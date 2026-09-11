@@ -931,6 +931,10 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
       setError("请填写正确的采集数量");
       return;
     }
+    if (parsedTargetCount > 200) {
+      setError("采集数量最多 200 条");
+      return;
+    }
     if (mode === "keyword" && !keywords.trim()) {
       setError("请至少填写一个关键词");
       return;
@@ -1296,7 +1300,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
             </label>
             <label><span>站点</span><select value={site} onChange={(event) => setSite(event.target.value as TargetSite | "")}><option value="" disabled>请选择</option><option value="US">美国站 US</option><option value="CO">哥伦比亚 CO</option><option value="EC">厄瓜多尔 EC</option></select></label>
             <label><span>选品范围</span><select value={scope} onChange={(event) => setScope(event.target.value as SelectionScope | "")}><option value="" disabled>请选择</option><option value="divergent">发散相似款</option><option value="exact">精准匹配</option></select></label>
-            <label><span>采集数量</span><input type="number" min="1" value={targetCount} onChange={(event) => setTargetCount(event.target.value)} /></label>
+            <label><span>采集数量</span><input type="number" min="1" max="200" value={targetCount} onChange={(event) => setTargetCount(event.target.value)} /></label>
             <label className="collection-keyword-field">
               <span>采集关键词 <em>{mode === "keyword" ? "必填" : "作为图片描述标签"}</em></span>
               <input value={keywords} onChange={(event) => setKeywords(event.target.value)} placeholder="多个关键词用逗号分隔，最多 5 个" />
@@ -1443,6 +1447,12 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
             <button type="button" className="confirm-button" disabled={busy || selectedCandidates.length === 0} onClick={() => void confirmSelected()}>确认入池（{selectedCandidates.length}）</button>
           </div>
         </div>
+        {activeRun && filteredCandidates.length > 1 && (
+          <p className="confirm-tip">
+            <span aria-hidden="true">ⓘ</span>
+            <span>提示：多个商品一起入池时，<b>多 SKU 商品会明显拖慢速度</b>。建议先用上方「SKU筛选」把最大 SKU 规格数调小，筛掉多 SKU 商品后再点「确认入池」。</span>
+          </p>
+        )}
         {!activeRun && <div className="result-empty"><span>⌕</span><strong>等待采集结果</strong><p>选择采集方向并提交条件，候选商品将在这里展示。</p></div>}
         {activeRun && activeRun.candidates.length === 0 && <div className="result-empty"><span>○</span><strong>本批次没有候选</strong><p>可以调整关键词、价格范围或关闭风险排除后重试。</p></div>}
         {activeRun && activeRun.candidates.length > 0 && filteredCandidates.length === 0 && (

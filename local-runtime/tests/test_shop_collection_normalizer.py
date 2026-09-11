@@ -108,6 +108,79 @@ def test_normalize_detail_response_handles_mixed_onebound_fields_and_normalizes_
     assert sku.attributes == {"颜色": "蓝色", "尺寸": "L"}
 
 
+def test_normalize_detail_response_maps_color_spec_images_onto_matching_skus() -> None:
+    """1688 ``skus.sku[]`` rows carry no image, so colour images must come from ``props_img``."""
+
+    candidate = normalize_detail_response(
+        {
+            "item": {
+                "num_iid": "952447669072",
+                "title": "电镀高级感气质夏日抓夹",
+                "pic_url": "https://images.example/main.jpg",
+                "props_list": {
+                    "0:0": "颜色:果冻蓝",
+                    "0:1": "颜色:果冻绿",
+                    "1:0": "纯度:13.5*6.5*5cm",
+                },
+                "props_name": "0:0:颜色:果冻蓝;0:1:颜色:果冻绿;1:0:纯度:13.5*6.5*5cm",
+                "props_img": {
+                    "0:0": "https://images.example/color-blue.jpg",
+                    "0:1": "https://images.example/color-green.jpg",
+                },
+                "skus": {
+                    "sku": [
+                        {
+                            "sku_id": "sku-blue",
+                            "properties": "0:0;1:0",
+                            "properties_name": "0:0:颜色:果冻蓝;1:0:纯度:13.5*6.5*5cm",
+                            "price": "4.90",
+                        },
+                        {
+                            "sku_id": "sku-green",
+                            "properties": "0:1;1:0",
+                            "properties_name": "0:1:颜色:果冻绿;1:0:纯度:13.5*6.5*5cm",
+                            "price": "4.90",
+                        },
+                    ]
+                },
+            }
+        },
+        evidence=_evidence(),
+    )
+
+    records = {record.sku_id: record for record in candidate.source_variant_records}
+    assert records["sku-blue"].image_url == "https://images.example/color-blue.jpg"
+    assert records["sku-green"].image_url == "https://images.example/color-green.jpg"
+    assert records["sku-blue"].attributes == {"颜色": "果冻蓝", "纯度": "13.5*6.5*5cm"}
+
+
+def test_normalize_detail_response_supports_wrapped_spec_images_and_ignores_non_color_specs() -> None:
+    """Only colour specs may provide an image; a size/纯度 dimension alone must stay imageless."""
+
+    candidate = normalize_detail_response(
+        {
+            "item": {
+                "num_iid": "1005",
+                "title": "只有尺寸规格的商品",
+                "prop_imgs": {
+                    "prop_img": [
+                        {"properties": "1:0", "url": "https://images.example/size-l.jpg"},
+                    ]
+                },
+                "props_img": {"1:0": "https://images.example/size-l.jpg"},
+                "props_list": {"1:0": "尺寸:L", "1:1": "尺寸:M"},
+                "skus": [
+                    {"sku_id": "sku-l", "properties": "1:0", "properties_name": "1:0:尺寸:L"},
+                ],
+            }
+        },
+        evidence=_evidence(),
+    )
+
+    assert candidate.source_variant_records[0].image_url is None
+    assert candidate.source_variant_records[0].attributes == {"尺寸": "L"}
+
+
 def test_normalize_detail_response_drops_raw_description_html_and_credentials_from_the_contract() -> None:
     html = '<section>secret product text<img src="https://images.example/description.jpg"></section>'
     candidate = normalize_detail_response(

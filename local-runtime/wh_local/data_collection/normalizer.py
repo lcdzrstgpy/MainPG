@@ -602,6 +602,8 @@ def _variants_from(source: Mapping[str, Any]) -> tuple[SourceVariantRecord, ...]
             return ()
     if not isinstance(entries, Sequence) or isinstance(entries, (str, bytes, bytearray)):
         return ()
+    property_images = _property_image_index(source)
+    color_property_ids = _color_property_ids(source)
     for entry in entries:
         if not isinstance(entry, Mapping):
             continue
@@ -614,12 +616,17 @@ def _variants_from(source: Mapping[str, Any]) -> tuple[SourceVariantRecord, ...]
             # OneBound 1688 item_get returns per-SKU specs as string fields,
             # e.g. ``properties_name: "0:0:颜色:粉色"`` or ``"颜色:粉色;尺寸:L"``.
             attributes = _string_spec_attributes(spec_text)
+        # SKU 行本身通常没有图片字段；1688 把规格图按属性值挂在 ``props_img``
+        # （``"pid:vid" -> url``）上，只能靠颜色属性值回查。
+        image_url = _url_value(entry, ("image_url", "pic_url", "image", "sku_image")) or _color_variant_image(
+            entry, property_images, color_property_ids
+        )
         records.append(
             SourceVariantRecord(
                 sku_id=sku_id,
                 attributes=attributes or {},
                 spec_text=spec_text,
-                image_url=_url_value(entry, ("image_url", "pic_url", "image", "sku_image")),
+                image_url=image_url,
                 price_cny=_number_value(entry, ("price", "price_cny", "promotion_price")),
                 min_order_quantity=_moq_or_none(entry, ("moq", "min_order_quantity", "begin_num")),
                 quantity=_integer_value(entry, ("quantity", "stock", "inventory", "num")),
@@ -627,6 +634,106 @@ def _variants_from(source: Mapping[str, Any]) -> tuple[SourceVariantRecord, ...]
             )
         )
     return tuple(records)
+
+
+_COLOR_PROPERTY_NAMES = ("颜色", "色彩", "颜色分类")
+
+
+def _is_color_property_name(value: Any) -> bool:
+    """规格名是否代表颜色维度（尺寸、纯度等其它规格一律不参与配图）。"""
+    if not isinstance(value, str):
+        return False
+    name = value.strip().casefold()
+    if not name:
+        return False
+    if any(token in name for token in _COLOR_PROPERTY_NAMES):
+        return True
+    return name in {"color", "colour"}
+
+
+def _property_image_index(source: Mapping[str, Any]) -> dict[str, str]:
+    """把 ``pid:vid`` 映射到对应的属性值图片 URL。
+
+    OneBound 1688 ``item_get`` 提供两种形态：``props_img``（``{"0:0": url}``）
+    或 ``prop_imgs.prop_img``（``[{"properties": "0:0", "url": url}]``）。
+    """
+    index: dict[str, str] = {}
+    direct = source.get("props_img")
+    if isinstance(direct, Mapping):
+        for key, value in direct.items():
+            url = _normalized_http_url(value)
+            if url:
+                index[str(key)] = url
+    wrapped = source.get("prop_imgs")
+    if isinstance(wrapped, Mapping):
+        entries = wrapped.get("prop_img")
+        if isinstance(entries, Sequence) and not isinstance(entries, (str, bytes, bytearray)):
+            for entry in entries:
+                if not isinstance(entry, Mapping):
+                    continue
+                key = entry.get("properties")
+                url = _normalized_http_url(entry.get("url")) or _normalized_http_url(entry.get("image_url"))
+                if isinstance(key, str) and key and url:
+                    index.setdefault(key, url)
+    return index
+
+
+def _color_property_ids(source: Mapping[str, Any]) -> frozenset[str]:
+    """从 ``props_list``/``props_name`` 里找出颜色维度的属性 ID。"""
+    ids: set[str] = set()
+    props_list = source.get("props_list")
+    if isinstance(props_list, Mapping):
+        for key, value in props_list.items():
+            if _is_color_property_name(str(value).split(":", 1)[0]):
+                ids.add(str(key).split(":", 1)[0])
+    if ids:
+        return frozenset(ids)
+    for field in ("props_name", "property_alias"):
+        text = source.get(field)
+        if not isinstance(text, str):
+            continue
+        for segment in text.split(";"):
+            parts = segment.split(":")
+            if len(parts) >= 3 and parts[0].strip().isdigit() and _is_color_property_name(parts[2]):
+                ids.add(parts[0].strip())
+    return frozenset(ids)
+
+
+def _color_variant_image(
+    entry: Mapping[str, Any],
+    property_images: Mapping[str, str],
+    color_property_ids: frozenset[str],
+) -> str | None:
+    """按 SKU 的颜色属性值取规格图，尺寸等其它规格不参与配图。"""
+    if not property_images:
+        return None
+    for pair in _color_property_pairs(entry, color_property_ids):
+        url = property_images.get(pair)
+        if url:
+            return url
+    return None
+
+
+def _color_property_pairs(entry: Mapping[str, Any], color_property_ids: frozenset[str]) -> tuple[str, ...]:
+    """列出该 SKU 中代表颜色的 ``pid:vid`` 组合。"""
+    pairs: list[str] = []
+    spec_text = entry.get("properties_name")
+    if isinstance(spec_text, str):
+        # ``properties_name`` 形如 ``pid:vid:名称:值``，即使缺少 ``props_list`` 也能定位颜色。
+        for segment in spec_text.split(";"):
+            parts = segment.split(":")
+            if len(parts) >= 3 and parts[0].strip().isdigit() and _is_color_property_name(parts[2]):
+                pair = f"{parts[0].strip()}:{parts[1].strip()}"
+                if pair not in pairs:
+                    pairs.append(pair)
+    properties = entry.get("properties")
+    if isinstance(properties, str):
+        # ``properties`` 形如 ``0:0;1:0``，配合 ``props_list`` 推导出的颜色属性 ID 使用。
+        for piece in properties.split(";"):
+            pair = piece.strip()
+            if pair and pair.split(":", 1)[0] in color_property_ids and pair not in pairs:
+                pairs.append(pair)
+    return tuple(pairs)
 
 
 def _string_spec_attributes(value: Any) -> dict[str, str]:

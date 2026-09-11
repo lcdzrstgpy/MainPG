@@ -214,7 +214,7 @@ def test_collector_only_fetches_details_for_target_count_items_without_sku_filte
         def __init__(self) -> None:
             self.detail_ids: list[str] = []
 
-        def search_keyword(self, criteria: DailySelectionCriteria) -> ProviderCallResult:
+        def search_keyword(self, criteria: DailySelectionCriteria, page: int = 1) -> ProviderCallResult:
             payload = {
                 "items": {
                     "item": [

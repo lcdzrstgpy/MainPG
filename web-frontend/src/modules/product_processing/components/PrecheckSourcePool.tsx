@@ -12,10 +12,10 @@ const SOURCE_KIND_LABELS: Record<string, string> = {
   detail: "原始详情",
 };
 
-type CollapsibleSourceKind = "gallery" | "detail";
+type CollapsibleSourceKind = "gallery" | "sku" | "detail";
 
 function isCollapsibleSourceKind(kind: string): kind is CollapsibleSourceKind {
-  return kind === "gallery" || kind === "detail";
+  return kind === "gallery" || kind === "sku" || kind === "detail";
 }
 
 type PrecheckSourcePoolProps = {
@@ -82,6 +82,11 @@ function SourceCard({
         <span className={`precheck-publication status-${asset.media_status || "pending"}`}>
           {statusLabel}
         </span>
+        {asset.text_review_status === "flagged" && (
+          <span className="precheck-text-review-flag" title={asset.text_review_reason || "原图检出中文，需人工复核"}>
+            待审核
+          </span>
+        )}
       </div>
       <div className="precheck-card-actions">
         {retryable && onRetry ? (
@@ -120,6 +125,7 @@ export function PrecheckSourcePool({
   const sourcePoolId = useId().replace(/:/g, "");
   const [expandedGroups, setExpandedGroups] = useState<Record<CollapsibleSourceKind, boolean>>({
     gallery: false,
+    sku: false,
     detail: false,
   });
   const byKind = new Map<string, PreviewImageAsset[]>();
@@ -151,6 +157,9 @@ export function PrecheckSourcePool({
           const collapsible = isCollapsibleSourceKind(kind);
           const expanded = !collapsible || expandedGroups[kind];
           const contentId = `${sourcePoolId}-${kind}-images`;
+          const pendingReview = group.filter(
+            (asset) => asset.text_review_status === "flagged",
+          ).length;
           return (
             <section
               key={kind}
@@ -176,7 +185,12 @@ export function PrecheckSourcePool({
                     </button>
                   )}
                 </div>
-                <span>{group.length} 项</span>
+                <span>
+                  {group.length} 项
+                  {pendingReview > 0 && (
+                    <em className="precheck-source-review">· {pendingReview} 张待审核</em>
+                  )}
+                </span>
               </header>
               {expanded && (
                 <div id={contentId} className="precheck-asset-grid">

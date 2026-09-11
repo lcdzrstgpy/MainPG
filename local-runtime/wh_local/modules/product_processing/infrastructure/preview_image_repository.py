@@ -91,6 +91,7 @@ class PreviewImageRepository:
         source_asset_id: str = "",
         media_asset_id: str = "",
         source_kind: str = "",
+        sku_id: str = "",
     ) -> dict[str, Any]:
         workspace = str(workspace_id or "").strip()
         identity = str(identity_hash or "").strip().casefold()
@@ -111,6 +112,7 @@ class PreviewImageRepository:
             "source_asset_id": str(source_asset_id or "")[:64],
             "media_asset_id": str(media_asset_id or "")[:36],
             "source_kind": str(source_kind or "")[:32],
+            "sku_id": str(sku_id or "")[:64],
             "identity_hash": identity[:64],
             "access_token": uuid4().hex,
             "managed_path": str(managed_path or ""),
@@ -147,8 +149,17 @@ class PreviewImageRepository:
                 raise PreviewPublicationConflict(
                     "preview asset registration could not be loaded"
                 )
+            changed = False
             if not row.access_token:
                 row.access_token = uuid4().hex
+                changed = True
+            # 代理资产按 identity 去重，重复注册不会更新已有行；这里对缺失的
+            # sku_id 做一次回填，让改动前登记的任务也能拿到变种对应关系。
+            target_sku_id = str(sku_id or "")[:64]
+            if target_sku_id and not row.sku_id:
+                row.sku_id = target_sku_id
+                changed = True
+            if changed:
                 session.flush()
             return self._asset(row)
 
@@ -224,6 +235,57 @@ class PreviewImageRepository:
                 ).order_by(PreviewImageAssetRow.created_at, PreviewImageAssetRow.id)
             ).all()
             return [self._asset(row) for row in rows]
+
+    def list_assets_for_text_review(
+        self,
+        task_id: int,
+        workspace_id: str,
+        *,
+        source_kind: str = "sku",
+        draft_ids: Sequence[int] | None = None,
+    ) -> list[dict[str, Any]]:
+        """列出该任务下待复核文字的来源资产（按 source_kind，默认 SKU 规格图）。"""
+        with self.database.sessions() as session:
+            statement = select(PreviewImageAssetRow).where(
+                PreviewImageAssetRow.task_id == int(task_id),
+                PreviewImageAssetRow.workspace_id == str(workspace_id),
+                PreviewImageAssetRow.source_kind == str(source_kind),
+            )
+            if draft_ids:
+                statement = statement.where(
+                    PreviewImageAssetRow.product_draft_id.in_(
+                        [int(value) for value in draft_ids]
+                    )
+                )
+            rows = session.scalars(
+                statement.order_by(
+                    PreviewImageAssetRow.product_draft_id, PreviewImageAssetRow.created_at
+                )
+            ).all()
+            return [self._asset(row) for row in rows]
+
+    def update_asset_text_review(
+        self,
+        asset_id: str,
+        workspace_id: str,
+        *,
+        status: str,
+        reason: str,
+    ) -> dict[str, Any] | None:
+        with self.database.sessions.begin() as session:
+            row = session.scalar(
+                select(PreviewImageAssetRow).where(
+                    PreviewImageAssetRow.id == str(asset_id),
+                    PreviewImageAssetRow.workspace_id == str(workspace_id),
+                )
+            )
+            if row is None:
+                return None
+            row.text_review_status = str(status or "")[:32]
+            row.text_review_reason = str(reason or "")[:240]
+            row.updated_at = utc_now()
+            session.flush()
+            return self._asset(row)
 
     def claim_materialization(
         self,
@@ -1538,6 +1600,7 @@ class PreviewImageRepository:
             "source_asset_id": row.source_asset_id,
             "media_asset_id": row.media_asset_id,
             "source_kind": row.source_kind,
+            "sku_id": row.sku_id,
             "identity_hash": row.identity_hash,
             "access_token": row.access_token,
             "managed_path": row.managed_path,
@@ -1551,6 +1614,8 @@ class PreviewImageRepository:
             "public_url": row.public_url,
             "error_code": row.error_code,
             "error_message": row.error_message,
+            "text_review_status": row.text_review_status,
+            "text_review_reason": row.text_review_reason,
             "materialize_claim_token": row.materialize_claim_token,
             "materialize_claimed_at": row.materialize_claimed_at,
             "created_at": row.created_at,

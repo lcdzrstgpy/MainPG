@@ -19,6 +19,10 @@ from .provider import ProviderCallResult
 LOCAL_EXPANSION_RULESET_VERSION = "local-v1"
 _LOCAL_EXPANSIONS = {"露营灯": ("便携露营灯",)}
 _IMAGE_OPERATION_BUDGET_COST = 3  # download, upload, then image search
+# 单关键词最多翻页数：上游单页返回条数有上限（1688 约 100 条、淘宝固定一页），
+# target_count（最高 200）需要按 page 递增补齐；这里给出安全上限，避免上游对深页
+# 返回重复数据时无界翻页。
+_MAX_SEARCH_PAGES = 10
 _NUMBER = re.compile(r"[-+]?(?:\d+(?:\.\d+)?|\.\d+)")
 CollectionProgressCallback = Callable[[str, int, int], None]
 
@@ -26,7 +30,7 @@ CollectionProgressCallback = Callable[[str, int, int], None]
 class DailySelectionProvider(Protocol):
     credential_fingerprint: str
 
-    def search_keyword(self, criteria: DailySelectionCriteria) -> ProviderCallResult: ...
+    def search_keyword(self, criteria: DailySelectionCriteria, page: int = 1) -> ProviderCallResult: ...
 
     def search_by_image(self, criteria: DailySelectionCriteria) -> ProviderCallResult: ...
 
@@ -158,26 +162,36 @@ class DailySelectionCollector:
                     per_query = DailySelectionCriteria(
                         **{**criteria.model_dump(mode="python"), "keywords": (query,)},
                     )
-                    response = self._provider.search_keyword(per_query)
-                    latest_budget = self._settle(criteria, 1, len(response.audits), collection_time)
-                    search_calls += 1
-                    api_calls += len(response.audits)
-                    attempts.append(
-                        QueryAttempt(
-                            query,
-                            expanded,
-                            LOCAL_EXPANSION_RULESET_VERSION if criteria.selection_scope == "divergent" else None,
-                            response.audits,
-                        )
+                    responses = _search_pages(
+                        self._provider,
+                        per_query,
+                        should_stop=lambda: len(candidates) >= criteria.target_count,
                     )
-                    candidates.extend(_tagged_candidates(response, query, expanded=expanded))
-                    if response.error is not None:
-                        errors.append(response.error)
+                    latest_budget = self._settle(
+                        criteria,
+                        1,
+                        sum(len(response.audits) for response in responses),
+                        collection_time,
+                    )
+                    for response in responses:
+                        search_calls += 1
+                        api_calls += len(response.audits)
+                        attempts.append(
+                            QueryAttempt(
+                                query,
+                                expanded,
+                                LOCAL_EXPANSION_RULESET_VERSION if criteria.selection_scope == "divergent" else None,
+                                response.audits,
+                            )
+                        )
+                        candidates.extend(_tagged_candidates(response, query, expanded=expanded))
+                        if response.error is not None:
+                            errors.append(response.error)
                     search_completed += 1
                     self._progress("searching", search_completed, len(queries))
             else:
                 # 并行关键词搜索
-                response_by_keyword: dict[str, ProviderCallResult] = {}
+                responses_by_keyword: dict[str, list[ProviderCallResult]] = {}
                 ordered_queries: list[tuple[str, bool]] = list(queries)
                 _reserve_all = True
                 reserved_search_calls = 0
@@ -194,11 +208,11 @@ class DailySelectionCollector:
                 if _reserve_all and not cancelled:
                     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-                    def _search(kw: str) -> tuple[str, ProviderCallResult]:
+                    def _search(kw: str) -> tuple[str, list[ProviderCallResult]]:
                         per_query = DailySelectionCriteria(
                             **{**criteria.model_dump(mode="python"), "keywords": (kw,)},
                         )
-                        return kw, self._provider.search_keyword(per_query)
+                        return kw, _search_pages(self._provider, per_query)
 
                     with ThreadPoolExecutor(max_workers=max_parallel) as executor:
                         future_map = {
@@ -206,39 +220,44 @@ class DailySelectionCollector:
                             for query, _ in ordered_queries
                         }
                         for future in as_completed(future_map):
-                            kw, response = future.result()
-                            response_by_keyword[kw] = response
+                            kw, responses = future.result()
+                            responses_by_keyword[kw] = responses
                             search_completed += 1
                             self._progress("searching", search_completed, len(ordered_queries))
                     # Settle（超额 audit 释放差值）
-                    total_audits = sum(len(r.audits) for r in response_by_keyword.values())
+                    total_audits = sum(
+                        len(response.audits)
+                        for responses in responses_by_keyword.values()
+                        for response in responses
+                    )
                     latest_budget = self._settle(criteria, len(ordered_queries), total_audits, collection_time)
                 elif reserved_search_calls:
                     # 预算不足提前退出：释放已预占的差额
                     latest_budget = self._settle(criteria, reserved_search_calls, 0, collection_time)
                 for query, expanded in ordered_queries:
-                    response = response_by_keyword.get(query)
-                    if response is None:
+                    responses = responses_by_keyword.get(query)
+                    if not responses:
                         continue
-                    search_calls += 1
-                    api_calls += len(response.audits)
-                    attempts.append(
-                        QueryAttempt(
-                            query,
-                            expanded,
-                            LOCAL_EXPANSION_RULESET_VERSION if criteria.selection_scope == "divergent" else None,
-                            response.audits,
+                    for response in responses:
+                        search_calls += 1
+                        api_calls += len(response.audits)
+                        attempts.append(
+                            QueryAttempt(
+                                query,
+                                expanded,
+                                LOCAL_EXPANSION_RULESET_VERSION if criteria.selection_scope == "divergent" else None,
+                                response.audits,
+                            )
                         )
-                    )
-                    candidates.extend(_tagged_candidates(response, query, expanded=expanded))
-                    if response.error is not None:
-                        errors.append(response.error)
+                        candidates.extend(_tagged_candidates(response, query, expanded=expanded))
+                        if response.error is not None:
+                            errors.append(response.error)
 
         unique = _rank_candidates(_deduplicate(candidates))
         # 详情拉取量控制：展示候选按「采集数量」收敛，未启用 SKU/起订量筛选时
-        # 只拉排名前 target_count 个候选的详情即可——与 1688 上游返回条数≈采集
-        # 数量的行为对齐，避免为多余候选（如淘宝接口忽略 page_size 返回的
-        # 固定 48 条）浪费 API 与时长。启用 SKU 硬筛选时需要全量候选的详情数据
+        # 只拉排名前 target_count 个候选的详情即可。搜索已按 page 翻取到
+        # target_count，但仍可能因去重/上游返回偏差多出少量候选，这里统一截断，
+        # 避免为多余候选浪费 API 与时长。启用 SKU 硬筛选时需要全量候选的详情数据
         # 才能判定，仍按 detail_count 尽量全量；超出 API 预算时由逐条 _reserve
         # 自然停止。
         has_sku_filter = (
@@ -425,6 +444,36 @@ def _queries(criteria: DailySelectionCriteria) -> tuple[tuple[str, bool], ...]:
         return tuple(base)
     additions = [(query, True) for keyword in criteria.keywords for query in _LOCAL_EXPANSIONS.get(keyword, ())]
     return tuple(base + additions)
+
+
+def _search_pages(
+    provider: DailySelectionProvider,
+    criteria: DailySelectionCriteria,
+    *,
+    should_stop: Callable[[], bool] | None = None,
+) -> list[ProviderCallResult]:
+    """按 ``page`` 逐页拉取关键词搜索，直到凑满 ``target_count`` 或某页无结果。
+
+    上游对单页返回条数有上限（1688 单页约 100 条、淘宝接口忽略 ``page_size``
+    固定返回一页），只发一次请求无法把 ``target_count``（最高 200）凑满，因此
+    按页递增翻取；某页返回空即视为结果已尽，不再继续翻页。
+    """
+    responses: list[ProviderCallResult] = []
+    found = 0
+    for page in range(1, _MAX_SEARCH_PAGES + 1):
+        if should_stop is not None and should_stop():
+            break
+        response = provider.search_keyword(criteria, page=page)
+        responses.append(response)
+        if response.error is not None:
+            break
+        page_candidates = normalize_search_response(response.response, evidence=response.audit)
+        if not page_candidates:
+            break
+        found += len(page_candidates)
+        if found >= criteria.target_count:
+            break
+    return responses
 
 
 def _collected_candidates(response: ProviderCallResult, reference_image_url: str | None) -> list[CollectedCandidate]:

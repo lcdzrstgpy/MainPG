@@ -5,6 +5,7 @@ import math
 import os
 import re
 import threading
+from collections.abc import Mapping
 from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any
@@ -187,6 +188,55 @@ def _http_urls(values: Any) -> list[str]:
     return [str(value).strip() for value in (values or []) if _is_http_url(value)]
 
 
+def _variant_export_key(record: Mapping[str, Any]) -> str:
+    """变种在导出侧的稳定标识，与预检前端 variantKey 保持同口径。
+
+    前端取 ``String(sku_id || source_sku_id || 属性值拼接)``；这里保持一致，
+    使预检侧「排除该 SKU」的键能准确命中导出行。
+    """
+    sku_id = str(record.get("sku_id") or record.get("source_sku_id") or "").strip()
+    if sku_id:
+        return sku_id
+    attributes = record.get("attributes")
+    if isinstance(attributes, Mapping):
+        return "/".join(str(value) for value in attributes.values() if value)
+    return ""
+
+
+def _excluded_variant_keys(row: Mapping[str, Any]) -> set[str]:
+    preview_overrides = row.get("preview_overrides") or {}
+    if not isinstance(preview_overrides, Mapping):
+        return set()
+    raw = preview_overrides.get("excluded_variant_keys") or []
+    if not isinstance(raw, (list, tuple)):
+        return set()
+    return {str(value or "").strip() for value in raw if str(value or "").strip()}
+
+
+def _variant_image_override_url(
+    row: Mapping[str, Any], variant: Mapping[str, Any] | None
+) -> str:
+    """取该 SKU 在预检侧被明确替换后的规格图公网地址（未替换返回空串）。
+
+    ``variant_image_overrides`` 的原始值可能是预览资产 ID 或 http(s) 地址；
+    finalize/妙手导出在 ``_export_rows`` 里已统一解析成 ``variant_image_urls``。
+    """
+    if variant is None:
+        return ""
+    key = _variant_export_key(variant)
+    if not key:
+        return ""
+    preview_overrides = row.get("preview_overrides") or {}
+    if not isinstance(preview_overrides, Mapping):
+        return ""
+    resolved = preview_overrides.get("variant_image_urls") or {}
+    if isinstance(resolved, Mapping):
+        url = str(resolved.get(key) or "").strip()
+        if _is_http_url(url):
+            return url
+    return ""
+
+
 def require_final_public_image_urls(values: list[str]) -> list[str]:
     """Fail closed when a final workbook still contains a local/private image."""
     normalized = [str(value or "").strip() for value in values]
@@ -293,9 +343,13 @@ def _dxm_export_rows(row: dict[str, Any]) -> list[list[Any]]:
     records = [item for item in variant_records if isinstance(item, dict)]
     if not records:
         return [_dxm_single_export_row(row, None)]
+    # 预检侧整行剔除的 SKU 规格：该变种不产生任何导出行（商品仍保留其余变种）。
+    excluded = _excluded_variant_keys(row)
     exported: list[list[Any]] = []
     seen: set[tuple[Any, Any, Any, Any]] = set()
     for record in records:
+        if excluded and _variant_export_key(record) in excluded:
+            continue
         values = _dxm_single_export_row(row, record)
         # 变种属性名一/值一 + 属性名二/值二（export 行第 4~7 列）
         variant_key = (values[4], values[5], values[6], values[7])
@@ -303,7 +357,8 @@ def _dxm_export_rows(row: dict[str, Any]) -> list[list[Any]]:
             continue
         seen.add(variant_key)
         exported.append(values)
-    return exported if exported else [_dxm_single_export_row(row, None)]
+    # 有变种记录时不再回退单行：全部被剔除意味着该商品不出现任何行。
+    return exported
 
 
 def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) -> list[Any]:
@@ -404,6 +459,20 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
         material_images = next(iter(_http_urls(source_detail_image_urls)), "")
         if not material_images:
             material_images = main_image
+
+    # SKU 规格图：店小秘「预览图」列对齐原型 _build_dxm_row（DXM_COLUMNS[8]）——
+    # 取变种自己的规格图，缺失时回退商品主图。预检侧「全部使用主图替代」通过
+    # variant_image_mode=="main" 强制走商品主图。*轮播图/素材图仍保持商品级不变。
+    # 操作员在预检侧逐个 SKU 换过图时，显式替换优先于以上两种策略。
+    variant_image_mode = str(preview_overrides.get("variant_image_mode") or "source").strip().lower()
+    variant_image = str((variant or {}).get("image_url") or "").strip()
+    override_image = _variant_image_override_url(row, variant)
+    if override_image:
+        preview_image = override_image
+    elif variant_image_mode == "main" or not _is_http_url(variant_image):
+        preview_image = main_image
+    else:
+        preview_image = variant_image
 
     # 详情图以 HTML 追加到产品描述（交接文档 §10/§12）；仅追加可外部访问的 http(s) 地址
     # Presence is semantic: an explicit empty array means the operator removed
@@ -522,7 +591,7 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
         variant_value_1,
         variant_name_2,
         variant_value_2,
-        main_image,
+        preview_image,  # 预览图：SKU 规格图（缺失回退商品主图）
         declared_price_value if declared_price_value not in (None, "") else "",
         variant_sku,
         length,
@@ -1090,9 +1159,13 @@ def _miaoshou_row_values(
         item for item in (row.get("source_variant_records") or []) if isinstance(item, dict)
     ]
     targets: list[dict[str, Any] | None] = [None] if not variant_records else variant_records
+    # 与店小秘同口径：预检侧整行剔除的 SKU 不产生妙手行。
+    excluded = _excluded_variant_keys(row)
     exported: list[dict[int, Any]] = []
     seen: set[tuple[Any, Any, Any, Any]] = set()
     for variant in targets:
+        if variant is not None and excluded and _variant_export_key(variant) in excluded:
+            continue
         dxm_row = _dxm_single_export_row(row, variant)
         # 与店小秘一致：按「规格名1/值1 + 规格名2/值2」组合去重，避免同规格多价行
         # 在妙手被判重复。
@@ -1101,9 +1174,7 @@ def _miaoshou_row_values(
             continue
         seen.add(variant_key)
         exported.append(_miaoshou_single_row_values(row, variant, kind, dxm_row, columns))
-    return exported or [
-        _miaoshou_single_row_values(row, None, kind, _dxm_single_export_row(row, None), columns)
-    ]
+    return exported
 
 
 def _miaoshou_single_row_values(
@@ -1159,18 +1230,30 @@ def _miaoshou_single_row_values(
     values[columns["spec_name_2"]] = spec_name_2
     values[columns["spec_value_2"]] = spec_value_2
 
-    # 图片：与店小秘导出同一批最终图片（均已是公网 https）。
+    # 图片：店小秘 18/19 列为商品级轮播/素材图，8 列为 SKU 规格图。妙手把 SKU 规格图
+    # 落到颜色图（服饰）/预览图（非服饰），缺失或「全部使用主图替代」时回退商品级图片。
     carousel_text = str(dxm_row[18] or "").strip()
-    main_image = str(dxm_row[8] or "").strip()
-    if not main_image and carousel_text:
-        main_image = carousel_text.splitlines()[0]
+    # 商品级主图取店小秘 *产品素材图（19 列，商品级），避免沿用 8 列已被换成规格图。
+    product_image = str(dxm_row[19] or "").strip()
+    if not product_image and carousel_text:
+        product_image = carousel_text.splitlines()[0]
+    variant_image_mode = str(preview_overrides.get("variant_image_mode") or "source").strip().lower()
+    variant_image = str((variant or {}).get("image_url") or "").strip()
+    # 逐 SKU 显式换图优先（与店小秘同口径）。
+    override_image = _variant_image_override_url(row, variant)
+    if override_image:
+        sku_image = override_image
+    else:
+        if variant_image_mode == "main" or not _is_http_url(variant_image):
+            variant_image = ""
+        sku_image = variant_image or product_image
     if kind == MS_KIND_APPAREL:
-        values[columns["color_images"]] = carousel_text
-        values[columns["material_image"]] = main_image
+        values[columns["color_images"]] = sku_image or carousel_text
+        values[columns["material_image"]] = product_image
     else:
         values[columns["carousel_images"]] = carousel_text
-        values[columns["material_image"]] = main_image
-        values[columns["preview_image"]] = main_image
+        values[columns["material_image"]] = product_image
+        values[columns["preview_image"]] = sku_image
 
     # 价格/物流/库存。
     values[columns["declared_price"]] = dxm_row[9]

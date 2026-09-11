@@ -216,6 +216,10 @@ export type PreviewImageBucket = "source" | "processed";
 
 export type PreviewSourceKind = "main" | "gallery" | "sku" | "detail" | "";
 
+/** SKU 原图中文复核状态：""=尚未检测，clear=未检出中文，flagged=检出中文待人工处理，
+ * text_check_failed=检测流程失败（不影响图片本身可用）。 */
+export type PreviewTextReviewStatus = "" | "clear" | "flagged" | "text_check_failed";
+
 export type PreviewImageAsset = {
   id: string;
   origin: PreviewImageOrigin;
@@ -232,8 +236,12 @@ export type PreviewImageAsset = {
   height: number;
   bucket: PreviewImageBucket;
   source_kind: PreviewSourceKind;
+  /** 仅「原始 SKU」来源资产带值：对应 source_variant_records 里的 sku_id。 */
+  sku_id: string;
   media_asset_id: string;
   media_status: MediaAssetStatus | "";
+  text_review_status: PreviewTextReviewStatus;
+  text_review_reason: string;
 };
 
 export type PreviewImageManifest = {
@@ -353,6 +361,12 @@ export type PreviewOverrides = {
   detail_images?: string[];
   core_fields?: PreviewCoreFields;
   shipping_package_records?: Record<string, ShippingPackageRecordOverride>;
+  /** SKU 规格图导出策略：source=每个 SKU 用规格原图（缺失回退商品主图）；main=全部用商品主图替代。 */
+  variant_image_mode?: "source" | "main";
+  /** 被整行剔除的 SKU 变种键：导出时该变种不产生任何表格行。 */
+  excluded_variant_keys?: string[];
+  /** 逐个 SKU 指定的规格图：键=变种键，值=预览资产 ID 或 http(s) 图片地址。 */
+  variant_image_overrides?: Record<string, string>;
 };
 
 export type PreviewItem = {
@@ -395,6 +409,8 @@ export type PreviewItem = {
     builtin?: number;
     original?: number;
   };
+  /** 采集到的 SKU 变体（含规格图 image_url），供预检侧栏查看与选择规格图策略。 */
+  source_variant_records?: DraftVariant[];
 };
 
 export type PreviewResponse = {

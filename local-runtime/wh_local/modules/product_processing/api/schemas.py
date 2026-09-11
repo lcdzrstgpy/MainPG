@@ -247,6 +247,22 @@ class PreviewDesiredState(BaseModel):
     # changed by the operator, while captured rows remain immutable evidence.
     shipping_package_records: dict[str, ShippingPackageRecordOverride] = Field(default_factory=dict)
     image_manifest_v2: PreviewImageManifestInput
+    # SKU 规格图导出策略：source=每个 SKU 用采集到的规格原图（缺失回退商品主图）；
+    # main=全部 SKU 统一用商品主图替代。仅影响导出时预览图/颜色图列的取值。
+    variant_image_mode: Literal["source", "main"] = "source"
+    # 被操作员整行剔除的 SKU 规格：导出时该变种不产生任何表格行。
+    excluded_variant_keys: list[str] = Field(default_factory=list)
+    # 逐个 SKU 指定规格图：key=SKU 变种键，值=预览资产 ID 或 http(s) 图片地址。
+    variant_image_overrides: dict[str, str] = Field(default_factory=dict)
+
+
+class PreviewAssetImportRequest(BaseModel):
+    """把外部图片转存成本商品的预览资产（供前端同源读取像素后裁剪）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    draft_id: int
+    url: str = Field(min_length=1, max_length=2000)
 
 
 class PreviewSaveItem(BaseModel):

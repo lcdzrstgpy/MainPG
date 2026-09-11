@@ -63,7 +63,7 @@ class DailySelectionCriteria(BaseModel):
     max_sku_price: Decimal | None = None
     min_sku_stock: int | None = None
     max_sku_stock: int | None = None
-    target_count: int = Field(default=30, ge=1, le=100)
+    target_count: int = Field(default=30, ge=1, le=200)
     max_api_calls: int = Field(default=0, ge=0, description="兼容旧客户端字段；不再限制万邦调用次数")
     detail_count: int = Field(default=50, ge=1, le=190, description="启用 SKU 筛选时的详情覆盖上限；未启用时只拉取前 target_count 个候选的详情")
     exclude_risks: bool = True

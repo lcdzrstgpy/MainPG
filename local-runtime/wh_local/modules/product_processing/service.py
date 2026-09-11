@@ -3431,6 +3431,15 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 "excluded": bool(draft_id) and int(draft_id) in excluded_ids,
                 **projected,
             })
+        # SKU 原图中文复核：预检页要展示「待审核」名单，这里顺带触发一次后台检测
+        # （同任务去重，检测在独立线程跑，不拖慢本接口）。结果落库后由下一次
+        # task_preview 带回；前端可轮询 sku_text_review_status 看进度。
+        if any(
+            str(asset.get("source_kind") or "") == "sku"
+            for item in items
+            for asset in (item.get("assets") or [])
+        ):
+            self.preview_images.start_sku_text_review(task_id, workspace_id=workspace_id)
         return {
             "task_id": task_id,
             "task": {
@@ -3730,6 +3739,59 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             )
         except LookupError as exc:
             raise ProductProcessingNotFound(str(exc)) from exc
+
+    def import_preview_image_from_url(
+        self,
+        task_id: int,
+        draft_id: int,
+        url: str,
+        *,
+        workspace_id: str = "local",
+    ) -> dict[str, Any]:
+        """把外部图片经图床转存为预览资产。
+
+        前端框选裁剪需要读取像素，外部跨域地址（如 1688 商品图）会让 canvas 变脏
+        无法导出；转存后拿到本服务签名的同源地址即可裁剪，导出时随发布流程换成公网地址。
+        """
+        from urllib.parse import urlsplit  # noqa: PLC0415
+
+        from .infrastructure.preview_image_files import (  # noqa: PLC0415
+            MAX_PREVIEW_IMAGE_BYTES,
+        )
+
+        normalized = str(url or "").strip()
+        if not normalized.lower().startswith("https://") or not is_safe_external_url(normalized):
+            raise ProductProcessingValidationError("只能转存可公开访问的 https 图片地址")
+        self.require_preview_target(task_id, draft_id, workspace_id=workspace_id)
+        try:
+            image = fetch_public_image(
+                normalized,
+                max_bytes=MAX_PREVIEW_IMAGE_BYTES,
+                timeout_seconds=30,
+            )
+        except Exception as exc:  # noqa: BLE001 - 统一转成校验错误回给前端
+            raise ProductProcessingValidationError(f"图片转存失败：{exc}") from exc
+        content = bytes(getattr(image, "content", b"") or b"")
+        if not content:
+            raise ProductProcessingValidationError("图片转存失败：未取到图片内容")
+        filename = Path(urlsplit(normalized).path).name or "imported-image.jpg"
+        return self.register_preview_upload(
+            task_id,
+            draft_id,
+            content,
+            filename,
+            str(getattr(image, "media_type", "") or ""),
+            workspace_id=workspace_id,
+        )
+
+    def sku_text_review_status(
+        self, task_id: int, *, workspace_id: str = "local"
+    ) -> dict[str, int]:
+        """SKU 原图中文复核进度（预检页「待审核」计数与轮询用）。"""
+        self._require_task(task_id, workspace_id)
+        return self.preview_images.sku_text_review_progress(
+            task_id, workspace_id=workspace_id
+        )
 
     def draft_media(self, draft_id: int, *, workspace_id: str = "local") -> dict[str, Any]:
         draft = self.get_draft(draft_id, workspace_id)
@@ -4300,6 +4362,35 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             cleaned[MANIFEST_KEY] = PreviewImageManifest.from_value(
                 overrides.get(MANIFEST_KEY)
             ).as_dict()
+        # SKU 规格图导出策略（source=用规格原图 / main=统一用商品主图）。显式保存，
+        # 使「使用原图」可以覆盖此前选择的「主图替代」。
+        variant_image_mode = str(overrides.get("variant_image_mode") or "").strip().lower()
+        if variant_image_mode in {"source", "main"}:
+            cleaned["variant_image_mode"] = variant_image_mode
+        # 被整行剔除的 SKU 规格键：去重保序后显式保存，导出时据此过滤变种行。
+        raw_excluded = overrides.get("excluded_variant_keys") or []
+        if isinstance(raw_excluded, (list, tuple)):
+            excluded = list(
+                dict.fromkeys(
+                    str(value or "").strip()
+                    for value in raw_excluded
+                    if str(value or "").strip()
+                )
+            )
+            if excluded:
+                cleaned["excluded_variant_keys"] = excluded
+        # 逐个 SKU 的规格图替换：值为预览资产 ID（导出时物化发布成公网地址）
+        # 或已是公网的 http(s) 图片地址（如其它 SKU 的采集规格原图）。
+        raw_variant_images = overrides.get("variant_image_overrides") or {}
+        if isinstance(raw_variant_images, dict):
+            variant_images: dict[str, str] = {}
+            for raw_key, raw_value in raw_variant_images.items():
+                variant_key = str(raw_key or "").strip()
+                value = str(raw_value or "").strip()
+                if variant_key and value:
+                    variant_images[variant_key] = value
+            if variant_images:
+                cleaned["variant_image_overrides"] = variant_images
         return cleaned
 
     def _preview_item(
@@ -4428,6 +4519,19 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 if str(value or "").strip()
             ],
             "variant_translation_sources": result.get("variant_translation_sources") or {},
+            # SKU 规格图管理侧栏数据：仅透出展示所需字段，避免把件重尺等重型
+            # 证据整体塞进预检响应（单商品最多可含两百多个 SKU）。
+            "source_variant_records": [
+                {
+                    "sku_id": str(record.get("sku_id") or record.get("source_sku_id") or "").strip(),
+                    "source_sku_id": str(record.get("source_sku_id") or "").strip() or None,
+                    "display_name": str(record.get("display_name") or "").strip() or None,
+                    "attributes": record.get("attributes") if isinstance(record.get("attributes"), dict) else {},
+                    "image_url": str(record.get("image_url") or record.get("imageUrl") or "").strip() or None,
+                }
+                for record in (result.get("source_variant_records") or [])
+                if isinstance(record, dict)
+            ],
             "preview_revision": preview_revision,
             "result_version": task_item_result_version(result),
             # Kept separate from product_dimensions: these are shipping package

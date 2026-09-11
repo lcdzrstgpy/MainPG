@@ -48,6 +48,9 @@ _SEARCH_RETRIES = 1
 _SEARCH_RETRY_BACKOFF_SECONDS = 1.5
 # 搜索类操作触发自动重试的 outcome：上游超时、空结果、上游失败。
 _SEARCH_RETRY_OUTCOMES = frozenset({"timeout", "no_results", "upstream_failed"})
+# 单页请求条数上限：上游对 page_size 实际有截断（1688 约 100 条、淘宝接口
+# 忽略该参数固定返回一页），target_count 超过此值时由采集侧按 page 递增补齐。
+_SEARCH_PAGE_SIZE_MAX = 100
 _ITEM_GET_SEMAPHORE = threading.BoundedSemaphore(3)
 
 
@@ -325,13 +328,19 @@ class OneBoundProvider:
             "image_max_bytes": self._image_max_bytes,
         }
 
-    def search_keyword(self, criteria: DailySelectionCriteria) -> ProviderCallResult:
+    def search_keyword(self, criteria: DailySelectionCriteria, page: int = 1) -> ProviderCallResult:
         if criteria.collection_mode != "keyword":
             return self._local_error("item_search", "invalid_request", "keyword criteria are required")
+        if isinstance(page, bool) or not isinstance(page, int) or page < 1:
+            return self._local_error("item_search", "invalid_request", "page must be a positive integer")
         return self._api_call(
             "item_search",
-            {"q": " ".join(criteria.keywords), "page_size": criteria.target_count},
-            request_metadata={"query_count": len(criteria.keywords)},
+            {
+                "q": " ".join(criteria.keywords),
+                "page": page,
+                "page_size": min(criteria.target_count, _SEARCH_PAGE_SIZE_MAX),
+            },
+            request_metadata={"query_count": len(criteria.keywords), "page": page},
             retry_outcomes=_SEARCH_RETRY_OUTCOMES,
         )
 

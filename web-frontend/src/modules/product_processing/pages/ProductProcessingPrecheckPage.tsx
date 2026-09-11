@@ -8,6 +8,7 @@ import {
   finalizeProductPreview,
   getListingAdvice,
   getPreviewFinalizeRun,
+  importPreviewAssetFromUrl,
   regeneratePreviewDetail,
   restorePreviewItem,
   retryMediaAsset,
@@ -20,6 +21,13 @@ import {
 import { DimensionChangeSetReview } from '../components/DimensionChangeSetReview';
 import { PrecheckFinalizeProgress } from '../components/PrecheckFinalizeProgress';
 import { PrecheckImageManager } from '../components/PrecheckImageManager';
+import {
+  PrecheckSkuManager,
+  type VariantImageMode,
+  type VariantImageOption,
+  type VariantRef,
+} from '../components/PrecheckSkuManager';
+import { variantLabel } from '../utils/skuFilter';
 import {
   addAssets,
   restoreRemovedAsset,
@@ -39,6 +47,7 @@ import type {
   PreviewImageManifest,
   PreviewItem,
   PreviewResponse,
+  PreviewTextReviewStatus,
   ShippingPackageRecord,
   ShippingPackageRecordOverride,
 } from '../types';
@@ -65,7 +74,20 @@ type ItemEdits = {
   addedAssets?: PreviewImageAsset[];
   core_fields?: PreviewCoreFields;
   shipping_package_records?: Record<string, ShippingPackageRecordOverride>;
+  /** SKU 规格图导出策略：source=规格原图 / main=全部用商品主图替代。 */
+  variantImageMode?: VariantImageMode;
+  /** 被整行剔除（导出时不进表）的 SKU 变种键。 */
+  excludedVariantKeys?: string[];
+  /** 逐个 SKU 的规格图替换：键=变种键，值=预览资产 ID 或 http(s) 直链。 */
+  variantImageOverrides?: Record<string, string>;
 };
+
+/** 侧栏里可用于替换 SKU 规格图的图片来源及分组标题。 */
+const VARIANT_IMAGE_ORIGIN_GROUPS: Array<{ origin: PreviewImageAsset['origin']; label: string }> = [
+  { origin: 'generated', label: 'AI 处理图' },
+  { origin: 'upload', label: '本地导入的图片' },
+  { origin: 'dimension', label: '尺寸图' },
+];
 
 type UndoSnackbar = {
   draftId: number;
@@ -259,9 +281,11 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
   const [listingAdviceLoadingIds, setListingAdviceLoadingIds] = useState<Set<number>>(new Set());
   const [listingAdviceErrors, setListingAdviceErrors] = useState<Record<number, string>>({});
   const listingAdviceRequestRef = useRef<Record<number, string>>({});
+  const [skuManagerOpen, setSkuManagerOpen] = useState(false);
 
   useEffect(() => {
     if (!isActive) setActiveImage(null);
+    if (!isActive) setSkuManagerOpen(false);
   }, [isActive]);
 
   const runStorageKey = `pp-preview-finalize:${ctx.workspaceId}:${taskId}`;
@@ -576,6 +600,35 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     }));
   };
 
+  const effectiveVariantImageMode = (item: PreviewItem): VariantImageMode => (
+    editFor(item).variantImageMode ?? item.overrides.variant_image_mode ?? 'source'
+  );
+
+  /** 被整行剔除的 SKU 变种键（本地编辑优先，其次已保存值）。 */
+  const effectiveExcludedVariants = (item: PreviewItem): string[] => (
+    editFor(item).excludedVariantKeys ?? item.overrides.excluded_variant_keys ?? []
+  );
+
+  /** 逐个 SKU 的换图值；空串表示「清除换图」，不参与提交。 */
+  const effectiveVariantImageOverrides = (item: PreviewItem): Record<string, string> => {
+    const combined = {
+      ...(item.overrides.variant_image_overrides ?? {}),
+      ...(editFor(item).variantImageOverrides ?? {}),
+    };
+    return Object.fromEntries(
+      Object.entries(combined).filter(([, value]) => String(value ?? '').trim() !== ''),
+    );
+  };
+
+  /** 某 SKU 换图值的可访问地址：资产 ID 走预览地址，http(s) 直链原样返回。 */
+  const variantImageUrlOf = (item: PreviewItem, key: string): string => {
+    const value = String(effectiveVariantImageOverrides(item)[key] ?? '').trim();
+    if (!value) return '';
+    if (/^https?:\/\//i.test(value)) return value;
+    const asset = effectiveAssets(item).find((entry) => entry.id === value);
+    return asset ? asset.preview_url || asset.public_url || '' : '';
+  };
+
   const collectDesiredState = (item: PreviewItem): PreviewSavePayload => {
     if (item.product_draft_id == null) throw new Error(`商品 #${item.item_id} 缺少草稿 ID，无法保存预检`);
     const edit = editFor(item);
@@ -589,6 +642,9 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
         core_fields: effectiveCoreFields(item),
         image_manifest_v2: effectiveManifest(item),
         shipping_package_records: effectiveShippingPackageOverrides(item),
+        variant_image_mode: effectiveVariantImageMode(item),
+        excluded_variant_keys: effectiveExcludedVariants(item),
+        variant_image_overrides: effectiveVariantImageOverrides(item),
       },
     };
   };
@@ -605,6 +661,9 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
         core_fields: { ...item.core_fields },
         image_manifest_v2: cloneManifest(item.image_manifest),
         shipping_package_records: effectiveShippingPackageOverrides(item),
+        variant_image_mode: item.overrides.variant_image_mode ?? 'source',
+        excluded_variant_keys: item.overrides.excluded_variant_keys ?? [],
+        variant_image_overrides: item.overrides.variant_image_overrides ?? {},
       },
     };
   };
@@ -624,6 +683,205 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
 
   const setManifest = (draftId: number, manifest: PreviewImageManifest) => {
     setEdit(draftId, { imageManifest: cloneManifest(manifest) });
+  };
+
+  const applyVariantImageMode = (mode: VariantImageMode, draftIds: number[]) => {
+    if (draftIds.length === 0) return;
+    setEdits((previous) => {
+      const next = { ...previous };
+      for (const draftId of draftIds) {
+        next[draftId] = { ...(next[draftId] ?? {}), variantImageMode: mode };
+      }
+      return next;
+    });
+  };
+
+  const itemOfDraft = (draftId: number): PreviewItem | undefined => (
+    allItems.find((entry) => (entry.product_draft_id ?? entry.item_id) === draftId)
+  );
+
+  /** 整行剔除 / 恢复 SKU 规格：导出时被剔除的变种不产生表格行。 */
+  const applyVariantExclusion = (entries: VariantRef[], excluded: boolean) => {
+    if (entries.length === 0) return;
+    const grouped = new Map<number, string[]>();
+    for (const entry of entries) {
+      const list = grouped.get(entry.draftId) ?? [];
+      list.push(entry.variantKey);
+      grouped.set(entry.draftId, list);
+    }
+    setEdits((previous) => {
+      const next = { ...previous };
+      for (const [draftId, keys] of grouped) {
+        const item = itemOfDraft(draftId);
+        if (!item) continue;
+        const current = new Set(previous[draftId]?.excludedVariantKeys ?? item.overrides.excluded_variant_keys ?? []);
+        for (const key of keys) {
+          if (excluded) current.add(key);
+          else current.delete(key);
+        }
+        next[draftId] = { ...(previous[draftId] ?? {}), excludedVariantKeys: Array.from(current) };
+      }
+      return next;
+    });
+  };
+
+  /** 设置/清除逐个 SKU 的规格图替换（value 为空串表示恢复规格原图）。 */
+  const applyVariantImageOverrides = (entries: Array<VariantRef & { value: string }>) => {
+    if (entries.length === 0) return;
+    const grouped = new Map<number, Array<{ variantKey: string; value: string }>>();
+    for (const entry of entries) {
+      const list = grouped.get(entry.draftId) ?? [];
+      list.push({ variantKey: entry.variantKey, value: entry.value });
+      grouped.set(entry.draftId, list);
+    }
+    setEdits((previous) => {
+      const next = { ...previous };
+      for (const [draftId, list] of grouped) {
+        const item = itemOfDraft(draftId);
+        if (!item) continue;
+        const current = {
+          ...(item.overrides.variant_image_overrides ?? {}),
+          ...(previous[draftId]?.variantImageOverrides ?? {}),
+        };
+        for (const entry of list) {
+          if (entry.value) current[entry.variantKey] = entry.value;
+          else delete current[entry.variantKey];
+        }
+        next[draftId] = { ...(previous[draftId] ?? {}), variantImageOverrides: current };
+      }
+      return next;
+    });
+  };
+
+  /** 该商品可用于替换 SKU 规格图的候选图：AI 处理图 / 本地导入 / 尺寸图 / 其他 SKU 规格原图。 */
+  const variantImageOptionsOf = (item: PreviewItem): VariantImageOption[] => {
+    const options: VariantImageOption[] = [];
+    const seen = new Set<string>();
+    const assets = effectiveAssets(item);
+    for (const { origin, label } of VARIANT_IMAGE_ORIGIN_GROUPS) {
+      for (const asset of assets) {
+        if (asset.origin !== origin) continue;
+        const url = asset.preview_url || asset.public_url || '';
+        if (!url || seen.has(asset.id)) continue;
+        seen.add(asset.id);
+        options.push({
+          value: asset.id,
+          thumb: url,
+          cropSrc: url,
+          group: label,
+          label: `${label} · ${asset.id.slice(0, 8)}`,
+        });
+      }
+    }
+    const variants = Array.isArray(item.source_variant_records) ? item.source_variant_records : [];
+    variants.forEach((variant, index) => {
+      const url = String(variant.image_url ?? variant.imageUrl ?? '').trim();
+      if (!/^https?:\/\//i.test(url) || seen.has(url)) return;
+      seen.add(url);
+      const label = variantLabel(variant) || variant.display_name || `SKU ${index + 1}`;
+      options.push({
+        value: url,
+        thumb: url,
+        cropSrc: url,
+        group: '其他 SKU 的规格原图',
+        label: `${label}（规格原图）`,
+      });
+    });
+    return options;
+  };
+
+  const overrideUrlOfDraft = (draftId: number, key: string): string => {
+    const item = itemOfDraft(draftId);
+    return item ? variantImageUrlOf(item, key) : '';
+  };
+
+  /** 该 SKU 原图的中文复核状态：按 sku_id 关联「原始 SKU」来源资产。 */
+  const textReviewOfDraft = (draftId: number, skuId: string): PreviewTextReviewStatus => {
+    const target = String(skuId || '').trim();
+    if (!target) return '';
+    const item = itemOfDraft(draftId);
+    if (!item) return '';
+    const asset = effectiveAssets(item).find(
+      (entry) => entry.source_kind === 'sku' && String(entry.sku_id || '') === target,
+    );
+    return asset?.text_review_status ?? '';
+  };
+
+  /** 把裁剪产物上传成该商品的预览资产，返回可直接写入换图值的候选项。 */
+  const uploadVariantCrop = async (draftId: number, file: File): Promise<VariantImageOption> => {
+    if (!ALLOWED_UPLOAD_TYPES.has(file.type)) throw new Error('裁剪结果不是支持的 JPEG / PNG / WebP 图片');
+    if (file.size <= 0 || file.size > MAX_UPLOAD_BYTES) throw new Error('裁剪结果必须大于 0 字节且不超过 25 MiB');
+    setPendingUploads((count) => count + 1);
+    try {
+      const data = await uploadPreviewAssets(ctx, taskId, draftId, [file]);
+      const asset = data.assets[0];
+      if (!asset) throw new Error('裁剪图上传失败：服务端未返回素材');
+      const item = itemOfDraft(draftId);
+      if (item) {
+        setEdits((previous) => {
+          const current = previous[draftId] ?? {};
+          return {
+            ...previous,
+            [draftId]: {
+              ...current,
+              addedAssets: mergeAssets(item.assets, current.addedAssets, data.assets),
+            },
+          };
+        });
+      }
+      const url = asset.preview_url || asset.public_url || '';
+      if (!url) throw new Error('裁剪图已上传，但暂无可用预览地址，请稍后重试');
+      return {
+        value: asset.id,
+        thumb: url,
+        cropSrc: url,
+        group: '本地导入的图片',
+        label: '刚裁剪的图片',
+      };
+    } finally {
+      setPendingUploads((count) => Math.max(0, count - 1));
+    }
+  };
+
+  /**
+   * 裁剪前确保图片可被 canvas 读取：外部跨域地址（如 1688 商品图）先经后端图床
+   * 转存成本商品的预览资产，拿到本服务签名的同源地址后再交给裁剪弹层。
+   */
+  const prepareVariantCropSrc = async (draftId: number, url: string): Promise<string> => {
+    const raw = String(url || '').trim();
+    if (!raw) throw new Error('这张候选图没有可用的图片地址，无法裁剪');
+    if (!/^https?:\/\//i.test(raw)) return raw;
+    let origin = '';
+    try {
+      origin = new URL(raw).origin;
+    } catch {
+      throw new Error('图片地址无效，无法转存后裁剪');
+    }
+    if (origin === window.location.origin) return raw;
+    setPendingUploads((count) => count + 1);
+    try {
+      const data = await importPreviewAssetFromUrl(ctx, taskId, draftId, raw);
+      const asset = data.asset;
+      if (!asset) throw new Error('图片转存失败：服务端未返回素材');
+      const item = itemOfDraft(draftId);
+      if (item) {
+        setEdits((previous) => {
+          const current = previous[draftId] ?? {};
+          return {
+            ...previous,
+            [draftId]: {
+              ...current,
+              addedAssets: mergeAssets(item.assets, current.addedAssets, [asset]),
+            },
+          };
+        });
+      }
+      const sameOrigin = asset.preview_url || asset.public_url || '';
+      if (!sameOrigin) throw new Error('图片已转存，但暂无可用预览地址，请稍后重试');
+      return sameOrigin;
+    } finally {
+      setPendingUploads((count) => Math.max(0, count - 1));
+    }
   };
 
   const clearListingAdvice = (draftId: number) => {
@@ -1050,6 +1308,13 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
                 : '完成预审并导出'}
           </button>
           <button type="button" onClick={() => void load()} disabled={loading || mutationsLocked}>重新加载</button>
+          <button
+            type="button"
+            onClick={() => setSkuManagerOpen(true)}
+            disabled={loading || mutationsLocked || allItems.length === 0}
+          >
+            管理 SKU 规格图
+          </button>
         </div>
         <div className="precheck-toolbar">
           <input
@@ -1464,6 +1729,37 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
           </div>
           <button type="button" className="precheck-lightbox-close" aria-label="关闭" onClick={() => setActiveImage(null)}>×</button>
         </div>,
+        document.body,
+      )}
+
+      {/* portal 到 body：同上，避免 tab 面板动画的层叠上下文锁住侧栏 z-index */}
+      {skuManagerOpen && createPortal(
+        <PrecheckSkuManager
+          items={allItems}
+          modeOf={(draftId) => {
+            const item = itemOfDraft(draftId);
+            return item ? effectiveVariantImageMode(item) : 'source';
+          }}
+          onApplyMode={applyVariantImageMode}
+          excludedOf={(draftId) => {
+            const item = itemOfDraft(draftId);
+            return item ? effectiveExcludedVariants(item) : [];
+          }}
+          overridesOf={(draftId) => {
+            const item = itemOfDraft(draftId);
+            return item ? effectiveVariantImageOverrides(item) : {};
+          }}
+          overrideUrlOf={overrideUrlOfDraft}
+          textReviewOf={textReviewOfDraft}
+          optionsOf={variantImageOptionsOf}
+          onExclude={(entries) => applyVariantExclusion(entries, true)}
+          onRestore={(entries) => applyVariantExclusion(entries, false)}
+          onSetVariantImage={applyVariantImageOverrides}
+          onUploadCrop={uploadVariantCrop}
+          onPrepareCropSrc={prepareVariantCropSrc}
+          onPreview={setActiveImage}
+          onClose={() => setSkuManagerOpen(false)}
+        />,
         document.body,
       )}
     </div>

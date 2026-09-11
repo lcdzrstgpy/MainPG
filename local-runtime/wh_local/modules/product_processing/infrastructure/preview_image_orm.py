@@ -32,6 +32,9 @@ class PreviewImageAssetRow(Base):
     source_asset_id: Mapped[str] = mapped_column(String(64), default="")
     media_asset_id: Mapped[str] = mapped_column(String(36), default="", index=True)
     source_kind: Mapped[str] = mapped_column(String(32), default="")
+    # SKU 来源绑定的业务 SKU 主键，仅 source_kind="sku" 的代理资产会写入；
+    # 预检页据此把「原始 SKU」图片与具体变种对齐（中文复核按变种展示）。
+    sku_id: Mapped[str] = mapped_column(String(64), default="")
     identity_hash: Mapped[str] = mapped_column(String(64))
     access_token: Mapped[str] = mapped_column(String(64), default=lambda: uuid4().hex)
     managed_path: Mapped[str] = mapped_column(Text, default="")
@@ -45,6 +48,10 @@ class PreviewImageAssetRow(Base):
     public_url: Mapped[str] = mapped_column(Text, default="")
     error_code: Mapped[str] = mapped_column(String(64), default="")
     error_message: Mapped[str] = mapped_column(Text, default="")
+    # SKU 原图中文文字复核：clear=未检出中文，flagged=检出中文需人工复核，
+    # text_check_failed=检测流程失败（不阻塞资产可用性），空串=尚未检测。
+    text_review_status: Mapped[str] = mapped_column(String(32), default="", index=True)
+    text_review_reason: Mapped[str] = mapped_column(Text, default="")
     materialize_claim_token: Mapped[str] = mapped_column(String(64), default="")
     materialize_claimed_at: Mapped[str] = mapped_column(String(64), default="")
     created_at: Mapped[str] = mapped_column(String(64), default=utc_now)

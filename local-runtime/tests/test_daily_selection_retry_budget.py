@@ -14,7 +14,7 @@ from wh_local.data_collection.provider import ProviderCallResult
 class RetryAuditProvider:
     credential_fingerprint = "0" * 64
 
-    def search_keyword(self, criteria: DailySelectionCriteria) -> ProviderCallResult:
+    def search_keyword(self, criteria: DailySelectionCriteria, page: int = 1) -> ProviderCallResult:
         return ProviderCallResult(
             response={"items": []},
             audits=(

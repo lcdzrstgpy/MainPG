@@ -107,6 +107,29 @@ def inspect_visible_text(content: bytes) -> dict[str, list[str]] | None:
         # 默认关闭 OCR 质检（对齐 POD 生图管线）：生成图不做文字检测/重绘，
         # 避免因检出中文或 AI 排版文字而判失败整条链接。
         return None
+    inspection = _inspect_content(content)
+    if inspection is None:
+        return None
+    chinese, prominent = inspection
+    return {"chinese": chinese, "prominent": prominent}
+
+
+def inspect_sku_text(content: bytes) -> dict[str, Any] | None:
+    """只读中文检测入口，供「SKU 原图中文复核」使用。
+
+    与 ``inspect_visible_text`` 的唯一差异是不受 ``ocr_gate_enabled()`` 总开关约束：
+    该开关只用于关闭生成链路的文字质检/重绘，SKU 原图复核是纯只读判定，必须照常执行。
+    OCR 不可用或推理失败返回 ``None``，调用方据此标记 ``text_check_failed``。
+    """
+    inspection = _inspect_content(content)
+    if inspection is None:
+        return None
+    chinese, _prominent = inspection
+    return {"chinese": chinese, "has_chinese": bool(chinese)}
+
+
+def _inspect_content(content: bytes) -> tuple[list[str], list[str]] | None:
+    """OCR 推理主体：返回 (中文文本, 显著排版文本)；OCR 不可用/失败返回 ``None``。"""
     engine = _get_engine()
     if engine is None:
         return None
@@ -133,7 +156,7 @@ def inspect_visible_text(content: bytes) -> dict[str, list[str]] | None:
     chinese: list[str] = []
     prominent: list[str] = []
     if not result:
-        return {"chinese": chinese, "prominent": prominent}
+        return chinese, prominent
     for line in result:
         if not isinstance(line, (list, tuple)) or len(line) < 2:
             continue
@@ -166,7 +189,7 @@ def inspect_visible_text(content: bytes) -> dict[str, list[str]] | None:
             len(searchable) >= 6 and height_ratio >= 0.16
         ):
             prominent.append(text)
-    return {"chinese": chinese, "prominent": prominent}
+    return chinese, prominent
 
 
 def detect_chinese_text(content: bytes) -> list[str] | None:
