@@ -228,6 +228,7 @@ def freeze_pod_points(
     title_call_count: Any,
     image_call_count: Any,
     idempotency_key: str,
+    app_version: str = "",
 ) -> dict[str, Any]:
     normalized_calls, title_count, image_count = _normalize_plan(
         calls,
@@ -263,6 +264,7 @@ def freeze_pod_points(
         scope=list(POD_FEATURE_KEYS),
         idempotency_key=freeze_id,
         source_type="pod_freeze",
+        app_version=app_version,
         multiplier_percent=multiplier_percent,
         points_per_unit=points_per_unit,
         persist_plan=lambda conn, persisted_freeze_id: _persist_pod_plan(

@@ -961,6 +961,7 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             title_call_count=payload.get("title_call_count"),
             image_call_count=payload.get("image_call_count"),
             idempotency_key=str(payload.get("idempotency_key") or ""),
+            app_version=str(payload.get("app_version") or "")[:40],
         )
         if freeze["status"] != "frozen":
             raise HTTPException(status_code=409, detail="POD freeze is no longer active")
@@ -1099,6 +1100,7 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             idempotency_key=idempotency_key,
             billing_profile=billing_profile,
             task_id=str(payload.get("task_id") or ""),
+            app_version=str(payload.get("app_version") or "")[:40],
         )
         keys = _issue_batch_keys(db_path, account, freeze["freeze_id"])
         return {"ok": True, "freeze": {**freeze, "keys": keys}}
@@ -1219,6 +1221,7 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
                 idempotency_key=idempotency_key,
                 quantity=1,
                 source_ref=str(payload.get("source_ref") or "")[:200],
+                app_version=str(payload.get("app_version") or "")[:40],
                 metadata=_safe_billing_metadata(metadata),
             ),
         }
@@ -2289,6 +2292,22 @@ def _complete_gateway_request(
         )
         if cursor.rowcount != 1:
             raise HTTPException(status_code=409, detail="gateway request claim is no longer active")
+        # 记录上游返回的真实 token 用量（文本类响应带 usage 字段）。仅在 usage 事件
+        # 尚未写入用量时回填，避免覆盖直连路径经 settle 上报的值。
+        usage = response_payload.get("usage") if isinstance(response_payload, dict) else None
+        if isinstance(usage, dict):
+            prompt_tokens = int(usage.get("prompt_tokens") or 0)
+            completion_tokens = int(usage.get("completion_tokens") or 0)
+            total_tokens = int(usage.get("total_tokens") or 0)
+            if total_tokens > 0 or prompt_tokens > 0 or completion_tokens > 0:
+                conn.execute(
+                    """
+                    UPDATE billing_ai_usage_events
+                    SET input_tokens = ?, output_tokens = ?, total_tokens = ?
+                    WHERE usage_id = ? AND COALESCE(total_tokens, 0) = 0
+                    """,
+                    (prompt_tokens, completion_tokens, total_tokens, usage_id),
+                )
 
 
 def _record_gateway_provider_task(
