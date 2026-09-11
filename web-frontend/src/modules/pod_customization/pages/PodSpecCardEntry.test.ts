@@ -172,7 +172,11 @@ test("spec card drawer stacks above the workspace back-to-top button", () => {
 
 test("spec card drawer keeps the POD theme tokens inside the portal", () => {
   // 抽屉 portal 到 body，必须让 --pod-* 变量在 portal 根节点上也可见，否则面板会变透明
-  assert.match(styles, /\.pod-customization-page,\s*\n?\.pod-spec-card-drawer-layer \{[\s\S]*?--pod-surface:/);
+  const scope = styles.match(/\.pod-customization-page,[^{}]*\{/);
+  assert.ok(scope, "缺少 POD 主题变量的作用域选择器");
+  assert.match(scope![0], /\.pod-spec-card-drawer-layer/);
+  assert.match(scope![0], /\.pod-result-lightbox-layer/);
+  assert.match(styles, /\.pod-spec-card-drawer-layer \{[\s\S]*?--pod-surface:/);
   assert.match(styles, /\.pod-spec-card-drawer-layer \{[^}]*--pod-text:/);
   assert.match(styles, /\.pod-spec-card-drawer-layer \{[^}]*color: var\(--pod-text\)/);
 });

@@ -1,6 +1,12 @@
-/* 主题变量同时挂在 portal 根节点上：抽屉用 createPortal 挂到 body，
-   若只定义在 .pod-customization-page 上，抽屉会因脱离作用域而变量失效（背景变透明）。 */
+/* 主题变量同时挂在 portal 根节点上：抽屉/弹层用 createPortal 挂到 body，
+   若只定义在 .pod-customization-page 上，会因脱离作用域而变量失效（背景变透明）。 */
 .pod-customization-page,
+.pod-result-lightbox-layer,
+.pod-listing-detail-layer,
+.pod-history-drawer-layer,
+.pod-template-drawer-layer,
+.pod-failed-retry-backdrop,
+.pod-unsaved-confirm-backdrop,
 .pod-spec-card-drawer-layer {
   --pod-surface: var(--theme-module-surface, #fff);
   --pod-surface-raised: var(--theme-module-surface-raised, #fff);

@@ -939,10 +939,6 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
       setError("请填写可公开访问的参考图 URL");
       return;
     }
-    if (platform === "1688+taobao") {
-      setNotice("1688 与淘宝组合采集暂未支持，请分别选择 1688 或淘宝单平台采集。");
-      return;
-    }
 
     setBusy(true);
     setCollecting(true);
@@ -1291,7 +1287,6 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                 <option value="" disabled>请选择</option>
                 <option value="1688">1688</option>
                 <option value="taobao">淘宝</option>
-                <option value="1688+taobao">1688 + 淘宝</option>
               </select>
             </label>
             <label><span>站点</span><select value={site} onChange={(event) => setSite(event.target.value as TargetSite | "")}><option value="" disabled>请选择</option><option value="US">美国站 US</option><option value="CO">哥伦比亚 CO</option><option value="EC">厄瓜多尔 EC</option></select></label>
@@ -1315,13 +1310,6 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
               <span className="iconfont icon-setting" aria-hidden="true"></span>高级设置
             </button>
           </div>
-
-          {platform === "1688+taobao" && (
-            <div className="channel-placeholder-note">
-              <span>前端预留</span>
-              1688 与淘宝组合采集暂不调用后端，后续接口接入后可直接补充请求逻辑。
-            </div>
-          )}
 
           <div className="collection-actions">
             <span>{!platform || platform === "1688"

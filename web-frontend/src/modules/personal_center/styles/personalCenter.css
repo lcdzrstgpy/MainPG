@@ -1519,3 +1519,38 @@
   cursor: not-allowed;
   opacity: 0.6;
 }
+
+.model-field-hint {
+  display: block;
+  margin-top: 6px;
+  color: var(--theme-text-muted, #64748b);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* 生图模型选择面板：两个模型并排，避免单列过宽留白 */
+.model-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.model-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--theme-module-border, #d8e3ee);
+  border-radius: 12px;
+  background: var(--theme-module-surface, #fff);
+}
+
+.model-block .version-actions {
+  margin-top: auto;
+}
+
+@media (max-width: 640px) {
+  .model-grid {
+    grid-template-columns: 1fr;
+  }
+}

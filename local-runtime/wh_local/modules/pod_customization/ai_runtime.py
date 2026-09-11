@@ -12,6 +12,7 @@ import hashlib
 import inspect
 import io
 import time
+from pathlib import Path
 from typing import Any, Callable
 
 from PIL import Image, ImageDraw
@@ -39,6 +40,36 @@ from .runtime_contracts import (
 )
 
 
+# 单次速创生图的分段超时：超过该时长仍未拿到图片地址就丢弃这次调用，交给已规划的重试
+# 立刻重投。依据本地真实时延（近千次调用均值 ~74s、p95 ~115s、上游健康日上限 136s），
+# 240s 约为 3 倍 p95。原先 600s 的上限会让一个长尾任务独占 1/8 的生图槽位长达 10 分钟，
+# 把整批有效并发从 8 拖到 4~5，整批耗时直接翻倍。
+SUCHUANG_RESULT_TIMEOUT_SECONDS: float = 240.0
+POD_IMAGE_MODEL_DEFAULT = "image_gpt"
+SUCHUANG_BASE_URL = "https://api.wuyinkeji.com"
+SUCHUANG_IMAGE_SUBMIT_PATHS = {
+    "image_gpt": "/api/async/image_gpt",
+    "image_gpt_2.5": "/api/async/image_gpt_2.5",
+}
+SUCHUANG_IMAGE_ASPECT_RATIO_2_5 = {
+    "1:1": "1024x1024",
+    "16:9": "1280x720",
+    "9:16": "720x1280",
+    "4:3": "1152x864",
+    "3:4": "864x1152",
+    "3:2": "1536x1024",
+    "2:3": "1024x1536",
+    "5:4": "1120x896",
+    "4:5": "896x1120",
+    "21:9": "1456x624",
+    "9:21": "624x1456",
+    "1:3": "688x2048",
+    "3:1": "2048x688",
+    "2:1": "1536x768",
+    "1:2": "768x1536",
+}
+
+
 class PodCustomizationAiRuntime(AiRuntime):
     """Dedicated POD execution lane which reuses the tested image-edit chain."""
 
@@ -53,6 +84,7 @@ class PodCustomizationAiRuntime(AiRuntime):
         requests_per_minute: float = 0.0,
         session: Any | None = None,
         poll_interval_seconds: float = 3.0,
+        result_timeout_seconds: float = SUCHUANG_RESULT_TIMEOUT_SECONDS,
         public_image_fetcher: Callable[..., FetchedPublicImage] | None = None,
         public_image_timeout_seconds: float = 30.0,
     ) -> None:
@@ -84,6 +116,7 @@ class PodCustomizationAiRuntime(AiRuntime):
         if hasattr(self.session, "trust_env"):
             self.session.trust_env = False
         self._poll_interval_seconds = max(0.0, float(poll_interval_seconds))
+        self._result_timeout_seconds = max(0.0, float(result_timeout_seconds))
         self._public_image_fetcher = public_image_fetcher or fetch_public_image
         self._public_image_timeout_seconds = max(1.0, min(float(public_image_timeout_seconds), 60.0))
 
@@ -113,12 +146,15 @@ class PodCustomizationAiRuntime(AiRuntime):
         service decides whether a malformed grid receives its single retry.
         """
         _required_provider_key(grant, "wuyin")
+        model = _resolve_pod_image_model()
         reference_url = self._publish_listing_reference(request)
         try:
             with self.provider_slot():
                 _required_provider_key(grant, "wuyin")
                 submit_kwargs = {"on_start": on_start} if on_start is not None else {}
-                task_id = self._submit_suchuang_grid(grant, request, reference_url, **submit_kwargs)
+                task_id = self._submit_suchuang_grid(
+                    grant, request, reference_url, model=model, **submit_kwargs
+                )
                 result_url = self._poll_suchuang_grid(grant, task_id)
                 try:
                     content, content_type = self._download_suchuang_grid(result_url)
@@ -147,7 +183,7 @@ class PodCustomizationAiRuntime(AiRuntime):
             content_type=content_type,
             suffix=_suffix_for_content_type(content_type),
             provider="suchuang",
-            model=request.model_id,
+            model=model,
             reference_count=1,
             attempt_count=1,
         )
@@ -181,6 +217,7 @@ class PodCustomizationAiRuntime(AiRuntime):
         request: DirectListingGridRequest,
         reference_url: str,
         *,
+        model: str,
         on_start: Callable[[], None] | None = None,
     ) -> str:
         self.acquire_request_token()
@@ -190,11 +227,23 @@ class PodCustomizationAiRuntime(AiRuntime):
             if on_start is not None:
                 on_start()
             self._ensure_open()
+            size_value = _suchuang_size(request.size)
+            submit_path = SUCHUANG_IMAGE_SUBMIT_PATHS.get(
+                model, SUCHUANG_IMAGE_SUBMIT_PATHS[POD_IMAGE_MODEL_DEFAULT]
+            )
+            if model == "image_gpt_2.5":
+                body: dict[str, Any] = {
+                    "prompt": request.prompt,
+                    "aspectRatio": SUCHUANG_IMAGE_ASPECT_RATIO_2_5.get(size_value, "1024x1024"),
+                    "urls": reference_url,
+                }
+            else:
+                body = {"prompt": request.prompt, "size": size_value, "urls": [reference_url]}
             response = self.session.post(
-                "https://api.wuyinkeji.com/api/async/image_gpt",
+                f"{SUCHUANG_BASE_URL}{submit_path}",
                 params={"key": image_key},
                 headers={"Authorization": image_key, "Content-Type": "application/json"},
-                json={"prompt": request.prompt, "size": _suchuang_size(request.size), "urls": [reference_url]},
+                json=body,
                 timeout=30.0,
                 allow_redirects=False,
             )
@@ -222,7 +271,7 @@ class PodCustomizationAiRuntime(AiRuntime):
         return task_id
 
     def _poll_suchuang_grid(self, grant: PodExecutionGrant, task_id: str) -> str:
-        deadline = time.monotonic() + 600.0
+        deadline = time.monotonic() + self._result_timeout_seconds
         last_message = ""
         while time.monotonic() < deadline:
             if self._poll_interval_seconds:
@@ -300,7 +349,7 @@ class PodCustomizationAiRuntime(AiRuntime):
                 )
             last_message = message or f"status={status_value or 'processing'}"
         raise MediaProcessingError(
-            f"速创图片任务超时：{last_message}",
+            f"速创图片任务分段超时（{self._result_timeout_seconds:.0f}s）：{last_message}",
             attempt_count=1,
             status_class="transient",
         )
@@ -385,6 +434,23 @@ def _accepts_keyword(function: Callable[..., Any], name: str) -> bool:
         parameter.kind == inspect.Parameter.VAR_KEYWORD
         for parameter in parameters.values()
     )
+
+
+def _resolve_pod_image_model() -> str:
+    """按调用读取 POD 独立模型配置；任何本地配置故障都安全回退到 2.0。"""
+    try:
+        from wh_local.modules.basic_settings.service import SystemConfigService
+        from wh_local.modules.product_processing.provider_config import registered_system_config_db_path
+
+        database_path = registered_system_config_db_path()
+        if not database_path:
+            return POD_IMAGE_MODEL_DEFAULT
+        selected = str(SystemConfigService(Path(database_path)).get_pod_image_model().get("model") or "").strip()
+        if selected in SUCHUANG_IMAGE_SUBMIT_PATHS:
+            return selected
+    except Exception:
+        pass
+    return POD_IMAGE_MODEL_DEFAULT
 
 
 def _suchuang_size(value: str | None) -> str:
