@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { ClipboardEvent as ReactClipboardEvent } from "react";
 
 import { listProductSources, loadProductImage, updateProductSourceGroup } from "../api/profitActivityApi";
@@ -379,7 +380,8 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
     }
   };
 
-  return (
+  // portal 到 body：tab 面板 fill-mode 动画的层叠上下文会锁住 fixed 抽屉 z-index，被顶栏盖住
+  return createPortal(
     <div className="profit-source-drawer-root">
       <div className="profit-source-drawer-mask" onClick={onClose} />
       <aside className="profit-source-drawer">
@@ -576,6 +578,7 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
           {unlinkError ? <p className="profit-source-drawer-status is-error">{unlinkError}</p> : null}
         </div>
       </aside>
-    </div>
+    </div>,
+    document.body,
   );
 }

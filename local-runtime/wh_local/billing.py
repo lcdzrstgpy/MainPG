@@ -2534,6 +2534,11 @@ def settle_batch_points(
                 "refunded_points": _display_points(int(freeze["refunded_points"])),
                 "already_settled": True,
             }
+        if str(freeze["status"]) != "frozen":
+            # 冻结已被 TTL 清扫释放（status='released'）或其他非 frozen 终态时，
+            # 继续结算会把 locked_points 扣成负数触发 CHECK 约束（500）。
+            # 明确拒绝（409），客户端应停止重试，而不是再打一轮 settle。
+            raise HTTPException(status_code=409, detail="batch freeze is no longer active")
         profile = str(freeze["billing_profile"] or BATCH_BILLING_PROFILE_PRODUCT)
         pricing = pricing_items(database_path, rule_version=None)
         # 结算倍率/单条价值 = 冻结时快照（老批次无快照列则按 100% 基础价结算）。

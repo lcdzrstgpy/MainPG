@@ -68,7 +68,7 @@ from ..pod_billing import (
     update_pod_pricing_items,
 )
 from ..session import Actor
-from .auth_service import SQLiteCustomerAuthService
+from .auth_service import SQLiteCustomerAuthService, purge_expired_customer_feedback
 from .credential_vault import CredentialVaultError, active_secret, enabled_secrets
 from .contracts import CustomerAuthActionResult, CustomerAuthResult, CustomerAuthUnavailable
 from .email_sender import TencentCloudSESEmailSender
@@ -875,6 +875,22 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
     )
     ttl_thread.start()
 
+    # 用户反馈保留期：每天清理一次（14 天）。守护线程，服务退出自动终止。
+    def _feedback_purge_loop() -> None:
+        while True:
+            try:
+                time.sleep(60 * 60 * 24)
+                purge_expired_customer_feedback(db_path)
+            except Exception:
+                time.sleep(60 * 60 *24)
+
+    purge_thread = threading.Thread(
+        target=_feedback_purge_loop,
+        name="feedback-retention",
+        daemon=True,
+    )
+    purge_thread.start()
+
     @app.on_event("shutdown")
     def _stop_batch_ttl_sweep() -> None:
         _gateway_stop_event.set()
@@ -924,6 +940,171 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         if account is None:
             raise HTTPException(status_code=401, detail="invalid bearer token")
         return {"ok": True, "account": account}
+
+    # ---- 用户反馈 ----------------------------------------------------- #
+    _FEEDBACK_CATEGORIES = {"bug", "suggestion", "other"}
+    _FEEDBACK_MAX_IMAGES = 3
+    _FEEDBACK_MAX_IMAGE_BYTES = 2 * 1024 * 1024
+    _FEEDBACK_MAX_CONTENT_CHARS = 2000
+    _FEEDBACK_WINDOW_HOURS = 6
+    _FEEDBACK_WINDOW_LIMIT = 10
+
+    def _validate_feedback_images(images_raw: Any) -> tuple[list[dict[str, Any]], int]:
+        """严格校验反馈图片：数量、大小、mime 白名单 + magic bytes 真身校验。
+
+        返回 (规范化图片元数据列表, 总字节数)；任何一项不过即抛 400/413。
+        data_b64 原样入库（与 log-upload 的 base64 存储惯例一致）。
+        """
+        if images_raw is None:
+            return [], 0
+        if not isinstance(images_raw, list):
+            raise HTTPException(status_code=400, detail="images must be a list")
+        if len(images_raw) > _FEEDBACK_MAX_IMAGES:
+            raise HTTPException(status_code=400, detail=f"too many images (max {_FEEDBACK_MAX_IMAGES})")
+        out: list[dict[str, Any]] = []
+        total = 0
+        for idx, item in enumerate(images_raw):
+            if not isinstance(item, dict):
+                raise HTTPException(status_code=400, detail="invalid image entry")
+            name = str(item.get("name") or f"image{idx + 1}").strip()[:80]
+            mime = str(item.get("mime") or "").strip().lower()
+            data_b64 = str(item.get("data_b64") or "")
+            if not data_b64:
+                raise HTTPException(status_code=400, detail="image data is required")
+            try:
+                raw = base64.b64decode(data_b64, validate=True)
+            except (ValueError, binascii.Error) as exc:
+                raise HTTPException(status_code=400, detail="image data is invalid") from exc
+            if len(raw) > _FEEDBACK_MAX_IMAGE_BYTES:
+                raise HTTPException(status_code=413, detail="image is too large (max 2MB each)")
+            if mime == "image/png":
+                ok = raw.startswith(b"\x89PNG\r\n\x1a\n")
+            elif mime == "image/jpeg":
+                ok = raw.startswith(b"\xff\xd8\xff")
+            elif mime == "image/gif":
+                ok = raw.startswith(b"GIF87a") or raw.startswith(b"GIF89a")
+            elif mime == "image/webp":
+                ok = raw.startswith(b"RIFF") and len(raw) >= 12 and raw[8:12] == b"WEBP"
+            else:
+                raise HTTPException(status_code=400, detail="unsupported image type (png/jpg/gif/webp)")
+            if not ok:
+                raise HTTPException(status_code=400, detail="image content does not match its type")
+            total += len(raw)
+            out.append({"name": name, "size": len(raw), "mime": mime, "data_b64": data_b64})
+        return out, total
+
+    @app.post("/api/customer/feedback")
+    def customer_feedback_submit(
+        payload: dict[str, Any],
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """提交用户反馈（文字 + 图片 base64）。复用登录 token 鉴权。"""
+        account = _required_account(db_path, authorization)
+        content = str(payload.get("content") or "").strip()[:_FEEDBACK_MAX_CONTENT_CHARS]
+        if not content:
+            raise HTTPException(status_code=400, detail="feedback content is required")
+        category = str(payload.get("category") or "").strip().lower()
+        if category not in _FEEDBACK_CATEGORIES:
+            category = "other"
+        contact = str(payload.get("contact") or "").strip()[:200]
+        images, total_bytes = _validate_feedback_images(payload.get("images"))
+        app_version = str(payload.get("app_version") or "").strip()[:64]
+        platform = str(payload.get("platform") or "").strip()[:64]
+        feedback_id = f"fb_{secrets.token_urlsafe(18)}"
+        now = _utc_now()
+        with transaction(db_path) as conn:
+            window_start = (
+                datetime.now(timezone.utc) - timedelta(hours=_FEEDBACK_WINDOW_HOURS)
+            ).isoformat(timespec="seconds")
+            recent = conn.execute(
+                "SELECT COUNT(*) FROM customer_feedback "
+                "WHERE account_id = ? AND datetime(created_at) >= datetime(?)",
+                (str(account["account_id"]), window_start),
+            ).fetchone()[0]
+            if recent >= _FEEDBACK_WINDOW_LIMIT:
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"too many feedback submissions in {_FEEDBACK_WINDOW_HOURS} hours (max {_FEEDBACK_WINDOW_LIMIT})",
+                )
+            conn.execute(
+                """
+                INSERT INTO customer_feedback (
+                    feedback_id, account_id, username, workspace_id, category,
+                    content, contact, images_json, image_count, total_image_bytes,
+                    status, admin_note, admin_id, status_updated_at,
+                    app_version, platform, client_ip, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', '', '', '', ?, ?, ?, ?)
+                """,
+                (
+                    feedback_id,
+                    str(account["account_id"]),
+                    str(account.get("username") or ""),
+                    str(account.get("workspace_id") or "default"),
+                    category,
+                    content,
+                    contact,
+                    json.dumps(images, ensure_ascii=False),
+                    len(images),
+                    total_bytes,
+                    app_version,
+                    platform,
+                    request.client.host if request.client else "",
+                    now,
+                ),
+            )
+        return {"ok": True, "feedback_id": feedback_id, "created_at": now}
+
+    @app.get("/api/customer/feedback/mine")
+    def customer_feedback_mine(
+        authorization: str | None = Header(default=None),
+        limit: int = 20,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """当前账号的历史反馈列表（含管理员处理状态与备注，不含图片原数据之外的敏感信息）。"""
+        account = _required_account(db_path, authorization)
+        limit = max(1, min(int(limit), 100))
+        offset = max(0, int(offset))
+        with transaction(db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT feedback_id, category, content, contact, image_count,
+                       total_image_bytes, status, admin_note, status_updated_at,
+                       app_version, platform, created_at
+                FROM customer_feedback
+                WHERE account_id = ?
+                ORDER BY created_at DESC, feedback_id DESC
+                LIMIT ? OFFSET ?
+                """,
+                (str(account["account_id"]), limit, offset),
+            ).fetchall()
+            total = conn.execute(
+                "SELECT COUNT(*) FROM customer_feedback WHERE account_id = ?",
+                (str(account["account_id"]),),
+            ).fetchone()[0]
+        return {
+            "ok": True,
+            "feedback": [
+                {
+                    "feedback_id": str(row["feedback_id"]),
+                    "category": str(row["category"]),
+                    "content": str(row["content"]),
+                    "contact": str(row["contact"] or ""),
+                    "image_count": int(row["image_count"]),
+                    "total_image_bytes": int(row["total_image_bytes"]),
+                    "status": str(row["status"]),
+                    "admin_note": str(row["admin_note"] or ""),
+                    "status_updated_at": str(row["status_updated_at"] or ""),
+                    "app_version": str(row["app_version"] or ""),
+                    "platform": str(row["platform"] or ""),
+                    "created_at": str(row["created_at"]),
+                }
+                for row in rows
+            ],
+            "total": int(total),
+            "limit": limit,
+            "offset": offset,
+        }
 
     @app.get("/api/customer/billing/summary")
     def billing_summary(authorization: str | None = Header(default=None)) -> dict[str, Any]:

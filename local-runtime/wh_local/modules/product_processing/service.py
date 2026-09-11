@@ -7238,6 +7238,14 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         text_failure_is_invalid = bool(
             text_failure is not None and text_failure.error_kind == "invalid_response"
         )
+        # 生成了轮播图但整组产物都非公开 http(s)（COS 未配 且未设 WH_MEDIA_BASE_URL）：
+        # 导出会被 _http_urls 过滤后回退来源图。仅记一条诊断日志（前端不消费 ai_notes），
+        # 不改导出内容、不改计费、不改 four_grid 状态，最小副作用。
+        if grid_image_paths and not any(
+            is_safe_external_url(str(value or "").strip())
+            for value in list(grid_image_paths) + [grid_summary_path]
+        ):
+            self._note_media_unconfigured(ai_notes, "four_grid")
         result = {
             "product_draft_id": draft["id"],
             "candidate_id": raw.get("candidate_id") or draft.get("candidate_id"),

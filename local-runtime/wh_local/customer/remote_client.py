@@ -184,6 +184,25 @@ class CustomerAuthClient:
             headers={"Authorization": f"Bearer {remote_token}"},
         )
 
+    def submit_feedback(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Submit user feedback (text + base64 images) to the platform auth service."""
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        return self._post(
+            "/api/customer/feedback",
+            payload,
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
+    def list_my_feedback(self, remote_token: str, limit: int = 20, offset: int = 0) -> dict[str, Any]:
+        """Fetch the current account's feedback history from the platform service."""
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        return self._get(
+            f"/api/customer/feedback/mine?limit={limit}&offset={offset}",
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
     def admin_request(
         self,
         remote_token: str,
