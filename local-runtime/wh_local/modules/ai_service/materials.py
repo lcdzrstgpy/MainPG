@@ -38,7 +38,11 @@ def extract_local_document(filename: str, content: bytes) -> tuple[str, str]:
             text = _xlsx_text(content)
         else:
             text = _docx_text(content)
-    except (UnicodeDecodeError, OSError, ValueError, zipfile.BadZipFile) as exc:
+    except (UnicodeDecodeError, OSError, ValueError, zipfile.BadZipFile, KeyError, csv.Error, ElementTree.ParseError) as exc:
+        raise ValueError("file could not be read as the declared document type") from exc
+    except Exception as exc:
+        # openpyxl 的 InvalidFileException 等第三方库异常未统一继承 ValueError，
+        # 这里兜底捕获，避免损坏文件直接触发 500。
         raise ValueError("file could not be read as the declared document type") from exc
     text = _compact(text)
     if not text:

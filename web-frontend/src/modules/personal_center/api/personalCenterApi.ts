@@ -87,6 +87,8 @@ export type BillingSummary = {
   };
   recent_ledger: BillingLedgerEntry[];
   recent_orders: BillingOrder[];
+  /** 当前仍在支付中的单子（最多一条）；仅供支付完成后的轮询识别到账。 */
+  pending_order?: BillingOrder | null;
   security: {
     server_authoritative: boolean;
     local_balance_trusted: boolean;
@@ -204,4 +206,28 @@ export function changeAccountPassword(input: {
     method: "POST",
     body: input,
   });
+}
+
+export type ImageModelChoice = {
+  value: string;
+  label: string;
+};
+
+export type ImageModelSetting = {
+  ok: boolean;
+  model: string;
+  choices: ImageModelChoice[];
+};
+
+/** 个人中心「模型选择」：读取当前生图模型与可选项（只含模型名，不含上游凭据）。 */
+export function loadImageModel() {
+  return httpJson<ImageModelSetting>("/desktop/basic-settings/image-model");
+}
+
+/** 切换生图模型；只改模型字段，不影响系统配置的其他内容。 */
+export function saveImageModel(model: string) {
+  return httpJson<{ ok: boolean; model: string; message: string }>(
+    "/desktop/basic-settings/image-model",
+    { method: "PUT", body: { model } },
+  );
 }

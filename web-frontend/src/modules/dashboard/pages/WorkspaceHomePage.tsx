@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { BRAND_LOGO_URL, BRAND_MARK_URL, BRAND_NAME } from "../../../shared/brand";
+import { BRAND_LOGO_URL, BRAND_MANUAL_URL, BRAND_MARK_URL, BRAND_NAME } from "../../../shared/brand";
 import type { WorkspaceModuleId } from "../../../app/navigation/modules";
 import { DashboardStats } from "../components/DashboardStats";
 import { useUiMode } from "../../../shared/hooks/useUiMode";
@@ -43,7 +43,10 @@ function AppleWorkspaceHome({ greeting, onOpenModule }: { greeting: string; onOp
           <span className="mac-brand-tile"><img src={BRAND_MARK_URL} alt="" /></span>
           <div><span>{formatChineseDate()}</span><h1>{greeting}，本地用户</h1><p>今天也从清晰、有序的工作台开始。</p></div>
         </div>
-        <button type="button" onClick={() => onOpenModule("daily_selection")}><span>＋</span> 新建采集</button>
+        <div className="mac-welcome-actions">
+          <a className="mac-manual-link" href={BRAND_MANUAL_URL} target="_blank" rel="noopener noreferrer">使用手册 ↗</a>
+          <button type="button" onClick={() => onOpenModule("daily_selection")}><span>＋</span> 新建采集</button>
+        </div>
       </section>
 
       <DashboardStats onOpenModule={onOpenModule} variant="apple" />
@@ -98,6 +101,7 @@ export function WorkspaceHomePage({ onOpenModule }: WorkspaceHomePageProps) {
         <img className="brand-logo-hero" src={BRAND_LOGO_URL} alt={BRAND_NAME} />
         <p className="eyebrow">JIEYE ECOMMERCE PLATFORM · 界野电商平台</p>
         <h1>{greeting}，准备开始今天的工作。</h1>
+        <a className="dashboard-manual-link" href={BRAND_MANUAL_URL} target="_blank" rel="noopener noreferrer">使用手册 ↗</a>
       </section>
       <DashboardStats onOpenModule={onOpenModule} />
     </div>

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import csv
 import math
+import os
 import re
+import threading
 from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any
@@ -504,8 +506,12 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
         stock = _normalize_stock(core_fields.get("stock"))
 
     # 店小秘重量导出统一以当前重量向上取整到 100：不足 100 按 100、
-    # 不足 200 按 200……（最低 100）。长宽高和抛重不参与重量计算。
-    weight = _ceil_weight_for_export(weight)
+    # 不足 200 按 200……（最低 100）。长宽高不参与重量计算。
+    # 店小秘要求材积重量（长×宽×高÷6）≤ 实际重量，否则报“材积重量大于实际重量，无法录入”。
+    # 导出前兜底：若体积重量超过当前重量，以店小秘导入为准，将重量抬升到体积重量，避免导入失败。
+    # 最后无论怎么算都不得超过 899g，超出封顶到 899，确保在店小秘导入范围内。
+    weight = _dxm_enforce_volumetric_weight(length, width, height, _ceil_weight_for_export(weight))
+    weight = _cap_dxm_weight(weight)
 
     return [
         optimized_title,
@@ -637,6 +643,51 @@ def _ceil_weight_for_export(value: Any) -> Any:
         return ""
     ceiled = int(math.ceil(number / 100.0)) * 100
     return ceiled
+
+
+# 店小秘重量导入上限：最终导出的重量（g）无论如何计算都不允许超过该值，
+# 否则无法导入。超过时直接封顶到上限。
+DXM_WEIGHT_MAX_GRAM = 899
+
+
+def _cap_dxm_weight(value: Any, max_value: float = DXM_WEIGHT_MAX_GRAM) -> Any:
+    """店小秘重量上限封顶：超过上限的导出重量封顶到 max_value，空值/非数值原样返回。"""
+    if value in ("", None):
+        return value
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return value
+    if number <= 0:
+        return value
+    return min(number, max_value)
+
+
+def _dxm_enforce_volumetric_weight(length: Any, width: Any, height: Any, weight: Any) -> Any:
+    """店小秘导入前保证 材积重量（长×宽×高÷6，单位 g）≤ 实际重量。
+
+    店小秘校验：材积重量 > 实际重量 时报“材积重量大于实际重量，无法录入”。
+    导出前兜底：仅当长/宽/高齐全且当前重量有效（正数）时，若体积重量超过当前重量，
+    以店小秘导入为准，将重量抬升到体积重量并按 100 向上取整，避免导入失败。
+    当前重量缺失/非正（导出为空）时不虚构重量，原样返回以保留缺失提示。
+    """
+    if length in ("", None) or width in ("", None) or height in ("", None):
+        return weight
+    try:
+        volumetric = float(length) * float(width) * float(height) / 6.0
+    except (TypeError, ValueError):
+        return weight
+    if weight in ("", None):
+        return weight
+    try:
+        current = float(weight)
+    except (TypeError, ValueError):
+        return weight
+    if current <= 0:
+        return weight
+    if current < volumetric:
+        return _ceil_weight_for_export(volumetric)
+    return weight
 
 
 # 尺寸文本模式：如 "30*20*10" / "30×20×10cm" / "40.5*30*20 CM"（1688 变种尺寸属性值）
@@ -771,3 +822,396 @@ def _normalize_row(raw: dict[str, Any], row_number: int) -> dict[str, Any]:
 
 def _clean_header(value: Any) -> str:
     return str(value or "").replace("\n", " ").strip()
+
+
+# ===== 妙手 Temu 导入模板（服饰类 / 非服饰类）=====
+# 生成方式：以官方模板为底稿（保留第 1、2 行表头/字段说明），清掉示例数据行后
+# 从第 3 行开始逐 SKU 写入。
+#
+# 性能说明：官方模板里「类目ID」(约 4.2 万行) 与「包装清单」(约 1.5 万行) 两张参考表
+# 只供人工查阅，openpyxl 每次加载/保存它们要额外约 8 秒。因此：
+#   1) 首次使用时把模板精简为「只含 Sheet1」的缓存文件，之后导出直接读缓存（毫秒级）；
+#   2) 两张参考表抽出为独立参考表文件，需要手填类目ID 时单独打开查阅。
+MS_KIND_APPAREL = "apparel"
+MS_KIND_GENERAL = "general"
+MS_KIND_OPTIONS = (MS_KIND_APPAREL, MS_KIND_GENERAL)
+
+# 模板内置在 product_processing/templates 下随版本发布（发布方会在上线时同步覆盖更新）。
+MS_TEMPLATE_DIR = Path(__file__).resolve().parents[1] / "templates"
+MS_TEMPLATE_FILES = {
+    MS_KIND_APPAREL: "妙手Temu导入模板-服饰类模板.xlsx",
+    MS_KIND_GENERAL: "妙手Temu导入模板-非服饰类模板.xlsx",
+}
+# 由官方模板精简而来、只含 Sheet1 的缓存文件（放在 generated 子目录，随模板更新自动失效重建）。
+MS_GENERATED_DIR_NAME = "generated"
+MS_SLIM_TEMPLATE_FILES = {
+    MS_KIND_APPAREL: "妙手-服饰类.sheet1.xlsx",
+    MS_KIND_GENERAL: "妙手-非服饰类.sheet1.xlsx",
+}
+# 人工查阅用的参考表（类目ID + 包装清单），与导出分离，避免拖慢每次导出。
+MS_REFERENCE_FILE = "妙手参考表-类目ID与包装清单.xlsx"
+MS_MAIN_SHEET = "Sheet1"
+# 精简模板与参考表各自一把锁：参考表生成要序列化两张万行级参考表（约 8 秒），
+# 不能阻塞导出所需的精简模板读取。
+_MS_TEMPLATE_LOCK = threading.Lock()
+_MS_REFERENCE_LOCK = threading.Lock()
+
+# 妙手默认导出值（产地等系统无数据字段的策略常量，非模板说明的字段类型）。
+# 产地必须带行政区后缀（妙手按其标准产地名比对，如模板示例“中国-福建省”），
+# 不带“省/市”后缀会被判“产地有误”导致导入失败。
+MS_ORIGIN_DEFAULT = "中国-浙江省"
+MS_CUSTOMIZED_DEFAULT = "否"
+MS_SENSITIVE_DEFAULT = "否"
+
+# 服饰类模板（Sheet1，1-based 列号），列结构见模板表头：类目ID/主编号/标题/英文标题/...
+_MS_APPAREL_COLUMNS = {
+    "category_id": 2,
+    "main_no": 3,
+    "title": 4,
+    "title_en": 5,
+    "description": 6,
+    "ship_days": 7,
+    "origin": 8,
+    "made_in": 9,
+    "external_url": 10,
+    "material_image": 11,
+    "customized": 12,
+    "spec_name_1": 13,
+    "spec_value_1": 14,
+    "spec_name_2": 15,
+    "spec_value_2": 16,
+    "color_images": 17,
+    "main_sku_no": 18,
+    "declared_price": 19,
+    "suggested_price": 20,
+    "length_cm": 21,
+    "width_cm": 22,
+    "height_cm": 23,
+    "weight_g": 24,
+    "stock": 25,
+    "platform_sku": 26,
+    "sensitive": 27,
+    "sensitive_value": 28,
+    "code_type": 33,
+    "code": 34,
+    "sku_class_type": 35,
+    "sku_class_count": 36,
+    "sku_class_unit": 37,
+    "independent_pack": 38,
+    "pack_list": 39,
+    "pack_list_count": 40,
+    "video": 41,
+    "manual": 42,
+    "supply_url": 43,
+}
+
+# 非服饰类模板（Sheet1，1-based 列号）：列位与服饰类整体平移，图片列结构不同。
+_MS_GENERAL_COLUMNS = {
+    "category_id": 2,
+    "main_no": 3,
+    "title": 4,
+    "title_en": 5,
+    "description": 6,
+    "ship_days": 7,
+    "main_sku_no": 8,
+    "origin": 9,
+    "made_in": 10,
+    "external_url": 11,
+    "carousel_images": 12,
+    "material_image": 13,
+    "customized": 14,
+    "spec_name_1": 15,
+    "spec_value_1": 16,
+    "spec_name_2": 17,
+    "spec_value_2": 18,
+    "preview_image": 19,
+    "declared_price": 20,
+    "suggested_price": 21,
+    "length_cm": 22,
+    "width_cm": 23,
+    "height_cm": 24,
+    "weight_g": 25,
+    "stock": 26,
+    "platform_sku": 27,
+    "sensitive": 28,
+    "sensitive_value": 29,
+    "code_type": 34,
+    "code": 35,
+    "sku_class_type": 36,
+    "sku_class_count": 37,
+    "sku_class_unit": 38,
+    "independent_pack": 39,
+    "pack_list": 40,
+    "pack_list_count": 41,
+    "video": 42,
+    "manual": 43,
+    "supply_url": 44,
+}
+
+
+def _miaoshou_generated_dir(template_dir: Path) -> Path:
+    return template_dir / MS_GENERATED_DIR_NAME
+
+
+def ensure_miaoshou_reference_workbook(*, template_dir: Path | None = None) -> Path:
+    """生成/更新妙手参考表文件（类目ID + 包装清单），供人工查阅。
+
+    这两张表原本在官方模板里，导出时一并携带会让 openpyxl 每次多花约 8 秒。
+    模板更新或参考表缺失时重建一次；耗时较长（约 8 秒），导出路径通过后台线程调用。
+    """
+    base = template_dir or MS_TEMPLATE_DIR
+    full = base / MS_TEMPLATE_FILES[MS_KIND_GENERAL]
+    if not full.is_file():
+        raise ValueError(f"miaoshou template not bundled: {full}")
+    reference = base / MS_REFERENCE_FILE
+    with _MS_REFERENCE_LOCK:
+        try:
+            if reference.is_file() and reference.stat().st_mtime >= full.stat().st_mtime:
+                return reference
+        except OSError:
+            pass
+        workbook = load_workbook(full)
+        try:
+            for name in list(workbook.sheetnames):
+                if name == MS_MAIN_SHEET:
+                    workbook.remove(workbook[name])
+            reference.parent.mkdir(parents=True, exist_ok=True)
+            temporary = reference.with_name(f".{reference.name}.tmp")
+            workbook.save(temporary)
+        finally:
+            workbook.close()
+        os.replace(temporary, reference)
+        return reference
+
+
+def ensure_miaoshou_reference_async(*, template_dir: Path | None = None) -> None:
+    """后台生成参考表，避免拖慢当前导出请求（失败静默，下次导出会重试）。"""
+    def _run() -> None:
+        try:
+            ensure_miaoshou_reference_workbook(template_dir=template_dir)
+        except Exception:  # noqa: BLE001 - 参考表生成失败不应影响导出
+            return
+
+    threading.Thread(target=_run, name="miaoshou-reference-builder", daemon=True).start()
+
+
+def miaoshou_slim_template_path(kind: str, *, template_dir: Path | None = None) -> Path:
+    """精简模板（只含 Sheet1）路径；缺失或官方模板更新后自动重建。
+
+    官方模板的两张参考表（类目ID/包装清单）只供人工查阅，但会让 openpyxl 每次
+    加载/保存多花约 8 秒。这里生成只含 Sheet1 的缓存副本，导出时读它即可；
+    参考表则抽成独立文件（ensure_miaoshou_reference_workbook）另行查阅。
+    """
+    if kind not in MS_TEMPLATE_FILES:
+        raise ValueError(f"unsupported miaoshou template kind: {kind}")
+    base = template_dir or MS_TEMPLATE_DIR
+    full = base / MS_TEMPLATE_FILES[kind]
+    if not full.is_file():
+        raise ValueError(f"miaoshou template not bundled: {full}")
+    slim = _miaoshou_generated_dir(base) / MS_SLIM_TEMPLATE_FILES[kind]
+    with _MS_TEMPLATE_LOCK:
+        try:
+            if slim.is_file() and slim.stat().st_mtime >= full.stat().st_mtime:
+                return slim
+        except OSError:
+            pass
+        workbook = load_workbook(full)
+        try:
+            for name in list(workbook.sheetnames):
+                if name != MS_MAIN_SHEET:
+                    workbook.remove(workbook[name])
+            slim.parent.mkdir(parents=True, exist_ok=True)
+            temporary = slim.with_name(f".{slim.name}.tmp")
+            workbook.save(temporary)
+        except OSError:
+            # 安装目录不可写时退化为直接读官方模板：慢一些但导出仍可用。
+            return full
+        finally:
+            workbook.close()
+        try:
+            os.replace(temporary, slim)
+        except OSError:
+            return full
+    # 参考表与精简模板同源同代，重建精简模板时顺带后台补齐参考表。
+    ensure_miaoshou_reference_async(template_dir=template_dir)
+    return slim
+
+
+def create_miaoshou_workbook(
+    rows: list[dict[str, Any]],
+    kind: str,
+    destination: Path,
+    *,
+    template_dir: Path | None = None,
+) -> int:
+    """按妙手导入模板生成导出工作簿：保留模板 Sheet1 结构，逐 SKU 写入导出结果。
+
+    返回实际写入的数据行数。模板第 1 行表头、第 2 行字段说明保留，第 3 行起的
+    示例数据将被清空后重写。
+    """
+    if kind not in MS_TEMPLATE_FILES:
+        raise ValueError(f"unsupported miaoshou template kind: {kind}")
+    columns = _MS_APPAREL_COLUMNS if kind == MS_KIND_APPAREL else _MS_GENERAL_COLUMNS
+    slim_path = miaoshou_slim_template_path(kind, template_dir=template_dir)
+
+    workbook = load_workbook(slim_path)
+    sheet = workbook[MS_MAIN_SHEET]
+    # 移除模板示例行上残留的合并单元格后，删除第 3 行起全部示例内容。
+    for merged in list(sheet.merged_cells.ranges):
+        sheet.unmerge_cells(str(merged))
+    if sheet.max_row and sheet.max_row > 2:
+        sheet.delete_rows(3, sheet.max_row - 2)
+
+    row_number = 3
+    for product_row in rows:
+        for values in _miaoshou_row_values(product_row, kind, columns):
+            for column, value in values.items():
+                sheet.cell(row=row_number, column=column, value=value)
+            row_number += 1
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    workbook.save(destination)
+    return row_number - 3
+
+
+def _miaoshou_row_values(
+    row: dict[str, Any],
+    kind: str,
+    columns: dict[str, int],
+) -> list[dict[int, Any]]:
+    """把一个商品的导出结果展开为若干妙手 SKU 行（每行=一个变种，无变种=单行）。
+
+    规格名/值、申报价、建议售价、长宽高、图片等基础取值与店小秘导出行保持同口径
+    （复用 _dxm_single_export_row）；妙手侧差异在这里单独处理：
+      - 描述列：详情图按「每行一个图片 URL」追加（妙手描述列不支持 <img> 标签）
+      - 重量列：导出真实重量，不做店小秘的 100 取整/899 封顶
+      - 产地/定制品/是否敏感属性：系统无数据，按既定默认值填写
+    """
+    variant_records = [
+        item for item in (row.get("source_variant_records") or []) if isinstance(item, dict)
+    ]
+    targets: list[dict[str, Any] | None] = [None] if not variant_records else variant_records
+    exported: list[dict[int, Any]] = []
+    seen: set[tuple[Any, Any, Any, Any]] = set()
+    for variant in targets:
+        dxm_row = _dxm_single_export_row(row, variant)
+        # 与店小秘一致：按「规格名1/值1 + 规格名2/值2」组合去重，避免同规格多价行
+        # 在妙手被判重复。
+        variant_key = (dxm_row[4], dxm_row[5], dxm_row[6], dxm_row[7])
+        if variant_key in seen:
+            continue
+        seen.add(variant_key)
+        exported.append(_miaoshou_single_row_values(row, variant, kind, dxm_row, columns))
+    return exported or [
+        _miaoshou_single_row_values(row, None, kind, _dxm_single_export_row(row, None), columns)
+    ]
+
+
+def _miaoshou_single_row_values(
+    row: dict[str, Any],
+    variant: dict[str, Any] | None,
+    kind: str,
+    dxm_row: list[Any],
+    columns: dict[str, int],
+) -> dict[int, Any]:
+    values: dict[int, Any] = {}
+    preview_overrides = row.get("preview_overrides") or {}
+    if not isinstance(preview_overrides, dict):
+        preview_overrides = {}
+    core_fields = preview_overrides.get("core_fields") or {}
+    if not isinstance(core_fields, dict):
+        core_fields = {}
+
+    # 主编号：同一 SPU 的所有 SKU 行共用（取商品级 SKC/货号，不用变种 SKU）。
+    skc = str(row.get("skc") or "").strip()
+    product_sku = str(core_fields.get("sku") or row.get("sku") or "").strip()
+    main_no = skc or product_sku
+
+    # 标题/英文标题与店小秘同口径（dxm 行 0/1 列）。
+    title = str(dxm_row[0] or "").strip()
+    values[columns["title"]] = title
+    values[columns["title_en"]] = title
+    values[columns["main_no"]] = main_no
+
+    # 产品描述：纯文本 + 详情图 URL（每行一个）；详情图优先级与店小秘一致。
+    description = str(preview_overrides.get("description") or row.get("description") or "").strip()
+    if "detail_images" in preview_overrides:
+        detail_sources = _http_urls(preview_overrides.get("detail_images"))
+    else:
+        detail_sources = _http_urls(row.get("detail_image_paths"))
+    lines = [description] if description else []
+    lines.extend(detail_sources)
+    values[columns["description"]] = "\n".join(lines)
+
+    # 规格名/值（dxm 行 4..7 列）。规格名称2/值2 在妙手模板中为必填：有第二规格轴时
+    # 用真实值；没有时兜底为「规格 / Standard」（西语站 Estándar），与店小秘无变种时的
+    # 兜底口径一致，避免服饰类模板因必填列为空被拒。
+    values[columns["spec_name_1"]] = dxm_row[4]
+    values[columns["spec_value_1"]] = dxm_row[5]
+    spec_name_2 = dxm_row[6] if dxm_row[6] else ""
+    spec_value_2 = dxm_row[7] if dxm_row[7] else ""
+    if not (spec_name_2 and spec_value_2):
+        spec_name_2 = "规格"
+        spec_value_2 = (
+            "Estándar"
+            if str(row.get("target_language") or "").strip().casefold() == "es"
+            else "Standard"
+        )
+    values[columns["spec_name_2"]] = spec_name_2
+    values[columns["spec_value_2"]] = spec_value_2
+
+    # 图片：与店小秘导出同一批最终图片（均已是公网 https）。
+    carousel_text = str(dxm_row[18] or "").strip()
+    main_image = str(dxm_row[8] or "").strip()
+    if not main_image and carousel_text:
+        main_image = carousel_text.splitlines()[0]
+    if kind == MS_KIND_APPAREL:
+        values[columns["color_images"]] = carousel_text
+        values[columns["material_image"]] = main_image
+    else:
+        values[columns["carousel_images"]] = carousel_text
+        values[columns["material_image"]] = main_image
+        values[columns["preview_image"]] = main_image
+
+    # 价格/物流/库存。
+    values[columns["declared_price"]] = dxm_row[9]
+    values[columns["suggested_price"]] = dxm_row[23] if dxm_row[23] not in (None, "") else ""
+    values[columns["length_cm"]] = dxm_row[11]
+    values[columns["width_cm"]] = dxm_row[12]
+    values[columns["height_cm"]] = dxm_row[13]
+    values[columns["weight_g"]] = _miaoshou_raw_weight(row, variant, preview_overrides, core_fields)
+    # 妙手要求库存为「大于等于 0 的整数」：库存为 0 或缺失时也必须写出整数 0，
+    # 留空会被判为导入失败（“库存，对应值必须是大于等于0的整数”）。
+    values[columns["stock"]] = _normalize_stock(dxm_row[24])
+    values[columns["ship_days"]] = dxm_row[25] if dxm_row[25] not in (None, "") else DEFAULT_SHIP_DAYS
+
+    # 系统无数据/固定策略列。
+    values[columns["origin"]] = MS_ORIGIN_DEFAULT
+    values[columns["customized"]] = MS_CUSTOMIZED_DEFAULT
+    values[columns["sensitive"]] = MS_SENSITIVE_DEFAULT
+    external_url = str(dxm_row[17] or "").strip()
+    values[columns["external_url"]] = external_url
+    # 货源链接（选填）店小秘无对应数据，妙手支持为空，这里留空由用户自行补充。
+    values[columns["supply_url"]] = ""
+    return values
+
+
+def _miaoshou_raw_weight(
+    row: dict[str, Any],
+    variant: dict[str, Any] | None,
+    preview_overrides: dict[str, Any],
+    core_fields: dict[str, Any],
+) -> Any:
+    """妙手重量：真实重量（g），不做店小秘的向上取整 100 与 899 封顶。
+
+    取值链与店小秘一致：匹配到的 SKU 包装件重尺 → 预检核心字段 → 商品级 AI 估算。
+    """
+    dimensions = row.get("product_dimensions") or {}
+    if not isinstance(dimensions, dict):
+        dimensions = {}
+    package_fields, _ = _variant_shipping_package_fields(row, variant, preview_overrides)
+    weight_value = package_fields.get("weight_g")
+    if weight_value in (None, ""):
+        weight_value = core_fields.get("weight_g")
+    if weight_value in (None, ""):
+        weight_value = dimensions.get("weight_g")
+    return _export_number(weight_value)

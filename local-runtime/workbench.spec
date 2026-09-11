@@ -25,7 +25,9 @@ binaries: list = []
 hiddenimports: list = []
 
 # 第三方包完整收集（datas/binaries/hiddenimports）
-for _pkg in ("uvicorn", "qcloud_cos", "rapidocr_onnxruntime", "onnxruntime", "openpyxl", "PIL"):
+# 说明：uvicorn 在运行期会惰性加载 websockets/wsproto，若不显式 collect 会导致
+# 打包产物启动时出现 "Unsupported upgrade request" 警告，故补充进收集列表。
+for _pkg in ("uvicorn", "qcloud_cos", "rapidocr_onnxruntime", "onnxruntime", "openpyxl", "PIL", "websockets", "wsproto"):
     _d, _b, _h = collect_all(_pkg)
     datas += _d
     binaries += _b
@@ -46,6 +48,15 @@ for _rel in (
         datas.append((str(_src), _rel))
     else:
         print(f"[workbench.spec] WARNING: 缺失 {_rel}")
+
+# 妙手导入官方模板（妙手导出按 Path(__file__) 相对位置读取）。只打包官方模板本身，
+# generated/ 下的精简缓存由运行期首次导出时自动生成，不随包分发。
+_ms_templates = ROOT / "wh_local/modules/product_processing/templates"
+if _ms_templates.is_dir():
+    for _tpl in _ms_templates.glob("*.xlsx"):
+        datas.append((str(_tpl), "wh_local/modules/product_processing/templates"))
+else:
+    print("[workbench.spec] WARNING: 妙手导入模板目录不存在")
 
 # 前端构建产物（web-frontend/dist → _internal/web-frontend/dist）
 _frontend_dist = REPO / "web-frontend" / "dist"

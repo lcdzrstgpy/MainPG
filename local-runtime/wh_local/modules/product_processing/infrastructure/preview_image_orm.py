@@ -104,5 +104,7 @@ class PreviewFinalizeRunRow(Base):
     workbook_path: Mapped[str] = mapped_column(Text, default="")
     row_count: Mapped[int] = mapped_column(Integer, default=0)
     product_count: Mapped[int] = mapped_column(Integer, default=0)
+    # 最终表格格式：dxm=店小秘模板，apparel=妙手服饰类，general=妙手非服饰类
+    workbook_format: Mapped[str] = mapped_column(String(32), default="dxm")
     created_at: Mapped[str] = mapped_column(String(64), default=utc_now)
     updated_at: Mapped[str] = mapped_column(String(64), default=utc_now, onupdate=utc_now)

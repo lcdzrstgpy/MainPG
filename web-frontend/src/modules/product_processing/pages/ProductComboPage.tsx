@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ppRequest, type ApiContext } from '../api/client';
 import { productProcessingApiContext } from '../api/context';
 import {
@@ -51,6 +51,7 @@ export function ProductComboPage({ onOpenPrecheck, isActive = true }: Props) {
   const [mainImageUrl, setMainImageUrl] = useState('');
   const [generatingMain, setGeneratingMain] = useState(false);
   const [processing, setProcessing] = useState(false);
+  const loadSourcesSeqRef = useRef(0);
 
   // 组合基本信息（与预检导出字段保持一致）
   const [form, setForm] = useState({
@@ -78,14 +79,15 @@ export function ProductComboPage({ onOpenPrecheck, isActive = true }: Props) {
   const fail = useCallback((err: unknown) => { setError(err instanceof Error ? err.message : String(err)); setMessage(''); }, []);
 
   const loadSources = useCallback(async () => {
+    const seq = ++loadSourcesSeqRef.current;
     setLoading(true);
     try {
       const data = await listComboSources(ctx);
-      setSources(data.sources || []);
+      if (seq === loadSourcesSeqRef.current) setSources(data.sources || []);
     } catch (err) {
-      fail(err);
+      if (seq === loadSourcesSeqRef.current) fail(err);
     } finally {
-      setLoading(false);
+      if (seq === loadSourcesSeqRef.current) setLoading(false);
     }
   }, [ctx, fail]);
 
@@ -181,6 +183,8 @@ export function ProductComboPage({ onOpenPrecheck, isActive = true }: Props) {
         setDraftId(data.draft.id);
         notify('组合草稿已保存，可继续生成主图');
       }
+      // 内容/来源图可能已变更,旧主图不再有效,需重新生成
+      setMainImageUrl('');
     } catch (err) {
       fail(err);
     } finally {
@@ -210,6 +214,10 @@ export function ProductComboPage({ onOpenPrecheck, isActive = true }: Props) {
   const startProcessing = async () => {
     if (!draftId) {
       fail('请先保存组合草稿并生成主图');
+      return;
+    }
+    if (!mainImageUrl) {
+      fail('请先生成组合主图，再开始处理');
       return;
     }
     setProcessing(true);
@@ -372,7 +380,7 @@ export function ProductComboPage({ onOpenPrecheck, isActive = true }: Props) {
           ))}
         </div>
         <div className="verify-actions">
-          <button className="primary" onClick={() => void startProcessing()} disabled={processing || !draftId}>
+          <button className="primary" onClick={() => void startProcessing()} disabled={processing || !draftId || !mainImageUrl}>
             {processing ? '处理中…' : '开始处理并生成 3 张图'}
           </button>
           <span className="verify-premium-hint">整条组合流程共 100 积分（分两步预扣）</span>

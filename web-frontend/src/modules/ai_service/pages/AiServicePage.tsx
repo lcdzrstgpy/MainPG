@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { ClipboardEvent, FormEvent, KeyboardEvent, MouseEvent } from "react";
 
 import { generatedImageDownloadName } from "../data/assetDownload";
@@ -52,6 +53,7 @@ export function AiServicePage() {
   const conversationFlowRef = useRef<HTMLDivElement>(null);
   const imageUploadVersionRef = useRef(0);
   const objectUrlsRef = useRef(new Set<string>());
+  const selectVersionRef = useRef(0);
 
   const selectableModels = useMemo(() => modelsForMode(mode), [mode]);
   const selectedModel = useMemo(
@@ -167,7 +169,17 @@ export function AiServicePage() {
 
   const openNewCreation = () => {
     setActiveConversationId(undefined);
-    setMessages([]);
+    setMessages((current) => {
+      current.forEach((message) => {
+        message.generatedImageUrls?.forEach((url) => {
+          if (objectUrlsRef.current.has(url)) {
+            URL.revokeObjectURL(url);
+            objectUrlsRef.current.delete(url);
+          }
+        });
+      });
+      return [];
+    });
     setPrompt("");
     setApiError("");
     clearComposerAttachment(true);
@@ -238,21 +250,62 @@ export function AiServicePage() {
   };
 
   const selectConversation = async (conversation: AiConversation) => {
+    const version = selectVersionRef.current + 1;
+    selectVersionRef.current = version;
     setActiveConversationId(conversation.id);
     setRemoteConversationId(conversation.id);
+    setMode(conversation.mode);
     setApiError("");
+    clearComposerAttachment(true);
+    clearComposerDocument();
+    setWebSearchEnabled(false);
     try {
       const history = await aiServiceApi.messages(conversation.id);
-      const restored = await Promise.all(history.messages.map(async (message) => ({
-        id: message.message_id,
-        role: message.role,
-        content: message.content,
-        generatedImageUrls: message.role === "assistant" && message.asset_ids.length
-          ? await Promise.all(message.asset_ids.map(aiServiceApi.loadAssetUrl)) : undefined,
-      })));
-      setMessages(restored);
+      if (selectVersionRef.current !== version) return;
+      const restored = await Promise.all(history.messages.map(async (message) => {
+        let generatedImageUrls: string[] | undefined;
+        if (message.role === "assistant" && message.asset_ids.length) {
+          generatedImageUrls = [];
+          for (const assetId of message.asset_ids) {
+            try {
+              const url = await aiServiceApi.loadAssetUrl(assetId);
+              objectUrlsRef.current.add(url);
+              generatedImageUrls.push(url);
+            } catch {
+              // 单个资产加载失败时跳过该图，避免整条会话无法显示
+            }
+          }
+        }
+        return {
+          id: message.message_id,
+          role: message.role,
+          content: message.content,
+          generatedImageUrls,
+        };
+      }));
+      if (selectVersionRef.current !== version) {
+        restored.forEach((message) => {
+          message.generatedImageUrls?.forEach((url) => {
+            URL.revokeObjectURL(url);
+            objectUrlsRef.current.delete(url);
+          });
+        });
+        return;
+      }
+      setMessages((current) => {
+        current.forEach((message) => {
+          message.generatedImageUrls?.forEach((url) => {
+            if (objectUrlsRef.current.has(url)) {
+              URL.revokeObjectURL(url);
+              objectUrlsRef.current.delete(url);
+            }
+          });
+        });
+        return restored;
+      });
       setPrompt("");
     } catch (error) {
+      if (selectVersionRef.current !== version) return;
       setApiError(error instanceof Error ? error.message : "本地会话加载失败");
     }
   };
@@ -335,6 +388,7 @@ export function AiServicePage() {
           asset_ids: draft.submitted.assetId ? [draft.submitted.assetId] : [],
         });
         const generatedImageUrls = await Promise.all(result.asset_ids.map(aiServiceApi.loadAssetUrl));
+        generatedImageUrls.forEach((url) => objectUrlsRef.current.add(url));
         setMessages((current) => [...current, {
           id: `assistant-${Date.now()}`,
           role: "assistant",
@@ -395,15 +449,16 @@ export function AiServicePage() {
         {mode !== "chat" && <section className="ai-settings-card"><span className="ai-card-kicker">CREATION SETTINGS</span><h2>创作参数</h2><label>画面比例<select value={aspectRatio} onChange={(event) => setAspectRatio(event.target.value)}><option>1:1</option><option>4:5</option><option>3:4</option><option>16:9</option></select></label><label>场景风格 <small>可选</small><input value={sceneStyle} onChange={(event) => setSceneStyle(event.target.value)} list="ai-scene-style-suggestions" placeholder="如：新中式茶室、法式复古花园" /><datalist id="ai-scene-style-suggestions"><option value="自然家居" /><option value="纯色影棚" /><option value="轻奢生活方式" /><option value="户外通勤" /><option value="新中式茶室" /><option value="节日促销陈列" /></datalist></label></section>}
         <section className="ai-settings-card ai-tips-card"><span className="iconfont icon-bulb-fill" /><div><b>商品图创作小贴士</b><p>上传正面、清晰且无遮挡的商品图，换背景和场景图的效果会更稳定。</p></div></section>
       </aside>
-      {conversationMenu && <>
+      {/* portal 到 body：tab 面板 fill-mode 动画的层叠上下文会锁住 fixed 层 z-index，被顶栏盖住 */}
+      {conversationMenu && createPortal(<>
         <button className="ai-context-backdrop" type="button" aria-label="关闭会话菜单" onClick={() => setConversationMenu(undefined)} />
         <div className="ai-conversation-menu" role="menu" style={{ left: conversationMenu.x, top: conversationMenu.y }}>
           <button type="button" role="menuitem" onClick={() => beginRenameConversation(conversationMenu.conversation)}>重命名</button>
           <button type="button" role="menuitem" onClick={() => void toggleConversationPin(conversationMenu.conversation)}>{conversationMenu.conversation.isPinned ? "取消置顶" : "置顶"}</button>
           <button type="button" role="menuitem" className="is-danger" onClick={() => void removeConversation(conversationMenu.conversation)}>删除会话</button>
         </div>
-      </>}
-      {renamingConversation && <div className="ai-dialog-backdrop" role="presentation"><form className="ai-conversation-dialog" onSubmit={(event) => void saveConversationRename(event)}><h2>重命名会话</h2><input autoFocus value={renameValue} onChange={(event) => setRenameValue(event.target.value)} maxLength={80} aria-label="会话名称" /><div><button type="button" onClick={() => setRenamingConversation(undefined)}>取消</button><button type="submit" disabled={!renameValue.trim()}>保存</button></div></form></div>}
+      </>, document.body)}
+      {renamingConversation && createPortal(<div className="ai-dialog-backdrop" role="presentation"><form className="ai-conversation-dialog" onSubmit={(event) => void saveConversationRename(event)}><h2>重命名会话</h2><input autoFocus value={renameValue} onChange={(event) => setRenameValue(event.target.value)} maxLength={80} aria-label="会话名称" /><div><button type="button" onClick={() => setRenamingConversation(undefined)}>取消</button><button type="submit" disabled={!renameValue.trim()}>保存</button></div></form></div>, document.body)}
     </section>
   );
 }

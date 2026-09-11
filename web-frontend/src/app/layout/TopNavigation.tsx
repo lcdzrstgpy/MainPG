@@ -4,6 +4,12 @@ import type { WorkspaceModuleId } from "../navigation/modules";
 import { useTheme, THEME_META, type ThemeId } from "../../shared/hooks/useTheme";
 import { UI_MODE_META, useUiMode, type UiModeId } from "../../shared/hooks/useUiMode";
 import { InboxBell } from "../../shared/components/InboxBell";
+import { getAuthAccount } from "../../transport/http/client";
+
+/** 与个人中心共享的头像存储键，右键头像与个人中心头像保持一致。 */
+export const AVATAR_STORAGE_KEY = "jye_workspace_avatar";
+/** 头像变化通知：保存后派发，供同页其它位置（如个人中心）实时同步。 */
+export const AVATAR_CHANGED_EVENT = "jye_avatar_changed";
 
 export type WorkspaceTab = {
   key: string;
@@ -45,7 +51,7 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
   const { uiMode, setUiMode } = useUiMode();
 
   // 本地头像：仅用于本地展示，base64 存 localStorage。
-  const AVATAR_KEY = "jye_workspace_avatar";
+  const AVATAR_KEY = AVATAR_STORAGE_KEY;
   const [avatarSrc, setAvatarSrc] = useState<string | null>(() => {
     try {
       return localStorage.getItem(AVATAR_KEY);
@@ -53,9 +59,17 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
       return null;
     }
   });
+  const account = getAuthAccount<{ username?: string }>() ?? {};
+  const displayName = account.username?.trim() || "";
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // 头像大图预览。
+  const [avatarPreviewOpen, setAvatarPreviewOpen] = useState(false);
 
   const openAvatarPicker = () => fileInputRef.current?.click();
+
+  const openAvatarPreview = () => {
+    if (avatarSrc) setAvatarPreviewOpen(true);
+  };
 
   const handleAvatarFile = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -71,6 +85,8 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
       } catch {
         // 存储空间不足时仅保留内存中的头像用于本次显示。
       }
+      // 通知同页其它位置（如个人中心）头像已更新。
+      self.dispatchEvent(new Event(AVATAR_CHANGED_EVENT));
     };
     reader.readAsDataURL(file);
   };
@@ -186,11 +202,11 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
           <details className="user-menu">
             <summary className={avatarSrc ? "has-avatar" : ""}>
               {avatarSrc ? (
-                <img className="avatar-img" src={avatarSrc} alt="本地用户头像" title="更换头像" />
+                <img className="avatar-img" src={avatarSrc} alt="本地用户头像" title="查看大图" onClick={openAvatarPreview} />
               ) : (
                 <span className="avatar">{uiMode === "apple" ? "界" : "U"}</span>
               )}
-              {!avatarSrc && <span>本地用户</span>}
+              {displayName ? <span>{displayName}</span> : (!avatarSrc && <span>本地用户</span>)}
               <span className="caret">⌄</span>
             </summary>
             <div className="user-popover">
@@ -247,6 +263,14 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
           ))}
         </div>
       </div>
+      {avatarPreviewOpen && avatarSrc && (
+        <div className="avatar-preview-layer" onMouseDown={() => setAvatarPreviewOpen(false)} role="dialog" aria-modal="true" aria-label="头像预览">
+          <div className="avatar-preview-panel" onMouseDown={(event) => event.stopPropagation()}>
+            <button className="avatar-preview-close" type="button" onClick={() => setAvatarPreviewOpen(false)} aria-label="关闭预览">×</button>
+            <img className="avatar-preview-img" src={avatarSrc} alt="头像大图" />
+          </div>
+        </div>
+      )}
     </header>
   );
 }

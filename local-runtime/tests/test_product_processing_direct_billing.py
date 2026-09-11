@@ -190,6 +190,70 @@ def test_derive_batch_item_refunds_text_subitems_when_exact_cache_skips_provider
     }
 
 
+def test_derive_batch_item_refunds_image_subitems_on_source_fallback() -> None:
+    """AI 生图失败回退来源图的 completed 链接，图像子项全额退款，文字子项照常计费。"""
+    settings = {
+        "processing_scope": [],
+        "title_optimize": True,
+        "description": True,
+        "size": True,
+        "grid_image": True,
+        "detail_image": True,
+    }
+    derived = batch_billing_module.derive_item_results(
+        [
+            {
+                "status": "completed",
+                "result": {"provider_status_classes": {"four_grid": "source_fallback"}},
+            }
+        ],
+        settings,
+    )
+    statuses = {
+        subitem["feature"]: subitem["status"]
+        for subitem in derived[0]["subitems"]
+    }
+    assert statuses == {
+        "title": "success",
+        "description": "success",
+        "product_dimensions": "success",
+        "four_grid": "no_return",
+        "detail_images": "no_return",
+    }
+
+
+def test_derive_batch_item_images_stay_success_when_no_fallback() -> None:
+    """正常生成（four_grid 非 source_fallback）的图像子项仍按 success 全价计费。"""
+    settings = {
+        "processing_scope": [],
+        "title_optimize": True,
+        "description": True,
+        "size": True,
+        "grid_image": True,
+        "detail_image": True,
+    }
+    derived = batch_billing_module.derive_item_results(
+        [
+            {
+                "status": "completed",
+                "result": {"provider_status_classes": {"four_grid": "success"}},
+            }
+        ],
+        settings,
+    )
+    statuses = {
+        subitem["feature"]: subitem["status"]
+        for subitem in derived[0]["subitems"]
+    }
+    assert statuses == {
+        "title": "success",
+        "description": "success",
+        "product_dimensions": "success",
+        "four_grid": "success",
+        "detail_images": "success",
+    }
+
+
 def test_derive_batch_item_marks_retried_links_for_retry_premium() -> None:
     """重试溢价的链接，每个上报子项都带 retried 标记供服务端按重试单价结算。"""
     from wh_local.modules.product_processing.service import _item_had_retry

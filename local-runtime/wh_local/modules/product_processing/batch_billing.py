@@ -160,6 +160,8 @@ def derive_item_results(
     - no_return  上游无返回/整条失败，全退
     一期保守策略：completed 链接全部 success；失败链接全部 no_return
     （拦截退半的细分留到 ai_notes 里带 quality-gate 标记时再细化）。
+    例外：生图失败回退来源图（four_grid=source_fallback）的 completed 链接，其
+    图像子项（four_grid/detail_images）按 no_return 全额退款，文字子项照常计费。
 
     ``cancelled=True``：任务被用户取消（含页面关闭触发取消），已完成链接照常
     success 全价扣，未完成链接按 ``intercept`` 退半（对应服务端 50% 结算）。
@@ -177,13 +179,25 @@ def derive_item_results(
             for value in (item_result.get("billing_skipped_kinds") or [])
             if str(value or "").strip()
         }
+        # 图片生图失败回退来源图：识别“未选主图（导出回退来源图）”类链接。
+        # 这类链接 AI 并未真正产出可用处理后图，应把图像子项全额退款（no_return），
+        # 而不是按 success 全价扣费；文案/详情等成功子项照常计费。
+        image_source_fallback = bool(
+            str((item_result.get("provider_status_classes") or {}).get("four_grid") or "") == "source_fallback"
+        )
+        image_no_return_features: set[str] = set()
+        if image_source_fallback:
+            image_no_return_features = {"four_grid", "detail_images"} & set(features)
         if status_value == "completed":
             subitems = [
                 {
                     "feature": feature,
                     "status": (
                         "no_return"
-                        if "text" in skipped_kinds and feature in TEXT_SUBITEM_FEATURES
+                        if (
+                            ("text" in skipped_kinds and feature in TEXT_SUBITEM_FEATURES)
+                            or feature in image_no_return_features
+                        )
                         else "success"
                     ),
                 }

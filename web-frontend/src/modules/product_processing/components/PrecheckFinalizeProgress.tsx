@@ -1,13 +1,16 @@
-import type { PreviewFinalizeRun, PreviewImageAsset } from "../types";
+import type { MiaoshouTemplateKind, PreviewFinalizeRun, PreviewImageAsset } from "../types";
 
 type PrecheckFinalizeProgressProps = {
   run: PreviewFinalizeRun;
   assets: PreviewImageAsset[];
   retrying: boolean;
   downloading: boolean;
+  msExporting: MiaoshouTemplateKind | null;
   onRetry: () => void;
   onDownload: () => void;
+  onExportMiaoshou: (kind: MiaoshouTemplateKind) => void;
   onReloadStale: () => void;
+  onExcludeFailed: () => void;
 };
 
 function sanitizedMessage(message: string, code: string): string {
@@ -26,15 +29,21 @@ export function PrecheckFinalizeProgress({
   assets,
   retrying,
   downloading,
+  msExporting,
   onRetry,
   onDownload,
+  onExportMiaoshou,
   onReloadStale,
+  onExcludeFailed,
 }: PrecheckFinalizeProgressProps) {
   const assetById = new Map(assets.map((asset) => [asset.id, asset]));
   const total = Math.max(0, run.total_count);
   const published = Math.min(Math.max(0, run.published_count), total || run.published_count);
   const progress = total > 0 ? Math.min(100, Math.round((published / total) * 100)) : 0;
   const active = run.status === "queued" || run.status === "publishing";
+  const failedProductCount = new Set(
+    run.errors.map((failure) => failure.product_draft_id).filter((id): id is number => id != null),
+  ).size;
 
   return (
     <section className={`precheck-finalize status-${run.status}`} aria-live="polite">
@@ -88,9 +97,14 @@ export function PrecheckFinalizeProgress({
           ) : (
             <div className="precheck-manager-empty">发布任务失败，暂无单图错误明细。</div>
           )}
-          <button type="button" className="primary" disabled={retrying} onClick={onRetry}>
-            {retrying ? "正在重试…" : "仅重试失败图片"}
-          </button>
+          <div className="precheck-finalize-actions">
+            <button type="button" className="primary" disabled={retrying} onClick={onRetry}>
+              {retrying ? "正在重试…" : "仅重试失败图片"}
+            </button>
+            <button type="button" disabled={retrying} onClick={onExcludeFailed}>
+              {failedProductCount > 0 ? `一键剔除失败商品（${failedProductCount} 个）` : "一键剔除失败商品"}
+            </button>
+          </div>
         </div>
       )}
 
@@ -106,14 +120,33 @@ export function PrecheckFinalizeProgress({
         <div className="precheck-finalize-completed">
           <div><strong>{run.product_count}</strong><span>商品</span></div>
           <div><strong>{run.row_count}</strong><span>表格行</span></div>
-          <button
-            type="button"
-            className="primary"
-            disabled={downloading || !run.workbook_ready || !run.download}
-            onClick={onDownload}
-          >
-            {downloading ? "下载中…" : "下载最终版表格"}
-          </button>
+          <div className="precheck-finalize-downloads">
+            <span className="precheck-finalize-downloads-label">下载表格：</span>
+            <button
+              type="button"
+              className="primary"
+              disabled={downloading || !run.workbook_ready || !run.download}
+              onClick={onDownload}
+            >
+              {downloading ? "下载中…" : "店小秘"}
+            </button>
+            <button
+              type="button"
+              className="primary"
+              disabled={msExporting !== null}
+              onClick={() => onExportMiaoshou("apparel")}
+            >
+              {msExporting === "apparel" ? "正在生成…" : "妙手·服饰类"}
+            </button>
+            <button
+              type="button"
+              className="primary"
+              disabled={msExporting !== null}
+              onClick={() => onExportMiaoshou("general")}
+            >
+              {msExporting === "general" ? "正在生成…" : "妙手·非服饰类"}
+            </button>
+          </div>
         </div>
       )}
     </section>

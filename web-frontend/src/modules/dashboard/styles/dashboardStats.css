@@ -171,115 +171,136 @@
 
 .dashboard-trend-total strong {
   color: var(--theme-text-primary, #16332f);
-  font-size: 1.45rem;
+  font-size: 1.5rem;
+  font-weight: 800;
   line-height: 1;
+  letter-spacing: -.01em;
   font-variant-numeric: tabular-nums;
 }
 
 .dashboard-trend-plot {
   position: relative;
   display: block;
-  min-height: 240px;
+  min-height: 260px;
   padding: 0;
   overflow: hidden;
   border-radius: 14px;
-  background:
-    repeating-linear-gradient(to bottom, transparent 0 62px, color-mix(in srgb, var(--theme-module-border, #f0e5ec) 58%, transparent) 63px 64px),
-    color-mix(in srgb, var(--theme-module-surface-soft, #fbf6f9) 70%, transparent);
+  background: color-mix(in srgb, var(--theme-module-surface-soft, #fbf6f9) 55%, transparent);
 }
 
 .trend-svg {
   display: block;
   width: 100%;
-  height: 240px;
+  height: 260px;
 }
 
+/* 水平网格：极淡虚线，只做视觉参考不抢戏 */
 .trend-grid {
-  stroke: color-mix(in srgb, var(--theme-module-border, #ecdbe6) 80%, transparent);
+  stroke: color-mix(in srgb, var(--theme-module-border, #e7dae4) 50%, transparent);
   stroke-width: 1;
-  stroke-dasharray: 3 4;
+  stroke-dasharray: 2 6;
 }
 
 .trend-baseline {
-  stroke: color-mix(in srgb, var(--theme-text-muted, #b9a5c2) 60%, transparent);
+  stroke: color-mix(in srgb, var(--theme-module-border, #d9c9d6) 80%, transparent);
   stroke-width: 1.2;
 }
 
+/* 轴刻度数字：等宽小字，紧凑不扁 */
 .trend-tick {
-  fill: var(--theme-text-muted, #9c88a6);
-  font-size: 11px;
-  font-family: inherit;
+  fill: #8f7d9b;
+  font-size: 10px;
+  font-weight: 500;
+  font-family: "SF Mono", "JetBrains Mono", Consolas, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
 }
 
-.trend-area {
-  opacity: .9;
-  pointer-events: none;
-}
-
+/* 曲线：从左到右画出（pathLength=1 归一化） */
 .trend-line {
   fill: none;
-  stroke-width: 2.4;
+  stroke-width: 2.6;
   stroke-linecap: round;
   stroke-linejoin: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: trend-draw .8s cubic-bezier(.45, 0, .25, 1) forwards;
+}
+
+@keyframes trend-draw {
+  to { stroke-dashoffset: 0; }
+}
+
+/* 面积：淡入 */
+.trend-area {
+  opacity: 0;
+  animation: trend-fade .6s ease .2s forwards;
+}
+
+@keyframes trend-fade {
+  to { opacity: 1; }
 }
 
 .trend-dot {
   stroke: #fff;
-  stroke-width: 1.6;
+  stroke-width: 1.4;
   transition: r .15s ease;
 }
 
 .trend-cursor {
-  stroke: color-mix(in srgb, var(--theme-text-secondary, #8a6f96) 55%, transparent);
+  stroke: color-mix(in srgb, #6b5876 45%, transparent);
   stroke-width: 1;
-  stroke-dasharray: 4 4;
+  stroke-dasharray: 3 5;
 }
 
+/* 悬浮卡片：毛玻璃，跟随数据点，靠右自动左翻 */
 .trend-tip {
   position: absolute;
   z-index: 5;
-  top: 10px;
+  top: 14px;
   display: grid;
-  gap: 5px;
-  min-width: 168px;
-  padding: 9px 12px;
-  border: 1px solid rgba(255, 255, 255, .65);
+  gap: 6px;
+  min-width: 150px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, .7);
   border-radius: 12px;
-  background: rgba(255, 255, 255, .92);
-  box-shadow: 0 12px 30px rgba(90, 52, 110, .16);
-  backdrop-filter: blur(6px);
-  transform: translateX(-50%);
+  background: rgba(255, 255, 255, .93);
+  box-shadow: 0 12px 28px rgba(90, 52, 110, .18);
+  backdrop-filter: blur(8px);
+  transform: translateX(12px);
   pointer-events: none;
 }
 
 .trend-tip[data-flip="true"] {
-  transform: translateX(-100%);
+  transform: translateX(calc(-100% - 12px));
 }
 
 .trend-tip strong {
   color: #4a2f5c;
-  font-size: .86rem;
+  font-size: .8rem;
+  font-weight: 800;
 }
 
 .trend-tip span {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
   color: #7a5f85;
-  font-size: .78rem;
+  font-size: .76rem;
   white-space: nowrap;
 }
 
 .trend-tip span b {
   margin-left: auto;
   color: #3a2b52;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
 
 .trend-tip i {
   display: inline-block;
-  width: 9px;
-  height: 9px;
+  width: 8px;
+  height: 8px;
   border-radius: 3px;
   flex: none;
 }
@@ -500,6 +521,28 @@
 .dashboard-page .page-hero-card h1 {
   margin: 3px 0 0;
   font-size: clamp(1.72rem, 2.25vw, 2.25rem);
+}
+
+.dashboard-page .dashboard-manual-link {
+  justify-self: start;
+  margin-top: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 16px;
+  border: 1px solid color-mix(in srgb, var(--theme-accent, #0e7490) 30%, transparent);
+  border-radius: 999px;
+  color: var(--theme-accent, #0e7490);
+  background: color-mix(in srgb, var(--theme-accent, #0e7490) 8%, transparent);
+  font-size: .86rem;
+  font-weight: 650;
+  text-decoration: none;
+  transition: border-color .16s ease, background .16s ease;
+}
+
+.dashboard-page .dashboard-manual-link:hover {
+  border-color: var(--theme-accent, #0e7490);
+  background: color-mix(in srgb, var(--theme-accent, #0e7490) 16%, transparent);
 }
 
 .dashboard-page .section-heading {

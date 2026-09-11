@@ -54,6 +54,7 @@ from .schemas import (
     DraftRestoreRequest,
     DraftUpdateRequest,
     ListingAdviceRequest,
+    MiaoshouExportRequest,
     PreviewFinalizeRequest,
     PreviewSaveRequest,
     PromptTemplateRequest,
@@ -818,6 +819,19 @@ def create_product_processing_router(
             workspace_id=_workspace(workspace_id),
         )
 
+    @router.post("/tasks/{task_id}/preview/items/{draft_id}/regenerate-detail")
+    def regenerate_preview_detail(
+        task_id: int,
+        draft_id: int,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        return _call(
+            service.regenerate_preview_detail_images,
+            task_id,
+            int(draft_id),
+            workspace_id=_workspace(workspace_id),
+        )
+
     @router.get("/preview/assets/{asset_id}/content", response_model=None)
     def preview_asset_content(
         asset_id: str,
@@ -904,6 +918,7 @@ def create_product_processing_router(
             [item.model_dump() for item in body.items],
             workspace_id=_workspace(workspace_id),
             idempotency_key=str(idempotency_key or "").strip(),
+            export_format=body.export_format,
         )
 
     @router.get("/tasks/{task_id}/preview/finalize/{run_id}")
@@ -945,6 +960,37 @@ def create_product_processing_router(
             service.preview_finalize_download_path,
             task_id,
             run_id,
+            workspace_id=_workspace(workspace_id),
+        )
+        return FileResponse(path, filename=path.name, media_type=_download_media_type(path))
+
+    @router.post("/tasks/{task_id}/preview/finalize/{run_id}/export-miaoshou")
+    def export_miaoshou_preview(
+        task_id: int,
+        run_id: str,
+        body: MiaoshouExportRequest,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        return _call(
+            service.export_miaoshou_workbook,
+            task_id,
+            run_id,
+            body.kind,
+            workspace_id=_workspace(workspace_id),
+        )
+
+    @router.get("/tasks/{task_id}/preview/finalize/{run_id}/miaoshou-download")
+    def download_miaoshou_preview(
+        task_id: int,
+        run_id: str,
+        kind: str = Query(default="", max_length=16),
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ):
+        path = _call(
+            service.miaoshou_download_path,
+            task_id,
+            run_id,
+            kind,
             workspace_id=_workspace(workspace_id),
         )
         return FileResponse(path, filename=path.name, media_type=_download_media_type(path))

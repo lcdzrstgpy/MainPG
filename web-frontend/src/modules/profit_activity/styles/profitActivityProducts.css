@@ -287,12 +287,15 @@
 }
 
 .profit-source-drawer {
-  position: relative;
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
   z-index: 1;
   display: flex;
   flex-direction: column;
   width: min(520px, 94vw);
-  height: 100%;
+  max-width: 100%;
   background: #fbfdff;
   border-left: 1px solid #d8e7f2;
   box-shadow: -18px 0 48px rgba(23, 61, 92, 0.18);

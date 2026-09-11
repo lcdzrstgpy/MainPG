@@ -26,6 +26,8 @@ type PrecheckImageManagerProps = {
   onUndoAvailable: (undo: RemovedAssetUndo) => void;
   retryingMediaAssetIds?: ReadonlySet<string>;
   onRetryMediaAsset?: (assetId: string) => void;
+  regeneratingDetail?: boolean;
+  onRegenerateDetail?: () => void;
 };
 
 const ORIGIN_LABELS: Record<PreviewImageAsset["origin"], string> = {
@@ -144,6 +146,8 @@ export function PrecheckImageManager({
   onUndoAvailable,
   retryingMediaAssetIds = new Set<string>(),
   onRetryMediaAsset,
+  regeneratingDetail = false,
+  onRegenerateDetail,
 }: PrecheckImageManagerProps) {
   const assetById = new Map(assets.map((asset) => [asset.id, asset]));
 
@@ -275,14 +279,24 @@ export function PrecheckImageManager({
         <header>
           <div>
             <h3>详情图 <span>{manifest.detail_asset_ids.length}</span></h3>
-            <p>按顺序追加到产品描述；允许明确保存为空。</p>
+            <p>按顺序追加到产品描述；允许明确保存为空。修改轮播图后可在此重新生成详情图。</p>
           </div>
-          <FilePicker
-            label="添加图片"
-            target="detail"
-            disabled={disabled}
-            onAddFiles={onAddFiles}
-          />
+          <div className="precheck-manager-actions">
+            <FilePicker
+              label="添加图片"
+              target="detail"
+              disabled={disabled}
+              onAddFiles={onAddFiles}
+            />
+            <button
+              type="button"
+              className="btn-mini primary"
+              disabled={disabled || !onRegenerateDetail || regeneratingDetail}
+              onClick={() => onRegenerateDetail?.()}
+            >
+              {regeneratingDetail ? "更新中…" : "更新详情图"}
+            </button>
+          </div>
         </header>
         {manifest.detail_asset_ids.length === 0 ? (
           <div className="precheck-manager-empty">

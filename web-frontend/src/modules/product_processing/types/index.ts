@@ -312,6 +312,7 @@ export type PreviewFinalizeRun = {
   id: string;
   task_id: number;
   status: "queued" | "publishing" | "publish_failed" | "stale" | "completed";
+  workbook_format: PreviewExportFormat;
   total_count: number;
   published_count: number;
   failed_count: number;
@@ -322,6 +323,22 @@ export type PreviewFinalizeRun = {
     message: string;
   }>;
   workbook_ready: boolean;
+  file: string;
+  row_count: number;
+  product_count: number;
+  download: string;
+};
+
+/** 妙手导出模板类型：apparel=服饰类，general=非服饰类。 */
+export type MiaoshouTemplateKind = "apparel" | "general";
+
+/** 完成预审并导出的模板格式：dxm=店小秘，apparel=妙手服饰类，general=妙手非服饰类。 */
+export type PreviewExportFormat = "dxm" | MiaoshouTemplateKind;
+
+export type MiaoshouExportResponse = {
+  task_id: number;
+  run_id: string;
+  kind: MiaoshouTemplateKind;
   file: string;
   row_count: number;
   product_count: number;
@@ -350,6 +367,8 @@ export type PreviewItem = {
   status: string;
   reason: string;
   title: string;
+  /** AI 生图失败回退来源图：未真正产出可用处理后主图/轮播图（导出回退来源图）。 */
+  image_ai_failed?: boolean;
   description: string;
   source_url?: string;
   source_image_urls: string[];

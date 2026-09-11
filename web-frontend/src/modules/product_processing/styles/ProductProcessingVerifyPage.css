@@ -3,7 +3,7 @@
   margin: 0;
   padding: 0 0 40px;
   color: #20364d;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif);
 }
 
 .verify-commandbar {
@@ -2059,6 +2059,14 @@
   line-height: 1.45;
 }
 
+.precheck-manager-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
 .precheck-v2-media-registry {
   border-color: #b8d7e7;
   background: linear-gradient(135deg, #f4fbff, #fbfdff);
@@ -2691,6 +2699,18 @@
   color: #fff;
 }
 
+.precheck-finalize-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.precheck-finalize-actions > button:not(.primary) {
+  border-color: #e0c6c2;
+  color: #8e332c;
+}
+
 .precheck-finalize-stale strong {
   display: block;
   margin-bottom: 5px;
@@ -2726,6 +2746,25 @@
 .precheck-finalize-completed span {
   color: #789488;
   font-size: 0.66rem;
+}
+
+/* 结果卡片：按格式下载表格（统一入口） */
+.precheck-finalize-completed .precheck-finalize-downloads {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.precheck-finalize-completed .precheck-finalize-downloads .precheck-finalize-downloads-label {
+  display: inline;
+  font-size: 0.72rem;
+  color: #5f6b73;
+  white-space: nowrap;
 }
 
 @media (max-width: 1100px) {
@@ -3689,6 +3728,12 @@
   color: #b36b00;
 }
 
+/* 勾选里含「被搜索/筛选隐藏」的草稿：橙色警示，避免看不见却被一起提交 */
+.verify-pool-stats .is-hidden-selection strong,
+.verify-pool-stats .is-hidden-selection i.iconfont,
+.verify-pool-stats .is-hidden-selection em { color: #b36b00; }
+.verify-pool-stats .is-hidden-selection em { font-style: normal; font-size: .72rem; }
+
 /* 视图切换图标 */
 .verify-view-toggle button .iconfont {
   font-size: 0.88rem;
@@ -3780,9 +3825,12 @@
 }
 
 .verify-drawer {
-  position: relative;
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
   width: min(560px, 92vw);
-  height: 100%;
+  max-width: 100%;
   display: flex;
   flex-direction: column;
   background: #f6f9fc;
@@ -4594,7 +4642,10 @@
 .verify-batch-actions button { padding: 7px 12px; border: 1px solid #cfe1eb; border-radius: 8px; color: #167797; background: #f4fbfe; font-size: .72rem; font-weight: 800; cursor: pointer; }
 .verify-batch-actions button.is-danger { border-color: #edc9cd; color: #a74c55; background: #fff6f6; }
 .verify-batch-actions button:disabled { cursor: not-allowed; opacity: .45; }
-.verify-batch-list { max-height: 320px; overflow-y: auto; }
+/* 注意：旧内嵌面板已废弃（TSX 中 verify-batch-panel/-toggle 零引用）。
+   此处不要保留 max-height，否则会被下方弹窗版的 .verify-batch-list 继承，
+   把侧抽屉列表钉在 320px、只占半屏并在此范围内滚动。 */
+.verify-batch-list { overflow-y: auto; }
 .verify-batch-row { display: flex; align-items: center; gap: 8px; padding: 9px 14px; border-bottom: 1px solid #f0f4f7; }
 .verify-batch-row:last-child { border-bottom: 0; }
 .verify-batch-row.is-active { background: #f0fbfe; box-shadow: inset 3px 0 #0aa6cc; }
@@ -4623,7 +4674,9 @@
 .verify-batch-actions button { padding: 7px 12px; border: 1px solid #cfe1eb; border-radius: 8px; color: #167797; background: #f4fbfe; font-size: .72rem; font-weight: 800; cursor: pointer; }
 .verify-batch-actions button.is-danger { border-color: #edc9cd; color: #a74c55; background: #fff6f6; }
 .verify-batch-actions button:disabled { cursor: not-allowed; opacity: .45; }
-.verify-batch-list { flex: 1; min-height: 0; overflow-y: auto; }
+/* 侧抽屉列表：撑满抽屉剩余高度（head 之外的可用空间），仅在列表内部滚动。
+   max-height:none 显式清除同选择器在其他区块的遗留上限，避免被再次钉死。 */
+.verify-batch-list { flex: 1; min-height: 0; max-height: none; overflow-y: auto; }
 .verify-batch-row { display: flex; align-items: center; gap: 8px; padding: 9px 16px; border-bottom: 1px solid #f0f4f7; }
 .verify-batch-row:last-child { border-bottom: 0; }
 .verify-batch-row.is-active { background: #f0fbfe; box-shadow: inset 3px 0 #0aa6cc; }
@@ -4639,6 +4692,7 @@
 .verify-batch-meta { flex: none; color: #7d92a2; font-size: .68rem; }
 .verify-batch-meta strong { color: #0b92ba; font-size: .8rem; }
 .verify-batch-empty { margin: 0; padding: 16px; color: #8295a4; font-size: .74rem; text-align: center; }
+.verify-batch-more { margin: 0; padding: 10px 16px; color: #8a6d1f; background: #fffaf0; border-top: 1px solid #f2e6cc; font-size: .7rem; text-align: center; }
 .verify-batch-active-note { margin: 0; padding: 8px 16px; color: #167a63; background: #f2fcf7; font-size: .7rem; border-top: 1px solid #e6f4ee; }
 
 /* 顶部「采集批次」入口按钮高亮态 */

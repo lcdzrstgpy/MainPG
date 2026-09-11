@@ -3,7 +3,10 @@ import { ppRequest, ppUpload, type ApiContext } from "./client";
 import type {
   DraftMediaResponse,
   MediaAssetView,
+  MiaoshouExportResponse,
+  MiaoshouTemplateKind,
   PreviewCoreFields,
+  PreviewExportFormat,
   PreviewFinalizeRun,
   PreviewImageAsset,
   PreviewImageManifest,
@@ -158,15 +161,28 @@ export function restorePreviewItem(
   );
 }
 
+export function regeneratePreviewDetail(
+  ctx: ApiContext,
+  taskId: number,
+  draftId: number,
+): Promise<PreviewResponse> {
+  return ppRequest(
+    ctx,
+    `/api/product-processing/tasks/${taskId}/preview/items/${draftId}/regenerate-detail`,
+    { method: "POST", body: {} },
+  );
+}
+
 export function finalizeProductPreview(
   ctx: ApiContext,
   taskId: number,
   items: PreviewSavePayload[],
   idempotencyKey: string,
+  exportFormat: PreviewExportFormat = "dxm",
 ): Promise<PreviewFinalizeRun> {
   return ppRequest(ctx, `/api/product-processing/tasks/${taskId}/preview/finalize`, {
     method: "POST", headers: { "Idempotency-Key": idempotencyKey },
-    body: { items },
+    body: { items, export_format: exportFormat },
   });
 }
 
@@ -190,6 +206,20 @@ export function retryPreviewFinalizeRun(
     ctx,
     `/api/product-processing/tasks/${taskId}/preview/finalize/${encodeURIComponent(runId)}/retry`,
     { method: "POST", body: {} },
+  );
+}
+
+/** 基于已完成预审的最终快照再次生成妙手导入模板（服饰类/非服饰类）。 */
+export function exportMiaoshouPreview(
+  ctx: ApiContext,
+  taskId: number,
+  runId: string,
+  kind: MiaoshouTemplateKind,
+): Promise<MiaoshouExportResponse> {
+  return ppRequest(
+    ctx,
+    `/api/product-processing/tasks/${taskId}/preview/finalize/${encodeURIComponent(runId)}/export-miaoshou`,
+    { method: "POST", body: { kind } },
   );
 }
 

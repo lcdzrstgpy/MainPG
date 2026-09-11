@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -261,7 +261,16 @@ class PreviewSaveRequest(BaseModel):
 
 
 class PreviewFinalizeRequest(PreviewSaveRequest):
-    pass
+    # 最终导出模板：dxm=店小秘，apparel=妙手服饰类，general=妙手非服饰类
+    export_format: Literal["dxm", "apparel", "general"] = "dxm"
+
+
+class MiaoshouExportRequest(BaseModel):
+    """按预审完成记录再次导出妙手导入模板（服饰类 / 非服饰类）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str = Field(min_length=1, max_length=16)
 
 
 class ListingAdviceRequest(BaseModel):

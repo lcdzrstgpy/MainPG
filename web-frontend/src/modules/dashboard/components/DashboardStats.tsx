@@ -2,6 +2,7 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import type { WorkspaceModuleId } from "../../../app/navigation/modules";
 import { getDashboardStats, type DashboardStats, type DashboardTrendPoint } from "../api/dashboardApi";
 import { loadBillingUsageHistory, type BillingUsageEntry } from "../../personal_center/api/personalCenterApi";
+import { getAuthToken } from "../../../transport/http/client";
 import "./../styles/dashboardStats.css";
 import { AppleAppGlyph } from "../../../shared/components/AppleAppGlyph";
 
@@ -11,21 +12,26 @@ type TrendMode = "dual" | "sum";
 
 /* ── 折线趋势图（重制版：平滑曲线 + 入场动画 + 跟随式悬浮卡） ── */
 
-/** Catmull-Rom 样条 → 三次贝塞尔：把折线变成顺滑曲线 */
-function smoothPath(pts: Array<{ x: number; y: number }>): string {
+/** Catmull-Rom 样条 → 三次贝塞尔：把折线变成顺滑曲线
+ * baselineY: 图表底部基线 y 坐标（y=0 的位置）。SVG 的 y 轴向下递增，所以
+ * 数值越大 y 越小，baselineY 是合法 y 的上界。样条在连续 0 值附近会把控制点
+ * 算到 baselineY 之下（视觉上即跌进负数区间），这里把越界的控制点拉回基线，
+ * 让曲线"贴着底走"而不下凹。 */
+function smoothPath(pts: Array<{ x: number; y: number }>, baselineY: number): string {
   if (pts.length === 0) return "";
-  if (pts.length < 3) return pts.map((p, i) => `${i ? "L" : "M"}${p.x.toFixed(2)} ${p.y.toFixed(2)}`).join(" ");
-  let d = `M${pts[0].x.toFixed(2)} ${pts[0].y.toFixed(2)}`;
+  const clampY = (y: number) => (y > baselineY ? baselineY : y);
+  if (pts.length < 3) return pts.map((p, i) => `${i ? "L" : "M"}${p.x.toFixed(2)} ${clampY(p.y).toFixed(2)}`).join(" ");
+  let d = `M${pts[0].x.toFixed(2)} ${clampY(pts[0].y).toFixed(2)}`;
   for (let i = 0; i < pts.length - 1; i++) {
     const p0 = pts[Math.max(0, i - 1)];
     const p1 = pts[i];
     const p2 = pts[i + 1];
     const p3 = pts[Math.min(pts.length - 1, i + 2)];
     const c1x = p1.x + (p2.x - p0.x) / 6;
-    const c1y = p1.y + (p2.y - p0.y) / 6;
+    const c1y = clampY(p1.y + (p2.y - p0.y) / 6);
     const c2x = p2.x - (p3.x - p1.x) / 6;
-    const c2y = p2.y - (p3.y - p1.y) / 6;
-    d += ` C${c1x.toFixed(2)} ${c1y.toFixed(2)} ${c2x.toFixed(2)} ${c2y.toFixed(2)} ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`;
+    const c2y = clampY(p2.y - (p3.y - p1.y) / 6);
+    d += ` C${c1x.toFixed(2)} ${c1y.toFixed(2)} ${c2x.toFixed(2)} ${c2y.toFixed(2)} ${p2.x.toFixed(2)} ${clampY(p2.y).toFixed(2)}`;
   }
   return d;
 }
@@ -150,7 +156,7 @@ function DashboardTrendChart({ points }: { points: DashboardTrendPoint[] }) {
               // 无数据时 smoothPath 返回空串，拼接出的 d（如 " L48.00 240.00 ..."）
               // 以 L 开头属于非法 SVG 路径，浏览器会报 "Expected moveto path command"。
               if (pts.length === 0) return null;
-              const line = smoothPath(pts);
+              const line = smoothPath(pts, pad.top + plotH);
               const lastX = pts[pts.length - 1].x;
               const firstX = pts[0].x;
               const area = `${line} L${lastX.toFixed(2)} ${(pad.top + plotH).toFixed(2)} L${firstX.toFixed(2)} ${(pad.top + plotH).toFixed(2)} Z`;
@@ -253,6 +259,12 @@ function DashboardPointsPie() {
 
   useEffect(() => {
     let cancelled = false;
+    // 未登录时不请求计费用量：后端会以 401 拒绝，仅产生控制台噪音。
+    if (!getAuthToken()) {
+      setLoaded(true);
+      setLoading(false);
+      return;
+    }
     loadBillingUsageHistory({ limit: 100 })
       .then((res) => {
         if (cancelled) return;
