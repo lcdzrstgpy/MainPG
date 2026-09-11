@@ -385,6 +385,29 @@ CREATE TABLE IF NOT EXISTS action_logs (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS customer_feedback (
+    feedback_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL DEFAULT '',
+    username TEXT NOT NULL DEFAULT '',
+    workspace_id TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT 'suggestion',
+    content TEXT NOT NULL DEFAULT '',
+    contact TEXT NOT NULL DEFAULT '',
+    images_json TEXT NOT NULL DEFAULT '[]',
+    image_count INTEGER NOT NULL DEFAULT 0,
+    total_image_bytes INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'new',
+    admin_note TEXT NOT NULL DEFAULT '',
+    admin_id TEXT NOT NULL DEFAULT '',
+    status_updated_at TEXT NOT NULL DEFAULT '',
+    app_version TEXT NOT NULL DEFAULT '',
+    platform TEXT NOT NULL DEFAULT '',
+    client_ip TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_customer_feedback_account_time ON customer_feedback(account_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_customer_feedback_created ON customer_feedback(created_at);
+
 -- 积分钱包：只允许平台账号服务端写入；本地工作台不得直接修改余额。
 CREATE TABLE IF NOT EXISTS billing_wallets (
     account_id TEXT PRIMARY KEY,

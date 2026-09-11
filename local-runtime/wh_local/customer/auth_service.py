@@ -17,6 +17,8 @@ from .email_sender import EmailDeliveryError, VerificationEmailSender
 DEFAULT_ITERATIONS = 200_000
 DEFAULT_WORKSPACE_ID = "default"
 DEFAULT_WORKSPACE_CODE = "local-demo"
+FEEDBACK_RETENTION_DAYS = 14
+FEEDBACK_PURGE_BATCH = 500
 PASSWORD_RESET_TTL = timedelta(minutes=30)
 EMAIL_CODE_TTL = timedelta(minutes=10)
 EMAIL_CODE_RESEND_SECONDS = 60
@@ -843,6 +845,32 @@ def _log_security_event(
             _utc_now(),
         ),
     )
+
+
+def purge_expired_customer_feedback(
+    database_path: Path,
+    *,
+    days: int = FEEDBACK_RETENTION_DAYS,
+    batch: int = FEEDBACK_PURGE_BATCH,
+) -> int:
+    """Delete customer feedback rows older than ``days`` days; batched to avoid
+    long transactions. Feedback rows carry base64 images, so retention matters
+    for disk usage. Runs daily from the auth server maintenance thread."""
+    removed = 0
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+    while True:
+        with transaction(database_path) as conn:
+            cursor = conn.execute(
+                "DELETE FROM customer_feedback WHERE rowid IN ("
+                "SELECT rowid FROM customer_feedback "
+                f"WHERE datetime(created_at) < datetime(?) LIMIT {batch})",
+                (cutoff,),
+            )
+            deleted = cursor.rowcount
+        removed += deleted
+        if deleted < batch:
+            break
+    return removed
 
 
 def _account_id(username: str, email: str) -> str:
