@@ -1415,12 +1415,17 @@ class PodBatchWorker:
                     f"style-{style_index}-{role}{panel.suffix}",
                     panel.content,
                 )
+                # 第 4 张图「规格卡」：只对 hero 做伴随式合成。母版仍是上面这张
+                # 干净图（pattern/composite 指针不变），合成的卡片图只替换发布指针。
+                publish_media = panel
+                if role == "hero":
+                    publish_media = self._spec_card_publish_media(batch, style_index, panel)
                 public_url = ""
                 publish_error = ""
                 for _attempt in (1, 2):
                     try:
                         public_url = self.ai_runtime.publish_listing_image(
-                            panel, namespace=batch["workspace_id"], role=role
+                            publish_media, namespace=batch["workspace_id"], role=role
                         )
                         break
                     except Exception as exc:
@@ -1662,6 +1667,62 @@ class PodBatchWorker:
             reference_count=1,
         )
 
+    def _spec_card_publish_media(self, batch: dict[str, Any], style_index: int, panel: Any) -> Any:
+        """hero 面板的发布用 media：已配置规格卡则返回合成好的卡片，否则返回干净图。
+
+        ``pattern_asset_id`` / ``composite_asset_id`` 始终指向干净母版；这里只决定
+        发布哪一张。方案 §9：任何渲染异常都只记警告并回退干净图，绝不阻断单款。
+        """
+
+        from . import spec_card
+        from .contracts import SpecCardConfig, spec_card_is_configured
+
+        listing_fields = batch.get("listing_fields")
+        raw_config = listing_fields.get("spec_card") if isinstance(listing_fields, dict) else None
+        try:
+            config = SpecCardConfig.from_mapping(raw_config)
+        except ValueError as exc:
+            # 冻结快照里的配置不合法（提交前本应被拦截）：按未配置处理并留痕。
+            self._log_spec_card_fallback(batch["batch_id"], style_index, f"配置不可用：{exc}")
+            return panel
+        if not config.enabled or not spec_card_is_configured(config):
+            return panel
+        try:
+            result = spec_card.render_spec_card(
+                panel.content,
+                spec_card.SpecCardRequest(
+                    cells=config.cells, style=config.style, corner=config.corner
+                ),
+            )
+            self._save_asset(
+                batch,
+                SPEC_CARD_ASSET_KIND,
+                f"style-{style_index}-hero-card.jpg",
+                result.jpeg_bytes,
+            )
+        except Exception as exc:  # noqa: BLE001 - 渲染/落库失败一律回退干净图
+            self._log_spec_card_fallback(
+                batch["batch_id"], style_index, safe_error_message(exc) or exc.__class__.__name__
+            )
+            return panel
+        try:
+            business_logger("pod_processing").info(
+                "POD 规格卡合成 | batch_id=%s | style=%d | 单元格=%d | 字号=%dpx | 风格=%s | 位置=%s",
+                batch["batch_id"], style_index, result.cell_count, result.font_px,
+                config.style, config.corner)
+        except Exception:  # noqa: BLE001
+            pass
+        return build_spec_card_media(result.jpeg_bytes)
+
+    @staticmethod
+    def _log_spec_card_fallback(batch_id: str, style_index: int, reason: str) -> None:
+        try:
+            business_logger("pod_processing").warning(
+                "POD 规格卡合成回退干净图 | batch_id=%s | style=%d | 原因=%s",
+                batch_id, style_index, reason)
+        except Exception:  # noqa: BLE001 - 日志绝不阻断业务
+            pass
+
     def _save_asset(self, batch: dict[str, Any], kind: str, filename: str, content: bytes) -> dict[str, Any]:
         stored = self.assets.save_image(batch["workspace_id"], batch["owner_user_id"], content)
         return self.repository.create_asset(
@@ -1703,3 +1764,25 @@ def _accepts_keyword(function: Any, name: str) -> bool:
         parameter.kind == inspect.Parameter.VAR_KEYWORD
         for parameter in parameters.values()
     )
+
+
+# 第 4 张图「规格卡」：派生卡片图入库的资产类型与发布用 media（方案 §6）。
+SPEC_CARD_ASSET_KIND = "direct_listing_panel_card"
+SPEC_CARD_ASSET_SUFFIX = ".jpg"
+
+
+def build_spec_card_media(jpeg_bytes: bytes) -> Any:
+    """把合成好的卡片字节包成可发布的 media（与四格面板同形状；本地合成，无 provider 参考）。"""
+
+    from wh_local.modules.product_processing.infrastructure.media import GeneratedMedia
+
+    return GeneratedMedia(
+        stage="spec_card",
+        content=jpeg_bytes,
+        content_type="image/jpeg",
+        suffix=SPEC_CARD_ASSET_SUFFIX,
+        provider="local-spec-card",
+        model="local",
+        reference_count=0,
+    )
+

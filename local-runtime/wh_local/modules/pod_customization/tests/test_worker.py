@@ -1141,6 +1141,174 @@ def test_worker_makes_one_initial_grid_call_per_style_and_keeps_four_results_tog
     runtime.close()
 
 
+def _spec_card_batch_request(
+    template_id: str,
+    *,
+    count: int = 1,
+    cells: tuple[tuple[str, ...], ...] = (("尺寸", "30 × 20 × 10 cm"), ("材质", "帆布")),
+    style: str = "light",
+    corner: str = "bottom-right",
+    enabled: bool = True,
+) -> BatchCreate:
+    return BatchCreate(
+        template_id=template_id,
+        count=count,
+        prompt_version="v1",
+        business_fields=BusinessFields(product_name="Tote bag", product_category="bags"),
+        listing_fields=ListingFields(
+            declared_price=18.5,
+            suggested_price_usd=29.99,
+            category_name="家居收纳 > 包袋",
+            skus=[{"name": "Default SKU", "length_cm": 30, "width_cm": 20, "height_cm": 10, "weight_g": 450}],
+            spec_card={
+                "enabled": enabled,
+                "style": style,
+                "corner": corner,
+                "cells": [list(row) for row in cells],
+            },
+        ),
+    )
+
+
+def _assets_of_kind(service: PodCustomizationService, kind: str) -> list[dict]:
+    with service.repository._connect() as connection:
+        rows = connection.execute(
+            "SELECT * FROM pod_customization_assets WHERE kind = ? ORDER BY created_at, rowid",
+            (kind,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _asset_row(service: PodCustomizationService, asset_id: str) -> dict:
+    with service.repository._connect() as connection:
+        row = connection.execute(
+            "SELECT * FROM pod_customization_assets WHERE asset_id = ?", (asset_id,)
+        ).fetchone()
+    assert row is not None
+    return dict(row)
+
+
+def _published_digest(public_url: str) -> str:
+    return public_url.rsplit("/", 1)[-1].split(".", 1)[0]
+
+
+def test_style_grid_composites_the_spec_card_onto_the_hero_panel_only(tmp_path: Path) -> None:
+    grid = _grid([_pattern(index) for index in range(4)])
+    runtime = ListingOnlyRuntime([grid])
+    service = _service(tmp_path, runtime)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _spec_card_batch_request(template["id"]), enqueue=False)
+
+    service.worker.process_batch(batch["id"])
+    stored = service.get_batch(actor, batch["id"])
+    internal = service.repository.get_batch_internal(batch["id"])
+
+    assert stored["status"] == "completed"
+    assert len(runtime.publications) == 4
+    card_assets = _assets_of_kind(service, "direct_listing_panel_card")
+    assert len(card_assets) == 1
+    rows_by_role = {item["role"]: item for item in internal["items"]}
+    payloads_by_role = {item["role"]: item for item in stored["items"]}
+    assert set(rows_by_role) == {"hero", "detail_a", "detail_b", "lifestyle"}
+    # hero 发布的是卡片图，其它三格仍是各自的干净母版。
+    assert _published_digest(payloads_by_role["hero"]["public_url"]) == card_assets[0]["sha256"][:12]
+    assert card_assets[0]["filename"] == "style-1-hero-card.jpg"
+    for role in ("detail_a", "detail_b", "lifestyle"):
+        master = _asset_row(service, rows_by_role[role]["pattern_asset_id"])
+        assert master["kind"] == "direct_listing_panel"
+        assert payloads_by_role[role]["public_url"] == (
+            f"https://cos.example.com/workspace-a/{role}/{master['sha256'][:12]}.png"
+        )
+    # 干净母版没有被卡片改写：hero 的母版资产仍是拆分出来的第一格像素。
+    from wh_local.modules.pod_customization.images import split_grid_2x2
+
+    hero_master = _asset_row(service, rows_by_role["hero"]["pattern_asset_id"])
+    assert hero_master["kind"] == "direct_listing_panel"
+    assert hero_master["sha256"] == hashlib.sha256(split_grid_2x2(grid)[0]).hexdigest()
+    assert hero_master["sha256"] != card_assets[0]["sha256"]
+    service.close()
+    runtime.close()
+
+
+def test_style_grid_spec_card_render_failure_publishes_the_clean_panel(tmp_path: Path, monkeypatch) -> None:
+    from wh_local.modules.pod_customization import spec_card
+
+    grid = _grid([_pattern(index) for index in range(4)])
+    runtime = ListingOnlyRuntime([grid])
+    service = _service(tmp_path, runtime)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _spec_card_batch_request(template["id"]), enqueue=False)
+
+    def boom(*_args, **_kwargs):
+        raise spec_card.SpecCardRenderError("no usable font for the spec card renderer")
+
+    monkeypatch.setattr(spec_card, "render_spec_card", boom)
+    service.worker.process_batch(batch["id"])
+
+    stored = service.get_batch(actor, batch["id"])
+    internal = service.repository.get_batch_internal(batch["id"])
+    assert stored["status"] == "completed"
+    assert stored["completed_count"] == 1
+    assert _assets_of_kind(service, "direct_listing_panel_card") == []
+    for item, internal_item in zip(stored["items"], internal["items"], strict=True):
+        master = _asset_row(service, internal_item["pattern_asset_id"])
+        assert master["kind"] == "direct_listing_panel"
+        assert item["public_url"] == (
+            f"https://cos.example.com/workspace-a/{item['role']}/{master['sha256'][:12]}.png"
+        )
+    service.close()
+    runtime.close()
+
+
+def test_style_regeneration_composites_the_spec_card_again(tmp_path: Path) -> None:
+    runtime = ListingOnlyRuntime([
+        _grid([_pattern(index) for index in range(4)]),
+        _grid([_pattern(index) for index in range(40, 44)]),
+    ])
+    service = _service(tmp_path, runtime)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _spec_card_batch_request(template["id"]), enqueue=False)
+    service.worker.process_batch(batch["id"])
+    assert len(_assets_of_kind(service, "direct_listing_panel_card")) == 1
+
+    service.regenerate_style(actor, batch["id"], 1, creative_prompt="smaller tiles", enqueue=True)
+    with service.worker._futures_lock:
+        future = service.worker._futures[("regenerate-style", f"{batch['id']}:1")]
+    future.result(timeout=10)
+
+    card_assets = _assets_of_kind(service, "direct_listing_panel_card")
+    assert len(card_assets) == 2
+    hero = next(item for item in service.get_batch(actor, batch["id"])["items"] if item["role"] == "hero")
+    assert _published_digest(hero["public_url"]) == card_assets[-1]["sha256"][:12]
+    service.close()
+    runtime.close()
+
+
+def test_style_grid_skips_spec_card_composition_when_disabled(tmp_path: Path) -> None:
+    grid = _grid([_pattern(index) for index in range(4)])
+    runtime = ListingOnlyRuntime([grid])
+    service = _service(tmp_path, runtime)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(
+        actor,
+        _spec_card_batch_request(template["id"], enabled=False, cells=(("尺寸", "30cm"),)),
+        enqueue=False,
+    )
+
+    service.worker.process_batch(batch["id"])
+    stored = service.get_batch(actor, batch["id"])
+
+    assert stored["status"] == "completed"
+    assert _assets_of_kind(service, "direct_listing_panel_card") == []
+    assert len(runtime.publications) == 4
+    service.close()
+    runtime.close()
+
+
 def test_style_grid_retries_one_generation_failure_only_once(tmp_path: Path) -> None:
     first = [_pattern(index) for index in range(4)]
     retry = [_pattern(index) for index in range(20, 24)]

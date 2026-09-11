@@ -739,7 +739,7 @@ class SourcingService:
                         "source_main_image_url": _text(selection.main_image_url),
                         "store_name": batch.store_name,
                         "visibility": "shared",
-                    }, actor=actor)
+                    }, actor=actor, allow_company_write=True)
                 return None
             saved: Mapping[str, Any] | None = None
             for product_id, selling_price in self._archive_product_targets(
@@ -775,7 +775,7 @@ class SourcingService:
                     "source_groups_json": json.dumps(groups, ensure_ascii=False, separators=(",", ":")),
                     "source_type": "price_verification", "source_main_image_url": _text(selection.main_image_url),
                     "store_name": batch.store_name, "visibility": "shared",
-                }, actor=actor)
+                }, actor=actor, allow_company_write=True)
             return saved
         except Exception:
             # 自动同步失败不能阻断关联/解除关联，但必须留痕：否则产品库

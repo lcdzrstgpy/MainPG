@@ -80,12 +80,57 @@ export type PodListingFieldsDraft = {
   skus: PodSkuDraft[];
 };
 
+export type SpecCardStyle = "light" | "dark";
+
+export type SpecCardCorner = "bottom-right" | "bottom-left" | "top-right" | "top-left";
+
+/** 第 4 张图（素材图）上原样印出的用户自填表格；配置随批次快照冻结。 */
+export type SpecCardConfig = {
+  enabled: boolean;
+  style: SpecCardStyle;
+  corner: SpecCardCorner;
+  cells: string[][];
+};
+
+export type SpecCardPreviewRequest = {
+  cells: string[][];
+  style: SpecCardStyle;
+  corner: SpecCardCorner;
+  base_template_id?: string;
+};
+
+export type SpecCardPreviewResponse = {
+  image: string;
+};
+
+export type SpecCardReprintRequest = {
+  cells: string[][];
+  style: SpecCardStyle;
+  corner: SpecCardCorner;
+  style_index?: number | null;
+};
+
+export type SpecCardReprintError = {
+  style_index: number;
+  message: string;
+};
+
+export type SpecCardReprintResponse = {
+  saved: boolean;
+  reprinted: number;
+  failed: number;
+  errors: SpecCardReprintError[];
+  needs_re_export: boolean;
+};
+
 export type PodListingFields = {
   title_mode: PodTitleMode;
   declared_price: number;
   suggested_price_usd: number;
   category_name: string;
   skus: PodSku[];
+  /** 批次冻结快照里的规格卡配置；旧批次快照可能缺失该键。 */
+  spec_card?: SpecCardConfig;
 };
 
 export type PodDianxiaomiExportStatus = {

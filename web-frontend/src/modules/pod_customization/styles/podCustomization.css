@@ -1,4 +1,7 @@
-.pod-customization-page {
+/* 主题变量同时挂在 portal 根节点上：抽屉用 createPortal 挂到 body，
+   若只定义在 .pod-customization-page 上，抽屉会因脱离作用域而变量失效（背景变透明）。 */
+.pod-customization-page,
+.pod-spec-card-drawer-layer {
   --pod-surface: var(--theme-module-surface, #fff);
   --pod-surface-raised: var(--theme-module-surface-raised, #fff);
   --pod-surface-soft: var(--theme-module-surface-soft, #f7fafc);
@@ -11,6 +14,9 @@
   --pod-primary: var(--theme-primary, #0877d3);
   --pod-primary-rgb: var(--theme-module-primary-rgb, 8, 119, 211);
   --pod-shadow: var(--theme-module-shadow, rgba(26, 105, 149, .08));
+}
+
+.pod-customization-page {
   min-width: 0;
   min-height: calc(100dvh - 190px);
   color: var(--pod-text);
@@ -368,8 +374,11 @@
 .pod-current-template-summary > header h2 { margin: 2px 0 0; font-size: .9rem; }
 .pod-current-template-summary > header button { padding: 6px 9px; border: 1px solid var(--pod-border); border-radius: 8px; color: var(--pod-primary); background: var(--pod-surface-soft); font-size: .62rem; font-weight: 800; }
 .pod-current-template-body { display: grid; grid-template-columns: 138px minmax(0, 1fr); align-items: stretch; gap: 20px; }
-.pod-current-template-image { aspect-ratio: 1 / 1; overflow: hidden; border: 1px solid var(--pod-border); border-radius: 16px; color: var(--pod-text-muted); background: var(--pod-surface-soft); }
-.pod-current-template-image img { display: block; width: 100%; height: 100%; object-fit: contain; }
+/* 模板图要贴边铺满整框：本元素是 <button>，浏览器 UA 默认内边距（Chromium/WebKit 为 1px 6px）
+   会把 width/height:100% 的图片顶进内容盒，露出框底形成白边，因此显式 padding:0；
+   图片按 cover 铺满整个圆角框，超出部分由 overflow:hidden 裁切（只改前端样式，不动图片本身）。 */
+.pod-current-template-image { aspect-ratio: 1 / 1; padding: 0; overflow: hidden; border: 1px solid var(--pod-border); border-radius: 16px; color: var(--pod-text-muted); background: var(--pod-surface-soft); }
+.pod-current-template-image img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .pod-current-template-body dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: center; gap: 12px 18px; margin: 0; }
 .pod-current-template-body dl > div { display: grid; grid-template-columns: 96px minmax(0, 1fr); align-items: center; gap: 8px; }
 .pod-current-template-body dt { padding: 9px 10px; border-radius: 7px; color: var(--pod-text); background: var(--pod-surface-tint); font-size: .66rem; font-weight: 850; text-align: center; }
@@ -399,7 +408,10 @@
 .pod-style-export-selection:disabled { cursor: not-allowed; opacity: .55; }
 .pod-style-export-selection:focus-visible { outline: 2px solid var(--pod-primary); outline-offset: 2px; }
 .pod-style-result-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
-.pod-style-result { position: relative; aspect-ratio: 1 / 1; min-width: 0; overflow: hidden; border: 1px solid var(--pod-border); border-radius: 16px; background: var(--pod-surface); }
+/* 四格图（主图/细节图 A/细节图 B/素材图）要图片贴边铺满：本元素是 <button>，浏览器 UA 默认内边距
+   （Chromium/WebKit 为 1px 6px）会把 width/height:100% 的图片顶进内容盒，露出框底白底形成白边，
+   因此显式 padding:0；图片仍按 cover 铺满整个圆角框，超出部分由 overflow:hidden 裁切。 */
+.pod-style-result { position: relative; aspect-ratio: 1 / 1; min-width: 0; padding: 0; overflow: hidden; border: 1px solid var(--pod-border); border-radius: 16px; background: var(--pod-surface); }
 .pod-style-result:not(:disabled):hover { border-color: var(--pod-primary); box-shadow: 0 7px 18px var(--pod-shadow); transform: translateY(-1px); }
 .pod-style-result:disabled { cursor: default; }
 .pod-style-result img { width: 100%; height: 100%; display: block; object-fit: cover; }
@@ -651,3 +663,139 @@
   .pod-customization-page *,
   .pod-template-drawer { scroll-behavior: auto !important; animation: none !important; transition: none !important; }
 }
+
+/* ---------------------------------------------------------------------------
+   规格卡（第 4 张图上的用户自填表格）：入口行、右侧抽屉、表格编辑、四角选择器、预览。
+   仅在文件末尾追加，不改动上方既有规则。
+--------------------------------------------------------------------------- */
+
+.pod-spec-card-entry { display: flex; align-items: center; gap: 10px; margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--pod-border); }
+.pod-spec-card-entry-button { display: inline-flex; align-items: center; gap: 2px; padding: 8px 14px; white-space: nowrap; border: 1px solid var(--pod-border-strong); border-radius: 10px; color: var(--pod-primary); background: var(--pod-surface-tint); font-size: .78rem; font-weight: 700; }
+.pod-spec-card-entry-button:not(:disabled):hover { border-color: var(--pod-primary); box-shadow: 0 6px 16px var(--pod-shadow); }
+.pod-spec-card-entry-button em { color: #d76862; font-style: normal; }
+.pod-spec-card-entry-summary { min-width: 0; color: var(--pod-text-secondary); font-size: .68rem; }
+.pod-spec-card-entry-summary.is-warning { color: #a84c48; font-weight: 700; }
+
+.pod-spec-card-drawer-layer { position: fixed; z-index: 520; inset: 0; }  /* 必须高于「返回顶部」悬浮按钮(80)与工作区外壳各层：抽屉已 portal 到 body */
+.pod-spec-card-drawer-backdrop { position: absolute; inset: 0; width: 100%; border: 0; background: var(--theme-module-overlay, rgba(15, 36, 53, .36)); backdrop-filter: blur(3px); }
+.pod-spec-card-drawer { position: absolute; top: 0; right: 0; bottom: 0; display: flex; width: min(760px, 94vw); flex-direction: column; border-left: 1px solid var(--pod-border); color: var(--pod-text); background: var(--pod-surface-raised); box-shadow: -24px 0 60px rgba(11, 35, 55, .18); animation: pod-drawer-in .2s ease-out; }
+.pod-spec-card-drawer-header { display: flex; align-items: start; justify-content: space-between; gap: 16px; padding: 20px 22px 15px; border-bottom: 1px solid var(--pod-border); background: var(--theme-module-panel-gradient, var(--pod-surface-soft)); }
+.pod-spec-card-drawer-header > div > span { color: var(--pod-primary); font-size: .64rem; font-weight: 900; letter-spacing: .1em; }
+.pod-spec-card-drawer-header h2 { margin: 3px 0; font-size: 1.25rem; }
+.pod-spec-card-drawer-header > button { width: 34px; height: 34px; border: 1px solid var(--pod-border); border-radius: 9px; color: var(--pod-text-secondary); background: var(--pod-surface); font-size: 1.25rem; }
+
+.pod-spec-card-frozen-banner { margin: 0; padding: 9px 22px; border-bottom: 1px solid var(--pod-border); color: #7a5a17; background: #fff8e6; font-size: .72rem; font-weight: 700; }
+.pod-spec-card-terminal-banner { margin: 0; padding: 9px 22px; border-bottom: 1px solid var(--pod-border); color: #1c6b48; background: #effaf3; font-size: .72rem; font-weight: 700; }
+
+.pod-spec-card-drawer-body { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 16px; padding: 16px 22px; overflow: auto; }
+.pod-spec-card-section,
+.pod-spec-card-appearance,
+.pod-spec-card-preview { display: flex; flex-direction: column; gap: 9px; padding: 12px 13px; border: 1px solid var(--pod-border); border-radius: 14px; background: var(--pod-surface); }
+.pod-spec-card-section-title { display: flex; align-items: baseline; gap: 8px; }
+.pod-spec-card-section-title > span { color: var(--pod-primary); font-size: .6rem; font-weight: 900; letter-spacing: .1em; }
+.pod-spec-card-section-title h3 { margin: 0; font-size: .88rem; }
+
+.pod-spec-card-table-toolbar { display: flex; align-items: center; gap: 8px; }
+.pod-spec-card-table-toolbar > span { margin-right: auto; color: var(--pod-text-secondary); font-size: .68rem; font-weight: 700; }
+.pod-spec-card-table-toolbar > button { padding: 5px 11px; border: 1px solid var(--pod-border); border-radius: 8px; color: var(--pod-text); background: var(--pod-surface-soft); font-size: .68rem; }
+.pod-spec-card-table-toolbar > button:not(:disabled):hover { border-color: var(--pod-border-strong); color: var(--pod-primary); }
+.pod-spec-card-table-toolbar > button:disabled { cursor: not-allowed; opacity: .5; }
+.pod-spec-card-table { width: 100%; border-collapse: separate; border-spacing: 6px 5px; table-layout: fixed; }
+.pod-spec-card-table td { position: relative; vertical-align: top; }
+.pod-spec-card-table td > input { width: 100%; padding: 7px 9px 15px; border: 1px solid var(--pod-border); border-radius: 9px; color: var(--pod-text); background: var(--pod-surface-soft); font-size: .74rem; }
+.pod-spec-card-table td > input:focus { border-color: var(--pod-primary); outline: 2px solid rgba(var(--pod-primary-rgb), .18); outline-offset: 0; }
+.pod-spec-card-table td > input[aria-invalid="true"] { border-color: #edc4c1; }
+.pod-spec-card-table td > input:disabled { cursor: not-allowed; opacity: .7; }
+.pod-spec-card-cell-count { position: absolute; right: 9px; bottom: 4px; color: var(--pod-text-muted); font-size: .56rem; }
+.pod-spec-card-cell-count.is-limit { color: #a84c48; font-weight: 700; }
+.pod-spec-card-row-action { width: 26px; }
+.pod-spec-card-row-action > button { width: 24px; height: 24px; border: 1px solid var(--pod-border); border-radius: 8px; color: var(--pod-text-secondary); background: var(--pod-surface-soft); font-size: .9rem; line-height: 1; }
+.pod-spec-card-row-action > button:disabled { cursor: not-allowed; opacity: .4; }
+.pod-spec-card-column-actions td > button { width: 100%; padding: 4px 0; border: 1px dashed var(--pod-border); border-radius: 8px; color: var(--pod-text-muted); background: none; font-size: .62rem; }
+.pod-spec-card-column-actions td > button:disabled { cursor: not-allowed; opacity: .4; }
+.pod-spec-card-table-hint { margin: 0; color: var(--pod-text-muted); font-size: .62rem; }
+.pod-spec-card-table-notice { margin: 0; color: #a84c48; font-size: .68rem; font-weight: 700; }
+
+.pod-spec-card-field { display: flex; flex-direction: column; gap: 6px; }
+.pod-spec-card-field-label { color: var(--pod-text-secondary); font-size: .68rem; font-weight: 700; }
+.pod-spec-card-field-label em { color: #d76862; font-style: normal; }
+.pod-spec-card-style-options { display: flex; gap: 8px; }
+.pod-spec-card-style-options > button { display: flex; min-width: 96px; flex-direction: column; gap: 2px; padding: 8px 12px; border: 1px solid var(--pod-border); border-radius: 10px; color: var(--pod-text); background: var(--pod-surface-soft); text-align: left; }
+.pod-spec-card-style-options > button b { font-size: .76rem; }
+.pod-spec-card-style-options > button i { color: var(--pod-text-muted); font-size: .6rem; font-style: normal; }
+.pod-spec-card-style-options > button.is-active { border-color: var(--pod-primary); color: var(--pod-primary); background: var(--pod-surface-tint); box-shadow: 0 6px 16px var(--pod-shadow); }
+.pod-spec-card-style-options > button:disabled { cursor: not-allowed; opacity: .6; }
+.pod-spec-card-corner-grid { display: grid; width: min(240px, 100%); grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.pod-spec-card-corner-grid > button { padding: 12px 6px; border: 1px solid var(--pod-border); border-radius: 10px; color: var(--pod-text-secondary); background: var(--pod-surface-soft); font-size: .68rem; font-weight: 700; }
+.pod-spec-card-corner-grid > button.is-active { border-color: var(--pod-primary); color: var(--pod-primary); background: var(--pod-surface-tint); box-shadow: inset 0 0 0 1px var(--pod-primary); }
+.pod-spec-card-corner-grid > button:disabled { cursor: not-allowed; opacity: .6; }
+
+.pod-spec-card-preview-frame { position: relative; display: grid; aspect-ratio: 1 / 1; width: min(260px, 100%); place-items: center; border: 1px solid var(--pod-border); border-radius: 14px; background: var(--pod-surface-soft); overflow: hidden; }
+.pod-spec-card-preview-frame img { width: 100%; height: 100%; display: block; object-fit: contain; }
+.pod-spec-card-preview-empty { color: var(--pod-text-muted); font-size: .68rem; }
+.pod-spec-card-preview-loading { position: absolute; right: 8px; bottom: 8px; padding: 3px 8px; border-radius: 999px; color: var(--pod-primary); background: var(--pod-surface-tint); font-size: .6rem; font-style: normal; }
+.pod-spec-card-preview-note { margin: 0; color: var(--pod-text-muted); font-size: .62rem; }
+.pod-spec-card-preview-error { display: flex; align-items: center; gap: 10px; margin: 0; color: #a84c48; font-size: .68rem; }
+.pod-spec-card-preview-error > button { padding: 4px 12px; border: 1px solid var(--pod-border-strong); border-radius: 8px; color: var(--pod-primary); background: var(--pod-surface-tint); font-size: .66rem; }
+
+.pod-spec-card-drawer-footer { display: flex; align-items: end; justify-content: space-between; gap: 14px; padding: 13px 22px 16px; border-top: 1px solid var(--pod-border); background: var(--theme-module-panel-gradient, var(--pod-surface-soft)); }
+.pod-spec-card-footer-status { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
+.pod-spec-card-summary { margin: 0; color: var(--pod-text-secondary); font-size: .68rem; font-weight: 700; }
+.pod-spec-card-unlocked-notice { margin: 0; color: #7a5a17; font-size: .64rem; }
+.pod-spec-card-reprint-progress { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--pod-primary); font-size: .7rem; font-weight: 700; }
+.pod-spec-card-reprint-meter { display: block; width: 110px; height: 6px; border-radius: 999px; background: linear-gradient(90deg, rgba(var(--pod-primary-rgb), .18), var(--pod-primary), rgba(var(--pod-primary-rgb), .18)); background-size: 200% 100%; animation: pod-spec-card-reprint 1.1s linear infinite; }
+.pod-spec-card-reprint-result { display: flex; flex-direction: column; gap: 4px; }
+.pod-spec-card-reprint-result > p { margin: 0; color: var(--pod-text-secondary); font-size: .68rem; font-weight: 700; }
+.pod-spec-card-reprint-errors { max-height: 96px; margin: 0; padding-left: 16px; overflow: auto; color: #a84c48; font-size: .64rem; }
+.pod-spec-card-reprint-reexport { color: #7a5a17 !important; }
+.pod-spec-card-reprint-error { margin: 0; color: #a84c48; font-size: .68rem; }
+.pod-spec-card-footer-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; }
+.pod-spec-card-footer-actions > button { padding: 8px 13px; border: 1px solid var(--pod-border); border-radius: 10px; color: var(--pod-text); background: var(--pod-surface); font-size: .7rem; }
+.pod-spec-card-footer-actions > button:not(:disabled):hover { border-color: var(--pod-border-strong); }
+.pod-spec-card-footer-actions > button:disabled { cursor: not-allowed; opacity: .5; }
+.pod-spec-card-save-button { border-color: var(--pod-primary) !important; color: #fff !important; background: var(--pod-primary) !important; font-weight: 700; }
+.pod-spec-card-save-button:disabled { color: var(--pod-text-muted) !important; background: var(--pod-surface-soft) !important; }
+.pod-spec-card-reprint-button { font-weight: 700; }
+.pod-spec-card-unlock-button { border-style: dashed; color: var(--pod-text-secondary); }
+
+@keyframes pod-spec-card-reprint {
+  from { background-position: 0 0; }
+  to { background-position: 200% 0; }
+}
+
+@media (max-width: 720px) {
+  .pod-spec-card-drawer { width: 100vw; }
+  .pod-spec-card-drawer-body { padding: 12px 14px; }
+  .pod-spec-card-drawer-footer { flex-wrap: wrap; padding: 12px 14px; }
+  .pod-spec-card-footer-actions { flex-wrap: wrap; justify-content: flex-end; }
+}
+
+/* 抽屉自身也尊重"减少动态效果"设置（页面根选择器已覆盖后代，这里兜住独立挂载的场景）。 */
+@media (prefers-reduced-motion: reduce) {
+  .pod-spec-card-drawer,
+  .pod-spec-card-reprint-meter { scroll-behavior: auto !important; animation: none !important; transition: none !important; }
+}
+
+/* 规格卡表格编辑器：列操作上移到表头并与列对齐（2026-09-10 用户反馈排版混乱） */
+.pod-spec-card-table-editor { display: flex; flex-direction: column; gap: 8px; }
+.pod-spec-card-table-editor .pod-spec-card-table thead th { padding: 0 0 2px; vertical-align: bottom; }
+.pod-spec-card-table-editor .pod-spec-card-table thead th > button { width: 100%; padding: 4px 0; border: 1px dashed var(--pod-border); border-radius: 8px; color: var(--pod-text-muted); background: none; font-size: .62rem; letter-spacing: .02em; }
+.pod-spec-card-table-editor .pod-spec-card-table thead th > button:not(:disabled):hover { border-color: var(--pod-border-strong); color: var(--pod-primary); }
+.pod-spec-card-table-editor .pod-spec-card-table thead th > button:disabled { cursor: not-allowed; opacity: .4; }
+.pod-spec-card-table-editor .pod-spec-card-table td, .pod-spec-card-table-editor .pod-spec-card-table th { padding: 0; }
+.pod-spec-card-table-editor .pod-spec-card-table td > input { display: block; width: 100%; padding: 8px 10px 16px; border: 1px solid var(--pod-border-strong); border-radius: 9px; color: var(--pod-text); background: var(--pod-surface); font-size: .76rem; }
+.pod-spec-card-table-editor .pod-spec-card-table td > input:hover { border-color: var(--pod-primary); }
+.pod-spec-card-table-editor .pod-spec-card-table td > input:focus { border-color: var(--pod-primary); outline: 2px solid rgba(var(--pod-primary-rgb), .18); }
+.pod-spec-card-table-editor .pod-spec-card-cell-count { position: absolute; right: 8px; bottom: 3px; color: var(--pod-text-muted); font-size: .54rem; }
+.pod-spec-card-table-editor .pod-spec-card-row-action > button { width: 26px; height: 26px; margin-top: 3px; border: 1px solid var(--pod-border-strong); border-radius: 8px; color: var(--pod-text-secondary); background: var(--pod-surface); font-size: .82rem; }
+.pod-spec-card-table-editor .pod-spec-card-row-action > button:not(:disabled):hover { border-color: #d76862; color: #d76862; }
+.pod-spec-card-table-editor .pod-spec-card-row-action-head { width: 30px; }
+.pod-spec-card-table-editor .pod-spec-card-table-toolbar > button { padding: 6px 12px; border: 1px solid var(--pod-border-strong); border-radius: 8px; color: var(--pod-text); background: var(--pod-surface); font-size: .7rem; font-weight: 700; }
+.pod-spec-card-table-editor .pod-spec-card-table-toolbar > button:not(:disabled):hover { border-color: var(--pod-primary); color: var(--pod-primary); }
+
+/* portal 抽屉内的表单元素：沿用页面级字体与手型规则 */
+.pod-spec-card-drawer-layer button,
+.pod-spec-card-drawer-layer input,
+.pod-spec-card-drawer-layer textarea { font: inherit; }
+.pod-spec-card-drawer-layer button { cursor: pointer; }
+.pod-spec-card-drawer-layer { color: var(--pod-text); }

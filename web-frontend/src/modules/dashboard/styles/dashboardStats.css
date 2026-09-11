@@ -234,6 +234,7 @@
 /* 面积：淡入 */
 .trend-area {
   opacity: 0;
+  pointer-events: none;
   animation: trend-fade .6s ease .2s forwards;
 }
 

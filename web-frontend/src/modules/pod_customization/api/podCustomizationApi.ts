@@ -10,6 +10,10 @@ import type {
   PodStyleTitle,
   PodTemplate,
   PodTemplateCalibration,
+  SpecCardPreviewRequest,
+  SpecCardPreviewResponse,
+  SpecCardReprintRequest,
+  SpecCardReprintResponse,
 } from "../types";
 
 const API_BASE = "/api/pod-customization";
@@ -142,6 +146,16 @@ export const podCustomizationApi = {
   ),
   retryFailed: (batchId: string, body: PodBatchRetryRequest) => httpJson<PodBatchRetryResult>(
     `${API_BASE}/batches/${encodeURIComponent(batchId)}/retry-failed`,
+    { method: "POST", body },
+  ),
+  // 规格卡同源预览：不落库、不计费，只返回一张 data URL 示意图。
+  previewSpecCard: (body: SpecCardPreviewRequest) => httpJson<SpecCardPreviewResponse>(
+    `${API_BASE}/spec-card/preview`,
+    { method: "POST", body },
+  ),
+  // 终态批次全批一次性重印；批次非终态时后端返回 409。
+  reprintSpecCard: (batchId: string, body: SpecCardReprintRequest) => httpJson<SpecCardReprintResponse>(
+    `${API_BASE}/batches/${encodeURIComponent(batchId)}/spec-card/reprint`,
     { method: "POST", body },
   ),
   exportDianxiaomi,

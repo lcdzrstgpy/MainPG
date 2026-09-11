@@ -11,6 +11,9 @@ import type {
   PodTemplateCalibration,
   PodStyleTitleStatus,
   PodStyleTitleSource,
+  SpecCardConfig,
+  SpecCardCorner,
+  SpecCardStyle,
 } from "../types";
 
 export type PodStyleRow = {
@@ -50,6 +53,95 @@ export const EMPTY_POD_LISTING_FIELDS: PodListingFieldsDraft = {
   category_name: "",
   skus: [{ name: "", length_cm: "", width_cm: "", height_cm: "", weight_g: "" }],
 };
+
+// 规格卡（第 4 张图上的用户自填表格）的编辑边界：1–3 列 / 1–8 行 / 每格 120 字。
+export const SPEC_CARD_MIN_ROWS = 1;
+export const SPEC_CARD_MAX_ROWS = 12;
+export const SPEC_CARD_MIN_COLUMNS = 1;
+export const SPEC_CARD_MAX_COLUMNS = 6;
+export const SPEC_CARD_CELL_MAX_LENGTH = 120;
+
+export const SPEC_CARD_STYLE_LABELS: Record<SpecCardStyle, string> = {
+  light: "浅色卡片",
+  dark: "深色卡片",
+};
+
+export const SPEC_CARD_CORNER_LABELS: Record<SpecCardCorner, string> = {
+  "bottom-right": "右下角",
+  "bottom-left": "左下角",
+  "top-right": "右上角",
+  "top-left": "左上角",
+};
+
+// 默认就是一张空表：单元格全空 = 未配置，提交时会被必填拦截。
+export const EMPTY_SPEC_CARD: SpecCardConfig = {
+  enabled: true,
+  style: "light",
+  corner: "bottom-right",
+  cells: Array.from({ length: 4 }, () => ["", ""]),
+};
+
+export function emptySpecCardCells(
+  rows: number = EMPTY_SPEC_CARD.cells.length,
+  columns: number = EMPTY_SPEC_CARD.cells[0].length,
+): string[][] {
+  return Array.from({ length: rows }, () => Array.from({ length: columns }, () => ""));
+}
+
+export function cloneSpecCardConfig(config: SpecCardConfig): SpecCardConfig {
+  return {
+    enabled: config.enabled,
+    style: config.style,
+    corner: config.corner,
+    cells: config.cells.map((row) => [...row]),
+  };
+}
+
+export function createEmptySpecCard(): SpecCardConfig {
+  return cloneSpecCardConfig(EMPTY_SPEC_CARD);
+}
+
+export function isSpecCardStyle(value: unknown): value is SpecCardStyle {
+  return value === "light" || value === "dark";
+}
+
+export function isSpecCardCorner(value: unknown): value is SpecCardCorner {
+  return value === "bottom-right" || value === "bottom-left" || value === "top-right" || value === "top-left";
+}
+
+export function isSpecCardConfig(value: unknown): value is SpecCardConfig {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value as Partial<SpecCardConfig>;
+  return typeof candidate.enabled === "boolean"
+    && isSpecCardStyle(candidate.style)
+    && isSpecCardCorner(candidate.corner)
+    && Array.isArray(candidate.cells)
+    && candidate.cells.every((row) => Array.isArray(row) && row.every((cell) => typeof cell === "string"));
+}
+
+/**
+ * 必填判定口径：只要有一个非空单元格就算已配置，不校验行数、不要求填满整行。
+ * `enabled` 由批次冻结快照承载（当前 UI 恒为 true），不参与提交拦截。
+ */
+export function isSpecCardConfigured(config: SpecCardConfig | null | undefined): boolean {
+  if (!config || !Array.isArray(config.cells)) return false;
+  return config.cells.some((row) => Array.isArray(row) && row.some((cell) => typeof cell === "string" && cell.trim().length > 0));
+}
+
+/** 配置摘要，例如「4 行 · 浅色卡片 · 右下角」；未配置时为「未配置」。 */
+export function specCardSummaryText(config: SpecCardConfig | null | undefined): string {
+  if (!config || !isSpecCardConfigured(config)) return "未配置";
+  // 空行在渲染期会被跳过，摘要因此只数有内容的行。
+  const rows = config.cells.filter((row) => row.some((cell) => cell.trim().length > 0)).length;
+  const style = SPEC_CARD_STYLE_LABELS[config.style] ?? SPEC_CARD_STYLE_LABELS.light;
+  const corner = SPEC_CARD_CORNER_LABELS[config.corner] ?? SPEC_CARD_CORNER_LABELS["bottom-right"];
+  return `${rows} 行 · ${style} · ${corner}`;
+}
+
+/** 提交载荷里带的规格卡快照（单元格内容原样透传，不做任何加工）。 */
+export function specCardForApi(config: SpecCardConfig): SpecCardConfig {
+  return cloneSpecCardConfig(config);
+}
 
 const ACTIVE_BATCH_STATUSES = new Set<PodBatchStatus>([
   "queued",
@@ -189,7 +281,14 @@ function positiveListingNumber(value: string, label: string): number | { error: 
   return parsed;
 }
 
-export function listingFieldsForApi(fields: PodListingFieldsDraft): PodListingFieldsResult {
+/**
+ * 组装提交载荷里的 listing_fields 快照。
+ * 传入 specCard 时一并冻结 `spec_card`（批次级配置）；不传则保持旧载荷结构不变。
+ */
+export function listingFieldsForApi(
+  fields: PodListingFieldsDraft,
+  specCard?: SpecCardConfig | null,
+): PodListingFieldsResult {
   const declaredPrice = positiveListingNumber(fields.declared_price, "申报价");
   if (typeof declaredPrice !== "number") return declaredPrice;
   const suggestedPriceUsd = positiveListingNumber(fields.suggested_price_usd, "建议美元售价");
@@ -222,6 +321,8 @@ export function listingFieldsForApi(fields: PodListingFieldsDraft): PodListingFi
       suggested_price_usd: suggestedPriceUsd,
       category_name: categoryName,
       skus,
+      // 规格卡随批次一起冻结；不传配置时载荷结构与旧版本保持一致。
+      ...(specCard ? { spec_card: specCardForApi(specCard) } : {}),
     },
   };
 }

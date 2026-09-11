@@ -626,6 +626,36 @@ CREATE TABLE IF NOT EXISTS billing_pricing_changelog (
 CREATE INDEX IF NOT EXISTS idx_billing_pricing_changelog_version
     ON billing_pricing_changelog (rule_version, created_at);
 
+-- 积分倍率配置：管理员在后台「价格倍率」页维护两套计费口径（ai / pod）。
+-- points_per_unit = 单条价值（整数积分，NULL = 基础定价，不改默认行为）；
+-- multiplier_percent = 单条价值相对基准的派生倍率（100 = 1.0 倍），用于审计与图表。
+CREATE TABLE IF NOT EXISTS billing_multiplier_rules (
+    category TEXT PRIMARY KEY CHECK (category IN ('ai', 'pod')),
+    multiplier_percent INTEGER NOT NULL DEFAULT 100,
+    points_per_unit INTEGER,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_by TEXT NOT NULL DEFAULT 'system',
+    change_reason TEXT NOT NULL DEFAULT '',
+    CHECK (multiplier_percent > 0),
+    CHECK (points_per_unit IS NULL OR points_per_unit > 0)
+);
+
+-- 倍率变更审计：只追加，不改不删；同时记录倍率与单条价值双口径。
+CREATE TABLE IF NOT EXISTS billing_multiplier_changelog (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    category TEXT NOT NULL,
+    before_percent INTEGER NOT NULL,
+    after_percent INTEGER NOT NULL,
+    before_points INTEGER,
+    after_points INTEGER,
+    changed_by TEXT NOT NULL DEFAULT '',
+    change_reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_billing_multiplier_changelog_time
+    ON billing_multiplier_changelog (category, created_at);
+
 -- 密钥发放审计：客户端批量冻结时下发短期密钥，记录归属与过期时间（不含明文）。
 CREATE TABLE IF NOT EXISTS billing_key_grants (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1050,6 +1080,10 @@ def _migrate_core_schema(conn: sqlite3.Connection) -> None:
     # 分析用量与失败率（历史记录保持空串；旧客户端未上报时同样为空）。
     _ensure_column(conn, "billing_ai_usage_events", "app_version", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "billing_batch_freezes", "app_version", "TEXT NOT NULL DEFAULT ''")
+    # 积分倍率快照：冻结时记录生效倍率与单条价值（points_per_unit 为 NULL 表示基础定价），
+    # 结算按冻结时快照执行，保证中途调价不影响已冻结任务。
+    _ensure_column(conn, "billing_batch_freezes", "multiplier_percent", "INTEGER NOT NULL DEFAULT 100")
+    _ensure_column(conn, "billing_batch_freezes", "points_per_unit", "INTEGER")
     # 支付订单的积分明细均为原始积分单位（当前为 0.1 积分）。旧订单保留
     # points 兼容字段，并在首次启动时把它作为基础积分快照。
     _ensure_column(conn, "billing_payment_orders", "base_points", "INTEGER NOT NULL DEFAULT 0")
@@ -1368,6 +1402,14 @@ def init_db(database_path: Path) -> None:
         )
         _seed_roles(conn)
         _seed_permissions(conn)
+        # 积分倍率默认行：未配置时两层计费口径都走基础定价（不改默认行为）。
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO billing_multiplier_rules (
+                category, multiplier_percent, points_per_unit, updated_by, change_reason
+            ) VALUES ('ai', 100, NULL, 'system', '默认基础定价'), ('pod', 100, NULL, 'system', '默认基础定价')
+            """
+        )
         module_migrations = _module_migrations()
         recover_interrupted_pod_migrations(
             conn,
