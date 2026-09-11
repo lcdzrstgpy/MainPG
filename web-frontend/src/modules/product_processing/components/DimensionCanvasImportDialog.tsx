@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import {
   getDimensionTaskEligibility,
@@ -165,7 +166,9 @@ export function DimensionCanvasImportDialog({ open, onClose, onImported }: Props
     </section>
   );
 
-  return (
+  // portal 到 body：workspace-tab-panel 的 fill-mode 入场动画创建层叠上下文，
+  // 会把 fixed 弹层的 z-index(1200) 锁在面板内、被 sticky 顶栏(z:18)盖住
+  return createPortal(
     <div className="dimension-modal-backdrop" role="presentation" onMouseDown={(event) => {
       if (event.target === event.currentTarget) onClose();
     }}>
@@ -194,6 +197,7 @@ export function DimensionCanvasImportDialog({ open, onClose, onImported }: Props
           <button className="primary" onClick={submit} disabled={submitting || selected.size === 0}>{submitting ? "导入中…" : "导入队列"}</button>
         </footer>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

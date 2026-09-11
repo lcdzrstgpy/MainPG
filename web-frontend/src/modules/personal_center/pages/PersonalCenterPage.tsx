@@ -1,4 +1,5 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import { clearAuthSession, getAuthAccount } from "../../../transport/http/client";
 import { AVATAR_CHANGED_EVENT, AVATAR_STORAGE_KEY } from "../../../app/layout/TopNavigation";
@@ -604,16 +605,17 @@ export function PersonalCenterPage() {
         </div>
       </div>
 
-      {avatarPreviewOpen && avatarSrc && (
+      {/* portal 到 body：workspace-tab-panel 的 fill-mode 入场动画创建层叠上下文，
+          会把 fixed 弹层的 z-index 锁在面板内、被 sticky 顶栏(z:18)盖住 */}
+      {avatarPreviewOpen && avatarSrc && createPortal(
         <div className="personal-avatar-preview-layer" onMouseDown={() => setAvatarPreviewOpen(false)} role="dialog" aria-modal="true" aria-label="头像预览">
           <div className="personal-avatar-preview-panel" onMouseDown={(event) => event.stopPropagation()}>
             <button className="personal-avatar-preview-close" type="button" onClick={() => setAvatarPreviewOpen(false)} aria-label="关闭预览">×</button>
             <img className="personal-avatar-preview-img" src={avatarSrc} alt="头像大图" />
           </div>
-        </div>
-      )}
+        </div>, document.body)}
 
-      {passwordOpen && (
+      {passwordOpen && createPortal(
         <div className="personal-password-layer" onMouseDown={closePasswordDialog}>
           <section
             className="personal-password-dialog"
@@ -677,8 +679,7 @@ export function PersonalCenterPage() {
               </footer>
             </form>
           </section>
-        </div>
-      )}
+        </div>, document.body)}
 
       {error && <div className="personal-alert is-error">{error}</div>}
       {loading && <div className="personal-alert">正在读取服务器账户与积分数据...</div>}

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 
 import {
   loadKeyGrants,
@@ -408,7 +409,9 @@ export function SystemAdminPage() {
         </section>
       )}
 
-      {editOpen && (
+      {/* portal 到 body：workspace-tab-panel 的 fill-mode 入场动画创建层叠上下文，
+          会把 fixed 弹层的 z-index(60) 锁在面板内、被 sticky 顶栏(z:18)盖住 */}
+      {editOpen && createPortal(
         <div className="settings-dialog-backdrop" role="presentation" onMouseDown={() => !busy && setEditOpen(false)}>
           <section
             className="settings-edit-dialog"
@@ -464,10 +467,9 @@ export function SystemAdminPage() {
               </div>
             </div>
           </section>
-        </div>
-      )}
+        </div>, document.body)}
 
-      {podEditOpen && (
+      {podEditOpen && createPortal(
         <div className="settings-dialog-backdrop" role="presentation" onMouseDown={() => !busy && setPodEditOpen(false)}>
           <section
             className="settings-edit-dialog"
@@ -518,8 +520,7 @@ export function SystemAdminPage() {
               </div>
             </div>
           </section>
-        </div>
-      )}
+        </div>, document.body)}
     </main>
   );
 }
