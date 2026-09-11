@@ -52,6 +52,7 @@ from .schemas import (
     DraftDeleteRequest,
     DraftProcessRequest,
     DraftRestoreRequest,
+    DraftSkuAvailabilityRequest,
     DraftUpdateRequest,
     ListingAdviceRequest,
     MiaoshouExportRequest,
@@ -524,6 +525,19 @@ def create_product_processing_router(
         if not body.draft_ids:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "draft_ids is required")
         return service.restore_drafts(body.draft_ids, _workspace(workspace_id))
+
+    @router.post("/drafts/sku-availability")
+    def check_draft_sku_availability(
+        body: DraftSkuAvailabilityRequest,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        if not body.draft_ids:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "draft_ids is required")
+        return _call(
+            service.check_draft_sku_availability,
+            body.draft_ids,
+            workspace_id=_workspace(workspace_id),
+        )
 
     @router.post("/drafts/process")
     def process_drafts(

@@ -2,6 +2,7 @@ import { apiRequest } from "../../../shared/api/apiClient";
 import { ppRequest, ppUpload, type ApiContext } from "./client";
 import type {
   DraftMediaResponse,
+  DraftSkuAvailabilityResponse,
   MediaAssetView,
   MiaoshouExportResponse,
   MiaoshouTemplateKind,
@@ -257,4 +258,15 @@ export function retryMediaAsset(
     `/api/product-processing/media-assets/${encodeURIComponent(assetId)}/retry`,
     { method: "POST", body: {} },
   );
+}
+
+/** 草稿池「SKU 规格图可用性判断」：并行检测所选/当前页链接的 SKU 规格图是否含中文。 */
+export function checkDraftSkuAvailability(
+  ctx: ApiContext,
+  draftIds: number[],
+): Promise<DraftSkuAvailabilityResponse> {
+  return ppRequest(ctx, `/api/product-processing/drafts/sku-availability`, {
+    method: "POST",
+    body: { draft_ids: draftIds },
+  });
 }

@@ -96,10 +96,12 @@ from .domain.workbooks import is_variant_value_noise, read_product_workbook
 from .infrastructure.assets import ProductProcessingAssets
 from .infrastructure.ocr_gate import (
     detect_chinese_text,
+    inspect_sku_text,
     inspect_visible_text,
     max_repair_rounds,
     ocr_diagnostics,
     ocr_gate_enabled,
+    ocr_worker_limit,
 )
 from .infrastructure.repository import ProductProcessingRepository
 from .infrastructure.dimension_template_repository import DimensionTemplateRepository
@@ -3802,6 +3804,121 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "draft_id": draft_id,
             "groups": self.media_assets.list_draft_media(workspace_id, draft_id),
         }
+
+    # 草稿池「SKU 规格图可用性判断」：单条链接参与检测的 SKU 规格图数达到该值即整条跳过，
+    # 避免一条链接几十张图把整批判断拖成分钟级。
+    _SKU_AVAILABILITY_MAX_IMAGES = 10
+
+    def check_draft_sku_availability(
+        self,
+        draft_ids: list[int],
+        *,
+        workspace_id: str = "local",
+    ) -> dict[str, Any]:
+        """草稿池级「SKU 规格图可用性判断」（严格口径 + 并行 OCR）。
+
+        - 只检测 role="sku" 且已 ready 的规格图；本身没有规格图的链接判为不可用；
+        - 有规格图的 SKU 数 ≥ ``_SKU_AVAILABILITY_MAX_IMAGES``（10）的链接直接跳过；
+        - 严格口径：所有规格图都不含中文才算可用；任一张检出中文、或 OCR 推理失败
+          （返回 ``None``）都判为不可用，不显示标签；
+        - 所有图片一次性提交线程池并行 OCR，实际并发受 ocr_gate 推理上限约束。
+        """
+        unique_ids = list(dict.fromkeys(int(draft_id) for draft_id in draft_ids if int(draft_id) > 0))
+        plans: list[dict[str, Any]] = []
+        plan_by_draft: dict[int, dict[str, Any]] = {}
+        tasks: list[tuple[int, str]] = []
+        for draft_id in unique_ids:
+            plan = self._new_sku_availability_plan(draft_id)
+            plan_by_draft[draft_id] = plan
+            plans.append(plan)
+            try:
+                draft = self.get_draft(draft_id, workspace_id)
+            except ProductProcessingNotFound:
+                plan.update(status="missing", reason="draft_not_found")
+                continue
+            if int(draft.get("media_contract_version") or 1) < 2:
+                plan.update(status="missing", reason="media_registry_unavailable")
+                continue
+            groups = self.media_assets.list_draft_media(workspace_id, draft_id)
+            sku_assets = [
+                str(view["asset_id"])
+                for view in groups.get("sku", [])
+                if str(view.get("status") or "") == "ready" and str(view.get("asset_id") or "")
+            ]
+            plan["sku_image_count"] = len(sku_assets)
+            if len(sku_assets) >= self._SKU_AVAILABILITY_MAX_IMAGES:
+                plan.update(status="skipped", reason="too_many_sku_images")
+                continue
+            if not sku_assets:
+                plan.update(status="unavailable", reason="no_sku_image")
+                continue
+            plan["status"] = "pending"
+            tasks.extend((draft_id, asset_id) for asset_id in sku_assets)
+
+        if tasks:
+            from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+
+            workers = max(1, ocr_worker_limit())
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="sku-availability") as pool:
+                outcomes = list(
+                    pool.map(lambda task: self._inspect_sku_asset(task[1], workspace_id), tasks)
+                )
+            for (draft_id, _asset_id), outcome in zip(tasks, outcomes):
+                plan = plan_by_draft[draft_id]
+                if outcome is None:
+                    plan["failed"] += 1
+                    continue
+                plan["checked"] += 1
+                if outcome.get("has_chinese"):
+                    plan["chinese"].extend(str(item) for item in outcome.get("chinese") or [])
+
+        for plan in plans:
+            if plan["status"] != "pending":
+                continue
+            if plan["failed"]:
+                plan.update(status="unavailable", reason="text_check_failed")
+            elif plan["chinese"]:
+                plan.update(status="unavailable", reason="chinese_detected")
+            else:
+                plan.update(status="clean", clean=True)
+            plan["chinese"] = plan["chinese"][:5]
+
+        return {
+            "results": plans,
+            "summary": {
+                "total": len(plans),
+                "clean": sum(1 for plan in plans if plan["clean"]),
+                "unavailable": sum(1 for plan in plans if plan["status"] == "unavailable"),
+                "skipped": sum(1 for plan in plans if plan["status"] == "skipped"),
+            },
+        }
+
+    @staticmethod
+    def _new_sku_availability_plan(draft_id: int) -> dict[str, Any]:
+        return {
+            "draft_id": draft_id,
+            "status": "pending",
+            "clean": False,
+            "sku_image_count": 0,
+            "checked": 0,
+            "chinese": [],
+            "failed": 0,
+            "reason": "",
+        }
+
+    def _inspect_sku_asset(self, asset_id: str, workspace_id: str) -> dict[str, Any] | None:
+        """读取草稿池 SKU 规格图字节并做中文检测；读不到或推理失败返回 ``None``。"""
+        try:
+            path, _content_type = self.media_assets.require_ready_managed_file(
+                asset_id, workspace_id=workspace_id
+            )
+            content = Path(path).read_bytes()
+        except Exception:  # noqa: BLE001 - 单张图读取失败按检测失败处理，不影响其它 SKU
+            return None
+        try:
+            return inspect_sku_text(content)
+        except Exception:  # noqa: BLE001 - 推理异常统一按检测失败处理
+            return None
 
     def media_asset_content(
         self,

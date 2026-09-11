@@ -5,9 +5,10 @@ import { SkuBatchManager } from '../components/SkuBatchManager';
 import { ppRequest, type ApiContext } from '../api/client';
 import { productProcessingApiContext } from '../api/context';
 import { addDraftComboSource } from '../api/comboApi';
-import type { DraftCollectionBatch } from '../api/productProcessingApi';
+import { checkDraftSkuAvailability, type DraftCollectionBatch } from '../api/productProcessingApi';
 import { variantPresentation } from '../data/skuPresentation';
 import type {
+  DraftSkuAvailabilityItem,
   DraftSummary,
   DraftVariant,
   ProductProcessingOptions,
@@ -121,6 +122,9 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
   const [batchBusy, setBatchBusy] = useState(false);
   // 批次列表是否还有更多（后端 limit 上限 200，超出时提示，避免以为“只有这么多”）
   const [batchesHasMore, setBatchesHasMore] = useState(false);
+  // SKU 规格图可用性判断：draftId -> 判定结果。仅在内存中保留，点按钮后并行检测。
+  const [skuAvailability, setSkuAvailability] = useState<Record<number, DraftSkuAvailabilityItem>>({});
+  const [skuAvailabilityBusy, setSkuAvailabilityBusy] = useState(false);
   const draftListRef = useRef<HTMLDivElement>(null);
   const stickyToolbarRef = useRef<HTMLDivElement>(null);
   const stickySpacerRef = useRef<HTMLDivElement>(null);
@@ -527,6 +531,28 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
     setSkuBatchOpen(true);
   };
 
+  // SKU 规格图可用性判断：有勾选时判断已勾选链接，无勾选时判断当前页链接。
+  // 检测在服务端并行执行；结果只保留在内存里，不落库、不影响草稿状态。
+  const runSkuAvailabilityCheck = async () => {
+    const targets = (selectedIds.size ? selectedDrafts : pageDrafts).map((draft) => draft.id);
+    if (!targets.length) { setError('当前没有可判断的链接'); return; }
+    setSkuAvailabilityBusy(true);
+    setError('');
+    try {
+      const data = await checkDraftSkuAvailability(ctx, targets);
+      setSkuAvailability((prev) => {
+        const next = { ...prev };
+        for (const item of data.results || []) next[item.draft_id] = item;
+        return next;
+      });
+      const summary = data.summary || { total: 0, clean: 0, unavailable: 0, skipped: 0 };
+      notify(
+        `SKU 可用性判断完成：可用 ${summary.clean} 条，不可用 ${summary.unavailable} 条，`
+        + `跳过（SKU 规格图 ≥ 10 张）${summary.skipped} 条`,
+      );
+    } catch (err) { fail(err); } finally { setSkuAvailabilityBusy(false); }
+  };
+
   const saveRow = async (draft: DraftSummary) => {
     setLoading(true);
     try {
@@ -714,6 +740,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
             <button onClick={selectAll}><i className="iconfont icon-select" aria-hidden="true" />全选本页</button>
             <button onClick={clearSelection}><i className="iconfont icon-close-circle" aria-hidden="true" />取消选择</button>
             <button onClick={openSkuBatch} disabled={!selectedIds.size}><i className="iconfont icon-barcode" aria-hidden="true" />批量管理 SKU</button>
+            <button onClick={() => void runSkuAvailabilityCheck()} disabled={skuAvailabilityBusy} title="并行检测链接的 SKU 规格图是否含中文水印；SKU 规格图 ≥ 10 张的链接自动跳过"><i className="iconfont icon-check-circle" aria-hidden="true" />{skuAvailabilityBusy ? '判断中…' : 'SKU 可用性判断'}</button>
             <button onClick={() => saveDrafts(true)} disabled={loading}><i className="iconfont icon-save" aria-hidden="true" />保存已选</button>
             <button className="primary" onClick={() => handleProcess(false)} disabled={loading || !selectedIds.size}><i className="iconfont icon-rocket" aria-hidden="true" />开始处理</button>
             <button onClick={() => deleteSelected()} disabled={loading || !selectedIds.size}><i className="iconfont icon-delete" aria-hidden="true" />删除选择</button>
@@ -896,6 +923,9 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
             const isPremium = premiumIds.has(draft.id);
             return (
               <article key={draft.id} className={`pool-card ${isSelected ? 'selected' : ''} ${isPremium ? 'premium' : ''}`}>
+                {skuAvailability[draft.id]?.clean && (
+                  <span className="pool-sku-availability-tag" title="该链接的 SKU 规格图均无明显中文水印，可直接用于作图"><i className="iconfont icon-check-circle" aria-hidden="true" />sku规格图可用</span>
+                )}
                 <div className="pool-card-body">
                   <label className="pool-check">
                     <input type="checkbox" checked={isSelected} onChange={onSelect} />

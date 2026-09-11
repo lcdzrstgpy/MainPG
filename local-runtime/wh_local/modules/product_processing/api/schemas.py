@@ -89,6 +89,15 @@ class DraftRestoreRequest(BaseModel):
         return list(dict.fromkeys(item for item in value if item > 0))
 
 
+class DraftSkuAvailabilityRequest(BaseModel):
+    draft_ids: list[int] = Field(default_factory=list)
+
+    @field_validator("draft_ids")
+    @classmethod
+    def positive_ids(cls, value: list[int]) -> list[int]:
+        return list(dict.fromkeys(item for item in value if item > 0))
+
+
 class DraftProcessRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 

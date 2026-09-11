@@ -316,6 +316,23 @@ export type DraftMediaResponse = {
   groups: DraftMediaGroups & Record<string, MediaBindingView[]>;
 };
 
+/** 草稿池「SKU 规格图可用性判断」单条链接结果。 */
+export type DraftSkuAvailabilityItem = {
+  draft_id: number;
+  status: "pending" | "clean" | "unavailable" | "skipped" | "missing";
+  clean: boolean;
+  sku_image_count: number;
+  checked: number;
+  chinese: string[];
+  failed: number;
+  reason: string;
+};
+
+export type DraftSkuAvailabilityResponse = {
+  results: DraftSkuAvailabilityItem[];
+  summary: { total: number; clean: number; unavailable: number; skipped: number };
+};
+
 export type PreviewFinalizeRun = {
   id: string;
   task_id: number;
