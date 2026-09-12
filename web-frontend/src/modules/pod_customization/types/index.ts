@@ -81,23 +81,18 @@ export type PodTitleMode = "long" | "short";
 
 export type PodSkuDraft = {
   name: string;
-  length_cm: string;
-  width_cm: string;
-  height_cm: string;
+  declared_price: string;
   weight_g: string;
 };
 
 export type PodSku = {
   name: string;
-  length_cm: number;
-  width_cm: number;
-  height_cm: number;
+  declared_price: number;
   weight_g: number;
 };
 
 export type PodListingFieldsDraft = {
   title_mode: PodTitleMode;
-  declared_price: string;
   suggested_price_usd: string;
   category_name: string;
   skus: PodSkuDraft[];
@@ -148,7 +143,6 @@ export type SpecCardReprintResponse = {
 
 export type PodListingFields = {
   title_mode: PodTitleMode;
-  declared_price: number;
   suggested_price_usd: number;
   category_name: string;
   skus: PodSku[];

@@ -107,9 +107,8 @@ class ListingSku(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, allow_inf_nan=False)
 
     name: str = Field(strict=True, min_length=1, max_length=120)
-    length_cm: float = Field(strict=True, gt=0)
-    width_cm: float = Field(strict=True, gt=0)
-    height_cm: float = Field(strict=True, gt=0)
+    # 申报价改为每个 SKU 各一个；长/宽/高改由 listing_fields.spec_card 的尺寸详情表格承载。
+    declared_price: float = Field(strict=True, gt=0)
     weight_g: float = Field(strict=True, gt=0)
 
 
@@ -117,15 +116,13 @@ class ListingFields(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, allow_inf_nan=False)
 
     title_mode: Literal["long", "short"] = "long"
-    declared_price: float = Field(strict=True, gt=0)
     suggested_price_usd: float = Field(strict=True, gt=0)
     category_name: str = Field(min_length=1, max_length=120)
     skus: list[ListingSku] = Field(
         min_length=1,
         max_length=100,
     )
-    # 第 4 张图「规格卡」；可选字段（Agent C 的集成点）。注意 SpecCardConfig 自带
-    # config，父模型的 str_strip_whitespace 不会传播到嵌套模型 —— 单元格文本逐字保留。
+    # 第 4 张图「规格卡」：表头 + 每个 SKU 一行的尺寸详情表格，同时是导出长/宽/高的取值来源。
     spec_card: SpecCardConfig | None = None
 
 
@@ -231,7 +228,7 @@ SPEC_CARD_STYLES = ("light", "dark")
 SpecCardStyle = Literal["light", "dark"]
 SPEC_CARD_CORNERS = ("bottom-right", "bottom-left", "top-right", "top-left")
 SpecCardCorner = Literal["bottom-right", "bottom-left", "top-right", "top-left"]
-SPEC_CARD_MAX_ROWS = 12
+SPEC_CARD_MAX_ROWS = 101  # 尺寸详情表格行数 = 1 行表头 + 最多 100 个 SKU 行
 SPEC_CARD_MAX_COLUMNS = 6
 SPEC_CARD_MAX_CELL_LENGTH = 120
 

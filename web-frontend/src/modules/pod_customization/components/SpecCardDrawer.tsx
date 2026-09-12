@@ -3,9 +3,8 @@ import { createPortal } from "react-dom";
 
 import { podCustomizationApi } from "../api/podCustomizationApi";
 import {
+  buildSpecCardCells,
   cloneSpecCardConfig,
-  createEmptySpecCard,
-  emptySpecCardCells,
   specCardSummaryText,
 } from "../data/podCustomizationModel";
 import type {
@@ -109,14 +108,9 @@ export function SpecCardDrawer({ open, config, batch, baseTemplateId, onClose, o
   };
 
   const restoreDefault = () => {
-    const next = createEmptySpecCard();
-    setCells(next.cells);
-    setStyle(next.style);
-    setCorner(next.corner);
-  };
-
-  const clearCells = () => {
-    setCells(emptySpecCardCells(cells.length, cells[0]?.length ?? 1));
+    // 表格结构（表头 + SKU 行）由 SKU 预设决定，恢复默认只清空已填的长/宽/高。
+    const skuNames = cells.slice(1).map((row) => row[0] ?? "");
+    setCells(buildSpecCardCells(skuNames));
   };
 
   const reprintBatch = async () => {
@@ -226,7 +220,6 @@ export function SpecCardDrawer({ open, config, batch, baseTemplateId, onClose, o
             )}
             <button type="button" className="pod-spec-card-save-button" disabled={readOnly} onClick={saveConfig}>保存到本批次</button>
             <button type="button" disabled={readOnly} onClick={restoreDefault}>恢复默认</button>
-            <button type="button" disabled={readOnly} onClick={clearCells}>清空</button>
           </div>
         </footer>
       </aside>

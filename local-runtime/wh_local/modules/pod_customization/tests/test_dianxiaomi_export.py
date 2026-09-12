@@ -65,15 +65,45 @@ def _service(tmp_path: Path) -> PodCustomizationService:
     )
 
 
+def _listing_payload_from_legacy_skus(
+    skus: list[dict[str, object]], *, title_mode: str = "long"
+) -> ListingFields:
+    """把旧结构 SKU（含长宽高）改写为新契约：申报价下移到 SKU，长宽高搬进 spec_card 尺寸表。"""
+
+    return ListingFields(
+        title_mode=title_mode,
+        suggested_price_usd=29.99,
+        category_name="家居收纳 > 包袋",
+        skus=[
+            {
+                "name": sku["name"],
+                "declared_price": sku.get("declared_price", 18.5),
+                "weight_g": sku["weight_g"],
+            }
+            for sku in skus
+        ],
+        spec_card={
+            "cells": [
+                ["尺寸图", "长", "宽", "高"],
+                *[
+                    [
+                        sku["name"],
+                        str(sku["length_cm"]),
+                        str(sku["width_cm"]),
+                        str(sku["height_cm"]),
+                    ]
+                    for sku in skus
+                ],
+            ]
+        },
+    )
+
+
 def _listing(
     *, title_mode: str = "long", skus: list[dict[str, object]] | None = None
 ) -> ListingFields:
-    return ListingFields(
-        declared_price=18.5,
-        suggested_price_usd=29.99,
-        category_name="家居收纳 > 包袋",
-        title_mode=title_mode,
-        skus=skus
+    return _listing_payload_from_legacy_skus(
+        skus
         or [
             {
                 "name": "Default SKU",
@@ -83,20 +113,18 @@ def _listing(
                 "weight_g": 450,
             }
         ],
+        title_mode=title_mode,
     )
 
 
-def test_listing_fields_requires_sku_specific_positive_dimensions_and_weight() -> None:
+def test_listing_fields_requires_sku_specific_positive_declared_price_and_weight() -> None:
     fields = ListingFields(
-        declared_price=18.5,
         suggested_price_usd=29.99,
         category_name="家居收纳 > 包袋",
         skus=[
             {
                 "name": "CT-BLACK",
-                "length_cm": 30,
-                "width_cm": 20,
-                "height_cm": 10,
+                "declared_price": 18.5,
                 "weight_g": 450,
             }
         ],
@@ -105,32 +133,51 @@ def test_listing_fields_requires_sku_specific_positive_dimensions_and_weight() -
     assert fields.model_dump()["skus"] == [
         {
             "name": "CT-BLACK",
-            "length_cm": 30.0,
-            "width_cm": 20.0,
-            "height_cm": 10.0,
+            "declared_price": 18.5,
             "weight_g": 450.0,
         }
     ]
-    assert "weight_g" not in fields.model_dump()
+    assert fields.model_dump()["spec_card"] is None
+    # 申报价不再允许挂在 listing_fields 顶层：它已下移到每个 SKU。
+    assert "declared_price" not in fields.model_dump()
     with pytest.raises(ValidationError):
         ListingFields(
-            declared_price=18.5,
             suggested_price_usd=29.99,
             category_name="家居收纳 > 包袋",
             skus=[],
         )
     with pytest.raises(ValidationError):
         ListingFields(
-            declared_price=18.5,
             suggested_price_usd=29.99,
             category_name="家居收纳 > 包袋",
             skus=[
                 {
                     "name": " ",
-                    "length_cm": 30,
-                    "width_cm": 20,
-                    "height_cm": 10,
+                    "declared_price": 18.5,
                     "weight_g": 0,
+                }
+            ],
+        )
+    with pytest.raises(ValidationError):
+        ListingFields(
+            suggested_price_usd=29.99,
+            category_name="家居收纳 > 包袋",
+            skus=[
+                {
+                    "name": "CT-BLACK",
+                    "weight_g": 450,
+                }
+            ],
+        )
+    with pytest.raises(ValidationError):
+        ListingFields(
+            suggested_price_usd=29.99,
+            category_name="家居收纳 > 包袋",
+            skus=[
+                {
+                    "name": "CT-BLACK",
+                    "declared_price": 0,
+                    "weight_g": 450,
                 }
             ],
         )
@@ -394,7 +441,7 @@ def test_service_exports_exact_42_cell_row_and_skips_invalid_styles(tmp_path: Pa
     ]
     assert row[10] == "SKU-001-01"
     assert row[6:9] == [None, None, "https://images.example.com/pod/1/lifestyle.png"]
-    assert row[9:15] == [18.5, "SKU-001-01", 30, 20, 10, 450]
+    assert row[9:15] == [18.5, "SKU-001-01", 30.0, 20.0, 10.0, 450]
     assert row[15:18] == [None, None, None]
     assert row[18] == "\n".join(
         [
@@ -450,15 +497,21 @@ def test_service_export_repeats_each_style_for_saved_skus_and_uses_last_scene_as
         workbook.close()
 
     assert exported.exported_style_count == 1
-    assert service.get_batch(actor, batch["id"])["listing_fields"]["skus"] == [
-        {"name": "CT-BLACK", "length_cm": 30.0, "width_cm": 20.0, "height_cm": 10.0, "weight_g": 450.0},
-        {"name": "CT-SAND", "length_cm": 40.0, "width_cm": 25.0, "height_cm": 15.0, "weight_g": 650.0},
+    stored_listing = service.get_batch(actor, batch["id"])["listing_fields"]
+    assert stored_listing["skus"] == [
+        {"name": "CT-BLACK", "declared_price": 18.5, "weight_g": 450.0},
+        {"name": "CT-SAND", "declared_price": 18.5, "weight_g": 650.0},
+    ]
+    assert stored_listing["spec_card"]["cells"] == [
+        ["尺寸图", "长", "宽", "高"],
+        ["CT-BLACK", "30", "20", "10"],
+        ["CT-SAND", "40", "25", "15"],
     ]
     assert [row[3] for row in rows] == ["POD-001", "POD-001"]
     assert [row[4] for row in rows] == ["尺寸", "尺寸"]
     assert [row[5] for row in rows] == ["CT-BLACK", "CT-SAND"]
     assert [row[10] for row in rows] == ["CT-BLACK", "CT-SAND"]
-    assert [row[11:14] for row in rows] == [(30, 20, 10), (40, 25, 15)]
+    assert [row[11:14] for row in rows] == [(30.0, 20.0, 10.0), (40.0, 25.0, 15.0)]
     assert [row[14] for row in rows] == [450, 650]
     assert [row[8] for row in rows] == [
         "https://images.example.com/pod/1/final-scene.png",
@@ -954,7 +1007,7 @@ def test_batch_payload_reports_export_readiness_and_zero_exportable_block(tmp_pa
 
     payload = service.get_batch(actor, batch["id"])
 
-    assert payload["listing_fields"] == _listing().model_dump()
+    assert payload["listing_fields"] == _listing().model_dump(mode="json")
     assert payload["dianxiaomi_export"] == {
         "ready": False,
         "exportable_style_count": 0,

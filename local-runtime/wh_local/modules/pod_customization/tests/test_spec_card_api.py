@@ -161,10 +161,9 @@ def _batch_request(template_id: str, *, count: int, cells: list[list[str]] | Non
         prompt_version="v1",
         business_fields=BusinessFields(product_name="Tote bag", product_category="bags"),
         listing_fields=ListingFields(
-            declared_price=18.5,
             suggested_price_usd=29.99,
             category_name="家居收纳 > 包袋",
-            skus=[{"name": "Default SKU", "length_cm": 30, "width_cm": 20, "height_cm": 10, "weight_g": 450}],
+            skus=[{"name": "Default SKU", "declared_price": 18.5, "weight_g": 450}],
             spec_card=None if cells is None else {"cells": cells},
         ),
     )
@@ -297,10 +296,9 @@ def test_batch_create_freezes_the_spec_card_snapshot_without_stripping_cells(tmp
     client, service = _client(tmp_path, runtime, billing)
     template_id = _upload_template(service)
     listing_fields = {
-        "declared_price": 18.5,
         "suggested_price_usd": 29.99,
         "category_name": "家居收纳 > 包袋",
-        "skus": [{"name": "Default SKU", "length_cm": 30, "width_cm": 20, "height_cm": 10, "weight_g": 450}],
+        "skus": [{"name": "Default SKU", "declared_price": 18.5, "weight_g": 450}],
     }
 
     with_card = client.post(
@@ -535,7 +533,9 @@ def test_spec_card_reprint_style_index_filter_only_reprints_that_style(tmp_path:
     runtime.close()
 
 
-def test_spec_card_reprint_writes_an_audit_line_per_style(tmp_path: Path, caplog) -> None:
+def test_spec_card_reprint_writes_an_audit_line_per_style(
+    tmp_path: Path, caplog, monkeypatch
+) -> None:
     billing = Billing()
     runtime = ApiRuntime([_grid(0), _grid(10)])
     seed = _service(tmp_path, runtime, billing)
@@ -543,6 +543,9 @@ def test_spec_card_reprint_writes_an_audit_line_per_style(tmp_path: Path, caplog
     seed.close()
     client, service = _client(tmp_path, runtime, billing)
 
+    # 业务日志在测试环境关闭了向 root 传播（runtime_logs._is_testing），
+    # 这里临时打开，让 caplog 能抓到该 logger 的记录；断言内容不变。
+    monkeypatch.setattr(logging.getLogger("business.pod_processing"), "propagate", True)
     with caplog.at_level(logging.INFO, logger="business.pod_processing"):
         response = client.post(
             f"{API}/batches/{batch['id']}/spec-card/reprint",

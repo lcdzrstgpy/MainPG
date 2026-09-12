@@ -45,10 +45,10 @@ def _actor(user_id: str = "operator-1", workspace_id: str = "workspace-a") -> Ac
 
 def _listing_fields() -> ListingFields:
     return ListingFields(
-        declared_price=18.5,
         suggested_price_usd=29.99,
         category_name="家居收纳 > 杯具",
-        skus=[{"name": "Default SKU", "length_cm": 30, "width_cm": 20, "height_cm": 10, "weight_g": 450}],
+        skus=[{"name": "Default SKU", "declared_price": 18.5, "weight_g": 450}],
+        spec_card={"cells": [["尺寸图", "长", "宽", "高"], ["Default SKU", "30", "20", "10"]]},
     )
 
 
@@ -221,7 +221,7 @@ def test_listing_snapshot_and_style_copy_are_persisted_with_historical_null_comp
         enqueue=False,
     )
 
-    assert batch["listing_fields"] == _listing_fields().model_dump()
+    assert batch["listing_fields"] == _listing_fields().model_dump(mode="json")
     service.repository.upsert_style_copy(
         batch["id"], actor.workspace_id, actor.id, 1,
         title="Coastal Mug", english_title="Coastal Stoneware Mug", description="A calm mug.",

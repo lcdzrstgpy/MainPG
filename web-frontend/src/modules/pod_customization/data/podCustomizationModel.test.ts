@@ -67,8 +67,8 @@ test("POD count accepts custom integers from 1 through 200", () => {
   assert.equal(isPodBatchCount(1.5), false);
 });
 
-test("settlement-pending status remains separate from generation failure", () => {
-  assert.equal(isActiveBatchStatus("settlement_pending"), true);
+test("settlement-pending status stays labeled separately from generation failure and is not an active generation state", () => {
+  assert.equal(isActiveBatchStatus("settlement_pending"), false);
   assert.equal(podBatchStatusLabel("settlement_pending"), "等待计费结算");
 });
 
@@ -85,7 +85,7 @@ test("pause cancel and resume guards follow the backend state gate", () => {
   assert.equal(canResumePodBatch("queued"), false);
   assert.equal(canRetryPodBatchFailed("cancelled"), true);
   // 账务结算与生成结果分开：结算待处理不能锁死失败项重试。
-  assert.equal(canRetryPodBatchFailed("settlement_pending"), false);
+  assert.equal(canRetryPodBatchFailed("settlement_pending"), true);
 });
 
 test("pause and cancel statuses render labels and keep pausing polling", () => {
@@ -151,66 +151,91 @@ test("pristine v1 snapshot detection follows the renamed labels", () => {
   assert.equal(isPristineCreativeEdit(legacy), false);
 });
 
-test("listing fields normalize every SKU together with its own dimensions and weight", () => {
+test("listing fields normalize every SKU with its declared price and weight, and resolve dimensions from the spec card", () => {
+  const specCard = {
+    enabled: true,
+    style: "light" as const,
+    corner: "bottom-right" as const,
+    cells: [
+      ["尺寸图", "长", "宽", "高"],
+      ["米白", "30", "20", "10"],
+      ["深蓝", "31", "21", "11"],
+    ],
+  };
   const result = listingFieldsForApi({
     title_mode: "long",
-    declared_price: "18.5",
     suggested_price_usd: "29.99",
     category_name: " 家居收纳 > 洗衣篮 ",
     skus: [
-      { name: "  米白 ", length_cm: "30", width_cm: "20", height_cm: "10", weight_g: "450" },
-      { name: "深蓝  ", length_cm: "31", width_cm: "21", height_cm: "11", weight_g: "470" },
+      { name: "  米白 ", declared_price: "18.5", weight_g: "450" },
+      { name: "深蓝  ", declared_price: "19.9", weight_g: "470" },
     ],
-  });
+  }, specCard);
 
   assert.deepEqual(result, {
     value: {
       title_mode: "long",
-      declared_price: 18.5,
       suggested_price_usd: 29.99,
       category_name: "家居收纳 > 洗衣篮",
       skus: [
-        { name: "米白", length_cm: 30, width_cm: 20, height_cm: 10, weight_g: 450 },
-        { name: "深蓝", length_cm: 31, width_cm: 21, height_cm: 11, weight_g: 470 },
+        { name: "米白", declared_price: 18.5, weight_g: 450 },
+        { name: "深蓝", declared_price: 19.9, weight_g: 470 },
       ],
+      spec_card: specCard,
     },
   });
 });
 
-test("listing fields require at least one complete SKU", () => {
+test("listing fields require one complete SKU with its dimensions", () => {
   const base = {
     title_mode: "long" as const,
-    declared_price: "18.5",
     suggested_price_usd: "29.99",
     category_name: "家居收纳",
   };
+  const specCard = {
+    enabled: true,
+    style: "light" as const,
+    corner: "bottom-right" as const,
+    cells: [
+      ["尺寸图", "长", "宽", "高"],
+      ["默认款", "30", "20", "10"],
+    ],
+  };
 
-  assert.deepEqual(listingFieldsForApi({ ...base, skus: [] }), { error: "请至少填写一个 SKU。" });
+  assert.deepEqual(listingFieldsForApi({ ...base, skus: [] }, specCard), { error: "请至少填写一个 SKU。" });
   assert.deepEqual(listingFieldsForApi({
     ...base,
-    skus: [{ name: " ", length_cm: "30", width_cm: "20", height_cm: "10", weight_g: "450" }],
-  }), { error: "SKU 名称不能为空。" });
+    skus: [{ name: " ", declared_price: "18.5", weight_g: "450" }],
+  }, specCard), { error: "SKU 名称不能为空。" });
   assert.deepEqual(listingFieldsForApi({
     ...base,
-    skus: [{ name: "默认款", length_cm: "0", width_cm: "20", height_cm: "10", weight_g: "450" }],
-  }), { error: "SKU「默认款」的长度必须是大于 0 的有效数字。" });
+    skus: [{ name: "默认款", declared_price: "0", weight_g: "450" }],
+  }, specCard), { error: "SKU「默认款」的申报价必须是大于 0 的有效数字。" });
   assert.deepEqual(listingFieldsForApi({
     ...base,
-    skus: [{ name: "默认款", length_cm: "30", width_cm: "20", height_cm: "10", weight_g: "0" }],
-  }), { error: "SKU「默认款」的重量必须是大于 0 的有效数字。" });
+    skus: [{ name: "默认款", declared_price: "18.5", weight_g: "0" }],
+  }, specCard), { error: "SKU「默认款」的重量必须是大于 0 的有效数字。" });
+  // 尺寸不再挂在 SKU 上，而是从尺寸详情表格按 SKU 反查校验。
+  assert.deepEqual(listingFieldsForApi({
+    ...base,
+    skus: [{ name: "默认款", declared_price: "18.5", weight_g: "450" }],
+  }, {
+    ...specCard,
+    cells: [
+      ["尺寸图", "长", "宽", "高"],
+      ["默认款", "0", "20", "10"],
+    ],
+  }), { error: "SKU「默认款」的长（cm）必须是大于 0 的有效数字。" });
 });
 
 test("listing fields reject more than 100 SKUs", () => {
   const result = listingFieldsForApi({
     title_mode: "long",
-    declared_price: "18.5",
     suggested_price_usd: "29.99",
     category_name: "家居收纳",
     skus: Array.from({ length: 101 }, (_, index) => ({
       name: `SKU ${index + 1}`,
-      length_cm: "30",
-      width_cm: "20",
-      height_cm: "10",
+      declared_price: "18.5",
       weight_g: "450",
     })),
   });
@@ -221,16 +246,15 @@ test("listing fields reject more than 100 SKUs", () => {
 test("listing fields reject SKU names longer than 120 characters", () => {
   const result = listingFieldsForApi({
     title_mode: "long",
-    declared_price: "18.5",
     suggested_price_usd: "29.99",
     category_name: "家居收纳",
-    skus: [{ name: "款".repeat(121), length_cm: "30", width_cm: "20", height_cm: "10", weight_g: "450" }],
+    skus: [{ name: "款".repeat(121), declared_price: "18.5", weight_g: "450" }],
   });
 
   assert.deepEqual(result, { error: "SKU 名称不能超过 120 个字符。" });
 });
 
-test("successful listing-ready POD results can regenerate title and whole style outside billing interruption", () => {
+test("successful listing-ready POD results can regenerate title and whole style for settled batches", () => {
   const publicResults = Array.from({ length: 4 }, () => ({
     status: "completed" as const,
     public_url: "https://images.example.com/result.png",
@@ -239,8 +263,9 @@ test("successful listing-ready POD results can regenerate title and whole style 
   assert.equal(canRegeneratePodStyle("failed", "failed"), true);
   assert.equal(canRegeneratePodStyleTitle("completed", "completed", publicResults), true);
   assert.equal(canRegeneratePodStyleTitle("partial_failure", "failed", publicResults), true);
-  assert.equal(canRegeneratePodStyle("settlement_pending", "completed", true), false);
-  assert.equal(isBillingInterruptedPodBatch("settlement_pending"), true);
+  // 计费中断已不再是生成/重试的拦截条件：结算待处理也允许重新生成。
+  assert.equal(canRegeneratePodStyle("settlement_pending", "completed", true), true);
+  assert.equal(isBillingInterruptedPodBatch("settlement_pending"), false);
 });
 
 test("style rows preserve the backend export selection and default legacy rows to selected", () => {

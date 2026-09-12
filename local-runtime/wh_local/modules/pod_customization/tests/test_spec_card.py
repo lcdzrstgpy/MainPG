@@ -104,10 +104,9 @@ def _jpeg_sof_sampling(content: bytes) -> tuple[int, list[tuple[int, int]]]:
 
 def _listing_fields(**extra: object) -> dict:
     payload: dict = {
-        "declared_price": 18.5,
         "suggested_price_usd": 29.99,
         "category_name": "bags",
-        "skus": [{"name": "S", "length_cm": 30, "width_cm": 20, "height_cm": 10, "weight_g": 450}],
+        "skus": [{"name": "S", "declared_price": 18.5, "weight_g": 450}],
     }
     payload.update(extra)
     return payload

@@ -287,6 +287,56 @@ def _is_unsafe_attribute_character(value: str) -> bool:
     )
 
 
+def _sku_declared_price(listing_fields: dict[str, Any], sku: dict[str, Any]) -> Any:
+    """申报价：新快照挂在各自 SKU 上，旧快照仍在 listing_fields 顶层。"""
+
+    value = sku.get("declared_price")
+    if value is None:
+        value = listing_fields.get("declared_price")
+    if value is None:
+        raise ValueError("declared_price is required for the Dianxiaomi export")
+    return value
+
+
+def _cell_number(value: Any) -> Any:
+    """尺寸详情单元格是文本；能转成正数就写成数字，便于店小秘表格识别。"""
+
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return text
+    try:
+        return float(text)
+    except ValueError:
+        return text
+
+
+def _skus_rows_cells(listing_fields: dict[str, Any]) -> list[tuple[Any, ...]]:
+    """取出尺寸详情表格的数据行（跳过第 1 行表头）。"""
+
+    spec_card = listing_fields.get("spec_card")
+    cells = spec_card.get("cells") if isinstance(spec_card, dict) else None
+    if not isinstance(cells, (list, tuple)):
+        return []
+    return [tuple(row) for row in cells if isinstance(row, (list, tuple))]
+
+
+def _sku_dimensions(listing_fields: dict[str, Any], sku: dict[str, Any]) -> tuple[Any, Any, Any]:
+    """长/宽/高：优先从尺寸详情表格按 SKU 名反查，旧快照退回 SKU 自身字段。"""
+
+    name = str(sku.get("name") or "").strip()
+    if name:
+        for row in _skus_rows_cells(listing_fields):
+            if len(row) >= 4 and str(row[0]).strip() == name:
+                return (_cell_number(row[1]), _cell_number(row[2]), _cell_number(row[3]))
+    if all(key in sku for key in ("length_cm", "width_cm", "height_cm")):
+        return sku["length_cm"], sku["width_cm"], sku["height_cm"]
+    raise ValueError(f"dimensions for SKU {name or '<unnamed>'} are missing from the spec card")
+
+
 def _build_row(
     style_index: int,
     images: dict[str, str],
@@ -322,6 +372,8 @@ def _build_row(
     sku = sku or listing_fields
     product_code = _product_code(listing_fields, style_index)
     sku_code = _sku_code(sku, style_index, sku_index)
+    declared_price = _sku_declared_price(listing_fields, sku)
+    length_cm, width_cm, height_cm = _sku_dimensions(listing_fields, sku)
     row: list[Any] = ["" for _ in DXM_COLUMNS]
     values = {
         0: selected_title,
@@ -331,11 +383,11 @@ def _build_row(
         4: "尺寸",
         5: sku["name"],
         8: images["lifestyle"],
-        9: listing_fields["declared_price"],
+        9: declared_price,
         10: sku_code,
-        11: sku["length_cm"],
-        12: sku["width_cm"],
-        13: sku["height_cm"],
+        11: length_cm,
+        12: width_cm,
+        13: height_cm,
         14: sku["weight_g"],
         18: "\n".join(image_urls),
         19: images["hero"],

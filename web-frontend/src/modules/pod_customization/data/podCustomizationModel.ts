@@ -64,15 +64,20 @@ export function normalizeStylePlanning(value: unknown): PodStylePlanning | "" {
 
 export const EMPTY_POD_LISTING_FIELDS: PodListingFieldsDraft = {
   title_mode: "long",
-  declared_price: "",
   suggested_price_usd: "",
   category_name: "",
-  skus: [{ name: "", length_cm: "", width_cm: "", height_cm: "", weight_g: "" }],
+  skus: [{ name: "", declared_price: "", weight_g: "" }],
 };
 
-// 规格卡（第 4 张图上的用户自填表格）的编辑边界：1–3 列 / 1–8 行 / 每格 120 字。
+// 尺寸详情（第 4 张图上的规格卡）是结构化表格，不再是自由表格：
+// 第 1 行为表头（尺寸图 / 长 / 宽 / 高），之后每个 SKU 一行，固定 4 列；
+// 表头与第 1 列由 SKU 预设自动映射，属强制只读单元格。
+export const SPEC_CARD_DIMENSION_HEADER = ["尺寸图", "长", "宽", "高"] as const;
+export const SPEC_CARD_COLUMNS = SPEC_CARD_DIMENSION_HEADER.length;
+export const SPEC_CARD_DIMENSION_LABELS = ["长（cm）", "宽（cm）", "高（cm）"] as const;
 export const SPEC_CARD_MIN_ROWS = 1;
-export const SPEC_CARD_MAX_ROWS = 12;
+// 行数跟随 SKU 数量：1 行表头 + 每个 SKU 一行。
+export const SPEC_CARD_MAX_ROWS = MAX_POD_SKU_COUNT + 1;
 export const SPEC_CARD_MIN_COLUMNS = 1;
 export const SPEC_CARD_MAX_COLUMNS = 6;
 export const SPEC_CARD_CELL_MAX_LENGTH = 120;
@@ -89,20 +94,41 @@ export const SPEC_CARD_CORNER_LABELS: Record<SpecCardCorner, string> = {
   "top-left": "左上角",
 };
 
-// 默认就是一张空表：单元格全空 = 未配置，提交时会被必填拦截。
+/** 已有单元格里匹配该 SKU 的行；匹配不到时退回按位置对齐（重命名后仍保留已填尺寸）。 */
+function findDimensionRow(
+  cells: readonly (readonly string[])[],
+  name: string,
+  index: number,
+): readonly string[] | undefined {
+  const trimmed = name.trim();
+  const matched = trimmed ? cells.find((row) => (row[0] ?? "").trim() === trimmed) : undefined;
+  return matched ?? cells[index + 1];
+}
+
+/**
+ * 按 SKU 列表重建尺寸详情表格：表头固定，每个 SKU 一行，第 1 列写 SKU 名称。
+ * 已有表格里同一 SKU 的长/宽/高会被保留，避免重建时清掉用户已填的尺寸。
+ */
+export function buildSpecCardCells(
+  skuNames: readonly string[],
+  previous: readonly (readonly string[])[] = [],
+): string[][] {
+  const names = skuNames.length ? [...skuNames] : [""];
+  return [
+    [...SPEC_CARD_DIMENSION_HEADER],
+    ...names.map((name, index) => {
+      const source = findDimensionRow(previous, name, index);
+      return [name, source?.[1] ?? "", source?.[2] ?? "", source?.[3] ?? ""];
+    }),
+  ];
+}
+
 export const EMPTY_SPEC_CARD: SpecCardConfig = {
   enabled: true,
   style: "light",
   corner: "bottom-right",
-  cells: Array.from({ length: 4 }, () => ["", ""]),
+  cells: buildSpecCardCells([""]),
 };
-
-export function emptySpecCardCells(
-  rows: number = EMPTY_SPEC_CARD.cells.length,
-  columns: number = EMPTY_SPEC_CARD.cells[0].length,
-): string[][] {
-  return Array.from({ length: rows }, () => Array.from({ length: columns }, () => ""));
-}
 
 export function cloneSpecCardConfig(config: SpecCardConfig): SpecCardConfig {
   return {
@@ -136,19 +162,23 @@ export function isSpecCardConfig(value: unknown): value is SpecCardConfig {
 }
 
 /**
- * 必填判定口径：只要有一个非空单元格就算已配置，不校验行数、不要求填满整行。
+ * 必填判定口径：尺寸详情是结构化表格，配置完成 = 每个 SKU 行都填了长、宽、高。
+ * 表头行与第 1 列由 SKU 预设自动映射，不参与判定。
  * `enabled` 由批次冻结快照承载（当前 UI 恒为 true），不参与提交拦截。
  */
 export function isSpecCardConfigured(config: SpecCardConfig | null | undefined): boolean {
   if (!config || !Array.isArray(config.cells)) return false;
-  return config.cells.some((row) => Array.isArray(row) && row.some((cell) => typeof cell === "string" && cell.trim().length > 0));
+  const rows = config.cells.slice(1);
+  if (!rows.length) return false;
+  return rows.every((row) => Array.isArray(row)
+    && [1, 2, 3].every((column) => typeof row[column] === "string" && row[column].trim().length > 0));
 }
 
-/** 配置摘要，例如「4 行 · 浅色卡片 · 右下角」；未配置时为「未配置」。 */
+/** 配置摘要，例如「3 行 · 浅色卡片 · 右下角」；未配置时为「未配置」。 */
 export function specCardSummaryText(config: SpecCardConfig | null | undefined): string {
   if (!config || !isSpecCardConfigured(config)) return "未配置";
-  // 空行在渲染期会被跳过，摘要因此只数有内容的行。
-  const rows = config.cells.filter((row) => row.some((cell) => cell.trim().length > 0)).length;
+  // 行数 = 1 行表头 + 每个 SKU 一行。
+  const rows = config.cells.length;
   const style = SPEC_CARD_STYLE_LABELS[config.style] ?? SPEC_CARD_STYLE_LABELS.light;
   const corner = SPEC_CARD_CORNER_LABELS[config.corner] ?? SPEC_CARD_CORNER_LABELS["bottom-right"];
   return `${rows} 行 · ${style} · ${corner}`;
@@ -299,14 +329,13 @@ function positiveListingNumber(value: string, label: string): number | { error: 
 
 /**
  * 组装提交载荷里的 listing_fields 快照。
- * 传入 specCard 时一并冻结 `spec_card`（批次级配置）；不传则保持旧载荷结构不变。
+ * 申报价改为每个 SKU 各一个；长/宽/高不在 SKU 上，而是从尺寸详情表格按 SKU 反查校验，
+ * 随 specCard 冻结进 `spec_card`；不传配置时载荷结构与旧版本保持一致。
  */
 export function listingFieldsForApi(
   fields: PodListingFieldsDraft,
   specCard?: SpecCardConfig | null,
 ): PodListingFieldsResult {
-  const declaredPrice = positiveListingNumber(fields.declared_price, "申报价");
-  if (typeof declaredPrice !== "number") return declaredPrice;
   const suggestedPriceUsd = positiveListingNumber(fields.suggested_price_usd, "建议美元售价");
   if (typeof suggestedPriceUsd !== "number") return suggestedPriceUsd;
   const categoryName = fields.category_name.trim();
@@ -314,26 +343,28 @@ export function listingFieldsForApi(
 
   if (!fields.skus.length) return { error: "请至少填写一个 SKU。" };
   if (fields.skus.length > MAX_POD_SKU_COUNT) return { error: `SKU 最多可添加 ${MAX_POD_SKU_COUNT} 个。` };
+  const cells = specCard?.cells ?? [];
   const skus = [] as PodListingFields["skus"];
-  for (const sku of fields.skus) {
+  for (const [index, sku] of fields.skus.entries()) {
     const name = sku.name.trim();
     if (!name) return { error: "SKU 名称不能为空。" };
     if (name.length > MAX_POD_SKU_NAME_LENGTH) return { error: `SKU 名称不能超过 ${MAX_POD_SKU_NAME_LENGTH} 个字符。` };
-    const lengthCm = positiveListingNumber(sku.length_cm, `SKU「${name}」的长度`);
-    if (typeof lengthCm !== "number") return lengthCm;
-    const widthCm = positiveListingNumber(sku.width_cm, `SKU「${name}」的宽度`);
-    if (typeof widthCm !== "number") return widthCm;
-    const heightCm = positiveListingNumber(sku.height_cm, `SKU「${name}」的高度`);
-    if (typeof heightCm !== "number") return heightCm;
+    const declaredPrice = positiveListingNumber(sku.declared_price, `SKU「${name}」的申报价`);
+    if (typeof declaredPrice !== "number") return declaredPrice;
     const weightG = positiveListingNumber(sku.weight_g, `SKU「${name}」的重量`);
     if (typeof weightG !== "number") return weightG;
-    skus.push({ name, length_cm: lengthCm, width_cm: widthCm, height_cm: heightCm, weight_g: weightG });
+    // 长/宽/高从尺寸详情表格反查（先按 SKU 名，再退回按位置），确保导出第 11-13 列不缺值。
+    const dimensionRow = findDimensionRow(cells, name, index);
+    for (const [offset, label] of SPEC_CARD_DIMENSION_LABELS.entries()) {
+      const parsed = positiveListingNumber(dimensionRow?.[offset + 1] ?? "", `SKU「${name}」的${label}`);
+      if (typeof parsed !== "number") return parsed;
+    }
+    skus.push({ name, declared_price: declaredPrice, weight_g: weightG });
   }
 
   return {
     value: {
       title_mode: fields.title_mode,
-      declared_price: declaredPrice,
       suggested_price_usd: suggestedPriceUsd,
       category_name: categoryName,
       skus,

@@ -548,7 +548,7 @@
 .pod-sku-editor-heading button:disabled { cursor: not-allowed; color: var(--pod-text-muted); border-color: var(--pod-border); background: var(--pod-surface-soft); }
 .pod-sku-limit-notice { margin: -2px 0 0; color: var(--pod-text-muted); font-size: .53rem; font-weight: 750; }
 .pod-sku-inputs { display: grid; gap: 6px; }
-.pod-sku-input-row { display: grid; grid-template-columns: minmax(62px, 1.14fr) repeat(4, minmax(32px, .6fr)) 20px; align-items: end; gap: 3px; }
+.pod-sku-input-row { display: grid; grid-template-columns: minmax(62px, 1.4fr) repeat(2, minmax(38px, .7fr)) 20px; align-items: end; gap: 3px; }
 .pod-sku-input-row label { display: grid; min-width: 0; gap: 3px; }
 .pod-sku-input-row label > span { overflow: hidden; color: var(--pod-text-muted); font-size: .49rem; font-weight: 800; letter-spacing: -.015em; text-overflow: ellipsis; white-space: nowrap; }
 .pod-sku-inputs input { min-width: 0; min-height: 28px; padding: 4px; border: 1px solid var(--pod-border); border-radius: 7px; color: var(--pod-text); background: var(--pod-surface); font-size: .56rem; }

@@ -15,6 +15,7 @@ import {
   POD_STYLE_PLANNING_OPTIONS,
   EMPTY_SPEC_CARD,
   buildPromptV1,
+  buildSpecCardCells,
   businessFieldsForApi,
   canDeletePodBatch,
   isPristineCreativeEdit,
@@ -39,6 +40,7 @@ import {
   removePodSystemTemplate,
   resolvePodSystemTemplate,
   savePodCustomizationDraft,
+  POD_CUSTOMIZATION_DRAFT_VERSION,
   type PodSystemTemplate,
 } from "../data/podCustomizationDraft";
 import { usePodAssetUrl } from "../data/usePodAssetUrl";
@@ -68,14 +70,12 @@ type PodDraftAccount = {
   workspace_code?: string;
 };
 
-type SkuField = "name" | "length_cm" | "width_cm" | "height_cm" | "weight_g";
+type SkuField = "name" | "declared_price" | "weight_g";
 type SkuFieldErrors = Record<string, string>;
 
 const SKU_FIELD_LABELS: Record<SkuField, string> = {
   name: "名称",
-  length_cm: "长度",
-  width_cm: "宽度",
-  height_cm: "高度",
+  declared_price: "申报价",
   weight_g: "重量",
 };
 
@@ -152,11 +152,10 @@ function autoGrowBusinessTextarea(textarea: HTMLTextAreaElement): void {
 }
 
 const LISTING_FIELDS: Array<{
-  key: "declared_price" | "suggested_price_usd" | "category_name";
+  key: "suggested_price_usd" | "category_name";
   label: string;
   inputMode?: "decimal" | "numeric";
 }> = [
-  { key: "declared_price", label: "申报价", inputMode: "decimal" },
   { key: "suggested_price_usd", label: "建议售价（USD）", inputMode: "decimal" },
   { key: "category_name", label: "店小秘类目" },
 ];
@@ -185,10 +184,9 @@ const EMPTY_BUSINESS_FIELDS_FOR_SWITCH: Record<keyof PodBusinessFieldsDraft, str
 
 const EMPTY_LISTING_FIELDS_FOR_SWITCH: PodListingFieldsDraft = {
   title_mode: "long",
-  declared_price: "",
   suggested_price_usd: "",
   category_name: "",
-  skus: [{ name: "", length_cm: "", width_cm: "", height_cm: "", weight_g: "" }],
+  skus: [{ name: "", declared_price: "", weight_g: "" }],
 };
 
 function replaceTemplate(templates: PodTemplate[], updated: PodTemplate): PodTemplate[] {
@@ -368,7 +366,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   useEffect(() => {
     if (!draftScope) return;
     const result = savePodCustomizationDraft(draftScope.accountId, draftScope.workspaceId, {
-      version: 3,
+      version: POD_CUSTOMIZATION_DRAFT_VERSION,
       business_fields: businessFields,
       listing_fields: listingFields,
       spec_card: specCard,
@@ -387,6 +385,14 @@ export function PodCustomizationPage({ isActive = true }: Props) {
       lastDraftSaveErrorRef.current = "";
     }
   }, [batchCount, briefHistory, businessFields, currentBatchEdit, customCountInput, customCountMode, draftScope?.accountId, draftScope?.workspaceId, listingFields, selectedTemplateId, specCard, systemTemplates]);
+
+  // 尺寸详情表格与 SKU 预设联动：SKU 增减或改名时按顺序重建表头与 SKU 行；
+  // 已填的长/宽/高按 SKU 名（退化时按位置）保留，避免重建时清掉用户输入。
+  const skuNamesSignature = JSON.stringify(listingFields.skus.map((sku) => sku.name));
+  useEffect(() => {
+    const names = JSON.parse(skuNamesSignature) as string[];
+    setSpecCard((current) => ({ ...current, cells: buildSpecCardCells(names, current.cells) }));
+  }, [skuNamesSignature]);
 
   // Resize multiline business textareas on mount and whenever their values change.
   // onChange handles live typing; this effect handles initial load and draft restore.
@@ -424,7 +430,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     setBusinessFields((current) => mergeBusinessFields(current, item.fields));
   };
 
-  const updateListingField = (key: "title_mode" | "declared_price" | "suggested_price_usd" | "category_name", value: string) => {
+  const updateListingField = (key: "title_mode" | "suggested_price_usd" | "category_name", value: string) => {
     setListingFields((current) => ({ ...current, [key]: value }));
   };
 
@@ -432,7 +438,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     if (skuLimitReached) return;
     setListingFields((current) => ({
       ...current,
-      skus: [...current.skus, { name: "", length_cm: "", width_cm: "", height_cm: "", weight_g: "" }],
+      skus: [...current.skus, { name: "", declared_price: "", weight_g: "" }],
     }));
   };
 
@@ -459,7 +465,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     }
     const currentTemplateHasArchive = systemTemplates.some((template) => template.templateId === selectedTemplateId);
     const formHasContent = Object.values(businessFields).some((value) => value.trim())
-      || listingFields.declared_price.trim() || listingFields.suggested_price_usd.trim()
+      || listingFields.suggested_price_usd.trim()
       || listingFields.category_name.trim() || listingFields.skus.some((sku) => Object.values(sku).some((value) => value.trim()));
     if (!currentTemplateHasArchive && selectedTemplateId && formHasContent) {
       setPendingTemplateSwitch(templateId);
@@ -943,14 +949,12 @@ export function PodCustomizationPage({ isActive = true }: Props) {
                 {LISTING_FIELDS.map((field) => <label key={field.key}><span>{field.label}<em>*</em></span><input value={listingFields[field.key]} inputMode={field.inputMode} onChange={(event) => updateListingField(field.key, event.target.value)} /></label>)}
               </div>
               <div className="pod-sku-editor" aria-label="SKU 预设">
-                <div className="pod-sku-editor-heading"><span>SKU 预设<small>每个 SKU 需填写名称、长、宽、高与重量</small></span><button type="button" onClick={addSku} disabled={skuLimitReached} aria-describedby={skuLimitReached ? "pod-sku-limit-notice" : undefined} title={skuLimitReached ? "最多可添加 100 个 SKU" : undefined}><span className="iconfont icon-plus" aria-hidden="true" />新增 SKU</button></div>
+                <div className="pod-sku-editor-heading"><span>SKU 预设<small>每个 SKU 需填写名称、申报价与重量</small></span><button type="button" onClick={addSku} disabled={skuLimitReached} aria-describedby={skuLimitReached ? "pod-sku-limit-notice" : undefined} title={skuLimitReached ? "最多可添加 100 个 SKU" : undefined}><span className="iconfont icon-plus" aria-hidden="true" />新增 SKU</button></div>
                 {skuLimitReached && <p id="pod-sku-limit-notice" className="pod-sku-limit-notice" role="status">已达到 100 个 SKU 上限。</p>}
                 <div className="pod-sku-inputs">
                   {listingFields.skus.map((sku, index) => <div key={index} className="pod-sku-input-row">
                     <label><span>SKU 名称 {index + 1}</span><input value={sku.name} onChange={(event) => updateSku(index, "name", event.target.value)} aria-label="SKU 名称" aria-invalid={Boolean(skuFieldErrors[skuErrorKey(index, "name")])} aria-describedby={skuFieldErrors[skuErrorKey(index, "name")] ? `pod-sku-error-${index}-name` : undefined} />{skuFieldErrors[skuErrorKey(index, "name")] && <small id={`pod-sku-error-${index}-name`} className="pod-sku-field-error">{skuFieldErrors[skuErrorKey(index, "name")]}</small>}</label>
-                    <label><span>长（cm）</span><input value={sku.length_cm} inputMode="decimal" onChange={(event) => updateSku(index, "length_cm", event.target.value)} aria-label="SKU 长（cm）" aria-invalid={Boolean(skuFieldErrors[skuErrorKey(index, "length_cm")])} aria-describedby={skuFieldErrors[skuErrorKey(index, "length_cm")] ? `pod-sku-error-${index}-length_cm` : undefined} />{skuFieldErrors[skuErrorKey(index, "length_cm")] && <small id={`pod-sku-error-${index}-length_cm`} className="pod-sku-field-error">{skuFieldErrors[skuErrorKey(index, "length_cm")]}</small>}</label>
-                    <label><span>宽（cm）</span><input value={sku.width_cm} inputMode="decimal" onChange={(event) => updateSku(index, "width_cm", event.target.value)} aria-label="SKU 宽（cm）" aria-invalid={Boolean(skuFieldErrors[skuErrorKey(index, "width_cm")])} aria-describedby={skuFieldErrors[skuErrorKey(index, "width_cm")] ? `pod-sku-error-${index}-width_cm` : undefined} />{skuFieldErrors[skuErrorKey(index, "width_cm")] && <small id={`pod-sku-error-${index}-width_cm`} className="pod-sku-field-error">{skuFieldErrors[skuErrorKey(index, "width_cm")]}</small>}</label>
-                    <label><span>高（cm）</span><input value={sku.height_cm} inputMode="decimal" onChange={(event) => updateSku(index, "height_cm", event.target.value)} aria-label="SKU 高（cm）" aria-invalid={Boolean(skuFieldErrors[skuErrorKey(index, "height_cm")])} aria-describedby={skuFieldErrors[skuErrorKey(index, "height_cm")] ? `pod-sku-error-${index}-height_cm` : undefined} />{skuFieldErrors[skuErrorKey(index, "height_cm")] && <small id={`pod-sku-error-${index}-height_cm`} className="pod-sku-field-error">{skuFieldErrors[skuErrorKey(index, "height_cm")]}</small>}</label>
+                    <label><span>申报价</span><input value={sku.declared_price} inputMode="decimal" onChange={(event) => updateSku(index, "declared_price", event.target.value)} aria-label="SKU 申报价" aria-invalid={Boolean(skuFieldErrors[skuErrorKey(index, "declared_price")])} aria-describedby={skuFieldErrors[skuErrorKey(index, "declared_price")] ? `pod-sku-error-${index}-declared_price` : undefined} />{skuFieldErrors[skuErrorKey(index, "declared_price")] && <small id={`pod-sku-error-${index}-declared_price`} className="pod-sku-field-error">{skuFieldErrors[skuErrorKey(index, "declared_price")]}</small>}</label>
                     <label><span>重量（g）</span><input value={sku.weight_g} inputMode="decimal" onChange={(event) => updateSku(index, "weight_g", event.target.value)} aria-label="SKU 重量（g）" aria-invalid={Boolean(skuFieldErrors[skuErrorKey(index, "weight_g")])} aria-describedby={skuFieldErrors[skuErrorKey(index, "weight_g")] ? `pod-sku-error-${index}-weight_g` : undefined} />{skuFieldErrors[skuErrorKey(index, "weight_g")] && <small id={`pod-sku-error-${index}-weight_g`} className="pod-sku-field-error">{skuFieldErrors[skuErrorKey(index, "weight_g")]}</small>}</label>
                     <button type="button" onClick={() => removeSku(index)} aria-label="删除 SKU">×</button>
                   </div>)}
