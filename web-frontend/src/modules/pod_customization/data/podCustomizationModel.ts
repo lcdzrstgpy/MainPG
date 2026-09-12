@@ -46,6 +46,22 @@ export const EMPTY_POD_BUSINESS_FIELDS: PodBusinessFieldsDraft = {
   excluded_elements: "",
 };
 
+/**
+ * 「样式规划」不再由用户自由填写：固定二选一（默认不选，必填拦截）。
+ * 该值会作为批内硬性要求原文注入每一款的 Prompt，优先级高于配方建议。
+ */
+export const POD_STYLE_PLANNING_OPTIONS = ["全覆盖", "半覆盖"] as const;
+export type PodStylePlanning = (typeof POD_STYLE_PLANNING_OPTIONS)[number];
+
+export function isPodStylePlanning(value: unknown): value is PodStylePlanning {
+  return typeof value === "string" && (POD_STYLE_PLANNING_OPTIONS as readonly string[]).includes(value);
+}
+
+/** 旧草稿里可能是任意自由文本；不是两项之一时视为未选择，交给用户重新选。 */
+export function normalizeStylePlanning(value: unknown): PodStylePlanning | "" {
+  return isPodStylePlanning(value) ? value : "";
+}
+
 export const EMPTY_POD_LISTING_FIELDS: PodListingFieldsDraft = {
   title_mode: "long",
   declared_price: "",

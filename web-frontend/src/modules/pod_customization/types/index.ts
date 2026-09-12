@@ -54,6 +54,29 @@ export type PodBusinessFields = Omit<PodBusinessFieldsDraft,
   excluded_elements: string[];
 };
 
+/** 智能前置层「一句话 → 10 个业务字段」的接口响应；fields 与批次业务字段同形。 */
+export type PodBriefFieldsResponse = {
+  brief_id: string;
+  prompt_version: string;
+  model: string;
+  fields: PodBusinessFields;
+};
+
+/**
+ * 智能前置层实际代填的字段：不含 `style_planning`。
+ * 「样式规划」由用户在页面上二选一（全覆盖 / 半覆盖），AI 不代为决定，
+ * 也不得覆盖用户已选的值。
+ */
+export type PodBriefFieldsDraft = Omit<PodBusinessFieldsDraft, "style_planning">;
+
+/** 「最近生成」历史条目；fields 为回填前的字符串口径（数组已用「、」连接）。 */
+export type PodBriefHistoryItem = {
+  id: string;
+  input: string;
+  fields: PodBriefFieldsDraft;
+  created_at: string;
+};
+
 export type PodTitleMode = "long" | "short";
 
 export type PodSkuDraft = {

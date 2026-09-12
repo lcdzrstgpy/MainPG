@@ -71,6 +71,38 @@ class BusinessFields(BaseModel):
     excluded_elements: list[str] = Field(default_factory=list)
 
 
+# --- 智能前置层：模糊输入 → 结构化业务字段 ---
+# 方案见 docs/superpowers/specs/2026-09-12-pod-brief-preprocessing-design.md。
+BRIEF_INPUT_MIN_LENGTH = 1
+BRIEF_INPUT_MAX_LENGTH = 500
+# 元素关键词必须多写：元素池越大，跨款图案差异化越明显（后端按款式随机分配主打/辅主/点缀）。
+BRIEF_STYLE_KEYWORDS_MIN_ITEMS = 40
+# 偏好配色要尽量多：每款的强调色从配色表里轮换抽取，颜色越多跨款差异越大。
+BRIEF_COLOR_PREFERENCES_MIN_ITEMS = 10
+# 禁用元素要尽量多，且必须覆盖侵权类与危险类（防止商品/店铺被封）。
+BRIEF_EXCLUDED_ELEMENTS_MIN_ITEMS = 10
+
+
+class BriefFieldRequest(BaseModel):
+    """用户在前置层里写下的一句模糊主题/需求。"""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    brief: str = Field(min_length=BRIEF_INPUT_MIN_LENGTH, max_length=BRIEF_INPUT_MAX_LENGTH)
+    locale: str = Field(default="zh-CN", max_length=16)
+
+
+class BriefFieldResponse(BaseModel):
+    """AI 转换结果：字段与 BusinessFields 一一对应，前端直接写回表单。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    brief_id: str
+    prompt_version: str
+    model: str
+    fields: BusinessFields
+
+
 class ListingSku(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, allow_inf_nan=False)
 

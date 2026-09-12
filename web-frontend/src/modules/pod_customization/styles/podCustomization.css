@@ -123,6 +123,37 @@
 .pod-advanced-prompt-editor span { color: var(--pod-text-muted); font-size: .58rem; }
 .pod-advanced-prompt-editor button { padding: 3px 5px; border: 0; color: var(--pod-primary); background: transparent; font-size: .59rem; font-weight: 800; }
 
+/* 智能前置层：一句话 → 业务字段的可折叠输入区，风格与「高级：本批次创意编辑」一致。 */
+.pod-brief-input { margin-bottom: 10px; border: 1px solid var(--pod-border); border-radius: 10px; background: var(--pod-surface-soft); overflow: hidden; }
+.pod-brief-input-toggle { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 9px; border: 0; color: var(--pod-text-secondary); background: transparent; text-align: left; }
+.pod-brief-input-toggle > span { display: grid; gap: 2px; }
+.pod-brief-input-toggle b { color: var(--pod-text); font-size: .68rem; }
+.pod-brief-input-toggle small { color: var(--pod-text-muted); font-size: .59rem; }
+.pod-brief-input-toggle > i { font-size: .65rem; transition: transform .18s ease; }
+.pod-brief-input-toggle > i.is-open { transform: rotate(180deg); }
+.pod-brief-input-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; padding: 0 9px 9px; }
+.pod-brief-input textarea { width: 100%; min-width: 0; min-height: 66px; max-height: 240px; overflow-y: auto; padding: 7px 8px; border: 1px solid var(--pod-border); border-radius: 8px; outline: 0; color: var(--pod-text); background: var(--pod-surface); font-size: .69rem; line-height: 1.48; resize: none; }
+.pod-brief-input textarea:focus { border-color: var(--pod-primary); box-shadow: 0 0 0 3px rgba(var(--pod-primary-rgb), .13); }
+.pod-brief-input textarea:disabled { opacity: .6; cursor: not-allowed; }
+.pod-brief-input-meta { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.pod-brief-input-meta > span { color: var(--pod-text-muted); font-size: .58rem; }
+.pod-brief-input-meta > span.pod-brief-input-stage { color: var(--pod-primary); font-weight: 800; }
+.pod-brief-input-meta small { color: var(--pod-text-muted); font-size: .58rem; }
+.pod-brief-input-generate { display: inline-flex; align-items: center; justify-content: center; width: 100%; gap: 6px; padding: 8px 12px; border: 0; border-radius: 8px; color: #fff; background: var(--pod-primary); font-size: .68rem; font-weight: 800; }
+.pod-brief-input-generate:disabled { opacity: .55; cursor: not-allowed; }
+.pod-brief-input-generate .icon-loading { display: inline-block; animation: pod-spin .8s linear infinite; }
+.pod-brief-input-error { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin: 0; padding: 6px 8px; border-radius: 8px; color: #a84c48; background: #fff4f3; font-size: .62rem; }
+.pod-brief-input-error button { border: 0; color: currentColor; background: transparent; font-size: .63rem; font-weight: 900; text-decoration: underline; }
+.pod-brief-input-notice { margin: 0; color: #246f61; font-size: .62rem; }
+.pod-brief-history { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; gap: 5px; }
+.pod-brief-history > b { color: var(--pod-text-muted); font-size: .58rem; font-weight: 900; letter-spacing: .04em; }
+.pod-brief-history ul { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.pod-brief-history li { min-width: 0; }
+.pod-brief-history li button { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; min-width: 0; padding: 5px 8px; border: 1px solid var(--pod-border); border-radius: 8px; color: var(--pod-text-secondary); background: var(--pod-surface); text-align: left; }
+.pod-brief-history li button:hover { border-color: var(--pod-primary); background: var(--pod-surface-tint); }
+.pod-brief-history li span { min-width: 0; overflow: hidden; color: var(--pod-text); font-size: .62rem; text-overflow: ellipsis; white-space: nowrap; }
+.pod-brief-history li small { flex: 0 0 auto; color: var(--pod-text-muted); font-size: .57rem; }
+
 .pod-count-options { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; }
 .pod-count-options button { display: flex; align-items: baseline; justify-content: center; gap: 3px; padding: 9px 5px; border: 1px solid var(--pod-border); border-radius: 10px; color: var(--pod-text-secondary); background: var(--pod-surface-soft); }
 .pod-count-options button b { font-size: 1rem; }
@@ -364,6 +395,12 @@
 .pod-business-editor > .pod-business-fields > label > :is(input, textarea) { min-height: var(--pod-business-row-height); }
 .pod-business-editor > .pod-business-fields > label > input { height: var(--pod-business-row-height); }
 .pod-business-editor > .pod-business-fields > label > textarea { height: var(--pod-business-row-height); overflow-y: hidden; resize: none; }
+/* 「样式规划」改为二选一：与相邻业务字段同排（98px 标签列 + 控件列），视觉与 label 行一致。 */
+.pod-business-editor > .pod-business-fields > .pod-style-planning { display: grid; grid-template-columns: 98px minmax(0, 1fr); align-items: stretch; gap: 8px; min-height: var(--pod-business-row-height, 36px); }
+.pod-style-planning > span { display: flex; align-items: center; min-height: var(--pod-business-row-height, 36px); padding: 0 10px; border-radius: 7px; color: var(--pod-text); background: var(--pod-surface-tint); font-size: .67rem; font-weight: 800; }
+.pod-style-planning > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.pod-style-planning button { min-width: 0; min-height: var(--pod-business-row-height, 36px); border: 1px solid var(--pod-border); border-radius: 7px; color: var(--pod-text-secondary); background: var(--pod-surface-soft); font-size: .65rem; font-weight: 800; }
+.pod-style-planning button.is-active { border-color: var(--pod-primary); color: var(--pod-primary); background: color-mix(in srgb, var(--pod-primary) 8%, var(--pod-surface)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pod-primary) 28%, transparent); }
 .pod-advanced-prompt { margin-top: 12px; }
 .pod-volume-inline { display: flex; align-items: end; justify-content: space-between; gap: 8px; margin: 14px 1px 8px; }
 .pod-volume-inline b { font-size: .72rem; }
@@ -625,7 +662,8 @@
   .pod-business-fields { grid-template-columns: 1fr; }
   .pod-business-fields label,
   .pod-business-fields label.is-wide,
-  .pod-business-fields label.is-multiline { grid-template-columns: 92px minmax(0, 1fr); }
+  .pod-business-fields label.is-multiline,
+  .pod-business-fields .pod-style-planning { grid-template-columns: 92px minmax(0, 1fr); }
   .pod-count-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .pod-current-template-body { grid-template-columns: 104px minmax(0, 1fr); gap: 12px; }
   .pod-current-template-body dl { grid-template-columns: 1fr; gap: 7px; }

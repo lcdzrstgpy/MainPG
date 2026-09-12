@@ -17,6 +17,7 @@ from ...session import Actor, actor_from_authorization, require_permission
 from .contracts import (
     BatchCreate,
     BatchRetryFailedCreate,
+    BriefFieldRequest,
     CalibrationUpdate,
     DirectListingTrialCreate,
     ExportSelectionUpdate,
@@ -42,6 +43,7 @@ def create_router(
     ai_runtime: PodAiRuntime,
     *,
     title_runtime: Any | None = None,
+    brief_runtime: Any | None = None,
     billing_coordinator: PodBillingCoordinator | None = None,
     start_workers: bool = True,
 ) -> APIRouter:
@@ -51,6 +53,7 @@ def create_router(
         asset_root,
         ai_runtime,
         title_runtime=title_runtime,
+        brief_runtime=brief_runtime,
         billing_coordinator=billing_coordinator,
         start_workers=start_workers,
     )
@@ -116,6 +119,13 @@ def create_router(
     def create_batch(body: BatchCreate, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
         permitted(actor, "pod_customization.create")
         return _call(service.create_batch, actor, body, enqueue=start_workers)
+
+    @router.post("/brief/fields")
+    def generate_brief_fields(
+        body: BriefFieldRequest, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        return _call(service.generate_brief_fields, actor, body)
 
     @router.post("/direct-listing-trials")
     def run_direct_listing_trial(
