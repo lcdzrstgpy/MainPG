@@ -96,6 +96,10 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
   const [skuBatchOpen, setSkuBatchOpen] = useState(false);
   const [edits, setEdits] = useState<Record<number, DraftEdit>>({});
   const [loading, setLoading] = useState(false);
+  // 草稿列表自身的加载态：与「开始处理/删除/保存」的 loading 分开，轮询静默刷新时
+  // 不置位，避免空列表在每次自动刷新时闪回「正在拉取新数据中」。
+  const [listLoading, setListLoading] = useState(true);
+  const [listError, setListError] = useState('');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [page, setPage] = useState(1);
@@ -298,21 +302,31 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
   const fail = (err: unknown) => { setError(err instanceof Error ? err.message : String(err)); setMessage(''); };
 
   // 加入组合定制已收敛到「商品自定义组合」页，草稿池不再提供入口。
-  const refresh = async () => {
-    const batchQuery = activeBatchId ? `&selection_run_id=${encodeURIComponent(activeBatchId)}` : '';
-    const draftData = await ppRequest<{ drafts: DraftSummary[] }>(ctx, `${API_BASE}/drafts?view=summary&limit=500${batchQuery}`);
-    const nextDrafts = draftData.drafts || [];
-    setDrafts(nextDrafts);
-    // 勾选只保留仍在本次加载结果里的草稿：切换批次、批次被清理/删除、或外部
-    // 已提交处理时，残留的隐藏 id 不参与「已勾选」计数，也不会被「开始处理」一起提交。
-    const visible = new Set(nextDrafts.map((draft) => draft.id));
-    const prune = (prev: Set<number>) => {
-      if (!prev.size) return prev;
-      const kept = new Set<number>();
-      for (const id of prev) if (visible.has(id)) kept.add(id);
-      return kept.size === prev.size ? prev : kept;
-    };
-    setSelectedIds(prune);
+  // quiet=true 用于轮询等静默刷新：不动 listLoading，避免列表闪回加载态。
+  const refresh = async (quiet = false) => {
+    if (!quiet) { setListLoading(true); setListError(''); }
+    try {
+      const batchQuery = activeBatchId ? `&selection_run_id=${encodeURIComponent(activeBatchId)}` : '';
+      const draftData = await ppRequest<{ drafts: DraftSummary[] }>(ctx, `${API_BASE}/drafts?view=summary&limit=500${batchQuery}`);
+      const nextDrafts = draftData.drafts || [];
+      setDrafts(nextDrafts);
+      // 勾选只保留仍在本次加载结果里的草稿：切换批次、批次被清理/删除、或外部
+      // 已提交处理时，残留的隐藏 id 不参与「已勾选」计数，也不会被「开始处理」一起提交。
+      const visible = new Set(nextDrafts.map((draft) => draft.id));
+      const prune = (prev: Set<number>) => {
+        if (!prev.size) return prev;
+        const kept = new Set<number>();
+        for (const id of prev) if (visible.has(id)) kept.add(id);
+        return kept.size === prev.size ? prev : kept;
+      };
+      setSelectedIds(prune);
+      setListError('');
+    } catch (err) {
+      if (!quiet) setListError(err instanceof Error ? err.message : String(err));
+      throw err;
+    } finally {
+      if (!quiet) setListLoading(false);
+    }
   };
 
   const refreshBatches = async () => {
@@ -400,7 +414,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
   useChangePoller({
     url: `${API_BASE}/drafts/revision`,
     headers: { "X-Workspace-ID": ctx.workspaceId },
-    onChange: () => { refresh().catch(() => undefined); refreshBatches(); },
+    onChange: () => { refresh(true).catch(() => undefined); refreshBatches(); },
   });
 
   const toggleDraft = (id: number) => {
@@ -714,6 +728,16 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
             )}
             {dirtyCount > 0 && <span className="dirty"><i className="iconfont icon-save" aria-hidden="true" />未保存修改 <strong>{dirtyCount}</strong></span>}
           </div>
+          <div className="verify-pool-search-wrap">
+            <i className="iconfont icon-search" aria-hidden="true" />
+            <input
+              type="search"
+              className="verify-pool-search"
+              placeholder="搜索标题 / SKC / SKU / 来源..."
+              value={searchTerm}
+              onChange={(e) => { setSearchTerm(e.target.value); setPage(1); }}
+            />
+          </div>
           <div className="verify-pool-controls">
             <div className="verify-page-size">
               <i className="iconfont icon-appstore" aria-hidden="true" />
@@ -751,16 +775,6 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
                 />
                 不看单规格
               </label>
-            </div>
-            <div className="verify-pool-search-wrap">
-              <i className="iconfont icon-search" aria-hidden="true" />
-              <input
-                type="search"
-                className="verify-pool-search"
-                placeholder="搜索标题 / SKC / SKU / 来源..."
-                value={searchTerm}
-                onChange={(e) => { setSearchTerm(e.target.value); setPage(1); }}
-              />
             </div>
           </div>
         </div>
@@ -826,7 +840,15 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
         </div>
 
         {totalDrafts === 0 && (
-          <p className="verify-empty">正在拉取新数据中....</p>
+          <p className={`verify-empty${listError ? ' is-error' : ''}`}>
+            {listError
+              ? <>草稿加载失败：{listError}（可点击右上方「刷新」重试）</>
+              : listLoading
+                ? '正在加载草稿…'
+                : selectableDrafts.length > 0
+                  ? '当前搜索 / 筛选条件下没有匹配的草稿。'
+                  : '暂无待处理草稿，去「采集」或「每日选品」入池后再回来刷新。'}
+          </p>
         )}
         <div className="verify-draft-list">
           {pageDrafts.map((draft) => {

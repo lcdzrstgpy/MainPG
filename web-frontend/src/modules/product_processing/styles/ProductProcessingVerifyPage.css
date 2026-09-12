@@ -199,6 +199,10 @@
   font-size: 0.88rem;
 }
 
+.verify-empty.is-error {
+  color: #c0392b;
+}
+
 /* ===== 草稿池卡片布局 ===== */
 
 .verify-draft-list {
@@ -659,10 +663,13 @@
   display: flex;
   gap: 8px;
   align-items: center;
+  flex: 0 0 auto;
 }
 
+/* 搜索框占据统计与筛选之间的中段，宽度随主体拉伸 */
 .verify-pool-search-wrap {
   position: relative;
+  flex: 1 1 320px;
   min-width: 220px;
 }
 
