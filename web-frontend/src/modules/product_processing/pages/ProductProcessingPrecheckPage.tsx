@@ -601,7 +601,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
   };
 
   const effectiveVariantImageMode = (item: PreviewItem): VariantImageMode => (
-    editFor(item).variantImageMode ?? item.overrides.variant_image_mode ?? 'source'
+    editFor(item).variantImageMode ?? item.overrides.variant_image_mode ?? 'auto'
   );
 
   /** 被整行剔除的 SKU 变种键（本地编辑优先，其次已保存值）。 */
@@ -661,7 +661,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
         core_fields: { ...item.core_fields },
         image_manifest_v2: cloneManifest(item.image_manifest),
         shipping_package_records: effectiveShippingPackageOverrides(item),
-        variant_image_mode: item.overrides.variant_image_mode ?? 'source',
+        variant_image_mode: item.overrides.variant_image_mode ?? 'auto',
         excluded_variant_keys: item.overrides.excluded_variant_keys ?? [],
         variant_image_overrides: item.overrides.variant_image_overrides ?? {},
       },
@@ -1739,6 +1739,12 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
           modeOf={(draftId) => {
             const item = itemOfDraft(draftId);
             return item ? effectiveVariantImageMode(item) : 'source';
+          }}
+          modeSavedOf={(draftId) => {
+            const item = itemOfDraft(draftId);
+            if (!item) return true;
+            // 本地编辑值与已保存值一致 ⇒ 已生效；否则提示「待保存」。
+            return effectiveVariantImageMode(item) === (item.overrides.variant_image_mode ?? 'auto');
           }}
           onApplyMode={applyVariantImageMode}
           excludedOf={(draftId) => {

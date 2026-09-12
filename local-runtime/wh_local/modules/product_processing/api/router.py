@@ -537,6 +537,7 @@ def create_product_processing_router(
             service.check_draft_sku_availability,
             body.draft_ids,
             workspace_id=_workspace(workspace_id),
+            force=bool(body.force),
         )
 
     @router.post("/drafts/process")

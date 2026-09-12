@@ -25,6 +25,7 @@ except ImportError:  # pragma: no cover - posix
 from wh_local.data_collection.public_image_fetch import FetchedPublicImage
 
 from .domain.policy import is_safe_external_url
+from .domain import sku_availability
 from .domain.preview_images import (
     MANIFEST_KEY,
     SLOT_INDEX,
@@ -1949,8 +1950,88 @@ class PreviewImageService:
                     variants = raw_payload.get("source_variant_records")
                     if variants:
                         result["source_variant_records"] = variants
+            # auto 策略：解析可用性结论随行下发（指纹校验需要当前图集，工作簿是纯
+            # 函数模块拿不到），口径与 service.mark_row_auto_variant_source 一致。
+            result["sku_source_usable"] = self._sku_source_usable(
+                draft_id, workspace_id, drafts_by_id
+            )
             rows.append(result)
         return rows
+
+    def sku_availability_state(
+        self, draft_id: int, workspace_id: str = "local"
+    ) -> dict[str, Any]:
+        """草稿规格图可用性结论（供预检页把 auto 档的「未判定」讲清楚）。
+
+        返回 ``resolve_draft_usable`` 的口径：``judged``/``clean``/``usable_source``
+        /``reason``。``reason`` 取值：
+        - ``never_judged``：从未跑过判断 → auto 会全部回退主图
+        - ``scope_relaxed`` / ``skipped`` / ``missing`` / ``pending`` / ``not_decided``
+        - ``unavailable``：判定含中文 → auto 回退主图
+        - ``clean``：判定干净 → auto 用规格原图
+        - ``fingerprint_stale`` / ``media_unavailable``：结论已失效
+        """
+        try:
+            draft = self.product_repository.get_draft(draft_id, workspace_id=workspace_id) or {}
+        except Exception:  # noqa: BLE001 - 读不到草稿时按未判定
+            return {"judged": False, "clean": False, "usable_source": False, "reason": "never_judged"}
+        stored = sku_availability.load(draft.get("sku_availability_raw"))
+        if not stored:
+            return {"judged": False, "clean": False, "usable_source": False, "reason": "never_judged"}
+        if bool(stored.get("scope_relaxed")):
+            return {"judged": False, "clean": False, "usable_source": False, "reason": "scope_relaxed"}
+        status = str(stored.get("status") or "")
+        if status not in sku_availability.DECIDED_STATUSES:
+            return {
+                "judged": False, "clean": False, "usable_source": False,
+                "reason": status or "not_decided",
+            }
+        if self.media_assets is None:
+            return {"judged": False, "clean": False, "usable_source": False, "reason": "media_unavailable"}
+        try:
+            groups = self.media_assets.list_draft_media(workspace_id, int(draft_id))
+            views, _relaxed = sku_availability.keep_active_sku_views(
+                groups.get("sku", []), draft.get("raw_payload"),
+            )
+            current = sku_availability.fingerprint_of(
+                [
+                    view for view in views
+                    if str(view.get("status") or "") == "ready" and str(view.get("asset_id") or "")
+                ]
+            )
+        except Exception:  # noqa: BLE001 - 当前图集读不出来时保守按未判定
+            return {"judged": False, "clean": False, "usable_source": False, "reason": "media_unavailable"}
+        return sku_availability.resolve_draft_usable(stored, current_fingerprint=current)
+
+    def _sku_source_usable(
+        self,
+        draft_id: int,
+        workspace_id: str,
+        drafts_by_id: Mapping[int, Mapping[str, Any]],
+    ) -> bool:
+        """该草稿的规格图是否已明确判定「可用且结论未失效」。"""
+        draft = drafts_by_id.get(draft_id) or {}
+        stored = sku_availability.load(draft.get("sku_availability_raw"))
+        if not stored:
+            return False
+        if bool(stored.get("scope_relaxed")) or str(stored.get("status") or "") not in sku_availability.DECIDED_STATUSES:
+            return False
+        if self.media_assets is None:
+            return False
+        try:
+            groups = self.media_assets.list_draft_media(workspace_id, int(draft_id))
+            views, _relaxed = sku_availability.keep_active_sku_views(
+                groups.get("sku", []), draft.get("raw_payload"),
+            )
+            current = sku_availability.fingerprint_of(
+                [
+                    view for view in views
+                    if str(view.get("status") or "") == "ready" and str(view.get("asset_id") or "")
+                ]
+            )
+        except Exception:  # noqa: BLE001 - 当前图集读不出来时保守按未判定
+            return False
+        return sku_availability.is_usable_source(stored, current)
 
     def _source_main_fallback(
         self,

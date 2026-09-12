@@ -21,6 +21,8 @@ export type Draft = {
   status: DraftStatus;
   raw_payload: Record<string, any>;
   media_contract_version: number;
+  /** 落库的 SKU 规格图可用性结论（JSON 字符串；空串=从未判定）。 */
+  sku_availability_raw?: string;
   created_at: string;
   updated_at: string;
 };
@@ -326,11 +328,30 @@ export type DraftSkuAvailabilityItem = {
   chinese: string[];
   failed: number;
   reason: string;
+  /** 参与检测图片的内容指纹：导出侧据此判断结论是否仍然对应当前图集。 */
+  fingerprint?: string;
+  /** 判定范围被兜底放宽（现存变种缺少可用标识），结论不参与 auto 策略。 */
+  scope_relaxed?: boolean;
+  judged_at?: string;
 };
 
 export type DraftSkuAvailabilityResponse = {
   results: DraftSkuAvailabilityItem[];
   summary: { total: number; clean: number; unavailable: number; skipped: number };
+};
+
+/** 落库在草稿上的可用性结论（刷新后读回，供前端还原标记）。 */
+export type StoredSkuAvailability = {
+  status?: "pending" | "clean" | "unavailable" | "skipped" | "missing";
+  clean?: boolean;
+  sku_image_count?: number;
+  checked?: number;
+  chinese?: string[];
+  failed?: number;
+  reason?: string;
+  fingerprint?: string;
+  scope_relaxed?: boolean;
+  judged_at?: string;
 };
 
 export type PreviewFinalizeRun = {
@@ -378,8 +399,9 @@ export type PreviewOverrides = {
   detail_images?: string[];
   core_fields?: PreviewCoreFields;
   shipping_package_records?: Record<string, ShippingPackageRecordOverride>;
-  /** SKU 规格图导出策略：source=每个 SKU 用规格原图（缺失回退商品主图）；main=全部用商品主图替代。 */
-  variant_image_mode?: "source" | "main";
+  /** SKU 规格图导出策略：source=每个 SKU 用规格原图（缺失回退商品主图）；main=全部用商品主图替代；
+   * auto=按草稿池「SKU 规格图可用性判断」结论自动选择（判定干净且未失效→规格原图，否则→主图）。 */
+  variant_image_mode?: "source" | "main" | "auto";
   /** 被整行剔除的 SKU 变种键：导出时该变种不产生任何表格行。 */
   excluded_variant_keys?: string[];
   /** 逐个 SKU 指定的规格图：键=变种键，值=预览资产 ID 或 http(s) 图片地址。 */
@@ -428,6 +450,15 @@ export type PreviewItem = {
   };
   /** 采集到的 SKU 变体（含规格图 image_url），供预检侧栏查看与选择规格图策略。 */
   source_variant_records?: DraftVariant[];
+  /** 草稿池「SKU 规格图可用性判断」结论摘要。
+   * usable_source=true 表示当前（含指纹校验）可用规格原图导出；reason 说明判定来源：
+   * clean / unavailable / skipped / missing / pending / never_judged / scope_relaxed / media_unavailable。 */
+  sku_availability?: {
+    judged: boolean;
+    clean: boolean;
+    usable_source: boolean;
+    reason: string;
+  } | null;
 };
 
 export type PreviewResponse = {

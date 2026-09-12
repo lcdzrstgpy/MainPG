@@ -85,6 +85,7 @@ from .domain.models import DEFAULT_PROMPTS, DailySelectionHandoffEnvelope, Daily
 from .domain.physical_dimensions import extract_physical_dimensions
 from .domain.policy import PolicyIssue, is_safe_external_url, product_policy_issue, strict_external_url_issue
 from .domain.preview_images import task_item_result_version
+from .domain import sku_availability as sku_availability_domain
 from .domain.prompts import (
     GRID_RUNTIME_CONTRACT,
     SINGLE_IMAGE_RUNTIME_CONTRACT,
@@ -3440,6 +3441,11 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 ),
                 "media_contract_version": int((draft or {}).get("media_contract_version") or 1),
                 "excluded": bool(draft_id) and int(draft_id) in excluded_ids,
+                # auto 档在预检侧要讲清「未判定 ⇒ 会全部回退主图」，需要结论随行下发。
+                "sku_availability": (
+                    self.preview_images.sku_availability_state(int(draft_id), workspace_id)
+                    if draft_id else None
+                ),
                 **projected,
             })
         # SKU 原图中文复核：预检页要展示「待审核」名单，这里顺带触发一次后台检测
@@ -3815,7 +3821,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         }
 
     # 草稿池「SKU 规格图可用性判断」：单条链接参与检测的 SKU 规格图数达到该值即整条跳过，
-    # 避免一条链接几十张图把整批判断拖成分钟级。
+    # 避免一条链接几十张图把整批判断拖成分钟级。传 force=True 可忽略该阈值强制检测。
     _SKU_AVAILABILITY_MAX_IMAGES = 20
 
     def check_draft_sku_availability(
@@ -3823,16 +3829,21 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         draft_ids: list[int],
         *,
         workspace_id: str = "local",
+        force: bool = False,
+        persist: bool = True,
     ) -> dict[str, Any]:
         """草稿池级「SKU 规格图可用性判断」（严格口径 + 并行 OCR）。
 
         - 只检测 role="sku" 且已 ready 的规格图；本身没有规格图的链接判为不可用；
         - 只统计「当前仍保留在草稿里」的 SKU（``raw_payload.source_variant_records``）
           对应的规格图，已删除 SKU 的历史绑定不计入；
-        - 有规格图的 SKU 数 ≥ ``_SKU_AVAILABILITY_MAX_IMAGES``（20）的链接直接跳过；
+        - 有规格图的 SKU 数 ≥ ``_SKU_AVAILABILITY_MAX_IMAGES``（20）的链接直接跳过，
+          除非 ``force=True``（前台「强制检测」入口）；
         - 严格口径：所有规格图都不含中文才算可用；任一张检出中文、或 OCR 推理失败
           （返回 ``None``）都判为不可用，不显示标签；
-        - 所有图片一次性提交线程池并行 OCR，实际并发受 ocr_gate 推理上限约束。
+        - 所有图片一次性提交线程池并行 OCR，实际并发受 ocr_gate 推理上限约束；
+        - ``persist=True``（默认）时把结论落库到 ``drafts.sku_availability_json``，
+          并写入 ``fingerprint``（参与检测图片的 content_hash 集合）供导出侧校验有效性。
         """
         unique_ids = list(dict.fromkeys(int(draft_id) for draft_id in draft_ids if int(draft_id) > 0))
         plans: list[dict[str, Any]] = []
@@ -3851,16 +3862,21 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 plan.update(status="missing", reason="media_registry_unavailable")
                 continue
             groups = self.media_assets.list_draft_media(workspace_id, draft_id)
-            sku_views = self._keep_active_sku_views(
+            sku_views, scope_relaxed = self._keep_active_sku_views(
                 groups.get("sku", []), draft.get("raw_payload") or {},
             )
-            sku_assets = [
-                str(view["asset_id"])
+            plan["scope_relaxed"] = scope_relaxed
+            # 指纹用「全部已 ready 规格图」的 content_hash 集合（含超阈值被跳过的），
+            # 这样标签页重跑、图被替换/增删时都能被导出侧检出失效。
+            ready_views = [
+                view
                 for view in sku_views
                 if str(view.get("status") or "") == "ready" and str(view.get("asset_id") or "")
             ]
+            plan["fingerprint"] = self._sku_availability_fingerprint(ready_views)
+            sku_assets = [str(view["asset_id"]) for view in ready_views]
             plan["sku_image_count"] = len(sku_assets)
-            if len(sku_assets) >= self._SKU_AVAILABILITY_MAX_IMAGES:
+            if len(sku_assets) >= self._SKU_AVAILABILITY_MAX_IMAGES and not force:
                 plan.update(status="skipped", reason="too_many_sku_images")
                 continue
             if not sku_assets:
@@ -3897,6 +3913,20 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 plan.update(status="clean", clean=True)
             plan["chinese"] = plan["chinese"][:5]
 
+        # 落库：每条草稿覆盖写自己的结论。fallback 语义由导出侧按 status 解释——
+        # clean 才用原规格图，其余（含 skipped / missing / 未判定）一律维持现状。
+        if persist:
+            judged_at = _iso_utc_now()
+            for plan in plans:
+                plan["judged_at"] = judged_at
+                if plan["status"] in {"pending", "clean", "unavailable", "skipped"}:
+                    try:
+                        self.repository.save_draft_sku_availability(
+                            int(plan["draft_id"]), plan, workspace_id=workspace_id,
+                        )
+                    except Exception:  # noqa: BLE001 - 落库失败不应让判断结果整体失败
+                        plan["persisted"] = False
+
         return {
             "results": plans,
             "summary": {
@@ -3908,44 +3938,83 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         }
 
     @staticmethod
+    def _sku_availability_fingerprint(sku_views: list[dict[str, Any]]) -> str:
+        """参与检测的规格图内容指纹（实现见 domain.sku_availability）。"""
+        return sku_availability_domain.fingerprint_of(sku_views)
+
+    def sku_availability_state(self, draft_id: int, *, workspace_id: str = "local") -> dict[str, Any]:
+        """读取某草稿的可用性结论并校验有效性（供导出侧 auto 策略使用）。
+
+        返回 ``{"judged": bool, "clean": bool, "usable_source": bool, "reason": str}``。
+        ``usable_source=True`` 表示明确判定过、判定干净且结论对当前图集仍然有效。
+        """
+        try:
+            stored = self.repository.load_draft_sku_availability(draft_id, workspace_id=workspace_id)
+        except Exception:  # noqa: BLE001 - 读取失败按未判定处理
+            return {"judged": False, "clean": False, "usable_source": False, "reason": "load_failed"}
+        if not stored:
+            return sku_availability_domain.resolve_draft_usable(
+                None, current_fingerprint=None,
+            )
+        if bool(stored.get("scope_relaxed")):
+            return sku_availability_domain.resolve_draft_usable(
+                stored, current_fingerprint=None,
+            )
+        try:
+            draft = self.get_draft(draft_id, workspace_id)
+            groups = self.media_assets.list_draft_media(workspace_id, draft_id)
+            sku_views, _relaxed = self._keep_active_sku_views(
+                groups.get("sku", []), draft.get("raw_payload") or {},
+            )
+            current = self._sku_availability_fingerprint(
+                [
+                    view
+                    for view in sku_views
+                    if str(view.get("status") or "") == "ready" and str(view.get("asset_id") or "")
+                ]
+            )
+        except Exception:  # noqa: BLE001 - 当前图集读不出来时保守按未判定
+            return sku_availability_domain.resolve_draft_usable(
+                stored, current_fingerprint=None, fingerprint_error=True,
+            )
+        return sku_availability_domain.resolve_draft_usable(
+            stored, current_fingerprint=current,
+        )
+
+    def mark_row_auto_variant_source(
+        self,
+        row: dict[str, Any],
+        draft_id: int | None,
+        *,
+        workspace_id: str = "local",
+    ) -> None:
+        """给导出行注入 auto 策略所需的结论标记（就地写 ``sku_source_usable``）。
+
+        ``variant_image_mode == "auto"`` 时，工作簿据此决定「用规格原图」还是「回退商品
+        主图」。只有「明确判定过、判定干净且指纹未失效」才为 True；其余（不可用 / 未判定 /
+        跳过 / 口径放宽）一律 False，即维持与现状一致的保守行为。
+        """
+        usable = False
+        if draft_id:
+            try:
+                usable = bool(
+                    self.sku_availability_state(int(draft_id), workspace_id=workspace_id).get("usable_source")
+                )
+            except Exception:  # noqa: BLE001 - 取不到结论时保守回退，不影响导出
+                usable = False
+        row["sku_source_usable"] = usable
+
+    @staticmethod
     def _keep_active_sku_views(
         sku_views: list[dict[str, Any]], raw: dict[str, Any],
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], bool]:
         """只保留「当前仍保留在草稿里」的 SKU 对应的规格图绑定。
 
-        草稿池删除 SKU 规格只改写 ``raw_payload.source_variant_records``，不会同步
-        失效 ``product_processing_media_bindings``，直接用绑定计数会把已删除（甚至
-        更早的历史残留）的规格图也算进去。这里按现存变种的 ``sku_id`` / ``spec_text``
-        反查绑定；若现存变种完全没有可用标识，则退回不过滤，避免误伤正常草稿。
+        实现见 ``domain.sku_availability.keep_active_sku_views``（与导出侧共用同一份
+        口径，避免判定范围和使用范围不一致）。返回 ``(过滤后的视图, 是否放宽口径)``。
         """
-        records = raw.get("source_variant_records")
-        if not isinstance(records, list):
-            return sku_views
-        sku_ids: set[str] = set()
-        labels: set[str] = set()
-        for record in records:
-            if not isinstance(record, dict):
-                continue
-            sku_id = str(record.get("sku_id") or record.get("source_sku_id") or "").strip()
-            if sku_id:
-                sku_ids.add(sku_id)
-            label = str(record.get("spec_text") or "").strip()
-            if not label:
-                attributes = record.get("attributes")
-                if isinstance(attributes, dict):
-                    label = " ".join(
-                        str(value) for value in attributes.values()
-                        if value is not None and str(value).strip()
-                    ).strip()
-            if label:
-                labels.add(label)
-        if not sku_ids and not labels:
-            return sku_views
-        return [
-            view for view in sku_views
-            if str(view.get("sku_id") or "") in sku_ids
-            or str(view.get("variant_label") or "") in labels
-        ]
+        views, relaxed = sku_availability_domain.keep_active_sku_views(sku_views, raw)
+        return [dict(view) for view in views], relaxed
 
     @staticmethod
     def _new_sku_availability_plan(draft_id: int) -> dict[str, Any]:
@@ -3958,6 +4027,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "chinese": [],
             "failed": 0,
             "reason": "",
+            "fingerprint": "",
+            "scope_relaxed": False,
         }
 
     def _inspect_sku_asset(self, asset_id: str, workspace_id: str) -> dict[str, Any] | None:
@@ -4448,6 +4519,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             draft = self.repository.get_draft(draft_id, workspace_id=workspace_id) if draft_id else None
             if draft and draft.get("preview_overrides"):
                 merged["preview_overrides"] = draft["preview_overrides"]
+            # auto 策略：把可用性结论解析成布尔随行下发（指纹校验需要当前图集，
+            # 只能在服务层做；workbooks 是纯函数模块拿不到）。
+            self.mark_row_auto_variant_source(merged, draft_id, workspace_id=workspace_id)
             rows.append(merged)
         if not rows:
             raise ValueError("task has no successful products to export")
@@ -4533,10 +4607,10 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             cleaned[MANIFEST_KEY] = PreviewImageManifest.from_value(
                 overrides.get(MANIFEST_KEY)
             ).as_dict()
-        # SKU 规格图导出策略（source=用规格原图 / main=统一用商品主图）。显式保存，
-        # 使「使用原图」可以覆盖此前选择的「主图替代」。
+        # SKU 规格图导出策略（source=用规格原图 / main=统一用商品主图 / auto=按可用性
+        # 判断结论自动选）。显式保存，使「使用原图」「自动」可以覆盖此前选择。
         variant_image_mode = str(overrides.get("variant_image_mode") or "").strip().lower()
-        if variant_image_mode in {"source", "main"}:
+        if variant_image_mode in {"source", "main", "auto"}:
             cleaned["variant_image_mode"] = variant_image_mode
         # 被整行剔除的 SKU 规格键：去重保序后显式保存，导出时据此过滤变种行。
         raw_excluded = overrides.get("excluded_variant_keys") or []

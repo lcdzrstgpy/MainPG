@@ -4729,6 +4729,35 @@
   color: #b26a05;
 }
 
+/* 「当前策略下导出会用主图」：蓝调，与「已换图」的绿、「已删除」的红区分开 */
+.precheck-sku-badge.tone-main {
+  border: 1px solid #bcdcf3;
+  background: #eaf5fd;
+  color: #1c6fa8;
+}
+
+/* 缩略图左上角来源标记：策略回退主图 / 结论待判定 */
+.precheck-sku-thumb {
+  position: relative;
+}
+
+.precheck-sku-thumb-flag {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 0.62rem;
+  font-weight: 600;
+  line-height: 1.5;
+  pointer-events: none;
+}
+
+.precheck-sku-thumb-flag.tone-main {
+  background: rgba(28, 111, 168, 0.92);
+  color: #fff;
+}
+
 .precheck-sku-card-actions {
   display: flex;
   gap: 4px;
@@ -4843,8 +4872,86 @@
 .sku-batch-draft-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  align-items: center;
+  gap: 8px;
   margin-top: 8px;
+}
+
+/* 规格图策略分段控件：逐商品切换「规格原图 / 全用主图 / 自动」 */
+.sku-mode-seg {
+  display: inline-flex;
+  border: 1px solid #dce9f2;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #f6fafd;
+}
+
+.sku-mode-seg-btn {
+  padding: 4px 10px;
+  border: none;
+  border-right: 1px solid #dce9f2;
+  background: transparent;
+  color: #5a7a94;
+  font-size: 0.74rem;
+  line-height: 1.5;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.sku-mode-seg-btn:last-child {
+  border-right: none;
+}
+
+.sku-mode-seg-btn:hover {
+  background: #e8f3fb;
+  color: #18334d;
+}
+
+.sku-mode-seg-btn.is-active {
+  background: #2f7fbf;
+  color: #fff;
+  font-weight: 600;
+}
+
+.sku-mode-seg-btn.is-active:hover {
+  background: #2a72ab;
+  color: #fff;
+}
+
+/* 策略保存状态：待保存（黄）/ 已生效（绿），消除「点了没反应」的困惑 */
+.sku-mode-state {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  vertical-align: baseline;
+}
+
+.sku-mode-state.is-dirty {
+  background: #fdf3e2;
+  color: #b8791f;
+}
+
+.sku-mode-state.is-saved {
+  background: #e8f5ec;
+  color: #2f8a4f;
+}
+
+/* 「自动」档下的判定结论提示：解释为什么导出会（或不会）回退主图 */
+.sku-mode-hint {
+  margin: 6px 0 0;
+  padding: 5px 9px;
+  border-radius: 6px;
+  font-size: 0.74rem;
+  line-height: 1.55;
+}
+
+.sku-mode-hint.is-warn {
+  background: #fdf3e2;
+  border-left: 3px solid #e0a94a;
+  color: #8a5d12;
 }
 
 /* ── 换图选择器（按商品逐个挑选替换图） ── */

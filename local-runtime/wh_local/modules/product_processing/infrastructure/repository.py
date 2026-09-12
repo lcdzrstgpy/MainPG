@@ -965,6 +965,43 @@ class ProductProcessingRepository:
             session.flush()
             return self._draft(row)
 
+    def save_draft_sku_availability(
+        self,
+        draft_id: int,
+        payload: dict[str, Any] | None,
+        *,
+        workspace_id: str = "local",
+    ) -> dict[str, Any] | None:
+        """保存草稿池「SKU 规格图可用性判断」结论（覆盖写）。
+
+        传 ``None`` 或空字典表示清空结论（回到「从未判定」）。结论的有效期不靠时间
+        戳，读取侧用 ``fingerprint``（参与检测图片的 content_hash 集合）与实际图集比对。
+        """
+        with self.database.sessions.begin() as session:
+            row = session.get(ProductDraftRow, draft_id)
+            if row is None or row.workspace_id != workspace_id:
+                return None
+            serialized = dumps(payload) if payload else ""
+            if row.sku_availability_json != serialized:
+                row.sku_availability_json = serialized
+                row.updated_at = utc_now()
+            session.flush()
+            return self._draft(row)
+
+    def load_draft_sku_availability(
+        self,
+        draft_id: int,
+        *,
+        workspace_id: str = "local",
+    ) -> dict[str, Any]:
+        """读取落库的可用性结论原始 JSON（不校验 fingerprint，校验由服务层做）。"""
+        with self.database.sessions.begin() as session:
+            row = session.get(ProductDraftRow, draft_id)
+            if row is None or row.workspace_id != workspace_id:
+                return {}
+            value = loads(str(row.sku_availability_json or ""), {})
+            return value if isinstance(value, dict) else {}
+
     def save_draft_preview_overrides(
         self,
         draft_id: int,
@@ -2445,6 +2482,7 @@ class ProductProcessingRepository:
             "preview_overrides": loads(row.preview_overrides_json, {}),
             "preview_revision": int(row.preview_revision or 0),
             "media_contract_version": int(row.media_contract_version or 1),
+            "sku_availability_raw": str(row.sku_availability_json or ""),
             "created_at": row.created_at,
             "updated_at": row.updated_at,
         }

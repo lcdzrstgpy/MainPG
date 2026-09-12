@@ -39,6 +39,9 @@ class ProductDraftRow(Base):
     preview_overrides_json: Mapped[str] = mapped_column(Text, default="{}")
     preview_revision: Mapped[int] = mapped_column(Integer, default=0)
     media_contract_version: Mapped[int] = mapped_column(Integer, default=1)
+    # 草稿池「SKU 规格图可用性判断」结论（JSON）。空串表示从未判定，与
+    # 「已判定为不可用」必须区分：导出取图的 auto 策略据此外推。
+    sku_availability_json: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[str] = mapped_column(String(64), default=utc_now)
     updated_at: Mapped[str] = mapped_column(String(64), default=utc_now, onupdate=utc_now)
 

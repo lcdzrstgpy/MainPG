@@ -91,6 +91,8 @@ class DraftRestoreRequest(BaseModel):
 
 class DraftSkuAvailabilityRequest(BaseModel):
     draft_ids: list[int] = Field(default_factory=list)
+    # 强制检测：忽略「SKU 规格图 ≥ 20 张即跳过」的性能阈值，把大图集链接也检一遍。
+    force: bool = False
 
     @field_validator("draft_ids")
     @classmethod
@@ -257,8 +259,12 @@ class PreviewDesiredState(BaseModel):
     shipping_package_records: dict[str, ShippingPackageRecordOverride] = Field(default_factory=dict)
     image_manifest_v2: PreviewImageManifestInput
     # SKU 规格图导出策略：source=每个 SKU 用采集到的规格原图（缺失回退商品主图）；
-    # main=全部 SKU 统一用商品主图替代。仅影响导出时预览图/颜色图列的取值。
-    variant_image_mode: Literal["source", "main"] = "source"
+    # main=全部 SKU 统一用商品主图替代；auto=按草稿池「SKU 规格图可用性判断」结论自动
+    # 选择——判定干净且结论未失效时用规格原图，其余（不可用/未判定）走商品主图。
+    # 默认 auto：保证未人工干预时不会把带中文的来源规格图直接导出；判定干净的 SKU
+    # 仍逐个用规格原图。source / main 为用户显式选择，优先级永远高于 auto。
+    # 仅影响导出时预览图/颜色图列取值。
+    variant_image_mode: Literal["source", "main", "auto"] = "auto"
     # 被操作员整行剔除的 SKU 规格：导出时该变种不产生任何表格行。
     excluded_variant_keys: list[str] = Field(default_factory=list)
     # 逐个 SKU 指定规格图：key=SKU 变种键，值=预览资产 ID 或 http(s) 图片地址。

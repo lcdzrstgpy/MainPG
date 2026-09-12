@@ -222,6 +222,15 @@ def _excluded_variant_keys(row: Mapping[str, Any]) -> set[str]:
     return {str(value or "").strip() for value in raw if str(value or "").strip()}
 
 
+def _variant_source_image_usable(row: Mapping[str, Any]) -> bool:
+    """auto 策略下是否可用该 SKU 的规格原图（由服务层解析后随行下发）。
+
+    ``sku_source_usable`` 仅在「可用性判断明确判定干净且结论未失效」时为 True；
+    缺失该键（老数据 / 非 auto 路径）一律 False，保证保守回退。
+    """
+    return bool(row.get("sku_source_usable"))
+
+
 def _variant_image_override_url(
     row: Mapping[str, Any], variant: Mapping[str, Any] | None
 ) -> str:
@@ -470,15 +479,22 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
             material_images = main_image
 
     # SKU 规格图：店小秘「预览图」列对齐原型 _build_dxm_row（DXM_COLUMNS[8]）——
-    # 取变种自己的规格图，缺失时回退商品主图。预检侧「全部使用主图替代」通过
-    # variant_image_mode=="main" 强制走商品主图。*轮播图/素材图仍保持商品级不变。
-    # 操作员在预检侧逐个 SKU 换过图时，显式替换优先于以上两种策略。
-    variant_image_mode = str(preview_overrides.get("variant_image_mode") or "source").strip().lower()
+    # 取变种自己的规格图，缺失时回退商品主图。缺省策略为 "auto"：按可用性判断结论决定
+    # （结论干净且未失效→用规格原图，否则→主图），保证未人工干预时不会把来源规格图
+    # （可能带中文）直接导出。预检侧「全部使用主图替代」通过 variant_image_mode=="main"
+    # 强制走商品主图。*轮播图/素材图仍保持商品级不变。
+    # 操作员在预检侧逐个 SKU 换过图时，显式替换优先于以上所有策略。
+    variant_image_mode = str(preview_overrides.get("variant_image_mode") or "auto").strip().lower()
     variant_image = str((variant or {}).get("image_url") or "").strip()
     override_image = _variant_image_override_url(row, variant)
     if override_image:
         preview_image = override_image
-    elif variant_image_mode == "main" or not _is_http_url(variant_image):
+    elif variant_image_mode == "main":
+        preview_image = main_image
+    elif variant_image_mode == "auto" and not _variant_source_image_usable(row):
+        # 判定不可用 / 未判定 → 回退主图；判定干净 → 沿用下方规格原图分支。
+        preview_image = main_image
+    elif not _is_http_url(variant_image):
         preview_image = main_image
     else:
         preview_image = variant_image
@@ -987,14 +1003,17 @@ def _miaoshou_row_values(row: dict[str, Any], kind: str) -> list[dict[int, Any]]
         product_image = str(dxm_row[19] or "").strip()
         if not product_image and carousel_text:
             product_image = carousel_text.splitlines()[0]
-        variant_image_mode = str(preview_overrides.get("variant_image_mode") or "source").strip().lower()
+        variant_image_mode = str(preview_overrides.get("variant_image_mode") or "auto").strip().lower()
         variant_image = str((variant or {}).get("image_url") or "").strip()
         # 逐 SKU 显式换图优先（与店小秘同口径）。
         override_image = _variant_image_override_url(row, variant)
         if override_image:
             sku_image = override_image
         else:
-            if variant_image_mode == "main" or not _is_http_url(variant_image):
+            # auto：仅在可用性判断结论干净且未失效时保留规格原图，否则回退商品主图。
+            if variant_image_mode == "main" or (
+                variant_image_mode == "auto" and not _variant_source_image_usable(row)
+            ):
                 variant_image = ""
             sku_image = variant_image or product_image
         exported.append(

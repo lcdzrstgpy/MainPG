@@ -78,7 +78,7 @@ export type PreviewSavePayload = {
     core_fields: PreviewCoreFields;
     image_manifest_v2: PreviewImageManifest;
     shipping_package_records?: Record<string, ShippingPackageRecordOverride>;
-    variant_image_mode?: "source" | "main";
+    variant_image_mode?: "source" | "main" | "auto";
     /** 被整行剔除的 SKU 变种键：导出时该变种不产生表格行。 */
     excluded_variant_keys?: string[];
     /** 逐个 SKU 指定的规格图：键=变种键，值=预览资产 ID 或 http(s) 图片地址。 */
@@ -264,9 +264,10 @@ export function retryMediaAsset(
 export function checkDraftSkuAvailability(
   ctx: ApiContext,
   draftIds: number[],
+  force = false,
 ): Promise<DraftSkuAvailabilityResponse> {
   return ppRequest(ctx, `/api/product-processing/drafts/sku-availability`, {
     method: "POST",
-    body: { draft_ids: draftIds },
+    body: { draft_ids: draftIds, force },
   });
 }

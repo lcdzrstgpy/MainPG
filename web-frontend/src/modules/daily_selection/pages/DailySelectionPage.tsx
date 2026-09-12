@@ -883,6 +883,10 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
       throw new Error("采集数量必须是正整数");
     }
     const normalizedKeywords = keywords.split(/[，,\n]/).map((item) => item.trim()).filter(Boolean).slice(0, 5);
+    // 只填分隔符时 trim 非空但归一化后为空，必须在提交前拦住，否则后端会直接拒绝。
+    if (mode === "keyword" && normalizedKeywords.length === 0) {
+      throw new Error("关键词不能只填分隔符，请至少填写一个有效关键词");
+    }
     const criteria: DailySelectionCriteria = {
       keywords: mode === "image" ? normalizedKeywords : normalizedKeywords,
       selection_scope: scope,
@@ -911,6 +915,19 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     if (parsedMaxSkuPrice !== undefined) criteria.max_sku_price = parsedMaxSkuPrice;
     if (parsedMinSkuStock !== undefined) criteria.min_sku_stock = parsedMinSkuStock;
     if (parsedMaxSkuStock !== undefined) criteria.max_sku_stock = parsedMaxSkuStock;
+    // 上下限写反属于用户常见笔误，前端先拦，避免等到后端校验才报错。
+    if (parsedMinPrice !== undefined && parsedMaxPrice !== undefined && parsedMinPrice > parsedMaxPrice) {
+      throw new Error("最低价格不能大于最高价格");
+    }
+    if (parsedMinSkuCount !== undefined && parsedMaxSkuCount !== undefined && parsedMinSkuCount > parsedMaxSkuCount) {
+      throw new Error("SKU 规格数下限不能大于上限");
+    }
+    if (parsedMinSkuPrice !== undefined && parsedMaxSkuPrice !== undefined && parsedMinSkuPrice > parsedMaxSkuPrice) {
+      throw new Error("SKU 最低价不能大于 SKU 最高价");
+    }
+    if (parsedMinSkuStock !== undefined && parsedMaxSkuStock !== undefined && parsedMinSkuStock > parsedMaxSkuStock) {
+      throw new Error("SKU 库存下限不能大于上限");
+    }
 
     criteria.collection_mode = mode;
     criteria.collection_platform = platform === "taobao" ? "taobao" : "1688";

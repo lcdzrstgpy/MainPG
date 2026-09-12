@@ -11,7 +11,7 @@ import {
 } from '../utils/skuFilter';
 import { PrecheckSkuImageCropper } from './PrecheckSkuImageCropper';
 
-export type VariantImageMode = 'source' | 'main';
+export type VariantImageMode = 'source' | 'main' | 'auto';
 
 /** 可用于替换 SKU 规格图的候选图（值写入 variant_image_overrides）。 */
 export type VariantImageOption = {
@@ -34,6 +34,8 @@ type Props = {
   items: PreviewItem[];
   /** 读取某商品当前的规格图策略 */
   modeOf: (draftId: number) => VariantImageMode;
+  /** 该商品的规格图策略是否已保存（false = 仅本地编辑，尚未落库） */
+  modeSavedOf: (draftId: number) => boolean;
   /** 应用规格图策略（写入预检页本地 edits，随保存/导出生效） */
   onApplyMode: (mode: VariantImageMode, draftIds: number[]) => void;
   /** 某商品已被整行剔除（不进导出表）的 SKU 变种键 */
@@ -133,6 +135,7 @@ function itemTitle(item: PreviewItem, draftId: number): string {
 export function PrecheckSkuManager({
   items,
   modeOf,
+  modeSavedOf,
   onApplyMode,
   excludedOf,
   overridesOf,
@@ -170,6 +173,7 @@ export function PrecheckSkuManager({
         const overrideValue = String(overrides[key] ?? '').trim();
         const overrideUrl = overrideValue ? overrideUrlOf(draftId, key) : '';
         const skuId = String(variant.sku_id || '');
+        const display = overrideUrl || sourceImage;
         return {
           variant,
           label,
@@ -177,18 +181,23 @@ export function PrecheckSkuManager({
           sourceImage,
           overrideValue,
           overrideUrl,
-          display: overrideUrl || sourceImage,
+          display,
           excluded: excluded.has(key),
           hit: matchSku(variant, filter),
           /** 原图中文复核状态，用于「仅看待审核」筛选与徽标。 */
           textReview: skuId ? textReviewOf(draftId, skuId) : ('' as PreviewTextReviewStatus),
         };
       });
+      /** 商品主图：策略回退商品的最终取图（与导出侧 preview_image 同源）。 */
+      const mainImageUrl = safeImageUrl(item.main_image);
       return {
         item,
         draftId,
         title: itemTitle(item, draftId),
         variants,
+        mainImageUrl,
+        /** 草稿池可用性判定结论（后端 task_preview 已带出），用于解释 auto 的实际取值。 */
+        availability: item.sku_availability ?? null,
         /** 本商品已换图的 SKU 数，用于对照「单条链接最多修改 6 个」的限制。 */
         replacedCount: variants.filter((entry) => entry.overrideValue).length,
       };
@@ -235,6 +244,49 @@ export function PrecheckSkuManager({
     }
   }
 
+  /**
+   * 该 SKU 在导出时实际会写进表格的图，以及它的来源。
+   *
+   * 与后端 `_dxm_single_export_row` 的取值顺序保持一致：
+   * 逐 SKU 人工换图 > main 策略 > auto 策略 > 规格原图（缺失则回退主图）。
+   *
+   * auto 的判定结论是**草稿级别**（`item.sku_availability`，由后端 task_preview 带出）：
+   * 只有「已判定且判定干净、且指纹未失效」才用规格原图，其余情况（含从未判定）
+   * 一律回退主图。所以这里能如实显示 auto 的实际结果，不再需要「待判定」兜底。
+   */
+  const resolveExportImage = (
+    mode: VariantImageMode,
+    entry: { overrideUrl: string; sourceImage: string },
+    mainImageUrl: string,
+    availability: { usable_source: boolean; reason: string } | null,
+  ): { url: string; kind: 'manual' | 'main' | 'source'; fallbackReason?: string } => {
+    if (entry.overrideUrl) return { url: entry.overrideUrl, kind: 'manual' };
+    if (mode === 'main') {
+      // 主图缺失时后端仍会写规格原图，此处如实反映。
+      return mainImageUrl
+        ? { url: mainImageUrl, kind: 'main' }
+        : { url: entry.sourceImage, kind: 'source' };
+    }
+    if (mode === 'auto') {
+      const usable = Boolean(availability?.usable_source);
+      if (usable && entry.sourceImage) return { url: entry.sourceImage, kind: 'source' };
+      // 判定不可用 / 从未判定：回退主图（与后端一致）。
+      return mainImageUrl
+        ? { url: mainImageUrl, kind: 'main', fallbackReason: availability?.reason || 'unknown' }
+        : { url: entry.sourceImage, kind: 'source' };
+    }
+    return { url: entry.sourceImage, kind: 'source' };
+  };
+
+  /** 勾选项中是否已有换图 / 已删除：决定勾选栏只显示当前有意义的动作按钮。 */
+  const selectedSet = new Set(selected);
+  const selectedHasReplacement = allEntries.some(
+    (entry) => selectedSet.has(`${entry.draftId}::${entry.key}`) && entry.overrideValue,
+  );
+  const selectedHasExcluded = allEntries.some(
+    (entry) => selectedSet.has(`${entry.draftId}::${entry.key}`) && entry.excluded,
+  );
+
   const toggleSelected = (ref: VariantRef) => {
     const id = `${ref.draftId}::${ref.variantKey}`;
     setSelected((current) => {
@@ -245,12 +297,33 @@ export function PrecheckSkuManager({
     });
   };
 
+  const VARIANT_MODE_LABELS: Record<VariantImageMode, string> = {
+    source: '使用规格原图（可能含中文）',
+    main: '全部使用主图替代',
+    auto: '按可用性判断自动选择（默认·推荐）',
+  };
+
+  /** 模式短标签：逐商品卡片内空间紧张，用短名。 */
+  const VARIANT_MODE_SHORT: Record<VariantImageMode, string> = {
+    source: '规格原图',
+    main: '全用主图',
+    auto: '自动',
+  };
+
+  /**
+   * 应用规格图策略。逐商品与底部批量走同一条路径，保证交互一致：
+   * 都需确认、都给出「待保存」提示，避免「点了没反应」。
+   */
+  const applyModeTo = (mode: VariantImageMode, draftIds: number[], scopeHint: string) => {
+    if (draftIds.length === 0) return;
+    const label = VARIANT_MODE_LABELS[mode];
+    if (!window.confirm(`确定对${scopeHint}执行「${label}」？`)) return;
+    onApplyMode(mode, draftIds);
+    setNotice(`已对${scopeHint}应用「${label}」，点击预检页「保存预检修改」或「完成预审并导出」后生效。`);
+  };
+
   const applyMode = (mode: VariantImageMode) => {
-    if (affected.length === 0) return;
-    const label = mode === 'main' ? '全部使用主图替代' : '使用规格原图';
-    if (!window.confirm(`确定对 ${affected.length} 个商品执行「${label}」？`)) return;
-    onApplyMode(mode, affected.map((row) => row.draftId));
-    setNotice(`已对 ${affected.length} 个商品应用「${label}」，点击预检页「保存预检修改」或「完成预审并导出」后生效。`);
+    applyModeTo(mode, affected.map((row) => row.draftId), ` ${affected.length} 个商品`);
   };
 
   const excludeRefs = (refs: VariantRef[], message: string) => {
@@ -572,9 +645,14 @@ export function PrecheckSkuManager({
               <span>已勾选 <strong>{selectedRefs.length}</strong> 个 SKU</span>
               <div className="sku-batch-selection-actions">
                 <button type="button" className="btn-mini" onClick={() => openPicker(selectedRefs, '勾选的 SKU')}>换图</button>
-                <button type="button" className="btn-mini" onClick={clearReplacementSelected}>清除换图</button>
-                <button type="button" className="btn-mini" onClick={() => excludeRefs(selectedRefs, `已删除 ${selectedRefs.length} 个 SKU 规格，导出时不会出现在表格中。`)}>删除规格</button>
-                <button type="button" className="btn-mini" onClick={restoreSelected}>恢复</button>
+                {selectedHasReplacement && (
+                  <button type="button" className="btn-mini" onClick={clearReplacementSelected}>清除换图</button>
+                )}
+                {selectedHasExcluded ? (
+                  <button type="button" className="btn-mini" onClick={restoreSelected}>恢复</button>
+                ) : (
+                  <button type="button" className="btn-mini" onClick={() => excludeRefs(selectedRefs, `已删除 ${selectedRefs.length} 个 SKU 规格，导出时不会出现在表格中。`)}>删除规格</button>
+                )}
                 <button type="button" className="btn-mini" onClick={() => setSelected(new Set())}>取消勾选</button>
               </div>
             </div>
@@ -586,7 +664,6 @@ export function PrecheckSkuManager({
             )}
             {visibleRows.map((row) => {
               const mode = modeOf(row.draftId);
-              const mainImage = safeImageUrl(row.item.main_image);
               const hitCount = row.variants.filter((entry) => entry.hit).length;
               return (
                 <section key={row.draftId} className="sku-batch-draft">
@@ -594,7 +671,10 @@ export function PrecheckSkuManager({
                     <div>
                       <strong title={row.title}>{row.title.slice(0, 60)}</strong>
                       <small>
-                        {mode === 'main' ? '当前：全部使用主图替代' : '当前：使用规格原图'}
+                        {`当前：${VARIANT_MODE_LABELS[mode]}`}
+                        {modeSavedOf(row.draftId)
+                          ? <span className="sku-mode-state is-saved" title="该策略已保存到草稿">已生效</span>
+                          : <span className="sku-mode-state is-dirty" title="仅本地编辑，需点「保存预检修改」或「完成预审并导出」才生效">待保存</span>}
                         {' · '}
                         <span className={row.replacedCount > MAX_EDITED_VARIANT_IMAGES_PER_LINK ? 'is-over' : undefined}>
                           已换图 {row.replacedCount} / {MAX_EDITED_VARIANT_IMAGES_PER_LINK}
@@ -602,13 +682,13 @@ export function PrecheckSkuManager({
                       </small>
                     </div>
                     <span className="precheck-sku-headright">
-                      {mainImage && (
+                      {row.mainImageUrl && (
                         <img
                           className="precheck-sku-main"
-                          src={mainImage}
+                          src={row.mainImageUrl}
                           alt="商品主图"
                           referrerPolicy="no-referrer"
-                          onClick={() => onPreview(mainImage)}
+                          onClick={() => onPreview(row.mainImageUrl)}
                           title="点击放大商品主图"
                         />
                       )}
@@ -617,8 +697,18 @@ export function PrecheckSkuManager({
                     </span>
                   </header>
                   <div className="sku-batch-draft-actions">
-                    <button type="button" className="btn-mini" onClick={() => onApplyMode('source', [row.draftId])}>本商品用规格原图</button>
-                    <button type="button" className="btn-mini" onClick={() => onApplyMode('main', [row.draftId])}>本商品全用主图</button>
+                    <div className="sku-mode-seg" role="group" aria-label="本商品规格图策略">
+                      {(Object.keys(VARIANT_MODE_SHORT) as VariantImageMode[]).map((option) => (
+                        <button
+                          key={option}
+                          type="button"
+                          className={`sku-mode-seg-btn${mode === option ? ' is-active' : ''}`}
+                          aria-pressed={mode === option}
+                          title={VARIANT_MODE_LABELS[option]}
+                          onClick={() => applyModeTo(option, [row.draftId], `「${row.title.slice(0, 20)}」`)}
+                        >{VARIANT_MODE_SHORT[option]}</button>
+                      ))}
+                    </div>
                     <button
                       type="button"
                       className="btn-mini"
@@ -626,12 +716,29 @@ export function PrecheckSkuManager({
                         row.variants.map((entry) => ({ draftId: row.draftId, variantKey: entry.key })),
                         row.title,
                       )}
-                    >本商品批量换图</button>
+                    >批量换图</button>
                   </div>
+                  {mode === 'auto' && !row.availability?.usable_source && (
+                    <p className="sku-mode-hint is-warn">
+                      {row.availability?.reason === 'media_unavailable'
+                        ? '本商品规格原图素材不可用，自动模式下导出将全部回退主图。'
+                        : row.availability?.reason === 'scope_relaxed'
+                          ? '本商品当前按「宽松口径」判定，不足以直接使用规格原图，自动模式下导出将全部回退主图。'
+                          : row.availability?.reason === 'never_judged'
+                            ? '本商品尚未做过「SKU 规格图可用性判断」，自动模式下无法确认规格原图是否可用，导出将全部回退主图（即 AI 处理后的商品主图，不含中文）。'
+                            : row.availability?.judged
+                              ? '本商品判定结论为「不可用」，自动模式下导出将全部回退主图。'
+                              : '当前无法确认规格原图是否可用，自动模式下导出将全部回退主图。'}
+                      {row.availability?.reason === 'never_judged' && ' 可先执行一次可用性判断，判定干净后会自动改用规格原图。'}
+                    </p>
+                  )}
                   <div className="precheck-sku-grid">
                     {row.variants.map((entry) => {
                       const id = `${row.draftId}::${entry.key}`;
                       const checked = selected.has(id);
+                      /** 该 SKU 当前策略下实际会导出的图（与后端取值口径一致）。 */
+                      const resolved = resolveExportImage(mode, entry, row.mainImageUrl, row.availability);
+                      const effective = { ...resolved, display: resolved.url };
                       return (
                         <div
                           key={id}
@@ -644,20 +751,27 @@ export function PrecheckSkuManager({
                               onChange={() => toggleSelected({ draftId: row.draftId, variantKey: entry.key })}
                             />
                           </label>
-                          {entry.display
+                          {effective.display
                             ? (
                               <button
                                 type="button"
-                                className="precheck-sku-thumb"
-                                onClick={() => onPreview(entry.display)}
-                                title="点击放大查看"
+                                className={`precheck-sku-thumb is-from-${effective.kind}`}
+                                onClick={() => onPreview(effective.display)}
+                                title={
+                                  effective.kind === 'manual' ? '点击放大（人工换图）'
+                                    : effective.kind === 'main' ? '点击放大（当前策略：商品主图）'
+                                      : '点击放大（规格原图）'
+                                }
                               >
                                 <img
                                   className="verify-sku-image"
-                                  src={entry.display}
-                                  alt={`${entry.label} 规格图`}
+                                  src={effective.display}
+                                  alt={`${entry.label} 导出图`}
                                   referrerPolicy="no-referrer"
                                 />
+                                {effective.kind === 'main' && (
+                                  <span className="precheck-sku-thumb-flag tone-main" aria-hidden="true">主图</span>
+                                )}
                               </button>
                             )
                             : (
@@ -672,7 +786,12 @@ export function PrecheckSkuManager({
                             )}
                           <span className="precheck-sku-label" title={entry.label}>{entry.label || '—'}</span>
                           <div className="precheck-sku-badges">
-                            {entry.overrideValue && <span className="precheck-sku-badge tone-replaced">已换图</span>}
+                            {effective.kind === 'manual' && <span className="precheck-sku-badge tone-replaced">已换图</span>}
+                            {effective.kind === 'main' && (
+                              <span className="precheck-sku-badge tone-main" title="当前策略下该 SKU 导出时使用商品主图">
+                                导出用主图
+                              </span>
+                            )}
                             {entry.excluded && <span className="precheck-sku-badge tone-excluded">已删除</span>}
                             {entry.textReview === 'flagged' && (
                               <span className="precheck-sku-badge tone-text" title="该 SKU 原图检出中文，建议重新锚定后再换图">
@@ -733,6 +852,12 @@ export function PrecheckSkuManager({
             onClick={() => applyMode('main')}
             disabled={affected.length === 0}
           >全部使用主图替代（{affected.length}）</button>
+          <button
+            type="button"
+            onClick={() => applyMode('auto')}
+            disabled={affected.length === 0}
+            title="规格图已通过「SKU 可用性判断」的用规格原图，其余回退商品主图"
+          >按可用性自动选择（{affected.length}）</button>
         </footer>
 
         {picker && currentGroup && (

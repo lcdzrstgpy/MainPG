@@ -67,6 +67,7 @@ _MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("preview_revision", "INTEGER NOT NULL DEFAULT 0"),
         ("preview_overrides_json", "TEXT NOT NULL DEFAULT '{}'"),
         ("media_contract_version", "INTEGER NOT NULL DEFAULT 1"),
+        ("sku_availability_json", "TEXT NOT NULL DEFAULT ''"),
     ],
     "product_processing_combo_sources": [
         ("is_main", "BOOLEAN NOT NULL DEFAULT 0"),

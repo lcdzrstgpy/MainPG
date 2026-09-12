@@ -244,6 +244,7 @@ class MediaAssetService:
             "variant_label": str(binding.get("variant_label") or ""),
             "sort_order": int(binding.get("sort_order") or 0),
             "status": str(asset.get("status") or "pending"),
+            "content_hash": str(asset.get("content_hash") or ""),
             "preview_url": self._preview_url(asset) if ready else "",
             "width": int(asset.get("width") or 0),
             "height": int(asset.get("height") or 0),
