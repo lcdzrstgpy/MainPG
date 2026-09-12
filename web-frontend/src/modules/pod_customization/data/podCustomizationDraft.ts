@@ -48,7 +48,6 @@ const EMPTY_BUSINESS_FIELDS: PodBusinessFieldsDraft = {
   target_audience: "",
   core_selling_points: "",
   design_theme: "",
-  style_planning: "",
   style_keywords: "",
   color_preferences: "",
   excluded_elements: "",
@@ -156,10 +155,6 @@ export function loadPodCustomizationDraft(
     if (isPodCustomizationDraft(parsed)) return { state: cloneDraft(parsed) };
     if (isPreviousPodCustomizationDraft(parsed) || isOlderPodCustomizationDraft(parsed) || isLegacyPodCustomizationDraft(parsed)) {
       const state = migrateDraft(parsed);
-      state.business_fields = {
-        ...state.business_fields,
-        style_planning: state.business_fields.style_planning ?? "",
-      };
       try {
         storage.setItem(key, JSON.stringify(cloneDraft(state)));
       } catch {
@@ -240,7 +235,7 @@ function browserStorage(): PodCustomizationStorage | null {
 function cloneDraft(state: PodCustomizationDraft): PodCustomizationDraft {
   return {
     version: POD_CUSTOMIZATION_DRAFT_VERSION,
-    business_fields: { ...state.business_fields, style_planning: state.business_fields.style_planning ?? "" },
+    business_fields: { ...state.business_fields },
     listing_fields: {
       ...state.listing_fields,
       skus: state.listing_fields.skus.map((sku) => ({ ...sku })),
@@ -323,8 +318,6 @@ function isBusinessFields(value: unknown): value is PodBusinessFieldsDraft {
     && typeof value.target_audience === "string"
     && typeof value.core_selling_points === "string"
     && typeof value.design_theme === "string"
-    // style_planning 为 v4 新增：旧草稿缺失时视为空串（cloneDraft 归一化）。
-    && (value.style_planning === undefined || typeof value.style_planning === "string")
     && typeof value.style_keywords === "string"
     && typeof value.color_preferences === "string"
     && typeof value.excluded_elements === "string";

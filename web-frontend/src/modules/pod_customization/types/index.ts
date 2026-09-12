@@ -39,7 +39,6 @@ export type PodBusinessFieldsDraft = {
   target_audience: string;
   core_selling_points: string;
   design_theme: string;
-  style_planning: string;
   style_keywords: string;
   color_preferences: string;
   excluded_elements: string;
@@ -62,12 +61,8 @@ export type PodBriefFieldsResponse = {
   fields: PodBusinessFields;
 };
 
-/**
- * 智能前置层实际代填的字段：不含 `style_planning`。
- * 「样式规划」由用户在页面上二选一（全覆盖 / 半覆盖），AI 不代为决定，
- * 也不得覆盖用户已选的值。
- */
-export type PodBriefFieldsDraft = Omit<PodBusinessFieldsDraft, "style_planning">;
+/** 智能前置层实际代填的字段：与业务字段同形，一次性代填全部字段。 */
+export type PodBriefFieldsDraft = PodBusinessFieldsDraft;
 
 /** 「最近生成」历史条目；fields 为回填前的字符串口径（数组已用「、」连接）。 */
 export type PodBriefHistoryItem = {

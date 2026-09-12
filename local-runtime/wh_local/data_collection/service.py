@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .budget import UnlimitedApiBudget
 from .collector import DailySelectionCollector, DailySelectionProvider
-from .criteria import DailySelectionCriteria
+from .criteria import DailySelectionCriteria, validate_criteria
 from .empty_collection import (
     EmptyCollectionRetryRunner,
     SkuRepullOutboxDispatcher,
@@ -221,7 +221,7 @@ class DailySelectionService:
         cancel_event: threading.Event | None = None,
     ) -> DailySelectionRun:
         _report_progress(progress_callback, "preparing", 1, 0, 1, "正在准备采集")
-        criteria = DailySelectionCriteria.model_validate(dict(request))
+        criteria = validate_criteria(dict(request))
         provider_config = self._provider_config_resolver(actor)
         if not isinstance(provider_config, Mapping):
             raise TypeError("provider config resolver must return a mapping")
@@ -281,7 +281,7 @@ class DailySelectionService:
         request_data.pop("reference_image_url", None)
         request_data.setdefault("keywords", ("similar products",))
         request_data["collection_platform"] = platform
-        criteria = DailySelectionCriteria.model_validate(request_data)
+        criteria = validate_criteria(request_data)
         provider_config = self._provider_config_resolver(actor)
         if not isinstance(provider_config, Mapping):
             raise TypeError("provider config resolver must return a mapping")

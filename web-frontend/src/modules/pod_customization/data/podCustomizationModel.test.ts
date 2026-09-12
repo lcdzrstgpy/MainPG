@@ -3,7 +3,6 @@ import test from "node:test";
 
 import {
   POD_BATCH_COUNTS,
-  POD_STYLE_PLANNING_OPTIONS,
   EMPTY_POD_BUSINESS_FIELDS,
   buildPromptV1,
   businessFieldsForApi,
@@ -18,29 +17,11 @@ import {
   groupPodStyleRows,
   isActiveBatchStatus,
   isPodBatchCount,
-  isPodStylePlanning,
   isPristineCreativeEdit,
   listingFieldsForApi,
-  normalizeStylePlanning,
   podBatchStatusLabel,
   podBatchStatusDetail,
 } from "./podCustomizationModel.ts";
-
-test("样式规划 fixed two-choice: unknown or legacy free text falls back to unselected", () => {
-  assert.deepEqual([...POD_STYLE_PLANNING_OPTIONS], ["全覆盖", "半覆盖"]);
-
-  assert.equal(normalizeStylePlanning("全覆盖"), "全覆盖");
-  assert.equal(normalizeStylePlanning("半覆盖"), "半覆盖");
-
-  // 旧草稿里的自由文本不再合法，视为未选择，交给用户重新选。
-  assert.equal(normalizeStylePlanning("花纹铺满包身、提手处留白"), "");
-  assert.equal(normalizeStylePlanning(""), "");
-  assert.equal(normalizeStylePlanning(undefined), "");
-  assert.equal(normalizeStylePlanning(null), "");
-
-  assert.equal(isPodStylePlanning("全覆盖"), true);
-  assert.equal(isPodStylePlanning("全铺满"), false);
-});
 
 test("POD style results present the lifestyle panel as the primary image and hero as material", () => {
   const rows = groupPodStyleRows({
@@ -118,14 +99,12 @@ test("business list fields are normalized at the API boundary", () => {
     target_audience: "通勤",
     core_selling_points: "轻量、防漏",
     design_theme: "山野",
-    style_planning: " 花纹铺满杯身 ",
     style_keywords: "复古, 粗线条",
     color_preferences: "松绿、砂岩黄",
     excluded_elements: "Logo",
   });
   assert.deepEqual(payload.core_selling_points, ["轻量", "防漏"]);
   assert.deepEqual(payload.style_keywords, ["复古", "粗线条"]);
-  assert.equal(payload.style_planning, "花纹铺满杯身");
 });
 
 test("built-in v1 prompt carries the renamed batch-wide fields and never the element list", () => {
@@ -133,11 +112,10 @@ test("built-in v1 prompt carries the renamed batch-wide fields and never the ele
     ...EMPTY_POD_BUSINESS_FIELDS,
     product_name: "绗缝手提托特包",
     design_theme: "美式西南复古牛仔荒野风",
-    style_planning: "花纹铺满包身、提手处留白",
     style_keywords: "复古牛仔靴插画、沙漠仙人掌、绿松石配饰",
   });
   assert.ok(prompt.includes("主题整批统一风格：美式西南复古牛仔荒野风"));
-  assert.ok(prompt.includes("样式规划：花纹铺满包身、提手处留白"));
+  assert.ok(prompt.includes("内饰表面保持无花色的统一纯色（默认黑色）"));
   assert.ok(!prompt.includes("风格关键词"));
   assert.ok(!prompt.includes("复古牛仔靴插画"));
 });
@@ -146,8 +124,8 @@ test("pristine v1 snapshot detection follows the renamed labels", () => {
   const prompt = buildPromptV1({ ...EMPTY_POD_BUSINESS_FIELDS, product_name: "包" });
   assert.equal(isPristineCreativeEdit(prompt), true);
   assert.equal(isPristineCreativeEdit("手写的自定义方向：加一只小狗"), false);
-  // 旧版快照（含“设计主题/风格关键词”标签）不再视为 pristine，避免旧标签冻结。
-  const legacy = prompt.replace("主题整批统一风格：", "设计主题：").replace("样式规划：", "风格关键词：");
+  // 旧版快照（含“设计主题”标签）不再视为 pristine，避免旧标签冻结。
+  const legacy = prompt.replace("主题整批统一风格：", "设计主题：");
   assert.equal(isPristineCreativeEdit(legacy), false);
 });
 

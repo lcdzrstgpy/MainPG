@@ -395,12 +395,6 @@
 .pod-business-editor > .pod-business-fields > label > :is(input, textarea) { min-height: var(--pod-business-row-height); }
 .pod-business-editor > .pod-business-fields > label > input { height: var(--pod-business-row-height); }
 .pod-business-editor > .pod-business-fields > label > textarea { height: var(--pod-business-row-height); overflow-y: hidden; resize: none; }
-/* 「样式规划」改为二选一：与相邻业务字段同排（98px 标签列 + 控件列），视觉与 label 行一致。 */
-.pod-business-editor > .pod-business-fields > .pod-style-planning { display: grid; grid-template-columns: 98px minmax(0, 1fr); align-items: stretch; gap: 8px; min-height: var(--pod-business-row-height, 36px); }
-.pod-style-planning > span { display: flex; align-items: center; min-height: var(--pod-business-row-height, 36px); padding: 0 10px; border-radius: 7px; color: var(--pod-text); background: var(--pod-surface-tint); font-size: .67rem; font-weight: 800; }
-.pod-style-planning > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
-.pod-style-planning button { min-width: 0; min-height: var(--pod-business-row-height, 36px); border: 1px solid var(--pod-border); border-radius: 7px; color: var(--pod-text-secondary); background: var(--pod-surface-soft); font-size: .65rem; font-weight: 800; }
-.pod-style-planning button.is-active { border-color: var(--pod-primary); color: var(--pod-primary); background: color-mix(in srgb, var(--pod-primary) 8%, var(--pod-surface)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pod-primary) 28%, transparent); }
 .pod-advanced-prompt { margin-top: 12px; }
 .pod-volume-inline { display: flex; align-items: end; justify-content: space-between; gap: 8px; margin: 14px 1px 8px; }
 .pod-volume-inline b { font-size: .72rem; }
@@ -662,8 +656,7 @@
   .pod-business-fields { grid-template-columns: 1fr; }
   .pod-business-fields label,
   .pod-business-fields label.is-wide,
-  .pod-business-fields label.is-multiline,
-  .pod-business-fields .pod-style-planning { grid-template-columns: 92px minmax(0, 1fr); }
+  .pod-business-fields label.is-multiline { grid-template-columns: 92px minmax(0, 1fr); }
   .pod-count-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .pod-current-template-body { grid-template-columns: 104px minmax(0, 1fr); gap: 12px; }
   .pod-current-template-body dl { grid-template-columns: 1fr; gap: 7px; }

@@ -20,8 +20,6 @@ function joinBriefList(values: string[]): string {
 /**
  * 把接口返回的数组型字段用「、」连接成草稿字符串，口径与
  * businessFieldsForApi 里的 splitBusinessField 对齐（可往返）。
- *
- * 刻意不含 `style_planning`：该项由用户二选一，AI 结果不得覆盖。
  */
 export function briefFieldsToDraft(fields: PodBusinessFields): PodBriefFieldsDraft {
   return {
@@ -37,7 +35,7 @@ export function briefFieldsToDraft(fields: PodBusinessFields): PodBriefFieldsDra
   };
 }
 
-/** 生成结果直接覆盖同名字段，未涉及字段（含 style_planning）保持用户当前值。 */
+/** 生成结果直接覆盖同名字段，未涉及的字段保持用户当前值。 */
 export function mergeBusinessFields(
   current: PodBusinessFieldsDraft,
   incoming: Partial<PodBusinessFieldsDraft>,

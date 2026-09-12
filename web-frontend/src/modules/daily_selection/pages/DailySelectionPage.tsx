@@ -144,6 +144,59 @@ function numberOrUndefined(value: string): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+/**
+ * 采集筛选区间的自洽检查：与后端 DailySelectionCriteria 的模型级校验同一口径，
+ * 提交前就拦掉不自洽的区间，避免请求打到后端才失败——后端的校验错误经异步采集
+ * 任务回传，用户只会看到一条提示，定位不到具体字段。
+ */
+function collectionFilterError(input: {
+  minPrice: string;
+  maxPrice: string;
+  minMoq: string;
+  minSkuCount: string;
+  maxSkuCount: string;
+  minSkuPrice: string;
+  maxSkuPrice: string;
+  minSkuStock: string;
+  maxSkuStock: string;
+}): string | undefined {
+  const orderedRanges = [
+    ["最低价", "最高价", input.minPrice, input.maxPrice],
+    ["SKU 最低价", "SKU 最高价", input.minSkuPrice, input.maxSkuPrice],
+    ["SKU 数量下限", "SKU 数量上限", input.minSkuCount, input.maxSkuCount],
+    ["SKU 最低库存", "SKU 最高库存", input.minSkuStock, input.maxSkuStock],
+  ] as const;
+  for (const [minLabel, maxLabel, rawMin, rawMax] of orderedRanges) {
+    const min = numberOrUndefined(rawMin);
+    const max = numberOrUndefined(rawMax);
+    if (min !== undefined && max !== undefined && min > max) {
+      return `${minLabel}不能高于${maxLabel}`;
+    }
+  }
+  const positiveIntegers = [
+    ["最小起订量", input.minMoq],
+    ["SKU 数量下限", input.minSkuCount],
+    ["SKU 最低库存", input.minSkuStock],
+  ] as const;
+  for (const [label, raw] of positiveIntegers) {
+    const value = numberOrUndefined(raw);
+    if (value !== undefined && (!Number.isInteger(value) || value < 1)) {
+      return `${label}必须是大于 0 的整数`;
+    }
+  }
+  const nonNegativePrices = [
+    ["最低价", input.minPrice],
+    ["最高价", input.maxPrice],
+    ["SKU 最低价", input.minSkuPrice],
+    ["SKU 最高价", input.maxSkuPrice],
+  ] as const;
+  for (const [label, raw] of nonNegativePrices) {
+    const value = numberOrUndefined(raw);
+    if (value !== undefined && value < 0) return `${label}不能为负数`;
+  }
+  return undefined;
+}
+
 function formatDate(value: string): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN", { hour12: false });
@@ -937,6 +990,21 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     }
     if (mode === "image" && !referenceImageUrl.trim()) {
       setError("请填写可公开访问的参考图 URL");
+      return;
+    }
+    const filterError = collectionFilterError({
+      minPrice,
+      maxPrice,
+      minMoq,
+      minSkuCount,
+      maxSkuCount,
+      minSkuPrice,
+      maxSkuPrice,
+      minSkuStock,
+      maxSkuStock,
+    });
+    if (filterError) {
+      setError(`筛选条件有误：${filterError}`);
       return;
     }
 

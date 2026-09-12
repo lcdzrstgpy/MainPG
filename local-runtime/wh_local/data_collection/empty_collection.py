@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
 
 from .collector import DailySelectionCollector
-from .criteria import DailySelectionCriteria
+from .criteria import validate_criteria
 from .filtering import filter_and_score_candidates
 
 
@@ -199,7 +199,7 @@ class EmptyCollectionRetryRunner:
                 job.updated_at = _now()
             self._persist(actor, job)
             return
-        criteria = DailySelectionCriteria.model_validate(dict(run.criteria))
+        criteria = validate_criteria(dict(run.criteria))
         max_rounds = _retry_rounds()
         for round_index in range(1, max_rounds + 1):
             if round_index > 1:

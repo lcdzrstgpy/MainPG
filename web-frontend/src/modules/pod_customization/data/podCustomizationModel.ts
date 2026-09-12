@@ -40,27 +40,10 @@ export const EMPTY_POD_BUSINESS_FIELDS: PodBusinessFieldsDraft = {
   target_audience: "",
   core_selling_points: "",
   design_theme: "",
-  style_planning: "",
   style_keywords: "",
   color_preferences: "",
   excluded_elements: "",
 };
-
-/**
- * 「样式规划」不再由用户自由填写：固定二选一（默认不选，必填拦截）。
- * 该值会作为批内硬性要求原文注入每一款的 Prompt，优先级高于配方建议。
- */
-export const POD_STYLE_PLANNING_OPTIONS = ["全覆盖", "半覆盖"] as const;
-export type PodStylePlanning = (typeof POD_STYLE_PLANNING_OPTIONS)[number];
-
-export function isPodStylePlanning(value: unknown): value is PodStylePlanning {
-  return typeof value === "string" && (POD_STYLE_PLANNING_OPTIONS as readonly string[]).includes(value);
-}
-
-/** 旧草稿里可能是任意自由文本；不是两项之一时视为未选择，交给用户重新选。 */
-export function normalizeStylePlanning(value: unknown): PodStylePlanning | "" {
-  return isPodStylePlanning(value) ? value : "";
-}
 
 export const EMPTY_POD_LISTING_FIELDS: PodListingFieldsDraft = {
   title_mode: "long",
@@ -240,7 +223,6 @@ export function buildPromptV1(fields: PodBusinessFieldsDraft): string {
     `目标人群：${valueOrFallback(fields.target_audience)}`,
     `核心卖点：${valueOrFallback(fields.core_selling_points)}`,
     `主题整批统一风格：${valueOrFallback(fields.design_theme)}`,
-    `样式规划：${valueOrFallback(fields.style_planning)}`,
     `偏好配色：${valueOrFallback(fields.color_preferences)}`,
     `禁用元素：${valueOrFallback(fields.excluded_elements)}`,
     "硬性规则：",
@@ -250,6 +232,7 @@ export function buildPromptV1(fields: PodBusinessFieldsDraft): string {
     "4. 不同款式必须使用不同图案、构图和创意配方，禁止复用上一款图案。",
     "5. 禁止复制模板原有图案、产品颜色、背景或场景；必须重新设计产品表面与展示环境。",
     "6. 不得添加未授权品牌、商标、版权角色、文字、水印或与禁用元素冲突的内容。",
+    "7. 带内饰/内衬的产品（如收纳筐、脏衣篓、束口袋内里）：内饰表面保持无花色的统一纯色（默认黑色），图案只印在产品外表面，严禁把外表面的花色、底纹延伸到内饰上。",
   ].join("\n");
 }
 
@@ -263,7 +246,7 @@ export function isPristineCreativeEdit(text: string | null | undefined): boolean
   // Structurally still the auto-generated v1 snapshot (just copied/stored from
   // the built-in prompt), not a hand-written creative direction. Such a snapshot
   // must follow business-field edits instead of freezing stale field values.
-  return ["产品名称：", "产品品类：", "目标市场：", "主题整批统一风格：", "样式规划：", "硬性规则："].every(
+  return ["产品名称：", "产品品类：", "目标市场：", "主题整批统一风格：", "硬性规则："].every(
     (label) => trimmed.includes(label),
   );
 }
@@ -276,7 +259,6 @@ export function businessFieldsSignature(fields: PodBusinessFieldsDraft): string 
     fields.target_audience,
     fields.core_selling_points,
     fields.design_theme,
-    fields.style_planning,
     fields.style_keywords,
     fields.color_preferences,
     fields.excluded_elements,
@@ -311,7 +293,6 @@ export function businessFieldsForApi(fields: PodBusinessFieldsDraft): PodBusines
     target_audience: fields.target_audience.trim(),
     core_selling_points: splitBusinessField(fields.core_selling_points),
     design_theme: fields.design_theme.trim(),
-    style_planning: fields.style_planning.trim(),
     style_keywords: splitBusinessField(fields.style_keywords),
     color_preferences: splitBusinessField(fields.color_preferences),
     excluded_elements: splitBusinessField(fields.excluded_elements),

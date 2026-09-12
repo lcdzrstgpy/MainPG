@@ -98,7 +98,6 @@ def test_direct_listing_prompt_never_renders_element_keywords() -> None:
     fields = BusinessFields(
         product_name="绗缝手提托特包",
         design_theme="美式西南复古牛仔荒野风",
-        style_planning="花纹铺满包身、提手处留白",
         style_keywords=["复古牛仔靴插画", "沙漠仙人掌"],
     )
     prompt = build_direct_listing_prompt(fields, "")
@@ -106,13 +105,12 @@ def test_direct_listing_prompt_never_renders_element_keywords() -> None:
     assert "复古牛仔靴插画" not in prompt
     assert "沙漠仙人掌" not in prompt
     assert "Batch-wide theme & style: 美式西南复古牛仔荒野风." in prompt
-    assert "Style planning (batch-wide hard requirements): 花纹铺满包身、提手处留白." in prompt
 
 
-def test_direct_listing_prompt_omits_style_planning_line_when_empty() -> None:
-    fields = BusinessFields(product_name="包", design_theme="主题", style_planning="")
+def test_direct_listing_prompt_keeps_interior_unprinted_rule() -> None:
+    fields = BusinessFields(product_name="收纳筐", design_theme="美式乡村")
     prompt = build_direct_listing_prompt(fields, "")
-    assert "Style planning" not in prompt
+    assert "keep the interior surface unprinted" in prompt
 
 
 def test_style_prompt_declares_assigned_elements_as_subject() -> None:
@@ -129,14 +127,13 @@ def test_style_prompt_instructs_invention_without_assignment() -> None:
     assert "本款未分配素材：必须在 Batch-wide theme & style 的主题内自创一个新元素" in prompt
 
 
-def test_style_prompt_keeps_planning_and_rendering_contracts() -> None:
+def test_style_prompt_keeps_theme_and_rendering_contracts() -> None:
     prompt = _style_prompt(
         {"design_theme": "牛仔荒野风", "color_preferences": ["暖陶土红", "绿松石蓝"]},
         3,
         style_elements=assign_style_elements(COWBOY_KEYWORDS, 3, "batch-a"),
     )
-    assert "主题整批统一风格与样式规划必须保持" in prompt
-    assert "必须以样式规划为准" in prompt
+    assert "主题整批统一风格必须保持，优先级高于本款配方建议" in prompt
     assert "整幅图案（含所有元素与底色）必须采用本款渲染工艺" in prompt
     assert "accent_colors=" in prompt
     assert "本款色彩重心：强调色" in prompt

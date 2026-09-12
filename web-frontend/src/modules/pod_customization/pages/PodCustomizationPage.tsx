@@ -12,7 +12,6 @@ import { TemplateLibraryDrawer } from "../components/TemplateLibraryDrawer";
 import { PodUnsavedTemplateConfirmDialog } from "../components/PodUnsavedTemplateConfirmDialog";
 import {
   POD_BATCH_COUNTS,
-  POD_STYLE_PLANNING_OPTIONS,
   EMPTY_SPEC_CARD,
   buildPromptV1,
   buildSpecCardCells,
@@ -25,7 +24,6 @@ import {
   isActivePodStyleTitleStatus,
   isSpecCardConfigured,
   groupPodStyleRows,
-  normalizeStylePlanning,
   resolveCreativePrompt,
   listingFieldsForApi,
   shouldPollPodBatch,
@@ -107,7 +105,6 @@ const BUSINESS_FIELDS: Array<{
   multiline?: boolean;
   required?: boolean;
   hint?: string;
-  control?: "style-planning";
 }> = [
   { key: "product_name", label: "产品名称", required: true },
   { key: "product_category", label: "产品品类", required: true },
@@ -119,13 +116,6 @@ const BUSINESS_FIELDS: Array<{
     label: "主题整批统一风格",
     required: true,
     hint: "整批统一的创意主题与风格基调，例如：美式西南复古牛仔荒野风、复古手绘插画风",
-  },
-  {
-    key: "style_planning",
-    label: "样式规划",
-    required: true,
-    control: "style-planning",
-    hint: "图案在包身的覆盖范围：全覆盖＝满版铺满；半覆盖＝局部铺满、其余留白。",
   },
   {
     key: "style_keywords",
@@ -176,7 +166,6 @@ const EMPTY_BUSINESS_FIELDS_FOR_SWITCH: Record<keyof PodBusinessFieldsDraft, str
   target_audience: "",
   core_selling_points: "",
   design_theme: "",
-  style_planning: "",
   style_keywords: "",
   color_preferences: "",
   excluded_elements: "",
@@ -212,10 +201,8 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   const [selectedTemplateId, setSelectedTemplateId] = useState(initialDraft.state.selected_template_id);
   const [selectedTemplateSnapshot, setSelectedTemplateSnapshot] = useState<PodTemplate | null>(null);
   const [selectedItemId, setSelectedItemId] = useState<string>();
-  // 旧草稿里的 style_planning 可能是自由文本：二选一后只接受「全覆盖 / 半覆盖」，其余视为未选择。
   const [businessFields, setBusinessFields] = useState<PodBusinessFieldsDraft>(() => ({
     ...initialDraft.state.business_fields,
-    style_planning: normalizeStylePlanning(initialDraft.state.business_fields.style_planning),
   }));
   const [briefHistory, setBriefHistory] = useState<PodBriefHistoryItem[]>(initialDraft.state.brief_history ?? []);
   const [listingFields, setListingFields] = useState<PodListingFieldsDraft>(initialDraft.state.listing_fields);
@@ -919,17 +906,10 @@ export function PodCustomizationPage({ isActive = true }: Props) {
             <PodBriefInput onGenerated={handleBriefGenerated} history={briefHistory} onSelectHistory={selectBriefHistory} />
             <div className="pod-business-fields">
               {BUSINESS_FIELDS.map((field, fieldIndex) => (
-                field.control === "style-planning"
-                  ? <div key={field.key} className="pod-style-planning" role="radiogroup" aria-label={field.label}>
-                    <span>{field.label}{field.required && <em>*</em>}{field.hint && <i className="pod-field-info" data-tip={field.hint} aria-hidden="true">ⓘ</i>}</span>
-                    <div>
-                      {POD_STYLE_PLANNING_OPTIONS.map((option) => <button key={option} type="button" role="radio" aria-checked={businessFields.style_planning === option} className={businessFields.style_planning === option ? "is-active" : ""} onClick={() => updateBusinessField("style_planning", option)}>{option}</button>)}
-                    </div>
-                  </div>
-                  : <label key={field.key} className={field.multiline ? "is-multiline" : ""}><span>{field.label}{field.required && <em>*</em>}{field.hint && <i className="pod-field-info" data-tip={field.hint} aria-hidden="true">ⓘ</i>}</span><textarea rows={1} ref={(el) => { businessTextareasRef.current[fieldIndex] = el; }} value={businessFields[field.key]} onChange={(event) => {
-                    updateBusinessField(field.key, event.currentTarget.value);
-                    autoGrowBusinessTextarea(event.currentTarget);
-                  }} /></label>
+                <label key={field.key} className={field.multiline ? "is-multiline" : ""}><span>{field.label}{field.required && <em>*</em>}{field.hint && <i className="pod-field-info" data-tip={field.hint} aria-hidden="true">ⓘ</i>}</span><textarea rows={1} ref={(el) => { businessTextareasRef.current[fieldIndex] = el; }} value={businessFields[field.key]} onChange={(event) => {
+                  updateBusinessField(field.key, event.currentTarget.value);
+                  autoGrowBusinessTextarea(event.currentTarget);
+                }} /></label>
               ))}
             </div>
             <div className="pod-advanced-prompt">

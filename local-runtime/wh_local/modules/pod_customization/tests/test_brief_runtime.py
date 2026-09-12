@@ -165,7 +165,7 @@ def test_validate_brief_fields_dedupes_and_requires_required_scalars() -> None:
 
 
 def test_validate_brief_fields_rejects_style_planning_from_the_provider() -> None:
-    """样式规划由用户在页面上二选一；provider 若擅自输出该字段，契约即判不合格。"""
+    """样式规划字段已被彻底删除；provider 若擅自输出该多余字段，契约即判不合格。"""
     with pytest.raises(ValueError, match="failed validation"):
         validate_brief_fields({**_fields(), "style_planning": "全覆盖"})
 
@@ -185,8 +185,8 @@ def test_generate_brief_fields_sends_theme_keyword_recipe_and_untrusted_notice()
 
     assert result.prompt_version == PROMPT_VERSION
     assert len(result.fields.style_keywords) == 45
-    # 样式规划不代填：固定返回空串，交给用户在页面上二选一。
-    assert result.fields.style_planning == ""
+    # 样式规划字段已被彻底删除：契约里不再有该键。
+    assert not hasattr(result.fields, "style_planning")
     assert outcomes == [("brf1:brief:1", "success")]
 
     request = session.requests[0]
