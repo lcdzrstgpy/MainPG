@@ -34,8 +34,9 @@ from .title_runtime import PodTitleRequest, visual_signature
 # Inactivity deadline for a running batch. A batch that produces no durable
 # progress (no provider result, no post-process completion, no title) for this
 # many seconds will be reaped by the live reaper and its epoch revoked.
-# Must be above the ai_runtime provider polling ceiling (600 s) so a legitimately
-# slow but still-progressing style is not reaped mid-flight.
+# Must stay above the per-call provider segment timeout
+# (SUCHUANG_RESULT_TIMEOUT_SECONDS) plus that style's single retry, so a
+# legitimately slow but still-progressing style is not reaped mid-flight.
 POD_PROGRESS_TIMEOUT_SECONDS: int = 900
 
 # How often the deadline-aware wait loop polls for new completions.

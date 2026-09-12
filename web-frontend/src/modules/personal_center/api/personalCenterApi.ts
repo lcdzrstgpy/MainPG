@@ -232,6 +232,21 @@ export function saveImageModel(model: string) {
   );
 }
 
+export type PodImageModelSetting = ImageModelSetting;
+
+/** 读取 POD 独立生图模型，不跟随 AI处理 的模型配置。 */
+export function loadPodImageModel() {
+  return httpJson<PodImageModelSetting>("/desktop/basic-settings/pod-image-model");
+}
+
+/** 切换 POD 独立生图模型。 */
+export function savePodImageModel(model: string) {
+  return httpJson<{ ok: boolean; model: string; message: string }>(
+    "/desktop/basic-settings/pod-image-model",
+    { method: "PUT", body: { model } },
+  );
+}
+
 // ---- 意见反馈 ----
 export type FeedbackCategory = "bug" | "suggestion" | "other";
 export type FeedbackStatus = "new" | "processing" | "resolved";

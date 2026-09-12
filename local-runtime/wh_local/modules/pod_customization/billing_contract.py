@@ -19,6 +19,10 @@ _PRODUCT_BATCH_FEATURES: tuple[tuple[PodFeature, str], ...] = (
 # 每个款式预留的标题调用次数。与 title_runtime.MAX_ATTEMPTS 保持一致；标题重生不额外计费。
 TITLE_ATTEMPTS = 5
 
+# 智能前置层一次生成预留的文本调用次数：与契约修复重试上限一致。
+# 这些调用全部记为 pod.title —— 服务端对 POD 画像的纯 title scope 显式零计费。
+BRIEF_ATTEMPTS = 3
+
 
 class PodBillingAuthorizationRequired(RuntimeError):
     """The durable billing action must pause until a fresh grant is issued."""
@@ -96,6 +100,22 @@ class PodCallPlan:
                 for attempt in range(1, TITLE_ATTEMPTS + 1)
             )
         return cls(idempotency_key=f"pod:trial:{trial_id}", calls=tuple(calls))
+
+    @classmethod
+    def for_brief(cls, brief_id: str) -> "PodCallPlan":
+        """智能前置层：一次模糊输入 → 结构化业务字段。
+
+        只冻结 ``pod.title`` 文本调用。服务端对 POD 画像的纯 title scope 显式零计费
+        （``billing.py`` 的 ``set(normalized_scope) == {"title"}`` 分支），所以该动作免费，
+        但仍然复用冻结 → 发放短期密钥 → 结算的完整底座与幂等键。
+        """
+        return cls(
+            idempotency_key=f"pod:brief:{brief_id}",
+            calls=tuple(
+                PodPlannedCall(f"{brief_id}:brief:{attempt}", "pod.title")
+                for attempt in range(1, BRIEF_ATTEMPTS + 1)
+            ),
+        )
 
     @classmethod
     def for_style_retry(cls, action_id: str, *, include_title: bool) -> "PodCallPlan":

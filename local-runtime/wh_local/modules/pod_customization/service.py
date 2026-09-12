@@ -28,12 +28,14 @@ from .billing_contract import (
 from .contracts import (
     BatchCreate,
     BatchRetryFailedCreate,
+    BriefFieldRequest,
     Calibration,
     DirectListingTrialCreate,
     NormalizedPoint,
     NormalizedRect,
     validate_spec_card,
 )
+from .brief_runtime import PodBriefRequest
 from .export import (
     DianxiaomiExport,
     PodWorkbookExport,
@@ -113,6 +115,7 @@ class PodCustomizationService:
         ai_runtime: PodAiRuntime,
         *,
         title_runtime: Any | None = None,
+        brief_runtime: Any | None = None,
         billing_coordinator: PodBillingCoordinator | None = None,
         start_workers: bool = True,
     ) -> None:
@@ -120,6 +123,7 @@ class PodCustomizationService:
         self.assets = PodAssetStore(asset_root)
         self.ai_runtime = ai_runtime
         self.title_runtime = title_runtime
+        self.brief_runtime = brief_runtime
         self.billing_coordinator = billing_coordinator
         self.repository = PodCustomizationRepository(self.database_path)
         self.export_records = PodExportRecordStore(self.database_path)
@@ -438,6 +442,47 @@ class PodCustomizationService:
     def list_direct_listing_trials(self, actor: Actor) -> dict[str, Any]:
         rows, total = self.repository.list_direct_listing_trials(actor.workspace_id, actor.id)
         return {"trials": [self._direct_listing_trial_payload(row) for row in rows], "total": total}
+
+    def generate_brief_fields(self, actor: Actor, request: BriefFieldRequest) -> dict[str, Any]:
+        """智能前置层：一句模糊输入 → 结构化业务字段。
+
+        动作免费（服务端对 POD 画像的纯 title scope 显式零计费），但仍走完整的
+        冻结 → 发放短期密钥 → 调用 → 结算流程，保留幂等键与审计。
+        """
+        if self.brief_runtime is None:
+            raise RuntimeError("POD 智能填写服务未启用")
+        brief_id = uuid.uuid4().hex
+        billing_run = self._freeze_brief(actor, brief_id)
+        try:
+            return self._run_brief_fields_authorized(request, brief_id, billing_run)
+        except PodBillingAuthorizationRequired as exc:
+            raise RuntimeError(str(exc)) from exc
+        finally:
+            billing_run.settle()
+
+    def _run_brief_fields_authorized(
+        self,
+        request: BriefFieldRequest,
+        brief_id: str,
+        billing_run: PodBillingRun,
+    ) -> dict[str, Any]:
+        call_ids = tuple(
+            call.call_id for call in billing_run.plan.calls if call.feature == "pod.title"
+        )
+        result = self.brief_runtime.generate_brief_fields(
+            PodBriefRequest(brief_id=brief_id, brief=request.brief, locale=request.locale),
+            grant=billing_run.grant,
+            call_id=call_ids[0],
+            call_ids=call_ids,
+            on_start=lambda call_id: billing_run.start(call_id, "pod.title"),
+            on_outcome=lambda call_id, status: billing_run.record(call_id, "pod.title", status),
+        )
+        return {
+            "brief_id": brief_id,
+            "prompt_version": result.prompt_version,
+            "model": result.model,
+            "fields": result.fields.model_dump(),
+        }
 
     def list_batches(self, actor: Actor, *, limit: int = 20, offset: int = 0) -> dict[str, Any]:
         rows, total = self.repository.list_batches(
@@ -1593,6 +1638,20 @@ class PodCustomizationService:
             target_id=trial_id,
             batch_id="",
             action_payload=request.model_dump(mode="json"),
+        )
+
+    def _freeze_brief(self, actor: Actor, brief_id: str) -> PodBillingRun:
+        if self.billing_coordinator is None:
+            raise RuntimeError("POD billing coordinator is not configured")
+        plan = PodCallPlan.for_brief(brief_id)
+        # 不落库用户的模糊输入：方案 D4 明确生成内容不做后端持久化，这里只留模式标记。
+        return self._freeze_action(
+            actor,
+            plan,
+            action_type="title_retry",
+            target_id=brief_id,
+            batch_id="",
+            action_payload={"mode": "brief"},
         )
 
     def _freeze_style_retry(

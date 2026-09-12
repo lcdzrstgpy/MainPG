@@ -1,4 +1,4 @@
-import type { PodBusinessFieldsDraft, PodListingFieldsDraft, PodTemplate, SpecCardConfig } from "../types";
+import type { PodBriefHistoryItem, PodBusinessFieldsDraft, PodListingFieldsDraft, PodTemplate, SpecCardConfig } from "../types";
 
 export const POD_CUSTOMIZATION_DRAFT_VERSION = 3;
 const PREVIOUS_POD_CUSTOMIZATION_DRAFT_VERSION = 2;
@@ -27,6 +27,8 @@ export type PodCustomizationDraft = {
   selected_template_id: string;
   current_batch_edit: string | null;
   system_templates: PodSystemTemplate[];
+  // 智能前置层「最近生成」历史：与业务字段同一草稿生命周期，缺失/损坏时归一化为 []。
+  brief_history: PodBriefHistoryItem[];
 };
 
 export type PodDraftLoadResult = { state: PodCustomizationDraft; error?: string };
@@ -111,6 +113,7 @@ export function createEmptyPodCustomizationDraft(): PodCustomizationDraft {
     selected_template_id: "",
     current_batch_edit: null,
     system_templates: [],
+    brief_history: [],
   };
 }
 
@@ -242,7 +245,29 @@ function cloneDraft(state: PodCustomizationDraft): PodCustomizationDraft {
     selected_template_id: state.selected_template_id,
     current_batch_edit: state.current_batch_edit,
     system_templates: state.system_templates.map(cloneSystemTemplate),
+    // 后加的键：已存在的旧草稿缺失/损坏时退化为 []，而不是丢弃整份草稿。
+    brief_history: briefHistoryOrDefault(state.brief_history),
   };
+}
+
+function briefHistoryOrDefault(value: unknown): PodBriefHistoryItem[] {
+  return isBriefHistory(value) ? value.map(cloneBriefHistoryItem) : [];
+}
+
+function cloneBriefHistoryItem(item: PodBriefHistoryItem): PodBriefHistoryItem {
+  return { ...item, fields: { ...item.fields } };
+}
+
+function isBriefHistory(value: unknown): value is PodBriefHistoryItem[] {
+  return Array.isArray(value) && value.every(isBriefHistoryItem);
+}
+
+function isBriefHistoryItem(value: unknown): value is PodBriefHistoryItem {
+  return isRecord(value)
+    && typeof value.id === "string"
+    && typeof value.input === "string"
+    && isBusinessFields(value.fields)
+    && typeof value.created_at === "string";
 }
 
 function specCardOrDefault(value: unknown): SpecCardConfig {
@@ -277,7 +302,9 @@ function isPodCustomizationDraft(value: unknown): value is PodCustomizationDraft
     && typeof value.selected_template_id === "string"
     && (typeof value.current_batch_edit === "string" || value.current_batch_edit === null)
     && Array.isArray(value.system_templates)
-    && value.system_templates.every(isPodSystemTemplate);
+    && value.system_templates.every(isPodSystemTemplate)
+    // brief_history 为后加的键：缺失时视为 []（cloneDraft 归一化），不丢弃旧草稿。
+    && (value.brief_history === undefined || isBriefHistory(value.brief_history));
 }
 
 function isBusinessFields(value: unknown): value is PodBusinessFieldsDraft {
@@ -312,7 +339,7 @@ type PreviousPodListingFieldsDraft = Omit<PodListingFieldsDraft, "skus"> & {
   skus: PreviousPodSkuDraft[];
 };
 
-type PreviousPodCustomizationDraft = Omit<PodCustomizationDraft, "version" | "listing_fields" | "spec_card"> & {
+type PreviousPodCustomizationDraft = Omit<PodCustomizationDraft, "version" | "listing_fields" | "spec_card" | "brief_history"> & {
   version: typeof PREVIOUS_POD_CUSTOMIZATION_DRAFT_VERSION;
   listing_fields: PreviousPodListingFieldsDraft;
 };
@@ -329,7 +356,7 @@ type LegacyPodListingFieldsDraft = {
   sku_names?: string[];
 };
 
-type LegacyPodCustomizationDraft = Omit<PodCustomizationDraft, "version" | "listing_fields" | "spec_card"> & {
+type LegacyPodCustomizationDraft = Omit<PodCustomizationDraft, "version" | "listing_fields" | "spec_card" | "brief_history"> & {
   version: typeof LEGACY_POD_CUSTOMIZATION_DRAFT_VERSION;
   listing_fields: LegacyPodListingFieldsDraft;
 };
@@ -409,6 +436,8 @@ function migrateDraft(legacy: PreviousPodCustomizationDraft | LegacyPodCustomiza
       version: POD_CUSTOMIZATION_DRAFT_VERSION,
       // 旧草稿没有规格卡配置，迁移时补一张空白表（= 未配置，提交时会被必填拦截）。
       spec_card: createEmptySpecCard(),
+      // 旧草稿没有智能填写历史，迁移时补空数组。
+      brief_history: [],
       listing_fields: {
         title_mode: previousListing.title_mode,
         declared_price: previousListing.declared_price,
@@ -424,6 +453,7 @@ function migrateDraft(legacy: PreviousPodCustomizationDraft | LegacyPodCustomiza
     ...rest,
     version: POD_CUSTOMIZATION_DRAFT_VERSION,
     spec_card: createEmptySpecCard(),
+    brief_history: [],
     listing_fields: {
       title_mode: legacyListing.title_mode,
       declared_price: legacyListing.declared_price,

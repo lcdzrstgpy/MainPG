@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 
 from ...session import Actor, actor_from_authorization, require_admin
-from .schemas import ImageModelSelection, SystemConfigUpdate
+from .schemas import ImageModelSelection, PodImageModelSelection, SystemConfigUpdate
 from .service import SystemConfigService
 
 
@@ -43,6 +43,18 @@ def create_router(database_path: Path) -> APIRouter:
     ) -> dict[str, Any]:
         # 只改生图模型，不动系统配置的其他字段（避免整表 PUT 清空 cos 等未提交字段）。
         return service.save_image_model(payload.model, actor_id=actor.id)
+
+    @router.get("/pod-image-model")
+    def get_pod_image_model(actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
+        # POD 使用独立模型配置，不跟随 AI处理 的生图模型。
+        return service.get_pod_image_model()
+
+    @router.put("/pod-image-model")
+    def save_pod_image_model(
+        payload: PodImageModelSelection,
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        return service.save_pod_image_model(payload.model, actor_id=actor.id)
 
     @router.post("/system-config/publish")
     def publish_system_config(actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:

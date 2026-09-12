@@ -71,6 +71,11 @@ def register_system_config_db_path(db_path: str | Path) -> None:
     _system_config_db_path = str(db_path)
 
 
+def registered_system_config_db_path() -> str | None:
+    """返回应用组合根注册的系统配置数据库路径。"""
+    return _system_config_db_path
+
+
 def _try_system_runtime_config() -> Any | None:
     """尝试从 BasicSettings 数据库加载 RuntimeSystemConfig，失败返回 None。"""
     db_path = _system_config_db_path

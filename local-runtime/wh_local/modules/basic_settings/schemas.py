@@ -65,6 +65,12 @@ class ImageModelSelection(BaseModel):
     model: str = ""
 
 
+class PodImageModelSelection(BaseModel):
+    """个人中心提交的 POD 独立生图模型名。"""
+
+    model: str = ""
+
+
 class SystemConfigUpdate(BaseModel):
     """系统配置页面一次保存提交的完整表单。"""
 

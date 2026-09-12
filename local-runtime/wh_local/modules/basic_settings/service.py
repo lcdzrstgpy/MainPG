@@ -93,6 +93,7 @@ def default_system_config() -> dict[str, Any]:
             "model": "gpt-image-2-2k",
             "reference_model": "gpt-image-2-2k",
         },
+        "pod_image": {"model": IMAGE_MODEL_DEFAULT},
         "backup_image": {"base_url": "", "model": "", "reference_model": ""},
         "cos": {"bucket": "", "region": "ap-guangzhou"},
         "limits": {
@@ -307,6 +308,50 @@ class SystemConfigService:
             )
         return {"ok": True, "model": selected, "message": "生图模型已切换"}
 
+    def get_pod_image_model(self) -> dict[str, Any]:
+        """读取 POD 独立生图模型与可选项。"""
+        config = self._load_raw_config()
+        return {
+            "ok": True,
+            "model": _normalized_image_model(config["pod_image"].get("model")),
+            "choices": [{"value": value, "label": label} for value, label in IMAGE_MODEL_CHOICES],
+        }
+
+    def save_pod_image_model(self, model: str, actor_id: str) -> dict[str, Any]:
+        """只修改 POD 生图模型，不影响 AI处理 的图片模型。"""
+        selected = _normalized_image_model(model)
+        config = self._load_raw_config()
+        config["pod_image"]["model"] = selected
+        now = utc_now()
+        with transaction(self.database_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO workbench_settings(key, value_json, updated_by, updated_at)
+                VALUES(?, ?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value_json = excluded.value_json,
+                    updated_by = excluded.updated_by,
+                    updated_at = excluded.updated_at
+                """,
+                (CONFIG_KEY, json.dumps(config, ensure_ascii=False, sort_keys=True), actor_id, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO action_logs(actor_id, action, target_type, target_id, request_json, result_json, created_at)
+                VALUES(?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    actor_id,
+                    "system_config.pod_image_model",
+                    "system_config",
+                    CONFIG_KEY,
+                    json.dumps({"model": selected}, ensure_ascii=False, sort_keys=True),
+                    json.dumps({"ok": True}, ensure_ascii=False),
+                    now,
+                ),
+            )
+        return {"ok": True, "model": selected, "message": "POD 生图模型已切换"}
+
     def _load_raw_config(self) -> dict[str, Any]:
         # 数据库没有保存过配置时，直接返回默认配置，保证页面首次打开也能渲染。
         with transaction(self.database_path) as conn:
@@ -325,6 +370,7 @@ class SystemConfigService:
         return {
             "ai": dict(config["ai"]),
             "image": dict(config["image"]),
+            "pod_image": dict(config["pod_image"]),
             "backup_image": dict(config["backup_image"]),
             "cos": dict(config["cos"]),
             "limits": dict(config["limits"]),
@@ -369,6 +415,9 @@ class SystemConfigService:
                 "base_url": PRIMARY_AI_BASE_URL,
                 "model": payload.image.model.strip(),
                 "reference_model": payload.image.reference_model.strip(),
+            },
+            "pod_image": {
+                "model": _normalized_image_model((current.get("pod_image") or {}).get("model")),
             },
             "backup_image": {
                 "base_url": payload.backup_image.base_url.strip(),
@@ -487,6 +536,8 @@ def _with_fixed_provider_defaults(config: dict[str, Any]) -> dict[str, Any]:
     """Keep provider defaults fixed even when an old local DB has stale values."""
     config["ai"]["base_url"] = PRIMARY_AI_BASE_URL
     config["image"]["base_url"] = PRIMARY_AI_BASE_URL
+    pod_image = config.setdefault("pod_image", {})
+    pod_image["model"] = _normalized_image_model(pod_image.get("model"))
     # 旧本地 DB 可能保存过 1k；产品处理默认要优先使用 2k，加载时自动迁移展示/运行值。
     if str(config["image"].get("model") or "").strip() in {"", "gpt-image-2", "gpt-image-2-1k"}:
         config["image"]["model"] = "gpt-image-2-2k"
