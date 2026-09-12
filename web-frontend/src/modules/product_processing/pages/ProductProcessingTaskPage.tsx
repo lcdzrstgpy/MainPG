@@ -96,6 +96,66 @@ function formatDuration(seconds?: number): string {
   return `${secs}秒`;
 }
 
+/** 进度平滑插值：轮询返回的是整数百分比，直接渲染会一格一格跳。
+ *  这里用 requestAnimationFrame 做指数缓动，让圆环与数字始终连续推进。
+ *  缓动状态收在独立组件内，逐帧重渲染只影响这个圆环，不拖累整页。 */
+function ProgressRing({ progress, running }: { progress: number; running: boolean }) {
+  const smooth = useSmoothProgress(progress);
+  return (
+    <div
+      className={`verify-progress-ring ${running ? 'is-live' : 'is-done'}`}
+      role="progressbar"
+      aria-label="处理进度"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={progress}
+    >
+      <span className="verify-progress-halo" aria-hidden="true" />
+      <svg viewBox="0 0 120 120" aria-hidden="true">
+        <defs>
+          <linearGradient id="verify-progress-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor="#2fe0e6" />
+            <stop offset="55%" stopColor="#0baec0" />
+            <stop offset="100%" stopColor="#2563eb" />
+          </linearGradient>
+        </defs>
+        <circle className="verify-progress-track" cx="60" cy="60" r="52" pathLength="100" />
+        {running && (
+          <circle className="verify-progress-sweep" cx="60" cy="60" r="52" pathLength="100" aria-hidden="true" />
+        )}
+        <circle className="verify-progress-value" cx="60" cy="60" r="52" pathLength="100" strokeDashoffset={100 - smooth} />
+      </svg>
+      <div className="verify-progress-center">
+        <strong>{Math.round(smooth)}<em>%</em></strong>
+        <span>{running ? '处理中' : '已完成'}</span>
+      </div>
+    </div>
+  );
+}
+
+/** 进度平滑插值：把轮询得到的整数进度缓动成连续值。 */
+function useSmoothProgress(target: number): number {
+  const [value, setValue] = useState(target);
+  const valueRef = useRef(target);
+  useEffect(() => {
+    let raf = 0;
+    const tick = () => {
+      const diff = target - valueRef.current;
+      if (Math.abs(diff) < 0.05) {
+        valueRef.current = target;
+        setValue(target);
+        return;
+      }
+      valueRef.current += diff * 0.12;
+      setValue(valueRef.current);
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [target]);
+  return value;
+}
+
 export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, initialPremiumDraftIds, initialOptions, onOpenPrecheck }: Props) {
   const ctx = api();
   // 处理参数全部为系统默认（范围全开、全部数量、8 线程并行、自动补跑等），
@@ -485,21 +545,8 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
             {batch && (
               <>
                 {batch.total_count > 0 && (
-                  <div className="verify-progress-area">
-                    <div
-                      className={`verify-progress ${batchProcessing ? 'is-live' : 'is-done'}`}
-                      role="progressbar"
-                      aria-label="处理进度"
-                      aria-valuemin={0}
-                      aria-valuemax={100}
-                      aria-valuenow={progress}
-                    >
-                      <svg viewBox="0 0 46 46" aria-hidden="true">
-                        <circle className="verify-progress-track" cx="23" cy="23" r="18" pathLength="100" />
-                        <circle className="verify-progress-value" cx="23" cy="23" r="18" pathLength="100" strokeDashoffset={100 - progress} />
-                      </svg>
-                      <strong>{progress}%</strong>
-                    </div>
+                  <div className={`verify-progress-area ${batchProcessing ? 'is-live' : 'is-done'}`}>
+                    <ProgressRing progress={progress} running={batchProcessing} />
                     <div className="verify-progress-meta">
                       <strong>{taskPaused
                         ? '已暂停'

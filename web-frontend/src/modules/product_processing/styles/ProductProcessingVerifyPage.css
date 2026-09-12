@@ -267,61 +267,6 @@
   cursor: pointer;
 }
 
-/* 精品模式开关：一次 4K 智能生图，本地拆成四张高清独立图 */
-.pool-premium {
-  flex-shrink: 0;
-  padding-top: 40px;
-  display: grid;
-  place-items: center;
-}
-
-.premium-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 2px 8px;
-  border: 1px solid rgba(0, 0, 0, 0.12);
-  border-radius: 999px;
-  background: #f6f8fa;
-  color: #6b7280;
-  font-size: 0.62rem;
-  font-weight: 700;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.premium-toggle .iconfont {
-  font-size: 0.72rem;
-}
-
-.premium-toggle:hover {
-  border-color: rgba(212, 164, 32, 0.55);
-  color: #a87f0f;
-}
-
-.premium-toggle.active {
-  border-color: transparent;
-  background: linear-gradient(100deg, #e7b83c, #d4a420);
-  color: #fff;
-  box-shadow: 0 3px 8px rgba(212, 164, 32, 0.3);
-}
-
-.pool-card.premium {
-  border-color: rgba(212, 164, 32, 0.65);
-  box-shadow: 0 0 0 1px rgba(212, 164, 32, 0.35), 0 4px 14px rgba(212, 164, 32, 0.16);
-}
-
-.pool-premium-tag {
-  flex-shrink: 0;
-  padding: 1px 9px;
-  border-radius: 999px;
-  color: #fff;
-  background: linear-gradient(100deg, #e7b83c, #d4a420);
-  font-size: 0.64rem;
-  font-weight: 850;
-  box-shadow: 0 3px 8px rgba(212, 164, 32, 0.28);
-}
-
 /* SKU 规格图可用性判断通过：卡片左上角斜放绿色标签（仅内存态，不落库） */
 .pool-sku-availability-tag {
   position: absolute;
@@ -714,82 +659,6 @@
   display: flex;
   gap: 8px;
   align-items: center;
-}
-
-/* ── 视图分段切换（全部 / 只看已选） ── */
-.verify-view-toggle {
-  display: inline-flex;
-  align-items: center;
-  padding: 3px;
-  border: 1px solid #d6e6f1;
-  border-radius: 999px;
-  background: #eef5fa;
-}
-
-.verify-view-toggle button {
-  padding: 6px 14px;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: #5a7a94;
-  font-size: 0.8rem;
-  font-weight: 800;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: all 0.18s ease;
-}
-
-.verify-view-toggle button:hover:not(.is-active) {
-  color: #0a8fca;
-}
-
-.verify-view-toggle button.is-active {
-  color: #fff;
-  background: linear-gradient(100deg, #0a8fca, #0ab3c0);
-  box-shadow: 0 4px 10px rgba(10, 155, 202, 0.28);
-}
-
-/* ── 只看已选横幅 ── */
-.verify-selected-banner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 10px;
-  padding: 10px 14px;
-  margin-bottom: 10px;
-  border: 1px solid #9fe0ea;
-  border-radius: 12px;
-  color: #0b5f78;
-  background: linear-gradient(100deg, #eafcfe, #f0f9ff);
-  font-size: 0.84rem;
-}
-
-.verify-selected-banner strong {
-  color: #0a8fca;
-  font-size: 0.95rem;
-}
-
-.verify-selected-banner-acts {
-  display: flex;
-  gap: 8px;
-}
-
-.verify-selected-banner-acts button {
-  padding: 5px 12px;
-  border: 1px solid #9fd4e8;
-  border-radius: 999px;
-  background: #fff;
-  color: #11627f;
-  font-size: 0.76rem;
-  font-weight: 800;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.verify-selected-banner-acts button:hover {
-  border-color: #13a9f2;
-  box-shadow: 0 4px 10px rgba(19, 169, 242, 0.18);
 }
 
 .verify-pool-search-wrap {
@@ -3054,75 +2923,137 @@
   color: #b06a00;
 }
 
-/* ── 处理进度（环形，参考产品采集进度条） ── */
+/* ── 处理进度：大圆环为主体，rAF 缓动 + 流光 + 呼吸光晕 ── */
 .verify-progress-area {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 16px;
-  margin-bottom: 14px;
-  padding: 12px 14px;
+  gap: 24px;
+  margin-bottom: 16px;
+  padding: 18px 24px;
   border: 1px solid #d8e7f2;
-  border-radius: 12px;
-  background: #f4faff;
+  border-radius: 16px;
+  background: radial-gradient(130% 170% at 0% 0%, #f2fbff 0%, #e9f5fd 48%, #f8fcff 100%);
+  overflow: hidden;
+}
+/* 处理中缓慢扫过的光泽，强调「一直在动」 */
+.verify-progress-area::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(115deg, transparent 38%, rgba(255, 255, 255, 0.75) 50%, transparent 62%);
+  transform: translateX(-130%);
+}
+.verify-progress-area.is-live::after {
+  animation: verify-progress-sheen 2.8s ease-in-out infinite;
 }
 
-.verify-progress {
+.verify-progress-ring {
   position: relative;
-  flex: 0 0 46px;
-  width: 46px;
-  height: 46px;
-  filter: drop-shadow(0 5px 9px rgba(8, 145, 189, 0.14));
+  flex: 0 0 132px;
+  width: 132px;
+  height: 132px;
 }
-.verify-progress svg {
+.verify-progress-ring svg {
   display: block;
   width: 100%;
   height: 100%;
   transform: rotate(-90deg);
+  overflow: visible;
 }
-.verify-progress circle {
+.verify-progress-ring circle {
   fill: none;
-  stroke-width: 4;
+  stroke-width: 8;
 }
 .verify-progress-track {
   stroke: #dcecf3;
 }
+/* 弧长由 rAF 每帧写入，不能再叠 CSS transition，否则会持续追不上目标值 */
 .verify-progress-value {
-  stroke: #0baec0;
+  stroke: url(#verify-progress-gradient);
   stroke-linecap: round;
   stroke-dasharray: 100;
-  transition: stroke-dashoffset 0.36s ease;
+  filter: drop-shadow(0 4px 10px rgba(11, 174, 192, 0.32));
 }
-.verify-progress.is-live .verify-progress-value {
-  animation: verify-progress-glow 1.35s ease-in-out infinite;
+/* 处理中：一条短弧绕圈流动，直观表达「正在跑」 */
+.verify-progress-sweep {
+  stroke: rgba(37, 99, 235, 0.5);
+  stroke-linecap: round;
+  stroke-dasharray: 8 92;
+  animation: verify-progress-sweep 1.8s linear infinite;
 }
-.verify-progress strong {
+.verify-progress-halo {
+  position: absolute;
+  inset: -12px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(11, 174, 192, 0.3) 0%, rgba(11, 174, 192, 0) 68%);
+  opacity: 0;
+  pointer-events: none;
+}
+.verify-progress-ring.is-live .verify-progress-halo {
+  animation: verify-progress-halo 2.4s ease-in-out infinite;
+}
+.verify-progress-ring.is-live .verify-progress-value {
+  animation: verify-progress-breathe 2.4s ease-in-out infinite;
+}
+.verify-progress-center {
   position: absolute;
   inset: 0;
-  display: grid;
-  place-items: center;
-  color: #147a9b;
-  font-size: 0.65rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+}
+.verify-progress-center strong {
+  color: #0a3a63;
+  font-size: 1.72rem;
+  line-height: 1;
+  letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
 }
+.verify-progress-center strong em {
+  margin-left: 1px;
+  color: #147a9b;
+  font-size: 0.8rem;
+  font-style: normal;
+}
+.verify-progress-center span {
+  color: #5a738c;
+  font-size: 0.7rem;
+}
 
-@keyframes verify-progress-glow {
-  0%, 100% { filter: drop-shadow(0 0 1px rgba(9, 174, 192, 0.2)); }
-  50% { filter: drop-shadow(0 0 4px rgba(9, 174, 192, 0.55)); }
+@keyframes verify-progress-sweep {
+  from { stroke-dashoffset: 100; }
+  to { stroke-dashoffset: 0; }
+}
+@keyframes verify-progress-breathe {
+  0%, 100% { opacity: 0.86; }
+  50% { opacity: 1; }
+}
+@keyframes verify-progress-halo {
+  0%, 100% { opacity: 0.25; transform: scale(0.95); }
+  50% { opacity: 0.8; transform: scale(1.05); }
+}
+@keyframes verify-progress-sheen {
+  0% { transform: translateX(-130%); }
+  60%, 100% { transform: translateX(130%); }
 }
 
 .verify-progress-meta {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
   min-width: 0;
 }
 .verify-progress-meta > strong {
   color: #0a3a63;
-  font-size: 0.92rem;
+  font-size: 1rem;
 }
 .verify-progress-meta > span {
   color: #5a738c;
-  font-size: 0.78rem;
+  font-size: 0.8rem;
 }
 .verify-progress-meta b {
   color: #0a8fca;
@@ -3776,13 +3707,6 @@
 .verify-pool-stats .is-hidden-selection i.iconfont,
 .verify-pool-stats .is-hidden-selection em { color: #b36b00; }
 .verify-pool-stats .is-hidden-selection em { font-style: normal; font-size: .72rem; }
-
-/* 视图切换图标 */
-.verify-view-toggle button .iconfont {
-  font-size: 0.88rem;
-  margin-right: 4px;
-  vertical-align: -2px;
-}
 
 /* 卡片内标签图标 */
 .pool-label .iconfont {

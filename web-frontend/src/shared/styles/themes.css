@@ -1365,7 +1365,6 @@
   .verify-history button,
   .verify-row-actions button,
   .btn-mini,
-  .verify-selected-banner-acts button,
   .verify-sku header button,
   .verify-pagination button,
   .verify-pagination-pages button,
@@ -1399,7 +1398,6 @@
   .sku-batch-foot button.primary,
   .verify-pagination button.current,
   .verify-pagination-pages button.active,
-  .verify-view-toggle button.is-active,
   .verify-hide-single:has(input:checked)
 ) {
   border-color: #f8fafc;
@@ -1423,7 +1421,6 @@
 [data-theme="diamond"] .verify-page :is(
   .verify-page-size,
   .verify-sku-filter,
-  .verify-view-toggle,
   .verify-hide-single,
   .verify-scope-check,
   .verify-count,
@@ -1477,13 +1474,6 @@
   color: var(--theme-text-secondary);
   background: var(--theme-module-surface-soft);
 }
-
-[data-theme="diamond"] .verify-page .verify-selected-banner {
-  border-color: var(--theme-module-border-strong);
-  color: var(--theme-text-primary);
-  background: linear-gradient(105deg, #24272e, #30343c);
-}
-[data-theme="diamond"] .verify-page .verify-selected-banner strong { color: #ffffff; }
 
 [data-theme="diamond"] .verify-page .verify-pool-history-entry button,
 [data-theme="diamond"] .verify-page .history-collection-trigger {
@@ -2029,8 +2019,7 @@
   .profit-site-check-group label.is-active,
   .draft-pagination button.current,
   .verify-pagination button.current,
-  .verify-pagination-pages button.active,
-  .verify-view-toggle button.active
+  .verify-pagination-pages button.active
 ) {
   color: var(--theme-on-primary);
   border-color: var(--theme-primary);
@@ -2316,8 +2305,6 @@
   .draft-pagination button.current,
   .verify-pagination button.current,
   .verify-pagination-pages button.active,
-  .verify-view-toggle button.is-active,
-  .verify-view-toggle button.active,
   .verify-hide-single:has(input:checked),
   .price-verification-source-link-button.is-linked,
   .price-verification-source-linked-group button.is-active,
@@ -2364,8 +2351,6 @@
   .draft-pagination button.current,
   .verify-pagination button.current,
   .verify-pagination-pages button.active,
-  .verify-view-toggle button.is-active,
-  .verify-view-toggle button.active,
   .verify-hide-single:has(input:checked),
   .price-verification-source-link-button.is-linked,
   .price-verification-source-linked-group button.is-active,
@@ -2442,8 +2427,6 @@
   .draft-pagination button.current,
   .verify-pagination button.current,
   .verify-pagination-pages button.active,
-  .verify-view-toggle button.is-active,
-  .verify-view-toggle button.active,
   .verify-hide-single:has(input:checked),
   .price-verification-source-link-button.is-linked,
   .price-verification-source-linked-group button.is-active,
@@ -2473,8 +2456,6 @@
   .draft-pagination button.current,
   .verify-pagination button.current,
   .verify-pagination-pages button.active,
-  .verify-view-toggle button.is-active,
-  .verify-view-toggle button.active,
   .verify-hide-single:has(input:checked),
   .price-verification-source-link-button.is-linked,
   .price-verification-source-linked-group button.is-active,
@@ -4201,10 +4182,6 @@
 .product-processing-tabs button.is-active {
   color: var(--theme-primary) !important;
   border-bottom-color: var(--theme-primary) !important;
-}
-.verify-page .verify-view-toggle button.is-active {
-  color: var(--theme-on-primary) !important;
-  background: var(--theme-primary-button-gradient) !important;
 }
 :is(.precheck-card.is-edited, .precheck-card .precheck-thumb.is-main) {
   border-color: var(--theme-primary) !important;

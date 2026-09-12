@@ -3807,7 +3807,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
 
     # 草稿池「SKU 规格图可用性判断」：单条链接参与检测的 SKU 规格图数达到该值即整条跳过，
     # 避免一条链接几十张图把整批判断拖成分钟级。
-    _SKU_AVAILABILITY_MAX_IMAGES = 10
+    _SKU_AVAILABILITY_MAX_IMAGES = 20
 
     def check_draft_sku_availability(
         self,
@@ -3818,7 +3818,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         """草稿池级「SKU 规格图可用性判断」（严格口径 + 并行 OCR）。
 
         - 只检测 role="sku" 且已 ready 的规格图；本身没有规格图的链接判为不可用；
-        - 有规格图的 SKU 数 ≥ ``_SKU_AVAILABILITY_MAX_IMAGES``（10）的链接直接跳过；
+        - 只统计「当前仍保留在草稿里」的 SKU（``raw_payload.source_variant_records``）
+          对应的规格图，已删除 SKU 的历史绑定不计入；
+        - 有规格图的 SKU 数 ≥ ``_SKU_AVAILABILITY_MAX_IMAGES``（20）的链接直接跳过；
         - 严格口径：所有规格图都不含中文才算可用；任一张检出中文、或 OCR 推理失败
           （返回 ``None``）都判为不可用，不显示标签；
         - 所有图片一次性提交线程池并行 OCR，实际并发受 ocr_gate 推理上限约束。
@@ -3840,9 +3842,12 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 plan.update(status="missing", reason="media_registry_unavailable")
                 continue
             groups = self.media_assets.list_draft_media(workspace_id, draft_id)
+            sku_views = self._keep_active_sku_views(
+                groups.get("sku", []), draft.get("raw_payload") or {},
+            )
             sku_assets = [
                 str(view["asset_id"])
-                for view in groups.get("sku", [])
+                for view in sku_views
                 if str(view.get("status") or "") == "ready" and str(view.get("asset_id") or "")
             ]
             plan["sku_image_count"] = len(sku_assets)
@@ -3892,6 +3897,46 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 "skipped": sum(1 for plan in plans if plan["status"] == "skipped"),
             },
         }
+
+    @staticmethod
+    def _keep_active_sku_views(
+        sku_views: list[dict[str, Any]], raw: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """只保留「当前仍保留在草稿里」的 SKU 对应的规格图绑定。
+
+        草稿池删除 SKU 规格只改写 ``raw_payload.source_variant_records``，不会同步
+        失效 ``product_processing_media_bindings``，直接用绑定计数会把已删除（甚至
+        更早的历史残留）的规格图也算进去。这里按现存变种的 ``sku_id`` / ``spec_text``
+        反查绑定；若现存变种完全没有可用标识，则退回不过滤，避免误伤正常草稿。
+        """
+        records = raw.get("source_variant_records")
+        if not isinstance(records, list):
+            return sku_views
+        sku_ids: set[str] = set()
+        labels: set[str] = set()
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            sku_id = str(record.get("sku_id") or record.get("source_sku_id") or "").strip()
+            if sku_id:
+                sku_ids.add(sku_id)
+            label = str(record.get("spec_text") or "").strip()
+            if not label:
+                attributes = record.get("attributes")
+                if isinstance(attributes, dict):
+                    label = " ".join(
+                        str(value) for value in attributes.values()
+                        if value is not None and str(value).strip()
+                    ).strip()
+            if label:
+                labels.add(label)
+        if not sku_ids and not labels:
+            return sku_views
+        return [
+            view for view in sku_views
+            if str(view.get("sku_id") or "") in sku_ids
+            or str(view.get("variant_label") or "") in labels
+        ]
 
     @staticmethod
     def _new_sku_availability_plan(draft_id: int) -> dict[str, Any]:
