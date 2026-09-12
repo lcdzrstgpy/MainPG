@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import type { WorkspaceModuleId } from "../navigation/modules";
-import { useTheme, THEME_META, BUILTIN_THEME_IDS, DOWNLOADABLE_THEME_IDS, type ThemeId } from "../../shared/hooks/useTheme";
+import { useTheme, THEME_META, BUILTIN_THEME_IDS, type ThemeId, type ThemeListItemFromServer, fetchThemeList } from "../../shared/hooks/useTheme";
 import { UI_MODE_META, useUiMode, type UiModeId } from "../../shared/hooks/useUiMode";
 import { InboxBell } from "../../shared/components/InboxBell";
 import { getAuthAccount } from "../../transport/http/client";
@@ -46,6 +46,9 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
   const [topbarStuck, setTopbarStuck] = useState(false);
   const [themePanelOpen, setThemePanelOpen] = useState(false);
   const [themeStoreOpen, setThemeStoreOpen] = useState(false);
+  const [storeThemes, setStoreThemes] = useState<ThemeListItemFromServer[]>([]);
+  const [storeLoading, setStoreLoading] = useState(false);
+  const [storeError, setStoreError] = useState<string | null>(null);
   const topbarRef = useRef<HTMLElement>(null);
   const themeMenuRef = useRef<HTMLDivElement>(null);
   const { theme, setTheme, downloadedThemes, isDownloaded, downloadTheme } = useTheme();
@@ -116,6 +119,23 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
     document.addEventListener("mousedown", onDocMouseDown);
     return () => document.removeEventListener("mousedown", onDocMouseDown);
   }, [themePanelOpen, themeStoreOpen]);
+
+  // 打开商店时从后端拉取可下载主题列表。
+  useEffect(() => {
+    if (!themeStoreOpen) return;
+    setStoreLoading(true);
+    setStoreError(null);
+    fetchThemeList()
+      .then((themes) => {
+        setStoreThemes(themes);
+      })
+      .catch((err: unknown) => {
+        setStoreError(err instanceof Error ? err.message : "加载失败");
+      })
+      .finally(() => {
+        setStoreLoading(false);
+      });
+  }, [themeStoreOpen]);
 
   useEffect(() => {
     const updateStuckState = () => {
@@ -200,30 +220,41 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
                       <strong>更多主题</strong>
                       <span aria-hidden="true" />
                     </header>
-                    <div className="theme-store-grid">
-                      {DOWNLOADABLE_THEME_IDS.map((id) => {
-                        const downloaded = isDownloaded(id);
-                        const active = theme === id;
-                        return (
-                          <div key={id} className={`theme-store-card ${active ? "is-active" : ""}`}>
-                            <span className="theme-store-swatch" style={{ background: THEME_META[id].swatch }} />
-                            <span className="theme-store-name">{THEME_META[id].label}</span>
-                            <button
-                              type="button"
-                              className={`theme-store-action ${downloaded ? "is-use" : "is-download"}`}
-                              onClick={() => {
-                                if (!downloaded) downloadTheme(id);
-                                setTheme(id);
-                                setThemeStoreOpen(false);
-                                setThemePanelOpen(false);
-                              }}
-                            >
-                              {active ? "使用中" : downloaded ? "使用" : "下载"}
-                            </button>
-                          </div>
-                        );
-                      })}
-                    </div>
+                    {storeLoading ? (
+                      <div className="theme-store-empty">加载中…</div>
+                    ) : storeError ? (
+                      <div className="theme-store-empty is-error">{storeError}</div>
+                    ) : (
+                      <div className="theme-store-grid">
+                        {storeThemes.map((item) => {
+                          const id = item.id as ThemeId;
+                          const downloaded = isDownloaded(id);
+                          const active = theme === id;
+                          const meta = THEME_META[id] ?? { label: item.label, swatch: item.swatch };
+                          return (
+                            <div key={id} className={`theme-store-card ${active ? "is-active" : ""}`}>
+                              <span className="theme-store-swatch" style={{ background: meta.swatch }} />
+                              <span className="theme-store-name">{meta.label}</span>
+                              <span className="theme-store-desc">{item.description}</span>
+                              <button
+                                type="button"
+                                className={`theme-store-action ${downloaded ? "is-use" : "is-download"}`}
+                                onClick={async () => {
+                                  if (!downloaded) {
+                                    await downloadTheme(id);
+                                  }
+                                  setTheme(id);
+                                  setThemeStoreOpen(false);
+                                  setThemePanelOpen(false);
+                                }}
+                              >
+                                {active ? "使用中" : downloaded ? "使用" : "下载"}
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <>
@@ -244,19 +275,19 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
                           {theme === id && <span className="theme-check">✓</span>}
                         </button>
                       ))}
-                      {DOWNLOADABLE_THEME_IDS.filter((id) => isDownloaded(id)).map((id) => (
+                      {downloadedThemes.map((item) => (
                         <button
-                          key={id}
+                          key={item.id}
                           type="button"
-                          className={`theme-option ${theme === id ? "is-active" : ""}`}
+                          className={`theme-option ${theme === item.id ? "is-active" : ""}`}
                           onClick={() => {
-                            setTheme(id);
+                            setTheme(item.id);
                             setThemePanelOpen(false);
                           }}
                         >
-                          <span className="theme-swatch" style={{ background: THEME_META[id].swatch }} />
-                          <span className="theme-option-name">{THEME_META[id].label}</span>
-                          {theme === id && <span className="theme-check">✓</span>}
+                          <span className="theme-swatch" style={{ background: item.swatch }} />
+                          <span className="theme-option-name">{item.label}</span>
+                          {theme === item.id && <span className="theme-check">✓</span>}
                         </button>
                       ))}
                     </div>

@@ -1,0 +1,10 @@
+{
+  "id": "quirky",
+  "label": "怪趣贴纸",
+  "description": "多彩贴纸风，活泼有趣",
+  "swatch": "linear-gradient(135deg, #a3e635 0 34%, #fde047 34% 62%, #f43f5e 62% 78%, #7c3aed 78%)",
+  "version": "1.0.0",
+  "files": [
+    "theme.css"
+  ]
+}

@@ -61,6 +61,7 @@ from ..data_collection.shop_routes import (
 from ..data_collection.shop_worker import ShopCollectionWorker
 from ..db import init_db
 from ..modules.basic_settings.router import create_router as create_basic_settings_router
+from ..modules.themes.router import create_themes_router
 from ..modules.ai_service import create_router as create_ai_service_router
 from ..modules.ai_service.temporary_cos import TemporaryCosStore
 from ..messages import (
@@ -445,6 +446,14 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         app.include_router(create_admin_proxy_router(remote_customer_auth, customer_sessions))
 
     app.include_router(create_basic_settings_router(db_path))
+    # Theme marketplace packages ship with the runtime source; copy them into
+    # the active data_dir so packaged builds can serve them too.
+    themes_src_dir = config.runtime_root / "wh_local" / "data" / "themes"
+    themes_dir = config.data_dir / "themes"
+    if themes_src_dir.exists() and not themes_dir.exists():
+        import shutil
+        shutil.copytree(themes_src_dir, themes_dir)
+    app.include_router(create_themes_router(themes_dir))
     ai_service_assets = config.data_dir / "ai-service" / "assets"
     app.include_router(
         create_ai_service_router(
