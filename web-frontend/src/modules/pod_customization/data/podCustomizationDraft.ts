@@ -1,7 +1,8 @@
-import type { PodBriefHistoryItem, PodBusinessFieldsDraft, PodListingFieldsDraft, PodTemplate, SpecCardConfig } from "../types";
+import type { PodBriefHistoryItem, PodBusinessFieldsDraft, PodListingFieldsDraft, PodTemplate, PodTitleMode, SpecCardConfig } from "../types";
 
-export const POD_CUSTOMIZATION_DRAFT_VERSION = 3;
-const PREVIOUS_POD_CUSTOMIZATION_DRAFT_VERSION = 2;
+export const POD_CUSTOMIZATION_DRAFT_VERSION = 4;
+const PREVIOUS_POD_CUSTOMIZATION_DRAFT_VERSION = 3;
+const OLDER_POD_CUSTOMIZATION_DRAFT_VERSION = 2;
 const LEGACY_POD_CUSTOMIZATION_DRAFT_VERSION = 1;
 
 export type PodCustomizationStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
@@ -55,20 +56,21 @@ const EMPTY_BUSINESS_FIELDS: PodBusinessFieldsDraft = {
 
 const EMPTY_LISTING_FIELDS: PodListingFieldsDraft = {
   title_mode: "long",
-  declared_price: "",
   suggested_price_usd: "",
   category_name: "",
-  skus: [{ name: "", length_cm: "", width_cm: "", height_cm: "", weight_g: "" }],
+  skus: [{ name: "", declared_price: "", weight_g: "" }],
 };
 
-// 与 podCustomizationModel.EMPTY_SPEC_CARD 同形的空白表（4 行 × 2 列）。
+// 与 podCustomizationModel.EMPTY_SPEC_CARD 同形的空白表（1 行表头 + 1 个空 SKU 行 × 4 列）。
 // 这里刻意本地实现，不 import 模型模块：本文件会被 node --experimental-strip-types
 // 直接加载（podCustomizationDraft.test.ts），无扩展名的运行时导入在 Node ESM 下无法解析。
+const SPEC_CARD_DIMENSION_HEADER = ["尺寸图", "长", "宽", "高"];
+
 const EMPTY_SPEC_CARD_DRAFT: SpecCardConfig = {
   enabled: true,
   style: "light",
   corner: "bottom-right",
-  cells: Array.from({ length: 4 }, () => ["", ""]),
+  cells: [[...SPEC_CARD_DIMENSION_HEADER], ["", "", "", ""]],
 };
 
 function createEmptySpecCard(): SpecCardConfig {
@@ -89,16 +91,21 @@ function isSpecCardConfig(value: unknown): value is SpecCardConfig {
     && value.cells.every((row) => Array.isArray(row) && row.every((cell) => typeof cell === "string"));
 }
 
+function versionedDraftStorageKey(version: number, accountId: string, workspaceId: string): string {
+  return `mainpg:pod-customization:v${version}:${encodeURIComponent(accountId)}:${encodeURIComponent(workspaceId)}`;
+}
+
 export function podCustomizationDraftStorageKey(accountId: string, workspaceId: string): string {
-  return `mainpg:pod-customization:v${POD_CUSTOMIZATION_DRAFT_VERSION}:${encodeURIComponent(accountId)}:${encodeURIComponent(workspaceId)}`;
+  return versionedDraftStorageKey(POD_CUSTOMIZATION_DRAFT_VERSION, accountId, workspaceId);
 }
 
-function previousPodCustomizationDraftStorageKey(accountId: string, workspaceId: string): string {
-  return `mainpg:pod-customization:v${PREVIOUS_POD_CUSTOMIZATION_DRAFT_VERSION}:${encodeURIComponent(accountId)}:${encodeURIComponent(workspaceId)}`;
-}
-
-function legacyPodCustomizationDraftStorageKey(accountId: string, workspaceId: string): string {
-  return `mainpg:pod-customization:v${LEGACY_POD_CUSTOMIZATION_DRAFT_VERSION}:${encodeURIComponent(accountId)}:${encodeURIComponent(workspaceId)}`;
+/** 历代草稿键（由新到旧）；命中任一即迁移为当前版本。 */
+function historicalDraftStorageKeys(accountId: string, workspaceId: string): string[] {
+  return [
+    PREVIOUS_POD_CUSTOMIZATION_DRAFT_VERSION,
+    OLDER_POD_CUSTOMIZATION_DRAFT_VERSION,
+    LEGACY_POD_CUSTOMIZATION_DRAFT_VERSION,
+  ].map((version) => versionedDraftStorageKey(version, accountId, workspaceId));
 }
 
 export function createEmptyPodCustomizationDraft(): PodCustomizationDraft {
@@ -131,12 +138,13 @@ export function loadPodCustomizationDraft(
   try {
     raw = storage.getItem(key);
     if (!raw) {
-      sourceKey = previousPodCustomizationDraftStorageKey(accountId, workspaceId);
-      raw = storage.getItem(sourceKey);
-    }
-    if (!raw) {
-      sourceKey = legacyPodCustomizationDraftStorageKey(accountId, workspaceId);
-      raw = storage.getItem(sourceKey);
+      for (const candidate of historicalDraftStorageKeys(accountId, workspaceId)) {
+        raw = storage.getItem(candidate);
+        if (raw) {
+          sourceKey = candidate;
+          break;
+        }
+      }
     }
   } catch {
     return { state: empty, error: "无法读取 POD 草稿：浏览器本地存储不可用。" };
@@ -146,7 +154,7 @@ export function loadPodCustomizationDraft(
   try {
     const parsed: unknown = JSON.parse(raw);
     if (isPodCustomizationDraft(parsed)) return { state: cloneDraft(parsed) };
-    if (isPreviousPodCustomizationDraft(parsed) || isLegacyPodCustomizationDraft(parsed)) {
+    if (isPreviousPodCustomizationDraft(parsed) || isOlderPodCustomizationDraft(parsed) || isLegacyPodCustomizationDraft(parsed)) {
       const state = migrateDraft(parsed);
       state.business_fields = {
         ...state.business_fields,
@@ -155,7 +163,7 @@ export function loadPodCustomizationDraft(
       try {
         storage.setItem(key, JSON.stringify(cloneDraft(state)));
       } catch {
-        // Reading a compatible old draft remains useful even if its v3 replacement cannot be persisted.
+        // Reading a compatible old draft remains useful even if its current replacement cannot be persisted.
       }
       return { state };
     }
@@ -325,18 +333,27 @@ function isBusinessFields(value: unknown): value is PodBusinessFieldsDraft {
 function isListingFields(value: unknown): value is PodListingFieldsDraft {
   return isRecord(value)
     && (value.title_mode === "long" || value.title_mode === "short")
-    && typeof value.declared_price === "string"
     && typeof value.suggested_price_usd === "string"
     && typeof value.category_name === "string"
     && Array.isArray(value.skus)
     && value.skus.every(isSkuDraft);
 }
 
-type PreviousPodSkuDraft = Omit<PodListingFieldsDraft["skus"][number], "weight_g">;
-
-type PreviousPodListingFieldsDraft = Omit<PodListingFieldsDraft, "skus"> & {
+/** v3 草稿：SKU 自带长/宽/高与重量，申报价在顶层；尺寸详情还是自由表格。 */
+type PreviousSkuDraft = {
+  name: string;
+  length_cm: string;
+  width_cm: string;
+  height_cm: string;
   weight_g: string;
-  skus: PreviousPodSkuDraft[];
+};
+
+type PreviousPodListingFieldsDraft = {
+  title_mode: PodTitleMode;
+  declared_price: string;
+  suggested_price_usd: string;
+  category_name: string;
+  skus: PreviousSkuDraft[];
 };
 
 type PreviousPodCustomizationDraft = Omit<PodCustomizationDraft, "version" | "listing_fields" | "spec_card" | "brief_history"> & {
@@ -344,8 +361,31 @@ type PreviousPodCustomizationDraft = Omit<PodCustomizationDraft, "version" | "li
   listing_fields: PreviousPodListingFieldsDraft;
 };
 
+/** v2 草稿：SKU 自带长/宽/高，重量挂在顶层。 */
+type OlderSkuDraft = {
+  name: string;
+  length_cm: string;
+  width_cm: string;
+  height_cm: string;
+};
+
+type OlderPodListingFieldsDraft = {
+  title_mode: PodTitleMode;
+  declared_price: string;
+  suggested_price_usd: string;
+  category_name: string;
+  weight_g: string;
+  skus: OlderSkuDraft[];
+};
+
+type OlderPodCustomizationDraft = Omit<PodCustomizationDraft, "version" | "listing_fields" | "spec_card" | "brief_history"> & {
+  version: typeof OLDER_POD_CUSTOMIZATION_DRAFT_VERSION;
+  listing_fields: OlderPodListingFieldsDraft;
+};
+
+/** v1 草稿：扁平字段 + 可选的 sku_names 列表。 */
 type LegacyPodListingFieldsDraft = {
-  title_mode: PodListingFieldsDraft["title_mode"];
+  title_mode: PodTitleMode;
   declared_price: string;
   suggested_price_usd: string;
   length_cm: string;
@@ -374,6 +414,19 @@ function isLegacyPodCustomizationDraft(value: unknown): value is LegacyPodCustom
     && value.system_templates.every(isPodSystemTemplate);
 }
 
+function isOlderPodCustomizationDraft(value: unknown): value is OlderPodCustomizationDraft {
+  if (!isRecord(value) || value.version !== OLDER_POD_CUSTOMIZATION_DRAFT_VERSION) return false;
+  return isBusinessFields(value.business_fields)
+    && isOlderListingFields(value.listing_fields)
+    && typeof value.batch_count === "number"
+    && typeof value.custom_count_mode === "boolean"
+    && typeof value.custom_count_input === "string"
+    && typeof value.selected_template_id === "string"
+    && (typeof value.current_batch_edit === "string" || value.current_batch_edit === null)
+    && Array.isArray(value.system_templates)
+    && value.system_templates.every(isPodSystemTemplate);
+}
+
 function isPreviousPodCustomizationDraft(value: unknown): value is PreviousPodCustomizationDraft {
   if (!isRecord(value) || value.version !== PREVIOUS_POD_CUSTOMIZATION_DRAFT_VERSION) return false;
   return isBusinessFields(value.business_fields)
@@ -392,10 +445,20 @@ function isPreviousListingFields(value: unknown): value is PreviousPodListingFie
     && (value.title_mode === "long" || value.title_mode === "short")
     && typeof value.declared_price === "string"
     && typeof value.suggested_price_usd === "string"
-    && typeof value.weight_g === "string"
     && typeof value.category_name === "string"
     && Array.isArray(value.skus)
     && value.skus.every(isPreviousSkuDraft);
+}
+
+function isOlderListingFields(value: unknown): value is OlderPodListingFieldsDraft {
+  return isRecord(value)
+    && (value.title_mode === "long" || value.title_mode === "short")
+    && typeof value.declared_price === "string"
+    && typeof value.suggested_price_usd === "string"
+    && typeof value.weight_g === "string"
+    && typeof value.category_name === "string"
+    && Array.isArray(value.skus)
+    && value.skus.every(isOlderSkuDraft);
 }
 
 function isLegacyListingFields(value: unknown): value is LegacyPodListingFieldsDraft {
@@ -414,13 +477,20 @@ function isLegacyListingFields(value: unknown): value is LegacyPodListingFieldsD
 function isSkuDraft(value: unknown): boolean {
   return isRecord(value)
     && typeof value.name === "string"
+    && typeof value.declared_price === "string"
+    && typeof value.weight_g === "string";
+}
+
+function isPreviousSkuDraft(value: unknown): value is PreviousSkuDraft {
+  return isRecord(value)
+    && typeof value.name === "string"
     && typeof value.length_cm === "string"
     && typeof value.width_cm === "string"
     && typeof value.height_cm === "string"
     && typeof value.weight_g === "string";
 }
 
-function isPreviousSkuDraft(value: unknown): value is PreviousPodSkuDraft {
+function isOlderSkuDraft(value: unknown): value is OlderSkuDraft {
   return isRecord(value)
     && typeof value.name === "string"
     && typeof value.length_cm === "string"
@@ -428,45 +498,105 @@ function isPreviousSkuDraft(value: unknown): value is PreviousPodSkuDraft {
     && typeof value.height_cm === "string";
 }
 
-function migrateDraft(legacy: PreviousPodCustomizationDraft | LegacyPodCustomizationDraft): PodCustomizationDraft {
-  if (legacy.version === PREVIOUS_POD_CUSTOMIZATION_DRAFT_VERSION) {
-    const { listing_fields: previousListing, ...rest } = legacy;
-    return {
-      ...rest,
-      version: POD_CUSTOMIZATION_DRAFT_VERSION,
-      // 旧草稿没有规格卡配置，迁移时补一张空白表（= 未配置，提交时会被必填拦截）。
-      spec_card: createEmptySpecCard(),
-      // 旧草稿没有智能填写历史，迁移时补空数组。
-      brief_history: [],
-      listing_fields: {
-        title_mode: previousListing.title_mode,
-        declared_price: previousListing.declared_price,
-        suggested_price_usd: previousListing.suggested_price_usd,
-        category_name: previousListing.category_name,
-        skus: previousListing.skus.map((sku) => ({ ...sku, weight_g: previousListing.weight_g })),
-      },
-    };
+/** 迁移中间态：把各代草稿的 SKU 归一到「名称 + 申报价 + 重量 + 长宽高」。 */
+type MigratedSku = {
+  name: string;
+  declared_price: string;
+  weight_g: string;
+  length_cm: string;
+  width_cm: string;
+  height_cm: string;
+};
+
+function migratedCore(
+  legacy: PreviousPodCustomizationDraft | OlderPodCustomizationDraft | LegacyPodCustomizationDraft,
+): Pick<PodCustomizationDraft, "version" | "listing_fields" | "spec_card" | "brief_history"> {
+  let title_mode: PodTitleMode;
+  let suggested_price_usd: string;
+  let category_name: string;
+  let skus: MigratedSku[];
+
+  if (legacy.version === LEGACY_POD_CUSTOMIZATION_DRAFT_VERSION) {
+    const source = legacy.listing_fields;
+    title_mode = source.title_mode;
+    suggested_price_usd = source.suggested_price_usd;
+    category_name = source.category_name;
+    const names = source.sku_names?.length ? source.sku_names : ["默认款"];
+    skus = names.map((name) => ({
+      name,
+      declared_price: source.declared_price,
+      weight_g: source.weight_g,
+      length_cm: source.length_cm,
+      width_cm: source.width_cm,
+      height_cm: source.height_cm,
+    }));
+  } else if (legacy.version === OLDER_POD_CUSTOMIZATION_DRAFT_VERSION) {
+    // v2：重量在顶层，同一批 SKU 共用一个重量值。
+    const source = legacy.listing_fields;
+    title_mode = source.title_mode;
+    suggested_price_usd = source.suggested_price_usd;
+    category_name = source.category_name;
+    skus = source.skus.map((sku) => ({
+      name: sku.name,
+      declared_price: source.declared_price,
+      weight_g: source.weight_g,
+      length_cm: sku.length_cm,
+      width_cm: sku.width_cm,
+      height_cm: sku.height_cm,
+    }));
+  } else {
+    // v3：重量挂在各自 SKU 上。
+    const source = legacy.listing_fields;
+    title_mode = source.title_mode;
+    suggested_price_usd = source.suggested_price_usd;
+    category_name = source.category_name;
+    skus = source.skus.map((sku) => ({
+      name: sku.name,
+      declared_price: source.declared_price,
+      weight_g: sku.weight_g,
+      length_cm: sku.length_cm,
+      width_cm: sku.width_cm,
+      height_cm: sku.height_cm,
+    }));
   }
-  const { listing_fields: legacyListing, ...rest } = legacy;
-  const names = legacyListing.sku_names?.length ? legacyListing.sku_names : ["默认款"];
+
   return {
-    ...rest,
     version: POD_CUSTOMIZATION_DRAFT_VERSION,
-    spec_card: createEmptySpecCard(),
+    // 旧草稿没有智能填写历史，迁移时补空数组。
     brief_history: [],
     listing_fields: {
-      title_mode: legacyListing.title_mode,
-      declared_price: legacyListing.declared_price,
-      suggested_price_usd: legacyListing.suggested_price_usd,
-      category_name: legacyListing.category_name,
-      skus: names.map((name) => ({
-        name,
-        length_cm: legacyListing.length_cm,
-        width_cm: legacyListing.width_cm,
-        height_cm: legacyListing.height_cm,
-        weight_g: legacyListing.weight_g,
+      title_mode,
+      suggested_price_usd,
+      category_name,
+      skus: skus.map((sku) => ({
+        name: sku.name,
+        declared_price: sku.declared_price,
+        weight_g: sku.weight_g,
       })),
     },
+    // 旧草稿把长/宽/高放在 SKU 上：迁移时搬进尺寸详情表格（表头 + 每个 SKU 一行）。
+    spec_card: {
+      ...createEmptySpecCard(),
+      cells: [
+        [...SPEC_CARD_DIMENSION_HEADER],
+        ...skus.map((sku) => [sku.name, sku.length_cm, sku.width_cm, sku.height_cm]),
+      ],
+    },
+  };
+}
+
+function migrateDraft(
+  legacy: PreviousPodCustomizationDraft | OlderPodCustomizationDraft | LegacyPodCustomizationDraft,
+): PodCustomizationDraft {
+  return {
+    business_fields: legacy.business_fields,
+    batch_count: legacy.batch_count,
+    custom_count_mode: legacy.custom_count_mode,
+    custom_count_input: legacy.custom_count_input,
+    selected_template_id: legacy.selected_template_id,
+    current_batch_edit: legacy.current_batch_edit,
+    system_templates: legacy.system_templates,
+    ...migratedCore(legacy),
   };
 }
 

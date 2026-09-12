@@ -255,10 +255,10 @@ def _batch_request(template_id: str, *, count: int = 1) -> BatchCreate:
         count=count,
         business_fields=BusinessFields(product_name="Canvas Tote", product_category="tote bag"),
         listing_fields=ListingFields(
-            declared_price=18.5,
             suggested_price_usd=29.99,
             category_name="家居收纳 > 包袋",
-            skus=[{"name": "Default SKU", "length_cm": 30, "width_cm": 20, "height_cm": 10, "weight_g": 450}],
+            skus=[{"name": "Default SKU", "declared_price": 18.5, "weight_g": 450}],
+            spec_card={"cells": [["尺寸图", "长", "宽", "高"], ["Default SKU", "30", "20", "10"]]},
         ),
         creative_prompt="coastal botanical ink",
     )

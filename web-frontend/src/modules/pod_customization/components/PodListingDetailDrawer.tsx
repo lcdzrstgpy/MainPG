@@ -19,12 +19,33 @@ type Props = {
 
 const ROLE_LABELS = ["主图", "细节图 A", "细节图 B", "素材图"] as const;
 
-type LegacyListingDimensions = {
+/** 旧批次快照：申报价/重量/长宽高散落在 listing_fields 顶层或各 SKU 上。 */
+type LegacyListingFields = {
+  declared_price?: number;
   length_cm?: number;
   width_cm?: number;
   height_cm?: number;
   weight_g?: number;
 };
+
+type LegacySkuDimensions = {
+  length_cm?: number;
+  width_cm?: number;
+  height_cm?: number;
+};
+
+type ListingSkuRow = {
+  name: string;
+  declaredPrice: string;
+  length: string;
+  width: string;
+  height: string;
+  weight: string;
+};
+
+function formatAmount(value: number | undefined): string {
+  return typeof value === "number" ? value.toFixed(2) : "";
+}
 
 export function PodListingDetailDrawer({ batch, style, onClose, onSaveTitle }: Props) {
   const [draftTitle, setDraftTitle] = useState(
@@ -67,17 +88,30 @@ export function PodListingDetailDrawer({ batch, style, onClose, onSaveTitle }: P
   };
 
   const listingFields = batch.listing_fields;
-  const legacyListingFields = listingFields as (typeof listingFields & LegacyListingDimensions) | undefined;
-  const skuDimensions = listingFields?.skus ?? [];
+  const legacyListingFields = listingFields as (typeof listingFields & LegacyListingFields) | undefined;
+  // 新快照：申报价在各自 SKU 上、长宽高在尺寸详情表格里；旧快照：三者在顶层或 SKU 上。
+  const specCells = listingFields?.spec_card?.cells ?? [];
+  const skuRows: ListingSkuRow[] = (listingFields?.skus ?? []).map((sku, index) => {
+    const legacySku = sku as typeof sku & LegacySkuDimensions;
+    const matched = specCells.find((row) => (row[0] ?? "").trim() === sku.name.trim());
+    const dimensionRow = matched ?? specCells[index + 1];
+    return {
+      name: sku.name,
+      declaredPrice: formatAmount(legacySku.declared_price ?? legacyListingFields?.declared_price),
+      length: legacySku.length_cm !== undefined ? String(legacySku.length_cm) : (dimensionRow?.[1] ?? ""),
+      width: legacySku.width_cm !== undefined ? String(legacySku.width_cm) : (dimensionRow?.[2] ?? ""),
+      height: legacySku.height_cm !== undefined ? String(legacySku.height_cm) : (dimensionRow?.[3] ?? ""),
+      weight: String(legacySku.weight_g ?? ""),
+    };
+  });
   const listingDetails = listingFields ? [
-    ["申报价", listingFields.declared_price.toFixed(2)],
     ["建议售价（USD）", listingFields.suggested_price_usd.toFixed(2)],
     ["店小秘类目", listingFields.category_name],
   ] as const : [];
-  const legacyWeight = legacyListingFields && skuDimensions.length === 0 && legacyListingFields.weight_g !== undefined
+  const legacyWeight = legacyListingFields && skuRows.length === 0 && legacyListingFields.weight_g !== undefined
     ? ["重量（g）", String(legacyListingFields.weight_g)] as const
     : null;
-  const legacyDimensions = legacyListingFields && skuDimensions.length === 0
+  const legacyDimensions = legacyListingFields && skuRows.length === 0
     && legacyListingFields.length_cm !== undefined
     && legacyListingFields.width_cm !== undefined
     && legacyListingFields.height_cm !== undefined
@@ -125,11 +159,11 @@ export function PodListingDetailDrawer({ batch, style, onClose, onSaveTitle }: P
           {listingDetails.length ? <dl>
             {[...listingDetails, ...(legacyWeight ? [legacyWeight] : [])].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
           </dl> : <p>该旧批次没有保存店小秘上架快照。</p>}
-          {skuDimensions.length > 0 && <div className="pod-listing-sku-dimensions">
+          {skuRows.length > 0 && <div className="pod-listing-sku-dimensions">
             <h4>SKU 规格、尺寸与重量</h4>
             <div role="table" aria-label="SKU 规格、尺寸与重量">
-              <div role="row" className="pod-listing-sku-dimensions-header"><span role="columnheader">SKU 名称</span><span role="columnheader">长（cm）</span><span role="columnheader">宽（cm）</span><span role="columnheader">高（cm）</span><span role="columnheader">重量（g）</span></div>
-              {skuDimensions.map((sku, index) => <div role="row" key={`${sku.name}-${index}`}><span role="cell">{sku.name}</span><span role="cell">{sku.length_cm}</span><span role="cell">{sku.width_cm}</span><span role="cell">{sku.height_cm}</span><span role="cell">{sku.weight_g}</span></div>)}
+              <div role="row" className="pod-listing-sku-dimensions-header"><span role="columnheader">SKU 名称</span><span role="columnheader">申报价</span><span role="columnheader">长（cm）</span><span role="columnheader">宽（cm）</span><span role="columnheader">高（cm）</span><span role="columnheader">重量（g）</span></div>
+              {skuRows.map((sku, index) => <div role="row" key={`${sku.name}-${index}`}><span role="cell">{sku.name}</span><span role="cell">{sku.declaredPrice}</span><span role="cell">{sku.length}</span><span role="cell">{sku.width}</span><span role="cell">{sku.height}</span><span role="cell">{sku.weight}</span></div>)}
             </div>
           </div>}
           {legacyDimensions.length > 0 && <div className="pod-listing-legacy-dimensions"><h4>商品尺寸</h4><dl>{legacyDimensions.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl></div>}

@@ -74,7 +74,7 @@ test("system-template save control has its own secondary action treatment", () =
   assert.match(styles, /\.pod-save-system-template-copy small \{[\s\S]*?font-size:/);
 });
 
-test("listing editor keeps dimensions and weight on each SKU and appends a blank SKU", () => {
+test("listing editor keeps declared price and weight on each SKU and appends a blank SKU", () => {
   const listingFieldDeclaration = source.slice(source.indexOf("const LISTING_FIELDS"), source.indexOf("function toSummary"));
 
   assert.doesNotMatch(listingFieldDeclaration, /length_cm/);
@@ -83,15 +83,18 @@ test("listing editor keeps dimensions and weight on each SKU and appends a blank
   assert.doesNotMatch(listingFieldDeclaration, /weight_g/);
   assert.match(source, /新增 SKU/);
   assert.match(source, /aria-label="SKU 名称"/);
-  assert.match(source, /aria-label="SKU 长（cm）"/);
-  assert.match(source, /aria-label="SKU 宽（cm）"/);
-  assert.match(source, /aria-label="SKU 高（cm）"/);
+  assert.match(source, /aria-label="SKU 申报价"/);
   assert.match(source, /aria-label="SKU 重量（g）"/);
   assert.match(source, /aria-label="删除 SKU"/);
+  // 长/宽/高不再挂在 SKU 行上，改由尺寸详情（规格卡）表格承载。
+  assert.doesNotMatch(source, /aria-label="SKU 长（cm）"/);
+  assert.doesNotMatch(source, /aria-label="SKU 宽（cm）"/);
+  assert.doesNotMatch(source, /aria-label="SKU 高（cm）"/);
+  assert.match(source, /每个 SKU 需填写名称、申报价与重量/);
   assert.match(source, /updateSku/);
   assert.match(source, /addSku/);
   assert.match(source, /removeSku/);
-  assert.match(source, /skus: \[\.\.\.current\.skus, \{ name: "", length_cm: "", width_cm: "", height_cm: "", weight_g: "" \}\]/);
+  assert.match(source, /skus: \[\.\.\.current\.skus, \{ name: "", declared_price: "", weight_g: "" \}\]/);
 });
 
 test("SKU validation marks each invalid field beside its own input", () => {
@@ -102,9 +105,10 @@ test("SKU validation marks each invalid field beside its own input", () => {
   assert.match(source, /SKU「\$\{skuLabel\}」的\$\{SKU_FIELD_LABELS\[key\]\}/);
 });
 
-test("SKU rows fit all five fields in the existing desktop setup panel and only wrap on narrow viewports", () => {
-  assert.match(styles, /\.pod-sku-input-row \{ display: grid; grid-template-columns: minmax\(62px, 1\.14fr\) repeat\(4, minmax\(32px, \.6fr\)\) 20px; align-items: end; gap: 3px; \}/);
+test("SKU rows fit all three fields in the existing desktop setup panel and only wrap on narrow viewports", () => {
+  assert.match(styles, /\.pod-sku-input-row \{ display: grid; grid-template-columns: minmax\(62px, 1\.4fr\) repeat\(2, minmax\(38px, \.7fr\)\) 20px; align-items: end; gap: 3px; \}/);
   assert.match(styles, /@media \(max-width: 420px\) \{[\s\S]*?\.pod-sku-input-row \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\) 22px; \}/);
+  assert.match(styles, /@media \(max-width: 420px\) \{[\s\S]*?\.pod-sku-input-row label:first-child \{ grid-column: 1 \/ -1; \}/);
   assert.match(styles, /@media \(max-width: 420px\) \{[\s\S]*?\.pod-sku-input-row > button \{ grid-column: 3; grid-row: 2; width: 22px; \}/);
 });
 
@@ -115,10 +119,17 @@ test("adding SKU stops at the supported limit with an accessible explanation", (
   assert.match(source, /已达到 100 个 SKU 上限。/);
 });
 
-test("listing detail shows SKU dimensions and weight while retaining legacy dimensions", () => {
+test("listing detail shows SKU declared price, weight and spec-card dimensions while retaining legacy dimensions", () => {
   assert.match(listingDrawerSource, /SKU 规格、尺寸与重量/);
   assert.match(listingDrawerSource, /listingFields\?\.skus/);
-  assert.match(listingDrawerSource, /sku\.weight_g/);
+  assert.match(listingDrawerSource, /legacySku\.declared_price/);
+  assert.match(listingDrawerSource, /legacySku\.weight_g/);
+  assert.match(listingDrawerSource, /listingFields\?\.spec_card\?\.cells/);
+  assert.match(listingDrawerSource, /dimensionRow\?\.\[1\]/);
+  assert.match(listingDrawerSource, /legacySku\.length_cm/);
+  assert.match(listingDrawerSource, /legacySku\.width_cm/);
+  assert.match(listingDrawerSource, /legacySku\.height_cm/);
+  assert.match(listingDrawerSource, /legacyListingFields\?\.declared_price/);
   assert.match(listingDrawerSource, /legacyListingFields\.weight_g/);
   assert.match(listingDrawerSource, /legacyListingFields\.length_cm/);
   assert.match(listingDrawerSource, /legacyListingFields\.width_cm/);

@@ -137,8 +137,9 @@ def test_reap_stuck_style_grid_batch_marks_grid_results_terminal(tmp_path: Path)
             prompt_version="v1",
             business_fields=BusinessFields(product_name="Tote bag", product_category="bags"),
             listing_fields=ListingFields(
-                declared_price=18.5, suggested_price_usd=29.99, category_name="家居收纳 > 包袋",
-                skus=[{"name": "Default", "length_cm": 30, "width_cm": 20, "height_cm": 10, "weight_g": 450}],
+                suggested_price_usd=29.99, category_name="家居收纳 > 包袋",
+                skus=[{"name": "Default", "declared_price": 18.5, "weight_g": 450}],
+                spec_card={"cells": [["尺寸图", "长", "宽", "高"], ["Default", "30", "20", "10"]]},
             ),
         ),
         enqueue=False,

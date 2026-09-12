@@ -51,25 +51,25 @@ test("POD drafts are isolated by account and workspace", () => {
   const first = createEmptyPodCustomizationDraft();
   first.business_fields.product_name = "旅行杯";
   first.listing_fields.skus = [
-    { name: "默认款", length_cm: "20", width_cm: "10", height_cm: "8", weight_g: "400" },
-    { name: "礼盒款", length_cm: "22", width_cm: "12", height_cm: "9", weight_g: "450" },
+    { name: "默认款", declared_price: "18.5", weight_g: "400" },
+    { name: "礼盒款", declared_price: "19.9", weight_g: "450" },
   ];
   assert.deepEqual(savePodCustomizationDraft("account-a", "workspace-a", first, storage), { ok: true });
 
-  assert.equal(podCustomizationDraftStorageKey("account-a", "workspace-a"), "mainpg:pod-customization:v3:account-a:workspace-a");
+  assert.equal(podCustomizationDraftStorageKey("account-a", "workspace-a"), "mainpg:pod-customization:v4:account-a:workspace-a");
   assert.equal(loadPodCustomizationDraft("account-a", "workspace-a", storage).state.business_fields.product_name, "旅行杯");
   assert.deepEqual(loadPodCustomizationDraft("account-a", "workspace-a", storage).state.listing_fields.skus, first.listing_fields.skus);
   assert.equal(loadPodCustomizationDraft("account-b", "workspace-a", storage).state.business_fields.product_name, "");
   assert.equal(loadPodCustomizationDraft("account-a", "workspace-b", storage).state.business_fields.product_name, "");
 });
 
-test("new POD drafts start with one blank SKU including weight", () => {
+test("new POD drafts start with one blank SKU carrying declared price and weight", () => {
   assert.deepEqual(createEmptyPodCustomizationDraft().listing_fields.skus, [
-    { name: "", length_cm: "", width_cm: "", height_cm: "", weight_g: "" },
+    { name: "", declared_price: "", weight_g: "" },
   ]);
 });
 
-test("v2 POD drafts move their global weight into each SKU", () => {
+test("v2 POD drafts move their global weight and declared price into each SKU and dimensions into the spec card", () => {
   const storage = new MemoryStorage();
   const legacyKey = "mainpg:pod-customization:v2:account-a:workspace-a";
   storage.setItem(legacyKey, JSON.stringify({
@@ -85,12 +85,18 @@ test("v2 POD drafts move their global weight into each SKU", () => {
     },
   }));
 
-  assert.deepEqual(loadPodCustomizationDraft("account-a", "workspace-a", storage).state.listing_fields.skus, [
-    { name: "默认款", length_cm: "30", width_cm: "20", height_cm: "10", weight_g: "450" },
+  const result = loadPodCustomizationDraft("account-a", "workspace-a", storage);
+
+  assert.deepEqual(result.state.listing_fields.skus, [
+    { name: "默认款", declared_price: "18.5", weight_g: "450" },
+  ]);
+  assert.deepEqual(result.state.spec_card.cells, [
+    ["尺寸图", "长", "宽", "高"],
+    ["默认款", "30", "20", "10"],
   ]);
 });
 
-test("v1 POD drafts migrate SKU names and product dimensions into per-SKU rows", () => {
+test("v1 POD drafts migrate SKU names and product dimensions into per-SKU listing fields and spec-card rows", () => {
   const storage = new MemoryStorage();
   const legacyKey = "mainpg:pod-customization:v1:account-a:workspace-a";
   const legacy = {
@@ -114,8 +120,13 @@ test("v1 POD drafts migrate SKU names and product dimensions into per-SKU rows",
 
   assert.equal(result.error, undefined);
   assert.deepEqual(result.state.listing_fields.skus, [
-    { name: "  米白 ", length_cm: "30", width_cm: "20", height_cm: "10", weight_g: "450" },
-    { name: "深蓝", length_cm: "30", width_cm: "20", height_cm: "10", weight_g: "450" },
+    { name: "  米白 ", declared_price: "18.5", weight_g: "450" },
+    { name: "深蓝", declared_price: "18.5", weight_g: "450" },
+  ]);
+  assert.deepEqual(result.state.spec_card.cells, [
+    ["尺寸图", "长", "宽", "高"],
+    ["  米白 ", "30", "20", "10"],
+    ["深蓝", "30", "20", "10"],
   ]);
 });
 
@@ -138,8 +149,14 @@ test("v1 POD drafts without SKU names migrate to the default SKU", () => {
     },
   }));
 
-  assert.deepEqual(loadPodCustomizationDraft("account-a", "workspace-a", storage).state.listing_fields.skus, [
-    { name: "默认款", length_cm: "30", width_cm: "20", height_cm: "10", weight_g: "" },
+  const result = loadPodCustomizationDraft("account-a", "workspace-a", storage);
+
+  assert.deepEqual(result.state.listing_fields.skus, [
+    { name: "默认款", declared_price: "", weight_g: "" },
+  ]);
+  assert.deepEqual(result.state.spec_card.cells, [
+    ["尺寸图", "长", "宽", "高"],
+    ["默认款", "30", "20", "10"],
   ]);
 });
 
