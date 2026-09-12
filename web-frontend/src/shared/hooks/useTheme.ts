@@ -1,6 +1,8 @@
 import { useCallback, useSyncExternalStore } from "react";
 
-export type ThemeId = "classic" | "sunset" | "violet" | "dessert" | "diamond" | "quirky" | "chinese";
+// peach(桃花源)主题:背景见 shared/styles/peach-garden.css,交互特效见
+// shared/components/PeachGarden.tsx(花瓣飘落/爆裂/涟漪)。已注册进主题选择器。
+export type ThemeId = "classic" | "sunset" | "violet" | "dessert" | "diamond" | "quirky" | "chinese" | "peach";
 
 export const THEME_META: Record<ThemeId, { label: string; swatch: string }> = {
   classic: { label: "经典", swatch: "linear-gradient(135deg, #087bf5, #14c8c0)" },
@@ -11,6 +13,7 @@ export const THEME_META: Record<ThemeId, { label: string; swatch: string }> = {
   diamond: { label: "黑白钻石", swatch: "linear-gradient(135deg, #050505, #737985 55%, #ffffff)" },
   quirky: { label: "怪趣贴纸", swatch: "linear-gradient(135deg, #a3e635 0 34%, #fde047 34% 62%, #f43f5e 62% 78%, #7c3aed 78%)" },
   chinese: { label: "水墨青黛", swatch: "linear-gradient(135deg, #eee9dc 0 36%, #52716c 36% 72%, #a74736 72%)" },
+  peach: { label: "桃花源", swatch: "linear-gradient(135deg, #ffe3ec 0 34%, #f48fb0 34% 68%, #7fb89a 68%)" },
 };
 
 const STORAGE_KEY = "mainpg.theme";
@@ -24,7 +27,7 @@ let cascadeTimer: number | undefined;
 function readTheme(): ThemeId {
   try {
     const saved = window.localStorage.getItem(STORAGE_KEY);
-    if (saved === "sunset" || saved === "violet" || saved === "dessert" || saved === "diamond" || saved === "quirky" || saved === "chinese" || saved === "classic") return saved;
+    if (saved === "sunset" || saved === "violet" || saved === "dessert" || saved === "diamond" || saved === "quirky" || saved === "chinese" || saved === "peach" || saved === "classic") return saved;
   } catch { /* ignore */ }
   return "classic";
 }

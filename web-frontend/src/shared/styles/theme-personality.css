@@ -27,6 +27,7 @@
      chinese   水墨 / 宣纸         —— 小圆角 + 细墨线边框，hover 墨晕扩散。
      diamond   极简 / 几何         —— 几乎直角 + 细边 + 低色度阴影，hover 干净利落。
      dessert   奶油 / 圆润         —— 大圆角奶油感，无硬描边，柔雾阴影，hover 极轻。
+     peach     花瓣 / 游丝         —— 花瓣形不对称圆角，粉青双晕阴影，hover 轻摇上浮。
    ========================================================================= */
 
 /* ---------------------------------------------------------------------------
@@ -314,6 +315,83 @@
 }
 [data-theme="dessert"] :is(.dashboard-page, .mac-home) .mac-launchpad button:hover .mac-app-icon {
   transform: translateY(-2px);
+}
+
+/* ---------------------------------------------------------------------------
+   7. peach 桃花源 —— 花瓣 / 游丝
+   签名：花瓣形不对称圆角（左上-右上-右下-左下 圆尖交替），描边带粉、
+         阴影带粉青双晕；hover 时卡片像花瓣一样轻摇 + 上浮，桃花影随。
+   ------------------------------------------------------------------------- */
+[data-theme="peach"] .dashboard-page .page-hero-card,
+[data-theme="peach"] .daily-selection-page .daily-page-heading {
+  border-radius: 30px 14px 30px 14px;
+}
+/* 页头横幅：原版硬编码蓝色渐变，桃花源下换半透明桃粉→青山渐变，
+   毛玻璃让背景山水若隐若现，白字保持可读 */
+[data-theme="peach"] .daily-selection-page .daily-page-heading {
+  border-color: rgba(217, 93, 120, 0.42);
+  background: linear-gradient(118deg, rgba(128, 52, 78, 0.8) 0%, rgba(208, 107, 130, 0.64) 56%, rgba(90, 155, 124, 0.58) 100%);
+  backdrop-filter: blur(10px) saturate(1.12);
+  -webkit-backdrop-filter: blur(10px) saturate(1.12);
+  box-shadow: 0 14px 34px rgba(176, 58, 85, 0.2);
+}
+[data-theme="peach"] .daily-selection-page .daily-page-heading p {
+  color: #ffeef0;
+}
+[data-theme="peach"] .daily-selection-page .daily-page-heading .daily-kicker {
+  color: #ffd9e2;
+}
+[data-theme="peach"] :is(.dashboard-page, .mac-home) .mac-launchpad {
+  border-radius: 30px 14px 30px 14px;
+  border-color: rgba(217, 93, 120, 0.3);
+  background: rgba(255, 250, 247, 0.58);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.72), 0 16px 38px rgba(176, 58, 85, 0.12), 0 6px 18px rgba(90, 155, 124, 0.08);
+}
+[data-theme="peach"] :is(.dashboard-page, .mac-home) .mac-continue-grid > button {
+  border-radius: 22px 10px 22px 10px;
+  border-color: rgba(217, 93, 120, 0.3);
+  box-shadow: 0 8px 20px rgba(176, 58, 85, 0.08);
+}
+/* 面板/卡片：降低不透明度 + 毛玻璃，让桃花源背景透出来 */
+[data-theme="peach"] .daily-selection-page :is(.daily-panel, .shop-collection-panel, .plugin-candidate-review) {
+  border-radius: 24px 12px 24px 12px;
+  border-color: rgba(217, 93, 120, 0.26);
+  background: rgba(255, 250, 247, 0.58);
+  backdrop-filter: blur(9px);
+  -webkit-backdrop-filter: blur(9px);
+  box-shadow: 0 10px 26px rgba(176, 58, 85, 0.08);
+}
+[data-theme="peach"] .dashboard-page .page-hero-card {
+  background: rgba(255, 250, 247, 0.22);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+[data-theme="peach"] .collection-workspace-tabs button.is-active {
+  border-radius: 999px;
+  box-shadow: 0 6px 16px rgba(176, 58, 85, 0.28);
+}
+
+/* hover：花瓣轻摇上浮，粉影 + 青影双晕 */
+[data-theme="peach"] :is(.dashboard-page, .mac-home) .mac-continue-grid > button,
+[data-theme="peach"] :is(.dashboard-page, .mac-home) .mac-launchpad button:hover .mac-app-icon,
+[data-theme="peach"] .daily-selection-page .daily-panel,
+[data-theme="peach"] .daily-selection-page .sku-filter-button:not(:disabled) {
+  transition: transform 0.28s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.28s ease, border-color 0.28s ease;
+}
+[data-theme="peach"] :is(.dashboard-page, .mac-home) .mac-continue-grid > button:hover {
+  transform: translateY(-4px) rotate(-0.7deg);
+  box-shadow: 0 18px 36px rgba(176, 58, 85, 0.16), 0 8px 20px rgba(90, 155, 124, 0.12);
+  border-color: rgba(217, 93, 120, 0.45);
+}
+[data-theme="peach"] :is(.dashboard-page, .mac-home) .mac-launchpad button:hover .mac-app-icon {
+  transform: translateY(-5px) rotate(-3deg) scale(1.04);
+  box-shadow: 0 14px 26px rgba(176, 58, 85, 0.26);
+}
+[data-theme="peach"] .daily-selection-page .daily-panel:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 16px 34px rgba(176, 58, 85, 0.12);
 }
 
 /* ---------------------------------------------------------------------------

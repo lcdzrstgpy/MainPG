@@ -4,8 +4,11 @@
      - classic  : 经典蓝青（默认）
      - sunset   : 暖阳橙
      - violet   : 樱雾粉紫
+     - dessert  : 焦糖
+     - diamond  : 黑白钻石
      - quirky   : 怪趣贴纸
      - chinese  : 水墨青黛
+     - peach    : 桃花源（背景/特效见 peach-garden.css、PeachGarden.tsx）
    ================================================================ */
 
 /* ---- 默认主题变量（经典蓝青）---- */
@@ -545,6 +548,96 @@
   --theme-module-overlay: rgba(0, 0, 0, .64);
 }
 
+/* ---- 桃花源：落英缤纷 · 桃花粉 + 宣纸暖白 + 青绿山水 ---- */
+[data-theme="peach"] {
+  --theme-page-bg: #fdf0ec;
+  --theme-card-bg: rgba(255, 250, 247, .2);
+  --theme-card-border: rgba(217, 93, 120, .22);
+  --theme-card-shadow: rgba(140, 61, 82, .08);
+  --theme-card-shadow-lg: rgba(140, 61, 82, .14);
+
+  --theme-text-primary: #473037;
+  --theme-text-secondary: #7f5f6a;
+  --theme-text-muted: #ad8f97;
+
+  --theme-primary: #d95d78;
+  --theme-primary-light: #ffeef2;
+  --theme-accent: #5a9b7c;
+
+  --theme-sidebar-hover-bg: #fde9ee;
+  --theme-sidebar-active-bg: linear-gradient(100deg, #ffd9e4, #ffeeec);
+  --theme-sidebar-active-color: #b03a55;
+  --theme-sidebar-active-border: #f3a8bb;
+  --theme-sidebar-active-shadow: 0 6px 16px rgba(176, 58, 85, .12);
+
+  --theme-hero-gradient: linear-gradient(120deg, #80344e, #d06b82 55%, #5a9b7c);
+  --theme-hero-text: #ffefe9;
+  --theme-hero-eyebrow: #ffd7de;
+
+  --theme-brand-gradient: linear-gradient(145deg, #d95d78, #7fb89a);
+  --theme-brand-shadow: rgba(217, 93, 120, .24);
+  --theme-brand-large-color: #b03a55;
+  --theme-brand-large-bg: #fff8f6;
+
+  --theme-avatar-bg: #ffe3ea;
+  --theme-avatar-color: #b03a55;
+
+  --theme-icon-button-border: #edd3d8;
+  --theme-icon-button-bg: #fff8f6;
+  --theme-icon-button-color: #7f5f6a;
+
+  --theme-page-tab-border: #edd8da;
+  --theme-page-tab-bg: #fdf5f2;
+  --theme-page-tab-active-border: #f3a8bb;
+  --theme-page-tab-active-bg: #ffeef2;
+  --theme-page-tab-active-color: #b03a55;
+
+  --theme-flow-color-a: rgba(233, 122, 148, .08);
+  --theme-flow-color-b: rgba(240, 157, 178, .2);
+  --theme-flow-color-c: rgba(122, 178, 148, .22);
+  --theme-flow-color-d: rgba(233, 150, 170, .14);
+  --theme-flow-ripple: rgba(233, 122, 148, .26);
+  --theme-flow-ripple-secondary: rgba(122, 178, 148, .16);
+
+  --theme-scroll-gradient: linear-gradient(145deg, #d95d78, #5a9b7c);
+  --theme-scroll-shadow: rgba(176, 58, 85, .3);
+
+  --theme-meteor-gradient: linear-gradient(90deg, transparent, rgba(255, 192, 208, .2) 30%, rgba(255, 214, 224, .75));
+  --theme-meteor-dot: #ffe9ee;
+  --theme-meteor-dot-shadow: rgba(255, 183, 199, .6);
+
+  --theme-auth-gradient: linear-gradient(135deg, #6e2f47 0%, #a34a63 42%, #d0718a 76%, #e8a4b2 100%);
+  --theme-auth-brand-text: #ffefe9;
+  --theme-auth-brand-eyebrow: #ffd7de;
+  --theme-auth-tabs-bg: #fdeaea;
+  --theme-auth-tabs-active-color: #b03a55;
+  --theme-auth-input-border: #e8cdd2;
+  --theme-auth-input-outline: #e78ba2;
+  --theme-auth-label-color: #7f5f6a;
+  --theme-auth-hint-color: #b08d96;
+
+  --theme-primary-button-gradient: linear-gradient(105deg, #b03a55, #d95d78);
+  --theme-primary-button-shadow: rgba(176, 58, 85, .28);
+  --theme-on-primary: #ffffff;
+
+  --theme-hero-gradient-overwrite: linear-gradient(120deg, #80344e, #d06b82 55%, #5a9b7c);
+  --theme-hero-shadow: rgba(128, 52, 78, .24);
+  --theme-hero-fluid-bg: radial-gradient(circle at 35% 38%, rgba(255, 214, 224, .3), rgba(122, 178, 148, .14) 48%, transparent 70%);
+  --theme-hero-sheen-color: rgba(255, 255, 255, .1);
+
+  --theme-module-surface: #fff8f6;
+  --theme-module-surface-raised: rgba(255, 248, 246, .98);
+  --theme-module-surface-soft: #fdeeea;
+  --theme-module-surface-tint: #f9dfe3;
+  --theme-module-border: #ecd3d6;
+  --theme-module-border-strong: #d79aa8;
+  --theme-module-primary-strong: #b03a55;
+  --theme-module-primary-rgb: 217, 93, 120;
+  --theme-module-panel-gradient: linear-gradient(120deg, #fdeeea 0%, #fff8f6 62%, #e7f2ea 100%);
+  --theme-module-shadow: rgba(140, 61, 82, .1);
+  --theme-module-overlay: rgba(71, 48, 55, .34);
+}
+
 /* ================================================================
    主题覆盖样式：侧边栏、标签页、头像、仪表盘等
    ================================================================ */
@@ -558,6 +651,10 @@
 [data-theme="violet"] .sidebar-subitem.is-active { color: #82418f !important; background: #ecd9f5 !important; }
 [data-theme="violet"] .sidebar-item:hover, [data-theme="violet"] .sidebar-subitem:hover { background: #f7dfed !important; }
 
+[data-theme="peach"] .sidebar-item.is-active { background: linear-gradient(100deg, #ffd9e4, #ffeeec) !important; color: #b03a55 !important; box-shadow: inset 0 0 0 1px #f3a8bb, 0 6px 16px rgba(176, 58, 85, .12) !important; }
+[data-theme="peach"] .sidebar-subitem.is-active { color: #b03a55 !important; background: #ffe7ee !important; }
+[data-theme="peach"] .sidebar-item:hover, [data-theme="peach"] .sidebar-subitem:hover { background: #fde9ee !important; }
+
 /* ---- 顶栏激活按钮 ---- */
 [data-theme="sunset"] .sidebar-pin-button.is-active { color: #d97706 !important; border-color: #fde68a !important; background: #fef3c7 !important; box-shadow: inset 0 0 0 1px #fcd34d !important; }
 [data-theme="sunset"] .page-tab.is-active { border-color: #fdba74 !important; background: #fff7ed !important; }
@@ -569,9 +666,15 @@
 [data-theme="violet"] .page-tab.is-active > button { color: #9b53aa !important; }
 [data-theme="violet"] .topbar-pin-toggle.is-active { color: #8e499d !important; border-color: #ca91c4 !important; background: #f4d7e9 !important; }
 
+[data-theme="peach"] .sidebar-pin-button.is-active { color: #b03a55 !important; border-color: #f3a8bb !important; background: #ffe3ea !important; box-shadow: inset 0 0 0 1px #f7c0cd !important; }
+[data-theme="peach"] .page-tab.is-active { border-color: #f3a8bb !important; background: linear-gradient(105deg, #ffe4ec, #fff0ec) !important; box-shadow: 0 4px 12px rgba(176, 58, 85, .12) !important; }
+[data-theme="peach"] .page-tab.is-active > button { color: #b03a55 !important; }
+[data-theme="peach"] .topbar-pin-toggle.is-active { color: #b03a55 !important; border-color: #f3a8bb !important; background: #ffe3ea !important; }
+
 /* ---- 头像 ---- */
 [data-theme="sunset"] .avatar { color: #b45309; background: #fef3c7; }
 [data-theme="violet"] .avatar { color: #9850a9; background: linear-gradient(145deg, #fff0f7, #eee2ff); }
+[data-theme="peach"] .avatar { color: #b03a55; background: linear-gradient(145deg, #ffe3ea, #fff3ec); }
 
 /* ---- 仪表盘 Hero 卡片 ---- */
 [data-theme="sunset"] .dashboard-page .page-hero-card { background: var(--theme-hero-gradient) !important; box-shadow: 0 18px 42px #b4530926 !important; }
@@ -588,11 +691,20 @@
 [data-theme="violet"] .page-hero-card .eyebrow { color: #b65e93 !important; }
 [data-theme="violet"] .profit-test-hero { background: var(--theme-hero-gradient) !important; }
 
+[data-theme="peach"] .dashboard-page .page-hero-card { background: var(--theme-hero-gradient) !important; box-shadow: 0 18px 42px rgba(128, 52, 78, .2) !important; }
+[data-theme="peach"] .dashboard-page .page-hero-card::before { background: radial-gradient(circle at 35% 38%, rgba(255, 214, 224, .5), rgba(122, 178, 148, .2) 48%, transparent 70%) !important; }
+[data-theme="peach"] .page-hero-card { background: var(--theme-hero-gradient) !important; }
+[data-theme="peach"] .page-hero-card p:not(.eyebrow) { color: #ffefe9 !important; }
+[data-theme="peach"] .page-hero-card .eyebrow { color: #ffd7de !important; }
+[data-theme="peach"] .profit-test-hero { background: var(--theme-hero-gradient) !important; }
+
 /* ---- 仪表盘流星特效 ---- */
 [data-theme="sunset"] .dashboard-meteor { background: linear-gradient(90deg, transparent 0%, rgba(245, 158, 11, .2) 24%, rgba(234, 179, 8, .8) 82%, rgba(253, 224, 71, .96) 100%) !important; }
 [data-theme="sunset"] .dashboard-meteor::after { background: #fde68a !important; box-shadow: 0 0 9px rgba(245, 158, 11, .82) !important; }
 [data-theme="violet"] .dashboard-meteor { background: linear-gradient(90deg, transparent 0%, rgba(240, 168, 203, .2) 24%, rgba(205, 159, 229, .72) 82%, rgba(255, 221, 237, .96) 100%) !important; }
 [data-theme="violet"] .dashboard-meteor::after { background: #ffe4f1 !important; box-shadow: 0 0 9px rgba(226, 138, 185, .62) !important; }
+[data-theme="peach"] .dashboard-meteor { background: linear-gradient(90deg, transparent 0%, rgba(255, 183, 199, .22) 24%, rgba(240, 138, 162, .72) 82%, rgba(255, 232, 237, .96) 100%) !important; }
+[data-theme="peach"] .dashboard-meteor::after { background: #ffe9ee !important; box-shadow: 0 0 9px rgba(240, 138, 162, .66) !important; }
 
 /* ---- 利润测算按钮 ---- */
 [data-theme="sunset"] .profit-test-page .primary-button { background: var(--theme-primary-button-gradient) !important; }
@@ -601,6 +713,9 @@
 [data-theme="violet"] .profit-test-page .primary-button { background: var(--theme-primary-button-gradient) !important; }
 [data-theme="violet"] .profit-site-tabs button.is-active { color: #fff; background: #b66bc9; box-shadow: 0 7px 14px rgba(182, 107, 201, .24); }
 [data-theme="violet"] .profit-title-icon { color: #a257b2; background: #fff3f9; border-color: #ead7e8; }
+[data-theme="peach"] .profit-test-page .primary-button { background: var(--theme-primary-button-gradient) !important; }
+[data-theme="peach"] .profit-site-tabs button.is-active { color: #fff; background: #b03a55; box-shadow: 0 7px 14px rgba(176, 58, 85, .26); }
+[data-theme="peach"] .profit-title-icon { color: #b03a55; background: #fff0f3; border-color: #f5d2da; }
 
 /* ---- 主题切换按钮样式 ---- */
 .theme-switcher { display: grid; gap: 6px; padding-top: 8px; margin-top: 8px; border-top: 1px solid #e5edf4; }
@@ -611,6 +726,7 @@
 .theme-option.is-active { border-color: #a7dafa; background: #eaf8ff; color: #0877d3; }
 [data-theme="sunset"] .theme-option.is-active { border-color: #fdba74; background: #fff7ed; color: #d97706; }
 [data-theme="violet"] .theme-option.is-active { border: 2px solid #ba79b5; background: linear-gradient(100deg, #f4cde2, #e3d2f5); color: #81418f; box-shadow: 2px 3px 0 rgba(129, 65, 143, .18); transform: rotate(-.45deg); }
+[data-theme="peach"] .theme-option.is-active { border-color: #f3a8bb; background: linear-gradient(100deg, #ffe4ec, #fff0ec); color: #b03a55; box-shadow: 0 4px 12px rgba(176, 58, 85, .12); }
 .theme-swatch { width: 18px; height: 18px; border-radius: 50%; flex-shrink: 0; border: 2px solid rgba(255,255,255,.5); box-shadow: 0 1px 3px rgba(0,0,0,.12); }
 .theme-option-name { flex: 1; }
 .theme-check { font-size: .85rem; color: inherit; }
@@ -634,11 +750,22 @@
   background: radial-gradient(ellipse at 50% 115%, rgba(240, 166, 202, .2) 0 16%, rgba(194, 158, 225, .13) 36%, transparent 68%) 0 0 / 180px 32px repeat-x !important;
 }
 
+[data-theme="peach"] .topbar-card::before,
+[data-theme="peach"] .sidebar-card::before {
+  background: linear-gradient(105deg, transparent 22%, rgba(255, 183, 199, .1) 36%, rgba(240, 138, 162, .18) 46%, rgba(122, 178, 148, .16) 53%, rgba(240, 138, 162, .1) 62%, transparent 78%) !important;
+}
+[data-theme="peach"] .topbar-card::after,
+[data-theme="peach"] .sidebar-card::after {
+  background: radial-gradient(ellipse at 50% 115%, rgba(240, 138, 162, .22) 0 16%, rgba(122, 178, 148, .13) 36%, transparent 68%) 0 0 / 180px 32px repeat-x !important;
+}
+
 /* ---- 仪表盘背景流体光斑 ---- */
 [data-theme="sunset"] .dashboard-page::before { background: radial-gradient(circle at 35% 35%, #fde68a, #f59e0b 58%, transparent 72%) !important; }
 [data-theme="sunset"] .dashboard-page::after { background: radial-gradient(circle at 45% 45%, #fcd34d, #fbbf24 58%, transparent 73%) !important; }
 [data-theme="violet"] .dashboard-page::before { background: radial-gradient(circle at 35% 35%, #ffe1ef, #e7c9f4 58%, transparent 72%) !important; }
 [data-theme="violet"] .dashboard-page::after { background: radial-gradient(circle at 45% 45%, #f6d8ed, #efb6d2 58%, transparent 73%) !important; }
+[data-theme="peach"] .dashboard-page::before { background: radial-gradient(circle at 35% 35%, #ffdbe4, #f29db1 58%, transparent 72%) !important; }
+[data-theme="peach"] .dashboard-page::after { background: radial-gradient(circle at 45% 45%, #ffe9ec, #a9d1ba 58%, transparent 73%) !important; }
 
 /* ---- 黑白钻石：工作台外壳与登录页 ---- */
 [data-theme="diamond"] .auth-screen::before {

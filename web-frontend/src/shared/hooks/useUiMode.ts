@@ -28,7 +28,7 @@ function applyUiMode(id: UiModeId, animate = false) {
   try {
     window.localStorage.setItem(STORAGE_KEY, id);
     const savedTheme = window.localStorage.getItem("mainpg.theme");
-    originalTheme = savedTheme === "sunset" || savedTheme === "violet" || savedTheme === "diamond" || savedTheme === "quirky" || savedTheme === "chinese"
+    originalTheme = savedTheme === "sunset" || savedTheme === "violet" || savedTheme === "dessert" || savedTheme === "diamond" || savedTheme === "quirky" || savedTheme === "chinese" || savedTheme === "peach"
       ? savedTheme
       : "classic";
   } catch { /* ignore */ }
