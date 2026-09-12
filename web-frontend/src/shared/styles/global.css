@@ -747,6 +747,19 @@ html.mode-cascade .sidebar-card { animation-delay: 0.16s; }
   overflow: hidden;
 }
 
+.inbox-kind-badge {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: #eef4ff;
+  color: #3d6db5;
+  font-size: .72rem;
+  font-weight: 700;
+  vertical-align: 1px;
+  white-space: nowrap;
+}
+
 .inbox-item.is-expanded .inbox-item-main strong {
   display: block;
   -webkit-line-clamp: unset;

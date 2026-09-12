@@ -246,7 +246,12 @@ export function InboxBell() {
                   >
                     <span className="inbox-item-dot" aria-hidden="true" />
                     <span className="inbox-item-main">
-                      <strong>{item.title}</strong>
+                      <strong>
+                        {item.kind === "feedback_reply" && (
+                          <span className="inbox-kind-badge">回复</span>
+                        )}
+                        {item.title}
+                      </strong>
                       {item.content && <em>{item.content}</em>}
                       <time>{formatTime(item.publishedAt)}</time>
                     </span>

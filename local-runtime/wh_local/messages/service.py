@@ -93,3 +93,87 @@ class AnnouncementSyncService:
     def stop(self) -> None:
         self._stop.set()
         self._thread = None
+
+
+class FeedbackReplySyncService:
+    """从后台拉取管理员对用户反馈的回复，写入本地消息表（kind=feedback_reply）。
+
+    与 AnnouncementSyncService 同构，仅拉取端点与消息类型不同：
+    - 端点：{base_url}/api/feedback-replies/public
+    - kind：feedback_reply（前端据此在消息中心做轻微样式区分）
+    """
+
+    def __init__(
+        self,
+        repository: MessagesRepository,
+        base_url: str,
+        *,
+        interval_seconds: int = 180,
+        account_id_provider: Callable[[], str] | None = None,
+    ) -> None:
+        self.repository = repository
+        self.base_url = str(base_url or "").strip().rstrip("/")
+        self.interval_seconds = interval_seconds
+        self.account_id_provider = account_id_provider
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def configured(self) -> bool:
+        return bool(self.base_url)
+
+    def sync_once(self) -> int:
+        """执行一次同步，返回新增消息数；失败返回 0。"""
+        if not self.configured():
+            return 0
+        url = f"{self.base_url}/api/feedback-replies/public"
+        account_id = ""
+        try:
+            if self.account_id_provider is not None:
+                account_id = (self.account_id_provider() or "").strip()
+        except Exception:  # 身份查询失败不影响同步
+            account_id = ""
+        if account_id:
+            url += f"?account_id={quote(account_id)}"
+        try:
+            request_kwargs = {"timeout": 10, "verify": False} if is_ip_literal_host(self.base_url) else {"timeout": 10}
+            response = httpx.get(url, **request_kwargs)
+            response.raise_for_status()
+            payload = response.json()
+            items = payload.get("announcements") if isinstance(payload, dict) else None
+            if not isinstance(items, list):
+                logger.warning("feedback reply sync: unexpected payload from %s", url)
+                return 0
+            # 反馈回复以 feedback_replies 的 id 作为 server_id，加 10 亿偏移
+            # 与公告（announcements.id）共享同一 messages 表但不冲突。
+            reply_items = [
+                {**item, "id": int(item.get("id") or 0) + 1_000_000_000}
+                for item in items
+            ]
+            return self.repository.upsert_server_announcements(
+                reply_items, kind="feedback_reply"
+            )
+        except Exception as exc:  # 离线/服务器未就绪：静默降级
+            logger.info("feedback reply sync unavailable (%s): %s", url, exc)
+            return 0
+
+    def start(self) -> None:
+        if self._thread is not None or not self.configured():
+            return
+        self._stop.clear()
+
+        def _run() -> None:
+            while not self._stop.is_set():
+                try:
+                    self.sync_once()
+                except Exception:
+                    logger.exception("feedback reply sync crashed")
+                self._stop.wait(self.interval_seconds)
+
+        self._thread = threading.Thread(
+            target=_run, name="feedback-reply-sync", daemon=True
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread = None

@@ -7,6 +7,7 @@ export type InboxMessage = {
   content: string;
   publishedAt: string;
   read: boolean;
+  kind: string;
 };
 
 const TOKEN_KEY = "wh_demo_token";
@@ -27,6 +28,7 @@ function mapMessage(value: unknown): InboxMessage {
     content: String(raw.content ?? ""),
     publishedAt: String(raw.published_at ?? raw.publishedAt ?? ""),
     read: Boolean(raw.read),
+    kind: String(raw.kind ?? "announcement"),
   };
 }
 

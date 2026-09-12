@@ -12,11 +12,21 @@ CREATE TABLE IF NOT EXISTS messages (
     content TEXT NOT NULL DEFAULT '',
     published_at TEXT NOT NULL DEFAULT '',
     read INTEGER NOT NULL DEFAULT 0,
-    received_at TEXT NOT NULL DEFAULT (datetime('now'))
+    received_at TEXT NOT NULL DEFAULT (datetime('now')),
+    kind TEXT NOT NULL DEFAULT 'announcement'
 );
 CREATE INDEX IF NOT EXISTS idx_messages_read
     ON messages (read, published_at DESC);
 """
+
+
+def _ensure_kind_column(con: sqlite3.Connection) -> None:
+    """旧库迁移：messages 表缺 kind 列时补上（默认 announcement）。"""
+    cols = {row[1] for row in con.execute("PRAGMA table_info(messages)")}
+    if "kind" not in cols:
+        con.execute(
+            "ALTER TABLE messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'announcement'"
+        )
 
 
 class MessagesRepository:
@@ -28,6 +38,7 @@ class MessagesRepository:
         con = self._connect()
         try:
             con.executescript(SCHEMA_SQL)
+            _ensure_kind_column(con)
             con.commit()
         finally:
             con.close()
@@ -38,10 +49,13 @@ class MessagesRepository:
         con.execute("PRAGMA busy_timeout = 20000")
         return con
 
-    def upsert_server_announcements(self, items: list[dict[str, Any]]) -> int:
-        """按 server_id 同步服务器公告，返回新增条数（新公告默认未读）。
+    def upsert_server_announcements(
+        self, items: list[dict[str, Any]], kind: str = "announcement"
+    ) -> int:
+        """按 server_id 同步服务器消息，返回新增条数（新消息默认未读）。
 
-        已存在的公告会更新服务端字段，但保留本机 ``read`` 状态。
+        已存在的消息会更新服务端字段，但保留本机 ``read`` 状态。
+        ``kind`` 区分来源：announcement（公告）或 feedback_reply（反馈回复）。
         """
         con = self._connect()
         try:
@@ -56,11 +70,11 @@ class MessagesRepository:
                 cur = con.execute(
                     """
                     INSERT INTO messages (
-                        server_id, title, content, published_at, read
-                    ) VALUES (?, ?, ?, ?, 0)
+                        server_id, title, content, published_at, read, kind
+                    ) VALUES (?, ?, ?, ?, 0, ?)
                     ON CONFLICT(server_id) DO NOTHING
                     """,
-                    (server_id, title, content, published_at),
+                    (server_id, title, content, published_at, kind),
                 )
                 if cur.rowcount > 0:
                     new_count += 1
@@ -68,10 +82,10 @@ class MessagesRepository:
                 con.execute(
                     """
                     UPDATE messages
-                    SET title = ?, content = ?, published_at = ?
+                    SET title = ?, content = ?, published_at = ?, kind = ?
                     WHERE server_id = ?
                     """,
-                    (title, content, published_at, server_id),
+                    (title, content, published_at, kind, server_id),
                 )
             con.commit()
             return new_count
@@ -83,7 +97,7 @@ class MessagesRepository:
         try:
             rows = con.execute(
                 """
-                SELECT id, server_id, title, content, published_at, read
+                SELECT id, server_id, title, content, published_at, read, kind
                 FROM messages
                 ORDER BY published_at DESC, id DESC
                 """
@@ -131,12 +145,17 @@ class MessagesRepository:
         ids = [int(value) for value in active_server_ids if int(value) > 0]
         con = self._connect()
         try:
+            # 只撤回公告类消息（kind='announcement'），反馈回复由独立通道管理，
+            # 不随公告在线列表被误删。
             if not ids:
-                cur = con.execute("DELETE FROM messages WHERE server_id > 0")
+                cur = con.execute(
+                    "DELETE FROM messages WHERE server_id > 0 AND kind = 'announcement'"
+                )
             else:
                 placeholders = ",".join("?" * len(ids))
                 cur = con.execute(
-                    f"DELETE FROM messages WHERE server_id > 0 AND server_id NOT IN ({placeholders})",
+                    f"DELETE FROM messages WHERE server_id > 0 AND kind = 'announcement' "
+                    f"AND server_id NOT IN ({placeholders})",
                     ids,
                 )
             con.commit()

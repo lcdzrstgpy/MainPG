@@ -66,6 +66,7 @@ from ..modules.ai_service import create_router as create_ai_service_router
 from ..modules.ai_service.temporary_cos import TemporaryCosStore
 from ..messages import (
     AnnouncementSyncService,
+    FeedbackReplySyncService,
     MessagesRepository,
     create_messages_router,
 )
@@ -350,6 +351,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         pod_ai_runtime = getattr(runtime_app.state, "pod_customization_ai_runtime", None)
         pod_title_runtime = getattr(runtime_app.state, "pod_customization_title_runtime", None)
         messages_sync = getattr(runtime_app.state, "messages_sync", None)
+        reply_sync = getattr(runtime_app.state, "reply_sync", None)
         if shop_worker is not None:
             logger.info("lifespan step: starting shop_worker")
             shop_worker.start()
@@ -358,6 +360,10 @@ def create_app(database_path: Path | None = None) -> FastAPI:
             logger.info("lifespan step: starting messages_sync")
             messages_sync.start()
             logger.info("lifespan step: messages_sync started")
+        if reply_sync is not None:
+            logger.info("lifespan step: starting reply_sync")
+            reply_sync.start()
+            logger.info("lifespan step: reply_sync started")
         logger.info("lifespan step: startup done, yielding")
         try:
             yield
@@ -366,6 +372,8 @@ def create_app(database_path: Path | None = None) -> FastAPI:
                 shop_worker.close()
             if messages_sync is not None:
                 messages_sync.stop()
+            if reply_sync is not None:
+                reply_sync.stop()
             # Stop the POD coordinator before closing the runtimes it submits
             # provider work to. Closing the runtimes first leaves old POD
             # futures alive long enough to write into the next app instance.
@@ -566,8 +574,15 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         interval_seconds=180,
         account_id_provider=_current_remote_account_id,
     )
+    reply_sync = FeedbackReplySyncService(
+        messages_repository,
+        config.announce_base_url,
+        interval_seconds=180,
+        account_id_provider=_current_remote_account_id,
+    )
     app.include_router(create_messages_router(messages_repository, messages_sync))
     app.state.messages_sync = messages_sync
+    app.state.reply_sync = reply_sync
 
     return app
 
