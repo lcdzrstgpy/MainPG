@@ -33,7 +33,8 @@
   left: -24%;
   height: 22vh;
   border-radius: 50%;
-  filter: blur(30px);
+  /* 不再用 filter: blur() 实时模糊(每帧重算很贵);
+     雾的柔和边缘由 radial-gradient 的 transparent 过渡自带 */
   will-change: transform;
 }
 
@@ -71,9 +72,8 @@
 [data-theme="peach"] .topbar-card,
 [data-theme="peach"] .content-card {
   background: rgba(255, 251, 248, 0.2);
-  /* 只用 2px 微模糊，保住山水细节；文字靠下方 text-shadow 保可读 */
-  backdrop-filter: blur(2px) saturate(1.05);
-  -webkit-backdrop-filter: blur(2px) saturate(1.05);
+  /* 不用 backdrop-filter：它在 Chrome/Windows 上会强制每帧重算整片背景合成，
+     是滚屏卡顿的最大来源；2px 微模糊去掉后肉眼无差，文字靠 text-shadow 保可读 */
   border-color: rgba(217, 93, 120, 0.26);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.85),
@@ -112,8 +112,6 @@
 [data-theme="peach"] .verify-commandbar {
   border-color: rgba(217, 93, 120, 0.42);
   background: linear-gradient(118deg, rgba(128, 52, 78, 0.82) 0%, rgba(208, 107, 130, 0.68) 56%, rgba(90, 155, 124, 0.6) 100%);
-  backdrop-filter: blur(3px) saturate(1.12);
-  -webkit-backdrop-filter: blur(3px) saturate(1.12);
   box-shadow: 0 14px 34px rgba(176, 58, 85, 0.2);
 }
 
@@ -168,8 +166,6 @@
 [data-theme="peach"] .ai-search-toggle,
 [data-theme="peach"] .ai-document-preview > .iconfont {
   background: rgba(255, 251, 248, 0.48);
-  backdrop-filter: blur(2px);
-  -webkit-backdrop-filter: blur(2px);
   border-color: rgba(217, 93, 120, 0.22);
 }
 

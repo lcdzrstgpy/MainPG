@@ -78,6 +78,35 @@ function drawPetalShape(ctx: CanvasRenderingContext2D, x: number, y: number, siz
   ctx.restore();
 }
 
+/** 贴图基准尺寸:花瓣按颜色离线预渲染一次,之后每帧只 drawImage。
+ *  每帧重画贝塞尔路径是 CPU 开销大头,drawImage 可走 GPU,动画明显更顺。 */
+const SPRITE_BASE = 48;
+const petalSpriteCache = new Map<string, HTMLCanvasElement>();
+
+function getPetalSprite(color: string): HTMLCanvasElement {
+  const cached = petalSpriteCache.get(color);
+  if (cached) return cached;
+  const sprite = document.createElement("canvas");
+  sprite.width = Math.ceil(SPRITE_BASE * 2);
+  sprite.height = Math.ceil(SPRITE_BASE * 2);
+  const sctx = sprite.getContext("2d");
+  if (sctx) drawPetalShape(sctx, sprite.width / 2, sprite.height / 2, SPRITE_BASE, 0, 1, 1, color);
+  petalSpriteCache.set(color, sprite);
+  return sprite;
+}
+
+function drawPetalSprite(ctx: CanvasRenderingContext2D, x: number, y: number, size: number, rot: number, scaleX: number, alpha: number, color: string) {
+  const sprite = getPetalSprite(color);
+  const scale = size / SPRITE_BASE;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(rot);
+  ctx.scale(scaleX * scale, scale);
+  ctx.globalAlpha = alpha;
+  ctx.drawImage(sprite, -sprite.width / 2, -sprite.height / 2);
+  ctx.restore();
+}
+
 export function PeachGarden() {
   const { theme } = useTheme();
   const { uiMode } = useUiMode();
@@ -132,7 +161,8 @@ export function PeachGarden() {
     };
 
     const resize = () => {
-      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      // DPR 上限 1.5:2x 屏全屏画布是 4 倍像素填充,1.5x 视觉差别很小但省近一半像素
+      const dpr = Math.min(1.5, window.devicePixelRatio || 1);
       width = window.innerWidth;
       height = window.innerHeight;
       canvas.width = Math.round(width * dpr);
@@ -223,7 +253,7 @@ export function PeachGarden() {
 
         // 绕竖轴翻滚:scaleX 在 0.3~1 之间呼吸,营造花瓣翻面的立体动感
         const tumble = 0.3 + 0.7 * Math.abs(Math.sin(petal.tumblePhase));
-        drawPetalShape(ctx, petal.x, petal.y, petal.size, petal.rot, petal.flip * tumble, petal.alpha, petal.color);
+        drawPetalSprite(ctx, petal.x, petal.y, petal.size, petal.rot, petal.flip * tumble, petal.alpha, petal.color);
       }
 
       // 爆裂碎片
@@ -238,7 +268,7 @@ export function PeachGarden() {
         b.x += b.vx * k;
         b.y += b.vy * k;
         b.rot += b.vr * dt;
-        drawPetalShape(ctx, b.x, b.y, b.size, b.rot, 1, Math.max(0, b.life) * b.alpha, b.color);
+        drawPetalSprite(ctx, b.x, b.y, b.size, b.rot, 1, Math.max(0, b.life) * b.alpha, b.color);
       }
 
       // 水波纹涟漪(压扁的椭圆,模拟水面)
