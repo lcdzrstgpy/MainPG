@@ -330,9 +330,9 @@
    毛玻璃让背景山水若隐若现，白字保持可读 */
 [data-theme="peach"] .daily-selection-page .daily-page-heading {
   border-color: rgba(217, 93, 120, 0.42);
-  background: linear-gradient(118deg, rgba(128, 52, 78, 0.8) 0%, rgba(208, 107, 130, 0.64) 56%, rgba(90, 155, 124, 0.58) 100%);
-  backdrop-filter: blur(10px) saturate(1.12);
-  -webkit-backdrop-filter: blur(10px) saturate(1.12);
+  background: linear-gradient(118deg, rgba(128, 52, 78, 0.55) 0%, rgba(208, 107, 130, 0.45) 56%, rgba(90, 155, 124, 0.4) 100%);
+  backdrop-filter: blur(3px) saturate(1.12);
+  -webkit-backdrop-filter: blur(3px) saturate(1.12);
   box-shadow: 0 14px 34px rgba(176, 58, 85, 0.2);
 }
 [data-theme="peach"] .daily-selection-page .daily-page-heading p {
@@ -344,9 +344,9 @@
 [data-theme="peach"] :is(.dashboard-page, .mac-home) .mac-launchpad {
   border-radius: 30px 14px 30px 14px;
   border-color: rgba(217, 93, 120, 0.3);
-  background: rgba(255, 250, 247, 0.58);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  background: rgba(255, 250, 247, 0.2);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
   box-shadow: inset 0 1px rgba(255, 255, 255, 0.72), 0 16px 38px rgba(176, 58, 85, 0.12), 0 6px 18px rgba(90, 155, 124, 0.08);
 }
 [data-theme="peach"] :is(.dashboard-page, .mac-home) .mac-continue-grid > button {
@@ -358,15 +358,15 @@
 [data-theme="peach"] .daily-selection-page :is(.daily-panel, .shop-collection-panel, .plugin-candidate-review) {
   border-radius: 24px 12px 24px 12px;
   border-color: rgba(217, 93, 120, 0.26);
-  background: rgba(255, 250, 247, 0.58);
-  backdrop-filter: blur(9px);
-  -webkit-backdrop-filter: blur(9px);
+  background: rgba(255, 250, 247, 0.2);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
   box-shadow: 0 10px 26px rgba(176, 58, 85, 0.08);
 }
 [data-theme="peach"] .dashboard-page .page-hero-card {
   background: rgba(255, 250, 247, 0.22);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
 }
 [data-theme="peach"] .collection-workspace-tabs button.is-active {
   border-radius: 999px;
