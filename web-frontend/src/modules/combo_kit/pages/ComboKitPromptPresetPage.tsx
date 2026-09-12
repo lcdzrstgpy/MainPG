@@ -57,9 +57,13 @@ export function ComboKitPromptPresetPage({ isActive = true }: Props) {
   return (
     <div className="combo-kit-page">
       <header className="combo-kit-header">
-        <div>
-          <h1>提示词模板预设</h1>
-          <p>选择组合生图默认模板；已手动修改过提示词的套装不会被覆盖。</p>
+        <div className="combo-kit-title">
+          <span className="combo-kit-title-icon iconfont icon-skin" aria-hidden="true" />
+          <div>
+            <span>COMBO KIT · PROMPT PRESET</span>
+            <h1>提示词模板预设</h1>
+            <p>选择组合生图默认模板；已手动修改过提示词的套装不会被覆盖。</p>
+          </div>
         </div>
       </header>
 

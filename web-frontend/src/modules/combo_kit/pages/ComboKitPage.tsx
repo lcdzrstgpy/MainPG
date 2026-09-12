@@ -695,9 +695,13 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
   return (
     <div className="combo-kit-page">
       <header className="combo-kit-header">
-        <div>
-          <h1>{set ? set.name || '未命名套装' : '组合生图'}</h1>
-          <p>上传 2~6 张原图 → 逐图主体词/蒙版 → 融合主图 → 文本+并行6图 → 独立预检</p>
+        <div className="combo-kit-title">
+          <span className="combo-kit-title-icon iconfont icon-skin" aria-hidden="true" />
+          <div>
+            <span>COMBO KIT · FUSION WORKFLOW</span>
+            <h1>{set ? set.name || '未命名套装' : '组合生图'}</h1>
+            <p>上传 2~6 张原图 → 逐图主体词/蒙版 → 融合主图 → 文本+并行6图 → 独立预检</p>
+          </div>
         </div>
         <div className="combo-header-actions">
           <button onClick={openHistory}>历史</button>

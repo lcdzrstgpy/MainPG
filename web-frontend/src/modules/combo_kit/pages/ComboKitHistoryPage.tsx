@@ -65,7 +65,14 @@ export function ComboKitHistoryPage({ isActive = true, onOpenSet }: Props) {
   return (
     <div className="combo-kit-page">
       <header className="combo-kit-header">
-        <div><h1>历史组合套装</h1><p>查看已保存的组合套装，搜索后可回到组合生图继续制作。</p></div>
+        <div className="combo-kit-title">
+          <span className="combo-kit-title-icon iconfont icon-time-circle" aria-hidden="true" />
+          <div>
+            <span>COMBO KIT · HISTORY</span>
+            <h1>历史组合套装</h1>
+            <p>查看已保存的组合套装，搜索后可回到组合生图继续制作。</p>
+          </div>
+        </div>
         <div className="combo-header-actions"><button type="button" onClick={() => void load()} disabled={loading}>刷新</button></div>
       </header>
       {error && <div className="combo-kit-message error">{error}</div>}
