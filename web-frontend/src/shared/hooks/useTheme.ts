@@ -1,4 +1,4 @@
-import { useCallback, useSyncExternalStore } from "react";
+import { useCallback, useMemo, useSyncExternalStore } from "react";
 
 // peach(桃花源)主题:背景见 shared/styles/peach-garden.css,交互特效见
 // shared/components/PeachGarden.tsx(花瓣飘落/爆裂/涟漪)。已注册进主题选择器。
@@ -16,7 +16,14 @@ export const THEME_META: Record<ThemeId, { label: string; swatch: string }> = {
   peach: { label: "桃花源", swatch: "linear-gradient(135deg, #ffe3ec 0 34%, #f48fb0 34% 68%, #7fb89a 68%)" },
 };
 
+/** 安装即内置、在快捷面板直接展示的主题。 */
+export const BUILTIN_THEME_IDS: readonly ThemeId[] = ["classic", "sunset", "peach"];
+
+/** 需要通过「主题商店」下载后才能使用的主题。 */
+export const DOWNLOADABLE_THEME_IDS: readonly ThemeId[] = ["violet", "dessert", "diamond", "quirky", "chinese"];
+
 const STORAGE_KEY = "mainpg.theme";
+const DOWNLOADED_THEMES_KEY = "mainpg.downloadedThemes";
 
 // 与 global.css 里最长的那一条对齐:卡片交错最晚 0.98s 延迟 + 0.8s 本体 ≈ 1.78s,
 // 再算上白板淡入的余量。改 CSS 动画时长/延迟时这里要同步改,否则动画会被 class 移除打断。
@@ -31,6 +38,26 @@ function readTheme(): ThemeId {
   } catch { /* ignore */ }
   return "classic";
 }
+
+function readDownloadedThemes(): Set<ThemeId> {
+  try {
+    const raw = window.localStorage.getItem(DOWNLOADED_THEMES_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((id): id is ThemeId => DOWNLOADABLE_THEME_IDS.includes(id as ThemeId)));
+  } catch { /* ignore */ }
+  return new Set();
+}
+
+function saveDownloadedThemes(themes: Set<ThemeId>) {
+  try {
+    window.localStorage.setItem(DOWNLOADED_THEMES_KEY, JSON.stringify([...themes]));
+  } catch { /* ignore */ }
+}
+
+let downloadedThemes: Set<ThemeId> = readDownloadedThemes();
+const downloadedListeners = new Set<() => void>();
 
 function applyTheme(id: ThemeId, animate = true) {
   const appliedTheme = document.documentElement.getAttribute("data-ui-mode") === "apple" ? "classic" : id;
@@ -93,5 +120,26 @@ export function useTheme() {
     listeners.forEach((fn) => fn());
   }, []);
 
-  return { theme, setTheme } as const;
+  const downloaded = useSyncExternalStore(
+    useCallback((cb) => {
+      downloadedListeners.add(cb);
+      return () => { downloadedListeners.delete(cb); };
+    }, []),
+    useCallback(() => downloadedThemes, []),
+    useCallback(() => downloadedThemes, [])
+  );
+
+  const isDownloaded = useCallback((id: ThemeId) => {
+    return BUILTIN_THEME_IDS.includes(id) || downloaded.has(id);
+  }, [downloaded]);
+
+  const downloadTheme = useCallback((id: ThemeId) => {
+    if (BUILTIN_THEME_IDS.includes(id) || downloadedThemes.has(id)) return;
+    downloadedThemes = new Set(downloadedThemes);
+    downloadedThemes.add(id);
+    saveDownloadedThemes(downloadedThemes);
+    downloadedListeners.forEach((fn) => fn());
+  }, []);
+
+  return { theme, setTheme, downloadedThemes: downloaded, isDownloaded, downloadTheme } as const;
 }

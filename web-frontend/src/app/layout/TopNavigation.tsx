@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import type { WorkspaceModuleId } from "../navigation/modules";
-import { useTheme, THEME_META, type ThemeId } from "../../shared/hooks/useTheme";
+import { useTheme, THEME_META, BUILTIN_THEME_IDS, DOWNLOADABLE_THEME_IDS, type ThemeId } from "../../shared/hooks/useTheme";
 import { UI_MODE_META, useUiMode, type UiModeId } from "../../shared/hooks/useUiMode";
 import { InboxBell } from "../../shared/components/InboxBell";
 import { getAuthAccount } from "../../transport/http/client";
@@ -45,9 +45,10 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
   const [closingKeys, setClosingKeys] = useState<string[]>([]);
   const [topbarStuck, setTopbarStuck] = useState(false);
   const [themePanelOpen, setThemePanelOpen] = useState(false);
+  const [themeStoreOpen, setThemeStoreOpen] = useState(false);
   const topbarRef = useRef<HTMLElement>(null);
   const themeMenuRef = useRef<HTMLDivElement>(null);
-  const { theme, setTheme } = useTheme();
+  const { theme, setTheme, downloadedThemes, isDownloaded, downloadTheme } = useTheme();
   const { uiMode, setUiMode } = useUiMode();
 
   // 本地头像：仅用于本地展示，base64 存 localStorage。
@@ -105,15 +106,16 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
   }, []);
 
   useEffect(() => {
-    if (!themePanelOpen) return;
+    if (!themePanelOpen && !themeStoreOpen) return;
     const onDocMouseDown = (event: MouseEvent) => {
       if (themeMenuRef.current && !themeMenuRef.current.contains(event.target as Node)) {
         setThemePanelOpen(false);
+        setThemeStoreOpen(false);
       }
     };
     document.addEventListener("mousedown", onDocMouseDown);
     return () => document.removeEventListener("mousedown", onDocMouseDown);
-  }, [themePanelOpen]);
+  }, [themePanelOpen, themeStoreOpen]);
 
   useEffect(() => {
     const updateStuckState = () => {
@@ -167,34 +169,108 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
           <div className="theme-quick-menu" ref={themeMenuRef}>
             <button
               type="button"
-              className={`theme-quick-trigger ${themePanelOpen ? "is-active" : ""}`}
-              onClick={() => setThemePanelOpen((open) => !open)}
+              className={`theme-quick-trigger ${themePanelOpen || themeStoreOpen ? "is-active" : ""}`}
+              onClick={() => {
+                if (themeStoreOpen) {
+                  setThemeStoreOpen(false);
+                  setThemePanelOpen(false);
+                } else {
+                  setThemePanelOpen((open) => !open);
+                }
+              }}
               aria-label={`主题风格（当前：${THEME_META[theme].label}）`}
-              aria-expanded={themePanelOpen}
+              aria-expanded={themePanelOpen || themeStoreOpen}
               title="主题风格"
             >
               <span className="face-mouth" aria-hidden="true" />
             </button>
-            {themePanelOpen && (
-              <div className="theme-quick-popover" role="dialog" aria-label="主题风格">
-                <header className="theme-quick-header"><strong>主题风格</strong></header>
-                <div className="theme-quick-options">
-                  {(Object.keys(THEME_META) as ThemeId[]).map((id) => (
-                    <button
-                      key={id}
-                      type="button"
-                      className={`theme-option ${theme === id ? "is-active" : ""}`}
-                      onClick={() => {
-                        setTheme(id);
-                        setThemePanelOpen(false);
-                      }}
-                    >
-                      <span className="theme-swatch" style={{ background: THEME_META[id].swatch }} />
-                      <span className="theme-option-name">{THEME_META[id].label}</span>
-                      {theme === id && <span className="theme-check">✓</span>}
-                    </button>
-                  ))}
-                </div>
+            {(themePanelOpen || themeStoreOpen) && (
+              <div className={`theme-quick-popover ${themeStoreOpen ? "is-store" : ""}`} role="dialog" aria-label="主题风格">
+                {themeStoreOpen ? (
+                  <div className="theme-store">
+                    <header className="theme-quick-header">
+                      <button
+                        type="button"
+                        className="theme-store-back"
+                        onClick={() => setThemeStoreOpen(false)}
+                        aria-label="返回快捷面板"
+                      >
+                        ←
+                      </button>
+                      <strong>更多主题</strong>
+                      <span aria-hidden="true" />
+                    </header>
+                    <div className="theme-store-grid">
+                      {DOWNLOADABLE_THEME_IDS.map((id) => {
+                        const downloaded = isDownloaded(id);
+                        const active = theme === id;
+                        return (
+                          <div key={id} className={`theme-store-card ${active ? "is-active" : ""}`}>
+                            <span className="theme-store-swatch" style={{ background: THEME_META[id].swatch }} />
+                            <span className="theme-store-name">{THEME_META[id].label}</span>
+                            <button
+                              type="button"
+                              className={`theme-store-action ${downloaded ? "is-use" : "is-download"}`}
+                              onClick={() => {
+                                if (!downloaded) downloadTheme(id);
+                                setTheme(id);
+                                setThemeStoreOpen(false);
+                                setThemePanelOpen(false);
+                              }}
+                            >
+                              {active ? "使用中" : downloaded ? "使用" : "下载"}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <header className="theme-quick-header"><strong>主题风格</strong></header>
+                    <div className="theme-quick-options">
+                      {BUILTIN_THEME_IDS.map((id) => (
+                        <button
+                          key={id}
+                          type="button"
+                          className={`theme-option ${theme === id ? "is-active" : ""}`}
+                          onClick={() => {
+                            setTheme(id);
+                            setThemePanelOpen(false);
+                          }}
+                        >
+                          <span className="theme-swatch" style={{ background: THEME_META[id].swatch }} />
+                          <span className="theme-option-name">{THEME_META[id].label}</span>
+                          {theme === id && <span className="theme-check">✓</span>}
+                        </button>
+                      ))}
+                      {DOWNLOADABLE_THEME_IDS.filter((id) => isDownloaded(id)).map((id) => (
+                        <button
+                          key={id}
+                          type="button"
+                          className={`theme-option ${theme === id ? "is-active" : ""}`}
+                          onClick={() => {
+                            setTheme(id);
+                            setThemePanelOpen(false);
+                          }}
+                        >
+                          <span className="theme-swatch" style={{ background: THEME_META[id].swatch }} />
+                          <span className="theme-option-name">{THEME_META[id].label}</span>
+                          {theme === id && <span className="theme-check">✓</span>}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="theme-quick-footer">
+                      <button
+                        type="button"
+                        className="theme-more-button"
+                        onClick={() => setThemeStoreOpen(true)}
+                      >
+                        更多主题
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
             )}
           </div>
