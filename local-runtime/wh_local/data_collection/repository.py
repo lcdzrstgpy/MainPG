@@ -497,15 +497,11 @@ class DailySelectionRepository:
                         """,
                         (workspace_id, handoff_id),
                     )
-                    row = connection.execute(
-                        """
-                        SELECT handoff_id, run_id, candidate_id, workspace_id,
-                               payload_json, status, idempotency_key, created_at
-                        FROM daily_selection_handoffs
-                        WHERE workspace_id = ? AND handoff_id = ?
-                        """,
-                        (workspace_id, handoff_id),
-                    ).fetchone()
+                    # 上面就是本事务内的写入，无需再回读一次；直接按已知终态组装。
+                    acknowledged = dict(row)
+                    acknowledged["status"] = "consumed"
+                    handoffs.append(DailySelectionHandoff(**acknowledged))
+                    continue
                 handoffs.append(DailySelectionHandoff(**dict(row)))
             connection.commit()
             return tuple(handoffs)

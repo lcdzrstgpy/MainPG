@@ -677,7 +677,14 @@ def register_daily_selection_routes(
                 )
             if any(int(d.get("media_contract_version") or 1) >= 2 for d in drafts):
                 _schedule_media_materialization(
-                    plugin_draft_writer, background_tasks, actor.workspace_id
+                    plugin_draft_writer,
+                    background_tasks,
+                    actor.workspace_id,
+                    draft_ids=[
+                        int(draft["id"])
+                        for draft in drafts
+                        if int(draft.get("media_contract_version") or 1) >= 2
+                    ],
                 )
             acknowledged = service.mark_handoffs_consumed(actor=actor, handoffs=handoffs)
             return DailySelectionConfirmResult(
@@ -1592,13 +1599,16 @@ def _schedule_media_materialization(
     draft_writer: Any,
     background_tasks: BackgroundTasks | None,
     workspace_id: str,
+    draft_ids: list[int] | None = None,
 ) -> None:
     if background_tasks is not None:
         # V2 assets are registered inside the same transaction that created the
         # draft, so they are safe to materialize immediately after commit.
+        # 只排空本次入池草稿绑定的资产，避免每次确认都扫整个工作区的积压。
         background_tasks.add_task(
             draft_writer.media_assets.materialize_until_idle,
             workspace_id=workspace_id,
+            draft_ids=draft_ids,
         )
 
 

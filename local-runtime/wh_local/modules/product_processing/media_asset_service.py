@@ -257,8 +257,13 @@ class MediaAssetService:
         *,
         workspace_id: str | None = None,
         limit: int = 20,
+        draft_ids: list[int] | None = None,
     ) -> dict[str, int]:
-        claimed = self.repository.claim_materialization(workspace_id=workspace_id, limit=limit)
+        claimed = self.repository.claim_materialization(
+            workspace_id=workspace_id,
+            limit=limit,
+            draft_ids=draft_ids,
+        )
         ready = retryable = failed = 0
         for asset in claimed:
             target_workspace = str(asset["workspace_id"] or "")
@@ -323,6 +328,7 @@ class MediaAssetService:
         *,
         workspace_id: str | None = None,
         batch_size: int = 20,
+        draft_ids: list[int] | None = None,
     ) -> dict[str, int]:
         """Drain every currently claimable remote asset in bounded claim batches.
 
@@ -330,12 +336,16 @@ class MediaAssetService:
         caller that owns the background worker must, however, continue claiming
         batches until none are left; otherwise assets beyond the first batch are
         permanently left in ``pending`` with zero attempts.
+
+        ``draft_ids`` 非空时只排空这些草稿绑定的资产（入池后的定向物化），
+        避免每次入池都扫过整个工作区的历史 pending 积压。
         """
         total = {"claimed": 0, "ready": 0, "retryable": 0, "failed": 0}
         while True:
             batch = self.materialize_pending(
                 workspace_id=workspace_id,
                 limit=max(1, int(batch_size)),
+                draft_ids=draft_ids,
             )
             for key in total:
                 total[key] += int(batch.get(key) or 0)

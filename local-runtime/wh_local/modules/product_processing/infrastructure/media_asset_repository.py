@@ -189,8 +189,13 @@ class MediaAssetRepository:
         workspace_id: str | None = None,
         limit: int = 20,
         lease_seconds: int = 180,
+        draft_ids: list[int] | None = None,
     ) -> list[dict[str, Any]]:
-        """Claim pending/retryable/expired-materializing remote assets under a lease."""
+        """Claim pending/retryable/expired-materializing remote assets under a lease.
+
+        ``draft_ids`` 非空时只认领这些草稿绑定的资产：入池后只物化本批新增的
+        素材，不再每次排空整个工作区的历史 pending 积压。
+        """
         now = datetime.now(timezone.utc)
         now_iso = now.isoformat()
         cutoff = (now - timedelta(seconds=lease_seconds)).isoformat()
@@ -214,6 +219,15 @@ class MediaAssetRepository:
         ]
         if workspace_id is not None:
             conditions.append(MediaAssetRow.workspace_id == workspace_id)
+        if draft_ids:
+            conditions.append(
+                MediaAssetRow.id.in_(
+                    select(MediaBindingRow.asset_id).where(
+                        MediaBindingRow.product_draft_id.in_([int(value) for value in draft_ids]),
+                        MediaBindingRow.active == 1,
+                    )
+                )
+            )
         with self.database.sessions.begin() as session:
             rows = session.scalars(
                 select(MediaAssetRow)

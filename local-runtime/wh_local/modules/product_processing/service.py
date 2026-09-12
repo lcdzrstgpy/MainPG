@@ -2302,33 +2302,38 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
     ) -> dict[str, Any]:
         receipts: list[dict[str, Any]] = []
         drafts: list[dict[str, Any]] = []
-        created_count = 0
+        replayed: list[tuple[DailySelectionHandoffEnvelope, dict[str, Any]]] = []
+        requests: list[dict[str, Any]] = []
+        # 重放判定整批一次查：回执唯一约束仍是幂等边界。
+        existing = self.repository.handoff_receipts([handoff.handoff_id for handoff in handoffs])
         for handoff in handoffs:
-            existing_receipt = self.repository.handoff_receipt(handoff.handoff_id, handoff.workspace_id)
-            if existing_receipt is not None:
-                receipts.append(existing_receipt)
-                draft = self.repository.get_draft(
-                    existing_receipt["product_draft_id"],
-                    include_deleted=True,
-                    workspace_id=handoff.workspace_id,
-                )
-                if draft:
-                    drafts.append(draft)
+            receipt = existing.get(handoff.handoff_id)
+            if receipt is not None:
+                replayed.append((handoff, receipt))
                 continue
             if handoff.status == "failed":
                 raise ValueError("failed daily-selection handoffs cannot be consumed")
-            # A new handoff creates a V2 draft with its media assets and bindings
-            # in one transaction. Only replaying this exact handoff is idempotent.
-            draft, receipt = self.create_draft_with_media(handoff)
-            created_count += 1
+            requests.append(self._draft_request_from_handoff(handoff))
+        # 整批一个事务建池：多 SKU 入池不再「一个商品一次 commit」。
+        created = self.repository.create_drafts_with_media(requests)
+        for handoff, receipt in replayed:
+            receipts.append(receipt)
+            draft = self.repository.get_draft(
+                receipt["product_draft_id"],
+                include_deleted=True,
+                workspace_id=handoff.workspace_id,
+            )
+            if draft:
+                drafts.append(draft)
+        for draft, receipt in created:
             receipts.append(receipt)
             drafts.append(draft)
         return {
             "contract_version": "daily-selection-handoff-consumer-v1",
             "consumer_status": "consumed",
             "received": len(handoffs),
-            "created": created_count,
-            "replayed": len(handoffs) - created_count,
+            "created": len(created),
+            "replayed": len(replayed),
             "receipts": receipts,
             "drafts": drafts,
             "upstream_ack_required": True,
@@ -2396,20 +2401,24 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         self, handoff: DailySelectionHandoffEnvelope
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Create a V2 draft with registered media assets and bindings atomically."""
+        return self.repository.create_draft_with_media(**self._draft_request_from_handoff(handoff))
+
+    def _draft_request_from_handoff(
+        self, handoff: DailySelectionHandoffEnvelope
+    ) -> dict[str, Any]:
+        """把 handoff 编译成 ``repository.create_drafts_with_media`` 的单个请求项。"""
         raw = self._draft_payload_from_handoff(handoff)
-        draft_values = self._draft_values_from_handoff(handoff, raw)
-        media_entries = self._handoff_media_entries(raw)
-        return self.repository.create_draft_with_media(
-            draft_values=draft_values,
-            media_entries=media_entries,
-            handoff_id=handoff.handoff_id,
-            idempotency_key=handoff.idempotency_key,
-            workspace_id=handoff.workspace_id,
-            run_id=handoff.run_id,
-            candidate_id=handoff.candidate_id,
-            source_status=handoff.status,
-            payload_sha256=hashlib.sha256(handoff.payload_json.encode("utf-8")).hexdigest(),
-        )
+        return {
+            "draft_values": self._draft_values_from_handoff(handoff, raw),
+            "media_entries": self._handoff_media_entries(raw),
+            "handoff_id": handoff.handoff_id,
+            "idempotency_key": handoff.idempotency_key,
+            "workspace_id": handoff.workspace_id,
+            "run_id": handoff.run_id,
+            "candidate_id": handoff.candidate_id,
+            "source_status": handoff.status,
+            "payload_sha256": hashlib.sha256(handoff.payload_json.encode("utf-8")).hexdigest(),
+        }
 
     def _draft_values_from_handoff(
         self,

@@ -335,82 +335,151 @@ class ProductProcessingRepository:
         payload_sha256: str,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Create a V2 draft plus its media assets, bindings, and receipt atomically."""
+        return self.create_drafts_with_media(
+            [
+                {
+                    "draft_values": draft_values,
+                    "media_entries": media_entries,
+                    "handoff_id": handoff_id,
+                    "idempotency_key": idempotency_key,
+                    "workspace_id": workspace_id,
+                    "run_id": run_id,
+                    "candidate_id": candidate_id,
+                    "source_status": source_status,
+                    "payload_sha256": payload_sha256,
+                }
+            ]
+        )[0]
+
+    def create_drafts_with_media(
+        self,
+        requests: list[dict[str, Any]],
+    ) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+        """整批创建 V2 草稿 + 媒体资产/绑定 + 回执，全部收敛在同一个事务内。
+
+        与逐个调用 :meth:`create_draft_with_media` 语义一致（回执唯一约束仍是
+        重放边界），但把「一个商品一次事务」合并为「整批一次事务」：资产查询
+        由「每个媒体项一次 SELECT」降为「整批一次 SELECT + 批内复用」，多 SKU
+        入池时 SQL 条数不再随媒体项线性增长，也不再逐个 commit。
+        """
+        if not requests:
+            return []
+        workspace_ids = {str(item["workspace_id"]) for item in requests}
+        identities: set[str] = set()
+        for item in requests:
+            for entry in item["media_entries"]:
+                identities.add(str(entry.get("source_identity_hash") or ""))
         with self.database.sessions.begin() as session:
-            draft_row = ProductDraftRow(media_contract_version=2, **draft_values)
-            session.add(draft_row)
+            draft_rows: list[ProductDraftRow] = []
+            for item in requests:
+                draft_row = ProductDraftRow(
+                    media_contract_version=2, **dict(item["draft_values"])
+                )
+                session.add(draft_row)
+                draft_rows.append(draft_row)
+            # 一次 flush 分配全部草稿 id（绑定键依赖它）。
             session.flush()
-            draft_id = int(draft_row.id)
-            asset_by_identity: dict[str, MediaAssetRow] = {}
-            for entry in media_entries:
-                source_identity_hash = str(entry.get("source_identity_hash") or "")
-                asset_row = asset_by_identity.get(source_identity_hash)
-                if asset_row is None:
-                    asset_row = session.scalar(
-                        select(MediaAssetRow).where(
-                            MediaAssetRow.workspace_id == workspace_id,
-                            MediaAssetRow.source_identity_hash == source_identity_hash,
-                        )
+            asset_cache: dict[tuple[str, str], MediaAssetRow] = {}
+            if identities:
+                for asset_row in session.scalars(
+                    select(MediaAssetRow).where(
+                        MediaAssetRow.workspace_id.in_(workspace_ids),
+                        MediaAssetRow.source_identity_hash.in_(identities),
                     )
-                    if asset_row is None:
-                        asset_row = MediaAssetRow(
-                            workspace_id=workspace_id,
-                            origin="remote_source",
-                            source_url=str(entry.get("source_url") or ""),
-                            source_identity_hash=source_identity_hash,
-                            status="pending",
-                        )
-                        session.add(asset_row)
-                        session.flush()
-                    asset_by_identity[source_identity_hash] = asset_row
-                role = str(entry.get("role") or "gallery")
-                slot_id = str(entry.get("slot_id") or "")
-                sku_id = str(entry.get("sku_id") or "")
-                variant_label = str(entry.get("variant_label") or "")
-                sort_order = int(entry.get("sort_order") or 0)
-                session.add(
-                    MediaBindingRow(
+                ):
+                    asset_cache[
+                        (asset_row.workspace_id, asset_row.source_identity_hash)
+                    ] = asset_row
+            created_assets: list[MediaAssetRow] = []
+            for item in requests:
+                workspace_id = str(item["workspace_id"])
+                for entry in item["media_entries"]:
+                    source_identity_hash = str(entry.get("source_identity_hash") or "")
+                    cache_key = (workspace_id, source_identity_hash)
+                    if cache_key in asset_cache:
+                        continue
+                    asset_row = MediaAssetRow(
                         workspace_id=workspace_id,
-                        asset_id=asset_row.id,
-                        product_draft_id=draft_id,
-                        task_id=int(entry.get("task_id") or 0),
-                        task_item_id=int(entry.get("task_item_id") or 0),
-                        role=role,
-                        slot_id=slot_id,
-                        sku_id=sku_id,
-                        variant_label=variant_label,
-                        sort_order=sort_order,
-                        binding_key=media_binding_key(
-                            draft_id,
-                            role,
-                            slot_id,
-                            sku_id,
-                            variant_label,
-                            source_identity_hash,
-                            sort_order,
-                        ),
-                        active=1,
+                        origin="remote_source",
+                        source_url=str(entry.get("source_url") or ""),
+                        source_identity_hash=source_identity_hash,
+                        status="pending",
+                    )
+                    session.add(asset_row)
+                    asset_cache[cache_key] = asset_row
+                    created_assets.append(asset_row)
+            # 一次 flush 分配全部新资产 id（绑定 key 依赖它）。
+            if created_assets:
+                session.flush()
+            for item, draft_row in zip(requests, draft_rows):
+                workspace_id = str(item["workspace_id"])
+                draft_id = int(draft_row.id)
+                for entry in item["media_entries"]:
+                    source_identity_hash = str(entry.get("source_identity_hash") or "")
+                    asset_row = asset_cache[(workspace_id, source_identity_hash)]
+                    role = str(entry.get("role") or "gallery")
+                    slot_id = str(entry.get("slot_id") or "")
+                    sku_id = str(entry.get("sku_id") or "")
+                    variant_label = str(entry.get("variant_label") or "")
+                    sort_order = int(entry.get("sort_order") or 0)
+                    session.add(
+                        MediaBindingRow(
+                            workspace_id=workspace_id,
+                            asset_id=asset_row.id,
+                            product_draft_id=draft_id,
+                            task_id=int(entry.get("task_id") or 0),
+                            task_item_id=int(entry.get("task_item_id") or 0),
+                            role=role,
+                            slot_id=slot_id,
+                            sku_id=sku_id,
+                            variant_label=variant_label,
+                            sort_order=sort_order,
+                            binding_key=media_binding_key(
+                                draft_id,
+                                role,
+                                slot_id,
+                                sku_id,
+                                variant_label,
+                                source_identity_hash,
+                                sort_order,
+                            ),
+                            active=1,
+                        )
+                    )
+            # 回执整批一次查存量，只补缺失项。
+            handoff_ids = [str(item["handoff_id"]) for item in requests]
+            receipt_by_handoff: dict[str, DailySelectionHandoffReceiptRow] = {
+                row.handoff_id: row
+                for row in session.scalars(
+                    select(DailySelectionHandoffReceiptRow).where(
+                        DailySelectionHandoffReceiptRow.handoff_id.in_(handoff_ids)
                     )
                 )
-            receipt_row = session.scalar(
-                select(DailySelectionHandoffReceiptRow).where(
-                    DailySelectionHandoffReceiptRow.handoff_id == handoff_id
-                )
-            )
-            if receipt_row is None:
-                receipt_row = DailySelectionHandoffReceiptRow(
-                    handoff_id=handoff_id,
-                    idempotency_key=idempotency_key,
-                    workspace_id=workspace_id,
-                    run_id=run_id,
-                    candidate_id=candidate_id,
-                    product_draft_id=draft_id,
-                    source_status=source_status,
-                    consumer_status="consumed",
-                    payload_sha256=payload_sha256,
-                )
-                session.add(receipt_row)
-                session.flush()
-            return self._draft(draft_row), self._handoff_receipt(receipt_row)
+            }
+            receipt_rows: list[DailySelectionHandoffReceiptRow] = []
+            for item, draft_row in zip(requests, draft_rows):
+                handoff_id = str(item["handoff_id"])
+                receipt_row = receipt_by_handoff.get(handoff_id)
+                if receipt_row is None:
+                    receipt_row = DailySelectionHandoffReceiptRow(
+                        handoff_id=handoff_id,
+                        idempotency_key=str(item["idempotency_key"]),
+                        workspace_id=str(item["workspace_id"]),
+                        run_id=str(item["run_id"]),
+                        candidate_id=str(item["candidate_id"]),
+                        product_draft_id=int(draft_row.id),
+                        source_status=str(item["source_status"]),
+                        consumer_status="consumed",
+                        payload_sha256=str(item["payload_sha256"]),
+                    )
+                    session.add(receipt_row)
+                    receipt_by_handoff[handoff_id] = receipt_row
+                receipt_rows.append(receipt_row)
+            session.flush()
+            return [
+                (self._draft(draft_row), self._handoff_receipt(receipt_row))
+                for draft_row, receipt_row in zip(draft_rows, receipt_rows)
+            ]
 
     def intake_shop_candidate_with_media(
         self,
@@ -835,15 +904,26 @@ class ProductProcessingRepository:
             return removed
 
     def drafts_revision(self, workspace_id: str = "local") -> str:
-        """轻量变更指纹：最近一次草稿写入/更新的时间（ISO 字符串，字典序即时间序）。
+        """轻量变更指纹：仅统计仍在草稿池（status='draft'）的草稿。
 
-        供前端轮询检测外部采集/入池产生的新草稿，避免频繁拉全量列表。
+        指纹 = 最近更新时间 + 条数，供前端轮询检测外部采集/入池/删除产生的
+        草稿池变化。只覆盖 ``status='draft'`` 与列表口径一致：已处理草稿上
+        的预览/媒体等写入不再造成无意义的全量重拉，而草稿新增、删除、状态
+        流转都会改变条数或时间戳，仍能被可靠检测。命中复合索引
+        (workspace_id, status, updated_at)，不做逐行回表。
         """
         with self.database.sessions() as session:
-            value = session.execute(
-                select(func.max(ProductDraftRow.updated_at)).where(ProductDraftRow.workspace_id == workspace_id)
-            ).scalar_one_or_none()
-            return str(value) if value else ""
+            row = session.execute(
+                select(
+                    func.max(ProductDraftRow.updated_at),
+                    func.count(),
+                ).where(
+                    ProductDraftRow.workspace_id == workspace_id,
+                    ProductDraftRow.status == "draft",
+                )
+            ).one()
+        latest, total = row[0], int(row[1] or 0)
+        return f"{latest or ''}|{total}"
 
     def mark_drafts_status(
         self,
@@ -2268,6 +2348,19 @@ class ProductProcessingRepository:
                 )
             )
             return self._handoff_receipt(row) if row else None
+
+    def handoff_receipts(self, handoff_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """批量读取回执，供整批入池时一次性判定重放项。"""
+        wanted = [str(value) for value in handoff_ids if value]
+        if not wanted:
+            return {}
+        with self.database.sessions() as session:
+            rows = session.scalars(
+                select(DailySelectionHandoffReceiptRow).where(
+                    DailySelectionHandoffReceiptRow.handoff_id.in_(wanted)
+                )
+            ).all()
+            return {row.handoff_id: self._handoff_receipt(row) for row in rows}
 
     def save_handoff_receipt(
         self,

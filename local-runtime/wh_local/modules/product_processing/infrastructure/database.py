@@ -56,6 +56,8 @@ def create_database(database_url: str | None = None) -> ProductProcessingDatabas
     _ensure_columns(engine)
     _remove_legacy_candidate_unique_constraint(engine)
     _ensure_shop_candidate_unique_index(engine)
+    if parsed.drivername == "sqlite":
+        _ensure_performance_indexes(engine)
     return ProductProcessingDatabase(engine, sessionmaker(engine, expire_on_commit=False))
 
 
@@ -297,6 +299,52 @@ def _ensure_shop_candidate_unique_index(engine: Engine) -> None:
                 "AND handoff_id IS NULL AND candidate_id IS NOT NULL"
             )
         )
+
+
+# 高频读写路径的复合索引：全部 CREATE INDEX IF NOT EXISTS，老库启动时自动补齐。
+# 表名/列名与 ORM 一一对应，不改变任何业务语义。
+_PERFORMANCE_INDEXES: tuple[tuple[str, str, str], ...] = (
+    # 草稿池变更指纹：覆盖 (workspace_id, status, updated_at)，让
+    # max(updated_at)+count(*) 走索引而不逐行回表（原实测单次 600ms 级）。
+    (
+        "idx_pp_drafts_ws_status_updated",
+        "product_processing_drafts",
+        "(workspace_id, status, updated_at)",
+    ),
+    # 草稿池列表：workspace+status 过滤 + created_at DESC 排序，消除 TEMP B-TREE。
+    (
+        "idx_pp_drafts_ws_status_created",
+        "product_processing_drafts",
+        "(workspace_id, status, created_at DESC, id DESC)",
+    ),
+    # 草稿素材读取：按 (草稿, 启用, 排序) 取绑定，消除 media_bindings 的临时排序。
+    (
+        "idx_pp_media_bindings_ws_draft_active_sort",
+        "product_processing_media_bindings",
+        "(workspace_id, product_draft_id, active, sort_order)",
+    ),
+    # 来源图按草稿+类型+同步状态过滤（此前 kind 无索引，优化器放弃 draft 索引）。
+    (
+        "idx_pp_source_images_draft_kind_status",
+        "product_processing_source_images",
+        "(product_draft_id, kind, sync_status)",
+    ),
+    # 资产物化认领：workspace+status 过滤 + created_at DESC 排序。
+    (
+        "idx_pp_media_assets_ws_status_created",
+        "product_processing_media_assets",
+        "(workspace_id, status, created_at)",
+    ),
+)
+
+
+def _ensure_performance_indexes(engine: Engine) -> None:
+    """补齐高频读写路径的复合索引（幂等，重启不重复建）。"""
+    with engine.begin() as connection:
+        for name, table, columns in _PERFORMANCE_INDEXES:
+            connection.execute(
+                text(f"CREATE INDEX IF NOT EXISTS {name} ON {table} {columns}")
+            )
 
 
 def _configure_sqlite(engine: Engine) -> None:
