@@ -11523,7 +11523,8 @@ function extractPageSkuGroupsInFrame() {
     if (!value || value.length > 40) return "";
     return value;
   };
-  const badSpecValueRe = /官方|退货|客服|收藏|好评|店铺|评价|保障|包邮|发货|物流|起批|库存|已售|加购|选择|请选择|加入|立即|下单|采购车|跨境铺货|分销代发|全部参数|商品参数|产品参数|规格参数|详细参数|基本参数/i;
+  // 噪音值词表（与主采集逻辑保持一致）：拦截销售承诺/售后/支付等非规格文案。
+  const badSpecValueRe = /官方|退货|退款|售后|赔付|未送达|送达|未更新|轨迹|客服|收藏|好评|店铺|评价|保障|包邮|发货|物流|运费|配送|快递|起批|库存|已售|加购|购物车|选择|请选择|加入|立即|下单|采购车|标运|跨境铺货|分销代发|售自|无进口费用|最优价格保证|此卖家的订单满|会员|登录|注册|优惠券|领券|返现|返利|积分|秒杀|限时|分期|来自|券前价|券后价|到手价|包含的内容|包含内容|的顾客|顾客表示|满分|全部参数|商品参数|产品参数|规格参数|详细参数|基本参数|paypal|klarna|afterpay|common_arrows|add\s*to\s*cart|buy\s*now|free\s*shipping|shipping|delivery|returns?|warranty|best\s*price|sold\s*by|tracking|order\s*over|^其他(?:的)?$|[:：]$/i;
   const optionSelector = [
     "button[class*='sku']",
     "li[class*='sku']",
@@ -13466,7 +13467,10 @@ function extractProductFromCurrentPage(expectedProductId = "") {
     .replace(/\s*(已选|请选择|选择|库存|起批|¥|￥|\$).*/i, "")
     .replace(/\s*(?:\u5df2\u9009|\u8bf7\u9009\u62e9|\u9009\u62e9|\u5e93\u5b58|\u8d77\u6279|¥|￥|\$).*/i, "")
     .trim();
-  const badSpecValueRe = /官方|退货|客服|收藏|好评|店铺|评价|保障|包邮|发货|物流|起批|库存|已售|加购|选择|请选择|加入|立即|下单|采购车|跨境铺货|分销代发|\u5168\u90e8\u53c2\u6570|\u5546\u54c1\u53c2\u6570|\u4ea7\u54c1\u53c2\u6570|\u89c4\u683c\u53c2\u6570|\u8be6\u7ec6\u53c2\u6570|\u57fa\u672c\u53c2\u6570/i;
+  // 噪音值词表：销售承诺/售后保障/支付方式/导购按钮等文案常被宽泛的选择器误当成规格值
+  // （如「送达超时赔付」「无进口费用」「售自」「paypal」「klarna」），这里统一拦截。
+  // 末尾的 [:：]$ 用于拦截「存储容量:」「标运：」这类把标签当值泄漏进来的文本。
+  const badSpecValueRe = /官方|退货|退款|售后|赔付|未送达|送达|未更新|轨迹|客服|收藏|好评|店铺|评价|保障|包邮|发货|物流|运费|配送|快递|起批|库存|已售|加购|购物车|选择|请选择|加入|立即|下单|采购车|标运|跨境铺货|分销代发|售自|无进口费用|最优价格保证|此卖家的订单满|会员|登录|注册|优惠券|领券|返现|返利|积分|秒杀|限时|分期|来自|券前价|券后价|到手价|包含的内容|包含内容|的顾客|顾客表示|满分|全部参数|商品参数|产品参数|规格参数|详细参数|基本参数|paypal|klarna|afterpay|common_arrows|add\s*to\s*cart|buy\s*now|free\s*shipping|shipping|delivery|returns?|warranty|best\s*price|sold\s*by|tracking|order\s*over|^其他(?:的)?$|[:：]$/i;
   const colorVariantWordRe = /黑色?|白色?|灰色?|银色?|金色?|蓝色?|红色?|绿色?|黄色?|粉色?|紫色?|透明色?|橙色?|棕色?|米白|玫红|black|white|gray|grey|silver|gold|blue|red|green|yellow|pink|purple|clear|orange|brown/i;
   const attributeNoiseNameRe = /attribute|parameter|detail|\u4ea7\u54c1\u5c5e\u6027|\u5546\u54c1\u5c5e\u6027|\u57fa\u672c\u4fe1\u606f|\u8be6\u7ec6\u53c2\u6570|\u54c1\u724c|\u6750\u8d28|\u4ea7\u5730|\u8d27\u53f7|\u6267\u884c\u6807\u51c6|\u9002\u7528\u573a\u666f/i;
   const parameterNoiseNameRe = /all\s*parameters?|product\s*(?:parameters?|attributes?|specifications?)|specification\s*(?:parameters?|details?|table|list)|parameter\s*(?:details?|table|list)|\u5168\u90e8\u53c2\u6570|\u5546\u54c1\u53c2\u6570|\u4ea7\u54c1\u53c2\u6570|\u89c4\u683c\u53c2\u6570|\u8be6\u7ec6\u53c2\u6570|\u57fa\u672c\u53c2\u6570|\u8be6\u60c5\u53c2\u6570|\u4ea7\u54c1\u5c5e\u6027|\u5546\u54c1\u5c5e\u6027/i;
@@ -13568,7 +13572,22 @@ function extractProductFromCurrentPage(expectedProductId = "") {
     const codes = tokens.filter((token) => /^[A-Za-z]?\d{2,5}[A-Za-z]?$/.test(token));
     return codes.length >= 2;
   };
+  // 规格维度标签词典：当容器的 source_name 本身就是标准规格标签（如「颜色:」）时，
+  // 直接用词典定名，不再拿整个容器正文当依据——否则正文里的「17到23英寸」等词会把
+  // 「颜色」维度误判成 Size/Pack（表现为截图里「尺码 送达超时赔付」这类错误维度名）。
+  const explicitVariantLabelName = (value) => {
+    const label = text(value).replace(/[:：\s]+$/g, "").trim();
+    if (!label) return "";
+    if (/^(?:颜色|色号|色彩|颜色分类)$/.test(label) || /^colou?r$/i.test(label)) return "Color";
+    if (/^(?:尺码|尺寸|大小)$/.test(label) || /^size$/i.test(label)) return "Size";
+    if (/^(?:容量|净含量|电池容量)$/.test(label) || /^capacity$/i.test(label)) return "Capacity";
+    if (/^(?:型号|款式|样式|图案)$/.test(label) || /^(?:style|model)$/i.test(label)) return "Style";
+    if (/^(?:包装|套装)$/.test(label) || /^pack$/i.test(label)) return "Pack";
+    return "";
+  };
   const normalizeGroupName = (value, fallbackText = "") => {
+    const explicitLabelName = explicitVariantLabelName(value);
+    if (explicitLabelName) return explicitLabelName;
     const sourceName = text(value);
     const sample = `${sourceName} ${fallbackText || ""}`;
     const hasDimensionEvidence = /\d+(?:\.\d+)?\s*(?:[x×*]\s*\d+(?:\.\d+)?\s*){1,2}(?:cm|mm|inch|in\b|m\b|厘米|公分|毫米|英寸|寸|米)|\d+(?:\.\d+)?\s*(?:cm|mm|inch|in\b|m\b|厘米|公分|毫米|英寸|寸|米)|package\s*(?:size|dimension)|dimensions?|\u5305\u88c5\u5c3a\u5bf8/i.test(sample);
@@ -13608,13 +13627,18 @@ function extractProductFromCurrentPage(expectedProductId = "") {
       }
       return containers;
     };
+    // Temu 商品页右侧面板/参数表里大量元素的类名含 option/prop/attribute，按类名子串
+    // 匹配会把整个面板当成规格容器，进而把销售承诺、支付方式等文案采成规格值
+    // （表现为「Temu 只有一个 SKU 却出现几十个变种」）。这里只保留 sku/spec 这类
+    // 强语义类名与 data-testid 明确的容器，真正的规格容器主要交给上面的标签锚定逻辑
+    // （temuVariantContainersFromLabels）确定。
     const genericContainers = Array.from(document.querySelectorAll(
       platform === "temu"
-        ? "[class*='sku'], [class*='prop'], [class*='attribute'], [class*='spec']"
+        ? "[class*='sku'], [class*='spec']"
         : "[class*='sku'], [class*='prop'], [class*='attribute'], [class*='spec'], [class*='option'], [class*='selector'], [class*='variant']"
     ));
     const temuContainers = platform === "temu"
-      ? Array.from(document.querySelectorAll("[data-testid*='sku'], [data-testid*='Sku'], [data-testid*='variant'], [data-testid*='Variant'], [data-testid*='option'], [data-testid*='Option'], [class*='variant'], [class*='Variant'], [class*='option'], [class*='Option']"))
+      ? Array.from(document.querySelectorAll("[data-testid*='sku'], [data-testid*='Sku'], [data-testid*='variant'], [data-testid*='Variant'], [data-testid*='option'], [data-testid*='Option']"))
       : [];
     const containers = Array.from(new Set([...genericContainers, ...temuContainers, ...temuVariantContainersFromLabels()]))
       .filter(visible)
@@ -13634,6 +13658,9 @@ function extractProductFromCurrentPage(expectedProductId = "") {
         : "";
       const sourceName = labelText || temuLabel || (labelMatch ? labelMatch[1] : "");
       const classText = text(`${container.className || ""} ${container.getAttribute?.("class") || ""} ${container.getAttribute?.("data-testid") || ""} ${container.getAttribute?.("data-spm") || ""}`);
+      // Temu：容器必须带规格标签，或类名/data-testid 有明确的 sku/variant/option 痕迹，
+      // 否则视为误命中的装饰位/推荐位，直接跳过。
+      if (platform === "temu" && !sourceName && !/sku|spec|variant|option|sale-prop/i.test(classText)) continue;
       const parameterNoiseGroup = variantGroupLooksLikeParameterNoise(sourceName, classText, fullText);
       const optionElements = Array.from(container.querySelectorAll(variantOptionSelector))
         .filter((element) => visible(element) && isLeafVariantOptionElement(element));
@@ -13667,7 +13694,7 @@ function extractProductFromCurrentPage(expectedProductId = "") {
             selectable
           } : null;
         })
-        .filter((item) => item && item.value.length >= 1 && item.value.length <= 80 && !badSpecValueRe.test(item.value));
+        .filter((item) => item && item.value.length >= 1 && item.value.length <= 40 && !badSpecValueRe.test(item.value));
       const hasBoundOptionEvidence = values.some(variantOptionHasBoundEvidence);
       let hasSalesOptionEvidence = values.some(variantOptionHasSalesEvidence);
       // Temu/1688 规格选项常是纯文本元素（无价格/库存/SKU 属性且无 selectable 标志），

@@ -25,7 +25,8 @@
     "Quantity": "Quantity"
   });
   const BAD_IMAGE_RE = /(?:aftersales|after-sales|service|review|comment|recommend|avatar|logo|sprite|icon|loading|placeholder|blank|video|play)/i;
-  const BAD_OPTION_RE = /(?:加入购物车|立即购买|购买|配送|送达|运费|免运费|退货|保障|客服|收藏|评价|已售|库存|数量|推荐|最近的|请选择|查看全部|更多)/i;
+  // 噪音选项词表：销售承诺/售后保障/物流支付等文案常被误当成规格值。
+  const BAD_OPTION_RE = /(?:加入购物车|添加到购物车|立即购买|购买|下单|配送|送达|运费|免运费|快递|标运|物流|轨迹|退货|退款|赔付|售后|未送达|保障|客服|收藏|评价|已售|库存|数量|推荐|最近的|请选择|查看全部|更多|无进口费用|售自|进口费用|最优价格保证|此卖家的订单满|购物车|paypal|klarna|afterpay)/i;
 
   function text(value) {
     return value == null ? "" : String(value).replace(/\s+/g, " ").trim();
@@ -283,7 +284,7 @@
         const strongOption = /^(?:radio|option)$/i.test(attr(element, "role"));
         const rawValue = strongOption ? attr(element, "aria-label") : directCandidateText(element);
         const value = cleanedOptionValue(rawValue);
-        if (!value || value.length > 40 || SKU_LABELS[value] || BAD_OPTION_RE.test(value) || /(?:CA\$|US\$|\$|¥|￥)\s*\d/i.test(value)) continue;
+        if (!value || value.length > 40 || SKU_LABELS[value] || BAD_OPTION_RE.test(value) || /(?:CA\$|US\$|\$|¥|￥)\s*\d/i.test(value) || /[:：]$/.test(value)) continue;
         if (seen.has(value.toLowerCase())) continue;
         const evidenceElement = optionEvidenceElement(element, label.element);
         const imageUrl = strongOption
