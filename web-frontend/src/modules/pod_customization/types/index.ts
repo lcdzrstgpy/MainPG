@@ -54,6 +54,29 @@ export type PodBusinessFields = Omit<PodBusinessFieldsDraft,
   excluded_elements: string[];
 };
 
+/** 智能前置层「一句话 → 10 个业务字段」的接口响应；fields 与批次业务字段同形。 */
+export type PodBriefFieldsResponse = {
+  brief_id: string;
+  prompt_version: string;
+  model: string;
+  fields: PodBusinessFields;
+};
+
+/**
+ * 智能前置层实际代填的字段：不含 `style_planning`。
+ * 「样式规划」由用户在页面上二选一（全覆盖 / 半覆盖），AI 不代为决定，
+ * 也不得覆盖用户已选的值。
+ */
+export type PodBriefFieldsDraft = Omit<PodBusinessFieldsDraft, "style_planning">;
+
+/** 「最近生成」历史条目；fields 为回填前的字符串口径（数组已用「、」连接）。 */
+export type PodBriefHistoryItem = {
+  id: string;
+  input: string;
+  fields: PodBriefFieldsDraft;
+  created_at: string;
+};
+
 export type PodTitleMode = "long" | "short";
 
 export type PodSkuDraft = {
@@ -80,12 +103,57 @@ export type PodListingFieldsDraft = {
   skus: PodSkuDraft[];
 };
 
+export type SpecCardStyle = "light" | "dark";
+
+export type SpecCardCorner = "bottom-right" | "bottom-left" | "top-right" | "top-left";
+
+/** 第 4 张图（素材图）上原样印出的用户自填表格；配置随批次快照冻结。 */
+export type SpecCardConfig = {
+  enabled: boolean;
+  style: SpecCardStyle;
+  corner: SpecCardCorner;
+  cells: string[][];
+};
+
+export type SpecCardPreviewRequest = {
+  cells: string[][];
+  style: SpecCardStyle;
+  corner: SpecCardCorner;
+  base_template_id?: string;
+};
+
+export type SpecCardPreviewResponse = {
+  image: string;
+};
+
+export type SpecCardReprintRequest = {
+  cells: string[][];
+  style: SpecCardStyle;
+  corner: SpecCardCorner;
+  style_index?: number | null;
+};
+
+export type SpecCardReprintError = {
+  style_index: number;
+  message: string;
+};
+
+export type SpecCardReprintResponse = {
+  saved: boolean;
+  reprinted: number;
+  failed: number;
+  errors: SpecCardReprintError[];
+  needs_re_export: boolean;
+};
+
 export type PodListingFields = {
   title_mode: PodTitleMode;
   declared_price: number;
   suggested_price_usd: number;
   category_name: string;
   skus: PodSku[];
+  /** 批次冻结快照里的规格卡配置；旧批次快照可能缺失该键。 */
+  spec_card?: SpecCardConfig;
 };
 
 export type PodDianxiaomiExportStatus = {

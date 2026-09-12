@@ -5,14 +5,23 @@ import type { PodBatchRetryRequest } from "../data/podBatchRetry";
 import type {
   CreatePodBatchRequest,
   PodBatch,
+  PodBriefFieldsResponse,
   PodBatchItem,
   PodBatchListResponse,
   PodStyleTitle,
   PodTemplate,
   PodTemplateCalibration,
+  SpecCardPreviewRequest,
+  SpecCardPreviewResponse,
+  SpecCardReprintRequest,
+  SpecCardReprintResponse,
 } from "../types";
 
 const API_BASE = "/api/pod-customization";
+
+// 智能前置层生成为大输出（40+ 元素 / 10+ 配色 / 12+ 禁用项），沿用默认 30s 会被前端提前中断。
+// 后端最坏为 3 次尝试 × 90s 单次超时，这里给到 300s，确保拿到后端的结果或真实错误再收尾。
+const BRIEF_GENERATE_TIMEOUT_MS = 300_000;
 
 function apiUrl(path: string): string {
   return `${(import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "")}${path}`;
@@ -108,6 +117,11 @@ export const podCustomizationApi = {
     body,
   }),
   getBatch: (batchId: string) => httpJson<PodBatch>(`${API_BASE}/batches/${encodeURIComponent(batchId)}`),
+  // 智能前置层：把一句模糊输入转成结构化业务字段（权限与创建批次一致）。
+  generateBriefFields: (body: { brief: string; locale?: string }) => httpJson<PodBriefFieldsResponse>(
+    `${API_BASE}/brief/fields`,
+    { method: "POST", body, timeoutMs: BRIEF_GENERATE_TIMEOUT_MS },
+  ),
   pauseBatch: (batchId: string) => httpJson<PodBatch>(
     `${API_BASE}/batches/${encodeURIComponent(batchId)}/pause`,
     { method: "POST", body: {} },
@@ -142,6 +156,16 @@ export const podCustomizationApi = {
   ),
   retryFailed: (batchId: string, body: PodBatchRetryRequest) => httpJson<PodBatchRetryResult>(
     `${API_BASE}/batches/${encodeURIComponent(batchId)}/retry-failed`,
+    { method: "POST", body },
+  ),
+  // 规格卡同源预览：不落库、不计费，只返回一张 data URL 示意图。
+  previewSpecCard: (body: SpecCardPreviewRequest) => httpJson<SpecCardPreviewResponse>(
+    `${API_BASE}/spec-card/preview`,
+    { method: "POST", body },
+  ),
+  // 终态批次全批一次性重印；批次非终态时后端返回 409。
+  reprintSpecCard: (batchId: string, body: SpecCardReprintRequest) => httpJson<SpecCardReprintResponse>(
+    `${API_BASE}/batches/${encodeURIComponent(batchId)}/spec-card/reprint`,
     { method: "POST", body },
   ),
   exportDianxiaomi,

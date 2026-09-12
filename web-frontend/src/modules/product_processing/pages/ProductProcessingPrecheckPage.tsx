@@ -4,6 +4,7 @@ import { ppDownload, ppRequest, type ApiContext } from '../api/client';
 import { productProcessingApiContext } from '../api/context';
 import {
   excludePreviewItem,
+  exportMiaoshouPreview,
   finalizeProductPreview,
   getListingAdvice,
   getPreviewFinalizeRun,
@@ -30,7 +31,9 @@ import {
   type PrecheckFinalizeRefresh,
 } from '../data/precheckFinalizeRefresh';
 import type {
+  MiaoshouTemplateKind,
   PreviewCoreFields,
+  PreviewExportFormat,
   PreviewFinalizeRun,
   PreviewImageAsset,
   PreviewImageManifest,
@@ -237,6 +240,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
   const [startingFinalize, setStartingFinalize] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [msExporting, setMsExporting] = useState<MiaoshouTemplateKind | null>(null);
   const [finalizeRun, setFinalizeRun] = useState<PreviewFinalizeRun | null>(null);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
@@ -338,13 +342,27 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     }
   }, [ctx, downloadedStorageKey, fail, notify]);
 
-  const acceptFinalizeRun = useCallback((run: PreviewFinalizeRun) => {
-    setFinalizeRun(run);
-    if (run.status === 'completed') {
-      removeSession(runStorageKey);
-      void downloadRun(run, true);
+  const exportMiaoshou = useCallback(async (kind: MiaoshouTemplateKind) => {
+    if (!finalizeRun?.id) return;
+    setMsExporting(kind);
+    try {
+      const payload = await exportMiaoshouPreview(ctx, taskId, finalizeRun.id, kind);
+      if (!payload.download) throw new Error('妙手导出未生成下载链接');
+      await ppDownload(ctx, payload.download, payload.file || `miaoshou_${kind}_task_${taskId}.xlsx`);
+      const kindLabel = kind === 'apparel' ? '服饰类' : '非服饰类';
+      notify(`妙手${kindLabel}表已导出（${payload.product_count} 个商品 / ${payload.row_count} 行），请按妙手要求核对字段后导入`);
+    } catch (err) {
+      fail(err);
+    } finally {
+      setMsExporting(null);
     }
-  }, [downloadRun, idempotencyStorageKey, runStorageKey]);
+  }, [ctx, taskId, finalizeRun, fail, notify]);
+
+  const acceptFinalizeRun = useCallback((run: PreviewFinalizeRun) => {
+    // 完成后不自动下载：表格按格式统一在结果卡片里下载/生成。
+    // 保留 runStorageKey，刷新页面后仍能恢复结果卡片继续下载。
+    setFinalizeRun(run);
+  }, []);
 
   useEffect(() => {
     setPreview(null);
@@ -793,7 +811,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     }
   };
 
-  const startFinalize = async () => {
+  const startFinalize = async (format: PreviewExportFormat = 'dxm') => {
     if (pendingUploads > 0) {
       fail('图片仍在导入，请等待完成后再完成预审');
       return;
@@ -823,6 +841,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
         taskId,
         request.items,
         request.idempotencyKey,
+        format,
       );
       writeSession(runStorageKey, run.id);
       acceptFinalizeRun(run);
@@ -1020,10 +1039,15 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
           </button>
           <button
             type="button"
-            onClick={() => void startFinalize()}
+            className="primary"
+            onClick={() => void startFinalize('dxm')}
             disabled={startingFinalize || loading || mutationsLocked || pendingUploads > 0 || finalizeNeedsResolution || exportableCount === 0}
           >
-            {startingFinalize ? '正在建立完成任务…' : pendingUploads > 0 ? `正在导入图片（${pendingUploads}）` : '完成预审并导出'}
+            {startingFinalize
+              ? '正在建立完成任务…'
+              : pendingUploads > 0
+                ? `正在导入图片（${pendingUploads}）`
+                : '完成预审并导出'}
           </button>
           <button type="button" onClick={() => void load()} disabled={loading || mutationsLocked}>重新加载</button>
         </div>
@@ -1083,8 +1107,10 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
           assets={allAssets}
           retrying={retrying}
           downloading={downloading}
+          msExporting={msExporting}
           onRetry={() => void retryFinalize()}
           onDownload={() => void downloadRun(finalizeRun, false)}
+          onExportMiaoshou={(kind) => void exportMiaoshou(kind)}
           onReloadStale={() => void reloadAfterStale()}
           onExcludeFailed={() => void excludeFailedItems()}
         />

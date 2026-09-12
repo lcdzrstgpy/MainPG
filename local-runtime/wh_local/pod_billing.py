@@ -13,7 +13,14 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from .billing import PIC_UNIT_SCALE, freeze_planned_points, settle_planned_points
+from .billing import (
+    MULTIPLIER_CATEGORY_POD,
+    PIC_UNIT_SCALE,
+    _scaled_units,
+    active_multipliers,
+    freeze_planned_points,
+    settle_planned_points,
+)
 from .db import connect, transaction
 from .session import Actor
 
@@ -68,6 +75,7 @@ def pod_pricing_items(
     *,
     rule_version: int | None = None,
     require_configured: bool = True,
+    multiplier_percent: int | None = None,
 ) -> dict[str, Any]:
     conn = connect(database_path)
     try:
@@ -87,12 +95,18 @@ def pod_pricing_items(
         ).fetchall()
     finally:
         conn.close()
-    by_key = {str(row["feature_key"]): int(row["charge_points"]) for row in rows}
+    by_key = {
+        str(row["feature_key"]): _scaled_units(int(row["charge_points"]), multiplier_percent)
+        for row in rows
+    }
     if require_configured and any(key not in by_key for key in POD_FEATURE_KEYS):
         raise HTTPException(status_code=503, detail="POD pricing is not configured")
     return {
         "rule_version": version,
         "point_unit_scale": PIC_UNIT_SCALE,
+        "multiplier_percent": (
+            int(multiplier_percent) if multiplier_percent is not None else 100
+        ),
         "items": {
             key: {
                 "charge_units": units,
@@ -226,11 +240,21 @@ def freeze_pod_points(
         raise HTTPException(status_code=400, detail="idempotency_key length must be 16..200")
     freeze_id = _pod_freeze_id(actor.id, idem)
     plan_hash = _plan_hash(normalized_calls, title_count, image_count)
-    pricing = pod_pricing_items(database_path)
+    # 冻结时读取当前生效的 POD 倍率/单条价值并快照：计费以快照为准，中途调价不影响。
+    pod_cfg = active_multipliers(database_path)[MULTIPLIER_CATEGORY_POD]
+    multiplier_percent = int(pod_cfg["multiplier_percent"])
+    points_per_unit = pod_cfg["points_per_unit"]
+    pricing = pod_pricing_items(
+        database_path,
+        multiplier_percent=multiplier_percent if points_per_unit is None else None,
+    )
     price_by_feature = {
         key: int(value["charge_units"])
         for key, value in pricing["items"].items()
     }
+    if points_per_unit is not None and "pod.image" in price_by_feature:
+        # 固定单条价值模式：图片调用按管理员设置的价值收取，标题调用保持免费。
+        price_by_feature["pod.image"] = int(points_per_unit) * PIC_UNIT_SCALE
     frozen_units = sum(price_by_feature[item["feature"]] for item in normalized_calls)
     freeze = freeze_planned_points(
         database_path,
@@ -241,6 +265,8 @@ def freeze_pod_points(
         idempotency_key=freeze_id,
         source_type="pod_freeze",
         app_version=app_version,
+        multiplier_percent=multiplier_percent,
+        points_per_unit=points_per_unit,
         persist_plan=lambda conn, persisted_freeze_id: _persist_pod_plan(
             conn,
             persisted_freeze_id,
@@ -268,6 +294,8 @@ def freeze_pod_points(
     return {
         **freeze,
         "rule_version": int(pricing["rule_version"]),
+        "multiplier_percent": multiplier_percent,
+        "points_per_unit": points_per_unit,
         "title_call_count": title_count,
         "image_call_count": image_count,
         "calls": normalized_calls,

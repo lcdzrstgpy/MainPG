@@ -264,6 +264,31 @@ def test_title_validator_rejects_invalid_listing_titles(
         validate_title_result(title_result_from_dict(payload), accepted_titles=accepted_titles)
 
 
+def test_title_validator_rejects_a_self_referential_sentence_clause() -> None:
+    from wh_local.modules.pod_customization.title_runtime import validate_title_result, title_result_from_dict
+
+    title = (
+        "Neon Tropical Jungle Quilted Weekend Tote Bag - This quilted handheld tote bag features "
+        "a bold neon tropical print"
+    )
+    assert 80 <= len(title) <= 200
+
+    with pytest.raises(ValueError, match="not a noun phrase"):
+        validate_title_result(title_result_from_dict(_payload(title=title)))
+
+
+def test_title_validator_allows_lowercase_pronouns_inside_a_noun_phrase() -> None:
+    from wh_local.modules.pod_customization.title_runtime import validate_title_result, title_result_from_dict
+
+    title = (
+        "Lightweight Comfortable Short-Sleeve Camp Collar Shirt with Topographic Mountain Print "
+        "sized to fit it all"
+    )
+    assert 80 <= len(title) <= 200
+
+    validate_title_result(title_result_from_dict(_payload(title=title)))
+
+
 def test_title_validator_rejects_normalized_duplicate_despite_case_and_whitespace() -> None:
     from wh_local.modules.pod_customization.title_runtime import validate_title_result, title_result_from_dict
 
@@ -516,6 +541,10 @@ def test_title_request_contract_requires_distinct_complete_listing_phrases() -> 
     assert "distinct visual lead" in lowered
     assert "product type" in lowered
     assert "exact duplicate" in lowered
+    assert "batch_variety" in lowered
+    assert "sentence skeleton" in lowered
+    assert "sentence pattern" in lowered
+    assert "self-referential" in lowered
     assert "six meaningful words" not in lowered
     assert "five or more" not in lowered
     assert "accepted_visual_signatures" not in lowered
@@ -539,7 +568,7 @@ def test_title_validator_allows_visual_words_in_a_five_of_six_prefix() -> None:
     validate_title_result(title_result_from_dict(_payload(title=candidate)), accepted_titles=(accepted,))
 
 
-@pytest.mark.parametrize("ending", [" with", " and", " for", " or", " of", " in", " to", ",", "-", "(", "[", "{"])
+@pytest.mark.parametrize("ending", [" with", " and", " for", " or", " of", " in", " to", ",", "-", ":", ";", "(", "[", "{"])
 def test_title_validator_rejects_incomplete_title_endings(ending: str) -> None:
     from wh_local.modules.pod_customization.title_runtime import validate_title_result, title_result_from_dict
 
@@ -581,6 +610,41 @@ def test_display_title_fallback_uses_a_complete_boundary() -> None:
     )
     assert result.title.endswith(".")
     assert 80 <= len(result.normalized_title) <= 200
+
+
+def test_display_title_fallback_allows_a_self_referential_description() -> None:
+    from wh_local.modules.pod_customization.title_runtime import title_result_from_dict, validate_title_result
+
+    result = title_result_from_dict(
+        {
+            **_payload(title="中文标题"),
+            "english_title": "Coastal Botanical Canvas Tote with Ocean Fern Artwork",
+            "description": "This canvas tote features layered coastal botanical artwork for everyday carry.",
+        }
+    )
+    assert result.title.startswith(
+        "Coastal Botanical Canvas Tote with Ocean Fern Artwork - This canvas tote"
+    )
+    validate_title_result(result)
+
+
+def test_display_title_fallback_does_not_cut_at_a_colon() -> None:
+    from wh_local.modules.pod_customization.title_runtime import title_result_from_dict, validate_title_result
+
+    result = title_result_from_dict(
+        {
+            **_payload(title="中文标题"),
+            "english_title": "Navy Quilted Vegas Motif Travel Tote",
+            "description": (
+                "This quilted tote bag features a navy base printed with bold Vegas-themed motifs: "
+                "pink convertibles, and poker cards."
+            ),
+        }
+    )
+    assert result.title.endswith("poker cards.")
+    assert not result.title.endswith(":")
+    assert 80 <= len(result.normalized_title) <= 200
+    validate_title_result(result)
 
 
 def test_display_title_fallback_rejects_when_no_complete_boundary_can_reach_minimum() -> None:

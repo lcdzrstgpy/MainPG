@@ -13,6 +13,7 @@ import hashlib
 import http.client
 import json
 import mimetypes
+import os
 import re
 import socket
 import ssl
@@ -85,8 +86,41 @@ IMAGE_GENERATION_TOTAL_TIMEOUT_SECONDS = 660.0
 PROVIDER_TRANSIENT_FAILURE_THRESHOLD = 2
 PROVIDER_TRANSIENT_COOLDOWN_SECONDS = 45.0
 WUYIN_IMAGE_SUBMIT_PATH = "/api/async/image_gpt"
+# 直连模式下模型同样由 URL 路径决定；桌面端在个人中心切换后按模型选路径。
+WUYIN_IMAGE_SUBMIT_PATHS = {
+    "image_gpt": "/api/async/image_gpt",
+    "image_gpt_2.5": "/api/async/image_gpt_2.5",
+}
 WUYIN_IMAGE_DETAIL_PATH = "/api/async/detail"
+# image_gpt_2.5 只提供 1K 档，尺寸字段是像素串 aspectRatio（没有 size）。
+WUYIN_IMAGE_ASPECT_RATIO_2_5 = {
+    "1:1": "1024x1024",
+    "16:9": "1280x720",
+    "9:16": "720x1280",
+    "4:3": "1152x864",
+    "3:4": "864x1152",
+    "3:2": "1536x1024",
+    "2:3": "1024x1536",
+    "5:4": "1120x896",
+    "4:5": "896x1120",
+    "21:9": "1456x624",
+    "9:21": "624x1456",
+    "1:3": "688x2048",
+    "3:1": "2048x688",
+    "2:1": "1536x768",
+    "1:2": "768x1536",
+}
 WUYIN_IMAGE_POLL_INTERVAL_SECONDS = 3.0
+# 上游异步生图 detail 没有任何进度字段：实测「正常出图」与「任务卡死」两种情况下响应
+# 逐字节同构（status 恒为 0、result=null、message 为空、updated_at 也不是心跳），因此无法
+# 直接读出「有没有进展」，只能用时间基线做间接判定。实测真实商品图完成耗时：
+#   image_gpt_2.5(1K)  66.2~95.5s（median 72.1s）→ max×2≈191s / median×3≈216s
+#   image_gpt(2048)    62.6~146.6s（median 68.2s）→ max×2≈293s / median×3≈204s
+# 两档阈值均按 max×2 量级取整，给慢尾样本留足余量以避免误杀。超过阈值仍无任何字段
+# 变化，即视为本次提交大概率卡死（多为上游抓不到参考图 URL，任务被 worker 静默丢弃），
+# 提前放弃以免占满图片并发槽。
+WUYIN_IMAGE_STALL_THRESHOLD_SECONDS = 180.0
+WUYIN_IMAGE_STALL_THRESHOLD_2K_SECONDS = 300.0
 MAX_PROVIDER_RESULT_BYTES = 32 * 1024 * 1024
 MAX_PROVIDER_JSON_BYTES = 8 * 1024 * 1024
 REFERENCE_DOWNLOAD_ATTEMPTS = 3
@@ -393,25 +427,36 @@ class ProductImageProcessor:
             ][:reference_limit]
             if not url_references:
                 raise MediaProcessingError("a confirmed source image URL is required for image processing")
-            references = url_references
+            ordinary_references = url_references
+            candidate_values: list[str] = []
         else:
             # 直连提供方只能接收可公网访问的参考图 URL（它需要自己下载图片），
             # 本地缓存文件路径无法传递给提供方。采集链路保存的本地文件不带 URL，
             # 若直接取本地路径会导致提交给提供方的 urls=[]，图生图任务静默失败
             # （提供方返回 status=3 且无图无原因）。因此直连模式把远端 URL 排到
             # 前面，保证 _load_references 取到的前 N 个参考都带 URL（元组第 4 项）。
-            direct_values = [
+            candidate_values = [
                 *[value for value in reference_values if _plausible_public_http_url(value)],
                 *[value for value in reference_values if not _plausible_public_http_url(value)],
             ]
-            references = self._load_references(direct_values, limit=reference_limit)
-            if not references:
+            ordinary_references = self._load_references(candidate_values, limit=reference_limit)
+            if not ordinary_references:
                 raise MediaProcessingError("a confirmed source image is required for image processing")
-        ordinary_reference_count = len(references)
-        references.extend(extra_references or [])
-        if layout_scaffold and not server_managed_only:
-            scaffold = build_grid_scaffold(references[0][0])
-            references = [*references, (scaffold, "fixed-four-grid-layout.png", "image/png")]
+        ordinary_reference_count = len(ordinary_references)
+        # 参考图在两次尝试之间可能被替换（停滞时改走 COS 中转、或换下一张候选图），
+        # 这里按「当前普通参考图 + 额外参考图 + 底板」统一组装本次尝试要发的图。
+        extra_reference_list = list(extra_references or [])
+        scaffold_required = bool(layout_scaffold) and not server_managed_only
+
+        def assemble_attempt_references(new_ordinary: list[tuple]) -> list[tuple]:
+            built = [*new_ordinary, *extra_reference_list]
+            if scaffold_required and new_ordinary:
+                built.append(
+                    (build_grid_scaffold(new_ordinary[0][0]), "fixed-four-grid-layout.png", "image/png")
+                )
+            return built
+
+        references: list[tuple] = assemble_attempt_references(ordinary_references)
         retries = max(1, min(int((config.get("limits") or {}).get("image_retry_attempts") or 3), 5))
         errors: list[str] = []
         attempt_count = 0
@@ -419,6 +464,10 @@ class ProductImageProcessor:
         # 四宫格单次生成成本高：串行闸下一条一条发，失败最多重试一次即放行下一条商品
         # （provider 轮巡叠加时按 provider 数放行）。
         max_total_attempts = min(retries, 2) if stage == "grid_image" else retries * max(1, len(providers))
+        # 停滞升级状态：整次调用最多做一次 COS 中转 + 一次换候选参考图，避免无限重试。
+        reference_offset = 0
+        references_relayed = False
+        references_rotated = False
         for provider in self._provider_order(providers, config):
             for attempt in range(1, retries + 1):
                 if attempt_count >= max_total_attempts:
@@ -471,6 +520,52 @@ class ProductImageProcessor:
                         if time.monotonic() + delay >= generation_deadline:
                             break
                         time.sleep(delay)
+                    if status_class == "provider_stalled":
+                        # 停滞 = 上游很可能静默丢弃了任务（多为抓不到参考图 URL：防盗链 /
+                        # 出网策略差异）。优先把本地已成功下载的参考图改走 COS 中转，交给
+                        # 上游一个它一定能抓到的临时 URL；无法中转时退回换下一张候选参考图。
+                        # 两者都不可用（或没有剩余重试预算）就立即放弃，不再等满剩余预算。
+                        has_budget = (
+                            attempt_count < max_total_attempts
+                            and generation_deadline - time.monotonic() > 1.0
+                        )
+                        escalated = False
+                        if has_budget and not references_relayed and _cos_configured(config):
+                            relayed = self._relay_references(ordinary_references)
+                            if relayed is not None:
+                                references_relayed = True
+                                ordinary_references = relayed
+                                escalated = True
+                        remaining_candidates = (
+                            candidate_values[reference_offset + 1 :]
+                            if not server_managed_only
+                            else []
+                        )
+                        if (
+                            has_budget
+                            and not escalated
+                            and not references_rotated
+                            and remaining_candidates
+                        ):
+                            try:
+                                rotated = self._load_references(
+                                    remaining_candidates, limit=reference_limit
+                                )
+                            except MediaProcessingError:
+                                rotated = []
+                            if rotated and rotated != ordinary_references:
+                                reference_offset += 1
+                                references_rotated = True
+                                ordinary_references = rotated
+                                escalated = True
+                        if escalated:
+                            references = assemble_attempt_references(ordinary_references)
+                            continue
+                        raise MediaProcessingError(
+                            "; ".join(errors),
+                            attempt_count=attempt_count,
+                            status_class="provider_stalled",
+                        ) from exc
             if attempt_count >= max_total_attempts:
                 break
         raise MediaProcessingError(
@@ -1237,6 +1332,7 @@ class ProductImageProcessor:
         image_size: str | None = None,
         reference_model: str | None = None,
     ) -> tuple[bytes, str]:
+        model = str(reference_model or provider.get("reference_model") or provider.get("model") or "").strip()
         if _is_server_managed_wuyin_provider(provider):
             return self._request_server_managed_wuyin_image(
                 provider,
@@ -1244,6 +1340,7 @@ class ProductImageProcessor:
                 references,
                 timeout_seconds=timeout_seconds,
                 image_size=image_size,
+                model=model,
             )
         if _is_wuyin_image_provider(provider):
             return self._request_wuyin_image(
@@ -1252,6 +1349,7 @@ class ProductImageProcessor:
                 references,
                 timeout_seconds=timeout_seconds,
                 image_size=image_size,
+                model=model,
             )
         files: Any
         if len(references) == 1:
@@ -1307,6 +1405,7 @@ class ProductImageProcessor:
         *,
         timeout_seconds: float,
         image_size: str | None = None,
+        model: str = "",
     ) -> tuple[bytes, str]:
         token = remote_token()
         reservation = usage_id("image_grid")
@@ -1333,6 +1432,8 @@ class ProductImageProcessor:
                     "usage_id": reservation,
                     "prompt": prompt,
                     "size": _wuyin_size(image_size or provider.get("image_size")),
+                    # 服务端持有上游凭据与端点，客户端只声明所选模型名（白名单校验）。
+                    **({"model": model} if model else {}),
                     **({"urls": urls} if urls else {}),
                 },
                 timeout=max(30.0, min(float(timeout_seconds), 660.0)),
@@ -1374,22 +1475,32 @@ class ProductImageProcessor:
         *,
         timeout_seconds: float,
         image_size: str | None = None,
+        model: str = "",
     ) -> tuple[bytes, str]:
         urls, temporary_store, temporary_references = self._wuyin_reference_urls(references)
+        resolved_model = str(model or provider.get("model") or "").strip()
+        submit_path = WUYIN_IMAGE_SUBMIT_PATHS.get(resolved_model, WUYIN_IMAGE_SUBMIT_PATH)
+        size_value = _wuyin_size(image_size or provider.get("image_size"))
+        if resolved_model == "image_gpt_2.5":
+            # 2.5 端点的 urls 要求逗号拼接字符串，传数组上游会返回 500；
+            # 且不接受 quality 字段（传了会 500 存在未绑定的参数）。
+            payload: dict[str, Any] = {
+                "prompt": prompt,
+                "aspectRatio": WUYIN_IMAGE_ASPECT_RATIO_2_5.get(size_value, "1024x1024"),
+                "urls": ",".join(urls),
+            }
+        else:
+            payload = {"prompt": prompt, "size": size_value, "urls": urls}
         try:
             global_ai_request_limiter().acquire()
             response = _SESSION.post(
-                f"{provider['base_url']}{WUYIN_IMAGE_SUBMIT_PATH}",
+                f"{provider['base_url']}{submit_path}",
                 params={"key": provider["api_key"]},
                 headers={
                     "Authorization": provider["api_key"],
                     "Content-Type": "application/json",
                 },
-                json={
-                    "prompt": prompt,
-                    "size": _wuyin_size(image_size or provider.get("image_size")),
-                    "urls": urls,
-                },
+                json=payload,
                 timeout=max(1.0, min(30.0, float(timeout_seconds))),
                 stream=True,
             )
@@ -1408,12 +1519,42 @@ class ProductImageProcessor:
             task_id = str(data.get("id") or data.get("task_id") or "").strip() if isinstance(data, dict) else ""
             if not task_id:
                 raise MediaProcessingError("provider response does not contain image task id")
-            result_url = self._poll_wuyin_image_result(provider, task_id, timeout_seconds=timeout_seconds)
+            result_url = self._poll_wuyin_image_result(
+                provider,
+                task_id,
+                timeout_seconds=timeout_seconds,
+                stall_threshold_seconds=_wuyin_stall_threshold_seconds(resolved_model, image_size),
+            )
             return _download_provider_result_image(result_url)
         finally:
             if temporary_store is not None:
                 for temporary in temporary_references:
                     temporary_store.delete(temporary)
+
+    @staticmethod
+    def _relay_references(
+        references: list[tuple[bytes, str, str] | tuple[bytes, str, str, str]],
+    ) -> list[tuple[bytes, str, str]] | None:
+        """把「直传给上游的公网 URL」换成本地字节，交给 COS 中转成上游能抓到的临时 URL。
+
+        上游抓不到源站图（防盗链、出网策略差异）是异步任务静默卡死的主因，而本地往往
+        能正常下载。这里丢掉参考图上的原始 URL，让 ``_wuyin_reference_urls`` 改走 COS。
+        全部参考都已是本地字节（无 URL 可替换）时返回 None，表示无需中转。
+        """
+        relayed: list[tuple[bytes, str, str]] = []
+        changed = False
+        for reference in references:
+            url = str(reference[3]).strip() if len(reference) >= 4 else ""
+            if url and reference[0]:
+                changed = True
+            relayed.append(
+                (
+                    bytes(reference[0]),
+                    str(reference[1] or "reference.png"),
+                    str(reference[2] or "image/jpeg"),
+                )
+            )
+        return relayed if changed else None
 
     def _wuyin_reference_urls(
         self,
@@ -1468,9 +1609,32 @@ class ProductImageProcessor:
         task_id: str,
         *,
         timeout_seconds: float,
+        stall_threshold_seconds: float = 0.0,
     ) -> str:
-        deadline = time.monotonic() + max(10.0, min(float(timeout_seconds), IMAGE_EDIT_REQUEST_TIMEOUT_SECONDS))
+        started_at = time.monotonic()
+        deadline = started_at + max(10.0, min(float(timeout_seconds), IMAGE_EDIT_REQUEST_TIMEOUT_SECONDS))
+        # 上游没有进度字段，只能用「距上次字段发生变化的时间」当进展信号。阈值内不干预；
+        # 超过阈值仍无任何变化就提前放弃，避免等满整个 600s 才失败。
+        stall_threshold = max(0.0, float(stall_threshold_seconds))
+        last_progress_at = started_at
+        last_signature: tuple[str, bool] | None = None
         last_message = ""
+
+        def _stalled() -> bool:
+            return bool(
+                stall_threshold
+                and last_signature is not None
+                and time.monotonic() - last_progress_at >= stall_threshold
+            )
+
+        def _raise_stalled(message: str, status_value: str, code: int) -> None:
+            raise MediaProcessingError(
+                f"provider image task stalled: no field change for "
+                f"{int(time.monotonic() - last_progress_at)}s "
+                f"status={status_value or 'unknown'} code={code} {message}",
+                status_class="provider_stalled",
+            )
+
         while time.monotonic() < deadline:
             time.sleep(WUYIN_IMAGE_POLL_INTERVAL_SECONDS)
             response = _SESSION.get(
@@ -1503,6 +1667,12 @@ class ProductImageProcessor:
                 return result_url
             message = _provider_message(payload)
             message_lower = message.lower()
+            # 进展信号：detail 里任何可见变化（status 变动、出现 result）都算进展并重置计时。
+            # 字段长期完全不变 = 大概率卡死（上游抓不到参考图时 worker 会静默丢弃任务）。
+            signature = (status_value, False)
+            if signature != last_signature:
+                last_signature = signature
+                last_progress_at = time.monotonic()
             # 上游 status 为异步任务状态码（含纯数字、英文与中文文本三种表达）。语义：
             #   1      任务处理完成（成功）；≥0 且命中文末（0/2/3/4/5/6）= 排队/准备/等待/处理中/发布
             #   <0     任务处理失败；fail/failed/error/cancelled / 失败= 明确失败
@@ -1519,6 +1689,8 @@ class ProductImageProcessor:
                         status_class="transient",
                     )
                 # status ∈ {0,2,3,4,5,6}: 处理中，等图片就绪后返回
+                if _stalled():
+                    _raise_stalled(message, status_value, code)
                 last_message = message or f"status={status_value}"
                 continue
             # 上游可能返回中文状态（如“成功/失败”）；`.lower()` 不影响中文，需单独归并。
@@ -1538,6 +1710,8 @@ class ProductImageProcessor:
                     f"provider image task failed: status={status_value} code={code} {message}",
                     status_class="transient",
                 )
+            if _stalled():
+                _raise_stalled(message, status_value, code)
             last_message = message or f"status={status_value or 'processing'}"
         raise MediaProcessingError(f"provider image task timed out: {last_message}")
 
@@ -1625,6 +1799,26 @@ def _wuyin_size(value: str | None) -> str:
     return "1:1"
 
 
+def _wuyin_stall_threshold_seconds(model: str, image_size: str | None) -> float:
+    """按端点与尺寸档位选停滞阈值：1K 与 2K/4K 的真实生成耗时差异明显。
+
+    2.5 端点恒为 1K；旧端点 image_gpt 的 2K/4K transport 更慢，用更宽的阈值避免误杀。
+    """
+    if str(model or "").strip() == "image_gpt_2.5":
+        return WUYIN_IMAGE_STALL_THRESHOLD_SECONDS
+    raw_size = str(image_size or "").strip().lower()
+    if raw_size in {"2048x2048", "4096x4096", "2048x1024", "1024x2048"}:
+        return WUYIN_IMAGE_STALL_THRESHOLD_2K_SECONDS
+    return WUYIN_IMAGE_STALL_THRESHOLD_SECONDS
+
+
+def _cos_configured(config: dict[str, Any]) -> bool:
+    cos = dict(config.get("cos") or {})
+    return bool(
+        cos.get("bucket") and cos.get("region") and cos.get("secret_id") and cos.get("secret_key")
+    )
+
+
 def _first_image_url(value: Any) -> str:
     if isinstance(value, str):
         candidate = value.strip()
@@ -1680,6 +1874,9 @@ def _safe_error(error: BaseException) -> str:
 def _retry_class(error: BaseException) -> str:
     status = getattr(error, "status_code", None)
     explicit_class = str(getattr(error, "status_class", "") or "")
+    if explicit_class == "provider_stalled":
+        # 停滞不是上游显式失败，可通过 COS 中转参考图 / 换候选参考图后重试一次。
+        return "provider_stalled"
     if explicit_class in {"billing_payment_required", "billing_forbidden", "non_retryable_4xx"}:
         return "non_retryable_4xx"
     if explicit_class in {

@@ -787,7 +787,10 @@ class PreviewImageRepository:
         idempotency_key: str = "",
         request_hash: str = "",
         total_count: int | None = None,
+        workbook_format: str = "dxm",
     ) -> dict[str, Any]:
+        if str(workbook_format or "") not in {"dxm", "apparel", "general"}:
+            raise ValueError("workbook format must be dxm, apparel or general")
         raw_request = [dict(entry) for entry in (items if items is not None else snapshot)]
         request_digest = str(
             request_hash or calculate_snapshot_hash(raw_request)
@@ -853,6 +856,7 @@ class PreviewImageRepository:
                     snapshot_hash=digest,
                     snapshot_json=_dumps(entries),
                     status="queued",
+                    workbook_format=str(workbook_format or "dxm"),
                     total_count=(
                         max(0, int(total_count))
                         if total_count is not None
@@ -1583,6 +1587,7 @@ class PreviewImageRepository:
             "snapshot_hash": row.snapshot_hash,
             "snapshot": snapshot if isinstance(snapshot, list) else [],
             "status": row.status,
+            "workbook_format": str(row.workbook_format or "dxm"),
             "total_count": int(row.total_count or 0),
             "published_count": int(row.published_count or 0),
             "failed_count": int(row.failed_count or 0),

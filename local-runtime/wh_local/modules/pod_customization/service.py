@@ -1,14 +1,20 @@
 from __future__ import annotations
 
-import json
 import inspect
+import io
+import json
 import threading
 import uuid
 from pathlib import Path
 from typing import Any
 
+from PIL import Image, ImageDraw
+from pydantic import ValidationError
+
 from ...customer.contracts import CustomerBillingPermissionError
+from ...runtime_logs import business_logger
 from ...session import Actor
+from . import spec_card
 from .assets import PodAssetStore
 from .billing_contract import (
     PodBillingAuthorizationRequired,
@@ -22,11 +28,14 @@ from .billing_contract import (
 from .contracts import (
     BatchCreate,
     BatchRetryFailedCreate,
+    BriefFieldRequest,
     Calibration,
     DirectListingTrialCreate,
     NormalizedPoint,
     NormalizedRect,
+    validate_spec_card,
 )
+from .brief_runtime import PodBriefRequest
 from .export import (
     DianxiaomiExport,
     analyze_dianxiaomi_export,
@@ -47,7 +56,53 @@ from .runtime_contracts import (
     PodAiRuntime,
 )
 from .title_runtime import PodTitleRequest, visual_signature
-from .worker import PodBatchWorker, PodBillingRun, POD_PROGRESS_TIMEOUT_SECONDS
+from .worker import (
+    POD_PROGRESS_TIMEOUT_SECONDS,
+    SPEC_CARD_ASSET_KIND,
+    PodBatchWorker,
+    PodBillingRun,
+    build_spec_card_media,
+)
+
+
+class BatchNotTerminalForSpecCard(PodRepositoryError):
+    """批次仍在生成中：配置冻结只读，重印不可用（方案 §8/§10.3），路由转 409。"""
+
+    def __init__(self, message: str = "批次尚未完成，暂不能重新合成标注") -> None:
+        super().__init__(message, 409)
+
+
+_PYDANTIC_VALUE_ERROR_PREFIX = "Value error, "
+
+
+def _spec_card_validation_message(exc: ValidationError) -> str:
+    """取 pydantic 校验错误里的中文文案（``Value error, 规格卡风格必须是…`` → ``规格卡风格必须是…``）。"""
+
+    for error in exc.errors():
+        message = str(error.get("msg") or "").strip()
+        if message.startswith(_PYDANTIC_VALUE_ERROR_PREFIX):
+            message = message[len(_PYDANTIC_VALUE_ERROR_PREFIX):].strip()
+        if message:
+            return message
+    return "规格卡配置不正确"
+
+
+def blank_spec_card_base_jpeg(side: int = 800) -> bytes:
+    """预览兜底底图：纯白 ``side×side`` + 浅灰虚线框，示意卡片会印在这张图上。"""
+
+    image = Image.new("RGB", (side, side), "#ffffff")
+    draw = ImageDraw.Draw(image)
+    inset = max(8, round(side * 0.03))
+    step = max(12, round(side * 0.05))
+    for offset in range(inset, side - inset, step):
+        end = min(offset + step // 2, side - inset)
+        draw.line((offset, inset, end, inset), fill="#d8d8d8", width=2)
+        draw.line((offset, side - inset, end, side - inset), fill="#d8d8d8", width=2)
+        draw.line((inset, offset, inset, end), fill="#d8d8d8", width=2)
+        draw.line((side - inset, offset, side - inset, end), fill="#d8d8d8", width=2)
+    output = io.BytesIO()
+    image.save(output, "JPEG", quality=92)
+    return output.getvalue()
 
 
 class PodCustomizationService:
@@ -58,6 +113,7 @@ class PodCustomizationService:
         ai_runtime: PodAiRuntime,
         *,
         title_runtime: Any | None = None,
+        brief_runtime: Any | None = None,
         billing_coordinator: PodBillingCoordinator | None = None,
         start_workers: bool = True,
     ) -> None:
@@ -65,6 +121,7 @@ class PodCustomizationService:
         self.assets = PodAssetStore(asset_root)
         self.ai_runtime = ai_runtime
         self.title_runtime = title_runtime
+        self.brief_runtime = brief_runtime
         self.billing_coordinator = billing_coordinator
         self.repository = PodCustomizationRepository(self.database_path)
         self.export_records = PodExportRecordStore(self.database_path)
@@ -188,6 +245,18 @@ class PodCustomizationService:
             self.worker.register_billing_run(batch_id, billing_run)
         if enqueue and self.worker is not None:
             self.worker.submit(batch["batch_id"], billing_run)
+        # 本地 POD 处理日志（pod_processing.log）：批次创建明细。
+        try:
+            business_logger("pod_processing").info(
+                "========== POD 批次开始 | batch_id=%s | workspace=%s | 用户=%s | "
+                "模板=%s | 款式数=%d | 类目=%s | 创意提示=%s | 批次标题=%s "
+                "| 冻结计费=%s ==========",
+                batch["batch_id"], actor.workspace_id, actor.id, request.template_id,
+                request.count, request.business_fields.product_category,
+                (request.creative_prompt or "-")[:200], (request.title or "-")[:120],
+                "有" if billing_run is not None else "无")
+        except Exception:  # noqa: BLE001 本地业务日志绝不影响业务
+            pass
         return self._batch_payload(batch)
 
     def run_direct_listing_trial(
@@ -372,6 +441,47 @@ class PodCustomizationService:
         rows, total = self.repository.list_direct_listing_trials(actor.workspace_id, actor.id)
         return {"trials": [self._direct_listing_trial_payload(row) for row in rows], "total": total}
 
+    def generate_brief_fields(self, actor: Actor, request: BriefFieldRequest) -> dict[str, Any]:
+        """智能前置层：一句模糊输入 → 结构化业务字段。
+
+        动作免费（服务端对 POD 画像的纯 title scope 显式零计费），但仍走完整的
+        冻结 → 发放短期密钥 → 调用 → 结算流程，保留幂等键与审计。
+        """
+        if self.brief_runtime is None:
+            raise RuntimeError("POD 智能填写服务未启用")
+        brief_id = uuid.uuid4().hex
+        billing_run = self._freeze_brief(actor, brief_id)
+        try:
+            return self._run_brief_fields_authorized(request, brief_id, billing_run)
+        except PodBillingAuthorizationRequired as exc:
+            raise RuntimeError(str(exc)) from exc
+        finally:
+            billing_run.settle()
+
+    def _run_brief_fields_authorized(
+        self,
+        request: BriefFieldRequest,
+        brief_id: str,
+        billing_run: PodBillingRun,
+    ) -> dict[str, Any]:
+        call_ids = tuple(
+            call.call_id for call in billing_run.plan.calls if call.feature == "pod.title"
+        )
+        result = self.brief_runtime.generate_brief_fields(
+            PodBriefRequest(brief_id=brief_id, brief=request.brief, locale=request.locale),
+            grant=billing_run.grant,
+            call_id=call_ids[0],
+            call_ids=call_ids,
+            on_start=lambda call_id: billing_run.start(call_id, "pod.title"),
+            on_outcome=lambda call_id, status: billing_run.record(call_id, "pod.title", status),
+        )
+        return {
+            "brief_id": brief_id,
+            "prompt_version": result.prompt_version,
+            "model": result.model,
+            "fields": result.fields.model_dump(),
+        }
+
     def list_batches(self, actor: Actor, *, limit: int = 20, offset: int = 0) -> dict[str, Any]:
         rows, total = self.repository.list_batches(
             actor.workspace_id,
@@ -392,6 +502,11 @@ class PodCustomizationService:
             return self._batch_payload(batch)
         if not self.repository.request_pause(batch_id):
             raise PodRepositoryError("仅运行中的 POD 批次可以暂停", 409)
+        try:
+            business_logger("pod_processing").info(
+                "POD 批次暂停请求 | batch_id=%s | workspace=%s", batch_id, actor.workspace_id)
+        except Exception:  # noqa: BLE001
+            pass
         return self._batch_payload(self.repository.get_batch(batch_id, actor.workspace_id, actor.id))
 
     def cancel_batch(self, actor: Actor, batch_id: str) -> dict[str, Any]:
@@ -413,6 +528,12 @@ class PodCustomizationService:
         was_paused = batch["status"] == "paused"
         if not self.repository.request_cancel(batch_id):
             raise PodRepositoryError("仅运行中或已暂停的 POD 批次可以取消", 409)
+        try:
+            business_logger("pod_processing").warning(
+                "POD 批次取消 | batch_id=%s | workspace=%s | 原状态=%s",
+                batch_id, actor.workspace_id, str(batch["status"] or "-"))
+        except Exception:  # noqa: BLE001
+            pass
         if was_paused or not worker_running:
             # 已暂停或 worker 已退出的批次不会再经过检查点，需同步收尾。
             finish_cancelled()
@@ -444,6 +565,11 @@ class PodCustomizationService:
             raise RuntimeError("POD worker is disabled")
         self.worker.register_billing_run(batch_id, run)
         self.worker.submit(batch_id, run)
+        try:
+            business_logger("pod_processing").info(
+                "POD 批次恢复 | batch_id=%s | workspace=%s", batch_id, actor.workspace_id)
+        except Exception:  # noqa: BLE001
+            pass
         return self._batch_payload(self.repository.get_batch(batch_id, actor.workspace_id, actor.id))
 
     def export_dianxiaomi(self, actor: Actor, batch_id: str) -> DianxiaomiExport:
@@ -505,6 +631,152 @@ class PodCustomizationService:
             owner_user_id=actor.id,
         )
         return {"exports": rows, "total": len(rows)}
+
+    # --- 第 4 张图「规格卡」：同源预览 + 终态重印（方案 §7/§8） ---
+
+    SPEC_CARD_TERMINAL_STATUSES = frozenset({"completed", "partial_failure", "failed"})
+    SPEC_CARD_PREVIEW_BASE_SIDE = 800
+
+    def template_spec_card_base(self, actor: Actor, template_id: str) -> bytes | None:
+        """预览底图：模板资产字节；模板不存在/资产不可读都返回 None（用空白底图，不报错）。"""
+
+        try:
+            template = self.repository.get_template(template_id, actor.workspace_id, actor.id)
+            asset = self.repository.get_asset(template["asset_id"], actor.workspace_id, actor.id)
+            return self.assets.read(asset["relative_path"])
+        except Exception:  # noqa: BLE001 - 预览底图缺失不影响示意
+            return None
+
+    def preview_spec_card(self, config_mapping: Any, base_content: bytes | None = None) -> bytes:
+        """规格卡同源渲染预览：返回 JPEG 字节；**不落库、不计费**（方案 §7）。
+
+        配置非法（空表/超行超列/风格或位置不识别）抛 ValueError，由路由转 400。
+        """
+
+        config = self._validated_spec_card_config(config_mapping)
+        request = spec_card.SpecCardRequest(
+            cells=config.cells, style=config.style, corner=config.corner
+        )
+        if base_content:
+            try:
+                return spec_card.render_spec_card(base_content, request).jpeg_bytes
+            except spec_card.SpecCardRenderError:
+                # 底图不可读/非正方形/过小：退回空白示意底图，不把预览变成报错。
+                pass
+        blank = blank_spec_card_base_jpeg(self.SPEC_CARD_PREVIEW_BASE_SIDE)
+        return spec_card.render_spec_card(blank, request).jpeg_bytes
+
+    def reprint_batch_spec_card(
+        self,
+        actor: Actor,
+        batch_id: str,
+        config_mapping: Any,
+        style_index: int | None = None,
+    ) -> dict[str, Any]:
+        """终态批次「保存并全批重印」：0 provider 调用，逐款独立（方案 §8）。
+
+        只替换 ``publications.public_url``；某款失败保持现状并计入 errors，其余款继续。
+        """
+
+        batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
+        if batch["status"] not in self.SPEC_CARD_TERMINAL_STATUSES:
+            raise BatchNotTerminalForSpecCard()
+        config = self._validated_spec_card_config(config_mapping)
+        self.repository.update_batch_spec_card(batch_id, config.model_dump())
+        targets = self.repository.list_spec_card_hero_targets(batch_id)
+        if style_index is not None:
+            wanted = int(style_index)
+            targets = [target for target in targets if int(target["style_index"]) == wanted]
+        reprinted = 0
+        errors: list[dict[str, Any]] = []
+        for target in targets:
+            index = int(target["style_index"])
+            self._log_spec_card_audit(actor, batch_id, index, "重印开始")
+            try:
+                public_url = self._reprint_style_spec_card(batch, target, config)
+            except Exception as exc:  # noqa: BLE001 - 逐款独立，失败款保持现状
+                message = safe_error_message(exc) or exc.__class__.__name__
+                errors.append({"style_index": index, "message": message})
+                self._log_spec_card_audit(
+                    actor, batch_id, index, f"重印失败，保持现状：{message}", level="warning"
+                )
+                continue
+            reprinted += 1
+            self._log_spec_card_audit(actor, batch_id, index, f"重印完成 | public_url={public_url}")
+        return {
+            "saved": True,
+            "reprinted": reprinted,
+            "failed": len(errors),
+            "errors": errors,
+            "needs_re_export": True,
+        }
+
+    def _reprint_style_spec_card(self, batch: dict[str, Any], target: dict[str, Any], config: Any) -> str:
+        """单款重印：读干净母版 → 渲染 → 派生资产 → 发布 → 只改发布指针。"""
+
+        style_index = int(target["style_index"])
+        pattern_asset_id = str(target.get("pattern_asset_id") or "")
+        if not pattern_asset_id:
+            raise PodRepositoryError("POD 母版资产已不可用，无法重新合成标注", 404)
+        asset = self.repository.get_asset(
+            pattern_asset_id, batch["workspace_id"], batch["owner_user_id"]
+        )
+        base_content = self.assets.read(asset["relative_path"])
+        result = spec_card.render_spec_card(
+            base_content,
+            spec_card.SpecCardRequest(cells=config.cells, style=config.style, corner=config.corner),
+        )
+        self._save_batch_asset(
+            batch, SPEC_CARD_ASSET_KIND, f"style-{style_index}-hero-card.jpg", result.jpeg_bytes
+        )
+        public_url = self.ai_runtime.publish_listing_image(
+            build_spec_card_media(result.jpeg_bytes),
+            namespace=batch["workspace_id"],
+            role="hero",
+        )
+        if not public_url:
+            raise RuntimeError("重印后的规格卡未取得可公开访问的地址")
+        if not self.repository.set_style_grid_publication(target["result_id"], "hero", public_url):
+            raise PodRepositoryError("POD style result not found", 404)
+        return str(public_url)
+
+    def _save_batch_asset(
+        self, batch: dict[str, Any], kind: str, filename: str, content: bytes
+    ) -> dict[str, Any]:
+        stored = self.assets.save_image(batch["workspace_id"], batch["owner_user_id"], content)
+        return self.repository.create_asset(
+            workspace_id=batch["workspace_id"],
+            owner_user_id=batch["owner_user_id"],
+            kind=kind,
+            filename=filename,
+            relative_path=stored.relative_path,
+            content_type=stored.content_type,
+            byte_size=stored.byte_size,
+            sha256=stored.sha256,
+            width=stored.width,
+            height=stored.height,
+        )
+
+    @staticmethod
+    def _log_spec_card_audit(
+        actor: Actor, batch_id: str, style_index: int, detail: str, *, level: str = "info"
+    ) -> None:
+        try:
+            getattr(business_logger("pod_processing"), level)(
+                "POD 规格卡重印 | batch_id=%s | style=%d | 操作人=%s | workspace=%s | %s",
+                batch_id, style_index, getattr(actor, "username", "") or actor.id,
+                actor.workspace_id, detail)
+        except Exception:  # noqa: BLE001 - 审计日志绝不阻断业务
+            pass
+
+    @staticmethod
+    def _validated_spec_card_config(config_mapping: Any) -> Any:
+        """整卡校验（空表/行列表格上限/风格与位置）；错误一律是带中文文案的 ValueError。"""
+
+        try:
+            return validate_spec_card(config_mapping)
+        except ValidationError as exc:
+            raise ValueError(_spec_card_validation_message(exc)) from exc
 
     def optimize_scene(
         self,
@@ -700,6 +972,14 @@ class PodCustomizationService:
         if title_indices:
             self._require_title_runtime_configured(require_present=True)
         self._preflight_batch_retry(actor, batch_id, image_indices, title_indices)
+        try:
+            business_logger("pod_processing").info(
+                "POD 失败重试 | batch_id=%s | workspace=%s | 图片款式=%s | 标题款式=%s",
+                batch_id, actor.workspace_id,
+                ",".join(str(i) for i in image_indices) or "-",
+                ",".join(str(i) for i in title_indices) or "-")
+        except Exception:  # noqa: BLE001
+            pass
         action_id = f"{batch_id}:batch-retry:{uuid.uuid4().hex}"
         billing_run = self._freeze_batch_retry(
             actor, action_id, batch_id, image_indices, title_indices
@@ -1328,6 +1608,20 @@ class PodCustomizationService:
             target_id=trial_id,
             batch_id="",
             action_payload=request.model_dump(mode="json"),
+        )
+
+    def _freeze_brief(self, actor: Actor, brief_id: str) -> PodBillingRun:
+        if self.billing_coordinator is None:
+            raise RuntimeError("POD billing coordinator is not configured")
+        plan = PodCallPlan.for_brief(brief_id)
+        # 不落库用户的模糊输入：方案 D4 明确生成内容不做后端持久化，这里只留模式标记。
+        return self._freeze_action(
+            actor,
+            plan,
+            action_type="title_retry",
+            target_id=brief_id,
+            batch_id="",
+            action_payload={"mode": "brief"},
         )
 
     def _freeze_style_retry(

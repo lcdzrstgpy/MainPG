@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 
 from ...session import Actor, actor_from_authorization, require_admin
-from .schemas import SystemConfigUpdate
+from .schemas import ImageModelSelection, PodImageModelSelection, SystemConfigUpdate
 from .service import SystemConfigService
 
 
@@ -30,6 +30,31 @@ def create_router(database_path: Path) -> APIRouter:
             return service.save_config(payload, actor_id=actor.id)
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @router.get("/image-model")
+    def get_image_model(actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
+        # 个人中心「模型选择」：读取当前生图模型与可选项（只含模型名，不含凭据）。
+        return service.get_image_model()
+
+    @router.put("/image-model")
+    def save_image_model(
+        payload: ImageModelSelection,
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        # 只改生图模型，不动系统配置的其他字段（避免整表 PUT 清空 cos 等未提交字段）。
+        return service.save_image_model(payload.model, actor_id=actor.id)
+
+    @router.get("/pod-image-model")
+    def get_pod_image_model(actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
+        # POD 使用独立模型配置，不跟随 AI处理 的生图模型。
+        return service.get_pod_image_model()
+
+    @router.put("/pod-image-model")
+    def save_pod_image_model(
+        payload: PodImageModelSelection,
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        return service.save_pod_image_model(payload.model, actor_id=actor.id)
 
     @router.post("/system-config/publish")
     def publish_system_config(actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:

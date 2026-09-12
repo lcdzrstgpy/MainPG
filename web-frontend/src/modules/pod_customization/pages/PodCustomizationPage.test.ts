@@ -49,6 +49,13 @@ test("POD listing result labels identify the original scene as primary and the o
   assert.match(modelSource, /四格顺序固定为主图、细节图 A、细节图 B、素材图。/);
 });
 
+test("POD four-grid tiles keep images flush inside the rounded frame", () => {
+  // 四格图是 <button>，浏览器 UA 默认内边距会把 width/height:100% 的图片顶进内容盒，
+  // 露出框底白色形成白边；因此必须显式清零内边距，并保持 cover 铺满。
+  assert.match(styles, /\.pod-style-result \{ position: relative; aspect-ratio: 1 \/ 1; min-width: 0; padding: 0; overflow: hidden;/);
+  assert.match(styles, /\.pod-style-result img \{ width: 100%; height: 100%; display: block; object-fit: cover; \}/);
+});
+
 test("system-template save control is independent and immediately precedes generation", () => {
   const advancedStart = source.indexOf('<div className="pod-advanced-prompt">');
   const advancedEnd = source.indexOf('<div className="pod-volume-inline">', advancedStart);

@@ -4,12 +4,16 @@ import { createPortal } from "react-dom";
 import { podCustomizationApi } from "../api/podCustomizationApi";
 import { PodBatchGallery } from "../components/PodBatchGallery";
 import { PodBatchHistoryDrawer } from "../components/PodBatchHistoryDrawer";
+import { PodBriefInput } from "../components/PodBriefInput";
 import { PodFailedRetryDialog } from "../components/PodFailedRetryDialog";
 import { PodResultLightbox } from "../components/PodResultLightbox";
+import { SpecCardDrawer } from "../components/SpecCardDrawer";
 import { TemplateLibraryDrawer } from "../components/TemplateLibraryDrawer";
 import { PodUnsavedTemplateConfirmDialog } from "../components/PodUnsavedTemplateConfirmDialog";
 import {
   POD_BATCH_COUNTS,
+  POD_STYLE_PLANNING_OPTIONS,
+  EMPTY_SPEC_CARD,
   buildPromptV1,
   businessFieldsForApi,
   canDeletePodBatch,
@@ -18,12 +22,16 @@ import {
   isActiveBatchStatus,
   isActivePodItemStatus,
   isActivePodStyleTitleStatus,
+  isSpecCardConfigured,
   groupPodStyleRows,
+  normalizeStylePlanning,
   resolveCreativePrompt,
   listingFieldsForApi,
   shouldPollPodBatch,
+  specCardSummaryText,
 } from "../data/podCustomizationModel";
 import { batchRetryCandidates, type PodBatchRetryRequest } from "../data/podBatchRetry";
+import { createBriefHistoryItem, mergeBusinessFields, recordBriefHistory } from "../data/podBrief";
 import {
   createPodSystemTemplate,
   createEmptyPodCustomizationDraft,
@@ -39,10 +47,13 @@ import type {
   PodBatch,
   PodBatchCount,
   PodBatchSummary,
+  PodBriefFieldsDraft,
+  PodBriefHistoryItem,
   PodBusinessFieldsDraft,
   PodListingFieldsDraft,
   PodTemplate,
   PodTemplateCalibration,
+  SpecCardConfig,
 } from "../types";
 import "../styles/podCustomization.css";
 
@@ -67,6 +78,9 @@ const SKU_FIELD_LABELS: Record<SkuField, string> = {
   height_cm: "高度",
   weight_g: "重量",
 };
+
+// 成功提示（右上角 toast）只在出现后短暂停留，到点自动收起，不做常驻；错误提示仍保留到用户处理。
+const NOTICE_AUTO_DISMISS_MS = 6_000;
 
 function skuErrorKey(index: number, key: SkuField): string {
   return `${index}:${key}`;
@@ -93,6 +107,7 @@ const BUSINESS_FIELDS: Array<{
   multiline?: boolean;
   required?: boolean;
   hint?: string;
+  control?: "style-planning";
 }> = [
   { key: "product_name", label: "产品名称", required: true },
   { key: "product_category", label: "产品品类", required: true },
@@ -108,18 +123,27 @@ const BUSINESS_FIELDS: Array<{
   {
     key: "style_planning",
     label: "样式规划",
-    multiline: true,
     required: true,
-    hint: "整批统一的排布与覆盖要求，例如：花纹铺满包身、提手处留白；全铺满 / 铺满一半。无特殊要求请写“无特殊要求”",
+    control: "style-planning",
+    hint: "图案在包身的覆盖范围：全覆盖＝满版铺满；半覆盖＝局部铺满、其余留白。",
   },
   {
     key: "style_keywords",
     label: "元素关键词",
     required: true,
-    hint: "元素之间用顿号或逗号分隔；建议写 10 种以上不同元素；系统将按款式随机分配主打/辅主/点缀，其余元素不在该款出现；素材可跨款复用",
+    hint: "用顿号或逗号分隔；每一项都要是具体事物（如奶昔杯、点唱机、霓虹灯牌），不要写形容词、风格词、配色或「xx元素」这类抽象词；建议 40 种以上；系统将按款式随机分配主打/辅主/点缀，其余元素不在该款出现；素材可跨款复用",
   },
-  { key: "color_preferences", label: "偏好配色" },
-  { key: "excluded_elements", label: "禁用元素", multiline: true },
+  {
+    key: "color_preferences",
+    label: "偏好配色",
+    hint: "尽量多写（建议 10 种以上）；写具体颜色名，如「电光粉紫、落日金橙、霓虹青色」，不要写「高饱和度」「撞色」这类抽象词；系统按款式轮换强调色，颜色越多跨款差异越明显",
+  },
+  {
+    key: "excluded_elements",
+    label: "禁用元素",
+    multiline: true,
+    hint: "尽量多写，且务必覆盖侵权类（品牌 logo、商标、球队或联盟标识、影视动漫游戏角色、卡通 IP 形象、名人肖像、奢侈品牌老花、平台水印、受版权保护的海报封面）与危险违禁类（武器弹药、管制刀具、爆炸物、毒品、赌博、烟草电子烟、酒精、暴力血腥、恐怖或仇恨符号、纳粹标志、宗教或政治符号、国旗国徽、成人或色情内容、钞票图样、身份证件、二维码、真人照片），避免商品下架或店铺被封",
+  },
 ];
 
 function autoGrowBusinessTextarea(textarea: HTMLTextAreaElement): void {
@@ -190,8 +214,14 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   const [selectedTemplateId, setSelectedTemplateId] = useState(initialDraft.state.selected_template_id);
   const [selectedTemplateSnapshot, setSelectedTemplateSnapshot] = useState<PodTemplate | null>(null);
   const [selectedItemId, setSelectedItemId] = useState<string>();
-  const [businessFields, setBusinessFields] = useState<PodBusinessFieldsDraft>(initialDraft.state.business_fields);
+  // 旧草稿里的 style_planning 可能是自由文本：二选一后只接受「全覆盖 / 半覆盖」，其余视为未选择。
+  const [businessFields, setBusinessFields] = useState<PodBusinessFieldsDraft>(() => ({
+    ...initialDraft.state.business_fields,
+    style_planning: normalizeStylePlanning(initialDraft.state.business_fields.style_planning),
+  }));
+  const [briefHistory, setBriefHistory] = useState<PodBriefHistoryItem[]>(initialDraft.state.brief_history ?? []);
   const [listingFields, setListingFields] = useState<PodListingFieldsDraft>(initialDraft.state.listing_fields);
+  const [specCard, setSpecCard] = useState<SpecCardConfig>(initialDraft.state.spec_card ?? EMPTY_SPEC_CARD);
   const [batchCount, setBatchCount] = useState<PodBatchCount>(initialDraft.state.batch_count);
   const [customCountMode, setCustomCountMode] = useState(initialDraft.state.custom_count_mode);
   const [customCountInput, setCustomCountInput] = useState(initialDraft.state.custom_count_input);
@@ -199,6 +229,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   const [currentBatchEdit, setCurrentBatchEdit] = useState<string | null>(initialDraft.state.current_batch_edit);
   const [systemTemplates, setSystemTemplates] = useState<PodSystemTemplate[]>(initialDraft.state.system_templates);
   const [templateDrawerOpen, setTemplateDrawerOpen] = useState(false);
+  const [specCardDrawerOpen, setSpecCardDrawerOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [failedRetryOpen, setFailedRetryOpen] = useState(false);
   const [pendingTemplateSwitch, setPendingTemplateSwitch] = useState<string | null>(null);
@@ -340,12 +371,14 @@ export function PodCustomizationPage({ isActive = true }: Props) {
       version: 3,
       business_fields: businessFields,
       listing_fields: listingFields,
+      spec_card: specCard,
       batch_count: batchCount,
       custom_count_mode: customCountMode,
       custom_count_input: customCountInput,
       selected_template_id: selectedTemplateId,
       current_batch_edit: currentBatchEdit,
       system_templates: systemTemplates,
+      brief_history: briefHistory,
     });
     if (!result.ok && lastDraftSaveErrorRef.current !== result.error) {
       lastDraftSaveErrorRef.current = result.error;
@@ -353,7 +386,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     } else if (result.ok) {
       lastDraftSaveErrorRef.current = "";
     }
-  }, [batchCount, businessFields, currentBatchEdit, customCountInput, customCountMode, draftScope?.accountId, draftScope?.workspaceId, listingFields, selectedTemplateId, systemTemplates]);
+  }, [batchCount, briefHistory, businessFields, currentBatchEdit, customCountInput, customCountMode, draftScope?.accountId, draftScope?.workspaceId, listingFields, selectedTemplateId, specCard, systemTemplates]);
 
   // Resize multiline business textareas on mount and whenever their values change.
   // onChange handles live typing; this effect handles initial load and draft restore.
@@ -364,6 +397,14 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     });
   }, [businessFields]);
 
+  // 提示生命周期：成功 toast 出现后自动收起，避免一次操作后一直挂在右上角。
+  // 依赖 notice 本身：新提示出现会清掉旧计时器重新计时；手动关闭（notice 置空）也会清掉计时器。
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(""), NOTICE_AUTO_DISMISS_MS);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
   const clearMessages = () => {
     setNotice("");
     setError("");
@@ -371,6 +412,16 @@ export function PodCustomizationPage({ isActive = true }: Props) {
 
   const updateBusinessField = (key: keyof PodBusinessFieldsDraft, value: string) => {
     setBusinessFields((current) => ({ ...current, [key]: value }));
+  };
+
+  // 智能填写：生成结果直接覆盖同名字段，并把本次输入记入「最近生成」历史。
+  const handleBriefGenerated = (fields: PodBriefFieldsDraft, input: string) => {
+    setBusinessFields((current) => mergeBusinessFields(current, fields));
+    setBriefHistory((current) => recordBriefHistory(current, createBriefHistoryItem(input, fields)));
+  };
+
+  const selectBriefHistory = (item: PodBriefHistoryItem) => {
+    setBusinessFields((current) => mergeBusinessFields(current, item.fields));
   };
 
   const updateListingField = (key: "title_mode" | "declared_price" | "suggested_price_usd" | "category_name", value: string) => {
@@ -422,6 +473,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     setSelectedTemplateSnapshot(null);
     setCurrentBatchEdit(null);
     setBusinessFields({ ...EMPTY_BUSINESS_FIELDS_FOR_SWITCH });
+    setBriefHistory([]);
     setListingFields({ ...EMPTY_LISTING_FIELDS_FOR_SWITCH });
     setSkuFieldErrors({});
     setAdvancedOpen(false);
@@ -525,7 +577,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
       setError(`请填写：${missingRequired.map((field) => field.label).join("、")}。`);
       return;
     }
-    const listingFieldsResult = listingFieldsForApi(listingFields);
+    const listingFieldsResult = listingFieldsForApi(listingFields, specCard);
     const nextSkuFieldErrors = validateSkuFields(listingFields.skus);
     setSkuFieldErrors(nextSkuFieldErrors);
     if (Object.keys(nextSkuFieldErrors).length) {
@@ -534,6 +586,10 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     }
     if (!listingFieldsResult.value) {
       setError(listingFieldsResult.error ?? "请完整填写店小秘上架信息。" );
+      return;
+    }
+    if (!isSpecCardConfigured(specCard)) {
+      setError("请先点击「批量添加尺寸」完成表格配置。");
       return;
     }
     const normalizedListingFields = listingFieldsResult.value;
@@ -848,16 +904,26 @@ export function PodCustomizationPage({ isActive = true }: Props) {
       {/* portal 到 body：tab 面板 fill-mode 动画的层叠上下文会锁住 fixed toast 的 z-index，被顶栏盖住 */}
       {error && createPortal(<div className="pod-page-message is-error" role="alert"><span>!</span><p>{error}</p><button type="button" onClick={clearMessages} aria-label="关闭提示">×</button></div>, document.body)}
 
+      {!error && notice && <div className="pod-page-message" role="status"><span>✓</span><p>{notice}</p><button type="button" onClick={clearMessages} aria-label="关闭提示">×</button></div>}
+
       <div className="pod-workbench-grid">
         <aside className="pod-setup-column pod-brief-sidebar">
           <section className="pod-setup-card pod-business-editor">
             <div className="pod-section-title"><span>BRIEF EDITOR</span><h2>业务信息编辑</h2><small>用于直出 Prompt</small></div>
+            <PodBriefInput onGenerated={handleBriefGenerated} history={briefHistory} onSelectHistory={selectBriefHistory} />
             <div className="pod-business-fields">
               {BUSINESS_FIELDS.map((field, fieldIndex) => (
-                <label key={field.key} className={field.multiline ? "is-multiline" : ""}><span>{field.label}{field.required && <em>*</em>}{field.hint && <i className="pod-field-info" data-tip={field.hint} aria-hidden="true">ⓘ</i>}</span><textarea rows={1} ref={(el) => { businessTextareasRef.current[fieldIndex] = el; }} value={businessFields[field.key]} onChange={(event) => {
-                  updateBusinessField(field.key, event.currentTarget.value);
-                  autoGrowBusinessTextarea(event.currentTarget);
-                }} /></label>
+                field.control === "style-planning"
+                  ? <div key={field.key} className="pod-style-planning" role="radiogroup" aria-label={field.label}>
+                    <span>{field.label}{field.required && <em>*</em>}{field.hint && <i className="pod-field-info" data-tip={field.hint} aria-hidden="true">ⓘ</i>}</span>
+                    <div>
+                      {POD_STYLE_PLANNING_OPTIONS.map((option) => <button key={option} type="button" role="radio" aria-checked={businessFields.style_planning === option} className={businessFields.style_planning === option ? "is-active" : ""} onClick={() => updateBusinessField("style_planning", option)}>{option}</button>)}
+                    </div>
+                  </div>
+                  : <label key={field.key} className={field.multiline ? "is-multiline" : ""}><span>{field.label}{field.required && <em>*</em>}{field.hint && <i className="pod-field-info" data-tip={field.hint} aria-hidden="true">ⓘ</i>}</span><textarea rows={1} ref={(el) => { businessTextareasRef.current[fieldIndex] = el; }} value={businessFields[field.key]} onChange={(event) => {
+                    updateBusinessField(field.key, event.currentTarget.value);
+                    autoGrowBusinessTextarea(event.currentTarget);
+                  }} /></label>
               ))}
             </div>
             <div className="pod-advanced-prompt">
@@ -889,6 +955,10 @@ export function PodCustomizationPage({ isActive = true }: Props) {
                     <button type="button" onClick={() => removeSku(index)} aria-label="删除 SKU">×</button>
                   </div>)}
                 </div>
+              </div>
+              <div className="pod-spec-card-entry" aria-label="规格卡配置">
+                <button type="button" className="pod-spec-card-entry-button" onClick={() => setSpecCardDrawerOpen(true)}>批量添加尺寸<em>*</em></button>
+                <span className={isSpecCardConfigured(specCard) ? "pod-spec-card-entry-summary" : "pod-spec-card-entry-summary is-warning"}>{specCardSummaryText(specCard)}</span>
               </div>
             </section>
             <div className="pod-volume-inline"><b>生成数量</b></div>
@@ -989,6 +1059,24 @@ export function PodCustomizationPage({ isActive = true }: Props) {
         busy={switchingTemplate}
         onClose={() => setPendingTemplateSwitch(null)}
         onConfirm={confirmTemplateSwitch}
+      />
+
+      <SpecCardDrawer
+        open={specCardDrawerOpen}
+        config={specCard}
+        batch={activeBatch}
+        baseTemplateId={selectedTemplate?.id}
+        onClose={() => setSpecCardDrawerOpen(false)}
+        onSave={(next) => {
+          setSpecCard(next);
+          setNotice(`规格卡配置已保存：${specCardSummaryText(next)}。`);
+        }}
+        onReprinted={(batchId, result) => {
+          setNotice(result.failed > 0
+            ? `全批重印完成：成功 ${result.reprinted} 款、失败 ${result.failed} 款，该批次需重新导出。`
+            : `全批重印完成：${result.reprinted} 款已更新，该批次需重新导出。`);
+          void refreshActiveBatch(batchId);
+        }}
       />
     </section>
   );

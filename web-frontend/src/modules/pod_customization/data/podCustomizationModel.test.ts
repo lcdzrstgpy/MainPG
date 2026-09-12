@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   POD_BATCH_COUNTS,
+  POD_STYLE_PLANNING_OPTIONS,
   EMPTY_POD_BUSINESS_FIELDS,
   buildPromptV1,
   businessFieldsForApi,
@@ -17,11 +18,29 @@ import {
   groupPodStyleRows,
   isActiveBatchStatus,
   isPodBatchCount,
+  isPodStylePlanning,
   isPristineCreativeEdit,
   listingFieldsForApi,
+  normalizeStylePlanning,
   podBatchStatusLabel,
   podBatchStatusDetail,
 } from "./podCustomizationModel.ts";
+
+test("样式规划 fixed two-choice: unknown or legacy free text falls back to unselected", () => {
+  assert.deepEqual([...POD_STYLE_PLANNING_OPTIONS], ["全覆盖", "半覆盖"]);
+
+  assert.equal(normalizeStylePlanning("全覆盖"), "全覆盖");
+  assert.equal(normalizeStylePlanning("半覆盖"), "半覆盖");
+
+  // 旧草稿里的自由文本不再合法，视为未选择，交给用户重新选。
+  assert.equal(normalizeStylePlanning("花纹铺满包身、提手处留白"), "");
+  assert.equal(normalizeStylePlanning(""), "");
+  assert.equal(normalizeStylePlanning(undefined), "");
+  assert.equal(normalizeStylePlanning(null), "");
+
+  assert.equal(isPodStylePlanning("全覆盖"), true);
+  assert.equal(isPodStylePlanning("全铺满"), false);
+});
 
 test("POD style results present the lifestyle panel as the primary image and hero as material", () => {
   const rows = groupPodStyleRows({

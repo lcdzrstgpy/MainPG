@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 from typing import Any
 
@@ -16,12 +17,15 @@ from ...session import Actor, actor_from_authorization, require_permission
 from .contracts import (
     BatchCreate,
     BatchRetryFailedCreate,
+    BriefFieldRequest,
     CalibrationUpdate,
     DirectListingTrialCreate,
     ExportSelectionUpdate,
     ManualTitleUpdate,
     RegenerateItemCreate,
     SceneOptimizationCreate,
+    SpecCardPreviewRequest,
+    SpecCardReprintRequest,
 )
 from .billing_contract import PodBillingCoordinator
 from .errors import safe_error_message
@@ -39,6 +43,7 @@ def create_router(
     ai_runtime: PodAiRuntime,
     *,
     title_runtime: Any | None = None,
+    brief_runtime: Any | None = None,
     billing_coordinator: PodBillingCoordinator | None = None,
     start_workers: bool = True,
 ) -> APIRouter:
@@ -48,6 +53,7 @@ def create_router(
         asset_root,
         ai_runtime,
         title_runtime=title_runtime,
+        brief_runtime=brief_runtime,
         billing_coordinator=billing_coordinator,
         start_workers=start_workers,
     )
@@ -114,6 +120,13 @@ def create_router(
         permitted(actor, "pod_customization.create")
         return _call(service.create_batch, actor, body, enqueue=start_workers)
 
+    @router.post("/brief/fields")
+    def generate_brief_fields(
+        body: BriefFieldRequest, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        return _call(service.generate_brief_fields, actor, body)
+
     @router.post("/direct-listing-trials")
     def run_direct_listing_trial(
         body: DirectListingTrialCreate, actor: Actor = Depends(actor_from_authorization)
@@ -132,6 +145,38 @@ def create_router(
     def get_batch(batch_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
         permitted(actor, "pod_customization.read")
         return _call(service.get_batch, actor, batch_id)
+
+    @router.post("/spec-card/preview")
+    def preview_spec_card(
+        body: SpecCardPreviewRequest, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        """规格卡同源预览：只渲染，不落库、不计费（方案 §7）。"""
+
+        permitted(actor, "pod_customization.read")
+        base_content = (
+            _call(service.template_spec_card_base, actor, body.base_template_id)
+            if body.base_template_id
+            else None
+        )
+        jpeg = _call(service.preview_spec_card, body.config_mapping(), base_content)
+        return {"image": f"data:image/jpeg;base64,{base64.b64encode(jpeg).decode('ascii')}"}
+
+    @router.post("/batches/{batch_id}/spec-card/reprint")
+    def reprint_batch_spec_card(
+        batch_id: str,
+        body: SpecCardReprintRequest,
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        """终态批次「保存并全批重印」：0 provider 调用，逐款独立（方案 §8）。"""
+
+        permitted(actor, "pod_customization.create")
+        return _call(
+            service.reprint_batch_spec_card,
+            actor,
+            batch_id,
+            body.config_mapping(),
+            style_index=body.style_index,
+        )
 
     @router.delete("/batches/{batch_id}")
     def delete_batch(batch_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:

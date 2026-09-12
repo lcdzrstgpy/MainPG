@@ -241,3 +241,32 @@ test("old drafts without style_planning load with it backfilled as empty string"
   const loaded = loadPodCustomizationDraft("account-a", "workspace-a", storage);
   assert.equal(loaded.state.business_fields.style_planning, "");
 });
+
+test("v3 drafts saved before brief history load with an empty brief_history instead of being discarded", () => {
+  const storage = new MemoryStorage();
+  const state = createEmptyPodCustomizationDraft();
+  const legacy = JSON.parse(JSON.stringify(state)) as Record<string, unknown>;
+  delete legacy["brief_history"];
+  (legacy["business_fields"] as Record<string, unknown>)["product_name"] = "保留商品";
+  storage.setItem(podCustomizationDraftStorageKey("account-a", "workspace-a"), JSON.stringify(legacy));
+
+  const loaded = loadPodCustomizationDraft("account-a", "workspace-a", storage);
+
+  assert.equal(loaded.error, undefined);
+  assert.equal(loaded.state.business_fields.product_name, "保留商品");
+  assert.deepEqual(loaded.state.brief_history, []);
+});
+
+test("brief history written into a draft is read back unchanged", () => {
+  const storage = new MemoryStorage();
+  const state = createEmptyPodCustomizationDraft();
+  state.brief_history = [{
+    id: "brief-1",
+    input: "美式复古托特包",
+    fields: { ...state.business_fields, product_name: "托特包", style_keywords: "仙人掌、纳瓦霍几何" },
+    created_at: "2026-09-12T01:00:00.000Z",
+  }];
+
+  assert.deepEqual(savePodCustomizationDraft("account-a", "workspace-a", state, storage), { ok: true });
+  assert.deepEqual(loadPodCustomizationDraft("account-a", "workspace-a", storage).state.brief_history, state.brief_history);
+});

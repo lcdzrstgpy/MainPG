@@ -1,4 +1,5 @@
 import { type FormEvent, useCallback, useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 
 import {
   loadMyFeedback,
@@ -41,6 +42,7 @@ export function FeedbackPanel() {
   const [history, setHistory] = useState<FeedbackHistoryItem[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState("");
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   const loadHistory = useCallback(async () => {
     setHistoryLoading(true);
@@ -58,6 +60,17 @@ export function FeedbackPanel() {
   useEffect(() => {
     void loadHistory();
   }, [loadHistory]);
+
+  // 打开抽屉时重新拉取，避免展示过期状态；Esc 关闭。
+  useEffect(() => {
+    if (!historyOpen) return;
+    void loadHistory();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setHistoryOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [historyOpen, loadHistory]);
 
   const handleImagePick = useCallback(
     (files: FileList | null) => {
@@ -227,34 +240,52 @@ export function FeedbackPanel() {
         </button>
         {success && <span className="feedback-state is-success">{success}</span>}
         {error && <span className="feedback-state is-error">{error}</span>}
+        <button type="button" className="feedback-history-trigger" onClick={() => setHistoryOpen(true)}>
+          我的反馈
+          {history.length > 0 && <b>{history.length}</b>}
+        </button>
       </div>
 
-      <div className="feedback-history">
-        <div className="feedback-history-title">我的反馈</div>
-        {historyLoading && <p className="feedback-history-state">正在加载…</p>}
-        {historyError && <p className="feedback-history-state is-error">{historyError}</p>}
-        {!historyLoading && !historyError && history.length === 0 && (
-          <p className="feedback-history-state">还没有提交过反馈</p>
-        )}
-        {!historyLoading && history.length > 0 && (
-          <ul className="feedback-list">
-            {history.map((item) => (
-              <li key={item.feedback_id} className="feedback-list-item">
-                <div className="feedback-list-head">
-                  <span className={`feedback-status is-${item.status}`}>
-                    {item.status === "new" ? "待处理" : item.status === "processing" ? "处理中" : "已解决"}
-                  </span>
-                  <span className="feedback-list-category">{feedbackCategoryNames[item.category] ?? item.category}</span>
-                  <span className="feedback-list-time">{formatFeedbackTime(item.created_at)}</span>
-                  {item.image_count > 0 && <span className="feedback-list-images">含 {item.image_count} 张图</span>}
-                </div>
-                <p className="feedback-list-content">{item.content}</p>
-                {item.admin_note && <p className="feedback-list-note">官方回复：{item.admin_note}</p>}
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+      {historyOpen && createPortal(
+        <div className="feedback-drawer-root">
+          <div className="feedback-drawer-mask" onClick={() => setHistoryOpen(false)} />
+          <aside className="feedback-drawer" role="dialog" aria-modal="true" aria-label="我的反馈">
+            <header className="feedback-drawer-head">
+              <div>
+                <h2>我的反馈</h2>
+                <p>共 {history.length} 条 · 仅保留最近 14 天</p>
+              </div>
+              <button type="button" className="feedback-drawer-close" onClick={() => setHistoryOpen(false)} aria-label="关闭">×</button>
+            </header>
+            <div className="feedback-drawer-body">
+              {historyLoading && <p className="feedback-history-state">正在加载…</p>}
+              {historyError && <p className="feedback-history-state is-error">{historyError}</p>}
+              {!historyLoading && !historyError && history.length === 0 && (
+                <p className="feedback-history-state">还没有提交过反馈</p>
+              )}
+              {!historyLoading && history.length > 0 && (
+                <ul className="feedback-list">
+                  {history.map((item) => (
+                    <li key={item.feedback_id} className="feedback-list-item">
+                      <div className="feedback-list-head">
+                        <span className={`feedback-status is-${item.status}`}>
+                          {item.status === "new" ? "待处理" : item.status === "processing" ? "处理中" : "已解决"}
+                        </span>
+                        <span className="feedback-list-category">{feedbackCategoryNames[item.category] ?? item.category}</span>
+                        <span className="feedback-list-time">{formatFeedbackTime(item.created_at)}</span>
+                        {item.image_count > 0 && <span className="feedback-list-images">含 {item.image_count} 张图</span>}
+                      </div>
+                      <p className="feedback-list-content">{item.content}</p>
+                      {item.admin_note && <p className="feedback-list-note">官方回复：{item.admin_note}</p>}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </aside>
+        </div>,
+        document.body,
+      )}
     </article>
   );
 }

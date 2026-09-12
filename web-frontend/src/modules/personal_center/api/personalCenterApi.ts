@@ -208,6 +208,45 @@ export function changeAccountPassword(input: {
   });
 }
 
+export type ImageModelChoice = {
+  value: string;
+  label: string;
+};
+
+export type ImageModelSetting = {
+  ok: boolean;
+  model: string;
+  choices: ImageModelChoice[];
+};
+
+/** 个人中心「模型选择」：读取当前生图模型与可选项（只含模型名，不含上游凭据）。 */
+export function loadImageModel() {
+  return httpJson<ImageModelSetting>("/desktop/basic-settings/image-model");
+}
+
+/** 切换生图模型；只改模型字段，不影响系统配置的其他内容。 */
+export function saveImageModel(model: string) {
+  return httpJson<{ ok: boolean; model: string; message: string }>(
+    "/desktop/basic-settings/image-model",
+    { method: "PUT", body: { model } },
+  );
+}
+
+export type PodImageModelSetting = ImageModelSetting;
+
+/** 读取 POD 独立生图模型，不跟随 AI处理 的模型配置。 */
+export function loadPodImageModel() {
+  return httpJson<PodImageModelSetting>("/desktop/basic-settings/pod-image-model");
+}
+
+/** 切换 POD 独立生图模型。 */
+export function savePodImageModel(model: string) {
+  return httpJson<{ ok: boolean; model: string; message: string }>(
+    "/desktop/basic-settings/pod-image-model",
+    { method: "PUT", body: { model } },
+  );
+}
+
 // ---- 意见反馈 ----
 export type FeedbackCategory = "bug" | "suggestion" | "other";
 export type FeedbackStatus = "new" | "processing" | "resolved";

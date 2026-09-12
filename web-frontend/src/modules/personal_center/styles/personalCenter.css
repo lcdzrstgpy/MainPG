@@ -1485,6 +1485,76 @@
   }
 }
 
+/* 生图模型选择面板 */
+.model-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.model-field > span {
+  color: var(--theme-text-muted, #64748b);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.model-field select {
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--theme-module-border, #d8e3ee);
+  border-radius: 10px;
+  background: var(--theme-module-surface, #fff);
+  color: var(--theme-text-secondary, #334155);
+  font-size: 13px;
+  font-weight: 700;
+  outline: none;
+}
+
+.model-field select:focus {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12);
+}
+
+.model-field select:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.model-field-hint {
+  display: block;
+  margin-top: 6px;
+  color: var(--theme-text-muted, #64748b);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* 生图模型选择面板：两个模型并排，避免单列过宽留白 */
+.model-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.model-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--theme-module-border, #d8e3ee);
+  border-radius: 12px;
+  background: var(--theme-module-surface, #fff);
+}
+
+.model-block .version-actions {
+  margin-top: auto;
+}
+
+@media (max-width: 640px) {
+  .model-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* ---- 意见反馈 ---- */
 .feedback-card { margin-top: 16px; }
 
@@ -1549,8 +1619,59 @@
 .feedback-state.is-success { color: var(--theme-success, #16a34a); }
 .feedback-state.is-error { color: var(--theme-danger, #dc2626); }
 
-.feedback-history { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--theme-module-border, #e5edf5); }
-.feedback-history-title { color: var(--theme-text-secondary, #334155); font-size: 13px; font-weight: 700; margin-bottom: 10px; }
+.feedback-history-trigger {
+  display: inline-flex; align-items: center; gap: 6px;
+  margin-left: auto; min-height: 36px; padding: 0 16px;
+  border: 1px solid var(--theme-module-border, #c7d6e6); border-radius: 10px;
+  background: var(--theme-module-surface, #fff); color: var(--theme-text-secondary, #334155);
+  font-size: 13px; font-weight: 700; cursor: pointer;
+}
+.feedback-history-trigger:hover { border-color: #3b82f6; color: #2563eb; }
+.feedback-history-trigger b {
+  min-width: 18px; padding: 1px 6px; border-radius: 999px;
+  background: rgba(59, 130, 246, 0.12); color: #2563eb; font-size: 11px; text-align: center;
+}
+
+/* 我的反馈抽屉 */
+.feedback-drawer-root {
+  position: fixed; inset: 0; z-index: 1200;
+  display: flex; justify-content: flex-end;
+}
+.feedback-drawer-mask {
+  position: absolute; inset: 0;
+  background: rgba(13, 32, 52, 0.36); backdrop-filter: blur(1px);
+}
+.feedback-drawer {
+  position: relative; z-index: 1;
+  display: flex; flex-direction: column;
+  width: min(480px, 94vw); max-width: 100%;
+  background: var(--theme-module-surface, #fbfdff);
+  border-left: 1px solid var(--theme-module-border, #d8e7f2);
+  box-shadow: -18px 0 48px rgba(23, 61, 92, 0.18);
+  animation: feedback-drawer-in 0.22s ease-out;
+}
+@keyframes feedback-drawer-in {
+  from { transform: translateX(24px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+.feedback-drawer-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 14px;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--theme-module-border, #d8e7f2);
+}
+.feedback-drawer-head h2 {
+  margin: 0 0 4px; color: var(--theme-text-primary, #172b44); font-size: 16px; font-weight: 800;
+}
+.feedback-drawer-head p { margin: 0; color: var(--theme-text-muted, #64748b); font-size: 12px; }
+.feedback-drawer-close {
+  flex: none; width: 32px; height: 32px;
+  border: 1px solid var(--theme-module-border, #cfe0eb); border-radius: 50%;
+  background: var(--theme-module-surface, #fff); color: var(--theme-text-muted, #526a82);
+  font-size: 18px; line-height: 1; cursor: pointer;
+}
+.feedback-drawer-close:hover { border-color: #82c9ef; color: #2563eb; }
+.feedback-drawer-body { flex: 1; overflow-y: auto; padding: 16px 18px 24px; }
+
 .feedback-history-state { color: var(--theme-text-muted, #94a3b8); font-size: 12px; margin: 6px 0; }
 .feedback-history-state.is-error { color: var(--theme-danger, #dc2626); }
 .feedback-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
@@ -1582,4 +1703,3 @@
   .feedback-meta-row { flex-direction: column; gap: 10px; }
   .feedback-list-time { margin-left: 0; width: 100%; }
 }
-

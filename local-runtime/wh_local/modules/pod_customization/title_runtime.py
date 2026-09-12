@@ -25,6 +25,14 @@ RETRY_BACKOFF_SECONDS = 0.5
 TITLE_MIN_LENGTH = 80
 TITLE_MAX_LENGTH = 200
 _TITLE_TRAILING_CONNECTORS = frozenset({"and", "or", "with", "for", "of", "in", "to"})
+# 上架标题必须是名词短语：出现独立的第二分句（典型是 "… Tote Bag - This quilted tote
+# bag features …"）就判不合格。只匹配首字母大写的独立主语代词，避免误伤小写用法
+# （如 "designed to fit it all"）。
+_TITLE_SENTENCE_PRONOUN = re.compile(r"\b(?:This|These|Those|They|We|It)\s+[A-Za-z]+")
+# 代词紧跟在介词后面时仍在名词短语内（"Tote for This Season"），不算独立分句。
+_TITLE_PRONOUN_PREPOSITIONS = frozenset(
+    {"for", "in", "of", "on", "with", "to", "from", "at", "by", "about", "than", "into", "over", "under", "per"}
+)
 _RESULT_KEYS = frozenset(
     {"title", "english_title", "description", "visual_theme", "motif_keywords", "color_keywords"}
 )
@@ -148,6 +156,12 @@ def validate_title_result(
         raise ValueError("title must contain English alphabetic tokens")
     if _incomplete_title_ending(title):
         raise ValueError("title has an incomplete ending")
+    # 由 english_title + description 兜底拼出来的标题本身就带 " - <描述句>"，
+    # 不能按自述式句子拒掉，否则会把可救回的标题变成失败项。
+    if not title.startswith(_assembled_title_prefix(result.english_title)):
+        clause = _self_referential_clause(title)
+        if clause:
+            raise ValueError(f"title is a sentence, not a noun phrase: {clause}")
     prohibited = _prohibited_term(title)
     if prohibited:
         raise ValueError(f"title contains prohibited term: {prohibited}")
@@ -368,23 +382,39 @@ def _messages_for_request(request: PodTitleRequest, *, rejection_feedback: str) 
         "contract": {
             "market": "United States",
             "language": "English ASCII only",
-            "title_length": "80-195 ASCII characters after normalized whitespace; always at least 80, so if a draft is shorter, enrich it with concrete image-grounded detail until it reaches 80+",
+            "title_length": "80-195 ASCII characters after normalized whitespace; always at least 80, so if a draft is shorter, enrich it with concrete image-grounded detail until it reaches 80+, and never let it run past 195 — trim the trailing qualifier instead",
             "prohibited_terms": sorted(_PROHIBITED_TERMS),
             "title_composition": (
                 "Write a complete natural US-English noun phrase with a leading visual segment that names a "
                 "visible style-specific visual theme, motif, or color. Avoid reproducing an accepted title "
-                "exactly. Avoid dangling connectors and dangling punctuation."
+                "exactly, and avoid reusing its sentence skeleton: change the clause order, the connective "
+                "wording, and the closing qualifier instead of keeping the same structure and swapping one "
+                "word. Write one noun phrase only: never append a second clause or a self-referential sentence "
+                "such as a dash followed by 'This ... features ...'. "
+                "Avoid dangling connectors and dangling punctuation."
+            ),
+            "batch_variety": (
+                "Titles in one batch must not read as clones of one another. Read accepted_titles first, then "
+                "deliberately pick a sentence pattern that none of them uses: move the use-case clause, the "
+                "detail clause, and the closing qualifier to different positions, and paraphrase any wording "
+                "that already appears in an accepted title instead of repeating the same tail again. Keep every "
+                "clause grounded in this image and the supplied business fields."
             ),
             "title_generation_recipe": (
                 "Plan silently before writing. First choose a distinct visual lead of two to five meaningful words "
                 "that is visibly grounded in this image. Then build the title in this order: distinct visual lead; "
                 "accurate product type; one or two visible or supplied factual details such as motif, material, "
-                "color, or use; a complete final qualifier. Aim for 110-150 ASCII characters and never exceed 195. "
+                "color, or use; a complete final qualifier. Before writing, compare that plan with accepted_titles "
+                "and re-plan any clause whose wording or position they already use. "
+                "Aim for 110-150 ASCII characters. Treat the length budget as a hard gate: a draft below 80 or "
+                "above 195 characters is rejected outright, so trim the trailing qualifier before answering "
+                "instead of letting the title run long. "
                 "Never use any word listed in prohibited_terms (for example 'perfect', 'best', 'ultimate', "
                 "'premium', 'luxury', 'guaranteed') anywhere in title, english_title, or description, even as a "
                 "substring of a longer word. "
                 "Silently check before output that the title is not an exact duplicate of an "
-                "accepted title, contains no prohibited term, is at least 80 ASCII characters, and has no dangling "
+                "accepted title, does not retell an accepted title with only its visual words swapped, contains no "
+                "prohibited term, is at least 80 ASCII characters, and has no dangling "
                 "connector, punctuation, or "
                 "unbalanced bracket. Do not output this plan or a checklist."
             ),
@@ -411,7 +441,8 @@ def _messages_for_request(request: PodTitleRequest, *, rejection_feedback: str) 
             "listing title and must be an ASCII 80-195-character complete natural noun phrase. Begin it with a "
             "leading visual segment grounded in the image. Follow title_generation_recipe exactly and aim for 110-150 "
             "characters. End it with a complete noun, never a dangling connector or punctuation. Do not reproduce an "
-            "accepted title exactly. Generate title, english_title, and description together in this single response. Return "
+            "accepted title exactly, and vary the sentence pattern from accepted_titles so this title does not read as "
+            "a clone of another style. Generate title, english_title, and description together in this single response. Return "
             "exactly one JSON object, no Markdown or extra keys."
         ),
     }
@@ -474,6 +505,23 @@ def _normalize_title(value: Any) -> str:
     return _normalized_text(value)
 
 
+def _assembled_title_prefix(english_title: str) -> str:
+    """Separator used when `_display_listing_title` rescues a title from the provider copy."""
+    return f"{english_title} - "
+
+
+def _self_referential_clause(title: str) -> str:
+    """Return the self-referential clause that breaks the noun-phrase contract, else ''."""
+    for match in _TITLE_SENTENCE_PRONOUN.finditer(title):
+        preceding = title[: match.start()].rstrip()
+        if not preceding:
+            return match.group(0)
+        previous = preceding.rsplit(" ", 1)[-1].strip(" ,;:-").casefold()
+        if previous not in _TITLE_PRONOUN_PREPOSITIONS:
+            return match.group(0)
+    return ""
+
+
 def _display_listing_title(title: str, english_title: str, description: str) -> str:
     """Prefer the provider title, but recover a safe-length English display title from its copy."""
     if title.isascii() and TITLE_MIN_LENGTH <= len(title) <= TITLE_MAX_LENGTH:
@@ -481,10 +529,11 @@ def _display_listing_title(title: str, english_title: str, description: str) -> 
 
     if not english_title.isascii() or not description.isascii():
         return title
-    prefix = f"{english_title} - "
+    prefix = _assembled_title_prefix(english_title)
+    # 只在真正的句末切分：把 ":" / ";" 当边界会拼出以冒号结尾的断句标题。
     candidates = (
         f"{prefix}{description[:match.end()]}"
-        for match in re.finditer(r"[.!?;:]", description)
+        for match in re.finditer(r"[.!?]", description)
     )
     valid_candidates = (
         candidate
@@ -507,7 +556,7 @@ def _incomplete_title_ending(value: str) -> bool:
     words = re.findall(r"[A-Za-z]+", stripped)
     return (
         not stripped
-        or stripped[-1] in {",", "-"}
+        or stripped[-1] in {",", "-", ":", ";"}
         or any(
             stripped.count(left) != stripped.count(right)
             for left, right in (("(", ")"), ("[", "]"), ("{", "}"))

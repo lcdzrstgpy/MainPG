@@ -30,8 +30,18 @@ TEXT_MODEL_FALLBACK_ORDER = ("gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4-mini", "g
 IMAGE_MODEL = "image_gpt"
 REFERENCE_IMAGE_MODEL = "image_gpt"
 REFERENCE_IMAGE_MODEL_1K = "gpt-image-2-1k"
-# 产品处理出图优先质感：默认固定使用 gpt-image-2-2k，避免 balanced 轮巡回 1k。
-IMAGE_MODEL_POOL = ("image_gpt",)
+# 生图模型的客户端白名单：桌面端只允许在这两个名字之间切换，其它历史值一律回落。
+# 上游端点与凭据仍由服务端持有，客户端只传模型名。
+IMAGE_MODEL_CHOICES = ("image_gpt", "image_gpt_2.5")
+_IMAGE_MODEL_ALIASES = {
+    "image_gpt": "image_gpt",
+    "image_gpt_2.5": "image_gpt_2.5",
+    # 旧接口只对应 GPT-Image-2，历史/误配的写法统一收敛到 image_gpt。
+    "gpt-image-2": "image_gpt",
+    "gpt-image-2-1k": "image_gpt",
+    "gpt-image-2-2k": "image_gpt",
+    "gpt-image-2-4k": "image_gpt",
+}
 IMAGE_SIZE = "2048x2048"
 REFERENCE_IMAGE_SIZE_1K = "1024x1024"
 IMAGE_QUALITY = "medium"
@@ -61,6 +71,11 @@ def register_system_config_db_path(db_path: str | Path) -> None:
     _system_config_db_path = str(db_path)
 
 
+def registered_system_config_db_path() -> str | None:
+    """返回应用组合根注册的系统配置数据库路径。"""
+    return _system_config_db_path
+
+
 def _try_system_runtime_config() -> Any | None:
     """尝试从 BasicSettings 数据库加载 RuntimeSystemConfig，失败返回 None。"""
     db_path = _system_config_db_path
@@ -87,12 +102,15 @@ def resolve_ai_provider() -> dict[str, Any]:
     text_model = TEXT_MODEL
 
     # 图片 AI（仅 api_key 可覆盖，模型写死）
-    image_model = _first_truthy(
-        os.environ.get("WH_IMAGE_AI_MODEL"),
-        (sys_cfg and sys_cfg.image_ai.model),
-        IMAGE_MODEL,
+    image_model = normalize_image_model(
+        _first_truthy(
+            os.environ.get("WH_IMAGE_AI_MODEL"),
+            (sys_cfg and sys_cfg.image_ai.model),
+            IMAGE_MODEL,
+        )
     )
-    reference_image_model = REFERENCE_IMAGE_MODEL
+    # 参考图编辑与主生图必须用同一个模型，否则切换后两条链路走不同上游。
+    reference_image_model = image_model
     premium_image_model = PREMIUM_IMAGE_MODEL
     premium_image_size = PREMIUM_IMAGE_SIZE
 
@@ -128,7 +146,7 @@ def resolve_ai_provider() -> dict[str, Any]:
         "reference_image_model": reference_image_model,
         "reference_image_model_1k": REFERENCE_IMAGE_MODEL_1K,
         "reference_image_size_1k": REFERENCE_IMAGE_SIZE_1K,
-        "image_models": list(IMAGE_MODEL_POOL),
+        "image_models": [image_model],
         "image_size": os.environ.get("WH_AI_IMAGE_SIZE", IMAGE_SIZE).strip(),
         "image_quality": os.environ.get("WH_AI_IMAGE_QUALITY", IMAGE_QUALITY).strip(),
         # 精品模式 4K 四宫格配置（环境变量可覆盖，便于运营按中转实际能力调整）
@@ -171,6 +189,11 @@ def _try_system_cos_public() -> dict[str, str]:
         return {"bucket": str(cos.get("bucket", "")).strip(), "region": str(cos.get("region", "")).strip()}
     except Exception:
         return {}
+
+
+def normalize_image_model(value: Any) -> str:
+    """把任意来源的图片模型名收敛到客户端白名单，未知值回到默认 image_gpt。"""
+    return _IMAGE_MODEL_ALIASES.get(str(value or "").strip().lower(), IMAGE_MODEL)
 
 
 def _first_truthy(*values: Any) -> str:

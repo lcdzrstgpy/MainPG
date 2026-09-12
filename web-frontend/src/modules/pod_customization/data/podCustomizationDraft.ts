@@ -1,4 +1,4 @@
-import type { PodBusinessFieldsDraft, PodListingFieldsDraft, PodTemplate } from "../types";
+import type { PodBriefHistoryItem, PodBusinessFieldsDraft, PodListingFieldsDraft, PodTemplate, SpecCardConfig } from "../types";
 
 export const POD_CUSTOMIZATION_DRAFT_VERSION = 3;
 const PREVIOUS_POD_CUSTOMIZATION_DRAFT_VERSION = 2;
@@ -19,12 +19,16 @@ export type PodCustomizationDraft = {
   version: typeof POD_CUSTOMIZATION_DRAFT_VERSION;
   business_fields: PodBusinessFieldsDraft;
   listing_fields: PodListingFieldsDraft;
+  // 规格卡配置随草稿按 account/workspace 维度保存在本地，随批次提交时冻结。
+  spec_card: SpecCardConfig;
   batch_count: number;
   custom_count_mode: boolean;
   custom_count_input: string;
   selected_template_id: string;
   current_batch_edit: string | null;
   system_templates: PodSystemTemplate[];
+  // 智能前置层「最近生成」历史：与业务字段同一草稿生命周期，缺失/损坏时归一化为 []。
+  brief_history: PodBriefHistoryItem[];
 };
 
 export type PodDraftLoadResult = { state: PodCustomizationDraft; error?: string };
@@ -57,6 +61,34 @@ const EMPTY_LISTING_FIELDS: PodListingFieldsDraft = {
   skus: [{ name: "", length_cm: "", width_cm: "", height_cm: "", weight_g: "" }],
 };
 
+// 与 podCustomizationModel.EMPTY_SPEC_CARD 同形的空白表（4 行 × 2 列）。
+// 这里刻意本地实现，不 import 模型模块：本文件会被 node --experimental-strip-types
+// 直接加载（podCustomizationDraft.test.ts），无扩展名的运行时导入在 Node ESM 下无法解析。
+const EMPTY_SPEC_CARD_DRAFT: SpecCardConfig = {
+  enabled: true,
+  style: "light",
+  corner: "bottom-right",
+  cells: Array.from({ length: 4 }, () => ["", ""]),
+};
+
+function createEmptySpecCard(): SpecCardConfig {
+  return { ...EMPTY_SPEC_CARD_DRAFT, cells: EMPTY_SPEC_CARD_DRAFT.cells.map((row) => [...row]) };
+}
+
+function cloneSpecCardConfig(config: SpecCardConfig): SpecCardConfig {
+  return { ...config, cells: config.cells.map((row) => [...row]) };
+}
+
+function isSpecCardConfig(value: unknown): value is SpecCardConfig {
+  return isRecord(value)
+    && typeof value.enabled === "boolean"
+    && (value.style === "light" || value.style === "dark")
+    && (value.corner === "bottom-right" || value.corner === "bottom-left"
+      || value.corner === "top-right" || value.corner === "top-left")
+    && Array.isArray(value.cells)
+    && value.cells.every((row) => Array.isArray(row) && row.every((cell) => typeof cell === "string"));
+}
+
 export function podCustomizationDraftStorageKey(accountId: string, workspaceId: string): string {
   return `mainpg:pod-customization:v${POD_CUSTOMIZATION_DRAFT_VERSION}:${encodeURIComponent(accountId)}:${encodeURIComponent(workspaceId)}`;
 }
@@ -74,12 +106,14 @@ export function createEmptyPodCustomizationDraft(): PodCustomizationDraft {
     version: POD_CUSTOMIZATION_DRAFT_VERSION,
     business_fields: { ...EMPTY_BUSINESS_FIELDS },
     listing_fields: { ...EMPTY_LISTING_FIELDS },
+    spec_card: createEmptySpecCard(),
     batch_count: 20,
     custom_count_mode: false,
     custom_count_input: "20",
     selected_template_id: "",
     current_batch_edit: null,
     system_templates: [],
+    brief_history: [],
   };
 }
 
@@ -203,13 +237,41 @@ function cloneDraft(state: PodCustomizationDraft): PodCustomizationDraft {
       ...state.listing_fields,
       skus: state.listing_fields.skus.map((sku) => ({ ...sku })),
     },
+    // v3 之前的草稿没有 spec_card，缺失/损坏时退回空白表，而不是丢弃整份草稿。
+    spec_card: specCardOrDefault(state.spec_card),
     batch_count: state.batch_count,
     custom_count_mode: state.custom_count_mode,
     custom_count_input: state.custom_count_input,
     selected_template_id: state.selected_template_id,
     current_batch_edit: state.current_batch_edit,
     system_templates: state.system_templates.map(cloneSystemTemplate),
+    // 后加的键：已存在的旧草稿缺失/损坏时退化为 []，而不是丢弃整份草稿。
+    brief_history: briefHistoryOrDefault(state.brief_history),
   };
+}
+
+function briefHistoryOrDefault(value: unknown): PodBriefHistoryItem[] {
+  return isBriefHistory(value) ? value.map(cloneBriefHistoryItem) : [];
+}
+
+function cloneBriefHistoryItem(item: PodBriefHistoryItem): PodBriefHistoryItem {
+  return { ...item, fields: { ...item.fields } };
+}
+
+function isBriefHistory(value: unknown): value is PodBriefHistoryItem[] {
+  return Array.isArray(value) && value.every(isBriefHistoryItem);
+}
+
+function isBriefHistoryItem(value: unknown): value is PodBriefHistoryItem {
+  return isRecord(value)
+    && typeof value.id === "string"
+    && typeof value.input === "string"
+    && isBusinessFields(value.fields)
+    && typeof value.created_at === "string";
+}
+
+function specCardOrDefault(value: unknown): SpecCardConfig {
+  return isSpecCardConfig(value) ? cloneSpecCardConfig(value) : createEmptySpecCard();
 }
 
 function cloneSystemTemplate(template: PodSystemTemplate): PodSystemTemplate {
@@ -232,13 +294,17 @@ function isPodCustomizationDraft(value: unknown): value is PodCustomizationDraft
   if (!isRecord(value) || value.version !== POD_CUSTOMIZATION_DRAFT_VERSION) return false;
   return isBusinessFields(value.business_fields)
     && isListingFields(value.listing_fields)
+    // spec_card 为后加的键：已存在的 v3 草稿缺失该键时视为空白表（cloneDraft 归一化），不丢弃草稿。
+    && (value.spec_card === undefined || isSpecCardConfig(value.spec_card))
     && typeof value.batch_count === "number"
     && typeof value.custom_count_mode === "boolean"
     && typeof value.custom_count_input === "string"
     && typeof value.selected_template_id === "string"
     && (typeof value.current_batch_edit === "string" || value.current_batch_edit === null)
     && Array.isArray(value.system_templates)
-    && value.system_templates.every(isPodSystemTemplate);
+    && value.system_templates.every(isPodSystemTemplate)
+    // brief_history 为后加的键：缺失时视为 []（cloneDraft 归一化），不丢弃旧草稿。
+    && (value.brief_history === undefined || isBriefHistory(value.brief_history));
 }
 
 function isBusinessFields(value: unknown): value is PodBusinessFieldsDraft {
@@ -273,7 +339,7 @@ type PreviousPodListingFieldsDraft = Omit<PodListingFieldsDraft, "skus"> & {
   skus: PreviousPodSkuDraft[];
 };
 
-type PreviousPodCustomizationDraft = Omit<PodCustomizationDraft, "version" | "listing_fields"> & {
+type PreviousPodCustomizationDraft = Omit<PodCustomizationDraft, "version" | "listing_fields" | "spec_card" | "brief_history"> & {
   version: typeof PREVIOUS_POD_CUSTOMIZATION_DRAFT_VERSION;
   listing_fields: PreviousPodListingFieldsDraft;
 };
@@ -290,7 +356,7 @@ type LegacyPodListingFieldsDraft = {
   sku_names?: string[];
 };
 
-type LegacyPodCustomizationDraft = Omit<PodCustomizationDraft, "version" | "listing_fields"> & {
+type LegacyPodCustomizationDraft = Omit<PodCustomizationDraft, "version" | "listing_fields" | "spec_card" | "brief_history"> & {
   version: typeof LEGACY_POD_CUSTOMIZATION_DRAFT_VERSION;
   listing_fields: LegacyPodListingFieldsDraft;
 };
@@ -368,6 +434,10 @@ function migrateDraft(legacy: PreviousPodCustomizationDraft | LegacyPodCustomiza
     return {
       ...rest,
       version: POD_CUSTOMIZATION_DRAFT_VERSION,
+      // 旧草稿没有规格卡配置，迁移时补一张空白表（= 未配置，提交时会被必填拦截）。
+      spec_card: createEmptySpecCard(),
+      // 旧草稿没有智能填写历史，迁移时补空数组。
+      brief_history: [],
       listing_fields: {
         title_mode: previousListing.title_mode,
         declared_price: previousListing.declared_price,
@@ -382,6 +452,8 @@ function migrateDraft(legacy: PreviousPodCustomizationDraft | LegacyPodCustomiza
   return {
     ...rest,
     version: POD_CUSTOMIZATION_DRAFT_VERSION,
+    spec_card: createEmptySpecCard(),
+    brief_history: [],
     listing_fields: {
       title_mode: legacyListing.title_mode,
       declared_price: legacyListing.declared_price,

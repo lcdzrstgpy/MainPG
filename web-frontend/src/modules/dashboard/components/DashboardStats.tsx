@@ -153,8 +153,8 @@ function DashboardTrendChart({ points }: { points: DashboardTrendPoint[] }) {
           <g key={`${mode}-${days}`}>
             {activeSeries.map((s) => {
               const pts = s.values.map((v, i) => ({ x: xAt(i), y: yAt(v) }));
-              // 空数据系列不渲染：否则 area 会以 " L" 开头（无 M 移动命令），触发
-              // SVG "Expected moveto path command" 控制台报错。
+              // 无数据时 smoothPath 返回空串，拼接出的 d（如 " L48.00 240.00 ..."）
+              // 以 L 开头属于非法 SVG 路径，浏览器会报 "Expected moveto path command"。
               if (pts.length === 0) return null;
               const line = smoothPath(pts, pad.top + plotH);
               const lastX = pts[pts.length - 1].x;

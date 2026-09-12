@@ -1,7 +1,7 @@
 export type CollectionMode = "keyword" | "image";
 export type SelectionScope = "exact" | "divergent";
 export type TargetSite = "US" | "CO" | "EC";
-export type CollectionPlatform = "1688" | "taobao" | "1688+taobao";
+export type CollectionPlatform = "1688" | "taobao";
 
 export type DailySelectionCriteria = {
   keywords: string[];

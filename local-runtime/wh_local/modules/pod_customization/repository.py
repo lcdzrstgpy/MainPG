@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from collections.abc import Mapping
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -2493,6 +2494,83 @@ class PodCustomizationRepository:
                  _safe_error(error_message), fingerprint, pattern_asset_id, now),
             )
             self._refresh_counts(connection, batch["batch_id"], now, execution_epoch)
+
+    def update_batch_spec_card(self, batch_id: str, spec_card_mapping: Mapping[str, Any] | None) -> bool:
+        """把规格卡配置写回批次快照的 ``listing_fields_json.spec_card``（其余键原样保留）。
+
+        方案 §10.3 D6：配置随批次冻结在既有 JSON 快照里，零 DB 迁移。返回是否命中批次。
+        """
+
+        now = _now()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT listing_fields_json FROM pod_customization_batches WHERE batch_id = ?",
+                (batch_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            try:
+                listing_fields = json.loads(row["listing_fields_json"] or "{}")
+            except (TypeError, ValueError):
+                listing_fields = {}
+            if not isinstance(listing_fields, dict):
+                listing_fields = {}
+            listing_fields["spec_card"] = (
+                dict(spec_card_mapping) if spec_card_mapping is not None else None
+            )
+            connection.execute(
+                """UPDATE pod_customization_batches SET listing_fields_json = ?, updated_at = ?
+                   WHERE batch_id = ?""",
+                (json.dumps(listing_fields, ensure_ascii=False), now, batch_id),
+            )
+        return True
+
+    def list_spec_card_hero_targets(self, batch_id: str) -> list[dict[str, Any]]:
+        """列出该批次已完成的 hero 结果（style_index + 结果/母版指针 + 当前发布 URL）。
+
+        重印逐款替换 ``publications.public_url``；``pattern_asset_id`` 始终是干净母版。
+        """
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT results.style_index AS style_index,
+                          results.result_id AS result_id,
+                          results.pattern_asset_id AS pattern_asset_id,
+                          COALESCE(publications.role, '') AS role,
+                          COALESCE(publications.public_url, '') AS public_url
+                   FROM pod_customization_style_grid_results AS results
+                   LEFT JOIN pod_customization_style_grid_publications AS publications
+                     ON publications.result_id = results.result_id
+                   WHERE results.batch_id = ? AND results.status = 'completed'
+                     AND (COALESCE(publications.role, '') = 'hero'
+                          OR (COALESCE(publications.role, '') = '' AND results.variant_index = 1))
+                   ORDER BY results.style_index""",
+                (batch_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def set_style_grid_publication(self, result_id: str, role: str, public_url: str) -> bool:
+        """更新一格结果的发布指针（``result_id`` 主键 upsert，与 finish 里的写法一致）。
+
+        返回是否命中该结果行；重印只改指针，绝不触碰母版资产。
+        """
+
+        now = _now()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM pod_customization_style_grid_results WHERE result_id = ?",
+                (result_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            connection.execute(
+                """INSERT INTO pod_customization_style_grid_publications
+                   (result_id, role, public_url, updated_at) VALUES (?, ?, ?, ?)
+                   ON CONFLICT(result_id) DO UPDATE SET
+                     role = excluded.role, public_url = excluded.public_url, updated_at = excluded.updated_at""",
+                (result_id, role, public_url, now),
+            )
+        return True
 
     def fail_style_grid(
         self,
