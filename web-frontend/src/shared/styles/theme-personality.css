@@ -132,6 +132,59 @@
 }[data-theme="peach"] .daily-selection-page .daily-panel:hover {
   transform: translateY(-2px);
   box-shadow: 0 16px 34px rgba(176, 58, 85, 0.12);
+}/* 桃花源：产品库（货源关联产品库）页面的蓝色适配。
+   该模块样式(profitActivityProducts.css)硬编码了大量经典蓝，未纳入主题统一层，
+   这里显式覆盖为桃粉系。 */[data-theme="peach"] .profit-products-head {
+  border-color: rgba(217, 93, 120, 0.42);
+  background: var(--theme-hero-gradient);
+  box-shadow: 0 14px 34px rgba(128, 52, 78, 0.2);
+}[data-theme="peach"] .profit-products-head .eyebrow {
+  color: #ffd7de;
+}[data-theme="peach"] .profit-products-head p:not(.eyebrow) {
+  color: #ffefe9;
+}[data-theme="peach"] .profit-products-page .primary-button {
+  background: var(--theme-primary-button-gradient);
+  box-shadow: 0 8px 18px rgba(176, 58, 85, 0.22);
+}[data-theme="peach"] .profit-products-page button:hover:not(:disabled) {
+  border-color: rgba(217, 93, 120, 0.5);
+  box-shadow: 0 8px 18px rgba(176, 58, 85, 0.14);
+}[data-theme="peach"] .profit-source-badge {
+  background: #ffeef2;
+  color: #b03a55;
+  border-color: #f3c9d3;
+}[data-theme="peach"] .profit-source-open {
+  color: #b03a55 !important;
+  border-color: #e8c3cb !important;
+}[data-theme="peach"] .profit-editable-cell:not(.is-readonly):hover .profit-editable-value {
+  color: #b03a55;
+}[data-theme="peach"] .profit-products-settings-tabs button.is-active {
+  color: #b03a55;
+  border-color: #f3a8bb;
+  background: linear-gradient(100deg, #ffe4ec, #fff0ec);
+}[data-theme="peach"] .profit-products-settings-tabs .profit-products-add-site-button {
+  color: #b03a55;
+  border-color: #f3a8bb;
+  background: #fff0f3;
+}/* 桃花源：产品库货源详情抽屉里的蓝色链接/按钮/徽章。 */[data-theme="peach"] :is(
+  .profit-source-open,
+  .profit-source-edit-button,
+  .profit-source-card-url,
+  .profit-source-add-row,
+  .profit-source-card-result small,
+  .profit-source-edit-image-button:hover,
+  .profit-source-drawer-close:hover
+) {
+  color: #b03a55 !important;
+}[data-theme="peach"] .profit-source-add-row {
+  border-color: #f3a8bb !important;
+}[data-theme="peach"] .profit-inline-save {
+  background: var(--theme-primary-button-gradient) !important;
+  border-color: #b03a55 !important;
+}[data-theme="peach"] .profit-source-image-count {
+  background: #b03a55;
+}[data-theme="peach"] .profit-image-preview-pager button:hover {
+  border-color: #f3a8bb;
+  color: #b03a55;
 }/* ---------------------------------------------------------------------------
    无障碍：尊重系统「减弱动态效果」
    ------------------------------------------------------------------------- */@media (prefers-reduced-motion: reduce) {
