@@ -1,8 +1,8 @@
-import { useEffect, useRef } from "react";
+import { memo, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 
-import { useTheme } from "../hooks/useTheme";
-import { useUiMode } from "../hooks/useUiMode";
+import type { ThemeId } from "../hooks/useTheme";
+import type { UiModeId } from "../hooks/useUiMode";
 
 /**
  * 桃花源主题专属交互层。
@@ -107,9 +107,12 @@ function drawPetalSprite(ctx: CanvasRenderingContext2D, x: number, y: number, si
   ctx.restore();
 }
 
-export function PeachGarden() {
-  const { theme } = useTheme();
-  const { uiMode } = useUiMode();
+type PeachGardenProps = {
+  theme: ThemeId;
+  uiMode: UiModeId;
+};
+
+export const PeachGarden = memo(function PeachGarden({ theme, uiMode }: PeachGardenProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   // apple 桌面模式下主题会被映射回 classic(见 applyTheme),此时不渲染桃花源层。
@@ -340,4 +343,4 @@ export function PeachGarden() {
       )}
     </>
   );
-}
+});
