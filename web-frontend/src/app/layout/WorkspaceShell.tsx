@@ -12,6 +12,7 @@ import {
 } from "../navigation/modules";
 import { Sidebar } from "./Sidebar";
 import { TopNavigation, type WorkspaceTab } from "./TopNavigation";
+import { PeachGarden } from "../../shared/components/PeachGarden";
 import { InkTap } from "../../shared/components/InkTap";
 import { WorkspaceHomePage } from "../../modules/dashboard/pages/WorkspaceHomePage";
 import { DailySelectionPage } from "../../modules/daily_selection/pages/DailySelectionPage";
@@ -480,6 +481,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
 
   return (
     <main className={`workspace-shell${playEntryAnimation ? " is-brand-entering" : ""}`}>
+      <PeachGarden />
       <InkTap />
       <Sidebar
         collapsed={sidebarIsCollapsed && !sidebarTemporarilyExpanded}

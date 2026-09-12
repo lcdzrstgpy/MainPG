@@ -1,0 +1,265 @@
+/* ================================================================
+   桃花源主题专属:晨景桃花源 —— AI 生成的桃林溪水全景图 + 薄雾
+   + 花瓣画布。背景图:public/theme/peach-garden-bg.jpg
+   背景层由 PeachGarden 组件挂到 WorkspaceShell 内(z:0,在壳背景之上、
+   卡片之下);花瓣画布 portal 到 body(z:30,顶栏之上、弹窗之下)。
+   两者均 pointer-events:none,不拦截任何交互。
+   ================================================================ */
+
+/* ---- 背景全景(AI 生成:桃林 + 青绿山水 + 溪流倒影) ---- */
+.peach-garden-scenery {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(255, 244, 240, 0.12) 0%, rgba(255, 244, 240, 0) 34%, rgba(255, 250, 246, 0.08) 82%, rgba(255, 250, 246, 0.14) 100%),
+    url("/theme/peach-garden-bg.jpg") center bottom / cover no-repeat,
+    linear-gradient(180deg, #ffe3ec 0%, #f3ecdc 100%);
+}
+
+/* ---- 薄雾(两团,缓缓横移,给静态背景一点呼吸感) ---- */
+.peach-garden-mist {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.peach-garden-mist::before,
+.peach-garden-mist::after {
+  content: "";
+  position: absolute;
+  left: -24%;
+  height: 22vh;
+  border-radius: 50%;
+  /* 不再用 filter: blur() 实时模糊(每帧重算很贵);
+     雾的柔和边缘由 radial-gradient 的 transparent 过渡自带 */
+  will-change: transform;
+}
+
+.peach-garden-mist::before {
+  width: 64%;
+  top: 30%;
+  background: radial-gradient(ellipse, rgba(255, 252, 250, 0.55), transparent 70%);
+  animation: peach-mist-drift 46s ease-in-out infinite alternate;
+}
+
+.peach-garden-mist::after {
+  width: 78%;
+  bottom: 22%;
+  background: radial-gradient(ellipse, rgba(214, 232, 216, 0.38), transparent 72%);
+  animation: peach-mist-drift 62s ease-in-out infinite alternate-reverse;
+}
+
+@keyframes peach-mist-drift {
+  from { transform: translateX(-4%); }
+  to { transform: translateX(30%); }
+}
+
+/* ---- 花瓣画布(portal 到 body,悬浮在所有内容之上) ---- */
+.peach-garden-petals {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* ---- 桃花源主题:卡片化作漂浮的"花瓣纸"(毛玻璃 + 粉青双晕) ---- */
+[data-theme="peach"] .sidebar-card,
+[data-theme="peach"] .topbar-card,
+[data-theme="peach"] .content-card {
+  background: rgba(255, 251, 248, 0.2);
+  /* 不用 backdrop-filter：它在 Chrome/Windows 上会强制每帧重算整片背景合成，
+     是滚屏卡顿的最大来源；2px 微模糊去掉后肉眼无差，文字靠 text-shadow 保可读 */
+  border-color: rgba(217, 93, 120, 0.26);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    0 1px 2px rgba(140, 61, 82, 0.04),
+    0 16px 40px -14px rgba(176, 58, 85, 0.16),
+    0 8px 24px -12px rgba(90, 155, 124, 0.14);
+  /* 半透明卡片下的文字垫一层浅色柔影，防止背景花纹干扰阅读 */
+  text-shadow: 0 1px 3px rgba(255, 252, 250, 0.5);
+}
+
+[data-theme="peach"] .sidebar-card,
+[data-theme="peach"] .topbar-card {
+  border-radius: 26px 16px 26px 16px;
+}
+
+[data-theme="peach"] .content-card {
+  border-radius: 30px 18px 30px 18px;
+  padding: clamp(24px, 3.4vw, 40px);
+}
+
+[data-theme="peach"] .topbar-card.is-pinned.is-stuck {
+  background: rgba(255, 251, 248, 0.78);
+}
+
+/* ---------------------------------------------------------------------------
+   各模块硬编码蓝/白面板的统一适配（peach 主题下才生效）
+   目标：把原本蓝色渐变页头改成桃粉→青山半透明渐变；
+         把原本纯白/浅蓝面板改成半透毛玻璃，让背景桃花山水透出来。
+   ------------------------------------------------------------------------- */
+
+/* 页头横幅：蓝色渐变 → 桃粉→青山半透明 */
+[data-theme="peach"] .daily-page-heading,
+[data-theme="peach"] .settings-hero,
+[data-theme="peach"] .price-verification-hero,
+[data-theme="peach"] .profit-activity-hero,
+[data-theme="peach"] .verify-commandbar {
+  border-color: rgba(217, 93, 120, 0.42);
+  background: linear-gradient(118deg, rgba(128, 52, 78, 0.82) 0%, rgba(208, 107, 130, 0.68) 56%, rgba(90, 155, 124, 0.6) 100%);
+  box-shadow: 0 14px 34px rgba(176, 58, 85, 0.2);
+}
+
+[data-theme="peach"] .settings-hero::after {
+  border-color: rgba(255, 255, 255, 0.18);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.46), rgba(217, 93, 120, 0.1));
+}
+
+[data-theme="peach"] .settings-hero-icon {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.38);
+  box-shadow: 0 12px 26px rgba(176, 58, 85, 0.16);
+}
+
+/* 页头文字保持可读 */
+[data-theme="peach"] .daily-page-heading .daily-kicker,
+[data-theme="peach"] .price-verification-hero .eyebrow,
+[data-theme="peach"] .profit-activity-hero .eyebrow,
+[data-theme="peach"] .verify-eyebrow {
+  color: #ffd9e2;
+}
+[data-theme="peach"] .daily-page-heading p,
+[data-theme="peach"] .price-verification-hero p:not(.eyebrow),
+[data-theme="peach"] .profit-activity-hero p:not(.eyebrow),
+[data-theme="peach"] .verify-command-title p,
+[data-theme="peach"] .price-verification-hero-status,
+[data-theme="peach"] .back-to-collection-button,
+[data-theme="peach"] .preset-entry-button {
+  color: #fff0f2;
+}
+
+/* 主要白/蓝面板 → 半透毛玻璃 */
+[data-theme="peach"] .daily-panel,
+[data-theme="peach"] .shop-collection-panel,
+[data-theme="peach"] .plugin-candidate-review,
+[data-theme="peach"] .settings-card,
+[data-theme="peach"] .settings-card-wide,
+[data-theme="peach"] .shop-collection-header,
+[data-theme="peach"] .shop-collection-create,
+[data-theme="peach"] .shop-batch-list,
+[data-theme="peach"] .shop-batch-detail,
+[data-theme="peach"] .shop-collection-message,
+[data-theme="peach"] .collection-workspace-tabs,
+[data-theme="peach"] .plugin-section-tabs,
+[data-theme="peach"] .ai-service-sessions,
+[data-theme="peach"] .ai-creation-settings,
+[data-theme="peach"] .ai-settings-card,
+[data-theme="peach"] .ai-message-body,
+[data-theme="peach"] .ai-mode-tabs,
+[data-theme="peach"] .ai-composer,
+[data-theme="peach"] .ai-empty-creation > span,
+[data-theme="peach"] .ai-search-toggle,
+[data-theme="peach"] .ai-document-preview > .iconfont {
+  background: rgba(255, 251, 248, 0.48);
+  border-color: rgba(217, 93, 120, 0.22);
+}
+
+[data-theme="peach"] .shop-items-list article,
+[data-theme="peach"] .plugin-candidate-list article,
+[data-theme="peach"] .shop-batch-stats span,
+[data-theme="peach"] .plugin-pagination,
+[data-theme="peach"] .shop-collection-message.is-success,
+[data-theme="peach"] .shop-collection-message.is-error {
+  background: rgba(255, 251, 248, 0.42);
+}
+
+[data-theme="peach"] .shop-items-list article:hover,
+[data-theme="peach"] .plugin-candidate-list article:hover,
+[data-theme="peach"] .shop-batch-list > button:hover,
+[data-theme="peach"] .shop-batch-list > button.is-selected {
+  background: rgba(255, 238, 242, 0.62);
+}
+
+/* 列表选中条/强调色 */
+[data-theme="peach"] .shop-batch-list > button.is-selected {
+  box-shadow: inset 3px 0 #d95d78;
+}
+
+/* 蓝色主按钮 → 桃粉渐变 */
+[data-theme="peach"] .shop-collection-create button,
+[data-theme="peach"] .collection-workspace-tabs button.is-active,
+[data-theme="peach"] .plugin-section-tabs button.is-active,
+[data-theme="peach"] .ai-new-creation,
+[data-theme="peach"] .ai-generate-button,
+[data-theme="peach"] .ai-mode-tabs button.is-active,
+[data-theme="peach"] .ai-service-brand > span {
+  background: linear-gradient(105deg, #d95d78, #5a9b7c);
+  box-shadow: 0 9px 18px rgba(217, 93, 120, 0.25);
+  border-color: transparent;
+  color: #fff;
+}
+
+/* 蓝色次按钮/标签 → 桃粉系 */
+[data-theme="peach"] .shop-batch-actions button,
+[data-theme="peach"] .shop-pagination button,
+[data-theme="peach"] .plugin-link-pill,
+[data-theme="peach"] .shop-items-list a.plugin-link-pill,
+[data-theme="peach"] .plugin-candidate-list article > button,
+[data-theme="peach"] .ai-download-button,
+[data-theme="peach"] .ai-search-toggle.is-on,
+[data-theme="peach"] .ai-template > .iconfont,
+[data-theme="peach"] .ai-document-preview > .iconfont {
+  color: #b03a55;
+  background: rgba(255, 238, 242, 0.72);
+  border-color: rgba(217, 93, 120, 0.28);
+}
+
+[data-theme="peach"] .shop-batch-actions button.is-danger {
+  color: #a74c55;
+  background: #fff6f6;
+  border-color: #edc9cd;
+}
+
+/* 进度条/状态点 → 桃粉/青山 */
+[data-theme="peach"] .shop-progress > span,
+[data-theme="peach"] .topbar-collection-progress {
+  background: rgba(217, 93, 120, 0.18);
+}
+[data-theme="peach"] .shop-progress i,
+[data-theme="peach"] .topbar-collection-progress > span {
+  background: linear-gradient(90deg, #d95d78, #5a9b7c);
+}
+[data-theme="peach"] .ai-status-dot {
+  background: #5a9b7c;
+  box-shadow: 0 0 0 4px rgba(90, 155, 124, 0.18);
+}
+
+/* 输入框/选择框 → 半透浅色 */
+[data-theme="peach"] .shop-collection-create select,
+[data-theme="peach"] .shop-collection-create input,
+[data-theme="peach"] .ai-settings-card select,
+[data-theme="peach"] .ai-composer textarea,
+[data-theme="peach"] .ai-search-toggle {
+  background: rgba(255, 255, 255, 0.25);
+  border-color: rgba(217, 93, 120, 0.22);
+}
+
+[data-theme="peach"] .shop-collection-create input:focus,
+[data-theme="peach"] .shop-collection-create select:focus,
+[data-theme="peach"] .ai-composer textarea:focus {
+  border-color: rgba(217, 93, 120, 0.55);
+  box-shadow: 0 0 0 3px rgba(217, 93, 120, 0.12);
+}
+
+/* ---- 无障碍:系统减弱动态时停掉所有循环动画(花瓣由 JS 定格一帧) ---- */
+@media (prefers-reduced-motion: reduce) {
+  .peach-garden-mist::before,
+  .peach-garden-mist::after {
+    animation: none;
+  }
+}
