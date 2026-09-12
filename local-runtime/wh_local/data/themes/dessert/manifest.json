@@ -1,0 +1,10 @@
+{
+  "id": "dessert",
+  "label": "焦糖",
+  "description": "暖棕焦糖色调，温馨舒适",
+  "swatch": "linear-gradient(135deg, #f3e3cf 0 34%, #b8754e 34% 67%, #bd7b82 67%)",
+  "version": "1.0.0",
+  "files": [
+    "theme.css"
+  ]
+}

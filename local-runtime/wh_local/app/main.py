@@ -61,6 +61,7 @@ from ..data_collection.shop_routes import (
 from ..data_collection.shop_worker import ShopCollectionWorker
 from ..db import init_db
 from ..modules.basic_settings.router import create_router as create_basic_settings_router
+from ..modules.themes.router import create_themes_router
 from ..modules.ai_service import create_router as create_ai_service_router
 from ..modules.ai_service.temporary_cos import TemporaryCosStore
 from ..messages import (
@@ -445,6 +446,15 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         app.include_router(create_admin_proxy_router(remote_customer_auth, customer_sessions))
 
     app.include_router(create_basic_settings_router(db_path))
+    # 主题商店资源：优先读运行根目录下的源码包(wh_local/data/themes)，打包构建
+    # 时再回退到 PyInstaller 解包目录。客户端走公网下载，此路由仅服务端/开发机需要，
+    # 找不到目录时挂空列表，不影响启动。
+    _themes_candidates = [
+        config.runtime_root / "wh_local" / "data" / "themes",
+        Path(getattr(sys, "_MEIPASS", config.runtime_root)) / "wh_local" / "data" / "themes",
+    ]
+    themes_dir = next((p for p in _themes_candidates if p.is_dir()), Path("_no_themes_dir"))
+    app.include_router(create_themes_router(themes_dir))
     ai_service_assets = config.data_dir / "ai-service" / "assets"
     app.include_router(
         create_ai_service_router(

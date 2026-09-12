@@ -1,8 +1,8 @@
-import { useEffect, useRef } from "react";
+import { memo, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 
-import { useTheme } from "../hooks/useTheme";
-import { useUiMode } from "../hooks/useUiMode";
+import type { ThemeId } from "../hooks/useTheme";
+import type { UiModeId } from "../hooks/useUiMode";
 
 /**
  * 水墨青黛（chinese）主题专属交互层：点击时在光标处晕开一颗墨点。
@@ -18,9 +18,12 @@ import { useUiMode } from "../hooks/useUiMode";
 
 const MAX_SPOTS = 24;
 
-export function InkTap() {
-  const { theme } = useTheme();
-  const { uiMode } = useUiMode();
+type InkTapProps = {
+  theme: ThemeId;
+  uiMode: UiModeId;
+};
+
+export const InkTap = memo(function InkTap({ theme, uiMode }: InkTapProps) {
   const layerRef = useRef<HTMLDivElement | null>(null);
 
   const active = theme === "chinese" && uiMode === "classic";
@@ -65,4 +68,4 @@ export function InkTap() {
   if (!active) return null;
 
   return createPortal(<div ref={layerRef} className="ink-tap-layer" aria-hidden="true" />, document.body);
-}
+});

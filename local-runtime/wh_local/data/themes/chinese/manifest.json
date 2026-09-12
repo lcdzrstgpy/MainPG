@@ -1,0 +1,10 @@
+{
+  "id": "chinese",
+  "label": "水墨青黛",
+  "description": "水墨青黛意境，点击屏幕有墨韵反馈",
+  "swatch": "linear-gradient(135deg, #eee9dc 0 36%, #52716c 36% 72%, #a74736 72%)",
+  "version": "1.0.0",
+  "files": [
+    "theme.css"
+  ]
+}

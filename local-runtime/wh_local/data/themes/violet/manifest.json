@@ -1,0 +1,10 @@
+{
+  "id": "violet",
+  "label": "樱雾粉紫",
+  "description": "柔和粉紫渐变，适合长时间办公",
+  "swatch": "linear-gradient(135deg, #f5d8e9 0 38%, #e7c9f4 38% 70%, #d57eae 70%)",
+  "version": "1.0.0",
+  "files": [
+    "theme.css"
+  ]
+}
