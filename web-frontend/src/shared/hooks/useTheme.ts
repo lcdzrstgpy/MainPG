@@ -175,7 +175,14 @@ if (typeof window !== "undefined") {
 
 // ---- backend API ----
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
+// 主题商店走公网服务器，实现真正的云端下载与热更新（不依赖客户端安装包）。
+// - 开发模式（vite dev）下走相对路径 /themes，由 vite 代理转发到本地 8010；
+// - 生产/打包构建下走公网 workbench.haocoming.top，直接向服务器下载。
+// 也可用 VITE_THEME_STORE_BASE_URL 显式覆盖（例如指向测试服务器）。
+const THEME_STORE_BASE_URL = (
+  import.meta.env.VITE_THEME_STORE_BASE_URL ??
+  (import.meta.env.DEV ? "" : "https://workbench.haocoming.top")
+).replace(/\/$/, "");
 
 export interface ThemeListItemFromServer {
   id: string;
@@ -192,14 +199,14 @@ export interface ThemePackageFromServer {
 }
 
 export async function fetchThemeList(): Promise<ThemeListItemFromServer[]> {
-  const res = await fetch(`${API_BASE}/themes`);
+  const res = await fetch(`${THEME_STORE_BASE_URL}/themes`);
   if (!res.ok) throw new Error(`Failed to fetch theme list: ${res.status}`);
   const data = (await res.json()) as { themes: ThemeListItemFromServer[] };
   return data.themes;
 }
 
 export async function fetchThemePackage(id: string): Promise<ThemePackageFromServer> {
-  const res = await fetch(`${API_BASE}/themes/${encodeURIComponent(id)}/package`);
+  const res = await fetch(`${THEME_STORE_BASE_URL}/themes/${encodeURIComponent(id)}/package`);
   if (!res.ok) throw new Error(`Failed to fetch theme ${id}: ${res.status}`);
   return (await res.json()) as ThemePackageFromServer;
 }

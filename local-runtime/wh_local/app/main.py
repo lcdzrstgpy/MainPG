@@ -446,13 +446,14 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         app.include_router(create_admin_proxy_router(remote_customer_auth, customer_sessions))
 
     app.include_router(create_basic_settings_router(db_path))
-    # Theme marketplace packages ship with the runtime source; copy them into
-    # the active data_dir so packaged builds can serve them too.
-    themes_src_dir = config.runtime_root / "wh_local" / "data" / "themes"
-    themes_dir = config.data_dir / "themes"
-    if themes_src_dir.exists() and not themes_dir.exists():
-        import shutil
-        shutil.copytree(themes_src_dir, themes_dir)
+    # 主题商店资源：优先读运行根目录下的源码包(wh_local/data/themes)，打包构建
+    # 时再回退到 PyInstaller 解包目录。客户端走公网下载，此路由仅服务端/开发机需要，
+    # 找不到目录时挂空列表，不影响启动。
+    _themes_candidates = [
+        config.runtime_root / "wh_local" / "data" / "themes",
+        Path(getattr(sys, "_MEIPASS", config.runtime_root)) / "wh_local" / "data" / "themes",
+    ]
+    themes_dir = next((p for p in _themes_candidates if p.is_dir()), Path("_no_themes_dir"))
     app.include_router(create_themes_router(themes_dir))
     ai_service_assets = config.data_dir / "ai-service" / "assets"
     app.include_router(
