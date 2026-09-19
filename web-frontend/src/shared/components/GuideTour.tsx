@@ -4,6 +4,7 @@ import { driver, type DriveStep, type Driver, type PopoverDOM } from "driver.js"
 import {
   getActiveGuideConfig,
   getGuideBoardConfig,
+  type GuideAdvanceMode,
   type GuidePresetMode,
   type GuideStepConfig,
   type GuideSubTaskConfig,
@@ -24,6 +25,9 @@ const GUIDE_SEEN_PREFIX = "jye_workspace_guide_seen:";
 const PANEL_SEEN_KEY = "jye_workspace_guide_panel_seen";
 
 const WAIT_FOR_ELEMENT_MS = 4000;
+
+/** 门控满足后停留多久再自动翻页：给用户一点时间看清「已完成」。 */
+const GATE_ADVANCE_DELAY_MS = 700;
 
 function readFlag(key: string): boolean {
   try {
@@ -175,13 +179,22 @@ function presetModeOf(step: GuideStepConfig): GuidePresetMode {
   return step.presetMode ?? "off";
 }
 
+/** 本步的放行方式，缺省 manual（用户自己点「下一步」）。 */
+function advanceModeOf(step: GuideStepConfig): GuideAdvanceMode {
+  return step.advanceOn ?? "manual";
+}
+
 /**
  * 这一步是否需要用户先动手（自己填写 / 引导替他点开控件）。
  * 这类步骤不会放开蒙版：driver.js 默认只放行本步高亮的控件，
  * 用户操作完再点提示卡上的「下一步」，页面其他区块照旧点不动。
  * 这里只用来决定提示卡要不要补一行说明（样式见 guide-tour.css）。
+ *
+ * 带放行门控（advanceOn 非 manual）的步骤不补这行通用说明：那句话写的是
+ * 「完成后再点下一步」，而门控步骤是自动前进，且门控会挂自己的精确提示。
  */
 function needsUserAction(step: GuideStepConfig): boolean {
+  if (advanceModeOf(step) !== "manual") return false;
   return step.interactive === true || presetModeOf(step) === "require" || step.autoOpen === true;
 }
 
@@ -197,6 +210,17 @@ function findControl(element: Element | null): Element | null {
   if (!element) return null;
   if (element.matches(CONTROL_SELECTOR)) return element;
   return element.querySelector(CONTROL_SELECTOR);
+}
+
+/**
+ * 高亮区域里的文件选择框：本身是 file input 就用它，否则取内部第一个。
+ * 「必须选中文件才能下一步」的门控靠监听它的 change 放行。
+ */
+function findFileInput(element: Element | null): HTMLInputElement | null {
+  if (!element) return null;
+  if (element instanceof HTMLInputElement && element.type === "file") return element;
+  const nested = element.querySelector("input[type='file']");
+  return nested instanceof HTMLInputElement ? nested : null;
 }
 
 /** 读控件当前的值；不是输入类控件时退化成读文本内容。 */
@@ -244,8 +268,9 @@ function toDriveStep(step: GuideStepConfig): DriveStep {
       align: step.align,
       // 需要用户自己操作的步骤额外补一行说明（样式见 guide-tour.css）。
       popoverClass: needsUserAction(step) ? "guide-step-interactive" : "",
-      // 要求填入预设值的步骤：先把「下一步」禁掉，用户填对后由预设值逻辑放行。
-      disableButtons: presetModeOf(step) === "require" ? ["next"] : undefined,
+      // 带「不做完不放行」门控的步骤：先把「下一步」禁掉，满足条件后由门控逻辑放行。
+      disableButtons:
+        presetModeOf(step) === "require" || advanceModeOf(step) !== "manual" ? ["next"] : undefined,
     },
   };
 }
@@ -284,14 +309,20 @@ export function startGuideTour(
 
   /** driver.js 当前那张提示卡的 DOM，用于禁用「下一步」和挂预设值说明。 */
   let currentPopover: PopoverDOM | null = null;
-  /** 本步「必须填入预设值」的拦截状态。 */
+  /** 本步「不做完不放行」的拦截状态（填入预设值 / 选中文件两种门控共用）。 */
   let gateBlocked = false;
-  /** 撤销上一步预设逻辑挂上去的监听与说明块。 */
+  /** 撤销上一步门控挂上去的监听与说明块。 */
   let releasePreset: (() => void) | null = null;
-  /** 预设值说明块，抖动提示时要用。 */
+  /** 门控说明块，抖动提示时要用。 */
   let presetHint: HTMLElement | null = null;
+  /** 门控满足后「延迟自动翻页」的定时器；离开本步必须撤销，否则会多翻一步。 */
+  let advanceTimer: number | null = null;
 
   const clearPreset = () => {
+    if (advanceTimer !== null) {
+      window.clearTimeout(advanceTimer);
+      advanceTimer = null;
+    }
     releasePreset?.();
     releasePreset = null;
     gateBlocked = false;
@@ -316,18 +347,89 @@ export function startGuideTour(
     presetHint.classList.add("is-shake");
   };
 
-  const mountPresetHint = (value: string): HTMLElement => {
+  /** 在提示卡里挂一块门控说明（两种门控共用同一套样式与抖动反馈）。 */
+  const mountGateHint = (text: string): HTMLElement => {
     const hint = document.createElement("div");
     hint.className = PRESET_HINT_CLASS;
-    hint.textContent = `请先填入「${value}」再继续`;
+    hint.textContent = text;
     currentPopover?.wrapper.appendChild(hint);
     return hint;
   };
 
-  /** 播放到一步时执行它的预设动作：自动填入、自动点开、以及「不填不让走」的门控。 */
+  /** 前进到下一步；跨页时先请求切页。门控自动放行与「下一步」按钮共用这一条路径。 */
+  const goNextStep = () => {
+    const index = tour?.getActiveIndex();
+    if (index === undefined) return;
+    switchPageFor(index, index + 1);
+    tour?.moveNext();
+  };
+
+  /**
+   * 放行门控（advanceOn = click / file）：先禁掉「下一步」，等用户在页面上真的做出
+   * 对应动作后自动前进，不再要求他到提示卡上二次确认。
+   *
+   * 判定方式按模式分开：
+   * - click：监听高亮区域内的点击（子元素冒泡上来也算），点到即完成；
+   * - file：监听区域内 file input 的 change，真的选到文件才算完成。文件框的值由浏览器
+   *   接管，脚本既读不到真实路径也写不进去，只能认「选过文件」这件事。
+   */
+  const applyAdvanceGate = (step: GuideStepConfig, element: Element) => {
+    const mode = advanceModeOf(step);
+    const input = mode === "file" ? findFileInput(element) : null;
+    if (mode === "file" && !input) {
+      // 高亮区域里根本没有文件选择框：不能拦人，否则用户会被卡死在引导里。
+      releaseNextButton();
+      return;
+    }
+
+    const waitingText = mode === "file" ? "请先选择文件再继续" : "请先点击高亮区域完成本步";
+    const hint = mountGateHint(waitingText);
+    presetHint = hint;
+    const button = currentPopover?.nextButton;
+    /** click 模式进入本步时不算完成，必须真的点过。 */
+    let satisfied = false;
+
+    const render = () => {
+      // 键盘右方向键会绕过禁用按钮直接触发 onNextClick，因此拦截状态要单独记一份。
+      gateBlocked = !satisfied;
+      if (button) {
+        button.disabled = !satisfied;
+        button.classList.toggle("driver-popover-btn-disabled", !satisfied);
+      }
+      hint.textContent = satisfied ? "已完成，继续下一步" : waitingText;
+      hint.classList.toggle("is-ok", satisfied);
+    };
+
+    /** 门控只放行一次：用户做完动作后自动翻页，重复触发不再排队。 */
+    const onSatisfied = () => {
+      if (satisfied) return;
+      satisfied = true;
+      render();
+      // 刚做完动作就跳走会让人不确定自己点对没有，留一点时间把「已完成」显示出来。
+      advanceTimer = window.setTimeout(() => {
+        advanceTimer = null;
+        goNextStep();
+      }, GATE_ADVANCE_DELAY_MS);
+    };
+
+    const onEvent = () => {
+      if (mode === "file" && !input?.files?.length) return;
+      onSatisfied();
+    };
+
+    render();
+    // 用户可能在进入本步之前就已经把文件选好了。
+    if (mode === "file") onEvent();
+    const eventName = mode === "file" ? "change" : "click";
+    element.addEventListener(eventName, onEvent);
+    releasePreset = () => element.removeEventListener(eventName, onEvent);
+  };
+
+  /** 播放到一步时执行它的门控与预设动作：自动填入、自动点开、以及「不做完不让走」。 */
   const applyStepPreset = (step: GuideStepConfig, highlighted: Element | undefined) => {
     const mode = presetModeOf(step);
-    if (mode === "off" && step.autoOpen !== true) return;
+    const advanceMode = advanceModeOf(step);
+    if (mode === "off" && step.autoOpen !== true && advanceMode === "manual") return;
 
     const element = highlighted ?? resolveStepElement(step);
     if (!element || element.id === DUMMY_ELEMENT_ID) {
@@ -337,6 +439,12 @@ export function startGuideTour(
 
     const value = step.presetValue ?? "";
     if (step.autoOpen === true) autoOpenControl(element);
+
+    // 放行门控优先：它是「不放行」，与「预设值」同时配上没有意义。
+    if (advanceMode !== "manual") {
+      applyAdvanceGate(step, element);
+      return;
+    }
 
     if (!value) {
       // 只勾了「要求填入」却没写内容：不拦人，保存时后端也会拦下这种配置。
@@ -352,7 +460,7 @@ export function startGuideTour(
     }
     if (mode !== "require") return;
 
-    const hint = mountPresetHint(value);
+    const hint = mountGateHint(`请先填入「${value}」再继续`);
     presetHint = hint;
     const button = currentPopover?.nextButton;
 
@@ -376,6 +484,23 @@ export function startGuideTour(
       control.removeEventListener("change", sync);
     };
   };
+
+  /**
+   * 掐掉落在表单控件上的方向键。
+   *
+   * driver.js 默认 allowKeyboardControl，把 ArrowRight / ArrowLeft 绑成翻页，且监听挂在
+   * window 的冒泡阶段。用户在输入框里按左右方向键移动光标时，按键会一路冒泡到 window，
+   * 引导就被「毫无操作」地翻到下一步——就是那种「我没点它自己跳了」的现象。
+   * 在捕获阶段拦下这类按键（其余按键与输入行为原样保留），既修掉误跳又不牺牲键盘可用性。
+   */
+  const swallowArrowKeysInFields = (event: KeyboardEvent) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (!target.closest("input, textarea, select, [contenteditable='true']")) return;
+    event.stopPropagation();
+  };
+  window.addEventListener("keydown", swallowArrowKeysInFields, true);
 
   tour = driver({
     steps,
@@ -414,10 +539,7 @@ export function startGuideTour(
         pulsePresetHint();
         return;
       }
-      const index = tour?.getActiveIndex();
-      if (index === undefined) return;
-      switchPageFor(index, index + 1);
-      tour?.moveNext();
+      goNextStep();
     },
     onPrevClick: () => {
       const index = tour?.getActiveIndex();
@@ -427,6 +549,7 @@ export function startGuideTour(
     },
     onDestroyed: () => {
       clearPreset();
+      window.removeEventListener("keydown", swallowArrowKeysInFields, true);
       onFinish?.(reachedLastStep);
     },
   });

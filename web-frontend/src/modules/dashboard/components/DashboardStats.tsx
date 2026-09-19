@@ -335,7 +335,7 @@ function TrendChart({ points }: { points: DashboardTrendPoint[] }) {
   const yAt = (value: number) => CHART_PAD.top + innerHeight - (value / niceMax) * innerHeight;
 
   const line = (key: "inbound" | "processed") =>
-    points.map((point, index) => `${index === 0 ? "M" : "L"}${xAt(index).toFixed(1)},${yAt(point[key]).toFixed(1)}`).join(" ");
+    monotonePath(points.map((point, index) => [xAt(index), yAt(point[key])]));
 
   const gridValues = [0, 0.25, 0.5, 0.75, 1].map((ratio) => Math.round(niceMax * ratio));
   const labelEvery = Math.max(1, Math.ceil(points.length / 6));
@@ -406,4 +406,66 @@ function niceCeil(value: number): number {
     if (candidate >= value) return candidate;
   }
   return magnitude * 10;
+}
+
+/**
+ * 单调三次插值（Fritsch–Carlson）转成 cubic Bézier 路径，让折线变成平滑曲线。
+ *
+ * 不用直连线段是因为尖角生硬；但也不能直接用普通样条——它会在峰谷处过冲，
+ * 把 0 拉到负值、或在孤立尖峰两侧造出并不存在的假峰。单调插值保证曲线
+ * 始终被夹在相邻数据点之间，平滑的同时不改变数据本身的形状。
+ */
+function monotonePath(coords: Array<[number, number]>): string {
+  const count = coords.length;
+  if (count === 0) return "";
+  if (count === 1) return `M${coords[0][0].toFixed(1)},${coords[0][1].toFixed(1)}`;
+
+  const slopes: number[] = [];
+  for (let index = 0; index < count - 1; index += 1) {
+    const [x0, y0] = coords[index];
+    const [x1, y1] = coords[index + 1];
+    slopes.push(x1 === x0 ? 0 : (y1 - y0) / (x1 - x0));
+  }
+
+  const tangents: number[] = new Array<number>(count);
+  tangents[0] = slopes[0];
+  tangents[count - 1] = slopes[count - 2];
+  for (let index = 1; index < count - 1; index += 1) {
+    const previous = slopes[index - 1];
+    const next = slopes[index];
+    // 斜率反号说明该点是极值，切线取 0，曲线才会在这里回旋而不是冲过去。
+    tangents[index] = previous * next <= 0 ? 0 : (previous + next) / 2;
+  }
+  // Fritsch–Carlson 限幅：切线不得超过相邻割线斜率的 3 倍，否则仍会过冲。
+  for (let index = 0; index < count - 1; index += 1) {
+    const slope = slopes[index];
+    if (slope === 0) {
+      tangents[index] = 0;
+      tangents[index + 1] = 0;
+      continue;
+    }
+    const alpha = tangents[index] / slope;
+    const beta = tangents[index + 1] / slope;
+    const magnitude = alpha * alpha + beta * beta;
+    if (magnitude > 9) {
+      const scale = 3 / Math.sqrt(magnitude);
+      tangents[index] = scale * alpha * slope;
+      tangents[index + 1] = scale * beta * slope;
+    }
+  }
+
+  const [startX, startY] = coords[0];
+  let path = `M${startX.toFixed(1)},${startY.toFixed(1)}`;
+  for (let index = 0; index < count - 1; index += 1) {
+    const [x0, y0] = coords[index];
+    const [x1, y1] = coords[index + 1];
+    // Hermite → Bézier：控制点落在两端切线上，距离取区间长度的三分之一。
+    const third = (x1 - x0) / 3;
+    const c1x = x0 + third;
+    const c1y = y0 + tangents[index] * third;
+    const c2x = x1 - third;
+    const c2y = y1 - tangents[index + 1] * third;
+    path += ` C${c1x.toFixed(1)},${c1y.toFixed(1)} ${c2x.toFixed(1)},${c2y.toFixed(1)} ${x1.toFixed(1)},${y1.toFixed(1)}`;
+  }
+  return path;
 }

@@ -19,6 +19,19 @@ export type GuideAlign = "start" | "center" | "end";
  */
 export type GuidePresetMode = "off" | "require" | "auto";
 
+/**
+ * 步骤的放行方式：决定「什么算这一步做完了」。
+ * - manual：不做判定，用户点提示卡上的「下一步」自己走；
+ * - click：用户点了高亮区域里的可点元素才算完成，完成后自动前进；
+ * - file：用户在高亮区域里选到文件才算完成，完成后自动前进。
+ *
+ * click / file 既是拦截（没做完点不动「下一步」），也是验收（做完自动翻页，
+ * 不再要求用户在提示卡上二次确认）。这不能用 presetMode 顶替：那个门控是拿
+ * 「控件的值」和 presetValue 比对，只对输入类控件成立，按钮点没点、文件选没选
+ * 它都看不见。
+ */
+export type GuideAdvanceMode = "manual" | "click" | "file";
+
 /** 引导步骤的所在页面；取值是工作台模块 id，跨页时前端据此切页。 */
 export type GuidePageId = string;
 
@@ -50,6 +63,11 @@ export type GuideStepConfig = {
    * 这类控件不点开就看不到选项，让引导替用户点一下更顺。
    */
   autoOpen?: boolean;
+  /**
+   * 本步的放行方式，缺省 manual（用户自己点「下一步」）。
+   * 见 GuideAdvanceMode：click / file 会先禁掉「下一步」，用户真的做出对应动作后自动前进。
+   */
+  advanceOn?: GuideAdvanceMode;
 };
 
 export type GuideSubTaskConfig = {
@@ -86,6 +104,12 @@ export const GUIDE_PRESET_MODE_LABELS: Record<GuidePresetMode, string> = {
   off: "不涉及预设值",
   require: "必须填入才能下一步",
   auto: "引导自动填入",
+};
+
+export const GUIDE_ADVANCE_MODE_LABELS: Record<GuideAdvanceMode, string> = {
+  manual: "用户自己点「下一步」",
+  click: "点一下高亮区域就自动下一步",
+  file: "选中文件就自动下一步",
 };
 
 /** 步骤数量上限等约束与后端 service.py 保持一致，避免提交后才被拒。 */

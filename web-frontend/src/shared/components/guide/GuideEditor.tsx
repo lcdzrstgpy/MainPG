@@ -10,12 +10,14 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { GUIDE_BOARD_META, type GuideBoardId } from "../GuideTour";
 import {
+  GUIDE_ADVANCE_MODE_LABELS,
   GUIDE_ALIGN_LABELS,
   GUIDE_LIMITS,
   GUIDE_PRESET_MODE_LABELS,
   GUIDE_SIDE_LABELS,
   cloneGuideConfig,
   nextSubTaskId,
+  type GuideAdvanceMode,
   type GuideAlign,
   type GuideConfig,
   type GuidePresetMode,
@@ -607,6 +609,24 @@ export function GuideEditor({
                   </div>
                   {presetValueMissing(step) && (
                     <span className="guide-editor-warn">还没填预设内容，保存会被拦下</span>
+                  )}
+
+                  <label className="guide-editor-field">
+                    <span>放行方式</span>
+                    <select
+                      className="guide-editor-input"
+                      value={step.advanceOn ?? "manual"}
+                      onChange={(event) => patchStep(index, { advanceOn: event.target.value as GuideAdvanceMode })}
+                    >
+                      {Object.entries(GUIDE_ADVANCE_MODE_LABELS).map(([value, label]) => (
+                        <option key={value} value={value}>{label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  {(step.advanceOn ?? "manual") !== "manual" && (
+                    <span className="guide-editor-hint">
+                      进入本步先禁掉「下一步」，用户在高亮区域内完成对应动作后自动前进，不用再点确认
+                    </span>
                   )}
 
                   <label className="guide-editor-check">

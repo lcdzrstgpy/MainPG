@@ -32,6 +32,9 @@ SIDES = ("top", "bottom", "left", "right")
 ALIGNS = ("start", "center", "end")
 # 步骤的预设值处理方式：require 要用户填对才能下一步，auto 由引导自动填入。
 PRESET_MODES = ("require", "auto")
+# 步骤的放行方式：click 要用户点了高亮区域、file 要用户选到文件，两者都在满足后自动前进；
+# manual（用户自己点「下一步」）是缺省值，不落库。
+ADVANCE_MODES = ("manual", "click", "file")
 
 
 def utc_now() -> str:
@@ -91,6 +94,11 @@ def _step(raw: Any, task_id: str, index: int) -> dict[str, Any]:
     # 下拉框这类「不点开就展不开」的控件：进入该步时由引导自动点一下。
     if raw.get("autoOpen") is True:
         step["autoOpen"] = True
+    # 放行方式：click / file 会在用户完成对应动作后自动前进。缺省 manual，因此只在非
+    # manual 时落库；写错的值按缺省处理，不落一条前端不认识的配置。
+    advance_on = _choice(raw.get("advanceOn"), ADVANCE_MODES, "")
+    if advance_on and advance_on != "manual":
+        step["advanceOn"] = advance_on
     return step
 
 
