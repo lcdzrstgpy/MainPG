@@ -1389,6 +1389,77 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             ),
         }
 
+    # --- POD 半定制独立计费接口 ---
+    # 半定制（纯图案）按「组」上报：4 款 = 1 个 link，固定 32 积分（8 积分/款）。
+    # 与全定制（pod_random_v1）/商品处理（product_processing）共用底层 freeze/settle，
+    # 但通过独立路由强制 billing_profile = pod_semi_v1，避免和现有 POD 通用接口混用，
+    # 也防止客户端误传其他画像把半定制按全定制单价计费。
+    @app.post("/api/customer/billing/pod-semi/freeze")
+    def customer_pod_semi_freeze(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        account = _required_account(db_path, authorization)
+        link_count = payload.get("link_count")
+        try:
+            link_count = max(1, int(link_count))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="link_count is required") from exc
+        scope = payload.get("scope")
+        if scope is not None and not isinstance(scope, list):
+            raise HTTPException(status_code=400, detail="scope must be a list")
+        idempotency_key = str(payload.get("idempotency_key") or "").strip()
+        if idempotency_key and not 16 <= len(idempotency_key) <= 200:
+            raise HTTPException(status_code=400, detail="idempotency_key length must be 16..200")
+        _require_pod_create_permission(db_path, account)
+        freeze = freeze_batch_points(
+            db_path,
+            _billing_actor(account),
+            link_count=link_count,
+            scope=[str(item) for item in (scope or [])] if scope is not None else None,
+            idempotency_key=idempotency_key,
+            billing_profile=BATCH_BILLING_PROFILE_POD_SEMI,
+            task_id=str(payload.get("task_id") or ""),
+            app_version=str(payload.get("app_version") or "")[:40],
+        )
+        keys = _issue_batch_keys(db_path, account, freeze["freeze_id"])
+        return {"ok": True, "freeze": {**freeze, "keys": keys}}
+
+    @app.post("/api/customer/billing/pod-semi/settle")
+    def customer_pod_semi_settle(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        account = _required_account(db_path, authorization)
+        freeze_id = str(payload.get("freeze_id") or "").strip()
+        items = payload.get("items")
+        if not freeze_id:
+            raise HTTPException(status_code=400, detail="freeze_id is required")
+        if not isinstance(items, list):
+            raise HTTPException(status_code=400, detail="items must be a list")
+        result = settle_batch_points(
+            db_path,
+            freeze_id,
+            item_results=items,
+            expected_account_id=str(account["account_id"]),
+        )
+        return {"ok": True, "settle": result}
+
+    @app.get("/api/customer/billing/pod-semi/{freeze_id}")
+    def customer_pod_semi_status(
+        freeze_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        account = _required_account(db_path, authorization)
+        return {
+            "ok": True,
+            "freeze": batch_freeze_status(
+                db_path,
+                freeze_id,
+                expected_account_id=str(account["account_id"]),
+            ),
+        }
+
     @app.post("/api/customer/product-processing/failure-log")
     def product_processing_failure_log(
         payload: dict[str, Any],

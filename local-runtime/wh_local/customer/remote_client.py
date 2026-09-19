@@ -214,6 +214,27 @@ class CustomerAuthClient:
             headers={"Authorization": f"Bearer {remote_token}"},
         )
 
+    def freeze_pod_semi_points(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Freeze points for a POD semi-customization batch (4 items = 1 link = fixed 32 points)."""
+        return self._billing_post("/api/customer/billing/pod-semi/freeze", remote_token, payload)
+
+    def settle_pod_semi_points(self, remote_token: str, freeze_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Settle a frozen POD semi-customization batch (per-group subitem statuses)."""
+        return self._billing_post(
+            "/api/customer/billing/pod-semi/settle",
+            remote_token,
+            {**payload, "freeze_id": freeze_id},
+        )
+
+    def pod_semi_freeze_status(self, remote_token: str, freeze_id: str) -> dict[str, Any]:
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        return self._billing_result(
+            self._get,
+            f"/api/customer/billing/pod-semi/{freeze_id}",
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
     def submit_pp_failure_log(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Upload product-processing failure diagnostics for server-side storage.
 

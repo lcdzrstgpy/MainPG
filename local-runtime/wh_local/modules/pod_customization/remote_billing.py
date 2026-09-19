@@ -7,6 +7,7 @@ from typing import Any
 from ...customer.contracts import CustomerBillingPermissionError
 from ...session import Actor
 from .billing_contract import (
+    POD_BILLING_PROFILE_SEMI,
     PodBillingCoordinator,
     PodCallOutcome,
     PodCallPlan,
@@ -27,10 +28,12 @@ class RemotePodBillingCoordinator(PodBillingCoordinator):
 
     def freeze(self, actor: Actor, plan: PodCallPlan) -> PodExecutionGrant:
         remote_token = self._required_remote_token(actor)
-        response = self._remote_client.freeze_batch_points(
-            remote_token,
-            plan.product_batch_freeze_payload(),
-        )
+        payload = plan.product_batch_freeze_payload()
+        # 半定制走独立计费接口（固定 32/组），全定制/商品处理走通用 batch 接口。
+        if plan.semi_item_count:
+            response = self._remote_client.freeze_pod_semi_points(remote_token, payload)
+        else:
+            response = self._remote_client.freeze_batch_points(remote_token, payload)
         freeze = response.get("freeze") if isinstance(response, Mapping) else None
         if not isinstance(freeze, Mapping):
             raise RuntimeError("POD billing service returned an invalid freeze")
@@ -44,11 +47,19 @@ class RemotePodBillingCoordinator(PodBillingCoordinator):
         outcomes: Sequence[PodCallOutcome],
     ) -> None:
         del actor
-        self._remote_client.settle_batch_points(
-            grant.remote_token,
-            grant.freeze_id,
-            plan.product_batch_settlement_payload(outcomes),
-        )
+        payload = plan.product_batch_settlement_payload(outcomes)
+        if plan.semi_item_count:
+            self._remote_client.settle_pod_semi_points(
+                grant.remote_token,
+                grant.freeze_id,
+                payload,
+            )
+        else:
+            self._remote_client.settle_batch_points(
+                grant.remote_token,
+                grant.freeze_id,
+                payload,
+            )
 
     def regrant(self, actor: Actor, freeze_id: str) -> PodExecutionGrant:
         remote_token = self._required_remote_token(actor)
@@ -60,15 +71,18 @@ class RemotePodBillingCoordinator(PodBillingCoordinator):
             link_count = max(1, int(status.get("link_count") or 0))
         except (TypeError, ValueError) as exc:
             raise RuntimeError("POD billing service returned an invalid freeze status") from exc
-        response = self._remote_client.freeze_batch_points(
-            remote_token,
-            {
-                "idempotency_key": freeze_id,
-                "link_count": link_count,
-                "scope": list(status.get("scope") or []),
-                "billing_profile": str(status.get("billing_profile") or "pod_random_v1"),
-            },
-        )
+        billing_profile = str(status.get("billing_profile") or "pod_random_v1")
+        payload = {
+            "idempotency_key": freeze_id,
+            "link_count": link_count,
+            "scope": list(status.get("scope") or []),
+            "billing_profile": billing_profile,
+        }
+        # 重新冻结也按画像分流：半定制走独立接口，避免被通用接口重新按全定制单价计价。
+        if billing_profile == POD_BILLING_PROFILE_SEMI:
+            response = self._remote_client.freeze_pod_semi_points(remote_token, payload)
+        else:
+            response = self._remote_client.freeze_batch_points(remote_token, payload)
         freeze = response.get("freeze") if isinstance(response, Mapping) else None
         if not isinstance(freeze, Mapping):
             raise RuntimeError("POD billing service returned an invalid grant")

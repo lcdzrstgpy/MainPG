@@ -21,14 +21,15 @@ TEST_GRANT_POINTS = int(os.environ.get("WH_BILLING_TEST_GRANT_POINTS", "10000") 
 GATEWAY_LEGACY_LEASE_SECONDS = 900
 BATCH_BILLING_PROFILE_PRODUCT = "product_processing"
 BATCH_BILLING_PROFILE_POD = "pod_random_v1"
-# 半定制（纯图案）独立计费画像：每款（单张图案）随机 32..38 整数积分。
+# 半定制（纯图案）独立计费画像：按「组」上报，一组 4 款固定 32 积分（即 8 积分/款）。
+# 客户端半定制把 4 款折叠成 1 个 link 上报（link_count = 组数），故这里按 link 固定 32。
 BATCH_BILLING_PROFILE_POD_SEMI = "pod_semi_v1"
 # POD 每条款式定价：服务器随机取 40..50 整数积分。
 POD_LINK_PRICE_MIN_POINTS = 40
 POD_LINK_PRICE_VARIANTS = 11
-# POD 半定制每款（单张图案）定价：服务器随机取 32..38 整数积分。
+# POD 半定制每组（4 款）定价：固定 32 整数积分（variants=1 → randbelow(1) 恒为 0）。
 POD_SEMI_LINK_PRICE_MIN_POINTS = 32
-POD_SEMI_LINK_PRICE_VARIANTS = 7
+POD_SEMI_LINK_PRICE_VARIANTS = 1
 # Fixed-package topup gifts are tiered by package: higher packages gift more.
 # The historical ``topup_double`` configuration remains in SQLite for audit
 # and old order snapshots.  New orders use this fixed tiered rule and
@@ -692,6 +693,8 @@ def usage_history(
         raw_status = str(row["status"] or "")
         billing_profile = str(row["billing_profile"] or BATCH_BILLING_PROFILE_PRODUCT)
         is_pod = billing_profile in {BATCH_BILLING_PROFILE_POD, BATCH_BILLING_PROFILE_POD_SEMI}
+        # 半定制按「组」上报（一组 4 款），展示时要把 link_count 还原成款数。
+        is_semi = billing_profile == BATCH_BILLING_PROFILE_POD_SEMI
         freeze_id = str(row["freeze_id"] or "")
         # 组合套装扣费通过 freeze_batch_points(idempotency_key=combo-kit:xxx) 写入，
         # 按 freeze_id 前缀划分独立板块，便于消费流水按服务归类管理。
@@ -720,7 +723,7 @@ def usage_history(
                     "套装组合结算" if is_combo else ("POD 定制结算" if is_pod else "批量链接结算")
                 ),
                 "model": (
-                    f"{int(row['link_count'])} 款创作"
+                    f"{int(row['link_count']) * (4 if is_semi else 1)} 款创作"
                     if is_pod
                     else f"{int(row['link_count'])} 条链接"
                 ),
