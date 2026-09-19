@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ..session import actor_from_authorization
 from .repository import MessagesRepository
@@ -16,8 +16,12 @@ def create_messages_router(
     router = APIRouter(prefix="/api/messages", tags=["messages"])
 
     @router.get("")
-    def list_messages(_: Any = Depends(actor_from_authorization)) -> dict[str, Any]:
-        return {"messages": repository.list_messages()}
+    def list_messages(
+        with_images: int = Query(default=0),
+        _: Any = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        # 图片 base64 体积大：默认不带，公告弹窗用 with_images=1 取本地缓存的本体。
+        return {"messages": repository.list_messages(with_images=bool(with_images))}
 
     @router.get("/unread-count")
     def unread_count(_: Any = Depends(actor_from_authorization)) -> dict[str, Any]:

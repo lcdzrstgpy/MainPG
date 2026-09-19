@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -13,7 +14,10 @@ CREATE TABLE IF NOT EXISTS messages (
     published_at TEXT NOT NULL DEFAULT '',
     read INTEGER NOT NULL DEFAULT 0,
     received_at TEXT NOT NULL DEFAULT (datetime('now')),
-    kind TEXT NOT NULL DEFAULT 'announcement'
+    kind TEXT NOT NULL DEFAULT 'announcement',
+    image_count INTEGER NOT NULL DEFAULT 0,
+    image_rev INTEGER NOT NULL DEFAULT 0,
+    images TEXT NOT NULL DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS idx_messages_read
     ON messages (read, published_at DESC);
@@ -33,6 +37,31 @@ def _ensure_kind_column(con: sqlite3.Connection) -> None:
         )
 
 
+def _ensure_image_columns(con: sqlite3.Connection) -> None:
+    """旧库迁移：补公告图片相关列。
+
+    images 存图片本体（JSON 数组，元素含 base64），按需从服务端拉取后本地缓存；
+    image_rev 是服务端图片版本号，变化说明图片被改过，需重新拉取。
+    """
+    cols = {row[1] for row in con.execute("PRAGMA table_info(messages)")}
+    if "image_count" not in cols:
+        con.execute("ALTER TABLE messages ADD COLUMN image_count INTEGER NOT NULL DEFAULT 0")
+    if "image_rev" not in cols:
+        con.execute("ALTER TABLE messages ADD COLUMN image_rev INTEGER NOT NULL DEFAULT 0")
+    if "images" not in cols:
+        con.execute("ALTER TABLE messages ADD COLUMN images TEXT NOT NULL DEFAULT '[]'")
+
+
+def _load_images(raw: Any) -> list[dict[str, Any]]:
+    try:
+        items = json.loads(raw or "[]")
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(items, list):
+        return []
+    return [item for item in items if isinstance(item, dict)]
+
+
 class MessagesRepository:
     """本地消息表：保存从服务器同步来的公告及本机已读状态。"""
 
@@ -43,6 +72,7 @@ class MessagesRepository:
         try:
             con.executescript(SCHEMA_SQL)
             _ensure_kind_column(con)
+            _ensure_image_columns(con)
             con.commit()
         finally:
             con.close()
@@ -78,42 +108,95 @@ class MessagesRepository:
                 title = str(item.get("title") or "").strip()
                 content = str(item.get("content") or "")
                 published_at = str(item.get("published_at") or "")
+                image_count = int(item.get("image_count") or 0)
+                image_rev = int(item.get("image_rev") or 0)
                 cur = con.execute(
                     """
                     INSERT INTO messages (
-                        server_id, title, content, published_at, read, kind
-                    ) VALUES (?, ?, ?, ?, 0, ?)
+                        server_id, title, content, published_at, read, kind,
+                        image_count, image_rev, images
+                    ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, '[]')
                     ON CONFLICT(server_id) DO NOTHING
                     """,
-                    (server_id, title, content, published_at, kind),
+                    (server_id, title, content, published_at, kind, image_count, image_rev),
                 )
                 if cur.rowcount > 0:
                     new_count += 1
                     continue
+                # 图片版本号变了说明服务端改过图：清空本地缓存，交给按需拉取重新下载。
                 con.execute(
                     """
                     UPDATE messages
-                    SET title = ?, content = ?, published_at = ?, kind = ?
+                    SET title = ?, content = ?, published_at = ?, kind = ?,
+                        image_count = ?, image_rev = ?,
+                        images = CASE WHEN image_rev = ? THEN images ELSE '[]' END
                     WHERE server_id = ?
                     """,
-                    (title, content, published_at, kind, server_id),
+                    (
+                        title,
+                        content,
+                        published_at,
+                        kind,
+                        image_count,
+                        image_rev,
+                        image_rev,
+                        server_id,
+                    ),
                 )
             con.commit()
             return new_count
         finally:
             con.close()
 
-    def list_messages(self) -> list[dict[str, Any]]:
+    def list_messages(self, *, with_images: bool = False) -> list[dict[str, Any]]:
         con = self._connect()
         try:
             rows = con.execute(
                 """
-                SELECT id, server_id, title, content, published_at, read, kind
+                SELECT id, server_id, title, content, published_at, read, kind,
+                       image_count, image_rev, images
                 FROM messages
                 ORDER BY published_at DESC, id DESC
                 """
             ).fetchall()
+            messages: list[dict[str, Any]] = []
+            for row in rows:
+                item = dict(row)
+                # 图片 base64 体积大：默认只给数量，弹窗需要时才带上本体。
+                item["images"] = _load_images(item.get("images")) if with_images else []
+                messages.append(item)
+            return messages
+        finally:
+            con.close()
+
+    def messages_missing_images(self, limit: int = 10) -> list[dict[str, Any]]:
+        """待按需拉取图片本体的公告（有图但本地缓存为空）。"""
+        con = self._connect()
+        try:
+            rows = con.execute(
+                """
+                SELECT server_id, image_rev FROM messages
+                WHERE kind = 'announcement' AND image_count > 0 AND images = '[]'
+                ORDER BY published_at DESC, id DESC
+                LIMIT ?
+                """,
+                (int(limit),),
+            ).fetchall()
             return [dict(row) for row in rows]
+        finally:
+            con.close()
+
+    def save_message_images(
+        self, server_id: int, image_rev: int, images: list[dict[str, Any]]
+    ) -> None:
+        """写入按需拉取到的图片本体（含服务端版本号，供下次判断是否过期）。"""
+        con = self._connect()
+        try:
+            con.execute(
+                "UPDATE messages SET images = ?, image_rev = ? WHERE server_id = ?",
+                (json.dumps(images, ensure_ascii=False), int(image_rev), int(server_id)),
+            )
+            con.commit()
         finally:
             con.close()
 

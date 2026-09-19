@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Callable
+from typing import Any, Callable
 from urllib.parse import quote
 
 import httpx
@@ -39,6 +39,13 @@ class AnnouncementSyncService:
     def configured(self) -> bool:
         return bool(self.base_url)
 
+    def _request_kwargs(self) -> dict[str, Any]:
+        # IP-direct connections to a test/staging host cannot match the public
+        # certificate's hostname; skip verification only for bare IP literals.
+        if is_ip_literal_host(self.base_url):
+            return {"timeout": 10, "verify": False}
+        return {"timeout": 10}
+
     def sync_once(self) -> int:
         """执行一次同步，返回新增消息数；失败返回 0。"""
         if not self.configured():
@@ -53,10 +60,7 @@ class AnnouncementSyncService:
         if account_id:
             url += f"?account_id={quote(account_id)}"
         try:
-            # IP-direct connections to a test/staging host cannot match the public
-            # certificate's hostname; skip verification only for bare IP literals.
-            request_kwargs = {"timeout": 10, "verify": False} if is_ip_literal_host(self.base_url) else {"timeout": 10}
-            response = httpx.get(url, **request_kwargs)
+            response = httpx.get(url, **self._request_kwargs())
             response.raise_for_status()
             payload = response.json()
             items = payload.get("announcements") if isinstance(payload, dict) else None
@@ -67,10 +71,41 @@ class AnnouncementSyncService:
             # 撤回：服务器返回完整在线列表时，把已下线/已删除的本地消息一并移除。
             active_ids = [int(item.get("id") or 0) for item in items]
             self.repository.prune_retracted(active_ids)
+            self._sync_pending_images()
             return new_count
         except Exception as exc:  # 离线/服务器未就绪：静默降级
             logger.info("announcement sync unavailable (%s): %s", url, exc)
             return 0
+
+    def _sync_pending_images(self) -> None:
+        """按需拉取带图公告的图片本体，存本地缓存供弹窗直接读取。
+
+        列表接口只回 image_count/image_rev，避免每轮同步都搬运 base64；
+        这里只补本地缺图的公告（每轮最多 10 条），失败静默跳过下次再试。
+        """
+        try:
+            pending = self.repository.messages_missing_images()
+        except Exception:
+            logger.exception("announcement images: scan pending failed")
+            return
+        for row in pending:
+            server_id = int(row.get("server_id") or 0)
+            if server_id <= 0:
+                continue
+            try:
+                response = httpx.get(
+                    f"{self.base_url}/api/announcements/{server_id}/images",
+                    **self._request_kwargs(),
+                )
+                response.raise_for_status()
+                payload = response.json()
+                images = payload.get("images") if isinstance(payload, dict) else None
+                if not isinstance(images, list):
+                    continue
+                image_rev = int(payload.get("image_rev") or row.get("image_rev") or 0)
+                self.repository.save_message_images(server_id, image_rev, images)
+            except Exception as exc:  # 单条失败不影响其余公告
+                logger.info("announcement images unavailable (%s): %s", server_id, exc)
 
     def start(self) -> None:
         if self._thread is not None or not self.configured():

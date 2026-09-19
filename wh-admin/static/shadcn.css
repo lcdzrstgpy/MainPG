@@ -480,6 +480,239 @@ textarea.input, textarea.form-control { height: auto; padding: 8px 10px; line-he
   cursor: pointer;
 }
 .announcement-toggle:hover { text-decoration: underline; }
+.announcement-images { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.announcement-image-grid { display: flex; flex-wrap: wrap; gap: 10px; }
+.announcement-image-item { position: relative; width: 96px; height: 96px; border-radius: var(--radius-sm); overflow: hidden; border: 1px solid #e4e4e7; background: #f4f4f5; }
+.announcement-image-item img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.announcement-image-remove {
+  position: absolute; top: 3px; right: 3px; width: 20px; height: 20px; border: 0; border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55); color: #fff; font-size: 14px; line-height: 1; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.announcement-image-remove:hover { background: rgba(220, 38, 38, 0.9); }
+.announcement-image-add {
+  width: 96px; height: 96px; border: 1px dashed #cbd5e1; border-radius: var(--radius-sm);
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+  color: #6d7789; font-size: 12.5px; background: #fafafa;
+}
+.announcement-image-add:hover { border-color: var(--primary); color: var(--primary); }
+.announcement-image-hint { margin-top: 6px; color: #6d7789; font-size: 12px; }
+.announcement-thumbs { position: relative; display: inline-block; cursor: pointer; }
+.announcement-thumbs img { width: 54px; height: 54px; object-fit: cover; border-radius: 6px; border: 1px solid #e4e4e7; display: block; }
+.announcement-thumb-more {
+  position: absolute; right: -6px; bottom: -6px; min-width: 20px; height: 20px; padding: 0 5px;
+  border-radius: 10px; background: rgba(0, 0, 0, 0.66); color: #fff; font-size: 11px;
+  display: flex; align-items: center; justify-content: center;
+}
+
+/* ---------------- 公告发布预览（后台按客户端弹窗的样式还原，含多图轮播） ----------------
+   与客户端 web-frontend/src/shared/styles/global.css 的 .announcement-modal-* 一一对应，
+   改动请两边同步，保证「后台预览 = 客户端弹窗」。 */
+.mask .modal.announcement-preview-modal {
+  position: relative; width: min(1680px, 84vw); padding: 24px 22px 20px;
+  border: 1px solid rgba(198, 220, 238, .9); border-radius: 20px; background: #fff;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, .75),
+    0 40px 80px -26px rgba(7, 38, 69, .5),
+    0 12px 30px rgba(7, 38, 69, .16);
+}
+.announcement-preview-close {
+  position: absolute; top: 16px; right: 16px; width: 36px; height: 36px; border: 0; border-radius: 12px;
+  background: transparent; color: #6b849a; font-size: 20px; line-height: 1; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: background-color .18s ease, color .18s ease, box-shadow .18s ease, transform .2s cubic-bezier(.16, 1, .3, 1);
+}
+.announcement-preview-close:hover { background: #fff; color: #12304c; box-shadow: 0 8px 18px rgba(9, 46, 84, .16); transform: rotate(90deg); }
+.announcement-preview-head { position: relative; display: flex; align-items: center; gap: 12px; margin: 0 0 18px; }
+/* 顶部品牌渐变条：贴住预览框上沿，与客户端弹窗一致。 */
+.announcement-preview-head::before {
+  content: ""; position: absolute; top: -24px; left: -22px; right: -22px; height: 4px;
+  border-radius: 20px 20px 0 0; background: linear-gradient(90deg, #087bf5, #14c8c0 48%, #6f7bf7);
+}
+.announcement-preview-mark {
+  flex: none; width: 38px; height: 38px; display: grid; place-items: center; border-radius: 12px;
+  background: linear-gradient(140deg, #087bf5, #14c8c0); color: #fff;
+  box-shadow: 0 10px 20px -9px rgba(8, 123, 245, .7), inset 0 1px 0 rgba(255, 255, 255, .45);
+}
+.announcement-preview-mark svg { width: 19px; height: 19px; }
+.announcement-preview-heading { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.announcement-preview-eyebrow { color: #0f3355; font-size: 13px; font-weight: 700; letter-spacing: .04em; }
+.announcement-preview-subtitle { color: #7d97ae; font-size: 10.5px; letter-spacing: .1em; }
+.announcement-preview-badge {
+  margin-left: auto; flex: none; padding: 3px 11px; border-radius: 999px;
+  background: #fff7ed; color: #c2410c; font-size: 11px; font-weight: 600;
+}
+.mask .modal.announcement-preview-modal h3 {
+  margin: 0 0 14px; color: #10304e; font-size: 19px; font-weight: 700; line-height: 1.4; letter-spacing: -.01em;
+}
+/* 轮播：图片一律按原始比例铺满宽度（不裁剪、不变形）；超长截图在框内纵向滚动，
+   避免被固定高度压成「中间一条细缝 + 两侧大片深色空框」。 */
+.announcement-preview-carousel {
+  position: relative; border-radius: 14px; overflow: hidden; background: #0d1b2a;
+  box-shadow: inset 0 0 0 1px rgba(9, 46, 84, .1), 0 10px 24px -14px rgba(7, 38, 69, .5);
+}
+.announcement-preview-track { display: flex; align-items: center; transition: transform .45s cubic-bezier(.22, .61, .36, 1); }
+.announcement-preview-slide {
+  flex: 0 0 100%; display: grid; place-items: center;
+  max-height: min(62vh, 760px); overflow-y: auto; overscroll-behavior: contain;
+}
+.announcement-preview-slide img { display: block; width: 100%; height: auto; }
+.announcement-preview-nav {
+  position: absolute; top: 50%; width: 38px; height: 38px; display: grid; place-items: center;
+  border: 0; border-radius: 50%; background: rgba(9, 26, 46, .5); color: #fff; font-size: 22px;
+  line-height: 1; cursor: pointer; transform: translateY(-50%); transition: background-color .2s ease, opacity .2s ease;
+}
+.announcement-preview-nav:hover:not(:disabled) { background: rgba(9, 26, 46, .78); }
+.announcement-preview-nav:disabled { opacity: .22; cursor: default; }
+.announcement-preview-nav.is-prev { left: 12px; }
+.announcement-preview-nav.is-next { right: 12px; }
+.announcement-preview-counter {
+  position: absolute; right: 10px; bottom: 10px; padding: 3px 10px; border-radius: 999px;
+  background: rgba(9, 26, 46, .6); color: #fff; font-size: 11.5px;
+}
+.announcement-preview-dots { display: flex; justify-content: center; gap: 8px; margin-top: 14px; }
+.announcement-preview-dot {
+  width: 7px; height: 7px; padding: 0; border: 0; border-radius: 50%; background: #c8d8e6;
+  cursor: pointer; transition: width .24s ease, background-color .24s ease;
+}
+.announcement-preview-dot.is-active { width: 20px; border-radius: 4px; background: var(--primary); }
+.announcement-preview-content {
+  margin: 16px 0 0; max-height: min(34vh, 340px); overflow-y: auto; color: #3d5670;
+  font-size: 13.5px; line-height: 1.8; word-break: break-word;
+}
+.mask .modal.announcement-preview-modal .modal-actions {
+  margin-top: 18px; padding-top: 16px; border-top: 1px solid #eef4fa;
+}
+.mask .modal.announcement-preview-modal .modal-actions .btn {
+  padding: 11px 30px; border-radius: 12px; font-size: 14px; font-weight: 600;
+}
+
+/* ==========================================================================
+   公告正文富文本排版（Changelog 卡片风）
+   客户端 web-frontend/src/shared/styles/global.css 里 .announcement-modal-content
+   是同一套规则（字号按各自基准换算），改动请两边同步，保证「后台预览 = 客户端弹窗」。
+   ========================================================================== */
+.announcement-preview-content > *:first-child { margin-top: 0; }
+.announcement-preview-content > *:last-child { margin-bottom: 0; }
+.announcement-preview-content p { margin: 0 0 10px; }
+
+/* 小标题：左侧品牌色竖条 */
+.announcement-preview-content h1,
+.announcement-preview-content h2,
+.announcement-preview-content h3,
+.announcement-preview-content h4 {
+  position: relative; margin: 20px 0 12px; padding-left: 12px;
+  color: #14304c; font-size: 14.6px; font-weight: 700; line-height: 1.5;
+}
+.announcement-preview-content h1,
+.announcement-preview-content h2 { font-size: 15.7px; }
+.announcement-preview-content h4 { color: #33556f; font-size: 13.5px; }
+.announcement-preview-content h1::before,
+.announcement-preview-content h2::before,
+.announcement-preview-content h3::before,
+.announcement-preview-content h4::before {
+  content: ""; position: absolute; top: .18em; bottom: .18em; left: 0; width: 3px;
+  border-radius: 2px; background: linear-gradient(180deg, #0a8fe0, #35c2b0);
+}
+
+/* 无序列表：品牌色圆点 */
+.announcement-preview-content ul { margin: 0 0 10px; padding: 0; list-style: none; }
+.announcement-preview-content ul > li { position: relative; margin: 0 0 8px; padding-left: 18px; }
+.announcement-preview-content ul > li::before {
+  content: ""; position: absolute; top: .66em; left: 4px; width: 6px; height: 6px;
+  border-radius: 50%; background: #0a8fe0; box-shadow: 0 0 0 3px rgba(10, 143, 224, .13);
+}
+.announcement-preview-content ul ul > li::before {
+  top: .68em; left: 4px; width: 5px; height: 5px;
+  background: #fff; box-shadow: inset 0 0 0 1.5px #7fb8dd;
+}
+
+/* 有序列表：数字徽标 */
+.announcement-preview-content ol {
+  margin: 0 0 10px; padding: 0; list-style: none; counter-reset: ann-ol;
+}
+.announcement-preview-content ol > li {
+  position: relative; margin: 0 0 8px; padding-left: 28px; counter-increment: ann-ol;
+}
+.announcement-preview-content ol > li::before {
+  content: counter(ann-ol); position: absolute; top: .22em; left: 0;
+  min-width: 18px; height: 18px; padding: 0 4px; border-radius: 6px;
+  background: rgba(10, 143, 224, .12); color: #0a72c9; font-size: 11px;
+  font-weight: 700; line-height: 18px; text-align: center;
+}
+
+/* 任务清单：隐掉自定义圆点，避免和复选框重叠 */
+.announcement-preview-content li:has(> input[type="checkbox"]) { padding-left: 0; }
+.announcement-preview-content li:has(> input[type="checkbox"])::before { content: none; }
+.announcement-preview-content input[type="checkbox"] {
+  width: 14px; height: 14px; margin: 0 6px 0 0; vertical-align: -2px; accent-color: #0a8fe0;
+}
+
+/* 强调 */
+.announcement-preview-content strong { color: #0a72c9; font-weight: 700; }
+.announcement-preview-content em { color: #4a6b85; }
+.announcement-preview-content del { color: #9aacbd; }
+
+/* 行内代码 / 代码块 */
+.announcement-preview-content code {
+  padding: 1px 5px; border-radius: 5px; background: #eef4fa; color: #0a72c9;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .84em;
+}
+.announcement-preview-content pre {
+  margin: 0 0 10px; padding: 10px 12px; border: 1px solid #e4eef7; border-radius: 10px;
+  background: #f4f8fc; overflow-x: auto;
+}
+.announcement-preview-content pre code { padding: 0; background: none; color: #33556f; font-size: 12px; }
+
+/* 引用块 */
+.announcement-preview-content blockquote {
+  margin: 0 0 10px; padding: 8px 12px; border-left: 3px solid #bcd9ec;
+  border-radius: 0 8px 8px 0; background: #f5fafd; color: #4a6b85;
+}
+.announcement-preview-content blockquote > *:last-child { margin-bottom: 0; }
+
+/* 分割线 */
+.announcement-preview-content hr {
+  height: 1px; margin: 16px 0; border: 0;
+  background: linear-gradient(90deg, #dce9f3, rgba(220, 233, 243, 0));
+}
+
+/* 链接与图片 */
+.announcement-preview-content a {
+  color: #0a8fe0; text-decoration: none; border-bottom: 1px solid rgba(10, 143, 224, .35);
+}
+.announcement-preview-content a:hover { border-bottom-color: #0a8fe0; }
+.announcement-preview-content img { max-width: 100%; border-radius: 10px; }
+
+/* 表格 */
+.announcement-preview-content table {
+  width: 100%; margin: 0 0 12px; border-collapse: collapse; font-size: 12px;
+}
+.announcement-preview-content th,
+.announcement-preview-content td { padding: 7px 10px; border: 1px solid #e4eef7; text-align: left; }
+.announcement-preview-content th { background: #f2f8fd; color: #14304c; font-weight: 700; }
+
+/* 提示块 `::: tip / info / warning / danger` */
+.announcement-preview-content .ann-callout {
+  margin: 0 0 12px; padding: 10px 13px; border: 1px solid #d6e8f6;
+  border-left-width: 3px; border-radius: 12px; background: #f4faff;
+}
+.announcement-preview-content .ann-callout-title {
+  margin: 0 0 4px; color: #0a72c9; font-size: 12px; font-weight: 700;
+}
+.announcement-preview-content .ann-callout-body > *:last-child { margin-bottom: 0; }
+.announcement-preview-content .ann-callout.is-tip {
+  border-color: #c9ead9; border-left-color: #24b47e; background: #f3fbf7;
+}
+.announcement-preview-content .ann-callout.is-tip .ann-callout-title { color: #17855c; }
+.announcement-preview-content .ann-callout.is-warning {
+  border-color: #f4e2c0; border-left-color: #e0a12a; background: #fffaf0;
+}
+.announcement-preview-content .ann-callout.is-warning .ann-callout-title { color: #a9741a; }
+.announcement-preview-content .ann-callout.is-danger {
+  border-color: #f5d3d3; border-left-color: #e0574f; background: #fff5f5;
+}
+.announcement-preview-content .ann-callout.is-danger .ann-callout-title { color: #b93b34; }
 
 /* ---------------- 弹窗 ---------------- */
 .mask {

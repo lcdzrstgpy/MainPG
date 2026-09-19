@@ -1,5 +1,13 @@
 import { httpJson } from "../../transport/http/client";
 
+export type InboxMessageImage = {
+  name: string;
+  mime: string;
+  size: number;
+  /** 不带 data: 前缀的 base64 本体。 */
+  data: string;
+};
+
 export type InboxMessage = {
   id: number;
   serverId: number;
@@ -8,6 +16,10 @@ export type InboxMessage = {
   publishedAt: string;
   read: boolean;
   kind: string;
+  /** 服务端图片张数；images 为空（未按需拉取）时也能知道有没有图。 */
+  imageCount: number;
+  imageRev: number;
+  images: InboxMessageImage[];
 };
 
 const TOKEN_KEY = "wh_demo_token";
@@ -17,6 +29,16 @@ function resolveToken(): string {
   const stored = window.localStorage.getItem(TOKEN_KEY);
   if (stored) return stored;
   return import.meta.env.DEV ? "dev-admin-token" : "";
+}
+
+function mapImage(value: unknown): InboxMessageImage {
+  const raw = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
+  return {
+    name: String(raw.name ?? ""),
+    mime: String(raw.mime ?? "image/png"),
+    size: Number(raw.size ?? 0),
+    data: String(raw.data ?? ""),
+  };
 }
 
 function mapMessage(value: unknown): InboxMessage {
@@ -29,11 +51,18 @@ function mapMessage(value: unknown): InboxMessage {
     publishedAt: String(raw.published_at ?? raw.publishedAt ?? ""),
     read: Boolean(raw.read),
     kind: String(raw.kind ?? "announcement"),
+    imageCount: Number(raw.image_count ?? raw.imageCount ?? 0),
+    imageRev: Number(raw.image_rev ?? raw.imageRev ?? 0),
+    images: Array.isArray(raw.images)
+      ? raw.images.map(mapImage).filter((image) => image.data)
+      : [],
   };
 }
 
-export async function fetchMessages(): Promise<InboxMessage[]> {
-  const payload = await httpJson<{ messages?: unknown[] }>("/api/messages", {
+/** 拉取消息列表；withImages=true 时一并带上公告图片（base64），供弹窗轮播。 */
+export async function fetchMessages(options?: { withImages?: boolean }): Promise<InboxMessage[]> {
+  const path = options?.withImages ? "/api/messages?with_images=1" : "/api/messages";
+  const payload = await httpJson<{ messages?: unknown[] }>(path, {
     token: resolveToken(),
   });
   return Array.isArray(payload.messages) ? payload.messages.map(mapMessage) : [];

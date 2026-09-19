@@ -64,6 +64,14 @@ import {
   setActiveGuideConfig,
   type GuideConfig,
 } from "../../shared/components/guide/guideConfig";
+import {
+  AnnouncementModal,
+  REPLAY_ANNOUNCEMENT_EVENT,
+  hasSeenAnnouncement,
+  isAnnouncementPopupEligible,
+  markAnnouncementSeen,
+} from "../../shared/components/AnnouncementModal";
+import { fetchMessages, markMessageRead, type InboxMessage } from "../../shared/api/messagesApi";
 import { showToast } from "../../shared/components/toastStore";
 import { HelpAgentWidget } from "../../modules/help_agent/components/HelpAgentWidget";
 import { WorkspaceTabScrollStore } from "./workspaceTabState";
@@ -324,10 +332,16 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
   const guideTourRef = useRef<ReturnType<typeof startGuideTour> | null>(null);
   const guideAutoStartedRef = useRef(false);
   const [guideBoardPanelOpen, setGuideBoardPanelOpen] = useState(false);
+  /** 引导教程是否正在走：教程期间公告弹窗让位，避免两层遮罩同时盖在屏幕上。 */
+  const [guideTourActive, setGuideTourActive] = useState(false);
   /** 服务端引导配置是否已加载完（成功或失败都算，失败时用内置默认引导）。 */
   const [guideConfigReady, setGuideConfigReady] = useState(false);
   /** 编辑器打开时使用的配置快照；非空即代表编辑器开着。 */
   const [guideEditorSeed, setGuideEditorSeed] = useState<GuideConfig | null>(null);
+  /** 登录后待弹出的公告队列（多条时在同一个弹窗里逐条看）。 */
+  const [announcementQueue, setAnnouncementQueue] = useState<InboxMessage[]>([]);
+  /** 公告只在进入工作台后自动检查一次，避免轮询式反复弹窗。 */
+  const announcementCheckedRef = useRef(false);
 
   /**
    * 引导请求切页：只认工作台真实存在的模块。
@@ -352,6 +366,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
       onRequestPage: requestGuidePage,
       onFinish: (completed) => {
         guideTourRef.current = null;
+        setGuideTourActive(false);
         if (!completed) return;
         markGuideSubTaskDone(boardId, subTaskId);
         // 回到面板，让用户看到更新后的进度并接着看下一个子任务。
@@ -360,6 +375,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
     });
     if (!tour) return;
     guideTourRef.current = tour;
+    setGuideTourActive(true);
   };
 
   // 引导内容存在本地服务端：启动时拉一次写入运行时配置，换浏览器/重装都还在；
@@ -433,6 +449,64 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
     }, 800);
     return () => window.clearTimeout(timer);
   }, [playEntryAnimation, guideConfigReady]);
+
+  /** 拉取公告（带图片），滤掉本机已弹过的，组成待展示队列。 */
+  const loadAnnouncementQueue = async () => {
+    try {
+      const items = await fetchMessages({ withImages: true });
+      // 「只弹一次」由本机 localStorage 标记负责；服务端 read 只用于铃铛红点。
+      // 不能拿 read 当过滤条件：用户可能在铃铛里点开过公告（那时就被标了已读），
+      // 结果登录弹窗反而永远不出现。
+      const pending = items.filter(
+        (item) =>
+          item.kind === "announcement" &&
+          !hasSeenAnnouncement(item.id) &&
+          isAnnouncementPopupEligible(item.publishedAt),
+      );
+      if (pending.length) setAnnouncementQueue(pending);
+    } catch {
+      // 离线等场景静默：公告不是关键路径，留到下次登录。
+    }
+  };
+
+  // 登录后的公告大弹窗：等入场动画播完、且新手引导不占屏时再弹（首次会被引导先拦住，
+  // 引导关掉后本效果因依赖变化会重新跑一次）。比引导的 800ms 稍晚，避免和它抢秒。
+  useEffect(() => {
+    if (announcementCheckedRef.current) return;
+    if (playEntryAnimation || !guideConfigReady) return;
+    if (guideBoardPanelOpen || guideEditorSeed || guideTourActive) return;
+    const timer = window.setTimeout(() => {
+      announcementCheckedRef.current = true;
+      void loadAnnouncementQueue();
+    }, 900);
+    return () => window.clearTimeout(timer);
+  }, [playEntryAnimation, guideConfigReady, guideBoardPanelOpen, guideEditorSeed, guideTourActive]);
+
+  /** 单条公告算看过：本机写标记（服务端没有「已弹出」概念），同时上报已读并刷新铃铛红点。 */
+  const handleAnnouncementSeen = (messageId: number) => {
+    markAnnouncementSeen(messageId);
+    void markMessageRead(messageId).catch(() => undefined);
+    window.dispatchEvent(new Event("mainpg:messages-change"));
+  };
+
+  /** 消息中心里点公告 → 重开大弹窗回看（重新拉带图片的版本，排版与登录弹窗完全一致）。 */
+  useEffect(() => {
+    const handleReplay = (event: Event) => {
+      const messageId = (event as CustomEvent<{ messageId?: number }>).detail?.messageId;
+      if (!messageId) return;
+      void (async () => {
+        try {
+          const items = await fetchMessages({ withImages: true });
+          const target = items.find((item) => item.id === messageId);
+          if (target) setAnnouncementQueue([target]);
+        } catch {
+          // 离线等场景静默
+        }
+      })();
+    };
+    window.addEventListener(REPLAY_ANNOUNCEMENT_EVENT, handleReplay);
+    return () => window.removeEventListener(REPLAY_ANNOUNCEMENT_EVENT, handleReplay);
+  }, []);
 
   const openComboGenerate = (setId: string) => {
     setExpandedGroupId("combo_workflow");
@@ -754,6 +828,13 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
           onSave={saveGuideEditor}
           onClose={() => setGuideEditorSeed(null)}
           onPreview={previewGuideDraft}
+        />
+      )}
+      {announcementQueue.length > 0 && (
+        <AnnouncementModal
+          announcements={announcementQueue}
+          onSeen={handleAnnouncementSeen}
+          onClose={() => setAnnouncementQueue([])}
         />
       )}
       <BrandEntryAnimation active={playEntryAnimation} onComplete={onEntryAnimationComplete} />

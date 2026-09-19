@@ -576,7 +576,9 @@ def _announce_db() -> sqlite3.Connection:
             active INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
-            target_account_ids TEXT NOT NULL DEFAULT ''
+            target_account_ids TEXT NOT NULL DEFAULT '',
+            image_rev INTEGER NOT NULL DEFAULT 0,
+            images TEXT NOT NULL DEFAULT '[]'
         )
         """
     )
@@ -586,8 +588,80 @@ def _announce_db() -> sqlite3.Connection:
         con.execute(
             "ALTER TABLE announcements ADD COLUMN target_account_ids TEXT NOT NULL DEFAULT ''"
         )
+    # 旧库迁移：图片列缺失时补列（images 为 JSON 数组，元素形如
+    # {"name","mime","size","data"}，data 为不带前缀的 base64，直接存库）。
+    if "images" not in cols:
+        con.execute("ALTER TABLE announcements ADD COLUMN images TEXT NOT NULL DEFAULT '[]'")
+    # 图片版本号：内容变化时自增，客户端据此判断本地缓存的图片是否过期。
+    if "image_rev" not in cols:
+        con.execute("ALTER TABLE announcements ADD COLUMN image_rev INTEGER NOT NULL DEFAULT 0")
     con.commit()
     return con
+
+
+ANNOUNCE_IMAGE_MAX_COUNT = 6
+ANNOUNCE_IMAGE_MAX_BYTES = 2 * 1024 * 1024
+ANNOUNCE_IMAGE_MIMES = {"image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"}
+
+
+def _decode_image_payload(item: Any) -> dict[str, Any] | None:
+    """校验单张图片（base64），返回落库结构；空白项返回 None。"""
+    if not isinstance(item, dict):
+        raise HTTPException(status_code=400, detail="图片格式不正确")
+    mime = str(item.get("mime") or "").strip().lower()
+    data = str(item.get("data") or "").strip()
+    name = str(item.get("name") or "").strip()[:120]
+    if data.startswith("data:"):
+        header, _, data = data.partition(",")
+        if not mime:
+            mime = header[5:].split(";")[0].strip().lower()
+    data = data.strip()
+    if not data:
+        return None
+    if mime == "image/jpg":
+        mime = "image/jpeg"
+    if mime not in ANNOUNCE_IMAGE_MIMES:
+        raise HTTPException(status_code=400, detail="仅支持 png/jpg/gif/webp 格式的图片")
+    try:
+        binary = base64.b64decode(data + "=" * (-len(data) % 4), validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(status_code=400, detail="图片数据不是合法的 base64 编码")
+    if len(binary) > ANNOUNCE_IMAGE_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="单张图片不能超过 2MB")
+    return {"name": name, "mime": mime, "size": len(binary), "data": data}
+
+
+def _normalize_announcement_images(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """校验并规范化公告图片列表，最多 ANNOUNCE_IMAGE_MAX_COUNT 张。"""
+    raw = payload.get("images")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise HTTPException(status_code=400, detail="images must be a list")
+    if len(raw) > ANNOUNCE_IMAGE_MAX_COUNT:
+        raise HTTPException(
+            status_code=400, detail=f"最多上传 {ANNOUNCE_IMAGE_MAX_COUNT} 张图片"
+        )
+    cleaned: list[dict[str, Any]] = []
+    for item in raw:
+        decoded = _decode_image_payload(item)
+        if decoded is not None:
+            cleaned.append(decoded)
+    return cleaned
+
+
+def _load_announcement_images(raw: Any) -> list[dict[str, Any]]:
+    """解析库里的 images 字段，容忍脏数据。"""
+    try:
+        items = json.loads(raw or "[]")
+    except (json.JSONDecodeError, TypeError):
+        return []
+    return [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+
+
+def _images_signature(images: list[dict[str, Any]]) -> tuple[str, ...]:
+    """图片内容指纹：只比 base64 本体，用于判断是否需要自增 image_rev。"""
+    return tuple(str(item.get("data") or "") for item in images)
 
 
 def _now_beijing() -> str:
@@ -610,7 +684,16 @@ def _normalize_target_account_ids(payload: dict[str, Any]) -> list[str]:
     return cleaned
 
 
-def _serialize_announcement(row) -> dict[str, Any]:
+def _dump_target_account_ids(targets: list[str]) -> str:
+    """落库用字符串：空列表必须存空串。
+
+    public 接口以 target_account_ids='' 判定「全员可见」，若存成 '[]' 则全员公告
+    对客户端不可见（定向列表里也没有任何账号能 LIKE 命中）。
+    """
+    return json.dumps(targets, ensure_ascii=False) if targets else ""
+
+
+def _serialize_announcement(row, *, with_images: bool = True) -> dict[str, Any]:
     r = dict(row)
     try:
         targets = json.loads(r.get("target_account_ids") or "[]")
@@ -618,7 +701,10 @@ def _serialize_announcement(row) -> dict[str, Any]:
             targets = []
     except json.JSONDecodeError:
         targets = []
-    return {
+    images = _load_announcement_images(r.get("images"))
+    # 列表场景（with_images=False）只回图片数量与版本号，避免每次轮询都搬运 base64；
+    # 客户端按需再调 /api/announcements/{id}/images 取图片本体并本地缓存。
+    payload: dict[str, Any] = {
         "id": r["id"],
         "title": r["title"],
         "content": r["content"],
@@ -627,35 +713,71 @@ def _serialize_announcement(row) -> dict[str, Any]:
         "created_at": r["created_at"],
         "updated_at": r["updated_at"],
         "target_account_ids": targets,
+        "image_count": len(images),
+        "image_rev": int(r.get("image_rev") or 0),
     }
+    if with_images:
+        payload["images"] = images
+    return payload
 
 
 @app.get("/api/announcements/public")
-def public_announcements(account_id: str = Query(default="")) -> dict[str, Any]:
+def public_announcements(
+    account_id: str = Query(default=""), with_images: int = Query(default=0)
+) -> dict[str, Any]:
     # 免登录：客户端工作台轮询拉取。仅返回 active=1 的公告，下线/删除的会被客户端撤回。
     # 定向发送：客户端携带自己的账号 ID 时，额外返回发给它的公告；不带则只给全员公告。
+    # with_images=1 时才带 base64 图片本体（默认只给 image_count/image_rev，省带宽）。
     account_id = (account_id or "").strip()
+    include_images = bool(with_images)
     con = _announce_db()
     try:
         if account_id:
             like = f'%"{account_id}"%'
             rows = con.execute(
-                "SELECT * FROM announcements WHERE active=1 AND (target_account_ids='' OR target_account_ids LIKE ?) "
+                "SELECT * FROM announcements WHERE active=1 AND (target_account_ids IN ('', '[]') OR target_account_ids LIKE ?) "
                 "ORDER BY id DESC",
                 (like,),
             ).fetchall()
         else:
             rows = con.execute(
-                "SELECT * FROM announcements WHERE active=1 AND target_account_ids='' ORDER BY id DESC"
+                "SELECT * FROM announcements WHERE active=1 AND target_account_ids IN ('', '[]') ORDER BY id DESC"
             ).fetchall()
     finally:
         con.close()
-    return {"announcements": [_serialize_announcement(r) for r in rows]}
+    return {
+        "announcements": [
+            _serialize_announcement(r, with_images=include_images) for r in rows
+        ]
+    }
+
+
+@app.get("/api/announcements/{announcement_id}/images")
+def announcement_images(announcement_id: int) -> dict[str, Any]:
+    # 免登录：客户端工作台按需拉取某条公告的图片本体（含 base64），本地缓存后不再重复拉。
+    con = _announce_db()
+    try:
+        row = con.execute(
+            "SELECT images, image_rev FROM announcements WHERE id=? AND active=1",
+            (announcement_id,),
+        ).fetchone()
+    finally:
+        con.close()
+    if row is None:
+        raise HTTPException(status_code=404, detail="公告不存在或已下线")
+    return {
+        "id": announcement_id,
+        "image_rev": int(row["image_rev"] or 0),
+        "images": _load_announcement_images(row["images"]),
+    }
 
 
 @app.get("/api/announcements")
-def list_announcements(x_auth_token: str | None = Header(default=None)) -> dict[str, Any]:
+def list_announcements(
+    x_auth_token: str | None = Header(default=None), with_images: int = Query(default=1)
+) -> dict[str, Any]:
     _check_auth(x_auth_token)
+    include_images = bool(with_images)
     con = _announce_db()
     try:
         rows = con.execute(
@@ -663,7 +785,11 @@ def list_announcements(x_auth_token: str | None = Header(default=None)) -> dict[
         ).fetchall()
     finally:
         con.close()
-    return {"announcements": [_serialize_announcement(r) for r in rows]}
+    return {
+        "announcements": [
+            _serialize_announcement(r, with_images=include_images) for r in rows
+        ]
+    }
 
 
 @app.post("/api/announcements")
@@ -674,13 +800,24 @@ def create_announcement(payload: dict[str, Any], x_auth_token: str | None = Head
         raise HTTPException(status_code=400, detail="公告标题不能为空")
     content = (payload.get("content") or "").strip()
     targets = _normalize_target_account_ids(payload)
+    images = _normalize_announcement_images(payload)
     now = _now_beijing()
     con = _announce_db()
     try:
         cur = con.execute(
-            "INSERT INTO announcements(title, content, published_at, active, created_at, updated_at, target_account_ids) "
-            "VALUES(?,?,?,?,?,?,?)",
-            (title, content, now, 1, now, now, json.dumps(targets, ensure_ascii=False)),
+            "INSERT INTO announcements(title, content, published_at, active, created_at, updated_at, target_account_ids, image_rev, images) "
+            "VALUES(?,?,?,?,?,?,?,?,?)",
+            (
+                title,
+                content,
+                now,
+                1,
+                now,
+                now,
+                _dump_target_account_ids(targets),
+                1 if images else 0,
+                json.dumps(images, ensure_ascii=False),
+            ),
         )
         con.commit()
         new_id = cur.lastrowid
@@ -698,16 +835,35 @@ def update_announcement(announcement_id: int, payload: dict[str, Any], x_auth_to
         raise HTTPException(status_code=400, detail="公告标题不能为空")
     content = (payload.get("content") or "").strip()
     targets = _normalize_target_account_ids(payload)
+    images = _normalize_announcement_images(payload)
     now = _now_beijing()
     con = _announce_db()
     try:
-        cur = con.execute(
-            "UPDATE announcements SET title=?, content=?, updated_at=?, target_account_ids=? WHERE id=?",
-            (title, content, now, json.dumps(targets, ensure_ascii=False), announcement_id),
+        existing = con.execute(
+            "SELECT images, image_rev FROM announcements WHERE id=?", (announcement_id,)
+        ).fetchone()
+        if existing is None:
+            raise HTTPException(status_code=404, detail="公告不存在")
+        # 图片内容有变化才自增版本号，客户端凭它判断本地缓存是否过期。
+        old_signature = _images_signature(_load_announcement_images(existing["images"]))
+        new_signature = _images_signature(images)
+        if old_signature == new_signature:
+            image_rev = int(existing["image_rev"] or 0)
+        else:
+            image_rev = int(existing["image_rev"] or 0) + 1
+        con.execute(
+            "UPDATE announcements SET title=?, content=?, updated_at=?, target_account_ids=?, image_rev=?, images=? WHERE id=?",
+            (
+                title,
+                content,
+                now,
+                _dump_target_account_ids(targets),
+                image_rev,
+                json.dumps(images, ensure_ascii=False),
+                announcement_id,
+            ),
         )
         con.commit()
-        if cur.rowcount == 0:
-            raise HTTPException(status_code=404, detail="公告不存在")
         row = con.execute("SELECT * FROM announcements WHERE id=?", (announcement_id,)).fetchone()
     finally:
         con.close()
