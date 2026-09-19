@@ -94,7 +94,7 @@ BILLING_TOPUP_PRODUCTS = {
     "points_49": {"amount_cents": 4900, "label": "49 元积分包"},
     "points_99": {"amount_cents": 9900, "label": "99 元积分包"},
     "points_499": {"amount_cents": 49900, "label": "499 元积分包"},
-    "points_4999": {"amount_cents": 499900, "label": "4999 元积分包"},
+    "points_999": {"amount_cents": 99900, "label": "999 元积分包"},
 }
 # Amounts are immutable product amounts.  Their point value is calculated
 # from the active server rule, never from this legacy display mapping.
@@ -3302,9 +3302,14 @@ def _display_topup_order(order: dict[str, Any], pricing: dict[str, Any]) -> dict
     order["points"] = _display_billing_points(base_points, pricing)
     order["base_points"] = _display_billing_points(base_points, pricing)
     order["promotion_bonus_points"] = _display_billing_points(promotion_bonus_points, pricing)
-    order["promotion_bonus_percent"] = (
-        topup_bonus_percent(str(order.get("package_id") or "")) if promotion_bonus_points else 0
-    )
+    package_id = str(order.get("package_id") or "")
+    promotion_percent = topup_bonus_percent(package_id)
+    # Historical orders retain their monetary and points snapshots.  The old
+    # 4999-CNY package is no longer sold, so derive its display percentage
+    # from the saved amounts instead of applying today's package catalogue.
+    if promotion_bonus_points and not promotion_percent and base_points:
+        promotion_percent = promotion_bonus_points * 100 // base_points
+    order["promotion_bonus_percent"] = promotion_percent if promotion_bonus_points else 0
     order["total_points"] = _display_billing_points(total_points, pricing)
     return order
 
