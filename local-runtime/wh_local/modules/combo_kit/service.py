@@ -265,7 +265,12 @@ class ComboKitService:
     def set_item_order(self, set_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         self._require_set(set_id)
         order = payload.get("order") or []
+        # 只允许本套装内的 item 参与排序：跨套装 item_id 一律忽略，
+        # 防止借排序接口篡改其它套装的 item_index。
+        valid_ids = {str(item.get("item_id")) for item in self.repository.list_items(set_id)}
         for index, item_id in enumerate(order, start=1):
+            if str(item_id) not in valid_ids:
+                continue
             try:
                 self.repository.update_item(str(item_id), {"item_index": index})
             except KeyError:
@@ -476,30 +481,36 @@ class ComboKitService:
             self._settle_billing(billing["billing_id"], freeze, success=False, actor=actor)
             raise
         # 全部成功后落盘并结算。main 命中则保留，其余张按角色并入，不覆盖本次未生成的角色。
+        # 落盘/COS 发布也纳入失败结算保护：任一步抛异常必须按失败结算并解锁冻结，
+        # 否则 freeze 永久泄漏、billing 停留在 frozen。
         saved = []
-        for out in outputs:
-            path = self.assets.save_generated(
-                bytes(out.get("content") or b""),
-                stage=str(out.get("role") or ""),
-                set_id=set_id_val,
-                suffix=str(out.get("suffix") or ".jpg"),
-                workspace_id=workspace_id,
-            )
-            saved.append({
-                "role": out.get("role"),
-                "label": out.get("label"),
-                "path": path,
-                "url": f"/api/combo-kit/generated/{set_id_val}/{out.get('role')}.jpg",
-                "public_url": self._publish_to_cos(
+        try:
+            for out in outputs:
+                path = self.assets.save_generated(
                     bytes(out.get("content") or b""),
                     stage=str(out.get("role") or ""),
+                    set_id=set_id_val,
                     suffix=str(out.get("suffix") or ".jpg"),
                     workspace_id=workspace_id,
-                ),
-                "provider": out.get("provider"),
-                "model": out.get("model"),
-                "attempt_count": out.get("attempt_count"),
-            })
+                )
+                saved.append({
+                    "role": out.get("role"),
+                    "label": out.get("label"),
+                    "path": path,
+                    "url": f"/api/combo-kit/generated/{set_id_val}/{out.get('role')}.jpg",
+                    "public_url": self._publish_to_cos(
+                        bytes(out.get("content") or b""),
+                        stage=str(out.get("role") or ""),
+                        suffix=str(out.get("suffix") or ".jpg"),
+                        workspace_id=workspace_id,
+                    ),
+                    "provider": out.get("provider"),
+                    "model": out.get("model"),
+                    "attempt_count": out.get("attempt_count"),
+                })
+        except Exception:
+            self._settle_billing(billing["billing_id"], freeze, success=False, actor=actor)
+            raise
         # 保留本次未重新生成的角色（含 main），按 IMAGE_ROLES 稳定排序，替换时其它图不被覆盖。
         regenerated_roles = {str(item.get("role") or "") for item in saved}
         existing = _read_json(base.get("image_results_json") or [], [])

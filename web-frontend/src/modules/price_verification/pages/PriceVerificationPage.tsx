@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useChangePoller } from "../../../shared/hooks/useChangePoller";
 import { priceVerificationApi } from "../api/priceVerificationApi";
@@ -42,10 +42,15 @@ export function PriceVerificationPage({ isActive = true }: { isActive?: boolean 
     window.scrollTo({ top: 0, behavior: "smooth" });
   });
 
+  // 首载、useChangePoller、手动刷新会重叠触发：序号守卫只认最新一次，晚到的旧响应丢弃。
+  const refreshSeqRef = useRef(0);
+
   const refresh = async (quiet = false) => {
+    const seq = ++refreshSeqRef.current;
     if (!quiet) setLoading(true);
     try {
       const batches = await priceVerificationApi.listCaptureBatches();
+      if (seq !== refreshSeqRef.current) return;
       setCaptureBatches(batches);
       const batch = batches.find((item) => item.is_current);
       try { setPrescreen(await priceVerificationApi.getPrescreen()); } catch { setPrescreen(null); }
@@ -59,17 +64,20 @@ export function PriceVerificationPage({ isActive = true }: { isActive?: boolean 
         priceVerificationApi.listBatchSelections(batch.batch_id).catch(() => []),
         priceVerificationApi.getBatchSourcingState(batch.batch_id).catch(emptySourcingState),
       ]);
+      if (seq !== refreshSeqRef.current) return;
       setBatchItems(items);
       setBatchSelections(selections);
       setSourcingState(sourceState);
-      if (sourceState.selected_skc_ids.length) setSourceSkcIds(sourceState.selected_skc_ids);
+      // 无条件同步：入库完成后清空的 SKC 列表必须真实清空，不能保留旧值。
+      setSourceSkcIds(sourceState.selected_skc_ids);
       if (!quiet) setNotice(batch.quote_count
         ? `当前批次已入库 ${batch.quote_count} 条报价，初筛后 ${items.length} 个 SKC 可直接选择并执行图搜。`
         : "当前批次暂无报价，可在 Temu 页面用插件采集本页数据后回此页刷新。");
     } catch (error) {
+      if (seq !== refreshSeqRef.current) return;
       setNotice(`读取运行状态失败：${errorMessage(error)}`);
     } finally {
-      if (!quiet) setLoading(false);
+      if (!quiet && seq === refreshSeqRef.current) setLoading(false);
     }
   };
 

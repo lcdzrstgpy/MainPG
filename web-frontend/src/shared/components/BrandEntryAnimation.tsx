@@ -33,13 +33,17 @@ function elementIsVisible(element: HTMLElement | null) {
 export function BrandEntryAnimation({ active, onComplete }: BrandEntryAnimationProps) {
   const [geometry, setGeometry] = useState<EntryGeometry | null>(null);
   const completedRef = useRef(false);
+  // 父组件常传内联箭头（每次 render 身份都变）：用 ref 保存最新引用，
+  // effect 依赖只留 [active]，避免动画期间父级重渲染重置定时器/完成标记。
+  const onCompleteRef = useRef(onComplete);
+  onCompleteRef.current = onComplete;
 
   useLayoutEffect(() => {
     if (!active) return;
 
     completedRef.current = false;
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      const frame = window.requestAnimationFrame(onComplete);
+      const frame = window.requestAnimationFrame(() => onCompleteRef.current());
       return () => window.cancelAnimationFrame(frame);
     }
 
@@ -56,9 +60,9 @@ export function BrandEntryAnimation({ active, onComplete }: BrandEntryAnimationP
       startWidth: Math.min(480, Math.max(260, window.innerWidth * 0.46)),
     });
 
-    const timer = window.setTimeout(onComplete, ENTRY_DURATION_MS + 240);
+    const timer = window.setTimeout(() => onCompleteRef.current(), ENTRY_DURATION_MS + 240);
     return () => window.clearTimeout(timer);
-  }, [active, onComplete]);
+  }, [active]);
 
   if (!active || !geometry) return null;
 

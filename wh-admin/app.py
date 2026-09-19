@@ -687,13 +687,15 @@ def _normalize_target_account_ids(payload: dict[str, Any]) -> list[str]:
 def _dump_target_account_ids(targets: list[str]) -> str:
     """落库用字符串：空列表必须存空串。
 
-    public 接口以 target_account_ids='' 判定「全员可见」，若存成 '[]' 则全员公告
-    对客户端不可见（定向列表里也没有任何账号能 LIKE 命中）。
+    public 接口以 target_account_ids 为空判定「全员可见」，若存成 '[]' 则全员公告
+    对客户端不可见（定向列表里也没有任何账号能命中）。
     """
     return json.dumps(targets, ensure_ascii=False) if targets else ""
 
 
-def _serialize_announcement(row, *, with_images: bool = True) -> dict[str, Any]:
+def _serialize_announcement(
+    row, *, with_images: bool = True, include_targets: bool = True
+) -> dict[str, Any]:
     r = dict(row)
     try:
         targets = json.loads(r.get("target_account_ids") or "[]")
@@ -712,10 +714,12 @@ def _serialize_announcement(row, *, with_images: bool = True) -> dict[str, Any]:
         "active": bool(r["active"]),
         "created_at": r["created_at"],
         "updated_at": r["updated_at"],
-        "target_account_ids": targets,
         "image_count": len(images),
         "image_rev": int(r.get("image_rev") or 0),
     }
+    # 免登录的 public 接口不返回定向名单，避免泄露收件人。
+    if include_targets:
+        payload["target_account_ids"] = targets
     if with_images:
         payload["images"] = images
     return payload
@@ -732,24 +736,30 @@ def public_announcements(
     include_images = bool(with_images)
     con = _announce_db()
     try:
-        if account_id:
-            like = f'%"{account_id}"%'
-            rows = con.execute(
-                "SELECT * FROM announcements WHERE active=1 AND (target_account_ids IN ('', '[]') OR target_account_ids LIKE ?) "
-                "ORDER BY id DESC",
-                (like,),
-            ).fetchall()
-        else:
-            rows = con.execute(
-                "SELECT * FROM announcements WHERE active=1 AND target_account_ids IN ('', '[]') ORDER BY id DESC"
-            ).fetchall()
+        rows = con.execute(
+            "SELECT * FROM announcements WHERE active=1 ORDER BY id DESC"
+        ).fetchall()
     finally:
         con.close()
-    return {
-        "announcements": [
-            _serialize_announcement(r, with_images=include_images) for r in rows
-        ]
-    }
+    # 定向过滤在 Python 侧做精确成员判断：LIKE 通配会让 "%" 之类的账号 ID
+    # 匹配所有定向公告，泄露收件人名单。公告表行数少，全量过滤无性能问题。
+    items = []
+    for row in rows:
+        try:
+            targets = json.loads(row["target_account_ids"] or "[]")
+            if not isinstance(targets, list):
+                targets = []
+        except json.JSONDecodeError:
+            targets = []
+        if targets and account_id not in targets:
+            continue
+        # 定向名单不回给免登录端，避免泄露收件人。
+        items.append(
+            _serialize_announcement(
+                row, with_images=include_images, include_targets=False
+            )
+        )
+    return {"announcements": items}
 
 
 @app.get("/api/announcements/{announcement_id}/images")

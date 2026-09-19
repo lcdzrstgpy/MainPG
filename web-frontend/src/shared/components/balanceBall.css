@@ -1,0 +1,95 @@
+/* 悬浮翻转球：余额面朝外 + 主题吉祥物背面，可拖动、点击翻面。 */
+.balance-ball {
+  position: fixed;
+  z-index: 900; /* 低于弹窗层(1500)，高于普通内容 */
+  width: 72px;
+  height: 72px;
+  perspective: 800px;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+  filter: drop-shadow(0 8px 22px rgba(15, 23, 42, 0.26));
+  outline: none;
+}
+
+.balance-ball:active {
+  cursor: grabbing;
+}
+
+.balance-ball:focus-visible {
+  filter: drop-shadow(0 0 0 2px var(--theme-module-primary-strong, #0ea5ff)) drop-shadow(0 6px 16px rgba(15, 23, 42, 0.22));
+}
+
+.balance-ball-inner {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  transform-style: preserve-3d;
+  transition: transform 0.5s cubic-bezier(0.4, 0.1, 0.2, 1);
+}
+
+.balance-ball.is-flipped .balance-ball-inner {
+  transform: rotateY(180deg);
+}
+
+.balance-ball-face {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid rgba(255, 255, 255, 0.55);
+  box-shadow: inset 0 -6px 14px rgba(2, 12, 40, 0.18), inset 0 6px 14px rgba(255, 255, 255, 0.35);
+}
+
+.balance-ball-face.is-front {
+  background: linear-gradient(160deg, var(--theme-module-primary-soft, #3b82f6), var(--theme-module-primary-strong, #075985));
+  color: #fff;
+  gap: 1px;
+}
+
+.balance-ball-label {
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  opacity: 0.92;
+  line-height: 1.1;
+}
+
+.balance-ball-face.is-front b {
+  font-size: 19px;
+  font-weight: 800;
+  line-height: 1.15;
+  max-width: 62px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 5~6 位：中字（15px，62px 宽放得下 6 位） */
+.balance-ball-face.is-front b.is-compact {
+  font-size: 15px;
+}
+
+/* 7 位起：小字（13px，约 8 位内完整） */
+.balance-ball-face.is-front b.is-tiny {
+  font-size: 13px;
+}
+
+.balance-ball-face.is-back {
+  transform: rotateY(180deg);
+  background: var(--theme-hero-glow, #0f172a);
+}
+
+.balance-ball-face.is-back img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}

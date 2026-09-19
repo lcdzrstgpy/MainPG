@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 from dataclasses import dataclass
 from pathlib import Path
 import logging
@@ -35,7 +36,7 @@ class Actor:
 def actor_from_bearer_token(token: str, database_path: Path | None = None) -> Actor:
     config = default_config()
 
-    if token == config.dev_admin_token:
+    if hmac.compare_digest(token or "", config.dev_admin_token):
         return Actor(id="local-demo-admin", username="local-demo", role="admin")
 
     db_path = database_path or config.database_path

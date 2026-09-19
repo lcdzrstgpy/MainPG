@@ -35,7 +35,13 @@ def create_themes_router(themes_dir: Path) -> APIRouter:
         """List all downloadable themes."""
         items = []
         for theme_dir in _list_theme_dirs():
-            manifest = _read_manifest(theme_dir)
+            try:
+                manifest = _read_manifest(theme_dir)
+            except (OSError, json.JSONDecodeError, ValueError):
+                # 单个主题包 manifest 损坏只跳过该项，不让整个列表接口 500。
+                continue
+            if not all(key in manifest for key in ("id", "label", "description", "swatch", "version")):
+                continue
             items.append(
                 {
                     "id": manifest["id"],

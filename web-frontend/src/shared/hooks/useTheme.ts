@@ -2,6 +2,7 @@ import { useCallback, useMemo, useSyncExternalStore } from "react";
 
 // peach(桃花源)主题:背景见 shared/styles/peach-garden.css,交互特效见
 // shared/components/PeachGarden.tsx(花瓣飘落/爆裂/涟漪)。已注册进主题选择器。
+// starry(星月夜)主题:变量见 themes.css 的 [data-theme="starry"],造型见 theme-personality.css。
 export type ThemeId = "classic" | "sunset" | "violet" | "dessert" | "diamond" | "quirky" | "chinese" | "peach";
 
 export interface ThemeMeta {
@@ -21,6 +22,7 @@ export const THEME_META: Record<ThemeId, Omit<ThemeMeta, "id">> = {
   diamond: { label: "黑白钻石", swatch: "linear-gradient(135deg, #050505, #737985 55%, #ffffff)" },
   quirky: { label: "怪趣贴纸", swatch: "linear-gradient(135deg, #a3e635 0 34%, #fde047 34% 62%, #f43f5e 62% 78%, #7c3aed 78%)" },
   chinese: { label: "水墨青黛", swatch: "linear-gradient(135deg, #eee9dc 0 36%, #52716c 36% 72%, #a74736 72%)" },
+  // starry(星月夜):已隐藏,以后再启用——重新加回 ThemeId、THEME_META、BUILTIN_THEME_IDS 三处即可。
 };
 
 /** 安装即内置、在快捷面板直接展示的主题。 */
@@ -165,9 +167,14 @@ if (typeof window !== "undefined") {
       }
     }
     if (e.key === DOWNLOADED_THEMES_KEY) {
+      const previous = new Set(downloadedThemes.keys());
       const next = readDownloadedThemes();
       downloadedThemes = next;
       ensureDownloadedCssInjected(downloadedThemes);
+      // 跨标签页删除主题时同步移除残留 style 标签，避免 CSS 变量污染。
+      for (const id of previous) {
+        if (!next.has(id)) removeThemeCss(id);
+      }
       downloadedListeners.forEach((fn) => fn());
     }
   });

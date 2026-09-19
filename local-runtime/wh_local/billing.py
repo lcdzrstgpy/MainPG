@@ -2856,7 +2856,8 @@ def _compute_link_charge_fixed(
         str(result.get("retried") or "").lower() in {"true", "1", "yes"}
         for result in item_results
     )
-    premium_units = _scaled_units(RETRY_PREMIUM_UNITS, multiplier_percent)
+    # 重试溢价只在确实发生重试时收取；未重试批次不应被加收。
+    premium_units = _scaled_units(RETRY_PREMIUM_UNITS if retried else 0, multiplier_percent)
     charge_units = 0
     refund_units = 0
     details: list[dict[str, Any]] = []

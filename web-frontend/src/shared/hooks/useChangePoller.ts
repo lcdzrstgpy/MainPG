@@ -40,6 +40,9 @@ export function useChangePoller({ url, onChange, headers, intervalMs = 8000, ena
       if (activeController) return;
       const controller = new AbortController();
       activeController = controller;
+      // 无超时的话，服务端挂起时 finally 永不执行、activeController 永不复位，
+      // 轮询会静默永久停摆。15s 强制中断，下轮继续。
+      const timeoutId = window.setTimeout(() => controller.abort(), 15_000);
       try {
         const requestHeaders: Record<string, string> = { ...(headersRef.current ?? {}) };
         const token = getAuthToken();
@@ -53,8 +56,9 @@ export function useChangePoller({ url, onChange, headers, intervalMs = 8000, ena
         }
         revisionRef.current = revision;
       } catch {
-        // 网络抖动 / 请求被取消：静默跳过，等待下一轮
+        // 网络抖动 / 请求被取消 / 超时：静默跳过，等待下一轮
       } finally {
+        window.clearTimeout(timeoutId);
         if (activeController === controller) activeController = null;
       }
     };

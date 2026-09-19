@@ -3,6 +3,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import secrets
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,6 +44,16 @@ class LocalRuntimeConfig:
     onebound_1688_enabled: bool
 
 
+def _default_dev_admin_token() -> str:
+    # 打包版（PyInstaller frozen）绝不携带公开的固定管理员口令：默认随机生成，
+    # 防止局域网内任何人用已知 token 冒充 admin；运维需要时用
+    # WH_LOCAL_DEV_ADMIN_TOKEN 显式覆盖。源码运行（本地 dev / tests）保留
+    # dev-admin-token 方便调试，与前端 import.meta.env.DEV 注入保持一致。
+    if getattr(sys, "frozen", False):
+        return secrets.token_urlsafe(24)
+    return "dev-admin-token"
+
+
 def default_config(workspace: Path | None = None) -> LocalRuntimeConfig:
     root = runtime_root(workspace)
     install_dir = install_root()
@@ -59,7 +70,7 @@ def default_config(workspace: Path | None = None) -> LocalRuntimeConfig:
         install_root=install_dir,
         data_dir=data_dir,
         database_path=database_path,
-        dev_admin_token=os.environ.get("WH_LOCAL_DEV_ADMIN_TOKEN", "dev-admin-token"),
+        dev_admin_token=os.environ.get("WH_LOCAL_DEV_ADMIN_TOKEN", _default_dev_admin_token()),
         customer_auth_base_url=os.environ.get(
             "WH_LOCAL_CUSTOMER_AUTH_BASE_URL",
             "https://workbench.haocoming.top/auth-api",

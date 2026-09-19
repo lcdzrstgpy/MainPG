@@ -79,6 +79,13 @@ def _fernet() -> Fernet:
     if path.exists():
         key = path.read_bytes().strip()
     else:
+        # 密钥文件缺失：仅当 vault 也缺失（全新初始化）时才生成新密钥。
+        # 若 vault 已存在（内含密文），密钥丢失意味着旧密文永久不可解，
+        # 必须报错而不是静默生成新密钥（split-brain，后续写入会用错误密钥）。
+        if _vault_path().exists():
+            raise CredentialVaultError(
+                "credential vault master key is missing; restore the key file"
+            )
         key = Fernet.generate_key()
         _secure_write(path, key + b"\n")
     try:

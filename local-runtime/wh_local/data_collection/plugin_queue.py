@@ -166,25 +166,33 @@ class DataCollectionPluginQueue:
         now = _now()
         reclaim_before = (datetime.now(timezone.utc) - _COMMAND_LEASE_WINDOW).isoformat()
         with self._connect() as conn:
-            session = self._session(conn, session_token)
-            # A browser can die after acknowledging a command. Requeue its
-            # expired in-flight command so the next poll can finish it.
-            conn.execute(
-                """UPDATE data_collection_plugin_commands
-                SET status = 'queued', result_json = '{}', updated_at = ?
-                WHERE session_id = ? AND status IN ('sent', 'running') AND updated_at < ?""",
-                (now, session["id"], reclaim_before),
-            )
-            rows = conn.execute(
-                """SELECT id FROM data_collection_plugin_commands
-                WHERE session_id = ? AND status = 'queued' ORDER BY id LIMIT ?""",
-                (session["id"], max(1, min(limit, 50))),
-            ).fetchall()
-            ids = [int(row["id"]) for row in rows]
-            if ids:
-                marks = ",".join("?" for _ in ids)
-                conn.execute(f"UPDATE data_collection_plugin_commands SET status = 'sent', updated_at = ? WHERE id IN ({marks})", (now, *ids))
-            conn.execute("UPDATE data_collection_plugin_sessions SET last_seen_at = ?, status = 'connected' WHERE id = ?", (now, session["id"]))
+            # BEGIN IMMEDIATE 串行化「选 queued → 置 sent」：并发 poll（同 session
+            # 重试/双开）不经过这里会同时读到同一批 queued 并重复分发执行。
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                session = self._session(conn, session_token)
+                # A browser can die after acknowledging a command. Requeue its
+                # expired in-flight command so the next poll can finish it.
+                conn.execute(
+                    """UPDATE data_collection_plugin_commands
+                    SET status = 'queued', result_json = '{}', updated_at = ?
+                    WHERE session_id = ? AND status IN ('sent', 'running') AND updated_at < ?""",
+                    (now, session["id"], reclaim_before),
+                )
+                rows = conn.execute(
+                    """SELECT id FROM data_collection_plugin_commands
+                    WHERE session_id = ? AND status = 'queued' ORDER BY id LIMIT ?""",
+                    (session["id"], max(1, min(limit, 50))),
+                ).fetchall()
+                ids = [int(row["id"]) for row in rows]
+                if ids:
+                    marks = ",".join("?" for _ in ids)
+                    conn.execute(f"UPDATE data_collection_plugin_commands SET status = 'sent', updated_at = ? WHERE id IN ({marks})", (now, *ids))
+                conn.execute("UPDATE data_collection_plugin_sessions SET last_seen_at = ?, status = 'connected' WHERE id = ?", (now, session["id"]))
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
             return tuple(self._command(conn, command_id) for command_id in ids)
 
     def receive_result(

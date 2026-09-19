@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { WorkspaceModuleId } from "../../../app/navigation/modules";
 import { AppleAppGlyph } from "../../../shared/components/AppleAppGlyph";
@@ -121,12 +121,18 @@ export function DashboardStats({ onOpenModule, variant = "classic" }: DashboardS
   const [error, setError] = useState<string | null>(null);
   const [range, setRange] = useState<TrendRange>(30);
 
+  const loadSeqRef = useRef(0);
+
   const load = useCallback(async () => {
+    const seq = ++loadSeqRef.current;
     try {
       const next = await getDashboardOverview();
+      // 60s 定时 + visibilitychange 会重叠触发：只认最新一次请求，晚到的旧数据丢弃。
+      if (seq !== loadSeqRef.current) return;
       setOverview(next);
       setError(null);
     } catch (exc) {
+      if (seq !== loadSeqRef.current) return;
       setError(exc instanceof Error ? exc.message : "工作台数据加载失败");
     }
   }, []);
@@ -380,6 +386,7 @@ function TrendChart({ points }: { points: DashboardTrendPoint[] }) {
           fill="transparent"
           onMouseLeave={() => setHover(null)}
           onMouseMove={(event) => {
+            if (points.length === 0) return;
             const rect = event.currentTarget.getBoundingClientRect();
             const ratio = (event.clientX - rect.left) / Math.max(rect.width, 1);
             setHover(Math.min(points.length - 1, Math.max(0, Math.round(ratio * (points.length - 1)))));

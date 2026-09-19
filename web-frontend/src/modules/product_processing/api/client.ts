@@ -34,6 +34,30 @@ function authHeaders(context: ApiContext): HeadersInit {
   return headers;
 }
 
+const DEFAULT_TIMEOUT_MS = 30_000;
+
+/** 带超时的 fetch：慢请求挂起会无限堆积，30s 后强制中断并给出可读错误。 */
+function fetchWithTimeout(input: string, init: RequestInit, timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<Response> {
+  const controller = new AbortController();
+  const externalSignal = init.signal ?? null;
+  const onAbort = () => controller.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) controller.abort();
+    else externalSignal.addEventListener("abort", onAbort, { once: true });
+  }
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(input, { ...init, signal: controller.signal })
+    .catch((error: unknown) => {
+      const timedOut = controller.signal.aborted && !(externalSignal?.aborted ?? false);
+      if (timedOut) throw new PpRequestError("请求超时，请稍后重试", 0);
+      throw error;
+    })
+    .finally(() => {
+      window.clearTimeout(timer);
+      if (externalSignal) externalSignal.removeEventListener("abort", onAbort);
+    });
+}
+
 export async function ppRequest<T>(
   context: ApiContext,
   path: string,
@@ -56,7 +80,7 @@ export async function ppRequest<T>(
   if (needsBody && !headers.has("content-type")) {
     headers.set("content-type", "application/json");
   }
-  const response = await fetch(url, {
+  const response = await fetchWithTimeout(url, {
     ...rest,
     method: rest.method ?? (needsBody ? "POST" : "GET"),
     headers,
@@ -82,7 +106,7 @@ export async function ppUpload<T>(
 ): Promise<T> {
   const url = buildUrl(context, path);
   const headers = new Headers(authHeaders(context));
-  const response = await fetch(url, {
+  const response = await fetchWithTimeout(url, {
     method: "POST",
     headers,
     body: formData,
