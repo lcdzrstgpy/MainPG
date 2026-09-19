@@ -126,6 +126,9 @@ export function useDimensionCanvasAutosave(
         const message = cause instanceof Error ? cause.message : String(cause);
         setRetryable(true);
         setError(message || "自动保存失败，本地编辑仍保留");
+        // 把失败的快照放回队列：自动重试定时器依赖 queuedRef 非空，
+        // 否则失败后若用户不再编辑,重试永远不会触发。
+        queuedRef.current = queued;
         const attempt = retryAttemptRef.current++;
         const delay = Math.min(2000 * 2 ** attempt, 8000);
         if (retryTimerRef.current != null) window.clearTimeout(retryTimerRef.current);
@@ -212,6 +215,11 @@ export function useDimensionCanvasAutosave(
   const retry = useCallback(() => {
     if (!item || !retryable) return;
     blockedRef.current = false;
+    // 手动重试要先停掉自动重试定时器,否则定时器触发时会重复保存同一快照
+    if (retryTimerRef.current != null) {
+      window.clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
     generationRef.current += 1;
     queuedRef.current = { generation: generationRef.current, editor };
     setConflictItem(null);

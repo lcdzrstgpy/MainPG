@@ -67,20 +67,32 @@ POD_BASE_POINTS_PER_STYLE = 45
 # ---------------------------------------------------------------------------
 PLAN_TYPES = {
     "experience": {"label": "体验版", "weekly_points": 500},
-    "basic": {"label": "基础版", "weekly_points": 1500},
+    "basic": {"label": "基础版", "weekly_points": 500},
     "flagship": {"label": "旗舰版", "weekly_points": 500},
 }
 PLAN_DEFAULT_TYPE = "experience"
 PLAN_UNIT_SCALE = 10
 PLAN_WEEKLY_POINTS = 500
 PLAN_WEEKLY_UNITS = PLAN_WEEKLY_POINTS * PLAN_UNIT_SCALE
-# 基础版（¥40 购买套餐）：立得 4000 充值积分（走普通充值入账）+ 每周 1500 体验额度，
-# 购买日起生效 4 周，到期自动回落体验版。续期从现有到期时间顺延 28 天。
+# 基础版（¥39.9 购买套餐）：立得 4000 充值积分（走普通充值入账）+ 4 周内每周可领
+# 1000 充值积分（每周 1 次、最多 4 次、领到即永久）。到期自动回落体验版。
+# 续期从现有到期时间顺延 28 天，并重置领取资格（重新 4 周 × 1000）。
 PLAN_BASIC_PACKAGE_ID = "plan_basic"
 PLAN_BASIC_PRICE_CENTS = 3990
 PLAN_BASIC_GRANT_POINTS = 4000
 PLAN_BASIC_DURATION_DAYS = 28
-PLAN_BASIC_WEEKLY_UNITS = 1500 * PLAN_UNIT_SCALE
+PLAN_BASIC_CLAIM_POINTS = 1000
+PLAN_BASIC_CLAIM_UNITS = PLAN_BASIC_CLAIM_POINTS * PLAN_UNIT_SCALE
+PLAN_BASIC_CLAIM_MAX = 4
+
+# ---------------------------------------------------------------------------
+# 每日免费领取：所有套餐（含体验版）每个北京自然日可领 100 积分进「额外积分池」。
+# 该池不设上限、不随周期重置，消费顺序在体验积分之后、充值积分之前。
+# 幂等按「北京自然日」做 key，服务端取时间，客户端改本地时钟无法重复领取。
+# 如需收口免费额度，在此加一个上限常量并在 claim_daily_extra 里校验 extra_balance。
+# ---------------------------------------------------------------------------
+DAILY_EXTRA_POINTS = 100
+DAILY_EXTRA_UNITS = DAILY_EXTRA_POINTS * PLAN_UNIT_SCALE
 
 
 def _plan_weekly_units(plan_type: str) -> int:
@@ -114,6 +126,28 @@ def _plan_next_refresh(period_key: str) -> str:
 
 def _plan_type_label(plan_type: str) -> str:
     return PLAN_TYPES.get(plan_type, PLAN_TYPES[PLAN_DEFAULT_TYPE])["label"]
+
+
+def _daily_period_key(now_dt: datetime | None = None) -> str:
+    """北京自然日标识（YYYY-MM-DD），作为每日免费领取的幂等周期。
+
+    时间取服务端，客户端改本地时钟不会重复领取。
+    """
+    china_tz = timezone(timedelta(hours=8))
+    dt = (now_dt or datetime.now(timezone.utc)).astimezone(china_tz)
+    return dt.date().isoformat()
+
+
+def _daily_next_refresh(period_key: str) -> str:
+    """下一个可领时刻（次日北京时间 00:00），ISO 8601 带 +08:00 偏移。"""
+    try:
+        day = datetime.strptime(period_key, "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return ""
+    china_tz = timezone(timedelta(hours=8))
+    next_day = day + timedelta(days=1)
+    refresh = datetime(next_day.year, next_day.month, next_day.day, tzinfo=china_tz)
+    return refresh.isoformat(timespec="seconds")
 
 
 def _multiplier_category(feature_key: str) -> str:
@@ -760,7 +794,7 @@ def reserve_ai_usage(
         if existing is not None:
             return dict(existing)
         plan_balance, paid_balance, locked_pts, manual_frozen = _wallet_balances(conn, actor.id)
-        available = plan_balance + paid_balance - locked_pts - manual_frozen
+        available = plan_balance + _wallet_extra_balance(conn, actor.id) + paid_balance - locked_pts - manual_frozen
         if available < reserve_points:
             raise HTTPException(
                 status_code=402,
@@ -880,7 +914,7 @@ def settle_ai_usage_success(
         ).fetchone()
         if wallet is None:
             raise HTTPException(status_code=409, detail="wallet missing")
-        total_available = int(wallet["plan_balance"]) + int(wallet["points_balance"])
+        total_available = int(wallet["plan_balance"]) + int(wallet["points_balance"]) + _wallet_extra_balance(conn, row["account_id"])
         # 兜底：重试溢价未在冻结时预留（reserve 只含 base + 退款余量），余额不足以覆盖
         # base+premium 时按余额上限截断扣费，避免触发 CHECK(points_balance >= 0) 抛 500。
         if charge_points > total_available:
@@ -1415,24 +1449,24 @@ def _ensure_wallet(conn: Any, account_id: str, workspace_id: str) -> None:
         """,
         (PLAN_DEFAULT_TYPE, PLAN_WEEKLY_UNITS, period, now, account_id, now),
     )
-    # 跨周期惰性重置：体验积分重置为满额（不累积），按当前套餐周额度，plan_type 保持不变。
+    # 跨周期惰性重置：体验积分重置为满额（不累积），所有套餐统一 500/周。
     conn.execute(
         """
         UPDATE billing_wallets
-        SET plan_balance = CASE plan_type WHEN 'basic' THEN ? ELSE ? END,
-            plan_period_key = ?, version = version + 1, updated_at = ?
+        SET plan_balance = ?, plan_period_key = ?, version = version + 1, updated_at = ?
         WHERE account_id = ? AND plan_period_key <> ?
         """,
-        (PLAN_BASIC_WEEKLY_UNITS, PLAN_WEEKLY_UNITS, period, now, account_id, period),
+        (PLAN_WEEKLY_UNITS, period, now, account_id, period),
     )
 
 
 def _activate_basic_plan(conn: Any, account_id: str, now: str) -> None:
-    """激活/续期基础版：体验池重置为 1500/周，生效 4 周（续期从现有到期时间顺延）。
+    """激活/续期基础版：体验池重置为 500/周，生效 4 周（续期从现有到期时间顺延）。
 
     立得 4000 积分由 settle_payment_order 的 base_points 普通充值入账处理，
-    这里只负责套餐状态与体验额度。调用方必须先跑过 _ensure_wallet（含过期回落），
-    保证 wallet 行存在且 plan_type 为干净状态。
+    这里只负责套餐状态与领取资格。续期（再次购买）会重置领取资格：
+    basic_claim_count 清零、basic_claim_period 清空，重新获得 4 周 × 1000 领取机会。
+    调用方必须先跑过 _ensure_wallet（含过期回落），保证 wallet 行存在且 plan_type 为干净状态。
     """
     period = _plan_period_key()
     row = conn.execute(
@@ -1453,17 +1487,144 @@ def _activate_basic_plan(conn: Any, account_id: str, now: str) -> None:
         """
         UPDATE billing_wallets
         SET plan_type = ?, plan_balance = ?, plan_period_key = ?,
-            plan_expire_at = ?, version = version + 1, updated_at = ?
+            plan_expire_at = ?, basic_claim_period = '', basic_claim_count = 0,
+            version = version + 1, updated_at = ?
         WHERE account_id = ?
         """,
-        ("basic", PLAN_BASIC_WEEKLY_UNITS, period, expire_at, now, account_id),
+        ("basic", PLAN_WEEKLY_UNITS, period, expire_at, now, account_id),
     )
+
+
+def claim_basic_weekly(
+    database_path: Path,
+    account_id: str,
+    workspace_id: str = "default",
+) -> dict[str, Any]:
+    """基础版每周领取：+1000 额外积分（进 extra_balance 子池，永久有效），每周 1 次、最多 4 次。
+
+    领取资格校验：套餐为基础版、未到期、本周未领过、累计不足 4 次。
+    领到的积分进额外积分子池（非充值池）并写台账（source_type=plan_basic_claim，按周幂等）。
+    """
+    now = _utc_now()
+    period = _plan_period_key()
+    with transaction(database_path) as conn:
+        _ensure_wallet(conn, account_id, workspace_id or "default")
+        wallet = conn.execute(
+            """
+            SELECT plan_type, plan_expire_at, basic_claim_period, basic_claim_count
+            FROM billing_wallets WHERE account_id = ?
+            """,
+            (account_id,),
+        ).fetchone()
+        if wallet is None:
+            raise HTTPException(status_code=409, detail="wallet missing")
+        if str(wallet["plan_type"]) != "basic":
+            raise HTTPException(status_code=409, detail="当前套餐无领取资格，购买基础版后可用")
+        expire_at = str(wallet["plan_expire_at"] or "")
+        if expire_at and expire_at <= now:
+            raise HTTPException(status_code=409, detail="基础版已到期，无法领取")
+        claim_count = int(wallet["basic_claim_count"] or 0)
+        if claim_count >= PLAN_BASIC_CLAIM_MAX:
+            raise HTTPException(
+                status_code=409,
+                detail=f"四周领取已用完（{PLAN_BASIC_CLAIM_MAX}/{PLAN_BASIC_CLAIM_MAX}）",
+            )
+        if str(wallet["basic_claim_period"] or "") == period:
+            raise HTTPException(status_code=409, detail="本周已领取，下周一再来")
+        conn.execute(
+            """
+            UPDATE billing_wallets
+            SET extra_balance = extra_balance + ?,
+                basic_claim_period = ?, basic_claim_count = basic_claim_count + 1,
+                version = version + 1, updated_at = ?
+            WHERE account_id = ?
+            """,
+            (PLAN_BASIC_CLAIM_UNITS, period, now, account_id),
+        )
+        _append_ledger(
+            conn,
+            account_id=account_id,
+            workspace_id=workspace_id or "default",
+            direction="credit",
+            points_delta=PLAN_BASIC_CLAIM_UNITS,
+            source_type="plan_basic_claim",
+            source_id=f"basic:{period}",
+            idempotency_key=f"plan_basic_claim:{account_id}:{period}",
+            metadata={"claim_points": PLAN_BASIC_CLAIM_POINTS, "period": period, "pool": "extra"},
+        )
+        new_count = claim_count + 1
+    cache.invalidate_wallet(account_id)
+    return {
+        "ok": True,
+        "claimed_points": PLAN_BASIC_CLAIM_POINTS,
+        "claim_count": new_count,
+        "claim_max": PLAN_BASIC_CLAIM_MAX,
+        "period": period,
+    }
+
+
+def claim_daily_extra(
+    database_path: Path,
+    account_id: str,
+    workspace_id: str = "default",
+) -> dict[str, Any]:
+    """每日免费领取：+100 额外积分（进 extra_balance 子池，永久有效、不设上限）。
+
+    所有套餐（体验版/基础版/旗舰版）均可领取，每个北京自然日 1 次。
+    资格校验只有「今天是否已领」一条：套餐、到期时间、累计次数都不参与限制，
+    因此基础版到期回落体验版后仍可继续每日领取。
+
+    幂等键按账期（北京自然日）生成，重复请求/并发重试不会重复入账。
+    """
+    now = _utc_now()
+    period = _daily_period_key()
+    with transaction(database_path) as conn:
+        _ensure_wallet(conn, account_id, workspace_id or "default")
+        wallet = conn.execute(
+            "SELECT daily_claim_date, daily_claim_count FROM billing_wallets WHERE account_id = ?",
+            (account_id,),
+        ).fetchone()
+        if wallet is None:
+            raise HTTPException(status_code=409, detail="wallet missing")
+        if str(wallet["daily_claim_date"] or "") == period:
+            raise HTTPException(status_code=409, detail="今日已领取，明天再来")
+        conn.execute(
+            """
+            UPDATE billing_wallets
+            SET extra_balance = extra_balance + ?,
+                daily_claim_date = ?, daily_claim_count = daily_claim_count + 1,
+                version = version + 1, updated_at = ?
+            WHERE account_id = ?
+            """,
+            (DAILY_EXTRA_UNITS, period, now, account_id),
+        )
+        _append_ledger(
+            conn,
+            account_id=account_id,
+            workspace_id=workspace_id or "default",
+            direction="credit",
+            points_delta=DAILY_EXTRA_UNITS,
+            source_type="daily_extra_claim",
+            source_id=f"daily:{period}",
+            idempotency_key=f"daily_extra_claim:{account_id}:{period}",
+            metadata={"claim_points": DAILY_EXTRA_POINTS, "period": period, "pool": "extra"},
+        )
+        total_days = int(wallet["daily_claim_count"] or 0) + 1
+    cache.invalidate_wallet(account_id)
+    return {
+        "ok": True,
+        "claimed_points": DAILY_EXTRA_POINTS,
+        "claim_count": total_days,
+        "period": period,
+        "next_claim_at": _daily_next_refresh(period),
+    }
 
 
 def _wallet_balances(conn: Any, account_id: str) -> tuple[int, int, int, int]:
     """Return (plan_balance, points_balance, locked_points, manual_frozen_points).
 
-    先做惰性周刷新，保证读到的体验积分是本周期最新值。
+    纯读，不做惰性刷新；需要"读到本周期最新值"的调用方（如 _debit_wallet）
+    必须先跑 _ensure_wallet。
     """
     row = conn.execute(
         """
@@ -1482,6 +1643,18 @@ def _wallet_balances(conn: Any, account_id: str) -> tuple[int, int, int, int]:
     )
 
 
+def _wallet_extra_balance(conn: Any, account_id: str) -> int:
+    """额外积分子池余额（0.1 积分单位）；缺失行/列时返回 0。"""
+    try:
+        row = conn.execute(
+            "SELECT extra_balance FROM billing_wallets WHERE account_id = ?",
+            (account_id,),
+        ).fetchone()
+    except Exception:
+        return 0
+    return int(row["extra_balance"] or 0) if row is not None else 0
+
+
 def _debit_wallet(
     conn: Any,
     account_id: str,
@@ -1493,23 +1666,36 @@ def _debit_wallet(
 
     返回 (plan_used, paid_used)，供结算台账记录分池明细。体验积分先于充值积分消耗。
     ``unlock_units`` 同时释放对应锁定额（结算/释放时传 reserved/frozen 值）。
+
+    扣费前先跑 _ensure_wallet：跨周后即使没有任何"查余额"路径先触发惰性刷新，
+    这里也会把体验池重置到本周满额再扣，保证免费额度不会被跳过。
     """
-    plan_balance, points_balance, _, _ = _wallet_balances(conn, account_id)
+    _ensure_wallet(conn, account_id, "default")
+    plan_balance, points_balance, locked_points, _ = _wallet_balances(conn, account_id)
+    # 兜底：解锁量不超过实际锁定量。正常路径由状态机保证解锁 ≤ 锁定，
+    # 这里是最后防线，避免任何路径漏洞（如过期释放与结算竞态）把 locked 击穿成负数。
+    if unlock_units > locked_points:
+        unlock_units = locked_points
+    # 扣费顺序：体验积分 → 额外积分 → 充值积分。
+    # paid_used 语义保持为「付费池共扣」= extra_used + points_used，返回值结构不变。
     plan_used = min(plan_balance, charge_units)
-    paid_used = charge_units - plan_used
+    remaining = charge_units - plan_used
+    extra_used = min(_wallet_extra_balance(conn, account_id), remaining)
+    points_used = remaining - extra_used
     conn.execute(
         """
         UPDATE billing_wallets
         SET plan_balance = plan_balance - ?,
+            extra_balance = extra_balance - ?,
             points_balance = points_balance - ?,
             locked_points = locked_points - ?,
             version = version + 1,
             updated_at = ?
         WHERE account_id = ?
         """,
-        (plan_used, paid_used, unlock_units, now, account_id),
+        (plan_used, extra_used, points_used, unlock_units, now, account_id),
     )
-    return plan_used, paid_used
+    return plan_used, extra_used + points_used
 
 
 def _append_ledger(
@@ -1715,7 +1901,8 @@ def settle_payment_order(
             )
         package_id = str(order["package_id"] or "")
         if package_id == PLAN_BASIC_PACKAGE_ID:
-            # 基础版套餐：充值积分已按 base_points 入账，此处激活 4 周套餐与每周 1500 体验额度。
+            # 基础版套餐：充值积分已按 base_points 入账，此处激活 4 周套餐与每周 500 体验额度
+            # （另有每周 1000 额外积分领取资格，见 claim_basic_weekly）。
             _activate_basic_plan(conn, account_id, now)
         settled = conn.execute(
             "SELECT * FROM billing_payment_orders WHERE order_id = ?",
@@ -2225,7 +2412,7 @@ def freeze_batch_points(
         )
         frozen_points = _display_points(frozen_units)
         plan_balance, paid_balance, locked_pts, manual_frozen = _wallet_balances(conn, actor.id)
-        available = plan_balance + paid_balance - locked_pts - manual_frozen
+        available = plan_balance + _wallet_extra_balance(conn, actor.id) + paid_balance - locked_pts - manual_frozen
         if available < frozen_units:
             raise HTTPException(
                 status_code=402,
@@ -2422,7 +2609,7 @@ def freeze_planned_points(
                 "already_frozen": True,
             }
         plan_balance, paid_balance, locked_pts, manual_frozen = _wallet_balances(conn, actor.id)
-        available = plan_balance + paid_balance - locked_pts - manual_frozen
+        available = plan_balance + _wallet_extra_balance(conn, actor.id) + paid_balance - locked_pts - manual_frozen
         if available < units:
             raise HTTPException(
                 status_code=402,
@@ -2833,7 +3020,7 @@ def settle_batch_points(
         # 兜底：重试溢价未在冻结时预留（frozen 只含 base+退款余量），余额不足以覆盖
         # charge+premium 时按余额上限截断，避免触发 CHECK(points_balance >= 0) 抛 500。
         if wallet is not None:
-            total_available = int(wallet["plan_balance"]) + int(wallet["points_balance"])
+            total_available = int(wallet["plan_balance"]) + int(wallet["points_balance"]) + _wallet_extra_balance(conn, expected_account_id)
             if total_charged_units > total_available:
                 total_charged_units = total_available
         # release the unused lock (refund) and debit the charge; wallet stores units.
@@ -2987,14 +3174,18 @@ def release_expired_batch_freezes(database_path: Path, *, now_iso: str = "") -> 
             frozen_units = int(freeze["frozen_points"])
             release_units = frozen_units * BATCH_EXPIRY_RELEASE_PERCENT // 100
             retained_units = frozen_units - release_units
-            conn.execute(
+            # 竞态防护：状态仍为 frozen 才允许转为 released。若结算等路径已抢先
+            # 提交（status 已变），rowcount 为 0 → 跳过，避免同一笔冻结被解锁两次。
+            cursor = conn.execute(
                 """
                 UPDATE billing_batch_freezes
                 SET status = 'released', settled_at = ?
-                WHERE freeze_id = ?
+                WHERE freeze_id = ? AND status = 'frozen'
                 """,
                 (_utc_now(), freeze["freeze_id"]),
             )
+            if cursor.rowcount == 0:
+                continue
             _append_ledger(
                 conn,
                 account_id=str(freeze["account_id"]),
@@ -3018,10 +3209,21 @@ def release_expired_batch_freezes(database_path: Path, *, now_iso: str = "") -> 
                     idempotency_key=f"batch_expiry:{freeze['freeze_id']}:retain",
                     metadata={"link_count": int(freeze["link_count"])},
                 )
+            # 兜底：过期惩罚按余额上限截断，避免余额不足时把钱包扣成负数
+            # （points_balance 有 CHECK 会抛 500；plan_balance 无 CHECK 会静默变负）。
+            wallet = conn.execute(
+                "SELECT plan_balance, points_balance FROM billing_wallets WHERE account_id = ?",
+                (str(freeze["account_id"]),),
+            ).fetchone()
+            charge_units = retained_units
+            if wallet is not None:
+                total_available = int(wallet["plan_balance"]) + int(wallet["points_balance"])
+                if charge_units > total_available:
+                    charge_units = total_available
             _debit_wallet(
                 conn,
                 str(freeze["account_id"]),
-                retained_units,
+                charge_units,
                 _utc_now(),
                 unlock_units=frozen_units,
             )

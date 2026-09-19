@@ -1096,6 +1096,17 @@ def _migrate_core_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "billing_wallets", "plan_type", "TEXT NOT NULL DEFAULT 'experience'")
     # 基础版购买套餐到期时刻（ISO 8601 UTC）；空串=不过期。到期由 _ensure_wallet 惰性回落。
     _ensure_column(conn, "billing_wallets", "plan_expire_at", "TEXT NOT NULL DEFAULT ''")
+    # 基础版每周领取：basic_claim_period 为上次领取的自然周 key（YYYY-MM-DD 周一），
+    # basic_claim_count 为累计领取次数（上限 4）。领到的积分进充值池、永久有效。
+    _ensure_column(conn, "billing_wallets", "basic_claim_period", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "billing_wallets", "basic_claim_count", "INTEGER NOT NULL DEFAULT 0")
+    # 额外积分独立子池（0.1 积分单位）：每日免费领取 + 基础版每周领取都进这里，
+    # 消费顺序在体验积分之后、充值积分之前。该池不设上限、不随周期重置。
+    _ensure_column(conn, "billing_wallets", "extra_balance", "INTEGER NOT NULL DEFAULT 0")
+    # 每日免费领取：daily_claim_date 为上次领取的北京自然日（YYYY-MM-DD，按日幂等），
+    # daily_claim_count 为累计领取天数（仅用于展示/统计，不限制领取资格）。
+    _ensure_column(conn, "billing_wallets", "daily_claim_date", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "billing_wallets", "daily_claim_count", "INTEGER NOT NULL DEFAULT 0")
     # 登录状态字段：账号级单端登录限制（云端认证服务与本地工作台共用同一 schema）。
     _ensure_column(conn, "auth_accounts", "login_status", "TEXT NOT NULL DEFAULT 'offline'")
     # 本地会话表保存远端 wh_auth_* token，登出时联动撤销云端登录态。

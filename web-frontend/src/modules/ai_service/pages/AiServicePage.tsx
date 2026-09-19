@@ -390,12 +390,14 @@ export function AiServicePage() {
           size: imageSizeFor(aspectRatio),
           asset_ids: draft.submitted.assetId ? [draft.submitted.assetId] : [],
         });
-        const generatedImageUrls = await Promise.all(result.asset_ids.map(aiServiceApi.loadAssetUrl));
+        const assetIds = result.asset_ids ?? [];
+        if (!assetIds.length) throw new Error("生成失败：服务端没有返回图片");
+        const generatedImageUrls = await Promise.all(assetIds.map(aiServiceApi.loadAssetUrl));
         generatedImageUrls.forEach((url) => objectUrlsRef.current.add(url));
         setMessages((current) => [...current, {
           id: `assistant-${Date.now()}`,
           role: "assistant",
-          content: `已生成 ${result.asset_ids.length} 张商品创作图。`,
+          content: `已生成 ${assetIds.length} 张商品创作图。`,
           generatedImageUrls,
         }]);
       }

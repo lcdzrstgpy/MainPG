@@ -323,7 +323,7 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
     setBusy('analyze');
     try {
       if (!set.items.length) { fail('请先上传至少 2 张原图'); return; }
-      const missing = set.items.filter((it) => !it.subject_keywords.trim());
+      const missing = set.items.filter((it) => !(it.subject_keywords || "").trim());
       if (missing.length) { fail('请为每个子商品填写主体词'); return; }
       // 先把用户填写的融合主图提示词 + 模板保存，再执行主体解析 + 融合主图生成。
       await updateSet(ctx, set.set_id, { fusion_prompt: fusionPrompt });

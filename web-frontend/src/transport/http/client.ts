@@ -43,14 +43,19 @@ export function clearAuthSession() {
 
 const SESSION_EXPIRED_EVENT = "auth:session-expired";
 
-/** 通知应用层登录状态已失效（登录超时 / 远程会话缺失），用于自动返回登录页。 */
-export function notifySessionExpired(): void {
-  window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT));
+/** 通知应用层登录状态已失效（登录超时 / 远程会话缺失 / 被顶替），用于自动返回登录页。 */
+export function notifySessionExpired(reason?: string): void {
+  window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT, { detail: reason || "" }));
 }
 
 export function isSessionExpired(response: Response, detail: string): boolean {
+  // 认证入口自身的 401 是业务拒绝（密码错/验证码错/账号停用），不是会话过期，
+  // 不能触发回登录页（否则登录页输错密码会被"踢"）。
+  if (/invalid (username\/email or password)|invalid or expired (reset token|email code)|a valid 6-digit email code is required|user is not registered on the server|customer account is not active/i.test(detail)) {
+    return false;
+  }
   if (response.status === 401) return true;
-  return /login session expired|remote customer session is missing|invalid bearer token|missing bearer token/i.test(detail);
+  return /login session expired|remote customer session is missing|invalid bearer token|missing bearer token|session revoked/i.test(detail);
 }
 
 /**
@@ -66,9 +71,15 @@ const interceptorWindow = window as unknown as Record<string, unknown>;
 if (!interceptorWindow[FETCH_INTERCEPTOR_KEY]) {
   interceptorWindow[FETCH_INTERCEPTOR_KEY] = true;
   const originalFetch = window.fetch.bind(window);
+  // 认证入口的 401 是业务拒绝（密码/验证码错误），不应触发会话过期回登录页。
+  const AUTH_ENTRY_PATH =
+    /\/api\/customer\/(login|register|activate|email-code|password-reset|change-password|forgot-password)(\/|$)/i;
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const response = await originalFetch(input, init);
-    if (response.status === 401) notifySessionExpired();
+    if (response.status === 401) {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.pathname : input.url;
+      if (!AUTH_ENTRY_PATH.test(url)) notifySessionExpired();
+    }
     return response;
   };
 }
@@ -116,6 +127,19 @@ export function toUserMessage(raw: string): string {
   if (/username or email already exists/i.test(message)) {
     return "这个用户名或邮箱已经注册过了，可以直接登录；忘记密码就在登录页点「忘记密码？」重置";
   }
+  // ---- 登录与会话 ----
+  if (/too many failed login attempts/i.test(message)) return "登录失败次数过多，请 15 分钟后再试";
+  if (/session revoked/i.test(message)) return "你的账号已在其他设备登录，本机已退出";
+  if (/login session expired|invalid bearer token|missing bearer token/i.test(message)) return "登录状态已失效，请重新登录";
+  // ---- 修改用户名 ----
+  if (/username is required/i.test(message)) return "请输入新的用户名";
+  if (/username must be 3-32 characters/i.test(message)) return "用户名需要 3-32 个字符";
+  if (/username contains unsupported characters/i.test(message)) return "用户名只能包含中英文、数字、下划线和连字符";
+  if (/new username must be different/i.test(message)) return "新用户名不能与当前用户名相同";
+  if (/username already taken/i.test(message)) return "这个用户名已被占用，换一个试试";
+  if (/username can only be changed once every 30 days/i.test(message)) return "30 天内只能修改一次用户名，过段时间再来";
+  if (/a verified email is required to change username/i.test(message)) return "当前账号没有绑定邮箱，无法修改用户名";
+  if (/missing account/i.test(message)) return "账号信息缺失，请重新登录后再试";
   if (/password must be at least 6 characters/i.test(message)) return "密码至少 6 位，请重新设置";
   if (/a valid email is required/i.test(message)) return "邮箱格式不正确，请检查后重新填写";
   if (/account not found/i.test(message)) return "找不到这个账号，请确认用户名或邮箱有没有写错";
@@ -264,7 +288,7 @@ export async function httpJson<T>(path: string, options: RequestOptions = {}): P
 
   if (!response.ok) {
     const detail = detailFromPayload(payload, response.status);
-    if (isSessionExpired(response, detail)) notifySessionExpired();
+    if (isSessionExpired(response, detail)) notifySessionExpired(detail);
     throw new Error(toUserMessage(detail));
   }
 
@@ -288,7 +312,7 @@ export async function httpBlob(path: string, options: RequestOptions = {}): Prom
 
   if (!response.ok) {
     const detail = await response.text().catch(() => "请求失败");
-    if (isSessionExpired(response, detail)) notifySessionExpired();
+    if (isSessionExpired(response, detail)) notifySessionExpired(detail);
     throw new Error(toUserMessage(detail || "请求失败"));
   }
 

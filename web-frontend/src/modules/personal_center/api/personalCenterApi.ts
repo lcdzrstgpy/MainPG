@@ -67,6 +67,24 @@ export type BillingSummary = {
       next_refresh_at: string;
       /** 基础版套餐到期时刻（ISO 8601）；空串=无到期限制（体验版/旗舰版）。 */
       plan_expire_at: string;
+      /** 基础版每周领取：每次可领积分（非基础版为 0）。 */
+      basic_claim_points: number;
+      /** 已领取次数。 */
+      basic_claim_count: number;
+      /** 领取次数上限（4 次）。 */
+      basic_claim_max: number;
+      /** 当前是否可领取（服务端已算好：套餐有效 + 未领满 + 本周未领）。 */
+      basic_claimable: boolean;
+      /** 每日免费领取：每次可领积分（所有套餐统一 100）。 */
+      daily_claim_points: number;
+      /** 今天是否还没领（服务端按北京自然日判定，所有套餐通用）。 */
+      daily_claimable: boolean;
+      /** 上次领取的北京自然日（YYYY-MM-DD）；空串=从未领过。 */
+      daily_claim_date: string;
+      /** 今日已领时，下一次可领时刻（次日 00:00，ISO 8601）；未领时为空串。 */
+      daily_next_claim_at: string;
+      /** 额外积分独立子池实时余额（每日 + 基础版每周领取都进这里，消费时在体验之后、充值之前扣）。 */
+      extra_balance: number;
     };
   };
   pricing: {
@@ -195,6 +213,31 @@ export function createTopupOrder(input: {
   });
 }
 
+/** 基础版每周领取 1000 积分（额外积分池，永久有效）。 */
+export function claimBasicWeeklyPoints() {
+  return httpJson<{
+    ok: boolean;
+    claimed_points: number;
+    claim_count: number;
+    claim_max: number;
+    period: string;
+  }>("/api/customer/billing/plan-basic/claim", { method: "POST" });
+}
+
+/** 每日免费领取 100 积分（额外积分池，永久有效，所有套餐可用；按北京自然日幂等）。 */
+export function claimDailyExtraPoints() {
+  return httpJson<{
+    ok: boolean;
+    claimed_points: number;
+    /** 累计领取天数。 */
+    claim_count: number;
+    /** 本次账期（北京自然日 YYYY-MM-DD）。 */
+    period: string;
+    /** 下次可领时刻（次日 00:00，ISO 8601）。 */
+    next_claim_at: string;
+  }>("/api/customer/billing/daily-extra/claim", { method: "POST" });
+}
+
 /**
  * 自定义金额的到账积分必须由服务端报价，客户端不自行推算赠送规则。
  */
@@ -213,6 +256,23 @@ export function changeAccountPassword(input: {
   new_password: string;
 }) {
   return httpJson<{ ok: boolean; message: string }>("/api/customer/change-password", {
+    method: "POST",
+    body: input,
+  });
+}
+
+/** 发送改用户名用的邮箱验证码（发到账号绑定邮箱）。 */
+export function sendUsernameChangeCode(email: string) {
+  return httpJson<{ ok: boolean; message: string }>("/api/customer/email-code", {
+    method: "POST",
+    body: { email, purpose: "change_username" },
+    token: "",
+  });
+}
+
+/** 修改登录用户名：服务端校验已登录 + 邮箱验证码，30 天限一次。 */
+export function changeUsername(input: { new_username: string; code: string }) {
+  return httpJson<{ ok: boolean; message: string }>("/api/customer/change-username", {
     method: "POST",
     body: input,
   });

@@ -33,10 +33,15 @@ from ..billing import (
     BATCH_BILLING_PROFILE_POD,
     BATCH_BILLING_PROFILE_POD_SEMI,
     BATCH_BILLING_PROFILE_PRODUCT,
+    DAILY_EXTRA_POINTS,
     PLAN_BASIC_PACKAGE_ID,
     PLAN_BASIC_PRICE_CENTS,
+    PLAN_BASIC_CLAIM_MAX,
+    PLAN_BASIC_CLAIM_POINTS,
     TOPUP_PROMOTION_ID,
     TOPUP_PROMOTION_NAME,
+    _daily_next_refresh,
+    _daily_period_key,
     _ensure_wallet,
     _plan_next_refresh,
     _plan_period_key,
@@ -44,6 +49,8 @@ from ..billing import (
     _plan_weekly_units,
     active_pricing,
     batch_freeze_status,
+    claim_basic_weekly,
+    claim_daily_extra,
     compute_batch_charge,
     freeze_batch_points,
     pricing_changelog,
@@ -77,7 +84,7 @@ from ..pod_billing import (
     update_pod_pricing_items,
 )
 from ..session import Actor
-from .auth_service import SQLiteCustomerAuthService, purge_expired_customer_feedback
+from .auth_service import SQLiteCustomerAuthService, purge_expired_customer_feedback, refresh_stale_login_status
 from .credential_vault import CredentialVaultError, active_secret, enabled_secrets
 from .contracts import CustomerAuthActionResult, CustomerAuthResult, CustomerAuthUnavailable
 from .email_sender import TencentCloudSESEmailSender
@@ -912,6 +919,23 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
     )
     purge_thread.start()
 
+    # 在线状态维护：每 10 分钟把"会话已全部失效"的账号从 online 回落 offline，
+    # 修正"直接关客户端不点退出导致永远 online"的挂起问题。
+    def _login_status_refresh_loop() -> None:
+        while True:
+            try:
+                time.sleep(10 * 60)
+                refresh_stale_login_status(db_path)
+            except Exception:
+                time.sleep(10 * 60)
+
+    status_thread = threading.Thread(
+        target=_login_status_refresh_loop,
+        name="login-status-refresh",
+        daemon=True,
+    )
+    status_thread.start()
+
     @app.on_event("shutdown")
     def _stop_batch_ttl_sweep() -> None:
         _gateway_stop_event.set()
@@ -1408,6 +1432,33 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
     ) -> dict[str, Any]:
         _required_account(db_path, authorization)
         return _topup_quote(db_path, payload)
+
+    @app.post("/api/customer/billing/plan-basic/claim")
+    def claim_basic_plan_points(
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """基础版每周领取 1000 积分（额外积分池，永久有效）。"""
+        account = _required_account(db_path, authorization)
+        return claim_basic_weekly(
+            db_path,
+            str(account["account_id"]),
+            str(account.get("workspace_id") or "default"),
+        )
+
+    @app.post("/api/customer/billing/daily-extra/claim")
+    def claim_daily_extra_points(
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """每日免费领取 100 积分（额外积分池，永久有效，所有套餐可用）。
+
+        幂等按北京自然日，单账号每日仅一次；重复请求返回 409。
+        """
+        account = _required_account(db_path, authorization)
+        return claim_daily_extra(
+            db_path,
+            str(account["account_id"]),
+            str(account.get("workspace_id") or "default"),
+        )
 
     @app.post("/api/customer/billing/usage/reserve")
     def reserve_billing_usage(
@@ -1937,6 +1988,20 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
     def change_password(payload: dict[str, Any]) -> dict[str, Any]:
         return _action_response(_call_action(service.change_password, payload))
 
+    @app.post("/api/customer/change-username")
+    def change_username(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """修改登录用户名：已登录 + 绑定邮箱验证码（purpose=change_username），30 天限一次。
+
+        account_id 由服务端从 token 解析注入，不信任请求体，防止改他人账号。
+        """
+        account = _required_account(db_path, authorization)
+        enriched_payload = dict(payload)
+        enriched_payload["account_id"] = str(account["account_id"])
+        return _action_response(_call_action(service.change_username, enriched_payload))
+
     @app.post("/api/customer/forgot-password")
     def forgot_password(payload: dict[str, Any], request: Request) -> dict[str, Any]:
         enriched_payload = dict(payload)
@@ -2151,6 +2216,10 @@ def _issue_platform_session(
     return {"session_id": session_id, "token": token, "expires_at": expires_at}
 
 
+class SessionRevokedError(RuntimeError):
+    """平台会话已被撤销（他端登录顶替/登出/改密），区别于过期与不存在。"""
+
+
 def _account_by_token(database_path: Path, token: str) -> dict[str, Any] | None:
     """按 token 查账户；命中 Redis 会话缓存直接返回，DB miss 时回填。
 
@@ -2187,6 +2256,14 @@ def _account_by_token(database_path: Path, token: str) -> dict[str, Any] | None:
             (token_hash, now),
         ).fetchone()
         if row is None:
+            # 区分"会话被撤销"（他端登录顶替/登出/改密）与"过期/不存在"，
+            # 让被顶替的前端收到可识别的提示，而不是笼统的会话过期。
+            revoked = conn.execute(
+                "SELECT 1 FROM auth_platform_sessions WHERE token_hash = ? AND revoked_at <> ''",
+                (token_hash,),
+            ).fetchone()
+            if revoked is not None:
+                raise SessionRevokedError()
             return None
         conn.execute(
             "UPDATE auth_platform_sessions SET last_used_at = ? WHERE token_hash = ?",
@@ -2212,7 +2289,10 @@ def _account_by_token(database_path: Path, token: str) -> dict[str, Any] | None:
 
 def _required_account(database_path: Path, authorization: str | None) -> dict[str, Any]:
     token = _bearer_token(authorization)
-    account = _account_by_token(database_path, token)
+    try:
+        account = _account_by_token(database_path, token)
+    except SessionRevokedError:
+        raise HTTPException(status_code=401, detail="session revoked, account signed in on another device")
     if account is None:
         raise HTTPException(status_code=401, detail="invalid bearer token")
     if str(account.get("account_status") or "").lower() not in {"active", ""}:
@@ -3146,7 +3226,9 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
     # 展示型余额/流水缓存（短 TTL）；冻结/结算/充值等写路径会主动失效。
     pricing = active_pricing(database_path)
     promotion = topup_promotion_status()
-    cache_key = f"wallet:{account_id}:topup:fixed-package-tiered-bonus:{pricing['rule_version']}:plan:{_plan_period_key()}"
+    # 键必须与 cache.invalidate_wallet(account_id) 删除的键一致，否则领取/充值/结算
+    # 之后 30s 内刷新 summary 仍命中旧缓存（余额"不涨"）。维度差异由 30s 短 TTL 兜底。
+    cache_key = f"wallet:{account_id}"
     cached = _cache.cache_get(cache_key)
     if cached is not None:
         return cached
@@ -3155,7 +3237,8 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
         wallet = conn.execute(
             """
             SELECT points_balance, locked_points, manual_frozen_points, version, ledger_head_hash,
-                   updated_at, plan_balance, plan_period_key, plan_type, plan_expire_at
+                   updated_at, plan_balance, plan_period_key, plan_type, plan_expire_at,
+                   basic_claim_period, basic_claim_count, extra_balance
             FROM billing_wallets
             WHERE account_id = ?
             """,
@@ -3200,6 +3283,17 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
     plan_type = str(wallet["plan_type"] if wallet else "experience")
     plan_balance_units = int(wallet["plan_balance"] if wallet else 0)
     plan_weekly_units = _plan_weekly_units(plan_type)
+    # 基础版每周领取状态：可领 = 套餐有效（过期已被 _ensure_wallet 回落）且未领满且本周未领。
+    claim_count = int(wallet["basic_claim_count"] if wallet else 0)
+    basic_claimable = (
+        plan_type == "basic"
+        and claim_count < PLAN_BASIC_CLAIM_MAX
+        and str(wallet["basic_claim_period"] if wallet else "") != _plan_period_key()
+    )
+    # 每日免费领取状态：所有套餐通用，唯一条件是「今天还没领」。
+    today = _daily_period_key()
+    daily_claim_date = str(wallet["daily_claim_date"] if wallet else "")
+    daily_claimable = daily_claim_date != today
     payload = {
         "ok": True,
         "account": {
@@ -3213,7 +3307,7 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
             "locked_points": _display_billing_points(int(wallet["locked_points"] if wallet else 0), pricing),
             "manual_frozen_points": _display_billing_points(int(wallet["manual_frozen_points"] if wallet else 0), pricing),
             "frozen_points": _display_billing_points(int((wallet["locked_points"] if wallet else 0) + (wallet["manual_frozen_points"] if wallet else 0)), pricing),
-            "available_points": _display_billing_points(int((wallet["plan_balance"] if wallet else 0) + (wallet["points_balance"] if wallet else 0) - (wallet["locked_points"] if wallet else 0) - (wallet["manual_frozen_points"] if wallet else 0)), pricing),
+            "available_points": _display_billing_points(int((wallet["plan_balance"] if wallet else 0) + (wallet["extra_balance"] if wallet else 0) + (wallet["points_balance"] if wallet else 0) - (wallet["locked_points"] if wallet else 0) - (wallet["manual_frozen_points"] if wallet else 0)), pricing),
             "version": int(wallet["version"] if wallet else 0),
             "ledger_head_hash": wallet["ledger_head_hash"] if wallet else "",
             "updated_at": wallet["updated_at"] if wallet else "",
@@ -3225,6 +3319,15 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
                 "plan_used": _display_billing_points(max(0, plan_weekly_units - plan_balance_units), pricing),
                 "next_refresh_at": _plan_next_refresh(wallet["plan_period_key"] if wallet else ""),
                 "plan_expire_at": wallet["plan_expire_at"] if wallet else "",
+                "basic_claim_points": PLAN_BASIC_CLAIM_POINTS if plan_type == "basic" else 0,
+                "basic_claim_count": claim_count,
+                "basic_claim_max": PLAN_BASIC_CLAIM_MAX,
+                "basic_claimable": basic_claimable,
+                "daily_claim_points": DAILY_EXTRA_POINTS,
+                "daily_claimable": daily_claimable,
+                "daily_claim_date": daily_claim_date,
+                "daily_next_claim_at": _daily_next_refresh(today) if not daily_claimable else "",
+                "extra_balance": _display_billing_points(int(wallet["extra_balance"] if wallet else 0), pricing),
             },
         },
         "pricing": pricing,

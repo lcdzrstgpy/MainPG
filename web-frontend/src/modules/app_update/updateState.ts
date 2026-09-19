@@ -99,7 +99,7 @@ export function toUpdateDialogState(status: Partial<AppUpdateStatus>): UpdateDia
     mandatory: release?.mandatory === true,
     currentVersion: status.current_version ?? "当前版本",
     targetVersion: release?.version ?? "",
-    notes: release?.release_notes.split(/\r?\n/).map((note) => note.trim()).filter(Boolean) ?? [],
+    notes: (release?.release_notes ?? "").split(/\r?\n/).map((note) => note.trim()).filter(Boolean) ?? [],
     phase,
     progress,
     message: messageForPhase(phase),

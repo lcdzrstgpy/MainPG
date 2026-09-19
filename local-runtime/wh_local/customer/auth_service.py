@@ -29,7 +29,11 @@ EMAIL_CODE_MAX_ATTEMPTS = 5
 DEFAULT_WORKSPACE_NAME = "本地演示工作区"
 # 会话失联阈值：前端心跳间隔约 30 秒，超过该阈值未刷新 last_used_at 视为
 # 已关闭页面/断线，允许该账号重新登录并撤销旧会话。
-SESSION_STALE_SECONDS = 90
+SESSION_STALE_SECONDS = 300
+
+# 登录防爆破：15 分钟内同账号连续失败 5 次即锁定，之后登录直接拒绝。
+LOGIN_MAX_FAILURES = 5
+LOGIN_LOCK_WINDOW_SECONDS = 15 * 60
 
 
 class SQLiteCustomerAuthService:
@@ -103,6 +107,26 @@ class SQLiteCustomerAuthService:
                     (row["account_id"], row["username"], row["email"], "account is not active", _utc_now()),
                 )
                 raise PermissionError("customer account is not active")
+
+            # 登录防爆破：15 分钟内同账号连续失败达到上限后锁定，密码比对之前拒绝，
+            # 避免攻击者无限试密码。窗口外的旧失败自然滑出，锁定自动解除。
+            lock_since = _utc_ago(LOGIN_LOCK_WINDOW_SECONDS)
+            failed_count = conn.execute(
+                """
+                SELECT COUNT(*) AS total FROM auth_login_logs
+                WHERE account_id = ? AND success = 0 AND created_at > ?
+                """,
+                (row["account_id"], lock_since),
+            ).fetchone()["total"]
+            if int(failed_count) >= LOGIN_MAX_FAILURES:
+                conn.execute(
+                    """
+                    INSERT INTO auth_login_logs (account_id, username, email, success, failure_reason, created_at)
+                    VALUES (?, ?, ?, 0, ?, ?)
+                    """,
+                    (row["account_id"], row["username"], row["email"], "too many failed login attempts", _utc_now()),
+                )
+                raise PermissionError("too many failed login attempts, please try again later")
 
             if not _verify_password(password, row["salt"], row["password_hash"], int(row["iterations"])):
                 conn.execute(
@@ -360,7 +384,7 @@ class SQLiteCustomerAuthService:
         self._require_email_verification()
         email = _normalize_email(_text(payload, "email"))
         purpose = _text(payload, "purpose").lower() or "register"
-        if purpose not in {"register", "reset_password"}:
+        if purpose not in {"register", "reset_password", "change_username"}:
             raise ValueError("unsupported email code purpose")
 
         now_dt = datetime.now(timezone.utc)
@@ -379,6 +403,8 @@ class SQLiteCustomerAuthService:
             if purpose == "register" and existing_account is not None:
                 return _email_code_success()
             if purpose == "reset_password" and existing_account is None:
+                return _email_code_success()
+            if purpose == "change_username" and existing_account is None:
                 return _email_code_success()
 
             recently_sent = conn.execute(
@@ -571,6 +597,113 @@ class SQLiteCustomerAuthService:
             ok=True,
             message="if the account exists, a verification code has been sent to its email",
         )
+
+    def change_username(self, payload: dict[str, Any]) -> CustomerAuthActionResult:
+        """修改登录用户名：需已登录（account_id）+ 绑定邮箱验证码（purpose=change_username）。
+
+        规则：30 天限一次、新名 3~32 字符（中英文/数字/下划线/连字符）、
+        工作区范围内唯一、验证码一次性消费。成功/失败均写 auth_security_events。
+        """
+        self._require_email_verification()
+        account_id = _text(payload, "account_id")
+        new_username = _text(payload, "new_username").strip()
+        code = _text(payload, "code") or _text(payload, "email_code")
+        if not account_id:
+            raise PermissionError("missing account")
+        if not new_username:
+            raise ValueError("username is required")
+        if not 3 <= len(new_username) <= 32:
+            raise ValueError("username must be 3-32 characters")
+        if not re.fullmatch(r"[\w\u4e00-\u9fa5-]+", new_username):
+            raise ValueError("username contains unsupported characters")
+        if not re.fullmatch(r"\d{6}", code):
+            raise ValueError("a valid 6-digit email code is required")
+        now = _utc_now()
+
+        with transaction(self.database_path) as conn:
+            account = conn.execute(
+                "SELECT username, email FROM auth_accounts WHERE account_id = ?",
+                (account_id,),
+            ).fetchone()
+            if account is None:
+                raise PermissionError("account not found")
+            old_username = str(account["username"] or "")
+            email = _normalize_email(str(account["email"] or ""))
+            if not email:
+                _log_security_event(conn, account_id, "change_username", False, {"reason": "no bound email"})
+                raise PermissionError("a verified email is required to change username")
+            if new_username == old_username:
+                raise ValueError("new username must be different from the current one")
+
+        # 验证码校验（内部自开事务，错码 attempts 递增并抛出）。
+        verification_id = self._validate_email_code(email, code, purpose="change_username")
+
+        with transaction(self.database_path) as conn:
+            # 频率限制：30 天内只允许成功改一次。
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat(timespec="seconds")
+            recent = conn.execute(
+                """
+                SELECT 1 FROM auth_security_events
+                WHERE account_id = ? AND event_type = 'change_username' AND success = 1
+                  AND created_at > ?
+                LIMIT 1
+                """,
+                (account_id, cutoff),
+            ).fetchone()
+            if recent is not None:
+                _log_security_event(conn, account_id, "change_username", False, {"reason": "rate limited"})
+                raise PermissionError("username can only be changed once every 30 days")
+
+            taken = conn.execute(
+                "SELECT 1 FROM auth_accounts WHERE lower(username) = lower(?) AND account_id <> ?",
+                (new_username, account_id),
+            ).fetchone()
+            if taken is not None:
+                _log_security_event(conn, account_id, "change_username", False, {"reason": "username taken"})
+                raise ValueError("username already taken")
+
+            # 与重置密码一致：事务内二次校验，防止同一验证码被并发消费。
+            verification = conn.execute(
+                """
+                SELECT token_hash, expires_at, attempts
+                FROM auth_email_verifications
+                WHERE verification_id = ? AND email = ? AND purpose = 'change_username' AND used_at = ''
+                """,
+                (verification_id, email),
+            ).fetchone()
+            expected_code_hash = _email_code_digest(
+                self.email_code_secret,
+                verification_id,
+                email,
+                "change_username",
+                code,
+            )
+            if (
+                verification is None
+                or str(verification["expires_at"]) <= now
+                or int(verification["attempts"]) >= EMAIL_CODE_MAX_ATTEMPTS
+                or not hmac.compare_digest(str(verification["token_hash"]), expected_code_hash)
+            ):
+                _log_security_event(conn, account_id, "change_username", False, {"reason": "invalid code"})
+                raise PermissionError("invalid or expired email code")
+
+            conn.execute(
+                "UPDATE auth_accounts SET username = ?, updated_at = ? WHERE account_id = ?",
+                (new_username, now, account_id),
+            )
+            conn.execute(
+                "UPDATE auth_email_verifications SET used_at = ? WHERE verification_id = ? AND used_at = ''",
+                (now, verification_id),
+            )
+            _log_security_event(
+                conn,
+                account_id,
+                "change_username",
+                True,
+                {"old_username": old_username, "new_username": new_username},
+            )
+
+        return CustomerAuthActionResult(ok=True, message="username changed")
 
     def reset_password(self, payload: dict[str, Any]) -> CustomerAuthActionResult:
         new_password = _text(payload, "new_password") or _text(payload, "password")
@@ -832,6 +965,32 @@ def _log_security_event(
             _utc_now(),
         ),
     )
+
+
+def refresh_stale_login_status(database_path: Path) -> int:
+    """把"所有平台会话均已过期/撤销"的账号从 online 回落为 offline。
+
+    login_status 只有登录（置 online）和显式登出（置 offline）两条写入路径：
+    用户直接关客户端不点退出时会永远停在 online。此函数由 auth server 的
+    维护线程周期调用，让在线状态随会话生命周期自动收敛。
+    """
+    now = _utc_now()
+    with transaction(database_path) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE auth_accounts
+            SET login_status = 'offline', updated_at = ?
+            WHERE login_status = 'online'
+              AND NOT EXISTS (
+                  SELECT 1 FROM auth_platform_sessions s
+                  WHERE s.account_id = auth_accounts.account_id
+                    AND s.revoked_at = ''
+                    AND s.expires_at > ?
+              )
+            """,
+            (now, now),
+        )
+        return int(cursor.rowcount or 0)
 
 
 def purge_expired_customer_feedback(

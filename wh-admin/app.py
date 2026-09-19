@@ -1382,7 +1382,7 @@ def export(request: Request, x_auth_token: str | None = Header(default=None)) ->
 # ---------------------------------------------------------------- 静态页面与启动
 @app.get("/")
 def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+    return FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-store"})
 
 
 @app.get("/static/{filename}")
@@ -1596,15 +1596,41 @@ def billing_records(limit: int = 200, x_auth_token: str | None = Header(default=
     db_path = load_config()["database_path"]
     scale = _billing_point_scale(db_path)
     limit = max(1, min(int(limit), 500))
+    # 基础版领取列由 MainPG 服务端迁移补加；缺列时退化占位，避免整页 500。
+    has_claim = _table_has_column(db_path, "billing_wallets", "basic_claim_count")
+    claim_cols = (
+        "COALESCE(w.plan_expire_at,'') AS plan_expire_at, COALESCE(w.basic_claim_count,0) AS basic_claim_count"
+        if has_claim
+        else "'' AS plan_expire_at, 0 AS basic_claim_count"
+    )
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
-        wallets = conn.execute("SELECT a.account_id,a.username,a.email,a.workspace_id,COALESCE(w.points_balance,0) AS points_balance,COALESCE(w.locked_points,0) AS locked_points,COALESCE(w.manual_frozen_points,0) AS manual_frozen_points,w.updated_at,(SELECT COUNT(1) FROM billing_batch_items b JOIN billing_batch_freezes f ON f.freeze_id=b.freeze_id WHERE f.account_id=a.account_id AND b.feature_key='title' AND b.status='success') AS success_usage,(SELECT COALESCE(SUM(charged_points),0) FROM billing_batch_freezes f WHERE f.account_id=a.account_id AND f.status='settled') AS charged_points FROM auth_accounts a LEFT JOIN billing_wallets w ON w.account_id=a.account_id ORDER BY COALESCE(w.updated_at,a.updated_at) DESC LIMIT ?", (limit,)).fetchall()
+        wallets = conn.execute(
+            "SELECT a.account_id,a.username,a.email,a.workspace_id,"
+            "COALESCE(w.points_balance,0) AS points_balance,COALESCE(w.locked_points,0) AS locked_points,"
+            "COALESCE(w.manual_frozen_points,0) AS manual_frozen_points,"
+            "COALESCE(w.plan_balance,0) AS plan_balance,COALESCE(w.plan_type,'experience') AS plan_type,"
+            f"{claim_cols},w.updated_at,"
+            "(SELECT COUNT(1) FROM billing_batch_items b JOIN billing_batch_freezes f ON f.freeze_id=b.freeze_id "
+            "WHERE f.account_id=a.account_id AND b.feature_key='title' AND b.status='success') AS success_usage,"
+            "(SELECT COALESCE(SUM(charged_points),0) FROM billing_batch_freezes f "
+            "WHERE f.account_id=a.account_id AND f.status='settled') AS charged_points "
+            "FROM auth_accounts a LEFT JOIN billing_wallets w ON w.account_id=a.account_id "
+            "ORDER BY COALESCE(w.updated_at,a.updated_at) DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
     # 消费流水已拆分到 /api/billing/usage 独立游标分页；此处只返回钱包列表。
     wallet_rows = []
     for row in wallets:
         item = dict(row)
-        for key in ("points_balance", "locked_points", "manual_frozen_points", "charged_points"):
+        for key in ("points_balance", "locked_points", "manual_frozen_points", "charged_points", "plan_balance"):
             item[key] = _display_points(int(item.get(key) or 0), scale)
+        # 体验积分：所有套餐统一 500/周；额外积分：基础版四周每周领 1000（最多 4 次）。
+        item["plan_limit"] = 500
+        item["plan_label"] = {"experience": "体验版", "basic": "基础版", "flagship": "旗舰版"}.get(
+            str(item.get("plan_type") or ""), "体验版"
+        )
+        item["basic_claim_max"] = 4
         wallet_rows.append(item)
     return {"ok": True, "point_unit_scale": scale, "wallets": wallet_rows}
 

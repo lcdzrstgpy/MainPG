@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import threading
 import time
 from typing import Any
@@ -25,6 +26,12 @@ from .contracts import (
 _BILLING_MAX_ATTEMPTS = 5
 _BILLING_RETRY_DELAYS = (0.2, 0.6, 1.2, 2.0)
 _BILLING_REQUEST_GATE = threading.BoundedSemaphore(2)
+
+# 会话失效类 401 detail：透传给前端识别（被顶替/过期），不回折叠成固定话术。
+_SESSION_FAILURE_DETAIL = re.compile(
+    r"session revoked|login session expired|invalid bearer token|missing bearer token",
+    re.IGNORECASE,
+)
 
 
 class CustomerAuthClient:
@@ -69,6 +76,19 @@ class CustomerAuthClient:
     def change_password(self, payload: dict[str, Any]) -> CustomerAuthActionResult:
         return normalize_action_response(self._post("/api/customer/change-password", payload, account_action=True))
 
+    def change_username(self, payload: dict[str, Any], remote_token: str) -> CustomerAuthActionResult:
+        """修改登录用户名（服务端校验已登录 + 邮箱验证码，30 天限一次）。"""
+        if not remote_token:
+            raise CustomerAuthPermissionError()
+        return normalize_action_response(
+            self._post(
+                "/api/customer/change-username",
+                payload,
+                headers={"Authorization": f"Bearer {remote_token}"},
+                account_action=True,
+            )
+        )
+
     def forgot_password(self, payload: dict[str, Any]) -> CustomerAuthActionResult:
         return normalize_action_response(self._post("/api/customer/forgot-password", payload, account_action=True))
 
@@ -102,6 +122,28 @@ class CustomerAuthClient:
         return self._billing_result(
             self._get,
             "/api/customer/billing/rules",
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
+    def claim_daily_extra(self, remote_token: str) -> dict[str, Any]:
+        """每日免费领取 100 积分（服务端按北京自然日幂等，重复请求返回 409）。"""
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        return self._billing_result(
+            self._post,
+            "/api/customer/billing/daily-extra/claim",
+            {},
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
+    def claim_basic_weekly(self, remote_token: str) -> dict[str, Any]:
+        """基础版每周领取 1000 积分（服务端按自然周幂等）。"""
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        return self._billing_result(
+            self._post,
+            "/api/customer/billing/plan-basic/claim",
+            {},
             headers={"Authorization": f"Bearer {remote_token}"},
         )
 
@@ -269,9 +311,12 @@ class CustomerAuthClient:
                 status_code = getattr(exc, "status_code", None)
                 if type(status_code) is not int or not 400 <= status_code < 500:
                     raise CustomerBillingProtocolError() from exc
+                # 保留上游 detail（如「今日已领取，明天再来」）：4xx 是可预期的业务
+                # 拒绝，把原文带给用户比一句笼统英文有用得多。
+                upstream = str(getattr(exc, "message", "") or "")
                 raise CustomerAuthRejected(
                     status_code,
-                    "remote billing request was rejected",
+                    upstream or "remote billing request was rejected",
                 ) from exc
             except CustomerBillingPermissionError:
                 raise
@@ -326,6 +371,10 @@ class CustomerAuthClient:
                 if account_action and detail:
                     # 账号操作要把上游原因带给用户（邀请码过期、验证码错误、密码不对…），
                     # 折叠成固定话术会让注册/登录页只剩一句「操作失败，请稍后重试」。
+                    raise CustomerAuthPermissionError(status, detail) from None
+                if status == 401 and detail and _SESSION_FAILURE_DETAIL.search(detail):
+                    # 会话失效类 401（被顶替/过期）：透传 detail，前端据此给出
+                    # 明确提示并回登录页，而不是把用户留在工作区反复报错。
                     raise CustomerAuthPermissionError(status, detail) from None
                 raise CustomerBillingPermissionError(status) from None
             if 400 <= status < 500:

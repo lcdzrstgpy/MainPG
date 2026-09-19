@@ -41,12 +41,9 @@ export const aiServiceApi = {
     const decoder = new TextDecoder();
     let raw = "";
     let content = "";
-    while (true) {
-      const next = await reader.read();
-      if (next.done) break;
-      raw += decoder.decode(next.value, { stream: true });
-      const events = raw.split("\n\n");
-      raw = events.pop() ?? "";
+    const drainEvents = (chunk: string) => {
+      const events = chunk.split("\n\n");
+      const tail = events.pop() ?? "";
       for (const event of events) {
         for (const line of event.split("\n")) {
           if (!line.startsWith("data:")) continue;
@@ -58,11 +55,26 @@ export const aiServiceApi = {
             const delta = payload.choices?.[0]?.delta?.content;
             if (typeof delta === "string") content += delta;
           } catch (error) {
-            if (error instanceof Error) throw error;
+            // JSON 解析失败（心跳/非标准行）跳过该行；业务错误照常抛出。
+            if (!(error instanceof SyntaxError)) throw error;
           }
         }
       }
+      return tail;
+    };
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      raw += decoder.decode(next.value, { stream: true });
+      raw = drainEvents(raw);
     }
+    // 流结束时 flush 残留缓冲：最后一条 data 事件可能没有 \n\n 结尾。
+    const trailing = decoder.decode();
+    if (trailing) {
+      raw += trailing;
+      raw = drainEvents(raw);
+    }
+    if (raw.trim()) drainEvents(`${raw}\n\n`);
     return content;
   },
 };

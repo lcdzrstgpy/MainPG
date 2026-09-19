@@ -6,7 +6,8 @@ import { HelpAgentWidget } from "../modules/help_agent/components/HelpAgentWidge
 import { StartupUpdateGate } from "../modules/app_update/components/StartupUpdateGate";
 import { RuntimeUpdateNotifier } from "../modules/app_update/components/RuntimeUpdateNotifier";
 import { GlobalToast } from "../shared/components/GlobalToast";
-import { clearAuthSession, getAuthAccount, getAuthToken, httpJson } from "../transport/http/client";
+import { BalanceFloatingBall } from "../shared/components/BalanceFloatingBall";
+import { clearAuthSession, getAuthAccount, getAuthToken, httpJson, toUserMessage } from "../transport/http/client";
 
 type MeResponse = {
   user_id?: string;
@@ -14,6 +15,9 @@ type MeResponse = {
   role?: string;
   workspace_code?: string;
 };
+
+// 会话失效原因透传到登录页的临时键（"被顶替"等场景给用户一句明确解释）。
+const LOGIN_HINT_KEY = "wh_login_hint";
 
 // 查询仍在处理中的产品任务数（queued / running），供「关闭页面前提醒」判断。
 async function fetchActiveTaskCount(): Promise<number> {
@@ -65,7 +69,15 @@ export function App() {
   // 任意接口返回登录失效（登录超时 / 远程会话缺失）时统一回到登录页，避免用户
   // 停留在工作区内反复看到报错提示。
   useEffect(() => {
-    const onSessionExpired = () => {
+    const onSessionExpired = (event: Event) => {
+      const reason = (event as CustomEvent<string>).detail || "";
+      if (reason) {
+        try {
+          sessionStorage.setItem(LOGIN_HINT_KEY, toUserMessage(reason));
+        } catch {
+          // sessionStorage 不可用时静默忽略，仅失去一条提示
+        }
+      }
       clearAuthSession();
       setPlayEntryAnimation(false);
       setEnteredWorkspace(false);
@@ -147,6 +159,7 @@ export function App() {
         <HelpAgentWidget allowFeedback={false} />
       </>
     )}
+    {enteredWorkspace && <BalanceFloatingBall />}
     <RuntimeUpdateNotifier />
     <GlobalToast />
   </>;

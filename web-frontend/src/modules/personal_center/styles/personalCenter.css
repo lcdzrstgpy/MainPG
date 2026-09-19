@@ -202,6 +202,39 @@
   font-size: 14px;
 }
 
+.personal-username-code-row {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+
+.personal-username-code-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.personal-username-code-btn {
+  flex: none;
+  padding: 0 14px;
+  border: 1px solid var(--theme-module-primary-strong, #0ea5ff);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--theme-module-primary-strong, #0ea5ff);
+  font-size: 0.8rem;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.personal-username-code-btn:hover:not(:disabled) {
+  background: var(--theme-module-primary-soft, rgba(14, 165, 255, 0.12));
+}
+
+.personal-username-code-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .personal-password-layer {
   position: fixed;
   inset: 0;
@@ -649,6 +682,18 @@
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.personal-profile-actions {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.personal-profile-actions .personal-password-entry {
+  justify-content: center;
 }
 
 .personal-profile-id {
@@ -2243,4 +2288,106 @@
   font-size: 0.78rem;
   font-weight: 700;
   text-align: center;
+}
+
+/* 体验卡上的「体验积分」条标题行 */
+.personal-plan-block-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 2px;
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--theme-text-muted, #64748b);
+}
+
+/* 体验卡上的「每周额外领取」块（基础版） */
+.personal-plan-claim {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(14, 165, 255, 0.06);
+  border: 1px dashed var(--theme-module-primary-strong, #0ea5ff);
+  display: grid;
+  gap: 8px;
+}
+.personal-plan-claim-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.personal-plan-claim-head span {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--theme-text-muted, #64748b);
+}
+.personal-plan-claim-head b {
+  font-size: 0.95rem;
+  font-weight: 800;
+  color: var(--theme-module-primary-strong, #075985);
+  white-space: nowrap;
+}
+.personal-plan-claim-meter {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--theme-module-surface-soft, #eef2f6);
+  overflow: hidden;
+}
+.personal-plan-claim-meter > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--theme-primary-button-gradient, linear-gradient(135deg, #0ea5ff, #20e0bd));
+  transition: width 0.5s ease;
+}
+.personal-plan-claim-meta {
+  display: flex;
+  justify-content: center;
+  font-size: 0.78rem;
+  color: var(--theme-text-muted, #64748b);
+}
+.personal-plan-claim-btn {
+  padding: 7px 18px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--theme-primary-button-gradient, linear-gradient(135deg, #0ea5ff, #20e0bd));
+  color: #fff;
+  font-size: 0.85rem;
+  font-weight: 800;
+  cursor: pointer;
+  transition: transform 0.16s ease, box-shadow 0.16s ease, filter 0.16s ease;
+}
+.personal-plan-claim-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(14, 165, 255, 0.28);
+}
+.personal-plan-claim-btn:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+.personal-plan-claim-notice {
+  margin: 0;
+  text-align: center;
+  font-size: 0.78rem;
+  color: var(--theme-accent, #16a34a);
+}
+/* 基础版专属的每周 1000 领取区，作为每日领取的下挂区域 */
+.personal-plan-claim-basic {
+  display: grid;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--theme-border-soft, #e2e8f0);
+}
+.personal-plan-claim-basic .personal-plan-claim-btn.is-secondary {
+  padding: 5px 14px;
+  font-size: 0.78rem;
+  background: var(--theme-module-surface-soft, #eef2f6);
+  color: var(--theme-module-primary-strong, #075985);
+  box-shadow: inset 0 0 0 1px var(--theme-module-primary-strong, #0ea5ff);
+}
+.personal-plan-claim-basic .personal-plan-claim-btn.is-secondary:hover:not(:disabled) {
+  filter: brightness(1.04);
+  box-shadow: inset 0 0 0 1px var(--theme-module-primary-strong, #0ea5ff), 0 6px 14px rgba(14, 165, 255, 0.18);
 }

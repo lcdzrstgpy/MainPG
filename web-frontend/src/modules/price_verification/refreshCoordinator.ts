@@ -21,13 +21,33 @@ export function createLatestRefreshRunner<T, O>(
     while (true) {
       const generation = requestedGeneration;
       const options = latestOptions;
+      let value: T | null = null;
+      let loadError: unknown = null;
+      let loaded = false;
       try {
-        const value = await load(options);
-        if (generation === requestedGeneration) onSuccess(value, options);
+        value = await load(options);
+        loaded = true;
       } catch (error) {
-        if (generation === requestedGeneration) onError(error, options);
+        loadError = error;
       }
-      if (generation === requestedGeneration) return;
+      if (generation === requestedGeneration) {
+        // handler 自身的异常与 load 失败分开处理：success 回调抛错不应被
+        // 误报成加载失败，error 回调抛错也不应变成 unhandled rejection。
+        if (loaded) {
+          try {
+            onSuccess(value as T, options);
+          } catch {
+            // 回调异常不影响协调器状态
+          }
+        } else {
+          try {
+            onError(loadError, options);
+          } catch {
+            // 回调异常不影响协调器状态
+          }
+        }
+        return;
+      }
     }
   };
 

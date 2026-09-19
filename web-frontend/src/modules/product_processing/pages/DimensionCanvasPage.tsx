@@ -238,6 +238,8 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
   const prefetchUrl = useMemo(() => {
     if (!batch || !activeItemId) return null;
     const index = batch.items.findIndex((item) => item.id === activeItemId);
+    // index === -1：activeItemId 不在当前批次（切页残留/初始空 id），无下一条可预取。
+    if (index < 0 || index + 1 >= batch.items.length) return null;
     const next = batch.items[index + 1];
     const url = next?.assets.find((asset) => asset.previewUrl)?.previewUrl;
     return url || null;

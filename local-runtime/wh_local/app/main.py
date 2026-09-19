@@ -549,7 +549,8 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         prefix="/api",
     )
 
-    # 工作台看板（/api/dashboard/overview）：模块已入库，恢复注册。
+    # 工作台看板（/api/dashboard/overview）：前端已就绪，后端模块已随
+    # merge/ui-optimize-bigdog-pod-0912 入库，恢复注册。
     app.include_router(create_dashboard_router(db_path))
 
     # 核价及货源模块

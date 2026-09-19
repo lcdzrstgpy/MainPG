@@ -458,7 +458,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   const filteredCandidates = useMemo(() => {
     if (!activeRun) return [];
     return activeRun.candidates.filter((candidate) => {
-      const skuCount = candidate.source_variant_records.length;
+      const skuCount = candidate.source_variant_records?.length ?? 0;
       if (appliedSkuFilter.min !== null && skuCount < appliedSkuFilter.min) return false;
       if (appliedSkuFilter.max !== null && skuCount > appliedSkuFilter.max) return false;
       return true;
@@ -1597,7 +1597,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                       <span><b>{formatMoney(candidate.price_cny)}</b><em>价格</em></span>
                       <span title={candidate.listed_at ?? ""}><b>{formatListedAt(candidate.listed_at)}</b><em>上架时间</em></span>
                       <span><b>{candidate.min_order_quantity ?? "未知"}</b><em>起订</em></span>
-                      <span title={`${candidate.source_variant_records.length} 个 SKU 规格`}><b>{candidate.source_variant_records.length || "未知"}</b><em>SKU</em></span>
+                      <span title={`${candidate.source_variant_records?.length ?? 0} 个 SKU 规格`}><b>{candidate.source_variant_records?.length || "未知"}</b><em>SKU</em></span>
                     </div>
                     <div className="candidate-meta"><span>{candidate.shop_name || "店铺待补齐"}</span><span>{candidate.location || "产地待补齐"}</span></div>
                     {candidate.selection_reasons.length > 0 && (

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -9,9 +10,17 @@ from starlette.responses import FileResponse
 
 from .schemas import ThemeListResponse, ThemeManifest, ThemePackageResponse
 
+_THEME_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]+")
+
 
 def create_themes_router(themes_dir: Path) -> APIRouter:
     router = APIRouter(prefix="/themes", tags=["themes"])
+
+    def _safe_theme_dir(theme_id: str) -> Path | None:
+        # 防止路径穿越（如 ..%2f 编码斜杠）：theme_id 只允许安全字符。
+        if not _THEME_ID_PATTERN.fullmatch(theme_id):
+            return None
+        return themes_dir / theme_id
 
     def _list_theme_dirs() -> list[Path]:
         if not themes_dir.exists():
@@ -41,23 +50,23 @@ def create_themes_router(themes_dir: Path) -> APIRouter:
 
     @router.get("/{theme_id}/manifest", response_model=ThemeManifest)
     def get_manifest(theme_id: str) -> ThemeManifest:
-        theme_dir = themes_dir / theme_id
-        if not theme_dir.exists() or not (theme_dir / "manifest.json").exists():
+        theme_dir = _safe_theme_dir(theme_id)
+        if theme_dir is None or not theme_dir.exists() or not (theme_dir / "manifest.json").exists():
             raise HTTPException(status_code=404, detail=f"Theme '{theme_id}' not found")
         return ThemeManifest(**_read_manifest(theme_dir))
 
     @router.get("/{theme_id}/package", response_model=ThemePackageResponse)
     def get_package(theme_id: str) -> ThemePackageResponse:
         """Download a theme package (manifest + bundled CSS)."""
-        theme_dir = themes_dir / theme_id
-        if not theme_dir.exists() or not (theme_dir / "manifest.json").exists():
+        theme_dir = _safe_theme_dir(theme_id)
+        if theme_dir is None or not theme_dir.exists() or not (theme_dir / "manifest.json").exists():
             raise HTTPException(status_code=404, detail=f"Theme '{theme_id}' not found")
 
         manifest = _read_manifest(theme_dir)
         css_parts = []
         for filename in manifest.get("files", []):
             file_path = theme_dir / filename
-            if not file_path.exists():
+            if not file_path.resolve().is_relative_to(theme_dir.resolve()) or not file_path.exists():
                 raise HTTPException(status_code=500, detail=f"Theme file missing: {filename}")
             css_parts.append(file_path.read_text(encoding="utf-8"))
 
@@ -69,7 +78,9 @@ def create_themes_router(themes_dir: Path) -> APIRouter:
     @router.get("/{theme_id}/theme.css")
     def get_theme_css(theme_id: str) -> FileResponse:
         """Raw CSS file for a theme (useful for direct <link> injection)."""
-        theme_dir = themes_dir / theme_id
+        theme_dir = _safe_theme_dir(theme_id)
+        if theme_dir is None:
+            raise HTTPException(status_code=404, detail=f"Theme CSS for '{theme_id}' not found")
         css_path = theme_dir / "theme.css"
         if not css_path.exists():
             raise HTTPException(status_code=404, detail=f"Theme CSS for '{theme_id}' not found")

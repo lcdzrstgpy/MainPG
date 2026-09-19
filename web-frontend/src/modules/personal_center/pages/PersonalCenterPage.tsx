@@ -1,10 +1,14 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-import { clearAuthSession, getAuthAccount } from "../../../transport/http/client";
+import { clearAuthSession, getAuthAccount, getAuthToken, saveAuthSession } from "../../../transport/http/client";
+import { notifyBalanceChanged } from "../../../shared/balanceEvents";
 import { AVATAR_CHANGED_EVENT, AVATAR_STORAGE_KEY } from "../../../app/layout/TopNavigation";
 import {
   changeAccountPassword,
+  changeUsername,
+  claimBasicWeeklyPoints,
+  claimDailyExtraPoints,
   createTopupOrder,
   loadBillingSummary,
   loadBillingUsageHistory,
@@ -13,6 +17,7 @@ import {
   quoteCustomTopup,
   saveImageModel,
   savePodImageModel,
+  sendUsernameChangeCode,
   type BillingPackage,
   type BillingSummary,
   type BillingUsageEntry,
@@ -37,7 +42,7 @@ const providerMeta = {
   alipay: { label: "支付宝", icon: "iconfont icon-alipay-circle-fill", className: "is-alipay" },
 } as const;
 
-/** 「升级体验」弹窗里的基础版套餐（¥39.9）：立得 4000 充值积分 + 四周每周 1500 体验额度。 */
+/** 「升级体验」弹窗里的基础版套餐（¥39.9）：立得 4000 充值积分 + 四周每周可领 1000。 */
 const PLAN_BASIC_PRODUCT: BillingPackage = {
   package_id: "plan_basic",
   label: "基础版",
@@ -351,6 +356,14 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
   const [passwordBusy, setPasswordBusy] = useState(false);
   const [passwordSuccess, setPasswordSuccess] = useState("");
   const [passwordError, setPasswordError] = useState("");
+  const [usernameOpen, setUsernameOpen] = useState(false);
+  const [newUsername, setNewUsername] = useState("");
+  const [usernameCode, setUsernameCode] = useState("");
+  const [usernameBusy, setUsernameBusy] = useState(false);
+  const [usernameError, setUsernameError] = useState("");
+  const [usernameNotice, setUsernameNotice] = useState("");
+  const [codeBusy, setCodeBusy] = useState(false);
+  const [codeCooldown, setCodeCooldown] = useState(0);
   // 消费流水刷新保护：30 秒内（含页面刷新，随缓存持久化）相同筛选条件不重复请求；筛选变更因缓存键变化自动重新拉取。
   const USAGE_REFRESH_COOLDOWN_MS = 30_000;
   // 消费流水筛选条件（服务板块/状态/日期）。
@@ -704,6 +717,110 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
     }
   };
 
+  useEffect(() => {
+    if (codeCooldown <= 0) return;
+    const timer = window.setInterval(
+      () => setCodeCooldown((seconds) => Math.max(0, seconds - 1)),
+      1000,
+    );
+    return () => window.clearInterval(timer);
+  }, [codeCooldown]);
+
+  useEffect(() => {
+    if (!usernameOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !usernameBusy) setUsernameOpen(false);
+    };
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [usernameBusy, usernameOpen]);
+
+  const openUsernameDialog = () => {
+    setNewUsername("");
+    setUsernameCode("");
+    setUsernameError("");
+    setUsernameNotice("");
+    setCodeCooldown(0);
+    setUsernameOpen(true);
+  };
+
+  const closeUsernameDialog = () => {
+    if (!usernameBusy) setUsernameOpen(false);
+  };
+
+  const sendUsernameCode = async () => {
+    const email = account?.email;
+    if (!email) {
+      setUsernameError("当前账号没有绑定邮箱，无法修改用户名");
+      return;
+    }
+    setUsernameError("");
+    setUsernameNotice("");
+    setCodeBusy(true);
+    try {
+      await sendUsernameChangeCode(email);
+      setCodeCooldown(60);
+      setUsernameNotice("验证码已发送到账号绑定邮箱，请查收");
+    } catch (exc) {
+      setUsernameError(exc instanceof Error ? exc.message : "验证码发送失败，请稍后重试");
+    } finally {
+      setCodeBusy(false);
+    }
+  };
+
+  const submitUsernameChange = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setUsernameError("");
+    setUsernameNotice("");
+    const trimmed = newUsername.trim();
+    if (!trimmed) {
+      setUsernameError("请输入新的用户名");
+      return;
+    }
+    if (trimmed.length < 3 || trimmed.length > 32) {
+      setUsernameError("用户名需要 3-32 个字符");
+      return;
+    }
+    if (trimmed === (account?.username || summary?.account.username)) {
+      setUsernameError("新用户名不能与当前用户名相同");
+      return;
+    }
+    if (!/^[\w\u4e00-\u9fa5-]+$/.test(trimmed)) {
+      setUsernameError("用户名只能包含中英文、数字、下划线和连字符");
+      return;
+    }
+    if (!/^\d{6}$/.test(usernameCode.trim())) {
+      setUsernameError("请输入 6 位数字验证码");
+      return;
+    }
+    setUsernameBusy(true);
+    try {
+      await changeUsername({ new_username: trimmed, code: usernameCode.trim() });
+      // 更新本地缓存的 account，保持登录态（改名不需要重新登录）
+      const current = getAuthAccount<AccountSnapshot>();
+      if (current) {
+        saveAuthSession(getAuthToken(), { ...current, username: trimmed });
+      }
+      setUsernameNotice("用户名修改成功，下次登录请使用新用户名");
+      setNewUsername("");
+      setUsernameCode("");
+      setUsernameOpen(false);
+      window.setTimeout(() => window.location.reload(), 600);
+    } catch (exc) {
+      const message = exc instanceof Error ? exc.message : "修改用户名失败";
+      setUsernameError(
+        message.includes("already taken") ? "这个用户名已被占用，换一个试试" : message,
+      );
+    } finally {
+      setUsernameBusy(false);
+    }
+  };
+
   const submitTopup = async (product?: BillingPackage | null) => {
     if (!product) return;
     setCreating(true);
@@ -738,6 +855,101 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
       setError(exc instanceof Error ? exc.message : "创建充值订单失败");
     } finally {
       setCreating(false);
+    }
+  };
+
+  const [claimBusy, setClaimBusy] = useState(false);
+  const [claimNotice, setClaimNotice] = useState("");
+  const [dailyClaimBusy, setDailyClaimBusy] = useState(false);
+  const [dailyClaimNotice, setDailyClaimNotice] = useState("");
+
+  const claimBasicPoints = async () => {
+    if (claimBusy) return;
+    setClaimBusy(true);
+    setClaimNotice("");
+    setError("");
+    let result: Awaited<ReturnType<typeof claimBasicWeeklyPoints>> | null = null;
+    try {
+      result = await claimBasicWeeklyPoints();
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : "领取失败，请稍后重试");
+      setClaimBusy(false);
+      return;
+    }
+    // 领取已成功：先给即时反馈；后面 summary 刷新失败也不误报"领取失败"。
+    setClaimNotice(`已领取 ${result.claimed_points} 积分（第 ${result.claim_count}/${result.claim_max} 周）`);
+    notifyBalanceChanged();
+    try {
+      const payload = await loadBillingSummary();
+      setSummary(payload);
+      writeBalanceCache(balanceCacheKeyValue, payload);
+      lastBalanceRefreshAt.current = Date.now();
+    } catch {
+      // 概要刷新失败：用领取结果乐观更新当前展示，避免"已入账却显示没变"。
+      setSummary((current) =>
+        current
+          ? {
+              ...current,
+              wallet: {
+                ...current.wallet,
+                plan: {
+                  ...current.wallet.plan,
+                  extra_balance: (current.wallet.plan.extra_balance ?? 0) + result.claimed_points,
+                  basic_claim_count: result.claim_count,
+                  basic_claimable: result.claim_count < result.claim_max,
+                },
+              },
+            }
+          : current,
+      );
+    } finally {
+      setClaimBusy(false);
+    }
+  };
+
+  /** 每日免费领取 100 积分（所有套餐通用，按北京自然日幂等）。 */
+  const claimDailyPoints = async () => {
+    if (dailyClaimBusy) return;
+    setDailyClaimBusy(true);
+    setDailyClaimNotice("");
+    setError("");
+    let result: Awaited<ReturnType<typeof claimDailyExtraPoints>> | null = null;
+    try {
+      result = await claimDailyExtraPoints();
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : "领取失败，请稍后重试");
+      setDailyClaimBusy(false);
+      return;
+    }
+    // 领取已成功：先给即时反馈；后面 summary 刷新失败也不误报"领取失败"。
+    setDailyClaimNotice(`已领取 ${result.claimed_points} 积分，明日 00:00 后可再领`);
+    notifyBalanceChanged();
+    try {
+      const payload = await loadBillingSummary();
+      setSummary(payload);
+      writeBalanceCache(balanceCacheKeyValue, payload);
+      lastBalanceRefreshAt.current = Date.now();
+    } catch {
+      // 概要刷新失败：用领取结果乐观更新当前展示，避免"已入账却显示没变"。
+      setSummary((current) =>
+        current
+          ? {
+              ...current,
+              wallet: {
+                ...current.wallet,
+                plan: {
+                  ...current.wallet.plan,
+                  extra_balance: (current.wallet.plan.extra_balance ?? 0) + result.claimed_points,
+                  daily_claimable: false,
+                  daily_claim_date: result.period,
+                  daily_next_claim_at: result.next_claim_at,
+                },
+              },
+            }
+          : current,
+      );
+    } finally {
+      setDailyClaimBusy(false);
     }
   };
 
@@ -819,6 +1031,72 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
           </section>
         </div>, document.body)}
 
+      {usernameOpen && createPortal(
+        <div className="personal-password-layer" onMouseDown={closeUsernameDialog}>
+          <section
+            className="personal-password-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="personal-username-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <header>
+              <div>
+                <span>ACCOUNT PROFILE</span>
+                <h2 id="personal-username-title">修改用户名</h2>
+                <p>新用户名会作为登录名使用，验证码将发送到账号绑定邮箱，30 天内只能修改一次。</p>
+              </div>
+              <button type="button" onClick={closeUsernameDialog} disabled={usernameBusy} aria-label="关闭">×</button>
+            </header>
+            <form onSubmit={(event) => void submitUsernameChange(event)}>
+              <label>
+                <span>新用户名</span>
+                <input
+                  autoFocus
+                  type="text"
+                  autoComplete="username"
+                  value={newUsername}
+                  onChange={(event) => setNewUsername(event.target.value)}
+                  placeholder="3-32 个字符，中英文、数字、下划线、连字符"
+                  minLength={3}
+                  maxLength={32}
+                  required
+                />
+              </label>
+              <label>
+                <span>邮箱验证码</span>
+                <div className="personal-username-code-row">
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    value={usernameCode}
+                    onChange={(event) => setUsernameCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
+                    placeholder="6 位数字验证码"
+                    required
+                  />
+                  <button
+                    type="button"
+                    className="personal-username-code-btn"
+                    onClick={() => void sendUsernameCode()}
+                    disabled={codeBusy || codeCooldown > 0}
+                  >
+                    {codeBusy ? "发送中…" : codeCooldown > 0 ? `${codeCooldown} 秒后重发` : "发送验证码"}
+                  </button>
+                </div>
+              </label>
+              {usernameError && <p className="personal-password-message is-error">{usernameError}</p>}
+              {usernameNotice && <p className="personal-password-message is-success">{usernameNotice}</p>}
+              <footer>
+                <button type="button" onClick={closeUsernameDialog} disabled={usernameBusy}>取消</button>
+                <button className="is-primary" type="submit" disabled={usernameBusy}>
+                  {usernameBusy ? "正在修改…" : "确认修改"}
+                </button>
+              </footer>
+            </form>
+          </section>
+        </div>, document.body)}
+
       {upgradeOpen && createPortal(
         <div className="personal-password-layer" onMouseDown={() => setUpgradeOpen(false)}>
           <section
@@ -832,7 +1110,7 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
               <div>
                 <span>PLAN UPGRADE</span>
                 <h2 id="personal-upgrade-title">升级体验</h2>
-                <p>购买基础版，立即到账 4000 积分，并享受四周每周 1500 体验额度。</p>
+                <p>购买基础版，立得 4000 积分，四周内每周可领 1000 积分，领到即永久。</p>
               </div>
               <button type="button" onClick={() => setUpgradeOpen(false)} aria-label="关闭">×</button>
             </header>
@@ -843,9 +1121,9 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
                   <span className="personal-upgrade-plan-price">{money(PLAN_BASIC_PRODUCT.amount_cents)}</span>
                 </div>
                 <ul className="personal-upgrade-plan-benefits">
-                  <li><b>购买立得 4000 积分</b>（充值积分，长期可用）</li>
-                  <li>每周体验上限提升至 <b>1500 积分</b></li>
-                  <li>有效期 <b>四周</b>，到期自动回到体验版</li>
+                  <li><b>购买立得 4000 积分</b>（充值积分，永久有效）</li>
+                  <li>四周内<b>每周可领 1000 积分</b>（领到即永久）</li>
+                  <li>四周后到期，当周没领不补</li>
                 </ul>
                 <button
                   type="button"
@@ -909,10 +1187,16 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
                 <p>个人中心</p>
                 <h1>{account?.username || summary?.account.username || "当前用户"}</h1>
               </div>
-              <button className="personal-password-entry" type="button" onClick={openPasswordDialog}>
-                <span className="iconfont icon-key" aria-hidden="true" />
-                <span>修改密码</span>
-              </button>
+              <div className="personal-profile-actions">
+                <button className="personal-password-entry" type="button" onClick={openPasswordDialog}>
+                  <span className="iconfont icon-key" aria-hidden="true" />
+                  <span>修改密码</span>
+                </button>
+                <button className="personal-password-entry" type="button" onClick={openUsernameDialog}>
+                  <span className="iconfont icon-user" aria-hidden="true" />
+                  <span>修改用户名</span>
+                </button>
+              </div>
             </div>
 
             <div className="personal-profile-balance">
@@ -971,6 +1255,10 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
                 下周一 {formatUsageTime(summary.wallet.plan.next_refresh_at).slice(5, 16)} 刷新
               </div>
             )}
+            <div className="personal-plan-block-head">
+              <span>体验积分</span>
+              <span>每周一刷新</span>
+            </div>
             <div className="personal-plan-card-value">
               <b>{summary?.wallet.plan?.plan_balance ?? "--"}</b>
               <em>/ {summary?.wallet.plan?.plan_limit ?? 500} 积分</em>
@@ -988,6 +1276,63 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
                   width: `${Math.min(100, Math.max(0, ((summary?.wallet.plan?.plan_balance ?? 0) / (summary?.wallet.plan?.plan_limit || 1)) * 100))}%`,
                 }}
               />
+            </div>
+            <div className="personal-plan-claim">
+              <div className="personal-plan-claim-head">
+                <span>额外积分</span>
+                <b>{summary?.wallet.plan?.extra_balance ?? 0} 积分</b>
+              </div>
+              <div className="personal-plan-claim-meta">
+                {summary?.wallet.plan?.daily_claimable ?? true ? (
+                  <button
+                    type="button"
+                    className="personal-plan-claim-btn"
+                    disabled={dailyClaimBusy || !summary}
+                    onClick={claimDailyPoints}
+                  >
+                    {dailyClaimBusy ? "领取中…" : `每日领取 ${summary?.wallet.plan?.daily_claim_points ?? 100} 积分`}
+                  </button>
+                ) : (
+                  <span>今日已领，明天 00:00 再来</span>
+                )}
+              </div>
+              {dailyClaimNotice && <p className="personal-plan-claim-notice">{dailyClaimNotice}</p>}
+              {/* 基础版专属：四周内每周另可领 1000，与每日领取叠加 */}
+              {summary?.wallet.plan?.plan_type === "basic" && (
+                <div className="personal-plan-claim-basic">
+                  <div
+                    className="personal-plan-claim-meter"
+                    role="progressbar"
+                    aria-label="基础版每周领取进度"
+                    aria-valuemin={0}
+                    aria-valuemax={summary.wallet.plan.basic_claim_max}
+                    aria-valuenow={summary.wallet.plan.basic_claim_count}
+                  >
+                    <span
+                      style={{
+                        width: `${Math.min(100, Math.max(0, (summary.wallet.plan.basic_claim_count / (summary.wallet.plan.basic_claim_max || 4)) * 100))}%`,
+                      }}
+                    />
+                  </div>
+                  <div className="personal-plan-claim-meta">
+                    {summary.wallet.plan.basic_claimable ? (
+                      <button
+                        type="button"
+                        className="personal-plan-claim-btn is-secondary"
+                        disabled={claimBusy}
+                        onClick={claimBasicPoints}
+                      >
+                        {claimBusy ? "领取中…" : "领取基础版 1000 积分"}
+                      </button>
+                    ) : summary.wallet.plan.basic_claim_count >= summary.wallet.plan.basic_claim_max ? (
+                      <span>基础版本周额度已领满</span>
+                    ) : (
+                      <span>基础版本周已领，下周一再来</span>
+                    )}
+                  </div>
+                  {claimNotice && <p className="personal-plan-claim-notice">{claimNotice}</p>}
+                </div>
+              )}
             </div>
             <div className="personal-plan-stats">
               <div className="personal-plan-stat">

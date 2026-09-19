@@ -59,6 +59,19 @@ export function AuthPage({ onEnter }: AuthPageProps) {
   const [forgotCodeCooldown, setForgotCodeCooldown] = useState(0);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  // 会话失效原因提示（被顶替/过期）：App 层写入 sessionStorage，登录页读一次即清。
+  const [sessionHint, setSessionHint] = useState(() => {
+    try {
+      const value = window.sessionStorage.getItem("wh_login_hint");
+      if (value) {
+        window.sessionStorage.removeItem("wh_login_hint");
+        return value;
+      }
+    } catch {
+      // ignore
+    }
+    return "";
+  });
   // 政策同意：登录与注册均需勾选《界野隐私政策》后才可提交。
   const [agreed, setAgreed] = useState(false);
 
@@ -230,6 +243,7 @@ export function AuthPage({ onEnter }: AuthPageProps) {
         <div className="auth-tabs"><button type="button" className={isLogin ? "is-selected" : ""} onClick={() => { setMode("login"); setConfirmPassword(""); setError(""); setNotice(""); }}>登录</button><button type="button" className={mode === "register" ? "is-selected" : ""} onClick={() => { setMode("register"); setConfirmPassword(""); setError(""); setNotice(""); }}>注册</button></div>
         <p className="eyebrow">{isLogin ? "WELCOME BACK" : mode === "register" ? "CREATE ACCOUNT" : "RESET PASSWORD"}</p>
         <h2>{isLogin ? "登录工作台" : mode === "register" ? "注册账号" : "找回密码"}</h2>
+        {sessionHint && <p className="auth-notice">{sessionHint}</p>}
         {mode === "forgot" ? (
           <form onSubmit={handleForgotSubmit}>
             <label>邮箱<input type="email" value={forgotEmail} onChange={(e) => setForgotEmail(e.target.value)} onInvalid={(e) => e.currentTarget.setCustomValidity(e.currentTarget.validity.typeMismatch ? "请输入有效的邮箱地址" : "请输入邮箱")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder="name@example.com" autoComplete="email" required /></label>
