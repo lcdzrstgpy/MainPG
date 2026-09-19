@@ -92,7 +92,13 @@ export function HelpAgentWidget({ allowFeedback = true, showBalance = false }: H
   const { theme } = useTheme();
   const [open, setOpen] = useState(false);
   const ballSize = showBalance ? BALANCE_BALL_SIZE : BALL_SIZE;
-  const [position, setPosition] = useState<BallPosition>(() => readStoredPosition() ?? defaultPosition(ballSize));
+  // 初始化就要夹取：localStorage 里可能是大窗口下拖拽存下的坐标，直接沿用会停在屏幕外，
+  // 而 resize 事件只在窗口尺寸变化时才触发，球就再也回不来了。
+  const [position, setPosition] = useState<BallPosition>(() => clampBallPosition(
+    readStoredPosition() ?? defaultPosition(ballSize),
+    { width: window.innerWidth, height: window.innerHeight },
+    ballSize,
+  ));
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState(false);

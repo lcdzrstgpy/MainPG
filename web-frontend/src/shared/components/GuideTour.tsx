@@ -568,12 +568,10 @@ export function startGuideTour(
 type GuideBoardPanelProps = {
   onClose: () => void;
   onStartSubTask: (boardId: GuideBoardId, subTaskId: GuideSubTaskId) => void;
-  /** 管理员专属：打开引导编辑器补充/修改教程内容。 */
-  onEdit?: () => void;
 };
 
 /** 板块选择面板：一级板块展开后是二级子任务，每个子任务都能单独再看一遍。 */
-export function GuideBoardPanel({ onClose, onStartSubTask, onEdit }: GuideBoardPanelProps) {
+export function GuideBoardPanel({ onClose, onStartSubTask }: GuideBoardPanelProps) {
   const progress = getGuideProgress();
   // 默认展开「还有子任务没看完」的板块，其余收起，面板保持紧凑。
   const [expandedBoards, setExpandedBoards] = useState<GuideBoardId[]>(() =>
@@ -678,11 +676,6 @@ export function GuideBoardPanel({ onClose, onStartSubTask, onEdit }: GuideBoardP
           })}
         </ul>
         <footer className="guide-board-foot">
-          {onEdit && (
-            <button type="button" className="guide-board-edit" onClick={onEdit}>
-              编辑引导
-            </button>
-          )}
           <button type="button" className="guide-board-skip" onClick={onClose}>
             跳过，直接进入工作台
           </button>

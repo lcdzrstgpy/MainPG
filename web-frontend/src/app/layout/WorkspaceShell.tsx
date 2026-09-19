@@ -827,7 +827,6 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         <GuideBoardPanel
           onClose={() => setGuideBoardPanelOpen(false)}
           onStartSubTask={startGuideSubTask}
-          onEdit={isAdmin ? openGuideEditor : undefined}
         />
       )}
       {guideEditorSeed && (
