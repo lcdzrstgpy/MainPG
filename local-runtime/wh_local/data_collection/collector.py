@@ -565,9 +565,13 @@ def _valid_image_audits(response: ProviderCallResult) -> bool:
     expected = ("download_reference_image", "upload_img", "item_search_img")
     observed = tuple(audit.operation for audit in response.audits)
     if len(observed) <= len(expected):
-        # 短序列（中途失败/部分完成）：必须是 expected 前缀，成功与否由 response.ok 反映
-        return observed == expected[: len(observed)]
-    # 长序列（图搜自动重试成功）：前 3 项必须匹配基准，其余只能是 search 重试记录
+        # 短序列（中途失败/部分完成）：必须是 expected 前缀；
+        # 成功响应仍要求 audit 恰好完整（与原始语义一致）。
+        if observed != expected[: len(observed)]:
+            return False
+        return not response.ok or observed == expected
+    # 长序列（图搜自动重试）：前 3 项必须匹配基准，其余只能是 search 重试记录。
+    # 原实现用等长比较，把重试成功后变长的 audit 误判为 invalid_provider_sequence。
     if observed[:3] != expected:
         return False
     return all(op == "item_search_img" for op in observed[3:])
