@@ -70,6 +70,23 @@ def test_prompt_template_crud_and_activation(service: ProductProcessingService) 
         service.save_prompt_template({"name": "bad", "prompts": {"combined_text": "x"}})
 
 
+def test_prompt_template_can_be_deactivated(service: ProductProcessingService) -> None:
+    """「不使用模板」：停用后回到系统默认，模板本身保留、可再次启用。"""
+    service.save_prompt_template({"name": "夏天风", "prompts": {"title": "清爽"}})
+    assert service._active_template_prompts()["title"] == "清爽"
+
+    result = service.deactivate_prompt_template()
+    assert result["templates"][0]["is_active"] is False
+    assert service.repository.active_prompt_template() is None
+    # 不再注入任何附加词，但模板仍在列表里
+    assert service._active_template_prompts() == {}
+    assert len(service.prompt_templates()["templates"]) == 1
+
+    template_id = service.prompt_templates()["templates"][0]["id"]
+    service.activate_prompt_template(template_id)
+    assert service._active_template_prompts()["title"] == "清爽"
+
+
 def test_image_additions_append_with_fixed_contract(service: ProductProcessingService) -> None:
     service.save_prompt_template({"name": "t", "prompts": {"grid_image": "宫内放蓝色道具"}})
 

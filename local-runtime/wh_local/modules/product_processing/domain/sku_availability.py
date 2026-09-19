@@ -31,6 +31,27 @@ STATUS_PENDING_SYNC = "pending_sync"
 # 只有这两种状态是「明确判定过」，其余一律视为未判定。
 DECIDED_STATUSES = frozenset({STATUS_CLEAN, STATUS_UNAVAILABLE})
 
+# 店小秘要求「变种预览图必须为 1:1 尺寸」，而该列正是我们导出的 SKU 规格原图列。
+# 判定宽高是否 1:1 的容差：允许 1% 的相对误差（最小 1px），避免把 1024x1023 这类
+# 仅差一两像素的方图误判成非方图；来源图本质上不会有这种舍入误差。
+SQUARE_TOLERANCE_RATIO = 0.01
+
+
+def is_square_view(view: Mapping[str, Any]) -> bool:
+    """该规格图宽高是否为 1:1。
+
+    宽高缺失（0 / 非法值）时返回 True：无从判断不误报，避免把「尺寸读不出来」的图
+    整批打成非方图、连带把这些链接全部回退主图。
+    """
+    try:
+        width = int(view.get("width") or 0)
+        height = int(view.get("height") or 0)
+    except (TypeError, ValueError):
+        return True
+    if width <= 0 or height <= 0:
+        return True
+    return abs(width - height) <= max(1, round(max(width, height) * SQUARE_TOLERANCE_RATIO))
+
 
 def fingerprint_of(sku_views: Sequence[Mapping[str, Any]]) -> str:
     """参与检测的规格图内容指纹（空图集返回空串）。
@@ -96,6 +117,8 @@ def resolve_draft_usable(
         "reason": reason,
         # 结论有效时一并给出「检出中文的 SKU」，供导出侧兜底剔除。
         "chinese_variant_keys": chinese_variant_keys(stored) if judged else [],
+        # 结论有效时给出「规格原图不是 1:1」的 SKU，供预检页给出可照做的提示。
+        "not_square_variant_keys": not_square_variant_keys(stored) if judged else [],
     }
 
 
@@ -125,6 +148,16 @@ def chinese_variant_keys(stored: Mapping[str, Any] | None) -> list[str]:
     if not stored or bool(stored.get("all_sku_chinese")):
         return []
     raw = stored.get("chinese_variant_keys") or []
+    if not isinstance(raw, (list, tuple)):
+        return []
+    return sorted({str(value).strip() for value in raw if str(value or "").strip()})
+
+
+def not_square_variant_keys(stored: Mapping[str, Any] | None) -> list[str]:
+    """落库结论里「规格原图不是 1:1」的变种导出键（去重排序）。"""
+    if not stored:
+        return []
+    raw = stored.get("not_square_variant_keys") or []
     if not isinstance(raw, (list, tuple)):
         return []
     return sorted({str(value).strip() for value in raw if str(value or "").strip()})

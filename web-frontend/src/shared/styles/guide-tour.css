@@ -578,6 +578,20 @@ body.driver-active .workspace-tab-panel.is-active > * > [class*="-panel"] {
   box-shadow: 0 30px 72px rgba(15, 33, 58, .32);
 }
 
+/* 预览（正在播引导）时：整层浮到 driver 遮罩之上，否则面板会被压暗的遮罩盖住，
+   看不到自己正在编辑的步骤。driver 的遮罩是 body 下 z-index:10000 的 svg，这里压它一头。 */
+.guide-editor-overlay.is-previewing {
+  z-index: 10001;
+}
+
+/* driver 会给 .driver-active * 挂 pointer-events:none，把面板里的元素一起冻住。
+   这里显式恢复，管理员才能边看这一步的效果边拖动浮窗 / 关闭；
+   编辑区本身由 .guide-editor-body 的内联 pointer-events 另行冻住。 */
+.guide-editor.is-previewing,
+.guide-editor.is-previewing * {
+  pointer-events: auto;
+}
+
 .guide-editor-head {
   display: flex;
   align-items: flex-start;

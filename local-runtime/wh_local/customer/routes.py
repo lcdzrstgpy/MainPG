@@ -202,6 +202,25 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
         except Exception as exc:
             handle_auth_error(exc)
 
+    @router.get("/billing/ledger")
+    def billing_point_ledger(
+        category: str = "",
+        limit: int = 20,
+        offset: int = 0,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        try:
+            if not hasattr(remote_auth, "billing_ledger_history"):
+                raise CustomerAuthUnavailable("remote billing service is not configured")
+            return remote_auth.billing_ledger_history(
+                remote_token_from_local_session(authorization),
+                category=category,
+                limit=limit,
+                offset=offset,
+            )
+        except Exception as exc:
+            handle_auth_error(exc)
+
     @router.post("/billing/topup-orders")
     def create_topup_order(payload: dict[str, Any], authorization: str | None = Header(default=None)) -> dict[str, Any]:
         try:
@@ -228,21 +247,11 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
 
     @router.post("/billing/daily-extra/claim")
     def claim_daily_extra(authorization: str | None = Header(default=None)) -> dict[str, Any]:
-        """每日免费领取 100 积分；真正的钱包写入在远端 customer-auth 服务。"""
+        """每日签到：体验版 100 积分/天（每周上限 500），标准版 200 积分/天（每周上限 1000）。"""
         try:
             if not hasattr(remote_auth, "claim_daily_extra"):
                 raise CustomerAuthUnavailable("remote billing service is not configured")
             return remote_auth.claim_daily_extra(remote_token_from_local_session(authorization))
-        except Exception as exc:
-            handle_auth_error(exc)
-
-    @router.post("/billing/plan-basic/claim")
-    def claim_basic_weekly(authorization: str | None = Header(default=None)) -> dict[str, Any]:
-        """基础版每周领取 1000 积分；真正的钱包写入在远端 customer-auth 服务。"""
-        try:
-            if not hasattr(remote_auth, "claim_basic_weekly"):
-                raise CustomerAuthUnavailable("remote billing service is not configured")
-            return remote_auth.claim_basic_weekly(remote_token_from_local_session(authorization))
         except Exception as exc:
             handle_auth_error(exc)
 

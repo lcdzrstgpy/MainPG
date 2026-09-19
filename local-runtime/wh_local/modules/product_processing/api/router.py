@@ -169,6 +169,10 @@ def create_product_processing_router(
     def activate_prompt_template(template_id: int) -> dict[str, Any]:
         return _call(service.activate_prompt_template, template_id)
 
+    @router.post("/engine/prompt-templates/deactivate")
+    def deactivate_prompt_template() -> dict[str, Any]:
+        return _call(service.deactivate_prompt_template)
+
     @router.post("/engine/prompt-templates/{template_id}/delete")
     def delete_prompt_template(template_id: int) -> dict[str, Any]:
         return _call(service.delete_prompt_template, template_id)

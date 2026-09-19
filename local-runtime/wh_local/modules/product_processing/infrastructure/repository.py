@@ -2124,6 +2124,12 @@ class ProductProcessingRepository:
                 row.is_active = row.id == template_id
             return self._prompt_template(target)
 
+    def deactivate_prompt_templates(self) -> None:
+        """清空所有模板的启用标记：回到只用系统默认提示词的状态。"""
+        with self.database.sessions.begin() as session:
+            for row in session.scalars(select(EnginePromptTemplateRow)).all():
+                row.is_active = False
+
     def delete_prompt_template(self, template_id: int) -> bool:
         with self.database.sessions.begin() as session:
             row = session.get(EnginePromptTemplateRow, template_id)

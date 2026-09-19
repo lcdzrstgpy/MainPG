@@ -1123,7 +1123,14 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
       acceptFinalizeRun(run);
       if (run.status === 'queued' || run.status === 'publishing') refreshRef.current?.watch(run.id);
     } catch (err) {
-      fail(err);
+      const raw = err instanceof Error ? err.message : String(err);
+      // 后端偶发只回一句通用「操作失败，请稍后重试」时，用户不知道该做什么。
+      // 这里补上可执行的两条路：缩小到成功链接，或刷新核对后重试。
+      fail(
+        raw.includes('操作失败')
+          ? '导出没有提交成功：可以勾选「只看成功链接」只导出已成功的商品，或点「重新加载」核对后再试；如果还是不行，请把这条提示截图发给我们'
+          : err,
+      );
     } finally {
       setStartingFinalize(false);
     }

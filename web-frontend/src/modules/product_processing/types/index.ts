@@ -333,6 +333,8 @@ export type DraftSkuAvailabilityItem = {
   chinese_variant_keys?: string[];
   /** 该链接所有有规格图的 SKU 都检出中文：不剔除，回退商品主图以免整条商品消失。 */
   all_sku_chinese?: boolean;
+  /** 规格原图不是 1:1 的 SKU 变种导出键（店小秘「变种预览图」列强制方图）。 */
+  not_square_variant_keys?: string[];
   /** 参与检测图片的内容指纹：导出侧据此判断结论是否仍然对应当前图集。 */
   fingerprint?: string;
   /** 判定范围被兜底放宽（现存变种缺少可用标识），结论不参与 auto 策略。 */
@@ -463,6 +465,8 @@ export type PreviewItem = {
     clean: boolean;
     usable_source: boolean;
     reason: string;
+    /** 规格原图非 1:1 的 SKU 变种导出键；非空即说明这批链接为何不能直接用规格原图。 */
+    not_square_variant_keys?: string[];
   } | null;
 };
 

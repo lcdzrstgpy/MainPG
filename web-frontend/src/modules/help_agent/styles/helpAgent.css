@@ -32,10 +32,93 @@
   border-color: var(--theme-card-border, rgba(184, 209, 230, .82));
   box-shadow: 0 10px 24px var(--theme-card-shadow-lg, rgba(26, 65, 101, .1));
 }
-.help-agent-ball span {
+.help-agent-ball-symbol {
   font-size: 1.55rem;
   font-weight: var(--weight-semibold, 600);
   line-height: 1;
+}
+
+/* -- 合并了积分球的双面球：正面可用积分、背面主题吉祥物 ------------------ */
+
+.help-agent-ball.is-balance {
+  width: 88px;
+  height: 88px;
+  perspective: 800px;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  filter: drop-shadow(0 8px 22px rgba(15, 23, 42, .26));
+  transition: filter .2s ease;
+}
+/* 双面球自带翻转，悬停不再整体平移缩放，只加深一点投影 */
+.help-agent-ball.is-balance:hover {
+  transform: none;
+  filter: drop-shadow(0 10px 26px rgba(15, 23, 42, .34));
+}
+.help-agent-ball.is-balance.is-open {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+.help-agent-ball-inner {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  transform-style: preserve-3d;
+  transition: transform .5s cubic-bezier(.4, .1, .2, 1);
+}
+.help-agent-ball.is-flipped .help-agent-ball-inner { transform: rotateY(180deg); }
+
+.help-agent-ball-face {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  border: 2px solid rgba(255, 255, 255, .55);
+  border-radius: 50%;
+  overflow: hidden;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  box-shadow: inset 0 -6px 14px rgba(2, 12, 40, .18), inset 0 6px 14px rgba(255, 255, 255, .35);
+}
+.help-agent-ball-face.is-front {
+  color: #fff;
+  background: linear-gradient(160deg, var(--theme-module-primary-soft, #3b82f6), var(--theme-module-primary-strong, #075985));
+}
+.help-agent-ball-label {
+  font-size: 13px;
+  font-weight: 750;
+  letter-spacing: .06em;
+  line-height: 1.1;
+  opacity: .92;
+}
+.help-agent-ball-face.is-front b {
+  max-width: 78px;
+  font-size: 24px;
+  font-weight: 800;
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.help-agent-ball-face.is-front b.is-compact { font-size: 17px; }
+.help-agent-ball-face.is-back {
+  transform: rotateY(180deg);
+  background: var(--theme-hero-glow, #0f172a);
+}
+.help-agent-ball-face.is-back img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .help-agent-ball-inner { transition: none; }
 }
 
 /* -- 面板 ---------------------------------------------------------------- */

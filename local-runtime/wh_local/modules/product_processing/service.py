@@ -927,6 +927,10 @@ class ProductProcessingService:
             raise ProductProcessingNotFound("prompt template not found")
         return {**self.prompt_templates(), "template": saved, "message": f"已启用模板「{saved['name']}」"}
 
+    def deactivate_prompt_template(self) -> dict[str, Any]:
+        self.repository.deactivate_prompt_templates()
+        return {**self.prompt_templates(), "message": "已停用模板，后续任务使用系统默认提示词"}
+
     def delete_prompt_template(self, template_id: int) -> dict[str, Any]:
         if not self.repository.delete_prompt_template(template_id):
             raise ProductProcessingNotFound("prompt template not found")
@@ -3992,9 +3996,15 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
           除非 ``force=True``（前台「强制检测」入口）；
         - 严格口径：所有规格图都不含中文才算可用；任一张检出中文、或 OCR 推理失败
           （返回 ``None``）都判为不可用，不显示标签；
+        - 尺寸口径：店小秘「变种预览图」列（即导出的规格原图列）强制 1:1，任一张规格
+          原图非 1:1（按宽高比，容差见 ``domain.sku_availability.SQUARE_TOLERANCE_RATIO``）
+          即落 ``not_square_image`` 判不可用，导出回退商品主图（我们生成的方图），
+          并跳过该链接的 OCR；
         - 所有图片一次性提交线程池并行 OCR，实际并发受 ocr_gate 推理上限约束；
         - 返回 ``chinese_variant_keys``（检出中文的变种导出键）与 ``all_sku_chinese``
           （全部有图 SKU 都含中文），供前端「优化链接 SKU」决定剔除哪些变种；
+        - 另返回 ``not_square_variant_keys``（规格原图非 1:1 的变种导出键），供前端提示
+          用户这批链接为何不能直接用规格原图；
         - ``persist=True``（默认）时把结论落库到 ``drafts.sku_availability_json``，
           并写入 ``fingerprint``（参与检测图片的 content_hash 集合）供导出侧校验有效性。
         """
@@ -4044,6 +4054,22 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 continue
             if not sku_targets:
                 plan.update(status="unavailable", reason="no_sku_image")
+                continue
+            # 店小秘要求「变种预览图必须为 1:1 尺寸」，而导出的该列正是 SKU 规格原图：
+            # 任一规格原图非 1:1 都会被店小秘整单拒收。命中即判不可用（导出回退商品主图，
+            # 主图由我们按 2048x2048 方图生成，天然满足 1:1），并跳过 OCR——反正不用原图了。
+            not_square_views = [
+                view for view in ready_views if not sku_availability_domain.is_square_view(view)
+            ]
+            if not_square_views:
+                plan["not_square_variant_keys"] = sorted(
+                    {
+                        str(self._sku_view_variant_key(view, raw) or "")
+                        for view in not_square_views
+                    }
+                    - {""}
+                )
+                plan.update(status="unavailable", reason="not_square_image")
                 continue
             plan["status"] = "pending"
             plan["_sku_keys"] = {key for _asset_id, key in sku_targets if key}
@@ -4253,6 +4279,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             # （此时不做 SKU 级剔除，回退商品主图，避免整条商品在导出表格里消失）。
             "chinese_variant_keys": [],
             "all_sku_chinese": False,
+            # 规格原图不是 1:1（店小秘「变种预览图」列强制方图）的 SKU 变种导出键。
+            "not_square_variant_keys": [],
             "_sku_keys": set(),
             "_chinese_keys": set(),
             "fingerprint": "",

@@ -726,12 +726,15 @@ export function PrecheckSkuManager({
                           ? '本商品规格原图素材不可用，自动模式下导出将全部回退主图。'
                           : row.availability?.reason === 'scope_relaxed'
                             ? '本商品当前按「宽松口径」判定，不足以直接使用规格原图，自动模式下导出将全部回退主图。'
-                            : row.availability?.reason === 'never_judged'
-                              ? '本商品尚未做过「SKU 规格图可用性判断」，自动模式下无法确认规格原图是否可用，导出将全部回退主图（即 AI 处理后的商品主图，不含中文）。'
-                              : row.availability?.judged
-                                ? '本商品判定结论为「不可用」，自动模式下导出将全部回退主图。'
-                                : '当前无法确认规格原图是否可用，自动模式下导出将全部回退主图。'}
+                            : row.availability?.reason === 'not_square_image'
+                              ? `本商品有 ${row.availability?.not_square_variant_keys?.length || '部分'} 个 SKU 的规格原图不是 1:1 方图，店小秘要求「变种预览图必须为 1:1 尺寸」，直接使用规格原图会被整单拒收，自动模式下导出已全部回退 1:1 的商品主图。`
+                              : row.availability?.reason === 'never_judged'
+                                ? '本商品尚未做过「SKU 规格图可用性判断」，自动模式下无法确认规格原图是否可用，导出将全部回退主图（即 AI 处理后的商品主图，不含中文）。'
+                                : row.availability?.judged
+                                  ? '本商品判定结论为「不可用」，自动模式下导出将全部回退主图。'
+                                  : '当前无法确认规格原图是否可用，自动模式下导出将全部回退主图。'}
                       {row.availability?.reason === 'never_judged' && ' 可先执行一次可用性判断，判定干净后会自动改用规格原图。'}
+                      {row.availability?.reason === 'not_square_image' && ' 如需保留规格原图，请把下方标红的图片裁成正方形后重新换图。'}
                     </p>
                   )}
                   <div className="precheck-sku-grid">
@@ -741,10 +744,14 @@ export function PrecheckSkuManager({
                       /** 该 SKU 当前策略下实际会导出的图（与后端取值口径一致）。 */
                       const resolved = resolveExportImage(mode, entry, row.mainImageUrl, row.availability);
                       const effective = { ...resolved, display: resolved.url };
+                      /** 该 SKU 的规格原图不是 1:1，是本次判定不可用的原因（仅 auto 策略下相关）。 */
+                      const notSquare = mode === 'auto'
+                        && row.availability?.reason === 'not_square_image'
+                        && (row.availability?.not_square_variant_keys || []).includes(entry.key);
                       return (
                         <div
                           key={id}
-                          className={`precheck-sku-card${entry.hit && active ? ' is-hit' : ''}${entry.excluded ? ' is-excluded' : ''}`}
+                          className={`precheck-sku-card${entry.hit && active ? ' is-hit' : ''}${entry.excluded ? ' is-excluded' : ''}${notSquare ? ' is-not-square' : ''}`}
                         >
                           <label className="precheck-sku-check" title="勾选后可批量操作">
                             <input
@@ -795,6 +802,11 @@ export function PrecheckSkuManager({
                               </span>
                             )}
                             {entry.excluded && <span className="precheck-sku-badge tone-excluded">已删除</span>}
+                            {notSquare && (
+                              <span className="precheck-sku-badge tone-not-square" title="该 SKU 规格原图不是 1:1 方图，店小秘要求「变种预览图必须为 1:1 尺寸」，直接使用会被拒收">
+                                原图非 1:1
+                              </span>
+                            )}
                             {entry.textReview === 'flagged' && (
                               <span className="precheck-sku-badge tone-text" title="该 SKU 原图检出中文，建议重新锚定后再换图">
                                 待审核原图

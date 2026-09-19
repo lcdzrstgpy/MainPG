@@ -190,8 +190,47 @@ export function toUserMessage(raw: string): string {
   if (/download returned non-binary data/i.test(message)) return "更新包下载异常，请稍后重试";
   if (/Cross-origin update actions are not allowed/i.test(message)) return "更新请求来源不被允许，请从工作台里点更新";
 
+  // ---- 预检与导出（finalize）----
+  // 后端这批 detail 是英文抛出的，原先一条都不匹配：用户做完预检点「完成预审并
+  // 导出」时，无论遇到哪种失败都只看到「操作失败，请稍后重试」，既分不清是数据
+  // 没处理完、版本过期还是并发冲突，也不知道该做什么。这里逐条给出原因 + 下一步。
+  if (/preview finalization exceeded the time budget/i.test(message)) {
+    return "图片发布超时了，可以点「仅重试失败图片」再试一次";
+  }
+  if (/处理前图片尚未同步完成|source (proxy|media) is not ready/i.test(message)) {
+    return "这批商品的处理前图片还在同步，所以整单导不出来：请等它们同步完成后再点「完成预审并导出」，或先勾选「只看成功链接」只导出已成功的商品";
+  }
+  if (/请先将处理前图片加入素材库/i.test(message)) {
+    return "有商品的处理前图片还没加入素材库：请先在预检里把来源图加入素材库，或勾选「只看成功链接」只导出已成功的商品";
+  }
+  if (
+    /preview finalization contains drafts that are not exportable|no exportable drafts|task has no exportable rows/i.test(message)
+  ) {
+    return "这批商品里还有没处理成功的，整单导不出来：请先处理完，或勾选「只看成功链接」只导出已完成商品";
+  }
+  if (
+    /preview revision conflict|preview revision changed during save|expected preview revision is required/i.test(message)
+  ) {
+    return "预检数据已经被改动过（可能刚保存过，或在另一个窗口改过）：请点「重新加载」核对后再导出";
+  }
+  if (/task item result version changed before finalization/i.test(message)) {
+    return "这批商品的处理结果刚更新过：请点「重新加载」后再导出";
+  }
+  if (/idempotency key was reused|request conflicts with the stored run/i.test(message)) {
+    return "这次导出和上一次重复提交了：请点「重新加载」后重新导出";
+  }
+  if (
+    /finalization run (could not be loaded|not found)|finalization claim changed|publication row is missing|publication claim changed|asset registration could not be loaded/i.test(message)
+  ) {
+    return "导出任务状态被其他操作改动了：请点「重新加载」后再试一次";
+  }
+  if (
+    /finalization snapshot contains a missing image asset|finalization image has no content hash|manifest references an asset outside|preview image target does not belong|preview image draft not found|preview image task not found|preview save must contain each positive draft id once|main image must be retained in carousel/i.test(message)
+  ) {
+    return "提交的图片或商品数据和当前任务对不上：请点「重新加载」后再导出；一直失败请把提示截图发给我们";
+  }
+
   // ---- 其它 ----
-  if (/preview finalization exceeded the time budget/i.test(message)) return "图片发布超时了，可以点「仅重试失败图片」再试一次";
   if (/unsupported miaoshou template kind/i.test(message)) return "妙手导出的模板类型不对，请选择「服饰类」或「非服饰类」";
   if (/\bis not configured\b/i.test(message)) return "相关服务还没配置好，请联系对接人处理";
   if (/provider is unavailable/i.test(message)) return "上游服务暂时不可用，请稍后重试";

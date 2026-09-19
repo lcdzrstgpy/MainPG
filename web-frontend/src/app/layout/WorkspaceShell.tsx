@@ -412,8 +412,17 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
     }
   };
 
-  /** 预览：临时把草稿当生效配置播一遍，播完还原，不写库也不记完成标记。 */
-  const previewGuideDraft = async (config: GuideConfig, boardId: GuideBoardId, subTaskId: string) => {
+  /**
+   * 预览：临时把草稿当生效配置播一遍，播完还原，不写库也不记完成标记。
+   * startIndex 指定从第几步开播，编辑器「演示这一步」用它停到正在编辑的那一步，
+   * 之后可以照常点「下一步」把后面的步骤演示完。
+   */
+  const previewGuideDraft = async (
+    config: GuideConfig,
+    boardId: GuideBoardId,
+    subTaskId: string,
+    startIndex = 0,
+  ) => {
     const previous = getActiveGuideConfig();
     setGuideBoardPanelOpen(false);
     setActiveGuideConfig(cloneGuideConfig(config));
@@ -422,6 +431,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         const tour = startGuideTour(boardId, subTaskId, {
           onRequestPage: requestGuidePage,
           onFinish: () => resolve(),
+          startIndex,
         });
         if (!tour) {
           resolve();
@@ -812,7 +822,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
       >
         <span aria-hidden="true">↑</span>
       </button>
-      <HelpAgentWidget />
+      <HelpAgentWidget showBalance />
       {guideBoardPanelOpen && (
         <GuideBoardPanel
           onClose={() => setGuideBoardPanelOpen(false)}

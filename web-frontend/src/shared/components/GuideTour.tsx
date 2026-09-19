@@ -280,6 +280,8 @@ type GuideTourOptions = {
   onRequestPage: (page: GuidePageId) => void;
   /** 引导结束（完成 / 跳过 / Esc）后的回调，completed 表示是否有走完整个子任务。 */
   onFinish?: (completed: boolean) => void;
+  /** 从第几步开播，默认 0；编辑器「演示这一步」用它直接停到正在编辑的那一步。 */
+  startIndex?: number;
 };
 
 /**
@@ -289,7 +291,7 @@ type GuideTourOptions = {
 export function startGuideTour(
   boardId: GuideBoardId,
   subTaskId: GuideSubTaskId,
-  { onRequestPage, onFinish }: GuideTourOptions,
+  { onRequestPage, onFinish, startIndex = 0 }: GuideTourOptions,
 ): Driver | null {
   const task = guideSubTask(boardId, subTaskId);
   if (!task || task.steps.length === 0) return null;
@@ -297,6 +299,8 @@ export function startGuideTour(
   const steps = task.steps.map(toDriveStep);
   /** 与 steps 下标一一对应的页面；跨页时据此切页。 */
   const stepPages = task.steps.map((step) => step.page);
+  // 配置可能在这期间改过，越界的起点会被 driver 忽略并停在空白处，这里先夹回合法范围。
+  const from = Math.min(Math.max(Math.trunc(startIndex) || 0, 0), steps.length - 1);
   let tour: Driver | null = null;
   /** 是否已经走到本子任务的最后一步：只有走到最后才算完成，中途跳过不计。 */
   let reachedLastStep = false;
@@ -554,10 +558,10 @@ export function startGuideTour(
     },
   });
 
-  // 子任务首步页可能不是当前页（如从 AI 处理切回采集），先请求切页再高亮。
-  const firstPage = stepPages[0];
-  if (firstPage) onRequestPage(firstPage);
-  tour.drive(0);
+  // 起始步所在的页可能不是当前页（如从 AI 处理切回采集），先请求切页再高亮。
+  const fromPage = stepPages[from];
+  if (fromPage) onRequestPage(fromPage);
+  tour.drive(from);
   return tour;
 }
 

@@ -401,17 +401,21 @@ def test_dxm_export_raises_weight_to_volumetric_then_caps_at_899() -> None:
 # ---- SKU 规格图检出中文：导出侧兜底剔除 ----
 
 
-def _jpeg(color: str) -> bytes:
+def _jpeg(color: str, size: tuple[int, int] = (32, 32)) -> bytes:
     buffer = BytesIO()
-    Image.new("RGB", (32, 32), color).save(buffer, format="JPEG", quality=90)
+    Image.new("RGB", size, color).save(buffer, format="JPEG", quality=90)
     return buffer.getvalue()
 
 
 def _bind_sku_media(
-    service: ProductProcessingService, draft_id: int, sku_id: str, color: str
+    service: ProductProcessingService,
+    draft_id: int,
+    sku_id: str,
+    color: str,
+    size: tuple[int, int] = (32, 32),
 ) -> str:
     asset = service.media_assets.register_local_asset(
-        "local", f"sku-{sku_id}", _jpeg(color), "image/jpeg"
+        "local", f"sku-{sku_id}", _jpeg(color, size), "image/jpeg"
     )
     service.media_assets.bind_asset(
         workspace_id="local",
@@ -512,6 +516,77 @@ def test_resolve_draft_usable_reports_chinese_keys_only_when_valid() -> None:
     assert stale["judged"] is False
     assert stale["chinese_variant_keys"] == []
     assert stale["reason"] == "fingerprint_stale"
+
+
+def test_is_square_view_tolerates_tiny_rounding_but_flags_real_ratio() -> None:
+    """宽高比判定：方图（含 1% 内舍入）通过，明显长方/扁图判非方；尺寸读不出来不误报。"""
+    assert sku_availability.is_square_view({"width": 1000, "height": 1000}) is True
+    assert sku_availability.is_square_view({"width": 1000, "height": 1005}) is True
+    assert sku_availability.is_square_view({"width": 1000, "height": 1200}) is False
+    assert sku_availability.is_square_view({"width": 1200, "height": 900}) is False
+    # 宽高缺失 / 非法时无从判断，按方形处理以免整批链接被误回退主图。
+    assert sku_availability.is_square_view({}) is True
+    assert sku_availability.is_square_view({"width": 0, "height": 0}) is True
+    assert sku_availability.is_square_view({"width": "abc", "height": 100}) is True
+
+
+def test_resolve_draft_usable_reports_not_square_keys_only_when_valid() -> None:
+    """非 1:1 键随结论有效性透出：指纹失效 / 未判定时不给出。"""
+    stored = {
+        "status": sku_availability.STATUS_UNAVAILABLE,
+        "fingerprint": "fp-1",
+        "not_square_variant_keys": ["sku-b", "sku-a", "sku-b"],
+    }
+    valid = sku_availability.resolve_draft_usable(stored, current_fingerprint="fp-1")
+    assert valid["reason"] == "unavailable"
+    assert valid["not_square_variant_keys"] == ["sku-a", "sku-b"]
+
+    stale = sku_availability.resolve_draft_usable(stored, current_fingerprint="fp-2")
+    assert stale["not_square_variant_keys"] == []
+
+    never = sku_availability.resolve_draft_usable(None, current_fingerprint=None)
+    assert never["not_square_variant_keys"] == []
+
+
+def test_check_draft_sku_availability_flags_not_square_sku(tmp_path: Path) -> None:
+    """任一规格原图非 1:1 即判不可用（店小秘「变种预览图」列强制方图），并跳过 OCR。"""
+    service = _service(tmp_path)
+    draft, _ = service.create_draft(
+        {
+            "source_type": "manual",
+            "title": "非方图规格商品",
+            "product_name": "非方图规格商品",
+            "skc": "SKC-NS",
+            "source_variant_records": [
+                {"sku_id": "sku-a", "attributes": {"颜色": "白色"}},
+                {"sku_id": "sku-b", "attributes": {"颜色": "黑色"}},
+            ],
+        },
+        workspace_id="local",
+    )
+    draft_id = int(draft["id"])
+    raw = service.get_draft(draft_id, "local")["raw_payload"]
+    service.repository.update_draft(
+        draft_id, {"media_contract_version": 2}, raw, workspace_id="local"
+    )
+    _bind_sku_media(service, draft_id, "sku-a", "green")
+    _bind_sku_media(service, draft_id, "sku-b", "blue", size=(40, 32))
+    # 命中非 1:1 就不该再去 OCR：调用即失败，确保这条链接根本没进 OCR 任务。
+    service._inspect_sku_asset = lambda asset_id, workspace_id: (_ for _ in ()).throw(
+        AssertionError("非 1:1 的链接不应触发 OCR")
+    )
+
+    plan = service.check_draft_sku_availability([draft_id], workspace_id="local")["results"][0]
+    assert plan["status"] == sku_availability.STATUS_UNAVAILABLE
+    assert plan["reason"] == "not_square_image"
+    assert plan["not_square_variant_keys"] == ["sku-b"]
+
+    row = _variant_row()
+    service.mark_row_sku_availability(row, draft_id, workspace_id="local")
+    assert row["sku_source_usable"] is False
+    # 非 1:1 不剔除任何 SKU（商品照常导出，只是整条回退商品主图）。
+    assert row["preview_overrides"] == {}
+    assert [values[10] for values in _dxm_export_rows(row)] == ["sku-a", "sku-b"]
 
 
 def test_mark_row_sku_availability_excludes_chinese_detected_sku(tmp_path: Path) -> None:

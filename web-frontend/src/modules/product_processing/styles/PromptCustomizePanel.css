@@ -187,6 +187,33 @@
   color: #d64545;
 }
 
+/* 当前使用状态 + 「不使用模板」入口 */
+.prompt-template-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid #dcebf5;
+  border-radius: 9px;
+  background: #f2f8fc;
+  font-size: 0.78rem;
+  color: #526a82;
+}
+
+.prompt-template-status strong {
+  color: #18334d;
+  font-weight: 800;
+}
+
+.prompt-template-select-hint {
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: #7d94aa;
+}
+
 /* 模板管理栏 */
 .prompt-template-bar {
   display: flex;

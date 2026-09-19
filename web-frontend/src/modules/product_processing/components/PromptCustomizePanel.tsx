@@ -145,6 +145,22 @@ export function PromptCustomizePanel() {
     }
   };
 
+  // 停用当前模板：回到只用系统默认提示词，模板本身保留在列表里，随时可再启用。
+  const deactivate = async () => {
+    setSaving(true);
+    setError('');
+    setMessage('');
+    try {
+      const data = await ppRequest<TemplatesResponse>(ctx, `${API_BASE}/engine/prompt-templates/deactivate`, { body: {} });
+      setTemplates(data.templates || []);
+      setMessage(data.message || '已停用模板，后续任务使用系统默认提示词');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '停用模板失败');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const remove = async () => {
     if (selectedId == null) return;
     if (!window.confirm(`确定删除模板「${selectedTemplate?.name ?? ''}」吗？`)) return;
@@ -189,7 +205,7 @@ export function PromptCustomizePanel() {
           <span className="prompt-panel-toggle-title">
             提示词预设模板
             <small>
-              高级 · 按账号保存多个命名模板{activeTemplate ? `，当前使用「${activeTemplate.name}」` : '，暂未启用'}
+              高级 · 按账号保存多个命名模板{activeTemplate ? `，当前使用「${activeTemplate.name}」` : '，当前使用系统默认提示词'}
             </small>
           </span>
           <span className="prompt-panel-toggle-caret">{open ? '关闭 ✕' : '配置 ▸'}</span>
@@ -216,9 +232,21 @@ export function PromptCustomizePanel() {
             拆分逻辑与产品保真规则由系统固定，不可被提示词改变。模板保存在当前账号本机，
             不随工作区变化，启用后对所有新任务生效，下次打开自动带出。
           </p>
+          <div className="prompt-template-status">
+            <span>
+              当前使用：
+              <strong>{activeTemplate ? `「${activeTemplate.name}」` : '系统默认提示词（未启用模板）'}</strong>
+            </span>
+            <button
+              type="button"
+              className="prompt-btn"
+              onClick={deactivate}
+              disabled={saving || loading || !activeTemplate}
+            >不使用模板</button>
+          </div>
           <div className="prompt-template-bar">
             <label className="prompt-template-select-label">
-              编辑模板
+              选择 / 编辑模板
               <select
                 value={selectedId ?? ''}
                 onChange={(e) => {
@@ -232,6 +260,7 @@ export function PromptCustomizePanel() {
                   <option key={t.id} value={t.id}>{t.name}{t.is_active ? '（当前使用）' : ''}</option>
                 ))}
               </select>
+              <small className="prompt-template-select-hint">选中只是载入编辑，需点「设为当前使用」才会生效</small>
             </label>
             <div className="prompt-template-actions">
               <button type="button" className="prompt-btn" onClick={resetValues} disabled={loading}>新建</button>

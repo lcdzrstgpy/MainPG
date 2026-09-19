@@ -39,8 +39,14 @@ type GuideEditorProps = {
   /** 保存草稿；失败时 reject（提示由外层负责），编辑器保留「未保存」状态。 */
   onSave: (config: GuideConfig) => Promise<void>;
   onClose: () => void;
-  /** 用草稿临时顶替生效配置并播放引导；Promise 在引导结束后 resolve。 */
-  onPreview: (config: GuideConfig, boardId: GuideBoardId, subTaskId: string) => Promise<void>;
+  /** 用草稿临时顶替生效配置并播放引导；startIndex 指定从第几步开播。
+   *  Promise 在引导结束后 resolve。 */
+  onPreview: (
+    config: GuideConfig,
+    boardId: GuideBoardId,
+    subTaskId: string,
+    startIndex?: number,
+  ) => Promise<void>;
 };
 
 type PickSlot = { stepIndex: number; selectorIndex: number | "new" };
@@ -318,12 +324,13 @@ export function GuideEditor({
     patchSteps((steps) => steps.map((step, itemIndex) => (itemIndex === index ? { ...step, ...patch } : step)));
   };
 
-  const handlePreview = async () => {
+  /** 预览草稿：startIndex 指定从第几步开播，之后可继续「下一步」演示完剩下的步骤。 */
+  const handlePreview = async (startIndex = 0) => {
     if (!subTask || subTask.steps.length === 0 || previewing) return;
     if (dirty && !window.confirm("预览用的是当前草稿，还没保存。继续预览吗？")) return;
     setPreviewing(true);
     try {
-      await onPreview(draft, boardId, subTask.id);
+      await onPreview(draft, boardId, subTask.id, startIndex);
     } finally {
       setPreviewing(false);
     }
@@ -344,7 +351,9 @@ export function GuideEditor({
   };
 
   return (
-    <div className="guide-editor-overlay">
+    // 预览时整层提到 driver 遮罩之上（见 guide-tour.css 的 .is-previewing），
+    // 让管理员能一边看这一步的效果一边看着自己编辑的步骤。
+    <div className={`guide-editor-overlay${previewing ? " is-previewing" : ""}`}>
       <aside
         ref={panelRef}
         className={`guide-editor${previewing ? " is-previewing" : ""}${dragging ? " is-dragging" : ""}`}
@@ -361,14 +370,15 @@ export function GuideEditor({
         >
           <div>
             <h2>引导编辑器</h2>
-            <p>拖标题栏可移动窗口。选板块 → 选子任务 → 点「点选拾取」，再点页面上要讲解的位置。</p>
+            <p>拖标题栏可移动窗口。选板块 → 选子任务 → 点「点选拾取」，再点页面上要讲解的位置。每步右侧的 ▶ 可直接演示这一步。</p>
           </div>
           <button type="button" className="guide-editor-close" onClick={onClose} aria-label="关闭编辑器">
             ×
           </button>
         </header>
 
-        <div className="guide-editor-body">
+        {/* 预览期间冻住编辑区，避免改配置把正在播的这一步改跑偏；标题栏仍可拖动浮窗。 */}
+        <div className="guide-editor-body" style={previewing ? { pointerEvents: "none" } : undefined}>
           <div className="guide-editor-boards" role="tablist">
             {GUIDE_BOARD_META.map((meta) => (
               <button
@@ -455,6 +465,15 @@ export function GuideEditor({
                   <div className="guide-editor-step-head">
                     <strong>第 {index + 1} 步</strong>
                     <div className="guide-editor-step-tools">
+                      <button
+                        type="button"
+                        className="guide-editor-icon-btn"
+                        onClick={() => void handlePreview(index)}
+                        disabled={previewing}
+                        title="演示这一步（从这一步开始，可继续往后演示）"
+                      >
+                        ▶
+                      </button>
                       <button
                         type="button"
                         className="guide-editor-icon-btn"
@@ -702,13 +721,20 @@ export function GuideEditor({
 
         <footer className="guide-editor-foot">
           <span className="guide-editor-status">
-            {picking ? "拾取中：点击页面上的位置，Esc 取消" : dirty ? "有未保存的修改" : "已与线上一致"}
+            {previewing
+              ? "演示中：点提示卡的「下一步」可继续往后演示，走完即回到编辑"
+              : picking
+                ? "拾取中：点击页面上的位置，Esc 取消"
+                : dirty
+                  ? "有未保存的修改"
+                  : "已与线上一致"}
           </span>
           <button
             type="button"
             className="guide-editor-btn ghost"
-            onClick={handlePreview}
+            onClick={() => void handlePreview(0)}
             disabled={!subTask || subTask.steps.length === 0 || previewing}
+            title="从第 1 步开始预览整段引导"
           >
             {previewing ? "预览中…" : "预览"}
           </button>

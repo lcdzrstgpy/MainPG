@@ -4885,6 +4885,13 @@
   color: #1c6fa8;
 }
 
+/* 「规格原图不是 1:1」：店小秘「变种预览图」列强制方图，用橙红强提醒 */
+.precheck-sku-badge.tone-not-square {
+  border: 1px solid #f5b183;
+  background: #fff2e6;
+  color: #c05621;
+}
+
 /* 缩略图左上角来源标记：策略回退主图 / 结论待判定 */
 .precheck-sku-thumb {
   position: relative;
@@ -4927,6 +4934,12 @@
 .precheck-sku-card.is-excluded .precheck-sku-label {
   opacity: 0.55;
   filter: grayscale(0.6);
+}
+
+/* 规格原图不是 1:1，导出已被迫回退主图：橙框提醒用户可裁方后换图保留原图 */
+.precheck-sku-card.is-not-square {
+  border-color: #f5b183;
+  background: #fffaf5;
 }
 
 .precheck-sku-empty {

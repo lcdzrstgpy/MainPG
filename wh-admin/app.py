@@ -1596,13 +1596,6 @@ def billing_records(limit: int = 200, x_auth_token: str | None = Header(default=
     db_path = load_config()["database_path"]
     scale = _billing_point_scale(db_path)
     limit = max(1, min(int(limit), 500))
-    # 基础版领取列由 MainPG 服务端迁移补加；缺列时退化占位，避免整页 500。
-    has_claim = _table_has_column(db_path, "billing_wallets", "basic_claim_count")
-    claim_cols = (
-        "COALESCE(w.plan_expire_at,'') AS plan_expire_at, COALESCE(w.basic_claim_count,0) AS basic_claim_count"
-        if has_claim
-        else "'' AS plan_expire_at, 0 AS basic_claim_count"
-    )
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         wallets = conn.execute(
@@ -1610,7 +1603,8 @@ def billing_records(limit: int = 200, x_auth_token: str | None = Header(default=
             "COALESCE(w.points_balance,0) AS points_balance,COALESCE(w.locked_points,0) AS locked_points,"
             "COALESCE(w.manual_frozen_points,0) AS manual_frozen_points,"
             "COALESCE(w.plan_balance,0) AS plan_balance,COALESCE(w.plan_type,'experience') AS plan_type,"
-            f"{claim_cols},w.updated_at,"
+            "COALESCE(w.extra_balance,0) AS extra_balance,"
+            "COALESCE(w.plan_expire_at,'') AS plan_expire_at,w.updated_at,"
             "(SELECT COUNT(1) FROM billing_batch_items b JOIN billing_batch_freezes f ON f.freeze_id=b.freeze_id "
             "WHERE f.account_id=a.account_id AND b.feature_key='title' AND b.status='success') AS success_usage,"
             "(SELECT COALESCE(SUM(charged_points),0) FROM billing_batch_freezes f "
@@ -1623,14 +1617,14 @@ def billing_records(limit: int = 200, x_auth_token: str | None = Header(default=
     wallet_rows = []
     for row in wallets:
         item = dict(row)
-        for key in ("points_balance", "locked_points", "manual_frozen_points", "charged_points", "plan_balance"):
+        for key in ("points_balance", "locked_points", "manual_frozen_points", "charged_points", "plan_balance", "extra_balance"):
             item[key] = _display_points(int(item.get(key) or 0), scale)
-        # 体验积分：所有套餐统一 500/周；额外积分：基础版四周每周领 1000（最多 4 次）。
-        item["plan_limit"] = 500
+        # 每周签到额度按套餐区分：体验版/旗舰版 500，标准版 1000（积分由每日签到逐日领取）。
+        plan_type = str(item.get("plan_type") or "")
+        item["plan_limit"] = 1000 if plan_type == "basic" else 500
         item["plan_label"] = {"experience": "体验版", "basic": "基础版", "flagship": "旗舰版"}.get(
-            str(item.get("plan_type") or ""), "体验版"
+            plan_type, "体验版"
         )
-        item["basic_claim_max"] = 4
         wallet_rows.append(item)
     return {"ok": True, "point_unit_scale": scale, "wallets": wallet_rows}
 

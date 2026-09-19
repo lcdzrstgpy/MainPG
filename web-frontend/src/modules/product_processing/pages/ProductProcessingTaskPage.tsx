@@ -297,6 +297,12 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
     if (!initialDraftIds?.length) return 0;
     return initialDraftIds.filter((id) => skuResults[id]?.status === 'pending_sync').length;
   }, [initialDraftIds, skuResults]);
+  // 规格原图不是 1:1：店小秘「变种预览图」列强制方图，直接用原图会被整单拒收，
+  // 因此同判不可用、导出回退商品主图（我们生成的方图）。
+  const skuNotSquareCount = useMemo(() => {
+    if (!initialDraftIds?.length) return 0;
+    return initialDraftIds.filter((id) => skuResults[id]?.reason === 'not_square_image').length;
+  }, [initialDraftIds, skuResults]);
   const skuFallbackCount = Math.max(0, skuTotalChecked - skuCleanCount - skuPendingSyncCount);
 
   // 检测结果 → 处理参数：variant_image_mode 分流 + 「优化链接 SKU」命中的变种剔除键。
@@ -305,7 +311,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
   // - 整条链接全是中文图（all_sku_chinese）：不剔除，回退商品主图，避免整条商品消失；
   // - 等待同步（pending_sync）：规格图还没物化完，此刻定论不可信，显式回落 auto（同时清掉
   //   上一轮可能写死的 main），素材同步完成后由后端自动补判，判定干净即用规格原图；
-  // - 其余（无规格图 / 规格图过多 / OCR 失败）：统一用商品主图（main）。
+  // - 其余（无规格图 / 规格图过多 / 规格原图非 1:1 / OCR 失败）：统一用商品主图（main）。
   const skuPlan = useMemo(() => {
     const classification: Record<number, 'source' | 'main' | 'auto'> = {};
     const exclusions: Record<number, string[]> = {};
@@ -669,13 +675,13 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                   className="btn-mini"
                   disabled={skuCheckBusy || !initialDraftIds?.length}
                   onClick={() => void runSkuAvailabilityCheck()}
-                  title="重新检测所选链接的 SKU 规格图是否含中文水印"
+                  title="重新检测所选链接的 SKU 规格图是否含中文水印、以及是否为 1:1 方图"
                 >{skuCheckBusy ? '检测中…' : '重新检测'}</button>
               </div>
               {skuCheckBusy && (
                 <div className="verify-repull-banner" role="status">
                   <i className="iconfont icon-loading" aria-hidden="true" />
-                  <span>正在检测所选链接的 SKU 规格图是否含中文水印…</span>
+                  <span>正在检测所选链接的 SKU 规格图是否含中文水印、是否为 1:1 方图…</span>
                   <em>已完成 {skuCheckProgress.done} / {skuCheckProgress.total} 条</em>
                 </div>
               )}
@@ -691,13 +697,23 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                     <div className="verify-count success">可用原图 <b>{skuCleanCount}</b></div>
                     <div className="verify-count">改用主图 <b>{skuFallbackCount}</b></div>
                     <div className="verify-count">规格图过多跳过 <b>{skuSkippedCount}</b></div>
+                    {skuNotSquareCount > 0 && (
+                      <div className="verify-count">原图非 1:1 <b>{skuNotSquareCount}</b></div>
+                    )}
                     {skuPendingSyncCount > 0 && (
                       <div className="verify-count">等待同步 <b>{skuPendingSyncCount}</b></div>
                     )}
                   </div>
                   <p className="verify-sku-check-hint">
                     共检测 <b>{skuTotalChecked}</b> 条链接：<b>{skuCleanCount}</b> 条 SKU 规格图可用，导出时用「规格原图」；
-                    <b>{skuFallbackCount}</b> 条改用「商品主图」（含 {skuSkippedCount} 条 SKU 规格图 ≥ 50 张的链接）。
+                    <b>{skuFallbackCount}</b> 条改用「商品主图」（含 {skuSkippedCount} 条 SKU 规格图 ≥ 50 张的链接
+                    {skuNotSquareCount > 0 && <>，以及 {skuNotSquareCount} 条规格原图不是 1:1 的链接</>}）。
+                    {skuNotSquareCount > 0 && (
+                      <>
+                        {' '}店小秘要求「变种预览图必须为 1:1 尺寸」，这些链接直接导规格原图会被拒收，
+                        已自动改用 1:1 的商品主图；如需保留原图，请先在预检页把图片裁成正方形。
+                      </>
+                    )}
                     {skuPendingSyncCount > 0 && (
                       <>
                         {' '}另有 <b>{skuPendingSyncCount}</b> 条规格图还在同步，暂不定论——同步完成后会自动补判，
