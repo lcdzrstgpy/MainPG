@@ -610,7 +610,7 @@ def _normalize_target_account_ids(payload: dict[str, Any]) -> list[str]:
     return cleaned
 
 
-def _serialize_announcement(row) -> dict[str, Any]:
+def _serialize_announcement(row, *, include_targets: bool = True) -> dict[str, Any]:
     r = dict(row)
     try:
         targets = json.loads(r.get("target_account_ids") or "[]")
@@ -618,7 +618,7 @@ def _serialize_announcement(row) -> dict[str, Any]:
             targets = []
     except json.JSONDecodeError:
         targets = []
-    return {
+    payload: dict[str, Any] = {
         "id": r["id"],
         "title": r["title"],
         "content": r["content"],
@@ -626,8 +626,10 @@ def _serialize_announcement(row) -> dict[str, Any]:
         "active": bool(r["active"]),
         "created_at": r["created_at"],
         "updated_at": r["updated_at"],
-        "target_account_ids": targets,
     }
+    if include_targets:
+        payload["target_account_ids"] = targets
+    return payload
 
 
 @app.get("/api/announcements/public")
@@ -637,20 +639,25 @@ def public_announcements(account_id: str = Query(default="")) -> dict[str, Any]:
     account_id = (account_id or "").strip()
     con = _announce_db()
     try:
-        if account_id:
-            like = f'%"{account_id}"%'
-            rows = con.execute(
-                "SELECT * FROM announcements WHERE active=1 AND (target_account_ids='' OR target_account_ids LIKE ?) "
-                "ORDER BY id DESC",
-                (like,),
-            ).fetchall()
-        else:
-            rows = con.execute(
-                "SELECT * FROM announcements WHERE active=1 AND target_account_ids='' ORDER BY id DESC"
-            ).fetchall()
+        rows = con.execute(
+            "SELECT * FROM announcements WHERE active=1 ORDER BY id DESC"
+        ).fetchall()
     finally:
         con.close()
-    return {"announcements": [_serialize_announcement(r) for r in rows]}
+    # 定向过滤在 Python 侧做精确成员判断：LIKE 通配会让 "%" 之类的账号 ID
+    # 匹配所有定向公告，泄露收件人名单。公告表行数少，全量过滤无性能问题。
+    items = []
+    for row in rows:
+        try:
+            targets = json.loads(row["target_account_ids"] or "[]")
+            if not isinstance(targets, list):
+                targets = []
+        except json.JSONDecodeError:
+            targets = []
+        if targets and account_id not in targets:
+            continue
+        items.append(_serialize_announcement(row, include_targets=False))
+    return {"announcements": items}
 
 
 @app.get("/api/announcements")

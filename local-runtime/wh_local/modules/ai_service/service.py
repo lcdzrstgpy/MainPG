@@ -608,11 +608,20 @@ class AiService:
         with self._connect() as conn:
             result = conn.execute(
                 """UPDATE ai_service_pod_groups SET status = ?, output_asset_ids_json = ?, error_message = ?, finished_at = ?, updated_at = ?
-                   WHERE creation_id = ? AND workspace_id = ? AND owner_user_id = ? AND kind = ?""",
+                   WHERE creation_id = ? AND workspace_id = ? AND owner_user_id = ? AND kind = ? AND finished_at = ''""",
                 (status, json.dumps(output_asset_ids or []), error_message[:300], now, now, creation_id, actor.workspace_id, actor.id, kind),
             )
         if result.rowcount != 1:
-            raise AiServiceError("POD group not found", 404)
+            # 重复 finish（网络重试）不得覆盖已落定的产出：finished_at 非空即已结束。
+            with self._connect() as conn:
+                existing = conn.execute(
+                    "SELECT 1 FROM ai_service_pod_groups WHERE creation_id = ? AND workspace_id = ? AND owner_user_id = ? AND kind = ?",
+                    (creation_id, actor.workspace_id, actor.id, kind),
+                ).fetchone()
+            if existing is None:
+                raise AiServiceError("POD group not found", 404)
+            self._finish_pod_creation_when_settled(actor, creation_id)
+            return
         self._finish_pod_creation_when_settled(actor, creation_id)
 
     def retry_pod_group(self, actor: Actor, creation_id: str, kind: str) -> dict[str, Any]:

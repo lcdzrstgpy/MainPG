@@ -578,13 +578,8 @@ class UpdateAdminService:
                 """,
                 (version, payload_text, now, now),
             )
-            connection.execute(
-                """
-                UPDATE launcher_golden SET active = 0
-                WHERE version = ? AND active = 1 AND id != (SELECT id FROM launcher_golden WHERE version = ? ORDER BY id DESC LIMIT 1)
-                """,
-                (version, version),
-            )
+            # 反激活只发生在发布动作（launcher_publish_golden）里。
+            # 这里若按同版本反激活，匿名上传草稿即可瘫痪线上启动器配置。
         self.db.audit(username, "launcher_golden_uploaded", target=version)
         return self.launcher_get_golden(version)
 
