@@ -65,7 +65,15 @@ def decrypt_bytes(blob: bytes) -> bytes:
         raise ValueError("unrecognized encrypted credential blob")
     body = blob[len(_ENC_MAGIC):]
     nonce, ciphertext = body[:12], body[12:]
-    return _aead().decrypt(nonce, ciphertext, None)
+    try:
+        return _aead().decrypt(nonce, ciphertext, None)
+    except Exception as exc:  # noqa: BLE001 - 统一转 ValueError 供上层优雅降级
+        # AESGCM.decrypt 在密文损坏/密钥不符时抛 cryptography 的 InvalidTag，
+        # 它不是 ValueError 子类，若不转换会穿透 load_credential_config 的
+        # (OSError, ValueError) 捕获，导致 default_config 启动崩溃。
+        if exc.__class__.__name__ == "InvalidTag":
+            raise ValueError("credential blob failed authentication") from exc
+        raise
 
 
 def encrypt_credential_file(source: Path, dest: Path) -> None:

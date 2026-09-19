@@ -564,9 +564,13 @@ def _provider_sequence_error() -> DailySelectionError:
 def _valid_image_audits(response: ProviderCallResult) -> bool:
     expected = ("download_reference_image", "upload_img", "item_search_img")
     observed = tuple(audit.operation for audit in response.audits)
-    if observed != expected[: len(observed)]:
+    if len(observed) <= len(expected):
+        # 短序列（中途失败/部分完成）：必须是 expected 前缀，成功与否由 response.ok 反映
+        return observed == expected[: len(observed)]
+    # 长序列（图搜自动重试成功）：前 3 项必须匹配基准，其余只能是 search 重试记录
+    if observed[:3] != expected:
         return False
-    return not response.ok or observed == expected
+    return all(op == "item_search_img" for op in observed[3:])
 
 
 def _status(candidates: Sequence[CollectedCandidate], errors: Sequence[DailySelectionError]) -> str:

@@ -21,13 +21,17 @@ function resolveToken(): string {
 
 function mapMessage(value: unknown): InboxMessage {
   const raw = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
+  const rawRead = raw.read;
+  // 后端若把布尔序列化为字符串（"false"/"0"），Boolean("false") 会误判为已读，
+  // 导致未读红点失效。显式归一所有可能形态。
+  const read = rawRead === true || rawRead === 1 || rawRead === "1" || rawRead === "true";
   return {
     id: Number(raw.id ?? 0),
     serverId: Number(raw.server_id ?? raw.serverId ?? 0),
     title: String(raw.title ?? ""),
     content: String(raw.content ?? ""),
     publishedAt: String(raw.published_at ?? raw.publishedAt ?? ""),
-    read: Boolean(raw.read),
+    read,
     kind: String(raw.kind ?? "announcement"),
   };
 }

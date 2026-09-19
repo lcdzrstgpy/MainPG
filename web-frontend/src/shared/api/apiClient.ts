@@ -39,6 +39,7 @@ export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T
     throw new Error(toUserMessage(message));
   }
 
-  // 204/空体等无 JSON 的成功响应兜底为空对象，避免抛英文 SyntaxError 绕过中文映射。
-  return response.json().catch(() => ({})) as Promise<T>;
+  // 204/空体等无 JSON 的成功响应兜底为空对象，避免抛英文 SyntaxError 绕过中文映射；
+  // body 为字面量 null 时 json() 正常 resolve 成 null，同样要兜底防下游解引用崩溃。
+  return response.json().then((value) => (value ?? {}) as T).catch(() => ({} as T));
 }

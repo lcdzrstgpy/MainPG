@@ -162,13 +162,16 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
 
   const closeTabWithEffect = (key: string) => {
     if (closingKeys.includes(key)) return;
+    // 记录关闭发起时该标签是否已激活：发起时激活的标签属于正常关闭，
+    // 只有「发起时未激活、动画期间被重新激活」才是用户反悔重开。
+    const wasActiveAtClose = activeKeyRef.current === key;
     setClosingKeys((current) => [...current, key]);
     const timer = window.setTimeout(() => {
       closingTimers.current.delete(timer);
       setClosingKeys((current) => current.filter((item) => item !== key));
       // 180ms 动画期间该标签若被重新打开并激活（activeKey 又指向它），说明用户
       // 想保留，跳过删除——否则会误删刚重开的标签。
-      if (activeKeyRef.current === key) return;
+      if (!wasActiveAtClose && activeKeyRef.current === key) return;
       onCloseTab(key);
     }, 180);
     closingTimers.current.add(timer);

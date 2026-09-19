@@ -244,7 +244,6 @@ class UpdateManager:
         return self.status()
 
     def _install_after_begin(self) -> dict[str, object]:
-        installer_launched = False
         try:
             if self.settings.platform != "win32":
                 self._set_state("unavailable", error="Automatic updates are only available on Windows.")
@@ -254,12 +253,13 @@ class UpdateManager:
             installer = self._download_verified_installer(self._release)
             self._set_state("installing")
             self._launcher(installer, ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"])
-            installer_launched = True
         except Exception as error:
             self._set_state("failed", error=self._safe_error(error))
         finally:
-            if not installer_launched:
-                self._operation_lock.release()
+            # 无条件释放：主程序被安装器替换时锁随进程消失，无所谓；
+            # 主程序存活（UAC 取消 / 安装器提前退出）时若不释放，
+            # _operation_lock 永久持有，后续 check/install 全部拿不到锁。
+            self._operation_lock.release()
         return self.status()
 
     def _begin(self, state: str) -> bool:
@@ -726,22 +726,28 @@ class PatchManager:
                 self._validate_response_url(source)
                 digest = hashlib.sha256()
                 file_bytes = 0
-                with target.open("wb") as output:
-                    for chunk in self._download_chunks(source):
-                        output.write(chunk)
-                        digest.update(chunk)
-                        file_bytes += len(chunk)
-                        downloaded_bytes += len(chunk)
-                        report_progress()
-                if file_bytes != entry.size:
-                    raise RuntimeError(f"Downloaded patch file size mismatch for {entry.path}")
-                if entry.sha256 and digest.hexdigest().lower() != entry.sha256:
-                    raise RuntimeError(f"Downloaded patch file SHA-256 mismatch for {entry.path}")
+                try:
+                    with target.open("wb") as output:
+                        for chunk in self._download_chunks(source):
+                            output.write(chunk)
+                            digest.update(chunk)
+                            file_bytes += len(chunk)
+                            downloaded_bytes += len(chunk)
+                            report_progress()
+                    if file_bytes != entry.size:
+                        raise RuntimeError(f"Downloaded patch file size mismatch for {entry.path}")
+                    if entry.sha256 and digest.hexdigest().lower() != entry.sha256:
+                        raise RuntimeError(f"Downloaded patch file SHA-256 mismatch for {entry.path}")
+                except BaseException:
+                    # 下载/校验失败：清理半成品，避免 staging 残留损坏文件
+                    target.unlink(missing_ok=True)
+                    raise
+                finally:
+                    close = getattr(source, "close", None)
+                    if callable(close):
+                        close()
                 downloaded_files += 1
                 report_progress()
-                close = getattr(source, "close", None)
-                if callable(close):
-                    close()
             self._set_state("installing")
             state_file = self._state_path()
             state_file.parent.mkdir(parents=True, exist_ok=True)

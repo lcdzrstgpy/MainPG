@@ -570,8 +570,10 @@ def _validate_global_address(value: str, *, allow_hostname: bool) -> None:
         address = ipaddress.ip_address(value)
     except ValueError:
         try:
-            address = ipaddress.ip_address(socket.inet_aton(value))
-        except OSError:
+            # inet_aton 支持整数/十六进制等非标准写法，返回 bytes；
+            # 必须经 inet_ntoa 归一为点分十进制，ip_address(bytes) 会抛 ValueError。
+            address = ipaddress.ip_address(socket.inet_ntoa(socket.inet_aton(value)))
+        except (OSError, ValueError):
             if allow_hostname:
                 return
             raise DailySelectionImageAccessDenied("image address is invalid") from None
