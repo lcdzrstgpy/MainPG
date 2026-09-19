@@ -72,7 +72,13 @@
   white-space: nowrap;
 }
 
+/* 5~6 位：中字（15px，62px 宽放得下 6 位） */
 .balance-ball-face.is-front b.is-compact {
+  font-size: 15px;
+}
+
+/* 7 位起：小字（13px，约 8 位内完整） */
+.balance-ball-face.is-front b.is-tiny {
   font-size: 13px;
 }
 

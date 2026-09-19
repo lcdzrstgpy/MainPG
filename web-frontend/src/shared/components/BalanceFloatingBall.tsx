@@ -182,7 +182,7 @@ export function BalanceFloatingBall() {
       <div className="balance-ball-inner">
         <div className="balance-ball-face is-front">
           <span className="balance-ball-label">积分</span>
-          <b className={displayPoints.length >= 6 ? "is-compact" : undefined}>{displayPoints}</b>
+          <b className={displayPoints.length >= 7 ? "is-tiny" : displayPoints.length >= 5 ? "is-compact" : undefined}>{displayPoints}</b>
         </div>
         <div className="balance-ball-face is-back">
           <img src={mascot} alt="主题伙伴" draggable={false} />
