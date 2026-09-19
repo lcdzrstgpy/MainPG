@@ -1763,3 +1763,12 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* 设置抽屉属于利润活动的一部分，沿用主题表面，不保留冷蓝的二级面板。 */
+[data-theme] .profit-products-settings-dialog { border-color: var(--theme-module-border); color: var(--theme-text-primary); background: var(--theme-module-surface); box-shadow: 0 24px 64px var(--theme-card-shadow-lg); }
+[data-theme] :is(.profit-products-settings-head h2, .profit-products-settings-dialog label) { color: var(--theme-text-primary); }
+[data-theme] :is(.profit-products-settings-head p, .profit-products-formula-note) { color: var(--theme-text-secondary); }
+[data-theme] :is(.profit-products-settings-dialog input, .profit-products-settings-tabs button, .profit-products-add-site-button) { border-color: var(--theme-module-border); color: var(--theme-text-secondary); background: var(--theme-module-surface-raised); }
+[data-theme] .profit-products-settings-tabs button.is-active { border-color: transparent; color: var(--theme-on-primary); background: var(--theme-primary-button-gradient); box-shadow: 0 8px 18px var(--theme-primary-button-shadow); }
+[data-theme] :is(.profit-products-new-site-form, .profit-products-settings-fields) { border-color: var(--theme-module-border); background: var(--theme-module-surface-soft); }
+[data-theme] .profit-products-settings-backdrop { background: var(--theme-module-overlay); }

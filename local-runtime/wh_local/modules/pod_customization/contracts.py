@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
 
@@ -63,18 +63,26 @@ class Calibration(BaseModel):
 class BusinessFields(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    product_name: str = ""
-    product_category: str = ""
-    target_market: str = ""
-    target_audience: str = ""
-    core_selling_points: list[str] = Field(default_factory=list)
-    design_theme: str = ""
-    style_keywords: list[str] = Field(default_factory=list)
-    color_preferences: list[str] = Field(default_factory=list)
-    excluded_elements: list[str] = Field(default_factory=list)
+    product_name: Annotated[str, Field(max_length=500)] = ""
+    product_category: Annotated[str, Field(max_length=500)] = ""
+    target_market: Annotated[str, Field(max_length=500)] = ""
+    target_audience: Annotated[str, Field(max_length=500)] = ""
+    core_selling_points: list[Annotated[str, Field(max_length=200)]] = Field(
+        default_factory=list, max_length=100
+    )
+    design_theme: Annotated[str, Field(max_length=500)] = ""
+    style_keywords: list[Annotated[str, Field(max_length=200)]] = Field(
+        default_factory=list, max_length=100
+    )
+    color_preferences: list[Annotated[str, Field(max_length=200)]] = Field(
+        default_factory=list, max_length=100
+    )
+    excluded_elements: list[Annotated[str, Field(max_length=200)]] = Field(
+        default_factory=list, max_length=100
+    )
     # 选填：用户手写的上架文案限制（例如「标题不要出现刺绣」「明确带上 2D Flat」）。
     # 只作用于标题/英文标题/描述，不进入图片提示词。
-    copy_restrictions: str = ""
+    copy_restrictions: Annotated[str, Field(max_length=2000)] = ""
 
 
 # --- 智能前置层：模糊输入 → 结构化业务字段 ---
@@ -231,7 +239,7 @@ class ManualTitleUpdate(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    title: str
+    title: Annotated[str, Field(max_length=300)]
 
     @model_validator(mode="after")
     def strip_title(self) -> "ManualTitleUpdate":
@@ -260,6 +268,7 @@ SpecCardCorner = Literal["bottom-right", "bottom-left", "top-right", "top-left"]
 SPEC_CARD_MAX_ROWS = 101  # 尺寸详情表格行数 = 1 行表头 + 最多 100 个 SKU 行
 SPEC_CARD_MAX_COLUMNS = 6
 SPEC_CARD_MAX_CELL_LENGTH = 120
+SPEC_CARD_MAX_TOTAL_CELLS = SPEC_CARD_MAX_ROWS * SPEC_CARD_MAX_COLUMNS
 
 _SPEC_CARD_GRID_ERROR = "规格卡表格结构不正确"
 _SPEC_CARD_CELL_ERROR = "规格卡表格单元格必须是文本"
@@ -391,10 +400,18 @@ def _coerce_spec_card_rows(cells: Sequence[Sequence[str]] | None) -> tuple[tuple
         return ()
     if isinstance(cells, (str, bytes, bytearray)) or not isinstance(cells, Sequence):
         raise ValueError(_SPEC_CARD_GRID_ERROR)
+    if len(cells) > SPEC_CARD_MAX_ROWS:
+        raise ValueError(f"规格卡最多 {SPEC_CARD_MAX_ROWS} 行")
     rows: list[tuple[str, ...]] = []
+    total_cells = 0
     for row in cells:
         if isinstance(row, (str, bytes, bytearray)) or not isinstance(row, Sequence):
             raise ValueError(_SPEC_CARD_GRID_ERROR)
+        if len(row) > SPEC_CARD_MAX_COLUMNS:
+            raise ValueError(f"规格卡最多 {SPEC_CARD_MAX_COLUMNS} 列")
+        total_cells += len(row)
+        if total_cells > SPEC_CARD_MAX_TOTAL_CELLS:
+            raise ValueError(f"规格卡最多 {SPEC_CARD_MAX_TOTAL_CELLS} 个单元格")
         normalized: list[str] = []
         for cell in row:
             if cell is None:

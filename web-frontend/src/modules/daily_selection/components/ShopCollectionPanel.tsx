@@ -1,4 +1,5 @@
-import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { forwardRef, type FormEvent, useCallback, useEffect, useImperativeHandle, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 
 import { shopCollectionApi } from "../api/shopCollectionApi";
 import "../styles/shop-collection.css";
@@ -14,6 +15,11 @@ import {
 
 type ShopCollectionPanelProps = {
   isActive?: boolean;
+  onBatchCountChange?: (count: number) => void;
+};
+
+export type ShopCollectionPanelHandle = {
+  openBatchManager: () => void;
 };
 
 const ITEM_PAGE_SIZE_OPTIONS = [10, 20, 50, 100] as const;
@@ -49,7 +55,7 @@ function itemStatusLabel(item: ShopCollectionItem): string {
   return labels[item.detail_status];
 }
 
-export function ShopCollectionPanel({ isActive = true }: ShopCollectionPanelProps) {
+export const ShopCollectionPanel = forwardRef<ShopCollectionPanelHandle, ShopCollectionPanelProps>(function ShopCollectionPanel({ isActive = true, onBatchCountChange }, ref) {
   const [shopPlatform, setShopPlatform] = useState<"1688" | "taobao">("1688");
   const [sourceInput, setSourceInput] = useState("");
   const [batches, setBatches] = useState<ShopCollectionBatch[]>([]);
@@ -63,11 +69,27 @@ export function ShopCollectionPanel({ isActive = true }: ShopCollectionPanelProp
   const [actionBusy, setActionBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [batchManagerOpen, setBatchManagerOpen] = useState(false);
 
   const selectedBatch = useMemo(
     () => batches.find((batch) => batch.batch_id === selectedBatchId) ?? null,
     [batches, selectedBatchId],
   );
+
+  useImperativeHandle(ref, () => ({ openBatchManager: () => setBatchManagerOpen(true) }), []);
+
+  useEffect(() => {
+    onBatchCountChange?.(batches.length);
+  }, [batches.length, onBatchCountChange]);
+
+  useEffect(() => {
+    if (!batchManagerOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setBatchManagerOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [batchManagerOpen]);
 
   const refreshBatches = useCallback(async (selectFirst = false) => {
     try {
@@ -202,17 +224,6 @@ export function ShopCollectionPanel({ isActive = true }: ShopCollectionPanelProp
       {(error || notice) && <p className={`shop-collection-message ${error ? "is-error" : "is-success"}`} role="status">{error || notice}</p>}
 
       <div className="shop-collection-grid">
-        <aside className="shop-batch-list" aria-label="整店采集批次">
-          <div className="shop-section-title"><strong>批次</strong><span>{loading ? "读取中…" : `${batches.length} 条`}</span></div>
-          {!loading && batches.length === 0 && <p className="shop-empty">尚无整店采集批次。</p>}
-          {batches.map((batch) => (
-            <button key={batch.batch_id} type="button" className={batch.batch_id === selectedBatchId ? "is-selected" : ""} onClick={() => { setSelectedBatchId(batch.batch_id); setItemsOffset(0); }}>
-              <span><strong>{batch.shop_name || batch.shop_sid || "等待识别店铺"}</strong><small>{shopBatchStatusLabel(batch.status)}</small></span>
-              <b>{shopBatchProgress(batch)}%</b>
-            </button>
-          ))}
-        </aside>
-
         <div className="shop-batch-detail">
           {!selectedBatch && <div className="shop-empty"><strong>选择或创建一个批次</strong><p>这里仅管理采集进度；商品详情和导出请在产品池中查看。</p></div>}
           {selectedBatch && (
@@ -257,6 +268,34 @@ export function ShopCollectionPanel({ isActive = true }: ShopCollectionPanelProp
           )}
         </div>
       </div>
+
+      {batchManagerOpen && createPortal(
+        <div className="shop-batch-drawer-layer">
+          <button type="button" className="shop-batch-drawer-backdrop" onClick={() => setBatchManagerOpen(false)} aria-label="关闭批次管理" />
+          <aside className="shop-batch-drawer" role="dialog" aria-modal="true" aria-label="整店采集批次管理">
+            <header className="shop-batch-drawer-header">
+              <div><span>BATCH MANAGER</span><h2>批次管理</h2><p>选择一个批次，即可在工作台查看进度和商品。</p></div>
+              <button type="button" onClick={() => setBatchManagerOpen(false)} aria-label="关闭批次管理">×</button>
+            </header>
+            <div className="shop-batch-drawer-summary"><span>整店采集批次</span><b>{loading ? "读取中…" : `${batches.length} 条`}</b></div>
+            <div className="shop-batch-drawer-list">
+              {!loading && batches.length === 0 && <p className="shop-empty">尚无整店采集批次。</p>}
+              {batches.map((batch) => (
+                <button
+                  key={batch.batch_id}
+                  type="button"
+                  className={batch.batch_id === selectedBatchId ? "is-selected" : ""}
+                  onClick={() => { setSelectedBatchId(batch.batch_id); setItemsOffset(0); setBatchManagerOpen(false); }}
+                >
+                  <span><strong>{batch.shop_name || batch.shop_sid || "等待识别店铺"}</strong><small>{shopBatchStatusLabel(batch.status)}</small></span>
+                  <b>{shopBatchProgress(batch)}%</b>
+                </button>
+              ))}
+            </div>
+          </aside>
+        </div>,
+        document.body,
+      )}
     </section>
   );
-}
+});

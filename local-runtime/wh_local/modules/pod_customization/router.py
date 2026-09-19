@@ -7,6 +7,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from ...customer.contracts import (
     CustomerAuthRejected,
@@ -38,6 +39,82 @@ from .service import PodCustomizationService
 
 
 MAX_TEMPLATE_UPLOAD_BYTES = 20 * 1024 * 1024
+POD_JSON_REQUEST_MAX_BYTES = 1 * 1024 * 1024
+POD_TEMPLATE_MULTIPART_MAX_BYTES = MAX_TEMPLATE_UPLOAD_BYTES + 1024 * 1024
+_POD_API_PREFIX = "/api/pod-customization"
+
+
+class _PodRequestBodyTooLarge(Exception):
+    pass
+
+
+class PodRequestLimitMiddleware:
+    """Enforce POD request limits while the ASGI body is still streaming."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or not str(scope.get("path") or "").startswith(_POD_API_PREFIX):
+            await self.app(scope, receive, send)
+            return
+
+        path = str(scope.get("path") or "").rstrip("/") or "/"
+        max_bytes = (
+            POD_TEMPLATE_MULTIPART_MAX_BYTES
+            if scope.get("method") == "POST" and path == f"{_POD_API_PREFIX}/templates"
+            else POD_JSON_REQUEST_MAX_BYTES
+        )
+        headers = dict(scope.get("headers") or ())
+        raw_length = headers.get(b"content-length", b"")
+        try:
+            declared_length = int(raw_length)
+        except (TypeError, ValueError):
+            declared_length = 0
+        if declared_length > max_bytes:
+            await _send_request_too_large(send)
+            return
+
+        consumed = 0
+        response_started = False
+
+        async def limited_receive():
+            nonlocal consumed
+            message = await receive()
+            if message["type"] == "http.request":
+                consumed += len(message.get("body", b""))
+                if consumed > max_bytes:
+                    raise _PodRequestBodyTooLarge()
+            return message
+
+        async def tracked_send(message):
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self.app(scope, limited_receive, tracked_send)
+        except _PodRequestBodyTooLarge:
+            if not response_started:
+                await _send_request_too_large(send)
+            else:
+                raise
+
+
+async def _send_request_too_large(send: Send) -> None:
+    body = b'{"detail":"POD request is too large"}'
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 413,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode("ascii")),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": body})
 
 
 def create_router(
@@ -74,7 +151,7 @@ def create_router(
     async def upload_template(request: Request, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
         permitted(actor, "pod_customization.template_manage")
         length = request.headers.get("content-length", "")
-        if length.isdigit() and int(length) > MAX_TEMPLATE_UPLOAD_BYTES + 1024 * 1024:
+        if length.isdigit() and int(length) > POD_TEMPLATE_MULTIPART_MAX_BYTES:
             raise HTTPException(status_code=413, detail="POD template upload is too large")
         form = await request.form()
         upload = form.get("file")

@@ -209,3 +209,25 @@
 .combo-modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
 .combo-modal-actions button { padding: 9px 14px; border-radius: 11px; border: 1px solid var(--theme-module-border, #cfe0eb); background: var(--theme-module-surface, #fff); color: var(--theme-text-secondary, #2f5878); cursor: pointer; font-size: 13px; font-weight: 800; }
 .combo-modal-actions button.primary { border: 0; color: #fff; background: linear-gradient(105deg, #087bf5, #14c8c0); }
+
+/* 主题覆盖：组合套装的旧蓝白表面统一接入全局主题色板。 */
+[data-theme] .combo-kit-page { color: var(--theme-text-primary); }
+[data-theme] :is(.combo-kit-list, .combo-kit-empty, .combo-section, .combo-steps, .combo-edit-stage, .combo-text-result, .combo-preset-card, .combo-history-table, .combo-drawer, .combo-modal) {
+  border-color: var(--theme-module-border);
+  color: var(--theme-text-primary);
+  background: var(--theme-module-surface);
+  box-shadow: 0 10px 28px var(--theme-module-shadow);
+}
+[data-theme] :is(.combo-kit-list h2, .combo-section h2, .combo-section h3, .combo-subtitle, .combo-edit-stage-title, .combo-text-result h3, .combo-preset-card h2, .combo-preset-card h3, .combo-history-name, .combo-modal h3, .combo-drawer-head h3) { color: var(--theme-text-primary); }
+[data-theme] :is(.combo-grid label, .combo-section > label, .combo-extra-fields > summary, .combo-hint, .combo-preset-subtitle, .combo-preset-zh, .combo-history-row, .combo-drawer-thumb-label) { color: var(--theme-text-secondary); }
+[data-theme] :is(.combo-grid input, .combo-grid select, .combo-grid textarea, .combo-section textarea, .combo-item input, .combo-edit-stage-info input, .combo-preset-custom input, .combo-preset-custom textarea, .combo-history-search input, .combo-modal input) {
+  border-color: var(--theme-module-border);
+  color: var(--theme-text-primary);
+  background: var(--theme-module-surface-raised);
+  outline-color: var(--theme-module-primary-strong);
+}
+[data-theme] :is(.combo-kit-list li:hover, .combo-history-drawer-item:hover) { background: var(--theme-module-surface-soft); }
+[data-theme] :is(.combo-kit-list li.active, .combo-history-header, .combo-preset-prompt) { color: var(--theme-text-secondary); background: var(--theme-module-surface-tint); }
+[data-theme] :is(.combo-step-tab, .combo-history-drawer-item, .combo-drawer-head button) { border-color: var(--theme-module-border); color: var(--theme-text-secondary); background: var(--theme-module-surface-raised); }
+[data-theme] :is(.combo-step-tab.is-active, .combo-modal-actions button.primary) { border-color: transparent; color: var(--theme-on-primary); background: var(--theme-primary-button-gradient); box-shadow: 0 7px 14px var(--theme-primary-button-shadow); }
+[data-theme] :is(.combo-drawer-mask, .combo-modal-mask) { background: var(--theme-module-overlay); }

@@ -90,3 +90,12 @@ launcher_screenshot*.png
 *.merge-bak
 ~$*
 W-H-*.zip
+
+# 测试运行残留（每次跑 pytest 都会生成，含临时 SQLite，体积可达数百 MB）
+local-runtime/.tmp_bt_*/
+local-runtime/.tmp_pytest*/
+local-runtime/.pytest_tmp/
+# 运行期临时会话文件（文件名本身就是一个奇怪的字面量）
+local-runtime/:memory:.ses
+# Vite 热更新产生的时序文件
+web-frontend/*.timestamp-*.mjs

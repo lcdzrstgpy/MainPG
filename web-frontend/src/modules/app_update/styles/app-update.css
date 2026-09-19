@@ -12,3 +12,13 @@
 .app-update-progress { margin-top: 18px; color: #334155; }.app-update-progress-track { overflow: hidden; height: 8px; border-radius: 999px; background: #e2e8f0; }.app-update-progress-track span { display: block; height: 100%; border-radius: inherit; background: #2563eb; transition: width .2s ease; }.app-update-progress strong { display: inline-block; margin-top: 7px; font-size: 13px; }.app-update-progress small { display: block; margin-top: 8px; line-height: 1.5; }
 .app-update-error { margin: 18px 0 0; color: #b42318; line-height: 1.5; }.app-update-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }.app-update-actions button { border-radius: 7px; padding: 9px 15px; cursor: pointer; font: inherit; font-weight: 600; }.app-update-actions button:focus-visible { outline: 3px solid rgb(37 99 235 / 35%); outline-offset: 2px; }.app-update-actions button:disabled { cursor: not-allowed; opacity: .65; }.app-update-primary { border: 1px solid #2563eb; color: #fff; background: #2563eb; }.app-update-secondary { border: 1px solid #cbd5e1; color: #334155; background: #fff; }
 @media (max-width: 480px) { .app-update-backdrop { padding: 14px; }.app-update-dialog { padding: 22px; }.app-update-versions { grid-template-columns: 1fr; } }
+
+/* 更新弹窗也要和当前工作区主题一致，而不是在暖阳下退回蓝白。 */
+[data-theme] .app-update-backdrop { background: var(--theme-module-overlay); }
+[data-theme] .app-update-dialog { border-color: var(--theme-module-border); color: var(--theme-text-primary); background: var(--theme-module-surface); box-shadow: 0 24px 70px var(--theme-card-shadow-lg); }
+[data-theme] .app-update-badge { color: var(--theme-module-primary-strong); background: var(--theme-module-surface-tint); }
+[data-theme] :is(.app-update-versions div, .app-update-notes) { color: var(--theme-text-secondary); background: var(--theme-module-surface-soft); }
+[data-theme] :is(.app-update-versions dt, .app-update-notes h3, .app-update-progress) { color: var(--theme-text-secondary); }
+[data-theme] .app-update-progress-track { background: var(--theme-module-border); }
+[data-theme] .app-update-progress-track span, [data-theme] .app-update-primary { border-color: transparent; color: var(--theme-on-primary); background: var(--theme-primary-button-gradient); }
+[data-theme] .app-update-secondary { border-color: var(--theme-module-border); color: var(--theme-text-secondary); background: var(--theme-module-surface-raised); }

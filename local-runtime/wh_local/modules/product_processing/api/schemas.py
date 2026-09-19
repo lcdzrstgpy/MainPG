@@ -116,10 +116,11 @@ class DraftProcessRequest(BaseModel):
     # 强制入库：用户对失败/待确认草稿点击「我已知晓，仍要入库」后重新提交时带上。
     # 图片质量门不再阻断（回退来源图继续走完流水线），预审环节可人工修正信息。
     force_import_draft_ids: list[int] = []
-    # SKU 原图可用性分类（处理设置页检测结果）：{draft_id: "source"|"main"}。
-    # source=该链接每个 SKU 用规格原图；main=统一用商品主图（中文水印/无规格图/规格图过多）。
+    # SKU 原图可用性分类（处理设置页检测结果）：{draft_id: "source"|"main"|"auto"}。
+    # source=该链接每个 SKU 用规格原图；main=统一用商品主图（中文水印/无规格图/规格图过多）；
+    # auto=规格图还没同步完、此刻无法定论，显式回落默认策略，待素材同步完成后由后端自动补判。
     # 处理时写入草稿预检覆盖，导出最终版表格按此分流；用户仍可在预检页修改。
-    variant_image_classification: dict[int, Literal["source", "main"]] = {}
+    variant_image_classification: dict[int, Literal["source", "main", "auto"]] = {}
     # 「优化链接 SKU」勾选结果：{draft_id: [variant_key, ...]}，命中的来源变种导出时整行剔除。
     # 处理时并入草稿预检覆盖的 excluded_variant_keys（与用户手工排除取并集）。
     variant_image_exclusions: dict[int, list[str]] = {}

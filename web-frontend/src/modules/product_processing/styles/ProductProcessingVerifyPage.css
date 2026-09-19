@@ -5565,4 +5565,15 @@
 /* 顶部「采集批次」入口按钮高亮态 */
 .verify-actions button.is-active { border-color: #0aa6cc; background: #e9f9fd; }
 
+/* 批次管理是审核页最后一块未接入主题变量的工作区，保持状态语义色，其余表面随主题变化。 */
+[data-theme] :is(.verify-batch-panel, .verify-batch-popover) { border-color: var(--theme-module-border); color: var(--theme-text-primary); background: var(--theme-module-surface); box-shadow: 0 12px 30px var(--theme-module-shadow); }
+[data-theme] :is(.verify-batch-panel-head, .verify-batch-popover-head) { border-color: var(--theme-module-border); background: var(--theme-module-surface-soft); }
+[data-theme] :is(.verify-batch-toggle strong, .verify-batch-popover-head strong, .verify-batch-name) { color: var(--theme-text-primary); }
+[data-theme] :is(.verify-batch-toggle span, .verify-batch-popover-head span, .verify-batch-meta, .verify-batch-empty) { color: var(--theme-text-secondary); }
+[data-theme] .verify-batch-row { border-color: var(--theme-module-border); }
+[data-theme] .verify-batch-row.is-active { background: var(--theme-module-surface-tint); box-shadow: inset 3px 0 var(--theme-module-primary-strong); }
+[data-theme] :is(.verify-batch-actions button, .verify-batch-actions button:not(.is-danger)) { border-color: var(--theme-module-border); color: var(--theme-module-primary-strong); background: var(--theme-module-surface-soft); }
+[data-theme] .verify-batch-check input { accent-color: var(--theme-module-primary-strong); }
+[data-theme] .verify-batch-mask { background: var(--theme-module-overlay); }
+
 @keyframes verify-batch-drawer-in { from { transform: translateX(24px); opacity: .4; } to { transform: translateX(0); opacity: 1; } }

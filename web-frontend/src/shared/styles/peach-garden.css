@@ -277,6 +277,90 @@
   box-shadow: 0 0 0 3px rgba(217, 93, 120, 0.12);
 }
 
+/* 业务工作区：同样保留宣纸半透层，避免切到桃花源后出现孤立的纯白或冷蓝面板。 */
+[data-theme="peach"] :is(
+  .api-key-panel,
+  .settings-card,
+  .settings-table,
+  .combo-kit-list,
+  .combo-kit-empty,
+  .combo-section,
+  .combo-steps,
+  .combo-edit-stage,
+  .combo-text-result,
+  .combo-preset-card,
+  .combo-history-table,
+  .profit-products-settings-fields,
+  .profit-products-new-site-form,
+  .verify-batch-panel,
+  .ai-pod-job-group
+) {
+  border-color: rgba(217, 93, 120, 0.24);
+  background: rgba(255, 251, 248, 0.58);
+  box-shadow: 0 10px 28px rgba(140, 61, 82, 0.08);
+}
+
+[data-theme="peach"] :is(
+  .settings-edit-dialog,
+  .combo-drawer,
+  .combo-modal,
+  .profit-products-settings-dialog,
+  .verify-batch-popover,
+  .app-update-dialog,
+  .ai-conversation-menu,
+  .ai-conversation-dialog
+) {
+  border-color: rgba(217, 93, 120, 0.28);
+  color: #473037;
+  background: rgba(255, 248, 246, 0.94);
+  box-shadow: 0 22px 60px rgba(112, 53, 74, 0.2);
+}
+
+[data-theme="peach"] :is(
+  .api-key-panel input,
+  .settings-field input,
+  .settings-edit-dialog input,
+  .combo-grid input,
+  .combo-grid select,
+  .combo-grid textarea,
+  .combo-section textarea,
+  .combo-item input,
+  .combo-edit-stage-info input,
+  .combo-preset-custom input,
+  .combo-preset-custom textarea,
+  .combo-history-search input,
+  .combo-modal input,
+  .profit-products-settings-dialog input
+) {
+  border-color: rgba(217, 93, 120, 0.25);
+  color: #473037;
+  background: rgba(255, 255, 255, 0.5);
+}
+
+[data-theme="peach"] :is(
+  .settings-tabs button.is-active,
+  .combo-step-tab.is-active,
+  .combo-modal-actions button.primary,
+  .profit-products-settings-tabs button.is-active,
+  .app-update-primary
+) {
+  color: #fff;
+  background: linear-gradient(105deg, #d95d78, #5a9b7c);
+  box-shadow: 0 8px 18px rgba(217, 93, 120, 0.22);
+}
+
+[data-theme="peach"] :is(
+  .settings-dialog-backdrop,
+  .combo-drawer-mask,
+  .combo-modal-mask,
+  .profit-products-settings-backdrop,
+  .verify-batch-mask,
+  .app-update-backdrop,
+  .ai-dialog-backdrop
+) {
+  background: rgba(71, 48, 55, 0.34);
+}
+
 /* ---- 无障碍:系统减弱动态时停掉所有循环动画(花瓣由 JS 定格一帧) ---- */
 @media (prefers-reduced-motion: reduce) {
   .peach-garden-mist::before,

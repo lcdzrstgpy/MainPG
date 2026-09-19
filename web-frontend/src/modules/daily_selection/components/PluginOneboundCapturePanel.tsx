@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 
 import { pluginOneboundCaptureApi } from "../api/pluginOneboundCaptureApi";
 import {
@@ -18,6 +19,11 @@ import "../styles/shop-collection.css";
 type PluginOneboundCapturePanelProps = {
   isActive?: boolean;
   onOpenDraft?: (draftId: number) => void;
+  onBatchCountChange?: (count: number) => void;
+};
+
+export type PluginOneboundCapturePanelHandle = {
+  openBatchManager: () => void;
 };
 
 const PLUGIN_PAGE_SIZE_OPTIONS = [10, 20, 50, 100] as const;
@@ -63,7 +69,7 @@ function numberOrNull(value: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-export function PluginOneboundCapturePanel({ isActive = true, onOpenDraft }: PluginOneboundCapturePanelProps) {
+export const PluginOneboundCapturePanel = forwardRef<PluginOneboundCapturePanelHandle, PluginOneboundCapturePanelProps>(function PluginOneboundCapturePanel({ isActive = true, onOpenDraft, onBatchCountChange }, ref) {
   const [batches, setBatches] = useState<PluginOneboundCaptureBatch[]>([]);
   const [selectedBatchId, setSelectedBatchId] = useState("");
   const [items, setItems] = useState<PluginOneboundCaptureItem[]>([]);
@@ -86,11 +92,27 @@ export function PluginOneboundCapturePanel({ isActive = true, onOpenDraft }: Plu
   const [skuRepullBusy, setSkuRepullBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [batchManagerOpen, setBatchManagerOpen] = useState(false);
 
   const selectedBatch = useMemo(
     () => batches.find((batch) => batch.batch_id === selectedBatchId) ?? null,
     [batches, selectedBatchId],
   );
+
+  useImperativeHandle(ref, () => ({ openBatchManager: () => setBatchManagerOpen(true) }), []);
+
+  useEffect(() => {
+    onBatchCountChange?.(batches.length);
+  }, [batches.length, onBatchCountChange]);
+
+  useEffect(() => {
+    if (!batchManagerOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setBatchManagerOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [batchManagerOpen]);
 
   const refreshBatches = useCallback(async (selectFirst = false) => {
     try {
@@ -318,29 +340,6 @@ export function PluginOneboundCapturePanel({ isActive = true, onOpenDraft }: Plu
       {(error || notice) && <p className={`shop-collection-message ${error ? "is-error" : "is-success"}`} role="status">{error || notice}</p>}
 
       <div className="shop-collection-grid">
-        <aside className="shop-batch-list" aria-label="插件采集批次">
-          <div className="shop-section-title"><strong>批次</strong><span>{loading ? "读取中…" : `${batches.length} 条`}</span></div>
-          {!loading && batches.length === 0 && <p className="shop-empty"><strong>尚无插件采集批次</strong><br />请前往 1688 或淘宝页面使用浏览器插件发起整页采集。</p>}
-          {batches.map((batch) => {
-            const batchProgress = pluginCaptureProgress(batch);
-            return (
-              <button
-                key={batch.batch_id}
-                type="button"
-                className={batch.batch_id === selectedBatchId ? "is-selected" : ""}
-                onClick={() => {
-                  setSelectedBatchId(batch.batch_id);
-                  setItemsOffset(0);
-                  setCandidateOffset(0);
-                }}
-              >
-                <span><strong>{batch.batch_id.slice(0, 8)}</strong><small>{pluginCaptureStatusLabel(batch.status)} · {formatDate(batch.created_at)}</small></span>
-                <b>{batchProgress.percent}%</b>
-              </button>
-            );
-          })}
-        </aside>
-
         <div className="shop-batch-detail">
           {!selectedBatch && batches.length > 0 && <div className="shop-empty"><strong>请选择一个插件采集批次</strong><p>这里仅展示插件已经发起的采集任务。</p></div>}
           {selectedBatch && progress && (
@@ -544,6 +543,42 @@ export function PluginOneboundCapturePanel({ isActive = true, onOpenDraft }: Plu
           )}
         </div>
       </div>
+
+      {batchManagerOpen && createPortal(
+        <div className="shop-batch-drawer-layer">
+          <button type="button" className="shop-batch-drawer-backdrop" onClick={() => setBatchManagerOpen(false)} aria-label="关闭批次管理" />
+          <aside className="shop-batch-drawer" role="dialog" aria-modal="true" aria-label="插件采集批次管理">
+            <header className="shop-batch-drawer-header">
+              <div><span>PLUGIN BATCHES</span><h2>批次管理</h2><p>选择一个插件采集批次，继续审核候选和确认入池。</p></div>
+              <button type="button" onClick={() => setBatchManagerOpen(false)} aria-label="关闭批次管理">×</button>
+            </header>
+            <div className="shop-batch-drawer-summary"><span>插件采集批次</span><b>{loading ? "读取中…" : `${batches.length} 条`}</b></div>
+            <div className="shop-batch-drawer-list">
+              {!loading && batches.length === 0 && <p className="shop-empty"><strong>尚无插件采集批次</strong><br />请前往 1688 或淘宝页面使用浏览器插件发起整页采集。</p>}
+              {batches.map((batch) => {
+                const batchProgress = pluginCaptureProgress(batch);
+                return (
+                  <button
+                    key={batch.batch_id}
+                    type="button"
+                    className={batch.batch_id === selectedBatchId ? "is-selected" : ""}
+                    onClick={() => {
+                      setSelectedBatchId(batch.batch_id);
+                      setItemsOffset(0);
+                      setCandidateOffset(0);
+                      setBatchManagerOpen(false);
+                    }}
+                  >
+                    <span><strong>{batch.batch_id.slice(0, 8)}</strong><small>{pluginCaptureStatusLabel(batch.status)} · {formatDate(batch.created_at)}</small></span>
+                    <b>{batchProgress.percent}%</b>
+                  </button>
+                );
+              })}
+            </div>
+          </aside>
+        </div>,
+        document.body,
+      )}
     </section>
   );
-}
+});
