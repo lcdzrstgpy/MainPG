@@ -37,7 +37,7 @@ TOPUP_TIER_BONUS_PERCENTS = {
     "points_49": 25,
     "points_99": 50,
     "points_499": 75,
-    "points_4999": 100,
+    "points_999": 100,
 }
 TOPUP_PROMOTION_ID = "fixed_package_tiered_bonus"
 TOPUP_PROMOTION_NAME = "固定套餐档位递增赠送（25%~100%）"

@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-from wh_local.billing import set_topup_promotion_active, settle_payment_order, topup_promotion_status
+from wh_local.billing import settle_payment_order, topup_promotion_status
 from wh_local.customer.auth_server import create_auth_app
-from wh_local.db import init_db, transaction
+from wh_local.db import transaction
 
 from test_customer_billing import _EMAIL_CODE_SECRET, _register_and_login
 
@@ -27,31 +25,31 @@ def _client_and_headers(tmp_path: Path, monkeypatch) -> tuple[TestClient, Path, 
 
 
 @pytest.mark.parametrize(
-    ("package_id", "amount_cents", "base_points"),
+    ("package_id", "amount_cents", "base_points", "bonus_percent", "bonus_points", "total_points"),
     [
-        ("points_50", 5_000, 5_000),
-        ("points_99", 9_900, 9_900),
-        ("points_199", 19_900, 19_900),
-        ("points_499", 49_900, 49_900),
-        ("points_999", 99_900, 99_900),
+        ("points_49", 4_900, 4_900, 25, 1_225, 6_125),
+        ("points_99", 9_900, 9_900, 50, 4_950, 14_850),
+        ("points_499", 49_900, 49_900, 75, 37_425, 87_325),
+        ("points_999", 99_900, 99_900, 100, 99_900, 199_800),
     ],
 )
-def test_active_topup_promotion_snapshots_every_fixed_package(
+def test_fixed_topup_tiers_snapshot_their_permanent_bonus(
     tmp_path: Path,
     monkeypatch,
     package_id: str,
     amount_cents: int,
     base_points: int,
+    bonus_percent: int,
+    bonus_points: int,
+    total_points: int,
 ) -> None:
-    client, database_path, headers = _client_and_headers(tmp_path, monkeypatch)
-    set_topup_promotion_active(database_path, active=True, updated_by="test")
-
+    client, _, headers = _client_and_headers(tmp_path, monkeypatch)
     response = client.post(
         "/api/customer/billing/topup-orders",
         json={
             "provider": "alipay",
             "package_id": package_id,
-            "idempotency_key": f"promotion-fixed-{package_id}-0001",
+            "idempotency_key": f"tiered-topup-{package_id}-0001",
         },
         headers=headers,
     )
@@ -61,139 +59,91 @@ def test_active_topup_promotion_snapshots_every_fixed_package(
     assert order["amount_cents"] == amount_cents
     assert order["points"] == base_points
     assert order["base_points"] == base_points
-    assert order["promotion_bonus_points"] == base_points
-    assert order["total_points"] == base_points * 2
-    assert order["promotion_id"] == "topup_double"
+    assert order["promotion_bonus_percent"] == bonus_percent
+    assert order["promotion_bonus_points"] == bonus_points
+    assert order["total_points"] == total_points
+    assert order["promotion_id"] == "fixed_package_tiered_bonus"
 
 
-def test_topup_promotion_controls_custom_quote_and_disabled_orders(tmp_path: Path, monkeypatch) -> None:
-    client, database_path, headers = _client_and_headers(tmp_path, monkeypatch)
-
-    disabled_quote = client.post(
+def test_custom_topup_is_quoted_and_created_without_a_bonus(tmp_path: Path, monkeypatch) -> None:
+    client, _, headers = _client_and_headers(tmp_path, monkeypatch)
+    quote = client.post(
         "/api/customer/billing/topup-quote",
         json={"amount_cents": 12_300},
         headers=headers,
     )
-    assert disabled_quote.status_code == 200
-    assert disabled_quote.json()["product"] == {
+    assert quote.status_code == 200
+    assert quote.json()["product"] == {
         "package_id": "custom",
         "label": "自定义积分充值",
         "amount_cents": 12_300,
         "points": 12_300,
         "base_points": 12_300,
         "promotion_bonus_points": 0,
+        "promotion_bonus_percent": 0,
         "total_points": 12_300,
         "promotion_id": "",
         "promotion_name": "",
     }
 
-    set_topup_promotion_active(database_path, active=True, updated_by="test")
-    active_quote = client.post(
-        "/api/customer/billing/topup-quote",
-        json={"amount_cents": 12_300},
-        headers=headers,
-    )
-    assert active_quote.status_code == 200
-    assert active_quote.json()["product"]["base_points"] == 12_300
-    assert active_quote.json()["product"]["promotion_bonus_points"] == 12_300
-    assert active_quote.json()["product"]["total_points"] == 24_600
-
-    set_topup_promotion_active(database_path, active=False, updated_by="test")
-    order_response = client.post(
+    order = client.post(
         "/api/customer/billing/topup-orders",
         json={
             "provider": "alipay",
             "package_id": "custom",
             "amount_cents": 12_300,
-            "idempotency_key": "promotion-custom-disabled-0001",
+            "idempotency_key": "tiered-topup-custom-0001",
         },
         headers=headers,
     )
-    assert order_response.status_code == 200
-    order = order_response.json()["order"]
-    assert order["base_points"] == 12_300
-    assert order["promotion_bonus_points"] == 0
-    assert order["total_points"] == 12_300
+    assert order.status_code == 200
+    assert order.json()["order"]["promotion_bonus_points"] == 0
+    assert order.json()["order"]["total_points"] == 12_300
 
 
-def test_topup_promotion_order_snapshot_survives_later_disable(tmp_path: Path, monkeypatch) -> None:
-    client, database_path, headers = _client_and_headers(tmp_path, monkeypatch)
-    set_topup_promotion_active(database_path, active=True, updated_by="test")
-    promoted = client.post(
+@pytest.mark.parametrize("package_id", ("points_50", "points_199", "points_4999"))
+def test_retired_fixed_packages_cannot_create_new_orders(tmp_path: Path, monkeypatch, package_id: str) -> None:
+    client, _, headers = _client_and_headers(tmp_path, monkeypatch)
+    response = client.post(
         "/api/customer/billing/topup-orders",
         json={
             "provider": "alipay",
-            "package_id": "points_50",
-            "idempotency_key": "promotion-snapshot-enabled-0001",
+            "package_id": package_id,
+            "idempotency_key": f"retired-package-{package_id}-0001",
         },
         headers=headers,
-    ).json()["order"]
-
-    set_topup_promotion_active(database_path, active=False, updated_by="test")
-    plain = client.post(
-        "/api/customer/billing/topup-orders",
-        json={
-            "provider": "alipay",
-            "package_id": "points_50",
-            "idempotency_key": "promotion-snapshot-disabled-0001",
-        },
-        headers=headers,
-    ).json()["order"]
-    assert promoted["total_points"] == 10_000
-    assert plain["total_points"] == 5_000
-
-    first_settlement = settle_payment_order(
-        database_path,
-        provider="alipay",
-        out_trade_no=promoted["out_trade_no"],
-        gateway_transaction_id="trade_snapshot_enabled",
-        amount_cents=promoted["amount_cents"],
-        provider_status="TRADE_SUCCESS",
     )
-    second_settlement = settle_payment_order(
-        database_path,
-        provider="alipay",
-        out_trade_no=plain["out_trade_no"],
-        gateway_transaction_id="trade_snapshot_disabled",
-        amount_cents=plain["amount_cents"],
-        provider_status="TRADE_SUCCESS",
-    )
-    assert first_settlement["already_paid"] is False
-    assert second_settlement["already_paid"] is False
 
-    summary = client.get("/api/customer/billing/summary", headers=headers).json()
-    assert summary["wallet"]["available_points"] == 15_000
-    assert summary["topup_promotion"]["active"] is False
+    assert response.status_code == 400
+    assert response.json()["detail"] == "unknown topup package"
 
 
-def test_promoted_payment_callback_is_idempotent_and_writes_two_ledger_rows(tmp_path: Path, monkeypatch) -> None:
+def test_successful_999_topup_is_idempotent_and_writes_two_ledger_rows(tmp_path: Path, monkeypatch) -> None:
     client, database_path, headers = _client_and_headers(tmp_path, monkeypatch)
-    set_topup_promotion_active(database_path, active=True, updated_by="test")
     order = client.post(
         "/api/customer/billing/topup-orders",
         json={
             "provider": "alipay",
-            "package_id": "points_99",
-            "idempotency_key": "promotion-idempotent-callback-0001",
+            "package_id": "points_999",
+            "idempotency_key": "tiered-topup-idempotent-0001",
         },
         headers=headers,
     ).json()["order"]
-
     settlement = {
         "provider": "alipay",
         "out_trade_no": order["out_trade_no"],
-        "gateway_transaction_id": "trade_idempotent_promotion",
+        "gateway_transaction_id": "trade_tiered_idempotent",
         "amount_cents": order["amount_cents"],
         "provider_status": "TRADE_SUCCESS",
     }
+
     assert settle_payment_order(database_path, **settlement)["already_paid"] is False
     assert settle_payment_order(database_path, **settlement)["already_paid"] is True
 
     with transaction(database_path) as conn:
-        account_id = conn.execute("SELECT account_id FROM auth_accounts WHERE username = 'billing_user'").fetchone()[0]
-        wallet = conn.execute(
-            "SELECT points_balance FROM billing_wallets WHERE account_id = ?", (account_id,)
-        ).fetchone()
+        account_id = conn.execute(
+            "SELECT account_id FROM auth_accounts WHERE username = 'billing_user'"
+        ).fetchone()[0]
         rows = conn.execute(
             """
             SELECT source_type, points_delta FROM billing_point_ledger
@@ -201,55 +151,71 @@ def test_promoted_payment_callback_is_idempotent_and_writes_two_ledger_rows(tmp_
             """,
             (account_id, order["order_id"]),
         ).fetchall()
-    assert wallet["points_balance"] == 198_000
     assert [(row["source_type"], row["points_delta"]) for row in rows] == [
-        ("payment_alipay", 99_000),
-        ("topup_promotion_bonus", 99_000),
+        ("payment_alipay", 999_000),
+        ("topup_promotion_bonus", 999_000),
     ]
 
 
-def test_promotion_cli_and_legacy_order_snapshot_migration(tmp_path: Path) -> None:
-    database_path = tmp_path / "legacy.sqlite3"
-    init_db(database_path)
+def test_historical_4999_pending_order_keeps_its_double_snapshot(tmp_path: Path, monkeypatch) -> None:
+    client, database_path, headers = _client_and_headers(tmp_path, monkeypatch)
     with transaction(database_path) as conn:
-        conn.execute(
-            """
-            INSERT INTO auth_accounts (account_id, username, email, workspace_id)
-            VALUES ('legacy-account', 'legacy-account', 'legacy-account@example.test', 'default')
-            """
-        )
+        account = conn.execute(
+            "SELECT account_id, workspace_id FROM auth_accounts WHERE username = 'billing_user'"
+        ).fetchone()
         conn.execute(
             """
             INSERT INTO billing_payment_orders (
                 order_id, out_trade_no, account_id, workspace_id, provider, package_id,
-                amount_cents, points, status, idempotency_key, request_hash
-            ) VALUES ('legacy-order', 'legacy-trade', 'legacy-account', 'default', 'alipay',
-                      'points_10', 1000, 10000, 'paid', 'legacy-idempotency', 'legacy-hash')
-            """
+                amount_cents, currency, points, base_points, promotion_bonus_points,
+                total_points, promotion_id, promotion_name, status, idempotency_key,
+                request_hash, expires_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, 'alipay', 'points_4999', 499900, 'CNY', ?, ?, ?, ?,
+                      'topup_double', '充值积分翻倍活动', 'pending', ?, ?,
+                      '9999-12-31T00:00:00+00:00', '2026-09-01T00:00:00+00:00',
+                      '2026-09-01T00:00:00+00:00')
+            """,
+            (
+                "legacy-4999-order",
+                "legacy-4999-trade",
+                account["account_id"],
+                account["workspace_id"],
+                4_999_000,
+                4_999_000,
+                4_999_000,
+                9_998_000,
+                "legacy-4999-idempotency",
+                "legacy-4999-hash",
+            ),
         )
 
-    init_db(database_path)
-    with transaction(database_path) as conn:
-        migrated = conn.execute(
-            """
-            SELECT base_points, promotion_bonus_points, total_points, promotion_id
-            FROM billing_payment_orders WHERE order_id = 'legacy-order'
-            """
-        ).fetchone()
-    assert dict(migrated) == {
-        "base_points": 10_000,
-        "promotion_bonus_points": 0,
-        "total_points": 10_000,
-        "promotion_id": "",
+    settled = settle_payment_order(
+        database_path,
+        provider="alipay",
+        out_trade_no="legacy-4999-trade",
+        gateway_transaction_id="trade_legacy_4999",
+        amount_cents=499_900,
+        provider_status="TRADE_SUCCESS",
+    )
+    assert settled["already_paid"] is False
+
+    summary = client.get("/api/customer/billing/summary", headers=headers).json()
+    legacy_order = next(order for order in summary["recent_orders"] if order["order_id"] == "legacy-4999-order")
+    assert legacy_order["promotion_bonus_percent"] == 100
+    assert legacy_order["promotion_bonus_points"] == 499_900
+    assert legacy_order["total_points"] == 999_800
+
+
+def test_permanent_tiered_bonus_status_lists_the_four_current_packages() -> None:
+    assert topup_promotion_status() == {
+        "active": True,
+        "name": "固定套餐档位递增赠送（25%~100%）",
+        "bonus_rate_percent": 100,
+        "tiers": [
+            {"package_id": "points_49", "bonus_rate_percent": 25},
+            {"package_id": "points_99", "bonus_rate_percent": 50},
+            {"package_id": "points_499", "bonus_rate_percent": 75},
+            {"package_id": "points_999", "bonus_rate_percent": 100},
+        ],
+        "applies_to": "fixed_packages",
     }
-
-    script = Path(__file__).resolve().parents[1] / "manage_topup_promotion.py"
-    for command, expected_active in (("status", False), ("enable", True), ("disable", False)):
-        result = subprocess.run(
-            [sys.executable, str(script), command, "--database", str(database_path)],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        assert f'"active": {str(expected_active).lower()}' in result.stdout
-    assert topup_promotion_status(database_path)["active"] is False
