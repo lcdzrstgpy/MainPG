@@ -395,7 +395,9 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
-        allow_credentials=True,
+        # 鉴权走 Authorization: Bearer 头，不依赖 cookie；关闭 allow_credentials
+        # 避免 Starlette 回显任意 Origin 并放行跨域带凭据请求（同源防护形同虚设）。
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -435,7 +437,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
 
         @app.get("/dev/customer-login-demo", response_class=HTMLResponse)
         def customer_login_demo() -> str:
-            return AUTH_FLOW_DEMO_HTML
+            return CUSTOMER_LOGIN_DEMO_HTML
 
         @app.get("/dev/auth/{page_path:path}", response_class=HTMLResponse)
         def customer_auth_flow_demo(page_path: str = "login") -> str:
@@ -533,6 +535,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
             product_processing,
             customer_sessions=customer_sessions,
             remote_customer_auth=remote_customer_auth,
+            with_lifespan=False,  # lifespan 由下方 /api 前缀的注册负责，防恢复任务双跑
         )
     )
     # 后端静态图床：生成图目录对外挂载（assets/outputs → /pp-media）。

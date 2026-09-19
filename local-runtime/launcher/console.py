@@ -667,6 +667,9 @@ def _restore_table_rows(db_path: Path, table: str, rows: list[Any]) -> int:
     """把导出的数据行写回目标表（仅写入存在的列，按唯一键冲突替换）。"""
     if not db_path.is_file():
         return 0
+    # 表名来自 zip 条目文件名，必须白名单校验：恶意条目名可逃逸双引号注入 SQL。
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table or ""):
+        return 0
     with sqlite3.connect(str(db_path)) as conn:
         cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{table}")').fetchall()]
         if not cols:

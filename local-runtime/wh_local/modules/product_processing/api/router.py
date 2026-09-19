@@ -74,8 +74,14 @@ def create_product_processing_router(
     assets_root: Path | None = None,
     customer_sessions: LocalSessionService | None = None,
     remote_customer_auth: CustomerAuthClient | None = None,
+    with_lifespan: bool = True,
 ) -> APIRouter:
-    """Create the complete local API used by the Product Processing screen."""
+    """Create the complete local API used by the Product Processing screen.
+
+    ``with_lifespan``: 同一 service 以多个前缀挂载时，只让其中一个注册带
+    lifespan（recover_background_work 启动恢复）。FastAPI 会把每个子
+    lifespan 合并进应用，多次注册会并发执行多次恢复，把排队任务重复拉起。
+    """
     owned_database = None
     if service is None:
         owned_database = create_database(database_url)
@@ -123,7 +129,7 @@ def create_product_processing_router(
             if owned_database is not None:
                 owned_database.dispose()
 
-    router = APIRouter(prefix="/product-processing", tags=["product_processing"], lifespan=lifespan)
+    router = APIRouter(prefix="/product-processing", tags=["product_processing"], lifespan=lifespan if with_lifespan else None)
     router.include_router(create_dimension_canvas_router(dimension_service))
 
     @router.get("/engine/status")
