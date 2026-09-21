@@ -291,3 +291,52 @@
   background: rgba(255, 255, 255, .88);
   box-shadow: 0 12px 30px rgba(158, 72, 101, .09);
 }
+
+/* The start page owns a compact, inline dark studio stylesheet. Its custom
+   properties and direct surface fills must be overridden as one bounded unit. */
+.mainpg-embedded .cf-root {
+  --teal: #d65778;
+  --ink: #fff;
+  --text: #49343b;
+  --dim: #856b74;
+  --muted: #a27f8a;
+  --surface: rgba(255, 255, 255, .84);
+  --surface2: #fff0f3;
+  --bd: #f0ccd6;
+  --bd2: #e8b8c5;
+  background: #fff7f8;
+}
+
+.mainpg-embedded .cf-amb {
+  background: radial-gradient(900px 420px at 50% -8%, rgba(255, 176, 197, .36), transparent 70%), radial-gradient(700px 500px at 85% 0%, rgba(244, 205, 150, .2), transparent 65%);
+}
+
+.mainpg-embedded .cf-grid { opacity: .42; }
+
+.mainpg-embedded .cf-card,
+.mainpg-embedded .cf-tabs,
+.mainpg-embedded .cf-input,
+.mainpg-embedded .cf-area,
+.mainpg-embedded .cf-form-select,
+.mainpg-embedded .cf-keyinput,
+.mainpg-embedded .cf-gen {
+  background: rgba(255, 255, 255, .86);
+}
+
+.mainpg-embedded .cf-drop {
+  border-color: #dc7892;
+  background: radial-gradient(420px 160px at 50% 30%, rgba(255, 184, 202, .38), transparent 70%);
+}
+
+.mainpg-embedded .cf-keybox,
+.mainpg-embedded .cf-keyform,
+.mainpg-embedded .cf-guide {
+  border-color: #ecc2cf;
+  background: #fff1f4;
+}
+
+.mainpg-embedded .cf-cta,
+.mainpg-embedded .cf-keybtn,
+.mainpg-embedded .cf-keybox a {
+  background: linear-gradient(105deg, #c7486c, #e8899f);
+}
