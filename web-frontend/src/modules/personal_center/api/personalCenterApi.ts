@@ -63,30 +63,36 @@ export type BillingSummary = {
       plan_label: string;
       /** 限时积分余额（体验池，每周一 00:00 作废）。 */
       plan_balance: number;
-      /** 每周签到额度上限（体验版 500，标准版 1000）。 */
+      /** 体验池每周参考额度（统一 500）。 */
       plan_limit: number;
-      /** 本周已通过签到领取的额度。 */
+      /** 已使用的体验额度。 */
       plan_used: number;
       next_refresh_at: string;
-      /** 标准版套餐到期时刻（ISO 8601）；空串=无到期限制（体验版/旗舰版）。 */
+      /** 基础版套餐到期时刻（ISO 8601）；空串=无到期限制（体验版/旗舰版）。 */
       plan_expire_at: string;
-      /** 本周已签到领取的积分。 */
-      signin_week_points: number;
-      /** 每周签到额度上限（体验版 500，标准版 1000）。 */
-      signin_week_limit: number;
-      /** 本周还能签到的剩余额度。 */
-      signin_week_remaining: number;
-      /** true=标准版，签到积分进永久池；false=签到积分限时（每周一作废）。 */
-      signin_permanent: boolean;
-      /** 每日签到：每次可领积分（体验版 100，标准版 200）。 */
+      /** 基础版每周直接领取：每次可领积分（非基础版为 0）。 */
+      basic_claim_points: number;
+      /** 已领取次数。 */
+      basic_claim_count: number;
+      /** 领取次数上限（4 次）。 */
+      basic_claim_max: number;
+      /** 当前是否可领取（服务端已算好：套餐有效 + 未领满 + 本周未领）。 */
+      basic_claimable: boolean;
+      /** 每日签到：本次可领积分（首签 500，之后每天 100）。 */
       daily_claim_points: number;
-      /** 今天是否还能签到（服务端按北京自然日 + 本周额度判定）。 */
+      /** 今天是否还没签（服务端按北京自然日判定，所有套餐通用）。 */
       daily_claimable: boolean;
       /** 上次签到的北京自然日（YYYY-MM-DD）；空串=从未签到过。 */
       daily_claim_date: string;
-      /** 今日已签时，下一次可签时刻（次日 00:00，ISO 8601）；可签时为空串。 */
+      /** 未签过时=首签奖励积分（500）；已签过=0。 */
+      daily_first_claim_bonus: number;
+      /** 本周已签到天数（进度条用）。 */
+      daily_week_count: number;
+      /** 每周最多可签到天数（7）。 */
+      daily_week_max: number;
+      /** 今日已签时，下一次可签时刻（次日 00:00，ISO 8601）；未签时为空串。 */
       daily_next_claim_at: string;
-      /** 永久积分子池实时余额（标准版每周领取 + 标准版签到进这里，消费时在限时之后、充值之前扣）。 */
+      /** 额外积分独立子池实时余额（首签 500 + 基础版每周领取进这里，永久；消费时在体验之后、充值之前扣）。 */
       extra_balance: number;
     };
   };
@@ -251,7 +257,18 @@ export function createTopupOrder(input: {
   });
 }
 
-/** 每日签到领取积分（体验版 100/天上限 500，标准版 200/天上限 1000；按北京自然日幂等）。 */
+/** 基础版每周直接领取 1000 积分（额外积分池，永久有效）。 */
+export function claimBasicWeeklyPoints() {
+  return httpJson<{
+    ok: boolean;
+    claimed_points: number;
+    claim_count: number;
+    claim_max: number;
+    period: string;
+  }>("/api/customer/billing/plan-basic/claim", { method: "POST" });
+}
+
+/** 每日签到（首签 +500 永久，之后每天 +100 限时；按北京自然日幂等）。 */
 export function claimDailyExtraPoints() {
   return httpJson<{
     ok: boolean;
@@ -262,14 +279,8 @@ export function claimDailyExtraPoints() {
     period: string;
     /** 下次可签时刻（次日 00:00，ISO 8601）。 */
     next_claim_at: string;
-    /** true=本次签到积分进永久池（标准版）；false=进限时池（每周一作废）。 */
-    permanent: boolean;
-    /** 本周已签到累计积分。 */
-    week_claimed_points: number;
-    /** 每周签到额度上限。 */
-    week_limit_points: number;
-    /** 本周剩余可签到额度。 */
-    week_remaining_points: number;
+    /** true=本次是首签（+500 进永久池）；false=日常签到（+100 进限时池）。 */
+    first_claim_bonus: boolean;
   }>("/api/customer/billing/daily-extra/claim", { method: "POST" });
 }
 

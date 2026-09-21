@@ -59,50 +59,48 @@ MULTIPLIER_DEFAULT_PERCENT = 100
 POD_BASE_POINTS_PER_STYLE = 45
 
 # ---------------------------------------------------------------------------
-# 套餐积分：每个注册用户默认「体验版」，每周一北京时间 00:00 重置「每周签到额度」。
-# 周额度按套餐区分，需通过每日签到领取，每天 1 次、每周最多 5 天，未领完不累积：
-#   体验版/旗舰版：每日 +100 积分、每周上限 500 积分；
-#   标准版（basic）：每日 +200 积分、每周上限 1000 积分。
-# 体验版：签到积分进 plan_balance（限时积分，每周一 00:00 过期作废）；
-# 标准版（basic）：签到积分进 extra_balance（永久积分，不随周期清零）。
+# 套餐积分：每个注册用户默认「体验版」。每日签到按北京自然日 1 次（无每周上限）：
+#   * 首签（从未签到过的账号）：+500 积分进额外池（永久）；
+#   * 之后每天：+100 积分进体验池（plan_balance，限时，每周一 00:00 过期作废）。
+# 基础版（¥39.9）：除每日签到外，28 天内每周可直接领取 1000 积分进额外池（永久），
+# 最多 4 次；到期自动回落体验版。
 # 限时积分先于其他池消耗（先过期先消耗）。旗舰版（flagship）预留 plan_type 口子，
 # 后续只需在 PLAN_TYPES 加配置 + 提供升级接口即可接入。
 # 数据库存「0.1 积分」单位（与 point_unit_scale 一致：10 units = 1 积分）。
 # ---------------------------------------------------------------------------
 PLAN_TYPES = {
-    "experience": {"label": "体验版", "weekly_points": 500, "daily_points": 100},
-    "basic": {"label": "基础版", "weekly_points": 1000, "daily_points": 200},
-    "flagship": {"label": "旗舰版", "weekly_points": 500, "daily_points": 100},
+    "experience": {"label": "体验版"},
+    "basic": {"label": "基础版"},
+    "flagship": {"label": "旗舰版"},
 }
 PLAN_DEFAULT_TYPE = "experience"
 PLAN_UNIT_SCALE = 10
 PLAN_WEEKLY_POINTS = 500
-# 标准版（¥39.9 购买套餐）：立得 4000 充值积分（走普通充值入账），4 周内签到权益
-# 升级为每日 200 积分、每周上限 1000。到期自动回落体验版（签到积分随之恢复限时）。
-# 续期从现有到期时间顺延 28 天。
+# 基础版（¥39.9 购买套餐）：立得 4000 充值积分（走普通充值入账）+ 4 周内每周可领
+# 1000 额外积分（每周 1 次、最多 4 次、领到即永久）。到期自动回落体验版。
+# 续期从现有到期时间顺延 28 天，并重置领取资格（重新 4 周 × 1000）。
 PLAN_BASIC_PACKAGE_ID = "plan_basic"
 PLAN_BASIC_PRICE_CENTS = 3990
 PLAN_BASIC_GRANT_POINTS = 4000
 PLAN_BASIC_DURATION_DAYS = 28
+PLAN_BASIC_CLAIM_POINTS = 1000
+PLAN_BASIC_CLAIM_UNITS = PLAN_BASIC_CLAIM_POINTS * PLAN_UNIT_SCALE
+PLAN_BASIC_CLAIM_MAX = 4
 
 # ---------------------------------------------------------------------------
-# 每日签到：从套餐对应的「每周签到额度」中领取，每日 1 次、每周最多 5 天。
-# 体验版进限时池（plan_balance，周一作废），标准版进永久池（extra_balance）。
+# 每日签到：新用户首签 +500（额外池，永久），之后每天 +100（体验池，限时）。
+# 所有套餐统一规则；基础版另有每周直接领取 1000（见 claim_basic_weekly）。
 # 幂等按「北京自然日」做 key，服务端取时间，客户端改本地时钟无法重复领取。
 # ---------------------------------------------------------------------------
 DAILY_EXTRA_POINTS = 100
+DAILY_EXTRA_UNITS = DAILY_EXTRA_POINTS * PLAN_UNIT_SCALE
+DAILY_FIRST_CLAIM_POINTS = 500
+DAILY_FIRST_CLAIM_UNITS = DAILY_FIRST_CLAIM_POINTS * PLAN_UNIT_SCALE
 
 
 def _plan_weekly_units(plan_type: str) -> int:
-    """按套餐类型返回每周签到额度（0.1 积分单位）；未知类型回落默认套餐。"""
-    weekly = PLAN_TYPES.get(plan_type, PLAN_TYPES[PLAN_DEFAULT_TYPE]).get("weekly_points")
-    return int(weekly or PLAN_WEEKLY_POINTS) * PLAN_UNIT_SCALE
-
-
-def _plan_daily_units(plan_type: str) -> int:
-    """按套餐类型返回每日签到积分（0.1 积分单位）；未知类型回落默认套餐。"""
-    daily = PLAN_TYPES.get(plan_type, PLAN_TYPES[PLAN_DEFAULT_TYPE]).get("daily_points")
-    return int(daily or DAILY_EXTRA_POINTS) * PLAN_UNIT_SCALE
+    """体验池每周参考额度（0.1 积分单位）；所有套餐统一 500，仅用于前端展示。"""
+    return PLAN_WEEKLY_POINTS * PLAN_UNIT_SCALE
 
 
 def _plan_period_key(now_dt: datetime | None = None) -> str:
@@ -1527,53 +1525,32 @@ def _ensure_wallet(conn: Any, account_id: str, workspace_id: str) -> None:
         """,
         (PLAN_DEFAULT_TYPE, now, account_id, now),
     )
-    # 跨周期惰性重置：限时积分（体验池）过期作废（不累积），本周签到额度同步清零。
+    # 跨周期惰性重置：限时积分（体验池）过期作废（不累积），周一清零。
     conn.execute(
         """
         UPDATE billing_wallets
         SET plan_balance = 0, plan_period_key = ?,
-            signin_week_key = ?, signin_week_units = 0,
             version = version + 1, updated_at = ?
         WHERE account_id = ? AND plan_period_key <> ?
         """,
-        (period, period, now, account_id, period),
-    )
-    # 老库升级/新建钱包：把签到周期键初始化到本周（本周额度从 0 起算）。
-    conn.execute(
-        """
-        UPDATE billing_wallets
-        SET signin_week_key = ?, signin_week_units = 0, version = version + 1, updated_at = ?
-        WHERE account_id = ? AND signin_week_key <> ?
-        """,
         (period, now, account_id, period),
-    )
-    # 历史遗留自愈：限时池余额只可能来自本周期签到入账，超出本周签到累计的部分是旧
-    # 「体验版每周预发 500」规则留下的脏数据（两处跨周期判定键不同步导致未被清理）。
-    # basic 套餐的签到进 extra_balance，其 plan_balance 不受此约束。
-    conn.execute(
-        """
-        UPDATE billing_wallets
-        SET plan_balance = signin_week_units, version = version + 1, updated_at = ?
-        WHERE account_id = ? AND plan_type <> 'basic'
-          AND signin_week_key = ? AND plan_balance > signin_week_units
-        """,
-        (now, account_id, period),
     )
 
 
 def _activate_basic_plan(conn: Any, account_id: str, now: str) -> None:
-    """激活/续期标准版：签到权益升级（每日 200 / 每周上限 1000、积分永久），生效 4 周。
+    """激活/续期基础版：28 天内每周可直接领取 1000 额外积分（永久，最多 4 次）。
 
     立得 4000 积分由 settle_payment_order 的 base_points 普通充值入账处理，
     这里只负责套餐状态。调用方必须先跑过 _ensure_wallet（含过期回落），
     保证 wallet 行存在且 plan_type 为干净状态。
+    续期重置每周领取资格（basic_claim_period/basic_claim_count 清零，重新 4 周）。
     """
     row = conn.execute(
         "SELECT plan_expire_at FROM billing_wallets WHERE account_id = ?",
         (account_id,),
     ).fetchone()
     existing_expire = str(row["plan_expire_at"] or "") if row is not None else ""
-    # 续期语义：当前仍在标准版有效期内 → 到期时间 +28 天；否则从此刻起算 28 天。
+    # 续期语义：当前仍在基础版有效期内 → 到期时间 +28 天；否则从此刻起算 28 天。
     base = existing_expire if existing_expire > now else now
     try:
         base_dt = datetime.fromisoformat(base)
@@ -1586,6 +1563,7 @@ def _activate_basic_plan(conn: Any, account_id: str, now: str) -> None:
         """
         UPDATE billing_wallets
         SET plan_type = ?, plan_expire_at = ?,
+            basic_claim_period = '', basic_claim_count = 0,
             version = version + 1, updated_at = ?
         WHERE account_id = ?
         """,
@@ -1593,96 +1571,141 @@ def _activate_basic_plan(conn: Any, account_id: str, now: str) -> None:
     )
 
 
-def claim_daily_extra(
+def claim_basic_weekly(
     database_path: Path,
     account_id: str,
     workspace_id: str = "default",
 ) -> dict[str, Any]:
-    """每日签到：从套餐对应的「每周签到额度」中领取（体验版 100/500，标准版 200/1000）。
+    """基础版每周直接领取：+1000 额外积分（进 extra_balance 子池，永久有效），每周 1 次、最多 4 次。
 
-    每个北京自然日可签到 1 次，本周累计入账达到额度上限（即最多 5 天）封顶，
-    未领完不累积到下周。积分去向按套餐区分：
-      * 标准版（basic）：进 extra_balance（永久积分，不随周期清零）；
-      * 其余套餐：进 plan_balance（限时积分，每周一 00:00 过期作废）。
-    资格校验只有「今天是否已签」与「本周额度是否领满」两条：套餐到期时间不参与限制，
-    因此标准版到期回落体验版后仍可继续签到（签到积分恢复为限时）。
-
-    幂等键按账期（北京自然日）生成，重复请求/并发重试不会重复入账。
+    领取资格校验：套餐为基础版、未到期、本周未领过、累计不足 4 次。
+    领到的积分进额外积分子池（非充值池）并写台账（source_type=plan_basic_claim，按周幂等）。
     """
     now = _utc_now()
-    period = _daily_period_key()
-    week = _plan_period_key()
+    period = _plan_period_key()
     with transaction(database_path) as conn:
         _ensure_wallet(conn, account_id, workspace_id or "default")
         wallet = conn.execute(
             """
-            SELECT plan_type, daily_claim_date, daily_claim_count,
-                   signin_week_key, signin_week_units
+            SELECT plan_type, plan_expire_at, basic_claim_period, basic_claim_count
             FROM billing_wallets WHERE account_id = ?
             """,
             (account_id,),
         ).fetchone()
         if wallet is None:
             raise HTTPException(status_code=409, detail="wallet missing")
-        if str(wallet["daily_claim_date"] or "") == period:
-            raise HTTPException(status_code=409, detail="今日已签到，明天再来")
-        plan_type = str(wallet["plan_type"] or "")
-        daily_units = _plan_daily_units(plan_type)
-        weekly_units = _plan_weekly_units(plan_type)
-        # 周累计额度：异常/跨周的脏值按 0 处理（_ensure_wallet 已负责清零）。
-        week_key = str(wallet["signin_week_key"] or "")
-        used_units = int(wallet["signin_week_units"] or 0) if week_key == week else 0
-        if used_units + daily_units > weekly_units:
-            limit_points = _display_points(weekly_units, PLAN_UNIT_SCALE)
+        if str(wallet["plan_type"]) != "basic":
+            raise HTTPException(status_code=409, detail="当前套餐无领取资格，购买基础版后可用")
+        expire_at = str(wallet["plan_expire_at"] or "")
+        if expire_at and expire_at <= now:
+            raise HTTPException(status_code=409, detail="基础版已到期，无法领取")
+        claim_count = int(wallet["basic_claim_count"] or 0)
+        if claim_count >= PLAN_BASIC_CLAIM_MAX:
             raise HTTPException(
                 status_code=409,
-                detail=f"本周签到额度已领满（{limit_points}/{limit_points}），下周一再来",
+                detail=f"四周领取已用完（{PLAN_BASIC_CLAIM_MAX}/{PLAN_BASIC_CLAIM_MAX}）",
             )
-        week_units = used_units + daily_units
-        permanent = plan_type == "basic"
-        # 永久池（标准版）用 extra_balance，限时池（体验版）用 plan_balance。
-        pool_column = "extra_balance" if permanent else "plan_balance"
-        claim_points = _display_points(daily_units, PLAN_UNIT_SCALE)
+        if str(wallet["basic_claim_period"] or "") == period:
+            raise HTTPException(status_code=409, detail="本周已领取，下周一再来")
         conn.execute(
-            f"""
+            """
             UPDATE billing_wallets
-            SET {pool_column} = {pool_column} + ?,
-                daily_claim_date = ?, daily_claim_count = daily_claim_count + 1,
-                signin_week_key = ?, signin_week_units = ?,
+            SET extra_balance = extra_balance + ?,
+                basic_claim_period = ?, basic_claim_count = basic_claim_count + 1,
                 version = version + 1, updated_at = ?
             WHERE account_id = ?
             """,
-            (daily_units, period, week, week_units, now, account_id),
+            (PLAN_BASIC_CLAIM_UNITS, period, now, account_id),
         )
         _append_ledger(
             conn,
             account_id=account_id,
             workspace_id=workspace_id or "default",
             direction="credit",
-            points_delta=daily_units,
+            points_delta=PLAN_BASIC_CLAIM_UNITS,
+            source_type="plan_basic_claim",
+            source_id=f"basic:{period}",
+            idempotency_key=f"plan_basic_claim:{account_id}:{period}",
+            metadata={"claim_points": PLAN_BASIC_CLAIM_POINTS, "period": period, "pool": "extra"},
+        )
+        new_count = claim_count + 1
+    cache.invalidate_wallet(account_id)
+    return {
+        "ok": True,
+        "claimed_points": PLAN_BASIC_CLAIM_POINTS,
+        "claim_count": new_count,
+        "claim_max": PLAN_BASIC_CLAIM_MAX,
+        "period": period,
+    }
+
+
+def claim_daily_extra(
+    database_path: Path,
+    account_id: str,
+    workspace_id: str = "default",
+) -> dict[str, Any]:
+    """每日签到：新用户首签 +500 额外积分（永久），之后每天 +100 体验积分（限时）。
+
+    所有套餐统一规则，不设每周额度上限；基础版另有每周直接领取 1000（见 claim_basic_weekly）。
+    * 首签（daily_claim_count == 0，即从未签到过）：+500 进 extra_balance（永久）；
+    * 日常签到：+100 进 plan_balance（限时积分，每周一 00:00 过期作废）。
+    资格校验只有「今天是否已签」一条：套餐、到期时间都不参与限制，
+    因此基础版到期回落体验版后仍可继续签到。
+
+    幂等键按账期（北京自然日）生成，重复请求/并发重试不会重复入账。
+    """
+    now = _utc_now()
+    period = _daily_period_key()
+    with transaction(database_path) as conn:
+        _ensure_wallet(conn, account_id, workspace_id or "default")
+        wallet = conn.execute(
+            "SELECT daily_claim_date, daily_claim_count FROM billing_wallets WHERE account_id = ?",
+            (account_id,),
+        ).fetchone()
+        if wallet is None:
+            raise HTTPException(status_code=409, detail="wallet missing")
+        if str(wallet["daily_claim_date"] or "") == period:
+            raise HTTPException(status_code=409, detail="今日已签到，明天再来")
+        first = int(wallet["daily_claim_count"] or 0) == 0
+        units = DAILY_FIRST_CLAIM_UNITS if first else DAILY_EXTRA_UNITS
+        points = DAILY_FIRST_CLAIM_POINTS if first else DAILY_EXTRA_POINTS
+        # 首签 500 进永久池（extra_balance），日常 100 进限时池（plan_balance）。
+        pool_column = "extra_balance" if first else "plan_balance"
+        conn.execute(
+            f"""
+            UPDATE billing_wallets
+            SET {pool_column} = {pool_column} + ?,
+                daily_claim_date = ?, daily_claim_count = daily_claim_count + 1,
+                version = version + 1, updated_at = ?
+            WHERE account_id = ?
+            """,
+            (units, period, now, account_id),
+        )
+        _append_ledger(
+            conn,
+            account_id=account_id,
+            workspace_id=workspace_id or "default",
+            direction="credit",
+            points_delta=units,
             source_type="daily_extra_claim",
             source_id=f"daily:{period}",
             idempotency_key=f"daily_extra_claim:{account_id}:{period}",
             metadata={
-                "claim_points": claim_points,
+                "claim_points": points,
                 "period": period,
-                "week": week,
-                "pool": "extra" if permanent else "plan",
-                "permanent": permanent,
+                "pool": "extra" if first else "plan",
+                "first_claim_bonus": first,
             },
         )
         total_days = int(wallet["daily_claim_count"] or 0) + 1
     cache.invalidate_wallet(account_id)
     return {
         "ok": True,
-        "claimed_points": claim_points,
+        "claimed_points": points,
         "claim_count": total_days,
         "period": period,
         "next_claim_at": _daily_next_refresh(period),
-        "permanent": permanent,
-        "week_claimed_points": _display_points(week_units, PLAN_UNIT_SCALE),
-        "week_limit_points": _display_points(weekly_units, PLAN_UNIT_SCALE),
-        "week_remaining_points": _display_points(weekly_units - week_units, PLAN_UNIT_SCALE),
+        "first_claim_bonus": first,
     }
 
 

@@ -1629,9 +1629,10 @@ def billing_records(limit: int = 200, x_auth_token: str | None = Header(default=
         item = dict(row)
         for key in ("points_balance", "locked_points", "manual_frozen_points", "charged_points", "plan_balance", "extra_balance"):
             item[key] = _display_points(int(item.get(key) or 0), scale)
-        # 每周签到额度按套餐区分：体验版/旗舰版 500，标准版 1000（积分由每日签到逐日领取）。
+        # 体验积分：每日签到 +100 所得（限时，周一清零，无上限）；额外积分：首签 500 +
+        # 基础版每周直接领取 1000（永久）。plan_limit 仅作前端兜底展示，不再有周额度语义。
         plan_type = str(item.get("plan_type") or "")
-        item["plan_limit"] = 1000 if plan_type == "basic" else 500
+        item["plan_limit"] = 500
         item["plan_label"] = {"experience": "体验版", "basic": "基础版", "flagship": "旗舰版"}.get(
             plan_type, "体验版"
         )

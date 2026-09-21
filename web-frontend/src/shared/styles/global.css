@@ -1067,14 +1067,15 @@ html.mode-cascade .sidebar-card { animation-delay: 0.16s; }
 }
 
 /* 图片按原始比例铺满宽度（不裁剪、不变形）；超长截图在框内纵向滚动，
-   不会被固定高度压成「中间细缝 + 两侧大片深色空框」。 */
+   不会被固定高度压成「中间细缝 + 两侧大片深色空框」。
+   高度上限收紧到 40vh：给下方正文留出可见空间，带图公告文字不再被顶出可视区。 */
 .announcement-modal-slide {
   flex: 0 0 100%;
   display: grid;
-  place-items: center;
-  max-height: min(62vh, 760px);
+  place-items: start center;   /* 顶部对齐：长图从头部开始滚，不裁首屏内容 */
+  max-height: min(40vh, 520px);
   overflow-y: auto;
-  overscroll-behavior: contain;
+  /* 不阻断滚动链：图滚到底后继续滚正文，否则带图公告的文字滚不到 */
 }
 
 .announcement-modal-slide img {
