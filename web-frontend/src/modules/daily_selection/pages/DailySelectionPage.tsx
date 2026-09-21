@@ -481,34 +481,28 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     void refreshRuns();
   }, []);
 
-  // 悬浮 toast：成功提示 2s、错误提示 3s 后自动消失，不常驻、不占页面空间
+  // 悬浮 toast：成功提示 2s、错误提示 3s 后自动消失；消失前 300ms 置淡出状态播动画。
+  // 两个 effect 曾分别管理"清空"与"淡出"，前者先触发会清掉后者的定时器，淡出永远不播。
   useEffect(() => {
-    if (!notice && !error) return;
+    if (!notice && !error) {
+      setNoticeLeaving(false);
+      return;
+    }
+    const duration = error ? 3000 : 2000;
+    const leaveTimer = window.setTimeout(() => setNoticeLeaving(true), Math.max(0, duration - 300));
     const timer = window.setTimeout(() => {
       setNotice("");
       setError("");
-    }, error ? 3000 : 2000);
-    return () => window.clearTimeout(timer);
+    }, duration);
+    return () => {
+      window.clearTimeout(leaveTimer);
+      window.clearTimeout(timer);
+    };
   }, [notice, error]);
 
   useEffect(() => {
     setTopbarStatusTarget(document.getElementById("workspace-topbar-status"));
   }, []);
-
-  useEffect(() => {
-    if (!notice) {
-      setNoticeLeaving(false);
-      return;
-    }
-
-    setNoticeLeaving(false);
-    const leaveTimer = window.setTimeout(() => setNoticeLeaving(true), 4000);
-    const clearTimer = window.setTimeout(() => setNotice(""), 4480);
-    return () => {
-      window.clearTimeout(leaveTimer);
-      window.clearTimeout(clearTimer);
-    };
-  }, [notice]);
 
   useEffect(() => {
     if (!collecting || !collectionTaskId || !isActive) return;

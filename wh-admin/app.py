@@ -193,6 +193,11 @@ def save_config(config: dict[str, Any]) -> None:
     CONFIG_PATH.write_text(
         json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+    # 配置里含 SSH 口令：收紧文件权限，避免同机其他进程/用户读到。
+    try:
+        os.chmod(CONFIG_PATH, 0o600)
+    except OSError:
+        pass  # Windows 等不支持 chmod 的平台忽略
 
 
 def cfg_ok(config: dict[str, Any]) -> bool:
@@ -1606,6 +1611,12 @@ def billing_records(limit: int = 200, x_auth_token: str | None = Header(default=
     db_path = load_config()["database_path"]
     scale = _billing_point_scale(db_path)
     limit = max(1, min(int(limit), 500))
+    # extra_balance 列由服务端 db.py 迁移补加，老库可能缺列：探测退化避免整页 500。
+    extra_col = (
+        "COALESCE(w.extra_balance,0) AS extra_balance"
+        if _table_has_column(db_path, "billing_wallets", "extra_balance")
+        else "0 AS extra_balance"
+    )
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         wallets = conn.execute(
@@ -1613,7 +1624,7 @@ def billing_records(limit: int = 200, x_auth_token: str | None = Header(default=
             "COALESCE(w.points_balance,0) AS points_balance,COALESCE(w.locked_points,0) AS locked_points,"
             "COALESCE(w.manual_frozen_points,0) AS manual_frozen_points,"
             "COALESCE(w.plan_balance,0) AS plan_balance,COALESCE(w.plan_type,'experience') AS plan_type,"
-            "COALESCE(w.extra_balance,0) AS extra_balance,"
+            f"{extra_col},"
             "COALESCE(w.plan_expire_at,'') AS plan_expire_at,w.updated_at,"
             "(SELECT COUNT(1) FROM billing_batch_items b JOIN billing_batch_freezes f ON f.freeze_id=b.freeze_id "
             "WHERE f.account_id=a.account_id AND b.feature_key='title' AND b.status='success') AS success_usage,"
@@ -2251,12 +2262,12 @@ def adjust_billing_points(account_id: str, payload: dict[str, Any], request: Req
     try:
         points_delta = int(payload.get("points_delta"))
     except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail="??????????") from exc
+        raise HTTPException(status_code=400, detail="调账积分必须是整数") from exc
     reason = str(payload.get("reason") or "").strip()
     if not -1_000_000 <= points_delta <= 1_000_000 or points_delta == 0:
-        raise HTTPException(status_code=400, detail="??????? -1,000,000 ? 1,000,000????? 0")
+        raise HTTPException(status_code=400, detail="调账金额必须在 -1,000,000 到 1,000,000 之间且不能为 0")
     if not 3 <= len(reason) <= 240:
-        raise HTTPException(status_code=400, detail="??? 3?240 ??????")
+        raise HTTPException(status_code=400, detail="调账原因长度需在 3 到 240 个字符之间")
     sys.path.insert(0, "/opt/wh-workbench/MainPG/local-runtime")
     from wh_local.billing import _append_ledger
     from wh_local.db import transaction
@@ -2266,13 +2277,13 @@ def adjust_billing_points(account_id: str, payload: dict[str, Any], request: Req
     with transaction(db_path) as conn:
         row = conn.execute("SELECT workspace_id FROM auth_accounts WHERE account_id = ?", (account_id,)).fetchone()
         if row is None:
-            raise HTTPException(status_code=404, detail="?????")
+            raise HTTPException(status_code=404, detail="账户不存在")
         workspace_id = str(row["workspace_id"] or "default")
         wallet = conn.execute("SELECT points_balance, locked_points, manual_frozen_points FROM billing_wallets WHERE account_id = ?", (account_id,)).fetchone()
         balance = int(wallet["points_balance"]) if wallet else 0
         unavailable = (int(wallet["locked_points"]) + int(wallet["manual_frozen_points"])) if wallet else 0
         if balance + units_delta < unavailable:
-            raise HTTPException(status_code=409, detail="????????? 0")
+            raise HTTPException(status_code=409, detail="扣减后余额不能小于冻结总额")
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         if wallet is None:
             conn.execute("INSERT INTO billing_wallets(account_id,workspace_id,points_balance,locked_points,version,created_at,updated_at) VALUES (?, ?, 0, 0, 0, ?, ?)", (account_id, workspace_id, now, now))

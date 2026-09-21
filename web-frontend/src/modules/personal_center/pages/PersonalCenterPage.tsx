@@ -945,11 +945,13 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
               ...current,
               wallet: {
                 ...current.wallet,
+                available_points:
+                  (current.wallet.available_points ?? 0) + result.claimed_points,
                 plan: {
                   ...current.wallet.plan,
                   extra_balance: (current.wallet.plan.extra_balance ?? 0) + result.claimed_points,
                   basic_claim_count: result.claim_count,
-                  basic_claimable: result.claim_count < result.claim_max,
+                  basic_claimable: false,
                 },
               },
             }
@@ -995,6 +997,8 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
               ...current,
               wallet: {
                 ...current.wallet,
+                available_points:
+                  (current.wallet.available_points ?? 0) + result.claimed_points,
                 plan: {
                   ...current.wallet.plan,
                   plan_balance: result.first_claim_bonus
@@ -1005,7 +1009,9 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
                     : current.wallet.plan.extra_balance,
                   daily_claimable: false,
                   daily_claim_date: result.period,
+                  daily_claim_points: 100,
                   daily_first_claim_bonus: 0,
+                  daily_week_count: (current.wallet.plan.daily_week_count ?? 0) + 1,
                   daily_next_claim_at: result.next_claim_at,
                 },
               },

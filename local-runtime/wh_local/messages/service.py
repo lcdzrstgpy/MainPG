@@ -69,7 +69,13 @@ class AnnouncementSyncService:
                 return 0
             new_count = self.repository.upsert_server_announcements(items)
             # 撤回：服务器返回完整在线列表时，把已下线/已删除的本地消息一并移除。
-            active_ids = [int(item.get("id") or 0) for item in items]
+            # id 异常（非数字）的条目单独跳过，避免单个坏数据让整轮撤回清理被跳过。
+            active_ids: list[int] = []
+            for item in items:
+                try:
+                    active_ids.append(int(item.get("id") or 0))
+                except (TypeError, ValueError):
+                    logger.warning("announcement sync: bad server id %r", item.get("id"))
             self.repository.prune_retracted(active_ids)
             self._sync_pending_images()
             return new_count

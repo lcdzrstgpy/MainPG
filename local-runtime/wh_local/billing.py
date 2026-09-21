@@ -984,6 +984,9 @@ def settle_ai_usage_success(
             premium_units = RETRY_PREMIUM_UNITS
         charge_points = base_charge_points + premium_units
         refund_points = int(row["reserved_points"]) - base_charge_points
+        # 先惰性刷新（跨周清零体验池）再读余额：否则 clamp 基于过期余额，跨周一结算
+        # 会按旧额度放行，随后 _debit_wallet 内部刷新后余额不足触发 CHECK 500。
+        _ensure_wallet(conn, row["account_id"], "default")
         wallet = conn.execute(
             "SELECT plan_balance, points_balance FROM billing_wallets WHERE account_id = ?",
             (row["account_id"],),
@@ -1761,6 +1764,11 @@ def _debit_wallet(
     """
     _ensure_wallet(conn, account_id, "default")
     plan_balance, points_balance, locked_points, _ = _wallet_balances(conn, account_id)
+    # 最终防线：三池可用总额不足时截断，避免任何路径漏洞把 points_balance 扣成负数
+    # 触发 CHECK(points_balance >= 0) 抛 500（如跨周清零后调用方仍按旧余额放行）。
+    available = plan_balance + _wallet_extra_balance(conn, account_id) + points_balance
+    if charge_units > available:
+        charge_units = available
     # 兜底：解锁量不超过实际锁定量。正常路径由状态机保证解锁 ≤ 锁定，
     # 这里是最后防线，避免任何路径漏洞（如过期释放与结算竞态）把 locked 击穿成负数。
     if unlock_units > locked_points:
@@ -3103,6 +3111,8 @@ def settle_batch_points(
                 detail="settle totals exceed the frozen points",
             )
         total_charged_units = total_charge_units + total_premium_units
+        # 先惰性刷新（跨周清零体验池）再读余额，clamp 才会基于本周真实可用额度。
+        _ensure_wallet(conn, expected_account_id, "default")
         wallet = conn.execute(
             "SELECT plan_balance, points_balance FROM billing_wallets WHERE account_id = ?",
             (expected_account_id,),
