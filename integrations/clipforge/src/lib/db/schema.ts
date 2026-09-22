@@ -1,4 +1,5 @@
 import { sqliteTable, text, integer, uniqueIndex } from "drizzle-orm/sqlite-core";
+import type { CreationBrief } from "@/lib/creation-brief";
 import type {
   CreativeIntent,
   ProductionSnapshot,
@@ -50,8 +51,21 @@ export const projects = sqliteTable("projects", {
   mediaInsights: text("media_insights", { mode: "json" }).$type<ProjectMediaInsight[]>().default([]),
   productionWorkflow: text("production_workflow", { mode: "json" }).$type<WorkflowStagePlan[]>(),
   versionSnapshots: text("version_snapshots", { mode: "json" }).$type<ProductionSnapshot[]>().default([]),
+  // Unified creation contract: the same brief is written by every creation entry and read by
+  // script / assets / video / export. Existing projects read null and keep their legacy behaviour.
+  creationBrief: text("creation_brief", { mode: "json" }).$type<CreationBrief>(),
   createdAt: integer("created_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
   updatedAt: integer("updated_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
+});
+
+// Creation events: append-only observation of the creation flow (entry, strategy, style, submit,
+// compose). Kept separate from project state so telemetry can never block or mutate creation.
+export const projectEvents = sqliteTable("project_events", {
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  projectId: text("project_id").notNull(),
+  kind: text("kind").notNull(),
+  payload: text("payload", { mode: "json" }).$type<Record<string, unknown>>(),
+  createdAt: integer("created_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
 });
 
 // Scripts table

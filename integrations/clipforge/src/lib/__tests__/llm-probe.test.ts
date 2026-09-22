@@ -372,8 +372,9 @@ describe("Atlas 双网关：聊天走 /v1，素材走 /api/v1（issue #24）", (
     expect(migrateSettings(build("https://openrouter.ai/api/v1")).llm.baseUrl).toBe("https://openrouter.ai/api/v1");
   });
 
-  it("一键接入与设置页预设填的是同一个地址（两条路各写各的，就是这次故障的成因）", () => {
-    const preset = LLM_PRESETS.find((p) => /atlascloud/i.test(p.baseUrl));
-    expect(preset?.baseUrl).toBe(ATLAS_LLM_BASE_URL);
+  it("设置页预设不再提供 Atlas 端点：一键接入（内部兼容）与预设不可能再各写各的", () => {
+    expect(LLM_PRESETS.filter((p) => /atlascloud/i.test(p.baseUrl))).toEqual([]);
+    // 内部兼容仍在：一键接入写入的素材网关会被归一化到聊天网关（见上方双网关用例）
+    expect(normalizeChatBase(ATLAS_BASE_URL)).toBe(ATLAS_LLM_BASE_URL);
   });
 });

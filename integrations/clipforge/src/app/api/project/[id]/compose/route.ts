@@ -21,6 +21,7 @@ import { isAudibleFromVolumedetect } from "@/lib/video-composer/audio-probe";
 import { buildComplianceOverlays } from "@/lib/compliance-overlays";
 import { fetchFreeBgm, moodQueryForCategory, moodQueryForMood } from "@/lib/free-bgm";
 import { resolveBgmMix } from "@/lib/audio-mix";
+import { buildVoiceReport, type VoiceSource, type VoiceWarning } from "@/lib/voice-report";
 import { renderAudioStems } from "@/lib/audio-stems";
 import type { Shot, ScriptCharacter } from "@/lib/db/schema";
 import { assignCharacterVoices } from "@/lib/character-voices";
@@ -103,6 +104,12 @@ function toLocalPath(fileRef: string | undefined): string | undefined {
   if (!m) return undefined;
   const p = join(getDataDir(), "uploads", m[1]);
   return existsSync(p) ? p : undefined;
+}
+
+/** 把未知异常压成一行可读原因（写进逐镜音频报告，便于成片详情解释降级原因） */
+function readableReason(prefix: string, error: unknown): string {
+  const detail = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  return detail ? `${prefix}：${detail}` : prefix;
 }
 
 /** 按镜头类型给商品原图分镜分配一个默认运镜 */
@@ -234,11 +241,16 @@ export async function POST(
 
     // Structured degradation log for this render (in-memory for now; persisted into the
     // .timeline.json sidecar so tooling can surface which shots degraded and why)
-    const composeWarnings: { code: "tts_fallback_free" | "tts_failed"; shotId: number }[] = [];
+    const composeWarnings: VoiceWarning[] = [];
+    // Per-shot audio provenance (same sidecar): which engine actually voiced each shot
+    // (volcengine / edge / native / none) plus the readable degradation reason. Recording only —
+    // it never changes the fallback order or blocks the render.
+    const voiceShots: Array<{ shotId: number; source: VoiceSource; reason?: string }> = [];
 
     /**
-     * 为某分镜生成配音并落地为本地 mp3；失败返回 undefined（不阻断合成）。
-     * 返回 { file, words }：words 为免费 Edge 引擎回传的词级时间戳（卡拉OK真同步用），付费引擎无词数据。
+     * 为某分镜生成配音并落地为本地 mp3；失败不阻断合成（该镜音源记 none + 失败原因）。
+     * 返回 { file, words, source, reason }：words 为免费 Edge 引擎回传的词级时间戳（卡拉OK真同步用），
+     * 付费引擎无词数据；source 记录这镜究竟是付费火山还是免费 Edge 出的声。
      * 付费 TTS 抛错时回退免费 Edge（同文案照常出声）并记录 tts_fallback_free 警告——
      * 哑镜是最刺耳的成片缺陷，免费兜底链永远比静音好。
      * characterVoice：剧情脚本中该镜说话角色的专属音色（仅免费 Edge 路径生效——付费 TTS 配置是
@@ -249,7 +261,7 @@ export async function POST(
       text: string,
       characterVoice?: string,
       shotType?: string
-    ): Promise<{ file: string; words?: TTSWord[] } | undefined> {
+    ): Promise<{ file?: string; words?: TTSWord[]; source: VoiceSource; reason?: string } | undefined> {
       if (!text || (!ttsConfig && !useFreeTts)) return undefined;
       const freeOpts = { voice: characterVoice || freeVoice, rate: freeRate };
       // per-shot expressive delivery for paid engines that support it (hook → eager,
@@ -261,28 +273,34 @@ export async function POST(
         // 付费 TTS 优先；否则走免费 Edge keyless TTS（速度映射：speed 倍率 → SSML 带符号百分比）
         let audio: Buffer;
         let words: TTSWord[] | undefined;
+        let source: VoiceSource;
+        let reason: string | undefined;
         if (ttsConfig) {
           try {
             audio = await generateSpeech(text, { ...ttsConfig, ...expressive });
+            source = "volcengine";
           } catch (e) {
             console.warn(`分镜 ${shotId} 付费配音失败，回退免费 Edge 配音:`, e);
             composeWarnings.push({ code: "tts_fallback_free", shotId });
+            reason = readableReason("付费语音合成失败，已回退免费 Edge 音色", e);
             const d = await generateSpeechFreeDetailed(text, freeOpts);
             audio = d.audio;
             words = d.words.length > 0 ? d.words : undefined;
+            source = "edge";
           }
         } else {
           const d = await generateSpeechFreeDetailed(text, freeOpts);
           audio = d.audio;
           words = d.words.length > 0 ? d.words : undefined;
+          source = "edge";
         }
         const file = join(ttsDir, `shot-${shotId}.mp3`);
         await writeFile(file, audio);
-        return { file, words };
+        return { file, words, source, ...(reason && { reason }) };
       } catch (e) {
         console.warn(`分镜 ${shotId} 配音生成失败（已跳过）:`, e);
         composeWarnings.push({ code: "tts_failed", shotId });
-        return undefined;
+        return { source: "none", reason: readableReason("语音合成失败，该镜无旁白", e) };
       }
     }
 
@@ -370,6 +388,13 @@ export async function POST(
           ? await buildVoiceover(shot.shotId, shot.voiceover, shot.characterId ? characterVoices.get(shot.characterId) : undefined, shot.type)
           : undefined;
       const audioPath = vo?.file;
+      // Per-shot audio provenance for the sidecar: video with native audio wins (TTS is skipped
+      // there), otherwise whatever engine buildVoiceover ended up using, else none.
+      voiceShots.push({
+        shotId: shot.shotId,
+        source: vo?.source ?? (nativeAudio ? "native" : "none"),
+        ...(vo?.reason && { reason: vo.reason }),
+      });
 
       // Effective duration (core fix for issue #14 "next segment starts before speech ends"):
       // 1) TTS narration → actual audio length + breathing gap (clamped 1.5–20s); when the probe
@@ -580,6 +605,9 @@ export async function POST(
             } : {}),
             // structured degradation log (TTS fallbacks / failed shots) — surfaced by tooling later
             ...(composeWarnings.length > 0 ? { warnings: composeWarnings } : {}),
+            // per-shot audio provenance + reduction (counts / hasFailures / failedShotIds).
+            // Recording only: this never blocks the render nor changes the fallback chain.
+            voiceReport: buildVoiceReport({ shots: voiceShots, warnings: composeWarnings }),
           }),
           "utf8"
         ).catch(() => {});

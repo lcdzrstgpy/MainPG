@@ -62,20 +62,6 @@ const MEDIA_PROVIDER_KEYS = ["volcengine", "suchuang"] as const;
 // AI platform configuration list
 const AI_PROVIDERS = [
   {
-    key: "atlas-cloud",
-    name: "Atlas Cloud",
-    descKey: "providerAtlasDesc",
-    tipKey: "providerAtlasTip",
-    icon: (
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <circle cx="12" cy="12" r="10" />
-        <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" />
-        <path d="M2 12h20" />
-      </svg>
-    ),
-    iconBg: "from-blue-500 to-cyan-500",
-  },
-  {
     key: "fal-ai",
     name: "fal.ai",
     descKey: "providerFalDesc",
@@ -176,7 +162,7 @@ const AI_PROVIDERS = [
 ];
 
 // Map Chinese vendor names by key to i18n display names (English users would otherwise see hard-coded Chinese like "火山引擎/阿里百炼/硅基流动").
-// Only overrides vendors with Chinese names; others (Atlas Cloud/OpenAI, etc.) already use English brand names and use platform.name directly.
+// Only overrides vendors with Chinese names; other vendors already use English brand names and use platform.name directly.
 // Note: platform.name is still used as the identity for enabledNames custom model filtering, so we only change the display, not name.
 const PROVIDER_NAME_KEYS: Record<string, string> = {
   volcengine: "providerVolcengineName",
@@ -869,21 +855,11 @@ export default function SettingsPage() {
                         </>
                       ) : (
                         <>
-                          {/* Atlas / MiniMax / fal: Key (reused or custom) + optional GroupId/baseUrl + model/voice dropdowns */}
-                          {ttsMeta.keySource === "tts" ? (
-                            <div className="space-y-1.5">
-                              <Label className="text-xs text-muted-foreground">{t("apiKeyLabel")}</Label>
-                              <PasswordInput value={tts.apiKey} onChange={(apiKey) => setTTS({ ...tts, apiKey })} placeholder={t("ttsApiKeyPlaceholderShort")} />
-                            </div>
-                          ) : (
-                            <div className="text-xs rounded-md border border-border/60 bg-muted/20 px-3 py-2">
-                              {providers[ttsMeta.keySource]?.apiKey ? (
-                                <span className="text-emerald-500">{t("ttsKeyReused")}</span>
-                              ) : (
-                                <span className="text-amber-500">{t("ttsKeyMissing")}</span>
-                              )}
-                            </div>
-                          )}
+                          {/* Key (self-provided) + optional GroupId/baseUrl + model/voice dropdowns */}
+                          <div className="space-y-1.5">
+                            <Label className="text-xs text-muted-foreground">{t("apiKeyLabel")}</Label>
+                            <PasswordInput value={tts.apiKey} onChange={(apiKey) => setTTS({ ...tts, apiKey })} placeholder={t("ttsApiKeyPlaceholderShort")} />
+                          </div>
                           {ttsMeta.editableBaseUrl && (
                             <div className="space-y-1.5">
                               <Label className="text-xs text-muted-foreground">{t("ttsBaseUrlLabel")}</Label>

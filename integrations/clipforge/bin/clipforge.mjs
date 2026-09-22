@@ -177,7 +177,7 @@ const step = (m) => process.stderr.write(`· ${m}\n`);
 function requireLlm() {
   if (!LLM.baseUrl || !LLM.apiKey || !LLM.model) {
     throw new Error(
-      "create 需要 LLM。请设置环境变量 CLIPFORGE_LLM_BASE_URL、CLIPFORGE_LLM_API_KEY、CLIPFORGE_LLM_MODEL（OpenAI 兼容，如 Atlas Cloud / DeepSeek / OpenRouter）。",
+      "create 需要 LLM。请设置环境变量 CLIPFORGE_LLM_BASE_URL、CLIPFORGE_LLM_API_KEY、CLIPFORGE_LLM_MODEL（任意 OpenAI 兼容端点，如火山引擎方舟 / DeepSeek / OpenRouter）。",
     );
   }
 }

@@ -9,7 +9,7 @@
  *
  * Environment variables:
  *   CLIPFORGE_BASE_URL     ClipForge instance URL (default http://localhost:3000; run `pnpm dev` / `pnpm start` first)
- *   CLIPFORGE_LLM_BASE_URL LLM endpoint (OpenAI-compatible, e.g. https://api.atlascloud.ai/v1)
+ *   CLIPFORGE_LLM_BASE_URL LLM endpoint (any OpenAI-compatible endpoint, e.g. https://ark.cn-beijing.volces.com/api/v3)
  *   CLIPFORGE_LLM_API_KEY  LLM key (required for script generation; omitting it gives a clear prompt in create_video / generate_script)
  *   CLIPFORGE_LLM_MODEL    LLM model name (e.g. deepseek-ai/deepseek-v4-pro)
  */
@@ -196,7 +196,7 @@ async function api(path, { method = "GET", body, timeoutMs = 600000 } = {}) {
 function requireLlm() {
   if (!LLM.baseUrl || !LLM.apiKey || !LLM.model) {
     throw new Error(
-      "生成脚本需要 LLM。请为 MCP 服务设置环境变量：CLIPFORGE_LLM_BASE_URL、CLIPFORGE_LLM_API_KEY、CLIPFORGE_LLM_MODEL（OpenAI 兼容接口，如 Atlas Cloud / DeepSeek / OpenRouter）。",
+      "生成脚本需要 LLM。请为 MCP 服务设置环境变量：CLIPFORGE_LLM_BASE_URL、CLIPFORGE_LLM_API_KEY、CLIPFORGE_LLM_MODEL（任意 OpenAI 兼容端点，如火山引擎方舟 / DeepSeek / OpenRouter）。",
     );
   }
 }
