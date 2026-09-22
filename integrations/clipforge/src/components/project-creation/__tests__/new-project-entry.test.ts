@@ -80,9 +80,9 @@ describe("共享表单的页面接线 props", () => {
   });
 
   it("链接导入后不再强制本地图片，但普通模式仍要求至少一张商品图", () => {
-    expect(validateCreationBriefForm({ inputMode: "link", productName: "桂花乌龙茶", images: [] }).valid).toBe(false);
-    expect(validateCreationBriefForm({ inputMode: "link", productName: "桂花乌龙茶", images: [], linkImported: true }).valid).toBe(true);
-    expect(validateCreationBriefForm({ inputMode: "upload", productName: "桂花乌龙茶", images: [], linkImported: true }).valid).toBe(false);
+    expect(validateCreationBriefForm({ inputMode: "link", productName: "桂花乌龙茶", images: [], strategyChosen: true }).valid).toBe(false);
+    expect(validateCreationBriefForm({ inputMode: "link", productName: "桂花乌龙茶", images: [], linkImported: true, strategyChosen: true }).valid).toBe(true);
+    expect(validateCreationBriefForm({ inputMode: "upload", productName: "桂花乌龙茶", images: [], linkImported: true, strategyChosen: true }).valid).toBe(false);
   });
 });
 

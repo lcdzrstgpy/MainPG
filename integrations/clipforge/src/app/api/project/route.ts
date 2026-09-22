@@ -32,6 +32,15 @@ export async function POST(req: NextRequest) {
     const videoMode = VIDEO_MODES.includes(body.videoMode) ? body.videoMode : undefined;
     const sourceType = body.sourceType === "clone" ? "clone" : undefined;
 
+    // Content type + character binding (same allowlist style as videoMode/sourceType): an unknown
+    // contentType is ignored so the column default ("product") keeps its legacy meaning, and `topic`
+    // is only persisted for topic projects — a product project never stores a stray topic string.
+    const CONTENT_TYPES = ["product", "topic"] as const;
+    const contentType: (typeof CONTENT_TYPES)[number] | undefined =
+      CONTENT_TYPES.includes(body.contentType) ? body.contentType : undefined;
+    const characterId = typeof body.characterId === "string" ? body.characterId.trim() || undefined : undefined;
+    const topic = typeof body.topic === "string" ? body.topic.trim() || undefined : undefined;
+
     // Unified creation contract. The brief is always normalized for validation/telemetry, but the
     // column is only written when the caller actually sent one — legacy callers (and projects
     // created before this contract) keep a null brief and their old behaviour.
@@ -69,6 +78,9 @@ export async function POST(req: NextRequest) {
         productImages: body.productImages || [],
         ...(videoMode && { videoMode }),
         ...(sourceType && { sourceType }),
+        ...(characterId && { characterId }),
+        ...(contentType && { contentType }),
+        ...(contentType === "topic" && topic && { topic }),
         ...(body.sourceVideoUrl && { sourceVideoUrl: body.sourceVideoUrl }),
         ...(hasCreationBrief && { creationBrief }),
         ...(creativeIntent && { creativeIntent }),

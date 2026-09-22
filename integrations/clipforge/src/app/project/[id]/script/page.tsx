@@ -77,6 +77,24 @@ export function shouldAutoStartPipeline(input: { outputStrategy: OutputStrategy 
   return input.outputStrategy === "draft";
 }
 
+/**
+ * 脚本页的主播来源优先级：项目记录 → 项目创作简报 → URL `?presenter=`（旧链接兜底）。
+ *
+ * 创建时选中的主播必须能被后续生图/生视频阶段复用；只读 URL 参数会让角色凭空消失
+ * （创建后的跳转链接根本不带 `?presenter=`），所以 URL 只能当兜底。
+ */
+export function resolveScriptCharacter(
+  project: { characterId?: string | null } | null,
+  brief: { characterId?: string } | null,
+  presenterParam?: string | null
+): string | undefined {
+  for (const candidate of [project?.characterId, brief?.characterId, presenterParam]) {
+    const id = typeof candidate === "string" ? candidate.trim() : "";
+    if (id) return id;
+  }
+  return undefined;
+}
+
 export default function ScriptPage() {
   const t = useT("script");
   const tc = useT("common");
@@ -98,6 +116,8 @@ export default function ScriptPage() {
     videoMode: string;
     contentType: string;
     topic: string;
+    /** 创建时绑定的主播：角色优先级的最高来源 */
+    characterId: string;
   } | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [genError, setGenError] = useState("");
@@ -143,6 +163,7 @@ export default function ScriptPage() {
           videoMode: proj.videoMode ?? "product_closeup",
           contentType: proj.contentType ?? "product",
           topic: proj.topic ?? "",
+          characterId: proj.characterId ?? "",
         });
       }
       if (Array.isArray(dbScripts) && dbScripts.length > 0) {
@@ -288,6 +309,7 @@ export default function ScriptPage() {
               videoMode: proj.videoMode ?? "product_closeup",
               contentType: proj.contentType ?? "product",
               topic: proj.topic ?? "",
+              characterId: proj.characterId ?? "",
             });
           }
         }
@@ -424,7 +446,7 @@ export default function ScriptPage() {
   // generation-task mode chosen on the studio card (?gen=ai): the free chain stays hands-off,
   // the AI chain stops at the script gate — money is only spent after one explicit click here
   const [genPref, setGenPref] = useState<"free" | "ai">("free");
-  // presenter picked at creation time (?presenter=<id>) — resolved to their sheet for identity locking
+  // 创建时选中的主播（?presenter=<id> 只是旧链接的兜底）：真正的来源优先级见 resolveScriptCharacter
   const [presenterParam, setPresenterParam] = useState("");
   useEffect(() => {
     const qs = new URLSearchParams(window.location.search);
@@ -593,6 +615,8 @@ export default function ScriptPage() {
   // zero-cost "video plan" gate — money is only spent after this one explicit click, and the
   // bill goes to the user's own model platform (open-source BYOK, ClipForge itself is free) ----
   const { characters: presenterLib, updateCharacter } = useCharacterStore();
+  // 主播来源优先级：项目记录 → 创作简报 → URL 兜底；解析结果同时供生图与生视频使用
+  const presenterId = resolveScriptCharacter(projectMeta, creationBrief, presenterParam);
   const [aiFilming, setAiFilming] = useState(false);
   const [aiFilmStage, setAiFilmStage] = useState("");
   /** Ticked by the user to allow a generation whose estimate exceeds their spend cap */
@@ -619,7 +643,7 @@ export default function ScriptPage() {
 
   /** Free dryRun call — full film prompt + counts + warnings, nothing submitted, nothing billed. */
   const fetchFilmPreview = async (scriptId: string) => {
-    const presenter = presenterLib.find((c) => c.id === presenterParam);
+    const presenter = presenterLib.find((c) => c.id === presenterId);
     const res = await fetch(`/api/project/${id}/storyboard-film`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -688,8 +712,8 @@ export default function ScriptPage() {
         resolveDefaultModelTarget(s.providers, s.defaultVideoModel, s.customModels, "video"),
       ]);
       if (!imgTarget || !vidTarget) throw new Error(t("aiFilmNeedModels"));
-      // identity/product anchors: presenter sheet (picked at creation) + first product photo
-      const presenter = presenterLib.find((c) => c.id === presenterParam);
+      // identity/product anchors: presenter sheet (bound at creation, or via the legacy ?presenter= link) + first product photo
+      const presenter = presenterLib.find((c) => c.id === presenterId);
       let sheet = presenter?.referenceImages?.[0];
       // multi-view sheet on demand: a presenter picked at creation but never "sheeted" gets their
       // 2x2 four-view reference generated right here (one square generation, physically the same

@@ -8,12 +8,18 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { sanitizeCreationBrief } from "@/lib/creation-brief";
+import { sanitizeCreativeIntent, type CreativeIntent, type VisualBible } from "@/lib/production-system";
 import { useCharacterStore } from "@/lib/stores/project-store";
 import { useTemplateStore } from "@/lib/stores/template-store";
 import { InputSourcePanel, type InputSourceImage } from "./input-source-panel";
 import { NarrativePanel } from "./narrative-panel";
 import { OutputStrategyPanel } from "./output-strategy-panel";
-import { VisualControlPanel } from "./visual-control-panel";
+import {
+  EMPTY_VISUAL_CONSTRAINTS,
+  VisualControlPanel,
+  buildCreativeIntentFields,
+  type VisualConstraintValues,
+} from "./visual-control-panel";
 import {
   AUDIENCE_OPTIONS,
   CATEGORY_OPTIONS,
@@ -43,6 +49,12 @@ export interface CreationBriefFormValues {
   linkUrl: string;
   topic: string;
   videoMode: VideoModeId;
+  /** 由「场景与画面约束」映射并经 sanitize；始终存在（约束为空时是空 subject 的完整对象） */
+  creativeIntent: CreativeIntent;
+  /** 仅当画面约束确实收集到「画面禁忌」时产出，不凭空编造锚点 */
+  visualBible?: VisualBible;
+  /** 用户是否真的点选过一次出片策略卡（默认高亮的 draft 不算已选择） */
+  strategyChosen: boolean;
 }
 
 /** 入口页在挂载后推给表单的预填（商品库、热点、模板、示例商品等）。 */
@@ -117,6 +129,9 @@ export function CreationBriefForm({
   const [linkUrl, setLinkUrl] = useState("");
   const [topic, setTopic] = useState("");
   const [videoMode, setVideoMode] = useState<VideoModeId>(DEFAULT_VIDEO_MODE);
+  const [constraints, setConstraints] = useState<VisualConstraintValues>(EMPTY_VISUAL_CONSTRAINTS);
+  // 默认高亮的 draft 不是「已选择」：只有点过策略卡才置 true，见校验与冻结契约 C3
+  const [strategyChosen, setStrategyChosen] = useState(false);
   const [showErrors, setShowErrors] = useState(false);
 
   // every mutation runs through the shared sanitizer, so no field can drift out of contract
@@ -149,11 +164,19 @@ export function CreationBriefForm({
     }
   }, [prefillKey, patchBrief]);
 
+  // 画面约束是唯一来源：映射出的字段经共享 sanitizer 归一化为完整的 CreativeIntent（空 subject 也保留）
+  const creativeIntent = sanitizeCreativeIntent(buildCreativeIntentFields(constraints));
+  // 只映射确实收集到的「画面禁忌」；收集不到就不产出 visualBible，绝不编造其它锚点
+  const forbiddenChanges = creativeIntent.negative ?? [];
+  const visualBible: VisualBible | undefined = forbiddenChanges.length
+    ? { characterAnchors: [], productAnchors: [], wardrobeAnchors: [], environmentAnchors: [], lightingAnchors: [], forbiddenChanges }
+    : undefined;
+
   // 实时快照：只在真正收集到的字段变化时上报，避免每次渲染都推送新对象
-  const valuesKey = JSON.stringify({ brief, productName, category, sellingPoints, linkUrl, topic, videoMode, imageCount: images.length });
+  const valuesKey = JSON.stringify({ brief, productName, category, sellingPoints, linkUrl, topic, videoMode, constraints, strategyChosen, imageCount: images.length });
   useEffect(() => {
     if (!onValuesChange) return;
-    onValuesChange({ brief: sanitizeCreationBrief(brief), productName, category, sellingPoints, images, linkUrl, topic, videoMode });
+    onValuesChange({ brief: sanitizeCreationBrief(brief), productName, category, sellingPoints, images, linkUrl, topic, videoMode, creativeIntent, visualBible, strategyChosen });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- valuesKey 已经是所有被收集字段的值指纹
   }, [valuesKey]);
 
@@ -183,7 +206,11 @@ export function CreationBriefForm({
   );
 
   const handleOutputStrategyChange = useCallback(
-    (outputStrategy: OutputStrategy) => patchBrief({ outputStrategy, audioStrategy: defaultAudioStrategyFor(outputStrategy) }),
+    (outputStrategy: OutputStrategy) => {
+      // 点选即代表用户显式选择了策略：默认 draft 只有在被点过一次后才算「已选择」
+      setStrategyChosen(true);
+      patchBrief({ outputStrategy, audioStrategy: defaultAudioStrategyFor(outputStrategy) });
+    },
     [patchBrief]
   );
 
@@ -226,7 +253,7 @@ export function CreationBriefForm({
     patchBrief({ platforms: next });
   };
 
-  const validation = validateCreationBriefForm({ productName, images, topic, inputMode: brief.inputMode, linkImported });
+  const validation = validateCreationBriefForm({ productName, images, topic, inputMode: brief.inputMode, linkImported, strategyChosen });
   const blocked = disabled === true;
 
   const handleSubmit = () => {
@@ -237,7 +264,7 @@ export function CreationBriefForm({
     const submitted = sanitizeCreationBrief(brief);
     if (onSubmitForm) {
       // 入口页需要来源字段（商品名/图片/来源）才能建项目：只走这一条提交路径
-      onSubmitForm({ brief: submitted, productName, category, sellingPoints, images, linkUrl, topic, videoMode });
+      onSubmitForm({ brief: submitted, productName, category, sellingPoints, images, linkUrl, topic, videoMode, creativeIntent, visualBible, strategyChosen });
       return;
     }
     onSubmit(submitted);
@@ -470,6 +497,8 @@ export function CreationBriefForm({
         }))}
         characterId={brief.characterId}
         onCharacterIdChange={(characterId) => patchBrief({ characterId })}
+        constraints={constraints}
+        onConstraintsChange={setConstraints}
         disabled={blocked}
       />
 

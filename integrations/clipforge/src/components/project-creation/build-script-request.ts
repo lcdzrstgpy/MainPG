@@ -43,7 +43,21 @@ export interface ScriptRequestInput {
   character?: ScriptRequestCharacter;
 }
 
+/** Only the narrative fields the user actually filled; `undefined` when every field is blank. */
+function buildNarrativePayload(
+  narrative: CreationBrief["narrative"]
+): { situation?: string; language?: string; tone?: string } | undefined {
+  if (!narrative) return undefined;
+  const fields: { situation?: string; language?: string; tone?: string } = {};
+  if (narrative.situation?.trim()) fields.situation = narrative.situation;
+  if (narrative.language?.trim()) fields.language = narrative.language;
+  if (narrative.tone?.trim()) fields.tone = narrative.tone;
+  return Object.keys(fields).length ? fields : undefined;
+}
+
 export function buildScriptRequest(input: ScriptRequestInput): Record<string, unknown> {
+  // Same level as `priceRange`: narrative only appears once the user has filled at least one field.
+  const narrative = buildNarrativePayload(input.brief.narrative);
   return {
     projectId: input.projectId,
     productName: input.productName,
@@ -63,6 +77,7 @@ export function buildScriptRequest(input: ScriptRequestInput): Record<string, un
     targetAudience: input.brief.targetAudience.join(","),
     platforms: input.brief.platforms.join(","),
     usageAdvantage: input.brief.usageAdvantage ?? "",
+    ...(narrative && { narrative }),
     ...(input.brief.templateId && { templateId: input.brief.templateId }),
     ...(input.referenceStructure !== undefined && { referenceStructure: input.referenceStructure }),
     ...(input.customRequirements && { customRequirements: input.customRequirements }),

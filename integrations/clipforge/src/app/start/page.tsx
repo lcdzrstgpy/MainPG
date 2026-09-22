@@ -25,7 +25,7 @@ import {
   type CreationBriefFormPrefill,
   type CreationBriefFormValues,
 } from "@/components/project-creation/creation-brief-form";
-import { OUTPUT_STRATEGY_OPTIONS, type VideoModeId } from "@/components/project-creation/creation-brief-defaults";
+import { OUTPUT_STRATEGY_OPTIONS, validateCreationBriefForm, type VideoModeId } from "@/components/project-creation/creation-brief-defaults";
 import { fetchImagesAsFiles, importProductSource, isValidProductUrl } from "@/components/project-creation/link-import";
 import { buildScriptRequest } from "@/components/project-creation/build-script-request";
 import {
@@ -36,6 +36,8 @@ import {
 import { StyleChoicePrompt } from "@/components/project-creation/style-choice-prompt";
 import { recordStrategySelected } from "@/components/project-creation/creation-events";
 import { sanitizeCreationBrief, type CreationBrief, type OutputStrategy } from "@/lib/creation-brief";
+import { buildTopicScriptRequest } from "@/lib/creation-submit";
+import { sanitizeCreativeIntent } from "@/lib/production-system";
 import {
   CLONE_PREFILL_STORAGE_KEY,
   parseClonePrefill,
@@ -92,6 +94,8 @@ interface PendingScript {
   productName: string;
   category: string;
   description: string;
+  /** 一句话主题：主题链路只认它，绝不拿空的 productName 去打带货脚本接口 */
+  topic: string;
   productImages: string[];
   videoMode: VideoModeId;
   /** 爆款复刻交接的参考镜头节奏骨架：有值时随脚本请求下发，风格重试也要带上 */
@@ -506,27 +510,44 @@ export default function StartPage() {
   /**
    * 脚本请求：唯一构造器是 buildScriptRequest，且必须带用户显式选择的风格。
    * 409 needs_explicit_style 不是失败，而是「请用户选一个风格」——记下待重试请求并返回。
+   *
+   * 一句话主题改为走既有主题引擎 `/api/topic/script`：拿空的 productName 打带货脚本接口
+   * 只会得到「请填写商品名称」的假失败。
    */
   const requestScript = async (pending: PendingScript): Promise<"ok" | "needs-style"> => {
-    const res = await fetch("/api/llm/script", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(
-        buildScriptRequest({
-          brief: pending.brief,
-          projectId: pending.projectId,
-          productName: pending.productName,
-          category: pending.category,
-          productDescription: pending.description,
-          productImages: pending.productImages,
-          videoMode: pending.videoMode,
-          llmConfig: llmConfig(),
-          character: characterFor(pending.brief.characterId),
-          // 复刻交接的参考节奏骨架：有值才下发（buildScriptRequest 省略未给出的可选键）
-          ...(pending.referenceStructure ? { referenceStructure: pending.referenceStructure } : {}),
+    const isTopic = pending.brief.inputMode === "topic";
+    const res = isTopic
+      ? await fetch("/api/topic/script", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(
+            buildTopicScriptRequest({
+              projectId: pending.projectId,
+              topic: pending.topic,
+              brief: pending.brief,
+              llmConfig: llmConfig(),
+            })
+          ),
         })
-      ),
-    });
+      : await fetch("/api/llm/script", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(
+            buildScriptRequest({
+              brief: pending.brief,
+              projectId: pending.projectId,
+              productName: pending.productName,
+              category: pending.category,
+              productDescription: pending.description,
+              productImages: pending.productImages,
+              videoMode: pending.videoMode,
+              llmConfig: llmConfig(),
+              character: characterFor(pending.brief.characterId),
+              // 复刻交接的参考节奏骨架：有值才下发（buildScriptRequest 省略未给出的可选键）
+              ...(pending.referenceStructure ? { referenceStructure: pending.referenceStructure } : {}),
+            })
+          ),
+        });
     if (res.ok) return "ok";
     const data: { error?: string; code?: string; candidates?: unknown } = await res.json().catch(() => ({}));
     const requirement = parseStyleRequirement(res.status, data);
@@ -541,6 +562,19 @@ export default function StartPage() {
   /** 表单提交：创建项目（带 creationBrief）→ 上传商品图 → 生成脚本 → 跳转脚本页。 */
   const runCreation = async (values: CreationBriefFormValues) => {
     if (busy) return;
+    // 提交前先过共享校验：错误（含「请先选择一个出片策略」）必须显示出来，绝不静默跳过
+    const validation = validateCreationBriefForm({
+      productName: values.productName,
+      images: values.images,
+      topic: values.topic,
+      inputMode: values.brief.inputMode,
+      linkImported: importedImages.length > 0,
+      strategyChosen: values.strategyChosen,
+    });
+    if (!validation.valid) {
+      setError(Object.values(validation.errors).filter(Boolean).join("；"));
+      return;
+    }
     if (!llmReady) {
       setError(t("errNeedLlm"));
       return;
@@ -575,6 +609,13 @@ export default function StartPage() {
           productDescription: description,
           productImages: [],
           creationBrief: brief,
+          // 表单产出的画面约束（再经共享 sanitizer）与角色绑定：创建时就写进项目，
+          // 后续生图/生视频阶段才不会丢失
+          creativeIntent: sanitizeCreativeIntent(values.creativeIntent),
+          ...(values.visualBible ? { visualBible: values.visualBible } : {}),
+          ...(brief.characterId ? { characterId: brief.characterId } : {}),
+          // 一句话主题：项目类型与主题文本落库，脚本链路据此走主题引擎
+          ...(isTopic ? { contentType: "topic" as const, topic: topicText } : {}),
           // 复刻交接的参考视频：创建时落到项目 sourceVideoUrl，供后续复刻/修复阶段取用
           ...(cloneRef.current.referenceVideoUrl
             ? { sourceVideoUrl: cloneRef.current.referenceVideoUrl }
@@ -612,6 +653,7 @@ export default function StartPage() {
         productName,
         category: values.category,
         description,
+        topic: topicText,
         productImages,
         videoMode: values.videoMode,
         ...(cloneRef.current.referenceStructure

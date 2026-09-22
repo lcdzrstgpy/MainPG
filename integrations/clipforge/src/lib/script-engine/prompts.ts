@@ -7,6 +7,7 @@ import { getTemplatesByCategory, categoryNameMap, type ProductCategory } from ".
 import { buildHookGuidance } from "./hook-patterns";
 import { EMOTION_RESTRAINT_RULES, presenterPromptBlock } from "@/lib/presenters";
 import { cameraPresetGuide } from "@/lib/camera-presets";
+import type { CreativeIntent, VisualBible } from "@/lib/production-system";
 
 // ==================== System Role Prompt ====================
 
@@ -676,6 +677,107 @@ export const PRODUCT_ANALYSIS_PROMPT = `你是一位专业的电商选品分析�
   }
 }`;
 
+// ==================== Narrative & Visual Constraints (design §7.3) ====================
+
+/**
+ * Narrative requirements of the creation brief: who is in which situation, in what language and tone.
+ * Rendered into the script prompt so the creator's "人物/处境/语言/语气" choices actually steer the copy
+ * instead of living only in the project row (review finding: they never reached the LLM).
+ */
+export interface ScriptNarrative {
+  situation?: string;
+  language?: string;
+  tone?: string;
+}
+
+/** Per-field cap (same budget as the creation brief's own sanitizer). */
+const NARRATIVE_MAX = 120;
+
+/**
+ * Resolve the narrative for a script request: the request body wins field by field, the project's
+ * persisted brief fills the gaps. Returns undefined when neither side carries a value, so callers
+ * without narrative render exactly the prompt they rendered before this input existed.
+ */
+export function resolveNarrative(requestValue?: unknown, briefValue?: unknown): ScriptNarrative | undefined {
+  const pick = (value: unknown): ScriptNarrative => {
+    const raw = value && typeof value === "object" ? value as Record<string, unknown> : {};
+    const text = (v: unknown) => typeof v === "string" ? v.trim().slice(0, NARRATIVE_MAX) : "";
+    const situation = text(raw.situation);
+    const language = text(raw.language);
+    const tone = text(raw.tone);
+    return {
+      ...(situation && { situation }),
+      ...(language && { language }),
+      ...(tone && { tone }),
+    };
+  };
+  const request = pick(requestValue);
+  const brief = pick(briefValue);
+  const merged: ScriptNarrative = {
+    ...(brief.situation && { situation: brief.situation }),
+    ...(brief.language && { language: brief.language }),
+    ...(brief.tone && { tone: brief.tone }),
+    ...(request.situation && { situation: request.situation }),
+    ...(request.language && { language: request.language }),
+    ...(request.tone && { tone: request.tone }),
+  };
+  return Object.keys(merged).length ? merged : undefined;
+}
+
+/** Renders the narrative requirement block; empty (no block at all) when nothing was supplied. */
+export function buildNarrativeBlock(narrative?: ScriptNarrative | null): string {
+  if (!narrative) return "";
+  const rows = [
+    narrative.situation && `- 人物与处境：${narrative.situation}`,
+    narrative.language && `- 语言：${narrative.language}`,
+    narrative.tone && `- 语气：${narrative.tone}`,
+  ].filter(Boolean);
+  return rows.length ? `【叙事要求】\n${rows.join("\n")}` : "";
+}
+
+/**
+ * Renders the visual constraint block from the project's creative intent (画面级制作参数) and visual
+ * bible (跨镜头一致性锚点 / 禁改项). Empty in, empty out — callers without project constraints keep
+ * their previous prompt byte for byte.
+ */
+export function buildVisualConstraintBlock(
+  creativeIntent?: CreativeIntent | null,
+  visualBible?: VisualBible | null,
+): string {
+  const rows: string[] = [];
+  const line = (label: string, value?: string) => {
+    if (value) rows.push(`- ${label}：${value}`);
+  };
+  const list = (label: string, value?: string[]) => {
+    if (value?.length) rows.push(`- ${label}：${value.join("；")}`);
+  };
+
+  if (creativeIntent) {
+    line("画面主体", creativeIntent.subject);
+    line("主体动作", creativeIntent.action);
+    line("环境", creativeIntent.environment);
+    line("光线", creativeIntent.lighting);
+    line("色调", creativeIntent.palette);
+    line("构图", creativeIntent.composition);
+    line("机位与运镜", creativeIntent.camera);
+    line("画面运动", creativeIntent.motion);
+    list("连续性锚点", creativeIntent.continuity);
+    list("商品不变量", creativeIntent.productConstraints);
+    list("禁止出现", creativeIntent.negative);
+  }
+  if (visualBible) {
+    list("人物锚点", visualBible.characterAnchors);
+    list("商品锚点", visualBible.productAnchors);
+    list("服装锚点", visualBible.wardrobeAnchors);
+    list("环境锚点", visualBible.environmentAnchors);
+    list("光线锚点", visualBible.lightingAnchors);
+    list("禁止改变", visualBible.forbiddenChanges);
+  }
+  if (!rows.length) return "";
+  rows.push("- 以上约束必须落到每个分镜的 description，以及 AI 生成分镜的英文 prompt 上；同一主体/光线/色调全片保持不变");
+  return `【视觉约束（必须遵守）】\n${rows.join("\n")}`;
+}
+
 // ==================== Assemble Full Prompt ====================
 
 /** Input parameters for script generation */
@@ -717,6 +819,12 @@ export interface ScriptGenerationInput {
   performanceHint?: string;
   /** pin the opening hook mechanism (HOOK_PATTERNS id) — anti-homogenization batch rotation assigns a different one per video */
   preferredHookId?: string;
+  /** §7.3 narrative requirements (人物与处境/语言/语气) from the request or the project brief; omitted when unset */
+  narrative?: ScriptNarrative;
+  /** project creative intent (subject/action/environment/lighting/…) — rendered as the visual constraint block */
+  creativeIntent?: CreativeIntent | null;
+  /** project visual bible (consistency anchors / forbidden changes) — rendered into the visual constraint block */
+  visualBible?: VisualBible | null;
 }
 
 /**
@@ -823,6 +931,18 @@ export function buildUserPrompt(input: ScriptGenerationInput): string {
 
   // append style directive
   parts.push(`\n${styleDirective}`);
+
+  // §7.3: the creator's narrative requirements (人物与处境/语言/语气) and the project's visual
+  // constraints (creativeIntent + visualBible) are creative requirements of their own — each block is
+  // omitted entirely when it carries nothing, so callers without them keep the previous prompt.
+  const narrativeBlock = buildNarrativeBlock(input.narrative);
+  if (narrativeBlock) {
+    parts.push(`\n${narrativeBlock}`);
+  }
+  const visualBlock = buildVisualConstraintBlock(input.creativeIntent, input.visualBible);
+  if (visualBlock) {
+    parts.push(`\n${visualBlock}`);
+  }
 
   // append performance feedback (data flywheel): real published-video conversion data biases
   // the chosen style + opening hook; empty string when the creator has no metrics yet (cold start)

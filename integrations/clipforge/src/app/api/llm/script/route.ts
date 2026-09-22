@@ -3,7 +3,7 @@ import { getDataDir } from "@/lib/paths";
 import { readFile } from "fs/promises";
 import { join } from "path";
 import { generateScript, analyzeProduct } from "@/lib/script-engine/generator";
-import { styleNameMap, type ScriptStyleType } from "@/lib/script-engine/prompts";
+import { styleNameMap, resolveNarrative, type ScriptStyleType } from "@/lib/script-engine/prompts";
 import { hookPatternName, HOOK_PATTERNS } from "@/lib/script-engine/hook-patterns";
 import type { ProductCategory } from "@/lib/script-engine/templates";
 import { getDb } from "@/lib/db";
@@ -13,6 +13,7 @@ import { apiError, errText } from "@/lib/api-error";
 import { llmErrorPair } from "@/lib/llm-error";
 import { resolveScriptStyle } from "@/lib/script-style";
 import type { CreationBrief } from "@/lib/creation-brief";
+import type { CreativeIntent, VisualBible } from "@/lib/production-system";
 import { topConvertingStyle, topConvertingHook, buildPerformanceHint, type MetricInput } from "@/lib/performance-insights";
 
 /** Allowed enum values for the styleType column in the scripts table */
@@ -47,21 +48,36 @@ const explicitText = (value: unknown): string | undefined =>
   typeof value === "string" && value.trim() ? value : undefined;
 
 /**
- * Design §7.3: script generation falls back to the project's persisted creation brief when the
+ * Design §7.3: script generation falls back to the project's persisted creation settings when the
  * request omits a field. Best-effort read — a missing project or a DB failure degrades to "no
  * defaults" instead of turning script generation into a 500.
  */
-async function readCreationBrief(projectId: string): Promise<CreationBrief | null> {
+interface ProjectDefaults {
+  brief: CreationBrief | null;
+  creativeIntent: CreativeIntent | null;
+  visualBible: VisualBible | null;
+}
+
+async function readProjectDefaults(projectId: string): Promise<ProjectDefaults> {
   try {
     const db = getDb();
     const rows = await db
-      .select({ creationBrief: projects.creationBrief })
+      .select({
+        creationBrief: projects.creationBrief,
+        creativeIntent: projects.creativeIntent,
+        visualBible: projects.visualBible,
+      })
       .from(projects)
       .where(eq(projects.id, projectId));
-    return rows[0]?.creationBrief ?? null;
+    const row = rows[0];
+    return {
+      brief: row?.creationBrief ?? null,
+      creativeIntent: row?.creativeIntent ?? null,
+      visualBible: row?.visualBible ?? null,
+    };
   } catch (e) {
-    console.warn("读取项目创作简报失败（已跳过默认值）:", e);
-    return null;
+    console.warn("读取项目创作设定失败（已跳过默认值）:", e);
+    return { brief: null, creativeIntent: null, visualBible: null };
   }
 }
 
@@ -171,10 +187,16 @@ export async function POST(req: NextRequest) {
   // data flywheel: performance feedback is on by default; pass insightMode:false to opt out
   const useInsights = body.insightMode !== false;
 
-  // §7.3: the project's persisted creation brief supplies defaults (style / audience / platforms)
-  // for callers that omit a field; an explicit request field always wins.
+  // §7.3: the project's persisted creation settings supply defaults (style / audience / platforms /
+  // narrative / creative intent / visual bible) for callers that omit a field; an explicit request
+  // field always wins.
   const projectId = body.projectId;
-  const brief = typeof projectId === "string" && projectId ? await readCreationBrief(projectId) : null;
+  const defaults = typeof projectId === "string" && projectId
+    ? await readProjectDefaults(projectId)
+    : { brief: null, creativeIntent: null, visualBible: null };
+  const brief = defaults.brief;
+  // Narrative: the request body wins field by field, the project brief fills the gaps.
+  const narrative = resolveNarrative(body.narrative, brief?.narrative);
   const requestedStyle = explicitText(body.styleType) ?? explicitText(brief?.styleType) ?? "";
   const briefAudience = Array.isArray(brief?.targetAudience) && brief.targetAudience.length
     ? brief.targetAudience.join(",")
@@ -266,6 +288,11 @@ export async function POST(req: NextRequest) {
       // caller-supplied requirements — buildUserPrompt already injects this field
       customRequirements: typeof body.customRequirements === "string" ? body.customRequirements.slice(0, 2000) : undefined,
       performanceHint: insights.hint,
+      // §7.3: the creator's narrative requirements and the project's visual constraints (creative
+      // intent + visual bible) must reach the LLM, not just live in the project row.
+      narrative,
+      creativeIntent: defaults.creativeIntent ?? undefined,
+      visualBible: defaults.visualBible ?? undefined,
       // anti-homogenization: batch rotation pins a different opening hook mechanism per video (validated against the pattern library)
       preferredHookId:
         typeof body.preferredHookId === "string" && HOOK_PATTERNS.some((p) => p.id === body.preferredHookId)

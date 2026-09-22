@@ -21,6 +21,7 @@ import { CAPTION_PRESET_IDS } from "@/lib/caption-presets";
 import { ProjectHeader } from "@/components/project-header";
 import { CreationBriefSummary } from "@/components/project-creation/creation-brief-summary";
 import { LEGACY_BRIEF_NOTICE, summarizeVoiceReport, voiceSourceExplanation, type VoiceReportSummary } from "@/lib/project-detail-view";
+import { AUDIO_STRATEGY_LABELS, resolveVoiceoverRequest } from "@/lib/voiceover-strategy";
 import {
   compositionChoiceLabel,
   compositionChoices,
@@ -48,7 +49,6 @@ interface VideoClipItem {
 
 // 合成配置
 interface ComposeConfig {
-  ttsEnabled: boolean;
   ttsVoice: string;
   /** 免费 TTS 音色（未配置付费 TTS 时使用） */
   freeVoice: string;
@@ -147,8 +147,11 @@ export default function VideoPage() {
   // 本项目已完成的成片版本（新到旧）与用户当前选中的版本：音频报告按选中的版本读取，而不是「最新一条」
   const [compositions, setCompositions] = useState<CompositionChoice[]>([]);
   const [selectedCompositionId, setSelectedCompositionId] = useState<string | null>(null);
+  // 用户在视频页手动拨动的配音开关：null = 尚未手动覆盖，跟随本次音频策略的默认值
+  const [ttsOverride, setTtsOverride] = useState<boolean | null>(null);
+  // 旧项目（无简报）沿用 productionWorkflow.voice 阶段的启用状态；null = 该项目未记录该阶段
+  const [workflowVoiceEnabled, setWorkflowVoiceEnabled] = useState<boolean | null>(null);
   const [config, setConfig] = useState<ComposeConfig>({
-    ttsEnabled: true,
     ttsVoice: "female-gentle",
     freeVoice: "zh-CN-XiaoxiaoNeural",
     bgm: "upbeat",
@@ -177,11 +180,28 @@ export default function VideoPage() {
   const [bgmUploading, setBgmUploading] = useState(false);
   // 是否已配置付费 TTS（否则配音走免费 Edge keyless TTS）
   const paidTtsReady = isPaidTTSReady(tts, providers);
+  // 本次音频策略 → 是否跑 TTS 的唯一判定入口；手动开关优先级高于策略默认值
+  const audioStrategy = creationBrief?.audioStrategy ?? null;
+  const voiceover = resolveVoiceoverRequest({
+    audioStrategy,
+    manualTtsEnabled: ttsOverride,
+    legacyWorkflowVoiceEnabled: workflowVoiceEnabled,
+  });
+  const ttsEnabled = voiceover.ttsEnabled;
+  // 让用户一眼看出「当前生效的是策略默认还是手动覆盖」
+  const voiceoverSourceNote =
+    voiceover.source === "manual"
+      ? `已手动覆盖为${ttsEnabled ? "开启" : "关闭"}配音`
+      : voiceover.source === "strategy"
+        ? "按策略默认"
+        : "旧项目默认（未记录创作简报）";
+  const audioStrategyLabel = audioStrategy ? AUDIO_STRATEGY_LABELS[audioStrategy] : "未记录";
   // 把「配音开关 + 是否配置了付费 TTS + 简报里的音频策略」翻译成一句人话：
   // 付费火山语音 / 免费 Edge 回退 / 模型原生音频 / 静音 / 本次未开启
   const voiceSource = voiceSourceExplanation({
-    audioStrategy: creationBrief?.audioStrategy ?? null,
-    ttsEnabled: config.ttsEnabled,
+    // 手动覆盖后策略已不生效：交给「开关 + 付费是否就绪」解释，避免仍显示「静音」
+    audioStrategy: voiceover.source === "manual" ? null : audioStrategy,
+    ttsEnabled,
     paidTtsReady,
   });
   // 免费配音试听状态
@@ -251,7 +271,7 @@ export default function VideoPage() {
           );
           if (Array.isArray(project.productionWorkflow)) {
             const voiceStage = project.productionWorkflow.find((stage: { id?: unknown }) => stage.id === "voice");
-            if (voiceStage) setConfig((current) => ({ ...current, ttsEnabled: voiceStage.enabled !== false }));
+            if (voiceStage) setWorkflowVoiceEnabled(voiceStage.enabled !== false);
           }
         }
         // 收集每个分镜已生成的画面，作时间线缩略图（已完成且有文件的才算）
@@ -533,8 +553,8 @@ export default function VideoPage() {
             ...(!config.voiceGround && { voiceGround: false }),
             // uploaded BGM stays fixed across combos; otherwise the mood dimension picks the free track
             ...(bgm?.path ? { bgmPath: bgm.path } : { freeBgm: true, bgmMood: combo.bgm }),
-            ...(config.ttsEnabled && paidTtsReady && { ttsConfig: resolveTTSConfig(tts, providers) }),
-            ...(config.ttsEnabled && !paidTtsReady && { freeTts: { enabled: true, voice: config.freeVoice } }),
+            ...(ttsEnabled && paidTtsReady && { ttsConfig: resolveTTSConfig(tts, providers) }),
+            ...(ttsEnabled && !paidTtsReady && { freeTts: { enabled: true, voice: config.freeVoice } }),
           }),
         });
         const data = await res.json();
@@ -603,11 +623,12 @@ export default function VideoPage() {
           // 没上传 BGM 且选了非 none 的配乐情绪 → 自动取一条该情绪的免费 CC 配乐（之前这里漏发，下拉形同虚设）
           ...(!bgm?.path && config.bgm !== "none" && { freeBgm: true, bgmMood: config.bgm }),
           // 开启配音时：已配付费 TTS 走付费；否则走免费 Edge keyless TTS（无需 Key），合成为每镜生成口播音轨
-          ...(config.ttsEnabled && paidTtsReady && {
+          // 是否开启由「本次音频策略 + 手动覆盖」判定：mute / native-audio 不带任何 TTS 配置
+          ...(ttsEnabled && paidTtsReady && {
             // 解析后的完整配置（含平台、复用的 Key、默认 baseUrl/模型/音色、可选 GroupId）
             ttsConfig: resolveTTSConfig(tts, providers),
           }),
-          ...(config.ttsEnabled && !paidTtsReady && {
+          ...(ttsEnabled && !paidTtsReady && {
             freeTts: { enabled: true, voice: config.freeVoice },
           }),
         }),
@@ -900,22 +921,36 @@ export default function VideoPage() {
                 <div className="flex items-center justify-between">
                   <span className="text-xs text-muted-foreground">{t("ttsEnableLabel")}</span>
                   <button
-                    onClick={() => setConfig((c) => ({ ...c, ttsEnabled: !c.ttsEnabled }))}
-                    className={`relative w-10 h-5 rounded-full transition-colors ${config.ttsEnabled ? "bg-primary" : "bg-muted"}`}
+                    onClick={() => setTtsOverride(!ttsEnabled)}
+                    className={`relative w-10 h-5 rounded-full transition-colors ${ttsEnabled ? "bg-primary" : "bg-muted"}`}
                   >
-                    <div className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${config.ttsEnabled ? "translate-x-5" : "translate-x-0.5"}`} />
+                    <div className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${ttsEnabled ? "translate-x-5" : "translate-x-0.5"}`} />
                   </button>
+                </div>
+                {/* 本次音频策略：说清开关的默认值从哪来（策略默认 / 手动覆盖 / 旧项目默认） */}
+                <div className="flex items-center justify-between gap-2" data-voiceover-source={voiceover.source}>
+                  <p className="text-[11px] text-muted-foreground">
+                    本次音频策略：{audioStrategyLabel} · {voiceoverSourceNote}
+                  </p>
+                  {voiceover.source === "manual" && (
+                    <button
+                      onClick={() => setTtsOverride(null)}
+                      className="shrink-0 text-[11px] text-primary hover:underline"
+                    >
+                      恢复策略默认
+                    </button>
+                  )}
                 </div>
                 {/* 当前人声由谁生成的明确说明：付费火山语音 / 免费 Edge 回退 / 模型原生音频 / 静音 */}
                 <p className="text-[11px] text-muted-foreground" data-voice-source={voiceSource.kind}>
                   {voiceSource.label}：{voiceSource.detail}
                 </p>
-                {config.ttsEnabled && paidTtsReady && (
+                {ttsEnabled && paidTtsReady && (
                   <p className="text-[11px] text-muted-foreground">
                     {t("ttsPaidHint", { provider: getTTSProviderMeta(tts.provider).label })}
                   </p>
                 )}
-                {config.ttsEnabled && !paidTtsReady && (
+                {ttsEnabled && !paidTtsReady && (
                   <div className="space-y-2">
                     <Select value={config.freeVoice} onValueChange={(v) => setConfig((c) => ({ ...c, freeVoice: v ?? c.freeVoice }))}>
                       <SelectTrigger className="bg-muted/30 border-border/50 text-xs">
