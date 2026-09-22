@@ -85,6 +85,27 @@ npm run build
 if ($LASTEXITCODE -ne 0) { throw "frontend build failed" }
 Pop-Location
 
+# 1b. Build the vendored ClipForge application as a local-only sidecar. The
+# output is copied into the MainPG bundle below with its own Node runtime, so
+# customer machines never need a globally installed Node or pnpm.
+$clipforgeRoot = Join-Path $PSScriptRoot "..\integrations\clipforge"
+if (-not (Test-Path -LiteralPath $clipforgeRoot -PathType Container)) {
+    throw "vendored ClipForge source missing: $clipforgeRoot"
+}
+$pnpmCommand = Get-Command pnpm -ErrorAction SilentlyContinue
+if (-not $pnpmCommand) { throw "pnpm 10+ is required to build the embedded ClipForge sidecar" }
+$nodeCommand = Get-Command node -ErrorAction SilentlyContinue
+if (-not $nodeCommand) { throw "Node 20+ is required to build the embedded ClipForge sidecar" }
+Write-Host "[build] building embedded ClipForge sidecar ..."
+Push-Location $clipforgeRoot
+& $pnpmCommand.Source install --frozen-lockfile
+if ($LASTEXITCODE -ne 0) { throw "ClipForge dependency installation failed" }
+& $pnpmCommand.Source build
+if ($LASTEXITCODE -ne 0) { throw "ClipForge build failed" }
+& $nodeCommand.Source scripts\prepare-mainpg-sidecar.mjs
+if ($LASTEXITCODE -ne 0) { throw "ClipForge standalone preparation failed" }
+Pop-Location
+
 # 2. Ensure PyInstaller
 & $python -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('PyInstaller') else 1)"
 if ($LASTEXITCODE -ne 0) {
@@ -100,6 +121,31 @@ if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed" }
 
 $dist = Join-Path $PSScriptRoot "dist\MainPG"
 if (-not (Test-Path $dist)) { throw "bundle output missing: $dist" }
+
+# Ship the standalone app and the exact Node executable that built it. This is
+# intentionally a copied build artifact, not a Git submodule/reference and not
+# a dependency on a customer-installed Node runtime.
+$clipforgeStandalone = Join-Path $clipforgeRoot ".next\standalone"
+if (-not (Test-Path -LiteralPath (Join-Path $clipforgeStandalone "server.js") -PathType Leaf)) {
+    throw "ClipForge standalone entry missing after build"
+}
+$clipforgeBundle = Join-Path $dist "clipforge"
+$clipforgeApp = Join-Path $clipforgeBundle "app"
+New-Item -ItemType Directory -Force -Path $clipforgeBundle | Out-Null
+Copy-Item -LiteralPath $clipforgeStandalone -Destination $clipforgeApp -Recurse -Force
+Copy-Item -LiteralPath $nodeCommand.Source -Destination (Join-Path $clipforgeBundle "node.exe") -Force
+
+# Next's file tracing may omit dynamically loaded media binaries. Copy them
+# explicitly so composition does not fall back to a machine-global ffmpeg.
+foreach ($mediaModule in @("ffmpeg-static", "@ffprobe-installer")) {
+    $mediaSource = Join-Path $clipforgeRoot ("node_modules\" + $mediaModule)
+    if (Test-Path -LiteralPath $mediaSource -PathType Container) {
+        $mediaTarget = Join-Path $clipforgeApp ("node_modules\" + $mediaModule)
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $mediaTarget) | Out-Null
+        Copy-Item -LiteralPath $mediaSource -Destination $mediaTarget -Recurse -Force
+    }
+}
+Write-Host "[build] bundled ClipForge standalone + Node runtime"
 
 # 4. Copy the app icon so shortcuts can use the product logo (jieye-mark).
 # Existing installations keep their app-local credential files because the installer does not

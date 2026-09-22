@@ -20,4 +20,9 @@ describe("MainPG embedded shell", () => {
     expect(css).toMatch(/\.mainpg-embedded \.cf-root/);
     expect(css).toMatch(/background: #fff7f8/);
   });
+
+  it("does not advertise Atlas Cloud beside the MainPG start action", () => {
+    expect(startPage).not.toMatch(/reassureLead/);
+    expect(startPage).not.toMatch(/<b>Atlas Cloud<\/b>/);
+  });
 });
