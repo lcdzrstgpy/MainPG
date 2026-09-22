@@ -260,6 +260,23 @@
 - 强制约定：**任何提交前必须先校验**「`git diff --cached --name-status | grep -c '^D'` 必须为 0」且 `git ls-files` 数量正常；本轮的每个批次都是靠这条校验拦住的。
 - 建议后续排查：并行代理是否共用同一个 `.git` 索引，或某个工具在写入 `.git/index`。
 
+### 复审修复（提交 dd23b5fb）
+
+外部复审结论：结构与迁移完整，但「定制化信息真正驱动生产链路」未闭环。已逐条修复：
+
+| 复审项 | 问题 | 修复 |
+|---|---|---|
+| P1 | 人物/处境/语言/语气只保存不生效 | `buildScriptRequest` 输出 `narrative`；脚本路由 `resolveNarrative`（请求体优先、项目简报兜底）；提示词新增【叙事要求】段 |
+| P1 | 视觉约束组件未接线、创建不写 `creativeIntent`/`visualBible` | 表单接入 `visual-control-panel` 的 `constraints`，产出并回传 `creativeIntent`（`visualBible` 仅由真实收集到的禁忌映射，不编造锚点）；两个入口创建时提交这两个字段 |
+| P1 | 选中主播会丢失 | `POST /api/project` 落库 `characterId`；脚本页 `resolveScriptCharacter` 按 项目 → 简报 → URL 兜底 的优先级解析 |
+| P1 | 一句话主题链路错误 | 两个入口在 topic 模式下带 `contentType:"topic"` + `topic`，脚本改走 `/api/topic/script`（唯一构造器 `buildTopicScriptRequest`），不再用空 `productName` 打带货脚本接口 |
+| P2 | `audioStrategy="mute"` 未生效 | `resolveVoiceoverRequest` 以策略驱动合成请求（mute/native-audio 不启用 TTS，旧项目保留既有默认，手动覆盖优先并在界面标注来源） |
+| P2 | 出片策略未强制显式选择 | `strategyChosen` 只由用户点击置真，未选择时校验失败并展示可读错误；默认值仍为 `draft` |
+| 附带 | `tsc --noEmit` 被既有类型错误阻断 | 修好 `providers-volcengine-timeout.test.ts` 的 `never` 推断（显式 mock 类型，未削弱断言）；现全项目 tsc 0 报错 |
+
+复审所述「全量测试超 30 秒窗口且有失败」的两点澄清：该套件单次运行约 68 秒，30 秒工具窗口会把运行截断；未注入 `FFMPEG_PATH` 时媒体类用例 8 个失败是 `spawn ffmpeg ENOENT`（本机 PATH 无 ffmpeg），注入内置二进制后**166 个测试文件 / 1607 项用例全部通过**。
+
+
 
 
 
