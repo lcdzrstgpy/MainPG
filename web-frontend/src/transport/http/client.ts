@@ -41,6 +41,26 @@ export function clearAuthSession() {
   window.localStorage.removeItem(ACCOUNT_KEY);
 }
 
+/**
+ * Release the remote single-device session before forgetting the local bearer
+ * token. This avoids leaving an account locked after a real session expiry.
+ */
+export async function releaseAuthSession(): Promise<void> {
+  const token = getAuthToken();
+  try {
+    if (token) {
+      await fetch(`${apiBaseUrl()}/api/customer/logout`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    }
+  } catch {
+    // A failed remote release must not block the local sign-out.
+  } finally {
+    clearAuthSession();
+  }
+}
+
 const SESSION_EXPIRED_EVENT = "auth:session-expired";
 
 /** 通知应用层登录状态已失效（登录超时 / 远程会话缺失），用于自动返回登录页。 */
@@ -49,28 +69,12 @@ export function notifySessionExpired(): void {
 }
 
 export function isSessionExpired(response: Response, detail: string): boolean {
-  if (response.status === 401) return true;
-  return /login session expired|remote customer session is missing|invalid bearer token|missing bearer token/i.test(detail);
-}
-
-/**
- * 全局 fetch 拦截器：任意接口返回 401（登录会话失效/远程会话缺失）即统一派发
- * auth:session-expired，由 App 回到登录页。
- *
- * 用于兜住未走 httpJson/httpBlob 的裸 fetch 调用（如 product_processing、
- * profit_activity、DailySelectionPage、useChangePoller 等模块自带的 fetch），
- * 避免这些路径在会话过期时只显示"操作失败，请稍后重试"、让用户手动退出重登。
- */
-const FETCH_INTERCEPTOR_KEY = "__wh_session_fetch_interceptor__";
-const interceptorWindow = window as unknown as Record<string, unknown>;
-if (!interceptorWindow[FETCH_INTERCEPTOR_KEY]) {
-  interceptorWindow[FETCH_INTERCEPTOR_KEY] = true;
-  const originalFetch = window.fetch.bind(window);
-  window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const response = await originalFetch(input, init);
-    if (response.status === 401) notifySessionExpired();
-    return response;
-  };
+  // Business modules can use 401 while trying their fallback credentials. A
+  // plain 401 therefore is not enough evidence to discard the whole login.
+  return (
+    response.status === 401 &&
+    /login session expired|remote customer session is missing|invalid bearer token|missing bearer token|session revoked/i.test(detail)
+  );
 }
 
 /**
