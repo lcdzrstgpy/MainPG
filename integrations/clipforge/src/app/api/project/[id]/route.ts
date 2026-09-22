@@ -6,6 +6,7 @@ import { projects } from "@/lib/db/schema";
 import { getUploadsDir, getOutputDir } from "@/lib/paths";
 import { eq } from "drizzle-orm";
 import { apiError, errText } from "@/lib/api-error";
+import { sanitizeCreationBrief } from "@/lib/creation-brief";
 
 // Project ids are UUIDs; validate before using one in a filesystem path (guards the rm below against traversal)
 const SAFE_ID = /^[a-zA-Z0-9-]+$/;
@@ -28,6 +29,11 @@ const PATCHABLE_FIELDS = [
   "sourceVideoUrl",
   "characterId",
   "status",
+  // Unified creation contract (see src/lib/creation-brief.ts). creativeIntent / visualBible /
+  // productionWorkflow stay OUT of this list on purpose: their single write path (with their own
+  // sanitizers) is PATCH /api/project/[id]/production, and duplicating it here would give the same
+  // columns two divergent update paths.
+  "creationBrief",
 ] as const;
 
 // Valid enum values for the status field (SQLite does not enforce enums, so we validate manually)
@@ -85,6 +91,12 @@ export async function PATCH(
     // Validate that the status value is a legal enum member
     if ("status" in updates && !VALID_STATUS.has(String(updates.status))) {
       return apiError(req, "非法的项目状态值", "Invalid project status value", 400);
+    }
+
+    // The brief is normalized with the same sanitizer used at creation time, so an edit can never
+    // store an out-of-contract strategy/enum that the script and compose stages would trust.
+    if ("creationBrief" in updates) {
+      updates.creationBrief = sanitizeCreationBrief(updates.creationBrief);
     }
 
     if (Object.keys(updates).length === 0) {

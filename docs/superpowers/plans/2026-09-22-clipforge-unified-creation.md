@@ -204,7 +204,21 @@
 
 ---
 
-## 验收与验证命令
+## 进度与未决事项
+
+### 已完成批次
+
+- **批次 1（77e2a560）**：`creationBrief` 合同与 `sanitizeCreationBrief`、`creation_brief` 列 + `project_events` 表（迁移 0020）、`recordCreationEvent`、逐镜 `voiceReport`（写入合成 sidecar）、设置页/错误文案/CLI/MCP/LLM 预设去 Atlas。
+- **批次 2**：`src/components/project-creation/` 共享表单与 `buildScriptRequest`；`src/lib/script-style.ts` 风格解析器（无数据不再回退 `pain_point`）；`POST /api/project` 接受并校验 `creationBrief`/`creativeIntent`/`visualBible`/`productionWorkflow`，`PATCH` 白名单加入 `creationBrief`。
+
+### 未决事项（下一批次必须先决定）
+
+1. **风格词表别名**：`insights.topStyle` 落库的是引擎风格词（`pain_point`、`scene`），而 UI 白名单是 `pain-point`、`scenario`。当前 `resolveScriptStyle` 采严格口径，真实历史数据里这两种风格不会被推荐。接线批次需显式决定归一策略（建议在 `script-style.ts` 内维护一张受控别名表，而不是放宽白名单）。
+2. **`/api/llm/script` 接线时机**：`resolveScriptStyle` 已就绪但未接入路由，原因是 `/start`、`/project/new`、批量出片、爆款复刻、MCP/CLI 仍会发送 `auto`；必须先完成 Task 2.1（工作台显式选择风格）与 Task 1.2（新建页接入共享表单），再切换路由，否则默认流程会报错。
+3. **创建 API 的兼容边界（已实现）**：只有请求体带 `creationBrief` 时才会写入默认 `productionWorkflow`；无简报的旧调用方保持该列 null，避免素材页「自动生视频」开关被静默改变。
+4. **文档去 Atlas（Task 6.4）暂缓**：`README*.md` / `TUTORIAL*.md` / `docs/*.html` 属上游 vendored 内容，改动会影响 AGPL 溯源与后续上游对比，需与维护者确认后再动。
+
+
 
 ```bash
 cd integrations/clipforge

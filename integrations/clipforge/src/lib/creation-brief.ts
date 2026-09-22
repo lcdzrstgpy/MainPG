@@ -109,3 +109,21 @@ const WORKFLOW_INPUT_BY_STRATEGY: Record<OutputStrategy, Parameters<typeof build
 export function buildWorkflowPlanForStrategy(strategy: OutputStrategy): WorkflowStagePlan[] {
   return buildWorkflowPlan(WORKFLOW_INPUT_BY_STRATEGY[strategy]);
 }
+
+/**
+ * Design §7.2: the server must reject a brief whose strategy and workflow disagree, instead of
+ * silently producing a cheaper film than the user asked for. Only an *explicitly* disabled key
+ * stage is a conflict — an absent stage is not questioned here, and `draft` is defined as the
+ * still-output plan, so its disabled `motion` stage is expected.
+ * Returns a human-readable reason, or null when the pair is consistent.
+ */
+export function assertStrategyWorkflowConsistency(brief: CreationBrief, workflow: WorkflowStagePlan[]): string | null {
+  const stage = (id: WorkflowStagePlan["id"]) => workflow.find((row) => row.id === id);
+  if (brief.outputStrategy === "controlled-motion" && stage("motion")?.enabled === false) {
+    return "出片策略 controlled-motion 要求启用 motion 阶段，但提交的工作流把 motion 设为 disabled";
+  }
+  if (brief.outputStrategy === "native-film" && stage("compose")?.enabled === false) {
+    return "出片策略 native-film 要求启用 compose 阶段，但提交的工作流把 compose 设为 disabled";
+  }
+  return null;
+}

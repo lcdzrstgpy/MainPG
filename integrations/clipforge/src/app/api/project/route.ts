@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
 import { projects } from "@/lib/db/schema";
 import { desc } from "drizzle-orm";
+import { assertStrategyWorkflowConsistency, buildWorkflowPlanForStrategy, sanitizeCreationBrief } from "@/lib/creation-brief";
+import { recordCreationEvent } from "@/lib/creation-analytics";
+import { sanitizeCreativeIntent, sanitizeVisualBible, sanitizeWorkflowPlan, type WorkflowStagePlan } from "@/lib/production-system";
 
 // fetch project list, most recently edited first (the /start "continue" cards rely on this order)
 export async function GET() {
@@ -29,6 +32,33 @@ export async function POST(req: NextRequest) {
     const videoMode = VIDEO_MODES.includes(body.videoMode) ? body.videoMode : undefined;
     const sourceType = body.sourceType === "clone" ? "clone" : undefined;
 
+    // Unified creation contract. The brief is always normalized for validation/telemetry, but the
+    // column is only written when the caller actually sent one — legacy callers (and projects
+    // created before this contract) keep a null brief and their old behaviour.
+    const creationBrief = sanitizeCreationBrief(body.creationBrief);
+    const hasCreationBrief = body.creationBrief !== undefined;
+
+    // creativeIntent / visualBible are sanitized here so a raw value can never reach the script /
+    // assets / compose stages; callers that do not send them still get null (legacy behaviour).
+    const creativeIntent = body.creativeIntent !== undefined ? sanitizeCreativeIntent(body.creativeIntent) : undefined;
+    const visualBible = body.visualBible !== undefined ? sanitizeVisualBible(body.visualBible) : undefined;
+
+    // Design §7.2: a submitted workflow must agree with the chosen strategy. When a brief-backed
+    // caller omits the workflow we write the deterministic plan for that strategy, so `draft` never
+    // silently promises AI motion. Legacy callers that send no brief keep a null workflow and their
+    // previous behaviour (the assets page still defaults auto-motion to on for them).
+    let productionWorkflow: WorkflowStagePlan[] | undefined;
+    if (body.productionWorkflow === undefined) {
+      if (hasCreationBrief) productionWorkflow = buildWorkflowPlanForStrategy(creationBrief.outputStrategy);
+    } else {
+      const workflow = sanitizeWorkflowPlan(body.productionWorkflow);
+      if (workflow) {
+        const conflict = assertStrategyWorkflowConsistency(creationBrief, workflow);
+        if (conflict) return NextResponse.json({ error: conflict }, { status: 400 });
+        productionWorkflow = workflow;
+      }
+    }
+
     const newProject = await db
       .insert(projects)
       .values({
@@ -40,8 +70,26 @@ export async function POST(req: NextRequest) {
         ...(videoMode && { videoMode }),
         ...(sourceType && { sourceType }),
         ...(body.sourceVideoUrl && { sourceVideoUrl: body.sourceVideoUrl }),
+        ...(hasCreationBrief && { creationBrief }),
+        ...(creativeIntent && { creativeIntent }),
+        ...(visualBible && { visualBible }),
+        ...(productionWorkflow && { productionWorkflow }),
       })
       .returning();
+
+    // Observability only: recordCreationEvent swallows its own failures, so creation never depends on it.
+    recordCreationEvent({
+      projectId: newProject[0].id,
+      kind: "project_created",
+      payload: {
+        inputMode: creationBrief.inputMode,
+        outputStrategy: creationBrief.outputStrategy,
+        audioStrategy: creationBrief.audioStrategy,
+        styleType: creationBrief.styleType,
+        styleSource: creationBrief.styleSource,
+        sourceType: sourceType ?? "manual",
+      },
+    });
 
     return NextResponse.json(newProject[0], { status: 201 });
   } catch (error) {
