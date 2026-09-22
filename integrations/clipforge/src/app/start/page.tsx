@@ -36,6 +36,12 @@ import {
 import { StyleChoicePrompt } from "@/components/project-creation/style-choice-prompt";
 import { recordStrategySelected } from "@/components/project-creation/creation-events";
 import { sanitizeCreationBrief, type CreationBrief, type OutputStrategy } from "@/lib/creation-brief";
+import {
+  CLONE_PREFILL_STORAGE_KEY,
+  parseClonePrefill,
+  parseStartPrefill,
+  type CreationEntryId,
+} from "@/lib/creation-entry-prefill";
 
 /** How many trend chips are shown at once; "shuffle" pages through the full board. */
 const TRENDS_PAGE_SIZE = 8;
@@ -88,6 +94,8 @@ interface PendingScript {
   description: string;
   productImages: string[];
   videoMode: VideoModeId;
+  /** 爆款复刻交接的参考镜头节奏骨架：有值时随脚本请求下发，风格重试也要带上 */
+  referenceStructure?: string;
 }
 
 /** 还没建项目就需要用户先选风格的提交内容。 */
@@ -101,6 +109,89 @@ type PendingCreation = PendingScript | PendingForm;
 /** 出片策略只影响跳转：只有 draft 兼容旧的 ?auto=1 断点恢复，其它策略不隐式启动流水线。 */
 function scriptPath(projectId: string, strategy: OutputStrategy): string {
   return `/project/${projectId}/script${strategy === "draft" ? "?auto=1" : ""}`;
+}
+
+/**
+ * 次级入口的预填 → 主入口表单预填（设计 §4：三种来源都是同一个入口的预填）。
+ *
+ * `prefill` 之外还带两样「只用于创建/生成、不进表单字段」的复刻交接内容：
+ * `referenceStructure`（脚本请求）与 `referenceVideoUrl`（项目 sourceVideoUrl）。
+ */
+export interface StartPrefillResolution {
+  /** 表单来源，与 `CreationBrief.inputMode` 同值——不存在第二套来源枚举 */
+  inputMode: CreationEntryId;
+  /** 推给共享表单的预填；库内商品与复刻商品图由页面补齐 */
+  prefill: CreationBriefFormPrefill;
+  /** 商品库条目 id：页面据此读库内的名称/卖点/图片 */
+  productId?: string;
+  /** 爆款复刻已落盘的商品图地址：页面抓成 File（纯函数不发请求、不碰 DOM） */
+  productImages?: string[];
+  /** 爆款复刻的参考镜头节奏骨架：生成脚本时透传 */
+  referenceStructure?: string;
+  /** 爆款复刻的参考视频地址：创建项目时写入 sourceVideoUrl */
+  referenceVideoUrl?: string;
+}
+
+/**
+ * URL 预填参数 + 复刻暂存 → 一次表单预填。认不出的组合一律返回 null（绝不抛错），
+ * 调用方据此保持空表单，而不是猜一个来源填进去。
+ */
+export function resolveStartPrefill(
+  search: string,
+  cloneStorageValue?: string | null
+): StartPrefillResolution | null {
+  const params = parseStartPrefill(search);
+
+  if (params.entry === "topic") {
+    if (!params.topic) return null;
+    return { inputMode: "topic", prefill: { brief: { inputMode: "topic" }, topic: params.topic } };
+  }
+
+  if (params.entry === "clone") {
+    // 暂存缺失/损坏时宁可空表单：只带 query 文本的半份复刻简报会让用户以为节奏骨架还在
+    const payload = parseClonePrefill(cloneStorageValue ?? null);
+    if (!payload) return null;
+    return {
+      inputMode: "clone",
+      prefill: {
+        productName: params.productName,
+        sellingPoints: params.sellingPoints,
+        brief: payload.brief,
+      },
+      ...(payload.productImages?.length ? { productImages: payload.productImages } : {}),
+      ...(payload.referenceStructure ? { referenceStructure: payload.referenceStructure } : {}),
+      ...(payload.referenceVideoUrl ? { referenceVideoUrl: payload.referenceVideoUrl } : {}),
+    };
+  }
+
+  // 商品库：库页的「做视频」按钮曾经只带 ?productId=，与 ?entry=product-library&productId= 同一分支
+  if (params.productId) {
+    return {
+      inputMode: "product-library",
+      prefill: { brief: { inputMode: "product-library" } },
+      productId: params.productId,
+    };
+  }
+
+  return null;
+}
+
+/** 读取爆款复刻暂存；浏览器禁用本地存储时按「没有交接」处理。 */
+function readClonePrefillStorage(): string | null {
+  try {
+    return localStorage.getItem(CLONE_PREFILL_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/** 暂存用过即清：同一份交接不会被下一次刷新重放，用户之后的改动也不会被覆盖。 */
+function clearClonePrefillStorage(): void {
+  try {
+    localStorage.removeItem(CLONE_PREFILL_STORAGE_KEY);
+  } catch {
+    /* storage unavailable → nothing to clear */
+  }
 }
 
 export default function StartPage() {
@@ -162,27 +253,53 @@ export default function StartPage() {
     setPrefillKey(crypto.randomUUID());
   }, []);
 
-  // product-library hand-off: /start?productId=x pre-fills the upload source, so the
-  // library's "make video" button lands beginners on the same single creation path
+  // 次级入口交接：商品库 / 一句话主题 / 爆款复刻只把「一份预填简报」放在 query 里（复刻另带
+  // localStorage 暂存），由本页消费一次，落到同一个共享表单上——不再各自创建项目。
   const { products: libraryProducts } = useProductLibraryStore();
   const prefilledRef = useRef(false);
+  // 复刻交接的参考结构/来源视频不属于表单字段，预填时暂存在这里，创建与生成时透传
+  const cloneRef = useRef<{ referenceStructure?: string; referenceVideoUrl?: string }>({});
   useEffect(() => {
     if (prefilledRef.current) return;
-    const productId = new URLSearchParams(window.location.search).get("productId");
-    if (!productId) return;
-    const product = libraryProducts.find((p) => p.id === productId);
-    if (!product) return; // store not hydrated yet (effect re-runs) or stale id
+    const resolution = resolveStartPrefill(window.location.search, readClonePrefillStorage());
+    if (!resolution) return;
+
+    if (resolution.inputMode === "product-library") {
+      const product = libraryProducts.find((p) => p.id === resolution.productId);
+      if (!product) return; // store not hydrated yet (effect re-runs) or stale id
+      prefilledRef.current = true;
+      void (async () => {
+        // fetch library images into File objects; local blob URLs from other pages may be dead — text stays filled either way
+        const files = await fetchImagesAsFiles(product.images);
+        pushPrefill({
+          ...resolution.prefill,
+          productName: product.name,
+          sellingPoints: product.description ?? "",
+          ...(files.length ? { images: files } : {}),
+        });
+      })();
+      return;
+    }
+
     prefilledRef.current = true;
-    void (async () => {
-      // fetch library images into File objects; local blob URLs from other pages may be dead — text stays filled either way
-      const files = await fetchImagesAsFiles(product.images);
-      pushPrefill({
-        productName: product.name,
-        sellingPoints: product.description ?? "",
-        brief: { inputMode: "upload" },
-        ...(files.length ? { images: files } : {}),
-      });
-    })();
+
+    if (resolution.inputMode === "clone") {
+      // 交接只发生一次：参考结构留给创建/生成，暂存立刻清掉，用户之后自己的改动不会再被覆盖
+      cloneRef.current = {
+        referenceStructure: resolution.referenceStructure,
+        referenceVideoUrl: resolution.referenceVideoUrl,
+      };
+      clearClonePrefillStorage();
+      void (async () => {
+        const files = resolution.productImages?.length
+          ? await fetchImagesAsFiles(resolution.productImages)
+          : [];
+        pushPrefill({ ...resolution.prefill, ...(files.length ? { images: files } : {}) });
+      })();
+      return;
+    }
+
+    pushPrefill(resolution.prefill);
   }, [libraryProducts, pushPrefill]);
 
   // fetch recent projects to give returning users a "continue" entry point (replaces the old homepage project list so they are not left stranded)
@@ -405,6 +522,8 @@ export default function StartPage() {
           videoMode: pending.videoMode,
           llmConfig: llmConfig(),
           character: characterFor(pending.brief.characterId),
+          // 复刻交接的参考节奏骨架：有值才下发（buildScriptRequest 省略未给出的可选键）
+          ...(pending.referenceStructure ? { referenceStructure: pending.referenceStructure } : {}),
         })
       ),
     });
@@ -456,6 +575,10 @@ export default function StartPage() {
           productDescription: description,
           productImages: [],
           creationBrief: brief,
+          // 复刻交接的参考视频：创建时落到项目 sourceVideoUrl，供后续复刻/修复阶段取用
+          ...(cloneRef.current.referenceVideoUrl
+            ? { sourceVideoUrl: cloneRef.current.referenceVideoUrl }
+            : {}),
         }),
       });
       if (!projectRes.ok) {
@@ -491,6 +614,9 @@ export default function StartPage() {
         description,
         productImages,
         videoMode: values.videoMode,
+        ...(cloneRef.current.referenceStructure
+          ? { referenceStructure: cloneRef.current.referenceStructure }
+          : {}),
       });
       if (outcome === "needs-style") {
         setBusy(false);
@@ -526,6 +652,7 @@ export default function StartPage() {
     try {
       // 库里的简报也要跟着用户的实际选择走（失败不阻断这次生成）
       await patchProject(pending.projectId, { creationBrief: brief });
+      // 原样带上 pending：复刻交接的 referenceStructure 不会在风格重试时丢失
       const outcome = await requestScript({ ...pending, brief });
       if (outcome === "needs-style") {
         setBusy(false);

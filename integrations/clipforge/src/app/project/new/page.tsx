@@ -39,6 +39,11 @@ import {
 import { StyleChoicePrompt } from "@/components/project-creation/style-choice-prompt";
 import { recordStrategySelected } from "@/components/project-creation/creation-events";
 import { DEFAULT_CREATION_BRIEF, sanitizeCreationBrief, type CreationBrief } from "@/lib/creation-brief";
+import {
+  CLONE_PREFILL_STORAGE_KEY,
+  parseClonePrefill,
+  parseStartPrefill,
+} from "@/lib/creation-entry-prefill";
 import { useT, useLocale } from "@/lib/i18n";
 
 /**
@@ -137,6 +142,24 @@ interface PendingForm {
 }
 
 type PendingCreation = PendingScript | PendingForm;
+
+/** 读取爆款复刻暂存；浏览器禁用本地存储时按「没有交接」处理（与 /start 同一份契约）。 */
+function readClonePrefillStorage(): string | null {
+  try {
+    return localStorage.getItem(CLONE_PREFILL_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/** 暂存用过即清：同一份交接不会被下一次刷新重放，用户之后的改动也不会被覆盖。 */
+function clearClonePrefillStorage(): void {
+  try {
+    localStorage.removeItem(CLONE_PREFILL_STORAGE_KEY);
+  } catch {
+    /* storage unavailable → nothing to clear */
+  }
+}
 
 export default function NewProjectPage() {
   const router = useRouter();
@@ -380,28 +403,72 @@ export default function NewProjectPage() {
   // product library (used to pre-fill from the library when "make video" is triggered)
   const { products: libraryProducts } = useProductLibraryStore();
 
-  // on mount, if ?productId is present, pre-fill once from the product library (products are only available after the store hydrates, hence the dependency)
+  /**
+   * 次级入口交接（设计 §4）：商品库 / 一句话主题 / 爆款复刻只把「一份预填简报」放在 query 里
+   * （复刻另带 localStorage 暂存），由本页消费一次，落到与 /start 同一份共享表单上。
+   * 认不出的组合一律不预填（绝不抛错），调用方保持空表单，而不是猜一个来源填进去。
+   */
   const prefilledRef = useRef(false);
+  // 复刻交接的参考结构/来源视频不属于表单字段，预填时暂存在这里，创建与生成时透传
+  const cloneRef = useRef<{ referenceStructure?: string; referenceVideoUrl?: string }>({});
   useEffect(() => {
     if (prefilledRef.current) return;
-    const productId = new URLSearchParams(window.location.search).get("productId");
-    if (!productId) return;
-    const product = libraryProducts.find((p) => p.id === productId);
-    if (!product) return;
-    prefilledRef.current = true;
-    void (async () => {
-      // product library images are same-origin /api/files paths, so they can be fetched as Files;
-      // local blob URLs expire across pages and are simply skipped (text stays filled)
-      const files = await fetchImagesAsFiles(product.images);
-      pushPrefill({
-        productName: product.name,
-        // the product library's "tech" category maps to "digital" here; all other values are the same
-        category: product.category === "tech" ? "digital" : product.category,
-        sellingPoints: product.description ?? "",
-        brief: { inputMode: "product-library" },
-        ...(files.length ? { images: files } : {}),
-      });
-    })();
+    const params = parseStartPrefill(window.location.search);
+    if (!params.entry && !params.productId) return;
+
+    // 商品库：库页的「做视频」带 ?entry=product-library&productId=；store 未 hydrate 时找不到商品，
+    // 不落 prefilledRef，effect 会在 store 更新后重跑
+    if (params.productId) {
+      const product = libraryProducts.find((p) => p.id === params.productId);
+      if (!product) return;
+      prefilledRef.current = true;
+      void (async () => {
+        // product library images are same-origin /api/files paths, so they can be fetched as Files;
+        // local blob URLs expire across pages and are simply skipped (text stays filled)
+        const files = await fetchImagesAsFiles(product.images);
+        pushPrefill({
+          productName: product.name,
+          // the product library's "tech" category maps to "digital" here; all other values are the same
+          category: product.category === "tech" ? "digital" : product.category,
+          sellingPoints: product.description ?? "",
+          brief: { inputMode: "product-library" },
+          ...(files.length ? { images: files } : {}),
+        });
+      })();
+      return;
+    }
+
+    // 一句话主题：纯文本，不需要 store，直接预填
+    if (params.entry === "topic") {
+      if (!params.topic) return;
+      prefilledRef.current = true;
+      pushPrefill({ brief: { inputMode: "topic" }, topic: params.topic });
+      return;
+    }
+
+    // 爆款复刻：暂存缺失/损坏时宁可空表单（只带 query 文本的半份简报会让用户以为节奏骨架还在）
+    if (params.entry === "clone") {
+      const payload = parseClonePrefill(readClonePrefillStorage());
+      if (!payload) return;
+      prefilledRef.current = true;
+      // 交接只发生一次：参考结构留给创建/生成，暂存立刻清掉，用户之后自己的改动不会再被覆盖
+      cloneRef.current = {
+        referenceStructure: payload.referenceStructure,
+        referenceVideoUrl: payload.referenceVideoUrl,
+      };
+      clearClonePrefillStorage();
+      void (async () => {
+        const files = payload.productImages?.length
+          ? await fetchImagesAsFiles(payload.productImages)
+          : [];
+        pushPrefill({
+          productName: params.productName,
+          sellingPoints: params.sellingPoints,
+          brief: payload.brief,
+          ...(files.length ? { images: files } : {}),
+        });
+      })();
+    }
   }, [libraryProducts, pushPrefill]);
 
   // one-click fill with example product (including a real sample image) to let beginners try without any setup
@@ -565,6 +632,10 @@ export default function NewProjectPage() {
           productDescription: values.sellingPoints,
           productImages: [],
           creationBrief: brief,
+          // 复刻交接的参考视频：创建时落到项目 sourceVideoUrl（与 /start 一致）
+          ...(cloneRef.current.referenceVideoUrl
+            ? { sourceVideoUrl: cloneRef.current.referenceVideoUrl }
+            : {}),
         }),
       });
       if (!projectRes.ok) throw new Error(t("errorCreateFailed"));
@@ -607,7 +678,8 @@ export default function NewProjectPage() {
         projectId: project.id,
         brief,
         productImages,
-        referenceStructure,
+        // 复刻交接的参考节奏骨架：用户没选模板时透传（与 /start 一致）
+        referenceStructure: referenceStructure ?? cloneRef.current.referenceStructure,
         customRequirements: adTemplate ? adTemplateScriptDirective(adTemplate) : undefined,
       });
       if (outcome === "needs-style") {

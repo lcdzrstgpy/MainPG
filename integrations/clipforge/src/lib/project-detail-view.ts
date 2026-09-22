@@ -26,7 +26,7 @@ export const OUTPUT_STRATEGY_GROUP_LABELS: Record<OutputStrategy, string> = {
 
 /**
  * 判定一条成片属于哪种策略时可用的信号。
- * `strategy` 是给未来合成记录补上策略字段时预留的显式信号；`label` 是当前唯一可用的线索
+ * `strategy` 是合成记录落库的显式策略列（迁移 0021）；`label` 是历史成片唯一可用的线索
  * （整片生成会写入「九宫格整片 · 模型」，其它合成记录多数没有标签）。
  */
 export interface CompositionStrategySource {
@@ -57,6 +57,17 @@ export function compositionStrategyOf(composition: CompositionStrategySource | n
 export function compositionStrategyLabel(composition: CompositionStrategySource | null | undefined): string {
   const strategy = compositionStrategyOf(composition);
   return strategy ? OUTPUT_STRATEGY_GROUP_LABELS[strategy] : "策略未记录";
+}
+
+/**
+ * 新建成片记录应落库的策略：读项目创作简报的 `outputStrategy`（写入侧的唯一来源）。
+ * 旧项目没有简报、结构异常或枚举非法时返回 null —— 宁可写 null 让导出页回退到标签粗判，
+ * 也不要按当前默认值瞎猜（那会把受控动态的成片冒充成免费草稿）。
+ */
+export function compositionStrategyFromBrief(creationBrief: unknown): OutputStrategy | null {
+  if (!creationBrief || typeof creationBrief !== "object" || Array.isArray(creationBrief)) return null;
+  const raw = (creationBrief as Record<string, unknown>).outputStrategy;
+  return isOutputStrategy(raw) ? raw : null;
 }
 
 export interface CompositionGroups<T> {

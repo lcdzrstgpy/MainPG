@@ -12,7 +12,10 @@ import { resolveScriptStyle, SCRIPT_STYLE_VALUES } from "@/lib/script-style";
  * 1) 非交互入口（CLI / MCP / Infinite Canvas 节点）与爆款复刻页的默认风格必须是白名单里的显式
  *    UI 值，不能是 auto，也不能是痛点种草；
  * 2) 收到 409 时必须把候选风格带进错误信息，不得当成普通「生成失败」吞掉；
- * 3) batch / clone 复用共享解析器 parseStyleRequirement（与 /start、/project/new 同一份）。
+ * 3) batch 复用共享解析器 parseStyleRequirement（与 /start、/project/new 同一份）。
+ *
+ * 爆款复刻页在 Task 5.1 后不再自己请求脚本（它只把显式风格随预填简报交给主入口 /start），
+ * 因此「复用解析器」这一条只对 batch 生效；clone 仍被断言为「显式合法风格 + 不再硬编码 auto」。
  */
 const read = (file: string) => readFileSync(resolve(process.cwd(), file), "utf8");
 
@@ -84,15 +87,20 @@ describe("调用方都处理 409 needs_explicit_style", () => {
     }
   });
 
-  it("batch / clone 复用共享解析器并渲染候选风格", () => {
-    for (const page of [batchPage, clonePage]) {
-      expect(page).toMatch(/parseStyleRequirement/);
-      expect(page).toMatch(/errorNeedsExplicitStyle/);
-    }
+  it("batch 复用共享解析器并渲染候选风格", () => {
+    expect(batchPage).toMatch(/parseStyleRequirement/);
+    expect(batchPage).toMatch(/errorNeedsExplicitStyle/);
     // 文案 key 必须真实存在且带 {candidates} 占位符，否则页面上会渲染出原始 key
-    for (const messages of [batchMessages, cloneMessages]) {
-      expect(messages).toMatch(/errorNeedsExplicitStyle:/);
-      expect(messages).toMatch(/\{candidates\}/);
-    }
+    expect(batchMessages).toMatch(/errorNeedsExplicitStyle:/);
+    expect(batchMessages).toMatch(/\{candidates\}/);
+  });
+
+  it("爆款复刻只把显式风格交给主入口：不再自己请求脚本，也不再需要 409 分支", () => {
+    expect(clonePage).not.toMatch(/parseStyleRequirement/);
+    expect(clonePage).not.toMatch(/fetch\(\s*["'`]\/api\/llm\/script/);
+    expect(clonePage).toMatch(/toPrefillParams\(/);
+    expect(literalOf(clonePage, "CLONE_SCRIPT_STYLE")).toBe("scenario");
+    expect(cloneMessages).toMatch(/handoffCta:/);
+    expect(cloneMessages).not.toMatch(/errorNeedsExplicitStyle:/);
   });
 });

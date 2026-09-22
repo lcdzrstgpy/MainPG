@@ -21,6 +21,12 @@ import { CAPTION_PRESET_IDS } from "@/lib/caption-presets";
 import { ProjectHeader } from "@/components/project-header";
 import { CreationBriefSummary } from "@/components/project-creation/creation-brief-summary";
 import { LEGACY_BRIEF_NOTICE, summarizeVoiceReport, voiceSourceExplanation, type VoiceReportSummary } from "@/lib/project-detail-view";
+import {
+  compositionChoiceLabel,
+  compositionChoices,
+  pickCompositionId,
+  type CompositionChoice,
+} from "@/lib/composition-timeline-view";
 import type { CreationBrief } from "@/lib/creation-brief";
 import {
   Select,
@@ -138,6 +144,9 @@ export default function VideoPage() {
   const [creationBrief, setCreationBrief] = useState<CreationBrief | null>(null);
   // 成片 sidecar 里的逐镜音频来源报告；读不到时保持 null → 页面显示「暂无音频报告」
   const [voiceReport, setVoiceReport] = useState<VoiceReportSummary | null>(null);
+  // 本项目已完成的成片版本（新到旧）与用户当前选中的版本：音频报告按选中的版本读取，而不是「最新一条」
+  const [compositions, setCompositions] = useState<CompositionChoice[]>([]);
+  const [selectedCompositionId, setSelectedCompositionId] = useState<string | null>(null);
   const [config, setConfig] = useState<ComposeConfig>({
     ttsEnabled: true,
     ttsVoice: "female-gentle",
@@ -288,20 +297,45 @@ export default function VideoPage() {
     setConfig((c) => ({ ...c, resolution: defaultResolution, aspectRatio: defaultAspectRatio }));
   }, [defaultResolution, defaultAspectRatio]);
 
-  // 逐镜音频来源：读最新成片的 sidecar（`.timeline.json` 里的 voiceReport）。
-  // 读不到（没有成片 / 老 sidecar 没有该字段 / 请求失败）时不报错，页面显示「暂无音频报告」。
+  // 成片版本列表：默认选中最新一条（与迁移前「读最新成片」行为一致），用户可在音频报告卡片里切换版本。
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(`/api/project/${id}/compose`);
+        const res = await fetch(`/api/project/${id}/compositions`);
         if (!res.ok) return;
-        const data = (await res.json()) as { composition?: { timelineUrl?: unknown } } | null;
-        const timelineUrl = typeof data?.composition?.timelineUrl === "string" ? data.composition.timelineUrl : null;
-        if (!timelineUrl) return;
-        const sidecar = await fetch(timelineUrl);
-        if (!sidecar.ok) return;
-        const summary = summarizeVoiceReport(await sidecar.json());
+        const data = (await res.json()) as { compositions?: unknown } | null;
+        if (cancelled) return;
+        const list = compositionChoices(data?.compositions);
+        setCompositions(list);
+        setSelectedCompositionId((current) => pickCompositionId(list, current));
+      } catch {
+        /* 版本列表读不到时保持没有可选版本，音频报告回退到「暂无音频报告」 */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
+  // 逐镜音频来源：按「用户选中的成片版本」读它自己的 sidecar（`.timeline.json` 里的 voiceReport）。
+  // 读不到（没有成片 / 该版本没有 sidecar / 老 sidecar 没有该字段 / 请求失败）时不报错，页面显示「暂无音频报告」。
+  useEffect(() => {
+    let cancelled = false;
+    setVoiceReport(null);
+    if (!selectedCompositionId) return;
+    (async () => {
+      try {
+        const res = await fetch(`/api/project/${id}/compositions/${selectedCompositionId}/timeline`);
+        if (!res.ok) return;
+        const data = (await res.json()) as { timeline?: unknown; timelineUrl?: unknown } | null;
+        let payload: unknown = data?.timeline;
+        // 接口正常情况下内联返回 sidecar；万一没有内联，则按 timelineUrl 直接取原始文件
+        if (payload == null && typeof data?.timelineUrl === "string") {
+          const sidecar = await fetch(data.timelineUrl);
+          if (sidecar.ok) payload = await sidecar.json();
+        }
+        const summary = summarizeVoiceReport(payload);
         if (!cancelled && summary) setVoiceReport(summary);
       } catch {
         /* 音频报告是解释性信息，读不到不影响页面其它功能 */
@@ -310,7 +344,7 @@ export default function VideoPage() {
     return () => {
       cancelled = true;
     };
-  }, [id]);
+  }, [id, selectedCompositionId]);
 
   // Production-console preview hand-off: select the existing real fast profile
   // (720p / veryfast / CRF 26) without touching any paid generation stage.
@@ -796,10 +830,34 @@ export default function VideoPage() {
               </CardContent>
             </Card>
 
-            {/* 本次音频来源：逐镜实际音源与降级情况（读成片 sidecar 的 voiceReport，读不到就明说没有） */}
+            {/* 本次音频来源：按选中的成片版本逐个读 sidecar 的 voiceReport（读不到就明说没有） */}
             <Card className="glass-card" data-voice-report={voiceReport ? "available" : "missing"}>
               <CardContent className="p-4 space-y-2">
                 <Label className="text-sm font-medium">本次音频来源（逐镜实际音源）</Label>
+                {/* 成片版本选择器：音频报告跟着用户选中的版本走；没有成片时不显示 */}
+                {compositions.length > 0 && (
+                  <Select
+                    value={selectedCompositionId ?? undefined}
+                    onValueChange={(value) => setSelectedCompositionId(value ?? null)}
+                  >
+                    <SelectTrigger className="bg-muted/30 border-border/50 text-xs" data-composition-picker>
+                      {/* Base UI 的 Select.Value 默认显示原始 value，用函数子节点映射为版本名 */}
+                      <SelectValue>
+                        {(value: string) => {
+                          const index = compositions.findIndex((c) => c.id === value);
+                          return compositionChoiceLabel(index >= 0 ? compositions[index] : null, index >= 0 ? index : 0);
+                        }}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      {compositions.map((choice, index) => (
+                        <SelectItem key={choice.id} value={choice.id}>
+                          {compositionChoiceLabel(choice, index)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
                 {voiceReport ? (
                   <>
                     <p className="text-xs text-muted-foreground tabular-nums">

@@ -22,6 +22,7 @@ import { buildComplianceOverlays } from "@/lib/compliance-overlays";
 import { fetchFreeBgm, moodQueryForCategory, moodQueryForMood } from "@/lib/free-bgm";
 import { resolveBgmMix } from "@/lib/audio-mix";
 import { buildVoiceReport, type VoiceSource, type VoiceWarning } from "@/lib/voice-report";
+import { compositionStrategyFromBrief } from "@/lib/project-detail-view";
 import { renderAudioStems } from "@/lib/audio-stems";
 import type { Shot, ScriptCharacter } from "@/lib/db/schema";
 import { assignCharacterVoices } from "@/lib/character-voices";
@@ -150,6 +151,9 @@ export async function POST(
     }
     const project = projRows[0];
     const productImages = (project.productImages ?? []) as string[];
+    // 本次成片实际使用的出片策略（导出页据此挑主版本）。来源只有一处：项目创作简报。
+    // 旧项目读不到简报 → null，导出页回退到标签粗判；绝不用默认策略顶替。
+    const recordedStrategy = compositionStrategyFromBrief(project.creationBrief);
 
     const scriptRows = await db.select().from(scriptsTable).where(eq(scriptsTable.projectId, id));
     const selected = scriptRows.find((s) => s.selected) ?? scriptRows[0];
@@ -343,7 +347,7 @@ export async function POST(
     // 立即建合成记录(composing)并返回；重活(TTS+FFmpeg)后台异步跑，前端轮询 GET 获取结果
     const [comp] = await db
       .insert(compositions)
-      .values({ projectId: id, resolution: outputCfg.resolution, aspectRatio: outputCfg.aspectRatio, aigcBadge, ...(label && { label }), status: "composing" })
+      .values({ projectId: id, strategy: recordedStrategy, resolution: outputCfg.resolution, aspectRatio: outputCfg.aspectRatio, aigcBadge, ...(label && { label }), status: "composing" })
       .returning();
     await db.update(projects).set({ status: "composing", updatedAt: new Date() }).where(eq(projects.id, id));
 

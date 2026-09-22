@@ -21,7 +21,7 @@ import {
   type ProductItem,
 } from "@/lib/stores/product-library-store";
 import { getExampleProducts } from "@/lib/examples";
-import { useSettingsStore } from "@/lib/stores/settings-store";
+import { toPrefillParams } from "@/lib/creation-entry-prefill";
 import { useT, useLocale } from "@/lib/i18n";
 
 // Category options (label uses an i18n key; resolved at runtime via t())
@@ -51,11 +51,16 @@ const categoryLabelKeyMap: Record<string, string> = Object.fromEntries(
 
 export default function ProductsPage() {
   const t = useT("products");
-  // "make video" destination depends on the workspace mode (single beginner path vs. full form)
-  const uiMode = useSettingsStore((s) => s.uiMode);
   const locale = useLocale();
   const { products, addProduct, updateProduct, removeProduct } =
     useProductLibraryStore();
+
+  /**
+   * 「做视频」只预填、不创建项目：商品库条目 id 与来源（inputMode=product-library）带进唯一主创建入口。
+   * 小白 / 导演两种模式都指向同一个 `/start`（设计 §4），旧深链接兼容路由不再作为出品路径。
+   */
+  const makeVideoHref = (productId: string) =>
+    toPrefillParams({ kind: "product-library", productId }).href;
 
   // One-click import of example products (lets new users quickly try batch rendering / viral-clip replication)
   const importExamples = useCallback(() => {
@@ -753,8 +758,8 @@ export default function ProductsPage() {
                             {t("videoCount", { n: product.videoCount })}
                           </span>
                         </div>
-                        {/* Make video: beginner mode routes to the one-tap studio, director mode to the full advanced form — both pre-fill via productId */}
-                        <Link href={`${uiMode === "pro" ? "/project/new" : "/start"}?productId=${product.id}`} className="block mt-3">
+                        {/* Make video: pre-fills the unified creation brief in the single entry (source = product library) */}
+                        <Link href={makeVideoHref(product.id)} className="block mt-3">
                           <Button size="sm" className="w-full brand-gradient text-white border-0">
                             <LuVideo className="w-3.5 h-3.5 mr-1.5" />
                             {t("makeVideo")}

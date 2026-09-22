@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -9,16 +8,23 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { useSettingsStore } from "@/lib/stores/settings-store";
-import { enabledMainPgMediaProviders, mergeCustomModels, buildVideoOptions } from "@/lib/gen-params";
-import { referenceModelFor, buildReplicatePrompt, REPLICATE_MAX_REF_SEC, type ReplicateShot } from "@/lib/replicate-plan";
-import { parseStyleRequirement } from "@/components/project-creation/script-style-requirement";
+import type { ReplicateShot } from "@/lib/replicate-plan";
+import { toPrefillParams } from "@/lib/creation-entry-prefill";
 import { useT } from "@/lib/i18n";
 
 /**
- * 爆款复刻没有风格选择器，但 /api/llm/script 现在要求显式风格：auto 只在实例有足够历史转化数据时
- * 才由服务端推荐，否则返回 409 needs_explicit_style。这里固定用一个中性、非痛点种草的合法 UI 值
- * （script-style.ts 的 SCRIPT_STYLE_VALUES），不再发送 auto —— 否则冷启动实例上整条复刻链会被挡下。
+ * 爆款复刻（/project/clone）。
+ *
+ * 设计 §8 阶段 5：这个入口保留「解析参考视频镜头节奏 + 生成复刻用结构」的核心能力，但创建动作
+ * 改为产出一份预填 CreationBrief（inputMode="clone"）+ 参考结构，然后进入唯一主创建入口 /start。
+ * 本页不再创建项目、不再自己发脚本请求，也不再提供模型级「一键成片复刻」（那个能力需要项目与
+ * 付费视频模型调用，必须落在项目详情页，不在本页的职责内）。
+ */
+
+/**
+ * 复刻用的显式脚本风格：/api/llm/script 要求显式风格，auto 只在实例有足够历史转化数据时才由服务端
+ * 推荐，否则返回 409 needs_explicit_style。这里固定用一个中性、非痛点种草的合法 UI 值
+ * （script-style.ts 的 SCRIPT_STYLE_VALUES），随预填简报带进主入口。
  */
 const CLONE_SCRIPT_STYLE = "scenario";
 
@@ -39,25 +45,14 @@ interface ProductImage {
 
 /** real reference-video analysis result (from /api/replicate/analyze) */
 interface RefAnalysis {
-  path: string;
   duration: number;
   shots: ReplicateShot[];
   referenceStructure: string;
-  modelTierEligible: boolean;
-}
-
-/** resolved provider target for the default video model (same pattern as the assets page) */
-interface VideoModelTarget {
-  provider: string;
-  model: string;
-  apiKey: string;
-  baseUrl?: string;
 }
 
 export default function ClonePage() {
   const t = useT("clone");
   const router = useRouter();
-  const { llm, providers, defaultVideoModel, customModels, videoParams } = useSettingsStore();
 
   // video URL and analysis state
   const [videoUrl, setVideoUrl] = useState("");
@@ -74,15 +69,9 @@ export default function ClonePage() {
   const [productName, setProductName] = useState("");
   const [productFeatures, setProductFeatures] = useState("");
 
-  // generation state
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [genError, setGenError] = useState("");
-
-  // model-tier one-shot replication state (Seedance reference-to-video)
-  const [videoModelTarget, setVideoModelTarget] = useState<VideoModelTarget | null>(null);
-  const [isReplicating, setIsReplicating] = useState(false);
-  const [replicateError, setReplicateError] = useState("");
-  const [replicateResult, setReplicateResult] = useState<{ url: string; projectId: string } | null>(null);
+  // handoff state (to the single creation entry)
+  const [isHandingOff, setIsHandingOff] = useState(false);
+  const [handoffError, setHandoffError] = useState("");
 
   // drag-and-drop upload state
   const [isDragging, setIsDragging] = useState(false);
@@ -95,37 +84,6 @@ export default function ClonePage() {
     const word = new URLSearchParams(window.location.search).get("trend")?.trim();
     if (word) setTrendFrom(word.slice(0, 60));
   }, []);
-
-  // resolve the provider for the default video model (drives the model-tier replicate button)
-  useEffect(() => {
-    let cancelled = false;
-    const enabled = enabledMainPgMediaProviders(providers);
-    if (enabled.length === 0 || !defaultVideoModel) {
-      setVideoModelTarget(null);
-      return;
-    }
-    (async () => {
-      try {
-        const res = await fetch("/api/ai/models", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ providers: enabled, mediaType: "video" }),
-        });
-        if (!res.ok) return;
-        const data = await res.json();
-        const merged = mergeCustomModels(data.models ?? [], customModels, "video", new Set(enabled.map((e) => e.name)));
-        const model = merged.find((m) => m.id === defaultVideoModel);
-        if (cancelled || !model) return;
-        const prov = enabled.find((e) => e.name === model.provider);
-        if (prov) setVideoModelTarget({ provider: prov.name, model: defaultVideoModel, apiKey: prov.apiKey, baseUrl: prov.baseUrl });
-      } catch {
-        // model-tier button simply stays disabled
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [providers, defaultVideoModel, customModels]);
 
   /**
    * Analyze the reference. With an uploaded video file this is REAL analysis:
@@ -175,151 +133,64 @@ export default function ClonePage() {
     }
   }, [videoUrl, refVideoFile, t]);
 
-  /** shared step: create the clone project + upload product images, return { projectId, paths } */
-  const createCloneProject = useCallback(async (): Promise<{ projectId: string; paths: string[] }> => {
-    const projRes = await fetch("/api/project", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: t("projectNameSuffix", { name: productName }),
-        productName,
-        productDescription: productFeatures,
-        productImages: [],
-        sourceType: "clone",
-        ...(videoUrl.trim() && { sourceVideoUrl: videoUrl.trim() }),
-      }),
-    });
-    if (!projRes.ok) throw new Error(t("errorProjectCreate"));
-    const project = await projRes.json();
-
+  /**
+   * 交接前的商品图落盘：主入口需要的商品图是本地 File，跨页面传不过去。这里按一个临时 id 上传，
+   * 把服务端地址放进预填暂存（与商品库来源用同一套「先落盘、再抓成 File」的做法）。
+   */
+  const uploadProductImages = useCallback(async (images: ProductImage[]): Promise<string[]> => {
+    if (images.length === 0) return [];
     const formData = new FormData();
-    productImages.forEach((img) => formData.append("files", img.file));
-    formData.append("projectId", project.id);
-    const uploadRes = await fetch("/api/upload", { method: "POST", body: formData });
-    if (!uploadRes.ok) {
-      const e = await uploadRes.json().catch(() => ({}));
-      throw new Error(e.error || t("errorCloneFailed"));
-    }
-    const { paths } = await uploadRes.json();
-    await fetch(`/api/project/${project.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ productImages: paths }),
-    });
-    return { projectId: project.id, paths };
-  }, [productName, productFeatures, productImages, videoUrl, t]);
+    images.forEach((img) => formData.append("files", img.file));
+    formData.append("productId", `clone-prefill-${crypto.randomUUID()}`);
+    const res = await fetch("/api/upload", { method: "POST", body: formData });
+    if (!res.ok) return [];
+    const data: { paths?: string[] } = await res.json().catch(() => ({}));
+    return Array.isArray(data.paths) ? data.paths : [];
+  }, []);
 
   /**
-   * Model-tier one-shot replication (Seedance 2.0 reference-to-video): the analyzed
-   * reference clip (≤15s) + product images go into ONE multimodal generation call;
-   * the result is saved as a finished composition on the export page.
+   * 交接：把「预填简报（来源/风格/时长）+ 参考结构 + 商品信息」交给唯一主创建入口 /start，
+   * 由那里创建项目、生成脚本。本页不再有任何创建语义。
    */
-  const handleModelReplicate = useCallback(async () => {
-    if (isReplicating || !refAnalysis || !videoModelTarget) return;
-    const refModel = referenceModelFor(videoModelTarget.model);
-    if (!refModel) {
-      setReplicateError(t("modelTierNeedSeedance"));
-      return;
-    }
-    setIsReplicating(true);
-    setReplicateError("");
-    setReplicateResult(null);
+  const handleHandoff = useCallback(async () => {
+    if (isHandingOff) return;
+    setHandoffError("");
+    setIsHandingOff(true);
     try {
-      const { projectId, paths } = await createCloneProject();
-      const videoOptions = buildVideoOptions(videoParams);
-      videoOptions.duration = Math.min(15, Math.max(4, Math.round(refAnalysis.duration)));
-      const res = await fetch("/api/ai/video", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          provider: videoModelTarget.provider,
-          model: refModel,
-          apiKey: videoModelTarget.apiKey,
-          baseUrl: videoModelTarget.baseUrl,
-          mode: "video-to-video",
-          prompt: buildReplicatePrompt({ productName, sellingPoints: productFeatures, imageCount: paths.length }),
-          referenceVideoUrls: [refAnalysis.path],
-          referenceImageUrls: paths,
-          projectId,
-          options: { ...videoOptions, audioEnabled: true },
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || t("modelTierFailed"));
-      const videoUrlOut = data.videoUrls?.[0];
-      if (!videoUrlOut) throw new Error(t("modelTierFailed"));
-      // persist as a finished composition (provider URLs expire) → export page
-      const saveRes = await fetch(`/api/project/${projectId}/replicate/save`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ videoUrl: videoUrlOut }),
-      });
-      const saved = await saveRes.json().catch(() => ({}));
-      if (!saveRes.ok) throw new Error(saved.error || t("modelTierFailed"));
-      setReplicateResult({ url: saved.url, projectId });
-    } catch (err) {
-      setReplicateError(err instanceof Error ? err.message : t("modelTierFailed"));
-    } finally {
-      setIsReplicating(false);
-    }
-  }, [isReplicating, refAnalysis, videoModelTarget, videoParams, productName, productFeatures, createCloneProject, t]);
-
-  /**
-   * Rhythm-tier clone: create the project + generate a script whose shot count and
-   * per-shot durations follow the ANALYZED reference skeleton (referenceStructure).
-   * Without a real analysis (URL-only), the script simply follows the generic
-   * high-conversion structure. (The old dead `referenceUrl` field is gone — it was
-   * never read by the script API.)
-   */
-  const handleGenerate = useCallback(async () => {
-    if (isGenerating) return;
-    if (!llm.apiKey) {
-      setGenError(t("errorNoLlm"));
-      return;
-    }
-    setGenError("");
-    setIsGenerating(true);
-    try {
-      const { projectId, paths } = await createCloneProject();
-
-      // rhythm skeleton: total duration follows the reference when analyzed (15-40s clamp)
-      const targetDuration = refAnalysis
-        ? Math.min(40, Math.max(15, Math.round(refAnalysis.duration)))
-        : 40;
-      const scriptRes = await fetch("/api/llm/script", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          projectId,
-          productName,
-          productDescription: productFeatures,
-          targetDuration,
-          styleType: CLONE_SCRIPT_STYLE,
-          videoMode: "product_closeup",
-          productImages: paths,
-          ...(refAnalysis?.referenceStructure && { referenceStructure: refAnalysis.referenceStructure }),
-          llmConfig: {
-            baseUrl: llm.baseUrl,
-            apiKey: llm.apiKey,
-            model: llm.model,
-            visionModel: llm.visionModel,
-          },
-        }),
-      });
-      if (!scriptRes.ok) {
-        const data: { error?: string; code?: string; candidates?: unknown } = await scriptRes.json().catch(() => ({}));
-        // 409 needs_explicit_style 不是「复刻失败」：接口要求显式风格，把候选风格贴给用户而不是报生成失败
-        const requirement = parseStyleRequirement(scriptRes.status, data);
-        if (requirement) throw new Error(t("errorNeedsExplicitStyle", { candidates: requirement.candidates.join(" / ") }));
-        throw new Error(data.error || t("errorScriptGen"));
+      const images = await uploadProductImages(productImages);
+      // 图片暂存失败就不跳转：否则用户以为商品图带过去了，到了主入口才发现是空的
+      if (productImages.length > 0 && images.length === 0) {
+        setHandoffError(t("handoffImagesFailed"));
+        setIsHandingOff(false);
+        return;
       }
-
-      router.push(`/project/${projectId}/script`);
+      const target = toPrefillParams({
+        kind: "clone",
+        productName,
+        sellingPoints: productFeatures,
+        styleType: CLONE_SCRIPT_STYLE,
+        // 节奏时长跟随参考视频（15-40s）；统一合同只有 15/30/60，按最近档位归位
+        targetDuration: refAnalysis ? refAnalysis.duration : 40,
+        ...(refAnalysis?.referenceStructure && { referenceStructure: refAnalysis.referenceStructure }),
+        ...(videoUrl.trim() && { referenceVideoUrl: videoUrl.trim() }),
+        ...(images.length && { productImages: images }),
+      });
+      if (target.storage) {
+        // 参考结构放不进 URL：浏览器禁用本地存储时明确报错，而不是丢掉节奏骨架后照常跳转
+        try {
+          localStorage.setItem(target.storage.key, target.storage.value);
+        } catch {
+          setHandoffError(t("handoffStorageBlocked"));
+          setIsHandingOff(false);
+          return;
+        }
+      }
+      router.push(target.href);
     } catch (err) {
-      setGenError(err instanceof Error ? err.message : t("errorCloneFailed"));
-      setIsGenerating(false);
+      setHandoffError(err instanceof Error ? err.message : t("handoffFailed"));
+      setIsHandingOff(false);
     }
-  }, [isGenerating, llm, productName, productFeatures, refAnalysis, createCloneProject, router, t]);
+  }, [isHandingOff, productImages, productName, productFeatures, refAnalysis, videoUrl, uploadProductImages, router, t]);
 
   /** handle file selection / upload */
   const handleFiles = useCallback(
@@ -374,8 +245,8 @@ export default function ClonePage() {
 
   /** whether analysis has been completed */
   const hasAnalysis = storyboards.length > 0;
-  /** whether generation can be started */
-  const canGenerate =
+  /** whether the handoff can start */
+  const canHandoff =
     hasAnalysis &&
     productImages.length > 0 &&
     productName.trim() !== "" &&
@@ -739,81 +610,27 @@ export default function ClonePage() {
           </Card>
         </div>
 
-        {/* model-tier one-shot replication (Seedance reference-to-video, ≤15s references) */}
-        {refAnalysis && (
-          <div className="mb-10">
-            <Card className="glass-card">
-              <CardContent className="p-6 space-y-3">
-                <div className="flex items-center justify-between gap-2">
-                  <h3 className="text-sm font-semibold">⚡ {t("modelTierTitle")}</h3>
-                  {!refAnalysis.modelTierEligible && (
-                    <Badge variant="outline" className="text-xs text-amber-600">
-                      {t("modelTierTooLong", { max: REPLICATE_MAX_REF_SEC })}
-                    </Badge>
-                  )}
-                </div>
-                <p className="text-xs text-muted-foreground leading-relaxed">{t("modelTierDesc")}</p>
-                {videoModelTarget && !referenceModelFor(videoModelTarget.model) && (
-                  <p className="text-xs text-amber-600/90">{t("modelTierNeedSeedance")}</p>
-                )}
-                {!videoModelTarget && <p className="text-xs text-amber-600/90">{t("modelTierNeedModel")}</p>}
-                {replicateError && <p className="text-xs text-destructive">{replicateError}</p>}
-                {replicateResult ? (
-                  <div className="space-y-2">
-                    <video src={replicateResult.url} controls className="w-full max-w-xs rounded-lg border border-border/50" />
-                    <div className="flex items-center gap-3 text-xs">
-                      <span className="text-emerald-600">✓ {t("modelTierDone")}</span>
-                      <Link href={`/project/${replicateResult.projectId}/export`} className="text-primary underline">
-                        {t("modelTierViewExport")}
-                      </Link>
-                    </div>
-                  </div>
-                ) : (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="text-xs border-primary/50 text-primary hover:bg-primary/10"
-                    disabled={
-                      isReplicating ||
-                      !refAnalysis.modelTierEligible ||
-                      !videoModelTarget ||
-                      !referenceModelFor(videoModelTarget.model) ||
-                      productImages.length === 0 ||
-                      !productName.trim()
-                    }
-                    onClick={handleModelReplicate}
-                    title={
-                      videoModelTarget
-                        ? `${videoModelTarget.provider} · ${referenceModelFor(videoModelTarget.model) ?? videoModelTarget.model}`
-                        : undefined
-                    }
-                  >
-                    {isReplicating ? t("modelTierRunning") : t("modelTierBtn")}
-                  </Button>
-                )}
-              </CardContent>
-            </Card>
-          </div>
-        )}
-
-        {/* bottom action buttons */}
+        {/* bottom action: hand the pre-filled brief over to the single creation entry */}
         <div className="flex flex-col items-center pb-10 gap-3">
-          {genError && (
-            <p className="text-sm text-destructive">{genError}</p>
+          <p className="max-w-xl text-center text-xs text-muted-foreground leading-relaxed">
+            {t("handoffNote")}
+          </p>
+          {handoffError && (
+            <p className="text-sm text-destructive">{handoffError}</p>
           )}
           <Button
             size="lg"
             className="brand-gradient text-white px-10 text-base font-semibold"
-            disabled={!canGenerate || isGenerating}
-            onClick={handleGenerate}
+            disabled={!canHandoff || isHandingOff}
+            onClick={handleHandoff}
           >
-            {isGenerating ? (
+            {isHandingOff ? (
               <>
                 <svg className="animate-spin h-5 w-5 mr-2" viewBox="0 0 24 24" fill="none">
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                 </svg>
-                {t("cloning")}
+                {t("handingOff")}
               </>
             ) : (
               <>
@@ -830,7 +647,7 @@ export default function ClonePage() {
                 >
                   <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
                 </svg>
-                {t("startClone")}
+                {t("handoffCta")}
               </>
             )}
           </Button>

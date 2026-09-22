@@ -205,6 +205,10 @@ export const compositions = sqliteTable("compositions", {
   aigcBadge: integer("aigc_badge", { mode: "boolean" }),
   // Human-readable variant label (variant-matrix batch renders, e.g. "疑问钩子×卡拉OK×动感")
   label: text("label"),
+  // 产出这条成片时实际使用的出片策略（取自项目 creationBrief.outputStrategy）。
+  // Nullable on purpose: rows rendered before this column existed — and routes that don't know a
+  // project brief — stay null, and the export page falls back to its label heuristic for them.
+  strategy: text("strategy", { enum: ["draft", "controlled-motion", "native-film"] }),
   status: text("status", { enum: ["pending", "composing", "done", "failed"] }).notNull().default("pending"),
   createdAt: integer("created_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
 });

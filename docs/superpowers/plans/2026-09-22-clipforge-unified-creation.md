@@ -234,6 +234,33 @@
 - `/start?embed=mainpg`：出现「出片策略（创建时选定）」三项，`draft` 文案含「非 AI 动态视频，不计费」；来源含 商品图/商品链接/一句话主题/商品库预填/爆款复刻；页面无任何 Atlas 文案；未配 LLM 时引导「前往设置」而非内联填 Key。
 - `/project/new?embed=mainpg`：与 `/start` 同一份表单，步骤为 1 商品图片 / 2 商品名称 / 3 视频模式 / 4 出片策略；无 Atlas 文案。
 
+### 批次 4（功能完整性）与遗留决策
+
+已实现：`compositions.strategy` 列（迁移 0021）与导出页严格分组；按 `compositionId` 读取成片音频报告的读接口（含跨项目/非法 id/路径穿越防护）；次级入口（topic / clone / products / batch）收敛为「只预填一份 `CreationBrief`」，批量出片复用共享脚本请求构造器与显式策略；`/start` 与 `/project/new` 均消费同一套预填参数（`parseStartPrefill` / `parseClonePrefill`）。
+
+维护者已作出的取舍（不再视为未决）：
+
+- **clone 的付费「模型级一键成片复刻」保持移除**：它与「次级入口不创建项目」直接冲突。若产品上仍需该付费能力，应在项目详情（assets / production）内提供，而不是回到 clone 页——需要产品确认后再开任务。
+- **批量出片的秒级时长抖动收窄到 15/30/60**：`CreationBrief.targetDuration` 只有三档，抖动被归位到合法档位，变量标签回填的是真实生效值（不显示不会发生的抖动）。
+- **topic 页移除「旁白风格 / 目标时长」选择器**：这两个选项无法映射进白名单（旁白风格与脚本风格不是同一套枚举，15/25/40 不在 {15,30,60}），改由主入口简报显式选择。
+- **`/products` 的「做视频」统一指向 `/start`**：小白与导演模式同址，单一创建入口。
+
+仍待处理（低优先）：
+
+- `/project/new?entry=topic` 的提交语义未与 `/start` 对齐（主题文本不会映射为商品名/描述）。仓库内已无该深链接的生产者，仅为旧链接兼容。
+- 批量出片的 `preferredHookId` 仍是共享构造器之外追加的批专用字段；彻底收口需要给 `buildScriptRequest` 增加该入参。
+- `/api/replicate/analyze` 返回的 `modelTierEligible` 已无消费者，可清理。
+- `/products` 的「去批量出片」不带商品预选；如需带参需要 `/batch` 接受 `productIds`。
+
+### 环境风险与操作约定（重要）
+
+本轮出现**两次 git 索引被清空**（`git ls-files` 归零、全仓文件被标记为已暂存删除；HEAD 与工作区文件均完好）。触发时机都在多个并行代理同时执行 `drizzle-kit generate` / `vitest` / `tsc` 等命令之后，根因未定位。
+
+- 恢复方式（只动索引、不碰工作区，已验证有效）：`git reset --mixed HEAD`。
+- 强制约定：**任何提交前必须先校验**「`git diff --cached --name-status | grep -c '^D'` 必须为 0」且 `git ls-files` 数量正常；本轮的每个批次都是靠这条校验拦住的。
+- 建议后续排查：并行代理是否共用同一个 `.git` 索引，或某个工具在写入 `.git/index`。
+
+
 
 
 

@@ -148,6 +148,13 @@
       "when": 1790058811200,
       "tag": "0020_add_creation_brief_and_events",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1790061820545,
+      "tag": "0021_add_composition_strategy",
+      "breakpoints": true
     }
   ]
 }

@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { LuSparkles, LuCircleAlert, LuLoaderCircle, LuWandSparkles } from "react-icons/lu";
+import { LuSparkles, LuCircleAlert, LuWandSparkles } from "react-icons/lu";
 import { useSettingsStore } from "@/lib/stores/settings-store";
 import { useT } from "@/lib/i18n";
 import { Card, CardContent } from "@/components/ui/card";
@@ -11,23 +11,15 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { toPrefillParams } from "@/lib/creation-entry-prefill";
 
-// narration styles (one-to-one correspondence with the backend TopicNarrationStyle); label/desc resolved per locale at render time
-const narrationStyleValues = ["knowledge", "story", "lifestyle", "inspiration", "travel"] as const;
-
-// duration options (label is a plain unit string, no translation needed)
-const durationOptions = [
-  { value: "15", label: "15s" },
-  { value: "25", label: "25s" },
-  { value: "40", label: "40s" },
-];
+/**
+ * 一句话主题入口（/project/topic）。
+ *
+ * 设计 §8 阶段 5：这个入口只负责把「一句话主题」预填进主入口 /start 的创作简报，不再自己创建
+ * 项目、也不再调用 /api/topic/script 形成第二条创建链。脚本风格、目标时长与出片策略都在创作
+ * 简报里由用户显式选择，因此本页不再重复提供这两项选择器。
+ */
 
 // topic inspiration examples (zero-barrier trial for beginners); copy resolved per locale; key order matches the render below
 const exampleTopicKeys = ["exampleTopic1", "exampleTopic2", "exampleTopic3", "exampleTopic4", "exampleTopic5"];
@@ -39,52 +31,19 @@ export default function TopicProjectPage() {
   const isLLMConfigured = llm.apiKey.length > 0;
 
   const [topic, setTopic] = useState("");
-  const [narrationStyle, setNarrationStyle] = useState("knowledge");
-  const [duration, setDuration] = useState("25");
-
-  const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const isValid = topic.trim().length >= 2;
 
-  const handleGenerate = async () => {
-    if (!isValid || isSubmitting) return;
+  /** 只做交接：主题随 query 带进主入口，由那里创建项目与生成脚本。 */
+  const handleContinue = () => {
+    if (!isValid) return;
     if (!isLLMConfigured) {
       setError(t("errorNoLlm"));
       return;
     }
-    setIsSubmitting(true);
     setError(null);
-    try {
-      const res = await fetch("/api/topic/script", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          topic: topic.trim(),
-          narrationStyle,
-          targetDuration: Number(duration),
-          llmConfig: {
-            baseUrl: llm.baseUrl,
-            apiKey: llm.apiKey,
-            model: llm.model,
-          },
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        // even on failure, the backend may have created a draft project and returned a projectId so the user can retry after navigating
-        if (data.projectId) {
-          router.push(`/project/${data.projectId}/script`);
-          return;
-        }
-        throw new Error(data.error || t("errorGenerateCheckLlm"));
-      }
-      // success: navigate to the script page to review multiple options, then proceed through auto-fill assets → compose
-      router.push(`/project/${data.projectId}/script`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t("errorGenerate"));
-      setIsSubmitting(false);
-    }
+    router.push(toPrefillParams({ kind: "topic", topic }).href);
   };
 
   return (
@@ -152,50 +111,10 @@ export default function TopicProjectPage() {
               </div>
             </div>
 
-            {/* narration style */}
-            <div className="space-y-2">
-              <Label className="text-sm font-medium">{t("narrationLabel")}</Label>
-              <Select value={narrationStyle} onValueChange={(val) => setNarrationStyle(val ?? "knowledge")}>
-                <SelectTrigger>
-                  {/* Base UI's Select.Value shows the raw value by default; use a function child to map it to the translated label */}
-                  <SelectValue>
-                    {(value: string) => t(`narration_${value}_label`)}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  {narrationStyleValues.map((value) => (
-                    <SelectItem key={value} value={value}>
-                      {t(`narration_${value}_label`)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {/* description for the selected style (placed outside the Select to avoid the trigger showing the raw value) */}
-              <p className="text-xs text-muted-foreground">
-                {t(`narration_${narrationStyle}_desc`)}
-              </p>
-            </div>
-
-            {/* duration */}
-            <div className="space-y-2">
-              <Label className="text-sm font-medium">{t("durationLabel")}</Label>
-              <div className="flex gap-2">
-                {durationOptions.map((o) => (
-                  <button
-                    key={o.value}
-                    type="button"
-                    onClick={() => setDuration(o.value)}
-                    className={`flex-1 rounded-lg border px-4 py-2 text-sm font-medium transition-colors ${
-                      duration === o.value
-                        ? "border-primary bg-primary/10 text-primary"
-                        : "border-border/60 text-muted-foreground hover:border-primary/40"
-                    }`}
-                  >
-                    {o.label}
-                  </button>
-                ))}
-              </div>
-            </div>
+            {/* handoff note: style / duration / output strategy now live in the creation brief */}
+            <p className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground leading-relaxed">
+              {t("entryNote")}
+            </p>
 
             {/* error message */}
             {error && (
@@ -205,24 +124,15 @@ export default function TopicProjectPage() {
               </div>
             )}
 
-            {/* generate button */}
+            {/* continue to the single creation entry */}
             <Button
-              onClick={handleGenerate}
-              disabled={!isValid || isSubmitting}
+              onClick={handleContinue}
+              disabled={!isValid}
               className="w-full brand-gradient text-white"
               size="lg"
             >
-              {isSubmitting ? (
-                <>
-                  <LuLoaderCircle className="w-4 h-4 animate-spin" />
-                  <span className="ml-1.5">{t("generatingScript")}</span>
-                </>
-              ) : (
-                <>
-                  <LuWandSparkles className="w-4 h-4" />
-                  <span className="ml-1.5">{t("ctaGenerate")}</span>
-                </>
-              )}
+              <LuWandSparkles className="w-4 h-4" />
+              <span className="ml-1.5">{t("ctaContinue")}</span>
             </Button>
 
             {/* workflow hints */}

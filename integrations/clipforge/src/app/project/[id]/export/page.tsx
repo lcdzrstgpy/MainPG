@@ -69,7 +69,8 @@ export default function ExportPage() {
   const [projectName, setProjectName] = useState("");
   const [composition, setComposition] = useState<Composition | null>(null);
   // full output history (variant-matrix renders carry a label) — the latest-only view hid variants
-  const [history, setHistory] = useState<Array<{ id: string; url: string | null; label?: string | null; createdAt?: string | number | null }>>([]);
+  // `strategy` 是合成记录落库的出片策略（迁移 0021）：严格分组的唯一依据，旧记录为 null 时回退 label
+  const [history, setHistory] = useState<Array<{ id: string; url: string | null; label?: string | null; strategy?: string | null; createdAt?: string | number | null }>>([]);
   // 项目创作简报（旧项目为 null）：决定哪个成片是本项目的主版本
   const [creationBrief, setCreationBrief] = useState<CreationBrief | null>(null);
   const [scriptInfo, setScriptInfo] = useState<ScriptInfo | null>(null);
@@ -432,7 +433,7 @@ export default function ExportPage() {
 
   // 成片行（主版本与其他版本共用同一展示，只是分组标题不同）
   const historyRow = (
-    item: { id: string; url: string | null; label?: string | null; createdAt?: string | number | null },
+    item: { id: string; url: string | null; label?: string | null; strategy?: string | null; createdAt?: string | number | null },
     index: number
   ) => (
     <div key={item.id} className="flex items-center gap-2 text-xs">

@@ -19,9 +19,27 @@ import { Label } from "@/components/ui/label";
 import { useProductLibraryStore } from "@/lib/stores/product-library-store";
 import { useSettingsStore } from "@/lib/stores/settings-store";
 import { getExampleProducts } from "@/lib/examples";
-import { buildVariationPlan, describeSlot } from "@/lib/variation-plan";
+import { buildVariationPlan, describeSlot, type VariationSlot } from "@/lib/variation-plan";
 import { parseStyleRequirement } from "@/components/project-creation/script-style-requirement";
+import { buildScriptRequest } from "@/components/project-creation/build-script-request";
+import type { VideoModeId } from "@/components/project-creation/creation-brief-defaults";
+import { isOutputStrategy, type CreationBrief, type OutputStrategy } from "@/lib/creation-brief";
+import {
+  batchAutoComposeEnabled,
+  batchItemTargetPath,
+  BATCH_OUTPUT_STRATEGIES,
+  buildBatchItemBrief,
+  resolveBatchItemStyle,
+} from "@/lib/batch-creation-brief";
 import { useT, useLocale } from "@/lib/i18n";
+
+/**
+ * 批量出片（/batch）。
+ *
+ * 设计 §8 阶段 5：批量保留自己的调度、并发与防同质化变量矩阵，但每一件都通过同一份
+ * `CreationBrief`（含显式出片策略）与唯一脚本请求构造器 `buildScriptRequest` 创建与生成脚本，
+ * 不再维护第二套请求体。免费合成链只服务于显式 `draft`，其余策略回到项目页显式确认。
+ */
 
 // Video mode options (labelKey refers to a batch-namespace i18n key; resolved at render time)
 const videoModeOptions = [
@@ -46,6 +64,13 @@ const scriptStyleOptions = [
   { value: "auto", labelKey: "styleAuto" },
 ];
 
+/**
+ * 默认脚本风格必须是白名单里的显式合法值（`auto` 只在历史样本足够时才由服务端推荐，否则 409）。
+ * 这里用中性、非痛点种草的值，默认批量不会因为「没有历史数据」被挡下；用户仍可显式选「智能推荐」，
+ * 那时 409 会把候选风格与原因显示到具体那一条任务上。
+ */
+const DEFAULT_BATCH_STYLE = "scenario";
+
 // Target duration options
 const durationOptions = [
   { value: "15", label: "15s" },
@@ -63,19 +88,16 @@ const categoryLabelKeys: Record<string, string> = {
   other: "categoryOther",
 };
 
-// Script style value → normalized backend styleType
-const styleTypeMap: Record<string, string> = {
-  "pain-point": "pain_point",
-  scenario: "scene",
-  comparison: "comparison",
-  story: "story",
-  drama: "drama",
-  reversal: "reversal",
-  interview: "interview",
-  unboxing: "unboxing",
-  product_pov: "product_pov",
-  talking_head: "talking_head",
-  auto: "auto",
+// Output strategy → i18n keys (the same three values a single project offers)
+const strategyLabelKeys: Record<OutputStrategy, string> = {
+  "draft": "strategyDraft",
+  "controlled-motion": "strategyControlledMotion",
+  "native-film": "strategyNativeFilm",
+};
+const strategyHintKeys: Record<OutputStrategy, string> = {
+  "draft": "strategyDraftHint",
+  "controlled-motion": "strategyControlledMotionHint",
+  "native-film": "strategyNativeFilmHint",
 };
 
 // Backend styleType → short display name (for variation-slot summaries; kept local to avoid pulling the prompt engine into the client bundle)
@@ -149,9 +171,11 @@ export default function BatchPage() {
   const [selectedProducts, setSelectedProducts] = useState<Set<string>>(new Set());
   // Configuration state
   const [videoMode, setVideoMode] = useState("product_closeup");
-  const [scriptStyle, setScriptStyle] = useState("auto");
+  const [scriptStyle, setScriptStyle] = useState(DEFAULT_BATCH_STYLE);
   const [duration, setDuration] = useState("30");
-  // Whether to auto-compose visuals + render after script generation (free path, no API key needed) — upgrades batch from "script only" to "one-click full video"
+  // Output strategy is explicit and identical to a single project (draft / controlled-motion / native-film)
+  const [outputStrategy, setOutputStrategy] = useState<OutputStrategy>("draft");
+  // Whether to auto-compose visuals + render after script generation (free path, no API key needed) — only for `draft`
   const [autoCompose, setAutoCompose] = useState(true);
   const [productCard, setProductCard] = useState(true); // batch mode defaults to overlaying a product-card sticker (shown only when a product image is available)
   // anti-homogenization: rotate hook/style/voice/BGM/captions per item so the batch doesn't ship N same-template videos (platforms suppress that account-wide)
@@ -219,11 +243,63 @@ export default function BatchPage() {
     videoMode: string;
     scriptStyle: string;
     duration: string;
+    strategy: OutputStrategy;
     autoCompose: boolean;
     productCard: boolean;
     jobId?: string;
     itemIdByProduct: Map<string, string>;
   }
+
+  /** The per-run settings the shared brief is built from. */
+  interface BatchSettings {
+    duration: string;
+    scriptStyle: string;
+    strategy: OutputStrategy;
+  }
+
+  /**
+   * One batch item: the product plus the variable-matrix slot and the unified creation brief that
+   * both project creation and script generation read (设计 §8 阶段 5).
+   */
+  interface BatchWorkItem {
+    product: (typeof products)[number];
+    slot?: VariationSlot;
+    brief: CreationBrief;
+    /** Seconds actually added to the target duration (the brief only accepts 15/30/60). */
+    appliedDurationOffset: number;
+    resume?: BatchJobItemRow;
+  }
+
+  /** Build one item's brief through the shared helpers — no page-local request shape. */
+  const buildWorkItem = (
+    product: (typeof products)[number],
+    slot: VariationSlot | undefined,
+    settings: BatchSettings
+  ): BatchWorkItem => {
+    const built = buildBatchItemBrief({
+      style: resolveBatchItemStyle({ slotStyleType: slot?.styleType, chosenStyle: settings.scriptStyle }),
+      baseDuration: parseInt(settings.duration, 10),
+      durationOffset: slot?.durationOffset ?? 0,
+      strategy: settings.strategy,
+      audience: product.targetAudience,
+    });
+    return {
+      product,
+      brief: built.brief,
+      appliedDurationOffset: built.appliedDurationOffset,
+      ...(slot ? { slot } : {}),
+    };
+  };
+
+  /** Variable-matrix summary for one item; the duration delta shown is the one that actually applies. */
+  const variationLabelOf = (item: BatchWorkItem): string | undefined =>
+    item.slot
+      ? describeSlot(
+          { ...item.slot, durationOffset: item.appliedDurationOffset },
+          styleDisplayNames,
+          locale === "en" ? "en" : "zh"
+        )
+      : undefined;
 
   /** best-effort item write-through; never blocks or fails the run */
   const reportItem = (ctx: BatchCtx, productId: string, patch: Record<string, unknown>) => {
@@ -254,7 +330,7 @@ export default function BatchPage() {
     ctx: BatchCtx,
     product: (typeof products)[number],
     projectId: string,
-    slot?: ReturnType<typeof buildVariationPlan>[number]
+    slot?: VariationSlot
   ) => {
     await fetch(`/api/project/${projectId}/stock-fill`, {
       method: "POST",
@@ -279,15 +355,11 @@ export default function BatchPage() {
     if (!composed && !abortRef.current) throw new Error(t("errorComposeFailed"));
   };
 
-  // Process a single product (updates by task.id, supports out-of-order concurrency);
+  // Process a single item (updates by task.id, supports out-of-order concurrency);
   // slot = this item's anti-homogenization assignment; resume = the persisted item row,
   // letting a half-finished item continue from its recorded stage instead of scratch
-  const processOne = async (
-    product: (typeof products)[number],
-    slot: ReturnType<typeof buildVariationPlan>[number] | undefined,
-    ctx: BatchCtx,
-    resume?: BatchJobItemRow
-  ) => {
+  const processOne = async (item: BatchWorkItem, ctx: BatchCtx) => {
+    const { product, slot, brief, resume } = item;
     setBatchTasks((prev) => prev.map((t) => (t.id === product.id ? { ...t, status: "generating", error: undefined } : t)));
     reportItem(ctx, product.id, { status: "generating" });
     try {
@@ -312,7 +384,8 @@ export default function BatchPage() {
         return;
       }
 
-      // 1) Create project (a resumed item that already has one reuses it)
+      // 1) Create project with the unified creation brief (策略显式；工作流由服务端按策略推导).
+      //    A resumed item that already has a project reuses it.
       let projectId = resume?.projectId ?? undefined;
       if (!projectId) {
         const projRes = await fetch("/api/project", {
@@ -325,6 +398,7 @@ export default function BatchPage() {
             productDescription: product.description ?? "",
             productImages: product.images ?? [],
             videoMode: ctx.videoMode,
+            creationBrief: brief,
           }),
         });
         if (!projRes.ok) throw new Error(t("errorProjectCreate"));
@@ -332,26 +406,28 @@ export default function BatchPage() {
         reportItem(ctx, product.id, { projectId });
       }
 
-      // 2) Generate script
+      // 2) Generate script through the single request builder; the batch only appends its own
+      //    variation channel (hook rotation), which is not part of the CreationBrief.
       const scriptRes = await fetch("/api/llm/script", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          projectId,
-          productName: product.name,
-          category: product.category,
-          productDescription: product.description ?? "",
-          targetDuration: parseInt(ctx.duration) + (slot?.durationOffset ?? 0),
-          styleType: slot?.styleType ?? styleTypeMap[ctx.scriptStyle] ?? "auto",
+          ...buildScriptRequest({
+            brief,
+            projectId,
+            productName: product.name,
+            category: product.category,
+            productDescription: product.description ?? "",
+            productImages: product.images ?? [],
+            videoMode: ctx.videoMode as VideoModeId,
+            llmConfig: {
+              baseUrl: llm.baseUrl,
+              apiKey: llm.apiKey,
+              model: llm.model,
+              visionModel: llm.visionModel,
+            },
+          }),
           ...(slot?.hookId ? { preferredHookId: slot.hookId } : {}),
-          videoMode: ctx.videoMode,
-          productImages: product.images ?? [],
-          llmConfig: {
-            baseUrl: llm.baseUrl,
-            apiKey: llm.apiKey,
-            model: llm.model,
-            visionModel: llm.visionModel,
-          },
         }),
       });
       if (!scriptRes.ok) {
@@ -364,8 +440,9 @@ export default function BatchPage() {
       }
       const scriptData = await scriptRes.json().catch(() => ({}));
 
-      // 3) Auto-render (free path): fill visuals (per-shot video preferred, fall back to image) → free Edge TTS → poll until video is done
-      if (ctx.autoCompose && !abortRef.current) {
+      // 3) Auto-render (free path) — only for an explicit draft (免费草稿) strategy:
+      //    逐镜生视频 / 原生整片 必须回到项目页显式确认，绝不能在批量里静默降级成静态拼接。
+      if (batchAutoComposeEnabled(ctx.strategy, ctx.autoCompose) && !abortRef.current) {
         setBatchTasks((prev) => prev.map((tk) => (tk.id === product.id ? { ...tk, status: "composing", projectId } : tk)));
         reportItem(ctx, product.id, { status: "composing" });
         // 2.5) judge pass on the selected (first) variant — the same quality bar as the
@@ -415,10 +492,7 @@ export default function BatchPage() {
   };
 
   /** Shared pool executor + job settlement, used by both fresh runs and resumes. */
-  const executeBatch = async (
-    workItems: Array<{ product: (typeof products)[number]; slot?: ReturnType<typeof buildVariationPlan>[number]; resume?: BatchJobItemRow }>,
-    ctx: BatchCtx
-  ) => {
+  const executeBatch = async (workItems: BatchWorkItem[], ctx: BatchCtx) => {
     // Concurrency pool: run at most 3 tasks simultaneously to speed up batch rendering
     const CONCURRENCY = 3;
     let cursor = 0;
@@ -426,7 +500,7 @@ export default function BatchPage() {
       while (!abortRef.current) {
         const idx = cursor++;
         if (idx >= workItems.length) break;
-        await processOne(workItems[idx].product, workItems[idx].slot, ctx, workItems[idx].resume);
+        await processOne(workItems[idx], ctx);
       }
     };
     await Promise.all(Array.from({ length: Math.min(CONCURRENCY, workItems.length) }, worker));
@@ -454,7 +528,7 @@ export default function BatchPage() {
     setIsGenerating(false);
   };
 
-  // Start batch generation (real: create project + generate script per item, reusing the single-product flow)
+  // Start batch generation (create project + generate script per item through the shared brief/request builder)
   const handleStartBatch = useCallback(async () => {
     if (selectedProducts.size === 0 || isGenerating) return;
     if (!llm.apiKey) {
@@ -470,34 +544,48 @@ export default function BatchPage() {
 
     const selected = products.filter((p) => selectedProducts.has(p.id));
     // variation plan: one slot per item; hook pool keys off the first product's category (patterns are
-    // largely universal), a fresh seed each run so consecutive batches don't share the same rotation
+    // largely universal), a fresh seed each run so consecutive batches don't share the same rotation.
+    // The chosen style is passed as-is: the plan only rotates styles when it is "auto".
     const plan = antiHomogeneity
       ? buildVariationPlan({
           count: selected.length,
           category: (selected[0]?.category ?? "other") as Parameters<typeof buildVariationPlan>[0]["category"],
-          styleType: styleTypeMap[scriptStyle] ?? "auto",
+          styleType: scriptStyle,
           seed: Date.now() % 100000,
         })
       : [];
     setHomogeneity(null);
-    const tasks: BatchTask[] = selected.map((p, i) => ({
-      id: p.id,
-      productName: p.name,
-      status: "pending" as TaskStatus,
-      ...(plan[i] ? { variation: describeSlot(plan[i], styleDisplayNames, locale === "en" ? "en" : "zh") } : {}),
-    }));
+    const settings: BatchSettings = { duration, scriptStyle, strategy: outputStrategy };
+    const work = selected.map((p, i) => buildWorkItem(p, plan[i], settings));
+    const tasks: BatchTask[] = work.map((item) => {
+      const variation = variationLabelOf(item);
+      return {
+        id: item.product.id,
+        productName: item.product.name,
+        status: "pending" as TaskStatus,
+        ...(variation ? { variation } : {}),
+      };
+    });
     setBatchTasks(tasks);
 
-    // persist the job up front — the run config (incl. the variation plan) rides along so a
-    // resume replays identical settings and slots
-    const ctx: BatchCtx = { videoMode, scriptStyle, duration, autoCompose, productCard, itemIdByProduct: new Map() };
+    // persist the job up front — the run config (incl. the variation plan and the output strategy)
+    // rides along so a resume replays identical settings and slots
+    const ctx: BatchCtx = {
+      videoMode,
+      scriptStyle,
+      duration,
+      strategy: outputStrategy,
+      autoCompose,
+      productCard,
+      itemIdByProduct: new Map(),
+    };
     try {
       const jobRes = await fetch("/api/batch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          config: { videoMode, scriptStyle, duration, autoCompose, productCard, antiHomogeneity, plan },
-          items: selected.map((p, i) => ({ productId: p.id, productName: p.name, variation: tasks[i].variation ?? null })),
+          config: { videoMode, scriptStyle, duration, strategy: outputStrategy, autoCompose, productCard, antiHomogeneity, plan },
+          items: work.map((item, i) => ({ productId: item.product.id, productName: item.product.name, variation: tasks[i].variation ?? null })),
         }),
       });
       const jobData = await jobRes.json().catch(() => ({}));
@@ -509,9 +597,9 @@ export default function BatchPage() {
       /* persistence is an upgrade, not a dependency — the run proceeds in-memory */
     }
 
-    await executeBatch(selected.map((p, i) => ({ product: p, slot: plan[i] })), ctx);
+    await executeBatch(work, ctx);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- executeBatch/processOne are stable page-level handlers
-  }, [selectedProducts, isGenerating, products, llm, videoMode, duration, scriptStyle, autoCompose, productCard, antiHomogeneity, locale, incrementVideoCount]);
+  }, [selectedProducts, isGenerating, products, llm, videoMode, duration, scriptStyle, outputStrategy, autoCompose, productCard, antiHomogeneity, locale, incrementVideoCount]);
 
   // Resume the interrupted job: finished items are kept as-is, everything else re-runs with the
   // job's ORIGINAL config/slots; items whose composition already exists just poll/finish it.
@@ -524,8 +612,8 @@ export default function BatchPage() {
     setConfigError("");
     const { job, items } = resumableJob;
     const cfg = (job.config ?? {}) as {
-      videoMode?: string; scriptStyle?: string; duration?: string; autoCompose?: boolean;
-      productCard?: boolean; plan?: ReturnType<typeof buildVariationPlan>;
+      videoMode?: string; scriptStyle?: string; duration?: string; strategy?: string; autoCompose?: boolean;
+      productCard?: boolean; plan?: VariationSlot[];
     };
     abortRef.current = false;
     setIsGenerating(true);
@@ -537,11 +625,15 @@ export default function BatchPage() {
       videoMode: cfg.videoMode ?? videoMode,
       scriptStyle: cfg.scriptStyle ?? scriptStyle,
       duration: cfg.duration ?? duration,
+      // an interrupted job without a strategy predates the explicit strategy: draft is what its
+      // free compose chain actually did
+      strategy: isOutputStrategy(cfg.strategy) ? cfg.strategy : "draft",
       autoCompose: cfg.autoCompose ?? true,
       productCard: cfg.productCard ?? true,
       jobId: job.id,
       itemIdByProduct: new Map(items.map((i) => [i.productId, i.id])),
     };
+    const settings: BatchSettings = { duration: ctx.duration, scriptStyle: ctx.scriptStyle, strategy: ctx.strategy };
     const plan = Array.isArray(cfg.plan) ? cfg.plan : [];
     const byId = new Map(products.map((p) => [p.id, p]));
 
@@ -554,7 +646,7 @@ export default function BatchPage() {
     }));
     setBatchTasks(tasks);
 
-    const work: Array<{ product: (typeof products)[number]; slot?: ReturnType<typeof buildVariationPlan>[number]; resume?: BatchJobItemRow }> = [];
+    const work: BatchWorkItem[] = [];
     for (const [idx, it] of items.entries()) {
       if (it.status === "done") continue;
       const product = byId.get(it.productId);
@@ -564,7 +656,7 @@ export default function BatchPage() {
         setBatchTasks((prev) => prev.map((tk) => (tk.id === it.productId ? { ...tk, status: "failed", error: t("resumeProductMissing") } : tk)));
         continue;
       }
-      work.push({ product, slot: plan[idx], resume: it });
+      work.push({ ...buildWorkItem(product, plan[idx], settings), resume: it });
     }
     await executeBatch(work, ctx);
   };
@@ -802,6 +894,30 @@ export default function BatchPage() {
                   ))}
                 </div>
               </div>
+
+              {/* Output strategy — the same three values a single project offers (设计 §5.2) */}
+              <div>
+                <Label className="text-xs text-muted-foreground mb-2.5 block">{t("strategyLabel")}</Label>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  {BATCH_OUTPUT_STRATEGIES.map((strategy) => (
+                    <button
+                      key={strategy}
+                      onClick={() => !isGenerating && setOutputStrategy(strategy)}
+                      disabled={isGenerating}
+                      className={`relative flex items-center justify-center h-9 rounded-lg border px-2 text-xs font-medium transition-all ${
+                        outputStrategy === strategy
+                          ? "border-primary bg-primary/10 text-primary"
+                          : "border-border/50 bg-muted/20 text-muted-foreground hover:border-primary/40 hover:text-foreground"
+                      } ${isGenerating ? "opacity-60 cursor-not-allowed" : "cursor-pointer"}`}
+                    >
+                      {t(strategyLabelKeys[strategy])}
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+                  {t(strategyHintKeys[outputStrategy])}
+                </p>
+              </div>
             </CardContent>
           </Card>
 
@@ -857,8 +973,10 @@ export default function BatchPage() {
                       </div>
                       <div className="flex items-center gap-2 shrink-0">
                         {task.status === "done" && task.projectId && (
-                          <Link href={`/project/${task.projectId}/${autoCompose ? "export" : "script"}`}>
-                            <Button variant="outline" size="sm" className="text-xs h-7">{autoCompose ? t("taskViewVideo") : t("taskView")}</Button>
+                          <Link href={batchItemTargetPath(task.projectId, outputStrategy, autoCompose)}>
+                            <Button variant="outline" size="sm" className="text-xs h-7">
+                              {batchAutoComposeEnabled(outputStrategy, autoCompose) ? t("taskViewVideo") : t("taskView")}
+                            </Button>
                           </Link>
                         )}
                         <Badge className={statusColors[task.status]}>
@@ -911,28 +1029,36 @@ export default function BatchPage() {
                 </Link>
               </p>
             )}
-            {/* Auto-render toggle: upgrades batch from "script only" to "one-click full video" (free path) */}
-            <label className="flex items-center justify-center gap-2 mb-3 text-sm text-muted-foreground cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={autoCompose}
-                onChange={(e) => setAutoCompose(e.target.checked)}
-                disabled={isGenerating}
-                className="w-4 h-4 accent-violet-500"
-              />
-              {t("autoComposeLabel")}
-            </label>
-            {autoCompose && (
-              <label className="flex items-center justify-center gap-2 mb-3 text-sm text-muted-foreground cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={productCard}
-                  onChange={(e) => setProductCard(e.target.checked)}
-                  disabled={isGenerating}
-                  className="w-4 h-4 accent-violet-500"
-                />
-                {t("productCardLabel")}
-              </label>
+            {/* Auto-render toggle: only the explicit free-draft strategy may run the free chain */}
+            {outputStrategy === "draft" ? (
+              <>
+                <label className="flex items-center justify-center gap-2 mb-3 text-sm text-muted-foreground cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={autoCompose}
+                    onChange={(e) => setAutoCompose(e.target.checked)}
+                    disabled={isGenerating}
+                    className="w-4 h-4 accent-violet-500"
+                  />
+                  {t("autoComposeLabel")}
+                </label>
+                {autoCompose && (
+                  <label className="flex items-center justify-center gap-2 mb-3 text-sm text-muted-foreground cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={productCard}
+                      onChange={(e) => setProductCard(e.target.checked)}
+                      disabled={isGenerating}
+                      className="w-4 h-4 accent-violet-500"
+                    />
+                    {t("productCardLabel")}
+                  </label>
+                )}
+              </>
+            ) : (
+              <p className="mb-3 text-center text-xs leading-relaxed text-muted-foreground">
+                {t("paidStrategyHint")}
+              </p>
             )}
             {/* anti-homogenization rotation: each item gets a different hook/style/voice/BGM/caption mix */}
             <label className="flex items-center justify-center gap-2 mb-3 text-sm text-muted-foreground cursor-pointer select-none">
