@@ -218,6 +218,23 @@
 3. **创建 API 的兼容边界（已实现）**：只有请求体带 `creationBrief` 时才会写入默认 `productionWorkflow`；无简报的旧调用方保持该列 null，避免素材页「自动生视频」开关被静默改变。
 4. **文档去 Atlas（Task 6.4）暂缓**：`README*.md` / `TUTORIAL*.md` / `docs/*.html` 属上游 vendored 内容，改动会影响 AGPL 溯源与后续上游对比，需与维护者确认后再动。
 
+### 批次 3 之后新增的未决事项
+
+5. **`compositions` 表没有策略列**：导出页的「免费草稿 / 受控动态成片 / 原生整片」分组与默认选中因此对 `draft` 与 `controlled-motion` 无法严格成立（只能靠 `label` 粗判，缺失时回退到「最新一条」）。要么给 `compositions` 增加 `strategy` 列，要么在 compose 写入时约定 `label` 前缀。
+6. **video 页音频报告取的是「最新一条」合成记录**，不是导出页选中的版本；按 `compositionId` 读取对应 sidecar 需要新增读接口（属 `src/app/api/**`）。
+7. **脚本版本保留只有本页会话内快照**：`/api/llm/script` 是先删后插整组替换，跨会话版本需要 API 侧支持（本次未改 API）。
+8. **新文案未接 i18n**：`creation-brief-summary` / `style-choice-prompt` / 脚本页新分支等使用硬编码中文，英文界面下仍显示中文。
+9. **Task 5.1 次级入口尚未统一**：商品库/主播库/爆款复刻/主题/批量目前只做了「风格不再静默降级」的兼容（clone 改为显式 `scenario`、CLI/MCP/Canvas 有默认值与 409 提示），仍未改为「只预填一份 `CreationBrief`」。
+10. **Task 4.2 剩余两项**：`draft` 的付费升级缺二次确认；`tts_failed` 目前只暴露数据（`voiceReport`），尚未默认把任务标记为待处理。
+
+### 批次 3 的真机验证记录（主工作区新构建）
+
+以 `integrations/clipforge/.next/standalone` 起本地服务（127.0.0.1:3210，独立数据目录），浏览器实测：
+
+- `/start?embed=mainpg`：出现「出片策略（创建时选定）」三项，`draft` 文案含「非 AI 动态视频，不计费」；来源含 商品图/商品链接/一句话主题/商品库预填/爆款复刻；页面无任何 Atlas 文案；未配 LLM 时引导「前往设置」而非内联填 Key。
+- `/project/new?embed=mainpg`：与 `/start` 同一份表单，步骤为 1 商品图片 / 2 商品名称 / 3 视频模式 / 4 出片策略；无 Atlas 文案。
+
+
 
 
 ```bash
