@@ -15,6 +15,7 @@ import { NextRequest } from "next/server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import * as schema from "@/lib/db/schema";
 import type { ScriptGenerationInput } from "@/lib/script-engine/prompts";
+import { scriptCharacterFrom } from "@/lib/script-character";
 
 const state = vi.hoisted(() => ({
   db: null as unknown,
@@ -217,5 +218,48 @@ describe("POST /api/llm/script × character 脏数据（安全忽略 / 按上限
     await post({ character: { id: "char_a", name: "小美", appearance: "长发", voiceStyle: "   " } });
     expect(state.lastInput?.character).toEqual({ id: "char_a", name: "小美", appearance: "长发" });
     expect(state.lastPrompt).not.toContain("声音风格：");
+  });
+});
+
+/**
+ * 脚本页「重新生成」的端到端回归：页面用 scriptCharacterFrom(角色库里的角色) 得到载荷，
+ * 路由必须把它交给 generateScript，并让提示词带上【出镜人物】与 characterId 约束。
+ * 这两条断言把「页面载荷 → 路由 → 提示词」串成一条链，避免任一段再次断掉。
+ */
+describe("POST /api/llm/script × 脚本页重新生成的 character 载荷", () => {
+  const presenter = {
+    id: "char_presenter",
+    name: "邻家姐姐",
+    appearance: "30岁出头，齐肩黑发，米色针织衫，手腕套着旧发圈",
+    voiceProfile: { style: "温柔女声" },
+  };
+
+  it("页面构造的载荷 → generateScript 收到 character，prompt 含【出镜人物】与 characterId 约束", async () => {
+    const character = scriptCharacterFrom(presenter);
+    expect(character).toEqual({
+      id: "char_presenter",
+      name: "邻家姐姐",
+      appearance: "30岁出头，齐肩黑发，米色针织衫，手腕套着旧发圈",
+      voiceStyle: "温柔女声",
+    });
+
+    const res = await post({ videoMode: "live_presenter", character });
+    expect(res.status).toBe(200);
+    expect(state.lastInput?.character).toEqual(character);
+    expect(state.lastPrompt).toContain("【出镜人物】");
+    expect(state.lastPrompt).toContain("人物名称：邻家姐姐");
+    expect(state.lastPrompt).toContain("外貌特征：30岁出头，齐肩黑发，米色针织衫，手腕套着旧发圈");
+    expect(state.lastPrompt).toContain('characterId 字段填入 "char_presenter"');
+  });
+
+  it("角色已删除（构造器返回 undefined，页面不发送该键）→ prompt 无人物块且键集与无角色时一致", async () => {
+    const character = scriptCharacterFrom(undefined);
+    expect(character).toBeUndefined();
+
+    const res = await post({ videoMode: "live_presenter", character });
+    expect(res.status).toBe(200);
+    expect("character" in (state.lastInput ?? {})).toBe(false);
+    expect(Object.keys(state.lastInput ?? {}).sort()).toEqual(LEGACY_INPUT_KEYS);
+    expect(state.lastPrompt).not.toContain("【出镜人物】");
   });
 });

@@ -47,16 +47,18 @@ describe("脚本页的角色接线（源码契约）", () => {
     expect(scriptPage.match(/characterId: proj\.characterId \?\? ""/g) ?? []).toHaveLength(2);
   });
 
-  it("两处角色查找都用解析结果，不再只读 URL 参数", () => {
+  it("角色查找收敛为单一解析来源（只用 presenterId，不再只读 URL 参数）", () => {
     expect(scriptPage).toMatch(
       /const presenterId = resolveScriptCharacter\(projectMeta, creationBrief, presenterParam\)/
     );
     const lookups = scriptPage.match(/presenterLib\.find\(\(c\) => c\.id === (\w+)\)/g) ?? [];
-    expect(lookups).toHaveLength(2);
+    // 预览与提交共用组件顶部解析出的同一个 presenter，不再各自查一次（避免第二套角色解析来源）
+    expect(lookups).toHaveLength(1);
     for (const lookup of lookups) {
       expect(lookup).toContain("presenterId");
       expect(lookup).not.toContain("presenterParam");
     }
+    expect(scriptPage.match(/useCharacterStore\(\)/g) ?? []).toHaveLength(1);
   });
 
   it("?presenter= 仍被读取，作为旧链接的后备", () => {

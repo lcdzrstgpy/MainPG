@@ -24,6 +24,7 @@ import { friendlyError } from "@/lib/friendly-error";
 import { ProjectHeader } from "@/components/project-header";
 import { DEFAULT_CREATION_BRIEF, sanitizeCreationBrief, type CreationBrief, type OutputStrategy } from "@/lib/creation-brief";
 import { buildTopicScriptRequest } from "@/lib/creation-submit";
+import { scriptCharacterFrom } from "@/lib/script-character";
 import { CreationBriefSummary } from "@/components/project-creation/creation-brief-summary";
 import { StyleChoicePrompt } from "@/components/project-creation/style-choice-prompt";
 import { parseStyleRequirement, type ScriptStyleRequirement } from "@/components/project-creation/script-style-requirement";
@@ -137,6 +138,13 @@ export default function ScriptPage() {
   const [creationBrief, setCreationBrief] = useState<CreationBrief | null>(null);
   // 简报是否已经读取完成：区分「还没读到」与「读到了 null（旧项目）」，策略门控不会误判
   const [briefLoaded, setBriefLoaded] = useState(false);
+  // 主播的唯一解析来源：优先级见 resolveScriptCharacter（项目记录 → 创作简报 → URL 兜底）。
+  // 脚本重生成、原生影片预览与提交都复用这里的同一个 presenter，页面不出现第二套角色解析。
+  // ?presenter=<id> 只是旧链接的兜底，创建后的跳转链接并不带它。
+  const [presenterParam, setPresenterParam] = useState("");
+  const { characters: presenterLib, updateCharacter } = useCharacterStore();
+  const presenterId = resolveScriptCharacter(projectMeta, creationBrief, presenterParam);
+  const presenter = presenterId ? presenterLib.find((c) => c.id === presenterId) : undefined;
   // 409 needs_explicit_style：不是失败，是「请用户先选一个风格」；candidates 由共享解析器给出
   const [stylePrompt, setStylePrompt] = useState<ScriptStyleRequirement | null>(null);
   // 重新生成会替换项目当前的脚本集合，先把被替换掉的那一版留在本页，旧脚本不再凭空消失
@@ -235,6 +243,10 @@ export default function ScriptPage() {
       const endpoint = isTopic ? "/api/topic/script" : "/api/llm/script";
       // 风格优先用简报里持久化的显式选择；旧项目没有简报时才落到 auto（由接口决定推荐或要求显式选择）
       const requestedStyle = styleOverride ?? creationBrief?.styleType ?? "auto";
+      // 带货分支带上角色：复用顶部唯一解析出的 presenter，转成脚本接口需要的 character 载荷
+      // （服务端 sanitizeCharacter 是第二道防线）。未选角色 / 角色已删除 ⇒ 不发送该键，
+      // 保持既有无人物行为；topic 分支不带 character，本次不改主题链路。
+      const character = scriptCharacterFrom(presenter);
       // 主题分支只经共享构造器拼 body：时长取 brief.targetDuration、旁白风格取 brief.styleType 的
       // 白名单透传（旧项目简报为 null 时由 resolveTopicScriptBrief 给兼容基线），页面不放常量
       const payload = isTopic
@@ -253,6 +265,7 @@ export default function ScriptPage() {
             styleType: requestedStyle,
             videoMode: projectMeta.videoMode,
             productImages: projectMeta.productImages,
+            ...(character && { character }),
             llmConfig: {
               baseUrl: llm.baseUrl,
               apiKey: llm.apiKey,
@@ -460,8 +473,7 @@ export default function ScriptPage() {
   // generation-task mode chosen on the studio card (?gen=ai): the free chain stays hands-off,
   // the AI chain stops at the script gate — money is only spent after one explicit click here
   const [genPref, setGenPref] = useState<"free" | "ai">("free");
-  // 创建时选中的主播（?presenter=<id> 只是旧链接的兜底）：真正的来源优先级见 resolveScriptCharacter
-  const [presenterParam, setPresenterParam] = useState("");
+  // 旧链接参数（?auto=1 / ?gen=ai / ?presenter=<id>）只在这里读取一次；presenterParam 的声明已上移
   useEffect(() => {
     const qs = new URLSearchParams(window.location.search);
     if (qs.get("auto") === "1") setAutoMode(true);
@@ -628,9 +640,7 @@ export default function ScriptPage() {
   // ---- AI film chain (grid → one-call film): the paid path. The free script above is the
   // zero-cost "video plan" gate — money is only spent after this one explicit click, and the
   // bill goes to the user's own model platform (open-source BYOK, ClipForge itself is free) ----
-  const { characters: presenterLib, updateCharacter } = useCharacterStore();
-  // 主播来源优先级：项目记录 → 创作简报 → URL 兜底；解析结果同时供生图与生视频使用
-  const presenterId = resolveScriptCharacter(projectMeta, creationBrief, presenterParam);
+  // presenterId / presenter 已在组件顶部统一解析，此处不再重复
   const [aiFilming, setAiFilming] = useState(false);
   const [aiFilmStage, setAiFilmStage] = useState("");
   /** Ticked by the user to allow a generation whose estimate exceeds their spend cap */
@@ -657,7 +667,6 @@ export default function ScriptPage() {
 
   /** Free dryRun call — full film prompt + counts + warnings, nothing submitted, nothing billed. */
   const fetchFilmPreview = async (scriptId: string) => {
-    const presenter = presenterLib.find((c) => c.id === presenterId);
     const res = await fetch(`/api/project/${id}/storyboard-film`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -727,7 +736,6 @@ export default function ScriptPage() {
       ]);
       if (!imgTarget || !vidTarget) throw new Error(t("aiFilmNeedModels"));
       // identity/product anchors: presenter sheet (bound at creation, or via the legacy ?presenter= link) + first product photo
-      const presenter = presenterLib.find((c) => c.id === presenterId);
       let sheet = presenter?.referenceImages?.[0];
       // multi-view sheet on demand: a presenter picked at creation but never "sheeted" gets their
       // 2x2 four-view reference generated right here (one square generation, physically the same
