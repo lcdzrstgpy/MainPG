@@ -1434,8 +1434,11 @@ class PodCustomizationService:
                         template_image=self.assets.read(template_asset["relative_path"]),
                         template_content_type=template_asset["content_type"],
                         trial_id=stored["target_id"],
-                        prompt=build_direct_listing_prompt(
+                        base_prompt=build_direct_listing_prompt(
                             request.business_fields, request.creative_prompt
+                        ),
+                        trial_elements=assign_style_elements(
+                            request.business_fields.style_keywords, 1, stored["target_id"]
                         ),
                         billing_run=run,
                     )

@@ -4257,9 +4257,13 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     if not label:
                         attributes = record.get("attributes")
                         if isinstance(attributes, Mapping):
-                            label = "/".join(
-                                str(value) for value in attributes.values() if value
-                            )
+                            # 与媒体绑定（variant_label）保持一致的分隔符与过滤口径，
+                            # 否则纯属性型 SKU 反查不到标签，可用性剔除键被漏报。
+                            label = " ".join(
+                                str(value)
+                                for value in attributes.values()
+                                if value is not None and str(value).strip()
+                            ).strip()
                     if label and label == view_label:
                         return variant_export_key(record)
         return view_sku_id
@@ -5502,19 +5506,34 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     pass
                 if str(processed.get("status") or "") == "completed":
                     if not _direct_ai_enabled():
-                        self._settle_product_processing_item_success(
-                            task_id,
-                            int(item_id),
-                            settings,
-                            processed.get("result") or {},
-                        )
+                        # 计费结算失败不阻断任务：进度落库与任务完成优先，结算异常只记日志。
+                        # 此前结算异常会穿透 _persist_progress：串行模式任务永久卡 running，
+                        # 并行模式整批被作废（已完成项全部丢弃）。
+                        try:
+                            self._settle_product_processing_item_success(
+                                task_id,
+                                int(item_id),
+                                settings,
+                                processed.get("result") or {},
+                            )
+                        except Exception:  # noqa: BLE001
+                            _level.exception(
+                                "AI 计费结算失败（不影响任务进度）| task_id=%s | item_id=%s",
+                                task_id, item_id,
+                            )
                 else:
                     if not _direct_ai_enabled():
-                        self._settle_product_processing_item_failure_for_item(
-                            task_id,
-                            int(item_id),
-                            processed,
-                        )
+                        try:
+                            self._settle_product_processing_item_failure_for_item(
+                                task_id,
+                                int(item_id),
+                                processed,
+                            )
+                        except Exception:  # noqa: BLE001
+                            _level.exception(
+                                "AI 计费失败结算失败（不影响任务进度）| task_id=%s | item_id=%s",
+                                task_id, item_id,
+                            )
             except LookupError:
                 # 任务已被清理时忽略进度写入，不阻塞整体流程
                 pass

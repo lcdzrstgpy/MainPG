@@ -52,8 +52,18 @@ export function AiServicePage() {
   const documentInputRef = useRef<HTMLInputElement>(null);
   const conversationFlowRef = useRef<HTMLDivElement>(null);
   const imageUploadVersionRef = useRef(0);
+  const documentUploadVersionRef = useRef(0);
   const objectUrlsRef = useRef(new Set<string>());
   const selectVersionRef = useRef(0);
+  /** 生成请求版本号 + 中止器：切换会话/新建创作时让在飞生成作废，防止回复写进错误会话。 */
+  const generationSeqRef = useRef(0);
+  const generationAbortRef = useRef<AbortController | null>(null);
+
+  const invalidateGeneration = () => {
+    generationSeqRef.current += 1;
+    generationAbortRef.current?.abort();
+    generationAbortRef.current = null;
+  };
 
   const selectableModels = useMemo(() => modelsForMode(mode), [mode]);
   const selectedModel = useMemo(
@@ -158,19 +168,25 @@ export function AiServicePage() {
       setApiError("文件仅支持 TXT、CSV、XLSX 或 DOCX。");
       return;
     }
+    // 版本号守卫：连续选择两个文件时，先发的慢请求返回后不覆盖后选文件。
+    const uploadVersion = documentUploadVersionRef.current + 1;
+    documentUploadVersionRef.current = uploadVersion;
     setUploadedDocumentName(file.name);
     setUploadedDocumentAssetId(undefined);
     if (apiStatus !== "ready") return;
     try {
       const asset = await aiServiceApi.uploadAsset(file);
+      if (documentUploadVersionRef.current !== uploadVersion) return;
       setUploadedDocumentAssetId(asset.asset_id);
     } catch (error) {
+      if (documentUploadVersionRef.current !== uploadVersion) return;
       clearComposerDocument();
       setApiError(error instanceof Error ? error.message : "文件上传或本地解析失败");
     }
   };
 
   const openNewCreation = () => {
+    invalidateGeneration();
     setActiveConversationId(undefined);
     setMessages((current) => {
       current.forEach((message) => {
@@ -253,6 +269,7 @@ export function AiServicePage() {
   };
 
   const selectConversation = async (conversation: AiConversation) => {
+    invalidateGeneration();
     const version = selectVersionRef.current + 1;
     selectVersionRef.current = version;
     setActiveConversationId(conversation.id);
@@ -354,6 +371,9 @@ export function AiServicePage() {
     clearComposerDocument();
     setIsGenerating(true);
     setApiError("");
+    const seq = ++generationSeqRef.current;
+    const controller = new AbortController();
+    generationAbortRef.current = controller;
     try {
       const conversation = remoteConversationId
         ? { conversation_id: remoteConversationId }
@@ -377,7 +397,9 @@ export function AiServicePage() {
           model_id: selectedModel.id,
           asset_ids: [draft.submitted.assetId, documentAssetId].filter((assetId): assetId is string => Boolean(assetId)),
           web_search: webSearchEnabled,
+          signal: controller.signal,
         });
+        if (seq !== generationSeqRef.current) return; // 生成期间已切换会话/新建创作
         setMessages((current) => [...current, { id: `assistant-${Date.now()}`, role: "assistant", content: reply || "模型未返回文字内容。" }]);
       } else {
         const template = runtimeTemplates.find((item) => item.mode === mode);
@@ -389,7 +411,9 @@ export function AiServicePage() {
           prompt: `${content}${sceneStyle ? `\n场景风格：${sceneStyle}` : ""}`,
           size: imageSizeFor(aspectRatio),
           asset_ids: draft.submitted.assetId ? [draft.submitted.assetId] : [],
+          signal: controller.signal,
         });
+        if (seq !== generationSeqRef.current) return;
         const assetIds = result.asset_ids ?? [];
         if (!assetIds.length) throw new Error("生成失败：服务端没有返回图片");
         const generatedImageUrls = await Promise.all(assetIds.map(aiServiceApi.loadAssetUrl));
@@ -402,6 +426,7 @@ export function AiServicePage() {
         }]);
       }
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return; // 切换会话主动中止，不算错误
       setApiError(mode === "chat" && draft.submitted.assetId
         ? "模型请求失败，请切换模型后重试。"
         : error instanceof Error ? error.message : "创作任务失败");

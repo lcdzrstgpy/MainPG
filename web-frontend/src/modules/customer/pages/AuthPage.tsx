@@ -59,6 +59,8 @@ export function AuthPage({ onEnter }: AuthPageProps) {
   const [forgotCodeCooldown, setForgotCodeCooldown] = useState(0);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  // 单端登录被拒时的自救：显示"强制登录"按钮，点击后撤销旧会话放行。
+  const [forceLogin, setForceLogin] = useState(false);
   // 会话失效原因提示（被顶替/过期）：App 层写入 sessionStorage，登录页读一次即清。
   const [sessionHint, setSessionHint] = useState(() => {
     try {
@@ -175,6 +177,38 @@ export function AuthPage({ onEnter }: AuthPageProps) {
     }
   }
 
+  async function doLogin(force: boolean) {
+    setError("");
+    setNotice("");
+    setForceLogin(false);
+    setBusy(true);
+    try {
+      if (!agreed) {
+        setError("请先阅读并同意《界野隐私政策》");
+        return;
+      }
+      const payload: Record<string, string | boolean> = identifier.includes("@")
+        ? { email: identifier, password }
+        : { username: identifier, password };
+      if (force) payload.force = true;
+      const data = await httpJson<LoginResponse>("/api/customer/login", {
+        method: "POST",
+        body: payload,
+        token: "",
+      });
+      if (!data.token) throw new Error("登录失败：服务端未返回登录凭证");
+      saveAuthSession(data.token, data.account ?? {});
+      onEnter();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "请求失败，请稍后再试";
+      setError(message);
+      // 账号已在其他设备登录：给"强制登录"自救入口，避免被锁死等 5 分钟。
+      setForceLogin(message.includes("已在其他设备登录"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
     setError("");
@@ -190,17 +224,7 @@ export function AuthPage({ onEnter }: AuthPageProps) {
         return;
       }
       if (isLogin) {
-        const payload = identifier.includes("@")
-          ? { email: identifier, password }
-          : { username: identifier, password };
-        const data = await httpJson<LoginResponse>("/api/customer/login", {
-          method: "POST",
-          body: payload,
-          token: "",
-        });
-        if (!data.token) throw new Error("登录失败：服务端未返回登录凭证");
-        saveAuthSession(data.token, data.account ?? {});
-        onEnter();
+        await doLogin(false);
       } else {
         const data = await httpJson<RegisterResponse>("/api/customer/register", {
           method: "POST",
@@ -272,6 +296,16 @@ export function AuthPage({ onEnter }: AuthPageProps) {
               {!isLogin && <label>邀请码<input type="text" value={invitationCode} onChange={(e) => setInvitationCode(e.target.value)} placeholder="选填" autoComplete="off" /></label>}
               <label className="auth-agree"><input type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} /><span>我已阅读并同意 <a className="link-button" href="/privacy" target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}>《界野隐私政策》</a></span></label>
               {error && <p className="auth-error">{error}</p>}
+              {forceLogin && (
+                <button
+                  type="button"
+                  className="auth-force-login"
+                  disabled={busy}
+                  onClick={() => doLogin(true)}
+                >
+                  {busy ? "处理中…" : "强制登录（将退出其他设备）"}
+                </button>
+              )}
               {notice && <p className="auth-notice">{notice}</p>}
               <button className="primary-button" type="submit" disabled={busy}>{busy ? "处理中…" : isLogin ? "登录并进入工作台 →" : "注册并进入工作台 →"}</button>
             </form>

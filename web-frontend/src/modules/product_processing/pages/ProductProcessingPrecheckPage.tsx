@@ -1440,7 +1440,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
         const listingAdvice = listingAdviceByDraftId[draftId];
         const listingAdviceLoading = listingAdviceLoadingIds.has(draftId);
         const listingAdviceError = listingAdviceErrors[draftId];
-        const listingAdviceTone = listingAdvice?.level.trim().charAt(0).toLowerCase() || 'c';
+        const listingAdviceTone = (listingAdvice?.level ?? '').trim().charAt(0).toLowerCase() || 'c';
         return (
           <section key={item.item_id} className={`verify-section precheck-card${hasOverrides ? ' is-edited' : ''}`}>
             <div className="precheck-card-head">

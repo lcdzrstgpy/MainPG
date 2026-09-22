@@ -159,8 +159,8 @@ class PodCustomizationRepository:
         with self._connect() as connection:
             row = connection.execute(
                 """SELECT * FROM pod_customization_templates
-                   WHERE template_id = ? AND workspace_id = ? AND deleted_at = ''""",
-                (template_id, workspace_id),
+                   WHERE template_id = ? AND workspace_id = ? AND owner_user_id = ? AND deleted_at = ''""",
+                (template_id, workspace_id, owner_user_id),
             ).fetchone()
             if row is None:
                 raise PodRepositoryError("POD template not found", 404)
@@ -169,8 +169,8 @@ class PodCustomizationRepository:
                 """UPDATE pod_customization_templates
                    SET calibration_status = 'ready', calibration_json = ?, error_message = '',
                        version = ?, updated_at = ?
-                   WHERE template_id = ? AND workspace_id = ?""",
-                (calibration_json, version, now, template_id, workspace_id),
+                   WHERE template_id = ? AND workspace_id = ? AND owner_user_id = ?""",
+                (calibration_json, version, now, template_id, workspace_id, owner_user_id),
             )
             connection.execute(
                 """INSERT INTO pod_customization_template_snapshots
@@ -196,8 +196,8 @@ class PodCustomizationRepository:
             result = connection.execute(
                 """UPDATE pod_customization_templates
                    SET calibration_status = ?, error_message = ?, updated_at = ?
-                   WHERE template_id = ? AND workspace_id = ? AND deleted_at = ''""",
-                (status, _safe_error(error_message), _now(), template_id, workspace_id),
+                   WHERE template_id = ? AND workspace_id = ? AND owner_user_id = ? AND deleted_at = ''""",
+                (status, _safe_error(error_message), _now(), template_id, workspace_id, owner_user_id),
             )
         if result.rowcount != 1:
             raise PodRepositoryError("POD template not found", 404)
@@ -207,8 +207,8 @@ class PodCustomizationRepository:
         with self._connect() as connection:
             row = connection.execute(
                 """SELECT * FROM pod_customization_templates
-                   WHERE template_id = ? AND workspace_id = ? AND deleted_at = ''""",
-                (template_id, workspace_id),
+                   WHERE template_id = ? AND workspace_id = ? AND owner_user_id = ? AND deleted_at = ''""",
+                (template_id, workspace_id, owner_user_id),
             ).fetchone()
         if row is None:
             raise PodRepositoryError("POD template not found", 404)
@@ -218,9 +218,9 @@ class PodCustomizationRepository:
         with self._connect() as connection:
             rows = connection.execute(
                 """SELECT * FROM pod_customization_templates
-                   WHERE workspace_id = ? AND deleted_at = ''
+                   WHERE workspace_id = ? AND owner_user_id = ? AND deleted_at = ''
                    ORDER BY updated_at DESC, template_id""",
-                (workspace_id,),
+                (workspace_id, owner_user_id),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -228,8 +228,8 @@ class PodCustomizationRepository:
         with self._connect() as connection:
             rows = connection.execute(
                 """SELECT * FROM pod_customization_template_snapshots
-                   WHERE template_id = ? AND workspace_id = ? ORDER BY version""",
-                (template_id, workspace_id),
+                   WHERE template_id = ? AND workspace_id = ? AND owner_user_id = ? ORDER BY version""",
+                (template_id, workspace_id, owner_user_id),
             ).fetchall()
         return [dict(row) for row in rows]
 

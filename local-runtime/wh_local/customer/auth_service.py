@@ -58,6 +58,8 @@ class SQLiteCustomerAuthService:
     def login(self, payload: dict[str, Any]) -> CustomerAuthResult:
         identifier = _text(payload, "username") or _text(payload, "email")
         password = _text(payload, "password")
+        # 强制登录：账号已有活跃会话时，用户明确选择"退出其他设备"后撤销旧会话放行。
+        force = bool(payload.get("force") or payload.get("force_relogin"))
         if not identifier or not password:
             self._log_login("", identifier, "", False, "missing username/email or password")
             raise ValueError("username/email and password are required")
@@ -155,7 +157,7 @@ class SQLiteCustomerAuthService:
             if active_session is not None:
                 last_used = str(active_session["last_used_at"] or "")
                 still_active = bool(last_used and last_used >= stale_before)
-                if still_active:
+                if still_active and not force:
                     conn.execute(
                         """
                         INSERT INTO auth_login_logs (account_id, username, email, success, failure_reason, created_at)
@@ -164,15 +166,33 @@ class SQLiteCustomerAuthService:
                         (row["account_id"], row["username"], row["email"], "账号已在其他设备登录", now),
                     )
                     raise PermissionError("该账号已在其他设备登录，请先退出后再登录")
-                # 旧会话已失联（如关闭页面未登出），撤销并允许本次登录。
-                conn.execute(
-                    """
-                    UPDATE auth_platform_sessions
-                    SET revoked_at = ?
-                    WHERE account_id = ? AND revoked_at = ''
-                    """,
-                    (now, row["account_id"]),
-                )
+                if still_active and force:
+                    # 用户明确选择强制登录：撤销旧会话，旧端下次请求收到 401 被顶替提示。
+                    conn.execute(
+                        """
+                        INSERT INTO auth_login_logs (account_id, username, email, success, failure_reason, created_at)
+                        VALUES (?, ?, ?, 1, ?, ?)
+                        """,
+                        (row["account_id"], row["username"], row["email"], "强制登录，撤销其他设备会话", now),
+                    )
+                    conn.execute(
+                        """
+                        UPDATE auth_platform_sessions
+                        SET revoked_at = ?
+                        WHERE account_id = ? AND revoked_at = ''
+                        """,
+                        (now, row["account_id"]),
+                    )
+                elif not still_active:
+                    # 旧会话已失联（如关闭页面未登出），撤销并允许本次登录。
+                    conn.execute(
+                        """
+                        UPDATE auth_platform_sessions
+                        SET revoked_at = ?
+                        WHERE account_id = ? AND revoked_at = ''
+                        """,
+                        (now, row["account_id"]),
+                    )
 
             conn.execute(
                 """

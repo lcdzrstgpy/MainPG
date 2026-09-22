@@ -437,8 +437,11 @@ def update_multipliers(
             return None, MULTIPLIER_DEFAULT_PERCENT
         if points_value is not None:
             points = _normalize_points_value(f"{category}_points_per_unit", points_value)
+            # 派生倍率如实记录（只防下限），不钳到 MULTIPLIER_MAX_PERCENT：
+            # 钳制会让审计记录的倍率与实扣金额脱节（设 500 积分/条时记录 500% 实扣 1111%）。
+            # 10%–500% 的输入约束只用于「按倍率调」入口（_normalize_percent_value）。
             percent = int(points * 100 / base_points + 0.5) if base_points else 100
-            return points, max(1, min(MULTIPLIER_MAX_PERCENT, percent))
+            return points, max(1, percent)
         if percent_value is not None:
             percent = _normalize_percent_value(f"{category}_multiplier_percent", percent_value)
             points = int(base_points * percent / 100 + 0.5)

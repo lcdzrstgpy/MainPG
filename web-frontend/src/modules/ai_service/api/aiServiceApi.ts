@@ -30,12 +30,16 @@ export const aiServiceApi = {
     return payload as ApiAsset;
   },
   loadAssetUrl: async (assetId: string) => URL.createObjectURL(await httpBlob(`/api/ai-service/assets/${encodeURIComponent(assetId)}`)),
-  createImage: (body: Record<string, unknown>) => httpJson<{ asset_ids: string[]; conversation_id: string }>("/api/ai-service/creations", { method: "POST", body }),
-  streamChat: async (body: Record<string, unknown>) => {
+  createImage: (body: Record<string, unknown> & { signal?: AbortSignal }) => {
+    const { signal, ...payload } = body;
+    return httpJson<{ asset_ids: string[]; conversation_id: string }>("/api/ai-service/creations", { method: "POST", body: payload, signal });
+  },
+  streamChat: async (body: Record<string, unknown> & { signal?: AbortSignal }) => {
     const headers: Record<string, string> = { "content-type": "application/json" };
     const token = getAuthToken();
     if (token) headers.authorization = `Bearer ${token}`;
-    const response = await fetch(apiUrl("/api/ai-service/messages/stream"), { method: "POST", headers, body: JSON.stringify(body) });
+    const { signal, ...payload } = body;
+    const response = await fetch(apiUrl("/api/ai-service/messages/stream"), { method: "POST", headers, body: JSON.stringify(payload), signal });
     if (!response.ok || !response.body) throw new Error(toUserMessage((await response.text()) || "对话请求失败"));
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
