@@ -3,7 +3,7 @@
 import { Card, CardContent } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { LANGUAGE_OPTIONS, SCRIPT_STYLE_OPTIONS, STYLE_SOURCE_LABELS, TONE_OPTIONS } from "./creation-brief-defaults";
+import { LANGUAGE_OPTIONS, SCRIPT_STYLE_OPTIONS, STYLE_SOURCE_LABELS, TONE_OPTIONS, type DescribedBriefOption } from "./creation-brief-defaults";
 import type { CreationBrief, StyleSource } from "./creation-brief-types";
 
 export interface NarrativePanelProps {
@@ -12,6 +12,13 @@ export interface NarrativePanelProps {
   styleSource: StyleSource;
   narrative: CreationBrief["narrative"];
   onNarrativeChange: (narrative: CreationBrief["narrative"]) => void;
+  /**
+   * 风格选项集按输入来源切换：缺省仍是带货脚本风格，一句话主题链路传自己的旁白风格词表，
+   * 否则用户点到的风格不在引擎白名单里会被静默降级。
+   */
+  styleOptions?: ReadonlyArray<DescribedBriefOption<string>>;
+  /** 风格区块标题，缺省沿用「脚本风格」。 */
+  styleLabel?: string;
   disabled?: boolean;
 }
 
@@ -21,6 +28,8 @@ export function NarrativePanel({
   styleSource,
   narrative,
   onNarrativeChange,
+  styleOptions = SCRIPT_STYLE_OPTIONS,
+  styleLabel = "脚本风格",
   disabled,
 }: NarrativePanelProps) {
   const current = narrative ?? {};
@@ -31,12 +40,12 @@ export function NarrativePanel({
       <CardContent className="p-5 space-y-5">
         <div>
           <div className="flex items-center justify-between mb-3">
-            <Label className="text-sm font-medium">脚本风格</Label>
+            <Label className="text-sm font-medium">{styleLabel}</Label>
             {/* the source is always visible: a recommended or template-inherited style is never implied to be hand-picked */}
             <span className="text-xs text-muted-foreground">风格来源：{STYLE_SOURCE_LABELS[styleSource]}</span>
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3" role="radiogroup" aria-label="脚本风格">
-            {SCRIPT_STYLE_OPTIONS.map((option) => {
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3" role="radiogroup" aria-label={styleLabel}>
+            {styleOptions.map((option) => {
               const active = option.id === styleType;
               return (
                 <button

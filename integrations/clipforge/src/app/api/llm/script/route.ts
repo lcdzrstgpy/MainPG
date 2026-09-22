@@ -3,7 +3,7 @@ import { getDataDir } from "@/lib/paths";
 import { readFile } from "fs/promises";
 import { join } from "path";
 import { generateScript, analyzeProduct } from "@/lib/script-engine/generator";
-import { styleNameMap, resolveNarrative, type ScriptStyleType } from "@/lib/script-engine/prompts";
+import { styleNameMap, resolveNarrative, type ScriptStyleType, type ScriptGenerationInput } from "@/lib/script-engine/prompts";
 import { hookPatternName, HOOK_PATTERNS } from "@/lib/script-engine/hook-patterns";
 import type { ProductCategory } from "@/lib/script-engine/templates";
 import { getDb } from "@/lib/db";
@@ -46,6 +46,37 @@ const ENGINE_STYLE_BY_UI_STYLE: Readonly<Record<string, ScriptStyleType>> = {
 /** Non-empty trimmed string, or undefined — an empty string counts as "the caller sent nothing". */
 const explicitText = (value: unknown): string | undefined =>
   typeof value === "string" && value.trim() ? value : undefined;
+
+/** Length caps for the sanitized on-screen character fields (the caller sends free-form text). */
+const CHARACTER_ID_MAX = 80;
+const CHARACTER_NAME_MAX = 60;
+const CHARACTER_APPEARANCE_MAX = 300;
+const CHARACTER_VOICE_STYLE_MAX = 80;
+
+/**
+ * Sanitize `body.character` server-side into exactly the shape `generateScript` expects, so the
+ * prompt's 【出镜人物】 block (name / appearance anchor / shot.characterId constraint) reaches the LLM.
+ * Only id/name/appearance/voiceStyle survive — every other key is dropped rather than passed through.
+ * Strings are trimmed and length-capped; an entry without a usable id *and* name degrades to
+ * undefined (treated as "no character"). Malformed input (string, number, array, null) is ignored
+ * instead of throwing — a bad character must never turn script generation into a 500.
+ */
+function sanitizeCharacter(raw: unknown): ScriptGenerationInput["character"] {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const source = raw as Record<string, unknown>;
+  const text = (value: unknown, max: number): string =>
+    typeof value === "string" ? value.trim().slice(0, max) : "";
+  const id = text(source.id, CHARACTER_ID_MAX);
+  const name = text(source.name, CHARACTER_NAME_MAX);
+  if (!id || !name) return undefined;
+  const voiceStyle = text(source.voiceStyle, CHARACTER_VOICE_STYLE_MAX);
+  return {
+    id,
+    name,
+    appearance: text(source.appearance, CHARACTER_APPEARANCE_MAX),
+    ...(voiceStyle && { voiceStyle }),
+  };
+}
 
 /**
  * Design §7.3: script generation falls back to the project's persisted creation settings when the
@@ -216,6 +247,9 @@ export async function POST(req: NextRequest) {
   const targetAudience = explicitText(body.targetAudience) ?? briefAudience;
   const platforms = explicitText(body.platforms) ?? briefPlatforms;
 
+  // on-screen character (live_presenter): only the sanitized fields reach the prompt builder.
+  const character = sanitizeCharacter(body.character);
+
   // Data flywheel (read side): pull the creator's real conversion feedback for this category. It is
   // used two ways: (1) as the only admissible source for smart-recommend ("auto") style resolution,
   // (2) as an advisory hint injected into the prompt so variants lean toward what actually sells.
@@ -293,6 +327,9 @@ export async function POST(req: NextRequest) {
       narrative,
       creativeIntent: defaults.creativeIntent ?? undefined,
       visualBible: defaults.visualBible ?? undefined,
+      // on-screen character (live_presenter): the sanitized id/name/appearance anchor reaches the
+      // prompt's 【出镜人物】 block. Omitted entirely when there is no usable character.
+      ...(character && { character }),
       // anti-homogenization: batch rotation pins a different opening hook mechanism per video (validated against the pattern library)
       preferredHookId:
         typeof body.preferredHookId === "string" && HOOK_PATTERNS.some((p) => p.id === body.preferredHookId)

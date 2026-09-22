@@ -5,6 +5,8 @@ import {
   type OutputStrategy,
   type StyleSource,
 } from "@/lib/creation-brief";
+import { isTopicNarrationStyle } from "@/lib/creation-submit";
+import type { TopicNarrationStyle } from "@/lib/script-engine/prompts";
 
 /**
  * Option vocabularies and defaults for the creation brief.
@@ -84,6 +86,32 @@ export const SCRIPT_STYLE_OPTIONS: ReadonlyArray<DescribedBriefOption<string>> =
   { id: "scenario", label: "场景安利", description: "真实场景展示，沉浸式种草" },
   { id: "auto", label: "智能推荐", description: "按历史投放数据推荐；数据不足时会要求你手动选风格" },
 ];
+
+/**
+ * 一句话主题（非带货）链路的旁白风格词表。
+ *
+ * 与带货的 `SCRIPT_STYLE_OPTIONS` 是两套不同的词表：主题引擎只承认
+ * `TopicNarrationStyle` 这五个值（见 `topicNarrationStyleFor`）。选项 id 直接标注成
+ * `TopicNarrationStyle`，所以词表一旦与引擎的联合类型脱节就编译不过，不需要再抄一份
+ * 不受校验的字面量；label 与引擎的展示名（`topicNarrationNameMap`）保持一致。
+ */
+export const TOPIC_NARRATION_STYLE_OPTIONS: ReadonlyArray<DescribedBriefOption<TopicNarrationStyle>> = [
+  { id: "knowledge", label: "知识科普", description: "抛问题再讲清 3-5 个知识点，结尾给一句金句" },
+  { id: "story", label: "情感故事", description: "第一人称叙事，情绪有起伏，结尾落到共鸣点" },
+  { id: "lifestyle", label: "生活方式", description: "日常场景里的做法与细节，轻松可复制" },
+  { id: "inspiration", label: "励志金句", description: "短句递进给力量，适合转发与收藏" },
+  { id: "travel", label: "旅行风光", description: "目的地风光与人文体验，画面感优先" },
+];
+
+/**
+ * 切换输入来源时把 `styleType` 收进目标来源自己的词表：主题模式下认不出的风格会被静默降级成
+ * knowledge，所以这里显式重置成主题词表的第一个值，让用户在面板上直接看到实际生效的风格。
+ * 非主题来源不做任何改写，商品模式的选项与行为完全不变。
+ */
+export function coerceStyleTypeForInputMode(styleType: string, inputMode: InputMode): string {
+  if (inputMode !== "topic") return styleType;
+  return isTopicNarrationStyle(styleType) ? styleType : TOPIC_NARRATION_STYLE_OPTIONS[0].id;
+}
 
 /** The value is also the text handed to the script model, so ids stay human-readable. */
 export const LANGUAGE_OPTIONS: ReadonlyArray<BriefOption<string>> = [
@@ -205,6 +233,11 @@ export function videoModeLabel(id: VideoModeId): string {
 /** Unknown values (legacy projects) fall back to the raw id instead of a made-up style name. */
 export function scriptStyleLabel(id: string): string {
   return labelOf(SCRIPT_STYLE_OPTIONS, id, id);
+}
+
+/** 主题旁白风格的展示名；认不出的值同样回退成原始 id，不猜一个别名。 */
+export function topicNarrationStyleLabel(id: string): string {
+  return TOPIC_NARRATION_STYLE_OPTIONS.find((option) => option.id === id)?.label ?? id;
 }
 
 export function outputStrategyLabel(id: OutputStrategy): string {

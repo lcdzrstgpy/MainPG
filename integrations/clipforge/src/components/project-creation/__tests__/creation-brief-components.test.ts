@@ -72,7 +72,9 @@ describe("input-source-panel", () => {
 
 describe("narrative-panel", () => {
   it("collects style, situation, language and tone", () => {
-    expect(narrativePanel).toMatch(/SCRIPT_STYLE_OPTIONS\.map/);
+    // 风格词表由 prop 驱动，缺省仍是带货的 SCRIPT_STYLE_OPTIONS（调用方零改动）
+    expect(narrativePanel).toMatch(/styleOptions = SCRIPT_STYLE_OPTIONS/);
+    expect(narrativePanel).toMatch(/\{styleOptions\.map\(/);
     expect(narrativePanel).toMatch(/LANGUAGE_OPTIONS\.map/);
     expect(narrativePanel).toMatch(/TONE_OPTIONS\.map/);
     expect(narrativePanel).toMatch(/narrative\??\.situation/);

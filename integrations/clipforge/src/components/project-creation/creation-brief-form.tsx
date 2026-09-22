@@ -28,6 +28,9 @@ import {
   MAX_SOURCE_IMAGES,
   PLATFORM_OPTIONS,
   PRICE_RANGE_OPTIONS,
+  SCRIPT_STYLE_OPTIONS,
+  TOPIC_NARRATION_STYLE_OPTIONS,
+  coerceStyleTypeForInputMode,
   defaultAudioStrategyFor,
   resolveStyleSource,
   validateCreationBriefForm,
@@ -180,7 +183,18 @@ export function CreationBriefForm({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- valuesKey 已经是所有被收集字段的值指纹
   }, [valuesKey]);
 
-  const handleInputModeChange = useCallback((inputMode: InputMode) => patchBrief({ inputMode }), [patchBrief]);
+  const handleInputModeChange = useCallback(
+    (inputMode: InputMode) => {
+      // 两个来源各有自己的风格词表：切到主题时残留的带货风格会被引擎静默降级，所以显式归一化
+      const styleType = coerceStyleTypeForInputMode(brief.styleType, inputMode);
+      if (styleType === brief.styleType) {
+        patchBrief({ inputMode });
+        return;
+      }
+      patchBrief({ inputMode, styleType, styleSource: resolveStyleSource({ styleType, templateId: brief.templateId }) });
+    },
+    [brief.styleType, brief.templateId, patchBrief]
+  );
 
   const handleStyleTypeChange = useCallback(
     (styleType: string) => patchBrief({ styleType, styleSource: resolveStyleSource({ styleType, templateId: brief.templateId }) }),
@@ -255,6 +269,8 @@ export function CreationBriefForm({
 
   const validation = validateCreationBriefForm({ productName, images, topic, inputMode: brief.inputMode, linkImported, strategyChosen });
   const blocked = disabled === true;
+  // 一句话主题走的是主题引擎的旁白风格词表，与带货脚本风格不通用
+  const topicMode = brief.inputMode === "topic";
 
   const handleSubmit = () => {
     if (!validation.valid || blocked) {
@@ -354,6 +370,8 @@ export function CreationBriefForm({
         styleSource={brief.styleSource}
         narrative={brief.narrative}
         onNarrativeChange={(narrative) => patchBrief({ narrative })}
+        styleOptions={topicMode ? TOPIC_NARRATION_STYLE_OPTIONS : SCRIPT_STYLE_OPTIONS}
+        styleLabel={topicMode ? "主题旁白风格" : "脚本风格"}
         disabled={blocked}
       />
 

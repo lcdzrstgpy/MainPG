@@ -10,6 +10,7 @@ import {
   inputModeLabel,
   outputStrategyLabel,
   scriptStyleLabel,
+  topicNarrationStyleLabel,
 } from "./creation-brief-defaults";
 import type { CreationBrief } from "./creation-brief-types";
 
@@ -30,13 +31,15 @@ export function CreationBriefSummary({ brief, title = "创作简报", className 
   const safe = sanitizeCreationBrief(brief);
   const narrative = safe.narrative ?? {};
   const platforms = safe.platforms.map((id) => PLATFORM_OPTIONS.find((option) => option.id === id)?.label ?? id);
+  // 一句话主题存的是主题引擎的旁白风格，只有带货词表认得不上，按来源选对应的展示名
+  const styleLabel = safe.inputMode === "topic" ? topicNarrationStyleLabel(safe.styleType) : scriptStyleLabel(safe.styleType);
   const rows: Array<{ key: string; label: string; value: string }> = [
     { key: "input", label: "创作来源", value: inputModeLabel(safe.inputMode) },
     {
       key: "style",
       label: "脚本风格",
       value: safe.styleType
-        ? `${scriptStyleLabel(safe.styleType)}（${STYLE_SOURCE_LABELS[safe.styleSource]}）`
+        ? `${styleLabel}（${STYLE_SOURCE_LABELS[safe.styleSource]}）`
         : `未选风格（${STYLE_SOURCE_LABELS[safe.styleSource]}）`,
     },
     { key: "duration", label: "目标时长", value: durationLabel(safe.targetDuration) },

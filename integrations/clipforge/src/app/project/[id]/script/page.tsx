@@ -23,6 +23,7 @@ import { STAGE_LABEL_KEYS } from "@/lib/pipeline-stages";
 import { friendlyError } from "@/lib/friendly-error";
 import { ProjectHeader } from "@/components/project-header";
 import { DEFAULT_CREATION_BRIEF, sanitizeCreationBrief, type CreationBrief, type OutputStrategy } from "@/lib/creation-brief";
+import { buildTopicScriptRequest } from "@/lib/creation-submit";
 import { CreationBriefSummary } from "@/components/project-creation/creation-brief-summary";
 import { StyleChoicePrompt } from "@/components/project-creation/style-choice-prompt";
 import { parseStyleRequirement, type ScriptStyleRequirement } from "@/components/project-creation/script-style-requirement";
@@ -93,6 +94,17 @@ export function resolveScriptCharacter(
     if (id) return id;
   }
   return undefined;
+}
+
+/**
+ * 主题项目重新生成时使用的创作简报。统一创作入口之前的旧主题项目没有 `creationBrief` 列
+ * （读到的是 `null`），若直接取字段，请求体里就会出现 undefined 并把时长/风格静默交给接口默认值。
+ * 兼容基线显式写死为「主题模式 + DEFAULT_CREATION_BRIEF」：targetDuration 取默认 30s、
+ * styleType 为空 ⇒ 引擎默认旁白风格 knowledge（见 buildTopicScriptRequest / topicNarrationStyleFor）。
+ * 不从题材或项目名猜任意时长与风格——宁可落在一个明确定义的默认上。
+ */
+export function resolveTopicScriptBrief(brief: CreationBrief | null): CreationBrief {
+  return brief ?? sanitizeCreationBrief({ ...DEFAULT_CREATION_BRIEF, inputMode: "topic" });
 }
 
 export default function ScriptPage() {
@@ -223,13 +235,15 @@ export default function ScriptPage() {
       const endpoint = isTopic ? "/api/topic/script" : "/api/llm/script";
       // 风格优先用简报里持久化的显式选择；旧项目没有简报时才落到 auto（由接口决定推荐或要求显式选择）
       const requestedStyle = styleOverride ?? creationBrief?.styleType ?? "auto";
+      // 主题分支只经共享构造器拼 body：时长取 brief.targetDuration、旁白风格取 brief.styleType 的
+      // 白名单透传（旧项目简报为 null 时由 resolveTopicScriptBrief 给兼容基线），页面不放常量
       const payload = isTopic
-        ? {
+        ? buildTopicScriptRequest({
             projectId: id,
             topic: projectMeta.topic || projectName,
-            targetDuration: 25,
+            brief: resolveTopicScriptBrief(creationBrief),
             llmConfig: { baseUrl: llm.baseUrl, apiKey: llm.apiKey, model: llm.model },
-          }
+          })
         : {
             projectId: id,
             productName: projectMeta.productName,
