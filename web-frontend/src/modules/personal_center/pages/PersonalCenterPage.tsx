@@ -28,6 +28,7 @@ import {
   type TopupOrderResponse,
 } from "../api/personalCenterApi";
 import { SystemVersionPanel } from "../components/SystemVersionPanel";
+import { PreferencesPanel } from "../components/PreferencesPanel";
 import { FeedbackPanel } from "../components/FeedbackPanel";
 import "../styles/personalCenter.css";
 
@@ -324,7 +325,7 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
   const defaultUsageFilterKey = buildUsageFilterKey("", "", "", "");
 
   const [summary, setSummary] = useState<BillingSummary | null>(cachedBalance?.summary ?? null);
-  const [activePanel, setActivePanel] = useState<"wallet" | "usage" | "pricing" | "model" | "version" | "feedback">("wallet");
+  const [activePanel, setActivePanel] = useState<"wallet" | "usage" | "pricing" | "model" | "preferences" | "version" | "feedback">("wallet");
 
   // 可用积分与积分构成的数字滚动动画（首次直接用缓存值，不闪）。
   const animatedAvailablePoints = useAnimatedNumber(summary?.wallet.available_points);
@@ -1230,6 +1231,10 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
           <span className="iconfont icon-robot-fill" aria-hidden="true" />
           <span>模型选择</span>
         </button>
+        <button type="button" className={activePanel === "preferences" ? "is-active" : ""} onClick={() => setActivePanel("preferences")}>
+          <span className="iconfont icon-skin" aria-hidden="true" />
+          <span>偏好设置</span>
+        </button>
         <button type="button" className={activePanel === "version" ? "is-active" : ""} onClick={() => setActivePanel("version")}>
           <span className="iconfont icon-setting" aria-hidden="true" />
           <span>系统版本</span>
@@ -1748,6 +1753,8 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
               </section>
             </div>
           </article>
+        ) : activePanel === "preferences" ? (
+          <PreferencesPanel />
         ) : activePanel === "version" ? (
           <SystemVersionPanel />
         ) : activePanel === "feedback" ? (

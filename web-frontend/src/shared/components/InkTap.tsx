@@ -21,12 +21,14 @@ const MAX_SPOTS = 24;
 type InkTapProps = {
   theme: ThemeId;
   uiMode: UiModeId;
+  /** 点击特效开关（个人中心 → 偏好设置）；关掉后不再产生墨点。 */
+  enabled: boolean;
 };
 
-export const InkTap = memo(function InkTap({ theme, uiMode }: InkTapProps) {
+export const InkTap = memo(function InkTap({ theme, uiMode, enabled }: InkTapProps) {
   const layerRef = useRef<HTMLDivElement | null>(null);
 
-  const active = theme === "chinese" && uiMode === "classic";
+  const active = theme === "chinese" && uiMode === "classic" && enabled;
 
   useEffect(() => {
     if (!active) return;

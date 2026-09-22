@@ -182,6 +182,31 @@ html.mode-cascade .sidebar-card { animation-delay: 0.16s; }
 .topbar-pin-toggle { color: #087bf5; }.topbar-pin-toggle svg { width: 21px; height: 21px; overflow: visible; filter: drop-shadow(0 2px 2px rgba(8, 123, 245, .18)); }.topbar-pin-toggle svg path { fill: currentColor; stroke: none; }.topbar-pin-toggle.is-active { color: #087bf5; border-color: #99dfe1; background: #e8fafa; box-shadow: 0 6px 14px rgba(8, 151, 165, .14); }
 .topbar-card.is-pinned { top: 0; box-shadow: 0 16px 42px rgba(26, 65, 101, .1); }
 .topbar-card.is-pinned.is-stuck { border-top: 0; border-radius: 0 0 22px 22px; background: #fff; box-shadow: 0 10px 28px rgba(26, 65, 101, .1); }
+
+/* 顶栏滚动收起：原版原来只有上面的「吸顶变实心」，这里补上与桌面版一致的收起——
+   滚过阈值后主行隐去、只留标签行贴在顶边。仅在偏好设置打开时生效；
+   收起态不画中间分隔线（卡片与标签行都不保留边框）。 */
+html[data-topbar-collapse="on"][data-ui-mode="classic"] .topbar-card.is-pinned.is-stuck {
+  top: 0;
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+html[data-topbar-collapse="on"][data-ui-mode="classic"] .topbar-card.is-pinned.is-stuck .topbar-main {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+html[data-topbar-collapse="on"][data-ui-mode="classic"] .topbar-card.is-pinned.is-stuck .topbar-lower-row {
+  pointer-events: auto;
+  border: 0;
+  border-radius: 0 0 22px 22px;
+  background: var(--theme-card-bg, #fff);
+  box-shadow: 0 10px 28px rgba(26, 65, 101, .1);
+  transform: translateY(-66px);
+}
 .sidebar-card { isolation: isolate; }.sidebar-card::before { content: ""; position: absolute; z-index: 0; inset: 1px; border-radius: 20px; pointer-events: none; opacity: 0; background: linear-gradient(105deg, transparent 22%, rgba(37, 170, 237, .08) 36%, rgba(24, 187, 218, .2) 46%, rgba(33, 214, 172, .25) 53%, rgba(47, 183, 225, .15) 62%, transparent 78%); background-size: 230% 100%; filter: blur(.15px); box-shadow: inset 0 0 22px rgba(28, 190, 205, .05); animation: topbar-water-flow-soft 17s cubic-bezier(.35, .08, .28, 1) infinite; }.sidebar-card::after { content: ""; position: absolute; z-index: 0; right: 1px; bottom: 1px; left: 1px; height: 34px; overflow: hidden; border-radius: 0 0 20px 20px; pointer-events: none; opacity: 0; background: radial-gradient(ellipse at 50% 115%, rgba(35, 218, 179, .29) 0 16%, rgba(25, 164, 226, .17) 36%, transparent 68%) 0 0 / 180px 32px repeat-x; filter: blur(2.2px); animation: topbar-water-ripple 17s ease-in-out infinite; }.sidebar-card > * { position: relative; z-index: 1; }
 
 /* 工作区不再用第二行撑满剩余视口：短页面按内容收口，长页面自然向下滚动。 */

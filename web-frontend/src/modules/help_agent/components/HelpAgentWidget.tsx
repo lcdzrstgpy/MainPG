@@ -15,12 +15,13 @@ import {
   toAssistantMessage,
   type ChatMessage,
 } from "../data/chatMessage";
+import { useBallSize, type BallSizeId } from "../../../shared/hooks/useBallSize";
 import "../styles/helpAgent.css";
 
 const DRAG_THRESHOLD_PX = 4;
 const BALL_SIZE = 56;
-/** 与积分球合并后换成大一号的球：正面积分、背面主题吉祥物。 */
-const BALANCE_BALL_SIZE = 88;
+/** 合并积分球后的球体直径（偏好设置 → 悬浮球大小）；中档 88 为既有大小。 */
+const BALANCE_BALL_SIZES: Record<BallSizeId, number> = { sm: 68, md: 88, lg: 110 };
 const PANEL_WIDTH = 380;
 const PANEL_HEIGHT = 520;
 const PANEL_MARGIN = 16;
@@ -90,8 +91,10 @@ function clampAxis(value: number, max: number, min: number): number {
 
 export function HelpAgentWidget({ allowFeedback = true, showBalance = false }: HelpAgentWidgetProps = {}) {
   const { theme } = useTheme();
+  const { size: ballSizePref } = useBallSize();
   const [open, setOpen] = useState(false);
-  const ballSize = showBalance ? BALANCE_BALL_SIZE : BALL_SIZE;
+  // 大小偏好只作用于合并了积分球的实例（登录页那个小 Q 球保持原尺寸）。
+  const ballSize = showBalance ? BALANCE_BALL_SIZES[ballSizePref] : BALL_SIZE;
   // 初始化就要夹取：localStorage 里可能是大窗口下拖拽存下的坐标，直接沿用会停在屏幕外，
   // 而 resize 事件只在窗口尺寸变化时才触发，球就再也回不来了。
   const [position, setPosition] = useState<BallPosition>(() => clampBallPosition(
@@ -114,15 +117,17 @@ export function HelpAgentWidget({ allowFeedback = true, showBalance = false }: H
   const bodyRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  // 窗口缩放时把悬浮球拉回可视区，避免缩小窗口后球跑出屏幕找不回来。
+  // 窗口缩放、或偏好设置里改了球体大小：把悬浮球拉回可视区，
+  // 避免缩小窗口 / 换成大球后球有一部分留在屏幕外找不回来。
   useEffect(() => {
-    const onResize = () => {
+    const clampIntoView = () => {
       setPosition((current) =>
         clampBallPosition(current, { width: window.innerWidth, height: window.innerHeight }, ballSize),
       );
     };
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
+    clampIntoView();
+    window.addEventListener("resize", clampIntoView);
+    return () => window.removeEventListener("resize", clampIntoView);
   }, [ballSize]);
 
   // 积分面显示一段时间后自动翻到吉祥物面（和原积分悬浮球一致）。

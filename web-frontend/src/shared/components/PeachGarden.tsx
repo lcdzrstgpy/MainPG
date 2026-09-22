@@ -110,13 +110,24 @@ function drawPetalSprite(ctx: CanvasRenderingContext2D, x: number, y: number, si
 type PeachGardenProps = {
   theme: ThemeId;
   uiMode: UiModeId;
+  /** 点击特效：单击花瓣爆裂 + 双击桃花雨（个人中心 → 偏好设置）。 */
+  tapEffects: boolean;
+  /** 全屏特效：花瓣飘落 + 薄雾 + 光标风力。关掉后只剩点击反馈（若点击特效开着）。 */
+  ambientEffects: boolean;
 };
 
-export const PeachGarden = memo(function PeachGarden({ theme, uiMode }: PeachGardenProps) {
+export const PeachGarden = memo(function PeachGarden({ theme, uiMode, tapEffects, ambientEffects }: PeachGardenProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   // apple 桌面模式下主题会被映射回 classic(见 applyTheme),此时不渲染桃花源层。
-  const active = theme === "peach" && uiMode === "classic";
+  const sceneryActive = theme === "peach" && uiMode === "classic";
+  // 两个特效都关掉时不创建花瓣画布（桃林溪水静态背景仍保留,它属于主题外观）。
+  const active = sceneryActive && (tapEffects || ambientEffects);
+
+  // 点击特效只决定事件里要不要响应,不该重建花瓣（重跑 effect 会让花瓣重新随机分布）,
+  // 所以用 ref 读最新值;全屏特效决定花瓣/薄雾是否存在,变化时需要重建。
+  const tapRef = useRef(tapEffects);
+  tapRef.current = tapEffects;
 
   useEffect(() => {
     if (!active) return;
@@ -171,7 +182,9 @@ export const PeachGarden = memo(function PeachGarden({ theme, uiMode }: PeachGar
       canvas.width = Math.round(width * dpr);
       canvas.height = Math.round(height * dpr);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      seedPetals();
+      // 全屏特效关闭时不播种花瓣：画布只用来画点击反馈（碎片/涟漪）。
+      if (ambientEffects) seedPetals();
+      else petals = [];
     };
 
     const onPointerMove = (event: PointerEvent) => {
@@ -217,10 +230,22 @@ export const PeachGarden = memo(function PeachGarden({ theme, uiMode }: PeachGar
         });
       }
       if (bursts.length > 420) bursts.splice(0, bursts.length - 420);
+      // 全屏特效关闭时没有花瓣常驻动画,碎片/涟漪画完循环会停;点击时重新拉起。
+      if (!reduceMotion && !running) {
+        running = true;
+        last = performance.now();
+        rafId = requestAnimationFrame(step);
+      }
     };
 
-    const onPointerDown = (event: PointerEvent) => burstAt(event.clientX, event.clientY, 1);
-    const onDblClick = (event: MouseEvent) => burstAt(event.clientX, event.clientY, 2.6);
+    const onPointerDown = (event: PointerEvent) => {
+      if (!tapRef.current) return;
+      burstAt(event.clientX, event.clientY, 1);
+    };
+    const onDblClick = (event: MouseEvent) => {
+      if (!tapRef.current) return;
+      burstAt(event.clientX, event.clientY, 2.6);
+    };
 
     const step = (now: number) => {
       const dt = Math.min(32, now - last);
@@ -290,6 +315,11 @@ export const PeachGarden = memo(function PeachGarden({ theme, uiMode }: PeachGar
         ctx.stroke();
       }
 
+      // 全屏特效关闭时没有常驻动画：碎片与涟漪都消散后停帧，避免画布空转耗电。
+      if (!ambientEffects && bursts.length === 0 && ripples.length === 0) {
+        running = false;
+        return;
+      }
       rafId = requestAnimationFrame(step);
     };
 
@@ -306,7 +336,8 @@ export const PeachGarden = memo(function PeachGarden({ theme, uiMode }: PeachGar
 
     resize();
     window.addEventListener("resize", resize);
-    window.addEventListener("pointermove", onPointerMove, { passive: true });
+    // 光标「风力」推开花瓣属于全屏特效，关掉时无需监听指针移动。
+    if (ambientEffects) window.addEventListener("pointermove", onPointerMove, { passive: true });
     window.addEventListener("pointerdown", onPointerDown, { passive: true });
     window.addEventListener("dblclick", onDblClick, { passive: true });
     document.addEventListener("visibilitychange", onVisibility);
@@ -328,16 +359,17 @@ export const PeachGarden = memo(function PeachGarden({ theme, uiMode }: PeachGar
       window.removeEventListener("dblclick", onDblClick);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [active]);
+  }, [active, ambientEffects]);
 
-  if (!active) return null;
+  if (!sceneryActive) return null;
 
   return (
     <>
       <div className="peach-garden-scenery" aria-hidden="true">
-        <div className="peach-garden-mist" />
+        {/* 薄雾是常驻漂移动画，归全屏特效；桃林溪水背景图保留（属于主题外观）。 */}
+        {ambientEffects && <div className="peach-garden-mist" />}
       </div>
-      {createPortal(
+      {active && createPortal(
         <canvas ref={canvasRef} className="peach-garden-petals" aria-hidden="true" />,
         document.body,
       )}

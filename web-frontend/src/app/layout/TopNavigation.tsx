@@ -265,14 +265,14 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
                                 className={`theme-store-action ${downloaded ? "is-use" : "is-download"}`}
                                 onClick={async () => {
                                   if (disabled) return;
-                                  if (!downloaded) {
-                                    try {
-                                      await downloadTheme(id);
-                                      setStoreActionError(null);
-                                    } catch (err) {
-                                      setStoreActionError(err instanceof Error ? err.message : "下载失败，请重试");
-                                      return;
-                                    }
+                                  // 无条件走 downloadTheme：内部对"未下载/版本落后/已是最新"分别处理，
+                                  // 主题包改版后点「使用」即自动更新到新版本。
+                                  try {
+                                    await downloadTheme(id);
+                                    setStoreActionError(null);
+                                  } catch (err) {
+                                    setStoreActionError(err instanceof Error ? err.message : "下载失败，请重试");
+                                    return;
                                   }
                                   setTheme(id);
                                   setThemeStoreOpen(false);

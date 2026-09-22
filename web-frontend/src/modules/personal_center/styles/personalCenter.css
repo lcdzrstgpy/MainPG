@@ -2592,3 +2592,156 @@
   line-height: 1;
   letter-spacing: -0.02em;
 }
+
+/* ================================================================
+   偏好设置（个人中心 → 偏好设置）：点击特效 / 全屏特效两个开关
+   配色全部走主题变量，随主题切换自动跟随。
+   ================================================================ */
+.preferences-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.preferences-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+  border-radius: 16px;
+  background: var(--theme-module-surface-soft, rgba(148, 163, 184, 0.08));
+  border: 1px solid var(--theme-module-border, rgba(148, 163, 184, 0.2));
+}
+
+.preferences-row-label {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--theme-text-strong, #0f172a);
+}
+
+/* 三档分段选择（如「悬浮球大小」的小 / 中 / 大） */
+.preferences-segment {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 10px;
+  border: 1px solid var(--theme-module-border, rgba(148, 163, 184, 0.28));
+  background: var(--theme-module-surface-soft, rgba(148, 163, 184, 0.12));
+}
+
+.preferences-segment button {
+  min-width: 42px;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--theme-text-muted, #64748b);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background-color 0.16s ease, color 0.16s ease;
+}
+
+.preferences-segment button:hover:not(.is-active) {
+  color: var(--theme-text-strong, #0f172a);
+  background: var(--theme-module-surface, rgba(255, 255, 255, 0.7));
+}
+
+.preferences-segment button.is-active {
+  color: #fff;
+  background: var(--theme-accent, #16a34a);
+}
+
+.preferences-segment button:focus-visible {
+  outline: 2px solid var(--theme-accent, #16a34a);
+  outline-offset: 1px;
+}
+
+/* 子项：缩进 + 左侧竖线，尺寸收一号，表示从属于上一行（如「侧边栏收起」→「触碰展开」） */
+.preferences-row.is-sub {
+  margin-left: 26px;
+  padding: 10px 14px;
+  border: 0;
+  border-left: 2px solid var(--theme-module-border, rgba(148, 163, 184, 0.35));
+  border-radius: 0 12px 12px 0;
+  background: transparent;
+}
+
+.preferences-row.is-sub .preferences-row-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--theme-text-secondary, #465a73);
+}
+
+.preferences-row.is-sub .preferences-switch {
+  width: 46px;
+  height: 27px;
+}
+
+.preferences-row.is-sub .preferences-switch > span {
+  top: 3px;
+  left: 3px;
+  width: 19px;
+  height: 19px;
+}
+
+.preferences-row.is-sub .preferences-switch.is-on > span {
+  transform: translateX(19px);
+}
+
+/* 上一级未开启（侧边栏没收起）时，子项置灰不可点 */
+.preferences-row.is-locked {
+  opacity: 0.45;
+}
+
+.preferences-row.is-locked .preferences-switch {
+  cursor: not-allowed;
+}
+
+/* 开关：轨道 + 滑块，开启态用主题强调色 */
+.preferences-switch {
+  position: relative;
+  flex: none;
+  width: 52px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--theme-module-border, rgba(148, 163, 184, 0.45));
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.32);
+  cursor: pointer;
+  transition: background-color 0.18s ease, border-color 0.18s ease;
+}
+
+.preferences-switch > span {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.24);
+  transition: transform 0.18s ease;
+}
+
+.preferences-switch.is-on {
+  background: var(--theme-accent, #16a34a);
+  border-color: transparent;
+}
+
+.preferences-switch.is-on > span {
+  transform: translateX(22px);
+}
+
+.preferences-switch:focus-visible {
+  outline: 2px solid var(--theme-accent, #16a34a);
+  outline-offset: 2px;
+}
+
+.preferences-note {
+  margin: 14px 0 0;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--theme-text-muted, #64748b);
+}

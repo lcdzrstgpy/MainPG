@@ -136,7 +136,9 @@
 [data-ui-mode="apple"] .page-tab.is-active { border-color: rgba(105,127,157,.12); background: rgba(255,255,255,.84); box-shadow: 0 3px 10px rgba(65,76,94,.09); }
 [data-ui-mode="apple"] .page-tab > button { padding: 7px 9px; color: #687286; }
 [data-ui-mode="apple"] .page-tab.is-active > button { color: #1d1d1f; }
-[data-ui-mode="apple"] .topbar-card.is-stuck {
+/* 顶栏滚动收起：只有偏好设置里打开「顶栏滚动收起」才生效（默认关 → 桌面版也保持完整顶栏）。
+   收起态不画中间那条分隔线（原来的 border 会在浮起面板的边缘形成一条亮线）。 */
+html[data-topbar-collapse="on"][data-ui-mode="apple"] .topbar-card.is-stuck {
   top: 0 !important;
   pointer-events: none;
   border-color: transparent !important;
@@ -145,15 +147,15 @@
   backdrop-filter: none;
 }
 
-[data-ui-mode="apple"] .topbar-card.is-stuck .topbar-main {
+html[data-topbar-collapse="on"][data-ui-mode="apple"] .topbar-card.is-stuck .topbar-main {
   visibility: hidden;
   opacity: 0;
   pointer-events: none;
 }
 
-[data-ui-mode="apple"] .topbar-card.is-stuck .topbar-lower-row {
+html[data-topbar-collapse="on"][data-ui-mode="apple"] .topbar-card.is-stuck .topbar-lower-row {
   pointer-events: auto;
-  border: 1px solid rgba(255,255,255,.74);
+  border: 0;
   border-radius: 0 0 17px 17px;
   background: rgba(250,252,255,.86);
   box-shadow: 0 12px 32px rgba(49,62,87,.2), inset 0 1px rgba(255,255,255,.9);

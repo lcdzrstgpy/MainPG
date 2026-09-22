@@ -10,6 +10,7 @@ import "./shared/styles/design-tokens.css";
 import "./shared/styles/global.css";
 import "./shared/styles/themes.css";
 import "./shared/styles/theme-personality.css";
+import "./shared/styles/fx-preference.css";
 import "./shared/styles/peach-garden.css";
 import "./shared/styles/ink-tap.css";
 import "./shared/styles/framework-flow.css";
