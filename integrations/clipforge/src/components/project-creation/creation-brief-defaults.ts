@@ -243,6 +243,11 @@ export interface CreationBriefFormValidationInput {
   /** One-sentence topic; replaces the product name + image requirement in topic mode. */
   topic?: string;
   inputMode?: InputMode;
+  /**
+   * 商品链接已经导入成功：链接模式此时已拿到商品图（远端 URL 或已抓取的本地路径），
+   * 因此不再强制用户额外手工上传图片；其余来源仍然至少要一张商品图。
+   */
+  linkImported?: boolean;
 }
 
 export interface CreationBriefFormValidation {
@@ -261,7 +266,9 @@ export function validateCreationBriefForm(input: CreationBriefFormValidationInpu
     if (!(input.topic ?? "").trim()) errors.topic = "请填写一句话主题";
   } else {
     if (!input.productName.trim()) errors.productName = "请填写商品名称";
-    if (input.images.length < 1) errors.images = "请至少上传 1 张商品图";
+    // 只有链接来源在「已成功导入」后可以不带本地图片：导入结果本身已经带了商品图
+    const linkCarriesImages = input.inputMode === "link" && input.linkImported === true;
+    if (!linkCarriesImages && input.images.length < 1) errors.images = "请至少上传 1 张商品图";
   }
   return { valid: Object.keys(errors).length === 0, errors };
 }

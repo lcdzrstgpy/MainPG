@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { LuCircleAlert, LuZap } from "react-icons/lu";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -29,11 +29,56 @@ import {
 } from "./creation-brief-defaults";
 import type { AudioStrategy, CreationBrief, InputMode, OutputStrategy } from "./creation-brief-types";
 
+/**
+ * 表单收集到的全部内容：简报本身 + 建项目需要的来源字段（商品名/图片/来源）。
+ * 入口页据此构造创建 DTO，表单自己不做任何请求。
+ */
+export interface CreationBriefFormValues {
+  brief: CreationBrief;
+  productName: string;
+  category: string;
+  sellingPoints: string;
+  /** 本地商品图（含 File），入口页用它们走上传接口 */
+  images: InputSourceImage[];
+  linkUrl: string;
+  topic: string;
+  videoMode: VideoModeId;
+}
+
+/** 入口页在挂载后推给表单的预填（商品库、热点、模板、示例商品等）。 */
+export interface CreationBriefFormPrefill {
+  brief?: Partial<CreationBrief>;
+  productName?: string;
+  category?: string;
+  sellingPoints?: string;
+  images?: InputSourceImage[];
+  linkUrl?: string;
+  topic?: string;
+  videoMode?: VideoModeId;
+}
+
 export interface CreationBriefFormProps {
   initial?: Partial<CreationBrief>;
   submitLabel: string;
   showAdvanced?: boolean;
+  /** 只要简报的调用方（向后兼容的原始契约） */
   onSubmit: (brief: CreationBrief) => void;
+  /**
+   * 需要来源字段（商品名/图片/来源）才能建项目的入口页走这个通道；
+   * 提供它时表单只调它，避免同一次提交触发两条创建路径。
+   */
+  onSubmitForm?: (values: CreationBriefFormValues) => void;
+  /** 实时快照：入口页据此驱动模板推荐等只读用途，不允许反向改表单状态 */
+  onValuesChange?: (values: CreationBriefFormValues) => void;
+  /** 外部预填内容，配合 `prefillKey` 在 key 变化时应用一次 */
+  prefill?: CreationBriefFormPrefill;
+  prefillKey?: string;
+  /** 链接导入由入口页执行（它会发请求），表单只回传输入 */
+  onImportLink?: (url: string) => void;
+  importing?: boolean;
+  importError?: string;
+  /** 链接已导入成功：此时链接来源已有商品图，不再强制本地图片 */
+  linkImported?: boolean;
   disabled?: boolean;
 }
 
@@ -46,7 +91,21 @@ const CARD_CLS = "flex items-center justify-center h-11 rounded-lg border text-s
  * It collects and validates; it never calls a model, never composes media, and never issues a
  * request of its own. Whatever needs to happen after submission belongs to the hosting page.
  */
-export function CreationBriefForm({ initial, submitLabel, showAdvanced, onSubmit, disabled }: CreationBriefFormProps) {
+export function CreationBriefForm({
+  initial,
+  submitLabel,
+  showAdvanced,
+  onSubmit,
+  onSubmitForm,
+  onValuesChange,
+  prefill,
+  prefillKey,
+  onImportLink,
+  importing,
+  importError,
+  linkImported,
+  disabled,
+}: CreationBriefFormProps) {
   const templates = useTemplateStore((state) => state.templates);
   const characters = useCharacterStore((state) => state.characters);
 
@@ -64,6 +123,39 @@ export function CreationBriefForm({ initial, submitLabel, showAdvanced, onSubmit
   const patchBrief = useCallback((partial: Partial<CreationBrief>) => {
     setBrief((prev) => sanitizeCreationBrief({ ...prev, ...partial }));
   }, []);
+
+  // 外部预填（商品库/热点/模板/示例商品）：只在 prefillKey 变化时应用一次。
+  // prefill 对象通常每次渲染都是新引用，所以经 ref 取最新值，绝不以它作为依赖。
+  const latestPrefill = useRef<CreationBriefFormPrefill | undefined>(prefill);
+  useEffect(() => {
+    latestPrefill.current = prefill;
+  }, [prefill]);
+  useEffect(() => {
+    const incoming = latestPrefill.current;
+    if (!incoming) return;
+    if (incoming.brief) patchBrief(incoming.brief);
+    if (incoming.productName !== undefined) setProductName(incoming.productName);
+    if (incoming.category !== undefined) setCategory(incoming.category);
+    if (incoming.sellingPoints !== undefined) setSellingPoints(incoming.sellingPoints);
+    if (incoming.linkUrl !== undefined) setLinkUrl(incoming.linkUrl);
+    if (incoming.topic !== undefined) setTopic(incoming.topic);
+    if (incoming.videoMode) setVideoMode(incoming.videoMode);
+    if (incoming.images) {
+      const next = incoming.images;
+      setImages((prev) => {
+        prev.forEach((image) => URL.revokeObjectURL(image.url));
+        return next;
+      });
+    }
+  }, [prefillKey, patchBrief]);
+
+  // 实时快照：只在真正收集到的字段变化时上报，避免每次渲染都推送新对象
+  const valuesKey = JSON.stringify({ brief, productName, category, sellingPoints, linkUrl, topic, videoMode, imageCount: images.length });
+  useEffect(() => {
+    if (!onValuesChange) return;
+    onValuesChange({ brief: sanitizeCreationBrief(brief), productName, category, sellingPoints, images, linkUrl, topic, videoMode });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- valuesKey 已经是所有被收集字段的值指纹
+  }, [valuesKey]);
 
   const handleInputModeChange = useCallback((inputMode: InputMode) => patchBrief({ inputMode }), [patchBrief]);
 
@@ -134,7 +226,7 @@ export function CreationBriefForm({ initial, submitLabel, showAdvanced, onSubmit
     patchBrief({ platforms: next });
   };
 
-  const validation = validateCreationBriefForm({ productName, images, topic, inputMode: brief.inputMode });
+  const validation = validateCreationBriefForm({ productName, images, topic, inputMode: brief.inputMode, linkImported });
   const blocked = disabled === true;
 
   const handleSubmit = () => {
@@ -142,7 +234,13 @@ export function CreationBriefForm({ initial, submitLabel, showAdvanced, onSubmit
       setShowErrors(true);
       return;
     }
-    onSubmit(sanitizeCreationBrief(brief));
+    const submitted = sanitizeCreationBrief(brief);
+    if (onSubmitForm) {
+      // 入口页需要来源字段（商品名/图片/来源）才能建项目：只走这一条提交路径
+      onSubmitForm({ brief: submitted, productName, category, sellingPoints, images, linkUrl, topic, videoMode });
+      return;
+    }
+    onSubmit(submitted);
   };
 
   return (
@@ -155,6 +253,9 @@ export function CreationBriefForm({ initial, submitLabel, showAdvanced, onSubmit
         onRemoveImage={handleRemoveImage}
         linkUrl={linkUrl}
         onLinkUrlChange={setLinkUrl}
+        onImportLink={onImportLink}
+        importing={importing}
+        importError={importError}
         topic={topic}
         onTopicChange={setTopic}
         disabled={blocked}

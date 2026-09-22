@@ -22,6 +22,10 @@ import { useT, useLocale } from "@/lib/i18n";
 import { STAGE_LABEL_KEYS } from "@/lib/pipeline-stages";
 import { friendlyError } from "@/lib/friendly-error";
 import { ProjectHeader } from "@/components/project-header";
+import { DEFAULT_CREATION_BRIEF, sanitizeCreationBrief, type CreationBrief, type OutputStrategy } from "@/lib/creation-brief";
+import { CreationBriefSummary } from "@/components/project-creation/creation-brief-summary";
+import { StyleChoicePrompt } from "@/components/project-creation/style-choice-prompt";
+import { parseStyleRequirement, type ScriptStyleRequirement } from "@/components/project-creation/script-style-requirement";
 
 // shot type labels (label changed to i18n key, resolved per locale at render time)
 const shotTypeLabels: Record<Shot["type"], { labelKey: string; color: string }> = {
@@ -51,6 +55,28 @@ interface DbScript {
   selected: boolean | null;
 }
 
+/** One script variant as kept in the page-local history (a copy of the DB rows replaced by a regeneration). */
+interface ScriptVersion {
+  id: string;
+  title: string;
+  styleType: string;
+  totalDuration: number;
+  shots: Shot[];
+}
+
+/**
+ * 设计 §7.4：?auto=1 是否允许隐式启动免费流水线的唯一判据。
+ * - `draft`：免费静态草稿就是用户选的策略，可以自动跑（judge → stock_fill → compose）；
+ * - `controlled-motion` / `native-film`：必须停在脚本确认页，由用户走各自的付费确认入口，
+ *   绝不能被 URL 参数静默降级成静态草稿；
+ * - `null`（旧项目没有 creationBrief 列）：保留原 `?auto=1` 行为，以便断点恢复。
+ */
+export function shouldAutoStartPipeline(input: { outputStrategy: OutputStrategy | null; autoParam: boolean }): boolean {
+  if (!input.autoParam) return false;
+  if (input.outputStrategy === null) return true;
+  return input.outputStrategy === "draft";
+}
+
 export default function ScriptPage() {
   const t = useT("script");
   const tc = useT("common");
@@ -75,6 +101,14 @@ export default function ScriptPage() {
   } | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [genError, setGenError] = useState("");
+  // 项目级创作简报（设计 §7.3/§7.4）：`null` 表示旧项目——该列是在统一创作入口后才开始写入的
+  const [creationBrief, setCreationBrief] = useState<CreationBrief | null>(null);
+  // 简报是否已经读取完成：区分「还没读到」与「读到了 null（旧项目）」，策略门控不会误判
+  const [briefLoaded, setBriefLoaded] = useState(false);
+  // 409 needs_explicit_style：不是失败，是「请用户先选一个风格」；candidates 由共享解析器给出
+  const [stylePrompt, setStylePrompt] = useState<ScriptStyleRequirement | null>(null);
+  // 重新生成会替换项目当前的脚本集合，先把被替换掉的那一版留在本页，旧脚本不再凭空消失
+  const [previousScripts, setPreviousScripts] = useState<ScriptVersion[]>([]);
   const { llm } = useSettingsStore();
   // beginner/director split: simple mode swaps the 3-column editor for a read-and-go card
   const spendCapUsd = useSettingsStore((st) => st.spendCapUsd);
@@ -99,6 +133,8 @@ export default function ScriptPage() {
       if (projectRes.ok) {
         const proj = await projectRes.json();
         setProjectName(proj.name ?? proj.productName ?? "");
+        // 简报随每次读取刷新：脚本接口会把实际用到的风格与来源写回项目简报
+        setCreationBrief(proj.creationBrief ? sanitizeCreationBrief(proj.creationBrief) : null);
         setProjectMeta({
           productName: proj.productName ?? "",
           category: proj.productCategory ?? "",
@@ -134,8 +170,22 @@ export default function ScriptPage() {
     }
   };
 
+  /**
+   * 重新生成前先把当前脚本集合快照到本页：脚本接口是「先删后插」的整组替换，
+   * 若不快照，用户改完简报重新生成时旧脚本会立刻消失。
+   */
+  const snapshotCurrentScripts = () => {
+    if (scripts.length === 0) return;
+    setPreviousScripts((prev) => {
+      const seen = new Set(prev.map((v) => v.id));
+      const added = scripts.filter((s) => !seen.has(s.id));
+      return added.length ? [...added, ...prev] : prev;
+    });
+  };
+
   // empty-state "generate script" click: topic projects use the de-commercialized script engine, commerce projects use the product script engine
-  const handleGenerate = async () => {
+  // `styleOverride` 只在 409 选完风格后重试时传入：本次用它，并把简报改成用户的显式选择
+  const handleGenerate = async (styleOverride?: string) => {
     if (!projectMeta) return;
     if (!llm.apiKey) {
       setGenError(t("errorNoLlm"));
@@ -143,10 +193,15 @@ export default function ScriptPage() {
     }
     setIsGenerating(true);
     setGenError("");
+    setStylePrompt(null);
+    // 再次生成 = 新版本：旧脚本先留在本页，不被这次替换悄悄覆盖
+    snapshotCurrentScripts();
     try {
       const isTopic = projectMeta.contentType === "topic";
       // topic projects use /api/topic/script (no product needed); otherwise use the commerce script engine
       const endpoint = isTopic ? "/api/topic/script" : "/api/llm/script";
+      // 风格优先用简报里持久化的显式选择；旧项目没有简报时才落到 auto（由接口决定推荐或要求显式选择）
+      const requestedStyle = styleOverride ?? creationBrief?.styleType ?? "auto";
       const payload = isTopic
         ? {
             projectId: id,
@@ -160,7 +215,7 @@ export default function ScriptPage() {
             category: projectMeta.category,
             productDescription: projectMeta.description,
             targetDuration: 30,
-            styleType: "auto",
+            styleType: requestedStyle,
             videoMode: projectMeta.videoMode,
             productImages: projectMeta.productImages,
             llmConfig: {
@@ -177,6 +232,13 @@ export default function ScriptPage() {
       });
       if (!res.ok) {
         const e = await res.json().catch(() => ({}));
+        // 409 needs_explicit_style 不是失败：接口给不出推荐（candidates 里是可选风格），
+        // 让用户选一个再重试，绝不显示成「生成失败」
+        const requirement = parseStyleRequirement(res.status, e);
+        if (requirement) {
+          setStylePrompt(requirement);
+          return;
+        }
         throw new Error(e.error || t("errorGenFailedCheckLlm"));
       }
       await loadScripts();
@@ -185,6 +247,21 @@ export default function ScriptPage() {
     } finally {
       setIsGenerating(false);
     }
+  };
+
+  /** 用户在 409 提示里选完风格：把显式风格写回项目简报，然后用同一个风格重试生成。 */
+  const pickScriptStyle = async (styleType: string) => {
+    if (isGenerating) return;
+    const nextBrief = sanitizeCreationBrief({ ...(creationBrief ?? {}), styleType, styleSource: "explicit" });
+    setCreationBrief(nextBrief);
+    setStylePrompt(null);
+    // 库里的简报要跟随用户的实际选择（失败不阻断这次生成）
+    await fetch(`/api/project/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ creationBrief: nextBrief }),
+    }).catch(() => {});
+    await handleGenerate(styleType);
   };
 
   useEffect(() => {
@@ -201,6 +278,8 @@ export default function ScriptPage() {
           const proj = await projectRes.json();
           if (!cancelled) {
             setProjectName(proj.name ?? proj.productName ?? "");
+            // null 是合法状态（旧项目），必须与「还没读到」区分开，策略门控才不会误判
+            setCreationBrief(proj.creationBrief ? sanitizeCreationBrief(proj.creationBrief) : null);
             setProjectMeta({
               productName: proj.productName ?? "",
               category: proj.productCategory ?? "",
@@ -235,7 +314,12 @@ export default function ScriptPage() {
       } catch {
         if (!cancelled) setScripts([]);
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          // 「简报已读取」与「读到的是 null（旧项目）」必须分开：读取失败也当作已尝试，
+          // 否则策略门控会永远等下去
+          setBriefLoaded(true);
+          setLoading(false);
+        }
       }
     })();
     return () => {
@@ -350,6 +434,10 @@ export default function ScriptPage() {
     if (p) setPresenterParam(p);
   }, []);
   // (the ?auto=1 fresh-start trigger lives below, after the pipeline re-attach check)
+  // 出片策略门控（设计 §7.4）：`null` 表示项目没有 creationBrief（旧项目，保留原行为）
+  const outputStrategy: OutputStrategy | null = creationBrief?.outputStrategy ?? null;
+  // ?auto=1 是否允许隐式启动免费流水线：controlled-motion / native-film 一律停在脚本确认页
+  const freeChainApplies = shouldAutoStartPipeline({ outputStrategy, autoParam: autoMode });
   // Judge pass — the quality bar runs in BOTH hands-off chains, not just the pro editor.
   // Four narrow judges tear the voiceover lines apart and their rewrites are applied
   // automatically BEFORE any footage matching / generation money. Beginners never operate
@@ -491,12 +579,15 @@ export default function ScriptPage() {
   // ?auto=1 fresh start (from the /start hero flows) — only after the re-attach check settled,
   // so an already-live or breakpointed run is never silently restarted from the top
   useEffect(() => {
-    if (!autoMode || autoModeTriggered || loading || !currentScript || !pipelineChecked || resumableRun) return;
+    if (!autoMode || autoModeTriggered || loading || !briefLoaded || !currentScript || !pipelineChecked || resumableRun) return;
     setAutoModeTriggered(true);
+    // 策略门控（设计 §7.4）：draft 才允许免费链自动跑；controlled-motion / native-film 停在
+    // 脚本确认页等用户走各自的付费确认入口，绝不被 URL 参数静默降级成静态草稿
+    if (!shouldAutoStartPipeline({ outputStrategy, autoParam: autoMode })) return;
     // the AI path lands on the "script ready" gate instead of auto-running the free chain
     if (genPref !== "ai") autoFinish();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- autoFinish is a stable page-level handler; triggering once per auto entry
-  }, [autoMode, autoModeTriggered, loading, currentScript, genPref, pipelineChecked, resumableRun]);
+  }, [autoMode, autoModeTriggered, loading, briefLoaded, outputStrategy, currentScript, genPref, pipelineChecked, resumableRun]);
 
   // ---- AI film chain (grid → one-call film): the paid path. The free script above is the
   // zero-cost "video plan" gate — money is only spent after this one explicit click, and the
@@ -779,6 +870,77 @@ export default function ScriptPage() {
   // slim context strip (shared by loading, empty and normal states); global chrome lives in AppShell
   const headerBar = <ProjectHeader projectName={projectName || t("defaultProjectName")} />;
 
+  // 设计 §6.2 / §7.4：脚本页顶部持久展示创作简报摘要，并按出片策略说明下一步。
+  // 旧项目（没有 creationBrief 列）只做说明，不改行为。
+  const briefPanel = (
+    <div className="mx-auto mb-5 w-full max-w-3xl space-y-3">
+      <CreationBriefSummary
+        brief={creationBrief ?? DEFAULT_CREATION_BRIEF}
+        title={creationBrief ? "创作简报" : "创作简报（旧项目 · 未记录）"}
+      />
+      {!creationBrief && (
+        <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3">
+          <p className="text-sm font-medium text-amber-500">旧项目：没有创作简报</p>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+            该项目创建于统一创作入口之前，没有记录出片策略；带 ?auto=1 打开时仍按原来的免费流水线行为运行，以便断点恢复。
+          </p>
+        </div>
+      )}
+      {/* 非 draft 策略不得自动启动免费流水线：给出各自的确认入口，不新建页面 */}
+      {outputStrategy === "controlled-motion" && (
+        <div className="rounded-xl border border-primary/40 bg-primary/5 px-4 py-3">
+          <p className="text-sm font-medium">出片策略：导演可控动态（逐镜生视频）</p>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+            该策略不会自动启动免费静态流水线。确认脚本后进入素材页逐镜生成动态镜头（按镜头数与模型计费）。
+          </p>
+          <Link href={`/project/${id}/assets`} className="mt-2.5 inline-block">
+            <Button size="sm" className="brand-gradient text-white">生成逐镜动态镜头</Button>
+          </Link>
+        </div>
+      )}
+      {outputStrategy === "native-film" && (
+        <div className="rounded-xl border border-primary/40 bg-primary/5 px-4 py-3">
+          <p className="text-sm font-medium">出片策略：原生整片（一次模型生成，自带音频）</p>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+            该策略不会自动启动免费静态流水线。先用整片预览核对模型、时长与费用，确认后才提交付费生成。
+          </p>
+          <Button
+            size="sm"
+            className="brand-gradient mt-2.5 text-white"
+            disabled={aiFilming || autoFinishing || !currentScript}
+            onClick={runAiFilm}
+          >
+            {t("aiFilmPreviewTitle")}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+
+  // 重新生成 = 新版本：被替换掉的旧脚本在本页保留（脚本接口是整组替换，旧记录会立即从库里消失）
+  const previousScriptsPanel = previousScripts.length > 0 && (
+    <details className="mx-auto mb-5 w-full max-w-3xl rounded-xl border border-border/60 bg-muted/20 px-4 py-3">
+      <summary className="cursor-pointer text-xs font-medium">
+        已保留 {previousScripts.length} 个旧脚本版本（本次会话内可查看，重新生成不会连带删掉它们）
+      </summary>
+      <div className="mt-3 space-y-3">
+        {previousScripts.map((version) => (
+          <div key={version.id} className="rounded-lg border border-border/50 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-medium">{version.title}</span>
+              <span className="shrink-0 text-[10px] text-muted-foreground">
+                {version.totalDuration}s · {t("shotCount", { n: version.shots.length })}
+              </span>
+            </div>
+            <p className="mt-2 whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
+              {version.shots.map((shot) => shot.voiceover).filter(Boolean).join("\n")}
+            </p>
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+
   // loading: skeleton screen (mimics the script card layout; feels faster than a spinner and reduces perceived wait)
   if (loading) {
     return (
@@ -811,42 +973,51 @@ export default function ScriptPage() {
     return (
       <div className="min-h-screen grid-bg">
         {headerBar}
-        <div className="mx-auto max-w-md flex flex-col items-center justify-center py-28 px-6 text-center">
-          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-muted/40 mb-5">
-            <LuWand className="w-8 h-8 text-muted-foreground" />
-          </div>
-          <h2 className="text-lg font-semibold mb-2">{t("emptyTitle")}</h2>
-          <p className="text-sm text-muted-foreground mb-6">
-            {t("emptyDesc", { name: projectName || t("emptyDescThisProject") })}
-          </p>
-          {genError && (
-            <div className="mb-4 flex flex-col items-center gap-2">
-              <p className="text-sm text-destructive">{genError}</p>
-              {/* most generation errors are LLM-config related — offer a direct jump to Settings */}
-              <Link href="/settings?tab=llm" className="text-xs text-primary underline underline-offset-2 hover:text-primary/80">
-                {t("goToSettings")}
+        <main className="mx-auto max-w-3xl px-6 py-10">
+          {briefPanel}
+          <div className="mx-auto flex max-w-md flex-col items-center justify-center py-14 text-center">
+            <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-muted/40 mb-5">
+              <LuWand className="w-8 h-8 text-muted-foreground" />
+            </div>
+            <h2 className="text-lg font-semibold mb-2">{t("emptyTitle")}</h2>
+            <p className="text-sm text-muted-foreground mb-6">
+              {t("emptyDesc", { name: projectName || t("emptyDescThisProject") })}
+            </p>
+            {genError && (
+              <div className="mb-4 flex flex-col items-center gap-2">
+                <p className="text-sm text-destructive">{genError}</p>
+                {/* most generation errors are LLM-config related — offer a direct jump to Settings */}
+                <Link href="/settings?tab=llm" className="text-xs text-primary underline underline-offset-2 hover:text-primary/80">
+                  {t("goToSettings")}
+                </Link>
+              </div>
+            )}
+            {/* 409 asks for an explicit style: that is a step forward, not a failure */}
+            {stylePrompt && (
+              <div className="mb-4 w-full text-left">
+                <StyleChoicePrompt requirement={stylePrompt} onPick={pickScriptStyle} busy={isGenerating} />
+              </div>
+            )}
+            <div className="flex items-center gap-3">
+              <Button onClick={() => handleGenerate()} disabled={isGenerating} className="brand-gradient text-white">
+                {isGenerating ? (
+                  <>
+                    <LuLoaderCircle className="w-4 h-4 mr-2 animate-spin" />
+                    {tc("generating")}
+                  </>
+                ) : (
+                  <>
+                    <LuWand className="w-4 h-4 mr-2" />
+                    {t("generateScript")}
+                  </>
+                )}
+              </Button>
+              <Link href="/projects">
+                <Button variant="outline">{t("backToProjects")}</Button>
               </Link>
             </div>
-          )}
-          <div className="flex items-center gap-3">
-            <Button onClick={handleGenerate} disabled={isGenerating} className="brand-gradient text-white">
-              {isGenerating ? (
-                <>
-                  <LuLoaderCircle className="w-4 h-4 mr-2 animate-spin" />
-                  {tc("generating")}
-                </>
-              ) : (
-                <>
-                  <LuWand className="w-4 h-4 mr-2" />
-                  {t("generateScript")}
-                </>
-              )}
-            </Button>
-            <Link href="/projects">
-              <Button variant="outline">{t("backToProjects")}</Button>
-            </Link>
           </div>
-        </div>
+        </main>
       </div>
     );
   }
@@ -941,7 +1112,7 @@ export default function ScriptPage() {
     );
   }
 
-  if ((autoMode && !autoFinishError && (autoFinishing || !autoModeTriggered)) || aiFilming) {
+  if ((freeChainApplies && !autoFinishError && (autoFinishing || !autoModeTriggered)) || aiFilming) {
     return (
       <div className="min-h-screen grid-bg">
         {headerBar}
@@ -975,6 +1146,9 @@ export default function ScriptPage() {
       {headerBar}
 
       <main className="mx-auto max-w-7xl px-6 py-8">
+        {/* 设计 §6.2：简报摘要始终在顶部，重生成后仍按同一份约束解释本页风格与策略 */}
+        {briefPanel}
+        {previousScriptsPanel}
         {/* breakpoint choice: a failed/interrupted server-side run offers resume (default) or a
             clean restart — the beginner never loses a half-finished chain to a closed tab again */}
         {resumableRun && !autoFinishing && !aiFilming && (
@@ -1023,6 +1197,10 @@ export default function ScriptPage() {
               <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-2.5 text-xs text-destructive">
                 {autoFinishError || aiFilmError}
               </div>
+            )}
+            {/* 需要用户显式选风格：不是错误，是继续生成所缺的一步 */}
+            {stylePrompt && (
+              <StyleChoicePrompt requirement={stylePrompt} onPick={pickScriptStyle} busy={isGenerating} />
             )}
             <div className="flex flex-col items-center gap-3">
               {/* two finishing paths, primary = what was chosen on the studio card; the AI one
@@ -1275,6 +1453,12 @@ export default function ScriptPage() {
                   </Link>
                 </div>
               )}
+              {/* 409 needs_explicit_style：接口给不出推荐（candidates 是可选风格），让用户选一个再重试 */}
+              {stylePrompt && (
+                <div className="mb-4">
+                  <StyleChoicePrompt requirement={stylePrompt} onPick={pickScriptStyle} busy={isGenerating} />
+                </div>
+              )}
               <TabsContent value="timeline" className="mt-0">
                 <div className="space-y-3">
                   {readiness && (
@@ -1510,6 +1694,9 @@ export default function ScriptPage() {
                 {t("regenConfirmTitle")}
               </h3>
               <p className="text-xs text-muted-foreground leading-relaxed">{t("regenConfirmDesc")}</p>
+              <p className="text-xs leading-relaxed text-primary/80">
+                被替换掉的旧脚本会保留在本页的「旧脚本版本」里，本次会话内仍可查看。
+              </p>
               <div className="flex justify-end gap-2">
                 <Button variant="outline" size="sm" onClick={() => setRegenConfirmOpen(false)}>{t("regenConfirmCancel")}</Button>
                 <Button

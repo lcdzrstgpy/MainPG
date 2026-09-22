@@ -44,6 +44,9 @@ import { classifyMaterial, MATERIAL_ACCEPT, type PublicLocalMaterial } from "@/l
 import { uploadLocalMaterial, type MaterialUploadProgress } from "@/lib/upload-local-material";
 import { ProjectHeader } from "@/components/project-header";
 import { ModelCapabilityPreflight } from "@/components/model-capability-preflight";
+import { CreationBriefSummary } from "@/components/project-creation/creation-brief-summary";
+import { assetsStageGuide, LEGACY_BRIEF_NOTICE } from "@/lib/project-detail-view";
+import type { CreationBrief } from "@/lib/creation-brief";
 import {
   checkPromptConsistency,
   compileCreativePrompt,
@@ -105,6 +108,9 @@ export default function AssetsPage() {
   // after image generation, automatically run image-to-video to produce real motion shots (i2v quality path, replacing fake Ken-Burns camera moves). Only active when a video model is configured.
   const [autoMotion, setAutoMotion] = useState(true);
   const [projectName, setProjectName] = useState("");
+  // project-level creation brief: drives which asset action is the primary one for this
+  // strategy. null = legacy project created before the brief existed, its asset flow stays untouched.
+  const [creationBrief, setCreationBrief] = useState<CreationBrief | null>(null);
   // project type: topic (one-sentence-to-video without a product) uses the free stock library for automatic visuals
   const [contentType, setContentType] = useState<string>("");
   // project product category — unlocks the category physical-realism layers in the i2v motion prompt
@@ -174,6 +180,9 @@ export default function AssetsPage() {
   const offerStockFill = !loading && shouldOfferStockFill(assets, contentType, modelTarget !== null);
   // only show the "configure a model" warning when there are still AI shots that need generating (no warning once everything is ready, to avoid contradicting the "all done" state)
   const showModelWarning = !loading && needsImageModelWarning(assets, modelTarget !== null);
+  // 素材阶段的分策略引导：draft=静态草稿、controlled-motion=逐镜 I2V 主操作、native-film=整片流程。
+  // 只标注主次，不改变任何按钮的既有行为；旧项目（无简报）保持原样。
+  const stageGuide = useMemo(() => assetsStageGuide(creationBrief?.outputStrategy ?? null), [creationBrief]);
 
   // load real data: project info + selected script shots + resolve the provider for the default image model
   useEffect(() => {
@@ -201,6 +210,12 @@ export default function AssetsPage() {
           setProjectCategory(typeof project.productCategory === "string" ? project.productCategory : "");
           setProjectCreativeIntent(sanitizeCreativeIntent(project.creativeIntent));
           setProjectVisualBible(sanitizeVisualBible(project.visualBible));
+          // 创作简报（旧项目为 null）：只读展示 + 策略引导，缺失时保持既有素材流程
+          setCreationBrief(
+            project.creationBrief && typeof project.creationBrief === "object"
+              ? (project.creationBrief as CreationBrief)
+              : null
+          );
           if (Array.isArray(project.productionWorkflow)) {
             const motionStage = project.productionWorkflow.find((stage: { id?: unknown }) => stage.id === "motion");
             if (motionStage) setAutoMotion(motionStage.enabled !== false);
@@ -985,6 +1000,25 @@ export default function AssetsPage() {
 
       <main className="mx-auto max-w-4xl px-6 py-8">
         <ModelCatalogStatus statuses={catalog.statuses} pending={catalog.pending} onRetry={catalog.retry} />
+        {/* 创作简报（只读）+ 素材阶段引导：先让用户看清本次策略，再决定生成静态素材还是动态镜头。
+            旧项目没有简报，显示兼容提示并保持原有素材流程。 */}
+        <section className="mb-6 space-y-3">
+          {creationBrief ? (
+            <CreationBriefSummary brief={creationBrief} />
+          ) : (
+            <div className="rounded-xl border border-border/50 bg-muted/10 px-4 py-3 text-xs text-muted-foreground">
+              {LEGACY_BRIEF_NOTICE}
+            </div>
+          )}
+          <div
+            className="rounded-xl border border-primary/25 bg-primary/5 px-4 py-3"
+            data-stage-guide={stageGuide.primaryAction ?? "none"}
+            data-legacy-brief={stageGuide.legacy ? "true" : "false"}
+          >
+            <p className="text-xs font-semibold text-foreground">{stageGuide.title}</p>
+            <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{stageGuide.detail}</p>
+          </div>
+        </section>
         {/* Action bar: title + generation ACTIONS only. Creative settings live in the
             director panel below so this row stays a stable, scannable set of verbs. */}
         <div className="flex flex-wrap items-center justify-between gap-y-3 mb-4">
@@ -1006,6 +1040,7 @@ export default function AssetsPage() {
                 size="sm"
                 className="text-xs border-primary/50 text-primary hover:bg-primary/10"
                 title={t("stockFillHint")}
+                data-strategy-primary={stageGuide.primaryAction === "stock-fill" ? "true" : undefined}
               >
                 {isFillingStock ? (
                   <>
@@ -1055,6 +1090,7 @@ export default function AssetsPage() {
                     variant="outline"
                     className="text-xs border-primary/50 text-primary hover:bg-primary/10 disabled:border-border/60 disabled:text-muted-foreground"
                     title={filmReason}
+                    data-strategy-primary={stageGuide.primaryAction === "storyboard-film" ? "true" : undefined}
                   >
                     {isFilmGenerating ? (
                       <>
@@ -1655,6 +1691,7 @@ export default function AssetsPage() {
                                   ? `${t("motionTip")}\n${videoModelTarget.provider} · ${videoModelTarget.model}`
                                   : t("motionTip")
                               }
+                              data-strategy-primary={stageGuide.primaryAction === "per-shot-motion" ? "true" : undefined}
                             >
                               {motionShots.has(asset.shotId) ? t("btnConvertingMotion") : t("btnConvertMotion")}
                             </Button>

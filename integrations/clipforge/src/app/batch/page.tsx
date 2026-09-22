@@ -20,6 +20,7 @@ import { useProductLibraryStore } from "@/lib/stores/product-library-store";
 import { useSettingsStore } from "@/lib/stores/settings-store";
 import { getExampleProducts } from "@/lib/examples";
 import { buildVariationPlan, describeSlot } from "@/lib/variation-plan";
+import { parseStyleRequirement } from "@/components/project-creation/script-style-requirement";
 import { useT, useLocale } from "@/lib/i18n";
 
 // Video mode options (labelKey refers to a batch-namespace i18n key; resolved at render time)
@@ -354,8 +355,12 @@ export default function BatchPage() {
         }),
       });
       if (!scriptRes.ok) {
-        const e = await scriptRes.json().catch(() => ({}));
-        throw new Error(e.error || t("errorScriptFailed"));
+        const data: { error?: string; code?: string; candidates?: unknown } = await scriptRes.json().catch(() => ({}));
+        // 409 needs_explicit_style 不是「生成失败」：该实例历史数据不足，无法为 auto 推荐风格，
+        // 需要用户显式选一个（候选风格一并贴出）。用户没选风格时不得静默落到痛点种草。
+        const requirement = parseStyleRequirement(scriptRes.status, data);
+        if (requirement) throw new Error(t("errorNeedsExplicitStyle", { candidates: requirement.candidates.join(" / ") }));
+        throw new Error(data.error || t("errorScriptFailed"));
       }
       const scriptData = await scriptRes.json().catch(() => ({}));
 

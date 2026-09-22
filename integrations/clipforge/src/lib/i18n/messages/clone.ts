@@ -49,6 +49,7 @@ export const clone: NamespaceMessages = {
     errorNoLlm: "尚未配置 LLM，请先到「设置」填写 API Key",
     errorProjectCreate: "项目创建失败",
     errorScriptGen: "脚本生成失败，请检查 LLM 设置",
+    errorNeedsExplicitStyle: "接口要求显式脚本风格（历史数据不足以智能推荐），请指定其中一种：{candidates}",
     errorCloneFailed: "复刻生成失败",
     // 参考视频真分析（场景切点→节奏骨架）
     refVideoLabel: "参考视频文件（推荐，可真实解析节奏）",
@@ -121,6 +122,7 @@ export const clone: NamespaceMessages = {
     errorNoLlm: "No LLM configured yet — go to Settings and enter your API key first",
     errorProjectCreate: "Failed to create project",
     errorScriptGen: "Script generation failed, please check your LLM settings",
+    errorNeedsExplicitStyle: "The API now requires an explicit script style (not enough historical data to recommend one) — use one of: {candidates}",
     errorCloneFailed: "Cloning failed",
     // Real reference-video analysis (scene cuts → rhythm skeleton)
     refVideoLabel: "Reference video file (recommended — enables real rhythm analysis)",

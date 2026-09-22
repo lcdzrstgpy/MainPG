@@ -43,6 +43,7 @@ export const batch: NamespaceMessages = {
     errorNoLlmCta: "前往设置填 Key →",
     errorProjectCreate: "项目创建失败",
     errorScriptFailed: "脚本生成失败",
+    errorNeedsExplicitStyle: "历史数据不足以智能推荐脚本风格，请在「脚本风格」里显式选一种（可选：{candidates}）后重试",
     errorComposeFailed: "合成失败",
     errorGenerateFailed: "生成失败",
     // 批次持久化：中断续跑
@@ -122,6 +123,7 @@ export const batch: NamespaceMessages = {
     errorNoLlmCta: "Add your API key in Settings →",
     errorProjectCreate: "Failed to create project",
     errorScriptFailed: "Script generation failed",
+    errorNeedsExplicitStyle: "Not enough historical data to recommend a script style — pick one under \"Script style\" (available: {candidates}) and retry",
     errorComposeFailed: "Render failed",
     errorGenerateFailed: "Generation failed",
     // Batch persistence: resume after interruption

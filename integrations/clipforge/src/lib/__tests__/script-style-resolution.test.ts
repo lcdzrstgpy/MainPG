@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { resolveScriptStyle, SCRIPT_STYLE_VALUES, DEFAULT_MIN_SAMPLE_SIZE } from "@/lib/script-style";
+import {
+  resolveScriptStyle,
+  SCRIPT_STYLE_VALUES,
+  SCRIPT_STYLE_ALIASES,
+  DEFAULT_MIN_SAMPLE_SIZE,
+} from "@/lib/script-style";
 import { STYLE_VALUES } from "@/lib/ad-templates";
 
 const expectNeedsChoice = (result: ReturnType<typeof resolveScriptStyle>, reason: "no-data" | "unknown-style") => {
@@ -131,5 +136,56 @@ describe("resolveScriptStyle 契约 4：纯函数，非法输入不抛错", () =
       const result = resolveScriptStyle({ requestedStyle: value });
       expect(["resolved", "needs-explicit-choice"]).toContain(result.kind);
     }
+  });
+});
+
+describe("SCRIPT_STYLE_ALIASES 受控别名表（引擎词 → UI 白名单）", () => {
+  it("只登记真正拼写不同的引擎词，不改变公开白名单取值集合", () => {
+    expect(SCRIPT_STYLE_ALIASES).toEqual({ pain_point: "pain-point", scene: "scenario" });
+    // 别名只影响归一化读取，SCRIPT_STYLE_VALUES 仍是纯 UI 白名单
+    expect(SCRIPT_STYLE_VALUES).not.toContain("pain_point");
+    expect(SCRIPT_STYLE_VALUES).not.toContain("scene");
+    for (const target of Object.values(SCRIPT_STYLE_ALIASES)) {
+      expect(SCRIPT_STYLE_VALUES).toContain(target);
+    }
+  });
+
+  it("回归：auto + 历史 topStyle 为引擎词 pain_point → 可推荐为 pain-point", () => {
+    expect(
+      resolveScriptStyle({ requestedStyle: "auto", insights: { topStyle: "pain_point", sampleSize: 3 } })
+    ).toEqual({ kind: "resolved", styleType: "pain-point", styleSource: "performance-recommendation" });
+  });
+
+  it("回归：auto + 历史 topStyle 为引擎词 scene → 可推荐为 scenario", () => {
+    expect(
+      resolveScriptStyle({ requestedStyle: "auto", insights: { topStyle: "scene", sampleSize: 5 } })
+    ).toEqual({ kind: "resolved", styleType: "scenario", styleSource: "performance-recommendation" });
+  });
+
+  it("调用方直接传引擎词时同样归一到 UI 值", () => {
+    expect(resolveScriptStyle({ requestedStyle: "pain_point" })).toEqual({
+      kind: "resolved",
+      styleType: "pain-point",
+      styleSource: "explicit",
+    });
+    expect(resolveScriptStyle({ requestedStyle: "SCENE" })).toEqual({
+      kind: "resolved",
+      styleType: "scenario",
+      styleSource: "explicit",
+    });
+  });
+
+  it("未列入别名表的非法值仍不被接受（不静默吞掉）", () => {
+    expectNeedsChoice(resolveScriptStyle({ requestedStyle: "custom" }), "unknown-style");
+    expectNeedsChoice(resolveScriptStyle({ requestedStyle: "painpoint" }), "unknown-style");
+    expectNeedsChoice(resolveScriptStyle({ requestedStyle: "scenes" }), "unknown-style");
+    expectNeedsChoice(
+      resolveScriptStyle({ requestedStyle: "auto", insights: { topStyle: "custom", sampleSize: 99 } }),
+      "no-data"
+    );
+    expectNeedsChoice(
+      resolveScriptStyle({ requestedStyle: "auto", insights: { topStyle: "painpoint", sampleSize: 99 } }),
+      "no-data"
+    );
   });
 });

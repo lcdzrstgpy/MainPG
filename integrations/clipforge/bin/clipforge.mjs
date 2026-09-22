@@ -42,6 +42,19 @@ const QUALITY_PRESETS = ["fast", "standard", "hd"];
 const BGM_MOODS = ["upbeat", "chill", "energetic", "emotional"];
 const CAPTION_PRESETS = ["standard", "bold", "minimal", "karaoke"]; // caption style presets (mirrors src/lib/caption-presets.ts)
 
+// Styles accepted by /api/llm/script: the UI whitelist (src/lib/script-style.ts SCRIPT_STYLE_VALUES,
+// i.e. the ad-template whitelist minus "auto") plus the engine spellings the server aliases back
+// (pain_point→pain-point, scene→scenario). "auto" means "recommend from conversion history" and is
+// therefore NOT a default: on an instance without enough samples the route answers 409
+// needs_explicit_style, so it stays opt-in.
+const SCRIPT_STYLE_INPUTS = [
+  "drama", "reversal", "interview", "story", "unboxing", "product_pov",
+  "comparison", "talking_head", "pain-point", "scenario", "pain_point", "scene",
+  "auto",
+];
+// Neutral, non-pain-point whitelist value, so `product` works out of the box on a data-less instance.
+const DEFAULT_SCRIPT_STYLE = "scenario";
+
 function parseBgmVolume(value) {
   const raw = Number(value);
   if (!Number.isFinite(raw)) return null;
@@ -146,7 +159,15 @@ async function api(path, { method = "GET", body, timeoutMs = 600000 } = {}) {
   } catch {
     data = { raw: text };
   }
-  if (!res.ok) throw new Error(data?.error || data?.raw || `HTTP ${res.status}`);
+  if (!res.ok) {
+    // 409 needs_explicit_style is not a failure but "pick a style yourself": surface the candidates
+    // so the caller can retry with a valid --style. The throw still exits non-zero via main().
+    const candidates = Array.isArray(data?.candidates) ? data.candidates.filter((c) => typeof c === "string") : [];
+    if (data?.code === "needs_explicit_style" && candidates.length) {
+      throw new Error(`${data.error || "需要显式选择脚本风格"}（可选风格：${candidates.join(" / ")}）`);
+    }
+    throw new Error(data?.error || data?.raw || `HTTP ${res.status}`);
+  }
   return data;
 }
 
@@ -287,7 +308,7 @@ async function cmdProduct(flags) {
   if (!productName) throw new Error("未能解析出商品标题，无法生成带货脚本，请换一个带标准 OG/JSON-LD 标签的链接。");
   step(`商品：${productName}${ingest.product?.priceText ? ` · ${ingest.product.priceText}` : ""} · 图 ${ingest.productImages?.length ?? 0} 张`);
 
-  const styleType = ["pain_point", "scene", "comparison", "story", "drama", "reversal", "interview", "unboxing", "product_pov", "talking_head", "auto"].includes(flags.style) ? flags.style : "auto";
+  const styleType = SCRIPT_STYLE_INPUTS.includes(flags.style) ? flags.style : DEFAULT_SCRIPT_STYLE;
   const targetDuration = Number.isFinite(Number(flags.duration)) && flags.duration ? Number(flags.duration) : 30;
   step(`写带货脚本（${styleType} · ${targetDuration}s）…`);
   const scriptRes = await api("/api/llm/script", {
@@ -750,8 +771,9 @@ const HELP = `ClipForge CLI · 命令行一句话出片
                    [--footage auto|image|video] [--voice <id>] [--aspect 9:16|16:9|1:1]
                    [--quality fast|standard|hd] [--bgm] [--bgm-mood upbeat] [--bgm-volume 5-40] [--audio-stems] [--karaoke] [--cta "..."] [--json]
                    [--caption standard|bold|minimal|karaoke]   字幕样式预设(标准底板/重击大字/极简/逐字高亮)
-  clipforge product --url "<商品链接>" [--style pain_point|scene|comparison|story|drama|reversal|interview|unboxing|product_pov|talking_head|auto] [--duration 30]
+  clipforge product --url "<商品链接>" [--style scenario|pain-point|comparison|story|drama|reversal|interview|unboxing|product_pov|talking_head|auto] [--duration 30]
                    [--category beauty|food|home|fashion|tech|other] [--compose 同款成片选项]   贴链接→带货脚本(加 --compose 直接出片)
+                   风格默认 scenario(显式合法 UI 值)；--style auto=按历史转化数据推荐，实例样本不足时返回 409 并列出候选风格
   clipforge import --project <id> (--file <路径> | --text "你的脚本") [--title "..."]   自带脚本出片
   clipforge dub --project <id> --lang en                                              配音译制(换语种,出海)
   clipforge compose --project <id> [同款成片选项] [--no-fill]

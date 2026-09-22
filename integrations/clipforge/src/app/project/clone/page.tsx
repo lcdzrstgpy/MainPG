@@ -12,7 +12,15 @@ import { Badge } from "@/components/ui/badge";
 import { useSettingsStore } from "@/lib/stores/settings-store";
 import { enabledMainPgMediaProviders, mergeCustomModels, buildVideoOptions } from "@/lib/gen-params";
 import { referenceModelFor, buildReplicatePrompt, REPLICATE_MAX_REF_SEC, type ReplicateShot } from "@/lib/replicate-plan";
+import { parseStyleRequirement } from "@/components/project-creation/script-style-requirement";
 import { useT } from "@/lib/i18n";
+
+/**
+ * 爆款复刻没有风格选择器，但 /api/llm/script 现在要求显式风格：auto 只在实例有足够历史转化数据时
+ * 才由服务端推荐，否则返回 409 needs_explicit_style。这里固定用一个中性、非痛点种草的合法 UI 值
+ * （script-style.ts 的 SCRIPT_STYLE_VALUES），不再发送 auto —— 否则冷启动实例上整条复刻链会被挡下。
+ */
+const CLONE_SCRIPT_STYLE = "scenario";
 
 /** storyboard card data */
 interface StoryboardCard {
@@ -286,7 +294,7 @@ export default function ClonePage() {
           productName,
           productDescription: productFeatures,
           targetDuration,
-          styleType: "auto",
+          styleType: CLONE_SCRIPT_STYLE,
           videoMode: "product_closeup",
           productImages: paths,
           ...(refAnalysis?.referenceStructure && { referenceStructure: refAnalysis.referenceStructure }),
@@ -299,8 +307,11 @@ export default function ClonePage() {
         }),
       });
       if (!scriptRes.ok) {
-        const e = await scriptRes.json().catch(() => ({}));
-        throw new Error(e.error || t("errorScriptGen"));
+        const data: { error?: string; code?: string; candidates?: unknown } = await scriptRes.json().catch(() => ({}));
+        // 409 needs_explicit_style 不是「复刻失败」：接口要求显式风格，把候选风格贴给用户而不是报生成失败
+        const requirement = parseStyleRequirement(scriptRes.status, data);
+        if (requirement) throw new Error(t("errorNeedsExplicitStyle", { candidates: requirement.candidates.join(" / ") }));
+        throw new Error(data.error || t("errorScriptGen"));
       }
 
       router.push(`/project/${projectId}/script`);

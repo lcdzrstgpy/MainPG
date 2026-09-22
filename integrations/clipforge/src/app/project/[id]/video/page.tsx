@@ -19,6 +19,9 @@ import { buildHookVariants } from "@/lib/script-engine/hook-variants";
 import type { ProductCategory } from "@/lib/script-engine/templates";
 import { CAPTION_PRESET_IDS } from "@/lib/caption-presets";
 import { ProjectHeader } from "@/components/project-header";
+import { CreationBriefSummary } from "@/components/project-creation/creation-brief-summary";
+import { LEGACY_BRIEF_NOTICE, summarizeVoiceReport, voiceSourceExplanation, type VoiceReportSummary } from "@/lib/project-detail-view";
+import type { CreationBrief } from "@/lib/creation-brief";
 import {
   Select,
   SelectContent,
@@ -131,6 +134,10 @@ export default function VideoPage() {
   const [projectName, setProjectName] = useState("");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // 项目创作简报（旧项目为 null）：本次出片策略与音频策略的唯一来源
+  const [creationBrief, setCreationBrief] = useState<CreationBrief | null>(null);
+  // 成片 sidecar 里的逐镜音频来源报告；读不到时保持 null → 页面显示「暂无音频报告」
+  const [voiceReport, setVoiceReport] = useState<VoiceReportSummary | null>(null);
   const [config, setConfig] = useState<ComposeConfig>({
     ttsEnabled: true,
     ttsVoice: "female-gentle",
@@ -161,6 +168,13 @@ export default function VideoPage() {
   const [bgmUploading, setBgmUploading] = useState(false);
   // 是否已配置付费 TTS（否则配音走免费 Edge keyless TTS）
   const paidTtsReady = isPaidTTSReady(tts, providers);
+  // 把「配音开关 + 是否配置了付费 TTS + 简报里的音频策略」翻译成一句人话：
+  // 付费火山语音 / 免费 Edge 回退 / 模型原生音频 / 静音 / 本次未开启
+  const voiceSource = voiceSourceExplanation({
+    audioStrategy: creationBrief?.audioStrategy ?? null,
+    ttsEnabled: config.ttsEnabled,
+    paidTtsReady,
+  });
   // 免费配音试听状态
   const [previewingVoice, setPreviewingVoice] = useState(false);
 
@@ -221,6 +235,11 @@ export default function VideoPage() {
         if (project) {
           setProjectName(project.name ?? project.productName ?? "");
           setProjectCategory(typeof project.productCategory === "string" ? project.productCategory : "");
+          setCreationBrief(
+            project.creationBrief && typeof project.creationBrief === "object"
+              ? (project.creationBrief as CreationBrief)
+              : null
+          );
           if (Array.isArray(project.productionWorkflow)) {
             const voiceStage = project.productionWorkflow.find((stage: { id?: unknown }) => stage.id === "voice");
             if (voiceStage) setConfig((current) => ({ ...current, ttsEnabled: voiceStage.enabled !== false }));
@@ -268,6 +287,30 @@ export default function VideoPage() {
   useEffect(() => {
     setConfig((c) => ({ ...c, resolution: defaultResolution, aspectRatio: defaultAspectRatio }));
   }, [defaultResolution, defaultAspectRatio]);
+
+  // 逐镜音频来源：读最新成片的 sidecar（`.timeline.json` 里的 voiceReport）。
+  // 读不到（没有成片 / 老 sidecar 没有该字段 / 请求失败）时不报错，页面显示「暂无音频报告」。
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/project/${id}/compose`);
+        if (!res.ok) return;
+        const data = (await res.json()) as { composition?: { timelineUrl?: unknown } } | null;
+        const timelineUrl = typeof data?.composition?.timelineUrl === "string" ? data.composition.timelineUrl : null;
+        if (!timelineUrl) return;
+        const sidecar = await fetch(timelineUrl);
+        if (!sidecar.ok) return;
+        const summary = summarizeVoiceReport(await sidecar.json());
+        if (!cancelled && summary) setVoiceReport(summary);
+      } catch {
+        /* 音频报告是解释性信息，读不到不影响页面其它功能 */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
 
   // Production-console preview hand-off: select the existing real fast profile
   // (720p / veryfast / CRF 26) without touching any paid generation stage.
@@ -600,6 +643,15 @@ export default function VideoPage() {
             </Link>
           </div>
         )}
+        <div className={`space-y-3 ${loading || loadError ? "hidden" : "mb-6"}`}>
+          {creationBrief ? (
+            <CreationBriefSummary brief={creationBrief} />
+          ) : (
+            <div className="rounded-xl border border-border/50 bg-muted/10 px-4 py-3 text-xs text-muted-foreground">
+              {LEGACY_BRIEF_NOTICE}
+            </div>
+          )}
+        </div>
         <div className={`grid grid-cols-1 lg:grid-cols-3 gap-6 ${loading || loadError ? "hidden" : ""}`}>
           {/* 左侧：视频时间线 */}
           <div className="lg:col-span-2">
@@ -744,6 +796,40 @@ export default function VideoPage() {
               </CardContent>
             </Card>
 
+            {/* 本次音频来源：逐镜实际音源与降级情况（读成片 sidecar 的 voiceReport，读不到就明说没有） */}
+            <Card className="glass-card" data-voice-report={voiceReport ? "available" : "missing"}>
+              <CardContent className="p-4 space-y-2">
+                <Label className="text-sm font-medium">本次音频来源（逐镜实际音源）</Label>
+                {voiceReport ? (
+                  <>
+                    <p className="text-xs text-muted-foreground tabular-nums">
+                      付费火山语音 {voiceReport.counts.volcengine} 镜 · 免费 Edge 回退 {voiceReport.counts.edge} 镜 · 模型原生音频{" "}
+                      {voiceReport.counts.native} 镜 · 无音轨 {voiceReport.counts.none} 镜
+                    </p>
+                    {voiceReport.hasFailures ? (
+                      <p className="text-xs text-amber-600 dark:text-amber-500">
+                        有语音降级/失败的镜头：{voiceReport.failedShotIds.length > 0 ? voiceReport.failedShotIds.join("、") : "—"}
+                        （降级镜头请在导出前确认）
+                      </p>
+                    ) : (
+                      <p className="text-xs text-emerald-600 dark:text-emerald-500">本次合成没有语音降级或失败。</p>
+                    )}
+                    {voiceReport.degradations.length > 0 && (
+                      <ul className="space-y-1">
+                        {voiceReport.degradations.map((item) => (
+                          <li key={item.shotId} className="text-[11px] text-muted-foreground">
+                            镜头 {item.shotId}（{item.source}）：{item.reason}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </>
+                ) : (
+                  <p className="text-xs text-muted-foreground">暂无音频报告</p>
+                )}
+              </CardContent>
+            </Card>
+
             {/* 配音设置 */}
             <Card className="glass-card">
               <CardContent className="p-4 space-y-4">
@@ -762,6 +848,10 @@ export default function VideoPage() {
                     <div className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${config.ttsEnabled ? "translate-x-5" : "translate-x-0.5"}`} />
                   </button>
                 </div>
+                {/* 当前人声由谁生成的明确说明：付费火山语音 / 免费 Edge 回退 / 模型原生音频 / 静音 */}
+                <p className="text-[11px] text-muted-foreground" data-voice-source={voiceSource.kind}>
+                  {voiceSource.label}：{voiceSource.detail}
+                </p>
                 {config.ttsEnabled && paidTtsReady && (
                   <p className="text-[11px] text-muted-foreground">
                     {t("ttsPaidHint", { provider: getTTSProviderMeta(tts.provider).label })}
