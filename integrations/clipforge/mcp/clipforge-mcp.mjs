@@ -9,7 +9,7 @@
  *
  * Environment variables:
  *   CLIPFORGE_BASE_URL     ClipForge instance URL (default http://localhost:3000; run `pnpm dev` / `pnpm start` first)
- *   CLIPFORGE_LLM_BASE_URL LLM endpoint (OpenAI-compatible, e.g. https://api.atlascloud.ai/v1)
+ *   CLIPFORGE_LLM_BASE_URL LLM endpoint (any OpenAI-compatible endpoint, e.g. https://ark.cn-beijing.volces.com/api/v3)
  *   CLIPFORGE_LLM_API_KEY  LLM key (required for script generation; omitting it gives a clear prompt in create_video / generate_script)
  *   CLIPFORGE_LLM_MODEL    LLM model name (e.g. deepseek-ai/deepseek-v4-pro)
  */
@@ -37,6 +37,19 @@ const FOOTAGE_KINDS = ["auto", "image", "video"];
 const ASPECT_RATIOS = ["9:16", "16:9", "1:1"]; // 9:16 portrait (Douyin/Kuaishou/Reels/Shorts) · 16:9 landscape · 1:1 square
 const QUALITY_PRESETS = ["fast", "standard", "hd"]; // maps to real FFmpeg encoding: resolution + x264 preset + crf
 const CAPTION_PRESETS = ["standard", "bold", "minimal", "karaoke"]; // caption style presets (mirrors src/lib/caption-presets.ts)
+
+// Styles accepted by /api/llm/script: the UI whitelist (src/lib/script-style.ts SCRIPT_STYLE_VALUES,
+// i.e. the ad-template whitelist minus "auto") plus the engine spellings the server aliases back
+// (pain_point→pain-point, scene→scenario). "auto" means "recommend from conversion history" and is
+// therefore NOT a default: on an instance without enough samples the route answers 409
+// needs_explicit_style, so it stays opt-in.
+const SCRIPT_STYLE_INPUTS = [
+  "drama", "reversal", "interview", "story", "unboxing", "product_pov",
+  "comparison", "talking_head", "pain-point", "scenario", "pain_point", "scene",
+  "auto",
+];
+// Neutral, non-pain-point whitelist value, so clipforge_product_script works out of the box on a data-less instance.
+const DEFAULT_SCRIPT_STYLE = "scenario";
 
 /** footage resolution: default "auto" — delegates to stock-fill per shot ("video first, fall back to image" — fully key-free); image/video are explicit overrides */
 function resolveMediaType(footage) {
@@ -184,8 +197,13 @@ async function api(path, { method = "GET", body, timeoutMs = 600000 } = {}) {
     data = { raw: text };
   }
   if (!res.ok) {
-    const msg = data?.error || data?.raw || `HTTP ${res.status}`;
-    const err = new Error(msg);
+    const candidates = Array.isArray(data?.candidates) ? data.candidates.filter((c) => typeof c === "string") : [];
+    // 409 needs_explicit_style is not a hard failure but "pick a style yourself": put the candidates in
+    // the message so the calling agent retries with a valid styleType instead of guessing one.
+    const explicit = data?.code === "needs_explicit_style" && candidates.length
+      ? `${data.error || "需要显式选择脚本风格"}（候选风格：${candidates.join(" / ")}，请用 styleType 指定其中一个后重试）`
+      : null;
+    const err = new Error(explicit || data?.error || data?.raw || `HTTP ${res.status}`);
     err.payload = data;
     throw err;
   }
@@ -196,7 +214,7 @@ async function api(path, { method = "GET", body, timeoutMs = 600000 } = {}) {
 function requireLlm() {
   if (!LLM.baseUrl || !LLM.apiKey || !LLM.model) {
     throw new Error(
-      "生成脚本需要 LLM。请为 MCP 服务设置环境变量：CLIPFORGE_LLM_BASE_URL、CLIPFORGE_LLM_API_KEY、CLIPFORGE_LLM_MODEL（OpenAI 兼容接口，如 Atlas Cloud / DeepSeek / OpenRouter）。",
+      "生成脚本需要 LLM。请为 MCP 服务设置环境变量：CLIPFORGE_LLM_BASE_URL、CLIPFORGE_LLM_API_KEY、CLIPFORGE_LLM_MODEL（任意 OpenAI 兼容端点，如火山引擎方舟 / DeepSeek / OpenRouter）。",
     );
   }
 }
@@ -284,9 +302,9 @@ const TOOLS = [
         url: { type: "string", description: "商品页链接（http/https）" },
         styleType: {
           type: "string",
-          enum: ["pain_point", "scene", "comparison", "story", "drama", "reversal", "interview", "unboxing", "product_pov", "talking_head", "auto"],
+          enum: SCRIPT_STYLE_INPUTS,
           description:
-            "脚本风格（四大形态）：剧情形 drama 情景短剧(双角色冲突对话+免费多音色)/reversal 反转剧场/interview 街头采访(主持人+路人)/story 剧情故事；物品形 unboxing 开箱测评/product_pov 物品拟人(商品第一人称)/comparison 对比测评；口播形 talking_head 达人口播/pain_point 痛点种草；场景形 scene 场景安利。默认 auto（按历史转化数据智能推荐）",
+            "脚本风格（四大形态）：剧情形 drama 情景短剧(双角色冲突对话+免费多音色)/reversal 反转剧场/interview 街头采访(主持人+路人)/story 剧情故事；物品形 unboxing 开箱测评/product_pov 物品拟人(商品第一人称)/comparison 对比测评；口播形 talking_head 达人口播/pain-point 痛点种草；场景形 scenario 场景安利。默认 scenario（显式合法 UI 值）；auto=按历史转化数据智能推荐，实例样本不足时接口返回 409 needs_explicit_style 并给出候选风格，此时必须显式改选一个再重试",
         },
         durationSec: { type: "number", description: "目标时长（秒），默认 30，建议 15-60" },
         category: {
@@ -998,7 +1016,7 @@ async function handleProductScript(args) {
   if (!productName) throw new Error("未能解析出商品标题，无法生成带货脚本。请换一个带标准 OG/JSON-LD 标签的链接。");
 
   // Step 2: generate the commerce script from the ingested product data (LLM)
-  const styleType = ["pain_point", "scene", "comparison", "story", "drama", "reversal", "interview", "unboxing", "product_pov", "talking_head", "auto"].includes(args.styleType) ? args.styleType : "auto";
+  const styleType = SCRIPT_STYLE_INPUTS.includes(args.styleType) ? args.styleType : DEFAULT_SCRIPT_STYLE;
   const targetDuration = Number.isFinite(args.durationSec) ? Number(args.durationSec) : 30;
   const scriptRes = await api("/api/llm/script", {
     method: "POST",

@@ -91,6 +91,11 @@ export const start: NamespaceMessages = {
     atlasKeyInvalid: "Key 无效或无权限，请检查后重试",
     atlasConnectFailed: "连接失败，请检查网络后重试",
     atlasDismiss: "稍后再说",
+    // 统一的创建入口：出片策略与「未配模型」引导（不再内联填 Key）
+    strategyLegend: "出片策略（创建时选定）",
+    llmNoticeText: "还没配置模型？脚本与画面需要一个 LLM 平台，先去设置里填一次 Key。",
+    llmNoticeCta: "前往设置",
+    errNeedLlm: "请先在设置中配置 LLM API Key，再开始生成",
     // 主按钮 + 安心文案
     ctaStart: "开始生成",
     busyDefault: "生成中…",
@@ -251,6 +256,11 @@ export const start: NamespaceMessages = {
     atlasKeyInvalid: "Key invalid or unauthorized — check and retry",
     atlasConnectFailed: "Connection failed — check your network and retry",
     atlasDismiss: "Maybe later",
+    // Single creation entry: output strategy + "no model configured" guidance (no inline key form)
+    strategyLegend: "Output strategy (chosen at creation)",
+    llmNoticeText: "No model configured yet? Scripts and visuals need an LLM platform — add a key in settings first.",
+    llmNoticeCta: "Open settings",
+    errNeedLlm: "Configure your LLM API key in settings before generating",
     // 主按钮 + 安心文案
     ctaStart: "Start generating",
     busyDefault: "Generating…",

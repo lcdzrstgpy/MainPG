@@ -325,6 +325,8 @@ async function persistFilm(projectId: string, videoUrl: string | undefined, mode
     .values({
       projectId,
       outputPath,
+      // 整片生成就是 native-film 策略的产出（设计 §5.2）：导出页据此把它认作本项目主版本
+      strategy: "native-film",
       resolution: "720p",
       aspectRatio: "9:16",
       ...(probe?.duration ? { duration: Math.round(probe.duration * 1000) } : {}),

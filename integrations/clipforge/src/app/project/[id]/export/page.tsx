@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useParams } from "next/navigation";
 import { LuCheck, LuCircleCheck, LuFilm, LuDownload, LuLink2, LuFileText, LuPlus, LuHouse, LuShuffle, LuLoaderCircle, LuSparkles, LuImage, LuLayoutGrid, LuQrCode, LuScanLine, LuLanguages, LuShieldCheck, LuTriangleAlert, LuCircleX, LuClipboardCheck } from "react-icons/lu";
 import Link from "next/link";
@@ -13,6 +13,9 @@ import { buildShopLink } from "@/lib/shop-link";
 import { useT, useLocale } from "@/lib/i18n";
 import { ProjectHeader } from "@/components/project-header";
 import { PerformanceFeedback } from "@/components/performance-feedback";
+import { CreationBriefSummary } from "@/components/project-creation/creation-brief-summary";
+import { OUTPUT_STRATEGY_GROUP_LABELS, LEGACY_BRIEF_NOTICE, compositionStrategyLabel, groupCompositionsByStrategy } from "@/lib/project-detail-view";
+import { isOutputStrategy, type CreationBrief, type OutputStrategy } from "@/lib/creation-brief";
 
 import { PlatformExportPanel } from "@/components/platform-export-panel";
 
@@ -38,12 +41,17 @@ const styleLabelKeys: Record<string, string> = {
 };
 
 interface Composition {
+  id: string;
   url: string | null;
   fileName: string;
   resolution: string | null;
   aspectRatio: string | null;
   status: string;
   createdAt: string | null;
+  /** 成片标签（如「九宫格整片 · Seedance 2.5」），用于判断它属于哪种出片策略 */
+  label?: string | null;
+  /** 未来合成记录落库策略后的显式信号；当前多为 undefined */
+  strategy?: string | null;
 }
 
 interface ScriptInfo {
@@ -61,7 +69,10 @@ export default function ExportPage() {
   const [projectName, setProjectName] = useState("");
   const [composition, setComposition] = useState<Composition | null>(null);
   // full output history (variant-matrix renders carry a label) — the latest-only view hid variants
-  const [history, setHistory] = useState<Array<{ id: string; url: string | null; label?: string | null; createdAt?: string | number | null }>>([]);
+  // `strategy` 是合成记录落库的出片策略（迁移 0021）：严格分组的唯一依据，旧记录为 null 时回退 label
+  const [history, setHistory] = useState<Array<{ id: string; url: string | null; label?: string | null; strategy?: string | null; createdAt?: string | number | null }>>([]);
+  // 项目创作简报（旧项目为 null）：决定哪个成片是本项目的主版本
+  const [creationBrief, setCreationBrief] = useState<CreationBrief | null>(null);
   const [scriptInfo, setScriptInfo] = useState<ScriptInfo | null>(null);
   const [fileSize, setFileSize] = useState<string>("");
   // publish copy
@@ -315,6 +326,8 @@ export default function ExportPage() {
     (async () => {
       setLoading(true);
       try {
+        // 项目策略决定哪条成片是主版本，需在成片分组之前解析出来
+        let briefStrategy: OutputStrategy | null = null;
         // list *successful* compositions (a failed retry on top must not blank this page)
         const [compRes, projRes, scriptsRes] = await Promise.all([
           fetch(`/api/project/${id}/compositions`),
@@ -323,8 +336,15 @@ export default function ExportPage() {
         ]);
         if (projRes.ok) {
           const proj = await projRes.json();
+          const brief: CreationBrief | null =
+            proj.creationBrief && typeof proj.creationBrief === "object"
+              ? (proj.creationBrief as CreationBrief)
+              : null;
+          // 旧项目没有简报 → 策略未知，下面沿用「默认选最新一条」的既有行为
+          briefStrategy = isOutputStrategy(brief?.outputStrategy) ? brief.outputStrategy : null;
           if (!cancelled) {
             setProjectName(proj.name ?? proj.productName ?? "");
+            setCreationBrief(brief);
             setProductMeta({
               productName: proj.productName ?? proj.name ?? "",
               category: proj.productCategory ?? "",
@@ -336,9 +356,12 @@ export default function ExportPage() {
         }
         if (compRes.ok) {
           const data = await compRes.json();
-          const latestDone = Array.isArray(data.compositions) ? data.compositions[0] : null;
-          if (!cancelled && latestDone) setComposition(latestDone);
-          if (!cancelled && Array.isArray(data.compositions)) setHistory(data.compositions);
+          const list: Composition[] = Array.isArray(data.compositions) ? data.compositions : [];
+          // 主版本 = 判定为项目 outputStrategy 的成片；没有命中时退回最新一条（迁移前行为）
+          const groups = groupCompositionsByStrategy(list, briefStrategy);
+          const selected = groups.primary[0] ?? list[0] ?? null;
+          if (!cancelled) setHistory(list);
+          if (!cancelled && selected) setComposition(selected);
         }
         if (scriptsRes.ok) {
           const arr = await scriptsRes.json();
@@ -398,6 +421,47 @@ export default function ExportPage() {
     ? new Date(composition.createdAt).toLocaleDateString("zh-CN")
     : "";
 
+  // 成片按项目出片策略分组：主版本（命中 outputStrategy）与「其他版本」。
+  // 旧项目没有简报 → briefStrategy 为 null → 主版本为空，页面沿用「默认最新一条」行为。
+  const briefStrategy: OutputStrategy | null = creationBrief && isOutputStrategy(creationBrief.outputStrategy)
+    ? creationBrief.outputStrategy
+    : null;
+  const compositionGroups = useMemo(() => groupCompositionsByStrategy(history, briefStrategy), [history, briefStrategy]);
+  // 平台导出面板默认选中列表第一项 → 主版本优先，其次保持历史顺序
+  const exportOrder = useMemo(() => [...compositionGroups.primary, ...compositionGroups.others], [compositionGroups]);
+  const primaryGroupTitle = briefStrategy ? `${OUTPUT_STRATEGY_GROUP_LABELS[briefStrategy]}（本项目主策略）` : "主版本";
+
+  // 成片行（主版本与其他版本共用同一展示，只是分组标题不同）
+  const historyRow = (
+    item: { id: string; url: string | null; label?: string | null; strategy?: string | null; createdAt?: string | number | null },
+    index: number
+  ) => (
+    <div key={item.id} className="flex items-center gap-2 text-xs">
+      <span className="text-muted-foreground/60 shrink-0 tabular-nums">{String(index + 1).padStart(2, "0")}</span>
+      <span className="truncate flex-1 text-muted-foreground">{item.label || t("historyUnlabeled")}</span>
+      <span className="text-muted-foreground/60 shrink-0">{compositionStrategyLabel(item)}</span>
+      {item.createdAt && (
+        <span className="text-muted-foreground/60 shrink-0">
+          {new Date(item.createdAt).toLocaleString(locale === "zh" ? "zh-CN" : "en-US", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+        </span>
+      )}
+      {item.url && (
+        <a href={item.url} target="_blank" rel="noreferrer" className="text-primary underline shrink-0">
+          {t("historyView")}
+        </a>
+      )}
+    </div>
+  );
+
+  // 创作简报（只读）；旧项目没有简报时给出兼容提示而不是空渲染
+  const briefBar = creationBrief ? (
+    <CreationBriefSummary brief={creationBrief} className="mb-6" />
+  ) : (
+    <div className="mb-6 rounded-xl border border-border/50 bg-muted/10 px-4 py-3 text-xs text-muted-foreground">
+      {LEGACY_BRIEF_NOTICE}
+    </div>
+  );
+
   // slim context strip (shared by loading, empty and normal states); global chrome lives in AppShell
   const headerBar = <ProjectHeader projectName={projectName || t("projectFallback")} />;
 
@@ -418,7 +482,8 @@ export default function ExportPage() {
     return (
       <div className="min-h-screen grid-bg">
         {headerBar}
-        <div className="mx-auto max-w-md flex flex-col items-center justify-center py-28 px-6 text-center">
+        <div className="mx-auto max-w-3xl px-6 pt-8">{briefBar}</div>
+        <div className="mx-auto max-w-md flex flex-col items-center justify-center py-20 px-6 text-center">
           <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-muted/40 mb-5">
             <LuFilm className="w-8 h-8 text-muted-foreground" />
           </div>
@@ -454,6 +519,7 @@ export default function ExportPage() {
       {headerBar}
 
       <main className="mx-auto max-w-3xl px-6 py-10">
+        {briefBar}
         {/* completion banner */}
         <div className="text-center mb-8">
           <div className="inline-flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/10 mb-4">
@@ -519,32 +585,30 @@ export default function ExportPage() {
           </Button>
         </div>
 
-        {/* output history: every successful render, newest first — variant-matrix outputs
-            show their combo label so A/B takes stay reachable after leaving the video page */}
-        {history.length > 1 && (
-          <Card className="glass-card mb-6">
+        {/* 成片按出片策略分组：默认选中并预览本项目主策略对应的主版本，
+            不属于主策略的版本收纳到「其他版本」，仍可预览/下载 */}
+        {history.length > 0 && (
+          <Card className="glass-card mb-6" data-composition-groups="strategy">
             <CardContent className="p-5">
               <h3 className="text-sm font-semibold mb-3">🎞 {t("historyTitle", { n: history.length })}</h3>
-              <div className="space-y-1.5">
-                {history.map((h, i) => (
-                  <div key={h.id} className="flex items-center gap-2 text-xs">
-                    <span className="text-muted-foreground/60 shrink-0 tabular-nums">{String(i + 1).padStart(2, "0")}</span>
-                    <span className="truncate flex-1 text-muted-foreground">
-                      {h.label || t("historyUnlabeled")}
-                    </span>
-                    {h.createdAt && (
-                      <span className="text-muted-foreground/60 shrink-0">
-                        {new Date(h.createdAt).toLocaleString(locale === "zh" ? "zh-CN" : "en-US", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}
-                      </span>
-                    )}
-                    {h.url && (
-                      <a href={h.url} target="_blank" rel="noreferrer" className="text-primary underline shrink-0">
-                        {t("historyView")}
-                      </a>
-                    )}
-                  </div>
-                ))}
+              <div data-composition-group="primary">
+                <p className="text-xs font-semibold mb-2 text-primary">{primaryGroupTitle}</p>
+                {compositionGroups.primary.length > 0 ? (
+                  <div className="space-y-1.5">{compositionGroups.primary.map(historyRow)}</div>
+                ) : (
+                  <p className="text-[11px] text-muted-foreground">
+                    {briefStrategy
+                      ? "当前没有判定为本策略的成片，「其他版本」里的最新一条仍在预览中。"
+                      : "旧项目未记录出片策略，默认沿用最新一条成片。"}
+                  </p>
+                )}
               </div>
+              {compositionGroups.others.length > 0 && (
+                <div className="mt-4 border-t border-border/40 pt-3" data-composition-group="others">
+                  <p className="text-xs font-semibold mb-2">其他版本</p>
+                  <div className="space-y-1.5">{compositionGroups.others.map(historyRow)}</div>
+                </div>
+              )}
             </CardContent>
           </Card>
         )}
@@ -643,7 +707,7 @@ export default function ExportPage() {
           </CardContent>
         </Card>
 
-        <PlatformExportPanel key={id} projectId={id} compositions={history} />
+        <PlatformExportPanel key={id} projectId={id} compositions={exportOrder} />
 
         {/* advanced tools (collapsed by default): feedback / A/B testing / QC & compliance — keeps the primary download action prominent for casual users */}
         <details className="group rounded-xl border border-border/50 bg-card/30 mb-6">

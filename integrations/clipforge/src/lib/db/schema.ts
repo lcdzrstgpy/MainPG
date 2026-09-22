@@ -1,4 +1,5 @@
 import { sqliteTable, text, integer, uniqueIndex } from "drizzle-orm/sqlite-core";
+import type { CreationBrief } from "@/lib/creation-brief";
 import type {
   CreativeIntent,
   ProductionSnapshot,
@@ -50,8 +51,21 @@ export const projects = sqliteTable("projects", {
   mediaInsights: text("media_insights", { mode: "json" }).$type<ProjectMediaInsight[]>().default([]),
   productionWorkflow: text("production_workflow", { mode: "json" }).$type<WorkflowStagePlan[]>(),
   versionSnapshots: text("version_snapshots", { mode: "json" }).$type<ProductionSnapshot[]>().default([]),
+  // Unified creation contract: the same brief is written by every creation entry and read by
+  // script / assets / video / export. Existing projects read null and keep their legacy behaviour.
+  creationBrief: text("creation_brief", { mode: "json" }).$type<CreationBrief>(),
   createdAt: integer("created_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
   updatedAt: integer("updated_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
+});
+
+// Creation events: append-only observation of the creation flow (entry, strategy, style, submit,
+// compose). Kept separate from project state so telemetry can never block or mutate creation.
+export const projectEvents = sqliteTable("project_events", {
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  projectId: text("project_id").notNull(),
+  kind: text("kind").notNull(),
+  payload: text("payload", { mode: "json" }).$type<Record<string, unknown>>(),
+  createdAt: integer("created_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
 });
 
 // Scripts table
@@ -191,6 +205,10 @@ export const compositions = sqliteTable("compositions", {
   aigcBadge: integer("aigc_badge", { mode: "boolean" }),
   // Human-readable variant label (variant-matrix batch renders, e.g. "疑问钩子×卡拉OK×动感")
   label: text("label"),
+  // 产出这条成片时实际使用的出片策略（取自项目 creationBrief.outputStrategy）。
+  // Nullable on purpose: rows rendered before this column existed — and routes that don't know a
+  // project brief — stay null, and the export page falls back to its label heuristic for them.
+  strategy: text("strategy", { enum: ["draft", "controlled-motion", "native-film"] }),
   status: text("status", { enum: ["pending", "composing", "done", "failed"] }).notNull().default("pending"),
   createdAt: integer("created_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
 });

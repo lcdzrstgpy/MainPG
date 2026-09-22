@@ -48,6 +48,8 @@ describe("publicMediaSource", () => {
       subtitleStyle: null,
       aigcBadge: false,
       label: "Text edit · R1",
+      // 迁移 0021 新增的可空列：完整 composition 行现在必须给出该键
+      strategy: null,
       status: "done",
       createdAt: new Date("2026-08-25T00:00:00.000Z"),
     };

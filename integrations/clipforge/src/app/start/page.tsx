@@ -1,10 +1,11 @@
 "use client";
 
 /**
- * New "act first, configure later" landing page (dark studio direction).
- * Lives as an independent route /start, leaving the homepage (currently being rewritten for i18n) untouched.
- * Users land and act immediately: upload a product image or describe a topic → kick off generation right away;
- * only prompted to configure a Key when AI is actually needed (Atlas one-click recommended).
+ * MainPG 里的 AI 视频工作台，也是唯一的项目创建入口。
+ *
+ * 商品图 / 商品链接 / 一句话主题三种来源都落到同一份「创作简报」（CreationBrief）：
+ * 表单状态、默认值和请求体只有一份；出片策略在创建时显式选定并写进 creationBrief.outputStrategy，
+ * 脚本请求只由 buildScriptRequest 构造。未配置模型时只给设置页引导，不再内联填 Key。
  */
 
 import { useState, useRef, useCallback, useEffect } from "react";
@@ -16,10 +17,31 @@ import { useProductLibraryStore } from "@/lib/stores/product-library-store";
 import { useCharacterStore } from "@/lib/stores/project-store";
 import { getExampleProducts, type ExampleProduct } from "@/lib/examples";
 import { useT, useLocale } from "@/lib/i18n";
-import { ATLAS_KEYS_URL } from "@/lib/atlas-onekey";
 import { formatRelativeTime } from "@/lib/relative-time";
 import { classifyTrendTitle, pickDailyTrend, TREND_CATEGORY_IDS } from "@/lib/trends";
 import type { TrendTopic, TrendCategoryId } from "@/lib/trends";
+import {
+  CreationBriefForm,
+  type CreationBriefFormPrefill,
+  type CreationBriefFormValues,
+} from "@/components/project-creation/creation-brief-form";
+import { OUTPUT_STRATEGY_OPTIONS, type VideoModeId } from "@/components/project-creation/creation-brief-defaults";
+import { fetchImagesAsFiles, importProductSource, isValidProductUrl } from "@/components/project-creation/link-import";
+import { buildScriptRequest } from "@/components/project-creation/build-script-request";
+import {
+  missingStyleRequirement,
+  parseStyleRequirement,
+  type ScriptStyleRequirement,
+} from "@/components/project-creation/script-style-requirement";
+import { StyleChoicePrompt } from "@/components/project-creation/style-choice-prompt";
+import { recordStrategySelected } from "@/components/project-creation/creation-events";
+import { sanitizeCreationBrief, type CreationBrief, type OutputStrategy } from "@/lib/creation-brief";
+import {
+  CLONE_PREFILL_STORAGE_KEY,
+  parseClonePrefill,
+  parseStartPrefill,
+  type CreationEntryId,
+} from "@/lib/creation-entry-prefill";
 
 /** How many trend chips are shown at once; "shuffle" pages through the full board. */
 const TRENDS_PAGE_SIZE = 8;
@@ -28,28 +50,32 @@ const TRENDS_PAGE_SIZE = 8;
 const DAILY_PERSONA_KEY = "clipforge_daily_persona";
 const DAILY_LAST_KEY = "clipforge_daily_last";
 
+/**
+ * 三种出片策略在本页的说明。id 与 src/lib/creation-brief.ts 的 OutputStrategy 一一对应，
+ * 页面源码里必须看得见这三个 id —— 「免费草稿」不能被误解成 AI 动态视频。
+ * 与 /project/new 的 BGM_LABELS 一样，属于页面内的双语数据，不进 i18n 词表。
+ */
+const STRATEGY_NOTES: Record<OutputStrategy, { zh: string; en: string }> = {
+  "draft": {
+    zh: "免费草稿：静态素材 + FFmpeg 合成，非 AI 动态视频，不计费",
+    en: "Free draft: static material + local FFmpeg render — not an AI motion video, no cost",
+  },
+  "controlled-motion": {
+    zh: "导演可控动态：逐镜生成关键帧并提交图生视频任务，按镜头计费",
+    en: "Director-controlled motion: per-shot keyframes + image-to-video tasks, billed per shot",
+  },
+  "native-film": {
+    zh: "原生整片：一次模型调用生成整片画面与原生音频",
+    en: "Native film: one model call renders the whole film with its own audio",
+  },
+};
+
 /** Local calendar date (YYYY-MM-DD) — "today" for the daily-pick marker follows the user's clock. */
 function localDateStamp(): string {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-type Mode = "upload" | "topic" | "link";
-
-/** AI-mode commerce form → engine vocab: beginner-facing words map onto script style + video mode */
-const FORM_PRESETS = {
-  auto: { styleType: "auto", videoMode: "product_closeup" },
-  presenter: { styleType: "talking_head", videoMode: "live_presenter" },
-  drama: { styleType: "drama", videoMode: "live_presenter" },
-  montage: { styleType: "auto", videoMode: "graphic_montage" },
-} as const;
-type FormId = keyof typeof FORM_PRESETS;
-
-interface PickedImage {
-  id: string;
-  url: string;
-  file: File;
-}
 interface RecentProject {
   id: string;
   name: string;
@@ -58,39 +84,140 @@ interface RecentProject {
   updatedAt: string | null;
 }
 
+/** 已经建好项目、只差脚本的待重试请求（409 需要用户显式选风格时用）。 */
+interface PendingScript {
+  kind: "script";
+  projectId: string;
+  brief: CreationBrief;
+  productName: string;
+  category: string;
+  description: string;
+  productImages: string[];
+  videoMode: VideoModeId;
+  /** 爆款复刻交接的参考镜头节奏骨架：有值时随脚本请求下发，风格重试也要带上 */
+  referenceStructure?: string;
+}
+
+/** 还没建项目就需要用户先选风格的提交内容。 */
+interface PendingForm {
+  kind: "form";
+  values: CreationBriefFormValues;
+}
+
+type PendingCreation = PendingScript | PendingForm;
+
+/** 出片策略只影响跳转：只有 draft 兼容旧的 ?auto=1 断点恢复，其它策略不隐式启动流水线。 */
+function scriptPath(projectId: string, strategy: OutputStrategy): string {
+  return `/project/${projectId}/script${strategy === "draft" ? "?auto=1" : ""}`;
+}
+
+/**
+ * 次级入口的预填 → 主入口表单预填（设计 §4：三种来源都是同一个入口的预填）。
+ *
+ * `prefill` 之外还带两样「只用于创建/生成、不进表单字段」的复刻交接内容：
+ * `referenceStructure`（脚本请求）与 `referenceVideoUrl`（项目 sourceVideoUrl）。
+ */
+export interface StartPrefillResolution {
+  /** 表单来源，与 `CreationBrief.inputMode` 同值——不存在第二套来源枚举 */
+  inputMode: CreationEntryId;
+  /** 推给共享表单的预填；库内商品与复刻商品图由页面补齐 */
+  prefill: CreationBriefFormPrefill;
+  /** 商品库条目 id：页面据此读库内的名称/卖点/图片 */
+  productId?: string;
+  /** 爆款复刻已落盘的商品图地址：页面抓成 File（纯函数不发请求、不碰 DOM） */
+  productImages?: string[];
+  /** 爆款复刻的参考镜头节奏骨架：生成脚本时透传 */
+  referenceStructure?: string;
+  /** 爆款复刻的参考视频地址：创建项目时写入 sourceVideoUrl */
+  referenceVideoUrl?: string;
+}
+
+/**
+ * URL 预填参数 + 复刻暂存 → 一次表单预填。认不出的组合一律返回 null（绝不抛错），
+ * 调用方据此保持空表单，而不是猜一个来源填进去。
+ */
+export function resolveStartPrefill(
+  search: string,
+  cloneStorageValue?: string | null
+): StartPrefillResolution | null {
+  const params = parseStartPrefill(search);
+
+  if (params.entry === "topic") {
+    if (!params.topic) return null;
+    return { inputMode: "topic", prefill: { brief: { inputMode: "topic" }, topic: params.topic } };
+  }
+
+  if (params.entry === "clone") {
+    // 暂存缺失/损坏时宁可空表单：只带 query 文本的半份复刻简报会让用户以为节奏骨架还在
+    const payload = parseClonePrefill(cloneStorageValue ?? null);
+    if (!payload) return null;
+    return {
+      inputMode: "clone",
+      prefill: {
+        productName: params.productName,
+        sellingPoints: params.sellingPoints,
+        brief: payload.brief,
+      },
+      ...(payload.productImages?.length ? { productImages: payload.productImages } : {}),
+      ...(payload.referenceStructure ? { referenceStructure: payload.referenceStructure } : {}),
+      ...(payload.referenceVideoUrl ? { referenceVideoUrl: payload.referenceVideoUrl } : {}),
+    };
+  }
+
+  // 商品库：库页的「做视频」按钮曾经只带 ?productId=，与 ?entry=product-library&productId= 同一分支
+  if (params.productId) {
+    return {
+      inputMode: "product-library",
+      prefill: { brief: { inputMode: "product-library" } },
+      productId: params.productId,
+    };
+  }
+
+  return null;
+}
+
+/** 读取爆款复刻暂存；浏览器禁用本地存储时按「没有交接」处理。 */
+function readClonePrefillStorage(): string | null {
+  try {
+    return localStorage.getItem(CLONE_PREFILL_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/** 暂存用过即清：同一份交接不会被下一次刷新重放，用户之后的改动也不会被覆盖。 */
+function clearClonePrefillStorage(): void {
+  try {
+    localStorage.removeItem(CLONE_PREFILL_STORAGE_KEY);
+  } catch {
+    /* storage unavailable → nothing to clear */
+  }
+}
+
 export default function StartPage() {
   const router = useRouter();
   const t = useT("start");
   const locale = useLocale();
   const { llm } = useSettingsStore();
-  const applyAtlasOneKey = useSettingsStore((s) => s.applyAtlasOneKey);
+  const characters = useCharacterStore((s) => s.characters);
   const llmReady = llm.apiKey.trim().length > 0;
   // example products follow the UI language
   const examples = getExampleProducts(locale);
 
-  const [mode, setMode] = useState<Mode>("upload");
-  // generation-task mode: the free/paid fork, explicit with cost up front
-  // (open-source BYOK — AI charges go to the user's own model platform, never to us)
-  const [genMode, setGenMode] = useState<"free" | "ai">("free");
-  // commerce form (AI mode only): what the finished video looks like
-  const [form, setForm] = useState<FormId>("auto");
-  const { characters } = useCharacterStore();
-  const [presenterId, setPresenterId] = useState("");
-  const [images, setImages] = useState<PickedImage[]>([]);
-  const [productName, setProductName] = useState("");
-  const [sellingPoints, setSellingPoints] = useState("");
-  const [topic, setTopic] = useState("");
-  const [link, setLink] = useState("");
-  const [isDragging, setIsDragging] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [stage, setStage] = useState("");
+  const [busySteps, setBusySteps] = useState<string[]>([]);
   // which step of the busy takeover is running (index into busySteps)
   const [stageIdx, setStageIdx] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [needKey, setNeedKey] = useState(false);
-  const [atlasKey, setAtlasKey] = useState("");
-  const [connecting, setConnecting] = useState(false);
-  const [connectError, setConnectError] = useState<string | null>(null);
+  // 需要用户显式选风格（本地未选 / 接口 409 无数据可推荐）
+  const [stylePrompt, setStylePrompt] = useState<ScriptStyleRequirement | null>(null);
+  // 表单预填通道（商品库、热点、示例商品、链接导入）
+  const [prefill, setPrefill] = useState<CreationBriefFormPrefill | undefined>();
+  const [prefillKey, setPrefillKey] = useState("");
+  // 商品链接导入
+  const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState("");
+  const [importedImages, setImportedImages] = useState<string[]>([]);
   const [recent, setRecent] = useState<RecentProject[]>([]);
   const [trends, setTrends] = useState<TrendTopic[]>([]);
   const [trendsSource, setTrendsSource] = useState<string>("");
@@ -118,47 +245,62 @@ export default function StartPage() {
     try { localStorage.setItem("clipforge_guide_dismissed", "1"); } catch { /* ignore */ }
   };
 
-  const fileRef = useRef<HTMLInputElement>(null);
-  const keyformRef = useRef<HTMLDivElement>(null);
-  const cardRef = useRef<HTMLDivElement>(null);
+  const briefRef = useRef<HTMLDivElement>(null);
+  const pendingRef = useRef<PendingCreation | null>(null);
 
-  // product-library hand-off: /start?productId=x pre-fills the upload tab, so the
-  // library's "make video" button lands beginners on the same single creation path
+  const pushPrefill = useCallback((next: CreationBriefFormPrefill) => {
+    setPrefill(next);
+    setPrefillKey(crypto.randomUUID());
+  }, []);
+
+  // 次级入口交接：商品库 / 一句话主题 / 爆款复刻只把「一份预填简报」放在 query 里（复刻另带
+  // localStorage 暂存），由本页消费一次，落到同一个共享表单上——不再各自创建项目。
   const { products: libraryProducts } = useProductLibraryStore();
   const prefilledRef = useRef(false);
+  // 复刻交接的参考结构/来源视频不属于表单字段，预填时暂存在这里，创建与生成时透传
+  const cloneRef = useRef<{ referenceStructure?: string; referenceVideoUrl?: string }>({});
   useEffect(() => {
     if (prefilledRef.current) return;
-    const productId = new URLSearchParams(window.location.search).get("productId");
-    if (!productId) return;
-    const product = libraryProducts.find((p) => p.id === productId);
-    if (!product) return; // store not hydrated yet (effect re-runs) or stale id
-    prefilledRef.current = true;
-    queueMicrotask(() => {
-      setMode("upload");
-      setProductName(product.name);
-      if (product.description) setSellingPoints(product.description);
-    });
-    // fetch library images into File objects; local blob URLs from other pages may be dead — text stays filled either way
-    (async () => {
-      const files: PickedImage[] = [];
-      for (const [i, src] of product.images.slice(0, 5).entries()) {
-        try {
-          const res = await fetch(src);
-          const blob = await res.blob();
-          const file = new File([blob], `product-${i}.png`, { type: blob.type || "image/png" });
-          files.push({ id: crypto.randomUUID(), url: URL.createObjectURL(file), file });
-        } catch {
-          /* non-fatal per image */
-        }
-      }
-      if (files.length) {
-        setImages((prev) => {
-          prev.forEach((p) => URL.revokeObjectURL(p.url));
-          return files;
+    const resolution = resolveStartPrefill(window.location.search, readClonePrefillStorage());
+    if (!resolution) return;
+
+    if (resolution.inputMode === "product-library") {
+      const product = libraryProducts.find((p) => p.id === resolution.productId);
+      if (!product) return; // store not hydrated yet (effect re-runs) or stale id
+      prefilledRef.current = true;
+      void (async () => {
+        // fetch library images into File objects; local blob URLs from other pages may be dead — text stays filled either way
+        const files = await fetchImagesAsFiles(product.images);
+        pushPrefill({
+          ...resolution.prefill,
+          productName: product.name,
+          sellingPoints: product.description ?? "",
+          ...(files.length ? { images: files } : {}),
         });
-      }
-    })();
-  }, [libraryProducts]);
+      })();
+      return;
+    }
+
+    prefilledRef.current = true;
+
+    if (resolution.inputMode === "clone") {
+      // 交接只发生一次：参考结构留给创建/生成，暂存立刻清掉，用户之后自己的改动不会再被覆盖
+      cloneRef.current = {
+        referenceStructure: resolution.referenceStructure,
+        referenceVideoUrl: resolution.referenceVideoUrl,
+      };
+      clearClonePrefillStorage();
+      void (async () => {
+        const files = resolution.productImages?.length
+          ? await fetchImagesAsFiles(resolution.productImages)
+          : [];
+        pushPrefill({ ...resolution.prefill, ...(files.length ? { images: files } : {}) });
+      })();
+      return;
+    }
+
+    pushPrefill(resolution.prefill);
+  }, [libraryProducts, pushPrefill]);
 
   // fetch recent projects to give returning users a "continue" entry point (replaces the old homepage project list so they are not left stranded)
   useEffect(() => {
@@ -243,11 +385,14 @@ export default function StartPage() {
   const trendsSourceLabel =
     trendsSource === "douyin" ? t("trendsSourceDouyin") : trendsSource === "toutiao" ? t("trendsSourceToutiao") : "Google Trends";
 
-  // tap a trend → prefill it as a one-sentence topic and bring the action card into view
+  const scrollToBrief = () => {
+    requestAnimationFrame(() => briefRef.current?.scrollIntoView({ block: "start", behavior: "smooth" }));
+  };
+
+  // tap a trend → prefill it as a one-sentence topic and bring the creation form into view
   const pickTrend = (tp: TrendTopic) => {
-    setMode("topic");
-    setTopic(tp.title);
-    requestAnimationFrame(() => cardRef.current?.scrollIntoView({ block: "center", behavior: "smooth" }));
+    pushPrefill({ brief: { inputMode: "topic" }, topic: tp.title });
+    scrollToBrief();
   };
 
   // daily pick: score the full board against the persona keywords, prefill the winner, remember today's pick
@@ -282,239 +427,243 @@ export default function StartPage() {
   const stageKeyFor = (status: string) =>
     status === "done" ? "pjStageDone" : status === "video" || status === "composing" ? "pjStageVideo" : status === "assets" ? "pjStageAssets" : "pjStageScript";
 
-  const addFiles = useCallback((files: FileList | null) => {
-    if (!files) return;
-    setImages((prev) => {
-      const remaining = 5 - prev.length;
-      if (remaining <= 0) return prev;
-      const next = Array.from(files)
-        .slice(0, remaining)
-        .filter((f) => f.type.startsWith("image/"))
-        .map((file) => ({ id: crypto.randomUUID(), url: URL.createObjectURL(file), file }));
-      return [...prev, ...next];
-    });
-  }, []);
-
-  const removeImage = (id: string) =>
-    setImages((prev) => {
-      const t = prev.find((i) => i.id === id);
-      if (t) URL.revokeObjectURL(t.url);
-      return prev.filter((i) => i.id !== id);
-    });
-
-  // one-click fill example: fetch the example image as a File into the upload zone + populate name/selling points
+  // one-click fill example: fetch the example image as a File into the form + populate name/selling points
   const fillExample = useCallback(async (ex: ExampleProduct) => {
-    setMode("upload");
-    setProductName(ex.name);
-    setSellingPoints(ex.sellingPoints);
-    try {
-      const res = await fetch(ex.image);
-      const blob = await res.blob();
-      const file = new File([blob], `${ex.id}.png`, { type: blob.type || "image/png" });
-      setImages((prev) => {
-        prev.forEach((i) => URL.revokeObjectURL(i.url));
-        return [{ id: crypto.randomUUID(), url: URL.createObjectURL(file), file }];
-      });
-    } catch {
-      /* image fetch failure is fine; the text fields are already filled */
+    const files = await fetchImagesAsFiles([ex.image]);
+    pushPrefill({
+      productName: ex.name,
+      category: ex.category,
+      sellingPoints: ex.sellingPoints,
+      brief: { inputMode: "upload" },
+      ...(files.length ? { images: files } : {}),
+    });
+    scrollToBrief();
+  }, [pushPrefill]);
+
+  // paste a product URL → server parses title / price / images → prefill the brief for review before creating
+  const handleImportLink = useCallback(async (url: string) => {
+    if (!isValidProductUrl(url)) {
+      setImportError(t("errIngest"));
+      return;
     }
-  }, []);
+    setImportError("");
+    setImporting(true);
+    try {
+      const result = await importProductSource(url);
+      if (!result.ok) throw new Error(result.message || t("errIngest"));
+      const { source } = result;
+      setImportedImages(source.imageUrls);
+      // 链接导入只预填：项目由统一入口带着简报创建
+      pushPrefill({
+        productName: source.productName,
+        sellingPoints: source.sellingPoints,
+        linkUrl: source.linkUrl,
+        brief: { inputMode: "link" },
+        ...(source.files.length ? { images: source.files } : {}),
+      });
+    } catch (e) {
+      setImportError(e instanceof Error ? e.message : t("errIngest"));
+    } finally {
+      setImporting(false);
+    }
+  }, [pushPrefill, t]);
 
-  const canStart =
-    mode === "topic"
-      ? topic.trim().length >= 2
-      : mode === "link"
-      ? /^https?:\/\/.+/i.test(link.trim())
-      : images.length >= 1 && productName.trim().length > 0;
-
-  // read LLM config live from the store: after one-click setup the newly written Key is immediately available in the same tick, avoiding stale closure values
+  // read LLM config live from the store so a freshly saved Key is used in the same tick
   const llmConfig = () => {
     const l = useSettingsStore.getState().llm;
     return { baseUrl: l.baseUrl, apiKey: l.apiKey, model: l.model, visionModel: l.visionModel };
   };
 
-  // creation-time choices flow into script generation and the script page's finishing gate
-  const creationPreset = () => (genMode === "ai" ? FORM_PRESETS[form] : FORM_PRESETS.auto);
-  const genQuery = () => {
-    if (genMode !== "ai") return "";
-    const p =
-      (form === "presenter" || form === "drama") && presenterId
-        ? `&presenter=${encodeURIComponent(presenterId)}`
-        : "";
-    return `&gen=ai${p}`;
-  };
-  const creationCharacter = () => {
-    if (genMode !== "ai" || (form !== "presenter" && form !== "drama") || !presenterId) return null;
-    const c = characters.find((x) => x.id === presenterId);
-    return c ? { id: c.id, name: c.name, appearance: c.appearance || "", voiceStyle: c.voiceProfile?.style } : null;
+  const characterFor = (characterId?: string) => {
+    if (!characterId) return undefined;
+    const c = characters.find((item) => item.id === characterId);
+    return c ? { id: c.id, name: c.name, appearance: c.appearance || "", voiceStyle: c.voiceProfile?.style } : undefined;
   };
 
-  // step labels for the busy takeover, per entry mode (rendered as a live checklist)
-  const busySteps =
-    mode === "upload"
-      ? [t("stageCreate"), t("stageUpload"), t("stageScript")]
-      : mode === "link"
-      ? [t("stageIngest"), t("stageScript")]
-      : [t("stageScript")];
-
-  const startTopic = async () => {
-    setStageIdx(0);
-    setStage(t("stageScript"));
-    const res = await fetch("/api/topic/script", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ topic: topic.trim(), narrationStyle: "knowledge", targetDuration: 25, llmConfig: llmConfig() }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok && !data.projectId) throw new Error(data.error || t("errTopicScript"));
-    router.push(`/project/${data.projectId}/script?auto=1${genQuery()}`);
-  };
-
-  const startUpload = async () => {
-    setStageIdx(0);
-    setStage(t("stageCreate"));
-    const projectRes = await fetch("/api/project", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: t("projectName", { name: productName }), productName, productCategory: "other", productDescription: sellingPoints, productImages: [] }),
-    });
-    if (!projectRes.ok) {
-      const errData = await projectRes.json().catch(() => ({}));
-      throw new Error(errData.error ? `${t("errProjectCreate")}: ${errData.error}` : t("errProjectCreate"));
-    }
-    const project = await projectRes.json();
-
-    setStageIdx(1);
-    setStage(t("stageUpload"));
-    const fd = new FormData();
-    images.forEach((i) => fd.append("files", i.file));
-    fd.append("projectId", project.id);
-    const uploadRes = await fetch("/api/upload", { method: "POST", body: fd });
-    if (!uploadRes.ok) throw new Error(t("errUpload"));
-    const { paths } = await uploadRes.json();
-    await fetch(`/api/project/${project.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ productImages: paths }),
-    });
-
-    setStageIdx(2);
-    setStage(t("stageScript"));
-    const scriptRes = await fetch("/api/llm/script", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        projectId: project.id,
-        productName,
-        category: "other",
-        productDescription: sellingPoints,
-        targetDuration: 30,
-        styleType: creationPreset().styleType,
-        videoMode: creationPreset().videoMode,
-        productImages: paths,
-        llmConfig: llmConfig(),
-        ...(creationCharacter() && { character: creationCharacter() }),
-      }),
-    });
-    if (!scriptRes.ok) {
-      const errData = await scriptRes.json().catch(() => ({}));
-      throw new Error(errData.error ? `${t("errScript")}: ${errData.error}` : t("errScript"));
-    }
-    router.push(`/project/${project.id}/script?auto=1${genQuery()}`);
-  };
-
-  // paste a product URL → ingest (fetch page, parse title/price/images, create project) → auto-generate script → script page
-  const startLink = async () => {
-    setStageIdx(0);
-    setStage(t("stageIngest"));
-    const ingestRes = await fetch("/api/ingest/product", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: link.trim(), createProject: true }),
-    });
-    const data = await ingestRes.json().catch(() => ({}));
-    if (!ingestRes.ok || !data.projectId) throw new Error(data.error || t("errIngest"));
-    const p = data.product || {};
-    setStageIdx(1);
-    setStage(t("stageScript"));
-    // even if script gen fails, the project exists with product data — the script page offers retry
-    await fetch("/api/llm/script", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        projectId: data.projectId,
-        productName: p.title || t("linkProductFallback"),
-        category: "other",
-        productDescription: p.description || "",
-        targetDuration: 30,
-        styleType: creationPreset().styleType,
-        videoMode: creationPreset().videoMode,
-        productImages: data.productImages || [],
-        llmConfig: llmConfig(),
-        ...(creationCharacter() && { character: creationCharacter() }),
-      }),
-    });
-    router.push(`/project/${data.projectId}/script?auto=1${genQuery()}`);
-  };
-
-  // actually run generation (shared by all modes); restore busy/stage on failure
-  const runGeneration = async () => {
-    setBusy(true);
-    setError(null);
+  const patchProject = async (projectId: string, body: Record<string, unknown>): Promise<boolean> => {
     try {
-      if (mode === "topic") await startTopic();
-      else if (mode === "link") await startLink();
-      else await startUpload();
+      const res = await fetch(`/api/project/${projectId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  };
+
+  const uploadImages = async (projectId: string, files: CreationBriefFormValues["images"]): Promise<string[]> => {
+    const fd = new FormData();
+    files.forEach((image) => fd.append("files", image.file));
+    fd.append("projectId", projectId);
+    const res = await fetch("/api/upload", { method: "POST", body: fd });
+    if (!res.ok) throw new Error(t("errUpload"));
+    const data: { paths?: string[] } = await res.json().catch(() => ({}));
+    return Array.isArray(data.paths) ? data.paths : [];
+  };
+
+  /**
+   * 脚本请求：唯一构造器是 buildScriptRequest，且必须带用户显式选择的风格。
+   * 409 needs_explicit_style 不是失败，而是「请用户选一个风格」——记下待重试请求并返回。
+   */
+  const requestScript = async (pending: PendingScript): Promise<"ok" | "needs-style"> => {
+    const res = await fetch("/api/llm/script", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(
+        buildScriptRequest({
+          brief: pending.brief,
+          projectId: pending.projectId,
+          productName: pending.productName,
+          category: pending.category,
+          productDescription: pending.description,
+          productImages: pending.productImages,
+          videoMode: pending.videoMode,
+          llmConfig: llmConfig(),
+          character: characterFor(pending.brief.characterId),
+          // 复刻交接的参考节奏骨架：有值才下发（buildScriptRequest 省略未给出的可选键）
+          ...(pending.referenceStructure ? { referenceStructure: pending.referenceStructure } : {}),
+        })
+      ),
+    });
+    if (res.ok) return "ok";
+    const data: { error?: string; code?: string; candidates?: unknown } = await res.json().catch(() => ({}));
+    const requirement = parseStyleRequirement(res.status, data);
+    if (requirement) {
+      pendingRef.current = pending;
+      setStylePrompt(requirement);
+      return "needs-style";
+    }
+    throw new Error(data.error ? `${t("errScript")}: ${data.error}` : t("errScript"));
+  };
+
+  /** 表单提交：创建项目（带 creationBrief）→ 上传商品图 → 生成脚本 → 跳转脚本页。 */
+  const runCreation = async (values: CreationBriefFormValues) => {
+    if (busy) return;
+    if (!llmReady) {
+      setError(t("errNeedLlm"));
+      return;
+    }
+    const brief = sanitizeCreationBrief(values.brief);
+    // 没有显式风格就不提交：先让用户选，避免接口把 auto 当成推荐失败
+    if (!brief.styleType) {
+      pendingRef.current = { kind: "form", values };
+      setStylePrompt(missingStyleRequirement());
+      return;
+    }
+    setStylePrompt(null);
+    setError(null);
+
+    const isTopic = brief.inputMode === "topic";
+    const topicText = values.topic.trim();
+    const productName = isTopic ? topicText : values.productName.trim();
+    const description = isTopic ? topicText : values.sellingPoints.trim();
+    const steps = [t("stageCreate"), ...(!isTopic && values.images.length ? [t("stageUpload")] : []), t("stageScript")];
+
+    setBusy(true);
+    setBusySteps(steps);
+    setStageIdx(0);
+    try {
+      const projectRes = await fetch("/api/project", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: isTopic ? topicText : t("projectName", { name: productName }),
+          productName,
+          productCategory: values.category,
+          productDescription: description,
+          productImages: [],
+          creationBrief: brief,
+          // 复刻交接的参考视频：创建时落到项目 sourceVideoUrl，供后续复刻/修复阶段取用
+          ...(cloneRef.current.referenceVideoUrl
+            ? { sourceVideoUrl: cloneRef.current.referenceVideoUrl }
+            : {}),
+        }),
+      });
+      if (!projectRes.ok) {
+        const errData: { error?: string } = await projectRes.json().catch(() => ({}));
+        throw new Error(errData.error ? `${t("errProjectCreate")}: ${errData.error}` : t("errProjectCreate"));
+      }
+      const project: { id: string } = await projectRes.json();
+
+      // 策略选择本身要留痕（project_created 之外的单列事件）；失败不影响创建
+      try {
+        await recordStrategySelected({ projectId: project.id, creationBrief: brief });
+      } catch {
+        /* observability only */
+      }
+
+      let productImages: string[] = [];
+      if (values.images.length) {
+        setStageIdx(1);
+        productImages = await uploadImages(project.id, values.images);
+      } else if (importedImages.length) {
+        // 链接导入抓到的商品图（服务端解析得到），没有本地文件时直接沿用
+        productImages = importedImages;
+      }
+      if (productImages.length) await patchProject(project.id, { productImages });
+
+      setStageIdx(steps.length - 1);
+      const outcome = await requestScript({
+        kind: "script",
+        projectId: project.id,
+        brief,
+        productName,
+        category: values.category,
+        description,
+        productImages,
+        videoMode: values.videoMode,
+        ...(cloneRef.current.referenceStructure
+          ? { referenceStructure: cloneRef.current.referenceStructure }
+          : {}),
+      });
+      if (outcome === "needs-style") {
+        setBusy(false);
+        return;
+      }
+      setBusy(false);
+      router.push(scriptPath(project.id, brief.outputStrategy));
     } catch (e) {
       setError(e instanceof Error ? e.message : t("errGeneric"));
       setBusy(false);
-      setStage("");
       setStageIdx(0);
     }
   };
 
-  const onStart = () => {
-    if (!canStart || busy) return;
-    // no LLM configured: expand the Atlas one-click setup panel inline (no navigation, no loss of filled content)
-    if (!llmReady) {
-      setNeedKey(true);
-      // the panel may be mounting this very tick — defer the scroll until React has committed it to the DOM
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          keyformRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
-        });
+  /** 用户选完风格：没建项目就带着新风格重新走创建；已建项目就只重试脚本请求。 */
+  const pickStyle = async (styleType: string) => {
+    const pending = pendingRef.current;
+    if (!pending || busy) return;
+    if (pending.kind === "form") {
+      setStylePrompt(null);
+      await runCreation({
+        ...pending.values,
+        brief: sanitizeCreationBrief({ ...pending.values.brief, styleType, styleSource: "explicit" }),
       });
       return;
     }
-    runGeneration();
-  };
-
-  // paste an Atlas Key → validate → write full config → immediately continue with generation
-  const connectAtlasAndStart = async () => {
-    const key = atlasKey.trim();
-    if (!key || connecting || busy) return;
-    setConnecting(true);
-    setConnectError(null);
+    const brief = sanitizeCreationBrief({ ...pending.brief, styleType, styleSource: "explicit" });
+    setStylePrompt(null);
+    setError(null);
+    setBusy(true);
+    setBusySteps([t("stageScript")]);
+    setStageIdx(0);
     try {
-      const res = await fetch("/api/ai/test-provider", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: "atlas-cloud", apiKey: key }),
-      });
-      const data = await res.json().catch(() => ({ status: "unknown" }));
-      // only block on "explicitly invalid"; unknown (network/endpoint uncertainty) passes through and lets generation attempt proceed
-      if (data.status === "invalid") {
-        setConnectError(t("atlasKeyInvalid"));
-        setConnecting(false);
+      // 库里的简报也要跟着用户的实际选择走（失败不阻断这次生成）
+      await patchProject(pending.projectId, { creationBrief: brief });
+      // 原样带上 pending：复刻交接的 referenceStructure 不会在风格重试时丢失
+      const outcome = await requestScript({ ...pending, brief });
+      if (outcome === "needs-style") {
+        setBusy(false);
         return;
       }
-      applyAtlasOneKey(key);
-      setConnecting(false);
-      setNeedKey(false);
-      await runGeneration();
-    } catch {
-      setConnectError(t("atlasConnectFailed"));
-      setConnecting(false);
+      setBusy(false);
+      router.push(scriptPath(pending.projectId, brief.outputStrategy));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t("errGeneric"));
+      setBusy(false);
+      setStageIdx(0);
     }
   };
 
@@ -527,69 +676,20 @@ export default function StartPage() {
         .cf-amb{position:absolute;inset:0;pointer-events:none;background:radial-gradient(900px 420px at 50% -8%,rgba(139,92,246,.10),transparent 70%),radial-gradient(700px 500px at 85% 0%,rgba(124,92,255,.07),transparent 65%);}
         .cf-grid{position:absolute;inset:0;pointer-events:none;opacity:.5;background-image:linear-gradient(var(--bd) 1px,transparent 1px),linear-gradient(90deg,var(--bd) 1px,transparent 1px);background-size:64px 64px;-webkit-mask-image:radial-gradient(circle at 50% 22%,#000,transparent 72%);mask-image:radial-gradient(circle at 50% 22%,#000,transparent 72%);}
         .cf-wrap{position:relative;max-width:980px;margin:0 auto;padding:0 24px}
-        .cf-hero{padding:52px 0 56px;text-align:center}
+        .cf-hero{padding:52px 0 30px;text-align:center}
         .cf-eyebrow{font-size:12px;letter-spacing:.22em;text-transform:uppercase;color:var(--teal);opacity:.85;margin-bottom:18px}
         .cf-h1{font-weight:700;font-size:clamp(34px,5.6vw,60px);line-height:1.04;letter-spacing:-.02em;margin-bottom:16px}
         .cf-h1 .hl{color:var(--teal);text-shadow:0 0 34px rgba(139,92,246,.35)}
-        .cf-sub{color:var(--dim);font-size:16px;line-height:1.7;max-width:560px;margin:0 auto 34px}
-        .cf-card{max-width:620px;margin:0 auto;background:var(--surface);border:1px solid var(--bd);border-radius:20px;padding:14px;backdrop-filter:blur(14px);box-shadow:0 30px 80px -40px rgba(0,0,0,.8);text-align:left}
-        .cf-tabs{display:flex;gap:6px;background:rgba(0,0,0,.25);border-radius:13px;padding:5px;margin-bottom:14px}
-        .cf-tab{flex:1;height:40px;border:0;border-radius:9px;background:transparent;color:var(--dim);font:inherit;font-size:14px;font-weight:500;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:8px;transition:.18s}
-        .cf-tab.on{background:var(--surface2);color:var(--text);box-shadow:inset 0 0 0 1px var(--bd2)}
-        .cf-drop{position:relative;border:1.5px dashed rgba(139,92,246,.40);border-radius:14px;background:radial-gradient(420px 160px at 50% 30%,rgba(139,92,246,.16),transparent 70%);padding:34px 24px 26px;display:flex;flex-direction:column;align-items:center;gap:6px;cursor:pointer;animation:cfBreathe 4.6s ease-in-out infinite;transition:border-color .18s}
-        .cf-drop.drag{border-color:var(--teal)}
-        @keyframes cfBreathe{0%,100%{box-shadow:0 0 46px -16px rgba(139,92,246,.30)}50%{box-shadow:0 0 78px -14px rgba(139,92,246,.5)}}
-        .cf-dic{width:50px;height:50px;border-radius:16px;background:var(--surface2);border:1px solid var(--bd2);display:grid;place-items:center;color:var(--teal);margin-bottom:6px}
-        .cf-dt{font-size:16px;font-weight:500}
-        .cf-ds{font-size:13px;color:var(--muted)}
-        .cf-thumbs{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
-        .cf-thumb{position:relative;width:62px;height:62px;border-radius:10px;overflow:hidden;border:1px solid var(--bd2)}
-        .cf-thumb img{width:100%;height:100%;object-fit:cover}
-        .cf-thumb button{position:absolute;top:2px;right:2px;width:18px;height:18px;border:0;border-radius:6px;background:rgba(0,0,0,.6);color:#fff;cursor:pointer;font-size:12px;line-height:1;display:grid;place-items:center}
-        .cf-field{margin-top:12px}
-        .cf-input,.cf-area{width:100%;background:rgba(0,0,0,.25);border:1px solid var(--bd);border-radius:11px;color:var(--text);font:inherit;font-size:14px;padding:11px 13px;outline:none;transition:.18s}
-        .cf-input:focus,.cf-area:focus{border-color:rgba(139,92,246,.45)}
-        .cf-area{resize:none;min-height:84px;line-height:1.6}
-        .cf-cta-row{display:flex;align-items:center;gap:14px;margin-top:14px;padding:2px 2px 2px}
-        .cf-cta{height:48px;padding:0 24px;border:0;border-radius:12px;background:linear-gradient(100deg,#6366f1,#8b5cf6 55%,#d946ef);color:var(--ink);font:inherit;font-size:15px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:8px;white-space:nowrap;box-shadow:0 12px 30px -12px rgba(139,92,246,.4);transition:.18s}
-        .cf-cta:hover:not(:disabled){transform:translateY(-1px)}
-        .cf-cta:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
-        .cf-reassure{font-size:12.5px;color:var(--muted);line-height:1.5}
-        .cf-reassure b{color:var(--dim);font-weight:600}
-        .cf-genrow{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
-        .cf-gen{display:flex;flex-direction:column;gap:3px;padding:10px 12px;border:1px solid var(--bd);border-radius:12px;background:rgba(0,0,0,.2);font:inherit;text-align:left;cursor:pointer;transition:.18s}
-        .cf-gen b{font-size:13.5px;font-weight:600;color:var(--text)}
-        .cf-gen span{font-size:11.5px;line-height:1.5;color:var(--muted)}
-        .cf-gen:hover{border-color:var(--bd2)}
-        .cf-gen.on{border-color:rgba(139,92,246,.55);background:rgba(139,92,246,.08)}
-        .cf-gen.on b{color:var(--teal)}
-        .cf-formrow{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:10px}
-        .cf-form-lbl{font-size:12px;color:var(--muted);flex:none;margin-right:2px}
-        .cf-fchip{padding:5px 11px;border:1px solid var(--bd);border-radius:999px;background:transparent;color:var(--dim);font:inherit;font-size:12.5px;cursor:pointer;transition:.18s}
-        .cf-fchip:hover{border-color:var(--bd2);color:var(--text)}
-        .cf-fchip.on{border-color:rgba(139,92,246,.5);background:rgba(139,92,246,.1);color:var(--text)}
-        .cf-form-select{background:rgba(0,0,0,.25);border:1px solid var(--bd);border-radius:9px;color:var(--text);font:inherit;font-size:12.5px;padding:5px 9px;outline:none}
-        .cf-keybox{margin-top:12px;border:1px solid rgba(139,92,246,.3);background:rgba(139,92,246,.07);border-radius:12px;padding:12px 14px;font-size:13px;color:var(--dim);display:flex;align-items:center;justify-content:space-between;gap:12px}
-        .cf-keybox a{color:var(--ink);background:linear-gradient(100deg,#6366f1,#8b5cf6);padding:7px 13px;border-radius:9px;font-weight:600;text-decoration:none;white-space:nowrap}
-        .cf-keyform{margin-top:12px;border:1px solid rgba(139,92,246,.32);background:rgba(139,92,246,.06);border-radius:14px;padding:14px}
-        .cf-keyhead{font-size:14.5px;font-weight:600;color:var(--text);display:flex;align-items:center;gap:9px;margin-bottom:5px}
-        .cf-keyhead .badge{font-size:11px;font-weight:700;letter-spacing:.02em;color:var(--ink);background:linear-gradient(100deg,#6366f1,#8b5cf6);border-radius:6px;padding:2px 8px}
-        .cf-keyclose{margin-left:auto;width:26px;height:26px;flex:none;border:1px solid transparent;border-radius:999px;background:transparent;color:var(--muted);cursor:pointer;display:grid;place-items:center;transition:.18s}
-        .cf-keyclose:hover{color:var(--text);border-color:var(--bd2);background:var(--surface2)}
-        .cf-keydesc{font-size:12.5px;color:var(--dim);line-height:1.55;margin-bottom:11px}
-        .cf-keydesc a{color:var(--teal);text-decoration:none;white-space:nowrap}
-        .cf-keydesc a:hover{text-decoration:underline;text-underline-offset:2px}
-        .cf-keyrow{display:flex;gap:8px}
-        .cf-keyinput{flex:1;min-width:0;background:rgba(0,0,0,.3);border:1px solid var(--bd);border-radius:10px;color:var(--text);font:inherit;font-size:14px;padding:11px 13px;outline:none;transition:.18s}
-        .cf-keyinput:focus{border-color:rgba(139,92,246,.5)}
-        .cf-keybtn{padding:0 18px;border:0;border-radius:10px;background:linear-gradient(100deg,#6366f1,#8b5cf6 55%,#d946ef);color:var(--ink);font:inherit;font-size:14px;font-weight:600;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;gap:7px;transition:.18s}
-        .cf-keybtn:hover:not(:disabled){transform:translateY(-1px)}
-        .cf-keybtn:disabled{opacity:.5;cursor:not-allowed}
-        .cf-keyalt{margin-top:10px;font-size:12px}
-        .cf-keyalt a{color:var(--muted);text-decoration:none;border-bottom:1px dashed var(--bd2);padding-bottom:1px}
-        .cf-keyalt a:hover{color:var(--dim)}
-        .cf-keyerr{margin-top:9px;color:#FCA5A5;font-size:12.5px}
-        .cf-err{margin-top:12px;color:#FCA5A5;font-size:13px}
+        .cf-sub{color:var(--dim);font-size:16px;line-height:1.7;max-width:560px;margin:0 auto 26px}
+        .cf-legend{display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:8px;margin:0 auto;max-width:760px}
+        .cf-legend-lbl{font-size:12px;letter-spacing:.08em;color:var(--muted);text-transform:uppercase}
+        .cf-legend-chip{font-size:12px;color:var(--dim);border:1px solid var(--bd);border-radius:999px;padding:5px 11px;background:var(--surface)}
+        .cf-legend-chip[data-strategy="controlled-motion"],.cf-legend-chip[data-strategy="native-film"]{border-color:var(--bd2);color:var(--text)}
+        .cf-brief{max-width:720px;margin:26px auto 0;text-align:left;display:flex;flex-direction:column;gap:16px}
+        .cf-card{background:var(--surface);border:1px solid var(--bd);border-radius:20px;padding:14px;backdrop-filter:blur(14px);box-shadow:0 30px 80px -40px rgba(0,0,0,.8);text-align:left}
+        .cf-notice{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px;border:1px solid rgba(139,92,246,.3);background:rgba(139,92,246,.07);border-radius:12px;padding:12px 14px;font-size:13px;color:var(--dim)}
+        .cf-notice a{color:var(--ink);background:linear-gradient(100deg,#6366f1,#8b5cf6);padding:7px 13px;border-radius:9px;font-weight:600;text-decoration:none;white-space:nowrap}
+        .cf-err{margin-top:4px;color:#FCA5A5;font-size:13px}
         .cf-prog{padding:30px 18px 22px;display:flex;flex-direction:column;align-items:center;gap:18px}
         .cf-prog-title{font-size:16px;font-weight:600;color:var(--text);display:flex;align-items:center;gap:10px}
         .cf-spin{width:18px;height:18px;flex:none;border-radius:999px;border:2px solid rgba(139,92,246,.25);border-top-color:var(--teal);animation:cfSpin .8s linear infinite}
@@ -603,7 +703,7 @@ export default function StartPage() {
         .cf-prog-step.on .ic{border-color:rgba(139,92,246,.6)}
         .cf-prog-step.done .ic{border-color:rgba(139,92,246,.5);color:var(--teal)}
         .cf-prog-hint{font-size:12px;color:var(--muted);text-align:center;line-height:1.6}
-        .cf-guide{max-width:620px;margin:14px auto 0;text-align:left;background:rgba(139,92,246,.06);border:1px solid rgba(139,92,246,.25);border-radius:16px;padding:14px 16px;position:relative}
+        .cf-guide{max-width:720px;margin:18px auto 0;text-align:left;background:rgba(139,92,246,.06);border:1px solid rgba(139,92,246,.25);border-radius:16px;padding:14px 16px;position:relative}
         .cf-guide-title{font-size:13.5px;font-weight:600;color:var(--text);margin-bottom:10px}
         .cf-guide-close{position:absolute;top:10px;right:10px;width:24px;height:24px;border:0;border-radius:999px;background:transparent;color:var(--muted);cursor:pointer;font-size:14px;line-height:1;display:grid;place-items:center;transition:.15s}
         .cf-guide-close:hover{color:var(--text);background:var(--surface2)}
@@ -611,7 +711,7 @@ export default function StartPage() {
         .cf-guide-step{display:flex;align-items:baseline;gap:9px;font-size:13px;color:var(--dim);line-height:1.55}
         .cf-guide-step b{flex:none;width:18px;height:18px;border-radius:999px;background:rgba(139,92,246,.18);color:var(--teal);font-size:11px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;transform:translateY(2px)}
         .cf-guide-foot{margin-top:10px;font-size:12px;color:var(--muted)}
-        .cf-trends{max-width:620px;margin:26px auto 0;text-align:left;background:var(--surface);border:1px solid var(--bd);border-radius:16px;padding:14px 16px}
+        .cf-trends{max-width:720px;margin:26px auto 0;text-align:left;background:var(--surface);border:1px solid var(--bd);border-radius:16px;padding:14px 16px}
         .cf-trends-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
         .cf-trends-lbl{font-size:13px;font-weight:600;color:var(--dim);letter-spacing:.02em}
         .cf-trends-more{display:inline-flex;align-items:center;gap:5px;padding:5px 11px;border:1px solid var(--bd);border-radius:999px;background:transparent;color:var(--muted);font:inherit;font-size:12px;cursor:pointer;transition:.18s}
@@ -638,10 +738,10 @@ export default function StartPage() {
         .cf-daily-btn{padding:7px 14px;border:0;border-radius:9px;background:var(--surface2);color:var(--text);font:inherit;font-size:12.5px;font-weight:600;cursor:pointer;box-shadow:inset 0 0 0 1px var(--bd2);transition:.18s;flex:none}
         .cf-daily-btn:hover{box-shadow:inset 0 0 0 1px rgba(139,92,246,.45)}
         .cf-daily-msg{margin-top:8px;font-size:12px;color:var(--dim)}
-        .cf-examples{margin-top:24px;font-size:13px;color:var(--muted);display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap}
+        .cf-examples{margin-top:22px;font-size:13px;color:var(--muted);display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap}
         .cf-chip{padding:6px 12px;border:1px solid var(--bd);border-radius:999px;background:var(--surface);color:var(--dim);font:inherit;cursor:pointer;transition:.18s}
         .cf-chip:hover{border-color:rgba(139,92,246,.4);color:var(--text)}
-        .cf-recent{max-width:620px;margin:22px auto 0;text-align:left}
+        .cf-recent{max-width:720px;margin:22px auto 0;text-align:left}
         .cf-recent .lbl{font-size:12px;color:var(--muted);margin-bottom:8px;letter-spacing:.02em;display:flex;align-items:center;justify-content:space-between}
         .cf-recent .lbl-all{color:var(--muted);text-decoration:none;transition:.18s}
         .cf-recent .lbl-all:hover{color:var(--dim)}
@@ -652,7 +752,7 @@ export default function StartPage() {
         .cf-pj .col{min-width:0;display:flex;flex-direction:column;gap:2px}
         .cf-pj .nm{font-size:13px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
         .cf-pj-meta{font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-        @media (prefers-reduced-motion:reduce){.cf-drop{animation:none}}
+        .cf-profiles{max-width:720px;margin:16px auto 0;text-align:left}
       `}</style>
 
       <div className="cf-amb" />
@@ -663,10 +763,35 @@ export default function StartPage() {
           <h1 className="cf-h1">{t("h1Lead")}<span className="hl">{t("h1Highlight")}</span></h1>
           <p className="cf-sub">{t("sub")}</p>
 
-          <div className="cf-card" ref={cardRef}>
-            {busy ? (
-              /* busy takeover: the whole card becomes a live checklist so the 20–60s
-                 creation wait reads as progress, not a frozen button */
+          {/* 出片策略摆在最前面：创建时就要看见这次是免费草稿还是真去生视频 */}
+          <div className="cf-legend" aria-label={t("strategyLegend")}>
+            <span className="cf-legend-lbl">{t("strategyLegend")}</span>
+            {OUTPUT_STRATEGY_OPTIONS.map((option) => (
+              <span
+                key={option.id}
+                className="cf-legend-chip"
+                data-strategy={option.id}
+                title={option.description}
+              >
+                {locale === "zh" ? STRATEGY_NOTES[option.id].zh : STRATEGY_NOTES[option.id].en}
+              </span>
+            ))}
+          </div>
+        </section>
+
+        <section className="cf-brief" ref={briefRef}>
+          {/* 未配置模型时只给设置页引导（不再内联填 Key） */}
+          {!llmReady && (
+            <div className="cf-notice">
+              <span>{t("llmNoticeText")}</span>
+              <Link href="/settings?tab=llm">{t("llmNoticeCta")}</Link>
+            </div>
+          )}
+
+          {busy ? (
+            /* busy takeover: the whole create block becomes a live checklist so the
+               20–60s creation wait reads as progress, not a frozen button */
+            <div className="cf-card">
               <div className="cf-prog">
                 <div className="cf-prog-title">
                   <span className="cf-spin" />
@@ -690,274 +815,145 @@ export default function StartPage() {
                 </div>
                 <div className="cf-prog-hint">{t("progHint")}</div>
               </div>
-            ) : (
-              <>
-            <div className="cf-tabs">
-              <button className={`cf-tab${mode === "upload" ? " on" : ""}`} onClick={() => setMode("upload")}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="9" cy="9" r="2" /><path d="m21 15-3.6-3.6a2 2 0 0 0-2.8 0L6 20" /></svg>
-                {t("tabUpload")}
-              </button>
-              <button className={`cf-tab${mode === "link" ? " on" : ""}`} onClick={() => setMode("link")}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" /><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" /></svg>
-                {t("tabLink")}
-              </button>
-              <button className={`cf-tab${mode === "topic" ? " on" : ""}`} onClick={() => setMode("topic")}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 19v3" /><path d="M8 22h8" /><rect x="9" y="2" width="6" height="13" rx="3" /><path d="M5 10a7 7 0 0 0 14 0" /></svg>
-                {t("tabTopic")}
+            </div>
+          ) : (
+            <>
+              <CreationBriefForm
+                submitLabel={t("ctaStart")}
+                showAdvanced
+                /* 本页用 onSubmitForm：建项目还需要商品名/图片/来源字段 */
+                onSubmit={() => { /* 见 onSubmitForm */ }}
+                onSubmitForm={runCreation}
+                prefill={prefill}
+                prefillKey={prefillKey}
+                onImportLink={handleImportLink}
+                importing={importing}
+                importError={importError}
+                linkImported={importedImages.length > 0}
+              />
+
+              {/* 需要用户显式选风格：不是错误，是继续生成所缺的一步 */}
+              {stylePrompt && <StyleChoicePrompt requirement={stylePrompt} onPick={pickStyle} />}
+              {error && <div className="cf-err">{error}</div>}
+            </>
+          )}
+
+          {!busy && <div className="cf-profiles"><ProductionProfilePicker /></div>}
+        </section>
+
+        {showGuide && (
+          <div className="cf-guide">
+            <button type="button" className="cf-guide-close" onClick={dismissGuide} aria-label={t("guideClose")}>✕</button>
+            <div className="cf-guide-title">{t("guideTitle")}</div>
+            <div className="cf-guide-steps">
+              <div className="cf-guide-step"><b>1</b>{t("guideStep1")}</div>
+              <div className="cf-guide-step"><b>2</b>{t("guideStep2")}</div>
+              <div className="cf-guide-step"><b>3</b>{t("guideStep3")}</div>
+            </div>
+            <div className="cf-guide-foot">{t("guideFoot")}</div>
+          </div>
+        )}
+
+        {recent.length > 0 && (
+          <div className="cf-recent">
+            <div className="lbl">
+              {t("recentLabel")}
+              <Link href="/projects" className="lbl-all">{t("recentAll")} →</Link>
+            </div>
+            <div className="row">
+              {recent.map((p) => {
+                const rel = formatRelativeTime(p.updatedAt, locale);
+                return (
+                  <Link key={p.id} href={`/project/${p.id}/${stepFor(p.status)}`} className="cf-pj">
+                    <span className="dot" />
+                    <span className="col">
+                      <span className="nm">{p.name || p.productName || t("untitledProject")}</span>
+                      <span className="cf-pj-meta">{t(stageKeyFor(p.status))}{rel ? ` · ${rel}` : ""}</span>
+                    </span>
+                  </Link>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {trends.length > 0 && (
+          <div className="cf-trends">
+            <div className="cf-trends-head">
+              <span className="cf-trends-lbl">{t("trendsLabel")}</span>
+              <button type="button" className="cf-trends-more" onClick={() => setTrendsPage((p) => p + 1)}>
+                {t("trendsRefresh")}
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M21 12a9 9 0 1 1-2.64-6.36" /><path d="M21 3v6h-6" /></svg>
               </button>
             </div>
-
-            {mode === "upload" ? (
-              <>
-                <div
-                  className={`cf-drop${isDragging ? " drag" : ""}`}
-                  onClick={() => fileRef.current?.click()}
-                  onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
-                  onDragLeave={(e) => { e.preventDefault(); setIsDragging(false); }}
-                  onDrop={(e) => { e.preventDefault(); setIsDragging(false); addFiles(e.dataTransfer.files); }}
-                >
-                  <div className="cf-dic"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><path d="M17 8l-5-5-5 5" /><path d="M12 3v12" /></svg></div>
-                  <div className="cf-dt">{t("dropTitle")}</div>
-                  <div className="cf-ds">{t("dropSub")}</div>
-                  <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={(e) => addFiles(e.target.files)} />
-                </div>
-                {images.length > 0 && (
-                  <div className="cf-thumbs">
-                    {images.map((i) => (
-                      <div key={i.id} className="cf-thumb">
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={i.url} alt={t("imgAlt")} />
-                        <button onClick={(e) => { e.stopPropagation(); removeImage(i.id); }} aria-label={t("removeAria")}>×</button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <div className="cf-field">
-                  <input className="cf-input" value={productName} onChange={(e) => setProductName(e.target.value)} placeholder={t("productNamePlaceholder")} />
-                </div>
-                <div className="cf-field">
-                  <textarea className="cf-area" value={sellingPoints} onChange={(e) => setSellingPoints(e.target.value)} placeholder={t("sellingPointsPlaceholder")} />
-                </div>
-              </>
-            ) : mode === "link" ? (
-              <div className="cf-field" style={{ marginTop: 0 }}>
-                <input
-                  className="cf-input"
-                  value={link}
-                  onChange={(e) => setLink(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter" && canStart && !busy) runGeneration(); }}
-                  placeholder={t("linkPlaceholder")}
-                />
-                <div className="cf-ds" style={{ marginTop: 8 }}>{t("linkHint")}</div>
-              </div>
-            ) : (
-              <div className="cf-field" style={{ marginTop: 0 }}>
-                <textarea className="cf-area" style={{ minHeight: 120 }} value={topic} onChange={(e) => setTopic(e.target.value)} placeholder={t("topicPlaceholder")} />
+            {trendsCats.length > 1 && (
+              <div className="cf-trends-cats">
+                {(["all", ...trendsCats] as const).map((id) => (
+                  <button
+                    key={id}
+                    type="button"
+                    className={`cf-cat${trendsCat === id ? " on" : ""}`}
+                    onClick={() => { setTrendsCat(id); setTrendsPage(0); }}
+                  >
+                    {id === "all" ? t("trendCatAll") : t(`trendCat_${id}`)}
+                  </button>
+                ))}
               </div>
             )}
-
-            {/* generation-task mode: the free/paid fork every mature product makes explicit —
-                cost and key requirements live ON the option, never behind it */}
-            <div className="cf-genrow">
-              {(["free", "ai"] as const).map((g) => (
-                <button key={g} type="button" className={`cf-gen${genMode === g ? " on" : ""}`} onClick={() => setGenMode(g)}>
-                  <b>{t(g === "free" ? "genFree" : "genAi")}</b>
-                  <span>{t(g === "free" ? "genFreeDesc" : "genAiDesc")}</span>
-                </button>
+            {/* ranked list rows: scan-friendly, one action per row (was a wall of glued pills) */}
+            <div className="cf-trend-list">
+              {trendsShown.map((tp, i) => (
+                <div key={`${tp.source || "t"}-${tp.rank ?? tp.title}`} className="cf-trow">
+                  <b className={`trk${typeof tp.rank === "number" && tp.rank <= 3 ? " hot" : ""}`}>
+                    {typeof tp.rank === "number" ? tp.rank : i + 1}
+                  </b>
+                  <button
+                    type="button"
+                    className="ttl"
+                    title={tp.context || tp.title}
+                    onClick={() => pickTrend(tp)}
+                  >
+                    {tp.title}
+                  </button>
+                  {tp.traffic && <span className="tv">{tp.traffic}</span>}
+                  <Link
+                    href={`/project/clone?trend=${encodeURIComponent(tp.title)}`}
+                    className="tclone"
+                    title={t("trendCloneAria")}
+                    aria-label={t("trendCloneAria")}
+                  >
+                    {t("trendCloneLabel")}
+                  </Link>
+                </div>
               ))}
             </div>
-            {/* commerce form: only asked when it actually changes the outcome (AI visuals);
-                the free quick cut uses generic stock footage where this choice is moot */}
-            {genMode === "ai" && mode !== "topic" && (
-              <div className="cf-formrow">
-                <span className="cf-form-lbl">{t("formLabel")}</span>
-                {(Object.keys(FORM_PRESETS) as FormId[]).map((f) => (
-                  <button
-                    key={f}
-                    type="button"
-                    className={`cf-fchip${form === f ? " on" : ""}`}
-                    title={t(`form_${f}_tip`)}
-                    onClick={() => setForm(f)}
-                  >
-                    {t(`form_${f}`)}
-                  </button>
-                ))}
-              </div>
-            )}
-            {/* presenter picking follows the domestic digital-human convention: face → lines → voice */}
-            {genMode === "ai" && mode !== "topic" && (form === "presenter" || form === "drama") && characters.length > 0 && (
-              <div className="cf-formrow">
-                <span className="cf-form-lbl">{t("presenterLabel")}</span>
-                <select className="cf-form-select" value={presenterId} onChange={(e) => setPresenterId(e.target.value)}>
-                  <option value="">{t("presenterAuto")}</option>
-                  {characters.map((c) => (
-                    <option key={c.id} value={c.id}>{c.name}</option>
-                  ))}
-                </select>
-              </div>
-            )}
-            {genMode === "ai" && <ProductionProfilePicker />}
+            <div className="cf-trends-src">{t("trendsSourceNote", { source: trendsSourceLabel })}</div>
 
-            {needKey && !llmReady && (
-              <div className="cf-keyform" ref={keyformRef}>
-                <div className="cf-keyhead">
-                  <span className="badge">{t("atlasBadge")}</span>
-                  {t("atlasTitle")}
-                  <button type="button" className="cf-keyclose" aria-label={t("atlasDismiss")} title={t("atlasDismiss")} onClick={() => setNeedKey(false)}>
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 6 6 18M6 6l12 12" /></svg>
-                  </button>
-                </div>
-                <div className="cf-keydesc">
-                  {t("atlasDesc")}{" "}
-                  <a href={ATLAS_KEYS_URL} target="_blank" rel="noreferrer">{t("atlasGetKey")} ↗</a>
-                </div>
-                <div className="cf-keyrow">
-                  <input
-                    className="cf-keyinput"
-                    type="password"
-                    value={atlasKey}
-                    autoFocus
-                    onChange={(e) => setAtlasKey(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter") connectAtlasAndStart(); }}
-                    placeholder={t("atlasKeyPlaceholder")}
-                  />
-                  <button className="cf-keybtn" onClick={connectAtlasAndStart} disabled={atlasKey.trim().length === 0 || connecting || busy}>
-                    {connecting ? t("atlasConnecting") : busy ? (stage || t("busyDefault")) : t("atlasConnectStart")}
-                    {!connecting && !busy && <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M5 12h14M13 6l6 6-6 6" /></svg>}
-                  </button>
-                </div>
-                {connectError && <div className="cf-keyerr">{connectError}</div>}
-                <div className="cf-keyalt">
-                  <Link href="/settings?tab=llm">{t("atlasUseOther")}</Link>
-                </div>
-              </div>
-            )}
-            <div className="cf-cta-row">
-              <button className="cf-cta" onClick={onStart} disabled={!canStart || busy}>
-                {busy ? (stage || t("busyDefault")) : t("ctaStart")}
-                {!busy && <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M5 12h14M13 6l6 6-6 6" /></svg>}
-              </button>
+            <div className="cf-daily">
+              <span className="cf-daily-lbl">{t("dailyLabel")}</span>
+              <input
+                className="cf-daily-input"
+                value={dailyPersona}
+                onChange={(e) => onPersonaChange(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") runDailyPick(); }}
+                placeholder={t("dailyPersonaPlaceholder")}
+              />
+              <button type="button" className="cf-daily-btn" onClick={runDailyPick}>{t("dailyPick")}</button>
             </div>
-            {error && <div className="cf-err">{error}</div>}
-              </>
+            {(dailyMsg || (dailyLast && dailyLast.date === localDateStamp())) && (
+              <div className="cf-daily-msg">
+                {dailyMsg || t("dailyDoneHint").replace("{topic}", dailyLast?.topic ?? "")}
+              </div>
             )}
           </div>
+        )}
 
-          {showGuide && (
-            <div className="cf-guide">
-              <button type="button" className="cf-guide-close" onClick={dismissGuide} aria-label={t("guideClose")}>✕</button>
-              <div className="cf-guide-title">{t("guideTitle")}</div>
-              <div className="cf-guide-steps">
-                <div className="cf-guide-step"><b>1</b>{t("guideStep1")}</div>
-                <div className="cf-guide-step"><b>2</b>{t("guideStep2")}</div>
-                <div className="cf-guide-step"><b>3</b>{t("guideStep3")}</div>
-              </div>
-              <div className="cf-guide-foot">{t("guideFoot")}</div>
-            </div>
-          )}
-
-          {recent.length > 0 && (
-            <div className="cf-recent">
-              <div className="lbl">
-                {t("recentLabel")}
-                <Link href="/projects" className="lbl-all">{t("recentAll")} →</Link>
-              </div>
-              <div className="row">
-                {recent.map((p) => {
-                  const rel = formatRelativeTime(p.updatedAt, locale);
-                  return (
-                    <Link key={p.id} href={`/project/${p.id}/${stepFor(p.status)}`} className="cf-pj">
-                      <span className="dot" />
-                      <span className="col">
-                        <span className="nm">{p.name || p.productName || t("untitledProject")}</span>
-                        <span className="cf-pj-meta">{t(stageKeyFor(p.status))}{rel ? ` · ${rel}` : ""}</span>
-                      </span>
-                    </Link>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {trends.length > 0 && (
-            <div className="cf-trends">
-              <div className="cf-trends-head">
-                <span className="cf-trends-lbl">{t("trendsLabel")}</span>
-                <button type="button" className="cf-trends-more" onClick={() => setTrendsPage((p) => p + 1)}>
-                  {t("trendsRefresh")}
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M21 12a9 9 0 1 1-2.64-6.36" /><path d="M21 3v6h-6" /></svg>
-                </button>
-              </div>
-              {trendsCats.length > 1 && (
-                <div className="cf-trends-cats">
-                  {(["all", ...trendsCats] as const).map((id) => (
-                    <button
-                      key={id}
-                      type="button"
-                      className={`cf-cat${trendsCat === id ? " on" : ""}`}
-                      onClick={() => { setTrendsCat(id); setTrendsPage(0); }}
-                    >
-                      {id === "all" ? t("trendCatAll") : t(`trendCat_${id}`)}
-                    </button>
-                  ))}
-                </div>
-              )}
-              {/* ranked list rows: scan-friendly, one action per row (was a wall of glued pills) */}
-              <div className="cf-trend-list">
-                {trendsShown.map((tp, i) => (
-                  <div key={`${tp.source || "t"}-${tp.rank ?? tp.title}`} className="cf-trow">
-                    <b className={`trk${typeof tp.rank === "number" && tp.rank <= 3 ? " hot" : ""}`}>
-                      {typeof tp.rank === "number" ? tp.rank : i + 1}
-                    </b>
-                    <button
-                      type="button"
-                      className="ttl"
-                      title={tp.context || tp.title}
-                      onClick={() => pickTrend(tp)}
-                    >
-                      {tp.title}
-                    </button>
-                    {tp.traffic && <span className="tv">{tp.traffic}</span>}
-                    <Link
-                      href={`/project/clone?trend=${encodeURIComponent(tp.title)}`}
-                      className="tclone"
-                      title={t("trendCloneAria")}
-                      aria-label={t("trendCloneAria")}
-                    >
-                      {t("trendCloneLabel")}
-                    </Link>
-                  </div>
-                ))}
-              </div>
-              <div className="cf-trends-src">{t("trendsSourceNote", { source: trendsSourceLabel })}</div>
-
-              <div className="cf-daily">
-                <span className="cf-daily-lbl">{t("dailyLabel")}</span>
-                <input
-                  className="cf-daily-input"
-                  value={dailyPersona}
-                  onChange={(e) => onPersonaChange(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") runDailyPick(); }}
-                  placeholder={t("dailyPersonaPlaceholder")}
-                />
-                <button type="button" className="cf-daily-btn" onClick={runDailyPick}>{t("dailyPick")}</button>
-              </div>
-              {(dailyMsg || (dailyLast && dailyLast.date === localDateStamp())) && (
-                <div className="cf-daily-msg">
-                  {dailyMsg || t("dailyDoneHint").replace("{topic}", dailyLast?.topic ?? "")}
-                </div>
-              )}
-            </div>
-          )}
-
-          <div className="cf-examples">
-            {t("examplesLabel")}
-            {examples.slice(0, 3).map((ex) => (
-              <button key={ex.id} type="button" className="cf-chip" onClick={() => fillExample(ex)}>{ex.name} ¥{ex.price}</button>
-            ))}
-          </div>
-
-        </section>
+        <div className="cf-examples">
+          {t("examplesLabel")}
+          {examples.slice(0, 3).map((ex) => (
+            <button key={ex.id} type="button" className="cf-chip" onClick={() => void fillExample(ex)}>{ex.name} ¥{ex.price}</button>
+          ))}
+        </div>
       </div>
     </div>
   );

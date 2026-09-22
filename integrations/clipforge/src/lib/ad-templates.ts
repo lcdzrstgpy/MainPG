@@ -5592,7 +5592,12 @@ export function recommendAdTemplates(
 /** Fixed id for the per-project AI-generated template (only one custom slot per project). */
 export const CUSTOM_AD_TEMPLATE_ID = "custom_ai";
 
-const STYLE_VALUES = new Set([
+/**
+ * Script-style vocabulary accepted by the creation forms. This is the single source of truth for
+ * `script-style.ts` (which derives the selectable-style list from it) — do not duplicate these
+ * literals elsewhere; import this set instead.
+ */
+export const STYLE_VALUES = new Set([
   "drama", "reversal", "interview", "story", "unboxing", "product_pov",
   "comparison", "talking_head", "pain-point", "scenario", "auto",
 ]);

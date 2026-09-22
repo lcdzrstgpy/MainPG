@@ -4,7 +4,7 @@ import type { NamespaceMessages } from "../config";
 export const clone: NamespaceMessages = {
   zh: {
     heroTitle: "爆款复刻",
-    heroSubtitle: "贴爆款视频链接做参考，载入高转化带货结构，用你的商品重新生成脚本",
+    heroSubtitle: "贴爆款视频链接或上传参考视频，载入真实镜头节奏；确认商品信息后进入视频工作台，用统一创作简报生成脚本与成片",
     // 从首页热点雷达跳转过来的同款横幅
     trendBannerTitle: "做热点「{trend}」的同款",
     trendBannerDesc: "先去抖音搜这个热点，挑一条你想复刻的爆款——把链接粘到下面，或下载后上传参考视频。",
@@ -29,8 +29,14 @@ export const clone: NamespaceMessages = {
     productNamePlaceholder: "输入你的商品名称",
     productFeaturesLabel: "商品卖点",
     productFeaturesPlaceholder: "描述商品的核心卖点、优势特性等...",
-    cloning: "复刻生成中...",
-    startClone: "开始复刻生成",
+    // 交接给唯一主创建入口（预填创作简报，不再在本页建项目）
+    handoffNote:
+      "下一步把节奏结构与商品信息预填进视频工作台的创作简报：脚本风格、目标时长与出片策略在那里确认后再统一创建项目与生成脚本。",
+    handoffCta: "去工作台生成脚本",
+    handingOff: "正在准备创作简报...",
+    handoffFailed: "交接失败，请重试",
+    handoffImagesFailed: "商品图暂存失败，请重试后再进入工作台",
+    handoffStorageBlocked: "浏览器禁用了本地存储，参考镜头节奏无法带过去，请允许本地存储后重试",
     // 分镜结构卡片
     shot1Title: "开场吸引",
     shot1Desc: "产品特写 + 痛点提问，黄金3秒抓住注意力",
@@ -44,12 +50,7 @@ export const clone: NamespaceMessages = {
     shot5Desc: "使用前后效果对比，增强说服力",
     shot6Title: "促销转化",
     shot6Desc: "限时优惠 + 购买引导，促成下单",
-    // 错误与项目名
-    projectNameSuffix: "{name} 复刻",
-    errorNoLlm: "尚未配置 LLM，请先到「设置」填写 API Key",
-    errorProjectCreate: "项目创建失败",
-    errorScriptGen: "脚本生成失败，请检查 LLM 设置",
-    errorCloneFailed: "复刻生成失败",
+    // 错误提示
     // 参考视频真分析（场景切点→节奏骨架）
     refVideoLabel: "参考视频文件（推荐，可真实解析节奏）",
     refVideoBtn: "选择视频文件",
@@ -62,21 +63,10 @@ export const clone: NamespaceMessages = {
     realStructureHint: "已按画面切点解析出真实节奏骨架（全长约 {sec}s）。生成脚本时将逐镜对齐镜头数与时长，只复刻节奏不照搬内容。",
     realShotTitle: "第 {n} 镜",
     realShotDesc: "节奏复刻位：时长与切换节奏跟随参考，内容由 AI 结合你的商品重写",
-    // 模型级一键成片复刻（Seedance 参考生视频）
-    modelTierTitle: "一键成片复刻（Seedance 参考生视频）",
-    modelTierDesc: "把参考视频（≤15 秒）与商品图直接交给 Seedance 2.0 参考生视频模型：保留参考片的运镜、节奏与景别，把画面主体换成你的商品，一次调用出完整成片（消耗视频模型额度）。成片会保存到项目导出页。",
-    modelTierTooLong: "参考视频超过 {max} 秒，模型级复刻不可用（节奏复刻不受影响）",
-    modelTierNeedModel: "需要在设置中配置视频模型（Atlas Cloud + Seedance 2.0 系列）",
-    modelTierNeedSeedance: "当前默认视频模型不支持参考生视频，请在设置中选择 Seedance 2.0 系列模型",
-    modelTierBtn: "⚡ 一键成片复刻",
-    modelTierRunning: "复刻生成中（约 1-3 分钟）...",
-    modelTierFailed: "成片复刻失败",
-    modelTierDone: "复刻成片已保存",
-    modelTierViewExport: "去导出页查看 →",
   },
   en: {
     heroTitle: "Clone a hit",
-    heroSubtitle: "Paste a trending video as reference, load a high-converting commerce structure, and regenerate the script with your product",
+    heroSubtitle: "Paste a trending video link or upload the reference to load its real shot rhythm; confirm your product, then finish the unified creation brief in the studio",
     // 从首页热点雷达跳转过来的同款横幅
     trendBannerTitle: "Remixing the trend “{trend}”",
     trendBannerDesc: "Search this trend on Douyin, pick a viral video you want to remix — paste its link below, or download it and upload as the reference.",
@@ -101,8 +91,14 @@ export const clone: NamespaceMessages = {
     productNamePlaceholder: "Enter your product name",
     productFeaturesLabel: "Selling points",
     productFeaturesPlaceholder: "Describe the core selling points, key advantages, etc...",
-    cloning: "Cloning...",
-    startClone: "Start cloning",
+    // Handoff to the single creation entry (pre-fills the creation brief; no project is created here)
+    handoffNote:
+      "Next, the rhythm structure and your product info are pre-filled into the studio's creation brief — script style, target length and output strategy are confirmed there before any project is created.",
+    handoffCta: "Continue in the studio",
+    handingOff: "Preparing the creation brief...",
+    handoffFailed: "Handoff failed, please retry",
+    handoffImagesFailed: "Could not store the product images — please retry before continuing to the studio",
+    handoffStorageBlocked: "Local storage is blocked, so the reference rhythm cannot be carried over — allow local storage and retry",
     // 分镜结构卡片
     shot1Title: "Hook opening",
     shot1Desc: "Product close-up + pain-point question — grab attention in the golden 3 seconds",
@@ -116,12 +112,7 @@ export const clone: NamespaceMessages = {
     shot5Desc: "Compare results before and after use to boost persuasion",
     shot6Title: "Promo & conversion",
     shot6Desc: "Limited-time offer + purchase prompt to drive orders",
-    // 错误与项目名
-    projectNameSuffix: "{name} clone",
-    errorNoLlm: "No LLM configured yet — go to Settings and enter your API key first",
-    errorProjectCreate: "Failed to create project",
-    errorScriptGen: "Script generation failed, please check your LLM settings",
-    errorCloneFailed: "Cloning failed",
+    // 错误提示
     // Real reference-video analysis (scene cuts → rhythm skeleton)
     refVideoLabel: "Reference video file (recommended — enables real rhythm analysis)",
     refVideoBtn: "Choose video file",
@@ -134,16 +125,5 @@ export const clone: NamespaceMessages = {
     realStructureHint: "The real rhythm skeleton was extracted from scene cuts (about {sec}s total). Script generation will match the shot count and per-shot durations — only the rhythm is replicated, never the content.",
     realShotTitle: "Shot {n}",
     realShotDesc: "Rhythm slot: duration and pacing follow the reference; content is rewritten by AI around your product",
-    // Model-tier one-shot replication (Seedance reference-to-video)
-    modelTierTitle: "One-shot replication (Seedance reference-to-video)",
-    modelTierDesc: "Hand the reference clip (≤15s) and your product photos straight to Seedance 2.0 reference-to-video: it keeps the reference's camera work, pacing and framing while swapping in your product — one call, one finished clip (uses video-model credits). The result is saved to the project's export page.",
-    modelTierTooLong: "Reference exceeds {max}s — model-tier replication unavailable (rhythm cloning still works)",
-    modelTierNeedModel: "Configure a video model in Settings first (Atlas Cloud + Seedance 2.0 family)",
-    modelTierNeedSeedance: "The current default video model doesn't support reference-to-video — pick a Seedance 2.0 family model in Settings",
-    modelTierBtn: "⚡ One-shot replicate",
-    modelTierRunning: "Replicating (about 1-3 minutes)...",
-    modelTierFailed: "Replication failed",
-    modelTierDone: "Replicated clip saved",
-    modelTierViewExport: "View on export page →",
   },
 };

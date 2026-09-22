@@ -137,7 +137,7 @@ export const script: NamespaceMessages = {
     aiFilmConfirm: "确认无误，开始生成（此步计费）",
     aiFilmBackToEdit: "回脚本页改词",
     aiFilmFailed: "AI 成片失败，可重试或转免费快剪",
-    aiFilmNeedModels: "还没配好生图/视频模型——到设置里的「生图模型」和「视频模型」各选一个（推荐 Atlas 一个 Key 全搞定）",
+    aiFilmNeedModels: "还没配好生图/视频模型——到设置里的「生图模型」和「视频模型」各选一个（先配置火山引擎或速创平台）",
     // 保存模板弹窗
     saveTemplateTitle: "保存为模板",
     saveTemplateDesc: "保存当前脚本结构为模板，下次可直接套用到其他商品",
@@ -269,7 +269,7 @@ export const script: NamespaceMessages = {
     aiFilmConfirm: "Looks right — generate (billed step)",
     aiFilmBackToEdit: "Back to edit the script",
     aiFilmFailed: "AI film failed — retry, or fall back to the free quick cut",
-    aiFilmNeedModels: "No image/video model configured yet — pick one under Settings → Image model and Video model (Atlas covers both with one key)",
+    aiFilmNeedModels: "No image/video model configured yet — pick one under Settings → Image model and Video model (set up Volcengine or Suchuang first)",
     simpleGoPro: "Open Director mode \u2192",
     autoFinishFailed: "Auto-finish failed — use “Next” to complete the steps manually",
     // Server-side pipeline: resume from breakpoint (closing the tab no longer kills the chain)

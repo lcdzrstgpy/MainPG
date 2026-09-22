@@ -18,6 +18,13 @@ import type { CanvasNodeContentProps } from "@infinite-canvas/plugin-sdk";
 type Cfg = { base: string; llmBaseUrl: string; llmApiKey: string; llmModel: string };
 const CFG_KEY = "clipforge-config";
 const DEFAULT_CFG: Cfg = { base: "http://localhost:3000", llmBaseUrl: "", llmApiKey: "", llmModel: "" };
+/**
+ * This node has no style picker, but /api/llm/script now requires an explicit style: "auto" is only
+ * resolved from conversion history and otherwise answers 409 needs_explicit_style. Use a neutral,
+ * non-pain-point whitelist value (src/lib/script-style.ts SCRIPT_STYLE_VALUES) instead of auto so the
+ * node still works on a data-less instance.
+ */
+const SCRIPT_STYLE = "scenario";
 
 /** Loose JSON shape from the ClipForge API — only the fields this plugin reads, all runtime-checked */
 type ApiJson = {
@@ -29,6 +36,9 @@ type ApiJson = {
     composition?: { status?: string; url?: string };
     error?: string;
     raw?: string;
+    /** 409 needs_explicit_style: the instance cannot recommend a style and lists the selectable ones */
+    code?: string;
+    candidates?: string[];
 };
 
 /** Minimal JSON client against the ClipForge HTTP API */
@@ -50,7 +60,13 @@ async function api(base: string, path: string, init?: { method?: string; body?: 
     } catch {
         data = { raw: text };
     }
-    if (!res.ok) throw new Error(data?.error || data?.raw || `HTTP ${res.status}`);
+    if (!res.ok) {
+        // 409 needs_explicit_style 不是「生成失败」：实例没有足够历史数据可推荐风格，把候选风格贴出来
+        if (data?.code === "needs_explicit_style" && Array.isArray(data.candidates) && data.candidates.length) {
+            throw new Error(`${data.error || "需要显式选择脚本风格"}（候选风格：${data.candidates.join(" / ")}）`);
+        }
+        throw new Error(data?.error || data?.raw || `HTTP ${res.status}`);
+    }
     return data;
 }
 
@@ -153,7 +169,7 @@ function ClipForgeContent({ ctx }: CanvasNodeContentProps) {
                         productName: name.trim(),
                         productDescription: points.trim(),
                         productImages: up.paths,
-                        styleType: "auto",
+                        styleType: SCRIPT_STYLE,
                         targetDuration: duration,
                         llmConfig,
                     },
