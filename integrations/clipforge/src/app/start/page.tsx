@@ -4,7 +4,7 @@
  * MainPG 里的 AI 视频工作台，也是唯一的项目创建入口。
  *
  * 商品图 / 商品链接 / 一句话主题三种来源都落到同一份「创作简报」（CreationBrief）：
- * 表单状态、默认值和请求体只有一份；出片策略在创建时显式选定并写进 creationBrief.outputStrategy，
+ * 表单状态、默认值和请求体只有一份；五种出片方案在创建时选定并写进 creationBrief.outputScheme，
  * 脚本请求只由 buildScriptRequest 构造。未配置模型时只给设置页引导，不再内联填 Key。
  */
 
@@ -24,7 +24,7 @@ import {
   type CreationBriefFormPrefill,
   type CreationBriefFormValues,
 } from "@/components/project-creation/creation-brief-form";
-import { OUTPUT_STRATEGY_OPTIONS, validateCreationBriefForm, type VideoModeId } from "@/components/project-creation/creation-brief-defaults";
+import { validateCreationBriefForm, type VideoModeId } from "@/components/project-creation/creation-brief-defaults";
 import { fetchImagesAsFiles, importProductSource, isValidProductUrl } from "@/components/project-creation/link-import";
 import { buildScriptRequest } from "@/components/project-creation/build-script-request";
 import {
@@ -50,26 +50,6 @@ const TRENDS_PAGE_SIZE = 8;
 /** localStorage keys for the daily-persona picker (device-local, no account concept) */
 const DAILY_PERSONA_KEY = "clipforge_daily_persona";
 const DAILY_LAST_KEY = "clipforge_daily_last";
-
-/**
- * 三种出片策略在本页的说明。id 与 src/lib/creation-brief.ts 的 OutputStrategy 一一对应，
- * 页面源码里必须看得见这三个 id —— 「免费草稿」不能被误解成 AI 动态视频。
- * 与 /project/new 的 BGM_LABELS 一样，属于页面内的双语数据，不进 i18n 词表。
- */
-const STRATEGY_NOTES: Record<OutputStrategy, { zh: string; en: string }> = {
-  "draft": {
-    zh: "免费草稿：静态素材 + FFmpeg 合成，非 AI 动态视频，不计费",
-    en: "Free draft: static material + local FFmpeg render — not an AI motion video, no cost",
-  },
-  "controlled-motion": {
-    zh: "导演可控动态：逐镜生成关键帧并提交图生视频任务，按镜头计费",
-    en: "Director-controlled motion: per-shot keyframes + image-to-video tasks, billed per shot",
-  },
-  "native-film": {
-    zh: "原生整片：一次模型调用生成整片画面与原生音频",
-    en: "Native film: one model call renders the whole film with its own audio",
-  },
-};
 
 /** Local calendar date (YYYY-MM-DD) — "today" for the daily-pick marker follows the user's clock. */
 function localDateStamp(): string {
@@ -721,10 +701,6 @@ export default function StartPage() {
         .cf-h1{font-weight:700;font-size:clamp(34px,5.6vw,60px);line-height:1.04;letter-spacing:-.02em;margin-bottom:16px}
         .cf-h1 .hl{color:var(--teal);text-shadow:0 0 34px rgba(139,92,246,.35)}
         .cf-sub{color:var(--dim);font-size:16px;line-height:1.7;max-width:560px;margin:0 auto 26px}
-        .cf-legend{display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:8px;margin:0 auto;max-width:760px}
-        .cf-legend-lbl{font-size:12px;letter-spacing:.08em;color:var(--muted);text-transform:uppercase}
-        .cf-legend-chip{font-size:12px;color:var(--dim);border:1px solid var(--bd);border-radius:999px;padding:5px 11px;background:var(--surface)}
-        .cf-legend-chip[data-strategy="controlled-motion"],.cf-legend-chip[data-strategy="native-film"]{border-color:var(--bd2);color:var(--text)}
         .cf-brief{max-width:720px;margin:26px auto 0;text-align:left;display:flex;flex-direction:column;gap:16px}
         .cf-card{background:var(--surface);border:1px solid var(--bd);border-radius:20px;padding:14px;backdrop-filter:blur(14px);box-shadow:0 30px 80px -40px rgba(0,0,0,.8);text-align:left}
         .cf-notice{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px;border:1px solid rgba(139,92,246,.3);background:rgba(139,92,246,.07);border-radius:12px;padding:12px 14px;font-size:13px;color:var(--dim)}
@@ -792,7 +768,6 @@ export default function StartPage() {
         .cf-pj .col{min-width:0;display:flex;flex-direction:column;gap:2px}
         .cf-pj .nm{font-size:13px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
         .cf-pj-meta{font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-        .cf-profiles{max-width:720px;margin:16px auto 0;text-align:left}
       `}</style>
 
       <div className="cf-amb" />
@@ -803,20 +778,6 @@ export default function StartPage() {
           <h1 className="cf-h1">{t("h1Lead")}<span className="hl">{t("h1Highlight")}</span></h1>
           <p className="cf-sub">{t("sub")}</p>
 
-          {/* 出片策略摆在最前面：创建时就要看见这次是免费草稿还是真去生视频 */}
-          <div className="cf-legend" aria-label={t("strategyLegend")}>
-            <span className="cf-legend-lbl">{t("strategyLegend")}</span>
-            {OUTPUT_STRATEGY_OPTIONS.map((option) => (
-              <span
-                key={option.id}
-                className="cf-legend-chip"
-                data-strategy={option.id}
-                title={option.description}
-              >
-                {locale === "zh" ? STRATEGY_NOTES[option.id].zh : STRATEGY_NOTES[option.id].en}
-              </span>
-            ))}
-          </div>
         </section>
 
         <section className="cf-brief" ref={briefRef}>

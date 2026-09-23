@@ -44,14 +44,9 @@ describe("/start 成为唯一主创建入口", () => {
     expect(startPage).not.toMatch(/<b>Atlas Cloud<\/b>/);
   });
 
-  it("三种出片策略都显式呈现，draft 文案写明非 AI 动态视频", () => {
-    expect(startPage).toMatch(/OUTPUT_STRATEGY_OPTIONS/);
-    for (const id of ["draft", "controlled-motion", "native-film"]) {
-      expect(startPage).toMatch(new RegExp(`"${id}"`));
-    }
-    expect(OUTPUT_STRATEGY_OPTIONS.map((option) => option.id)).toEqual(["draft", "controlled-motion", "native-film"]);
-    expect(startPage).toMatch(/非 AI 动态视频/);
-    // 共享词表里的 draft 标签同样必须点明「非 AI 动态视频」
+  it("shows the five-card scheme only in the creation form, without a legacy strategy legend", () => {
+    expect(startPage).not.toMatch(/cf-legend|STRATEGY_NOTES|OUTPUT_STRATEGY_OPTIONS/);
+    expect(form).toMatch(/<OutputSchemePanel/);
     expect(OUTPUT_STRATEGY_OPTIONS.find((option) => option.id === "draft")?.label).toContain("非 AI 动态视频");
   });
 

@@ -304,6 +304,7 @@ export function CreationBriefForm({
               <span className="text-destructive ml-0.5">*</span>
             </Label>
             <Input
+              aria-label="商品名称"
               value={productName}
               onChange={(event) => setProductName(event.target.value)}
               placeholder="例如：桂花乌龙茶"
@@ -366,6 +367,7 @@ export function CreationBriefForm({
         disabled={blocked}
       />
 
+      <section aria-label="投放设置">
       <Card className="glass-card">
         <CardContent className="p-5 space-y-5">
           <span className="text-sm font-semibold">投放设置</span>
@@ -488,6 +490,7 @@ export function CreationBriefForm({
           )}
         </CardContent>
       </Card>
+      </section>
 
       <VisualControlPanel
         videoMode={videoMode}
@@ -516,7 +519,6 @@ export function CreationBriefForm({
         onChange={handleOutputSchemeChange}
         disabled={blocked}
       />
-      {/* 音频策略由方案面板紧随五卡呈现，原生整片固定原生音频。 */}
 
       <div className="pt-2">
         {showErrors && !validation.valid && (
@@ -527,7 +529,7 @@ export function CreationBriefForm({
             </p>
           </div>
         )}
-        <Button type="button" onClick={handleSubmit} disabled={blocked} className="w-full h-12 brand-gradient text-white font-semibold text-base">
+        <Button type="button" data-submit-brief onClick={handleSubmit} disabled={blocked} className="w-full h-12 brand-gradient text-white font-semibold text-base">
           <LuZap className="w-5 h-5 mr-2" />
           {submitLabel}
         </Button>

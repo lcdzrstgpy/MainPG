@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
 import { sanitizeCreativeIntent } from "@/lib/production-system";
 import type { CreationBrief } from "@/lib/creation-brief";
+import { OUTPUT_SCHEMES } from "@/lib/output-schemes";
 import { validateCreationBriefForm } from "@/components/project-creation/creation-brief-defaults";
 import { CreationBriefForm } from "@/components/project-creation/creation-brief-form";
 import { EMPTY_VISUAL_CONSTRAINTS, buildCreativeIntentFields } from "@/components/project-creation/visual-control-panel";
@@ -77,10 +78,44 @@ describe("CreationBriefForm contract", () => {
     for (const panel of ["InputSourcePanel", "NarrativePanel", "VisualControlPanel", "OutputSchemePanel"]) {
       expect(form).toMatch(new RegExp(`\\b${panel}\\b`));
     }
-    expect(form.indexOf("<VisualControlPanel")).toBeLessThan(form.indexOf("<OutputSchemePanel"));
-    expect(form.indexOf("<OutputSchemePanel")).toBeLessThan(form.indexOf("音频策略"));
     expect(form).not.toMatch(/<OutputStrategyPanel/);
     expect(form).not.toMatch(/CreationBriefSummary/);
+  });
+
+  it("renders source, product, narrative, delivery, visual, scheme, audio, and submit in order", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(createElement(CreationBriefForm, {
+        initial: { outputScheme: { ...OUTPUT_SCHEMES["controlled-balanced"] } },
+        submitLabel: "Create",
+        onSubmit: () => undefined,
+      })));
+
+      const controls = [
+        '[role="radiogroup"][aria-label="创作来源"]',
+        'input[aria-label="商品名称"]',
+        '[role="radiogroup"][aria-label="脚本风格"]',
+        'section[aria-label="投放设置"]',
+        '[role="radiogroup"][aria-label="画面形态"]',
+        '[role="radiogroup"][aria-label="出片方案"]',
+        '[role="radiogroup"][aria-label="音频策略"]',
+        'button[data-submit-brief]',
+      ].map((selector) => {
+        const element = container.querySelector(selector);
+        expect(element, `Missing rendered control: ${selector}`).not.toBeNull();
+        return element!;
+      });
+      for (let index = 1; index < controls.length; index += 1) {
+        expect(controls[index - 1].compareDocumentPosition(controls[index]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      }
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      vi.unstubAllGlobals();
+    }
   });
 
   it("gates the optional sections behind showAdvanced", () => {
