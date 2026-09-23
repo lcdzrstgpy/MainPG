@@ -41,6 +41,26 @@ export function clearAuthSession() {
   window.localStorage.removeItem(ACCOUNT_KEY);
 }
 
+/**
+ * Release the remote single-device session before forgetting the local bearer
+ * token. This avoids leaving an account locked after a real session expiry.
+ */
+export async function releaseAuthSession(): Promise<void> {
+  const token = getAuthToken();
+  try {
+    if (token) {
+      await fetch(`${apiBaseUrl()}/api/customer/logout`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    }
+  } catch {
+    // A failed remote release must not block the local sign-out.
+  } finally {
+    clearAuthSession();
+  }
+}
+
 const SESSION_EXPIRED_EVENT = "auth:session-expired";
 
 /** 通知应用层登录状态已失效（登录超时 / 远程会话缺失 / 被顶替），用于自动返回登录页。 */
@@ -54,8 +74,12 @@ export function isSessionExpired(response: Response, detail: string): boolean {
   if (/invalid (username\/email or password)|invalid or expired (reset token|email code)|a valid 6-digit email code is required|user is not registered on the server|customer account is not active/i.test(detail)) {
     return false;
   }
-  if (response.status === 401) return true;
-  return /login session expired|remote customer session is missing|invalid bearer token|missing bearer token|session revoked/i.test(detail);
+  // 部分模块（如 profit_activity）会带多个候选令牌重试，遇到 401 会换令牌继续；
+  // 裸 401 不足以判定登录失效，必须同时命中明确的会话失效关键词。
+  return (
+    response.status === 401 &&
+    /login session expired|remote customer session is missing|invalid bearer token|missing bearer token|session revoked/i.test(detail)
+  );
 }
 
 /**
@@ -78,7 +102,18 @@ if (!interceptorWindow[FETCH_INTERCEPTOR_KEY]) {
     const response = await originalFetch(input, init);
     if (response.status === 401) {
       const url = typeof input === "string" ? input : input instanceof URL ? input.pathname : input.url;
-      if (!AUTH_ENTRY_PATH.test(url)) notifySessionExpired();
+      if (!AUTH_ENTRY_PATH.test(url)) {
+        // 与 httpJson/httpBlob 共用同一套判定：裸 401 不足以判定登录失效，
+        // 需按响应体确认是真实会话失效，否则带候选令牌重试的模块会在换令牌时被误踢出。
+        let detail = "";
+        try {
+          const body = (await response.clone().json()) as { detail?: unknown } | null;
+          if (body && typeof body.detail === "string") detail = body.detail;
+        } catch {
+          // 非 JSON 响应无法判定会话是否失效，交由调用方处理
+        }
+        if (isSessionExpired(response, detail)) notifySessionExpired(detail);
+      }
     }
     return response;
   };

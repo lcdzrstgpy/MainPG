@@ -6,7 +6,7 @@ import { HelpAgentWidget } from "../modules/help_agent/components/HelpAgentWidge
 import { StartupUpdateGate } from "../modules/app_update/components/StartupUpdateGate";
 import { RuntimeUpdateNotifier } from "../modules/app_update/components/RuntimeUpdateNotifier";
 import { GlobalToast } from "../shared/components/GlobalToast";
-import { clearAuthSession, getAuthAccount, getAuthToken, httpJson, toUserMessage } from "../transport/http/client";
+import { getAuthAccount, getAuthToken, httpJson, releaseAuthSession, toUserMessage } from "../transport/http/client";
 
 type MeResponse = {
   user_id?: string;
@@ -68,7 +68,12 @@ export function App() {
   // 任意接口返回登录失效（登录超时 / 远程会话缺失）时统一回到登录页，避免用户
   // 停留在工作区内反复看到报错提示。
   useEffect(() => {
+    // 会话失效可能由多条链路同时派发（httpJson 判定 + 全局 fetch 拦截器），
+    // 用一次性标记避免重复调用远端登出。
+    let releasingSession = false;
     const onSessionExpired = (event: Event) => {
+      if (releasingSession) return;
+      releasingSession = true;
       const reason = (event as CustomEvent<string>).detail || "";
       if (reason) {
         try {
@@ -77,9 +82,11 @@ export function App() {
           // sessionStorage 不可用时静默忽略，仅失去一条提示
         }
       }
-      clearAuthSession();
       setPlayEntryAnimation(false);
       setEnteredWorkspace(false);
+      // Keep the local token until the local backend has had a chance to
+      // revoke the matching remote single-device session.
+      void releaseAuthSession();
     };
     window.addEventListener("auth:session-expired", onSessionExpired);
     return () => window.removeEventListener("auth:session-expired", onSessionExpired);
@@ -119,15 +126,9 @@ export function App() {
   }, [activeTaskCount]);
 
   async function signOut() {
-    try {
-      await httpJson<{ ok?: boolean }>("/api/customer/logout", { method: "POST" });
-    } catch {
-      // 退出接口异常不阻塞本地登出
-    } finally {
-      clearAuthSession();
-      setPlayEntryAnimation(false);
-      setEnteredWorkspace(false);
-    }
+    await releaseAuthSession();
+    setPlayEntryAnimation(false);
+    setEnteredWorkspace(false);
   }
 
   function enterWorkspaceAfterLogin() {
