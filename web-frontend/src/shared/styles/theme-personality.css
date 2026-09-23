@@ -82,7 +82,46 @@
    6. dessert 焦糖 —— 奶油圆润
    签名：大圆角奶油感、无硬描边（细同色浅边）、柔雾阴影；
          hover 极轻上浮 2px，慢而温柔 —— 不循环、不旋转，保持安静。
-   ------------------------------------------------------------------------- *//* hover：温柔上浮 *//* ---------------------------------------------------------------------------
+   ------------------------------------------------------------------------- */
+/* 下载主题：每种主题除配色外保留一个克制的空间性格，且只影响首页与采集工作区。 */
+[data-theme="violet"] :is(.dashboard-page .page-hero-card, .daily-selection-page .daily-page-heading) { border-radius: 28px; }
+[data-theme="violet"] :is(.daily-selection-page .daily-panel, .daily-selection-page .shop-collection-panel, .daily-selection-page .plugin-candidate-review) {
+  border-radius: 20px;
+  box-shadow: 0 12px 28px rgba(96, 67, 114, .1);
+}
+[data-theme="violet"] .daily-selection-page .daily-panel:hover { transform: translateY(-2px) rotate(-.15deg); }
+
+[data-theme="quirky"] :is(.dashboard-page .page-hero-card, .daily-selection-page .daily-page-heading, .daily-selection-page .daily-panel, .daily-selection-page .shop-collection-panel, .daily-selection-page .plugin-candidate-review) {
+  border: 2px solid rgba(46, 27, 72, .7);
+  border-radius: 12px;
+  box-shadow: 4px 4px 0 rgba(46, 27, 72, .4);
+}
+[data-theme="quirky"] .daily-selection-page .daily-panel:hover { transform: translate(-2px, -2px); box-shadow: 6px 6px 0 rgba(46, 27, 72, .42); }
+[data-theme="quirky"] .daily-selection-page .daily-panel:active { transform: translate(1px, 1px); box-shadow: 2px 2px 0 rgba(46, 27, 72, .4); }
+
+[data-theme="chinese"] :is(.dashboard-page .page-hero-card, .daily-selection-page .daily-page-heading, .daily-selection-page .daily-panel, .daily-selection-page .shop-collection-panel, .daily-selection-page .plugin-candidate-review) {
+  border-color: rgba(54, 91, 86, .48);
+  border-radius: 9px;
+  box-shadow: 0 8px 20px rgba(40, 59, 55, .08);
+}
+[data-theme="chinese"] .daily-selection-page .daily-panel:hover { border-color: rgba(54, 91, 86, .76); box-shadow: 0 0 0 3px rgba(71, 111, 106, .07), 0 10px 24px rgba(40, 59, 55, .1); }
+
+[data-theme="diamond"] :is(.dashboard-page .page-hero-card, .daily-selection-page .daily-page-heading, .daily-selection-page .daily-panel, .daily-selection-page .shop-collection-panel, .daily-selection-page .plugin-candidate-review) {
+  border-radius: 6px;
+  border-color: rgba(174, 184, 198, .5);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, .3);
+}
+[data-theme="diamond"] .daily-selection-page .daily-panel:hover { border-color: rgba(241, 244, 247, .78); filter: brightness(1.07); }
+
+[data-theme="dessert"] :is(.dashboard-page .page-hero-card, .daily-selection-page .daily-page-heading) { border-radius: 28px; }
+[data-theme="dessert"] :is(.daily-selection-page .daily-panel, .daily-selection-page .shop-collection-panel, .daily-selection-page .plugin-candidate-review) {
+  border-radius: 20px;
+  border-color: rgba(201, 154, 122, .48);
+  box-shadow: 0 12px 28px rgba(100, 57, 36, .09);
+}
+[data-theme="dessert"] .daily-selection-page .daily-panel:hover { transform: translateY(-2px); box-shadow: 0 16px 32px rgba(100, 57, 36, .14); }
+
+/* ---------------------------------------------------------------------------
    7. peach 桃花源 —— 花瓣 / 游丝
    签名：花瓣形不对称圆角（左上-右上-右下-左下 圆尖交替），描边带粉、
          阴影带粉青双晕；hover 时卡片像花瓣一样轻摇 + 上浮，桃花影随。

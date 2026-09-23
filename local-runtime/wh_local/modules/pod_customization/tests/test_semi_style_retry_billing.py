@@ -47,11 +47,12 @@ def _service(tmp_path: Path, billing: RecordingBilling) -> PodCustomizationServi
     )
 
 
-def test_semi_group_retry_freezes_images_only_and_expands_to_four_items(tmp_path: Path) -> None:
+def test_semi_group_retry_freezes_images_only_and_folds_to_one_link(tmp_path: Path) -> None:
     """半定制整组重试不能复用全定制的重试计划。
 
     全定制计划会带 5 个标题调用，而半定制没有标题链路：那些调用永远不会产生结果，
-    冻结按 1 个 link 计（应按 4 款），结算时全量比对过不去，冻结积分也退不回来。
+    结算时全量比对过不去，冻结积分也退不回来。半定制按「组」计费：重试一个组（4 款）
+    折叠成 1 个 link 上报，结算也只回 1 条 item。
     """
     billing = RecordingBilling()
     service = _service(tmp_path, billing)
@@ -77,7 +78,7 @@ def test_semi_group_retry_freezes_images_only_and_expands_to_four_items(tmp_path
     assert [call.feature for call in plan.calls] == ["pod.image", "pod.image"]
     assert plan.product_batch_freeze_payload() == {
         "idempotency_key": plan.idempotency_key,
-        "link_count": 4,
+        "link_count": 1,
         "scope": ["four_grid"],
         "billing_profile": plan.billing_profile,
     }
@@ -86,8 +87,7 @@ def test_semi_group_retry_freezes_images_only_and_expands_to_four_items(tmp_path
     ]
     assert plan.product_batch_settlement_payload(outcomes) == {
         "items": [
-            {"link_idx": index, "subitems": [{"feature": "four_grid", "status": "success"}]}
-            for index in range(1, 5)
+            {"link_idx": 1, "subitems": [{"feature": "four_grid", "status": "success"}]}
         ]
     }
 
@@ -116,6 +116,6 @@ def test_semi_batch_plan_survives_persistence_roundtrip(tmp_path: Path) -> None:
     assert plan.product_batch_settlement_payload(outcomes) == {
         "items": [
             {"link_idx": index, "subitems": [{"feature": "four_grid", "status": "success"}]}
-            for index in range(1, 9)
+            for index in range(1, 3)
         ]
     }

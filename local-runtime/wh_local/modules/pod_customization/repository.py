@@ -2979,8 +2979,9 @@ class PodCustomizationRepository:
             )
             self._refresh_counts(connection, batch_id, now)
             connection.execute(
-                """UPDATE pod_customization_batches SET status = 'generating_patterns', updated_at = ?, error_message = ''
-                   WHERE batch_id = ?""", (now, batch_id)
+                """UPDATE pod_customization_batches SET status = 'generating_patterns', updated_at = ?, error_message = '',
+                       last_progress_at = ?
+                   WHERE batch_id = ?""", (now, now, batch_id)
             )
             rows = connection.execute(
                 """SELECT results.result_id AS item_id,
@@ -3071,10 +3072,11 @@ class PodCustomizationRepository:
             next_status = "generating_patterns" if image_style_indices else "generating_titles"
             claimed = connection.execute(
                 """UPDATE pod_customization_batches
-                   SET status = ?, error_message = '', updated_at = ?, finished_at = ''
+                   SET status = ?, error_message = '', updated_at = ?, finished_at = '',
+                       last_progress_at = ?
                    WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ?
                      AND status IN ('completed', 'partial_failure', 'failed', 'cancelled', 'settlement_pending')""",
-                (next_status, now, batch_id, workspace_id, owner_user_id),
+                (next_status, now, now, batch_id, workspace_id, owner_user_id),
             )
             if claimed.rowcount != 1:
                 raise PodRepositoryError("POD batch must settle before retrying failed styles", 409)

@@ -15,6 +15,7 @@ import "./shared/styles/peach-garden.css";
 import "./shared/styles/ink-tap.css";
 import "./shared/styles/framework-flow.css";
 import "./modules/product_processing/styles/product-processing.css";
+import "./modules/ai_video/styles/aiVideoPage.css";
 import "./shared/styles/apple-workspace.css";
 import "driver.js/dist/driver.css";
 import "./shared/styles/guide-tour.css";
