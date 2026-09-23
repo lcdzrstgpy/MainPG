@@ -6,7 +6,7 @@ import { projects } from "@/lib/db/schema";
 import { getUploadsDir, getOutputDir } from "@/lib/paths";
 import { eq } from "drizzle-orm";
 import { apiError, errText } from "@/lib/api-error";
-import { sanitizeCreationBrief } from "@/lib/creation-brief";
+import { buildWorkflowPlanForStrategy, sanitizeCreationBrief } from "@/lib/creation-brief";
 
 // Project ids are UUIDs; validate before using one in a filesystem path (guards the rm below against traversal)
 const SAFE_ID = /^[a-zA-Z0-9-]+$/;
@@ -30,9 +30,9 @@ const PATCHABLE_FIELDS = [
   "characterId",
   "status",
   // Unified creation contract (see src/lib/creation-brief.ts). creativeIntent / visualBible /
-  // productionWorkflow stay OUT of this list on purpose: their single write path (with their own
-  // sanitizers) is PATCH /api/project/[id]/production, and duplicating it here would give the same
-  // columns two divergent update paths.
+  // productionWorkflow stay OUT of this list: callers edit them through
+  // PATCH /api/project/[id]/production. Updating the brief below also rebuilds the workflow
+  // internally, so the saved plan follows its output scheme.
   "creationBrief",
 ] as const;
 
@@ -95,8 +95,11 @@ export async function PATCH(
 
     // The brief is normalized with the same sanitizer used at creation time, so an edit can never
     // store an out-of-contract strategy/enum that the script and compose stages would trust.
+    // Keep the workflow in step with the strategy derived from the saved scheme snapshot.
     if ("creationBrief" in updates) {
-      updates.creationBrief = sanitizeCreationBrief(updates.creationBrief);
+      const creationBrief = sanitizeCreationBrief(updates.creationBrief);
+      updates.creationBrief = creationBrief;
+      updates.productionWorkflow = buildWorkflowPlanForStrategy(creationBrief.outputStrategy);
     }
 
     if (Object.keys(updates).length === 0) {

@@ -188,6 +188,7 @@ describe("PATCH 更新创作简报", () => {
     expect((await updated.json()).creationBrief).toEqual(
       sanitizeCreationBrief({ inputMode: "topic", targetDuration: 60, outputStrategy: "native-film", targetAudience: ["学生党"] })
     );
+    expect((await (await get(created.id)).json()).productionWorkflow).toEqual(buildWorkflowPlanForStrategy("native-film"));
     expect((await (await get(created.id)).json()).creationBrief.outputStrategy).toBe("native-film");
 
     const invalid = await patch(created.id, { creationBrief: { inputMode: "telepathy", outputStrategy: "hologram" } });
