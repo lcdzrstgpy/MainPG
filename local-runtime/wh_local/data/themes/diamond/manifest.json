@@ -1,0 +1,10 @@
+{
+  "id": "diamond",
+  "label": "黑白钻石",
+  "description": "高对比黑钻石风格，简洁锐利",
+  "swatch": "linear-gradient(135deg, #050505, #737985 55%, #ffffff)",
+  "version": "1.0.0",
+  "files": [
+    "theme.css"
+  ]
+}

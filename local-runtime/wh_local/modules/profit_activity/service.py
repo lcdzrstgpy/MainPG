@@ -853,14 +853,27 @@ def _decimal(value: Any) -> Decimal:
 _SETTINGS_FIELD_TYPES = get_type_hints(ProfitSettings)
 
 
+def _int_setting(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("settings value must be an integer") from exc
+
+
+def _bool_setting(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"true", "1", "yes", "on"}
+
+
 def _decimal_settings(values: dict[str, Any]) -> dict[str, Any]:
     return {
         key: (
             _decimal_setting(value)
             if _SETTINGS_FIELD_TYPES.get(key) is Decimal
-            else int(value)
+            else _int_setting(value)
             if _SETTINGS_FIELD_TYPES.get(key) is int
-            else value is True
+            else _bool_setting(value)
             if _SETTINGS_FIELD_TYPES.get(key) is bool
             else str(value)
         )

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 
 from ...customer.contracts import CustomerBillingPermissionError
@@ -21,26 +21,12 @@ class RemotePodBillingCoordinator(PodBillingCoordinator):
         self,
         remote_client: Any,
         remote_token_resolver: Callable[[Actor], str],
-        *,
-        server_managed: bool = False,
     ) -> None:
         self._remote_client = remote_client
         self._remote_token_resolver = remote_token_resolver
-        self._server_managed = bool(server_managed)
 
     def freeze(self, actor: Actor, plan: PodCallPlan) -> PodExecutionGrant:
         remote_token = self._required_remote_token(actor)
-        if self._server_managed:
-            # The desktop never receives a provider credential in this mode.
-            # Each actual POD call reserves and settles through the server AI
-            # gateway with its stable call id as the idempotency boundary.
-            return PodExecutionGrant(
-                freeze_id=f"pod-gateway:{plan.idempotency_key}",
-                rule_version=0,
-                expires_at=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
-                provider_keys={},
-                remote_token=remote_token,
-            )
         response = self._remote_client.freeze_batch_points(
             remote_token,
             plan.product_batch_freeze_payload(),
@@ -58,10 +44,6 @@ class RemotePodBillingCoordinator(PodBillingCoordinator):
         outcomes: Sequence[PodCallOutcome],
     ) -> None:
         del actor
-        if self._server_managed:
-            # Server gateway requests already settled from the provider's
-            # durable outcome; this legacy batch callback has no authority.
-            return
         self._remote_client.settle_batch_points(
             grant.remote_token,
             grant.freeze_id,
@@ -70,14 +52,6 @@ class RemotePodBillingCoordinator(PodBillingCoordinator):
 
     def regrant(self, actor: Actor, freeze_id: str) -> PodExecutionGrant:
         remote_token = self._required_remote_token(actor)
-        if self._server_managed:
-            return PodExecutionGrant(
-                freeze_id=freeze_id,
-                rule_version=0,
-                expires_at=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
-                provider_keys={},
-                remote_token=remote_token,
-            )
         status_response = self._remote_client.batch_freeze_status(remote_token, freeze_id)
         status = status_response.get("freeze") if isinstance(status_response, Mapping) else None
         if not isinstance(status, Mapping) or str(status.get("freeze_id") or "") != freeze_id:

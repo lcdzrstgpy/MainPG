@@ -39,8 +39,17 @@ class CustomerAuthClient:
     business modules.
     """
 
-    def __init__(self, base_url: str = "", *, timeout_seconds: float = 8):
+    def __init__(
+        self,
+        base_url: str = "",
+        *,
+        timeout_seconds: float = 8,
+        station_base_url: str = "",
+    ):
         self.base_url = str(base_url or "").strip().rstrip("/")
+        # 分站申请走公告发布后台（wh-admin）的免登录接口，与账号服务不同域：
+        # 工作台用 publish-api 前缀访问，由调用方注入同一套配置。
+        self.station_base_url = str(station_base_url or "").strip().rstrip("/")
         self.timeout_seconds = timeout_seconds
         self._session = requests.Session()
         self._session.trust_env = False
@@ -66,6 +75,18 @@ class CustomerAuthClient:
 
     def change_password(self, payload: dict[str, Any]) -> CustomerAuthActionResult:
         return normalize_action_response(self._post("/api/customer/change-password", payload))
+
+    def change_username(self, payload: dict[str, Any], remote_token: str) -> CustomerAuthActionResult:
+        """修改登录用户名（服务端校验已登录 + 邮箱验证码，30 天限一次）。"""
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        return normalize_action_response(
+            self._post(
+                "/api/customer/change-username",
+                payload,
+                headers={"Authorization": f"Bearer {remote_token}"},
+            )
+        )
 
     def forgot_password(self, payload: dict[str, Any]) -> CustomerAuthActionResult:
         return normalize_action_response(self._post("/api/customer/forgot-password", payload))
@@ -122,6 +143,27 @@ class CustomerAuthClient:
             headers={"Authorization": f"Bearer {remote_token}"},
         )
 
+    def billing_ledger_history(
+        self,
+        remote_token: str,
+        *,
+        category: str = "",
+        limit: int = 20,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """积分入账明细分页查询（充值积分 / 活动积分，服务端过滤后再分页）。"""
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        query = f"?limit={max(1, min(int(limit), 100))}&offset={max(0, int(offset))}"
+        if category:
+            from urllib.parse import quote
+            query += f"&category={quote(category, safe='')}"
+        return self._billing_result(
+            self._get,
+            f"/api/customer/billing/ledger{query}",
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
     def create_topup_order(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
         if not remote_token:
             raise CustomerBillingPermissionError()
@@ -142,14 +184,6 @@ class CustomerAuthClient:
 
     def reserve_ai_usage(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
         return self._billing_post("/api/customer/billing/usage/reserve", remote_token, payload)
-
-    def gateway_pod_title(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
-        """Request a server-managed POD title; no provider credential is returned."""
-        return self._billing_post("/api/customer/ai/pod/title", remote_token, payload)
-
-    def gateway_pod_image(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
-        """Request one server-managed complete POD style; no provider credential is returned."""
-        return self._billing_post("/api/customer/ai/pod/image", remote_token, payload)
 
     def settle_ai_usage_success(self, remote_token: str, usage_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         return self._billing_post(f"/api/customer/billing/usage/{usage_id}/succeed", remote_token, payload)
@@ -191,6 +225,71 @@ class CustomerAuthClient:
             payload,
             headers={"Authorization": f"Bearer {remote_token}"},
         )
+
+    def submit_feedback(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Submit user feedback (text + base64 images) to the platform auth service."""
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        return self._post(
+            "/api/customer/feedback",
+            payload,
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
+    def list_my_feedback(self, remote_token: str, limit: int = 20, offset: int = 0) -> dict[str, Any]:
+        """Fetch the current account's feedback history from the platform service."""
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        return self._get(
+            f"/api/customer/feedback/mine?limit={limit}&offset={offset}",
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
+    def submit_station_application(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """提交分站申请（「推广计划 · 申请加入」）。
+
+        打到公告发布后台（wh-admin）的免登录端点；account_id 由本地后端从会话
+        注入，不信任前端上报，避免替他人提交申请。
+        """
+        return self._station_request("POST", "/api/station-applications/public", payload)
+
+    def get_station_application(self, account_id: str) -> dict[str, Any]:
+        """查询该账号最近一条分站申请状态（免登录端点，不回分站密码）。"""
+        account_id = str(account_id or "").strip()
+        if not account_id:
+            raise CustomerAuthRejected(400, "missing account id")
+        from urllib.parse import quote
+
+        return self._station_request(
+            "GET",
+            f"/api/station-applications/public?account_id={quote(account_id, safe='')}",
+        )
+
+    def list_partner_stations(self) -> dict[str, Any]:
+        """合作中的中转站清单（编号 + 名称），充值页下拉框用。"""
+        return self._station_request("GET", "/api/station-applications/public/partners")
+
+    def get_partner_tiers(self, station_code: str) -> dict[str, Any]:
+        """按中转编号取该站的充值档位，选中后档位表整体切换用。"""
+        code = str(station_code or "").strip()
+        if not code:
+            raise CustomerAuthRejected(400, "missing station code")
+        from urllib.parse import quote
+
+        return self._station_request(
+            "GET",
+            f"/api/station-applications/public/partners/{quote(code, safe='')}",
+        )
+
+    def _station_request(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if not self.station_base_url:
+            raise CustomerAuthUnavailable("station application service is not configured")
+        return self._request(method, path, payload, base_url=self.station_base_url)
 
     def freeze_pod_points(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Freeze a POD plan and decrypt its scoped grants only in memory."""
@@ -299,6 +398,169 @@ class CustomerAuthClient:
             headers={"Authorization": f"Bearer {remote_token}"},
         )
 
+    def claim_daily_extra(self, remote_token: str) -> dict[str, Any]:
+        """每日免费领取 100 积分（服务端按北京自然日幂等，重复请求返回 409）。"""
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        return self._billing_result(
+            self._post,
+            "/api/customer/billing/daily-extra/claim",
+            {},
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
+    def claim_basic_weekly(self, remote_token: str) -> dict[str, Any]:
+        """基础版每周领取 1000 积分（服务端按自然周幂等）。"""
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        return self._billing_result(
+            self._post,
+            "/api/customer/billing/plan-basic/claim",
+            {},
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
+    def billing_usage_history(
+        self,
+        remote_token: str,
+        *,
+        cursor: str = "",
+        limit: int = 30,
+    ) -> dict[str, Any]:
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        query = f"?limit={max(1, min(int(limit), 100))}"
+        if cursor:
+            from urllib.parse import quote
+            query += f"&cursor={quote(cursor, safe='')}"
+        return self._billing_result(
+            self._get,
+            f"/api/customer/billing/usage{query}",
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
+    def create_topup_order(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        return self._post(
+            "/api/customer/billing/topup-orders",
+            payload,
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
+    def quote_topup(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        return self._post(
+            "/api/customer/billing/topup-quote",
+            payload,
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
+    def reserve_ai_usage(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._billing_post("/api/customer/billing/usage/reserve", remote_token, payload)
+
+    def settle_ai_usage_success(self, remote_token: str, usage_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._billing_post(f"/api/customer/billing/usage/{usage_id}/succeed", remote_token, payload)
+
+    def settle_ai_usage_failure(self, remote_token: str, usage_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._billing_post(f"/api/customer/billing/usage/{usage_id}/fail", remote_token, payload)
+
+    def freeze_batch_points(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Freeze points for a batch of product links and receive scoped AI keys."""
+        return self._billing_post("/api/customer/billing/batch/freeze", remote_token, payload)
+
+    def settle_batch_points(self, remote_token: str, freeze_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Settle a frozen batch from per-link subitem statuses reported by the client."""
+        return self._billing_post(
+            "/api/customer/billing/batch/settle",
+            remote_token,
+            {**payload, "freeze_id": freeze_id},
+        )
+
+    def batch_freeze_status(self, remote_token: str, freeze_id: str) -> dict[str, Any]:
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        return self._billing_result(
+            self._get,
+            f"/api/customer/billing/batch/{freeze_id}",
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
+    def submit_pp_failure_log(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Upload product-processing failure diagnostics for server-side storage.
+
+        Best-effort reporting only: the desktop never blocks task completion on
+        this call, and failures to report are intentionally swallowed by callers.
+        """
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        return self._post(
+            "/api/customer/product-processing/failure-log",
+            payload,
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
+    def submit_feedback(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Submit user feedback (text + base64 images) to the platform auth service."""
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        return self._post(
+            "/api/customer/feedback",
+            payload,
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
+    def list_my_feedback(self, remote_token: str, limit: int = 20, offset: int = 0) -> dict[str, Any]:
+        """Fetch the current account's feedback history from the platform service."""
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        return self._get(
+            f"/api/customer/feedback/mine?limit={limit}&offset={offset}",
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
+    def admin_request(
+        self,
+        remote_token: str,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Forward an authenticated admin API request to the platform auth service.
+
+        Only ``/api/admin/*`` paths are allowed; the caller (workbench admin
+        proxy) is responsible for authorizing the local session first.
+        """
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        if not path.startswith("/api/admin/"):
+            raise CustomerBillingProtocolError()
+        headers = {"Authorization": f"Bearer {remote_token}"}
+        if method == "GET":
+            return self._billing_result(self._get, path, headers=headers)
+        if method in ("POST", "PUT", "PATCH", "DELETE"):
+            return self._billing_result(
+                self._request,
+                method,
+                path,
+                payload if payload is not None else {},
+                headers,
+            )
+        raise CustomerBillingProtocolError()
+
+    def _billing_post(self, path: str, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        # 附带客户端版本号：服务端据此在消费流水上记录产生该笔调用的版本，
+        # 供后台按版本分析用量与失败率。旧服务端会忽略该字段，无兼容风险。
+        return self._billing_result(
+            self._post,
+            path,
+            {**payload, "app_version": str(default_config().app_version or "")},
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
     def _billing_result(self, function, *args, **kwargs) -> dict[str, Any]:
         for attempt in range(_BILLING_MAX_ATTEMPTS):
             try:
@@ -319,9 +581,12 @@ class CustomerAuthClient:
                 status_code = getattr(exc, "status_code", None)
                 if type(status_code) is not int or not 400 <= status_code < 500:
                     raise CustomerBillingProtocolError() from exc
+                # cachefix: 保留上游 detail（如「今日已领取，明天再来」）：4xx 是可预期的
+                # 业务拒绝，把原文带给用户比一句笼统英文有用得多。
+                upstream = str(getattr(exc, "message", "") or "")
                 raise CustomerAuthRejected(
                     status_code,
-                    "remote billing request was rejected",
+                    upstream or "remote billing request was rejected",
                 ) from exc
             except CustomerBillingPermissionError:
                 raise
@@ -341,8 +606,11 @@ class CustomerAuthClient:
         path: str,
         payload: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
+        *,
+        base_url: str = "",
     ) -> dict[str, Any]:
-        if not self.base_url:
+        target = str(base_url or self.base_url).strip().rstrip("/")
+        if not target:
             raise CustomerAuthUnavailable("customer auth service is not configured")
         body = json.dumps(payload).encode("utf-8") if payload is not None else None
         request_headers = {"Accept": "application/json"}
@@ -353,7 +621,7 @@ class CustomerAuthClient:
         try:
             response = self._session.request(
                 method,
-                f"{self.base_url}{path}",
+                f"{target}{path}",
                 data=body,
                 headers=request_headers,
                 timeout=self.timeout_seconds,

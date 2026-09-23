@@ -244,7 +244,6 @@ class UpdateManager:
         return self.status()
 
     def _install_after_begin(self) -> dict[str, object]:
-        installer_launched = False
         try:
             if self.settings.platform != "win32":
                 self._set_state("unavailable", error="Automatic updates are only available on Windows.")
@@ -254,12 +253,13 @@ class UpdateManager:
             installer = self._download_verified_installer(self._release)
             self._set_state("installing")
             self._launcher(installer, ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"])
-            installer_launched = True
         except Exception as error:
             self._set_state("failed", error=self._safe_error(error))
         finally:
-            if not installer_launched:
-                self._operation_lock.release()
+            # 无条件释放：主程序被安装器替换时锁随进程消失，无所谓；
+            # 主程序存活（UAC 取消 / 安装器提前退出）时若不释放，
+            # _operation_lock 永久持有，后续 check/install 全部拿不到锁。
+            self._operation_lock.release()
         return self.status()
 
     def _begin(self, state: str) -> bool:

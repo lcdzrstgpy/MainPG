@@ -12,8 +12,6 @@ from typing import Any
 
 import requests
 
-from wh_local.config import default_config
-from wh_local.customer.remote_client import CustomerAuthClient
 from wh_local.modules.product_processing.doubao_ark import MODEL_ID, DoubaoArkError
 
 from .billing_contract import PodBillingAuthorizationRequired, PodExecutionGrant
@@ -222,9 +220,7 @@ class PodTitleRuntime(AiRuntime):
         on_outcome: Callable[[str, str], None] | None = None,
     ) -> PodTitleResult:
         _validate_request(request)
-        use_gateway = not grant.provider_key("ark") and bool(getattr(grant, "remote_token", ""))
-        if not use_gateway:
-            _required_ark_key(grant)
+        _required_ark_key(grant)
         last_feedback = _normalized_text(request.rejected_reason)
         planned_call_ids = call_ids or tuple(
             f"{call_id.rsplit(':', 1)[0]}:{attempt}"
@@ -245,11 +241,7 @@ class PodTitleRuntime(AiRuntime):
                         on_start(attempt_call_id)
                     self._ensure_open()
                     messages = _messages_for_request(request, rejection_feedback=last_feedback)
-                    content = (
-                        self._complete_via_gateway(grant, attempt_call_id, messages)
-                        if use_gateway
-                        else self._complete(_required_ark_key(grant), messages)
-                    )
+                    content = self._complete(_required_ark_key(grant), messages)
                 if on_outcome is not None:
                     on_outcome(attempt_call_id, "success")
                     outcome_recorded = True
@@ -361,47 +353,6 @@ class PodTitleRuntime(AiRuntime):
                 retryable=True,
             )
         return content.strip()
-
-    @staticmethod
-    def _complete_via_gateway(
-        grant: PodExecutionGrant, call_id: str, messages: list[dict[str, Any]]
-    ) -> str:
-        remote_token = str(grant.remote_token or "")
-        if not remote_token:
-            raise PodBillingAuthorizationRequired("POD gateway authorization is unavailable")
-        client = CustomerAuthClient(default_config().customer_auth_base_url, timeout_seconds=35)
-        if not client.configured():
-            raise PodBillingAuthorizationRequired("POD gateway is not configured")
-        try:
-            reserved = client.reserve_ai_usage(
-                remote_token,
-                {"feature_key": "pod.title", "idempotency_key": f"pod:gateway:{call_id}"},
-            )
-            usage = reserved.get("usage") if isinstance(reserved, dict) else None
-            usage_id = str(usage.get("usage_id") or "") if isinstance(usage, dict) else ""
-            if not usage_id:
-                raise RuntimeError("POD title gateway reservation is invalid")
-            response = client.gateway_pod_title(
-                remote_token, {"usage_id": usage_id, "messages": messages, "model": MODEL_ID}
-            )
-            choices = response.get("choices") if isinstance(response, dict) else None
-            content = (
-                choices[0].get("message", {}).get("content")
-                if isinstance(choices, list) and choices and isinstance(choices[0], dict)
-                else None
-            )
-            if not isinstance(content, str) or not content.strip():
-                raise RuntimeError("POD title gateway returned an invalid response")
-            return content.strip()
-        except PodBillingAuthorizationRequired:
-            raise
-        except Exception as exc:
-            raise DoubaoArkError(
-                "POD title gateway is temporarily unavailable",
-                error_kind="transient",
-                retryable=True,
-            ) from exc
-
 
 REQUEST_TIMEOUT_SECONDS = 60.0
 

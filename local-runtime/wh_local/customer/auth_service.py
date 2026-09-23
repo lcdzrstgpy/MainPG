@@ -7,6 +7,7 @@ import json
 import re
 from pathlib import Path
 import secrets
+import sqlite3
 from typing import Any
 
 from ..db import transaction
@@ -26,7 +27,11 @@ EMAIL_CODE_MAX_ATTEMPTS = 5
 DEFAULT_WORKSPACE_NAME = "本地演示工作区"
 # 会话失联阈值：前端心跳间隔约 30 秒，超过该阈值未刷新 last_used_at 视为
 # 已关闭页面/断线，允许该账号重新登录并撤销旧会话。
-SESSION_STALE_SECONDS = 90
+SESSION_STALE_SECONDS = 300
+
+# 登录防爆破：15 分钟内同账号连续失败 5 次即锁定，之后登录直接拒绝。
+LOGIN_MAX_FAILURES = 5
+LOGIN_LOCK_WINDOW_SECONDS = 15 * 60
 
 
 class SQLiteCustomerAuthService:
@@ -51,6 +56,8 @@ class SQLiteCustomerAuthService:
     def login(self, payload: dict[str, Any]) -> CustomerAuthResult:
         identifier = _text(payload, "username") or _text(payload, "email")
         password = _text(payload, "password")
+        # 强制登录：账号已有活跃会话时，用户明确选择"退出其他设备"后撤销旧会话放行。
+        force = bool(payload.get("force") or payload.get("force_relogin"))
         if not identifier or not password:
             self._log_login("", identifier, "", False, "missing username/email or password")
             raise ValueError("username/email and password are required")
@@ -101,6 +108,26 @@ class SQLiteCustomerAuthService:
                 )
                 raise PermissionError("customer account is not active")
 
+            # 登录防爆破：15 分钟内同账号连续失败达到上限后锁定，密码比对之前拒绝，
+            # 避免攻击者无限试密码。窗口外的旧失败自然滑出，锁定自动解除。
+            lock_since = _utc_ago(LOGIN_LOCK_WINDOW_SECONDS)
+            failed_count = conn.execute(
+                """
+                SELECT COUNT(*) AS total FROM auth_login_logs
+                WHERE account_id = ? AND success = 0 AND created_at > ?
+                """,
+                (row["account_id"], lock_since),
+            ).fetchone()["total"]
+            if int(failed_count) >= LOGIN_MAX_FAILURES:
+                conn.execute(
+                    """
+                    INSERT INTO auth_login_logs (account_id, username, email, success, failure_reason, created_at)
+                    VALUES (?, ?, ?, 0, ?, ?)
+                    """,
+                    (row["account_id"], row["username"], row["email"], "too many failed login attempts", _utc_now()),
+                )
+                raise PermissionError("too many failed login attempts, please try again later")
+
             if not _verify_password(password, row["salt"], row["password_hash"], int(row["iterations"])):
                 conn.execute(
                     """
@@ -128,7 +155,7 @@ class SQLiteCustomerAuthService:
             if active_session is not None:
                 last_used = str(active_session["last_used_at"] or "")
                 still_active = bool(last_used and last_used >= stale_before)
-                if still_active:
+                if still_active and not force:
                     conn.execute(
                         """
                         INSERT INTO auth_login_logs (account_id, username, email, success, failure_reason, created_at)
@@ -137,7 +164,33 @@ class SQLiteCustomerAuthService:
                         (row["account_id"], row["username"], row["email"], "账号已在其他设备登录", now),
                     )
                     raise PermissionError("该账号已在其他设备登录，请先退出后再登录")
-                # 旧会话已失联（如关闭页面未登出），撤销并允许本次登录。
+                if still_active and force:
+                    # 用户明确选择强制登录：撤销旧会话，旧端下次请求收到 401 被顶替提示。
+                    conn.execute(
+                        """
+                        INSERT INTO auth_login_logs (account_id, username, email, success, failure_reason, created_at)
+                        VALUES (?, ?, ?, 1, ?, ?)
+                        """,
+                        (row["account_id"], row["username"], row["email"], "强制登录，撤销其他设备会话", now),
+                    )
+                    conn.execute(
+                        """
+                        UPDATE auth_platform_sessions
+                        SET revoked_at = ?
+                        WHERE account_id = ? AND revoked_at = ''
+                        """,
+                        (now, row["account_id"]),
+                    )
+                elif not still_active:
+                    # 旧会话已失联（如关闭页面未登出），撤销并允许本次登录。
+                    conn.execute(
+                        """
+                        UPDATE auth_platform_sessions
+                        SET revoked_at = ?
+                        WHERE account_id = ? AND revoked_at = ''
+                        """,
+                        (now, row["account_id"]),
+                    )
                 conn.execute(
                     """
                     UPDATE auth_platform_sessions
@@ -180,15 +233,14 @@ class SQLiteCustomerAuthService:
         email = _normalize_email(_text(payload, "email"))
         email_code = _text(payload, "email_code")
         password = _text(payload, "password")
-        invitation_code = _text(payload, "invitation_code")
+        # 邀请码可选：未填写时默认归属到公共邀请码 MAINPG-448N-ZKP6。
+        invitation_code = _text(payload, "invitation_code") or "MAINPG-448N-ZKP6"
         if not username:
             raise ValueError("username is required")
         if not re.fullmatch(r"\d{6}", email_code):
             raise ValueError("a valid 6-digit email code is required")
         if not password or len(password) < 6:
             raise ValueError("password must be at least 6 characters")
-        if not invitation_code:
-            raise ValueError("invitation code is required")
 
         verification_id = self._validate_email_code(email, email_code, purpose="register")
 
@@ -358,7 +410,7 @@ class SQLiteCustomerAuthService:
         self._require_email_verification()
         email = _normalize_email(_text(payload, "email"))
         purpose = _text(payload, "purpose").lower() or "register"
-        if purpose not in {"register", "reset_password"}:
+        if purpose not in {"register", "reset_password", "change_username"}:
             raise ValueError("unsupported email code purpose")
 
         now_dt = datetime.now(timezone.utc)
@@ -377,6 +429,8 @@ class SQLiteCustomerAuthService:
             if purpose == "register" and existing_account is not None:
                 return _email_code_success()
             if purpose == "reset_password" and existing_account is None:
+                return _email_code_success()
+            if purpose == "change_username" and existing_account is None:
                 return _email_code_success()
 
             recently_sent = conn.execute(
@@ -570,6 +624,113 @@ class SQLiteCustomerAuthService:
             message="if the account exists, a verification code has been sent to its email",
         )
 
+    def change_username(self, payload: dict[str, Any]) -> CustomerAuthActionResult:
+        """修改登录用户名：需已登录（account_id）+ 绑定邮箱验证码（purpose=change_username）。
+
+        规则：30 天限一次、新名 3~32 字符（中英文/数字/下划线/连字符）、
+        工作区范围内唯一、验证码一次性消费。成功/失败均写 auth_security_events。
+        """
+        self._require_email_verification()
+        account_id = _text(payload, "account_id")
+        new_username = _text(payload, "new_username").strip()
+        code = _text(payload, "code") or _text(payload, "email_code")
+        if not account_id:
+            raise PermissionError("missing account")
+        if not new_username:
+            raise ValueError("username is required")
+        if not 3 <= len(new_username) <= 32:
+            raise ValueError("username must be 3-32 characters")
+        if not re.fullmatch(r"[\w\u4e00-\u9fa5-]+", new_username):
+            raise ValueError("username contains unsupported characters")
+        if not re.fullmatch(r"\d{6}", code):
+            raise ValueError("a valid 6-digit email code is required")
+        now = _utc_now()
+
+        with transaction(self.database_path) as conn:
+            account = conn.execute(
+                "SELECT username, email FROM auth_accounts WHERE account_id = ?",
+                (account_id,),
+            ).fetchone()
+            if account is None:
+                raise PermissionError("account not found")
+            old_username = str(account["username"] or "")
+            email = _normalize_email(str(account["email"] or ""))
+            if not email:
+                _log_security_event(conn, account_id, "change_username", False, {"reason": "no bound email"})
+                raise PermissionError("a verified email is required to change username")
+            if new_username == old_username:
+                raise ValueError("new username must be different from the current one")
+
+        # 验证码校验（内部自开事务，错码 attempts 递增并抛出）。
+        verification_id = self._validate_email_code(email, code, purpose="change_username")
+
+        with transaction(self.database_path) as conn:
+            # 频率限制：30 天内只允许成功改一次。
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat(timespec="seconds")
+            recent = conn.execute(
+                """
+                SELECT 1 FROM auth_security_events
+                WHERE account_id = ? AND event_type = 'change_username' AND success = 1
+                  AND created_at > ?
+                LIMIT 1
+                """,
+                (account_id, cutoff),
+            ).fetchone()
+            if recent is not None:
+                _log_security_event(conn, account_id, "change_username", False, {"reason": "rate limited"})
+                raise PermissionError("username can only be changed once every 30 days")
+
+            taken = conn.execute(
+                "SELECT 1 FROM auth_accounts WHERE lower(username) = lower(?) AND account_id <> ?",
+                (new_username, account_id),
+            ).fetchone()
+            if taken is not None:
+                _log_security_event(conn, account_id, "change_username", False, {"reason": "username taken"})
+                raise ValueError("username already taken")
+
+            # 与重置密码一致：事务内二次校验，防止同一验证码被并发消费。
+            verification = conn.execute(
+                """
+                SELECT token_hash, expires_at, attempts
+                FROM auth_email_verifications
+                WHERE verification_id = ? AND email = ? AND purpose = 'change_username' AND used_at = ''
+                """,
+                (verification_id, email),
+            ).fetchone()
+            expected_code_hash = _email_code_digest(
+                self.email_code_secret,
+                verification_id,
+                email,
+                "change_username",
+                code,
+            )
+            if (
+                verification is None
+                or str(verification["expires_at"]) <= now
+                or int(verification["attempts"]) >= EMAIL_CODE_MAX_ATTEMPTS
+                or not hmac.compare_digest(str(verification["token_hash"]), expected_code_hash)
+            ):
+                _log_security_event(conn, account_id, "change_username", False, {"reason": "invalid code"})
+                raise PermissionError("invalid or expired email code")
+
+            conn.execute(
+                "UPDATE auth_accounts SET username = ?, updated_at = ? WHERE account_id = ?",
+                (new_username, now, account_id),
+            )
+            conn.execute(
+                "UPDATE auth_email_verifications SET used_at = ? WHERE verification_id = ? AND used_at = ''",
+                (now, verification_id),
+            )
+            _log_security_event(
+                conn,
+                account_id,
+                "change_username",
+                True,
+                {"old_username": old_username, "new_username": new_username},
+            )
+
+        return CustomerAuthActionResult(ok=True, message="username changed")
+
     def reset_password(self, payload: dict[str, Any]) -> CustomerAuthActionResult:
         new_password = _text(payload, "new_password") or _text(payload, "password")
         if not new_password or len(new_password) < 6:
@@ -656,46 +817,8 @@ class SQLiteCustomerAuthService:
         return CustomerAuthActionResult(ok=True, message="password reset")
 
     def password_reset(self, payload: dict[str, Any]) -> CustomerAuthActionResult:
-        if _text(payload, "reset_token") or _text(payload, "token"):
-            return self.reset_password(payload)
-        identifier = _text(payload, "account_id") or _text(payload, "username") or _text(payload, "email")
-        new_password = _text(payload, "new_password") or _text(payload, "password")
-        if not identifier:
-            raise ValueError("account_id, username or email is required")
-        if not new_password or len(new_password) < 6:
-            raise ValueError("new password must be at least 6 characters")
-
-        salt = secrets.token_hex(16)
-        password_hash = _hash_password(new_password, salt, DEFAULT_ITERATIONS)
-        now = _utc_now()
-        with transaction(self.database_path) as conn:
-            row = conn.execute(
-                """
-                SELECT account_id
-                FROM auth_accounts
-                WHERE account_id = ?
-                   OR lower(username) = lower(?)
-                   OR (email <> '' AND lower(email) = lower(?))
-                """,
-                (identifier, identifier, identifier),
-            ).fetchone()
-            if row is None:
-                raise ValueError("account not found")
-            conn.execute(
-                """
-                UPDATE auth_password_credentials
-                SET password_hash = ?, salt = ?, algorithm = 'pbkdf2_sha256', iterations = ?, updated_at = ?
-                WHERE account_id = ?
-                """,
-                (password_hash, salt, DEFAULT_ITERATIONS, now, row["account_id"]),
-            )
-            conn.execute(
-                "UPDATE auth_accounts SET updated_at = ? WHERE account_id = ?",
-                (now, row["account_id"]),
-            )
-            _revoke_platform_sessions(conn, row["account_id"])
-            _log_security_event(conn, row["account_id"], "password_reset_direct", True)
-        return CustomerAuthActionResult(ok=True, message="password reset")
+        # Security: delegate to the email-code verified reset flow; forbid credential-less reset.
+        return self.reset_password(payload)
 
     def _log_login(self, account_id: str, username: str, email: str, success: bool, reason: str) -> None:
         with transaction(self.database_path) as conn:
@@ -843,6 +966,123 @@ def _log_security_event(
             _utc_now(),
         ),
     )
+
+
+ACTION_LOG_RETENTION_DAYS = 90
+ACTION_LOG_MAX_ROWS = 2_000_000
+ACTION_LOG_PURGE_BATCH = 5_000
+FEEDBACK_RETENTION_DAYS = 14
+FEEDBACK_PURGE_BATCH = 500
+
+# 操作日志保留策略与后台页面文案（"服务器自动保留最近三个月"）对齐。
+# 两类表写入方不同、时间格式也不同（admin_operation_logs 为北京时间、
+# action_logs 为 UTC），因此统一用 SQLite datetime() 归一化后再比较，
+# 避免不同时区偏移的字符串直接比大小。
+_ACTION_LOG_TABLES = ("admin_operation_logs", "action_logs")
+
+
+def purge_expired_action_logs(
+    database_path: Path,
+    *,
+    days: int = ACTION_LOG_RETENTION_DAYS,
+    max_rows: int = ACTION_LOG_MAX_ROWS,
+    batch: int = ACTION_LOG_PURGE_BATCH,
+) -> int:
+    """Delete outdated operation-log rows; batched to avoid long transactions.
+
+    Two rules, applied in order: rows older than ``days`` days, then — as a
+    row-count backstop against a sudden burst — anything beyond the newest
+    ``max_rows`` rows. Returns the number of rows removed. Runs daily from
+    the auth server maintenance thread; all exceptions are intentionally
+    swallowed by the caller so retention can never affect request handling.
+    """
+    removed = 0
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+    with transaction(database_path) as conn:
+        for table in _ACTION_LOG_TABLES:
+            try:
+                conn.execute(
+                    f"CREATE INDEX IF NOT EXISTS idx_{table}_created_at ON {table}(created_at)"
+                )
+            except sqlite3.Error:
+                pass
+    for table in _ACTION_LOG_TABLES:
+        while True:
+            with transaction(database_path) as conn:
+                cursor = conn.execute(
+                    f"DELETE FROM {table} WHERE rowid IN ("
+                    f"SELECT rowid FROM {table} "
+                    f"WHERE datetime(created_at) < datetime(?) LIMIT {batch})",
+                    (cutoff,),
+                )
+                deleted = cursor.rowcount
+            removed += deleted
+            if deleted < batch:
+                break
+        while True:
+            with transaction(database_path) as conn:
+                cursor = conn.execute(
+                    f"DELETE FROM {table} WHERE rowid IN ("
+                    f"SELECT rowid FROM {table} "
+                    f"ORDER BY rowid DESC LIMIT {batch} OFFSET {max_rows})"
+                )
+                deleted = cursor.rowcount
+            removed += deleted
+            if deleted < batch:
+                break
+    return removed
+
+
+def refresh_stale_login_status(database_path: Path) -> int:
+    """把"所有平台会话均已过期/撤销"的账号从 online 回落为 offline。
+
+    login_status 只有登录（置 online）和显式登出（置 offline）两条写入路径：
+    用户直接关客户端不点退出时会永远停在 online。此函数由 auth server 的
+    维护线程周期调用，让在线状态随会话生命周期自动收敛。
+    """
+    now = _utc_now()
+    with transaction(database_path) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE auth_accounts
+            SET login_status = 'offline', updated_at = ?
+            WHERE login_status = 'online'
+              AND NOT EXISTS (
+                  SELECT 1 FROM auth_platform_sessions s
+                  WHERE s.account_id = auth_accounts.account_id
+                    AND s.revoked_at = ''
+                    AND s.expires_at > ?
+              )
+            """,
+            (now, now),
+        )
+        return int(cursor.rowcount or 0)
+
+
+def purge_expired_customer_feedback(
+    database_path: Path,
+    *,
+    days: int = FEEDBACK_RETENTION_DAYS,
+    batch: int = FEEDBACK_PURGE_BATCH,
+) -> int:
+    """Delete customer feedback rows older than ``days`` days; batched to avoid
+    long transactions. Feedback rows carry base64 images, so retention matters
+    for disk usage. Runs daily from the auth server maintenance thread."""
+    removed = 0
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+    while True:
+        with transaction(database_path) as conn:
+            cursor = conn.execute(
+                "DELETE FROM customer_feedback WHERE rowid IN ("
+                "SELECT rowid FROM customer_feedback "
+                f"WHERE datetime(created_at) < datetime(?) LIMIT {batch})",
+                (cutoff,),
+            )
+            deleted = cursor.rowcount
+        removed += deleted
+        if deleted < batch:
+            break
+    return removed
 
 
 def _account_id(username: str, email: str) -> str:

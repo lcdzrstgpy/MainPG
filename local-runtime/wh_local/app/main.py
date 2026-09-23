@@ -7,8 +7,9 @@ import threading
 import time
 
 from collections.abc import Mapping
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing
 from pathlib import Path
+import sqlite3
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -60,10 +61,12 @@ from ..data_collection.shop_routes import (
 from ..data_collection.shop_worker import ShopCollectionWorker
 from ..db import init_db
 from ..modules.basic_settings.router import create_router as create_basic_settings_router
+from ..modules.themes.router import create_themes_router
 from ..modules.ai_service import create_router as create_ai_service_router
 from ..modules.ai_service.temporary_cos import TemporaryCosStore
 from ..messages import (
     AnnouncementSyncService,
+    FeedbackReplySyncService,
     MessagesRepository,
     create_messages_router,
 )
@@ -336,10 +339,13 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         pod_ai_runtime = getattr(runtime_app.state, "pod_customization_ai_runtime", None)
         pod_title_runtime = getattr(runtime_app.state, "pod_customization_title_runtime", None)
         messages_sync = getattr(runtime_app.state, "messages_sync", None)
+        reply_sync = getattr(runtime_app.state, "reply_sync", None)
         if shop_worker is not None:
             shop_worker.start()
         if messages_sync is not None:
             messages_sync.start()
+        if reply_sync is not None:
+            reply_sync.start()
         try:
             yield
         finally:
@@ -347,6 +353,8 @@ def create_app(database_path: Path | None = None) -> FastAPI:
                 shop_worker.close()
             if messages_sync is not None:
                 messages_sync.stop()
+            if reply_sync is not None:
+                reply_sync.stop()
             if pod_service is not None:
                 pod_service.close()
             if pod_title_runtime is not None:
@@ -362,7 +370,9 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
-        allow_credentials=True,
+        # 鉴权走 Authorization: Bearer 头，不依赖 cookie；关闭 allow_credentials
+        # 避免 Starlette 回显任意 Origin 并放行跨域带凭据请求（同源防护形同虚设）。
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -402,13 +412,18 @@ def create_app(database_path: Path | None = None) -> FastAPI:
 
         @app.get("/dev/customer-login-demo", response_class=HTMLResponse)
         def customer_login_demo() -> str:
-            return AUTH_FLOW_DEMO_HTML
+            return CUSTOMER_LOGIN_DEMO_HTML
 
         @app.get("/dev/auth/{page_path:path}", response_class=HTMLResponse)
         def customer_auth_flow_demo(page_path: str = "login") -> str:
             return AUTH_FLOW_DEMO_HTML
 
-    remote_customer_auth = CustomerAuthClient(config.customer_auth_base_url)
+    # 分站申请落在公告发布后台（wh-admin）的免登录接口上，与公告同步共用同一
+    # 前缀（publish-api），因此复用 announce_base_url，不再单独加一份配置。
+    remote_customer_auth = CustomerAuthClient(
+        config.customer_auth_base_url,
+        station_base_url=config.announce_base_url,
+    )
     customer_auth = (
         remote_customer_auth
         if remote_customer_auth.configured()
@@ -424,6 +439,15 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         app.include_router(create_admin_proxy_router(remote_customer_auth, customer_sessions))
 
     app.include_router(create_basic_settings_router(db_path))
+    # 主题商店资源：优先读运行根目录下的源码包(wh_local/data/themes)，打包构建
+    # 时再回退到 PyInstaller 解包目录。客户端走公网下载，此路由仅服务端/开发机需要，
+    # 找不到目录时挂空列表，不影响启动。
+    _themes_candidates = [
+        config.runtime_root / "wh_local" / "data" / "themes",
+        Path(getattr(sys, "_MEIPASS", config.runtime_root)) / "wh_local" / "data" / "themes",
+    ]
+    themes_dir = next((p for p in _themes_candidates if p.is_dir()), Path("_no_themes_dir"))
+    app.include_router(create_themes_router(themes_dir))
     ai_service_assets = config.data_dir / "ai-service" / "assets"
     app.include_router(
         create_ai_service_router(
@@ -437,7 +461,6 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     pod_billing = RemotePodBillingCoordinator(
         remote_customer_auth,
         session_remote_token_resolver(customer_sessions),
-        server_managed=True,
     )
     pod_router = create_pod_customization_router(
         db_path,
@@ -486,6 +509,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
             product_processing,
             customer_sessions=customer_sessions,
             remote_customer_auth=remote_customer_auth,
+            with_lifespan=False,  # lifespan 由下方 /api 前缀的注册负责，防恢复任务双跑
         )
     )
     # 后端静态图床：生成图目录对外挂载（assets/outputs → /pp-media）。
@@ -509,14 +533,39 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     )
 
     # 公告消息：从公告发布后台定时同步，前端右上角站内信读取。
+    # 定向发送：同步时携带最近登录的远端账号 ID，后台据此返回发给该账号的定向公告。
+    def _current_remote_account_id() -> str:
+        try:
+            with closing(sqlite3.connect(db_path)) as conn:
+                row = conn.execute(
+                    "SELECT account_id FROM auth_accounts ORDER BY updated_at DESC LIMIT 1"
+                ).fetchone()
+                if row and row[0]:
+                    return str(row[0])
+                # 老版本登录镜像没有 auth_accounts 行：回退到 customer_users。
+                row = conn.execute(
+                    "SELECT remote_customer_id FROM customer_users ORDER BY updated_at DESC LIMIT 1"
+                ).fetchone()
+                return str(row[0] or "") if row else ""
+        except Exception:
+            return ""
+
     messages_repository = MessagesRepository(db_path)
     messages_sync = AnnouncementSyncService(
         messages_repository,
         config.announce_base_url,
         interval_seconds=300,
+        account_id_provider=_current_remote_account_id,
+    )
+    reply_sync = FeedbackReplySyncService(
+        messages_repository,
+        config.announce_base_url,
+        interval_seconds=180,
+        account_id_provider=_current_remote_account_id,
     )
     app.include_router(create_messages_router(messages_repository, messages_sync))
     app.state.messages_sync = messages_sync
+    app.state.reply_sync = reply_sync
 
     return app
 

@@ -30,19 +30,42 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from ..billing import (
     BATCH_BILLING_PROFILE_POD,
+    BATCH_BILLING_PROFILE_POD_SEMI,
     BATCH_BILLING_PROFILE_PRODUCT,
+    DAILY_EXTRA_POINTS,
+    DAILY_FIRST_CLAIM_POINTS,
+    PLAN_BASIC_CLAIM_MAX,
+    PLAN_BASIC_CLAIM_POINTS,
+    PLAN_BASIC_PACKAGE_ID,
+    PLAN_BASIC_PRICE_CENTS,
+    TOPUP_PROMOTION_ID,
+    TOPUP_PROMOTION_NAME,
+    _ensure_wallet,
+    _plan_next_refresh,
+    _plan_period_key,
+    _plan_type_label,
+    _plan_weekly_units,
     active_pricing,
     batch_freeze_status,
+    _daily_next_refresh,
+    _daily_period_key,
+    claim_basic_weekly,
+    claim_daily_extra,
     compute_batch_charge,
     freeze_batch_points,
     pricing_changelog,
     pricing_items,
+    point_ledger_history,
+
+
     release_expired_batch_freezes,
     reserve_ai_usage,
     settle_payment_order,
+    station_rebate_cents,
     settle_ai_usage_failure,
     settle_ai_usage_success,
     settle_batch_points,
+    topup_bonus_percent,
     topup_promotion_status,
     update_active_pricing,
     update_pricing_items,
@@ -62,7 +85,7 @@ from ..pod_billing import (
     update_pod_pricing_items,
 )
 from ..session import Actor
-from .auth_service import SQLiteCustomerAuthService
+from .auth_service import SQLiteCustomerAuthService, _log_security_event, purge_expired_action_logs, purge_expired_customer_feedback, refresh_stale_login_status
 from .credential_vault import CredentialVaultError, active_secret, enabled_secrets
 from .contracts import CustomerAuthActionResult, CustomerAuthResult, CustomerAuthUnavailable
 from .email_sender import TencentCloudSESEmailSender
@@ -81,7 +104,7 @@ BILLING_TOPUP_PRODUCTS = {
     "points_49": {"amount_cents": 4900, "label": "49 元积分包"},
     "points_99": {"amount_cents": 9900, "label": "99 元积分包"},
     "points_499": {"amount_cents": 49900, "label": "499 元积分包"},
-    "points_4999": {"amount_cents": 499900, "label": "4999 元积分包"},
+    "points_999": {"amount_cents": 99900, "label": "999 元积分包"},
 }
 # Amounts are immutable product amounts.  Their point value is calculated
 # from the active server rule, never from this legacy display mapping.
@@ -93,6 +116,12 @@ TOPUP_PACKAGE_CENTS = {
         "label": str(product["label"]),
     }
     for package_id, product in BILLING_TOPUP_PRODUCTS.items()
+}
+# 基础版套餐（「升级体验」弹窗专属，不进入充值页套餐列表）：
+# ¥40 = 4000 充值积分（标准价 1:100）+ 4 周每周 1500 体验额度。套餐状态由支付结算激活。
+PLAN_BASIC_PACKAGE = {
+    "amount_cents": PLAN_BASIC_PRICE_CENTS,
+    "label": "基础版 · 四周体验",
 }
 CUSTOM_TOPUP_MIN_CENTS = 100
 CUSTOM_TOPUP_MAX_CENTS = 300_000
@@ -116,8 +145,6 @@ MAX_GATEWAY_RESPONSE_BYTES = 8 * 1024 * 1024
 GATEWAY_DISTINCT_REQUEST_LIMITS = {
     "product_processing.text": 2,
     "product_processing.image_grid_2k": 13,
-    "pod.title": 1,
-    "pod.image": 1,
 }
 # Text adapters retry an identical upstream request at most three times; the
 # image generation adapter has a five-attempt outer budget.  Keep the server
@@ -125,17 +152,12 @@ GATEWAY_DISTINCT_REQUEST_LIMITS = {
 GATEWAY_SAME_REQUEST_ATTEMPT_LIMITS = {
     "product_processing.text": 3,
     "product_processing.image_grid_2k": 5,
-    "pod.title": 3,
-    "pod.image": 5,
 }
 GATEWAY_LEASE_SECONDS = {
     "product_processing.text": 600,
     "product_processing.image_grid_2k": 900,
-    "pod.title": 600,
-    "pod.image": 900,
 }
-POD_GATEWAY_FEATURE_KEYS = {"pod.title", "pod.image"}
-GATEWAY_IMAGE_FEATURE_KEYS = {"product_processing.image_grid_2k", "pod.image"}
+GATEWAY_IMAGE_FEATURE_KEYS = {"product_processing.image_grid_2k"}
 DEFAULT_ALIPAY_LOCAL_RETURN_URL = "http://127.0.0.1:8010/?module=personal_center&payment=success"
 
 
@@ -649,12 +671,6 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
     init_pod_billing_schema(db_path)
     _init_pod_grant_compensation_schema(db_path)
     _recover_pending_pod_grant_compensations(db_path)
-    try:
-        reconcile_pod_gateway_requests(db_path)
-    except Exception:
-        # Reconciliation is intentionally retried by the periodic sweep below.
-        # A provider outage must never prevent account-service startup.
-        pass
     service = SQLiteCustomerAuthService(
         db_path,
         email_sender=TencentCloudSESEmailSender.from_env(),
@@ -673,7 +689,6 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             try:
                 time.sleep(60 * 60)
                 release_expired_batch_freezes(db_path)
-                reconcile_pod_gateway_requests(db_path)
             except Exception:
                 time.sleep(60 * 60)
 
@@ -683,6 +698,41 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         daemon=True,
     )
     ttl_thread.start()
+
+    # 操作日志保留期：每天清理一次（90 天 + 200 万行兜底，与后台页面
+    # 「自动保留最近三个月」文案一致）。守护线程，服务退出自动终止。
+    def _action_log_purge_loop() -> None:
+        while True:
+            try:
+                time.sleep(60 * 60 * 24)
+                purge_expired_action_logs(db_path)
+                purge_expired_customer_feedback(db_path)
+            except Exception:
+                time.sleep(60 * 60 * 24)
+
+    purge_thread = threading.Thread(
+        target=_action_log_purge_loop,
+        name="action-log-retention",
+        daemon=True,
+    )
+    purge_thread.start()
+
+    # 在线状态维护：每 10 分钟把"会话已全部失效"的账号从 online 回落 offline，
+    # 修正"直接关客户端不点退出导致永远 online"的挂起问题。
+    def _login_status_refresh_loop() -> None:
+        while True:
+            try:
+                time.sleep(10 * 60)
+                refresh_stale_login_status(db_path)
+            except Exception:
+                time.sleep(10 * 60)
+
+    status_thread = threading.Thread(
+        target=_login_status_refresh_loop,
+        name="login-status-refresh",
+        daemon=True,
+    )
+    status_thread.start()
 
     @app.on_event("shutdown")
     def _stop_batch_ttl_sweep() -> None:
@@ -723,6 +773,223 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=401, detail="invalid bearer token")
         return {"ok": True, "account": account}
 
+    @app.post("/api/customer/log-upload")
+    def customer_log_upload(
+        payload: dict[str, Any],
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """启动器上报本地 runtime.log：复用认证 token，按用户/时间落库供后台查看。"""
+        account = _required_account(db_path, authorization)
+        content_b64 = str(payload.get("content_b64") or "")
+        if not content_b64:
+            raise HTTPException(status_code=400, detail="log content is required")
+        try:
+            decoded = base64.b64decode(content_b64, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise HTTPException(status_code=400, detail="log content is invalid") from exc
+        if len(decoded) > 16 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="log content is too large")
+        log_name = str(payload.get("log_name") or "runtime.log").strip()[:255] or "runtime.log"
+        app_version = str(payload.get("app_version") or "").strip()[:64]
+        platform = str(payload.get("platform") or "").strip()[:64]
+        upload_id = f"logup_{secrets.token_urlsafe(18)}"
+        now = _utc_now()
+        with transaction(db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO launcher_log_uploads (
+                    upload_id, account_id, username, workspace_id, app_version,
+                    platform, log_name, log_size, content_b64, client_ip, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    upload_id,
+                    str(account["account_id"]),
+                    str(account.get("username") or ""),
+                    str(account.get("workspace_id") or "default"),
+                    app_version,
+                    platform,
+                    log_name,
+                    len(decoded),
+                    content_b64,
+                    request.client.host if request.client else "",
+                    now,
+                ),
+            )
+        return {
+            "ok": True,
+            "upload_id": upload_id,
+            "log_name": log_name,
+            "log_size": len(decoded),
+            "created_at": now,
+        }
+
+    # ---- 用户反馈 ----------------------------------------------------- #
+    _FEEDBACK_CATEGORIES = {"bug", "suggestion", "other"}
+    _FEEDBACK_MAX_IMAGES = 3
+    _FEEDBACK_MAX_IMAGE_BYTES = 2 * 1024 * 1024
+    _FEEDBACK_MAX_CONTENT_CHARS = 2000
+    _FEEDBACK_WINDOW_HOURS = 6
+    _FEEDBACK_WINDOW_LIMIT = 10
+
+    def _validate_feedback_images(images_raw: Any) -> tuple[list[dict[str, Any]], int]:
+        """严格校验反馈图片：数量、大小、mime 白名单 + magic bytes 真身校验。
+
+        返回 (规范化图片元数据列表, 总字节数)；任何一项不过即抛 400/413。
+        data_b64 原样入库（与 log-upload 的 base64 存储惯例一致）。
+        """
+        if images_raw is None:
+            return [], 0
+        if not isinstance(images_raw, list):
+            raise HTTPException(status_code=400, detail="images must be a list")
+        if len(images_raw) > _FEEDBACK_MAX_IMAGES:
+            raise HTTPException(status_code=400, detail=f"too many images (max {_FEEDBACK_MAX_IMAGES})")
+        out: list[dict[str, Any]] = []
+        total = 0
+        for idx, item in enumerate(images_raw):
+            if not isinstance(item, dict):
+                raise HTTPException(status_code=400, detail="invalid image entry")
+            name = str(item.get("name") or f"image{idx + 1}").strip()[:80]
+            mime = str(item.get("mime") or "").strip().lower()
+            data_b64 = str(item.get("data_b64") or "")
+            if not data_b64:
+                raise HTTPException(status_code=400, detail="image data is required")
+            try:
+                raw = base64.b64decode(data_b64, validate=True)
+            except (ValueError, binascii.Error) as exc:
+                raise HTTPException(status_code=400, detail="image data is invalid") from exc
+            if len(raw) > _FEEDBACK_MAX_IMAGE_BYTES:
+                raise HTTPException(status_code=413, detail="image is too large (max 2MB each)")
+            if mime == "image/png":
+                ok = raw.startswith(b"\x89PNG\r\n\x1a\n")
+            elif mime == "image/jpeg":
+                ok = raw.startswith(b"\xff\xd8\xff")
+            elif mime == "image/gif":
+                ok = raw.startswith(b"GIF87a") or raw.startswith(b"GIF89a")
+            elif mime == "image/webp":
+                ok = raw.startswith(b"RIFF") and len(raw) >= 12 and raw[8:12] == b"WEBP"
+            else:
+                raise HTTPException(status_code=400, detail="unsupported image type (png/jpg/gif/webp)")
+            if not ok:
+                raise HTTPException(status_code=400, detail="image content does not match its type")
+            total += len(raw)
+            out.append({"name": name, "size": len(raw), "mime": mime, "data_b64": data_b64})
+        return out, total
+
+    @app.post("/api/customer/feedback")
+    def customer_feedback_submit(
+        payload: dict[str, Any],
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """提交用户反馈（文字 + 图片 base64）。复用登录 token 鉴权。"""
+        account = _required_account(db_path, authorization)
+        content = str(payload.get("content") or "").strip()[:_FEEDBACK_MAX_CONTENT_CHARS]
+        if not content:
+            raise HTTPException(status_code=400, detail="feedback content is required")
+        category = str(payload.get("category") or "").strip().lower()
+        if category not in _FEEDBACK_CATEGORIES:
+            category = "other"
+        contact = str(payload.get("contact") or "").strip()[:200]
+        images, total_bytes = _validate_feedback_images(payload.get("images"))
+        app_version = str(payload.get("app_version") or "").strip()[:64]
+        platform = str(payload.get("platform") or "").strip()[:64]
+        feedback_id = f"fb_{secrets.token_urlsafe(18)}"
+        now = _utc_now()
+        with transaction(db_path) as conn:
+            window_start = (
+                datetime.now(timezone.utc) - timedelta(hours=_FEEDBACK_WINDOW_HOURS)
+            ).isoformat(timespec="seconds")
+            recent = conn.execute(
+                "SELECT COUNT(*) FROM customer_feedback "
+                "WHERE account_id = ? AND datetime(created_at) >= datetime(?)",
+                (str(account["account_id"]), window_start),
+            ).fetchone()[0]
+            if recent >= _FEEDBACK_WINDOW_LIMIT:
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"too many feedback submissions in {_FEEDBACK_WINDOW_HOURS} hours (max {_FEEDBACK_WINDOW_LIMIT})",
+                )
+            conn.execute(
+                """
+                INSERT INTO customer_feedback (
+                    feedback_id, account_id, username, workspace_id, category,
+                    content, contact, images_json, image_count, total_image_bytes,
+                    status, admin_note, admin_id, status_updated_at,
+                    app_version, platform, client_ip, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', '', '', '', ?, ?, ?, ?)
+                """,
+                (
+                    feedback_id,
+                    str(account["account_id"]),
+                    str(account.get("username") or ""),
+                    str(account.get("workspace_id") or "default"),
+                    category,
+                    content,
+                    contact,
+                    json.dumps(images, ensure_ascii=False),
+                    len(images),
+                    total_bytes,
+                    app_version,
+                    platform,
+                    request.client.host if request.client else "",
+                    now,
+                ),
+            )
+        return {"ok": True, "feedback_id": feedback_id, "created_at": now}
+
+    @app.get("/api/customer/feedback/mine")
+    def customer_feedback_mine(
+        authorization: str | None = Header(default=None),
+        limit: int = 20,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """当前账号的历史反馈列表（含管理员处理状态与备注，不含图片原数据之外的敏感信息）。"""
+        account = _required_account(db_path, authorization)
+        limit = max(1, min(int(limit), 100))
+        offset = max(0, int(offset))
+        with transaction(db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT feedback_id, category, content, contact, image_count,
+                       total_image_bytes, status, admin_note, status_updated_at,
+                       app_version, platform, created_at
+                FROM customer_feedback
+                WHERE account_id = ?
+                ORDER BY created_at DESC, feedback_id DESC
+                LIMIT ? OFFSET ?
+                """,
+                (str(account["account_id"]), limit, offset),
+            ).fetchall()
+            total = conn.execute(
+                "SELECT COUNT(*) FROM customer_feedback WHERE account_id = ?",
+                (str(account["account_id"]),),
+            ).fetchone()[0]
+        return {
+            "ok": True,
+            "feedback": [
+                {
+                    "feedback_id": str(row["feedback_id"]),
+                    "category": str(row["category"]),
+                    "content": str(row["content"]),
+                    "contact": str(row["contact"] or ""),
+                    "image_count": int(row["image_count"]),
+                    "total_image_bytes": int(row["total_image_bytes"]),
+                    "status": str(row["status"]),
+                    "admin_note": str(row["admin_note"] or ""),
+                    "status_updated_at": str(row["status_updated_at"] or ""),
+                    "app_version": str(row["app_version"] or ""),
+                    "platform": str(row["platform"] or ""),
+                    "created_at": str(row["created_at"]),
+                }
+                for row in rows
+            ],
+            "total": int(total),
+            "limit": limit,
+            "offset": offset,
+        }
+
     @app.get("/api/customer/billing/summary")
     def billing_summary(authorization: str | None = Header(default=None)) -> dict[str, Any]:
         account = _required_account(db_path, authorization)
@@ -759,6 +1026,7 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             title_call_count=payload.get("title_call_count"),
             image_call_count=payload.get("image_call_count"),
             idempotency_key=str(payload.get("idempotency_key") or ""),
+            app_version=str(payload.get("app_version") or "")[:40],
         )
         if freeze["status"] != "frozen":
             raise HTTPException(status_code=409, detail="POD freeze is no longer active")
@@ -885,9 +1153,10 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         if billing_profile not in {
             BATCH_BILLING_PROFILE_PRODUCT,
             BATCH_BILLING_PROFILE_POD,
+            BATCH_BILLING_PROFILE_POD_SEMI,
         }:
             raise HTTPException(status_code=400, detail="invalid batch billing profile")
-        if billing_profile == BATCH_BILLING_PROFILE_POD:
+        if billing_profile in {BATCH_BILLING_PROFILE_POD, BATCH_BILLING_PROFILE_POD_SEMI}:
             _require_pod_create_permission(db_path, account)
         freeze = freeze_batch_points(
             db_path,
@@ -897,6 +1166,7 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             idempotency_key=idempotency_key,
             billing_profile=billing_profile,
             task_id=str(payload.get("task_id") or ""),
+            app_version=str(payload.get("app_version") or "")[:40],
         )
         keys = _issue_batch_keys(db_path, account, freeze["freeze_id"])
         return {"ok": True, "freeze": {**freeze, "keys": keys}}
@@ -923,6 +1193,76 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
 
     @app.get("/api/customer/billing/batch/{freeze_id}")
     def customer_billing_batch_status(
+        freeze_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        account = _required_account(db_path, authorization)
+        return {
+            "ok": True,
+            "freeze": batch_freeze_status(
+                db_path,
+                freeze_id,
+                expected_account_id=str(account["account_id"]),
+            ),
+        }
+
+    # --- POD 半定制独立计费接口 ---
+    # 半定制（纯图案）按「组」上报：4 款 = 1 个 link，固定 32 积分（8 积分/款）。
+    # 与全定制（pod_random_v1）/商品处理（product_processing）共用底层 freeze/settle，
+    # 但通过独立路由强制 billing_profile = pod_semi_v1，避免和现有 POD 通用接口混用。
+    @app.post("/api/customer/billing/pod-semi/freeze")
+    def customer_pod_semi_freeze(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        account = _required_account(db_path, authorization)
+        link_count = payload.get("link_count")
+        try:
+            link_count = max(1, int(link_count))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="link_count is required") from exc
+        scope = payload.get("scope")
+        if scope is not None and not isinstance(scope, list):
+            raise HTTPException(status_code=400, detail="scope must be a list")
+        idempotency_key = str(payload.get("idempotency_key") or "").strip()
+        if idempotency_key and not 16 <= len(idempotency_key) <= 200:
+            raise HTTPException(status_code=400, detail="idempotency_key length must be 16..200")
+        _require_pod_create_permission(db_path, account)
+        freeze = freeze_batch_points(
+            db_path,
+            _billing_actor(account),
+            link_count=link_count,
+            scope=[str(item) for item in (scope or [])] if scope is not None else None,
+            idempotency_key=idempotency_key,
+            billing_profile=BATCH_BILLING_PROFILE_POD_SEMI,
+            task_id=str(payload.get("task_id") or ""),
+            app_version=str(payload.get("app_version") or "")[:40],
+        )
+        keys = _issue_batch_keys(db_path, account, freeze["freeze_id"])
+        return {"ok": True, "freeze": {**freeze, "keys": keys}}
+
+    @app.post("/api/customer/billing/pod-semi/settle")
+    def customer_pod_semi_settle(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        account = _required_account(db_path, authorization)
+        freeze_id = str(payload.get("freeze_id") or "").strip()
+        items = payload.get("items")
+        if not freeze_id:
+            raise HTTPException(status_code=400, detail="freeze_id is required")
+        if not isinstance(items, list):
+            raise HTTPException(status_code=400, detail="items must be a list")
+        result = settle_batch_points(
+            db_path,
+            freeze_id,
+            item_results=items,
+            expected_account_id=str(account["account_id"]),
+        )
+        return {"ok": True, "settle": result}
+
+    @app.get("/api/customer/billing/pod-semi/{freeze_id}")
+    def customer_pod_semi_status(
         freeze_id: str,
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
@@ -964,6 +1304,23 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             usage_status=usage_status,
         )
 
+    @app.get("/api/customer/billing/ledger")
+    def billing_point_ledger(
+        category: str = "",
+        limit: int = 20,
+        offset: int = 0,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """积分入账明细分页查询：只返回入账（credit），category 区分充值/活动积分。"""
+        account = _required_account(db_path, authorization)
+        return point_ledger_history(
+            db_path,
+            account_id=str(account["account_id"]),
+            category=category,
+            limit=limit,
+            offset=offset,
+        )
+
     @app.post("/api/customer/billing/topup-orders")
     def create_billing_topup_order(
         payload: dict[str, Any],
@@ -980,6 +1337,33 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         _required_account(db_path, authorization)
         return _topup_quote(db_path, payload)
 
+    @app.post("/api/customer/billing/plan-basic/claim")
+    def claim_basic_plan_points(
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """基础版每周直接领取 1000 积分（额外积分池，永久有效）。"""
+        account = _required_account(db_path, authorization)
+        return claim_basic_weekly(
+            db_path,
+            str(account["account_id"]),
+            str(account.get("workspace_id") or "default"),
+        )
+
+    @app.post("/api/customer/billing/daily-extra/claim")
+    def claim_daily_extra_points(
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """每日签到：首签 +500 额外积分（永久），之后每天 +100 体验积分（限时）。
+
+        幂等按北京自然日，单账号每日仅一次；重复请求返回 409。
+        """
+        account = _required_account(db_path, authorization)
+        return claim_daily_extra(
+            db_path,
+            str(account["account_id"]),
+            str(account.get("workspace_id") or "default"),
+        )
+
     @app.post("/api/customer/billing/usage/reserve")
     def reserve_billing_usage(
         payload: dict[str, Any],
@@ -992,8 +1376,6 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             "product_processing.text",
             "product_processing.image_grid_2k",
             "product_processing.vision",
-            "pod.title",
-            "pod.image",
         }:
             raise HTTPException(status_code=400, detail="unsupported billing feature")
         if not 16 <= len(idempotency_key) <= 200:
@@ -1019,6 +1401,7 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
                 idempotency_key=idempotency_key,
                 quantity=1,
                 source_ref=str(payload.get("source_ref") or "")[:200],
+                app_version=str(payload.get("app_version") or "")[:40],
                 metadata=_safe_billing_metadata(metadata),
             ),
         }
@@ -1226,7 +1609,7 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         # 该网关同时承载文本与视觉（多模态）聊天。feature_key 由 usage 事件决定，
         # 不再硬编码文本，确保视觉 usage_id 不会被 "usage feature does not match" 拒绝。
         feature_key = _usage_feature(db_path, usage_id)
-        if feature_key not in {"product_processing.text", "product_processing.vision", "pod.title"}:
+        if feature_key not in {"product_processing.text", "product_processing.vision"}:
             raise HTTPException(status_code=400, detail="usage feature does not match operation")
         _require_reserved_usage(
             db_path,
@@ -1385,36 +1768,6 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
                 _fail_gateway_request(db_path, usage_id, request_hash)
             raise
 
-    @app.post("/api/customer/ai/pod/title")
-    def server_managed_pod_title(
-        payload: dict[str, Any],
-        authorization: str | None = Header(default=None),
-    ) -> dict[str, Any]:
-        """Run a title regeneration with server-owned credentials and settle it for zero points."""
-        usage_id = str(payload.get("usage_id") or "")
-        try:
-            response = server_managed_ai_chat(payload, authorization)
-        except HTTPException:
-            _release_pod_gateway_failure_if_safe(db_path, usage_id)
-            raise
-        _settle_pod_gateway_success(db_path, usage_id)
-        return response
-
-    @app.post("/api/customer/ai/pod/image")
-    def server_managed_pod_image(
-        payload: dict[str, Any],
-        authorization: str | None = Header(default=None),
-    ) -> dict[str, Any]:
-        """Run one complete four-image POD style and settle it on provider success."""
-        usage_id = str(payload.get("usage_id") or "")
-        try:
-            response = server_managed_ai_image(payload, authorization)
-        except HTTPException:
-            _release_pod_gateway_failure_if_safe(db_path, usage_id)
-            raise
-        _settle_pod_gateway_success(db_path, usage_id)
-        return response
-
     @app.post("/api/customer/billing/payment-callback/{provider}")
     async def billing_payment_callback(provider: str, request: Request) -> PlainTextResponse:
         """Accept a provider callback only after its official signature checks."""
@@ -1522,6 +1875,20 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
     @app.post("/api/customer/change-password")
     def change_password(payload: dict[str, Any]) -> dict[str, Any]:
         return _action_response(_call_action(service.change_password, payload))
+
+    @app.post("/api/customer/change-username")
+    def change_username(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """修改登录用户名：已登录 + 绑定邮箱验证码（purpose=change_username），30 天限一次。
+
+        account_id 由服务端从 token 解析注入，不信任请求体，防止改他人账号。
+        """
+        account = _required_account(db_path, authorization)
+        enriched_payload = dict(payload)
+        enriched_payload["account_id"] = str(account["account_id"])
+        return _action_response(_call_action(service.change_username, enriched_payload))
 
     @app.post("/api/customer/forgot-password")
     def forgot_password(payload: dict[str, Any], request: Request) -> dict[str, Any]:
@@ -1667,6 +2034,15 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         nonce = os.urandom(12)
         encryptor = Cipher(algorithms.AES(session_key), modes.GCM(nonce)).encryptor()
         ciphertext = encryptor.update(plaintext) + encryptor.finalize()
+        # 审计：下发采集凭据（OneBound API key）属安全敏感操作，记录发放人。
+        with transaction(db_path) as conn:
+            _log_security_event(
+                conn,
+                row["account_id"],
+                "collect_key_issued",
+                True,
+                {"workspace_code": workspace_code},
+            )
         return {
             "ok": True,
             "payload": base64.b64encode(ciphertext).decode("ascii"),
@@ -1737,6 +2113,10 @@ def _issue_platform_session(
     return {"session_id": session_id, "token": token, "expires_at": expires_at}
 
 
+class SessionRevokedError(RuntimeError):
+    """平台会话已被撤销（他端登录顶替/登出/改密），区别于过期与不存在。"""
+
+
 def _account_by_token(database_path: Path, token: str) -> dict[str, Any] | None:
     """按 token 查账户；命中 Redis 会话缓存直接返回，DB miss 时回填。
 
@@ -1773,6 +2153,14 @@ def _account_by_token(database_path: Path, token: str) -> dict[str, Any] | None:
             (token_hash, now),
         ).fetchone()
         if row is None:
+            # 区分"会话被撤销"（他端登录顶替/登出/改密）与"过期/不存在"，
+            # 让被顶替的前端收到可识别的提示，而不是笼统的会话过期。
+            revoked = conn.execute(
+                "SELECT 1 FROM auth_platform_sessions WHERE token_hash = ? AND revoked_at <> ''",
+                (token_hash,),
+            ).fetchone()
+            if revoked is not None:
+                raise SessionRevokedError()
             return None
         conn.execute(
             "UPDATE auth_platform_sessions SET last_used_at = ? WHERE token_hash = ?",
@@ -1798,7 +2186,10 @@ def _account_by_token(database_path: Path, token: str) -> dict[str, Any] | None:
 
 def _required_account(database_path: Path, authorization: str | None) -> dict[str, Any]:
     token = _bearer_token(authorization)
-    account = _account_by_token(database_path, token)
+    try:
+        account = _account_by_token(database_path, token)
+    except SessionRevokedError:
+        raise HTTPException(status_code=401, detail="session revoked, account signed in on another device")
     if account is None:
         raise HTTPException(status_code=401, detail="invalid bearer token")
     if str(account.get("account_status") or "").lower() not in {"active", ""}:
@@ -1852,157 +2243,6 @@ def _fixed_usage_provider(feature_key: str) -> tuple[str, str]:
     )
 
 
-def _settle_pod_gateway_success(database_path: Path, usage_id: str) -> dict[str, Any]:
-    """Settle one POD gateway usage from the server-owned provider outcome.
-
-    This is deliberately not exposed as a client settlement route.  The
-    authoritative evidence is the durable gateway row written before this
-    function runs, and the underlying usage settlement is idempotent.
-    """
-    feature_key = _usage_feature(database_path, usage_id)
-    if feature_key not in POD_GATEWAY_FEATURE_KEYS:
-        raise HTTPException(status_code=400, detail="usage feature does not match POD operation")
-    provider, model = _fixed_usage_provider(feature_key)
-    return settle_ai_usage_success(
-        database_path,
-        usage_id,
-        provider=provider,
-        model=model,
-        provider_task_id=_gateway_provider_task_id_for_usage(database_path, usage_id),
-        metadata={"gateway_settlement": "server_authoritative", "pod_operation": feature_key},
-    )
-
-
-def _gateway_provider_task_id_for_usage(database_path: Path, usage_id: str) -> str:
-    with transaction(database_path) as conn:
-        row = conn.execute(
-            """
-            SELECT provider_task_id
-            FROM billing_ai_gateway_requests
-            WHERE usage_id = ? AND status = 'succeeded' AND provider_task_id <> ''
-            ORDER BY updated_at DESC
-            LIMIT 1
-            """,
-            (usage_id,),
-        ).fetchone()
-    return str(row["provider_task_id"] or "") if row is not None else ""
-
-
-def _release_pod_gateway_failure_if_safe(database_path: Path, usage_id: str) -> None:
-    """Release a POD reservation only when no provider outcome remains uncertain."""
-    try:
-        feature_key = _usage_feature(database_path, usage_id)
-    except HTTPException:
-        return
-    if feature_key not in POD_GATEWAY_FEATURE_KEYS:
-        return
-    with transaction(database_path) as conn:
-        rows = conn.execute(
-            """
-            SELECT status, phase
-            FROM billing_ai_gateway_requests
-            WHERE usage_id = ?
-            """,
-            (usage_id,),
-        ).fetchall()
-    if any(
-        str(row["status"]) == "in_progress" or str(row["phase"]) == "submit_uncertain"
-        for row in rows
-    ):
-        return
-    settle_ai_usage_failure(
-        database_path,
-        usage_id,
-        error_message="POD gateway rejected the operation before provider submission",
-        reject_gateway_activity=True,
-    )
-
-
-def reconcile_pod_gateway_requests(database_path: Path, *, limit: int = 100) -> dict[str, int]:
-    """Reconcile durable submitted POD style tasks without any desktop callback.
-
-    A task id is persisted before polling.  Therefore process restarts and a
-    paused desktop cannot cause a second provider submission or strand the
-    reservation: a later reconciliation either settles the confirmed success,
-    releases a terminal failure, or leaves a transient provider outage pending.
-    """
-    # A crash after an upstream submit but before a durable task id cannot be
-    # polled safely.  Keep the same usage non-retryable, then release its
-    # reservation during the server sweep so no customer balance is frozen
-    # indefinitely.  The platform absorbs this deliberately conservative
-    # ambiguous-provider cost rather than charging the customer twice.
-    with transaction(database_path) as conn:
-        uncertain_rows = conn.execute(
-            """
-            SELECT usage_id FROM billing_ai_gateway_requests
-            WHERE feature_key = 'pod.image' AND status = 'failed'
-              AND phase = 'submit_uncertain' AND provider_task_id = ''
-            ORDER BY updated_at, usage_id
-            LIMIT ?
-            """,
-            (max(1, min(int(limit), 500)),),
-        ).fetchall()
-    failed = 0
-    for row in uncertain_rows:
-        settle_ai_usage_failure(
-            database_path,
-            str(row["usage_id"]),
-            error_message="POD image submit outcome remained uncertain; reservation released by server recovery",
-            reject_gateway_activity=True,
-        )
-        failed += 1
-
-    api_key = _server_provider_secret("image", "WH_WUYIN_IMAGE_API_KEY")
-    if not api_key:
-        return {"completed": 0, "failed": failed, "pending": 0}
-    with transaction(database_path) as conn:
-        rows = conn.execute(
-            """
-            SELECT usage_id, request_hash, provider_task_id
-            FROM billing_ai_gateway_requests
-            WHERE feature_key = 'pod.image' AND status = 'in_progress'
-              AND provider_task_id <> ''
-            ORDER BY updated_at, usage_id
-            LIMIT ?
-            """,
-            (max(1, min(int(limit), 500)),),
-        ).fetchall()
-    completed = pending = 0
-    for row in rows:
-        usage_id = str(row["usage_id"])
-        request_hash = str(row["request_hash"])
-        task_id = str(row["provider_task_id"])
-        try:
-            result_url = _poll_server_wuyin(api_key, task_id)
-            _complete_gateway_request(
-                database_path,
-                usage_id,
-                request_hash,
-                {"ok": True, "task_id": task_id, "result_url": result_url},
-            )
-            _settle_pod_gateway_success(database_path, usage_id)
-            completed += 1
-        except _ImageProviderTerminalFailure:
-            _fail_gateway_request(
-                database_path,
-                usage_id,
-                request_hash,
-                phase="terminal_failed",
-                clear_provider_task=False,
-            )
-            settle_ai_usage_failure(
-                database_path,
-                usage_id,
-                error_message="POD image provider task failed",
-            )
-            failed += 1
-        except Exception:
-            # Provider timeouts and temporary outages keep the task durable;
-            # the next server reconciliation reuses the same provider id.
-            pending += 1
-    return {"completed": completed, "failed": failed, "pending": pending}
-
-
 def _gateway_request_hash(payload: dict[str, Any]) -> str:
     encoded = json.dumps(
         payload,
@@ -2037,11 +2277,6 @@ def _require_reserved_usage(
         raise HTTPException(status_code=404, detail="usage event not found")
     if str(usage["feature_key"]) != feature_key:
         raise HTTPException(status_code=400, detail="usage feature does not match operation")
-    if (
-        str(usage["status"]) == "succeeded"
-        and feature_key in POD_GATEWAY_FEATURE_KEYS
-    ):
-        return
     if str(usage["status"]) != "reserved":
         raise HTTPException(status_code=409, detail="usage event is not reserved")
 
@@ -2066,26 +2301,6 @@ def _claim_gateway_request(
         if str(usage["feature_key"]) != feature_key:
             raise HTTPException(status_code=400, detail="usage feature does not match operation")
         if str(usage["status"]) != "reserved":
-            if (
-                feature_key in POD_GATEWAY_FEATURE_KEYS
-                and str(usage["status"]) == "succeeded"
-            ):
-                completed = conn.execute(
-                    """
-                    SELECT response_json
-                    FROM billing_ai_gateway_requests
-                    WHERE usage_id = ? AND request_hash = ? AND feature_key = ?
-                      AND status = 'succeeded'
-                    """,
-                    (usage_id, request_hash, feature_key),
-                ).fetchone()
-                if completed is not None:
-                    try:
-                        cached = json.loads(str(completed["response_json"] or ""))
-                    except (TypeError, json.JSONDecodeError) as exc:
-                        raise HTTPException(status_code=503, detail="cached gateway response is unavailable") from exc
-                    if isinstance(cached, dict):
-                        return _GatewayRequestClaim(cached_response=cached)
             raise HTTPException(status_code=409, detail="usage event is not reserved")
 
         if feature_key in GATEWAY_IMAGE_FEATURE_KEYS:
@@ -2273,6 +2488,22 @@ def _complete_gateway_request(
         )
         if cursor.rowcount != 1:
             raise HTTPException(status_code=409, detail="gateway request claim is no longer active")
+        # 记录上游返回的真实 token 用量（文本类响应带 usage 字段）。仅在 usage 事件
+        # 尚未写入用量时回填，避免覆盖直连路径经 settle 上报的值。
+        usage = response_payload.get("usage") if isinstance(response_payload, dict) else None
+        if isinstance(usage, dict):
+            prompt_tokens = int(usage.get("prompt_tokens") or 0)
+            completion_tokens = int(usage.get("completion_tokens") or 0)
+            total_tokens = int(usage.get("total_tokens") or 0)
+            if total_tokens > 0 or prompt_tokens > 0 or completion_tokens > 0:
+                conn.execute(
+                    """
+                    UPDATE billing_ai_usage_events
+                    SET input_tokens = ?, output_tokens = ?, total_tokens = ?
+                    WHERE usage_id = ? AND COALESCE(total_tokens, 0) = 0
+                    """,
+                    (prompt_tokens, completion_tokens, total_tokens, usage_id),
+                )
 
 
 def _record_gateway_provider_task(
@@ -2835,7 +3066,9 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
     # 展示型余额/流水缓存（短 TTL）；冻结/结算/充值等写路径会主动失效。
     pricing = active_pricing(database_path)
     promotion = topup_promotion_status()
-    cache_key = f"wallet:{account_id}:topup:fixed-package-bonus-25:{pricing['rule_version']}"
+        # cachefix: 键必须与 cache.invalidate_wallet(account_id) 删除的键一致，否则领取/充值/结算
+    # 之后 30s 内刷新 summary 仍命中旧缓存（余额"不涨"）。维度差异由 30s 短 TTL 兜底。
+    cache_key = f"wallet:{account_id}"
     cached = _cache.cache_get(cache_key)
     if cached is not None:
         return cached
@@ -2843,7 +3076,10 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
         _ensure_wallet(conn, account_id, workspace_id)
         wallet = conn.execute(
             """
-            SELECT points_balance, locked_points, manual_frozen_points, version, ledger_head_hash, updated_at
+            SELECT points_balance, locked_points, manual_frozen_points, version, ledger_head_hash,
+                   updated_at, plan_balance, plan_period_key, plan_type, plan_expire_at,
+                   basic_claim_period, basic_claim_count, extra_balance,
+                   daily_claim_date, daily_claim_count
             FROM billing_wallets
             WHERE account_id = ?
             """,
@@ -2859,6 +3095,17 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
             """,
             (account_id,),
         ).fetchall()
+        # 本周签到次数（进度条用）：source_id 形如 daily:YYYY-MM-DD，字典序即日期序。
+        week_signin_count = int(
+            conn.execute(
+                """
+                SELECT COUNT(*) AS n FROM billing_point_ledger
+                WHERE account_id = ? AND source_type = 'daily_extra_claim'
+                  AND source_id >= ?
+                """,
+                (account_id, f"daily:{_plan_period_key()}"),
+            ).fetchone()["n"]
+        )
         orders = conn.execute(
             """
             SELECT order_id, out_trade_no, provider, package_id, amount_cents, currency,
@@ -2871,6 +3118,23 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
             """,
             (account_id,),
         ).fetchall()
+    plan_type = str(wallet["plan_type"] if wallet else "experience")
+    plan_balance_units = int(wallet["plan_balance"] if wallet else 0)
+    plan_weekly_units = _plan_weekly_units(plan_type)
+    # 基础版每周直接领取状态：可领 = 套餐有效（过期已被 _ensure_wallet 回落）且未领满且本周未领。
+    claim_count = int(wallet["basic_claim_count"] if wallet else 0)
+    basic_claimable = (
+        plan_type == "basic"
+        and claim_count < PLAN_BASIC_CLAIM_MAX
+        and str(wallet["basic_claim_period"] if wallet else "") != _plan_period_key()
+    )
+    # 每日签到状态：所有套餐通用，唯一条件是「今天还没签」。
+    # 首签（从未签到过）送 500（永久），之后每天 100（限时）。
+    today = _daily_period_key()
+    daily_claim_date = str(wallet["daily_claim_date"] if wallet else "")
+    daily_claimable = daily_claim_date != today
+    first_claim = int(wallet["daily_claim_count"] if wallet else 0) == 0
+    daily_claim_points = DAILY_FIRST_CLAIM_POINTS if first_claim else DAILY_EXTRA_POINTS
     payload = {
         "ok": True,
         "account": {
@@ -2884,16 +3148,38 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
             "locked_points": _display_billing_points(int(wallet["locked_points"] if wallet else 0), pricing),
             "manual_frozen_points": _display_billing_points(int(wallet["manual_frozen_points"] if wallet else 0), pricing),
             "frozen_points": _display_billing_points(int((wallet["locked_points"] if wallet else 0) + (wallet["manual_frozen_points"] if wallet else 0)), pricing),
-            "available_points": _display_billing_points(int((wallet["points_balance"] if wallet else 0) - (wallet["locked_points"] if wallet else 0) - (wallet["manual_frozen_points"] if wallet else 0)), pricing),
+            "available_points": _display_billing_points(int((wallet["plan_balance"] if wallet else 0) + (wallet["extra_balance"] if wallet else 0) + (wallet["points_balance"] if wallet else 0) - (wallet["locked_points"] if wallet else 0) - (wallet["manual_frozen_points"] if wallet else 0)), pricing),
             "version": int(wallet["version"] if wallet else 0),
             "ledger_head_hash": wallet["ledger_head_hash"] if wallet else "",
             "updated_at": wallet["updated_at"] if wallet else "",
+            "plan": {
+                "plan_type": plan_type,
+                "plan_label": _plan_type_label(plan_type),
+                "plan_balance": _display_billing_points(plan_balance_units, pricing),
+                "plan_limit": _display_billing_points(plan_weekly_units, pricing),
+                "plan_used": _display_billing_points(max(0, plan_weekly_units - plan_balance_units), pricing),
+                "next_refresh_at": _plan_next_refresh(wallet["plan_period_key"] if wallet else ""),
+                "plan_expire_at": wallet["plan_expire_at"] if wallet else "",
+                "basic_claim_points": PLAN_BASIC_CLAIM_POINTS if plan_type == "basic" else 0,
+                "basic_claim_count": claim_count,
+                "basic_claim_max": PLAN_BASIC_CLAIM_MAX,
+                "basic_claimable": basic_claimable,
+                "daily_claim_points": daily_claim_points,
+                "daily_claimable": daily_claimable,
+                "daily_claim_date": daily_claim_date,
+                "daily_first_claim_bonus": DAILY_FIRST_CLAIM_POINTS if first_claim else 0,
+                "daily_week_count": week_signin_count,
+                "daily_week_max": 7,
+                "daily_next_claim_at": _daily_next_refresh(today) if not daily_claimable else "",
+                "extra_balance": _display_billing_points(int(wallet["extra_balance"] if wallet else 0), pricing),
+            },
         },
         "pricing": pricing,
         "topup_promotion": {
             "active": promotion["active"],
             "name": promotion["name"],
             "bonus_rate_percent": promotion["bonus_rate_percent"],
+            "tiers": promotion["tiers"],
             "applies_to": promotion["applies_to"],
         },
         "topup_products": _topup_products(pricing),
@@ -2932,7 +3218,8 @@ def _topup_product(
         * int(pricing["points_per_cny"])
         * int(pricing["point_unit_scale"])
     )
-    promotion_bonus_points = base_points * 25 // 100 if includes_fixed_package_bonus else 0
+    promotion_percent = topup_bonus_percent(package_id) if includes_fixed_package_bonus else 0
+    promotion_bonus_points = base_points * promotion_percent // 100
     total_points = base_points + promotion_bonus_points
     return {
         "package_id": package_id,
@@ -2942,9 +3229,10 @@ def _topup_product(
         "points": _display_billing_points(base_points, pricing),
         "base_points": _display_billing_points(base_points, pricing),
         "promotion_bonus_points": _display_billing_points(promotion_bonus_points, pricing),
+        "promotion_bonus_percent": promotion_percent,
         "total_points": _display_billing_points(total_points, pricing),
-        "promotion_id": "fixed_package_bonus_25" if promotion_bonus_points else "",
-        "promotion_name": "固定套餐赠送 25%" if promotion_bonus_points else "",
+        "promotion_id": TOPUP_PROMOTION_ID if promotion_bonus_points else "",
+        "promotion_name": TOPUP_PROMOTION_NAME if promotion_bonus_points else "",
     }
 
 
@@ -2968,6 +3256,14 @@ def _display_topup_order(order: dict[str, Any], pricing: dict[str, Any]) -> dict
     order["points"] = _display_billing_points(base_points, pricing)
     order["base_points"] = _display_billing_points(base_points, pricing)
     order["promotion_bonus_points"] = _display_billing_points(promotion_bonus_points, pricing)
+    package_id = str(order.get("package_id") or "")
+    promotion_percent = topup_bonus_percent(package_id)
+    # The retired 4999-CNY package is not in the active catalogue. Historical
+    # orders retain their saved points snapshot, so derive its display percent
+    # from that snapshot instead of applying today's package mapping.
+    if promotion_bonus_points and not promotion_percent and base_points:
+        promotion_percent = promotion_bonus_points * 100 // base_points
+    order["promotion_bonus_percent"] = promotion_percent if promotion_bonus_points else 0
     order["total_points"] = _display_billing_points(total_points, pricing)
     return order
 
@@ -2998,8 +3294,117 @@ def _custom_topup_amount(payload: dict[str, Any]) -> int:
     return amount_cents
 
 
+# ---------------------------------------------------------------------------
+# 中转站充值档位：与官方固定套餐并行的第二套体系。
+#
+# package_id 协议 station:<中转编号>:<金额分>。中转站的档位（最多 6 档）与倍率
+# 由中转站在自己网站上配置，经主站公告后台（wh-admin）的免登录端点读取；此处
+# 只负责校验与换算：积分 = 金额(元) × 该站倍率 × point_unit_scale，无官方赠送。
+# ---------------------------------------------------------------------------
+
+
+def _station_package_id(station_code: str, amount_cents: int) -> str:
+    """中转站档位订单的 package_id：官方套餐与中转档位是两套并行体系，用前缀区分。"""
+    return f"station:{station_code}:{int(amount_cents)}"
+
+
+def _parse_station_package_id(package_id: Any) -> tuple[str, int] | None:
+    parts = str(package_id or "").split(":")
+    if len(parts) != 3 or parts[0] != "station" or not parts[1]:
+        return None
+    try:
+        amount_cents = int(parts[2])
+    except ValueError:
+        return None
+    return (parts[1], amount_cents) if amount_cents > 0 else None
+
+
+def _station_partner_detail(station_code: str) -> dict[str, Any]:
+    """取合作中转站在其网站上配置的充值档位（≤6 档）。
+
+    经主站公告后台（wh-admin）的免登录端点读取；短缓存以避开充值页反复刷新。
+    中转站档位与官方固定套餐是两套并行体系，这里只负责取用，不参与官方换算。
+    """
+    code = str(station_code or "").strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="missing station code")
+    cache_key = f"station-partner:{code}"
+    cached = _cache.cache_get(cache_key)
+    if cached is not None:
+        return cached
+    base_url = str(default_config().announce_base_url or "").strip().rstrip("/")
+    if not base_url:
+        raise HTTPException(status_code=503, detail="station tier service is not configured")
+    from urllib.parse import quote
+
+    url = f"{base_url}/api/station-applications/public/partners/{quote(code, safe='')}"
+    try:
+        response = requests.get(url, timeout=8)
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=503, detail="station tier service is unavailable") from exc
+    if response.status_code == 404:
+        raise HTTPException(status_code=404, detail="该中转编号不是合作中的中转站")
+    try:
+        detail = response.json() or {}
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="station tier service returned invalid payload") from exc
+    if response.status_code >= 400 or not detail.get("ok"):
+        raise HTTPException(status_code=502, detail="station tier service failed")
+    _cache.cache_set(cache_key, detail, ttl=30)
+    return detail
+
+
+def _station_tier_rate(station_code: str, amount_cents: int) -> float:
+    """校验「中转编号 + 金额」确为该站已配置档位，并返回其积分倍率。"""
+    detail = _station_partner_detail(station_code)
+    if str(detail.get("station_code") or "") != str(station_code):
+        raise HTTPException(status_code=404, detail="该中转编号不是合作中的中转站")
+    for tier in detail.get("tiers") or []:
+        try:
+            if int(tier.get("amount_cents")) == int(amount_cents):
+                return float(tier.get("rate"))
+        except (TypeError, ValueError, AttributeError):
+            continue
+    raise HTTPException(status_code=400, detail="该金额档位不是中转站配置的档位")
+
+
+def _station_tier_product(
+    *,
+    station_code: str,
+    amount_cents: int,
+    rate: float,
+    pricing: dict[str, Any],
+) -> dict[str, Any]:
+    """中转档位商品：积分 = 金额(元) × 倍率，无官方固定套餐赠送。"""
+    base_points = int(
+        round((int(amount_cents) // 100) * float(rate) * int(pricing["point_unit_scale"]))
+    )
+    return {
+        "package_id": _station_package_id(station_code, amount_cents),
+        "label": f"中转站充值 {int(amount_cents) // 100} 元",
+        "amount_cents": int(amount_cents),
+        "points": _display_billing_points(base_points, pricing),
+        "base_points": _display_billing_points(base_points, pricing),
+        "promotion_bonus_points": 0,
+        "promotion_bonus_percent": 0,
+        "total_points": _display_billing_points(base_points, pricing),
+        "promotion_id": "",
+        "promotion_name": "",
+    }
+
+
 def _topup_quote(database_path: Path, payload: dict[str, Any]) -> dict[str, Any]:
     pricing = active_pricing(database_path)
+    station_package = _parse_station_package_id(payload.get("package_id"))
+    if station_package is not None:
+        station_code, amount_cents = station_package
+        product = _station_tier_product(
+            station_code=station_code,
+            amount_cents=amount_cents,
+            rate=_station_tier_rate(station_code, amount_cents),
+            pricing=pricing,
+        )
+        return {"ok": True, "product": product}
     product = _topup_product(
         package_id="custom",
         label="自定义积分充值",
@@ -3018,13 +3423,30 @@ def _create_topup_order(database_path: Path, account: dict[str, Any], payload: d
     idempotency_key = str(payload.get("idempotency_key") or "").strip()
     if provider not in PAYMENT_PROVIDERS:
         raise HTTPException(status_code=400, detail="provider must be wechat or alipay")
-    if package_id != "custom" and package_id not in TOPUP_PACKAGE_CENTS:
+    station_package = _parse_station_package_id(package_id)
+    if (
+        station_package is None
+        and package_id != "custom"
+        and package_id != PLAN_BASIC_PACKAGE_ID
+        and package_id not in TOPUP_PACKAGE_CENTS
+    ):
         raise HTTPException(status_code=400, detail="unknown topup package")
     if not 16 <= len(idempotency_key) <= 128:
         raise HTTPException(status_code=400, detail="idempotency_key is required")
 
-    if package_id == "custom":
+    # 中转档位：金额与倍率都以中转站网站上配置的档位为准（≤6 档，与官方套餐两套体系）。
+    station_rate: float | None = None
+    if station_package is not None:
+        station_code, station_amount_cents = station_package
+        station_rate = _station_tier_rate(station_code, station_amount_cents)
+        product = {
+            "amount_cents": station_amount_cents,
+            "label": f"中转站充值 {station_amount_cents // 100} 元",
+        }
+    elif package_id == "custom":
         product = {"amount_cents": _custom_topup_amount(payload), "label": "自定义积分充值"}
+    elif package_id == PLAN_BASIC_PACKAGE_ID:
+        product = {"amount_cents": PLAN_BASIC_PRICE_CENTS, "label": PLAN_BASIC_PACKAGE["label"]}
     else:
         product = TOPUP_PACKAGE_CENTS[package_id]
     pricing = active_pricing(database_path)
@@ -3043,11 +3465,24 @@ def _create_topup_order(database_path: Path, account: dict[str, Any], payload: d
     with transaction(database_path) as conn:
         _ensure_wallet(conn, account_id, workspace_id)
         base_points = (
-            (int(product["amount_cents"]) // 100)
+            int(
+                round(
+                    (int(product["amount_cents"]) // 100)
+                    * station_rate
+                    * int(pricing["point_unit_scale"])
+                )
+            )
+            if station_rate is not None
+            else (int(product["amount_cents"]) // 100)
             * int(pricing["points_per_cny"])
             * int(pricing["point_unit_scale"])
         )
-        promotion_bonus_points = base_points * 25 // 100 if package_id != "custom" else 0
+        promotion_percent = (
+            topup_bonus_percent(package_id)
+            if package_id != "custom" and station_rate is None
+            else 0
+        )
+        promotion_bonus_points = base_points * promotion_percent // 100
         total_points = base_points + promotion_bonus_points
         existing = conn.execute(
             """
@@ -3061,6 +3496,20 @@ def _create_topup_order(database_path: Path, account: dict[str, Any], payload: d
         ).fetchone()
         if existing is not None:
             return _topup_order_response(dict(existing), reused=True, pricing=pricing)
+        # 分站档位订单：按总部合约口径在下单时冻结返利快照，付款成功后原样计提；
+        # 官方套餐 / 自定义充值不涉及分站，快照留空。d / m / c 不下发客户端。
+        station_code = station_package[0] if station_package is not None else ""
+        tier_rate = float(station_rate or 0)
+        station_rebate = (
+            station_rebate_cents(
+                conn,
+                station_code=station_code,
+                amount_cents=int(product["amount_cents"]),
+                tier_rate=tier_rate,
+            )
+            if station_code
+            else 0
+        )
         order_id = f"billord_{secrets.token_urlsafe(18)}"
         out_trade_no = f"MP{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}{secrets.token_hex(8)}"
         conn.execute(
@@ -3069,9 +3518,9 @@ def _create_topup_order(database_path: Path, account: dict[str, Any], payload: d
                 order_id, out_trade_no, account_id, workspace_id, provider, package_id,
                 amount_cents, currency, points, base_points, promotion_bonus_points,
                 total_points, promotion_id, promotion_name, status, idempotency_key, request_hash,
-                expires_at, created_at, updated_at
+                expires_at, created_at, updated_at, station_code, tier_rate, rebate_cents
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'CNY', ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'CNY', ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 order_id,
@@ -3085,13 +3534,16 @@ def _create_topup_order(database_path: Path, account: dict[str, Any], payload: d
                 base_points,
                 promotion_bonus_points,
                 total_points,
-                "fixed_package_bonus_25" if promotion_bonus_points else "",
-                "固定套餐赠送 25%" if promotion_bonus_points else "",
+                TOPUP_PROMOTION_ID if promotion_bonus_points else "",
+                TOPUP_PROMOTION_NAME if promotion_bonus_points else "",
                 idempotency_key,
                 request_hash,
                 expires_at,
                 now,
                 now,
+                station_code,
+                tier_rate,
+                station_rebate,
             ),
         )
         order = conn.execute(
@@ -3122,6 +3574,15 @@ def _topup_order_response(
         "message": "支付网关尚未配置。订单已在服务器生成 pending 记录，待商户参数和回调验签接入后才可收款入账。",
     }
     if order["provider"] == "alipay" and alipay_is_configured():
+        station_order = _parse_station_package_id(order["package_id"])
+        if station_order is not None:
+            package_label = f"中转站充值 {station_order[1] // 100} 元"
+        elif order["package_id"] == PLAN_BASIC_PACKAGE_ID:
+            package_label = PLAN_BASIC_PACKAGE["label"]
+        else:
+            package_label = TOPUP_PACKAGE_CENTS.get(str(order["package_id"]), {}).get(
+                "label", str(order["package_id"])
+            )
         payment = {
             "provider": "alipay",
             "mode": "page_pay",
@@ -3129,7 +3590,7 @@ def _topup_order_response(
             "pay_url": build_page_payment_url(
                 out_trade_no=str(order["out_trade_no"]),
                 amount_cents=int(order["amount_cents"]),
-                subject=f"界野电商平台 {order['package_id']} 积分充值",
+                subject=f"界野电商平台 {package_label} 积分充值",
                 expires_at=str(order["expires_at"]),
             ),
             "message": "请在浏览器中完成支付宝付款。付款成功后积分会自动到账。",
@@ -3140,18 +3601,6 @@ def _topup_order_response(
         "order": order,
         "payment": payment,
     }
-
-
-def _ensure_wallet(conn: Any, account_id: str, workspace_id: str) -> None:
-    now = _utc_now()
-    conn.execute(
-        """
-        INSERT INTO billing_wallets (account_id, workspace_id, points_balance, locked_points, version, created_at, updated_at)
-        VALUES (?, ?, 0, 0, 0, ?, ?)
-        ON CONFLICT(account_id) DO NOTHING
-        """,
-        (account_id, workspace_id, now, now),
-    )
 
 
 def _stable_json_hash(payload: dict[str, Any]) -> str:

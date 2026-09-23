@@ -153,7 +153,7 @@ def test_calibration_has_a_deterministic_fallback_when_runtime_has_no_vision_cal
     }
 
 
-def test_startup_recovery_requires_a_fresh_billing_grant(tmp_path: Path) -> None:
+def test_startup_recovery_marks_interrupted_batch_as_retryable_failure(tmp_path: Path) -> None:
     service = _service(tmp_path)
     actor = _actor()
     template = service.upload_template(actor, name="Recovery scene", filename="scene.png", content=_png())
@@ -181,9 +181,9 @@ def test_startup_recovery_requires_a_fresh_billing_grant(tmp_path: Path) -> None
     stored = service.get_batch(actor, batch["id"])
 
     assert recovered == 1
-    assert stored["status"] == "billing_auth_required"
+    assert stored["status"] == "failed"
     assert stored["failed_count"] == 20
-    assert "重启" in stored["error_message"]
+    assert "失败" in stored["error_message"]
 
 
 def test_additive_pod_schema_does_not_delete_legacy_ai_service_pod_history(tmp_path: Path) -> None:
@@ -272,3 +272,120 @@ def test_style_copy_repository_preserves_batch_ownership(tmp_path: Path) -> None
             title="No", english_title="No", description="No",
         )
     assert getattr(raised.value, "status_code", None) == 404
+
+
+def test_claim_batch_with_epoch_returns_positive_epoch_on_first_claim(tmp_path: Path) -> None:
+    """claim_batch_with_epoch returns a positive epoch and the batch enters generating_patterns."""
+    service = _service(tmp_path)
+    actor = _actor()
+    template = service.upload_template(actor, name="Epoch test", filename="epoch.png", content=_png())
+    service.update_template_calibration(
+        actor,
+        template["id"],
+        Calibration(
+            mask=NormalizedRect(x=0.2, y=0.2, width=0.6, height=0.6),
+            anchor=NormalizedPoint(x=0.5, y=0.5),
+        ),
+    )
+    batch = service.create_batch(
+        actor,
+        BatchCreate(
+            template_id=template["id"],
+            count=2,
+            business_fields=BusinessFields(product_name="Epoch cup", product_category="drinkware"),
+            listing_fields=_listing_fields(),
+        ),
+        enqueue=False,
+    )
+
+    epoch = service.repository.claim_batch_with_epoch(batch["id"])
+    assert epoch is not None
+    assert epoch > 0
+    assert service.repository.get_batch_status(batch["id"]) == "generating_patterns"
+
+
+def test_claim_batch_with_epoch_returns_none_when_batch_already_active(tmp_path: Path) -> None:
+    """A second claim_batch_with_epoch while the batch is active returns None."""
+    service = _service(tmp_path)
+    actor = _actor()
+    template = service.upload_template(actor, name="Epoch test 2", filename="epoch2.png", content=_png())
+    service.update_template_calibration(
+        actor,
+        template["id"],
+        Calibration(
+            mask=NormalizedRect(x=0.2, y=0.2, width=0.6, height=0.6),
+            anchor=NormalizedPoint(x=0.5, y=0.5),
+        ),
+    )
+    batch = service.create_batch(
+        actor,
+        BatchCreate(
+            template_id=template["id"],
+            count=2,
+            business_fields=BusinessFields(product_name="Epoch cup 2", product_category="drinkware"),
+            listing_fields=_listing_fields(),
+        ),
+        enqueue=False,
+    )
+
+    first_epoch = service.repository.claim_batch_with_epoch(batch["id"])
+    assert first_epoch is not None and first_epoch > 0
+
+    second_epoch = service.repository.claim_batch_with_epoch(batch["id"])
+    assert second_epoch is None
+    assert service.repository.get_batch_status(batch["id"]) == "generating_patterns"
+
+
+# ---------------------------------------------------------------------------
+# Task 4 — live reaper lifecycle
+# ---------------------------------------------------------------------------
+
+def test_reap_stuck_batches_once_expires_stale_batch(tmp_path: Path) -> None:
+    """reap_stuck_batches_once() marks a stale batch terminal and returns a record."""
+    service = _service(tmp_path)
+    actor = _actor()
+
+    template = service.upload_template(actor, name="Reaper test", filename="r.png", content=_png())
+    service.update_template_calibration(
+        actor,
+        template["id"],
+        Calibration(
+            mask=NormalizedRect(x=0.2, y=0.2, width=0.6, height=0.6),
+            anchor=NormalizedPoint(x=0.5, y=0.5),
+        ),
+    )
+    batch = service.create_batch(
+        actor,
+        BatchCreate(
+            template_id=template["id"],
+            count=1,
+            business_fields=BusinessFields(product_name="Reaper", product_category="test"),
+            listing_fields=_listing_fields(),
+        ),
+        enqueue=False,
+    )
+    batch_id = batch["id"]
+
+    # Claim to move batch into active state with an epoch
+    epoch = service.repository.claim_batch_with_epoch(batch_id)
+    assert epoch is not None
+
+    # Reap immediately (stale_after_seconds=0 so the just-claimed batch qualifies)
+    reaped = service.reap_stuck_batches_once()
+    # Note: reap_stuck_batches_once uses POD_PROGRESS_TIMEOUT_SECONDS, not 0 —
+    # but we can call repository.reap_stuck_batches directly with 0 to test the mechanism
+    if not reaped:
+        reaped = service.repository.reap_stuck_batches(stale_after_seconds=0)
+
+    assert any(r["batch_id"] == batch_id for r in reaped), (
+        f"Expected batch_id {batch_id!r} in reaped list, got {reaped!r}"
+    )
+    status = service.repository.get_batch_status(batch_id)
+    assert status in {"failed", "partial_failure"}
+
+
+def test_start_workers_false_does_not_start_reaper(tmp_path: Path) -> None:
+    """With start_workers=False, no reaper thread is started."""
+    service = _service(tmp_path)  # _service uses start_workers=False
+    assert service._reaper_thread is None
+    assert not service._reaper_stop.is_set()

@@ -161,11 +161,12 @@ def verify_callback(payload: dict[str, str]) -> dict[str, str]:
     }
 
 
-def _canonical_payload(payload: dict[str, str]) -> bytes:
+def _canonical_payload(payload: dict[str, str], *, exclude_sign_type: bool) -> bytes:
+    excluded = {"sign", "sign_type"} if exclude_sign_type else {"sign"}
     values = {
         str(key): str(value)
         for key, value in payload.items()
-        if key not in {"sign", "sign_type"} and value is not None
+        if key not in excluded and value is not None
     }
     return "&".join(f"{key}={values[key]}" for key in sorted(values)).encode("utf-8")
 
@@ -173,7 +174,7 @@ def _canonical_payload(payload: dict[str, str]) -> bytes:
 def _sign(params: dict[str, str], private_key_pem: bytes) -> str:
     private_key = serialization.load_pem_private_key(private_key_pem, password=None)
     signature = private_key.sign(
-        _canonical_payload(params),
+        _canonical_payload(params, exclude_sign_type=False),
         padding.PKCS1v15(),
         hashes.SHA256(),
     )
@@ -218,7 +219,7 @@ def _verify(payload: dict[str, str], signature: str, public_key_pem: bytes) -> b
         public_key = serialization.load_pem_public_key(public_key_pem)
         public_key.verify(
             base64.b64decode(signature),
-            _canonical_payload(payload),
+            _canonical_payload(payload, exclude_sign_type=True),
             padding.PKCS1v15(),
             hashes.SHA256(),
         )

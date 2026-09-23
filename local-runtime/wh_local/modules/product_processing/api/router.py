@@ -58,6 +58,7 @@ def create_product_processing_router(
     assets_root: Path | None = None,
     customer_sessions: LocalSessionService | None = None,
     remote_customer_auth: CustomerAuthClient | None = None,
+    with_lifespan: bool = True,
 ) -> APIRouter:
     """Create the complete local API used by the Product Processing screen."""
     owned_database = None

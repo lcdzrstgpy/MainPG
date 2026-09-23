@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import re
+import sys
 from typing import Any
 
+from ..config import APP_VERSION
+from ..runtime_logs import business_logger
 from .contracts import CustomerAuthRejected, CustomerAuthUnavailable
 from .local_session import LocalSessionService
 from .remote_client import CustomerAuthClient
@@ -50,6 +53,32 @@ def _safe_error_detail(value: object) -> str:
     )
     detail = _BEARER_VALUE.sub("Bearer [redacted]", detail)
     return _CREDENTIAL_VALUE.sub(lambda match: f"{match.group(1)}[redacted]", detail)
+
+
+def _public_station_application(payload: dict[str, Any]) -> dict[str, Any]:
+    """分站申请的客户端视图：只透出状态相关字段，绝不回分站密码。
+
+    分站专属账号密码由后台以定向公告下发，用户从站内信里查看；这里回传密码
+    会让免登录申请接口变成撞库口令的泄露面。
+    """
+    application = payload.get("application") if isinstance(payload.get("application"), dict) else {}
+    return {
+        "ok": bool(payload.get("ok", True)),
+        "duplicated": bool(payload.get("duplicated")),
+        "message": str(payload.get("message") or ""),
+        "application": (
+            {
+                "status": str(application.get("status") or "pending"),
+                "applied_at": str(application.get("applied_at") or ""),
+                "decided_at": str(application.get("decided_at") or ""),
+                "reject_reason": str(application.get("reject_reason") or ""),
+                "station_username": str(application.get("station_username") or ""),
+                "login_url": str(application.get("login_url") or ""),
+            }
+            if application
+            else None
+        ),
+    }
 
 
 def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessionService):
@@ -129,6 +158,18 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
         except Exception as exc:
             handle_auth_error(exc)
 
+    @router.post("/change-username")
+    def change_username(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        try:
+            if not hasattr(remote_auth, "change_username"):
+                raise CustomerAuthUnavailable("remote account service is not configured")
+            return _public_action(remote_auth.change_username(payload, remote_token_from_local_session(authorization)))
+        except Exception as exc:
+            handle_auth_error(exc)
+
     @router.post("/forgot-password")
     def forgot_password(payload: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -150,11 +191,15 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
         except Exception as exc:
             handle_auth_error(exc)
 
-    def remote_token_from_local_session(authorization: str | None) -> str:
+    def local_session_from_token(authorization: str | None):
         token = bearer_token(authorization)
         session = sessions.store.get_session(token)
         if session is None:
             raise CustomerAuthRejected(401, "login session expired, please sign in again")
+        return session
+
+    def remote_token_from_local_session(authorization: str | None) -> str:
+        session = local_session_from_token(authorization)
         if not session.remote_token:
             # 本地会话仍在但远程会话缺失（应用重启或远程 token 失效）：
             # 按登录失效处理，引导用户重新登录。
@@ -187,6 +232,25 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
         except Exception as exc:
             handle_auth_error(exc)
 
+    @router.get("/billing/ledger")
+    def billing_point_ledger(
+        category: str = "",
+        limit: int = 20,
+        offset: int = 0,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        try:
+            if not hasattr(remote_auth, "billing_ledger_history"):
+                raise CustomerAuthUnavailable("remote billing service is not configured")
+            return remote_auth.billing_ledger_history(
+                remote_token_from_local_session(authorization),
+                category=category,
+                limit=limit,
+                offset=offset,
+            )
+        except Exception as exc:
+            handle_auth_error(exc)
+
     @router.post("/billing/topup-orders")
     def create_topup_order(payload: dict[str, Any], authorization: str | None = Header(default=None)) -> dict[str, Any]:
         try:
@@ -211,6 +275,16 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
         except Exception as exc:
             handle_auth_error(exc)
 
+    @router.post("/billing/daily-extra/claim")
+    def claim_daily_extra(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        """每日签到：体验版 100 积分/天（每周上限 500），标准版 200 积分/天（每周上限 1000）。"""
+        try:
+            if not hasattr(remote_auth, "claim_daily_extra"):
+                raise CustomerAuthUnavailable("remote billing service is not configured")
+            return remote_auth.claim_daily_extra(remote_token_from_local_session(authorization))
+        except Exception as exc:
+            handle_auth_error(exc)
+
     @router.post("/logout")
     def logout(authorization: str | None = Header(default=None)) -> dict[str, bool]:
         try:
@@ -224,7 +298,114 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
             except Exception:
                 pass
             sessions.logout(token)
+            try:
+                business_logger("login").info(
+                    "登出 | token=%s | workspace=%s",
+                    (token[:8] + "…") if token else "-",
+                    getattr(sessions.store, "workspace_id", "")
+                    if hasattr(sessions.store, "workspace_id") else "-")
+            except Exception:  # noqa: BLE001 登出日志失败不阻断
+                pass
             return {"ok": True}
+        except Exception as exc:
+            handle_auth_error(exc)
+
+    @router.post("/feedback")
+    def submit_feedback(payload: dict[str, Any], authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        try:
+            if not hasattr(remote_auth, "submit_feedback"):
+                raise CustomerAuthUnavailable("remote feedback service is not configured")
+            # 版本与平台由本地后端注入（本地知道自己的编译版本），不信任前端上报。
+            enriched = dict(payload)
+            enriched.setdefault("app_version", APP_VERSION)
+            enriched.setdefault(
+                "platform",
+                "windows" if sys.platform == "win32" else "macos" if sys.platform == "darwin" else "linux",
+            )
+            return remote_auth.submit_feedback(remote_token_from_local_session(authorization), enriched)
+        except Exception as exc:
+            handle_auth_error(exc)
+
+    @router.get("/feedback/mine")
+    def my_feedback(
+        limit: int = 20,
+        offset: int = 0,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        try:
+            if not hasattr(remote_auth, "list_my_feedback"):
+                raise CustomerAuthUnavailable("remote feedback service is not configured")
+            return remote_auth.list_my_feedback(
+                remote_token_from_local_session(authorization),
+                limit=limit,
+                offset=offset,
+            )
+        except Exception as exc:
+            handle_auth_error(exc)
+
+    @router.post("/station-application")
+    def submit_station_application(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """提交分站申请（个人中心「推广计划 · 申请加入」）。
+
+        account_id 与用户名取自本地登录会话，前端只能补充联系方式与申请说明；
+        提交后由后台在 1~3 个工作日内答复，批准时把分站专属账号密码以定向公告下发。
+        """
+        try:
+            if not hasattr(remote_auth, "submit_station_application"):
+                raise CustomerAuthUnavailable("station application service is not configured")
+            session = local_session_from_token(authorization)
+            return _public_station_application(
+                remote_auth.submit_station_application(
+                    {
+                        "account_id": session.user_id,
+                        "username": session.username,
+                        "email": str(payload.get("email") or ""),
+                        "contact": str(payload.get("contact") or ""),
+                        "note": str(payload.get("note") or ""),
+                    }
+                )
+            )
+        except Exception as exc:
+            handle_auth_error(exc)
+
+    @router.get("/station-application")
+    def my_station_application(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        """查询本账号最近一条分站申请的状态（审核中 / 已成立分站 / 已驳回 / 已撤销）。"""
+        try:
+            if not hasattr(remote_auth, "get_station_application"):
+                raise CustomerAuthUnavailable("station application service is not configured")
+            session = local_session_from_token(authorization)
+            return _public_station_application(
+                remote_auth.get_station_application(session.user_id)
+            )
+        except Exception as exc:
+            handle_auth_error(exc)
+
+    @router.get("/station-partners")
+    def list_station_partners(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        """合作中的中转站清单（编号 + 名称），充值页「中转编号」下拉框用。"""
+        try:
+            if not hasattr(remote_auth, "list_partner_stations"):
+                raise CustomerAuthUnavailable("station application service is not configured")
+            local_session_from_token(authorization)
+            return remote_auth.list_partner_stations()
+        except Exception as exc:
+            handle_auth_error(exc)
+
+    @router.get("/station-partners/{station_code}")
+    def station_partner_tiers(
+        station_code: str,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """按中转编号取该站在其网站上配置的充值档位（最多 6 档）。"""
+        try:
+            if not hasattr(remote_auth, "get_partner_tiers"):
+                raise CustomerAuthUnavailable("station application service is not configured")
+            local_session_from_token(authorization)
+            return remote_auth.get_partner_tiers(station_code)
         except Exception as exc:
             handle_auth_error(exc)
 
