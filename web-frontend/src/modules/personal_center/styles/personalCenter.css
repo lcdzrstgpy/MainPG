@@ -1122,6 +1122,54 @@
   color: var(--theme-text-muted, #94a3b8);
 }
 
+/* 中转编号下拉框：选中后整张档位表切换为该中转站在其自己网站上配置的档位。 */
+.topup-station {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--theme-module-border, #dbe5ef);
+  border-radius: 16px;
+  color: #475569;
+  background: var(--theme-module-surface, #fff);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.topup-station label {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1 1 auto;
+}
+
+.topup-station label > span {
+  flex: 0 0 auto;
+  color: var(--theme-text-secondary, #475569);
+}
+
+.topup-station select {
+  flex: 1 1 auto;
+  min-width: 190px;
+  padding: 8px 10px;
+  border: 1px solid var(--theme-module-border, #dbe5ef);
+  border-radius: 10px;
+  color: var(--theme-text-primary, #132238);
+  background: var(--theme-module-surface, rgba(255, 255, 255, 0.86));
+  font: inherit;
+  font-weight: 650;
+}
+
+.topup-station small {
+  flex: 0 0 auto;
+  max-width: 420px;
+  color: var(--theme-text-muted, #64748b);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .custom-topup {
   display: flex;
   align-items: center;
@@ -2551,4 +2599,434 @@
   font-variant-numeric: tabular-nums;
   line-height: 1;
   letter-spacing: -0.02em;
+}
+
+/* ================================================================
+   推广计划面板（personal-promo）
+   结构：概览 → 计划说明 → 推广形式 → 返点规则（双维阶梯）→ 试算示例
+   视觉沿用 .pricing-card 的卡片 + hero 渐变语言，保持个人中心一致观感。
+   ================================================================ */
+.promo-card {
+  display: grid;
+  gap: 18px;
+}
+
+.promo-hero {
+  position: relative;
+  overflow: hidden;
+  display: grid;
+  gap: 12px;
+  padding: 22px 26px;
+  border: 1px solid rgba(var(--theme-module-primary-rgb, 8, 119, 211), 0.16);
+  border-radius: 20px;
+  background:
+    radial-gradient(120% 150% at 100% 0%, rgba(var(--theme-module-primary-rgb, 8, 119, 211), 0.16), transparent 46%),
+    linear-gradient(135deg, #eefaff, var(--theme-module-surface, #fff));
+}
+
+.promo-hero-kicker {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 4px 12px;
+  border-radius: 999px;
+  color: var(--theme-module-primary-strong, #0877d3);
+  background: rgba(var(--theme-module-primary-rgb, 8, 119, 211), 0.1);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+
+.promo-hero-formula {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+  color: var(--theme-text-primary, #132238);
+}
+
+.promo-hero-formula b {
+  font-size: 26px;
+  font-weight: 850;
+  letter-spacing: -0.02em;
+  background: linear-gradient(120deg, var(--theme-module-primary-strong, #0877d3), #19e2c4);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.promo-hero-formula em,
+.promo-hero-formula i {
+  font-style: normal;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--theme-text-muted, #64748b);
+}
+
+.promo-hero-formula strong {
+  font-size: 26px;
+  font-weight: 850;
+  color: var(--theme-module-primary-strong, #0877d3);
+}
+
+.promo-hero-note {
+  margin: 0;
+  color: var(--theme-text-secondary, #475569);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.promo-section {
+  display: grid;
+  gap: 12px;
+}
+
+.promo-section-head {
+  display: grid;
+  gap: 3px;
+}
+
+.promo-section-head h3 {
+  margin: 0;
+  color: var(--theme-text-primary, #132238);
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.promo-section-head small {
+  color: var(--theme-text-muted, #64748b);
+  font-size: 12px;
+}
+
+.promo-note-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.promo-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--theme-module-border, #d8e9f3);
+  border-radius: 16px;
+  background: var(--theme-module-surface, #fff);
+}
+
+.promo-note > .iconfont {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  color: var(--theme-module-primary-strong, #0877d3);
+  background: rgba(var(--theme-module-primary-rgb, 8, 119, 211), 0.1);
+  font-size: 16px;
+}
+
+.promo-note b {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--theme-text-primary, #132238);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.promo-note p {
+  margin: 0;
+  color: var(--theme-text-secondary, #475569);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.promo-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.promo-form {
+  display: grid;
+  gap: 6px;
+  padding: 16px 18px;
+  border: 1px solid var(--theme-module-border, #d8e9f3);
+  border-radius: 16px;
+  background: var(--theme-module-surface-soft, #f8fbfe);
+}
+
+.promo-form-step {
+  font-family: var(--font-number, ui-monospace, Menlo, Consolas, monospace);
+  font-size: 20px;
+  font-weight: 850;
+  letter-spacing: -0.02em;
+  background: linear-gradient(120deg, var(--theme-module-primary-strong, #0877d3), #19e2c4);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.promo-form b {
+  color: var(--theme-text-primary, #132238);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.promo-form p {
+  margin: 0;
+  color: var(--theme-text-secondary, #475569);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.promo-tier-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 12px;
+}
+
+.promo-tier {
+  padding: 16px 18px;
+  border: 1px solid var(--theme-module-border, #d8e9f3);
+  border-radius: 16px;
+  background: var(--theme-module-surface, #fff);
+}
+
+.promo-tier-head {
+  display: grid;
+  gap: 3px;
+  margin-bottom: 12px;
+}
+
+.promo-tier-head h3 {
+  margin: 0;
+  color: var(--theme-text-primary, #132238);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.promo-tier-head small {
+  color: var(--theme-text-muted, #64748b);
+  font-size: 11px;
+}
+
+.promo-tier-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.promo-tier-list li {
+  display: grid;
+  grid-template-columns: 52px 1fr auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: var(--theme-module-surface-soft, #f4f8fb);
+}
+
+.promo-tier-list li.is-top {
+  background: rgba(var(--theme-module-primary-rgb, 8, 119, 211), 0.1);
+}
+
+.promo-tier-code {
+  font-family: var(--font-number, ui-monospace, Menlo, Consolas, monospace);
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--theme-module-primary-strong, #0877d3);
+}
+
+.promo-tier-range {
+  color: var(--theme-text-secondary, #475569);
+  font-size: 12px;
+}
+
+.promo-tier-value {
+  font-family: var(--font-number, ui-monospace, Menlo, Consolas, monospace);
+  font-size: 15px;
+  font-weight: 850;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--theme-text-primary, #132238);
+}
+
+.promo-tier-list em {
+  font-style: normal;
+  color: var(--theme-text-muted, #64748b);
+  font-size: 11px;
+}
+
+.promo-example {
+  display: grid;
+  gap: 8px;
+  padding: 16px 18px;
+  border: 1px dashed rgba(var(--theme-module-primary-rgb, 8, 119, 211), 0.34);
+  border-radius: 16px;
+  background: rgba(var(--theme-module-primary-rgb, 8, 119, 211), 0.06);
+}
+
+.promo-example-kicker {
+  width: fit-content;
+  padding: 3px 10px;
+  border-radius: 999px;
+  color: var(--theme-module-primary-strong, #0877d3);
+  background: rgba(var(--theme-module-primary-rgb, 8, 119, 211), 0.12);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.promo-example-formula {
+  margin: 0;
+  color: var(--theme-text-primary, #132238);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.promo-example-body {
+  margin: 0;
+  color: var(--theme-text-secondary, #475569);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.promo-example-body b {
+  color: var(--theme-module-primary-strong, #0877d3);
+  font-weight: 800;
+}
+
+.promo-example-body strong {
+  color: var(--theme-text-primary, #132238);
+  font-size: 14px;
+  font-weight: 850;
+}
+
+/* ================================================================
+   申请成立分站：按钮 + 申请状态卡片
+   ================================================================ */
+.promo-apply {
+  display: grid;
+  gap: 12px;
+}
+
+.promo-apply-empty {
+  display: grid;
+  gap: 12px;
+  justify-items: start;
+}
+
+.promo-apply-hint {
+  margin: 0;
+  color: var(--theme-text-secondary, #475569);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.promo-apply-btn {
+  justify-self: start;
+}
+
+.promo-apply-state {
+  display: grid;
+  gap: 12px;
+  padding: 16px 18px;
+  border: 1px solid rgba(var(--theme-module-primary-rgb, 8, 119, 211), 0.16);
+  border-radius: 16px;
+  background: rgba(var(--theme-module-primary-rgb, 8, 119, 211), 0.05);
+}
+
+.promo-apply-state.is-rejected,
+.promo-apply-state.is-revoked {
+  border-color: rgba(239, 68, 68, 0.24);
+  background: rgba(239, 68, 68, 0.05);
+}
+
+.promo-apply-state-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.promo-apply-badge {
+  padding: 3px 12px;
+  border-radius: 999px;
+  background: var(--theme-primary-button-gradient, linear-gradient(135deg, #0ea5ff, #20e0bd));
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.promo-apply-state.is-rejected .promo-apply-badge,
+.promo-apply-state.is-revoked .promo-apply-badge {
+  background: #ef4444;
+}
+
+.promo-apply-time {
+  color: var(--theme-text-muted, #64748b);
+  font-size: 12px;
+}
+
+.promo-apply-kv {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.promo-apply-kv > div {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.promo-apply-kv dt {
+  flex: 0 0 72px;
+  color: var(--theme-text-muted, #64748b);
+  font-size: 12px;
+}
+
+.promo-apply-kv dd {
+  margin: 0;
+  color: var(--theme-text-primary, #132238);
+  font-size: 13px;
+  font-weight: 700;
+  word-break: break-all;
+}
+
+.promo-apply-kv dd a {
+  color: var(--theme-module-primary-strong, #0877d3);
+  text-decoration: none;
+}
+
+.promo-apply-reason {
+  margin: 0;
+  color: #b91c1c;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.promo-apply-notice {
+  margin: 0;
+  color: var(--theme-accent, #16a34a);
+  font-size: 12px;
+}
+
+.promo-apply-error {
+  margin: 0;
+  color: #dc2626;
+  font-size: 12px;
+}
+
+@media (max-width: 720px) {
+  .promo-hero { padding: 18px; }
+  .promo-hero-formula b,
+  .promo-hero-formula strong { font-size: 20px; }
+  .promo-tier-list li { grid-template-columns: 44px 1fr auto; }
+  .promo-tier-list em { display: none; }
+  .promo-apply-kv > div { flex-direction: column; gap: 2px; }
+  .promo-apply-kv dt { flex: none; }
 }

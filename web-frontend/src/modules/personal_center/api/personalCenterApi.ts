@@ -402,3 +402,70 @@ export function loadMyFeedback(limit = 50, offset = 0) {
     offset: number;
   }>(`/api/customer/feedback/mine?limit=${limit}&offset=${offset}`);
 }
+
+// ---- 分站申请（推广计划 · 申请加入） ----
+export type StationApplicationStatus = "pending" | "approved" | "rejected" | "revoked";
+
+/** 分站申请状态视图；不含分站密码（密码由后台以定向公告下发）。 */
+export type StationApplicationState = {
+  status: StationApplicationStatus;
+  applied_at: string;
+  decided_at: string;
+  reject_reason: string;
+  station_username: string;
+  login_url: string;
+};
+
+export type StationApplicationResult = {
+  ok: boolean;
+  duplicated: boolean;
+  message: string;
+  application: StationApplicationState | null;
+};
+
+/** 提交分站申请；账号信息由本地后端从登录会话注入，前端只补充联系方式与说明。 */
+export function submitStationApplication(input: { email?: string; contact?: string; note?: string }) {
+  return httpJson<StationApplicationResult>("/api/customer/station-application", {
+    method: "POST",
+    body: input,
+  });
+}
+
+/** 查询本账号最近一条分站申请状态。 */
+export function loadMyStationApplication() {
+  return httpJson<StationApplicationResult>("/api/customer/station-application");
+}
+
+// ---- 合作中转站（充值页「中转编号」下拉框） ----
+export type StationPartner = {
+  station_code: string;
+  station_name: string;
+};
+
+/** 中转站在其自己的网站上配置的充值档位（最多 6 档）。 */
+export type StationTier = {
+  amount_cents: number;
+  /** 该档位的积分倍率：到账积分 = 金额(元) × 倍率。 */
+  rate: number;
+};
+
+export type StationPartnerDetail = {
+  ok: boolean;
+  station_code: string;
+  station_name: string;
+  /** 中转站的终端价 Y，仅用于展示。 */
+  terminal_rate: number;
+  tiers: StationTier[];
+};
+
+/** 合作中的中转站清单（编号 + 名称）。 */
+export function loadStationPartners() {
+  return httpJson<{ ok: boolean; partners: StationPartner[] }>("/api/customer/station-partners");
+}
+
+/** 按中转编号取该站的充值档位；档位与官方固定套餐是两套体系。 */
+export function loadStationPartnerDetail(stationCode: string) {
+  return httpJson<StationPartnerDetail>(
+    `/api/customer/station-partners/${encodeURIComponent(stationCode)}`,
+  );
+}

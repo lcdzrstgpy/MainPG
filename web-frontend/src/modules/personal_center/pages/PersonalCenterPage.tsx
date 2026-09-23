@@ -14,6 +14,8 @@ import {
   loadBillingUsageHistory,
   loadImageModel,
   loadPodImageModel,
+  loadStationPartnerDetail,
+  loadStationPartners,
   quoteCustomTopup,
   saveImageModel,
   savePodImageModel,
@@ -24,10 +26,13 @@ import {
   type BillingSummary,
   type BillingUsageEntry,
   type ImageModelChoice,
+  type StationPartner,
+  type StationPartnerDetail,
   type TopupOrderResponse,
 } from "../api/personalCenterApi";
 import { SystemVersionPanel } from "../components/SystemVersionPanel";
 import { FeedbackPanel } from "../components/FeedbackPanel";
+import { PromotionPlanPanel } from "../components/PromotionPlanPanel";
 import "../styles/personalCenter.css";
 
 type AccountSnapshot = {
@@ -53,6 +58,11 @@ const PLAN_BASIC_PRODUCT: BillingPackage = {
 
 function money(amountCents: number) {
   return `¥${(amountCents / 100).toFixed(2)}`;
+}
+
+/** 中转档位订单的 package_id，与主站约定一致：station:<中转编号>:<金额分>。 */
+function stationPackageId(stationCode: string, amountCents: number) {
+  return `station:${stationCode}:${amountCents}`;
 }
 
 /** 只有有限数字才当作有效数据；undefined/NaN 一律按「无数据」处理，
@@ -323,7 +333,7 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
   const defaultUsageFilterKey = buildUsageFilterKey("", "", "", "");
 
   const [summary, setSummary] = useState<BillingSummary | null>(cachedBalance?.summary ?? null);
-  const [activePanel, setActivePanel] = useState<"wallet" | "usage" | "pricing" | "model" | "version" | "feedback">("wallet");
+  const [activePanel, setActivePanel] = useState<"wallet" | "usage" | "pricing" | "model" | "version" | "promo" | "feedback">("wallet");
 
   // 可用积分与积分构成的数字滚动动画（首次直接用缓存值，不闪）。
   const animatedAvailablePoints = useAnimatedNumber(summary?.wallet.available_points);
@@ -358,6 +368,13 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
   const [customQuote, setCustomQuote] = useState<BillingPackage | null>(null);
   const [customQuoteLoading, setCustomQuoteLoading] = useState(false);
   const [customQuoteError, setCustomQuoteError] = useState("");
+  // 中转编号：选中后档位表整体切换为该中转站在其自己网站上配置的档位（≤6 档），
+  // 与官方固定套餐是两套并行体系；留空表示使用官方档位。
+  const [stationPartners, setStationPartners] = useState<StationPartner[]>([]);
+  const [selectedStation, setSelectedStation] = useState("");
+  const [stationDetail, setStationDetail] = useState<StationPartnerDetail | null>(null);
+  const [stationLoading, setStationLoading] = useState(false);
+  const [stationError, setStationError] = useState("");
   const [creating, setCreating] = useState(false);
   const [createdOrder, setCreatedOrder] = useState<TopupOrderResponse | null>(null);
   const [paymentNotice, setPaymentNotice] = useState("");
@@ -557,16 +574,83 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
     return { totalCharged, totalReserved, totalRefunded, settledCount, count: filteredUsageEntries.length };
   }, [filteredUsageEntries]);
 
+  // 合作中的中转站清单：进页面拉一次，只用于「中转编号」下拉框的选项。
+  useEffect(() => {
+    let disposed = false;
+    loadStationPartners()
+      .then((payload) => {
+        if (!disposed) setStationPartners(payload.partners ?? []);
+      })
+      .catch(() => {
+        // 暂无合作中转站（或接口不可用）时下拉框只保留官方档位，不打扰用户。
+        if (!disposed) setStationPartners([]);
+      });
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  // 切换中转编号：读取该站在其自己网站上配置的档位，并默认选中第一档。
+  useEffect(() => {
+    setStationError("");
+    if (!selectedStation) {
+      setStationDetail(null);
+      return;
+    }
+    let disposed = false;
+    setStationLoading(true);
+    loadStationPartnerDetail(selectedStation)
+      .then((payload) => {
+        if (disposed) return;
+        setStationDetail(payload);
+        const first = payload.tiers[0];
+        setSelectedPackage(first ? stationPackageId(payload.station_code, first.amount_cents) : "");
+      })
+      .catch((exc) => {
+        if (disposed) return;
+        setStationDetail(null);
+        setSelectedPackage("");
+        setStationError(exc instanceof Error ? exc.message : "读取中转站档位失败");
+      })
+      .finally(() => {
+        if (!disposed) setStationLoading(false);
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [selectedStation]);
+
   const customAmountCents = useMemo(() => {
     if (!/^\d+$/.test(customAmount)) return 0;
     const yuan = Number(customAmount);
     return Number.isSafeInteger(yuan) && yuan >= 1 && yuan <= 3000 ? yuan * 100 : 0;
   }, [customAmount]);
 
+  // 当前展示的档位表：选中中转编号时整体切换为该中转商自己的档位（到账积分 =
+  // 金额(元) × 倍率，不叠加官方固定套餐赠送），否则是官方套餐。
+  const topupProducts = useMemo<BillingPackage[]>(() => {
+    if (!selectedStation || !stationDetail) return summary?.topup_products ?? [];
+    // 与服务端 _display_billing_points 同一口径：先按 point_unit_scale 取整，再折回展示值。
+    const scale = Number(summary?.pricing?.point_unit_scale) || 10;
+    return stationDetail.tiers.map((tier) => {
+      const units = Math.round((tier.amount_cents / 100) * Number(tier.rate) * scale);
+      const points = units / scale;
+      return {
+        package_id: stationPackageId(stationDetail.station_code, tier.amount_cents),
+        label: `中转站充值 ${tier.amount_cents / 100} 元`,
+        amount_cents: tier.amount_cents,
+        base_points: points,
+        promotion_bonus_points: 0,
+        promotion_bonus_percent: 0,
+        total_points: points,
+      };
+    });
+  }, [selectedStation, stationDetail, summary]);
+
   const activePackage = useMemo(() => {
     if (selectedPackage === "custom") return customQuote;
-    return summary?.topup_products.find((item) => item.package_id === selectedPackage) ?? summary?.topup_products[0];
-  }, [customQuote, selectedPackage, summary]);
+    return topupProducts.find((item) => item.package_id === selectedPackage) ?? topupProducts[0];
+  }, [customQuote, selectedPackage, topupProducts]);
 
   useEffect(() => {
     setCustomQuote(null);
@@ -1184,6 +1268,10 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
           <span className="iconfont icon-setting" aria-hidden="true" />
           <span>系统版本</span>
         </button>
+        <button type="button" className={activePanel === "promo" ? "is-active" : ""} onClick={() => setActivePanel("promo")}>
+          <span className="iconfont icon-gift" aria-hidden="true" />
+          <span>推广计划</span>
+        </button>
         <button type="button" className={activePanel === "feedback" ? "is-active" : ""} onClick={() => setActivePanel("feedback")}>
           <span className="iconfont icon-message" aria-hidden="true" />
           <span>意见反馈</span>
@@ -1396,12 +1484,51 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
               <b>{(summary?.wallet.points_balance ?? 0).toLocaleString()}<i>积分</i></b>
             </div>
           </div>
+          <div className="topup-station">
+            <label>
+              <span>中转编号</span>
+              <select
+                value={selectedStation}
+                aria-label="选择合作中转站编号"
+                onChange={(event) => {
+                  setSelectedStation(event.target.value);
+                  setSelectedPackage("");
+                  setCreatedOrder(null);
+                  setPaymentNotice("");
+                }}
+              >
+                <option value="">官方档位（不使用中转站）</option>
+                {stationPartners.map((partner) => (
+                  <option key={partner.station_code} value={partner.station_code}>
+                    {partner.station_code} · {partner.station_name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <small>
+              {!selectedStation
+                ? stationPartners.length
+                  ? `已合作 ${stationPartners.length} 个中转站，选择后档位与倍率按该中转站网站上的设置到账`
+                  : "暂无合作中的中转站"
+                : stationLoading
+                  ? "正在读取该中转站的档位..."
+                  : stationError
+                    ? stationError
+                    : stationDetail
+                      ? stationDetail.tiers.length
+                        ? `中转商：${stationDetail.station_name} · 档位与倍率以该中转站网站设置为准`
+                        : "该中转站暂未配置充值档位"
+                      : ""}
+            </small>
+          </div>
           <p className="topup-promotion-banner">
-            <span className="iconfont icon-gift" aria-hidden="true" />
-            {summary?.topup_promotion?.name || "固定套餐档位递增赠送"}：仅固定套餐享赠送，自定义金额按原价到账。
+            <span className={`iconfont ${selectedStation ? "icon-gold" : "icon-gift"}`} aria-hidden="true" />
+            {selectedStation
+              ? "当前为中转站档位：到账积分按该中转站网站上设置的倍率计算，不叠加官方套餐赠送。"
+              : `${summary?.topup_promotion?.name || "固定套餐档位递增赠送"}：仅固定套餐享赠送，自定义金额按原价到账。`}
           </p>
           <div className="topup-products">
-            {summary?.topup_products.map((item) => (
+            {topupProducts.map((item) => (
               <button
                 key={item.package_id}
                 type="button"
@@ -1417,43 +1544,46 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
               </button>
             ))}
           </div>
-          <div className={`custom-topup ${selectedPackage === "custom" ? "is-active" : ""}`}>
-            <label>
-              <span>自定义金额</span>
-              <div>
-                <b>¥</b>
-                <input
-                  type="number"
-                  min="1"
-                  max="3000"
-                  step="1"
-                  inputMode="numeric"
-                  value={customAmount}
-                  onFocus={() => setSelectedPackage("custom")}
-                  onChange={(event) => {
-                    setCustomAmount(event.target.value);
-                    setSelectedPackage("custom");
-                  }}
-                  placeholder="1 - 3000"
-                  aria-label="自定义充值金额，单位元"
-                />
-                <em>元</em>
-              </div>
-            </label>
-            <small>
-              {!customAmount
-                ? "支持 1 - 3000 元整数充值"
-                : !customAmountCents
-                  ? "请输入 1 到 3000 的整数金额"
-                  : customQuoteLoading
-                    ? "正在获取服务器报价..."
-                    : customQuoteError
-                      ? customQuoteError
-                      : customQuote
-                        ? `预计到账 ${totalPoints(customQuote).toLocaleString()} 积分（自定义金额不参与固定套餐赠送）`
-                        : "正在获取服务器报价..."}
-            </small>
-          </div>
+          {/* 中转站只有固定档位（≤6 档），没有自定义金额，故选中中转编号时隐藏该块。 */}
+          {!selectedStation && (
+            <div className={`custom-topup ${selectedPackage === "custom" ? "is-active" : ""}`}>
+              <label>
+                <span>自定义金额</span>
+                <div>
+                  <b>¥</b>
+                  <input
+                    type="number"
+                    min="1"
+                    max="3000"
+                    step="1"
+                    inputMode="numeric"
+                    value={customAmount}
+                    onFocus={() => setSelectedPackage("custom")}
+                    onChange={(event) => {
+                      setCustomAmount(event.target.value);
+                      setSelectedPackage("custom");
+                    }}
+                    placeholder="1 - 3000"
+                    aria-label="自定义充值金额，单位元"
+                  />
+                  <em>元</em>
+                </div>
+              </label>
+              <small>
+                {!customAmount
+                  ? "支持 1 - 3000 元整数充值"
+                  : !customAmountCents
+                    ? "请输入 1 到 3000 的整数金额"
+                    : customQuoteLoading
+                      ? "正在获取服务器报价..."
+                      : customQuoteError
+                        ? customQuoteError
+                        : customQuote
+                          ? `预计到账 ${totalPoints(customQuote).toLocaleString()} 积分（自定义金额不参与固定套餐赠送）`
+                          : "正在获取服务器报价..."}
+              </small>
+            </div>
+          )}
           <button className="primary-topup" type="button" disabled={!activePackage || creating || customQuoteLoading} onClick={() => void submitTopup(activePackage)}>
             {creating ? "正在创建服务器订单..." : "创建充值订单"}
           </button>
@@ -1673,6 +1803,8 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
           </article>
         ) : activePanel === "version" ? (
           <SystemVersionPanel />
+        ) : activePanel === "promo" ? (
+          <PromotionPlanPanel />
         ) : activePanel === "feedback" ? (
           <div ref={feedbackRef}>
             <FeedbackPanel initialContent={prefillFeedback} />
