@@ -10,6 +10,30 @@ from typing import Any, Literal, Mapping
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, TypeAdapter, ValidationError, field_validator
 
 
+# 店铺 ID 校验：原先住在 shop_parsing.py，被 provider（数据源适配）、shop_service、
+# shop_worker 共用，导致 provider 不得不反向依赖"整店解析"层。放在契约层后，三处都只
+# 依赖 contracts（provider 的正向依赖方向恢复正确）。shop_parsing 仍 re-export 本函数
+# 与其正则，既有引用路径不变。
+_SHOP_SID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_@.-]{0,127}$")
+
+
+def validate_shop_sid(value: object) -> str:
+    """Return a non-empty upstream shop identifier without coercing booleans."""
+    if isinstance(value, bool) or value is None:
+        raise ValueError("shop sid is required")
+    if isinstance(value, int):
+        candidate = str(value)
+    elif isinstance(value, str):
+        candidate = value.strip()
+    else:
+        raise ValueError("shop sid must be a string or integer")
+    if not candidate:
+        raise ValueError("shop sid is required")
+    if _SHOP_SID.fullmatch(candidate) is None:
+        raise ValueError("shop sid contains unsupported characters")
+    return candidate
+
+
 SENSITIVE_FIELD_NAMES = frozenset(
     {
         "key",

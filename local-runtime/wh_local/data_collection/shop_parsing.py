@@ -7,14 +7,15 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from .contracts import ApiEvidence, ShopPage
+# _SHOP_SID（店铺 ID 正则）与 validate_shop_sid 一起住在契约层 contracts.py，
+# 这里显式导入并 re-export，既有调用方（含测试）的 import 路径保持有效。
+from .contracts import ApiEvidence, ShopPage, _SHOP_SID, validate_shop_sid
 from .normalizer import sanitize_raw_payload
 
 
 _OFFER_ID = re.compile(r"^[0-9]+$")
 _OFFER_PATH = re.compile(r"/(?:offer/)?([0-9]+)(?:\.html?)?/?$", re.IGNORECASE)
 _SHOP_OFFER_FRAGMENT = re.compile(r"(?:^|&)\s*offerid-([0-9]+)(?:\s*(?:&|$))", re.IGNORECASE)
-_SHOP_SID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_@.-]{0,127}$")
 _WINPORT_PATH = re.compile(r"/winport/([A-Za-z0-9][A-Za-z0-9_@.-]{0,127})\.html?/?$", re.IGNORECASE)
 _NON_SHOP_HOST_LABELS = frozenset(
     {"1688", "www", "detail", "m", "winport", "s", "search", "show", "login", "work"}
@@ -77,21 +78,7 @@ def extract_1688_shop_sid(value: str) -> str:
     raise ValueError("1688 shop URL did not include a shop SID")
 
 
-def validate_shop_sid(value: object) -> str:
-    """Return a non-empty upstream shop identifier without coercing booleans."""
-    if isinstance(value, bool) or value is None:
-        raise ValueError("shop sid is required")
-    if isinstance(value, int):
-        candidate = str(value)
-    elif isinstance(value, str):
-        candidate = value.strip()
-    else:
-        raise ValueError("shop sid must be a string or integer")
-    if not candidate:
-        raise ValueError("shop sid is required")
-    if _SHOP_SID.fullmatch(candidate) is None:
-        raise ValueError("shop sid contains unsupported characters")
-    return candidate
+# validate_shop_sid 的实现已移至 contracts.py，本模块只做 re-export（见文件头 import）。
 
 
 def normalize_shop_page(payload: Mapping[str, Any], evidence: ApiEvidence | None) -> ShopPage:

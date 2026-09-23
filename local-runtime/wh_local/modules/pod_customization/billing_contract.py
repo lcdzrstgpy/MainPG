@@ -362,12 +362,23 @@ class PodCallPlan:
         if self.semi_item_count:
             return self._semi_batch_settlement_payload(outcomes)
         outcome_by_call = self._validated_outcomes(outcomes)
+        groups = self._product_batch_groups()
+        # 每条 link 的子项必须恰好覆盖冻结 scope（billing.py 逐 link 校验）。
+        # 混合批次（图片款+标题款混跑/混重试/混续跑）里没跑到的子项补 no_return：
+        # 否则标题款只报 title 子项被 400 拒绝，冻结积分永久卡死。
+        # 补的子项不影响扣费判定之外的行为——title-only 链接 four_grid=no_return
+        # 自然走退款路径（title-only 重试结算后免费，语义正确）。
+        present = {call.feature for group in groups for call in group}
+        scope_products = {product for pod, product in _PRODUCT_BATCH_FEATURES if pod in present}
         items: list[dict[str, object]] = []
-        for link_idx, group in enumerate(self._product_batch_groups(), start=1):
+        for link_idx, group in enumerate(groups, start=1):
             subitems: list[dict[str, str]] = []
             for pod_feature, product_feature in _PRODUCT_BATCH_FEATURES:
+                if product_feature not in scope_products:
+                    continue
                 matching = [call for call in group if call.feature == pod_feature]
                 if not matching:
+                    subitems.append({"feature": product_feature, "status": "no_return"})
                     continue
                 succeeded = any(
                     outcome_by_call[(call.call_id, call.feature)] == "success"

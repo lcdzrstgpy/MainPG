@@ -33,7 +33,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 # ---- 与 wh_local/config.py 保持同步 --------------------------------------- #
-APP_VERSION = "1.4.4"
+APP_VERSION = "1.4.5"
 UPDATE_RELEASE_HOST = "workbench.haocoming.top"
 UPDATE_MANIFEST_URL = f"https://{UPDATE_RELEASE_HOST}/mainpg/windows/manifest.json"
 UPDATE_MANIFEST_ALLOWED_HOSTS = frozenset({UPDATE_RELEASE_HOST})

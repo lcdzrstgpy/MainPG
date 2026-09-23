@@ -1,0 +1,64 @@
+/* ============================================================
+   特效偏好降级（个人中心 → 偏好设置）
+   ------------------------------------------------------------
+   <html> 上的 data-fx-tap / data-fx-ambient 属性由
+   shared/hooks/useEffectPreferences.ts 维护：
+
+     data-fx-tap="off"     点击特效：组件层直接不渲染交互层
+                           （InkTap 墨点、PeachGarden 爆裂/桃花雨）
+     data-fx-ambient="off" 全屏特效：本文件负责停掉各主题的
+                           「常驻装饰动画」——背景漂移、墨韵呼吸、
+                           花瓣薄雾、顶栏侧栏流光等。
+
+   关闭只影响「动不动」，主题配色、纹理、静态背景图全部保留，
+   随时可以再打开。
+
+   ⚠️ 水墨青黛等商店下发的主题 CSS 用 !important + 0,1,1 特异性声明
+   动画，所以这里必须用属性选择器抬高特异性并同样加 !important，
+   才能在不更新主题包的前提下覆盖掉。
+   ============================================================ */
+
+/* ---------- 水墨青黛：画卷漂移 / 墨韵呼吸 / 顶栏侧栏墨雾 / 侧栏竹影摇曳 ---------- */
+html[data-fx-ambient="off"][data-theme="chinese"] .workspace-shell::before,
+html[data-fx-ambient="off"][data-theme="chinese"] .workspace-shell::after,
+html[data-fx-ambient="off"][data-theme="chinese"] .topbar-card::before,
+html[data-fx-ambient="off"][data-theme="chinese"] .sidebar-card::before,
+html[data-fx-ambient="off"][data-theme="chinese"] .sidebar-item:hover,
+html[data-fx-ambient="off"][data-theme="chinese"] .sidebar-subitem:hover {
+  animation: none !important;
+}
+
+/* ---------- 暖阳橙：整屏背景漂移 / 头部流光 / 顶栏侧栏流光与气泡 / 图标呼吸 ---------- */
+html[data-fx-ambient="off"][data-theme="sunset"] .workspace-shell,
+html[data-fx-ambient="off"][data-theme="sunset"] :is(
+  .page-hero-card,
+  .settings-hero,
+  .daily-page-heading,
+  .daily-drawer-header,
+  .price-verification-hero,
+  .product-processing-hero,
+  .verify-commandbar,
+  .profit-products-head,
+  .profit-activity-hero,
+  .profit-test-hero
+),
+html[data-fx-ambient="off"][data-theme="sunset"] .topbar-card::before,
+html[data-fx-ambient="off"][data-theme="sunset"] .sidebar-card::before,
+html[data-fx-ambient="off"][data-theme="sunset"] .topbar-card::after,
+html[data-fx-ambient="off"][data-theme="sunset"] .sidebar-card::after,
+html[data-fx-ambient="off"][data-theme="sunset"] :is(
+  .brand-mark,
+  .avatar,
+  .stats-icon,
+  .sidebar-pin-button.is-active,
+  .topbar-pin-toggle.is-active,
+  .theme-option.is-active
+) {
+  animation: none !important;
+}
+
+/* ---------- 桃花源：薄雾漂移（花瓣画布由组件层按开关决定是否挂载） ---------- */
+html[data-fx-ambient="off"] .peach-garden-mist::before,
+html[data-fx-ambient="off"] .peach-garden-mist::after {
+  animation: none !important;
+}

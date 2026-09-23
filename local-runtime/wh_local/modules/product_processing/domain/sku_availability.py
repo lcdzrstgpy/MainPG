@@ -205,6 +205,13 @@ def _resolve(
         return False, False, "media_unavailable"
     if not current_fingerprint or current_fingerprint != str(stored.get("fingerprint") or ""):
         return False, False, "fingerprint_stale"
+    if status == STATUS_UNAVAILABLE:
+        # 保留落库时的细化原因（not_square_image / chinese_detected / too_many_sku_images /
+        # no_sku_image / text_check_failed），前端据此展示「非 1:1 需裁剪」等可执行提示；
+        # 折叠成粗粒度 unavailable 会让这些提示与红标永不生效。
+        detail = str(stored.get("reason") or "").strip()
+        if detail:
+            return True, False, detail
     return True, status == STATUS_CLEAN, status
 
 
@@ -223,7 +230,9 @@ def keep_active_sku_views(
     """
     records = (raw or {}).get("source_variant_records")
     if not isinstance(records, list):
-        return list(sku_views), False
+        # 老批次没有该字段：无法按现存变种过滤，属放宽口径——不过滤但标记 relaxed，
+        # 结论不能保证覆盖导出实际使用的图集，调用方不应据此判定为「可用」。
+        return list(sku_views), True
     sku_ids: set[str] = set()
     labels: set[str] = set()
     for record in records:

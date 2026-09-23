@@ -127,6 +127,8 @@ export function AnnouncementModal({ announcements, onSeen, onClose }: Announceme
     if (index + 1 < announcements.length) {
       setIndex(index + 1);
       setSlide(0);
+      // 切换公告后恢复自动轮播：悬停状态属于上一张图，不能带到新公告。
+      setAutoPaused(false);
       return;
     }
     close();

@@ -27,6 +27,9 @@ EMAIL_CODE_EMAIL_HOURLY_LIMIT = 5
 EMAIL_CODE_IP_HOURLY_LIMIT = 20
 EMAIL_CODE_MAX_ATTEMPTS = 5
 DEFAULT_WORKSPACE_NAME = "本地演示工作区"
+# 会话失联阈值：前端心跳间隔约 30 秒，超过该阈值未刷新 last_used_at 视为
+# 已关闭页面/断线，允许该账号重新登录并撤销旧会话。
+SESSION_STALE_SECONDS = 300
 
 # 登录防爆破：15 分钟内同账号连续失败 5 次即锁定，之后登录直接拒绝。
 LOGIN_MAX_FAILURES = 5
@@ -55,6 +58,8 @@ class SQLiteCustomerAuthService:
     def login(self, payload: dict[str, Any]) -> CustomerAuthResult:
         identifier = _text(payload, "username") or _text(payload, "email")
         password = _text(payload, "password")
+        # 强制登录：账号已有活跃会话时，用户明确选择"退出其他设备"后撤销旧会话放行。
+        force = bool(payload.get("force") or payload.get("force_relogin"))
         if not identifier or not password:
             self._log_login("", identifier, "", False, "missing username/email or password")
             raise ValueError("username/email and password are required")
@@ -135,20 +140,59 @@ class SQLiteCustomerAuthService:
                 )
                 raise PermissionError("invalid username/email or password")
 
-            # 单端登录：同一账号只保留最新一个平台会话，新登录直接顶替旧会话。
-            # 早期实现按"旧会话是否仍有心跳"决定拒绝或顶替，但桌面端关页即销毁后端
-            # 进程，进程内持有的 remote_token 随之丢失，用户已无法主动登出；此时若
-            # 拒绝登录，用户会被锁死到旧会话过期为止（表现为"关掉页面再打开就登录
-            # 不上"），故统一按顶替处理：撤销该账号全部未撤销会话，由调用方签发新会话。
+            # 单端登录限制：账号存在"活跃且未失联"的平台会话时，禁止再次登录。
+            # 失联判定：前端会周期性心跳刷新 last_used_at；超过阈值未心跳视为
+            # 已关闭页面/断线，此时允许重新登录并撤销旧会话，避免用户被锁死。
             now = _utc_now()
-            conn.execute(
+            stale_before = _utc_ago(SESSION_STALE_SECONDS)
+            active_session = conn.execute(
                 """
-                UPDATE auth_platform_sessions
-                SET revoked_at = ?
-                WHERE account_id = ? AND revoked_at = ''
+                SELECT session_id, last_used_at FROM auth_platform_sessions
+                WHERE account_id = ?
+                  AND revoked_at = ''
+                  AND expires_at > ?
                 """,
-                (now, row["account_id"]),
-            )
+                (row["account_id"], now),
+            ).fetchone()
+            if active_session is not None:
+                last_used = str(active_session["last_used_at"] or "")
+                still_active = bool(last_used and last_used >= stale_before)
+                if still_active and not force:
+                    conn.execute(
+                        """
+                        INSERT INTO auth_login_logs (account_id, username, email, success, failure_reason, created_at)
+                        VALUES (?, ?, ?, 0, ?, ?)
+                        """,
+                        (row["account_id"], row["username"], row["email"], "账号已在其他设备登录", now),
+                    )
+                    raise PermissionError("该账号已在其他设备登录，请先退出后再登录")
+                if still_active and force:
+                    # 用户明确选择强制登录：撤销旧会话，旧端下次请求收到 401 被顶替提示。
+                    conn.execute(
+                        """
+                        INSERT INTO auth_login_logs (account_id, username, email, success, failure_reason, created_at)
+                        VALUES (?, ?, ?, 1, ?, ?)
+                        """,
+                        (row["account_id"], row["username"], row["email"], "强制登录，撤销其他设备会话", now),
+                    )
+                    conn.execute(
+                        """
+                        UPDATE auth_platform_sessions
+                        SET revoked_at = ?
+                        WHERE account_id = ? AND revoked_at = ''
+                        """,
+                        (now, row["account_id"]),
+                    )
+                elif not still_active:
+                    # 旧会话已失联（如关闭页面未登出），撤销并允许本次登录。
+                    conn.execute(
+                        """
+                        UPDATE auth_platform_sessions
+                        SET revoked_at = ?
+                        WHERE account_id = ? AND revoked_at = ''
+                        """,
+                        (now, row["account_id"]),
+                    )
 
             conn.execute(
                 """

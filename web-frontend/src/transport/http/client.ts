@@ -6,6 +6,8 @@ type RequestOptions = {
   token?: string;
   /** 覆盖默认超时（毫秒）。用于外部慢接口（如 1688 图搜），默认 30s 不够时单独放宽。 */
   timeoutMs?: number;
+  /** 中止信号：切换会话/组件卸载时主动取消在飞请求。 */
+  signal?: AbortSignal;
 };
 
 const TOKEN_KEY = "wh_demo_token";
@@ -320,13 +322,19 @@ async function fetchWithTimeout(
   url: string,
   init: RequestInit,
   timeoutMs: number = REQUEST_TIMEOUT_MS,
+  externalSignal?: AbortSignal,
 ): Promise<Response> {
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  const signal = externalSignal
+    ? AbortSignal.any([controller.signal, externalSignal])
+    : controller.signal;
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
+    return await fetch(url, { ...init, signal });
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
+      // 外部主动中止（切换会话等）原样抛出，由调用方识别；超时中止转成超时文案。
+      if (externalSignal?.aborted) throw error;
       throw new Error("请求超时，请稍后重试");
     }
     throw error;
@@ -348,6 +356,7 @@ export async function httpJson<T>(path: string, options: RequestOptions = {}): P
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
     },
     options.timeoutMs,
+    options.signal,
   );
 
   const contentType = response.headers.get("content-type") ?? "";
@@ -382,6 +391,7 @@ export async function httpBlob(path: string, options: RequestOptions = {}): Prom
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
     },
     options.timeoutMs,
+    options.signal,
   );
 
   if (!response.ok) {

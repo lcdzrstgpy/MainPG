@@ -4,10 +4,49 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Callable
+from dataclasses import dataclass
 from threading import RLock
+from typing import Protocol
 
 from .public_image_fetch import FetchedPublicImage, fetch_public_image
-from .service import CachedDailySelectionImage, DailySelectionImageCache
+
+# 图片缓存的数据结构与接口定义在本模块（缓存自己的领域），而不是 service。
+# 原先它们住在 service.py，导致本模块为了几个类型反向 import 编排层（循环依赖的种子）。
+# service.py 仍然 re-export 这些名字，外部既有引用路径不受影响。
+
+
+@dataclass(frozen=True)
+class CachedDailySelectionImage:
+    """Bytes returned by an injected safe image cache/fetch adapter."""
+
+    content: bytes
+    media_type: str
+    final_url: str
+    resolved_address: str | None = None
+
+
+class DailySelectionImageAccessDenied(PermissionError):
+    """Raised for unrecorded or unsafe image targets."""
+
+
+class DailySelectionImageNotFound(LookupError):
+    """Raised when a requested URL is not part of an owned run snapshot."""
+
+
+class DailySelectionImageCache(Protocol):
+    """Host adapter that validates every network target before connecting.
+
+    Implementations must invoke ``validate_target`` for the initial resolved
+    address and again for every redirect target before opening that connection.
+    """
+
+    def get_or_fetch(
+        self,
+        *,
+        workspace_id: str,
+        url: str,
+        validate_target: Callable[[str, str | None], None],
+    ) -> CachedDailySelectionImage: ...
 
 
 class PublicDailySelectionImageCache(DailySelectionImageCache):

@@ -718,6 +718,14 @@ def create_product_processing_router(
             raise HTTPException(status.HTTP_404_NOT_FOUND, "preview product not found")
 
         context = prepare_listing_context(body.title, body.description, body.category_path)
+        if context.get("matched") is False:
+            # 表里没有任何依据时不调 AI：既不必要地花一次积分，也避免让模型
+            # 从三个不相关的候选里硬挑一条当结论。
+            return deterministic_listing_advice(
+                context,
+                notice="未匹配到 996 表格中的任何规则，请人工确认类目；本次未消耗 AI 积分。",
+            )
+
         token = _remote_token(request, customer_sessions)
         if remote_customer_auth is None or not token:
             return deterministic_listing_advice(

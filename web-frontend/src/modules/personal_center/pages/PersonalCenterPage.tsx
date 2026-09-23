@@ -7,6 +7,7 @@ import { AVATAR_CHANGED_EVENT, AVATAR_STORAGE_KEY } from "../../../app/layout/To
 import {
   changeAccountPassword,
   changeUsername,
+  claimBasicWeeklyPoints,
   claimDailyExtraPoints,
   createTopupOrder,
   loadBillingLedgerHistory,
@@ -29,6 +30,7 @@ import {
   type TopupOrderResponse,
 } from "../api/personalCenterApi";
 import { SystemVersionPanel } from "../components/SystemVersionPanel";
+import { PreferencesPanel } from "../components/PreferencesPanel";
 import { FeedbackPanel } from "../components/FeedbackPanel";
 import { PromotionPlanPanel } from "../components/PromotionPlanPanel";
 import "../styles/personalCenter.css";
@@ -47,7 +49,7 @@ const providerMeta = {
   alipay: { label: "支付宝", icon: "iconfont icon-alipay-circle-fill", className: "is-alipay" },
 } as const;
 
-/** 「升级体验」弹窗里的基础版套餐（¥39.9）：立得 4000 充值积分 + 每日签到 200 积分、每周上限 1000。 */
+/** 「升级体验」弹窗里的基础版套餐（¥39.9）：立得 4000 充值积分 + 28 天内每周可领 1000 永久积分。 */
 const PLAN_BASIC_PRODUCT: BillingPackage = {
   package_id: "plan_basic",
   label: "基础版",
@@ -140,7 +142,7 @@ const LEDGER_SOURCE_LABELS: Record<string, string> = {
   payment_wechat: "微信充值",
   topup_promotion_bonus: "充值档位赠送",
   daily_extra_claim: "每日签到",
-  plan_basic_claim: "标准版每周领取",
+  plan_basic_claim: "基础版每周领取",
   plan_experience_claim: "体验版每周领取",
   admin_adjustment: "管理员划拨",
   test_grant: "测试划拨",
@@ -331,12 +333,12 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
   const defaultUsageFilterKey = buildUsageFilterKey("", "", "", "");
 
   const [summary, setSummary] = useState<BillingSummary | null>(cachedBalance?.summary ?? null);
-  const [activePanel, setActivePanel] = useState<"wallet" | "usage" | "pricing" | "model" | "version" | "promo" | "feedback">("wallet");
+  const [activePanel, setActivePanel] = useState<"wallet" | "usage" | "pricing" | "model" | "preferences" | "version" | "promo" | "feedback">("wallet");
 
   // 可用积分与积分构成的数字滚动动画（首次直接用缓存值，不闪）。
   const animatedAvailablePoints = useAnimatedNumber(summary?.wallet.available_points);
-  // 积分构成：永久积分=充值池+永久子池（充值积分、标准版每周领取、标准版签到），
-  // 限时积分=体验池（体验版签到所得，每周一 00:00 过期作废）。
+  // 积分构成：永久积分=充值池+额外池（充值积分、基础版每周领取、首签新人礼），
+  // 限时积分=体验池（每日签到所得，每周一 00:00 过期作废）。
   const permanentPoints = summary
     ? (summary.wallet.points_balance ?? 0) + (summary.wallet.plan.extra_balance ?? 0)
     : null;
@@ -987,10 +989,59 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
     }
   };
 
+  const [claimBusy, setClaimBusy] = useState(false);
+  const [claimNotice, setClaimNotice] = useState("");
   const [dailyClaimBusy, setDailyClaimBusy] = useState(false);
   const [dailyClaimNotice, setDailyClaimNotice] = useState("");
 
-  /** 每日签到：体验版 +100/天上限 500，标准版 +200/天上限 1000（按北京自然日幂等）。 */
+  const claimBasicPoints = async () => {
+    if (claimBusy) return;
+    setClaimBusy(true);
+    setClaimNotice("");
+    setError("");
+    let result: Awaited<ReturnType<typeof claimBasicWeeklyPoints>> | null = null;
+    try {
+      result = await claimBasicWeeklyPoints();
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : "领取失败，请稍后重试");
+      setClaimBusy(false);
+      return;
+    }
+    // 领取已成功：先给即时反馈；后面 summary 刷新失败也不误报"领取失败"。
+    setClaimNotice(`已领取 ${result.claimed_points} 积分（第 ${result.claim_count}/${result.claim_max} 周）`);
+    notifyBalanceChanged();
+    loadLedger(ledgerCategory, ledgerPage);
+    try {
+      const payload = await loadBillingSummary();
+      setSummary(payload);
+      writeBalanceCache(balanceCacheKeyValue, payload);
+      lastBalanceRefreshAt.current = Date.now();
+    } catch {
+      // 概要刷新失败：用领取结果乐观更新当前展示，避免"已入账却显示没变"。
+      setSummary((current) =>
+        current
+          ? {
+              ...current,
+              wallet: {
+                ...current.wallet,
+                available_points:
+                  (current.wallet.available_points ?? 0) + result.claimed_points,
+                plan: {
+                  ...current.wallet.plan,
+                  extra_balance: (current.wallet.plan.extra_balance ?? 0) + result.claimed_points,
+                  basic_claim_count: result.claim_count,
+                  basic_claimable: false,
+                },
+              },
+            }
+          : current,
+      );
+    } finally {
+      setClaimBusy(false);
+    }
+  };
+
+  /** 每日签到：首签 +500 永久，之后每天 +100 限时（按北京自然日幂等）。 */
   const claimDailyPoints = async () => {
     if (dailyClaimBusy) return;
     setDailyClaimBusy(true);
@@ -1006,11 +1057,9 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
     }
     // 签到已成功：先给即时反馈；后面 summary 刷新失败也不误报"签到失败"。
     setDailyClaimNotice(
-      result.week_remaining_points <= 0
-        ? `已签到 +${result.claimed_points} 积分，本周额度已领满，下周一 00:00 重置`
-        : result.permanent
-          ? `已签到 +${result.claimed_points} 积分（永久有效），明日 00:00 后可再签`
-          : `已签到 +${result.claimed_points} 积分（本周一 00:00 过期），明日 00:00 后可再签`,
+      result.first_claim_bonus
+        ? `首签礼包 +${result.claimed_points} 积分（永久有效），明日 00:00 后可再签到`
+        : `已签到 +${result.claimed_points} 积分（限时，周一 00:00 过期），明日 00:00 后可再签到`,
     );
     notifyBalanceChanged();
     loadLedger(ledgerCategory, ledgerPage);
@@ -1027,19 +1076,21 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
               ...current,
               wallet: {
                 ...current.wallet,
+                available_points:
+                  (current.wallet.available_points ?? 0) + result.claimed_points,
                 plan: {
                   ...current.wallet.plan,
-                  plan_balance: result.permanent
+                  plan_balance: result.first_claim_bonus
                     ? current.wallet.plan.plan_balance
                     : (current.wallet.plan.plan_balance ?? 0) + result.claimed_points,
-                  extra_balance: result.permanent
+                  extra_balance: result.first_claim_bonus
                     ? (current.wallet.plan.extra_balance ?? 0) + result.claimed_points
                     : current.wallet.plan.extra_balance,
-                  signin_week_points: result.week_claimed_points,
-                  signin_week_remaining: result.week_remaining_points,
-                  plan_used: result.week_claimed_points,
                   daily_claimable: false,
                   daily_claim_date: result.period,
+                  daily_claim_points: 100,
+                  daily_first_claim_bonus: 0,
+                  daily_week_count: (current.wallet.plan.daily_week_count ?? 0) + 1,
                   daily_next_claim_at: result.next_claim_at,
                 },
               },
@@ -1208,7 +1259,7 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
               <div>
                 <span>PLAN UPGRADE</span>
                 <h2 id="personal-upgrade-title">升级体验</h2>
-                <p>购买基础版，立得 4000 积分，每日签到 200 积分、每周上限 1000，领到即永久。</p>
+                <p>购买基础版，立得 4000 积分，28 天内每周可直接领取 1000 积分，领到即永久。</p>
               </div>
               <button type="button" onClick={() => setUpgradeOpen(false)} aria-label="关闭">×</button>
             </header>
@@ -1220,8 +1271,8 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
                 </div>
                 <ul className="personal-upgrade-plan-benefits">
                   <li><b>购买立得 4000 积分</b>（充值积分，永久有效）</li>
-                  <li>签到升级为<b>每日 200 积分</b>（每周上限 1000，领到即永久）</li>
-                  <li>四周后到期，自动回落体验版（每日 100 / 每周 500，限时积分）</li>
+                  <li>28 天内<b>每周可直接领取 1000 积分</b>（领到即永久）</li>
+                  <li>28 天后到期，自动回落体验版（每日签到 +100 限时积分）</li>
                 </ul>
                 <button
                   type="button"
@@ -1257,6 +1308,10 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
         <button type="button" className={activePanel === "model" ? "is-active" : ""} onClick={() => setActivePanel("model")}>
           <span className="iconfont icon-robot-fill" aria-hidden="true" />
           <span>模型选择</span>
+        </button>
+        <button type="button" className={activePanel === "preferences" ? "is-active" : ""} onClick={() => setActivePanel("preferences")}>
+          <span className="iconfont icon-skin" aria-hidden="true" />
+          <span>偏好设置</span>
         </button>
         <button type="button" className={activePanel === "version" ? "is-active" : ""} onClick={() => setActivePanel("version")}>
           <span className="iconfont icon-setting" aria-hidden="true" />
@@ -1320,21 +1375,15 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
             </div>
             <div className="personal-plan-card-value">
               <b>{summary?.wallet.plan?.plan_balance ?? "--"}</b>
-              <em>/ {summary?.wallet.plan?.plan_limit ?? 500} 积分</em>
+              <em>积分</em>
             </div>
-            <div
-              className="personal-plan-card-meter"
-              role="progressbar"
-              aria-label="限时积分余额"
-              aria-valuemin={0}
-              aria-valuemax={summary?.wallet.plan?.plan_limit ?? 500}
-              aria-valuenow={summary?.wallet.plan?.plan_balance ?? 0}
-            >
-              <span
-                style={{
-                  width: `${Math.min(100, Math.max(0, ((summary?.wallet.plan?.plan_balance ?? 0) / (summary?.wallet.plan?.plan_limit || 1)) * 100))}%`,
-                }}
-              />
+            <div className="personal-plan-block-head">
+              <span>额外积分</span>
+              <span>永久有效</span>
+            </div>
+            <div className="personal-plan-card-value">
+              <b>{summary?.wallet.plan?.extra_balance ?? "--"}</b>
+              <em>积分</em>
             </div>
             <div className="personal-plan-claim">
               <div className="personal-plan-claim-head">
@@ -1342,19 +1391,28 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
                   每日签到
                   <i
                     className="personal-plan-claim-hint"
-                    title={
-                      summary?.wallet.plan?.signin_permanent
-                        ? "标准版签到积分永久有效，不会过期。"
-                        : "体验版签到积分每周一 00:00 过期，升级标准版后永久有效。"
-                    }
+                    title="首签送 500 积分进额外积分（永久）；之后每天 +100 进限时积分（周一 00:00 过期）。"
                   >
                     ?
                   </i>
                 </span>
-                <b>
-                  {summary?.wallet.plan?.signin_week_points ?? 0} /{" "}
-                  {summary?.wallet.plan?.signin_week_limit ?? 500} 本周已签
-                </b>
+                <span className="personal-plan-claim-week">
+                  本周已签 {summary?.wallet.plan?.daily_week_count ?? 0}/{summary?.wallet.plan?.daily_week_max ?? 7} 天
+                </span>
+              </div>
+              <div
+                className="personal-plan-claim-meter"
+                role="progressbar"
+                aria-label="本周签到进度"
+                aria-valuemin={0}
+                aria-valuemax={summary?.wallet.plan?.daily_week_max ?? 7}
+                aria-valuenow={summary?.wallet.plan?.daily_week_count ?? 0}
+              >
+                <span
+                  style={{
+                    width: `${Math.min(100, Math.max(0, ((summary?.wallet.plan?.daily_week_count ?? 0) / (summary?.wallet.plan?.daily_week_max || 7)) * 100))}%`,
+                  }}
+                />
               </div>
               <div className="personal-plan-claim-meta">
                 {summary?.wallet.plan?.daily_claimable ?? true ? (
@@ -1364,29 +1422,53 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
                     disabled={dailyClaimBusy || !summary}
                     onClick={claimDailyPoints}
                   >
-                    {dailyClaimBusy ? "签到中…" : `每日签到 +${summary?.wallet.plan?.daily_claim_points ?? 100} 积分`}
+                    {dailyClaimBusy
+                      ? "签到中…"
+                      : (summary?.wallet.plan?.daily_first_claim_bonus ?? 0) > 0
+                        ? `签到领 ${summary?.wallet.plan?.daily_first_claim_bonus} 新人礼`
+                        : `每日签到 +${summary?.wallet.plan?.daily_claim_points ?? 100} 积分`}
                   </button>
-                ) : (summary?.wallet.plan?.signin_week_remaining ?? 0) <= 0 ? (
-                  <span>本周签到额度已领满，下周一 00:00 重置</span>
                 ) : (
                   <span>今日已签到，明天 00:00 再来</span>
                 )}
               </div>
               {dailyClaimNotice && <p className="personal-plan-claim-notice">{dailyClaimNotice}</p>}
-            </div>
-            <div className="personal-plan-stats">
-              <div className="personal-plan-stat">
-                <span>限时余额</span>
-                <b>{summary?.wallet.plan?.plan_balance ?? "--"}</b>
-              </div>
-              <div className="personal-plan-stat">
-                <span>本周已签</span>
-                <b>{summary?.wallet.plan?.signin_week_points ?? 0}</b>
-              </div>
-              <div className="personal-plan-stat">
-                <span>刷新周期</span>
-                <b>每周一</b>
-              </div>
+              {/* 基础版专属：28 天内每周另可领 1000（永久），与每日签到叠加 */}
+              {summary?.wallet.plan?.plan_type === "basic" && (
+                <div className="personal-plan-claim-basic">
+                  <div
+                    className="personal-plan-claim-meter"
+                    role="progressbar"
+                    aria-label="基础版每周领取进度"
+                    aria-valuemin={0}
+                    aria-valuemax={summary.wallet.plan.basic_claim_max}
+                    aria-valuenow={summary.wallet.plan.basic_claim_count}
+                  >
+                    <span
+                      style={{
+                        width: `${Math.min(100, Math.max(0, (summary.wallet.plan.basic_claim_count / (summary.wallet.plan.basic_claim_max || 4)) * 100))}%`,
+                      }}
+                    />
+                  </div>
+                  <div className="personal-plan-claim-meta">
+                    {summary.wallet.plan.basic_claimable ? (
+                      <button
+                        type="button"
+                        className="personal-plan-claim-btn is-secondary"
+                        disabled={claimBusy}
+                        onClick={claimBasicPoints}
+                      >
+                        {claimBusy ? "领取中…" : "领取基础版 1000 积分（永久）"}
+                      </button>
+                    ) : summary.wallet.plan.basic_claim_count >= summary.wallet.plan.basic_claim_max ? (
+                      <span>基础版四周领取已用完</span>
+                    ) : (
+                      <span>基础版本周已领，下周一再来</span>
+                    )}
+                  </div>
+                  {claimNotice && <p className="personal-plan-claim-notice">{claimNotice}</p>}
+                </div>
+              )}
             </div>
             {summary?.wallet.plan?.plan_expire_at && (
               <div className="personal-plan-expire">
@@ -1412,14 +1494,14 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
             <div className="personal-overview-metric">
               <span>
                 长期积分
-                <i className="personal-overview-hint" title="充值积分与标准版签到等永久有效的积分，不会过期。">?</i>
+                <i className="personal-overview-hint" title="充值积分与首签新人礼、基础版每周领取等永久有效的积分，不会过期。">?</i>
               </span>
               <b>{animatedPermanentPoints === null ? "--" : animatedPermanentPoints.toLocaleString()}</b>
             </div>
             <div className="personal-overview-metric">
               <span>
                 限时积分
-                <i className="personal-overview-hint" title="体验版每日签到所得，每周一 00:00 统一清空作废。">?</i>
+                <i className="personal-overview-hint" title="每日签到所得，每周一 00:00 统一清空作废。">?</i>
               </span>
               <b>{animatedLimitedPoints === null ? "--" : animatedLimitedPoints.toLocaleString()}</b>
             </div>
@@ -1792,6 +1874,8 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
               </section>
             </div>
           </article>
+        ) : activePanel === "preferences" ? (
+          <PreferencesPanel />
         ) : activePanel === "version" ? (
           <SystemVersionPanel />
         ) : activePanel === "promo" ? (

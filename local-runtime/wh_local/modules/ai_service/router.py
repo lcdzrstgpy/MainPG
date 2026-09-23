@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import base64
 import json
 from concurrent.futures import ThreadPoolExecutor
@@ -143,15 +144,11 @@ def create_router(
     @router.post("/creations")
     def create_image(body: dict[str, Any], actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
         permitted(actor, "ai_service.create")
-        conversation_id = str(body.get("conversation_id") or "")
-        if not conversation_id:
-            template_id = str(body.get("template_id") or "scene")
-            template = next((item for item in service.templates() if item["id"] == template_id), None)
-            conversation_id = service.create_conversation(actor, str(body.get("title") or "新建创作"), mode=str(template["mode"] if template else "generate"))["conversation_id"]
+        template_id = str(body.get("template_id") or "scene")
+        model_id = str(body.get("model_id") or "gpt-image-2-1k")
         asset_ids = _string_list(body.get("asset_ids"))
         prompt = str(body.get("prompt") or "").strip()
-        model_id = str(body.get("model_id") or "gpt-image-2-1k")
-        template_id = str(body.get("template_id") or "scene")
+        # 先校验模板/模型再建会话：校验失败时抛错直接返回，不残留空会话。
         payload = _call(
             service.prepare_creation,
             actor,
@@ -161,6 +158,10 @@ def create_router(
             asset_ids=asset_ids,
             size=str(body.get("size") or "1024x1024"),
         )
+        conversation_id = str(body.get("conversation_id") or "")
+        if not conversation_id:
+            template = next((item for item in service.templates() if item["id"] == template_id), None)
+            conversation_id = service.create_conversation(actor, str(body.get("title") or "新建创作"), mode=str(template["mode"] if template else "generate"))["conversation_id"]
         _call(service.append_message, actor, conversation_id, role="user", content=prompt, asset_ids=asset_ids)
         creation = _call(service.create_creation, actor, conversation_id, payload)
         gateway: StationGateway | None = None
@@ -273,6 +274,8 @@ def create_router(
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    # POD 线程池随进程退出回收：此前无 shutdown，热重载/关闭时 4 个 ai-pod 线程滞留。
+    atexit.register(pod_executor.shutdown, wait=False)
     return router
 
 
@@ -306,10 +309,16 @@ def _stream_station_reply(
             if line.startswith("data:"):
                 _append_delta(chunks, line[5:].strip())
             yield f"{line}\n\n"
-        _call(service.append_message, actor, conversation_id, role="assistant", content="".join(chunks))
     except StationGatewayError as exc:
         yield f"data: {json.dumps({'error': str(exc)}, ensure_ascii=False)}\n\n"
     finally:
+        # 无论上游报错还是客户端断连，已生成的增量文本都落库，
+        # 避免历史记录只剩 user 消息、assistant 回复凭空消失。
+        if chunks:
+            try:
+                _call(service.append_message, actor, conversation_id, role="assistant", content="".join(chunks))
+            except AiServiceError:
+                pass
         gateway.close()
 
 

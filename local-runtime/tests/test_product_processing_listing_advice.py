@@ -243,3 +243,102 @@ def test_listing_advice_endpoint_reserves_ai_and_settles_success(
     finally:
         getattr(service, "_dimension_canvas_service").close()
         database.dispose()
+
+
+def test_unknown_product_never_borrows_the_first_table_row() -> None:
+    """一条都没命中时不能把编号最小的规则（办公用品 / A-优先）当成建议。"""
+    context = prepare_listing_context("zzzz qqqq", "unrelated words", "")
+
+    assert context["matched"] is False
+    assert context["top_score"] < 3
+
+    advice = deterministic_listing_advice(context)
+
+    assert advice["level"] == "待人工确认"
+    assert advice["matched_rule_number"] == 0
+    assert advice["recommended_category"] == "未匹配"
+    assert "办公用品" not in advice["recommended_category"]
+    assert "无资质直接做" not in advice["action"]
+
+
+def test_threshold_keeps_normal_products_behaving_as_before() -> None:
+    """加阈值后正常商品的候选数（3）与结论都不变。"""
+    context = prepare_listing_context("Pet leash", "nylon dog lead", "宠物用品")
+
+    assert context["matched"] is True
+    assert len(context["candidates"]) == 3
+    assert context["candidates"][0].number == 2
+    assert deterministic_listing_advice(context)["level"] == "A-优先"
+
+
+def test_listing_advice_endpoint_skips_ai_when_nothing_matched(tmp_path) -> None:
+    """未匹配时必须直接回表结论，且不预留 AI 额度（不花积分）。"""
+    database = create_database("sqlite:///:memory:")
+    service = ProductProcessingService(
+        ProductProcessingRepository(database),
+        ProductProcessingAssets(tmp_path / "assets"),
+    )
+    draft, _created = service.create_draft(
+        {"source_type": "manual", "title": "zzzz qqqq"},
+        workspace_id="local",
+    )
+    task = service.repository.create_task(
+        title="listing advice unmatched test",
+        preflight_only=False,
+        settings={"_billing": {"account_id": "user"}},
+        drafts=[draft],
+        idempotency_key=None,
+        workspace_id="local",
+    )
+
+    class RecordingRemote:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, str]] = []
+
+        def reserve_ai_usage(self, token, payload):
+            self.events.append(("reserve", token))
+            raise AssertionError("unmatched advice must not reserve AI usage")
+
+        def settle_ai_usage_failure(self, token, usage_id, _payload):
+            self.events.append(("fail", f"{token}:{usage_id}"))
+            return {"usage": {"usage_id": usage_id, "status": "failed"}}
+
+    sessions = LocalSessionService()
+    session = sessions.login_customer(
+        CustomerAuthResult(customer_id="user", username="user", remote_token="remote-session")
+    )
+    remote = RecordingRemote()
+    app = FastAPI()
+    app.dependency_overrides[actor_from_authorization] = lambda: Actor(
+        id="user", username="user", role="operator"
+    )
+    app.include_router(
+        create_product_processing_router(
+            service,
+            customer_sessions=sessions,
+            remote_customer_auth=remote,
+        )
+    )
+
+    try:
+        response = TestClient(app).post(
+            f"/product-processing/tasks/{task['id']}/preview/items/{draft['id']}/listing-advice",
+            headers={"Authorization": f"Bearer {session.token}"},
+            json={
+                "title": "zzzz qqqq",
+                "description": "totally unrelated words",
+                "category_path": "",
+                "request_id": "test-request-unmatched-001",
+            },
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["level"] == "待人工确认"
+        assert payload["matched_rule_number"] == 0
+        assert payload["source"] == "rules"
+        assert "未匹配到" in payload["notice"]
+        assert remote.events == []
+    finally:
+        getattr(service, "_dimension_canvas_service").close()
+        database.dispose()

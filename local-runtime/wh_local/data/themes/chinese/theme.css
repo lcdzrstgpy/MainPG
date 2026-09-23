@@ -1,6 +1,6 @@
 [data-theme="chinese"] {
   --theme-page-bg: #ebe8de;
-  --theme-card-bg: rgba(249, 247, 239, .95);
+  --theme-card-bg: rgba(249, 247, 239, .22);
   --theme-card-border: rgba(91, 105, 98, .34);
   --theme-card-shadow: rgba(38, 52, 48, .09);
   --theme-card-shadow-lg: rgba(38, 52, 48, .14);
@@ -74,15 +74,15 @@
   --theme-hero-fluid-bg: radial-gradient(circle at 35% 38%, rgba(207, 220, 207, .24), rgba(133, 157, 144, .12) 48%, transparent 70%);
   --theme-hero-sheen-color: rgba(255, 255, 255, .08);
 
-  --theme-module-surface: #faf8f1;
-  --theme-module-surface-raised: rgba(250, 248, 241, .98);
-  --theme-module-surface-soft: #f0eee6;
-  --theme-module-surface-tint: #e4ece7;
+  --theme-module-surface: rgba(250, 248, 241, .22);
+  --theme-module-surface-raised: rgba(250, 248, 241, .26);
+  --theme-module-surface-soft: rgba(240, 238, 230, .22);
+  --theme-module-surface-tint: rgba(228, 236, 231, .26);
   --theme-module-border: #d0d7d1;
   --theme-module-border-strong: #829d95;
   --theme-module-primary-strong: #315c57;
   --theme-module-primary-rgb: 49, 92, 87;
-  --theme-module-panel-gradient: linear-gradient(120deg, #f1efe7 0%, #faf8f1 62%, #e4ebe5 100%);
+  --theme-module-panel-gradient: linear-gradient(120deg, rgba(241, 239, 231, .26) 0%, rgba(250, 248, 241, .22) 62%, rgba(228, 235, 229, .26) 100%);
   --theme-module-shadow: rgba(43, 67, 62, .1);
   --theme-module-overlay: rgba(21, 37, 35, .3);
 }
@@ -104,7 +104,7 @@
   z-index: 0;
   inset: -24px;
   pointer-events: none;
-  opacity: .17;
+  opacity: .3;
   background: url("/theme/chinese-ink-overlay.png") center / cover no-repeat;
   mix-blend-mode: multiply;
   will-change: transform, opacity;
@@ -117,7 +117,7 @@
   z-index: 0;
   inset: -8%;
   pointer-events: none;
-  opacity: .22;
+  opacity: .34;
   background:
     radial-gradient(ellipse at 10% 72%, rgba(34, 61, 57, .16) 0 7%, rgba(68, 96, 87, .08) 16%, transparent 34%),
     radial-gradient(ellipse at 86% 18%, rgba(67, 91, 83, .13) 0 9%, rgba(112, 132, 117, .06) 20%, transparent 38%),
@@ -138,9 +138,9 @@
 }
 
 [data-theme="chinese"] .sidebar-card {
-  background-color: #f5f3ea;
+  background-color: rgba(245, 243, 234, .22);
   background-image:
-    linear-gradient(180deg, rgba(255, 254, 248, .7), rgba(242, 240, 231, .66)),
+    linear-gradient(180deg, rgba(255, 254, 248, .2), rgba(242, 240, 231, .18)),
     url("/theme/chinese-ink-overlay.png"),
     repeating-linear-gradient(92deg, rgba(76, 70, 57, .025) 0 1px, transparent 1px 8px);
   background-repeat: no-repeat, no-repeat, repeat;
@@ -149,9 +149,9 @@
 }
 
 [data-theme="chinese"] .topbar-card {
-  background-color: #f6f4ec;
+  background-color: rgba(246, 244, 236, .24);
   background-image:
-    linear-gradient(rgba(248, 247, 240, .7), rgba(248, 247, 240, .7)),
+    linear-gradient(rgba(248, 247, 240, .2), rgba(248, 247, 240, .2)),
     url("/theme/chinese-ink-overlay.png");
   background-repeat: no-repeat;
   background-position: center, right -20px top -55px;
@@ -159,17 +159,17 @@
 }
 
 [data-theme="chinese"] .content-card {
-  background-color: #f8f6ee;
+  background-color: rgba(248, 246, 238, .2);
   background-image:
     repeating-linear-gradient(96deg, rgba(76, 70, 57, .018) 0 1px, transparent 1px 8px),
-    linear-gradient(rgba(249, 247, 239, .96), rgba(249, 247, 239, .96));
+    linear-gradient(rgba(249, 247, 239, .2), rgba(249, 247, 239, .2));
   background-repeat: repeat, no-repeat;
   background-position: center;
   background-size: auto, 100% 100%;
 }
 
 [data-theme="chinese"] .topbar-card.is-pinned.is-stuck {
-  background-color: rgba(248, 247, 240, .97);
+  background-color: rgba(248, 247, 240, .34);
   border-radius: 0 0 12px 12px;
 }
 

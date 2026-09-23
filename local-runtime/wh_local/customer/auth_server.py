@@ -33,6 +33,10 @@ from ..billing import (
     BATCH_BILLING_PROFILE_POD,
     BATCH_BILLING_PROFILE_POD_SEMI,
     BATCH_BILLING_PROFILE_PRODUCT,
+    DAILY_EXTRA_POINTS,
+    DAILY_FIRST_CLAIM_POINTS,
+    PLAN_BASIC_CLAIM_MAX,
+    PLAN_BASIC_CLAIM_POINTS,
     PLAN_BASIC_PACKAGE_ID,
     PLAN_BASIC_PRICE_CENTS,
     TOPUP_PROMOTION_ID,
@@ -40,13 +44,13 @@ from ..billing import (
     _daily_next_refresh,
     _daily_period_key,
     _ensure_wallet,
-    _plan_daily_units,
     _plan_next_refresh,
     _plan_period_key,
     _plan_type_label,
     _plan_weekly_units,
     active_pricing,
     batch_freeze_status,
+    claim_basic_weekly,
     claim_daily_extra,
     compute_batch_charge,
     freeze_batch_points,
@@ -1519,14 +1523,25 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         _required_account(db_path, authorization)
         return _topup_quote(db_path, payload)
 
+    @app.post("/api/customer/billing/plan-basic/claim")
+    def claim_basic_plan_points(
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """基础版每周直接领取 1000 积分（额外积分池，永久有效）。"""
+        account = _required_account(db_path, authorization)
+        return claim_basic_weekly(
+            db_path,
+            str(account["account_id"]),
+            str(account.get("workspace_id") or "default"),
+        )
+
     @app.post("/api/customer/billing/daily-extra/claim")
     def claim_daily_extra_points(
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
-        """每日签到：体验版 100 积分/天（上限 500），标准版 200 积分/天（上限 1000）。
+        """每日签到：首签 +500 额外积分（永久），之后每天 +100 体验积分（限时）。
 
-        体验版签到积分进限时池（每周一 00:00 作废）；标准版进永久池。
-        幂等按北京自然日，单账号每日仅一次；当日重复请求或本周额度领满返回 409。
+        幂等按北京自然日，单账号每日仅一次；重复请求返回 409。
         """
         account = _required_account(db_path, authorization)
         return claim_daily_extra(
@@ -3313,7 +3328,8 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
             """
             SELECT points_balance, locked_points, manual_frozen_points, version, ledger_head_hash,
                    updated_at, plan_balance, plan_period_key, plan_type, plan_expire_at,
-                   extra_balance, daily_claim_date, signin_week_key, signin_week_units
+                   basic_claim_period, basic_claim_count, extra_balance,
+                   daily_claim_date, daily_claim_count
             FROM billing_wallets
             WHERE account_id = ?
             """,
@@ -3329,6 +3345,17 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
             """,
             (account_id,),
         ).fetchall()
+        # 本周签到次数（进度条用）：source_id 形如 daily:YYYY-MM-DD，字典序即日期序。
+        week_signin_count = int(
+            conn.execute(
+                """
+                SELECT COUNT(*) AS n FROM billing_point_ledger
+                WHERE account_id = ? AND source_type = 'daily_extra_claim'
+                  AND source_id >= ?
+                """,
+                (account_id, f"daily:{_plan_period_key()}"),
+            ).fetchone()["n"]
+        )
         # 最近订单：只展示已入账（paid）的单子，最多 5 条。
         paid_orders = conn.execute(
             """
@@ -3358,20 +3385,20 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
     plan_type = str(wallet["plan_type"] if wallet else "experience")
     plan_balance_units = int(wallet["plan_balance"] if wallet else 0)
     plan_weekly_units = _plan_weekly_units(plan_type)
-    daily_units = _plan_daily_units(plan_type)
-    # 每周签到额度：本周已签到累计 units（跨周脏值按 0 处理，_ensure_wallet 已负责清零）。
-    week_key = _plan_period_key()
-    signin_week_units = (
-        int(wallet["signin_week_units"] if wallet else 0)
-        if str(wallet["signin_week_key"] if wallet else "") == week_key
-        else 0
+    # 基础版每周直接领取状态：可领 = 套餐有效（过期已被 _ensure_wallet 回落）且未领满且本周未领。
+    claim_count = int(wallet["basic_claim_count"] if wallet else 0)
+    basic_claimable = (
+        plan_type == "basic"
+        and claim_count < PLAN_BASIC_CLAIM_MAX
+        and str(wallet["basic_claim_period"] if wallet else "") != _plan_period_key()
     )
-    signin_week_units = max(0, min(signin_week_units, plan_weekly_units))
-    signin_remaining_units = max(0, plan_weekly_units - signin_week_units)
-    # 每日签到状态：当日未签且本周额度还够签一次才可签。
+    # 每日签到状态：所有套餐通用，唯一条件是「今天还没签」。
+    # 首签（从未签到过）送 500（永久），之后每天 100（限时）。
     today = _daily_period_key()
     daily_claim_date = str(wallet["daily_claim_date"] if wallet else "")
-    daily_claimable = daily_claim_date != today and signin_remaining_units >= daily_units
+    daily_claimable = daily_claim_date != today
+    first_claim = int(wallet["daily_claim_count"] if wallet else 0) == 0
+    daily_claim_points = DAILY_FIRST_CLAIM_POINTS if first_claim else DAILY_EXTRA_POINTS
     payload = {
         "ok": True,
         "account": {
@@ -3394,18 +3421,19 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
                 "plan_label": _plan_type_label(plan_type),
                 "plan_balance": _display_billing_points(plan_balance_units, pricing),
                 "plan_limit": _display_billing_points(plan_weekly_units, pricing),
-                # 已使用 = 本周已通过签到领取的额度（签到从周额度中扣减，与消费无关）。
-                "plan_used": _display_billing_points(signin_week_units, pricing),
+                "plan_used": _display_billing_points(max(0, plan_weekly_units - plan_balance_units), pricing),
                 "next_refresh_at": _plan_next_refresh(wallet["plan_period_key"] if wallet else ""),
                 "plan_expire_at": wallet["plan_expire_at"] if wallet else "",
-                "signin_week_points": _display_billing_points(signin_week_units, pricing),
-                "signin_week_limit": _display_billing_points(plan_weekly_units, pricing),
-                "signin_week_remaining": _display_billing_points(signin_remaining_units, pricing),
-                # 标准版签到积分永久有效；体验版签到积分每周一 00:00 作废。
-                "signin_permanent": plan_type == "basic",
-                "daily_claim_points": _display_billing_points(daily_units, pricing),
+                "basic_claim_points": PLAN_BASIC_CLAIM_POINTS if plan_type == "basic" else 0,
+                "basic_claim_count": claim_count,
+                "basic_claim_max": PLAN_BASIC_CLAIM_MAX,
+                "basic_claimable": basic_claimable,
+                "daily_claim_points": daily_claim_points,
                 "daily_claimable": daily_claimable,
                 "daily_claim_date": daily_claim_date,
+                "daily_first_claim_bonus": DAILY_FIRST_CLAIM_POINTS if first_claim else 0,
+                "daily_week_count": week_signin_count,
+                "daily_week_max": 7,
                 "daily_next_claim_at": _daily_next_refresh(today) if not daily_claimable else "",
                 "extra_balance": _display_billing_points(int(wallet["extra_balance"] if wallet else 0), pricing),
             },

@@ -143,20 +143,31 @@ export function PodSemiCustomizationPage({ isActive = true }: Props) {
     }
   };
 
+  /** 批次请求目标守卫：切换批次后旧响应晚到会被丢弃，防止界面闪回旧批次。 */
+  const batchRequestRef = useRef<string>("");
+
   const openBatch = async (batchId: string) => {
     setHistoryOpen(false);
+    batchRequestRef.current = batchId;
     try {
-      setActiveBatch(await podSemiCustomizationApi.getBatch(batchId));
+      const batch = await podSemiCustomizationApi.getBatch(batchId);
+      if (batchRequestRef.current !== batchId) return;
+      setActiveBatch(batch);
     } catch (cause) {
+      if (batchRequestRef.current !== batchId) return;
       setError(cause instanceof Error ? cause.message : String(cause));
     }
   };
 
   const refreshActiveBatch = async () => {
     if (!activeBatch) return;
+    const batchId = activeBatch.id;
     try {
-      setActiveBatch(await podSemiCustomizationApi.getBatch(activeBatch.id));
+      const batch = await podSemiCustomizationApi.getBatch(batchId);
+      if (batchRequestRef.current !== batchId) return;
+      setActiveBatch(batch);
     } catch (cause) {
+      if (batchRequestRef.current !== batchId) return;
       setError(cause instanceof Error ? cause.message : String(cause));
     }
   };

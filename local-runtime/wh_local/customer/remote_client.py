@@ -136,9 +136,20 @@ class CustomerAuthClient:
             headers={"Authorization": f"Bearer {remote_token}"},
         )
 
+    def claim_basic_weekly(self, remote_token: str) -> dict[str, Any]:
+        """基础版每周直接领取 1000 积分（额外积分池，永久有效）。"""
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        return self._billing_result(
+            self._post,
+            "/api/customer/billing/plan-basic/claim",
+            {},
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
     def claim_daily_extra(self, remote_token: str) -> dict[str, Any]:
-        """每日签到领取积分（体验版 100/天上限 500，标准版 200/天上限 1000；
-        服务端按北京自然日幂等，重复请求返回 409）。"""
+        """每日签到（首签 +500 永久，之后每天 +100 限时）；
+        服务端按北京自然日幂等，重复请求返回 409。"""
         if not remote_token:
             raise CustomerBillingPermissionError()
         return self._billing_result(

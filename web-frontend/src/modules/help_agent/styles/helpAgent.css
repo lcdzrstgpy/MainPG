@@ -40,9 +40,17 @@
 
 /* -- 合并了积分球的双面球：正面可用积分、背面主题吉祥物 ------------------ */
 
+/* 尺寸随偏好设置（个人中心 → 悬浮球大小：小 / 中 / 大），中＝88px 为既有大小。
+   球面内的字号与积分宽度按球径等比适配（88px 时约 13 / 24 / 17 / 78px），
+   并设下限，避免小档把字缩到看不清。 */
 .help-agent-ball.is-balance {
-  width: 88px;
-  height: 88px;
+  --ba-size: 88px;
+  --ba-label: max(11px, calc(var(--ba-size) * 0.148));
+  --ba-points: max(19px, calc(var(--ba-size) * 0.273));
+  --ba-points-compact: max(14px, calc(var(--ba-size) * 0.193));
+  --ba-points-width: max(62px, calc(var(--ba-size) * 0.886));
+  width: var(--ba-size);
+  height: var(--ba-size);
   perspective: 800px;
   border: none;
   background: transparent;
@@ -60,6 +68,9 @@
   border: none;
   box-shadow: none;
 }
+
+html[data-ball-size="sm"] .help-agent-ball.is-balance { --ba-size: 68px; }
+html[data-ball-size="lg"] .help-agent-ball.is-balance { --ba-size: 110px; }
 
 .help-agent-ball-inner {
   position: relative;
@@ -91,22 +102,22 @@
   background: linear-gradient(160deg, var(--theme-module-primary-soft, #3b82f6), var(--theme-module-primary-strong, #075985));
 }
 .help-agent-ball-label {
-  font-size: 13px;
+  font-size: var(--ba-label, 13px);
   font-weight: 750;
   letter-spacing: .06em;
   line-height: 1.1;
   opacity: .92;
 }
 .help-agent-ball-face.is-front b {
-  max-width: 78px;
-  font-size: 24px;
+  max-width: var(--ba-points-width, 78px);
+  font-size: var(--ba-points, 24px);
   font-weight: 800;
   line-height: 1.15;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.help-agent-ball-face.is-front b.is-compact { font-size: 17px; }
+.help-agent-ball-face.is-front b.is-compact { font-size: var(--ba-points-compact, 17px); }
 .help-agent-ball-face.is-back {
   transform: rotateY(180deg);
   background: var(--theme-hero-glow, #0f172a);

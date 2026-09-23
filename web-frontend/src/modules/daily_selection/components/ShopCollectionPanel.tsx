@@ -1,4 +1,4 @@
-import { forwardRef, type FormEvent, useCallback, useEffect, useImperativeHandle, useMemo, useState } from "react";
+import { forwardRef, type FormEvent, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { shopCollectionApi } from "../api/shopCollectionApi";
@@ -106,12 +106,18 @@ export const ShopCollectionPanel = forwardRef<ShopCollectionPanelHandle, ShopCol
     }
   }, []);
 
+  /** 商品列表请求序号：切换批次时旧响应晚到会被丢弃，防止列表显示错批次商品。 */
+  const itemsRequestSeq = useRef(0);
+
   const refreshItems = useCallback(async (batchId: string, offset: number) => {
+    const seq = ++itemsRequestSeq.current;
     try {
       const page = await shopCollectionApi.listItems(batchId, itemsPageSize, offset);
+      if (seq !== itemsRequestSeq.current) return; // 过期响应：已有更新的请求发出
       setItems(page.items);
       setItemsTotal(page.total);
     } catch (requestError) {
+      if (seq !== itemsRequestSeq.current) return;
       setError(formatShopCollectionError(requestError));
     }
   }, [itemsPageSize]);

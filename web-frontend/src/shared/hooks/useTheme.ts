@@ -241,8 +241,19 @@ export function useTheme() {
     return BUILTIN_THEME_IDS.includes(id) || downloaded.has(id);
   }, [downloaded]);
 
-  const downloadTheme = useCallback(async (id: ThemeId): Promise<void> => {
-    if (BUILTIN_THEME_IDS.includes(id) || downloadedThemes.has(id)) return;
+  const downloadTheme = useCallback(async (id: ThemeId, options?: { force?: boolean }): Promise<void> => {
+    if (BUILTIN_THEME_IDS.includes(id)) return;
+    const installed = downloadedThemes.get(id);
+    if (installed && !options?.force) {
+      // 已安装：比对远端版本，不同则自动更新（否则主题包改版后老用户永远拿旧 CSS）。
+      try {
+        const list = await fetchThemeList();
+        const remote = list.find((item) => item.id === id);
+        if (!remote?.version || remote.version === installed.version) return;
+      } catch {
+        return; // 列表拉不到时保持现状，不打断使用
+      }
+    }
     const pkg = await fetchThemePackage(id);
     injectThemeCss(id, pkg.css);
     const meta: DownloadedTheme = {

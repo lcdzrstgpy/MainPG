@@ -82,7 +82,21 @@ def _contains(text: str, term: str) -> bool:
     return term in text
 
 
-def rank_listing_rules(title: str, description: str = "", category_path: str = "", *, limit: int = 3) -> list[ListingRule]:
+# 一条规则都没被类目/关键词命中时的最低分。打分体系里最小的非零分是
+# 「命中一个关键词」= 3 分，所以低于它就说明这张表对该商品没有任何依据。
+# 此时绝不能按分数排序把编号最小的那条顶上来当建议（会给出虚假的宽松结论，
+# 例如把识别不出来的商品判成「办公用品 / A-优先 / 无资质直接做」）。
+MIN_MATCH_SCORE = 3
+
+# 未匹配到任何规则时的展示等级。刻意不用 A~E 里的任何一档，
+# 避免和表格中的风险等级混淆。
+UNMATCHED_LEVEL = "待人工确认"
+
+
+def rank_rule_candidates(
+    title: str, description: str = "", category_path: str = ""
+) -> list[tuple[int, ListingRule]]:
+    """按类目/关键词打分排序，返回 (score, rule) 列表（包含 0 分项）。"""
     text = _normalized(category_path, title, description)
     category = _normalized(category_path)
     ranked: list[tuple[int, int, ListingRule]] = []
@@ -98,7 +112,14 @@ def rank_listing_rules(title: str, description: str = "", category_path: str = "
                 score += 4
         ranked.append((score, -rule.number, rule))
     ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    return [item[2] for item in ranked[: max(1, limit)]]
+    return [(item[0], item[2]) for item in ranked]
+
+
+def rank_listing_rules(title: str, description: str = "", category_path: str = "", *, limit: int = 3) -> list[ListingRule]:
+    return [
+        rule
+        for _score, rule in rank_rule_candidates(title, description, category_path)[: max(1, limit)]
+    ]
 
 
 def detect_red_flags(title: str, description: str = "", category_path: str = "") -> list[str]:
@@ -107,17 +128,40 @@ def detect_red_flags(title: str, description: str = "", category_path: str = "")
 
 
 def prepare_listing_context(title: str, description: str = "", category_path: str = "") -> dict[str, Any]:
-    candidates = rank_listing_rules(title, description, category_path)
+    ranked = rank_rule_candidates(title, description, category_path)
+    top_score = ranked[0][0] if ranked else 0
     return {
         "title": str(title or "").strip(),
         "description": str(description or "").strip(),
         "category_path": str(category_path or "").strip(),
-        "candidates": candidates,
+        # 候选仍保留前 3 条（AI 需要可比较的选项），但能不能采信看 matched：
+        # top_score 低于阈值时这张表对该商品没有依据，下游必须走「未匹配」结论。
+        "candidates": [rule for _score, rule in ranked[:3]],
+        "top_score": top_score,
+        "matched": top_score >= MIN_MATCH_SCORE,
         "red_flags": detect_red_flags(title, description, category_path),
     }
 
 
+def unmatched_listing_advice(*, notice: str = "") -> dict[str, Any]:
+    """一条规则都没命中时的结论：不给类目建议，交回人工确认。"""
+    return {
+        "level": UNMATCHED_LEVEL,
+        "action": "未匹配到规则，请人工确认类目",
+        "recommended_category": "未匹配",
+        "reason": "标题、描述与当前类目都未命中 996 类目资质表中的任何规则。",
+        "warning": "为避免误导，未按默认类目给出建议；请人工核对商品实际类目与资质要求。",
+        "required_documents": [],
+        "matched_rule_number": 0,
+        "matched_rule": "",
+        "source": "rules",
+        "notice": notice,
+    }
+
+
 def deterministic_listing_advice(context: dict[str, Any], *, notice: str = "") -> dict[str, Any]:
+    if context.get("matched") is False:
+        return unmatched_listing_advice(notice=notice)
     rule: ListingRule = context["candidates"][0]
     flags = list(context.get("red_flags") or [])
     warning = rule.listing_requirement

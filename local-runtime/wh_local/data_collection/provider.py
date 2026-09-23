@@ -27,9 +27,9 @@ from .contracts import (
     DailySelectionError,
     is_sensitive_field,
     redact_sensitive_text,
+    validate_shop_sid,
 )
 from .criteria import DailySelectionCriteria
-from .shop_parsing import validate_shop_sid
 from .public_image_fetch import (
     FetchedPublicImage,
     PublicImageFetchError,

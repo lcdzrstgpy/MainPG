@@ -16,6 +16,8 @@ import { PeachGarden } from "../../shared/components/PeachGarden";
 import { InkTap } from "../../shared/components/InkTap";
 import { useTheme } from "../../shared/hooks/useTheme";
 import { useUiMode } from "../../shared/hooks/useUiMode";
+import { useEffectPreferences } from "../../shared/hooks/useEffectPreferences";
+import { useSidebarPreferences } from "../../shared/hooks/useSidebarState";
 import { WorkspaceHomePage } from "../../modules/dashboard/pages/WorkspaceHomePage";
 import {
   importPreviewItem,
@@ -130,8 +132,15 @@ function ModuleFallback() {
 export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryAnimation = false, onEntryAnimationComplete = () => undefined }: WorkspaceShellProps) {
   const { theme } = useTheme();
   const { uiMode } = useUiMode();
+  // 特效偏好（个人中心 → 偏好设置）：点击特效 / 全屏特效，localStorage 持久化。
+  const { tap: tapEffects, ambient: ambientEffects } = useEffectPreferences();
 
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // 侧边栏偏好持久化在 localStorage：折叠状态（首次默认展开）+ 收起后是否触碰展开。
+  const {
+    collapsed: sidebarCollapsed,
+    hoverExpand: sidebarHoverExpand,
+    toggleCollapsed: toggleSidebarCollapsed,
+  } = useSidebarPreferences();
   const [sidebarHovered, setSidebarHovered] = useState(false);
   const [isNarrowDesktop, setIsNarrowDesktop] = useState(() => window.matchMedia(NARROW_DESKTOP_QUERY).matches);
   const [expandedGroupId, setExpandedGroupId] = useState<WorkspaceNavigationGroupId | null>(null);
@@ -768,12 +777,13 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
   };
 
   const sidebarIsCollapsed = sidebarCollapsed || isNarrowDesktop;
-  const sidebarTemporarilyExpanded = sidebarIsCollapsed && sidebarHovered;
+  // 收起后鼠标触碰是否临时浮出，由偏好设置控制（关掉后只能点顶栏按钮展开）。
+  const sidebarTemporarilyExpanded = sidebarIsCollapsed && sidebarHovered && sidebarHoverExpand;
 
   return (
     <main className={`workspace-shell${playEntryAnimation ? " is-brand-entering" : ""}`}>
-      <PeachGarden theme={theme} uiMode={uiMode} />
-      <InkTap theme={theme} uiMode={uiMode} />
+      <PeachGarden theme={theme} uiMode={uiMode} tapEffects={tapEffects} ambientEffects={ambientEffects} />
+      <InkTap theme={theme} uiMode={uiMode} enabled={tapEffects} />
       <Sidebar
         collapsed={sidebarIsCollapsed && !sidebarTemporarilyExpanded}
         activeId={activeModuleId}
@@ -785,7 +795,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         badges={{ dimension_canvas: dimensionNotifications.length }}
       />
       <section className="workspace-main">
-        <TopNavigation sidebarPinned={!sidebarIsCollapsed} activeKey={activeTabKey} tabs={tabs} onToggleSidebar={() => setSidebarCollapsed((value) => !value)} onSelectTab={selectTab} onCloseTab={closeTab} onOpenPersonalCenter={() => openModule("personal_center")} onOpenGuide={openGuideBoardPanel} onSignOut={onSignOut} />
+        <TopNavigation sidebarPinned={!sidebarIsCollapsed} activeKey={activeTabKey} tabs={tabs} onToggleSidebar={toggleSidebarCollapsed} onSelectTab={selectTab} onCloseTab={closeTab} onOpenPersonalCenter={() => openModule("personal_center")} onOpenGuide={openGuideBoardPanel} onSignOut={onSignOut} />
         <div className="content-card" ref={contentRef}>
           {workspaceNotice && (
             <div className="workspace-notice" role="status">
