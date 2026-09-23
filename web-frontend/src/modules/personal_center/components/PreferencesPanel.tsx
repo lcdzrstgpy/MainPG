@@ -2,6 +2,8 @@ import { useEffectPreferences } from "../../../shared/hooks/useEffectPreferences
 import { useSidebarPreferences } from "../../../shared/hooks/useSidebarState";
 import { useTopbarCollapse } from "../../../shared/hooks/useTopbarCollapse";
 import { BALL_SIZE_OPTIONS, useBallSize } from "../../../shared/hooks/useBallSize";
+import { useTheme } from "../../../shared/hooks/useTheme";
+import { useUiMode } from "../../../shared/hooks/useUiMode";
 
 /**
  * 偏好设置面板：开关界面行为与动效。
@@ -12,6 +14,13 @@ export function PreferencesPanel() {
   const { collapsed: sidebarCollapsed, hoverExpand: sidebarHoverExpand, toggleCollapsed: toggleSidebar, toggleHoverExpand: toggleSidebarHoverExpand } = useSidebarPreferences();
   const { enabled: topbarCollapse, toggleEnabled: toggleTopbarCollapse } = useTopbarCollapse();
   const { size: ballSize, setSize: setBallSize } = useBallSize();
+  const { theme } = useTheme();
+  const { uiMode } = useUiMode();
+
+  // 特效只存在于原版布局 + 水墨青黛 / 桃花源 / 暖阳橙 这几个主题上；
+  // 其余情况（含桌面风格——它会把主题强制成经典）把开关置灰，避免点了没反应。
+  const tapAvailable = uiMode === "classic" && (theme === "chinese" || theme === "peach");
+  const ambientAvailable = uiMode === "classic" && (theme === "chinese" || theme === "peach" || theme === "sunset");
 
   return (
     <article className="personal-card preferences-card">
@@ -42,29 +51,37 @@ export function PreferencesPanel() {
           </div>
         </div>
 
-        <div className="preferences-row">
+        <div className={tapAvailable ? "preferences-row" : "preferences-row is-locked"}>
           <span className="preferences-row-label">点击特效</span>
           <button
             type="button"
             role="switch"
             aria-checked={tap}
             aria-label="点击特效"
+            disabled={!tapAvailable}
             className={tap ? "preferences-switch is-on" : "preferences-switch"}
-            onClick={() => setEffects({ tap: !tap })}
+            onClick={() => {
+              if (!tapAvailable) return;
+              setEffects({ tap: !tap });
+            }}
           >
             <span aria-hidden="true" />
           </button>
         </div>
 
-        <div className="preferences-row">
+        <div className={ambientAvailable ? "preferences-row" : "preferences-row is-locked"}>
           <span className="preferences-row-label">全屏特效</span>
           <button
             type="button"
             role="switch"
             aria-checked={ambient}
             aria-label="全屏特效"
+            disabled={!ambientAvailable}
             className={ambient ? "preferences-switch is-on" : "preferences-switch"}
-            onClick={() => setEffects({ ambient: !ambient })}
+            onClick={() => {
+              if (!ambientAvailable) return;
+              setEffects({ ambient: !ambient });
+            }}
           >
             <span aria-hidden="true" />
           </button>

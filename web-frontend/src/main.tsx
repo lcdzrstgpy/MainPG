@@ -20,6 +20,14 @@ import "./shared/styles/apple-workspace.css";
 import "driver.js/dist/driver.css";
 import "./shared/styles/guide-tour.css";
 
+// 偏好设置的启动初始化：这几个模块在被 import 时会把偏好写到 <html> 的 data-* 属性上，
+// 必须早于首帧渲染。尤其是「顶栏滚动收起」——它只被个人中心面板引用，而个人中心是懒加载的，
+// 不在这里显式 import 的话，冷启动后要先打开一次个人中心属性才写得进去，设置看起来就"没生效"。
+import "./shared/hooks/useEffectPreferences";
+import "./shared/hooks/useSidebarState";
+import "./shared/hooks/useTopbarCollapse";
+import "./shared/hooks/useBallSize";
+
 import { App } from "./app/App";
 import { startRuntimeHeartbeat } from "./transport/runtimeHeartbeat";
 

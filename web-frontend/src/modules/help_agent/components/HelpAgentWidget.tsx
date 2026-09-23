@@ -119,15 +119,18 @@ export function HelpAgentWidget({ allowFeedback = true, showBalance = false }: H
 
   // 窗口缩放、或偏好设置里改了球体大小：把悬浮球拉回可视区，
   // 避免缩小窗口 / 换成大球后球有一部分留在屏幕外找不回来。
+  // 用户从没拖动过球（localStorage 无坐标）时直接按新尺寸重算右下角默认位置，
+  // 否则换成大球后会残留"按旧尺寸算出来的边距"。
   useEffect(() => {
-    const clampIntoView = () => {
+    const keepInView = () => {
+      const viewport = { width: window.innerWidth, height: window.innerHeight };
       setPosition((current) =>
-        clampBallPosition(current, { width: window.innerWidth, height: window.innerHeight }, ballSize),
+        readStoredPosition() ? clampBallPosition(current, viewport, ballSize) : defaultPosition(ballSize),
       );
     };
-    clampIntoView();
-    window.addEventListener("resize", clampIntoView);
-    return () => window.removeEventListener("resize", clampIntoView);
+    keepInView();
+    window.addEventListener("resize", keepInView);
+    return () => window.removeEventListener("resize", keepInView);
   }, [ballSize]);
 
   // 积分面显示一段时间后自动翻到吉祥物面（和原积分悬浮球一致）。
