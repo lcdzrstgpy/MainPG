@@ -252,10 +252,10 @@ export function audioStrategyLabel(id: AudioStrategy): string {
 
 /**
  * Native film carries its own audio track, so the brief must record it. The other strategies keep
- * the shared default instead of being silently re-routed to another audio source.
+ * the strategy's own TTS default instead of inheriting native film's audio source.
  */
 export function defaultAudioStrategyFor(strategy: OutputStrategy): AudioStrategy {
-  return strategy === "native-film" ? "native-audio" : DEFAULT_CREATION_BRIEF.audioStrategy;
+  return strategy === "native-film" ? "native-audio" : "volcengine-tts";
 }
 
 /**

@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { sanitizeCreationBrief } from "@/lib/creation-brief";
+import { OUTPUT_SCHEMES } from "@/lib/output-schemes";
 import { sanitizeCreativeIntent, type CreativeIntent, type VisualBible } from "@/lib/production-system";
 import { useCharacterStore } from "@/lib/stores/project-store";
 import { useTemplateStore } from "@/lib/stores/template-store";
@@ -133,7 +134,7 @@ export function CreationBriefForm({
   const [topic, setTopic] = useState("");
   const [videoMode, setVideoMode] = useState<VideoModeId>(DEFAULT_VIDEO_MODE);
   const [constraints, setConstraints] = useState<VisualConstraintValues>(EMPTY_VISUAL_CONSTRAINTS);
-  // 默认高亮的 draft 不是「已选择」：只有点过策略卡才置 true，见校验与冻结契约 C3
+  // 默认高亮的策略不是「已选择」：只有点过策略卡才置 true，见校验与冻结契约 C3
   const [strategyChosen, setStrategyChosen] = useState(false);
   const [showErrors, setShowErrors] = useState(false);
 
@@ -221,14 +222,19 @@ export function CreationBriefForm({
 
   const handleOutputStrategyChange = useCallback(
     (outputStrategy: OutputStrategy) => {
-      // 点选即代表用户显式选择了策略：默认 draft 只有在被点过一次后才算「已选择」
+      // 点选即代表用户显式选择了策略：默认策略只有在被点过一次后才算「已选择」
       setStrategyChosen(true);
-      patchBrief({ outputStrategy, audioStrategy: defaultAudioStrategyFor(outputStrategy) });
+      const id = outputStrategy === "controlled-motion" ? "controlled-balanced" : outputStrategy;
+      const audioStrategy = defaultAudioStrategyFor(outputStrategy);
+      patchBrief({ outputScheme: { ...OUTPUT_SCHEMES[id], audioStrategy }, outputStrategy, audioStrategy });
     },
     [patchBrief]
   );
 
-  const handleAudioStrategyChange = useCallback((audioStrategy: AudioStrategy) => patchBrief({ audioStrategy }), [patchBrief]);
+  const handleAudioStrategyChange = useCallback((audioStrategy: AudioStrategy) => {
+    if (brief.outputStrategy === "native-film" || audioStrategy === "native-audio") return;
+    patchBrief({ outputScheme: { ...brief.outputScheme, audioStrategy }, audioStrategy });
+  }, [brief.outputScheme, brief.outputStrategy, patchBrief]);
 
   const handleFilesSelected = useCallback((files: FileList | null) => {
     if (!files) return;

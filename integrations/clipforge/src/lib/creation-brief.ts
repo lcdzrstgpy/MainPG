@@ -1,5 +1,5 @@
 import { buildWorkflowPlan, type WorkflowStagePlan } from "@/lib/production-system";
-import { OUTPUT_SCHEMES, sanitizeOutputSchemeSnapshot, type OutputSchemeSnapshot } from "@/lib/output-schemes";
+import { OUTPUT_SCHEMES, inferLegacyOutputSchemeSnapshot, sanitizeOutputSchemeSnapshot, type OutputSchemeSnapshot } from "@/lib/output-schemes";
 
 export type InputMode = "upload" | "link" | "topic" | "product-library" | "clone";
 export type OutputStrategy = "draft" | "controlled-motion" | "native-film";
@@ -78,13 +78,9 @@ export function sanitizeCreationBrief(value: unknown): CreationBrief {
   const usageAdvantage = clean(raw.usageAdvantage, 300);
   const templateId = clean(raw.templateId, 80);
   const characterId = clean(raw.characterId, 80);
-  const legacyId = raw.outputStrategy === "draft" ? "draft"
-    : raw.outputStrategy === "controlled-motion" ? "controlled-balanced"
-    : "native-film";
-  const outputScheme = sanitizeOutputSchemeSnapshot(raw.outputScheme ?? {
-    id: legacyId,
-    audioStrategy: raw.audioStrategy,
-  });
+  const outputScheme = raw.outputScheme
+    ? sanitizeOutputSchemeSnapshot(raw.outputScheme)
+    : inferLegacyOutputSchemeSnapshot(raw.outputStrategy, raw.audioStrategy);
   return {
     version: 1,
     inputMode: pickEnum(raw.inputMode, INPUT_MODES, DEFAULT_CREATION_BRIEF.inputMode),

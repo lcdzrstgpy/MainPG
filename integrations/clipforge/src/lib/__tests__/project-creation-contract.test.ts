@@ -100,12 +100,12 @@ describe("创建项目写入创作简报", () => {
     expect((await (await post({ videoMode: "telepathy" })).json()).videoMode).toBe("product_closeup");
   });
 
-  it("非法策略归一化为 draft 而不是 500，并写入该策略的默认工作流", async () => {
+  it("非法策略归一化为 native-film 而不是 500，并写入该策略的默认工作流", async () => {
     const response = await post({ name: "非法策略", creationBrief: { outputStrategy: "hologram", inputMode: "telepathy", targetDuration: 42 } });
     expect(response.status).toBe(201);
     const row = await response.json();
-    expect(row.creationBrief).toMatchObject({ outputStrategy: "draft", inputMode: "upload", targetDuration: 30 });
-    expect(row.productionWorkflow).toEqual(buildWorkflowPlanForStrategy("draft"));
+    expect(row.creationBrief).toMatchObject({ outputStrategy: "native-film", inputMode: "upload", targetDuration: 30 });
+    expect(row.productionWorkflow).toEqual(buildWorkflowPlanForStrategy("native-film"));
   });
 
   it("策略与工作流冲突返回 400，且不写入任何项目", async () => {
@@ -193,7 +193,7 @@ describe("PATCH 更新创作简报", () => {
     const invalid = await patch(created.id, { creationBrief: { inputMode: "telepathy", outputStrategy: "hologram" } });
     expect(invalid.status).toBe(200);
     expect((await invalid.json()).creationBrief).toEqual(sanitizeCreationBrief({}));
-    expect((await (await get(created.id)).json()).creationBrief.outputStrategy).toBe("draft");
+    expect((await (await get(created.id)).json()).creationBrief.outputStrategy).toBe("native-film");
   });
 
   it("其余 sanitize 列仍只由 production 路由写入，既有字段照常更新", async () => {

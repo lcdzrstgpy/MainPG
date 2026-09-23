@@ -1,14 +1,53 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
+import { describe, expect, it, vi } from "vitest";
 import { sanitizeCreativeIntent } from "@/lib/production-system";
+import type { CreationBrief } from "@/lib/creation-brief";
 import { validateCreationBriefForm } from "@/components/project-creation/creation-brief-defaults";
+import { CreationBriefForm } from "@/components/project-creation/creation-brief-form";
 import { EMPTY_VISUAL_CONSTRAINTS, buildCreativeIntentFields } from "@/components/project-creation/visual-control-panel";
 
 const read = (file: string) => readFileSync(resolve(process.cwd(), "src/components/project-creation", file), "utf8");
 const form = read("creation-brief-form.tsx");
 
 describe("CreationBriefForm contract", () => {
+  it("keeps the saved scheme and legacy fields in sync when strategy or audio changes", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    let brief: CreationBrief | undefined;
+    const select = async (selector: string) => {
+      const button = container.querySelector<HTMLButtonElement>(selector);
+      expect(button, selector).not.toBeNull();
+      await act(async () => button!.click());
+    };
+
+    try {
+      await act(async () => root.render(createElement(CreationBriefForm, {
+        submitLabel: "Create",
+        onSubmit: () => undefined,
+        onValuesChange: (values) => { brief = values.brief; },
+      })));
+      await select('[data-strategy="draft"]');
+      expect(brief).toMatchObject({ outputScheme: { id: "draft", audioStrategy: "volcengine-tts" }, outputStrategy: "draft", audioStrategy: "volcengine-tts" });
+      await select('[data-strategy="controlled-motion"]');
+      expect(brief).toMatchObject({ outputScheme: { id: "controlled-balanced", audioStrategy: "volcengine-tts" }, outputStrategy: "controlled-motion", audioStrategy: "volcengine-tts" });
+      await select('[data-audio-strategy="mute"]');
+      expect(brief).toMatchObject({ outputScheme: { audioStrategy: "mute" }, audioStrategy: "mute" });
+      await select('[data-strategy="native-film"]');
+      expect(brief).toMatchObject({ outputScheme: { id: "native-film", audioStrategy: "native-audio" }, audioStrategy: "native-audio" });
+      await select('[data-audio-strategy="volcengine-tts"]');
+      expect(brief).toMatchObject({ outputScheme: { id: "native-film", audioStrategy: "native-audio" }, audioStrategy: "native-audio" });
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("exposes exactly the documented props and the brief-only submit contract", () => {
     expect(form).toMatch(/"use client"/);
     expect(form).toMatch(/export function CreationBriefForm\(/);

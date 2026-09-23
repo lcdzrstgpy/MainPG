@@ -6,7 +6,7 @@ import {
   sanitizeOutputSchemeSnapshot,
   type OutputSchemeId,
 } from "@/lib/output-schemes";
-import { sanitizeCreationBrief } from "@/lib/creation-brief";
+import { sanitizeCreationBrief, type CreationBrief } from "@/lib/creation-brief";
 
 const IDS: OutputSchemeId[] = [
   "draft", "controlled-rapid", "controlled-balanced", "controlled-cinematic", "native-film",
@@ -91,5 +91,17 @@ describe("project generation projection", () => {
 
   it("uses globals when the project has no creation brief", () => {
     expect(projectGenerationSettings(null, globals)).toEqual(globals);
+  });
+
+  it.each([
+    ["draft", "mute", "draft", 0],
+    ["controlled-motion", "volcengine-tts", "controlled-motion", 0.55],
+  ] as const)("projects a legacy %s brief without a snapshot", (outputStrategy, audioStrategy, expectedStrategy, motionStrength) => {
+    const legacy = { outputStrategy, audioStrategy } as CreationBrief;
+    expect(projectGenerationSettings(legacy, globals)).toMatchObject({
+      outputStrategy: expectedStrategy,
+      audioStrategy,
+      videoParams: { resolution: "720p", duration: 5, motionStrength },
+    });
   });
 });

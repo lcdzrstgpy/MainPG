@@ -105,10 +105,10 @@ describe("output strategy vocabulary", () => {
     expect(outputStrategyLabel("native-film")).toBe(native.label);
   });
 
-  it("records native audio for native-film and keeps the documented default elsewhere", () => {
+  it("records native audio for native-film and TTS for draft or controlled motion", () => {
     expect(defaultAudioStrategyFor("native-film")).toBe("native-audio");
-    expect(defaultAudioStrategyFor("draft")).toBe(DEFAULT_CREATION_BRIEF.audioStrategy);
-    expect(defaultAudioStrategyFor("controlled-motion")).toBe(DEFAULT_CREATION_BRIEF.audioStrategy);
+    expect(defaultAudioStrategyFor("draft")).toBe("volcengine-tts");
+    expect(defaultAudioStrategyFor("controlled-motion")).toBe("volcengine-tts");
   });
 
   it("describes the three audio strategies without hiding the mute option", () => {
@@ -163,8 +163,8 @@ describe("output strategy must be explicitly chosen (P2 / C3)", () => {
     expect(validateCreationBriefForm({ ...complete, strategyChosen: true }).valid).toBe(true);
   });
 
-  it("keeps draft as the default value without counting it as chosen", () => {
-    expect(DEFAULT_CREATION_BRIEF.outputStrategy).toBe("draft");
+  it("keeps native film as the default value without counting it as chosen", () => {
+    expect(DEFAULT_CREATION_BRIEF.outputStrategy).toBe("native-film");
     expect(validateCreationBriefForm({ ...complete, strategyChosen: false }).valid).toBe(false);
   });
 });
@@ -173,7 +173,7 @@ describe("defaults stay free of implicit downgrades", () => {
   it("normalizes an empty brief into the shared default contract", () => {
     expect(sanitizeCreationBrief(undefined)).toEqual(DEFAULT_CREATION_BRIEF);
     expect(DEFAULT_CREATION_BRIEF.styleType).toBe("");
-    expect(DEFAULT_CREATION_BRIEF.outputStrategy).toBe("draft");
+    expect(DEFAULT_CREATION_BRIEF.outputStrategy).toBe("native-film");
     expect(DEFAULT_CREATION_BRIEF.platforms).toEqual(["douyin"]);
   });
 

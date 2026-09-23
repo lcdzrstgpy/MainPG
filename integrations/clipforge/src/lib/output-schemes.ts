@@ -67,6 +67,14 @@ export function sanitizeOutputSchemeSnapshot(value: unknown): OutputSchemeSnapsh
   };
 }
 
+/** Translate records written before `outputScheme` existed. */
+export function inferLegacyOutputSchemeSnapshot(outputStrategy: unknown, audioStrategy: unknown): OutputSchemeSnapshot {
+  const id: OutputSchemeId = outputStrategy === "draft" ? "draft"
+    : outputStrategy === "controlled-motion" ? "controlled-balanced"
+    : "native-film";
+  return sanitizeOutputSchemeSnapshot({ id, audioStrategy });
+}
+
 export interface ProjectGenerationGlobals {
   imageParams: ImageGenParams;
   videoParams: VideoGenParams;
@@ -87,7 +95,9 @@ export function projectGenerationSettings(
   global: ProjectGenerationGlobals,
 ): ProjectGenerationSettings {
   if (!brief) return global;
-  const scheme = sanitizeOutputSchemeSnapshot(brief.outputScheme);
+  const scheme = brief.outputScheme
+    ? sanitizeOutputSchemeSnapshot(brief.outputScheme)
+    : inferLegacyOutputSchemeSnapshot(brief.outputStrategy, brief.audioStrategy);
   return {
     outputStrategy: scheme.outputStrategy,
     audioStrategy: scheme.audioStrategy,
