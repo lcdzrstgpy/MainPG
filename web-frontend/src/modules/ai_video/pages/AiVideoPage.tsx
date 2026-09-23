@@ -142,8 +142,9 @@ export function AiVideoPage() {
   useEffect(() => {
     if (!iframeOrigin) return;
     const onMessage = (event: MessageEvent) => {
-      // 只接受来自 clipforge 服务同源、且形如 location 消息的事件（父侧额外防御）。
+      // 只接受当前 iframe 从 clipforge 服务同源发出的 location 消息。
       if (event.origin !== iframeOrigin) return;
+      if (event.source !== frameRef.current?.contentWindow) return;
       const data = event.data as { type?: unknown; pathname?: unknown } | null;
       if (!data || data.type !== AI_VIDEO_LOCATION_MESSAGE) return;
       if (typeof data.pathname !== "string") return;

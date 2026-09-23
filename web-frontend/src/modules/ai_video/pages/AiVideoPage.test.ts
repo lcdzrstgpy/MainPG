@@ -87,6 +87,8 @@ test("AI video keeps a persistent iframe and speaks the frozen parent/iframe pro
 
   // 只处理来自 clipforge 服务同源的 location 消息，且 pathname 必须是字符串。
   assert.match(page, /event\.origin !== iframeOrigin/);
+  // 同源不等于就是当前 iframe：拒绝同一 sidecar origin 的其他窗口伪造导航状态。
+  assert.match(page, /event\.source !== frameRef\.current\?\.contentWindow/);
   assert.match(page, /data\.type !== AI_VIDEO_LOCATION_MESSAGE/);
   assert.match(page, /typeof data\.pathname !== "string"/);
 
