@@ -3,14 +3,13 @@ import { createPortal } from 'react-dom';
 import { ppDownload, ppRequest, type ApiContext } from '../api/client';
 import { productProcessingApiContext } from '../api/context';
 import {
-  excludePreviewItem,
+  excludePreviewItems,
   exportMiaoshouPreview,
   finalizeProductPreview,
   getListingAdvice,
   getPreviewFinalizeRun,
   importPreviewAssetFromUrl,
   regeneratePreviewDetail,
-  restorePreviewItem,
   retryMediaAsset,
   retryPreviewFinalizeRun,
   saveProductPreview,
@@ -278,6 +277,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
   const [onlySuccess, setOnlySuccess] = useState(false);
   const [onlyFailed, setOnlyFailed] = useState(false);
   const [excludingDraftIds, setExcludingDraftIds] = useState<Set<number>>(new Set());
+  const [selectedDraftIds, setSelectedDraftIds] = useState<Set<number>>(new Set());
   const [imageZoomed, setImageZoomed] = useState(false);
   const [expandedDraftIds, setExpandedDraftIds] = useState<Set<number>>(new Set());
   const [listingAdviceByDraftId, setListingAdviceByDraftId] = useState<Record<number, ListingAdvice>>({});
@@ -399,6 +399,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     setUndoSnackbar(null);
     setActiveImage(null);
     setExcludingDraftIds(new Set());
+    setSelectedDraftIds(new Set());
     setListingAdviceByDraftId({});
     setListingAdviceLoadingIds(new Set());
     setListingAdviceErrors({});
@@ -506,6 +507,21 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
   const totalPages = Math.max(1, Math.ceil(filteredItems.length / pageSize));
   const safePage = Math.min(page, totalPages);
   const pagedItems = filteredItems.slice((safePage - 1) * pageSize, safePage * pageSize);
+
+  // 勾选作用于「当前筛选结果」（含分页之外的商品）：「全选」即选中筛选出的全部商品，
+  // 「删除所选」只删除其中仍在当前筛选结果里的项，避免筛选切换后误删不可见商品。
+  const selectableDraftIds = useMemo(
+    () => filteredItems
+      .map((item) => item.product_draft_id)
+      .filter((id): id is number => id != null),
+    [filteredItems],
+  );
+  const selectedDraftIdsInView = useMemo(
+    () => selectableDraftIds.filter((id) => selectedDraftIds.has(id)),
+    [selectableDraftIds, selectedDraftIds],
+  );
+  const allInViewSelected = selectableDraftIds.length > 0
+    && selectedDraftIdsInView.length === selectableDraftIds.length;
 
   // 与草稿池页共用同一套「产品处理工作流」卡片：本页停在结果预检，
   // 只能回到第 01 步草稿池（第 02 步需先勾选草稿，故本页不直达）。
@@ -1177,10 +1193,34 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     notify('已撤销图片删除');
   };
 
-  const replacePreview = (data: PreviewResponse) => {
+  /**
+   * 把排除/恢复结果本地合并进当前预览，不再拉取或重建整份预检
+   * （逐条重建整份预检正是删除请求 30s 超时的原因）。
+   */
+  const applyExclusionLocally = (draftIds: number[], excluded: boolean) => {
+    const target = new Set(draftIds);
+    // 递增版本号让并发中的静默轮询结果失效，避免旧快照把刚删除的链接「回弹」回来。
     previewVersionRef.current += 1;
-    setPreview(data);
-    setEdits({});
+    setPreview((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        items: current.items.map((item) => (
+          item.product_draft_id != null && target.has(item.product_draft_id)
+            ? { ...item, excluded }
+            : item
+        )),
+        excluded_draft_ids: excluded
+          ? Array.from(new Set([...current.excluded_draft_ids, ...draftIds])).sort((a, b) => a - b)
+          : current.excluded_draft_ids.filter((id) => !target.has(id)),
+      };
+    });
+    setSelectedDraftIds((current) => {
+      if (!excluded) return current;
+      const next = new Set(current);
+      for (const draftId of draftIds) next.delete(draftId);
+      return next;
+    });
     // 预检清单已变化，旧 finalize run 的快照（含已删除/新恢复的链接）已失效；
     // 必须清除 run 状态，否则「仅重试失败图片」会复用旧快照继续被删除项阻挡。
     setFinalizeRun(null);
@@ -1188,79 +1228,82 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     removeSession(idempotencyStorageKey);
   };
 
-  const excludeItem = async (draftId: number) => {
-    const item = allItems.find((candidate) => candidate.product_draft_id === draftId);
-    const label = item?.skc || `商品 #${draftId}`;
-    if (!window.confirm(`确定从预检中删除「${label}」吗？删除后该商品不再参与最终导出，可在页面底部「已排除」列表中恢复。`)) return;
+  /** 批量排除/恢复：一次请求写设置 + 本地合并结果。 */
+  const applyExclusion = async (draftIds: number[], excluded: boolean, successMessage: string) => {
+    const ids = Array.from(new Set(draftIds.filter((draftId) => draftId > 0)));
+    if (ids.length === 0) return;
     setError('');
     setMessage('');
-    setExcludingDraftIds((current) => new Set(current).add(draftId));
+    setExcludingDraftIds((current) => new Set([...current, ...ids]));
     try {
-      const data = await excludePreviewItem(ctx, taskId, draftId);
-      replacePreview(data);
-      notify(`已从预检删除「${label}」`);
+      const result = await excludePreviewItems(ctx, taskId, ids, excluded);
+      applyExclusionLocally(result.applied_draft_ids, excluded);
+      notify(successMessage);
     } catch (err) {
       fail(err);
     } finally {
       setExcludingDraftIds((current) => {
         const next = new Set(current);
-        next.delete(draftId);
+        for (const draftId of ids) next.delete(draftId);
         return next;
       });
     }
   };
 
+  const excludeItem = async (draftId: number) => {
+    const item = allItems.find((candidate) => candidate.product_draft_id === draftId);
+    const label = item?.skc || `商品 #${draftId}`;
+    if (!window.confirm(`确定从预检中删除「${label}」吗？删除后该商品不再参与最终导出，可在页面底部「已排除」列表中恢复。`)) return;
+    await applyExclusion([draftId], true, `已从预检删除「${label}」`);
+  };
+
+  const excludeItems = async (draftIds: number[]) => {
+    if (draftIds.length === 0) return;
+    const labels = draftIds
+      .slice(0, 5)
+      .map((draftId) => itemOfDraft(draftId)?.skc || `商品 #${draftId}`)
+      .join('、');
+    const more = draftIds.length > 5 ? ` 等共 ${draftIds.length} 个` : '';
+    if (!window.confirm(`确定从预检中删除选中的 ${draftIds.length} 个商品吗？删除后不再参与最终导出，可在页面底部「已排除」列表中恢复。\n${labels}${more}`)) return;
+    await applyExclusion(draftIds, true, `已从预检删除 ${draftIds.length} 个商品`);
+  };
+
+  const restoreItems = async (draftIds: number[]) => {
+    const ids = draftIds.filter((draftId) => draftId > 0);
+    if (ids.length === 0) return;
+    await applyExclusion(
+      ids,
+      false,
+      ids.length === 1 ? `已恢复商品 #${ids[0]} 到预检列表` : `已恢复 ${ids.length} 个商品到预检列表`,
+    );
+  };
+
   const restoreItem = async (draftId: number) => {
-    setError('');
-    setMessage('');
-    try {
-      const data = await restorePreviewItem(ctx, taskId, draftId);
-      replacePreview(data);
-      notify(`已恢复商品 #${draftId} 到预检列表`);
-    } catch (err) {
-      fail(err);
-    }
+    await restoreItems([draftId]);
   };
 
   const restoreAllExcluded = async () => {
-    if (excludedItems.length === 0) return;
-    if (!window.confirm(`确定恢复全部 ${excludedItems.length} 个已删除商品吗？`)) return;
-    for (const item of excludedItems) {
-      const draftId = item.product_draft_id;
-      if (draftId == null) continue;
-      await restoreItem(draftId);
-    }
+    const ids = excludedItems
+      .map((item) => item.product_draft_id)
+      .filter((id): id is number => id != null);
+    if (ids.length === 0) return;
+    if (!window.confirm(`确定恢复全部 ${ids.length} 个已删除商品吗？`)) return;
+    await restoreItems(ids);
   };
 
   const excludeFailedItems = async () => {
     const failedItems = allItems.filter(itemHasFailure);
-    if (failedItems.length === 0) return;
+    const failedDraftIds = failedItems
+      .map((item) => item.product_draft_id)
+      .filter((id): id is number => id != null);
+    if (failedDraftIds.length === 0) return;
     const previewLabels = failedItems
       .slice(0, 5)
       .map((item) => item.skc || `商品 #${item.product_draft_id}`)
       .join('、');
     const more = failedItems.length > 5 ? ` 等共 ${failedItems.length} 个` : '';
     if (!window.confirm(`确定一键剔除 ${failedItems.length} 个失败/需处理的商品吗？剔除后不再参与最终导出，可在页面底部「已排除」列表中恢复。\n${previewLabels}${more}`)) return;
-    setError('');
-    setMessage('');
-    const failedDraftIdSet = new Set(
-      failedItems.map((item) => item.product_draft_id).filter((id): id is number => id != null),
-    );
-    setExcludingDraftIds(failedDraftIdSet);
-    try {
-      let latest: PreviewResponse | null = null;
-      for (const item of failedItems) {
-        const draftId = item.product_draft_id;
-        if (draftId == null) continue;
-        latest = await excludePreviewItem(ctx, taskId, draftId);
-      }
-      if (latest) replacePreview(latest);
-      notify(`已一键剔除 ${failedItems.length} 个失败/需处理的商品`);
-    } catch (err) {
-      fail(err);
-    } finally {
-      setExcludingDraftIds(new Set());
-    }
+    await applyExclusion(failedDraftIds, true, `已一键剔除 ${failedItems.length} 个失败/需处理的商品`);
   };
 
   const finalizing = finalizeRun?.status === 'queued' || finalizeRun?.status === 'publishing';
@@ -1395,6 +1438,33 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
               ? `显示 ${(safePage - 1) * pageSize + 1}-${Math.min(safePage * pageSize, filteredItems.length)} / 共 ${filteredItems.length} 个商品`
               : '共 0 个商品'}
           </span>
+          <label className="precheck-only-success">
+            <input
+              type="checkbox"
+              checked={allInViewSelected}
+              disabled={selectableDraftIds.length === 0 || mutationsLocked}
+              onChange={() => {
+                setSelectedDraftIds((current) => {
+                  const next = new Set(current);
+                  if (allInViewSelected) {
+                    for (const draftId of selectableDraftIds) next.delete(draftId);
+                  } else {
+                    for (const draftId of selectableDraftIds) next.add(draftId);
+                  }
+                  return next;
+                });
+              }}
+            />
+            全选当前筛选（{selectableDraftIds.length}）
+          </label>
+          <button
+            type="button"
+            className="btn-mini danger precheck-bulk-delete-btn"
+            disabled={selectedDraftIdsInView.length === 0 || mutationsLocked || excludingDraftIds.size > 0}
+            onClick={() => void excludeItems(selectedDraftIdsInView)}
+          >
+            删除所选{selectedDraftIdsInView.length > 0 ? `（${selectedDraftIdsInView.length}）` : ''}
+          </button>
           <span className="precheck-expand-actions">
             <button type="button" onClick={expandAllItems} disabled={allItems.length === 0}>全部展开</button>
             <button type="button" onClick={collapseAllItems} disabled={expandedDraftIds.size === 0}>全部折叠</button>
@@ -1444,6 +1514,24 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
         return (
           <section key={item.item_id} className={`verify-section precheck-card${hasOverrides ? ' is-edited' : ''}`}>
             <div className="precheck-card-head">
+              <label className="precheck-item-select">
+                <input
+                  type="checkbox"
+                  aria-label={`选择 ${item.skc || `商品 #${draftId}`}`}
+                  checked={item.product_draft_id != null && selectedDraftIds.has(item.product_draft_id)}
+                  disabled={item.product_draft_id == null || mutationsLocked}
+                  onChange={(event) => {
+                    const targetDraftId = item.product_draft_id;
+                    if (targetDraftId == null) return;
+                    setSelectedDraftIds((current) => {
+                      const next = new Set(current);
+                      if (event.target.checked) next.add(targetDraftId);
+                      else next.delete(targetDraftId);
+                      return next;
+                    });
+                  }}
+                />
+              </label>
               <button
                 type="button"
                 className="precheck-card-toggle"

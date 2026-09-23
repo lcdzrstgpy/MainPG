@@ -3572,6 +3572,48 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         )
         return self.task_preview(task_id, workspace_id=workspace_id)
 
+    def set_preview_items_excluded(
+        self,
+        task_id: int,
+        draft_ids: list[int],
+        *,
+        excluded: bool = True,
+        workspace_id: str = "local",
+    ) -> dict[str, Any]:
+        """批量从预检中排除/恢复商品链接，一次写入任务设置并返回轻量结果。
+
+        与 ``set_preview_item_excluded`` 的差别：不再重建整份预检快照。
+        逐条重建（以及批量删除时的 N 次全量重建）在几十条商品的任务上会超过前端 30s 超时；
+        前端改为按返回的 ``excluded_draft_ids`` 本地增量更新列表即可。
+        """
+        task = self._require_task(task_id, workspace_id)
+        if task["status"] in {"queued", "running", "paused"}:
+            raise ProductProcessingConflict("任务尚未结束，不能排除商品")
+        owned_draft_ids = {
+            int(item.get("product_draft_id") or 0)
+            for item in task["items"]
+            if item.get("product_draft_id")
+        }
+        # 忽略不属于本任务或已失效的 ID，避免批量操作因个别过期项整体失败。
+        applied = {int(value) for value in draft_ids if int(value) in owned_draft_ids}
+        excluded_ids = {
+            int(value)
+            for value in task["settings"].get("excluded_preview_draft_ids", [])
+            if str(value).isdigit()
+        }
+        next_ids = (excluded_ids | applied) if excluded else (excluded_ids - applied)
+        if next_ids != excluded_ids:
+            self.repository.merge_task_settings(
+                task_id,
+                workspace_id,
+                excluded_preview_draft_ids=sorted(next_ids),
+            )
+        return {
+            "task_id": int(task_id),
+            "excluded_draft_ids": sorted(next_ids),
+            "applied_draft_ids": sorted(applied),
+        }
+
     def save_task_preview(
         self,
         task_id: int,

@@ -57,6 +57,7 @@ from .schemas import (
     ListingAdviceRequest,
     MiaoshouExportRequest,
     PreviewAssetImportRequest,
+    PreviewExcludeRequest,
     PreviewFinalizeRequest,
     PreviewSaveRequest,
     PromptTemplateRequest,
@@ -842,6 +843,21 @@ def create_product_processing_router(
             task_id,
             int(draft_id),
             excluded=False,
+            workspace_id=_workspace(workspace_id),
+        )
+
+    @router.post("/tasks/{task_id}/preview/items/exclude")
+    def exclude_preview_items(
+        task_id: int,
+        body: PreviewExcludeRequest,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        # 批量排除/恢复：一次写入任务设置并返回轻量结果，避免逐条重建整份预检导致的请求超时。
+        return _call(
+            service.set_preview_items_excluded,
+            task_id,
+            body.draft_ids,
+            excluded=body.excluded,
             workspace_id=_workspace(workspace_id),
         )
 

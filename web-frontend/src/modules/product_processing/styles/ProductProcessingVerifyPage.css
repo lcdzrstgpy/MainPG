@@ -1384,12 +1384,23 @@
 
 .precheck-card-head {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 54px;
+  grid-template-columns: 22px minmax(0, 1fr) 54px;
   align-items: center;
   gap: 8px;
   min-width: 0;
   padding-right: 12px;
   overflow: hidden;
+}
+
+.precheck-item-select {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.precheck-bulk-delete-btn {
+  white-space: nowrap;
 }
 
 .precheck-card-head .precheck-card-toggle {

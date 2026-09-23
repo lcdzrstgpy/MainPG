@@ -156,28 +156,30 @@ export function saveProductPreview(
   });
 }
 
-export function excludePreviewItem(
-  ctx: ApiContext,
-  taskId: number,
-  draftId: number,
-): Promise<PreviewResponse> {
-  return ppRequest(
-    ctx,
-    `/api/product-processing/tasks/${taskId}/preview/items/${draftId}/exclude`,
-    { method: "POST", body: {} },
-  );
-}
+export type PreviewExcludeResult = {
+  task_id: number;
+  /** 排除/恢复后任务级被排除草稿 ID 全量快照，供前端本地同步列表。 */
+  excluded_draft_ids: number[];
+  /** 本次实际生效（属于该任务）的草稿 ID。 */
+  applied_draft_ids: number[];
+};
 
-export function restorePreviewItem(
+/**
+ * 批量排除/恢复预检商品链接。
+ *
+ * 单次请求写入任务设置并返回轻量结果，不再重建整份预检快照，
+ * 因此单条删除快、批量删除/一键剔除只发一次请求，不会触发 30s 超时。
+ */
+export function excludePreviewItems(
   ctx: ApiContext,
   taskId: number,
-  draftId: number,
-): Promise<PreviewResponse> {
-  return ppRequest(
-    ctx,
-    `/api/product-processing/tasks/${taskId}/preview/items/${draftId}/restore`,
-    { method: "POST", body: {} },
-  );
+  draftIds: number[],
+  excluded = true,
+): Promise<PreviewExcludeResult> {
+  return ppRequest(ctx, `/api/product-processing/tasks/${taskId}/preview/items/exclude`, {
+    method: "POST",
+    body: { draft_ids: draftIds, excluded },
+  });
 }
 
 export function regeneratePreviewDetail(
