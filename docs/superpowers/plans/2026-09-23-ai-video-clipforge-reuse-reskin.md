@@ -30,9 +30,10 @@ local-runtime
 
 ### 1. 让内嵌模式在服务器首屏确定
 
-修改 `integrations/clipforge/src/middleware.ts`、`src/app/layout.tsx`、`src/components/app-shell.tsx` 和嵌入壳测试。
+修改 `integrations/clipforge/src/proxy.ts`、`src/app/layout.tsx`、`src/components/app-shell.tsx` 和嵌入壳测试。
+（实施修正：本仓库是 Next 16，`middleware.ts` 已改名为 `proxy.ts`，且 `src/proxy.ts` 早已承载 `/api/*` 的本地 CORS。两者并存会被 Next 判为冲突并直接让 `next build` 失败，因此内嵌标记与 CORS 合并进同一个 `proxy.ts`，matcher 并列 `/api/:path*` 与页面路由。）
 
-- 新建或扩展 Next middleware：请求带 `embed=mainpg` 时，在请求头写入 `x-mainpg-embed: 1`，并以 session cookie 保存内嵌状态；请求带 `embed=standalone` 时清除该 cookie。后续内部路由不含 query 参数时，middleware 仍根据 cookie 写入同一请求头。
+- 扩展 Next 代理层：请求带 `embed=mainpg` 时，在请求头写入 `x-mainpg-embed: 1`，并以 session cookie 保存内嵌状态；请求带 `embed=standalone` 时清除该 cookie。后续内部路由不含 query 参数时，代理层仍根据 cookie 写入同一请求头。
 - Root layout 用 `headers()` 在服务端读取 `x-mainpg-embed`，首个 HTML 响应就给 `<html>` 添加 `mainpg-embedded`，并把 `embedded` 作为 prop 传入 `AppShell`。不再由 `useEffect` 在浏览器 mount 后识别 `location.search`，也不在 mount 后才添加/删除 class。
 - `AppShell` 用传入的 `embedded` 决定是否输出独立 ClipForge 导航；嵌入时只输出 `mainpg-embed-content` 与页面内容。保留 `?embed=standalone` 作为上游独立运行的显式退出方式。
 - 保留现有 standalone 黑色界面行为，但它只能在无内嵌 cookie 或 `embed=standalone` 时出现。

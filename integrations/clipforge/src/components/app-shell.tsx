@@ -7,6 +7,7 @@ import { LanguageToggle } from "@/components/language-toggle";
 import { TaskCenter } from "@/components/task-center";
 import { useT } from "@/lib/i18n";
 import { useSettingsStore } from "@/lib/stores/settings-store";
+import { MAINPG_EMBED_LOCATION, isFromEmbedParent, isMainPgNavigateMessage } from "@/lib/mainpg-embed-bridge";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -95,28 +96,39 @@ function NavIcon({ name }: { name: string }) {
  * - UI mode 小白/导演 — beginner mode keeps pages on the happy path, director
  *   mode reveals the pro tooling (director panel, per-shot camera etc.);
  * - collapse — icon-only rail, persisted per device.
+ *
+ * `embedded` 由服务端首屏判定（middleware 写请求头 → root layout 读 headers()）：
+ * 内嵌时只渲染内容区，独立壳的侧栏 / Logo / 移动顶栏一概不输出，也不再由 mount
+ * 后的 useEffect 去补 class，避免硬刷新先闪黑色壳。
  */
-export function AppShell({ children }: { children: React.ReactNode }) {
+export function AppShell({ children, embedded }: { children: React.ReactNode; embedded: boolean }) {
   const t = useT("common");
   const pathname = usePathname();
   const router = useRouter();
   const uiMode = useSettingsStore((s) => s.uiMode);
   const setUiMode = useSettingsStore((s) => s.setUiMode);
-  const [embedded, setEmbedded] = useState(false);
 
+  // MainPG 内嵌通信桥（消息形状不可改）：
+  //   父 → iframe：{ type: "mainpg:ai-video-navigate", href }
+  //   iframe → 父：{ type: "mainpg:ai-video-location", pathname }
+  // 只认父窗口来源 + 白名单 href；跳转走 Next router，内嵌状态由 session cookie 续航。
   useEffect(() => {
-    const searchParams = new URLSearchParams(window.location.search);
-    const isMainPGEmbed = searchParams.get("embed") === "mainpg";
-    setEmbedded(isMainPGEmbed);
+    // 非 iframe（独立打开）时不参与桥接
+    if (window.parent === window) return;
+    const onMessage = (event: MessageEvent) => {
+      if (!isFromEmbedParent(event.source, window.parent)) return;
+      if (!isMainPgNavigateMessage(event.data)) return;
+      router.push(event.data.href);
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [router]);
 
-    if (isMainPGEmbed) {
-      document.documentElement.classList.add("mainpg-embedded");
-    } else {
-      document.documentElement.classList.remove("mainpg-embedded");
-    }
-
-    return () => document.documentElement.classList.remove("mainpg-embedded");
-  }, []);
+  // mount 与自身 pathname 变化时都回报路径；第一条同时充当父侧的 ready 信号
+  useEffect(() => {
+    if (window.parent === window) return;
+    window.parent.postMessage({ type: MAINPG_EMBED_LOCATION, pathname }, "*");
+  }, [pathname]);
 
   // collapsed preference (loaded post-mount so SSR markup stays stable)
   const [collapsed, setCollapsed] = useState(false);

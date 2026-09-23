@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { headers } from "next/headers";
 // self-hosted Geist via the official npm package (same --font-geist-* variables) — a build-time fetch
 // from Google Fonts is a network dependency that intermittently breaks CI release builds
 import { GeistSans } from "geist/font/sans";
@@ -6,6 +7,7 @@ import { GeistMono } from "geist/font/mono";
 import "./globals.css";
 import { LocaleInitializer } from "@/components/locale-initializer";
 import { AppShell } from "@/components/app-shell";
+import { EMBED_HEADER_NAME, EMBED_HEADER_ON } from "@/lib/embed-mode";
 
 const geistSans = GeistSans;
 const geistMono = GeistMono;
@@ -29,20 +31,24 @@ export const metadata: Metadata = {
   ],
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  // Site-wide default dark studio theme: pin the dark class on <html>
+  // 内嵌判定搬到服务端首屏：middleware 已把 `x-mainpg-embed: 1` 写进本次请求头，
+  // 所以首个 HTML 响应就带 mainpg-embedded 类，硬刷新 / 网络节流下不会再先闪黑色独立壳。
+  const embedded = (await headers()).get(EMBED_HEADER_NAME) === EMBED_HEADER_ON;
+
+  // embedded 时不能带 dark：否则 dark: 变体会把内嵌页拉回深色，盖掉 .mainpg-embedded 令牌
   return (
     <html
       lang="zh-CN"
-      className={`dark ${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${embedded ? "mainpg-embedded" : "dark"} ${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col bg-background text-foreground">
         <LocaleInitializer />
-        <AppShell>{children}</AppShell>
+        <AppShell embedded={embedded}>{children}</AppShell>
       </body>
     </html>
   );
