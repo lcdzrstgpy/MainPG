@@ -15,13 +15,11 @@ PodCallStatus = Literal["success", "no_return"]
 POD_BILLING_PROFILE_RANDOM = "pod_random_v1"
 POD_BILLING_PROFILE_SEMI = "pod_semi_v1"
 
-# 半定制当前使用的计费画像。
-# 暂时复用 pod_random_v1：远端计费服务的 profile 白名单尚未包含 pod_semi_v1，
-# 直接上报会被以 400 invalid batch billing profile 拒绝，建批次直接失败。
-# 代价是暂时按 40–50/款计费（约定为 32–38/款）。
-# 远端上线 pod_semi_v1 后，把下面一行改成 POD_BILLING_PROFILE_SEMI 即可；
-# 冻结与结算口径不依赖该字符串（它们看 semi_item_count），无需其他改动。
-SEMI_BILLING_PROFILE = POD_BILLING_PROFILE_RANDOM
+# 半定制使用的计费画像。
+# 半定制按「组」上报：4 款 = 1 个 link = 固定 32 积分（即 8 积分/款）。这与全定制
+# 按「款」计价（pod_random_v1，40–50/款）是两套口径，必须走独立画像，否则远端会
+# 按 POD 通用单价对「组」计价，单价直接翻 4 倍。
+SEMI_BILLING_PROFILE = POD_BILLING_PROFILE_SEMI
 
 _PRODUCT_BATCH_FEATURES: tuple[tuple[PodFeature, str], ...] = (
     ("pod.title", "title"),
@@ -69,9 +67,20 @@ class PodCallPlan:
     calls: tuple[PodPlannedCall, ...]
     # 上报给远端计费服务的画像字符串（决定单价区间）。
     billing_profile: str = POD_BILLING_PROFILE_RANDOM
-    # 半定制的交付款数（>0 即为半定制）。冻结与结算的「按款展开」口径只看它，
+    # 半定制的交付款数（>0 即为半定制）。冻结与结算的「按组展开」口径只看它，
     # 与 billing_profile 解耦：这样才能在不改远端的前提下临时换用别的画像。
     semi_item_count: int = 0
+
+    @property
+    def semi_group_count(self) -> int:
+        """半定制的「组」数（4 款一组），也是上报给远端的 link_count。
+
+        冻结与结算都以「组」为单位：一组 4 款共享该组生图调用的成败，远端按 link
+        计费，一组固定 32 积分。非半定制计划、或款数不是 4 的倍数时返回 0。
+        """
+        if not self.semi_item_count or self.semi_item_count % 4 != 0:
+            return 0
+        return self.semi_item_count // 4
 
     @classmethod
     def for_semi_batch(cls, batch_id: str, *, count: int) -> "PodCallPlan":
@@ -327,9 +336,11 @@ class PodCallPlan:
         attempts and do not create additional billable subitems.
         """
         if self.semi_item_count:
+            # 半定制按「组」冻结：一组 4 款 = 1 个 link（固定 32 积分，即 8 积分/款）。
+            # 款数仍保留在 semi_item_count 里用于结算展开与界面展示，不上报。
             return {
                 "idempotency_key": self.idempotency_key,
-                "link_count": self.semi_item_count,
+                "link_count": self.semi_group_count,
                 "scope": ["four_grid"],
                 "billing_profile": self.billing_profile,
             }
@@ -375,12 +386,13 @@ class PodCallPlan:
         self,
         outcomes: Sequence[PodCallOutcome],
     ) -> dict[str, object]:
-        """半定制结算：把按「组」的生图成败展开成按「款」的 subitem。
+        """半定制结算：按「组」折叠成一条 subitem（一组 = 1 个 link = 固定 32 积分）。
 
-        组 g 的 4 个款（连续 4 个 link_idx）共享该组速创调用的成败。
+        组 g 的 4 个款共享该组速创调用的成败；上报给远端的 link 数与冻结时一致
+        （= semi_group_count），否则服务端校验 item_results 条数 != link_count 会拒绝。
         组号从调用 id 实际解析（而不是假定 1..N），这样「继续」只跑部分组时也正确。
         """
-        if not self.semi_item_count or self.semi_item_count % 4 != 0:
+        if not self.semi_group_count:
             raise ValueError("semi settlement requires a valid semi_item_count")
         outcome_by_call = self._validated_outcomes(outcomes)
         items: list[dict[str, object]] = []
@@ -391,12 +403,11 @@ class PodCallPlan:
                 for call in image_calls
             )
             status = "success" if succeeded else "no_return"
-            for _ in range(4):
-                items.append({
-                    "link_idx": len(items) + 1,
-                    "subitems": [{"feature": "four_grid", "status": status}],
-                })
-        if len(items) != self.semi_item_count:
+            items.append({
+                "link_idx": len(items) + 1,
+                "subitems": [{"feature": "four_grid", "status": status}],
+            })
+        if len(items) != self.semi_group_count:
             raise ValueError(
                 "semi settlement link count does not match the frozen item count"
             )

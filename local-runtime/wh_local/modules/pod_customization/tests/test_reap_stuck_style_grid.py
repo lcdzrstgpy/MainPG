@@ -192,3 +192,70 @@ def test_reap_stuck_style_grid_batch_marks_grid_results_terminal(tmp_path: Path)
 
     service.close()
     title.close()
+
+
+def test_retrying_a_long_settled_batch_refreshes_the_inactivity_clock(tmp_path: Path) -> None:
+    """重试已结算很久的批次时必须刷新 last_progress_at，否则会被清道夫当场误杀。
+
+    批次被拉回 generating_patterns 时，如果"最后活动时间"还停在很久以前，清道夫下一次
+    tick 就会把它当僵尸回收（并 +1 execution_epoch，让正在跑的 worker 写入全部被拒）。
+    线上表现：重试刚发起十几秒就被 "batch timed out after 900s of inactivity" 打断。
+    """
+
+    service, title = _service(tmp_path)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(
+        actor,
+        BatchCreate(
+            template_id=template["id"],
+            count=2,
+            prompt_version="v1",
+            business_fields=BusinessFields(product_name="Tote bag", product_category="bags"),
+            listing_fields=ListingFields(
+                suggested_price_usd=29.99, category_name="家居收纳 > 包袋",
+                skus=[{"name": "Default", "declared_price": 18.5, "weight_g": 450}],
+                spec_card={"cells": [["尺寸图", "长", "宽", "高"], ["Default", "30", "20", "10"]]},
+            ),
+        ),
+        enqueue=False,
+    )
+    batch_id = batch["id"]
+    stale_clock = "2020-01-01T00:00:00.000+00:00"
+
+    with service.repository._connect() as connection:
+        # 结算态 + 极旧的最后活动时间；款式 1 的 4 张图都是 failed 才够重试门槛。
+        connection.execute(
+            """UPDATE pod_customization_batches
+               SET status = 'partial_failure', last_progress_at = ?, finished_at = ?
+               WHERE batch_id = ?""",
+            (stale_clock, stale_clock, batch_id),
+        )
+        connection.execute(
+            """UPDATE pod_customization_style_grid_results
+               SET status = 'failed' WHERE batch_id = ? AND style_index = 1""",
+            (batch_id,),
+        )
+
+    service.repository.claim_batch_retry(
+        batch_id,
+        actor.workspace_id,
+        actor.id,
+        image_style_indices=(1,),
+        title_style_indices=(),
+    )
+
+    with service.repository._connect() as connection:
+        row = connection.execute(
+            "SELECT status, last_progress_at FROM pod_customization_batches WHERE batch_id = ?",
+            (batch_id,),
+        ).fetchone()
+    assert row["status"] == "generating_patterns", f"expected retry to reopen the batch, got {row['status']}"
+    assert row["last_progress_at"] > stale_clock, (
+        f"retry must refresh last_progress_at, still {row['last_progress_at']}"
+    )
+
+    assert service.reap_stuck_batches_once() == [], "retry must not be reaped as a stuck batch"
+
+    service.close()
+    title.close()

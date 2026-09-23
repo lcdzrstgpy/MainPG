@@ -11,6 +11,7 @@ import base64
 import hashlib
 import inspect
 import io
+import json
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -26,6 +27,8 @@ from wh_local.data_collection.public_image_fetch import (
     PublicImageFetchError,
     fetch_public_image,
 )
+
+from ...runtime_logs import business_logger
 
 from .assets import MAX_IMAGE_BYTES, inspect_pod_image
 from .billing_contract import PodExecutionGrant
@@ -276,8 +279,36 @@ class PodCustomizationAiRuntime(AiRuntime):
 
     def _poll_suchuang_grid(self, grant: PodExecutionGrant, task_id: str) -> str:
         deadline = time.monotonic() + self._result_timeout_seconds
+        started_at = time.monotonic()
         last_message = ""
+        last_payload: object = None
+        last_status = ""
+        polls = 0
+
+        def trace(raw_limit: int) -> str:
+            """失败留痕：上游只回「调用成功」这类套话，缺任务 ID 与原始响应就无从回查。"""
+
+            return suchuang_poll_trace(
+                task_id,
+                polls,
+                time.monotonic() - started_at,
+                last_payload,
+                last_status,
+                raw_limit=raw_limit,
+            )
+
+        def fail(reason: str, status_class: str = "transient") -> MediaProcessingError:
+            """日志留全量留痕，落库的错误信息里嵌精简版（safe_error_message 还会再截到 500 字符）。"""
+
+            business_logger("pod_processing").warning(
+                "POD 速创生图失败：%s | %s", reason, trace(2000)
+            )
+            return MediaProcessingError(
+                f"{reason} | {trace(200)}", attempt_count=1, status_class=status_class
+            )
+
         while time.monotonic() < deadline:
+            polls += 1
             if self._poll_interval_seconds:
                 self.interruptible_wait(self._poll_interval_seconds)
             self.acquire_request_token()
@@ -303,6 +334,7 @@ class PodCustomizationAiRuntime(AiRuntime):
                         last_message = f"detail HTTP {status}"
                         continue
                     payload = response.json()
+                    last_payload = payload
                 finally:
                     response.close()
             if not isinstance(payload, dict):
@@ -323,6 +355,7 @@ class PodCustomizationAiRuntime(AiRuntime):
             if result_url:
                 return result_url
             status_value = str(data.get("status") or payload.get("status") or "").strip().lower() if isinstance(data, dict) else ""
+            last_status = status_value
             message = _suchuang_message(payload)
             # 上游 status 为异步任务状态码（纯数字或文本）：≥0 为排队/准备/等待/处理中/发布，
             # 1<0 为失败，1/成功文本才表示完成。3/4/5 数字实为“处理中”，不能按文本失败集误判成失败。
@@ -332,31 +365,15 @@ class PodCustomizationAiRuntime(AiRuntime):
                 numeric_status = None
             if numeric_status is not None:
                 if numeric_status < 0:
-                    raise MediaProcessingError(
-                        f"速创图片任务失败：{message}",
-                        attempt_count=1,
-                        status_class="transient",
-                    )
+                    raise fail(f"速创图片任务失败：{message}")
                 last_message = message or f"status={status_value}"
                 continue
             if status_value in {"success", "succeeded", "finish", "finished", "completed", "done"}:
-                raise MediaProcessingError(
-                    f"速创已完成但没有图片地址：{message}",
-                    attempt_count=1,
-                    status_class="transient",
-                )
+                raise fail(f"速创已完成但没有图片地址：{message}")
             if status_value in {"fail", "failed", "error", "cancelled", "canceled"}:
-                raise MediaProcessingError(
-                    f"速创图片任务失败：{message}",
-                    attempt_count=1,
-                    status_class="transient",
-                )
+                raise fail(f"速创图片任务失败：{message}")
             last_message = message or f"status={status_value or 'processing'}"
-        raise MediaProcessingError(
-            f"速创图片任务分段超时（{self._result_timeout_seconds:.0f}s）：{last_message}",
-            attempt_count=1,
-            status_class="transient",
-        )
+        raise fail(f"速创图片任务分段超时（{self._result_timeout_seconds:.0f}s）：{last_message}")
 
     def _download_suchuang_grid(self, result_url: str) -> tuple[bytes, str]:
         try:
@@ -507,6 +524,56 @@ def _suchuang_message(payload: object) -> str:
         if isinstance(value, str) and value.strip():
             return safe_error_message(value, fallback="未提供错误说明")[:180]
     return "未提供错误说明"
+
+
+# 留痕时屏蔽的敏感键：上游详情响应理论上不含密钥，但这些内容会落库/落盘，先兜一层。
+_TRACE_REDACT_KEYS = frozenset({"key", "api_key", "apikey", "token", "access_token", "authorization"})
+
+
+def _trace_payload(value: Any, depth: int = 0) -> Any:
+    """把上游响应裁剪成可安全留痕的形状：限深、限宽，并屏蔽密钥类字段。
+
+    深度要留够（code → data → images → item → url 已经 4 层）：截太浅会把最关键的
+    图片地址本身换成省略号，反而看不出"上游到底给没给图、挂在哪个键下"。
+    """
+
+    if depth >= 8:
+        return "…"
+    if isinstance(value, dict):
+        return {
+            str(name): (
+                "***" if str(name).lower() in _TRACE_REDACT_KEYS else _trace_payload(item, depth + 1)
+            )
+            for name, item in list(value.items())[:20]
+        }
+    if isinstance(value, (list, tuple)):
+        return [_trace_payload(item, depth + 1) for item in list(value)[:8]]
+    return value
+
+
+def suchuang_poll_trace(
+    task_id: str,
+    polls: int,
+    elapsed: float,
+    payload: object,
+    status: str,
+    *,
+    raw_limit: int = 200,
+) -> str:
+    """把上游任务 ID 与最后一次轮询原文压成一行，用于生图失败留痕。
+
+    上游失败时只回「调用成功」这类套话，而任务 ID 与原始状态此前既不落库也不打日志，
+    一旦分段超时，事后既无法回查上游任务、也判断不出是上游卡住还是我们没认出已完成的响应。
+    """
+
+    try:
+        raw = json.dumps(_trace_payload(payload), ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        raw = repr(payload)
+    return (
+        f"task={task_id or '<none>'} polls={polls} elapsed={elapsed:.0f}s "
+        f"status={status or '<empty>'} raw={raw[:raw_limit]}"
+    )
 
 
 def _suffix_for_content_type(content_type: str) -> str:

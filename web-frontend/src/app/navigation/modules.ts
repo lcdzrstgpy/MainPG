@@ -11,6 +11,7 @@ export type WorkspaceModuleId =
   | "dimension_canvas"
   | "pod_customization"
   | "pod_semi_customization"
+  | "ai_video"
   | "profit_activity"
   | "profit_activity_products"
   | "price_verification"
@@ -91,6 +92,14 @@ const podSemiCustomization: WorkspaceModule = {
   icon: "",
   iconClass: "iconfont icon-skin",
   description: "按提示词生成纯图案花色图，按批次打包下载",
+};
+
+const aiVideo: WorkspaceModule = {
+  id: "ai_video",
+  label: "AI 视频",
+  icon: "",
+  iconClass: "iconfont icon-video",
+  description: "通过 ClipForge 生成电商短视频",
 };
 
 const productProcessingHistory: WorkspaceModule = {
@@ -177,6 +186,7 @@ const processingTasks: WorkspaceModule = {
 
 export const workspaceModules: WorkspaceNavigationItem[] = [
   dashboard,
+  aiVideo,
   {
     id: "product_workflow",
     label: "产品处理",
@@ -218,6 +228,7 @@ export const workspaceModules: WorkspaceNavigationItem[] = [
 
 export const workspacePageModules: WorkspaceModule[] = [
   dashboard,
+  aiVideo,
   collection,
   collectionPanel,
   productProcessing,

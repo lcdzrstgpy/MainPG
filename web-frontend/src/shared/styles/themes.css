@@ -180,7 +180,99 @@
   --theme-module-panel-gradient: linear-gradient(120deg, #fff7ed 0%, #fffdf8 64%, #fef3c7 100%);
   --theme-module-shadow: rgba(120, 60, 10, .11);
   --theme-module-overlay: rgba(67, 20, 7, .22);
-}/* ---- 樱雾粉紫：柔和、低饱和的女生向主题 ---- *//* ---- 怪趣贴纸 ---- *//* ---- 水墨青黛 ---- *//* ---- 黑白钻石 ---- *//* ---- 桃花源：落英缤纷 · 桃花粉 + 宣纸暖白 + 青绿山水 ---- */[data-theme="peach"] {
+}
+
+/* ---- 下载主题的内置兜底 -------------------------------------------------
+   主题商店的完整 CSS 会在运行时追加到 head 末尾，因此仍可覆盖下面的基础
+   调色板。这里仅保证离线、缓存被清理或主题包临时不可用时，不会回退成经典蓝。 */
+[data-theme="violet"] {
+  --theme-page-bg: #f8f3fb; --theme-card-bg: rgba(255, 252, 255, .92); --theme-card-border: rgba(214, 191, 224, .7);
+  --theme-card-shadow: rgba(96, 67, 114, .1); --theme-card-shadow-lg: rgba(96, 67, 114, .15);
+  --theme-text-primary: #352640; --theme-text-secondary: #745f80; --theme-text-muted: #a392ad;
+  --theme-primary: #8b5cf6; --theme-primary-light: #f3edff; --theme-accent: #d06cae;
+  --theme-sidebar-hover-bg: #f8f0fa; --theme-sidebar-active-bg: linear-gradient(100deg, #eedcff, #fde5f3); --theme-sidebar-active-color: #7842a0; --theme-sidebar-active-border: #d6a9de; --theme-sidebar-active-shadow: 0 5px 13px rgba(124, 58, 150, .15);
+  --theme-hero-gradient: linear-gradient(118deg, #43265b, #8756a6 55%, #d06cae); --theme-hero-text: #f9edff; --theme-hero-eyebrow: #eacdf4;
+  --theme-brand-gradient: linear-gradient(145deg, #8b5cf6, #d06cae); --theme-brand-shadow: rgba(139, 92, 246, .25); --theme-brand-large-color: #7842a0; --theme-brand-large-bg: #fffaff;
+  --theme-avatar-bg: #f0e4fb; --theme-avatar-color: #7842a0; --theme-icon-button-border: #e1d3e8; --theme-icon-button-bg: #fffaff; --theme-icon-button-color: #745f80;
+  --theme-page-tab-border: #e5d7eb; --theme-page-tab-bg: #fcf8fd; --theme-page-tab-active-border: #d2a8dd; --theme-page-tab-active-bg: #f4e9fa; --theme-page-tab-active-color: #7842a0;
+  --theme-flow-color-a: rgba(139, 92, 246, .08); --theme-flow-color-b: rgba(208, 108, 174, .17); --theme-flow-color-c: rgba(180, 117, 208, .22); --theme-flow-color-d: rgba(139, 92, 246, .12); --theme-flow-ripple: rgba(208, 108, 174, .25); --theme-flow-ripple-secondary: rgba(139, 92, 246, .15);
+  --theme-scroll-gradient: linear-gradient(145deg, #8b5cf6, #d06cae); --theme-scroll-shadow: rgba(124, 66, 160, .28); --theme-meteor-gradient: linear-gradient(90deg, transparent, rgba(208, 108, 174, .18) 28%, rgba(139, 92, 246, .72) 82%, rgba(246, 220, 255, .95)); --theme-meteor-dot: #f1d9fa; --theme-meteor-dot-shadow: rgba(208, 108, 174, .7);
+  --theme-auth-gradient: linear-gradient(135deg, #352044 0%, #653d7e 42%, #9a5ead 72%, #d06cae 100%); --theme-auth-brand-text: #f9edff; --theme-auth-brand-eyebrow: #eacdf4; --theme-auth-tabs-bg: #f8f0fa; --theme-auth-tabs-active-color: #7842a0; --theme-auth-input-border: #e1d3e8; --theme-auth-input-outline: #a56ac0; --theme-auth-label-color: #745f80; --theme-auth-hint-color: #a392ad;
+  --theme-primary-button-gradient: linear-gradient(105deg, #7c3fa1, #d06cae); --theme-primary-button-shadow: rgba(124, 63, 161, .27); --theme-on-primary: #fff;
+  --theme-module-surface: #fffaff; --theme-module-surface-raised: rgba(255, 250, 255, .97); --theme-module-surface-soft: #f8f0fa; --theme-module-surface-tint: #f1e1f5; --theme-module-border: #e5d7eb; --theme-module-border-strong: #d2a8dd; --theme-module-primary-strong: #7842a0; --theme-module-primary-rgb: 139, 92, 246; --theme-module-panel-gradient: linear-gradient(120deg, #f7effa 0%, #fffaff 64%, #f2e2f6 100%); --theme-module-shadow: rgba(96, 67, 114, .1); --theme-module-overlay: rgba(52, 34, 67, .28);
+}
+
+[data-theme="dessert"] {
+  --theme-page-bg: #f8f0e8; --theme-card-bg: rgba(255, 251, 246, .93); --theme-card-border: rgba(219, 190, 166, .72);
+  --theme-card-shadow: rgba(100, 57, 36, .1); --theme-card-shadow-lg: rgba(100, 57, 36, .15);
+  --theme-text-primary: #4b2f26; --theme-text-secondary: #80624f; --theme-text-muted: #aa907d;
+  --theme-primary: #a8613f; --theme-primary-light: #fff3e7; --theme-accent: #c58a5a;
+  --theme-sidebar-hover-bg: #fff5eb; --theme-sidebar-active-bg: linear-gradient(100deg, #f5ddc8, #f9ebe0); --theme-sidebar-active-color: #915033; --theme-sidebar-active-border: #cf9a78; --theme-sidebar-active-shadow: 0 5px 13px rgba(145, 80, 51, .15);
+  --theme-hero-gradient: linear-gradient(118deg, #573122, #9a6045 55%, #c58a5a); --theme-hero-text: #fff1e3; --theme-hero-eyebrow: #f4d1ad;
+  --theme-brand-gradient: linear-gradient(145deg, #a8613f, #c58a5a); --theme-brand-shadow: rgba(168, 97, 63, .25); --theme-brand-large-color: #915033; --theme-brand-large-bg: #fff9f2;
+  --theme-avatar-bg: #f6e1cc; --theme-avatar-color: #915033; --theme-icon-button-border: #e5cfba; --theme-icon-button-bg: #fffaf4; --theme-icon-button-color: #80624f;
+  --theme-page-tab-border: #e6d3c1; --theme-page-tab-bg: #fffaf5; --theme-page-tab-active-border: #d9ad8e; --theme-page-tab-active-bg: #fff0e2; --theme-page-tab-active-color: #915033;
+  --theme-flow-color-a: rgba(197, 138, 90, .09); --theme-flow-color-b: rgba(168, 97, 63, .18); --theme-flow-color-c: rgba(205, 152, 103, .2); --theme-flow-color-d: rgba(197, 138, 90, .13); --theme-flow-ripple: rgba(168, 97, 63, .24); --theme-flow-ripple-secondary: rgba(197, 138, 90, .15);
+  --theme-scroll-gradient: linear-gradient(145deg, #a8613f, #c58a5a); --theme-scroll-shadow: rgba(145, 80, 51, .28); --theme-meteor-gradient: linear-gradient(90deg, transparent, rgba(225, 182, 141, .18) 28%, rgba(168, 97, 63, .7) 82%, rgba(255, 232, 207, .95)); --theme-meteor-dot: #f8d5b0; --theme-meteor-dot-shadow: rgba(197, 138, 90, .7);
+  --theme-auth-gradient: linear-gradient(135deg, #44251d 0%, #75422e 40%, #a8613f 72%, #d19b6d 100%); --theme-auth-brand-text: #fff1e3; --theme-auth-brand-eyebrow: #f4d1ad; --theme-auth-tabs-bg: #fff4eb; --theme-auth-tabs-active-color: #915033; --theme-auth-input-border: #e5cfba; --theme-auth-input-outline: #bd7550; --theme-auth-label-color: #80624f; --theme-auth-hint-color: #aa907d;
+  --theme-primary-button-gradient: linear-gradient(105deg, #915033, #bd7550); --theme-primary-button-shadow: rgba(145, 80, 51, .27); --theme-on-primary: #fff;
+  --theme-module-surface: #fffaf4; --theme-module-surface-raised: rgba(255, 250, 244, .97); --theme-module-surface-soft: #fbf0e5; --theme-module-surface-tint: #f4e2d1; --theme-module-border: #e6d3c1; --theme-module-border-strong: #d9ad8e; --theme-module-primary-strong: #915033; --theme-module-primary-rgb: 168, 97, 63; --theme-module-panel-gradient: linear-gradient(120deg, #fbf0e5 0%, #fffaf4 64%, #f3dec9 100%); --theme-module-shadow: rgba(100, 57, 36, .1); --theme-module-overlay: rgba(67, 37, 29, .28);
+}
+
+[data-theme="diamond"] {
+  color-scheme: dark;
+  --theme-page-bg: #111318; --theme-card-bg: rgba(25, 28, 34, .94); --theme-card-border: rgba(105, 114, 129, .65);
+  --theme-card-shadow: rgba(0, 0, 0, .34); --theme-card-shadow-lg: rgba(0, 0, 0, .5);
+  --theme-text-primary: #f1f4f7; --theme-text-secondary: #b5bdc9; --theme-text-muted: #8993a2;
+  --theme-primary: #e7ebf0; --theme-primary-light: #2b3039; --theme-accent: #aeb8c6;
+  --theme-sidebar-hover-bg: #252a33; --theme-sidebar-active-bg: linear-gradient(100deg, #3b424d, #242a34); --theme-sidebar-active-color: #fff; --theme-sidebar-active-border: #939eae; --theme-sidebar-active-shadow: 0 5px 13px rgba(0, 0, 0, .42);
+  --theme-hero-gradient: linear-gradient(118deg, #16191f, #3f4754 56%, #7f8996); --theme-hero-text: #f3f5f7; --theme-hero-eyebrow: #c7ced7;
+  --theme-brand-gradient: linear-gradient(145deg, #f2f4f7, #8993a0); --theme-brand-shadow: rgba(0, 0, 0, .4); --theme-brand-large-color: #e7ebf0; --theme-brand-large-bg: #20242c;
+  --theme-avatar-bg: #303640; --theme-avatar-color: #f1f4f7; --theme-icon-button-border: #4f5866; --theme-icon-button-bg: #242932; --theme-icon-button-color: #d5dae1;
+  --theme-page-tab-border: #454d5a; --theme-page-tab-bg: #1e232b; --theme-page-tab-active-border: #aeb8c6; --theme-page-tab-active-bg: #343b47; --theme-page-tab-active-color: #fff;
+  --theme-flow-color-a: rgba(219, 226, 236, .05); --theme-flow-color-b: rgba(174, 184, 198, .15); --theme-flow-color-c: rgba(123, 135, 153, .2); --theme-flow-color-d: rgba(219, 226, 236, .09); --theme-flow-ripple: rgba(220, 227, 236, .2); --theme-flow-ripple-secondary: rgba(142, 153, 170, .14);
+  --theme-scroll-gradient: linear-gradient(145deg, #edf0f3, #8993a0); --theme-scroll-shadow: rgba(0, 0, 0, .42); --theme-meteor-gradient: linear-gradient(90deg, transparent, rgba(174, 184, 198, .12) 28%, rgba(225, 230, 236, .64) 82%, rgba(255, 255, 255, .92)); --theme-meteor-dot: #f6f7f8; --theme-meteor-dot-shadow: rgba(230, 235, 240, .64);
+  --theme-auth-gradient: linear-gradient(135deg, #0b0d10 0%, #242932 44%, #535d6d 76%, #8993a0 100%); --theme-auth-brand-text: #f3f5f7; --theme-auth-brand-eyebrow: #c7ced7; --theme-auth-tabs-bg: #20252d; --theme-auth-tabs-active-color: #fff; --theme-auth-input-border: #4f5866; --theme-auth-input-outline: #bbc4d0; --theme-auth-label-color: #c4cad3; --theme-auth-hint-color: #8993a2;
+  --theme-primary-button-gradient: linear-gradient(105deg, #f1f4f7, #aeb8c6); --theme-primary-button-shadow: rgba(0, 0, 0, .36); --theme-on-primary: #15191f;
+  --theme-module-surface: #1c2027; --theme-module-surface-raised: rgba(30, 34, 42, .98); --theme-module-surface-soft: #252b34; --theme-module-surface-tint: #343b47; --theme-module-border: #46505f; --theme-module-border-strong: #7d8999; --theme-module-primary-strong: #f1f4f7; --theme-module-primary-rgb: 231, 235, 240; --theme-module-panel-gradient: linear-gradient(120deg, #20252d 0%, #1c2027 64%, #2e3540 100%); --theme-module-shadow: rgba(0, 0, 0, .34); --theme-module-overlay: rgba(0, 0, 0, .62);
+}
+
+[data-theme="quirky"] {
+  --theme-page-bg: #fff8cf; --theme-card-bg: rgba(255, 254, 239, .94); --theme-card-border: rgba(82, 51, 113, .48);
+  --theme-card-shadow: rgba(49, 28, 76, .16); --theme-card-shadow-lg: rgba(49, 28, 76, .24);
+  --theme-text-primary: #2e1b48; --theme-text-secondary: #5e4778; --theme-text-muted: #917b9d;
+  --theme-primary: #7c3aed; --theme-primary-light: #f0e8ff; --theme-accent: #f43f5e;
+  --theme-sidebar-hover-bg: #fff1a8; --theme-sidebar-active-bg: linear-gradient(100deg, #fce45d, #ffc0d1); --theme-sidebar-active-color: #51239c; --theme-sidebar-active-border: #7c3aed; --theme-sidebar-active-shadow: 3px 4px 0 rgba(59, 31, 92, .3);
+  --theme-hero-gradient: linear-gradient(118deg, #5b21b6, #f43f5e 57%, #f6c92e); --theme-hero-text: #fffdf0; --theme-hero-eyebrow: #fff0a8;
+  --theme-brand-gradient: linear-gradient(145deg, #7c3aed, #f43f5e); --theme-brand-shadow: rgba(124, 58, 237, .28); --theme-brand-large-color: #51239c; --theme-brand-large-bg: #fffbe3;
+  --theme-avatar-bg: #fce45d; --theme-avatar-color: #3d216e; --theme-icon-button-border: #72518d; --theme-icon-button-bg: #fffbe3; --theme-icon-button-color: #5e4778;
+  --theme-page-tab-border: #d5b4d8; --theme-page-tab-bg: #fffbee; --theme-page-tab-active-border: #7c3aed; --theme-page-tab-active-bg: #f4ddff; --theme-page-tab-active-color: #51239c;
+  --theme-flow-color-a: rgba(124, 58, 237, .1); --theme-flow-color-b: rgba(244, 63, 94, .18); --theme-flow-color-c: rgba(250, 204, 21, .25); --theme-flow-color-d: rgba(124, 58, 237, .15); --theme-flow-ripple: rgba(244, 63, 94, .28); --theme-flow-ripple-secondary: rgba(124, 58, 237, .18);
+  --theme-scroll-gradient: linear-gradient(145deg, #7c3aed, #f43f5e); --theme-scroll-shadow: rgba(81, 35, 156, .3); --theme-meteor-gradient: linear-gradient(90deg, transparent, rgba(250, 204, 21, .18) 25%, rgba(244, 63, 94, .75) 82%, rgba(255, 252, 182, .96)); --theme-meteor-dot: #fff59c; --theme-meteor-dot-shadow: rgba(244, 63, 94, .72);
+  --theme-auth-gradient: linear-gradient(135deg, #321365 0%, #6d28d9 40%, #f43f5e 72%, #facc15 100%); --theme-auth-brand-text: #fffdf0; --theme-auth-brand-eyebrow: #fff0a8; --theme-auth-tabs-bg: #fff6ce; --theme-auth-tabs-active-color: #51239c; --theme-auth-input-border: #d5b4d8; --theme-auth-input-outline: #7c3aed; --theme-auth-label-color: #5e4778; --theme-auth-hint-color: #917b9d;
+  --theme-primary-button-gradient: linear-gradient(105deg, #6d28d9, #f43f5e); --theme-primary-button-shadow: rgba(81, 35, 156, .28); --theme-on-primary: #fff;
+  --theme-module-surface: #fffbee; --theme-module-surface-raised: rgba(255, 251, 227, .98); --theme-module-surface-soft: #fff2ba; --theme-module-surface-tint: #ffe0ec; --theme-module-border: #d5b4d8; --theme-module-border-strong: #9c67c2; --theme-module-primary-strong: #51239c; --theme-module-primary-rgb: 124, 58, 237; --theme-module-panel-gradient: linear-gradient(120deg, #fff5c8 0%, #fffbee 64%, #f8dfff 100%); --theme-module-shadow: rgba(49, 28, 76, .15); --theme-module-overlay: rgba(46, 27, 72, .34);
+}
+
+[data-theme="chinese"] {
+  --theme-page-bg: #efede4; --theme-card-bg: rgba(250, 249, 244, .94); --theme-card-border: rgba(147, 166, 157, .7);
+  --theme-card-shadow: rgba(40, 59, 55, .1); --theme-card-shadow-lg: rgba(40, 59, 55, .16);
+  --theme-text-primary: #253a3a; --theme-text-secondary: #536b67; --theme-text-muted: #82928d;
+  --theme-primary: #476f6a; --theme-primary-light: #e5eee8; --theme-accent: #a74736;
+  --theme-sidebar-hover-bg: #e8eee7; --theme-sidebar-active-bg: linear-gradient(100deg, #dce8de, #efe5d8); --theme-sidebar-active-color: #365b56; --theme-sidebar-active-border: #8ca89c; --theme-sidebar-active-shadow: 0 5px 13px rgba(49, 79, 70, .14);
+  --theme-hero-gradient: linear-gradient(118deg, #263b3b, #4f726d 55%, #8e4b3f); --theme-hero-text: #eff2e9; --theme-hero-eyebrow: #cbd5ca;
+  --theme-brand-gradient: linear-gradient(145deg, #476f6a, #a74736); --theme-brand-shadow: rgba(71, 111, 106, .23); --theme-brand-large-color: #365b56; --theme-brand-large-bg: #faf9f4;
+  --theme-avatar-bg: #dce8de; --theme-avatar-color: #365b56; --theme-icon-button-border: #c6d1c7; --theme-icon-button-bg: #faf9f4; --theme-icon-button-color: #536b67;
+  --theme-page-tab-border: #cbd5ca; --theme-page-tab-bg: #f8f7f0; --theme-page-tab-active-border: #8ca89c; --theme-page-tab-active-bg: #e7eee7; --theme-page-tab-active-color: #365b56;
+  --theme-flow-color-a: rgba(71, 111, 106, .08); --theme-flow-color-b: rgba(167, 71, 54, .14); --theme-flow-color-c: rgba(128, 155, 137, .2); --theme-flow-color-d: rgba(71, 111, 106, .12); --theme-flow-ripple: rgba(71, 111, 106, .22); --theme-flow-ripple-secondary: rgba(167, 71, 54, .13);
+  --theme-scroll-gradient: linear-gradient(145deg, #476f6a, #a74736); --theme-scroll-shadow: rgba(54, 91, 86, .28); --theme-meteor-gradient: linear-gradient(90deg, transparent, rgba(167, 71, 54, .12) 28%, rgba(71, 111, 106, .7) 82%, rgba(230, 238, 225, .94)); --theme-meteor-dot: #e4ede1; --theme-meteor-dot-shadow: rgba(71, 111, 106, .68);
+  --theme-auth-gradient: linear-gradient(135deg, #203333 0%, #3d625d 40%, #587c74 70%, #a74736 100%); --theme-auth-brand-text: #eff2e9; --theme-auth-brand-eyebrow: #cbd5ca; --theme-auth-tabs-bg: #e8eee7; --theme-auth-tabs-active-color: #365b56; --theme-auth-input-border: #c6d1c7; --theme-auth-input-outline: #5c8780; --theme-auth-label-color: #536b67; --theme-auth-hint-color: #82928d;
+  --theme-primary-button-gradient: linear-gradient(105deg, #365b56, #5c8780); --theme-primary-button-shadow: rgba(54, 91, 86, .27); --theme-on-primary: #fff;
+  --theme-module-surface: #faf9f4; --theme-module-surface-raised: rgba(250, 249, 244, .97); --theme-module-surface-soft: #f0eee4; --theme-module-surface-tint: #e0e8df; --theme-module-border: #cbd5ca; --theme-module-border-strong: #8ca89c; --theme-module-primary-strong: #365b56; --theme-module-primary-rgb: 71, 111, 106; --theme-module-panel-gradient: linear-gradient(120deg, #f0eee4 0%, #faf9f4 64%, #e1ebe1 100%); --theme-module-shadow: rgba(40, 59, 55, .1); --theme-module-overlay: rgba(29, 44, 44, .32);
+}
+
+/* ---- 桃花源：落英缤纷 · 桃花粉 + 宣纸暖白 + 青绿山水 ---- */
+[data-theme="peach"] {
   --theme-page-bg: #fdf0ec;
   --theme-card-bg: rgba(255, 250, 247, .2);
   --theme-card-border: rgba(217, 93, 120, .22);
@@ -604,5 +696,54 @@
 }[data-theme="sunset"] .theme-quick-trigger.is-active {
   background: #fff4de;
   border-color: #b45309;
-}[data-theme="sunset"] .theme-quick-trigger::before,
+}
+
+/* 其余主题共用工作台外壳。业务模块只消费语义变量，导航、Hero 和主题入口
+   也必须同步，避免出现「内容换色、外壳仍是经典蓝」的割裂。 */
+:is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"]) .sidebar-item.is-active {
+  background: var(--theme-sidebar-active-bg) !important;
+  color: var(--theme-sidebar-active-color) !important;
+  box-shadow: inset 0 0 0 1px var(--theme-sidebar-active-border), var(--theme-sidebar-active-shadow) !important;
+}
+:is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"]) :is(.sidebar-subitem.is-active, .sidebar-pin-button.is-active, .topbar-pin-toggle.is-active) {
+  color: var(--theme-sidebar-active-color) !important;
+  border-color: var(--theme-sidebar-active-border) !important;
+  background: var(--theme-module-surface-tint) !important;
+}
+:is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"]) :is(.sidebar-item:hover, .sidebar-subitem:hover) { background: var(--theme-sidebar-hover-bg) !important; }
+:is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"]) :is(.page-tab.is-active, .theme-option.is-active) {
+  color: var(--theme-page-tab-active-color) !important;
+  border-color: var(--theme-page-tab-active-border) !important;
+  background: var(--theme-page-tab-active-bg) !important;
+  box-shadow: 0 4px 12px var(--theme-module-shadow) !important;
+}
+:is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"]) .page-tab.is-active > button { color: inherit !important; }
+:is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"]) .avatar { color: var(--theme-avatar-color); background: var(--theme-avatar-bg); }
+:is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"]) :is(
+  .page-hero-card, .settings-hero, .daily-page-heading, .daily-drawer-header,
+  .price-verification-hero, .product-processing-hero, .verify-commandbar,
+  .profit-products-head, .profit-activity-hero, .profit-test-hero
+) {
+  background: var(--theme-hero-gradient) !important;
+  border-color: var(--theme-module-border-strong) !important;
+  box-shadow: 0 16px 38px var(--theme-card-shadow-lg) !important;
+}
+:is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"]) :is(
+  .page-hero-card, .settings-hero, .daily-page-heading, .daily-drawer-header,
+  .price-verification-hero, .product-processing-hero, .verify-commandbar,
+  .profit-products-head, .profit-activity-hero, .profit-test-hero
+) :is(h1, h2, h3, p) { color: var(--theme-hero-text) !important; }
+:is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"]) :is(
+  .page-hero-card, .settings-hero, .daily-page-heading, .daily-drawer-header,
+  .price-verification-hero, .product-processing-hero, .verify-commandbar,
+  .profit-products-head, .profit-activity-hero, .profit-test-hero
+) :is(.eyebrow, .daily-kicker, .verify-eyebrow) { color: var(--theme-hero-eyebrow) !important; }
+:is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"]) .theme-quick-trigger {
+  color: var(--theme-on-primary);
+  border-color: var(--theme-module-primary-strong);
+  background: var(--theme-brand-gradient);
+  box-shadow: 2px 3px 0 var(--theme-module-primary-strong);
+}
+
+[data-theme="sunset"] .theme-quick-trigger::before,
 [data-theme="sunset"] .theme-quick-trigger::after { background: #7c3a1d; }[data-theme="sunset"] .theme-quick-trigger .face-mouth { border-bottom-color: #7c3a1d; }/* 樱雾粉紫：粉紫渐变 + 紫描边大圆角 *//* 焦糖：奶油底 + 焦糖描边，柔和圆润 *//* 黑白钻石：黑底银边，冷峻克制 *//* 怪趣贴纸：绿黄粉大渐变 + 粗深紫描边歪头 *//* 水墨青黛：米白纸底 + 青黛描边，偏方正印章感 */

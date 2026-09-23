@@ -103,6 +103,7 @@ from ..modules.product_processing.infrastructure.database import create_database
 from ..modules.product_processing.infrastructure.repository import ProductProcessingRepository
 from ..modules.product_processing.provider_config import register_system_config_db_path
 from ..modules.product_processing.service import ProductProcessingService
+from ..modules.clipforge import ClipForgeService, create_router as create_clipforge_router
 from ..price_verification import (
     PriceVerificationRouteDependencies,
     register_price_verification_routes,
@@ -156,6 +157,28 @@ def _provider_config(actor: DailySelectionActor) -> Mapping[str, Any]:
 def _provider_factory(config: Mapping[str, Any]) -> OneBound1688Provider:
     """Create the OneBound provider from resolved configuration."""
     return OneBound1688Provider(config)
+
+
+def _clipforge_source_root(install_root: Path) -> Path:
+    """Locate the vendored ClipForge source in development and packaged installs."""
+    override = os.environ.get("WH_CLIPFORGE_SOURCE_ROOT", "").strip()
+    candidates = [
+        Path(override) if override else None,
+        install_root / "clipforge" / "app",
+        install_root / "integrations" / "clipforge",
+        Path(__file__).resolve().parents[3] / "integrations" / "clipforge",
+    ]
+    return next((candidate for candidate in candidates if candidate is not None and candidate.is_dir()), candidates[1])
+
+
+def _clipforge_node_binary(source_root: Path) -> Path | str:
+    """Use the Node runtime bundled next to packaged ClipForge when present."""
+    sidecar_root = source_root.parent
+    for name in ("node.exe", "node"):
+        bundled = sidecar_root / name
+        if bundled.is_file():
+            return bundled
+    return "node"
 
 
 class _RuntimeExitController:
@@ -337,6 +360,12 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     db_path = database_path or config.database_path
     init_db(db_path)
     register_system_config_db_path(db_path)
+    clipforge_source_root = _clipforge_source_root(config.install_root)
+    clipforge = ClipForgeService(
+        source_root=clipforge_source_root,
+        data_root=config.data_dir / "clipforge",
+        node_binary=str(_clipforge_node_binary(clipforge_source_root)),
+    )
 
     update_manager = UpdateManager(
         UpdateSettings(
@@ -374,6 +403,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         pod_title_runtime = getattr(runtime_app.state, "pod_customization_title_runtime", None)
         messages_sync = getattr(runtime_app.state, "messages_sync", None)
         reply_sync = getattr(runtime_app.state, "reply_sync", None)
+        clipforge_service = getattr(runtime_app.state, "clipforge_service", None)
         if shop_worker is not None:
             logger.info("lifespan step: starting shop_worker")
             shop_worker.start()
@@ -386,6 +416,9 @@ def create_app(database_path: Path | None = None) -> FastAPI:
             logger.info("lifespan step: starting reply_sync")
             reply_sync.start()
             logger.info("lifespan step: reply_sync started")
+        if clipforge_service is not None:
+            clipforge_status = clipforge_service.start()
+            logger.info("lifespan step: clipforge state=%s message=%s", clipforge_status.state, clipforge_status.message)
         logger.info("lifespan step: startup done, yielding")
         try:
             yield
@@ -405,6 +438,8 @@ def create_app(database_path: Path | None = None) -> FastAPI:
                 pod_title_runtime.close(wait=False, cancel_futures=True)
             if pod_ai_runtime is not None:
                 pod_ai_runtime.close(wait=False, cancel_futures=True)
+            if clipforge_service is not None:
+                clipforge_service.stop()
 
     app = FastAPI(
         title="H Smart Ecommerce Local Runtime",
@@ -484,6 +519,8 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         app.include_router(create_admin_proxy_router(remote_customer_auth, customer_sessions))
 
     app.include_router(create_basic_settings_router(db_path))
+    app.include_router(create_clipforge_router(clipforge))
+    app.state.clipforge_service = clipforge
     # 新手引导配置：前端播放引导时读取，管理员在工作台里可视化编辑后写回。
     app.include_router(create_guide_router(db_path))
     # 主题商店资源：优先读运行根目录下的源码包(wh_local/data/themes)，打包构建
