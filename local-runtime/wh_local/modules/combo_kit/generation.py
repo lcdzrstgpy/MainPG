@@ -3,7 +3,7 @@
 本模块禁止 OCR 校验：不调用 inspect_visible_text；单图直出，无四宫格裁切。
 
 成品图构成（第 1 张「套装主图」由主体解析阶段的融合主图复用，不入本模块）：
-- 轮播图 2 / 轮播图 3 / 白底尺寸图 / 细节图：并行调用生图 API（最多并发 4）。
+- 使用场景图 1 / 使用场景图 2 / 白底尺寸图 / 细节图：并行调用生图 API（最多并发 4）。
 - 详情图：本地拼接合成（用主图 + 上述成品图），不调用生图 API。
 """
 from __future__ import annotations
@@ -15,7 +15,7 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 from ..product_processing.infrastructure.media import (
     MediaConfigurationError,
@@ -26,18 +26,21 @@ from ..product_processing.service import (
     ProductProcessingService,
 )
 from .contracts import (
+    FUSION_MAIN_ROLE,
     GENERATED_API_ROLES,
     IMAGE_ROLES,
+    MAX_IMAGES,
     ComboKitValidationError,
 )
 
 
-def crop_subject_references(sources: list[dict[str, Any]]) -> list[str]:
+def crop_subject_references(sources: list[dict[str, Any]], *, normalize: bool = False) -> list[str]:
     """按用户蒙版把每张原图抠出主体，返回可用于生图参考的本地图片路径。
 
     sources 每项：{"path": 原图路径, "points": 归一化六点 [[x,y],...], "inverted": bool}。
     抠图规则：默认保留多边形内主体（反选则保留多边形外），其余区域填充纯白背景，
     确保生图 provider 拿到的是「已按框选主体的图」，而不是整张原图。
+    normalize=True（单品多视角）时额外把主体裁成固定占比的 1:1 画布，提供统一尺度锚点。
     任一抠图失败则回退到原图路径。
     """
     references: list[str] = []
@@ -46,7 +49,7 @@ def crop_subject_references(sources: list[dict[str, Any]]) -> list[str]:
         if not raw:
             continue
         try:
-            cropped = _crop_to_mask(raw, source.get("points"), bool(source.get("inverted")))
+            cropped = _crop_to_mask(raw, source.get("points"), bool(source.get("inverted")), normalize=normalize)
             if cropped:
                 references.append(cropped)
                 continue
@@ -56,19 +59,64 @@ def crop_subject_references(sources: list[dict[str, Any]]) -> list[str]:
     return references
 
 
-def _crop_to_mask(raw_path: str, points: Any, inverted: bool) -> str | None:
+# 归一化后主体在画布中的占比：留约三成白边，既不贴边也不缩小到失去细节。
+_SUBJECT_FRAME_RATIO = 0.7
+
+
+def _normalize_subject_frame(canvas: Image.Image, selection: Image.Image) -> Image.Image:
+    """把抠图结果按主体包围盒紧裁后放进 1:1 白底画布，主体约占 70%。
+
+    同一件商品的原图机位、构图、占比各不相同，原样送参考会让模型缺少统一尺度锚点，
+    同一件商品在成品图里被拉长压扁、弧度不一致。统一「主体包围盒 -> 固定占比」后，
+    每张参考图的主体尺度与画面占比一致，模型才有稳定的比例与曲率参照。
+    """
+    # 软化后的蒙版边缘有过渡灰阶，按 128 阈值取包围盒，避免把羽化外圈算成主体。
+    binary = selection.point(lambda value: 255 if value >= 128 else 0)
+    bbox = binary.getbbox()
+    if not bbox:
+        return canvas
+    left, top, right, bottom = bbox
+    width, height = canvas.size
+    # 蒙版是用户手绘多边形，可能略微画进主体内部；向外留一成余量避免裁掉主体边缘。
+    pad_x = round((right - left) * 0.1)
+    pad_y = round((bottom - top) * 0.1)
+    subject = canvas.crop(
+        (max(0, left - pad_x), max(0, top - pad_y), min(width, right + pad_x), min(height, bottom + pad_y))
+    )
+    subject_w, subject_h = subject.size
+    if subject_w <= 0 or subject_h <= 0:
+        return canvas
+    side = max(1, round(max(subject_w, subject_h) / _SUBJECT_FRAME_RATIO))
+    frame = Image.new("RGB", (side, side), (255, 255, 255))
+    frame.paste(subject, ((side - subject_w) // 2, (side - subject_h) // 2))
+    return frame
+
+
+def _crop_to_mask(raw_path: str, points: Any, inverted: bool, *, normalize: bool = False) -> str | None:
     image = Image.open(raw_path).convert("RGB")
     width, height = image.size
     selection = Image.new("L", (width, height), 0)
-    if isinstance(points, (list, tuple)) and len(points) >= 3:
+    has_polygon = isinstance(points, (list, tuple)) and len(points) >= 3
+    if has_polygon:
         polygon = [(float(point[0]) * width, float(point[1]) * height) for point in points]
         ImageDraw.Draw(selection).polygon(polygon, fill=255)
     else:
         selection.paste(255, (0, 0, width, height))
     if inverted:
         selection = ImageOps.invert(selection)
+    if has_polygon:
+        # 多边形边界是硬边：直接涂白会在生成物上切出笔直斜切口，因此只做羽化
+        # （GaussianBlur）让主体柔和过渡到白底。不做 MinFilter 内收：内收会把
+        # 主体边缘一圈像素按部分透明度与白底混合，留下肉眼可见的浅灰重影/光晕。
+        radius = max(1, min(round(min(width, height) * 0.005), 12))
+        selection = selection.filter(ImageFilter.GaussianBlur(radius=max(1.0, radius * 1.5)))
     canvas = Image.new("RGB", (width, height), (255, 255, 255))
     canvas.paste(image, (0, 0), selection)
+    # 单品多视角要在多张成品图之间保持同一比例与弧度：把参考图统一成
+    # 「主体占画布固定比例」的 1:1 白底图，模型才有一致的尺度锚点。
+    # 套装（bundle）不做归一化：成员商品之间的真实大小关系本身就是参考信息。
+    if normalize and has_polygon:
+        canvas = _normalize_subject_frame(canvas, selection)
     handle = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
     try:
         canvas.save(handle.name, "PNG")
@@ -76,7 +124,20 @@ def _crop_to_mask(raw_path: str, points: Any, inverted: bool) -> str | None:
         handle.close()
     return handle.name
 
-_static_config = ProductProcessingService._media_config_provider
+def _static_config() -> dict[str, Any]:
+    """共享媒体配置 + 组合套装专用参考图上限。
+
+    共享配置只为 grid_image / detail_image 提供了参考图上限，套装角色
+    （main、使用场景图、白底尺寸图、细节图）没有对应配置会退化到默认 2 张，
+    导致 3 件以上套装的成员商品无法全部进入生图请求。这里按 MAX_IMAGES 放开。
+    """
+    config = dict(ProductProcessingService._media_config_provider() or {})
+    limits = dict(config.get("limits") or {})
+    for role in (*GENERATED_API_ROLES, FUSION_MAIN_ROLE):
+        limits[f"{role}_reference_max_count"] = MAX_IMAGES
+    limits["reference_max_cap"] = MAX_IMAGES
+    config["limits"] = limits
+    return config
 
 
 def _make_media_processor() -> ProductImageProcessor:
@@ -96,6 +157,7 @@ def generate_combo_images(
     roles: Iterable[str] | None = None,
     title: str = "",
     category: str = "",
+    references_by_role: dict[str, list[str]] | None = None,
 ) -> list[dict[str, Any]]:
     """并行生成整套成品图中的生图部分 + 本地拼接详情图。
 
@@ -103,10 +165,14 @@ def generate_combo_images(
     [carousel_2, carousel_3, white_bg, detail_shot, detail_page]。
     传入 roles 时只生成指定角色（单张重做/替换），并跳过详情图合成，
     用于避免二次生成覆盖其它图。
+    references_by_role 为单品多视角按角色分配的参考图（同一商品的不同机位先按角色
+    筛选过）：把 4 个机位无差别全送给每个角色，模型会在机位之间「平均」出一个真机
+    不存在的造型。未命中的角色回退到 reference_values（全部参考图）。
     任一张生图失败抛 ComboKitValidationError（调用方据此结算生图失败）。
     """
     processor = media_processor or _make_media_processor()
     outputs: dict[str, dict[str, Any]] = {}
+    per_role_references = references_by_role or {}
 
     def _generate_one(role: str, label: str, prompt: str) -> dict[str, Any]:
         if not prompt:
@@ -114,7 +180,7 @@ def generate_combo_images(
         media = processor.generate(
             stage=role,
             prompt=prompt,
-            reference_values=reference_values,
+            reference_values=per_role_references.get(role) or reference_values,
             image_size="2048x2048",
         )
         # 仅做尺寸归一到方图，不做 OCR 文字质检。
@@ -130,7 +196,7 @@ def generate_combo_images(
             "status_class": str(getattr(normalized, "provider_status_class", "") or "success"),
         }
 
-    # 并发生图：轮播2/3、白底尺寸图、细节图（并发上限 4）。
+    # 并发生图：使用场景图 1/2、白底尺寸图、细节图（并发上限 4）。
     # 传入 roles 时只生成指定的生图角色（单张重做/替换），其余角色保留不动。
     label_map = {str(spec["role"]): str(spec["label"]) for spec in IMAGE_ROLES}
     target_roles = set(roles) if roles else set(GENERATED_API_ROLES)

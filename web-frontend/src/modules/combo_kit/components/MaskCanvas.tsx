@@ -5,11 +5,14 @@ type Props = {
   setId: string;
   item: ComboKitItem;
   onSaveMask?: (itemId: string, mask: { points: Array<[number, number]> }, inverted: boolean) => void;
+  // 算法预框选：返回主体轮廓多边形（失败/不可信返回 null，由本组件回落默认六边形）。
+  onAutoMask?: (itemId: string) => Promise<Point[] | null>;
 };
 
 type Point = [number, number];
 
-// 六点框选：6 个可拖动控制点围成六边形，包围商品主体。坐标归一化 0..1。
+// 兜底框选：还没做自动分割（或分割不可信）时用这个固定多边形，用户可拖动微调。
+// 坐标归一化 0..1。
 const DEFAULT_POINTS: Point[] = [
   [0.5, 0.06],
   [0.94, 0.32],
@@ -21,26 +24,60 @@ const DEFAULT_POINTS: Point[] = [
 
 const HANDLE_R = 9;
 
-export function MaskCanvas({ setId, item, onSaveMask }: Props) {
+export function MaskCanvas({ setId, item, onSaveMask, onAutoMask }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const dragRef = useRef<number>(-1);
   const dragWholeRef = useRef<{ start: Point; orig: Point[] } | null>(null);
+  // 记录正在自动框选的 item_id：切图后旧请求的结果必须丢弃，不能覆盖新图的框。
+  const autoBusyRef = useRef<string>('');
   const [inverted, setInverted] = useState(item.mask_inverted);
   const [points, setPoints] = useState<Point[]>(() => readMask(item.mask_json) ?? DEFAULT_POINTS);
   const [view, setView] = useState<'view' | 'mask'>('view');
   const [originName, setOriginName] = useState('');
+  const [autoState, setAutoState] = useState<'idle' | 'running' | 'done' | 'failed'>('idle');
 
   useEffect(() => {
     const raw = item.original_url || item.original_path || '';
     setOriginName(raw.split('/').pop() || '');
   }, [item]);
 
+  // 算法预框选：拿到轮廓就直接当初始框，失败则由下面的默认多边形兜底。
+  const runAutoMask = async (itemId: string) => {
+    if (!onAutoMask || autoBusyRef.current) return;
+    autoBusyRef.current = itemId;
+    setAutoState('running');
+    try {
+      const auto = await onAutoMask(itemId);
+      // 结果回来时若已切到别的图，直接丢弃。
+      if (autoBusyRef.current !== itemId) return;
+      if (auto && auto.length >= 3) {
+        setPoints(auto);
+        setView('mask');
+        setAutoState('done');
+        return;
+      }
+      setAutoState('failed');
+    } catch {
+      if (autoBusyRef.current === itemId) setAutoState('failed');
+    } finally {
+      if (autoBusyRef.current === itemId) autoBusyRef.current = '';
+    }
+  };
+
   // 每张图片的蒙版独立：切换图片（item_id 变化）时，重置为当前图自己的蒙版/反选，
   // 避免继承上一张的形状。保存蒙版后 item_id 不变，不会覆盖用户刚绘制的蒙版。
   useEffect(() => {
     setInverted(item.mask_inverted);
-    setPoints(readMask(item.mask_json) ?? DEFAULT_POINTS);
+    const saved = readMask(item.mask_json);
+    setPoints(saved ?? DEFAULT_POINTS);
+    if (saved || !onAutoMask) {
+      setAutoState('idle');
+      return;
+    }
+    // 还没有人工蒙版：先跑一次算法预框选，用户只需在此基础上微调。
+    void runAutoMask(item.item_id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [item.item_id]);
 
   useEffect(() => {
@@ -77,7 +114,9 @@ export function MaskCanvas({ setId, item, onSaveMask }: Props) {
   };
 
   const nearHandle = (p: Point): number => {
-    return points.findIndex(([x, y]) => Math.hypot(x - p[0], y - p[1]) < 0.10);
+    // 命中半径随点数收窄：自动框选可能给出 10+ 个点，半径过大相邻控制点会互相抢。
+    const radius = Math.min(0.1, 0.6 / Math.max(3, points.length));
+    return points.findIndex(([x, y]) => Math.hypot(x - p[0], y - p[1]) < radius);
   };
 
   const pointInPoly = (p: Point): boolean => {
@@ -132,11 +171,21 @@ export function MaskCanvas({ setId, item, onSaveMask }: Props) {
 
   const reset = () => {
     setPoints(DEFAULT_POINTS);
+    setAutoState('idle');
   };
 
   const save = () => {
     onSaveMask?.(item.item_id, { points }, inverted);
   };
+
+  const autoHint =
+    autoState === 'running'
+      ? '正在自动识别主体…'
+      : autoState === 'done'
+        ? '已自动框选，拖动控制点微调后保存即可。'
+        : autoState === 'failed'
+          ? '未能自动识别主体，请手动拖动控制点框选。'
+          : '';
 
   return (
     <div className="combo-mask">
@@ -147,6 +196,15 @@ export function MaskCanvas({ setId, item, onSaveMask }: Props) {
         <button className="btn-mini" onClick={() => setInverted((v) => !v)}>
           反选：{inverted ? '是' : '否'}
         </button>
+        {onAutoMask && (
+          <button
+            className="btn-mini"
+            disabled={autoState === 'running'}
+            onClick={() => void runAutoMask(item.item_id)}
+          >
+            {autoState === 'running' ? '识别中…' : '自动框选'}
+          </button>
+        )}
         <button className="btn-mini danger" onClick={reset}>重置</button>
         <button className="btn-mini primary" onClick={save}>保存蒙版</button>
       </div>
@@ -182,7 +240,9 @@ export function MaskCanvas({ setId, item, onSaveMask }: Props) {
               onPointerUp={onUp}
               onPointerCancel={onUp}
             />
-            <div className="combo-mask-hint">拖动六个控制点圈住商品主体，或在框内拖动可整体平移整框；可反选；保存后由 AI 结合主体词解析。</div>
+            <div className="combo-mask-hint">
+              {autoHint || '拖动控制点圈住商品主体，或在框内拖动可整体平移整框；可反选；保存后由 AI 结合主体词解析。'}
+            </div>
           </>
         )}
       </div>
@@ -212,7 +272,7 @@ function draw(canvas: HTMLCanvasElement, points: Point[], inverted: boolean, ima
   if (!points.length) return;
   const px = points.map(([x, y]) => [x * w, y * h] as [number, number]);
   ctx.globalCompositeOperation = 'source-over';
-  // 六边形填充。
+  // 多边形填充。
   ctx.fillStyle = inverted ? 'rgba(0,0,0,0.45)' : 'rgba(30,190,120,0.35)';
   polygon(ctx, px);
   ctx.fill();
@@ -221,7 +281,7 @@ function draw(canvas: HTMLCanvasElement, points: Point[], inverted: boolean, ima
   ctx.lineWidth = 2;
   polygon(ctx, px);
   ctx.stroke();
-  // 六个控制点。
+  // 各控制点。
   for (const [x, y] of px) {
     ctx.beginPath();
     ctx.arc(x, y, HANDLE_R, 0, Math.PI * 2);
@@ -248,5 +308,6 @@ function readMask(mask: Record<string, unknown>): Point[] | null {
   const arr = pts
     .filter((p) => Array.isArray(p) && p.length === 2)
     .map((p) => [Number(p[0]), Number(p[1])] as Point);
-  return arr.length === 6 ? arr : null;
+  // 点数不固定：人工绘制是 6 点六边形，自动框选可能给出 10+ 点的贴合轮廓。
+  return arr.length >= 3 ? arr : null;
 }

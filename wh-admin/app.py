@@ -913,6 +913,622 @@ def delete_announcement(announcement_id: int, x_auth_token: str | None = Header(
     return {"ok": True}
 
 
+# ------------------------------------------------------- 分站申请与成立分站
+# 申请记录与公告同库（ANNOUNCE_DB_PATH），客户端免登录提交、管理端审核。
+# 批准成立分站：调同机分站平台内部接口开户（127.0.0.1:8014）→ 生成专属账号密码 →
+# 以定向公告（target_account_ids=[account_id]）下发给该用户。
+STATION_INTERNAL_BASE = os.environ.get("STATION_INTERNAL_BASE", "http://127.0.0.1:8014")
+STATION_INTERNAL_TOKEN = os.environ.get("STATION_INTERNAL_TOKEN", "stn-int-5f2b8c41d9e74a06")
+STATION_LOGIN_URL = os.environ.get("STATION_LOGIN_URL", "https://station.haocoming.top")
+
+STATION_APPLICATION_STATUSES = ("pending", "approved", "rejected", "revoked")
+
+
+def _station_apply_db() -> sqlite3.Connection:
+    """申请记录库：与公告同库，便于批准时在同一连接内写入定向公告。"""
+    con = _announce_db()
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS station_applications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id TEXT NOT NULL,
+            username TEXT NOT NULL DEFAULT '',
+            email TEXT NOT NULL DEFAULT '',
+            contact TEXT NOT NULL DEFAULT '',
+            note TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'pending',
+            applied_at TEXT NOT NULL,
+            decided_at TEXT,
+            reject_reason TEXT NOT NULL DEFAULT '',
+            station_username TEXT NOT NULL DEFAULT '',
+            station_password TEXT NOT NULL DEFAULT '',
+            station_code TEXT NOT NULL DEFAULT '',
+            station_name TEXT NOT NULL DEFAULT '',
+            announcement_id INTEGER,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_station_applications_account"
+        " ON station_applications(account_id, id DESC)"
+    )
+    # 旧库迁移：中转编号 / 名称在批准成立分站时从分站平台回写，客户端充值页
+    # 据此列出「合作中的中转站」并按编号取档位。
+    columns = {row["name"] for row in con.execute("PRAGMA table_info(station_applications)")}
+    if "station_code" not in columns:
+        con.execute(
+            "ALTER TABLE station_applications ADD COLUMN station_code TEXT NOT NULL DEFAULT ''"
+        )
+    if "station_name" not in columns:
+        con.execute(
+            "ALTER TABLE station_applications ADD COLUMN station_name TEXT NOT NULL DEFAULT ''"
+        )
+    con.commit()
+    return con
+
+
+def _serialize_station_application(row: Any, *, with_password: bool = True) -> dict[str, Any]:
+    r = dict(row)
+    payload: dict[str, Any] = {
+        "id": r["id"],
+        "account_id": r["account_id"],
+        "username": r["username"],
+        "email": r["email"],
+        "contact": r["contact"],
+        "note": r["note"],
+        "status": r["status"],
+        "applied_at": r["applied_at"],
+        "decided_at": r["decided_at"],
+        "reject_reason": r["reject_reason"],
+        "station_username": r["station_username"],
+        "station_code": r["station_code"],
+        "station_name": r["station_name"],
+        "announcement_id": r["announcement_id"],
+        "login_url": STATION_LOGIN_URL if r["station_username"] else "",
+    }
+    # 免登录接口不回密码；分站密码同时存在于定向公告正文里，客户端可从消息中心查看。
+    if with_password:
+        payload["station_password"] = r["station_password"]
+    return payload
+
+
+def _station_internal_request(
+    path: str, payload: dict[str, Any] | None, *, method: str = "POST"
+) -> dict[str, Any]:
+    """经 loopback 调用同机分站平台的内部接口（开户 / 停用 / 查询）。"""
+    import urllib.error
+    import urllib.request
+
+    url = f"{STATION_INTERNAL_BASE.rstrip('/')}{path}"
+    data = (
+        json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        if payload is not None
+        else None
+    )
+    request = urllib.request.Request(url, data=data, method=method)
+    request.add_header("X-Station-Internal-Token", STATION_INTERNAL_TOKEN)
+    request.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            body = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = str((json.loads(exc.read().decode("utf-8")) or {}).get("detail") or "")
+        except Exception:
+            detail = ""
+        raise HTTPException(
+            status_code=502, detail=f"分站平台操作失败：{detail or exc.code}"
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503, detail=f"无法连接分站平台（{STATION_INTERNAL_BASE}）：{exc}"
+        ) from exc
+    try:
+        return json.loads(body or "{}")
+    except json.JSONDecodeError:
+        return {}
+
+
+def _read_station_identity() -> tuple[str, str]:
+    """读取分站平台当前的中转编号与名称，失败时返回空值（不阻断主流程）。"""
+    try:
+        partner = _station_internal_request(
+            "/api/station/internal/partner", None, method="GET"
+        )
+    except HTTPException:
+        log.warning("读取分站平台中转编号失败")
+        return "", ""
+    return str(partner.get("station_code") or ""), str(partner.get("station_name") or "")
+
+
+def _generate_station_username(con: sqlite3.Connection) -> str:
+    """生成未占用过的分站登录账号（stn + 6 位十六进制）。"""
+    for _ in range(20):
+        candidate = "stn" + secrets.token_hex(3)
+        used = con.execute(
+            "SELECT 1 FROM station_applications WHERE station_username=?", (candidate,)
+        ).fetchone()
+        if used is None:
+            return candidate
+    raise HTTPException(status_code=500, detail="生成分站账号失败，请重试")
+
+
+def _publish_targeted_announcement(
+    con: sqlite3.Connection, *, title: str, content: str, targets: list[str]
+) -> int:
+    """写一条只对指定账号可见的公告（复用定向公告通道，空名单会被拒绝）。"""
+    if not targets:
+        raise HTTPException(status_code=400, detail="定向公告必须指定收件账号")
+    now = _now_beijing()
+    cur = con.execute(
+        "INSERT INTO announcements(title, content, published_at, active, created_at, updated_at,"
+        " target_account_ids, image_rev, images) VALUES(?,?,?,?,?,?,?,0,'[]')",
+        (title, content, now, 1, now, now, _dump_target_account_ids(targets)),
+    )
+    return int(cur.lastrowid or 0)
+
+
+@app.post("/api/station-applications/public")
+def submit_station_application(payload: dict[str, Any]) -> dict[str, Any]:
+    """客户端提交分站申请（免登录，由本地工作台代理转发）。"""
+    account_id = str(payload.get("account_id") or "").strip()
+    if not account_id:
+        raise HTTPException(status_code=400, detail="缺少账号信息，请重新登录后再试")
+    now = _now_beijing()
+    con = _station_apply_db()
+    try:
+        existing = con.execute(
+            "SELECT * FROM station_applications WHERE account_id=? ORDER BY id DESC LIMIT 1",
+            (account_id,),
+        ).fetchone()
+        # 已有进行中/已通过的申请不再重复受理，直接回当前状态。
+        if existing is not None and str(existing["status"]) in ("pending", "approved"):
+            return {
+                "ok": True,
+                "duplicated": True,
+                "application": _serialize_station_application(existing, with_password=False),
+            }
+        cur = con.execute(
+            "INSERT INTO station_applications(account_id, username, email, contact, note, status,"
+            " applied_at, updated_at) VALUES(?,?,?,?,?,'pending',?,?)",
+            (
+                account_id,
+                str(payload.get("username") or "")[:64],
+                str(payload.get("email") or "")[:120],
+                str(payload.get("contact") or "")[:120],
+                str(payload.get("note") or "")[:500],
+                now,
+                now,
+            ),
+        )
+        con.commit()
+        row = con.execute(
+            "SELECT * FROM station_applications WHERE id=?", (cur.lastrowid,)
+        ).fetchone()
+    finally:
+        con.close()
+    return {
+        "ok": True,
+        "message": "申请已提交，我们会在 1~3 个工作日内答复",
+        "application": _serialize_station_application(row, with_password=False),
+    }
+
+
+@app.get("/api/station-applications/public")
+def my_station_application(account_id: str = Query(default="")) -> dict[str, Any]:
+    """客户端查询自己最近一条分站申请的状态（免登录）。"""
+    account_id = (account_id or "").strip()
+    if not account_id:
+        return {"application": None}
+    con = _station_apply_db()
+    try:
+        row = con.execute(
+            "SELECT * FROM station_applications WHERE account_id=? ORDER BY id DESC LIMIT 1",
+            (account_id,),
+        ).fetchone()
+    finally:
+        con.close()
+    return {
+        "application": _serialize_station_application(row, with_password=False) if row else None
+    }
+
+
+@app.get("/api/station-applications/public/partners")
+def list_partner_stations(x_auth_token: str | None = Header(default=None)) -> dict[str, Any]:
+    """总部后台：合作中的中转站全量清单（编号 + 名称，需管理员登录）。
+
+    中转编号是分站商与客户之间的信息差凭据（客户只能从上游中转商处拿到自己的
+    编号），因此全量清单不对外公开，仅总部管理员可查。
+
+    编号与名称是批准成立分站时从分站平台回写的快照，按编号去重（分站平台当前
+    是单实例单站，多个分站商共用同一个编号，去重后只出现一条）。
+    """
+    _check_auth(x_auth_token)
+    con = _station_apply_db()
+    try:
+        rows = con.execute(
+            "SELECT station_code, station_name FROM station_applications"
+            " WHERE status='approved' AND station_code <> '' ORDER BY id DESC"
+        ).fetchall()
+    finally:
+        con.close()
+    seen: set[str] = set()
+    partners: list[dict[str, Any]] = []
+    for row in rows:
+        code = str(row["station_code"])
+        if code in seen:
+            continue
+        seen.add(code)
+        partners.append({"station_code": code, "station_name": str(row["station_name"] or code)})
+    return {"ok": True, "partners": partners}
+
+
+@app.get("/api/station-applications/public/partners/{station_code}")
+def partner_station_detail(station_code: str) -> dict[str, Any]:
+    """按中转编号取该站的充值档位（客户端充值页切换档位表用，免登录）。"""
+    code = str(station_code or "").strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="缺少中转编号")
+    con = _station_apply_db()
+    try:
+        known = con.execute(
+            "SELECT 1 FROM station_applications WHERE status='approved' AND station_code=? LIMIT 1",
+            (code,),
+        ).fetchone()
+    finally:
+        con.close()
+    if known is None:
+        raise HTTPException(status_code=404, detail="该中转编号不是合作中的中转站")
+    detail = _station_internal_request("/api/station/internal/partner", None, method="GET")
+    # 分站平台自报的编号必须与请求一致，避免用别的编号套取同一份档位。
+    if str(detail.get("station_code") or "") != code:
+        raise HTTPException(status_code=404, detail="该中转编号不是合作中的中转站")
+    return {
+        "ok": True,
+        "station_code": code,
+        "station_name": str(detail.get("station_name") or code),
+        "terminal_rate": detail.get("terminal_rate") or 0,
+        "tiers": detail.get("tiers") or [],
+    }
+
+
+@app.get("/api/station-applications")
+def list_station_applications(
+    status: str = Query(default=""),
+    limit: int = Query(default=200),
+    x_auth_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _check_auth(x_auth_token)
+    status = (status or "").strip()
+    limit = max(1, min(int(limit), 500))
+    con = _station_apply_db()
+    try:
+        if status in STATION_APPLICATION_STATUSES:
+            rows = con.execute(
+                "SELECT * FROM station_applications WHERE status=? ORDER BY id DESC LIMIT ?",
+                (status, limit),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT * FROM station_applications ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        counts = {
+            key: con.execute(
+                "SELECT COUNT(1) AS n FROM station_applications WHERE status=?", (key,)
+            ).fetchone()["n"]
+            for key in STATION_APPLICATION_STATUSES
+        }
+    finally:
+        con.close()
+    return {
+        "applications": [_serialize_station_application(row) for row in rows],
+        "counts": counts,
+    }
+
+
+@app.get("/api/station-applications/{application_id}/profile")
+def station_application_profile(
+    application_id: int, x_auth_token: str | None = Header(default=None)
+) -> dict[str, Any]:
+    """卡片用画像：该账号的钱包积分余额 + 最近消费流水。"""
+    _check_auth(x_auth_token)
+    con = _station_apply_db()
+    try:
+        row = con.execute(
+            "SELECT account_id FROM station_applications WHERE id=?", (application_id,)
+        ).fetchone()
+    finally:
+        con.close()
+    if row is None:
+        raise HTTPException(status_code=404, detail="申请记录不存在")
+    account_id = str(row["account_id"])
+    db_path = load_config()["database_path"]
+    scale = _billing_point_scale(db_path)
+    import sqlite3
+
+    wallet: dict[str, Any] = {}
+    usage: list[dict[str, Any]] = []
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        wallet_row = conn.execute(
+            "SELECT a.account_id,a.username,a.email,"
+            "COALESCE(w.points_balance,0) AS points_balance,COALESCE(w.locked_points,0) AS locked_points,"
+            "COALESCE(w.plan_balance,0) AS plan_balance,COALESCE(w.plan_type,'experience') AS plan_type,"
+            "COALESCE(w.extra_balance,0) AS extra_balance,COALESCE(w.plan_expire_at,'') AS plan_expire_at "
+            "FROM auth_accounts a LEFT JOIN billing_wallets w ON w.account_id=a.account_id "
+            "WHERE a.account_id=?",
+            (account_id,),
+        ).fetchone()
+        if wallet_row is not None:
+            wallet = dict(wallet_row)
+            for key in ("points_balance", "locked_points", "plan_balance", "extra_balance"):
+                wallet[key] = _display_points(int(wallet.get(key) or 0), scale)
+            plan_type = str(wallet.get("plan_type") or "")
+            wallet["plan_label"] = {
+                "experience": "体验版",
+                "basic": "基础版",
+                "flagship": "旗舰版",
+            }.get(plan_type, "体验版")
+        # 消费流水事件表由服务端迁移维护，缺表时退化为空列表，不影响卡片其余信息。
+        try:
+            usage_rows = conn.execute(
+                "SELECT usage_id,feature_key,charged_points,status,created_at"
+                " FROM billing_ai_usage_events WHERE account_id=?"
+                " ORDER BY created_at DESC,usage_id DESC LIMIT 20",
+                (account_id,),
+            ).fetchall()
+            for item in usage_rows:
+                record = dict(item)
+                record["charged_points"] = _display_points(
+                    int(record.get("charged_points") or 0), scale
+                )
+                usage.append(record)
+        except Exception:
+            usage = []
+    return {
+        "ok": True,
+        "account_id": account_id,
+        "point_unit_scale": scale,
+        "wallet": wallet,
+        "usage": usage,
+    }
+
+
+@app.post("/api/station-applications/{application_id}/approve")
+def approve_station_application(
+    application_id: int,
+    request: Request,
+    x_auth_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """批准成立分站：开户 → 生成专属账号密码 → 定向公告下发。"""
+    admin = _check_auth(x_auth_token)
+    con = _station_apply_db()
+    try:
+        row = con.execute(
+            "SELECT * FROM station_applications WHERE id=?", (application_id,)
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="申请记录不存在")
+        if str(row["status"]) == "approved":
+            # 幂等：已批准且编号齐全时直接返回。
+            if str(row["station_code"] or "").strip():
+                return {
+                    "ok": True,
+                    "duplicated": True,
+                    "application": _serialize_station_application(row),
+                }
+            # 兜底：早年批准流程没回写中转编号，导致该站永远缺席充值页下拉框。
+            # 这里补读一次并写回，不重复开户、不重复发公告。
+            code, name = _read_station_identity()
+            if not code:
+                return {
+                    "ok": True,
+                    "duplicated": True,
+                    "backfilled": False,
+                    "application": _serialize_station_application(row),
+                }
+            stamp = _now_beijing()
+            con.execute(
+                "UPDATE station_applications SET station_code=?, station_name=?, updated_at=?"
+                " WHERE id=?",
+                (code, name, stamp, application_id),
+            )
+            con.commit()
+            fixed = con.execute(
+                "SELECT * FROM station_applications WHERE id=?", (application_id,)
+            ).fetchone()
+            log.info("补写中转编号 | 申请=%s | 编号=%s", application_id, code)
+            return {
+                "ok": True,
+                "duplicated": True,
+                "backfilled": True,
+                "application": _serialize_station_application(fixed),
+            }
+        if str(row["status"]) == "revoked":
+            raise HTTPException(
+                status_code=400, detail="该分站已撤销，请让用户重新提交申请后再批准"
+            )
+        station_username = _generate_station_username(con)
+        station_password = gen_password(14)
+        account_id = str(row["account_id"])
+        label = str(row["username"] or account_id)
+    finally:
+        con.close()
+
+    # 先开户：分站平台失败时申请保持待审，允许重试。
+    _station_internal_request(
+        "/api/station/internal/accounts",
+        {
+            "username": station_username,
+            "password": station_password,
+            "display_name": f"{label} 的分站",
+        },
+    )
+
+    # 回写中转编号/名称：客户端充值页据此列出「合作中的中转站」并按编号取档位。
+    # 读不到时只丢编号（不影响分站成立），该站不会出现在充值页下拉框里。
+    station_code = ""
+    station_name = ""
+    try:
+        partner = _station_internal_request(
+            "/api/station/internal/partner", None, method="GET"
+        )
+        station_code = str(partner.get("station_code") or "")
+        station_name = str(partner.get("station_name") or "")
+    except HTTPException:
+        log.warning("成立分站后读取中转编号失败 | 申请=%s", application_id)
+
+    now = _now_beijing()
+    content = (
+        "恭喜，您的分站申请已通过审核。\n\n"
+        f"分站后台地址：{STATION_LOGIN_URL}\n"
+        f"专属账号：{station_username}\n"
+        f"专属密码：{station_password}\n\n"
+        "请使用上述账号密码登录分站后台，并在登录后第一时间修改密码。"
+    )
+    con = _station_apply_db()
+    try:
+        announcement_id = _publish_targeted_announcement(
+            con,
+            title="您的分站已成立（专属账号密码）",
+            content=content,
+            targets=[account_id],
+        )
+        con.execute(
+            "UPDATE station_applications SET status='approved', decided_at=?, reject_reason='',"
+            " station_username=?, station_password=?, station_code=?, station_name=?,"
+            " announcement_id=?, updated_at=? WHERE id=?",
+            (
+                now,
+                station_username,
+                station_password,
+                station_code,
+                station_name,
+                announcement_id,
+                now,
+                application_id,
+            ),
+        )
+        con.commit()
+        updated = con.execute(
+            "SELECT * FROM station_applications WHERE id=?", (application_id,)
+        ).fetchone()
+    finally:
+        con.close()
+    log.info(
+        "批准成立分站 | 申请=%s | 账号=%s | 操作人=%s | ip=%s",
+        application_id,
+        station_username,
+        admin.get("username") or "",
+        _client_ip(request),
+    )
+    return {
+        "ok": True,
+        "application": _serialize_station_application(updated),
+        "announcement_id": announcement_id,
+    }
+
+
+@app.post("/api/station-applications/{application_id}/reject")
+def reject_station_application(
+    application_id: int,
+    payload: dict[str, Any],
+    request: Request,
+    x_auth_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """驳回申请（必填理由），客户端可查询到驳回原因。"""
+    admin = _check_auth(x_auth_token)
+    reason = str(payload.get("reason") or "").strip()[:300]
+    if not reason:
+        raise HTTPException(status_code=400, detail="请填写驳回理由")
+    now = _now_beijing()
+    con = _station_apply_db()
+    try:
+        row = con.execute(
+            "SELECT * FROM station_applications WHERE id=?", (application_id,)
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="申请记录不存在")
+        if str(row["status"]) == "approved":
+            raise HTTPException(
+                status_code=400, detail="已成立分站的申请不能驳回，请先撤销已批准"
+            )
+        con.execute(
+            "UPDATE station_applications SET status='rejected', reject_reason=?, decided_at=?,"
+            " updated_at=? WHERE id=?",
+            (reason, now, now, application_id),
+        )
+        con.commit()
+        updated = con.execute(
+            "SELECT * FROM station_applications WHERE id=?", (application_id,)
+        ).fetchone()
+    finally:
+        con.close()
+    log.info(
+        "驳回分站申请 | 申请=%s | 操作人=%s | ip=%s",
+        application_id,
+        admin.get("username") or "",
+        _client_ip(request),
+    )
+    return {"ok": True, "application": _serialize_station_application(updated)}
+
+
+@app.post("/api/station-applications/{application_id}/revoke")
+def revoke_station_application(
+    application_id: int,
+    request: Request,
+    x_auth_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """撤销已批准的分站：停用分站账号并下线对应的定向公告。"""
+    admin = _check_auth(x_auth_token)
+    con = _station_apply_db()
+    try:
+        row = con.execute(
+            "SELECT * FROM station_applications WHERE id=?", (application_id,)
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="申请记录不存在")
+        if str(row["status"]) != "approved":
+            raise HTTPException(status_code=400, detail="仅已批准的分站可以撤销")
+        station_username = str(row["station_username"] or "")
+        announcement_id = int(row["announcement_id"] or 0)
+    finally:
+        con.close()
+    if station_username:
+        _station_internal_request(
+            f"/api/station/internal/accounts/{station_username}/disable", {}
+        )
+    now = _now_beijing()
+    con = _station_apply_db()
+    try:
+        # 公告下线后客户端下次同步会撤回本地消息，避免旧密码继续流传。
+        if announcement_id:
+            con.execute(
+                "UPDATE announcements SET active=0, updated_at=? WHERE id=?",
+                (now, announcement_id),
+            )
+        con.execute(
+            "UPDATE station_applications SET status='revoked', decided_at=?, updated_at=? WHERE id=?",
+            (now, now, application_id),
+        )
+        con.commit()
+        updated = con.execute(
+            "SELECT * FROM station_applications WHERE id=?", (application_id,)
+        ).fetchone()
+    finally:
+        con.close()
+    log.info(
+        "撤销分站 | 申请=%s | 账号=%s | 操作人=%s | ip=%s",
+        application_id,
+        station_username,
+        admin.get("username") or "",
+        _client_ip(request),
+    )
+    return {"ok": True, "application": _serialize_station_application(updated)}
+
+
 # ---------------------------------------------------------------- 数据看板
 @app.get("/api/dashboard")
 def dashboard(x_auth_token: str | None = Header(default=None)) -> dict[str, Any]:
@@ -2212,6 +2828,97 @@ def billing_multipliers(x_auth_token: str | None = Header(default=None)) -> dict
             "扣费按「冻结时快照」结算：调整单条价值后仅对新冻结的任务生效，"
             "已冻结任务仍按冻结时的倍率结算，不受中途调价影响。"
         ),
+    }
+
+
+@app.get("/api/billing/profit-detail")
+def billing_profit_detail(x_auth_token: str | None = Header(default=None)) -> dict[str, Any]:
+    """价格利润明细页数据（只读）：充值兑换率 × 积分消耗口径 → 条/元、元/条、利润。
+
+    口径说明：
+    - 变量一（充值）：档位实得兑换率 = 基准 points_per_cny × (1 + 档位赠送%)。
+    - 变量二（消耗）：AI 处理 = 文本 5 + 图片 35 积分/条；POD = 基准 45 积分/款式；
+      商品组合 = 主图 40 + 三图与文本 60 积分/条。
+    - 本接口只做展示口径换算，不写库、不参与扣费。
+    """
+    _check_auth(x_auth_token)
+    sys.path.insert(0, "/opt/wh-workbench/MainPG/local-runtime")
+    from wh_local.billing import (
+        FEATURE_PRICING,
+        PLAN_BASIC_GRANT_POINTS,
+        PLAN_BASIC_PRICE_CENTS,
+        POD_BASE_POINTS_PER_STYLE,
+        TOPUP_PROMOTION_NAME,
+        TOPUP_TIER_BONUS_PERCENTS,
+        active_pricing,
+    )
+    db_path = Path(load_config()["database_path"])
+    base_points_per_cny = int(active_pricing(db_path).get("points_per_cny") or 100)
+    # 档位金额与 auth_server.BILLING_TOPUP_PRODUCTS 保持一致（金额为不可变商品元数据）。
+    topup_specs = (
+        ("points_49", "49 元积分包", 4900),
+        ("points_99", "99 元积分包", 9900),
+        ("points_499", "499 元积分包", 49900),
+        ("points_999", "999 元积分包", 99900),
+    )
+    tiers = []
+    for package_id, label, amount_cents in topup_specs:
+        bonus_percent = int(TOPUP_TIER_BONUS_PERCENTS.get(package_id, 0))
+        amount_yuan = amount_cents / 100
+        base_points = int(amount_yuan) * base_points_per_cny
+        bonus_points = base_points * bonus_percent // 100
+        total_points = base_points + bonus_points
+        tiers.append(
+            {
+                "package_id": package_id,
+                "label": label,
+                "amount_cents": amount_cents,
+                "amount_yuan": round(amount_yuan, 2),
+                "bonus_percent": bonus_percent,
+                "base_points": base_points,
+                "bonus_points": bonus_points,
+                "total_points": total_points,
+                "points_per_yuan": round(total_points / amount_yuan, 2) if amount_yuan else 0,
+            }
+        )
+    consumption = (
+        {
+            "key": "ai",
+            "label": "AI 处理",
+            "unit": "单条链接",
+            "points_per_unit": int(FEATURE_PRICING["product_processing.text"].fixed_charge_points)
+            + int(FEATURE_PRICING["product_processing.image_grid_2k"].fixed_charge_points),
+        },
+        {
+            "key": "pod",
+            "label": "POD 定制",
+            "unit": "单款式",
+            "points_per_unit": int(POD_BASE_POINTS_PER_STYLE),
+        },
+        {
+            "key": "combo",
+            "label": "商品组合",
+            "unit": "单条组合",
+            "points_per_unit": int(FEATURE_PRICING["product_processing.combo_main"].fixed_charge_points)
+            + int(FEATURE_PRICING["product_processing.combo_process"].fixed_charge_points),
+        },
+    )
+    return {
+        "ok": True,
+        "base_points_per_cny": base_points_per_cny,
+        "default_link_cost_yuan": 0.1,
+        "topup_tiers": tiers,
+        "plan": {
+            "package_id": "plan_basic",
+            "label": "基础版 · 四周体验（月卡）",
+            "price_cents": int(PLAN_BASIC_PRICE_CENTS),
+            "price_yuan": round(int(PLAN_BASIC_PRICE_CENTS) / 100, 2),
+            # 立得积分为固定口径，不参与调价；其余按周期额度由页面滑块推算。
+            "grant_points": int(PLAN_BASIC_GRANT_POINTS),
+        },
+        "consumption": list(consumption),
+        "promotion_name": TOPUP_PROMOTION_NAME,
+        "note": "只读换算口径：利润 = 元/条 − 单条成本；分销/中转商按基准价结算，赠送倍率即合作商毛利。",
     }
 
 

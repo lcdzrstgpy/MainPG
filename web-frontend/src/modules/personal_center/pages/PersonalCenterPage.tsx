@@ -15,7 +15,6 @@ import {
   loadImageModel,
   loadPodImageModel,
   loadStationPartnerDetail,
-  loadStationPartners,
   quoteCustomTopup,
   saveImageModel,
   savePodImageModel,
@@ -26,7 +25,6 @@ import {
   type BillingSummary,
   type BillingUsageEntry,
   type ImageModelChoice,
-  type StationPartner,
   type StationPartnerDetail,
   type TopupOrderResponse,
 } from "../api/personalCenterApi";
@@ -368,9 +366,10 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
   const [customQuote, setCustomQuote] = useState<BillingPackage | null>(null);
   const [customQuoteLoading, setCustomQuoteLoading] = useState(false);
   const [customQuoteError, setCustomQuoteError] = useState("");
-  // 中转编号：选中后档位表整体切换为该中转站在其自己网站上配置的档位（≤6 档），
+  // 中转编号：不提供可选清单，由用户从上游中转商处拿到编号后手动填写（信息差），
+  // 填写并确认后档位表整体切换为该中转站在其自己网站上配置的档位（≤6 档），
   // 与官方固定套餐是两套并行体系；留空表示使用官方档位。
-  const [stationPartners, setStationPartners] = useState<StationPartner[]>([]);
+  const [stationCodeInput, setStationCodeInput] = useState("");
   const [selectedStation, setSelectedStation] = useState("");
   const [stationDetail, setStationDetail] = useState<StationPartnerDetail | null>(null);
   const [stationLoading, setStationLoading] = useState(false);
@@ -574,21 +573,16 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
     return { totalCharged, totalReserved, totalRefunded, settledCount, count: filteredUsageEntries.length };
   }, [filteredUsageEntries]);
 
-  // 合作中的中转站清单：进页面拉一次，只用于「中转编号」下拉框的选项。
-  useEffect(() => {
-    let disposed = false;
-    loadStationPartners()
-      .then((payload) => {
-        if (!disposed) setStationPartners(payload.partners ?? []);
-      })
-      .catch(() => {
-        // 暂无合作中转站（或接口不可用）时下拉框只保留官方档位，不打扰用户。
-        if (!disposed) setStationPartners([]);
-      });
-    return () => {
-      disposed = true;
-    };
-  }, []);
+  // 确认中转编号：失焦或回车时才提交，避免每敲一个字就请求一次档位。
+  const commitStationCode = () => {
+    const code = stationCodeInput.trim();
+    if (code !== stationCodeInput) setStationCodeInput(code);
+    if (code === selectedStation) return;
+    setSelectedPackage("");
+    setCreatedOrder(null);
+    setPaymentNotice("");
+    setSelectedStation(code);
+  };
 
   // 切换中转编号：读取该站在其自己网站上配置的档位，并默认选中第一档。
   useEffect(() => {
@@ -1487,29 +1481,26 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
           <div className="topup-station">
             <label>
               <span>中转编号</span>
-              <select
-                value={selectedStation}
-                aria-label="选择合作中转站编号"
-                onChange={(event) => {
-                  setSelectedStation(event.target.value);
-                  setSelectedPackage("");
-                  setCreatedOrder(null);
-                  setPaymentNotice("");
+              <input
+                type="text"
+                value={stationCodeInput}
+                placeholder="输入中转商提供的中转编号"
+                aria-label="输入合作中转站编号"
+                autoComplete="off"
+                spellCheck={false}
+                onChange={(event) => setStationCodeInput(event.target.value)}
+                onBlur={commitStationCode}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    commitStationCode();
+                  }
                 }}
-              >
-                <option value="">官方档位（不使用中转站）</option>
-                {stationPartners.map((partner) => (
-                  <option key={partner.station_code} value={partner.station_code}>
-                    {partner.station_code} · {partner.station_name}
-                  </option>
-                ))}
-              </select>
+              />
             </label>
             <small>
               {!selectedStation
-                ? stationPartners.length
-                  ? `已合作 ${stationPartners.length} 个中转站，选择后档位与倍率按该中转站网站上的设置到账`
-                  : "暂无合作中的中转站"
+                ? "留空即按官方档位充值；填写中转编号后，档位与倍率按该中转站网站上的设置到账"
                 : stationLoading
                   ? "正在读取该中转站的档位..."
                   : stationError

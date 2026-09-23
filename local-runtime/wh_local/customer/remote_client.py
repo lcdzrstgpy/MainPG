@@ -43,16 +43,27 @@ class CustomerAuthClient:
     business modules.
     """
 
-    def __init__(self, base_url: str = "", *, timeout_seconds: float = 8):
+    def __init__(
+        self,
+        base_url: str = "",
+        *,
+        timeout_seconds: float = 8,
+        station_base_url: str = "",
+    ):
         self.base_url = str(base_url or "").strip().rstrip("/")
+        # 分站申请走公告发布后台（wh-admin）的免登录接口，与账号服务不同域：
+        # 工作台用 publish-api 前缀访问，由调用方注入同一套配置。
+        self.station_base_url = str(station_base_url or "").strip().rstrip("/")
         self.timeout_seconds = timeout_seconds
         self._session = requests.Session()
         self._session.trust_env = False
         # IP-direct connections to a test/staging host cannot match the public
         # certificate's hostname. Skip chain/hostname verification only when the
         # target is a bare IP literal; production (domain) stays fully verified.
-        if is_ip_literal_host(self.base_url):
-            self._session.verify = False
+        for _target in (self.base_url, self.station_base_url):
+            if is_ip_literal_host(_target):
+                self._session.verify = False
+                break
 
     def configured(self) -> bool:
         return bool(self.base_url)
@@ -258,6 +269,48 @@ class CustomerAuthClient:
             headers={"Authorization": f"Bearer {remote_token}"},
         )
 
+    def submit_station_application(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """提交分站申请（「推广计划 · 申请加入」）。
+
+        打到公告发布后台（wh-admin）的免登录端点；account_id 由本地后端从会话
+        注入，不信任前端上报，避免替他人提交申请。
+        """
+        return self._station_request("POST", "/api/station-applications/public", payload)
+
+    def get_station_application(self, account_id: str) -> dict[str, Any]:
+        """查询该账号最近一条分站申请状态（免登录端点，不回分站密码）。"""
+        account_id = str(account_id or "").strip()
+        if not account_id:
+            raise CustomerAuthRejected(400, "missing account id")
+        from urllib.parse import quote
+
+        return self._station_request(
+            "GET",
+            f"/api/station-applications/public?account_id={quote(account_id, safe='')}",
+        )
+
+    def get_partner_tiers(self, station_code: str) -> dict[str, Any]:
+        """按中转编号取该站的充值档位，选中后档位表整体切换用。"""
+        code = str(station_code or "").strip()
+        if not code:
+            raise CustomerAuthRejected(400, "missing station code")
+        from urllib.parse import quote
+
+        return self._station_request(
+            "GET",
+            f"/api/station-applications/public/partners/{quote(code, safe='')}",
+        )
+
+    def _station_request(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if not self.station_base_url:
+            raise CustomerAuthUnavailable("station application service is not configured")
+        return self._request(method, path, payload, base_url=self.station_base_url)
+
     def admin_request(
         self,
         remote_token: str,
@@ -356,8 +409,10 @@ class CustomerAuthClient:
         headers: dict[str, str] | None = None,
         *,
         account_action: bool = False,
+        base_url: str = "",
     ) -> dict[str, Any]:
-        if not self.base_url:
+        target = str(base_url or self.base_url).strip().rstrip("/")
+        if not target:
             raise CustomerAuthUnavailable("customer auth service is not configured")
         body = json.dumps(payload).encode("utf-8") if payload is not None else None
         request_headers = {"Accept": "application/json"}
@@ -368,7 +423,7 @@ class CustomerAuthClient:
         try:
             response = self._session.request(
                 method,
-                f"{self.base_url}{path}",
+                f"{target}{path}",
                 data=body,
                 headers=request_headers,
                 timeout=self.timeout_seconds,

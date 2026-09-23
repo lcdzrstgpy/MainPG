@@ -16,7 +16,7 @@ const EMPTY_CUSTOM: ComboPresetTemplate = {
   name: '自定义模板',
   description: '当前账号在本机保存的组合生图模板。',
   base_prompt_a: '',
-  role_directions: { carousel_2: '', carousel_3: '', white_bg: '' },
+  role_directions: { carousel_2: '', carousel_3: '', white_bg: '', detail_shot: '' },
 };
 
 export function ComboKitPromptPresetPage({ isActive = true }: Props) {
@@ -91,17 +91,19 @@ export function ComboKitPromptPresetPage({ isActive = true }: Props) {
             <div className="combo-preset-custom">
               <label>模板名称<input value={custom.name} onChange={(event) => setCustom((value) => ({ ...value, name: event.target.value }))} maxLength={50} /></label>
               <label>基础提示词<textarea value={custom.base_prompt_a} onChange={(event) => setCustom((value) => ({ ...value, base_prompt_a: event.target.value }))} rows={4} /></label>
-              <label>轮播图 2<textarea value={custom.role_directions.carousel_2} onChange={(event) => setCustom((value) => ({ ...value, role_directions: { ...value.role_directions, carousel_2: event.target.value } }))} rows={3} /></label>
-              <label>轮播图 3<textarea value={custom.role_directions.carousel_3} onChange={(event) => setCustom((value) => ({ ...value, role_directions: { ...value.role_directions, carousel_3: event.target.value } }))} rows={3} /></label>
-              <label>白底图<textarea value={custom.role_directions.white_bg} onChange={(event) => setCustom((value) => ({ ...value, role_directions: { ...value.role_directions, white_bg: event.target.value } }))} rows={3} /></label>
+              <label>使用场景图 1<textarea value={custom.role_directions.carousel_2} onChange={(event) => setCustom((value) => ({ ...value, role_directions: { ...value.role_directions, carousel_2: event.target.value } }))} rows={3} /></label>
+              <label>使用场景图 2<textarea value={custom.role_directions.carousel_3} onChange={(event) => setCustom((value) => ({ ...value, role_directions: { ...value.role_directions, carousel_3: event.target.value } }))} rows={3} /></label>
+              <label>白底尺寸图<textarea value={custom.role_directions.white_bg} onChange={(event) => setCustom((value) => ({ ...value, role_directions: { ...value.role_directions, white_bg: event.target.value } }))} rows={3} /></label>
+              <label>细节图补充要求（选填，叠加在系统固定模板之上）<textarea value={custom.role_directions.detail_shot} onChange={(event) => setCustom((value) => ({ ...value, role_directions: { ...value.role_directions, detail_shot: event.target.value } }))} rows={3} placeholder="留空则只用系统固定模板；填写的内容会追加，不会覆盖模板。" /></label>
               <div className="combo-actions"><button type="button" className="primary" onClick={saveCustom}>保存并设为当前使用</button></div>
             </div>
           ) : (
             <>
               <h3>基础提示词</h3><pre className="combo-preset-prompt">{selected.base_prompt_a}</pre>
-              <h3>轮播图 2</h3><pre className="combo-preset-prompt">{selected.role_directions.carousel_2}</pre>
-              <h3>轮播图 3</h3><pre className="combo-preset-prompt">{selected.role_directions.carousel_3}</pre>
-              <h3>白底图</h3><pre className="combo-preset-prompt">{selected.role_directions.white_bg}</pre>
+              <h3>使用场景图 1</h3><pre className="combo-preset-prompt">{selected.role_directions.carousel_2}</pre>
+              <h3>使用场景图 2</h3><pre className="combo-preset-prompt">{selected.role_directions.carousel_3}</pre>
+              <h3>白底尺寸图</h3><pre className="combo-preset-prompt">{selected.role_directions.white_bg}</pre>
+              <h3>细节图补充要求</h3><pre className="combo-preset-prompt">{selected.role_directions.detail_shot || '（空，仅使用系统固定模板）'}</pre>
               <div className="combo-actions"><button type="button" className="primary" onClick={() => activate(selected.id)}>设为当前使用</button></div>
             </>
           )}

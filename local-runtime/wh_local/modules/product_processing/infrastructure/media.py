@@ -132,6 +132,19 @@ DOWNLOAD_RETRY_BACKOFF_SECONDS = (0.2, 0.6)
 _PROVIDER_CURSOR_LOCK = threading.Lock()
 _PROVIDER_CURSORS: dict[str, int] = {}
 
+
+def _resolve_reference_limit(config: dict[str, Any], stage: str) -> int:
+    """解析某 stage 的参考图上限：配置缺失时 grid_image 取 1、其余取 2。
+
+    ``reference_max_cap`` 为全局硬上限（默认 4）。组合套装多件商品需要把每件
+    单品原图都作为参考图送入生图，会显式抬高该上限（不会影响其它模块的默认行为）。
+    """
+    limits = config.get("limits") or {}
+    default_limit = 1 if stage == "grid_image" else 2
+    cap = max(1, int(limits.get("reference_max_cap") or 4))
+    return max(1, min(int(limits.get(f"{stage}_reference_max_count") or default_limit), cap))
+
+
 class MediaConfigurationError(RuntimeError):
     pass
 
@@ -351,14 +364,7 @@ class ProductImageProcessor:
         stage-specific reference limit and URL safety/download path as ``generate``.
         """
         config = self._config()
-        default_limit = 1 if stage == "grid_image" else 2
-        reference_limit = max(
-            1,
-            min(
-                int((config.get("limits") or {}).get(f"{stage}_reference_max_count") or default_limit),
-                4,
-            ),
-        )
+        reference_limit = _resolve_reference_limit(config, stage)
         return len(self._load_references(reference_values, limit=reference_limit))
 
     def generate(
@@ -399,14 +405,7 @@ class ProductImageProcessor:
         image_size: str | None = None,
         model_override: str | None = None,
     ) -> GeneratedMedia:
-        default_limit = 1 if stage == "grid_image" else 2
-        reference_limit = max(
-            1,
-            min(
-                int((config.get("limits") or {}).get(f"{stage}_reference_max_count") or default_limit),
-                4,
-            ),
-        )
+        reference_limit = _resolve_reference_limit(config, stage)
         # 统一先把参考图 URL 归一化：Temu 等平台保存的 imageView2 缩略图地址
         # 只有 180px/AVIF，上游生图服务无法使用；提升为高清 JPEG 版本后再转发/下载。
         reference_values = [

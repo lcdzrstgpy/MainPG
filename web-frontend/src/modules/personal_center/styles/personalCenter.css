@@ -1122,7 +1122,7 @@
   color: var(--theme-text-muted, #94a3b8);
 }
 
-/* 中转编号下拉框：选中后整张档位表切换为该中转站在其自己网站上配置的档位。 */
+/* 中转编号输入框：手动填写编号后整张档位表切换为该中转站在其自己网站上配置的档位。 */
 .topup-station {
   display: flex;
   align-items: center;
@@ -1150,7 +1150,8 @@
   color: var(--theme-text-secondary, #475569);
 }
 
-.topup-station select {
+.topup-station select,
+.topup-station input {
   flex: 1 1 auto;
   min-width: 190px;
   padding: 8px 10px;
@@ -1160,6 +1161,17 @@
   background: var(--theme-module-surface, rgba(255, 255, 255, 0.86));
   font: inherit;
   font-weight: 650;
+}
+
+.topup-station input::placeholder {
+  color: var(--theme-text-muted, #94a3b8);
+  font-weight: 500;
+}
+
+.topup-station input:focus {
+  outline: none;
+  border-color: var(--theme-module-border-strong, #38bdf8);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12);
 }
 
 .topup-station small {

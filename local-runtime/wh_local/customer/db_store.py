@@ -244,6 +244,23 @@ class SQLiteCustomerSessionStore(CustomerSessionStore):
                     return remote_token
         return ""
 
+    def active_remote_tokens(self) -> list[str]:
+        """仍有效的远端平台 token；只存在于进程内存，退出前需抢先用它登出。"""
+        now = _utc_now()
+        with self._remote_tokens_lock:
+            stored = tuple(self._remote_tokens.values())
+        tokens = [remote_token for _, _, expires_at, remote_token in stored if remote_token and expires_at > now]
+        return list(dict.fromkeys(tokens))
+
+    def revoke_all_sessions(self) -> None:
+        with transaction(self.database_path) as conn:
+            conn.execute(
+                "UPDATE customer_sessions SET revoked_at = ? WHERE revoked_at = ''",
+                (_utc_now(),),
+            )
+        with self._remote_tokens_lock:
+            self._remote_tokens.clear()
+
     def _remote_token_for_hash(self, token_hash: str) -> str:
         with self._remote_tokens_lock:
             stored = self._remote_tokens.get(token_hash)

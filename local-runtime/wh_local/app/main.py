@@ -95,6 +95,7 @@ from ..modules.combo_kit.billing import (
     session_remote_token_resolver as combo_session_token_resolver,
 )
 from ..modules.combo_kit.repository import ComboKitRepository
+from ..modules.combo_kit.worker import ComboKitTaskWorker
 from ..modules.product_processing.api.router import create_product_processing_router
 from ..modules.product_processing.domain.models import DailySelectionHandoffEnvelope
 from ..modules.product_processing.infrastructure.assets import ProductProcessingAssets
@@ -193,10 +194,18 @@ class _RuntimeExitController:
         # 确认真退出前执行的「取消运行中任务并结算」回调（仅桌面端注入）。
         self._on_before_exit: Any | None = None
         self._exit_cancel_s = float(os.environ.get("WH_LOCAL_RUNTIME_EXIT_CANCEL_S", "6"))
+        # 结算之后执行的「登出远端会话并撤销本地会话」回调（仅桌面端注入）。
+        # 单独限时，避免被任务结算的耗时挤掉。
+        self._on_release_sessions: Any | None = None
+        self._release_sessions_s = float(os.environ.get("WH_LOCAL_RUNTIME_EXIT_RELEASE_S", "5"))
 
     def set_on_before_exit(self, callback: Any | None) -> None:
         """注入退出前回调；仅在真正决定退出（而非刷新重载）时执行一次。"""
         self._on_before_exit = callback
+
+    def set_on_release_sessions(self, callback: Any | None) -> None:
+        """注入「释放会话」回调；在取消/结算回调之后执行一次。"""
+        self._on_release_sessions = callback
 
     def start(self) -> None:
         if not self.enabled or self._watchdog is not None:
@@ -291,12 +300,21 @@ class _RuntimeExitController:
         # 使「关闭页面→任务取消/已取消+按冻结积分 50% 扣费」可达成。仅在真正
         # 决定退出（非刷新重载）时执行；回调带超时保护，绝不无限阻塞。
         self._run_before_exit()
+        # 结算完成后再释放会话：远端 token 只存活在本进程内存里，进程一退出就无法
+        # 再登出，远端会残留一个"活跃"平台会话，用户重开页面登录时会被单端登录拒绝。
+        self._run_session_release()
         # 硬退出整个进程（含所有守护工作线程），释放被锁定的 MainPG.exe。
         os._exit(0)  # noqa: PLR1722 - deliberate hard exit on desktop page close
 
     def _run_before_exit(self) -> None:
         """在独立线程执行退出前回调，并限时等待，避免阻塞退出。"""
-        callback = self._on_before_exit
+        self._run_limited(self._on_before_exit, self._exit_cancel_s, "mainpg-exit-cancel")
+
+    def _run_session_release(self) -> None:
+        """释放会话：登出远端平台会话并撤销本机本地会话。"""
+        self._run_limited(self._on_release_sessions, self._release_sessions_s, "mainpg-exit-release")
+
+    def _run_limited(self, callback: Any | None, timeout_s: float, thread_name: str) -> None:
         if callback is None:
             return
         done = threading.Event()
@@ -305,13 +323,13 @@ class _RuntimeExitController:
             try:
                 callback()
             except Exception:
-                # 取消/结算尽力而为；失败交给对账 / 服务端 TTL 兜底。
+                # 取消/结算/登出均为尽力而为；失败交给对账 / 服务端 TTL 兜底。
                 pass
             finally:
                 done.set()
 
-        threading.Thread(target=_wrap, daemon=True, name="mainpg-exit-cancel").start()
-        done.wait(timeout=self._exit_cancel_s)
+        threading.Thread(target=_wrap, daemon=True, name=thread_name).start()
+        done.wait(timeout=timeout_s)
 
 
 def create_app(database_path: Path | None = None) -> FastAPI:
@@ -445,7 +463,12 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         def customer_auth_flow_demo(page_path: str = "login") -> str:
             return AUTH_FLOW_DEMO_HTML
 
-    remote_customer_auth = CustomerAuthClient(config.customer_auth_base_url)
+    # 分站申请落在公告发布后台（wh-admin）的免登录接口上，与公告同步共用同一
+    # 前缀（publish-api），因此复用 announce_base_url，不再单独加一份配置。
+    remote_customer_auth = CustomerAuthClient(
+        config.customer_auth_base_url,
+        station_base_url=config.announce_base_url,
+    )
     customer_auth = (
         remote_customer_auth
         if remote_customer_auth.configured()
@@ -517,10 +540,12 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         combo_kit_assets,
         combo_kit_ai,
         combo_kit_billing,
+        ComboKitTaskWorker(combo_kit_repo),
     )
     app.include_router(combo_kit_router)
     register_combo_kit_exception_handlers(app)
     app.state.combo_kit_service = getattr(combo_kit_router, "combo_kit_service")
+    app.state.combo_kit_task_worker = getattr(combo_kit_router, "combo_kit_worker")
 
     # Normal requests delete transient references immediately. This startup
     # construction sweep handles objects left by a prior interrupted process.
@@ -532,6 +557,21 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     # 使「关前端页 → 任务已取消 + 按冻结积分 50% 扣费」可达成。服务器环境 watchdog 未
     # 启用，该回调不被触发。
     runtime_exit.set_on_before_exit(product_processing.cancel_all_active_for_shutdown)
+    # 桌面端：结算完成后登出远端平台会话并撤销本机本地会话。远端 token 只存在后端
+    # 进程内存里，关页退出即丢失且用户再也无法主动登出；不在这里抢着登出，远端会残留
+    # 一个"活跃"平台会话，导致用户重新打开页面登录时被单端登录限制拒绝。
+    def _release_customer_sessions() -> None:
+        remote_tokens = customer_sessions.release_all_sessions()
+        if not remote_customer_auth.configured():
+            return
+        for remote_token in remote_tokens:
+            try:
+                remote_customer_auth.logout(remote_token)
+            except Exception:
+                # 单个 token 登出失败不影响其余 token；服务端 TTL 兜底。
+                continue
+
+    runtime_exit.set_on_release_sessions(_release_customer_sessions)
     app.include_router(
         create_product_processing_router(
             product_processing,

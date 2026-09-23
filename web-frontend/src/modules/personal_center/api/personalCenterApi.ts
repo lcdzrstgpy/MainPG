@@ -436,12 +436,7 @@ export function loadMyStationApplication() {
   return httpJson<StationApplicationResult>("/api/customer/station-application");
 }
 
-// ---- 合作中转站（充值页「中转编号」下拉框） ----
-export type StationPartner = {
-  station_code: string;
-  station_name: string;
-};
-
+// ---- 合作中转站（充值页「中转编号」由用户手动输入，故不提供可选清单） ----
 /** 中转站在其自己的网站上配置的充值档位（最多 6 档）。 */
 export type StationTier = {
   amount_cents: number;
@@ -457,11 +452,6 @@ export type StationPartnerDetail = {
   terminal_rate: number;
   tiers: StationTier[];
 };
-
-/** 合作中的中转站清单（编号 + 名称）。 */
-export function loadStationPartners() {
-  return httpJson<{ ok: boolean; partners: StationPartner[] }>("/api/customer/station-partners");
-}
 
 /** 按中转编号取该站的充值档位；档位与官方固定套餐是两套体系。 */
 export function loadStationPartnerDetail(stationCode: string) {

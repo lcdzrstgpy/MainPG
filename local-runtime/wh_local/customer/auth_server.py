@@ -3419,6 +3419,96 @@ def _topup_products(pricing: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _station_package_id(station_code: str, amount_cents: int) -> str:
+    """中转站档位订单的 package_id：官方套餐与中转档位是两套并行体系，用前缀区分。"""
+    return f"station:{station_code}:{int(amount_cents)}"
+
+
+def _parse_station_package_id(package_id: Any) -> tuple[str, int] | None:
+    parts = str(package_id or "").split(":")
+    if len(parts) != 3 or parts[0] != "station" or not parts[1]:
+        return None
+    try:
+        amount_cents = int(parts[2])
+    except ValueError:
+        return None
+    return (parts[1], amount_cents) if amount_cents > 0 else None
+
+
+def _station_partner_detail(station_code: str) -> dict[str, Any]:
+    """取合作中转站在其网站上配置的充值档位（≤6 档）。
+
+    经主站公告后台（wh-admin）的免登录端点读取；短缓存以避开充值页反复刷新。
+    中转站档位与官方固定套餐是两套并行体系，这里只负责取用，不参与官方换算。
+    """
+    code = str(station_code or "").strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="missing station code")
+    cache_key = f"station-partner:{code}"
+    cached = _cache.cache_get(cache_key)
+    if cached is not None:
+        return cached
+    base_url = str(default_config().announce_base_url or "").strip().rstrip("/")
+    if not base_url:
+        raise HTTPException(status_code=503, detail="station tier service is not configured")
+    from urllib.parse import quote
+
+    url = f"{base_url}/api/station-applications/public/partners/{quote(code, safe='')}"
+    try:
+        response = requests.get(url, timeout=8)
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=503, detail="station tier service is unavailable") from exc
+    if response.status_code == 404:
+        raise HTTPException(status_code=404, detail="该中转编号不是合作中的中转站")
+    try:
+        detail = response.json() or {}
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="station tier service returned invalid payload") from exc
+    if response.status_code >= 400 or not detail.get("ok"):
+        raise HTTPException(status_code=502, detail="station tier service failed")
+    _cache.cache_set(cache_key, detail, ttl=30)
+    return detail
+
+
+def _station_tier_rate(station_code: str, amount_cents: int) -> float:
+    """校验「中转编号 + 金额」确为该站已配置档位，并返回其积分倍率。"""
+    detail = _station_partner_detail(station_code)
+    if str(detail.get("station_code") or "") != str(station_code):
+        raise HTTPException(status_code=404, detail="该中转编号不是合作中的中转站")
+    for tier in detail.get("tiers") or []:
+        try:
+            if int(tier.get("amount_cents")) == int(amount_cents):
+                return float(tier.get("rate"))
+        except (TypeError, ValueError, AttributeError):
+            continue
+    raise HTTPException(status_code=400, detail="该金额档位不是中转站配置的档位")
+
+
+def _station_tier_product(
+    *,
+    station_code: str,
+    amount_cents: int,
+    rate: float,
+    pricing: dict[str, Any],
+) -> dict[str, Any]:
+    """中转档位商品：积分 = 金额(元) × 倍率，无官方固定套餐赠送。"""
+    base_points = int(
+        round((int(amount_cents) // 100) * float(rate) * int(pricing["point_unit_scale"]))
+    )
+    return {
+        "package_id": _station_package_id(station_code, amount_cents),
+        "label": f"中转站充值 {int(amount_cents) // 100} 元",
+        "amount_cents": int(amount_cents),
+        "points": _display_billing_points(base_points, pricing),
+        "base_points": _display_billing_points(base_points, pricing),
+        "promotion_bonus_points": 0,
+        "promotion_bonus_percent": 0,
+        "total_points": _display_billing_points(base_points, pricing),
+        "promotion_id": "",
+        "promotion_name": "",
+    }
+
+
 def _display_topup_order(order: dict[str, Any], pricing: dict[str, Any]) -> dict[str, Any]:
     base_points = int(order.get("base_points") or order.get("points") or 0)
     promotion_bonus_points = int(order.get("promotion_bonus_points") or 0)
@@ -3466,6 +3556,16 @@ def _custom_topup_amount(payload: dict[str, Any]) -> int:
 
 def _topup_quote(database_path: Path, payload: dict[str, Any]) -> dict[str, Any]:
     pricing = active_pricing(database_path)
+    station_package = _parse_station_package_id(payload.get("package_id"))
+    if station_package is not None:
+        station_code, amount_cents = station_package
+        product = _station_tier_product(
+            station_code=station_code,
+            amount_cents=amount_cents,
+            rate=_station_tier_rate(station_code, amount_cents),
+            pricing=pricing,
+        )
+        return {"ok": True, "product": product}
     product = _topup_product(
         package_id="custom",
         label="自定义积分充值",
@@ -3489,12 +3589,27 @@ def _create_topup_order(database_path: Path, account: dict[str, Any], payload: d
         pass
     if provider not in PAYMENT_PROVIDERS:
         raise HTTPException(status_code=400, detail="provider must be wechat or alipay")
-    if package_id != "custom" and package_id != PLAN_BASIC_PACKAGE_ID and package_id not in TOPUP_PACKAGE_CENTS:
+    station_package = _parse_station_package_id(package_id)
+    if (
+        station_package is None
+        and package_id != "custom"
+        and package_id != PLAN_BASIC_PACKAGE_ID
+        and package_id not in TOPUP_PACKAGE_CENTS
+    ):
         raise HTTPException(status_code=400, detail="unknown topup package")
     if not 16 <= len(idempotency_key) <= 128:
         raise HTTPException(status_code=400, detail="idempotency_key is required")
 
-    if package_id == "custom":
+    # 中转档位：金额与倍率都以中转站网站上配置的档位为准（≤6 档，与官方套餐两套体系）。
+    station_rate: float | None = None
+    if station_package is not None:
+        station_code, station_amount_cents = station_package
+        station_rate = _station_tier_rate(station_code, station_amount_cents)
+        product = {
+            "amount_cents": station_amount_cents,
+            "label": f"中转站充值 {station_amount_cents // 100} 元",
+        }
+    elif package_id == "custom":
         product = {"amount_cents": _custom_topup_amount(payload), "label": "自定义积分充值"}
     elif package_id == PLAN_BASIC_PACKAGE_ID:
         product = {"amount_cents": PLAN_BASIC_PRICE_CENTS, "label": PLAN_BASIC_PACKAGE["label"]}
@@ -3516,11 +3631,17 @@ def _create_topup_order(database_path: Path, account: dict[str, Any], payload: d
     with transaction(database_path) as conn:
         _ensure_wallet(conn, account_id, workspace_id)
         base_points = (
-            (int(product["amount_cents"]) // 100)
+            int(round((int(product["amount_cents"]) // 100) * station_rate * int(pricing["point_unit_scale"])))
+            if station_rate is not None
+            else (int(product["amount_cents"]) // 100)
             * int(pricing["points_per_cny"])
             * int(pricing["point_unit_scale"])
         )
-        promotion_percent = topup_bonus_percent(package_id) if package_id != "custom" else 0
+        promotion_percent = (
+            topup_bonus_percent(package_id)
+            if package_id != "custom" and station_rate is None
+            else 0
+        )
         promotion_bonus_points = base_points * promotion_percent // 100
         total_points = base_points + promotion_bonus_points
         existing = conn.execute(
@@ -3596,11 +3717,15 @@ def _topup_order_response(
         "message": "支付网关尚未配置。订单已在服务器生成 pending 记录，待商户参数和回调验签接入后才可收款入账。",
     }
     if order["provider"] == "alipay" and alipay_is_configured():
-        package_label = (
-            PLAN_BASIC_PACKAGE["label"]
-            if order["package_id"] == PLAN_BASIC_PACKAGE_ID
-            else TOPUP_PACKAGE_CENTS.get(str(order["package_id"]), {}).get("label", str(order["package_id"]))
-        )
+        station_order = _parse_station_package_id(order["package_id"])
+        if station_order is not None:
+            package_label = f"中转站充值 {station_order[1] // 100} 元"
+        elif order["package_id"] == PLAN_BASIC_PACKAGE_ID:
+            package_label = PLAN_BASIC_PACKAGE["label"]
+        else:
+            package_label = TOPUP_PACKAGE_CENTS.get(str(order["package_id"]), {}).get(
+                "label", str(order["package_id"])
+            )
         payment = {
             "provider": "alipay",
             "mode": "page_pay",

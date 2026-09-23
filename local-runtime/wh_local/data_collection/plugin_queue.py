@@ -337,6 +337,11 @@ class DataCollectionPluginQueue:
         with self._connect() as conn:
             return str(self._session(conn, session_token)["workspace_id"])
 
+    def session_id_for_token(self, session_token: str) -> int:
+        """Return the numeric session id bound to a browser session token."""
+        with self._connect() as conn:
+            return int(self._session(conn, session_token)["id"])
+
     def identity_for_session(self, session_token: str) -> Mapping[str, str]:
         """Resolve the authenticated actor/workspace of a live plugin session."""
         with self._connect() as conn:

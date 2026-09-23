@@ -33,8 +33,8 @@ _REQUIRED_COLUMNS: dict[int, str] = {
 
 _IMAGE_ROLE_LABELS = {
     "main": "套装主图",
-    "carousel_2": "轮播图2",
-    "carousel_3": "轮播图3",
+    "carousel_2": "使用场景图1",
+    "carousel_3": "使用场景图2",
     "white_bg": "白底尺寸图",
     "detail_shot": "细节图",
     "detail_page": "详情图",

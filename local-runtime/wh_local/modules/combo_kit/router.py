@@ -19,16 +19,19 @@ from .ai_runtime import ComboKitAiRuntime
 from .assets import ComboKitAssets
 from .billing import ComboKitBillingCoordinator
 from .contracts import (
+    DEFAULT_GENERATION_MODE,
     EDITABLE_PROMPT_ROLES,
+    GENERATION_MODES,
     ComboKitConflict,
     ComboKitError,
     ComboKitNotFound,
     ComboKitValidationError,
 )
 from .export import ComboDianxiaomiExportError
-from .prompts import all_image_roles, default_image_prompts
+from .prompts import all_image_roles, default_image_prompts, default_prompts_by_mode
 from .repository import ComboKitRepository
 from .service import ComboKitService
+from .worker import TASK_IMAGE, TASK_SUBJECT, TASK_TEXT, ComboKitTaskWorker
 
 
 def create_combo_kit_router(
@@ -36,16 +39,22 @@ def create_combo_kit_router(
     assets: ComboKitAssets,
     ai_runtime: ComboKitAiRuntime,
     billing: ComboKitBillingCoordinator,
+    worker: ComboKitTaskWorker,
 ) -> APIRouter:
     service = ComboKitService(repository, assets, ai_runtime, billing)
     router = APIRouter(prefix="/api/combo-kit", tags=["combo-kit"])
     setattr(router, "combo_kit_service", service)
+    setattr(router, "combo_kit_worker", worker)
 
     @router.get("/roles")
     def stats() -> dict[str, Any]:
         return {
             "image_roles": all_image_roles(),
             "default_image_prompts": default_image_prompts(),
+            # 生成选型（bundle / multiview）：前端据此渲染选型卡片并按需切换默认辅助词。
+            "generation_modes": [dict(item) for item in GENERATION_MODES],
+            "default_generation_mode": DEFAULT_GENERATION_MODE,
+            "default_image_prompts_by_mode": default_prompts_by_mode(),
             "editable_prompt_roles": list(EDITABLE_PROMPT_ROLES),
             "min_images": 2,
             "max_images": 6,
@@ -133,17 +142,43 @@ def create_combo_kit_router(
     ) -> dict[str, Any]:
         return service.set_primary_item(set_id, item_id)
 
+    @router.post("/sets/{set_id}/items/{item_id}/auto-mask")
+    def auto_mask_item(
+        set_id: str, item_id: str, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        """算法预框选：本地分割出主体轮廓作为初始蒙版，用户只需拖动控制点微调。
+
+        本地推理，不调外部 API、不计费；失败时返回空点，由前端回落到默认六边形。
+        """
+        return service.auto_mask_item(set_id, item_id)
+
     @router.post("/sets/{set_id}/items/order")
     async def reorder_items(
         set_id: str, request: Request, actor: Actor = Depends(actor_from_authorization)
     ) -> dict[str, Any]:
         return service.set_item_order(set_id, await _body(request))
 
+    # 三个长耗时 AI 动作统一「提交后台任务 + 轮询状态」：
+    # 单次耗时远超前端 30s HTTP 超时，同步返回会让前端先超时、后端仍在跑并扣费。
     @router.post("/sets/{set_id}/analyze-subject")
     async def analyze_subject(
         set_id: str, request: Request, actor: Actor = Depends(actor_from_authorization)
     ) -> dict[str, Any]:
-        return service.analyze_subject(set_id, await _body(request), actor=actor)
+        payload = await _body(request)
+        return worker.submit(
+            set_id=set_id,
+            task_type=TASK_SUBJECT,
+            workspace_id=actor.workspace_id,
+            owner_user_id=actor.id,
+            job=lambda report: service.analyze_subject(set_id, payload, actor=actor, progress=report),
+        )
+
+    @router.get("/sets/{set_id}/tasks/{task_type}")
+    def get_task(
+        set_id: str, task_type: str, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        """轮询任务状态：进行中返回进度，终态返回结果或错误。"""
+        return worker.task_state(set_id, task_type)
 
     @router.get("/sets/{set_id}/prompt")
     def get_prompt(set_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
@@ -161,7 +196,13 @@ def create_combo_kit_router(
 
     @router.post("/sets/{set_id}/generate-text")
     def generate_text(set_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
-        return service.generate_text(set_id, actor=actor)
+        return worker.submit(
+            set_id=set_id,
+            task_type=TASK_TEXT,
+            workspace_id=actor.workspace_id,
+            owner_user_id=actor.id,
+            job=lambda report: service.generate_text(set_id, actor=actor, progress=report),
+        )
 
     @router.post("/sets/{set_id}/generate-images")
     async def generate_images(
@@ -171,10 +212,13 @@ def create_combo_kit_router(
     ) -> dict[str, Any]:
         body = await _body(request)
         roles = body.get("roles")
-        return service.generate_images(
-            set_id,
-            actor=actor,
-            roles=[str(r).strip() for r in roles if str(r).strip()] if isinstance(roles, list) else None,
+        target_roles = [str(r).strip() for r in roles if str(r).strip()] if isinstance(roles, list) else None
+        return worker.submit(
+            set_id=set_id,
+            task_type=TASK_IMAGE,
+            workspace_id=actor.workspace_id,
+            owner_user_id=actor.id,
+            job=lambda report: service.generate_images(set_id, actor=actor, roles=target_roles, progress=report),
         )
 
     @router.delete("/sets/{set_id}/images/{role}")
@@ -182,6 +226,13 @@ def create_combo_kit_router(
         set_id: str, role: str, actor: Actor = Depends(actor_from_authorization)
     ) -> dict[str, Any]:
         return service.delete_generated_image(set_id, role)
+
+    @router.post("/sets/{set_id}/watermark/apply")
+    def apply_watermark(
+        set_id: str, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        """把当前水印配置立即烧到已生成的成品图上（本地合成，不重新生图、不计费）。"""
+        return service.apply_watermark_to_images(set_id)
 
     @router.post("/sets/{set_id}/preview")
     def create_preview(set_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
@@ -236,7 +287,9 @@ def create_combo_kit_router(
         path = service.assets.require_generated(
             str(item.get("path") or ""), workspace_id=ws
         )
-        return FileResponse(path, media_type=_media_type(path))
+        # 成品图会被原样覆盖（重新生成 / 立即应用水印），URL 不变，
+        # 必须要求浏览器每次回源校验，否则界面仍显示旧图。
+        return FileResponse(path, media_type=_media_type(path), headers={"Cache-Control": "no-cache"})
 
     return router
 
