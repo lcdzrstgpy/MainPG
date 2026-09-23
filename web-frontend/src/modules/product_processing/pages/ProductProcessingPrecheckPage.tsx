@@ -1440,7 +1440,10 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
         const listingAdvice = listingAdviceByDraftId[draftId];
         const listingAdviceLoading = listingAdviceLoadingIds.has(draftId);
         const listingAdviceError = listingAdviceErrors[draftId];
-        const listingAdviceTone = (listingAdvice?.level ?? '').trim().charAt(0).toLowerCase() || 'c';
+        // 风险等级 A~E 取首字母做配色；「待人工确认」这类非等级文案统一落到中性色，
+        // 否则会生成 tone-待 这种没有样式定义的类名。
+        const adviceToneKey = (listingAdvice?.level ?? '').trim().charAt(0).toLowerCase();
+        const listingAdviceTone = /^[abcde]$/.test(adviceToneKey) ? adviceToneKey : 'c';
         return (
           <section key={item.item_id} className={`verify-section precheck-card${hasOverrides ? ' is-edited' : ''}`}>
             <div className="precheck-card-head">
