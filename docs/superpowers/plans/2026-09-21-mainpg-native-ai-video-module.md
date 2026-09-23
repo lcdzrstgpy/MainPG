@@ -1,5 +1,7 @@
 # MainPG 原生 AI 视频模块 Implementation Plan
 
+> 已废弃：请执行 [2026-09-23-ai-video-clipforge-reuse-reskin.md](2026-09-23-ai-video-clipforge-reuse-reskin.md)。当前决定是复用 ClipForge 全部页面与业务能力，只替换内嵌壳层和视觉，不重写 MainPG 原生视频页面。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 让 AI 视频以 MainPG 原生页面呈现，同时继续使用内置 ClipForge 的视频制作、任务与资产能力。
