@@ -12,7 +12,6 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useSettingsStore } from "@/lib/stores/settings-store";
-import { ProductionProfilePicker } from "@/components/production-profile-picker";
 import { useProductLibraryStore } from "@/lib/stores/product-library-store";
 import { useCharacterStore } from "@/lib/stores/project-store";
 import { getExampleProducts, type ExampleProduct } from "@/lib/examples";
@@ -562,14 +561,13 @@ export default function StartPage() {
   /** 表单提交：创建项目（带 creationBrief）→ 上传商品图 → 生成脚本 → 跳转脚本页。 */
   const runCreation = async (values: CreationBriefFormValues) => {
     if (busy) return;
-    // 提交前先过共享校验：错误（含「请先选择一个出片策略」）必须显示出来，绝不静默跳过
+    // 提交前先过共享校验，确保来源字段完整。
     const validation = validateCreationBriefForm({
       productName: values.productName,
       images: values.images,
       topic: values.topic,
       inputMode: values.brief.inputMode,
       linkImported: importedImages.length > 0,
-      strategyChosen: values.strategyChosen,
     });
     if (!validation.valid) {
       setError(Object.values(validation.errors).filter(Boolean).join("；"));
@@ -880,7 +878,6 @@ export default function StartPage() {
             </>
           )}
 
-          {!busy && <div className="cf-profiles"><ProductionProfilePicker /></div>}
         </section>
 
         {showGuide && (

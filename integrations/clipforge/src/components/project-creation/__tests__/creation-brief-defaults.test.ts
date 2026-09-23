@@ -141,31 +141,18 @@ describe("form validation", () => {
   });
 
   it("accepts a complete product form and a complete topic form", () => {
-    expect(validateCreationBriefForm({ productName: "桂花乌龙茶", images: [{ id: "a" }], strategyChosen: true }).valid).toBe(true);
-    expect(validateCreationBriefForm({ inputMode: "topic", productName: "", images: [], topic: "在家泡一杯手冲咖啡", strategyChosen: true }).valid).toBe(true);
+    expect(validateCreationBriefForm({ productName: "桂花乌龙茶", images: [{ id: "a" }] }).valid).toBe(true);
+    expect(validateCreationBriefForm({ inputMode: "topic", productName: "", images: [], topic: "在家泡一杯手冲咖啡" }).valid).toBe(true);
     expect(validateCreationBriefForm({ inputMode: "topic", productName: "", images: [], topic: "  " }).errors.topic).toBeTruthy();
   });
 });
 
-describe("output strategy must be explicitly chosen (P2 / C3)", () => {
+describe("default output scheme", () => {
   const complete = { productName: "桂花乌龙茶", images: [{ id: "a" }] };
 
-  it("blocks submission while no strategy card has been clicked", () => {
-    const blocked = validateCreationBriefForm({ ...complete, strategyChosen: false });
-    expect(blocked.valid).toBe(false);
-    expect(blocked.errors.outputStrategy).toBe("请先选择一个出片策略");
-    // 缺省（没有选择记录）同样视为未选择
-    expect(validateCreationBriefForm(complete).valid).toBe(false);
-    expect(validateCreationBriefForm(complete).errors.outputStrategy).toBeTruthy();
-  });
-
-  it("allows submission once a strategy has been clicked", () => {
-    expect(validateCreationBriefForm({ ...complete, strategyChosen: true }).valid).toBe(true);
-  });
-
-  it("keeps native film as the default value without counting it as chosen", () => {
+  it("keeps native film as the ready default", () => {
     expect(DEFAULT_CREATION_BRIEF.outputStrategy).toBe("native-film");
-    expect(validateCreationBriefForm({ ...complete, strategyChosen: false }).valid).toBe(false);
+    expect(validateCreationBriefForm(complete).valid).toBe(true);
   });
 });
 

@@ -31,15 +31,15 @@ describe("CreationBriefForm contract", () => {
         onSubmit: () => undefined,
         onValuesChange: (values) => { brief = values.brief; },
       })));
-      await select('[data-strategy="draft"]');
+      await select('[data-scheme="draft"]');
       expect(brief).toMatchObject({ outputScheme: { id: "draft", audioStrategy: "volcengine-tts" }, outputStrategy: "draft", audioStrategy: "volcengine-tts" });
-      await select('[data-strategy="controlled-motion"]');
+      await select('[data-scheme="controlled-balanced"]');
       expect(brief).toMatchObject({ outputScheme: { id: "controlled-balanced", audioStrategy: "volcengine-tts" }, outputStrategy: "controlled-motion", audioStrategy: "volcengine-tts" });
       await select('[data-audio-strategy="mute"]');
       expect(brief).toMatchObject({ outputScheme: { audioStrategy: "mute" }, audioStrategy: "mute" });
-      await select('[data-strategy="native-film"]');
+      await select('[data-scheme="native-film"]');
       expect(brief).toMatchObject({ outputScheme: { id: "native-film", audioStrategy: "native-audio" }, audioStrategy: "native-audio" });
-      await select('[data-audio-strategy="volcengine-tts"]');
+      expect(container.querySelector('[data-audio-strategy="volcengine-tts"]')).toBeNull();
       expect(brief).toMatchObject({ outputScheme: { id: "native-film", audioStrategy: "native-audio" }, audioStrategy: "native-audio" });
     } finally {
       await act(async () => root.unmount());
@@ -69,14 +69,17 @@ describe("CreationBriefForm contract", () => {
   it("normalizes every state change through the shared sanitizer", () => {
     expect(form).toMatch(/sanitizeCreationBrief/);
     expect(form).toMatch(/validateCreationBriefForm/);
-    expect(form).toMatch(/defaultAudioStrategyFor/);
+    expect(form).toMatch(/OUTPUT_SCHEMES/);
     expect(form).toMatch(/resolveStyleSource/);
   });
 
   it("composes the four panels and keeps the summary out of the create flow", () => {
-    for (const panel of ["InputSourcePanel", "NarrativePanel", "VisualControlPanel", "OutputStrategyPanel"]) {
+    for (const panel of ["InputSourcePanel", "NarrativePanel", "VisualControlPanel", "OutputSchemePanel"]) {
       expect(form).toMatch(new RegExp(`\\b${panel}\\b`));
     }
+    expect(form.indexOf("<VisualControlPanel")).toBeLessThan(form.indexOf("<OutputSchemePanel"));
+    expect(form.indexOf("<OutputSchemePanel")).toBeLessThan(form.indexOf("音频策略"));
+    expect(form).not.toMatch(/<OutputStrategyPanel/);
     expect(form).not.toMatch(/CreationBriefSummary/);
   });
 
@@ -91,7 +94,6 @@ describe("submission gating", () => {
     validateCreationBriefForm({
       productName,
       images: Array.from({ length: imageCount }, (_, index) => ({ id: `image-${index}` })),
-      strategyChosen: true,
     }).valid;
 
   it("blocks submission while the product name is empty", () => {
@@ -108,37 +110,29 @@ describe("submission gating", () => {
 
   it("requires a topic instead of a product name in topic mode", () => {
     expect(validateCreationBriefForm({ inputMode: "topic", productName: "", images: [], topic: "" }).valid).toBe(false);
-    expect(validateCreationBriefForm({ inputMode: "topic", productName: "", images: [], topic: "在家泡一杯手冲咖啡", strategyChosen: true }).valid).toBe(true);
+    expect(validateCreationBriefForm({ inputMode: "topic", productName: "", images: [], topic: "在家泡一杯手冲咖啡" }).valid).toBe(true);
   });
 });
 
-describe("outcome-strategy gate (P2 / C3)", () => {
-  it("starts unselected and only becomes chosen after a strategy card click", () => {
-    expect(form).toMatch(/useState\(false\)/);
-    expect(form).toMatch(/setStrategyChosen\(true\)/);
-    expect(form).toMatch(/strategyChosen=\{strategyChosen\}|strategyChosen,/);
-    expect(form).toMatch(/validateCreationBriefForm\(\{[\s\S]*strategyChosen[\s\S]*\}\)/);
-  });
-
-  it("blocks a form whose strategy was never clicked and allows it afterwards", () => {
+describe("default native scheme", () => {
+  it("needs no extra scheme click when source fields are complete", () => {
     const filled = { productName: "桂花乌龙茶", images: [{ id: "a" }] };
-    expect(validateCreationBriefForm({ ...filled, strategyChosen: false }).valid).toBe(false);
-    expect(validateCreationBriefForm({ ...filled, strategyChosen: false }).errors.outputStrategy).toBeTruthy();
-    expect(validateCreationBriefForm({ ...filled, strategyChosen: true }).valid).toBe(true);
+    expect(validateCreationBriefForm(filled).valid).toBe(true);
+    expect(form).not.toMatch(/strategyChosen/);
   });
 });
 
 describe("extended form-values contract (C1)", () => {
-  it("declares creativeIntent / visualBible / strategyChosen on the frozen shape", () => {
+  it("declares creativeIntent / visualBible on the frozen shape", () => {
     expect(form).toMatch(/creativeIntent: CreativeIntent/);
     expect(form).toMatch(/visualBible\?: VisualBible/);
-    expect(form).toMatch(/strategyChosen: boolean/);
+    expect(form).not.toMatch(/strategyChosen: boolean/);
     expect(form).toMatch(/import \{ sanitizeCreativeIntent, type CreativeIntent, type VisualBible \} from "@\/lib\/production-system"/);
   });
 
   it("reports the extended shape through both onSubmitForm and onValuesChange", () => {
-    expect(form).toMatch(/onSubmitForm\(\{[^}]*creativeIntent[^}]*visualBible[^}]*strategyChosen[^}]*\}\)/);
-    expect(form).toMatch(/onValuesChange\(\{[^}]*creativeIntent[^}]*visualBible[^}]*strategyChosen[^}]*\}\)/);
+    expect(form).toMatch(/onSubmitForm\(\{[^}]*creativeIntent[^}]*visualBible[^}]*\}\)/);
+    expect(form).toMatch(/onValuesChange\(\{[^}]*creativeIntent[^}]*visualBible[^}]*\}\)/);
   });
 });
 

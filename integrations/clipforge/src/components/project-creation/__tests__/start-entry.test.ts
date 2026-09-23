@@ -55,10 +55,10 @@ describe("/start 成为唯一主创建入口", () => {
     expect(OUTPUT_STRATEGY_OPTIONS.find((option) => option.id === "draft")?.label).toContain("非 AI 动态视频");
   });
 
-  it("出片策略默认 draft，并在创建时把策略写进 creationBrief", () => {
-    expect(DEFAULT_CREATION_BRIEF.outputStrategy).toBe("draft");
+  it("出片方案默认原生整片，并在创建时把方案写进 creationBrief", () => {
+    expect(DEFAULT_CREATION_BRIEF.outputStrategy).toBe("native-film");
     expect(form).toMatch(/sanitizeCreationBrief/);
-    expect(form).toMatch(/OutputStrategyPanel/);
+    expect(form).toMatch(/OutputSchemePanel/);
     expect(startPage).toMatch(/creationBrief: /);
     expect(startPage).toMatch(/outputStrategy/);
   });

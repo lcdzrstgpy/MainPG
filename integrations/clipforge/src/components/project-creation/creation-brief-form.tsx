@@ -14,7 +14,7 @@ import { useCharacterStore } from "@/lib/stores/project-store";
 import { useTemplateStore } from "@/lib/stores/template-store";
 import { InputSourcePanel, type InputSourceImage } from "./input-source-panel";
 import { NarrativePanel } from "./narrative-panel";
-import { OutputStrategyPanel } from "./output-strategy-panel";
+import { OutputSchemePanel } from "./output-scheme-panel";
 import {
   EMPTY_VISUAL_CONSTRAINTS,
   VisualControlPanel,
@@ -32,12 +32,12 @@ import {
   SCRIPT_STYLE_OPTIONS,
   TOPIC_NARRATION_STYLE_OPTIONS,
   coerceStyleTypeForInputMode,
-  defaultAudioStrategyFor,
   resolveStyleSource,
   validateCreationBriefForm,
   type VideoModeId,
 } from "./creation-brief-defaults";
-import type { AudioStrategy, CreationBrief, InputMode, OutputStrategy } from "./creation-brief-types";
+import type { CreationBrief, InputMode } from "./creation-brief-types";
+import type { OutputSchemeSnapshot } from "@/lib/output-schemes";
 
 /**
  * 表单收集到的全部内容：简报本身 + 建项目需要的来源字段（商品名/图片/来源）。
@@ -57,8 +57,6 @@ export interface CreationBriefFormValues {
   creativeIntent: CreativeIntent;
   /** 仅当画面约束确实收集到「画面禁忌」时产出，不凭空编造锚点 */
   visualBible?: VisualBible;
-  /** 用户是否真的点选过一次出片策略卡（默认高亮的 draft 不算已选择） */
-  strategyChosen: boolean;
 }
 
 /** 入口页在挂载后推给表单的预填（商品库、热点、模板、示例商品等）。 */
@@ -134,8 +132,6 @@ export function CreationBriefForm({
   const [topic, setTopic] = useState("");
   const [videoMode, setVideoMode] = useState<VideoModeId>(DEFAULT_VIDEO_MODE);
   const [constraints, setConstraints] = useState<VisualConstraintValues>(EMPTY_VISUAL_CONSTRAINTS);
-  // 默认高亮的策略不是「已选择」：只有点过策略卡才置 true，见校验与冻结契约 C3
-  const [strategyChosen, setStrategyChosen] = useState(false);
   const [showErrors, setShowErrors] = useState(false);
 
   // every mutation runs through the shared sanitizer, so no field can drift out of contract
@@ -177,10 +173,10 @@ export function CreationBriefForm({
     : undefined;
 
   // 实时快照：只在真正收集到的字段变化时上报，避免每次渲染都推送新对象
-  const valuesKey = JSON.stringify({ brief, productName, category, sellingPoints, linkUrl, topic, videoMode, constraints, strategyChosen, imageCount: images.length });
+  const valuesKey = JSON.stringify({ brief, productName, category, sellingPoints, linkUrl, topic, videoMode, constraints, imageCount: images.length });
   useEffect(() => {
     if (!onValuesChange) return;
-    onValuesChange({ brief: sanitizeCreationBrief(brief), productName, category, sellingPoints, images, linkUrl, topic, videoMode, creativeIntent, visualBible, strategyChosen });
+    onValuesChange({ brief: sanitizeCreationBrief(brief), productName, category, sellingPoints, images, linkUrl, topic, videoMode, creativeIntent, visualBible });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- valuesKey 已经是所有被收集字段的值指纹
   }, [valuesKey]);
 
@@ -220,21 +216,10 @@ export function CreationBriefForm({
     [patchBrief]
   );
 
-  const handleOutputStrategyChange = useCallback(
-    (outputStrategy: OutputStrategy) => {
-      // 点选即代表用户显式选择了策略：默认策略只有在被点过一次后才算「已选择」
-      setStrategyChosen(true);
-      const id = outputStrategy === "controlled-motion" ? "controlled-balanced" : outputStrategy;
-      const audioStrategy = defaultAudioStrategyFor(outputStrategy);
-      patchBrief({ outputScheme: { ...OUTPUT_SCHEMES[id], audioStrategy }, outputStrategy, audioStrategy });
-    },
-    [patchBrief]
-  );
-
-  const handleAudioStrategyChange = useCallback((audioStrategy: AudioStrategy) => {
-    if (brief.outputStrategy === "native-film" || audioStrategy === "native-audio") return;
-    patchBrief({ outputScheme: { ...brief.outputScheme, audioStrategy }, audioStrategy });
-  }, [brief.outputScheme, brief.outputStrategy, patchBrief]);
+  const handleOutputSchemeChange = useCallback((value: OutputSchemeSnapshot) => {
+    const scheme = value.id === "native-film" ? { ...OUTPUT_SCHEMES["native-film"] } : value;
+    patchBrief({ outputScheme: scheme, outputStrategy: scheme.outputStrategy, audioStrategy: scheme.audioStrategy });
+  }, [patchBrief]);
 
   const handleFilesSelected = useCallback((files: FileList | null) => {
     if (!files) return;
@@ -273,7 +258,7 @@ export function CreationBriefForm({
     patchBrief({ platforms: next });
   };
 
-  const validation = validateCreationBriefForm({ productName, images, topic, inputMode: brief.inputMode, linkImported, strategyChosen });
+  const validation = validateCreationBriefForm({ productName, images, topic, inputMode: brief.inputMode, linkImported });
   const blocked = disabled === true;
   // 一句话主题走的是主题引擎的旁白风格词表，与带货脚本风格不通用
   const topicMode = brief.inputMode === "topic";
@@ -286,7 +271,7 @@ export function CreationBriefForm({
     const submitted = sanitizeCreationBrief(brief);
     if (onSubmitForm) {
       // 入口页需要来源字段（商品名/图片/来源）才能建项目：只走这一条提交路径
-      onSubmitForm({ brief: submitted, productName, category, sellingPoints, images, linkUrl, topic, videoMode, creativeIntent, visualBible, strategyChosen });
+      onSubmitForm({ brief: submitted, productName, category, sellingPoints, images, linkUrl, topic, videoMode, creativeIntent, visualBible });
       return;
     }
     onSubmit(submitted);
@@ -526,13 +511,12 @@ export function CreationBriefForm({
         disabled={blocked}
       />
 
-      <OutputStrategyPanel
-        outputStrategy={brief.outputStrategy}
-        onOutputStrategyChange={handleOutputStrategyChange}
-        audioStrategy={brief.audioStrategy}
-        onAudioStrategyChange={handleAudioStrategyChange}
+      <OutputSchemePanel
+        value={brief.outputScheme}
+        onChange={handleOutputSchemeChange}
         disabled={blocked}
       />
+      {/* 音频策略由方案面板紧随五卡呈现，原生整片固定原生音频。 */}
 
       <div className="pt-2">
         {showErrors && !validation.valid && (
