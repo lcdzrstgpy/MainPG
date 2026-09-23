@@ -28,6 +28,7 @@ import { scriptCharacterFrom } from "@/lib/script-character";
 import { CreationBriefSummary } from "@/components/project-creation/creation-brief-summary";
 import { StyleChoicePrompt } from "@/components/project-creation/style-choice-prompt";
 import { parseStyleRequirement, type ScriptStyleRequirement } from "@/components/project-creation/script-style-requirement";
+import { projectGenerationSettings } from "@/lib/output-schemes";
 
 // shot type labels (label changed to i18n key, resolved per locale at render time)
 const shotTypeLabels: Record<Shot["type"], { labelKey: string; color: string }> = {
@@ -730,6 +731,17 @@ export default function ScriptPage() {
       // resolve the configured default image + video models to their providers
       setAiFilmStage(t("aiFilmResolve"));
       const s = useSettingsStore.getState();
+      // The selected output scheme is a project snapshot.  Models and credentials remain
+      // global, but this run's resolution/duration/look cannot drift because someone changes
+      // the Settings page after the project was created.
+      const generation = projectGenerationSettings(creationBrief, {
+        imageParams: s.imageParams,
+        videoParams: s.videoParams,
+        motionIntensity: s.motionIntensity,
+        motionRealism: s.motionRealism,
+        chainMode: s.chainMode,
+        visualLook: s.visualLook,
+      });
       const [imgTarget, vidTarget] = await Promise.all([
         resolveDefaultModelTarget(s.providers, s.defaultImageModel, s.customModels, "image"),
         resolveDefaultModelTarget(s.providers, s.defaultVideoModel, s.customModels, "video"),
@@ -753,7 +765,7 @@ export default function ScriptPage() {
               model: imgTarget.model,
               apiKey: imgTarget.apiKey,
               baseUrl: imgTarget.baseUrl,
-              options: buildImageOptions(s.imageParams ? { ...s.imageParams, aspectRatio: "1:1", count: 1 } : undefined),
+              options: buildImageOptions(generation.imageParams ? { ...generation.imageParams, aspectRatio: "1:1", count: 1 } : undefined),
             }),
           });
           const sheetData = await sheetRes.json().catch(() => ({}));
@@ -778,7 +790,7 @@ export default function ScriptPage() {
           baseUrl: imgTarget.baseUrl,
           ...(sheet && { characterSheetUrl: sheet }),
           ...(productRef && { productImageUrl: productRef }),
-          options: buildImageOptions(s.imageParams ? { ...s.imageParams, aspectRatio: "9:16", count: 1 } : undefined),
+          options: buildImageOptions(generation.imageParams ? { ...generation.imageParams, aspectRatio: "9:16", count: 1 } : undefined),
         }),
       });
       const gridData = await gridRes.json().catch(() => ({}));
@@ -798,7 +810,7 @@ export default function ScriptPage() {
           apiKey: vidTarget.apiKey,
           baseUrl: vidTarget.baseUrl,
           ...(sheet && { characterSheetUrl: sheet }),
-          options: buildVideoOptions(s.videoParams ? { ...s.videoParams, aspectRatio: "9:16" } : undefined),
+          options: buildVideoOptions(generation.videoParams ? { ...generation.videoParams, aspectRatio: "9:16" } : undefined),
         }),
       });
       const filmData = await filmRes.json().catch(() => ({}));

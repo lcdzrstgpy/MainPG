@@ -47,6 +47,7 @@ import { ModelCapabilityPreflight } from "@/components/model-capability-prefligh
 import { CreationBriefSummary } from "@/components/project-creation/creation-brief-summary";
 import { assetsStageGuide, LEGACY_BRIEF_NOTICE } from "@/lib/project-detail-view";
 import type { CreationBrief } from "@/lib/creation-brief";
+import { projectGenerationSettings } from "@/lib/output-schemes";
 import {
   checkPromptConsistency,
   compileCreativePrompt,
@@ -111,6 +112,17 @@ export default function AssetsPage() {
   // project-level creation brief: drives which asset action is the primary one for this
   // strategy. null = legacy project created before the brief existed, its asset flow stays untouched.
   const [creationBrief, setCreationBrief] = useState<CreationBrief | null>(null);
+  // A created project owns its generation controls.  The global settings store still supplies
+  // models and credentials, and is the compatibility fallback for pre-brief projects, but it
+  // must not rewrite a saved project's resolution / continuity / look halfway through a run.
+  const generation = useMemo(() => projectGenerationSettings(creationBrief, {
+    imageParams,
+    videoParams,
+    motionIntensity,
+    motionRealism,
+    chainMode,
+    visualLook,
+  }), [creationBrief, imageParams, videoParams, motionIntensity, motionRealism, chainMode, visualLook]);
   // project type: topic (one-sentence-to-video without a product) uses the free stock library for automatic visuals
   const [contentType, setContentType] = useState<string>("");
   // project product category — unlocks the category physical-realism layers in the i2v motion prompt
@@ -560,7 +572,7 @@ export default function AssetsPage() {
       }
       // chain target: explicit override wins (null = explicitly no chain); otherwise the next shot's static keyframe
       const chainFrame =
-        chainMode !== "pin" || lastFrameOverride === null || !modelSupportsLastFrame(videoModelTarget.model)
+        generation.chainMode !== "pin" || lastFrameOverride === null || !modelSupportsLastFrame(videoModelTarget.model)
           ? undefined
           : lastFrameOverride ??
             // demo-type shots skip auto-chaining (their ending IS the content); explicit override still chains
@@ -568,7 +580,7 @@ export default function AssetsPage() {
       // tail mode: the previous shot's REAL last frame (extracted server-side after its save)
       // becomes this shot's first frame — pixel-continuous seam; falls back to own keyframe
       let tailFirstFrame: string | undefined;
-      if (chainMode === "tail" && !firstFrameOverride) {
+      if (generation.chainMode === "tail" && !firstFrameOverride) {
         const idx = assets.findIndex((a) => a.shotId === shotId);
         const prev = idx > 0 ? assets[idx - 1] : undefined;
         if (prev) tailFirstFrame = prev.lastFrameUrl ?? lastFrameByShot.current.get(prev.shotId);
@@ -583,7 +595,7 @@ export default function AssetsPage() {
         description: asset?.description,
         productShot: asset?.visualSource === "product_image" || PRODUCT_SHOT_TYPES.has(asset?.type ?? ""),
         chainToNext: !!chainFrame,
-        intensity: motionIntensity,
+        intensity: generation.motionIntensity,
         personShot: !!asset?.characterId,
         // a character WITH a line is a talking shot: mid-conversation direction + rotating
         // behavior beats (seeded by shot position so a batch never repeats the same gestures)
@@ -591,11 +603,11 @@ export default function AssetsPage() {
         beatSeed: assets.findIndex((a) => a.shotId === shotId),
         // global look: short lighting anchor keeps the palette from drifting through the i2v pass;
         // "real"-family looks also prepend their camera-identity opener (front tokens weigh most)
-        look: getLookPreset(visualLook)?.motion,
-        opener: getLookPreset(visualLook)?.opener,
+        look: getLookPreset(generation.visualLook)?.motion,
+        opener: getLookPreset(generation.visualLook)?.opener,
         // category physical-realism layers (tier is a user single-select; "auto" by default)
         category: projectCategory,
-        realism: motionRealism,
+        realism: generation.motionRealism,
       });
       // diagnosis retake (user-initiated, billed): patch exactly ONE dimension onto the prompt.
       // Base = the freshly rebuilt prompt — deterministic, so with unchanged settings it equals
@@ -644,7 +656,7 @@ export default function AssetsPage() {
       // per-shot duration: the composer's slot follows the script duration (voice-fitted), and the
       // composer trims overshoot from the TAIL — which would cut a chained ending. Round to the
       // model's supported range instead of always sending the global 5s default.
-      const videoOptions = buildVideoOptions(videoParams);
+      const videoOptions = buildVideoOptions(generation.videoParams);
       if (projectDirection.negativePrompt) {
         videoOptions.negativePrompt = [videoOptions.negativePrompt, projectDirection.negativePrompt].filter(Boolean).join(", ");
       }
@@ -714,7 +726,7 @@ export default function AssetsPage() {
         });
       }
     },
-    [assets, videoModelTarget, id, videoParams, motionIntensity, motionRealism, chainMode, projectCategory, projectCreativeIntent, projectVisualBible, visualLook, productSafe, productImages, presenterLib, presenterSheet, saveVideoAsset, reloadPendingTasks, t, locale]
+    [assets, videoModelTarget, id, generation, projectCategory, projectCreativeIntent, projectVisualBible, productSafe, productImages, presenterLib, presenterSheet, saveVideoAsset, reloadPendingTasks, t, locale]
   );
 
   // actually generate a single asset. Returns the saved static keyframe URL (undefined on failure) so
@@ -768,7 +780,7 @@ export default function AssetsPage() {
       const castSuffix = asset.characterId ? `。${realFaceLine(basePrompt)}` : "";
       // global look: one lighting/palette block across every keyframe keeps shots in one video
       // from drifting between styles (the LLM improvises style words per shot otherwise)
-      const lookText = lookImageSuffix(visualLook, basePrompt);
+      const lookText = lookImageSuffix(generation.visualLook, basePrompt);
       const lookSuffix = lookText ? `。${lookText}` : "";
       // frame-position directive: a keyframe is the frozen instant JUST BEFORE the action,
       // holding visible potential energy — gives the i2v pass a beat to play out instead of
@@ -803,7 +815,7 @@ export default function AssetsPage() {
             ...(useProductSafe && { imageUrl: productImages[0] }),
             // user-defined image parameters (aspect ratio → dimensions / count / steps / guidance / seed / negative prompt)
             options: (() => {
-              const options = buildImageOptions(imageParams);
+              const options = buildImageOptions(generation.imageParams);
               if (projectDirection.negativePrompt) options.negativePrompt = [options.negativePrompt, projectDirection.negativePrompt].filter(Boolean).join(", ");
               return options;
             })(),
@@ -846,7 +858,7 @@ export default function AssetsPage() {
         return undefined;
       }
     },
-    [assets, modelTarget, productImages, productSafe, imageParams, autoMotion, videoModelTarget, projectCreativeIntent, projectVisualBible, visualLook, generateMotion, t]
+    [assets, modelTarget, productImages, productSafe, generation, autoMotion, videoModelTarget, projectCreativeIntent, projectVisualBible, generateMotion, t]
   );
 
   // storyboard grid: ONE image generation renders every shot as a 3x3 grid cell (person /
@@ -873,7 +885,7 @@ export default function AssetsPage() {
           ...(presenterSheet && { characterSheetUrl: presenterSheet }),
           ...(productRef && { productImageUrl: productRef }),
           // the grid itself is 9:16 so each of the 3x3 cells is exactly 9:16 too
-          options: buildImageOptions(imageParams ? { ...imageParams, aspectRatio: "9:16", count: 1 } : undefined),
+          options: buildImageOptions(generation.imageParams ? { ...generation.imageParams, aspectRatio: "9:16", count: 1 } : undefined),
         }),
       });
       const data = await res.json();
@@ -885,7 +897,7 @@ export default function AssetsPage() {
     } finally {
       setIsGridGenerating(false);
     }
-  }, [id, scriptId, modelTarget, imageParams, isGridGenerating, presenterSheet, productSafe, productImages, reloadAssets, t]);
+  }, [id, scriptId, modelTarget, generation, isGridGenerating, presenterSheet, productSafe, productImages, reloadAssets, t]);
 
   // grid→film (field-proven 2026-08): every shot keyframe rides ONE Seedance 2.5
   // reference-to-video call with a timecoded multi-shot prompt — native cuts, dialogue
@@ -933,7 +945,7 @@ export default function AssetsPage() {
           baseUrl: videoModelTarget.baseUrl,
           // presenter sheet leads reference_images as the identity anchor (@Image1)
           ...(presenterSheet && { characterSheetUrl: presenterSheet }),
-          options: buildVideoOptions(videoParams ? { ...videoParams, aspectRatio: "9:16" } : undefined),
+          options: buildVideoOptions(generation.videoParams ? { ...generation.videoParams, aspectRatio: "9:16" } : undefined),
         }),
       });
       const data = await res.json();
@@ -945,7 +957,7 @@ export default function AssetsPage() {
     } finally {
       setIsFilmGenerating(false);
     }
-  }, [id, scriptId, videoModelTarget, videoParams, isFilmGenerating, presenterSheet, spendCapUsd, t]);
+  }, [id, scriptId, videoModelTarget, generation, isFilmGenerating, presenterSheet, spendCapUsd, t]);
 
   // generate all in one click (sequential, to avoid hitting platform rate limits with concurrent requests).
   // With auto-motion on, this runs TWO passes: (1) every static keyframe, (2) keyframe-chained i2v per shot —
@@ -971,18 +983,18 @@ export default function AssetsPage() {
         if (row.isVideo) continue; // already a motion/stock video — don't re-bill
         // tail mode: sequential continuation — the previous shot's real tail frame (captured at
         // save time in this very loop) beats the shot's own keyframe as the first frame
-        const tailFrame = chainMode === "tail" && i > 0 ? assets[i - 1].lastFrameUrl ?? lastFrameByShot.current.get(assets[i - 1].shotId) : undefined;
+        const tailFrame = generation.chainMode === "tail" && i > 0 ? assets[i - 1].lastFrameUrl ?? lastFrameByShot.current.get(assets[i - 1].shotId) : undefined;
         const firstFrame = tailFrame ?? staticFrameOf(row);
         if (!firstFrame) continue;
         const next = assets[i + 1];
         // pin mode pins the next keyframe as the last frame; tail/off modes never pin
-        const lastFrame = chainMode === "pin" && next && chainByDefault(row.type) ? staticFrameOf(next) : undefined;
+        const lastFrame = generation.chainMode === "pin" && next && chainByDefault(row.type) ? staticFrameOf(next) : undefined;
         // null = explicitly no chain (last shot / next frame unavailable)
         await generateMotion(row.shotId, firstFrame, lastFrame ?? null);
       }
     }
     setIsBatchGenerating(false);
-  }, [assets, generateOne, generateMotion, autoMotion, videoModelTarget, chainMode]);
+  }, [assets, generateOne, generateMotion, autoMotion, videoModelTarget, generation.chainMode]);
 
   return (
     <div className="min-h-screen grid-bg">
@@ -1292,10 +1304,10 @@ export default function AssetsPage() {
             modelId={videoModelTarget.model}
             provider={videoModelTarget.provider}
             supportsAudio={videoModelTarget.supportsAudio}
-            duration={videoParams.duration}
-            resolution={videoParams.resolution}
-            aspectRatio={videoParams.aspectRatio}
-            chainMode={chainMode}
+            duration={generation.videoParams.duration}
+            resolution={generation.videoParams.resolution}
+            aspectRatio={generation.videoParams.aspectRatio}
+            chainMode={generation.chainMode}
             audioEnabled={videoModelTarget.supportsAudio === true}
             referenceImageCount={Number(Boolean(presenterSheet)) + Number(Boolean(productSafe && productImages[0]))}
           />
