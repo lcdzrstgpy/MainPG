@@ -71,6 +71,28 @@ describe("project output scheme API", () => {
     expect(body.productionWorkflow).toEqual(buildWorkflowPlanForStrategy("controlled-motion"));
   });
 
+  it("does not persist a supplied paid-motion workflow for a draft scheme", async () => {
+    const body = await createProject({
+      creationBrief: { outputScheme: { id: "draft" } },
+      productionWorkflow: buildWorkflowPlanForStrategy("controlled-motion"),
+    });
+    expect(body.productionWorkflow).toEqual(buildWorkflowPlanForStrategy("draft"));
+    expect(db.select().from(schema.projects).all()[0].productionWorkflow).toEqual(body.productionWorkflow);
+  });
+
+  it.each(["native-film", "draft"] as const)(
+    "derives the %s workflow when a supplied workflow is malformed",
+    async (id) => {
+      const body = await createProject({
+        creationBrief: { outputScheme: { id } },
+        productionWorkflow: "not-an-array",
+      });
+      const strategy = id === "draft" ? "draft" : "native-film";
+      expect(body.productionWorkflow).toEqual(buildWorkflowPlanForStrategy(strategy));
+      expect(db.select().from(schema.projects).all()[0].productionWorkflow).toEqual(body.productionWorkflow);
+    },
+  );
+
   it("rebuilds the saved workflow when PATCH changes the scheme", async () => {
     const created = await createProject({ creationBrief: { outputScheme: { id: "draft" } } });
     expect(created.productionWorkflow).toEqual(buildWorkflowPlanForStrategy("draft"));

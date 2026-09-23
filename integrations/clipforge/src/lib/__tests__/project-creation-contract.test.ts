@@ -108,28 +108,26 @@ describe("创建项目写入创作简报", () => {
     expect(row.productionWorkflow).toEqual(buildWorkflowPlanForStrategy("native-film"));
   });
 
-  it("策略与工作流冲突返回 400，且不写入任何项目", async () => {
+  it("有简报时忽略提交的冲突工作流，按归一化策略生成", async () => {
     const motion = await post({
       name: "冲突",
       creationBrief: { outputStrategy: "controlled-motion" },
       productionWorkflow: withDisabledStage("controlled-motion", "motion"),
     });
-    expect(motion.status).toBe(400);
-    const motionError = (await motion.json()).error;
-    expect(motionError).toMatch(/controlled-motion/);
-    expect(motionError).toMatch(/motion/);
+    expect(motion.status).toBe(201);
+    expect((await motion.json()).productionWorkflow).toEqual(buildWorkflowPlanForStrategy("controlled-motion"));
 
     const compose = await post({
       name: "冲突",
       creationBrief: { outputStrategy: "native-film" },
       productionWorkflow: withDisabledStage("native-film", "compose"),
     });
-    expect(compose.status).toBe(400);
-    expect((await compose.json()).error).toMatch(/compose/);
-    expect(storedProjects()).toEqual([]);
+    expect(compose.status).toBe(201);
+    expect((await compose.json()).productionWorkflow).toEqual(buildWorkflowPlanForStrategy("native-film"));
+    expect(storedProjects()).toHaveLength(2);
   });
 
-  it("策略与工作流一致时按提交内容写入，非法工作流格式不写该列", async () => {
+  it("有简报时生成对应工作流，无简报时保留既有非法工作流处理", async () => {
     const consistent = await post({
       name: "动态项目",
       creationBrief: { outputStrategy: "controlled-motion" },
@@ -137,6 +135,11 @@ describe("创建项目写入创作简报", () => {
     });
     expect(consistent.status).toBe(201);
     expect((await consistent.json()).productionWorkflow).toEqual(buildWorkflowPlanForStrategy("controlled-motion"));
+
+    const legacyWorkflow = buildWorkflowPlanForStrategy("draft");
+    const legacy = await post({ name: "旧显式工作流", productionWorkflow: legacyWorkflow });
+    expect(legacy.status).toBe(201);
+    expect((await legacy.json()).productionWorkflow).toEqual(legacyWorkflow);
 
     const broken = await post({ name: "坏工作流", productionWorkflow: "not-an-array" });
     expect(broken.status).toBe(201);
