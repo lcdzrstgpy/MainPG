@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_IMAGE_PARAMS, DEFAULT_VIDEO_PARAMS } from "@/lib/gen-params";
 import {
   OUTPUT_SCHEMES,
+  outputSchemeExecution,
   projectGenerationSettings,
   sanitizeOutputSchemeSnapshot,
   type OutputSchemeId,
@@ -103,5 +104,21 @@ describe("project generation projection", () => {
       audioStrategy,
       videoParams: { resolution: "720p", duration: 5, motionStrength },
     });
+  });
+});
+
+describe("output scheme execution", () => {
+  it.each([
+    ["draft", "draft-pipeline"],
+    ["controlled-rapid", "controlled-assets"],
+    ["controlled-balanced", "controlled-assets"],
+    ["controlled-cinematic", "controlled-assets"],
+    ["native-film", "native-film"],
+  ] as const)("routes %s to exactly one workflow", (id, expected) => {
+    expect(outputSchemeExecution(sanitizeCreationBrief({ outputScheme: { id } }))).toBe(expected);
+  });
+
+  it("keeps legacy projects on their historical pipeline-resume path", () => {
+    expect(outputSchemeExecution(null)).toBe("legacy-pipeline");
   });
 });

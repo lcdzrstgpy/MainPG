@@ -8,7 +8,7 @@ const source = (relativePath: string) =>
 describe("project generation setting callers", () => {
   it("projects the saved creation brief before script-side native-film generation", () => {
     const page = source("src/app/project/[id]/script/page.tsx");
-    expect(page).toContain('import { projectGenerationSettings } from "@/lib/output-schemes"');
+    expect(page).toMatch(/import \{[^}]*projectGenerationSettings[^}]*\} from "@\/lib\/output-schemes"/);
     expect(page).toMatch(/const generation = projectGenerationSettings\(creationBrief, \{/);
     expect(page).toMatch(/buildImageOptions\(generation\.imageParams/);
     expect(page).toMatch(/buildVideoOptions\(generation\.videoParams/);

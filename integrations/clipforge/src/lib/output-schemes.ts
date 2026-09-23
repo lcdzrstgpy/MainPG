@@ -89,6 +89,19 @@ export interface ProjectGenerationSettings extends ProjectGenerationGlobals {
   audioStrategy?: OutputSchemeSnapshot["audioStrategy"];
 }
 
+/** The script page has one primary action; the saved scheme decides its only legal workflow. */
+export type OutputSchemeExecution = "draft-pipeline" | "controlled-assets" | "native-film" | "legacy-pipeline";
+
+export function outputSchemeExecution(brief: CreationBrief | null): OutputSchemeExecution {
+  if (!brief) return "legacy-pipeline";
+  const scheme = brief.outputScheme
+    ? sanitizeOutputSchemeSnapshot(brief.outputScheme)
+    : inferLegacyOutputSchemeSnapshot(brief.outputStrategy, brief.audioStrategy);
+  if (scheme.outputStrategy === "draft") return "draft-pipeline";
+  if (scheme.outputStrategy === "controlled-motion") return "controlled-assets";
+  return "native-film";
+}
+
 /** Apply a project's saved choice while retaining unrelated global generation parameters. */
 export function projectGenerationSettings(
   brief: CreationBrief | null,

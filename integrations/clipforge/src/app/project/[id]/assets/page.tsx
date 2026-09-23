@@ -195,6 +195,10 @@ export default function AssetsPage() {
   // 素材阶段的分策略引导：draft=静态草稿、controlled-motion=逐镜 I2V 主操作、native-film=整片流程。
   // 只标注主次，不改变任何按钮的既有行为；旧项目（无简报）保持原样。
   const stageGuide = useMemo(() => assetsStageGuide(creationBrief?.outputStrategy ?? null), [creationBrief]);
+  // The assets workspace is the director-controlled branch only.  Draft and native-film
+  // projects have their complete, distinct dispatch on the script page; showing the same
+  // keyframe/film buttons here would reintroduce the two-path ambiguity we just removed.
+  const directorFlow = !creationBrief || creationBrief.outputStrategy === "controlled-motion";
 
   // load real data: project info + selected script shots + resolve the provider for the default image model
   useEffect(() => {
@@ -1031,6 +1035,20 @@ export default function AssetsPage() {
             <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{stageGuide.detail}</p>
           </div>
         </section>
+        {!directorFlow ? (
+          <section className="rounded-xl border border-primary/30 bg-primary/5 px-5 py-4">
+            <p className="text-sm font-semibold">此项目不使用逐镜导演流程</p>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              {creationBrief?.outputStrategy === "native-film"
+                ? "原生整片会在脚本页生成九宫格参考图后，一次提交整片视频模型，并使用模型原生音频。"
+                : "免费草稿会在脚本页通过静态素材、可选配音与 FFmpeg 完成。"}
+            </p>
+            <Link href={`/project/${id}/script`} className="mt-3 inline-block">
+              <Button size="sm" className="brand-gradient text-white">返回脚本页一键出片</Button>
+            </Link>
+          </section>
+        ) : (
+          <>
         {/* Action bar: title + generation ACTIONS only. Creative settings live in the
             director panel below so this row stays a stable, scannable set of verbs. */}
         <div className="flex flex-wrap items-center justify-between gap-y-3 mb-4">
@@ -1765,6 +1783,8 @@ export default function AssetsPage() {
                 </Button>
               </Link>
             </div>
+          </>
+        )}
           </>
         )}
       </main>
