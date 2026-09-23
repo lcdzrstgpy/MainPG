@@ -99,6 +99,9 @@ describe("素材页：仅导演动态方案进入逐镜工作区", () => {
     expect(assetsPage).toMatch(/!directorFlow \? \(/);
     expect(assetsPage).toMatch(/此项目不使用逐镜导演流程/);
     expect(assetsPage).toMatch(/返回脚本页一键出片/);
+    expect(assetsPage).not.toMatch(/onClick=\{previewStoryboardFilm\}/);
+    expect(assetsPage).not.toMatch(/const previewStoryboardFilm/);
+    expect(assetsPage).not.toMatch(/const runStoryboardFilm/);
   });
 });
 

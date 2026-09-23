@@ -55,7 +55,7 @@ describe("/start 成为唯一主创建入口", () => {
     expect(form).toMatch(/sanitizeCreationBrief/);
     expect(form).toMatch(/OutputSchemePanel/);
     expect(startPage).toMatch(/creationBrief: /);
-    expect(startPage).toMatch(/outputStrategy/);
+    expect(startPage).toMatch(/outputScheme/);
   });
 
   it("创建后记录 project_created 之外的 strategy_selected，且失败不阻断", () => {

@@ -34,7 +34,7 @@ import {
 } from "@/components/project-creation/script-style-requirement";
 import { StyleChoicePrompt } from "@/components/project-creation/style-choice-prompt";
 import { recordStrategySelected } from "@/components/project-creation/creation-events";
-import { sanitizeCreationBrief, type CreationBrief, type OutputStrategy } from "@/lib/creation-brief";
+import { sanitizeCreationBrief, type CreationBrief } from "@/lib/creation-brief";
 import { buildTopicScriptRequest } from "@/lib/creation-submit";
 import { sanitizeCreativeIntent } from "@/lib/production-system";
 import {
@@ -90,7 +90,7 @@ interface PendingForm {
 type PendingCreation = PendingScript | PendingForm;
 
 /** A newly created project always stops at its script gate; only an old saved URL may carry ?auto=1. */
-function scriptPath(projectId: string, _strategy: OutputStrategy): string {
+function scriptPath(projectId: string): string {
   return `/project/${projectId}/script`;
 }
 
@@ -643,7 +643,7 @@ export default function StartPage() {
         return;
       }
       setBusy(false);
-      router.push(scriptPath(project.id, brief.outputStrategy));
+      router.push(scriptPath(project.id));
     } catch (e) {
       setError(e instanceof Error ? e.message : t("errGeneric"));
       setBusy(false);
@@ -679,7 +679,7 @@ export default function StartPage() {
         return;
       }
       setBusy(false);
-      router.push(scriptPath(pending.projectId, brief.outputStrategy));
+      router.push(scriptPath(pending.projectId));
     } catch (e) {
       setError(e instanceof Error ? e.message : t("errGeneric"));
       setBusy(false);
