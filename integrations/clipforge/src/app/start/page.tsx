@@ -89,9 +89,9 @@ interface PendingForm {
 
 type PendingCreation = PendingScript | PendingForm;
 
-/** 出片策略只影响跳转：只有 draft 兼容旧的 ?auto=1 断点恢复，其它策略不隐式启动流水线。 */
-function scriptPath(projectId: string, strategy: OutputStrategy): string {
-  return `/project/${projectId}/script${strategy === "draft" ? "?auto=1" : ""}`;
+/** A newly created project always stops at its script gate; only an old saved URL may carry ?auto=1. */
+function scriptPath(projectId: string, _strategy: OutputStrategy): string {
+  return `/project/${projectId}/script`;
 }
 
 /**

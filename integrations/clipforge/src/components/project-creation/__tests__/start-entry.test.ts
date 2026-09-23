@@ -64,9 +64,9 @@ describe("/start 成为唯一主创建入口", () => {
     expect(startPage).toMatch(/catch/);
   });
 
-  it("跳转脚本页只在 draft 策略下带 auto=1", () => {
-    expect(startPage).toMatch(/strategy === "draft"/);
-    expect(startPage).toMatch(/\?auto=1/);
+  it("新项目跳转脚本页不携带 auto=1，避免免费草稿静默开跑", () => {
+    expect(startPage).toMatch(/return `\/project\/\$\{projectId\}\/script`/);
+    expect(startPage).not.toMatch(/strategy === "draft" \? "\?auto=1"/);
     expect(startPage).not.toMatch(/gen=ai/);
   });
 });
