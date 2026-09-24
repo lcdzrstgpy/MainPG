@@ -7,6 +7,7 @@ import json
 import re
 from pathlib import Path
 import secrets
+import sqlite3
 from typing import Any
 
 from ..db import transaction
@@ -193,6 +194,14 @@ class SQLiteCustomerAuthService:
                         """,
                         (now, row["account_id"]),
                     )
+                conn.execute(
+                    """
+                    UPDATE auth_platform_sessions
+                    SET revoked_at = ?
+                    WHERE account_id = ? AND revoked_at = ''
+                    """,
+                    (now, row["account_id"]),
+                )
 
             conn.execute(
                 """
@@ -985,6 +994,71 @@ def _log_security_event(
             _utc_now(),
         ),
     )
+
+
+ACTION_LOG_RETENTION_DAYS = 90
+ACTION_LOG_MAX_ROWS = 2_000_000
+ACTION_LOG_PURGE_BATCH = 5_000
+FEEDBACK_RETENTION_DAYS = 14
+FEEDBACK_PURGE_BATCH = 500
+
+# 操作日志保留策略与后台页面文案（"服务器自动保留最近三个月"）对齐。
+# 两类表写入方不同、时间格式也不同（admin_operation_logs 为北京时间、
+# action_logs 为 UTC），因此统一用 SQLite datetime() 归一化后再比较，
+# 避免不同时区偏移的字符串直接比大小。
+_ACTION_LOG_TABLES = ("admin_operation_logs", "action_logs")
+
+
+def purge_expired_action_logs(
+    database_path: Path,
+    *,
+    days: int = ACTION_LOG_RETENTION_DAYS,
+    max_rows: int = ACTION_LOG_MAX_ROWS,
+    batch: int = ACTION_LOG_PURGE_BATCH,
+) -> int:
+    """Delete outdated operation-log rows; batched to avoid long transactions.
+
+    Two rules, applied in order: rows older than ``days`` days, then — as a
+    row-count backstop against a sudden burst — anything beyond the newest
+    ``max_rows`` rows. Returns the number of rows removed. Runs daily from
+    the auth server maintenance thread; all exceptions are intentionally
+    swallowed by the caller so retention can never affect request handling.
+    """
+    removed = 0
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+    with transaction(database_path) as conn:
+        for table in _ACTION_LOG_TABLES:
+            try:
+                conn.execute(
+                    f"CREATE INDEX IF NOT EXISTS idx_{table}_created_at ON {table}(created_at)"
+                )
+            except sqlite3.Error:
+                pass
+    for table in _ACTION_LOG_TABLES:
+        while True:
+            with transaction(database_path) as conn:
+                cursor = conn.execute(
+                    f"DELETE FROM {table} WHERE rowid IN ("
+                    f"SELECT rowid FROM {table} "
+                    f"WHERE datetime(created_at) < datetime(?) LIMIT {batch})",
+                    (cutoff,),
+                )
+                deleted = cursor.rowcount
+            removed += deleted
+            if deleted < batch:
+                break
+        while True:
+            with transaction(database_path) as conn:
+                cursor = conn.execute(
+                    f"DELETE FROM {table} WHERE rowid IN ("
+                    f"SELECT rowid FROM {table} "
+                    f"ORDER BY rowid DESC LIMIT {batch} OFFSET {max_rows})"
+                )
+                deleted = cursor.rowcount
+            removed += deleted
+            if deleted < batch:
+                break
+    return removed
 
 
 def refresh_stale_login_status(database_path: Path) -> int:

@@ -334,9 +334,7 @@ class ComboKitService:
                 self.repository.update_item(str(item_id), {"item_index": index})
             except KeyError:
                 continue
-        return {"items": self.repository.list_items(set_id)}
-
-    # ---- 主体解析（串行） ----
+        return {"items": self.repository.list_items(set_id)}    # ---- 主体解析（串行） ----
 
     def analyze_subject(
         self,

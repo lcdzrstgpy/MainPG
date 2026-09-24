@@ -60,6 +60,13 @@ class AnnouncementSyncService:
         if account_id:
             url += f"?account_id={quote(account_id)}"
         try:
+            if self.account_id_provider is not None:
+                account_id = (self.account_id_provider() or "").strip()
+        except Exception:  # 身份查询失败不影响同步：退化为仅拉全员公告
+            account_id = ""
+        if account_id:
+            url += f"?account_id={quote(account_id)}"
+        try:
             response = httpx.get(url, **self._request_kwargs())
             response.raise_for_status()
             payload = response.json()

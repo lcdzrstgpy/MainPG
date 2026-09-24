@@ -394,6 +394,17 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
         except Exception as exc:
             handle_auth_error(exc)
 
+    @router.get("/station-partners")
+    def list_station_partners(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        """合作中的中转站清单（编号 + 名称），充值页「中转编号」下拉框用。"""
+        try:
+            if not hasattr(remote_auth, "list_partner_stations"):
+                raise CustomerAuthUnavailable("station application service is not configured")
+            local_session_from_token(authorization)
+            return remote_auth.list_partner_stations()
+        except Exception as exc:
+            handle_auth_error(exc)
+
     @router.get("/station-partners/{station_code}")
     def station_partner_tiers(
         station_code: str,

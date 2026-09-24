@@ -270,6 +270,8 @@ class MessagesRepository:
         ids = [int(value) for value in active_server_ids if int(value) > 0]
         con = self._connect()
         try:
+            # 只撤回公告类消息（kind='announcement'），反馈回复由独立通道管理，
+            # 不随公告在线列表被误删。
             if not ids:
                 cur = con.execute(
                     "DELETE FROM messages WHERE server_id > 0 AND kind = ?",

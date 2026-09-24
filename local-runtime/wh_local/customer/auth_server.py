@@ -50,6 +50,8 @@ from ..billing import (
     _plan_weekly_units,
     active_pricing,
     batch_freeze_status,
+    _daily_next_refresh,
+    _daily_period_key,
     claim_basic_weekly,
     claim_daily_extra,
     compute_batch_charge,
@@ -62,6 +64,7 @@ from ..billing import (
     release_expired_batch_freezes,
     reserve_ai_usage,
     settle_payment_order,
+    station_rebate_cents,
     settle_ai_usage_failure,
     settle_ai_usage_success,
     settle_batch_points,
@@ -86,7 +89,7 @@ from ..pod_billing import (
     update_pod_pricing_items,
 )
 from ..session import Actor
-from .auth_service import SQLiteCustomerAuthService, purge_expired_customer_feedback, refresh_stale_login_status
+from .auth_service import SQLiteCustomerAuthService, _log_security_event, purge_expired_action_logs, purge_expired_customer_feedback, refresh_stale_login_status
 from .credential_vault import CredentialVaultError, active_secret, enabled_secrets
 from .contracts import CustomerAuthActionResult, CustomerAuthResult, CustomerAuthUnavailable
 from .email_sender import TencentCloudSESEmailSender
@@ -905,18 +908,20 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
     )
     ttl_thread.start()
 
-    # 用户反馈保留期：每天清理一次（14 天）。守护线程，服务退出自动终止。
-    def _feedback_purge_loop() -> None:
+    # 操作日志保留期：每天清理一次（90 天 + 200 万行兜底，与后台页面
+    # 「自动保留最近三个月」文案一致）。守护线程，服务退出自动终止。
+    def _action_log_purge_loop() -> None:
         while True:
             try:
                 time.sleep(60 * 60 * 24)
+                purge_expired_action_logs(db_path)
                 purge_expired_customer_feedback(db_path)
             except Exception:
-                time.sleep(60 * 60 *24)
+                time.sleep(60 * 60 * 24)
 
     purge_thread = threading.Thread(
-        target=_feedback_purge_loop,
-        name="feedback-retention",
+        target=_action_log_purge_loop,
+        name="action-log-retention",
         daemon=True,
     )
     purge_thread.start()
@@ -987,6 +992,58 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         if account is None:
             raise HTTPException(status_code=401, detail="invalid bearer token")
         return {"ok": True, "account": account}
+
+    @app.post("/api/customer/log-upload")
+    def customer_log_upload(
+        payload: dict[str, Any],
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """启动器上报本地 runtime.log：复用认证 token，按用户/时间落库供后台查看。"""
+        account = _required_account(db_path, authorization)
+        content_b64 = str(payload.get("content_b64") or "")
+        if not content_b64:
+            raise HTTPException(status_code=400, detail="log content is required")
+        try:
+            decoded = base64.b64decode(content_b64, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise HTTPException(status_code=400, detail="log content is invalid") from exc
+        if len(decoded) > 16 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="log content is too large")
+        log_name = str(payload.get("log_name") or "runtime.log").strip()[:255] or "runtime.log"
+        app_version = str(payload.get("app_version") or "").strip()[:64]
+        platform = str(payload.get("platform") or "").strip()[:64]
+        upload_id = f"logup_{secrets.token_urlsafe(18)}"
+        now = _utc_now()
+        with transaction(db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO launcher_log_uploads (
+                    upload_id, account_id, username, workspace_id, app_version,
+                    platform, log_name, log_size, content_b64, client_ip, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    upload_id,
+                    str(account["account_id"]),
+                    str(account.get("username") or ""),
+                    str(account.get("workspace_id") or "default"),
+                    app_version,
+                    platform,
+                    log_name,
+                    len(decoded),
+                    content_b64,
+                    request.client.host if request.client else "",
+                    now,
+                ),
+            )
+        return {
+            "ok": True,
+            "upload_id": upload_id,
+            "log_name": log_name,
+            "log_size": len(decoded),
+            "created_at": now,
+        }
 
     # ---- 用户反馈 ----------------------------------------------------- #
     _FEEDBACK_CATEGORIES = {"bug", "suggestion", "other"}
@@ -2236,6 +2293,15 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         nonce = os.urandom(12)
         encryptor = Cipher(algorithms.AES(session_key), modes.GCM(nonce)).encryptor()
         ciphertext = encryptor.update(plaintext) + encryptor.finalize()
+        # 审计：下发采集凭据（OneBound API key）属安全敏感操作，记录发放人。
+        with transaction(db_path) as conn:
+            _log_security_event(
+                conn,
+                row["account_id"],
+                "collect_key_issued",
+                True,
+                {"workspace_code": workspace_code},
+            )
         return {
             "ok": True,
             "payload": base64.b64encode(ciphertext).decode("ascii"),
@@ -3653,6 +3719,105 @@ def _custom_topup_amount(payload: dict[str, Any]) -> int:
     return amount_cents
 
 
+# ---------------------------------------------------------------------------
+# 中转站充值档位：与官方固定套餐并行的第二套体系。
+#
+# package_id 协议 station:<中转编号>:<金额分>。中转站的档位（最多 6 档）与倍率
+# 由中转站在自己网站上配置，经主站公告后台（wh-admin）的免登录端点读取；此处
+# 只负责校验与换算：积分 = 金额(元) × 该站倍率 × point_unit_scale，无官方赠送。
+# ---------------------------------------------------------------------------
+
+
+def _station_package_id(station_code: str, amount_cents: int) -> str:
+    """中转站档位订单的 package_id：官方套餐与中转档位是两套并行体系，用前缀区分。"""
+    return f"station:{station_code}:{int(amount_cents)}"
+
+
+def _parse_station_package_id(package_id: Any) -> tuple[str, int] | None:
+    parts = str(package_id or "").split(":")
+    if len(parts) != 3 or parts[0] != "station" or not parts[1]:
+        return None
+    try:
+        amount_cents = int(parts[2])
+    except ValueError:
+        return None
+    return (parts[1], amount_cents) if amount_cents > 0 else None
+
+
+def _station_partner_detail(station_code: str) -> dict[str, Any]:
+    """取合作中转站在其网站上配置的充值档位（≤6 档）。
+
+    经主站公告后台（wh-admin）的免登录端点读取；短缓存以避开充值页反复刷新。
+    中转站档位与官方固定套餐是两套并行体系，这里只负责取用，不参与官方换算。
+    """
+    code = str(station_code or "").strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="missing station code")
+    cache_key = f"station-partner:{code}"
+    cached = _cache.cache_get(cache_key)
+    if cached is not None:
+        return cached
+    base_url = str(default_config().announce_base_url or "").strip().rstrip("/")
+    if not base_url:
+        raise HTTPException(status_code=503, detail="station tier service is not configured")
+    from urllib.parse import quote
+
+    url = f"{base_url}/api/station-applications/public/partners/{quote(code, safe='')}"
+    try:
+        response = requests.get(url, timeout=8)
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=503, detail="station tier service is unavailable") from exc
+    if response.status_code == 404:
+        raise HTTPException(status_code=404, detail="该中转编号不是合作中的中转站")
+    try:
+        detail = response.json() or {}
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="station tier service returned invalid payload") from exc
+    if response.status_code >= 400 or not detail.get("ok"):
+        raise HTTPException(status_code=502, detail="station tier service failed")
+    _cache.cache_set(cache_key, detail, ttl=30)
+    return detail
+
+
+def _station_tier_rate(station_code: str, amount_cents: int) -> float:
+    """校验「中转编号 + 金额」确为该站已配置档位，并返回其积分倍率。"""
+    detail = _station_partner_detail(station_code)
+    if str(detail.get("station_code") or "") != str(station_code):
+        raise HTTPException(status_code=404, detail="该中转编号不是合作中的中转站")
+    for tier in detail.get("tiers") or []:
+        try:
+            if int(tier.get("amount_cents")) == int(amount_cents):
+                return float(tier.get("rate"))
+        except (TypeError, ValueError, AttributeError):
+            continue
+    raise HTTPException(status_code=400, detail="该金额档位不是中转站配置的档位")
+
+
+def _station_tier_product(
+    *,
+    station_code: str,
+    amount_cents: int,
+    rate: float,
+    pricing: dict[str, Any],
+) -> dict[str, Any]:
+    """中转档位商品：积分 = 金额(元) × 倍率，无官方固定套餐赠送。"""
+    base_points = int(
+        round((int(amount_cents) // 100) * float(rate) * int(pricing["point_unit_scale"]))
+    )
+    return {
+        "package_id": _station_package_id(station_code, amount_cents),
+        "label": f"中转站充值 {int(amount_cents) // 100} 元",
+        "amount_cents": int(amount_cents),
+        "points": _display_billing_points(base_points, pricing),
+        "base_points": _display_billing_points(base_points, pricing),
+        "promotion_bonus_points": 0,
+        "promotion_bonus_percent": 0,
+        "total_points": _display_billing_points(base_points, pricing),
+        "promotion_id": "",
+        "promotion_name": "",
+    }
+
+
 def _topup_quote(database_path: Path, payload: dict[str, Any]) -> dict[str, Any]:
     pricing = active_pricing(database_path)
     station_package = _parse_station_package_id(payload.get("package_id"))
@@ -3755,6 +3920,20 @@ def _create_topup_order(database_path: Path, account: dict[str, Any], payload: d
         ).fetchone()
         if existing is not None:
             return _topup_order_response(dict(existing), reused=True, pricing=pricing)
+        # 分站档位订单：按总部合约口径在下单时冻结返利快照，付款成功后原样计提；
+        # 官方套餐 / 自定义充值不涉及分站，快照留空。d / m / c 不下发客户端。
+        station_code = station_package[0] if station_package is not None else ""
+        tier_rate = float(station_rate or 0)
+        station_rebate = (
+            station_rebate_cents(
+                conn,
+                station_code=station_code,
+                amount_cents=int(product["amount_cents"]),
+                tier_rate=tier_rate,
+            )
+            if station_code
+            else 0
+        )
         order_id = f"billord_{secrets.token_urlsafe(18)}"
         out_trade_no = f"MP{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}{secrets.token_hex(8)}"
         conn.execute(
@@ -3763,9 +3942,9 @@ def _create_topup_order(database_path: Path, account: dict[str, Any], payload: d
                 order_id, out_trade_no, account_id, workspace_id, provider, package_id,
                 amount_cents, currency, points, base_points, promotion_bonus_points,
                 total_points, promotion_id, promotion_name, status, idempotency_key, request_hash,
-                expires_at, created_at, updated_at
+                expires_at, created_at, updated_at, station_code, tier_rate, rebate_cents
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'CNY', ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'CNY', ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 order_id,
@@ -3786,6 +3965,9 @@ def _create_topup_order(database_path: Path, account: dict[str, Any], payload: d
                 expires_at,
                 now,
                 now,
+                station_code,
+                tier_rate,
+                station_rebate,
             ),
         )
         order = conn.execute(

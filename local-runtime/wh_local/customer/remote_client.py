@@ -321,6 +321,10 @@ class CustomerAuthClient:
             f"/api/station-applications/public?account_id={quote(account_id, safe='')}",
         )
 
+    def list_partner_stations(self) -> dict[str, Any]:
+        """合作中的中转站清单（编号 + 名称），充值页下拉框用。"""
+        return self._station_request("GET", "/api/station-applications/public/partners")
+
     def get_partner_tiers(self, station_code: str) -> dict[str, Any]:
         """按中转编号取该站的充值档位，选中后档位表整体切换用。"""
         code = str(station_code or "").strip()
