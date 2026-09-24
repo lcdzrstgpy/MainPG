@@ -133,7 +133,7 @@ def test_billing_topup_order_is_pending_and_idempotent(tmp_path: Path, monkeypat
         "/api/customer/billing/topup-orders",
         json={
             "provider": "wechat",
-            "package_id": "points_10",
+            "package_id": "points_49",
             "idempotency_key": "idem_billing_test_0001",
         },
         headers=headers,
@@ -142,7 +142,7 @@ def test_billing_topup_order_is_pending_and_idempotent(tmp_path: Path, monkeypat
         "/api/customer/billing/topup-orders",
         json={
             "provider": "wechat",
-            "package_id": "points_10",
+            "package_id": "points_49",
             "idempotency_key": "idem_billing_test_0001",
         },
         headers=headers,
@@ -156,7 +156,11 @@ def test_billing_topup_order_is_pending_and_idempotent(tmp_path: Path, monkeypat
 
     summary = client.get("/api/customer/billing/summary", headers=headers).json()
     assert summary["wallet"]["available_points"] == 0
-    assert summary["recent_orders"][0]["status"] == "pending"
+    # 产品语义：recent_orders 只放已支付订单（按 paid_at 排序）；待支付单走
+    # pending_order 字段（前端支付恢复轮询用），不出现在 recent_orders 里。
+    assert summary["recent_orders"] == []
+    assert summary["pending_order"]["status"] == "pending"
+    assert summary["pending_order"]["order_id"] == first.json()["order"]["order_id"]
 
 
 def test_unverified_payment_callback_fails_closed(tmp_path: Path) -> None:
@@ -466,18 +470,18 @@ def test_remote_billing_client_normalizes_non_utf8_http_response(monkeypatch) ->
     client = CustomerAuthClient("https://customer.example.test")
 
     class NonUtf8Response:
-        def __enter__(self):
-            return self
+        # requests.Response 的最小替身：remote_client 现在走 requests.Session，
+        # 响应体非法 UTF-8 时 .text 解码出来的必然不是合法 JSON。
+        status_code = 200
+        content = b"\xff\xfe\xfd"
 
-        def __exit__(self, *_args) -> None:
-            return None
-
-        @staticmethod
-        def read() -> bytes:
-            return b"\xff\xfe\xfd"
+        @property
+        def text(self) -> str:
+            return self.content.decode("iso-8859-1")
 
     monkeypatch.setattr(
-        "wh_local.customer.remote_client.urlopen",
+        client._session,
+        "request",
         lambda *_args, **_kwargs: NonUtf8Response(),
     )
 
@@ -536,16 +540,22 @@ def test_customer_router_preserves_remote_billing_rejection_status(
 ) -> None:
     remote_auth = CustomerAuthClient("https://customer.example.test")
 
-    def reject_remote_request(*_args, **_kwargs):
-        raise HTTPError(
-            "https://customer.example.test/api/customer/billing/topup-orders",
-            status_code,
-            "rejected",
-            None,
-            BytesIO(f'{{"detail": "{detail}"}}'.encode("utf-8")),
-        )
+    class RejectedResponse:
+        # requests.Response 替身：remote_client 走 requests.Session，上游用
+        # HTTP 状态码 + JSON detail 表达拒绝（不再抛 urllib 的 HTTPError）。
+        def __init__(self) -> None:
+            self.status_code = status_code
+            self.content = f'{{"detail": "{detail}"}}'.encode("utf-8")
 
-    monkeypatch.setattr("wh_local.customer.remote_client.urlopen", reject_remote_request)
+        @property
+        def text(self) -> str:
+            return self.content.decode("utf-8")
+
+    monkeypatch.setattr(
+        remote_auth._session,
+        "request",
+        lambda *_args, **_kwargs: RejectedResponse(),
+    )
     client, local_token = _customer_router_client(remote_auth)
 
     response = client.post(

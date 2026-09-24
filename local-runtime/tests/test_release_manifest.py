@@ -120,7 +120,9 @@ def test_release_scripts_use_versioned_installer_and_preserve_installer_child() 
     assert '"dist\\MainPG-Setup-$Version.exe"' in build_script
     assert 'MAINPG_RELEASE_SIGNING_KEY_PATH is required' in build_script
     assert '"wh_local\\config.py"' in build_script
-    assert "$versionMatch = [regex]::Match($configText, '(?m)^APP_VERSION = \"[^\"]*\"$')" in build_script
+    # 版本注入：正则抽成 $versionPattern（防跨行误匹配），Match/Replace 共用同一模式。
+    assert "$versionPattern = '(?m)^APP_VERSION = \"[^\"\\r\\n]*\"(?=\\r?$)'" in build_script
+    assert "$versionMatch = [regex]::Match($configText, $versionPattern)" in build_script
     assert "if (-not $versionMatch.Success) { throw \"APP_VERSION metadata entry missing from $runtimeConfig\" }" in build_script
     assert '"taskkill", "/PID", str(pid), "/F"' in launcher
     assert '"taskkill", "/PID", str(pid), "/F", "/T"' not in launcher

@@ -78,7 +78,9 @@ def test_billing_context_uses_remote_summary_and_token() -> None:
 
     assert remote.tokens == ["remote-session"]
     assert payload["_billing"]["remote_token"] == "remote-session"
-    assert payload["_billing"]["estimated_points"] == 5
+    # legacy 费率下 text 链路 = 文本 5 + 主体识别(vision)伴生 15 = 20/条。
+    # vision 伴生预扣是产品设计（主图必填几乎必触发，预检保守计入，结算按实际退款）。
+    assert payload["_billing"]["estimated_points"] == 20
 
 
 @pytest.mark.parametrize(
@@ -115,7 +117,8 @@ def test_billing_context_rejects_insufficient_remote_balance() -> None:
         )
 
     assert caught.value.status_code == 402
-    assert "5" in caught.value.detail
+    # 预计需要 = 文本 5 + vision 伴生 15 = 20（见 estimated_points 注释）。
+    assert "20" in caught.value.detail
     assert "4" in caught.value.detail
     assert remote.tokens == ["remote-session"]
 
@@ -495,7 +498,7 @@ def test_workbook_rechecks_reserve_points_after_real_import_count(
             remote_token="remote-session",
         )
     )
-    remote = RecordingRemoteBilling(14)
+    remote = RecordingRemoteBilling(30)
     app = FastAPI()
     app.dependency_overrides[actor_from_authorization] = _actor
     app.include_router(
@@ -542,7 +545,8 @@ def test_workbook_rechecks_reserve_points_after_real_import_count(
         ]
 
         assert [response.status_code for response in responses] == [402, 402]
-        assert all("15" in response.json()["detail"] for response in responses)
+        # 3 个商品 × (文本 5 + vision 伴生 15) = 60，超过可用 14 → 两次都应 402。
+        assert all("60" in response.json()["detail"] for response in responses)
         assert counts() == before == (0, False, set())
         assert remote.tokens == ["remote-session"] * 4
     finally:

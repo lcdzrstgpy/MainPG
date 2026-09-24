@@ -15,16 +15,14 @@ from wh_local.modules.pod_customization.contracts import (
 
 
 def listing_fields() -> ListingFields:
+    # 新契约（contracts.ListingFields）：申报价/重量下沉到每个 SKU
+    #（ListingSku{name, declared_price, weight_g}），长/宽/高改由可选的
+    # spec_card 规格卡承载；旧的顶层 declared_price/length_cm/sku_prefix 等
+    # 平铺字段已废弃（extra="forbid" 会拒绝注入）。
     return ListingFields(
-        declared_price=18.5,
         suggested_price_usd=29.99,
-        length_cm=30,
-        width_cm=20,
-        height_cm=10,
-        weight_g=450,
-        category_id="123456",
-        product_code_prefix="POD-PROD",
-        sku_prefix="POD-SKU",
+        category_name="bags",
+        skus=[{"name": "POD-SKU", "declared_price": 18.5, "weight_g": 450}],
     )
 
 

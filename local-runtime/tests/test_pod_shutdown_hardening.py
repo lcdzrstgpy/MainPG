@@ -212,7 +212,8 @@ def test_worker_converts_preflight_runtime_shutdown_to_recoverable_auth_pause() 
             self.running: list[str] = []
             self.failed: list[str] = []
 
-        def mark_generation_call_running(self, call_id: str) -> None:
+        def mark_generation_call_running(self, call_id: str, _epoch: int | None = None) -> None:
+            # 产品侧签名带 execution_epoch（执行栅栏，见 worker._generate_listing_grid）。
             self.running.append(call_id)
 
         def finish_generation_call(self, call_id: str, **_kwargs) -> None:
@@ -224,6 +225,9 @@ def test_worker_converts_preflight_runtime_shutdown_to_recoverable_auth_pause() 
 
     class BillingRun:
         grant = _grant()
+        # 对齐产品侧 PodBillingRun(dataclass) 的字段：worker._generate_listing_grid 会读
+        # execution_epoch 做执行栅栏（stale worker 不得覆盖 reaper-revoked 状态）。
+        execution_epoch = 0
 
         def __init__(self) -> None:
             self.starts: list[tuple[str, str]] = []
@@ -283,13 +287,21 @@ def test_worker_shutdown_persists_planned_calls_for_regrant_resume(tmp_path) -> 
     worker._futures = {}
     worker._futures_lock = threading.Lock()
     worker._coordinator = ThreadPoolExecutor(max_workers=1)
+    # _style_postprocess_pool 是后来加进 close() 的线程池；用 object.__new__ 绕过 __init__
+    # 时必须手工补齐，否则 close() 里访问它会 AttributeError。
+    worker._style_postprocess_pool = ThreadPoolExecutor(max_workers=1)
 
     worker.close()
 
     reopened = PodCustomizationRepository(database_path)
     recovered = reopened.get_billing_run(stored["run_id"], "workspace-1", "owner-1")
-    assert recovered["status"] == "auth_required"
+    # 产品语义（repository 注释）：close() 本身不写状态（写状态在 service.py 与启动
+    # 恢复路径）；auth_required 只是 mark_billing_auth_required 的兼容别名、不再是
+    # 恢复门。真实恢复链 = 启动时 recover_billing_runs() 把中断 run 归一到
+    # settlement_pending（恢复门）→ claim_billing_resume 领取。
+    assert recovered["status"] == "authorized"
     assert [row["status"] for row in recovered["outcomes"]] == ["planned"]
+    assert reopened.recover_billing_runs() >= 1
     assert reopened.claim_billing_resume(stored["run_id"], "workspace-1", "owner-1")
 
 
