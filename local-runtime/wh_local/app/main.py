@@ -34,6 +34,7 @@ from ..config import (
     UPDATE_MANIFEST_URL,
     UPDATE_PATCH_MANIFEST_URL,
     default_config,
+    ensure_data_dir_ready,
 )
 from ..customer.auth_service import SQLiteCustomerAuthService
 from ..customer.collect_credentials import CollectCredentialsError, request_collect_credentials
@@ -340,6 +341,8 @@ class _RuntimeExitController:
 def create_app(database_path: Path | None = None) -> FastAPI:
     config = default_config()
     db_path = database_path or config.database_path
+    # 启动自检：数据目录可写（E002）+ 老库迁移到固定 AppData 目录（打包版）。
+    ensure_data_dir_ready(config, db_path)
     init_db(db_path)
     register_system_config_db_path(db_path)
     clipforge_source_root = _clipforge_source_root(config.install_root)
@@ -399,8 +402,14 @@ def create_app(database_path: Path | None = None) -> FastAPI:
             reply_sync.start()
             logger.info("lifespan step: reply_sync started")
         if clipforge_service is not None:
-            clipforge_status = clipforge_service.start()
-            logger.info("lifespan step: clipforge state=%s message=%s", clipforge_status.state, clipforge_status.message)
+            # ClipForge 是可选子服务：它出任何问题都绝不能挡住主后端启动。
+            # （打包进只读目录 / node 缺失 / 端口被占时 start() 会抛 OSError，
+            #   裸调会击穿 lifespan → 整个 8010 起不来。）
+            try:
+                clipforge_status = clipforge_service.start()
+                logger.info("lifespan step: clipforge state=%s message=%s", clipforge_status.state, clipforge_status.message)
+            except Exception as exc:  # noqa: BLE001 - 子服务故障不得阻断主程序
+                logger.warning("lifespan step: clipforge start failed (ignored): %s", exc)
         logger.info("lifespan step: startup done, yielding")
         try:
             yield
