@@ -15,6 +15,7 @@ import { useTemplateStore } from "@/lib/stores/template-store";
 import { InputSourcePanel, type InputSourceImage } from "./input-source-panel";
 import { NarrativePanel } from "./narrative-panel";
 import { OutputSchemePanel } from "./output-scheme-panel";
+import { optionCardClass, optionChipClass, SelectionCheck } from "./option-state-styles";
 import {
   EMPTY_VISUAL_CONSTRAINTS,
   VisualControlPanel,
@@ -95,9 +96,6 @@ export interface CreationBriefFormProps {
   linkImported?: boolean;
   disabled?: boolean;
 }
-
-const CHIP_CLS = "px-3 py-1.5 rounded-full border text-xs font-medium transition-all disabled:opacity-40";
-const CARD_CLS = "flex items-center justify-center h-11 rounded-lg border text-sm font-medium transition-all disabled:opacity-40";
 
 /**
  * The only stateful container of the creation brief.
@@ -340,12 +338,9 @@ export function CreationBriefForm({
                       aria-pressed={active}
                       disabled={blocked}
                       onClick={() => setCategory(active ? "" : option.id)}
-                      className={`${CHIP_CLS} ${
-                        active
-                          ? "bg-primary/15 text-primary border-primary/30"
-                          : "bg-muted/20 text-muted-foreground border-border/50 hover:border-primary/30"
-                      }`}
+                      className={optionChipClass(active)}
                     >
+                      {active && <SelectionCheck />}
                       {option.label}
                     </button>
                   );
@@ -383,12 +378,9 @@ export function CreationBriefForm({
                     aria-pressed={active}
                     disabled={blocked}
                     onClick={() => patchBrief({ targetDuration: option.id })}
-                    className={`${CARD_CLS} ${
-                      active
-                        ? "border-primary bg-primary/10 text-primary"
-                        : "border-border/50 bg-muted/20 text-muted-foreground hover:border-primary/40"
-                    }`}
+                    className={`flex h-11 items-center justify-center rounded-lg text-sm font-semibold ${optionCardClass(active)}`}
                   >
+                    {active && <SelectionCheck className="mr-1" />}
                     {option.label}
                   </button>
                 );
@@ -410,12 +402,9 @@ export function CreationBriefForm({
                         aria-pressed={active}
                         disabled={blocked}
                         onClick={() => patchBrief({ priceRange: active ? "" : option.id })}
-                        className={`${CARD_CLS} ${
-                          active
-                            ? "border-primary bg-primary/10 text-primary"
-                            : "border-border/50 bg-muted/20 text-muted-foreground hover:border-primary/40"
-                        }`}
+                        className={`flex h-11 items-center justify-center rounded-lg text-sm font-semibold ${optionCardClass(active)}`}
                       >
+                        {active && <SelectionCheck className="mr-1" />}
                         {option.label}
                       </button>
                     );
@@ -435,12 +424,9 @@ export function CreationBriefForm({
                         aria-pressed={active}
                         disabled={blocked}
                         onClick={() => toggleAudience(option.id)}
-                        className={`${CHIP_CLS} ${
-                          active
-                            ? "bg-primary/15 text-primary border-primary/30"
-                            : "bg-muted/20 text-muted-foreground border-border/50 hover:border-primary/30"
-                        }`}
+                        className={optionChipClass(active)}
                       >
+                        {active && <SelectionCheck />}
                         {option.label}
                       </button>
                     );
@@ -460,12 +446,9 @@ export function CreationBriefForm({
                         aria-pressed={active}
                         disabled={blocked}
                         onClick={() => togglePlatform(option.id)}
-                        className={`${CARD_CLS} ${
-                          active
-                            ? "border-primary bg-primary/10 text-primary"
-                            : "border-border/50 bg-muted/20 text-muted-foreground hover:border-primary/40"
-                        }`}
+                        className={`flex h-11 items-center justify-center rounded-lg text-sm font-semibold ${optionCardClass(active)}`}
                       >
+                        {active && <SelectionCheck className="mr-1" />}
                         {option.label}
                       </button>
                     );

@@ -3,6 +3,7 @@
 import { Card, CardContent } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { OUTPUT_SCHEMES, type OutputSchemeId, type OutputSchemeSnapshot } from "@/lib/output-schemes";
+import { optionCardClass, optionChipClass, SelectionCheck } from "./option-state-styles";
 
 const SCHEME_CARDS: ReadonlyArray<{
   id: OutputSchemeId;
@@ -44,11 +45,12 @@ export function OutputSchemePanel({ value, onChange, disabled }: {
                   data-scheme={card.id}
                   disabled={disabled}
                   onClick={() => onChange({ ...OUTPUT_SCHEMES[card.id] })}
-                  className={`rounded-lg border p-4 text-left transition-colors disabled:opacity-40 ${selected ? "border-primary bg-primary/10" : "border-border/50 bg-muted/20 hover:border-primary/40"}`}
+                  className={`rounded-lg p-4 text-left ${optionCardClass(selected)}`}
                 >
-                  <span className={`block text-sm font-semibold ${selected ? "text-primary" : "text-foreground"}`}>{card.title}</span>
-                  <span className="block mt-2 text-xs text-foreground">{card.chain}</span>
-                  <span className="block mt-2 text-[11px] text-muted-foreground">{card.detail}</span>
+                  {selected && <SelectionCheck className="absolute right-3 top-3" />}
+                  <span className="block pr-6 text-sm font-semibold">{card.title}</span>
+                  <span className={`mt-2 block text-xs ${selected ? "text-primary-foreground/90" : "text-foreground"}`}>{card.chain}</span>
+                  <span className={`mt-2 block text-[11px] ${selected ? "text-primary-foreground/75" : "text-muted-foreground"}`}>{card.detail}</span>
                 </button>
               );
             })}
@@ -75,8 +77,9 @@ export function OutputSchemePanel({ value, onChange, disabled }: {
                     data-audio-strategy={option.id}
                     disabled={disabled}
                     onClick={() => onChange({ ...value, audioStrategy: option.id })}
-                    className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-40 ${selected ? "border-primary/30 bg-primary/15 text-primary" : "border-border/50 bg-muted/20 text-muted-foreground hover:border-primary/30"}`}
+                    className={optionChipClass(selected)}
                   >
+                    {selected && <SelectionCheck />}
                     {option.label}
                   </button>
                 );
