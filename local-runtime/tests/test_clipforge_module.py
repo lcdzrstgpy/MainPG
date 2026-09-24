@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 from urllib.error import HTTPError
 
@@ -97,6 +98,10 @@ def test_readiness_accepts_an_http_400_response_from_next(monkeypatch) -> None:
     _wait_ready("http://127.0.0.1:8010", RunningProcess())
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows 文件系统不记录 POSIX 执行位（chmod 0o111 是 no-op），此断言只在 Linux/macOS 有意义",
+)
 def test_bundled_media_environment_makes_macos_ffprobe_executable(tmp_path: Path, monkeypatch) -> None:
     ffprobe = tmp_path / "node_modules" / "@ffprobe-installer" / "darwin-arm64" / "ffprobe"
     ffprobe.parent.mkdir(parents=True)

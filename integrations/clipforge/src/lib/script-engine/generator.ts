@@ -200,6 +200,17 @@ export function sanitizeVoiceover(text: string): string {
   return cleaned || (text || "").trim();
 }
 
+/**
+ * Coerce a LLM-supplied shot id to a positive integer, falling back to the shot's position.
+ * Exported for tests. Anything non-numeric, non-integral, <= 0 or absurdly large is rejected —
+ * the id lands in file names and Map keys, so a string must never reach those call sites.
+ */
+export function normalizeShotId(raw: unknown, index: number): number {
+  const n = Number(raw);
+  if (Number.isInteger(n) && n > 0 && n <= 10000) return n;
+  return index + 1;
+}
+
 function validateShot(shot: Partial<Shot>, index: number): Shot {
   const validTypes: Shot["type"][] = ["hook", "pain_point", "product_reveal", "demo", "social_proof", "cta"];
   const validTransitions: Shot["transition"][] = ["ai_start_end", "ai_reference", "direct_concat", "ffmpeg_fade"];
@@ -214,7 +225,10 @@ function validateShot(shot: Partial<Shot>, index: number): Shot {
     : undefined;
 
   return {
-    shotId: shot.shotId || index + 1,
+    // shotId 会进落盘文件名（asset-persistence: `${prefix}-${shotId}-...`），必须是正整数：
+    // LLM 透传的字符串 "x/../../../" 会被 join 解析成真实穿越路径 → 任意位置写文件。
+    // 同时它也是 compose 的 Map 键，非数字会静默匹配不上素材。
+    shotId: normalizeShotId(shot.shotId, index),
     type: validTypes.includes(shot.type as Shot["type"]) ? (shot.type as Shot["type"]) : "demo",
     duration: typeof shot.duration === "number" && shot.duration > 0 ? shot.duration : 3,
     description: shot.description || "",
