@@ -283,6 +283,18 @@ export function toUserMessage(raw: string): string {
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
+/** 本地后端失联/恢复广播（杀软杀子进程、后端崩溃时前端改展示提示页而非白屏）。 */
+export const BACKEND_OFFLINE_EVENT = "mainpg:backend-offline";
+export const BACKEND_ONLINE_EVENT = "mainpg:backend-online";
+
+function notifyBackendOffline(): void {
+  window.dispatchEvent(new CustomEvent(BACKEND_OFFLINE_EVENT));
+}
+
+function notifyBackendOnline(): void {
+  window.dispatchEvent(new CustomEvent(BACKEND_ONLINE_EVENT));
+}
+
 async function fetchWithTimeout(
   url: string,
   init: RequestInit,
@@ -301,6 +313,12 @@ async function fetchWithTimeout(
       // 外部主动中止（切换会话等）原样抛出，由调用方识别；超时中止转成超时文案。
       if (externalSignal?.aborted) throw error;
       throw new Error("请求超时，请稍后重试");
+    }
+    // TypeError = fetch 网络层失败（连接被拒/本地后端挂了/被杀软拦了），
+    // 转成友好文案并广播失联事件，由 BackendOfflineNotice 展示提示页。
+    if (error instanceof TypeError) {
+      notifyBackendOffline();
+      throw new Error("本地服务无响应，请检查 MainPG 后台组件是否被杀毒软件拦截");
     }
     throw error;
   } finally {
@@ -323,6 +341,9 @@ export async function httpJson<T>(path: string, options: RequestOptions = {}): P
     options.timeoutMs,
     options.signal,
   );
+
+  // 能拿到 HTTP 响应（哪怕 4xx/5xx）就说明本地后端进程还活着 → 恢复在线状态。
+  notifyBackendOnline();
 
   const contentType = response.headers.get("content-type") ?? "";
   let payload: any = {};
