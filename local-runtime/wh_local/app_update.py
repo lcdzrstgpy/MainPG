@@ -263,6 +263,11 @@ class UpdateManager:
         return self.status()
 
     def _begin(self, state: str) -> bool:
+        # 安装器已拉起（本进程即将被替换）：占住单操作槽直到进程退出，
+        # 拒绝重复 check/install（也避免重复拉起安装器）。这里靠状态门禁
+        # 而不是 _operation_lock——锁随每次操作释放，防 UAC 取消后永久锁死。
+        if self._state == "installing":
+            return False
         if not self._operation_lock.acquire(blocking=False):
             return False
         self._set_state(state, error=None, progress=None)

@@ -152,7 +152,9 @@ class SQLiteCustomerSessionStore(CustomerSessionStore):
                 """,
                 (session_id, session.user_id, _hash_token(session.token),
                  session.expires_at, now, now,
-                 session.remote_token or customer.remote_token or ""),
+                 # 安全规格：remote_token 只存进程内存（下方 _remote_tokens），
+                 # 盘上恒空串；get_session 读取时自动回退内存表，重启后自然失效。
+                 ""),
             )
         with self._remote_tokens_lock:
             self._remote_tokens[_hash_token(session.token)] = (

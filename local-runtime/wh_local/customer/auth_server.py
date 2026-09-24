@@ -3314,14 +3314,17 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
     account_id = str(account["account_id"])
     workspace_id = str(account.get("workspace_id") or "default")
     # 展示型余额/流水缓存（短 TTL）；冻结/结算/充值等写路径会主动失效。
-    pricing = active_pricing(database_path)
-    promotion = topup_promotion_status()
     # 键必须与 cache.invalidate_wallet(account_id) 删除的键一致，否则领取/充值/结算
     # 之后 30s 内刷新 summary 仍命中旧缓存（余额"不涨"）。维度差异由 30s 短 TTL 兜底。
     cache_key = f"wallet:{account_id}"
     cached = _cache.cache_get(cache_key)
     if cached is not None:
         return cached
+    # 定价/促销只在真正要算账（缓存 miss，需要查库）时才取。原先它们被放在钱包缓存
+    # 检查之前：缓存命中时结果直接被丢弃，却仍要为定价缓存 miss 白碰一次库 ——
+    # "命中缓存就不查库"这条性质就没了。
+    pricing = active_pricing(database_path)
+    promotion = topup_promotion_status()
     with transaction(database_path) as conn:
         _ensure_wallet(conn, account_id, workspace_id)
         wallet = conn.execute(
@@ -3677,6 +3680,10 @@ def _create_topup_order(database_path: Path, account: dict[str, Any], payload: d
             """,
             (order_id,),
         ).fetchone()
+    # 写路径必须失效钱包缓存：summary 的 recent_orders/余额走 30s TTL 缓存，不失效的话
+    # 刚建的充值订单在 TTL 内是"看不见"的。billing.py 的冻结/结算/充值入账都调了
+    # invalidate_wallet，这是唯一漏掉的写路径。（幂等复用分支没写库，无需失效。）
+    _cache.invalidate_wallet(account_id)
     return _topup_order_response(dict(order), reused=False, pricing=pricing)
 
 

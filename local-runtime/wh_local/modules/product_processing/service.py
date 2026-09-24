@@ -10222,14 +10222,18 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         return analysis
 
     def _media_processor(self) -> Any:
-        if self._media_instance is None:
-            with self._media_lock:
-                if self._media_instance is None:
-                    media_types = _media_types()
-                    if not media_types:
-                        raise MediaUnavailableError("图片处理依赖缺失：需要安装 requests 与 Pillow")
-                    processor_cls, _, _ = media_types
-                    self._media_instance = processor_cls(config_provider=self._media_config_provider)
+        # 半构造对象（__init__ 中途异常 / 测试 object.__new__）没有这两个属性，
+        # getattr 兜底避免 AttributeError；锁缺失时补一把（懒加载本身幂等）。
+        if getattr(self, "_media_instance", None) is not None:
+            return self._media_instance
+        lock = self.__dict__.setdefault("_media_lock", threading.Lock())
+        with lock:
+            if getattr(self, "_media_instance", None) is None:
+                media_types = _media_types()
+                if not media_types:
+                    raise MediaUnavailableError("图片处理依赖缺失：需要安装 requests 与 Pillow")
+                processor_cls, _, _ = media_types
+                self._media_instance = processor_cls(config_provider=self._media_config_provider)
         return self._media_instance
 
     @staticmethod
