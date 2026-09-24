@@ -1,4 +1,5 @@
 import { forwardRef, useEffect, useRef, type ReactNode } from "react";
+import { getTopbarVisualBottom } from "../../../shared/lib/topbar";
 import "../styles/workflowActionBar.css";
 
 type Props = {
@@ -43,7 +44,7 @@ export function useFloatingActionBar(edge: "bottom" | "top" = "bottom") {
         ? contentCard.scrollTop
         : window.scrollY || document.documentElement.scrollTop;
       const topbar = document.querySelector<HTMLElement>(".topbar-card");
-      const threshold = Math.max(0, Math.round(topbar?.getBoundingClientRect().bottom ?? 0)) + 8;
+      const threshold = Math.max(0, getTopbarVisualBottom(topbar)) + 8;
       if (!stuck) naturalTop = bar.getBoundingClientRect().top + scrollTop;
       const viewportTop = naturalTop - scrollTop;
 
@@ -65,6 +66,9 @@ export function useFloatingActionBar(edge: "bottom" | "top" = "bottom") {
         const spacerRect = spacer.getBoundingClientRect();
         bar.style.left = `${Math.round(spacerRect.left)}px`;
         bar.style.width = `${Math.round(spacerRect.width)}px`;
+        // 吸顶期间顶栏会收起/展开（视觉下沿移动），top 必须跟着走，
+        // 否则工具栏会悬在半空或压住内容。
+        if (edge === "top") bar.style.top = `${threshold}px`;
         if (viewportTop > threshold) {
           stuck = false;
           reset();

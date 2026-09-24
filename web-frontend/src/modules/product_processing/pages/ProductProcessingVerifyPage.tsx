@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useChangePoller } from '../../../shared/hooks/useChangePoller';
+import { getTopbarVisualBottom } from '../../../shared/lib/topbar';
 import { SkuBatchManager } from '../components/SkuBatchManager';
 import { ProductFlowCard } from '../components/ProductFlowSteps';
 import { ppRequest, type ApiContext } from '../api/client';
@@ -182,11 +183,9 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenPrecheck,
     };
 
     const apply = () => {
-      let topbarBottom = 0;
-      if (topbar) {
-        const rect = topbar.getBoundingClientRect();
-        if (rect.bottom > 0) topbarBottom = Math.round(rect.bottom);
-      }
+      // 取顶栏的**视觉**底部：收起态下 .topbar-card 的 bottom 不变（主行 visibility:hidden
+      // 仍占位），真正上移的是标签行的 translateY —— 详见 shared/lib/topbar.ts。
+      const topbarBottom = getTopbarVisualBottom(topbar);
       const needStick = spacer.getBoundingClientRect().top <= topbarBottom + 6;
       if (needStick) {
         applyStickyLayout(topbarBottom);
