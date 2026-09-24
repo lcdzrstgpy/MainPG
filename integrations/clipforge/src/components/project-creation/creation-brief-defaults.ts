@@ -1,5 +1,4 @@
 import {
-  DEFAULT_CREATION_BRIEF,
   type AudioStrategy,
   type InputMode,
   type OutputStrategy,
@@ -252,10 +251,10 @@ export function audioStrategyLabel(id: AudioStrategy): string {
 
 /**
  * Native film carries its own audio track, so the brief must record it. The other strategies keep
- * the shared default instead of being silently re-routed to another audio source.
+ * the strategy's own TTS default instead of inheriting native film's audio source.
  */
 export function defaultAudioStrategyFor(strategy: OutputStrategy): AudioStrategy {
-  return strategy === "native-film" ? "native-audio" : DEFAULT_CREATION_BRIEF.audioStrategy;
+  return strategy === "native-film" ? "native-audio" : "volcengine-tts";
 }
 
 /**
@@ -281,11 +280,6 @@ export interface CreationBriefFormValidationInput {
    * 因此不再强制用户额外手工上传图片；其余来源仍然至少要一张商品图。
    */
   linkImported?: boolean;
-  /**
-   * 用户是否真的点选过一次出片策略卡。缺省或 `false` 都视为「尚未选择」：
-   * 默认高亮 `draft` 不再是隐式选择，避免用户不点就进入静态草稿链路。
-   */
-  strategyChosen?: boolean;
 }
 
 export interface CreationBriefFormValidation {
@@ -294,7 +288,6 @@ export interface CreationBriefFormValidation {
     productName?: string;
     images?: string;
     topic?: string;
-    outputStrategy?: string;
   };
 }
 
@@ -309,7 +302,5 @@ export function validateCreationBriefForm(input: CreationBriefFormValidationInpu
     const linkCarriesImages = input.inputMode === "link" && input.linkImported === true;
     if (!linkCarriesImages && input.images.length < 1) errors.images = "请至少上传 1 张商品图";
   }
-  // 默认高亮的 draft 不算「已选择」：必须点过一次策略卡才放行
-  if (input.strategyChosen !== true) errors.outputStrategy = "请先选择一个出片策略";
   return { valid: Object.keys(errors).length === 0, errors };
 }
