@@ -67,7 +67,7 @@ export function SystemAdminPage() {
   const [items, setItems] = useState<Record<string, PricingSubItem>>({});
   const [maxChargePerLink, setMaxChargePerLink] = useState(0);
   const [freezePerLink, setFreezePerLink] = useState(0);
-  const [ttlDays, setTtlDays] = useState(7);
+  const [ttlHours, setTtlHours] = useState(6);
   const [editOpen, setEditOpen] = useState(false);
   const [draftItems, setDraftItems] = useState<Record<string, number>>({});
   const [changeReason, setChangeReason] = useState("");
@@ -90,7 +90,7 @@ export function SystemAdminPage() {
       setItems(payload.pricing.items ?? {});
       setMaxChargePerLink(payload.pricing.max_charge_per_link);
       setFreezePerLink(payload.pricing.freeze_per_link);
-      setTtlDays(payload.pricing.ttl_days);
+      setTtlHours(payload.pricing.ttl_hours);
       setPodRuleVersion(podPayload.pricing.rule_version);
       setPodItems(podPayload.pricing.items as Record<string, PricingSubItem>);
     } catch (cause) {
@@ -183,7 +183,7 @@ export function SystemAdminPage() {
       setItems(payload.pricing.items ?? {});
       setMaxChargePerLink(payload.pricing.max_charge_per_link);
       setFreezePerLink(payload.pricing.freeze_per_link);
-      setTtlDays(payload.pricing.ttl_days);
+      setTtlHours(payload.pricing.ttl_hours);
       setEditOpen(false);
       setMessage(`定价已更新（规则版本 v${payload.pricing.rule_version}）`);
     } catch (cause) {
@@ -273,7 +273,7 @@ export function SystemAdminPage() {
             <span>当前规则版本：<strong>v{ruleVersion}</strong></span>
             <span>单条最高：<strong>{maxChargePerLink} 积分</strong></span>
             <span>冻结单价：<strong>{freezePerLink} 积分/条</strong></span>
-            <span>冻结 TTL：<strong>{ttlDays} 天自动释放</strong></span>
+            <span>冻结 TTL：<strong>{ttlHours} 小时自动释放</strong></span>
           </div>
           <table className="settings-table">
             <thead>

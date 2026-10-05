@@ -68,6 +68,7 @@ class ComboKitRepository:
                 "image_results_json", "error_message", "fusion_prompt",
                 "declared_price", "length_cm", "width_cm", "height_cm", "weight_g",
                 "stock", "category_name", "suggested_price_usd", "id_type", "id_code",
+                "generation_mode", "watermark_json",
                 "created_at", "updated_at")
         with self._connect() as connection:
             connection.execute(
@@ -82,7 +83,8 @@ class ComboKitRepository:
                    "status", "stage", "text_result_json", "image_results_json", "error_message",
                    "fusion_prompt",
                    "declared_price", "length_cm", "width_cm", "height_cm", "weight_g",
-                   "stock", "category_name", "suggested_price_usd", "id_type", "id_code")
+                   "stock", "category_name", "suggested_price_usd", "id_type", "id_code",
+                   "generation_mode", "watermark_json")
         with self._connect() as connection:
             existing = self._get_set_row(connection, set_id)
             if existing is None:
@@ -128,7 +130,7 @@ class ComboKitRepository:
     def _set_dict(self, row: sqlite3.Row) -> dict[str, object]:
         data = self._row_keys(row)
         return _parse_json_fields(data, ("bullets_json", "attributes_json", "sku_specs_json",
-                                         "text_result_json", "image_results_json"))
+                                         "text_result_json", "image_results_json", "watermark_json"))
 
     # ---- 子商品素材 ----
 
@@ -338,6 +340,43 @@ class ComboKitRepository:
             data = self._row_keys(row)
             return _parse_json_fields(data, ("prompt_snapshot_json", "result_json"))
 
+    def update_task(self, set_id: str, task_type: str, values: dict[str, object]) -> dict[str, object]:
+        """局部更新任务（状态/进度/结果/错误），未提供的字段保持不变。"""
+        allowed = ("status", "result_json", "attempt_count", "error_kind", "error_message",
+                   "started_at", "finished_at")
+        with self._connect() as connection:
+            existing = connection.execute(
+                "SELECT 1 FROM combo_kit_tasks WHERE set_id = ? AND task_type = ?",
+                (set_id, task_type),
+            ).fetchone()
+            if existing is None:
+                raise KeyError(set_id)
+            assignments = []
+            params: list[object] = []
+            for key in allowed:
+                if key in values:
+                    assignments.append(f"{key} = ?")
+                    params.append(values[key])
+            if not assignments:
+                return self.get_task(set_id, task_type)
+            params.extend((set_id, task_type))
+            connection.execute(
+                f"UPDATE combo_kit_tasks SET {', '.join(assignments)} WHERE set_id = ? AND task_type = ?",
+                tuple(params),
+            )
+        return self.get_task(set_id, task_type)
+
+    def list_active_tasks(self) -> list[dict[str, object]]:
+        """列出仍未结束的任务（queued/running）：进程重启后据此标记中断。"""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM combo_kit_tasks WHERE status IN ('queued', 'running')"
+            ).fetchall()
+            return [
+                _parse_json_fields(self._row_keys(row), ("prompt_snapshot_json", "result_json"))
+                for row in rows
+            ]
+
     # ---- 扣费记录 ----
 
     def add_billing(self, values: dict[str, object]) -> dict[str, object]:
@@ -485,6 +524,8 @@ def _default_for(column: str) -> object:
         "suggested_price_usd": 0,
         "id_type": "",
         "id_code": "",
+        "generation_mode": "bundle",
+        "watermark_json": "{}",
         "subject_keywords": "",
         "mask_json": "{}",
         "subject_parsed_json": "{}",

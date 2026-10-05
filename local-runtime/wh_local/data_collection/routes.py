@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+import asyncio
 import hashlib
 import json
 import math
@@ -13,8 +14,19 @@ from urllib.parse import urlsplit, urlunsplit
 import re
 import threading
 
-from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Response
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Body,
+    Depends,
+    HTTPException,
+    Query,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from starlette.concurrency import run_in_threadpool
 
 from .budget import UnlimitedApiBudget
 from .contracts import DailySelectionContractError
@@ -142,6 +154,14 @@ class DailySelectionRouteDependencies:
             run_id_factory=self.run_id_factory,
             existing_source_refs=existing_source_refs,
         )
+
+
+# The browser connector opens ``/plugin/session/{id}`` as its realtime command
+# channel.  The route has to answer quickly enough to feel live and cheaply
+# enough to keep one SQLite query per connected browser in the local runtime.
+_PLUGIN_SOCKET_POLL_INTERVAL_SECONDS = 1.5
+_PLUGIN_SOCKET_AUTH_CLOSE_CODE = 4401
+_PLUGIN_SOCKET_UNAVAILABLE_CLOSE_CODE = 1013
 
 
 def register_daily_selection_routes(
@@ -397,6 +417,79 @@ def register_daily_selection_routes(
             workspace_id=actor.workspace_id,
             capabilities=capabilities if isinstance(capabilities, Mapping) else {},
         )
+
+    # Realtime command channel for the browser connector.  The connector has
+    # always dialled ``/plugin/session/{id}``; without this route the socket
+    # never opened and every command had to wait for the 1 minute alarm poll.
+    # It reuses the same queue, so a command is still handed out exactly once.
+    @router.websocket("/plugin/session/{session_id}")
+    async def plugin_session_socket(
+        websocket: WebSocket,
+        session_id: str,
+        token: str = Query(default=""),
+    ) -> None:
+        if plugin_queue is None:
+            await websocket.close(code=_PLUGIN_SOCKET_UNAVAILABLE_CLOSE_CODE)
+            return
+        if not token:
+            await websocket.close(code=_PLUGIN_SOCKET_AUTH_CLOSE_CODE)
+            return
+        try:
+            bound_session_id = await run_in_threadpool(
+                plugin_queue.session_id_for_token, token
+            )
+        except PermissionError:
+            await websocket.close(code=_PLUGIN_SOCKET_AUTH_CLOSE_CODE)
+            return
+        if session_id != str(bound_session_id):
+            await websocket.close(code=_PLUGIN_SOCKET_AUTH_CLOSE_CODE)
+            return
+
+        await websocket.accept()
+        close_code = 1000
+        try:
+            while True:
+                try:
+                    # The connector never sends payloads; an incoming frame only
+                    # ends the wait early, keeping this loop the single owner of
+                    # both liveness detection and command delivery.
+                    await asyncio.wait_for(
+                        websocket.receive_text(),
+                        timeout=_PLUGIN_SOCKET_POLL_INTERVAL_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    pass
+                try:
+                    commands = await run_in_threadpool(plugin_queue.poll, token, limit=10)
+                except PermissionError:
+                    # The session was removed while the socket stayed open.
+                    close_code = _PLUGIN_SOCKET_AUTH_CLOSE_CODE
+                    break
+                if not commands:
+                    continue
+                await websocket.send_json(
+                    {
+                        "type": "commands",
+                        "commands": [
+                            {
+                                "id": command.command_id,
+                                "command_type": command.command_type,
+                                "payload": command.payload,
+                                "status": command.status,
+                            }
+                            for command in commands
+                        ],
+                        # The local runtime only serves the root entry, where the
+                        # connector derives the legacy tenant context itself.
+                        "tenant_context": None,
+                    }
+                )
+        except (WebSocketDisconnect, RuntimeError):
+            return
+        try:
+            await websocket.close(code=close_code)
+        except RuntimeError:
+            return
 
     @router.post("/desktop/data-collection/temu-link/collect", response_model=PluginCommand)
     def queue_temu_link(

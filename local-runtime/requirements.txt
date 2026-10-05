@@ -17,4 +17,7 @@ Pillow>=11.0,<13
 numpy>=2.0,<3
 onnxruntime>=1.20,<2
 rapidocr-onnxruntime>=1.4,<2
+# 组合套装主体自动框选：rembg 本地分割（isnet-general-use 权重），走已有 onnxruntime。
+# 传递依赖会带入 opencv-python-headless（autosegment 的轮廓处理依赖）。
+rembg>=2.0.50,<3
 redis>=5.0

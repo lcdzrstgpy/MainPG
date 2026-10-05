@@ -114,3 +114,16 @@ class LocalSessionService:
         if not callable(resolver):
             return ""
         return str(resolver(user_id, workspace_id) or "")
+
+    def release_all_sessions(self) -> list[str]:
+        """退出前释放会话：撤销本机全部本地会话，并返回需远端登出的 token。
+
+        远端 token 只由进程内存持有，进程退出后即不可恢复，因此调用方必须在这之前
+        用它完成远端登出，否则远端会残留一个"活跃"平台会话。
+        """
+        lister = getattr(self.store, "active_remote_tokens", None)
+        remote_tokens = list(lister()) if callable(lister) else []
+        revoker = getattr(self.store, "revoke_all_sessions", None)
+        if callable(revoker):
+            revoker()
+        return remote_tokens

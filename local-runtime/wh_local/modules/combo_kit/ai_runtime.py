@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,7 +15,34 @@ from typing import Any
 
 from ..product_processing.doubao_ark import DoubaoArkClient, DoubaoArkError
 from ..product_processing.infrastructure.media import ProductImageProcessor
-from .contracts import IMAGE_ROLES, ComboKitValidationError
+from .contracts import DEFAULT_GENERATION_MODE, IMAGE_ROLES, ComboKitValidationError
+from .prompts import VIEW_LABEL_SET, VIEW_OTHER
+
+# 视角识别：单品多视角选型的参考图是同一商品的不同机位，但机位信息过去从未进入提示词
+# （主图提示词里拿到的只是各图的商品名），模型只能自己在多张图里挑一个角度，于是俯视/
+# 底部图完全没用上、所有成品图反复回到同一机位。因此单独做一次轻量视觉识别，把每张图
+# 的机位落库，供后续「按角色分配参考图」与「指定输出视角」使用。
+VIEW_CLASSIFY_PROMPT = """You are given several product photos of the SAME single product, in a fixed order.
+For EACH photo, identify the camera angle the product is photographed from.
+Use ONLY one of these exact labels:
+- "front view"         (looking straight at the product's front face)
+- "back view"          (looking at the side opposite the front face)
+- "left side view"     (straight side profile: the product's left side faces the camera)
+- "right side view"    (straight side profile: the product's right side faces the camera)
+- "top view"           (looking straight down onto the product's top surface)
+- "bottom view"        (the underside is clearly visible)
+- "three-quarter view" (an angled perspective showing the front and one side together)
+- "other view"         (cannot be determined, or none of the above fits)
+Ignore background, props, hands, packaging, logos and text. Judge only the product's orientation.
+Return exactly one JSON object with no Markdown and no extra text:
+{"views": ["<label for image 1>", "<label for image 2>", ...]}
+The array must contain exactly one label per supplied image, in the same order.
+"""
+
+# 单次机位识别的图片上限：一张套装最多几张来源图，超出部分不再识别（退化为无标签）。
+MAX_VIEW_IMAGES = 8
+# 机位识别缩略图边长：机位判断不需要细节，缩略图可避免多图 base64 撑爆请求体。
+VIEW_THUMBNAIL_SIDE = 512
 
 
 def _now() -> str:
@@ -48,33 +76,51 @@ class ComboKitAiRuntime:
         )
         return analysis
 
+    # ---- 机位识别（单品多视角：给每张来源图打视角标签） ----
+    def classify_view_labels(self, *, image_paths: list[str]) -> list[str]:
+        return classify_view_labels(image_paths=image_paths)
+
     # ---- 文本生成（标题 + 详情描述 + 五点） ----
     def generate_text(self, *, prompt: str) -> dict[str, Any]:
         result = generate_combo_text(prompt)
         return result
 
-    # ---- 融合套装主图（主体解析后立即生成，作为第 1 张成品图复用） ----
+    # ---- 套装主图（主体解析后立即生成，作为第 1 张成品图复用） ----
+    # bundle：多件商品融合成一张套装主图；multiview：同一商品多视角直接出商品主图。
     def generate_fusion_main(
         self,
         *,
         reference_values: list[str],
         set_name: str,
         subject_summaries: list[str],
+        view_labels: list[str] | None = None,
+        output_view: str = "",
         primary_subject: str = "",
         custom_prompt: str = "",
+        mode: str = DEFAULT_GENERATION_MODE,
     ) -> dict[str, Any]:
         from .generation import _make_media_processor
-        from .prompts import build_fusion_main_prompt
+        from .prompts import build_fusion_main_prompt, build_multiview_main_prompt
 
         processor = self._media or _make_media_processor()
         if not processor:
-            raise ComboKitValidationError("融合主图处理器不可用")
-        prompt = build_fusion_main_prompt(
-            set_name=set_name,
-            subject_summaries=subject_summaries,
-            primary_subject=primary_subject,
-            custom_prompt=custom_prompt,
-        )
+            raise ComboKitValidationError("套装主图处理器不可用")
+        if mode == "multiview":
+            # 主图只送该角色匹配的视角（reference_values 已按角色筛过），机位清单必须与
+            # 送出的参考图一一对应，否则模型会把机位张冠李戴。
+            prompt = build_multiview_main_prompt(
+                set_name=set_name,
+                reference_views=list(view_labels or []),
+                output_view=output_view,
+                custom_prompt=custom_prompt,
+            )
+        else:
+            prompt = build_fusion_main_prompt(
+                set_name=set_name,
+                subject_summaries=subject_summaries,
+                primary_subject=primary_subject,
+                custom_prompt=custom_prompt,
+            )
         media = processor.generate(
             stage="main",
             prompt=prompt,
@@ -105,12 +151,14 @@ class ComboKitAiRuntime:
         title: str = "",
         category: str = "",
         roles: list[str] | None = None,
+        references_by_role: dict[str, list[str]] | None = None,
     ) -> list[dict[str, Any]]:
         from .generation import generate_combo_images
 
         return generate_combo_images(
             media_processor=self._media,
             reference_values=reference_values,
+            references_by_role=references_by_role,
             prompts=prompts,
             fusion_content=fusion_content,
             fusion_suffix=fusion_suffix,
@@ -232,6 +280,72 @@ def _subject_fallback(fallback_title: str, reason: str) -> dict[str, Any]:
     }
 
 
+def classify_view_labels(*, image_paths: list[str]) -> list[str]:
+    """识别每张来源图的拍摄机位，返回与 image_paths 等长的机位标签列表。
+
+    仅单品多视角选型使用：机位标签让「按角色分配参考图」与「指定输出视角」成为可能。
+    任何一步失败（图片读不出、视觉通道不可用、返回长度不符、标签非法）都返回空列表，
+    调用方退化为「不按视角分配参考图」的旧行为，绝不阻断生图主流程。
+    """
+    paths = [str(path or "").strip() for path in image_paths][:MAX_VIEW_IMAGES]
+    if not paths:
+        return []
+    data_urls = [_thumbnail_data_url(path) for path in paths]
+    if any(not value for value in data_urls):
+        return []
+    content: list[dict[str, Any]] = [{"type": "text", "text": VIEW_CLASSIFY_PROMPT}]
+    content.extend(
+        {"type": "image_url", "image_url": {"url": value}} for value in data_urls
+    )
+    try:
+        reply = _ark_client().complete([{"role": "user", "content": content}])
+    except DoubaoArkError:
+        return []
+    return _parse_view_labels(reply, expected=len(data_urls))
+
+
+def _parse_view_labels(content: str, *, expected: int) -> list[str]:
+    try:
+        payload = json.loads(content)
+    except (TypeError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, dict):
+        return []
+    views = payload.get("views")
+    # 长度不符说明模型漏答/多答，机位与图片的对应关系已不可信，整体作废。
+    if not isinstance(views, list) or len(views) != expected:
+        return []
+    labels: list[str] = []
+    for value in views:
+        label = str(value or "").strip().lower()
+        labels.append(label if label in VIEW_LABEL_SET else VIEW_OTHER)
+    return labels
+
+
+def _thumbnail_data_url(path: str, max_side: int = VIEW_THUMBNAIL_SIDE) -> str:
+    """把本地图片压成小尺寸 JPEG data URL；读不出或不是图片时返回空串。"""
+    raw = str(path or "").strip()
+    if not raw:
+        return ""
+    file_path = Path(raw)
+    if not file_path.is_file():
+        return ""
+    try:
+        from PIL import Image
+
+        with Image.open(file_path) as image:
+            thumbnail = image.convert("RGB")
+            thumbnail.thumbnail((max_side, max_side))
+            buffer = io.BytesIO()
+            thumbnail.save(buffer, format="JPEG", quality=80)
+    except Exception:
+        return ""
+    data = buffer.getvalue()
+    if not data:
+        return ""
+    return "data:image/jpeg;base64," + base64.b64encode(data).decode("ascii")
+
+
 def generate_combo_text(prompt: str) -> dict[str, Any]:
     """组合套装文本：标题 + 详情描述 + 五点特性。strict JSON 合同。
 
@@ -307,5 +421,6 @@ def _ark_client() -> DoubaoArkClient:
 __all__ = [
     "ComboKitAiRuntime",
     "analyze_subject_with_mask",
+    "classify_view_labels",
     "generate_combo_text",
 ]

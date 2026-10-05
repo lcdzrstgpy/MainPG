@@ -1078,6 +1078,17 @@ class PreviewImageService:
             raise LookupError("preview finalization run not found")
         return self._public_run(run)
 
+    def list_finalize_runs(
+        self, task_id: int, *, workspace_id: str, limit: int = 10
+    ) -> list[dict[str, Any]]:
+        """该任务的历史导出记录（按时间倒序），供用户找回已下载的表格。"""
+        return [
+            self._public_run(run)
+            for run in self.repository.list_finalize_runs(
+                task_id, workspace_id=workspace_id, limit=limit
+            )
+        ]
+
     def retry_finalize(
         self,
         run_id: str,
@@ -2236,6 +2247,7 @@ class PreviewImageService:
             "file": Path(str(run.get("workbook_path") or "")).name if ready else "",
             "row_count": int(run.get("row_count") or 0),
             "product_count": int(run.get("product_count") or 0),
+            "created_at": str(run.get("created_at") or ""),
             "download": (
                 f"/api/product-processing/tasks/{task_id}/preview/finalize/{run_id}/download"
                 if ready

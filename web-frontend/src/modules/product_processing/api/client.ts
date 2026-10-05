@@ -34,9 +34,13 @@ function authHeaders(context: ApiContext): HeadersInit {
   return headers;
 }
 
-const DEFAULT_TIMEOUT_MS = 30_000;
+// 本模块的请求多为长耗时任务：SKU 规格图批量 OCR（本地 CPU 推理，单批 20 条链接）、
+// 近百条商品的结果预检聚合、导出收尾等，受本机 SQLite 锁与 OCR 推理排队影响，
+// 几十秒到数分钟都属正常，30s 短限会把正常慢请求误杀成「请求超时」。
+// 这里只保留 10 分钟上限做挂死兜底，不再对慢请求设短限。
+const DEFAULT_TIMEOUT_MS = 10 * 60_000;
 
-/** 带超时的 fetch：慢请求挂起会无限堆积，30s 后强制中断并给出可读错误。 */
+/** 带超时的 fetch：慢请求挂起会无限堆积，10 分钟后强制中断并给出可读错误。 */
 function fetchWithTimeout(input: string, init: RequestInit, timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<Response> {
   const controller = new AbortController();
   const externalSignal = init.signal ?? null;

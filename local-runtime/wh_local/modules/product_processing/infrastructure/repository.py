@@ -866,7 +866,10 @@ class ProductProcessingRepository:
         草稿（processing / processed）是任务预检页与最终店小秘表格导出的数据
         来源（preview_overrides、media_contract_version），超时也不清理。
 
-        批次入口时间取该批次池内草稿的最早创建时间；未分组草稿（selection_run_id
+        过期判据取该批次池内草稿的**最近一次更新时间**（``max(updated_at)``）：
+        命中去重的草稿被重新入池时只刷新 ``updated_at``/``selection_run_id``，
+        ``created_at`` 仍是几天前的旧值，若按 ``min(created_at)`` 判定，重采产生的
+        新批次会被整批误删（连同刚新建的草稿）。未分组草稿（selection_run_id
         为空）按同规则一并清理。写操作必须在 ``sessions.begin()`` 内提交，否则
         事务在会话关闭时回滚，清理不会落库。
         """
@@ -875,14 +878,14 @@ class ProductProcessingRepository:
             statement = (
                 select(
                     ProductDraftRow.selection_run_id,
-                    func.min(ProductDraftRow.created_at).label("first_created_at"),
+                    func.max(ProductDraftRow.updated_at).label("latest_updated_at"),
                 )
                 .where(
                     ProductDraftRow.workspace_id == workspace_id,
                     ProductDraftRow.status == "draft",
                 )
                 .group_by(ProductDraftRow.selection_run_id)
-                .having(func.min(ProductDraftRow.created_at) < cutoff)
+                .having(func.max(ProductDraftRow.updated_at) < cutoff)
             )
             expired = session.execute(statement).all()
             removed = 0

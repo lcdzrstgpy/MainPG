@@ -1182,6 +1182,33 @@ class PreviewImageRepository:
             )
             return self._run(row) if row else None
 
+    def list_finalize_runs(
+        self,
+        task_id: int,
+        *,
+        workspace_id: str,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """按时间倒序列出该任务的最终导出记录。
+
+        导出的表格由服务端落盘，run 记录也一直在库里；这个列表是「用户把下载下来的
+        文件弄丢、又记不起是哪一次」时的找回入口。
+        """
+        with self.database.sessions() as session:
+            rows = session.scalars(
+                select(PreviewFinalizeRunRow)
+                .where(
+                    PreviewFinalizeRunRow.workspace_id == str(workspace_id),
+                    PreviewFinalizeRunRow.task_id == int(task_id),
+                )
+                .order_by(
+                    PreviewFinalizeRunRow.created_at.desc(),
+                    PreviewFinalizeRunRow.id.desc(),
+                )
+                .limit(max(1, int(limit)))
+            ).all()
+            return [self._run(row) for row in rows]
+
     def claim_finalize_run(
         self,
         run_id: str,

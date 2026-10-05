@@ -673,22 +673,6 @@ class ProfitActivityService:
             raise ValueError("kind must be filtered or removed")
         return Path(result[f"{kind}_path"])
 
-    def save_filter_output(self, task_id: int, kind: str, actor: Any | None = None) -> Path:
-        """把已生成的可申报/剔除文件复制到本地保存目录（save_root），方便用户直接在该目录取用。"""
-        import shutil
-
-        result = self.get_filter_task_legacy(task_id, actor)
-        if kind not in {"filtered", "removed"}:
-            raise ValueError("kind must be filtered or removed")
-        source = Path(result[f"{kind}_path"])
-        if not source.exists():
-            raise ProfitActivityNotFound("filter_output_missing")
-        names = {"filtered": "可申报产品", "removed": "剔除产品"}
-        root = self._asset_root(self.get_settings(actor).settings)
-        target = root / f"{names[kind]}_{task_id}.xlsx"
-        shutil.copyfile(source, target)
-        return target
-
     def import_image_path(self, import_id: str, row_id: str, kind: str, actor: Any | None = None) -> Path:
         context = _actor_context(actor)
         session = self._repository.get_import_session(import_id, context.workspace_id)

@@ -16,7 +16,7 @@ export type PricingItemsPayload = {
     max_charge_units_per_link: number;
     freeze_per_link: number;
     freeze_units_per_link: number;
-    ttl_days: number;
+    ttl_hours: number;
     items: Record<string, PricingSubItem>;
     effective_at: string;
   };

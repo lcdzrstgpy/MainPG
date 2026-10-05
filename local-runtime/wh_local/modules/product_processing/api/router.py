@@ -57,6 +57,7 @@ from .schemas import (
     ListingAdviceRequest,
     MiaoshouExportRequest,
     PreviewAssetImportRequest,
+    PreviewExcludeRequest,
     PreviewFinalizeRequest,
     PreviewSaveRequest,
     PromptTemplateRequest,
@@ -853,6 +854,21 @@ def create_product_processing_router(
             workspace_id=_workspace(workspace_id),
         )
 
+    @router.post("/tasks/{task_id}/preview/items/exclude")
+    def exclude_preview_items(
+        task_id: int,
+        body: PreviewExcludeRequest,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        # 批量排除/恢复：一次写入任务设置并返回轻量结果，避免逐条重建整份预检导致的请求超时。
+        return _call(
+            service.set_preview_items_excluded,
+            task_id,
+            body.draft_ids,
+            excluded=body.excluded,
+            workspace_id=_workspace(workspace_id),
+        )
+
     @router.post("/tasks/{task_id}/preview/items/{draft_id}/regenerate-detail")
     def regenerate_preview_detail(
         task_id: int,
@@ -981,6 +997,26 @@ def create_product_processing_router(
             idempotency_key=str(idempotency_key or "").strip(),
             export_format=body.export_format,
         )
+
+    @router.get("/tasks/{task_id}/preview/finalize-runs")
+    def list_preview_finalize_runs(
+        task_id: int,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        """该任务的历史导出记录。
+
+        导出的表格是服务端落盘的，记录一直在库里；前端原先只把 run id 存在页面会话里，
+        关掉页面就再也找不到之前生成的表格，只能反复点「完成预审并导出」并撞幂等冲突。
+        """
+        return {
+            "runs": _call(
+                service.list_preview_finalize_runs,
+                task_id,
+                workspace_id=_workspace(workspace_id),
+                limit=limit,
+            )
+        }
 
     @router.get("/tasks/{task_id}/preview/finalize/{run_id}")
     def preview_finalize_status(

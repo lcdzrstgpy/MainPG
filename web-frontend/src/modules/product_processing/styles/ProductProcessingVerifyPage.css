@@ -1384,12 +1384,23 @@
 
 .precheck-card-head {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 54px;
+  grid-template-columns: 22px minmax(0, 1fr) 54px;
   align-items: center;
   gap: 8px;
   min-width: 0;
   padding-right: 12px;
   overflow: hidden;
+}
+
+.precheck-item-select {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.precheck-bulk-delete-btn {
+  white-space: nowrap;
 }
 
 .precheck-card-head .precheck-card-toggle {
@@ -5577,3 +5588,90 @@
 [data-theme] .verify-batch-mask { background: var(--theme-module-overlay); }
 
 @keyframes verify-batch-drawer-in { from { transform: translateX(24px); opacity: .4; } to { transform: translateX(0); opacity: 1; } }
+
+/* 历史导出：导出的表格一直保存在本机，但结果卡片只活在当前页面会话里，
+   关掉页面用户就找不到文件了。这块常驻列表提供「重新下载」入口。 */
+.precheck-finalize-history {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding: 14px 18px;
+  border: 1px solid #cfe2ee;
+  border-left: 4px solid #6b7f92;
+  border-radius: 12px;
+  background: #fbfdff;
+}
+
+.precheck-finalize-history > header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.precheck-finalize-history h2 {
+  margin: 0;
+  color: #203f57;
+  font-size: 0.95rem;
+}
+
+.precheck-finalize-history > header span {
+  color: #7190a5;
+  font-size: 0.76rem;
+}
+
+.precheck-finalize-history ul {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.precheck-finalize-history li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid #e2edf5;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.precheck-finalize-history li > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.precheck-finalize-history li strong {
+  color: #203f57;
+  font-size: 0.82rem;
+}
+
+.precheck-finalize-history li span {
+  overflow: hidden;
+  color: #7190a5;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.precheck-finalize-history li button {
+  flex: none;
+  padding: 6px 12px;
+  border: 1px solid #b4d7e9;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #0a7fae;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.precheck-finalize-history li button:disabled {
+  border-color: #dbe6ee;
+  color: #9aa9b5;
+  cursor: not-allowed;
+}

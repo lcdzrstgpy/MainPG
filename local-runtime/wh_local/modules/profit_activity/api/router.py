@@ -491,15 +491,6 @@ def create_profit_activity_router(
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
         return FileResponse(path, filename=path.name, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-    @router.post("/activity-filter/{task_id}/save")
-    def filter_save(task_id: int, kind: Literal["filtered", "removed"] = "filtered", actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
-        require_permission(actor, "profit_activity.export", database_path)
-        try:
-            saved_path = service.save_filter_output(task_id, kind, actor)
-        except (ProfitActivityNotFound, ValueError) as exc:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
-        return {"saved_path": str(saved_path)}
-
     return router
 
 

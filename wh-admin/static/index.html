@@ -29,6 +29,41 @@
   flex: none;
 }
 .nav-badge[hidden] { display: none; }
+
+/* 分站申请：卡片式列表 */
+.sa-list {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+}
+.sa-card {
+  min-width: 0;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+.sa-card-head { display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap; }
+.sa-card-head .sa-title { font-size: 14px; font-weight: 600; }
+.sa-card-head .sa-badges { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
+.sa-kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px 12px; }
+.sa-kv .sa-item { min-width: 0; }
+.sa-kv .sa-item .k { font-size: 11.5px; color: var(--muted-foreground); }
+.sa-kv .sa-item .v { font-size: 13px; word-break: break-all; }
+.sa-usage { border-top: 1px dashed var(--border); padding-top: 8px; }
+.sa-usage-title { font-size: 11.5px; color: var(--muted-foreground); margin-bottom: 4px; }
+.sa-usage-row { display: flex; gap: 8px; font-size: 12px; padding: 1px 0; }
+.sa-usage-row .t { color: var(--muted-foreground); flex: none; }
+.sa-usage-row .f { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sa-usage-row .p { flex: none; font-variant-numeric: tabular-nums; }
+.sa-note { font-size: 12px; color: var(--muted-foreground); white-space: pre-wrap; }
+.sa-card-actions { display: flex; gap: 8px; flex-wrap: wrap; padding-top: 2px; }
+.sa-empty { padding: 40px 16px; text-align: center; color: var(--muted-foreground); font-size: 12.5px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-lg); }
+/* 分站账号密码是多行文本（后台地址 / 账号 / 密码），需要保留换行 */
+.secret-box { white-space: pre-wrap; text-align: left; }
 </style>
 
 <!-- 旧自研样式已移除，样式全部来自 static/shadcn.css -->
@@ -74,6 +109,7 @@
       <div class="nav-group"><div class="nav-group-title">邀请码</div><button class="nav-item nav-subitem" data-section="invitations"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z"/><path d="M13 5v2"/><path d="M13 17v2"/><path d="M13 11v2"/></svg><span class="nav-label">邀请码生成</span></button><button class="nav-item nav-subitem" data-section="invite-profit"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 7h6v6"/><path d="m22 7-8.5 8.5-5-5L2 17"/></svg><span class="nav-label">邀请码利润明细</span></button></div>
       <button class="nav-item" data-section="admins"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg><span class="nav-label">管理员账号管理</span></button>
       <button class="nav-item" data-section="announcements"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 6a13 13 0 0 0 8.4-2.8A1 1 0 0 1 21 4v12a1 1 0 0 1-1.6.8A13 13 0 0 0 11 14H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z"/><path d="M6 14a12 12 0 0 0 2.4 7.2 2 2 0 0 0 3.2-2.4A8 8 0 0 1 10 14"/><path d="M8 6v8"/></svg><span class="nav-label">公告管理</span></button>
+      <button class="nav-item" data-section="station-applications"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 21h18"/><path d="M5 21V7l7-4 7 4v14"/><path d="M9 21v-5h6v5"/><path d="M9 11h.01"/><path d="M15 11h.01"/></svg><span class="nav-label">分站申请</span><span id="sa-badge" class="nav-badge" hidden>0</span></button>
       <button class="nav-item" data-section="logs"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 12h-5"/><path d="M15 8h-5"/><path d="M19 17V5a2 2 0 0 0-2-2H4"/><path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"/></svg><span class="nav-label">操作日志</span></button>
       <button class="nav-item" data-section="user-activity"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></svg><span class="nav-label">用户活动</span></button>
       <button class="nav-item" data-section="feedback"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"/></svg><span class="nav-label">用户反馈</span><span id="fb-badge" class="nav-badge" hidden>0</span></button>
@@ -163,6 +199,57 @@
           <div class="card" id="multiplier-preview-pod"><h3>POD 定制基准定价</h3><p class="chart-sub">默认每款式随机 40-50 积分；设置单条价值后每款式固定收取</p><div id="multiplier-preview-pod-body"></div></div>
         </div>
         <div class="card table-wrap"><table><thead><tr><th>调整时间</th><th>类别</th><th>单条价值（积分）</th><th>倍率</th><th>操作人</th><th>原因</th></tr></thead><tbody id="multiplier-log-body"></tbody></table></div>
+
+        <div class="pd-block" id="profit-detail-block">
+          <div class="section-head pd-head">
+            <div><h2>价格利润明细</h2><p>变量一「积分充值」× 变量二「积分消耗」的换算与利润试算：先算「1 元 = 多少积分」，再以「积分/元 ÷ 积分消耗（积分/条）」得出条/元，倒置为元/条。滑块实时试算，只做展示口径，不写库、不影响线上扣费。</p></div>
+            <span class="badge badge-muted" id="pd-source-tag">口径加载中…</span>
+          </div>
+
+          <div class="stats-grid" id="pd-kpi-cards"></div>
+
+          <div class="card pd-controls">
+            <div class="pd-control-row">
+              <div class="pd-control-head">
+                <span class="pd-control-label">变量一 · 积分充值兑换率</span>
+                <span class="pd-control-value" id="pd-rate-value">—</span>
+              </div>
+              <input id="pd-rate" class="pd-range" type="range" min="100" max="300" step="5" value="100">
+              <div class="pd-scale"><span>100 · 无赠送</span><span>200 · +100%</span><span>300 · +200%</span></div>
+              <div class="pd-quick" id="pd-rate-presets"></div>
+            </div>
+            <div class="pd-control-grid" id="pd-consumption-controls"></div>
+            <div class="pd-control-row">
+              <div class="pd-control-head">
+                <span class="pd-control-label">月卡 · 总积分（立得 4000 固定，其余可控）</span>
+                <span class="pd-control-value" id="pd-plan-value">—</span>
+              </div>
+              <input id="pd-plan-total" class="pd-range" type="range" min="4000" max="20000" step="100" value="9600">
+              <div class="pd-scale" id="pd-plan-scale"></div>
+            </div>
+            <div class="pd-control-row pd-cost-row">
+              <label>单条链接成本<input id="pd-link-cost" class="input" type="number" min="0" max="99" step="0.01" value="0.1"><span class="multiplier-unit">元 / 条</span></label>
+              <span class="pd-note" id="pd-cost-note"></span>
+            </div>
+          </div>
+
+          <div class="card chart-card">
+            <div class="pd-chart-head">
+              <div><h3 id="pd-chart-title">兑换率 × 元/条 与直营利润走势</h3><p class="chart-sub" id="pd-chart-sub">…</p></div>
+              <div class="pd-switch" id="pd-chart-switch">
+                <button class="pd-switch-btn is-active" data-pd-view="trend">折线 · 兑换率走势</button>
+                <button class="pd-switch-btn" data-pd-view="tier">柱状 · 档位利润</button>
+              </div>
+            </div>
+            <div class="chart-wrap"><canvas id="chart-profit-detail"></canvas></div>
+          </div>
+
+          <div class="card table-wrap pd-matrix-card">
+            <h3>档位 × 消耗口径 明细矩阵</h3>
+            <p class="chart-sub" id="pd-matrix-sub">…</p>
+            <table><thead><tr><th>充值档位</th><th>实得积分</th><th>兑换率（积分/元）</th><th>消耗口径</th><th>条/元</th><th>元/条</th><th>利润/条</th><th>利润率</th><th>直营利润/元</th><th>分销平台利润/元</th><th>合作商毛利/元</th></tr></thead><tbody id="pd-matrix-body"></tbody></table>
+          </div>
+        </div>
       </section>
 
       <section id="section-credentials" class="section">
@@ -281,6 +368,23 @@
         <div class="card filters"><input id="fb-search" class="input" placeholder="搜索账号 / 内容 / 联系方式 / 反馈 ID"><span id="fb-count" class="count"></span></div>
         <div class="card table-wrap"><table><thead><tr><th>时间（北京时间）</th><th>账号</th><th>类别</th><th>状态</th><th>内容 / 回复</th><th>图片</th><th>版本</th><th>处理</th></tr></thead><tbody id="fb-body"></tbody></table></div>
         <div class="card" id="fb-more-wrap" style="display:none;text-align:center;"><button id="fb-more" class="btn">加载更多</button></div>
+      </section>
+
+      <section id="section-station-applications" class="section">
+        <div class="section-head"><div><h2>分站申请</h2><p>客户端个人中心「推广计划 · 申请加入」提交的分站申请（按北京时间显示）；卡片展示申请时间、积分余额与消费流水，批准后自动开通分站账号并把专属账号密码以定向公告下发给该用户</p></div><button id="sa-refresh" class="btn btn-ghost btn-sm">刷新</button></div>
+        <div class="stats-grid" id="sa-stats"></div>
+        <div class="card filters">
+          <select id="sa-status" class="input">
+            <option value="">全部状态</option>
+            <option value="pending">待审核</option>
+            <option value="approved">已成立分站</option>
+            <option value="rejected">已驳回</option>
+            <option value="revoked">已撤销</option>
+          </select>
+          <input id="sa-search" class="input" placeholder="搜索账号 / 账号 ID / 邮箱 / 联系方式 / 分站账号">
+          <span id="sa-count" class="count"></span>
+        </div>
+        <div id="sa-list" class="sa-list"></div>
       </section>
 
       <section id="section-failure-logs" class="section">
@@ -547,7 +651,7 @@ async function activateSection(name) {
   document.querySelectorAll('.nav-item').forEach(item => item.classList.toggle('active', item.dataset.section === name));
   document.querySelectorAll('.section').forEach(item => item.classList.toggle('active', item.id === `section-${name}`));
   $('page-title').textContent = sectionTitles[name];
-  await ({ dashboard: loadDashboard, users: loadUsers, 'billing-wallet': loadBilling, 'billing-usage': () => { loadBilling(); loadBillingUsage(true); }, credentials: loadCredentials, invitations: loadInvitations, 'invite-profit': loadInvitationProfit, admins: loadAdmins, announcements: loadAnnouncements, logs: loadLogs, 'user-activity': loadUserActivity, feedback: loadFeedback, 'failure-logs': loadFailureLogs, 'log-uploads': loadLogUploads, multipliers: loadMultipliers, 'release-publish': loadReleaseEnv, 'release-history': () => loadReleaseHistory(1), 'release-logs': () => loadReleaseLogs(1) })[name]();
+  await ({ dashboard: loadDashboard, users: loadUsers, 'billing-wallet': loadBilling, 'billing-usage': () => { loadBilling(); loadBillingUsage(true); }, credentials: loadCredentials, invitations: loadInvitations, 'invite-profit': loadInvitationProfit, admins: loadAdmins, announcements: loadAnnouncements, 'station-applications': loadStationApplications, logs: loadLogs, 'user-activity': loadUserActivity, feedback: loadFeedback, 'failure-logs': loadFailureLogs, 'log-uploads': loadLogUploads, multipliers: loadMultipliers, 'release-publish': loadReleaseEnv, 'release-history': () => loadReleaseHistory(1), 'release-logs': () => loadReleaseLogs(1) })[name]();
 }
 document.querySelectorAll('.nav-item').forEach(item => item.onclick = () => activateSection(item.dataset.section));
 $('refresh-btn').onclick = () => activateSection(ACTIVE_SECTION);
@@ -1305,6 +1409,187 @@ function renderFeedback() {
 $('fb-search').oninput = renderFeedback;
 $('fb-more').onclick = () => loadFeedback(false);
 
+// ---------------- 分站申请 ----------------
+// 客户端「推广计划 · 申请加入」提交的申请：卡片展示申请时间 / 积分余额 / 消费流水，
+// 「批准成立分站」会调同机分站平台开户，并把专属账号密码以定向公告下发给该用户。
+const stationStatusNames = { pending: '待审核', approved: '已成立分站', rejected: '已驳回', revoked: '已撤销' };
+const stationStatusBadges = { pending: 'badge-warning', approved: 'badge-success', rejected: 'badge-danger', revoked: 'badge-muted' };
+const SA_AUTO_PROFILES = 12;   // 首屏自动拉取画像的卡片数，其余按需点击加载
+let STATION_APPLICATIONS = []; let STATION_COUNTS = {}; let STATION_PROFILES = {};
+let STATION_BADGE_TIMER = null;
+async function refreshStationBadge() {
+  try {
+    const data = await api('/api/station-applications?limit=1');
+    const count = Number((data.counts || {}).pending) || 0;
+    const badge = $('sa-badge');
+    if (!badge) return;
+    if (count > 0) { badge.textContent = count > 99 ? '99+' : String(count); badge.hidden = false; }
+    else { badge.hidden = true; }
+  } catch (error) { /* 静默：未配置/未登录时不打扰 */ }
+}
+function startStationBadgePolling() {
+  if (STATION_BADGE_TIMER) clearInterval(STATION_BADGE_TIMER);
+  refreshStationBadge();
+  STATION_BADGE_TIMER = setInterval(refreshStationBadge, 60000);
+}
+async function loadStationApplications() {
+  const status = $('sa-status').value;
+  try {
+    const data = await api(`/api/station-applications${status ? `?status=${encodeURIComponent(status)}` : ''}`);
+    STATION_APPLICATIONS = data.applications || [];
+    STATION_COUNTS = data.counts || {};
+    renderStationStats();
+    renderStationApplications();
+    await loadStationProfiles();
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+}
+function renderStationStats() {
+  const c = STATION_COUNTS || {};
+  const cards = [
+    { label: '待审核', value: Number(c.pending) || 0, sub: '需在 1~3 个工作日内答复', accent: true },
+    { label: '已成立分站', value: Number(c.approved) || 0, sub: '专属账号密码已定向公告下发' },
+    { label: '已驳回', value: Number(c.rejected) || 0, sub: '驳回理由同步展示给用户' },
+    { label: '已撤销', value: Number(c.revoked) || 0, sub: '分站账号已停用，无法登录' },
+  ];
+  $('sa-stats').innerHTML = cards.map(x => `<div class="stat-card${x.accent ? ' is-accent' : ''}"><div class="stat-label">${x.label}</div><div class="stat-value">${x.value.toLocaleString()}</div><div class="stat-sub">${x.sub}</div></div>`).join('');
+}
+async function loadStationProfiles() {
+  const missing = STATION_APPLICATIONS.filter(item => !(item.id in STATION_PROFILES)).slice(0, SA_AUTO_PROFILES);
+  if (!missing.length) return;
+  for (let i = 0; i < missing.length; i += 6) {
+    await Promise.all(missing.slice(i, i + 6).map(async item => {
+      try { STATION_PROFILES[item.id] = await api(`/api/station-applications/${item.id}/profile`); }
+      catch (error) { STATION_PROFILES[item.id] = null; }
+    }));
+  }
+  renderStationApplications();
+}
+function stationProfileHtml(item) {
+  const profile = STATION_PROFILES[item.id];
+  if (profile === undefined) {
+    return `<div class="sa-usage"><div class="sa-usage-title">积分余额与消费流水 <button class="link-btn" data-sa-action="profile" data-id="${item.id}">立即加载</button></div></div>`;
+  }
+  if (!profile) {
+    return '<div class="sa-usage"><div class="sa-usage-title">积分余额与消费流水：加载失败，刷新后重试</div></div>';
+  }
+  const w = profile.wallet || {};
+  const usage = Array.isArray(profile.usage) ? profile.usage : [];
+  const available = Number(w.points_balance || 0) - Number(w.locked_points || 0);
+  const items = [
+    { k: '积分余额', v: Number(w.points_balance || 0).toLocaleString() },
+    { k: '可用积分', v: available.toLocaleString() },
+    { k: '冻结积分', v: Number(w.locked_points || 0).toLocaleString() },
+    { k: '套餐', v: `${esc(w.plan_label || '体验版')} · ${Number(w.plan_balance || 0).toLocaleString()}` },
+  ];
+  const usageHtml = usage.length ? usage.map(row => {
+    const status = row.status === 'succeeded' ? '成功' : row.status === 'failed' ? '已释放' : '冻结中';
+    return `<div class="sa-usage-row"><span class="t">${fmtTime(row.created_at)}</span><span class="f" title="${esc(row.feature_key || '')}">${esc(row.feature_key || '-')} · ${status}</span><span class="p">${Number(row.charged_points || 0).toLocaleString()}</span></div>`;
+  }).join('') : '<div class="sa-usage-row"><span class="t">暂无消费流水</span></div>';
+  return `<div class="sa-kv">${items.map(x => `<div class="sa-item"><div class="k">${x.k}</div><div class="v">${x.v}</div></div>`).join('')}</div>
+    <div class="sa-usage"><div class="sa-usage-title">最近消费流水（${usage.length} 条）</div>${usageHtml}</div>`;
+}
+function renderStationApplications() {
+  const query = $('sa-search').value.trim().toLowerCase();
+  const rows = STATION_APPLICATIONS.filter(item => !query || `${item.username || ''} ${item.account_id || ''} ${item.email || ''} ${item.contact || ''} ${item.note || ''} ${item.station_username || ''}`.toLowerCase().includes(query));
+  $('sa-count').textContent = `显示 ${rows.length} / ${STATION_APPLICATIONS.length} 条申请`;
+  if (!rows.length) { $('sa-list').innerHTML = '<div class="sa-empty">当前筛选下暂无分站申请</div>'; return; }
+  $('sa-list').innerHTML = rows.map(item => {
+    const status = String(item.status || 'pending');
+    const name = item.username || item.account_id;
+    const badges = [`<span class="badge ${stationStatusBadges[status] || 'badge-muted'}">${esc(stationStatusNames[status] || status)}</span>`];
+    if (item.decided_at) badges.push(`<span class="badge badge-muted">审核 ${fmtTime(item.decided_at)}</span>`);
+    const meta = [
+      { k: '申请时间', v: fmtTime(item.applied_at) },
+      { k: '账号', v: `<b>${esc(item.username || '-')}</b> <span class="mono">${esc(item.account_id)}</span>` },
+      { k: '邮箱', v: esc(item.email || '-') },
+      { k: '联系方式', v: esc(item.contact || '-') },
+    ];
+    if (item.station_username) {
+      meta.push({ k: '分站账号', v: `<span class="mono">${esc(item.station_username)}</span>` });
+      meta.push({ k: '分站后台', v: `<a href="${esc(item.login_url)}" target="_blank" rel="noreferrer">${esc(item.login_url)}</a>` });
+    }
+    const actions = [];
+    if (status === 'pending' || status === 'rejected') actions.push(`<button class="btn btn-success btn-sm" data-sa-action="approve" data-id="${item.id}">批准成立分站</button>`);
+    if (status === 'pending') actions.push(`<button class="btn btn-ghost btn-sm" data-sa-action="reject" data-id="${item.id}" data-name="${esc(name)}">驳回</button>`);
+    if (status === 'approved') {
+      actions.push(`<button class="btn btn-ghost btn-sm" data-sa-action="password" data-id="${item.id}">查看专属密码</button>`);
+      actions.push(`<button class="btn btn-danger btn-sm" data-sa-action="revoke" data-id="${item.id}" data-name="${esc(name)}">撤销已批准</button>`);
+    }
+    return `<div class="sa-card">
+      <div class="sa-card-head"><span class="sa-title">${esc(name)} 的分站申请</span><span class="sa-badges">${badges.join('')}</span></div>
+      <div class="sa-kv">${meta.map(x => `<div class="sa-item"><div class="k">${x.k}</div><div class="v">${x.v}</div></div>`).join('')}</div>
+      ${item.note ? `<div class="sa-note">申请说明：${esc(item.note)}</div>` : ''}
+      ${item.reject_reason ? `<div class="sa-note">驳回理由：${esc(item.reject_reason)}</div>` : ''}
+      ${stationProfileHtml(item)}
+      ${actions.length ? `<div class="sa-card-actions">${actions.join('')}</div>` : ''}
+    </div>`;
+  }).join('');
+}
+$('sa-list').onclick = event => {
+  const button = event.target.closest('[data-sa-action]');
+  if (!button) return;
+  const id = Number(button.dataset.id);
+  const item = STATION_APPLICATIONS.find(x => Number(x.id) === id);
+  const name = (item && (item.username || item.account_id)) || button.dataset.name || '';
+  const action = button.dataset.saAction;
+  if (action === 'profile') {
+    api(`/api/station-applications/${id}/profile`)
+      .then(data => { STATION_PROFILES[id] = data; renderStationApplications(); })
+      .catch(error => { if (error.message !== '__AUTH__') { STATION_PROFILES[id] = null; renderStationApplications(); toast(error.message, 'error'); } });
+    return;
+  }
+  if (action === 'password') {
+    const app = item || {};
+    showSecret(
+      `分站专属账号密码 · ${app.station_username || ''}`,
+      `分站后台：${app.login_url || ''}\n专属账号：${app.station_username || ''}\n专属密码：${app.station_password || ''}`,
+    );
+    return;
+  }
+  if (action === 'approve') {
+    askConfirm(
+      '批准成立分站',
+      `将为 ${name} 开通分站后台账号并生成专属账号密码，随后以定向公告的形式发送给该用户。`,
+      async () => {
+        const data = await api(`/api/station-applications/${id}/approve`, { method: 'POST' });
+        const app = data.application || {};
+        toast('已批准并下发专属账号密码公告', 'success');
+        await loadStationApplications();
+        showSecret(
+          `分站专属账号密码 · ${app.station_username || ''}`,
+          `分站后台：${app.login_url || ''}\n专属账号：${app.station_username || ''}\n专属密码：${app.station_password || ''}`,
+        );
+      },
+    );
+    return;
+  }
+  if (action === 'reject') {
+    const reason = prompt(`驳回 ${name} 的分站申请，请填写驳回理由（会展示给该用户）`, '');
+    if (reason === null) return;
+    if (!reason.trim()) { toast('请填写驳回理由', 'error'); return; }
+    askConfirm('确认驳回申请', `将驳回 ${name} 的分站申请，理由会同步展示给该用户。`, async () => {
+      await api(`/api/station-applications/${id}/reject`, { method: 'POST', body: JSON.stringify({ reason: reason.trim() }) });
+      toast('已驳回该申请', 'success');
+      await loadStationApplications();
+    });
+    return;
+  }
+  if (action === 'revoke') {
+    askConfirm(
+      '撤销已批准的分站',
+      `将停用 ${name} 的分站账号，并下线对应的专属账号密码公告；该账号随即无法登录分站后台。`,
+      async () => {
+        await api(`/api/station-applications/${id}/revoke`, { method: 'POST' });
+        toast('已撤销该分站', 'success');
+        await loadStationApplications();
+      },
+    );
+  }
+};
+$('sa-status').onchange = () => loadStationApplications();
+$('sa-search').oninput = renderStationApplications;
+$('sa-refresh').onclick = () => loadStationApplications();
+
 function askConfirm(title,message,action){$('confirm-title').textContent=title;$('confirm-message').textContent=message;confirmAction=action;$('confirm-mask').classList.remove('hidden');}
 $('confirm-cancel').onclick=()=>{$('confirm-mask').classList.add('hidden');confirmAction=null;};
 $('confirm-ok').onclick=async()=>{$('confirm-mask').classList.add('hidden');const action=confirmAction;confirmAction=null;try{if(action)await action();}catch(error){if(error.message!=='__AUTH__')toast(error.message,'error');}};
@@ -1785,6 +2070,7 @@ async function loadMultipliers() {
     const data = await api('/api/billing/multipliers');
     MULTIPLIERS = data.multipliers || {}; MULTIPLIER_LOG = data.changelog || []; MULTIPLIER_PRICING = data.pricing || {};
     renderMultipliers();
+    await loadProfitDetail();
   } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
 }
 function multiplierCard(category) {
@@ -1891,6 +2177,269 @@ $('multiplier-cards').onclick = event => {
     submitMultiplier(category, { [`reset_${category}`]: true });
   }
 };
+
+/* ---- 价格利润明细（只读试算，不写库） ---- */
+const PD_COLORS = {
+  ai: { line: '#0b5cff', soft: 'rgba(11,92,255,.42)' },
+  pod: { line: '#f59e0b', soft: 'rgba(245,158,11,.42)' },
+  combo: { line: '#10b981', soft: 'rgba(16,185,129,.42)' }
+};
+const PD_CONSUMPTION_RANGE = { ai: [5, 200], pod: [5, 200], combo: [10, 300] };
+const PD_DEFAULT_PLAN_TOTAL = 9600;
+let PD_DATA = null; let PD_CHART = null; let PD_VIEW = 'trend';
+const PD_STATE = { rate: 100, planTotal: PD_DEFAULT_PLAN_TOTAL, linkCost: 0.1, consumption: {} };
+
+const pdNum = (value, digits = 2) => Number(value || 0).toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: digits });
+const pdBaseRate = () => Number((PD_DATA && PD_DATA.base_points_per_cny) || 100);
+const pdItems = () => ((PD_DATA && PD_DATA.consumption) || []);
+const pdBonusPercent = rate => { const base = pdBaseRate(); return base > 0 ? (rate / base - 1) * 100 : 0; };
+const pdColor = key => PD_COLORS[key] || { line: '#64748b', soft: 'rgba(100,116,139,.42)' };
+
+function pdMetrics(rate, pointsPerUnit, linkCost) {
+  const perYuan = pointsPerUnit > 0 ? rate / pointsPerUnit : 0;      // 条/元 = 积分/元 ÷ 积分/条
+  const perLink = perYuan > 0 ? 1 / perYuan : 0;                     // 元/条 = 倒置
+  const profitPerLink = perLink - linkCost;
+  const costPerYuan = linkCost * perYuan;
+  const resellerMargin = pdBonusPercent(rate) / 100;                 // 分销/中转商：赠送倍率即合作商毛利
+  return {
+    perYuan, perLink, profitPerLink, costPerYuan, resellerMargin,
+    margin: perLink > 0 ? profitPerLink / perLink : 0,
+    directProfitPerYuan: 1 - costPerYuan,
+    platformProfitPerYuan: 1 - costPerYuan - resellerMargin,
+    breakEvenRate: linkCost > 0 ? pointsPerUnit / linkCost : 0
+  };
+}
+
+function pdTierRows() {
+  const plan = (PD_DATA && PD_DATA.plan) || {};
+  const rows = ((PD_DATA && PD_DATA.topup_tiers) || []).map(t => ({
+    label: `${pdNum(t.amount_yuan, 2)} 元档`,
+    detail: `+${Number(t.bonus_percent || 0)}% 赠送 · 基础 ${pdNum(t.base_points, 0)} + 赠送 ${pdNum(t.bonus_points, 0)}`,
+    total_points: Number(t.total_points || 0),
+    rate: Number(t.points_per_yuan || 0)
+  }));
+  const priceYuan = Number(plan.price_yuan || 0);
+  if (priceYuan > 0) {
+    rows.push({
+      label: `月卡 ${pdNum(priceYuan, 2)} 元`,
+      detail: `立得 ${pdNum(plan.grant_points, 0)} 固定 · 其余可控`,
+      total_points: Number(PD_STATE.planTotal || 0),
+      rate: Number(PD_STATE.planTotal || 0) / priceYuan
+    });
+  }
+  return rows;
+}
+
+async function loadProfitDetail() {
+  try {
+    const data = await api('/api/billing/profit-detail');
+    PD_DATA = data;
+    PD_STATE.linkCost = Number(data.default_link_cost_yuan != null ? data.default_link_cost_yuan : 0.1);
+    PD_STATE.rate = pdBaseRate();
+    PD_STATE.planTotal = PD_DEFAULT_PLAN_TOTAL;
+    PD_STATE.consumption = {};
+    (data.consumption || []).forEach(item => { PD_STATE.consumption[item.key] = Number(item.points_per_unit || 0); });
+    renderProfitControls();
+    renderProfitDetail();
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+}
+
+function renderProfitControls() {
+  $('pd-rate-presets').innerHTML = ((PD_DATA && PD_DATA.topup_tiers) || []).map(t =>
+    `<button class="btn btn-sm" data-pd-rate="${Math.round(Number(t.points_per_yuan || 0))}">${pdNum(t.amount_yuan, 2)} 元 · +${Number(t.bonus_percent || 0)}%</button>`).join('');
+  $('pd-consumption-controls').innerHTML = pdItems().map(item => {
+    const key = item.key, range = PD_CONSUMPTION_RANGE[key] || [1, 200];
+    const value = Number(PD_STATE.consumption[key] != null ? PD_STATE.consumption[key] : item.points_per_unit);
+    return `<div class="pd-control-row">
+      <div class="pd-control-head">
+        <span class="pd-control-label">变量二 · ${esc(item.label)} 单条消耗</span>
+        <span class="pd-control-value" id="pd-cons-${esc(key)}-value">—</span>
+      </div>
+      <input id="pd-cons-${esc(key)}" class="pd-range" type="range" min="${range[0]}" max="${range[1]}" step="1" value="${value}">
+      <div class="pd-scale"><span>${range[0]}</span><span>基准 ${pdNum(item.points_per_unit, 0)} 积分 / ${esc(item.unit)}</span><span>${range[1]}</span></div>
+    </div>`;
+  }).join('');
+  $('pd-rate').value = PD_STATE.rate;
+  $('pd-plan-total').value = PD_STATE.planTotal;
+  $('pd-link-cost').value = PD_STATE.linkCost;
+  const tag = $('pd-source-tag');
+  if (tag) tag.textContent = `基准 ${pdBaseRate()} 积分/元 · ${PD_DATA.promotion_name || '档位递增赠送'}`;
+}
+
+function renderProfitLabels() {
+  const bonus = pdBonusPercent(PD_STATE.rate);
+  $('pd-rate-value').textContent = `${pdNum(PD_STATE.rate)} 积分 / 元 · ${bonus > 0.01 ? '赠送 +' + pdNum(bonus, 1) + '%' : '无赠送'}`;
+  pdItems().forEach(item => {
+    const el = $('pd-cons-' + item.key + '-value');
+    if (el) el.textContent = `${pdNum(PD_STATE.consumption[item.key])} 积分 / ${item.unit}`;
+  });
+  const plan = (PD_DATA && PD_DATA.plan) || {};
+  const priceYuan = Number(plan.price_yuan || 0);
+  const planRate = priceYuan > 0 ? Number(PD_STATE.planTotal) / priceYuan : 0;
+  $('pd-plan-value').textContent = `${pdNum(PD_STATE.planTotal, 0)} 积分 · 折合 ${pdNum(planRate, 1)} 积分/元`;
+  $('pd-plan-scale').innerHTML = `<span>4000 · 立得固定</span><span>折合 ${pdNum(planRate, 1)} 积分/元</span><span>20000</span>`;
+  $('pd-cost-note').textContent = `保本兑换率：` + pdItems().map(item =>
+    `${item.label} ${pdNum(pdMetrics(0, Number(PD_STATE.consumption[item.key]), PD_STATE.linkCost).breakEvenRate, 0)}`).join(' · ') + ' 积分/元';
+}
+
+function renderProfitKpi() {
+  const cost = Number(PD_STATE.linkCost || 0);
+  $('pd-kpi-cards').innerHTML = pdItems().map(item => {
+    const points = Number(PD_STATE.consumption[item.key] || 0);
+    const m = pdMetrics(PD_STATE.rate, points, cost);
+    const badge = m.profitPerLink >= 0 ? '<span class="badge badge-success">盈利</span>' : '<span class="badge badge-danger">亏损</span>';
+    return `<div class="stat-card is-accent">
+      <div class="stat-label">${esc(item.label)} · ${esc(item.unit)}</div>
+      <div class="stat-value">${pdNum(m.perLink, 3)}<small class="multiplier-unit"> 元 / 条</small></div>
+      <div class="stat-sub">${pdNum(PD_STATE.rate)} 积分/元 ÷ ${pdNum(points)} 积分/条 = <b>${pdNum(m.perYuan, 3)}</b> 条/元 → 倒置 <b>${pdNum(m.perLink, 3)}</b> 元/条</div>
+      <div class="stat-sub">利润 <b class="preview-actual">${pdNum(m.profitPerLink, 3)}</b> 元/条 · 利润率 <b>${pdNum(m.margin * 100, 1)}%</b> ${badge}</div>
+      <div class="stat-sub">直营 <b>${pdNum(m.directProfitPerYuan, 3)}</b> · 分销平台 <b>${pdNum(m.platformProfitPerYuan, 3)}</b> · 合作商毛利 <b>${pdNum(m.resellerMargin, 3)}</b> 元/元</div>
+      <div class="stat-sub">保本兑换率 <b>${pdNum(m.breakEvenRate, 0)}</b> 积分/元（当前 ${pdNum(PD_STATE.rate)}）</div>
+    </div>`;
+  }).join('');
+}
+
+function renderProfitChart() {
+  const canvas = $('chart-profit-detail'); if (!canvas || !window.Chart) return;
+  if (PD_CHART) { PD_CHART.destroy(); PD_CHART = null; }
+  const cost = Number(PD_STATE.linkCost || 0);
+  const items = pdItems();
+  if (!items.length) return;
+
+  if (PD_VIEW === 'tier') {
+    const rows = pdTierRows();
+    const datasets = [];
+    items.forEach(item => {
+      const points = Number(PD_STATE.consumption[item.key] || 0), color = pdColor(item.key);
+      datasets.push({
+        label: `${item.label} · 直营利润/元`,
+        data: rows.map(row => pdMetrics(row.rate, points, cost).directProfitPerYuan),
+        backgroundColor: color.line
+      });
+      datasets.push({
+        label: `${item.label} · 分销平台利润/元`,
+        data: rows.map(row => pdMetrics(row.rate, points, cost).platformProfitPerYuan),
+        backgroundColor: color.soft
+      });
+    });
+    PD_CHART = new Chart(canvas, {
+      type: 'bar',
+      data: { labels: rows.map(row => row.label), datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        scales: { y: { title: { display: true, text: '利润（元 / 元收入）' } } },
+        plugins: {
+          legend: { position: 'top' },
+          tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}：${pdNum(ctx.parsed.y, 3)} 元` } }
+        }
+      }
+    });
+    $('pd-chart-title').textContent = '档位 × 口径 利润对比（直营 vs 分销）';
+    $('pd-chart-sub').textContent = `按各档位实得兑换率与当前滑块消耗值计算；分销口径下平台按基准 ${pdBaseRate()} 积分/元 结算，赠送部分即合作商毛利。`;
+    return;
+  }
+
+  const trendMax = Math.min(600, Math.max(300, Math.ceil(pdTierRows().reduce((max, row) => Math.max(max, row.rate), pdBaseRate()) / 50) * 50));
+  const rates = [];
+  for (let rate = pdBaseRate(); rate <= trendMax + 0.001; rate += trendMax / 30) rates.push(Math.round(rate));
+  const datasets = items.map(item => ({
+    label: `${item.label} · 元/条`,
+    data: rates.map(rate => pdMetrics(rate, Number(PD_STATE.consumption[item.key]), cost).perLink),
+    borderColor: pdColor(item.key).line, backgroundColor: pdColor(item.key).line,
+    yAxisID: 'y', tension: .25, pointRadius: 0, borderWidth: 2
+  }));
+  datasets.push({
+    label: `单条成本 ${pdNum(cost, 2)} 元`,
+    data: rates.map(() => cost),
+    borderColor: '#94a3b8', backgroundColor: '#94a3b8', borderDash: [6, 4],
+    yAxisID: 'y', pointRadius: 0, borderWidth: 1.5
+  });
+  items.forEach(item => {
+    datasets.push({
+      label: `${item.label} · 直营利润率`,
+      data: rates.map(rate => pdMetrics(rate, Number(PD_STATE.consumption[item.key]), cost).directProfitPerYuan * 100),
+      borderColor: pdColor(item.key).line, backgroundColor: pdColor(item.key).line, borderDash: [5, 3],
+      yAxisID: 'y1', pointRadius: 0, borderWidth: 1.5
+    });
+  });
+  PD_CHART = new Chart(canvas, {
+    type: 'line',
+    data: { labels: rates, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'nearest', intersect: false },
+      scales: {
+        x: { title: { display: true, text: '充值兑换率（积分 / 元）' }, ticks: { maxTicksLimit: 12 } },
+        y: { position: 'left', title: { display: true, text: '元 / 条' } },
+        y1: { position: 'right', title: { display: true, text: '直营利润率（%）' }, grid: { drawOnChartArea: false }, ticks: { callback: value => value + '%' } }
+      },
+      plugins: {
+        legend: { position: 'top' },
+        tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}：${pdNum(ctx.parsed.y, 3)}${ctx.dataset.yAxisID === 'y1' ? '%' : ' 元'}` } }
+      }
+    }
+  });
+  $('pd-chart-title').textContent = '兑换率 × 元/条 与直营利润率走势';
+  $('pd-chart-sub').textContent = `实线（左轴）为各口径「元/条」，灰色虚线为单条成本，成本线以上即为利润；虚线（右轴）为直营利润率。分销利润见柱状视图与下方矩阵。`;
+}
+
+function renderProfitMatrix() {
+  const cost = Number(PD_STATE.linkCost || 0);
+  const items = pdItems();
+  const rows = pdTierRows();
+  const cell = (value, digits, ok, suffix = '') => `<td class="${ok >= 0 ? 'pd-pos' : 'pd-neg'}">${pdNum(value, digits)}${suffix}</td>`;
+  const html = rows.map(row => items.map((item, index) => {
+    const m = pdMetrics(row.rate, Number(PD_STATE.consumption[item.key]), cost);
+    const head = index === 0
+      ? `<td rowspan="${items.length}"><b>${esc(row.label)}</b><br><span class="pd-sub">${esc(row.detail)}</span></td>
+         <td rowspan="${items.length}">${pdNum(row.total_points, 0)}</td>
+         <td rowspan="${items.length}">${pdNum(row.rate, 1)}</td>`
+      : '';
+    return `<tr>${head}<td>${esc(item.label)}</td>
+      <td>${pdNum(m.perYuan, 3)}</td>
+      <td>${pdNum(m.perLink, 3)}</td>
+      ${cell(m.profitPerLink, 3, m.profitPerLink)}
+      ${cell(m.margin * 100, 1, m.profitPerLink, '%')}
+      ${cell(m.directProfitPerYuan, 3, m.directProfitPerYuan)}
+      ${cell(m.platformProfitPerYuan, 3, m.platformProfitPerYuan)}
+      <td>${pdNum(m.resellerMargin, 3)}</td></tr>`;
+  }).join('')).join('');
+  $('pd-matrix-body').innerHTML = html || '<tr><td class="empty" colspan="11">暂无口径数据</td></tr>';
+  $('pd-matrix-sub').textContent = `单条成本按 ${pdNum(cost, 2)} 元计：条/元 = 兑换率 ÷ 消耗，元/条 = 消耗 ÷ 兑换率，利润/条 = 元/条 − 成本；直营利润 = 1 − 成本/元，分销平台利润 = 1 − 成本/元 − 合作商毛利，合作商毛利 = 赠送比例。`;
+}
+
+function renderProfitDetail() {
+  if (!PD_DATA) return;
+  renderProfitLabels();
+  renderProfitKpi();
+  renderProfitChart();
+  renderProfitMatrix();
+}
+
+$('profit-detail-block').addEventListener('input', event => {
+  const el = event.target;
+  if (el.id === 'pd-rate') PD_STATE.rate = Number(el.value);
+  else if (el.id === 'pd-plan-total') PD_STATE.planTotal = Number(el.value);
+  else if (el.id === 'pd-link-cost') PD_STATE.linkCost = Math.max(0, Number(el.value) || 0);
+  else if (el.id && el.id.startsWith('pd-cons-')) PD_STATE.consumption[el.id.slice(8)] = Number(el.value);
+  else return;
+  renderProfitDetail();
+});
+$('profit-detail-block').addEventListener('click', event => {
+  const preset = event.target.closest('[data-pd-rate]');
+  if (preset) {
+    PD_STATE.rate = Number(preset.dataset.pdRate);
+    $('pd-rate').value = PD_STATE.rate;
+    renderProfitDetail();
+    return;
+  }
+  const view = event.target.closest('[data-pd-view]');
+  if (view) {
+    PD_VIEW = view.dataset.pdView;
+    document.querySelectorAll('[data-pd-view]').forEach(btn => btn.classList.toggle('is-active', btn === view));
+    renderProfitChart();
+  }
+});
 
 /* ---- 软件更新发布（代理转发到 update-admin） ---- */
 const RELEASE_PHASES = ['uploading', 'evsign', 'authenticode', 'patching', 'publishing', 'completed'];

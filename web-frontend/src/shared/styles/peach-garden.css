@@ -283,9 +283,9 @@
   .settings-card,
   .settings-table,
   .combo-kit-list,
-  .combo-kit-empty,
+  .combo-create-panel,
   .combo-section,
-  .combo-steps,
+  .combo-flow-card,
   .combo-edit-stage,
   .combo-text-result,
   .combo-preset-card,
@@ -339,7 +339,6 @@
 
 [data-theme="peach"] :is(
   .settings-tabs button.is-active,
-  .combo-step-tab.is-active,
   .combo-modal-actions button.primary,
   .profit-products-settings-tabs button.is-active,
   .app-update-primary

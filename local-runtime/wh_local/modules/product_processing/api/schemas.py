@@ -304,6 +304,15 @@ class PreviewFinalizeRequest(PreviewSaveRequest):
     export_format: Literal["dxm", "apparel", "general"] = "dxm"
 
 
+class PreviewExcludeRequest(BaseModel):
+    """批量排除/恢复预检商品链接，供「删除所选 / 一键剔除失败链接」使用。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    draft_ids: list[int] = Field(default_factory=list)
+    excluded: bool = True
+
+
 class MiaoshouExportRequest(BaseModel):
     """按预审完成记录再次导出妙手导入模板（服饰类 / 非服饰类）。"""
 

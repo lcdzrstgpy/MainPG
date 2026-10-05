@@ -380,6 +380,8 @@ export type PreviewFinalizeRun = {
   row_count: number;
   product_count: number;
   download: string;
+  /** 导出发起时间（历史导出列表用它区分是哪一次）。 */
+  created_at?: string;
 };
 
 /** 妙手导出模板类型：apparel=服饰类，general=非服饰类。 */

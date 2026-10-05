@@ -98,8 +98,10 @@ $nodeCommand = Get-Command node -ErrorAction SilentlyContinue
 if (-not $nodeCommand) { throw "Node 20+ is required to build the embedded ClipForge sidecar" }
 Write-Host "[build] building embedded ClipForge sidecar ..."
 Push-Location $clipforgeRoot
-& $pnpmCommand.Source install --frozen-lockfile
-if ($LASTEXITCODE -ne 0) { throw "ClipForge dependency installation failed" }
+if ($env:CLIPFORGE_SKIP_INSTALL -ne "1") {
+    & $pnpmCommand.Source install --frozen-lockfile
+    if ($LASTEXITCODE -ne 0) { throw "ClipForge dependency installation failed" }
+}
 & $pnpmCommand.Source build
 if ($LASTEXITCODE -ne 0) { throw "ClipForge build failed" }
 & $nodeCommand.Source scripts\prepare-mainpg-sidecar.mjs

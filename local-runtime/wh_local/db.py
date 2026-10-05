@@ -201,6 +201,28 @@ CREATE TABLE IF NOT EXISTS auth_platform_sessions (
 CREATE INDEX IF NOT EXISTS idx_auth_platform_sessions_account_active
     ON auth_platform_sessions (account_id, expires_at, revoked_at);
 
+-- 启动器日志上传表：用户从启动器「本地报错日志上传」上报 runtime.log，
+-- 后台管理按用户 / 时间 / 应用版本区分查看。content_b64 保存日志内容（不落明文路径）。
+CREATE TABLE IF NOT EXISTS launcher_log_uploads (
+    upload_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL DEFAULT '',
+    username TEXT NOT NULL DEFAULT '',
+    workspace_id TEXT NOT NULL DEFAULT '',
+    app_version TEXT NOT NULL DEFAULT '',
+    platform TEXT NOT NULL DEFAULT '',
+    log_name TEXT NOT NULL DEFAULT '',
+    log_size INTEGER NOT NULL DEFAULT 0,
+    content_b64 TEXT NOT NULL DEFAULT '',
+    client_ip TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_launcher_log_uploads_account_time
+    ON launcher_log_uploads (account_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_launcher_log_uploads_time
+    ON launcher_log_uploads (created_at);
+
 -- 密码重置凭证表：忘记密码时生成一次性 token，只保存 token_hash，不保存明文 token。
 CREATE TABLE IF NOT EXISTS auth_password_reset_tokens (
     reset_id TEXT PRIMARY KEY,
@@ -384,6 +406,30 @@ CREATE TABLE IF NOT EXISTS action_logs (
     error TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_action_logs_created_at ON action_logs(created_at);
+
+CREATE TABLE IF NOT EXISTS customer_feedback (
+    feedback_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL DEFAULT '',
+    username TEXT NOT NULL DEFAULT '',
+    workspace_id TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT 'suggestion',
+    content TEXT NOT NULL DEFAULT '',
+    contact TEXT NOT NULL DEFAULT '',
+    images_json TEXT NOT NULL DEFAULT '[]',
+    image_count INTEGER NOT NULL DEFAULT 0,
+    total_image_bytes INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'new',
+    admin_note TEXT NOT NULL DEFAULT '',
+    admin_id TEXT NOT NULL DEFAULT '',
+    status_updated_at TEXT NOT NULL DEFAULT '',
+    app_version TEXT NOT NULL DEFAULT '',
+    platform TEXT NOT NULL DEFAULT '',
+    client_ip TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_customer_feedback_account_time ON customer_feedback(account_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_customer_feedback_created ON customer_feedback(created_at);
 
 CREATE TABLE IF NOT EXISTS customer_feedback (
     feedback_id TEXT PRIMARY KEY,
@@ -1149,6 +1195,82 @@ def _migrate_core_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "billing_payment_orders", "total_points", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "billing_payment_orders", "promotion_id", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "billing_payment_orders", "promotion_name", "TEXT NOT NULL DEFAULT ''")
+    # 分站充值订单的返利快照（下单时冻结，结算时据此计提）：
+    # station_code 为成交的中转编号，tier_rate 为该档倍率，rebate_cents 为按
+    # 总部合约口径算出的待返利金额（分，0 表示该档无返利）。订单一旦落库不再
+    # 重算，后续调整合约不影响历史单。
+    _ensure_column(conn, "billing_payment_orders", "station_code", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "billing_payment_orders", "tier_rate", "REAL NOT NULL DEFAULT 0")
+    _ensure_column(conn, "billing_payment_orders", "rebate_cents", "INTEGER NOT NULL DEFAULT 0")
+    # 分站返利合约（总部权威口径）：station_code='*' 为全局默认，命中不到专属
+    # 行时回落到默认行。d / m / c 属总部机密，不下发分站、不下发客户端。
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS station_contracts (
+            station_code TEXT PRIMARY KEY,
+            rebate_percent REAL NOT NULL DEFAULT 10,
+            min_margin_percent REAL NOT NULL DEFAULT 5,
+            pricing_unit TEXT NOT NULL DEFAULT 'ai',
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+    # 分站返利台账（总部权威账）：订单付款成功后按快照计提一行 accrued，
+    # accrued_at + 7 天进入可结算（settled）状态，分站侧只读镜像本表汇总。
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS station_rebate_ledger (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            station_code TEXT NOT NULL,
+            order_id TEXT NOT NULL,
+            out_trade_no TEXT NOT NULL DEFAULT '',
+            account_id TEXT NOT NULL DEFAULT '',
+            package_id TEXT NOT NULL DEFAULT '',
+            amount_cents INTEGER NOT NULL DEFAULT 0,
+            tier_rate REAL NOT NULL DEFAULT 0,
+            rebate_cents INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'accrued'
+                CHECK (status IN ('accrued', 'settled', 'reserved', 'paid', 'void')),
+            accrued_at TEXT NOT NULL DEFAULT (datetime('now')),
+            settle_due_at TEXT NOT NULL DEFAULT '',
+            settled_at TEXT NOT NULL DEFAULT '',
+            payout_id TEXT NOT NULL DEFAULT '',
+            UNIQUE (order_id)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_station_rebate_ledger_station_status"
+        " ON station_rebate_ledger (station_code, status, accrued_at)"
+    )
+    # 分站提现打款单（总部权威账）：分站提交后进入 pending，由 wh-admin 审批。
+    # 金额粒度在打款单层（amount_cents），台账 station_rebate_ledger 只做 T+7 状态机，
+    # 不打散为行级 reserved/paid，避免整行冻结带来的金额对齐问题。
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS station_payouts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            station_code TEXT NOT NULL,
+            amount_cents INTEGER NOT NULL,
+            channel TEXT NOT NULL DEFAULT 'bank'
+                CHECK (channel IN ('bank', 'alipay', 'wechat', 'offline')),
+            account TEXT NOT NULL DEFAULT '',
+            note TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending', 'paid', 'rejected')),
+            applied_at TEXT NOT NULL DEFAULT (datetime('now')),
+            decided_at TEXT NOT NULL DEFAULT '',
+            voucher TEXT NOT NULL DEFAULT '',
+            reject_reason TEXT NOT NULL DEFAULT '',
+            created_by TEXT NOT NULL DEFAULT '',
+            decided_by TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_station_payouts_station_status"
+        " ON station_payouts (station_code, status, applied_at)"
+    )
     # The retired 2x switch must not remain armed after the permanent package
     # rule ships. Existing orders already carry immutable bonus snapshots.
     conn.execute(
