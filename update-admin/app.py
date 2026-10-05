@@ -2129,7 +2129,17 @@ def create_app(
                 version_dir = resolved.publish_dir / "releases" / semantic_version.raw
                 final_installer = resolved.publish_dir / filename
                 if final_installer.exists() or version_dir.exists():
-                    raise api_error(409, "release_files_exist", "该版本的发布文件已存在，请使用更高版本号")
+                    # releases 表有记录才是「真发布过」；表里没有说明是上一次发布中途
+                    # 失败（如官网文件同步权限问题）留下的孤儿产物。不清理的话这个
+                    # 版本号会被 409 永久挡住，只能人工登录服务器删文件。
+                    if service.get_release(semantic_version.raw) is not None:
+                        raise api_error(409, "release_files_exist", "该版本的发布文件已存在，请使用更高版本号")
+                    LOGGER.warning(
+                        "removing stale publish artifacts for %s (no releases row) before retry",
+                        semantic_version.raw,
+                    )
+                    shutil.rmtree(version_dir, ignore_errors=True)
+                    final_installer.unlink(missing_ok=True)
                 version_dir.mkdir(parents=True, exist_ok=False)
                 atomic_copy(publish_source, final_installer)
                 atomic_write_json(version_dir / "manifest.json", manifest)
