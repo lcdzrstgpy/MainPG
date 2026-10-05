@@ -71,6 +71,9 @@ _VARIANT_AXIS_NAMES = {
 # 噪音属性名：绝不作为店小秘变种规格轴（平台系统字段、导购元数据、纯数字 ID）。
 _NOISE_NAME_RE = re.compile(
     r"^(?:(?-i:is[A-Z])\w*|brand|sold.?by|afterpay|klarna|import|arrows|from|pre.?discount|"
+    r"icon|iconurl|icon_url|img|image|imageurl|image_url|pic|picture|photo|thumb|thumbnail|cover|logo|"
+    r"url|link|href|src|module|moduleid|module_id|component|componentid|component_id|"
+    r"biztype|biz_type|template|templateid|template_id|scene|sceneid|track|trackid|track_id|"
     r"品[类牌]|链接|平台|来源|图片|推荐|评分|评价|已售|库存|客服|运费|免运费)$",
     re.IGNORECASE,
 )
@@ -87,6 +90,7 @@ _NOISE_VALUE_RE = re.compile(
     r"sold\s+by\b|"  # Sold by
     r"^from$|"  # From（元数据）
     r"pre[- ]?discount|"  # Pre-Discount Price
+    r"https?://|"  # 图片/跳转链接等 URL 元数据
     r"no\s+additional\s+variants",  # No Additional Variants
     re.IGNORECASE,
 )

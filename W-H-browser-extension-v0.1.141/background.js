@@ -7662,6 +7662,7 @@ async function capture1688OfferDetailEvidenceFromTab(tabId, detailUrl, matchCont
         .replace(/\s+/g, " ");
       if (!cleaned || cleaned.length > 80) return "";
       if (/^(?:key|value|name|label|text|id|sku|skuid|sku id)$/i.test(cleaned)) return "";
+      if (/^(?:icon|iconurl|icon_url|img|image|imageurl|image_url|pic|picture|photo|thumb|thumbnail|cover|logo|url|link|href|src|module|moduleid|module_id|component|componentid|component_id|biztype|biz_type|template|templateid|template_id|scene|sceneid|track|trackid|track_id)$/i.test(cleaned)) return "";
       if (/price|stock|inventory|freight|shipping|logistics|coupon|discount|saleprice|sku/i.test(cleaned)) return "";
       if (/价格|库存|现货|可售|起批|已售|销量|运费|物流|快递|优惠|折扣/.test(cleaned)) return "";
       return cleaned;
@@ -7694,6 +7695,7 @@ async function capture1688OfferDetailEvidenceFromTab(tabId, detailUrl, matchCont
         .replace(/^[\s:：-]+|[\s:：-]+$/g, "")
         .replace(/\s+/g, " ");
       if (!cleaned || cleaned.length > 140) return "";
+      if (/^(?:https?:\/\/|data:|\/\/)/i.test(cleaned)) return "";
       if (/^(?:全部参数|商品参数|产品参数|规格参数|详细参数|基本参数)$/i.test(cleaned)) return "";
       if (/^(?:¥|￥|\$)?\d+(?:\.\d+)?$/.test(cleaned)) {
         const unit = sourceAttributeUnitFromName(name);
@@ -14267,6 +14269,7 @@ function extractProductFromCurrentPage(expectedProductId = "") {
       .replace(/\s+/g, " ");
     if (!cleaned || cleaned.length > 80) return "";
     if (/^(?:key|value|name|label|text|id|sku|skuid|sku id)$/i.test(cleaned)) return "";
+    if (/^(?:icon|iconurl|icon_url|img|image|imageurl|image_url|pic|picture|photo|thumb|thumbnail|cover|logo|url|link|href|src|module|moduleid|module_id|component|componentid|component_id|biztype|biz_type|template|templateid|template_id|scene|sceneid|track|trackid|track_id)$/i.test(cleaned)) return "";
     if (/price|stock|inventory|freight|shipping|logistics|coupon|discount|saleprice|sku/i.test(cleaned)) return "";
     if (/价格|库存|现货|可售|起批|已售|销量|运费|物流|快递|优惠|折扣/.test(cleaned)) return "";
     return cleaned;
@@ -14299,6 +14302,7 @@ function extractProductFromCurrentPage(expectedProductId = "") {
       .replace(/^[\s:：-]+|[\s:：-]+$/g, "")
       .replace(/\s+/g, " ");
     if (!cleaned || cleaned.length > 140) return "";
+    if (/^(?:https?:\/\/|data:|\/\/)/i.test(cleaned)) return "";
     if (/^(?:全部参数|商品参数|产品参数|规格参数|详细参数|基本参数)$/i.test(cleaned)) return "";
     if (/^(?:¥|￥|\$)?\d+(?:\.\d+)?$/.test(cleaned)) {
       const unit = sourceAttributeUnitFromName(name);

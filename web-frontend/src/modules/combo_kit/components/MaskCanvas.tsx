@@ -4,7 +4,7 @@ import { comboKitOriginUrl, type ComboKitItem } from '../../product_processing/a
 type Props = {
   setId: string;
   item: ComboKitItem;
-  onSaveMask?: (itemId: string, mask: { points: Array<[number, number]> }, inverted: boolean) => void;
+  onSaveMask?: (itemId: string, mask: { points: Array<[number, number]> }, inverted: boolean) => Promise<void> | void;
   // 算法预框选：返回主体轮廓多边形（失败/不可信返回 null，由本组件回落默认六边形）。
   onAutoMask?: (itemId: string) => Promise<Point[] | null>;
 };
@@ -29,13 +29,24 @@ export function MaskCanvas({ setId, item, onSaveMask, onAutoMask }: Props) {
   const imageRef = useRef<HTMLImageElement | null>(null);
   const dragRef = useRef<number>(-1);
   const dragWholeRef = useRef<{ start: Point; orig: Point[] } | null>(null);
-  // 记录正在自动框选的 item_id：切图后旧请求的结果必须丢弃，不能覆盖新图的框。
-  const autoBusyRef = useRef<string>('');
+  // 自动框选请求令牌：每次发起自增，旧请求返回时令牌已变即丢弃结果。
+  // 用令牌而非 item_id 比对，才能在切图后真正作废旧请求（否则会把上一张的轮廓画到新图上）。
+  const autoTokenRef = useRef(0);
   const [inverted, setInverted] = useState(item.mask_inverted);
   const [points, setPoints] = useState<Point[]>(() => readMask(item.mask_json) ?? DEFAULT_POINTS);
   const [view, setView] = useState<'view' | 'mask'>('view');
   const [originName, setOriginName] = useState('');
   const [autoState, setAutoState] = useState<'idle' | 'running' | 'done' | 'failed'>('idle');
+  // 保存反馈：按钮本身要能立刻显示「保存中/已保存」，而不是只在页面顶端飘一句话。
+  const [saving, setSaving] = useState(false);
+  const [saveState, setSaveState] = useState<'idle' | 'saved' | 'error'>('idle');
+
+  // 「已保存」提示短暂停留后自动收起，避免一直挂在按钮上。
+  useEffect(() => {
+    if (saveState === 'idle') return undefined;
+    const timer = window.setTimeout(() => setSaveState('idle'), 2400);
+    return () => window.clearTimeout(timer);
+  }, [saveState]);
 
   useEffect(() => {
     const raw = item.original_url || item.original_path || '';
@@ -44,13 +55,13 @@ export function MaskCanvas({ setId, item, onSaveMask, onAutoMask }: Props) {
 
   // 算法预框选：拿到轮廓就直接当初始框，失败则由下面的默认多边形兜底。
   const runAutoMask = async (itemId: string) => {
-    if (!onAutoMask || autoBusyRef.current) return;
-    autoBusyRef.current = itemId;
+    if (!onAutoMask) return;
+    const token = ++autoTokenRef.current;
     setAutoState('running');
     try {
       const auto = await onAutoMask(itemId);
-      // 结果回来时若已切到别的图，直接丢弃。
-      if (autoBusyRef.current !== itemId) return;
+      // 结果回来时若已切图或已重新发起，令牌不再匹配，直接丢弃。
+      if (token !== autoTokenRef.current) return;
       if (auto && auto.length >= 3) {
         setPoints(auto);
         setView('mask');
@@ -59,9 +70,7 @@ export function MaskCanvas({ setId, item, onSaveMask, onAutoMask }: Props) {
       }
       setAutoState('failed');
     } catch {
-      if (autoBusyRef.current === itemId) setAutoState('failed');
-    } finally {
-      if (autoBusyRef.current === itemId) autoBusyRef.current = '';
+      if (token === autoTokenRef.current) setAutoState('failed');
     }
   };
 
@@ -69,6 +78,7 @@ export function MaskCanvas({ setId, item, onSaveMask, onAutoMask }: Props) {
   // 避免继承上一张的形状。保存蒙版后 item_id 不变，不会覆盖用户刚绘制的蒙版。
   useEffect(() => {
     setInverted(item.mask_inverted);
+    setSaveState('idle');
     const saved = readMask(item.mask_json);
     setPoints(saved ?? DEFAULT_POINTS);
     if (saved || !onAutoMask) {
@@ -108,8 +118,13 @@ export function MaskCanvas({ setId, item, onSaveMask, onAutoMask }: Props) {
     const canvas = canvasRef.current!;
     const rect = canvas.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return [0, 0];
-    const x = (e.clientX - rect.left) / rect.width;
-    const y = (e.clientY - rect.top) / rect.height;
+    // 后端存的是「原图归一化」坐标，而原图在画布里是 contain 居中（两侧可能留白），
+    // 所以要把指针换算到图片所占的子矩形，不能按整块画布归一化，否则框会横向错位。
+    const { dx, dy, dw, dh } = imageRect(canvas.width, canvas.height, imageRef.current);
+    const cx = ((e.clientX - rect.left) / rect.width) * canvas.width;
+    const cy = ((e.clientY - rect.top) / rect.height) * canvas.height;
+    const x = dw > 0 ? (cx - dx) / dw : 0;
+    const y = dh > 0 ? (cy - dy) / dh : 0;
     return [Math.max(0, Math.min(1, x)), Math.max(0, Math.min(1, y))];
   };
 
@@ -170,12 +185,24 @@ export function MaskCanvas({ setId, item, onSaveMask, onAutoMask }: Props) {
   };
 
   const reset = () => {
+    // 作废在途的自动框选请求，避免刚重置又被旧结果覆盖。
+    autoTokenRef.current += 1;
     setPoints(DEFAULT_POINTS);
     setAutoState('idle');
   };
 
-  const save = () => {
-    onSaveMask?.(item.item_id, { points }, inverted);
+  const save = async () => {
+    if (!onSaveMask || saving) return;
+    setSaving(true);
+    setSaveState('idle');
+    try {
+      await onSaveMask(item.item_id, { points }, inverted);
+      setSaveState('saved');
+    } catch {
+      setSaveState('error');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const autoHint =
@@ -186,6 +213,15 @@ export function MaskCanvas({ setId, item, onSaveMask, onAutoMask }: Props) {
         : autoState === 'failed'
           ? '未能自动识别主体，请手动拖动控制点框选。'
           : '';
+
+  // 提示行优先级：保存反馈 > 自动框选状态 > 默认操作说明。
+  const hintText = saving
+    ? '正在保存蒙版…'
+    : saveState === 'saved'
+      ? '蒙版已保存，可继续微调或切换下一张。'
+      : saveState === 'error'
+        ? '保存失败，请重试。'
+        : autoHint || '拖动控制点圈住商品主体，或在框内拖动可整体平移整框；可反选；保存后由 AI 结合主体词解析。';
 
   return (
     <div className="combo-mask">
@@ -206,7 +242,9 @@ export function MaskCanvas({ setId, item, onSaveMask, onAutoMask }: Props) {
           </button>
         )}
         <button className="btn-mini danger" onClick={reset}>重置</button>
-        <button className="btn-mini primary" onClick={save}>保存蒙版</button>
+        <button className="btn-mini primary" onClick={() => void save()} disabled={saving}>
+          {saving ? '保存中…' : saveState === 'saved' ? '已保存 ✓' : '保存蒙版'}
+        </button>
       </div>
       <div className="combo-mask-stage">
         {view === 'view' && originName && (
@@ -240,8 +278,9 @@ export function MaskCanvas({ setId, item, onSaveMask, onAutoMask }: Props) {
               onPointerUp={onUp}
               onPointerCancel={onUp}
             />
-            <div className="combo-mask-hint">
-              {autoHint || '拖动控制点圈住商品主体，或在框内拖动可整体平移整框；可反选；保存后由 AI 结合主体词解析。'}
+            <div className={`combo-mask-hint${saveState === 'error' ? ' is-error' : ''}${saveState === 'saved' ? ' is-saved' : ''}`}>
+              {saveState === 'saved' && <i className="iconfont icon-check-circle" aria-hidden="true" />}
+              {hintText}
             </div>
           </>
         )}
@@ -250,27 +289,32 @@ export function MaskCanvas({ setId, item, onSaveMask, onAutoMask }: Props) {
   );
 }
 
+// 原图按 contain 铺进画布后，实际占据的子矩形（居中）。图片未加载时退化为整块画布。
+function imageRect(w: number, h: number, image: HTMLImageElement | null) {
+  if (!image || !image.complete || !image.naturalWidth || !image.naturalHeight) {
+    return { dx: 0, dy: 0, dw: w, dh: h };
+  }
+  const scale = Math.min(w / image.naturalWidth, h / image.naturalHeight);
+  const dw = image.naturalWidth * scale;
+  const dh = image.naturalHeight * scale;
+  return { dx: (w - dw) / 2, dy: (h - dh) / 2, dw, dh };
+}
+
 function draw(canvas: HTMLCanvasElement, points: Point[], inverted: boolean, image: HTMLImageElement | null) {
   const ctx = canvas.getContext('2d')!;
   const w = canvas.width;
   const h = canvas.height;
   ctx.clearRect(0, 0, w, h);
   // 原图底图：等比缩放居中铺入画布（contain），避免拉伸变形。
+  const { dx, dy, dw, dh } = imageRect(w, h, image);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, w, h);
   if (image && image.complete && image.naturalWidth) {
-    const scale = Math.min(w / image.naturalWidth, h / image.naturalHeight);
-    const dw = image.naturalWidth * scale;
-    const dh = image.naturalHeight * scale;
-    const dx = (w - dw) / 2;
-    const dy = (h - dh) / 2;
-    ctx.fillStyle = '#fff';
-    ctx.fillRect(0, 0, w, h);
     ctx.drawImage(image, dx, dy, dw, dh);
-  } else {
-    ctx.fillStyle = '#000';
-    ctx.fillRect(0, 0, w, h);
   }
   if (!points.length) return;
-  const px = points.map(([x, y]) => [x * w, y * h] as [number, number]);
+  // 点坐标是相对原图的 0..1，需先映射回图片在画布中的子矩形，再转成像素。
+  const px = points.map(([x, y]) => [x * dw + dx, y * dh + dy] as [number, number]);
   ctx.globalCompositeOperation = 'source-over';
   // 多边形填充。
   ctx.fillStyle = inverted ? 'rgba(0,0,0,0.45)' : 'rgba(30,190,120,0.35)';
