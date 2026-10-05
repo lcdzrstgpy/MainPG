@@ -948,6 +948,7 @@ class PodCustomizationService:
             batch_id=batch_id,
             action_payload={"instruction": instruction},
         )
+        self._sync_retry_epoch(billing_run)
         if self.worker is not None:
             self.worker.register_action_billing_run(f"scene:{batch_id}:{item_id}", billing_run)
         if enqueue:
@@ -977,6 +978,7 @@ class PodCustomizationService:
             batch_id=batch_id,
             action_payload={"creative_prompt": creative_prompt},
         )
+        self._sync_retry_epoch(billing_run)
         if self.worker is not None:
             self.worker.register_action_billing_run(f"item:{batch_id}:{item_id}", billing_run)
         if enqueue:
@@ -998,6 +1000,18 @@ class PodCustomizationService:
             return self._regenerate_style(
                 actor, batch_id, style_index, creative_prompt=creative_prompt, enqueue=enqueue
             )
+
+    def _sync_retry_epoch(self, billing_run: PodBillingRun) -> None:
+        """把 claim 之后的批次 epoch 写回 billing run。
+
+        claim 会把批次推进到新一轮（execution_epoch + 1），而重试用的 billing run
+        是在 claim 之前冻结的，epoch 仍停在旧值（0）。不刷新的话，这条路径的写入
+        与结算都不带 ``AND execution_epoch = ?`` 谓词，可能覆盖 reaper 已经判定的
+        失败终态（表现为「已判失败又变完成」）。
+        """
+        current = self.repository.get_batch_execution_epoch(billing_run.action_key)
+        if current is not None:
+            billing_run.execution_epoch = current
 
     def _regenerate_style(
         self,
@@ -1022,6 +1036,7 @@ class PodCustomizationService:
         except Exception:
             self._settle_unclaimed_retry(billing_run)
             raise
+        self._sync_retry_epoch(billing_run)
         if self.worker is not None:
             self.worker.register_action_billing_run(f"style:{batch_id}:{style_index}", billing_run)
         if enqueue:
@@ -1073,6 +1088,7 @@ class PodCustomizationService:
         except Exception:
             self._settle_unclaimed_retry(billing_run)
             raise
+        self._sync_retry_epoch(billing_run)
         if self.worker is not None:
             self.worker.register_action_billing_run(f"title:{batch_id}:{style_index}", billing_run)
         if enqueue:
@@ -1146,6 +1162,7 @@ class PodCustomizationService:
         except Exception:
             self._settle_unclaimed_retry(billing_run)
             raise
+        self._sync_retry_epoch(billing_run)
         if self.worker is not None:
             self.worker.register_action_billing_run(f"batch-retry:{batch_id}", billing_run)
         if enqueue:

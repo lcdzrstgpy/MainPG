@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useRef, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { priceVerificationApi } from "../api/priceVerificationApi";
@@ -172,6 +172,8 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
     error: string;
   } | null>(null);
   const sourceRunButtonRef = useRef<HTMLButtonElement>(null);
+  // 每个候选的利润预览请求序号：并发返回时只认最新一次，避免旧响应覆盖新结果
+  const profitSeqRef = useRef<Record<string, number>>({});
   const [showRefloatButton, setShowRefloatButton] = useState(false);
   const canRunSourceSearch = !busy && (sourceCount ?? 0) > 0;
   const canRefloatSourceSearch = Boolean(preview) && canRunSourceSearch;
@@ -186,12 +188,25 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
   const candidateKeyFor = (skcKey: string, candidate: SourceCandidate | null) =>
     candidate ? `${skcKey}:${candidate.offer_id ?? candidate.source_url ?? ""}` : "";
 
+  // 只在「候选集合」变化（新一轮图搜 / 候选增删）时重置输入态。
+  // 不能直接依赖 preview 的引用：后端每次回包都会重建整个对象，而已关联候选的
+  // 价格/重量编辑本身就会触发一次写入 → 回包产生新 preview → 清空 overrides →
+  // 输入框被打回后端原值，用户几乎无法连续输入多位数。
+  // 签名刻意不含价格与选中状态，因此改价不会把自己清掉。
+  const previewResetKey = useMemo(
+    () =>
+      (preview?.items ?? [])
+        .map((item) => `${item.skc_id ?? item.quote_key}:${(item.candidates ?? []).map((candidate) => candidate.offer_id ?? candidate.source_url ?? "").join("~")}`)
+        .join("|"),
+    [preview],
+  );
+
   useEffect(() => {
     setProfitOverrides({});
     setPriceOverrides({});
     setWeights({});
     setImagePreviewUrl("");
-  }, [preview]);
+  }, [previewResetKey]);
 
   useEffect(() => {
     if (!imagePreviewUrl) return;
@@ -285,6 +300,23 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
     }
   };
 
+  // 快速改价/改重量会并发多个利润预览请求，晚到的旧响应会覆盖新结果（面板数字与
+  // 输入不符、转圈提前消失）。这里按 candKey 记序号，只接受最新一次的结果。
+  const refreshCandidateProfit = (item: SourcePreviewItem, candidate: SourceCandidate, weightKg: number, priceOverride?: string) => {
+    const candKey = candidateKeyFor(itemKey(item), candidate);
+    const seq = (profitSeqRef.current[candKey] ?? 0) + 1;
+    profitSeqRef.current[candKey] = seq;
+    setProfitBusy(candKey);
+    void computeCandidateProfit(item, candidate, weightKg, priceOverride)
+      .then((profit) => {
+        if (profitSeqRef.current[candKey] !== seq) return;
+        setProfitOverrides((current) => ({ ...current, [candKey]: profit }));
+      })
+      .finally(() => {
+        if (profitSeqRef.current[candKey] === seq) setProfitBusy("");
+      });
+  };
+
   const linkedRecord = (skcKey: string, candidate: SourceCandidate) => {
     const offerId = offerIdFor(candidate);
     return links.find((link) => link.skc_id === skcKey && (link.offer_id === offerId || (candidate.source_url ? link.source_url === candidate.source_url : false)));
@@ -305,10 +337,7 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
     if (!Number.isFinite(parsed) || parsed <= 0) return;
     const rawWeight = Number(weights[candKey]);
     const weightKg = Number.isFinite(rawWeight) && rawWeight > 0 ? rawWeight : 0.5;
-    setProfitBusy(candKey);
-    void computeCandidateProfit(item, candidate, weightKg, rawValue)
-      .then((profit) => setProfitOverrides((current) => ({ ...current, [candKey]: profit })))
-      .finally(() => setProfitBusy(""));
+    refreshCandidateProfit(item, candidate, weightKg, rawValue);
     if (isAssociatedCandidate(itemKey(item), candidate)) {
       void onLink(itemKey(item), offerIdFor(candidate), candidate, rawValue, weights[candKey]).catch((error) => {
         onError(`候选源价同步失败：${actionError(error)}。当前输入未丢失，请重试。`);
@@ -322,10 +351,7 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
     setWeights((current) => ({ ...current, [candKey]: rawValue }));
     const parsed = Number(rawValue);
     if (!Number.isFinite(parsed) || parsed <= 0) return;
-    setProfitBusy(candKey);
-    void computeCandidateProfit(item, candidate, parsed, priceOverrides[candKey])
-      .then((profit) => setProfitOverrides((current) => ({ ...current, [candKey]: profit })))
-      .finally(() => setProfitBusy(""));
+    refreshCandidateProfit(item, candidate, parsed, priceOverrides[candKey]);
     if (isAssociatedCandidate(itemKey(item), candidate)) {
       void onLink(itemKey(item), offerIdFor(candidate), candidate, priceOverrides[candKey], rawValue).catch((error) => {
         onError(`候选重量同步失败：${actionError(error)}。当前输入未丢失，请重试。`);

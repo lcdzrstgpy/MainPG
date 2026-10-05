@@ -237,6 +237,12 @@ def test_retrying_a_long_settled_batch_refreshes_the_inactivity_clock(tmp_path: 
             (batch_id,),
         )
 
+    with service.repository._connect() as connection:
+        epoch_before = int(connection.execute(
+            "SELECT execution_epoch FROM pod_customization_batches WHERE batch_id = ?",
+            (batch_id,),
+        ).fetchone()["execution_epoch"])
+
     service.repository.claim_batch_retry(
         batch_id,
         actor.workspace_id,
@@ -247,12 +253,17 @@ def test_retrying_a_long_settled_batch_refreshes_the_inactivity_clock(tmp_path: 
 
     with service.repository._connect() as connection:
         row = connection.execute(
-            "SELECT status, last_progress_at FROM pod_customization_batches WHERE batch_id = ?",
+            "SELECT status, last_progress_at, execution_epoch FROM pod_customization_batches WHERE batch_id = ?",
             (batch_id,),
         ).fetchone()
     assert row["status"] == "generating_patterns", f"expected retry to reopen the batch, got {row['status']}"
     assert row["last_progress_at"] > stale_clock, (
         f"retry must refresh last_progress_at, still {row['last_progress_at']}"
+    )
+    # 重试必须推进 execution_epoch：重试路径的 billing run 冻结于 claim 之前，
+    # 若 epoch 不前移，重试线程的写入就不带栅栏谓词，会覆盖 reaper 已判定的失败终态。
+    assert int(row["execution_epoch"]) == epoch_before + 1, (
+        f"retry must advance execution_epoch, still {row['execution_epoch']}"
     )
 
     assert service.reap_stuck_batches_once() == [], "retry must not be reaped as a stuck batch"

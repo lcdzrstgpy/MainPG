@@ -1188,20 +1188,29 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
 
     # ---- 商品自定义组合：主图生成 + 三图并行处理（复用 AI 生图与预检导出）----
 
-    def _combo_reference_values(self, draft: dict[str, Any]) -> list[str]:
+    def _combo_reference_values(self, draft: dict[str, Any], *, workspace_id: str) -> list[str]:
         raw = draft.get("raw_payload") or {}
         values: list[str] = []
         for source in (raw.get("combo_sources") or []):
             if not isinstance(source, dict):
                 continue
             url = str(source.get("url") or "").strip()
-            if url:
+            if url and self._is_safe_reference_value(url):
                 values.append(url)
                 continue
-            # 本地上传来源图：以受管文件路径作为生图参考（媒体处理器支持读本地文件）。
+            # 本地上传来源图：必须落在本 workspace 的受管组合目录内。raw.combo_sources
+            # 是 update_draft 全量合并进来的用户可写字段，不校验就是任意文件读取
+            # （下游媒体处理器会直接读本地文件、并把它当作参考图发给 AI 提供方）。
             local_path = str(source.get("local_path") or "").strip()
-            if local_path and Path(local_path).is_file():
-                values.append(local_path)
+            if not local_path:
+                continue
+            try:
+                managed = self.assets.require_workspace_combo_source(
+                    local_path, workspace_id=workspace_id
+                )
+            except (FileNotFoundError, OSError, ValueError):
+                continue
+            values.append(str(managed))
         return list(dict.fromkeys(values))
 
     def _combo_member_titles(self, raw: dict[str, Any]) -> list[str]:
@@ -1488,7 +1497,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             raise ProductProcessingNotFound("product draft not found")
         if not _ai_enabled():
             raise ProductProcessingValidationError("图片生成服务未就绪")
-        reference_values = self._combo_reference_values(draft)
+        reference_values = self._combo_reference_values(draft, workspace_id=workspace_id)
         if not reference_values:
             raise ProductProcessingValidationError("组合至少需要 1 张可用的参考图")
         raw = draft.get("raw_payload") or {}
@@ -1544,10 +1553,12 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             raise ProductProcessingNotFound("product draft not found")
         if not _ai_enabled():
             raise ProductProcessingValidationError("图片生成服务未就绪")
-        main_path = Path(str(draft.get("image_path") or "")).resolve()
-        if not main_path.is_file():
-            raise ProductProcessingValidationError("尚未生成组合主图，请先生成主图")
-        reference_values = self._combo_reference_values(draft)
+        # image_path 也来自用户可写字段，而下游会直接读它的字节当组合主图 → 必须受管。
+        try:
+            main_path = self.assets.require_managed_file(str(draft.get("image_path") or ""))
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            raise ProductProcessingValidationError("尚未生成组合主图，请先生成主图") from exc
+        reference_values = self._combo_reference_values(draft, workspace_id=workspace_id)
         raw = draft.get("raw_payload") or {}
         title = str(draft.get("title") or draft.get("product_name") or "").strip()
         description = str(draft.get("description") or "").strip()
@@ -2240,6 +2251,25 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
     def retry_draft_source_images(self, draft_id: int, workspace_id: str = "local") -> dict[str, int]:
         return self.sync_draft_source_images(draft_id, workspace_id)
 
+    def _is_safe_reference_value(self, value: str) -> bool:
+        """参考图取值是否可交给下游媒体处理器。
+
+        下游（``infrastructure/media.py`` 的 ``_load_references``）对本地路径是
+        **直接 read_bytes**，而这些值追根到底来自用户可写字段（``draft.image_url`` /
+        ``raw.source_image_urls`` / ``draft.image_path``）。因此只放行三类：
+        ``data:image/``、带 scheme 的远程 URL、以及受管存储根内的本地文件。
+        其余一律丢弃 —— 否则可构造任意本地路径被读取、甚至上传给 AI 提供方。
+        """
+        if not value:
+            return False
+        if value.lower().startswith("data:image/") or "://" in value:
+            return True
+        try:
+            self.assets.require_managed_file(value)
+        except (FileNotFoundError, OSError, ValueError):
+            return False
+        return True
+
     def _generation_reference_values(
         self,
         draft_id: int,
@@ -2302,7 +2332,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         for path in all_ready_paths:
             if path not in local_candidates:
                 local_candidates.append(path)
-        return [*local_candidates, *requested], len(local_candidates)
+        # requested 直接来自用户可写字段，不能原样下传：只保留 URL 与受管本地文件。
+        safe_requested = [value for value in requested if self._is_safe_reference_value(value)]
+        return [*local_candidates, *safe_requested], len(local_candidates)
 
     def _seed_draft_source_images(self, draft: dict[str, Any], raw: dict[str, Any]) -> None:
         source_urls = [self._text(draft.get("image_url"))]
@@ -6160,7 +6192,17 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
     def _mark_draft_processed(
         self, draft: dict[str, Any], task_id: int, settings: dict[str, Any], workspace_id: str
     ) -> None:
-        """标记草稿为已处理（线程安全，由锁保护的外部调用保证）。"""
+        """标记草稿为已处理（线程安全，由锁保护的外部调用保证）。
+
+        任务在某一项处理途中被取消 / 暂停时，这一项仍会跑完并走到这里；此时不能
+        再把草稿置为「已处理」——否则任务项已是失败/取消，草稿却从草稿池消失，用户
+        既看不到它也无法重试。仅当任务仍在推进时才落库。
+        """
+        if not draft:
+            return
+        task = self.repository.get_task(task_id, workspace_id)
+        if task is not None and str(task.get("status") or "") in {"paused", "cancelled"}:
+            return
         raw = dict(draft["raw_payload"])
         raw["product_processing_receipt"] = {
             "task_id": task_id,
