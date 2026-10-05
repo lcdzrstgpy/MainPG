@@ -3,6 +3,7 @@
 import { Card, CardContent } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { optionCardClass, optionChipClass, SelectionCheck } from "./option-state-styles";
 import { LANGUAGE_OPTIONS, SCRIPT_STYLE_OPTIONS, STYLE_SOURCE_LABELS, TONE_OPTIONS, type DescribedBriefOption } from "./creation-brief-defaults";
 import type { CreationBrief, StyleSource } from "./creation-brief-types";
 
@@ -56,12 +57,11 @@ export function NarrativePanel({
                   data-style={option.id}
                   disabled={disabled}
                   onClick={() => onStyleTypeChange(option.id)}
-                  className={`relative flex flex-col items-start p-3.5 rounded-lg border text-left transition-all disabled:opacity-40 ${
-                    active ? "border-primary bg-primary/10" : "border-border/50 bg-muted/20 hover:border-primary/40"
-                  }`}
+                  className={`flex flex-col items-start rounded-lg p-3.5 text-left ${optionCardClass(active)}`}
                 >
-                  <span className={`text-sm font-medium ${active ? "text-primary" : "text-foreground"}`}>{option.label}</span>
-                  <span className="text-xs text-muted-foreground mt-0.5">{option.description}</span>
+                  {active && <SelectionCheck className="absolute right-3 top-3" />}
+                  <span className="text-sm font-semibold">{option.label}</span>
+                  <span className={`mt-0.5 text-xs ${active ? "text-primary-foreground/80" : "text-muted-foreground"}`}>{option.description}</span>
                 </button>
               );
             })}
@@ -93,12 +93,9 @@ export function NarrativePanel({
                   data-language={option.id}
                   disabled={disabled}
                   onClick={() => patch({ language: active ? undefined : option.id })}
-                  className={`px-3 py-1.5 rounded-full border text-xs font-medium transition-all disabled:opacity-40 ${
-                    active
-                      ? "bg-primary/15 text-primary border-primary/30"
-                      : "bg-muted/20 text-muted-foreground border-border/50 hover:border-primary/30"
-                  }`}
+                  className={optionChipClass(active)}
                 >
+                  {active && <SelectionCheck />}
                   {option.label}
                 </button>
               );
@@ -119,12 +116,9 @@ export function NarrativePanel({
                   data-tone={option.id}
                   disabled={disabled}
                   onClick={() => patch({ tone: active ? undefined : option.id })}
-                  className={`px-3 py-1.5 rounded-full border text-xs font-medium transition-all disabled:opacity-40 ${
-                    active
-                      ? "bg-primary/15 text-primary border-primary/30"
-                      : "bg-muted/20 text-muted-foreground border-border/50 hover:border-primary/30"
-                  }`}
+                  className={optionChipClass(active)}
                 >
+                  {active && <SelectionCheck />}
                   {option.label}
                 </button>
               );

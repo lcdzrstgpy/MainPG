@@ -26,6 +26,7 @@ import { compositionStrategyFromBrief } from "@/lib/project-detail-view";
 import { renderAudioStems } from "@/lib/audio-stems";
 import type { Shot, ScriptCharacter } from "@/lib/db/schema";
 import { assignCharacterVoices } from "@/lib/character-voices";
+import { resolveUploadFilePath } from "@/lib/remote-image";
 import { desc, and } from "drizzle-orm";
 
 type ComposeRequestBody = {
@@ -98,13 +99,13 @@ export async function GET(
   }
 }
 
-/** 把 /api/files/{pid}/{file} 形式的访问路径还原为本地磁盘绝对路径 */
+/** 把 /api/files/{pid}/{file} 形式的访问路径还原为本地磁盘绝对路径。
+ *  必须走 resolveUploadFilePath 的 uploads 根目录约束：fileRef 来自请求体，
+ *  `..` 会被 join 规范化成真实逃逸路径（/api/files/../../x 可读任意本地文件并混进成片）。 */
 function toLocalPath(fileRef: string | undefined): string | undefined {
   if (!fileRef) return undefined;
-  const m = fileRef.match(/\/api\/files\/(.+)/);
-  if (!m) return undefined;
-  const p = join(getDataDir(), "uploads", m[1]);
-  return existsSync(p) ? p : undefined;
+  const p = resolveUploadFilePath(fileRef);
+  return p && existsSync(p) ? p : undefined;
 }
 
 /** 把未知异常压成一行可读原因（写进逐镜音频报告，便于成片详情解释降级原因） */
@@ -210,18 +211,18 @@ export async function POST(
     /** 探测视频文件是否带「可听见」的音轨（自带语音/音效）；仅静音/空轨不算，让免费 TTS 旁白照常生效 */
     async function videoHasAudio(filePath: string): Promise<boolean> {
       try {
-        const { exec } = await import("child_process");
+        const { execFile } = await import("child_process");
         const { promisify } = await import("util");
-        const execAsync = promisify(exec);
+        const run = promisify(execFile);
+        // execFile + 参数数组（不过 shell）：文件名里的引号/分号只是普通字符。
+        // 拼 shell 字符串（原实现）在 Linux/mac 上会被解释成命令 → 命令注入。
         // 1) 先看有没有音频流
-        const { stdout } = await execAsync(
-          `"${ffprobeBin()}" -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 "${filePath}"`
-        );
+        const { stdout } = await run(ffprobeBin(), [
+          "-v", "error", "-select_streams", "a", "-show_entries", "stream=codec_type", "-of", "csv=p=0", filePath,
+        ]);
         if (stdout.trim().length === 0) return false;
         // 2) 有流再用 volumedetect 看是否真有声音（静音轨按无音频处理，避免吞掉 TTS 旁白）
-        const { stderr } = await execAsync(
-          `"${ffmpegBin()}" -i "${filePath}" -af volumedetect -f null -`
-        );
+        const { stderr } = await run(ffmpegBin(), ["-i", filePath, "-af", "volumedetect", "-f", "null", "-"]);
         return isAudibleFromVolumedetect(stderr);
       } catch {
         return false;

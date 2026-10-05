@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { LuWand, LuClock, LuImage, LuArrowRight, LuBookmarkPlus, LuLoaderCircle, LuTriangleAlert, LuCircleCheck, LuCircleX, LuPencil } from "react-icons/lu";
+import { LuWand, LuClock, LuImage, LuBookmarkPlus, LuLoaderCircle, LuTriangleAlert, LuCircleCheck, LuCircleX, LuPencil } from "react-icons/lu";
 import { checkScriptCompliance } from "@/lib/ad-compliance";
 import { checkPublishReadiness } from "@/lib/publish-readiness";
 import Link from "next/link";
@@ -28,6 +28,7 @@ import { scriptCharacterFrom } from "@/lib/script-character";
 import { CreationBriefSummary } from "@/components/project-creation/creation-brief-summary";
 import { StyleChoicePrompt } from "@/components/project-creation/style-choice-prompt";
 import { parseStyleRequirement, type ScriptStyleRequirement } from "@/components/project-creation/script-style-requirement";
+import { outputSchemeExecution, projectGenerationSettings } from "@/lib/output-schemes";
 
 // shot type labels (label changed to i18n key, resolved per locale at render time)
 const shotTypeLabels: Record<Shot["type"], { labelKey: string; color: string }> = {
@@ -68,15 +69,12 @@ interface ScriptVersion {
 
 /**
  * 设计 §7.4：?auto=1 是否允许隐式启动免费流水线的唯一判据。
- * - `draft`：免费静态草稿就是用户选的策略，可以自动跑（judge → stock_fill → compose）；
- * - `controlled-motion` / `native-film`：必须停在脚本确认页，由用户走各自的付费确认入口，
- *   绝不能被 URL 参数静默降级成静态草稿；
+ * - 带创作简报的新项目一律等待用户点「一键出片」；即使选免费草稿也不在 URL 跳转后静默开跑；
  * - `null`（旧项目没有 creationBrief 列）：保留原 `?auto=1` 行为，以便断点恢复。
  */
 export function shouldAutoStartPipeline(input: { outputStrategy: OutputStrategy | null; autoParam: boolean }): boolean {
   if (!input.autoParam) return false;
-  if (input.outputStrategy === null) return true;
-  return input.outputStrategy === "draft";
+  return input.outputStrategy === null;
 }
 
 /**
@@ -470,20 +468,17 @@ export default function ScriptPage() {
   // reveals the editor — the running chain is untouched.
   const [autoMode, setAutoMode] = useState(false);
   const [autoModeTriggered, setAutoModeTriggered] = useState(false);
-  // generation-task mode chosen on the studio card (?gen=ai): the free chain stays hands-off,
-  // the AI chain stops at the script gate — money is only spent after one explicit click here
-  const [genPref, setGenPref] = useState<"free" | "ai">("free");
-  // 旧链接参数（?auto=1 / ?gen=ai / ?presenter=<id>）只在这里读取一次；presenterParam 的声明已上移
+  // 旧链接参数（?auto=1 / ?presenter=<id>）只在这里读取一次；presenterParam 的声明已上移
   useEffect(() => {
     const qs = new URLSearchParams(window.location.search);
     if (qs.get("auto") === "1") setAutoMode(true);
-    if (qs.get("gen") === "ai") setGenPref("ai");
     const p = qs.get("presenter");
     if (p) setPresenterParam(p);
   }, []);
   // (the ?auto=1 fresh-start trigger lives below, after the pipeline re-attach check)
   // 出片策略门控（设计 §7.4）：`null` 表示项目没有 creationBrief（旧项目，保留原行为）
   const outputStrategy: OutputStrategy | null = creationBrief?.outputStrategy ?? null;
+  const execution = outputSchemeExecution(creationBrief);
   // ?auto=1 是否允许隐式启动免费流水线：controlled-motion / native-film 一律停在脚本确认页
   const freeChainApplies = shouldAutoStartPipeline({ outputStrategy, autoParam: autoMode });
   // Judge pass — the quality bar runs in BOTH hands-off chains, not just the pro editor.
@@ -577,6 +572,9 @@ export default function ScriptPage() {
   const startPipeline = async (resume: boolean) => {
     if (autoFinishing) return;
     if (!resume && !currentScript) return;
+    // New projects only reach the free server pipeline through their explicit draft scheme.
+    // A controlled/native project must never be silently downgraded by an old button or URL.
+    if (!resume && outputStrategy !== null && outputStrategy !== "draft") return;
     setAutoFinishing(true);
     setAutoFinishError("");
     setAutoFinishStage(t("autoFinishSelecting"));
@@ -629,13 +627,12 @@ export default function ScriptPage() {
   useEffect(() => {
     if (!autoMode || autoModeTriggered || loading || !briefLoaded || !currentScript || !pipelineChecked || resumableRun) return;
     setAutoModeTriggered(true);
-    // 策略门控（设计 §7.4）：draft 才允许免费链自动跑；controlled-motion / native-film 停在
-    // 脚本确认页等用户走各自的付费确认入口，绝不被 URL 参数静默降级成静态草稿
+    // Only legacy projects may resume through the historic ?auto=1 entry.  New projects
+    // always wait for the single output-scheme action below.
     if (!shouldAutoStartPipeline({ outputStrategy, autoParam: autoMode })) return;
-    // the AI path lands on the "script ready" gate instead of auto-running the free chain
-    if (genPref !== "ai") autoFinish();
+    autoFinish();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- autoFinish is a stable page-level handler; triggering once per auto entry
-  }, [autoMode, autoModeTriggered, loading, briefLoaded, outputStrategy, currentScript, genPref, pipelineChecked, resumableRun]);
+  }, [autoMode, autoModeTriggered, loading, briefLoaded, outputStrategy, currentScript, pipelineChecked, resumableRun]);
 
   // ---- AI film chain (grid → one-call film): the paid path. The free script above is the
   // zero-cost "video plan" gate — money is only spent after this one explicit click, and the
@@ -730,6 +727,17 @@ export default function ScriptPage() {
       // resolve the configured default image + video models to their providers
       setAiFilmStage(t("aiFilmResolve"));
       const s = useSettingsStore.getState();
+      // The selected output scheme is a project snapshot.  Models and credentials remain
+      // global, but this run's resolution/duration/look cannot drift because someone changes
+      // the Settings page after the project was created.
+      const generation = projectGenerationSettings(creationBrief, {
+        imageParams: s.imageParams,
+        videoParams: s.videoParams,
+        motionIntensity: s.motionIntensity,
+        motionRealism: s.motionRealism,
+        chainMode: s.chainMode,
+        visualLook: s.visualLook,
+      });
       const [imgTarget, vidTarget] = await Promise.all([
         resolveDefaultModelTarget(s.providers, s.defaultImageModel, s.customModels, "image"),
         resolveDefaultModelTarget(s.providers, s.defaultVideoModel, s.customModels, "video"),
@@ -753,7 +761,7 @@ export default function ScriptPage() {
               model: imgTarget.model,
               apiKey: imgTarget.apiKey,
               baseUrl: imgTarget.baseUrl,
-              options: buildImageOptions(s.imageParams ? { ...s.imageParams, aspectRatio: "1:1", count: 1 } : undefined),
+              options: buildImageOptions(generation.imageParams ? { ...generation.imageParams, aspectRatio: "1:1", count: 1 } : undefined),
             }),
           });
           const sheetData = await sheetRes.json().catch(() => ({}));
@@ -778,7 +786,7 @@ export default function ScriptPage() {
           baseUrl: imgTarget.baseUrl,
           ...(sheet && { characterSheetUrl: sheet }),
           ...(productRef && { productImageUrl: productRef }),
-          options: buildImageOptions(s.imageParams ? { ...s.imageParams, aspectRatio: "9:16", count: 1 } : undefined),
+          options: buildImageOptions(generation.imageParams ? { ...generation.imageParams, aspectRatio: "9:16", count: 1 } : undefined),
         }),
       });
       const gridData = await gridRes.json().catch(() => ({}));
@@ -798,7 +806,7 @@ export default function ScriptPage() {
           apiKey: vidTarget.apiKey,
           baseUrl: vidTarget.baseUrl,
           ...(sheet && { characterSheetUrl: sheet }),
-          options: buildVideoOptions(s.videoParams ? { ...s.videoParams, aspectRatio: "9:16" } : undefined),
+          options: buildVideoOptions(generation.videoParams ? { ...generation.videoParams, aspectRatio: "9:16" } : undefined),
         }),
       });
       const filmData = await filmRes.json().catch(() => ({}));
@@ -812,6 +820,26 @@ export default function ScriptPage() {
       setAiFilming(false);
     }
   };
+
+  /** The script page exposes one deliberate action; its saved scheme chooses the entire path. */
+  const startOutputScheme = () => {
+    if (!currentScript || autoFinishing || aiFilming) return;
+    if (execution === "controlled-assets") {
+      router.push(`/project/${id}/assets`);
+      return;
+    }
+    if (execution === "native-film") {
+      void runAiFilm();
+      return;
+    }
+    void startPipeline(false);
+  };
+
+  const outputActionLabel = execution === "controlled-assets"
+    ? "生成逐镜动态镜头"
+    : execution === "native-film"
+      ? "整片预览 · 确认后开始花钱"
+      : "一键生成草稿";
 
   // switching scripts invalidates the report — it was ruled on another script's lines
   useEffect(() => {
@@ -932,32 +960,27 @@ export default function ScriptPage() {
           </p>
         </div>
       )}
-      {/* 非 draft 策略不得自动启动免费流水线：给出各自的确认入口，不新建页面 */}
-      {outputStrategy === "controlled-motion" && (
-        <div className="rounded-xl border border-primary/40 bg-primary/5 px-4 py-3">
-          <p className="text-sm font-medium">出片策略：导演可控动态（逐镜生视频）</p>
-          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            该策略不会自动启动免费静态流水线。确认脚本后进入素材页逐镜生成动态镜头（按镜头数与模型计费）。
-          </p>
-          <Link href={`/project/${id}/assets`} className="mt-2.5 inline-block">
-            <Button size="sm" className="brand-gradient text-white">生成逐镜动态镜头</Button>
-          </Link>
-        </div>
-      )}
-      {outputStrategy === "native-film" && (
-        <div className="rounded-xl border border-primary/40 bg-primary/5 px-4 py-3">
-          <p className="text-sm font-medium">出片策略：原生整片（一次模型生成，自带音频）</p>
-          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            该策略不会自动启动免费静态流水线。先用整片预览核对模型、时长与费用，确认后才提交付费生成。
-          </p>
+      {currentScript && (
+        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-primary/40 bg-primary/5 px-4 py-3">
+          <a href="#script-content">
+            <Button size="sm" variant="outline">查看脚本</Button>
+          </a>
           <Button
             size="sm"
-            className="brand-gradient mt-2.5 text-white"
-            disabled={aiFilming || autoFinishing || !currentScript}
-            onClick={runAiFilm}
+            data-output-action="one-click"
+            className="brand-gradient text-white"
+            disabled={aiFilming || autoFinishing}
+            onClick={startOutputScheme}
           >
-            {t("aiFilmPreviewTitle")}
+            {outputActionLabel}
           </Button>
+          <p className="basis-full text-xs leading-relaxed text-muted-foreground">
+            {execution === "native-film"
+              ? "原生整片会先展示模型、时长与费用预览；确认后才会提交付费生成，使用模型原生音频。"
+              : execution === "controlled-assets"
+                ? "将进入导演可控动态：逐镜关键帧、逐镜 I2V，再本地合成。"
+                : "将以静态素材和 FFmpeg 生成草稿；是否配音由项目的音频策略决定。"}
+          </p>
         </div>
       )}
     </div>
@@ -1226,7 +1249,7 @@ export default function ScriptPage() {
               <h2 className="text-xl font-bold">{t("simpleTitle")}</h2>
               <p className="mt-1 text-sm text-muted-foreground">{t("simpleSubtitle")}</p>
             </div>
-            <Card className="glass-card">
+            <Card id="script-content" className="glass-card">
               <CardContent className="p-5">
                 <div className="mb-3 flex items-center justify-between gap-2">
                   <h3 className="min-w-0 truncate text-sm font-semibold">{currentScript?.title}</h3>
@@ -1249,33 +1272,6 @@ export default function ScriptPage() {
               <StyleChoicePrompt requirement={stylePrompt} onPick={pickScriptStyle} busy={isGenerating} />
             )}
             <div className="flex flex-col items-center gap-3">
-              {/* two finishing paths, primary = what was chosen on the studio card; the AI one
-                  is the single paid click (billed to the user's own model platform) */}
-              <div className="grid w-full gap-2 sm:grid-cols-2">
-                <Button
-                  size="lg"
-                  variant={genPref === "ai" ? "outline" : "default"}
-                  className={`w-full ${genPref === "ai" ? "" : "brand-gradient text-white"}`}
-                  disabled={autoFinishing || aiFilming || !currentScript}
-                  onClick={autoFinish}
-                >
-                  {autoFinishing ? (autoFinishStage || t("autoFinish")) : `⚡ ${t("autoFinish")}`}
-                </Button>
-                <Button
-                  size="lg"
-                  variant={genPref === "ai" ? "default" : "outline"}
-                  className={`w-full ${genPref === "ai" ? "brand-gradient text-white -order-1" : ""}`}
-                  disabled={autoFinishing || aiFilming || !currentScript}
-                  onClick={runAiFilm}
-                >
-                  {`✨ ${t("aiFilmCta")}`}
-                </Button>
-              </div>
-              <p className="text-center text-xs text-muted-foreground">{t("autoFinishHint")}</p>
-              <p className="text-center text-xs text-muted-foreground/80">{t("aiFilmCostNote")}</p>
-              {/* quality reassurance: both paths run the judge panel automatically — Easy mode
-                  hides the operation, never the quality features */}
-              <p className="text-center text-xs text-muted-foreground/80">⚖️ {t("autoJudgeNote")}</p>
               <div className="flex items-center gap-3">
                 <Button variant="outline" size="sm" className="text-xs" disabled={isGenerating} onClick={() => setRegenConfirmOpen(true)}>
                   {t("regenerate")}
@@ -1352,7 +1348,7 @@ export default function ScriptPage() {
           </div>
 
           {/* right panel: shot detail editing */}
-          <div className="lg:col-span-2">
+          <div id="script-content" className="lg:col-span-2">
             <Tabs defaultValue="timeline" className="w-full">
               <div className="flex items-center justify-between mb-4">
                 <TabsList>
@@ -1376,31 +1372,6 @@ export default function ScriptPage() {
                       <>⚖️ {t("judgeButton")}</>
                     )}
                   </Button>
-                  <Button
-                    variant="outline"
-                    className="text-sm"
-                    disabled={autoFinishing}
-                    onClick={autoFinish}
-                    title={t("autoFinishHint")}
-                  >
-                    {autoFinishing ? (
-                      <>
-                        <LuLoaderCircle className="w-4 h-4 mr-1 animate-spin" />
-                        {autoFinishStage || t("autoFinish")}
-                      </>
-                    ) : (
-                      <>
-                        <LuWand className="w-4 h-4 mr-1" />
-                        {t("autoFinish")}
-                      </>
-                    )}
-                  </Button>
-                  <Link href={`/project/${id}/assets`}>
-                    <Button className="brand-gradient text-white text-sm" disabled={autoFinishing}>
-                      {t("nextStepAssets")}
-                      <LuArrowRight className="w-4 h-4 ml-1" />
-                    </Button>
-                  </Link>
                 </div>
               </div>
 

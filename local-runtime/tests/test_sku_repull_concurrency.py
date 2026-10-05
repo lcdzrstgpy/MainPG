@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sqlite3
 import threading
 import time
 from types import SimpleNamespace
@@ -295,3 +296,63 @@ def test_sku_repull_cancel_marks_round_interrupted(runner_factory) -> None:
     assert final["status"] == "cancelled"
     assert final["done"] < final["total"]
     assert "已中断" in final["message"]
+
+
+def test_sku_repull_writeback_does_not_clobber_terminal_candidate_status(tmp_path: Path) -> None:
+    """补齐写回不得把用户已确认 / 已剔除的候选改回未确认。
+
+    补拉基于轮次启动时的快照，用户在轮次运行中点「确认入池」后，快照写回会把
+    状态冲掉（前端表现为「确认后又变回未确认」）。
+    """
+    database = tmp_path / "selection.sqlite3"
+    repository = DailySelectionRepository(database)
+    candidate = DailySelectionCandidate(
+        candidate_id="candidate-1",
+        offer_id="offer-1",
+        source_platform="1688",
+        source_url="https://detail.1688.com/offer/offer-1.html",
+        source_title="收纳盒",
+        main_image_url=None,
+        source_variant_records=(SourceVariantRecord(sku_id="sku-1"),),
+    )
+    repository.save_run(
+        workspace_id="ws-1",
+        run_id="run-terminal",
+        status="partial",
+        candidates=(candidate,),
+        metadata={},
+    )
+
+    def mark(status: str) -> None:
+        # 真实确认/剔除路径会同时写 status 列与 raw_candidate_json（后者是读取真相源）
+        with sqlite3.connect(database) as raw:
+            raw.execute("UPDATE daily_selection_candidates SET status = ?", (status,))
+            raw.execute(
+                "UPDATE daily_selection_candidates SET raw_candidate_json = json_set(raw_candidate_json, '$.status', ?)",
+                (status,),
+            )
+            raw.commit()
+
+    def stored() -> str:
+        run = repository.get_run(workspace_id="ws-1", run_id="run-terminal")
+        return run.candidates[0].status
+
+    for terminal in ("confirmed", "rejected"):
+        mark(terminal)
+        repository.update_candidate(
+            workspace_id="ws-1",
+            run_id="run-terminal",
+            candidate=candidate,
+            timestamp="2026-01-01T00:00:00Z",
+        )
+        assert stored() == terminal
+
+    # 非终态候选仍应被补齐结果正常替换
+    mark("candidate")
+    repository.update_candidate(
+        workspace_id="ws-1",
+        run_id="run-terminal",
+        candidate=candidate,
+        timestamp="2026-01-01T00:00:01Z",
+    )
+    assert stored() == "candidate"

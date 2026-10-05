@@ -47,6 +47,7 @@ import { ModelCapabilityPreflight } from "@/components/model-capability-prefligh
 import { CreationBriefSummary } from "@/components/project-creation/creation-brief-summary";
 import { assetsStageGuide, LEGACY_BRIEF_NOTICE } from "@/lib/project-detail-view";
 import type { CreationBrief } from "@/lib/creation-brief";
+import { projectGenerationSettings } from "@/lib/output-schemes";
 import {
   checkPromptConsistency,
   compileCreativePrompt,
@@ -98,7 +99,6 @@ export default function AssetsPage() {
   const { providers, defaultImageModel, defaultVideoModel, customModels, imageParams, videoParams, llm, motionIntensity, setMotionIntensity, motionRealism, setMotionRealism, chainMode, setChainMode, visualLook, setVisualLook } = useSettingsStore();
   // beginner/director split: simple mode hides the director panel, the storyboard-grid button
   // and per-shot camera tooling — beginners see shots + generate, nothing else
-  const spendCapUsd = useSettingsStore((st) => st.spendCapUsd);
   const uiMode = useSettingsStore((st) => st.uiMode);
 
   const [assets, setAssets] = useState<AssetItem[]>([]);
@@ -111,6 +111,17 @@ export default function AssetsPage() {
   // project-level creation brief: drives which asset action is the primary one for this
   // strategy. null = legacy project created before the brief existed, its asset flow stays untouched.
   const [creationBrief, setCreationBrief] = useState<CreationBrief | null>(null);
+  // A created project owns its generation controls.  The global settings store still supplies
+  // models and credentials, and is the compatibility fallback for pre-brief projects, but it
+  // must not rewrite a saved project's resolution / continuity / look halfway through a run.
+  const generation = useMemo(() => projectGenerationSettings(creationBrief, {
+    imageParams,
+    videoParams,
+    motionIntensity,
+    motionRealism,
+    chainMode,
+    visualLook,
+  }), [creationBrief, imageParams, videoParams, motionIntensity, motionRealism, chainMode, visualLook]);
   // project type: topic (one-sentence-to-video without a product) uses the free stock library for automatic visuals
   const [contentType, setContentType] = useState<string>("");
   // project product category — unlocks the category physical-realism layers in the i2v motion prompt
@@ -142,17 +153,6 @@ export default function AssetsPage() {
   // storyboard grid: one generation renders all shots in a 3x3 grid → cells become keyframes
   const [isGridGenerating, setIsGridGenerating] = useState(false);
   const [gridNotice, setGridNotice] = useState<string | null>(null);
-  // grid→film: one reference-to-video call turns all keyframes into a full multi-shot film
-  const [isFilmGenerating, setIsFilmGenerating] = useState(false);
-  const [filmNotice, setFilmNotice] = useState<{ text: string; url?: string } | null>(null);
-  /** Priced dryRun awaiting confirmation — nothing has been billed while this is set */
-  const [filmPlan, setFilmPlan] = useState<{
-    model: string;
-    swappedFrom?: string;
-    seconds: number;
-    shotCount: number;
-    estimate?: { unitUsd: number; seconds: number; minUsd: number; maxUsd: number; tierMultiplier: number };
-  } | null>(null);
   // on-camera presenter from the character library; their multi-view sheet rides the
   // grid and film passes as an identity reference so the person stops morphing
   const { characters: presenterLib } = useCharacterStore();
@@ -183,6 +183,10 @@ export default function AssetsPage() {
   // 素材阶段的分策略引导：draft=静态草稿、controlled-motion=逐镜 I2V 主操作、native-film=整片流程。
   // 只标注主次，不改变任何按钮的既有行为；旧项目（无简报）保持原样。
   const stageGuide = useMemo(() => assetsStageGuide(creationBrief?.outputStrategy ?? null), [creationBrief]);
+  // The assets workspace is the director-controlled branch only.  Draft and native-film
+  // projects have their complete, distinct dispatch on the script page; showing the same
+  // keyframe/film buttons here would reintroduce the two-path ambiguity we just removed.
+  const directorFlow = !creationBrief || creationBrief.outputStrategy === "controlled-motion";
 
   // load real data: project info + selected script shots + resolve the provider for the default image model
   useEffect(() => {
@@ -560,7 +564,7 @@ export default function AssetsPage() {
       }
       // chain target: explicit override wins (null = explicitly no chain); otherwise the next shot's static keyframe
       const chainFrame =
-        chainMode !== "pin" || lastFrameOverride === null || !modelSupportsLastFrame(videoModelTarget.model)
+        generation.chainMode !== "pin" || lastFrameOverride === null || !modelSupportsLastFrame(videoModelTarget.model)
           ? undefined
           : lastFrameOverride ??
             // demo-type shots skip auto-chaining (their ending IS the content); explicit override still chains
@@ -568,7 +572,7 @@ export default function AssetsPage() {
       // tail mode: the previous shot's REAL last frame (extracted server-side after its save)
       // becomes this shot's first frame — pixel-continuous seam; falls back to own keyframe
       let tailFirstFrame: string | undefined;
-      if (chainMode === "tail" && !firstFrameOverride) {
+      if (generation.chainMode === "tail" && !firstFrameOverride) {
         const idx = assets.findIndex((a) => a.shotId === shotId);
         const prev = idx > 0 ? assets[idx - 1] : undefined;
         if (prev) tailFirstFrame = prev.lastFrameUrl ?? lastFrameByShot.current.get(prev.shotId);
@@ -583,7 +587,7 @@ export default function AssetsPage() {
         description: asset?.description,
         productShot: asset?.visualSource === "product_image" || PRODUCT_SHOT_TYPES.has(asset?.type ?? ""),
         chainToNext: !!chainFrame,
-        intensity: motionIntensity,
+        intensity: generation.motionIntensity,
         personShot: !!asset?.characterId,
         // a character WITH a line is a talking shot: mid-conversation direction + rotating
         // behavior beats (seeded by shot position so a batch never repeats the same gestures)
@@ -591,11 +595,11 @@ export default function AssetsPage() {
         beatSeed: assets.findIndex((a) => a.shotId === shotId),
         // global look: short lighting anchor keeps the palette from drifting through the i2v pass;
         // "real"-family looks also prepend their camera-identity opener (front tokens weigh most)
-        look: getLookPreset(visualLook)?.motion,
-        opener: getLookPreset(visualLook)?.opener,
+        look: getLookPreset(generation.visualLook)?.motion,
+        opener: getLookPreset(generation.visualLook)?.opener,
         // category physical-realism layers (tier is a user single-select; "auto" by default)
         category: projectCategory,
-        realism: motionRealism,
+        realism: generation.motionRealism,
       });
       // diagnosis retake (user-initiated, billed): patch exactly ONE dimension onto the prompt.
       // Base = the freshly rebuilt prompt — deterministic, so with unchanged settings it equals
@@ -644,7 +648,7 @@ export default function AssetsPage() {
       // per-shot duration: the composer's slot follows the script duration (voice-fitted), and the
       // composer trims overshoot from the TAIL — which would cut a chained ending. Round to the
       // model's supported range instead of always sending the global 5s default.
-      const videoOptions = buildVideoOptions(videoParams);
+      const videoOptions = buildVideoOptions(generation.videoParams);
       if (projectDirection.negativePrompt) {
         videoOptions.negativePrompt = [videoOptions.negativePrompt, projectDirection.negativePrompt].filter(Boolean).join(", ");
       }
@@ -714,7 +718,7 @@ export default function AssetsPage() {
         });
       }
     },
-    [assets, videoModelTarget, id, videoParams, motionIntensity, motionRealism, chainMode, projectCategory, projectCreativeIntent, projectVisualBible, visualLook, productSafe, productImages, presenterLib, presenterSheet, saveVideoAsset, reloadPendingTasks, t, locale]
+    [assets, videoModelTarget, id, generation, projectCategory, projectCreativeIntent, projectVisualBible, productSafe, productImages, presenterLib, presenterSheet, saveVideoAsset, reloadPendingTasks, t, locale]
   );
 
   // actually generate a single asset. Returns the saved static keyframe URL (undefined on failure) so
@@ -768,7 +772,7 @@ export default function AssetsPage() {
       const castSuffix = asset.characterId ? `。${realFaceLine(basePrompt)}` : "";
       // global look: one lighting/palette block across every keyframe keeps shots in one video
       // from drifting between styles (the LLM improvises style words per shot otherwise)
-      const lookText = lookImageSuffix(visualLook, basePrompt);
+      const lookText = lookImageSuffix(generation.visualLook, basePrompt);
       const lookSuffix = lookText ? `。${lookText}` : "";
       // frame-position directive: a keyframe is the frozen instant JUST BEFORE the action,
       // holding visible potential energy — gives the i2v pass a beat to play out instead of
@@ -803,7 +807,7 @@ export default function AssetsPage() {
             ...(useProductSafe && { imageUrl: productImages[0] }),
             // user-defined image parameters (aspect ratio → dimensions / count / steps / guidance / seed / negative prompt)
             options: (() => {
-              const options = buildImageOptions(imageParams);
+              const options = buildImageOptions(generation.imageParams);
               if (projectDirection.negativePrompt) options.negativePrompt = [options.negativePrompt, projectDirection.negativePrompt].filter(Boolean).join(", ");
               return options;
             })(),
@@ -846,7 +850,7 @@ export default function AssetsPage() {
         return undefined;
       }
     },
-    [assets, modelTarget, productImages, productSafe, imageParams, autoMotion, videoModelTarget, projectCreativeIntent, projectVisualBible, visualLook, generateMotion, t]
+    [assets, modelTarget, productImages, productSafe, generation, autoMotion, videoModelTarget, projectCreativeIntent, projectVisualBible, generateMotion, t]
   );
 
   // storyboard grid: ONE image generation renders every shot as a 3x3 grid cell (person /
@@ -873,7 +877,7 @@ export default function AssetsPage() {
           ...(presenterSheet && { characterSheetUrl: presenterSheet }),
           ...(productRef && { productImageUrl: productRef }),
           // the grid itself is 9:16 so each of the 3x3 cells is exactly 9:16 too
-          options: buildImageOptions(imageParams ? { ...imageParams, aspectRatio: "9:16", count: 1 } : undefined),
+          options: buildImageOptions(generation.imageParams ? { ...generation.imageParams, aspectRatio: "9:16", count: 1 } : undefined),
         }),
       });
       const data = await res.json();
@@ -885,67 +889,7 @@ export default function AssetsPage() {
     } finally {
       setIsGridGenerating(false);
     }
-  }, [id, scriptId, modelTarget, imageParams, isGridGenerating, presenterSheet, productSafe, productImages, reloadAssets, t]);
-
-  // grid→film (field-proven 2026-08): every shot keyframe rides ONE Seedance 2.5
-  // reference-to-video call with a timecoded multi-shot prompt — native cuts, dialogue
-  // spoken verbatim, continuous audio. Lands in compositions (export page shows it).
-  /**
-   * Free dryRun: price the run and name the model that will actually bill, so this surface
-   * gets the same text-level confirmation the script page has (issue #28).
-   */
-  const previewStoryboardFilm = useCallback(async () => {
-    if (!videoModelTarget || !scriptId || isFilmGenerating) return;
-    setIsFilmGenerating(true);
-    setFilmNotice(null);
-    try {
-      const res = await fetch(`/api/project/${id}/storyboard-film`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scriptId, dryRun: true, model: videoModelTarget.model, baseUrl: videoModelTarget.baseUrl }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || t("filmFailed"));
-      setFilmPlan(data);
-    } catch (e) {
-      setFilmNotice({ text: e instanceof Error ? e.message : t("filmFailed") });
-    } finally {
-      setIsFilmGenerating(false);
-    }
-  }, [id, scriptId, videoModelTarget, isFilmGenerating, t]);
-
-  const runStoryboardFilm = useCallback(async () => {
-    if (!videoModelTarget || !scriptId || isFilmGenerating) return;
-    setIsFilmGenerating(true);
-    setFilmNotice(null);
-    try {
-      const res = await fetch(`/api/project/${id}/storyboard-film`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          scriptId,
-          provider: videoModelTarget.provider,
-          // whatever the confirm card just priced — never re-derived, so what was shown is what bills
-          model: videoModelTarget.model,
-          spendCapUsd,
-          acknowledgeOverCap: true, // the card already required an explicit confirm on this estimate
-          apiKey: videoModelTarget.apiKey,
-          baseUrl: videoModelTarget.baseUrl,
-          // presenter sheet leads reference_images as the identity anchor (@Image1)
-          ...(presenterSheet && { characterSheetUrl: presenterSheet }),
-          options: buildVideoOptions(videoParams ? { ...videoParams, aspectRatio: "9:16" } : undefined),
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || t("filmFailed"));
-      setFilmPlan(null);
-      setFilmNotice({ text: t("filmDone"), url: data.url });
-    } catch (e) {
-      setFilmNotice({ text: e instanceof Error ? e.message : t("filmFailed") });
-    } finally {
-      setIsFilmGenerating(false);
-    }
-  }, [id, scriptId, videoModelTarget, videoParams, isFilmGenerating, presenterSheet, spendCapUsd, t]);
+  }, [id, scriptId, modelTarget, generation, isGridGenerating, presenterSheet, productSafe, productImages, reloadAssets, t]);
 
   // generate all in one click (sequential, to avoid hitting platform rate limits with concurrent requests).
   // With auto-motion on, this runs TWO passes: (1) every static keyframe, (2) keyframe-chained i2v per shot —
@@ -971,18 +915,18 @@ export default function AssetsPage() {
         if (row.isVideo) continue; // already a motion/stock video — don't re-bill
         // tail mode: sequential continuation — the previous shot's real tail frame (captured at
         // save time in this very loop) beats the shot's own keyframe as the first frame
-        const tailFrame = chainMode === "tail" && i > 0 ? assets[i - 1].lastFrameUrl ?? lastFrameByShot.current.get(assets[i - 1].shotId) : undefined;
+        const tailFrame = generation.chainMode === "tail" && i > 0 ? assets[i - 1].lastFrameUrl ?? lastFrameByShot.current.get(assets[i - 1].shotId) : undefined;
         const firstFrame = tailFrame ?? staticFrameOf(row);
         if (!firstFrame) continue;
         const next = assets[i + 1];
         // pin mode pins the next keyframe as the last frame; tail/off modes never pin
-        const lastFrame = chainMode === "pin" && next && chainByDefault(row.type) ? staticFrameOf(next) : undefined;
+        const lastFrame = generation.chainMode === "pin" && next && chainByDefault(row.type) ? staticFrameOf(next) : undefined;
         // null = explicitly no chain (last shot / next frame unavailable)
         await generateMotion(row.shotId, firstFrame, lastFrame ?? null);
       }
     }
     setIsBatchGenerating(false);
-  }, [assets, generateOne, generateMotion, autoMotion, videoModelTarget, chainMode]);
+  }, [assets, generateOne, generateMotion, autoMotion, videoModelTarget, generation.chainMode]);
 
   return (
     <div className="min-h-screen grid-bg">
@@ -1019,6 +963,20 @@ export default function AssetsPage() {
             <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{stageGuide.detail}</p>
           </div>
         </section>
+        {!directorFlow ? (
+          <section className="rounded-xl border border-primary/30 bg-primary/5 px-5 py-4">
+            <p className="text-sm font-semibold">此项目不使用逐镜导演流程</p>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              {creationBrief?.outputStrategy === "native-film"
+                ? "原生整片会在脚本页生成九宫格参考图后，一次提交整片视频模型，并使用模型原生音频。"
+                : "免费草稿会在脚本页通过静态素材、可选配音与 FFmpeg 完成。"}
+            </p>
+            <Link href={`/project/${id}/script`} className="mt-3 inline-block">
+              <Button size="sm" className="brand-gradient text-white">返回脚本页一键出片</Button>
+            </Link>
+          </section>
+        ) : (
+          <>
         {/* Action bar: title + generation ACTIONS only. Creative settings live in the
             director panel below so this row stays a stable, scannable set of verbs. */}
         <div className="flex flex-wrap items-center justify-between gap-y-3 mb-4">
@@ -1061,9 +1019,6 @@ export default function AssetsPage() {
               const shotsOk = assets.length >= 2 && assets.length <= 9;
               const gridReady = Boolean(modelTarget) && shotsOk;
               const gridReason = !modelTarget ? t("gridNeedModel") : !shotsOk ? t("gridNeedShots") : t("gridTip");
-              const allShotsDone = shotsOk && assets.every((a) => a.status === "done");
-              const filmReady = Boolean(videoModelTarget) && allShotsDone;
-              const filmReason = !videoModelTarget ? t("filmNeedModel") : !allShotsDone ? t("filmNeedReady") : t("filmTip");
               return (
                 <>
                   {uiMode === "pro" && (
@@ -1084,23 +1039,6 @@ export default function AssetsPage() {
                     )}
                   </Button>
                   )}
-                  <Button
-                    onClick={previewStoryboardFilm}
-                    disabled={!filmReady || isFilmGenerating || isGridGenerating || isBatchGenerating}
-                    variant="outline"
-                    className="text-xs border-primary/50 text-primary hover:bg-primary/10 disabled:border-border/60 disabled:text-muted-foreground"
-                    title={filmReason}
-                    data-strategy-primary={stageGuide.primaryAction === "storyboard-film" ? "true" : undefined}
-                  >
-                    {isFilmGenerating ? (
-                      <>
-                        <LuLoaderCircle className="animate-spin mr-1.5 h-3.5 w-3.5" />
-                        {t("filmRunning")}
-                      </>
-                    ) : (
-                      <>{t("filmButton")}</>
-                    )}
-                  </Button>
                 </>
               );
             })()}
@@ -1292,10 +1230,10 @@ export default function AssetsPage() {
             modelId={videoModelTarget.model}
             provider={videoModelTarget.provider}
             supportsAudio={videoModelTarget.supportsAudio}
-            duration={videoParams.duration}
-            resolution={videoParams.resolution}
-            aspectRatio={videoParams.aspectRatio}
-            chainMode={chainMode}
+            duration={generation.videoParams.duration}
+            resolution={generation.videoParams.resolution}
+            aspectRatio={generation.videoParams.aspectRatio}
+            chainMode={generation.chainMode}
             audioEnabled={videoModelTarget.supportsAudio === true}
             referenceImageCount={Number(Boolean(presenterSheet)) + Number(Boolean(productSafe && productImages[0]))}
           />
@@ -1305,43 +1243,6 @@ export default function AssetsPage() {
         {gridNotice && (
           <div className="mb-4 rounded-lg border border-border bg-muted/40 px-4 py-2.5 text-xs text-muted-foreground">
             {gridNotice}
-          </div>
-        )}
-
-        {/* grid→film outcome: inline preview + export-page pointer, or the error verbatim */}
-        {filmPlan && (
-          <div className="mt-4 rounded-xl border border-primary/30 bg-primary/5 p-4 text-xs">
-            <p className="font-semibold">{t("filmConfirmTitle", { shots: filmPlan.shotCount, seconds: filmPlan.seconds })}</p>
-            {filmPlan.swappedFrom && (
-              <p className="mt-1.5 text-amber-600 dark:text-amber-500">
-                {t("filmModelSwap", { from: filmPlan.swappedFrom, to: filmPlan.model })}
-              </p>
-            )}
-            <p className="mt-1.5 tabular-nums">
-              {filmPlan.estimate
-                ? t("filmEstimate", {
-                    total: filmPlan.estimate.maxUsd.toFixed(2),
-                    unit: filmPlan.estimate.unitUsd,
-                    seconds: filmPlan.estimate.seconds,
-                  })
-                : t("filmEstimateUnknown", { model: filmPlan.model })}
-            </p>
-            <div className="mt-3 flex gap-2">
-              <Button size="sm" className="text-xs" onClick={runStoryboardFilm} disabled={isFilmGenerating}>
-                {t("filmConfirmGo")}
-              </Button>
-              <Button size="sm" variant="outline" className="text-xs" onClick={() => setFilmPlan(null)} disabled={isFilmGenerating}>
-                {t("filmConfirmCancel")}
-              </Button>
-            </div>
-          </div>
-        )}
-        {filmNotice && (
-          <div className="mb-4 rounded-lg border border-border bg-muted/40 px-4 py-2.5 text-xs text-muted-foreground">
-            <div>{filmNotice.text}</div>
-            {filmNotice.url && (
-              <video src={filmNotice.url} controls className="mt-2 max-h-64 rounded-md" />
-            )}
           </div>
         )}
 
@@ -1362,7 +1263,7 @@ export default function AssetsPage() {
         <LocalMaterialLibrary key={id} projectId={id} refreshKey={materialLibraryRevision}
           shots={assets.filter((asset) => asset.visualSource !== "product_image").map((asset) => ({ shotId: asset.shotId, description: asset.description || "" }))}
           canFill={assets.some((asset) => asset.visualSource !== "product_image" && asset.status !== "done")}
-          busy={isBatchGenerating || isGridGenerating || isFilmGenerating || isFillingStock || uploadingShot !== null || motionShots.size > 0 || assets.some((asset) => asset.status === "generating")}
+          busy={isBatchGenerating || isGridGenerating || isFillingStock || uploadingShot !== null || motionShots.size > 0 || assets.some((asset) => asset.status === "generating")}
           onUse={applyLocalMaterial} onFill={() => fillStock(true)} />
 
         {/* cloud paid-task recovery (issue #16): submitted tasks whose results were never
@@ -1753,6 +1654,8 @@ export default function AssetsPage() {
                 </Button>
               </Link>
             </div>
+          </>
+        )}
           </>
         )}
       </main>

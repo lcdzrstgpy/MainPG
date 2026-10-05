@@ -8,6 +8,7 @@ import { validateOrDelete } from "@/lib/media-validate";
 import { getDataDir } from "@/lib/paths";
 import { MAX_DOWNLOAD_BYTES } from "@/lib/providers/stock-types";
 import { resolveUploadFilePath } from "@/lib/remote-image";
+import { safeFetch } from "@/lib/ssrf-guard";
 import { sanitizeGenerationControlSummary, type GenerationControlSummary } from "@/lib/video-repair-plan";
 import { extractLastFrame, LAST_FRAME_SUFFIX } from "@/lib/video-composer/frame-extract";
 
@@ -45,7 +46,10 @@ export async function persistAssetSource(projectId: string, sourceUrl: string, s
     mime = meta.split(";")[0] || "image/png";
     bytes = /;base64/i.test(meta) ? Buffer.from(payload, "base64") : Buffer.from(decodeURIComponent(payload), "utf8");
   } else if (/^https?:\/\//.test(sourceUrl)) {
-    const response = await fetch(sourceUrl);
+    // safeFetch 而不是裸 fetch：裸 fetch 会让 sourceUrl 打到 http://127.0.0.1:<port>/...
+    // （本地服务探测）或 169.254.169.254（云元数据）上，且跟随重定向时每一跳都可能
+    // 被换目标；safeFetch 拒绝内网/保留地址 + 逐跳复验 + 15s 超时。
+    const response = await safeFetch(sourceUrl);
     if (!response.ok) throw new Error(`下载素材失败: ${response.status}`);
     const declared = Number(response.headers.get("content-length"));
     if (Number.isFinite(declared) && declared > MAX_DOWNLOAD_BYTES) throw new Error(`素材体积 ${declared} 超过上限 ${MAX_DOWNLOAD_BYTES}`);
@@ -60,7 +64,10 @@ export async function persistAssetSource(projectId: string, sourceUrl: string, s
   const directory = join(getDataDir(), "uploads", projectId);
   await mkdir(directory, { recursive: true });
   const safePrefix = prefix.replace(/[^a-zA-Z0-9-]/g, "-").slice(0, 40) || "asset";
-  const fileName = `${safePrefix}-${shotId}-${Date.now()}-${crypto.randomUUID().slice(0, 8)}.${ext}`;
+  // 纵深防御：shotId 直接进文件名，非整数（LLM 透传的 "x/.." 等）会被 join 解析成
+  // 穿越路径。上游 generator 已规范化，这里再兜一次，避免别的调用点把脏值送进来。
+  const safeShotId = Number.isInteger(shotId) && shotId > 0 && shotId <= 10000 ? shotId : 0;
+  const fileName = `${safePrefix}-${safeShotId}-${Date.now()}-${crypto.randomUUID().slice(0, 8)}.${ext}`;
   const absolutePath = join(directory, fileName);
   await writeFile(absolutePath, bytes);
   await assertValidMedia(absolutePath, ext);

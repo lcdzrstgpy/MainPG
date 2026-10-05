@@ -778,7 +778,12 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
 
   const sidebarIsCollapsed = sidebarCollapsed || isNarrowDesktop;
   // 收起后鼠标触碰是否临时浮出，由偏好设置控制（关掉后只能点顶栏按钮展开）。
-  const sidebarTemporarilyExpanded = sidebarIsCollapsed && sidebarHovered && sidebarHoverExpand;
+  // 有分组处于展开时，不响应「触碰临时展开」：收起态下子类是挂在侧栏外 12px 的悬浮层，
+  // 一旦 hoverExpand 把 is-collapsed 撤掉，悬浮层样式随之失效、菜单缩回侧栏内部，
+  // 鼠标落空触发 mouseleave → 又收起 → 悬浮层重出 → 无限循环闪烁。
+  // 只在悬浮层打开时抑制；平时（expandedGroupId 为空）触碰展开照常。
+  const sidebarTemporarilyExpanded =
+    sidebarIsCollapsed && sidebarHovered && sidebarHoverExpand && expandedGroupId === null;
 
   return (
     <main className={`workspace-shell${playEntryAnimation ? " is-brand-entering" : ""}`}>

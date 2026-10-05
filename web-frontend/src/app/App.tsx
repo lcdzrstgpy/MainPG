@@ -6,6 +6,7 @@ import { HelpAgentWidget } from "../modules/help_agent/components/HelpAgentWidge
 import { StartupUpdateGate } from "../modules/app_update/components/StartupUpdateGate";
 import { RuntimeUpdateNotifier } from "../modules/app_update/components/RuntimeUpdateNotifier";
 import { GlobalToast } from "../shared/components/GlobalToast";
+import { BackendOfflineNotice } from "../shared/components/BackendOfflineNotice";
 import { getAuthAccount, getAuthToken, httpJson, releaseAuthSession, toUserMessage } from "../transport/http/client";
 
 type MeResponse = {
@@ -161,5 +162,6 @@ export function App() {
     )}
     <RuntimeUpdateNotifier />
     <GlobalToast />
+    <BackendOfflineNotice />
   </>;
 }

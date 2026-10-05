@@ -16,6 +16,7 @@ import {
 const read = (file: string) => readFileSync(resolve(process.cwd(), file), "utf8");
 
 const scriptPage = read("src/app/project/[id]/script/page.tsx");
+const assetsPage = read("src/app/project/[id]/assets/page.tsx");
 const requirementModule = read("src/components/project-creation/script-style-requirement.ts");
 const promptModule = read("src/components/project-creation/style-choice-prompt.tsx");
 
@@ -25,13 +26,9 @@ const autoStartEffectBody = () => {
   return fromComment.slice(0, fromComment.indexOf("}, [autoMode"));
 };
 
-/** 非 draft 策略各自的分支：从策略判断到下一个页面级代码块。 */
-const strategyBlock = (marker: string, endMarker: string) =>
-  scriptPage.slice(scriptPage.indexOf(marker), scriptPage.indexOf(endMarker));
-
 describe("shouldAutoStartPipeline（出片策略门控，设计 §7.4）", () => {
-  it("只有 draft 策略 + ?auto=1 才自动启动免费流水线", () => {
-    expect(shouldAutoStartPipeline({ outputStrategy: "draft", autoParam: true })).toBe(true);
+  it("新项目即使选择免费草稿也不会因 URL 参数自动开跑", () => {
+    expect(shouldAutoStartPipeline({ outputStrategy: "draft", autoParam: true })).toBe(false);
   });
 
   it("controlled-motion / native-film 一律不许自动启动免费流水线", () => {
@@ -51,14 +48,14 @@ describe("shouldAutoStartPipeline（出片策略门控，设计 §7.4）", () =>
   });
 });
 
-describe("脚本页：自动出片只发生在 draft 分支", () => {
+describe("脚本页：自动出片只保留给旧项目断点恢复", () => {
   it("自动启动判据是 outputStrategy 与 URL auto 参数的组合", () => {
     const body = autoStartEffectBody();
     expect(body).toMatch(/shouldAutoStartPipeline\(\{ outputStrategy, autoParam: autoMode \}\)/);
     expect(body).toMatch(/if \(!shouldAutoStartPipeline/);
-    // 门控在前、启动在后：非 draft 策略在到达 autoFinish 之前就返回了
+    // 门控在前、启动在后：任何带创作简报的新项目在到达 autoFinish 前都会返回。
     expect(body.indexOf("shouldAutoStartPipeline")).toBeLessThan(body.indexOf("autoFinish()"));
-    expect(body).toMatch(/if \(genPref !== "ai"\) autoFinish\(\)/);
+    expect(body).toMatch(/autoFinish\(\)/);
   });
 
   it("简报还没读到时门控不生效，避免把受控动态误当成旧项目自动跑", () => {
@@ -72,18 +69,14 @@ describe("脚本页：自动出片只发生在 draft 分支", () => {
     expect(scriptPage).toMatch(/if \(\(freeChainApplies && !autoFinishError/);
   });
 
-  it("controlled-motion 停在脚本确认页，给逐镜动态确认入口且不启动流水线", () => {
-    const block = strategyBlock('outputStrategy === "controlled-motion"', 'outputStrategy === "native-film"');
-    expect(block).toMatch(/该策略不会自动启动免费静态流水线/);
-    expect(block).toMatch(/project\/\$\{id\}\/assets/);
-    expect(block).not.toMatch(/autoFinish\(\)|startPipeline\(/);
-  });
-
-  it("native-film 停在脚本确认页，给整片预览与计费确认入口且不启动流水线", () => {
-    const block = strategyBlock('outputStrategy === "native-film"', "// 重新生成 = 新版本");
-    expect(block).toMatch(/该策略不会自动启动免费静态流水线/);
-    expect(block).toMatch(/onClick=\{runAiFilm\}/);
-    expect(block).not.toMatch(/autoFinish\(\)|startPipeline\(/);
+  it("只呈现一个由项目方案驱动的一键出片入口", () => {
+    expect(scriptPage).toMatch(/outputSchemeExecution\(creationBrief\)/);
+    expect(scriptPage).toMatch(/const startOutputScheme = \(\) =>/);
+    expect(scriptPage).toMatch(/execution === "controlled-assets"/);
+    expect(scriptPage).toMatch(/router\.push\(`\/project\/\$\{id\}\/assets`\)/);
+    expect(scriptPage).toMatch(/execution === "native-film"/);
+    expect(scriptPage).toMatch(/void runAiFilm\(\)/);
+    expect(scriptPage).toMatch(/data-output-action="one-click"/);
   });
 });
 
@@ -97,6 +90,18 @@ describe("脚本页：旧项目（creationBrief 为 null）兼容", () => {
   it("简报读取完成（含读取失败）后标记 briefLoaded，门控不会永久等待", () => {
     expect(scriptPage).toMatch(/setBriefLoaded\(true\)/);
     expect(scriptPage).toMatch(/proj\.creationBrief \? sanitizeCreationBrief\(proj\.creationBrief\) : null/);
+  });
+});
+
+describe("素材页：仅导演动态方案进入逐镜工作区", () => {
+  it("把原生整片和免费草稿导回脚本页的唯一出片入口", () => {
+    expect(assetsPage).toMatch(/const directorFlow = !creationBrief \|\| creationBrief\.outputStrategy === "controlled-motion"/);
+    expect(assetsPage).toMatch(/!directorFlow \? \(/);
+    expect(assetsPage).toMatch(/此项目不使用逐镜导演流程/);
+    expect(assetsPage).toMatch(/返回脚本页一键出片/);
+    expect(assetsPage).not.toMatch(/onClick=\{previewStoryboardFilm\}/);
+    expect(assetsPage).not.toMatch(/const previewStoryboardFilm/);
+    expect(assetsPage).not.toMatch(/const runStoryboardFilm/);
   });
 });
 

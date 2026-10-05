@@ -70,18 +70,27 @@ export function notifySessionExpired(reason?: string): void {
   window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT, { detail: reason || "" }));
 }
 
+/** 会话失效关键词：401 + 命中其一才判定登录失效（裸 401 不算）。 */
+const SESSION_EXPIRED_DETAIL =
+  /login session expired|remote customer session is missing|invalid bearer token|missing bearer token|session revoked/i;
+
+/** 业务拒绝（密码错/验证码错/账号停用）不是会话过期，不能触发回登录页。 */
+const AUTH_BUSINESS_REJECT_DETAIL =
+  /invalid (username\/email or password)|invalid or expired (reset token|email code)|a valid 6-digit email code is required|user is not registered on the server|customer account is not active/i;
+
+export function isSessionExpiredDetail(detail: string): boolean {
+  return SESSION_EXPIRED_DETAIL.test(detail);
+}
+
 export function isSessionExpired(response: Response, detail: string): boolean {
   // 认证入口自身的 401 是业务拒绝（密码错/验证码错/账号停用），不是会话过期，
   // 不能触发回登录页（否则登录页输错密码会被"踢"）。
-  if (/invalid (username\/email or password)|invalid or expired (reset token|email code)|a valid 6-digit email code is required|user is not registered on the server|customer account is not active/i.test(detail)) {
+  if (AUTH_BUSINESS_REJECT_DETAIL.test(detail)) {
     return false;
   }
   // 部分模块（如 profit_activity）会带多个候选令牌重试，遇到 401 会换令牌继续；
   // 裸 401 不足以判定登录失效，必须同时命中明确的会话失效关键词。
-  return (
-    response.status === 401 &&
-    /login session expired|remote customer session is missing|invalid bearer token|missing bearer token|session revoked/i.test(detail)
-  );
+  return response.status === 401 && isSessionExpiredDetail(detail);
 }
 
 /**
@@ -93,6 +102,15 @@ export function isSessionExpired(response: Response, detail: string): boolean {
  * 避免这些路径在会话过期时只显示"操作失败，请稍后重试"、让用户手动退出重登。
  */
 const FETCH_INTERCEPTOR_KEY = "__wh_session_fetch_interceptor__";
+
+/**
+ * 多候选令牌重试的请求（如 profit_activity）打在 fetch init 上的标记。
+ * 这类请求的 401 可能只是「候选令牌不对、换一个继续」，不能由拦截器就地
+ * 判定会话失效——裁决权交给发起方（所有候选都失败后自行 notifySessionExpired）。
+ * 标记只存在于 init 对象上（fetch 会忽略未知 init 键），不会发给服务器。
+ */
+export const AUTH_RETRY_MANAGED = "__whAuthRetryManaged";
+
 const interceptorWindow = window as unknown as Record<string, unknown>;
 if (!interceptorWindow[FETCH_INTERCEPTOR_KEY]) {
   interceptorWindow[FETCH_INTERCEPTOR_KEY] = true;
@@ -102,7 +120,8 @@ if (!interceptorWindow[FETCH_INTERCEPTOR_KEY]) {
     /\/api\/customer\/(login|register|activate|email-code|password-reset|change-password|forgot-password)(\/|$)/i;
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const response = await originalFetch(input, init);
-    if (response.status === 401) {
+    const retryManaged = (init as Record<string, unknown> | undefined)?.[AUTH_RETRY_MANAGED] === true;
+    if (response.status === 401 && !retryManaged) {
       const url = typeof input === "string" ? input : input instanceof URL ? input.pathname : input.url;
       if (!AUTH_ENTRY_PATH.test(url)) {
         // 与 httpJson/httpBlob 共用同一套判定：裸 401 不足以判定登录失效，
@@ -318,6 +337,18 @@ export function toUserMessage(raw: string): string {
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
+/** 本地后端失联/恢复广播（杀软杀子进程、后端崩溃时前端改展示提示页而非白屏）。 */
+export const BACKEND_OFFLINE_EVENT = "mainpg:backend-offline";
+export const BACKEND_ONLINE_EVENT = "mainpg:backend-online";
+
+function notifyBackendOffline(): void {
+  window.dispatchEvent(new CustomEvent(BACKEND_OFFLINE_EVENT));
+}
+
+function notifyBackendOnline(): void {
+  window.dispatchEvent(new CustomEvent(BACKEND_ONLINE_EVENT));
+}
+
 async function fetchWithTimeout(
   url: string,
   init: RequestInit,
@@ -336,6 +367,12 @@ async function fetchWithTimeout(
       // 外部主动中止（切换会话等）原样抛出，由调用方识别；超时中止转成超时文案。
       if (externalSignal?.aborted) throw error;
       throw new Error("请求超时，请稍后重试");
+    }
+    // TypeError = fetch 网络层失败（连接被拒/本地后端挂了/被杀软拦了），
+    // 转成友好文案并广播失联事件，由 BackendOfflineNotice 展示提示页。
+    if (error instanceof TypeError) {
+      notifyBackendOffline();
+      throw new Error("本地服务无响应，请检查 MainPG 后台组件是否被杀毒软件拦截");
     }
     throw error;
   } finally {
@@ -358,6 +395,9 @@ export async function httpJson<T>(path: string, options: RequestOptions = {}): P
     options.timeoutMs,
     options.signal,
   );
+
+  // 能拿到 HTTP 响应（哪怕 4xx/5xx）就说明本地后端进程还活着 → 恢复在线状态。
+  notifyBackendOnline();
 
   const contentType = response.headers.get("content-type") ?? "";
   let payload: any = {};

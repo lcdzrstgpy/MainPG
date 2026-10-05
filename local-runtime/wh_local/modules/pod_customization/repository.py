@@ -1956,10 +1956,11 @@ class PodCustomizationRepository:
                 raise PodRepositoryError("all four public POD images are required before regenerating a title", 409)
             batch_claim = connection.execute(
                 """UPDATE pod_customization_batches
-                   SET status = 'generating_titles', error_message = '', updated_at = ?, finished_at = ''
+                   SET status = 'generating_titles', error_message = '', updated_at = ?, finished_at = '',
+                       last_progress_at = ?, execution_epoch = execution_epoch + 1
                    WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ?
                      AND status IN ('completed', 'partial_failure', 'failed', 'cancelled', 'settlement_pending')""",
-                (now, batch_id, workspace_id, owner_user_id),
+                (now, now, batch_id, workspace_id, owner_user_id),
             )
             if batch_claim.rowcount != 1:
                 raise PodRepositoryError("POD batch must settle before regenerating its title", 409)
@@ -2980,7 +2981,7 @@ class PodCustomizationRepository:
             self._refresh_counts(connection, batch_id, now)
             connection.execute(
                 """UPDATE pod_customization_batches SET status = 'generating_patterns', updated_at = ?, error_message = '',
-                       last_progress_at = ?
+                       last_progress_at = ?, execution_epoch = execution_epoch + 1
                    WHERE batch_id = ?""", (now, now, batch_id)
             )
             rows = connection.execute(
@@ -3073,7 +3074,7 @@ class PodCustomizationRepository:
             claimed = connection.execute(
                 """UPDATE pod_customization_batches
                    SET status = ?, error_message = '', updated_at = ?, finished_at = '',
-                       last_progress_at = ?
+                       last_progress_at = ?, execution_epoch = execution_epoch + 1
                    WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ?
                      AND status IN ('completed', 'partial_failure', 'failed', 'cancelled', 'settlement_pending')""",
                 (next_status, now, now, batch_id, workspace_id, owner_user_id),

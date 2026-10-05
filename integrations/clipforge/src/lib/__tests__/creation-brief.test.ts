@@ -23,8 +23,9 @@ describe("creation brief contract", () => {
       styleSource: "explicit",
       targetAudience: [],
       platforms: ["douyin"],
-      outputStrategy: "draft",
-      audioStrategy: "volcengine-tts",
+      outputScheme: expect.objectContaining({ id: "native-film", audioStrategy: "native-audio" }),
+      outputStrategy: "native-film",
+      audioStrategy: "native-audio",
     });
   });
 
@@ -74,6 +75,7 @@ describe("creation brief contract", () => {
       styleSource: "template",
       targetAudience: ["宝妈"],
       platforms: ["douyin", "tiktok"],
+      outputScheme: { id: "native-film" },
       priceRange: "£63.00",
       usageAdvantage: "一杯顶三杯",
       narrative: { situation: "通勤路上", language: "英语", tone: "轻快" },
@@ -90,6 +92,7 @@ describe("creation brief contract", () => {
       styleSource: "template",
       targetAudience: ["宝妈"],
       platforms: ["douyin", "tiktok"],
+      outputScheme: expect.objectContaining({ id: "native-film", audioStrategy: "native-audio" }),
       priceRange: "£63.00",
       usageAdvantage: "一杯顶三杯",
       narrative: { situation: "通勤路上", language: "英语", tone: "轻快" },
@@ -108,6 +111,40 @@ describe("creation brief contract", () => {
     expect(isOutputStrategy("native-film")).toBe(true);
     expect(isOutputStrategy("auto")).toBe(false);
     expect(isOutputStrategy(undefined)).toBe(false);
+  });
+
+  it("defaults to native film with native audio", () => {
+    expect(sanitizeCreationBrief({})).toMatchObject({
+      outputScheme: { id: "native-film", audioStrategy: "native-audio" },
+      outputStrategy: "native-film", audioStrategy: "native-audio",
+    });
+  });
+
+  it.each([
+    ["draft", "draft"],
+    ["controlled-motion", "controlled-balanced"],
+    ["native-film", "native-film"],
+  ] as const)("migrates legacy %s records to a %s snapshot", (outputStrategy, id) => {
+    expect(sanitizeCreationBrief({ outputStrategy, audioStrategy: "volcengine-tts" })).toMatchObject({
+      outputScheme: { id },
+    });
+  });
+
+  it("preserves a muted legacy controlled project", () => {
+    expect(sanitizeCreationBrief({ outputStrategy: "controlled-motion", audioStrategy: "mute" }))
+      .toMatchObject({ outputScheme: { id: "controlled-balanced", audioStrategy: "mute" }, audioStrategy: "mute" });
+  });
+
+  it("derives legacy strategy and audio from the selected snapshot", () => {
+    expect(sanitizeCreationBrief({
+      outputScheme: { id: "controlled-cinematic", apiKey: "secret" },
+      outputStrategy: "draft",
+      audioStrategy: "native-audio",
+    })).toMatchObject({
+      outputScheme: { id: "controlled-cinematic", outputStrategy: "controlled-motion", audioStrategy: "volcengine-tts" },
+      outputStrategy: "controlled-motion",
+      audioStrategy: "volcengine-tts",
+    });
   });
 });
 

@@ -52,14 +52,13 @@ export async function POST(req: NextRequest) {
     const creativeIntent = body.creativeIntent !== undefined ? sanitizeCreativeIntent(body.creativeIntent) : undefined;
     const visualBible = body.visualBible !== undefined ? sanitizeVisualBible(body.visualBible) : undefined;
 
-    // Design §7.2: a submitted workflow must agree with the chosen strategy. When a brief-backed
-    // caller omits the workflow we write the deterministic plan for that strategy, so `draft` never
-    // silently promises AI motion. Legacy callers that send no brief keep a null workflow and their
-    // previous behaviour (the assets page still defaults auto-motion to on for them).
+    // A brief-backed project always saves the workflow derived from its sanitized scheme, even if
+    // the request also contains a workflow. Legacy callers without a brief retain their existing
+    // optional workflow handling and otherwise keep a null workflow.
     let productionWorkflow: WorkflowStagePlan[] | undefined;
-    if (body.productionWorkflow === undefined) {
-      if (hasCreationBrief) productionWorkflow = buildWorkflowPlanForStrategy(creationBrief.outputStrategy);
-    } else {
+    if (hasCreationBrief) {
+      productionWorkflow = buildWorkflowPlanForStrategy(creationBrief.outputStrategy);
+    } else if (body.productionWorkflow !== undefined) {
       const workflow = sanitizeWorkflowPlan(body.productionWorkflow);
       if (workflow) {
         const conflict = assertStrategyWorkflowConsistency(creationBrief, workflow);

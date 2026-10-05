@@ -8,12 +8,14 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { sanitizeCreationBrief } from "@/lib/creation-brief";
+import { OUTPUT_SCHEMES } from "@/lib/output-schemes";
 import { sanitizeCreativeIntent, type CreativeIntent, type VisualBible } from "@/lib/production-system";
 import { useCharacterStore } from "@/lib/stores/project-store";
 import { useTemplateStore } from "@/lib/stores/template-store";
 import { InputSourcePanel, type InputSourceImage } from "./input-source-panel";
 import { NarrativePanel } from "./narrative-panel";
-import { OutputStrategyPanel } from "./output-strategy-panel";
+import { OutputSchemePanel } from "./output-scheme-panel";
+import { optionCardClass, optionChipClass, SelectionCheck } from "./option-state-styles";
 import {
   EMPTY_VISUAL_CONSTRAINTS,
   VisualControlPanel,
@@ -31,12 +33,12 @@ import {
   SCRIPT_STYLE_OPTIONS,
   TOPIC_NARRATION_STYLE_OPTIONS,
   coerceStyleTypeForInputMode,
-  defaultAudioStrategyFor,
   resolveStyleSource,
   validateCreationBriefForm,
   type VideoModeId,
 } from "./creation-brief-defaults";
-import type { AudioStrategy, CreationBrief, InputMode, OutputStrategy } from "./creation-brief-types";
+import type { CreationBrief, InputMode } from "./creation-brief-types";
+import type { OutputSchemeSnapshot } from "@/lib/output-schemes";
 
 /**
  * 表单收集到的全部内容：简报本身 + 建项目需要的来源字段（商品名/图片/来源）。
@@ -56,8 +58,6 @@ export interface CreationBriefFormValues {
   creativeIntent: CreativeIntent;
   /** 仅当画面约束确实收集到「画面禁忌」时产出，不凭空编造锚点 */
   visualBible?: VisualBible;
-  /** 用户是否真的点选过一次出片策略卡（默认高亮的 draft 不算已选择） */
-  strategyChosen: boolean;
 }
 
 /** 入口页在挂载后推给表单的预填（商品库、热点、模板、示例商品等）。 */
@@ -97,9 +97,6 @@ export interface CreationBriefFormProps {
   disabled?: boolean;
 }
 
-const CHIP_CLS = "px-3 py-1.5 rounded-full border text-xs font-medium transition-all disabled:opacity-40";
-const CARD_CLS = "flex items-center justify-center h-11 rounded-lg border text-sm font-medium transition-all disabled:opacity-40";
-
 /**
  * The only stateful container of the creation brief.
  *
@@ -133,8 +130,6 @@ export function CreationBriefForm({
   const [topic, setTopic] = useState("");
   const [videoMode, setVideoMode] = useState<VideoModeId>(DEFAULT_VIDEO_MODE);
   const [constraints, setConstraints] = useState<VisualConstraintValues>(EMPTY_VISUAL_CONSTRAINTS);
-  // 默认高亮的 draft 不是「已选择」：只有点过策略卡才置 true，见校验与冻结契约 C3
-  const [strategyChosen, setStrategyChosen] = useState(false);
   const [showErrors, setShowErrors] = useState(false);
 
   // every mutation runs through the shared sanitizer, so no field can drift out of contract
@@ -176,10 +171,10 @@ export function CreationBriefForm({
     : undefined;
 
   // 实时快照：只在真正收集到的字段变化时上报，避免每次渲染都推送新对象
-  const valuesKey = JSON.stringify({ brief, productName, category, sellingPoints, linkUrl, topic, videoMode, constraints, strategyChosen, imageCount: images.length });
+  const valuesKey = JSON.stringify({ brief, productName, category, sellingPoints, linkUrl, topic, videoMode, constraints, imageCount: images.length });
   useEffect(() => {
     if (!onValuesChange) return;
-    onValuesChange({ brief: sanitizeCreationBrief(brief), productName, category, sellingPoints, images, linkUrl, topic, videoMode, creativeIntent, visualBible, strategyChosen });
+    onValuesChange({ brief: sanitizeCreationBrief(brief), productName, category, sellingPoints, images, linkUrl, topic, videoMode, creativeIntent, visualBible });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- valuesKey 已经是所有被收集字段的值指纹
   }, [valuesKey]);
 
@@ -219,16 +214,10 @@ export function CreationBriefForm({
     [patchBrief]
   );
 
-  const handleOutputStrategyChange = useCallback(
-    (outputStrategy: OutputStrategy) => {
-      // 点选即代表用户显式选择了策略：默认 draft 只有在被点过一次后才算「已选择」
-      setStrategyChosen(true);
-      patchBrief({ outputStrategy, audioStrategy: defaultAudioStrategyFor(outputStrategy) });
-    },
-    [patchBrief]
-  );
-
-  const handleAudioStrategyChange = useCallback((audioStrategy: AudioStrategy) => patchBrief({ audioStrategy }), [patchBrief]);
+  const handleOutputSchemeChange = useCallback((value: OutputSchemeSnapshot) => {
+    const scheme = value.id === "native-film" ? { ...OUTPUT_SCHEMES["native-film"] } : value;
+    patchBrief({ outputScheme: scheme, outputStrategy: scheme.outputStrategy, audioStrategy: scheme.audioStrategy });
+  }, [patchBrief]);
 
   const handleFilesSelected = useCallback((files: FileList | null) => {
     if (!files) return;
@@ -267,7 +256,7 @@ export function CreationBriefForm({
     patchBrief({ platforms: next });
   };
 
-  const validation = validateCreationBriefForm({ productName, images, topic, inputMode: brief.inputMode, linkImported, strategyChosen });
+  const validation = validateCreationBriefForm({ productName, images, topic, inputMode: brief.inputMode, linkImported });
   const blocked = disabled === true;
   // 一句话主题走的是主题引擎的旁白风格词表，与带货脚本风格不通用
   const topicMode = brief.inputMode === "topic";
@@ -280,7 +269,7 @@ export function CreationBriefForm({
     const submitted = sanitizeCreationBrief(brief);
     if (onSubmitForm) {
       // 入口页需要来源字段（商品名/图片/来源）才能建项目：只走这一条提交路径
-      onSubmitForm({ brief: submitted, productName, category, sellingPoints, images, linkUrl, topic, videoMode, creativeIntent, visualBible, strategyChosen });
+      onSubmitForm({ brief: submitted, productName, category, sellingPoints, images, linkUrl, topic, videoMode, creativeIntent, visualBible });
       return;
     }
     onSubmit(submitted);
@@ -313,6 +302,7 @@ export function CreationBriefForm({
               <span className="text-destructive ml-0.5">*</span>
             </Label>
             <Input
+              aria-label="商品名称"
               value={productName}
               onChange={(event) => setProductName(event.target.value)}
               placeholder="例如：桂花乌龙茶"
@@ -348,12 +338,9 @@ export function CreationBriefForm({
                       aria-pressed={active}
                       disabled={blocked}
                       onClick={() => setCategory(active ? "" : option.id)}
-                      className={`${CHIP_CLS} ${
-                        active
-                          ? "bg-primary/15 text-primary border-primary/30"
-                          : "bg-muted/20 text-muted-foreground border-border/50 hover:border-primary/30"
-                      }`}
+                      className={optionChipClass(active)}
                     >
+                      {active && <SelectionCheck />}
                       {option.label}
                     </button>
                   );
@@ -375,6 +362,7 @@ export function CreationBriefForm({
         disabled={blocked}
       />
 
+      <section aria-label="投放设置">
       <Card className="glass-card">
         <CardContent className="p-5 space-y-5">
           <span className="text-sm font-semibold">投放设置</span>
@@ -390,12 +378,9 @@ export function CreationBriefForm({
                     aria-pressed={active}
                     disabled={blocked}
                     onClick={() => patchBrief({ targetDuration: option.id })}
-                    className={`${CARD_CLS} ${
-                      active
-                        ? "border-primary bg-primary/10 text-primary"
-                        : "border-border/50 bg-muted/20 text-muted-foreground hover:border-primary/40"
-                    }`}
+                    className={`flex h-11 items-center justify-center rounded-lg text-sm font-semibold ${optionCardClass(active)}`}
                   >
+                    {active && <SelectionCheck className="mr-1" />}
                     {option.label}
                   </button>
                 );
@@ -417,12 +402,9 @@ export function CreationBriefForm({
                         aria-pressed={active}
                         disabled={blocked}
                         onClick={() => patchBrief({ priceRange: active ? "" : option.id })}
-                        className={`${CARD_CLS} ${
-                          active
-                            ? "border-primary bg-primary/10 text-primary"
-                            : "border-border/50 bg-muted/20 text-muted-foreground hover:border-primary/40"
-                        }`}
+                        className={`flex h-11 items-center justify-center rounded-lg text-sm font-semibold ${optionCardClass(active)}`}
                       >
+                        {active && <SelectionCheck className="mr-1" />}
                         {option.label}
                       </button>
                     );
@@ -442,12 +424,9 @@ export function CreationBriefForm({
                         aria-pressed={active}
                         disabled={blocked}
                         onClick={() => toggleAudience(option.id)}
-                        className={`${CHIP_CLS} ${
-                          active
-                            ? "bg-primary/15 text-primary border-primary/30"
-                            : "bg-muted/20 text-muted-foreground border-border/50 hover:border-primary/30"
-                        }`}
+                        className={optionChipClass(active)}
                       >
+                        {active && <SelectionCheck />}
                         {option.label}
                       </button>
                     );
@@ -467,12 +446,9 @@ export function CreationBriefForm({
                         aria-pressed={active}
                         disabled={blocked}
                         onClick={() => togglePlatform(option.id)}
-                        className={`${CARD_CLS} ${
-                          active
-                            ? "border-primary bg-primary/10 text-primary"
-                            : "border-border/50 bg-muted/20 text-muted-foreground hover:border-primary/40"
-                        }`}
+                        className={`flex h-11 items-center justify-center rounded-lg text-sm font-semibold ${optionCardClass(active)}`}
                       >
+                        {active && <SelectionCheck className="mr-1" />}
                         {option.label}
                       </button>
                     );
@@ -497,6 +473,7 @@ export function CreationBriefForm({
           )}
         </CardContent>
       </Card>
+      </section>
 
       <VisualControlPanel
         videoMode={videoMode}
@@ -520,11 +497,9 @@ export function CreationBriefForm({
         disabled={blocked}
       />
 
-      <OutputStrategyPanel
-        outputStrategy={brief.outputStrategy}
-        onOutputStrategyChange={handleOutputStrategyChange}
-        audioStrategy={brief.audioStrategy}
-        onAudioStrategyChange={handleAudioStrategyChange}
+      <OutputSchemePanel
+        value={brief.outputScheme}
+        onChange={handleOutputSchemeChange}
         disabled={blocked}
       />
 
@@ -537,7 +512,7 @@ export function CreationBriefForm({
             </p>
           </div>
         )}
-        <Button type="button" onClick={handleSubmit} disabled={blocked} className="w-full h-12 brand-gradient text-white font-semibold text-base">
+        <Button type="button" data-submit-brief onClick={handleSubmit} disabled={blocked} className="w-full h-12 brand-gradient text-white font-semibold text-base">
           <LuZap className="w-5 h-5 mr-2" />
           {submitLabel}
         </Button>

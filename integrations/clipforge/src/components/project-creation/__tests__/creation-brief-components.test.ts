@@ -47,6 +47,15 @@ describe("output-strategy-panel", () => {
   });
 });
 
+describe("output-scheme-panel integration", () => {
+  it("uses one project-owned scheme selector in the creation form", () => {
+    const form = read("creation-brief-form.tsx");
+    expect(form).toMatch(/<OutputSchemePanel/);
+    expect(form).not.toMatch(/<OutputStrategyPanel/);
+    expect(form).toMatch(/outputScheme: scheme/);
+  });
+});
+
 describe("input-source-panel", () => {
   it("switches between the five input modes", () => {
     expect(inputSourcePanel).toMatch(/INPUT_MODE_OPTIONS\.map/);

@@ -75,7 +75,6 @@ const EMPTY_FORM_VALUES: CreationBriefFormValues = {
   videoMode: DEFAULT_VIDEO_MODE,
   // 画面约束为空时仍是完整的 CreativeIntent（空 subject），与共享表单的产出同形
   creativeIntent: sanitizeCreativeIntent({ subject: "" }),
-  strategyChosen: false,
 };
 
 // recipe-editor display labels for compose enums (bilingual data like the preset libraries, not i18n keys)
@@ -626,14 +625,13 @@ export default function NewProjectPage() {
   // submission handler: 建项目（带 creationBrief）→ 应用成片模板 → 上传商品图 → 生成脚本
   const handleSubmitForm = async (values: CreationBriefFormValues) => {
     if (isSubmitting) return;
-    // 提交前先过共享校验：错误（含「请先选择一个出片策略」）必须显示出来，绝不静默跳过
+    // 提交前先过共享校验，确保来源字段完整。
     const validation = validateCreationBriefForm({
       productName: values.productName,
       images: values.images,
       topic: values.topic,
       inputMode: values.brief.inputMode,
       linkImported: importedImages.length > 0,
-      strategyChosen: values.strategyChosen,
     });
     if (!validation.valid) {
       setError(Object.values(validation.errors).filter(Boolean).join("；"));

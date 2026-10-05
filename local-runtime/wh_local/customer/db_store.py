@@ -9,7 +9,7 @@ import threading
 
 from ..db import transaction
 from .contracts import CustomerAuthResult, LocalSession
-from .local_session import CustomerSessionStore
+from .local_session import CustomerSessionStore, SESSION_TTL
 
 
 DEFAULT_WORKSPACE_ID = "default"
@@ -152,7 +152,9 @@ class SQLiteCustomerSessionStore(CustomerSessionStore):
                 """,
                 (session_id, session.user_id, _hash_token(session.token),
                  session.expires_at, now, now,
-                 session.remote_token or customer.remote_token or ""),
+                 # 安全规格：remote_token 只存进程内存（下方 _remote_tokens），
+                 # 盘上恒空串；get_session 读取时自动回退内存表，重启后自然失效。
+                 ""),
             )
         with self._remote_tokens_lock:
             self._remote_tokens[_hash_token(session.token)] = (
@@ -188,10 +190,14 @@ class SQLiteCustomerSessionStore(CustomerSessionStore):
             ).fetchone()
             if row is None:
                 return None
+            # 滑动续期：活跃会话每次使用都顺延一个完整 TTL。否则登录满 7 天后
+            # 本地会话硬过期，严格鉴权的路由（如利润活动）会把正在用的用户
+            # 误踢回登录页——大部分页面不校验令牌，只有这类路由会先暴露。
+            renewed_expires_at = (datetime.now(timezone.utc) + SESSION_TTL).isoformat(timespec="seconds")
             session = LocalSession(
                 user_id=row["user_id"],
                 token=token,
-                expires_at=row["expires_at"],
+                expires_at=renewed_expires_at,
                 username=row["username"],
                 role=row["role"],
                 workspace_id=row["workspace_id"] or DEFAULT_WORKSPACE_ID,
@@ -199,7 +205,7 @@ class SQLiteCustomerSessionStore(CustomerSessionStore):
                 workspace_name=row["workspace_name"] or "",
                 remote_token=row["remote_token"] or self._remote_token_for_hash(token_hash),
             )
-        # last_used_at 更新放在读事务之外单独短事务执行：同一事务里“先读后写”
+        # last_used_at/滑动续期放在读事务之外单独短事务执行：同一事务里“先读后写”
         # 会把读快照升级为写锁，WAL 模式下若期间有并发提交会立即抛
         # SQLITE_BUSY_SNAPSHOT（OperationalError database is locked，busy_timeout
         # 不生效），此前被 session.actor_from_bearer_token 误映射成 401。
@@ -207,11 +213,11 @@ class SQLiteCustomerSessionStore(CustomerSessionStore):
         try:
             with transaction(self.database_path) as conn:
                 conn.execute(
-                    "UPDATE customer_sessions SET last_used_at = ? WHERE token_hash = ?",
-                    (now, token_hash),
+                    "UPDATE customer_sessions SET last_used_at = ?, expires_at = ? WHERE token_hash = ?",
+                    (now, renewed_expires_at, token_hash),
                 )
         except sqlite3.Error:
-            # last_used_at 仅用于会话活跃度展示，写失败不阻断本次鉴权。
+            # last_used_at/续期仅用于会话活跃度与保活，写失败不阻断本次鉴权。
             pass
         return session
 

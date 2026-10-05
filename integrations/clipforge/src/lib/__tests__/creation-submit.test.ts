@@ -107,18 +107,18 @@ describe("两个入口的创建链路（源码契约）", () => {
     }
   });
 
-  it("提交前先跑共享校验，错误（含「请先选择一个出片策略」）经 setError 展示而不是静默", () => {
+  it("提交前先跑共享校验，来源错误经 setError 展示", () => {
     for (const [name, page] of PAGES) {
       expect(page, name).toMatch(/validateCreationBriefForm\(\{/);
-      expect(page, name).toMatch(/strategyChosen: values\.strategyChosen/);
+      expect(page, name).not.toMatch(/strategyChosen/);
       expect(page, name).toMatch(/if \(!validation\.valid\) \{/);
       expect(page, name).toMatch(/setError\(Object\.values\(validation\.errors\)\.filter\(Boolean\)\.join\("；"\)\)/);
     }
   });
 
-  it("/project/new 的表单快照初值补齐扩展契约（creativeIntent / strategyChosen）", () => {
+  it("/project/new 的表单快照初值补齐 creativeIntent 契约", () => {
     expect(newProjectPage).toMatch(/creativeIntent: sanitizeCreativeIntent\(\{ subject: "" \}\)/);
-    expect(newProjectPage).toMatch(/strategyChosen: false/);
+    expect(newProjectPage).not.toMatch(/strategyChosen/);
     expect(newProjectPage.match(/EMPTY_FORM_VALUES: CreationBriefFormValues/g) ?? []).toHaveLength(1);
   });
 });
