@@ -6,6 +6,7 @@ import {
   markAllMessagesRead,
   markMessageRead,
   deleteMessage,
+  syncMessages,
   type InboxMessage,
 } from "../api/messagesApi";
 import { toAnnouncementSummary } from "../lib/announcementMarkdown";
@@ -68,7 +69,9 @@ export function InboxBell() {
   }, []);
 
   useEffect(() => {
-    refreshUnread();
+    // 本地消息表跨账号共享：先等一次同步把上一个账号的定向消息撤回，再显示未读红点，
+    // 否则同机换号后红点/列表会短暂带着别人的消息（与公告弹窗共用同一个在飞请求）。
+    void syncMessages().then(() => refreshUnread());
     const timer = window.setInterval(() => {
       if (document.visibilityState === "visible") refreshUnread();
     }, POLL_INTERVAL);

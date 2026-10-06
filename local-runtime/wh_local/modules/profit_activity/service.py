@@ -683,7 +683,7 @@ class ProfitActivityService:
         if row is None:
             raise ProfitActivityNotFound("import_row_not_found")
         field = "product_image_path" if kind == "product" else "source_image_path"
-        return resolve_asset(str(row.get(field) or ""))
+        return resolve_asset(str(row.get(field) or ""), require_managed=True)
 
     def image_path(self, skc: str, site: SiteCode, kind: str, group: int = 0, index: int = 0, actor: Any | None = None) -> Path:
         context = _actor_context(actor)
@@ -691,12 +691,12 @@ class ProfitActivityService:
         if product is None:
             raise ProfitActivityNotFound("product_not_found")
         if kind == "product":
-            return resolve_asset(product.image_path)
+            return resolve_asset(product.image_path, require_managed=True)
         if kind == "attachment":
-            return resolve_asset(product.attachment_image_path)
+            return resolve_asset(product.attachment_image_path, require_managed=True)
         groups = _source_groups(product.source_groups_json, "[]")
         paths = groups[group].get("image_paths", []) if group < len(groups) else []
-        return resolve_asset(paths[index] if index < len(paths) else product.source_image_path)
+        return resolve_asset(paths[index] if index < len(paths) else product.source_image_path, require_managed=True)
 
     def _asset_root(self, settings: ProfitSettings) -> Path:
         return ensure_writable_directory(Path(settings.save_root) if settings.save_root else self._output_root())
@@ -996,7 +996,7 @@ def _asset_tuple(path_value: Any) -> tuple[str, bytes] | None:
     if not path_value:
         return None
     try:
-        path = resolve_asset(str(path_value))
+        path = resolve_asset(str(path_value), require_managed=True)
     except ValueError:
         return None
     return path.name, path.read_bytes()

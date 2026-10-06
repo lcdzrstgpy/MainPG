@@ -4,6 +4,7 @@ import ipaddress
 import json
 import os
 import secrets
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,15 +55,69 @@ def _default_dev_admin_token() -> str:
     return "dev-admin-token"
 
 
+def default_data_dir(runtime_root: Path) -> Path:
+    """数据目录解析：打包版固定 %APPDATA%\\MainPG\\outputs\\wh-local。
+
+    老实现跟随"进程工作目录"，双击 exe / 快捷方式 / 命令行启动会落到不同目录，
+    甚至落到 Program Files 无写权限处直接建库失败——这正是双 workbench.sqlite3
+    的根源。打包版(frozen)一律用用户级 AppData（永远可写、与启动方式无关）；
+    源码运行保持 runtime_root/outputs/wh-local，开发与测试不受影响。
+    与 launcher/core.data_dir_from_env 的优先级保持一致。
+    """
+    override = os.environ.get("WH_LOCAL_DATA_DIR", "")
+    if override:
+        return Path(override)
+    if getattr(sys, "frozen", False):
+        appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        return Path(appdata) / "MainPG" / "outputs" / "wh-local"
+    return runtime_root / "outputs" / "wh-local"
+
+
+def _migrate_legacy_database(config: LocalRuntimeConfig, target_db: Path) -> None:
+    """打包版老版本把库建在 runtime_root/outputs/wh-local，首次启动迁到新数据目录。
+
+    只在目标位置还没有库时迁移（有则不动，避免覆盖用户数据）；WAL 附属文件
+    (-wal/-shm) 一并搬走，搬完顺手删掉旧目录（只删本次涉及的库文件）。
+    """
+    if not getattr(sys, "frozen", False):
+        return
+    legacy_dir = config.runtime_root / "outputs" / "wh-local"
+    legacy_db = legacy_dir / "workbench.sqlite3"
+    if not legacy_db.is_file() or target_db.is_file():
+        return
+    target_db.parent.mkdir(parents=True, exist_ok=True)
+    for suffix in ("", "-wal", "-shm"):
+        src = Path(str(legacy_db) + suffix)
+        if src.is_file():
+            shutil.move(str(src), str(target_db) + suffix)
+
+
+def ensure_data_dir_ready(config: LocalRuntimeConfig, database_path: Path | None = None) -> None:
+    """启动前置检查：数据目录可写（含老库迁移）。失败抛 RuntimeError(E002)。
+
+    在真正建库之前先试写一脚——目录不可写（权限/磁盘满/杀软锁定）时立刻
+    以明确错误码失败，而不是一路崩到 SQLite 报错变成白屏。
+    """
+    try:
+        config.data_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise RuntimeError(f"E002 无法创建数据目录 {config.data_dir}: {exc}") from exc
+    _migrate_legacy_database(config, database_path or config.database_path)
+    probe = config.data_dir / ".write-test"
+    try:
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+    except OSError as exc:
+        raise RuntimeError(f"E002 数据目录不可写 {config.data_dir}: {exc}") from exc
+
+
 def default_config(workspace: Path | None = None) -> LocalRuntimeConfig:
     root = runtime_root(workspace)
     install_dir = install_root()
     local_secrets = _local_onebound_config()
-    # Allow a dedicated data directory for development, tests, and packaged builds.
-    data_dir = Path(
-        os.environ.get("WH_LOCAL_DATA_DIR", "")
-        or root / "outputs" / "wh-local"
-    )
+    # 数据目录：打包版固定 %APPDATA%（见 default_data_dir）；
+    # WH_LOCAL_DATA_DIR / WH_LOCAL_DATABASE_PATH 显式覆盖仍然优先。
+    data_dir = default_data_dir(root)
     database_path = Path(os.environ.get("WH_LOCAL_DATABASE_PATH", "") or data_dir / "workbench.sqlite3")
     return LocalRuntimeConfig(
         app_version=_resolved_app_version(install_dir),

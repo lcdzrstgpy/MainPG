@@ -74,7 +74,7 @@ import {
   isAnnouncementPopupEligible,
   markAnnouncementSeen,
 } from "../../shared/components/AnnouncementModal";
-import { fetchMessages, markMessageRead, type InboxMessage } from "../../shared/api/messagesApi";
+import { fetchMessages, markMessageRead, syncMessages, type InboxMessage } from "../../shared/api/messagesApi";
 import { showToast } from "../../shared/components/toastStore";
 import { HelpAgentWidget } from "../../modules/help_agent/components/HelpAgentWidget";
 import { WorkspaceTabScrollStore } from "./workspaceTabState";
@@ -473,6 +473,9 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
   /** 拉取公告（带图片），滤掉本机已弹过的，组成待展示队列。 */
   const loadAnnouncementQueue = async () => {
     try {
+      // 先等一次同步完成：本地消息表没有账号维度，同机换号后上个账号的定向公告
+      // 会残留到下一轮后台同步（180s）才被撤回。放在读取之前，渲染时就不会泄漏。
+      await syncMessages();
       const items = await fetchMessages({ withImages: true });
       // 「只弹一次」由本机 localStorage 标记负责；服务端 read 只用于铃铛红点。
       // 不能拿 read 当过滤条件：用户可能在铃铛里点开过公告（那时就被标了已读），
@@ -778,7 +781,12 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
 
   const sidebarIsCollapsed = sidebarCollapsed || isNarrowDesktop;
   // 收起后鼠标触碰是否临时浮出，由偏好设置控制（关掉后只能点顶栏按钮展开）。
-  const sidebarTemporarilyExpanded = sidebarIsCollapsed && sidebarHovered && sidebarHoverExpand;
+  // 有分组处于展开时，不响应「触碰临时展开」：收起态下子类是挂在侧栏外 12px 的悬浮层，
+  // 一旦 hoverExpand 把 is-collapsed 撤掉，悬浮层样式随之失效、菜单缩回侧栏内部，
+  // 鼠标落空触发 mouseleave → 又收起 → 悬浮层重出 → 无限循环闪烁。
+  // 只在悬浮层打开时抑制；平时（expandedGroupId 为空）触碰展开照常。
+  const sidebarTemporarilyExpanded =
+    sidebarIsCollapsed && sidebarHovered && sidebarHoverExpand && expandedGroupId === null;
 
   return (
     <main className={`workspace-shell${playEntryAnimation ? " is-brand-entering" : ""}`}>

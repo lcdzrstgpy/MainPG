@@ -404,12 +404,9 @@
   background-image:
     radial-gradient(circle, rgba(251, 146, 60, .14) 0 7px, rgba(253, 186, 116, .09) 7px 10px, transparent 11px),
     radial-gradient(ellipse at 70% 35%, rgba(132, 204, 22, .12) 0 4px, transparent 5px),
-    linear-gradient(135deg, rgba(255, 247, 237, .5), rgba(255, 251, 235, .34)),
-    url("/theme/sunset-warm-bg.jpg");
-  background-position: 16px 22px, 28px 12px, 0 0, center center;
-  background-size: 146px 146px, 146px 146px, 100% 100%, cover;
-  background-repeat: repeat, repeat, no-repeat, no-repeat;
-  background-attachment: scroll, scroll, scroll, fixed;
+    linear-gradient(135deg, rgba(255, 247, 237, .7), rgba(255, 251, 235, .55));
+  background-position: 16px 22px, 28px 12px, 0 0;
+  background-size: 146px 146px, 146px 146px, 100% 100%;
   animation: citrus-background-drift 28s linear infinite;
 }[data-theme="sunset"] :is(
   .page-hero-card,
@@ -474,8 +471,8 @@
   border-color: #fb923c !important;
   box-shadow: 0 0 0 1px rgba(251, 146, 60, .1), 0 16px 32px rgba(180, 83, 9, .14), 0 0 24px rgba(245, 158, 11, .1) !important;
 }@keyframes citrus-background-drift {
-  from { background-position: 16px 22px, 28px 12px, 0 0, center center; }
-  to { background-position: 162px 168px, 174px 158px, 0 0, center center; }
+  from { background-position: 16px 22px, 28px 12px, 0 0; }
+  to { background-position: 162px 168px, 174px 158px, 0 0; }
 }@keyframes citrus-hero-splash {
   0%, 30% { background-position: 150% 0, 0 0, 18px 8px, 43px 21px, 0 0; }
   50%, 64% { background-position: -150% 0, 14px -7px, 2px 18px, 59px 9px, 0 0; }

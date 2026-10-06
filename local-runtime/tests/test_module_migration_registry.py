@@ -47,6 +47,9 @@ def test_pod_customization_migrations_are_registered_in_forward_order() -> None:
         "pod_customization:009_export_records",
         "pod_customization:010_pod_title_source",
         "pod_customization:011_pod_style_export_selection",
+        "pod_customization:012_batch_execution_fencing",
+        "pod_customization:013_style_elements",
+        "pod_customization:014_semi_customization",
     ]
 
 

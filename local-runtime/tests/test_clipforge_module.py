@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -14,12 +15,15 @@ from fastapi.testclient import TestClient
 from wh_local.app.main import _clipforge_build_resolver, _clipforge_node_binary
 from wh_local.modules.clipforge import service as service_module
 from wh_local.modules.clipforge.artifact import ClipForgeBuild, ClipForgeBuildState
+from wh_local.modules.clipforge import health as health_module
 from wh_local.modules.clipforge.health import ClipForgeHealthError
 from wh_local.modules.clipforge.router import create_router
 from wh_local.modules.clipforge.service import (
     ClipForgeService,
+    _MAX_AUTO_RESTARTS,
     _bundled_media_environment,
-    _platform_arch_tag,
+    _node_style_platform,
+    _resolve_ffprobe_binary,
 )
 
 
@@ -436,43 +440,58 @@ def test_start_route_returns_500_with_a_stable_error_without_leaking_details(
 
 
 @pytest.mark.parametrize(
-    ("system", "machine", "tag"),
+    ("system", "platform_dir", "suffix"),
     [
-        ("Darwin", "arm64", "darwin-arm64"),
-        ("Linux", "x86_64", "linux-x64"),
-        ("Windows", "AMD64", "win32-x64"),
-    ],
-)
-def test_platform_arch_tag_maps_to_the_ffprobe_installer_package(system: str, machine: str, tag: str) -> None:
-    assert _platform_arch_tag(system, machine) == tag
-
-
-@pytest.mark.parametrize(
-    ("system", "machine", "suffix"),
-    [
-        ("Darwin", "arm64", ""),
-        ("Linux", "x86_64", ""),
-        ("Windows", "AMD64", ".exe"),
+        ("Darwin", "darwin-arm64", ""),
+        ("Linux", "linux-x64", ""),
+        ("Windows", "win32-x64", ".exe"),
     ],
 )
 def test_bundled_media_environment_points_at_artifact_binaries(
-    tmp_path: Path, system: str, machine: str, suffix: str
+    tmp_path: Path, system: str, platform_dir: str, suffix: str
 ) -> None:
-    app_root = tmp_path / f"{system}-{machine}"
+    """@ffprobe-installer 的目录名由枚举安装现场得到，不再靠 platform.machine() 猜。"""
+    app_root = tmp_path / f"{system}-{platform_dir}"
     ffmpeg = app_root / "node_modules" / "ffmpeg-static" / f"ffmpeg{suffix}"
-    ffprobe = app_root / "node_modules" / "@ffprobe-installer" / _platform_arch_tag(system, machine) / f"ffprobe{suffix}"
+    ffprobe = app_root / "node_modules" / "@ffprobe-installer" / platform_dir / f"ffprobe{suffix}"
     ffmpeg.parent.mkdir(parents=True, exist_ok=True)
     ffprobe.parent.mkdir(parents=True, exist_ok=True)
     ffmpeg.write_bytes(b"fixture")
     ffprobe.write_bytes(b"fixture")
     ffprobe.chmod(0o644)
 
-    environment = _bundled_media_environment(app_root, system, machine)
+    environment = _bundled_media_environment(app_root, system)
 
     assert environment["FFMPEG_PATH"] == str(ffmpeg)
     assert environment["FFPROBE_PATH"] == str(ffprobe)
-    if system != "Windows":
+    # Windows 文件系统不记录 POSIX 执行位（chmod 0o111 是 no-op），
+    # 所以这条断言只在真正跑在 Linux/macOS 上时成立。
+    if system != "Windows" and sys.platform != "win32":
+        # 从包仓恢复的 ffprobe 常常缺失执行位，导出的路径必须已经被 chmod 过。
         assert ffprobe.stat().st_mode & 0o111 == 0o111
+
+
+def test_ffprobe_resolution_prefers_the_node_style_platform_directory(tmp_path: Path) -> None:
+    installer = tmp_path / "node_modules" / "@ffprobe-installer"
+    wanted = _node_style_platform()
+    other = "linux-x64" if wanted != "linux-x64" else "win32-x64"
+    (installer / other).mkdir(parents=True)
+    (installer / other / "ffprobe").write_bytes(b"fixture")
+    (installer / wanted).mkdir(parents=True)
+    preferred = installer / wanted / "ffprobe"
+    preferred.write_bytes(b"fixture")
+
+    assert _resolve_ffprobe_binary(tmp_path, "") == preferred
+
+
+def test_ffprobe_resolution_falls_back_and_reports_missing(tmp_path: Path) -> None:
+    only = tmp_path / "node_modules" / "@ffprobe-installer" / "linux-arm64"
+    only.mkdir(parents=True)
+    binary = only / "ffprobe"
+    binary.write_bytes(b"fixture")
+
+    assert _resolve_ffprobe_binary(tmp_path, "") == binary
+    assert _resolve_ffprobe_binary(tmp_path / "missing-app", "") is None
 
 
 def test_bundled_media_environment_is_empty_without_media_modules(tmp_path: Path) -> None:
@@ -499,3 +518,205 @@ def test_clipforge_build_resolver_reports_a_missing_build(tmp_path: Path) -> Non
 
     assert build.state == "missing"
     assert build.app_root is None
+
+
+# --- 崩溃自动重启 -----------------------------------------------------------
+
+
+def test_unexpected_exit_schedules_a_bounded_auto_restart(
+    service_factory: ServiceFactory, monkeypatch
+) -> None:
+    """崩溃后必须排上有限次自动重启，并把计划同时写进状态文案与错误体。"""
+    monkeypatch.setattr(service_module, "_RESTART_BACKOFF_SECONDS", (30.0, 30.0))
+    factory = FakeProcessFactory()
+    service = service_factory.make(process_factory=factory)
+    service.start()
+    wait_for_state(service, "ready")
+
+    factory.created[0].exit(3)
+    wait_until(lambda: "自动重启" in service.status().message)
+
+    status = service.status()
+    assert status.state == "failed"
+    assert "第 1/2 次" in status.message
+    assert status.error is not None and status.error.exit_code == 3
+    assert status.error.message == status.message
+    service.stop()
+
+
+def test_auto_restart_actually_relaunches_the_sidecar(
+    service_factory: ServiceFactory, monkeypatch
+) -> None:
+    monkeypatch.setattr(service_module, "_RESTART_BACKOFF_SECONDS", (0.01, 0.01))
+    factory = FakeProcessFactory()
+    service = service_factory.make(process_factory=factory)
+    service.start()
+    wait_for_state(service, "ready")
+
+    factory.created[0].exit(1)
+    wait_until(lambda: factory.call_count == 2)
+    wait_for_state(service, "ready")
+
+    assert service._restarts == 1
+    service.stop()
+
+
+def test_auto_restart_budget_stops_at_the_cap(service_factory: ServiceFactory, monkeypatch) -> None:
+    """预算耗尽后停在 failed，不再排新计时器。"""
+    monkeypatch.setattr(service_module, "_RESTART_BACKOFF_SECONDS", (30.0, 30.0))
+    service = service_factory.make()
+    service.status()
+
+    with service._lock:
+        for _ in range(_MAX_AUTO_RESTARTS + 1):
+            service._cancel_restart_timer_locked()
+            service._schedule_restart_locked()
+
+    assert service._restarts == _MAX_AUTO_RESTARTS
+    assert service._restart_timer is None
+    assert service.status().message.endswith(f"（已自动重启 {_MAX_AUTO_RESTARTS} 次，仍失败）")
+
+
+def test_manual_start_resets_the_auto_restart_budget(service_factory: ServiceFactory, monkeypatch) -> None:
+    monkeypatch.setattr(service_module, "_RESTART_BACKOFF_SECONDS", (30.0, 30.0))
+    service = service_factory.make()
+    service.status()
+    with service._lock:
+        service._restarts = _MAX_AUTO_RESTARTS
+
+    service.start()
+    wait_for_state(service, "ready")
+
+    assert service._restarts == 0
+    service.stop()
+
+
+def test_stop_cancels_a_pending_auto_restart(service_factory: ServiceFactory, monkeypatch) -> None:
+    monkeypatch.setattr(service_module, "_RESTART_BACKOFF_SECONDS", (30.0, 30.0))
+    service = service_factory.make()
+    service.status()
+    with service._lock:
+        service._mark_failed_locked("CLIPFORGE_PROCESS_EXITED", "AI 视频服务进程已退出", 1)
+        service._schedule_restart_locked()
+    assert service._restart_timer is not None
+
+    service.stop()
+
+    assert service._restart_timer is None
+    assert service.status().state == "stopped"
+
+
+# --- 生命周期卫生：孤儿回收 / 父亡子亡 --------------------------------------
+
+
+def test_orphan_sidecar_from_a_previous_crash_is_reaped(
+    service_factory: ServiceFactory, monkeypatch
+) -> None:
+    service = service_factory.make()
+    pid_file = service._pid_file
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    pid_file.write_text("31337", encoding="ascii")
+    killed: list[int] = []
+    monkeypatch.setattr(service_module, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(service_module, "_terminate_pid", lambda pid: killed.append(pid))
+
+    service._reap_orphan_child()
+
+    assert killed == [31337]
+    assert not pid_file.exists()
+
+
+def test_stale_pid_file_is_dropped_without_killing_anything(
+    service_factory: ServiceFactory, monkeypatch
+) -> None:
+    service = service_factory.make()
+    pid_file = service._pid_file
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    pid_file.write_text("31337", encoding="ascii")
+    killed: list[int] = []
+    monkeypatch.setattr(service_module, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(service_module, "_terminate_pid", lambda pid: killed.append(pid))
+
+    service._reap_orphan_child()
+
+    assert killed == []
+    assert not pid_file.exists()
+
+
+def test_spawn_writes_the_sidecar_pid_and_stop_clears_it(service_factory: ServiceFactory) -> None:
+    factory = FakeProcessFactory()
+    service = service_factory.make(process_factory=factory)
+
+    service.start()
+    wait_for_state(service, "ready")
+
+    assert service._pid_file.read_text(encoding="ascii").strip() == str(factory.created[0].pid)
+
+    service.stop()
+
+    assert not service._pid_file.exists()
+
+
+def test_parent_death_guard_is_disabled_off_windows(
+    service_factory: ServiceFactory, monkeypatch
+) -> None:
+    """非 Windows 平台不启用 Job Object；任何失败都降级为不启用，不影响启动。"""
+    monkeypatch.setattr(service_module.platform, "system", lambda: "Darwin")
+    service = service_factory.make()
+
+    service._kill_when_parent_exits(FakeProcess())
+
+    assert service._job is None
+
+
+# --- 日志卫生 ---------------------------------------------------------------
+
+
+def test_current_log_rotates_once_it_exceeds_the_size_cap(
+    service_factory: ServiceFactory, monkeypatch
+) -> None:
+    monkeypatch.setattr(service_module, "_LOG_MAX_BYTES", 16)
+    service = service_factory.make()
+    log_path = service._open_log("diag-1")
+    log_path.write_bytes(b"x" * 32)
+
+    service._open_log("diag-1")
+
+    rotated = log_path.with_name(f"{log_path.name}.1")
+    assert rotated.read_bytes() == b"x" * 32
+    assert log_path.exists() and log_path.stat().st_size == 0
+
+
+# --- 就绪探测 ---------------------------------------------------------------
+
+
+def test_readiness_probe_ignores_the_proxy_environment(monkeypatch) -> None:
+    """HTTP_PROXY 存在时，127.0.0.1 的探测也必须直连。
+
+    否则代理会把本地探测拒掉 → 探针超时 → start() 反过来把健康的 node 杀掉并报
+    "启动失败"。这里把代理指向一个必然连不上的地址：探测只要走了代理就必然失败。
+    """
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class _OkHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler 的约定命名
+            self.send_response(200)
+            self.send_header("content-type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, *_args: object) -> None:  # 测试输出里不要刷访问日志
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), _OkHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1")
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:1")
+    try:
+        with health_module._default_opener(f"http://127.0.0.1:{server.server_port}/api/health") as response:
+            assert int(response.status) == 200
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)

@@ -882,8 +882,12 @@ class PodBatchWorker:
         with self._futures_lock:
             for future in self._futures.values():
                 future.cancel()
-        self._coordinator.shutdown(wait=False, cancel_futures=True)
-        self._style_postprocess_pool.shutdown(wait=False, cancel_futures=True)
+        # 半构造对象（__init__ 中途异常后的清理路径、测试的 object.__new__ 造件）不该在
+        # close() 里二次炸掉：每个池都可能是未初始化状态，逐个判空再关。
+        for pool_name in ("_coordinator", "_style_postprocess_pool"):
+            pool = getattr(self, pool_name, None)
+            if pool is not None:
+                pool.shutdown(wait=False, cancel_futures=True)
 
     def _run_grid_calls(self, batch: dict[str, Any], call_kind: str, count: int) -> list[tuple[dict[str, Any], bytes]]:
         futures: dict[Future[Any], dict[str, Any]] = {}
@@ -1319,10 +1323,15 @@ class PodBatchWorker:
         epoch = execution_epoch if execution_epoch is not None else billing_run.execution_epoch or None
         self.repository.mark_generation_call_running(call["call_id"], epoch)
         provider_returned = False
+        # provider 调用是否已真正开始（on_start 已回调）。preflight 阶段的 runtime 关闭
+        # 属可恢复状态，要转成 auth pause；已经开始后被关则是硬失败。
+        provider_started = False
         try:
             def start_provider_call() -> None:
+                nonlocal provider_started
                 self._check_control(batch["batch_id"])
                 billing_run.start(provider_call_id, "pod.image")
+                provider_started = True
 
             runtime_kwargs = {
                 "grant": billing_run.grant,
@@ -1362,6 +1371,13 @@ class PodBatchWorker:
             self.repository.requeue_generation_call(call["call_id"], epoch)
             raise
         except RuntimeClosedError as exc:
+            if not provider_started:
+                # preflight 阶段（provider 请求尚未发出）runtime 被关 = 可恢复的暂停：
+                # 抛 auth pause 让上层走 resume/重新授权，而不是把这次 call 打成 failed
+                # 然后整条链路报废。
+                raise PodBillingAuthorizationRequired(
+                    "POD worker stopped before the provider request started; resume after re-authorization"
+                ) from exc
             raise RuntimeError("POD worker stopped while processing this provider call") from exc
         except Exception as exc:
             if not provider_returned:

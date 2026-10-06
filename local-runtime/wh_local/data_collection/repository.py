@@ -519,7 +519,11 @@ class DailySelectionRepository:
         candidate: DailySelectionCandidate,
         timestamp: str | None = None,
     ) -> None:
-        """Replace one run candidate (used by background SKU re-pull)."""
+        """Replace one run candidate (used by background SKU re-pull).
+
+        已确认 / 已剔除的候选不会被补齐结果覆盖：补齐是并发快照写回，而用户可能
+        在轮次进行中就对候选做出了终态决定。
+        """
         workspace_id = _required_text(workspace_id, "workspace_id")
         run_id = _required_text(run_id, "run_id")
         if not isinstance(candidate, DailySelectionCandidate):
@@ -535,6 +539,7 @@ class DailySelectionRepository:
                 run_id=run_id,
                 candidate=candidate,
                 timestamp=stamp,
+                preserve_terminal_status=True,
             )
             connection.execute(
                 """
@@ -807,7 +812,22 @@ class DailySelectionRepository:
         run_id: str,
         candidate: DailySelectionCandidate,
         timestamp: str,
+        preserve_terminal_status: bool = False,
     ) -> None:
+        # 后台 SKU 补齐基于「轮次启动时的快照」回写候选，期间用户可能已确认或剔除
+        # 该候选。注意 candidate 的真相源是 raw_candidate_json（读取时由它反序列化），
+        # 所以不能只保护 status 列 —— 命中终态时整条写回都要跳过，否则表现为
+        # 「确认后又变回未确认」。默认（False）保持原有的整体覆盖语义。
+        if preserve_terminal_status:
+            current = connection.execute(
+                """
+                SELECT status FROM daily_selection_candidates
+                WHERE workspace_id = ? AND run_id = ? AND candidate_id = ?
+                """,
+                (workspace_id, run_id, candidate.candidate_id),
+            ).fetchone()
+            if current is not None and str(current["status"]) in {"confirmed", "rejected"}:
+                return
         connection.execute(
             """
             INSERT INTO daily_selection_candidates
