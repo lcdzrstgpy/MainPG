@@ -45,6 +45,12 @@ export type ShopCollectionBatch = {
   completed_at?: string | null;
 };
 
+export type ShopCollectionItemCandidate = {
+  price_cny?: number | null;
+  shop_name?: string;
+  source_platform?: string;
+};
+
 export type ShopCollectionItem = {
   item_id: string;
   batch_id: string;
@@ -54,6 +60,7 @@ export type ShopCollectionItem = {
   source_title: string;
   detail_status: ShopItemDetailStatus;
   intake_action: ShopItemIntakeAction;
+  candidate?: ShopCollectionItemCandidate;
   attempts?: number;
   error_code?: string;
   error_message?: string;

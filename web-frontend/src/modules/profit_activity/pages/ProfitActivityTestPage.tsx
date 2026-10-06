@@ -1,6 +1,7 @@
 import { type ClipboardEvent, type DragEvent, type ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { toUserMessage } from "../../../transport/http/client";
+import type { ProfitActivityPrefill } from "../types/products";
 import "../styles/profitActivityTest.css";
 
 type Site = string;
@@ -258,7 +259,7 @@ const DEFAULT_PROFIT_SETTINGS: Record<string, number> = {
   activity_profit_rate_threshold: 0,
 };
 
-export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean }) {
+export function ProfitActivityTestPage({ isActive = true, prefill }: { isActive?: boolean; prefill?: ProfitActivityPrefill }) {
   // API 地址固定为空：所有请求走同源相对路径，由 Vite 代理转发到后端 8010（团队约定端口）
   const [apiBase, setApiBase] = useState("");
   const [token, setToken] = useState(defaultToken);
@@ -343,6 +344,37 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
     setImportGuidelinesOpen(false);
     setNoEligibleOpen(false);
   }, [isActive]);
+
+  // 从「商品货源及成本展示」点「查看利润明细」跳转而来时，带入成本、货源链接与 SKU 图；
+  // 售价与重量留空，由用户补齐后自动预览利润。
+  useEffect(() => {
+    if (!prefill) return;
+    let cancelled = false;
+    setProductForm({
+      ...emptyProduct,
+      skc: prefill.skc ?? "",
+      store_name: prefill.store_name ?? "",
+      cost_price: prefill.cost_price ?? "",
+      source_url: prefill.source_url ?? "",
+      note: prefill.note ?? "",
+    });
+    setProductImage(null);
+    setSourceImages([null]);
+    setCalculation(null);
+    setMessage("已带入成本与货源链接，请填写售价与重量查看利润。");
+    // SKU 图是远程地址，取回成 File 才能走后续预览与入库的图片上传流程。
+    const imageUrl = (prefill.source_image_url ?? "").trim();
+    if (imageUrl) {
+      void fetchImageFile(imageUrl).then((file) => {
+        if (cancelled || !file) return;
+        setSourceImages([file]);
+        setMessage("已带入成本、货源链接与 SKU 图片，请填写售价与重量查看利润。");
+      });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [prefill]);
 
   const selectedSkcs = useMemo(() => [...selected], [selected]);
   const displaySiteLabel = (value: Site) => siteProfiles.find((profile) => profile.id === value)?.label || siteLabel(value);
@@ -1369,6 +1401,21 @@ function ImageDrop({ title, hint, file, onFile }: { title: string; hint: string;
       <label className="profit-file-button">选择图片<input type="file" accept="image/*" onChange={onChange} /></label>
     </div>
   );
+}
+
+/** 「商品货源及成本展示」带过来的 SKU 图是远程地址，取回成 File 才能复用图片预览与入库上传。 */
+async function fetchImageFile(url: string): Promise<File | null> {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) return null;
+    const blob = await response.blob();
+    if (!blob.type.startsWith("image/")) return null;
+    const extension = blob.type.split("/")[1] || "png";
+    return new File([blob], `source-sku-${Date.now()}.${extension}`, { type: blob.type });
+  } catch {
+    // 远程站点未开放跨域时静默失败：留空由用户手动粘贴，不阻塞其余预填。
+    return null;
+  }
 }
 
 function PreviewStrip({ calculation }: { calculation?: Record<string, unknown> }) {

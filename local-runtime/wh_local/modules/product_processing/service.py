@@ -10702,6 +10702,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 "platform": raw.get("platform") or raw.get("source_platform") or "",
                 "source_platform": raw.get("source_platform") or "",
                 "source_title": raw.get("source_title") or "",
+                "shop_name": raw.get("shop_name") or "",
+                "collection_channel": raw.get("collection_channel") or "",
                 "main_image_url": raw.get("main_image_url") or "",
                 "product_link": raw.get("product_link") or raw.get("source_url") or "",
                 "source_url": raw.get("source_url") or "",

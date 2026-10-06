@@ -12056,16 +12056,35 @@ async function captureProductFromTab(tab, { commandType, expectedProductId = "" 
         const candidates = frameTexts
           .filter((t) => skuModelRe.test(t))
           .sort((a, b) => (skuSignalScore(b) - skuSignalScore(a)) || (b.length - a.length));
+        // 一次性把全部候选源合并写入缓存，而不是逐个覆盖：1688 的规格源与价格/库存
+        // 源是两个不同响应，逐个覆盖会让每轮提取只看到其中一半，永远拼不出逐 SKU 价；
+        // 多源同时在场才能由跨源 propValueMap 解码出完整规格与价格。
+        const validCandidates = [];
         for (const candidate of candidates.slice(0, 5)) {
           try {
             JSON.parse(candidate); // 校验 JSON 合法性，避免写入脏数据
+            validCandidates.push(candidate);
+          } catch (_error) {}
+        }
+        if (validCandidates.length) {
+          try {
             await chrome.scripting.executeScript({
               target: { tabId: tab.id },
               world: "MAIN",
-              func: (json) => {
-                try { window.__workbenchSkuJsonCache = json; } catch (_error) {}
+              func: (list) => {
+                try {
+                  const current = window.__workbenchSkuJsonCache;
+                  const existing = Array.isArray(current)
+                    ? current.filter((item) => typeof item === "string")
+                    : (typeof current === "string" ? [current] : []);
+                  const merged = [];
+                  for (const item of [...existing, ...list]) {
+                    if (typeof item === "string" && item && !merged.includes(item)) merged.push(item);
+                  }
+                  window.__workbenchSkuJsonCache = merged.slice(0, 8);
+                } catch (_error) {}
               },
-              args: [candidate]
+              args: [validCandidates]
             });
             const [netResult] = await chrome.scripting.executeScript({
               target: { tabId: tab.id },
@@ -12075,7 +12094,6 @@ async function captureProductFromTab(tab, { commandType, expectedProductId = "" 
             });
             if (productHasVariants(netResult?.result || {})) {
               result = netResult;
-              break;
             }
           } catch (_error) {}
         }
@@ -14184,11 +14202,18 @@ function extractProductFromCurrentPage(expectedProductId = "") {
     // 中可能已被挤出（缓冲上限 200 条），首次采集成功后缓存该 JSON，同页再次
     // 采集即使网络/全局数据丢失也能重新推导完整规格与组合。
     try {
+      // 缓存可能是单个 JSON 字符串（旧版）或多源字符串数组（新版）。1688 的规格源
+      // 与价格/库存源是两个独立响应，只留一个就无法解码逐 SKU 组合，因此数组形式
+      // 会把所有贡献源都作为 cached-sku 源送进 walkObjects。
       const cachedSku = window.__workbenchSkuJsonCache;
-      if (cachedSku && typeof cachedSku === "string" && cachedSku.length > 0 && cachedSku.length <= 8 * 1024 * 1024) {
-        const value = JSON.parse(cachedSku);
-        if (value && typeof value === "object") sources.push({ source: "cached-sku", value });
-      }
+      const cachedList = Array.isArray(cachedSku) ? cachedSku : [cachedSku];
+      cachedList.forEach((entry, index) => {
+        if (typeof entry !== "string" || !entry.length || entry.length > 8 * 1024 * 1024) return;
+        try {
+          const value = JSON.parse(entry);
+          if (value && typeof value === "object") sources.push({ source: `cached-sku:${index}`, value });
+        } catch (_error) {}
+      });
     } catch (_error) {}
     document.querySelectorAll("script[type='application/json'], script").forEach((script, index) => {
       const raw = script.textContent || "";
@@ -14506,24 +14531,43 @@ function extractProductFromCurrentPage(expectedProductId = "") {
     const combos = [];
     const sources = jsonSourcesFromPage();
     const contributingSources = new Set();
+    // 先跨全部 JSON 源汇总规格值映射（propValueId → 颜色/尺码 等）。1688 的规格源
+    // （skuProps）与价格/库存源（skuInfoMap）常是两个独立响应，只用当前对象自带的
+    // skuProps 会解不开组合 key，从而把带价格的逐 SKU 记录当成「无属性」丢弃。
+    const globalPropMap = {};
+    for (const source of sources) {
+      walkObjects(source.value, (object) => {
+        if (!object || typeof object !== "object" || Array.isArray(object)) return;
+        const skuProps = object.skuProps || object.sku_props || object.saleProps || object.salePropList || object.props || object.specList || object.specs || object.saleSpecs || object.optionList || object.saleOptions || object.saleAttrs || object.saleAttr || object.skuAttrs || object.skuAttrList;
+        if (!skuProps) return;
+        const { map } = propValueMapFromSkuProps(skuProps);
+        for (const [id, pair] of Object.entries(map)) {
+          if (!globalPropMap[id]) globalPropMap[id] = pair;
+        }
+      });
+    }
     for (const source of sources) {
       walkObjects(source.value, (object, path) => {
         if (!object || typeof object !== "object" || Array.isArray(object)) return;
         const skuProps = object.skuProps || object.sku_props || object.saleProps || object.salePropList || object.props || object.specList || object.specs || object.saleSpecs || object.optionList || object.saleOptions || object.saleAttrs || object.saleAttr || object.skuAttrs || object.skuAttrList;
         const mapSource = object.skuInfoMap || object.skuMap || object.skuInfo || object.skuInfos || object.skuList || object.skus || object.skuItems || object.sku_records || object.skuRecords || object.skuRecordList || object.sku_record_list || object.skuInfoList || object.goodsSkuList || object.goodsSkus || object.skuStockList || object.skuSpecs || object.skuSpec || object.saleSkuList;
-        const propData = propValueMapFromSkuProps(skuProps);
-        if (propData.groups.length) {
+        const localPropData = propValueMapFromSkuProps(skuProps);
+        // 本对象自带映射优先，缺失的 id 回落到跨源汇总映射。
+        const effectivePropMap = Object.keys(localPropData.map).length
+          ? { ...globalPropMap, ...localPropData.map }
+          : globalPropMap;
+        if (localPropData.groups.length) {
           contributingSources.add(source.source);
-          groups.push(...propData.groups.map((group) => ({ ...group, source: source.source })));
+          groups.push(...localPropData.groups.map((group) => ({ ...group, source: source.source })));
         }
         if (mapSource && typeof mapSource === "object") {
           const entries = Array.isArray(mapSource) ? mapSource.map((item, index) => [String(index), item]) : Object.entries(mapSource);
           for (const [key, item] of entries) {
             if (!item || typeof item !== "object") continue;
-            const attributes = attrsFromObject(item, propData.map);
+            const attributes = attrsFromObject(item, effectivePropMap);
             if (!Object.keys(attributes).length) {
               String(key).split(/[^A-Za-z0-9_\u4e00-\u9fff]+/).filter(Boolean).forEach((id) => {
-                const mapped = propData.map[id];
+                const mapped = effectivePropMap[id];
                 if (mapped) attributes[mapped.source_name || mapped.name] = mapped.value;
               });
             }
@@ -14532,7 +14576,7 @@ function extractProductFromCurrentPage(expectedProductId = "") {
             const pathFields = skuPathFieldsFromObject(item, key);
             const price = priceFromObject(item);
             const stock = stockFromObject(item);
-            const imageUrl = imageFromObject(item) || imageForSkuObject(item, attributes, propData.map) || "";
+            const imageUrl = imageFromObject(item) || imageForSkuObject(item, attributes, effectivePropMap) || "";
             if (!sourceSkuId && !variantIdentityPath(pathFields) && !price && !stock && !imageUrl) continue;
             contributingSources.add(source.source);
             combos.push({
@@ -14577,16 +14621,30 @@ function extractProductFromCurrentPage(expectedProductId = "") {
         }
       });
     }
-    // 把贡献了规格/组合数据的 JSON 源缓存到页面，供同页后续采集复用
-    // （探针捕获缓冲有上限，滑窗会挤掉早期 1688 JSONP 的 SKU 响应）。
+    // 把贡献了规格/组合数据的 JSON 源全部缓存到页面，供同页后续采集复用
+    // （探针捕获缓冲有上限，滑窗会挤掉早期 1688 JSONP 的 SKU 响应）。必须缓存
+    // 多个源：1688 的规格源与价格/库存源是拆分返回的，只留一个会丢失逐 SKU 价。
     if (contributingSources.size) {
       try {
-        const preferred = sources.find((source) => contributingSources.has(source.source)
-          && /sku|offer|detail|goods|product|mtop|h5api|laputa/i.test(source.source));
-        const best = preferred || sources.find((source) => contributingSources.has(source.source));
-        if (best && best.value && typeof best.value === "object") {
-          window.__workbenchSkuJsonCache = JSON.stringify(best.value);
+        const isSkuLike = (source) => /sku|offer|detail|goods|product|mtop|h5api|laputa/i.test(source.source);
+        const ordered = [
+          ...sources.filter((source) => contributingSources.has(source.source) && isSkuLike(source)),
+          ...sources.filter((source) => contributingSources.has(source.source) && !isSkuLike(source))
+        ];
+        const cacheEntries = [];
+        let cacheBytes = 0;
+        for (const source of ordered) {
+          if (!source.value || typeof source.value !== "object") continue;
+          let serialized = "";
+          try { serialized = JSON.stringify(source.value); } catch (_error) { continue; }
+          if (!serialized || serialized.length > 8 * 1024 * 1024) continue;
+          if (cacheEntries.includes(serialized)) continue;
+          if (cacheBytes + serialized.length > 16 * 1024 * 1024) break;
+          cacheEntries.push(serialized);
+          cacheBytes += serialized.length;
+          if (cacheEntries.length >= 8) break;
         }
+        if (cacheEntries.length) window.__workbenchSkuJsonCache = cacheEntries;
       } catch (_error) {}
     }
     return { groups, combos };

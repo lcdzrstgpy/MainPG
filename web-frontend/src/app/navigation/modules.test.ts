@@ -11,12 +11,14 @@ test("sidebar navigation groups the product workflow around its AI history entry
     "daily_selection",
     "product_processing",
     "product_processing_history",
+    "product_processing_sourcing",
     "dimension_canvas",
   ]);
   assert.deepEqual(productWorkflow?.children?.map((child) => child.label), [
     "采集",
     "AI处理",
     "历史记录",
+    "货源成本",
     "尺寸画布",
   ]);
   assert.equal(productWorkflow?.children?.find((child) => child.id === "product_processing_history")?.iconClass, "iconfont icon-time-circle");

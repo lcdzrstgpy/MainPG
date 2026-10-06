@@ -76,6 +76,25 @@ DOWNLOAD_ZIP_URLS = {
     "internal": "/internal-downloads/MainPG-Internal-Setup.zip",
     "public": "/downloads/MainPG-Setup.zip",
 }
+PLUGIN_MANIFEST_CONTRACT_VERSION = "mainpg-plugin-manifest-v1"
+PLUGIN_MANIFEST_FIELDS = (
+    "contract_version",
+    "name",
+    "version",
+    "zip_url",
+    "sha256",
+    "size",
+    "release_notes",
+    "published_at",
+)
+PLUGIN_DEFAULT_FILENAME_PREFIX = "W-H-browser-extension"
+PLUGIN_VERSION_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z._-]{0,63}")
+# 官网插件区引用的下载文件名形如 W-H-browser-extension-v0.1.141.zip；
+# 发布新插件时同步替换页面里引用的旧文件名与展示版本/体积。
+PLUGIN_REFERENCE_FILENAME_RE = re.compile(
+    r"W-H-browser-extension-v[0-9A-Za-z._-]+\.zip"
+)
+PLUGIN_VERSION_TEXT_RE = re.compile(r"当前版本：[^·<\"]*·\s*文件大小：[\d.]+\s*KB")
 SEEDED_USERNAMES = ("He123", "Liu123", "Dai123", "Yang123", "Shen123")
 LOGGER = logging.getLogger("mainpg.update_admin")
 UTC = timezone.utc
@@ -152,6 +171,27 @@ def website_zip_target(
     return base.parent / name
 
 
+def plugin_zip_filename(prefix: str, version: str) -> str:
+    return f"{prefix}-v{version}.zip"
+
+
+def plugin_publish_dir(settings: "Settings") -> Path:
+    """插件清单与历史归档的落盘目录（不在官网下载目录时用数据目录）。"""
+    target = settings.plugin_publish_dir or (settings.publish_dir.parent / "plugin")
+    return target
+
+
+def validate_plugin_settings(settings: "Settings") -> None:
+    if settings.plugin_public_base_url:
+        parsed = urlparse(settings.plugin_public_base_url)
+        is_local_http = parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost"}
+        if (parsed.scheme != "https" and not is_local_http) or not parsed.netloc:
+            raise RuntimeError(
+                "UPDATE_PLUGIN_PUBLIC_BASE_URL 必须使用 HTTPS；仅 localhost 测试允许 HTTP"
+            )
+
+
+
 @dataclass(frozen=True)
 class Settings:
     db_path: Path
@@ -181,6 +221,12 @@ class Settings:
     patch_max_extracted_bytes: int = 4_000_000_000
     proxy_secret: str = field(default="", repr=False)
     proxy_username: str = "boss"
+    plugin_publish_dir: Path | None = None
+    plugin_public_base_url: str = ""
+    plugin_download_dir: Path | None = None
+    plugin_filename_prefix: str = PLUGIN_DEFAULT_FILENAME_PREFIX
+    plugin_max_upload_bytes: int = 64 * 1024 * 1024
+    plugin_update_website: bool = True
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -188,6 +234,8 @@ class Settings:
         signing_path = os.environ.get("UPDATE_SIGNING_KEY_PATH", "").strip()
         internal_download_path = os.environ.get("UPDATE_INTERNAL_DOWNLOAD_PATH", "").strip()
         public_download_path = os.environ.get("UPDATE_PUBLIC_DOWNLOAD_PATH", "").strip()
+        plugin_publish_dir = os.environ.get("UPDATE_PLUGIN_PUBLISH_DIR", "").strip()
+        plugin_download_dir = os.environ.get("UPDATE_PLUGIN_DOWNLOAD_DIR", "").strip()
         return cls(
             db_path=Path(os.environ.get("UPDATE_ADMIN_DB_PATH", data_dir / "update-admin.sqlite3")).resolve(),
             staging_dir=Path(os.environ.get("UPDATE_ADMIN_STAGING_DIR", data_dir / "staging")).resolve(),
@@ -238,6 +286,23 @@ class Settings:
             ),
             proxy_secret=os.environ.get("UPDATE_ADMIN_PROXY_SECRET", "").strip(),
             proxy_username=os.environ.get("UPDATE_ADMIN_PROXY_USERNAME", "boss").strip() or "boss",
+            plugin_publish_dir=Path(plugin_publish_dir).resolve() if plugin_publish_dir else None,
+            plugin_public_base_url=os.environ.get(
+                "UPDATE_PLUGIN_PUBLIC_BASE_URL",
+                "",
+            ).strip().rstrip("/"),
+            plugin_download_dir=(
+                Path(plugin_download_dir).resolve() if plugin_download_dir else None
+            ),
+            plugin_filename_prefix=os.environ.get(
+                "UPDATE_PLUGIN_FILENAME_PREFIX",
+                PLUGIN_DEFAULT_FILENAME_PREFIX,
+            ).strip() or PLUGIN_DEFAULT_FILENAME_PREFIX,
+            plugin_max_upload_bytes=max(
+                1,
+                int(os.environ.get("UPDATE_PLUGIN_MAX_UPLOAD_BYTES", str(64 * 1024 * 1024))),
+            ),
+            plugin_update_website=os.environ.get("UPDATE_PLUGIN_UPDATE_WEBSITE", "1").strip() != "0",
         )
 
 
@@ -439,6 +504,22 @@ class Database:
                     created_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_launcher_reports_created_at ON launcher_reports(created_at DESC);
+                CREATE TABLE IF NOT EXISTS plugin_releases (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    version TEXT NOT NULL UNIQUE,
+                    plugin_name TEXT NOT NULL,
+                    release_notes TEXT NOT NULL,
+                    zip_filename TEXT NOT NULL,
+                    zip_url TEXT NOT NULL,
+                    sha256 TEXT NOT NULL,
+                    file_size INTEGER NOT NULL,
+                    signature TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_by TEXT NOT NULL REFERENCES admins(username),
+                    created_at TEXT NOT NULL,
+                    published_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_plugin_releases_published_at ON plugin_releases(published_at DESC);
                 """
             )
             release_columns = {
@@ -890,6 +971,55 @@ class UpdateAdminService:
             ).fetchone()
         return dict(row) if row is not None else None
 
+    def list_plugin_releases(self, page: int, page_size: int = 10) -> dict[str, Any]:
+        offset = (page - 1) * page_size
+        with self.db.connect() as connection:
+            total = int(connection.execute("SELECT COUNT(*) FROM plugin_releases").fetchone()[0])
+            rows = connection.execute(
+                """
+                SELECT version, plugin_name, release_notes, zip_filename, zip_url,
+                       sha256, file_size, status, created_by, published_at
+                FROM plugin_releases
+                ORDER BY id DESC
+                LIMIT ? OFFSET ?
+                """,
+                (page_size, offset),
+            ).fetchall()
+        return {
+            "items": [dict(row) for row in rows],
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "pages": max(1, (total + page_size - 1) // page_size),
+        }
+
+    def get_plugin_release(self, version: str) -> dict[str, Any] | None:
+        """Return one exact plugin release so the UI can reconcile a lost POST response."""
+        with self.db.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT version, plugin_name, release_notes, zip_filename, zip_url,
+                       sha256, file_size, status, created_by, published_at
+                FROM plugin_releases
+                WHERE version = ?
+                LIMIT 1
+                """,
+                (version,),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def assert_new_plugin_version(self, version: str) -> None:
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                "SELECT version FROM plugin_releases WHERE status = 'published'"
+            ).fetchall()
+        if version in {str(row["version"]) for row in rows}:
+            raise api_error(
+                409,
+                "plugin_version_exists",
+                f"插件版本 {version} 已发布，请使用更高版本号",
+            )
+
     def update_patch_result(
         self,
         version: str,
@@ -1141,6 +1271,17 @@ def canonical_patch_manifest_bytes(manifest: dict[str, Any]) -> bytes:
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
+
+
+def canonical_plugin_manifest_bytes(manifest: dict[str, Any]) -> bytes:
+    unsigned = {field: manifest[field] for field in PLUGIN_MANIFEST_FIELDS}
+    return json.dumps(
+        unsigned,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
 
 
 def resolve_innoextract(settings: Settings) -> str:
@@ -1712,12 +1853,123 @@ def validate_public_base_url(value: str) -> None:
         raise RuntimeError("UPDATE_PUBLIC_BASE_URL 必须使用 HTTPS；仅 localhost 测试允许 HTTP")
 
 
+def read_extension_manifest(archive_path: Path) -> dict[str, Any]:
+    """从上传的插件 zip 中读取并校验 WebExtension manifest.json。"""
+    if not zipfile.is_zipfile(archive_path):
+        raise api_error(422, "invalid_plugin_package", "插件包必须是有效的 zip 文件")
+    try:
+        with zipfile.ZipFile(archive_path) as archive:
+            names = archive.namelist()
+            if len(names) != len(set(names)):
+                raise api_error(422, "invalid_plugin_package", "插件包包含重复文件名")
+            candidates = [
+                name for name in names if name.rstrip("/").endswith("manifest.json")
+            ]
+            if not candidates:
+                raise api_error(422, "invalid_plugin_package", "插件包缺少 manifest.json")
+            info = archive.getinfo(min(candidates, key=len))
+            if info.file_size <= 0 or info.file_size > 1024 * 1024:
+                raise api_error(422, "invalid_plugin_package", "插件 manifest.json 体积异常")
+            try:
+                payload = json.loads(archive.read(info).decode("utf-8"))
+            except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
+                raise api_error(422, "invalid_plugin_package", "插件 manifest.json 无法解析") from exc
+    except zipfile.BadZipFile as exc:
+        raise api_error(422, "invalid_plugin_package", "插件包不是有效的 zip 文件") from exc
+    if not isinstance(payload, dict):
+        raise api_error(422, "invalid_plugin_package", "插件 manifest.json 格式不正确")
+    version = str(payload.get("version") or "").strip()
+    plugin_name = str(payload.get("name") or "").strip()
+    if not version or not plugin_name:
+        raise api_error(422, "invalid_plugin_package", "插件 manifest.json 缺少 version 或 name")
+    return {"version": version, "name": plugin_name}
+
+
+async def stage_plugin_upload(upload: UploadFile, settings: Settings) -> tuple[Path, str, int]:
+    original_name = Path(upload.filename or "").name
+    if not original_name.lower().endswith(".zip"):
+        raise api_error(422, "invalid_file_type", "只允许上传 .zip 插件包")
+    staged = settings.staging_dir / f"{secrets.token_hex(16)}.plugin.part"
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        with staged.open("xb") as target:
+            while True:
+                chunk = await upload.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > settings.plugin_max_upload_bytes:
+                    raise api_error(413, "file_too_large", "插件包超过后台允许的最大体积")
+                digest.update(chunk)
+                target.write(chunk)
+            target.flush()
+            os.fsync(target.fileno())
+        if size <= 0:
+            raise api_error(422, "invalid_plugin_package", "插件包为空")
+        return staged, digest.hexdigest(), size
+    except Exception:
+        staged.unlink(missing_ok=True)
+        raise
+    finally:
+        await upload.close()
+
+
+def update_website_plugin_area(
+    html: str,
+    *,
+    filename: str,
+    version: str,
+    size_bytes: int,
+) -> tuple[str, dict[str, int]]:
+    """把官网下载页插件区的下载文件名与展示版本/体积替换为最新发布值。"""
+    size_kb = max(1, round(size_bytes / 1024))
+    html, filename_replaced = PLUGIN_REFERENCE_FILENAME_RE.subn(filename, html)
+    version_text = f"当前版本：{version} · 文件大小：{size_kb} KB"
+    html, version_replaced = PLUGIN_VERSION_TEXT_RE.subn(version_text, html)
+    return html, {"filename": filename_replaced, "version_text": version_replaced}
+
+
+def publish_website_plugin_html(
+    settings: Settings,
+    *,
+    filename: str,
+    version: str,
+    size_bytes: int,
+) -> dict[str, int]:
+    """就地原子替换官网下载页，使插件区指向最新版本。"""
+    target = settings.plugin_download_dir
+    if target is None:
+        return {"filename": 0, "version_text": 0}
+    index = target / "index.html"
+    if not index.is_file():
+        return {"filename": 0, "version_text": 0}
+    original = index.read_text(encoding="utf-8")
+    updated, counts = update_website_plugin_area(
+        original,
+        filename=filename,
+        version=version,
+        size_bytes=size_bytes,
+    )
+    if updated != original:
+        temporary = index.with_name(f".{index.name}.{secrets.token_hex(8)}.tmp")
+        try:
+            temporary.write_bytes(updated.encode("utf-8"))
+            os.chmod(temporary, index.stat().st_mode & 0o777)
+            os.replace(temporary, index)
+        finally:
+            temporary.unlink(missing_ok=True)
+    return counts
+
+
+
 def create_app(
     settings: Settings | None = None,
     password_hasher: PasswordHasher | None = None,
 ) -> FastAPI:
     resolved = settings or Settings.from_env()
     validate_public_base_url(resolved.public_base_url)
+    validate_plugin_settings(resolved)
     validate_evsign_settings(resolved)
     hasher = password_hasher or PasswordHasher(time_cost=3, memory_cost=65536, parallelism=4)
     service = UpdateAdminService(resolved, hasher)
@@ -1794,6 +2046,13 @@ def create_app(
             "incremental_patch_enabled": resolved.patch_enabled,
             "embedded_patch_supported": True,
             "innoextract_configured": bool(shutil.which(resolved.innoextract_path)),
+            "plugin_publish_enabled": bool(
+                resolved.plugin_publish_dir and resolved.plugin_public_base_url
+            ),
+            "plugin_publish_dir": str(plugin_publish_dir(resolved)),
+            "plugin_public_base_url": resolved.plugin_public_base_url,
+            "plugin_download_dir": str(resolved.plugin_download_dir or ""),
+            "plugin_update_website": resolved.plugin_update_website,
         }
 
     @app.post("/api/auth/login")
@@ -1866,6 +2125,28 @@ def create_app(
         except ValueError as exc:
             raise api_error(422, "invalid_version", str(exc)) from exc
         release = service.get_release(semantic_version.raw)
+        return {
+            "published": bool(release and release["status"] == "published"),
+            "release": release,
+            "username": principal.username,
+        }
+
+    @app.get("/api/plugin-releases")
+    def plugin_releases(
+        page: int = Query(1, ge=1),
+        principal: AdminPrincipal = Depends(ready_admin),
+    ) -> dict[str, Any]:
+        return {**service.list_plugin_releases(page, 10), "username": principal.username}
+
+    @app.get("/api/plugin-releases/status/{version}")
+    def plugin_release_status(
+        version: str,
+        principal: AdminPrincipal = Depends(ready_admin),
+    ) -> dict[str, Any]:
+        normalized = version.strip()
+        if not normalized:
+            raise api_error(422, "invalid_version", "插件版本号不能为空")
+        release = service.get_plugin_release(normalized)
         return {
             "published": bool(release and release["status"] == "published"),
             "release": release,
@@ -2332,6 +2613,163 @@ def create_app(
                     website_alias_staged.unlink(missing_ok=True)
                 if zip_alias_staged is not None:
                     zip_alias_staged.unlink(missing_ok=True)
+
+    @app.post("/api/releases/publish-plugin")
+    async def publish_plugin_release(
+        request: Request,
+        version: str = Form(...),
+        release_notes: str = Form(""),
+        package: UploadFile = File(...),
+        principal: AdminPrincipal = Depends(ready_admin),
+    ) -> dict[str, Any]:
+        ensure_same_origin(request)
+        normalized_version = version.strip()
+        if not PLUGIN_VERSION_RE.fullmatch(normalized_version):
+            raise api_error(422, "invalid_version", "插件版本号格式不正确")
+        if not resolved.plugin_publish_dir or not resolved.plugin_public_base_url:
+            raise api_error(503, "plugin_publish_disabled", "服务器未启用插件发布通道")
+        notes = release_notes.strip()
+        if len(notes) > 10_000:
+            raise api_error(422, "release_notes_too_long", "更新说明不能超过 10000 个字符")
+
+        staged: Path | None = None
+        version_dir: Path | None = None
+        alias_staged: Path | None = None
+        database_release_inserted = False
+        manifest_published = False
+        async with service.publish_lock:
+            try:
+                service.assert_new_plugin_version(normalized_version)
+                staged, sha256, file_size = await stage_plugin_upload(package, resolved)
+                extension = await run_in_threadpool(read_extension_manifest, staged)
+                if extension["version"] != normalized_version:
+                    raise api_error(
+                        422,
+                        "plugin_version_mismatch",
+                        "提交的版本号与插件包 manifest.json 不一致",
+                    )
+                filename = plugin_zip_filename(resolved.plugin_filename_prefix, normalized_version)
+                zip_url = f"{resolved.plugin_public_base_url.rstrip('/')}/{quote(filename)}"
+                signing_key = load_signing_key(resolved)
+                published_at = iso_utc()
+                manifest: dict[str, Any] = {
+                    "contract_version": PLUGIN_MANIFEST_CONTRACT_VERSION,
+                    "name": extension["name"],
+                    "version": normalized_version,
+                    "zip_url": zip_url,
+                    "sha256": sha256,
+                    "size": file_size,
+                    "release_notes": notes,
+                    "published_at": published_at,
+                }
+                signature_bytes = signing_key.sign(canonical_plugin_manifest_bytes(manifest))
+                signing_key.public_key().verify(signature_bytes, canonical_plugin_manifest_bytes(manifest))
+                manifest["signature"] = base64.b64encode(signature_bytes).decode("ascii")
+
+                publish_root = plugin_publish_dir(resolved)
+                version_dir = publish_root / "releases" / normalized_version
+                archived = version_dir / filename
+                if version_dir.exists():
+                    # 表里没有记录说明是上次发布中途失败留下的孤儿产物，可安全清理。
+                    if service.get_plugin_release(normalized_version) is not None:
+                        raise api_error(409, "plugin_version_exists", "该插件版本的发布文件已存在")
+                    shutil.rmtree(version_dir, ignore_errors=True)
+                version_dir.mkdir(parents=True, exist_ok=False)
+                atomic_copy(staged, archived)
+                atomic_write_json(version_dir / "plugin-manifest.json", manifest)
+                if resolved.plugin_download_dir is not None:
+                    alias_staged = await run_in_threadpool(
+                        stage_atomic_download_alias,
+                        archived,
+                        resolved.plugin_download_dir / filename,
+                    )
+
+                with service.db.connect() as connection:
+                    connection.execute(
+                        """
+                        INSERT INTO plugin_releases(
+                            version, plugin_name, release_notes, zip_filename, zip_url,
+                            sha256, file_size, signature, status, created_by,
+                            created_at, published_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'published', ?, ?, ?)
+                        """,
+                        (
+                            normalized_version,
+                            extension["name"],
+                            notes,
+                            filename,
+                            zip_url,
+                            sha256,
+                            file_size,
+                            manifest["signature"],
+                            principal.username,
+                            published_at,
+                            published_at,
+                        ),
+                    )
+                database_release_inserted = True
+                # 顶层清单最后替换；读取方只会看到完整的新清单。
+                atomic_write_json(publish_root / "plugin-manifest.json", manifest)
+                manifest_published = True
+
+                if alias_staged is not None and resolved.plugin_download_dir is not None:
+                    await run_in_threadpool(
+                        commit_atomic_download_alias,
+                        alias_staged,
+                        resolved.plugin_download_dir / filename,
+                    )
+                    alias_staged = None
+                website_counts = {"filename": 0, "version_text": 0}
+                if resolved.plugin_update_website:
+                    website_counts = await run_in_threadpool(
+                        publish_website_plugin_html,
+                        resolved,
+                        filename=filename,
+                        version=normalized_version,
+                        size_bytes=file_size,
+                    )
+                try:
+                    service.db.audit(
+                        principal.username,
+                        "plugin_released",
+                        target=normalized_version,
+                        ip_address=resolve_client_ip(request),
+                        details={
+                            "plugin_name": extension["name"],
+                            "zip_url": zip_url,
+                            "sha256": sha256,
+                            "file_size": file_size,
+                            "website_updated": website_counts,
+                        },
+                    )
+                except sqlite3.Error:
+                    LOGGER.exception(
+                        "plugin published but audit insert failed: %s", normalized_version
+                    )
+                return {
+                    "ok": True,
+                    "plugin": manifest,
+                    "zip_filename": filename,
+                    "website_download_url": zip_url,
+                    "file_size": file_size,
+                    "website_updated": website_counts,
+                }
+            except Exception:
+                if not manifest_published:
+                    if database_release_inserted:
+                        with service.db.connect() as connection:
+                            connection.execute(
+                                "DELETE FROM plugin_releases WHERE version = ?",
+                                (normalized_version,),
+                            )
+                    if version_dir is not None and version_dir.exists():
+                        shutil.rmtree(version_dir, ignore_errors=True)
+                raise
+            finally:
+                if staged is not None:
+                    staged.unlink(missing_ok=True)
+                if alias_staged is not None:
+                    alias_staged.unlink(missing_ok=True)
 
     @app.get("/api/launcher/golden")
     def launcher_golden() -> dict[str, Any]:

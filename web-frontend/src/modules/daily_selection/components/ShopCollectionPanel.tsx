@@ -44,6 +44,11 @@ function formatDate(value: string): string {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN", { hour12: false });
 }
 
+function formatPrice(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "";
+  return `¥${value.toFixed(2)}`;
+}
+
 function itemStatusLabel(item: ShopCollectionItem): string {
   const labels: Record<ShopCollectionItem["detail_status"], string> = {
     pending: "等待补全",
@@ -250,7 +255,7 @@ export const ShopCollectionPanel = forwardRef<ShopCollectionPanelHandle, ShopCol
               {selectedBatch.error_message && <p className="shop-batch-warning">{formatShopCollectionError(new Error(selectedBatch.error_message))}</p>}
               <div className="shop-items-heading"><strong>批次商品</strong><span>{itemsTotal ? `${pageStart}–${pageEnd} / ${itemsTotal}` : "暂无商品"}</span></div>
               <div className="shop-items-list">
-                {items.map((item) => <article key={item.item_id}><div><strong>{item.source_title || `商品 ${item.offer_id}`}</strong><small>{item.offer_id} · {itemStatusLabel(item)}{item.intake_action !== "none" ? ` · ${item.intake_action}` : ""}</small>{item.error_message && <em>{formatShopCollectionError(new Error(item.error_message))}</em>}</div><a href={item.source_url} target="_blank" rel="noreferrer">查看来源</a></article>)}
+                {items.map((item) => <article key={item.item_id}><div><strong>{item.source_title || `商品 ${item.offer_id}`}</strong><small>{[item.offer_id, formatPrice(item.candidate?.price_cny) && `售价 ${formatPrice(item.candidate?.price_cny)}`, itemStatusLabel(item), item.intake_action !== "none" ? item.intake_action : ""].filter(Boolean).join(" · ")}</small>{item.error_message && <em>{formatShopCollectionError(new Error(item.error_message))}</em>}</div><a href={item.source_url} target="_blank" rel="noreferrer">查看来源</a></article>)}
                 {items.length === 0 && <p className="shop-empty">商品将在店铺列表发现完成后显示。</p>}
               </div>
               <div className="shop-pagination">
