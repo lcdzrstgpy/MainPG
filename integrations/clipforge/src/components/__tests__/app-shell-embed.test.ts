@@ -40,6 +40,17 @@ describe("MainPG embedded shell", () => {
     expect(shell).toMatch(/window\.parent\.postMessage/);
   });
 
+  it("AppShell 承载 uiMode 双向同步桥（收 ui-mode-set、报 ui-mode-state）", () => {
+    expect(shell).toMatch(/isMainPgUiModeSetMessage\(event\.data\)/);
+    expect(shell).toMatch(/setUiMode\(event\.data\.uiMode\)/);
+    expect(shell).toMatch(/type: MAINPG_EMBED_UI_MODE_STATE, uiMode \}/);
+    expect(shell).toMatch(/if \(window\.parent === window\) return;/);
+    // 桥接只同步 uiMode，不触碰创作简报 / 输出策略 / 生产工作流等其它状态
+    expect(shell).not.toMatch(/creationBrief/i);
+    expect(shell).not.toMatch(/outputStrategy/i);
+    expect(shell).not.toMatch(/productionWorkflow/i);
+  });
+
   it("globals.css 仍以内嵌命名空间承载 MainPG 主题", () => {
     expect(css).toMatch(/\.mainpg-embedded/);
     expect(css).toMatch(/\.mainpg-embedded \.cf-root/);

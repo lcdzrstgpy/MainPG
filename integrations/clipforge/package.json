@@ -20,6 +20,7 @@
     "cli": "node bin/clipforge.mjs",
     "render:element": "node scripts/render-element.mjs",
     "bundle:standalone": "node scripts/bundle-standalone.mjs",
+    "prepare:mainpg": "node scripts/prepare-mainpg-sidecar.mjs",
     "electron": "electron .",
     "electron:rebuild": "electron-rebuild -f -w better-sqlite3",
     "pack:dir": "next build && pnpm bundle:standalone && electron-builder --dir",

@@ -1,5 +1,4 @@
 import { buildWorkflowPlan, type WorkflowStagePlan } from "@/lib/production-system";
-import { OUTPUT_SCHEMES, inferLegacyOutputSchemeSnapshot, sanitizeOutputSchemeSnapshot, type OutputSchemeSnapshot } from "@/lib/output-schemes";
 
 export type InputMode = "upload" | "link" | "topic" | "product-library" | "clone";
 export type OutputStrategy = "draft" | "controlled-motion" | "native-film";
@@ -26,7 +25,6 @@ export interface CreationBrief {
     language?: string;
     tone?: string;
   };
-  outputScheme: OutputSchemeSnapshot;
   outputStrategy: OutputStrategy;
   audioStrategy: AudioStrategy;
   templateId?: string;
@@ -40,6 +38,7 @@ const cleanList = (value: unknown, max = 12): string[] => Array.isArray(value)
 
 const INPUT_MODES: readonly InputMode[] = ["upload", "link", "topic", "product-library", "clone"];
 const OUTPUT_STRATEGIES: readonly OutputStrategy[] = ["draft", "controlled-motion", "native-film"];
+const AUDIO_STRATEGIES: readonly AudioStrategy[] = ["volcengine-tts", "native-audio", "mute"];
 const STYLE_SOURCES: readonly StyleSource[] = ["explicit", "template", "performance-recommendation"];
 const TARGET_DURATIONS: readonly (15 | 30 | 60)[] = [15, 30, 60];
 
@@ -55,9 +54,8 @@ export const DEFAULT_CREATION_BRIEF: CreationBrief = {
   styleSource: "explicit",
   targetAudience: [],
   platforms: ["douyin"],
-  outputScheme: { ...OUTPUT_SCHEMES["native-film"] },
-  outputStrategy: OUTPUT_SCHEMES["native-film"].outputStrategy,
-  audioStrategy: OUTPUT_SCHEMES["native-film"].audioStrategy,
+  outputStrategy: "draft",
+  audioStrategy: "volcengine-tts",
 };
 
 export function isOutputStrategy(value: unknown): value is OutputStrategy {
@@ -78,9 +76,6 @@ export function sanitizeCreationBrief(value: unknown): CreationBrief {
   const usageAdvantage = clean(raw.usageAdvantage, 300);
   const templateId = clean(raw.templateId, 80);
   const characterId = clean(raw.characterId, 80);
-  const outputScheme = raw.outputScheme
-    ? sanitizeOutputSchemeSnapshot(raw.outputScheme)
-    : inferLegacyOutputSchemeSnapshot(raw.outputStrategy, raw.audioStrategy);
   return {
     version: 1,
     inputMode: pickEnum(raw.inputMode, INPUT_MODES, DEFAULT_CREATION_BRIEF.inputMode),
@@ -94,9 +89,8 @@ export function sanitizeCreationBrief(value: unknown): CreationBrief {
     ...(priceRange && { priceRange }),
     ...(usageAdvantage && { usageAdvantage }),
     ...(Object.keys(narrative).length && { narrative }),
-    outputScheme,
-    outputStrategy: outputScheme.outputStrategy,
-    audioStrategy: outputScheme.audioStrategy,
+    outputStrategy: pickEnum(raw.outputStrategy, OUTPUT_STRATEGIES, DEFAULT_CREATION_BRIEF.outputStrategy),
+    audioStrategy: pickEnum(raw.audioStrategy, AUDIO_STRATEGIES, DEFAULT_CREATION_BRIEF.audioStrategy),
     ...(templateId && { templateId }),
     ...(characterId && { characterId }),
   };

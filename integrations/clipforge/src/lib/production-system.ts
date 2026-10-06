@@ -280,7 +280,7 @@ export interface FailureDiagnosis { code: string; retryable: boolean; actions: R
 
 export function diagnoseGenerationFailure(error: unknown): FailureDiagnosis {
   const msg = (error instanceof Error ? error.message : String(error ?? "")).toLowerCase();
-  if (/task.?id|poll|timeout|timed out|unknown status/.test(msg)) return { code: "paid-task-detached", retryable: true, actions: ["resume-task"], message: { zh: "云端任务可能仍在运行，请继续查询原任务，避免重复扣费", en: "The cloud task may still be running; resume it instead of submitting and paying again" } };
+  if (/task.?id|poll|timeout|timed out|unknown status/.test(msg)) return { code: "paid-task-detached", retryable: true, actions: ["resume-task"], message: { zh: "云端生成任务可能仍在运行，请继续查询原任务，避免重复扣费", en: "The cloud task may still be running; resume it instead of submitting and paying again" } };
   if (/duration|resolution|aspect|ratio|unsupported param|invalid param/.test(msg)) return { code: "parameter-conflict", retryable: true, actions: ["adapt-params", "retry-stage"], message: { zh: "参数与模型规格冲突，可自动适配后重试", en: "Parameters conflict with the model contract; adapt them and retry" } };
   if (/moderation|safety|content policy|审核|敏感/.test(msg)) return { code: "content-policy", retryable: true, actions: ["neutralize-prompt", "retry-stage"], message: { zh: "内容审核拒绝，可保留创作意图并中和高风险措辞", en: "Content policy rejected the request; neutralize risky wording while preserving intent" } };
   if (/too many|maximum|limit.*image|reference.*limit/.test(msg)) return { code: "input-limit", retryable: true, actions: ["reduce-inputs", "retry-stage"], message: { zh: "参考素材超过模型上限，请减少输入后重试", en: "Reference inputs exceed the model limit; reduce them and retry" } };

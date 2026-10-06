@@ -68,9 +68,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     });
     return NextResponse.json({ runId, resumed: resuming }, { status: 202 });
   } catch (error) {
-    console.error("启动流水线失败:", error);
+    console.error("启动免费草稿自动任务失败:", error);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "启动流水线失败" },
+      { error: error instanceof Error ? error.message : "启动免费草稿自动任务失败" },
       { status: 500 }
     );
   }
@@ -97,9 +97,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     }
     return NextResponse.json({ run: { ...latest, interrupted: interrupted || latest.error === "interrupted" } });
   } catch (error) {
-    console.error("查询流水线失败:", error);
+    console.error("查询免费草稿自动任务失败:", error);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "查询流水线失败" },
+      { error: error instanceof Error ? error.message : "查询免费草稿自动任务失败" },
       { status: 500 }
     );
   }

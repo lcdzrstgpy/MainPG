@@ -17,7 +17,6 @@ import { NextRequest } from "next/server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import * as schema from "@/lib/db/schema";
 import type { CreationBrief } from "@/lib/creation-brief";
-import { OUTPUT_SCHEMES } from "@/lib/output-schemes";
 
 const state = vi.hoisted(() => ({
   db: null as unknown,
@@ -127,7 +126,6 @@ describe("POST /api/llm/script 风格解析契约", () => {
       styleSource: "explicit",
       targetAudience: [],
       platforms: ["douyin"],
-      outputScheme: { ...OUTPUT_SCHEMES.draft },
       outputStrategy: "draft",
       audioStrategy: "volcengine-tts",
     });
@@ -190,7 +188,6 @@ describe("POST /api/llm/script 风格解析契约", () => {
       styleSource: "explicit",
       targetAudience: ["宝妈"],
       platforms: ["douyin", "tiktok"],
-      outputScheme: { ...OUTPUT_SCHEMES.draft },
       outputStrategy: "draft",
       audioStrategy: "volcengine-tts",
     });
@@ -213,7 +210,6 @@ describe("POST /api/llm/script 风格解析契约", () => {
       styleSource: "explicit",
       targetAudience: ["宝妈"],
       platforms: ["douyin"],
-      outputScheme: { ...OUTPUT_SCHEMES.draft },
       outputStrategy: "draft",
       audioStrategy: "volcengine-tts",
     });

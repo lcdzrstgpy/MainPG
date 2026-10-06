@@ -1,6 +1,7 @@
 "use client";
 
 import { ProjectStepper } from "@/components/project-stepper";
+import type { OutputStrategy } from "@/lib/creation-brief";
 
 /**
  * Slim sticky context strip for the four project pipeline pages
@@ -11,14 +12,20 @@ import { ProjectStepper } from "@/components/project-stepper";
  * Sticky offset: sits below the mobile top bar (h-12) on small screens,
  * flush to the top on md+ where the sidebar replaces the top bar.
  */
-export function ProjectHeader({ projectName }: { projectName?: string }) {
+export function ProjectHeader({
+  projectName,
+  outputStrategy,
+}: {
+  projectName?: string;
+  outputStrategy?: OutputStrategy | null;
+}) {
   return (
     <div className="sticky top-12 z-40 border-b border-border/50 bg-background/80 backdrop-blur-xl md:top-0">
       <div className="mx-auto flex h-12 max-w-7xl items-center justify-between gap-3 px-4 sm:px-6">
         <span className="min-w-0 truncate text-sm font-medium text-muted-foreground">
           {projectName ?? ""}
         </span>
-        <ProjectStepper />
+        <ProjectStepper outputStrategy={outputStrategy} />
       </div>
     </div>
   );

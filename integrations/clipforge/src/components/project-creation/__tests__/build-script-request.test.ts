@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_CREATION_BRIEF, type CreationBrief } from "@/lib/creation-brief";
-import { OUTPUT_SCHEMES } from "@/lib/output-schemes";
 import { buildScriptRequest, type ScriptRequestInput } from "@/components/project-creation/build-script-request";
 
 /**
@@ -19,7 +18,6 @@ const FULL_BRIEF: CreationBrief = {
   priceRange: "50-200",
   usageAdvantage: "3 秒出泡，一杯顶三杯",
   narrative: { situation: "加班到深夜", language: "中文", tone: "共情" },
-  outputScheme: { ...OUTPUT_SCHEMES["controlled-balanced"] },
   outputStrategy: "controlled-motion",
   audioStrategy: "volcengine-tts",
   templateId: "template-1",
