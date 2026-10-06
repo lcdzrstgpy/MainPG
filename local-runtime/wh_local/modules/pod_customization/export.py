@@ -433,7 +433,6 @@ def _build_row(
     selected_title = (
         safe_english_title if listing_fields.get("title_mode") == "short" else safe_title
     )
-    category = listing_fields.get("category_name") or business_fields["product_category"]
     sku = sku or listing_fields
     product_code = _product_code(listing_fields, style_index)
     sku_code = _sku_code(sku, style_index, sku_index)
@@ -457,17 +456,14 @@ def _build_row(
         18: "\n".join(image_urls),
         19: images["hero"],
         23: listing_fields["suggested_price_usd"],
-        26: category,
-        27: category,
-        28: category,
-        30: "单品",
-        31: 1,
-        32: "件",
+        31: "单品",
+        32: 1,
+        33: "件",
     }
     for index, value in values.items():
         row[index] = value
-    if len(row) != 42:
-        raise AssertionError("POD Dianxiaomi row must contain exactly 42 cells")
+    if len(row) != len(DXM_COLUMNS):
+        raise AssertionError(f"POD Dianxiaomi row must contain exactly {len(DXM_COLUMNS)} cells")
     return row
 
 
