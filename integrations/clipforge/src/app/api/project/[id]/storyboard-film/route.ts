@@ -25,6 +25,7 @@ import { toRemoteUsableImage } from "@/lib/remote-image";
 import { probeMedia } from "@/lib/media-probe";
 import { recordAiTask, updateAiTask } from "@/lib/ai-tasks";
 import { apiError, errText } from "@/lib/api-error";
+import { filmChainStrategyGuard, filmChainGateError } from "@/lib/film-chain-gate";
 
 const IMAGE_EXT_RE = /\.(png|jpe?g|webp|bmp|gif)$/i;
 
@@ -54,6 +55,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       return apiError(req, "无效的项目ID", "Invalid project id", 400);
     }
     const body = await req.json();
+    // 服务端出片策略门禁（fail-closed）：原生整片（含 dryRun 预览）只放行
+    // 明确的 native-film 或「项目存在且无简报」的旧项目；其余一律拒绝
+    const gate = await filmChainStrategyGuard(id);
+    if (!gate.allowed) {
+      const error = filmChainGateError(gate);
+      return apiError(req, error.zh, error.en, error.status);
+    }
     const { scriptId, provider: providerName, model, apiKey, baseUrl, options, characterSheetUrl, dryRun, spendCapUsd, acknowledgeOverCap } = body as {
       scriptId?: string;
       provider?: string;

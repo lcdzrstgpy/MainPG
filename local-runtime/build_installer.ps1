@@ -97,6 +97,12 @@ if (-not $pnpmCommand) { throw "pnpm 10+ is required to build the embedded ClipF
 $nodeCommand = Get-Command node -ErrorAction SilentlyContinue
 if (-not $nodeCommand) { throw "Node 20+ is required to build the embedded ClipForge sidecar" }
 Write-Host "[build] building embedded ClipForge sidecar ..."
+# The publication/verification CLI lives in the ClipForge source tree and must be
+# invoked with that tree as the current directory so its publish source root is right.
+$clipforgePrepareScript = Join-Path $clipforgeRoot "scripts\prepare-mainpg-sidecar.mjs"
+# A dedicated publish root keeps the immutable artifact outside both the Next
+# build output and the vendored source tree, so `next build` can never clean it.
+$clipforgePublishRoot = Join-Path $PSScriptRoot "outputs\wh-local\clipforge"
 Push-Location $clipforgeRoot
 if ($env:CLIPFORGE_SKIP_INSTALL -ne "1") {
     & $pnpmCommand.Source install --frozen-lockfile
@@ -104,8 +110,12 @@ if ($env:CLIPFORGE_SKIP_INSTALL -ne "1") {
 }
 & $pnpmCommand.Source build
 if ($LASTEXITCODE -ne 0) { throw "ClipForge build failed" }
-& $nodeCommand.Source scripts\prepare-mainpg-sidecar.mjs
-if ($LASTEXITCODE -ne 0) { throw "ClipForge standalone preparation failed" }
+& $nodeCommand.Source $clipforgePrepareScript --output-root $clipforgePublishRoot
+if ($LASTEXITCODE -ne 0) { throw "ClipForge artifact publication failed" }
+$clipforgeCurrent = Get-Content -LiteralPath (Join-Path $clipforgePublishRoot "current.json") -Raw | ConvertFrom-Json
+$clipforgePublishedApp = Join-Path $clipforgePublishRoot $clipforgeCurrent.relativePath
+& $nodeCommand.Source $clipforgePrepareScript --verify-root $clipforgePublishedApp
+if ($LASTEXITCODE -ne 0) { throw "ClipForge artifact verification failed" }
 Pop-Location
 
 # 2. Ensure PyInstaller
@@ -124,30 +134,22 @@ if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed" }
 $dist = Join-Path $PSScriptRoot "dist\MainPG"
 if (-not (Test-Path $dist)) { throw "bundle output missing: $dist" }
 
-# Ship the standalone app and the exact Node executable that built it. This is
-# intentionally a copied build artifact, not a Git submodule/reference and not
-# a dependency on a customer-installed Node runtime.
-$clipforgeStandalone = Join-Path $clipforgeRoot ".next\standalone"
-if (-not (Test-Path -LiteralPath (Join-Path $clipforgeStandalone "server.js") -PathType Leaf)) {
-    throw "ClipForge standalone entry missing after build"
-}
+# Ship the verified, immutable artifact plus the exact Node executable that built
+# it. This is intentionally a copied build artifact, not a Git submodule/reference
+# and not a dependency on a customer-installed Node runtime. The artifact already
+# carries its media modules (ffmpeg-static / @ffprobe-installer), so no manual
+# media copy is needed here.
 $clipforgeBundle = Join-Path $dist "clipforge"
 $clipforgeApp = Join-Path $clipforgeBundle "app"
 New-Item -ItemType Directory -Force -Path $clipforgeBundle | Out-Null
-Copy-Item -LiteralPath $clipforgeStandalone -Destination $clipforgeApp -Recurse -Force
-Copy-Item -LiteralPath $nodeCommand.Source -Destination (Join-Path $clipforgeBundle "node.exe") -Force
-
-# Next's file tracing may omit dynamically loaded media binaries. Copy them
-# explicitly so composition does not fall back to a machine-global ffmpeg.
-foreach ($mediaModule in @("ffmpeg-static", "@ffprobe-installer")) {
-    $mediaSource = Join-Path $clipforgeRoot ("node_modules\" + $mediaModule)
-    if (Test-Path -LiteralPath $mediaSource -PathType Container) {
-        $mediaTarget = Join-Path $clipforgeApp ("node_modules\" + $mediaModule)
-        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $mediaTarget) | Out-Null
-        Copy-Item -LiteralPath $mediaSource -Destination $mediaTarget -Recurse -Force
-    }
+Copy-Item -LiteralPath $clipforgePublishedApp -Destination $clipforgeApp -Recurse -Force
+if (-not (Test-Path -LiteralPath (Join-Path $clipforgeApp "server.js") -PathType Leaf)) {
+    throw "Packaged ClipForge app root is missing server.js"
 }
-Write-Host "[build] bundled ClipForge standalone + Node runtime"
+& $nodeCommand.Source $clipforgePrepareScript --verify-root $clipforgeApp
+if ($LASTEXITCODE -ne 0) { throw "Packaged ClipForge app verification failed" }
+Copy-Item -LiteralPath $nodeCommand.Source -Destination (Join-Path $clipforgeBundle "node.exe") -Force
+Write-Host "[build] bundled verified ClipForge app + Node runtime"
 
 # 4. Copy the app icon so shortcuts can use the product logo (jieye-mark).
 # Existing installations keep their app-local credential files because the installer does not

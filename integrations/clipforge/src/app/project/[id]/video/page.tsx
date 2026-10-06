@@ -679,7 +679,10 @@ export default function VideoPage() {
     <div className="min-h-screen grid-bg">
       {/* project context strip: name + CLICKABLE step navigation — replaces the legacy
           inline non-clickable stepper this page carried while owned by a parallel session */}
-      <ProjectHeader projectName={projectName || t("defaultProjectName")} />
+      <ProjectHeader
+        projectName={projectName || t("defaultProjectName")}
+        outputStrategy={creationBrief?.outputStrategy ?? null}
+      />
 
       <main className="mx-auto max-w-7xl px-6 py-8">
         {/* page-level load feedback: these states existed but were never rendered,

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { LuWand, LuClock, LuImage, LuArrowRight, LuBookmarkPlus, LuLoaderCircle, LuTriangleAlert, LuCircleCheck, LuCircleX, LuPencil } from "react-icons/lu";
 import { checkScriptCompliance } from "@/lib/ad-compliance";
@@ -22,7 +22,9 @@ import { useT, useLocale } from "@/lib/i18n";
 import { STAGE_LABEL_KEYS } from "@/lib/pipeline-stages";
 import { friendlyError } from "@/lib/friendly-error";
 import { ProjectHeader } from "@/components/project-header";
+import { SimpleModeActions } from "@/components/script/simple-mode-actions";
 import { DEFAULT_CREATION_BRIEF, sanitizeCreationBrief, type CreationBrief, type OutputStrategy } from "@/lib/creation-brief";
+import { resolveScriptFlowPolicy } from "@/lib/script-flow-policy";
 import { buildTopicScriptRequest } from "@/lib/creation-submit";
 import { scriptCharacterFrom } from "@/lib/script-character";
 import { CreationBriefSummary } from "@/components/project-creation/creation-brief-summary";
@@ -64,19 +66,6 @@ interface ScriptVersion {
   styleType: string;
   totalDuration: number;
   shots: Shot[];
-}
-
-/**
- * 设计 §7.4：?auto=1 是否允许隐式启动免费流水线的唯一判据。
- * - `draft`：免费静态草稿就是用户选的策略，可以自动跑（judge → stock_fill → compose）；
- * - `controlled-motion` / `native-film`：必须停在脚本确认页，由用户走各自的付费确认入口，
- *   绝不能被 URL 参数静默降级成静态草稿；
- * - `null`（旧项目没有 creationBrief 列）：保留原 `?auto=1` 行为，以便断点恢复。
- */
-export function shouldAutoStartPipeline(input: { outputStrategy: OutputStrategy | null; autoParam: boolean }): boolean {
-  if (!input.autoParam) return false;
-  if (input.outputStrategy === null) return true;
-  return input.outputStrategy === "draft";
 }
 
 /**
@@ -138,6 +127,8 @@ export default function ScriptPage() {
   const [creationBrief, setCreationBrief] = useState<CreationBrief | null>(null);
   // 简报是否已经读取完成：区分「还没读到」与「读到了 null（旧项目）」，策略门控不会误判
   const [briefLoaded, setBriefLoaded] = useState(false);
+  // 读取失败 ≠ 旧项目：元数据读不到时绝不能被当成 legacy 而让 ?auto=1 误启免费链
+  const [briefLoadFailed, setBriefLoadFailed] = useState(false);
   // 主播的唯一解析来源：优先级见 resolveScriptCharacter（项目记录 → 创作简报 → URL 兜底）。
   // 脚本重生成、原生影片预览与提交都复用这里的同一个 presenter，页面不出现第二套角色解析。
   // ?presenter=<id> 只是旧链接的兜底，创建后的跳转链接并不带它。
@@ -172,6 +163,7 @@ export default function ScriptPage() {
       const dbScripts: DbScript[] = scriptsRes.ok ? await scriptsRes.json() : [];
       if (projectRes.ok) {
         const proj = await projectRes.json();
+        setBriefLoadFailed(false);
         setProjectName(proj.name ?? proj.productName ?? "");
         // 简报随每次读取刷新：脚本接口会把实际用到的风格与来源写回项目简报
         setCreationBrief(proj.creationBrief ? sanitizeCreationBrief(proj.creationBrief) : null);
@@ -185,6 +177,9 @@ export default function ScriptPage() {
           topic: proj.topic ?? "",
           characterId: proj.characterId ?? "",
         });
+      } else {
+        // 项目元数据读不到：不能当成「旧项目」误启免费链
+        setBriefLoadFailed(true);
       }
       if (Array.isArray(dbScripts) && dbScripts.length > 0) {
         setScripts(
@@ -206,6 +201,7 @@ export default function ScriptPage() {
       }
     } catch {
       setScripts([]);
+      setBriefLoadFailed(true);
     } finally {
       setLoading(false);
     }
@@ -325,6 +321,7 @@ export default function ScriptPage() {
         if (projectRes.ok) {
           const proj = await projectRes.json();
           if (!cancelled) {
+            setBriefLoadFailed(false);
             setProjectName(proj.name ?? proj.productName ?? "");
             // null 是合法状态（旧项目），必须与「还没读到」区分开，策略门控才不会误判
             setCreationBrief(proj.creationBrief ? sanitizeCreationBrief(proj.creationBrief) : null);
@@ -339,6 +336,9 @@ export default function ScriptPage() {
               characterId: proj.characterId ?? "",
             });
           }
+        } else if (!cancelled) {
+          // 项目元数据读不到：不能当成「旧项目」误启免费链
+          setBriefLoadFailed(true);
         }
         if (cancelled) return;
         if (Array.isArray(dbScripts) && dbScripts.length > 0) {
@@ -361,7 +361,11 @@ export default function ScriptPage() {
           setScripts([]);
         }
       } catch {
-        if (!cancelled) setScripts([]);
+        if (!cancelled) {
+          setScripts([]);
+          // 读取失败 ≠ 旧项目：不让 ?auto=1 在策略未知时误启免费链
+          setBriefLoadFailed(true);
+        }
       } finally {
         if (!cancelled) {
           // 「简报已读取」与「读到的是 null（旧项目）」必须分开：读取失败也当作已尝试，
@@ -470,22 +474,28 @@ export default function ScriptPage() {
   // reveals the editor — the running chain is untouched.
   const [autoMode, setAutoMode] = useState(false);
   const [autoModeTriggered, setAutoModeTriggered] = useState(false);
-  // generation-task mode chosen on the studio card (?gen=ai): the free chain stays hands-off,
-  // the AI chain stops at the script gate — money is only spent after one explicit click here
-  const [genPref, setGenPref] = useState<"free" | "ai">("free");
-  // 旧链接参数（?auto=1 / ?gen=ai / ?presenter=<id>）只在这里读取一次；presenterParam 的声明已上移
+  // 旧链接参数（?auto=1 / ?presenter=<id>）只在这里读取一次；presenterParam 的声明已上移
   useEffect(() => {
     const qs = new URLSearchParams(window.location.search);
     if (qs.get("auto") === "1") setAutoMode(true);
-    if (qs.get("gen") === "ai") setGenPref("ai");
     const p = qs.get("presenter");
     if (p) setPresenterParam(p);
   }, []);
   // (the ?auto=1 fresh-start trigger lives below, after the pipeline re-attach check)
   // 出片策略门控（设计 §7.4）：`null` 表示项目没有 creationBrief（旧项目，保留原行为）
   const outputStrategy: OutputStrategy | null = creationBrief?.outputStrategy ?? null;
-  // ?auto=1 是否允许隐式启动免费流水线：controlled-motion / native-film 一律停在脚本确认页
-  const freeChainApplies = shouldAutoStartPipeline({ outputStrategy, autoParam: autoMode });
+  // 简报读取状态：failed 时绝不能把付费项目误判成 legacy 而自动启动免费链
+  const briefState = briefLoadFailed ? "failed" : briefLoaded ? "loaded" : "loading";
+  // 统一策略门控：uiMode 只是界面模式，绝不改判出片策略（见 script-flow-policy）
+  const flow = resolveScriptFlowPolicy({ outputStrategy, uiMode, autoMode, briefState });
+  // 免费链是否为该项目的禁用路径：挂接/轮询发生在简报读完之前，必须用 ref 读最新策略。
+  // 简报读取失败同样视为禁用（fail-closed）；loading 期间暂不拦挂接——挂接只是观察，
+  // 要为 draft 旧项目的断点恢复保留入口，轮询循环里会随最新策略止损。
+  const freeChainForbiddenRef = useRef(false);
+  useEffect(() => {
+    freeChainForbiddenRef.current =
+      briefLoadFailed || !resolveScriptFlowPolicy({ outputStrategy }).allowFreeChain;
+  }, [outputStrategy, briefLoadFailed]);
   // Judge pass — the quality bar runs in BOTH hands-off chains, not just the pro editor.
   // Four narrow judges tear the voiceover lines apart and their rewrites are applied
   // automatically BEFORE any footage matching / generation money. Beginners never operate
@@ -548,12 +558,19 @@ export default function ScriptPage() {
 
   /** Poll the project's latest pipeline run to a terminal status, mirroring stage labels. */
   const attachPipeline = async () => {
+    // 已知付费策略的项目不观察免费草稿任务；轮询里还会用 ref 再查一次——
+    // 挂接可能发生在简报读完之前，入口闭包里的 outputStrategy 还是旧值
+    if (freeChainForbiddenRef.current) return;
     setAutoFinishing(true);
     setAutoFinishError("");
     setResumableRun(null);
     try {
       // 2.5s × 312 ≈ 13 min, above the server-side compose polling budget
       for (let i = 0; i < 312; i++) {
+        if (freeChainForbiddenRef.current) {
+          setAutoFinishing(false);
+          return;
+        }
         const d = await fetch(`/api/project/${id}/pipeline`).then((x) => x.json()).catch(() => ({}));
         const run = d?.run;
         if (!run) throw new Error(t("autoFinishFailed"));
@@ -577,6 +594,8 @@ export default function ScriptPage() {
   const startPipeline = async (resume: boolean) => {
     if (autoFinishing) return;
     if (!resume && !currentScript) return;
+    // 纵深门禁：autoFinish / 断点续跑 / 重新开始都经过这里，付费策略或简报未读定一律拒绝免费链
+    if (!resolveScriptFlowPolicy({ outputStrategy, uiMode, autoMode, briefState }).allowFreeChain) return;
     setAutoFinishing(true);
     setAutoFinishError("");
     setAutoFinishStage(t("autoFinishSelecting"));
@@ -597,7 +616,13 @@ export default function ScriptPage() {
     }
   };
 
-  const autoFinish = () => startPipeline(false);
+  const autoFinish = () => {
+    const flow = resolveScriptFlowPolicy({ outputStrategy, uiMode, autoMode, briefState });
+    // 只允许 draft / legacy 且简报已读定跑免费草稿链；controlled-motion / native-film 及
+    // 简报未读定绝不能被这一个按钮降级成静态草稿
+    if (!flow.allowFreeChain) return;
+    return startPipeline(false);
+  };
 
   // On entry, look for a live or breakpointed run BEFORE any fresh auto start:
   // live → re-attach (the "came back after closing the tab" path);
@@ -629,13 +654,13 @@ export default function ScriptPage() {
   useEffect(() => {
     if (!autoMode || autoModeTriggered || loading || !briefLoaded || !currentScript || !pipelineChecked || resumableRun) return;
     setAutoModeTriggered(true);
-    // 策略门控（设计 §7.4）：draft 才允许免费链自动跑；controlled-motion / native-film 停在
+    // 策略门控（设计 §7.4）：draft / legacy 才允许免费链自动跑；controlled-motion / native-film 停在
     // 脚本确认页等用户走各自的付费确认入口，绝不被 URL 参数静默降级成静态草稿
-    if (!shouldAutoStartPipeline({ outputStrategy, autoParam: autoMode })) return;
-    // the AI path lands on the "script ready" gate instead of auto-running the free chain
-    if (genPref !== "ai") autoFinish();
+    const flow = resolveScriptFlowPolicy({ outputStrategy, autoMode, briefState });
+    if (!flow.allowAutoStart) return;
+    autoFinish();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- autoFinish is a stable page-level handler; triggering once per auto entry
-  }, [autoMode, autoModeTriggered, loading, briefLoaded, outputStrategy, currentScript, genPref, pipelineChecked, resumableRun]);
+  }, [autoMode, autoModeTriggered, loading, briefLoaded, outputStrategy, briefState, currentScript, pipelineChecked, resumableRun]);
 
   // ---- AI film chain (grid → one-call film): the paid path. The free script above is the
   // zero-cost "video plan" gate — money is only spent after this one explicit click, and the
@@ -690,6 +715,8 @@ export default function ScriptPage() {
   // only after the user confirms THIS preview (text-level confirmation before any spend).
   const runAiFilm = async () => {
     if (!currentScript || aiFilming || autoFinishing) return;
+    // 纵深门禁：整片链只属于 native-film / legacy 且简报已读定，按钮显隐不是唯一防线
+    if (!resolveScriptFlowPolicy({ outputStrategy, briefState }).showNativeFilmAction) return;
     setAiFilming(true);
     setAiFilmError("");
     setFilmPreview(null);
@@ -715,6 +742,8 @@ export default function ScriptPage() {
   // dryRun must return the identical prompt (script edited in between → abort and re-preview).
   const confirmAiFilm = async () => {
     if (!currentScript || !filmPreview || aiFilming) return;
+    // 纵深门禁：付费提交前再校验一次出片策略，draft / controlled-motion 与简报未读定一律拒绝
+    if (!resolveScriptFlowPolicy({ outputStrategy, briefState }).showNativeFilmAction) return;
     setAiFilming(true);
     setAiFilmError("");
     try {
@@ -914,7 +943,7 @@ export default function ScriptPage() {
   };
 
   // slim context strip (shared by loading, empty and normal states); global chrome lives in AppShell
-  const headerBar = <ProjectHeader projectName={projectName || t("defaultProjectName")} />;
+  const headerBar = <ProjectHeader projectName={projectName || t("defaultProjectName")} outputStrategy={outputStrategy} />;
 
   // 设计 §6.2 / §7.4：脚本页顶部持久展示创作简报摘要，并按出片策略说明下一步。
   // 旧项目（没有 creationBrief 列）只做说明，不改行为。
@@ -924,31 +953,50 @@ export default function ScriptPage() {
         brief={creationBrief ?? DEFAULT_CREATION_BRIEF}
         title={creationBrief ? "创作简报" : "创作简报（旧项目 · 未记录）"}
       />
-      {!creationBrief && (
+      {flow.strategy === "legacy" && (
         <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3">
-          <p className="text-sm font-medium text-amber-500">旧项目：没有创作简报</p>
+          {briefLoadFailed ? (
+            <>
+              <p className="text-sm font-medium text-amber-500">创作简报读取失败：出片策略未知</p>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                已阻止免费草稿自动任务自动启动；请刷新页面重试，确认出片策略后再成片。
+              </p>
+            </>
+          ) : (
+            <>
+              <p className="text-sm font-medium text-amber-500">旧项目：没有创作简报</p>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                该项目创建于统一创作入口之前，没有记录出片策略；带 ?auto=1 打开时仍按原来的免费流水线行为运行，以便断点恢复。
+              </p>
+            </>
+          )}
+        </div>
+      )}
+      {/* 按出片策略给出各自的确认入口，绝不把付费策略静默降级成免费流水线 */}
+      {flow.strategy === "draft" && (
+        <div className="rounded-xl border border-primary/40 bg-primary/5 px-4 py-3">
+          <p className="text-sm font-medium">出片策略：免费草稿（自动成片）</p>
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            该项目创建于统一创作入口之前，没有记录出片策略；带 ?auto=1 打开时仍按原来的免费流水线行为运行，以便断点恢复。
+            该策略由免费草稿自动任务完成：真实素材配画面 → 免费 Edge 配音合成 → 直达成片，全程 ¥0。
           </p>
         </div>
       )}
-      {/* 非 draft 策略不得自动启动免费流水线：给出各自的确认入口，不新建页面 */}
-      {outputStrategy === "controlled-motion" && (
+      {flow.strategy === "controlled-motion" && (
         <div className="rounded-xl border border-primary/40 bg-primary/5 px-4 py-3">
           <p className="text-sm font-medium">出片策略：导演可控动态（逐镜生视频）</p>
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            该策略不会自动启动免费静态流水线。确认脚本后进入素材页逐镜生成动态镜头（按镜头数与模型计费）。
+            该策略不会自动启动免费静态流水线。确认脚本后进入素材页逐镜生成动态镜头（按镜头数与模型计费）。有可听原生音轨时保留原音轨，否则按当前 TTS 设置配音。
           </p>
           <Link href={`/project/${id}/assets`} className="mt-2.5 inline-block">
             <Button size="sm" className="brand-gradient text-white">生成逐镜动态镜头</Button>
           </Link>
         </div>
       )}
-      {outputStrategy === "native-film" && (
+      {flow.strategy === "native-film" && (
         <div className="rounded-xl border border-primary/40 bg-primary/5 px-4 py-3">
           <p className="text-sm font-medium">出片策略：原生整片（一次模型生成，自带音频）</p>
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            该策略不会自动启动免费静态流水线。先用整片预览核对模型、时长与费用，确认后才提交付费生成。
+            该策略不会自动启动免费静态流水线。先用整片预览核对模型、时长与费用，确认后才提交付费生成。自带模型原生音频，合成阶段不再跑 TTS。
           </p>
           <Button
             size="sm"
@@ -1158,7 +1206,7 @@ export default function ScriptPage() {
     );
   }
 
-  if ((freeChainApplies && !autoFinishError && (autoFinishing || !autoModeTriggered)) || aiFilming) {
+  if ((flow.allowAutoStart && !autoFinishError && (autoFinishing || !autoModeTriggered)) || aiFilming) {
     return (
       <div className="min-h-screen grid-bg">
         {headerBar}
@@ -1178,7 +1226,7 @@ export default function ScriptPage() {
           </p>
           {/* the paid film call keeps running server-side — no "go manual" escape mid-flight */}
           {!aiFilming && (
-            <Button variant="outline" size="sm" className="mt-8 text-xs" onClick={() => setAutoMode(false)}>
+            <Button variant="outline" size="sm" className="mt-8 text-xs" onClick={() => { setAutoMode(false); setUiMode("pro"); }}>
               {t("autoModeManual")}
             </Button>
           )}
@@ -1195,6 +1243,15 @@ export default function ScriptPage() {
         {/* 设计 §6.2：简报摘要始终在顶部，重生成后仍按同一份约束解释本页风格与策略 */}
         {briefPanel}
         {previousScriptsPanel}
+        {/* 转手动后免费草稿任务仍在服务端继续运行：导演模式里显示运行阶段，不重新附加、不重提交 */}
+        {autoFinishing && !aiFilming && uiMode !== "simple" && (
+          <div className="mx-auto mb-5 max-w-2xl rounded-xl border border-primary/40 bg-primary/5 px-4 py-3">
+            <p className="text-sm font-medium text-primary">
+              免费草稿自动任务进行中：{autoFinishStage || t("autoFinishSelecting")}
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">{t("autoModeHint")}</p>
+          </div>
+        )}
         {/* breakpoint choice: a failed/interrupted server-side run offers resume (default) or a
             clean restart — the beginner never loses a half-finished chain to a closed tab again */}
         {resumableRun && !autoFinishing && !aiFilming && (
@@ -1249,41 +1306,20 @@ export default function ScriptPage() {
               <StyleChoicePrompt requirement={stylePrompt} onPick={pickScriptStyle} busy={isGenerating} />
             )}
             <div className="flex flex-col items-center gap-3">
-              {/* two finishing paths, primary = what was chosen on the studio card; the AI one
-                  is the single paid click (billed to the user's own model platform) */}
-              <div className="grid w-full gap-2 sm:grid-cols-2">
-                <Button
-                  size="lg"
-                  variant={genPref === "ai" ? "outline" : "default"}
-                  className={`w-full ${genPref === "ai" ? "" : "brand-gradient text-white"}`}
-                  disabled={autoFinishing || aiFilming || !currentScript}
-                  onClick={autoFinish}
-                >
-                  {autoFinishing ? (autoFinishStage || t("autoFinish")) : `⚡ ${t("autoFinish")}`}
-                </Button>
-                <Button
-                  size="lg"
-                  variant={genPref === "ai" ? "default" : "outline"}
-                  className={`w-full ${genPref === "ai" ? "brand-gradient text-white -order-1" : ""}`}
-                  disabled={autoFinishing || aiFilming || !currentScript}
-                  onClick={runAiFilm}
-                >
-                  {`✨ ${t("aiFilmCta")}`}
-                </Button>
-              </div>
-              <p className="text-center text-xs text-muted-foreground">{t("autoFinishHint")}</p>
-              <p className="text-center text-xs text-muted-foreground/80">{t("aiFilmCostNote")}</p>
-              {/* quality reassurance: both paths run the judge panel automatically — Easy mode
-                  hides the operation, never the quality features */}
-              <p className="text-center text-xs text-muted-foreground/80">⚖️ {t("autoJudgeNote")}</p>
-              <div className="flex items-center gap-3">
-                <Button variant="outline" size="sm" className="text-xs" disabled={isGenerating} onClick={() => setRegenConfirmOpen(true)}>
-                  {t("regenerate")}
-                </Button>
-                <Button variant="ghost" size="sm" className="text-xs text-muted-foreground" onClick={() => setUiMode("pro")}>
-                  {t("simpleGoPro")}
-                </Button>
-              </div>
+              <SimpleModeActions
+                policy={flow}
+                id={id}
+                t={t}
+                autoFinish={autoFinish}
+                runAiFilm={runAiFilm}
+                isGenerating={isGenerating}
+                autoFinishing={autoFinishing}
+                aiFilming={aiFilming}
+                autoFinishStage={autoFinishStage}
+                hasScript={!!currentScript}
+                onRegenerate={() => setRegenConfirmOpen(true)}
+                onGoPro={() => setUiMode("pro")}
+              />
             </div>
           </div>
         ) : (
@@ -1376,31 +1412,46 @@ export default function ScriptPage() {
                       <>⚖️ {t("judgeButton")}</>
                     )}
                   </Button>
-                  <Button
-                    variant="outline"
-                    className="text-sm"
-                    disabled={autoFinishing}
-                    onClick={autoFinish}
-                    title={t("autoFinishHint")}
-                  >
-                    {autoFinishing ? (
-                      <>
-                        <LuLoaderCircle className="w-4 h-4 mr-1 animate-spin" />
-                        {autoFinishStage || t("autoFinish")}
-                      </>
-                    ) : (
-                      <>
-                        <LuWand className="w-4 h-4 mr-1" />
-                        {t("autoFinish")}
-                      </>
-                    )}
-                  </Button>
-                  <Link href={`/project/${id}/assets`}>
-                    <Button className="brand-gradient text-white text-sm" disabled={autoFinishing}>
-                      {t("nextStepAssets")}
-                      <LuArrowRight className="w-4 h-4 ml-1" />
+                  {flow.showDraftAction && (
+                    <Button
+                      variant="outline"
+                      className="text-sm"
+                      disabled={autoFinishing}
+                      onClick={autoFinish}
+                      title={t("autoFinishHint")}
+                    >
+                      {autoFinishing ? (
+                        <>
+                          <LuLoaderCircle className="w-4 h-4 mr-1 animate-spin" />
+                          {autoFinishStage || t("autoFinish")}
+                        </>
+                      ) : (
+                        <>
+                          <LuWand className="w-4 h-4 mr-1" />
+                          {t("autoFinish")}
+                        </>
+                      )}
                     </Button>
-                  </Link>
+                  )}
+                  {(flow.showControlledMotionAction || flow.showDraftAction) && (
+                    <Link href={`/project/${id}/assets`}>
+                      <Button className="brand-gradient text-white text-sm" disabled={autoFinishing}>
+                        {t("nextStepAssets")}
+                        <LuArrowRight className="w-4 h-4 ml-1" />
+                      </Button>
+                    </Link>
+                  )}
+                  {flow.showNativeFilmAction && (
+                    <Button
+                      variant="outline"
+                      className="text-sm"
+                      disabled={autoFinishing || aiFilming || !currentScript}
+                      onClick={runAiFilm}
+                      title={t("aiFilmPreviewTitle")}
+                    >
+                      {`✨ ${t("aiFilmPreviewTitle")}`}
+                    </Button>
+                  )}
                 </div>
               </div>
 

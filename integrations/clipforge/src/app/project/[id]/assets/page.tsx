@@ -987,7 +987,10 @@ export default function AssetsPage() {
   return (
     <div className="min-h-screen grid-bg">
       {/* project context strip: name + step navigation (global chrome lives in AppShell) */}
-      <ProjectHeader projectName={projectName || t("untitledProject")} />
+      <ProjectHeader
+        projectName={projectName || t("untitledProject")}
+        outputStrategy={creationBrief?.outputStrategy ?? null}
+      />
 
       {/* single hidden input reused for every per-shot upload; target shot tracked in pendingUploadShot */}
       <input

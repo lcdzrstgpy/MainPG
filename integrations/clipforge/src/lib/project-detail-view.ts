@@ -249,7 +249,7 @@ export function assetsStageGuide(strategy: OutputStrategy | null | undefined): A
         legacy: false,
         primaryAction: "per-shot-motion",
         title: "导演可控动态：逐镜 I2V 是本策略的主操作",
-        detail: "先为每镜生成关键帧，再用「转为动态」提交图生视频任务；未生成动态的镜头在合成时会退回静态素材。",
+        detail: "先为每镜生成关键帧，再用「转为动态」提交图生视频任务；未生成动态的镜头在合成时会退回静态素材。有可听原生音轨时保留原音轨，否则按当前 TTS 设置配音。",
       };
     case "native-film":
       return {
