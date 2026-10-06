@@ -76,7 +76,7 @@ import {
   isAnnouncementPopupEligible,
   markAnnouncementSeen,
 } from "../../shared/components/AnnouncementModal";
-import { fetchMessages, markMessageRead, type InboxMessage } from "../../shared/api/messagesApi";
+import { fetchMessages, markMessageRead, syncMessages, type InboxMessage } from "../../shared/api/messagesApi";
 import { showToast } from "../../shared/components/toastStore";
 import { HelpAgentWidget } from "../../modules/help_agent/components/HelpAgentWidget";
 import { WorkspaceTabScrollStore } from "./workspaceTabState";
@@ -475,6 +475,9 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
   /** 拉取公告（带图片），滤掉本机已弹过的，组成待展示队列。 */
   const loadAnnouncementQueue = async () => {
     try {
+      // 先等一次同步完成：本地消息表没有账号维度，同机换号后上个账号的定向公告
+      // 会残留到下一轮后台同步（180s）才被撤回。放在读取之前，渲染时就不会泄漏。
+      await syncMessages();
       const items = await fetchMessages({ withImages: true });
       // 「只弹一次」由本机 localStorage 标记负责；服务端 read 只用于铃铛红点。
       // 不能拿 read 当过滤条件：用户可能在铃铛里点开过公告（那时就被标了已读），
