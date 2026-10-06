@@ -651,7 +651,29 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     )
 
     # 公告消息：从公告发布后台定时同步，前端右上角站内信读取。
-    # 定向发送：同步时携带最近登录的远端账号 ID，后台据此返回发给该账号的定向公告。
+    # 身份：同步时带上「远端会话令牌」作为真正身份，后台按令牌解析账号再做定向过滤。
+    # account_id 由邮箱哈希推导、可被伪造，只能当兼容参数（新后台已忽略它）。
+
+    def _remote_token_for_local_token(local_token: str) -> str:
+        """本地会话令牌 -> 远端会话令牌（请求级同步用，身份精确）。
+
+        必须走共享的 customer_sessions：远端令牌只存进程内存，
+        新建 SQLiteCustomerSessionStore 实例是拿不到的。
+        """
+        try:
+            session = customer_sessions.store.get_session(local_token or "")
+        except Exception:
+            return ""
+        return (session.remote_token if session else "") or ""
+
+    def _current_remote_token() -> str:
+        """后台定时线程没有请求上下文时的回退：取最近一次登录且仍活跃的远端令牌。"""
+        try:
+            lister = getattr(customer_sessions.store, "active_remote_tokens", None)
+            values = [str(t) for t in lister()] if callable(lister) else []
+        except Exception:
+            values = []
+        return values[-1] if values else ""
     def _current_remote_account_id() -> str:
         try:
             with closing(sqlite3.connect(db_path)) as conn:
@@ -674,15 +696,22 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         config.announce_base_url,
         interval_seconds=180,
         account_id_provider=_current_remote_account_id,
+        auth_token_provider=_current_remote_token,
     )
     reply_sync = FeedbackReplySyncService(
         messages_repository,
         config.announce_base_url,
         interval_seconds=30,
         account_id_provider=_current_remote_account_id,
+        auth_token_provider=_current_remote_token,
     )
     app.include_router(
-        create_messages_router(messages_repository, messages_sync, reply_sync)
+        create_messages_router(
+            messages_repository,
+            messages_sync,
+            reply_sync,
+            remote_token_provider=_remote_token_for_local_token,
+        )
     )
     app.state.messages_sync = messages_sync
     app.state.reply_sync = reply_sync

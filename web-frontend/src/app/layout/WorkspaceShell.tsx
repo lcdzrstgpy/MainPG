@@ -483,7 +483,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
       const pending = items.filter(
         (item) =>
           item.kind === "announcement" &&
-          !hasSeenAnnouncement(item.id) &&
+          !hasSeenAnnouncement(item.serverId, item.id) &&
           isAnnouncementPopupEligible(item.publishedAt),
       );
       if (pending.length) setAnnouncementQueue(pending);
@@ -506,9 +506,11 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
   }, [playEntryAnimation, guideConfigReady, guideBoardPanelOpen, guideEditorSeed, guideTourActive]);
 
   /** 单条公告算看过：本机写标记（服务端没有「已弹出」概念），同时上报已读并刷新铃铛红点。 */
-  const handleAnnouncementSeen = (messageId: number) => {
-    markAnnouncementSeen(messageId);
-    void markMessageRead(messageId).catch(() => undefined);
+  const handleAnnouncementSeen = (item: InboxMessage) => {
+    // 标记键用 serverId（跨同步稳定，否则撤回重插会换 id 导致重复弹）；
+    // 已读上报仍用本地 id —— 后端 mark_read 认的是本地 messages.id。
+    markAnnouncementSeen(item.serverId, item.id);
+    void markMessageRead(item.id).catch(() => undefined);
     window.dispatchEvent(new Event("mainpg:messages-change"));
   };
 
