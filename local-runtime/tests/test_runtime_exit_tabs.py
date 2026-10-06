@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from wh_local.app.main import _RuntimeExitController
+import os
+
+from wh_local.app.main import _RuntimeExitController, _compose_exit_cleanup
 
 
 def _controller(monkeypatch) -> _RuntimeExitController:
@@ -105,3 +107,39 @@ def test_old_heartbeat_cannot_restore_timed_out_tab(monkeypatch) -> None:
     controller.touch("tab-a", 3)
 
     assert controller._clients == {}
+
+
+def test_hard_exit_runs_every_cleanup_step_before_exiting(monkeypatch) -> None:
+    controller = _controller(monkeypatch)
+    calls: list[str] = []
+    exits: list[int] = []
+    controller.set_on_before_exit(
+        _compose_exit_cleanup(
+            lambda: calls.append("product-processing"),
+            lambda: calls.append("clipforge-sidecar"),
+        )
+    )
+    monkeypatch.setattr(os, "_exit", lambda code: exits.append(code))
+
+    controller._exit("test")
+
+    # 硬退出不得绕过任何一个清理步骤：任务结算与 sidecar 回收都必须先跑完。
+    assert calls == ["product-processing", "clipforge-sidecar"]
+    assert exits == [0]
+
+
+def test_cleanup_step_failure_does_not_skip_the_sidecar_cleanup(monkeypatch) -> None:
+    controller = _controller(monkeypatch)
+    calls: list[str] = []
+    exits: list[int] = []
+
+    def explode() -> None:
+        raise RuntimeError("product processing cleanup failed")
+
+    controller.set_on_before_exit(_compose_exit_cleanup(explode, lambda: calls.append("clipforge-sidecar")))
+    monkeypatch.setattr(os, "_exit", lambda code: exits.append(code))
+
+    controller._exit("test")
+
+    assert calls == ["clipforge-sidecar"]
+    assert exits == [0]

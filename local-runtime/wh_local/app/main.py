@@ -104,7 +104,11 @@ from ..modules.product_processing.infrastructure.database import create_database
 from ..modules.product_processing.infrastructure.repository import ProductProcessingRepository
 from ..modules.product_processing.provider_config import register_system_config_db_path
 from ..modules.product_processing.service import ProductProcessingService
-from ..modules.clipforge import ClipForgeService, create_router as create_clipforge_router
+from ..modules.clipforge import (
+    ClipForgeService,
+    create_router as create_clipforge_router,
+    resolve_clipforge_build,
+)
 from ..price_verification import (
     PriceVerificationRouteDependencies,
     register_price_verification_routes,
@@ -160,26 +164,61 @@ def _provider_factory(config: Mapping[str, Any]) -> OneBound1688Provider:
     return OneBound1688Provider(config)
 
 
-def _clipforge_source_root(install_root: Path) -> Path:
-    """Locate the vendored ClipForge source in development and packaged installs."""
-    override = os.environ.get("WH_CLIPFORGE_SOURCE_ROOT", "").strip()
-    candidates = [
-        Path(override) if override else None,
-        install_root / "clipforge" / "app",
-        install_root / "integrations" / "clipforge",
-        Path(__file__).resolve().parents[3] / "integrations" / "clipforge",
-    ]
-    return next((candidate for candidate in candidates if candidate is not None and candidate.is_dir()), candidates[1])
+def _clipforge_build_resolver(install_root: Path, data_root: Path) -> Any:
+    """Resolve the one ClipForge app root for this process, on every call.
+
+    Resolution order lives in ``wh_local.modules.clipforge.artifact``: packaged
+    ``<install_root>/clipforge/app`` first, then the development pointer at
+    ``<data_root>/clipforge/current.json``. Resolving lazily means a freshly
+    published artifact is picked up without restarting MainPG.
+    """
+
+    def resolve() -> Any:
+        return resolve_clipforge_build(install_root, data_root)
+
+    return resolve
 
 
-def _clipforge_node_binary(source_root: Path) -> Path | str:
+def _clipforge_node_binary(install_root: Path) -> Path | str:
     """Use the Node runtime bundled next to packaged ClipForge when present."""
-    sidecar_root = source_root.parent
+    sidecar_root = Path(install_root) / "clipforge"
     for name in ("node.exe", "node"):
         bundled = sidecar_root / name
         if bundled.is_file():
             return bundled
     return "node"
+
+
+def _run_bounded_step(callback: Any, timeout_s: float = 5.0) -> None:
+    """Run one shutdown step with its own timeout so a stuck step cannot block the next."""
+    done = threading.Event()
+
+    def _wrap() -> None:
+        try:
+            callback()
+        except Exception:
+            # 清理步骤均为尽力而为；失败交给下次启动的重建兜底。
+            pass
+        finally:
+            done.set()
+
+    threading.Thread(target=_wrap, daemon=True, name="mainpg-exit-step").start()
+    done.wait(timeout=timeout_s)
+
+
+def _compose_exit_cleanup(*callbacks: Any) -> Any:
+    """Bounded composite cleanup run before the desktop hard exit.
+
+    Cancelling in-flight product-processing work and reaping the ClipForge
+    sidecar both have to happen before ``os._exit(0)``: a hard exit cannot be
+    allowed to skip sidecar tree termination.
+    """
+
+    def cleanup() -> None:
+        for callback in callbacks:
+            _run_bounded_step(callback)
+
+    return cleanup
 
 
 class _RuntimeExitController:
@@ -363,11 +402,10 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     ensure_data_dir_ready(config, db_path)
     init_db(db_path)
     register_system_config_db_path(db_path)
-    clipforge_source_root = _clipforge_source_root(config.install_root)
     clipforge = ClipForgeService(
-        source_root=clipforge_source_root,
+        build_resolver=_clipforge_build_resolver(config.install_root, config.data_dir),
         data_root=config.data_dir / "clipforge",
-        node_binary=str(_clipforge_node_binary(clipforge_source_root)),
+        node_binary=str(_clipforge_node_binary(config.install_root)),
     )
 
     update_manager = UpdateManager(
@@ -602,7 +640,9 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     # 桌面端：确认退出（关闭页面页面不再恢复）前取消所有仍在处理的任务并按 50% 结算，
     # 使「关前端页 → 任务已取消 + 按冻结积分 50% 扣费」可达成。服务器环境 watchdog 未
     # 启用，该回调不被触发。
-    runtime_exit.set_on_before_exit(product_processing.cancel_all_active_for_shutdown)
+    runtime_exit.set_on_before_exit(
+        _compose_exit_cleanup(product_processing.cancel_all_active_for_shutdown, clipforge.stop)
+    )
     # 桌面端：结算完成后登出远端平台会话并撤销本机本地会话。远端 token 只存在后端
     # 进程内存里，关页退出即丢失且用户再也无法主动登出；不在这里抢着登出，远端会残留
     # 一个"活跃"平台会话，导致用户重新打开页面登录时被单端登录限制拒绝。

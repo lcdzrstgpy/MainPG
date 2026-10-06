@@ -178,7 +178,7 @@ export const assets: NamespaceMessages = {
     taskLabel: "分镜 {shot} · {model} · 任务 {taskId}",
     taskResumeDone: "任务已取回并保存为分镜素材",
     taskResumeProcessing: "任务仍在云端生成中，请稍后再恢复查询",
-    taskResumeFailed: "云端任务已失败",
+    taskResumeFailed: "云端生成任务已失败",
     errorWithTaskId: "{msg}（任务 ID: {taskId}，已保存，可在上方恢复查询，请勿重复提交）",
     // 底部操作
     nextCompose: "下一步：合成视频",
@@ -309,7 +309,7 @@ export const assets: NamespaceMessages = {
     taskLabel: "Shot {shot} · {model} · task {taskId}",
     taskResumeDone: "Task retrieved and saved as the shot's asset",
     taskResumeProcessing: "Task is still generating in the cloud — try resuming later",
-    taskResumeFailed: "Cloud task failed",
+    taskResumeFailed: "Cloud generation task failed",
     errorWithTaskId: "{msg} (task ID: {taskId}, saved — resume the query above instead of resubmitting)",
     btnConvertingMotion: "Converting...",
     btnConvertMotion: "🎬 Add motion",

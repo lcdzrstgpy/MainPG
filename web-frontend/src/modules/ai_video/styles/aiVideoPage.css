@@ -52,6 +52,57 @@
   font-weight: 800;
 }
 
+/* 三档健康度：已连接 / 桥接超时 / 服务就绪但页面未连上。 */
+.ai-video-service-badge.is-ready {
+  color: #34745d;
+  background: #eaf8ef;
+}
+
+.ai-video-service-badge.is-warning {
+  color: #96601a;
+  background: #fdf3e2;
+}
+
+.ai-video-header-side {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.ai-video-ui-mode-toggle {
+  display: inline-flex;
+  padding: 3px;
+  border: 1px solid var(--theme-module-border, #f3cbd6);
+  border-radius: 999px;
+  background: var(--theme-module-surface, rgba(255, 255, 255, .74));
+}
+
+.ai-video-ui-mode-toggle button {
+  border: 0;
+  border-radius: 999px;
+  padding: 6px 13px;
+  color: var(--theme-text-secondary, #856b74);
+  background: transparent;
+  font-size: .78rem;
+  font-weight: 800;
+  cursor: pointer;
+  transition: color .18s ease, background .18s ease;
+}
+
+.ai-video-ui-mode-toggle button.is-active {
+  color: var(--theme-primary-strong, #b43d60);
+  background: var(--theme-module-surface-tint, #fff0f4);
+  box-shadow: 0 5px 12px rgba(205, 86, 119, .12);
+}
+
+.ai-video-ui-mode-toggle button:disabled {
+  cursor: not-allowed;
+  opacity: .55;
+}
+
 .ai-video-module-nav {
   display: flex;
   gap: 8px;
@@ -135,6 +186,17 @@
 .ai-video-service-help {
   margin-top: 10px !important;
   font-size: .83rem;
+}
+
+/* 启动失败：红色描边提示，配合下方诊断编号定位后端日志。 */
+.ai-video-service-state.is-error {
+  border-color: #f3c2cd;
+}
+
+.ai-video-service-diagnostic {
+  margin-top: 8px !important;
+  color: var(--theme-text-secondary, #856b74);
+  font-size: .78rem;
 }
 
 @media (max-width: 800px) {

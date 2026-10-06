@@ -1,13 +1,19 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { LanguageToggle } from "@/components/language-toggle";
 import { TaskCenter } from "@/components/task-center";
 import { useT } from "@/lib/i18n";
 import { useSettingsStore } from "@/lib/stores/settings-store";
-import { MAINPG_EMBED_LOCATION, isFromEmbedParent, isMainPgNavigateMessage } from "@/lib/mainpg-embed-bridge";
+import {
+  MAINPG_EMBED_LOCATION,
+  MAINPG_EMBED_UI_MODE_STATE,
+  isFromEmbedParent,
+  isMainPgNavigateMessage,
+  isMainPgUiModeSetMessage,
+} from "@/lib/mainpg-embed-bridge";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -110,25 +116,44 @@ export function AppShell({ children, embedded }: { children: React.ReactNode; em
 
   // MainPG 内嵌通信桥（消息形状不可改）：
   //   父 → iframe：{ type: "mainpg:ai-video-navigate", href }
+  //               { type: "mainpg:ai-video-ui-mode-set", uiMode }
   //   iframe → 父：{ type: "mainpg:ai-video-location", pathname }
-  // 只认父窗口来源 + 白名单 href；跳转走 Next router，内嵌状态由 session cookie 续航。
+  //               { type: "mainpg:ai-video-ui-mode-state", uiMode }
+  // 只认父窗口来源 + 白名单 href；跳转走 Next router，内嵌状态由 session cookie 续航；
+  // uiMode 只接受 simple/pro，且任何 uiMode 变化（含脚本页 setUiMode）都回报父窗口。
   useEffect(() => {
     // 非 iframe（独立打开）时不参与桥接
     if (window.parent === window) return;
     const onMessage = (event: MessageEvent) => {
       if (!isFromEmbedParent(event.source, window.parent)) return;
+      if (isMainPgUiModeSetMessage(event.data)) {
+        setUiMode(event.data.uiMode);
+        return;
+      }
       if (!isMainPgNavigateMessage(event.data)) return;
       router.push(event.data.href);
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [router]);
+  }, [router, setUiMode]);
 
   // mount 与自身 pathname 变化时都回报路径；第一条同时充当父侧的 ready 信号
   useEffect(() => {
     if (window.parent === window) return;
     window.parent.postMessage({ type: MAINPG_EMBED_LOCATION, pathname }, "*");
   }, [pathname]);
+
+  // uiMode 变化才回报父窗口；挂载后的第一条不回发——本壳本地持久化的模式不能抢先覆盖
+  // 父侧保存的权威模式，必须等父侧下发 set 之后、发生真实变化时才回报。
+  const uiModeStateSent = useRef(false);
+  useEffect(() => {
+    if (window.parent === window) return;
+    if (!uiModeStateSent.current) {
+      uiModeStateSent.current = true;
+      return;
+    }
+    window.parent.postMessage({ type: MAINPG_EMBED_UI_MODE_STATE, uiMode }, "*");
+  }, [uiMode]);
 
   // collapsed preference (loaded post-mount so SSR markup stays stable)
   const [collapsed, setCollapsed] = useState(false);

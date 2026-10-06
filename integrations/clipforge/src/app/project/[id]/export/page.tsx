@@ -463,7 +463,12 @@ export default function ExportPage() {
   );
 
   // slim context strip (shared by loading, empty and normal states); global chrome lives in AppShell
-  const headerBar = <ProjectHeader projectName={projectName || t("projectFallback")} />;
+  const headerBar = (
+    <ProjectHeader
+      projectName={projectName || t("projectFallback")}
+      outputStrategy={creationBrief?.outputStrategy ?? null}
+    />
+  );
 
   if (loading) {
     return (
