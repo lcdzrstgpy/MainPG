@@ -15,37 +15,26 @@ Design constraints that this module must keep:
   ``stopped``, and the diagnostic id survives repeated reads.
 * The child is started in its own process group so ``stop()`` can reap the whole
   Node/FFmpeg tree, and the same path is reused by the app-exit watchdog.
+* 正常退出之外的路径也要收干净：Windows 上把 node 挂进 Job Object
+  （``KILL_ON_JOB_CLOSE``），MainPG 被强杀时内核会自动回收整个后代树；pid 文件
+  只在 Job Object 不可用时兜底，并且动手前必须确认目标真是 node。
 """
 
 from __future__ import annotations
 
-<<<<<<< HEAD
-from dataclasses import dataclass
-from pathlib import Path
 import ctypes
-import ctypes.wintypes
+import json
 import os
 import platform
-from shutil import copy2
 import socket
 import subprocess
 import threading
-import time
-from typing import Final
-from urllib.error import HTTPError
-from urllib.request import ProxyHandler, build_opener
-=======
-import os
-import platform
-import subprocess
-import threading
-import socket
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal
+from urllib.request import ProxyHandler, build_opener
 from uuid import uuid4
->>>>>>> 8e8dfeebb
 
 from .artifact import ClipForgeBuild, ClipForgeBuildState
 from .health import wait_until_ready
@@ -55,19 +44,18 @@ from .process import popen_group_options, terminate_process_tree
 ClipForgeRuntimeState = Literal["unavailable", "stopped", "starting", "ready", "failed", "stopping"]
 
 _READY_TIMEOUT_SECONDS: Final[float] = 30.0
-<<<<<<< HEAD
+_MAX_LOG_FILES: Final[int] = 10
+
 # 子进程崩溃后的自动重启：有限次 + 递增间隔。不做无限重启（那会掩盖真正的故障，
 # 还可能和用户手动启动抢端口）；耗尽次数后停在 failed，让用户看到退出码再决定。
 _MAX_AUTO_RESTARTS: Final[int] = 2
 _RESTART_BACKOFF_SECONDS: Final[tuple[float, ...]] = (3.0, 10.0)
-_LOG_MAX_BYTES: Final[int] = 5 * 1024 * 1024
+
 # 就绪探测必须绕过代理：用户设了 HTTP_PROXY 时 urlopen 会把 127.0.0.1 的探测请求
 # 送给代理 → 被拒 → 超时 → start() 反而把健康的 node 杀掉并报"启动失败"。
-_NO_PROXY_OPENER = build_opener(ProxyHandler({}))
-# 保留 `urlopen` 这个模块级名字：既绑到禁代理的 opener，又让测试能 monkeypatch 它。
-urlopen = _NO_PROXY_OPENER.open
-=======
-_MAX_LOG_FILES: Final[int] = 10
+# health 模块的默认 opener 会走系统代理，所以这里显式注入一个禁代理的。
+_READY_HTTP_TIMEOUT_SECONDS: Final[float] = 1.0
+_NO_PROXY_OPENER: Final = build_opener(ProxyHandler({}))
 
 _ACTIVE_STATES: Final[frozenset[str]] = frozenset({"starting", "ready"})
 # 只有这些状态会因为 sidecar 进程消失而变成 failed；failed 自身必须保持不动。
@@ -83,7 +71,6 @@ class ClipForgeError:
     retryable: bool
     exit_code: int | None = None
     diagnostic_id: str | None = None
->>>>>>> 8e8dfeebb
 
 
 @dataclass(frozen=True)
@@ -97,12 +84,71 @@ class ClipForgeStatus:
     error: ClipForgeError | None = None
 
 
+def _loopback_open(url: str):
+    """探测专用 opener：禁代理 + 带超时（默认 opener 会把 loopback 请求送给代理）。"""
+    return _NO_PROXY_OPENER.open(url, timeout=_READY_HTTP_TIMEOUT_SECONDS)
+
+
+def _probe_readiness(
+    base_url: str,
+    process: object,
+    instance_id: str,
+    timeout_s: float = _READY_TIMEOUT_SECONDS,
+) -> None:
+    """默认就绪探针：严格校验 schema/instanceId，但绝不经由系统代理。"""
+    wait_until_ready(base_url, process, instance_id, timeout_s, opener=_loopback_open)
+
+
 def _platform_arch_tag(system: str, machine: str) -> str:
     """Map ``platform.system()/machine()`` to the @ffprobe-installer package suffix."""
     platform_name = {"Windows": "win32", "Darwin": "darwin"}.get(system, "linux")
     normalized = machine.lower()
-    arch = {"x86_64": "x64", "amd64": "x64", "x64": "x64", "aarch64": "arm64"}.get(normalized, normalized)
+    arch = {
+        "x86_64": "x64",
+        "amd64": "x64",
+        "x64": "x64",
+        "x86": "ia32",
+        "i386": "ia32",
+        "i686": "ia32",
+        "aarch64": "arm64",
+        "arm64": "arm64",
+    }.get(normalized, normalized)
     return f"{platform_name}-{arch}"
+
+
+def _node_style_platform(system: str | None = None, machine: str | None = None) -> str:
+    """Best-effort Node-style platform-arch tuple (win32-x64) for directory matching."""
+    return _platform_arch_tag(system or platform.system(), machine or platform.machine())
+
+
+def _resolve_ffprobe_binary(root: Path, suffix: str, system: str, machine: str) -> Path | None:
+    """Locate @ffprobe-installer's binary, preferring the arch this host really runs.
+
+    ``@ffprobe-installer`` 的目录名用的是 Node 的 process.arch（win32-x64 /
+    linux-arm64 …），而 ``platform.machine()`` 返回的是 uname 风格（AMD64 /
+    aarch64）：Windows x64 上差一个词就拼出 win32-amd64 这种不存在的目录，
+    Windows ARM64 上跑 x64 Node（仿真）时也会错。目录名是装机事实，先按算出来的
+    名字直取，拿不到再枚举安装现场，最后才放弃。
+    """
+    installer_root = root / "node_modules" / "@ffprobe-installer"
+    direct = installer_root / _platform_arch_tag(system, machine) / f"ffprobe{suffix}"
+    if direct.is_file():
+        return direct
+    if not installer_root.is_dir():
+        return None
+    candidates = [
+        entry / f"ffprobe{suffix}"
+        for entry in sorted(installer_root.iterdir())
+        if (entry / f"ffprobe{suffix}").is_file()
+    ]
+    if not candidates:
+        return None
+    wanted = _node_style_platform(system, machine)
+    for binary in candidates:
+        if binary.parent.name == wanted:
+            return binary
+    # 同机装了多份（如 win32-x64 + win32-arm64）却都匹配不上时，退而取第一份。
+    return candidates[0]
 
 
 def _bundled_media_environment(
@@ -117,14 +163,13 @@ def _bundled_media_environment(
     system = system or platform.system()
     machine = machine or platform.machine()
     suffix = ".exe" if system == "Windows" else ""
-    ffmpeg = Path(app_root) / "node_modules" / "ffmpeg-static" / f"ffmpeg{suffix}"
-    ffprobe = (
-        Path(app_root) / "node_modules" / "@ffprobe-installer" / _platform_arch_tag(system, machine) / f"ffprobe{suffix}"
-    )
+    root = Path(app_root)
+    ffmpeg = root / "node_modules" / "ffmpeg-static" / f"ffmpeg{suffix}"
+    ffprobe = _resolve_ffprobe_binary(root, suffix, system, machine)
     environment: dict[str, str] = {}
     if ffmpeg.is_file():
         environment["FFMPEG_PATH"] = str(ffmpeg)
-    if ffprobe.is_file():
+    if ffprobe is not None and ffprobe.is_file():
         if system != "Windows":
             try:
                 ffprobe.chmod(ffprobe.stat().st_mode | 0o111)
@@ -144,7 +189,7 @@ class ClipForgeService:
         node_binary: str = "node",
         *,
         process_factory: Callable[..., subprocess.Popen[bytes]] = subprocess.Popen,
-        ready_probe: Callable[..., None] = wait_until_ready,
+        ready_probe: Callable[..., None] = _probe_readiness,
     ) -> None:
         self._build_resolver = build_resolver
         self._data_root = Path(data_root)
@@ -158,22 +203,14 @@ class ClipForgeService:
         self._error: ClipForgeError | None = None
         self._process: subprocess.Popen[bytes] | None = None
         self._url: str | None = None
-<<<<<<< HEAD
-        self._message = "ClipForge standalone build is not available"
-        # 崩溃信息与进程句柄分开存：旧实现把 "failed" 塞进 _message 后就丢掉进程，
-        # 下一次 status() 走到 "stopped" 分支，前端于是从失败"自愈"成已就绪 —— 假在线。
-        self._failure: str | None = None
-        self._restarts = 0
-        self._stopping = False
-        self._restart_timer: threading.Timer | None = None
-        self._job: int | None = None
-        self._lock = threading.RLock()
-=======
         self._instance_id: str | None = None
         # 当前 generation 的诊断编号：状态与失败原因必须能靠它定位到单独一份日志。
         self._diagnostic_id: str | None = None
         self._generation = 0
->>>>>>> 8e8dfeebb
+        # 进程治理：Windows Job Object 句柄、自动重启预算与定时器。
+        self._job: int | None = None
+        self._restarts = 0
+        self._restart_timer: threading.Timer | None = None
 
     # --- 对外状态 ---------------------------------------------------------
 
@@ -184,82 +221,6 @@ class ClipForgeService:
     def status(self) -> ClipForgeStatus:
         build = self._resolve_build()
         with self._lock:
-<<<<<<< HEAD
-            if not self.standalone_entry.is_file():
-                return ClipForgeStatus(False, "unavailable", None, self._message)
-            if self._process is not None:
-                if self._process.poll() is None:
-                    return ClipForgeStatus(True, "ready", self._url, "ClipForge service is running")
-                # 进程已退出但守护线程还没接管状态时，这里也要如实报失败
-                self._record_failure_locked()
-            if self._failure is not None:
-                return ClipForgeStatus(False, "failed", None, self._failure)
-            return ClipForgeStatus(True, "stopped", None, "ClipForge service is ready to start")
-
-    def start(self, *, _auto: bool = False) -> ClipForgeStatus:
-        with self._lock:
-            self._stopping = False
-            self._cancel_restart_timer_locked()
-            current = self.status()
-            if current.state == "ready":
-                return current
-            if not self.standalone_entry.is_file():
-                return current
-            if not _auto:
-                # 用户显式启动 → 重置自动重启预算与历史失败
-                self._restarts = 0
-                self._failure = None
-            last_error: Exception | None = None
-            # 端口是 bind(0) 临时占位后立刻释放的，node 真正绑定前存在被抢占的窗口
-            # （TOCTOU）。就绪探测失败就换一个端口重试，把这个窗口变成无害。
-            for _attempt in range(2):
-                try:
-                    return self._spawn_and_wait()
-                except Exception as exc:  # noqa: BLE001 - 每次失败都要能落到下一次重试
-                    last_error = exc
-                    self._teardown_process_locked()
-            self._failure = f"ClipForge service failed to start: {last_error}"
-            return ClipForgeStatus(False, "failed", None, self._failure)
-
-    def _spawn_and_wait(self) -> ClipForgeStatus:
-        """Launch the sidecar on a fresh loopback port and block until it answers."""
-        with self._lock:
-            _ensure_standalone_static_assets(self._source_root)
-            port = _free_loopback_port()
-            self._data_root.mkdir(parents=True, exist_ok=True)
-            self._reap_orphan_child()
-            log_file = _open_rotating_log(self._data_root / "clipforge-server.log")
-            env = {
-                **os.environ,
-                "NODE_ENV": "production",
-                "HOSTNAME": "127.0.0.1",
-                "PORT": str(port),
-                "APP_DATA_DIR": str(self._data_root / "data"),
-                "APP_MIGRATIONS_DIR": str(self._source_root / "drizzle"),
-                **_bundled_media_environment(self._source_root),
-            }
-            try:
-                self._process = subprocess.Popen(
-                    [self._node_binary, str(self.standalone_entry)],
-                    cwd=str(self.standalone_entry.parent),
-                    env=env,
-                    stdin=subprocess.DEVNULL,
-                    stdout=log_file,
-                    stderr=subprocess.STDOUT,
-                )
-            except OSError as exc:
-                raise RuntimeError(f"could not spawn node: {exc}") from exc
-            finally:
-                log_file.close()
-            self._url = f"http://127.0.0.1:{port}"
-            self._kill_when_parent_exits()
-            self._write_pid_file()
-            process = self._process
-            # 守护线程：进程退出后记录失败信息（可持久上报）并做有限次自动重启。
-            threading.Thread(target=self._watch_child, args=(process,), daemon=True, name="clipforge-watch").start()
-            _wait_ready(self._url, process)
-            return ClipForgeStatus(True, "ready", self._url, "ClipForge service is running")
-=======
             self._build = build
             if build.state != "available":
                 if self._state in _UNAVAILABLE_OVERRIDABLE_STATES:
@@ -278,6 +239,9 @@ class ClipForgeService:
         with self._lock:
             if self._state in _ACTIVE_STATES:
                 return self._status_locked()
+            # 用户显式启动 → 重置自动重启预算，并取消上一轮待执行的重启。
+            self._restarts = 0
+            self._cancel_restart_timer_locked()
 
         build = self._resolve_build()
         with self._lock:
@@ -293,18 +257,21 @@ class ClipForgeService:
                     retryable=False,
                 )
                 return self._status_locked()
-            self._generation += 1
-            generation = self._generation
-            instance_id = uuid4().hex
-            diagnostic_id = uuid4().hex[:12]
-            self._state = "starting"
-            self._message = "AI 视频服务正在启动"
-            self._error = None
-            self._instance_id = instance_id
-            self._diagnostic_id = diagnostic_id
-            self._url = None
-            self._process = None
+            return self._launch_locked(build)
 
+    def _launch_locked(self, build: ClipForgeBuild) -> ClipForgeStatus:
+        """递增 generation 并起一个后台 worker；调用方必须持锁且已校验 build 可用。"""
+        self._generation += 1
+        generation = self._generation
+        instance_id = uuid4().hex
+        diagnostic_id = uuid4().hex[:12]
+        self._state = "starting"
+        self._message = "AI 视频服务正在启动"
+        self._error = None
+        self._instance_id = instance_id
+        self._diagnostic_id = diagnostic_id
+        self._url = None
+        self._process = None
         port = _free_loopback_port()
         worker = threading.Thread(
             target=self._start_worker,
@@ -313,190 +280,20 @@ class ClipForgeService:
             daemon=True,
         )
         worker.start()
-        with self._lock:
-            return self._status_locked()
->>>>>>> 8e8dfeebb
-
-    def _watch_child(self, process: subprocess.Popen[bytes]) -> None:
-        process.wait()
-        with self._lock:
-            if self._stopping or self._process is not process:
-                return
-            self._record_failure_locked()
-            if self._restarts >= _MAX_AUTO_RESTARTS or not self.standalone_entry.is_file():
-                self._failure = f"{self._failure}（已自动重启 {self._restarts} 次，仍失败）"
-                return
-            self._restarts += 1
-            delay = _RESTART_BACKOFF_SECONDS[min(self._restarts - 1, len(_RESTART_BACKOFF_SECONDS) - 1)]
-            self._failure = f"{self._failure}；{delay:.0f} 秒后自动重启（第 {self._restarts}/{_MAX_AUTO_RESTARTS} 次）"
-            self._restart_timer = threading.Timer(delay, self._auto_restart, name="clipforge-restart")
-            self._restart_timer.daemon = True
-            self._restart_timer.start()
-
-    def _auto_restart(self) -> None:
-        with self._lock:
-            if self._stopping or self._process is not None:
-                return
-        try:
-            self.start(_auto=True)
-        except Exception:  # noqa: BLE001 - 守护线程不允许把异常抛回解释器
-            pass
-
-    def _record_failure_locked(self) -> None:
-        process = self._process
-        code = process.returncode if process is not None else None
-        self._process = None
-        self._url = None
-        self._failure = f"ClipForge service exited with code {code}"
-
-    def _teardown_process_locked(self) -> None:
-        process = self._process
-        self._process = None
-        self._url = None
-        self._close_job_locked()
-        if process is not None and process.poll() is None:
-            try:
-                process.kill()
-            except OSError:
-                pass
-
-    def _cancel_restart_timer_locked(self) -> None:
-        timer = self._restart_timer
-        self._restart_timer = None
-        if timer is not None:
-            timer.cancel()
+        return self._status_locked()
 
     def stop(self) -> None:
         with self._lock:
-<<<<<<< HEAD
-            self._stopping = True
-            self._cancel_restart_timer_locked()
-            process = self._process
-            self._process = None
-            self._url = None
-            self._failure = None
-            self._close_job_locked()
-            self._clear_pid_file()
-            if process is None or process.poll() is not None:
-                return
-            try:
-                process.terminate()
-            except OSError:
-                return
-            # 第二次 wait 可能再次超时（进程僵死）；这里不允许把异常抛给调用方，
-            # 否则会击穿 lifespan 的 finally，把退出流程一起带崩。
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                try:
-                    process.kill()
-                    process.wait(timeout=5)
-                except (subprocess.TimeoutExpired, OSError):
-                    pass
-            except OSError:
-                pass
-
-    # ------------------------------------------------------------------
-    # 生命周期卫生：孤儿清理 / 父亡子亡
-    # ------------------------------------------------------------------
-
-    def _reap_orphan_child(self) -> None:
-        """Kill a sidecar left behind by a previous crashed MainPG (pid file)."""
-        try:
-            pid = int(self._pid_file.read_text(encoding="ascii").strip())
-        except (OSError, ValueError):
-            return
-        if pid == os.getpid():
-            return
-        if _pid_alive(pid):
-            _terminate_pid(pid)
-        self._clear_pid_file()
-
-    def _write_pid_file(self) -> None:
-        try:
-            self._data_root.mkdir(parents=True, exist_ok=True)
-            self._pid_file.write_text(str(os.getpid()), encoding="ascii")
-        except OSError:
-            pass
-
-    def _clear_pid_file(self) -> None:
-        try:
-            self._pid_file.unlink(missing_ok=True)
-        except OSError:
-            pass
-
-    def _kill_when_parent_exits(self) -> None:
-        """Windows：把子进程挂进 Job Object（KILL_ON_JOB_CLOSE），父进程一死系统自动回收。
-
-        这是唯一能真正实现"父亡子亡"的机制：主程序被任务管理器强杀时，
-        孤儿 node.exe 不会常驻占端口、也不会继续占着 .next 的文件锁。
-        任何一步失败都降级为不启用（行为退化为旧版），绝不影响启动。
-        """
-        process = self._process
-        if process is None or platform.system() != "Windows":
-            return
-        try:
-            job = _create_kill_on_close_job()
-            if job is None:
-                return
-            if not ctypes.windll.kernel32.AssignProcessToJobObject(job, process._handle):  # noqa: SLF001
-                ctypes.windll.kernel32.CloseHandle(job)
-                return
-            self._job = job
-        except Exception:  # noqa: BLE001 - ctypes 边界一律兜底
-            self._job = None
-
-    def _close_job_locked(self) -> None:
-        job = self._job
-        self._job = None
-        if job is not None and platform.system() == "Windows":
-            try:
-                ctypes.windll.kernel32.CloseHandle(job)
-            except Exception:  # noqa: BLE001
-                pass
-
-
-# ---------------------------------------------------------------------------
-# 模块级辅助函数
-# ---------------------------------------------------------------------------
-
-
-def _ensure_standalone_static_assets(source_root: Path) -> None:
-    """Keep Next's hashed static assets beside the standalone server.
-
-    Next build leaves .next/static at the project root while the standalone
-    server resolves them relative to .next/standalone. Copy on every sidecar
-    start so a fresh build cannot leave the embedded UI unstyled.
-
-    失败语义：这里只影响页面样式，绝不能让异常冒出去阻止服务启动。
-    逐文件复制而非 copytree 一把梭 —— 半途失败时已复制的文件是完整的，
-    不会像 copytree 那样留下"新旧两代混杂"的产物。
-    """
-    source = source_root / ".next" / "static"
-    if not source.is_dir():
-        return
-    target = source_root / ".next" / "standalone" / ".next" / "static"
-    try:
-        for src in source.rglob("*"):
-            if not src.is_file():
-                continue
-            dest = target / src.relative_to(source)
-            try:
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                copy2(src, dest)
-            except OSError as exc:  # noqa: PERF203 - 单文件失败不应中断整批
-                print(f"[clipforge] static asset copy skipped for {dest.name}: {exc}")
-    except OSError as exc:
-        print(f"[clipforge] static asset sync skipped: {exc}")
-
-
-=======
             # 先递增 generation：在途 worker/旧 watcher 从此不再具备写回权限。
             self._generation += 1
+            self._cancel_restart_timer_locked()
+            self._restarts = 0
             process = self._process
             self._process = None
             self._url = None
             self._instance_id = None
+            self._close_job_locked()
+            self._clear_pid_file()
             if self._state in {"ready", "starting", "failed"}:
                 self._state = "stopping"
                 self._message = "AI 视频服务正在关闭"
@@ -548,6 +345,9 @@ def _ensure_standalone_static_assets(source_root: Path) -> None:
             exit_code=exit_code,
             diagnostic_id=self._diagnostic_id,
         )
+        # 子进程已经不在（或刚被 terminate），句柄与 pid 标记都不能留着。
+        self._close_job_locked()
+        self._clear_pid_file()
 
     def _start_worker(
         self,
@@ -560,6 +360,8 @@ def _ensure_standalone_static_assets(source_root: Path) -> None:
         app_root = build.app_root
         assert app_root is not None  # start() 只会在 app_root 存在时创建 worker
         log_path = self._open_log(diagnostic_id)
+        # 上一轮 MainPG 被强杀时留下的 sidecar 必须先收掉，否则它会占着端口和 .next 文件锁。
+        self._reap_orphan_child()
         log_file = None
         try:
             log_file = log_path.open("ab")
@@ -589,6 +391,10 @@ def _ensure_standalone_static_assets(source_root: Path) -> None:
                 return
             self._process = process
             self._url = url
+            # 父亡子亡：MainPG 被任务管理器强杀时，Windows 内核会连同这个 node 及其
+            # 后代（ffmpeg 等）一起回收 —— 这是唯一覆盖"强杀"路径的机制。
+            self._kill_when_parent_exits_locked(process)
+            self._write_pid_file(process)
 
         try:
             # 严格探针必须在锁外执行：它最长等待 30 秒，不能阻塞状态查询。
@@ -633,6 +439,46 @@ def _ensure_standalone_static_assets(source_root: Path) -> None:
             if generation != self._generation or self._process is not process:
                 return
             self._mark_failed_locked("CLIPFORGE_PROCESS_EXITED", "AI 视频服务进程已退出", process.poll())
+            # 意外退出才自动重启；健康检查失败/构建不可用都不重试（重试也没意义）。
+            self._schedule_auto_restart_locked()
+
+    def _schedule_auto_restart_locked(self) -> None:
+        """进程意外退出后有限次自动重启；预算耗尽就停在 failed，把退出码留给用户。"""
+        if self._restart_timer is not None:
+            return
+        if self._restarts >= _MAX_AUTO_RESTARTS:
+            self._message = f"{self._message}（已自动重启 {self._restarts} 次，仍失败）"
+            return
+        build = self._build
+        if build is None or build.state != "available" or build.app_root is None:
+            return
+        self._restarts += 1
+        delay = _RESTART_BACKOFF_SECONDS[min(self._restarts - 1, len(_RESTART_BACKOFF_SECONDS) - 1)]
+        self._message = f"{self._message}；{delay:.0f} 秒后自动重启（第 {self._restarts}/{_MAX_AUTO_RESTARTS} 次）"
+        timer = threading.Timer(delay, self._auto_restart)
+        timer.daemon = True
+        self._restart_timer = timer
+        timer.start()
+
+    def _auto_restart(self) -> None:
+        with self._lock:
+            self._restart_timer = None
+            # stop() 或用户手动 start() 已经接管的话，定时器什么都不做。
+            if self._process is not None or self._state in _ACTIVE_STATES:
+                return
+            build = self._build
+            if build is None or build.state != "available" or build.app_root is None:
+                return
+            try:
+                self._launch_locked(build)
+            except Exception:  # noqa: BLE001 - 守护线程不允许把异常抛回解释器
+                pass
+
+    def _cancel_restart_timer_locked(self) -> None:
+        timer = self._restart_timer
+        self._restart_timer = None
+        if timer is not None:
+            timer.cancel()
 
     def _fail_generation(
         self, generation: int, code: str, message: str, exit_code: int | None
@@ -683,29 +529,106 @@ def _ensure_standalone_static_assets(source_root: Path) -> None:
         except OSError:
             pass
 
+    # ------------------------------------------------------------------
+    # 生命周期卫生：父亡子亡 / 孤儿清理
+    # ------------------------------------------------------------------
 
->>>>>>> 8e8dfeebb
+    def _kill_when_parent_exits_locked(self, process: subprocess.Popen[bytes]) -> None:
+        """Windows：把子进程挂进 Job Object（KILL_ON_JOB_CLOSE），父进程一死系统自动回收。
+
+        这是唯一能真正实现"父亡子亡"的机制：主程序被任务管理器强杀时，
+        孤儿 node.exe 不会常驻占端口、也不会继续占着 .next 的文件锁。
+        任何一步失败都降级为不启用（行为退化为旧版），绝不影响启动。
+        """
+        if platform.system() != "Windows":
+            return
+        try:
+            job = _create_kill_on_close_job()
+            if job is None:
+                return
+            handle = getattr(process, "_handle", None)
+            if handle is None or not ctypes.windll.kernel32.AssignProcessToJobObject(job, handle):
+                ctypes.windll.kernel32.CloseHandle(job)
+                return
+            self._job = job
+        except Exception:  # noqa: BLE001 - ctypes 边界一律兜底
+            self._job = None
+
+    def _close_job_locked(self) -> None:
+        job = self._job
+        self._job = None
+        if job is not None and platform.system() == "Windows":
+            try:
+                ctypes.windll.kernel32.CloseHandle(job)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _reap_orphan_child(self) -> None:
+        """回收上一轮崩溃遗留的 sidecar（Windows 上通常已被 Job Object 收走，这是兜底）。
+
+        pid 会被系统复用，所以只有"记录里的父进程已经不在 + 目标确实是 node"
+        才会动手；任何一条不成立都只是清掉标记文件，宁可留着孤儿也不误杀。
+        """
+        parent_pid, child_pid = _read_pid_file(self._pid_file)
+        parent_gone = parent_pid <= 0 or not _pid_alive(parent_pid)
+        if child_pid and child_pid != os.getpid() and parent_gone and _pid_is_node(child_pid):
+            _terminate_pid(child_pid)
+        self._clear_pid_file()
+
+    def _write_pid_file(self, process: subprocess.Popen[bytes]) -> None:
+        try:
+            self._data_root.mkdir(parents=True, exist_ok=True)
+            self._pid_file.write_text(
+                json.dumps({"parent": os.getpid(), "child": int(process.pid)}),
+                encoding="ascii",
+            )
+        except (OSError, TypeError, ValueError):
+            pass
+
+    def _clear_pid_file(self) -> None:
+        try:
+            self._pid_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def _free_loopback_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
-<<<<<<< HEAD
 
 
-def _open_rotating_log(path: Path):
-    """Append-mode log handle; keeps one previous generation once it exceeds the cap."""
+# ---------------------------------------------------------------------------
+# pid 文件：记录 (父进程, 子进程) 两个 pid，用于回收上一轮遗留的 sidecar
+# ---------------------------------------------------------------------------
+
+
+def _read_pid_file(path: Path) -> tuple[int, int]:
+    """Return ``(parent_pid, child_pid)``; 0 means unknown. 兼容旧版单 pid 文件。"""
     try:
-        if path.is_file() and path.stat().st_size >= _LOG_MAX_BYTES:
-            rotated = path.with_suffix(path.suffix + ".1")
-            if rotated.is_file():
-                rotated.unlink()
-            path.replace(rotated)
+        raw = path.read_text(encoding="ascii").strip()
     except OSError:
-        pass  # 轮转是卫生措施：失败就继续追加，不影响功能
-    return path.open("ab")
+        return (0, 0)
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        # 旧格式只写一个 pid：父进程未知 → 只能靠 _pid_is_node 兜底。
+        return (0, _as_pid(raw))
+    if not isinstance(payload, dict):
+        return (0, 0)
+    return (_as_pid(payload.get("parent")), _as_pid(payload.get("child")))
+
+
+def _as_pid(value: object) -> int:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
 
 
 def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
     if platform.system() == "Windows":
         # OpenProcess 返回空句柄即进程不存在。
         try:
@@ -723,88 +646,52 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def _pid_is_node(pid: int) -> bool:
+    """目标进程是不是 node 本体。false 一律不动手（pid 复用会误杀无关进程）。
+
+    macOS 上没有 /proc，这里会返回 False —— 宁可漏收一个孤儿，也不冒误杀的风险。
+    """
+    if pid <= 0 or pid == os.getpid():
+        return False
+    if platform.system() == "Windows":
+        try:
+            handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+            if not handle:
+                return False
+            try:
+                buffer = ctypes.create_unicode_buffer(1024)
+                size = ctypes.c_uint32(len(buffer))
+                if not ctypes.windll.kernel32.QueryFullProcessImageNameW(
+                    handle, 0, buffer, ctypes.byref(size)
+                ):
+                    return False
+                return Path(buffer.value).name.lower() in {"node", "node.exe"}
+            finally:
+                ctypes.windll.kernel32.CloseHandle(handle)
+        except Exception:  # noqa: BLE001
+            return False
+    try:
+        argv0 = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0", 1)[0].decode("utf-8", "replace")
+    except OSError:
+        return False
+    return Path(argv0).name.lower() in {"node", "node.exe"}
+
+
 def _terminate_pid(pid: int) -> None:
+    """终止**已确认是自家 node** 的遗留进程（调用方负责身份校验）。"""
     try:
         if platform.system() == "Windows":
-            ctypes.windll.kernel32.TerminateProcess(pid, 1)  # noqa: S105 - 目标是上一轮遗留的自家子进程
+            handle = ctypes.windll.kernel32.OpenProcess(0x0001, False, pid)  # PROCESS_TERMINATE
+            if not handle:
+                return
+            try:
+                ctypes.windll.kernel32.TerminateProcess(handle, 1)  # noqa: S105 - 目标是上一轮遗留的自家子进程
+            finally:
+                ctypes.windll.kernel32.CloseHandle(handle)
         else:
             os.kill(pid, 15)
     except Exception:  # noqa: BLE001
         pass
-
-
-def _wait_ready(url: str, process: subprocess.Popen[bytes]) -> None:
-    deadline = time.monotonic() + _READY_TIMEOUT_SECONDS
-    while time.monotonic() < deadline:
-        if process.poll() is not None:
-            raise RuntimeError(f"process exited with code {process.returncode}")
-        try:
-            with urlopen(url, timeout=1) as response:  # noqa: S310 - loopback URL created above
-                if int(response.status) < 500:
-                    return
-        except HTTPError as error:
-            # Next may reject the bare probe with 400 because it validates the
-            # Host header, but that response proves the local server is bound
-            # and able to serve requests. Only 5xx means it is not ready.
-            if error.code < 500:
-                return
-            time.sleep(0.25)
-        except OSError:
-            time.sleep(0.25)
-    raise TimeoutError("readiness probe timed out")
-
-
-def _bundled_media_environment(source_root: Path) -> dict[str, str]:
-    """Prefer media binaries copied with the standalone app, then let ClipForge fall back to PATH."""
-    is_windows = platform.system() == "Windows"
-    suffix = ".exe" if is_windows else ""
-    ffmpeg = source_root / "node_modules" / "ffmpeg-static" / f"ffmpeg{suffix}"
-    ffprobe = _resolve_ffprobe_binary(source_root, suffix)
-    # npm may restore @ffprobe-installer's macOS/Linux binary without its execute bit.
-    # Passing that path through as FFPROBE_PATH makes every media probe fail with EACCES.
-    if not is_windows and ffprobe is not None:
-        try:
-            ffprobe.chmod(ffprobe.stat().st_mode | 0o111)
-        except OSError:
-            pass
-    return {
-        **({"FFMPEG_PATH": str(ffmpeg)} if ffmpeg.is_file() else {}),
-        **({"FFPROBE_PATH": str(ffprobe)} if ffprobe is not None else {}),
-    }
-
-
-def _resolve_ffprobe_binary(source_root: Path, suffix: str) -> Path | None:
-    """Locate @ffprobe-installer's platform directory without guessing the arch name.
-
-    目录名用的是 Node 的 process.arch（win32-x64 / linux-arm64 …），而
-    platform.machine() 返回的是 uname 风格（AMD64 / aarch64）；Windows x64 上
-    两者差一个词就拼出 win32-amd64 这种不存在的目录，Windows ARM64 上跑 x64 Node
-    （仿真）时也会错。既然目录名是装机事实，直接枚举安装现场最稳。
-    """
-    root = source_root / "node_modules" / "@ffprobe-installer"
-    candidates: list[Path] = []
-    if root.is_dir():
-        for entry in sorted(root.iterdir()):
-            binary = entry / f"ffprobe{suffix}"
-            if entry.is_dir() and binary.is_file():
-                candidates.append(binary)
-    if candidates:
-        # 同机装了多份（如 win32-x64 + win32-arm64）时优先匹配本机 arch。
-        wanted = _node_style_platform()
-        for binary in candidates:
-            if binary.parent.name == wanted:
-                return binary
-        return candidates[0]
-    return None
-
-
-def _node_style_platform() -> str:
-    """Best-effort Node-style platform-arch tuple (win32-x64) for directory matching."""
-    system = platform.system().lower()
-    plat = "win32" if system == "windows" else ("darwin" if system == "darwin" else "linux")
-    machine = platform.machine().lower()
-    arch = {"amd64": "x64", "x86_64": "x64", "x86": "ia32", "i386": "ia32", "i686": "ia32", "aarch64": "arm64", "arm": "arm"}.get(machine, machine)
-    return f"{plat}-{arch}"
 
 
 # ---------------------------------------------------------------------------
@@ -869,5 +756,3 @@ def _create_kill_on_close_job() -> int | None:
         return int(job)
     except Exception:  # noqa: BLE001 - ctypes 边界一律兜底
         return None
-=======
->>>>>>> 8e8dfeebb

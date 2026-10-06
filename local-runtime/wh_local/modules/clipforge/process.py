@@ -16,6 +16,10 @@ from typing import Protocol
 
 _TERMINATE_GRACE_SECONDS = 5.0
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
+# Windows 的 signal 模块不提供全部 POSIX 信号（没有 SIGKILL）。这两个常量只会在
+# "模拟 POSIX 分支"的测试里被求值，但拿不到时不应该直接 AttributeError，所以给出兜底值。
+_SIGTERM = int(getattr(signal, "SIGTERM", 15))
+_SIGKILL = int(getattr(signal, "SIGKILL", 9))
 
 
 class _ProcessLike(Protocol):
@@ -51,10 +55,10 @@ def terminate_process_tree(process, grace_s: float = _TERMINATE_GRACE_SECONDS) -
             return
         _run_taskkill(pid, force=True)
         return
-    _signal_posix_group(pid, signal.SIGTERM)
+    _signal_posix_group(pid, _SIGTERM)
     if _wait_for_exit(process, grace_s):
         return
-    _signal_posix_group(pid, signal.SIGKILL)
+    _signal_posix_group(pid, _SIGKILL)
 
 
 def _wait_for_exit(process, grace_s: float) -> bool:

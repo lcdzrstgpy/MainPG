@@ -1,13 +1,10 @@
-<<<<<<< HEAD
-import sys
-=======
 from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import threading
 import time
->>>>>>> 8e8dfeebb
 from pathlib import Path
 from typing import Any
 
@@ -436,15 +433,6 @@ def test_start_route_returns_500_with_a_stable_error_without_leaking_details(
     assert response.json()["error"]["code"] == "CLIPFORGE_START_FAILED"
 
 
-<<<<<<< HEAD
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="Windows 文件系统不记录 POSIX 执行位（chmod 0o111 是 no-op），此断言只在 Linux/macOS 有意义",
-)
-def test_bundled_media_environment_makes_macos_ffprobe_executable(tmp_path: Path, monkeypatch) -> None:
-    ffprobe = tmp_path / "node_modules" / "@ffprobe-installer" / "darwin-arm64" / "ffprobe"
-    ffprobe.parent.mkdir(parents=True)
-=======
 # --- 环境与路径映射 ---------------------------------------------------------
 
 
@@ -477,7 +465,6 @@ def test_bundled_media_environment_points_at_artifact_binaries(
     ffmpeg.parent.mkdir(parents=True, exist_ok=True)
     ffprobe.parent.mkdir(parents=True, exist_ok=True)
     ffmpeg.write_bytes(b"fixture")
->>>>>>> 8e8dfeebb
     ffprobe.write_bytes(b"fixture")
     ffprobe.chmod(0o644)
 
@@ -485,12 +472,61 @@ def test_bundled_media_environment_points_at_artifact_binaries(
 
     assert environment["FFMPEG_PATH"] == str(ffmpeg)
     assert environment["FFPROBE_PATH"] == str(ffprobe)
-    if system != "Windows":
+    # Windows 文件系统不记录 POSIX 执行位（chmod 0o111 是 no-op），这条断言只在类 Unix 宿主上有意义。
+    if system != "Windows" and sys.platform != "win32":
         assert ffprobe.stat().st_mode & 0o111 == 0o111
 
 
 def test_bundled_media_environment_is_empty_without_media_modules(tmp_path: Path) -> None:
     assert _bundled_media_environment(tmp_path, "Darwin", "arm64") == {}
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows 文件系统不记录 POSIX 执行位（chmod 0o111 是 no-op），此断言只在 Linux/macOS 有意义",
+)
+def test_bundled_media_environment_detects_the_platform_when_unspecified(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """不传 system/machine 时必须自己能探到平台 —— 装机版走的正是这条路径。"""
+    app_root = tmp_path / "app"
+    ffprobe = app_root / "node_modules" / "@ffprobe-installer" / "darwin-arm64" / "ffprobe"
+    ffprobe.parent.mkdir(parents=True)
+    ffprobe.write_bytes(b"fixture")
+    ffprobe.chmod(0o644)
+    monkeypatch.setattr(service_module.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(service_module.platform, "machine", lambda: "arm64")
+
+    environment = _bundled_media_environment(app_root)
+
+    assert environment["FFPROBE_PATH"] == str(ffprobe)
+    assert ffprobe.stat().st_mode & 0o111 == 0o111
+
+
+def test_bundled_media_environment_falls_back_to_the_installed_arch_directory(tmp_path: Path) -> None:
+    """Windows ARM64 上跑 x64 Node 时 machine() 与装机目录名对不上，必须枚举兜底。"""
+    app_root = tmp_path / "app"
+    ffprobe = app_root / "node_modules" / "@ffprobe-installer" / "win32-x64" / "ffprobe.exe"
+    ffprobe.parent.mkdir(parents=True)
+    ffprobe.write_bytes(b"fixture")
+
+    environment = _bundled_media_environment(app_root, "Windows", "ARM64")
+
+    assert environment["FFPROBE_PATH"] == str(ffprobe)
+
+
+# --- 生命周期卫生 -----------------------------------------------------------
+
+
+def test_orphan_guard_only_accepts_a_node_process() -> None:
+    """pid 会被系统复用：回收孤儿前必须确认目标真是 node，否则宁可留着不动手。"""
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"])
+    try:
+        assert service_module._pid_alive(child.pid) is True
+        assert service_module._pid_is_node(child.pid) is False
+    finally:
+        child.kill()
+        child.wait()
 
 
 # --- main.py 接线 -----------------------------------------------------------
