@@ -681,7 +681,9 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         interval_seconds=30,
         account_id_provider=_current_remote_account_id,
     )
-    app.include_router(create_messages_router(messages_repository, messages_sync))
+    app.include_router(
+        create_messages_router(messages_repository, messages_sync, reply_sync)
+    )
     app.state.messages_sync = messages_sync
     app.state.reply_sync = reply_sync
 

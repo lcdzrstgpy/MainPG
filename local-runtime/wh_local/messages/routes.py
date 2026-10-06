@@ -6,12 +6,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ..session import actor_from_authorization
 from .repository import MessagesRepository
-from .service import AnnouncementSyncService
+from .service import AnnouncementSyncService, FeedbackReplySyncService
 
 
 def create_messages_router(
     repository: MessagesRepository,
     sync_service: AnnouncementSyncService | None = None,
+    reply_sync_service: FeedbackReplySyncService | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/messages", tags=["messages"])
 
@@ -47,10 +48,23 @@ def create_messages_router(
             raise HTTPException(status_code=404, detail="消息不存在")
         return {"ok": True}
 
-    if sync_service is not None:
+    if sync_service is not None or reply_sync_service is not None:
 
         @router.post("/sync")
         def sync(_: Any = Depends(actor_from_authorization)) -> dict[str, Any]:
-            return {"ok": True, "new": sync_service.sync_once()}
+            # 公告与反馈回复各自独立撤回（prune_retracted 按 kind 隔离），
+            # 一次调用同时刷新两个通道，让「登录/进入工作台立即同步」把两边的
+            # 陈旧消息都清掉，避免同机换号后短暂看到上一个账号的定向内容。
+            new_announcements = (
+                sync_service.sync_once() if sync_service is not None else 0
+            )
+            new_replies = (
+                reply_sync_service.sync_once() if reply_sync_service is not None else 0
+            )
+            return {
+                "ok": True,
+                "new": new_announcements,
+                "new_replies": new_replies,
+            }
 
     return router

@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 
 import { BRAND_LOGO_URL, BRAND_NAME } from "../../../shared/brand";
+import { resetMessagesSync, syncMessages } from "../../../shared/api/messagesApi";
 import { httpJson, saveAuthSession } from "../../../transport/http/client";
 
 type AuthPageProps = { onEnter: () => void };
@@ -198,6 +199,11 @@ export function AuthPage({ onEnter }: AuthPageProps) {
       });
       if (!data.token) throw new Error("登录失败：服务端未返回登录凭证");
       saveAuthSession(data.token, data.account ?? {});
+      // 换号后本地消息表还留着上一个账号的定向公告：立刻同步一次，让服务端
+      // 在线列表把无关消息撤回。不 await（登录不该被公告服务拖慢），工作台里
+      // 的公告弹窗/消息中心会复用同一个在飞请求先等它完成再渲染。
+      resetMessagesSync();
+      void syncMessages();
       onEnter();
     } catch (err) {
       const message = err instanceof Error ? err.message : "请求失败，请稍后再试";
