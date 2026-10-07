@@ -316,3 +316,41 @@ def test_updater_applies_patch_and_updates_version(tmp_path: Path, updater_prese
     assert (install / "keep" / "nested.txt").read_text(encoding="utf-8") == "nested-keep"
     assert json.loads((install / "version.json").read_text(encoding="utf-8"))["version"] == "1.2.0"
     assert not state_file.exists()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "MainPG.exe",
+        "resources/app/package.json",
+        "resources/app/node_modules/@scope/pkg/index.js",
+        "resources/app/node_modules/better-sqlite3-9f2c1a/build/Release/better_sqlite3.node",
+        "resources/app/node_modules/~legacy/dir/file.txt",
+        "resources/app/node_modules/array[0]/file.txt",
+    ],
+)
+def test_patch_path_safe_accepts_install_tree_paths(value: str) -> None:
+    from wh_local.app_update import _patch_path_safe
+
+    assert _patch_path_safe(value) is True
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "/etc/passwd",
+        "\\windows\\system32\\drivers",
+        "C:/windows/system32",
+        "../escape.txt",
+        "nested/../../escape.txt",
+        "nested/./file.txt",
+        "dir//file.txt",
+        "file with space.txt",
+        "weird;cmd.txt",
+    ],
+)
+def test_patch_path_safe_rejects_traversal_and_unsafe_chars(value: str) -> None:
+    from wh_local.app_update import _patch_path_safe
+
+    assert _patch_path_safe(value) is False
