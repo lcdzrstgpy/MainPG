@@ -13,7 +13,7 @@ from wh_local.secrets import load_credential_config
 
 
 # Release automation updates this single value when producing a desktop build.
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.5.1"
 # Replace this host only when the official MainPG release origin moves. Keep the
 # manifest and installer allowlist bound to the same release-owned host.
 UPDATE_RELEASE_HOST = "workbench.haocoming.top"
@@ -27,6 +27,12 @@ UPDATE_MANIFEST_ALLOWED_HOSTS = frozenset({UPDATE_RELEASE_HOST})
 # 2026-08-29 internal-test key rotation. The matching private key is held only
 # by the independent release server and is never distributed with MainPG.
 UPDATE_ED25519_PUBLIC_KEY_B64 = "qsK3rFMm732q6oZFG8m938ewHkFGj3EoxjRGq3YmHo0="
+
+# 安装器（Inno Setup）把用户选择的"数据存储位置"写到这里，运行时读回以避免
+# 用户数据全堆在 C 盘。用注册表而不是配置文件：Inno 的 RegWriteStringValue
+# 支持 Unicode，SaveStringToFile 是 ANSI 会破坏非 ASCII 路径。
+_STORAGE_REG_SUBKEY = r"Software\MainPG"
+_STORAGE_REG_VALUE = "DataRoot"
 
 
 @dataclass(frozen=True)
@@ -56,40 +62,61 @@ def _default_dev_admin_token() -> str:
 
 
 def default_data_dir(runtime_root: Path) -> Path:
-    """数据目录解析：打包版固定 %APPDATA%\\MainPG\\outputs\\wh-local。
+    r"""数据目录：默认 <storage_root>\outputs\wh-local，可用 WH_LOCAL_DATA_DIR 覆盖。
 
     老实现跟随"进程工作目录"，双击 exe / 快捷方式 / 命令行启动会落到不同目录，
     甚至落到 Program Files 无写权限处直接建库失败——这正是双 workbench.sqlite3
-    的根源。打包版(frozen)一律用用户级 AppData（永远可写、与启动方式无关）；
-    源码运行保持 runtime_root/outputs/wh-local，开发与测试不受影响。
+    的根源。现在统一由 storage_root()（安装器写入的存储根目录）派生：
+    %APPDATA%\MainPG\outputs\wh-local（默认）或用户自定义盘符下的同名子目录。
     与 launcher/core.data_dir_from_env 的优先级保持一致。
     """
     override = os.environ.get("WH_LOCAL_DATA_DIR", "")
     if override:
         return Path(override)
-    if getattr(sys, "frozen", False):
-        appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
-        return Path(appdata) / "MainPG" / "outputs" / "wh-local"
     return runtime_root / "outputs" / "wh-local"
 
 
+def _legacy_data_dir_candidates(config: LocalRuntimeConfig) -> list[Path]:
+    """老版本数据目录候选（迁移源），按优先级去重排列。
+
+    1.5.1 起数据根目录可自定义：用户换盘后旧库仍留在默认的
+    %APPDATA%\\MainPG\\outputs\\wh-local，首次启动需要把它搬到新位置，
+    否则用户会以为"数据凭空消失"。"""
+    appdata = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
+    ordered = [
+        appdata / "MainPG" / "outputs" / "wh-local",
+        config.runtime_root / "outputs" / "wh-local",
+    ]
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for cand in ordered:
+        if cand not in seen:
+            seen.add(cand)
+            unique.append(cand)
+    return unique
+
+
 def _migrate_legacy_database(config: LocalRuntimeConfig, target_db: Path) -> None:
-    """打包版老版本把库建在 runtime_root/outputs/wh-local，首次启动迁到新数据目录。
+    """打包版老版本把库建在 <root>/outputs/wh-local，首次启动迁到新数据目录。
 
     只在目标位置还没有库时迁移（有则不动，避免覆盖用户数据）；WAL 附属文件
-    (-wal/-shm) 一并搬走，搬完顺手删掉旧目录（只删本次涉及的库文件）。
+    (-wal/-shm) 一并搬走。迁移源覆盖默认 AppData 位置，保证换盘用户的数据
+    仍能被找回。
     """
     if not getattr(sys, "frozen", False):
         return
-    legacy_dir = config.runtime_root / "outputs" / "wh-local"
-    legacy_db = legacy_dir / "workbench.sqlite3"
-    if not legacy_db.is_file() or target_db.is_file():
+    if target_db.is_file():
         return
-    target_db.parent.mkdir(parents=True, exist_ok=True)
-    for suffix in ("", "-wal", "-shm"):
-        src = Path(str(legacy_db) + suffix)
-        if src.is_file():
-            shutil.move(str(src), str(target_db) + suffix)
+    for legacy_dir in _legacy_data_dir_candidates(config):
+        legacy_db = legacy_dir / "workbench.sqlite3"
+        if not legacy_db.is_file() or legacy_db == target_db:
+            continue
+        target_db.parent.mkdir(parents=True, exist_ok=True)
+        for suffix in ("", "-wal", "-shm"):
+            src = Path(str(legacy_db) + suffix)
+            if src.is_file():
+                shutil.move(str(src), str(target_db) + suffix)
+        return
 
 
 def ensure_data_dir_ready(config: LocalRuntimeConfig, database_path: Path | None = None) -> None:
@@ -170,18 +197,57 @@ def is_ip_literal_host(base_url: str) -> bool:
         return False
 
 
-def runtime_root(workspace: Path | None = None) -> Path:
-    r"""Data root: explicit workspace > packaged (%APPDATA%\MainPG) > current directory.
+def _configured_storage_root() -> Path | None:
+    r"""读取安装器写入的自定义数据根目录（HKCU\Software\MainPG\DataRoot）。
 
-    For packaged builds the user double-clicks the exe, so cwd may be the install
-    directory or a system directory (possibly read-only). Data goes to
-    %APPDATA%\MainPG so drafts/generated images/exports always land on disk."""
-    if workspace is not None:
-        return workspace
+    只接受绝对路径；非 Windows / 未设置 / 值非法时返回 None 由调用方回退默认值，
+    保证老用户静默自动更新（不经过向导页）后仍走原来的 %APPDATA%\MainPG。"""
+    if sys.platform != "win32":
+        return None
+    try:
+        import winreg
+    except ImportError:  # pragma: no cover - win32 一定有 winreg
+        return None
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _STORAGE_REG_SUBKEY) as key:
+            value, _ = winreg.QueryValueEx(key, _STORAGE_REG_VALUE)
+    except OSError:
+        return None
+    text = str(value or "").strip()
+    if not text:
+        return None
+    path = Path(text)
+    if not path.is_absolute():
+        return None
+    return path
+
+
+def storage_root() -> Path:
+    r"""数据根目录（所有运行时数据的最外层目录，用户可自定义到非系统盘）。
+
+    优先级：WH_LOCAL_DATA_ROOT 环境变量 > 安装器写入的注册表值 >
+    默认 %APPDATA%\MainPG（打包版）/ 当前目录（源码运行）。
+    默认值与原 runtime_root 完全一致，未自定义的老用户行为零变化。"""
+    override = os.environ.get("WH_LOCAL_DATA_ROOT", "").strip()
+    if override:
+        return Path(override)
     if getattr(sys, "frozen", False):
+        configured = _configured_storage_root()
+        if configured is not None:
+            return configured
         appdata = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
         return appdata / "MainPG"
     return Path.cwd()
+
+
+def runtime_root(workspace: Path | None = None) -> Path:
+    r"""Data root: explicit workspace > storage_root()。
+
+    包内所有运行时数据（日志、更新缓存、主题、导出）都以它为根；打包版用户
+    可在安装时把它指到非系统盘，避免 C 盘被数据撑满。"""
+    if workspace is not None:
+        return workspace
+    return storage_root()
 
 
 def install_root() -> Path:

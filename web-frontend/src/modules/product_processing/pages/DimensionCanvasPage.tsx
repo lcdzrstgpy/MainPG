@@ -478,6 +478,7 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
     ? currentItem?.assets.find((asset) => asset.id === editor.selectedAssetId) ?? null
     : null;
   const completion = editor ? canComplete(editor) : { ok: false, reason: "请选择商品" };
+  const busyLabel = busy === "upload" ? "导入中…" : busy === "complete" ? "提交中…" : busy === "review" ? "交回中…" : "处理中…";
 
   return (
     <div className="dimension-page" ref={rootRef} tabIndex={-1}>
@@ -492,7 +493,7 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
         <div className="dimension-command-actions">
           <button onClick={() => setImportOpen(true)}><i className="iconfont icon-upload" aria-hidden="true" />导入已完成任务</button>
           <button onClick={() => void loadBatches()}><i className="iconfont icon-sync" aria-hidden="true" />刷新历史批次</button>
-          {batch && <button className="primary" onClick={submitReview} disabled={busy !== "" || !batch.items.some((item) => item.state === "completed")}><i className="iconfont icon-check-circle" aria-hidden="true" />{busy === "review" ? "交回中…" : "交回审核"}</button>}
+          {batch && <button className="primary" onClick={submitReview} disabled={busy !== "" || !batch.items.some((item) => item.state === "completed")}>{busy === "review" ? <i className="app-spinner is-sm" aria-hidden="true" /> : <i className="iconfont icon-check-circle" aria-hidden="true" />}{busy === "review" ? "交回中…" : "交回审核"}</button>}
         </div>
       </header>
 
@@ -503,10 +504,19 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
       {!batch ? (
         <div className="dimension-landing-grid">
           <section className="dimension-empty-card">
-            <span className="dimension-empty-icon iconfont icon-column-width" aria-hidden="true" />
-            <h2>{loading ? "正在加载尺寸画布…" : "从单商品或批量任务开始"}</h2>
-            <p>在预检商品卡点击“添加尺寸图”，或导入已完成任务。页面刷新后草稿仍可继续。</p>
-            <button className="primary" onClick={() => setImportOpen(true)}><i className="iconfont icon-upload" aria-hidden="true" />导入已完成任务</button>
+            {loading ? (
+              <div className="app-loading-block">
+                <i className="app-spinner" aria-hidden="true" />
+                正在加载尺寸画布…
+              </div>
+            ) : (
+              <>
+                <span className="dimension-empty-icon iconfont icon-column-width" aria-hidden="true" />
+                <h2>从单商品或批量任务开始</h2>
+                <p>在预检商品卡点击“添加尺寸图”，或导入已完成任务。页面刷新后草稿仍可继续。</p>
+                <button className="primary" onClick={() => setImportOpen(true)}><i className="iconfont icon-upload" aria-hidden="true" />导入已完成任务</button>
+              </>
+            )}
           </section>
           <section className="dimension-history">
             <header><h2>历史批次</h2><span>{batches.length} 个</span></header>
@@ -532,7 +542,7 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
                 ))}
                 <button className="dimension-upload-tile" onClick={() => uploadInputRef.current?.click()} disabled={busy !== "" || autosave.state === "saving"}>
                   <span aria-hidden="true">＋</span>
-                  <small>{busy === "upload" ? "导入中…" : "导入图片"}</small>
+                  <small>{busy === "upload" ? <><i className="app-spinner is-sm" aria-hidden="true" />导入中…</> : "导入图片"}</small>
                 </button>
                 <input
                   ref={uploadInputRef}
@@ -615,16 +625,22 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
                 onCommitEditor={(next) => updateEditor(next)}
                 onCommitAnnotation={commitAnnotation}
               />
+              {busy !== "" && (
+                <div className="app-loading-mask" role="status" aria-live="polite">
+                  <i className="app-spinner" aria-hidden="true" />
+                  {busyLabel}
+                </div>
+              )}
               <footer className="dimension-editor-footer">
                 <label>回写位置
                   <select value={editor.targetSlotId} onChange={(event) => updateEditor({ ...editor, targetSlotId: event.target.value })}>
                     <option value="carousel.dimension_background">轮播尺寸槽位</option>
                   </select>
                 </label>
-                <div className={`dimension-autosave state-${autosave.state}`}><span />{autosave.state === "saving" ? "自动保存中" : autosave.state === "saved" ? "已自动保存" : autosave.state === "error" ? "保存失败" : "等待编辑"}</div>
+                <div className={`dimension-autosave state-${autosave.state}`}>{autosave.state === "saving" ? <i className="app-spinner is-sm" aria-hidden="true" /> : <span />}{autosave.state === "saving" ? "自动保存中" : autosave.state === "saved" ? "已自动保存" : autosave.state === "error" ? "保存失败" : "等待编辑"}</div>
                 <div className="dimension-complete">
                   {!completion.ok && <span>{completion.reason}</span>}
-                  <button className="primary" disabled={!completion.ok || busy !== "" || autosave.state === "saving" || autosave.state === "error"} onClick={complete}>{busy === "complete" ? "提交中…" : "完成并下一条"}</button>
+                  <button className="primary" disabled={!completion.ok || busy !== "" || autosave.state === "saving" || autosave.state === "error"} onClick={complete}>{busy === "complete" ? <><i className="app-spinner is-sm" aria-hidden="true" />提交中…</> : "完成并下一条"}</button>
                 </div>
               </footer>
             </main>

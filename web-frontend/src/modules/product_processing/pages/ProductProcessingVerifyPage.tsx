@@ -709,9 +709,9 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenPrecheck,
             <button className={batchesOpen ? 'is-active' : ''} onClick={() => { setBatchesOpen((value) => !value); if (!batchesOpen) refreshBatches(); }} disabled={batchBusy}><i className="iconfont icon-appstore" aria-hidden="true" />采集批次{draftBatches.length ? `（${draftBatches.length}）` : ''}</button>
             <button onClick={toggleSelectAllPage} disabled={!pageDrafts.length}><i className={`iconfont ${allPageSelected ? 'icon-close-circle' : 'icon-select'}`} aria-hidden="true" />{allPageSelected ? '取消全选' : '全选本页'}</button>
             <button onClick={openSkuBatch} disabled={!selectedIds.size}><i className="iconfont icon-barcode" aria-hidden="true" />批量管理 SKU</button>
-            <button className="primary" onClick={() => handleProcess(false)} disabled={loading || !selectedIds.size}><i className="iconfont icon-rocket" aria-hidden="true" />开始处理</button>
-            <button className={canUndoDelete ? 'undo-delete' : ''} onClick={handleDeleteOrUndo} disabled={loading || (!selectedIds.size && !deletedBatch)} title={canUndoDelete ? `恢复最近删除的 ${deletedBatch?.ids.length || 0} 条草稿` : '删除已勾选草稿'}>{canUndoDelete ? <span aria-hidden="true">↶</span> : <i className="iconfont icon-delete" aria-hidden="true" />}{canUndoDelete ? `撤回删除（${deletedBatch?.ids.length || 0}）` : '删除选择'}</button>
-            <button onClick={() => refresh().catch(fail)} disabled={loading}><i className="iconfont icon-sync" aria-hidden="true" />刷新</button>
+            <button className="primary" onClick={() => handleProcess(false)} disabled={loading || !selectedIds.size}>{loading ? <><i className="app-spinner is-sm" aria-hidden="true" />处理中…</> : <><i className="iconfont icon-rocket" aria-hidden="true" />开始处理</>}</button>
+            <button className={canUndoDelete ? 'undo-delete' : ''} onClick={handleDeleteOrUndo} disabled={loading || (!selectedIds.size && !deletedBatch)} title={canUndoDelete ? `恢复最近删除的 ${deletedBatch?.ids.length || 0} 条草稿` : '删除已勾选草稿'}>{loading ? <i className="app-spinner is-sm" aria-hidden="true" /> : canUndoDelete ? <span aria-hidden="true">↶</span> : <i className="iconfont icon-delete" aria-hidden="true" />}{canUndoDelete ? `撤回删除（${deletedBatch?.ids.length || 0}）` : '删除选择'}</button>
+            <button onClick={() => refresh().catch(fail)} disabled={loading}>{loading ? <i className="app-spinner is-sm" aria-hidden="true" /> : <i className="iconfont icon-sync" aria-hidden="true" />}刷新</button>
           </div>
         </div>
 
@@ -791,7 +791,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenPrecheck,
                   <div className="verify-batch-actions">
                     <button type="button" onClick={selectAllBatches} disabled={batchBusy || !draftBatches.length}>全选批次</button>
                     <button type="button" className="is-danger" onClick={() => void deleteSelectedBatches()} disabled={batchBusy || selectedBatchIds.size === 0}>
-                      {batchBusy ? '删除中…' : `删除选中批次（${selectedBatchIds.size}）`}
+                      {batchBusy ? <><i className="app-spinner is-sm" aria-hidden="true" />删除中…</> : `删除选中批次（${selectedBatchIds.size}）`}
                     </button>
                     {activeBatchId !== null && (
                       <button type="button" onClick={() => { setActiveBatchId(null); setPage(1); }}>查看全部草稿</button>
@@ -839,7 +839,25 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenPrecheck,
           )}
         </div>
 
-        {isPoolEmpty && (
+        {listLoading && isPoolEmpty && !listError && (
+          <div className="verify-draft-list is-skeleton" aria-busy="true" aria-label="正在加载草稿">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <article key={i} className="pool-card is-skeleton" aria-hidden="true">
+                <div className="pool-card-body">
+                  <span className="app-skeleton-line" style={{ width: 16, height: 16, borderRadius: 4 }} />
+                  <div className="pool-thumb app-skeleton-line" style={{ width: 96, height: 96 }} />
+                  <div className="pool-info">
+                    <span className="app-skeleton-line" style={{ width: '52%', height: 14 }} />
+                    <span className="app-skeleton-line" style={{ width: '78%' }} />
+                    <span className="app-skeleton-line" style={{ width: '64%' }} />
+                  </div>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+
+        {isPoolEmpty && (!listLoading || Boolean(listError)) && (
           <div className={`verify-empty-state${listError ? ' is-error' : ''}`}>
             <span className={`verify-empty-icon${listLoading ? ' is-loading' : ''}`} aria-hidden="true">
               <i
@@ -870,7 +888,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenPrecheck,
               <div className="verify-empty-actions">
                 {listError ? (
                   <button type="button" className="primary" onClick={() => refresh().catch(fail)} disabled={loading}>
-                    <i className="iconfont icon-sync" aria-hidden="true" />重新加载
+                    {loading ? <i className="app-spinner is-sm" aria-hidden="true" /> : <i className="iconfont icon-sync" aria-hidden="true" />}重新加载
                   </button>
                 ) : selectableDrafts.length > 0 ? (
                   <button
@@ -1011,7 +1029,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenPrecheck,
                       </div>
                     )}
                     <div className="verify-row-actions">
-                      <button className="primary" onClick={() => saveRow(draft)} disabled={loading}>保存</button>
+                      <button className="primary" onClick={() => saveRow(draft)} disabled={loading}>{loading ? <><i className="app-spinner is-sm" aria-hidden="true" />保存中…</> : '保存'}</button>
                     </div>
                   </div>
                 )}

@@ -78,6 +78,24 @@ if (Test-Path -LiteralPath $autoPatchSource -PathType Container) {
     }
 }
 
+# Preserve the already-encrypted credential blobs before PyInstaller replaces
+# dist\MainPG. The plaintext *.local.json sources are gitignored and may be
+# absent on a release machine; in that case the previous *.enc (encrypted with
+# the same fixed AEAD key) is reused so the installer never silently loses
+# media-publishing / collection credentials.
+$credBackupDir = Join-Path $PSScriptRoot "dist\_cred-backup"
+$existingDist = Join-Path $PSScriptRoot "dist\MainPG"
+if (Test-Path -LiteralPath $existingDist -PathType Container) {
+    if (Test-Path -LiteralPath $credBackupDir) { Remove-Item -LiteralPath $credBackupDir -Recurse -Force }
+    New-Item -ItemType Directory -Force -Path $credBackupDir | Out-Null
+    foreach ($credName in @("cos.enc", "onebound.enc")) {
+        $srcEnc = Join-Path $existingDist $credName
+        if (Test-Path -LiteralPath $srcEnc -PathType Leaf) {
+            Copy-Item -LiteralPath $srcEnc -Destination (Join-Path $credBackupDir $credName) -Force
+        }
+    }
+}
+
 # 1. Build the frontend
 Write-Host "[build] building web-frontend ..."
 Push-Location ..\web-frontend
@@ -206,6 +224,9 @@ if (Test-Path -LiteralPath $cosSource) {
     & $python -m wh_local.secrets encrypt $cosSource (Join-Path $dist "cos.enc") cos
     if ($LASTEXITCODE -ne 0) { throw "encrypting cos credentials failed" }
     Write-Host "[build] bundled cos.enc (media publishing, encrypted)"
+} elseif (Test-Path -LiteralPath (Join-Path $credBackupDir "cos.enc") -PathType Leaf) {
+    Copy-Item -LiteralPath (Join-Path $credBackupDir "cos.enc") -Destination (Join-Path $dist "cos.enc") -Force
+    Write-Host "[build] reused cos.enc from previous build (plaintext source absent)"
 } else {
     Write-Host "[build] WARNING: cos.local.json missing - preview export cannot publish images"
 }
@@ -222,6 +243,9 @@ if (Test-Path -LiteralPath $oneboundSource) {
     & $python -m wh_local.secrets encrypt $oneboundSource (Join-Path $dist "onebound.enc") onebound
     if ($LASTEXITCODE -ne 0) { throw "encrypting onebound credentials failed" }
     Write-Host "[build] bundled onebound.enc (collection credentials, encrypted)"
+} elseif (Test-Path -LiteralPath (Join-Path $credBackupDir "onebound.enc") -PathType Leaf) {
+    Copy-Item -LiteralPath (Join-Path $credBackupDir "onebound.enc") -Destination (Join-Path $dist "onebound.enc") -Force
+    Write-Host "[build] reused onebound.enc from previous build (plaintext source absent)"
 } else {
     Write-Host "[build] WARNING: onebound.local.json missing - installed users cannot collect 1688 data"
 }
@@ -338,4 +362,7 @@ Write-Host "[build] done: $zip"
 Write-Host "[build] done: $installer"
 if ($autoPatchBaseline -and (Test-Path -LiteralPath $autoPatchBaseline)) {
     Remove-Item -LiteralPath $autoPatchBaseline -Recurse -Force
+}
+if ($credBackupDir -and (Test-Path -LiteralPath $credBackupDir)) {
+    Remove-Item -LiteralPath $credBackupDir -Recurse -Force
 }

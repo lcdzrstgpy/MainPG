@@ -366,6 +366,7 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
         try:
             if not hasattr(remote_auth, "submit_station_application"):
                 raise CustomerAuthUnavailable("station application service is not configured")
+            remote_token = remote_token_from_local_session(authorization)
             session = local_session_from_token(authorization)
             return _public_station_application(
                 remote_auth.submit_station_application(
@@ -375,7 +376,8 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
                         "email": str(payload.get("email") or ""),
                         "contact": str(payload.get("contact") or ""),
                         "note": str(payload.get("note") or ""),
-                    }
+                    },
+                    remote_token,
                 )
             )
         except Exception as exc:
@@ -387,9 +389,8 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
         try:
             if not hasattr(remote_auth, "get_station_application"):
                 raise CustomerAuthUnavailable("station application service is not configured")
-            session = local_session_from_token(authorization)
             return _public_station_application(
-                remote_auth.get_station_application(session.user_id)
+                remote_auth.get_station_application(remote_token_from_local_session(authorization))
             )
         except Exception as exc:
             handle_auth_error(exc)

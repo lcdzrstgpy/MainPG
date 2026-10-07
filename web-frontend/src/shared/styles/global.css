@@ -1959,6 +1959,182 @@ html[data-topbar-collapse="on"][data-ui-mode="classic"] .topbar-card.is-pinned.i
   }
 }
 
+/* ===== 全局加载动效原子类（产品处理各板块共用，纯 CSS 零依赖） ===== */
+
+/* 按钮内联 spinner：单元素，颜色跟随 currentColor */
+.app-spinner {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  margin-right: 6px;
+  vertical-align: -2px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  opacity: .85;
+  animation: app-spin .7s linear infinite;
+}
+
+.app-spinner.is-sm {
+  width: 11px;
+  height: 11px;
+  margin-right: 5px;
+}
+
+.app-spinner.is-lg {
+  width: 16px;
+  height: 16px;
+  vertical-align: -3px;
+}
+
+@keyframes app-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* 骨架屏：AI 文本/列表加载占位 */
+.app-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--theme-module-border, #e1ebf2);
+  border-radius: 12px;
+  background: var(--theme-module-surface-soft, #f8fbfd);
+}
+
+.app-skeleton-caption {
+  display: flex;
+  align-items: center;
+  color: var(--theme-text-secondary, #5a738c);
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.app-skeleton-line {
+  position: relative;
+  height: 12px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--theme-module-border, #e4eef6);
+}
+
+.app-skeleton-line::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .9), transparent);
+  transform: translateX(-100%);
+  animation: app-skeleton-sheen 1.5s ease-in-out infinite;
+}
+
+@keyframes app-skeleton-sheen {
+  to { transform: translateX(100%); }
+}
+
+/* 长耗时遮罩：覆盖在图片/画布容器上，父容器需 position: relative */
+.app-loading-mask {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: inherit;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 800;
+  background: rgba(10, 58, 99, .42);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+
+.app-loading-mask .app-spinner {
+  margin-right: 0;
+  width: 16px;
+  height: 16px;
+}
+
+/* 扫描动效：自动识别/框选时覆盖在画布上 */
+.app-scan-mask {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: inherit;
+  background: rgba(9, 40, 66, .14);
+}
+
+.app-scan-mask::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 34%;
+  background: linear-gradient(180deg, transparent, rgba(20, 200, 192, .42) 46%, rgba(8, 123, 245, .5) 54%, transparent);
+  transform: translateY(-120%);
+  animation: app-scan-sweep 1.5s cubic-bezier(.45, .05, .55, .95) infinite;
+}
+
+@keyframes app-scan-sweep {
+  0% { transform: translateY(-120%); }
+  100% { transform: translateY(320%); }
+}
+
+.app-scan-badge {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+  background: rgba(10, 58, 99, .84);
+  box-shadow: 0 10px 22px rgba(7, 38, 69, .32);
+}
+
+.app-scan-badge .app-spinner {
+  margin-right: 0;
+}
+
+/* 整块加载占位：列表/内容区首次加载 */
+.app-loading-block {
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
+  min-height: 160px;
+  color: var(--theme-text-muted, #64748b);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.app-loading-block .app-spinner {
+  margin: 0;
+  width: 20px;
+  height: 20px;
+  color: var(--theme-primary, #0ea5e9);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-spinner {
+    animation-duration: 1.6s;
+  }
+
+  .app-skeleton-line::after {
+    animation: none;
+  }
+
+  .app-scan-mask::before {
+    animation: none;
+  }
+}
+
 /* ---- 本地后端失联提示页（杀软杀子进程/后端崩溃兜底） ---- */
 .backend-offline-mask {
   position: fixed;

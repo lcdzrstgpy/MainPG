@@ -1389,7 +1389,10 @@ def _plugin_product_to_draft(product: Mapping[str, Any]) -> dict[str, Any]:
     # 逐 SKU 缩略图，避免整页记录都回落成同一张商品主图。
     _plugin_fill_record_images(product, source_variant_records)
     # SKU 面板里的真实价格/库存补到每个 SKU；商品级重量给缺重量的 SKU 兜底。
-    _plugin_apply_sku_prices(product, source_variant_records)
+    # 面板价只对 CNY 货源站成立，非 CNY 页面（如 Temu）不覆盖，避免把目的地
+    # 售价写成人民币价格。
+    if source_currency == "CNY":
+        _plugin_apply_sku_prices(product, source_variant_records)
     shipping_package_records = _plugin_shipping_package_records(product, source_variant_records)
     _plugin_apply_default_weights(product, source_variant_records)
     # 顶层 price 是插件从整页文本里取的第一个 ¥ 数字，可能是广告位/推荐位/文案，
@@ -1909,14 +1912,21 @@ def _plugin_variant_records(
     groups = product.get("variant_groups") or product.get("raw_variant_groups") or []
     groups = [item for item in groups if isinstance(item, Mapping)] if isinstance(groups, (list, tuple)) else []
 
+    product_currency = product.get("currency") or product.get("price_currency")
     combo_records = _plugin_records_from_combos(
         combos,
         product_id,
         platform=platform,
-        product_currency=product.get("currency"),
+        product_currency=product_currency,
         fallback_image_url=fallback_image_url,
     )
-    group_records = _plugin_records_from_groups(groups, combos, product_id)
+    group_records = _plugin_records_from_groups(
+        groups,
+        combos,
+        product_id,
+        platform=platform,
+        product_currency=product_currency,
+    )
     if not group_records:
         return combo_records
 
@@ -2002,6 +2012,9 @@ def _plugin_records_from_groups(
     groups: list[Mapping[str, Any]],
     combos: list[Mapping[str, Any]],
     product_id: str,
+    *,
+    platform: str = "",
+    product_currency: Any = None,
 ) -> list[dict[str, Any]]:
     """按规格组笛卡尔积重建 SKU 记录，并用组合里的价格/库存/货号回填。"""
     axes: list[tuple[str, list[dict[str, Any]]]] = []
@@ -2039,12 +2052,20 @@ def _plugin_records_from_groups(
                 or matched.get("sku")
                 or ""
             ).strip()
-            price_cny = _plugin_decimal(matched.get("price"))
+            source_price = _plugin_decimal(matched.get("price"))
+            source_currency = _plugin_currency(
+                matched.get("currency") or product_currency,
+                matched.get("price"),
+                platform,
+            )
+            price_cny = source_price if source_currency == "CNY" else None
             quantity = _plugin_int(matched.get("stock") or matched.get("quantity") or matched.get("inventory"))
             image_url = str(matched.get("image_url") or matched.get("imageUrl") or "").strip() or None
         else:
             sku_id = ""
             price_cny = None
+            source_price = None
+            source_currency = None
             quantity = None
             image_url = None
         if not sku_id:
@@ -2068,6 +2089,8 @@ def _plugin_records_from_groups(
                 "spec_text": ";".join(spec_parts) or None,
                 "image_url": image_url,
                 "price_cny": price_cny,
+                "source_price": source_price,
+                "source_currency": source_currency,
                 "quantity": quantity,
             }
         )

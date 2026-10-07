@@ -397,7 +397,10 @@ export async function publishMainpgArtifact({
   const staging = mkdtempSync(join(outputRoot, ".staging-"));
   const validateOptions = resolveModule ? { resolveModule } : undefined;
   try {
-    cpSync(standalone, staging, { recursive: true });
+    // dereference: Turbopack 会在 standalone 里写入指向源 node_modules 的软链
+    // （如 .next/node_modules/better-sqlite3-<hash>）。Windows 上未启用开发者模式时
+    // 重建软链需要特权会抛 EPERM，且软链指向源树也无法自包含，故复制时解引用成实体文件。
+    cpSync(standalone, staging, { recursive: true, dereference: true });
     copyIfPresent(join(sourceRoot, ".next", "static"), join(staging, ".next", "static"));
     copyIfPresent(join(sourceRoot, "public"), join(staging, "public"));
     copyIfPresent(join(sourceRoot, "drizzle"), join(staging, "drizzle"));

@@ -418,6 +418,18 @@ def create_product_processing_router(
     ) -> dict[str, Any]:
         return {"draft": _call(service.get_draft, draft_id, _workspace(workspace_id))}
 
+    @router.get("/drafts/{draft_id}/processed-preview")
+    def draft_processed_preview(
+        draft_id: int,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        """货源页「查看处理后详情」：某草稿最近一次 AI 处理结果（预检同款结构）。"""
+        return _call(
+            service.draft_processed_preview,
+            draft_id,
+            workspace_id=_workspace(workspace_id),
+        )
+
     @router.post("/drafts/{draft_id}/source-images/retry")
     def retry_source_images(
         draft_id: int,
@@ -518,6 +530,17 @@ def create_product_processing_router(
         if not result["ids"]:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "product draft not found")
         return {"draft_id": draft_id, "status": "deleted"}
+
+    @router.delete("/drafts/{draft_id}/purge")
+    def purge_draft(
+        draft_id: int,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        """物理删除草稿（不可恢复），用于释放数据库空间。"""
+        result = service.purge_drafts([draft_id], _workspace(workspace_id))
+        if not result["ids"]:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "product draft not found")
+        return {"draft_id": draft_id, "status": "purged"}
 
     @router.post("/drafts/delete")
     def delete_drafts(

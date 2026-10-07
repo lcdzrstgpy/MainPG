@@ -301,24 +301,31 @@ class CustomerAuthClient:
             headers={"Authorization": f"Bearer {remote_token}"},
         )
 
-    def submit_station_application(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def submit_station_application(
+        self, payload: dict[str, Any], remote_token: str
+    ) -> dict[str, Any]:
         """提交分站申请（「推广计划 · 申请加入」）。
 
-        打到公告发布后台（wh-admin）的免登录端点；account_id 由本地后端从会话
-        注入，不信任前端上报，避免替他人提交申请。
+        打到公告发布后台（wh-admin）的 public 端点；身份由服务端按会话令牌
+        （``X-Auth-Token``）解析——account_id 可由邮箱推导，不能当身份用。
         """
-        return self._station_request("POST", "/api/station-applications/public", payload)
+        if not remote_token:
+            raise CustomerAuthPermissionError()
+        return self._station_request(
+            "POST",
+            "/api/station-applications/public",
+            payload,
+            remote_token=remote_token,
+        )
 
-    def get_station_application(self, account_id: str) -> dict[str, Any]:
-        """查询该账号最近一条分站申请状态（免登录端点，不回分站密码）。"""
-        account_id = str(account_id or "").strip()
-        if not account_id:
-            raise CustomerAuthRejected(400, "missing account id")
-        from urllib.parse import quote
-
+    def get_station_application(self, remote_token: str) -> dict[str, Any]:
+        """查询该账号最近一条分站申请状态（按会话令牌认身份，不回分站密码）。"""
+        if not remote_token:
+            raise CustomerAuthPermissionError()
         return self._station_request(
             "GET",
-            f"/api/station-applications/public?account_id={quote(account_id, safe='')}",
+            "/api/station-applications/public",
+            remote_token=remote_token,
         )
 
     def list_partner_stations(self) -> dict[str, Any]:
@@ -342,10 +349,13 @@ class CustomerAuthClient:
         method: str,
         path: str,
         payload: dict[str, Any] | None = None,
+        *,
+        remote_token: str = "",
     ) -> dict[str, Any]:
         if not self.station_base_url:
             raise CustomerAuthUnavailable("station application service is not configured")
-        return self._request(method, path, payload, base_url=self.station_base_url)
+        headers = {"X-Auth-Token": remote_token} if remote_token else None
+        return self._request(method, path, payload, headers, base_url=self.station_base_url)
 
     def admin_request(
         self,
