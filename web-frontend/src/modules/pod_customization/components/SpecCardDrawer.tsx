@@ -11,6 +11,7 @@ import type {
   PodBatchStatus,
   SpecCardConfig,
   SpecCardCorner,
+  SpecCardDisplayUnit,
   SpecCardReprintResponse,
   SpecCardStyle,
 } from "../types";
@@ -50,6 +51,8 @@ type Props = {
   config: SpecCardConfig;
   batch?: SpecCardBatchContext | null;
   baseTemplateId?: string;
+  /** 复刻等按款重印场景：只更新该 style_index 的目标快照；全定制不传则维持整批重印。 */
+  reprintStyleIndex?: number;
   onClose: () => void;
   onSave: (config: SpecCardConfig) => void;
   onReprinted?: (batchId: string, result: SpecCardReprintResponse) => void;
@@ -57,11 +60,12 @@ type Props = {
 
 type ReprintProgress = { done: number; total: number };
 
-export function SpecCardDrawer({ open, config, batch, baseTemplateId, onClose, onSave, onReprinted }: Props) {
+export function SpecCardDrawer({ open, config, batch, baseTemplateId, reprintStyleIndex, onClose, onSave, onReprinted }: Props) {
   const [cells, setCells] = useState<string[][]>(() => cloneSpecCardConfig(config).cells);
   const [style, setStyle] = useState<SpecCardStyle>(config.style);
   const [corner, setCorner] = useState<SpecCardCorner>(config.corner);
   const [enabled, setEnabled] = useState(config.enabled);
+  const [displayUnit, setDisplayUnit] = useState<SpecCardDisplayUnit>(config.display_unit);
   const [unlocked, setUnlocked] = useState(false);
   const [reprinting, setReprinting] = useState(false);
   const [reprintProgress, setReprintProgress] = useState<ReprintProgress | null>(null);
@@ -79,6 +83,7 @@ export function SpecCardDrawer({ open, config, batch, baseTemplateId, onClose, o
     setStyle(next.style);
     setCorner(next.corner);
     setEnabled(next.enabled);
+    setDisplayUnit(next.display_unit);
     setUnlocked(false);
     setReprinting(false);
     setReprintProgress(null);
@@ -101,6 +106,7 @@ export function SpecCardDrawer({ open, config, batch, baseTemplateId, onClose, o
     enabled,
     style,
     corner,
+    display_unit: displayUnit,
     cells: cells.map((row) => [...row]),
   });
 
@@ -128,7 +134,9 @@ export function SpecCardDrawer({ open, config, batch, baseTemplateId, onClose, o
         cells: next.cells,
         style: next.style,
         corner: next.corner,
+        display_unit: next.display_unit,
         enabled: next.enabled,
+        ...(reprintStyleIndex === undefined ? {} : { style_index: reprintStyleIndex }),
       });
       setReprintProgress({ done: result.reprinted, total: batch.count });
       setReprintResult(result);
@@ -174,18 +182,20 @@ export function SpecCardDrawer({ open, config, batch, baseTemplateId, onClose, o
             style={style}
             corner={corner}
             enabled={enabled}
+            displayUnit={displayUnit}
             onStyleChange={setStyle}
             onCornerChange={setCorner}
             onEnabledChange={setEnabled}
+            onDisplayUnitChange={setDisplayUnit}
             disabled={readOnly}
           />
 
-          <SpecCardPreview cells={cells} style={style} corner={corner} enabled={enabled} baseTemplateId={baseTemplateId} />
+          <SpecCardPreview cells={cells} style={style} corner={corner} enabled={enabled} displayUnit={displayUnit} baseTemplateId={baseTemplateId} />
         </div>
 
         <footer className="pod-spec-card-drawer-footer">
           <div className="pod-spec-card-footer-status">
-            <p className="pod-spec-card-summary">{isConfiguredSummary(cells, style, corner, enabled)}</p>
+            <p className="pod-spec-card-summary">{isConfiguredSummary(cells, style, corner, enabled, displayUnit)}</p>
             {mode === "frozen" && unlocked && <p className="pod-spec-card-unlocked-notice">{SPEC_CARD_UNLOCKED_NOTICE}</p>}
             {reprinting && reprintProgress && (
               <p className="pod-spec-card-reprint-progress" role="status">
@@ -233,6 +243,12 @@ export function SpecCardDrawer({ open, config, batch, baseTemplateId, onClose, o
   );
 }
 
-function isConfiguredSummary(cells: string[][], style: SpecCardStyle, corner: SpecCardCorner, enabled: boolean): string {
-  return specCardSummaryText({ enabled, style, corner, cells });
+function isConfiguredSummary(
+  cells: string[][],
+  style: SpecCardStyle,
+  corner: SpecCardCorner,
+  enabled: boolean,
+  displayUnit: SpecCardDisplayUnit,
+): string {
+  return specCardSummaryText({ enabled, style, corner, display_unit: displayUnit, cells });
 }

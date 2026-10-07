@@ -101,6 +101,20 @@ button { cursor: pointer; }
 .workspace-tab-panel.is-active > * > *:nth-child(6) { animation-delay: .74s; }
 .workspace-tab-panel.is-active > * > *:nth-child(7) { animation-delay: .86s; }
 .workspace-tab-panel.is-active > * > *:nth-child(n+8) { animation-delay: .98s; }
+
+/* POD 三个模块（全定制 / 半定制 / 爆款复刻）的页面根直接子块是 header 与网格容器，
+   落不进上面只认 section / *-card / *-panel 的选择器，这里按同一套动画补齐。
+   必须写成 animation-* 长写属性：简写会把上面 nth-child 规则给的 animation-delay 重置为 0，
+   那样所有区块就同时出现、没有逐块浮现的节奏了。 */
+.workspace-tab-panel.is-active > .pod-customization-page > *,
+.workspace-tab-panel.is-active > .pod-semi-customization-page > *,
+.workspace-tab-panel.is-active > .pod-replica-page > * {
+  animation-name: workbench-block-in;
+  animation-duration: .8s;
+  animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  animation-fill-mode: backwards;
+}
+
 /* 主题切换:主区三块自上而下逐块浮现,内容面板随后跟上 */
 /* 主题切换期间:让全界面的颜色一起流动,而不是只有背景在变、文字和边框硬切。
    只在这 1.4s 窗口内生效(见 useTheme.ts 的 CASCADE_MS),结束后自动移除,不拖累平时交互。
@@ -153,6 +167,9 @@ html.mode-cascade .sidebar-card { animation-delay: 0.16s; }
   html.theme-cascade .workspace-tab-panel.is-active > * > section,
   html.theme-cascade .workspace-tab-panel.is-active > * > [class*="-card"],
   html.theme-cascade .workspace-tab-panel.is-active > * > [class*="-panel"] { animation: none; }
+  .workspace-tab-panel.is-active > .pod-customization-page > *,
+  .workspace-tab-panel.is-active > .pod-semi-customization-page > *,
+  .workspace-tab-panel.is-active > .pod-replica-page > * { animation: none; }
   html.mode-cascade .workspace-main, html.mode-cascade .content-card, html.mode-cascade .sidebar-card { animation: none; }
 }
 @keyframes topbar-water-flow { 0%, 2% { opacity: 0; background-position: 125% 0; } 3% { opacity: .9; } 9% { opacity: .72; } 15% { opacity: 0; background-position: -125% 0; } 100% { opacity: 0; background-position: -125% 0; } }

@@ -66,7 +66,7 @@ def _service(tmp_path: Path) -> PodCustomizationService:
 
 
 def _listing_payload_from_legacy_skus(
-    skus: list[dict[str, object]], *, title_mode: str = "long"
+    skus: list[dict[str, object]], *, title_mode: str = "long", display_unit: str = "cm"
 ) -> ListingFields:
     """把旧结构 SKU（含长宽高）改写为新契约：申报价下移到 SKU，长宽高搬进 spec_card 尺寸表。"""
 
@@ -83,6 +83,7 @@ def _listing_payload_from_legacy_skus(
             for sku in skus
         ],
         spec_card={
+            "display_unit": display_unit,
             "cells": [
                 ["尺寸图", "长", "宽", "高"],
                 *[
@@ -100,7 +101,10 @@ def _listing_payload_from_legacy_skus(
 
 
 def _listing(
-    *, title_mode: str = "long", skus: list[dict[str, object]] | None = None
+    *,
+    title_mode: str = "long",
+    skus: list[dict[str, object]] | None = None,
+    display_unit: str = "cm",
 ) -> ListingFields:
     return _listing_payload_from_legacy_skus(
         skus
@@ -114,6 +118,7 @@ def _listing(
             }
         ],
         title_mode=title_mode,
+        display_unit=display_unit,
     )
 
 
@@ -333,6 +338,7 @@ def _batch(
     count: int = 2,
     title_mode: str = "long",
     skus: list[dict[str, object]] | None = None,
+    display_unit: str = "cm",
 ) -> dict:
     template = service.upload_template(actor, name="Scene", filename="scene.png", content=_png())
     service.update_template_calibration(
@@ -349,7 +355,7 @@ def _batch(
             template_id=template["id"],
             count=count,
             business_fields=BusinessFields(product_name="Canvas tote", product_category="Home > Bags"),
-            listing_fields=_listing(title_mode=title_mode, skus=skus),
+            listing_fields=_listing(title_mode=title_mode, skus=skus, display_unit=display_unit),
         ),
         enqueue=False,
     )
@@ -517,6 +523,42 @@ def test_service_export_repeats_each_style_for_saved_skus_and_uses_last_scene_as
         "https://images.example.com/pod/1/final-scene.png",
         "https://images.example.com/pod/1/final-scene.png",
     ]
+
+
+def test_service_export_converts_dimensions_to_selected_inches_and_keeps_stored_centimetres(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    actor = _actor()
+    batch = _batch(
+        service,
+        actor,
+        count=1,
+        display_unit="in",
+        skus=[
+            {"name": "CT-BLACK", "length_cm": 25.4, "width_cm": 50.8, "height_cm": 76.2, "weight_g": 450},
+        ],
+    )
+    _complete_style(service, batch["id"], 1)
+    _settle(service, batch["id"])
+    _complete_listing_title(service, batch["id"], 1)
+    service.repository.upsert_style_copy(
+        batch["id"], actor.workspace_id, actor.id, 1,
+        title="Coastal Tote", english_title="Coastal Canvas Tote", description="Carry calm everywhere.",
+    )
+
+    exported = service.export_dianxiaomi(actor, batch["id"])
+    workbook = load_workbook(io.BytesIO(exported.content), data_only=True)
+    try:
+        row = list(workbook.active.iter_rows(min_row=2, max_row=2, values_only=True))[0]
+    finally:
+        workbook.close()
+
+    stored = service.get_batch(actor, batch["id"])["listing_fields"]["spec_card"]
+    assert row[11:14] == (10, 20, 30)
+    assert stored["display_unit"] == "in"
+    assert stored["cells"][1][1:4] == ["25.4", "50.8", "76.2"]
+    service.close()
 
 
 def test_service_export_uses_selected_short_title_for_both_title_columns(tmp_path: Path) -> None:

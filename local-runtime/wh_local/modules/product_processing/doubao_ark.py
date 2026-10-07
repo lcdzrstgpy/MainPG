@@ -14,7 +14,7 @@ from ...config import is_ip_literal_host
 
 
 API_URL = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
-MODEL_ID = "doubao-seed-2-0-mini-260428"
+MODEL_ID = "doubao-seed-2-1-lite-260915"
 # 服务端单次上游文本调用上限是 240s（多 SKU 翻译分批时经常远超 60s）。客户端若沿用
 # 60s 会在服务端仍在处理时放弃，随后的重试立即命中网关
 # 409「identical gateway request is already in progress」，重试预算被白白耗尽。

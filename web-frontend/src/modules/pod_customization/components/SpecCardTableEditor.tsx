@@ -7,7 +7,7 @@ import {
 
 type Props = {
   /**
-   * 受控表格内容：cells[row][column]，纯文本，原样提交。
+   * 受控表格内容：cells[row][column]，纯文本，按厘米原值提交。
    * 结构（行数、表头、第 1 列）由 SKU 预设决定，本组件只让用户编辑数据格。
    */
   cells: string[][];
@@ -78,7 +78,7 @@ export function SpecCardTableEditor({ cells, onChange, disabled = false }: Props
         </tbody>
       </table>
 
-      <p className="pod-spec-card-table-hint">{SPEC_CARD_HEADER_ROW_HINT}；{SPEC_CARD_COLUMN_ALIGN_HINT}；单元格内容原样印出。</p>
+      <p className="pod-spec-card-table-hint">{SPEC_CARD_HEADER_ROW_HINT}；{SPEC_CARD_COLUMN_ALIGN_HINT}；尺寸输入始终按厘米保存，印图和导出时按所选单位换算。</p>
       <p className="pod-spec-card-table-hint">{SPEC_CARD_STRUCTURE_HINT}</p>
       {limitNotice && <p className="pod-spec-card-table-notice" role="alert">{limitNotice}</p>}
     </div>

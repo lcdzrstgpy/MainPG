@@ -67,6 +67,19 @@ test("new POD drafts start with one blank SKU carrying declared price and weight
   assert.deepEqual(createEmptyPodCustomizationDraft().listing_fields.skus, [
     { name: "", declared_price: "", weight_g: "" },
   ]);
+  assert.equal(createEmptyPodCustomizationDraft().spec_card.display_unit, "cm");
+});
+
+test("legacy current-version drafts without a spec-card unit default to centimetres", () => {
+  const storage = new MemoryStorage();
+  const draft = JSON.parse(JSON.stringify(createEmptyPodCustomizationDraft())) as Record<string, unknown>;
+  delete (draft.spec_card as Record<string, unknown>).display_unit;
+  storage.setItem(podCustomizationDraftStorageKey("account-a", "workspace-a"), JSON.stringify(draft));
+
+  const loaded = loadPodCustomizationDraft("account-a", "workspace-a", storage);
+
+  assert.equal(loaded.error, undefined);
+  assert.equal(loaded.state.spec_card.display_unit, "cm");
 });
 
 test("v2 POD drafts move their global weight and declared price into each SKU and dimensions into the spec card", () => {

@@ -99,11 +99,14 @@ export type SpecCardStyle = "light" | "dark";
 
 export type SpecCardCorner = "bottom-right" | "bottom-left" | "top-right" | "top-left";
 
-/** 第 4 张图（素材图）上原样印出的用户自填表格；配置随批次快照冻结。 */
+export type SpecCardDisplayUnit = "cm" | "in";
+
+/** 第 4 张图（素材图）的尺寸卡；单元格按厘米冻结，消费端按 display_unit 派生展示值。 */
 export type SpecCardConfig = {
   enabled: boolean;
   style: SpecCardStyle;
   corner: SpecCardCorner;
+  display_unit: SpecCardDisplayUnit;
   cells: string[][];
 };
 
@@ -111,6 +114,7 @@ export type SpecCardPreviewRequest = {
   cells: string[][];
   style: SpecCardStyle;
   corner: SpecCardCorner;
+  display_unit: SpecCardDisplayUnit;
   enabled: boolean;
   base_template_id?: string;
 };
@@ -123,6 +127,7 @@ export type SpecCardReprintRequest = {
   cells: string[][];
   style: SpecCardStyle;
   corner: SpecCardCorner;
+  display_unit: SpecCardDisplayUnit;
   enabled: boolean;
   style_index?: number | null;
 };

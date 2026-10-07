@@ -36,6 +36,19 @@ class SceneOptimizationRequest:
 
 
 @dataclass(frozen=True)
+class ListingReferenceImage:
+    """多参考图请求中的一张：角色 + 图片字节 + 内容类型。
+
+    复刻固定传两张，顺序 ``[pattern_source, target_product]``；全定制沿用旧的
+    ``template_image/template_content_type`` 单图路径；半定制零参考图。
+    """
+
+    role: str
+    content: bytes
+    content_type: str
+
+
+@dataclass(frozen=True)
 class DirectListingGridRequest:
     trial_id: str
     prompt: str
@@ -43,6 +56,7 @@ class DirectListingGridRequest:
     template_id: str = ""
     template_image: bytes = b""
     template_content_type: str = ""
+    reference_images: tuple[ListingReferenceImage, ...] = ()
     model_id: str = "gpt-image-2-2k"
     size: str = "1024x1024"
 

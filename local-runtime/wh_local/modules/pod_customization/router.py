@@ -26,6 +26,7 @@ from .contracts import (
     ExportSelectionUpdate,
     ManualTitleUpdate,
     RegenerateItemCreate,
+    ReplicaBatchCreate,
     SceneOptimizationCreate,
     SemiBatchCreate,
     SpecCardPreviewRequest,
@@ -60,9 +61,13 @@ class PodRequestLimitMiddleware:
             return
 
         path = str(scope.get("path") or "").rstrip("/") or "/"
+        multipart_paths = {
+            f"{_POD_API_PREFIX}/templates",
+            f"{_POD_API_PREFIX}/replica/images",
+        }
         max_bytes = (
             POD_TEMPLATE_MULTIPART_MAX_BYTES
-            if scope.get("method") == "POST" and path == f"{_POD_API_PREFIX}/templates"
+            if scope.get("method") == "POST" and path in multipart_paths
             else POD_JSON_REQUEST_MAX_BYTES
         )
         headers = dict(scope.get("headers") or ())
@@ -276,6 +281,51 @@ def create_router(
                 "X-POD-Semi-Count": str(item_count),
             },
         )
+
+    # --- 爆款复刻：独立上传 + 复刻批次创建/查询 ---
+    @router.post("/replica/images")
+    async def upload_replica_image(request: Request, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        length = request.headers.get("content-length", "")
+        if length.isdigit() and int(length) > POD_TEMPLATE_MULTIPART_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="POD image upload is too large")
+        form = await request.form()
+        upload = form.get("file")
+        role = str(form.get("role") or "").strip()
+        if upload is None or not hasattr(upload, "read"):
+            raise HTTPException(status_code=400, detail="file is required")
+        try:
+            content = await upload.read(MAX_TEMPLATE_UPLOAD_BYTES + 1)
+            if len(content) > MAX_TEMPLATE_UPLOAD_BYTES:
+                raise HTTPException(status_code=413, detail="POD image upload is too large")
+            return _call(
+                service.upload_replica_image,
+                actor,
+                role=role,
+                filename=str(getattr(upload, "filename", "replica-image")),
+                content=content,
+            )
+        finally:
+            await upload.close()
+
+    @router.post("/replica/batches")
+    def create_replica_batch(body: ReplicaBatchCreate, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        return _call(service.create_replica_batch, actor, body, enqueue=start_workers)
+
+    @router.get("/replica/batches")
+    def list_replica_batches(
+        limit: int = Query(default=20, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        permitted(actor, "pod_customization.read")
+        return _call(service.list_replica_batches, actor, limit=limit, offset=offset)
+
+    @router.get("/replica/batches/{batch_id}")
+    def get_replica_batch(batch_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
+        permitted(actor, "pod_customization.read")
+        return _call(service.get_replica_batch, actor, batch_id)
 
     @router.post("/brief/fields")
     def generate_brief_fields(

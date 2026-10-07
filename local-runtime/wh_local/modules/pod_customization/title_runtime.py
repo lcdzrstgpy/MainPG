@@ -197,7 +197,7 @@ def validate_listing_copy_text(field: str, value: object, *, max_length: int) ->
 
 
 class PodTitleRuntime(AiRuntime):
-    """An independent two-worker, two-slot Doubao lane for POD titles."""
+    """An independent, capacity-aligned Doubao lane for POD titles."""
 
     def __init__(
         self,
@@ -208,13 +208,14 @@ class PodTitleRuntime(AiRuntime):
         session: Any | None = None,
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
+        provider_capacity = max(1, int(provider_concurrency))
         super().__init__(
             AiRuntimeConfig(
                 name="pod-title",
                 executor_workers=max(1, int(executor_workers)),
-                pool_connections=2,
-                pool_maxsize=2,
-                provider_concurrency=max(1, int(provider_concurrency)),
+                pool_connections=provider_capacity,
+                pool_maxsize=provider_capacity,
+                provider_concurrency=provider_capacity,
                 requests_per_minute=max(0.0, float(requests_per_minute)),
                 user_agent="MainPG-PodTitle/1.0",
             ),
@@ -323,7 +324,12 @@ class PodTitleRuntime(AiRuntime):
                     "Content-Type": "application/json",
                     "User-Agent": "MainPG-PodTitle/1.0",
                 },
-                json={"model": MODEL_ID, "messages": messages, "response_format": _TITLE_RESPONSE_FORMAT},
+                json={
+                    "model": MODEL_ID,
+                    "messages": messages,
+                    "thinking": {"type": "disabled"},
+                    "response_format": _TITLE_RESPONSE_FORMAT,
+                },
                 timeout=REQUEST_TIMEOUT_SECONDS,
                 allow_redirects=False,
             )
@@ -368,7 +374,7 @@ class PodTitleRuntime(AiRuntime):
             )
         return content.strip()
 
-REQUEST_TIMEOUT_SECONDS = 60.0
+REQUEST_TIMEOUT_SECONDS = 80.0
 
 
 def _messages_for_request(request: PodTitleRequest, *, rejection_feedback: str) -> list[dict[str, Any]]:

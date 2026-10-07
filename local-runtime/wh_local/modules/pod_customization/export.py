@@ -15,6 +15,8 @@ from ...shared.miaoshou_workbook import (
     miaoshou_row_values,
 )
 from .dianxiaomi import DXM_COLUMNS, build_dianxiaomi_workbook
+from .replica_context import style_product_context
+from .spec_card_units import SPEC_CARD_DISPLAY_UNIT_CM, display_dimension_value
 from .title_runtime import validate_listing_copy_text
 
 
@@ -131,25 +133,47 @@ def _is_export_selected(batch: dict[str, Any], style_index: int) -> bool:
     return bool(selections.get(style_index, True))
 
 
+def _iter_export_rows(
+    batch: dict[str, Any],
+    style_copies: dict[int, Any],
+    exportable_styles: dict[int, dict[str, str]],
+):
+    """逐款展开 SKU：通过按款解析器读取该款的上架字段，款间不合并、不回退首款。"""
+    for style_index in sorted(exportable_styles):
+        context = style_product_context(batch, style_index)
+        business_fields = context["business_fields"]
+        listing_fields = context["listing_fields"]
+        for sku_index, sku in enumerate(_export_skus(listing_fields), start=1):
+            yield (
+                style_index,
+                exportable_styles[style_index],
+                style_copies[style_index],
+                business_fields,
+                listing_fields,
+                sku,
+                sku_index,
+            )
+
+
 def build_pod_dianxiaomi_export(
     batch: dict[str, Any], style_copies: dict[int, Any]
 ) -> DianxiaomiExport:
     analysis = analyze_dianxiaomi_export(batch, style_copies)
     if analysis.block_reason is not None:
         raise ValueError(analysis.block_reason)
-    skus = _export_skus(batch["listing_fields"])
     rows = [
         _build_row(
             style_index,
-            analysis.exportable_styles[style_index],
-            style_copies[style_index],
-            batch["business_fields"],
-            batch["listing_fields"],
+            images,
+            copy,
+            business_fields,
+            listing_fields,
             sku,
             sku_index=sku_index,
         )
-        for style_index in sorted(analysis.exportable_styles)
-        for sku_index, sku in enumerate(skus, start=1)
+        for style_index, images, copy, business_fields, listing_fields, sku, sku_index in (
+            _iter_export_rows(batch, style_copies, analysis.exportable_styles)
+        )
     ]
     return DianxiaomiExport(
         content=build_dianxiaomi_workbook(rows),
@@ -172,29 +196,29 @@ def build_pod_miaoshou_export(
     analysis = analyze_dianxiaomi_export(batch, style_copies)
     if analysis.block_reason is not None:
         raise ValueError(analysis.block_reason)
-    skus = _export_skus(batch["listing_fields"])
     rows: list[dict[int, Any]] = []
-    for style_index in sorted(analysis.exportable_styles):
-        for sku_index, sku in enumerate(skus, start=1):
-            dxm_row = _build_row(
-                style_index,
-                analysis.exportable_styles[style_index],
-                style_copies[style_index],
-                batch["business_fields"],
-                batch["listing_fields"],
-                sku,
-                sku_index=sku_index,
+    for style_index, images, copy, business_fields, listing_fields, sku, sku_index in (
+        _iter_export_rows(batch, style_copies, analysis.exportable_styles)
+    ):
+        dxm_row = _build_row(
+            style_index,
+            images,
+            copy,
+            business_fields,
+            listing_fields,
+            sku,
+            sku_index=sku_index,
+        )
+        rows.append(
+            miaoshou_row_values(
+                dxm_row,
+                kind,
+                # 妙手描述列不支持 HTML：把店小秘行里的 <img> 换成图片 URL 逐行。
+                description=_miaoshou_description(dxm_row[2]),
+                # 妙手库存必须为「大于等于 0 的整数」；POD 不设库存，按约定写 0。
+                stock=0,
             )
-            rows.append(
-                miaoshou_row_values(
-                    dxm_row,
-                    kind,
-                    # 妙手描述列不支持 HTML：把店小秘行里的 <img> 换成图片 URL 逐行。
-                    description=_miaoshou_description(dxm_row[2]),
-                    # 妙手库存必须为「大于等于 0 的整数」；POD 不设库存，按约定写 0。
-                    stock=0,
-                )
-            )
+        )
     return PodWorkbookExport(
         content=build_miaoshou_workbook_bytes(rows, kind),
         exported_style_count=len(analysis.exportable_styles),
@@ -393,10 +417,19 @@ def _sku_dimensions(listing_fields: dict[str, Any], sku: dict[str, Any]) -> tupl
     """长/宽/高：优先从尺寸详情表格按 SKU 名反查，旧快照退回 SKU 自身字段。"""
 
     name = str(sku.get("name") or "").strip()
+    spec_card = listing_fields.get("spec_card")
+    display_unit = (
+        str(spec_card.get("display_unit") or SPEC_CARD_DISPLAY_UNIT_CM)
+        if isinstance(spec_card, dict)
+        else SPEC_CARD_DISPLAY_UNIT_CM
+    )
     if name:
         for row in _skus_rows_cells(listing_fields):
             if len(row) >= 4 and str(row[0]).strip() == name:
-                return (_cell_number(row[1]), _cell_number(row[2]), _cell_number(row[3]))
+                return tuple(
+                    _cell_number(display_dimension_value(row[column], display_unit))
+                    for column in (1, 2, 3)
+                )
     if all(key in sku for key in ("length_cm", "width_cm", "height_cm")):
         return sku["length_cm"], sku["width_cm"], sku["height_cm"]
     raise ValueError(f"dimensions for SKU {name or '<unnamed>'} are missing from the spec card")

@@ -134,6 +134,27 @@ def test_title_runtime_owns_a_dedicated_session_executor_and_provider_capacity()
         product.close()
 
 
+def test_title_runtime_scales_connection_pool_with_provider_concurrency() -> None:
+    from wh_local.modules.pod_customization.title_runtime import PodTitleRuntime
+
+    runtime = PodTitleRuntime(
+        executor_workers=8,
+        provider_concurrency=8,
+        requests_per_minute=0,
+    )
+    try:
+        assert runtime.config.pool_connections == 8
+        assert runtime.config.pool_maxsize == 8
+    finally:
+        runtime.close()
+
+
+def test_title_runtime_uses_eighty_second_request_timeout() -> None:
+    from wh_local.modules.pod_customization.title_runtime import REQUEST_TIMEOUT_SECONDS
+
+    assert REQUEST_TIMEOUT_SECONDS == 80.0
+
+
 def test_title_request_uses_cropped_hero_and_includes_style_task_id() -> None:
     from wh_local.modules.pod_customization.title_runtime import PodTitleRuntime
 
@@ -147,12 +168,13 @@ def test_title_request_uses_cropped_hero_and_includes_style_task_id() -> None:
     assert result.title == _payload()["title"]
     assert result.english_title == "Coastal Botanical Canvas Tote with Ocean Fern Artwork"
     assert result.description == "A canvas tote featuring layered coastal botanical artwork for everyday carry."
-    assert result.model == "doubao-seed-2-0-mini-260428"
+    assert result.model == "doubao-seed-2-1-lite-260915"
     assert result.prompt_version == "pod-title-v1"
     assert result.attempt_count == 1
     body = session.requests[0]["json"]
     assert isinstance(body, dict)
-    assert body["model"] == "doubao-seed-2-0-mini-260428"
+    assert body["model"] == "doubao-seed-2-1-lite-260915"
+    assert body["thinking"] == {"type": "disabled"}
     response_format = body["response_format"]
     assert response_format["type"] == "json_schema"
     assert response_format["json_schema"]["strict"] is True

@@ -4,6 +4,8 @@ import test from "node:test";
 
 const source = readFileSync(new URL("./PodCustomizationPage.tsx", import.meta.url), "utf8");
 const gallerySource = readFileSync(new URL("../components/PodBatchGallery.tsx", import.meta.url), "utf8");
+// 店小秘上架编辑器已抽为受控组件，SKU 与规格卡入口的标记断言改为指向该共享组件。
+const listingEditorSource = readFileSync(new URL("../components/PodListingFieldsEditor.tsx", import.meta.url), "utf8");
 const listingDrawerSource = readFileSync(new URL("../components/PodListingDetailDrawer.tsx", import.meta.url), "utf8");
 const modelSource = readFileSync(new URL("../data/podCustomizationModel.ts", import.meta.url), "utf8");
 const styles = readFileSync(new URL("../styles/podCustomization.css", import.meta.url), "utf8");
@@ -75,22 +77,23 @@ test("system-template save control has its own secondary action treatment", () =
 });
 
 test("listing editor keeps declared price and weight on each SKU and appends a blank SKU", () => {
-  const listingFieldDeclaration = source.slice(source.indexOf("const LISTING_FIELDS"), source.indexOf("function toSummary"));
+  const listingFieldDeclaration = listingEditorSource.slice(listingEditorSource.indexOf("const LISTING_FIELDS"), listingEditorSource.indexOf("type Props"));
 
   assert.doesNotMatch(listingFieldDeclaration, /length_cm/);
   assert.doesNotMatch(listingFieldDeclaration, /width_cm/);
   assert.doesNotMatch(listingFieldDeclaration, /height_cm/);
   assert.doesNotMatch(listingFieldDeclaration, /weight_g/);
-  assert.match(source, /新增 SKU/);
-  assert.match(source, /aria-label="SKU 名称"/);
-  assert.match(source, /aria-label="SKU 申报价"/);
-  assert.match(source, /aria-label="SKU 重量（g）"/);
-  assert.match(source, /aria-label="删除 SKU"/);
+  assert.match(listingEditorSource, /新增 SKU/);
+  assert.match(listingEditorSource, /aria-label="SKU 名称"/);
+  assert.match(listingEditorSource, /aria-label="SKU 申报价"/);
+  assert.match(listingEditorSource, /aria-label="SKU 重量（g）"/);
+  assert.match(listingEditorSource, /aria-label="删除 SKU"/);
   // 长/宽/高不再挂在 SKU 行上，改由尺寸详情（规格卡）表格承载。
-  assert.doesNotMatch(source, /aria-label="SKU 长（cm）"/);
-  assert.doesNotMatch(source, /aria-label="SKU 宽（cm）"/);
-  assert.doesNotMatch(source, /aria-label="SKU 高（cm）"/);
-  assert.match(source, /每个 SKU 需填写名称、申报价与重量/);
+  assert.doesNotMatch(listingEditorSource, /aria-label="SKU 长（cm）"/);
+  assert.doesNotMatch(listingEditorSource, /aria-label="SKU 宽（cm）"/);
+  assert.doesNotMatch(listingEditorSource, /aria-label="SKU 高（cm）"/);
+  assert.match(listingEditorSource, /每个 SKU 需填写名称、申报价与重量/);
+  assert.match(source, /<PodListingFieldsEditor/);
   assert.match(source, /updateSku/);
   assert.match(source, /addSku/);
   assert.match(source, /removeSku/);
@@ -100,9 +103,9 @@ test("listing editor keeps declared price and weight on each SKU and appends a b
 test("SKU validation marks each invalid field beside its own input", () => {
   assert.match(source, /const \[skuFieldErrors, setSkuFieldErrors\] = useState<SkuFieldErrors>\(\{\}\);/);
   assert.match(source, /validateSkuFields\(listingFields\.skus\)/);
-  assert.match(source, /aria-invalid=\{Boolean\(skuFieldErrors\[skuErrorKey\(index, "name"\)\]\)\}/);
-  assert.match(source, /className="pod-sku-field-error"/);
-  assert.match(source, /SKU「\$\{skuLabel\}」的\$\{SKU_FIELD_LABELS\[key\]\}/);
+  assert.match(listingEditorSource, /aria-invalid=\{Boolean\(skuFieldErrors\[skuErrorKey\(index, "name"\)\]\)\}/);
+  assert.match(listingEditorSource, /className="pod-sku-field-error"/);
+  assert.match(listingEditorSource, /SKU「\$\{skuLabel\}」的\$\{SKU_FIELD_LABELS\[key\]\}/);
 });
 
 test("SKU rows fit all three fields in the existing desktop setup panel and only wrap on narrow viewports", () => {
@@ -114,9 +117,9 @@ test("SKU rows fit all three fields in the existing desktop setup panel and only
 
 test("adding SKU stops at the supported limit with an accessible explanation", () => {
   assert.match(source, /const skuLimitReached = listingFields\.skus\.length >= 100;/);
-  assert.match(source, /disabled=\{skuLimitReached\}/);
-  assert.match(source, /aria-describedby=\{skuLimitReached \? "pod-sku-limit-notice" : undefined\}/);
-  assert.match(source, /已达到 100 个 SKU 上限。/);
+  assert.match(listingEditorSource, /disabled=\{skuLimitReached\}/);
+  assert.match(listingEditorSource, /aria-describedby=\{skuLimitReached \? "pod-sku-limit-notice" : undefined\}/);
+  assert.match(listingEditorSource, /已达到 100 个 SKU 上限。/);
 });
 
 test("listing detail shows SKU declared price, weight and spec-card dimensions while retaining legacy dimensions", () => {

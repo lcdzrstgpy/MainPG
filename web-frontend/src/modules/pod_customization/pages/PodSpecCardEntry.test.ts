@@ -11,23 +11,27 @@ const modelSource = readFileSync(new URL("../data/podCustomizationModel.ts", imp
 const draftSource = readFileSync(new URL("../data/podCustomizationDraft.ts", import.meta.url), "utf8");
 const apiSource = readFileSync(new URL("../api/podCustomizationApi.ts", import.meta.url), "utf8");
 const styles = readFileSync(new URL("../styles/podCustomization.css", import.meta.url), "utf8");
+// 店小秘上架编辑器已抽为受控组件：SKU 预设与规格卡入口的标记断言改为指向该共享组件。
+const listingEditorSource = readFileSync(new URL("../components/PodListingFieldsEditor.tsx", import.meta.url), "utf8");
 
 function between(startMarker: string, endMarker: string): string {
   return source.slice(source.indexOf(startMarker), source.indexOf(endMarker));
 }
 
 test("the spec-card entry sits below the SKU preset with its required marker and summary", () => {
-  const skuEditor = source.indexOf('className="pod-sku-editor"');
-  const entry = source.indexOf('className="pod-spec-card-entry"');
+  const editor = source.indexOf("<PodListingFieldsEditor");
   const volume = source.indexOf('<div className="pod-volume-inline">');
+  const skuEditor = listingEditorSource.indexOf('className="pod-sku-editor"');
+  const entry = listingEditorSource.indexOf('className="pod-spec-card-entry"');
 
+  assert.ok(editor >= 0, "expected the shared listing editor to be rendered by the POD page");
+  assert.ok(volume > editor, "expected the spec-card entry inside the listing section");
   assert.ok(skuEditor >= 0, "expected the SKU preset block");
   assert.ok(entry > skuEditor, "expected the spec-card entry below the SKU preset block");
-  assert.ok(volume > entry, "expected the spec-card entry inside the listing section");
-  assert.match(source, /aria-label="规格卡配置"/);
-  assert.match(source, /className="pod-spec-card-entry-button"[\s\S]*?>批量添加尺寸<em>\*<\/em>/);
-  assert.match(source, /isSpecCardConfigured\(specCard\) \? "pod-spec-card-entry-summary" : "pod-spec-card-entry-summary is-warning"/);
-  assert.match(source, /specCardSummaryText\(specCard\)/);
+  assert.match(listingEditorSource, /aria-label="规格卡配置"/);
+  assert.match(listingEditorSource, /className="pod-spec-card-entry-button"[\s\S]*?>批量添加尺寸<em>\*<\/em>/);
+  assert.match(listingEditorSource, /isSpecCardConfigured\(specCard\) \? "pod-spec-card-entry-summary" : "pod-spec-card-entry-summary is-warning"/);
+  assert.match(listingEditorSource, /specCardSummaryText\(specCard\)/);
   assert.match(styles, /\.pod-spec-card-entry-summary\.is-warning \{ color: #a84c48;/);
 });
 
@@ -82,22 +86,32 @@ test("the drawer mirrors the shared drawer shell with dialog semantics", () => {
 test("the drawer edits the table, the style and the corner through the dedicated sections", () => {
   assert.match(drawerSource, /<SpecCardTableEditor cells=\{cells\} onChange=\{setCells\} disabled=\{readOnly\} \/>/);
   assert.match(drawerSource, /<SpecCardAppearanceControls[\s\S]*?onCornerChange=\{setCorner\}/);
-  assert.match(drawerSource, /<SpecCardPreview cells=\{cells\} style=\{style\} corner=\{corner\} enabled=\{enabled\} baseTemplateId=\{baseTemplateId\} \/>/);
+  assert.match(drawerSource, /<SpecCardPreview cells=\{cells\} style=\{style\} corner=\{corner\} enabled=\{enabled\} displayUnit=\{displayUnit\} baseTemplateId=\{baseTemplateId\} \/>/);
   assert.match(appearanceSource, /const CORNER_OPTIONS: SpecCardCorner\[\] = \["top-left", "top-right", "bottom-left", "bottom-right"\];/);
 
   // 用户规格（2026-09-12）：卡片外观里新增「是否印到图上」，关掉后素材图保持干净母版（长/宽/高仍照常导出）。
-  assert.match(appearanceSource, /export function SpecCardAppearanceControls\(\{ style, corner, enabled, onStyleChange, onCornerChange, onEnabledChange, disabled = false \}: Props\)/);
+  assert.match(appearanceSource, /export function SpecCardAppearanceControls\(\{ style, corner, enabled, displayUnit, onStyleChange, onCornerChange, onEnabledChange, onDisplayUnitChange, disabled = false \}: Props\)/);
   assert.match(appearanceSource, /const PRINT_OPTIONS: Array<\{ value: boolean; label: string; hint: string \}> = \[/);
   assert.match(appearanceSource, /\{ value: true, label: "印到图上", hint: "素材图带尺寸卡片" \}/);
   assert.match(appearanceSource, /\{ value: false, label: "不印", hint: "素材图保持干净" \}/);
   assert.match(appearanceSource, /aria-label="是否印到图上"/);
   assert.match(appearanceSource, /data-print=\{option\.value \? "on" : "off"\}/);
   assert.match(appearanceSource, /onClick=\{\(\) => onEnabledChange\(option\.value\)\}/);
+  assert.match(appearanceSource, /\{enabled && \([\s\S]*?印图单位<em>\*<\/em>[\s\S]*?aria-label="印图单位"/);
+  assert.match(appearanceSource, /\{ value: "cm", label: "厘米", hint: "cm" \}/);
+  assert.match(appearanceSource, /\{ value: "in", label: "英寸", hint: "in" \}/);
+  assert.match(appearanceSource, /onClick=\{\(\) => onDisplayUnitChange\(option\.value\)\}/);
   assert.match(drawerSource, /const \[enabled, setEnabled\] = useState\(config\.enabled\);/);
+  assert.match(drawerSource, /const \[displayUnit, setDisplayUnit\] = useState<SpecCardDisplayUnit>\(config\.display_unit\);/);
   assert.match(drawerSource, /setEnabled\(next\.enabled\);/);
+  assert.match(drawerSource, /setDisplayUnit\(next\.display_unit\);/);
   assert.match(drawerSource, /onEnabledChange=\{setEnabled\}/);
+  assert.match(drawerSource, /displayUnit=\{displayUnit\}/);
+  assert.match(drawerSource, /onDisplayUnitChange=\{setDisplayUnit\}/);
   assert.match(drawerSource, /const currentConfig = \(\): SpecCardConfig => \(\{\s*enabled,/);
+  assert.match(drawerSource, /display_unit: displayUnit,/);
   assert.match(drawerSource, /enabled: next\.enabled,/);
+  assert.match(drawerSource, /display_unit: next\.display_unit,/);
   assert.match(appearanceSource, /role="radiogroup" aria-label="卡片位置"/);
   assert.match(appearanceSource, /data-corner=\{option\}/);
   assert.match(styles, /\.pod-spec-card-corner-grid \{ display: grid;[\s\S]*?grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
@@ -124,7 +138,7 @@ test("the table editor enforces the fixed structure and cell limit without rewri
 
 test("the table editor injects no default table copy and no text processing", () => {
   assert.doesNotMatch(editorSource, /翻译/);
-  assert.doesNotMatch(editorSource, /单位/);
+  assert.match(editorSource, /尺寸输入始终按厘米保存，印图和导出时按所选单位换算/);
   assert.doesNotMatch(editorSource, /占位符/);
   assert.doesNotMatch(editorSource, /变量/);
   assert.doesNotMatch(editorSource, /一键模板/);

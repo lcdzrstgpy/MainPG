@@ -1,13 +1,15 @@
 import { SPEC_CARD_CORNER_LABELS } from "../data/podCustomizationModel";
-import type { SpecCardCorner, SpecCardStyle } from "../types";
+import type { SpecCardCorner, SpecCardDisplayUnit, SpecCardStyle } from "../types";
 
 type Props = {
   style: SpecCardStyle;
   corner: SpecCardCorner;
   enabled: boolean;
+  displayUnit: SpecCardDisplayUnit;
   onStyleChange: (style: SpecCardStyle) => void;
   onCornerChange: (corner: SpecCardCorner) => void;
   onEnabledChange: (enabled: boolean) => void;
+  onDisplayUnitChange: (unit: SpecCardDisplayUnit) => void;
   disabled?: boolean;
 };
 
@@ -22,10 +24,15 @@ const PRINT_OPTIONS: Array<{ value: boolean; label: string; hint: string }> = [
   { value: false, label: "不印", hint: "素材图保持干净" },
 ];
 
+const DISPLAY_UNIT_OPTIONS: Array<{ value: SpecCardDisplayUnit; label: string; hint: string }> = [
+  { value: "cm", label: "厘米", hint: "cm" },
+  { value: "in", label: "英寸", hint: "in" },
+];
+
 // 2×2 排布与图上实际象限一致：左上 / 右上 / 左下 / 右下。
 const CORNER_OPTIONS: SpecCardCorner[] = ["top-left", "top-right", "bottom-left", "bottom-right"];
 
-export function SpecCardAppearanceControls({ style, corner, enabled, onStyleChange, onCornerChange, onEnabledChange, disabled = false }: Props) {
+export function SpecCardAppearanceControls({ style, corner, enabled, displayUnit, onStyleChange, onCornerChange, onEnabledChange, onDisplayUnitChange, disabled = false }: Props) {
   return (
     <section className="pod-spec-card-appearance" aria-label="卡片外观">
       <div className="pod-spec-card-section-title"><span>APPEARANCE</span><h3>卡片外观</h3></div>
@@ -50,6 +57,29 @@ export function SpecCardAppearanceControls({ style, corner, enabled, onStyleChan
           ))}
         </div>
       </div>
+
+      {enabled && (
+        <div className="pod-spec-card-field">
+          <span className="pod-spec-card-field-label">印图单位<em>*</em></span>
+          <div className="pod-spec-card-style-options" role="radiogroup" aria-label="印图单位">
+            {DISPLAY_UNIT_OPTIONS.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                role="radio"
+                aria-checked={displayUnit === option.value}
+                className={displayUnit === option.value ? "is-active" : ""}
+                data-unit={option.value}
+                disabled={disabled}
+                onClick={() => onDisplayUnitChange(option.value)}
+              >
+                <b>{option.label}</b>
+                <i aria-hidden="true">{option.hint}</i>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="pod-spec-card-field">
         <span className="pod-spec-card-field-label">卡片风格<em>*</em></span>
