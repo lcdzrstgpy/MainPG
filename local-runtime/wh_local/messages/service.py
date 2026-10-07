@@ -97,7 +97,13 @@ class AnnouncementSyncService:
                     active_ids.append(int(item.get("id") or 0))
                 except (TypeError, ValueError):
                     logger.warning("announcement sync: bad server id %r", item.get("id"))
-            self.repository.prune_retracted(active_ids)
+            # 撤回只在**带身份**的那一轮做：不带令牌时服务端只返回全员公告，定向公告
+            # 天然缺席，按它撤回会把用户已缓存的定向公告当成"已下架"误删。
+            # （远端令牌只存在进程内存里，所以每次重启后的第一轮必然是匿名的。）
+            if headers.get("x-auth-token"):
+                self.repository.prune_retracted(active_ids)
+            else:
+                logger.info("announcement sync: anonymous pass, prune skipped")
             self._sync_pending_images(headers)
             return new_count
         except Exception as exc:  # 离线/服务器未就绪：静默降级
@@ -222,8 +228,12 @@ class FeedbackReplySyncService:
                 reply_items, kind="feedback_reply"
             )
             # 撤回：服务器已删除的反馈回复，本地对应消息一并移除。
+            # 同样要求带身份：匿名轮该接口返回的是合法空列表，按它撤回会清空整类消息。
             active_ids = [int(item.get("id") or 0) for item in reply_items]
-            self.repository.prune_retracted(active_ids, kind="feedback_reply")
+            if headers.get("x-auth-token"):
+                self.repository.prune_retracted(active_ids, kind="feedback_reply")
+            else:
+                logger.info("feedback reply sync: anonymous pass, prune skipped")
             return new_count
         except Exception as exc:  # 离线/服务器未就绪：静默降级
             logger.info("feedback reply sync unavailable (%s): %s", url, exc)

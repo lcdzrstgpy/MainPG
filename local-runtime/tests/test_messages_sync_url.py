@@ -169,7 +169,7 @@ def test_image_fetch_carries_auth_header(tmp_path, monkeypatch) -> None:
     def fake_get(url: str, **kwargs: object) -> _FakeResponse:
         captured.append((url, dict(kwargs)))
         # 列表接口必须回这条公告：回空列表会被 prune_retracted 当成"全部撤回"
-        # 把本地行删光，按需拉图就无从触发（见 test_empty_list_wipes_all）。
+        # 把本地行删光，按需拉图就无从触发（见 test_empty_list_never_wipes_local_messages）。
         return _FakeResponse(
             {
                 "announcements": [
@@ -215,19 +215,82 @@ def test_image_fetch_carries_auth_header(tmp_path, monkeypatch) -> None:
     assert _headers_of(captured[1]).get("x-auth-token") == "remote-tok-3"
 
 
-def test_empty_list_wipes_all_local_announcements(tmp_path, monkeypatch) -> None:
-    """已知行为（P2，暂不改）：服务端返回空列表会被当成"全部撤回"清空本地。
+def test_empty_list_never_wipes_local_messages(tmp_path, monkeypatch) -> None:
+    """空列表一律不撤回。
 
-    同步频率已提高（登录/进工作台都会同步），若某次返回结构合法却为空的
-    ``{"announcements": []}``，本地收件箱会被误清。这里把行为钉住，避免有人
-    在不知情的情况下放大它；真要改应加"空列表 + 距上次成功同步过短则跳过"。
+    空既可能是"服务端一条在线消息都没有"，也可能是"该接口按身份过滤后为空"
+    （匿名查反馈回复就是合法空列表）。两者无法区分，而批量删除不可逆 ——
+    宁可留下一条已下线的残留（换号/重新登录时会清），也不能误删整类消息。
     """
-    captured = _capture(monkeypatch)  # 返回 {"announcements": []}
+    _capture(monkeypatch)  # 返回 {"announcements": []}
     repository = MessagesRepository(tmp_path / "messages.sqlite3")
     repository.upsert_server_announcements(
         [{"id": 1, "title": "a", "content": "", "published_at": "2026-10-06T10:00:00+08:00"}]
     )
-    service = AnnouncementSyncService(repository, "https://example.test")
+    service = AnnouncementSyncService(
+        repository, "https://example.test", auth_token_provider=lambda: "tok"
+    )
 
     assert service.sync_once() == 0
-    assert repository.list_messages() == []
+    assert [m["server_id"] for m in repository.list_messages()] == [1]
+
+
+def test_anonymous_sync_keeps_directional_announcements(tmp_path, monkeypatch) -> None:
+    """匿名轮不得撤回：服务端匿名只回全员公告，按它撤回会把定向公告当"已下架"删掉。
+
+    远端令牌只存在进程内存里（重启即空），所以**每次重启后的第一轮必然是匿名的** ——
+    旧实现在这一刻会把用户收件箱里的定向公告清掉（真实发生过的数据丢失）。
+    """
+    _capture(monkeypatch)  # 匿名：服务端只返回全员公告
+    repository = MessagesRepository(tmp_path / "messages.sqlite3")
+    repository.upsert_server_announcements(
+        [
+            {"id": 19, "title": "全员公告", "content": "", "published_at": "p"},
+            {"id": 20, "title": "定向公告", "content": "", "published_at": "p"},
+        ]
+    )
+    service = AnnouncementSyncService(repository, "https://example.test")  # 无令牌
+
+    service.sync_once()
+
+    assert sorted(m["server_id"] for m in repository.list_messages()) == [19, 20]
+
+
+def test_anonymous_feedback_sync_keeps_local_replies(tmp_path, monkeypatch) -> None:
+    """匿名查反馈回复会拿到合法空列表 —— 绝不能按它把本地回复清空。"""
+    _capture(monkeypatch)  # 返回 {"announcements": []}
+    repository = MessagesRepository(tmp_path / "messages.sqlite3")
+    repository.upsert_server_announcements(
+        [{"id": 1_000_000_002, "title": "管理员回复", "content": "", "published_at": "p"}],
+        kind="feedback_reply",
+    )
+    service = FeedbackReplySyncService(repository, "https://example.test")  # 无令牌
+
+    service.sync_once()
+
+    assert [m["server_id"] for m in repository.list_messages()] == [1_000_000_002]
+
+
+def test_authenticated_sync_still_prunes_retracted_announcements(tmp_path, monkeypatch) -> None:
+    """带身份时必须保留撤回能力，否则服务端下架的消息会永远留在本地。"""
+
+    def fake_get(url: str, **kwargs: object) -> _FakeResponse:
+        return _FakeResponse(
+            {"announcements": [{"id": 19, "title": "全员公告", "content": "", "published_at": "p"}]}
+        )
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    repository = MessagesRepository(tmp_path / "messages.sqlite3")
+    repository.upsert_server_announcements(
+        [
+            {"id": 19, "title": "全员公告", "content": "", "published_at": "p"},
+            {"id": 20, "title": "已下架", "content": "", "published_at": "p"},
+        ]
+    )
+    service = AnnouncementSyncService(
+        repository, "https://example.test", auth_token_provider=lambda: "tok"
+    )
+
+    service.sync_once()
+
+    assert [m["server_id"] for m in repository.list_messages()] == [19]
