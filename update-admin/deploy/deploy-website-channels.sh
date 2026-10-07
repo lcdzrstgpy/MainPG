@@ -16,8 +16,18 @@ fi
 if ! grep -q '^UPDATE_PUBLIC_DOWNLOAD_PATH=' /etc/mainpg-update-admin.env; then
     printf 'UPDATE_PUBLIC_DOWNLOAD_PATH=/var/www/html/downloads/MainPG-Setup.exe\n' >> /etc/mainpg-update-admin.env
 fi
+if ! grep -q '^UPDATE_PLUGIN_PUBLISH_DIR=' /etc/mainpg-update-admin.env; then
+    printf 'UPDATE_PLUGIN_PUBLISH_DIR=/var/www/html/downloads/plugin\n' >> /etc/mainpg-update-admin.env
+    printf 'UPDATE_PLUGIN_PUBLIC_BASE_URL=https://workbench.haocoming.top/downloads\n' >> /etc/mainpg-update-admin.env
+    printf 'UPDATE_PLUGIN_DOWNLOAD_DIR=/var/www/html/downloads\n' >> /etc/mainpg-update-admin.env
+    printf 'UPDATE_PLUGIN_FILENAME_PREFIX=W-H-browser-extension\n' >> /etc/mainpg-update-admin.env
+    printf 'UPDATE_PLUGIN_MAX_UPLOAD_BYTES=67108864\n' >> /etc/mainpg-update-admin.env
+    printf 'UPDATE_PLUGIN_UPDATE_WEBSITE=1\n' >> /etc/mainpg-update-admin.env
+fi
 
-setfacl -m u:mainpg-update:rwx /var/www/html/internal-downloads /var/www/html/downloads
+install -d -o root -g www-data -m 0775 /var/www/html/downloads/plugin
+setfacl -m u:mainpg-update:rwx /var/www/html/internal-downloads /var/www/html/downloads /var/www/html/downloads/plugin
+setfacl -d -m u:mainpg-update:rwx /var/www/html/downloads/plugin
 install -o root -g root -m 0644 /tmp/app.py /opt/mainpg-update-admin/app.py
 install -o root -g root -m 0644 /tmp/app.js /opt/mainpg-update-admin/static/app.js
 install -o root -g root -m 0644 /tmp/app.css /opt/mainpg-update-admin/static/app.css

@@ -39,6 +39,22 @@ export type ProfitActivityProduct = {
   can_edit?: boolean;
 };
 
+/** 「商品货源及成本展示」页点 SKU 行「查看利润明细」时，带入单品利润表单的预填值。 */
+export type ProfitActivityPrefill = {
+  /** 商品ID（SKU/SKC/SPU），用于利润明细记录。 */
+  skc?: string;
+  /** 店铺名。 */
+  store_name?: string;
+  /** 采购成本，预填后用户只需补售价与重量。 */
+  cost_price?: string;
+  /** 货源链接。 */
+  source_url?: string;
+  /** 货源图（该 SKU 的商品图），带过来后直接填入「货源1 图片」，免去再截图粘贴。 */
+  source_image_url?: string;
+  /** 备注（一般放商品标题）。 */
+  note?: string;
+};
+
 export type ProductQueryParams = {
   site: ProfitActivitySite;
   scope: ProfitActivityScope;

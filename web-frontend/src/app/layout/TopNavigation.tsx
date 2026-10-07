@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import type { WorkspaceModuleId } from "../navigation/modules";
+import type { ProfitActivityPrefill } from "../../modules/profit_activity/types/products";
 import { useTheme, THEME_META, BUILTIN_THEME_IDS, type ThemeId, type ThemeListItemFromServer, fetchThemeList } from "../../shared/hooks/useTheme";
 import { UI_MODE_META, useUiMode, type UiModeId } from "../../shared/hooks/useUiMode";
 import { InboxBell } from "../../shared/components/InboxBell";
@@ -28,6 +29,7 @@ export type WorkspaceTab = {
   returnTaskId?: number;
   dimensionChangeSetId?: string;
   initialSetId?: string;
+  profitPrefill?: ProfitActivityPrefill;
 };
 
 type TopNavigationProps = {

@@ -4,6 +4,7 @@ export type WorkspaceModuleId =
   | "daily_selection_collection"
   | "product_processing"
   | "product_processing_history"
+  | "product_processing_sourcing"
   | "product_processing_tasks"
   | "combo_generate"
   | "combo_prompt_preset"
@@ -110,6 +111,14 @@ const productProcessingHistory: WorkspaceModule = {
   description: "查看并找回 AI 处理批次",
 };
 
+const productProcessingSourcing: WorkspaceModule = {
+  id: "product_processing_sourcing",
+  label: "货源成本",
+  icon: "",
+  iconClass: "iconfont icon-database",
+  description: "汇总各渠道采集商品的货源链接、店铺与成本价格",
+};
+
 const comboGenerate: WorkspaceModule = {
   id: "combo_generate",
   label: "组合生图",
@@ -194,7 +203,7 @@ export const workspaceModules: WorkspaceNavigationItem[] = [
     iconClass: "iconfont icon-build",
     description: "采集、处理与尺寸图制作",
     defaultChildId: "daily_selection",
-    children: [collection, productProcessing, productProcessingHistory, dimensionCanvas],
+    children: [collection, productProcessing, productProcessingHistory, productProcessingSourcing, dimensionCanvas],
   },
   {
     id: "combo_workflow",
@@ -233,6 +242,7 @@ export const workspacePageModules: WorkspaceModule[] = [
   collectionPanel,
   productProcessing,
   productProcessingHistory,
+  productProcessingSourcing,
   comboGenerate,
   comboPromptPreset,
   comboHistory,

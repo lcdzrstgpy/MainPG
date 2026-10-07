@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import asyncio
 import hashlib
 import json
+import logging
 import math
 from pathlib import Path
 from typing import Any
@@ -40,7 +41,8 @@ from .repository import (
     DailySelectionRunSummary,
 )
 from .handoff import DailySelectionConfirmResult, DailySelectionHandoff
-from .normalizer import sanitize_raw_payload
+from .link_collection import canonical_platform_url
+from .normalizer import normalize_detail_response, sanitize_raw_payload
 from .plugin_queue import DataCollectionPluginQueue, PluginCommand
 from .progress import (
     DailySelectionProgressTracker,
@@ -59,12 +61,15 @@ from .service import (
     ProviderConfigResolver,
     ProviderFactory,
     RunIdFactory,
+    _platform_config,
 )
 from .plugin_onebound_capture import (
     PluginOneBoundCaptureDependencies,
     PluginOneBoundCaptureService,
     register_plugin_onebound_capture_routes,
 )
+
+_logger = logging.getLogger(__name__)
 
 
 class DailySelectionFeedbackRequest(BaseModel):
@@ -610,7 +615,8 @@ def register_daily_selection_routes(
         except PermissionError as error:
             raise HTTPException(status_code=401, detail="invalid plugin session") from error
         draft, created = plugin_draft_writer.create_draft(
-            _plugin_product_to_draft(product), workspace_id=workspace_id
+            _enrich_plugin_draft_with_onebound(_plugin_product_to_draft(product), session_token),
+            workspace_id=workspace_id,
         )
         _schedule_source_image_sync(plugin_draft_writer, background_tasks, draft, workspace_id)
         return {
@@ -640,6 +646,47 @@ def register_daily_selection_routes(
         )["drafts"]
         return {"drafts": [draft for draft in listed if draft.get("source_ref") in requested]}
 
+    def _enrich_plugin_draft_with_onebound(
+        draft: dict[str, Any], session_token: str
+    ) -> dict[str, Any]:
+        """用商品 URL 走万邦 item_get，补齐插件草稿缺失的逐 SKU 货源价。
+
+        插件在页面上只能稳定读到「规格值 ¥价 库存N」这类文本，结构化逐 SKU
+        JSON 常抓不到，草稿就可能没有真实货源价。这里在入池前补一次详情。
+        任何失败（未配置凭据、会话离线、接口报错、链接不可解析）都原样返回，
+        采集流程绝不因为补齐失败而中断。
+        """
+        if plugin_queue is None or not _plugin_draft_needs_onebound(draft):
+            return draft
+        platform = _ONEBOUND_SOURCE_PLATFORMS[str(draft.get("source_platform") or "").strip().casefold()]
+        try:
+            identity = plugin_queue.identity_for_session(session_token)
+            actor = DailySelectionActor(
+                actor_id=str(identity["actor_id"]), workspace_id=str(identity["workspace_id"])
+            )
+            config = _platform_config(dependencies.provider_config_resolver(actor), platform)
+            provider = dependencies.provider_factory(config)
+            _canonical, offer_id = canonical_platform_url(platform, draft.get("source_ref"))
+            result = provider.get_item_detail(offer_id)
+            if not bool(getattr(result, "ok", False)):
+                return draft
+            detail = normalize_detail_response(
+                getattr(result, "response"),
+                evidence=getattr(result, "audit", None),
+                platform=platform,
+            ).model_dump(mode="python")
+            if str(detail.get("offer_id") or "") != offer_id:
+                return draft
+            _plugin_apply_onebound_detail(draft, detail)
+        except Exception:
+            _logger.warning(
+                "plugin draft onebound enrichment skipped (platform=%s source_ref=%r)",
+                platform,
+                draft.get("source_ref"),
+                exc_info=True,
+            )
+        return draft
+
     def _ingest_temu_link_result(
         command: PluginCommand,
         session_token: str,
@@ -655,7 +702,9 @@ def register_daily_selection_routes(
         if not isinstance(product, Mapping):
             return
         try:
-            draft_payload = _plugin_product_to_draft(product)
+            draft_payload = _enrich_plugin_draft_with_onebound(
+                _plugin_product_to_draft(product), session_token
+            )
         except HTTPException:
             # The plugin result is retained as command diagnostics, but only a
             # complete, usable product is allowed to enter the draft pool.
@@ -878,6 +927,424 @@ def _run_not_found(error: BaseException) -> HTTPException:
     return HTTPException(status_code=404, detail="daily-selection run not found")
 
 
+# 1688/淘宝等货源页的 SKU 面板文本形如「颜色 白色 ¥2.69 库存557989个」，
+# 这里的价格才是真实货源价。
+_PLUGIN_SKU_PANEL_PRICE = re.compile(
+    r"[¥￥]\s*([0-9]+(?:\.[0-9]{1,2})?)\s*(?:库存|现货|stock)",
+    re.IGNORECASE,
+)
+
+
+def _plugin_sku_panel_price(product: Mapping[str, Any]) -> float | None:
+    """从插件回传的 SKU 面板文本（captured_fields.specs）里取货源价。
+
+    只认「¥价 库存N」这种 SKU 面板格式，避免误取参数表/文案里的数字。
+    """
+    captured_fields = product.get("captured_fields")
+    if not isinstance(captured_fields, Mapping):
+        return None
+    specs = captured_fields.get("specs")
+    if not isinstance(specs, (list, tuple)):
+        return None
+    amounts: list[float] = []
+    for entry in specs:
+        if not isinstance(entry, str):
+            continue
+        for match in _PLUGIN_SKU_PANEL_PRICE.finditer(entry):
+            try:
+                amount = float(match.group(1))
+            except ValueError:
+                continue
+            if amount > 0:
+                amounts.append(amount)
+    return min(amounts) if amounts else None
+
+
+# SKU 面板里「规格值 ¥价 库存N」是成组的：标签就是紧挨在 ¥ 前的那个空格分隔 token，
+# 如「317打结发箍」「白色【中文包装】」。同一商品各 SKU 价格可以不同。
+_PLUGIN_SKU_PANEL_ENTRY = re.compile(
+    r"(?P<label>[^\s¥￥]+)\s*[¥￥]\s*(?P<price>[0-9]+(?:\.[0-9]{1,2})?)"
+    r"\s*(?:库存|现货|stock)\s*(?P<stock>[0-9]+)?",
+    re.IGNORECASE,
+)
+
+
+def _plugin_sku_panel_entries(product: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """解析 SKU 面板文本，返回逐 SKU 的 ``{label, price, stock}`` 条目。
+
+    整组共用一个价时（如「尺寸 12*20 ¥10 库存1410个」）标签对不上任何 SKU 值，
+    由调用方按共用价处理。
+    """
+    captured_fields = product.get("captured_fields")
+    if not isinstance(captured_fields, Mapping):
+        return []
+    specs = captured_fields.get("specs")
+    if not isinstance(specs, (list, tuple)):
+        return []
+    entries: list[dict[str, Any]] = []
+    for entry in specs:
+        if not isinstance(entry, str):
+            continue
+        for match in _PLUGIN_SKU_PANEL_ENTRY.finditer(entry):
+            try:
+                price = float(match.group("price"))
+            except ValueError:
+                continue
+            if price <= 0:
+                continue
+            stock_text = match.group("stock")
+            entries.append(
+                {
+                    "label": match.group("label").strip(),
+                    "price": price,
+                    "stock": int(stock_text) if stock_text else None,
+                }
+            )
+    return entries
+
+
+def _plugin_apply_sku_prices(
+    product: Mapping[str, Any], variant_records: list[dict[str, Any]]
+) -> None:
+    """把 SKU 面板里的真实价格/库存写回每个 SKU 记录。
+
+    面板价按标签匹配 SKU 属性值；整组共用一个价时给所有 SKU 同价；有多个价但
+    某个 SKU 标签对不上时按最低面板价兜底。SKU 记录里已有有效价格则不覆盖。
+    """
+    entries = _plugin_sku_panel_entries(product)
+    if not entries:
+        return
+    by_label: dict[str, dict[str, Any]] = {}
+    for entry in entries:
+        key = _normalized_package_specification(entry["label"])
+        if key and key not in by_label:
+            by_label[key] = entry
+    shared_price = min(entry["price"] for entry in entries)
+    for variant in variant_records:
+        existing = variant.get("price_cny")
+        if isinstance(existing, (int, float)) and existing > 0:
+            continue
+        matched: dict[str, Any] | None = None
+        for value in (variant.get("attributes") or {}).values():
+            matched = by_label.get(_normalized_package_specification(value))
+            if matched is not None:
+                break
+        if matched is None:
+            matched = by_label.get(_normalized_package_specification(variant.get("spec_text")))
+        price = matched["price"] if matched is not None else shared_price
+        variant["price_cny"] = price
+        variant["source_price"] = price
+        variant["source_currency"] = "CNY"
+        if matched is not None and matched["stock"] is not None:
+            variant["quantity"] = matched["stock"]
+
+
+def _plugin_default_weight(
+    product: Mapping[str, Any],
+) -> tuple[str | None, float | None]:
+    """取商品级重量（文本 + 千克），用于 SKU 自身缺重量时兜底。"""
+    weight_text, _ = _plugin_physical_evidence(product)
+    if not weight_text:
+        return None, None
+    match = _PLUGIN_WEIGHT_VALUE.search(weight_text)
+    if not match:
+        return weight_text[:80], None
+    try:
+        amount = float(match.group(1))
+    except ValueError:
+        return weight_text[:80], None
+    if amount <= 0:
+        return weight_text[:80], None
+    unit = (match.group(2) or "g").casefold()
+    kg = amount if unit in ("kg", "千克", "公斤") else amount / 1000.0
+    return weight_text[:80], kg
+
+
+def _plugin_apply_default_weights(
+    product: Mapping[str, Any], variant_records: list[dict[str, Any]]
+) -> None:
+    """SKU 自身没有重量时，用商品级重量兜底给该 SKU。"""
+    default_text, default_kg = _plugin_default_weight(product)
+    if default_text is None:
+        return
+    for variant in variant_records:
+        if variant.get("weight_kg") not in (None, ""):
+            continue
+        if str(variant.get("weight_text") or "").strip():
+            continue
+        variant["weight_text"] = default_text
+        if default_kg is not None:
+            variant["weight_kg"] = default_kg
+
+
+def _plugin_source_cost_cny(
+    product: Mapping[str, Any], variant_records: list[Mapping[str, Any]]
+) -> float | None:
+    """确定插件直采商品的货源成本（CNY）。
+
+    插件顶层 ``price`` 取自整页第一个 ¥ 文本（可能是广告位、推荐位或文案），
+    不能直接当成本。这里按可靠性回退：优先逐 SKU 折算出的价格，其次是 SKU
+    面板文本里的价格；都取不到时返回 None，由调用方回落到顶层 price。
+    """
+    sku_prices = [
+        float(record["price_cny"])
+        for record in variant_records
+        if isinstance(record.get("price_cny"), (int, float)) and record["price_cny"] > 0
+    ]
+    if sku_prices:
+        return min(sku_prices)
+    return _plugin_sku_panel_price(product)
+
+
+# OneBound（万邦）item_get 能按商品 URL 返回逐 SKU 真实价格；1688 与淘宝/天猫
+# 共用同一套 base_url 派生规则（`_platform_config`）。
+_ONEBOUND_SOURCE_PLATFORMS = {"1688": "1688", "taobao": "taobao", "tmall": "taobao"}
+
+
+def _plugin_amount(value: Any) -> float | None:
+    """把可能是 ``Decimal``/``float``/``str`` 的金额归一成正的 float。"""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(amount) or amount <= 0:
+        return None
+    return amount
+
+
+def _plugin_draft_needs_onebound(draft: Mapping[str, Any]) -> bool:
+    """插件草稿是否缺逐 SKU 货源价、需要万邦补齐。
+
+    只在 1688/淘宝/天猫货源站、且至少一个 SKU 没有有效 ``price_cny`` 时才为真，
+    避免对已有完整逐 SKU 价格的商品浪费付费接口额度。
+    """
+    platform = str(draft.get("source_platform") or "").strip().casefold()
+    if platform not in _ONEBOUND_SOURCE_PLATFORMS:
+        return False
+    records = draft.get("source_variant_records")
+    if not isinstance(records, (list, tuple)) or not records:
+        return True
+    for record in records:
+        if not isinstance(record, Mapping):
+            continue
+        if _plugin_amount(record.get("price_cny")) is None:
+            return True
+    return False
+
+
+def _plugin_variant_match_keys(record: Mapping[str, Any]) -> tuple[str, str]:
+    """生成跨来源匹配 SKU 用的两个键：整串规格文本 + 仅属性值集合。
+
+    插件侧规格名常是英文（``Color``），万邦侧是中文（``颜色``），所以属性名不能
+    参与匹配；只用归一化后的属性值集合。整串 ``spec_text`` 与原页面
+    ``properties_name`` 一致时优先精确匹配。
+    """
+    spec_text = record.get("spec_text")
+    spec_key = _normalized_package_specification(spec_text) if spec_text else ""
+    attributes = record.get("attributes")
+    if isinstance(attributes, Mapping) and attributes:
+        normalized = sorted(
+            value
+            for value in (_normalized_package_specification(item) for item in attributes.values())
+            if value
+        )
+        values_key = "|".join(normalized)
+    else:
+        values_key = _package_attribute_values_from_text(spec_text)
+    return spec_key, values_key
+
+
+def _plugin_value_image_map(product: Mapping[str, Any]) -> dict[str, str]:
+    """建立「规格值 → 规格图」索引，供逐 SKU 记录回填图片。
+
+    1688/淘宝页面把规格图按维度值提供（``variant_groups[*].values[*].image_url``、
+    ``variant_combinations[*].image_url``），而万邦 item_get 只按颜色维度配图；
+    按「尺寸 + 颜色」笛卡尔积展开的 SKU 记录因此常常整页无图。这里只用归一化后
+    的属性值作键：插件侧维度名常是英文（``Size``），万邦侧是中文（``尺寸``），名字对不上。
+    """
+    images: dict[str, str] = {}
+    groups = [
+        *(product.get("variant_groups") or []),
+        *(product.get("raw_variant_groups") or []),
+    ]
+    for group in groups:
+        if not isinstance(group, Mapping):
+            continue
+        for item in _plugin_group_values(group):
+            key = _normalized_package_specification(item.get("value"))
+            url = str(item.get("image_url") or "").strip()
+            if key and url:
+                images.setdefault(key, url)
+    combos = [
+        *(product.get("variant_combinations") or []),
+        *(product.get("raw_variant_combinations") or []),
+    ]
+    for combo in combos:
+        if not isinstance(combo, Mapping):
+            continue
+        url = str(combo.get("image_url") or combo.get("imageUrl") or "").strip()
+        if not url:
+            continue
+        for value in _plugin_combo_attributes(combo).values():
+            key = _normalized_package_specification(value)
+            if key:
+                images.setdefault(key, url)
+    return images
+
+
+def _plugin_record_image_from_values(
+    record: Mapping[str, Any], value_images: Mapping[str, str]
+) -> str:
+    """按记录各属性值回查规格图，命中即返回（尺寸轴通常自带缩略图）。"""
+    attributes = record.get("attributes")
+    if not isinstance(attributes, Mapping):
+        return ""
+    for value in attributes.values():
+        url = value_images.get(_normalized_package_specification(value))
+        if url:
+            return url
+    return ""
+
+
+def _plugin_fill_record_images(product: Mapping[str, Any], records: Any) -> None:
+    """给缺图的逐 SKU 记录回填插件抓到的规格值图（已有图的不覆盖）。
+
+    只补齐，不猜测：映射不到规格值图的记录保持留空，前端继续回落商品主图。
+    """
+    if not isinstance(records, (list, tuple)) or not records:
+        return
+    value_images = _plugin_value_image_map(product)
+    if not value_images:
+        return
+    for record in records:
+        if not isinstance(record, dict) or record.get("image_url"):
+            continue
+        url = _plugin_record_image_from_values(record, value_images)
+        if url:
+            record["image_url"] = url
+
+
+def _plugin_adopt_onebound_records(
+    draft: Mapping[str, Any], detail_records: Any
+) -> list[dict[str, Any]]:
+    """把万邦的 SKU 清单整段采用为草稿的逐 SKU 记录（只收有真实价的项）。
+
+    只在插件侧完全没解析出规格、或解析出的规格维度与货源站对不上（整页仍然无价）
+    时使用，作为「显示真实价」优于「整页空白」的兜底；绝不猜价。
+    """
+    adopted: list[dict[str, Any]] = []
+    for record in detail_records:
+        if not isinstance(record, Mapping):
+            continue
+        price = _plugin_amount(record.get("price_cny"))
+        if price is None:
+            continue
+        adopted.append(
+            {
+                "sku_id": str(
+                    record.get("sku_id") or f"{draft.get('candidate_id')}:onebound-{len(adopted)}"
+                ),
+                "source_sku_id": record.get("source_sku_id"),
+                "attributes": dict(record.get("attributes") or {}),
+                "spec_text": record.get("spec_text"),
+                "image_url": record.get("image_url"),
+                "price_cny": price,
+                "source_price": price,
+                "source_currency": "CNY",
+                "quantity": None,
+                "weight_text": None,
+                "weight_kg": None,
+            }
+        )
+    return adopted
+
+
+def _plugin_apply_onebound_detail(draft: dict[str, Any], detail: Mapping[str, Any]) -> bool:
+    """用万邦详情补齐插件草稿缺失的逐 SKU 货源价，返回是否发生改动。
+
+    优先按规格/属性值匹配、只填空缺、不覆盖插件已在页面读到的价；匹配不上的 SKU
+    保持留空（前端显示「—」），绝不猜价。若一条都匹配不上、且插件侧本来就没有
+    任何价（规格维度与货源站不一致），则整段采用万邦的 SKU 清单兜底。库存不合并：
+    万邦对 1688 常返回 9,999,xxx 级别的占位库存，合并会显示成假库存；重量也不合并，
+    因为万邦 item_get 不返回逐 SKU 重量。
+    """
+    detail_records = detail.get("source_variant_records")
+    if not isinstance(detail_records, (list, tuple)) or not detail_records:
+        return False
+
+    by_spec: dict[str, Mapping[str, Any]] = {}
+    by_values: dict[str, Mapping[str, Any]] = {}
+    for record in detail_records:
+        if not isinstance(record, Mapping) or _plugin_amount(record.get("price_cny")) is None:
+            continue
+        spec_key, values_key = _plugin_variant_match_keys(record)
+        if spec_key:
+            by_spec.setdefault(spec_key, record)
+        if values_key:
+            by_values.setdefault(values_key, record)
+
+    records = draft.get("source_variant_records")
+    changed = False
+    if not isinstance(records, list) or not records:
+        # 插件完全没解析出规格时，直接采用万邦的 SKU 清单（好过整页无价）。
+        adopted = _plugin_adopt_onebound_records(draft, detail_records)
+        if not adopted:
+            return False
+        draft["source_variant_records"] = adopted
+        changed = True
+    else:
+        matched = False
+        for record in records:
+            if not isinstance(record, dict) or _plugin_amount(record.get("price_cny")) is not None:
+                continue
+            spec_key, values_key = _plugin_variant_match_keys(record)
+            match = by_spec.get(spec_key) if spec_key else None
+            if match is None and values_key:
+                match = by_values.get(values_key)
+            if match is None:
+                continue
+            price = _plugin_amount(match.get("price_cny"))
+            if price is None:
+                continue
+            record["price_cny"] = price
+            record["source_price"] = price
+            record["source_currency"] = "CNY"
+            if not record.get("image_url") and match.get("image_url"):
+                record["image_url"] = match["image_url"]
+            matched = True
+        if matched:
+            changed = True
+        elif not any(
+            _plugin_amount(record.get("price_cny"))
+            for record in records
+            if isinstance(record, Mapping)
+        ):
+            # 一条都匹配不上、且插件侧本来就没有任何价：说明插件展开的规格维度
+            # 与货源站不一致（例如按图片索引而非售价维度展开），此时整页仍然无价。
+            # 改用万邦的完整 SKU 清单兜底，否则前端只会显示一列「—」。
+            adopted = _plugin_adopt_onebound_records(draft, detail_records)
+            if adopted:
+                draft["source_variant_records"] = adopted
+                changed = True
+
+    if not changed:
+        return False
+    # 万邦 item_get 只按颜色维度配图，且对 1688 常整单无图；用插件抓到的规格值图
+    # 回填，避免「尺寸 + 颜色」展开的每个 SKU 都共用商品主图。
+    _plugin_fill_record_images(draft, draft.get("source_variant_records"))
+    prices = [
+        price
+        for price in (_plugin_amount(record.get("price_cny")) for record in draft["source_variant_records"] if isinstance(record, Mapping))
+        if price is not None
+    ]
+    if prices:
+        # 与 _plugin_source_cost_cny 一致：货源成本取最低 SKU 价（起批价）。
+        draft["cost"] = min(prices)
+    return True
+
+
 def _plugin_product_to_draft(product: Mapping[str, Any]) -> dict[str, Any]:
     platform = str(product.get("platform") or "temu").strip().casefold() or "temu"
     product_id = str(product.get("product_id") or product.get("source_product_id") or "").strip()
@@ -909,20 +1376,41 @@ def _plugin_product_to_draft(product: Mapping[str, Any]) -> dict[str, Any]:
         product.get("image_url") or product.get("imageUrl") or (source_image_urls[0] if source_image_urls else "")
     ).strip()
     candidate_id = f"plugin:{platform}:{product_id or source_ref}"
+    # 插件抓到的商品页售价就是货源价：CNY 货源站（1688/淘宝/天猫）直接落成本；
+    # 非 CNY 页面（如 Temu 目的地）不写成本，避免把目的地售价当成货源成本。
+    source_price = _plugin_decimal(product.get("price"))
+    source_currency = _plugin_currency(
+        product.get("currency") or product.get("price_currency"), product.get("price"), platform
+    )
     weight_text, package_info_text = _plugin_physical_evidence(product)
     source_attributes = _plugin_source_attributes(product)
     source_variant_records = _plugin_variant_records(product, fallback_image_url=image_url)
+    # 1688/淘宝的规格图按维度值提供，尺寸轴常是唯一带图的一维；按值回填补齐
+    # 逐 SKU 缩略图，避免整页记录都回落成同一张商品主图。
+    _plugin_fill_record_images(product, source_variant_records)
+    # SKU 面板里的真实价格/库存补到每个 SKU；商品级重量给缺重量的 SKU 兜底。
+    _plugin_apply_sku_prices(product, source_variant_records)
     shipping_package_records = _plugin_shipping_package_records(product, source_variant_records)
+    _plugin_apply_default_weights(product, source_variant_records)
+    # 顶层 price 是插件从整页文本里取的第一个 ¥ 数字，可能是广告位/推荐位/文案，
+    # 不能直接当成本。CNY 货源站优先用逐 SKU 价或 SKU 面板价纠正，取不到才回落。
+    cost_cny = None
+    if source_currency == "CNY":
+        cost_cny = _plugin_source_cost_cny(product, source_variant_records)
+        if cost_cny is None:
+            cost_cny = source_price
     return {
         **sanitized_product,
         "source_type": "web_manual_capture",
         "source_platform": platform,
+        "collection_channel": "plugin_capture",
         "candidate_id": candidate_id,
         "source_ref": source_ref,
         "product_name": title,
         "title": title,
         "image_url": image_url,
         "source_image_urls": source_image_urls,
+        "cost": cost_cny,
         "declared_price": product.get("price"),
         "sku": str(product.get("sku") or "").strip() or None,
         "weight_text": weight_text,

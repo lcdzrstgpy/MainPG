@@ -34,6 +34,7 @@ const PriceVerificationPage = lazy(() => import("../../modules/price_verificatio
 const ProductProcessingVerifyPage = lazy(() => import("../../modules/product_processing/pages/ProductProcessingVerifyPage").then((m) => ({ default: m.ProductProcessingVerifyPage })));
 const ProductProcessingTaskPage = lazy(() => import("../../modules/product_processing/pages/ProductProcessingTaskPage").then((m) => ({ default: m.ProductProcessingTaskPage })));
 const ProductProcessingHistoryPage = lazy(() => import("../../modules/product_processing/pages/ProductProcessingHistoryPage").then((m) => ({ default: m.ProductProcessingHistoryPage })));
+const ProductSourcingCostPage = lazy(() => import("../../modules/product_processing/pages/ProductSourcingCostPage").then((m) => ({ default: m.ProductSourcingCostPage })));
 const ProductProcessingPrecheckPage = lazy(() => import("../../modules/product_processing/pages/ProductProcessingPrecheckPage").then((m) => ({ default: m.ProductProcessingPrecheckPage })));
 const ComboKitPage = lazy(() => import("../../modules/combo_kit/pages/ComboKitPage").then((m) => ({ default: m.ComboKitPage })));
 const ComboKitPromptPresetPage = lazy(() => import("../../modules/combo_kit/pages/ComboKitPromptPresetPage").then((m) => ({ default: m.ComboKitPromptPresetPage })));
@@ -44,6 +45,7 @@ const PodSemiCustomizationPage = lazy(() => import("../../modules/pod_semi_custo
 const AiVideoPage = lazy(() => import("../../modules/ai_video/pages/AiVideoPage").then((m) => ({ default: m.AiVideoPage })));
 const PersonalCenterPage = lazy(() => import("../../modules/personal_center/pages/PersonalCenterPage").then((m) => ({ default: m.PersonalCenterPage })));
 import type { ProductProcessingOptions } from "../../modules/product_processing/types";
+import type { ProfitActivityPrefill } from "../../modules/profit_activity/types/products";
 import type { DimensionCanvasItem, DimensionNotification } from "../../modules/product_processing/types/dimensionCanvas";
 import { DimensionNotificationRefreshFence } from "../../modules/product_processing/data/dimensionNotificationRefresh";
 import { EmptyModulePage } from "../../shared/components/EmptyModulePage";
@@ -544,6 +546,20 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
     setWorkspaceNotice("");
   };
 
+  // 从「商品货源及成本展示」的 SKU 明细跳转到「利润活动」单品利润表单，并预填成本与货源链接。
+  const openProfitActivity = (prefill: ProfitActivityPrefill) => {
+    setExpandedGroupId("sourcing_workflow");
+    setTabs((current) => {
+      const existing = current.find((tab) => tab.moduleId === "profit_activity");
+      if (existing) {
+        return current.map((tab) => (tab.moduleId === "profit_activity" ? { ...tab, profitPrefill: prefill } : tab));
+      }
+      return [...current, { key: "profit_activity", moduleId: "profit_activity", label: "利润活动", icon: "", profitPrefill: prefill }];
+    });
+    activateTab("profit_activity");
+    setWorkspaceNotice("");
+  };
+
   useEffect(() => {
     const query = new URLSearchParams(window.location.search);
     if (query.get("module") !== "personal_center" || query.get("payment") !== "success") return;
@@ -722,7 +738,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         content = <DailySelectionPage view="collection" initialDirectionId={tab.directionId} onOpenProductProcessingDraft={() => openModule("product_processing")} topbarStatusVisible={isActive} isActive={isActive} />;
         break;
       case "profit_activity":
-        content = <ProfitActivityTestPage isActive={isActive} />;
+        content = <ProfitActivityTestPage isActive={isActive} prefill={tab.profitPrefill} />;
         break;
       case "profit_activity_products":
         content = <ProfitActivityProductsPage isActive={isActive} />;
@@ -735,6 +751,9 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         break;
       case "product_processing_history":
         content = <ProductProcessingHistoryPage onOpenTask={openProcessingTaskDetail} onOpenPrecheck={openProcessingPrecheck} />;
+        break;
+      case "product_processing_sourcing":
+        content = <ProductSourcingCostPage isActive={isActive} onOpenProfitActivity={openProfitActivity} />;
         break;
       case "product_processing_tasks":
         content = tab.taskId != null ? (
