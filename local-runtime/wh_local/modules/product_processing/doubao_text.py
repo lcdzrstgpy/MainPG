@@ -105,7 +105,9 @@ class DoubaoTextClient:
                     # replacing it with a misleading final HTTP 409 diagnostic.
                     last_contract_error.attempt_count = attempt
                     raise last_contract_error from exc
-                if not exc.retryable or attempt >= MAX_ATTEMPTS:
+                if not exc.retryable or attempt >= min(
+                    MAX_ATTEMPTS, exc.max_attempts or MAX_ATTEMPTS
+                ):
                     raise
             except ValueError as exc:
                 # 校验失败（如语言契约拒绝中文输出）的真实原因不能丢，
