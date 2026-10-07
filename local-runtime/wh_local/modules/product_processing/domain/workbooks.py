@@ -64,8 +64,9 @@ _VARIANT_AXIS_NAMES = {
 }
 
 # ===== 变种属性清洗/校验层（导出店小秘前） =====
-# Temu 采集会把页面级元数据（品牌/评分/运费/支付方式/导航/整段商品描述）误当成变种属性
-# 名或值。此清洗层在生成店小秘模板行前剔除这些噪音，避免导入后出现「奇奇怪怪」的变种行。
+# 采集会把页面级元数据（品牌/评分/运费/支付方式/导航/整段商品描述）和技术字段
+# （iconUrl/moduleId 等页面模块字段、URL 类值）误当成变种属性名或值。此清洗层在生成
+# 店小秘模板行前剔除这些噪音，避免导入后出现「奇奇怪怪」的变种行。
 # 仅剔除明显噪音；未识别的一律保留（宁缺勿滥）。
 
 # 噪音属性名：绝不作为店小秘变种规格轴（平台系统字段、导购元数据、纯数字 ID）。
@@ -75,6 +76,11 @@ _NOISE_NAME_RE = re.compile(
     re.IGNORECASE,
 )
 _NOISE_NUMERIC_NAME_RE = re.compile(r"^\d+$")
+
+# 平台页面数据里的技术字段名（驼峰命名）：Temu 规格模块 JSON 的 iconUrl / moduleId，
+# 以及各平台页面数据里的 xxxId / xxxUrl / xxxIcon 等。真实规格轴只可能是中文或首字母
+# 大写的英文（Color / Size / Style），不会长成这样。
+_TECH_FIELD_NAME_RE = re.compile(r"^[a-z][a-zA-Z0-9]*[A-Z][a-zA-Z0-9]*$")
 
 # 噪音属性值：命中即整对剔除（这些是页面元数据，不是真实变种选项）。
 _NOISE_VALUE_RE = re.compile(
@@ -88,6 +94,15 @@ _NOISE_VALUE_RE = re.compile(
     r"^from$|"  # From（元数据）
     r"pre[- ]?discount|"  # Pre-Discount Price
     r"no\s+additional\s+variants",  # No Additional Variants
+    re.IGNORECASE,
+)
+
+# 链接/资源类值：页面字段值被误当规格值时，通常是 URL、图片资源名或平台模块类型常量
+# （如 Temu 规格模块的 iconUrl → https://…/bed4486c-….gif、moduleId → set_spec_module）。
+_URL_LIKE_VALUE_RE = re.compile(
+    r"(?:://|^//|^www\.)"  # 带协议/协议相对的链接、裸域名
+    r"|\.(?:jpe?g|png|gif|webp|avif|bmp|svg|ico)(?:[?#]|$)"  # 图片资源扩展名
+    r"|^[a-z][a-z0-9_]*_module$",  # 模块类型常量，如 set_spec_module
     re.IGNORECASE,
 )
 
@@ -106,11 +121,28 @@ def _variant_axis_name(name_text: str) -> str:
     return _VARIANT_AXIS_NAMES.get(name_text, name_text)
 
 
+# 可识别的真实规格轴：中文轴名 + 归一化后的英文轴名（clean_variant_attributes 会先本地映射）。
+_KNOWN_SPEC_AXIS_NAMES = frozenset(_VARIANT_AXIS_NAMES) | frozenset(_VARIANT_AXIS_NAMES.values())
+
+
+def _is_known_spec_axis(name_text: str) -> bool:
+    """属性名是否为可导出的真实规格轴（颜色/尺寸/款式/容量/材质…）。
+
+    供商品级属性兜底使用：只有真实规格轴才允许当成变种维度；页面模块字段
+    （iconUrl/moduleId）与参数表字段（品牌/产地/品类）都不是规格轴。
+    """
+    return str(name_text or "").strip() in _KNOWN_SPEC_AXIS_NAMES
+
+
 def _is_variant_value_noise(name: str, value: str) -> bool:
     """判定某一个（规格轴名, 属性值）是否为采集噪音，命中即应剔除整对。"""
-    if _NOISE_VALUE_RE.search(value):
+    if _NOISE_VALUE_RE.search(value) or _URL_LIKE_VALUE_RE.search(value):
         return True
-    if _NOISE_NAME_RE.match(name) or _NOISE_NUMERIC_NAME_RE.match(name):
+    if (
+        _NOISE_NAME_RE.match(name)
+        or _NOISE_NUMERIC_NAME_RE.match(name)
+        or _TECH_FIELD_NAME_RE.match(name)
+    ):
         return True
     axis = _variant_axis_name(name)
     if _WEIGHT_VALUE_RE.match(value) and axis not in _WEIGHT_TOLERANT_AXES:
@@ -319,19 +351,40 @@ DXM_COLUMNS = [
     "发货时效（天）",
 ]
 
+# 新版店小秘 POP Temu 模板（51 列）在 26 列之后新增的媒体/说明书字段，我们不产出，导出留空。
+DXM_PRODUCT_MEDIA_COLUMNS = [
+    "是否定制品",
+    "产品视频url",
+    "描述视频url",
+    "产品说明书",
+    "说明书语种",
+]
+
 DXM_SKU_CLASSIFICATION_COLUMNS = [
-    "SKU分类",
+    "SKU分类类型",
     "SKU分类数量",
     "SKU分类单位",
-    "独立包装",
-    "净含量数值",
-    "净含量单位",
-    "混合套装类型",
-    "SKU分类总数量",
-    "SKU分类总数量单位",
+    "是否独立包装",
+    "单品净含量",
+    "单品净含量单位",
+    "内计共含件数",
+    "是否同品",
     "总净含量",
     "总净含量单位",
     "包装清单",
+]
+
+# 新版模板尾部新增的敏感属性/产地等字段，我们不产出，导出留空。
+DXM_SENSITIVE_COLUMNS = [
+    "包装清单数量",
+    "是否敏感属性",
+    "敏感属性值",
+    "储电容量",
+    "刀具长度",
+    "刀刃角度",
+    "液体容量",
+    "来源URL",
+    "产地",
 ]
 
 
@@ -339,7 +392,12 @@ def create_result_workbook(rows: list[dict[str, Any]], destination: Path) -> Non
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "店小秘导入"
-    sheet.append(DXM_COLUMNS + ["*产品分类", "产品分类", "类目路径", "类目ID"] + DXM_SKU_CLASSIFICATION_COLUMNS)
+    sheet.append(
+        DXM_COLUMNS
+        + DXM_PRODUCT_MEDIA_COLUMNS
+        + DXM_SKU_CLASSIFICATION_COLUMNS
+        + DXM_SENSITIVE_COLUMNS
+    )
     for row in rows:
         for export_row in _dxm_export_rows(row):
             sheet.append(export_row)
@@ -404,10 +462,6 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
     source_detail_image_urls = row.get("source_detail_image_urls") or []
     source_attributes = row.get("source_attributes") or []
     cost = row.get("cost")
-    category = str(row.get("category") or "").strip()
-    category_path = str(core_fields.get("category_path") or row.get("category_path") or category).strip()
-    category_id = str(core_fields.get("category_id") or row.get("category_id") or "").strip()
-
     # 变种属性值翻译表（来源中文值 → 目标语言显示名，由 service 的 AI 翻译步骤生成）
     value_translations = row.get("variant_value_translations") or {}
     if not isinstance(value_translations, dict):
@@ -428,8 +482,13 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
         variant_sku = sku
 
     if not variant_values:
-        # 商品级属性兜底：清洗后仅取前两条
+        # 商品级属性兜底：清洗后仅取前两条「真实规格轴」（颜色/尺寸/款式/容量…）。
+        # 页面模块字段（iconUrl/moduleId）与参数表字段（品牌/产地/品类）不是变种维度，
+        # 不能拿来凑规格轴——否则会导出成「颜色: <一个 gif 链接>」这类脏规格。
+        # 无可用规格轴时走下方 规格/Standard 默认值。
         for name_text, value_text in clean_variant_attributes(source_attributes):
+            if not _is_known_spec_axis(name_text):
+                continue
             variant_values.append((name_text, value_translations.get(value_text, value_text)))
             if len(variant_values) >= 2:
                 break
@@ -610,6 +669,8 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
     # 此时收缩长宽高让材积重量回到重量以内，并把长宽高重排为单调递减。
     length, width, height = _dxm_fit_dimensions(length, width, height, weight)
 
+    # 列顺序必须与店小秘 POP Temu 模板（51 列）逐列对齐：
+    # DXM_COLUMNS(26) + DXM_PRODUCT_MEDIA_COLUMNS(5) + DXM_SKU_CLASSIFICATION_COLUMNS(11) + DXM_SENSITIVE_COLUMNS(9)
     return [
         optimized_title,
         optimized_title,
@@ -637,14 +698,31 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
         suggested_price if suggested_price not in (None, "") else "",
         stock,
         DEFAULT_SHIP_DAYS,  # 发货时效（天）
-        category_path,  # *产品分类
-        category_path,  # 产品分类
-        category_path,  # 类目路径
-        category_id,  # 类目ID
-        "单品",  # SKU分类
+        "",  # 是否定制品
+        "",  # 产品视频url
+        "",  # 描述视频url
+        "",  # 产品说明书
+        "",  # 说明书语种
+        "单品",  # SKU分类类型
         1,  # SKU分类数量
         "件",  # SKU分类单位
-        "", "", "", "", "", "", "", "", "",  # 其余 SKU 分类字段占位
+        "",  # 是否独立包装
+        "",  # 单品净含量
+        "",  # 单品净含量单位
+        "",  # 内计共含件数
+        "",  # 是否同品
+        "",  # 总净含量
+        "",  # 总净含量单位
+        "",  # 包装清单
+        "",  # 包装清单数量
+        "",  # 是否敏感属性
+        "",  # 敏感属性值
+        "",  # 储电容量
+        "",  # 刀具长度
+        "",  # 刀刃角度
+        "",  # 液体容量
+        "",  # 来源URL
+        "",  # 产地
     ]
 
 

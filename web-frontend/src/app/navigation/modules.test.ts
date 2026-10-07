@@ -22,7 +22,7 @@ test("sidebar navigation groups the product workflow around its AI history entry
   assert.equal(productWorkflow?.children?.find((child) => child.id === "product_processing_history")?.iconClass, "iconfont icon-time-circle");
 });
 
-test("POD customization is a grouped section with full and semi customization", () => {
+test("POD customization is a grouped section with full, semi and replica customization", () => {
   assert.deepEqual(workspaceModules.map((module) => module.id), [
     "dashboard",
     "ai_video",
@@ -40,9 +40,16 @@ test("POD customization is a grouped section with full and semi customization", 
   assert.deepEqual(podWorkflow?.children?.map((child) => child.id), [
     "pod_customization",
     "pod_semi_customization",
+    "pod_replica",
   ]);
-  assert.deepEqual(podWorkflow?.children?.map((child) => child.label), ["全定制", "半定制"]);
+  assert.deepEqual(podWorkflow?.children?.map((child) => child.label), ["全定制", "半定制", "爆款复刻"]);
   assert.equal(podWorkflow?.iconClass, "iconfont icon-skin");
+  // 新增爆款复刻不改变原两个入口的可用性。
+  assert.ok(podWorkflow?.children?.some((child) => child.id === "pod_customization"));
+  assert.ok(podWorkflow?.children?.some((child) => child.id === "pod_semi_customization"));
+  assert.ok(workspacePageModules.some((module) => module.id === "pod_customization"));
+  assert.ok(workspacePageModules.some((module) => module.id === "pod_semi_customization"));
+  assert.ok(workspacePageModules.some((module) => module.id === "pod_replica"));
 });
 
 test("sidebar navigation prioritizes price and source matching in its default sourcing workflow", () => {

@@ -391,7 +391,12 @@ class PodBriefRuntime(AiRuntime):
                     "Content-Type": "application/json",
                     "User-Agent": "MainPG-PodBrief/1.0",
                 },
-                json={"model": MODEL_ID, "messages": messages, "response_format": _BRIEF_RESPONSE_FORMAT},
+                json={
+                    "model": MODEL_ID,
+                    "messages": messages,
+                    "thinking": {"type": "disabled"},
+                    "response_format": _BRIEF_RESPONSE_FORMAT,
+                },
                 timeout=BRIEF_REQUEST_TIMEOUT_SECONDS,
                 allow_redirects=False,
             )

@@ -15,13 +15,30 @@ from ...pod_migrations import (
     recover_interrupted_pod_migrations,
 )
 from .billing_contract import PodCallOutcome, PodCallPlan, PodExecutionGrant
-from .contracts import BatchCreate, Calibration, SemiBatchCreate, grid_call_count, style_grid_call_count
+from .contracts import (
+    BatchCreate,
+    BusinessFields,
+    Calibration,
+    ReplicaBatchCreate,
+    SemiBatchCreate,
+    grid_call_count,
+    style_grid_call_count,
+)
 from .errors import PodExecutionExpired, safe_error_message
 from .prompts import assign_style_elements, build_direct_listing_prompt, build_semi_pattern_base
 
 
 SEMI_PLACEHOLDER_TEMPLATE_ID = "semi-pattern-placeholder"
 SEMI_PLACEHOLDER_TEMPLATE_NAME = "半定制占位模板"
+REPLICA_INTERNAL_TEMPLATE_NAME = "复刻内部锚点模板"
+
+
+class ReplicaBatchIdempotentReturn(Exception):
+    """复刻批次已存在且请求哈希一致：携带既有 batch_id，由服务层幂等返回。"""
+
+    def __init__(self, batch_id: str) -> None:
+        self.batch_id = batch_id
+        super().__init__(batch_id)
 
 
 def _safe_error(value: object) -> str:
@@ -550,6 +567,162 @@ class PodCustomizationRepository:
             )
         return self.get_batch(batch_id, workspace_id, owner_user_id)
 
+    def find_replica_batch(
+        self, workspace_id: str, owner_user_id: str, client_request_id: str
+    ) -> dict[str, Any] | None:
+        """按 ``client_request_id`` 查找复刻批次（actor/workspace 内唯一）。"""
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT batch_id, request_hash FROM pod_customization_replica_batches
+                   WHERE workspace_id = ? AND owner_user_id = ? AND client_request_id = ?""",
+                (workspace_id, owner_user_id, client_request_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def create_replica_batch(
+        self,
+        workspace_id: str,
+        owner_user_id: str,
+        request: ReplicaBatchCreate,
+        *,
+        request_hash: str,
+        batch_id: str | None = None,
+    ) -> dict[str, Any]:
+        """创建复刻批次：父批次 mode=replica、requested_count=len(targets)。
+
+        一个本地事务写入：内部锚点模板及快照（隐藏状态、不进用户模板库）、来源关联、
+        全部目标快照、四宫格结果与标题占位。不生成用于原创设计的元素分配记录。
+        并发重复提交由 (workspace_id, owner_user_id, client_request_id) 唯一约束兜底。
+        """
+        batch_id = str(batch_id or uuid.uuid4().hex)
+        now = _now()
+        first_target = request.targets[0]
+        first_listing = first_target.listing_fields
+        first_business = BusinessFields(
+            product_name=first_target.product_name,
+            product_category=first_listing.category_name,
+        )
+        title = (
+            request.title.strip()
+            or first_target.product_name.strip()
+            or f"POD-REPLICA-{batch_id[:8]}"
+        )
+        try:
+            with self._connect() as connection:
+                existing = connection.execute(
+                    """SELECT batch_id, request_hash FROM pod_customization_replica_batches
+                       WHERE workspace_id = ? AND owner_user_id = ? AND client_request_id = ?""",
+                    (workspace_id, owner_user_id, request.client_request_id),
+                ).fetchone()
+                if existing is not None:
+                    if existing["request_hash"] == request_hash:
+                        raise ReplicaBatchIdempotentReturn(existing["batch_id"])
+                    raise PodRepositoryError("client_request_id 已用于不同的复刻请求", 409)
+                source_asset = connection.execute(
+                    """SELECT * FROM pod_customization_assets
+                       WHERE asset_id = ? AND workspace_id = ?""",
+                    (request.source_asset_id, workspace_id),
+                ).fetchone()
+                if source_asset is None:
+                    raise PodRepositoryError("POD 复刻样图资产不存在", 404)
+                target_rows: list[tuple[int, dict[str, Any], Any]] = []
+                for index, target in enumerate(request.targets, start=1):
+                    asset = connection.execute(
+                        """SELECT * FROM pod_customization_assets
+                           WHERE asset_id = ? AND workspace_id = ?""",
+                        (target.target_asset_id, workspace_id),
+                    ).fetchone()
+                    if asset is None:
+                        raise PodRepositoryError("POD 复刻目标资产不存在", 404)
+                    target_rows.append((index, dict(asset), target))
+                first_asset = target_rows[0][1]
+                template_id = uuid.uuid4().hex
+                snapshot_id = uuid.uuid4().hex
+                connection.execute(
+                    """INSERT INTO pod_customization_templates
+                       (template_id, workspace_id, owner_user_id, name, source, asset_id, width, height,
+                        calibration_status, calibration_json, version, deleted_at, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, 'system', ?, ?, ?, 'ready', 'null', 1, ?, ?, ?)""",
+                    (template_id, workspace_id, owner_user_id, REPLICA_INTERNAL_TEMPLATE_NAME,
+                     first_asset["asset_id"], first_asset["width"], first_asset["height"], now, now, now),
+                )
+                connection.execute(
+                    """INSERT INTO pod_customization_template_snapshots
+                       (snapshot_id, template_id, workspace_id, owner_user_id, version, name, source,
+                        asset_id, width, height, calibration_json, created_at)
+                       VALUES (?, ?, ?, ?, 1, ?, 'system', ?, ?, ?, 'null', ?)""",
+                    (snapshot_id, template_id, workspace_id, owner_user_id,
+                     REPLICA_INTERNAL_TEMPLATE_NAME, first_asset["asset_id"],
+                     first_asset["width"], first_asset["height"], now),
+                )
+                initial_calls = len(request.targets)
+                connection.execute(
+                    """INSERT INTO pod_customization_batches
+                       (batch_id, workspace_id, owner_user_id, title, status, template_id, template_snapshot_id,
+                        template_name, requested_count, initial_call_count, max_refill_calls, prompt_version,
+                        prompt_snapshot, business_fields_json, listing_fields_json, creative_prompt, mode, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, 0, 'v1', ?, ?, ?, '', 'replica', ?, ?)""",
+                    (batch_id, workspace_id, owner_user_id, title[:120], template_id, snapshot_id,
+                     REPLICA_INTERNAL_TEMPLATE_NAME, len(request.targets), initial_calls,
+                     "{}", first_business.model_dump_json(), first_listing.model_dump_json(), now, now),
+                )
+                connection.execute(
+                    """INSERT INTO pod_customization_replica_batches
+                       (batch_id, workspace_id, owner_user_id, source_asset_id, client_request_id, request_hash, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (batch_id, workspace_id, owner_user_id, request.source_asset_id,
+                     request.client_request_id, request_hash, now),
+                )
+                connection.executemany(
+                    """INSERT INTO pod_customization_replica_targets
+                       (batch_id, style_index, asset_id, business_fields_json, listing_fields_json, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    [
+                        (
+                            batch_id,
+                            style_index,
+                            asset["asset_id"],
+                            BusinessFields(
+                                product_name=target.product_name,
+                                product_category=target.listing_fields.category_name,
+                            ).model_dump_json(),
+                            target.listing_fields.model_dump_json(),
+                            now,
+                        )
+                        for style_index, asset, target in target_rows
+                    ],
+                )
+                connection.execute(
+                    """INSERT INTO pod_customization_style_grid_batches (batch_id, created_at) VALUES (?, ?)""",
+                    (batch_id, now),
+                )
+                connection.executemany(
+                    """INSERT INTO pod_customization_style_grid_results
+                       (result_id, batch_id, workspace_id, owner_user_id, style_index, variant_index, status,
+                        created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)""",
+                    [
+                        (uuid.uuid4().hex, batch_id, workspace_id, owner_user_id, style_index, variant_index, now, now)
+                        for style_index in range(1, len(request.targets) + 1)
+                        for variant_index in range(1, 5)
+                    ],
+                )
+                connection.executemany(
+                    """INSERT INTO pod_customization_style_titles
+                       (batch_id, style_index, status, created_at, updated_at)
+                       VALUES (?, ?, 'queued', ?, ?)""",
+                    [
+                        (batch_id, style_index, now, now)
+                        for style_index in range(1, len(request.targets) + 1)
+                    ],
+                )
+        except sqlite3.IntegrityError:
+            existing = self.find_replica_batch(workspace_id, owner_user_id, request.client_request_id)
+            if existing is not None and existing["request_hash"] == request_hash:
+                raise ReplicaBatchIdempotentReturn(existing["batch_id"]) from None
+            raise PodRepositoryError("client_request_id 已用于不同的复刻请求", 409) from None
+        return self.get_batch(batch_id, workspace_id, owner_user_id)
+
     def preflight_batch(self, workspace_id: str, owner_user_id: str, request: BatchCreate) -> None:
         """Validate all stable local prerequisites before remote points are frozen."""
         del owner_user_id
@@ -643,6 +816,42 @@ class PodCustomizationRepository:
                    WHERE batch_id = ?""",
                 (batch_id,),
             ).fetchall()
+            replica_source: dict[str, Any] | None = None
+            replica_targets: list[dict[str, Any]] = []
+            if batch["mode"] == "replica":
+                replica_row = connection.execute(
+                    """SELECT source_asset_id FROM pod_customization_replica_batches
+                       WHERE batch_id = ?""",
+                    (batch_id,),
+                ).fetchone()
+                if replica_row is not None:
+                    source_asset = connection.execute(
+                        """SELECT * FROM pod_customization_assets WHERE asset_id = ?""",
+                        (replica_row["source_asset_id"],),
+                    ).fetchone()
+                    replica_source = dict(source_asset) if source_asset else None
+                target_rows = connection.execute(
+                    """SELECT * FROM pod_customization_replica_targets
+                       WHERE batch_id = ? ORDER BY style_index""",
+                    (batch_id,),
+                ).fetchall()
+                for row in target_rows:
+                    asset = connection.execute(
+                        """SELECT * FROM pod_customization_assets WHERE asset_id = ?""",
+                        (row["asset_id"],),
+                    ).fetchone()
+                    listing_fields = json.loads(row["listing_fields_json"])
+                    if isinstance(listing_fields, dict):
+                        listing_fields.setdefault("title_mode", "long")
+                    replica_targets.append(
+                        {
+                            "style_index": int(row["style_index"]),
+                            "asset_id": row["asset_id"],
+                            "asset": dict(asset) if asset else None,
+                            "business_fields": json.loads(row["business_fields_json"]),
+                            "listing_fields": listing_fields,
+                        }
+                    )
         result = dict(batch)
         result["business_fields"] = json.loads(result.pop("business_fields_json"))
         result["listing_fields"] = json.loads(result.pop("listing_fields_json"))
@@ -655,6 +864,12 @@ class PodCustomizationRepository:
             int(row["style_index"]): json.loads(row["elements_json"])
             for row in element_rows
         }
+        if replica_source is not None or replica_targets:
+            result["replica_source"] = replica_source
+            result["replica_targets"] = replica_targets
+            result["replica_targets_by_index"] = {
+                target["style_index"]: target for target in replica_targets
+            }
         result["style_titles"] = [self._decode_title_row(row) for row in title_rows]
         result["style_export_selections"] = {
             int(row["style_index"]): bool(row["selected"])
@@ -1724,7 +1939,7 @@ class PodCustomizationRepository:
         """
         with self._connect() as connection:
             batch = connection.execute(
-                """SELECT status FROM pod_customization_batches
+                """SELECT status, template_id FROM pod_customization_batches
                    WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ?""",
                 (batch_id, workspace_id, owner_user_id),
             ).fetchone()
@@ -1758,6 +1973,24 @@ class PodCustomizationRepository:
                 if row["pattern_asset_id"]:
                     asset_ids.add(row["pattern_asset_id"])
 
+            # 复刻批次：样图、目标图与内部锚点模板都要计入清理。
+            replica_template_id: str | None = None
+            replica_row = connection.execute(
+                "SELECT source_asset_id FROM pod_customization_replica_batches WHERE batch_id = ?",
+                (batch_id,),
+            ).fetchone()
+            if replica_row is not None:
+                if replica_row["source_asset_id"]:
+                    asset_ids.add(replica_row["source_asset_id"])
+                target_rows = connection.execute(
+                    "SELECT asset_id FROM pod_customization_replica_targets WHERE batch_id = ?",
+                    (batch_id,),
+                ).fetchall()
+                for row in target_rows:
+                    if row["asset_id"]:
+                        asset_ids.add(row["asset_id"])
+                replica_template_id = batch["template_id"]
+
             # The billing ledger references batch_id without a cascade FK.
             connection.execute(
                 "DELETE FROM pod_customization_billing_runs WHERE batch_id = ?", (batch_id,)
@@ -1765,6 +1998,17 @@ class PodCustomizationRepository:
             connection.execute(
                 "DELETE FROM pod_customization_batches WHERE batch_id = ?", (batch_id,)
             )
+            if replica_template_id is not None:
+                # 内部锚点模板/快照是本批次专属的隐藏结构，随批次一并删除。
+                # 必须放在批次删除之后，避免批次行的 template_snapshot_id 外键先被解除前触发约束。
+                connection.execute(
+                    "DELETE FROM pod_customization_template_snapshots WHERE template_id = ?",
+                    (replica_template_id,),
+                )
+                connection.execute(
+                    "DELETE FROM pod_customization_templates WHERE template_id = ?",
+                    (replica_template_id,),
+                )
             return self._delete_assets_and_collect_files(connection, asset_ids)
 
     def reap_stale_local_cache(self, *, older_than_hours: int = 48) -> list[str]:
@@ -1824,7 +2068,9 @@ class PodCustomizationRepository:
                      AND a.asset_id NOT IN (SELECT pattern_asset_id FROM pod_customization_style_grid_results WHERE pattern_asset_id <> '')
                      AND a.asset_id NOT IN (SELECT composite_asset_id FROM pod_customization_style_grid_results WHERE composite_asset_id <> '')
                      AND a.asset_id NOT IN (SELECT grid_asset_id FROM pod_customization_generation_calls WHERE grid_asset_id <> '')
-                     AND a.asset_id NOT IN (SELECT pattern_asset_id FROM pod_customization_pattern_candidates WHERE pattern_asset_id <> '')""",
+                     AND a.asset_id NOT IN (SELECT pattern_asset_id FROM pod_customization_pattern_candidates WHERE pattern_asset_id <> '')
+                     AND a.asset_id NOT IN (SELECT source_asset_id FROM pod_customization_replica_batches WHERE source_asset_id <> '')
+                     AND a.asset_id NOT IN (SELECT asset_id FROM pod_customization_replica_targets)""",
                 (cutoff,),
             ).fetchall()
             orphaned = {row["asset_id"] for row in rows if row["asset_id"] not in protected}
@@ -2707,6 +2953,40 @@ class PodCustomizationRepository:
                 """UPDATE pod_customization_batches SET listing_fields_json = ?, updated_at = ?
                    WHERE batch_id = ?""",
                 (json.dumps(listing_fields, ensure_ascii=False), now, batch_id),
+            )
+        return True
+
+    def update_replica_target_spec_card(
+        self, batch_id: str, style_index: int, spec_card_mapping: Mapping[str, Any] | None
+    ) -> bool:
+        """复刻按款覆盖规格卡配置：只改该目标的 ``listing_fields_json.spec_card``。
+
+        复刻每款规格卡独立，重印必须只更新被指定款，绝不改动整批镜像配置或别的款。
+        返回是否命中该目标行。
+        """
+
+        index = int(style_index)
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT listing_fields_json FROM pod_customization_replica_targets
+                   WHERE batch_id = ? AND style_index = ?""",
+                (batch_id, index),
+            ).fetchone()
+            if row is None:
+                return False
+            try:
+                listing_fields = json.loads(row["listing_fields_json"] or "{}")
+            except (TypeError, ValueError):
+                listing_fields = {}
+            if not isinstance(listing_fields, dict):
+                listing_fields = {}
+            listing_fields["spec_card"] = (
+                dict(spec_card_mapping) if spec_card_mapping is not None else None
+            )
+            connection.execute(
+                """UPDATE pod_customization_replica_targets
+                   SET listing_fields_json = ? WHERE batch_id = ? AND style_index = ?""",
+                (json.dumps(listing_fields, ensure_ascii=False), batch_id, index),
             )
         return True
 

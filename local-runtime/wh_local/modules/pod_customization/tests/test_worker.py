@@ -1198,6 +1198,7 @@ def _spec_card_batch_request(
     style: str = "light",
     corner: str = "bottom-right",
     enabled: bool = True,
+    display_unit: str = "cm",
 ) -> BatchCreate:
     return BatchCreate(
         template_id=template_id,
@@ -1212,6 +1213,7 @@ def _spec_card_batch_request(
                 "enabled": enabled,
                 "style": style,
                 "corner": corner,
+                "display_unit": display_unit,
                 "cells": [list(row) for row in cells],
             },
         ),
@@ -1275,6 +1277,40 @@ def test_style_grid_composites_the_spec_card_onto_the_hero_panel_only(tmp_path: 
     assert hero_master["kind"] == "direct_listing_panel"
     assert hero_master["sha256"] == hashlib.sha256(split_grid_2x2(grid)[0]).hexdigest()
     assert hero_master["sha256"] != card_assets[0]["sha256"]
+    service.close()
+    runtime.close()
+
+
+def test_style_grid_converts_spec_card_centimetres_to_selected_inches(tmp_path: Path, monkeypatch) -> None:
+    from wh_local.modules.pod_customization import spec_card
+
+    grid = _grid([_pattern(index) for index in range(4)])
+    runtime = ListingOnlyRuntime([grid])
+    service = _service(tmp_path, runtime)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(
+        actor,
+        _spec_card_batch_request(
+            template["id"],
+            cells=(("SKU", "Length", "Width", "Height"), ("A", "25.4", "50.8", "76.2")),
+            display_unit="in",
+        ),
+        enqueue=False,
+    )
+    captured: list[tuple[tuple[str, ...], ...]] = []
+    original = spec_card.render_spec_card
+
+    def capture(base_content, request, **kwargs):
+        captured.append(request.cells)
+        return original(base_content, request, **kwargs)
+
+    monkeypatch.setattr(spec_card, "render_spec_card", capture)
+    service.worker.process_batch(batch["id"])
+
+    assert captured == [
+        (("SKU", "Length (in)", "Width (in)", "Height (in)"), ("A", "10", "20", "30"))
+    ]
     service.close()
     runtime.close()
 

@@ -70,6 +70,7 @@ const EMPTY_SPEC_CARD_DRAFT: SpecCardConfig = {
   enabled: true,
   style: "light",
   corner: "bottom-right",
+  display_unit: "cm",
   cells: [[...SPEC_CARD_DIMENSION_HEADER], ["", "", "", ""]],
 };
 
@@ -78,7 +79,7 @@ function createEmptySpecCard(): SpecCardConfig {
 }
 
 function cloneSpecCardConfig(config: SpecCardConfig): SpecCardConfig {
-  return { ...config, cells: config.cells.map((row) => [...row]) };
+  return { ...config, display_unit: config.display_unit ?? "cm", cells: config.cells.map((row) => [...row]) };
 }
 
 function isSpecCardConfig(value: unknown): value is SpecCardConfig {
@@ -87,6 +88,7 @@ function isSpecCardConfig(value: unknown): value is SpecCardConfig {
     && (value.style === "light" || value.style === "dark")
     && (value.corner === "bottom-right" || value.corner === "bottom-left"
       || value.corner === "top-right" || value.corner === "top-left")
+    && (value.display_unit === undefined || value.display_unit === "cm" || value.display_unit === "in")
     && Array.isArray(value.cells)
     && value.cells.every((row) => Array.isArray(row) && row.every((cell) => typeof cell === "string"));
 }

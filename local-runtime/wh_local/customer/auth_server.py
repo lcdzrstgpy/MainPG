@@ -137,7 +137,7 @@ PAYMENT_PROVIDERS = {"wechat", "alipay"}
 TEXT_CHAT_URL = os.environ.get(
     "WH_TEXT_API_URL", "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
 ).rstrip("/")
-TEXT_MODEL = os.environ.get("WH_TEXT_MODEL", "doubao-seed-2-0-mini-260428").strip()
+TEXT_MODEL = os.environ.get("WH_TEXT_MODEL", "doubao-seed-2-1-lite-260915").strip()
 # 上游生图模型由 URL 路径决定，请求体不含 model 字段。桌面端只从白名单里挑名字，
 # 真正的端点与凭据都在服务端，客户端依旧拿不到上游密钥。
 WUYIN_IMAGE_MODEL_ENDPOINTS = {

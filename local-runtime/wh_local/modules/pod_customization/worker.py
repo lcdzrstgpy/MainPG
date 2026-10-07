@@ -25,10 +25,19 @@ from .billing_contract import (
 )
 from .images import compose_fixed_scene, split_grid_2x2
 from .prompts import LISTING_IMAGE_ROLES, build_semi_pattern_prompt, build_style_listing_prompt
-from .contracts import SEMI_PATTERN_ROLES
+from .contracts import BusinessFields, SEMI_PATTERN_ROLES
+from .replica_context import ReplicaStyleSnapshotMissingError, style_product_context
+from .replica_prompts import build_replica_listing_prompt
 from .repository import PodCustomizationRepository, PodRepositoryError
 from .runtime import RuntimeClosedError
-from .runtime_contracts import DirectListingGridRequest, PatternGridRequest, PodAiRuntime, SceneOptimizationRequest
+from .runtime_contracts import (
+    DirectListingGridRequest,
+    ListingReferenceImage,
+    PatternGridRequest,
+    PodAiRuntime,
+    SceneOptimizationRequest,
+)
+from .spec_card_units import display_spec_card_cells
 from .title_runtime import PodTitleRequest, visual_signature
 
 
@@ -502,6 +511,11 @@ class PodBatchWorker:
                 # 半定制不用模板、不用参考图：跳过模板图读取，交给纯文生图分支。
                 template_content = b""
                 template_content_type = ""
+            elif batch.get("mode") == "replica":
+                # 复刻按款解析各自目标白底图与来源样图；批次级内部锚点模板仅作结构
+                # 锚点，不参与生图，因此不读取、也不把同一个模板字节传给所有款。
+                template_content = b""
+                template_content_type = ""
             else:
                 snapshot = batch["template"]
                 template_asset = self.repository.get_asset(
@@ -695,10 +709,14 @@ class PodBatchWorker:
             raise RuntimeError("POD style retry requires a fresh short-lived billing grant")
         batch = self.repository.get_batch_internal(batch_id)
         semi = batch.get("mode") == "semi"
+        replica = batch.get("mode") == "replica"
         base_prompt = batch["prompt_snapshot"]
         if creative_prompt.strip():
-            base_prompt += f"\n\nWhole-style regeneration direction: {creative_prompt.strip()}"
-        if semi:
+            # 复刻不使用创作指示词：其提示词只由该款业务字段与样图锁定规则构造。
+            if not replica:
+                base_prompt += f"\n\nWhole-style regeneration direction: {creative_prompt.strip()}"
+        if semi or replica:
+            # 半定制零参考图；复刻按款解析目标白底图，不使用批次级锚点模板。
             template_content = b""
             template_content_type = ""
         else:
@@ -714,43 +732,25 @@ class PodBatchWorker:
             for attempt in (1, 2):
                 call_kind = "regenerate_style" if attempt == 1 else "regenerate_style_retry"
                 call_index = self.repository.next_generation_call_index(batch_id, call_kind)
-                if semi:
-                    prompt = build_semi_pattern_prompt(
-                        base_prompt,
-                        group_index=style_index,
-                        attempt=attempt,
-                        business_fields=batch["business_fields"],
-                        panel_elements=self._semi_panel_elements(batch, style_index),
-                    )
-                else:
-                    prompt = build_style_listing_prompt(
-                        base_prompt,
-                        style_index=style_index,
-                        attempt=attempt,
-                        business_fields=batch["business_fields"],
-                        creative_prompt=batch["creative_prompt"],
-                        style_elements=self._style_elements(batch, style_index),
-                    )
+                prompt, request_kwargs = self._style_generation_inputs(
+                    batch,
+                    style_index,
+                    attempt,
+                    template_content=template_content,
+                    template_content_type=template_content_type,
+                    base_prompt=base_prompt,
+                )
                 call = self.repository.create_generation_call(
                     batch, call_kind=call_kind, call_index=call_index, prompt_snapshot=prompt
                 )
                 last_call_id = call["call_id"]
                 call["style_index"] = style_index
-                if semi:
-                    request = DirectListingGridRequest(
-                        trial_id=f"{batch_id}-style-{style_index}-{call['call_id']}-attempt-{attempt}",
-                        prompt=prompt,
-                        attempt=attempt,
-                    )
-                else:
-                    request = DirectListingGridRequest(
-                        trial_id=f"{batch_id}-style-{style_index}-{call['call_id']}-attempt-{attempt}",
-                        template_id=batch["template_id"],
-                        template_image=template_content,
-                        template_content_type=template_content_type,
-                        prompt=prompt,
-                        attempt=attempt,
-                    )
+                request = DirectListingGridRequest(
+                    trial_id=f"{batch_id}-style-{style_index}-{call['call_id']}-attempt-{attempt}",
+                    prompt=prompt,
+                    attempt=attempt,
+                    **request_kwargs,
+                )
                 try:
                     provider_call_id = self._image_call_id(run, style_index, attempt)
                     grid = self.ai_runtime.submit(
@@ -913,6 +913,78 @@ class PodBatchWorker:
         """Number of concurrent provider/image jobs the POD runtime supports."""
         config = getattr(self.ai_runtime, "config", None)
         return max(1, int(getattr(config, "executor_workers", 1)))
+
+    def _style_generation_inputs(
+        self,
+        batch: dict[str, Any],
+        style_index: int,
+        attempt: int,
+        *,
+        template_content: bytes,
+        template_content_type: str,
+        base_prompt: str | None = None,
+    ) -> tuple[str, dict[str, Any]]:
+        """按款解析该款生图所需的 prompt 与请求参数。
+
+        - replica：样图来自批次来源资产快照，每款解析自己的目标白底图字节与
+          content_type，构造有序参考图 ``[pattern_source, target_product]``，prompt
+          使用该款业务字段的复刻提示词（不注入创作指示词、风格元素或原创多样性规则）；
+        - semi：纯文生图，零参考图，沿用 ``build_semi_pattern_prompt``；
+        - full：沿用批次模板单图与 ``build_style_listing_prompt``。
+
+        返回 ``(prompt, request_kwargs)``，``request_kwargs`` 直接展开进
+        :class:`DirectListingGridRequest`。
+        """
+        mode = batch.get("mode")
+        if mode == "semi":
+            prompt = build_semi_pattern_prompt(
+                base_prompt if base_prompt is not None else batch["prompt_snapshot"],
+                group_index=style_index,
+                attempt=attempt,
+                business_fields=batch["business_fields"],
+                panel_elements=self._semi_panel_elements(batch, style_index),
+            )
+            return prompt, {}
+        context = style_product_context(batch, style_index)
+        if mode == "replica":
+            fields = BusinessFields.model_validate(context["business_fields"])
+            prompt = build_replica_listing_prompt(fields, attempt=attempt)
+            source = batch.get("replica_source")
+            if not isinstance(source, dict) or not source.get("relative_path"):
+                raise ReplicaStyleSnapshotMissingError(
+                    f"POD 复刻来源资产快照缺失：style_index={style_index}"
+                )
+            target_asset = self.repository.get_asset(
+                str(context["template"]["asset_id"]),
+                batch["workspace_id"],
+                batch["owner_user_id"],
+            )
+            reference_images = (
+                ListingReferenceImage(
+                    role="pattern_source",
+                    content=self.assets.read(source["relative_path"]),
+                    content_type=str(source.get("content_type") or ""),
+                ),
+                ListingReferenceImage(
+                    role="target_product",
+                    content=self.assets.read(target_asset["relative_path"]),
+                    content_type=str(target_asset.get("content_type") or ""),
+                ),
+            )
+            return prompt, {"reference_images": reference_images}
+        prompt = build_style_listing_prompt(
+            base_prompt if base_prompt is not None else batch["prompt_snapshot"],
+            style_index=style_index,
+            attempt=attempt,
+            business_fields=batch["business_fields"],
+            creative_prompt=batch["creative_prompt"],
+            style_elements=self._style_elements(batch, style_index),
+        )
+        return prompt, {
+            "template_id": batch["template_id"],
+            "template_image": template_content,
+            "template_content_type": template_content_type,
+        }
 
     def _process_style_grids_streaming(
         self,
@@ -1114,23 +1186,13 @@ class PodBatchWorker:
 
         def submit_style(style_index: int, attempt_value: int) -> None:
             attempt_kind = "initial" if attempt_value == 1 else "retry"
-            if batch.get("mode") == "semi":
-                prompt = build_semi_pattern_prompt(
-                    batch["prompt_snapshot"],
-                    group_index=style_index,
-                    attempt=attempt_value,
-                    business_fields=batch["business_fields"],
-                    panel_elements=self._semi_panel_elements(batch, style_index),
-                )
-            else:
-                prompt = build_style_listing_prompt(
-                    batch["prompt_snapshot"],
-                    style_index=style_index,
-                    attempt=attempt_value,
-                    business_fields=batch["business_fields"],
-                    creative_prompt=batch["creative_prompt"],
-                    style_elements=self._style_elements(batch, style_index),
-                )
+            prompt, request_kwargs = self._style_generation_inputs(
+                batch,
+                style_index,
+                attempt_value,
+                template_content=template_content,
+                template_content_type=template_content_type,
+            )
             call = self.repository.get_or_create_generation_call(
                 batch, call_kind=attempt_kind, call_index=style_index, prompt_snapshot=prompt
             )
@@ -1171,21 +1233,12 @@ class PodBatchWorker:
                 raise PodBillingAuthorizationRequired(
                     "POD provider grant expired before the next image call started"
                 )
-            if batch.get("mode") == "semi":
-                request = DirectListingGridRequest(
-                    trial_id=f"{batch['batch_id']}-style-{style_index}-attempt-{attempt_value}",
-                    prompt=prompt,
-                    attempt=attempt_value,
-                )
-            else:
-                request = DirectListingGridRequest(
-                    trial_id=f"{batch['batch_id']}-style-{style_index}-attempt-{attempt_value}",
-                    template_id=batch["template_id"],
-                    template_image=template_content,
-                    template_content_type=template_content_type,
-                    prompt=prompt,
-                    attempt=attempt_value,
-                )
+            request = DirectListingGridRequest(
+                trial_id=f"{batch['batch_id']}-style-{style_index}-attempt-{attempt_value}",
+                prompt=prompt,
+                attempt=attempt_value,
+                **request_kwargs,
+            )
             future = self.ai_runtime.submit(
                 self._generate_listing_grid,
                 batch,
@@ -1617,14 +1670,14 @@ class PodBatchWorker:
         if not provider_call_ids:
             raise RuntimeError("POD title call plan is missing")
         try:
-            from .contracts import BusinessFields
-
+            # 产品名/类目等业务字段按款解析：复刻取该目标款字段，绝不使用样图产品。
+            context = style_product_context(batch, style_index)
             request = PodTitleRequest(
                 style_task_id=style_task_id,
                 style_index=style_index,
                 hero_image=hero.content,
                 hero_content_type=hero.content_type,
-                business_fields=BusinessFields.model_validate(batch["business_fields"]),
+                business_fields=BusinessFields.model_validate(context["business_fields"]),
                 creative_prompt=batch["creative_prompt"],
                 accepted_titles=self.repository.accepted_style_titles(
                     batch["batch_id"], exclude_style_index=style_index
@@ -1768,7 +1821,8 @@ class PodBatchWorker:
         from . import spec_card
         from .contracts import SpecCardConfig, spec_card_is_configured
 
-        listing_fields = batch.get("listing_fields")
+        # 规格卡配置按款解析：复刻取该目标款的 listing_fields，其他模式取批次快照。
+        listing_fields = style_product_context(batch, style_index).get("listing_fields")
         raw_config = listing_fields.get("spec_card") if isinstance(listing_fields, dict) else None
         try:
             config = SpecCardConfig.from_mapping(raw_config)
@@ -1782,7 +1836,9 @@ class PodBatchWorker:
             result = spec_card.render_spec_card(
                 panel.content,
                 spec_card.SpecCardRequest(
-                    cells=config.cells, style=config.style, corner=config.corner
+                    cells=display_spec_card_cells(config.cells, config.display_unit),
+                    style=config.style,
+                    corner=config.corner,
                 ),
             )
             self._save_asset(
@@ -1876,4 +1932,3 @@ def build_spec_card_media(jpeg_bytes: bytes) -> Any:
         model="local",
         reference_count=0,
     )
-

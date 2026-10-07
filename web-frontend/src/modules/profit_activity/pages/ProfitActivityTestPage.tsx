@@ -1,6 +1,6 @@
 import { type ClipboardEvent, type DragEvent, type ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { toUserMessage } from "../../../transport/http/client";
+import { getAuthToken, toUserMessage } from "../../../transport/http/client";
 import "../styles/profitActivityTest.css";
 
 type Site = string;
@@ -110,7 +110,6 @@ type SiteSettingField = {
   transform?: "percent";
 };
 
-const defaultToken = localStorage.getItem("whLocalApiToken") || (import.meta.env.DEV ? "dev-admin-token" : "");
 const emptyProduct: ProductForm = {
   skc: "",
   store_name: "",
@@ -261,7 +260,6 @@ const DEFAULT_PROFIT_SETTINGS: Record<string, number> = {
 export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean }) {
   // API 地址固定为空：所有请求走同源相对路径，由 Vite 代理转发到后端 8010（团队约定端口）
   const [apiBase, setApiBase] = useState("");
-  const [token, setToken] = useState(defaultToken);
   const [site, setSite] = useState<Site>("US");
   const [siteDraft, setSiteDraft] = useState("美区");
   const [siteDropdownOpen, setSiteDropdownOpen] = useState(false);
@@ -385,7 +383,7 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
     void restoreImportSessions();
     void loadFilterHistory();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiBase, token]);
+  }, [apiBase]);
 
   // 组件卸载时清理过滤轮询定时器
   useEffect(() => () => window.clearTimeout(filterPollRef.current), []);
@@ -416,6 +414,10 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
   const request = async <T,>(path: string, options: RequestInit = {}): Promise<T> => {
     const url = `${apiBase}${path}`;
     const headers = new Headers(options.headers);
+    // 令牌与其它板块（产品采集 / AI 处理）一致：每次请求现读登录会话令牌 wh_demo_token。
+    // 此前用的是模块加载时固化的 whLocalApiToken，打包版拿不到，会让本页所有请求变成
+    // 无鉴权 401，再被全局拦截器误判成「会话过期」把用户踢回登录页。
+    const token = getAuthToken();
     if (token) headers.set("Authorization", `Bearer ${token}`);
     const response = await fetch(url, { ...options, headers });
     const text = await response.text();
@@ -448,11 +450,12 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
   useEffect(() => {
     void loadStoreOptions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiBase, token, scope, storeOptionSites]);
+  }, [apiBase, scope, storeOptionSites]);
 
   const download = async (path: string, filename: string) => {
     const url = `${apiBase}${path}`;
     const headers = new Headers();
+    const token = getAuthToken();
     if (token) headers.set("Authorization", `Bearer ${token}`);
     const response = await fetch(url, { headers });
     setLog((items) => [`GET ${url} -> ${response.status}`, ...items].slice(0, 10));

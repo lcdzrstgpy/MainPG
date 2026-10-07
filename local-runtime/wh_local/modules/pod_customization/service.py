@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import inspect
 import io
 import json
@@ -35,6 +36,8 @@ from .contracts import (
     DirectListingTrialCreate,
     NormalizedPoint,
     NormalizedRect,
+    ReplicaBatchCreate,
+    ReplicaImageUploadResponse,
     SEMI_PATTERN_ROLES,
     SemiBatchCreate,
     validate_spec_card,
@@ -49,7 +52,8 @@ from .export import (
 )
 from .export_records import PodExportRecordStore
 from .errors import image_provider_outcome_for_exception, safe_error_message
-from .repository import PodCustomizationRepository, PodRepositoryError
+from .repository import PodCustomizationRepository, PodRepositoryError, ReplicaBatchIdempotentReturn
+from .spec_card_units import display_spec_card_cells
 from .prompts import (
     LISTING_IMAGE_ROLES,
     assign_style_elements,
@@ -91,6 +95,14 @@ def _spec_card_validation_message(exc: ValidationError) -> str:
         if message:
             return message
     return "规格卡配置不正确"
+
+
+def _replica_request_hash(request: ReplicaBatchCreate) -> str:
+    """复刻创建请求的规范化哈希：同 ID 同请求判重的依据。"""
+    payload = json.dumps(
+        request.model_dump(mode="json"), sort_keys=True, ensure_ascii=False, separators=(",", ":")
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def blank_spec_card_base_jpeg(side: int = 800) -> bytes:
@@ -316,6 +328,120 @@ class PodCustomizationService:
                 (request.title or "-")[:120], "有" if billing_run is not None else "无")
         except Exception:  # noqa: BLE001
             pass
+        return self._batch_payload(batch)
+
+    def upload_replica_image(
+        self,
+        actor: Actor,
+        *,
+        role: str,
+        filename: str,
+        content: bytes,
+    ) -> dict[str, Any]:
+        """复刻独立图片上传：一次一图，role=source|target；返回资产、角色、宽高与授权预览路径。"""
+        if role not in ("source", "target"):
+            raise ValueError("复刻图片角色必须是 source 或 target")
+        stored = self.assets.save_image(actor.workspace_id, actor.id, content)
+        asset = self.repository.create_asset(
+            workspace_id=actor.workspace_id,
+            owner_user_id=actor.id,
+            kind=f"replica_{role}",
+            filename=filename,
+            relative_path=stored.relative_path,
+            content_type=stored.content_type,
+            byte_size=stored.byte_size,
+            sha256=stored.sha256,
+            width=stored.width,
+            height=stored.height,
+        )
+        return ReplicaImageUploadResponse(
+            asset_id=asset["asset_id"],
+            role=role,
+            width=stored.width,
+            height=stored.height,
+            preview_url=f"/api/pod-customization/assets/{asset['asset_id']}",
+        ).model_dump()
+
+    def _replica_assets(
+        self, actor: Actor, request: ReplicaBatchCreate
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """校验样图与目标资产均属于当前 actor/workspace 且角色与上传标记一致（冻结前，不扣费）。"""
+        source = self.repository.get_asset(request.source_asset_id, actor.workspace_id, actor.id)
+        if source.get("kind") != "replica_source":
+            raise ValueError("样图资产角色错误，必须通过 role=source 上传")
+        targets: list[dict[str, Any]] = []
+        for target in request.targets:
+            asset = self.repository.get_asset(target.target_asset_id, actor.workspace_id, actor.id)
+            if asset.get("kind") != "replica_target":
+                raise ValueError("目标产品资产角色错误，必须通过 role=target 上传")
+            targets.append(asset)
+        return source, targets
+
+    def create_replica_batch(
+        self, actor: Actor, request: ReplicaBatchCreate, *, enqueue: bool = True
+    ) -> dict[str, Any]:
+        """创建复刻批次：先完成全部本地校验与幂等判重，再冻结计费并在一个事务里落库。"""
+        self._replica_assets(actor, request)
+        request_hash = _replica_request_hash(request)
+        existing = self.repository.find_replica_batch(
+            actor.workspace_id, actor.id, request.client_request_id
+        )
+        if existing is not None:
+            if existing["request_hash"] == request_hash:
+                return self.get_replica_batch(actor, existing["batch_id"])
+            raise PodRepositoryError("client_request_id 已用于不同的复刻请求", 409)
+        batch_id = uuid.uuid4().hex
+        billing_run = (
+            self._freeze_batch(actor, batch_id, len(request.targets))
+            if (enqueue or self.billing_coordinator)
+            else None
+        )
+        try:
+            batch = self.repository.create_replica_batch(
+                actor.workspace_id,
+                actor.id,
+                request,
+                request_hash=request_hash,
+                batch_id=batch_id,
+            )
+        except ReplicaBatchIdempotentReturn as duplicate:
+            # 并发下同请求已由另一提交者落库：结算本次冻结并按既有批次返回。
+            if billing_run is not None:
+                billing_run.settle()
+            return self.get_replica_batch(actor, duplicate.batch_id)
+        except Exception:
+            if billing_run is not None:
+                billing_run.settle()
+            raise
+        if billing_run is not None and self.worker is not None:
+            self.worker.register_billing_run(batch_id, billing_run)
+        if enqueue and self.worker is not None:
+            self.worker.submit(batch_id, billing_run)
+        try:
+            business_logger("pod_processing").info(
+                "========== POD 复刻批次开始 | batch_id=%s | workspace=%s | 用户=%s | "
+                "款数=%d | 样图=%s | 批次标题=%s | 冻结计费=%s ==========",
+                batch_id, actor.workspace_id, actor.id, len(request.targets),
+                request.source_asset_id, (request.title or "-")[:120],
+                "有" if billing_run is not None else "无")
+        except Exception:  # noqa: BLE001
+            pass
+        return self.get_replica_batch(actor, batch["batch_id"])
+
+    def list_replica_batches(self, actor: Actor, *, limit: int = 20, offset: int = 0) -> dict[str, Any]:
+        rows, total = self.repository.list_batches(
+            actor.workspace_id,
+            actor.id,
+            limit=max(1, min(limit, 100)),
+            offset=max(0, offset),
+            mode="replica",
+        )
+        return {"batches": [self._batch_summary(row) for row in rows], "total": total}
+
+    def get_replica_batch(self, actor: Actor, batch_id: str) -> dict[str, Any]:
+        batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
+        if batch.get("mode") != "replica":
+            raise PodRepositoryError("POD replica batch not found", 404)
         return self._batch_payload(batch)
 
     def list_semi_batches(self, actor: Actor, *, limit: int = 20, offset: int = 0) -> dict[str, Any]:
@@ -799,7 +925,9 @@ class PodCustomizationService:
             # 「不印到图上」：预览与生成结果一致 —— 直接给干净底图（无底图时给空白示意底图）。
             return base_content or blank_spec_card_base_jpeg(self.SPEC_CARD_PREVIEW_BASE_SIDE)
         request = spec_card.SpecCardRequest(
-            cells=config.cells, style=config.style, corner=config.corner
+            cells=display_spec_card_cells(config.cells, config.display_unit),
+            style=config.style,
+            corner=config.corner,
         )
         if base_content:
             try:
@@ -825,8 +953,18 @@ class PodCustomizationService:
         batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
         if batch["status"] not in self.SPEC_CARD_TERMINAL_STATUSES:
             raise BatchNotTerminalForSpecCard()
+        if batch.get("mode") == "replica" and style_index is None:
+            # 复刻每款规格卡独立，必须按款重印，禁止无 style_index 的全批更新。
+            raise PodRepositoryError("复刻批次重印必须指定 style_index", 422)
         config = self._validated_spec_card_config(config_mapping)
-        self.repository.update_batch_spec_card(batch_id, config.model_dump())
+        if batch.get("mode") == "replica":
+            # 复刻每款配置独立：只更新被指定款的快照，不改整批镜像配置、不动其他款。
+            if not self.repository.update_replica_target_spec_card(
+                batch_id, int(style_index), config.model_dump()
+            ):
+                raise PodRepositoryError("POD 复刻目标不存在", 404)
+        else:
+            self.repository.update_batch_spec_card(batch_id, config.model_dump())
         targets = self.repository.list_spec_card_hero_targets(batch_id)
         if style_index is not None:
             wanted = int(style_index)
@@ -869,7 +1007,11 @@ class PodCustomizationService:
         if config.enabled:
             result = spec_card.render_spec_card(
                 base_content,
-                spec_card.SpecCardRequest(cells=config.cells, style=config.style, corner=config.corner),
+                spec_card.SpecCardRequest(
+                    cells=display_spec_card_cells(config.cells, config.display_unit),
+                    style=config.style,
+                    corner=config.corner,
+                ),
             )
             rendered = result.jpeg_bytes
         else:
@@ -2065,7 +2207,9 @@ class PodCustomizationService:
         }
 
     def _batch_payload(self, batch: dict[str, Any]) -> dict[str, Any]:
-        semi = batch.get("mode") == "semi"
+        mode = batch.get("mode") or "full"
+        semi = mode == "semi"
+        replica = mode == "replica"
         snapshot = batch.get("template")
         template_payload = None
         if snapshot:
@@ -2110,10 +2254,10 @@ class PodCustomizationService:
                 "block_reason": export_analysis.block_reason,
             }
         style_count = int(batch["requested_count"])
-        return {
+        payload: dict[str, Any] = {
             "id": batch["batch_id"],
             "batch_id": batch["batch_id"],
-            "mode": "semi" if semi else "full",
+            "mode": mode,
             "title": batch["title"],
             "status": batch["status"],
             "template_id": batch["template_id"],
@@ -2145,6 +2289,44 @@ class PodCustomizationService:
             "template": template_payload,
             "items": items,
             "style_titles": [self._title_payload(title) for title in batch.get("style_titles", [])],
+        }
+        if replica:
+            payload["source"] = self._replica_source_payload(batch)
+            payload["targets"] = [
+                self._replica_target_payload(target)
+                for target in batch.get("replica_targets", [])
+            ]
+        return payload
+
+    @staticmethod
+    def _replica_source_payload(batch: dict[str, Any]) -> dict[str, Any]:
+        source = batch.get("replica_source") or {}
+        asset_id = source.get("asset_id", "")
+        return {
+            "asset_id": asset_id,
+            "preview_url": f"/api/pod-customization/assets/{asset_id}" if asset_id else None,
+            "download_url": f"/api/pod-customization/assets/{asset_id}?download=1" if asset_id else None,
+            "filename": source.get("filename", ""),
+            "content_type": source.get("content_type", ""),
+            "width": source.get("width"),
+            "height": source.get("height"),
+        }
+
+    @staticmethod
+    def _replica_target_payload(target: dict[str, Any]) -> dict[str, Any]:
+        asset = target.get("asset") or {}
+        asset_id = target.get("asset_id", "")
+        return {
+            "style_index": target.get("style_index"),
+            "asset_id": asset_id,
+            "preview_url": f"/api/pod-customization/assets/{asset_id}" if asset_id else None,
+            "download_url": f"/api/pod-customization/assets/{asset_id}?download=1" if asset_id else None,
+            "filename": asset.get("filename", ""),
+            "width": asset.get("width"),
+            "height": asset.get("height"),
+            "product_name": (target.get("business_fields") or {}).get("product_name", ""),
+            "business_fields": target.get("business_fields"),
+            "listing_fields": target.get("listing_fields"),
         }
 
     @staticmethod

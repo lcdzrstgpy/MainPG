@@ -111,6 +111,7 @@ export const EMPTY_SPEC_CARD: SpecCardConfig = {
   enabled: true,
   style: "light",
   corner: "bottom-right",
+  display_unit: "cm",
   cells: buildSpecCardCells([""]),
 };
 
@@ -119,6 +120,7 @@ export function cloneSpecCardConfig(config: SpecCardConfig): SpecCardConfig {
     enabled: config.enabled,
     style: config.style,
     corner: config.corner,
+    display_unit: config.display_unit ?? "cm",
     cells: config.cells.map((row) => [...row]),
   };
 }
@@ -141,6 +143,7 @@ export function isSpecCardConfig(value: unknown): value is SpecCardConfig {
   return typeof candidate.enabled === "boolean"
     && isSpecCardStyle(candidate.style)
     && isSpecCardCorner(candidate.corner)
+    && (candidate.display_unit === undefined || candidate.display_unit === "cm" || candidate.display_unit === "in")
     && Array.isArray(candidate.cells)
     && candidate.cells.every((row) => Array.isArray(row) && row.every((cell) => typeof cell === "string"));
 }
@@ -366,6 +369,7 @@ export function isPodBatchCount(value: number): value is PodBatchCount {
 
 export function groupPodStyleRows(
   batch: Pick<PodBatch, "items" | "style_grid" | "business_fields" | "style_titles">,
+  resolveStyleProductName?: (styleIndex: number) => string | undefined,
 ): PodStyleRow[] {
   const productName = batch.business_fields?.product_name?.trim() || "未命名商品";
   const grouped = new Map<number, Array<PodBatchItem | undefined>>();
@@ -394,9 +398,10 @@ export function groupPodStyleRows(
       : completed || failed ? "partial_failure"
       : settled.some((item) => item && isActivePodItemStatus(item.status)) ? "generating"
       : "queued";
+    const resolvedProductName = resolveStyleProductName?.(index)?.trim() || productName;
     return {
       index,
-      title: styleTitle?.title?.trim() || `${productName} · 款式 #${String(index).padStart(3, "0")}`,
+      title: styleTitle?.title?.trim() || `${resolvedProductName} · 款式 #${String(index).padStart(3, "0")}`,
       title_status: styleTitle?.status,
       title_source: styleTitle?.source,
       listing_ready: styleTitle?.listing_ready,

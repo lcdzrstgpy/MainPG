@@ -1,4 +1,4 @@
-"""combo_kit 店小秘导入模板导出：把一套组合套装数据映射到 42 列导入行。
+"""combo_kit 店小秘导入模板导出：把一套组合套装数据映射到店小秘 POP Temu 模板导入行。
 
 复用 pod_customization.dianxiaomi 的列定义与 xlsx 构建（DXM_COLUMNS /
 build_dianxiaomi_workbook），但把 combo_kit_sets 的字段映射到对应列。
@@ -28,7 +28,6 @@ _REQUIRED_COLUMNS: dict[int, str] = {
     14: "重量(g)",
     18: "轮播图",
     19: "产品素材图",
-    26: "产品分类",
 }
 
 _IMAGE_ROLE_LABELS = {
@@ -144,18 +143,14 @@ def _build_row(set_data: dict[str, Any], images: dict[str, str]) -> list[Any]:
         19: main,
         23: set_data.get("suggested_price_usd") or 0,
         24: set_data.get("stock") or 0,
-        26: str(set_data.get("category_name") or ""),
-        27: str(set_data.get("category_name") or ""),
-        28: str(set_data.get("category_path") or ""),
-        29: str(set_data.get("category_id") or ""),
-        30: "单品",
-        31: 1,
-        32: "件",
+        31: "单品",
+        32: 1,
+        33: "件",
     }
     for index, value in values.items():
         row[index] = value
-    if len(row) != 42:
-        raise AssertionError("combo_kit Dianxiaomi row must contain exactly 42 cells")
+    if len(row) != len(DXM_COLUMNS):
+        raise AssertionError(f"combo_kit Dianxiaomi row must contain exactly {len(DXM_COLUMNS)} cells")
     return row
 
 
@@ -178,8 +173,6 @@ def _validate_row(row: list[Any]) -> None:
             missing.append(f"{label}（需已发布到 COS 的公网图片直链）")
         elif index == 9:
             missing.append(f"{label}（未录入）")
-        elif index == 26:
-            missing.append(f"{label}（分类未填写）")
         else:
             missing.append(label)
     if missing:

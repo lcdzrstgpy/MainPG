@@ -271,6 +271,37 @@ def test_spec_card_preview_returns_a_data_url_without_persisting_or_billing(tmp_
     runtime.close()
 
 
+def test_spec_card_preview_converts_centimetres_to_selected_inches(tmp_path: Path, monkeypatch) -> None:
+    billing = Billing()
+    runtime = ApiRuntime([])
+    client, service = _client(tmp_path, runtime, billing)
+    captured: list[tuple[tuple[str, ...], ...]] = []
+    original = spec_card.render_spec_card
+
+    def capture(base_content, request, **kwargs):
+        captured.append(request.cells)
+        return original(base_content, request, **kwargs)
+
+    monkeypatch.setattr(spec_card, "render_spec_card", capture)
+    response = client.post(
+        f"{API}/spec-card/preview",
+        headers=HEADERS,
+        json={
+            "cells": [["SKU", "Length", "Width", "Height"], ["A", "25.4", "50.8", "76.2"]],
+            "style": "light",
+            "corner": "bottom-right",
+            "display_unit": "in",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert captured == [
+        (("SKU", "Length (in)", "Width (in)", "Height (in)"), ("A", "10", "20", "30"))
+    ]
+    service.close()
+    runtime.close()
+
+
 def test_spec_card_preview_uses_the_template_base_when_available(tmp_path: Path) -> None:
     billing = Billing()
     runtime = ApiRuntime([])
@@ -332,6 +363,7 @@ def test_batch_create_freezes_the_spec_card_snapshot_without_stripping_cells(tmp
         "enabled": True,
         "style": "dark",
         "corner": "top-left",
+        "display_unit": "cm",
         # 单元格文本原样冻结：不 strip（父模型的 str_strip_whitespace 不传播到嵌套模型）。
         "cells": [[" 尺寸 ", "30cm"]],
     }
@@ -457,8 +489,43 @@ def test_spec_card_reprint_replaces_only_the_hero_publication(tmp_path: Path) ->
         "enabled": True,
         "style": "dark",
         "corner": "top-left",
+        "display_unit": "cm",
         "cells": [["尺寸", "30 × 20 × 10 cm"], ["材质", "12oz 帆布"]],
     }
+    service.close()
+    runtime.close()
+
+
+def test_spec_card_reprint_converts_centimetres_to_selected_inches(tmp_path: Path, monkeypatch) -> None:
+    billing = Billing()
+    runtime = ApiRuntime([_grid(0)])
+    seed = _service(tmp_path, runtime, billing)
+    batch = _seed_batch(seed, runtime, count=1, cells=[["SKU", "Length", "Width", "Height"], ["A", "25.4", "50.8", "76.2"]])
+    seed.close()
+    client, service = _client(tmp_path, runtime, billing)
+    captured: list[tuple[tuple[str, ...], ...]] = []
+    original = spec_card.render_spec_card
+
+    def capture(base_content, request, **kwargs):
+        captured.append(request.cells)
+        return original(base_content, request, **kwargs)
+
+    monkeypatch.setattr(spec_card, "render_spec_card", capture)
+    response = client.post(
+        f"{API}/batches/{batch['id']}/spec-card/reprint",
+        headers=HEADERS,
+        json={
+            "cells": [["SKU", "Length", "Width", "Height"], ["A", "25.4", "50.8", "76.2"]],
+            "style": "light",
+            "corner": "bottom-right",
+            "display_unit": "in",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert captured == [
+        (("SKU", "Length (in)", "Width (in)", "Height (in)"), ("A", "10", "20", "30"))
+    ]
     service.close()
     runtime.close()
 
