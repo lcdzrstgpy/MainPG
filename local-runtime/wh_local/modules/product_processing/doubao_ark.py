@@ -35,18 +35,35 @@ _HTTP_SESSION.trust_env = False
 _SERVER_AI_REQUEST_GATE = threading.BoundedSemaphore(2)
 
 
+# 未归类 4xx（provider_http）的重试预算。历史上这一档被当成「不可重试」直接抛，
+# 但生产数据（2026-08 至 09）显示：504 次 provider_http 失败**全部只尝试了 1 次**
+# 就整单判死，平均耗时仅 13.8s（远低于 120s 超时），而对外文案却是「请稍后重试」
+# —— 内部判定与对外承诺自相矛盾。上游 4xx 里混着瞬时抖动（网关限流变体、在途
+# 冲突的其它表达、上游短暂 refusal），给一次追加尝试即可救回；真属坏请求时也只
+# 多花一次调用。上限固定为 2（首次 + 一次追加），不占用 MAX_ATTEMPTS 的三次预算。
+_PROVIDER_HTTP_MAX_ATTEMPTS = 2
+
+
 def _classify_http_status(status_code: int) -> tuple[str, bool]:
     """Classify an Ark HTTP status into a (error_kind, retryable) pair.
 
     401/403 are persistent credential/config problems. 408/409/425/429 and any
-    5xx are transient and worth retrying. The remaining 4xx (bad body, upstream
-    refusal) are non-retryable provider errors.
+    5xx are transient and worth retrying. Remaining 4xx are opaque provider
+    errors: not permanently hopeless, but budgeted to
+    ``_PROVIDER_HTTP_MAX_ATTEMPTS`` instead of the full retry budget.
     """
     if status_code in {401, 403}:
         return "configuration", False
     if status_code in {408, 409, 425, 429} or status_code >= 500:
         return "transient", True
-    return "provider_http", False
+    return "provider_http", True
+
+
+def _retry_budget_for(error_kind: str) -> int | None:
+    """Per-error-kind cap on total attempts, or None to use the caller's default."""
+    if error_kind == "provider_http":
+        return _PROVIDER_HTTP_MAX_ATTEMPTS
+    return None
 
 
 def _extract_upstream_detail(body: bytes) -> str | None:
@@ -142,6 +159,7 @@ class DoubaoArkError(RuntimeError):
         attempt_count: int = 0,
         upstream_detail: str | None = None,
         retry_after: float | None = None,
+        max_attempts: int | None = None,
     ) -> None:
         super().__init__(message)
         self.error_kind = str(error_kind)
@@ -154,6 +172,9 @@ class DoubaoArkError(RuntimeError):
         # 上游给出的建议等待秒数（Retry-After）。上层退避优先采用它，避免 0.5s 抢跑
         # 让服务端仍在处理时被反复重试。
         self.retry_after = retry_after
+        # 本次错误允许的总尝试次数上限（None = 用调用方的默认预算）。provider_http 这类
+        # 「可重试但预算小」的错误靠它把追加尝试压到 1 次，不占用常规三次预算。
+        self.max_attempts = max(1, int(max_attempts)) if max_attempts else None
 
 
 class DoubaoArkClient:
@@ -227,6 +248,7 @@ class DoubaoArkClient:
                 status_code=status_code,
                 upstream_detail=detail,
                 retry_after=retry_after,
+                max_attempts=_retry_budget_for(error_kind),
             )
         return _decode_gateway_content(body)
 
@@ -311,6 +333,7 @@ class DoubaoArkClient:
                 retryable=retryable,
                 status_code=status_code,
                 upstream_detail=_extract_upstream_detail(body),
+                max_attempts=_retry_budget_for(error_kind),
             )
 
         try:

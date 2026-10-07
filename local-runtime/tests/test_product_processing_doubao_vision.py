@@ -141,6 +141,46 @@ def test_transient_failure_retries_once_then_succeeds(monkeypatch) -> None:
     assert busy.closed is True
 
 
+def test_unclassified_4xx_retries_once_then_succeeds(monkeypatch) -> None:
+    """未归类 4xx 过去只试 1 次就整单失败（生产实测 504 次全为 attempt=1）。
+
+    上游 4xx 里混着瞬时抖动，给一次追加尝试即可救回；真属坏请求也只是多花一次调用。
+    """
+    flaky = _Response({"error": {"message": "upstream refused"}}, status_code=400)
+    session = _Session([flaky, _success_response()])
+    monkeypatch.setenv("ARK_API_KEY", "ark-secret-key")
+    monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
+    monkeypatch.setattr(doubao_vision.time, "sleep", lambda _seconds: None)
+
+    result = doubao_vision.DoubaoVisionClient().recognize_subject(
+        "data:image/jpeg;base64,dGVzdA==", SOURCE_TITLE
+    )
+
+    assert result.sellable_subject == VALID_ANALYSIS["sellable_subject"]
+    assert len(session.requests) == 2
+    assert flaky.closed is True
+
+
+def test_unclassified_4xx_stops_at_its_own_budget_not_the_full_three(monkeypatch) -> None:
+    """预算固定为 2：既不重演「只试 1 次」，也不像 transient 那样把三次预算打满。"""
+    session = _Session(
+        [_Response({"error": {"message": "nope"}}, status_code=400) for _ in range(3)]
+    )
+    monkeypatch.setenv("ARK_API_KEY", "ark-secret-key")
+    monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
+    monkeypatch.setattr(doubao_vision.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(doubao_vision.DoubaoVisionError) as captured:
+        doubao_vision.DoubaoVisionClient().recognize_subject(
+            "data:image/jpeg;base64,dGVzdA==", SOURCE_TITLE
+        )
+
+    assert captured.value.error_kind == "provider_http"
+    assert captured.value.retryable is True
+    assert captured.value.attempt_count == 2
+    assert len(session.requests) == 2
+
+
 def test_recognize_subject_rejects_missing_original_title(monkeypatch) -> None:
     monkeypatch.setenv("ARK_API_KEY", "ark-secret-key")
 

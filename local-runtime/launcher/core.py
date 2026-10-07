@@ -386,6 +386,120 @@ def port_free(port: int = DEFAULT_PORT) -> CheckResult:
         return CheckResult("port.8010", "运行时", "ok", f"端口 {port} 空闲")
 
 
+# --------------------------------------------------------------------------- #
+# 启动预检（失败页错误码）+ 启动失败落盘/补报
+# --------------------------------------------------------------------------- #
+ERR_PORT_OCCUPIED = "E001"        # 8010 被占（残留实例/别的程序）
+ERR_DATA_DIR = "E002"             # 数据目录不可写（权限/磁盘满/杀软锁定）
+ERR_NETWORK = "E003"              # 服务器不通（提示，不阻断）
+
+ERR_FIX_HINTS: dict[str, str] = {
+    ERR_PORT_OCCUPIED: "请打开任务管理器结束残留的 MainPG.exe / python.exe 后重试；"
+                       "若被其他程序占用，请重启电脑。",
+    ERR_DATA_DIR: "请检查磁盘剩余空间，并在杀毒软件中把 MainPG 加入信任区后重试。",
+    ERR_NETWORK: "请检查网络连接；公司/校园网络需放行 workbench.haocoming.top。",
+}
+
+
+def check_data_dir_writable() -> CheckResult:
+    """数据目录可写验证（E002）。与 wh_local.config 的数据目录解析保持一致。"""
+    db_dir = resolve_db_path().parent
+    probe = db_dir / ".write-test"
+    try:
+        db_dir.mkdir(parents=True, exist_ok=True)
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+    except OSError as exc:
+        return CheckResult("data.writable", "运行时", "fail",
+                           f"{ERR_DATA_DIR} 数据目录不可写: {db_dir} ({exc})")
+    return CheckResult("data.writable", "运行时", "ok", f"数据目录可写: {db_dir}")
+
+
+def startup_preflight(auth_base_url: str = DEFAULT_AUTH_BASE_URL) -> list[CheckResult]:
+    """启动前环境预检：E001 端口、E002 数据目录（fail=阻断）、E003 网络（warn=提示）。"""
+    results: list[CheckResult] = []
+    try:
+        with socket.create_connection(("127.0.0.1", DEFAULT_PORT), timeout=1.0):
+            results.append(CheckResult(
+                "port.8010", "运行时", "fail",
+                f"{ERR_PORT_OCCUPIED} 端口 {DEFAULT_PORT} 已被占用（可能有残留实例或其他程序）"))
+    except OSError:
+        results.append(CheckResult("port.8010", "运行时", "ok", f"端口 {DEFAULT_PORT} 空闲"))
+    results.append(check_data_dir_writable())
+    # 网络连通用 TCP/TLS 握手探测（只看通不通，不看 HTTP 状态码，
+    # 避免 404 之类被误判成网络故障）。
+    net = check_tcp_tls(auth_base_url or DEFAULT_AUTH_BASE_URL, timeout=6.0)
+    if net.status == "fail":
+        results.append(CheckResult(net.key, net.group, "warn", f"{ERR_NETWORK} {net.message}"))
+    else:
+        results.append(net)
+    return results
+
+
+def first_blocking_error(results: list[CheckResult]) -> CheckResult | None:
+    """预检结果中第一条 fail（阻断级）；无则 None。"""
+    for item in results:
+        if item.status == "fail":
+            return item
+    return None
+
+
+def error_code_of(message: str) -> str | None:
+    """从检查消息中提取错误码（E001/E002/E003），无则 None。"""
+    for code in (ERR_PORT_OCCUPIED, ERR_DATA_DIR, ERR_NETWORK):
+        if code in message:
+            return code
+    return None
+
+
+def startup_failure_log_path() -> Path:
+    """启动失败记录（JSONL）。冻结时 %APPDATA%\\MainPG\\startup-failure.log。"""
+    if getattr(sys, "frozen", False):
+        appdata = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
+        return appdata / "MainPG" / "startup-failure.log"
+    return Path.cwd() / "outputs" / "wh-local" / "startup-failure.log"
+
+
+def record_startup_failure(code: str, message: str) -> None:
+    """启动失败落盘（JSONL 追加，最多保留 20 条），并同步写入 runtime.log 供日志上传链路带走。"""
+    entry = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "code": code, "message": message}
+    try:
+        path = startup_failure_log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lines = [json.dumps(entry, ensure_ascii=False)]
+        if path.is_file():
+            old = [ln for ln in path.read_text(encoding="utf-8", errors="replace").splitlines() if ln.strip()]
+            lines = (old + lines)[-20:]
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+    try:
+        from .logupload import runtime_log_path
+
+        log = runtime_log_path()
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open("a", encoding="utf-8") as fh:
+            fh.write(f"\n[{entry['ts']}] STARTUP-FAILURE {code} {message}\n")
+    except OSError:
+        pass
+
+
+def consume_startup_failures() -> list[dict[str, Any]]:
+    """读取并清空未消化的启动失败记录（下次启动时提示用户/上报用）。"""
+    path = startup_failure_log_path()
+    if not path.is_file():
+        return []
+    try:
+        entries = [
+            json.loads(ln) for ln in path.read_text(encoding="utf-8", errors="replace").splitlines()
+            if ln.strip()
+        ]
+        path.unlink(missing_ok=True)
+        return entries
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
 def _get_json(base_url: str, path: str, timeout: float = 6.0) -> dict[str, Any]:
     """GET 一个本地/远端 JSON 端点，返回 dict。"""
     req = request.Request(base_url.rstrip("/") + path, method="GET",

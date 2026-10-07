@@ -301,16 +301,23 @@ class CustomerAuthClient:
             headers={"Authorization": f"Bearer {remote_token}"},
         )
 
-    def submit_station_application(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def submit_station_application(
+        self, payload: dict[str, Any], remote_token: str = ""
+    ) -> dict[str, Any]:
         """提交分站申请（「推广计划 · 申请加入」）。
 
-        打到公告发布后台（wh-admin）的免登录端点；account_id 由本地后端从会话
-        注入，不信任前端上报，避免替他人提交申请。
+        account_id 由本地后端从会话注入，不信任前端上报，避免替他人提交申请。
+        ⚠️ 同时带上远端会话令牌：发布后台按令牌解析身份（账号 ID 可由邮箱哈希
+        推导、不能当身份），没有令牌只会拿到 401。
         """
-        return self._station_request("POST", "/api/station-applications/public", payload)
+        return self._station_request(
+            "POST", "/api/station-applications/public", payload, remote_token=remote_token
+        )
 
-    def get_station_application(self, account_id: str) -> dict[str, Any]:
-        """查询该账号最近一条分站申请状态（免登录端点，不回分站密码）。"""
+    def get_station_application(
+        self, account_id: str, remote_token: str = ""
+    ) -> dict[str, Any]:
+        """查询该账号最近一条分站申请状态（不回分站密码）。"""
         account_id = str(account_id or "").strip()
         if not account_id:
             raise CustomerAuthRejected(400, "missing account id")
@@ -319,6 +326,7 @@ class CustomerAuthClient:
         return self._station_request(
             "GET",
             f"/api/station-applications/public?account_id={quote(account_id, safe='')}",
+            remote_token=remote_token,
         )
 
     def list_partner_stations(self) -> dict[str, Any]:
@@ -342,10 +350,14 @@ class CustomerAuthClient:
         method: str,
         path: str,
         payload: dict[str, Any] | None = None,
+        remote_token: str = "",
     ) -> dict[str, Any]:
         if not self.station_base_url:
             raise CustomerAuthUnavailable("station application service is not configured")
-        return self._request(method, path, payload, base_url=self.station_base_url)
+        headers = {"x-auth-token": remote_token} if remote_token else None
+        return self._request(
+            method, path, payload, headers, base_url=self.station_base_url
+        )
 
     def admin_request(
         self,

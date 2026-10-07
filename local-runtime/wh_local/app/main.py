@@ -34,6 +34,7 @@ from ..config import (
     UPDATE_MANIFEST_URL,
     UPDATE_PATCH_MANIFEST_URL,
     default_config,
+    ensure_data_dir_ready,
 )
 from ..customer.auth_service import SQLiteCustomerAuthService
 from ..customer.collect_credentials import CollectCredentialsError, request_collect_credentials
@@ -397,6 +398,8 @@ class _RuntimeExitController:
 def create_app(database_path: Path | None = None) -> FastAPI:
     config = default_config()
     db_path = database_path or config.database_path
+    # 启动自检：数据目录可写（E002）+ 老库迁移到固定 AppData 目录（打包版）。
+    ensure_data_dir_ready(config, db_path)
     init_db(db_path)
     register_system_config_db_path(db_path)
     clipforge = ClipForgeService(
@@ -455,8 +458,14 @@ def create_app(database_path: Path | None = None) -> FastAPI:
             reply_sync.start()
             logger.info("lifespan step: reply_sync started")
         if clipforge_service is not None:
-            clipforge_status = clipforge_service.start()
-            logger.info("lifespan step: clipforge state=%s message=%s", clipforge_status.state, clipforge_status.message)
+            # ClipForge 是可选子服务：它出任何问题都绝不能挡住主后端启动。
+            # （打包进只读目录 / node 缺失 / 端口被占时 start() 会抛 OSError，
+            #   裸调会击穿 lifespan → 整个 8010 起不来。）
+            try:
+                clipforge_status = clipforge_service.start()
+                logger.info("lifespan step: clipforge state=%s message=%s", clipforge_status.state, clipforge_status.message)
+            except Exception as exc:  # noqa: BLE001 - 子服务故障不得阻断主程序
+                logger.warning("lifespan step: clipforge start failed (ignored): %s", exc)
         logger.info("lifespan step: startup done, yielding")
         try:
             yield
@@ -682,7 +691,29 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     )
 
     # 公告消息：从公告发布后台定时同步，前端右上角站内信读取。
-    # 定向发送：同步时携带最近登录的远端账号 ID，后台据此返回发给该账号的定向公告。
+    # 身份：同步时带上「远端会话令牌」作为真正身份，后台按令牌解析账号再做定向过滤。
+    # account_id 由邮箱哈希推导、可被伪造，只能当兼容参数（新后台已忽略它）。
+
+    def _remote_token_for_local_token(local_token: str) -> str:
+        """本地会话令牌 -> 远端会话令牌（请求级同步用，身份精确）。
+
+        必须走共享的 customer_sessions：远端令牌只存进程内存，
+        新建 SQLiteCustomerSessionStore 实例是拿不到的。
+        """
+        try:
+            session = customer_sessions.store.get_session(local_token or "")
+        except Exception:
+            return ""
+        return (session.remote_token if session else "") or ""
+
+    def _current_remote_token() -> str:
+        """后台定时线程没有请求上下文时的回退：取最近一次登录且仍活跃的远端令牌。"""
+        try:
+            lister = getattr(customer_sessions.store, "active_remote_tokens", None)
+            values = [str(t) for t in lister()] if callable(lister) else []
+        except Exception:
+            values = []
+        return values[-1] if values else ""
     def _current_remote_account_id() -> str:
         try:
             with closing(sqlite3.connect(db_path)) as conn:
@@ -705,14 +736,23 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         config.announce_base_url,
         interval_seconds=180,
         account_id_provider=_current_remote_account_id,
+        auth_token_provider=_current_remote_token,
     )
     reply_sync = FeedbackReplySyncService(
         messages_repository,
         config.announce_base_url,
         interval_seconds=30,
         account_id_provider=_current_remote_account_id,
+        auth_token_provider=_current_remote_token,
     )
-    app.include_router(create_messages_router(messages_repository, messages_sync))
+    app.include_router(
+        create_messages_router(
+            messages_repository,
+            messages_sync,
+            reply_sync,
+            remote_token_provider=_remote_token_for_local_token,
+        )
+    )
     app.state.messages_sync = messages_sync
     app.state.reply_sync = reply_sync
 

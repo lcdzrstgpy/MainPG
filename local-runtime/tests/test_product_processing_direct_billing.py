@@ -527,10 +527,13 @@ def test_reconcile_open_batches_skips_still_running_tasks(tmp_path: Path, monkey
         count = service.reconcile_open_batches("remote-token", account_id="acct-direct")
     finally:
         service.repository.database.dispose()
-    assert count == 1
-    assert [call[1] for call in client.settle_calls] == ["fz-orphan-1"]
+    # 产品语义（reconcile_open_batches 注释）：task_id=0 是 combo 冻结，由
+    # run_combo_direct 的 _settle_combo_freeze 按真实结果结算，对账无从得知成败
+    # 硬算会误扣 → 跳过；queued 任务等终态再对账。两者都不该被碰。
+    assert count == 0
+    assert client.settle_calls == []
     remaining = batch_billing_module.open_freezes_for_account("acct-direct")
-    assert [record["freeze_id"] for record in remaining] == ["fz-running-1"]
+    assert sorted(record["freeze_id"] for record in remaining) == ["fz-orphan-1", "fz-running-1"]
 
 
 class FailingSettleClient(RecordingBatchClient):

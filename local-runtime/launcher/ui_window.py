@@ -2319,6 +2319,22 @@ class MainWindow(QMainWindow):
                 "未找到 MainPG.exe。请确认产品已安装，或用 WH_APP_EXE 指定路径。",
             )
             return
+        if action == "start":
+            # 启动预检（适配三件套）：E001 端口占用 / E002 数据目录不可写 → 失败页并阻断；
+            # E003 网络不通 → 仅提示，不阻断（离线可启动）。
+            preflight = core.startup_preflight()
+            blocking = core.first_blocking_error(preflight)
+            if blocking is not None:
+                code = core.error_code_of(blocking.message) or "E000"
+                core.record_startup_failure(code, blocking.message)
+                self._append_proc_log(
+                    f"{ICONS['close_circle']}  启动预检失败 {code}：{blocking.message}", ERROR_TEXT
+                )
+                self._show_preflight_failure(code, blocking.message)
+                return
+            for item in preflight:
+                if item.status == "warn":
+                    self._append_proc_log(f"⚠ 预检提示：{item.message}", TEXT_MUTED)
         self._proc_action = {"start": "启动", "stop": "停止", "restart": "重启"}[action]
         self._append_proc_log(f"正在{self._proc_action}主程序…", TEXT_MUTED)
         self._proc_worker = ProductActionWorker(self._product, action)
@@ -2327,10 +2343,32 @@ class MainWindow(QMainWindow):
         self._proc_worker.start()
         self._refresh_sidebar_status()
 
+    def _show_preflight_failure(self, code: str, message: str) -> None:
+        """启动预检失败页：错误码 + 原因 + 解决办法 + 复制诊断信息。"""
+        fix = core.ERR_FIX_HINTS.get(code, "请重启电脑后重试；仍失败请联系客服并附上诊断信息。")
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Critical)
+        box.setWindowTitle(f"启动失败（{code}）")
+        box.setText(f"环境自检未通过（{code}），已阻止启动以避免白屏。")
+        box.setInformativeText(f"{message}\n\n解决办法：{fix}\n\n失败记录已保存，可通过「日志上传」一并上报。")
+        box.setDetailedText(f"错误码: {code}\n详情: {message}\n时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        copy_btn = box.addButton("复制诊断信息", QMessageBox.ButtonRole.ActionRole)
+        box.addButton("关闭", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is copy_btn:
+            QtWidgets.QApplication.clipboard().setText(f"[{code}] {message}\n解决办法：{fix}")
+
     def _on_proc_done(self, _action: str, message: str) -> None:
         self._proc_worker = None
         self._proc_action = ""
         self._append_proc_log(f"{ICONS['check_circle']}  {message}", SUCCESS_TEXT)
+        pending = core.consume_startup_failures()
+        if pending:
+            last = pending[-1]
+            self._append_proc_log(
+                f"检测到 {len(pending)} 条历史启动失败记录（最近 {last.get('code', '?')}），"
+                f"已并入日志，可通过「日志上传」上报", TEXT_MUTED
+            )
         self._refresh_sidebar_status()
 
     def _on_proc_error(self, _action: str, message: str) -> None:

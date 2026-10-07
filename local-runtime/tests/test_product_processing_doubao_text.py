@@ -301,6 +301,20 @@ def test_old_gateway_retry_limit_preserves_contract_failure(monkeypatch) -> None
     assert len(session.requests) == 3
 
 
+def test_unclassified_4xx_retries_once_then_succeeds(monkeypatch) -> None:
+    """文本链路同样只追加一次：未归类 4xx 过去一次就判死。"""
+    flaky = _Response({"error": {"message": "upstream refused"}}, status_code=400)
+    session = _Session([flaky, _success()])
+    monkeypatch.setenv("ARK_API_KEY", "ark-secret")
+    monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
+    monkeypatch.setattr(doubao_text.time, "sleep", lambda _seconds: None)
+
+    result = doubao_text.DoubaoTextClient().generate_listing_text("prompt")
+
+    assert result.as_dict() == VALID_TEXT
+    assert len(session.requests) == 2
+
+
 def test_configuration_error_does_not_retry_or_expose_provider_body(monkeypatch) -> None:
     session = _Session([_Response("permission-secret", status_code=403)])
     monkeypatch.setenv("ARK_API_KEY", "ark-secret")

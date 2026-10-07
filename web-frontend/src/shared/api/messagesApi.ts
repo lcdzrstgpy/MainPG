@@ -63,6 +63,38 @@ function mapMessage(value: unknown): InboxMessage {
   };
 }
 
+/**
+ * 立即从发布后台同步一次（公告 + 反馈回复），并按服务端在线列表撤回本地陈旧消息。
+ *
+ * 本地消息表没有账号维度（同一台机器所有账号共用一张表），换号后上一个账号的
+ * 定向公告会残留在本地，直到下一轮后台同步（180s）才被撤回——这就是「新用户
+ * 短暂看到别人公告」的窗口。登录成功 / 进入工作台后先立刻调用本接口，把撤回
+ * 提前到消息渲染之前。
+ *
+ * 同一个登录周期内多次调用共用同一个在飞请求（单飞），避免重复打后端；
+ * 失败（离线等）静默降级，不阻断登录与消息展示。
+ */
+let messagesSyncInFlight: Promise<void> | null = null;
+
+export function syncMessages(): Promise<void> {
+  if (!messagesSyncInFlight) {
+    messagesSyncInFlight = httpJson("/api/messages/sync", {
+      method: "POST",
+      body: {},
+      token: resolveToken(),
+      timeoutMs: 8000,
+    })
+      .then(() => undefined)
+      .catch(() => undefined);
+  }
+  return messagesSyncInFlight;
+}
+
+/** 登录/登出后重置单飞缓存：换了账号必须重新同步一次，不能复用上一个账号的结果。 */
+export function resetMessagesSync(): void {
+  messagesSyncInFlight = null;
+}
+
 /** 拉取消息列表；withImages=true 时一并带上公告图片（base64），供弹窗轮播。 */
 export async function fetchMessages(options?: { withImages?: boolean }): Promise<InboxMessage[]> {
   const path = options?.withImages ? "/api/messages?with_images=1" : "/api/messages";

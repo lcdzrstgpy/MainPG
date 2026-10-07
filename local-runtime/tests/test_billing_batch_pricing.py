@@ -196,7 +196,10 @@ def test_ttl_release_frees_locked_points(tmp_path: Path) -> None:
             "SELECT points_balance, locked_points FROM billing_wallets WHERE account_id = ?",
             (actor.id,),
         ).fetchone()
-    assert dict(wallet) == {"points_balance": 1000, "locked_points": 0}
+    # 产品语义（billing.BATCH_EXPIRY_RELEASE_PERCENT=85）：过期释放只退 85%，
+    # 15% 作为过期惩罚扣留。1 条 link 冻结 453 units → 退 385、扣 68，
+    # 余额 1000-68=932，locked 归零。
+    assert dict(wallet) == {"points_balance": 932, "locked_points": 0}
 
 
 def test_usage_history_links_batch_to_task_id(tmp_path: Path) -> None:

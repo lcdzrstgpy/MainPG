@@ -52,6 +52,11 @@ from .generation import _make_media_processor, _static_config, crop_subject_refe
 from .watermark import apply_watermark, normalize_watermark_config
 from .worker import ProgressReporter
 
+try:  # 业务日志为可观测性设施，导入失败不得影响计费主流程。
+    from wh_local.runtime_logs import business_logger
+except Exception:  # noqa: BLE001
+    business_logger = None  # type: ignore[assignment]
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -866,8 +871,15 @@ class ComboKitService:
             if freeze:
                 try:
                     self.billing.settle(actor, freeze, success=False)
-                except Exception:
-                    pass
+                except Exception as settle_exc:  # noqa: BLE001
+                    # 结算失败会留下未释放的冻结点数；不阻断主流程，但必须留痕。
+                    if business_logger is not None:
+                        try:
+                            business_logger("ai_processing").warning(
+                                "套装主图失败后结算冻结异常 | set_id=%s | error=%s",
+                                set_id, str(settle_exc)[:300])
+                        except Exception:  # noqa: BLE001
+                            pass
         if not out or not out.get("content"):
             return None
         workspace_id = str(base.get("workspace_id") or "local")

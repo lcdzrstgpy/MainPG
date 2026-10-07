@@ -1,5 +1,11 @@
 import type { ProductQueryParams, ProductSources, ProfitActivityProduct, ProfitActivityScope, ProfitActivitySite } from "../types/products";
-import { toUserMessage } from "../../../transport/http/client";
+import {
+  AUTH_RETRY_MANAGED,
+  getAuthToken,
+  isSessionExpiredDetail,
+  notifySessionExpired,
+  toUserMessage,
+} from "../../../transport/http/client";
 
 export type ProfitActivitySiteOption = { site_code: ProfitActivitySite; display_name: string; builtin: boolean };
 
@@ -26,6 +32,29 @@ function candidateTokens(): string[] {
   return [...tokens];
 }
 
+/**
+ * 带令牌的「受管」fetch：401 不交给全局拦截器就地判定会话失效（本模块会
+ * 换候选令牌重试，单个候选被拒≠登录失效）。只有「登录会话令牌」被拒且文案
+ * 命中会话失效关键词时，才在这里通知会话失效——避免历史遗留令牌
+ * （whLocalApiToken）失效时把用户误踢回登录页。
+ */
+async function authedFetch(url: string, init: RequestInit, token: string): Promise<Response> {
+  const headers = new Headers(init.headers);
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const response = await fetch(url, { ...init, headers, [AUTH_RETRY_MANAGED]: true } as RequestInit);
+  if (response.status === 401 && token && token === getAuthToken()) {
+    let detail = "";
+    try {
+      const body = (await response.clone().json()) as { detail?: unknown } | null;
+      if (body && typeof body.detail === "string") detail = body.detail;
+    } catch {
+      // 非 JSON 响应（如图片二进制）无法判定会话是否失效，不误判
+    }
+    if (isSessionExpiredDetail(detail)) notifySessionExpired(detail);
+  }
+  return response;
+}
+
 // 从响应体里取出可读的错误文本：优先 detail 字符串，其次整段文本，
 // 最后才回退到状态码。绝不要把 JSON 原文交给用户（以前会直接显示
 // {"detail":"product_id_already_exists"}）。
@@ -42,9 +71,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const { apiBase } = resolveEndpoint();
   const last401 = new Error("invalid bearer token");
   for (const token of candidateTokens()) {
-    const headers = new Headers(options.headers);
-    if (token) headers.set("Authorization", `Bearer ${token}`);
-    const response = await fetch(`${apiBase}${path}`, { ...options, headers });
+    const response = await authedFetch(`${apiBase}${path}`, options, token);
     const text = await response.text();
     let data: unknown = text;
     try {
@@ -145,10 +172,9 @@ export async function loadProductImage({
   const token = candidateTokens()[0];
   const query = new URLSearchParams({ site, kind, group: String(group), index: String(index) });
   if (version) query.set("v", version);
-  const response = await fetch(`${apiBase}/api/profit-activity/products/${encodeURIComponent(skc)}/image?${query}`, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  const response = await authedFetch(`${apiBase}/api/profit-activity/products/${encodeURIComponent(skc)}/image?${query}`, {
     cache: "no-store",
-  });
+  }, token);
   if (!response.ok) throw new Error(toUserMessage(await response.text()));
   return URL.createObjectURL(await response.blob());
 }
@@ -190,11 +216,10 @@ export async function updateProductImage({
   if (source_url) form.set("source_url", source_url);
   if (source_groups?.length) form.set("source_groups_json", JSON.stringify(source_groups));
   form.set("image", image);
-  const response = await fetch(`${apiBase}/api/profit-activity/products/${encodeURIComponent(skc)}/update`, {
+  const response = await authedFetch(`${apiBase}/api/profit-activity/products/${encodeURIComponent(skc)}/update`, {
     method: "POST",
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
     body: form,
-  });
+  }, token);
   const text = await response.text();
   let data: unknown = text;
   try {
@@ -282,11 +307,10 @@ export async function saveProfitActivityProductEdit({
   if (attachmentImage) form.set("attachment_image", attachmentImage);
   if (clearProductImage) form.set("clear_product_image", "true");
   if (clearAttachmentImage) form.set("clear_attachment_image", "true");
-  const response = await fetch(`${apiBase}/api/profit-activity/products/${encodeURIComponent(skc)}/update`, {
+  const response = await authedFetch(`${apiBase}/api/profit-activity/products/${encodeURIComponent(skc)}/update`, {
     method: "POST",
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
     body: form,
-  });
+  }, token);
   const text = await response.text();
   let data: unknown = text;
   try {
@@ -331,11 +355,10 @@ export async function updateProductSourceGroup({
       form.set(`source_group_image_${groupIndex}`, file);
     }
   }
-  const response = await fetch(`${apiBase}/api/profit-activity/products/${encodeURIComponent(skc)}/update`, {
+  const response = await authedFetch(`${apiBase}/api/profit-activity/products/${encodeURIComponent(skc)}/update`, {
     method: "POST",
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
     body: form,
-  });
+  }, token);
   const text = await response.text();
   let data: unknown = text;
   try {
@@ -369,13 +392,10 @@ export async function downloadProfitActivityCatalog({
   scope: ProfitActivityScope;
 }) {
   const { apiBase } = resolveEndpoint();
-  const headers = new Headers();
   const token = candidateTokens()[0];
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-  const response = await fetch(`${apiBase}/api/profit-activity/catalog/rebuild?${new URLSearchParams({ sites: sites.join(","), scope })}`, {
+  const response = await authedFetch(`${apiBase}/api/profit-activity/catalog/rebuild?${new URLSearchParams({ sites: sites.join(","), scope })}`, {
     method: "POST",
-    headers,
-  });
+  }, token);
   if (!response.ok) throw new Error(toUserMessage(await response.text()));
   const blob = await response.blob();
   const objectUrl = URL.createObjectURL(blob);

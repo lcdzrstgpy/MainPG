@@ -140,9 +140,14 @@
 }
 
 .price-verification-steps .price-verification-step.is-current-flow {
-  border-color: transparent !important;
+  /* 彻底不留边框：原来是 `border-color: transparent`（仍占 1px），在圆角裁剪和主题
+     变量下会在卡片右缘压出一条暗线。去掉边框后用 padding 补回这 1px，保持与其他
+     步骤同宽同高，不引起布局跳变。 */
+  border: 0 !important;
+  padding: 14px 16px;
   background: var(--theme-hero-gradient, linear-gradient(135deg, #c952a8, #8f5ae0)) !important;
-  box-shadow: 0 12px 28px color-mix(in srgb, var(--theme-primary, #12a9d8) 34%, transparent);
+  /* 负 spread 让阴影贴合卡片本体、不外溢到右侧 gap，避免在窄 gap 里叠出一条暗带。 */
+  box-shadow: 0 8px 18px -6px color-mix(in srgb, var(--theme-primary, #12a9d8) 34%, transparent);
   transform: translateY(-1px);
 }
 

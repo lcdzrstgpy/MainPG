@@ -15,6 +15,7 @@ const THEME_MASCOT: Record<ThemeId, string> = {
   quirky: "/theme/mascots/06-sticker.png",
   chinese: "/theme/mascots/07-ink.png",
   peach: "/theme/mascots/08-peach.png",
+  alpine: "/theme/mascots/10-alpine.png",
 };
 
 const POSITION_KEY = "mainpg.balanceBall.position";
