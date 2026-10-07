@@ -190,6 +190,7 @@ def test_generate_brief_fields_sends_theme_keyword_recipe_and_untrusted_notice()
     assert outcomes == [("brf1:brief:1", "success")]
 
     request = session.requests[0]
+    assert request["json"]["thinking"] == {"type": "disabled"}
     schema = request["json"]["response_format"]["json_schema"]["schema"]
     assert schema["properties"]["style_keywords"]["minItems"] == 40
     # 模糊输入必须被当作不可信数据包裹。

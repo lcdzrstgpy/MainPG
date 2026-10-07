@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { podCustomizationApi } from "../api/podCustomizationApi";
-import type { SpecCardCorner, SpecCardStyle } from "../types";
+import type { SpecCardCorner, SpecCardDisplayUnit, SpecCardStyle } from "../types";
 
 type Props = {
   cells: string[][];
@@ -9,6 +9,7 @@ type Props = {
   corner: SpecCardCorner;
   /** 是否把卡片印到素材图上；关掉时预览与生成结果一致，给干净底图。 */
   enabled: boolean;
+  displayUnit: SpecCardDisplayUnit;
   /** 预览底图优先用该批次模板；缺省时后端自选白底图。 */
   baseTemplateId?: string;
 };
@@ -17,7 +18,7 @@ type Props = {
 export const SPEC_CARD_PREVIEW_DEBOUNCE_MS = 300;
 export const SPEC_CARD_PREVIEW_NOTE = "示意效果，最终以生成结果为准。";
 
-export function SpecCardPreview({ cells, style, corner, enabled, baseTemplateId }: Props) {
+export function SpecCardPreview({ cells, style, corner, enabled, displayUnit, baseTemplateId }: Props) {
   const [image, setImage] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -37,6 +38,7 @@ export function SpecCardPreview({ cells, style, corner, enabled, baseTemplateId 
         cells: cells.map((row) => [...row]),
         style,
         corner,
+        display_unit: displayUnit,
         enabled,
         ...(baseTemplateId ? { base_template_id: baseTemplateId } : {}),
       }).then((response) => {
@@ -55,7 +57,7 @@ export function SpecCardPreview({ cells, style, corner, enabled, baseTemplateId 
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [cells, style, corner, enabled, baseTemplateId, reloadToken]);
+  }, [cells, style, corner, enabled, displayUnit, baseTemplateId, reloadToken]);
 
   return (
     <section className="pod-spec-card-preview" aria-label="预览">

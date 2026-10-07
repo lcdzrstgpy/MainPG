@@ -2834,8 +2834,15 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         pass
                     self._enqueue_failure_diagnostics(task_id, workspace_id)
                     self._cleanup_terminal_billing_state(task_id)
-                except Exception:
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    # 失败收尾（写失败状态 / 清理计费状态）本身出错：不能让线程静默退出，
+                    # 否则任务会卡在 running 且计费状态残留，必须留痕。
+                    try:
+                        business_logger("ai_processing").error(
+                            "任务失败收尾处理异常 | task_id=%s | workspace=%s | error=%s",
+                            task_id, workspace_id, str(exc)[:300])
+                    except Exception:  # noqa: BLE001
+                        pass
             finally:
                 with self._task_worker_lock:
                     self._task_workers.pop((workspace_id, task_id), None)
@@ -3210,8 +3217,14 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         if token:
             try:
                 self._settle_cancelled_freezes(task_id, workspace_id, token)
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                # 结算失败不能阻断取消，但必须留痕：open 冻结记录会由对账 / 服务端 TTL 兜底。
+                try:
+                    business_logger("ai_processing").warning(
+                        "取消结算冻结失败（保留 open 记录，交由对账/TTL 兜底） | task_id=%s | workspace=%s | error=%s",
+                        task_id, workspace_id, str(exc)[:300])
+                except Exception:  # noqa: BLE001
+                    pass
         # 取消是终态（含「已终止·保留成功项」）：把失败明细写入本地 outbox，
         # 供后台分发器上传服务器，避免取消的任务在服务器失败日志中缺失。
         self._enqueue_failure_diagnostics(task_id, workspace_id)

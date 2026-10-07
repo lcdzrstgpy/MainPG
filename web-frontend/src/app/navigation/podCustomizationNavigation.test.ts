@@ -12,3 +12,14 @@ test("workspace exposes only the new POD customization page", () => {
   assert.match(shellSource, /case "pod_customization":/);
   assert.doesNotMatch(shellSource, /case "ai_service":/);
 });
+
+test("POD group exposes replica as a third entry beside full and semi customization", () => {
+  assert.match(modulesSource, /"pod_replica"/);
+  assert.match(modulesSource, /label: "爆款复刻"/);
+  assert.match(shellSource, /PodReplicaPage/);
+  assert.match(shellSource, /case "pod_replica":/);
+  // 原两个入口保持可用。
+  assert.match(modulesSource, /label: "全定制"/);
+  assert.match(modulesSource, /label: "半定制"/);
+  assert.match(shellSource, /case "pod_semi_customization":/);
+});

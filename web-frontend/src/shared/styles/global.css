@@ -101,6 +101,20 @@ button { cursor: pointer; }
 .workspace-tab-panel.is-active > * > *:nth-child(6) { animation-delay: .74s; }
 .workspace-tab-panel.is-active > * > *:nth-child(7) { animation-delay: .86s; }
 .workspace-tab-panel.is-active > * > *:nth-child(n+8) { animation-delay: .98s; }
+
+/* POD 三个模块（全定制 / 半定制 / 爆款复刻）的页面根直接子块是 header 与网格容器，
+   落不进上面只认 section / *-card / *-panel 的选择器，这里按同一套动画补齐。
+   必须写成 animation-* 长写属性：简写会把上面 nth-child 规则给的 animation-delay 重置为 0，
+   那样所有区块就同时出现、没有逐块浮现的节奏了。 */
+.workspace-tab-panel.is-active > .pod-customization-page > *,
+.workspace-tab-panel.is-active > .pod-semi-customization-page > *,
+.workspace-tab-panel.is-active > .pod-replica-page > * {
+  animation-name: workbench-block-in;
+  animation-duration: .8s;
+  animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  animation-fill-mode: backwards;
+}
+
 /* 主题切换:主区三块自上而下逐块浮现,内容面板随后跟上 */
 /* 主题切换期间:让全界面的颜色一起流动,而不是只有背景在变、文字和边框硬切。
    只在这 1.4s 窗口内生效(见 useTheme.ts 的 CASCADE_MS),结束后自动移除,不拖累平时交互。
@@ -153,6 +167,9 @@ html.mode-cascade .sidebar-card { animation-delay: 0.16s; }
   html.theme-cascade .workspace-tab-panel.is-active > * > section,
   html.theme-cascade .workspace-tab-panel.is-active > * > [class*="-card"],
   html.theme-cascade .workspace-tab-panel.is-active > * > [class*="-panel"] { animation: none; }
+  .workspace-tab-panel.is-active > .pod-customization-page > *,
+  .workspace-tab-panel.is-active > .pod-semi-customization-page > *,
+  .workspace-tab-panel.is-active > .pod-replica-page > * { animation: none; }
   html.mode-cascade .workspace-main, html.mode-cascade .content-card, html.mode-cascade .sidebar-card { animation: none; }
 }
 @keyframes topbar-water-flow { 0%, 2% { opacity: 0; background-position: 125% 0; } 3% { opacity: .9; } 9% { opacity: .72; } 15% { opacity: 0; background-position: -125% 0; } 100% { opacity: 0; background-position: -125% 0; } }
@@ -185,12 +202,18 @@ html.mode-cascade .sidebar-card { animation-delay: 0.16s; }
 
 /* 顶栏滚动收起：原版原来只有上面的「吸顶变实心」，这里补上与桌面版一致的收起——
    滚过阈值后主行隐去、只留标签行贴在顶边。仅在偏好设置打开时生效；
-   收起态不画中间分隔线（卡片与标签行都不保留边框）。 */
+   收起态不画中间分隔线（卡片与标签行都不保留边框）。
+
+   整卡必须 pointer-events: none（与桌面版一致）：主行走 visibility: hidden 仍占位，
+   标签行只是 translateY 上移，所以卡片盒子在标签行下方还留着约 66px 的透明带——
+   不关掉命中测试的话，滚到顶栏下面的内容会被这条看不见的带子吞掉点击。
+   标签行随后单独恢复 auto，标签按钮照常可点。 */
 html[data-topbar-collapse="on"][data-ui-mode="classic"] .topbar-card.is-pinned.is-stuck {
   top: 0;
   background: transparent;
   border-color: transparent;
   box-shadow: none;
+  pointer-events: none;
 }
 
 html[data-topbar-collapse="on"][data-ui-mode="classic"] .topbar-card.is-pinned.is-stuck .topbar-main {
@@ -206,6 +229,12 @@ html[data-topbar-collapse="on"][data-ui-mode="classic"] .topbar-card.is-pinned.i
   background: var(--theme-card-bg, #fff);
   box-shadow: 0 10px 28px rgba(26, 65, 101, .1);
   transform: translateY(-66px);
+}
+
+/* 头像预览是挂在顶栏内部的全屏模态：收起态整卡不再接收指针时它必须例外，
+   否则打开后既点不中关闭按钮、也点不到遮罩关闭。桌面版同样适用。 */
+html[data-topbar-collapse="on"] .avatar-preview-layer {
+  pointer-events: auto;
 }
 .sidebar-card { isolation: isolate; }.sidebar-card::before { content: ""; position: absolute; z-index: 0; inset: 1px; border-radius: 20px; pointer-events: none; opacity: 0; background: linear-gradient(105deg, transparent 22%, rgba(37, 170, 237, .08) 36%, rgba(24, 187, 218, .2) 46%, rgba(33, 214, 172, .25) 53%, rgba(47, 183, 225, .15) 62%, transparent 78%); background-size: 230% 100%; filter: blur(.15px); box-shadow: inset 0 0 22px rgba(28, 190, 205, .05); animation: topbar-water-flow-soft 17s cubic-bezier(.35, .08, .28, 1) infinite; }.sidebar-card::after { content: ""; position: absolute; z-index: 0; right: 1px; bottom: 1px; left: 1px; height: 34px; overflow: hidden; border-radius: 0 0 20px 20px; pointer-events: none; opacity: 0; background: radial-gradient(ellipse at 50% 115%, rgba(35, 218, 179, .29) 0 16%, rgba(25, 164, 226, .17) 36%, transparent 68%) 0 0 / 180px 32px repeat-x; filter: blur(2.2px); animation: topbar-water-ripple 17s ease-in-out infinite; }.sidebar-card > * { position: relative; z-index: 1; }
 

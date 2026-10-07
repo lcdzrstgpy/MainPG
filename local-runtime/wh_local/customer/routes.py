@@ -368,6 +368,8 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
                 raise CustomerAuthUnavailable("station application service is not configured")
             remote_token = remote_token_from_local_session(authorization)
             session = local_session_from_token(authorization)
+            # 远端会话令牌是发布后台认身份的唯一依据（账号 ID 可由邮箱哈希推导，
+            # 不能当身份）；缺失时 remote_token_from_local_session 会按登录失效处理。
             return _public_station_application(
                 remote_auth.submit_station_application(
                     {
@@ -377,7 +379,7 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
                         "contact": str(payload.get("contact") or ""),
                         "note": str(payload.get("note") or ""),
                     },
-                    remote_token,
+                    remote_token=remote_token,
                 )
             )
         except Exception as exc:
@@ -389,8 +391,12 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
         try:
             if not hasattr(remote_auth, "get_station_application"):
                 raise CustomerAuthUnavailable("station application service is not configured")
+            session = local_session_from_token(authorization)
             return _public_station_application(
-                remote_auth.get_station_application(remote_token_from_local_session(authorization))
+                remote_auth.get_station_application(
+                    session.user_id,
+                    remote_token=remote_token_from_local_session(authorization),
+                )
             )
         except Exception as exc:
             handle_auth_error(exc)

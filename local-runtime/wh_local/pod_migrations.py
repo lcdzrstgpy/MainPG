@@ -342,6 +342,22 @@ POD_MIGRATION_CONTRACTS: dict[str, MigrationEffect] = {
     "014_semi_customization": MigrationEffect(
         column_additions={"pod_customization_batches": ("mode",)}
     ),
+    "015_replica_customization": MigrationEffect(
+        tables={
+            "pod_customization_replica_batches": _table(
+                "batch_id workspace_id owner_user_id source_asset_id client_request_id request_hash created_at"
+            ),
+            "pod_customization_replica_targets": _table(
+                "batch_id style_index asset_id business_fields_json listing_fields_json created_at",
+                checks=("CHECK (style_index >= 1)",),
+            ),
+        },
+        indexes={
+            "idx_pod_replica_targets_batch": _index(
+                "pod_customization_replica_targets", "batch_id style_index"
+            ),
+        },
+    ),
 }
 
 

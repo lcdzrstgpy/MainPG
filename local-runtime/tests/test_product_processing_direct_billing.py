@@ -75,7 +75,7 @@ def test_doubao_ark_direct_uses_granted_key_and_upstream_url(monkeypatch: pytest
     assert content.startswith('{"optimized_title"')
     assert recorded["url"].startswith("https://ark.cn-beijing.volces.com")
     assert recorded["auth"] == "Bearer ARK-KEY"
-    assert recorded["json"]["model"] == "doubao-seed-2-0-mini-260428"
+    assert recorded["json"]["model"] == "doubao-seed-2-1-lite-260915"
 
 
 def test_doubao_ark_gateway_fallback_without_granted_key(monkeypatch: pytest.MonkeyPatch) -> None:

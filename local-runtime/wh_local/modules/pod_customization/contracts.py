@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
 
@@ -14,6 +14,15 @@ MIN_SEMI_ITEM_COUNT = 4
 MAX_SEMI_ITEM_COUNT = 200
 SEMI_PATTERN_ROLES = ("pattern_1", "pattern_2", "pattern_3", "pattern_4")
 PromptVersion = Literal["v1"]
+
+# 批次模式：全定制 full / 半定制 semi / 爆款复刻 replica。历史批次 mode 默认 full。
+PodBatchMode = Literal["full", "semi", "replica"]
+POD_BATCH_MODES = ("full", "semi", "replica")
+# 复刻：一张样图 + 1–200 张目标白底图，每张对应一款。
+MIN_REPLICA_TARGETS = 1
+MAX_REPLICA_TARGETS = 200
+REPLICA_IMAGE_ROLES = ("source", "target")
+ReplicaImageRole = Literal["source", "target"]
 
 
 def grid_call_count(pattern_count: int) -> int:
@@ -181,6 +190,69 @@ class SemiBatchCreate(BaseModel):
         return self
 
 
+# --- 爆款复刻：一张样图搬到 1–200 个目标产品，每款独立上架信息 ---
+
+
+class ReplicaImageUploadResponse(BaseModel):
+    """复刻独立图片上传结果：角色、尺寸与授权本地预览路径。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    asset_id: str
+    role: ReplicaImageRole
+    width: int
+    height: int
+    preview_url: str
+
+
+class ReplicaTargetCreate(BaseModel):
+    """复刻创建时的单项目标产品：一张白底图 + 商品名 + 复用现有上架字段。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    target_asset_id: str = Field(min_length=1, max_length=64)
+    product_name: str = Field(min_length=1, max_length=500)
+    listing_fields: ListingFields
+
+
+class ReplicaBatchCreate(BaseModel):
+    """复刻批次创建：款数由 ``targets`` 长度决定，不另设数量字段。
+
+    ``listing_fields`` 复用现有 ``ListingFields``；``business_fields`` 由服务端从
+    产品名与类目派生，其余可选业务字段保持空默认值，不做主题智能填写。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    client_request_id: str = Field(min_length=1, max_length=200)
+    source_asset_id: str = Field(min_length=1, max_length=64)
+    title: str = Field(default="", max_length=120)
+    creative_prompt: str = Field(default="", max_length=4000)
+    targets: list[ReplicaTargetCreate] = Field(
+        min_length=MIN_REPLICA_TARGETS, max_length=MAX_REPLICA_TARGETS
+    )
+
+    @model_validator(mode="after")
+    def validate_replica_creative_prompt(self) -> "ReplicaBatchCreate":
+        # 复刻不接受非空指示词：图案只来自样图，避免从 API 绕过图案锁定规则。
+        if self.creative_prompt.strip():
+            raise ValueError("复刻模式不接受指示词，图案只由样图决定")
+        return self
+
+
+class ReplicaBatch(TypedDict):
+    """复刻批次公共响应：共有批次字段 + 来源样图 source + 有序目标 targets。"""
+
+    id: str
+    batch_id: str
+    mode: str
+    title: str
+    status: str
+    count: int
+    source: dict[str, Any]
+    targets: list[dict[str, Any]]
+
+
 class DirectListingTrialCreate(BaseModel):
     """One synchronous, reference-locked 2x2 listing image trial."""
 
@@ -258,8 +330,13 @@ class ExportSelectionUpdate(BaseModel):
 # --- 第 4 张图「规格卡」（方案 docs/superpowers/specs/2026-09-10-pod-spec-card-plan.md §4/§10.4） ---
 #
 # 配置随批次冻结在 listing_fields_json.spec_card（零 DB 迁移）。
-# 渲染由 spec_card.py 负责：用户填什么就印什么 —— 不翻译、不做单位换算、不做变量替换。
+# 渲染由 spec_card.py 负责；固定尺寸表在渲染/导出边界按 display_unit 换算，冻结数据仍保留厘米原值。
 # 这里的字符串取值必须与 spec_card.STYLES / spec_card.CORNERS 保持一致。
+
+from .spec_card_units import (
+    SPEC_CARD_DISPLAY_UNIT_CM,
+    validate_spec_card_display_unit,
+)
 
 SPEC_CARD_STYLES = ("light", "dark")
 SpecCardStyle = Literal["light", "dark"]
@@ -336,6 +413,7 @@ class SpecCardConfig(BaseModel):
     enabled: bool = True
     style: str = "light"
     corner: str = "bottom-right"
+    display_unit: str = SPEC_CARD_DISPLAY_UNIT_CM
     cells: tuple[tuple[str, ...], ...] = ()
 
     @model_validator(mode="after")
@@ -344,6 +422,7 @@ class SpecCardConfig(BaseModel):
             raise ValueError(f"规格卡风格必须是 {' 或 '.join(SPEC_CARD_STYLES)}")
         if self.corner not in SPEC_CARD_CORNERS:
             raise ValueError("规格卡位置必须是右下、左下、右上、左上之一")
+        self.display_unit = validate_spec_card_display_unit(self.display_unit)
         # 空表是合法状态（未配置），由 spec_card_is_configured / 提交拦截处理，这里只校验上限。
         self.cells = validate_spec_card_cells(self.cells, require_content=False)
         return self
@@ -360,6 +439,7 @@ class SpecCardConfig(BaseModel):
             enabled=payload.get("enabled", True),
             style=payload.get("style", "light"),
             corner=payload.get("corner", "bottom-right"),
+            display_unit=payload.get("display_unit", SPEC_CARD_DISPLAY_UNIT_CM),
             cells=validate_spec_card_cells(payload.get("cells"), require_content=False),
         )
 
@@ -376,11 +456,18 @@ class SpecCardRequestBase(BaseModel):
     cells: Any = None
     style: str = "light"
     corner: str = "bottom-right"
+    display_unit: str = SPEC_CARD_DISPLAY_UNIT_CM
     # 是否把卡片印到第 4 张图上；关掉时素材图保持干净母版（长/宽/高数据仍必填）。
     enabled: bool = True
 
     def config_mapping(self) -> dict[str, Any]:
-        return {"cells": self.cells, "style": self.style, "corner": self.corner, "enabled": self.enabled}
+        return {
+            "cells": self.cells,
+            "style": self.style,
+            "corner": self.corner,
+            "display_unit": self.display_unit,
+            "enabled": self.enabled,
+        }
 
 
 class SpecCardPreviewRequest(SpecCardRequestBase):

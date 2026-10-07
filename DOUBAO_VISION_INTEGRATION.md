@@ -1,6 +1,6 @@
 # 豆包识图接入教程（Chat Completions）
 
-本教程用于把图片理解能力接入其他项目。已在 `doubao-seed-2-0-mini-260428` 上验证过本地 JPEG 图片识别。
+本教程用于把图片理解能力接入其他项目。以下示例统一使用 `doubao-seed-2-1-lite-260915`。
 
 ## 1. 安全准备
 
@@ -19,7 +19,7 @@ POST https://ark.cn-beijing.volces.com/api/v3/chat/completions
 本文示例模型：
 
 ```text
-doubao-seed-2-0-mini-260428
+doubao-seed-2-1-lite-260915
 ```
 
 模型可用性、版本和价格以你的方舟控制台配置为准。
@@ -30,7 +30,7 @@ doubao-seed-2-0-mini-260428
 
 ```json
 {
-  "model": "doubao-seed-2-0-mini-260428",
+  "model": "doubao-seed-2-1-lite-260915",
   "messages": [
     {
       "role": "user",
@@ -64,7 +64,7 @@ curl https://ark.cn-beijing.volces.com/api/v3/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $ARK_API_KEY" \
   -d '{
-    "model": "doubao-seed-2-0-mini-260428",
+    "model": "doubao-seed-2-1-lite-260915",
     "messages": [{
       "role": "user",
       "content": [
@@ -89,7 +89,7 @@ import urllib.error
 import urllib.request
 
 API_URL = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
-MODEL_ID = "doubao-seed-2-0-mini-260428"
+MODEL_ID = "doubao-seed-2-1-lite-260915"
 
 
 class RejectRedirects(urllib.request.HTTPRedirectHandler):

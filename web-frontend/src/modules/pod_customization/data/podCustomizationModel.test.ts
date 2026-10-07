@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   POD_BATCH_COUNTS,
+  EMPTY_SPEC_CARD,
   EMPTY_POD_BUSINESS_FIELDS,
   buildPromptV1,
   businessFieldsForApi,
@@ -19,9 +20,26 @@ import {
   isPodBatchCount,
   isPristineCreativeEdit,
   listingFieldsForApi,
+  cloneSpecCardConfig,
+  isSpecCardConfig,
   podBatchStatusLabel,
   podBatchStatusDetail,
 } from "./podCustomizationModel.ts";
+
+test("spec-card display unit defaults to centimetres and survives cloning", () => {
+  assert.equal(EMPTY_SPEC_CARD.display_unit, "cm");
+  const inches = { ...EMPTY_SPEC_CARD, display_unit: "in" as const };
+  assert.equal(cloneSpecCardConfig(inches).display_unit, "in");
+
+  const legacy = {
+    enabled: true,
+    style: "light",
+    corner: "bottom-right",
+    cells: [["SKU", "Length", "Width", "Height"]],
+  };
+  assert.equal(isSpecCardConfig(legacy), true);
+  assert.equal(cloneSpecCardConfig(legacy as typeof EMPTY_SPEC_CARD).display_unit, "cm");
+});
 
 test("POD style results present the lifestyle panel as the primary image and hero as material", () => {
   const rows = groupPodStyleRows({
@@ -140,6 +158,7 @@ test("listing fields normalize every SKU with its declared price and weight, and
     enabled: true,
     style: "light" as const,
     corner: "bottom-right" as const,
+    display_unit: "cm" as const,
     cells: [
       ["SKU", "Length", "Width", "Height"],
       ["米白", "30", "20", "10"],
@@ -180,6 +199,7 @@ test("listing fields require one complete SKU with its dimensions", () => {
     enabled: true,
     style: "light" as const,
     corner: "bottom-right" as const,
+    display_unit: "cm" as const,
     cells: [
       ["SKU", "Length", "Width", "Height"],
       ["默认款", "30", "20", "10"],

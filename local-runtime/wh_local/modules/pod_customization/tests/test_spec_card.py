@@ -34,6 +34,7 @@ from wh_local.modules.pod_customization.spec_card import (
     SpecCardRequest,
     render_spec_card,
 )
+from wh_local.modules.pod_customization.spec_card_units import display_spec_card_cells
 
 
 BASE_SIDE = 800
@@ -602,6 +603,28 @@ def test_spec_card_config_defaults_and_mapping() -> None:
     assert spec_card_is_configured(config) is True
 
 
+def test_spec_card_display_unit_defaults_to_centimetres_and_rejects_unknown() -> None:
+    config = SpecCardConfig.from_mapping({"cells": [["SKU", "Length", "Width", "Height"]]})
+
+    assert config.display_unit == "cm"
+    with pytest.raises(ValueError, match="规格卡单位"):
+        SpecCardConfig.from_mapping({"display_unit": "feet"})
+
+
+def test_display_spec_card_cells_converts_inches_without_mutating_centimetres() -> None:
+    source = (("SKU", "Length", "Width", "Height"), ("A", "30", "25.4", "10"))
+
+    assert display_spec_card_cells(source, "in") == (
+        ("SKU", "Length (in)", "Width (in)", "Height (in)"),
+        ("A", "11.81", "10", "3.94"),
+    )
+    assert display_spec_card_cells(source, "cm") == (
+        ("SKU", "Length (cm)", "Width (cm)", "Height (cm)"),
+        ("A", "30", "25.4", "10"),
+    )
+    assert source == (("SKU", "Length", "Width", "Height"), ("A", "30", "25.4", "10"))
+
+
 def test_spec_card_config_from_mapping_ignores_unknown_keys_and_keeps_text_verbatim() -> None:
     config = SpecCardConfig.from_mapping({"cells": [["  保留 空格  ", " 54 cm "]], "per_style": {}})
 
@@ -684,6 +707,12 @@ def test_spec_card_config_never_strips_cell_text() -> None:
     # 明确不能带 str_strip_whitespace：单元格必须逐字符原样印出
     assert SpecCardConfig.model_config.get("str_strip_whitespace", False) is False
     assert SpecCardConfig(cells=(("  a  ",),)).cells == (("  a  ",),)
+
+
+def test_display_unit_conversion_leaves_legacy_freeform_cards_unchanged() -> None:
+    cells = (("尺寸", "40cm"), ("材质", "12oz 帆布"))
+
+    assert display_spec_card_cells(cells, "cm") == cells
 
 
 def test_nested_spec_card_keeps_text_verbatim_inside_listing_fields() -> None:

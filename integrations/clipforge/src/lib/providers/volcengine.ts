@@ -171,10 +171,16 @@ export class VolcEngineProvider extends BaseProvider {
    * the paid task instead of double-billing a resubmit.
    */
   async submitVideoTask(options: VideoOptions): Promise<{ taskId: string; modelId: string }> {
+    // 任务类型由 content.role 决定，而不是 mode：只要带了 first_frame / last_frame，
+    // 任务就是「首帧/首尾帧生视频」，此时 ratio 必须为 adaptive（输出宽高比自动与首帧
+    // 一致），传具体比例会被判为 InvalidParameter.TaskTypeConstraint 直接 400。
+    // reference_image/video/audio 属于「全模态参考生视频」，ratio 无此限制，
+    // 所以只按首帧/尾帧是否存在来切换，不影响文生视频与参考生视频。
+    const hasPinnedFrame = Boolean(options.firstFrameUrl || options.lastFrameUrl)
     const body: Record<string, unknown> = {
       model: options.modelId,
       content: this.buildVideoContent(options),
-      ratio: toRatio(options.width, options.height),
+      ratio: hasPinnedFrame ? 'adaptive' : toRatio(options.width, options.height),
       ...(options.duration != null && { duration: options.duration }),
       generate_audio: options.audioEnabled ?? false,
       watermark: false,

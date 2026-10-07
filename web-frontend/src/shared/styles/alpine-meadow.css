@@ -1,0 +1,104 @@
+/* ================================================================
+   高山草原主题专属：晨光高原草甸 —— AI 生成的全景图 + 云影漂移
+   + 蒲公英种子画布。背景图:public/theme/alpine-meadow-bg.jpg
+   背景层由 AlpineMeadow 组件挂到 WorkspaceShell 内(z:0,在壳背景之上、
+   卡片之下);种子画布 portal 到 body(z:30,顶栏之上、弹窗之下)。
+   两者均 pointer-events:none,不拦截任何交互。
+   ================================================================ */
+
+/* ---- 背景全景(AI 生成:草甸 + 雪岭 + 淡云天空) ---- */
+.alpine-meadow-scenery {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(238, 245, 236, 0.1) 0%, rgba(238, 245, 236, 0) 36%, rgba(238, 245, 236, 0.06) 84%, rgba(214, 236, 216, 0.12) 100%),
+    url("/theme/alpine-meadow-bg.jpg") center bottom / cover no-repeat,
+    linear-gradient(180deg, #cfe6f2 0%, #e8f3e4 62%, #cfe4c8 100%);
+}
+
+/* ---- 云影(两团,缓缓横移,给静态背景一点呼吸感) ---- */
+.alpine-meadow-clouds {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.alpine-meadow-clouds::before,
+.alpine-meadow-clouds::after {
+  content: "";
+  position: absolute;
+  left: -30%;
+  height: 18vh;
+  border-radius: 50%;
+  /* 不用 filter: blur() 实时模糊(每帧重算很贵);
+     柔和边缘由 radial-gradient 的 transparent 过渡自带 */
+  will-change: transform;
+}
+
+.alpine-meadow-clouds::before {
+  width: 70%;
+  top: 7%;
+  background: radial-gradient(ellipse, rgba(255, 255, 255, 0.5), transparent 70%);
+  animation: alpine-cloud-drift 78s ease-in-out infinite alternate;
+}
+
+.alpine-meadow-clouds::after {
+  width: 86%;
+  top: 21%;
+  background: radial-gradient(ellipse, rgba(255, 255, 255, 0.32), transparent 74%);
+  animation: alpine-cloud-drift 104s ease-in-out infinite alternate-reverse;
+}
+
+@keyframes alpine-cloud-drift {
+  from { transform: translateX(-3%); }
+  to { transform: translateX(26%); }
+}
+
+/* ---- 种子画布(portal 到 body,悬浮在所有内容之上) ---- */
+.alpine-meadow-seeds {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* ---- 高山草原:卡片化作半透明的"草纸",让草甸透出来 ----
+   不用 backdrop-filter:它在 Chrome/Windows 上会强制每帧重算整片背景合成,
+   是滚屏卡顿的最大来源;文字靠 text-shadow 保可读。 */
+[data-theme="alpine"] .sidebar-card,
+[data-theme="alpine"] .topbar-card,
+[data-theme="alpine"] .content-card {
+  background: rgba(252, 255, 252, 0.22);
+  border-color: rgba(47, 125, 82, 0.26);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    0 1px 2px rgba(31, 74, 56, 0.04),
+    0 16px 40px -14px rgba(34, 107, 69, 0.16),
+    0 8px 24px -12px rgba(212, 160, 60, 0.1);
+  text-shadow: 0 1px 3px rgba(255, 255, 255, 0.5);
+}
+
+[data-theme="alpine"] .sidebar-card,
+[data-theme="alpine"] .topbar-card {
+  border-radius: 24px 14px 24px 14px;
+}
+
+[data-theme="alpine"] .content-card {
+  border-radius: 26px 16px 26px 16px;
+  padding: clamp(24px, 3.4vw, 40px);
+}
+
+[data-theme="alpine"] .topbar-card.is-pinned.is-stuck {
+  background: rgba(252, 255, 252, 0.8);
+}
+
+/* ---- 主按钮:草甸绿渐变(压在背景图上仍要清晰可见) ---- */
+[data-theme="alpine"] .primary-button {
+  background: var(--theme-primary-button-gradient);
+  box-shadow: 0 10px 24px rgba(34, 107, 69, 0.26);
+}

@@ -150,14 +150,15 @@ class PodCustomizationAiRuntime(AiRuntime):
         """
         _required_provider_key(grant, "wuyin")
         model = _resolve_pod_image_model()
-        # 半定制纯文生图：没有模板参考图时不发布、不校验公网，提交体也不带 urls。
-        reference_url = self._publish_listing_reference(request) if request.template_image else ""
+        # 复刻传两张（样图 + 目标白底图），全定制沿用旧 template_* 单图路径；
+        # 半定制纯文生图没有任何参考图时，不发布、不校验公网，提交体也不带 urls。
+        reference_urls = self._listing_reference_urls(request)
         try:
             with self.provider_slot():
                 _required_provider_key(grant, "wuyin")
                 submit_kwargs = {"on_start": on_start} if on_start is not None else {}
                 task_id = self._submit_suchuang_grid(
-                    grant, request, reference_url, model=model, **submit_kwargs
+                    grant, request, reference_urls, model=model, **submit_kwargs
                 )
                 result_url = self._poll_suchuang_grid(grant, task_id)
                 try:
@@ -188,25 +189,64 @@ class PodCustomizationAiRuntime(AiRuntime):
             suffix=_suffix_for_content_type(content_type),
             provider="suchuang",
             model=model,
-            reference_count=0 if not reference_url else 1,
+            reference_count=len(reference_urls),
             attempt_count=1,
         )
 
+    def _listing_reference_urls(self, request: DirectListingGridRequest) -> list[str]:
+        """resolve all listing reference images to provider-fetchable public URLs.
+
+        复刻按 ``request.reference_images`` 逐图发布（保持传入顺序）；
+        全定制沿用旧 ``template_image/template_content_type`` 单图路径；
+        半定制两处皆空，返回空列表，提交体不带 urls。
+        """
+        if request.reference_images:
+            return self._publish_listing_references(request)
+        if request.template_image:
+            return [self._publish_listing_reference(request)]
+        return []
+
+    def _publish_listing_references(self, request: DirectListingGridRequest) -> list[str]:
+        """逐图内容寻址发布复刻参考图，顺序保持 ``reference_images`` 原序。
+
+        任何一张发布失败都会抛 MediaProcessingError(non_retryable_local)，
+        由 generate_listing_grid 沿用既有错误分类，不会提交生图。
+        """
+        urls: list[str] = []
+        for image in request.reference_images:
+            urls.append(
+                self._publish_listing_reference_content(
+                    content=image.content,
+                    content_type=image.content_type,
+                    namespace=request.trial_id,
+                )
+            )
+        return urls
+
     def _publish_listing_reference(self, request: DirectListingGridRequest) -> str:
-        reference = GeneratedMedia(
-            stage="pod_listing_reference",
+        return self._publish_listing_reference_content(
             content=request.template_image,
             content_type=request.template_content_type,
-            suffix=_suffix_for_content_type(request.template_content_type),
+            namespace=request.trial_id,
+        )
+
+    def _publish_listing_reference_content(
+        self, *, content: bytes, content_type: str, namespace: str
+    ) -> str:
+        reference = GeneratedMedia(
+            stage="pod_listing_reference",
+            content=content,
+            content_type=content_type,
+            suffix=_suffix_for_content_type(content_type),
             provider="local-template",
             model="",
             reference_count=0,
         )
         url = self._media.upload_content_addressed_to_cos(
             reference,
-            namespace=request.trial_id,
+            namespace=namespace,
             collection="pod-direct-listing-reference",
-            content_hash=hashlib.sha256(request.template_image).hexdigest(),
+            content_hash=hashlib.sha256(content).hexdigest(),
         )
         if not self._media.is_configured_cos_url(url, require_public=True):
             raise MediaProcessingError(
@@ -219,7 +259,7 @@ class PodCustomizationAiRuntime(AiRuntime):
         self,
         grant: PodExecutionGrant,
         request: DirectListingGridRequest,
-        reference_url: str,
+        reference_urls: list[str],
         *,
         model: str,
         on_start: Callable[[], None] | None = None,
@@ -240,12 +280,13 @@ class PodCustomizationAiRuntime(AiRuntime):
                     "prompt": request.prompt,
                     "aspectRatio": SUCHUANG_IMAGE_ASPECT_RATIO_2_5.get(size_value, "1024x1024"),
                 }
-                if reference_url:
-                    body["urls"] = reference_url
+                if reference_urls:
+                    # 2.5 端点的 urls 要求逗号拼接字符串，传数组上游会返回 500。
+                    body["urls"] = ",".join(reference_urls)
             else:
                 body = {"prompt": request.prompt, "size": size_value}
-                if reference_url:
-                    body["urls"] = [reference_url]
+                if reference_urls:
+                    body["urls"] = list(reference_urls)
             response = self.session.post(
                 f"{SUCHUANG_BASE_URL}{submit_path}",
                 params={"key": image_key},

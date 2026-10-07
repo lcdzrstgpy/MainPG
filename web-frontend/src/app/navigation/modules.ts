@@ -12,6 +12,7 @@ export type WorkspaceModuleId =
   | "dimension_canvas"
   | "pod_customization"
   | "pod_semi_customization"
+  | "pod_replica"
   | "ai_video"
   | "profit_activity"
   | "profit_activity_products"
@@ -93,6 +94,14 @@ const podSemiCustomization: WorkspaceModule = {
   icon: "",
   iconClass: "iconfont icon-skin",
   description: "按提示词生成纯图案花色图，按批次打包下载",
+};
+
+const podReplica: WorkspaceModule = {
+  id: "pod_replica",
+  label: "爆款复刻",
+  icon: "",
+  iconClass: "iconfont icon-skin",
+  description: "把一张 POD 样图图案复刻到多个白底产品，逐款填写上架信息并导出",
 };
 
 const aiVideo: WorkspaceModule = {
@@ -219,9 +228,9 @@ export const workspaceModules: WorkspaceNavigationItem[] = [
     label: "POD定制",
     icon: "",
     iconClass: "iconfont icon-skin",
-    description: "POD 全定制与半定制",
+    description: "POD 全定制、半定制与爆款复刻",
     defaultChildId: "pod_customization",
-    children: [podCustomization, podSemiCustomization],
+    children: [podCustomization, podSemiCustomization, podReplica],
   },
   {
     id: "sourcing_workflow",
@@ -250,6 +259,7 @@ export const workspacePageModules: WorkspaceModule[] = [
   dimensionCanvas,
   podCustomization,
   podSemiCustomization,
+  podReplica,
   priceVerification,
   profitActivity,
   productLibrary,

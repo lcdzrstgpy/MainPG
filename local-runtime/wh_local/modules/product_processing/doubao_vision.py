@@ -191,7 +191,9 @@ class DoubaoVisionClient:
                 # （与文本客户端一致），避免一次坏输出就把整单判 dead。
                 if exc.error_kind == "invalid_response":
                     exc.retryable = True
-                if not exc.retryable or attempt >= MAX_ATTEMPTS:
+                # 错误自带的预算（如未归类 4xx 只追加一次）优先；缺省时用常规三次。
+                limit = min(MAX_ATTEMPTS, exc.max_attempts or MAX_ATTEMPTS)
+                if not exc.retryable or attempt >= limit:
                     raise
             if attempt < MAX_ATTEMPTS:
                 time.sleep(RETRY_BACKOFF_SECONDS)
