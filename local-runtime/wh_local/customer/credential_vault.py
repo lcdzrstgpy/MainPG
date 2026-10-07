@@ -6,6 +6,7 @@ Keys are encrypted with a Fernet master key stored in a separate root-only file.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import secrets
 import threading
@@ -19,6 +20,8 @@ from cryptography.fernet import Fernet, InvalidToken
 class CredentialVaultError(RuntimeError):
     """Raised when the local credential vault cannot safely be used."""
 
+
+_LOGGER = logging.getLogger(__name__)
 
 _LOCK = threading.RLock()
 _KINDS = {"text", "image"}
@@ -52,23 +55,25 @@ def _secure_write(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         os.chmod(path.parent, 0o700)
-    except OSError:
-        pass
+    except OSError as exc:
+        # 权限收紧失败多见于非 POSIX 文件系统（Windows / 挂载卷），不影响写入正确性，
+        # 但留一条 debug 痕便于排查「密钥文件权限异常」类问题。
+        _LOGGER.debug("chmod 700 failed for vault dir %s: %s", path.parent, exc)
     temporary = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
     try:
         with open(temporary, "xb") as handle:
             try:
                 os.chmod(temporary, 0o600)
-            except OSError:
-                pass
+            except OSError as exc:
+                _LOGGER.debug("chmod 600 failed for temp vault file %s: %s", temporary, exc)
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
         try:
             os.chmod(path, 0o600)
-        except OSError:
-            pass
+        except OSError as exc:
+            _LOGGER.debug("chmod 600 failed for vault file %s: %s", path, exc)
     finally:
         if temporary.exists():
             temporary.unlink(missing_ok=True)
