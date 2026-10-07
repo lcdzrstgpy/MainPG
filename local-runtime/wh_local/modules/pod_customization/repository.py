@@ -94,6 +94,81 @@ class PodCustomizationRepository:
         finally:
             connection.close()
 
+    _STYLE_EVENT_ERROR_LIMIT = 500
+
+    def record_style_event(
+        self,
+        batch_id: str,
+        event: str,
+        *,
+        style_index: int = 0,
+        variant_index: int = 0,
+        status: str = "",
+        error: str = "",
+    ) -> None:
+        """追加一条按款排查事件（只做一条 INSERT，不参与生成/导出逻辑）。"""
+        with self._connect() as connection:
+            self._insert_style_event(
+                connection,
+                batch_id,
+                event,
+                style_index=style_index,
+                variant_index=variant_index,
+                status=status,
+                error=error,
+            )
+
+    @staticmethod
+    def _insert_style_event(
+        connection: sqlite3.Connection,
+        batch_id: str,
+        event: str,
+        *,
+        style_index: int = 0,
+        variant_index: int = 0,
+        status: str = "",
+        error: str = "",
+    ) -> None:
+        connection.execute(
+            """INSERT INTO pod_customization_style_events
+               (batch_id, style_index, variant_index, event, status, error, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                batch_id,
+                int(style_index),
+                int(variant_index),
+                str(event),
+                str(status or ""),
+                _safe_error(error)[: PodCustomizationRepository._STYLE_EVENT_ERROR_LIMIT],
+                _now(),
+            ),
+        )
+
+    def _try_record_style_event(
+        self,
+        connection: sqlite3.Connection,
+        batch_id: str,
+        event: str,
+        *,
+        style_index: int = 0,
+        variant_index: int = 0,
+        status: str = "",
+        error: str = "",
+    ) -> None:
+        """热路径旁路写入：复用既有事务连接，任何异常都吞掉，绝不影响主流程。"""
+        try:
+            self._insert_style_event(
+                connection,
+                batch_id,
+                event,
+                style_index=style_index,
+                variant_index=variant_index,
+                status=status,
+                error=error,
+            )
+        except Exception:
+            pass
+
     def create_asset(
         self,
         *,
@@ -1824,6 +1899,10 @@ class PodCustomizationRepository:
                        WHERE batch_id = ?""",
                     (status, _safe_error(error_message), now, finished_at, finished_at, batch_id),
                 )
+            if result.rowcount == 1:
+                self._try_record_style_event(
+                    connection, batch_id, "batch_status", status=status, error=error_message
+                )
         if result.rowcount != 1:
             if execution_epoch is not None:
                 raise PodExecutionExpired(
@@ -1881,6 +1960,10 @@ class PodCustomizationRepository:
                      AND status IN ('queued', 'generating_patterns', 'compositing', 'generating_titles')""",
                 (now, batch_id),
             )
+            if result.rowcount == 1:
+                self._try_record_style_event(
+                    connection, batch_id, "pause_requested", status="pausing"
+                )
         return result.rowcount == 1
 
     def request_cancel(self, batch_id: str) -> bool:
@@ -1894,6 +1977,10 @@ class PodCustomizationRepository:
                                     'pausing', 'paused')""",
                 (now, batch_id),
             )
+            if result.rowcount == 1:
+                self._try_record_style_event(
+                    connection, batch_id, "cancel_requested", status="cancelling"
+                )
         return result.rowcount == 1
 
     def mark_batch_paused(self, batch_id: str, error_message: str = "") -> None:
@@ -2176,6 +2263,10 @@ class PodCustomizationRepository:
                 "DELETE FROM pod_customization_style_copy WHERE batch_id = ? AND style_index = ?",
                 (batch_id, style_index),
             )
+            self._try_record_style_event(
+                connection, batch_id, "style_title_status",
+                style_index=style_index, status="generating",
+            )
         return self._decode_title_row(row)
 
     def claim_title_regeneration(
@@ -2229,6 +2320,10 @@ class PodCustomizationRepository:
                 "SELECT * FROM pod_customization_style_titles WHERE batch_id = ? AND style_index = ?",
                 (batch_id, style_index),
             ).fetchone()
+            self._try_record_style_event(
+                connection, batch_id, "style_title_regenerate",
+                style_index=style_index, status="generating",
+            )
         if row is None:
             raise PodRepositoryError("POD style title is not available for regeneration", 409)
         return self._decode_title_row(row)
@@ -2310,6 +2405,10 @@ class PodCustomizationRepository:
                        )""",
                     (batch_id, style_index, now, batch_id, style_index),
                 )
+            self._try_record_style_event(
+                connection, batch_id, "style_title_status",
+                style_index=style_index, status="completed",
+            )
 
     def complete_manual_title(
         self,
@@ -2405,6 +2504,11 @@ class PodCustomizationRepository:
                     execution_epoch,
                 ),
             )
+            if result.rowcount == 1:
+                self._try_record_style_event(
+                    connection, batch_id, "style_title_status",
+                    style_index=style_index, status="failed", error=error_message,
+                )
         if result.rowcount != 1:
             if execution_epoch is not None:
                 with self._connect() as check_connection:
@@ -2900,6 +3004,11 @@ class PodCustomizationRepository:
                 if execution_epoch is not None:
                     self._raise_if_execution_expired(connection, batch["batch_id"], execution_epoch)
                 raise PodRepositoryError("POD style result not found", 404)
+            self._try_record_style_event(
+                connection, batch["batch_id"], "style_grid_status",
+                style_index=style_index, variant_index=variant_index,
+                status=status, error=error_message,
+            )
             row = connection.execute(
                 """SELECT result_id FROM pod_customization_style_grid_results
                    WHERE batch_id = ? AND style_index = ? AND variant_index = ?""",
@@ -3241,6 +3350,10 @@ class PodCustomizationRepository:
             )
             if result.rowcount != 4:
                 raise PodRepositoryError("only a settled POD style can be regenerated", 409)
+            self._try_record_style_event(
+                connection, batch_id, "style_regenerate",
+                style_index=style_index, status="generating_pattern",
+            )
             title_reset = connection.execute(
                 """UPDATE pod_customization_style_titles
                    SET style_task_id = '', status = 'queued', title = '', normalized_title = NULL,
@@ -3361,6 +3474,9 @@ class PodCustomizationRepository:
             )
             if claimed.rowcount != 1:
                 raise PodRepositoryError("POD batch must settle before retrying failed styles", 409)
+            self._try_record_style_event(
+                connection, batch_id, "batch_retry", status=next_status
+            )
 
             for style_index in image_style_indices:
                 # 一款的四张图来自同一次 2×2 生图调用，重试即整款重生成，
@@ -3373,6 +3489,10 @@ class PodCustomizationRepository:
                 )
                 if updated.rowcount != 4:
                     raise PodRepositoryError("POD style must keep its four image slots", 409)
+                self._try_record_style_event(
+                    connection, batch_id, "style_grid_status",
+                    style_index=style_index, status="generating_pattern",
+                )
                 title_reset = connection.execute(
                     """UPDATE pod_customization_style_titles
                        SET style_task_id = '', status = 'queued', title = '', normalized_title = NULL,

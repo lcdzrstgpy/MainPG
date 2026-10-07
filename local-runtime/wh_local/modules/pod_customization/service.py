@@ -2286,6 +2286,7 @@ class PodCustomizationService:
             "error_message": batch["error_message"],
             "created_at": batch["created_at"],
             "updated_at": batch["updated_at"],
+            "finished_at": batch.get("finished_at", ""),
             "template": template_payload,
             "items": items,
             "style_titles": [self._title_payload(title) for title in batch.get("style_titles", [])],
@@ -2397,6 +2398,7 @@ class PodCustomizationService:
             "style_grid": bool(batch.get("style_grid")),
             "created_at": batch["created_at"],
             "updated_at": batch["updated_at"],
+            "finished_at": batch.get("finished_at", ""),
         }
 
     @staticmethod
