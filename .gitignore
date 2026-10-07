@@ -25,7 +25,10 @@ local-runtime/build/
 
 # Local secrets
 local-runtime/wh_local/onebound.local.json
+# 安装包下发/加密后的凭据副本：与明文同源，同样不能进 git
+local-runtime/wh_local/onebound.enc
 local-runtime/wh_local/modules/product_processing/cos.local.json
+local-runtime/wh_local/modules/product_processing/cos.enc
 local-runtime/_rsa_private.pem
 local-runtime/_rsa_public.pem
 local-runtime/wh_local/secrets.py
