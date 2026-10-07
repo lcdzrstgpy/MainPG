@@ -18,6 +18,9 @@ venv/
 local-runtime/outputs/
 local-runtime/.runtime-packages/
 outputs/
+# 工作台出图/处理链路直接落在仓库根的输出产物，与 outputs/ 同类，不是源码素材
+generated-images/
+processed_image_*.png
 
 # PyInstaller 打包产物
 local-runtime/dist/
