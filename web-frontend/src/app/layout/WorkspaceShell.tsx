@@ -13,6 +13,7 @@ import {
 import { Sidebar } from "./Sidebar";
 import { TopNavigation, type WorkspaceTab } from "./TopNavigation";
 import { PeachGarden } from "../../shared/components/PeachGarden";
+import { AlpineMeadow } from "../../shared/components/AlpineMeadow";
 import { InkTap } from "../../shared/components/InkTap";
 import { useTheme } from "../../shared/hooks/useTheme";
 import { useUiMode } from "../../shared/hooks/useUiMode";
@@ -797,6 +798,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
   return (
     <main className={`workspace-shell${playEntryAnimation ? " is-brand-entering" : ""}`}>
       <PeachGarden theme={theme} uiMode={uiMode} tapEffects={tapEffects} ambientEffects={ambientEffects} />
+      <AlpineMeadow theme={theme} uiMode={uiMode} tapEffects={tapEffects} ambientEffects={ambientEffects} />
       <InkTap theme={theme} uiMode={uiMode} enabled={tapEffects} />
       <Sidebar
         collapsed={sidebarIsCollapsed && !sidebarTemporarilyExpanded}

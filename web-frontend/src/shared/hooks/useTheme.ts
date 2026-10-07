@@ -2,8 +2,9 @@ import { useCallback, useMemo, useSyncExternalStore } from "react";
 
 // peach(桃花源)主题:背景见 shared/styles/peach-garden.css,交互特效见
 // shared/components/PeachGarden.tsx(花瓣飘落/爆裂/涟漪)。已注册进主题选择器。
+// alpine(高山草原)主题:变量见 themes.css 的 [data-theme="alpine"],造型见 theme-personality.css。
 // starry(星月夜)主题:变量见 themes.css 的 [data-theme="starry"],造型见 theme-personality.css。
-export type ThemeId = "classic" | "sunset" | "violet" | "dessert" | "diamond" | "quirky" | "chinese" | "peach";
+export type ThemeId = "classic" | "sunset" | "violet" | "dessert" | "diamond" | "quirky" | "chinese" | "peach" | "alpine";
 
 export interface ThemeMeta {
   id: ThemeId;
@@ -17,6 +18,7 @@ export const THEME_META: Record<ThemeId, Omit<ThemeMeta, "id">> = {
   classic: { label: "经典", swatch: "linear-gradient(135deg, #087bf5, #14c8c0)" },
   sunset: { label: "暖阳橙", swatch: "linear-gradient(135deg, #e67e22, #f39c12)" },
   peach: { label: "桃花源", swatch: "linear-gradient(135deg, #ffe3ec 0 34%, #f48fb0 34% 68%, #7fb89a 68%)" },
+  alpine: { label: "高山草原", swatch: "linear-gradient(135deg, #dff0e4 0 30%, #2f7d52 30% 62%, #1f5f6f 62% 84%, #d4a03c 84%)" },
   violet: { label: "樱雾粉紫", swatch: "linear-gradient(135deg, #f5d8e9 0 38%, #e7c9f4 38% 70%, #d57eae 70%)" },
   dessert: { label: "焦糖", swatch: "linear-gradient(135deg, #f3e3cf 0 34%, #b8754e 34% 67%, #bd7b82 67%)" },
   diamond: { label: "黑白钻石", swatch: "linear-gradient(135deg, #050505, #737985 55%, #ffffff)" },
@@ -26,7 +28,7 @@ export const THEME_META: Record<ThemeId, Omit<ThemeMeta, "id">> = {
 };
 
 /** 安装即内置、在快捷面板直接展示的主题。 */
-export const BUILTIN_THEME_IDS: readonly ThemeId[] = ["classic", "sunset", "peach"];
+export const BUILTIN_THEME_IDS: readonly ThemeId[] = ["classic", "sunset", "peach", "alpine"];
 
 /** 需要通过「主题商店」从后端下载后才能使用的主题（服务器可能返回不同集合）。 */
 export const KNOWN_DOWNLOADABLE_IDS: readonly ThemeId[] = ["violet", "dessert", "diamond", "quirky", "chinese"];

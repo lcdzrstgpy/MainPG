@@ -15,6 +15,8 @@ const THEME_MASCOT: Record<ThemeId, string> = {
   quirky: "/theme/mascots/06-sticker.png",
   chinese: "/theme/mascots/07-ink.png",
   peach: "/theme/mascots/08-peach.png",
+  // alpine 暂复用 lime 的绿色系吉祥物占位；待专属「高山草原」吉祥物出图后替换。
+  alpine: "/theme/mascots/09-lime.png",
 };
 
 const POSITION_KEY = "mainpg.balanceBall.position";

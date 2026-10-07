@@ -62,3 +62,9 @@ html[data-fx-ambient="off"] .peach-garden-mist::before,
 html[data-fx-ambient="off"] .peach-garden-mist::after {
   animation: none !important;
 }
+
+/* ---------- 高山草原：云影漂移（种子画布由组件层按开关决定是否挂载） ---------- */
+html[data-fx-ambient="off"] .alpine-meadow-clouds::before,
+html[data-fx-ambient="off"] .alpine-meadow-clouds::after {
+  animation: none !important;
+}
