@@ -28,6 +28,7 @@ import os
 import platform
 import socket
 import subprocess
+import sys
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -58,6 +59,9 @@ _READY_HTTP_TIMEOUT_SECONDS: Final[float] = 1.0
 _NO_PROXY_OPENER: Final = build_opener(ProxyHandler({}))
 
 _ACTIVE_STATES: Final[frozenset[str]] = frozenset({"starting", "ready"})
+# 运维下发的「默认设置」文件名：速创 / LLM 的 Key 与默认模型。与 cos.local.json 同一范式——
+# 只把文件路径交给子进程（WH_CLIPFORGE_CONFIG），凭据本身留在磁盘上，不进环境变量明文。
+_CONFIGURED_SETTINGS_NAME: Final[str] = "clipforge.local.json"
 # 只有这些状态会因为 sidecar 进程消失而变成 failed；failed 自身必须保持不动。
 _EXIT_OBSERVABLE_STATES: Final[frozenset[str]] = frozenset({"starting", "ready"})
 # 构建产物消失不得抹掉已经持久化的 failed/诊断编号。
@@ -177,6 +181,21 @@ def _bundled_media_environment(
                 pass
         environment["FFPROBE_PATH"] = str(ffprobe)
     return environment
+
+
+def _configured_settings_candidates(module_dir: Path) -> tuple[Path, ...]:
+    """默认设置文件 clipforge.local.json 的候选位置：源码模块目录 + 打包资源目录。
+
+    与 cos.local.json 同一套布局：放进可执行文件同目录（onedir）或打包资源
+    （onefile 的 _MEIPASS）后，安装后零配置即可带上平台 Key 与默认模型。
+    """
+    candidates = [Path(module_dir) / _CONFIGURED_SETTINGS_NAME]
+    if getattr(sys, "frozen", False):
+        candidates.append(Path(sys.executable).resolve().parent / _CONFIGURED_SETTINGS_NAME)
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidates.append(Path(meipass) / _CONFIGURED_SETTINGS_NAME)
+    return tuple(candidates)
 
 
 class ClipForgeService:
@@ -494,6 +513,7 @@ class ClipForgeService:
 
     def _child_environment(self, app_root: Path, instance_id: str, port: int) -> dict[str, str]:
         reference_config = self._reference_config_path()
+        configured_settings = self._configured_settings_path()
         return {
             **os.environ,
             "NODE_ENV": "production",
@@ -504,6 +524,8 @@ class ClipForgeService:
             "MAINPG_CLIPFORGE_INSTANCE_ID": instance_id,
             # 只传路径不传凭据：sidecar 自己读 cos.local.json，密钥不进环境变量
             **({"WH_MEDIA_COS_CONFIG": str(reference_config)} if reference_config else {}),
+            # 同理：默认设置（平台 Key、默认模型）也只传路径，由 sidecar 自己读盘
+            **({"WH_CLIPFORGE_CONFIG": str(configured_settings)} if configured_settings else {}),
             **_bundled_media_environment(app_root),
         }
 
@@ -520,6 +542,13 @@ class ClipForgeService:
             return None
         path = Path(candidate)
         return path if path.is_file() else None
+
+    def _configured_settings_path(self) -> Path | None:
+        """默认设置文件 clipforge.local.json：取第一个存在的候选位置，没有则 None。"""
+        for candidate in _configured_settings_candidates(Path(__file__).resolve().parent):
+            if candidate.is_file():
+                return candidate
+        return None
 
     def _open_log(self, diagnostic_id: str) -> Path:
         logs_dir = self._data_root / "logs"

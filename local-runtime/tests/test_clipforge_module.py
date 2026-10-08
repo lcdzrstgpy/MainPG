@@ -20,6 +20,7 @@ from wh_local.modules.clipforge.router import create_router
 from wh_local.modules.clipforge.service import (
     ClipForgeService,
     _bundled_media_environment,
+    _configured_settings_candidates,
     _platform_arch_tag,
 )
 
@@ -479,6 +480,40 @@ def test_bundled_media_environment_points_at_artifact_binaries(
 
 def test_bundled_media_environment_is_empty_without_media_modules(tmp_path: Path) -> None:
     assert _bundled_media_environment(tmp_path, "Darwin", "arm64") == {}
+
+
+def test_configured_settings_candidates_start_from_the_module_directory(tmp_path: Path) -> None:
+    """源码运行时 clipforge.local.json 就放在模块目录里，必须排在首位。"""
+    candidates = _configured_settings_candidates(tmp_path)
+
+    assert candidates[0] == tmp_path / "clipforge.local.json"
+
+
+def test_child_environment_hands_the_configured_settings_path_to_the_sidecar(
+    service_factory: ServiceFactory, tmp_path: Path, monkeypatch
+) -> None:
+    """平台 Key / 默认模型只传文件路径，凭据本身不进环境变量（与 cos.local.json 同一范式）。"""
+    service = service_factory.make()
+    config = tmp_path / "clipforge.local.json"
+    config.write_text('{"providers": {"suchuang": {"enabled": true}}}', encoding="utf-8")
+    monkeypatch.setattr(service, "_configured_settings_path", lambda: config)
+
+    environment = service._child_environment(tmp_path / "app-root", "instance-1", 51234)
+
+    assert environment["WH_CLIPFORGE_CONFIG"] == str(config)
+    assert environment["PORT"] == "51234"
+
+
+def test_child_environment_omits_the_settings_path_when_absent(
+    service_factory: ServiceFactory, tmp_path: Path, monkeypatch
+) -> None:
+    service = service_factory.make()
+    monkeypatch.setattr(service, "_configured_settings_path", lambda: None)
+    monkeypatch.delenv("WH_CLIPFORGE_CONFIG", raising=False)
+
+    environment = service._child_environment(tmp_path / "app-root", "instance-1", 51234)
+
+    assert "WH_CLIPFORGE_CONFIG" not in environment
 
 
 @pytest.mark.skipif(
