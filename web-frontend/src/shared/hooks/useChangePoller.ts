@@ -49,6 +49,9 @@ export function useChangePoller({ url, onChange, headers, intervalMs = 8000, ena
         if (token) requestHeaders.authorization = `Bearer ${token}`;
         const response = await fetch(url, { signal: controller.signal, cache: "no-store", headers: requestHeaders });
         if (!response.ok) return;
+        // 必须确认是 JSON：开发态若该 url 未被 vite 代理，会命中 SPA fallback 回 index.html(200)，
+        // 直接 json() 会抛错并被下面的 catch 静默吞掉 —— 轮询会永久停摆且毫无提示。
+        if (!(response.headers.get("content-type") ?? "").includes("application/json")) return;
         const payload = (await response.json()) as { revision?: string | null };
         const revision = payload.revision ?? "";
         if (revisionRef.current !== null && revision !== revisionRef.current) {

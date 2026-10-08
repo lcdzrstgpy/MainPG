@@ -385,6 +385,19 @@ async function fetchWithTimeout(
   }
 }
 
+/**
+ * 是否为「网关/代理替后端回的不可达响应」。
+ *
+ * 开发态（vite proxy）在后端挂掉时，代理会替后端回 **500 text/plain**，浏览器拿到的是
+ * 正常 HTTP 响应而不是网络层失败 —— 若按「有响应 = 后端还活着」处理，失联遮罩永远不弹。
+ * 后端自身的 5xx 走 FastAPI 的 JSON detail（content-type: application/json），不会被误判；
+ * 只有非 JSON 的 5xx（代理错误页 / 纯文本 500）才判定为后端不可达。
+ */
+function isBackendUnreachable(response: Response): boolean {
+  if (response.status < 500) return false;
+  return !(response.headers.get("content-type") ?? "").includes("application/json");
+}
+
 export async function httpJson<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const headers: Record<string, string> = { "content-type": "application/json" };
   const token = authToken(options.token);
@@ -401,8 +414,15 @@ export async function httpJson<T>(path: string, options: RequestOptions = {}): P
     options.signal,
   );
 
-  // 能拿到 HTTP 响应（哪怕 4xx/5xx）就说明本地后端进程还活着 → 恢复在线状态。
-  notifyBackendOnline();
+  // 拿到后端自身的响应（含 4xx/5xx JSON）→ 进程还活着，恢复在线状态；
+  // 但代理/网关替后端回的 5xx（非 JSON）说明后端其实不可达，必须判失联，
+  // 否则开发态（vite 代理回 500）遮罩永远不会弹。
+  const backendUnreachable = isBackendUnreachable(response);
+  if (backendUnreachable) {
+    notifyBackendOffline();
+  } else {
+    notifyBackendOnline();
+  }
 
   const contentType = response.headers.get("content-type") ?? "";
   let payload: any = {};
@@ -415,7 +435,9 @@ export async function httpJson<T>(path: string, options: RequestOptions = {}): P
   }
 
   if (!response.ok) {
-    const detail = detailFromPayload(payload, response.status);
+    const detail = backendUnreachable
+      ? "本地服务无响应，请检查 MainPG 后台组件是否被杀毒软件拦截"
+      : detailFromPayload(payload, response.status);
     if (isSessionExpired(response, detail)) notifySessionExpired(detail);
     throw new Error(toUserMessage(detail));
   }
@@ -440,6 +462,8 @@ export async function httpBlob(path: string, options: RequestOptions = {}): Prom
   );
 
   if (!response.ok) {
+    // 代理替后端回的 5xx（非 JSON）同样是「后端不可达」，不能只当普通失败。
+    if (isBackendUnreachable(response)) notifyBackendOffline();
     const detail = await response.text().catch(() => "请求失败");
     if (isSessionExpired(response, detail)) notifySessionExpired(detail);
     throw new Error(toUserMessage(detail || "请求失败"));
