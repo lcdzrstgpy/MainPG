@@ -39,6 +39,8 @@ export type PluginOneboundCaptureItem = {
   status: PluginOneboundCaptureItemStatus;
   outcome: "" | "created" | "refreshed" | "skipped" | "failed" | "unprocessed";
   draft_id: number | null;
+  price_cny: number | null;
+  shop_name: string;
   attempts: number;
   error_code: string;
   error_message: string;
@@ -70,6 +72,8 @@ export type PluginOneboundCandidate = {
   draft_id: number | null;
   sku_count: number;
   main_image_url: string;
+  price_cny: number | null;
+  shop_name: string;
 };
 
 export type PluginOneboundCandidatesPage = {

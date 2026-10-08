@@ -12,7 +12,6 @@ export const start: NamespaceMessages = {
     eyebrow: "AI 带货短视频工作台",
     h1Lead: "丢张商品图，",
     h1Highlight: "直接出片",
-    sub: "上传商品图，或说一句话主题。AI 自动写脚本、配画面、配音，合成竖屏成片——先开跑，要用到 AI 时再配 Key。",
     // 模式切换
     tabUpload: "上传商品图",
     tabLink: "商品链接",
@@ -92,7 +91,6 @@ export const start: NamespaceMessages = {
     atlasConnectFailed: "连接失败，请检查网络后重试",
     atlasDismiss: "稍后再说",
     // 统一的创建入口：出片策略与「未配模型」引导（不再内联填 Key）
-    strategyLegend: "出片策略（创建时选定）",
     llmNoticeText: "还没配置模型？脚本与画面需要一个 LLM 平台，先去设置里填一次 Key。",
     llmNoticeCta: "前往设置",
     errNeedLlm: "请先在设置中配置 LLM API Key，再开始生成",
@@ -177,7 +175,6 @@ export const start: NamespaceMessages = {
     eyebrow: "AI Short-Video Studio",
     h1Lead: "Drop a product photo, ",
     h1Highlight: "ship the video",
-    sub: "Upload a product photo or just type a topic. AI writes the script, fills the visuals, adds voiceover, and renders a vertical short — start now, add a key only when AI kicks in.",
     // 模式切换
     tabUpload: "Upload product photo",
     tabLink: "Product link",
@@ -257,7 +254,6 @@ export const start: NamespaceMessages = {
     atlasConnectFailed: "Connection failed — check your network and retry",
     atlasDismiss: "Maybe later",
     // Single creation entry: output strategy + "no model configured" guidance (no inline key form)
-    strategyLegend: "Output strategy (chosen at creation)",
     llmNoticeText: "No model configured yet? Scripts and visuals need an LLM platform — add a key in settings first.",
     llmNoticeCta: "Open settings",
     errNeedLlm: "Configure your LLM API key in settings before generating",

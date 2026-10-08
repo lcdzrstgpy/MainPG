@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import { batchProgress, canCancelPodBatch, canPausePodBatch, canRegeneratePodStyle, canRegeneratePodStyleTitle, canResumePodBatch, canRetryPodBatchFailed, formatPodBatchWaitingTime, groupPodStyleRows, isActiveBatchStatus, podBatchProgressCounts, podBatchStatusDetail, podBatchStatusLabel, podItemStatusLabel, podStyleTitleStatusLabel } from "../data/podCustomizationModel";
+import { batchProgress, canCancelPodBatch, canPausePodBatch, canRegeneratePodStyle, canRegeneratePodStyleTitle, canResumePodBatch, canRetryPodBatchFailed, formatPodBatchWaitingTime, groupPodStyleRows, isActiveBatchStatus, podBatchProgressCounts, podBatchStatusDetail, podItemStatusLabel, podStyleTitleStatusLabel } from "../data/podCustomizationModel";
 import { dianxiaomiExportBlockMessage, isDianxiaomiExportEnabled } from "../data/dianxiaomiExport";
 import { PodAssetImage } from "../data/usePodAssetUrl";
 import type { PodBatch, PodBatchItem, PodMiaoshouTemplateKind } from "../types";
@@ -15,6 +15,8 @@ type Props = {
   onRegenerateStyle: (styleIndex: number) => void;
   onRegenerateTitle: (styleIndex: number) => void;
   onUpdateExportSelection: (styleIndex: number, selected: boolean) => void;
+  /** 一键反选：把所有可导出款式整体设为选中/取消选中。 */
+  onSetAllExportSelection: (selected: boolean) => void;
   onSaveTitle: (styleIndex: number, title: string) => Promise<void>;
   onExportDianxiaomi: () => void;
   onExportMiaoshou: (kind: PodMiaoshouTemplateKind) => void;
@@ -45,27 +47,46 @@ async function copyTitle(title: string): Promise<void> {
   }
 }
 
-/** 独立的「已等待」倒计时：让每秒的 now 更新只重渲染这一小段文字，
- * 而不是整个画廊（几十款 × 4 图）跟着每秒重渲染。 */
-function PodWaitingTime({ createdAt }: { createdAt: string }) {
+/** 独立的「已等待」计时：运行中每秒只重渲染这一小段文字，
+ * 而不是整个画廊（几十款 × 4 图）跟着每秒重渲染。
+ * 批次进入终态后停止计时，并按 finished_at 定格，完成后这行数字不再跳动。 */
+function PodWaitingTime({ createdAt, finishedAt, updatedAt, live }: { createdAt: string; finishedAt?: string; updatedAt?: string; live: boolean }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
+    if (!live) return;
     setNow(Date.now());
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, []);
-  return <>已等待 {formatPodBatchWaitingTime(createdAt, now)} · </>;
+  }, [live]);
+  // 终态优先用 finished_at；老后端还没返回该字段时退回 updated_at（终态批次两者基本一致）。
+  const frozenMs = Date.parse(finishedAt || updatedAt || "");
+  const end = live ? now : Number.isFinite(frozenMs) ? frozenMs : now;
+  return <>已等待 {formatPodBatchWaitingTime(createdAt, end)} · </>;
 }
 
-export function PodBatchGallery({ batch, busyAction, resolveStyleProductName, onOpenResult, onRegenerateStyle, onRegenerateTitle, onUpdateExportSelection, onSaveTitle, onExportDianxiaomi, onExportMiaoshou, onOpenFailedRetry, onPauseBatch, onCancelBatch, onResumeBatch }: Props) {
+export function PodBatchGallery({ batch, busyAction, resolveStyleProductName, onOpenResult, onRegenerateStyle, onRegenerateTitle, onUpdateExportSelection, onSetAllExportSelection, onSaveTitle, onExportDianxiaomi, onExportMiaoshou, onOpenFailedRetry, onPauseBatch, onCancelBatch, onResumeBatch }: Props) {
   const [selectedStyleIndex, setSelectedStyleIndex] = useState<number>();
-  const showWaitingTime = Boolean(batch && isActiveBatchStatus(batch.status));
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
+
+  // 导出下拉：点到菜单外面就收起。
+  useEffect(() => {
+    if (!exportMenuOpen) return;
+    const closeOnOutside = (event: MouseEvent) => {
+      if (!exportMenuRef.current?.contains(event.target as Node)) setExportMenuOpen(false);
+    };
+    document.addEventListener("mousedown", closeOnOutside);
+    return () => document.removeEventListener("mousedown", closeOnOutside);
+  }, [exportMenuOpen]);
 
   if (!batch) return <section className="pod-gallery pod-gallery-empty" aria-label="POD 批次画廊"><span className="iconfont icon-skin" aria-hidden="true" /><h2>从一个模板开始本批次</h2><p>生成结果会固定归在对应款式下。</p></section>;
 
   const progress = batchProgress(batch);
   const progressCounts = podBatchProgressCounts(batch);
   const styles = groupPodStyleRows(batch);
+  // 可勾选导出的款式（已就绪）；一键反选只作用于它们。
+  const exportableStyles = styles.filter((style) => style.status === "completed" && Boolean(style.listing_ready));
+  const allExportableSelected = exportableStyles.length > 0 && exportableStyles.every((style) => style.export_selected);
   // A style is "submitted" only after at least one of its images has left the
   // initial queued state, i.e. a provider request was actually dispatched. A
   // style whose four images are all still queued (waiting for the generation
@@ -100,7 +121,6 @@ export function PodBatchGallery({ batch, busyAction, resolveStyleProductName, on
     <header className="pod-gallery-header">
       <div className="pod-gallery-headline">
         <div className="pod-gallery-title"><span>POD BATCH · {batch.id.slice(0, 8)}</span><h2>{batch.title || `${batch.template_name} 创作批次`}</h2><p>当前批次 <b>{batch.count} 款</b> · {batch.template_name}</p></div>
-        <div className={`pod-batch-status status-${batch.status}`}><strong>{podBatchStatusLabel(batch.status, batch.dianxiaomi_export.ready, batch.processed_count >= batch.count)}</strong><span>{batch.processed_count} / {batch.count} 款</span><span>可上架 {batch.listing_ready_count ?? 0} / 总款数 {batch.count}</span></div>
       </div>
       <div className="pod-gallery-header-actions">
         <div className="pod-batch-control">
@@ -111,10 +131,18 @@ export function PodBatchGallery({ batch, busyAction, resolveStyleProductName, on
         {batchStatusDetail && <small className="pod-batch-status-detail">{batchStatusDetail}</small>}
         <div className="pod-dianxiaomi-export">
           <div className="pod-export-buttons">
+            <button type="button" className="pod-export-invert" disabled={!exportableStyles.length || Boolean(busyAction)} title={allExportableSelected ? "取消选中全部可导出款式" : "选中全部可导出款式"} onClick={() => onSetAllExportSelection(!allExportableSelected)}>一键反选</button>
             <button type="button" className="pod-open-failed-retry" disabled={!canRetryBatch || Boolean(busyAction)} title={retryBlockReason || "批量重试失败款式"} onClick={onOpenFailedRetry}>批量重试失败项</button>
-            <button type="button" disabled={!canExport} title={exportButtonTitle} onClick={onExportDianxiaomi}>{exporting ? "正在导出店小秘表格" : "导出店小秘表格"}</button>
-            <button type="button" disabled={!canExport} title={exportButtonTitle} onClick={() => onExportMiaoshou("apparel")}>{exportingMiaoshou === "apparel" ? "正在导出妙手表格" : "导出妙手表格（服饰）"}</button>
-            <button type="button" disabled={!canExport} title={exportButtonTitle} onClick={() => onExportMiaoshou("general")}>{exportingMiaoshou === "general" ? "正在导出妙手表格" : "导出妙手表格（非服饰）"}</button>
+            <div className="pod-export-menu" ref={exportMenuRef}>
+              <button type="button" className="pod-export-menu-trigger" disabled={!canExport} title={exportButtonTitle} aria-haspopup="menu" aria-expanded={exportMenuOpen} onClick={() => setExportMenuOpen((open) => !open)}>
+                <span>{exporting ? "正在导出店小秘表格" : exportingMiaoshou ? "正在导出妙手表格" : "导出表格"}</span><i className="iconfont icon-down" aria-hidden="true" />
+              </button>
+              {exportMenuOpen && <div className="pod-export-menu-list" role="menu">
+                <button type="button" role="menuitem" onClick={() => { setExportMenuOpen(false); onExportDianxiaomi(); }}>导出店小秘表格</button>
+                <button type="button" role="menuitem" onClick={() => { setExportMenuOpen(false); onExportMiaoshou("apparel"); }}>导出妙手表格（服饰）</button>
+                <button type="button" role="menuitem" onClick={() => { setExportMenuOpen(false); onExportMiaoshou("general"); }}>导出妙手表格（非服饰）</button>
+              </div>}
+            </div>
           </div>
           {!canRetryBatch && retryBlockReason && <small>{retryBlockReason}</small>}
           {(exportStatus.selected_exportable_style_count !== undefined || exportStatus.user_excluded_style_count !== undefined) && <small>已选可导出 {exportStatus.selected_exportable_style_count ?? exportStatus.exportable_style_count} 款 · 用户排除 {exportStatus.user_excluded_style_count ?? 0} 款</small>}
@@ -122,7 +150,7 @@ export function PodBatchGallery({ batch, busyAction, resolveStyleProductName, on
         </div>
       </div>
     </header>
-    <div className="pod-gallery-progress"><div role="progressbar" aria-label="POD 批次进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}><span style={{ width: `${progress}%` }} /></div><small>{showWaitingTime && <PodWaitingTime createdAt={batch.created_at} />}图片 {progressCounts.image}/{batch.count} · 标题 {progressCounts.title}/{batch.count} · 完成 {batch.completed_count} 款 · 失败 {batch.failed_count} 款 · {progress}%</small></div>
+    <div className="pod-gallery-progress"><div role="progressbar" aria-label="POD 批次进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}><span style={{ width: `${progress}%` }} /></div><small><PodWaitingTime createdAt={batch.created_at} finishedAt={batch.finished_at} updatedAt={batch.updated_at} live={isActiveBatchStatus(batch.status)} />图片 {progressCounts.image}/{batch.count} · 标题 {progressCounts.title}/{batch.count} · 完成 {batch.completed_count} 款 · 失败 {batch.failed_count} 款 · {progress}%</small></div>
     <div className="pod-style-rows">
       {styles.map((style) => {
         const regenerating = busyAction === `regenerate-style:${style.index}`;

@@ -1436,10 +1436,10 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
               ? "1688 会尽量拉取全部候选的详情（SKU/发源地/属性），失败或下架商品除外。"
               : "淘宝会尽量拉取全部候选的详情，失败或下架商品除外。"}</span>
             <div className="collection-submit-area">
-              <button className="collect-button" type="submit" disabled={busy || collecting}>{collecting ? `采集中 ${collectionProgress}%` : "开始采集"}</button>
+              <button className="collect-button" type="submit" disabled={busy || collecting}>{collecting ? <><i className="app-spinner is-sm" aria-hidden="true" />采集中 {collectionProgress}%</> : "开始采集"}</button>
               {collecting && (
                 <button className="collect-cancel-button" type="button" disabled={cancelling} onClick={cancelCollection}>
-                  {cancelling ? "正在中断…" : "中断采集"}
+                  {cancelling ? <><i className="app-spinner is-sm" aria-hidden="true" />正在中断…</> : "中断采集"}
                 </button>
               )}
             </div>
@@ -1497,7 +1497,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                   onClick={() => void startSkuRepullNow()}
                   title="对 SKU 规格未读取成功的商品后台自动重新拉取详情"
                 >
-                  <span aria-hidden="true">↻</span> SKU补齐
+                  {skuRepullBusy ? <i className="app-spinner is-sm" aria-hidden="true" /> : <span aria-hidden="true">↻</span>} SKU补齐
                 </button>
                 {skuRepull && skuRepull.status !== "idle" && (
                   <span className="sku-repull-state">
@@ -1505,7 +1505,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                       <>
                         <b>第 {skuRepull.round} 轮</b>
                         <i>{skuRepull.done}/{skuRepull.total} · {Math.round((skuRepull.done / Math.max(1, skuRepull.total)) * 100)}%</i>
-                        <button type="button" className="sku-repull-cancel" disabled={skuRepullBusy} onClick={() => void cancelSkuRepullNow()}>中断</button>
+                        <button type="button" className="sku-repull-cancel" disabled={skuRepullBusy} onClick={() => void cancelSkuRepullNow()}>{skuRepullBusy ? <><i className="app-spinner is-sm" aria-hidden="true" />中断</> : "中断"}</button>
                       </>
                     ) : (
                       <i>
@@ -1547,8 +1547,8 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                 onChange={toggleSelectAllCandidates}
               />
             </label>
-            <button type="button" className="select-all-button" disabled={busy || !activeRun || selectableCandidates.length === 0} onClick={selectAllCandidates}>全选</button>
-            <button type="button" className="confirm-button" disabled={busy || selectedCandidates.length === 0} onClick={() => void confirmSelected()}>确认入池（{selectedCandidates.length}）</button>
+            <button type="button" className="select-all-button" disabled={busy || !activeRun || selectableCandidates.length === 0} onClick={selectAllCandidates}>{busy && <i className="app-spinner is-sm" aria-hidden="true" />}全选</button>
+            <button type="button" className="confirm-button" disabled={busy || selectedCandidates.length === 0} onClick={() => void confirmSelected()}>{busy && <i className="app-spinner is-sm" aria-hidden="true" />}确认入池（{selectedCandidates.length}）</button>
           </div>
         </div>
         {activeRun && filteredCandidates.length > 1 && (
@@ -1702,7 +1702,12 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
           </header>
           <div className="history-drawer-summary"><span>采集记录</span><b>{runs.length} 条</b></div>
           <div className="run-list history-drawer-list">
-            {historyBusy && <div className="run-empty">正在读取批次…</div>}
+            {historyBusy && (
+              <div className="app-loading-block">
+                <i className="app-spinner" aria-hidden="true" />
+                正在读取批次…
+              </div>
+            )}
             {!historyBusy && runs.length === 0 && <div className="run-empty">暂无采集记录<br /><small>完成首次采集后会显示在这里</small></div>}
             {runs.map((run) => {
               const duration = formatRunDuration(run.created_at, run.updated_at);

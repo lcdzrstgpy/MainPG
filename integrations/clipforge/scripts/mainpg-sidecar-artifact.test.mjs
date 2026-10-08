@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -124,6 +124,57 @@ it("publishes a versioned artifact and points current.json at it", async () => {
   expect(current.artifactId).toBe(published.artifactId);
   expect(current.runtime).toBe("node");
   expect(current.appRoot).toBe(join(outputRoot, "artifacts", published.artifactId));
+});
+
+it("rejects an artifact whose symlink escapes the artifact or dangles", () => {
+  const root = mkdtempSync(join(tmpdir(), "clipforge-symlink-"));
+  fixture(root);
+  const outside = mkdtempSync(join(tmpdir(), "clipforge-outside-"));
+  writeFileSync(join(outside, "index.js"), "export {};");
+  const linkDir = join(root, ".next", "node_modules");
+  mkdirSync(linkDir, { recursive: true });
+  const escaping = join(linkDir, "native-abc123");
+  const dangling = join(linkDir, "native-missing");
+  try {
+    // 复刻 2026-10-07 故障：指向源码侧构建目录的绝对链 + 目标已被清理的断链
+    symlinkSync(join(outside, "index.js"), escaping);
+    symlinkSync(join(outside, "nope.js"), dangling);
+  } catch {
+    return; // 平台不支持创建软链（例如未提权的 Windows）时跳过
+  }
+
+  expect(() => validateMainpgArtifact(root, { resolveModule: fixtureResolver })).toThrow(/self-contained/);
+
+  rmSync(escaping);
+  rmSync(dangling);
+  // 去掉问题链后必须恢复通过，证明拦截针对的就是软链本身
+  expect(() => validateMainpgArtifact(root, { resolveModule: fixtureResolver })).not.toThrow();
+});
+
+it("materializes symlinked native modules so the published artifact stays self-contained", async () => {
+  const { sourceRoot, standalone, outputRoot } = publishFixture();
+  const realModule = join(sourceRoot, "node_modules", "better-sqlite3");
+  mkdirSync(realModule, { recursive: true });
+  writeFileSync(join(realModule, "index.js"), "export const real = true;");
+  const linkDir = join(standalone, ".next", "node_modules");
+  mkdirSync(linkDir, { recursive: true });
+  const link = join(linkDir, "better-sqlite3-abc123");
+  try {
+    symlinkSync(realModule, link);
+  } catch {
+    return; // 平台不支持创建软链时跳过
+  }
+
+  const published = await publishMainpgArtifact({
+    sourceRoot,
+    outputRoot,
+    resolveModule: (_id, root) => join(root, "node_modules", "next", "index.js"),
+    smokeTest: async () => {},
+  });
+
+  const copied = join(outputRoot, "artifacts", published.artifactId, ".next", "node_modules", "better-sqlite3-abc123");
+  expect(lstatSync(copied).isSymbolicLink()).toBe(false);
+  expect(readFileSync(join(copied, "index.js"), "utf8")).toContain("real");
 });
 
 it("digestTree is stable and ignores the publication metadata", () => {

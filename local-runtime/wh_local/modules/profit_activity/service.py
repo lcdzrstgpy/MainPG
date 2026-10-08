@@ -702,10 +702,11 @@ class ProfitActivityService:
         return ensure_writable_directory(Path(settings.save_root) if settings.save_root else self._output_root())
 
     def _output_root(self) -> Path:
-        # 打包场景：安装目录可能只读（如 Program Files），回退到 %APPDATA%\MainPG 可写目录
+        # 打包场景：安装目录可能只读（如 Program Files），回退到可写的数据根目录
         if getattr(sys, "frozen", False):
-            appdata = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
-            root = appdata / "MainPG" / "outputs" / "profit_activity"
+            from wh_local.config import storage_root  # 延迟导入，避免模块级循环依赖
+
+            root = storage_root() / "outputs" / "profit_activity"
         else:
             root = Path(os.getenv("PROFIT_ACTIVITY_OUTPUT_DIR") or Path(__file__).resolve().parents[4] / "real-workbench" / "employee_workbench" / "outputs" / "profit_activity")
         root.mkdir(parents=True, exist_ok=True)

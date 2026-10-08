@@ -15,11 +15,17 @@ const progressPercent = document.querySelector("#progress-percent");
 const progressBar = document.querySelector("#progress-bar");
 const progressBytes = document.querySelector("#progress-bytes");
 const progressMessage = document.querySelector("#progress-message");
+const pluginProgress = document.querySelector("#plugin-progress");
+const pluginProgressVersion = document.querySelector("#plugin-progress-version");
+const pluginProgressMessage = document.querySelector("#plugin-progress-message");
+const pluginProgressPercent = document.querySelector("#plugin-progress-percent");
+const pluginProgressBar = document.querySelector("#plugin-progress-bar");
 let activeUser = null;
 let activePublishJobId = null;
 let publishPollTimer = null;
 let releasePage = 1;
 let auditPage = 1;
+let pluginPage = 1;
 const API_BASE = new URL("api/", window.location.href).pathname;
 const PUBLISH_JOB_POLL_MS = 1000;
 const PUBLISH_PHASES = ["uploading", "evsign", "authenticode", "patching", "publishing", "completed"];
@@ -313,11 +319,71 @@ async function loadAuditPage(page = auditPage) {
   });
 }
 
+function renderPluginProgress({ version, percent, message, error = false } = {}) {
+  if (!version) {
+    pluginProgress.classList.add("hidden");
+    return;
+  }
+  pluginProgress.classList.remove("hidden");
+  pluginProgress.classList.toggle("is-error", Boolean(error));
+  pluginProgressVersion.textContent = `插件版本 ${version}`;
+  pluginProgressMessage.textContent = message || "";
+  pluginProgressPercent.textContent = `总进度 ${Math.round(percent)}%`;
+  pluginProgressBar.style.width = `${percent}%`;
+}
+
+async function loadPluginPage(page = pluginPage) {
+  const plugins = await api(`plugin-releases?page=${encodeURIComponent(page)}`);
+  pluginPage = Number(plugins.page || 1);
+  const pluginRows = document.querySelector("#plugin-rows");
+  pluginRows.innerHTML = plugins.items.length ? plugins.items.map((item) => `
+    <tr>
+      <td><strong>${escapeHtml(item.version)}</strong></td>
+      <td>${escapeHtml(item.plugin_name)}</td>
+      <td>${escapeHtml(item.created_by)}</td>
+      <td>${escapeHtml(item.published_at)}</td>
+      <td>${escapeHtml(item.zip_filename)}</td>
+      <td>${formatSize(Number(item.file_size || 0))}</td>
+      <td><span class="hash" title="${escapeHtml(item.sha256)}">${escapeHtml(item.sha256)}</span></td>
+    </tr>`).join("") : '<tr><td class="empty" colspan="7">尚未发布任何插件版本</td></tr>';
+  renderPagination("#plugin-pagination", plugins, async (nextPage) => {
+    await loadPluginPage(nextPage);
+  });
+}
+
+function uploadPlugin(form, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${API_BASE}releases/publish-plugin`);
+    xhr.withCredentials = true;
+    xhr.responseType = "json";
+    xhr.upload.addEventListener("progress", (event) => {
+      if (!event.lengthComputable) return;
+      onProgress(event.loaded, event.total);
+    });
+    xhr.addEventListener("load", () => {
+      const payload = xhr.response && typeof xhr.response === "object" ? xhr.response : {};
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(payload);
+        return;
+      }
+      const error = new Error(errorMessage(payload, `请求失败（${xhr.status}）`));
+      error.status = xhr.status;
+      error.code = payload?.detail?.code || "";
+      reject(error);
+    });
+    xhr.addEventListener("error", () => reject(new Error("上传连接中断，请刷新后确认发布结果")));
+    xhr.addEventListener("abort", () => reject(new Error("上传已取消")));
+    xhr.send(form);
+  });
+}
+
 async function loadDashboard() {
   const [, , jobs] = await Promise.all([
     loadReleasePage(),
     loadAuditPage(),
     api("publish-jobs"),
+    loadPluginPage(),
   ]);
   const latestJob = jobs.items[0] || null;
   if (latestJob) {
@@ -336,6 +402,7 @@ async function enterForUser(user) {
   }
   releasePage = 1;
   auditPage = 1;
+  pluginPage = 1;
   showView("dashboard");
   await loadDashboard();
 }
@@ -397,6 +464,10 @@ document.querySelector("#logout-button").addEventListener("click", async () => {
 
 document.querySelector("#refresh-button").addEventListener("click", async () => {
   try { await loadDashboard(); showNotice("已刷新", "success"); } catch (error) { showNotice(error.message, "error"); }
+});
+
+document.querySelector("#plugin-refresh-button").addEventListener("click", async () => {
+  try { await loadPluginPage(); showNotice("插件发布记录已刷新", "success"); } catch (error) { showNotice(error.message, "error"); }
 });
 
 document.querySelector("#publish-form").addEventListener("submit", async (event) => {
@@ -512,6 +583,61 @@ document.querySelector("#publish-form").addEventListener("submit", async (event)
     document.querySelector("#publish-update-only-button").textContent = "只发布更新（不同步官网）";
     document.querySelector("#publish-internal-button").textContent = "上传并发布内测版";
     document.querySelector("#publish-public-button").textContent = "上传并发布公共版";
+  }
+});
+
+document.querySelector("#plugin-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  showNotice("");
+  const formElement = event.currentTarget;
+  const form = new FormData(formElement);
+  const version = String(form.get("plugin_version") || "").trim();
+  const pkg = form.get("package");
+  if (!version) {
+    showNotice("请填写插件版本号", "error");
+    return;
+  }
+  if (!(pkg instanceof File) || pkg.size <= 0) {
+    showNotice("请选择有效的插件 ZIP 包", "error");
+    return;
+  }
+  form.set("version", version);
+  form.set("release_notes", String(form.get("plugin_release_notes") || ""));
+  form.delete("plugin_version");
+  form.delete("plugin_release_notes");
+  const button = document.querySelector("#publish-plugin-button");
+  button.disabled = true;
+  renderPluginProgress({ version, percent: 0, message: "正在上传插件包…" });
+  try {
+    const result = await uploadPlugin(form, (loaded, total) => {
+      const percent = total > 0 ? Math.min(90, (loaded / total) * 90) : 0;
+      renderPluginProgress({
+        version,
+        percent,
+        message: `正在上传插件包 ${formatSize(loaded)} / ${formatSize(total)}`,
+      });
+    });
+    const updated = result?.website_updated || {};
+    const websiteNote = (updated.filename || updated.version_text) ? "；官网插件区已同步" : "";
+    formElement.reset();
+    renderPluginProgress({ version, percent: 100, message: "发布完成" });
+    showNotice(`插件 ${version} 已发布并完成清单签名${websiteNote}`, "success");
+    await loadPluginPage();
+  } catch (error) {
+    renderPluginProgress({ version, percent: 100, message: error.message, error: true });
+    try {
+      const durable = await api(`plugin-releases/status/${encodeURIComponent(version)}`);
+      if (durable?.published && durable.release) {
+        formElement.reset();
+        renderPluginProgress({ version, percent: 100, message: "发布完成" });
+        showNotice(`插件 ${version} 已发布（服务器状态已确认）`, "success");
+        await loadPluginPage();
+        return;
+      }
+    } catch (_) { /* keep the original upload error */ }
+    showNotice(error.message, "error");
+  } finally {
+    button.disabled = false;
   }
 });
 

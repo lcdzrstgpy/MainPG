@@ -94,6 +94,8 @@ class _Item:
     review_status: str = ""
     error_code: str = ""
     message: str = ""
+    price_cny: float | None = None
+    shop_name: str = ""
 
 
 @dataclass
@@ -857,6 +859,8 @@ class PluginOneBoundCaptureService:
             raise ValueError("provider returned a mismatched offer")
         candidate["candidate_id"] = f"{batch.platform}:{item.offer_id}"
         item.source_title = _candidate_source_title(candidate)
+        item.price_cny = _number_or_none(candidate.get("price_cny"))
+        item.shop_name = str(candidate.get("shop_name") or "")
         # 采集成功仅登记为候选，不直接写入草稿池；确认入池由用户在插件页手动完成。
         item.status = "succeeded"
         item.outcome = ""
@@ -1203,7 +1207,7 @@ def register_plugin_onebound_capture_routes(
             if batch is None:
                 raise HTTPException(status_code=404, detail="capture batch not found")
             items = service._repository.items(workspace_id=actor.workspace_id, batch_id=batch_id, limit=limit, offset=offset)
-            return {"items": items, "total": service._repository.count_items(workspace_id=actor.workspace_id, batch_id=batch_id), "limit": limit, "offset": offset}
+            return {"items": [_persisted_item_view(item) for item in items], "total": service._repository.count_items(workspace_id=actor.workspace_id, batch_id=batch_id), "limit": limit, "offset": offset}
 
         @router.post(prefix + "/{batch_id}/start", status_code=202)
         def start_persistent_batch(
@@ -1360,6 +1364,19 @@ def _candidate_from_json(value: Any) -> Mapping[str, Any] | None:
     return data if isinstance(data, Mapping) else None
 
 
+def _number_or_none(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
 def _candidate_sku_empty(candidate: Mapping[str, Any] | None) -> bool:
     if not isinstance(candidate, Mapping):
         return True
@@ -1390,6 +1407,17 @@ def _candidate_view(item: Mapping[str, Any]) -> Mapping[str, Any]:
         "draft_id": item.get("draft_id"),
         "sku_count": len(variants),
         "main_image_url": str((candidate or {}).get("main_image_url") or ""),
+        "price_cny": _number_or_none((candidate or {}).get("price_cny")),
+        "shop_name": str((candidate or {}).get("shop_name") or ""),
+    }
+
+
+def _persisted_item_view(item: Mapping[str, Any]) -> Mapping[str, Any]:
+    candidate = _candidate_from_json(item.get("candidate_json"))
+    return {
+        **item,
+        "price_cny": _number_or_none((candidate or {}).get("price_cny")),
+        "shop_name": str((candidate or {}).get("shop_name") or ""),
     }
 
 
@@ -1401,6 +1429,10 @@ def _item_response(item: _Item) -> Mapping[str, Any]:
         "source_url": item.source_url,
         "statusText": item.message or "等待采集",
     }
+    if item.price_cny is not None:
+        result["price_cny"] = item.price_cny
+    if item.shop_name:
+        result["shop_name"] = item.shop_name
     if item.draft_id is not None:
         result["draft_id"] = item.draft_id
     if item.error_code:

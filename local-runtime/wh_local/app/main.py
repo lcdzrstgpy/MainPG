@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import mimetypes
 import os
 import sys
 import threading
@@ -780,6 +781,13 @@ def _frontend_dist_dir() -> Path:
 
 def _register_frontend_shell(app: FastAPI) -> None:
     """Expose the built workbench at the same local origin as the plugin API."""
+    # 部分 Python 运行环境的 mimetypes 未内置字体类型，会以 application/octet-stream
+    # 提供 woff2/woff/ttf/otf，导致个别浏览器拒绝加载 iconfont 而渲染出异常字形（乱码）。
+    # 这里显式注册，确保字体以正确的 font/* MIME 返回。
+    mimetypes.add_type("font/woff2", ".woff2")
+    mimetypes.add_type("font/woff", ".woff")
+    mimetypes.add_type("font/ttf", ".ttf")
+    mimetypes.add_type("font/otf", ".otf")
     frontend_dist = _frontend_dist_dir()
     assets = frontend_dist / "assets"
     brand = frontend_dist / "brand"

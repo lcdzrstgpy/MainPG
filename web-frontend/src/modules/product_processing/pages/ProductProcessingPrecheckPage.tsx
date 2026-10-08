@@ -528,7 +528,14 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
         />
 
         {(message || error) && <div className={`verify-message ${error ? 'error' : ''}`}>{error || message}</div>}
-        <p className="verify-empty">{loading ? '加载预检数据…' : '任务尚未完成，无法预检'}</p>
+        {loading ? (
+          <div className="app-loading-block">
+            <i className="app-spinner" aria-hidden="true" />
+            加载预检数据…
+          </div>
+        ) : (
+          <p className="verify-empty">任务尚未完成，无法预检</p>
+        )}
       </div>
     );
   }
@@ -1366,7 +1373,9 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
             onClick={() => void saveAll()}
             disabled={saving || loading || mutationsLocked || pendingUploads > 0 || allItems.length === 0}
           >
-            {saving ? '保存中…' : `保存预检修改${dirtyCount > 0 ? `（${dirtyCount} 条有修改）` : ''}`}
+            {saving
+              ? <><i className="app-spinner is-sm" aria-hidden="true" />保存中…</>
+              : `保存预检修改${dirtyCount > 0 ? `（${dirtyCount} 条有修改）` : ''}`}
           </button>
           <button
             type="button"
@@ -1375,12 +1384,14 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
             disabled={startingFinalize || loading || mutationsLocked || pendingUploads > 0 || finalizeNeedsResolution || exportableCount === 0}
           >
             {startingFinalize
-              ? '正在建立完成任务…'
+              ? <><i className="app-spinner is-sm" aria-hidden="true" />正在建立完成任务…</>
               : pendingUploads > 0
-                ? `正在导入图片（${pendingUploads}）`
+                ? <><i className="app-spinner is-sm" aria-hidden="true" />正在导入图片（{pendingUploads}）</>
                 : '完成预审并导出'}
           </button>
-          <button type="button" onClick={reloadForRetry} disabled={loading || mutationsLocked}>重新加载</button>
+          <button type="button" onClick={reloadForRetry} disabled={loading || mutationsLocked}>
+            {loading ? <><i className="app-spinner is-sm" aria-hidden="true" />重新加载</> : '重新加载'}
+          </button>
           <button
             type="button"
             onClick={() => setSkuManagerOpen(true)}
@@ -1504,7 +1515,9 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
                   disabled={downloading || !run.workbook_ready || !run.download}
                   onClick={() => void downloadRun(run, false)}
                 >
-                  {run.workbook_ready ? '重新下载' : '暂无表格'}
+                  {downloading
+                    ? <><i className="app-spinner is-sm" aria-hidden="true" />重新下载</>
+                    : run.workbook_ready ? '重新下载' : '暂无表格'}
                 </button>
               </li>
             ))}
@@ -1585,7 +1598,9 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
                 }}
                 title={item.product_draft_id == null ? '缺少草稿 ID，无法删除' : '从预检中删除此商品，可随时恢复'}
               >
-                {excludingDraftIds.has(draftId) ? '删除中…' : '删除'}
+                {excludingDraftIds.has(draftId)
+                  ? <><i className="app-spinner is-sm" aria-hidden="true" />删除中…</>
+                  : '删除'}
               </button>
             </div>
 
@@ -1615,7 +1630,9 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
                       onClick={() => void requestListingAdvice(item)}
                       title="结合 996 类目资质表并使用一次文本 AI 分析"
                     >
-                      <span aria-hidden="true">✦</span>
+                      {listingAdviceLoading
+                        ? <i className="app-spinner is-sm" aria-hidden="true" />
+                        : <span aria-hidden="true">✦</span>}
                       {listingAdviceLoading ? '分析中…' : listingAdvice ? '重新建议' : '上架建议'}
                     </button>
                   </div>
@@ -1673,21 +1690,6 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
                 <div className="precheck-core-grid">
                   <label>SKU货号
                     <input disabled={mutationsLocked} value={coreFields.sku ?? ''} onChange={(event) => setField(draftId, 'sku', event.target.value)} />
-                  </label>
-                  <label>申报价格
-                    <input disabled={mutationsLocked} value={coreFields.declared_price ?? ''} onChange={(event) => setField(draftId, 'declared_price', event.target.value)} />
-                  </label>
-                  <label>建议售价
-                    <input disabled={mutationsLocked} value={coreFields.suggested_price ?? ''} onChange={(event) => setField(draftId, 'suggested_price', event.target.value)} />
-                  </label>
-                  <label>库存
-                    <input disabled={mutationsLocked} value={coreFields.stock ?? ''} onChange={(event) => setField(draftId, 'stock', event.target.value)} />
-                  </label>
-                  <label>类目路径
-                    <input disabled={mutationsLocked} value={coreFields.category_path ?? ''} onChange={(event) => setField(draftId, 'category_path', event.target.value)} />
-                  </label>
-                  <label>类目ID
-                    <input disabled={mutationsLocked} value={coreFields.category_id ?? ''} onChange={(event) => setField(draftId, 'category_id', event.target.value)} />
                   </label>
                   <label><span className="precheck-dim-label">物流包裹长(cm) {provenanceBadge(item.dimension_provenance, item.dimension_confidence, 'length_cm')}</span>
                     <input disabled={mutationsLocked} value={coreFields.length_cm ?? ''} onChange={(event) => setField(draftId, 'length_cm', event.target.value)} />

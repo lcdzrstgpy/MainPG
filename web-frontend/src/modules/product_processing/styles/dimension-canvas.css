@@ -699,6 +699,7 @@
 }
 
 .dimension-stage-panel {
+  position: relative;
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
   min-width: 0;

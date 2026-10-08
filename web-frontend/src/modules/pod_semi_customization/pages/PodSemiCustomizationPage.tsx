@@ -1,14 +1,18 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { getAuthAccount } from "../../../transport/http/client";
 import { PodBriefInput } from "../../pod_customization/components/PodBriefInput";
 import {
   briefFieldsToDraft,
   createBriefHistoryItem,
+  isBriefRequestValid,
   mergeBusinessFields,
+  normalizeBriefInput,
   recordBriefHistory,
 } from "../../pod_customization/data/podBrief";
+import { podCustomizationApi } from "../../pod_customization/api/podCustomizationApi";
 import { PodAssetImage } from "../../pod_customization/data/usePodAssetUrl";
+import { formatPodBatchWaitingTime } from "../../pod_customization/data/podCustomizationModel";
 import type {
   PodBriefHistoryItem,
   PodBusinessFieldsDraft,
@@ -24,7 +28,6 @@ import {
   isSemiCountValid,
   semiBatchStatusLabel,
   semiBusinessFieldsForApi,
-  semiGroupCount,
   semiItemStatusLabel,
   semiItemTag,
 } from "../data/podSemiCustomizationModel";
@@ -34,6 +37,9 @@ import {
   savePodSemiDraft,
 } from "../data/podSemiCustomizationDraft";
 import type { SemiBatch } from "../types";
+// 本页复用了全定制的「智能填写」组件（.pod-brief-input 等样式定义在该文件里）；
+// 页面是按路由懒加载的，不显式引入的话单独打开本页会拿不到这些样式。
+import "../../pod_customization/styles/podCustomization.css";
 import "../styles/podSemiCustomization.css";
 
 type Props = {
@@ -48,26 +54,39 @@ type PodDraftAccount = {
 };
 
 /**
- * 半定制是纯图案花色制作，与具体产品无关，因此只保留图案相关字段：
- * 主题风格 / 元素关键词 / 配色 / 禁用元素。产品名、品类、市场、人群、卖点
- * 对纯图案生成没有意义，一律不展示（后端 SemiBatchCreate 也不校验它们）。
+ * 半定制是纯图案花色制作：主题风格 / 元素关键词 / 配色 / 禁用元素全部由「智能填写」自动生成，
+ * 用户不会手改，因此不在表单里展示（数据仍保存在 businessFields 中，照常进入 Prompt 与提交载荷）；
+ * 产品名、品类、市场、人群、卖点对纯图案生成没有意义。后端 SemiBatchCreate 不校验这些字段。
  */
-const SEMI_FIELDS: Array<{
-  key: keyof PodBusinessFieldsDraft;
-  label: string;
-  required?: boolean;
-  hint?: string;
-}> = [
-  { key: "design_theme", label: "主题整批统一风格", required: true, hint: "整批统一的图案风格基调，例如：美式西南复古、复古手绘插画风、法式田园碎花" },
-  { key: "style_keywords", label: "元素关键词", required: true, hint: "用顿号或逗号分隔；每一项都要是具体事物（如向日葵、雏菊、藤蔓），不要写形容词或风格词；系统按组随机分配主打/辅主/点缀" },
-  { key: "color_preferences", label: "偏好配色", hint: "尽量多写具体颜色名，如「电光粉紫、落日金橙、霓虹青」；颜色越多跨组差异越明显" },
-  { key: "excluded_elements", label: "禁用元素", hint: "覆盖侵权类（品牌 logo、卡通 IP、名人肖像）与危险违禁类（武器、毒品、仇恨符号），避免商品下架或店铺被封" },
-];
 
-/** 文本框高度随内容自适应：先归零再按 scrollHeight 撑开（与全定制页同一手法）。 */
-function autoGrowTextarea(textarea: HTMLTextAreaElement): void {
-  textarea.style.height = "auto";
-  textarea.style.height = `${Math.max(34, textarea.scrollHeight)}px`;
+/** 交付图案的推进百分比：(已完成 + 已失败) / 总款数。 */
+function semiProgressPercent(batch: SemiBatch): number {
+  if (batch.item_count <= 0) return 0;
+  return Math.min(100, Math.round(((batch.completed_item_count + batch.failed_item_count) / batch.item_count) * 100));
+}
+
+/** 批次标题：用 AI 定下的「整批统一风格」命名，历史列表里一眼能认出；
+    风格缺失时退回元素关键词，再退回用户那句话。上限与后端 title 一致（120）。 */
+function semiBatchTitle(fields: PodBusinessFieldsDraft, briefInput: string): string {
+  const theme = fields.design_theme.trim();
+  if (theme) return theme.slice(0, 120);
+  const keywords = fields.style_keywords.trim();
+  if (keywords) return keywords.slice(0, 120);
+  return briefInput.slice(0, 120);
+}
+
+/** 「已等待」独立计时：运行中每秒只重渲染这一小段，终态按 updated_at 定格，数字不再跳。 */
+function SemiWaitingTime({ createdAt, updatedAt, live }: { createdAt: string; updatedAt: string; live: boolean }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!live) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [live]);
+  const frozen = Date.parse(updatedAt);
+  const end = live ? now : Number.isFinite(frozen) ? frozen : now;
+  return <>已等待 {formatPodBatchWaitingTime(createdAt, end)} · </>;
 }
 
 const POLL_INTERVAL_MS = 2_000;
@@ -85,7 +104,8 @@ export function PodSemiCustomizationPage({ isActive = true }: Props) {
     ? loadPodSemiDraft(draftScope.accountId, draftScope.workspaceId)
     : createEmptyPodSemiDraft());
   const [businessFields, setBusinessFields] = useState<PodBusinessFieldsDraft>(initialDraft.business_fields);
-  const [creativePrompt, setCreativePrompt] = useState(initialDraft.creative_prompt);
+  // 一句话需求：由「开始生成」一个按钮驱动，先让豆包编辑提示词，再直接发起生图。
+  const [brief, setBrief] = useState("");
   const [count, setCount] = useState<number>(initialDraft.count);
   const [briefHistory, setBriefHistory] = useState<PodBriefHistoryItem[]>(initialDraft.brief_history);
 
@@ -99,7 +119,6 @@ export function PodSemiCustomizationPage({ isActive = true }: Props) {
   const [notice, setNotice] = useState("");
 
   const noticeTimerRef = useRef<number | undefined>(undefined);
-  const fieldTextareasRef = useRef<Array<HTMLTextAreaElement | null>>([]);
 
   const showNotice = (message: string) => {
     setNotice(message);
@@ -107,25 +126,17 @@ export function PodSemiCustomizationPage({ isActive = true }: Props) {
     noticeTimerRef.current = window.setTimeout(() => setNotice(""), NOTICE_AUTO_DISMISS_MS);
   };
 
-  // 草稿恢复 / 智能填写回填后重算高度：onChange 只覆盖手动输入，
-  // 程序化改值不会触发 change，必须在此统一撑开，否则内容会被裁掉。
-  useLayoutEffect(() => {
-    fieldTextareasRef.current.forEach((textarea) => {
-      if (textarea) autoGrowTextarea(textarea);
-    });
-  }, [businessFields, creativePrompt]);
-
   // 草稿自动落盘。
   useEffect(() => {
     if (!draftScope) return;
     savePodSemiDraft(draftScope.accountId, draftScope.workspaceId, {
       version: 1,
       business_fields: businessFields,
-      creative_prompt: creativePrompt,
+      creative_prompt: "",
       count,
       brief_history: briefHistory,
     });
-  }, [briefHistory, businessFields, count, creativePrompt, draftScope]);
+  }, [briefHistory, businessFields, count, draftScope]);
 
   const loadBatches = async () => {
     setBatchesLoading(true);
@@ -186,43 +197,43 @@ export function PodSemiCustomizationPage({ isActive = true }: Props) {
     return () => window.clearInterval(timer);
   }, [activeBatch?.status, activeBatch?.id]);
 
-  const onBriefGenerated = (fields: ReturnType<typeof briefFieldsToDraft>, input: string) => {
-    setBusinessFields((current) => mergeBusinessFields(current, fields));
-    setBriefHistory((current) => recordBriefHistory(current, createBriefHistoryItem(input, fields)));
-    showNotice("已按描述自动填写业务字段，可继续在下方人工修改。");
-  };
-
   const onSelectHistory = (item: PodBriefHistoryItem) => {
+    // 历史项就是历史「一句话需求」：回填输入框，点开始生成会按它重新编辑并生图。
+    setBrief(item.input);
     setBusinessFields((current) => mergeBusinessFields(current, item.fields));
   };
 
-  const missingRequired = SEMI_FIELDS.filter((field) => field.required && !businessFields[field.key].trim());
-
+  // 一个按钮走完整条链路：豆包先把一句话整理成图案提示词，再用它直接发起生图。
   const startBatch = async () => {
     if (busy) return;
     if (!isSemiCountValid(count)) {
       setError("半定制数量必须是 4 的倍数（4–200）。");
       return;
     }
-    if (missingRequired.length > 0) {
-      setError(`请填写必填字段：${missingRequired.map((field) => field.label).join("、")}。`);
+    if (!isBriefRequestValid(brief)) {
+      setError("请先写下图案需求（1–500 字），例如：法式田园碎花，向日葵与藤蔓，奶油白配鼠尾草绿。");
       return;
     }
     setBusy(true);
     setError("");
     try {
+      const input = normalizeBriefInput(brief);
+      const response = await podCustomizationApi.generateBriefFields({ brief: input, locale: "zh-CN" });
+      // briefFieldsToDraft 不含 copy_restrictions 等字段，用 mergeBusinessFields 补齐成完整草稿。
+      const fields = mergeBusinessFields(businessFields, briefFieldsToDraft(response.fields));
+      setBusinessFields(fields);
+      setBriefHistory((current) => recordBriefHistory(current, createBriefHistoryItem(input, fields)));
       const created = await podSemiCustomizationApi.createBatch({
         count,
         prompt_version: "v1",
-        business_fields: semiBusinessFieldsForApi(businessFields),
-        creative_prompt: creativePrompt.trim(),
+        business_fields: semiBusinessFieldsForApi(fields),
+        creative_prompt: "",
+        title: semiBatchTitle(fields, input),
       });
-      // 新批次必须同时成为轮询的请求目标：batchRequestRef 是「旧响应晚到即丢弃」的守卫，
-      // 只 setActiveBatch 不改 ref，refreshActiveBatch 会因 ref 不匹配直接 return，
-      // 导致刚发起的批次进度永不刷新（要切走再切回才恢复）。
+      // 必须同步轮询目标：refreshActiveBatch 会用 batchRequestRef 做守卫，
+      // 不更新的话新批次一直在"排队中"（轮询结果全被丢弃）。
       batchRequestRef.current = created.id;
       setActiveBatch(created);
-      showNotice(`已发起半定制批次：${count} 款图案 / ${semiGroupCount(count)} 次生图`);
       void loadBatches();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -316,6 +327,8 @@ export function PodSemiCustomizationPage({ isActive = true }: Props) {
     && isSemiBatchTerminal(activeBatch.status)
     && activeBatch.completed_item_count > 0;
 
+  const semiProgress = activeBatch ? semiProgressPercent(activeBatch) : 0;
+
   const selectedItem = activeBatch?.items.find((item) => item.id === selectedItemId);
 
   // 批次被换掉或重跑后旧款可能已不存在，关掉大图层避免停在悬空数据上。
@@ -360,45 +373,14 @@ export function PodSemiCustomizationPage({ isActive = true }: Props) {
       <div className="pod-semi-grid">
         <aside className="pod-semi-setup">
           <PodBriefInput
-            onGenerated={onBriefGenerated}
+            value={brief}
+            onValueChange={setBrief}
+            hideGenerate
             history={briefHistory}
             onSelectHistory={onSelectHistory}
-            subtitle="写「图案主题 + 风格」，AI 自动填好下方图案字段"
+            subtitle="写「图案主题 + 风格」，点「开始生成」后由豆包整理成提示词并直接生图"
             hint="请写清图案主题与风格，例如：法式田园碎花，向日葵与藤蔓，奶油白配鼠尾草绿"
           />
-
-          <section className="pod-semi-fields" aria-label="图案字段">
-            {SEMI_FIELDS.map((field, fieldIndex) => (
-              <label key={field.key} className="pod-semi-field">
-                <span>
-                  {field.label}
-                  {field.required && <em>*</em>}
-                  {field.hint && <i className="pod-field-info" data-tip={field.hint} aria-hidden="true">ⓘ</i>}
-                </span>
-                <textarea
-                  rows={1}
-                  ref={(element) => { fieldTextareasRef.current[fieldIndex] = element; }}
-                  value={businessFields[field.key]}
-                  onChange={(event) => {
-                    setBusinessFields((current) => ({ ...current, [field.key]: event.currentTarget.value }));
-                    autoGrowTextarea(event.currentTarget);
-                  }}
-                />
-              </label>
-            ))}
-            <label className="pod-semi-field">
-              <span>创意提示<small>选填</small></span>
-              <textarea
-                rows={1}
-                ref={(element) => { fieldTextareasRef.current[SEMI_FIELDS.length] = element; }}
-                value={creativePrompt}
-                onChange={(event) => {
-                  setCreativePrompt(event.currentTarget.value);
-                  autoGrowTextarea(event.currentTarget);
-                }}
-              />
-            </label>
-          </section>
 
           <section className="pod-semi-count" aria-label="生成数量">
             <span>生成数量（图案款数）</span>
@@ -415,7 +397,7 @@ export function PodSemiCustomizationPage({ isActive = true }: Props) {
           </section>
 
           <button type="button" className="pod-semi-start" disabled={busy} onClick={() => void startBatch()}>
-            {busy ? "提交中…" : "开始生成"}
+            {busy ? "正在编辑提示词并生图…" : `开始生成 ${count} 款图案`}
           </button>
         </aside>
 
@@ -429,7 +411,7 @@ export function PodSemiCustomizationPage({ isActive = true }: Props) {
               <header className="pod-semi-batch-head">
                 <div>
                   <b>{activeBatch.title || activeBatch.id}</b>
-                  <small>{semiBatchStatusLabel(activeBatch.status)} · 已出 {activeBatch.completed_item_count}/{activeBatch.item_count} 款 · 失败 {activeBatch.failed_item_count}</small>
+                  <small>{semiBatchStatusLabel(activeBatch.status)}</small>
                 </div>
                 <div className="pod-semi-batch-actions">
                   {isSemiBatchRunning(activeBatch.status) && <button type="button" disabled={busy} onClick={() => void control("pause")}>暂停</button>}
@@ -442,6 +424,11 @@ export function PodSemiCustomizationPage({ isActive = true }: Props) {
                   {downloadable && <button type="button" className="pod-semi-download" disabled={busy} onClick={() => void downloadZip()}>下载 ZIP</button>}
                 </div>
               </header>
+
+              <div className="pod-semi-progress" role="progressbar" aria-label="半定制批次进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={semiProgress}>
+                <div><span style={{ width: `${semiProgress}%` }} /></div>
+                <small><SemiWaitingTime createdAt={activeBatch.created_at} updatedAt={activeBatch.updated_at} live={isSemiBatchRunning(activeBatch.status)} />完成 {activeBatch.completed_item_count}/{activeBatch.item_count} 款 · 失败 {activeBatch.failed_item_count} 款 · {semiProgress}%</small>
+              </div>
 
               <div className="pod-semi-items">
                 {activeBatch.items.map((item) => {
