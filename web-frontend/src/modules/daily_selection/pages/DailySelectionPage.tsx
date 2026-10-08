@@ -654,8 +654,9 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   }, [activeRun]);
 
   // SKU 补齐轮询：任务运行中每秒刷新进度；完成后刷新批次候选显示最新 SKU 数。
+  // 页签是隐藏保活（切页不卸载），必须自己判 isActive，否则切走后仍每 1.5s 打接口。
   useEffect(() => {
-    if (!activeRun || skuRepull?.status !== "running") return;
+    if (!isActive || !activeRun || skuRepull?.status !== "running") return;
     let stopped = false;
     const timer = window.setInterval(async () => {
       try {
@@ -680,7 +681,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
       stopped = true;
       window.clearInterval(timer);
     };
-  }, [activeRun, skuRepull?.status]);
+  }, [activeRun, skuRepull?.status, isActive]);
 
   // 打开批次时同步一次空采集自动重试状态（内存任务或历史轮次持久化）；
   // 重试已在后台完成后自动刷新批次，避免停留在 0 条的旧数据。
@@ -717,8 +718,9 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   }, [activeRun]);
 
   // 空采集自动重试轮询：运行中每秒刷新状态；结束后刷新批次展示最新候选。
+  // 同上：切页后必须停，否则后台持续轮询。
   useEffect(() => {
-    if (!activeRun || collectionRetry?.status !== "running") return;
+    if (!isActive || !activeRun || collectionRetry?.status !== "running") return;
     let stopped = false;
     const timer = window.setInterval(async () => {
       try {
@@ -744,7 +746,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
       stopped = true;
       window.clearInterval(timer);
     };
-  }, [activeRun, collectionRetry?.status]);
+  }, [activeRun, collectionRetry?.status, isActive]);
 
   // 空采集：同步一次后台自动重试状态；已完成则直接刷新批次为最新候选。
   async function syncCollectionRetry(runId: string) {

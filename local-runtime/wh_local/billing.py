@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import json
+import logging
 import os
 import secrets
 from pathlib import Path
@@ -16,6 +17,8 @@ from . import cache
 from .db import transaction
 from .session import Actor
 
+
+_LOGGER = logging.getLogger(__name__)
 
 TEST_GRANT_POINTS = int(os.environ.get("WH_BILLING_TEST_GRANT_POINTS", "10000") or "10000")
 GATEWAY_LEGACY_LEASE_SECONDS = 900
@@ -1787,13 +1790,22 @@ def _wallet_balances(conn: Any, account_id: str) -> tuple[int, int, int, int]:
 
 
 def _wallet_extra_balance(conn: Any, account_id: str) -> int:
-    """额外积分子池余额（0.1 积分单位）；缺失行/列时返回 0。"""
+    """额外积分子池余额（0.1 积分单位）；缺失行/列时返回 0。
+
+    只有「老库没有这一列」才属于预期降级。其余异常（库锁、IO 错误）如果同样降级成
+    0，会让**明明有额外积分的账号被判余额不足（402）**，且完全无迹可查。故这里对
+    非缺列错误记 warning —— 返回值保持不变（不改变任何计费行为），只补可观测性。
+    """
     try:
         row = conn.execute(
             "SELECT extra_balance FROM billing_wallets WHERE account_id = ?",
             (account_id,),
         ).fetchone()
-    except Exception:
+    except Exception as exc:
+        if "no such column" not in str(exc).lower():
+            _LOGGER.warning(
+                "extra_balance lookup failed (account=%s): %s", account_id, exc
+            )
         return 0
     return int(row["extra_balance"] or 0) if row is not None else 0
 

@@ -103,7 +103,12 @@ class MessagesRepository:
                 for row in con.execute("SELECT server_id FROM message_deletions")
             }
             for item in items:
-                server_id = int(item.get("id") or 0)
+                try:
+                    server_id = int(item.get("id") or 0)
+                except (TypeError, ValueError):
+                    # 单条坏数据不能让整轮失败：公告与反馈回复共用本函数，
+                    # 抛错会整轮回滚，连撤回清理也一起跳过。
+                    continue
                 if server_id <= 0:
                     continue
                 if server_id in deleted_ids:

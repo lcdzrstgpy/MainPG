@@ -145,6 +145,9 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
   const [editRows, setEditRows] = useState<EditSourceRow[]>([]);
   const [savingSource, setSavingSource] = useState(false);
   const nextEditRowKeyRef = useRef(0);
+  // 每个货源链接最近一次核价请求的序号：并发时丢弃过期响应，
+  // 否则快速连改价格/重量时，慢的旧结果会覆盖新结果，显示与输入框不一致。
+  const profitRequestSeqRef = useRef<Record<number, number>>({});
   // 抽屉内维护最新产品数据：保存/解除关联后更新，避免编辑态复用旧的 source_groups
   const [productData, setProductData] = useState<ProfitActivityProduct | null>(product);
 
@@ -208,15 +211,29 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
   // 核价入库产品保留候选源价/重量/利润核算与解除关联；其他产品仅展示并允许修改图片与链接
   const isPriceVerification = current.source_type === "price_verification";
 
+  // 带序号守卫的核价：同一 link 的旧响应晚到即丢弃，避免覆盖最新一次的输入结果。
+  const runProfitRequest = (link: ProductSourceLink, run: () => Promise<SourceTopProfit | null>) => {
+    const seq = (profitRequestSeqRef.current[link.id] ?? 0) + 1;
+    profitRequestSeqRef.current[link.id] = seq;
+    setProfitBusy(link.id);
+    void run()
+      .then((profit) => {
+        if (profitRequestSeqRef.current[link.id] !== seq) return;
+        setProfits((current) => ({ ...current, [link.id]: profit }));
+      })
+      .finally(() => {
+        if (profitRequestSeqRef.current[link.id] !== seq) return;
+        setProfitBusy((current) => (current === link.id ? null : current));
+      });
+  };
+
   const changePrice = (link: ProductSourceLink, rawValue: string) => {
     if (!/^\d*\.?\d*$/.test(rawValue)) return;
     setPrices((current) => ({ ...current, [link.id]: rawValue }));
     const parsed = Number(rawValue);
     if (!Number.isFinite(parsed) || parsed <= 0) return;
-    setProfitBusy(link.id);
-    void computeProfit(link, rawValue, weights[link.id], sources?.site, sources?.selling_price ?? current.selling_price)
-      .then((profit) => setProfits((current) => ({ ...current, [link.id]: profit })))
-      .finally(() => setProfitBusy((current) => (current === link.id ? null : current)));
+    runProfitRequest(link, () =>
+      computeProfit(link, rawValue, weights[link.id], sources?.site, sources?.selling_price ?? current.selling_price));
   };
 
   const changeWeight = (link: ProductSourceLink, rawValue: string) => {
@@ -224,10 +241,8 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
     setWeights((current) => ({ ...current, [link.id]: rawValue }));
     const parsed = Number(rawValue);
     if (!Number.isFinite(parsed) || parsed <= 0) return;
-    setProfitBusy(link.id);
-    void computeProfit(link, prices[link.id], rawValue, sources?.site, sources?.selling_price ?? current.selling_price)
-      .then((profit) => setProfits((current) => ({ ...current, [link.id]: profit })))
-      .finally(() => setProfitBusy((current) => (current === link.id ? null : current)));
+    runProfitRequest(link, () =>
+      computeProfit(link, prices[link.id], rawValue, sources?.site, sources?.selling_price ?? current.selling_price));
   };
 
   const unlink = async (link: ProductSourceLink) => {

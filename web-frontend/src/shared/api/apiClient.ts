@@ -41,5 +41,16 @@ export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T
 
   // 204/空体等无 JSON 的成功响应兜底为空对象，避免抛英文 SyntaxError 绕过中文映射；
   // body 为字面量 null 时 json() 正常 resolve 成 null，同样要兜底防下游解引用崩溃。
-  return response.json().then((value) => (value ?? {}) as T).catch(() => ({} as T));
+  // 但**非 JSON 且本体是 HTML 的 2xx**（典型：打包态请求路径没命中后端，被 SPA
+  // fallback 回了 index.html）不能当成「成功空数据」——那会把「拿错内容」伪装成
+  // 「没有数据」，用户看到空列表而控制台毫无报错。这类必须按失败抛出。
+  const contentType = response.headers.get("content-type") ?? "";
+  if (contentType.includes("application/json")) {
+    return response.json().then((value) => (value ?? {}) as T).catch(() => ({} as T));
+  }
+  const body = await response.text().catch(() => "");
+  if (contentType.includes("text/html") || /^\s*<(?:!doctype|html|head|body)\b/i.test(body)) {
+    throw new Error(toUserMessage(`接口返回了网页而不是数据（HTTP ${response.status}）`));
+  }
+  return {} as T;
 }

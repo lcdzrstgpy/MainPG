@@ -675,12 +675,19 @@ class ProductProcessingDiagnosticOutboxDispatcher:
         return True
 
     def _run(self) -> None:
+        last_report = 0.0
         while True:
             try:
                 while self.drain_once():
                     pass
-            except Exception:
-                pass
+            except Exception as outbox_exc:
+                # 持续失败会让整条诊断上报链路静默失效；按 60s 节流留痕，避免刷日志。
+                now = time.monotonic()
+                if now - last_report >= 60.0:
+                    last_report = now
+                    _LOGGER.warning(
+                        "pp diagnostic outbox drain failed: %s", outbox_exc, exc_info=True
+                    )
             self._wake.wait(timeout=max(0.05, self._retry_delay))
             self._wake.clear()
 
@@ -2672,10 +2679,16 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             draft_ids = draft_ids[:max_products]
         if _direct_ai_enabled() and remote_token and request_billing_account:
             # 直连模式对账：把本账号仍 open 的冻结批次补结算，避免历史批次积分滞留。
+            # 对账是补偿路径，失败不能阻塞提交；但必须留痕——否则冻结积分滞留到 TTL
+            # （只退 85%）时毫无线索可查。
             try:
                 self.reconcile_open_batches(remote_token, account_id=request_billing_account)
-            except Exception:
-                pass
+            except Exception as reconcile_exc:
+                _LOGGER.warning(
+                    "billing reconcile before submit failed (account=%s): %s",
+                    request_billing_account,
+                    reconcile_exc,
+                )
         with self._submission_lock:
             existing = self._existing_task_for_submission(
                 payload,
@@ -5432,8 +5445,14 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             if account_id:
                 try:
                     self.reconcile_open_batches(token, account_id=account_id)
-                except Exception:
-                    pass
+                except Exception as reconcile_exc:
+                    # 同上：静默会让「历史批次积分滞留」这一补偿路径失效且无法排查。
+                    _LOGGER.warning(
+                        "billing reconcile after task failed (task=%s account=%s): %s",
+                        task_id,
+                        account_id,
+                        reconcile_exc,
+                    )
         return result
 
     def _settle_open_batch(
@@ -6533,8 +6552,16 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         item_id,
                         {"status": "failed", "reason": self._task_safe_error_reason(task_id, error)},
                     )
-                except Exception:
-                    pass
+                except Exception as settle_exc:
+                    # 预留回滚失败必须留痕：否则 usage 停在 reserved，积分既不退也查不到原因。
+                    # 注意用独立名：外层 `except Exception as exc` 的 exc 会被 Python 在
+                    # 其 except 块结束时删除，复用同名会连带把它清掉。
+                    _LOGGER.warning(
+                        "reserve rollback settle failed (task=%s item=%s): %s",
+                        task_id,
+                        item_id,
+                        settle_exc,
+                    )
             if isinstance(
                 error,
                 (

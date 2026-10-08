@@ -773,7 +773,12 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
     };
 
     refreshPaymentStatus();
-    const timer = window.setInterval(refreshPaymentStatus, 4000);
+    // 页面不可见时跳过本轮：用户切走模块或最小化窗口后不必每 4s 打接口；
+    // 重新可见时 visibilitychange / focus 会各补一次刷新，不影响到账感知。
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      refreshPaymentStatus();
+    }, 4000);
     window.addEventListener("focus", refreshPaymentStatus);
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {

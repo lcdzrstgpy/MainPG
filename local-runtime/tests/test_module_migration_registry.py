@@ -51,7 +51,34 @@ def test_pod_customization_migrations_are_registered_in_forward_order() -> None:
         "pod_customization:013_style_elements",
         "pod_customization:014_semi_customization",
         "pod_customization:015_replica_customization",
+        "pod_customization:016_pod_style_events",
     ]
+
+
+def test_pod_migration_sql_files_on_disk_match_the_registry() -> None:
+    """磁盘上的 POD 迁移 .sql 必须与唯一权威注册表一一对应（双向卡死）。
+
+    `init_db` 已改为从 `POD_MIGRATION_CONTRACTS` 派生迁移清单，所以：
+      * 磁盘多一个 .sql 而注册表没登记 → 该迁移被静默跳过（表建不出来）；
+      * 注册表登记了却没有 .sql 文件 → 同样被静默跳过。
+    2026-10-08 一天内出现三次「新增迁移只改了一半」的漂移，故加此守卫。
+    """
+    from wh_local.pod_migrations import POD_MIGRATION_CONTRACTS
+
+    migration_root = (
+        Path(__file__).parents[1]
+        / "wh_local"
+        / "modules"
+        / "pod_customization"
+        / "migrations"
+    )
+    on_disk = {path.stem for path in migration_root.glob("*.sql")}
+    registered = set(POD_MIGRATION_CONTRACTS)
+
+    assert on_disk == registered, (
+        f"仅在磁盘: {sorted(on_disk - registered)}；"
+        f"仅注册表: {sorted(registered - on_disk)}"
+    )
 
 
 def test_init_db_applies_pod_title_source_migration(tmp_path: Path) -> None:

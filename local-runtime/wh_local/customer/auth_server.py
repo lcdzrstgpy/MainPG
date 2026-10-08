@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -101,6 +102,8 @@ from .alipay_gateway import (
     verify_callback as verify_alipay_callback,
 )
 
+
+_LOGGER = logging.getLogger(__name__)
 
 REMOTE_SESSION_TTL = timedelta(days=7)
 BILLING_POINT_RATIO = 100
@@ -897,7 +900,9 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
                     purge_expired_pending_orders(db_path)
                     pending_purge_due_at = time.monotonic() + 5 * 60
             except Exception:
-                pass
+                # 这是过期冻结积分唯一的兜底释放路径：失败必须留痕，
+                # 否则用户积分长期不释放时运维无从下手（due 时间未推进，下一轮会重试）。
+                _LOGGER.exception("batch freeze TTL sweep failed")
             stop_event.wait(interval_seconds)
 
     ttl_thread = threading.Thread(
