@@ -79,7 +79,6 @@
 .pod-section-title { position: relative; display: grid; gap: 2px; padding-right: 60px; margin-bottom: 11px; }
 .pod-section-title > span { color: var(--pod-primary); font-size: .59rem; font-weight: 900; letter-spacing: .1em; }
 .pod-section-title h2 { margin: 0; font-size: .88rem; }
-.pod-section-title small { position: absolute; right: 0; bottom: 1px; color: var(--pod-text-muted); font-size: .6rem; }
 
 .pod-selected-template { display: flex; align-items: center; width: 100%; min-height: 62px; gap: 9px; padding: 8px; border: 1px dashed var(--pod-border-strong); border-radius: 11px; color: var(--pod-text-secondary); background: var(--pod-surface-soft); text-align: left; }
 .pod-selected-template:hover { border-color: var(--pod-primary); background: var(--pod-surface-tint); }
@@ -233,11 +232,6 @@
 .pod-gallery-header h2 { overflow: hidden; margin: 4px 0 3px; font-size: 1.08rem; text-overflow: ellipsis; white-space: nowrap; }
 .pod-gallery-header p { margin: 0; color: var(--pod-text-muted); font-size: .66rem; }
 .pod-gallery-header p b { color: var(--pod-text-secondary); }
-.pod-batch-status { display: grid; justify-items: end; gap: 2px; flex: 0 0 auto; padding: 7px 9px; border: 1px solid var(--pod-border); border-radius: 9px; color: var(--pod-text-secondary); background: var(--pod-surface-soft); }
-.pod-batch-status strong { font-size: .66rem; }
-.pod-batch-status span { color: var(--pod-text-muted); font-size: .58rem; }
-.pod-batch-status.status-completed { border-color: #b9e4d7; color: #16806d; background: #effbf7; }
-.pod-batch-status.status-failed { border-color: #edc4c1; color: #ad4e49; background: #fff4f3; }
 .pod-gallery-progress { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 9px; margin: 13px 0; }
 .pod-gallery-progress > div { height: 6px; overflow: hidden; border-radius: 9px; background: var(--pod-surface-soft); }
 .pod-gallery-progress > div span { display: block; height: 100%; border-radius: inherit; background: var(--theme-primary-button-gradient, linear-gradient(90deg, #087bf5, #14c8c0)); transition: width .25s ease; }
@@ -380,23 +374,26 @@
 .pod-brief-sidebar .pod-setup-card { padding: 16px; }
 .pod-business-editor { border-radius: 20px; flex: 1 1 auto; min-height: 0; }
 .pod-business-editor .pod-section-title { margin-bottom: 14px; padding: 0; text-align: center; }
-.pod-business-editor .pod-section-title small { position: static; }
 .pod-business-fields { display: grid; grid-template-columns: 1fr; gap: 8px; }
 .pod-business-fields label,
-.pod-business-fields label.is-wide,
-.pod-business-fields label.is-multiline { display: grid; grid-column: auto; grid-template-columns: 98px minmax(0, 1fr); align-items: center; gap: 8px; }
+.pod-business-fields label.is-wide { display: grid; grid-column: auto; grid-template-columns: 98px minmax(0, 1fr); align-items: center; gap: 8px; }
 .pod-business-fields label > span { display: flex; align-items: center; min-height: 36px; padding: 0 10px; border-radius: 7px; color: var(--pod-text); background: var(--pod-surface-tint); font-size: .67rem; }
-.pod-business-fields label.is-multiline { align-items: stretch; }
-.pod-business-fields label.is-multiline > span { align-items: flex-start; padding-top: 10px; }
 .pod-business-fields input,
 .pod-business-fields textarea { min-height: 36px; border-radius: 7px; background: var(--pod-surface-soft); }
 .pod-business-fields textarea { min-height: 54px; }
 .pod-business-editor > .pod-business-fields { --pod-business-row-height: 36px; }
-.pod-business-editor > .pod-business-fields > label { grid-template-columns: 98px minmax(0, 1fr); min-height: var(--pod-business-row-height); align-items: stretch; }
+/* 标签列要能容下最长的「标题/描述限制 + ⓘ」，否则会换行把标签块撑高。 */
+.pod-business-editor > .pod-business-fields > label { grid-template-columns: 120px minmax(0, 1fr); min-height: var(--pod-business-row-height); align-items: stretch; }
 .pod-business-editor > .pod-business-fields > label > span { min-height: var(--pod-business-row-height); height: 100%; align-items: center; padding-top: 0; }
 .pod-business-editor > .pod-business-fields > label > :is(input, textarea) { min-height: var(--pod-business-row-height); }
 .pod-business-editor > .pod-business-fields > label > input { height: var(--pod-business-row-height); }
 .pod-business-editor > .pod-business-fields > label > textarea { height: var(--pod-business-row-height); overflow-y: hidden; resize: none; }
+/* 业务字段字数提示：与后端字符上限对齐。单值字段显示「已用/上限」，
+   多值字段显示「条数/100 · 单条最长/200」；超限时提示与输入框标红。 */
+.pod-business-editor > .pod-business-fields > label { row-gap: 2px; }
+.pod-field-counter { grid-column: 2; color: var(--pod-text-muted); font-size: .55rem; font-weight: 700; line-height: 1.1; text-align: right; }
+.pod-field-counter.is-over { color: #d65e58; }
+.pod-business-editor > .pod-business-fields > label.is-over-limit > textarea { border-color: #d65e58; }
 .pod-advanced-prompt { margin-top: 12px; }
 .pod-volume-inline { display: flex; align-items: end; justify-content: space-between; gap: 8px; margin: 14px 1px 8px; }
 .pod-volume-inline b { font-size: .72rem; }
@@ -548,8 +545,15 @@
 .pod-sku-input-row label > span { overflow: hidden; color: var(--pod-text-muted); font-size: .49rem; font-weight: 800; letter-spacing: -.015em; text-overflow: ellipsis; white-space: nowrap; }
 .pod-sku-inputs input { min-width: 0; min-height: 28px; padding: 4px; border: 1px solid var(--pod-border); border-radius: 7px; color: var(--pod-text); background: var(--pod-surface); font-size: .56rem; }
 .pod-sku-inputs input[aria-invalid="true"] { border-color: #d75b52; box-shadow: 0 0 0 2px color-mix(in srgb, #d75b52 14%, transparent); }
-.pod-sku-field-error { color: #b9433c; font-size: .51rem; font-weight: 750; line-height: 1.25; }
+/* 错误槽位始终保留一行高度：提示出现/消失都不会顶动输入框。 */
+.pod-sku-field-error { display: block; min-height: 1.3em; color: #b9433c; font-size: .51rem; font-weight: 750; line-height: 1.25; }
+/* 类目/售价：错误信息内联在输入框正下方，不撑破「标签 | 输入框」两列布局。 */
+.pod-listing-fields .pod-listing-field-input { display: grid; min-width: 0; gap: 3px; }
+.pod-listing-field-error { display: block; min-height: 1.3em; color: #b9433c; font-size: .51rem; font-weight: 750; line-height: 1.25; }
+.pod-listing-fields .pod-business-fields input[aria-invalid="true"] { border-color: #d75b52; box-shadow: 0 0 0 2px color-mix(in srgb, #d75b52 14%, transparent); }
 .pod-sku-inputs button { width: 20px; height: 28px; padding: 0; border: 1px solid var(--pod-border); border-radius: 7px; color: var(--pod-text-muted); background: var(--pod-surface); font-size: .88rem; line-height: 1; }
+/* 错误槽位把整行拉高后，删除按钮要保持在输入框高度上，而不是落到错误提示那一行。 */
+.pod-sku-input-row > button { align-self: center; }
 .pod-sku-inputs button:hover { border-color: #d75b52; color: #c34942; background: #fff4f1; }
 .pod-listing-sku-dimensions,
 .pod-listing-legacy-dimensions { display: grid; gap: 7px; margin-top: 11px; }
@@ -568,10 +572,13 @@
 .pod-dianxiaomi-export button { min-height: 34px; padding: 7px 10px; border: 1px solid var(--pod-border-strong); border-radius: 9px; color: #fff; background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0)); font-size: .63rem; font-weight: 850; white-space: nowrap; }
 .pod-dianxiaomi-export button:disabled { cursor: not-allowed; color: var(--pod-text-muted); background: var(--pod-surface-soft); border-color: var(--pod-border); opacity: .82; }
 .pod-dianxiaomi-export small { color: #aa6351; font-size: .53rem; line-height: 1.35; text-align: right; }
-.pod-open-failed-retry { color: var(--pod-primary) !important; background: var(--pod-surface) !important; }
-.pod-open-failed-retry:hover:not(:disabled) { border-color: var(--pod-primary); background: var(--pod-surface-tint) !important; }
-/* 上面两条带 !important，会盖掉 button:disabled 的灰化；这里补回来，禁用时才不会被误认成可点。 */
-.pod-open-failed-retry:disabled { color: var(--pod-text-muted) !important; background: var(--pod-surface-soft) !important; }
+/* 一键反选 / 批量重试失败项 / 导出表格：统一用上面的深色实心样式，不再单独做次级外观。 */
+.pod-export-menu { position: relative; }
+.pod-export-menu-trigger { display: inline-flex; align-items: center; gap: 6px; }
+.pod-export-menu-trigger .icon-down { font-size: .55rem; opacity: .9; }
+.pod-export-menu-list { position: absolute; top: calc(100% + 6px); right: 0; z-index: 40; display: grid; min-width: 196px; padding: 5px; border: 1px solid var(--pod-border-strong); border-radius: 10px; background: var(--pod-surface); box-shadow: 0 16px 38px rgba(15, 36, 53, .2); }
+.pod-dianxiaomi-export .pod-export-menu-list button { width: 100%; min-height: 32px; padding: 7px 9px; border: 0; border-radius: 7px; color: var(--pod-text); background: transparent; font-size: .62rem; font-weight: 800; text-align: left; }
+.pod-dianxiaomi-export .pod-export-menu-list button:hover:not(:disabled) { background: var(--pod-surface-tint); }
 
 /* align-self: flex-start —— 导出那一列底下还有两行小字，居中会把暂停/取消往下顶，与导出按钮错行。 */
 .pod-batch-control { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; align-self: flex-start; }
@@ -657,8 +664,7 @@
   .pod-history { grid-column: auto; }
   .pod-business-fields { grid-template-columns: 1fr; }
   .pod-business-fields label,
-  .pod-business-fields label.is-wide,
-  .pod-business-fields label.is-multiline { grid-template-columns: 92px minmax(0, 1fr); }
+  .pod-business-fields label.is-wide { grid-template-columns: 92px minmax(0, 1fr); }
   .pod-count-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .pod-current-template-body { grid-template-columns: 104px minmax(0, 1fr); gap: 12px; }
   .pod-current-template-body dl { grid-template-columns: 1fr; gap: 7px; }
@@ -667,7 +673,6 @@
   .pod-gallery-header { align-items: flex-start; }
   .pod-gallery-headline { flex-wrap: wrap; }
   .pod-gallery-header-actions { margin-left: 0; }
-  .pod-batch-status { width: fit-content; }
   .pod-dianxiaomi-export { align-items: flex-start; }
   .pod-export-buttons { justify-content: flex-start; }
   .pod-dianxiaomi-export button { padding-inline: 8px; }

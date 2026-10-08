@@ -7,7 +7,7 @@ import { PodBatchHistoryDrawer } from "../../pod_customization/components/PodBat
 import { PodFailedRetryDialog } from "../../pod_customization/components/PodFailedRetryDialog";
 import { PodResultLightbox } from "../../pod_customization/components/PodResultLightbox";
 import { SpecCardDrawer, type SpecCardBatchContext } from "../../pod_customization/components/SpecCardDrawer";
-import { validateSkuFields, type SkuField, type SkuFieldErrors } from "../../pod_customization/components/PodListingFieldsEditor";
+import { validateListingFields, type SkuField } from "../../pod_customization/components/PodListingFieldsEditor";
 import { buildSpecCardCells, groupPodStyleRows, isActiveBatchStatus, isActivePodItemStatus, isActivePodStyleTitleStatus, shouldPollPodBatch } from "../../pod_customization/data/podCustomizationModel";
 import { batchRetryCandidates, type PodBatchRetryRequest } from "../../pod_customization/data/podBatchRetry";
 import type { PodBatchItem, PodMiaoshouTemplateKind } from "../../pod_customization/types";
@@ -58,7 +58,8 @@ export function PodReplicaPage({ isActive = true }: Props) {
   });
   const [targets, setTargets] = useState<ReplicaTargetDraft[]>(initialDraft.state.targets);
   const [activeTargetId, setActiveTargetId] = useState<string>();
-  const [skuFieldErrors, setSkuFieldErrors] = useState<Record<string, SkuFieldErrors>>({});
+  // 上架信息实时校验：抽屉里按当前产品实时重算并内联展示；「必填为空」在提交过一次后才提示。
+  const [listingErrorsRevealed, setListingErrorsRevealed] = useState(false);
   const [specCardTargetId, setSpecCardTargetId] = useState<string>();
   const [activeBatch, setActiveBatch] = useState<ReplicaBatch | null>(null);
   const [selectedItemId, setSelectedItemId] = useState<string>();
@@ -98,7 +99,7 @@ export function PodReplicaPage({ isActive = true }: Props) {
   const clearAll = () => {
     setSource(null);
     setTargets([]);
-    setSkuFieldErrors({});
+    setListingErrorsRevealed(false);
     setActiveTargetId(undefined);
     setSpecCardTargetId(undefined);
     requestIdRef.current = null;
@@ -254,12 +255,6 @@ export function PodReplicaPage({ isActive = true }: Props) {
   });
 
   const updateSku = (clientId: string, index: number, key: SkuField, value: string) => {
-    setSkuFieldErrors((current) => {
-      const targetErrors = current[clientId];
-      if (!targetErrors) return current;
-      const { [`${index}:${key}`]: _cleared, ...remaining } = targetErrors;
-      return { ...current, [clientId]: remaining };
-    });
     updateTarget(clientId, (target) => withSyncedSpecCard(target, {
       ...target.listingFields,
       skus: target.listingFields.skus.map((sku, currentIndex) => currentIndex === index ? { ...sku, [key]: value } : sku),
@@ -274,12 +269,15 @@ export function PodReplicaPage({ isActive = true }: Props) {
     if (!source) { setError("请先上传 POD 样图。"); return; }
     if (!targets.length) { setError("请至少添加一个目标产品。"); return; }
 
-    const allSkuErrors: Record<string, SkuFieldErrors> = {};
-    for (const target of targets) {
-      const errors = validateSkuFields(target.listingFields.skus);
-      if (Object.keys(errors).length) allSkuErrors[target.clientId] = errors;
+    // 上架信息是实时校验的：这里揭示「必填为空」，并拦截比后端合约更严的字符/格式问题。
+    setListingErrorsRevealed(true);
+    const invalidListingTarget = targets.find((target) => Object.keys(validateListingFields(target.listingFields)).length > 0);
+    if (invalidListingTarget) {
+      const index = targets.indexOf(invalidListingTarget);
+      setActiveTargetId(invalidListingTarget.clientId);
+      setError(`第 ${index + 1} 个产品有误：请检查上架信息中标红的字段。`);
+      return;
     }
-    setSkuFieldErrors(allSkuErrors);
 
     const firstInvalid = firstInvalidReplicaTargetIndex(targets);
     if (firstInvalid >= 0) {
@@ -382,6 +380,30 @@ export function PodReplicaPage({ isActive = true }: Props) {
     setActiveBatch((current) => current ? { ...current, style_titles: current.style_titles?.map((title) => title.style_index === styleIndex ? { ...title, export_selected: selected } : title) } : current);
     try {
       await podCustomizationApi.updateExportSelection(activeBatch.id, styleIndex, selected);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+      await refreshBatch(activeBatch.id);
+    }
+  };
+
+  /** 一键反选：把全部已就绪款式整体设为选中/取消选中，不用逐个点。 */
+  const setAllExportSelection = async (selected: boolean) => {
+    if (!activeBatch) return;
+    const readyTitles = (activeBatch.style_titles ?? []).filter((title) => title.listing_ready);
+    const changed = readyTitles.filter((title) => title.export_selected !== selected);
+    if (!changed.length) return;
+    clearMessages();
+    setActiveBatch((current) => current ? {
+      ...current,
+      dianxiaomi_export: current.dianxiaomi_export.selected_exportable_style_count === undefined ? current.dianxiaomi_export : {
+        ...current.dianxiaomi_export,
+        selected_exportable_style_count: selected ? readyTitles.length : 0,
+        user_excluded_style_count: current.dianxiaomi_export.user_excluded_style_count === undefined ? undefined : selected ? 0 : readyTitles.length,
+      },
+      style_titles: current.style_titles?.map((title) => title.listing_ready ? { ...title, export_selected: selected } : title),
+    } : current);
+    try {
+      await Promise.all(changed.map((title) => podCustomizationApi.updateExportSelection(activeBatch.id, title.style_index, selected)));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
       await refreshBatch(activeBatch.id);
@@ -515,6 +537,7 @@ export function PodReplicaPage({ isActive = true }: Props) {
             onRegenerateStyle={(styleIndex) => void regenerateStyle(styleIndex)}
             onRegenerateTitle={(styleIndex) => void regenerateStyleTitle(styleIndex)}
             onUpdateExportSelection={(styleIndex, selected) => void updateExportSelection(styleIndex, selected)}
+            onSetAllExportSelection={(selected) => void setAllExportSelection(selected)}
             onSaveTitle={(styleIndex, title) => saveManualTitle(styleIndex, title)}
             onExportDianxiaomi={() => void exportDianxiaomi()}
             onExportMiaoshou={(kind) => void exportMiaoshou(kind)}
@@ -529,8 +552,9 @@ export function PodReplicaPage({ isActive = true }: Props) {
       <ReplicaTargetDrawer
         open={Boolean(activeTarget)}
         target={activeTarget}
-        skuFieldErrors={activeTarget ? skuFieldErrors[activeTarget.clientId] ?? {} : {}}
+        skuFieldErrors={activeTarget ? validateListingFields(activeTarget.listingFields) : {}}
         skuLimitReached={Boolean(activeTarget && activeTarget.listingFields.skus.length >= MAX_SKU)}
+        showRequiredErrors={listingErrorsRevealed}
         onChangeProductName={changeProductName}
         onListingFieldChange={changeListingField}
         onAddSku={addSku}
