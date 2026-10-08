@@ -267,7 +267,7 @@
 .combo-text-result h3 { margin: 0 0 8px; font-size: 15px; color: #172b44; }
 .combo-text-result ul { margin: 8px 0 0; padding-left: 18px; }
 
-.combo-images { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 14px; }
+.combo-images { position: relative; display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 14px; }
 .combo-images figure { margin: 0; }
 .combo-images img { width: 100%; border-radius: 12px; background: #f3f6f9; border: 1px solid #e1ebf2; }
 .combo-images figcaption { text-align: center; font-size: 12px; color: #6f849a; margin-top: 4px; }
@@ -416,6 +416,36 @@
 @keyframes combo-progress-halo { 0%, 100% { opacity: .25; transform: scale(.95); } 50% { opacity: .8; transform: scale(1.05); } }
 @keyframes combo-progress-sheen { 0% { transform: translateX(-130%); } 60%, 100% { transform: translateX(130%); } }
 
+/* 按钮内联 spinner：纯 CSS 单元素，颜色跟随按钮文字 */
+.combo-spinner { display: inline-block; width: 13px; height: 13px; margin-right: 6px; vertical-align: -2px; border-radius: 50%; border: 2px solid currentColor; border-top-color: transparent; opacity: .85; animation: combo-spin .7s linear infinite; }
+.btn-mini .combo-spinner { width: 11px; height: 11px; margin-right: 5px; }
+@keyframes combo-spin { to { transform: rotate(360deg); } }
+
+/* AI 文本生成中的骨架屏占位 */
+.combo-text-skeleton { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; padding: 16px; border: 1px solid #e1ebf2; border-radius: 12px; background: #f8fbfd; }
+.combo-skeleton-caption { display: flex; align-items: center; color: #5a738c; font-size: 12.5px; font-weight: 700; }
+.combo-skeleton-line { position: relative; height: 12px; border-radius: 999px; overflow: hidden; background: #e4eef6; }
+.combo-skeleton-line::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .9), transparent); transform: translateX(-100%); animation: combo-skeleton-sheen 1.5s ease-in-out infinite; }
+@keyframes combo-skeleton-sheen { to { transform: translateX(100%); } }
+
+/* 自动框选：画布上的扫描动效 + 徽标 */
+.combo-mask-canvas-wrap { position: relative; }
+.combo-mask-scan { position: absolute; inset: 0; display: grid; place-items: center; overflow: hidden; background: rgba(9, 40, 66, .14); }
+.combo-mask-scan::before { content: ''; position: absolute; left: 0; right: 0; height: 34%; background: linear-gradient(180deg, transparent, rgba(20, 200, 192, .42) 46%, rgba(8, 123, 245, .5) 54%, transparent); transform: translateY(-120%); animation: combo-scan-sweep 1.5s cubic-bezier(.45, .05, .55, .95) infinite; }
+@keyframes combo-scan-sweep { 0% { transform: translateY(-120%); } 100% { transform: translateY(320%); } }
+.combo-mask-scan-badge { position: relative; z-index: 1; display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; border-radius: 999px; color: #fff; font-size: 12px; font-weight: 800; background: rgba(10, 58, 99, .84); box-shadow: 0 10px 22px rgba(7, 38, 69, .32); }
+.combo-mask-scan-badge .combo-spinner { margin-right: 0; }
+
+/* 水印烧制：成品图网格上的遮罩 */
+.combo-images-burning { position: absolute; inset: 0; z-index: 2; display: flex; align-items: center; justify-content: center; gap: 8px; border-radius: 14px; color: #fff; font-size: 13px; font-weight: 800; background: rgba(10, 58, 99, .42); backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px); }
+.combo-images-burning .combo-spinner { width: 16px; height: 16px; border-width: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .combo-spinner { animation-duration: 1.6s; }
+  .combo-mask-scan::before { animation: none; }
+  .combo-skeleton-line::after { animation: none; }
+}
+
 /* 主题覆盖：组合套装的旧蓝白表面统一接入全局主题色板。 */
 [data-theme] .combo-kit-page { color: var(--theme-text-primary); }
 [data-theme] :is(.combo-kit-list, .combo-section, .combo-flow-card, .combo-create-panel, .combo-edit-stage, .combo-text-result, .combo-preset-card, .combo-history-table, .combo-drawer, .combo-modal) {
@@ -446,3 +476,6 @@
 [data-theme] :is(.combo-progress-center strong, .combo-progress-copy strong) { color: var(--theme-text-primary); }
 [data-theme] :is(.combo-progress-center strong em, .combo-progress-center span, .combo-progress-copy span) { color: var(--theme-text-secondary); }
 [data-theme] .combo-progress-track { stroke: var(--theme-module-border); }
+[data-theme] .combo-text-skeleton { border-color: var(--theme-module-border); background: var(--theme-module-surface-raised); }
+[data-theme] .combo-skeleton-line { background: var(--theme-module-surface-soft); }
+[data-theme] .combo-skeleton-caption { color: var(--theme-text-secondary); }

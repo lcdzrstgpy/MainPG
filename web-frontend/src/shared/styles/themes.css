@@ -9,6 +9,7 @@
      - quirky   : 怪趣贴纸
      - chinese  : 水墨青黛
      - peach    : 桃花源（背景/特效见 peach-garden.css、PeachGarden.tsx）
+     - alpine   : 高山草原（内置：青翠草甸 + 远山青 + 野花金，暂无背景特效）
    ================================================================ *//* ---- 默认主题变量（经典蓝青）---- */:root {
   --theme-page-bg: #edf4fb;
   --theme-card-bg: rgba(255, 255, 255, .92);
@@ -359,7 +360,100 @@
   --theme-module-panel-gradient: linear-gradient(120deg, #fdeeea 0%, #fff8f6 62%, #e7f2ea 100%);
   --theme-module-shadow: rgba(140, 61, 82, .1);
   --theme-module-overlay: rgba(71, 48, 55, .34);
-}/* ================================================================
+}
+
+/* ---- 高山草原：清晨高原草甸 · 草甸绿 + 远山青 + 野花金 ----
+   意象：青翠草坡打底、远山青做强调、野花金点缀、正文取松针深绿。
+   侧边栏独立用深绿(#1e4a38)，与浅色主区拉开层次（与水墨青黛的米白底区分开）。 */
+[data-theme="alpine"] {
+  --theme-page-bg: #eef5ec;
+  --theme-card-bg: rgba(252, 255, 252, .22);
+  --theme-card-border: rgba(47, 125, 82, .26);
+  --theme-card-shadow: rgba(31, 74, 56, .08);
+  --theme-card-shadow-lg: rgba(31, 74, 56, .14);
+
+  --theme-text-primary: #1d3a2a;
+  --theme-text-secondary: #54705d;
+  --theme-text-muted: #8aa392;
+
+  --theme-primary: #2f7d52;
+  --theme-primary-light: #e8f5ec;
+  --theme-accent: #d4a03c;
+
+  --theme-sidebar-hover-bg: #f1f8f2;
+  --theme-sidebar-active-bg: linear-gradient(100deg, #d9f0e0, #eef7e6);
+  --theme-sidebar-active-color: #1e6a45;
+  --theme-sidebar-active-border: #8fbf6a;
+  --theme-sidebar-active-shadow: 0 5px 13px rgba(30, 106, 69, .13);
+
+  --theme-hero-gradient: linear-gradient(118deg, #1a4f45, #2f7d52 55%, #7fb069);
+  --theme-hero-text: #e6f5e8;
+  --theme-hero-eyebrow: #b6ddb0;
+
+  --theme-brand-gradient: linear-gradient(145deg, #2f7d52, #8fbf6a);
+  --theme-brand-shadow: rgba(47, 125, 82, .25);
+  --theme-brand-large-color: #226b45;
+  --theme-brand-large-bg: #ffffff;
+
+  --theme-avatar-bg: #d9f0e0;
+  --theme-avatar-color: #1e6a45;
+
+  --theme-icon-button-border: #cfe3d3;
+  --theme-icon-button-bg: #ffffff;
+  --theme-icon-button-color: #4a6355;
+
+  --theme-page-tab-border: #dbe9dd;
+  --theme-page-tab-bg: #f6faf6;
+  --theme-page-tab-active-border: #8fbf6a;
+  --theme-page-tab-active-bg: #e8f5ec;
+  --theme-page-tab-active-color: #2f7d52;
+
+  --theme-flow-color-a: rgba(143, 191, 106, .1);
+  --theme-flow-color-b: rgba(47, 125, 82, .18);
+  --theme-flow-color-c: rgba(31, 95, 111, .2);
+  --theme-flow-color-d: rgba(212, 160, 60, .13);
+  --theme-flow-ripple: rgba(47, 125, 82, .25);
+  --theme-flow-ripple-secondary: rgba(212, 160, 60, .17);
+
+  --theme-scroll-gradient: linear-gradient(145deg, #2f7d52, #8fbf6a);
+  --theme-scroll-shadow: rgba(34, 107, 69, .3);
+
+  --theme-meteor-gradient: linear-gradient(90deg, transparent 0%, rgba(143, 191, 106, .2) 24%, rgba(47, 125, 82, .8) 82%, rgba(212, 240, 190, .96) 100%);
+  --theme-meteor-dot: #c9e8b4;
+  --theme-meteor-dot-shadow: rgba(47, 125, 82, .8);
+
+  --theme-auth-gradient: linear-gradient(135deg, #0f2f26 0%, #1f5741 34%, #2f7d52 62%, #8fbf6a 100%);
+  --theme-auth-brand-text: #e2f3e4;
+  --theme-auth-brand-eyebrow: #b6ddb0;
+  --theme-auth-tabs-bg: #eef6ef;
+  --theme-auth-tabs-active-color: #2f7d52;
+  --theme-auth-input-border: #cfe3d3;
+  --theme-auth-input-outline: #3f8f62;
+  --theme-auth-label-color: #4a6355;
+  --theme-auth-hint-color: #8aa392;
+
+  --theme-primary-button-gradient: linear-gradient(105deg, #226b45, #3f8f62);
+  --theme-primary-button-shadow: rgba(47, 125, 82, .27);
+  --theme-on-primary: #ffffff;
+
+  --theme-hero-gradient-overwrite: linear-gradient(118deg, #1a4f45 0%, #2f7d52 55%, #7fb069 100%);
+  --theme-hero-shadow: rgba(47, 125, 82, .24);
+  --theme-hero-fluid-bg: radial-gradient(circle at 35% 38%, rgba(217, 240, 224, .43), rgba(143, 191, 106, .29) 48%, transparent 70%);
+  --theme-hero-sheen-color: rgba(255, 255, 255, .12);
+
+  --theme-module-surface: #ffffff;
+  --theme-module-surface-raised: rgba(255, 255, 255, .97);
+  --theme-module-surface-soft: #f3f9f3;
+  --theme-module-surface-tint: #e8f5ec;
+  --theme-module-border: #d5e7d8;
+  --theme-module-border-strong: #8fbf6a;
+  --theme-module-primary-strong: #226b45;
+  --theme-module-primary-rgb: 47, 125, 82;
+  --theme-module-panel-gradient: linear-gradient(120deg, #f3f9f3 0%, #ffffff 64%, #e8f5ec 100%);
+  --theme-module-shadow: rgba(31, 74, 56, .09);
+  --theme-module-overlay: rgba(21, 48, 37, .24);
+}
+/* ================================================================
    主题覆盖样式：侧边栏、标签页、头像、仪表盘等
    ================================================================ *//* ---- 侧边栏选中态 ---- */[data-theme="sunset"] .sidebar-item.is-active { background: linear-gradient(100deg, #fde8cd, #fef3c7) !important; color: #b45309 !important; box-shadow: inset 0 0 0 1px #f59e0b, 0 5px 13px #b4530920 !important; }[data-theme="sunset"] .sidebar-subitem.is-active { color: #b45309 !important; background: #fef3c7 !important; }[data-theme="sunset"] .sidebar-item:hover, [data-theme="sunset"] .sidebar-subitem:hover { background: #fef7ed !important; }[data-theme="peach"] .sidebar-item.is-active { background: linear-gradient(100deg, #ffd9e4, #ffeeec) !important; color: #b03a55 !important; box-shadow: inset 0 0 0 1px #f3a8bb, 0 6px 16px rgba(176, 58, 85, .12) !important; }[data-theme="peach"] .sidebar-subitem.is-active { color: #b03a55 !important; background: #ffe7ee !important; }[data-theme="peach"] .sidebar-item:hover, [data-theme="peach"] .sidebar-subitem:hover { background: #fde9ee !important; }/* ---- 顶栏激活按钮 ---- */[data-theme="sunset"] .sidebar-pin-button.is-active { color: #d97706 !important; border-color: #fde68a !important; background: #fef3c7 !important; box-shadow: inset 0 0 0 1px #fcd34d !important; }[data-theme="sunset"] .page-tab.is-active { border-color: #fdba74 !important; background: #fff7ed !important; }[data-theme="sunset"] .page-tab.is-active > button { color: #d97706 !important; }[data-theme="sunset"] .topbar-pin-toggle.is-active { color: #d97706 !important; border-color: #fde68a !important; background: #fef3c7 !important; }[data-theme="peach"] .sidebar-pin-button.is-active { color: #b03a55 !important; border-color: #f3a8bb !important; background: #ffe3ea !important; box-shadow: inset 0 0 0 1px #f7c0cd !important; }[data-theme="peach"] .page-tab.is-active { border-color: #f3a8bb !important; background: linear-gradient(105deg, #ffe4ec, #fff0ec) !important; box-shadow: 0 4px 12px rgba(176, 58, 85, .12) !important; }[data-theme="peach"] .page-tab.is-active > button { color: #b03a55 !important; }[data-theme="peach"] .topbar-pin-toggle.is-active { color: #b03a55 !important; border-color: #f3a8bb !important; background: #ffe3ea !important; }/* ---- 头像 ---- */[data-theme="sunset"] .avatar { color: #b45309; background: #fef3c7; }[data-theme="peach"] .avatar { color: #b03a55; background: linear-gradient(145deg, #ffe3ea, #fff3ec); }/* ---- 仪表盘 Hero 卡片 ---- */[data-theme="sunset"] .dashboard-page .page-hero-card { background: var(--theme-hero-gradient) !important; box-shadow: 0 18px 42px #b4530926 !important; }[data-theme="sunset"] .dashboard-page .page-hero-card::before { background: radial-gradient(circle at 35% 38%, #fde68a6e, #f59e0b4a 48%, transparent 70%) !important; }[data-theme="sunset"] .page-hero-card { background: var(--theme-hero-gradient) !important; }[data-theme="sunset"] .page-hero-card p:not(.eyebrow) { color: #fef3c7 !important; }[data-theme="sunset"] .page-hero-card .eyebrow { color: #fde68a !important; }[data-theme="sunset"] .profit-test-hero { background: var(--theme-hero-gradient) !important; }[data-theme="peach"] .dashboard-page .page-hero-card { background: var(--theme-hero-gradient) !important; box-shadow: 0 18px 42px rgba(128, 52, 78, .2) !important; }[data-theme="peach"] .dashboard-page .page-hero-card::before { background: radial-gradient(circle at 35% 38%, rgba(255, 214, 224, .5), rgba(122, 178, 148, .2) 48%, transparent 70%) !important; }[data-theme="peach"] .page-hero-card { background: var(--theme-hero-gradient) !important; }[data-theme="peach"] .page-hero-card p:not(.eyebrow) { color: #ffefe9 !important; }[data-theme="peach"] .page-hero-card .eyebrow { color: #ffd7de !important; }[data-theme="peach"] .profit-test-hero { background: var(--theme-hero-gradient) !important; }/* ---- 仪表盘流星特效 ---- */[data-theme="sunset"] .dashboard-meteor { background: linear-gradient(90deg, transparent 0%, rgba(245, 158, 11, .2) 24%, rgba(234, 179, 8, .8) 82%, rgba(253, 224, 71, .96) 100%) !important; }[data-theme="sunset"] .dashboard-meteor::after { background: #fde68a !important; box-shadow: 0 0 9px rgba(245, 158, 11, .82) !important; }[data-theme="peach"] .dashboard-meteor { background: linear-gradient(90deg, transparent 0%, rgba(255, 183, 199, .22) 24%, rgba(240, 138, 162, .72) 82%, rgba(255, 232, 237, .96) 100%) !important; }[data-theme="peach"] .dashboard-meteor::after { background: #ffe9ee !important; box-shadow: 0 0 9px rgba(240, 138, 162, .66) !important; }/* ---- 利润测算按钮 ---- */[data-theme="sunset"] .profit-test-page .primary-button { background: var(--theme-primary-button-gradient) !important; }[data-theme="sunset"] .profit-site-tabs button.is-active { color: #fff; background: #b45309; box-shadow: 0 7px 14px #b4530930; }[data-theme="sunset"] .profit-title-icon { color: #e67e22; background: #fef7ed; border-color: #fde8cd; }[data-theme="peach"] .profit-test-page .primary-button { background: var(--theme-primary-button-gradient) !important; }[data-theme="peach"] .profit-site-tabs button.is-active { color: #fff; background: #b03a55; box-shadow: 0 7px 14px rgba(176, 58, 85, .26); }[data-theme="peach"] .profit-title-icon { color: #b03a55; background: #fff0f3; border-color: #f5d2da; }/* ---- 主题切换按钮样式 ---- */.theme-switcher { display: grid; gap: 6px; padding-top: 8px; margin-top: 8px; border-top: 1px solid #e5edf4; }.theme-switcher-label { font-size: .7rem; font-weight: 800; color: #8295aa; letter-spacing: .06em; text-transform: uppercase; }.theme-options { display: grid; gap: 4px; }.theme-option { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid #e5edf4; border-radius: 9px; background: transparent; color: #527089; font-size: .82rem; font-weight: 700; text-align: left; cursor: pointer; transition: border-color .16s, background .16s; width: 100%; }.theme-option:hover { border-color: #c9deeb; background: #f4f8fb; }.theme-option.is-active { border-color: #a7dafa; background: #eaf8ff; color: #0877d3; }[data-theme="sunset"] .theme-option.is-active { border-color: #fdba74; background: #fff7ed; color: #d97706; }[data-theme="peach"] .theme-option.is-active { border-color: #f3a8bb; background: linear-gradient(100deg, #ffe4ec, #fff0ec); color: #b03a55; box-shadow: 0 4px 12px rgba(176, 58, 85, .12); }.theme-swatch { width: 18px; height: 18px; border-radius: 50%; flex-shrink: 0; border: 2px solid rgba(255,255,255,.5); box-shadow: 0 1px 3px rgba(0,0,0,.12); }.theme-option-name { flex: 1; }.theme-check { font-size: .85rem; color: inherit; }/* ---- 顶栏 & 侧边栏流光特效 ---- */[data-theme="sunset"] .topbar-card::before,
 [data-theme="sunset"] .sidebar-card::before {
@@ -700,26 +794,26 @@
 
 /* 其余主题共用工作台外壳。业务模块只消费语义变量，导航、Hero 和主题入口
    也必须同步，避免出现「内容换色、外壳仍是经典蓝」的割裂。 */
-:is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"]) .sidebar-item.is-active {
+:is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"], [data-theme="alpine"]) .sidebar-item.is-active {
   background: var(--theme-sidebar-active-bg) !important;
   color: var(--theme-sidebar-active-color) !important;
   box-shadow: inset 0 0 0 1px var(--theme-sidebar-active-border), var(--theme-sidebar-active-shadow) !important;
 }
-:is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"]) :is(.sidebar-subitem.is-active, .sidebar-pin-button.is-active, .topbar-pin-toggle.is-active) {
+:is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"], [data-theme="alpine"]) :is(.sidebar-subitem.is-active, .sidebar-pin-button.is-active, .topbar-pin-toggle.is-active) {
   color: var(--theme-sidebar-active-color) !important;
   border-color: var(--theme-sidebar-active-border) !important;
   background: var(--theme-module-surface-tint) !important;
 }
-:is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"]) :is(.sidebar-item:hover, .sidebar-subitem:hover) { background: var(--theme-sidebar-hover-bg) !important; }
-:is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"]) :is(.page-tab.is-active, .theme-option.is-active) {
+:is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"], [data-theme="alpine"]) :is(.sidebar-item:hover, .sidebar-subitem:hover) { background: var(--theme-sidebar-hover-bg) !important; }
+:is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"], [data-theme="alpine"]) :is(.page-tab.is-active, .theme-option.is-active) {
   color: var(--theme-page-tab-active-color) !important;
   border-color: var(--theme-page-tab-active-border) !important;
   background: var(--theme-page-tab-active-bg) !important;
   box-shadow: 0 4px 12px var(--theme-module-shadow) !important;
 }
-:is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"]) .page-tab.is-active > button { color: inherit !important; }
-:is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"]) .avatar { color: var(--theme-avatar-color); background: var(--theme-avatar-bg); }
-:is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"]) :is(
+:is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"], [data-theme="alpine"]) .page-tab.is-active > button { color: inherit !important; }
+:is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"], [data-theme="alpine"]) .avatar { color: var(--theme-avatar-color); background: var(--theme-avatar-bg); }
+:is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"], [data-theme="alpine"]) :is(
   .page-hero-card, .settings-hero, .daily-page-heading, .daily-drawer-header,
   .price-verification-hero, .product-processing-hero, .verify-commandbar,
   .profit-products-head, .profit-activity-hero, .profit-test-hero
@@ -728,17 +822,17 @@
   border-color: var(--theme-module-border-strong) !important;
   box-shadow: 0 16px 38px var(--theme-card-shadow-lg) !important;
 }
-:is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"]) :is(
+:is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"], [data-theme="alpine"]) :is(
   .page-hero-card, .settings-hero, .daily-page-heading, .daily-drawer-header,
   .price-verification-hero, .product-processing-hero, .verify-commandbar,
   .profit-products-head, .profit-activity-hero, .profit-test-hero
 ) :is(h1, h2, h3, p) { color: var(--theme-hero-text) !important; }
-:is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"]) :is(
+:is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"], [data-theme="alpine"]) :is(
   .page-hero-card, .settings-hero, .daily-page-heading, .daily-drawer-header,
   .price-verification-hero, .product-processing-hero, .verify-commandbar,
   .profit-products-head, .profit-activity-hero, .profit-test-hero
 ) :is(.eyebrow, .daily-kicker, .verify-eyebrow) { color: var(--theme-hero-eyebrow) !important; }
-:is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"]) .theme-quick-trigger {
+:is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"], [data-theme="alpine"]) .theme-quick-trigger {
   color: var(--theme-on-primary);
   border-color: var(--theme-module-primary-strong);
   background: var(--theme-brand-gradient);

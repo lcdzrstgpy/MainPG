@@ -220,6 +220,8 @@ export type PodBatchSummary = {
   style_grid?: boolean;
   created_at: string;
   updated_at: string;
+  /** 终态批次的收尾时间；运行中为空。前端「已等待」在批次结束后按它定格，不再跳秒。 */
+  finished_at?: string;
 };
 
 export type PodBatchItem = {

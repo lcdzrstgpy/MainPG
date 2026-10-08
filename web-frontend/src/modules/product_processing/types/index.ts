@@ -488,6 +488,19 @@ export type PreviewResponse = {
   excluded_draft_ids: number[];
 };
 
+/** 货源页「查看处理后详情」：某草稿最近一次 AI 处理结果，结构与预检单条 item 一致。 */
+export type DraftProcessedPreview = {
+  draft_id: number;
+  processed: boolean;
+  task_id: number | null;
+  item_id: number | null;
+  /** 实际提供结果的草稿 id；按同名回退时与 draft_id 不同。 */
+  matched_draft_id: number | null;
+  /** 结果来源："self"=本草稿，"title"=同名已处理草稿。 */
+  matched_by: "self" | "title" | null;
+  item: PreviewItem | null;
+};
+
 export type PreviewExportResponse = {
   task_id: number;
   file: string;

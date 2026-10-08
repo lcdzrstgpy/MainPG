@@ -1141,6 +1141,28 @@ class ProductProcessingRepository:
                 row.updated_at = now
             return [row.id for row in rows]
 
+    def purge_drafts(self, draft_ids: list[int], workspace_id: str = "local") -> list[int]:
+        """物理删除草稿（不可恢复），用于释放数据库空间。
+
+        依赖 SQLite ``PRAGMA foreign_keys=ON``：删除草稿行会级联清理
+        source_images / media_bindings / preview_image_assets / handoff_receipts，
+        并把 task_items、combo_sources 的 draft 外键置空。
+        """
+        ids = list(dict.fromkeys(int(item) for item in draft_ids if int(item) > 0))
+        if not ids:
+            return []
+        with self.database.sessions.begin() as session:
+            rows = session.scalars(
+                select(ProductDraftRow).where(
+                    ProductDraftRow.id.in_(ids),
+                    ProductDraftRow.workspace_id == workspace_id,
+                )
+            ).all()
+            deleted = [row.id for row in rows]
+            for row in rows:
+                session.delete(row)
+            return deleted
+
     def restore_drafts(self, draft_ids: list[int], workspace_id: str = "local") -> list[int]:
         """Restore a specific soft-deleted batch to the draft pool.
 
@@ -1220,6 +1242,70 @@ class ProductProcessingRepository:
             if row is not None and row.workspace_id != workspace_id:
                 return None
             return self._task(row) if row else None
+
+    def latest_task_item_for_draft(
+        self, draft_id: int, workspace_id: str = "local"
+    ) -> dict[str, Any] | None:
+        """某草稿最近一次处理任务项（货源页「查看处理后详情」用）。
+
+        优先取完成项，其次取最新一条；都按更新时间倒序，避免历史失败项盖住最新结果。
+        """
+        with self.database.sessions() as session:
+            row = session.scalars(
+                select(ProcessingTaskItemRow)
+                .join(ProcessingTaskRow, ProcessingTaskRow.id == ProcessingTaskItemRow.task_id)
+                .where(
+                    ProcessingTaskRow.workspace_id == workspace_id,
+                    ProcessingTaskItemRow.product_draft_id == int(draft_id),
+                )
+                .order_by(
+                    (ProcessingTaskItemRow.status == "completed").desc(),
+                    ProcessingTaskItemRow.updated_at.desc(),
+                    ProcessingTaskItemRow.id.desc(),
+                )
+                .limit(1)
+            ).first()
+            return self._item(row) if row is not None else None
+
+    def latest_processed_item_by_title(
+        self,
+        title: str,
+        workspace_id: str = "local",
+        *,
+        exclude_draft_id: int | None = None,
+    ) -> dict[str, Any] | None:
+        """按商品标题找已处理的重复草稿的最近处理项（同名回退）。
+
+        同一商品可能被采集多次形成多条草稿，AI 只处理了其中一条。当本草稿没有
+        处理记录时，回退到同名且已处理的草稿，返回其最新处理项。优先完成项，
+        其次最新；``exclude_draft_id`` 用于排除自身。
+        """
+        normalized = (title or "").strip()
+        if not normalized:
+            return None
+        with self.database.sessions() as session:
+            conditions = [
+                ProductDraftRow.workspace_id == workspace_id,
+                ProductDraftRow.title == normalized,
+            ]
+            if exclude_draft_id is not None:
+                conditions.append(ProductDraftRow.id != int(exclude_draft_id))
+            row = session.execute(
+                select(ProcessingTaskItemRow, ProductDraftRow.id)
+                .join(ProductDraftRow, ProductDraftRow.id == ProcessingTaskItemRow.product_draft_id)
+                .join(ProcessingTaskRow, ProcessingTaskRow.id == ProcessingTaskItemRow.task_id)
+                .where(ProcessingTaskRow.workspace_id == workspace_id, *conditions)
+                .order_by(
+                    (ProcessingTaskItemRow.status == "completed").desc(),
+                    ProcessingTaskItemRow.updated_at.desc(),
+                    ProcessingTaskItemRow.id.desc(),
+                )
+                .limit(1)
+            ).first()
+            if row is None:
+                return None
+            item_row, matched_draft_id = row
+            return {"draft_id": int(matched_draft_id), "item": self._item(item_row)}
 
     def list_tasks(
         self,

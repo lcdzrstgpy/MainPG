@@ -1364,12 +1364,15 @@ class EmbeddedPatchMissing(RuntimeError):
     """The installer is valid but was built without an embedded patch payload."""
 
 
+PATCH_PATH_EXTRA_CHARS = "._-@[]~"
+
+
 def patch_path_safe(value: str) -> bool:
     if not value or "\\" in value or ":" in value or value.startswith("/"):
         return False
     return all(
         part not in {"", ".", ".."}
-        and all(character.isalnum() or character in "._-" for character in part)
+        and all(character.isalnum() or character in PATCH_PATH_EXTRA_CHARS for character in part)
         for part in value.split("/")
     )
 

@@ -882,7 +882,7 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
                 : '例：a book and a brush pen holder on a wooden desk, soft studio light, clean neutral background'}
             />
           </label>
-          <div className="combo-actions"><button onClick={() => void onAnalyze()} disabled={busy === 'analyze'}>{busy === 'analyze' ? (progressText || '解析生成中…') : (isMultiview ? '解析视角并生成商品主图' : '生成融合主图')}</button></div>
+          <div className="combo-actions"><button onClick={() => void onAnalyze()} disabled={busy === 'analyze'}>{busy === 'analyze' ? (<><i className="combo-spinner" aria-hidden="true" />{progressText || '解析生成中…'}</>) : (isMultiview ? '解析视角并生成商品主图' : '生成融合主图')}</button></div>
           {busy === 'analyze' && (
             <div className="combo-progress-panel">
               <TaskProgressRing
@@ -937,8 +937,17 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
       return (
         <section className="combo-section">
           <h2>④ AI 文本生成（扣 20 积分）</h2>
-          <div className="combo-actions"><button onClick={() => void onGenerateText()} disabled={busy === 'text'}>{busy === 'text' ? (progressText || '生成中…') : '生成标题+描述+五点'}</button></div>
-          {hasText ? (
+          <div className="combo-actions"><button onClick={() => void onGenerateText()} disabled={busy === 'text'}>{busy === 'text' ? (<><i className="combo-spinner" aria-hidden="true" />{progressText || '生成中…'}</>) : '生成标题+描述+五点'}</button></div>
+          {busy === 'text' ? (
+            <div className="combo-text-skeleton" role="status" aria-live="polite">
+              <span className="combo-skeleton-caption">{progressText || 'AI 正在撰写标题、描述与五点卖点…'}</span>
+              <div className="combo-skeleton-line" style={{ width: '52%', height: 16 }} />
+              <div className="combo-skeleton-line" />
+              <div className="combo-skeleton-line" style={{ width: '88%' }} />
+              <div className="combo-skeleton-line" style={{ width: '94%' }} />
+              <div className="combo-skeleton-line" style={{ width: '70%' }} />
+            </div>
+          ) : hasText ? (
             <div className="combo-text-result">
               {textTitle && <h3>{textTitle}</h3>}
               {textDescription && <p>{textDescription}</p>}
@@ -955,7 +964,7 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
       return (
         <section className="combo-section">
           <h2>⑤ 生成 6 张成品图（4 次生图调用 · 扣 100 积分）+ 详情图</h2>
-          <div className="combo-actions"><button className="primary" onClick={() => void onGenerateImages()} disabled={busy === 'images'}>{busy === 'images' ? (progressText || '并行生成中…') : '生成 6 张图（并行）'}</button></div>
+          <div className="combo-actions"><button className="primary" onClick={() => void onGenerateImages()} disabled={busy === 'images'}>{busy === 'images' ? (<><i className="combo-spinner" aria-hidden="true" />{progressText || '并行生成中…'}</>) : '生成 6 张图（并行）'}</button></div>
           {busy === 'images' && (
             <div className="combo-progress-panel">
               <TaskProgressRing
@@ -991,7 +1000,7 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
               <input type="checkbox" checked={watermark.tile} onChange={(e) => setWatermark({ ...watermark, tile: e.target.checked })} />
               <span>平铺满图（整图重复铺开，开启后「位置」无效）</span>
             </label>
-            <div className="combo-actions"><button onClick={() => void onSaveWatermark()} disabled={busy === 'watermark'}>{busy === 'watermark' ? '应用中…' : '保存并应用到已生成的图'}</button></div>
+            <div className="combo-actions"><button onClick={() => void onSaveWatermark()} disabled={busy === 'watermark'}>{busy === 'watermark' ? (<><i className="combo-spinner" aria-hidden="true" />应用中…</>) : '保存并应用到已生成的图'}</button></div>
             <div className="combo-hint">水印直接烧进图片本身，页面预览 / 下载 / 导出店小秘 / 预检四处一致。保存后立即重烧已生成的成品图（不重新生图、不计费）；关闭水印保存则还原为干净图。详情图内部使用未加水印的主图，不会出现双层水印。</div>
           </details>
           <div className="combo-images">
@@ -1011,6 +1020,12 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
               );
             })}
             {!images.length && <div className="empty">尚未生成成品图。</div>}
+            {images.length > 0 && (busy === 'watermark' || busy === 'images') && (
+              <div className="combo-images-burning" role="status" aria-live="polite">
+                <i className="combo-spinner" aria-hidden="true" />
+                {busy === 'watermark' ? '正在将水印烧进成品图…' : '正在重新生成成品图…'}
+              </div>
+            )}
           </div>
           {images.length > 0 && <div className="combo-hint">替换仅重做该张（生图角色，扣 100 积分），不会覆盖其它图；删除可将不满意的图移除。</div>}
         </section>

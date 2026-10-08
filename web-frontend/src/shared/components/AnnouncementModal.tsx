@@ -11,22 +11,45 @@ import { renderAnnouncementHtml } from "../lib/announcementMarkdown";
  * 但消息中心里仍能随时翻看历史公告（服务端不记录已弹状态）。
  */
 const SEEN_PREFIX = "jye_workspace_announcement_seen:";
+/**
+ * 「已弹过」标记的新键，用服务端 ``server_id`` 做键。
+ *
+ * 旧键用的是本地 ``messages.id``（自增），而同步撤回（换号清理、公告下架再
+ * 上架）会 DELETE 行、重新 upsert 拿到**新的自增 id** → 旧标记失配 → 同一条
+ * 公告会重复弹。``server_id`` 跨同步稳定，改用它做键。
+ * 旧键保留只读兼容：升级后不让历史公告全部重新弹一遍。
+ */
+const SEEN_PREFIX_V2 = "jye_workspace_announcement_seen_v2:";
 /** 与 CSS 出场过渡时长保持一致：动画放完再卸载，避免弹窗"瞬移"消失。 */
 const CLOSE_ANIMATION_MS = 260;
 /** 轮播自动切换节奏：多图时每张停留 4 秒后自动翻下一张。 */
 const AUTOPLAY_INTERVAL_MS = 4000;
 
-export function hasSeenAnnouncement(messageId: number): boolean {
+/**
+ * 这条公告是否已经自动弹过。
+ *
+ * @param serverId  服务端 id（稳定，新键）
+ * @param legacyLocalId 本地自增 id（旧键，仅用于兼容升级前的标记）
+ */
+export function hasSeenAnnouncement(serverId: number, legacyLocalId?: number): boolean {
   try {
-    return window.localStorage.getItem(`${SEEN_PREFIX}${messageId}`) === "1";
+    if (window.localStorage.getItem(`${SEEN_PREFIX_V2}${serverId}`) === "1") return true;
+    return (
+      legacyLocalId !== undefined &&
+      window.localStorage.getItem(`${SEEN_PREFIX}${legacyLocalId}`) === "1"
+    );
   } catch {
     return false;
   }
 }
 
-export function markAnnouncementSeen(messageId: number): void {
+/** 标记已弹过：同时写新键（serverId）与旧键（本地 id），兼容旧版本缓存的 bundle。 */
+export function markAnnouncementSeen(serverId: number, legacyLocalId?: number): void {
   try {
-    window.localStorage.setItem(`${SEEN_PREFIX}${messageId}`, "1");
+    window.localStorage.setItem(`${SEEN_PREFIX_V2}${serverId}`, "1");
+    if (legacyLocalId !== undefined) {
+      window.localStorage.setItem(`${SEEN_PREFIX}${legacyLocalId}`, "1");
+    }
   } catch {
     // 无痕模式等场景 localStorage 不可用：忽略，最坏情况是下次登录再弹一次。
   }
@@ -71,7 +94,7 @@ type AnnouncementModalProps = {
   /** 待展示的公告队列；多条时按顺序逐条看。 */
   announcements: InboxMessage[];
   /** 单条公告已看过（翻到下一条或关闭时触发），父层负责标记已读。 */
-  onSeen: (messageId: number) => void;
+  onSeen: (message: InboxMessage) => void;
   /** 队列看完或用户关闭弹窗，父层据此清空队列。 */
   onClose: () => void;
 };
@@ -118,7 +141,7 @@ export function AnnouncementModal({ announcements, onSeen, onClose }: Announceme
 
   /** 当前这条已看过：写入本机标记并提交已读，红点随之减少。 */
   const markCurrentSeen = useCallback(() => {
-    if (current) onSeen(current.id);
+    if (current) onSeen(current);
   }, [current, onSeen]);
 
   /** 下一条：队列还有就换内容，没有就关闭。 */

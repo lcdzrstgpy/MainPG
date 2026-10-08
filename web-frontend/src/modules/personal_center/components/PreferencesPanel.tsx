@@ -19,8 +19,8 @@ export function PreferencesPanel() {
 
   // 特效只存在于原版布局 + 水墨青黛 / 桃花源 / 暖阳橙 这几个主题上；
   // 其余情况（含桌面风格——它会把主题强制成经典）把开关置灰，避免点了没反应。
-  const tapAvailable = uiMode === "classic" && (theme === "chinese" || theme === "peach");
-  const ambientAvailable = uiMode === "classic" && (theme === "chinese" || theme === "peach" || theme === "sunset");
+  const tapAvailable = uiMode === "classic" && (theme === "chinese" || theme === "peach" || theme === "alpine");
+  const ambientAvailable = uiMode === "classic" && (theme === "chinese" || theme === "peach" || theme === "sunset" || theme === "alpine");
 
   return (
     <article className="personal-card preferences-card">

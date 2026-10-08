@@ -13,6 +13,10 @@ from wh_local.modules.clipforge.process import popen_group_options, terminate_pr
 
 PID = 4321
 
+# Windows 的 signal 模块没有 SIGKILL（POSIX 专用）。下面这些用例是 monkeypatch 出
+# POSIX 分支来验证升级逻辑的，所以用一个等值的常量，断言在所有平台上都成立。
+_SIGKILL = getattr(signal, "SIGKILL", 9)
+
 
 class FakeProcess:
     """Records poll/wait behaviour so escalation can be tested without real waits."""
@@ -80,7 +84,7 @@ def test_posix_escalates_to_sigkill_when_grace_expires(monkeypatch) -> None:
 
     terminate_process_tree(process, grace_s=0.1)
 
-    assert killpg.calls == [(PID, signal.SIGTERM), (PID, signal.SIGKILL)]
+    assert killpg.calls == [(PID, signal.SIGTERM), (PID, _SIGKILL)]
 
 
 def test_posix_tolerates_a_vanished_process_group(monkeypatch) -> None:

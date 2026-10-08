@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger("wh_local.messages")
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS messages (
@@ -261,29 +264,33 @@ class MessagesRepository:
         """按服务器在线消息 id 列表撤回本地消息。
 
         服务器上已下线/已删除的消息，本地对应消息一并移除（含已读状态）。
-        仅在同步成功、拿到完整在线列表时调用；服务器不可达时不得调用，
+        仅在本轮同步**带身份**、且服务端返回了完整在线列表时调用；服务器不可达时不得调用，
         避免断网误删本地消息。
+
+        **空列表一律不撤回**：空既可能是"服务端一条在线消息都没有"，也可能是"该接口按
+        身份过滤后为空"（匿名轮查反馈回复就是合法空列表）。两者无法区分，而批量删除
+        不可逆 —— 宁可留下一条已下线的残留（换号/重新登录时会清），也不能误删整类消息。
 
         ``kind`` 限定撤回的消息类型：公告与反馈回复各自独立撤回，
         不会因公告在线列表把反馈回复误删（反之亦然）。
         """
         ids = [int(value) for value in active_server_ids if int(value) > 0]
+        if not ids:
+            logger.warning(
+                "prune_retracted(%s): empty active list, nothing pruned "
+                "(空列表无法区分「服务端没有」与「不是发给我的」)",
+                kind,
+            )
+            return 0
         con = self._connect()
         try:
-            # 只撤回公告类消息（kind='announcement'），反馈回复由独立通道管理，
-            # 不随公告在线列表被误删。
-            if not ids:
-                cur = con.execute(
-                    "DELETE FROM messages WHERE server_id > 0 AND kind = ?",
-                    (kind,),
-                )
-            else:
-                placeholders = ",".join("?" * len(ids))
-                cur = con.execute(
-                    f"DELETE FROM messages WHERE server_id > 0 AND kind = ? "
-                    f"AND server_id NOT IN ({placeholders})",
-                    [kind, *ids],
-                )
+            # 只撤回同一 kind 的消息，避免公告的在线列表把反馈回复误删（反之亦然）。
+            placeholders = ",".join("?" * len(ids))
+            cur = con.execute(
+                f"DELETE FROM messages WHERE server_id > 0 AND kind = ? "
+                f"AND server_id NOT IN ({placeholders})",
+                [kind, *ids],
+            )
             con.commit()
             return cur.rowcount
         finally:

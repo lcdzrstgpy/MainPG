@@ -19,6 +19,7 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   renameSync,
   rmSync,
@@ -81,6 +82,48 @@ function insideArtifact(realPath, realRoot) {
 }
 
 /**
+ * 产物必须自包含：任何断链、或指向产物之外的软链都判失败。
+ *
+ * 起因（2026-10-07 故障）：Next standalone 会为原生依赖生成软链，例如
+ * `.next/node_modules/better-sqlite3-<hash> -> <源码>/.next/standalone/node_modules/better-sqlite3`。
+ * 构建目录被下一次 `next build` 清理后，这条链断掉，运行期每个请求都报
+ * `Cannot find module 'better-sqlite3-<hash>'`，健康检查始终不过。
+ * 发布时拷贝的 dereference 负责把它物化，这里负责在发布前后都兜住回归。
+ */
+function assertSelfContained(root, realRoot) {
+  const offenders = [];
+  const visit = (directory) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const full = join(directory, entry.name);
+      const shown = (target) => `${relative(root, full)} -> ${target}`;
+      if (entry.isSymbolicLink()) {
+        let real;
+        try {
+          real = realpathSync(full);
+        } catch {
+          offenders.push(`${shown(readlinkSync(full) || "<unknown>")} (dangling)`);
+          continue;
+        }
+        if (!insideArtifact(real, realRoot)) {
+          offenders.push(shown(real));
+          continue;
+        }
+        // 指向产物内部的软链目录允许保留，但要继续下钻，避免内部链再指到外面。
+        if (statSync(full).isDirectory()) visit(full);
+        continue;
+      }
+      if (entry.isDirectory()) visit(full);
+    }
+  };
+  visit(root);
+  if (offenders.length > 0) {
+    throw new Error(
+      `ClipForge artifact is not self-contained; symlink(s) dangle or escape the artifact: ${offenders.join(", ")}`,
+    );
+  }
+}
+
+/**
  * 静态校验一个部署根：入口、清单、目录与依赖解析范围。
  * 通过时返回 artifact metadata（未发布时 artifactId 为 null）。
  */
@@ -128,6 +171,7 @@ export function validateMainpgArtifact(appRoot, options = {}) {
   }
 
   const realRoot = realpathSync(root);
+  assertSelfContained(root, realRoot);
   for (const id of DEPENDENCY_IDS) {
     let resolved;
     try {
@@ -214,7 +258,10 @@ function listFiles(root) {
 
 function copyIfPresent(from, to) {
   if (!existsSync(from)) return;
-  cpSync(from, to, { recursive: true, force: true });
+  // dereference：Next standalone 会把原生依赖做成软链（如 .next/node_modules/better-sqlite3-<hash>
+  // 指向源码构建目录）。必须物化成真实文件，否则源码侧 .next/standalone 被下一次 next build
+  // 清理后，产物里的软链就断链，运行期报 Cannot find module。产物必须自包含。
+  cpSync(from, to, { recursive: true, force: true, dereference: true });
 }
 
 function copyMediaModules(sourceRoot, staging, modules) {
@@ -223,7 +270,7 @@ function copyMediaModules(sourceRoot, staging, modules) {
     if (!existsSync(from)) continue;
     const to = join(staging, "node_modules", moduleId);
     mkdirSync(dirname(to), { recursive: true });
-    cpSync(from, to, { recursive: true, force: true });
+    cpSync(from, to, { recursive: true, force: true, dereference: true });
   }
   // npm/pnpm 有时会丢掉媒体二进制的可执行位（尤其 macOS/Linux 的 @ffprobe-installer）。
   // 在发布前修好，避免运行期 FFPROBE_PATH 指向一个不可执行的二进制。
@@ -397,7 +444,8 @@ export async function publishMainpgArtifact({
   const staging = mkdtempSync(join(outputRoot, ".staging-"));
   const validateOptions = resolveModule ? { resolveModule } : undefined;
   try {
-    cpSync(standalone, staging, { recursive: true });
+    // dereference：见 copyIfPresent 注释——standalone 里的软链必须物化，产物才能自包含。
+    cpSync(standalone, staging, { recursive: true, dereference: true });
     copyIfPresent(join(sourceRoot, ".next", "static"), join(staging, ".next", "static"));
     copyIfPresent(join(sourceRoot, "public"), join(staging, "public"));
     copyIfPresent(join(sourceRoot, "drizzle"), join(staging, "drizzle"));

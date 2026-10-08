@@ -238,12 +238,12 @@ export function MaskCanvas({ setId, item, onSaveMask, onAutoMask }: Props) {
             disabled={autoState === 'running'}
             onClick={() => void runAutoMask(item.item_id)}
           >
-            {autoState === 'running' ? '识别中…' : '自动框选'}
+            {autoState === 'running' ? (<><i className="combo-spinner" aria-hidden="true" />识别中…</>) : '自动框选'}
           </button>
         )}
         <button className="btn-mini danger" onClick={reset}>重置</button>
         <button className="btn-mini primary" onClick={() => void save()} disabled={saving}>
-          {saving ? '保存中…' : saveState === 'saved' ? '已保存 ✓' : '保存蒙版'}
+          {saving ? (<><i className="combo-spinner" aria-hidden="true" />保存中…</>) : saveState === 'saved' ? '已保存 ✓' : '保存蒙版'}
         </button>
       </div>
       <div className="combo-mask-stage">
@@ -257,27 +257,37 @@ export function MaskCanvas({ setId, item, onSaveMask, onAutoMask }: Props) {
         )}
         {view === 'mask' && (
           <>
-            <img
-              src={originName ? comboKitOriginUrl(setId, originName) : ''}
-              alt="蒙版底图"
-              style={{ display: 'none' }}
-              onLoad={(e) => {
-                // 只登记图像对象；画布尺寸由下方 ResizeObserver 跟随显示区域设定，
-                // 保证画布坐标与屏幕坐标 1:1，避免 objectFit 留边导致命中偏移。
-                imageRef.current = e.currentTarget;
-                const canvas = canvasRef.current;
-                if (canvas) draw(canvas, points, inverted, e.currentTarget);
-              }}
-              referrerPolicy="no-referrer"
-            />
-            <canvas
-              ref={canvasRef}
-              style={{ width: '100%', maxHeight: 560, display: 'block', border: '1px solid #ccc', cursor: 'crosshair', touchAction: 'none' }}
-              onPointerDown={onDown}
-              onPointerMove={onMove}
-              onPointerUp={onUp}
-              onPointerCancel={onUp}
-            />
+            <div className="combo-mask-canvas-wrap">
+              <img
+                src={originName ? comboKitOriginUrl(setId, originName) : ''}
+                alt="蒙版底图"
+                style={{ display: 'none' }}
+                onLoad={(e) => {
+                  // 只登记图像对象；画布尺寸由下方 ResizeObserver 跟随显示区域设定，
+                  // 保证画布坐标与屏幕坐标 1:1，避免 objectFit 留边导致命中偏移。
+                  imageRef.current = e.currentTarget;
+                  const canvas = canvasRef.current;
+                  if (canvas) draw(canvas, points, inverted, e.currentTarget);
+                }}
+                referrerPolicy="no-referrer"
+              />
+              <canvas
+                ref={canvasRef}
+                style={{ width: '100%', maxHeight: 560, display: 'block', border: '1px solid #ccc', cursor: 'crosshair', touchAction: 'none' }}
+                onPointerDown={onDown}
+                onPointerMove={onMove}
+                onPointerUp={onUp}
+                onPointerCancel={onUp}
+              />
+              {autoState === 'running' && (
+                <div className="combo-mask-scan">
+                  <span className="combo-mask-scan-badge">
+                    <i className="combo-spinner" aria-hidden="true" />
+                    正在自动识别主体…
+                  </span>
+                </div>
+              )}
+            </div>
             <div className={`combo-mask-hint${saveState === 'error' ? ' is-error' : ''}${saveState === 'saved' ? ' is-saved' : ''}`}>
               {saveState === 'saved' && <i className="iconfont icon-check-circle" aria-hidden="true" />}
               {hintText}

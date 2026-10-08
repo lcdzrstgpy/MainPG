@@ -202,12 +202,18 @@ html.mode-cascade .sidebar-card { animation-delay: 0.16s; }
 
 /* 顶栏滚动收起：原版原来只有上面的「吸顶变实心」，这里补上与桌面版一致的收起——
    滚过阈值后主行隐去、只留标签行贴在顶边。仅在偏好设置打开时生效；
-   收起态不画中间分隔线（卡片与标签行都不保留边框）。 */
+   收起态不画中间分隔线（卡片与标签行都不保留边框）。
+
+   整卡必须 pointer-events: none（与桌面版一致）：主行走 visibility: hidden 仍占位，
+   标签行只是 translateY 上移，所以卡片盒子在标签行下方还留着约 66px 的透明带——
+   不关掉命中测试的话，滚到顶栏下面的内容会被这条看不见的带子吞掉点击。
+   标签行随后单独恢复 auto，标签按钮照常可点。 */
 html[data-topbar-collapse="on"][data-ui-mode="classic"] .topbar-card.is-pinned.is-stuck {
   top: 0;
   background: transparent;
   border-color: transparent;
   box-shadow: none;
+  pointer-events: none;
 }
 
 html[data-topbar-collapse="on"][data-ui-mode="classic"] .topbar-card.is-pinned.is-stuck .topbar-main {
@@ -223,6 +229,12 @@ html[data-topbar-collapse="on"][data-ui-mode="classic"] .topbar-card.is-pinned.i
   background: var(--theme-card-bg, #fff);
   box-shadow: 0 10px 28px rgba(26, 65, 101, .1);
   transform: translateY(-66px);
+}
+
+/* 头像预览是挂在顶栏内部的全屏模态：收起态整卡不再接收指针时它必须例外，
+   否则打开后既点不中关闭按钮、也点不到遮罩关闭。桌面版同样适用。 */
+html[data-topbar-collapse="on"] .avatar-preview-layer {
+  pointer-events: auto;
 }
 .sidebar-card { isolation: isolate; }.sidebar-card::before { content: ""; position: absolute; z-index: 0; inset: 1px; border-radius: 20px; pointer-events: none; opacity: 0; background: linear-gradient(105deg, transparent 22%, rgba(37, 170, 237, .08) 36%, rgba(24, 187, 218, .2) 46%, rgba(33, 214, 172, .25) 53%, rgba(47, 183, 225, .15) 62%, transparent 78%); background-size: 230% 100%; filter: blur(.15px); box-shadow: inset 0 0 22px rgba(28, 190, 205, .05); animation: topbar-water-flow-soft 17s cubic-bezier(.35, .08, .28, 1) infinite; }.sidebar-card::after { content: ""; position: absolute; z-index: 0; right: 1px; bottom: 1px; left: 1px; height: 34px; overflow: hidden; border-radius: 0 0 20px 20px; pointer-events: none; opacity: 0; background: radial-gradient(ellipse at 50% 115%, rgba(35, 218, 179, .29) 0 16%, rgba(25, 164, 226, .17) 36%, transparent 68%) 0 0 / 180px 32px repeat-x; filter: blur(2.2px); animation: topbar-water-ripple 17s ease-in-out infinite; }.sidebar-card > * { position: relative; z-index: 1; }
 
@@ -1972,6 +1984,182 @@ html[data-topbar-collapse="on"][data-ui-mode="classic"] .topbar-card.is-pinned.i
 
 @media (prefers-reduced-motion: reduce) {
   .workspace-module-fallback-spinner {
+    animation: none;
+  }
+}
+
+/* ===== 全局加载动效原子类（产品处理各板块共用，纯 CSS 零依赖） ===== */
+
+/* 按钮内联 spinner：单元素，颜色跟随 currentColor */
+.app-spinner {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  margin-right: 6px;
+  vertical-align: -2px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  opacity: .85;
+  animation: app-spin .7s linear infinite;
+}
+
+.app-spinner.is-sm {
+  width: 11px;
+  height: 11px;
+  margin-right: 5px;
+}
+
+.app-spinner.is-lg {
+  width: 16px;
+  height: 16px;
+  vertical-align: -3px;
+}
+
+@keyframes app-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* 骨架屏：AI 文本/列表加载占位 */
+.app-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--theme-module-border, #e1ebf2);
+  border-radius: 12px;
+  background: var(--theme-module-surface-soft, #f8fbfd);
+}
+
+.app-skeleton-caption {
+  display: flex;
+  align-items: center;
+  color: var(--theme-text-secondary, #5a738c);
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.app-skeleton-line {
+  position: relative;
+  height: 12px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--theme-module-border, #e4eef6);
+}
+
+.app-skeleton-line::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .9), transparent);
+  transform: translateX(-100%);
+  animation: app-skeleton-sheen 1.5s ease-in-out infinite;
+}
+
+@keyframes app-skeleton-sheen {
+  to { transform: translateX(100%); }
+}
+
+/* 长耗时遮罩：覆盖在图片/画布容器上，父容器需 position: relative */
+.app-loading-mask {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: inherit;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 800;
+  background: rgba(10, 58, 99, .42);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+
+.app-loading-mask .app-spinner {
+  margin-right: 0;
+  width: 16px;
+  height: 16px;
+}
+
+/* 扫描动效：自动识别/框选时覆盖在画布上 */
+.app-scan-mask {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: inherit;
+  background: rgba(9, 40, 66, .14);
+}
+
+.app-scan-mask::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 34%;
+  background: linear-gradient(180deg, transparent, rgba(20, 200, 192, .42) 46%, rgba(8, 123, 245, .5) 54%, transparent);
+  transform: translateY(-120%);
+  animation: app-scan-sweep 1.5s cubic-bezier(.45, .05, .55, .95) infinite;
+}
+
+@keyframes app-scan-sweep {
+  0% { transform: translateY(-120%); }
+  100% { transform: translateY(320%); }
+}
+
+.app-scan-badge {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+  background: rgba(10, 58, 99, .84);
+  box-shadow: 0 10px 22px rgba(7, 38, 69, .32);
+}
+
+.app-scan-badge .app-spinner {
+  margin-right: 0;
+}
+
+/* 整块加载占位：列表/内容区首次加载 */
+.app-loading-block {
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
+  min-height: 160px;
+  color: var(--theme-text-muted, #64748b);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.app-loading-block .app-spinner {
+  margin: 0;
+  width: 20px;
+  height: 20px;
+  color: var(--theme-primary, #0ea5e9);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-spinner {
+    animation-duration: 1.6s;
+  }
+
+  .app-skeleton-line::after {
+    animation: none;
+  }
+
+  .app-scan-mask::before {
     animation: none;
   }
 }

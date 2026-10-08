@@ -37,14 +37,16 @@ _READY_ATTR = "_wh_business_log_ready"
 
 
 def runtime_log_dir() -> Path:
-    """返回本地运行时数据目录（runtime.log 所在的目录）。"""
+    """返回本地运行时数据目录（runtime.log 所在的目录）。
+
+    与 wh_local.config.storage_root() 一致：安装时若用户把数据根目录指到
+    非系统盘，业务日志一并落过去；WH_LOCAL_RUNTIME_LOGDIR 仍可单独覆盖。"""
     override = os.environ.get(_LOGDIR_ENV)
     if override:
         return Path(override)
-    if getattr(sys, "frozen", False):
-        appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
-        return Path(appdata) / "MainPG"
-    return Path.cwd()
+    from wh_local.config import storage_root  # 延迟导入，避免模块级循环依赖
+
+    return storage_root()
 
 
 def _is_testing() -> bool:

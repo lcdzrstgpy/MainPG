@@ -13,6 +13,7 @@ import {
 import { Sidebar } from "./Sidebar";
 import { TopNavigation, type WorkspaceTab } from "./TopNavigation";
 import { PeachGarden } from "../../shared/components/PeachGarden";
+import { AlpineMeadow } from "../../shared/components/AlpineMeadow";
 import { InkTap } from "../../shared/components/InkTap";
 import { useTheme } from "../../shared/hooks/useTheme";
 import { useUiMode } from "../../shared/hooks/useUiMode";
@@ -486,7 +487,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
       const pending = items.filter(
         (item) =>
           item.kind === "announcement" &&
-          !hasSeenAnnouncement(item.id) &&
+          !hasSeenAnnouncement(item.serverId, item.id) &&
           isAnnouncementPopupEligible(item.publishedAt),
       );
       if (pending.length) setAnnouncementQueue(pending);
@@ -509,9 +510,11 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
   }, [playEntryAnimation, guideConfigReady, guideBoardPanelOpen, guideEditorSeed, guideTourActive]);
 
   /** 单条公告算看过：本机写标记（服务端没有「已弹出」概念），同时上报已读并刷新铃铛红点。 */
-  const handleAnnouncementSeen = (messageId: number) => {
-    markAnnouncementSeen(messageId);
-    void markMessageRead(messageId).catch(() => undefined);
+  const handleAnnouncementSeen = (item: InboxMessage) => {
+    // 标记键用 serverId（跨同步稳定，否则撤回重插会换 id 导致重复弹）；
+    // 已读上报仍用本地 id —— 后端 mark_read 认的是本地 messages.id。
+    markAnnouncementSeen(item.serverId, item.id);
+    void markMessageRead(item.id).catch(() => undefined);
     window.dispatchEvent(new Event("mainpg:messages-change"));
   };
 
@@ -814,6 +817,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
   return (
     <main className={`workspace-shell${playEntryAnimation ? " is-brand-entering" : ""}`}>
       <PeachGarden theme={theme} uiMode={uiMode} tapEffects={tapEffects} ambientEffects={ambientEffects} />
+      <AlpineMeadow theme={theme} uiMode={uiMode} tapEffects={tapEffects} ambientEffects={ambientEffects} />
       <InkTap theme={theme} uiMode={uiMode} enabled={tapEffects} />
       <Sidebar
         collapsed={sidebarIsCollapsed && !sidebarTemporarilyExpanded}

@@ -358,6 +358,18 @@ POD_MIGRATION_CONTRACTS: dict[str, MigrationEffect] = {
             ),
         },
     ),
+    "016_pod_style_events": MigrationEffect(
+        tables={
+            "pod_customization_style_events": _table(
+                "event_id batch_id style_index variant_index event status error created_at"
+            )
+        },
+        indexes={
+            "idx_pod_style_events_batch": _index(
+                "pod_customization_style_events", "batch_id event_id"
+            ),
+        },
+    ),
 }
 
 

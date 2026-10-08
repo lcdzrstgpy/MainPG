@@ -1960,6 +1960,11 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         ids = self.repository.delete_drafts(draft_ids, workspace_id)
         return {"deleted_count": len(ids), "ids": ids, "status": "deleted"}
 
+    def purge_drafts(self, draft_ids: list[int], workspace_id: str = "local") -> dict[str, Any]:
+        """物理删除草稿并释放空间（不可恢复）。"""
+        ids = self.repository.purge_drafts(draft_ids, workspace_id)
+        return {"deleted_count": len(ids), "ids": ids, "status": "purged"}
+
     def list_draft_batches(
         self, *, limit: int, offset: int, workspace_id: str = "local"
     ) -> dict[str, Any]:
@@ -2829,8 +2834,15 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         pass
                     self._enqueue_failure_diagnostics(task_id, workspace_id)
                     self._cleanup_terminal_billing_state(task_id)
-                except Exception:
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    # 失败收尾（写失败状态 / 清理计费状态）本身出错：不能让线程静默退出，
+                    # 否则任务会卡在 running 且计费状态残留，必须留痕。
+                    try:
+                        business_logger("ai_processing").error(
+                            "任务失败收尾处理异常 | task_id=%s | workspace=%s | error=%s",
+                            task_id, workspace_id, str(exc)[:300])
+                    except Exception:  # noqa: BLE001
+                        pass
             finally:
                 with self._task_worker_lock:
                     self._task_workers.pop((workspace_id, task_id), None)
@@ -3205,8 +3217,14 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         if token:
             try:
                 self._settle_cancelled_freezes(task_id, workspace_id, token)
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                # 结算失败不能阻断取消，但必须留痕：open 冻结记录会由对账 / 服务端 TTL 兜底。
+                try:
+                    business_logger("ai_processing").warning(
+                        "取消结算冻结失败（保留 open 记录，交由对账/TTL 兜底） | task_id=%s | workspace=%s | error=%s",
+                        task_id, workspace_id, str(exc)[:300])
+                except Exception:  # noqa: BLE001
+                    pass
         # 取消是终态（含「已终止·保留成功项」）：把失败明细写入本地 outbox，
         # 供后台分发器上传服务器，避免取消的任务在服务器失败日志中缺失。
         self._enqueue_failure_diagnostics(task_id, workspace_id)
@@ -3559,6 +3577,88 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "item_count": len(items),
             "items": items,
             "excluded_draft_ids": sorted(excluded_ids),
+        }
+
+    def draft_processed_preview(
+        self, draft_id: int, *, workspace_id: str = "local"
+    ) -> dict[str, Any]:
+        """「查看处理后详情」：返回某草稿最近一次 AI 处理结果（预检同款结构）。
+
+        货源页只有 draft id，没有 task id；这里按草稿反查最近的处理任务项，复用
+        预检的字段与图片投影逻辑，保证展示与预检界面一致。同一商品可能被采集多次
+        形成重复草稿，而 AI 只处理了其中一条；本草稿没有处理记录时，按相同商品
+        标题回退到已处理的重复草稿，并用 ``matched_draft_id``/``matched_by`` 标注
+        结果来源。都没有时 ``processed=False``、``item=None``，由前端给出提示。
+        """
+        draft_id = int(draft_id)
+        if draft_id <= 0:
+            raise ProductProcessingValidationError("draft id must be positive")
+        draft = self.repository.get_draft(draft_id, workspace_id=workspace_id)
+        if draft is None:
+            raise ProductProcessingNotFound("product draft not found")
+        matched_draft = draft
+        matched_by = "self"
+        item = self.repository.latest_task_item_for_draft(draft_id, workspace_id=workspace_id)
+        if item is None or str(item.get("status") or "") != "completed":
+            fallback = self.repository.latest_processed_item_by_title(
+                draft.get("title") or "",
+                workspace_id=workspace_id,
+                exclude_draft_id=draft_id,
+            )
+            if fallback is not None:
+                fallback_draft = self.repository.get_draft(
+                    int(fallback["draft_id"]), workspace_id=workspace_id
+                )
+                if fallback_draft is not None:
+                    matched_draft = fallback_draft
+                    item = fallback["item"]
+                    matched_by = "title"
+        matched_draft_id = int(matched_draft.get("id") or draft_id)
+        if item is None:
+            return {
+                "draft_id": draft_id,
+                "processed": False,
+                "task_id": None,
+                "item_id": None,
+                "matched_draft_id": None,
+                "matched_by": None,
+                "item": None,
+            }
+        result = item.get("result") or {}
+        saved = matched_draft.get("preview_overrides") or {}
+        if not isinstance(saved, dict):
+            saved = {}
+        task_id = int(item.get("task_id") or 0)
+        media_contract_version = int(matched_draft.get("media_contract_version") or 1)
+        projected = self.preview_images.project_item_images(
+            task_id=task_id,
+            product_draft_id=matched_draft_id,
+            result=result,
+            saved=saved,
+            workspace_id=workspace_id,
+            media_contract_version=media_contract_version,
+        )
+        return {
+            "draft_id": draft_id,
+            "processed": True,
+            "task_id": task_id,
+            "item_id": item.get("id"),
+            "matched_draft_id": matched_draft_id,
+            "matched_by": matched_by,
+            "item": {
+                **self._preview_item(
+                    item,
+                    result,
+                    saved,
+                    preview_revision=int(matched_draft.get("preview_revision") or 0),
+                ),
+                "media_contract_version": media_contract_version,
+                "excluded": False,
+                "sku_availability": self.preview_images.sku_availability_state(
+                    matched_draft_id, workspace_id
+                ),
+                **projected,
+            },
         }
 
     def set_preview_item_excluded(
@@ -10709,6 +10809,10 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 "source_url": raw.get("source_url") or "",
                 "image_path": raw.get("image_path") or draft.get("image_path") or "",
                 "category": raw.get("category") or "",
+                # 原币种：货源站售价可能是 USD 等非人民币，前端要按原币种展示，
+                # 不能用固定的人民币符号。
+                "currency": raw.get("currency") or raw.get("price_currency") or "",
+                "price": raw.get("price") or "",
                 "selection_criteria": raw.get("selection_criteria") or {},
                 "variant_complexity": raw.get("variant_complexity") or {},
                 "captured_fields": raw.get("captured_fields") or {},

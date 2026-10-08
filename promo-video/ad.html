@@ -1,0 +1,1070 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>界野电商平台 · 竖屏宣传片（1080×1920 / 30s）</title>
+<style>
+  :root{
+    --bg:#0b0d09; --panel:#131711; --card:#1a2015; --ink:#eef1e6;
+    --dim:#a9b199; --line:rgba(168,184,98,.22); --olive:#a8b862; --oliveF:#cfe08b;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:radial-gradient(900px 600px at 20% 0%,#182010 0%,#0b0d09 60%);
+    color:var(--ink);
+    font:14px/1.6 "Microsoft YaHei","PingFang SC","Hiragino Sans GB",system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{
+    height:100%;display:grid;grid-template-columns:1fr 380px;gap:20px;
+    padding:18px;align-items:stretch;
+  }
+  .stage{display:flex;align-items:center;justify-content:center;min-height:0}
+  canvas{
+    height:calc(100vh - 36px);width:auto;max-width:100%;aspect-ratio:9/16;
+    background:#070903;border-radius:14px;
+    box-shadow:0 0 0 1px rgba(168,184,98,.22),0 24px 70px rgba(0,0,0,.65);
+  }
+  .panel{
+    background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    padding:16px;display:flex;flex-direction:column;gap:12px;overflow:auto;
+  }
+  .panel h1{margin:0;font-size:16px;letter-spacing:.4px}
+  .sub{margin:0;color:var(--dim);font-size:12px;letter-spacing:.5px}
+  .row{display:flex;gap:8px}
+  button{
+    flex:1;appearance:none;cursor:pointer;
+    background:var(--card);color:var(--ink);
+    border:1px solid var(--line);border-radius:9px;
+    padding:10px 12px;font-size:13px;font-family:inherit;
+    transition:.15s background,.15s border-color,.15s transform;
+  }
+  button:hover{background:#212a19;border-color:rgba(168,184,98,.5)}
+  button:active{transform:translateY(1px)}
+  button.primary{background:rgba(168,184,98,.16);border-color:rgba(168,184,98,.7);color:var(--oliveF);font-weight:700}
+  button.primary:hover{background:rgba(168,184,98,.26)}
+  button.danger{background:rgba(214,88,88,.16);border-color:rgba(214,88,88,.6);color:#f0a9a9}
+  .sw{display:flex;align-items:center;gap:8px;color:var(--dim);font-size:13px;cursor:pointer}
+  .sw input{accent-color:var(--olive);width:16px;height:16px}
+  .tl input[type=range]{width:100%;accent-color:var(--olive)}
+  .time{display:flex;justify-content:space-between;font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums}
+  .scenes{display:flex;flex-wrap:wrap;gap:6px}
+  .scenes button{
+    flex:0 0 auto;padding:6px 10px;font-size:11.5px;color:var(--dim);border-radius:999px;
+  }
+  .scenes button.on{color:var(--oliveF);border-color:rgba(168,184,98,.75);background:rgba(168,184,98,.14)}
+  .status{
+    border-top:1px solid var(--line);padding-top:10px;
+    font-size:12px;color:var(--oliveF);min-height:22px;font-variant-numeric:tabular-nums;
+  }
+  .warn{
+    background:rgba(214,88,88,.12);border:1px solid rgba(214,88,88,.45);color:#f3bcbc;
+    border-radius:9px;padding:10px;font-size:12px;
+  }
+  .warn code{background:rgba(0,0,0,.35);padding:1px 5px;border-radius:4px;font-size:11px}
+  .tip{margin:0;font-size:11.5px;color:var(--dim);line-height:1.7}
+  @media (max-width:900px){
+    .wrap{grid-template-columns:1fr;height:auto}
+    canvas{height:auto;width:100%}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="stage"><canvas id="cv" width="1080" height="1920"></canvas></div>
+
+  <aside class="panel">
+    <div>
+      <h1>界野电商平台 · 宣传片</h1>
+      <p class="sub">1080 × 1920 · 30.0s · 30fps · 无音轨</p>
+    </div>
+
+    <div class="row">
+      <button id="btnPlay">▶ 播放</button>
+      <button id="btnReplay">↺ 重播</button>
+    </div>
+    <div class="row">
+      <button id="btnRec" class="primary">● 录制导出视频</button>
+    </div>
+    <div class="row">
+      <button id="btnPng">保存当前帧 PNG</button>
+    </div>
+
+    <label class="sw"><input type="checkbox" id="chkLoop" checked> 循环预览</label>
+    <label class="sw"><input type="checkbox" id="chkSafe"> 显示安全区 / 时间码</label>
+
+    <div class="tl">
+      <input type="range" id="scrub" min="0" max="30000" value="0" step="1">
+      <div class="time"><span id="tNow">0.00s</span><span>30.00s</span></div>
+    </div>
+
+    <div class="scenes" id="scenes"></div>
+
+    <div class="warn" id="warn" hidden>
+      检测到以 <code>file://</code> 打开，浏览器会判定画布被污染，<b>无法导出视频</b>。
+      请在仓库根目录运行 <code>python -m http.server 8899</code>，再访问
+      <code>http://127.0.0.1:8899/promo-video/ad.html</code>。
+    </div>
+
+    <div class="status" id="status">就绪</div>
+
+    <p class="tip">
+      「录制导出视频」为 30 秒实时录制，导出 <b>.webm（VP9）</b>。
+      需要 MP4 时用剪映/ffmpeg 转封装即可；BGM 与口播建议在剪映里叠加。
+      所有画面由 <code>render(t)</code> 时间轴驱动，任意时刻可复现。
+    </p>
+  </aside>
+</div>
+
+<script>
+(() => {
+'use strict';
+
+/* ============================ 基础常量 ============================ */
+const W = 1080, H = 1920, DUR = 30.0, FPS = 30;
+const SAFE_TOP = 220, SAFE_BOTTOM = 220, SAFE_RIGHT = 320;
+
+const FONT_CN  = '"Microsoft YaHei","微软雅黑","PingFang SC","Hiragino Sans GB","Source Han Sans SC",sans-serif';
+const FONT_NUM = '"Arial Black","Impact","Arial",sans-serif';
+
+const C = {
+  dark0:'#070903', dark1:'#0d1007', dark2:'#141810',
+  ink:'#f2f4ea', dim:'#c2c8ad', faint:'#8d9580',
+  line:'rgba(168,184,98,.18)', line2:'rgba(168,184,98,.36)',
+  olive:'#a8b862', oliveD:'#7f8f45', oliveF:'#cfe08b',
+  card:'rgba(255,255,255,.045)',
+  paper:'#f3f0e7', paperInk:'#12150d', paperDim:'#5c6350',
+  paperLine:'rgba(18,21,13,.16)', paperOlive:'#7f8f45'
+};
+
+const cv  = document.getElementById('cv');
+const ctx = cv.getContext('2d', { alpha:false });
+
+/* ============================ 数学 / 缓动 ============================ */
+const clamp = (v,a,b)=> v<a?a:(v>b?b:v);
+const lerp  = (a,b,k)=> a+(b-a)*k;
+const easeOut = k => 1-Math.pow(1-k,3);
+const easeIO  = k => k<.5 ? 4*k*k*k : 1-Math.pow(-2*k+2,3)/2;
+const backOut = k => { const c1=1.70158, c3=c1+1; return 1+c3*Math.pow(k-1,3)+c1*Math.pow(k-1,2); };
+// 分段裁剪：t 从 start 起、历时 dur，返回 0→1
+const seg = (t,start,dur)=> clamp((t-(start||0))/(dur||.5),0,1);
+// 确定性伪随机（同一 seed 永远同一结果，保证录制可复现）
+const rnd = s => { const x = Math.sin(s*127.1+311.7)*43758.5453; return x-Math.floor(x); };
+
+/* ============================ 绘图工具 ============================ */
+function setFont(px, weight, family){
+  ctx.font = (weight||'400')+' '+px+'px '+(family||FONT_CN);
+}
+function setSpacing(v){
+  try { ctx.letterSpacing = (v||0)+'px'; } catch(e){ /* 老浏览器忽略 */ }
+}
+function txt(s, x, y, o){
+  o = o || {};
+  const size = o.size==null?48:o.size, weight = o.weight||'400';
+  ctx.save();
+  setFont(size, weight, o.family);
+  setSpacing(o.sp);
+  ctx.globalAlpha = (o.alpha==null?1:o.alpha);
+  ctx.fillStyle   = o.color || C.ink;
+  ctx.textAlign   = o.align || 'left';
+  ctx.textBaseline= o.baseline || 'alphabetic';
+  if (o.shadow){ ctx.shadowColor = o.shadow; ctx.shadowBlur = o.blur||24; ctx.shadowOffsetY = o.offY||0; }
+  if (o.stroke){ ctx.lineWidth = o.strokeW||2; ctx.strokeStyle = o.stroke; ctx.strokeText(s, x, y); }
+  ctx.fillText(s, x, y);
+  ctx.restore();
+}
+function txtW(s, size, weight, family, sp){
+  ctx.save(); setFont(size, weight, family); setSpacing(sp);
+  const w = ctx.measureText(s).width; ctx.restore();
+  return w;
+}
+/* 支持 «…» 内联强调（关键数字统一橄榄绿） */
+function txtHL(s, x, y, o){
+  o = o || {};
+  const size=o.size==null?48:o.size, weight=o.weight||'800', sp=(o.sp==null?1.6:o.sp);
+  const hlSize=o.hlSize||size, hlWeight=o.hlWeight||'900';
+  const segs=[]; let last=0, m; const re=/«([^»]*)»/g;
+  while((m=re.exec(s))){
+    if(m.index>last) segs.push({s:s.slice(last,m.index), hl:false});
+    segs.push({s:m[1], hl:true});
+    last = m.index + m[0].length;
+  }
+  if(last<s.length) segs.push({s:s.slice(last), hl:false});
+  if(!segs.length) segs.push({s:'', hl:false});
+
+  let w = 0;
+  segs.forEach(g => { w += txtW(g.s, g.hl?hlSize:size, g.hl?hlWeight:weight, o.family, sp); });
+  let cx = (o.align==='center') ? x - w/2 : x;
+  segs.forEach(g => {
+    const sz = g.hl?hlSize:size, wt = g.hl?hlWeight:weight;
+    const col = g.hl ? (o.hlColor||C.olive) : (o.color||C.ink);
+    txt(g.s, cx, y, {size:sz, weight:wt, family:o.family, color:col, sp, align:'left'});
+    cx += txtW(g.s, sz, wt, o.family, sp);
+  });
+  return w;
+}
+function rr(x,y,w,h,r){
+  const rad = Math.min(r==null?18:r, w/2, h/2);
+  ctx.beginPath();
+  ctx.moveTo(x+rad,y);
+  ctx.arcTo(x+w,y,x+w,y+h,rad);
+  ctx.arcTo(x+w,y+h,x,y+h,rad);
+  ctx.arcTo(x,y+h,x,y,rad);
+  ctx.arcTo(x,y,x+w,y,rad);
+  ctx.closePath();
+}
+function fillRR(x,y,w,h,r,color,alpha){
+  ctx.save(); if(alpha!=null) ctx.globalAlpha=alpha;
+  rr(x,y,w,h,r); ctx.fillStyle=color; ctx.fill(); ctx.restore();
+}
+function strokeRR(x,y,w,h,r,color,lw){
+  ctx.save(); rr(x,y,w,h,r);
+  ctx.strokeStyle=color; ctx.lineWidth=lw||2; ctx.stroke(); ctx.restore();
+}
+/* 装饰性「商品/图案」占位块：确定性生成，不含任何伪造数据 */
+function tile(x,y,w,h,seed,o){
+  o = o || {};
+  ctx.save();
+  rr(x,y,w,h,o.r==null?18:o.r); ctx.clip();
+  const g = ctx.createLinearGradient(x,y,x+w,y+h);
+  g.addColorStop(0, o.c0||'#1c2214'); g.addColorStop(1, o.c1||'#0d1108');
+  ctx.fillStyle=g; ctx.fillRect(x,y,w,h);
+  const n = o.n||5;
+  for(let i=0;i<n;i++){
+    const rx = x + rnd(seed+i*3.1)*w;
+    const ry = y + rnd(seed+i*7.7)*h;
+    const rs = (0.10+rnd(seed+i*1.7)*0.22)*Math.min(w,h);
+    ctx.globalAlpha = 0.10+rnd(seed+i*5.3)*0.26;
+    ctx.fillStyle = (i%2) ? C.olive : C.oliveF;
+    ctx.beginPath();
+    if(i%3===0){ ctx.rect(rx,ry,rs*1.5,rs); }
+    else if(i%3===1){ ctx.arc(rx,ry,rs*0.62,0,Math.PI*2); }
+    else { ctx.moveTo(rx,ry); ctx.lineTo(rx+rs,ry+rs*0.72); ctx.lineTo(rx-rs*0.42,ry+rs); ctx.closePath(); }
+    ctx.fill();
+  }
+  ctx.globalAlpha=1;
+  // 高光
+  const hg = ctx.createLinearGradient(x,y,x,y+h*0.7);
+  hg.addColorStop(0,'rgba(255,255,255,.10)'); hg.addColorStop(1,'rgba(255,255,255,0)');
+  ctx.fillStyle=hg; ctx.fillRect(x,y,w,h);
+  ctx.restore();
+  strokeRR(x,y,w,h,o.r==null?18:o.r, o.stroke||C.line2, o.lw||2);
+}
+
+/* ============================ 背景 ============================ */
+function bgDark(t, o){
+  o = o || {};
+  const g = ctx.createLinearGradient(0,0,W,H);
+  g.addColorStop(0,C.dark0); g.addColorStop(.55,C.dark1); g.addColorStop(1,C.dark2);
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+
+  const s = 90, drift = o.drift==null?1:o.drift, off = (t*14*drift)%s;
+  ctx.save();
+  ctx.globalAlpha=.055; ctx.strokeStyle=C.oliveF; ctx.lineWidth=1.4;
+  for(let x=-off;x<=W+s;x+=s){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke(); }
+  for(let y=-off;y<=H+s;y+=s){ ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); }
+  ctx.restore();
+
+  const gx = (o.gx==null?.5:o.gx)*W, gy = (o.gy==null?.42:o.gy)*H;
+  const rg = ctx.createRadialGradient(gx,gy,40,gx,gy,1150);
+  rg.addColorStop(0, o.glow||'rgba(168,184,98,.20)');
+  rg.addColorStop(.45,'rgba(168,184,98,.05)');
+  rg.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.save(); ctx.globalCompositeOperation='screen';
+  ctx.fillStyle=rg; ctx.fillRect(0,0,W,H); ctx.restore();
+
+  const vg = ctx.createRadialGradient(W/2,H/2,420,W/2,H/2,1250);
+  vg.addColorStop(0,'rgba(0,0,0,0)'); vg.addColorStop(1,'rgba(0,0,0,.55)');
+  ctx.fillStyle=vg; ctx.fillRect(0,0,W,H);
+}
+function bgPaper(t){
+  const g = ctx.createLinearGradient(0,0,W*.4,H);
+  g.addColorStop(0,'#f7f5ee'); g.addColorStop(.6,C.paper); g.addColorStop(1,'#e8e4d7');
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+  ctx.save();
+  ctx.globalAlpha=.5; ctx.strokeStyle='rgba(18,21,13,.045)'; ctx.lineWidth=1;
+  const s=80, off=(t*8)%s;
+  for(let x=-off;x<=W+s;x+=s){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke(); }
+  for(let y=-off;y<=H+s;y+=s){ ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); }
+  ctx.restore();
+}
+
+/* ============================ 通用组件 ============================ */
+function kicker(num, label, x, y, a){
+  if(a<=.001) return;
+  const size=40, sp=2.6, padX=34, h=76;
+  const lw = txtW(label,size,'700',FONT_CN,sp);
+  const nw = num ? txtW(num,size,'800',FONT_NUM,1)+58 : 0;
+  const w = lw + nw + padX*2;
+  ctx.save();
+  ctx.globalAlpha = a;
+  rr(x,y,w,h,38);
+  ctx.fillStyle='rgba(168,184,98,.10)'; ctx.fill();
+  ctx.strokeStyle='rgba(168,184,98,.45)'; ctx.lineWidth=2; ctx.stroke();
+  let cx = x+padX;
+  if(num){
+    txt(num, cx, y+h/2, {size, weight:'800', family:FONT_NUM, color:C.oliveF, baseline:'middle', sp:1});
+    cx += txtW(num,size,'800',FONT_NUM,1)+29;
+    ctx.beginPath(); ctx.moveTo(cx-14,y+22); ctx.lineTo(cx-14,y+h-22);
+    ctx.strokeStyle='rgba(168,184,98,.5)'; ctx.lineWidth=2; ctx.stroke();
+    cx += 29;
+  }
+  txt(label, cx, y+h/2, {size, weight:'700', color:C.olive, baseline:'middle', sp});
+  ctx.restore();
+}
+function title(lines, x, y0, t, o){
+  o = o || {};
+  const size = o.size||92, dly = o.delay||0, dur = o.dur||.6, stp = o.step||.14;
+  let y = y0;
+  lines.forEach((ln,i)=>{
+    const a = seg(t, dly+i*stp, dur);
+    const sz = ln.size||size;
+    if(a>.001){
+      const e = backOut(a);
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, a*2.4);
+      ctx.translate(0,(1-e)*64);
+      txtHL(ln.s, x, y, {
+        size: sz, weight: ln.weight||o.weight||'800',
+        color: ln.color||o.color||C.ink, sp: (o.sp==null?1.6:o.sp),
+        hlColor: o.hlColor||C.olive, hlSize: o.hlSize||Math.round(sz*1.16)
+      });
+      ctx.restore();
+    }
+    y += sz*1.33;
+  });
+  return y;
+}
+function pills(items, x, y, t, o){
+  o = o || {};
+  const size = o.size||40, padX = 32, padY = 20, gapX = 18, gapY = 18, h = size+padY*2;
+  const maxW = o.maxW || (W - x*2);
+  let cx = x, cy = y;
+  const dly = o.delay||0;
+  items.forEach((it,i)=>{
+    const label = (typeof it==='string') ? it : it.s;
+    const hl = (typeof it==='object') && !!it.hl;
+    const w = txtW(label,size,'600',FONT_CN,1.6)+padX*2;
+    if(cx>x && cx+w > x+maxW){ cx = x; cy += h+gapY; }
+    const a = seg(t, dly+i*.09, .42);
+    if(a>.001){
+      const e = backOut(a);
+      ctx.save();
+      ctx.globalAlpha = a;
+      ctx.translate(cx, cy+(1-e)*34);
+      rr(0,0,w,h,h/2);
+      ctx.fillStyle = hl ? 'rgba(168,184,98,.22)' : C.card; ctx.fill();
+      ctx.strokeStyle = hl ? 'rgba(168,184,98,.85)' : C.line2; ctx.lineWidth=2; ctx.stroke();
+      txt(label, w/2, h/2, {size, weight:'600', color: hl?C.oliveF:C.dim, align:'center', baseline:'middle', sp:1.6});
+      ctx.restore();
+    }
+    cx += w + gapX;
+  });
+  return cy + h;
+}
+function watermark(a){
+  if(a<=.001) return;
+  ctx.save();
+  ctx.globalAlpha = a*.9;
+  ctx.fillStyle = C.olive;
+  ctx.fillRect(96, 268, 6, 40);
+  txt('界野', 122, 300, {size:34, weight:'800', color:C.ink, sp:4});
+  txt('JIEYE', 122+txtW('界野',34,'800',FONT_CN,4)+22, 300, {size:22, weight:'700', color:C.faint, sp:5, baseline:'alphabetic'});
+  ctx.restore();
+}
+
+/* ============================ 分镜 1：痛点钩子 0.0–3.0 ============================ */
+function sceneHook(t){
+  bgDark(t, {gx:.5, gy:.36, glow:'rgba(168,184,98,.26)'});
+
+  kicker(null, 'TEMU 运营的日常', 96, 300, seg(t, .10, .5));
+
+  pills(['选品','做图','写标题','核价','算利润'], 96, 520, t, {
+    size:44, delay:.45, maxW:W-192
+  });
+
+  title([
+    {s:'你的一天，'},
+    {s:'够用吗？', color:C.olive}
+  ], 96, 1120, t, {size:112, delay:1.45, sp:2, hlSize:130, step:.18});
+}
+
+/* ============================ 分镜 2：品牌亮相 3.0–6.2 ============================ */
+function sceneBrand(t){
+  bgPaper(t);
+  const a1 = seg(t, .12, .7);
+
+  if(a1>.001 && assets.logo){
+    const img = assets.logo;
+    let w = 560, h = w*(img.naturalHeight/img.naturalWidth);
+    if(h > 320){ h = 320; w = h*(img.naturalWidth/img.naturalHeight); }
+    const e = easeOut(a1), k = lerp(1.10, 1, e);
+    ctx.save();
+    ctx.globalAlpha = a1;
+    ctx.globalCompositeOperation = 'multiply';
+    ctx.translate(W/2, 520);
+    ctx.scale(k,k);
+    ctx.drawImage(img, -w/2, -h/2, w, h);
+    ctx.restore();
+  }
+
+  const a2 = seg(t, .62, .6);
+  ctx.save(); ctx.globalAlpha = a2;
+  txtHL('界野电商平台', W/2, 800, {size:104, weight:'900', color:C.paperInk, sp:8, align:'center', hlColor:C.paperOlive});
+  ctx.restore();
+
+  const a3 = seg(t, .86, .5);
+  if(a3>.001){
+    const w = 300*easeOut(a3);
+    ctx.save(); ctx.globalAlpha = a3;
+    ctx.fillStyle = C.paperOlive;
+    ctx.fillRect(W/2-w/2, 856, w, 6);
+    ctx.restore();
+  }
+
+  ctx.save(); ctx.globalAlpha = seg(t, 1.02, .6);
+  txt('JIEYE ECOMMERCE PLATFORM', W/2, 934, {size:26, weight:'700', color:C.paperDim, sp:9, align:'center'});
+  ctx.restore();
+
+  ctx.save(); ctx.globalAlpha = seg(t, 1.32, .7);
+  txt('面向跨境电商团队的本地运营中台', W/2, 1052, {size:44, weight:'600', color:C.paperInk, sp:4, align:'center'});
+  ctx.restore();
+}
+
+/* ============================ 分镜 3：选品 · 采集 6.2–9.9 ============================ */
+function scenePick(t){
+  bgDark(t, {gx:.30, gy:.62});
+
+  kicker('01','选品 · 采集', 96, 260, seg(t, .05, .45));
+  title([
+    {s:'关键词或参考图，'},
+    {s:'一次最多 «200» 个候选'}
+  ], 96, 590, t, {size:80, delay:.32, hlSize:100, sp:1.4});
+
+  const cw = 196, ch = 300, gap = 20, y = 800;
+  for(let i=0;i<4;i++){
+    const a = seg(t, .70+i*.13, .55);
+    if(a<=.001) continue;
+    const e = backOut(a);
+    const x = 96 + i*(cw+gap) - (1-e)*220;
+    ctx.save(); ctx.globalAlpha = a;
+    tile(x, y, cw, ch, 11+i*7.3, {r:20, n:4});
+    ctx.restore();
+  }
+
+  const aBadge = seg(t, 1.55, .45);
+  if(aBadge>.001){
+    const e = backOut(aBadge);
+    const bx = 96+3*(cw+gap), by = y;
+    ctx.save();
+    ctx.globalAlpha = aBadge;
+    ctx.translate(bx+cw/2, by+ch/2);
+    ctx.scale(e,e);
+    rr(-84,-46,168,92,46);
+    ctx.fillStyle = C.olive; ctx.fill();
+    ctx.strokeStyle = C.oliveF; ctx.lineWidth=3; ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(-40,0); ctx.lineTo(-12,26); ctx.lineTo(44,-24);
+    ctx.strokeStyle = '#0d1007'; ctx.lineWidth=11; ctx.lineCap='round'; ctx.lineJoin='round'; ctx.stroke();
+    ctx.restore();
+  }
+
+  pills(['整店一次 120 件','采集并行 1–10','5 类风险词硬过滤','日预算按上海日期预占'], 96, 1230, t, {
+    size:38, delay:1.35, maxW:W-192
+  });
+}
+
+/* ============================ 分镜 4：AI 商品处理 9.9–14.1 ============================ */
+function sceneAI(t){
+  bgDark(t, {gx:.68, gy:.40});
+
+  kicker('02','AI 商品处理', 96, 260, seg(t, .05, .45));
+  title([
+    {s:'一次生图，拿到'},
+    {s:'«4» 张 «2048» 主图'}
+  ], 96, 590, t, {size:80, delay:.32, hlSize:104, sp:1.4});
+
+  // 收紧 → 裂开成 4 张
+  const a = seg(t, .62, 1.5);
+  const e = easeIO(a);
+  const s0 = 300, s1 = 380;                 // 格子边长
+  const g0 = 0,   g1 = 36;                  // 间隙
+  const cx = W/2, cy = 1075;
+  const sz = lerp(s0, s1, e), gp = lerp(g0, g1, e);
+  const step = sz + gp;
+  const pos = [[-1,-1],[1,-1],[-1,1],[1,1]];
+  pos.forEach((p,i)=>{
+    const x = cx + p[0]*step/2 - sz/2;
+    const y = cy + p[1]*step/2 - sz/2;
+    const ca = seg(t, .62+i*.10, .7);
+    ctx.save(); ctx.globalAlpha = ca;
+    tile(x, y, sz, sz, 31+i*9.1, {r: lerp(4,22,e), n:5});
+    ctx.restore();
+    const la = seg(t, 1.35+i*.10, .45);
+    if(la>.001){
+      ctx.save(); ctx.globalAlpha = la;
+      const lw = 236, lh = 48;
+      rr(x+sz/2-lw/2, y+sz-14-lh, lw, lh, 12);
+      ctx.fillStyle = 'rgba(7,9,3,.78)'; ctx.fill();
+      ctx.strokeStyle = C.line2; ctx.lineWidth=1.6; ctx.stroke();
+      txt('2048×2048', x+sz/2, y+sz-14-lh+lh/2, {size:26, weight:'800', family:FONT_NUM, color:C.oliveF, align:'center', baseline:'middle', sp:1});
+      ctx.restore();
+    }
+  });
+
+  pills(['标题约 180 字母','五点描述恰好 5 条','3 站点 × 2 语言','精品模式 4K'], 96, 1540, t, {
+    size:38, delay:1.9, maxW:W-192
+  });
+}
+
+/* ============================ 分镜 5：尺寸画布 14.1–17.1 ============================ */
+function sceneDim(t){
+  bgDark(t, {gx:.50, gy:.56});
+
+  kicker('03','尺寸画布', 96, 260, seg(t, .05, .45));
+  title([
+    {s:'«2000×2000» 尺寸图'},
+    {s:'本地确定性渲染'}
+  ], 96, 590, t, {size:80, delay:.30, hlSize:96, sp:1.4});
+
+  // 商品块
+  const bw = 420, bh = 460, bx = W/2-bw/2, by = 860;
+  const a0 = seg(t, .55, .6);
+  if(a0>.001){
+    const e = backOut(a0);
+    ctx.save();
+    ctx.globalAlpha = a0;
+    ctx.translate(W/2, by+bh/2); ctx.scale(lerp(.9,1,e), lerp(.9,1,e)); ctx.translate(-W/2,-(by+bh/2));
+    tile(bx, by, bw, bh, 77, {r:26, n:6});
+    ctx.restore();
+  }
+
+  // 三条尺寸箭头：长 / 高 / 深
+  function arrowH(y, x1, x2, a, label){
+    if(a<=.001) return;
+    const e = easeOut(a);
+    const xe = lerp(x1, x2, e);
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, a*2);
+    ctx.strokeStyle = C.oliveF; ctx.lineWidth=3.4; ctx.lineCap='round';
+    ctx.beginPath(); ctx.moveTo(x1, y); ctx.lineTo(xe, y); ctx.stroke();
+    const s = (x2>x1)?1:-1;
+    ctx.beginPath();
+    ctx.moveTo(xe, y); ctx.lineTo(xe-20*s, y-13); ctx.lineTo(xe-20*s, y+13); ctx.closePath();
+    ctx.fillStyle = C.oliveF; ctx.fill();
+    ctx.setLineDash([9,9]); ctx.lineWidth=2; ctx.strokeStyle='rgba(168,184,98,.5)';
+    ctx.beginPath();
+    ctx.moveTo(x1, y); ctx.lineTo(x1, by+bh); ctx.stroke();
+    ctx.setLineDash([]);
+    if(a>.55){
+      ctx.globalAlpha = seg(a, .55, .45);
+      const lw2 = txtW(label,30,'800',FONT_CN,3)+34;
+      fillRR((x1+x2)/2-lw2/2, y-58, lw2, 46, 12, 'rgba(7,9,3,.8)');
+      txt(label, (x1+x2)/2, y-35, {size:30, weight:'800', color:C.oliveF, align:'center', baseline:'middle', sp:3});
+    }
+    ctx.restore();
+  }
+  function arrowV(x, y1, y2, a, label){
+    if(a<=.001) return;
+    const e = easeOut(a);
+    const ye = lerp(y1, y2, e);
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, a*2);
+    ctx.strokeStyle = C.oliveF; ctx.lineWidth=3.4; ctx.lineCap='round';
+    ctx.beginPath(); ctx.moveTo(x, y1); ctx.lineTo(x, ye); ctx.stroke();
+    const s = (y2>y1)?1:-1;
+    ctx.beginPath();
+    ctx.moveTo(x, ye); ctx.lineTo(x-13, ye-20*s); ctx.lineTo(x+13, ye-20*s); ctx.closePath();
+    ctx.fillStyle = C.oliveF; ctx.fill();
+    if(a>.55){
+      ctx.globalAlpha = seg(a, .55, .45);
+      const lw2 = txtW(label,30,'800',FONT_CN,3)+34;
+      fillRR(x+22, (y1+y2)/2-lw2/2, lw2, 46, 12, 'rgba(7,9,3,.8)');
+      ctx.save(); ctx.translate(x+22+lw2/2, (y1+y2)/2); ctx.rotate(Math.PI/2);
+      txt(label, 0, 0, {size:30, weight:'800', color:C.oliveF, align:'center', baseline:'middle', sp:3});
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  arrowH(by+bh+96, bx, bx+bw, seg(t, .95, .7), '长 L');
+  arrowV(bx-82,   by, by+bh,  seg(t, 1.15, .7), '高 H');
+  arrowV(bx+bw+82,by, by+bh,  seg(t, 1.35, .7), '深 D');
+
+  pills(['不调用模型','数字与单位不靠 AI 猜','最多并行 3 张'], 96, 1560, t, {
+    size:38, delay:1.6, maxW:W-192
+  });
+}
+
+/* ============================ 分镜 6：核价 · 利润 17.1–20.6 ============================ */
+function scenePrice(t){
+  bgDark(t, {gx:.34, gy:.44});
+
+  kicker('04','核价 · 利润', 96, 260, seg(t, .05, .45));
+  title([
+    {s:'只读采集报价，'},
+    {s:'图搜找同款'}
+  ], 96, 590, t, {size:80, delay:.30, hlSize:96, sp:1.4});
+
+  const bx = 300, bwMax = 690, by = 880, bh = 62, gap = 52;
+  const vals = [.86, .71, .64];
+  const labels = ['同款候选 A','同款候选 B','同款候选 C'];
+
+  // 50% 阈值虚线
+  const ax = bx + bwMax*.5, eTh = seg(t, .5, .5);
+  if(eTh>.001){
+    ctx.save();
+    ctx.globalAlpha = eTh;
+    ctx.setLineDash([14,12]);
+    ctx.strokeStyle = C.olive;
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(ax, by-64); ctx.lineTo(ax, by+3*(bh+gap)-gap+28); ctx.stroke();
+    ctx.setLineDash([]);
+    const lw = 300, lh = 52;
+    fillRR(ax-lw/2, by-64-lh-12, lw, lh, 14, 'rgba(168,184,98,.18)');
+    strokeRR(ax-lw/2, by-64-lh-12, lw, lh, 14, 'rgba(168,184,98,.7)', 2);
+    txt('阈值 0.50', ax, by-64-lh-12+lh/2, {size:28, weight:'800', color:C.oliveF, align:'center', baseline:'middle', sp:2});
+    ctx.restore();
+  }
+
+  vals.forEach((v,i)=>{
+    const a = seg(t, .62+i*.16, .8);
+    if(a<=.001) return;
+    const e = easeOut(a);
+    const x = bx, y = by + i*(bh+gap);
+    ctx.save();
+    ctx.globalAlpha = a;
+    // 轨道
+    fillRR(x, y, bwMax, bh, bh/2, 'rgba(255,255,255,.05)', 1);
+    // 数值条
+    fillRR(x, y, Math.max(10, bwMax*v*e), bh, bh/2, i===0 ? C.olive : 'rgba(168,184,98,.42)', 1);
+    ctx.restore();
+    // 左侧名称
+    txt(labels[i], x-24, y+bh/2, {size:30, weight:'600', color:C.dim, align:'right', baseline:'middle', sp:1.2});
+    // 右侧数值
+    const na = seg(t, .95+i*.16, .45);
+    if(na>.001){
+      ctx.save(); ctx.globalAlpha = na;
+      txt('0.'+Math.round(v*100), x+bwMax+26, y+bh/2, {size:34, weight:'800', family:FONT_NUM, color: i===0?C.oliveF:C.dim, baseline:'middle', sp:1});
+      ctx.restore();
+    }
+  });
+
+  const aNote = seg(t, 1.7, .55);
+  if(aNote>.001){
+    ctx.save(); ctx.globalAlpha = aNote;
+    fillRR(96, 1300, W-192, 92, 16, 'rgba(168,184,98,.08)');
+    strokeRR(96, 1300, W-192, 92, 16, 'rgba(168,184,98,.35)', 2);
+    txtHL('召回 «60»  →  阈值 «0.50»  →  只看前 «5» 条', 96+34, 1300+46, {
+      size:34, weight:'700', color:C.dim, sp:1.4, hlColor:C.oliveF, hlSize:40
+    });
+    ctx.restore();
+  }
+
+  pills(['4 站点末端运费梯度','净利润或利润率达标即入选'], 96, 1460, t, {
+    size:38, delay:2.0, maxW:W-192
+  });
+}
+
+/* ============================ 分镜 7：POD · 组合套装 20.6–23.8 ============================ */
+function scenePod(t){
+  bgDark(t, {gx:.62, gy:.60});
+
+  kicker('05','POD 定制 · 组合套装', 96, 260, seg(t, .05, .45));
+  title([
+    {s:'一次生图 «4» 款图案'},
+    {s:'一套 «2–6» 件'},
+    {s:'出 «6» 张成品图'}
+  ], 96, 560, t, {size:76, delay:.28, hlSize:94, sp:1.4, step:.12});
+
+  // 上排：4 款图案
+  const pw = 196, ph = 196, pgap = 20, py = 930;
+  for(let i=0;i<4;i++){
+    const a = seg(t, .70+i*.11, .5);
+    if(a<=.001) continue;
+    const e = backOut(a);
+    const x = 96 + i*(pw+pgap);
+    ctx.save();
+    ctx.globalAlpha = a;
+    ctx.translate(x+pw/2, py+ph/2+(1-e)*60); ctx.scale(e,e); ctx.translate(-(x+pw/2), -(py+ph/2));
+    tile(x, py, pw, ph, 51+i*13.7, {r:18, n:6});
+    ctx.restore();
+  }
+
+  // 下排：6 张成品图
+  const cw = 130, ch = 168, cgap = 14, cy = 1200;
+  for(let i=0;i<6;i++){
+    const a = seg(t, 1.30+i*.09, .5);
+    if(a<=.001) continue;
+    const e = backOut(a);
+    const x = 96 + i*(cw+cgap);
+    ctx.save();
+    ctx.globalAlpha = a;
+    ctx.translate(x+cw/2, cy+ch/2+(1-e)*50); ctx.scale(e,e); ctx.translate(-(x+cw/2), -(cy+ch/2));
+    tile(x, cy, cw, ch, 91+i*5.9, {r:14, n:4});
+    ctx.restore();
+  }
+
+  pills(['一键导出店小秘 / 妙手导入表'], 96, 1500, t, {size:38, delay:1.9, maxW:W-192});
+}
+
+/* ============================ 分镜 8：交付即上架 23.8–26.6 ============================ */
+function sceneShip(t){
+  bgDark(t, {gx:.42, gy:.38});
+
+  kicker('06','交付即上架', 96, 260, seg(t, .05, .45));
+  title([
+    {s:'«42» 列导入表'},
+    {s:'下载即用'}
+  ], 96, 580, t, {size:80, delay:.28, hlSize:108, sp:1.4});
+
+  // 表格逐格填满（首列橄榄绿 = 必填列）
+  const cols = 7, rows = 6, gx = 96, gy = 880;
+  const cwid = (W-192)/cols, chg = 74;
+  const total = cols*rows;
+  for(let i=0;i<total;i++){
+    const r = Math.floor(i/cols), c = i%cols;
+    const a = seg(t, .48+i*0.045, .34);
+    if(a<=.001) continue;
+    const x = gx + c*cwid, y = gy + r*chg;
+    const e = easeOut(a);
+    ctx.save();
+    ctx.globalAlpha = a;
+    fillRR(x+3, y+3, (cwid-6)*e, chg-6, 8, c===0 ? 'rgba(168,184,98,.30)' : 'rgba(255,255,255,.055)', 1);
+    if(a>.6){
+      ctx.globalAlpha = seg(a,.6,.4)*.9;
+      strokeRR(x+3, y+3, cwid-6, chg-6, 8, c===0?'rgba(168,184,98,.6)':C.line, 1.4);
+    }
+    ctx.restore();
+  }
+  // 表头标注
+  const ah = seg(t, 1.9, .5);
+  if(ah>.001){
+    ctx.save();
+    ctx.globalAlpha = ah;
+    txt('必填列', gx+cwid/2, gy-24, {size:26, weight:'700', color:C.olive, align:'center', sp:2});
+    txt('共 42 列', gx+(W-192)-6, gy-24, {size:26, weight:'700', color:C.dim, align:'right', sp:2});
+    ctx.restore();
+  }
+
+  pills(['店小秘 / 妙手导入表','失败原因 CSV','视频清单','102 条本地问答库'], 96, 1400, t, {
+    size:38, delay:1.9, maxW:W-192
+  });
+}
+
+/* ============================ 分镜 9：收尾落版 26.6–30.0 ============================ */
+function sceneEnd(t){
+  bgPaper(t);
+
+  const a1 = seg(t, .14, .7);
+  if(a1>.001 && assets.logo){
+    const img = assets.logo;
+    let w = 520, h = w*(img.naturalHeight/img.naturalWidth);
+    if(h > 300){ h = 300; w = h*(img.naturalWidth/img.naturalHeight); }
+    const e = easeOut(a1), k = lerp(1.08, 1, e);
+    ctx.save();
+    ctx.globalAlpha = a1;
+    ctx.globalCompositeOperation = 'multiply';
+    ctx.translate(W/2, 430); ctx.scale(k,k);
+    ctx.drawImage(img, -w/2, -h/2, w, h);
+    ctx.restore();
+  }
+
+  ctx.save(); ctx.globalAlpha = seg(t, .48, .6);
+  txt('界野电商平台', W/2, 740, {size:96, weight:'900', color:C.paperInk, sp:8, align:'center'});
+  ctx.restore();
+
+  ctx.save(); ctx.globalAlpha = seg(t, .70, .6);
+  txt('JIEYE ECOMMERCE PLATFORM', W/2, 806, {size:24, weight:'700', color:C.paperDim, sp:9, align:'center'});
+  ctx.restore();
+
+  const a3 = seg(t, .86, .5);
+  if(a3>.001){
+    const w = 320*easeOut(a3);
+    ctx.save(); ctx.globalAlpha = a3;
+    ctx.fillStyle = C.paperOlive; ctx.fillRect(W/2-w/2, 862, w, 5);
+    ctx.restore();
+  }
+
+  ctx.save(); ctx.globalAlpha = seg(t, 1.05, .6);
+  txt('可控 · 可审核 · 可追溯', W/2, 980, {size:60, weight:'800', color:C.paperOlive, sp:6, align:'center'});
+  ctx.restore();
+
+  const a4 = seg(t, 1.35, .7);
+  if(a4>.001){
+    ctx.save();
+    ctx.globalAlpha = a4;
+    txt('把每日选品、AI 商品处理、核价找货源与利润审核，', W/2, 1112, {size:33, weight:'400', color:C.paperDim, sp:1.4, align:'center'});
+    txt('整理成可控、可审核、可追溯的团队流程。', W/2, 1162, {size:33, weight:'400', color:C.paperDim, sp:1.4, align:'center'});
+    ctx.restore();
+  }
+
+  const a5 = seg(t, 1.75, .55);
+  if(a5>.001){
+    const e = backOut(a5);
+    const label = 'workbench.haocoming.top';
+    const w = txtW(label,34,'700',FONT_NUM,2)+76, h = 84;
+    ctx.save();
+    ctx.globalAlpha = a5;
+    ctx.translate(W/2, 1290); ctx.scale(e,e); ctx.translate(-W/2, -1290);
+    fillRR(W/2-w/2, 1290-h/2, w, h, h/2, 'rgba(127,143,69,.10)', 1);
+    strokeRR(W/2-w/2, 1290-h/2, w, h, h/2, 'rgba(127,143,69,.75)', 2.5);
+    txt(label, W/2, 1290, {size:34, weight:'700', family:FONT_NUM, color:C.paperOlive, align:'center', baseline:'middle', sp:2});
+    ctx.restore();
+  }
+
+  ctx.save(); ctx.globalAlpha = seg(t, 2.05, .6);
+  txt('本地运行时 · 数据留在自己团队', W/2, 1410, {size:28, weight:'600', color:C.paperDim, sp:4, align:'center'});
+  ctx.restore();
+
+  ctx.save(); ctx.globalAlpha = seg(t, 2.35, .6)*.8;
+  txt('TEMU、店小秘及 1688 为其各自权利人商标，界野与其无官方隶属关系。', W/2, 1520, {
+    size:19, weight:'400', color:'rgba(18,21,13,.55)', sp:.5, align:'center'
+  });
+  ctx.restore();
+}
+
+/* ============================ 时间轴 ============================ */
+const SCENES = [
+  {id:'hook',  name:'0 痛点钩子',    t0:0.0,  t1:3.0,  draw:sceneHook},
+  {id:'brand', name:'1 品牌亮相',    t0:3.0,  t1:6.2,  draw:sceneBrand},
+  {id:'pick',  name:'2 选品采集',    t0:6.2,  t1:9.9,  draw:scenePick},
+  {id:'ai',    name:'3 AI商品处理',  t0:9.9,  t1:14.1, draw:sceneAI},
+  {id:'dim',   name:'4 尺寸画布',    t0:14.1, t1:17.1, draw:sceneDim},
+  {id:'price', name:'5 核价利润',    t0:17.1, t1:20.6, draw:scenePrice},
+  {id:'pod',   name:'6 POD套装',     t0:20.6, t1:23.8, draw:scenePod},
+  {id:'ship',  name:'7 交付上架',    t0:23.8, t1:26.6, draw:sceneShip},
+  {id:'end',   name:'8 收尾落版',    t0:26.6, t1:30.0, draw:sceneEnd}
+];
+const sceneAt = t => SCENES.find(s => t >= s.t0 && t < s.t1) || SCENES[SCENES.length-1];
+
+let showSafe = false;
+function safeArea(){
+  if(!showSafe) return;
+  ctx.save();
+  ctx.fillStyle = 'rgba(255,64,64,.14)';
+  ctx.fillRect(0,0,W,SAFE_TOP);
+  ctx.fillRect(0,H-SAFE_BOTTOM,W,SAFE_BOTTOM);
+  ctx.fillRect(W-SAFE_RIGHT, H-SAFE_TOP-SAFE_BOTTOM, SAFE_RIGHT, H-SAFE_TOP-SAFE_BOTTOM);
+  ctx.strokeStyle = 'rgba(255,80,80,.5)'; ctx.lineWidth = 2; ctx.setLineDash([16,14]);
+  ctx.beginPath();
+  ctx.moveTo(0,SAFE_TOP); ctx.lineTo(W,SAFE_TOP);
+  ctx.moveTo(0,H-SAFE_BOTTOM); ctx.lineTo(W,H-SAFE_BOTTOM);
+  ctx.moveTo(W-SAFE_RIGHT,H-SAFE_TOP); ctx.lineTo(W-SAFE_RIGHT,H-SAFE_BOTTOM);
+  ctx.stroke(); ctx.setLineDash([]);
+  ctx.restore();
+}
+function timecode(t){
+  if(!showSafe) return;
+  const sc = sceneAt(t);
+  txt(t.toFixed(2)+'s  |  '+sc.name, 96, H-120, {size:26, weight:'700', family:FONT_NUM, color:'rgba(255,120,120,.9)', sp:1});
+}
+
+/* ============================ 主渲染：t 的纯函数 ============================ */
+const assets = { logo:null, mark:null };
+
+function render(t){
+  t = clamp(t, 0, DUR);
+  const sc = sceneAt(t);
+  const lt = t - sc.t0;
+
+  ctx.save();
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+  sc.draw(lt, t);
+  if(sc.id !== 'brand' && sc.id !== 'end') watermark(seg(lt, .25, .5));
+  ctx.restore();
+
+  safeArea();
+  timecode(t);
+}
+
+function loadAsset(url){
+  return new Promise(res => {
+    const img = new Image();
+    img.onload  = () => res(img);
+    img.onerror = () => res(null);
+    img.src = url;
+  });
+}
+
+/* ============================ 播放循环 ============================ */
+const S = { playing:false, t:0, base:0, wall:0, loop:true, holdUntil:0, recording:false, rec:null, chunks:[] };
+
+function tick(now){
+  if(S.playing){
+    const nt = S.base + (now - S.wall)/1000;
+    if(nt >= DUR){
+      S.t = DUR; render(DUR); sync();
+      if(S.recording){ S.playing = false; S.holdUntil = now + 340; }
+      else if(S.loop){ S.base = 0; S.wall = now; S.t = 0; }
+      else { S.playing = false; setStatus('播放结束'); setPlayLabel(); }
+    } else {
+      S.t = nt; render(S.t); sync();
+    }
+  } else if(S.holdUntil && now >= S.holdUntil){
+    S.holdUntil = 0;
+    finishRecord();
+  }
+  requestAnimationFrame(tick);
+}
+
+function play(from){
+  S.base = (from==null || from>=DUR) ? 0 : from;
+  S.t = S.base;
+  S.wall = performance.now();
+  S.playing = true;
+  render(S.t); sync(); setPlayLabel();
+}
+function pause(){
+  if(S.playing){ S.t = clamp(S.base + (performance.now()-S.wall)/1000, 0, DUR); S.playing = false; }
+  render(S.t); sync(); setPlayLabel();
+}
+
+/* ============================ 界面同步 ============================ */
+const $ = id => document.getElementById(id);
+const elPlay = $('btnPlay'), elReplay = $('btnReplay'), elRec = $('btnRec'), elPng = $('btnPng');
+const elLoop = $('chkLoop'), elSafe = $('chkSafe'), elScrub = $('scrub'), elScenes = $('scenes');
+const elStatus = $('status'), elWarn = $('warn'), elTNow = $('tNow');
+
+function setStatus(s){ elStatus.textContent = s; }
+function setPlayLabel(){ elPlay.textContent = S.playing ? '❚❚ 暂停' : '▶ 播放'; }
+function sync(){
+  elScrub.value = Math.round(S.t*1000);
+  elTNow.textContent = S.t.toFixed(2)+'s';
+  const cur = sceneAt(S.t).id;
+  [...elScenes.children].forEach(b => b.classList.toggle('on', b.dataset.id === cur));
+}
+
+function download(blob, name){
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
+}
+
+/* ============================ 录制导出 ============================ */
+function startRecord(){
+  if(location.protocol === 'file:'){ elWarn.hidden = false; setStatus('无法录制：请用 http:// 打开'); return; }
+  if(typeof MediaRecorder === 'undefined'){ setStatus('当前浏览器不支持 MediaRecorder'); return; }
+
+  const stream = cv.captureStream(FPS);
+  const types = ['video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm'];
+  const mime = types.find(x => { try { return MediaRecorder.isTypeSupported(x); } catch(e){ return false; } }) || '';
+  let rec;
+  try {
+    rec = new MediaRecorder(stream, mime ? { mimeType:mime, videoBitsPerSecond:12000000 } : undefined);
+  } catch(e){ setStatus('录制启动失败：'+e.message); return; }
+
+  S.chunks = [];
+  rec.ondataavailable = e => { if(e.data && e.data.size) S.chunks.push(e.data); };
+  rec.onstop = () => {
+    const blob = new Blob(S.chunks, {type: mime || 'video/webm'});
+    S.chunks = [];
+    if(blob.size){
+      download(blob, '界野电商平台-宣传片-1080x1920.webm');
+      setStatus('已导出 webm（'+(blob.size/1048576).toFixed(1)+' MB）· 30s 实时录制完成');
+    } else {
+      setStatus('录制失败：未拿到数据');
+    }
+    S.recording = false; S.rec = null;
+    elRec.classList.remove('danger'); elRec.classList.add('primary');
+    elRec.textContent = '● 录制导出视频';
+    elScrub.disabled = false;
+  };
+
+  S.rec = rec; S.recording = true;
+  elRec.classList.remove('primary'); elRec.classList.add('danger');
+  elRec.textContent = '■ 录制中…（30s 自动结束）';
+  elScrub.disabled = true;
+  setStatus('录制中：正在从 0.00s 实时录制 30 秒，请勿切换标签页…');
+  rec.start(100);
+  play(0);
+}
+function finishRecord(){
+  if(S.rec && S.rec.state !== 'inactive'){ S.rec.stop(); }
+  else { S.recording = false; }
+}
+
+/* ============================ 交互绑定 ============================ */
+elPlay.addEventListener('click', ()=> { S.playing ? pause() : play(S.t >= DUR ? 0 : S.t); });
+
+elReplay.addEventListener('click', ()=>{
+  if(S.recording) return;
+  S.loop = elLoop.checked; play(0);
+});
+
+elRec.addEventListener('click', ()=>{
+  if(S.recording){ finishRecord(); setStatus('已手动停止录制，正在封装文件…'); return; }
+  startRecord();
+});
+
+elPng.addEventListener('click', ()=>{
+  cv.toBlob(b => {
+    if(!b){ setStatus('导出失败：画布可能被跨域污染（请用 http:// 打开）'); return; }
+    download(b, '界野电商平台-' + S.t.toFixed(2) + 's.png');
+    setStatus('已保存当前帧 PNG（'+S.t.toFixed(2)+'s）');
+  }, 'image/png');
+});
+
+elLoop.addEventListener('change', ()=>{ S.loop = elLoop.checked; setStatus(S.loop?'循环预览：开':'循环预览：关'); });
+elSafe.addEventListener('change', ()=>{ showSafe = elSafe.checked; render(S.t); });
+
+elScrub.addEventListener('input', ()=>{
+  if(S.recording) return;
+  S.playing = false;
+  S.t = clamp(Number(elScrub.value)/1000, 0, DUR);
+  render(S.t); sync(); setPlayLabel();
+});
+
+SCENES.forEach(sc => {
+  const b = document.createElement('button');
+  b.textContent = sc.name;
+  b.dataset.id = sc.id;
+  b.addEventListener('click', ()=>{
+    if(S.recording) return;
+    S.playing = false;
+    S.t = sc.t0 + 0.001;
+    render(S.t); sync(); setPlayLabel();
+    setStatus('跳转到 · ' + sc.name);
+  });
+  elScenes.appendChild(b);
+});
+
+window.addEventListener('keydown', e => {
+  if(e.code === 'Space'){ e.preventDefault(); S.playing ? pause() : play(S.t >= DUR ? 0 : S.t); }
+  if(e.code === 'ArrowLeft'){ pause(); S.t = clamp(S.t-1,0,DUR); render(S.t); sync(); }
+  if(e.code === 'ArrowRight'){ pause(); S.t = clamp(S.t+1,0,DUR); render(S.t); sync(); }
+  if(e.code === 'Home'){ pause(); S.t = 0; render(S.t); sync(); }
+});
+
+/* ============================ 初始化 ============================ */
+(async function init(){
+  if(location.protocol === 'file:'){
+    elWarn.hidden = false;
+    setStatus('提示：当前为 file:// 打开，预览正常，但导出视频/PNG 会被浏览器拦截');
+  }
+  await Promise.all([
+    loadAsset('../web-frontend/public/brand/jieye-logo.png').then(i => assets.logo = i),
+    loadAsset('../web-frontend/public/brand/jieye-mark.png').then(i => assets.mark = i)
+  ]);
+  if(!assets.logo) setStatus('提示：未加载到品牌 logo（不影响其他画面），已用文字排版替代');
+  else setStatus('就绪 · 品牌素材已加载');
+  S.loop = elLoop.checked;
+  render(0); sync(); setPlayLabel();
+  requestAnimationFrame(tick);
+})();
+
+})();
+</script>
+</body>
+</html>
+
+
+
+
+
+

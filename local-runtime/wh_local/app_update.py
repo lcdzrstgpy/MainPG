@@ -599,6 +599,12 @@ def _exit_process_after_delay(delay_seconds: float = 2.0) -> None:
 
 
 
+# 与发布端 update-admin/app.py::PATCH_PATH_EXTRA_CHARS 保持一致：允许字母数字
+# 以及 . _ - @ [ ] ~，覆盖 npm 依赖树里的 `better-sqlite3-<hash>`、`@scope/...`
+# 等目录名。两侧白名单必须同步，否则服务端签发的补丁会被客户端拒绝。
+_PATCH_PATH_EXTRA_CHARS = "._-@[]~"
+
+
 def _patch_path_safe(value: str) -> bool:
     """Relative forward-slash path inside the install tree; no traversal."""
     if not isinstance(value, str) or not value:
@@ -606,7 +612,8 @@ def _patch_path_safe(value: str) -> bool:
     if "\\" in value or ":" in value or value.startswith("/") or value.startswith("\\"):
         return False
     return all(
-        part and part not in {".", ".."} and all(c.isalnum() or c in "._/-" for c in part)
+        part not in {"", ".", ".."}
+        and all(c.isalnum() or c in _PATCH_PATH_EXTRA_CHARS for c in part)
         for part in value.split("/")
     )
 

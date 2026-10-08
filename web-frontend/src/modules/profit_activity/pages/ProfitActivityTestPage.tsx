@@ -2,6 +2,7 @@ import { type ClipboardEvent, type DragEvent, type ChangeEvent, useEffect, useMe
 import { createPortal } from "react-dom";
 import { getAuthToken, toUserMessage } from "../../../transport/http/client";
 import type { ProfitActivityPrefill } from "../types/products";
+import { ShippingWeightDrawer } from "../components/ShippingWeightDrawer";
 import "../styles/profitActivityTest.css";
 
 type Site = string;
@@ -280,6 +281,9 @@ export function ProfitActivityTestPage({ isActive = true, prefill }: { isActive?
   const [siteProfiles, setSiteProfiles] = useState<SiteSettingProfile[]>(builtinSiteSettingProfiles);
   const [productForm, setProductForm] = useState<ProductForm>(emptyProduct);
   const [productImage, setProductImage] = useState<File | null>(null);
+  // 重量侧边栏：粘贴/上传截图提取重量与长宽高；勾选后只按实际重量算（不算抛重）。
+  const [weightDrawerOpen, setWeightDrawerOpen] = useState(false);
+  const [weightUseActualOnly, setWeightUseActualOnly] = useState(false);
   // 每个货源链接一张货源图：sourceImages[0] 对应货源链接 1，sourceImages[i+1] 对应第 i 个追加链接
   const [sourceImages, setSourceImages] = useState<(File | null)[]>([null]);
   const [calculation, setCalculation] = useState<CalculateResult | null>(null);
@@ -1255,7 +1259,12 @@ export function ProfitActivityTestPage({ isActive = true, prefill }: { isActive?
             <label>商品ID<input value={productForm.skc} onChange={(event) => setProductForm({ ...productForm, skc: event.target.value })} placeholder="支持 SKU、SKC 或 SPU" /></label>
             <label>售价<input value={productForm.selling_price} onChange={(event) => setProductForm({ ...productForm, selling_price: event.target.value })} placeholder="必填" /></label>
             <label>成本（商品采购成本，不包括国内外操作费/运费）<input value={productForm.cost_price} onChange={(event) => setProductForm({ ...productForm, cost_price: event.target.value })} placeholder="必填" /></label>
-            <label>重量 KG<input value={productForm.weight_kg} onChange={(event) => setProductForm({ ...productForm, weight_kg: event.target.value })} placeholder="必填" /></label>
+            <label>重量 KG
+              <span className="profit-weight-field">
+                <input value={productForm.weight_kg} onChange={(event) => setProductForm({ ...productForm, weight_kg: event.target.value })} placeholder="必填" />
+                <button type="button" className="profit-weight-drawer-button" onClick={() => setWeightDrawerOpen(true)}>截图识别</button>
+              </span>
+            </label>
           </div>
           <ImageDrop title="商品主图 Ctrl+V" hint="必填：粘贴、拖入或选择图片" file={productImage} onFile={setProductImage} />
           <div className="profit-source-head"><h3>货源</h3><button type="button" onClick={addSourceUrl}>新增货源</button></div>
@@ -1367,6 +1376,16 @@ export function ProfitActivityTestPage({ isActive = true, prefill }: { isActive?
             </div>
           </div>
         </div>
+      )}
+
+      {weightDrawerOpen && (
+        <ShippingWeightDrawer
+          initialWeightKg={productForm.weight_kg}
+          useActualOnly={weightUseActualOnly}
+          onUseActualOnlyChange={setWeightUseActualOnly}
+          onApply={(weight) => setProductForm((current) => ({ ...current, weight_kg: weight }))}
+          onClose={() => setWeightDrawerOpen(false)}
+        />
       )}
 
     </div>
