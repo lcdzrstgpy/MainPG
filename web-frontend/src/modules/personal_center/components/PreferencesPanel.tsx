@@ -2,6 +2,7 @@ import { useEffectPreferences } from "../../../shared/hooks/useEffectPreferences
 import { useSidebarPreferences } from "../../../shared/hooks/useSidebarState";
 import { useTopbarCollapse } from "../../../shared/hooks/useTopbarCollapse";
 import { BALL_SIZE_OPTIONS, useBallSize } from "../../../shared/hooks/useBallSize";
+import { useBallPointsVisible } from "../../../shared/hooks/useBallPointsVisible";
 import { useTheme } from "../../../shared/hooks/useTheme";
 import { useUiMode } from "../../../shared/hooks/useUiMode";
 
@@ -14,6 +15,7 @@ export function PreferencesPanel() {
   const { collapsed: sidebarCollapsed, hoverExpand: sidebarHoverExpand, toggleCollapsed: toggleSidebar, toggleHoverExpand: toggleSidebarHoverExpand } = useSidebarPreferences();
   const { enabled: topbarCollapse, toggleEnabled: toggleTopbarCollapse } = useTopbarCollapse();
   const { size: ballSize, setSize: setBallSize } = useBallSize();
+  const { visible: ballPointsVisible, toggleVisible: toggleBallPointsVisible } = useBallPointsVisible();
   const { theme } = useTheme();
   const { uiMode } = useUiMode();
 
@@ -49,6 +51,20 @@ export function PreferencesPanel() {
               </button>
             ))}
           </div>
+        </div>
+
+        <div className="preferences-row">
+          <span className="preferences-row-label">显示积分数字</span>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={ballPointsVisible}
+            aria-label="显示积分数字"
+            className={ballPointsVisible ? "preferences-switch is-on" : "preferences-switch"}
+            onClick={toggleBallPointsVisible}
+          >
+            <span aria-hidden="true" />
+          </button>
         </div>
 
         <div className={tapAvailable ? "preferences-row" : "preferences-row is-locked"}>
