@@ -116,9 +116,11 @@ export class SuchuangProvider extends BaseProvider {
         prompt: options.prompt,
         ...(firstFrame.urls[0] && { first_frame: firstFrame.urls[0] }),
         ...(lastFrame.urls[0] && { last_frame: lastFrame.urls[0] }),
-        ...(images.urls.length && { images: images.urls.join(",") }),
-        ...(options.referenceVideoUrls?.length && { videos: options.referenceVideoUrls.join(",") }),
-        ...(options.referenceAudioUrls?.length && { audios: options.referenceAudioUrls.join(",") }),
+        // images / videos / audios 都必须是字符串数组：上游（Go）按 []string 反序列化，
+        // 传逗号拼接的字符串会被判 `cannot unmarshal string into ...images of type []string`（实测）
+        ...(images.urls.length && { images: images.urls }),
+        ...(options.referenceVideoUrls?.length && { videos: [...options.referenceVideoUrls] }),
+        ...(options.referenceAudioUrls?.length && { audios: [...options.referenceAudioUrls] }),
         generate_audio: options.audioEnabled ?? true,
         ratio: ratio(options.width, options.height),
         ...(options.duration != null && { duration: options.duration }),

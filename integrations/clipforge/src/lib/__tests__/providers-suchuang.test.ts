@@ -41,9 +41,10 @@ describe("SuchuangProvider", () => {
       prompt: "商品缓慢旋转展示",
       first_frame: "https://cdn.example/first.png",
       last_frame: "https://cdn.example/last.png",
-      images: "https://cdn.example/ref.png",
-      videos: "https://cdn.example/ref.mp4",
-      audios: "https://cdn.example/ref.mp3",
+      // 上游（Go）按 []string 反序列化，逗号拼接字符串会被判 unmarshal 失败（实测）
+      images: ["https://cdn.example/ref.png"],
+      videos: ["https://cdn.example/ref.mp4"],
+      audios: ["https://cdn.example/ref.mp3"],
       generate_audio: true,
       ratio: "9:16",
       duration: 8,
@@ -257,7 +258,7 @@ describe("SuchuangProvider", () => {
       expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/api/async/"))).toBe(false);
     });
 
-    it("视频任务的参考图同样中转（images 逗号拼接）", async () => {
+    it("视频任务的参考图同样中转（images 为字符串数组）", async () => {
       stubCosConfig();
       const fetchMock = relayFetchMock();
       vi.stubGlobal("fetch", fetchMock);
@@ -274,8 +275,9 @@ describe("SuchuangProvider", () => {
 
       const submitCall = fetchMock.mock.calls.find(([url]) => String(url).includes("/api/async/"))!;
       const body = JSON.parse((submitCall[1] as RequestInit).body as string);
-      expect(body.images.split(",")).toHaveLength(2);
-      for (const url of body.images.split(",")) {
+      expect(Array.isArray(body.images)).toBe(true);
+      expect(body.images).toHaveLength(2);
+      for (const url of body.images as string[]) {
         expect(url).toMatch(/^https:\/\/demo-bucket-123\.cos\.ap-guangzhou\.myqcloud\.com\/.*q-signature=/);
       }
     });
