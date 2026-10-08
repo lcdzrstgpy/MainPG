@@ -117,6 +117,9 @@ export function PodSemiCustomizationPage({ isActive = true }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  // 批次记录抽屉里的勾选删除（只对已结束的批次开放）。
+  const [selectedBatchIds, setSelectedBatchIds] = useState<string[]>([]);
+  const [deletingSelection, setDeletingSelection] = useState(false);
 
   const noticeTimerRef = useRef<number | undefined>(undefined);
 
@@ -301,6 +304,41 @@ export function PodSemiCustomizationPage({ isActive = true }: Props) {
     }
   };
 
+  const toggleSelectBatch = (batchId: string) => {
+    setSelectedBatchIds((current) => current.includes(batchId)
+      ? current.filter((id) => id !== batchId)
+      : [...current, batchId]);
+  };
+
+  /** 批量删除：只处理已结束的批次（抽屉里进行中的批次勾选框本来就是禁用的，这里再兜一次底）。 */
+  const deleteSelectedBatches = async () => {
+    const ids = selectedBatchIds.filter((id) => batches.some((batch) => batch.id === id && isSemiBatchTerminal(batch.status)));
+    if (!ids.length || busy || deletingSelection) return;
+    if (!window.confirm(`确认删除选中的 ${ids.length} 个批次？删除后这些批次的本地图片将被清理，不可恢复。`)) return;
+    setDeletingSelection(true);
+    setError("");
+    const deleted: string[] = [];
+    let failed = false;
+    try {
+      for (const batchId of ids) {
+        await podSemiCustomizationApi.deleteBatch(batchId);
+        deleted.push(batchId);
+      }
+    } catch (cause) {
+      failed = true;
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBatches((current) => current.filter((batch) => !deleted.includes(batch.id)));
+      if (activeBatch && deleted.includes(activeBatch.id)) {
+        setActiveBatch(null);
+        setSelectedItemId(undefined);
+      }
+      setSelectedBatchIds((current) => current.filter((id) => !deleted.includes(id)));
+      if (!failed && deleted.length) showNotice(`${deleted.length} 个批次已删除。`);
+      setDeletingSelection(false);
+    }
+  };
+
   const downloadZip = async () => {
     if (!activeBatch || busy) return;
     setBusy(true);
@@ -472,6 +510,11 @@ export function PodSemiCustomizationPage({ isActive = true }: Props) {
         batches={batches}
         activeBatchId={activeBatch?.id}
         loading={batchesLoading}
+        busy={busy}
+        deleting={deletingSelection}
+        selectedIds={selectedBatchIds}
+        onToggleSelect={toggleSelectBatch}
+        onDeleteSelected={() => void deleteSelectedBatches()}
         onOpen={(batchId) => void openBatch(batchId)}
         onRefresh={() => void loadBatches()}
         onClose={() => setHistoryOpen(false)}
