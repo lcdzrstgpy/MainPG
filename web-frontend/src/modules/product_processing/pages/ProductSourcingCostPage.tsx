@@ -6,6 +6,7 @@ import { productProcessingApiContext } from "../api/context";
 import type { DraftCollectionBatch } from "../api/productProcessingApi";
 import type { DraftProcessedPreview, Draft, DraftListResponse, PreviewImageAsset, PreviewItem } from "../types";
 import type { ProfitActivityPrefill } from "../../profit_activity/types/products";
+import "../styles/ProductProcessingVerifyPage.css";
 import "../styles/ProductSourcingCostPage.css";
 
 const API_BASE = "/api/product-processing";
@@ -209,7 +210,7 @@ function ProcessedDetailContent({ item, onPreview }: { item: PreviewItem; onPrev
           <div className="psc-detail-images">
             {section.urls.map((url, index) => (
               <button key={`${url}-${index}`} type="button" onClick={() => onPreview(url)}>
-                <img src={url} alt="" loading="lazy" />
+                <img src={url} alt="" loading="lazy" referrerPolicy="no-referrer" />
               </button>
             ))}
           </div>
@@ -540,14 +541,14 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
   };
 
   return (
-    <section className="psc-page">
-      <header className="psc-header">
-        <div className="psc-header-title">
+    <section className="verify-page">
+      <header className="verify-commandbar">
+        <div className="verify-command-title">
           <h1>商品货源及成本展示</h1>
           <p>汇总各采集渠道（每日选品 / 整店采集 / 插件采集）的货源链接、店铺与成本价格，便于核对与筛选。</p>
         </div>
         <div className="psc-header-aside">
-          <div className="psc-header-stats">
+          <div className="verify-command-stats">
             <span><i className="iconfont icon-appstore" aria-hidden="true" /><strong>{stats.count}</strong><em>商品条数</em></span>
             <span><i className="iconfont icon-check-circle" aria-hidden="true" /><strong>{stats.withCost}</strong><em>含成本</em></span>
             <span className="is-warn"><i className="iconfont icon-warning-circle" aria-hidden="true" /><strong>{stats.missingCost}</strong><em>缺成本</em></span>
@@ -646,7 +647,7 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
                   <tr className={expanded ? "psc-row is-expanded" : "psc-row"}>
                     <td className="psc-cell-product">
                       {row.imageUrl
-                        ? <img src={row.imageUrl} alt="" loading="lazy" />
+                        ? <img src={row.imageUrl} alt="" loading="lazy" referrerPolicy="no-referrer" />
                         : <span className="psc-thumb-placeholder" aria-hidden="true" />}
                       <div>
                         <strong title={row.title}>{row.title}</strong>
@@ -719,7 +720,7 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
                               <tr key={sku.key}>
                                 <td className="psc-sku-cell-image">
                                   {sku.imageUrl
-                                    ? <img src={sku.imageUrl} alt="" loading="lazy" />
+                                    ? <img src={sku.imageUrl} alt="" loading="lazy" referrerPolicy="no-referrer" />
                                     : <span className="psc-sku-thumb-placeholder" aria-hidden="true" />}
                                 </td>
                                 <td>{sku.label || "—"}</td>
@@ -823,7 +824,7 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
 
       {lightboxUrl && createPortal(
         <div className="psc-detail-lightbox" role="dialog" aria-modal="true" aria-label="图片预览" onClick={() => setLightboxUrl("")}>
-          <img src={lightboxUrl} alt="预览大图" onClick={(event) => event.stopPropagation()} />
+          <img src={lightboxUrl} alt="预览大图" referrerPolicy="no-referrer" onClick={(event) => event.stopPropagation()} />
           <button type="button" className="psc-detail-lightbox-close" aria-label="关闭" onClick={() => setLightboxUrl("")}>×</button>
         </div>,
         document.body,

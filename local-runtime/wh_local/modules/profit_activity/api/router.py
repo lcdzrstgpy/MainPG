@@ -10,9 +10,12 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse
+from starlette.concurrency import run_in_threadpool
 
 from ..domain.models import ProfitSettings, ProfitSiteProfile
+from ..domain.shipping_metrics import parse_shipping_metrics
 from ..infrastructure.repository import SettingsSnapshot
+from ..infrastructure.shipping_ocr import ShippingOcrUnavailable, extract_text_lines
 from ..service import ProfitActivityConflict, ProfitActivityNotFound, ProfitActivityService, _local_iso
 from .schemas import ArchiveRequest, FilterRequest, SettingsUpdateRequest, SiteProfilePayload
 from ....session import Actor, actor_from_bearer_token, actor_has_permission, require_permission
@@ -107,6 +110,30 @@ def create_profit_activity_router(
             return {**legacy, "preview": preview}
         except ValueError as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+    @router.post("/shipping-metrics/extract")
+    async def extract_shipping_metrics(
+        request: Request,
+        actor: Actor = Depends(profit_activity_actor),
+    ) -> dict[str, Any]:
+        """图片 → 实际重量/长宽高（本地 RapidOCR 纯算法，不含 AI、不消耗积分）。
+
+        表单字段 ``image``（单张图片）。返回解析结果与原始文本行，供前端侧边栏
+        展示、手动修正与回填重量。
+        """
+        require_permission(actor, "profit_activity.read", database_path)
+        form = await request.form()
+        uploaded = await _uploaded_file(form.get("image"))
+        if uploaded is None:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "image_required")
+        _filename, content = uploaded
+        try:
+            lines = await run_in_threadpool(extract_text_lines, content)
+        except ShippingOcrUnavailable as exc:
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "ocr_unavailable") from exc
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+        return {"metrics": parse_shipping_metrics(lines).to_dict(), "lines": lines}
 
     # Current module API kept for callers created before legacy screen parity.
     @router.post("/records", status_code=status.HTTP_201_CREATED)

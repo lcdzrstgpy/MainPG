@@ -405,3 +405,40 @@ export async function downloadProfitActivityCatalog({
   anchor.click();
   URL.revokeObjectURL(objectUrl);
 }
+
+export type ShippingMetrics = {
+  actual_weight_kg: number | null;
+  length_cm: number | null;
+  width_cm: number | null;
+  height_cm: number | null;
+  volumetric_weight_kg: number | null;
+  billable_weight_kg: number | null;
+  divisor: number;
+  matched_lines?: string[];
+};
+
+export type ShippingMetricsExtraction = { metrics: ShippingMetrics; lines: string[] };
+
+/**
+ * 物流/包装截图 → 实际重量与长宽高。
+ * 后端用本地 RapidOCR 做纯算法提取（不含 AI、不消耗积分）；识别失败/引擎不可用时抛错。
+ */
+export async function extractShippingMetrics(image: File): Promise<ShippingMetricsExtraction> {
+  const { apiBase } = resolveEndpoint();
+  const token = candidateTokens()[0];
+  const form = new FormData();
+  form.set("image", image);
+  const response = await authedFetch(`${apiBase}/api/profit-activity/shipping-metrics/extract`, {
+    method: "POST",
+    body: form,
+  }, token);
+  const text = await response.text();
+  let data: unknown = text;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    // 非 JSON 响应时保留原文
+  }
+  if (!response.ok) throw new Error(toUserMessage(errorText(data, response.status)));
+  return data as ShippingMetricsExtraction;
+}
