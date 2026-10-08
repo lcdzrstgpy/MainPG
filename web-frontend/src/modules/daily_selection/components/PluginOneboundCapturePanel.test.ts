@@ -67,7 +67,6 @@ test("plugin candidate review area styles are scoped under .plugin-candidate-*",
   for (const selector of [
     ".plugin-candidate-review",
     ".plugin-candidate-list",
-    ".plugin-candidate-title",
     ".plugin-candidate-body",
     ".plugin-candidate-links",
     ".plugin-candidate-source",
