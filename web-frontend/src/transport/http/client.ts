@@ -388,12 +388,16 @@ async function fetchWithTimeout(
 /**
  * 是否为「网关/代理替后端回的不可达响应」。
  *
- * 开发态（vite proxy）在后端挂掉时，代理会替后端回 **500 text/plain**，浏览器拿到的是
- * 正常 HTTP 响应而不是网络层失败 —— 若按「有响应 = 后端还活着」处理，失联遮罩永远不弹。
- * 后端自身的 5xx 走 FastAPI 的 JSON detail（content-type: application/json），不会被误判；
- * 只有非 JSON 的 5xx（代理错误页 / 纯文本 500）才判定为后端不可达。
+ * 这个假象**只在开发态存在**：页面在 5173、API 在 8010，后端挂掉时 vite 代理会替它
+ * 回 **500 text/plain**，浏览器拿到的是正常 HTTP 响应而不是网络层失败 —— 若按
+ * 「有响应 = 后端还活着」处理，失联遮罩永远不弹。
+ *
+ * 打包版页面与 API 同源（8010），后端挂掉表现为连接被拒（TypeError），本就走另一条
+ * 分支；此时非 JSON 的 5xx 只可能是后端自身未捕获异常（FastAPI 默认回纯文本），
+ * 不应判成「不可达」。因此这里限定 DEV，生产行为保持不变。
  */
 function isBackendUnreachable(response: Response): boolean {
+  if (!import.meta.env.DEV) return false;
   if (response.status < 500) return false;
   return !(response.headers.get("content-type") ?? "").includes("application/json");
 }
