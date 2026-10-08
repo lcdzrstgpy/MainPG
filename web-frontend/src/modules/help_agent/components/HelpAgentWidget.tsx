@@ -423,13 +423,14 @@ export function HelpAgentWidget({ allowFeedback = true, showBalance = false }: H
         title={showBalance
           ? ballPointsVisible
             ? `可用积分 ${points == null ? "加载中" : points}（点击打开操作答疑，可拖动）`
-            : "积分数字已隐藏（点击打开操作答疑，可拖动）"
+            : "数字已隐藏（点击打开操作答疑，可拖动）"
           : "操作答疑（可拖动）"}
       >
         {showBalance ? (
           <span className="help-agent-ball-inner">
-            <span className="help-agent-ball-face is-front">
-              <span className="help-agent-ball-label">积分</span>
+            <span className={`help-agent-ball-face is-front${ballPointsVisible ? "" : " is-points-masked"}`}>
+              {/* 关掉「显示积分数字」时球面只留「?」——连「积分」标签一起去掉，不留任何字。 */}
+              {ballPointsVisible && <span className="help-agent-ball-label">积分</span>}
               <b className={ballPointsText.length >= 6 ? "is-compact" : undefined}>{ballPointsText}</b>
             </span>
             <span className="help-agent-ball-face is-back">
