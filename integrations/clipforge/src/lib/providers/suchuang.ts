@@ -17,7 +17,8 @@ const IMAGE_MODELS: Model[] = [
 ];
 const VIDEO_MODELS: Model[] = [
   { id: "video_wan_3.0", name: "Wan 3.0", provider: "suchuang", mediaType: "video", modes: ["text-to-video", "image-to-video", "video-to-video"], supportsAudio: true },
-  { id: "minimax_h3", name: "MiniMax H3", provider: "suchuang", mediaType: "video", modes: ["text-to-video", "image-to-video"], supportsAudio: true },
+  // 端点名照抄文档：`/api/async/video_minimax_h3`（写成 minimax_h3 会打到 404）
+  { id: "video_minimax_h3", name: "MiniMax H3", provider: "suchuang", mediaType: "video", modes: ["text-to-video", "image-to-video"], supportsAudio: true },
   { id: "video_omni", name: "Kling Omni", provider: "suchuang", mediaType: "video", modes: ["text-to-video", "image-to-video"], supportsAudio: true },
   { id: "video_vidu", name: "Vidu", provider: "suchuang", mediaType: "video", modes: ["text-to-video", "image-to-video"], supportsAudio: true },
 ];
@@ -123,7 +124,9 @@ export class SuchuangProvider extends BaseProvider {
         ...(options.referenceAudioUrls?.length && { audios: [...options.referenceAudioUrls] }),
         generate_audio: options.audioEnabled ?? true,
         ratio: ratio(options.width, options.height),
-        ...(options.duration != null && { duration: options.duration }),
+        // duration 必须是**字符串**（实测：传数字被判 `json: cannot unmarshal number into
+        // Go struct field .Alias.seconds of type string`，文档同样标注 string）
+        ...(options.duration != null && { duration: String(options.duration) }),
         ...options.extra,
       });
       // 任务执行期间上游还要抓这些图，不能立刻删；到期后再尽力清理（进程若中途退出就交给桶的生命周期规则）

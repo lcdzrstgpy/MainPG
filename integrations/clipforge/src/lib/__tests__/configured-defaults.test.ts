@@ -56,7 +56,7 @@ describe("configuredDefaultsPatch：运维配置只补空值", () => {
         },
         llm: { provider: "自定义", baseUrl: "https://example.test", apiKey: "user-llm", model: "my-model" },
         defaultImageModel: "image_gpt_2.5",
-        defaultVideoModel: "minimax_h3",
+        defaultVideoModel: "video_minimax_h3",
       }),
       defaults
     );

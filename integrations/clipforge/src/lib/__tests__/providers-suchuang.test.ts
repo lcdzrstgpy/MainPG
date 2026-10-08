@@ -47,8 +47,27 @@ describe("SuchuangProvider", () => {
       audios: ["https://cdn.example/ref.mp3"],
       generate_audio: true,
       ratio: "9:16",
-      duration: 8,
+      // duration 必须是字符串：传数字会被判 `cannot unmarshal number into …seconds of type string`（实测）
+      duration: "8",
     });
+  });
+
+  it("MiniMax H3 走文档里的 video_minimax_h3 端点（写 minimax_h3 会 404）", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ code: 200, data: { id: "task-mini" } })));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await provider().submitVideoTask({
+      modelId: "video_minimax_h3",
+      mode: "text-to-video",
+      prompt: "商品展示",
+      duration: 5,
+      width: 720,
+      height: 1280,
+    });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${baseUrl}/api/async/video_minimax_h3?key=${apiKey}`);
+    expect(JSON.parse(init.body).duration).toBe("5");
   });
 
   it("normalizes a completed async task and finds its video URL", async () => {
