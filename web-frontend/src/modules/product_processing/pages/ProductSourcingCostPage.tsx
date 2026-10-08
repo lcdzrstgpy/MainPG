@@ -25,6 +25,7 @@ type SourcingRow = {
   shopName: string;
   channel: string;
   batchId: string;
+  batchDisplayName: string;
   cost: number | null;
   declaredPrice: number | null;
   currency: string;
@@ -63,6 +64,11 @@ const STATUS_OPTIONS = [
 ];
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
+
+// 单品采集（插件单品回传）不建批次，草稿的 selection_run_id 为空。用一个哨兵值把
+// 「未分组」也纳入批次筛选，与预检页、后端 list_drafts 的 __unassigned__ 口径一致。
+const UNASSIGNED_BATCH_ID = "__unassigned__";
+const UNASSIGNED_BATCH_LABEL = "未分组（单品采集）";
 
 function api(): ApiContext {
   return productProcessingApiContext();
@@ -304,6 +310,7 @@ function toRow(draft: Draft): SourcingRow {
     shopName: String(raw.shop_name || ""),
     channel: String(raw.collection_channel || ""),
     batchId: draft.selection_run_id || "",
+    batchDisplayName: draft.batch_display_name || "",
     cost: draft.cost,
     declaredPrice: draft.declared_price,
     currency,
@@ -395,10 +402,16 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
     const seen = new Map<string, string>();
     for (const row of rows) {
       if (row.batchId && !seen.has(row.batchId)) {
-        seen.set(row.batchId, batchLabels.get(row.batchId) || row.batchId);
+        seen.set(row.batchId, batchLabels.get(row.batchId) || row.batchDisplayName || row.batchId);
       }
     }
-    return Array.from(seen.entries());
+    const options = Array.from(seen.entries());
+    // 当前视图里存在未归批的草稿时，才补上「未分组」这一项，避免空选项。
+    // 放在最前面，方便单品采集一眼就能筛到。
+    if (rows.some((row) => !row.batchId)) {
+      options.unshift([UNASSIGNED_BATCH_ID, UNASSIGNED_BATCH_LABEL]);
+    }
+    return options;
   }, [rows, batchLabels]);
 
   const filteredRows = useMemo(() => {
@@ -406,7 +419,11 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
     return rows.filter((row) => {
       if (platform && row.platform !== platform) return false;
       if (channel && row.channel !== channel) return false;
-      if (batchId && row.batchId !== batchId) return false;
+      if (batchId === UNASSIGNED_BATCH_ID) {
+        if (row.batchId) return false;
+      } else if (batchId && row.batchId !== batchId) {
+        return false;
+      }
       if (onlyMissingCost && rowCost(row) !== null) return false;
       if (dateFrom || dateTo) {
         const day = localDateKey(row.createdAt);
@@ -666,7 +683,7 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
                     <td>{platformLabel(row.platform)}</td>
                     <td>{row.shopName || "—"}</td>
                     <td>{channelLabel(row.channel)}</td>
-                    <td title={row.batchId || undefined}>{row.batchId ? (batchLabels.get(row.batchId) || row.batchId) : "—"}</td>
+                    <td title={row.batchId || undefined}>{row.batchId ? (batchLabels.get(row.batchId) || row.batchDisplayName || row.batchId) : "未分组"}</td>
                     <td className={rowCost(row) === null ? "psc-cost-missing" : "psc-cost"}>
                       <span className="psc-cost-main">{formatCost(row)}</span>
                       {row.skus.length > 1 && (

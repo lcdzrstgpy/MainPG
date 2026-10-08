@@ -1855,11 +1855,19 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             (draft["id"] for draft in drafts),
             workspace_id=workspace_id,
         )
+        # 草稿列表不按批次过滤，直接带出批次展示名，免得前端在非「待处理」视图里
+        # 只能回落显示随机 UUID。
+        batch_display_names = self.repository.collection_batch_display_names(
+            draft.get("selection_run_id") or "" for draft in drafts
+        )
         drafts = [
             {
                 **draft,
                 "image_path": draft["image_path"] or ready_source_paths.get(draft["id"], ""),
                 "primary_source_image": primary_source_images.get(draft["id"]),
+                "batch_display_name": batch_display_names.get(
+                    str(draft.get("selection_run_id") or ""), ""
+                ),
             }
             for draft in drafts
         ]

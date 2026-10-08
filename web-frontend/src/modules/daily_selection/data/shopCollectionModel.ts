@@ -23,6 +23,7 @@ export type ShopCollectionBatch = {
   shop_sid: string;
   seller_id?: string;
   shop_name: string;
+  display_name?: string;
   seed_offer_id?: string;
   shop_url?: string;
   next_page?: number;

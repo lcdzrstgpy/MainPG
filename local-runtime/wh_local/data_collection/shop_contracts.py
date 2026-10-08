@@ -32,6 +32,7 @@ class ShopBatch(BaseModel):
     seed_offer_id: str = ""
     shop_url: str = ""
     shop_name: str = ""
+    display_name: str = ""
     status: ShopBatchStatus
     next_page: int = 1
     pages_fetched: int = 0

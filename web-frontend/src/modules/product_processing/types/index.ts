@@ -7,6 +7,8 @@ export type Draft = {
   source_ref: string;
   candidate_id: string | null;
   selection_run_id: string | null;
+  // 采集批次展示名（后端按来源渠道回填；老批次或未分组为空串）。
+  batch_display_name?: string;
   handoff_id: string | null;
   handoff_idempotency_key: string | null;
   skc: string | null;

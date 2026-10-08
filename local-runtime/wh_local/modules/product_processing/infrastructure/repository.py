@@ -4,7 +4,7 @@ import json
 import re
 import time
 import unicodedata
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -56,6 +56,82 @@ def _iso_after(seconds: float) -> str:
     immediately instead of after the intended delay.
     """
     return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
+
+
+# 采集批次展示名来源表：批次 ID 与列名一一对应（三张表分别属于三个采集渠道）。
+_COLLECTION_BATCH_DISPLAY_NAME_SOURCES: tuple[tuple[str, str], ...] = (
+    ("daily_selection_runs", "run_id"),
+    ("shop_collection_batches", "batch_id"),
+    ("plugin_onebound_capture_batches", "batch_id"),
+)
+
+
+def _lookup_collection_batch_display_name(session: Any, batch_id: str) -> str:
+    """按 selection_run_id 解析批次展示名：优先落库值，老数据用源表字段现算。
+
+    老批次（展示名列落库前创建）的 ``display_name`` 为空，这里按渠道用采集
+    关键词 / 店铺名 / page_url 现场拼一个同格式名字，避免前端回落成随机 UUID。
+    """
+    if not batch_id or batch_id == "__unassigned__":
+        return ""
+    try:
+        available = {
+            str(row[0])
+            for row in session.execute(
+                text("SELECT name FROM sqlite_master WHERE type = 'table'")
+            ).all()
+        }
+    except Exception:
+        return ""
+    for table, key in _COLLECTION_BATCH_DISPLAY_NAME_SOURCES:
+        if table not in available:
+            continue
+        try:
+            row = (
+                session.execute(
+                    text(f"SELECT * FROM {table} WHERE {key} = :batch_id"),
+                    {"batch_id": batch_id},
+                )
+                .mappings()
+                .first()
+            )
+        except Exception:
+            continue
+        if row is None:
+            continue
+        display_name = _collection_batch_display_name(table, row)
+        if display_name:
+            return display_name
+    return ""
+
+
+def _collection_batch_display_name(table: str, row: Mapping[str, Any]) -> str:
+    """已落库的展示名优先；为空时按来源渠道用源表字段现算。"""
+    stored = str(row.get("display_name") or "").strip()
+    if stored:
+        return stored
+    # 懒加载：batch_naming 属 data_collection 包，避免模块级交叉导入。
+    from wh_local.data_collection.batch_naming import (
+        daily_selection_display_name,
+        plugin_display_name,
+        shop_display_name,
+    )
+
+    if table == "daily_selection_runs":
+        return daily_selection_display_name(
+            loads(row.get("criteria_json"), {}),
+            loads(row.get("metadata_json"), {}),
+            created_at=row.get("created_at"),
+        )
+    if table == "shop_collection_batches":
+        return shop_display_name(
+            shop_name=str(row.get("shop_name") or ""),
+            platform=str(row.get("platform") or ""),
+            created_at=row.get("created_at"),
+        )
+    return plugin_display_name(
+        str(row.get("page_url") or ""), created_at=row.get("created_at")
+    )
 
 
 def _normalized_history_title(value: object) -> str:
@@ -747,6 +823,44 @@ class ProductProcessingRepository:
             rows = session.scalars(statement).all()
             return [self._draft(row) for row in rows[:limit]], len(rows) > limit
 
+    def collection_batch_display_names(self, batch_ids: Iterable[str]) -> dict[str, str]:
+        """批量解析采集批次展示名，供草稿列表直接带出。
+
+        草稿列表本身不按批次过滤，而 ``list_draft_batches`` 只统计草稿池内的
+        待处理批次，因此「已完成」等视图在前端拿不到批次名、只能回落显示 UUID。
+        这里对三张采集源表各做一次 IN 查询补上；未命中（手工录入 / 未分组）不进结果。
+        """
+        ids = [str(item).strip() for item in batch_ids]
+        ids = [item for item in dict.fromkeys(ids) if item and item != "__unassigned__"]
+        if not ids:
+            return {}
+        resolved: dict[str, str] = {}
+        with self.database.sessions() as session:
+            for table, key in _COLLECTION_BATCH_DISPLAY_NAME_SOURCES:
+                pending = [item for item in ids if item not in resolved]
+                if not pending:
+                    break
+                params = {f"batch_id_{index}": item for index, item in enumerate(pending)}
+                placeholders = ", ".join(f":{name}" for name in params)
+                try:
+                    rows = (
+                        session.execute(
+                            text(f"SELECT * FROM {table} WHERE {key} IN ({placeholders})"),
+                            params,
+                        )
+                        .mappings()
+                        .all()
+                    )
+                except Exception:
+                    continue
+                for row in rows:
+                    batch_id = str(row.get(key) or "")
+                    if batch_id and batch_id not in resolved:
+                        display_name = _collection_batch_display_name(table, row)
+                        if display_name:
+                            resolved[batch_id] = display_name
+        return resolved
+
     def list_draft_batches(
         self,
         limit: int,
@@ -822,7 +936,8 @@ class ProductProcessingRepository:
                         "source_type": source_type,
                         "collection_channel": str(raw.get("collection_channel") or "") or "",
                         "platform": str(raw.get("source_platform") or "") or "",
-                        "channel_name": str(raw.get("source_title") or raw.get("title") or "")[:60],
+                        "channel_name": _lookup_collection_batch_display_name(session, batch_id)
+                        or str(raw.get("source_title") or raw.get("title") or "")[:60],
                         "count": int(row.draft_count),
                         "first_created_at": str(row.first_created_at or ""),
                         "latest_updated_at": str(row.latest_updated_at or ""),
