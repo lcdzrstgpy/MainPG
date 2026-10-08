@@ -1272,7 +1272,6 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
                 <ul className="personal-upgrade-plan-benefits">
                   <li><b>购买立得 4000 积分</b>（充值积分，永久有效）</li>
                   <li>28 天内<b>每周可直接领取 1000 积分</b>（领到即永久）</li>
-                  <li>28 天后到期，自动回落体验版（每日签到 +100 限时积分）</li>
                 </ul>
                 <button
                   type="button"
