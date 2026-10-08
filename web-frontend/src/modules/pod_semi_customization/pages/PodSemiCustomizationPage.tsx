@@ -217,6 +217,10 @@ export function PodSemiCustomizationPage({ isActive = true }: Props) {
         business_fields: semiBusinessFieldsForApi(businessFields),
         creative_prompt: creativePrompt.trim(),
       });
+      // 新批次必须同时成为轮询的请求目标：batchRequestRef 是「旧响应晚到即丢弃」的守卫，
+      // 只 setActiveBatch 不改 ref，refreshActiveBatch 会因 ref 不匹配直接 return，
+      // 导致刚发起的批次进度永不刷新（要切走再切回才恢复）。
+      batchRequestRef.current = created.id;
       setActiveBatch(created);
       showNotice(`已发起半定制批次：${count} 款图案 / ${semiGroupCount(count)} 次生图`);
       void loadBatches();
