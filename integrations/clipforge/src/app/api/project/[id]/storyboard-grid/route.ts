@@ -13,6 +13,7 @@ import { buildStoryboardGridPrompt, computeGridCells, GRID_MAX_SHOTS } from "@/l
 import { ffmpegBin } from "@/lib/ffmpeg-path";
 import { probeMedia } from "@/lib/media-probe";
 import { apiError, errText } from "@/lib/api-error";
+import { strategyChainGuard, strategyGateError } from "@/lib/strategy-chain-gate";
 
 const execFileAsync = promisify(execFile);
 
@@ -63,6 +64,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const { id } = await params;
     if (!/^[a-zA-Z0-9-]+$/.test(id)) {
       return apiError(req, "无效的项目ID", "Invalid project id", 400);
+    }
+    // 服务端出片策略门禁（fail-closed）：九宫格关键帧生图（付费）只属于逐镜动态与原生整片；
+    // 免费草稿只用商品图/免费素材，不该被这条链烧钱
+    const gate = await strategyChainGuard(id, "keyframe");
+    if (!gate.allowed) {
+      const error = strategyGateError(gate, "keyframe");
+      return apiError(req, error.zh, error.en, error.status);
     }
     const body = await req.json();
     const { scriptId, provider: providerName, model, apiKey, baseUrl, options, characterSheetUrl, productImageUrl } = body as {

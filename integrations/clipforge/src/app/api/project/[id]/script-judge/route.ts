@@ -70,7 +70,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         messages: [{ role: "user", content: prompt }],
         // judges must be harsh and consistent, not creative — keep temperature low
         temperature: 0.3,
-        max_tokens: 8000,
+        // 额度必须同时容下「思维链 + 判官 JSON」：推理模型（实测 deepseek-flash）在 8000 时会把额度
+        // 全烧在 reasoning_content 上、content 返回空，判官直接失败。32000 实测可正常产出。
+        max_tokens: 32000,
         ...reasoningParams(llmConfig.baseUrl ?? ""),
         ...jsonModeParams(llmConfig.baseUrl ?? ""),
       },

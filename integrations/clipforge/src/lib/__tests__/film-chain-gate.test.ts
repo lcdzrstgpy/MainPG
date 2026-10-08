@@ -82,9 +82,12 @@ describe("filmChainGateError：拒绝原因映射", () => {
 });
 
 describe("提交路由的门禁接线", () => {
-  it("storyboard-grid 路由保持无门禁（controlled-motion 逐镜 I2V 的九宫格锚点照常可用）", () => {
+  it("storyboard-grid 用关键帧门禁（放行逐镜动态与原生整片），绝不用整片门禁", () => {
+    // 整片门禁只认 native-film，会把 controlled-motion 的九宫格锚点一起拦掉，所以这里必须是
+    // keyframe 白名单；但也绝不能再回到「完全无门禁」（免费草稿不该走付费生图）。
     expect(gridRoute).not.toMatch(/film-chain-gate/);
     expect(gridRoute).not.toMatch(/filmChainStrategyGuard/);
+    expect(gridRoute).toMatch(/strategyChainGuard\(id, "keyframe"\)/);
   });
 
   it("storyboard-film 路由导入门禁并在 dryRun 之前拦截", () => {

@@ -188,12 +188,16 @@ class ClipForgeService:
         data_root: Path,
         node_binary: str = "node",
         *,
+        reference_config_resolver: Callable[[], Path | None] | None = None,
         process_factory: Callable[..., subprocess.Popen[bytes]] = subprocess.Popen,
         ready_probe: Callable[..., None] = _probe_readiness,
     ) -> None:
         self._build_resolver = build_resolver
         self._data_root = Path(data_root)
         self._node_binary = node_binary
+        # 参考图公网中转用的对象存储配置（cos.local.json）位置；sidecar 用它把本地图换成
+        # 上游能抓的临时 URL（速创这类异步接口不接受内联图）。拿不到就注入空，sidecar 会明确报错。
+        self._reference_config_resolver = reference_config_resolver
         self._process_factory = process_factory
         self._ready_probe = ready_probe
         self._lock = threading.RLock()
@@ -489,6 +493,7 @@ class ClipForgeService:
             self._mark_failed_locked(code, message, exit_code)
 
     def _child_environment(self, app_root: Path, instance_id: str, port: int) -> dict[str, str]:
+        reference_config = self._reference_config_path()
         return {
             **os.environ,
             "NODE_ENV": "production",
@@ -497,8 +502,24 @@ class ClipForgeService:
             "APP_DATA_DIR": str(self._data_root / "data"),
             "APP_MIGRATIONS_DIR": str(app_root / "drizzle"),
             "MAINPG_CLIPFORGE_INSTANCE_ID": instance_id,
+            # 只传路径不传凭据：sidecar 自己读 cos.local.json，密钥不进环境变量
+            **({"WH_MEDIA_COS_CONFIG": str(reference_config)} if reference_config else {}),
             **_bundled_media_environment(app_root),
         }
+
+    def _reference_config_path(self) -> Path | None:
+        """参考图中转要用的 cos.local.json；解析不出来就返回 None（sidecar 会明确报缺配置）。"""
+        resolver = self._reference_config_resolver
+        if resolver is None:
+            return None
+        try:
+            candidate = resolver()
+        except Exception:  # noqa: BLE001 - 配置解析失败绝不能拖住 sidecar 启动
+            return None
+        if candidate is None:
+            return None
+        path = Path(candidate)
+        return path if path.is_file() else None
 
     def _open_log(self, diagnostic_id: str) -> Path:
         logs_dir = self._data_root / "logs"

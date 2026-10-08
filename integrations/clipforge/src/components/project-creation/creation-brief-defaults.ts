@@ -1,5 +1,5 @@
 import {
-  DEFAULT_CREATION_BRIEF,
+  defaultAudioStrategyForStrategy,
   type AudioStrategy,
   type InputMode,
   type OutputStrategy,
@@ -255,7 +255,7 @@ export function audioStrategyLabel(id: AudioStrategy): string {
  * the shared default instead of being silently re-routed to another audio source.
  */
 export function defaultAudioStrategyFor(strategy: OutputStrategy): AudioStrategy {
-  return strategy === "native-film" ? "native-audio" : DEFAULT_CREATION_BRIEF.audioStrategy;
+  return defaultAudioStrategyForStrategy(strategy);
 }
 
 /**

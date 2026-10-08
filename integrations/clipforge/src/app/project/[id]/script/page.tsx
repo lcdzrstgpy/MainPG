@@ -972,7 +972,8 @@ export default function ScriptPage() {
           )}
         </div>
       )}
-      {/* 按出片策略给出各自的确认入口，绝不把付费策略静默降级成免费流水线 */}
+      {/* 按出片策略给出各自的说明：入口只留一处（小白模式动作区 / 导演模式工具栏），
+          说明卡不再自带按钮，否则同屏会出现两个同名入口 */}
       {flow.strategy === "draft" && (
         <div className="rounded-xl border border-primary/40 bg-primary/5 px-4 py-3">
           <p className="text-sm font-medium">出片策略：免费草稿（自动成片）</p>
@@ -987,9 +988,6 @@ export default function ScriptPage() {
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
             该策略不会自动启动免费静态流水线。确认脚本后进入素材页逐镜生成动态镜头（按镜头数与模型计费）。有可听原生音轨时保留原音轨，否则按当前 TTS 设置配音。
           </p>
-          <Link href={`/project/${id}/assets`} className="mt-2.5 inline-block">
-            <Button size="sm" className="brand-gradient text-white">生成逐镜动态镜头</Button>
-          </Link>
         </div>
       )}
       {flow.strategy === "native-film" && (
@@ -998,14 +996,6 @@ export default function ScriptPage() {
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
             该策略不会自动启动免费静态流水线。先用整片预览核对模型、时长与费用，确认后才提交付费生成。自带模型原生音频，合成阶段不再跑 TTS。
           </p>
-          <Button
-            size="sm"
-            className="brand-gradient mt-2.5 text-white"
-            disabled={aiFilming || autoFinishing || !currentScript}
-            onClick={runAiFilm}
-          >
-            {t("aiFilmPreviewTitle")}
-          </Button>
         </div>
       )}
     </div>

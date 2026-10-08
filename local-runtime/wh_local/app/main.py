@@ -180,6 +180,23 @@ def _clipforge_build_resolver(install_root: Path, data_root: Path) -> Any:
     return resolve
 
 
+def _clipforge_reference_config() -> Path | None:
+    """给 AI 视频 sidecar 定位 cos.local.json（参考图公网中转用）。
+
+    速创这类异步接口的参考图必须由上游去抓，内联 base64 会被打回 500；sidecar 用这份
+    对象存储配置把本地图换成临时公网 URL。复用媒体模块同一套查找顺序，找不到就返回 None
+    （sidecar 会给出明确错误，而不是静默发一个抓不到的地址）。"""
+
+    try:
+        from wh_local.modules.product_processing.service import _cos_local_config_paths
+    except Exception:  # noqa: BLE001 - 模块不可用不能让视频服务起不来
+        return None
+    for candidate in _cos_local_config_paths():
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def _clipforge_node_binary(install_root: Path) -> Path | str:
     """Use the Node runtime bundled next to packaged ClipForge when present."""
     sidecar_root = Path(install_root) / "clipforge"
@@ -407,6 +424,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         build_resolver=_clipforge_build_resolver(config.install_root, config.data_dir),
         data_root=config.data_dir / "clipforge",
         node_binary=str(_clipforge_node_binary(config.install_root)),
+        reference_config_resolver=_clipforge_reference_config,
     )
 
     update_manager = UpdateManager(

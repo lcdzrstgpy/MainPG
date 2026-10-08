@@ -800,6 +800,8 @@ export default function AssetsPage() {
             baseUrl: modelTarget.baseUrl,
             mode: genMode,
             prompt: genPrompt,
+            // 服务端据此执行出片策略门禁：关键帧生图（付费）不属于免费草稿链
+            projectId: id,
             ...(useProductSafe && { imageUrl: productImages[0] }),
             // user-defined image parameters (aspect ratio → dimensions / count / steps / guidance / seed / negative prompt)
             options: (() => {
