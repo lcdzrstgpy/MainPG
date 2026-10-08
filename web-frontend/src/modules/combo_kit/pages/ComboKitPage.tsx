@@ -38,6 +38,7 @@ import {
 } from '../../product_processing/api/comboKitApi';
 import { MaskCanvas } from '../components/MaskCanvas';
 import { ModeCardCarousel, type ModeCardSlide } from '../components/ModeCardCarousel';
+import { TaskProgressRing } from '../components/TaskProgressRing';
 import { ProductFlowSteps, type ProductFlowStep } from '../../product_processing/components/ProductFlowSteps';
 import { COMBO_PRESET_TEMPLATES, resolveActiveTemplate } from '../presetTemplates';
 import '../styles/comboKit.css';
@@ -167,8 +168,12 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
+  // 正在移除的原图 id，用于按钮就地反馈（「移除中…」+ 禁用）。
+  const [removingItemId, setRemovingItemId] = useState<string | null>(null);
   // 异步任务的当前进度文案（如「解析主体 2/5」），进行中按钮据此显示。
   const [progressText, setProgressText] = useState('');
+  // 异步任务的进度数值，驱动环形进度显示；生图为并发不上报增量，通常停在 0/total。
+  const [taskProgress, setTaskProgress] = useState<{ current: number; total: number; label: string } | null>(null);
   const [prompts, setPrompts] = useState<Record<string, string>>({});
   const [baseA, setBaseA] = useState('');
   const [fusionPrompt, setFusionPrompt] = useState('');
@@ -194,8 +199,16 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
   const flowRef = useRef<HTMLElement | null>(null);
   const prevStepRef = useRef(step);
 
-  const notify = useCallback((ok: string) => { setMessage(ok); setError(''); }, []);
-  const fail = useCallback((e: unknown) => { setError(e instanceof Error ? e.message : String(e)); setMessage(''); }, []);
+  // 每次提示自增，使重复点击产生同样文案时也能重置浮层的自动消失计时。
+  const [noticeSeq, setNoticeSeq] = useState(0);
+  const notify = useCallback((ok: string) => { setMessage(ok); setError(''); setNoticeSeq((n) => n + 1); }, []);
+  const fail = useCallback((e: unknown) => { setError(e instanceof Error ? e.message : String(e)); setMessage(''); setNoticeSeq((n) => n + 1); }, []);
+  // 顶部浮层提示自动消失：成功停留久一点便于看清，错误停留更久避免被错过。
+  useEffect(() => {
+    if (!message && !error) return undefined;
+    const timer = window.setTimeout(() => { setMessage(''); setError(''); }, error ? 6000 : 3200);
+    return () => window.clearTimeout(timer);
+  }, [noticeSeq, message, error]);
   // 完成当前步骤的主操作后自动推进到下一步，省去每次手动点顶部步骤卡。
   const advanceStep = useCallback(() => setStep((cur) => Math.min(cur + 1, 6)), []);
 
@@ -367,8 +380,10 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
       }
       notify(`已上传 ${list.length} 张原图`);
       await refreshSet(set.set_id);
-      // 原图备齐（≥2 张）后自动进入「解析并生成主图」；不足则留在本步继续上传。
-      if (step === 2 && set.items.length + list.length >= 2) advanceStep();
+      // 仅在「首次备齐」时自动推进：原图从不足 2 张跨到 ≥2 张才进入「解析并生成主图」。
+      // 已有 ≥2 张后再补传（用户往往还在填主体词/框选）不跳步，避免打断编辑。
+      const before = set.items.length;
+      if (step === 2 && before < 2 && before + list.length >= 2) advanceStep();
     } catch (e) { fail(e); } finally { setBusy(''); }
   };
 
@@ -391,11 +406,13 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
   }, [set, onUpload]);
 
   const onRemoveItem = async (itemId: string) => {
-    if (!set) return;
+    if (!set || removingItemId) return;
+    setRemovingItemId(itemId);
     try {
       await removeItem(ctx, set.set_id, itemId);
       await refreshSet(set.set_id);
-    } catch (e) { fail(e); }
+      notify('已移除该原图');
+    } catch (e) { fail(e); } finally { setRemovingItemId(null); }
   };
 
   useEffect(() => {
@@ -427,9 +444,12 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
   const onSaveMask = async (itemId: string, mask: { points: Array<[number, number]> }, inverted: boolean) => {
     try {
       await updateItem(ctx, set!.set_id, itemId, { mask: { points: mask.points }, mask_inverted: inverted, mask_edit: true });
-      notify('蒙版已保存');
       await refreshSet(set!.set_id);
-    } catch (e) { fail(e); }
+    } catch (e) {
+      // 向上抛出，让蒙版编辑器就地显示「保存失败」，而不是只在页面顶部提示。
+      fail(e);
+      throw e;
+    }
   };
 
   // 算法预框选：后端本地分割出主体轮廓并已落库，这里只把点交给蒙版编辑器当初始框。
@@ -468,6 +488,7 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
         if (task.status === 'completed' || task.status === 'failed') return task;
         const p = task.progress;
         setProgressText(p && p.total > 0 ? `${p.label} ${p.current}/${p.total}` : p?.label || '排队中…');
+        setTaskProgress(p ? { current: p.current, total: p.total, label: p.label } : null);
         if (Date.now() > deadline) throw new Error('任务仍在执行，请稍后打开该套装查看结果');
         await new Promise((resolve) => window.setTimeout(resolve, TASK_POLL_INTERVAL_MS));
       }
@@ -479,6 +500,7 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
     if (!set) return;
     setBusy('analyze');
     setProgressText('');
+    setTaskProgress(null);
     const seq = ++pollSeqRef.current;
     try {
       if (!set.items.length) { fail('请先上传至少 2 张原图'); return; }
@@ -495,11 +517,19 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
       const task = await pollTask(set.set_id, 'subject', seq);
       if (!task) return;
       if (task.status === 'failed') { fail(task.error_message || '主体解析失败'); return; }
-      notify(mode === 'multiview' ? '视角解析完成，已生成商品主图' : '主体解析完成，已生成融合主图');
       await refreshSet(set.set_id);
-      // 主图生成成功后进入「AI 文本生成」。
-      advanceStep();
-    } catch (e) { fail(e); } finally { setBusy(''); setProgressText(''); }
+      // 主体解析成功但主图未产出：后端为避免阻断解析流程会吞掉生图异常，只把原因写进套装 error_message。
+      // 因此不能只凭任务状态就报成功，需显式检查主图是否真的生成，否则用户会「看不到图也没有任何提示」。
+      const produced = Boolean((task.result as { main_image?: unknown } | null)?.main_image);
+      if (!produced) {
+        const fresh = await getSet(ctx, set.set_id).catch(() => null);
+        const reason = String((fresh as { error_message?: string } | null)?.error_message || '').trim();
+        fail(reason || '主图未生成，请检查生图配置后重试');
+        return;
+      }
+      notify(mode === 'multiview' ? '视角解析完成，已生成商品主图，可在本步查看' : '主体解析完成，已生成融合主图，可在本步查看');
+      // 生成类操作不自动跳步：主图结果留在此步供用户查看，确认后再手动点「下一步」。
+    } catch (e) { fail(e); } finally { setBusy(''); setProgressText(''); setTaskProgress(null); }
   };
 
   const onSavePrompt = async () => {
@@ -533,17 +563,17 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
     if (!set) return;
     setBusy('text');
     setProgressText('');
+    setTaskProgress(null);
     const seq = ++pollSeqRef.current;
     try {
       await startGenerateText(ctx, set.set_id);
       const task = await pollTask(set.set_id, 'text', seq);
       if (!task) return;
       if (task.status === 'failed') { fail(task.error_message || '文本生成失败'); return; }
-      notify('文本已生成（扣 20 积分）');
+      notify('文本已生成（扣 20 积分），可在本步查看');
       await refreshSet(set.set_id);
-      // 文本生成成功后进入「生成成品图」。
-      advanceStep();
-    } catch (e) { fail(e); } finally { setBusy(''); setProgressText(''); }
+      // 生成类操作不自动跳步：文本结果留在此步供用户查看，确认后再手动点「下一步」。
+    } catch (e) { fail(e); } finally { setBusy(''); setProgressText(''); setTaskProgress(null); }
   };
 
   const onSaveWatermark = async () => {
@@ -567,6 +597,7 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
     if (!set) return;
     setBusy('images');
     setProgressText('');
+    setTaskProgress(null);
     const seq = ++pollSeqRef.current;
     try {
       // 水印在生成时烧进图片：先把当前配置落盘，避免「改了水印直接点生成」仍用旧配置出图。
@@ -575,11 +606,10 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
       const task = await pollTask(set.set_id, 'image', seq);
       if (!task) return;
       if (task.status === 'failed') { fail(task.error_message || '成品图生成失败'); return; }
-      notify(roles && roles.length ? `已重新生成 ${roles.length} 张图（扣 100 积分）` : '6 张成品图已生成（扣 100 积分）');
+      notify(roles && roles.length ? `已重新生成 ${roles.length} 张图（扣 100 积分），可在本步查看` : '6 张成品图已生成（扣 100 积分），可在本步查看');
       await refreshSet(set.set_id);
-      // 整批生成完成后进入「独立预检」；单张「替换」不推进，方便继续逐张微调。
-      if (!roles) advanceStep();
-    } catch (e) { fail(e); } finally { setBusy(''); setProgressText(''); }
+      // 生成类操作不自动跳步：整批成品图留在此步供用户逐张查看，确认后再手动点「下一步」进入预检。
+    } catch (e) { fail(e); } finally { setBusy(''); setProgressText(''); setTaskProgress(null); }
   };
 
   const onDeleteImage = async (role: string) => {
@@ -793,7 +823,9 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
                 <span className="combo-edit-stage-title">
                   正在编辑：{currentItem.subject_keywords || `第 ${set.items.findIndex((i) => i.item_id === currentItem.item_id) + 1} 张`}
                 </span>
-                <button className="btn-mini danger" onClick={() => void onRemoveItem(currentItem.item_id)}>移除</button>
+                <button className="btn-mini danger" onClick={() => void onRemoveItem(currentItem.item_id)} disabled={removingItemId === currentItem.item_id}>
+                  {removingItemId === currentItem.item_id ? '移除中…' : '移除'}
+                </button>
               </div>
               <div className="combo-edit-stage-grid">
                 <div className="combo-edit-stage-mask">
@@ -850,7 +882,21 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
                 : '例：a book and a brush pen holder on a wooden desk, soft studio light, clean neutral background'}
             />
           </label>
-          <div className="combo-actions"><button onClick={() => void onAnalyze()} disabled={busy === 'analyze'}>{busy === 'analyze' ? (progressText || '解析生成中…') : (isMultiview ? '解析视角并生成商品主图' : '生成融合主图')}</button></div>
+          <div className="combo-actions"><button onClick={() => void onAnalyze()} disabled={busy === 'analyze'}>{busy === 'analyze' ? (<><i className="combo-spinner" aria-hidden="true" />{progressText || '解析生成中…'}</>) : (isMultiview ? '解析视角并生成商品主图' : '生成融合主图')}</button></div>
+          {busy === 'analyze' && (
+            <div className="combo-progress-panel">
+              <TaskProgressRing
+                running
+                current={taskProgress?.current ?? 0}
+                total={taskProgress?.total ?? 0}
+                label={taskProgress?.label || '生成主图'}
+              />
+              <div className="combo-progress-copy">
+                <strong>{progressText || '正在解析并生成主图…'}</strong>
+                <span>主图依赖主体解析与参考图合成，耗时较长，请保持页面打开。</span>
+              </div>
+            </div>
+          )}
           {mainImage && (
             <div className="combo-fusion-preview">
               <h3>{isMultiview ? '商品主图（第 1 张成品图）' : '融合套装主图（第 1 张成品图）'}</h3>
@@ -891,8 +937,17 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
       return (
         <section className="combo-section">
           <h2>④ AI 文本生成（扣 20 积分）</h2>
-          <div className="combo-actions"><button onClick={() => void onGenerateText()} disabled={busy === 'text'}>{busy === 'text' ? (progressText || '生成中…') : '生成标题+描述+五点'}</button></div>
-          {hasText ? (
+          <div className="combo-actions"><button onClick={() => void onGenerateText()} disabled={busy === 'text'}>{busy === 'text' ? (<><i className="combo-spinner" aria-hidden="true" />{progressText || '生成中…'}</>) : '生成标题+描述+五点'}</button></div>
+          {busy === 'text' ? (
+            <div className="combo-text-skeleton" role="status" aria-live="polite">
+              <span className="combo-skeleton-caption">{progressText || 'AI 正在撰写标题、描述与五点卖点…'}</span>
+              <div className="combo-skeleton-line" style={{ width: '52%', height: 16 }} />
+              <div className="combo-skeleton-line" />
+              <div className="combo-skeleton-line" style={{ width: '88%' }} />
+              <div className="combo-skeleton-line" style={{ width: '94%' }} />
+              <div className="combo-skeleton-line" style={{ width: '70%' }} />
+            </div>
+          ) : hasText ? (
             <div className="combo-text-result">
               {textTitle && <h3>{textTitle}</h3>}
               {textDescription && <p>{textDescription}</p>}
@@ -909,7 +964,21 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
       return (
         <section className="combo-section">
           <h2>⑤ 生成 6 张成品图（4 次生图调用 · 扣 100 积分）+ 详情图</h2>
-          <div className="combo-actions"><button className="primary" onClick={() => void onGenerateImages()} disabled={busy === 'images'}>{busy === 'images' ? (progressText || '并行生成中…') : '生成 6 张图（并行）'}</button></div>
+          <div className="combo-actions"><button className="primary" onClick={() => void onGenerateImages()} disabled={busy === 'images'}>{busy === 'images' ? (<><i className="combo-spinner" aria-hidden="true" />{progressText || '并行生成中…'}</>) : '生成 6 张图（并行）'}</button></div>
+          {busy === 'images' && (
+            <div className="combo-progress-panel">
+              <TaskProgressRing
+                running
+                current={taskProgress?.current ?? 0}
+                total={taskProgress?.total ?? 0}
+                label={taskProgress?.label || '并发生成成品图'}
+              />
+              <div className="combo-progress-copy">
+                <strong>{progressText || '并行生成中…'}</strong>
+                <span>使用场景图 1/2、白底尺寸图、细节图 4 次生图调用并行执行，耗时较长，请保持页面打开。</span>
+              </div>
+            </div>
+          )}
           <div className="combo-hint">主图复用融合主图；使用场景图 1/2、白底尺寸图、细节图并行生成；详情图本地拼接。</div>
           <details className="combo-extra-fields combo-watermark">
             <summary>水印设置（可选 · 生成时烧进成品图，默认关闭）</summary>
@@ -931,7 +1000,7 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
               <input type="checkbox" checked={watermark.tile} onChange={(e) => setWatermark({ ...watermark, tile: e.target.checked })} />
               <span>平铺满图（整图重复铺开，开启后「位置」无效）</span>
             </label>
-            <div className="combo-actions"><button onClick={() => void onSaveWatermark()} disabled={busy === 'watermark'}>{busy === 'watermark' ? '应用中…' : '保存并应用到已生成的图'}</button></div>
+            <div className="combo-actions"><button onClick={() => void onSaveWatermark()} disabled={busy === 'watermark'}>{busy === 'watermark' ? (<><i className="combo-spinner" aria-hidden="true" />应用中…</>) : '保存并应用到已生成的图'}</button></div>
             <div className="combo-hint">水印直接烧进图片本身，页面预览 / 下载 / 导出店小秘 / 预检四处一致。保存后立即重烧已生成的成品图（不重新生图、不计费）；关闭水印保存则还原为干净图。详情图内部使用未加水印的主图，不会出现双层水印。</div>
           </details>
           <div className="combo-images">
@@ -951,6 +1020,12 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
               );
             })}
             {!images.length && <div className="empty">尚未生成成品图。</div>}
+            {images.length > 0 && (busy === 'watermark' || busy === 'images') && (
+              <div className="combo-images-burning" role="status" aria-live="polite">
+                <i className="combo-spinner" aria-hidden="true" />
+                {busy === 'watermark' ? '正在将水印烧进成品图…' : '正在重新生成成品图…'}
+              </div>
+            )}
           </div>
           {images.length > 0 && <div className="combo-hint">替换仅重做该张（生图角色，扣 100 积分），不会覆盖其它图；删除可将不满意的图移除。</div>}
         </section>
@@ -1102,7 +1177,13 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
         </div>
       </header>
 
-      {(message || error) && <div className={`combo-kit-message ${error ? 'error' : ''}`}>{error || message}</div>}
+      {(message || error) && createPortal(
+        <div className={`combo-kit-message is-floating ${error ? 'error' : ''}`} role="status" aria-live="polite">
+          <i className={`iconfont ${error ? 'icon-close-circle' : 'icon-check-circle'}`} aria-hidden="true" />
+          <span>{error || message}</span>
+        </div>,
+        document.body,
+      )}
 
       <main className="combo-kit-main">
         {!set && (

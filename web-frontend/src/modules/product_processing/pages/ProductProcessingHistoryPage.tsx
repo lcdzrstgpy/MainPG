@@ -128,7 +128,7 @@ export function ProductProcessingHistoryPage({ onOpenTask, onOpenPrecheck }: Pro
         <div className="verify-actions">
           <button type="button" className="primary" onClick={applyFilters}>筛选</button>
           <button type="button" className="processing-history-clear" onClick={clearFilters}>清除</button>
-          <button type="button" className="processing-history-refresh" onClick={() => void loadHistory()} disabled={loading}><i className="iconfont icon-sync" aria-hidden="true" />刷新</button>
+          <button type="button" className="processing-history-refresh" onClick={() => void loadHistory()} disabled={loading}>{loading ? <i className="app-spinner is-sm" aria-hidden="true" /> : <i className="iconfont icon-sync" aria-hidden="true" />}刷新</button>
         </div>
       </section>
 
@@ -138,7 +138,12 @@ export function ProductProcessingHistoryPage({ onOpenTask, onOpenPrecheck }: Pro
           <h2>AI 处理批次</h2>
           <span className="verify-sub">共 {total} 条</span>
         </div>
-        {loading && <p className="verify-empty">正在读取历史任务…</p>}
+        {loading && (
+          <div className="app-loading-block">
+            <i className="app-spinner" aria-hidden="true" />
+            正在读取历史任务…
+          </div>
+        )}
         {!loading && tasks.length === 0 && <p className="verify-empty">暂无 AI 处理记录。开始处理后，批次会自动保存在这里。</p>}
         {!loading && tasks.length > 0 && (
           <ul className="processing-history-items">

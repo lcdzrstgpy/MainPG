@@ -33,6 +33,11 @@ function formatDate(value: string): string {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN", { hour12: false });
 }
 
+function formatPrice(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "";
+  return `¥${value.toFixed(2)}`;
+}
+
 function itemStatusLabel(item: PluginOneboundCaptureItem): string {
   const labels: Record<PluginOneboundCaptureItem["status"], string> = {
     pending: "等待采集",
@@ -458,7 +463,12 @@ export const PluginOneboundCapturePanel = forwardRef<PluginOneboundCapturePanelH
                           <div className="plugin-candidate-body">
                             <a className="plugin-title-link" href={candidate.source_url} target="_blank" rel="noreferrer">{candidate.source_title.trim() || `商品 ${candidate.offer_id}`}</a>
                             <small>
-                              SKU {candidate.sku_count || "未知"} · {candidateReviewLabel(candidate.review_status)}
+                              {[
+                                candidate.price_cny != null ? `售价 ${formatPrice(candidate.price_cny)}` : "",
+                                candidate.shop_name,
+                                `SKU ${candidate.sku_count || "未知"}`,
+                                candidateReviewLabel(candidate.review_status),
+                              ].filter(Boolean).join(" · ")}
                             </small>
                           </div>
                           <div className="plugin-candidate-links">
@@ -506,6 +516,7 @@ export const PluginOneboundCapturePanel = forwardRef<PluginOneboundCapturePanelH
                             <strong>{item.source_title.trim() || `商品 ${item.offer_id}`}</strong>
                             <small>
                               {statusLabel}
+                              {item.price_cny != null ? ` · 售价 ${formatPrice(item.price_cny)}` : ""}
                               {outcomeLabel && outcomeLabel !== statusLabel ? ` · ${outcomeLabel}` : ""}
                               {item.attempts > 0 ? ` · 尝试 ${item.attempts} 次` : ""}
                             </small>

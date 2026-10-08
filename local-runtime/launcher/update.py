@@ -137,11 +137,12 @@ def canonical_manifest_payload(manifest: Mapping[str, object]) -> bytes:
 
 
 def runtime_root() -> Path:
-    """数据根目录：冻结时 %APPDATA%\\MainPG，源码运行时 cwd。"""
-    if getattr(sys, "frozen", False):
-        appdata = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
-        return appdata / "MainPG"
-    return Path.cwd()
+    """数据根目录：与 launcher.core.storage_root 一致（可在安装时自定义到非系统盘）。
+
+    默认 %APPDATA%\\MainPG（冻结）/ cwd（源码），保持与原实现零差异。"""
+    from .core import storage_root  # 延迟导入避免与 core 的懒加载互相牵扯
+
+    return storage_root()
 
 
 def install_root() -> Path:

@@ -97,6 +97,54 @@ class LauncherReport:
 # --------------------------------------------------------------------------- #
 # 路径与 DB 读取
 # --------------------------------------------------------------------------- #
+# 与 wh_local/config.py 保持同步：安装器把用户选择的"数据存储位置"写入
+# HKCU\Software\MainPG\DataRoot，启动器据此把日志/更新缓存落到同一位置。
+STORAGE_REG_SUBKEY = r"Software\MainPG"
+STORAGE_REG_VALUE = "DataRoot"
+
+
+def configured_storage_root() -> Path | None:
+    """读取自定义数据根目录（HKCU\\Software\\MainPG\\DataRoot）。
+
+    与 wh_local.config._configured_storage_root 保持同步：只接受绝对路径，
+    非 Windows / 未设置 / 非法值返回 None，交由 storage_root 回退默认值。"""
+    if sys.platform != "win32":
+        return None
+    try:
+        import winreg
+    except ImportError:  # pragma: no cover - win32 一定有 winreg
+        return None
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, STORAGE_REG_SUBKEY) as key:
+            value, _ = winreg.QueryValueEx(key, STORAGE_REG_VALUE)
+    except OSError:
+        return None
+    text = str(value or "").strip()
+    if not text:
+        return None
+    path = Path(text)
+    if not path.is_absolute():
+        return None
+    return path
+
+
+def storage_root() -> Path:
+    """数据根目录：WH_LOCAL_DATA_ROOT > 注册表 DataRoot > %APPDATA%\\MainPG(冻结)/cwd。
+
+    与 wh_local.config.storage_root 保持同一优先级，保证启动器与主程序读写
+    同一份数据（用户可在安装时把数据指到非系统盘）。"""
+    override = os.environ.get("WH_LOCAL_DATA_ROOT", "").strip()
+    if override:
+        return Path(override)
+    if getattr(sys, "frozen", False):
+        configured = configured_storage_root()
+        if configured is not None:
+            return configured
+        appdata = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
+        return appdata / "MainPG"
+    return Path.cwd()
+
+
 def data_dir_from_env() -> Path | None:
     """按 wh_local/config 同款优先级定位数据目录。"""
     db_override = os.environ.get("WH_LOCAL_DATABASE_PATH")
@@ -105,10 +153,7 @@ def data_dir_from_env() -> Path | None:
     data_override = os.environ.get("WH_LOCAL_DATA_DIR")
     if data_override:
         return Path(data_override)
-    if getattr(sys, "frozen", False):
-        appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
-        return Path(appdata) / "MainPG" / "outputs" / "wh-local"
-    return Path.cwd() / "outputs" / "wh-local"
+    return storage_root() / "outputs" / "wh-local"
 
 
 def resolve_db_path() -> Path:
@@ -453,10 +498,9 @@ def error_code_of(message: str) -> str | None:
 
 
 def startup_failure_log_path() -> Path:
-    """启动失败记录（JSONL）。冻结时 %APPDATA%\\MainPG\\startup-failure.log。"""
+    """启动失败记录（JSONL）。冻结时 <storage_root>\\startup-failure.log。"""
     if getattr(sys, "frozen", False):
-        appdata = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
-        return appdata / "MainPG" / "startup-failure.log"
+        return storage_root() / "startup-failure.log"
     return Path.cwd() / "outputs" / "wh-local" / "startup-failure.log"
 
 

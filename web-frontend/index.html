@@ -9,6 +9,14 @@
         const recoveryKey = "mainpg_asset_recovery_v1";
         const assetPathPrefix = "/assets/";
 
+        const recover = () => {
+          if (window.sessionStorage.getItem(recoveryKey) === "retrying") return;
+          window.sessionStorage.setItem(recoveryKey, "retrying");
+          const recoveryUrl = new URL(window.location.href);
+          recoveryUrl.searchParams.set("asset_retry", String(Date.now()));
+          window.location.replace(recoveryUrl.toString());
+        };
+
         const isWorkbenchAsset = (target) => {
           if (!target || !target.tagName) return false;
           const tagName = String(target.tagName).toUpperCase();
@@ -22,24 +30,44 @@
           }
         };
 
+        // iconfont 未加载成功时，PUA 图标码点会回退到系统字体渲染成异常字形（乱码）。
+        // 字体加载失败不会触发 window 的 error 事件，因此单独检测并及时恢复。
+        const isIconFontFailed = () => {
+          try {
+            return Array.from(document.fonts || []).some((face) => {
+              const family = String(face.family || "").replace(/^["']|["']$/g, "").toLowerCase();
+              return family === "iconfont" && face.status === "error";
+            });
+          } catch (_) {
+            return false;
+          }
+        };
+
         window.addEventListener("error", (event) => {
           if (!isWorkbenchAsset(event.target)) return;
-          if (window.sessionStorage.getItem(recoveryKey) === "retrying") return;
-          window.sessionStorage.setItem(recoveryKey, "retrying");
-          const recoveryUrl = new URL(window.location.href);
-          recoveryUrl.searchParams.set("asset_retry", String(Date.now()));
-          window.location.replace(recoveryUrl.toString());
+          recover();
         }, true);
 
         window.addEventListener("load", () => {
-          window.setTimeout(() => {
-            const rootReady = Boolean(document.querySelector("#root")?.childElementCount);
-            const stylesheetReady = Array.from(document.querySelectorAll('link[rel="stylesheet"]'))
-              .every((link) => Boolean(link.sheet));
-            if (rootReady && stylesheetReady) {
-              window.sessionStorage.removeItem(recoveryKey);
-            }
-          }, 1500);
+          const settle = () => {
+            window.setTimeout(() => {
+              const rootReady = Boolean(document.querySelector("#root")?.childElementCount);
+              const stylesheetReady = Array.from(document.querySelectorAll('link[rel="stylesheet"]'))
+                .every((link) => Boolean(link.sheet));
+              if (isIconFontFailed()) {
+                recover();
+                return;
+              }
+              if (rootReady && stylesheetReady) {
+                window.sessionStorage.removeItem(recoveryKey);
+              }
+            }, 1500);
+          };
+          if (document.fonts && typeof document.fonts.ready?.then === "function") {
+            document.fonts.ready.then(settle, settle);
+          } else {
+            settle();
+          }
         });
       })();
     </script>

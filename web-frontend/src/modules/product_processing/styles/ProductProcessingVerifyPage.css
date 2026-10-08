@@ -383,6 +383,27 @@
   gap: 10px;
 }
 
+/* ── 首次拉取草稿时的骨架占位 ── */
+.verify-draft-list.is-skeleton {
+  pointer-events: none;
+}
+
+.pool-card.is-skeleton {
+  border-style: dashed;
+}
+
+.pool-card.is-skeleton .pool-card-body {
+  align-items: center;
+}
+
+.pool-card.is-skeleton .pool-thumb {
+  width: 96px;
+  height: 96px;
+  border: none;
+  cursor: default;
+  background: var(--theme-module-border, #e4eef6);
+}
+
 /* ── 卡片容器 ── */
 .pool-card {
   position: relative;

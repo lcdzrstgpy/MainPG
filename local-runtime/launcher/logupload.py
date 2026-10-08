@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 import sys
 import time
 from pathlib import Path
@@ -32,11 +31,12 @@ class LogUploadError(ValueError):
 
 
 def runtime_log_path() -> Path:
-    """本地运行日志路径：冻结时 %APPDATA%\\MainPG\\runtime.log，源码运行时 cwd/runtime.log。"""
-    if getattr(sys, "frozen", False):
-        appdata = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
-        return appdata / "MainPG" / _LOG_FILE_NAME
-    return Path.cwd() / _LOG_FILE_NAME
+    """本地运行日志路径：与 launcher.core.storage_root 一致（可自定义到非系统盘）。
+
+    默认 <数据根目录>\\runtime.log（冻结时 %APPDATA%\\MainPG，源码时 cwd）。"""
+    from .core import storage_root  # 延迟导入避免与 core 的懒加载互相牵扯
+
+    return storage_root() / _LOG_FILE_NAME
 
 
 def login(username: str, password: str, timeout: float = 10.0) -> tuple[str, dict[str, Any]]:

@@ -1960,6 +1960,11 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         ids = self.repository.delete_drafts(draft_ids, workspace_id)
         return {"deleted_count": len(ids), "ids": ids, "status": "deleted"}
 
+    def purge_drafts(self, draft_ids: list[int], workspace_id: str = "local") -> dict[str, Any]:
+        """物理删除草稿并释放空间（不可恢复）。"""
+        ids = self.repository.purge_drafts(draft_ids, workspace_id)
+        return {"deleted_count": len(ids), "ids": ids, "status": "purged"}
+
     def list_draft_batches(
         self, *, limit: int, offset: int, workspace_id: str = "local"
     ) -> dict[str, Any]:
@@ -3572,6 +3577,88 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "item_count": len(items),
             "items": items,
             "excluded_draft_ids": sorted(excluded_ids),
+        }
+
+    def draft_processed_preview(
+        self, draft_id: int, *, workspace_id: str = "local"
+    ) -> dict[str, Any]:
+        """「查看处理后详情」：返回某草稿最近一次 AI 处理结果（预检同款结构）。
+
+        货源页只有 draft id，没有 task id；这里按草稿反查最近的处理任务项，复用
+        预检的字段与图片投影逻辑，保证展示与预检界面一致。同一商品可能被采集多次
+        形成重复草稿，而 AI 只处理了其中一条；本草稿没有处理记录时，按相同商品
+        标题回退到已处理的重复草稿，并用 ``matched_draft_id``/``matched_by`` 标注
+        结果来源。都没有时 ``processed=False``、``item=None``，由前端给出提示。
+        """
+        draft_id = int(draft_id)
+        if draft_id <= 0:
+            raise ProductProcessingValidationError("draft id must be positive")
+        draft = self.repository.get_draft(draft_id, workspace_id=workspace_id)
+        if draft is None:
+            raise ProductProcessingNotFound("product draft not found")
+        matched_draft = draft
+        matched_by = "self"
+        item = self.repository.latest_task_item_for_draft(draft_id, workspace_id=workspace_id)
+        if item is None or str(item.get("status") or "") != "completed":
+            fallback = self.repository.latest_processed_item_by_title(
+                draft.get("title") or "",
+                workspace_id=workspace_id,
+                exclude_draft_id=draft_id,
+            )
+            if fallback is not None:
+                fallback_draft = self.repository.get_draft(
+                    int(fallback["draft_id"]), workspace_id=workspace_id
+                )
+                if fallback_draft is not None:
+                    matched_draft = fallback_draft
+                    item = fallback["item"]
+                    matched_by = "title"
+        matched_draft_id = int(matched_draft.get("id") or draft_id)
+        if item is None:
+            return {
+                "draft_id": draft_id,
+                "processed": False,
+                "task_id": None,
+                "item_id": None,
+                "matched_draft_id": None,
+                "matched_by": None,
+                "item": None,
+            }
+        result = item.get("result") or {}
+        saved = matched_draft.get("preview_overrides") or {}
+        if not isinstance(saved, dict):
+            saved = {}
+        task_id = int(item.get("task_id") or 0)
+        media_contract_version = int(matched_draft.get("media_contract_version") or 1)
+        projected = self.preview_images.project_item_images(
+            task_id=task_id,
+            product_draft_id=matched_draft_id,
+            result=result,
+            saved=saved,
+            workspace_id=workspace_id,
+            media_contract_version=media_contract_version,
+        )
+        return {
+            "draft_id": draft_id,
+            "processed": True,
+            "task_id": task_id,
+            "item_id": item.get("id"),
+            "matched_draft_id": matched_draft_id,
+            "matched_by": matched_by,
+            "item": {
+                **self._preview_item(
+                    item,
+                    result,
+                    saved,
+                    preview_revision=int(matched_draft.get("preview_revision") or 0),
+                ),
+                "media_contract_version": media_contract_version,
+                "excluded": False,
+                "sku_availability": self.preview_images.sku_availability_state(
+                    matched_draft_id, workspace_id
+                ),
+                **projected,
+            },
         }
 
     def set_preview_item_excluded(
@@ -10715,11 +10802,17 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 "platform": raw.get("platform") or raw.get("source_platform") or "",
                 "source_platform": raw.get("source_platform") or "",
                 "source_title": raw.get("source_title") or "",
+                "shop_name": raw.get("shop_name") or "",
+                "collection_channel": raw.get("collection_channel") or "",
                 "main_image_url": raw.get("main_image_url") or "",
                 "product_link": raw.get("product_link") or raw.get("source_url") or "",
                 "source_url": raw.get("source_url") or "",
                 "image_path": raw.get("image_path") or draft.get("image_path") or "",
                 "category": raw.get("category") or "",
+                # 原币种：货源站售价可能是 USD 等非人民币，前端要按原币种展示，
+                # 不能用固定的人民币符号。
+                "currency": raw.get("currency") or raw.get("price_currency") or "",
+                "price": raw.get("price") or "",
                 "selection_criteria": raw.get("selection_criteria") or {},
                 "variant_complexity": raw.get("variant_complexity") or {},
                 "captured_fields": raw.get("captured_fields") or {},

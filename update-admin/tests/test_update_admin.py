@@ -553,6 +553,94 @@ def test_second_release_automatically_publishes_signed_incremental_patch(test_co
     assert release["patch_file_count"] == 3
 
 
+def test_patch_path_safe_blocks_traversal_and_absolute_paths():
+    for unsafe in (
+        "",
+        "../outside.txt",
+        "folder/../../etc/passwd",
+        "/etc/passwd",
+        "C:/Windows/system32/cmd.exe",
+        "..\\windows",
+        "clipforge/./route.js",
+        "clipforge//route.js",
+        "clipforge/route.js:ads",
+        "clipforge/route?.js",
+    ):
+        assert app_module.patch_path_safe(unsafe) is False
+
+    for safe in (
+        "MainPG.exe",
+        "clipforge/app/.next/server/app/api/project/[id]/compose/route.js",
+        "clipforge/app/.next/server/chunks/[root-of-the-server]__03~zp2a._.js",
+        "clipforge/app/.next/server/app/api/output/[...path]/route.js.nft.json",
+        "clipforge/app/@slot/page.js",
+    ):
+        assert app_module.patch_path_safe(safe) is True
+
+
+def test_embedded_patch_accepts_nextjs_dynamic_route_paths(test_context, monkeypatch):
+    client, settings, _ = test_context
+    monkeypatch.setattr(
+        app_module,
+        "verify_authenticode",
+        lambda path, resolved: {"status": "Valid", "subject": "CN=Test Publisher", "message": "ok"},
+    )
+    assert login(client, "boss", "Boss-Test-Password!").status_code == 200
+
+    first = client.post(
+        "/api/releases/publish",
+        data={"version": "1.0.0", "release_notes": "first"},
+        files={"installer": ("first.exe", b"MZ-first-installer", "application/octet-stream")},
+    )
+    assert first.status_code == 200, first.text
+
+    dynamic_paths = (
+        "clipforge/app/.next/server/app/api/project/[id]/compose/route.js",
+        "clipforge/app/.next/server/app/api/output/[...path]/route.js.nft.json",
+        "clipforge/app/.next/server/chunks/[root-of-the-server]__03~zp2a._.js",
+        "clipforge/app/.next/server/app/project/[id]/assets/page@client.js",
+    )
+
+    def make_bundle(root: Path, bundle_version: str, *, include_dynamic: bool):
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "MainPG.exe").write_bytes(f"main-{bundle_version}".encode())
+        (root / "version.json").write_text(json.dumps({"version": bundle_version}), encoding="utf-8")
+        if include_dynamic:
+            for relative in dynamic_paths:
+                target = root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(f"content-{bundle_version}-{relative}".encode())
+
+    old_bundle = settings.staging_dir.parent / "old-bundle"
+    new_bundle = settings.staging_dir.parent / "new-bundle"
+    make_bundle(old_bundle, "1.0.0", include_dynamic=False)
+    make_bundle(new_bundle, "1.0.1", include_dynamic=True)
+    embedded_installer = settings.staging_dir.parent / "dynamic-with-patch.exe"
+    embedded_installer.write_bytes(b"MZ-dynamic-installer")
+    from wh_local.runtime.embedded_patch_builder import append_embedded_patch  # noqa: PLC0415
+
+    append_embedded_patch(
+        installer=embedded_installer,
+        from_dir=old_bundle,
+        to_dir=new_bundle,
+        from_version="1.0.0",
+        to_version="1.0.1",
+    )
+    second = client.post(
+        "/api/releases/publish",
+        data={"version": "1.0.1", "release_notes": "dynamic routes"},
+        files={"installer": ("second.exe", embedded_installer.read_bytes(), "application/octet-stream")},
+    )
+    assert second.status_code == 200, second.text
+    result = second.json()
+    assert result["patch"]["status"] == "published"
+    assert result["patch"]["from_version"] == "1.0.0"
+    assert result["patch"]["file_count"] == len(dynamic_paths) + 1
+
+    for relative in dynamic_paths:
+        assert (settings.publish_dir / "patch" / "1.0.1" / relative).is_file()
+
+
 def test_patch_failure_keeps_full_installer_release_available(test_context, monkeypatch):
     client, settings, _ = test_context
     assert login(client, "boss", "Boss-Test-Password!").status_code == 200

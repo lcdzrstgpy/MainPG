@@ -21,6 +21,9 @@ MODEL_NAME = "isnet-general-use"
 MAX_POINTS = 12
 # Douglas-Peucker 容差（相对轮廓周长），越大轮廓越粗。
 SIMPLIFY_TOLERANCE = 0.012
+# 自动框选留白：轮廓贴主体太紧时不便微调，且后续抠图容易切到主体边缘。
+# 取图片长边的 3% 作为向外扩张量（像素），包住主体但不过分侵入背景。
+MARGIN_RATIO = 0.03
 # 分割可信区间：前景占比过小说明没找到主体，过大说明模型把整张图当成了前景。
 MIN_FOREGROUND_RATIO = 0.02
 MAX_FOREGROUND_RATIO = 0.98
@@ -100,6 +103,11 @@ def _polygon_from_mask(mask: Any, cv2: Any, np: Any) -> list[list[float]] | None
     )
     if extent < MIN_FOREGROUND_EXTENT:
         return None
+    # 轮廓外扩留白：在可信前景上再向外膨胀一点，让自动框不贴主体边缘（用户可继续微调）。
+    # 放在可信度检查之后，保证 ratio/extent 判断仍基于原始分割结果。
+    margin = max(2, int(round(max(height, width) * MARGIN_RATIO)))
+    kernel_size = margin * 2 + 1
+    binary = cv2.dilate(binary, np.ones((kernel_size, kernel_size), np.uint8), iterations=1)
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not len(contours):
         return None

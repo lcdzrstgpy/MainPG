@@ -676,7 +676,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                   disabled={skuCheckBusy || !initialDraftIds?.length}
                   onClick={() => void runSkuAvailabilityCheck()}
                   title="重新检测所选链接的 SKU 规格图是否含中文水印、以及是否为 1:1 方图"
-                >{skuCheckBusy ? '检测中…' : '重新检测'}</button>
+                >{skuCheckBusy ? <><i className="app-spinner is-sm" aria-hidden="true" />检测中…</> : '重新检测'}</button>
               </div>
               {skuCheckBusy && (
                 <div className="verify-repull-banner" role="status">
@@ -726,7 +726,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
               )}
             </div>
             <div className="verify-actions">
-              <button className="primary" onClick={() => startBatch()} disabled={loading || batchProcessing || !initialDraftIds?.length || skuCheckBusy}>{loading ? '处理中...' : '开始处理'}</button>
+              <button className="primary" onClick={() => startBatch()} disabled={loading || batchProcessing || !initialDraftIds?.length || skuCheckBusy}>{loading ? <><i className="app-spinner is-sm" aria-hidden="true" />处理中...</> : '开始处理'}</button>
               <button onClick={clearBatch} disabled={!batch || batchProcessing} title={batchProcessing ? '运行中任务不能清理' : undefined}>清空任务</button>
               {!!initialPremiumDraftIds?.length && (
                 <span className="verify-premium-hint">精品模式 {initialPremiumDraftIds.length} 条</span>
@@ -802,7 +802,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                       disabled={controlBusy || loading}
                       onClick={() => void (batch.task.status === 'paused' ? resumeTask() : pauseTask())}
                       title={batch.task.status === 'paused' ? '继续处理剩余商品' : '暂停处理：停止后续 AI 调用，可随时从断点继续'}
-                    >{batch.task.status === 'paused' ? '继续处理' : '暂停处理'}</button>
+                    >{controlBusy && <i className="app-spinner is-sm" aria-hidden="true" />}{batch.task.status === 'paused' ? '继续处理' : '暂停处理'}</button>
                   )}
                   {(batchProcessing || taskPaused) && (
                     <button
@@ -810,7 +810,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                       disabled={controlBusy || loading}
                       onClick={() => void cancelTask()}
                       title="取消任务：立即停止后续 AI 调用，未处理链接标记失败并释放积分（不可恢复）"
-                    >取消任务</button>
+                    >{controlBusy && <i className="app-spinner is-sm" aria-hidden="true" />}取消任务</button>
                   )}
                   {taskPaused ? (
                     <button
@@ -820,7 +820,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                       title={batch.success_count > 0
                         ? '永久取消剩余未完成商品，只预检并导出当前成功商品'
                         : '当前还没有成功商品可导出'}
-                    >预检并导出成功商品（{batch.success_count}）</button>
+                    >{controlBusy && <i className="app-spinner is-sm" aria-hidden="true" />}预检并导出成功商品（{batch.success_count}）</button>
                   ) : (
                     <button
                       className="primary"
@@ -855,7 +855,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                       disabled={loading || batchProcessing}
                       onClick={() => retryFailed(failureItems.map((item) => item.product_draft_id).filter((id): id is number => id != null))}
                       title={batchProcessing ? '当前批次处理中，完成后可重试' : '重新提交全部失败链接处理'}
-                    ><i className="iconfont icon-rocket" aria-hidden="true" />重试全部失败（{failureItems.length}）</button>
+                    >{loading ? <><i className="app-spinner is-sm" aria-hidden="true" />重试全部失败（{failureItems.length}）</> : <><i className="iconfont icon-rocket" aria-hidden="true" />重试全部失败（{failureItems.length}）</>}</button>
                   )}
                     </>
                   )}
@@ -892,7 +892,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                                 disabled={loading || batchProcessing}
                                 onClick={() => retryFailed([draftId])}
                                 title="以该草稿重新提交处理流水线"
-                              >重新处理</button>
+                              >{loading && <i className="app-spinner is-sm" aria-hidden="true" />}重新处理</button>
                             </span>
                           ) : ('-')}
                         </td>
