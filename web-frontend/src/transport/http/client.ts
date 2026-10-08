@@ -392,14 +392,18 @@ async function fetchWithTimeout(
  * 回 **500 text/plain**，浏览器拿到的是正常 HTTP 响应而不是网络层失败 —— 若按
  * 「有响应 = 后端还活着」处理，失联遮罩永远不弹。
  *
+ * ⚠️ 必须再看一眼响应体：FastAPI 未捕获异常的默认响应就是纯文本 `Internal Server Error`
+ * （同样是 5xx + text/plain），那是**后端活着但崩了**，绝不能被当成「不可达」——
+ * 否则真实错误会被「请检查杀毒软件」这条文案盖住（2026-10-08 实际踩到过一次）。
+ *
  * 打包版页面与 API 同源（8010），后端挂掉表现为连接被拒（TypeError），本就走另一条
- * 分支；此时非 JSON 的 5xx 只可能是后端自身未捕获异常（FastAPI 默认回纯文本），
- * 不应判成「不可达」。因此这里限定 DEV，生产行为保持不变。
+ * 分支；因此这里限定 DEV，生产行为保持不变。
  */
-function isBackendUnreachable(response: Response): boolean {
+function isBackendUnreachable(response: Response, bodyText = ""): boolean {
   if (!import.meta.env.DEV) return false;
   if (response.status < 500) return false;
-  return !(response.headers.get("content-type") ?? "").includes("application/json");
+  if ((response.headers.get("content-type") ?? "").includes("application/json")) return false;
+  return bodyText.trim() !== "Internal Server Error";
 }
 
 export async function httpJson<T>(path: string, options: RequestOptions = {}): Promise<T> {
@@ -418,24 +422,25 @@ export async function httpJson<T>(path: string, options: RequestOptions = {}): P
     options.signal,
   );
 
+  const contentType = response.headers.get("content-type") ?? "";
+  let payload: any = {};
+  let rawText = "";
+  if (contentType.includes("application/json")) {
+    payload = await response.json().catch(() => ({}));
+  } else if (!response.ok) {
+    // 非 JSON 错误响应（网关 200 html / 拦截页 / 后端纯文本 500）：把文本作为 detail 透出，
+    // 避免静默解析成空对象把真实失败吞掉。文本同时用于判定是不是「代理替后端作答」。
+    rawText = await response.text().catch(() => "");
+    payload = { detail: rawText || `请求失败 (HTTP ${response.status})` };
+  }
+
   // 拿到后端自身的响应（含 4xx/5xx JSON）→ 进程还活着，恢复在线状态；
-  // 但代理/网关替后端回的 5xx（非 JSON）说明后端其实不可达，必须判失联，
-  // 否则开发态（vite 代理回 500）遮罩永远不会弹。
-  const backendUnreachable = isBackendUnreachable(response);
+  // 只有「代理替后端作答」的 5xx 才判不可达，见 isBackendUnreachable。
+  const backendUnreachable = isBackendUnreachable(response, rawText);
   if (backendUnreachable) {
     notifyBackendOffline();
   } else {
     notifyBackendOnline();
-  }
-
-  const contentType = response.headers.get("content-type") ?? "";
-  let payload: any = {};
-  if (contentType.includes("application/json")) {
-    payload = await response.json().catch(() => ({}));
-  } else if (!response.ok) {
-    // 非 JSON 错误响应（网关 200 html / 拦截页等）：把文本作为 detail 透出，
-    // 避免静默解析成空对象把真实失败吞掉。
-    payload = { detail: (await response.text().catch(() => "")) || `请求失败 (HTTP ${response.status})` };
   }
 
   if (!response.ok) {
@@ -466,9 +471,10 @@ export async function httpBlob(path: string, options: RequestOptions = {}): Prom
   );
 
   if (!response.ok) {
-    // 代理替后端回的 5xx（非 JSON）同样是「后端不可达」，不能只当普通失败。
-    if (isBackendUnreachable(response)) notifyBackendOffline();
     const detail = await response.text().catch(() => "请求失败");
+    // 代理替后端回的 5xx（非 JSON）同样是「后端不可达」，不能只当普通失败；
+    // 但后端自身未捕获的 500（纯文本 "Internal Server Error"）不算。
+    if (isBackendUnreachable(response, detail)) notifyBackendOffline();
     if (isSessionExpired(response, detail)) notifySessionExpired(detail);
     throw new Error(toUserMessage(detail || "请求失败"));
   }

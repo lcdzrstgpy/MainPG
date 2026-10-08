@@ -1930,6 +1930,24 @@ class PodCustomizationRepository:
 
     TERMINAL_BATCH_STATUSES = {"completed", "partial_failure", "failed", "cancelled"}
 
+    # asset 是内容寻址存储：同一 asset_id 可能被多个批次 / 模板 / 快照共用
+    # （典型例子：复刻批次的「内部锚点模板」与目标白底图指向同一个 asset）。
+    # 删资产前必须确认没有任何表再引用它，否则会撞
+    # `sqlite3.IntegrityError: FOREIGN KEY constraint failed`（2026-10-08 实测）。
+    # `reap_stale_local_cache` 的孤儿扫描复用同一份判定，改动时勿只改一处。
+    _ASSET_IN_USE_PREDICATES = (
+        "asset_id NOT IN (SELECT asset_id FROM pod_customization_templates)",
+        "asset_id NOT IN (SELECT asset_id FROM pod_customization_template_snapshots)",
+        "asset_id NOT IN (SELECT pattern_asset_id FROM pod_customization_batch_items WHERE pattern_asset_id <> '')",
+        "asset_id NOT IN (SELECT composite_asset_id FROM pod_customization_batch_items WHERE composite_asset_id <> '')",
+        "asset_id NOT IN (SELECT pattern_asset_id FROM pod_customization_style_grid_results WHERE pattern_asset_id <> '')",
+        "asset_id NOT IN (SELECT composite_asset_id FROM pod_customization_style_grid_results WHERE composite_asset_id <> '')",
+        "asset_id NOT IN (SELECT grid_asset_id FROM pod_customization_generation_calls WHERE grid_asset_id <> '')",
+        "asset_id NOT IN (SELECT pattern_asset_id FROM pod_customization_pattern_candidates WHERE pattern_asset_id <> '')",
+        "asset_id NOT IN (SELECT source_asset_id FROM pod_customization_replica_batches WHERE source_asset_id <> '')",
+        "asset_id NOT IN (SELECT asset_id FROM pod_customization_replica_targets)",
+    )
+
     def delete_batch(self, batch_id: str, workspace_id: str, owner_user_id: str) -> list[str]:
         """Delete a terminal batch and return now-unused local asset paths.
 
@@ -2057,20 +2075,12 @@ class PodCustomizationRepository:
             ):
                 connection.execute(statement, (cutoff,))
             protected = self._collect_trial_asset_ids(connection)
+            guards = " AND ".join(self._ASSET_IN_USE_PREDICATES)
             rows = connection.execute(
-                """SELECT a.asset_id FROM pod_customization_assets AS a
-                   WHERE a.kind <> 'template'
-                     AND a.created_at < ?
-                     AND a.asset_id NOT IN (SELECT asset_id FROM pod_customization_templates)
-                     AND a.asset_id NOT IN (SELECT asset_id FROM pod_customization_template_snapshots)
-                     AND a.asset_id NOT IN (SELECT pattern_asset_id FROM pod_customization_batch_items WHERE pattern_asset_id <> '')
-                     AND a.asset_id NOT IN (SELECT composite_asset_id FROM pod_customization_batch_items WHERE composite_asset_id <> '')
-                     AND a.asset_id NOT IN (SELECT pattern_asset_id FROM pod_customization_style_grid_results WHERE pattern_asset_id <> '')
-                     AND a.asset_id NOT IN (SELECT composite_asset_id FROM pod_customization_style_grid_results WHERE composite_asset_id <> '')
-                     AND a.asset_id NOT IN (SELECT grid_asset_id FROM pod_customization_generation_calls WHERE grid_asset_id <> '')
-                     AND a.asset_id NOT IN (SELECT pattern_asset_id FROM pod_customization_pattern_candidates WHERE pattern_asset_id <> '')
-                     AND a.asset_id NOT IN (SELECT source_asset_id FROM pod_customization_replica_batches WHERE source_asset_id <> '')
-                     AND a.asset_id NOT IN (SELECT asset_id FROM pod_customization_replica_targets)""",
+                f"""SELECT asset_id FROM pod_customization_assets
+                   WHERE kind <> 'template'
+                     AND created_at < ?
+                     AND {guards}""",
                 (cutoff,),
             ).fetchall()
             orphaned = {row["asset_id"] for row in rows if row["asset_id"] not in protected}
@@ -2096,25 +2106,30 @@ class PodCustomizationRepository:
                         asset_ids.add(value)
         return asset_ids
 
-    @staticmethod
+    @classmethod
     def _delete_assets_and_collect_files(
-        connection: sqlite3.Connection, asset_ids: set[str]
+        cls, connection: sqlite3.Connection, asset_ids: set[str]
     ) -> list[str]:
-        """Delete non-template asset rows and return deduplicated unused paths."""
+        """Delete non-template asset rows and return deduplicated unused paths.
+
+        只删「已无任何表引用」的资产：asset 是内容寻址存储，同一 asset_id 可能被
+        其它批次 / 模板 / 快照共用，硬删会撞 FOREIGN KEY constraint failed。
+        """
         if not asset_ids:
             return []
         placeholders = ",".join("?" for _ in asset_ids)
         params = tuple(asset_ids)
+        guards = " AND ".join(cls._ASSET_IN_USE_PREDICATES)
         rows = connection.execute(
             f"""SELECT asset_id, relative_path FROM pod_customization_assets
-                WHERE asset_id IN ({placeholders}) AND kind <> 'template'""",
+                WHERE asset_id IN ({placeholders}) AND kind <> 'template' AND {guards}""",
             params,
         ).fetchall()
         if not rows:
             return []
         connection.execute(
             f"""DELETE FROM pod_customization_assets
-                WHERE asset_id IN ({placeholders}) AND kind <> 'template'""",
+                WHERE asset_id IN ({placeholders}) AND kind <> 'template' AND {guards}""",
             params,
         )
         relative_paths = {row["relative_path"] for row in rows}
