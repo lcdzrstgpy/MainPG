@@ -34,6 +34,7 @@ MIGRATION_NAMES = (
     "012_batch_execution_fencing",
     "013_style_elements",
     "014_semi_customization",
+    "015_replica_customization",
 )
 
 
