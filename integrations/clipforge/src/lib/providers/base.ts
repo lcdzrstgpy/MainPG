@@ -84,6 +84,14 @@ export abstract class BaseProvider implements AIProvider {
        * server rejected the request without processing it.
        */
       idempotent?: boolean
+      /**
+       * Serialize `body` as `application/x-www-form-urlencoded` instead of JSON.
+       *
+       * 速创（Suchuang）的视频端点只从表单/query 绑定参数：同一个 `images` 参考图，表单编码下
+       * 能建任务，JSON body 下会被回 `转发请求失败: 目标服务器返回 500 错误`（已实测对照）。
+       * 数组值按上游文档用英文逗号拼接。
+       */
+      form?: boolean
     } = {}
   ): Promise<T> {
     const { method = 'GET', body, headers = {}, timeout } = options
@@ -93,10 +101,21 @@ export abstract class BaseProvider implements AIProvider {
 
     // build request headers
     const mergedHeaders: Record<string, string> = {
-      'Content-Type': 'application/json',
+      'Content-Type': options.form ? 'application/x-www-form-urlencoded' : 'application/json',
       ...this.getAuthHeaders(),
       ...this.config.headers,
       ...headers,
+    }
+
+    const serializeBody = (): string | undefined => {
+      if (!body) return undefined
+      if (!options.form) return JSON.stringify(body)
+      const params = new URLSearchParams()
+      for (const [key, value] of Object.entries(body as Record<string, unknown>)) {
+        if (value === undefined || value === null) continue
+        params.append(key, Array.isArray(value) ? value.join(',') : String(value))
+      }
+      return params.toString()
     }
 
     // auto-retry on transient errors, up to 2 retries with exponential backoff.
@@ -111,7 +130,7 @@ export abstract class BaseProvider implements AIProvider {
         const response = await fetch(url, {
           method,
           headers: mergedHeaders,
-          body: body ? JSON.stringify(body) : undefined,
+          body: serializeBody(),
           signal: controller.signal,
         })
 

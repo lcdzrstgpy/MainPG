@@ -25,6 +25,13 @@ const VIDEO_MODELS: Model[] = [
 
 type SuchuangResponse = { code?: number; msg?: string; data?: Record<string, unknown> | string };
 
+/**
+ * 速创各视频端点接受的参数并不一致（逐个对过文档并实测），多传一个会直接被判
+ * 「转发请求失败: 存在未绑定的参数: xxx」。目前只有 MiniMax H3 不收 generate_audio
+ * ——它本身就是原生双声道（文档参数表里给的是 resolution 而不是 generate_audio）。
+ */
+const VIDEO_REJECTS_GENERATE_AUDIO: ReadonlySet<string> = new Set(["video_minimax_h3"]);
+
 /** 图片参考图的临时公网 URL 有效期（生成过程通常 1–3 分钟）。 */
 const IMAGE_REFERENCE_TTL_SECONDS = 1800;
 /** 视频任务期间参考图必须一直可抓，有效期给长一些；到期后再尽力清理。 */
@@ -117,18 +124,21 @@ export class SuchuangProvider extends BaseProvider {
         prompt: options.prompt,
         ...(firstFrame.urls[0] && { first_frame: firstFrame.urls[0] }),
         ...(lastFrame.urls[0] && { last_frame: lastFrame.urls[0] }),
-        // images / videos / audios 都必须是字符串数组：上游（Go）按 []string 反序列化，
-        // 传逗号拼接的字符串会被判 `cannot unmarshal string into ...images of type []string`（实测）
-        ...(images.urls.length && { images: images.urls }),
-        ...(options.referenceVideoUrls?.length && { videos: [...options.referenceVideoUrls] }),
-        ...(options.referenceAudioUrls?.length && { audios: [...options.referenceAudioUrls] }),
-        generate_audio: options.audioEnabled ?? true,
+        // images / videos / audios 按文档用**英文逗号拼接的字符串**。视频端点必须走表单编码
+        // （见 submit 的 form 参数）：同一个 images，表单编码下 code=200 能建任务，JSON body 下
+        // 会被回「转发请求失败: 目标服务器返回 500 错误」——因为我们用 JSON 提交才一直失败（实测对照）。
+        ...(images.urls.length && { images: images.urls.join(",") }),
+        ...(options.referenceVideoUrls?.length && { videos: options.referenceVideoUrls.join(",") }),
+        ...(options.referenceAudioUrls?.length && { audios: options.referenceAudioUrls.join(",") }),
+        // 多传一个上游不认的参数会整单被拒，所以按模型裁剪
+        ...(VIDEO_REJECTS_GENERATE_AUDIO.has(options.modelId)
+          ? {}
+          : { generate_audio: options.audioEnabled ?? true }),
         ratio: ratio(options.width, options.height),
-        // duration 必须是**字符串**（实测：传数字被判 `json: cannot unmarshal number into
-        // Go struct field .Alias.seconds of type string`，文档同样标注 string）
+        // duration 是字符串（实测：传数字被判 `cannot unmarshal number into …seconds of type string`）
         ...(options.duration != null && { duration: String(options.duration) }),
         ...options.extra,
-      });
+      }, { form: true });
       // 任务执行期间上游还要抓这些图，不能立刻删；到期后再尽力清理（进程若中途退出就交给桶的生命周期规则）
       const timer = setTimeout(() => void releaseAll(), VIDEO_REFERENCE_CLEANUP_DELAY_MS);
       timer.unref?.();
@@ -170,7 +180,15 @@ export class SuchuangProvider extends BaseProvider {
     };
   }
 
-  private async submit(modelId: string, body: Record<string, unknown>): Promise<string> {
+  /**
+   * `form: true` 用于视频端点：速创只从表单/query 绑定参数，JSON body 下参考图（images）
+   * 会被它回成「转发请求失败: 目标服务器返回 500 错误」。图片端点走 JSON 即可（一直是通的）。
+   */
+  private async submit(
+    modelId: string,
+    body: Record<string, unknown>,
+    options: { form?: boolean } = {}
+  ): Promise<string> {
     // The platform documents the key both as the Authorization header and query
     // parameter. Keep both: its console examples use the query parameter while
     // production API calls require Authorization.
@@ -178,6 +196,7 @@ export class SuchuangProvider extends BaseProvider {
       method: "POST",
       body,
       idempotent: false,
+      ...(options.form && { form: true }),
     });
     const data = asRecord(response.data);
     const taskId = String(data.id ?? data.task_id ?? data.taskId ?? "").trim();

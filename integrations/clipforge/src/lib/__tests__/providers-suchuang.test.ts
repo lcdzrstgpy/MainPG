@@ -37,17 +37,20 @@ describe("SuchuangProvider", () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe(`${baseUrl}/api/async/video_wan_3.0?key=${apiKey}`);
     expect(init.headers).toMatchObject({ Authorization: apiKey });
-    expect(JSON.parse(init.body)).toEqual({
+    // 视频端点必须走表单编码：同一个 images，JSON body 会被速创回成
+    // 「转发请求失败: 目标服务器返回 500 错误」，表单编码下才 code=200（实测对照）
+    expect((init.headers as Record<string, string>)["Content-Type"]).toBe("application/x-www-form-urlencoded");
+    expect(Object.fromEntries(new URLSearchParams(init.body as string))).toEqual({
       prompt: "商品缓慢旋转展示",
       first_frame: "https://cdn.example/first.png",
       last_frame: "https://cdn.example/last.png",
-      // 上游（Go）按 []string 反序列化，逗号拼接字符串会被判 unmarshal 失败（实测）
-      images: ["https://cdn.example/ref.png"],
-      videos: ["https://cdn.example/ref.mp4"],
-      audios: ["https://cdn.example/ref.mp3"],
-      generate_audio: true,
+      // 多张参考图按文档用英文逗号拼接
+      images: "https://cdn.example/ref.png",
+      videos: "https://cdn.example/ref.mp4",
+      audios: "https://cdn.example/ref.mp3",
+      generate_audio: "true",
       ratio: "9:16",
-      // duration 必须是字符串：传数字会被判 `cannot unmarshal number into …seconds of type string`（实测）
+      // duration 是字符串：传数字会被判 `cannot unmarshal number into …seconds of type string`（实测）
       duration: "8",
     });
   });
@@ -67,7 +70,10 @@ describe("SuchuangProvider", () => {
 
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe(`${baseUrl}/api/async/video_minimax_h3?key=${apiKey}`);
-    expect(JSON.parse(init.body).duration).toBe("5");
+    const fields = Object.fromEntries(new URLSearchParams(init.body as string));
+    expect(fields.duration).toBe("5");
+    // MiniMax H3 不收 generate_audio（传了会被判「存在未绑定的参数」，它本身是原生双声道）
+    expect(fields).not.toHaveProperty("generate_audio");
   });
 
   it("normalizes a completed async task and finds its video URL", async () => {
@@ -277,7 +283,7 @@ describe("SuchuangProvider", () => {
       expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/api/async/"))).toBe(false);
     });
 
-    it("视频任务的参考图同样中转（images 为字符串数组）", async () => {
+    it("视频任务的参考图同样中转（表单编码、英文逗号拼接）", async () => {
       stubCosConfig();
       const fetchMock = relayFetchMock();
       vi.stubGlobal("fetch", fetchMock);
@@ -293,10 +299,12 @@ describe("SuchuangProvider", () => {
       });
 
       const submitCall = fetchMock.mock.calls.find(([url]) => String(url).includes("/api/async/"))!;
-      const body = JSON.parse((submitCall[1] as RequestInit).body as string);
-      expect(Array.isArray(body.images)).toBe(true);
-      expect(body.images).toHaveLength(2);
-      for (const url of body.images as string[]) {
+      const init = submitCall[1] as RequestInit;
+      expect((init.headers as Record<string, string>)["Content-Type"]).toBe("application/x-www-form-urlencoded");
+      const images = new URLSearchParams(init.body as string).get("images")!;
+      const urls = images.split(",");
+      expect(urls).toHaveLength(2);
+      for (const url of urls) {
         expect(url).toMatch(/^https:\/\/demo-bucket-123\.cos\.ap-guangzhou\.myqcloud\.com\/.*q-signature=/);
       }
     });
