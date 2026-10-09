@@ -121,3 +121,41 @@ export function computeGridCells(
   }
   return cells;
 }
+
+/**
+ * 九宫格关键帧落库时写入的 prompt：既标记来源（"这格是九宫格裁出来的"），
+ * 也当作「这张图是不是为当前脚本这一镜画的」指纹——复用判定直接比它（见 reusableGridCells）。
+ */
+export function gridKeyframePrompt(index: number, description?: string): string {
+  return `[storyboard-grid 第${index + 1}格] ${description ?? ""}`.trim();
+}
+
+/** 复用判定需要的最小资产字段 */
+export interface GridKeyframeAsset {
+  shotId: number;
+  filePath: string | null;
+  prompt: string | null;
+}
+
+/**
+ * 已有的九宫格关键帧能不能直接复用，而不是重新画一遍？
+ *
+ * 判据从严：**每一镜**都必须有一张「由九宫格裁出来、且内嵌描述与当前脚本逐字一致」的关键帧。
+ * 用户改了某镜描述、换了脚本或换过参考图 → 描述对不上 → 返回 null，由调用方重新生成。
+ * 为什么需要这道墙：整片链每次进入都会重跑，没有它就会把同一批分镜反复重画（真金白银）。
+ */
+export function reusableGridCells(
+  shots: { shotId: number; description?: string }[],
+  assets: GridKeyframeAsset[]
+): { shotId: number; filePath: string }[] | null {
+  if (shots.length === 0) return null;
+  const byShot = new Map(assets.map((a) => [a.shotId, a]));
+  const cells: { shotId: number; filePath: string }[] = [];
+  for (const [index, shot] of shots.entries()) {
+    const asset = byShot.get(shot.shotId);
+    if (!asset?.filePath) return null;
+    if ((asset.prompt ?? "") !== gridKeyframePrompt(index, shot.description)) return null;
+    cells.push({ shotId: shot.shotId, filePath: asset.filePath });
+  }
+  return cells;
+}

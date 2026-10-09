@@ -9,7 +9,7 @@ import { scripts, assets } from "@/lib/db/schema";
 import { and, eq } from "drizzle-orm";
 import { createProvider } from "@/lib/providers";
 import { toRemoteUsableImage } from "@/lib/remote-image";
-import { buildStoryboardGridPrompt, computeGridCells, GRID_MAX_SHOTS } from "@/lib/storyboard-grid";
+import { buildStoryboardGridPrompt, computeGridCells, gridKeyframePrompt, reusableGridCells, GRID_MAX_SHOTS } from "@/lib/storyboard-grid";
 import { ffmpegBin } from "@/lib/ffmpeg-path";
 import { probeMedia } from "@/lib/media-probe";
 import { apiError, errText } from "@/lib/api-error";
@@ -73,7 +73,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       return apiError(req, error.zh, error.en, error.status);
     }
     const body = await req.json();
-    const { scriptId, provider: providerName, model, apiKey, baseUrl, options, characterSheetUrl, productImageUrl } = body as {
+    const { scriptId, provider: providerName, model, apiKey, baseUrl, options, characterSheetUrl, productImageUrl, regenerate } = body as {
       scriptId?: string;
       provider?: string;
       model?: string;
@@ -84,6 +84,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       characterSheetUrl?: string;
       /** Product photo — locks the product's appearance across all nine cells */
       productImageUrl?: string;
+      /** 强制重画：用户明确要求换一批分镜画面时才置 true（默认复用已有且仍匹配当前脚本的关键帧） */
+      regenerate?: boolean;
     };
     if (!scriptId || !providerName || !model) {
       return apiError(req, "缺少 scriptId / provider / model", "Missing scriptId / provider / model", 400);
@@ -109,6 +111,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         `The grid holds at most ${GRID_MAX_SHOTS} shots (this script has ${shots.length}) — use per-shot generation with keyframe chaining for longer scripts`,
         400
       );
+    }
+
+    // 已有「匹配当前脚本」的九宫格关键帧就直接复用，不再重画一遍。
+    // 整片链每次进入都会重跑这道工序，没有这道判断就会把同一批分镜反复重画（真金白银），
+    // 用户也会觉得「上次做好的又被重做了一遍」。
+    if (!regenerate) {
+      const existing = await db
+        .select({ shotId: assets.shotId, filePath: assets.filePath, prompt: assets.prompt })
+        .from(assets)
+        .where(and(eq(assets.projectId, id), eq(assets.selected, true)));
+      const reusable = reusableGridCells(shots, existing);
+      if (reusable) return NextResponse.json({ reused: true, cells: reusable, count: reusable.length });
     }
 
     // reference images (order matters — the prompt cites them by position):
@@ -164,7 +178,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         filePath,
         provider: providerName,
         model,
-        prompt: `[storyboard-grid 第${i + 1}格] ${shots[i].description ?? ""}`.trim(),
+        prompt: gridKeyframePrompt(i, shots[i].description),
         selected: true,
         status: "done",
       });

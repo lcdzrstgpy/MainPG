@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
-import { scripts } from "@/lib/db/schema";
-import { and, eq } from "drizzle-orm";
-import { buildJudgePrompt, parseJudgeResponse, type JudgeShotInput } from "@/lib/script-judge";
+import { projectEvents, scripts } from "@/lib/db/schema";
+import { and, desc, eq } from "drizzle-orm";
+import { buildJudgePrompt, judgeSignature, parseJudgeResponse, type JudgeShotInput } from "@/lib/script-judge";
 import { styleNameMap } from "@/lib/script-engine/prompts";
 import { reasoningParams, completeWithJsonRetry } from "@/lib/script-engine/generator";
 import { createLLMClient, llmErrorPair, jsonModeParams } from "@/lib/llm-error";
+import { recordCreationEvent } from "@/lib/creation-analytics";
 import { apiError, errText } from "@/lib/api-error";
 
 /**
@@ -53,6 +54,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       return apiError(req, "该脚本没有台词可评审", "This script has no voiceover lines to judge", 400);
     }
 
+    // 台词没变过就不再重判：判官团会**覆盖**已定稿的台词，而且每次都要花一次 LLM 调用
+    // （实测 ~40 秒）。指纹相同 = 自上次评审后逐镜台词与画面描述都没动。
+    const signature = judgeSignature(shots);
+    const [lastJudged] = await db
+      .select()
+      .from(projectEvents)
+      .where(and(eq(projectEvents.projectId, id), eq(projectEvents.kind, "script_judged")))
+      .orderBy(desc(projectEvents.createdAt))
+      .limit(1);
+    const judged = lastJudged?.payload as { scriptId?: string; signature?: string } | undefined;
+    if (judged?.scriptId === scriptId && judged.signature === signature) {
+      return NextResponse.json({ skipped: true });
+    }
+
     const styleLabel = script.styleType ? styleNameMap[script.styleType] : undefined;
     const prompt = buildJudgePrompt(shots, { styleLabel, styleType: script.styleType ?? undefined });
 
@@ -79,6 +94,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       { baseUrl: llmConfig.baseUrl ?? "", apiKey: llmConfig.apiKey ?? "", model: llmConfig.model },
       (content) => parseJudgeResponse(content, shots),
     );
+    // 记下「这个脚本在这个版本上已经审过」，下次同样的台词直接跳过（见上面的指纹判断）
+    recordCreationEvent({ projectId: id, kind: "script_judged", payload: { scriptId, signature } });
     return NextResponse.json(report);
   } catch (error) {
     console.error("判官团评审失败:", error);

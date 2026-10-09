@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildStoryboardGridPrompt, computeGridCells, GRID_MAX_SHOTS } from "@/lib/storyboard-grid";
+import { buildStoryboardGridPrompt, computeGridCells, gridKeyframePrompt, reusableGridCells, GRID_MAX_SHOTS } from "@/lib/storyboard-grid";
 import type { Shot, ScriptCharacter } from "@/lib/db/schema";
 
 const shot = (shotId: number, type: string, description: string) =>
@@ -63,5 +63,58 @@ describe("computeGridCells", () => {
     expect(cells[0].w).toBeLessThan(300);
     // 内缩对称：格宽 = 原格宽 - 2*内缩
     expect(cells[0].w).toBe(300 - 2 * Math.round(300 * 0.02));
+  });
+});
+
+/**
+ * 复用判定：整片链每次进入都会重跑九宫格这道工序，没有「已有就复用」就会把同一批分镜
+ * 反复重画（真花钱，用户也会觉得上次白做）。判据是「每一镜都有一张内嵌描述与当前脚本
+ * 逐字一致的九宫格关键帧」。
+ */
+describe("reusableGridCells（九宫格复用判定）", () => {
+  const shots = [
+    { shotId: 1, description: "把口红放进包里" },
+    { shotId: 2, description: "对镜头举起化妆包" },
+  ];
+  const asset = (shotId: number, index: number, description: string, filePath: string | null = `/api/files/p/asset-${shotId}.png`) => ({
+    shotId,
+    filePath,
+    prompt: gridKeyframePrompt(index, description),
+  });
+
+  it("每一镜都有匹配当前脚本的关键帧 → 复用，且按分镜顺序返回", () => {
+    expect(reusableGridCells(shots, [asset(2, 1, "对镜头举起化妆包"), asset(1, 0, "把口红放进包里")])).toEqual([
+      { shotId: 1, filePath: "/api/files/p/asset-1.png" },
+      { shotId: 2, filePath: "/api/files/p/asset-2.png" },
+    ]);
+  });
+
+  it("缺任何一镜的关键帧 → 不复用（重新画）", () => {
+    expect(reusableGridCells(shots, [asset(1, 0, "把口红放进包里")])).toBeNull();
+  });
+
+  it("某一镜的描述被改过 → 不复用（旧图与新脚本对不上）", () => {
+    const existing = [asset(1, 0, "把口红放进包里"), asset(2, 1, "对镜头举起化妆包")];
+    expect(reusableGridCells([shots[0], { shotId: 2, description: "改成对镜头微笑" }], existing)).toBeNull();
+  });
+
+  it("不是九宫格产出的关键帧（逐镜生成等）不算复用", () => {
+    const foreign = [{ shotId: 1, filePath: "/x.png", prompt: "逐镜生成的画面" }, asset(2, 1, "对镜头举起化妆包")];
+    expect(reusableGridCells(shots, foreign)).toBeNull();
+  });
+
+  it("资产没有文件路径 → 不算数", () => {
+    expect(reusableGridCells(shots, [asset(1, 0, "把口红放进包里", null), asset(2, 1, "对镜头举起化妆包")])).toBeNull();
+  });
+
+  it("空脚本不复用", () => {
+    expect(reusableGridCells([], [])).toBeNull();
+  });
+});
+
+describe("gridKeyframePrompt（落库 prompt 兼复用指纹）", () => {
+  it("带来源标记与格序号", () => {
+    expect(gridKeyframePrompt(0, "第一镜")).toBe("[storyboard-grid 第1格] 第一镜");
+    expect(gridKeyframePrompt(2, undefined)).toBe("[storyboard-grid 第3格]");
   });
 });

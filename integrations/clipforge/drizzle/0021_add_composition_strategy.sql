@@ -1,1 +1,0 @@
-ALTER TABLE `compositions` ADD `strategy` text;

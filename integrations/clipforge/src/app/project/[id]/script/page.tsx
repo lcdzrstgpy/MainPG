@@ -514,7 +514,9 @@ export default function ScriptPage() {
         }),
       });
       if (!res.ok) return;
-      const report = (await res.json()) as JudgeReport;
+      const report = (await res.json()) as JudgeReport | { skipped: true };
+      // 台词自上次评审后没变过：服务端按脚本指纹直接跳过——不再花一次 LLM、也不再覆盖已定稿的台词
+      if ("skipped" in report) return;
       setJudgeReport(report);
       // tier gate: hands-off flow auto-applies invariant/default only; taste stays display-only
       const autoRewrites = autoApplicableRewrites(report);
@@ -670,6 +672,11 @@ export default function ScriptPage() {
   const [aiFilmStage, setAiFilmStage] = useState("");
   /** Ticked by the user to allow a generation whose estimate exceeds their spend cap */
   const [overCapAck, setOverCapAck] = useState(false);
+  /**
+   * 默认复用项目里已有的分镜关键帧（仍然匹配当前脚本时）；勾上才重新画一遍九宫格。
+   * 否则每次走整片都会把同一批分镜重画一次——真花钱，还让用户觉得上次白做了。
+   */
+  const [regenerateGrid, setRegenerateGrid] = useState(false);
   const [aiFilmError, setAiFilmError] = useState("");
   /** dryRun preview of the film pass — the paid submit needs an explicit confirm on this exact prompt */
   const [filmPreview, setFilmPreview] = useState<{
@@ -801,6 +808,8 @@ export default function ScriptPage() {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           scriptId: currentScript.id,
+          // 默认复用已有且仍匹配当前脚本的关键帧；勾了「重新生成分镜画面」才重画
+          regenerate: regenerateGrid,
           provider: imgTarget.provider,
           model: sheet || productRef ? toEditVariant(imgTarget.model) : imgTarget.model,
           apiKey: imgTarget.apiKey,
@@ -1176,6 +1185,15 @@ export default function ScriptPage() {
                   <span>{t("aiFilmOverCap", { total: filmPreview.estimate!.maxUsd.toFixed(2), cap: spendCapUsd })}</span>
                 </label>
               )}
+              <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-border/60 px-4 py-2.5 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={regenerateGrid}
+                  onChange={(e) => setRegenerateGrid(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 accent-primary"
+                />
+                <span>{t("aiFilmRegenerateGrid")}</span>
+              </label>
               <details className="rounded-lg border border-border/60 p-3 text-xs">
                 <summary className="cursor-pointer font-medium">{t("aiFilmPromptToggle")}</summary>
                 <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap text-muted-foreground">{filmPreview.prompt}</pre>
