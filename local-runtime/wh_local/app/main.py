@@ -129,6 +129,12 @@ def _price_verification_actor(
 
 
 
+# 采集凭据下发要向服务端证明身份（会话 token）。具体解析器由 create_app() 绑定到
+# customer_sessions；未绑定或取不到 token 时服务端会拒绝 —— 按设计 fail closed，
+# 绝不回落到本地长期 OneBound 密钥。
+_REMOTE_TOKEN_RESOLVER = None
+
+
 def _provider_config(actor: DailySelectionActor) -> Mapping[str, Any]:
     """Resolve OneBound credentials from the platform collect-key service.
 
@@ -140,6 +146,12 @@ def _provider_config(actor: DailySelectionActor) -> Mapping[str, Any]:
     OneBound key as a fallback.
     """
     config = default_config()
+    token = ""
+    if callable(_REMOTE_TOKEN_RESOLVER):
+        try:
+            token = str(_REMOTE_TOKEN_RESOLVER(actor) or "")
+        except Exception:
+            token = ""
     try:
         credentials = request_collect_credentials(
             base_url=config.customer_auth_base_url,
@@ -149,6 +161,7 @@ def _provider_config(actor: DailySelectionActor) -> Mapping[str, Any]:
             # 留空可避免本地 workspace_id 与服务端 workspace_code 表示不同
             # 时把已注册的新用户误判为未注册。
             workspace_code="",
+            token=token,
         )
     except CollectCredentialsError as error:
         raise HTTPException(status_code=403, detail=str(error)) from error
@@ -592,9 +605,14 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     pod_ai_runtime = PodCustomizationAiRuntime(image_workers=8, batch_workers=2)
     pod_title_runtime = PodTitleRuntime(executor_workers=8, provider_concurrency=8)
     pod_brief_runtime = PodBriefRuntime(executor_workers=2, provider_concurrency=2)
+    remote_token_resolver = session_remote_token_resolver(customer_sessions)
+    # 让 _provider_config 能拿到远端会话 token：collect-key 已改为按 token 认身份，
+    # 没有 token 服务端会拒绝（fail closed）。
+    global _REMOTE_TOKEN_RESOLVER
+    _REMOTE_TOKEN_RESOLVER = remote_token_resolver
     pod_billing = RemotePodBillingCoordinator(
         remote_customer_auth,
-        session_remote_token_resolver(customer_sessions),
+        remote_token_resolver,
     )
     pod_router = create_pod_customization_router(
         db_path,

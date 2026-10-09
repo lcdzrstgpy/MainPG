@@ -2247,42 +2247,38 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
 
     # ---- 采集凭据下发（OneBound API key 只在服务器持有，按用户身份加密下发） ----
     @app.post("/api/customer/collect-key")
-    def collect_key(payload: dict[str, Any]) -> dict[str, Any]:
-        account_id = str(payload.get("account_id") or "").strip()
-        username = str(payload.get("username") or "").strip()
+    def collect_key(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        # 身份只能来自会话 token。原实现允许客户端自填 account_id/username，只校验
+        # 「该账号存在且 active」就把 OneBound api_key / api_secret 加密下发 —— 任何人
+        # 知道一个有效用户名即可冒领凭据，且审计日志记在被冒用者名下。
+        account = _required_account(db_path, authorization)
+        account_id = str(account.get("account_id") or "")
         workspace_code = str(payload.get("workspace_code") or "").strip()
         encrypted_session_key = str(payload.get("encrypted_session_key") or "")
-        if (not account_id and not username) or not encrypted_session_key:
-            raise HTTPException(status_code=400, detail="account_id/username and encrypted_session_key are required")
+        if not encrypted_session_key:
+            raise HTTPException(status_code=400, detail="encrypted_session_key is required")
 
-        # 校验用户存在且有效（账号必须在服务器注册过）
-        with transaction(db_path) as conn:
-            if account_id:
+        # 可选 workspace 断言：客户端若带了 workspace_code，必须与 token 所属账号一致。
+        if workspace_code:
+            with transaction(db_path) as conn:
                 row = conn.execute(
                     """
-                    SELECT a.account_id, a.account_status
+                    SELECT a.account_id
                     FROM auth_accounts a
                     LEFT JOIN workspaces w ON w.workspace_id = a.workspace_id
                     WHERE a.account_id = ?
-                      AND (? = '' OR w.workspace_code = ?)
+                      AND w.workspace_code = ?
                     """,
-                    (account_id, workspace_code, workspace_code),
+                    (account_id, workspace_code),
                 ).fetchone()
-            else:
-                row = conn.execute(
-                    """
-                    SELECT a.account_id, a.account_status
-                    FROM auth_accounts a
-                    LEFT JOIN workspaces w ON w.workspace_id = a.workspace_id
-                    WHERE lower(a.username) = lower(?)
-                      AND (? = '' OR w.workspace_code = ?)
-                    """,
-                    (username, workspace_code, workspace_code),
-                ).fetchone()
-        if row is None:
-            raise HTTPException(status_code=401, detail="user is not registered on the server")
-        if str(row["account_status"]).strip().lower() in {"disabled", "inactive", "locked", "suspended", "deleted"}:
-            raise HTTPException(status_code=403, detail="user account is not active")
+            if row is None:
+                raise HTTPException(
+                    status_code=403,
+                    detail="workspace_code does not match the signed-in account",
+                )
 
         # 用服务器私钥解出临时 AES 会话密钥，再加密 OneBound 凭据下发
         try:
@@ -2302,7 +2298,7 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         with transaction(db_path) as conn:
             _log_security_event(
                 conn,
-                row["account_id"],
+                account_id,
                 "collect_key_issued",
                 True,
                 {"workspace_code": workspace_code},
