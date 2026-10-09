@@ -5,14 +5,16 @@ import { writeFile, mkdir } from "fs/promises";
 import { join } from "path";
 import { getDataDir } from "@/lib/paths";
 import { getDb } from "@/lib/db";
-import { scripts, assets } from "@/lib/db/schema";
-import { and, eq } from "drizzle-orm";
+import { scripts, assets, projectEvents } from "@/lib/db/schema";
+import { and, desc, eq } from "drizzle-orm";
 import { createProvider } from "@/lib/providers";
 import { toRemoteUsableImage } from "@/lib/remote-image";
-import { buildStoryboardGridPrompt, computeGridCells, GRID_MAX_SHOTS } from "@/lib/storyboard-grid";
+import { buildStoryboardGridPrompt, computeGridCells, gridKeyframePrompt, reusableGridCells, GRID_MAX_SHOTS } from "@/lib/storyboard-grid";
 import { ffmpegBin } from "@/lib/ffmpeg-path";
 import { probeMedia } from "@/lib/media-probe";
 import { apiError, errText } from "@/lib/api-error";
+import { recordCreationEvent } from "@/lib/creation-analytics";
+import { strategyChainGuard, strategyGateError } from "@/lib/strategy-chain-gate";
 
 const execFileAsync = promisify(execFile);
 
@@ -64,8 +66,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (!/^[a-zA-Z0-9-]+$/.test(id)) {
       return apiError(req, "无效的项目ID", "Invalid project id", 400);
     }
+    // 服务端出片策略门禁（fail-closed）：九宫格关键帧生图（付费）只属于逐镜动态与原生整片；
+    // 免费草稿只用商品图/免费素材，不该被这条链烧钱
+    const gate = await strategyChainGuard(id, "keyframe");
+    if (!gate.allowed) {
+      const error = strategyGateError(gate, "keyframe");
+      return apiError(req, error.zh, error.en, error.status);
+    }
     const body = await req.json();
-    const { scriptId, provider: providerName, model, apiKey, baseUrl, options, characterSheetUrl, productImageUrl } = body as {
+    const { scriptId, provider: providerName, model, apiKey, baseUrl, options, characterSheetUrl, productImageUrl, regenerate } = body as {
       scriptId?: string;
       provider?: string;
       model?: string;
@@ -76,6 +85,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       characterSheetUrl?: string;
       /** Product photo — locks the product's appearance across all nine cells */
       productImageUrl?: string;
+      /** 强制重画：用户明确要求换一批分镜画面时才置 true（默认复用已有且仍匹配当前脚本的关键帧） */
+      regenerate?: boolean;
     };
     if (!scriptId || !providerName || !model) {
       return apiError(req, "缺少 scriptId / provider / model", "Missing scriptId / provider / model", 400);
@@ -101,6 +112,28 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         `The grid holds at most ${GRID_MAX_SHOTS} shots (this script has ${shots.length}) — use per-shot generation with keyframe chaining for longer scripts`,
         400
       );
+    }
+
+    // 已有「为**当前脚本**画过、且仍然齐整」的九宫格关键帧就直接复用，不再重画一遍。
+    // 整片链每次进入都会重跑这道工序，没有这道判断就会把同一批分镜反复重画（真金白银），
+    // 用户也会觉得「上次做好的又被重做了一遍」。
+    // 判定用记录下的 scriptId，而不是对比画面描述——判官团会重写 description，拿描述比对等于永远不复用。
+    if (!regenerate) {
+      const [generated] = await db
+        .select()
+        .from(projectEvents)
+        .where(and(eq(projectEvents.projectId, id), eq(projectEvents.kind, "grid_generated")))
+        .orderBy(desc(projectEvents.createdAt))
+        .limit(1);
+      const generatedFor = (generated?.payload as { scriptId?: string } | undefined)?.scriptId;
+      if (generatedFor === scriptId) {
+        const existing = await db
+          .select({ shotId: assets.shotId, filePath: assets.filePath, prompt: assets.prompt })
+          .from(assets)
+          .where(and(eq(assets.projectId, id), eq(assets.selected, true)));
+        const reusable = reusableGridCells(shots, existing);
+        if (reusable) return NextResponse.json({ reused: true, cells: reusable, count: reusable.length });
+      }
     }
 
     // reference images (order matters — the prompt cites them by position):
@@ -156,13 +189,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         filePath,
         provider: providerName,
         model,
-        prompt: `[storyboard-grid 第${i + 1}格] ${shots[i].description ?? ""}`.trim(),
+        prompt: gridKeyframePrompt(i, shots[i].description),
         selected: true,
         status: "done",
       });
       saved.push({ shotId: shots[i].shotId, filePath });
     }
 
+    // 记下「这批关键帧是为这个脚本画的」——下次同一个脚本再走整片就直接复用（见上面的判定）
+    recordCreationEvent({ projectId: id, kind: "grid_generated", payload: { scriptId } });
     return NextResponse.json({ gridPath: publicPath, cells: saved, count: saved.length });
   } catch (error) {
     console.error("九宫格分镜生成失败:", error);

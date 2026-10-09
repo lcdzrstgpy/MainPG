@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, it, expect } from "vitest";
 import {
   buildJudgePrompt,
@@ -6,6 +8,7 @@ import {
   autoApplicableDescriptionRewrites,
   factTokens,
   preservesFactTokens,
+  judgeSignature,
   JUDGE_IDS,
 } from "@/lib/script-judge";
 
@@ -141,5 +144,68 @@ describe("autoApplicableRewrites（采纳分级：全托管链只自动吃 invar
     // taste 级仍在报告里（UI 展示）
     expect(report.rewrites.length).toBe(2);
     expect(report.descriptionRewrites.length).toBe(1);
+  });
+});
+
+/**
+ * 脚本指纹：整片链每次进入都会自动跑判官团，而判官会**覆盖**已定稿的台词——指纹相同就该跳过，
+ * 只有台词/画面描述真的变了才重判。这里测的是「变了能认出、没变不误判」。
+ */
+describe("judgeSignature（判官跳过判据）", () => {
+  const shots = [
+    { shotId: 1, voiceover: "同款柜台三百八", description: "把口红放进包里" },
+    { shotId: 2, voiceover: "翻包找口红", description: "对镜头举起化妆包" },
+  ];
+
+  it("同一份脚本 → 同一个指纹", () => {
+    expect(judgeSignature(shots)).toBe(judgeSignature([...shots]));
+  });
+
+  it("改了台词 → 指纹变化（必须重判）", () => {
+    expect(judgeSignature([{ ...shots[0], voiceover: "换个说法" }, shots[1]])).not.toBe(judgeSignature(shots));
+  });
+
+  it("改了画面描述 → 指纹变化（画面官也会重写）", () => {
+    expect(judgeSignature([shots[0], { ...shots[1], description: "改成对镜头微笑" }])).not.toBe(judgeSignature(shots));
+  });
+
+  it("增删镜头 → 指纹变化", () => {
+    expect(judgeSignature([shots[0]])).not.toBe(judgeSignature(shots));
+  });
+
+  it("description 可缺省", () => {
+    expect(judgeSignature([{ shotId: 1, voiceover: "词" }])).toBe(judgeSignature([{ shotId: 1, voiceover: "词" }]));
+  });
+});
+
+/**
+ * 源码契约：这两道「不再重复花钱 / 不再覆盖已定稿台词」的墙必须留在链路上。
+ */
+describe("重复执行的短路（源码契约）", () => {
+  const read = (file: string) => readFileSync(resolve(process.cwd(), file), "utf8");
+  const judgeRoute = read("src/app/api/project/[id]/script-judge/route.ts");
+  const gridRoute = read("src/app/api/project/[id]/storyboard-grid/route.ts");
+  const scriptPage = read("src/app/project/[id]/script/page.tsx");
+
+  it("判官路由：同指纹直接 skipped 返回，且审完记事件", () => {
+    expect(judgeRoute).toContain("judgeSignature(shots)");
+    expect(judgeRoute).toContain("{ skipped: true }");
+    expect(judgeRoute).toContain('kind: "script_judged"');
+  });
+
+  it("脚本页：skipped 不再套用重写（否则又会覆盖定稿台词）", () => {
+    expect(scriptPage).toContain('if ("skipped" in report) return;');
+  });
+
+  it("九宫格路由：默认复用（按 scriptId 记录判定），只有 regenerate 才重画", () => {
+    expect(gridRoute).toContain("if (!regenerate)");
+    expect(gridRoute).toContain('kind: "grid_generated"');
+    expect(gridRoute).toContain("reusableGridCells(shots, existing)");
+    expect(gridRoute).toContain("reused: true");
+  });
+
+  it("脚本页：把 regenerate 传给九宫格并提供勾选入口", () => {
+    expect(scriptPage).toContain("regenerate: regenerateGrid");
+    expect(scriptPage).toContain("aiFilmRegenerateGrid");
   });
 });

@@ -186,6 +186,26 @@ export function preservesFactTokens(original: string, rewrite: string): boolean 
   return true;
 }
 
+/**
+ * 判官结果的「脚本指纹」：只取判官真正会动的内容（每镜台词 + 画面描述）。
+ *
+ * 用途：整片链每次都会跑一遍判官团，而判官团会**重写并覆盖**同一批台词——用户每次重新进入
+ * 项目都会发现「自己定稿的台词又被改了一遍」。指纹相同 = 自上次评审以来脚本没变过，
+ * 就没必要再花一次 LLM 调用、更不该再覆盖一次。
+ */
+export function judgeSignature(shots: JudgeShotInput[]): string {
+  const canonical = shots
+    .map((s) => `${s.shotId}\u0000${s.voiceover}\u0000${s.description ?? ""}`)
+    .join("\u0001");
+  // FNV-1a（32 位）：这里只需要「变没变」，不需要抗碰撞强度
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < canonical.length; i += 1) {
+    hash ^= canonical.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16);
+}
+
 /** Clamp one issue list: keep only entries with usable text; shotId must exist when given. */
 function clampIssues(raw: unknown, validShots: Set<number>): JudgeIssue[] {
   if (!Array.isArray(raw)) return [];

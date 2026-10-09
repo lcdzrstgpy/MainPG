@@ -514,7 +514,9 @@ export default function ScriptPage() {
         }),
       });
       if (!res.ok) return;
-      const report = (await res.json()) as JudgeReport;
+      const report = (await res.json()) as JudgeReport | { skipped: true };
+      // 台词自上次评审后没变过：服务端按脚本指纹直接跳过——不再花一次 LLM、也不再覆盖已定稿的台词
+      if ("skipped" in report) return;
       setJudgeReport(report);
       // tier gate: hands-off flow auto-applies invariant/default only; taste stays display-only
       const autoRewrites = autoApplicableRewrites(report);
@@ -670,6 +672,11 @@ export default function ScriptPage() {
   const [aiFilmStage, setAiFilmStage] = useState("");
   /** Ticked by the user to allow a generation whose estimate exceeds their spend cap */
   const [overCapAck, setOverCapAck] = useState(false);
+  /**
+   * 默认复用项目里已有的分镜关键帧（仍然匹配当前脚本时）；勾上才重新画一遍九宫格。
+   * 否则每次走整片都会把同一批分镜重画一次——真花钱，还让用户觉得上次白做了。
+   */
+  const [regenerateGrid, setRegenerateGrid] = useState(false);
   const [aiFilmError, setAiFilmError] = useState("");
   /** dryRun preview of the film pass — the paid submit needs an explicit confirm on this exact prompt */
   const [filmPreview, setFilmPreview] = useState<{
@@ -801,6 +808,8 @@ export default function ScriptPage() {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           scriptId: currentScript.id,
+          // 默认复用已有且仍匹配当前脚本的关键帧；勾了「重新生成分镜画面」才重画
+          regenerate: regenerateGrid,
           provider: imgTarget.provider,
           model: sheet || productRef ? toEditVariant(imgTarget.model) : imgTarget.model,
           apiKey: imgTarget.apiKey,
@@ -972,7 +981,8 @@ export default function ScriptPage() {
           )}
         </div>
       )}
-      {/* 按出片策略给出各自的确认入口，绝不把付费策略静默降级成免费流水线 */}
+      {/* 按出片策略给出各自的说明：入口只留一处（小白模式动作区 / 导演模式工具栏），
+          说明卡不再自带按钮，否则同屏会出现两个同名入口 */}
       {flow.strategy === "draft" && (
         <div className="rounded-xl border border-primary/40 bg-primary/5 px-4 py-3">
           <p className="text-sm font-medium">出片策略：免费草稿（自动成片）</p>
@@ -987,9 +997,6 @@ export default function ScriptPage() {
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
             该策略不会自动启动免费静态流水线。确认脚本后进入素材页逐镜生成动态镜头（按镜头数与模型计费）。有可听原生音轨时保留原音轨，否则按当前 TTS 设置配音。
           </p>
-          <Link href={`/project/${id}/assets`} className="mt-2.5 inline-block">
-            <Button size="sm" className="brand-gradient text-white">生成逐镜动态镜头</Button>
-          </Link>
         </div>
       )}
       {flow.strategy === "native-film" && (
@@ -998,14 +1005,6 @@ export default function ScriptPage() {
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
             该策略不会自动启动免费静态流水线。先用整片预览核对模型、时长与费用，确认后才提交付费生成。自带模型原生音频，合成阶段不再跑 TTS。
           </p>
-          <Button
-            size="sm"
-            className="brand-gradient mt-2.5 text-white"
-            disabled={aiFilming || autoFinishing || !currentScript}
-            onClick={runAiFilm}
-          >
-            {t("aiFilmPreviewTitle")}
-          </Button>
         </div>
       )}
     </div>
@@ -1133,6 +1132,15 @@ export default function ScriptPage() {
               <p className="text-sm text-muted-foreground">
                 {t("aiFilmPreviewMeta", { shots: filmPreview.shotCount, seconds: filmPreview.seconds, refs: filmPreview.referenceImages })}
               </p>
+              {filmPreview.durationOverflow && (
+                <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-xs text-amber-600 dark:text-amber-500">
+                  {t("aiFilmDurationWarn", {
+                    script: filmPreview.scriptSeconds,
+                    max: filmPreview.modelMaxSeconds,
+                    seconds: filmPreview.seconds,
+                  })}
+                </div>
+              )}
               {filmPreview.swappedFrom && (
                 <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-xs text-amber-600 dark:text-amber-500">
                   {t("aiFilmModelSwap", { from: filmPreview.swappedFrom, to: filmPreview.model })}
@@ -1186,6 +1194,15 @@ export default function ScriptPage() {
                   <span>{t("aiFilmOverCap", { total: filmPreview.estimate!.maxUsd.toFixed(2), cap: spendCapUsd })}</span>
                 </label>
               )}
+              <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-border/60 px-4 py-2.5 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={regenerateGrid}
+                  onChange={(e) => setRegenerateGrid(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 accent-primary"
+                />
+                <span>{t("aiFilmRegenerateGrid")}</span>
+              </label>
               <details className="rounded-lg border border-border/60 p-3 text-xs">
                 <summary className="cursor-pointer font-medium">{t("aiFilmPromptToggle")}</summary>
                 <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap text-muted-foreground">{filmPreview.prompt}</pre>

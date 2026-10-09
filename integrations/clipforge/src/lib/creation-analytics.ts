@@ -6,6 +6,8 @@ export type CreationEventKind =
   | "script_generated"
   | "strategy_selected"
   | "style_resolved"
+  | "script_judged"
+  | "grid_generated"
   | "video_task_submitted"
   | "compose_finished";
 

@@ -5,6 +5,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import type { CreativeIntent } from "@/lib/production-system";
 import { VIDEO_MODE_OPTIONS, type VideoModeId } from "./creation-brief-defaults";
+import { optionCardClass, SelectionCheck } from "./option-state-styles";
 
 /** Minimal description of a pickable script template — the store object is mapped by the caller. */
 export interface TemplateOption {
@@ -137,12 +138,11 @@ export function VisualControlPanel({
                   data-video-mode={option.id}
                   disabled={disabled}
                   onClick={() => onVideoModeChange(option.id)}
-                  className={`relative flex flex-col items-start p-3.5 rounded-lg border text-left transition-all disabled:opacity-40 ${
-                    active ? "border-primary bg-primary/10" : "border-border/50 bg-muted/20 hover:border-primary/40"
-                  }`}
+                  className={`flex flex-col items-start rounded-lg p-3.5 text-left ${optionCardClass(active)}`}
                 >
-                  <span className={`text-sm font-medium ${active ? "text-primary" : "text-foreground"}`}>{option.label}</span>
-                  <span className="text-xs text-muted-foreground mt-0.5">{option.description}</span>
+                  {active && <SelectionCheck className="absolute right-3 top-3" />}
+                  <span className="text-sm font-semibold">{option.label}</span>
+                  <span className={`mt-0.5 text-xs ${active ? "text-primary-foreground/80" : "text-muted-foreground"}`}>{option.description}</span>
                 </button>
               );
             })}
@@ -161,12 +161,11 @@ export function VisualControlPanel({
                 aria-pressed={!templateId}
                 disabled={disabled}
                 onClick={() => onTemplateIdChange(undefined)}
-                className={`shrink-0 flex flex-col items-start p-3 rounded-lg border text-left transition-all min-w-[140px] disabled:opacity-40 ${
-                  !templateId ? "border-primary bg-primary/10" : "border-border/50 bg-muted/20 hover:border-primary/40"
-                }`}
+                className={`shrink-0 flex min-w-[140px] flex-col items-start rounded-lg p-3 text-left ${optionCardClass(!templateId)}`}
               >
-                <span className={`text-sm font-medium ${!templateId ? "text-primary" : "text-foreground"}`}>不使用模板</span>
-                <span className="text-[11px] text-muted-foreground mt-0.5">完全由风格与创作要求决定</span>
+                {!templateId && <SelectionCheck className="absolute right-2 top-2" />}
+                <span className="pr-5 text-sm font-semibold">不使用模板</span>
+                <span className={`mt-0.5 text-[11px] ${!templateId ? "text-primary-foreground/80" : "text-muted-foreground"}`}>完全由风格与创作要求决定</span>
               </button>
               {templates.map((option) => {
                 const active = option.id === templateId;
@@ -177,14 +176,13 @@ export function VisualControlPanel({
                     aria-pressed={active}
                     disabled={disabled}
                     onClick={() => onTemplateIdChange(option.id)}
-                    className={`shrink-0 flex flex-col items-start p-3 rounded-lg border text-left transition-all min-w-[140px] disabled:opacity-40 ${
-                      active ? "border-primary bg-primary/10" : "border-border/50 bg-muted/20 hover:border-primary/40"
-                    }`}
+                    className={`shrink-0 flex min-w-[140px] flex-col items-start rounded-lg p-3 text-left ${optionCardClass(active)}`}
                   >
-                    <span className={`text-sm font-medium truncate max-w-[160px] ${active ? "text-primary" : "text-foreground"}`}>
+                    {active && <SelectionCheck className="absolute right-2 top-2" />}
+                    <span className="max-w-[160px] truncate pr-5 text-sm font-semibold">
                       {option.name}
                     </span>
-                    {option.meta && <span className="text-[11px] text-muted-foreground mt-0.5">{option.meta}</span>}
+                    {option.meta && <span className={`mt-0.5 text-[11px] ${active ? "text-primary-foreground/80" : "text-muted-foreground"}`}>{option.meta}</span>}
                   </button>
                 );
               })}
@@ -206,12 +204,11 @@ export function VisualControlPanel({
                 aria-checked={!characterId}
                 disabled={disabled}
                 onClick={() => onCharacterIdChange(undefined)}
-                className={`flex flex-col items-start p-3 rounded-lg border text-left transition-all disabled:opacity-40 ${
-                  !characterId ? "border-primary bg-primary/10" : "border-border/50 bg-muted/20 hover:border-primary/40"
-                }`}
+                className={`flex flex-col items-start rounded-lg p-3 text-left ${optionCardClass(!characterId)}`}
               >
+                {!characterId && <SelectionCheck className="absolute right-2 top-2" />}
                 <span className="text-sm font-medium">不出镜</span>
-                <span className="text-[11px] text-muted-foreground">用商品与场景画面完成讲解</span>
+                <span className={`text-[11px] ${!characterId ? "text-primary-foreground/80" : "text-muted-foreground"}`}>用商品与场景画面完成讲解</span>
               </button>
               {characters.map((option) => {
                 const active = option.id === characterId;
@@ -223,12 +220,11 @@ export function VisualControlPanel({
                     aria-checked={active}
                     disabled={disabled}
                     onClick={() => onCharacterIdChange(option.id)}
-                    className={`flex flex-col items-start p-3 rounded-lg border text-left transition-all disabled:opacity-40 ${
-                      active ? "border-primary bg-primary/10" : "border-border/50 bg-muted/20 hover:border-primary/40"
-                    }`}
+                    className={`flex flex-col items-start rounded-lg p-3 text-left ${optionCardClass(active)}`}
                   >
+                    {active && <SelectionCheck className="absolute right-2 top-2" />}
                     <span className="text-sm font-medium truncate max-w-[140px]">{option.name}</span>
-                    {option.description && <span className="text-[11px] text-muted-foreground truncate max-w-[140px]">{option.description}</span>}
+                    {option.description && <span className={`max-w-[140px] truncate text-[11px] ${active ? "text-primary-foreground/80" : "text-muted-foreground"}`}>{option.description}</span>}
                   </button>
                 );
               })}

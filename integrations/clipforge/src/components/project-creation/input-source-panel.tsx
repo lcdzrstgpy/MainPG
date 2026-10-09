@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { INPUT_MODE_OPTIONS, MAX_SOURCE_IMAGES } from "./creation-brief-defaults";
 import type { InputMode } from "./creation-brief-types";
+import { optionChipClass, SelectionCheck } from "./option-state-styles";
 
 /** A local file picked by the user, kept next to its object URL for the preview grid. */
 export interface InputSourceImage {
@@ -82,12 +83,9 @@ export function InputSourcePanel({
                   data-input-mode={option.id}
                   disabled={disabled}
                   onClick={() => onInputModeChange(option.id)}
-                  className={`px-3 py-1.5 rounded-full border text-xs font-medium transition-all disabled:opacity-40 ${
-                    active
-                      ? "bg-primary/15 text-primary border-primary/30"
-                      : "bg-muted/20 text-muted-foreground border-border/50 hover:border-primary/30"
-                  }`}
+                  className={optionChipClass(active)}
                 >
+                  {active && <SelectionCheck />}
                   {option.label}
                 </button>
               );

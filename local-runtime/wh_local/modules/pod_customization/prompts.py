@@ -5,11 +5,13 @@ import random
 import re
 from typing import Mapping, Sequence
 
-from .contracts import BusinessFields
+from .contracts import COMPOSITION_PANEL_KEYS, BusinessFields
 
 
 PATTERN_PROMPT_VERSION = "v1"
-LISTING_IMAGE_ROLES = ("hero", "detail_a", "detail_b", "lifestyle")
+# 位置↔角色固定：左上=主图(lifestyle)、右上=细节A(detail_a)、左下=细节B(detail_b)、右下=素材(hero)。
+# 标识符沿用历史值（lifestyle=主图、hero=素材），避免历史批次错标；仅位置分配按本元组顺序正确落位。
+LISTING_IMAGE_ROLES = ("lifestyle", "detail_a", "detail_b", "hero")
 
 # 元素关键词独立切分器：仅顿号/逗号/分号/换行，不含空格。
 # 注意不要复用公共 splitBusinessField（前端），这里与后端自洽即可；
@@ -126,12 +128,92 @@ def _brief_color_preferences(business_fields: Mapping[str, object] | None) -> li
     return [str(item).strip() for item in raw if str(item).strip()]
 
 
-def build_direct_listing_prompt(fields: BusinessFields, creative_prompt: str) -> str:
+# 四格固定角色/机位的默认描述（未配置用户构图时使用）。
+_DEFAULT_LISTING_PANEL_LINES = (
+    "Panel 1 — PRIMARY IMAGE (top-left): show the same complete product in one newly generated, natural, commercially useful lifestyle setting. Keep the full product and unchanged artwork visible; this is the marketplace primary image and title reference. Do not reuse the template background or add another product.",
+    "Panel 1 must be a wide lifestyle scene with the whole product inside a real environment, shot at a normal eye-level product angle, with the full silhouette in frame. It must never be a close-up, macro, cropped, partial, extreme-angle, or three-quarter detail shot: those belong to Panel 2 and Panel 3 and must not be repeated in the top-left panel.",
+    "Panel 2 — DETAIL IMAGE A (top-right): show a tight high-resolution close-up of the newly invented surface artwork on this same product. Make color, edges, print or material texture, and manufacturing detail easy to inspect; do not alter the artwork or its placement. This close-up belongs to the top-right panel only.",
+    "Panel 3 — DETAIL IMAGE B (bottom-left): show a different close product detail or three-quarter product view. Choose a product-appropriate structural or material detail, while keeping the artwork visibly identical to Panel 1 and Panel 2. This detail view belongs to the bottom-left panel only.",
+    "Panel 4 — MATERIAL IMAGE (bottom-right): show one complete product against a newly generated clean neutral ecommerce background. Keep the whole product clearly visible, make it fill most of the panel, and show the full design sharply. This is supporting material imagery, not the marketplace primary image.",
+    "Final check on the fixed order by position: top-left = the complete product in a lifestyle primary scene, top-right = tight artwork close-up, bottom-left = a different close product detail, bottom-right = the complete product on a neutral background. Do not swap, shift, or duplicate panels.",
+)
+# 系统「默认模板」的四格描述（等价于未配置构图时的默认机位）；内置项，不需要用户新建。
+DEFAULT_COMPOSITION_ID = "__default__"
+DEFAULT_COMPOSITION_NAME = "默认模板"
+DEFAULT_COMPOSITION_RAW_INPUT = "系统默认机位（与未配置构图时一致）"
+DEFAULT_COMPOSITION_PANELS: Mapping[str, Mapping[str, str]] = {
+    "panel_1": {
+        "zh": "平视自然机位的生活场景主图：完整产品置于真实使用场景中，可搭配少量低调衬托，光线柔和自然。",
+        "en": "Natural eye-level lifestyle hero shot: the complete product placed in a real, usable setting with a few subtle supporting props under soft natural light.",
+    },
+    "panel_2": {
+        "zh": "产品正面图案的高清微距特写，清楚呈现图案纹理与基底材质。",
+        "en": "Tight high-resolution macro close-up of the product's front surface artwork, clearly showing the pattern texture and base material.",
+    },
+    "panel_3": {
+        "zh": "另一处结构或材质细节的近景（如四分之三视角、边角或提手结构）。",
+        "en": "Close-up of a different structural or material detail (for example a three-quarter view, an edge, or the handle construction).",
+    },
+    "panel_4": {
+        "zh": "完整产品居中置于干净的中性纯白背景，规整正面拍摄，不要衬托。",
+        "en": "The complete product centered on a clean neutral pure-white background, neat straight-on framing with no supporting props.",
+    },
+}
+# 位置/角色由我们固定；用户构图只决定每一格「怎么拍」，不得改变四格角色。
+_FIXED_PANEL_ROLE_LINE = (
+    "Panel positions and roles stay fixed: top-left = PRIMARY image, top-right = detail A, "
+    "bottom-left = detail B, bottom-right = material image. Do not swap, shift, or duplicate panels."
+)
+_LISTING_PANEL_SLOTS = (
+    ("panel_1", "top-left", "primary image"),
+    ("panel_2", "top-right", "detail image A"),
+    ("panel_3", "bottom-left", "detail image B"),
+    ("panel_4", "bottom-right", "material image"),
+)
+# 有用户构图时，四格描述改成「用户指令最高优先级」的口径：避免用户指令被角色名默认机位淹没。
+_USER_DIRECTION_HEADER = (
+    "USER-SPECIFIED SHOOTING DIRECTIONS — HIGHEST PRIORITY: for each panel below, follow the user's "
+    "direction exactly as that panel's shot. These directions OVERRIDE the default shot normally implied "
+    "by the panel role name; do not fall back to the generic role shot or reuse another panel's framing."
+)
+
+
+def _listing_panel_lines(composition: Mapping[str, str] | None) -> list[str]:
+    """返回四格描述：有用户构图时用其画面指令替换默认机位，硬约束由调用方保留。"""
+    panels = {
+        key: str((composition or {}).get(key) or "").strip()
+        for key in COMPOSITION_PANEL_KEYS
+    }
+    if not any(panels.values()):
+        return list(_DEFAULT_LISTING_PANEL_LINES)
+    if any(not panels[key] for key in COMPOSITION_PANEL_KEYS):
+        # 四格不完整（理论上被契约挡住）：回退默认，避免生成半套指令。
+        return list(_DEFAULT_LISTING_PANEL_LINES)
+    return [
+        _USER_DIRECTION_HEADER,
+        *(
+            f"Panel {index} ({position} — role: {role}; user direction): {panels[key]}"
+            for index, (key, position, role) in enumerate(_LISTING_PANEL_SLOTS, start=1)
+        ),
+        _FIXED_PANEL_ROLE_LINE,
+        "Every panel must still show the same exact product wearing the same unchanged newly invented artwork, with the four-panel divider clean and centered.",
+    ]
+
+
+def build_direct_listing_prompt(
+    fields: BusinessFields,
+    creative_prompt: str,
+    *,
+    composition: Mapping[str, str] | None = None,
+) -> str:
     """Prompt for one product-locked four-panel listing contact sheet.
 
     Batch-wide facts are rendered verbatim for every style. Element keywords are
     deliberately NOT rendered here: they are assigned per style and injected by
     ``build_style_listing_prompt``, so no style ever receives the full list.
+
+    ``composition`` 为用户最新创作的构图（panel_1..4 画面指令）。提供时用它替换写死的
+    四格机位/构图描述，但保留全部硬约束（2×2、同产品同图案、禁文字/水印、内饰不印等）。
     """
     parts = [
         "Create one square 2x2 ecommerce contact sheet with exactly four equal panels.",
@@ -142,12 +224,7 @@ def build_direct_listing_prompt(fields: BusinessFields, creative_prompt: str) ->
         "Do not invent another product, extra accessories, text, captions, logos, labels, watermarks, collages, or borders. Keep the four-panel divider clean and centered.",
         "Panel order is fixed and every panel must show the same exact product with the same unchanged newly invented artwork.",
         "When the product has an interior or lining (for example a laundry hamper, storage basket, or tote bag with an inner lining), keep the interior surface unprinted: a plain uniform solid color, black by default. Never extend the outer surface artwork onto the interior, and never add a second pattern inside.",
-        "Panel 1 — MATERIAL IMAGE (top-left): show one complete product against a newly generated clean neutral ecommerce background. Keep the whole product clearly visible, make it fill most of the panel, and show the full design sharply. This is supporting material imagery, not the marketplace primary image.",
-        "Panel 2 — DETAIL IMAGE A (top-right): show a tight high-resolution close-up of the newly invented surface artwork on this same product. Make color, edges, print or material texture, and manufacturing detail easy to inspect; do not alter the artwork or its placement. This close-up belongs to the top-right panel only.",
-        "Panel 3 — DETAIL IMAGE B (bottom-left): show a different close product detail or three-quarter product view. Choose a product-appropriate structural or material detail, while keeping the artwork visibly identical to Panel 1 and Panel 2. This detail view belongs to the bottom-left panel only.",
-        "Panel 4 — PRIMARY IMAGE (bottom-right): show the same complete product in one newly generated, natural, commercially useful lifestyle setting. Keep the full product and unchanged artwork visible; this is the marketplace primary image and title reference. Do not reuse the template background or add another product.",
-        "Panel 4 must be a wide lifestyle scene with the whole product inside a real environment, shot at a normal eye-level product angle, with the full silhouette in frame. It must never be a close-up, macro, cropped, partial, extreme-angle, or three-quarter detail shot: those belong to Panel 2 and Panel 3 and must not be repeated in the bottom-right panel.",
-        "Final check on the fixed order by position: top-left = complete product on a neutral background, top-right = tight artwork close-up, bottom-left = a different close product detail, bottom-right = the complete product in a lifestyle scene. Do not swap, shift, or duplicate panels.",
+        *_listing_panel_lines(composition),
         f"Product name: {fields.product_name or 'POD product'}.",
     ]
     for label, value in (
@@ -264,9 +341,8 @@ def build_style_listing_prompt(
             "Do not reuse the first attempt's focal shape, motif arrangement, or color blocking.",
         ))
     rules.append(
-        "Panel positions stay fixed: the bottom-right panel is the PRIMARY lifestyle scene with the "
-        "whole product in a real setting, never a close-up, macro, cropped, or three-quarter detail "
-        "shot; those belong to the top-right and bottom-left panels only."
+        "Panel positions and roles stay fixed: top-left = PRIMARY image, top-right = detail A, "
+        "bottom-left = detail B, bottom-right = material image. Do not swap, shift, or duplicate panels."
     )
     return "\n".join(rules)
 

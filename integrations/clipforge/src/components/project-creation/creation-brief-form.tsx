@@ -13,6 +13,7 @@ import { useCharacterStore } from "@/lib/stores/project-store";
 import { useTemplateStore } from "@/lib/stores/template-store";
 import { InputSourcePanel, type InputSourceImage } from "./input-source-panel";
 import { NarrativePanel } from "./narrative-panel";
+import { optionCardClass, optionChipClass, SelectionCheck } from "./option-state-styles";
 import { OutputStrategyPanel } from "./output-strategy-panel";
 import {
   EMPTY_VISUAL_CONSTRAINTS,
@@ -97,9 +98,6 @@ export interface CreationBriefFormProps {
   disabled?: boolean;
 }
 
-const CHIP_CLS = "px-3 py-1.5 rounded-full border text-xs font-medium transition-all disabled:opacity-40";
-const CARD_CLS = "flex items-center justify-center h-11 rounded-lg border text-sm font-medium transition-all disabled:opacity-40";
-
 /**
  * The only stateful container of the creation brief.
  *
@@ -133,8 +131,9 @@ export function CreationBriefForm({
   const [topic, setTopic] = useState("");
   const [videoMode, setVideoMode] = useState<VideoModeId>(DEFAULT_VIDEO_MODE);
   const [constraints, setConstraints] = useState<VisualConstraintValues>(EMPTY_VISUAL_CONSTRAINTS);
-  // 默认高亮的 draft 不是「已选择」：只有点过策略卡才置 true，见校验与冻结契约 C3
-  const [strategyChosen, setStrategyChosen] = useState(false);
+  // 默认策略就是产品主路线（一次出片 / 原生整片），所以默认即「已选择」：卡片上的 ✓ 与提交校验
+  // 从此不再互相矛盾，用户不点卡片也能直接提交；改选其它策略仍由点击覆盖。
+  const [strategyChosen, setStrategyChosen] = useState(true);
   const [showErrors, setShowErrors] = useState(false);
 
   // every mutation runs through the shared sanitizer, so no field can drift out of contract
@@ -348,12 +347,9 @@ export function CreationBriefForm({
                       aria-pressed={active}
                       disabled={blocked}
                       onClick={() => setCategory(active ? "" : option.id)}
-                      className={`${CHIP_CLS} ${
-                        active
-                          ? "bg-primary/15 text-primary border-primary/30"
-                          : "bg-muted/20 text-muted-foreground border-border/50 hover:border-primary/30"
-                      }`}
+                      className={optionChipClass(active)}
                     >
+                      {active && <SelectionCheck />}
                       {option.label}
                     </button>
                   );
@@ -390,12 +386,9 @@ export function CreationBriefForm({
                     aria-pressed={active}
                     disabled={blocked}
                     onClick={() => patchBrief({ targetDuration: option.id })}
-                    className={`${CARD_CLS} ${
-                      active
-                        ? "border-primary bg-primary/10 text-primary"
-                        : "border-border/50 bg-muted/20 text-muted-foreground hover:border-primary/40"
-                    }`}
+                    className={`flex h-11 items-center justify-center rounded-lg text-sm font-semibold ${optionCardClass(active)}`}
                   >
+                    {active && <SelectionCheck className="mr-1" />}
                     {option.label}
                   </button>
                 );
@@ -417,12 +410,9 @@ export function CreationBriefForm({
                         aria-pressed={active}
                         disabled={blocked}
                         onClick={() => patchBrief({ priceRange: active ? "" : option.id })}
-                        className={`${CARD_CLS} ${
-                          active
-                            ? "border-primary bg-primary/10 text-primary"
-                            : "border-border/50 bg-muted/20 text-muted-foreground hover:border-primary/40"
-                        }`}
+                        className={`flex h-11 items-center justify-center rounded-lg text-sm font-semibold ${optionCardClass(active)}`}
                       >
+                        {active && <SelectionCheck className="mr-1" />}
                         {option.label}
                       </button>
                     );
@@ -442,12 +432,9 @@ export function CreationBriefForm({
                         aria-pressed={active}
                         disabled={blocked}
                         onClick={() => toggleAudience(option.id)}
-                        className={`${CHIP_CLS} ${
-                          active
-                            ? "bg-primary/15 text-primary border-primary/30"
-                            : "bg-muted/20 text-muted-foreground border-border/50 hover:border-primary/30"
-                        }`}
+                        className={optionChipClass(active)}
                       >
+                        {active && <SelectionCheck />}
                         {option.label}
                       </button>
                     );
@@ -467,12 +454,9 @@ export function CreationBriefForm({
                         aria-pressed={active}
                         disabled={blocked}
                         onClick={() => togglePlatform(option.id)}
-                        className={`${CARD_CLS} ${
-                          active
-                            ? "border-primary bg-primary/10 text-primary"
-                            : "border-border/50 bg-muted/20 text-muted-foreground hover:border-primary/40"
-                        }`}
+                        className={`flex h-11 items-center justify-center rounded-lg text-sm font-semibold ${optionCardClass(active)}`}
                       >
+                        {active && <SelectionCheck className="mr-1" />}
                         {option.label}
                       </button>
                     );

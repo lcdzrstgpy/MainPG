@@ -248,8 +248,56 @@ export type PodBatch = PodBatchSummary & {
   listing_fields: PodListingFields | null;
   dianxiaomi_export: PodDianxiaomiExportStatus;
   creative_prompt: string;
+  /** 该批次冻结的最新构图（无则为 null）；用于展示「本批次套用的构图」。 */
+  composition?: PodComposition | null;
   items: PodBatchItem[];
   style_titles?: PodStyleTitle[];
+};
+
+/** 单格画面指令：中文供展示/编辑，英文由后台转写后注入生图提示词。 */
+export type PodCompositionPanel = {
+  zh: string;
+  en: string;
+};
+
+/** 构图/视角定制：四格画面指令，键固定对应固定角色。 */
+export type PodCompositionPanels = {
+  /** 主图 */
+  panel_1: PodCompositionPanel;
+  /** 细节图 A */
+  panel_2: PodCompositionPanel;
+  /** 细节图 B */
+  panel_3: PodCompositionPanel;
+  /** 素材图 */
+  panel_4: PodCompositionPanel;
+};
+
+/** 手动编辑提交形状：只提交四格中文指令，后台据此重新转写英文。 */
+export type PodCompositionPanelsZh = {
+  panel_1: string;
+  panel_2: string;
+  panel_3: string;
+  panel_4: string;
+};
+
+/** 一份构图模板：中文供展示/编辑，英文由后台转写后注入生图提示词。 */
+export type PodComposition = {
+  composition_id: string;
+  name: string;
+  raw_input: string;
+  panels: PodCompositionPanels;
+  model: string;
+  prompt_version: string;
+  /** 是否为当前生效的那份（新建批次用它）。 */
+  is_active: boolean;
+  /** 系统内置「默认模板」：不可编辑/重命名/删除，只能设为生效。 */
+  is_builtin: boolean;
+  updated_at: string;
+};
+
+export type PodCompositionListResponse = {
+  templates: PodComposition[];
+  total: number;
 };
 
 export type PodBatchListResponse = {

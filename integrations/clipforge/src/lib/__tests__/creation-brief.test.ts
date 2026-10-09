@@ -23,8 +23,9 @@ describe("creation brief contract", () => {
       styleSource: "explicit",
       targetAudience: [],
       platforms: ["douyin"],
-      outputStrategy: "draft",
-      audioStrategy: "volcengine-tts",
+      // 默认主路线是一次出片（原生整片），音源随之落模型原生音频
+      outputStrategy: "native-film",
+      audioStrategy: "native-audio",
     });
   });
 

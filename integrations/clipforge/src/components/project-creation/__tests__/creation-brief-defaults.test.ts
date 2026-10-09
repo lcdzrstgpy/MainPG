@@ -107,8 +107,8 @@ describe("output strategy vocabulary", () => {
 
   it("records native audio for native-film and keeps the documented default elsewhere", () => {
     expect(defaultAudioStrategyFor("native-film")).toBe("native-audio");
-    expect(defaultAudioStrategyFor("draft")).toBe(DEFAULT_CREATION_BRIEF.audioStrategy);
-    expect(defaultAudioStrategyFor("controlled-motion")).toBe(DEFAULT_CREATION_BRIEF.audioStrategy);
+    expect(defaultAudioStrategyFor("draft")).toBe("volcengine-tts");
+    expect(defaultAudioStrategyFor("controlled-motion")).toBe("volcengine-tts");
   });
 
   it("describes the three audio strategies without hiding the mute option", () => {
@@ -147,25 +147,28 @@ describe("form validation", () => {
   });
 });
 
-describe("output strategy must be explicitly chosen (P2 / C3)", () => {
+describe("默认策略即已选（默认值由 draft 调整为一次出片后）", () => {
   const complete = { productName: "桂花乌龙茶", images: [{ id: "a" }] };
 
-  it("blocks submission while no strategy card has been clicked", () => {
+  it("默认策略是一次出片（原生整片），音源跟随策略而不是写死", () => {
+    expect(DEFAULT_CREATION_BRIEF.outputStrategy).toBe("native-film");
+    expect(DEFAULT_CREATION_BRIEF.audioStrategy).toBe(defaultAudioStrategyFor(DEFAULT_CREATION_BRIEF.outputStrategy));
+    expect(DEFAULT_CREATION_BRIEF.audioStrategy).toBe("native-audio");
+  });
+
+  it("缺省音源也跟随已归一化的策略（原生整片之外仍是火山语音）", () => {
+    expect(sanitizeCreationBrief({ outputStrategy: "native-film" }).audioStrategy).toBe("native-audio");
+    expect(sanitizeCreationBrief({ outputStrategy: "controlled-motion" }).audioStrategy).toBe("volcengine-tts");
+  });
+
+  it("校验仍然只认显式传进来的 strategyChosen：false 一律不可提交", () => {
     const blocked = validateCreationBriefForm({ ...complete, strategyChosen: false });
     expect(blocked.valid).toBe(false);
     expect(blocked.errors.outputStrategy).toBe("请先选择一个出片策略");
     // 缺省（没有选择记录）同样视为未选择
     expect(validateCreationBriefForm(complete).valid).toBe(false);
     expect(validateCreationBriefForm(complete).errors.outputStrategy).toBeTruthy();
-  });
-
-  it("allows submission once a strategy has been clicked", () => {
     expect(validateCreationBriefForm({ ...complete, strategyChosen: true }).valid).toBe(true);
-  });
-
-  it("keeps draft as the default value without counting it as chosen", () => {
-    expect(DEFAULT_CREATION_BRIEF.outputStrategy).toBe("draft");
-    expect(validateCreationBriefForm({ ...complete, strategyChosen: false }).valid).toBe(false);
   });
 });
 
@@ -173,7 +176,7 @@ describe("defaults stay free of implicit downgrades", () => {
   it("normalizes an empty brief into the shared default contract", () => {
     expect(sanitizeCreationBrief(undefined)).toEqual(DEFAULT_CREATION_BRIEF);
     expect(DEFAULT_CREATION_BRIEF.styleType).toBe("");
-    expect(DEFAULT_CREATION_BRIEF.outputStrategy).toBe("draft");
+    expect(DEFAULT_CREATION_BRIEF.outputStrategy).toBe("native-film");
     expect(DEFAULT_CREATION_BRIEF.platforms).toEqual(["douyin"]);
   });
 

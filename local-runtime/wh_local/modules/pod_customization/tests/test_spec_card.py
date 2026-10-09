@@ -338,20 +338,41 @@ def test_unknown_corner_raises(corner: str) -> None:
         )
 
 
-def test_overlong_text_is_truncated_and_reported(drawn_texts: list[str]) -> None:
-    cells = (("Long label text here", "x" * 200),)
+def test_long_sku_row_is_shown_in_full_without_ellipsis(drawn_texts: list[str]) -> None:
+    """用户反馈（2026-10-08）：SKU 太长不能把其它字段挤成省略号 —— 卡片加宽，字段全部完整显示。"""
 
+    cells = (
+        ("SKU", "Length (cm)", "Width (cm)", "Height (cm)"),
+        ("ZYL-22.05*16*22.05", "56", "41", "41"),
+    )
+    base = _decode(_base_png())
     result = render_spec_card(_base_png(), SpecCardRequest(cells=cells), font_loader=_injected_font)
+    box = _change_box(base, _decode(result.jpeg_bytes))
 
-    assert result.truncated_cells == 2
+    assert drawn_texts == [cell for row in cells for cell in row]
+    assert result.truncated_cells == 0
     assert result.dropped_rows == 0
-    assert result.font_px >= spec_card.HEADER_FONT_PX_AT_800  # 卡片按 1/9 面积整体放大
-    assert all(text.endswith("…") for text in drawn_texts)
-    assert len(drawn_texts[1]) < 200
-    assert drawn_texts[1][:-1] == "x" * (len(drawn_texts[1]) - 1)  # 前缀原样 + 省略号
-    # 只截断渲染副本，用户输入本身不被改写
-    assert cells[0][0] == "Long label text here"
-    assert cells[0][1] == "x" * 200
+    assert not any(text.endswith("…") for text in drawn_texts)
+    # 字号保持基准（内容加宽就放得下，不需要缩号）
+    assert result.font_px == spec_card.HEADER_FONT_PX_AT_800
+    assert result.body_font_px == spec_card.BODY_FONT_PX_AT_800
+    # 卡片比旧的 46% 宽上限更宽，但仍完整落在画布内
+    assert box is not None
+    left, _top, right, _bottom = box
+    assert right - left > CARD_MAX_WIDTH
+    assert 0 <= left and right <= BASE_SIDE
+
+
+def test_extreme_text_shrinks_the_font_instead_of_truncating(drawn_texts: list[str]) -> None:
+    """加宽到画布仍放不下时自动缩号：字段依旧完整，不出现省略号。"""
+
+    text = "x" * 120
+    result = render_spec_card(_base_png(), SpecCardRequest(cells=((text,),)), font_loader=_injected_font)
+
+    assert drawn_texts == [text]
+    assert result.truncated_cells == 0
+    assert result.font_px < spec_card.HEADER_FONT_PX_AT_800
+    assert result.font_px >= 9  # 缩号有下限（首行四号的最小可读字号）
 
 
 def test_twelve_rows_shrink_instead_of_dropping(drawn_texts: list[str]) -> None:
@@ -371,15 +392,31 @@ def test_twelve_rows_shrink_instead_of_dropping(drawn_texts: list[str]) -> None:
 
 
 def test_planner_drops_trailing_rows_when_height_cap_is_too_small() -> None:
-    """排版层仍保留「放不下就丢尾行」的兜底（极端内容时不会画到卡片外）。"""
+    """缩到最小字号仍放不下（``allow_truncate=True``）时，排版层保留「丢尾行」兜底，
+    极端内容不会画到卡片外。"""
+
+    rows = tuple((f"Row {index}",) for index in range(1, 9))
+    plan = spec_card._plan_card(
+        _injected_font(19), 19, _injected_font(16), 16, rows, max_width=400, max_height=60,
+        allow_truncate=True,
+    )
+
+    assert plan.dropped_rows > 0
+    assert len(plan.rows) < len(rows)
+
+
+def test_planner_marks_overflow_instead_of_truncating_for_the_caller_to_shrink() -> None:
+    """``allow_truncate=False``（内容优先）时不截断、不丢行，只把溢出交回调用方缩号。"""
 
     rows = tuple((f"Row {index}",) for index in range(1, 9))
     plan = spec_card._plan_card(
         _injected_font(19), 19, _injected_font(16), 16, rows, max_width=400, max_height=60
     )
 
-    assert plan.dropped_rows > 0
-    assert len(plan.rows) < len(rows)
+    assert plan.overflowed is True
+    assert plan.dropped_rows == 0
+    assert plan.truncated_cells == 0
+    assert plan.rows == rows
 
 
 def test_card_width_is_one_third_and_row_height_is_32px_with_fixed_fonts() -> None:

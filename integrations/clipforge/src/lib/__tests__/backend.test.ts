@@ -866,6 +866,26 @@ describe("completeWithJsonRetry（解析失败带着报错重问一次；能力�
     ).rejects.toThrow();
   });
 
+  it("推理模型把额度烧在思维链上（content 空 + finish_reason=length）→ 报错说清是推理额度问题", async () => {
+    // 实测 deepseek-flash：max_tokens 8000 全算作 reasoning_tokens，content 直接为空
+    const client = fakeClient(async () => ({
+      choices: [{
+        finish_reason: "length",
+        message: { content: "", reasoning_content: "很长很长的一段思维链".repeat(50) },
+      }],
+      usage: { completion_tokens_details: { reasoning_tokens: 8000 } },
+    }) as never);
+    const { completeWithJsonRetry } = await import("@/lib/script-engine/generator");
+    await expect(
+      completeWithJsonRetry(
+        client,
+        { model: "m", messages: [{ role: "user", content: "评审台词" }], max_tokens: 8000 },
+        {},
+        (c) => JSON.parse(c),
+      ),
+    ).rejects.toThrow(/全用在推理上[\s\S]*max_tokens=8000[\s\S]*reasoning_tokens=8000/);
+  });
+
   it("LLMRequestError（模型能力判定）不重试直接抛", async () => {
     let calls = 0;
     const client = fakeClient(async () => {

@@ -1173,7 +1173,7 @@ def test_worker_makes_one_initial_grid_call_per_style_and_keeps_four_results_tog
         (1, 1), (1, 2), (1, 3), (1, 4),
     ]
     assert all(item["status"] == "completed" for item in stored["items"])
-    assert [item["role"] for item in stored["items"][:4]] == ["hero", "detail_a", "detail_b", "lifestyle"]
+    assert [item["role"] for item in stored["items"][:4]] == ["lifestyle", "detail_a", "detail_b", "hero"]
     assert all(item["public_url"].startswith("https://cos.example.com/") for item in stored["items"])
     assert len(runtime.publications) == 80
     assert all(item["pattern_fingerprint"] for item in service.repository.get_batch_internal(batch["id"])["items"])
@@ -1270,12 +1270,12 @@ def test_style_grid_composites_the_spec_card_onto_the_hero_panel_only(tmp_path: 
         assert payloads_by_role[role]["public_url"] == (
             f"https://cos.example.com/workspace-a/{role}/{master['sha256'][:12]}.png"
         )
-    # 干净母版没有被卡片改写：hero 的母版资产仍是拆分出来的第一格像素。
+    # 干净母版没有被卡片改写：hero（右下=素材图）的母版资产仍是拆分出来的第四格像素。
     from wh_local.modules.pod_customization.images import split_grid_2x2
 
     hero_master = _asset_row(service, rows_by_role["hero"]["pattern_asset_id"])
     assert hero_master["kind"] == "direct_listing_panel"
-    assert hero_master["sha256"] == hashlib.sha256(split_grid_2x2(grid)[0]).hexdigest()
+    assert hero_master["sha256"] == hashlib.sha256(split_grid_2x2(grid)[3]).hexdigest()
     assert hero_master["sha256"] != card_assets[0]["sha256"]
     service.close()
     runtime.close()

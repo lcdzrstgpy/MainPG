@@ -7,7 +7,9 @@
 .pod-template-drawer-layer,
 .pod-failed-retry-backdrop,
 .pod-unsaved-confirm-backdrop,
-.pod-spec-card-drawer-layer {
+.pod-spec-card-drawer-layer,
+.pod-composition-drawer-layer,
+.pod-composition-manager-layer {
   --pod-surface: var(--theme-module-surface, #fff);
   --pod-surface-raised: var(--theme-module-surface-raised, #fff);
   --pod-surface-soft: var(--theme-module-surface-soft, #f7fafc);
@@ -845,3 +847,77 @@
 .pod-spec-card-drawer-layer textarea { font: inherit; }
 .pod-spec-card-drawer-layer button { cursor: pointer; }
 .pod-spec-card-drawer-layer { color: var(--pod-text); }
+
+/* 构图定制入口（放在左侧「创意描述」面板里）与抽屉 */
+.pod-composition-entry { display: flex; align-items: center; gap: 10px; margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--pod-border); }
+.pod-composition-entry-button { display: inline-flex; align-items: center; gap: 4px; padding: 8px 14px; white-space: nowrap; border: 1px solid var(--pod-border-strong); border-radius: 10px; color: var(--pod-primary); background: var(--pod-surface-tint); font-size: .78rem; font-weight: 700; }
+.pod-composition-entry-button:hover { border-color: var(--pod-primary); box-shadow: 0 6px 16px var(--pod-shadow); }
+.pod-composition-entry-summary { min-width: 0; color: var(--pod-text-secondary); font-size: .68rem; }
+.pod-composition-entry-summary.is-empty { color: var(--pod-text-muted); }
+
+.pod-composition-drawer-layer { position: fixed; z-index: 520; inset: 0; color: var(--pod-text); }
+.pod-composition-drawer-layer button, .pod-composition-drawer-layer textarea { font: inherit; }
+.pod-composition-drawer-layer button { cursor: pointer; }
+.pod-composition-drawer-backdrop { position: absolute; inset: 0; width: 100%; border: 0; background: var(--theme-module-overlay, rgba(15, 36, 53, .36)); backdrop-filter: blur(3px); }
+.pod-composition-drawer { position: absolute; top: 0; right: 0; bottom: 0; display: flex; width: min(680px, 94vw); flex-direction: column; border-left: 1px solid var(--pod-border); color: var(--pod-text); background: var(--pod-surface-raised); box-shadow: -24px 0 60px rgba(11, 35, 55, .18); animation: pod-drawer-in .2s ease-out; }
+.pod-composition-drawer-header { display: flex; align-items: start; justify-content: space-between; gap: 16px; padding: 20px 22px 15px; border-bottom: 1px solid var(--pod-border); background: var(--theme-module-panel-gradient, var(--pod-surface-soft)); }
+.pod-composition-drawer-header > div > span { color: var(--pod-primary); font-size: .58rem; font-weight: 900; letter-spacing: .1em; }
+.pod-composition-drawer-header h2 { margin: 3px 0; font-size: 1.2rem; }
+.pod-composition-drawer-header p { margin: 0; max-width: 46ch; color: var(--pod-text-secondary); font-size: .64rem; line-height: 1.5; }
+.pod-composition-drawer-header > button { width: 34px; height: 34px; flex: 0 0 auto; border: 1px solid var(--pod-border); border-radius: 9px; color: var(--pod-text-secondary); background: var(--pod-surface); font-size: 1.25rem; }
+.pod-composition-drawer-body { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 16px; padding: 16px 22px 20px; overflow: auto; }
+.pod-composition-editor, .pod-composition-result { display: flex; flex-direction: column; gap: 9px; padding: 12px 13px; border: 1px solid var(--pod-border); border-radius: 14px; background: var(--pod-surface); }
+.pod-composition-editor textarea { width: 100%; min-height: 96px; padding: 9px 10px; border: 1px solid var(--pod-border-strong); border-radius: 10px; outline: 0; color: var(--pod-text); background: var(--pod-surface-soft); font-size: .74rem; line-height: 1.55; box-sizing: border-box; overflow: hidden; resize: none; }
+.pod-composition-editor textarea:focus { border-color: var(--pod-primary); box-shadow: 0 0 0 3px rgba(var(--pod-primary-rgb), .13); }
+.pod-composition-editor textarea:disabled { opacity: .6; cursor: not-allowed; }
+.pod-composition-editor-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.pod-composition-editor-meta > span { color: var(--pod-text-muted); font-size: .6rem; }
+.pod-composition-editor-meta > span.pod-composition-stage { color: var(--pod-primary); font-weight: 800; }
+.pod-composition-editor-meta small { color: var(--pod-text-muted); font-size: .58rem; }
+.pod-composition-actions { display: flex; align-items: center; gap: 8px; }
+.pod-composition-generate { display: inline-flex; flex: 1; align-items: center; justify-content: center; gap: 6px; padding: 9px 14px; border: 0; border-radius: 9px; color: #fff; background: var(--pod-primary); font-size: .72rem; font-weight: 800; }
+.pod-composition-generate:disabled { opacity: .55; cursor: not-allowed; }
+.pod-composition-generate .icon-loading { display: inline-block; animation: pod-spin .8s linear infinite; }
+.pod-composition-clear { padding: 9px 14px; border: 1px solid var(--pod-border-strong); border-radius: 9px; color: var(--pod-text-secondary); background: var(--pod-surface); font-size: .72rem; font-weight: 700; }
+.pod-composition-clear:disabled { opacity: .55; cursor: not-allowed; }
+.pod-composition-error { margin: 0; padding: 6px 9px; border-radius: 8px; color: #a84c48; background: #fff4f3; font-size: .64rem; }
+.pod-composition-notice { margin: 0; color: #246f61; font-size: .64rem; }
+.pod-composition-result-title { display: flex; align-items: baseline; gap: 8px; }
+.pod-composition-result-title > span { color: var(--pod-primary); font-size: .58rem; font-weight: 900; letter-spacing: .1em; }
+.pod-composition-result-title h3 { margin: 0; font-size: .86rem; }
+.pod-composition-panels { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.pod-composition-panels > li { padding: 9px 11px; border: 1px solid var(--pod-border); border-radius: 10px; background: var(--pod-surface-soft); }
+.pod-composition-panels label { display: grid; gap: 5px; }
+.pod-composition-panels b { color: var(--pod-primary); font-size: .64rem; }
+.pod-composition-panels textarea { width: 100%; min-height: 56px; padding: 7px 9px; border: 1px solid var(--pod-border); border-radius: 8px; outline: 0; color: var(--pod-text); background: var(--pod-surface); font-size: .72rem; line-height: 1.5; box-sizing: border-box; overflow: hidden; resize: none; }
+.pod-composition-panels textarea:focus { border-color: var(--pod-primary); box-shadow: 0 0 0 3px rgba(var(--pod-primary-rgb), .13); }
+.pod-composition-panels textarea:disabled { opacity: .6; cursor: not-allowed; }
+.pod-composition-save { display: inline-flex; flex: 1; align-items: center; justify-content: center; gap: 6px; padding: 9px 14px; border: 0; border-radius: 9px; color: #fff; background: var(--pod-primary); font-size: .72rem; font-weight: 800; }
+.pod-composition-save:disabled { opacity: .55; cursor: not-allowed; }
+.pod-composition-save .icon-loading { display: inline-block; animation: pod-spin .8s linear infinite; }
+.pod-composition-empty { margin: 0; color: var(--pod-text-muted); font-size: .68rem; }
+
+/* 构图模板管理抽屉 */
+.pod-composition-manager-layer { position: fixed; z-index: 520; inset: 0; color: var(--pod-text); }
+.pod-composition-manager-layer button { font: inherit; cursor: pointer; }
+.pod-composition-manager-backdrop { position: absolute; inset: 0; width: 100%; border: 0; background: var(--theme-module-overlay, rgba(15, 36, 53, .36)); backdrop-filter: blur(3px); }
+.pod-composition-manager { position: absolute; top: 0; right: 0; bottom: 0; display: flex; width: min(560px, 94vw); flex-direction: column; border-left: 1px solid var(--pod-border); color: var(--pod-text); background: var(--pod-surface-raised); box-shadow: -24px 0 60px rgba(11, 35, 55, .18); animation: pod-drawer-in .2s ease-out; }
+.pod-composition-manager-header { display: flex; align-items: start; justify-content: space-between; gap: 16px; padding: 20px 22px 15px; border-bottom: 1px solid var(--pod-border); background: var(--theme-module-panel-gradient, var(--pod-surface-soft)); }
+.pod-composition-manager-header > div > span { color: var(--pod-primary); font-size: .58rem; font-weight: 900; letter-spacing: .1em; }
+.pod-composition-manager-header h2 { margin: 3px 0; font-size: 1.2rem; }
+.pod-composition-manager-header p { margin: 0; max-width: 42ch; color: var(--pod-text-secondary); font-size: .64rem; line-height: 1.5; }
+.pod-composition-manager-header > button { width: 34px; height: 34px; flex: 0 0 auto; border: 1px solid var(--pod-border); border-radius: 9px; color: var(--pod-text-secondary); background: var(--pod-surface); font-size: 1.25rem; }
+.pod-composition-manager-body { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 10px; padding: 16px 22px 20px; overflow: auto; }
+.pod-composition-manager-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; margin: 0; padding: 0; list-style: none; }
+.pod-composition-manager-list > li { display: grid; min-width: 0; gap: 7px; padding: 11px 12px; border: 1px solid var(--pod-border); border-radius: 12px; background: var(--pod-surface-soft); }
+.pod-composition-manager-list > li.is-active { border-color: var(--pod-primary); background: var(--pod-surface-tint); }
+.pod-composition-manager-meta { display: flex; min-width: 0; align-items: center; gap: 8px; }
+.pod-composition-manager-meta b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pod-composition-manager-meta small { margin-left: auto; flex: 0 0 auto; color: var(--pod-text-muted); font-size: .6rem; }
+.pod-composition-manager-badge { flex: 0 0 auto; padding: 2px 7px; border-radius: 999px; color: #fff; background: var(--pod-primary); font-size: .56rem; font-weight: 800; }
+.pod-composition-manager-preview { display: -webkit-box; overflow: hidden; margin: 0; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere; color: var(--pod-text-secondary); font-size: .68rem; line-height: 1.5; }
+.pod-composition-manager-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.pod-composition-manager-actions > button { padding: 6px 11px; border: 1px solid var(--pod-border-strong); border-radius: 8px; color: var(--pod-text); background: var(--pod-surface); font-size: .68rem; font-weight: 700; }
+.pod-composition-manager-actions > button:disabled { opacity: .5; cursor: not-allowed; }
+.pod-composition-manager-actions > button.is-danger { color: #b4473f; border-color: #efc9c5; }
+.pod-composition-manager-tag { flex: 0 0 auto; padding: 2px 7px; border: 1px solid var(--pod-border-strong); border-radius: 999px; color: var(--pod-text-secondary); background: var(--pod-surface); font-size: .56rem; font-weight: 800; }

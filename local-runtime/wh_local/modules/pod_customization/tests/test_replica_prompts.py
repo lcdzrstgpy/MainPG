@@ -42,11 +42,11 @@ def test_replica_prompt_declares_dual_reference_roles_and_target_only() -> None:
 def test_replica_prompt_reuses_four_panel_positions_and_camera_requirements() -> None:
     prompt = build_replica_listing_prompt(_fields(), attempt=1)
 
-    assert "Panel 1 — MATERIAL IMAGE (top-left)" in prompt
+    assert "Panel 1 — PRIMARY IMAGE (top-left)" in prompt
     assert "Panel 2 — DETAIL IMAGE A (top-right)" in prompt
     assert "Panel 3 — DETAIL IMAGE B (bottom-left)" in prompt
-    assert "Panel 4 — PRIMARY IMAGE (bottom-right)" in prompt
-    assert "Panel 4 must be a wide lifestyle scene" in prompt
+    assert "Panel 4 — MATERIAL IMAGE (bottom-right)" in prompt
+    assert "Panel 1 must be a wide lifestyle scene" in prompt
 
 
 def test_replica_prompt_declares_same_product_same_pattern_not_recolorways() -> None:

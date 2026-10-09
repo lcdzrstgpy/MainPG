@@ -121,6 +121,10 @@ describe("pro 模式：策略一致的非主操作", () => {
     expect(scriptPage).toMatch(/flow\.showControlledMotionAction/);
     expect(scriptPage).toMatch(/flow\.showNativeFilmAction/);
   });
+
+  it("入口唯一化后，整片预览在导演模式仍留一个（工具栏 ✨）", () => {
+    expect(scriptPage).toMatch(/flow\.showNativeFilmAction && \([\s\S]{0,600}onClick=\{runAiFilm\}/);
+  });
 });
 
 describe("转手动（Task 3）：进入导演模式且任务继续运行", () => {
@@ -133,19 +137,23 @@ describe("转手动（Task 3）：进入导演模式且任务继续运行", () =
 });
 
 describe("脚本页：出片策略停在脚本确认页（沿用？auto=1 不降级语义）", () => {
-  it("controlled-motion 给逐镜动态确认入口且不启动流水线", () => {
+  it("controlled-motion：说明卡只解释策略，不再自带入口", () => {
     const block = strategyBlock('flow.strategy === "controlled-motion"', 'flow.strategy === "native-film"');
     expect(block).toMatch(/该策略不会自动启动免费静态流水线/);
-    expect(block).toMatch(/project\/\$\{id\}\/assets/);
+    // 入口唯一化：说明卡里不再渲染可点击入口（素材页入口只留在小白动作区与导演模式工具栏）
+    expect(block).not.toMatch(/\/assets/);
+    expect(block).not.toMatch(/<Button|<Link/);
     expect(block).not.toMatch(/autoFinish\(\)|startPipeline\(/);
   });
 
-  it("native-film 给整片预览与计费确认入口且不启动流水线", () => {
+  it("native-film：说明卡只解释策略与计费，不再重复渲染整片预览按钮", () => {
     const block = strategyBlock('flow.strategy === "native-film"', "// 重新生成 = 新版本");
     expect(block).toMatch(/该策略不会自动启动免费静态流水线/);
-    expect(block).toMatch(/onClick=\{runAiFilm\}/);
-    expect(block).not.toMatch(/autoFinish\(\)|startPipeline\(/);
     expect(block).toMatch(/模型原生音频/);
+    // 同一个动作不能在同一屏出现两次：说明卡不再渲染整片预览按钮
+    expect(block).not.toMatch(/onClick=\{runAiFilm\}/);
+    expect(block).not.toMatch(/<Button|<Link/);
+    expect(block).not.toMatch(/autoFinish\(\)|startPipeline\(/);
   });
 });
 

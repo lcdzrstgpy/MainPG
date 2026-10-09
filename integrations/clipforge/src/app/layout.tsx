@@ -6,8 +6,10 @@ import { GeistSans } from "geist/font/sans";
 import { GeistMono } from "geist/font/mono";
 import "./globals.css";
 import { LocaleInitializer } from "@/components/locale-initializer";
+import { ConfiguredDefaultsInitializer } from "@/components/configured-defaults-initializer";
 import { AppShell } from "@/components/app-shell";
 import { EMBED_HEADER_NAME, EMBED_HEADER_ON } from "@/lib/embed-mode";
+import { resolveConfiguredDefaults } from "@/lib/configured-defaults-file";
 
 const geistSans = GeistSans;
 const geistMono = GeistMono;
@@ -40,6 +42,10 @@ export default async function RootLayout({
   // 所以首个 HTML 响应就带 mainpg-embedded 类，硬刷新 / 网络节流下不会再先闪黑色独立壳。
   const embedded = (await headers()).get(EMBED_HEADER_NAME) === EMBED_HEADER_ON;
 
+  // 运维下发的默认设置（平台 Key / 默认模型）：sidecar 随机端口导致 origin 每次都变、
+  // localStorage 里的设置读不到，靠它把配置补回前端（只补空值）
+  const configuredDefaults = resolveConfiguredDefaults();
+
   // embedded 时不能带 dark：否则 dark: 变体会把内嵌页拉回深色，盖掉 .mainpg-embedded 令牌
   return (
     <html
@@ -47,6 +53,7 @@ export default async function RootLayout({
       className={`${embedded ? "mainpg-embedded" : "dark"} ${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col bg-background text-foreground">
+        <ConfiguredDefaultsInitializer defaults={configuredDefaults} />
         <LocaleInitializer />
         <AppShell embedded={embedded}>{children}</AppShell>
       </body>

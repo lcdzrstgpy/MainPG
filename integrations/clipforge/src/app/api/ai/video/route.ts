@@ -5,6 +5,7 @@ import { toRemoteUsableImage, resolveUploadFilePath } from "@/lib/remote-image";
 import { apiError, errText } from "@/lib/api-error";
 import { recordAiTask, updateAiTask } from "@/lib/ai-tasks";
 import { sanitizeGenerationControlSummary } from "@/lib/video-repair-plan";
+import { strategyChainGuard, strategyGateError } from "@/lib/strategy-chain-gate";
 
 // AI video generation.
 //
@@ -23,6 +24,17 @@ export async function POST(req: NextRequest) {
 
   if (!apiKey) {
     return apiError(req, "缺少 API Key，请先在设置中配置对应平台", "Missing API Key, please configure the corresponding platform in settings first");
+  }
+
+  // 服务端出片策略门禁（fail-closed）：带 projectId 的调用就是项目内的逐镜生视频（付费 I2V），
+  // 只放行 controlled-motion 策略或旧项目；免费草稿不该烧钱，原生整片走整片链不做逐镜 I2V。
+  // 不带 projectId 的调用（平台试跑 / CLI）没有项目策略可判，保持原有行为。
+  if (typeof projectId === "string" && projectId) {
+    const gate = await strategyChainGuard(projectId, "motion");
+    if (!gate.allowed) {
+      const error = strategyGateError(gate, "motion");
+      return apiError(req, error.zh, error.en, error.status);
+    }
   }
 
   try {

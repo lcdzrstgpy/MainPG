@@ -73,9 +73,9 @@ describe("submission gating", () => {
   });
 });
 
-describe("outcome-strategy gate (P2 / C3)", () => {
-  it("starts unselected and only becomes chosen after a strategy card click", () => {
-    expect(form).toMatch(/useState\(false\)/);
+describe("outcome-strategy gate（默认策略即已选）", () => {
+  it("默认策略已经选中，不再要求用户额外点一次卡片", () => {
+    expect(form).toMatch(/const \[strategyChosen, setStrategyChosen\] = useState\(true\)/);
     expect(form).toMatch(/setStrategyChosen\(true\)/);
     expect(form).toMatch(/strategyChosen=\{strategyChosen\}|strategyChosen,/);
     expect(form).toMatch(/validateCreationBriefForm\(\{[\s\S]*strategyChosen[\s\S]*\}\)/);

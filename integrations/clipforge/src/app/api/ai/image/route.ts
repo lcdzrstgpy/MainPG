@@ -2,11 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { createProvider } from "@/lib/providers";
 import { toRemoteUsableImage } from "@/lib/remote-image";
 import { apiError, errText } from "@/lib/api-error";
+import { strategyChainGuard, strategyGateError } from "@/lib/strategy-chain-gate";
 
 // AI image generation
 export async function POST(req: NextRequest) {
   const body = await req.json();
-  const { provider: providerName, model, prompt, imageUrl, imageUrls, mode, apiKey, baseUrl, options } = body;
+  const { provider: providerName, model, prompt, imageUrl, imageUrls, mode, apiKey, baseUrl, options, projectId } = body;
 
   if (!providerName || !model || !prompt) {
     return apiError(req, "缺少必要参数", "Missing required parameters");
@@ -14,6 +15,17 @@ export async function POST(req: NextRequest) {
 
   if (!apiKey) {
     return apiError(req, "缺少 API Key，请先在设置中配置对应平台", "Missing API Key, please configure the corresponding platform in settings first");
+  }
+
+  // 服务端出片策略门禁（fail-closed）：带 projectId 的调用就是项目内的关键帧生图（付费），
+  // 只放行 controlled-motion / native-film 或旧项目；免费草稿只用商品图与免费素材。
+  // 不带 projectId 的调用（角色定妆照 / 平台试跑）没有项目策略可判，保持原有行为。
+  if (typeof projectId === "string" && projectId) {
+    const gate = await strategyChainGuard(projectId, "keyframe");
+    if (!gate.allowed) {
+      const error = strategyGateError(gate, "keyframe");
+      return apiError(req, error.zh, error.en, error.status);
+    }
   }
 
   try {

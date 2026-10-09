@@ -85,6 +85,7 @@ from ..modules.pod_customization.remote_billing import (
     session_remote_token_resolver,
 )
 from ..modules.pod_customization.brief_runtime import PodBriefRuntime
+from ..modules.pod_customization.composition_runtime import PodCompositionRuntime
 from ..modules.pod_customization.title_runtime import PodTitleRuntime
 from ..modules.combo_kit import (
     create_combo_kit_router,
@@ -191,6 +192,23 @@ def _clipforge_build_resolver(install_root: Path, data_root: Path) -> Any:
         return resolve_clipforge_build(install_root, data_root)
 
     return resolve
+
+
+def _clipforge_reference_config() -> Path | None:
+    """给 AI 视频 sidecar 定位 cos.local.json（参考图公网中转用）。
+
+    速创这类异步接口的参考图必须由上游去抓，内联 base64 会被打回 500；sidecar 用这份
+    对象存储配置把本地图换成临时公网 URL。复用媒体模块同一套查找顺序，找不到就返回 None
+    （sidecar 会给出明确错误，而不是静默发一个抓不到的地址）。"""
+
+    try:
+        from wh_local.modules.product_processing.service import _cos_local_config_paths
+    except Exception:  # noqa: BLE001 - 模块不可用不能让视频服务起不来
+        return None
+    for candidate in _cos_local_config_paths():
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def _clipforge_node_binary(install_root: Path) -> Path | str:
@@ -420,6 +438,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         build_resolver=_clipforge_build_resolver(config.install_root, config.data_dir),
         data_root=config.data_dir / "clipforge",
         node_binary=str(_clipforge_node_binary(config.install_root)),
+        reference_config_resolver=_clipforge_reference_config,
     )
 
     update_manager = UpdateManager(
@@ -605,6 +624,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     pod_ai_runtime = PodCustomizationAiRuntime(image_workers=8, batch_workers=2)
     pod_title_runtime = PodTitleRuntime(executor_workers=8, provider_concurrency=8)
     pod_brief_runtime = PodBriefRuntime(executor_workers=2, provider_concurrency=2)
+    pod_composition_runtime = PodCompositionRuntime(executor_workers=2, provider_concurrency=1)
     remote_token_resolver = session_remote_token_resolver(customer_sessions)
     # 让 _provider_config 能拿到远端会话 token：collect-key 已改为按 token 认身份，
     # 没有 token 服务端会拒绝（fail closed）。
@@ -620,6 +640,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         pod_ai_runtime,
         title_runtime=pod_title_runtime,
         brief_runtime=pod_brief_runtime,
+        composition_runtime=pod_composition_runtime,
         billing_coordinator=pod_billing,
     )
     app.include_router(pod_router)
@@ -629,6 +650,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     app.state.pod_customization_ai_runtime = pod_ai_runtime
     app.state.pod_customization_title_runtime = pod_title_runtime
     app.state.pod_customization_brief_runtime = pod_brief_runtime
+    app.state.pod_customization_composition_runtime = pod_composition_runtime
 
     # 商品组合套装：独立业务模块，与产品处理 / POD 完全隔离。
     combo_kit_repo = ComboKitRepository(db_path.parent / "combo-kit" / "combo_kit.sqlite3")

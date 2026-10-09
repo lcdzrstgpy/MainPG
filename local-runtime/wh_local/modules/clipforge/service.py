@@ -28,6 +28,7 @@ import os
 import platform
 import socket
 import subprocess
+import sys
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -58,6 +59,9 @@ _READY_HTTP_TIMEOUT_SECONDS: Final[float] = 1.0
 _NO_PROXY_OPENER: Final = build_opener(ProxyHandler({}))
 
 _ACTIVE_STATES: Final[frozenset[str]] = frozenset({"starting", "ready"})
+# 运维下发的「默认设置」文件名：速创 / LLM 的 Key 与默认模型。与 cos.local.json 同一范式——
+# 只把文件路径交给子进程（WH_CLIPFORGE_CONFIG），凭据本身留在磁盘上，不进环境变量明文。
+_CONFIGURED_SETTINGS_NAME: Final[str] = "clipforge.local.json"
 # 只有这些状态会因为 sidecar 进程消失而变成 failed；failed 自身必须保持不动。
 _EXIT_OBSERVABLE_STATES: Final[frozenset[str]] = frozenset({"starting", "ready"})
 # 构建产物消失不得抹掉已经持久化的 failed/诊断编号。
@@ -179,6 +183,21 @@ def _bundled_media_environment(
     return environment
 
 
+def _configured_settings_candidates(module_dir: Path) -> tuple[Path, ...]:
+    """默认设置文件 clipforge.local.json 的候选位置：源码模块目录 + 打包资源目录。
+
+    与 cos.local.json 同一套布局：放进可执行文件同目录（onedir）或打包资源
+    （onefile 的 _MEIPASS）后，安装后零配置即可带上平台 Key 与默认模型。
+    """
+    candidates = [Path(module_dir) / _CONFIGURED_SETTINGS_NAME]
+    if getattr(sys, "frozen", False):
+        candidates.append(Path(sys.executable).resolve().parent / _CONFIGURED_SETTINGS_NAME)
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidates.append(Path(meipass) / _CONFIGURED_SETTINGS_NAME)
+    return tuple(candidates)
+
+
 class ClipForgeService:
     """Owns exactly one loopback-only ClipForge sidecar child process."""
 
@@ -188,12 +207,16 @@ class ClipForgeService:
         data_root: Path,
         node_binary: str = "node",
         *,
+        reference_config_resolver: Callable[[], Path | None] | None = None,
         process_factory: Callable[..., subprocess.Popen[bytes]] = subprocess.Popen,
         ready_probe: Callable[..., None] = _probe_readiness,
     ) -> None:
         self._build_resolver = build_resolver
         self._data_root = Path(data_root)
         self._node_binary = node_binary
+        # 参考图公网中转用的对象存储配置（cos.local.json）位置；sidecar 用它把本地图换成
+        # 上游能抓的临时 URL（速创这类异步接口不接受内联图）。拿不到就注入空，sidecar 会明确报错。
+        self._reference_config_resolver = reference_config_resolver
         self._process_factory = process_factory
         self._ready_probe = ready_probe
         self._lock = threading.RLock()
@@ -489,6 +512,8 @@ class ClipForgeService:
             self._mark_failed_locked(code, message, exit_code)
 
     def _child_environment(self, app_root: Path, instance_id: str, port: int) -> dict[str, str]:
+        reference_config = self._reference_config_path()
+        configured_settings = self._configured_settings_path()
         return {
             **os.environ,
             "NODE_ENV": "production",
@@ -497,8 +522,33 @@ class ClipForgeService:
             "APP_DATA_DIR": str(self._data_root / "data"),
             "APP_MIGRATIONS_DIR": str(app_root / "drizzle"),
             "MAINPG_CLIPFORGE_INSTANCE_ID": instance_id,
+            # 只传路径不传凭据：sidecar 自己读 cos.local.json，密钥不进环境变量
+            **({"WH_MEDIA_COS_CONFIG": str(reference_config)} if reference_config else {}),
+            # 同理：默认设置（平台 Key、默认模型）也只传路径，由 sidecar 自己读盘
+            **({"WH_CLIPFORGE_CONFIG": str(configured_settings)} if configured_settings else {}),
             **_bundled_media_environment(app_root),
         }
+
+    def _reference_config_path(self) -> Path | None:
+        """参考图中转要用的 cos.local.json；解析不出来就返回 None（sidecar 会明确报缺配置）。"""
+        resolver = self._reference_config_resolver
+        if resolver is None:
+            return None
+        try:
+            candidate = resolver()
+        except Exception:  # noqa: BLE001 - 配置解析失败绝不能拖住 sidecar 启动
+            return None
+        if candidate is None:
+            return None
+        path = Path(candidate)
+        return path if path.is_file() else None
+
+    def _configured_settings_path(self) -> Path | None:
+        """默认设置文件 clipforge.local.json：取第一个存在的候选位置，没有则 None。"""
+        for candidate in _configured_settings_candidates(Path(__file__).resolve().parent):
+            if candidate.is_file():
+                return candidate
+        return None
 
     def _open_log(self, diagnostic_id: str) -> Path:
         logs_dir = self._data_root / "logs"

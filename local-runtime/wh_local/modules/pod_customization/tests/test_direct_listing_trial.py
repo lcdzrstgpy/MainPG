@@ -140,17 +140,17 @@ def test_direct_listing_trial_makes_one_reference_grid_and_returns_four_public_r
     assert "same exact product" in runtime.requests[0].prompt
     assert "The template is not a background plate" in runtime.requests[0].prompt
     assert "template's existing artwork" in runtime.requests[0].prompt
-    assert "Panel 1 — MATERIAL IMAGE" in runtime.requests[0].prompt
+    assert "Panel 1 — PRIMARY IMAGE" in runtime.requests[0].prompt
     assert "Panel 2 — DETAIL IMAGE A" in runtime.requests[0].prompt
     assert "Panel 3 — DETAIL IMAGE B" in runtime.requests[0].prompt
-    assert "Panel 4 — PRIMARY IMAGE" in runtime.requests[0].prompt
+    assert "Panel 4 — MATERIAL IMAGE" in runtime.requests[0].prompt
     assert result["status"] == "completed"
     assert result["grid"]["preview_url"].startswith("/api/pod-customization/assets/")
     assert [image["role"] for image in result["images"]] == [
-        "hero",
+        "lifestyle",
         "detail_a",
         "detail_b",
-        "lifestyle",
+        "hero",
     ]
     assert all(image["public_url"].startswith("https://bucket.cos.") for image in result["images"])
     assert len(runtime.published) == 4
@@ -324,10 +324,10 @@ def test_direct_listing_trial_returns_persisted_partial_result_when_publication_
     assert result["status"] == "failed"
     assert "COS upload failed for detail_a" in result["error_message"]
     assert [image["role"] for image in result["images"]] == [
-        "hero",
+        "lifestyle",
         "detail_a",
         "detail_b",
-        "lifestyle",
+        "hero",
     ]
     assert result["images"][0]["public_url"].startswith("https://bucket.cos.")
     assert result["images"][1]["public_url"] is None

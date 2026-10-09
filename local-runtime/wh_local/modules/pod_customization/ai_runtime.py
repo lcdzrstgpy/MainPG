@@ -22,6 +22,7 @@ from wh_local.modules.product_processing.domain.policy import is_safe_external_u
 from wh_local.modules.product_processing.infrastructure.media import GeneratedMedia, MediaProcessingError
 from wh_local.modules.product_processing.infrastructure.media import ProductImageProcessor
 from wh_local.modules.product_processing.service import ProductProcessingService
+from wh_local.media_enhance import options_from_env
 from wh_local.data_collection.public_image_fetch import (
     FetchedPublicImage,
     PublicImageFetchError,
@@ -439,8 +440,15 @@ class PodCustomizationAiRuntime(AiRuntime):
         return content, content_type
 
     def split_listing_grid(self, media):
-        """Reuse the established local four-grid splitter; no AI call is made."""
-        parts = self._media.split_four_grid(media)
+        """Reuse the established local four-grid splitter; no AI call is made.
+
+        在既有的"裁边 → 放大到 800×800"之后加一层**轻度锐化**：上游母图实测
+        1254×1254，拆四格后每格原生仅约 627×627，插值放大到 800 会发软；这里把
+        边缘对比度补回来，让交付图更利落（不产生新细节，参数见 media_enhance）。
+        默认开启，`WH_POD_IMAGE_ENHANCE=0` 可一键回退。
+        """
+
+        parts = self._media.split_four_grid(media, enhance=options_from_env())
         return [part for part in parts if part.stage.startswith("grid_image_") and part.stage != "grid_image_summary"]
 
     def publish_listing_image(self, media, *, namespace: str, role: str) -> str:
