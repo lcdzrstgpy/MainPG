@@ -53,10 +53,26 @@ export function resolveFilmModel(configured?: string | null): FilmModelChoice {
   return { model: model ?? "" };
 }
 
+/**
+ * 速创（Suchuang）各视频端点**真实**的单次时长上限（秒）。
+ *
+ * 它们不在 Atlas 参数表里，只能单独列。必须裁到上限再提交：MiniMax H3 实测最长 15 秒
+ * （调试页也写「时长，4-15秒」），我们曾提交 30 秒——它返回 code=200 给了 id，
+ * 但成片只有 5.17 秒，属于**静默降级**。宁可提前裁剪并把「实际生成多少秒」如实告诉用户。
+ */
+const SUCHUANG_MAX_SECONDS: Record<string, number> = {
+  "video_minimax_h3": 15,
+  "video_omni": 15, // 文档枚举 3-15
+  "video_vidu": 16, // 产品说明「最长16秒」
+  "video_wan_3.0": 30, // 文档 4-30
+};
+
 /** The model's own longest single generation, when its schema declares a duration enum. */
 export function modelMaxSeconds(modelId?: string | null): number | undefined {
-  const durations = modelId ? getVideoParamSpec(modelId)?.durationEnum : undefined;
-  return durations?.length ? Math.max(...durations) : undefined;
+  if (!modelId) return undefined;
+  const durations = getVideoParamSpec(modelId)?.durationEnum;
+  if (durations?.length) return Math.max(...durations);
+  return SUCHUANG_MAX_SECONDS[modelId];
 }
 
 export interface FilmDurationFit {

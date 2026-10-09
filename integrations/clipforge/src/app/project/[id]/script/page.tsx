@@ -1132,6 +1132,15 @@ export default function ScriptPage() {
               <p className="text-sm text-muted-foreground">
                 {t("aiFilmPreviewMeta", { shots: filmPreview.shotCount, seconds: filmPreview.seconds, refs: filmPreview.referenceImages })}
               </p>
+              {filmPreview.durationOverflow && (
+                <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-xs text-amber-600 dark:text-amber-500">
+                  {t("aiFilmDurationWarn", {
+                    script: filmPreview.scriptSeconds,
+                    max: filmPreview.modelMaxSeconds,
+                    seconds: filmPreview.seconds,
+                  })}
+                </div>
+              )}
               {filmPreview.swappedFrom && (
                 <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-xs text-amber-600 dark:text-amber-500">
                   {t("aiFilmModelSwap", { from: filmPreview.swappedFrom, to: filmPreview.model })}
