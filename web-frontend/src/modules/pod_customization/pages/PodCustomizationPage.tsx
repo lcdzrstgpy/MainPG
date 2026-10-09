@@ -2,6 +2,9 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { podCustomizationApi } from "../api/podCustomizationApi";
+import { CompositionEditDrawer } from "../components/CompositionEditDrawer";
+import { CompositionGenerateDrawer } from "../components/CompositionGenerateDrawer";
+import { CompositionManagerDrawer } from "../components/CompositionManagerDrawer";
 import { PodBatchGallery } from "../components/PodBatchGallery";
 import { PodBatchHistoryDrawer } from "../components/PodBatchHistoryDrawer";
 import { PodBriefInput } from "../components/PodBriefInput";
@@ -56,6 +59,7 @@ import type {
   PodBriefFieldsDraft,
   PodBriefHistoryItem,
   PodBusinessFieldsDraft,
+  PodComposition,
   PodListingFieldsDraft,
   PodMiaoshouTemplateKind,
   PodTemplate,
@@ -204,6 +208,11 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   const [templateDrawerOpen, setTemplateDrawerOpen] = useState(false);
   const [specCardDrawerOpen, setSpecCardDrawerOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [compositionDrawerOpen, setCompositionDrawerOpen] = useState(false);
+  const [compositionManagerOpen, setCompositionManagerOpen] = useState(false);
+  const [compositionEditOpen, setCompositionEditOpen] = useState(false);
+  const [compositionEditTarget, setCompositionEditTarget] = useState<PodComposition | null>(null);
+  const [composition, setComposition] = useState<PodComposition | null>(null);
   const [failedRetryOpen, setFailedRetryOpen] = useState(false);
   const [pendingTemplateSwitch, setPendingTemplateSwitch] = useState<string | null>(null);
   const [switchingTemplate, setSwitchingTemplate] = useState(false);
@@ -294,6 +303,22 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     const updateVisibility = () => setVisibility(document.visibilityState);
     document.addEventListener("visibilitychange", updateVisibility);
     return () => document.removeEventListener("visibilitychange", updateVisibility);
+  }, []);
+
+  // 读取该账号的最新构图（只保留最新一份），用于「新建批次将套用」提示。
+  useEffect(() => {
+    let stopped = false;
+    void (async () => {
+      try {
+        const latest = await podCustomizationApi.getLatestComposition();
+        if (!stopped) setComposition(latest);
+      } catch {
+        // 构图读取失败不影响主流程，静默忽略；用户打开抽屉时会再拉一次。
+      }
+    })();
+    return () => {
+      stopped = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -925,12 +950,13 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   return (
     <section className="pod-customization-page" aria-label="POD 定制">
       <header className="pod-page-header">
-        <div className="pod-page-title"><span className="pod-page-title-icon iconfont icon-skin" aria-hidden="true" /><div><span>POD CUSTOMIZATION · DIRECT LISTING</span><h1>POD 定制</h1></div></div>
+        <div className="pod-page-title"><span className="pod-page-title-icon iconfont icon-skin" aria-hidden="true" /><div><span>POD CUSTOMIZATION · DIRECT LISTING</span><h1>POD 全定制</h1></div></div>
         <div className="pod-page-header-actions">
           {batchRunning && <span className="pod-live-badge"><i />批次后台运行中</span>}
           <button type="button" onClick={() => setTemplateDrawerOpen(true)}><span className="iconfont icon-upload" />上传当前批次模板</button>
           <button type="button" onClick={() => setTemplateDrawerOpen(true)}><span className="iconfont icon-appstore" />查看历史批次模板</button>
           <button type="button" onClick={() => setHistoryOpen(true)}><span className="iconfont icon-time-circle" />查看定制记录历史</button>
+          <button type="button" onClick={() => setCompositionManagerOpen(true)}><span className="iconfont icon-skin" />构图模板管理</button>
         </div>
       </header>
 
@@ -963,6 +989,17 @@ export function PodCustomizationPage({ isActive = true }: Props) {
             <div className="pod-advanced-prompt">
               <button type="button" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((open) => !open)}><span><b>高级：本批次创意编辑</b><small>内置 POD Direct Listing Prompt v1</small></span><i className={`iconfont icon-down ${advancedOpen ? "is-open" : ""}`} /></button>
               {advancedOpen && <div className="pod-advanced-prompt-editor"><textarea value={currentBatchEdit ?? builtInPrompt} onChange={(event) => setCurrentBatchEdit(event.target.value)} aria-label="本批次创意提示词" /><div><span>{currentBatchEdit === null ? "正在使用内置 v1" : "已为本批次自定义"}</span><button type="button" onClick={() => setCurrentBatchEdit(null)}>重置为 v1</button></div></div>}
+            </div>
+            <div className="pod-composition-entry">
+              <button type="button" className="pod-composition-entry-button" onClick={() => setCompositionDrawerOpen(true)}>
+                <span className="iconfont icon-skin" aria-hidden="true" />
+                构图定制
+              </button>
+              <span className={composition ? "pod-composition-entry-summary" : "pod-composition-entry-summary is-empty"}>
+                {composition
+                  ? (composition.is_builtin ? "系统默认模板（默认机位）" : "已配置最新构图，新建批次将自动套用")
+                  : "未配置：使用系统默认模板"}
+              </span>
             </div>
             <PodListingFieldsEditor
               listingFields={listingFields}
@@ -1093,6 +1130,40 @@ export function PodCustomizationPage({ isActive = true }: Props) {
             ? `全批重印完成：成功 ${result.reprinted} 款、失败 ${result.failed} 款，该批次需重新导出。`
             : `全批重印完成：${result.reprinted} 款已更新，该批次需重新导出。`);
           void refreshActiveBatch(batchId);
+        }}
+      />
+
+      <CompositionGenerateDrawer
+        open={compositionDrawerOpen}
+        onClose={() => setCompositionDrawerOpen(false)}
+        onChanged={(next: PodComposition | null) => {
+          setComposition(next);
+          if (next) setNotice("已生成新模板并设为生效，新建批次将自动套用。");
+        }}
+      />
+
+      <CompositionEditDrawer
+        open={compositionEditOpen}
+        target={compositionEditTarget}
+        onClose={() => setCompositionEditOpen(false)}
+        onChanged={(saved: PodComposition) => {
+          setComposition(saved);
+          setNotice("构图已保存，新建批次将自动套用。");
+        }}
+      />
+
+      <CompositionManagerDrawer
+        open={compositionManagerOpen}
+        onClose={() => setCompositionManagerOpen(false)}
+        onEdit={(template) => {
+          setCompositionManagerOpen(false);
+          setCompositionEditTarget(template);
+          setCompositionEditOpen(true);
+        }}
+        onActiveChanged={(active) => {
+          setComposition(active);
+          if (!active) setNotice("已无生效模板，四张图将使用系统默认模板。");
+          else setNotice(active.is_builtin ? "当前使用系统默认模板（默认机位）。" : `当前生效模板：${active.name.trim() || "未命名构图"}。`);
         }}
       />
     </section>

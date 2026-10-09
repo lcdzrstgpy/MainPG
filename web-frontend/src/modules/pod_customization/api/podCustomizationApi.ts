@@ -8,6 +8,9 @@ import type {
   PodBriefFieldsResponse,
   PodBatchItem,
   PodBatchListResponse,
+  PodComposition,
+  PodCompositionListResponse,
+  PodCompositionPanelsZh,
   PodMiaoshouTemplateKind,
   PodStyleTitle,
   PodTemplate,
@@ -23,6 +26,9 @@ const API_BASE = "/api/pod-customization";
 // 智能前置层生成为大输出（40+ 元素 / 10+ 配色 / 12+ 禁用项），沿用默认 30s 会被前端提前中断。
 // 后端最坏为 3 次尝试 × 90s 单次超时，这里给到 300s，确保拿到后端的结果或真实错误再收尾。
 const BRIEF_GENERATE_TIMEOUT_MS = 300_000;
+
+// 构图定制同样接豆包且开启深度思考，单次时延与智能填写同量级，沿用同一档长超时。
+const COMPOSITION_GENERATE_TIMEOUT_MS = 300_000;
 
 function apiUrl(path: string): string {
   return `${(import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "")}${path}`;
@@ -148,6 +154,31 @@ export const podCustomizationApi = {
   generateBriefFields: (body: { brief: string; locale?: string }) => httpJson<PodBriefFieldsResponse>(
     `${API_BASE}/brief/fields`,
     { method: "POST", body, timeoutMs: BRIEF_GENERATE_TIMEOUT_MS },
+  ),
+  // 构图/视角定制：一段大白话 → 四格画面指令，并覆盖为该账号的最新构图（免费）。
+  generateComposition: (body: { brief: string; locale?: string }) => httpJson<PodComposition>(
+    `${API_BASE}/compositions`,
+    { method: "POST", body, timeoutMs: COMPOSITION_GENERATE_TIMEOUT_MS },
+  ),
+  getLatestComposition: () => httpJson<PodComposition | null>(`${API_BASE}/compositions/latest`),
+  // 构图模板列表（系统内置默认模板排最前，其余生效的排前）。
+  listCompositions: () => httpJson<PodCompositionListResponse>(`${API_BASE}/compositions`),
+  // 保存对某一份模板的手动编辑：只提交四格中文，后台据此重新转写英文，改原记录、不新增。
+  updateComposition: (compositionId: string, body: { panels: PodCompositionPanelsZh }) => httpJson<PodComposition>(
+    `${API_BASE}/compositions/${encodeURIComponent(compositionId)}`,
+    { method: "PUT", body, timeoutMs: COMPOSITION_GENERATE_TIMEOUT_MS },
+  ),
+  renameComposition: (compositionId: string, name: string) => httpJson<PodComposition>(
+    `${API_BASE}/compositions/${encodeURIComponent(compositionId)}`,
+    { method: "PATCH", body: { name } },
+  ),
+  activateComposition: (compositionId: string) => httpJson<PodComposition>(
+    `${API_BASE}/compositions/${encodeURIComponent(compositionId)}/activate`,
+    { method: "POST", body: {} },
+  ),
+  deleteComposition: (compositionId: string) => httpJson<{ deleted: boolean }>(
+    `${API_BASE}/compositions/${encodeURIComponent(compositionId)}`,
+    { method: "DELETE" },
   ),
   pauseBatch: (batchId: string) => httpJson<PodBatch>(
     `${API_BASE}/batches/${encodeURIComponent(batchId)}/pause`,

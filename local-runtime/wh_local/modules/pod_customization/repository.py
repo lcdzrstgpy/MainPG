@@ -18,6 +18,7 @@ from .billing_contract import PodCallOutcome, PodCallPlan, PodExecutionGrant
 from .contracts import (
     BatchCreate,
     BusinessFields,
+    COMPOSITION_PANEL_KEYS,
     Calibration,
     ReplicaBatchCreate,
     SemiBatchCreate,
@@ -43,6 +44,20 @@ class ReplicaBatchIdempotentReturn(Exception):
 
 def _safe_error(value: object) -> str:
     return safe_error_message(value) if str(value or "").strip() else ""
+
+
+def _normalized_composition_panels(panels: object) -> dict[str, dict[str, str]]:
+    """归一四格构图为 {panel_i: {zh, en}}；容错早期只有平面文本的存量行（en 暂缺）。"""
+
+    source = panels if isinstance(panels, Mapping) else {}
+    normalized: dict[str, dict[str, str]] = {}
+    for key in COMPOSITION_PANEL_KEYS:
+        entry = source.get(key)
+        if isinstance(entry, Mapping):
+            normalized[key] = {"zh": str(entry.get("zh") or ""), "en": str(entry.get("en") or "")}
+        else:
+            normalized[key] = {"zh": str(entry or ""), "en": ""}
+    return normalized
 
 
 class PodRepositoryError(RuntimeError):
@@ -436,10 +451,19 @@ class PodCustomizationRepository:
         request: BatchCreate,
         *,
         batch_id: str | None = None,
+        composition: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         batch_id = str(batch_id or uuid.uuid4().hex)
         now = _now()
-        prompt_snapshot = build_direct_listing_prompt(request.business_fields, request.creative_prompt)
+        # 该批次冻结当时的最新构图（无则空）：prompt_snapshot 内嵌用户四格画面指令的英文文本，可复现。
+        raw_panels = composition.get("panels") if isinstance(composition, Mapping) else None
+        en_panels = {
+            key: entry["en"] for key, entry in _normalized_composition_panels(raw_panels).items()
+        }
+        prompt_snapshot = build_direct_listing_prompt(
+            request.business_fields, request.creative_prompt, composition=en_panels
+        )
+        composition_json = json.dumps(composition, ensure_ascii=False) if composition else ""
         # New batches are isolated from legacy batches by a companion row.  Do
         # not reinterpret an existing batch while another runtime is working it.
         initial_calls = style_grid_call_count(request.count)
@@ -466,12 +490,13 @@ class PodCustomizationRepository:
                 """INSERT INTO pod_customization_batches
                    (batch_id, workspace_id, owner_user_id, title, status, template_id, template_snapshot_id,
                     template_name, requested_count, initial_call_count, max_refill_calls, prompt_version,
-                    prompt_snapshot, business_fields_json, listing_fields_json, creative_prompt, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    prompt_snapshot, business_fields_json, listing_fields_json, creative_prompt,
+                    composition_json, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (batch_id, workspace_id, owner_user_id, title[:120], request.template_id, snapshot["snapshot_id"],
                  snapshot["name"], request.count, initial_calls, max_refills, request.prompt_version,
                  prompt_snapshot, request.business_fields.model_dump_json(), request.listing_fields.model_dump_json(),
-                 request.creative_prompt, now, now),
+                 request.creative_prompt, composition_json, now, now),
             )
             connection.executemany(
                 """INSERT INTO pod_customization_style_grid_results
@@ -516,6 +541,161 @@ class PodCustomizationRepository:
                 [(batch_id, style_index, now, now) for style_index in range(1, request.count + 1)],
             )
         return self.get_batch(batch_id, workspace_id, owner_user_id)
+
+    def list_compositions(self, workspace_id: str, owner_user_id: str) -> list[dict[str, Any]]:
+        """列出该账号+工作区的全部构图模板；生效的排最前，其余按更新时间倒序。"""
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM pod_customization_compositions
+                   WHERE workspace_id = ? AND owner_user_id = ?
+                   ORDER BY is_active DESC, updated_at DESC, rowid DESC""",
+                (workspace_id, owner_user_id),
+            ).fetchall()
+        return [self._composition_record(dict(row)) for row in rows]
+
+    def get_composition(
+        self, workspace_id: str, owner_user_id: str, composition_id: str
+    ) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM pod_customization_compositions
+                   WHERE workspace_id = ? AND owner_user_id = ? AND composition_id = ?""",
+                (workspace_id, owner_user_id, composition_id),
+            ).fetchone()
+        return self._composition_record(dict(row)) if row is not None else None
+
+    def get_active_composition(self, workspace_id: str, owner_user_id: str) -> dict[str, Any] | None:
+        """读取当前生效的那份构图模板；没有则返回 None（新建批次用它）。"""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM pod_customization_compositions
+                   WHERE workspace_id = ? AND owner_user_id = ? AND is_active = 1
+                   ORDER BY updated_at DESC, rowid DESC LIMIT 1""",
+                (workspace_id, owner_user_id),
+            ).fetchone()
+        return self._composition_record(dict(row)) if row is not None else None
+
+    def create_composition(
+        self,
+        *,
+        workspace_id: str,
+        owner_user_id: str,
+        composition_id: str,
+        name: str,
+        raw_input: str,
+        panels: Mapping[str, Any],
+        model: str,
+        prompt_version: str,
+    ) -> dict[str, Any]:
+        """新增一份构图模板并设为生效（同一账号同时只有一份生效）。"""
+
+        now = _now()
+        payload = json.dumps(_normalized_composition_panels(panels), ensure_ascii=False)
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE pod_customization_compositions SET is_active = 0
+                   WHERE workspace_id = ? AND owner_user_id = ?""",
+                (workspace_id, owner_user_id),
+            )
+            connection.execute(
+                """INSERT INTO pod_customization_compositions
+                   (composition_id, workspace_id, owner_user_id, name, raw_input, panels_json,
+                    model, prompt_version, is_active, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)""",
+                (
+                    composition_id, workspace_id, owner_user_id, name, raw_input, payload,
+                    model, prompt_version, now, now,
+                ),
+            )
+        return self.get_composition(workspace_id, owner_user_id, composition_id)  # type: ignore[return-value]
+
+    def update_composition_panels(
+        self,
+        workspace_id: str,
+        owner_user_id: str,
+        composition_id: str,
+        *,
+        panels: Mapping[str, Any],
+        model: str,
+        prompt_version: str,
+    ) -> dict[str, Any] | None:
+        """改动原记录的四格内容（用于「保存修改」，不新增模板）。"""
+
+        payload = json.dumps(_normalized_composition_panels(panels), ensure_ascii=False)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """UPDATE pod_customization_compositions
+                   SET panels_json = ?, model = ?, prompt_version = ?, updated_at = ?
+                   WHERE workspace_id = ? AND owner_user_id = ? AND composition_id = ?""",
+                (payload, model, prompt_version, _now(), workspace_id, owner_user_id, composition_id),
+            )
+            if cursor.rowcount == 0:
+                return None
+        return self.get_composition(workspace_id, owner_user_id, composition_id)
+
+    def rename_composition(
+        self, workspace_id: str, owner_user_id: str, composition_id: str, name: str
+    ) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """UPDATE pod_customization_compositions SET name = ?, updated_at = ?
+                   WHERE workspace_id = ? AND owner_user_id = ? AND composition_id = ?""",
+                (name, _now(), workspace_id, owner_user_id, composition_id),
+            )
+            if cursor.rowcount == 0:
+                return None
+        return self.get_composition(workspace_id, owner_user_id, composition_id)
+
+    def clear_active_compositions(self, workspace_id: str, owner_user_id: str) -> None:
+        """清空该账号的生效标记（用于「回退到系统默认模板」）。"""
+
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE pod_customization_compositions SET is_active = 0
+                   WHERE workspace_id = ? AND owner_user_id = ?""",
+                (workspace_id, owner_user_id),
+            )
+
+    def activate_composition(
+        self, workspace_id: str, owner_user_id: str, composition_id: str
+    ) -> dict[str, Any] | None:
+        now = _now()
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE pod_customization_compositions SET is_active = 0
+                   WHERE workspace_id = ? AND owner_user_id = ?""",
+                (workspace_id, owner_user_id),
+            )
+            updated = connection.execute(
+                """UPDATE pod_customization_compositions SET is_active = 1, updated_at = ?
+                   WHERE workspace_id = ? AND owner_user_id = ? AND composition_id = ?""",
+                (now, workspace_id, owner_user_id, composition_id),
+            )
+            if updated.rowcount == 0:
+                return None
+        return self.get_composition(workspace_id, owner_user_id, composition_id)
+
+    def delete_composition(self, workspace_id: str, owner_user_id: str, composition_id: str) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """DELETE FROM pod_customization_compositions
+                   WHERE workspace_id = ? AND owner_user_id = ? AND composition_id = ?""",
+                (workspace_id, owner_user_id, composition_id),
+            )
+            return cursor.rowcount > 0
+
+    @staticmethod
+    def _composition_record(record: dict[str, Any]) -> dict[str, Any]:
+        try:
+            panels = json.loads(record.get("panels_json") or "{}")
+        except (TypeError, ValueError):
+            panels = {}
+        record["panels"] = _normalized_composition_panels(panels)
+        record["is_active"] = bool(record.get("is_active"))
+        record["name"] = str(record.get("name") or "")
+        return record
 
     def ensure_semi_placeholder(
         self,
@@ -3117,7 +3297,7 @@ class PodCustomizationRepository:
                      ON publications.result_id = results.result_id
                    WHERE results.batch_id = ? AND results.status = 'completed'
                      AND (COALESCE(publications.role, '') = 'hero'
-                          OR (COALESCE(publications.role, '') = '' AND results.variant_index = 1))
+                          OR (COALESCE(publications.role, '') = '' AND results.variant_index = 4))
                    ORDER BY results.style_index""",
                 (batch_id,),
             ).fetchall()

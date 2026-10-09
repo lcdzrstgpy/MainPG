@@ -25,8 +25,10 @@ from wh_local.modules.pod_customization.remote_billing import RemotePodBillingCo
 from wh_local.modules.pod_customization.contracts import (
     BatchCreate,
     BusinessFields,
+    CompositionPanels,
     ListingFields,
 )
+from wh_local.modules.pod_customization.composition_runtime import PodCompositionResult
 from wh_local.session import Actor
 
 
@@ -106,6 +108,67 @@ def _client(tmp_path) -> TestClient:
             tmp_path / "workbench.sqlite3",
             tmp_path / "pod-assets",
             RouterRuntime(),
+            billing_coordinator=Billing(),
+            start_workers=False,
+        )
+    )
+    return TestClient(app)
+
+
+class _CompositionRuntime:
+    def __init__(self) -> None:
+        self.panels = {
+            "panel_1": {"zh": "主图：木桌俯拍平铺", "en": "wide flat-lay hero on a wooden table"},
+            "panel_2": {"zh": "细节图 A：图案微距", "en": "macro close-up of the surface artwork"},
+            "panel_3": {"zh": "细节图 B：侧面结构", "en": "three-quarter structural detail"},
+            "panel_4": {"zh": "素材图：正面纯白底", "en": "front view on a plain neutral background"},
+        }
+        self.en = {key: value["en"] for key, value in self.panels.items()}
+
+    def generate_composition(self, request, *, grant, call_id, call_ids=None, on_start=None, on_outcome=None):
+        if on_start is not None:
+            on_start(call_id)
+        if on_outcome is not None:
+            on_outcome(call_id, "success")
+        return PodCompositionResult(
+            panels=CompositionPanels(**{key: dict(value) for key, value in self.panels.items()}),
+            attempt_count=1,
+            model="doubao-test",
+            prompt_version="pod-composition-v2",
+        )
+
+    def localize_composition(self, request, *, grant, call_id, call_ids=None, on_start=None, on_outcome=None):
+        if on_start is not None:
+            on_start(call_id)
+        if on_outcome is not None:
+            on_outcome(call_id, "success")
+        panels = {key: {"zh": request.panels[key], "en": self.en[key]} for key in self.panels}
+        return PodCompositionResult(
+            panels=CompositionPanels(**panels),
+            attempt_count=1,
+            model="doubao-test",
+            prompt_version="pod-composition-v2",
+        )
+
+
+def _composition_client(tmp_path) -> TestClient:
+    class Billing:
+        def freeze(self, actor, plan):
+            return PodExecutionGrant("freeze-1", 1, "2099-01-01T00:00:00Z", {"ark": "test-ark-key"})
+
+        def settle(self, actor, grant, plan, outcomes):
+            return None
+
+        def regrant(self, actor, freeze_id):
+            return self.freeze(actor, None)
+
+    app = FastAPI()
+    app.include_router(
+        create_router(
+            tmp_path / "workbench.sqlite3",
+            tmp_path / "pod-assets",
+            RouterRuntime(),
+            composition_runtime=_CompositionRuntime(),
             billing_coordinator=Billing(),
             start_workers=False,
         )
@@ -373,7 +436,7 @@ def test_export_selection_patch_contract_returns_current_selection(tmp_path) -> 
             "SELECT result_id, variant_index FROM pod_customization_style_grid_results WHERE batch_id = ? ORDER BY variant_index",
             (batch["id"],),
         ).fetchall()
-        for (result_id, _), role in zip(rows, ("hero", "detail_a", "detail_b", "lifestyle"), strict=True):
+        for (result_id, _), role in zip(rows, ("lifestyle", "detail_a", "detail_b", "hero"), strict=True):
             connection.execute(
                 "UPDATE pod_customization_style_grid_results SET status = 'completed' WHERE result_id = ?",
                 (result_id,),
@@ -429,6 +492,79 @@ def test_batch_retry_failed_contract_rejects_invalid_selection_before_queueing(t
     assert response.status_code == 422
 
 
+def test_composition_api_manages_multiple_templates(tmp_path) -> None:
+    """构图模板：新增累积、改原记录、设为生效、重命名、删除；空态 /latest 返回 null（不再 500）。"""
+    client = _composition_client(tmp_path)
+    headers = {"Authorization": "Bearer dev-admin-token"}
+    base = "/api/pod-customization/compositions"
+
+    first = client.get(f"{base}/latest", headers=headers)
+    assert first.status_code == 200
+    assert first.json() is None
+
+    # 列表里永远有系统内置「默认模板」；没有用户模板生效时它即生效。
+    seeded = client.get(base, headers=headers).json()
+    assert seeded["total"] == 1
+    assert seeded["templates"][0]["name"] == "默认模板"
+    assert seeded["templates"][0]["is_builtin"] is True
+    assert seeded["templates"][0]["is_active"] is True
+
+    a = client.post(base, headers=headers, json={"brief": "甲方案：主图俯拍平铺"}).json()
+    b = client.post(base, headers=headers, json={"brief": "乙方案：主图平铺"}).json()
+    assert a["is_active"] is True and b["is_active"] is True
+    assert a["panels"]["panel_1"]["zh"].startswith("主图")
+
+    listing = client.get(base, headers=headers).json()
+    assert listing["total"] == 3
+    assert listing["templates"][0]["is_builtin"] is True
+    assert listing["templates"][0]["is_active"] is False  # 已有用户模板生效
+    assert listing["templates"][1]["composition_id"] == b["composition_id"]
+    assert [t["composition_id"] for t in listing["templates"] if t["is_active"]] == [b["composition_id"]]
+
+    # 手动编辑：提交中文，后台重新转写英文，改原记录、不新增。
+    edited = client.put(
+        f"{base}/{a['composition_id']}",
+        headers=headers,
+        json={"panels": {
+            "panel_1": "主图：大理石台面平铺",
+            "panel_2": "细节图 A：图案微距",
+            "panel_3": "细节图 B：侧面结构",
+            "panel_4": "素材图：正面纯白底",
+        }},
+    )
+    assert edited.status_code == 200
+    assert edited.json()["composition_id"] == a["composition_id"]
+    assert edited.json()["panels"]["panel_1"]["zh"] == "主图：大理石台面平铺"
+    assert client.get(base, headers=headers).json()["total"] == 3
+
+    # 设为生效
+    activated = client.post(f"{base}/{a['composition_id']}/activate", headers=headers)
+    assert activated.json()["is_active"] is True
+    assert client.get(f"{base}/latest", headers=headers).json()["composition_id"] == a["composition_id"]
+
+    # 重命名
+    renamed = client.patch(f"{base}/{a['composition_id']}", headers=headers, json={"name": "甲方案"})
+    assert renamed.json()["name"] == "甲方案"
+
+    # 选择系统内置「默认模板」＝回退默认机位（清空用户模板生效标记）
+    default = client.post(f"{base}/__default__/activate", headers=headers).json()
+    assert default["is_builtin"] is True and default["is_active"] is True
+    assert client.get(f"{base}/latest", headers=headers).json() is None
+    assert client.get(base, headers=headers).json()["templates"][0]["is_active"] is True
+
+    # 删除
+    assert client.delete(f"{base}/{b['composition_id']}", headers=headers).json() == {"deleted": True}
+    assert client.get(base, headers=headers).json()["total"] == 2
+
+    # 找不到的记录返回 404
+    missing = client.put(
+        f"{base}/missing",
+        headers=headers,
+        json={"panels": {"panel_1": "a", "panel_2": "b", "panel_3": "c", "panel_4": "d"}},
+    )
+    assert missing.status_code == 404
+
+
 def test_direct_listing_trial_api_returns_one_grid_and_four_public_listing_images(tmp_path) -> None:
     client = _client(tmp_path)
     headers = {"Authorization": "Bearer dev-admin-token"}
@@ -453,10 +589,10 @@ def test_direct_listing_trial_api_returns_one_grid_and_four_public_listing_image
     result = response.json()
     assert result["grid"]["preview_url"].startswith("/api/pod-customization/assets/")
     assert [image["role"] for image in result["images"]] == [
-        "hero",
+        "lifestyle",
         "detail_a",
         "detail_b",
-        "lifestyle",
+        "hero",
     ]
     stored = client.get(f"/api/pod-customization/direct-listing-trials/{result['id']}", headers=headers)
     assert stored.status_code == 200

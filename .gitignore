@@ -106,3 +106,7 @@ local-runtime/.pytest_tmp/
 local-runtime/:memory:.ses
 # Vite 热更新产生的时序文件
 web-frontend/*.timestamp-*.mjs
+
+# pnpm 本地存储与仓库根运行时数据（本机产物，不是源码）
+.pnpm-store/
+/data/

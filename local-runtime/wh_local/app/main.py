@@ -85,6 +85,7 @@ from ..modules.pod_customization.remote_billing import (
     session_remote_token_resolver,
 )
 from ..modules.pod_customization.brief_runtime import PodBriefRuntime
+from ..modules.pod_customization.composition_runtime import PodCompositionRuntime
 from ..modules.pod_customization.title_runtime import PodTitleRuntime
 from ..modules.combo_kit import (
     create_combo_kit_router,
@@ -610,6 +611,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     pod_ai_runtime = PodCustomizationAiRuntime(image_workers=8, batch_workers=2)
     pod_title_runtime = PodTitleRuntime(executor_workers=8, provider_concurrency=8)
     pod_brief_runtime = PodBriefRuntime(executor_workers=2, provider_concurrency=2)
+    pod_composition_runtime = PodCompositionRuntime(executor_workers=2, provider_concurrency=1)
     pod_billing = RemotePodBillingCoordinator(
         remote_customer_auth,
         session_remote_token_resolver(customer_sessions),
@@ -620,6 +622,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         pod_ai_runtime,
         title_runtime=pod_title_runtime,
         brief_runtime=pod_brief_runtime,
+        composition_runtime=pod_composition_runtime,
         billing_coordinator=pod_billing,
     )
     app.include_router(pod_router)
@@ -629,6 +632,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     app.state.pod_customization_ai_runtime = pod_ai_runtime
     app.state.pod_customization_title_runtime = pod_title_runtime
     app.state.pod_customization_brief_runtime = pod_brief_runtime
+    app.state.pod_customization_composition_runtime = pod_composition_runtime
 
     # 商品组合套装：独立业务模块，与产品处理 / POD 完全隔离。
     combo_kit_repo = ComboKitRepository(db_path.parent / "combo-kit" / "combo_kit.sqlite3")
