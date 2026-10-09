@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import binascii
 import builtins
+import hashlib
 import json
 import logging
 import os
@@ -47,10 +48,16 @@ from server_scripts import (
     SERVER_DELETE_FEEDBACK_SCRIPT,
     SERVER_GET_FEEDBACK_IMAGES_SCRIPT,
     SERVER_LIST_FEEDBACK_SCRIPT,
+    SERVER_MARK_ALL_FEEDBACK_READ_SCRIPT,
     SERVER_LIST_FEEDBACK_REPLIES_SCRIPT,
+    SERVER_RESOLVE_CUSTOMER_PROFILE_SCRIPT,
+    SERVER_RESOLVE_CUSTOMER_SESSION_SCRIPT,
     SERVER_SEND_FEEDBACK_REPLY_SCRIPT,
     SERVER_LIST_INVITATIONS_SCRIPT,
+    SERVER_UPDATE_INVITATION_SCRIPT,
+    SERVER_TRANSFER_INVITATION_SCRIPT,
     SERVER_LIST_USERS_SCRIPT,
+    SERVER_LIST_WORKSPACES_SCRIPT,
     SERVER_LIST_USER_ACTIVITY_SCRIPT,
     SERVER_LOGIN_SCRIPT,
     SERVER_LOGOUT_SCRIPT,
@@ -190,14 +197,13 @@ def load_config() -> dict[str, Any]:
 
 
 def save_config(config: dict[str, Any]) -> None:
-    CONFIG_PATH.write_text(
-        json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    # 配置里含 SSH 口令：收紧文件权限，避免同机其他进程/用户读到。
-    try:
-        os.chmod(CONFIG_PATH, 0o600)
-    except OSError:
-        pass  # Windows 等不支持 chmod 的平台忽略
+    # 原子写：先写临时文件再 os.replace。直接 write_text 会在崩溃时留下半截
+    # config.json，load_config 解析失败静默返回 {}，进而让 /api/setup 误判成
+    # "未初始化"而免鉴权（见 setup 里的说明）。
+    payload = json.dumps(config, ensure_ascii=False, indent=2)
+    tmp_path = CONFIG_PATH.with_name(CONFIG_PATH.name + ".tmp")
+    tmp_path.write_text(payload, encoding="utf-8")
+    os.replace(tmp_path, CONFIG_PATH)
 
 
 def cfg_ok(config: dict[str, Any]) -> bool:
@@ -207,6 +213,66 @@ def cfg_ok(config: dict[str, Any]) -> bool:
         config.get(key)
         for key in ("server_ip", "server_port", "ssh_user", "ssh_pass", "database_path")
     )
+
+
+# 客户端身份解析缓存：令牌 sha256 -> (profile, 过期单调时刻)。轮询频繁，逐次查库浪费；
+# 只留 60 秒，键存令牌的 sha256（不落原文，降低内存转储泄露面）。
+_CUSTOMER_IDENTITY_CACHE: dict[str, tuple[dict[str, str], float]] = {}
+_CUSTOMER_IDENTITY_LOCK = threading.Lock()
+_CUSTOMER_IDENTITY_TTL = 60.0
+
+# 匿名身份：account_id 为空 = 无法证明是谁，调用方只给全员数据。
+_ANONYMOUS_PROFILE: dict[str, str] = {
+    "account_id": "",
+    "plan_type": "",
+    "workspace_code": "",
+}
+
+
+def _customer_account_profile(token: str) -> dict[str, str]:
+    """把客户端会话令牌解析成「账号 + 分类属性」——定向/分类投放唯一可信的身份来源。
+
+    ⚠️ 绝不能拿客户端传来的 account_id 当身份：它是
+    ``cust_ + sha256(lower(email))[:16]``（customer-auth 的 ``_account_id``），
+    **知道邮箱就能算出来**，等于没有鉴权。只有持有该账号有效会话令牌才可信。
+    令牌缺失/无效一律返回匿名 profile（account_id 空串，调用方只给全员数据）。
+
+    除 account_id 外还带 ``plan_type``（套餐）与 ``workspace_code``（分站），
+    供分类投放匹配；两者随账号属性变化，故只缓存 60 秒。
+    """
+    clean = str(token or "").strip()
+    if not clean:
+        return dict(_ANONYMOUS_PROFILE)
+    key = hashlib.sha256(clean.encode("utf-8")).hexdigest()
+    now = time.monotonic()
+    with _CUSTOMER_IDENTITY_LOCK:
+        cached = _CUSTOMER_IDENTITY_CACHE.get(key)
+        if cached is not None and cached[1] > now:
+            return dict(cached[0])
+    try:
+        result = _remote(SERVER_RESOLVE_CUSTOMER_PROFILE_SCRIPT, [clean])
+        if result.get("ok"):
+            profile = {
+                "account_id": str(result.get("account_id") or ""),
+                "plan_type": str(result.get("plan_type") or ""),
+                "workspace_code": str(result.get("workspace_code") or ""),
+            }
+        else:
+            profile = dict(_ANONYMOUS_PROFILE)
+    except Exception as exc:
+        # 身份查不到不能把同步打断，按匿名处理（退化为只给全员数据）。
+        log.warning("解析客户会话身份失败（按匿名处理）: %s", exc)
+        profile = dict(_ANONYMOUS_PROFILE)
+    with _CUSTOMER_IDENTITY_LOCK:
+        if len(_CUSTOMER_IDENTITY_CACHE) > 4096:  # 防伪造令牌刷内存
+            _CUSTOMER_IDENTITY_CACHE.clear()
+        _CUSTOMER_IDENTITY_CACHE[key] = (profile, now + _CUSTOMER_IDENTITY_TTL)
+    return dict(profile)
+
+
+def _customer_account_id(token: str) -> str:
+    """只要账号 ID 的调用方继续用这个；内部走 profile 解析。"""
+    return _customer_account_profile(token)["account_id"]
 
 
 # ---------------------------------------------------------------- SSH / 远端数据库
@@ -421,7 +487,12 @@ def health() -> dict[str, Any]:
 @app.post("/api/setup")
 def setup(payload: dict[str, Any], x_auth_token: str | None = Header(default=None)) -> dict[str, bool]:
     current = load_config()
-    if cfg_ok(current):
+    # 配置文件只要存在就一律要登录：load_config() 在文件损坏时会静默返回 {}，
+    # 原来的 `if cfg_ok(current)` 会让"配置损坏"退化成免鉴权 —— 任何人都能改写
+    # ssh_user / ssh_pass / server_ip / database_path。只有文件**根本不存在**
+    # （首次初始化）才放行免鉴权。
+    # 恢复办法：若配置文件损坏且无法登录，root 删掉 config.json 后重新初始化。
+    if CONFIG_PATH.exists() or cfg_ok(current):
         _check_auth(x_auth_token)
     required = ("server_ip", "server_port", "ssh_user", "ssh_pass", "database_path")
     missing = [key for key in required if not str(payload.get(key, "")).strip()]
@@ -513,6 +584,13 @@ def users(
     return _run_remote(SERVER_LIST_USERS_SCRIPT, [limit, offset], "读取用户列表")
 
 
+@app.get("/api/workspaces")
+def workspaces(x_auth_token: str | None = Header(default=None)) -> dict[str, Any]:
+    """分站/工作区清单 —— 分类投放表单「按分站」下拉的数据源。"""
+    _check_auth(x_auth_token)
+    return _run_remote(SERVER_LIST_WORKSPACES_SCRIPT, [], "读取分站列表")
+
+
 @app.post("/api/users/{account_id}/status")
 def user_status(
     account_id: str,
@@ -600,6 +678,13 @@ def _announce_db() -> sqlite3.Connection:
     # 图片版本号：内容变化时自增，客户端据此判断本地缓存的图片是否过期。
     if "image_rev" not in cols:
         con.execute("ALTER TABLE announcements ADD COLUMN image_rev INTEGER NOT NULL DEFAULT 0")
+    # 分类投放：JSON 规则，形如 {"plan_types":[...], "workspace_codes":[...]}。
+    # 空串 = 不限（等同只用 target_account_ids 或全员）。与 target_account_ids 并列，
+    # 两者同时给出时取**交集**（既要在名单里、又要符合分类）—— 宁窄勿宽，避免误发。
+    if "audience_rules" not in cols:
+        con.execute(
+            "ALTER TABLE announcements ADD COLUMN audience_rules TEXT NOT NULL DEFAULT ''"
+        )
     con.commit()
     return con
 
@@ -692,15 +777,86 @@ def _normalize_target_account_ids(payload: dict[str, Any]) -> list[str]:
 def _dump_target_account_ids(targets: list[str]) -> str:
     """落库用字符串：空列表必须存空串。
 
-    public 接口以 target_account_ids 为空判定「全员可见」，若存成 '[]' 则全员公告
-    对客户端不可见（定向列表里也没有任何账号能命中）。
+    public 接口以 target_account_ids='' 判定「全员可见」，若存成 '[]' 则全员公告
+    对客户端不可见（定向列表里也没有任何账号能 LIKE 命中）。
     """
     return json.dumps(targets, ensure_ascii=False) if targets else ""
 
 
-def _serialize_announcement(
-    row, *, with_images: bool = True, include_targets: bool = True
-) -> dict[str, Any]:
+# ---- 分类投放（按套餐 / 按分站） ----
+# 支持的套餐维度取值。加新维度时：这里补一项 + `_audience_matches` 补一条判断 +
+# 后台表单补一个选项即可，落库与下发都走通用逻辑。
+AUDIENCE_RULE_PLAN_TYPES = ("experience", "basic")
+AUDIENCE_RULE_KEYS = ("plan_types", "workspace_codes")
+
+
+def _normalize_audience_rules(payload: dict[str, Any]) -> dict[str, list[str]]:
+    """校验并规范化分类规则，返回 {plan_types, workspace_codes}（可能都为空）。"""
+    raw = payload.get("audience_rules")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=400, detail="audience_rules must be an object")
+    plans_raw = raw.get("plan_types") or []
+    codes_raw = raw.get("workspace_codes") or []
+    if not isinstance(plans_raw, list) or not isinstance(codes_raw, list):
+        raise HTTPException(status_code=400, detail="audience_rules 的取值必须是列表")
+    plans: list[str] = []
+    for item in plans_raw[:20]:
+        value = str(item or "").strip().lower()
+        if not value or value in plans:
+            continue
+        if value not in AUDIENCE_RULE_PLAN_TYPES:
+            raise HTTPException(status_code=400, detail=f"不支持的套餐类型：{value}")
+        plans.append(value)
+    codes: list[str] = []
+    for item in codes_raw[:200]:
+        value = str(item or "").strip()
+        if value and value not in codes:
+            codes.append(value)
+    return {"plan_types": plans, "workspace_codes": codes}
+
+
+def _dump_audience_rules(rules: dict[str, list[str]]) -> str:
+    """落库用字符串：空规则必须存空串（与 target_account_ids 同约定，空 = 不限）。"""
+    if not rules or not any(rules.get(key) for key in AUDIENCE_RULE_KEYS):
+        return ""
+    return json.dumps(rules, ensure_ascii=False)
+
+
+def _load_audience_rules(raw: Any) -> dict[str, list[str]]:
+    try:
+        data = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: dict[str, list[str]] = {}
+    for key in AUDIENCE_RULE_KEYS:
+        values = data.get(key)
+        if isinstance(values, list):
+            out[key] = [str(v) for v in values if str(v).strip()]
+    return out
+
+
+def _audience_matches(rules: dict[str, list[str]], profile: dict[str, str]) -> bool:
+    """分类匹配：**维度内是并集（OR）、维度间是交集（AND）**；空维度 = 不限。
+
+    匿名（account_id 为空）时 plan_type/workspace_code 都是空串，**不会命中任何
+    带分类规则的公告** —— 匿名不等于「体验版」，无法证明归属就一律不给。
+    """
+    if not rules:
+        return True
+    plans = rules.get("plan_types") or []
+    if plans and profile.get("plan_type", "") not in plans:
+        return False
+    codes = rules.get("workspace_codes") or []
+    if codes and profile.get("workspace_code", "") not in codes:
+        return False
+    return True
+
+
+def _serialize_announcement(row, *, with_images: bool = True, include_targets: bool = True) -> dict[str, Any]:
     r = dict(row)
     try:
         targets = json.loads(r.get("target_account_ids") or "[]")
@@ -722,9 +878,11 @@ def _serialize_announcement(
         "image_count": len(images),
         "image_rev": int(r.get("image_rev") or 0),
     }
-    # 免登录的 public 接口不返回定向名单，避免泄露收件人。
+    # 公开接口不泄露定向收件人列表（账号 ID 属于他人隐私）。
     if include_targets:
         payload["target_account_ids"] = targets
+        # 分类规则同样只给管理端：公开端泄露「这条是发给基础版的」本身是运营信息。
+        payload["audience_rules"] = _load_audience_rules(r.get("audience_rules"))
     if with_images:
         payload["images"] = images
     return payload
@@ -732,12 +890,18 @@ def _serialize_announcement(
 
 @app.get("/api/announcements/public")
 def public_announcements(
-    account_id: str = Query(default=""), with_images: int = Query(default=0)
+    account_id: str = Query(default=""),
+    with_images: int = Query(default=0),
+    x_auth_token: str | None = Header(default=None),
 ) -> dict[str, Any]:
     # 免登录：客户端工作台轮询拉取。仅返回 active=1 的公告，下线/删除的会被客户端撤回。
-    # 定向发送：客户端携带自己的账号 ID 时，额外返回发给它的公告；不带则只给全员公告。
+    # 定向发送：按**会话令牌**解析身份，额外返回发给该账号的公告；匿名只给全员公告。
+    #   ⚠️ 以前这里信任客户端传的 ?account_id=，而账号 ID = cust_ + sha256(邮箱)[:16]
+    #   可由邮箱推导 —— 任何人能读别人的定向公告（正文里还有分站密码）。现只认令牌。
+    #   query 参数 account_id 保留但**不再使用**，避免旧客户端误以为已生效。
     # with_images=1 时才带 base64 图片本体（默认只给 image_count/image_rev，省带宽）。
-    account_id = (account_id or "").strip()
+    profile = _customer_account_profile(x_auth_token)
+    account_id = profile["account_id"]
     include_images = bool(with_images)
     con = _announce_db()
     try:
@@ -746,8 +910,8 @@ def public_announcements(
         ).fetchall()
     finally:
         con.close()
-    # 定向过滤在 Python 侧做精确成员判断：LIKE 通配会让 "%" 之类的账号 ID
-    # 匹配所有定向公告，泄露收件人名单。公告表行数少，全量过滤无性能问题。
+    # 定向过滤在 Python 侧做 JSON 精确成员判断：LIKE 通配会让 "%" 之类的账号 ID
+    # 匹配所有定向公告并泄露收件人名单。公告行数少，全量过滤无性能问题。
     items = []
     for row in rows:
         try:
@@ -756,29 +920,46 @@ def public_announcements(
                 targets = []
         except json.JSONDecodeError:
             targets = []
+        # 指定名单与分类规则**取交集**：两者都给出时必须同时满足（宁窄勿宽，避免误发）。
         if targets and account_id not in targets:
             continue
-        # 定向名单不回给免登录端，避免泄露收件人。
-        items.append(
-            _serialize_announcement(
-                row, with_images=include_images, include_targets=False
-            )
-        )
+        if not _audience_matches(_load_audience_rules(row["audience_rules"]), profile):
+            continue
+        items.append(_serialize_announcement(row, with_images=include_images, include_targets=False))
     return {"announcements": items}
 
 
 @app.get("/api/announcements/{announcement_id}/images")
-def announcement_images(announcement_id: int) -> dict[str, Any]:
+def announcement_images(
+    announcement_id: int, x_auth_token: str | None = Header(default=None)
+) -> dict[str, Any]:
     # 免登录：客户端工作台按需拉取某条公告的图片本体（含 base64），本地缓存后不再重复拉。
+    # 定向公告的图片同样要认身份：公告 id 自增可枚举，以前不校验收件人，谁都能
+    # 按 id 把定向公告的图拖走（实测定向公告 id=20 的 2 张图无鉴权可取）。
+    profile = _customer_account_profile(x_auth_token)
+    account_id = profile["account_id"]
     con = _announce_db()
     try:
         row = con.execute(
-            "SELECT images, image_rev FROM announcements WHERE id=? AND active=1",
+            "SELECT images, image_rev, target_account_ids, audience_rules "
+            "FROM announcements WHERE id=? AND active=1",
             (announcement_id,),
         ).fetchone()
     finally:
         con.close()
     if row is None:
+        raise HTTPException(status_code=404, detail="公告不存在或已下线")
+    # 定向公告：拿不出该账号的有效会话就一律 404，连"这条存在"都不泄露。
+    # 分类公告同理：不符合分类也 404，避免"列表里没有、按 id 却能拖图"的绕过口。
+    try:
+        targets = json.loads(row["target_account_ids"] or "[]")
+        if not isinstance(targets, list):
+            targets = []
+    except json.JSONDecodeError:
+        targets = []
+    if targets and account_id not in targets:
+        raise HTTPException(status_code=404, detail="公告不存在或已下线")
+    if not _audience_matches(_load_audience_rules(row["audience_rules"]), profile):
         raise HTTPException(status_code=404, detail="公告不存在或已下线")
     return {
         "id": announcement_id,
@@ -815,13 +996,14 @@ def create_announcement(payload: dict[str, Any], x_auth_token: str | None = Head
         raise HTTPException(status_code=400, detail="公告标题不能为空")
     content = (payload.get("content") or "").strip()
     targets = _normalize_target_account_ids(payload)
+    rules = _normalize_audience_rules(payload)
     images = _normalize_announcement_images(payload)
     now = _now_beijing()
     con = _announce_db()
     try:
         cur = con.execute(
-            "INSERT INTO announcements(title, content, published_at, active, created_at, updated_at, target_account_ids, image_rev, images) "
-            "VALUES(?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO announcements(title, content, published_at, active, created_at, updated_at, target_account_ids, audience_rules, image_rev, images) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?)",
             (
                 title,
                 content,
@@ -830,6 +1012,7 @@ def create_announcement(payload: dict[str, Any], x_auth_token: str | None = Head
                 now,
                 now,
                 _dump_target_account_ids(targets),
+                _dump_audience_rules(rules),
                 1 if images else 0,
                 json.dumps(images, ensure_ascii=False),
             ),
@@ -850,6 +1033,7 @@ def update_announcement(announcement_id: int, payload: dict[str, Any], x_auth_to
         raise HTTPException(status_code=400, detail="公告标题不能为空")
     content = (payload.get("content") or "").strip()
     targets = _normalize_target_account_ids(payload)
+    rules = _normalize_audience_rules(payload)
     images = _normalize_announcement_images(payload)
     now = _now_beijing()
     con = _announce_db()
@@ -867,12 +1051,13 @@ def update_announcement(announcement_id: int, payload: dict[str, Any], x_auth_to
         else:
             image_rev = int(existing["image_rev"] or 0) + 1
         con.execute(
-            "UPDATE announcements SET title=?, content=?, updated_at=?, target_account_ids=?, image_rev=?, images=? WHERE id=?",
+            "UPDATE announcements SET title=?, content=?, updated_at=?, target_account_ids=?, audience_rules=?, image_rev=?, images=? WHERE id=?",
             (
                 title,
                 content,
                 now,
                 _dump_target_account_ids(targets),
+                _dump_audience_rules(rules),
                 image_rev,
                 json.dumps(images, ensure_ascii=False),
                 announcement_id,
@@ -1076,11 +1261,17 @@ def _publish_targeted_announcement(
 
 
 @app.post("/api/station-applications/public")
-def submit_station_application(payload: dict[str, Any]) -> dict[str, Any]:
-    """客户端提交分站申请（免登录，由本地工作台代理转发）。"""
-    account_id = str(payload.get("account_id") or "").strip()
+def submit_station_application(
+    payload: dict[str, Any], x_auth_token: str | None = Header(default=None)
+) -> dict[str, Any]:
+    """客户端提交分站申请（由本地工作台代理转发，按会话令牌认身份）。"""
+    # 分站申请单含手机号/邮箱/备注等 PII。账号 ID 可由邮箱推导，payload 里的
+    # account_id 一律不信 —— 否则能替他人提交申请、占掉"已有进行中申请"的坑。
+    account_id = _customer_account_id(x_auth_token)
     if not account_id:
-        raise HTTPException(status_code=400, detail="缺少账号信息，请重新登录后再试")
+        raise HTTPException(
+            status_code=401, detail="missing bearer token, please sign in again"
+        )
     now = _now_beijing()
     con = _station_apply_db()
     try:
@@ -1122,9 +1313,13 @@ def submit_station_application(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 @app.get("/api/station-applications/public")
-def my_station_application(account_id: str = Query(default="")) -> dict[str, Any]:
-    """客户端查询自己最近一条分站申请的状态（免登录）。"""
-    account_id = (account_id or "").strip()
+def my_station_application(
+    account_id: str = Query(default=""),
+    x_auth_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """客户端查询自己最近一条分站申请的状态（按会话令牌认身份）。"""
+    # 申请单含联系方式等 PII，账号 ID 可由邮箱推导，不能当身份用。
+    account_id = _customer_account_id(x_auth_token)
     if not account_id:
         return {"application": None}
     con = _station_apply_db()
@@ -1644,6 +1839,47 @@ def generate_invitations(
         "生成邀请码",
     )
 
+@app.post("/api/invitations/update")
+def update_invitation(
+    payload: dict[str, Any],
+    request: Request,
+    x_auth_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _check_auth(x_auth_token)
+    code = str(payload.get("code", "") or "").strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="邀请码不能为空")
+    try:
+        max_uses = int(payload.get("max_uses"))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="可用次数必须是整数") from exc
+    if not 1 <= max_uses <= 100000:
+        raise HTTPException(status_code=400, detail="每个邀请码可用次数须为 1–100000")
+    return _run_remote(
+        SERVER_UPDATE_INVITATION_SCRIPT,
+        [(x_auth_token or "").strip(), code, max_uses, _client_ip(request)],
+        "修改邀请码使用上限",
+    )
+
+@app.post("/api/invitations/transfer")
+def transfer_invitation(
+    payload: dict[str, Any],
+    request: Request,
+    x_auth_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _check_auth(x_auth_token)
+    account_id = str(payload.get("account_id", "") or "").strip()
+    new_code = str(payload.get("new_code", "") or "").strip()
+    if not account_id:
+        raise HTTPException(status_code=400, detail="账号不能为空")
+    if not new_code:
+        raise HTTPException(status_code=400, detail="目标邀请码不能为空")
+    return _run_remote(
+        SERVER_TRANSFER_INVITATION_SCRIPT,
+        [(x_auth_token or "").strip(), account_id, new_code, _client_ip(request)],
+        "转移账号邀请码",
+    )
+
 
 # ---------------------------------------------------------------- 管理员账号管理
 @app.get("/api/admins")
@@ -1748,6 +1984,19 @@ def feedback_unread_count(
     return _run_remote(SERVER_COUNT_NEW_FEEDBACK_SCRIPT, [], "读取新反馈数量")
 
 
+@app.post("/api/feedback/mark-all-read")
+def feedback_mark_all_read(
+    request: Request,
+    x_auth_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _check_auth(x_auth_token)
+    return _run_remote(
+        SERVER_MARK_ALL_FEEDBACK_READ_SCRIPT,
+        [(x_auth_token or "").strip(), _client_ip(request)],
+        "批量标记反馈已读",
+    )
+
+
 @app.get("/api/feedback")
 def feedback_list(
     limit: int = 200,
@@ -1826,9 +2075,15 @@ def feedback_send_reply(
 
 
 @app.get("/api/feedback-replies/public")
-def public_feedback_replies(account_id: str = Query(default="")) -> dict[str, Any]:
+def public_feedback_replies(
+    account_id: str = Query(default=""),
+    x_auth_token: str | None = Header(default=None),
+) -> dict[str, Any]:
     # 免登录：客户端工作台轮询拉取发给当前账号的反馈回复。
-    account_id = (account_id or "").strip()
+    # 反馈回复发给具体账号，必须按会话令牌认身份；匿名直接给空列表。
+    account_id = _customer_account_id(x_auth_token)
+    if not account_id:
+        return {"announcements": []}
     result = _run_remote(
         SERVER_LIST_FEEDBACK_REPLIES_SCRIPT, [account_id], "读取反馈回复"
     )
@@ -2227,6 +2482,13 @@ def billing_records(limit: int = 200, x_auth_token: str | None = Header(default=
     db_path = load_config()["database_path"]
     scale = _billing_point_scale(db_path)
     limit = max(1, min(int(limit), 500))
+    # 基础版领取列由 MainPG 服务端迁移补加；缺列时退化占位，避免整页 500。
+    has_claim = _table_has_column(db_path, "billing_wallets", "basic_claim_count")
+    claim_cols = (
+        "COALESCE(w.plan_expire_at,'') AS plan_expire_at, COALESCE(w.basic_claim_count,0) AS basic_claim_count"
+        if has_claim
+        else "'' AS plan_expire_at, 0 AS basic_claim_count"
+    )
     # extra_balance 列由服务端 db.py 迁移补加，老库可能缺列：探测退化避免整页 500。
     extra_col = (
         "COALESCE(w.extra_balance,0) AS extra_balance"
@@ -2241,7 +2503,7 @@ def billing_records(limit: int = 200, x_auth_token: str | None = Header(default=
             "COALESCE(w.manual_frozen_points,0) AS manual_frozen_points,"
             "COALESCE(w.plan_balance,0) AS plan_balance,COALESCE(w.plan_type,'experience') AS plan_type,"
             f"{extra_col},"
-            "COALESCE(w.plan_expire_at,'') AS plan_expire_at,w.updated_at,"
+            f"{claim_cols},w.updated_at,"
             "(SELECT COUNT(1) FROM billing_batch_items b JOIN billing_batch_freezes f ON f.freeze_id=b.freeze_id "
             "WHERE f.account_id=a.account_id AND b.feature_key='title' AND b.status='success') AS success_usage,"
             "(SELECT COALESCE(SUM(charged_points),0) FROM billing_batch_freezes f "
@@ -2257,12 +2519,12 @@ def billing_records(limit: int = 200, x_auth_token: str | None = Header(default=
         for key in ("points_balance", "locked_points", "manual_frozen_points", "charged_points", "plan_balance", "extra_balance"):
             item[key] = _display_points(int(item.get(key) or 0), scale)
         # 体验积分：每日签到 +100 所得（限时，周一清零，无上限）；额外积分：首签 500 +
-        # 基础版每周直接领取 1000（永久）。plan_limit 仅作前端兜底展示，不再有周额度语义。
-        plan_type = str(item.get("plan_type") or "")
+        # 基础版每周直接领取 1000（永久）。
         item["plan_limit"] = 500
         item["plan_label"] = {"experience": "体验版", "basic": "基础版", "flagship": "旗舰版"}.get(
-            plan_type, "体验版"
+            str(item.get("plan_type") or ""), "体验版"
         )
+        item["basic_claim_max"] = 4
         wallet_rows.append(item)
     return {"ok": True, "point_unit_scale": scale, "wallets": wallet_rows}
 
@@ -2286,6 +2548,23 @@ def _usage_decode_cursor(cursor: str) -> tuple[str, str] | None:
     return None
 
 
+# AI 用量聚合展示用：把子项技术键映射为可读名称，并固定展示顺序（识图 → 文案 → 出图）。
+_AI_FEATURE_LABELS = {
+    "product_processing.vision": "识图",
+    "product_processing.text": "文案",
+    "product_processing.image_grid_2k": "出图",
+    "pod.title": "标题",
+    "pod.image": "出图",
+}
+_AI_FEATURE_ORDER = (
+    "product_processing.vision",
+    "product_processing.text",
+    "product_processing.image_grid_2k",
+    "pod.title",
+    "pod.image",
+)
+
+
 @app.get("/api/billing/usage")
 def billing_usage_records(
     limit: int = 100,
@@ -2306,7 +2585,8 @@ def billing_usage_records(
     db_path = load_config()["database_path"]
     scale = _billing_point_scale(db_path)
     # 版本列由 MainPG 服务端迁移补加，服务器可能尚未升级；缺列时退化占位，避免整页 500。
-    ev_appver = "u.app_version" if _table_has_column(db_path, "billing_ai_usage_events", "app_version") else "'' AS app_version"
+    # AI 用量按「单条链接」聚合后，app_version 需包在聚合函数内，故此处只给表达式，别名在 SQL 中声明。
+    ev_appver = "u.app_version" if _table_has_column(db_path, "billing_ai_usage_events", "app_version") else "''"
     bf_appver = "f.app_version" if _table_has_column(db_path, "billing_batch_freezes", "app_version") else "'' AS app_version"
     limit = max(1, min(int(limit), 200))
     cur = _usage_decode_cursor(cursor)
@@ -2326,22 +2606,65 @@ def billing_usage_records(
             ev_conds.append("u.created_at <= ?")
             ev_params.append(end)
         if cur is not None:
-            t, k = cur
-            ev_conds.append("(u.created_at < ? OR (u.created_at = ? AND u.usage_id < ?))")
-            ev_params.extend([t, t, k])
+            # 组时间 = 组内最新 created_at，故先用 created_at <= 游标时间限定聚合范围；
+            # 组键位于 metadata JSON 内、SQL 层无法比较，精确的组级游标过滤放到外层。
+            t, _k = cur
+            ev_conds.append("u.created_at <= ?")
+            ev_params.append(t)
         if q:
             ev_conds.append("(COALESCE(a.username,'') LIKE ? OR u.account_id LIKE ? OR u.feature_key LIKE ?)")
             ev_params.extend([like, like, like])
         ev_where = "WHERE " + " AND ".join(ev_conds) if ev_conds else ""
+        # 同一 (task_id, item_id) 的识图/文案/出图子项合并为一行：账单按「单条链接」统计，
+        # 不再按子项拆散。组键：有 item_id 用 link:{task_id}:{item_id}；无 metadata 的历史
+        # 事件以 usage_id 单独成组，保持原样。GROUP BY 1 用位置引用 CASE 表达式，避免与
+        # 表列 usage_id 同名歧义。
+        ev_group_filter = ""
+        ev_group_params: list[Any] = []
+        if cur is not None:
+            t, k = cur
+            ev_group_filter = "WHERE (created_at < ? OR (created_at = ? AND usage_id < ?))"
+            ev_group_params = [t, t, k]
         usage = conn.execute(
-            f"SELECT u.usage_id,u.account_id,COALESCE(a.username,'') AS username,u.feature_key,u.reserved_points,"
-            f"u.charged_points,u.refunded_points,u.provider,u.provider_task_id,u.model,u.status,u.error_message,"
-            f"u.created_at,u.settled_at,COALESCE(w.points_balance,0) AS points_balance,"
-            f"COALESCE(w.locked_points,0) AS locked_points,COALESCE(w.manual_frozen_points,0) AS manual_frozen_points,"
-            f"{ev_appver},u.metadata_json FROM billing_ai_usage_events u LEFT JOIN auth_accounts a ON a.account_id=u.account_id "
-            f"LEFT JOIN billing_wallets w ON w.account_id=u.account_id {ev_where} "
-            f"ORDER BY u.created_at DESC,u.usage_id DESC LIMIT ?",
-            (*ev_params, limit + 1),
+            f"""
+            SELECT * FROM (
+                SELECT
+                    CASE
+                        WHEN json_extract(u.metadata_json, '$.item_id') IS NOT NULL
+                            THEN 'link:' || COALESCE(json_extract(u.metadata_json, '$.task_id'), '-')
+                                 || ':' || json_extract(u.metadata_json, '$.item_id')
+                        ELSE 'ev:' || u.usage_id
+                    END AS usage_id,
+                    u.account_id AS account_id,
+                    MAX(COALESCE(a.username,'')) AS username,
+                    MAX(u.created_at) AS created_at,
+                    MAX(u.settled_at) AS settled_at,
+                    COUNT(*) AS item_count,
+                    SUM(u.reserved_points) AS reserved_points,
+                    SUM(u.charged_points) AS charged_points,
+                    SUM(u.refunded_points) AS refunded_points,
+                    SUM(CASE WHEN u.status='succeeded' THEN 1 ELSE 0 END) AS ok_count,
+                    SUM(CASE WHEN u.status='failed' THEN 1 ELSE 0 END) AS fail_count,
+                    GROUP_CONCAT(u.feature_key) AS feature_keys,
+                    GROUP_CONCAT(DISTINCT COALESCE(u.provider,'')) AS providers,
+                    GROUP_CONCAT(DISTINCT COALESCE(u.model,'')) AS models,
+                    MAX(COALESCE(u.error_message,'')) AS error_message,
+                    MAX(COALESCE(w.points_balance,0)) AS points_balance,
+                    MAX(COALESCE(w.locked_points,0)) AS locked_points,
+                    MAX(COALESCE(w.manual_frozen_points,0)) AS manual_frozen_points,
+                    MAX({ev_appver}) AS app_version,
+                    json_extract(u.metadata_json, '$.task_id') AS task_id,
+                    json_extract(u.metadata_json, '$.item_id') AS item_id
+                FROM billing_ai_usage_events u
+                LEFT JOIN auth_accounts a ON a.account_id=u.account_id
+                LEFT JOIN billing_wallets w ON w.account_id=u.account_id
+                {ev_where}
+                GROUP BY 1, u.account_id
+            )
+            {ev_group_filter}
+            ORDER BY created_at DESC, usage_id DESC LIMIT ?
+            """,
+            (*ev_params, *ev_group_params, limit + 1),
         ).fetchall()
 
         # ---- billing_batch_freezes（消费流水取 'batch:'+freeze_id 作为全局唯一 usage_id）----
@@ -2379,7 +2702,43 @@ def billing_usage_records(
         item = dict(row)
         for key in ("reserved_points", "charged_points", "refunded_points", "points_balance", "locked_points", "manual_frozen_points"):
             item[key] = _display_points(int(item.get(key) or 0), scale)
-        item["feature_key"] = str(item.get("feature_key") or "")
+        # 链接级展示口径：功能名、合成状态、子项摘要。
+        present = [key for key in str(item.get("feature_keys") or "").split(",") if key]
+        ordered = [key for key in _AI_FEATURE_ORDER if key in present]
+        ordered += [key for key in present if key not in ordered]
+        if item.get("item_id") is not None:
+            # 有链接标识：识图/文案/出图等子项已合并，功能列展示链接口径。
+            item["feature_key"] = "product_processing.link"
+            item["feature_label"] = "AI 处理（单条链接）"
+            item["model"] = " + ".join(_AI_FEATURE_LABELS.get(key, key) for key in ordered)
+        else:
+            # 历史事件无链接标识，保持单条展示。
+            item["feature_key"] = ordered[0] if ordered else ""
+            item["feature_label"] = _AI_FEATURE_LABELS.get(item["feature_key"], item["feature_key"])
+            item["model"] = str(item.get("models") or "")
+        ok_count = int(item.get("ok_count") or 0)
+        fail_count = int(item.get("fail_count") or 0)
+        if fail_count == 0:
+            item["status"] = "succeeded"
+        elif ok_count == 0:
+            item["status"] = "failed"
+        else:
+            # 同一链接内部分子项失败：既非全成功也非全失败。
+            item["status"] = "partial"
+        item["provider"] = str(item.get("providers") or "")
+        # 「上游任务 ID」列改为「任务:链接」，便于按链接排查。
+        task_id, item_id = item.get("task_id"), item.get("item_id")
+        item["provider_task_id"] = (
+            f"{task_id}:{item_id}" if task_id is not None and item_id is not None else ""
+        )
+        # 中间字段仅供接口内部消费，不下发前端。
+        item.pop("feature_keys", None)
+        item.pop("models", None)
+        item.pop("providers", None)
+        item.pop("ok_count", None)
+        item.pop("fail_count", None)
+        item.pop("task_id", None)
+        item.pop("item_id", None)
         items.append(item)
     for row in batch:
         is_pod = str(row["billing_profile"] or "product_processing") == "pod_random_v1"
@@ -2397,6 +2756,7 @@ def billing_usage_records(
             "account_id": str(row["account_id"]),
             "username": str(row["username"]),
             "feature_key": "pod_customization.batch" if is_pod else "product_processing.batch",
+            "feature_label": "POD 定制结算" if is_pod else "AI 处理（批量链接）",
             "reserved_points": _display_points(int(row["frozen_points"] or 0), scale),
             "charged_points": _display_points(int(row["charged_points"] or 0), scale),
             "refunded_points": _display_points(int(row["refunded_points"] or 0), scale),
@@ -2535,6 +2895,15 @@ def billing_batch_release(freeze_id: str, payload: dict[str, Any], request: Requ
         if current == "released":
             return {"ok": True, "freeze_id": freeze_id, "status": "released", "released_points": 0, "point_unit_scale": scale, "already_released": True}
         frozen_units = int(freeze["frozen_points"])
+        wallet = conn.execute(
+            "SELECT locked_points FROM billing_wallets WHERE account_id = ?",
+            (str(freeze["account_id"]),),
+        ).fetchone()
+        if wallet is None or int(wallet["locked_points"]) < frozen_units:
+            raise HTTPException(
+                status_code=409,
+                detail="钱包任务冻结不足，无法释放该批次（账目可能已失衡，请先核对）",
+            )
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         conn.execute(
             "UPDATE billing_batch_freezes SET status = 'released', settled_at = ? WHERE freeze_id = ?",
@@ -2621,6 +2990,24 @@ def release_task_frozen_points(account_id: str, payload: dict[str, Any], request
             raise HTTPException(
                 status_code=409,
                 detail=f"释放数量不能超过当前任务冻结的 {locked_units // scale} 积分",
+            )
+        # 任务冻结（locked_points）由批次冻结（billing_batch_freezes）与 AI 用量
+        # 预留（billing_ai_usage_events.reserved）共同占用；本接口仅应释放批次冻结。
+        # 若释放量超过批次冻结总额，循环抵扣批次后会剩余 remaining > 0，却仍按
+        # 全额扣减 locked_points，把 AI 预留的锁一并扣掉，导致 locked_points 与
+        # 批次记录永久失衡（倒挂），进而让 TTL 清扫撞 CHECK(locked_points >= 0)
+        # 约束而整体回滚。因此释放量必须不超过批次冻结总额。
+        batch_locked = int(
+            conn.execute(
+                "SELECT COALESCE(SUM(frozen_points), 0) FROM billing_batch_freezes "
+                "WHERE account_id = ? AND status = 'frozen'",
+                (account_id,),
+            ).fetchone()[0]
+        )
+        if release_units > batch_locked:
+            raise HTTPException(
+                status_code=409,
+                detail=f"释放数量不能超过当前批次冻结的 {batch_locked // scale} 积分",
             )
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         batches = conn.execute(
@@ -2843,14 +3230,38 @@ def billing_multipliers(x_auth_token: str | None = Header(default=None)) -> dict
     }
 
 
+# 单条成本口径（元 / 单位）：AI 与 POD 沿用 0.1 元；商品组合为主图 + 三图与文本多段合成，单独按 0.4 元计。
+LINK_COST_BY_UNIT_YUAN = {"ai": 0.1, "pod": 0.1, "combo": 0.4}
+
+# 合作档位（我们 → 分站商）：占位阶梯，合作充值额越大返点率越高。
+# 用户充值的积分一律由我们按分站商设定的终端价 Y 直接发放，分站商只管倍率；
+# 我们按返点率 d 把现金返给分站商，d 的上限随合作档位递增。
+REBATE_DEFAULT_PERCENT = 10
+MIN_MARGIN_DEFAULT_PERCENT = 5
+REBATE_TIER_SPECS = (
+    ("partner_1000", "1,000 元合作档", 100000, 0),
+    ("partner_5000", "5,000 元合作档", 500000, 5),
+    ("partner_20000", "20,000 元合作档", 2000000, 10),
+    ("partner_50000", "50,000 元合作档", 5000000, 15),
+)
+
+
 @app.get("/api/billing/profit-detail")
 def billing_profit_detail(x_auth_token: str | None = Header(default=None)) -> dict[str, Any]:
-    """价格利润明细页数据（只读）：充值兑换率 × 积分消耗口径 → 条/元、元/条、利润。
+    """价格利润明细页数据（只读）：返点链路「用户实付 → 我们 → 分站商返点」的换算与利润。
 
-    口径说明：
-    - 变量一（充值）：档位实得兑换率 = 基准 points_per_cny × (1 + 档位赠送%)。
-    - 变量二（消耗）：AI 处理 = 文本 5 + 图片 35 积分/条；POD = 基准 45 积分/款式；
+    链路与口径：
+    - 入账与发放：用户按分站商设定的终端价 Y（积分/元）付款，1 元全额进我方账户；
+      我方直接给该用户发放 Y 积分，不再由分站商中转积分。
+    - 每 1 元恒等式：1 = Y·c + B + π，其中 c = 单条成本 ÷ 单条消耗（元/积分）为每积分成本。
+    - 返点：B = min(d, 1 − Y·c − m) 且 B ≥ 0，d 为合作档位给的返点率上限、m 为我方保底毛利率；
+      因 π = 1 − Y·c − B，数学上恒有 π ≥ m，故该公式保证我方永不亏本。
+    - 三条阈值线：返点上限线 Y1 = (1 − m − d)/c（Y ≤ Y1 足额返 d）；
+      返点归零线 Y2 = (1 − m)/c（Y > Y2 返点归零）；我方保本线 1/c（Y > 1/c 直接亏损，须拒绝该倍率）。
+    - 直充档（49/99/499/999/月卡）仍是「我们 → 用户」的终端充值档，不并入合作档。
+    - 消耗：AI 处理 = 文本 5 + 图片 35 积分/条；POD = 每款式 40-50 随机，取中值 45；
       商品组合 = 主图 40 + 三图与文本 60 积分/条。
+    - 成本：单条成本按口径区分，AI 与 POD 为 0.1 元，商品组合因多段合成单独按 0.4 元计。
     - 本接口只做展示口径换算，不写库、不参与扣费。
     """
     _check_auth(x_auth_token)
@@ -2859,13 +3270,16 @@ def billing_profit_detail(x_auth_token: str | None = Header(default=None)) -> di
         FEATURE_PRICING,
         PLAN_BASIC_GRANT_POINTS,
         PLAN_BASIC_PRICE_CENTS,
-        POD_BASE_POINTS_PER_STYLE,
+        POD_LINK_PRICE_MIN_POINTS,
+        POD_LINK_PRICE_VARIANTS,
         TOPUP_PROMOTION_NAME,
         TOPUP_TIER_BONUS_PERCENTS,
         active_pricing,
     )
     db_path = Path(load_config()["database_path"])
     base_points_per_cny = int(active_pricing(db_path).get("points_per_cny") or 100)
+    # POD 每款式 40-50 随机（billing.POD_LINK_PRICE_MIN_POINTS 起，共 POD_LINK_PRICE_VARIANTS 档），取中值作基准。
+    pod_base_points = (int(POD_LINK_PRICE_MIN_POINTS) * 2 + int(POD_LINK_PRICE_VARIANTS) - 1) // 2
     # 档位金额与 auth_server.BILLING_TOPUP_PRODUCTS 保持一致（金额为不可变商品元数据）。
     topup_specs = (
         ("points_49", "49 元积分包", 4900),
@@ -2900,12 +3314,14 @@ def billing_profit_detail(x_auth_token: str | None = Header(default=None)) -> di
             "unit": "单条链接",
             "points_per_unit": int(FEATURE_PRICING["product_processing.text"].fixed_charge_points)
             + int(FEATURE_PRICING["product_processing.image_grid_2k"].fixed_charge_points),
+            "cost_yuan": LINK_COST_BY_UNIT_YUAN["ai"],
         },
         {
             "key": "pod",
             "label": "POD 定制",
             "unit": "单款式",
-            "points_per_unit": int(POD_BASE_POINTS_PER_STYLE),
+            "points_per_unit": pod_base_points,
+            "cost_yuan": LINK_COST_BY_UNIT_YUAN["pod"],
         },
         {
             "key": "combo",
@@ -2913,12 +3329,27 @@ def billing_profit_detail(x_auth_token: str | None = Header(default=None)) -> di
             "unit": "单条组合",
             "points_per_unit": int(FEATURE_PRICING["product_processing.combo_main"].fixed_charge_points)
             + int(FEATURE_PRICING["product_processing.combo_process"].fixed_charge_points),
+            "cost_yuan": LINK_COST_BY_UNIT_YUAN["combo"],
         },
     )
     return {
         "ok": True,
         "base_points_per_cny": base_points_per_cny,
-        "default_link_cost_yuan": 0.1,
+        "default_link_cost_yuan": LINK_COST_BY_UNIT_YUAN["ai"],
+        "rebate": {
+            "default_percent": REBATE_DEFAULT_PERCENT,
+            "min_margin_percent": MIN_MARGIN_DEFAULT_PERCENT,
+            "tiers": [
+                {
+                    "tier_id": tier_id,
+                    "label": label,
+                    "amount_cents": amount_cents,
+                    "amount_yuan": round(amount_cents / 100, 2),
+                    "rebate_percent": rebate_percent,
+                }
+                for tier_id, label, amount_cents, rebate_percent in REBATE_TIER_SPECS
+            ],
+        },
         "topup_tiers": tiers,
         "plan": {
             "package_id": "plan_basic",
@@ -2930,8 +3361,253 @@ def billing_profit_detail(x_auth_token: str | None = Header(default=None)) -> di
         },
         "consumption": list(consumption),
         "promotion_name": TOPUP_PROMOTION_NAME,
-        "note": "只读换算口径：利润 = 元/条 − 单条成本；分销/中转商按基准价结算，赠送倍率即合作商毛利。",
+        "note": (
+            "只读换算口径（返点链路：用户 → 我们 → 分站商返点）。用户按分站商设定的终端价 Y 付款，"
+            "1 元全额进我方账户，我方按 Y 直接给用户发放积分；每 1 元恒等式 1 = Y·c + B + π，"
+            "其中 c = 单条成本 ÷ 单条消耗（每积分成本，元/积分）。返点 B = min(d, 1 − Y·c − m) 且 B ≥ 0，"
+            "d 为合作档位给的返点率上限、m 为我方保底毛利率，因 π = 1 − Y·c − B 故恒有 π ≥ m，永不亏本。"
+            "阈值线：返点上限线 Y1 = (1 − m − d)/c、返点归零线 Y2 = (1 − m)/c、我方保本线 1/c。"
+            "直充档与月卡仍是我们面向终端用户的充值档，不并入合作返点档。"
+        ),
     }
+
+
+# ---------------------------------------------------------------- 分站返利（P1：台账 + 打款单审批）
+def _station_rebate_name_map() -> dict[str, str]:
+    """从申请库取已批准分站的 编号 -> 名称 映射（尽力而为，缺失回退编号）。"""
+    try:
+        con = _station_apply_db()
+    except Exception:
+        return {}
+    try:
+        rows = con.execute(
+            "SELECT station_code, station_name FROM station_applications"
+            " WHERE status='approved' AND station_code <> '' ORDER BY id DESC"
+        ).fetchall()
+    except Exception:
+        return {}
+    finally:
+        con.close()
+    mapping: dict[str, str] = {}
+    for row in rows:
+        code = str(row["station_code"])
+        if code not in mapping:
+            mapping[code] = str(row["station_name"] or code)
+    return mapping
+
+
+@app.get("/api/station-rebate/overview")
+def station_rebate_overview(x_auth_token: str | None = Header(default=None)) -> dict[str, Any]:
+    """分站返利总览：每个分站的待到账 / 可结算 / 可提现 / 审核中 / 已打款汇总 + 全局合计。"""
+    _check_auth(x_auth_token)
+    sys.path.insert(0, "/opt/wh-workbench/MainPG/local-runtime")
+    from wh_local.billing import (
+        STATION_PAYOUT_CHANNEL_LABELS,
+        STATION_PAYOUT_STATUS_LABELS,
+        STATION_REBATE_STATUS_LABELS,
+        settle_due_station_rebates,
+        station_rebate_summary,
+    )
+    from wh_local.db import connect, transaction
+
+    db_path = Path(load_config()["database_path"])
+    name_map = _station_rebate_name_map()
+    summary_keys = (
+        "accrued_cents", "settled_cents", "reserved_cents", "paid_cents", "void_cents",
+        "rows_total", "pending_payout_cents", "paid_payout_cents", "rejected_payout_cents",
+        "payout_count", "available_cents",
+    )
+    totals = {key: 0 for key in summary_keys}
+    stations: list[dict[str, Any]] = []
+    # 惰性 T+7 结算：管理员查看返利总览时，先把已到期 accrued 转为 settled（幂等）。
+    with transaction(db_path) as tconn:
+        settle_due_station_rebates(tconn)
+    conn = connect(db_path)
+    try:
+        codes: set[str] = set(name_map)
+        try:
+            for row in conn.execute(
+                "SELECT DISTINCT station_code FROM station_contracts"
+                " WHERE station_code <> '*' AND station_code <> ''"
+            ):
+                codes.add(str(row["station_code"]))
+            for row in conn.execute(
+                "SELECT DISTINCT station_code FROM station_rebate_ledger WHERE station_code <> ''"
+            ):
+                codes.add(str(row["station_code"]))
+            for row in conn.execute(
+                "SELECT DISTINCT station_code FROM station_payouts WHERE station_code <> ''"
+            ):
+                codes.add(str(row["station_code"]))
+        except sqlite3.OperationalError:
+            pass
+        for code in sorted(codes):
+            summary = station_rebate_summary(conn, station_code=code)
+            stations.append({
+                "station_code": code,
+                "station_name": name_map.get(code, code),
+                **summary,
+            })
+            for key in summary_keys:
+                totals[key] += int(summary.get(key, 0))
+    finally:
+        conn.close()
+    return {
+        "ok": True,
+        "stations": stations,
+        "totals": totals,
+        "statuses": STATION_REBATE_STATUS_LABELS,
+        "payout_statuses": STATION_PAYOUT_STATUS_LABELS,
+        "channels": STATION_PAYOUT_CHANNEL_LABELS,
+    }
+
+
+@app.get("/api/station-rebate/ledger")
+def station_rebate_ledger_list(
+    station_code: str = Query(default=""),
+    status: str = Query(default=""),
+    page: int = Query(default=1),
+    page_size: int = Query(default=20),
+    x_auth_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """总部返利台账（分页），可按分站 / 状态过滤。"""
+    _check_auth(x_auth_token)
+    sys.path.insert(0, "/opt/wh-workbench/MainPG/local-runtime")
+    from wh_local.billing import STATION_REBATE_STATUS_LABELS, station_rebate_ledger
+    from wh_local.db import connect
+
+    db_path = Path(load_config()["database_path"])
+    name_map = _station_rebate_name_map()
+    conn = connect(db_path)
+    try:
+        result = station_rebate_ledger(
+            conn, station_code=station_code, status=status, page=page, page_size=page_size
+        )
+    finally:
+        conn.close()
+    rows = []
+    for row in result["rows"]:
+        code = str(row["station_code"])
+        rows.append({
+            "id": row["id"],
+            "station_code": code,
+            "station_name": name_map.get(code, code),
+            "order_id": row["order_id"],
+            "out_trade_no": row["out_trade_no"],
+            "account_id": row["account_id"],
+            "package_id": row["package_id"],
+            "amount_cents": row["amount_cents"],
+            "rebate_cents": row["rebate_cents"],
+            "status": row["status"],
+            "status_label": STATION_REBATE_STATUS_LABELS.get(row["status"], row["status"]),
+            "accrued_at": row["accrued_at"],
+            "settle_due_at": row["settle_due_at"],
+            "settled_at": row["settled_at"],
+        })
+    return {**result, "rows": rows, "statuses": STATION_REBATE_STATUS_LABELS}
+
+
+@app.get("/api/station-rebate/payouts")
+def station_rebate_payouts_list(
+    station_code: str = Query(default=""),
+    status: str = Query(default=""),
+    page: int = Query(default=1),
+    page_size: int = Query(default=20),
+    x_auth_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """总部打款单（分页），可按分站 / 状态过滤。"""
+    _check_auth(x_auth_token)
+    sys.path.insert(0, "/opt/wh-workbench/MainPG/local-runtime")
+    from wh_local.billing import (
+        STATION_PAYOUT_CHANNEL_LABELS,
+        STATION_PAYOUT_STATUS_LABELS,
+        station_payouts_list,
+    )
+    from wh_local.db import connect
+
+    db_path = Path(load_config()["database_path"])
+    name_map = _station_rebate_name_map()
+    conn = connect(db_path)
+    try:
+        result = station_payouts_list(
+            conn, station_code=station_code, status=status, page=page, page_size=page_size
+        )
+    finally:
+        conn.close()
+    rows = []
+    for row in result["rows"]:
+        code = str(row["station_code"])
+        rows.append({
+            "id": row["id"],
+            "station_code": code,
+            "station_name": name_map.get(code, code),
+            "amount_cents": row["amount_cents"],
+            "channel": row["channel"],
+            "channel_label": STATION_PAYOUT_CHANNEL_LABELS.get(row["channel"], row["channel"]),
+            "account": row["account"],
+            "note": row["note"],
+            "status": row["status"],
+            "status_label": STATION_PAYOUT_STATUS_LABELS.get(row["status"], row["status"]),
+            "applied_at": row["applied_at"],
+            "decided_at": row["decided_at"],
+            "voucher": row["voucher"],
+            "reject_reason": row["reject_reason"],
+            "created_by": row["created_by"],
+            "decided_by": row["decided_by"],
+        })
+    return {
+        **result,
+        "rows": rows,
+        "statuses": STATION_PAYOUT_STATUS_LABELS,
+        "channels": STATION_PAYOUT_CHANNEL_LABELS,
+    }
+
+
+@app.post("/api/station-rebate/payouts/{payout_id}/approve")
+def station_rebate_payout_approve(
+    payout_id: int,
+    payload: dict[str, Any],
+    request: Request,
+    x_auth_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """审批通过：登记打款渠道与凭证，打款单 pending -> paid。"""
+    admin = _check_auth(x_auth_token)
+    sys.path.insert(0, "/opt/wh-workbench/MainPG/local-runtime")
+    from wh_local.billing import approve_station_payout
+    from wh_local.db import transaction
+
+    channel = str(payload.get("channel") or "").strip() or None
+    voucher = str(payload.get("voucher") or "").strip()
+    decided_by = str(admin.get("username") or admin.get("account_id") or "admin")
+    db_path = Path(load_config()["database_path"])
+    with transaction(db_path) as conn:
+        result = approve_station_payout(
+            conn, payout_id=payout_id, channel=channel, voucher=voucher, decided_by=decided_by
+        )
+    return {"ok": True, **result}
+
+
+@app.post("/api/station-rebate/payouts/{payout_id}/reject")
+def station_rebate_payout_reject(
+    payout_id: int,
+    payload: dict[str, Any],
+    request: Request,
+    x_auth_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """审批驳回：打款单 pending -> rejected，释放占用的可结算余额。"""
+    admin = _check_auth(x_auth_token)
+    sys.path.insert(0, "/opt/wh-workbench/MainPG/local-runtime")
+    from wh_local.billing import reject_station_payout
+    from wh_local.db import transaction
+
+    reason = str(payload.get("reason") or "").strip()
+    decided_by = str(admin.get("username") or admin.get("account_id") or "admin")
+    db_path = Path(load_config()["database_path"])
+    with transaction(db_path) as conn:
+        result = reject_station_payout(
+            conn, payout_id=payout_id, reason=reason, decided_by=decided_by
+        )
+    return {"ok": True, **result}
 
 
 @app.post("/api/billing/multipliers")
