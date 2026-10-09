@@ -1,0 +1,106 @@
+{
+  "meta": {
+    "draft_name": "界野-抖音口播-60s",
+    "total_seconds": 60.0,
+    "fps": 30,
+    "canvas": { "width": 1080, "height": 1920, "ratio": "original" },
+    "font_path": "C:/Users/HUAWEI/AppData/Local/JianyingPro/Apps/11.5.0.14471/Resources/Font/SystemFont/zh-hans.ttf",
+    "layout": {
+      "card_transform_y": 0.6,
+      "card_font_size": 14.0,
+      "card_color": "#FFFFFF",
+      "accent_color": "#a8b862",
+      "voice_hint_transform_y": -0.62,
+      "voice_hint_font_size": 8.0,
+      "voice_hint_color": "#8A9A5B"
+    },
+    "safety": {
+      "top_safe_px": 220,
+      "bottom_safe_px": 220,
+      "right_bottom_keepout_px": [320, 420]
+    }
+  },
+  "shots": [
+    {
+      "no": 1,
+      "seconds": 6.0,
+      "role": "痛点钩子",
+      "voice": "一个人做跨境，最怕的不是没订单，是活干了一堆，爆款还没找到。",
+      "card": "活干了一堆\n爆款还没找到",
+      "stock_keywords": ["加班 疲惫 办公", "快递纸箱 堆叠", "深夜 电脑 发光"],
+      "direction": "数字人近景怼脸，语速偏快；上方空镜压暗，字卡直接切出"
+    },
+    {
+      "no": 2,
+      "seconds": 7.0,
+      "role": "品牌亮相",
+      "voice": "界野电商工作台，单人卖家的跨境全流程外挂，选品到上架一个工作台全搞定。",
+      "card": "界野电商工作台\n跨境全流程外挂",
+      "stock_keywords": ["科技感 蓝色 数据界面", "电脑 工作台 俯拍"],
+      "direction": "品牌名首次出现，字卡用主色 + 橄榄绿描边；素材库找“科技/数据”类画面"
+    },
+    {
+      "no": 3,
+      "seconds": 9.0,
+      "role": "01 选品采集",
+      "voice": "选品自带 24 个系统预设方向，关键词、参考图都能采，单店一键最多 120 件，插件一点直接进工作台。",
+      "card": "24 个预设方向\n单店一键最多 120 件",
+      "stock_keywords": ["商品列表 电商 选品", "鼠标点击 屏幕 录屏", "数据表格 滚动"],
+      "direction": "关键数字 24 / 120 用橄榄绿 #a8b862；素材建议用录屏感画面",
+      "fact_check": "「120 件」已核实：local-runtime/wh_local/data_collection/shop_worker.py:27 _MAX_SHOP_ITEMS = 120；「24 个系统预设方向」仓库内未定位到常量，属运营口径，上线前请自行确认"
+    },
+    {
+      "no": 4,
+      "seconds": 10.5,
+      "role": "02 AI 商品处理",
+      "voice": "做图更省事，AI 生图一批次 30 分钟处理 100 条链接，站点选好语言自动切换，标题、主图、场景图批量出，专用模板降低同质化比价。",
+      "card": "30 分钟 · 100 条链接\n标题 / 主图 / 场景图批量出",
+      "stock_keywords": ["AI 生成 图片 界面", "白底 商品图 模特", "多语言 商品详情 页面"],
+      "direction": "全片信息密度最高的一镜，字卡分两行，切勿超过 14 字/行",
+      "fact_check": "「30 分钟 / 100 条链接」仓库内未定位到常量，属运营口径；已核实的相关能力为「一次生图拆 4 张 2048 主图」（product_processing/provider_config.py:45 IMAGE_SIZE=2048x2048）与「站点 × 语言 = 3 × 2」（product_processing/domain/site_language.py:14-22）"
+    },
+    {
+      "no": 5,
+      "seconds": 6.5,
+      "role": "03 POD 定制",
+      "voice": "POD 更丝滑：上传模板、框选主体、填好风格，点一下图片和英文标题一起出。",
+      "card": "上传模板 → 框选主体\n图片 + 英文标题一起出",
+      "stock_keywords": ["T恤 印花 定制", "马克杯 图案 定制", "手绘 图案 特写"],
+      "direction": "三步动作做成字卡节奏，可与口播同步出现"
+    },
+    {
+      "no": 6,
+      "seconds": 8.5,
+      "role": "04 核价利润",
+      "voice": "核价插件是救命点：一页 50 组报价一次拉取，自动初筛、图搜货源，改价格和重量，利润实时重算。",
+      "card": "一页 50 组报价\n利润实时重算",
+      "stock_keywords": ["表格 数据 计算", "计算器 账本 利润", "仓库 货源 拍摄"],
+      "direction": "说“利润实时重算”时字卡数字做一次强调（放大 110%）",
+      "fact_check": "口径已按仓库事实修正：单页上限 50 是「SKC 分组」而非 SKU（price_verification/README.md:136,146-148，SKU 报价行允许 1–5000 行），故不写“50 个 SKU”。「图搜召回 60 / 阈值 0.50 / 只展示 5 条」见 price_verification/sourcing/image_similarity.py:31-33"
+    },
+    {
+      "no": 7,
+      "seconds": 6.0,
+      "role": "05 交付上架",
+      "voice": "表格一键导出，导入平台就能上架，全程本地运行，数据都在自己电脑里。",
+      "card": "表格一键导出\n导入平台即可上架",
+      "stock_keywords": ["笔记本 商务 桌面", "硬盘 数据 安全", "上传 进度条 界面"],
+      "direction": "“全程本地运行”是本条最硬的差异点，语气放稳"
+    },
+    {
+      "no": 8,
+      "seconds": 6.5,
+      "role": "收尾 + 福利",
+      "voice": "注册即领 500 积分，使用再领 2000，前 200 名免费体验——官网链接在视频下方。",
+      "card": "注册 500 + 2000 积分\n前 200 名免费体验",
+      "stock_keywords": ["礼物 优惠 惊喜", "手机 扫码 链接", "数字 增长 动效"],
+      "direction": "最后 1 秒切落版页，右下角预留官网 workbench.haocoming.top 与二维码，不要被数字人遮挡",
+      "fact_check": "「500 / 2000 积分、前 200 名免费体验」为运营口径，仓库内无对应常量，发布前请按当期活动实际条款核对；若活动已结束必须替换，避免虚假宣传"
+    }
+  ],
+  "endcard": {
+    "brand_line": "把每日选品、AI 商品处理、核价找货源与利润审核，整理成可控、可审核、可追溯的团队流程。",
+    "url": "workbench.haocoming.top",
+    "note": "官方品牌语，来自《界野宣传视频-脚本与分镜.md》；Slogan 项仓库内不存在正式版本，待确认後再补"
+  }
+}

@@ -1,0 +1,489 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-geist-mono);
+  --font-heading: var(--font-sans);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-amber: var(--amber);
+  --animate-shimmer-slide: shimmer-slide var(--speed) ease-in-out infinite alternate;
+  --animate-spin-around: spin-around calc(var(--speed) * 2) infinite linear;
+  @keyframes shimmer-slide {
+  to {
+    transform: translate(calc(100cqw - 100%), 0);
+    }
+  }
+  @keyframes spin-around {
+  0% {
+    transform: translateZ(0) rotate(0);
+    }
+  15%, 35% {
+    transform: translateZ(0) rotate(90deg);
+    }
+  65%, 85% {
+    transform: translateZ(0) rotate(270deg);
+    }
+  100% {
+    transform: translateZ(0) rotate(360deg);
+    }
+  }
+  --animate-shiny-text: shiny-text 8s infinite
+;
+  @keyframes shiny-text {
+  0%, 90%, 100% {
+    background-position: calc(-100% - var(--shiny-width)) 0;}
+  30%, 60% {
+    background-position: calc(100% + var(--shiny-width)) 0;}}}
+
+/* ==================== 亮色主题 ==================== */
+:root {
+  --background: #f8fafc;
+  --foreground: #0f172a;
+  --card: #ffffff;
+  --card-foreground: #0f172a;
+  --popover: #ffffff;
+  --popover-foreground: #0f172a;
+  --primary: #6366f1;
+  --primary-foreground: #ffffff;
+  --secondary: #f1f5f9;
+  --secondary-foreground: #334155;
+  --muted: #f1f5f9;
+  --muted-foreground: #64748b;
+  --accent: #eef2ff;
+  --accent-foreground: #3730a3;
+  --destructive: #ef4444;
+  --border: #e2e8f0;
+  --input: #e2e8f0;
+  --ring: #6366f1;
+  --chart-1: #6366f1;
+  --chart-2: #8b5cf6;
+  --chart-3: #06b6d4;
+  --chart-4: #f59e0b;
+  --chart-5: #10b981;
+  --radius: 0.75rem;
+  --sidebar: #ffffff;
+  --sidebar-foreground: #0f172a;
+  --sidebar-primary: #6366f1;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #eef2ff;
+  --sidebar-accent-foreground: #3730a3;
+  --sidebar-border: #e2e8f0;
+  --sidebar-ring: #6366f1;
+  --brand: #6366f1;
+  --brand-foreground: #ffffff;
+  --amber: #f59e0b;
+}
+
+/* ==================== 暗色主题（暗色创作台·全站默认） ==================== */
+/* 近黑冷调底 + 单一电光青强调，气质偏 Linear/Runway 的「高级暗色」 */
+.dark {
+  --background: #0b0d12;
+  --foreground: #edeff4;
+  --card: #12151c;
+  --card-foreground: #edeff4;
+  --popover: #12151c;
+  --popover-foreground: #edeff4;
+  --primary: #8b5cf6;
+  --primary-foreground: #ffffff;
+  --secondary: #171b24;
+  --secondary-foreground: #c7cdd8;
+  --muted: #161a22;
+  --muted-foreground: #98a2b3;
+  --accent: #1b212b;
+  --accent-foreground: #edeff4;
+  --destructive: #f87171;
+  --border: #222834;
+  --input: #1a1f29;
+  --ring: #8b5cf6;
+  --chart-1: #8b5cf6;
+  --chart-2: #d946ef;
+  --chart-3: #a78bfa;
+  --chart-4: #fbbf24;
+  --chart-5: #34d399;
+  --sidebar: #0e1117;
+  --sidebar-foreground: #edeff4;
+  --sidebar-primary: #8b5cf6;
+  --sidebar-primary-foreground: #04221e;
+  --sidebar-accent: #1b212b;
+  --sidebar-accent-foreground: #edeff4;
+  --sidebar-border: #222834;
+  --sidebar-ring: #8b5cf6;
+  --brand: #8b5cf6;
+  --brand-foreground: #04221e;
+  --amber: #fbbf24;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+}
+
+/* ==================== 品牌渐变 ==================== */
+.brand-gradient {
+  background: linear-gradient(100deg, #6366f1, #8b5cf6 55%, #d946ef);
+}
+
+.brand-gradient-text {
+  background: linear-gradient(100deg, #6366f1, #8b5cf6 55%, #d946ef);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ==================== 卡片 ==================== */
+.glass-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.75rem;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03), 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.dark .glass-card {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(255, 255, 255, 0.08);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(12px);
+}
+
+/* ==================== 页面背景 ==================== */
+.grid-bg {
+  background-color: #f8fafc;
+  background-image:
+    radial-gradient(circle at 20% 50%, rgba(99, 102, 241, 0.03) 0%, transparent 50%),
+    radial-gradient(circle at 80% 20%, rgba(139, 92, 246, 0.03) 0%, transparent 50%);
+}
+
+.dark .grid-bg {
+  background-color: #0b0d12;
+  /* brand purple glow (the teal glow predates the purple rebrand) */
+  background-image:
+    radial-gradient(circle at 50% -8%, rgba(139, 92, 246, 0.08) 0%, transparent 55%),
+    radial-gradient(circle at 85% 0%, rgba(217, 70, 239, 0.05) 0%, transparent 50%);
+}
+
+/* ==================== 选中高亮 ==================== */
+.neon-glow {
+  box-shadow:
+    0 0 0 2px rgba(99, 102, 241, 0.2),
+    0 4px 16px rgba(99, 102, 241, 0.08);
+}
+
+.dark .neon-glow {
+  box-shadow:
+    0 0 0 2px rgba(94, 234, 212, 0.35),
+    0 4px 20px rgba(94, 234, 212, 0.14);
+}
+
+/* ==================== 卡片悬停 ==================== */
+.card-hover {
+  transition: all 0.2s ease;
+}
+
+.card-hover:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    0 4px 6px rgba(0, 0, 0, 0.04),
+    0 10px 24px rgba(0, 0, 0, 0.06),
+    0 0 0 1px rgba(99, 102, 241, 0.1);
+  border-color: rgba(99, 102, 241, 0.3);
+}
+
+.dark .card-hover:hover {
+  box-shadow:
+    0 4px 6px rgba(0, 0, 0, 0.25),
+    0 10px 24px rgba(0, 0, 0, 0.35),
+    0 0 0 1px rgba(94, 234, 212, 0.22);
+  border-color: rgba(94, 234, 212, 0.4);
+}
+
+/* MainPG owns the surrounding chrome when ClipForge is embedded as its AI-video module. */
+.mainpg-embedded {
+  --background: #fff7f8;
+  --foreground: #49343b;
+  --card: rgba(255, 255, 255, .9);
+  --card-foreground: #49343b;
+  --popover: #fff;
+  --popover-foreground: #49343b;
+  --primary: #d65778;
+  --primary-foreground: #fff;
+  --secondary: #fff0f3;
+  --secondary-foreground: #674550;
+  --muted: #fff4f5;
+  --muted-foreground: #8d6e78;
+  --accent: #ffe7ee;
+  --accent-foreground: #a23556;
+  --destructive: #dc5c6d;
+  --border: #f0ccd6;
+  --input: #efc9d3;
+  --ring: #dc7892;
+  --sidebar: transparent;
+  --radius: 1rem;
+  --brand: #d65778;
+  --brand-foreground: #fff;
+}
+
+.mainpg-embedded body {
+  background: #fff7f8;
+  color: #49343b;
+}
+
+.mainpg-embedded .mainpg-embed-content {
+  min-height: 100%;
+}
+
+.mainpg-embedded .grid-bg {
+  background-color: #fff7f8;
+  background-image: radial-gradient(circle at 80% 0, rgba(255, 183, 202, .28), transparent 42%);
+}
+
+.mainpg-embedded .glass-card {
+  border-color: #f0ccd6;
+  background: rgba(255, 255, 255, .88);
+  box-shadow: 0 12px 30px rgba(158, 72, 101, .09);
+}
+
+/* The start page owns a compact, inline dark studio stylesheet. Its custom
+   properties and direct surface fills must be overridden as one bounded unit. */
+.mainpg-embedded .cf-root {
+  --teal: #d65778;
+  --ink: #fff;
+  --text: #49343b;
+  --dim: #856b74;
+  --muted: #a27f8a;
+  --surface: rgba(255, 255, 255, .84);
+  --surface2: #fff0f3;
+  --bd: #f0ccd6;
+  --bd2: #e8b8c5;
+  background: #fff7f8;
+}
+
+.mainpg-embedded .cf-amb {
+  background: radial-gradient(900px 420px at 50% -8%, rgba(255, 176, 197, .36), transparent 70%), radial-gradient(700px 500px at 85% 0%, rgba(244, 205, 150, .2), transparent 65%);
+}
+
+.mainpg-embedded .cf-grid { opacity: .42; }
+
+.mainpg-embedded .cf-card,
+.mainpg-embedded .cf-tabs,
+.mainpg-embedded .cf-input,
+.mainpg-embedded .cf-area,
+.mainpg-embedded .cf-form-select,
+.mainpg-embedded .cf-keyinput,
+.mainpg-embedded .cf-gen {
+  background: rgba(255, 255, 255, .86);
+}
+
+.mainpg-embedded .cf-drop {
+  border-color: #dc7892;
+  background: radial-gradient(420px 160px at 50% 30%, rgba(255, 184, 202, .38), transparent 70%);
+}
+
+.mainpg-embedded .cf-keybox,
+.mainpg-embedded .cf-keyform,
+.mainpg-embedded .cf-guide {
+  border-color: #ecc2cf;
+  background: #fff1f4;
+}
+
+.mainpg-embedded .cf-cta,
+.mainpg-embedded .cf-keybtn,
+.mainpg-embedded .cf-keybox a {
+  background: linear-gradient(105deg, #c7486c, #e8899f);
+}
+
+/* ---------- 内嵌亮色补全（以下选择器一律以 .mainpg-embedded 开头，不影响 standalone 暗色界面） ---------- */
+
+/* 选中高亮 / 滚动条：内嵌时跟 MainPG 的粉主色保持一致（:root 里没有对应规则） */
+.mainpg-embedded {
+  scrollbar-color: #e8b8c5 transparent;
+}
+
+.mainpg-embedded ::selection {
+  background: rgba(214, 87, 120, .22);
+  color: #49343b;
+}
+
+.mainpg-embedded ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.mainpg-embedded ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.mainpg-embedded ::-webkit-scrollbar-thumb {
+  background-color: #e8b8c5;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+
+.mainpg-embedded ::-webkit-scrollbar-thumb:hover {
+  background-color: #dc7892;
+}
+
+.mainpg-embedded input::placeholder,
+.mainpg-embedded textarea::placeholder {
+  color: #b3929c;
+}
+
+/* .brand-gradient / .brand-gradient-text 写死了独立紫色品牌，内嵌时收敛为 MainPG 粉橙主色。
+   只改 background-image：用 background 简写会把 .brand-gradient-text 的 background-clip:text 重置掉。 */
+.mainpg-embedded .brand-gradient,
+.mainpg-embedded .brand-gradient-text {
+  background-image: linear-gradient(105deg, #c7486c, #e8899f);
+}
+
+/* start 页内联样式表里残留的「深色底才成立」的强调色/阴影，逐条换成亮色值。 */
+.mainpg-embedded .cf-h1 .hl {
+  text-shadow: 0 0 34px rgba(214, 87, 120, .3);
+}
+
+.mainpg-embedded .cf-card {
+  box-shadow: 0 18px 46px -30px rgba(158, 72, 101, .4);
+}
+
+.mainpg-embedded .cf-notice {
+  border-color: #f0ccd6;
+  background: #fff0f3;
+}
+
+.mainpg-embedded .cf-notice a {
+  background-image: linear-gradient(105deg, #c7486c, #e8899f);
+}
+
+.mainpg-embedded .cf-err {
+  color: #b03052;
+}
+
+.mainpg-embedded .cf-spin {
+  border-color: rgba(214, 87, 120, .22);
+  border-top-color: #d65778;
+}
+
+.mainpg-embedded .cf-prog-step.on .ic {
+  border-color: rgba(214, 87, 120, .6);
+}
+
+.mainpg-embedded .cf-prog-step.done .ic {
+  border-color: rgba(214, 87, 120, .5);
+}
+
+.mainpg-embedded .cf-guide-step b {
+  background: rgba(214, 87, 120, .16);
+}
+
+.mainpg-embedded .cf-cat.on {
+  border-color: rgba(214, 87, 120, .35);
+  background: rgba(214, 87, 120, .08);
+}
+
+.mainpg-embedded .cf-trow .trk.hot {
+  color: #d65778;
+}
+
+.mainpg-embedded .cf-chip:hover,
+.mainpg-embedded .cf-trow .tclone:hover {
+  border-color: rgba(214, 87, 120, .4);
+}
+
+.mainpg-embedded .cf-daily-btn:hover {
+  box-shadow: inset 0 0 0 1px rgba(214, 87, 120, .45);
+}
+
+.mainpg-embedded .cf-daily-input {
+  background: #fff;
+  border-color: #efc9d3;
+}
+
+.mainpg-embedded .cf-daily-input:focus {
+  border-color: #dc7892;
+}
+
+/* 生产档案卡（渲染在 /start 内）通体用「白/黑半透明」的深色填充：以它自带的
+   aria-labelledby 钩子做受限覆盖，作用域只到这张卡内部。 */
+.mainpg-embedded [aria-labelledby="production-profile-title"] {
+  border-color: #f0ccd6;
+  background: rgba(255, 255, 255, .88);
+}
+
+.mainpg-embedded [aria-labelledby="production-profile-title"] [role="radio"][aria-checked="false"] {
+  border-color: #f0ccd6;
+  background: #fff;
+}
+
+.mainpg-embedded [aria-labelledby="production-profile-title"] [role="radio"][aria-checked="false"]:hover {
+  border-color: #dc7892;
+  background: #fff4f5;
+}
+
+.mainpg-embedded [aria-labelledby="production-profile-title"] .bg-white\/10 {
+  background-color: #f0ccd6;
+}
+
+.mainpg-embedded [aria-labelledby="production-profile-title"] .bg-white\/6 {
+  background-color: #fff0f3;
+}
+
+.mainpg-embedded [aria-labelledby="production-profile-title"] .bg-black\/15 {
+  background-color: #fff4f5;
+}
+
+.mainpg-embedded [aria-labelledby="production-profile-title"] .border-white\/6 {
+  border-color: #f0ccd6;
+}
+
+.mainpg-embedded [aria-labelledby="production-profile-title"] .text-amber-300\/90 {
+  color: #b45309;
+}

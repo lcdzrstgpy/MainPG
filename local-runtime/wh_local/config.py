@@ -1,0 +1,326 @@
+from __future__ import annotations
+
+import ipaddress
+import json
+import os
+import secrets
+import shutil
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+
+from wh_local.secrets import load_credential_config
+
+
+# Release automation updates this single value when producing a desktop build.
+APP_VERSION = "1.5.2"
+# Replace this host only when the official MainPG release origin moves. Keep the
+# manifest and installer allowlist bound to the same release-owned host.
+UPDATE_RELEASE_HOST = "workbench.haocoming.top"
+UPDATE_MANIFEST_URL = f"https://{UPDATE_RELEASE_HOST}/mainpg/windows/manifest.json"
+# Incremental patch manifest: describes from_version -> to_version file diff.
+# Signed with the same Ed25519 key; verified by PatchManager before download.
+UPDATE_PATCH_MANIFEST_URL = f"https://{UPDATE_RELEASE_HOST}/mainpg/windows/patch-manifest.json"
+UPDATE_MANIFEST_ALLOWED_HOSTS = frozenset({UPDATE_RELEASE_HOST})
+# Public verification key only. The matching private key belongs in the release
+# signing system and must never be distributed with the application.
+# 2026-08-29 internal-test key rotation. The matching private key is held only
+# by the independent release server and is never distributed with MainPG.
+UPDATE_ED25519_PUBLIC_KEY_B64 = "qsK3rFMm732q6oZFG8m938ewHkFGj3EoxjRGq3YmHo0="
+
+# 安装器（Inno Setup）把用户选择的"数据存储位置"写到这里，运行时读回以避免
+# 用户数据全堆在 C 盘。用注册表而不是配置文件：Inno 的 RegWriteStringValue
+# 支持 Unicode，SaveStringToFile 是 ANSI 会破坏非 ASCII 路径。
+_STORAGE_REG_SUBKEY = r"Software\MainPG"
+_STORAGE_REG_VALUE = "DataRoot"
+
+
+@dataclass(frozen=True)
+class LocalRuntimeConfig:
+    app_version: str
+    runtime_root: Path
+    install_root: Path
+    data_dir: Path
+    database_path: Path
+    dev_admin_token: str
+    customer_auth_base_url: str
+    announce_base_url: str
+    onebound_1688_api_key: str
+    onebound_1688_api_secret: str
+    onebound_1688_base_url: str
+    onebound_1688_enabled: bool
+
+
+def _default_dev_admin_token() -> str:
+    # 打包版（PyInstaller frozen）绝不携带公开的固定管理员口令：默认随机生成，
+    # 防止局域网内任何人用已知 token 冒充 admin；运维需要时用
+    # WH_LOCAL_DEV_ADMIN_TOKEN 显式覆盖。源码运行（本地 dev / tests）保留
+    # dev-admin-token 方便调试，与前端 import.meta.env.DEV 注入保持一致。
+    if getattr(sys, "frozen", False):
+        return secrets.token_urlsafe(24)
+    return "dev-admin-token"
+
+
+def default_data_dir(runtime_root: Path) -> Path:
+    r"""数据目录：默认 <storage_root>\outputs\wh-local，可用 WH_LOCAL_DATA_DIR 覆盖。
+
+    老实现跟随"进程工作目录"，双击 exe / 快捷方式 / 命令行启动会落到不同目录，
+    甚至落到 Program Files 无写权限处直接建库失败——这正是双 workbench.sqlite3
+    的根源。现在统一由 storage_root()（安装器写入的存储根目录）派生：
+    %APPDATA%\MainPG\outputs\wh-local（默认）或用户自定义盘符下的同名子目录。
+    与 launcher/core.data_dir_from_env 的优先级保持一致。
+    """
+    override = os.environ.get("WH_LOCAL_DATA_DIR", "")
+    if override:
+        return Path(override)
+    return runtime_root / "outputs" / "wh-local"
+
+
+def _legacy_data_dir_candidates(config: LocalRuntimeConfig) -> list[Path]:
+    """老版本数据目录候选（迁移源），按优先级去重排列。
+
+    1.5.1 起数据根目录可自定义：用户换盘后旧库仍留在默认的
+    %APPDATA%\\MainPG\\outputs\\wh-local，首次启动需要把它搬到新位置，
+    否则用户会以为"数据凭空消失"。"""
+    appdata = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
+    ordered = [
+        appdata / "MainPG" / "outputs" / "wh-local",
+        config.runtime_root / "outputs" / "wh-local",
+    ]
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for cand in ordered:
+        if cand not in seen:
+            seen.add(cand)
+            unique.append(cand)
+    return unique
+
+
+def _migrate_legacy_database(config: LocalRuntimeConfig, target_db: Path) -> None:
+    """打包版老版本把库建在 <root>/outputs/wh-local，首次启动迁到新数据目录。
+
+    只在目标位置还没有库时迁移（有则不动，避免覆盖用户数据）；WAL 附属文件
+    (-wal/-shm) 一并搬走。迁移源覆盖默认 AppData 位置，保证换盘用户的数据
+    仍能被找回。
+    """
+    if not getattr(sys, "frozen", False):
+        return
+    if target_db.is_file():
+        return
+    for legacy_dir in _legacy_data_dir_candidates(config):
+        legacy_db = legacy_dir / "workbench.sqlite3"
+        if not legacy_db.is_file() or legacy_db == target_db:
+            continue
+        target_db.parent.mkdir(parents=True, exist_ok=True)
+        for suffix in ("", "-wal", "-shm"):
+            src = Path(str(legacy_db) + suffix)
+            if src.is_file():
+                shutil.move(str(src), str(target_db) + suffix)
+        return
+
+
+def ensure_data_dir_ready(config: LocalRuntimeConfig, database_path: Path | None = None) -> None:
+    """启动前置检查：数据目录可写（含老库迁移）。失败抛 RuntimeError(E002)。
+
+    在真正建库之前先试写一脚——目录不可写（权限/磁盘满/杀软锁定）时立刻
+    以明确错误码失败，而不是一路崩到 SQLite 报错变成白屏。
+    """
+    try:
+        config.data_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise RuntimeError(f"E002 无法创建数据目录 {config.data_dir}: {exc}") from exc
+    _migrate_legacy_database(config, database_path or config.database_path)
+    probe = config.data_dir / ".write-test"
+    try:
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+    except OSError as exc:
+        raise RuntimeError(f"E002 数据目录不可写 {config.data_dir}: {exc}") from exc
+
+
+def default_config(workspace: Path | None = None) -> LocalRuntimeConfig:
+    root = runtime_root(workspace)
+    install_dir = install_root()
+    local_secrets = _local_onebound_config()
+    # 数据目录：打包版固定 %APPDATA%（见 default_data_dir）；
+    # WH_LOCAL_DATA_DIR / WH_LOCAL_DATABASE_PATH 显式覆盖仍然优先。
+    data_dir = default_data_dir(root)
+    database_path = Path(os.environ.get("WH_LOCAL_DATABASE_PATH", "") or data_dir / "workbench.sqlite3")
+    return LocalRuntimeConfig(
+        app_version=_resolved_app_version(install_dir),
+        runtime_root=root,
+        install_root=install_dir,
+        data_dir=data_dir,
+        database_path=database_path,
+        dev_admin_token=os.environ.get("WH_LOCAL_DEV_ADMIN_TOKEN", _default_dev_admin_token()),
+        customer_auth_base_url=os.environ.get(
+            "WH_LOCAL_CUSTOMER_AUTH_BASE_URL",
+            "https://workbench.haocoming.top/auth-api",
+        ),
+        announce_base_url=os.environ.get(
+            "WH_LOCAL_ANNOUNCE_BASE_URL",
+            "https://workbench.haocoming.top/publish-api",
+        ),
+        onebound_1688_api_key=os.environ.get(
+            "DAILY_SELECTION_ONEBOUND_API_KEY", local_secrets.get("api_key", "")
+        ),
+        onebound_1688_api_secret=os.environ.get(
+            "DAILY_SELECTION_ONEBOUND_API_SECRET", local_secrets.get("api_secret", "")
+        ),
+        onebound_1688_base_url=os.environ.get(
+            "DAILY_SELECTION_ONEBOUND_BASE_URL",
+            local_secrets.get("base_url", "https://api-gw.onebound.cn/1688"),
+        ),
+        onebound_1688_enabled=os.environ.get(
+            "DAILY_SELECTION_ONEBOUND_ENABLED", str(local_secrets.get("enabled", True))
+        ).strip().lower() in {"1", "true", "yes"},
+    )
+
+
+def is_ip_literal_host(base_url: str) -> bool:
+    """Return True when a remote base URL's host is a bare IP (not a domain).
+
+    Used to keep TLS hostname/chain verification enabled for production
+    (domain-based) URLs while allowing IP-direct connections to a test/staging
+    host, whose certificate cannot match a numeric IP literal."""
+    text = str(base_url or "").strip().split("://", 1)[-1]
+    text = text.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    host = text.rsplit("@", 1)[-1]
+    if host.startswith("["):  # IPv6 literal like [::1]:443
+        host = host.split("]", 1)[0].lstrip("[")
+    else:
+        host = host.rsplit(":", 1)[0]
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
+
+
+def _configured_storage_root() -> Path | None:
+    r"""读取安装器写入的自定义数据根目录（HKCU\Software\MainPG\DataRoot）。
+
+    只接受绝对路径；非 Windows / 未设置 / 值非法时返回 None 由调用方回退默认值，
+    保证老用户静默自动更新（不经过向导页）后仍走原来的 %APPDATA%\MainPG。"""
+    if sys.platform != "win32":
+        return None
+    try:
+        import winreg
+    except ImportError:  # pragma: no cover - win32 一定有 winreg
+        return None
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _STORAGE_REG_SUBKEY) as key:
+            value, _ = winreg.QueryValueEx(key, _STORAGE_REG_VALUE)
+    except OSError:
+        return None
+    text = str(value or "").strip()
+    if not text:
+        return None
+    path = Path(text)
+    if not path.is_absolute():
+        return None
+    return path
+
+
+def storage_root() -> Path:
+    r"""数据根目录（所有运行时数据的最外层目录，用户可自定义到非系统盘）。
+
+    优先级：WH_LOCAL_DATA_ROOT 环境变量 > 安装器写入的注册表值 >
+    默认 %APPDATA%\MainPG（打包版）/ 当前目录（源码运行）。
+    默认值与原 runtime_root 完全一致，未自定义的老用户行为零变化。"""
+    override = os.environ.get("WH_LOCAL_DATA_ROOT", "").strip()
+    if override:
+        return Path(override)
+    if getattr(sys, "frozen", False):
+        configured = _configured_storage_root()
+        if configured is not None:
+            return configured
+        appdata = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
+        return appdata / "MainPG"
+    return Path.cwd()
+
+
+def runtime_root(workspace: Path | None = None) -> Path:
+    r"""Data root: explicit workspace > storage_root()。
+
+    包内所有运行时数据（日志、更新缓存、主题、导出）都以它为根；打包版用户
+    可在安装时把它指到非系统盘，避免 C 盘被数据撑满。"""
+    if workspace is not None:
+        return workspace
+    return storage_root()
+
+
+def install_root() -> Path:
+    """Installation directory that holds the executable (patch targets live here).
+
+    Packaged builds put MainPG.exe / MainPG-Updater.exe / version.json next to
+    the executable. Source runs use the current directory so updates can be
+    exercised in development without a real install."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path.cwd().resolve()
+
+
+def _resolved_app_version(install_dir: Path) -> str:
+    """Read the on-disk version.json (written by MainPG-Updater after a patch).
+
+    Falls back to the compiled-in APP_VERSION when the file is absent (fresh
+    checkout / source run / not yet patched)."""
+    try:
+        data = json.loads((install_dir / "version.json").read_text(encoding="utf-8"))
+        value = str(data.get("version") or "").strip()
+        if value:
+            return value
+    except (OSError, ValueError):
+        pass
+    return APP_VERSION
+
+
+def _local_onebound_config() -> dict[str, str | bool]:
+    """Read project-local credentials from the Git-ignored configuration file.
+
+    Bundled installs ship ``onebound.enc`` (encrypted) next to the executable;
+    we prefer it and fall back to plaintext ``onebound.local.json`` so dev
+    checkouts and older installs keep working."""
+    values = load_credential_config(
+        json_candidates=_local_onebound_config_paths(),
+        enc_candidates=_local_onebound_enc_paths(),
+        name="onebound",
+    )
+    if not isinstance(values, dict):
+        return {}
+    return {
+        key: value
+        for key, value in values.items()
+        if key in {"api_key", "api_secret", "base_url", "enabled"}
+        and isinstance(value, (str, bool))
+    }
+
+
+def _local_onebound_config_paths() -> list[Path]:
+    """onebound.local.json candidates: source dir + packaged resource dir (PyInstaller).
+
+    The installer build places onebound.local.json next to the executable (onedir)
+    or into the bundle resources (onefile _MEIPASS), so installed users can use
+    the daily-selection collection API with zero configuration."""
+    candidates = [Path(__file__).with_name("onebound.local.json")]
+    if getattr(sys, "frozen", False):
+        candidates.append(Path(sys.executable).resolve().parent / "onebound.local.json")
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidates.append(Path(meipass) / "onebound.local.json")
+    return candidates
+
+
+def _local_onebound_enc_paths() -> list[Path]:
+    """``onebound.enc`` candidates, mirroring :func:`_local_onebound_config_paths`.
+
+    The installer build encrypts onebound.local.json into onebound.enc so the
+    plaintext API secret is not shipped to customer machines."""
+    candidates = [Path(__file__).with_name("onebound.enc")]
+    if getattr(sys, "frozen", False):
+        candidates.append(Path(sys.executable).resolve().parent / "onebound.enc")
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidates.append(Path(meipass) / "onebound.enc")
+    return candidates

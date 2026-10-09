@@ -1,0 +1,84 @@
+{
+  "sources": [
+    {
+      "repository": "xpaysh/ecommerce-prompts-mcp",
+      "url": "https://github.com/xpaysh/ecommerce-prompts-mcp",
+      "commit": "f44451c37c869e330d61031351842d9a40695346",
+      "license": "MIT",
+      "use": "title category, attribute, and SEO organization structures",
+      "runtime_copy": "adapted-structure"
+    },
+    {
+      "repository": "nexscope-ai/Amazon-Skills",
+      "url": "https://github.com/nexscope-ai/Amazon-Skills",
+      "commit": "bdc556233805bbc3b5d8d865f3f3bd153864970f",
+      "license": "MIT",
+      "use": "product-type, verified-attribute, keyword-ordering, and image-role structures",
+      "runtime_copy": "adapted-structure"
+    },
+    {
+      "repository": "wei910622-cell/AMZ-Skill",
+      "url": "https://github.com/wei910622-cell/AMZ-Skill",
+      "commit": "71c4c7656bc674ba17c930eaafb7f928ec1cf26c",
+      "license": "MIT",
+      "use": "fact-first, keyword-provenance, and parent-child title consistency structures",
+      "runtime_copy": "adapted-structure"
+    },
+    {
+      "repository": "coral870921-source/Ozon-Profit-Skills",
+      "url": "https://github.com/coral870921-source/Ozon-Profit-Skills",
+      "commit": "4f883a1facf47496c2e7b8907fd8d11f8110100c",
+      "license": "MIT",
+      "use": "cross-border product-title attribute-ordering structures",
+      "runtime_copy": "adapted-structure"
+    },
+    {
+      "repository": "JeremyGDM/awesome-ai-product-photography-prompts",
+      "url": "https://github.com/JeremyGDM/awesome-ai-product-photography-prompts",
+      "commit": "6815dab9c17ce20c5c554df4ecf28336fd0aef0a",
+      "license": "CC0-1.0",
+      "use": "general product-photography, food-and-beverage, and poster visual elements",
+      "runtime_copy": "normalized-content-elements"
+    },
+    {
+      "repository": "buluslan/gpt-image2-ecommerce",
+      "url": "https://github.com/buluslan/gpt-image2-ecommerce",
+      "commit": "4422c530b4fa873f5c398190fc8071a518bdd17e",
+      "license": "MIT",
+      "use": "structured ecommerce scene and category-prompt structures",
+      "runtime_copy": "adapted-structure"
+    },
+    {
+      "repository": "skyiron999/product-photo-ai-workflows",
+      "url": "https://github.com/skyiron999/product-photo-ai-workflows",
+      "commit": "75931104c59a484239335da2b7c1612999862771",
+      "license": "MIT",
+      "use": "product locking, material fidelity, style-card, and quality-check structures",
+      "runtime_copy": "adapted-structure"
+    },
+    {
+      "repository": "creatify-ai/ai-ad-prompt-guide",
+      "url": "https://github.com/creatify-ai/ai-ad-prompt-guide",
+      "commit": "115b3988d89a9d21d1114e59611f82b4612ab660",
+      "license": "MIT",
+      "use": "subject, lighting, camera, and technical description structures",
+      "runtime_copy": "adapted-structure"
+    },
+    {
+      "repository": "creatify-ai/static-ad-concept-generator",
+      "url": "https://github.com/creatify-ai/static-ad-concept-generator",
+      "commit": "4d7e51ce58b7e90f5f0a7d861be7248678e574d5",
+      "license": "MIT",
+      "use": "general visual-concept structures with advertising claims and social proof excluded",
+      "runtime_copy": "adapted-structure"
+    },
+    {
+      "repository": "yoyo-halo/cross-border-ecommerce-image-prompts",
+      "url": "https://github.com/yoyo-halo/cross-border-ecommerce-image-prompts",
+      "commit": "d7d89f8582880bf7b2b8458a28178b354667df8d",
+      "license": "MIT",
+      "use": "hero-image, scene, background-replacement, and feature-display structures",
+      "runtime_copy": "adapted-structure"
+    }
+  ]
+}

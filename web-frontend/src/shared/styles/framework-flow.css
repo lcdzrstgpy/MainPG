@@ -1,0 +1,66 @@
+/* ================================================================
+   framework-flow.css —— 整体框架观感精修
+   目标：让「切标签页 / 滚动 / 键盘操作」的反馈更顺、更安静、更统一。
+   原则：
+   - 只在现有动效上做「补足与柔化」，不新增花哨动画、不引入 transform
+     到标签面板（保持 fixed 抽屉不被限制在内容白板内的既有约束）。
+   - 所有动画遵循 prefers-reduced-motion。
+   ================================================================ */
+
+/* 1) 标签切换淡入更柔和可感：原 .2s ease-out 偏快近乎无感，
+      改为稍长 + 缓出曲线，让切换过程「能感知但不拖沓」。
+      仅动 duration/timing，动画名仍是纯 opacity 的 workspace-panel-enter。 */
+.workspace-tab-panel.is-active {
+  animation-duration: 0.32s;
+  animation-timing-function: cubic-bezier(0.2, 0.62, 0.26, 1);
+}
+
+/* 2) 内容区滚动条：细、圆润、低对比，hover 时略加深 —— 长时间滚动不刺眼。 */
+.content-card {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(115, 142, 165, 0.34) transparent;
+}
+.content-card::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.content-card::-webkit-scrollbar-thumb {
+  background: rgba(115, 142, 165, 0.3);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+.content-card::-webkit-scrollbar-thumb:hover {
+  background: rgba(96, 128, 158, 0.52);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+.content-card::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 3) 统一的温和焦点环：只补没有自定义 focus 样式的可点元素，
+      已有的组件级 focus-visible（特异性更高）不受影响。 */
+:where(a, button, [role="button"], input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid rgba(24, 144, 220, 0.5);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* 4) 侧边栏菜单项 hover 增加一点「可点」的位移反馈（不影响布局的 1px 上浮），
+      与顶部标签页的 hover 手感对齐。 */
+.sidebar-item:not(.is-active):hover,
+.sidebar-subitem:not(.is-active):hover {
+  transform: translateX(2px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-tab-panel.is-active {
+    animation: none;
+  }
+  .sidebar-item:not(.is-active):hover,
+  .sidebar-subitem:not(.is-active):hover {
+    transform: none;
+  }
+}

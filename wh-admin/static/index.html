@@ -1,0 +1,2776 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>电商工作台 · 后台管理系统</title>
+<link rel="stylesheet" href="static/shadcn.css">
+<!-- 公告正文 Markdown 渲染：与客户端共用同一套 marked 配置（客户端见 web-frontend/src/shared/lib/announcementMarkdown.ts） -->
+<!-- 注意：后台静态路由是 /static/{filename}，只支持单段路径，所以这两个库平铺在 static/ 下，不要放进子目录 -->
+<script src="static/marked.umd.js"></script>
+<script src="static/dompurify.min.js"></script>
+
+<style>
+/* 侧边栏「用户反馈」新反馈红点徽章 */
+.nav-badge {
+  margin-left: auto;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  flex: none;
+}
+.nav-badge[hidden] { display: none; }
+
+/* 分站申请：卡片式列表 */
+.sa-list {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+}
+.sa-card {
+  min-width: 0;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+.sa-card-head { display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap; }
+.sa-card-head .sa-title { font-size: 14px; font-weight: 600; }
+.sa-card-head .sa-badges { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
+.sa-kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px 12px; }
+.sa-kv .sa-item { min-width: 0; }
+.sa-kv .sa-item .k { font-size: 11.5px; color: var(--muted-foreground); }
+.sa-kv .sa-item .v { font-size: 13px; word-break: break-all; }
+.sa-usage { border-top: 1px dashed var(--border); padding-top: 8px; }
+.sa-usage-title { font-size: 11.5px; color: var(--muted-foreground); margin-bottom: 4px; }
+.sa-usage-row { display: flex; gap: 8px; font-size: 12px; padding: 1px 0; }
+.sa-usage-row .t { color: var(--muted-foreground); flex: none; }
+.sa-usage-row .f { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sa-usage-row .p { flex: none; font-variant-numeric: tabular-nums; }
+.sa-note { font-size: 12px; color: var(--muted-foreground); white-space: pre-wrap; }
+.sa-card-actions { display: flex; gap: 8px; flex-wrap: wrap; padding-top: 2px; }
+.sa-empty { padding: 40px 16px; text-align: center; color: var(--muted-foreground); font-size: 12.5px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-lg); }
+/* 分站账号密码是多行文本（后台地址 / 账号 / 密码），需要保留换行 */
+.secret-box { white-space: pre-wrap; text-align: left; }
+</style>
+
+<!-- 旧自研样式已移除，样式全部来自 static/shadcn.css -->
+
+
+
+
+</head>
+<body>
+<div id="auth-view">
+  <div id="login-card" class="auth-card">
+    <div class="brand-mark">WH</div>
+    <h1>后台管理系统</h1>
+    <div class="sub">使用服务器管理员账号登录</div>
+    <label>管理员账号<input id="login-username" class="input" autocomplete="username" placeholder="请输入管理员账号"></label>
+    <label>密码<input id="login-password" class="input" type="password" autocomplete="current-password" placeholder="请输入密码"></label>
+    <button id="login-btn" class="btn btn-primary">登录</button>
+    <div id="login-error" class="form-error"></div>
+  </div>
+
+  <div id="setup-card" class="auth-card hidden">
+    <div class="brand-mark">WH</div>
+    <h1>首次配置</h1>
+    <div class="sub">配置服务器连接，管理员数据将保存在服务器</div>
+    <label>服务器 IP<input id="setup-ip" class="input" placeholder="服务器 IP"></label>
+    <label>SSH 端口<input id="setup-port" class="input" value="22"></label>
+    <label>SSH 用户名<input id="setup-user" class="input" placeholder="root"></label>
+    <label>SSH 密码<input id="setup-password" class="input" type="password"></label>
+    <label>数据库路径<input id="setup-db" class="input" placeholder="/opt/wh-workbench/data/customer-auth.sqlite3"></label>
+    <button id="setup-btn" class="btn btn-primary">保存并初始化</button>
+    <div id="setup-error" class="form-error"></div>
+  </div>
+</div>
+
+<div id="main-view" class="hidden">
+  <aside class="sidebar">
+    <div class="sidebar-brand"><span class="sidebar-logo">WH</span><span>后台管理系统</span></div>
+    <nav class="nav">
+      <button class="nav-item active" data-section="dashboard"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></svg><span class="nav-label">数据看板</span></button>
+      <button class="nav-item" data-section="users"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><path d="M16 3.128a4 4 0 0 1 0 7.744"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><circle cx="9" cy="7" r="4"/></svg><span class="nav-label">账号状态管理</span></button>
+      <div class="nav-group"><div class="nav-group-title">积分与消费</div><button class="nav-item nav-subitem" data-section="billing-wallet"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1"/><path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4"/></svg><span class="nav-label">积分管理</span></button><button class="nav-item nav-subitem" data-section="billing-usage"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 16H8"/><path d="M14 8H8"/><path d="M16 12H8"/><path d="M4 3a1 1 0 0 1 1-1 1.3 1.3 0 0 1 .7.2l.933.6a1.3 1.3 0 0 0 1.4 0l.934-.6a1.3 1.3 0 0 1 1.4 0l.933.6a1.3 1.3 0 0 0 1.4 0l.933-.6a1.3 1.3 0 0 1 1.4 0l.934.6a1.3 1.3 0 0 0 1.4 0l.933-.6A1.3 1.3 0 0 1 19 2a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1 1.3 1.3 0 0 1-.7-.2l-.933-.6a1.3 1.3 0 0 0-1.4 0l-.934.6a1.3 1.3 0 0 1-1.4 0l-.933-.6a1.3 1.3 0 0 0-1.4 0l-.933.6a1.3 1.3 0 0 1-1.4 0l-.934-.6a1.3 1.3 0 0 0-1.4 0l-.933.6a1.3 1.3 0 0 1-.7.2 1 1 0 0 1-1-1z"/></svg><span class="nav-label">用户消费流水</span></button><button class="nav-item nav-subitem" data-section="multipliers"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/></svg><span class="nav-label">价格倍率</span></button></div>
+      <button class="nav-item" data-section="credentials"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"/><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"/></svg><span class="nav-label">密钥管理</span></button>
+      <div class="nav-group"><div class="nav-group-title">邀请码</div><button class="nav-item nav-subitem" data-section="invitations"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z"/><path d="M13 5v2"/><path d="M13 17v2"/><path d="M13 11v2"/></svg><span class="nav-label">邀请码生成</span></button><button class="nav-item nav-subitem" data-section="invite-profit"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 7h6v6"/><path d="m22 7-8.5 8.5-5-5L2 17"/></svg><span class="nav-label">邀请码利润明细</span></button></div>
+      <button class="nav-item" data-section="admins"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg><span class="nav-label">管理员账号管理</span></button>
+      <button class="nav-item" data-section="announcements"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 6a13 13 0 0 0 8.4-2.8A1 1 0 0 1 21 4v12a1 1 0 0 1-1.6.8A13 13 0 0 0 11 14H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z"/><path d="M6 14a12 12 0 0 0 2.4 7.2 2 2 0 0 0 3.2-2.4A8 8 0 0 1 10 14"/><path d="M8 6v8"/></svg><span class="nav-label">公告管理</span></button>
+      <button class="nav-item" data-section="station-applications"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 21h18"/><path d="M5 21V7l7-4 7 4v14"/><path d="M9 21v-5h6v5"/><path d="M9 11h.01"/><path d="M15 11h.01"/></svg><span class="nav-label">分站申请</span><span id="sa-badge" class="nav-badge" hidden>0</span></button>
+      <button class="nav-item" data-section="logs"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 12h-5"/><path d="M15 8h-5"/><path d="M19 17V5a2 2 0 0 0-2-2H4"/><path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"/></svg><span class="nav-label">操作日志</span></button>
+      <button class="nav-item" data-section="user-activity"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></svg><span class="nav-label">用户活动</span></button>
+      <button class="nav-item" data-section="feedback"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"/></svg><span class="nav-label">用户反馈</span><span id="fb-badge" class="nav-badge" hidden>0</span></button>
+      <button class="nav-item" data-section="failure-logs"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg><span class="nav-label">失败日志</span></button>
+      <button class="nav-item" data-section="log-uploads"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m17 8-5-5-5 5"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/></svg><span class="nav-label">用户日志上传</span></button>
+      <div class="nav-group"><div class="nav-group-title">软件更新发布</div><button class="nav-item nav-subitem" data-section="release-publish"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg><span class="nav-label">发布新版本</span></button><button class="nav-item nav-subitem" data-section="release-history"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg><span class="nav-label">发布记录</span></button><button class="nav-item nav-subitem" data-section="release-logs"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M12 11h4"/><path d="M12 16h4"/><path d="M8 11h.01"/><path d="M8 16h.01"/></svg><span class="nav-label">操作记录</span></button></div>
+    </nav>
+  </aside>
+
+  <div class="main-shell">
+    <header class="topbar">
+      <div id="page-title" class="page-title">数据看板</div>
+      <div class="top-actions">
+        <span id="admin-chip" class="admin-chip"></span>
+        <button id="refresh-btn" class="btn btn-ghost btn-sm">刷新</button>
+        <button id="change-password-btn" class="btn btn-ghost btn-sm">修改密码</button>
+        <button id="logout-btn" class="btn btn-ghost btn-sm">退出</button>
+      </div>
+    </header>
+
+    <main class="content">
+      <section id="section-dashboard" class="section active">
+        <div class="section-head"><div><h2>数据看板</h2><p>实时运营数据（北京时间）；折线图为近 30 天趋势，充值金额仅统计已支付订单，积分发放为账本入账（充值 + 管理员调账）</p></div></div>
+        <div class="stats-grid" id="dashboard-stats"></div>
+        <div class="dash-grid-2">
+          <div class="card chart-card">
+            <h3>用户在线分布</h3>
+            <p class="chart-sub">当前在线用户与离线用户占比</p>
+            <div class="chart-wrap chart-wrap-sm"><canvas id="chart-user-pie"></canvas></div>
+          </div>
+          <div class="card chart-card">
+            <h3>近 30 天流水与积分消耗</h3>
+            <p class="chart-sub">蓝色折线为每日充值金额（元），橙色折线为每日积分消耗</p>
+            <div class="chart-wrap"><canvas id="chart-flow"></canvas></div>
+          </div>
+        </div>
+        <div class="card chart-card">
+          <h3>近 30 天积分发放与充值</h3>
+          <p class="chart-sub">绿色折线为每日积分发放，紫色折线为每日充值金额（元）；动效为水流波纹</p>
+          <div class="chart-wrap"><canvas id="chart-issue"></canvas></div>
+        </div>
+        <div class="card chart-card">
+          <h3>近 30 天用户增长</h3>
+          <p class="chart-sub">蓝色折线为每日新增用户，橙色折线为每日活跃用户</p>
+          <div class="chart-wrap"><canvas id="chart-growth"></canvas></div>
+        </div>
+      </section>
+
+      <section id="section-users" class="section">
+        <div class="section-head"><div><h2>账号状态管理</h2><p>管理 MainPG 注册用户的状态、密码和在线会话</p></div><button id="export-btn" class="btn btn-success">导出 Excel</button></div>
+        <div class="card filters">
+          <input id="user-search" class="input" placeholder="搜索用户名 / 邮箱 / 显示名">
+          <select id="user-status" class="input"><option value="">全部状态</option><option value="active">正常</option><option value="disabled">已禁用</option></select>
+          <select id="user-login" class="input"><option value="">全部登录状态</option><option value="online">在线</option><option value="offline">离线</option></select>
+          <select id="user-role" class="input"><option value="">全部角色</option></select>
+          <span id="user-count" class="count"></span>
+        </div>
+        <div class="card table-wrap"><table><thead><tr><th>用户名</th><th>邮箱</th><th>显示名</th><th>账号所属</th><th>角色</th><th>工作区</th><th>状态</th><th>登录</th><th>总充值金额</th><th>注册时间（北京时间）</th><th>最近登录（北京时间）</th><th>操作</th></tr></thead><tbody id="users-body"></tbody></table></div>
+        <div class="card" id="users-more-wrap" style="display:none;text-align:center;"><button id="users-more" class="btn">加载更多</button></div>
+      </section>
+
+      <section id="section-billing-wallet" class="section">
+        <div class="section-head"><div><h2>&#x79EF;&#x5206;&#x7BA1;&#x7406;</h2><p>&#x670D;&#x52A1;&#x8D26;&#x672C;&#x662F;&#x552F;&#x4E00;&#x4F59;&#x989D;&#x4F9D;&#x636E;&#x3002;&#x53EF;&#x8C03;&#x6574;&#x79EF;&#x5206;&#xFF0C;&#x6216;&#x51BB;&#x7ED3;&#x7528;&#x6237;&#x5F53;&#x524D;&#x672A;&#x88AB;&#x4EFB;&#x52A1;&#x5360;&#x7528;&#x7684;&#x90E8;&#x5206;&#x3002;</p></div></div>
+        <div class="stats-grid" id="billing-stats"></div>
+        <div class="card table-wrap billing-rank-card"><table><thead><tr><th>#</th><th>&#x8D26;&#x6237;</th><th>&#x603B;&#x79EF;&#x5206;</th><th>&#x53EF;&#x7528;&#x79EF;&#x5206;</th><th>&#x4EFB;&#x52A1;&#x51BB;&#x7ED3;</th><th>&#x4EBA;&#x5DE5;&#x51BB;&#x7ED3;</th><th>&#x5DF2;&#x6D88;&#x8017;</th></tr></thead><tbody id="billing-ranking-body"></tbody></table></div>
+        <div class="card filters"><input id="billing-search" class="input" placeholder="&#x641C;&#x7D22;&#x8D26;&#x53F7; / &#x8D26;&#x6237; ID / &#x90AE;&#x7BB1;"><span id="billing-count" class="count"></span></div>
+        <div class="card table-wrap"><table><thead><tr><th>&#x8D26;&#x6237;</th><th>&#x603B;&#x79EF;&#x5206;</th><th>&#x4F53;&#x9A8C;&#x79EF;&#x5206;</th><th>&#x989D;&#x5916;&#x79EF;&#x5206;</th><th>&#x53EF;&#x7528;&#x79EF;&#x5206;</th><th>&#x4EFB;&#x52A1;&#x51BB;&#x7ED3;</th><th>&#x7BA1;&#x7406;&#x5458;&#x51BB;&#x7ED3;</th><th>&#x6210;&#x529F;&#x6B21;&#x6570;</th><th>&#x5DF2;&#x6263;&#x79EF;&#x5206;</th><th>&#x66F4;&#x65B0;&#x65F6;&#x95F4;</th><th>&#x64CD;&#x4F5C;</th></tr></thead><tbody id="billing-body"></tbody></table></div>
+      </section>
+
+      <section id="section-billing-usage" class="section">
+        <div class="section-head"><div><h2>&#x7528;&#x6237; AI &#x6D88;&#x8D39;&#x6D41;&#x6C34;</h2><p>&#x6BCF;&#x7B14;&#x4E0E;&#x7528;&#x6237;&#x3001;&#x529F;&#x80FD;&#x3001;&#x79EF;&#x5206;&#x7ED3;&#x7B97;&#x53CA;&#x4E0A;&#x6E38;&#x4EFB;&#x52A1;&#x7ED1;&#x5B9A;&#x3002;&#x4F59;&#x989D;&#x4E3A;&#x67E5;&#x770B;&#x65F6;&#x7684;&#x5F53;&#x524D;&#x4F59;&#x989D;&#x3002;</p></div></div>
+        <div class="card filters"><input id="billing-usage-search" class="input" placeholder="&#x641C;&#x7D22;&#x7528;&#x6237;&#x540D; / &#x8D26;&#x6237; ID / &#x529F;&#x80FD;"><label>&#x5F00;&#x59CB;&#x65F6;&#x95F4;<input id="billing-usage-from" class="input" type="datetime-local"></label><label>&#x7ED3;&#x675F;&#x65F6;&#x95F4;<input id="billing-usage-to" class="input" type="datetime-local"></label><button id="billing-usage-reset" class="btn btn-ghost btn-sm">&#x6E05;&#x7A7A;&#x7B5B;&#x9009;</button><span id="billing-usage-count" class="count"></span></div>
+        <div class="card table-wrap"><table><thead><tr><th>&#x6D88;&#x8D39;&#x65F6;&#x95F4;</th><th>&#x7528;&#x6237;</th><th>&#x5F53;&#x524D;&#x4F59;&#x989D;</th><th>&#x529F;&#x80FD;</th><th>&#x72B6;&#x6001;</th><th>&#x51BB;&#x7ED3; / &#x6263;&#x9664; / &#x91CA;&#x653E;</th><th>&#x6A21;&#x578B;</th><th>&#x4E0A;&#x6E38;&#x4EFB;&#x52A1; ID</th><th>&#x7248;&#x672C;</th></tr></thead><tbody id="billing-usage-body"></tbody></table></div>
+        <div class="card" id="billing-usage-more-wrap" style="display:none;text-align:center;"><button id="billing-usage-more" class="btn">&#x52A0;&#x8F7D;&#x66F4;&#x591A;</button></div>
+      </section>
+
+      <section id="section-multipliers" class="section">
+        <div class="section-head"><div><h2>价格倍率调整</h2><p>两套计费口径：AI 处理（单条商品链接）与 POD 定制（单款式）。设置「单条价值」后，服务器按基础定价的派生倍率计费；已冻结任务按冻结时快照结算，不受中途调价影响。</p></div></div>
+        <div class="stats-grid" id="multiplier-cards"></div>
+        <div class="card chart-card">
+          <h3>积分倍率历史走势</h3>
+          <p class="chart-sub">蓝色折线为 AI 处理倍率，橙色折线为 POD 倍率；每次调整均写入审计记录</p>
+          <div class="chart-wrap"><canvas id="chart-multiplier"></canvas></div>
+        </div>
+        <div class="dash-grid-2">
+          <div class="card" id="multiplier-preview-ai"><h3>AI 处理基准定价</h3><p class="chart-sub">单条链接按子项拆分定价，设置单条价值后按占比精确分摊</p><div id="multiplier-preview-ai-body"></div></div>
+          <div class="card" id="multiplier-preview-pod"><h3>POD 定制基准定价</h3><p class="chart-sub">默认每款式随机 40-50 积分；设置单条价值后每款式固定收取</p><div id="multiplier-preview-pod-body"></div></div>
+        </div>
+        <div class="card table-wrap"><table><thead><tr><th>调整时间</th><th>类别</th><th>单条价值（积分）</th><th>倍率</th><th>操作人</th><th>原因</th></tr></thead><tbody id="multiplier-log-body"></tbody></table></div>
+
+        <div class="pd-block" id="profit-detail-block">
+          <div class="section-head pd-head">
+            <div><h2>价格利润明细</h2><p>变量一「积分充值」× 变量二「积分消耗」的换算与利润试算：先算「1 元 = 多少积分」，再以「积分/元 ÷ 积分消耗（积分/条）」得出条/元，倒置为元/条。滑块实时试算，只做展示口径，不写库、不影响线上扣费。</p></div>
+            <span class="badge badge-muted" id="pd-source-tag">口径加载中…</span>
+          </div>
+
+          <div class="stats-grid" id="pd-kpi-cards"></div>
+
+          <div class="card pd-controls">
+            <div class="pd-control-row">
+              <div class="pd-control-head">
+                <span class="pd-control-label">变量一 · 积分充值兑换率</span>
+                <span class="pd-control-value" id="pd-rate-value">—</span>
+              </div>
+              <input id="pd-rate" class="pd-range" type="range" min="100" max="300" step="5" value="100">
+              <div class="pd-scale"><span>100 · 无赠送</span><span>200 · +100%</span><span>300 · +200%</span></div>
+              <div class="pd-quick" id="pd-rate-presets"></div>
+            </div>
+            <div class="pd-control-grid" id="pd-consumption-controls"></div>
+            <div class="pd-control-row">
+              <div class="pd-control-head">
+                <span class="pd-control-label">月卡 · 总积分（立得 4000 固定，其余可控）</span>
+                <span class="pd-control-value" id="pd-plan-value">—</span>
+              </div>
+              <input id="pd-plan-total" class="pd-range" type="range" min="4000" max="20000" step="100" value="9600">
+              <div class="pd-scale" id="pd-plan-scale"></div>
+            </div>
+            <div class="pd-control-row pd-cost-row">
+              <label>单条链接成本<input id="pd-link-cost" class="input" type="number" min="0" max="99" step="0.01" value="0.1"><span class="multiplier-unit">元 / 条</span></label>
+              <span class="pd-note" id="pd-cost-note"></span>
+            </div>
+          </div>
+
+          <div class="card chart-card">
+            <div class="pd-chart-head">
+              <div><h3 id="pd-chart-title">兑换率 × 元/条 与直营利润走势</h3><p class="chart-sub" id="pd-chart-sub">…</p></div>
+              <div class="pd-switch" id="pd-chart-switch">
+                <button class="pd-switch-btn is-active" data-pd-view="trend">折线 · 兑换率走势</button>
+                <button class="pd-switch-btn" data-pd-view="tier">柱状 · 档位利润</button>
+              </div>
+            </div>
+            <div class="chart-wrap"><canvas id="chart-profit-detail"></canvas></div>
+          </div>
+
+          <div class="card table-wrap pd-matrix-card">
+            <h3>档位 × 消耗口径 明细矩阵</h3>
+            <p class="chart-sub" id="pd-matrix-sub">…</p>
+            <table><thead><tr><th>充值档位</th><th>实得积分</th><th>兑换率（积分/元）</th><th>消耗口径</th><th>条/元</th><th>元/条</th><th>利润/条</th><th>利润率</th><th>直营利润/元</th><th>分销平台利润/元</th><th>合作商毛利/元</th></tr></thead><tbody id="pd-matrix-body"></tbody></table>
+          </div>
+        </div>
+      </section>
+
+      <section id="section-credentials" class="section">
+        <div class="section-head"><div><h2>密钥管理</h2><p>文本与图片服务密钥只加密保存在服务器；列表仅显示掩码，任何管理员均无法回读明文。</p></div></div>
+        <div class="card form-card">
+          <h3>新增服务器密钥</h3>
+          <div class="inline-form" style="grid-template-columns:150px minmax(160px,1fr) 145px minmax(260px,2fr) auto auto">
+            <label>类型<select id="credential-kind" class="input"><option value="text">文本密钥 · Aicoming</option><option value="image">图片密钥 · Wuyin</option></select></label>
+            <label>备注名称<input id="credential-label" class="input" maxlength="80" placeholder="例如：文本主密钥 2026-08"></label>
+            <label id="credential-concurrency-wrap">文本并发上限<input id="credential-max-concurrency" class="input" type="number" min="1" max="100" value="40"></label>
+            <label>新密钥<input id="credential-secret" class="input" type="password" autocomplete="new-password" placeholder="仅提交一次，不会在页面回显"></label>
+            <label style="justify-content:end"><span>新增后启用</span><input id="credential-activate" type="checkbox" checked></label>
+            <button id="credential-create-btn" class="btn btn-primary">加密保存</button>
+          </div>
+          <div class="form-note">文本密钥会组成服务器端分流池：每把密钥按自己的并发上限使用，遇到 429 会自动冷却并切换其他已启用密钥。图片密钥仍只使用当前启用的一把。密钥明文不会写入操作日志。</div>
+        </div>
+        <div class="card filters"><label>列表筛选<select id="credential-filter-kind" class="input"><option value="">全部类型</option><option value="text">仅文本密钥</option><option value="image">仅图片密钥</option></select></label><span id="credential-count" class="count"></span></div>
+        <div class="card table-wrap"><table><thead><tr><th>类型</th><th>备注</th><th>服务 / 模型</th><th>文本并发</th><th>密钥掩码</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead><tbody id="credentials-body"></tbody></table></div>
+      </section>
+
+      <section id="section-invitations" class="section">
+        <div class="section-head"><div><h2>邀请码生成</h2><p>邀请码直接写入 MainPG 注册验证表，并记录管理员 ID 与操作 ID</p></div></div>
+        <div class="card form-card">
+          <h3>生成新邀请码</h3>
+          <div class="inline-form">
+            <label>生成数量<input id="invite-count" class="input" type="number" min="1" max="50" value="1"></label>
+            <label>每个可用次数<input id="invite-max-uses" class="input" type="number" min="1" max="100000" value="1"></label>
+            <label>到期日期（可不填）<input id="invite-expiry" class="input" type="date"></label>
+            <label>备注（用于分类，可不填）<input id="invite-remark" class="input" maxlength="100" placeholder="例如：抖音渠道 / 内测用户"></label>
+            <button id="generate-invite-btn" class="btn btn-primary">生成邀请码</button>
+          </div>
+          <div class="form-note">邀请码格式保持为 MAINPG-XXXX-XXXX；到期日期按中国香港/北京时间当天结束计算。</div>
+          <div id="invite-result" class="result-box hidden"><div class="result-head"><b>本次生成结果</b><button id="copy-invites-btn" class="btn btn-ghost btn-sm">复制全部</button></div><div id="invite-result-codes" class="code-list"></div><div id="invite-operation" class="form-note"></div></div>
+        </div>
+        <div class="card filters"><span id="invites-count" class="count"></span></div>
+        <div class="card table-wrap"><table><thead><tr><th>邀请码</th><th>备注</th><th>使用情况</th><th>使用账号</th><th>总收入</th><th>状态</th><th>到期时间（北京时间）</th><th>创建管理员</th><th>管理员 ID</th><th>操作 ID</th><th>创建时间（北京时间）</th></tr></thead><tbody id="invites-body"></tbody></table></div>
+        <div class="card" id="invites-more-wrap" style="display:none;text-align:center;"><button id="invites-more" class="btn">加载更多</button></div>
+      </section>
+
+      <section id="section-invite-profit" class="section">
+        <div class="section-head"><div><h2>邀请码利润明细</h2><p>按邀请码统计注册账号数与其充值金额，收入仅统计已支付订单；点击「查看账号」可展开每个账号的充值明细</p></div></div>
+        <div class="stats-grid" id="invite-profit-stats"></div>
+        <div class="card table-wrap"><table><thead><tr><th>邀请码</th><th>备注</th><th>已关联账号</th><th>使用情况</th><th>总收入</th><th>状态</th><th>到期时间（北京时间）</th><th>创建管理员</th><th>创建时间（北京时间）</th><th>操作</th></tr></thead><tbody id="invite-profit-body"></tbody></table></div>
+      </section>
+
+      <section id="section-admins" class="section">
+        <div class="section-head"><div><h2>管理员账号管理</h2><p>所有管理员权限一致；新增与重置后首次登录必须修改密码</p></div></div>
+        <div class="card form-card">
+          <h3>创建管理员账号</h3>
+          <div class="inline-form" style="grid-template-columns: minmax(180px,1fr) minmax(220px,1fr) auto auto">
+            <label>管理员账号<input id="new-admin-name" class="input" maxlength="32" placeholder="字母、数字、点、下划线或短横线"></label>
+            <label>临时密码<input id="new-admin-password" class="input" type="text" placeholder="至少 8 位，包含字母和数字"></label>
+            <button id="random-admin-password" class="btn btn-ghost">随机密码</button>
+            <button id="create-admin-btn" class="btn btn-primary">创建账号</button>
+          </div>
+        </div>
+        <div class="card table-wrap"><table><thead><tr><th>管理员账号</th><th>管理员 ID</th><th>状态</th><th>密码状态</th><th>创建来源</th><th>创建时间（北京时间）</th><th>最近登录（北京时间）</th><th>操作</th></tr></thead><tbody id="admins-body"></tbody></table></div>
+      </section>
+
+      <section id="section-announcements" class="section">
+        <div class="section-head"><div><h2>公告管理</h2><p>发布平台公告，客户端工作台会自动同步；带图片的公告会在用户登录后以居中轮播弹窗展示，下线或删除后客户端下次同步会撤回该条</p></div></div>
+        <div class="card form-card">
+          <h3 id="announcement-form-title">发布新公告</h3>
+          <div class="inline-form" id="announcement-form-grid" style="grid-template-columns:1fr; align-items:start; gap:14px">
+            <label>标题<input id="announcement-title" class="input" maxlength="120" placeholder="公告标题"></label>
+            <label>正文（支持 Markdown：`# 小标题`、`- 要点`、`1. 步骤`、`**加粗**`、`::: tip 提示` 等）<textarea id="announcement-content" class="input announcement-textarea" rows="3" placeholder="公告内容，支持 Markdown 排版"></textarea></label>
+            <div>
+              <div class="label-text">公告图片（可选，最多 6 张，单张不超过 2MB）</div>
+              <div class="announcement-images" style="margin-top:6px">
+                <div class="announcement-image-grid" id="announcement-image-preview"></div>
+                <label class="announcement-image-add" id="announcement-image-add">
+                  <input type="file" id="announcement-image-input" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
+                  <span>+ 添加图片</span>
+                </label>
+              </div>
+              <div class="announcement-image-hint" id="announcement-image-hint"></div>
+            </div>
+            <div>
+              <div class="label-text">发送范围</div>
+              <div class="announcement-form-actions" style="margin-top:6px">
+                <label style="display:flex;align-items:center;gap:6px;font-weight:normal"><input type="radio" name="ann-target" id="ann-target-all" checked> 全部用户</label>
+                <label style="display:flex;align-items:center;gap:6px;font-weight:normal"><input type="radio" name="ann-target" id="ann-target-custom"> 指定用户</label>
+              </div>
+              <div id="ann-target-picker" class="card hidden" style="margin-top:10px;padding:12px">
+                <input id="ann-user-search" class="input" placeholder="搜索用户名 / 账号 ID">
+                <div id="ann-user-list" style="max-height:190px;overflow:auto;margin-top:8px;font-size:13px"></div>
+                <div id="ann-target-count" style="margin-top:8px;color:#6d7789;font-size:12px"></div>
+              </div>
+            </div>
+            <div class="announcement-form-actions">
+              <button id="announcement-save-btn" class="btn btn-primary">发布公告</button>
+              <button id="announcement-preview-btn" class="btn btn-ghost">预览效果</button>
+              <button id="announcement-cancel-btn" class="btn btn-ghost hidden">取消编辑</button>
+            </div>
+          </div>
+        </div>
+        <div class="card table-wrap"><table><thead><tr><th>状态</th><th>标题</th><th>正文</th><th>图片</th><th>范围</th><th>发布时间（北京时间）</th><th>操作</th></tr></thead><tbody id="announcements-body"></tbody></table></div>
+      </section>
+
+      <section id="section-logs" class="section">
+        <div class="section-head"><div><h2>操作日志</h2><p>记录管理员在后台的关键操作，按北京时间显示；服务器自动保留最近三个月</p></div></div>
+        <div class="card filters"><input id="log-search" class="input" placeholder="搜索管理员 / 动作 / 目标 / 操作 ID"><span id="log-count" class="count"></span></div>
+        <div class="card table-wrap"><table><thead><tr><th>时间（北京时间）</th><th>操作 ID</th><th>管理员</th><th>管理员 ID</th><th>操作</th><th>目标</th><th>结果</th><th>IP</th><th>详情</th></tr></thead><tbody id="logs-body"></tbody></table></div>
+        <div class="card" id="logs-more-wrap" style="display:none;text-align:center;"><button id="logs-more" class="btn">加载更多</button></div>
+      </section>
+
+      <section id="section-user-activity" class="section">
+        <div class="section-head"><div><h2>用户活动</h2><p>汇总用户登录、安全事件、AI 请求与计费冻结，按北京时间显示；服务器自动保留最近三个月</p></div></div>
+        <div class="card filters"><input id="ua-search" class="input" placeholder="搜索账号 / 动作 / 目标 / 类型"><span id="ua-count" class="count"></span></div>
+        <div class="card table-wrap"><table><thead><tr><th>时间（北京时间）</th><th>类型</th><th>账号</th><th>账号 ID</th><th>动作</th><th>目标</th><th>结果</th><th>IP</th><th>详情</th></tr></thead><tbody id="ua-body"></tbody></table></div>
+        <div class="card" id="ua-more-wrap" style="display:none;text-align:center;"><button id="ua-more" class="btn">加载更多</button></div>
+      </section>
+
+      <section id="section-feedback" class="section">
+        <div class="section-head"><div><h2>用户反馈</h2><p>个人中心提交的意见反馈（文字 + 图片），按北京时间显示；服务器自动保留最近 14 天</p></div></div>
+        <div class="card filters"><input id="fb-search" class="input" placeholder="搜索账号 / 内容 / 联系方式 / 反馈 ID"><span id="fb-count" class="count"></span></div>
+        <div class="card table-wrap"><table><thead><tr><th>时间（北京时间）</th><th>账号</th><th>类别</th><th>状态</th><th>内容 / 回复</th><th>图片</th><th>版本</th><th>处理</th></tr></thead><tbody id="fb-body"></tbody></table></div>
+        <div class="card" id="fb-more-wrap" style="display:none;text-align:center;"><button id="fb-more" class="btn">加载更多</button></div>
+      </section>
+
+      <section id="section-station-applications" class="section">
+        <div class="section-head"><div><h2>分站申请</h2><p>客户端个人中心「推广计划 · 申请加入」提交的分站申请（按北京时间显示）；卡片展示申请时间、积分余额与消费流水，批准后自动开通分站账号并把专属账号密码以定向公告下发给该用户</p></div><button id="sa-refresh" class="btn btn-ghost btn-sm">刷新</button></div>
+        <div class="stats-grid" id="sa-stats"></div>
+        <div class="card filters">
+          <select id="sa-status" class="input">
+            <option value="">全部状态</option>
+            <option value="pending">待审核</option>
+            <option value="approved">已成立分站</option>
+            <option value="rejected">已驳回</option>
+            <option value="revoked">已撤销</option>
+          </select>
+          <input id="sa-search" class="input" placeholder="搜索账号 / 账号 ID / 邮箱 / 联系方式 / 分站账号">
+          <span id="sa-count" class="count"></span>
+        </div>
+        <div id="sa-list" class="sa-list"></div>
+      </section>
+
+      <section id="section-failure-logs" class="section">
+        <div class="section-head"><div><h2>失败日志</h2><p>客户端商品处理任务终态静默上报的失败诊断（按北京时间显示）；用于定位失败根因，用户无感知</p></div><button id="failure-export-btn" class="btn btn-success">导出 Excel</button></div>
+        <div class="stats-grid" id="failure-stats"></div>
+        <div class="card filters">
+          <input id="failure-account" class="input" placeholder="搜索账号 / 账号 ID">
+          <input id="failure-version" class="input" placeholder="应用版本，如 1.2.8">
+          <input id="failure-site" class="input" placeholder="站点，如 temu">
+          <label>开始时间<input id="failure-from" class="input" type="datetime-local"></label>
+          <label>结束时间<input id="failure-to" class="input" type="datetime-local"></label>
+          <button id="failure-reset" class="btn btn-ghost btn-sm">清空筛选</button>
+          <span id="failure-count" class="count"></span>
+        </div>
+        <div class="card table-wrap"><table><thead><tr><th>上报时间（北京时间）</th><th>账号</th><th>版本</th><th>任务</th><th>商品处理结果</th><th>自动补跑</th><th>站点</th><th>操作</th></tr></thead><tbody id="failure-logs-body"></tbody></table></div>
+        <div class="card" id="failure-more-wrap" style="display:none;text-align:center;"><button id="failure-more" class="btn">加载更多</button></div>
+      </section>
+
+      <section id="section-log-uploads" class="section">
+        <div class="section-head"><div><h2>用户日志上传</h2><p>启动器「本地报错日志上传」上报的 runtime.log（按北京时间显示）；用于远程排查客户端问题，用户有感知</p></div><button id="logup-export-btn" class="btn btn-success">导出 Excel</button></div>
+        <div class="stats-grid" id="logup-stats"></div>
+        <div class="card filters">
+          <input id="logup-account" class="input" placeholder="搜索账号 / 账号 ID">
+          <input id="logup-version" class="input" placeholder="应用版本，如 1.3.9">
+          <input id="logup-platform" class="input" placeholder="平台，如 windows">
+          <label>开始时间<input id="logup-from" class="input" type="datetime-local"></label>
+          <label>结束时间<input id="logup-to" class="input" type="datetime-local"></label>
+          <button id="logup-reset" class="btn btn-ghost btn-sm">清空筛选</button>
+          <span id="logup-count" class="count"></span>
+        </div>
+        <div class="card table-wrap"><table><thead><tr><th>上传时间（北京时间）</th><th>账号</th><th>版本</th><th>平台</th><th>日志</th><th>大小</th><th>上传人 IP</th><th>操作</th></tr></thead><tbody id="logup-logs-body"></tbody></table></div>
+        <div class="card" id="logup-more-wrap" style="display:none;text-align:center;"><button id="logup-more" class="btn">加载更多</button></div>
+      </section>
+
+      <section id="section-release-publish" class="section">
+        <div class="section-head"><div><h2>发布新版本</h2><p>上传安装包并完成 EV Sign 签名、Authenticode 验证与清单签名；发布过程实时回传进度</p></div><button id="release-env-refresh" class="btn btn-ghost btn-sm">刷新环境状态</button></div>
+        <div class="release-grid-2">
+          <div class="card form-card">
+            <h3>版本信息</h3>
+            <div class="release-form">
+              <label>版本号<input id="release-version" class="input" placeholder="例如：1.3.4"></label>
+              <label>安装包（.exe）<input id="release-installer" class="input" type="file" accept=".exe,application/octet-stream"></label>
+              <label>更新说明<textarea id="release-notes" class="input announcement-textarea" rows="5" maxlength="10000" placeholder="填写本次更新的主要内容"></textarea></label>
+              <label class="release-checkbox"><input id="release-mandatory" type="checkbox"><span>设为强制更新</span></label>
+            </div>
+            <div class="release-actions">
+              <button id="release-submit-internal" class="btn btn-primary" data-channel="internal">发布内测版</button>
+              <button id="release-submit-public" class="btn btn-success" data-channel="public">发布公共版</button>
+              <button id="release-submit-update-only" class="btn btn-ghost" data-channel="update_only">仅更新通道</button>
+            </div>
+            <div class="form-note">内测版 / 公共版会同步官网固定下载地址；「仅更新通道」只更新在线更新清单，不改动官网下载。</div>
+          </div>
+          <div>
+            <div class="card form-card hidden" id="release-progress-card">
+              <div class="progress-head"><div><strong id="release-progress-version">发布任务</strong><span class="progress-phase" id="release-progress-phase"></span></div><span class="progress-percent" id="release-progress-percent">0%</span></div>
+              <div class="progress-track"><span id="release-progress-bar"></span></div>
+              <div class="progress-detail"><span id="release-progress-bytes">等待安装包</span><span id="release-progress-message"></span></div>
+              <ol class="progress-steps" id="release-progress-steps">
+                <li data-phase="uploading">上传安装包</li>
+                <li data-phase="evsign">EV Sign 签名</li>
+                <li data-phase="authenticode">Authenticode 验证</li>
+                <li data-phase="patching">增量补丁</li>
+                <li data-phase="publishing">发布文件</li>
+                <li data-phase="completed">清单签名</li>
+              </ol>
+            </div>
+            <div class="card form-card">
+              <h3>签名环境</h3>
+              <div id="release-env-list" class="form-note">加载中…</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="section-release-history" class="section">
+        <div class="section-head"><div><h2>发布记录</h2><p>历史发布的版本、渠道、安装包与签名校验信息（按北京时间显示）</p></div><button id="release-history-refresh" class="btn btn-ghost btn-sm">刷新</button></div>
+        <div class="card table-wrap">
+          <table>
+            <thead><tr><th>版本</th><th>渠道</th><th>发布人</th><th>发布时间（北京时间）</th><th>完整安装包</th><th>增量补丁</th><th>代码签名</th></tr></thead>
+            <tbody id="release-history-body"></tbody>
+          </table>
+        </div>
+        <nav class="card pagination" id="release-history-pagination"></nav>
+      </section>
+
+      <section id="section-release-logs" class="section">
+        <div class="section-head"><div><h2>操作记录</h2><p>发布后台的登录、发布、撤销等关键操作审计（按北京时间显示）</p></div><button id="release-logs-refresh" class="btn btn-ghost btn-sm">刷新</button></div>
+        <div class="card table-wrap">
+          <table style="min-width:720px;">
+            <thead><tr><th>时间（北京时间）</th><th>管理员</th><th>操作</th><th>目标</th><th>IP</th></tr></thead>
+            <tbody id="release-logs-body"></tbody>
+          </table>
+        </div>
+        <nav class="card pagination" id="release-logs-pagination"></nav>
+      </section>
+    </main>
+  </div>
+</div>
+
+<div id="confirm-mask" class="mask hidden"><div class="modal"><h3 id="confirm-title">确认操作</h3><p id="confirm-message" class="msg"></p><div class="modal-actions"><button id="confirm-cancel" class="btn btn-ghost">取消</button><button id="confirm-ok" class="btn btn-danger">确认</button></div></div></div>
+
+<div id="password-mask" class="mask hidden"><div class="modal"><h3 id="password-title">修改密码</h3><p id="password-message" class="msg">新密码须为 8–128 位，并同时包含字母和数字。</p><label>当前密码<input id="current-password" class="input" type="password" autocomplete="current-password"></label><label>新密码<input id="new-password" class="input" type="password" autocomplete="new-password"></label><label>确认新密码<input id="confirm-password" class="input" type="password" autocomplete="new-password"></label><div id="password-error" class="form-error"></div><div class="modal-actions"><button id="password-cancel" class="btn btn-ghost">取消</button><button id="password-submit" class="btn btn-primary">保存新密码</button></div></div></div>
+
+<div id="secret-mask" class="mask hidden"><div class="modal"><h3 id="secret-title">临时密码</h3><p id="secret-message" class="msg">请立即复制并安全交给对应人员，此密码只显示一次。</p><div id="secret-value" class="secret-box"></div><div class="modal-actions"><button id="secret-copy" class="btn btn-primary">复制</button><button id="secret-close" class="btn btn-ghost">关闭</button></div></div></div>
+<div id="invite-accounts-mask" class="mask hidden"><div class="modal modal-wide"><h3 id="invite-accounts-title">邀请码使用账号</h3><p id="invite-accounts-message" class="msg"></p><div class="table-wrap"><table style="min-width:760px"><thead><tr><th>用户名</th><th>邮箱</th><th>总充值金额</th><th>账号状态</th><th>登录状态</th><th>使用时间（北京时间）</th></tr></thead><tbody id="invite-accounts-body"></tbody></table></div><div class="modal-actions"><button id="invite-accounts-close" class="btn btn-primary">关闭</button></div></div></div>
+<div id="revenue-mask" class="mask hidden"><div class="modal"><h3>查看累计金额收入</h3><p class="msg">该数据仅限管理员查看，请输入当前账号的登录密码进行验证。</p><label>登录密码<input id="revenue-password" class="input" type="password" autocomplete="current-password"></label><div id="revenue-error" class="form-error"></div><div class="modal-actions"><button id="revenue-cancel" class="btn btn-ghost">取消</button><button id="revenue-submit" class="btn btn-primary">验证并查看</button></div></div></div>
+<div id="failure-detail-mask" class="mask hidden"><div class="modal modal-wide"><h3 id="failure-detail-title">失败明细</h3><p id="failure-detail-sub" class="msg"></p><div class="table-wrap"><table style="min-width:860px"><thead><tr><th>SKC</th><th>商品标题</th><th>状态</th><th>错误类型</th><th>失败原因 / 排错细节</th></tr></thead><tbody id="failure-detail-body"></tbody></table></div><div class="modal-actions"><button id="failure-detail-close" class="btn btn-primary">关闭</button></div></div></div>
+<div id="logup-detail-mask" class="mask hidden"><div class="modal modal-wide"><h3 id="logup-detail-title">日志详情</h3><p id="logup-detail-sub" class="msg"></p><pre id="logup-detail-content" class="log-content"></pre><div class="modal-actions"><button id="logup-detail-close" class="btn btn-primary">关闭</button></div></div></div>
+<div id="announcement-preview-mask" class="mask hidden">
+  <div class="modal announcement-preview-modal">
+    <button type="button" class="announcement-preview-close" id="announcement-preview-close" aria-label="关闭预览">×</button>
+    <div class="announcement-preview-head">
+      <span class="announcement-preview-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11v2a1 1 0 0 0 1 1h2l4 4V6L6 10H4a1 1 0 0 0-1 1Z"/><path d="M14.5 8.5a4.5 4.5 0 0 1 0 7"/><path d="M17.5 5.5a8.5 8.5 0 0 1 0 13"/></svg>
+      </span>
+      <span class="announcement-preview-heading">
+        <span class="announcement-preview-eyebrow">平台公告</span>
+        <span class="announcement-preview-subtitle">MainPG 官方发布</span>
+      </span>
+      <span class="announcement-preview-badge">预览效果</span>
+    </div>
+    <h3 id="announcement-preview-title"></h3>
+    <div class="announcement-preview-carousel hidden" id="announcement-preview-carousel">
+      <div class="announcement-preview-track" id="announcement-preview-track"></div>
+      <button type="button" class="announcement-preview-nav is-prev" id="announcement-preview-prev" aria-label="上一张">‹</button>
+      <button type="button" class="announcement-preview-nav is-next" id="announcement-preview-next" aria-label="下一张">›</button>
+      <span class="announcement-preview-counter" id="announcement-preview-counter"></span>
+    </div>
+    <div class="announcement-preview-dots hidden" id="announcement-preview-dots"></div>
+    <div class="announcement-preview-content" id="announcement-preview-content"></div>
+    <div class="modal-actions"><button type="button" class="btn btn-primary" id="announcement-preview-done">我知道了</button></div>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script src="static/chart.umd.min.js"></script>
+<script>
+let TOKEN = sessionStorage.getItem('wh_admin_token') || '';
+let CURRENT_ADMIN = null;
+let ACTIVE_SECTION = 'dashboard';
+let USERS = [], INVITATIONS = [], ADMINS = [], LOGS = [], LOGS_TOTAL = 0, LOGS_OFFSET = 0, LOGS_MORE = false;
+let USERS_TOTAL = 0, USERS_OFFSET = 0, USERS_MORE = false;
+let INVITATIONS_TOTAL = 0, INVITATIONS_OFFSET = 0, INVITATIONS_MORE = false;
+let confirmAction = null;
+
+const $ = id => document.getElementById(id);
+const esc = value => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+function fmtTime(value) {
+  if (!value) return '-';
+  let clean = String(value).trim();
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(clean)) clean = clean.replace(' ', 'T') + 'Z';
+  const parsed = new Date(clean);
+  if (Number.isNaN(parsed.getTime())) return clean;
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23'
+  }).format(parsed).replace(/\//g, '-');
+}
+
+function fmtMoney(cents) {
+  const amount = Number(cents || 0) / 100;
+  return '¥' + amount.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function toast(message, type = '') {
+  const item = document.createElement('div');
+  item.className = 'toast ' + type;
+  item.textContent = message;
+  $('toast').appendChild(item);
+  setTimeout(() => item.remove(), 3200);
+}
+
+async function api(path, options = {}) {
+  const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+  if (TOKEN) headers['X-Auth-Token'] = TOKEN;
+  const response = await fetch(apiPath(path), { ...options, headers });
+  const data = await response.json().catch(() => ({}));
+  if (response.status === 401 && !options.noAuth) {
+    showAuth();
+    throw new Error('__AUTH__');
+  }
+  if (!response.ok) throw new Error(data.detail || `请求失败 ${response.status}`);
+  return data;
+}
+
+const APP_BASE = window.location.pathname.startsWith('/admin/') ? '/admin' : '';
+const apiPath = path => path.startsWith('/api/') ? `${APP_BASE}${path}` : path;
+
+function showAuth() {
+  TOKEN = ''; CURRENT_ADMIN = null;
+  sessionStorage.removeItem('wh_admin_token');
+  $('main-view').classList.add('hidden');
+  $('auth-view').classList.remove('hidden');
+  $('login-card').classList.remove('hidden');
+  $('setup-card').classList.add('hidden');
+  $('login-password').value = '';
+}
+
+function showMain() {
+  $('auth-view').classList.add('hidden');
+  $('main-view').classList.remove('hidden');
+  $('admin-chip').textContent = `${CURRENT_ADMIN.username} · ${CURRENT_ADMIN.admin_id}`;
+  startFeedbackBadgePolling();
+}
+
+async function init() {
+  try {
+    const health = await fetch(apiPath('/api/health')).then(response => response.json());
+    if (!health.configured) {
+      $('login-card').classList.add('hidden');
+      $('setup-card').classList.remove('hidden');
+      return;
+    }
+    if (!TOKEN) return;
+    const data = await api('/api/me');
+    CURRENT_ADMIN = data.admin;
+    showMain();
+    if (CURRENT_ADMIN.must_change_password) openPasswordModal(true);
+    else activateSection('dashboard');
+  } catch (error) {
+    if (error.message !== '__AUTH__') showAuth();
+  }
+}
+
+$('login-btn').onclick = async () => {
+  $('login-error').textContent = '';
+  $('login-btn').disabled = true;
+  try {
+    const data = await api('/api/login', {
+      method: 'POST', noAuth: true,
+      body: JSON.stringify({ username: $('login-username').value.trim(), password: $('login-password').value })
+    });
+    TOKEN = data.token; CURRENT_ADMIN = data.admin;
+    sessionStorage.setItem('wh_admin_token', TOKEN);
+    showMain();
+    if (CURRENT_ADMIN.must_change_password) openPasswordModal(true);
+    else activateSection('dashboard');
+  } catch (error) { $('login-error').textContent = error.message; }
+  finally { $('login-btn').disabled = false; }
+};
+
+$('login-password').addEventListener('keydown', event => { if (event.key === 'Enter') $('login-btn').click(); });
+
+$('setup-btn').onclick = async () => {
+  $('setup-error').textContent = '';
+  $('setup-btn').disabled = true;
+  try {
+    const response = await fetch(apiPath('/api/setup'), { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
+      server_ip: $('setup-ip').value.trim(), server_port: Number($('setup-port').value || 22),
+      ssh_user: $('setup-user').value.trim(), ssh_pass: $('setup-password').value,
+      database_path: $('setup-db').value.trim()
+    }) });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || '保存失败');
+    toast('服务器配置及管理员初始化完成', 'success');
+    $('setup-card').classList.add('hidden'); $('login-card').classList.remove('hidden');
+  } catch (error) { $('setup-error').textContent = error.message; }
+  finally { $('setup-btn').disabled = false; }
+};
+
+const sectionTitles = { dashboard: '数据看板', 'billing-wallet': '积分管理', 'billing-usage': '用户消费流水', credentials: '密钥管理', users: '账号状态管理', invitations: '邀请码生成', 'invite-profit': '邀请码利润明细', admins: '管理员账号管理', announcements: '公告管理', logs: '操作日志', 'user-activity': '用户活动', feedback: '用户反馈', 'failure-logs': '失败日志', 'log-uploads': '用户日志上传', multipliers: '价格倍率', 'release-publish': '发布新版本', 'release-history': '发布记录', 'release-logs': '发布操作记录' };
+async function activateSection(name) {
+  ACTIVE_SECTION = name;
+  document.querySelectorAll('.nav-item').forEach(item => item.classList.toggle('active', item.dataset.section === name));
+  document.querySelectorAll('.section').forEach(item => item.classList.toggle('active', item.id === `section-${name}`));
+  $('page-title').textContent = sectionTitles[name];
+  await ({ dashboard: loadDashboard, users: loadUsers, 'billing-wallet': loadBilling, 'billing-usage': () => { loadBilling(); loadBillingUsage(true); }, credentials: loadCredentials, invitations: loadInvitations, 'invite-profit': loadInvitationProfit, admins: loadAdmins, announcements: loadAnnouncements, 'station-applications': loadStationApplications, logs: loadLogs, 'user-activity': loadUserActivity, feedback: loadFeedback, 'failure-logs': loadFailureLogs, 'log-uploads': loadLogUploads, multipliers: loadMultipliers, 'release-publish': loadReleaseEnv, 'release-history': () => loadReleaseHistory(1), 'release-logs': () => loadReleaseLogs(1) })[name]();
+}
+document.querySelectorAll('.nav-item').forEach(item => item.onclick = () => activateSection(item.dataset.section));
+$('refresh-btn').onclick = () => activateSection(ACTIVE_SECTION);
+
+
+let BILLING=[]; let BILLING_USAGE=[]; let BILLING_USAGE_CURSOR=''; let BILLING_USAGE_MORE=false; let BILLING_SUMMARY=null;
+function toUtc(ts){return ts?new Date(ts).toISOString().replace(/\.\d{3}Z$/,'+00:00'):'';}
+function usageFilterParams(){const sp=new URLSearchParams({limit:100});const q=($('billing-usage-search').value||'').trim();const from=toUtc($('billing-usage-from').value),to=toUtc($('billing-usage-to').value);if(q)sp.set('q',q);if(from)sp.set('start',from);if(to)sp.set('end',to);return sp;}
+async function loadBilling(){try{const data=await api('/api/billing?limit=500');BILLING=data.wallets||[];renderBillingWallets();}catch(error){if(error.message!=='__AUTH__')toast(error.message,'error');}loadBillingSummary();}
+async function loadBillingUsage(reset=true){if(reset){BILLING_USAGE=[];BILLING_USAGE_CURSOR='';BILLING_USAGE_MORE=false;}const sp=usageFilterParams();if(BILLING_USAGE_CURSOR)sp.set('cursor',BILLING_USAGE_CURSOR);try{const data=await api('/api/billing/usage?'+sp.toString());const rows=data.usage||[];if(reset)BILLING_USAGE=rows;else BILLING_USAGE=BILLING_USAGE.concat(rows);BILLING_USAGE_CURSOR=data.next_cursor||'';BILLING_USAGE_MORE=!!data.has_more;renderBillingUsage();}catch(error){if(error.message!=='__AUTH__')toast(error.message,'error');}}
+async function loadBillingSummary(){try{BILLING_SUMMARY=await api('/api/billing/summary');renderBillingSummary();}catch(error){if(error.message!=='__AUTH__')toast(error.message,'error');}}
+function renderBillingSummary(){const s=BILLING_SUMMARY;if(!s)return;const w=s.wallet||{},c=s.consumed||{},t=s.topup||{},u=s.users||{};const cards=[{label:'全平台总积分',value:Number(w.total_points||0).toLocaleString(),sub:`${Number(w.funded_accounts||0).toLocaleString()} 个账户有余额`,accent:true},{label:'可用积分',value:Number(w.available_points||0).toLocaleString(),sub:`任务冻结 ${Number(w.task_locked_points||0).toLocaleString()} · 人工冻结 ${Number(w.manual_frozen_points||0).toLocaleString()}`},{label:'已消耗积分',value:Number(c.charged_points||0).toLocaleString(),sub:`今日消耗 ${Number(c.today_charged_points||0).toLocaleString()} · ${Number(c.charged_accounts||0)} 个账户产生消耗`},{label:'充值总额',value:`¥${Number(t.amount_cny||0).toLocaleString()}`,sub:`${Number(t.orders||0)} 笔已支付订单 · ${Number(t.accounts||0)} 个账户充值`},{label:'用户数',value:Number(u.total||0).toLocaleString(),sub:`活跃 ${Number(u.active||0).toLocaleString()} · 在线 ${Number(u.online||0).toLocaleString()}`}];$('billing-stats').innerHTML=cards.map(x=>`<div class="stat-card${x.accent?' is-accent':''}"><div class="stat-label">${x.label}</div><div class="stat-value">${x.value}</div><div class="stat-sub">${x.sub||''}</div></div>`).join('');const rows=s.ranking||[];$('billing-ranking-body').innerHTML=rows.length?rows.map((r,i)=>`<tr><td>${i+1}</td><td><b>${esc(r.username||'-')}</b><br><span class="mono">${esc(r.account_id)}</span></td><td>${Number(r.points_balance||0).toLocaleString()}</td><td>${Number(r.available_points||0).toLocaleString()}</td><td>${Number(r.locked_points||0).toLocaleString()}</td><td>${Number(r.manual_frozen_points||0).toLocaleString()}</td><td>${Number(r.charged_points||0).toLocaleString()}</td></tr>`).join(''):'<tr><td class="empty" colspan="7">暂无账户</td></tr>';}
+function renderBillingWallets(){const query=($('billing-search').value||'').trim().toLowerCase();const rows=BILLING.filter(item=>!query||`${item.username||''} ${item.account_id||''} ${item.email||''}`.toLowerCase().includes(query));$('billing-count').textContent=`共 ${rows.length} / ${BILLING.length} 个账户`;$('billing-body').innerHTML=rows.length?rows.map(item=>{const balance=Number(item.points_balance||0),planBalance=Number(item.plan_balance||0),extra=Number(item.extra_balance||0),taskLocked=Number(item.locked_points||0),manualFrozen=Number(item.manual_frozen_points||0),totalBalance=balance+planBalance+extra,available=totalBalance-taskLocked-manualFrozen;const planLimit=Number(item.plan_limit||500),planLabel=item.plan_label||'体验版';const extraCell=`${extra.toLocaleString()}${item.plan_type==='basic'&&item.plan_expire_at?`<br><span class="mono">至 ${fmtTime(item.plan_expire_at).slice(0,10)}</span>`:''}`;return `<tr><td><b>${esc(item.username||'-')}</b><br><span class="mono">${esc(item.account_id)}</span></td><td>${totalBalance.toLocaleString()}</td><td>${planBalance.toLocaleString()}<br><span class="mono">${esc(planLabel)}</span></td><td>${extraCell}</td><td>${available.toLocaleString()}</td><td>${taskLocked.toLocaleString()}</td><td>${manualFrozen.toLocaleString()}</td><td>${Number(item.success_usage||0).toLocaleString()}</td><td>${Number(item.charged_points||0).toLocaleString()}</td><td>${fmtTime(item.updated_at)}</td><td><button class="link-btn green" data-billing-action="adjust" data-id="${esc(item.account_id)}" data-name="${esc(item.username||item.account_id)}">调账</button><button class="link-btn red" data-billing-action="freeze" data-id="${esc(item.account_id)}" data-name="${esc(item.username||item.account_id)}" data-frozen="${manualFrozen}" data-max-freeze="${Math.max(0,balance-taskLocked)}">冻结</button>${manualFrozen>0?`<button class="link-btn" data-billing-action="release" data-id="${esc(item.account_id)}" data-name="${esc(item.username||item.account_id)}" data-frozen="${manualFrozen}">释放</button>`:''}${taskLocked>0?`<button class="link-btn" data-billing-action="task-release" data-id="${esc(item.account_id)}" data-name="${esc(item.username||item.account_id)}" data-frozen="${taskLocked}">释放任务冻结</button>`:''}</td></tr>`;}).join(''):'<tr><td class="empty" colspan="11">暂无积分钱包</td></tr>';}
+function renderBillingUsage(){const rows=BILLING_USAGE;const loaded=rows.length;const hasMore=BILLING_USAGE_MORE;$('billing-usage-count').textContent=`已加载 ${loaded} 条${hasMore?' · 还有更多，可点击「加载更多」':''}`; $('billing-usage-more-wrap').style.display=hasMore&&loaded?'':'none'; $('billing-usage-body').innerHTML=rows.length?rows.map(item=>{const available=Number(item.points_balance||0)-Number(item.locked_points||0)-Number(item.manual_frozen_points||0);const status=item.status==='succeeded'?'成功':item.status==='failed'?'已释放':'冻结中';const statusClass=item.status==='succeeded'?'badge-success':item.status==='failed'?'badge-muted':'badge-warning';const isBatchFrozen=(item.feature_key||'').indexOf('.batch')>-1&&(item.status==='frozen');const releaseBtn=isBatchFrozen?`<button class="link-btn" data-batch-release="${esc(String(item.usage_id||'').replace(/^batch:/,''))}" data-name="${esc(item.username||item.account_id)}">释放</button>`:'';return `<tr><td>${fmtTime(item.created_at)}</td><td><b>${esc(item.username||'-')}</b><br><span class="mono">${esc(item.account_id)}</span></td><td>${available.toLocaleString()} / ${Number(item.points_balance||0).toLocaleString()}</td><td>${esc(item.feature_key)}</td><td><span class="badge ${statusClass}">${status}</span></td><td>${Number(item.reserved_points||0)} / ${Number(item.charged_points||0)} / ${Number(item.refunded_points||0)}</td><td>${esc(item.model||item.provider||'-')}</td><td class="mono">${esc(item.provider_task_id||'-')}</td><td>${esc(item.app_version||'-')}</td><td>${releaseBtn}</td></tr>`;}).join(''):'<tr><td class="empty" colspan="10">当前筛选下暂无 AI 消费记录</td></tr>';}
+$('billing-search').oninput=()=>renderBillingWallets();$('billing-usage-body').onclick=event=>{const button=event.target.closest('[data-batch-release]');if(!button)return;const name=button.dataset.name||'';const freezeId=button.dataset.batchRelease;const reason=prompt(`为 ${name} 释放任务冻结（整批归还）？填写释放原因（会写入服务器账本）`,'管理员释放任务冻结');if(reason===null)return;askConfirm('确认释放任务冻结',`将释放该任务批次（${freezeId}）的全部冻结积分。`,async()=>{await api(`/api/billing/batch/${freezeId}/release`,{method:'POST',body:JSON.stringify({reason})});toast('任务冻结已释放','success');await loadBilling();await loadBillingUsage(true);});};$('billing-usage-search').oninput=()=>loadBillingUsage(true);$('billing-usage-from').onchange=()=>loadBillingUsage(true);$('billing-usage-to').onchange=()=>loadBillingUsage(true);$('billing-usage-reset').onclick=()=>{$('billing-usage-search').value='';$('billing-usage-from').value='';$('billing-usage-to').value='';loadBillingUsage(true);};$('billing-usage-more').onclick=()=>loadBillingUsage(false);$('billing-body').onclick=event=>{const button=event.target.closest('[data-billing-action]');if(!button)return;const name=button.dataset.name||button.dataset.id;if(button.dataset.billingAction==='adjust'){const raw=prompt(`为 ${name} 调整积分（正数充值，负数扣减）`,'');if(raw===null)return;const delta=Number.parseInt(raw,10);if(!Number.isInteger(delta)||delta===0){toast('请输入非零整数','error');return;}const reason=prompt('填写调账原因（会写入服务器账本）','管理员调账');if(reason===null)return;askConfirm('确认调账',`将为 ${name} 调整 ${delta>0?'+':''}${delta.toLocaleString()} 积分\n原因：${reason}`,async()=>{await api(`/api/billing/${button.dataset.id}/adjust`,{method:'POST',body:JSON.stringify({points_delta:delta,reason})});toast('积分已调整','success');await loadBilling();});return;}if(button.dataset.billingAction==='release'){const raw=prompt(`为 ${name} 释放人工冻结积分（可释放数量：${Number(button.dataset.frozen).toLocaleString()}）`,'');if(raw===null)return;const release=Number.parseInt(raw,10);if(!Number.isInteger(release)||release<1){toast('请输入正整数','error');return;}if(release>Number(button.dataset.frozen)){toast('释放数量不能超过当前人工冻结','error');return;}const reason=prompt('填写释放原因（会写入服务器账本）','管理员释放冻结');if(reason===null)return;askConfirm('确认释放冻结',`将为 ${name} 释放 ${release.toLocaleString()} 积分（人工冻结）。`,async()=>{await api(`/api/billing/${button.dataset.id}/release`,{method:'POST',body:JSON.stringify({release_points:release,reason})});toast(`已释放 ${release.toLocaleString()} 积分`,'success');await loadBilling();});return;}if(button.dataset.billingAction==='task-release'){const raw=prompt(`为 ${name} 释放任务冻结积分（可释放数量：${Number(button.dataset.frozen).toLocaleString()}）`,'');if(raw===null)return;const release=Number.parseInt(raw,10);if(!Number.isInteger(release)||release<1){toast('请输入正整数','error');return;}if(release>Number(button.dataset.frozen)){toast('释放数量不能超过当前任务冻结','error');return;}const reason=prompt('填写释放原因（会写入服务器账本）','管理员释放任务冻结');if(reason===null)return;askConfirm('确认释放任务冻结',`将为 ${name} 释放 ${release.toLocaleString()} 积分（任务冻结）。\n该数额将从旧到新抵扣对应冻结批次。`,async()=>{await api(`/api/billing/${button.dataset.id}/task-release`,{method:'POST',body:JSON.stringify({release_points:release,reason})});toast(`已释放 ${release.toLocaleString()} 积分`,'success');await loadBilling();});return;}const raw=prompt(`为 ${name} 设置管理员冻结积分（0 为全部解冻；最多 ${Number(button.dataset.maxFreeze).toLocaleString()}）`,button.dataset.frozen||'0');if(raw===null)return;const frozen=Number.parseInt(raw,10);if(!Number.isInteger(frozen)||frozen<0||frozen>Number(button.dataset.maxFreeze)){toast('冻结积分超出可设置范围','error');return;}const reason=prompt('填写冻结或解冻原因（会写入服务器账本）',frozen?'管理员风险冻结':'管理员解除冻结');if(reason===null)return;askConfirm('确认设置冻结积分',`将 ${name} 的管理员冻结积分设置为 ${frozen.toLocaleString()}。`,async()=>{await api(`/api/billing/${button.dataset.id}/freeze`,{method:'POST',body:JSON.stringify({frozen_points:frozen,reason})});toast(frozen?'积分已冻结':'积分已全部解冻','success');await loadBilling();});};
+
+let CREDENTIALS=[];
+async function loadCredentials(){try{const data=await api('/api/credentials');CREDENTIALS=data.credentials||[];renderCredentials();}catch(error){if(error.message!=='__AUTH__')toast(error.message,'error');}}
+function syncCredentialForm(){const isText=$('credential-kind').value==='text';$('credential-concurrency-wrap').style.display=isText?'':'none';$('credential-max-concurrency').disabled=!isText;}
+function renderCredentials(){const kindName={text:'文本密钥',image:'图片密钥'},filter=$('credential-filter-kind').value,rows=CREDENTIALS.filter(item=>!filter||item.kind===filter);$('credential-count').textContent=`显示 ${rows.length} / ${CREDENTIALS.length} 把密钥`;$('credentials-body').innerHTML=rows.length?rows.map(item=>{const state=item.active?'<span class="badge badge-success">当前主用</span>':item.enabled?'<span class="badge badge-warning">参与分流</span>':'<span class="badge badge-muted">已停用</span>';const concurrency=item.kind==='text'?`${Number(item.max_concurrency||40)} 路`:'—';return `<tr><td>${esc(kindName[item.kind]||item.kind)}</td><td><b>${esc(item.label||'-')}</b><br><span class="mono">${esc(item.credential_id)}</span></td><td>${esc(item.provider||'-')}<br><span class="mono">${esc(item.model||'-')}</span></td><td>${concurrency}</td><td class="mono">${esc(item.masked_secret||'')}</td><td>${state}</td><td>${fmtTime(item.updated_at)}</td><td>${item.active?'':`<button class="link-btn green" data-credential-action="activate" data-id="${esc(item.credential_id)}" data-name="${esc(item.label)}">启用</button>`}<button class="link-btn" data-credential-action="edit" data-id="${esc(item.credential_id)}" data-name="${esc(item.label)}">编辑 / 轮换</button>${item.active?'':`<button class="link-btn red" data-credential-action="delete" data-id="${esc(item.credential_id)}" data-name="${esc(item.label)}">删除</button>`}</td></tr>`;}).join(''):'<tr><td class="empty" colspan="8">当前筛选下暂无托管密钥</td></tr>';}
+$('credential-filter-kind').onchange=renderCredentials;$('credential-kind').onchange=()=>{$('credential-filter-kind').value=$('credential-kind').value;syncCredentialForm();renderCredentials();};syncCredentialForm();
+$('credential-create-btn').onclick=async()=>{const kind=$('credential-kind').value,label=$('credential-label').value.trim(),secret=$('credential-secret').value,activate=$('credential-activate').checked,maxConcurrency=Number.parseInt($('credential-max-concurrency').value,10);if(!secret){toast('请输入要保存的密钥','error');return;}if(kind==='text'&&(!Number.isInteger(maxConcurrency)||maxConcurrency<1||maxConcurrency>100)){toast('文本并发上限应为 1 到 100','error');return;}$('credential-create-btn').disabled=true;try{await api('/api/credentials',{method:'POST',body:JSON.stringify({kind,label,secret,activate,max_concurrency:kind==='text'?maxConcurrency:1})});$('credential-secret').value='';$('credential-label').value='';toast(kind==='text'?'文本密钥已加入服务器分流池':'密钥已加密保存','success');await loadCredentials();}catch(error){if(error.message!=='__AUTH__')toast(error.message,'error');}finally{$('credential-create-btn').disabled=false;}};
+$('credentials-body').onclick=event=>{const button=event.target.closest('[data-credential-action]');if(!button)return;const action=button.dataset.credentialAction,id=button.dataset.id,name=button.dataset.name||id,item=CREDENTIALS.find(value=>value.credential_id===id);if(!item)return;if(action==='activate')askConfirm('确认启用密钥',item.kind==='text'?`将启用「${name}」并加入文本分流池。`: `将切换图片服务到「${name}」。`,async()=>{await api(`/api/credentials/${id}/activate`,{method:'POST'});toast(item.kind==='text'?'文本密钥已加入分流池':'服务器密钥已切换','success');await loadCredentials();});if(action==='delete')askConfirm('确认删除密钥',`将永久删除密钥「${name}」，此操作不可恢复。`,async()=>{await api(`/api/credentials/${id}`,{method:'DELETE'});toast('密钥已删除','success');await loadCredentials();});if(action==='edit'){const label=prompt('备注名称',name);if(label===null)return;const secret=prompt('如需轮换，请输入新密钥；只改备注请留空','');if(secret===null)return;let maxConcurrency=null;if(item.kind==='text'){const raw=prompt('该文本密钥的最大并发（1-100）',String(item.max_concurrency||40));if(raw===null)return;maxConcurrency=Number.parseInt(raw,10);if(!Number.isInteger(maxConcurrency)||maxConcurrency<1||maxConcurrency>100){toast('文本并发上限应为 1 到 100','error');return;}}askConfirm('确认更新密钥',secret?'将替换该密钥的服务器加密内容，旧内容不可恢复。':'将更新密钥配置。',async()=>{await api(`/api/credentials/${id}`,{method:'PATCH',body:JSON.stringify({label,secret,max_concurrency:maxConcurrency})});toast(secret?'密钥已轮换':'密钥配置已更新','success');await loadCredentials();});}};
+
+const USERS_PAGE = 100;
+async function loadUsers(reset = true) {
+  if (reset) { USERS = []; USERS_OFFSET = 0; USERS_MORE = false; }
+  try {
+    const data = await api(`/api/users?limit=${USERS_PAGE}&offset=${USERS_OFFSET}`);
+    const rows = data.users || [];
+    USERS = reset ? rows : USERS.concat(rows);
+    USERS_TOTAL = Number(data.total) || USERS.length;
+    USERS_OFFSET = rows.length ? USERS_OFFSET + rows.length : USERS_OFFSET;
+    USERS_MORE = !!data.has_more;
+    if (reset) {
+      const roles = [...new Set(USERS.map(user => user.role_name).filter(Boolean))];
+      $('user-role').innerHTML = '<option value="">全部角色</option>' + roles.map(role => `<option>${esc(role)}</option>`).join('');
+    }
+    renderUsers();
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+}
+
+function filteredUsers() {
+  const query = $('user-search').value.trim().toLowerCase(), status = $('user-status').value, login = $('user-login').value, role = $('user-role').value;
+  return USERS.filter(user => (!status || user.account_status === status) && (!login || user.login_status === login) && (!role || user.role_name === role) && (!query || `${user.username} ${user.email || ''} ${user.display_name || ''} ${user.invitation_code || ''}`.toLowerCase().includes(query)));
+}
+
+function renderUsers() {
+  const rows = filteredUsers();
+  $('user-count').textContent = `显示 ${rows.length} / ${USERS_TOTAL} 个账号${USERS_MORE ? ' · 还有更多，可点击「加载更多」' : ''}`;
+  $('users-more-wrap').style.display = USERS_MORE && rows.length ? '' : 'none';
+  $('users-body').innerHTML = rows.length ? rows.map(user => {
+    const active = user.account_status === 'active', online = user.login_status === 'online';
+    return `<tr><td><b>${esc(user.username)}</b></td><td>${esc(user.email || '-')}</td><td>${esc(user.display_name || '-')}</td><td>${user.invitation_code ? `<span class="badge badge-muted mono">${esc(user.invitation_code)}</span>` : '<span class="badge badge-warning">历史未记录</span>'}</td><td>${esc(user.role_name || '-')}</td><td>${esc(user.workspace_id || '-')}</td><td><span class="badge ${active ? 'badge-success' : 'badge-danger'}">${active ? '正常' : '已禁用'}</span></td><td><span class="badge ${online ? 'badge-success' : 'badge-muted'}">${online ? '在线' : '离线'}</span></td><td>${fmtMoney(user.total_recharge_cents)}</td><td>${fmtTime(user.created_at)}</td><td>${fmtTime(user.last_login)}</td><td><button class="link-btn ${active ? 'red' : 'green'}" data-user-action="status" data-id="${esc(user.account_id)}" data-name="${esc(user.username)}" data-status="${active ? 'disabled' : 'active'}">${active ? '禁用' : '启用'}</button><button class="link-btn" data-user-action="reset" data-id="${esc(user.account_id)}" data-name="${esc(user.username)}">重置密码</button>${online ? `<button class="link-btn red" data-user-action="logout" data-id="${esc(user.account_id)}" data-name="${esc(user.username)}">强制下线</button>` : ''}</td></tr>`;
+  }).join('') : '<tr><td class="empty" colspan="12">暂无账号数据</td></tr>';
+}
+['user-search','user-status','user-login','user-role'].forEach(id => $(id).addEventListener(id === 'user-search' ? 'input' : 'change', renderUsers));
+$('users-more').onclick = () => loadUsers(false);
+
+$('users-body').onclick = event => {
+  const button = event.target.closest('[data-user-action]'); if (!button) return;
+  const { userAction: action, id, name, status } = button.dataset;
+  if (action === 'status') askConfirm(status === 'disabled' ? '确认禁用用户' : '确认启用用户', `确定要${status === 'disabled' ? '禁用' : '启用'}用户「${name}」吗？`, async () => { await api(`/api/users/${id}/status`, {method:'POST',body:JSON.stringify({status})}); toast('用户状态已更新','success'); await loadUsers(); });
+  if (action === 'logout') askConfirm('确认强制下线', `将撤销用户「${name}」的所有有效登录会话。`, async () => { await api(`/api/users/${id}/force-logout`, {method:'POST'}); toast('用户已强制下线','success'); await loadUsers(); });
+  if (action === 'reset') askConfirm('确认重置密码', `将重置用户「${name}」的密码并撤销其所有会话。`, async () => { const data = await api(`/api/users/${id}/reset-password`, {method:'POST'}); showSecret('用户临时密码', data.new_password); await loadUsers(); });
+};
+
+$('export-btn').onclick = async () => {
+  try {
+    const response = await fetch(apiPath('/api/export'), {headers:{'X-Auth-Token':TOKEN}});
+    if (response.status === 401) { showAuth(); return; }
+    if (!response.ok) { const data = await response.json().catch(()=>({})); throw new Error(data.detail || '导出失败'); }
+    const blob = await response.blob(), link = document.createElement('a');
+    link.href = URL.createObjectURL(blob); link.download = `用户列表_${new Date().toISOString().slice(0,10)}.xlsx`; link.click(); URL.revokeObjectURL(link.href);
+    toast('用户列表已导出','success');
+  } catch (error) { toast(error.message,'error'); }
+};
+
+const INVITES_PAGE = 100;
+async function loadInvitations(reset = true) {
+  if (reset) { INVITATIONS = []; INVITATIONS_OFFSET = 0; INVITATIONS_MORE = false; }
+  try {
+    const data = await api(`/api/invitations?limit=${INVITES_PAGE}&offset=${INVITATIONS_OFFSET}`);
+    const rows = data.invitations || [];
+    INVITATIONS = reset ? rows : INVITATIONS.concat(rows);
+    INVITATIONS_TOTAL = Number(data.total) || INVITATIONS.length;
+    INVITATIONS_OFFSET = rows.length ? INVITATIONS_OFFSET + rows.length : INVITATIONS_OFFSET;
+    INVITATIONS_MORE = !!data.has_more;
+    renderInvitations();
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message,'error'); }
+}
+
+function renderInvitations() {
+  const now = new Date();
+  $('invites-count').textContent = `共 ${INVITATIONS.length} / ${INVITATIONS_TOTAL} 条邀请码${INVITATIONS_MORE ? ' · 还有更多，可点击「加载更多」' : ''}`;
+  $('invites-more-wrap').style.display = INVITATIONS_MORE && INVITATIONS.length ? '' : 'none';
+  $('invites-body').innerHTML = INVITATIONS.length ? INVITATIONS.map(item => {
+    const usedUp = Number(item.used_count) >= Number(item.max_uses), expired = item.expires_at && new Date(item.expires_at) < now;
+    const state = usedUp ? ['badge-danger','已用尽'] : expired ? ['badge-warning','已过期'] : ['badge-success','可使用'];
+    const accounts = item.accounts || [], unlinked = Math.max(0, Number(item.used_count) - accounts.length);
+    return `<tr><td class="mono"><b>${esc(item.code)}</b></td><td>${esc(item.remark || '-')}</td><td>${item.used_count} / ${item.max_uses}</td><td><button class="link-btn" data-invite-accounts="${esc(item.code)}">查看账号 (${accounts.length})</button>${unlinked ? `<span class="badge badge-warning">另有 ${unlinked} 次历史使用未关联</span>` : ''}</td><td>${fmtMoney(item.total_recharge_cents)}</td><td><span class="badge ${state[0]}">${state[1]}</span></td><td>${fmtTime(item.expires_at)}</td><td>${esc(item.created_by_username || '-')}</td><td class="mono">${esc(item.created_by_admin_id || item.created_by || '-')}</td><td class="mono">${esc(item.creation_operation_id || '-')}</td><td>${fmtTime(item.created_at)}</td></tr>`;
+  }).join('') : '<tr><td class="empty" colspan="11">暂无邀请码</td></tr>';
+}
+
+$('invites-body').onclick = event => {
+  const button = event.target.closest('[data-invite-accounts]'); if (!button) return;
+  const item = INVITATIONS.find(invite => invite.code === button.dataset.inviteAccounts); if (!item) return;
+  const accounts = item.accounts || [], unlinked = Math.max(0, Number(item.used_count) - accounts.length);
+  $('invite-accounts-title').textContent = `邀请码 ${item.code} 的使用账号`;
+  $('invite-accounts-message').textContent = unlinked ? `已关联 ${accounts.length} 个账号；另有 ${unlinked} 次为关联功能上线前的历史使用，无法可靠反推。` : `共关联 ${accounts.length} 个注册账号。`;
+  $('invite-accounts-body').innerHTML = accounts.length ? accounts.map(account => `<tr><td><b>${esc(account.username || '-')}</b></td><td>${esc(account.email || '-')}</td><td>${fmtMoney(account.total_recharge_cents)}</td><td><span class="badge ${account.account_status === 'active' ? 'badge-success' : 'badge-danger'}">${account.account_status === 'active' ? '正常' : '已禁用'}</span></td><td><span class="badge ${account.login_status === 'online' ? 'badge-success' : 'badge-muted'}">${account.login_status === 'online' ? '在线' : '离线'}</span></td><td>${fmtTime(account.used_at)}</td></tr>`).join('') : '<tr><td class="empty" colspan="6">该邀请码暂无可关联的账号记录</td></tr>';
+  $('invite-accounts-mask').classList.remove('hidden');
+};
+$('invite-accounts-close').onclick = () => $('invite-accounts-mask').classList.add('hidden');
+$('invites-more').onclick = () => loadInvitations(false);
+
+async function loadInvitationProfit() {
+  try {
+    const data = await api('/api/invitations?limit=500&offset=0');
+    INVITATIONS = data.invitations || [];
+    INVITATIONS_TOTAL = Number(data.total) || INVITATIONS.length;
+    INVITATIONS_OFFSET = INVITATIONS.length;
+    INVITATIONS_MORE = !!data.has_more;
+    renderInvitationProfit();
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+}
+
+function renderInvitationProfit() {
+  const now = new Date(), items = INVITATIONS;
+  const totalAccounts = items.reduce((sum, item) => sum + (item.accounts || []).length, 0);
+  const totalCents = items.reduce((sum, item) => sum + Number(item.total_recharge_cents || 0), 0);
+  const cards = [
+    { label: '邀请码总数', value: String(items.length) },
+    { label: '已关联注册账号', value: String(totalAccounts), sub: '通过邀请码注册并成功关联的账号数' },
+    { label: '邀请码总充值', value: fmtMoney(totalCents), sub: '仅统计已支付订单', accent: true },
+  ];
+  $('invite-profit-stats').innerHTML = cards.map(x => `<div class="stat-card${x.accent ? ' is-accent' : ''}"><div class="stat-label">${x.label}</div><div class="stat-value">${x.value}</div><div class="stat-sub">${x.sub || ''}</div></div>`).join('');
+  $('invite-profit-body').innerHTML = items.length ? items.map(item => {
+    const usedUp = Number(item.used_count) >= Number(item.max_uses), expired = item.expires_at && new Date(item.expires_at) < now;
+    const state = usedUp ? ['badge-danger','已用尽'] : expired ? ['badge-warning','已过期'] : ['badge-success','可使用'];
+    const accounts = item.accounts || [], unlinked = Math.max(0, Number(item.used_count) - accounts.length);
+    return `<tr><td class="mono"><b>${esc(item.code)}</b></td><td>${esc(item.remark || '-')}</td><td>${accounts.length} 个${unlinked ? `<span class="badge badge-warning">另有 ${unlinked} 次历史使用未关联</span>` : ''}</td><td>${item.used_count} / ${item.max_uses}</td><td>${fmtMoney(item.total_recharge_cents)}</td><td><span class="badge ${state[0]}">${state[1]}</span></td><td>${fmtTime(item.expires_at)}</td><td>${esc(item.created_by_username || '-')}</td><td>${fmtTime(item.created_at)}</td><td><button class="link-btn" data-invite-accounts="${esc(item.code)}">查看账号</button></td></tr>`;
+  }).join('') : '<tr><td class="empty" colspan="10">暂无邀请码</td></tr>';
+}
+
+$('invite-profit-body').onclick = event => {
+  const button = event.target.closest('[data-invite-accounts]'); if (!button) return;
+  const item = INVITATIONS.find(invite => invite.code === button.dataset.inviteAccounts); if (!item) return;
+  const accounts = item.accounts || [], unlinked = Math.max(0, Number(item.used_count) - accounts.length);
+  $('invite-accounts-title').textContent = `邀请码 ${item.code} 的使用账号`;
+  $('invite-accounts-message').textContent = unlinked ? `已关联 ${accounts.length} 个账号，累计充值 ${fmtMoney(item.total_recharge_cents)}；另有 ${unlinked} 次为关联功能上线前的历史使用，无法可靠反推。` : `共关联 ${accounts.length} 个注册账号，累计充值 ${fmtMoney(item.total_recharge_cents)}。`;
+  $('invite-accounts-body').innerHTML = accounts.length ? accounts.map(account => `<tr><td><b>${esc(account.username || '-')}</b></td><td>${esc(account.email || '-')}</td><td>${fmtMoney(account.total_recharge_cents)}</td><td><span class="badge ${account.account_status === 'active' ? 'badge-success' : 'badge-danger'}">${account.account_status === 'active' ? '正常' : '已禁用'}</span></td><td><span class="badge ${account.login_status === 'online' ? 'badge-success' : 'badge-muted'}">${account.login_status === 'online' ? '在线' : '离线'}</span></td><td>${fmtTime(account.used_at)}</td></tr>`).join('') : '<tr><td class="empty" colspan="6">该邀请码暂无可关联的账号记录</td></tr>';
+  $('invite-accounts-mask').classList.remove('hidden');
+};
+
+$('generate-invite-btn').onclick = async () => {
+  $('generate-invite-btn').disabled = true;
+  try {
+    const data = await api('/api/invitations/generate', {method:'POST',body:JSON.stringify({count:Number($('invite-count').value),max_uses:Number($('invite-max-uses').value),expires_at:$('invite-expiry').value,remark:$('invite-remark').value.trim()})});
+    $('invite-result').classList.remove('hidden'); $('invite-result').dataset.codes = JSON.stringify(data.codes || []);
+    $('invite-result-codes').innerHTML = (data.codes || []).map(code => `<span class="code-pill mono">${esc(code)}</span>`).join('');
+    $('invite-operation').textContent = `操作 ID：${data.operation_id}`;
+    toast(`已生成 ${data.count} 个邀请码`,'success'); $('invite-remark').value=''; await loadInvitations();
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message,'error'); }
+  finally { $('generate-invite-btn').disabled = false; }
+};
+$('copy-invites-btn').onclick = async () => { try { const codes = JSON.parse($('invite-result').dataset.codes || '[]'); await navigator.clipboard.writeText(codes.join('\n')); toast('邀请码已复制','success'); } catch { toast('复制失败，请手动复制','error'); } };
+
+async function loadAdmins() {
+  try { const data = await api('/api/admins'); ADMINS = data.admins || []; renderAdmins(); }
+  catch (error) { if (error.message !== '__AUTH__') toast(error.message,'error'); }
+}
+
+function renderAdmins() {
+  $('admins-body').innerHTML = ADMINS.length ? ADMINS.map(admin => {
+    const active = admin.status === 'active', self = CURRENT_ADMIN && admin.admin_id === CURRENT_ADMIN.admin_id;
+    const source = admin.created_by === 'system_bootstrap' ? '系统初始化' : (admin.created_by_username || admin.created_by || '-');
+    return `<tr><td><b>${esc(admin.username)}</b>${self ? ' <span class="badge badge-muted">当前</span>' : ''}</td><td class="mono">${esc(admin.admin_id)}</td><td><span class="badge ${active ? 'badge-success' : 'badge-danger'}">${active ? '启用' : '禁用'}</span></td><td><span class="badge ${admin.must_change_password ? 'badge-warning' : 'badge-success'}">${admin.must_change_password ? '首次登录待改密' : '已设置'}</span></td><td>${esc(source)}</td><td>${fmtTime(admin.created_at)}</td><td>${fmtTime(admin.last_login_at)}</td><td>${self ? '' : `<button class="link-btn ${active ? 'red' : 'green'}" data-admin-action="status" data-id="${esc(admin.admin_id)}" data-name="${esc(admin.username)}" data-status="${active ? 'disabled' : 'active'}">${active ? '禁用' : '启用'}</button>`}<button class="link-btn" data-admin-action="reset" data-id="${esc(admin.admin_id)}" data-name="${esc(admin.username)}">重置密码</button></td></tr>`;
+  }).join('') : '<tr><td class="empty" colspan="8">暂无管理员账号</td></tr>';
+}
+
+function randomPassword() {
+  const chars='ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%'; let value='Aa1!';
+  for(let i=0;i<10;i++) value += chars[Math.floor(Math.random()*chars.length)];
+  return [...value].sort(()=>Math.random()-.5).join('');
+}
+$('random-admin-password').onclick = () => $('new-admin-password').value = randomPassword();
+$('create-admin-btn').onclick = async () => {
+  try {
+    const username=$('new-admin-name').value.trim(), temporary_password=$('new-admin-password').value;
+    await api('/api/admins',{method:'POST',body:JSON.stringify({username,temporary_password})});
+    showSecret(`管理员 ${username} 的临时密码`,temporary_password); $('new-admin-name').value=''; $('new-admin-password').value=''; await loadAdmins();
+  } catch(error) { if(error.message!=='__AUTH__') toast(error.message,'error'); }
+};
+
+$('admins-body').onclick = event => {
+  const button=event.target.closest('[data-admin-action]'); if(!button)return;
+  const {adminAction:action,id,name,status}=button.dataset;
+  if(action==='status') askConfirm(status==='disabled'?'确认禁用管理员':'确认启用管理员',`确定要${status==='disabled'?'禁用':'启用'}管理员「${name}」吗？`,async()=>{await api(`/api/admins/${id}/status`,{method:'POST',body:JSON.stringify({status})});toast('管理员状态已更新','success');await loadAdmins();});
+  if(action==='reset') askConfirm('确认重置管理员密码',`管理员「${name}」现有会话将全部失效，下次登录必须修改临时密码。`,async()=>{const data=await api(`/api/admins/${id}/reset-password`,{method:'POST'});showSecret(`管理员 ${name} 的临时密码`,data.temporary_password);await loadAdmins();});
+};
+
+// ---- 公告管理 ----
+let ANNOUNCEMENTS = [];
+let ANNOUNCEMENT_EDITING_ID = null;
+let ANNOUNCE_TARGET = [];          // 当前表单选中的定向账号 ID
+let ANNOUNCE_USERS = [];           // /api/users 缓存
+let ANNOUNCE_USERS_LOADED = false;
+let ANNOUNCE_IMAGES = [];          // 当前表单待上传图片：[{name,mime,size,data}]
+const ANNOUNCE_IMAGE_MAX = 6;
+const ANNOUNCE_IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+const ANNOUNCE_IMAGE_MAX_BYTES = 2 * 1024 * 1024;
+async function loadAnnounceUsers() {
+  if (ANNOUNCE_USERS_LOADED) return;
+  try {
+    const data = await api('/api/users?limit=500');
+    ANNOUNCE_USERS = (data.users || []).map(u => ({ account_id: String(u.account_id || u.user_id || ''), username: String(u.username || '-') })).filter(u => u.account_id);
+    ANNOUNCE_USERS_LOADED = true;
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+}
+function renderAnnounceUserPicker() {
+  const query = $('ann-user-search').value.trim().toLowerCase();
+  const rows = ANNOUNCE_USERS.filter(u => !query || u.username.toLowerCase().includes(query) || u.account_id.toLowerCase().includes(query)).slice(0, 200);
+  $('ann-user-list').innerHTML = rows.length ? rows.map(u => {
+    const checked = ANNOUNCE_TARGET.includes(u.account_id);
+    return `<label style="display:flex;align-items:center;gap:8px;padding:4px 2px;font-weight:normal"><input type="checkbox" data-ann-user="${esc(u.account_id)}" ${checked ? 'checked' : ''}> <span>${esc(u.username)}</span> <span class="mono" style="color:#6d7789;font-size:12px">${esc(u.account_id)}</span></label>`;
+  }).join('') : '<div style="color:#6d7789">没有匹配的用户</div>';
+  $('ann-target-count').textContent = `已选择 ${ANNOUNCE_TARGET.length} 个用户`;
+}
+function setAnnounceTargetMode(custom) {
+  $('ann-target-all').checked = !custom;
+  $('ann-target-custom').checked = custom;
+  $('ann-target-picker').classList.toggle('hidden', !custom);
+  if (custom) { loadAnnounceUsers().then(renderAnnounceUserPicker); }
+}
+$('ann-target-all').onchange = () => setAnnounceTargetMode(false);
+$('ann-target-custom').onchange = () => setAnnounceTargetMode(true);
+$('ann-user-search').oninput = renderAnnounceUserPicker;
+$('ann-user-list').onchange = event => {
+  const box = event.target.closest('input[data-ann-user]');
+  if (!box) return;
+  const accountId = box.dataset.annUser;
+  if (box.checked) { if (!ANNOUNCE_TARGET.includes(accountId)) ANNOUNCE_TARGET.push(accountId); }
+  else { ANNOUNCE_TARGET = ANNOUNCE_TARGET.filter(x => x !== accountId); }
+  renderAnnounceUserPicker();
+};
+function currentAnnounceTargets() {
+  return $('ann-target-custom').checked ? ANNOUNCE_TARGET : [];
+}
+function autoGrowAnnouncementTextarea() {
+  const el = $('announcement-content');
+  if (!el) return;
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight + 2, 340) + 'px';
+}
+$('announcement-content').addEventListener('input', autoGrowAnnouncementTextarea);
+function renderAnnounceImages() {
+  $('announcement-image-preview').innerHTML = ANNOUNCE_IMAGES.map((img, index) => `
+    <div class="announcement-image-item">
+      <img src="data:${img.mime};base64,${img.data}" alt="${esc(img.name || '公告图片')}">
+      <button type="button" class="announcement-image-remove" data-ann-image-remove="${index}" title="移除">×</button>
+    </div>`).join('');
+  $('announcement-image-add').classList.toggle('hidden', ANNOUNCE_IMAGES.length >= ANNOUNCE_IMAGE_MAX);
+  $('announcement-image-hint').textContent = ANNOUNCE_IMAGES.length
+    ? `已选 ${ANNOUNCE_IMAGES.length}/${ANNOUNCE_IMAGE_MAX} 张，用户登录后会以轮播弹窗展示`
+    : '支持 PNG / JPG / GIF / WebP，不选图片则弹窗只展示标题与正文';
+}
+// 公告正文 Markdown 渲染：与客户端共用同一套 marked 配置与清洗策略。
+// 客户端对应实现 web-frontend/src/shared/lib/announcementMarkdown.ts，改动请两边同步。
+const ANNOUNCE_CALLOUT_TITLES = { tip: '小贴士', info: '说明', warning: '注意', danger: '重要提醒' };
+const ANNOUNCE_MARKDOWN_READY = typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined';
+const ANNOUNCE_MARKED = ANNOUNCE_MARKDOWN_READY ? new marked.Marked({ gfm: true, breaks: true }) : null;
+if (ANNOUNCE_MARKED) {
+  ANNOUNCE_MARKED.use({
+    extensions: [{
+      name: 'callout',
+      level: 'block',
+      start(src) {
+        const index = src.search(/^:::[ \t]*[a-zA-Z]+/m);
+        return index < 0 ? undefined : index;
+      },
+      tokenizer(src) {
+        const match = /^:::[ \t]*([a-zA-Z]+)[ \t]*([^\n]*)\n([\s\S]*?)\n:::[ \t]*(?:\n+|$)/.exec(src);
+        if (!match) return undefined;
+        const kind = match[1].toLowerCase();
+        if (!(kind in ANNOUNCE_CALLOUT_TITLES)) return undefined;
+        const title = match[2].trim();
+        return {
+          type: 'callout',
+          raw: match[0],
+          kind,
+          titleTokens: title ? this.lexer.inlineTokens(title) : [],
+          tokens: this.lexer.blockTokens(match[3].trim(), []),
+        };
+      },
+      renderer(token) {
+        const titleHtml = token.titleTokens.length
+          ? this.parser.parseInline(token.titleTokens)
+          : ANNOUNCE_CALLOUT_TITLES[token.kind];
+        return `<div class="ann-callout is-${token.kind}">`
+          + `<p class="ann-callout-title">${titleHtml}</p>`
+          + `<div class="ann-callout-body">${this.parser.parse(token.tokens)}</div>`
+          + `</div>\n`;
+      },
+    }],
+  });
+}
+// 兼容老公告的写法：历史内容习惯敲成「1.对免费用户更友好」「-要点」（标记后不带空格），
+// GFM 要求标记后必须有空格才算列表，否则整段会挤成一坨纯文本。这里补一个空格让老公告也有新排版。
+// 只兜底最明确的情况：有序仅 1~9 且后面非数字/空白（`1.4.6版本` 不受影响）；
+// 无序仅 - / + 且后面紧跟中英文（`---` 分割线、`*斜体*`、`-20 度` 不受影响）；围栏代码块内不动。
+const ANNOUNCE_LEGACY_ORDERED_RE = /^([1-9])\.(?=[^\s\d])/;
+const ANNOUNCE_LEGACY_BULLET_RE = /^([-+])(?=[\u4e00-\u9fffA-Za-z])/;
+function normalizeAnnounceMarkers(source) {
+  let inFence = false;
+  return source.split('\n').map(line => {
+    if (/^\s*(?:```|~~~)/.test(line)) {
+      inFence = !inFence;
+      return line;
+    }
+    if (inFence) return line;
+    return line.replace(ANNOUNCE_LEGACY_ORDERED_RE, '$1. ').replace(ANNOUNCE_LEGACY_BULLET_RE, '$1 ');
+  }).join('\n');
+}
+// vendor 资源异常时退化成纯文本，避免一处报错拖垮整个后台脚本。
+function renderAnnouncementHtml(markdown) {
+  const source = String(markdown || '').trim();
+  if (!source) return '';
+  if (!ANNOUNCE_MARKED) return esc(source).replace(/\n/g, '<br>');
+  return DOMPurify.sanitize(ANNOUNCE_MARKED.parse(normalizeAnnounceMarkers(source)));
+}
+// 公告预览：发布前先看用户实际会看到的样子（居中弹窗 + 多图轮播）。
+// 图片统一 contain 自适应，尺寸比例不同的图都完整显示、不变形、不撑破弹窗。
+let ANNOUNCE_PREVIEW_SLIDE = 0;
+// 自动轮播：与客户端弹窗一致，多图时每 4 秒自动翻下一张，走完回到第一张。
+let ANNOUNCE_PREVIEW_TIMER = null;
+const ANNOUNCE_PREVIEW_INTERVAL_MS = 4000;
+function stopAnnouncePreviewAuto() {
+  if (ANNOUNCE_PREVIEW_TIMER) { clearTimeout(ANNOUNCE_PREVIEW_TIMER); ANNOUNCE_PREVIEW_TIMER = null; }
+}
+function scheduleAnnouncePreviewAuto() {
+  stopAnnouncePreviewAuto();
+  if ($('announcement-preview-mask').classList.contains('hidden')) return;  // 预览关着就不空转
+  const total = Number($('announcement-preview-track').dataset.count || '0');
+  if (total < 2) return;  // 单图无需切换
+  ANNOUNCE_PREVIEW_TIMER = setTimeout(() => {
+    setAnnouncePreviewSlide((ANNOUNCE_PREVIEW_SLIDE + 1) % total);
+  }, ANNOUNCE_PREVIEW_INTERVAL_MS);
+}
+function renderAnnouncePreview() {
+  const total = Number($('announcement-preview-track').dataset.count || '0');
+  $('announcement-preview-track').style.transform = `translateX(-${ANNOUNCE_PREVIEW_SLIDE * 100}%)`;
+  $('announcement-preview-prev').disabled = ANNOUNCE_PREVIEW_SLIDE <= 0;
+  $('announcement-preview-next').disabled = ANNOUNCE_PREVIEW_SLIDE >= total - 1;
+  $('announcement-preview-counter').textContent = `${ANNOUNCE_PREVIEW_SLIDE + 1} / ${total}`;
+  Array.from($('announcement-preview-dots').children).forEach((dot, index) => {
+    dot.classList.toggle('is-active', index === ANNOUNCE_PREVIEW_SLIDE);
+  });
+}
+function setAnnouncePreviewSlide(next) {
+  const total = Number($('announcement-preview-track').dataset.count || '0');
+  ANNOUNCE_PREVIEW_SLIDE = Math.max(0, Math.min(total - 1, next));
+  renderAnnouncePreview();
+  scheduleAnnouncePreviewAuto();
+}
+function openAnnouncementPreview(title, content, images) {
+  const list = (Array.isArray(images) ? images : []).filter(img => img && img.data);
+  const contentHtml = renderAnnouncementHtml(content);
+  $('announcement-preview-title').textContent = title || '（未填写标题）';
+  $('announcement-preview-content').innerHTML = contentHtml;
+  $('announcement-preview-content').classList.toggle('hidden', !contentHtml);
+  $('announcement-preview-carousel').classList.toggle('hidden', !list.length);
+  $('announcement-preview-dots').classList.toggle('hidden', list.length < 2);
+  $('announcement-preview-counter').classList.toggle('hidden', list.length < 2);
+  $('announcement-preview-track').dataset.count = String(list.length);
+  $('announcement-preview-track').innerHTML = list.map((img, index) => `
+    <div class="announcement-preview-slide">
+      <img src="data:${img.mime};base64,${img.data}" alt="${esc(img.name || '公告图片 ' + (index + 1))}">
+    </div>`).join('');
+  $('announcement-preview-dots').innerHTML = list.length > 1
+    ? list.map((_, index) => `<button type="button" class="announcement-preview-dot" data-ann-preview-dot="${index}" aria-label="查看第 ${index + 1} 张"></button>`).join('')
+    : '';
+  ANNOUNCE_PREVIEW_SLIDE = 0;
+  renderAnnouncePreview();
+  $('announcement-preview-mask').classList.remove('hidden');
+  scheduleAnnouncePreviewAuto();
+}
+function closeAnnouncementPreview() {
+  stopAnnouncePreviewAuto();
+  $('announcement-preview-mask').classList.add('hidden');
+}
+$('announcement-preview-btn').onclick = () => {
+  const title = $('announcement-title').value.trim();
+  if (!title) { toast('请先填写公告标题', 'error'); return; }
+  openAnnouncementPreview(title, $('announcement-content').value, ANNOUNCE_IMAGES);
+};
+$('announcement-preview-close').onclick = closeAnnouncementPreview;
+$('announcement-preview-done').onclick = closeAnnouncementPreview;
+$('announcement-preview-mask').onclick = event => { if (event.target === $('announcement-preview-mask')) closeAnnouncementPreview(); };
+$('announcement-preview-prev').onclick = () => setAnnouncePreviewSlide(ANNOUNCE_PREVIEW_SLIDE - 1);
+$('announcement-preview-next').onclick = () => setAnnouncePreviewSlide(ANNOUNCE_PREVIEW_SLIDE + 1);
+// 鼠标停在图上暂停自动切换，方便细看截图；移开再继续。
+$('announcement-preview-carousel').onmouseenter = stopAnnouncePreviewAuto;
+$('announcement-preview-carousel').onmouseleave = scheduleAnnouncePreviewAuto;
+$('announcement-preview-dots').onclick = event => {
+  const dot = event.target.closest('[data-ann-preview-dot]');
+  if (dot) setAnnouncePreviewSlide(Number(dot.dataset.annPreviewDot));
+};
+document.addEventListener('keydown', event => {
+  if ($('announcement-preview-mask').classList.contains('hidden')) return;
+  if (event.key === 'Escape') { closeAnnouncementPreview(); return; }
+  if (event.key === 'ArrowLeft') setAnnouncePreviewSlide(ANNOUNCE_PREVIEW_SLIDE - 1);
+  else if (event.key === 'ArrowRight') setAnnouncePreviewSlide(ANNOUNCE_PREVIEW_SLIDE + 1);
+});
+function readImageAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || '').split(',')[1] || '');
+    reader.onerror = () => reject(new Error('读取失败'));
+    reader.readAsDataURL(file);
+  });
+}
+$('announcement-image-input').onchange = async event => {
+  const files = Array.from(event.target.files || []);
+  event.target.value = '';
+  for (const file of files) {
+    if (ANNOUNCE_IMAGES.length >= ANNOUNCE_IMAGE_MAX) { toast(`最多上传 ${ANNOUNCE_IMAGE_MAX} 张图片`, 'error'); break; }
+    if (!ANNOUNCE_IMAGE_MIMES.includes(file.type)) { toast(`「${file.name}」格式不支持`, 'error'); continue; }
+    if (file.size > ANNOUNCE_IMAGE_MAX_BYTES) { toast(`「${file.name}」超过 2MB`, 'error'); continue; }
+    try {
+      const data = await readImageAsBase64(file);
+      if (!data) { toast(`「${file.name}」读取失败`, 'error'); continue; }
+      ANNOUNCE_IMAGES.push({ name: file.name, mime: file.type, size: file.size, data });
+    } catch (error) { toast(`「${file.name}」读取失败`, 'error'); }
+  }
+  renderAnnounceImages();
+};
+$('announcement-image-preview').onclick = event => {
+  const button = event.target.closest('[data-ann-image-remove]');
+  if (!button) return;
+  ANNOUNCE_IMAGES.splice(Number(button.dataset.annImageRemove), 1);
+  renderAnnounceImages();
+};
+function resetAnnouncementForm() {
+  ANNOUNCEMENT_EDITING_ID = null;
+  $('announcement-form-title').textContent = '发布新公告';
+  $('announcement-save-btn').textContent = '发布公告';
+  $('announcement-cancel-btn').classList.add('hidden');
+  $('announcement-title').value = '';
+  $('announcement-content').value = '';
+  ANNOUNCE_TARGET = [];
+  ANNOUNCE_IMAGES = [];
+  renderAnnounceImages();
+  $('ann-user-search').value = '';
+  setAnnounceTargetMode(false);
+  autoGrowAnnouncementTextarea();
+}
+function fillAnnouncementForm(item) {
+  ANNOUNCEMENT_EDITING_ID = item.id;
+  $('announcement-form-title').textContent = '编辑公告 #' + item.id;
+  $('announcement-save-btn').textContent = '保存修改';
+  $('announcement-cancel-btn').classList.remove('hidden');
+  $('announcement-title').value = item.title;
+  $('announcement-content').value = item.content || '';
+  ANNOUNCE_TARGET = Array.isArray(item.target_account_ids) ? item.target_account_ids.slice() : [];
+  ANNOUNCE_IMAGES = Array.isArray(item.images) ? item.images.map(img => ({ name: img.name || '', mime: img.mime || 'image/png', size: img.size || 0, data: img.data || '' })).filter(img => img.data) : [];
+  renderAnnounceImages();
+  $('ann-user-search').value = '';
+  setAnnounceTargetMode(ANNOUNCE_TARGET.length > 0);
+  renderAnnounceUserPicker();
+  autoGrowAnnouncementTextarea();
+}
+async function loadAnnouncements() {
+  try {
+    const data = await api('/api/announcements');
+    ANNOUNCEMENTS = data.announcements || [];
+    renderAnnouncements();
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+}
+function renderAnnouncements() {
+  $('announcements-body').innerHTML = ANNOUNCEMENTS.length ? ANNOUNCEMENTS.map(item => {
+    const on = !!item.active;
+    const content = item.content || '';
+    const isLong = content.length > 100 || (content.match(/\n/g) || []).length >= 3;
+    const targets = Array.isArray(item.target_account_ids) ? item.target_account_ids : [];
+    const scope = targets.length ? `<span class="badge badge-warning">指定 ${targets.length} 人</span>` : '<span class="badge badge-muted">全部用户</span>';
+    const images = Array.isArray(item.images) ? item.images : [];
+    const imageCell = images.length
+      ? `<div class="announcement-thumbs" data-ann-preview="${item.id}" title="点击预览发布效果"><img src="data:${images[0].mime};base64,${images[0].data}" alt="">${images.length > 1 ? `<span class="announcement-thumb-more">+${images.length - 1}</span>` : ''}</div>`
+      : '<span style="color:#9ca3af">-</span>';
+    return `<tr>
+      <td>${on ? '<span class="badge badge-success">已上线</span>' : '<span class="badge badge-muted">已下线</span>'}</td>
+      <td><b>${esc(item.title)}</b></td>
+      <td class="announcement-content-cell">
+        <div class="announcement-body-clamp" data-ann-content data-id="${item.id}">${esc(content || '-')}</div>
+        ${isLong ? `<button class="announcement-toggle" data-ann-toggle data-id="${item.id}">展开</button>` : ''}
+      </td>
+      <td>${imageCell}</td>
+      <td>${scope}</td>
+      <td>${fmtTime(item.published_at)}</td>
+      <td>
+        <button class="link-btn" data-announcement-action="edit" data-id="${item.id}" data-title="${esc(item.title)}" data-content="${esc(item.content || '')}">编辑</button>
+        <button class="link-btn ${on ? 'red' : 'green'}" data-announcement-action="publish" data-id="${item.id}" data-title="${esc(item.title)}" data-on="${on ? '1' : '0'}">${on ? '下线' : '上线'}</button>
+        <button class="link-btn red" data-announcement-action="delete" data-id="${item.id}" data-title="${esc(item.title)}">删除</button>
+      </td>
+    </tr>`;
+  }).join('') : '<tr><td class="empty" colspan="7">暂无公告，发布第一条吧</td></tr>';
+}
+resetAnnouncementForm();
+$('announcement-save-btn').onclick = async () => {
+  const title = $('announcement-title').value.trim();
+  const content = $('announcement-content').value;
+  if (!title) { toast('请输入公告标题', 'error'); return; }
+  $('announcement-save-btn').disabled = true;
+  try {
+    const targets = currentAnnounceTargets();
+    const images = ANNOUNCE_IMAGES.map(img => ({ name: img.name, mime: img.mime, data: img.data }));
+    if (ANNOUNCEMENT_EDITING_ID == null) {
+      await api('/api/announcements', { method: 'POST', body: JSON.stringify({ title, content, target_account_ids: targets, images }) });
+      toast('公告已发布', 'success');
+    } else {
+      await api(`/api/announcements/${ANNOUNCEMENT_EDITING_ID}`, { method: 'PATCH', body: JSON.stringify({ title, content, target_account_ids: targets, images }) });
+      toast('公告已保存', 'success');
+    }
+    resetAnnouncementForm();
+    await loadAnnouncements();
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+  finally { $('announcement-save-btn').disabled = false; }
+};
+$('announcement-cancel-btn').onclick = resetAnnouncementForm;
+$('announcements-body').onclick = event => {
+  const preview = event.target.closest('[data-ann-preview]');
+  if (preview) {
+    const row = ANNOUNCEMENTS.find(item => item.id === Number(preview.dataset.annPreview));
+    if (row) openAnnouncementPreview(row.title, row.content, row.images);
+    return;
+  }
+  const toggle = event.target.closest('.announcement-toggle');
+  if (toggle) {
+    const body = toggle.closest('tr').querySelector('.announcement-body-clamp');
+    if (body) {
+      const expanded = body.classList.toggle('expanded');
+      toggle.textContent = expanded ? '收起' : '展开';
+    }
+    return;
+  }
+  const button = event.target.closest('[data-announcement-action]');
+  if (!button) return;
+  const action = button.dataset.announcementAction;
+  const id = Number(button.dataset.id);
+  const title = button.dataset.title || id;
+  if (action === 'edit') {
+    const item = ANNOUNCEMENTS.find(row => row.id === id);
+    if (item) fillAnnouncementForm(item);
+  } else if (action === 'publish') {
+    const on = button.dataset.on === '1';
+    askConfirm(on ? '确认下线公告' : '确认上线公告', `将「${title}」${on ? '下线' : '上线'}。客户端下次同步后生效。`, async () => {
+      await api(`/api/announcements/${id}/publish`, { method: 'POST', body: JSON.stringify({ active: !on }) });
+      toast(on ? '已下线' : '已上线', 'success');
+      await loadAnnouncements();
+    });
+  } else if (action === 'delete') {
+    askConfirm('确认删除公告', `将永久删除「${title}」，客户端下次同步后会撤回该条。`, async () => {
+      await api(`/api/announcements/${id}`, { method: 'DELETE' });
+      if (ANNOUNCEMENT_EDITING_ID === id) resetAnnouncementForm();
+      toast('公告已删除', 'success');
+      await loadAnnouncements();
+    });
+  }
+};
+
+const actionNames = {'admin.bootstrap_create':'初始化管理员','admin.create':'创建管理员','admin.set_status':'修改管理员状态','admin.reset_password':'重置管理员密码','user.set_status':'修改用户状态','user.reset_password':'重置用户密码','user.force_logout':'强制用户下线','invitation.generate':'生成邀请码','auth.login_success':'登录成功','auth.login_fail':'登录失败','change_password':'修改密码','forgot_password':'申请重置密码','reset_password':'重置密码','password_reset_direct':'直接重置密码','collect_key_issued':'下发采集密钥','pricing.update':'修改计费定价','billing.freeze':'冻结积分'};
+const typeLabels = {admin:'管理员',login:'登录',security:'安全事件',pricing:'改价',ai:'AI 请求',freeze:'计费冻结'};
+const LOGS_PAGE = 100;
+async function loadLogs(reset = true) {
+  if (reset) { LOGS = []; LOGS_OFFSET = 0; LOGS_MORE = false; }
+  try {
+    const data = await api(`/api/audit-logs?limit=${LOGS_PAGE}&offset=${LOGS_OFFSET}`);
+    const rows = data.logs || [];
+    LOGS = reset ? rows : LOGS.concat(rows);
+    LOGS_TOTAL = Number(data.total) || LOGS.length;
+    LOGS_OFFSET = rows.length ? LOGS_OFFSET + rows.length : LOGS_OFFSET;
+    LOGS_MORE = !!data.has_more;
+    renderLogs();
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+}
+function renderLogs(){
+  const query=$('log-search').value.trim().toLowerCase();
+  const rows=LOGS.filter(item=>!query||`${item.operation_id} ${item.actor_username} ${item.actor_admin_id} ${item.action} ${item.target_id}`.toLowerCase().includes(query));
+  $('log-count').textContent=`显示 ${rows.length} / ${LOGS_TOTAL} 条${LOGS_MORE ? ' · 还有更多，可点击「加载更多」' : ''}`;
+  $('logs-body').innerHTML=rows.length?rows.map(item=>{let details=item.details_json||'{}';try{const parsed=JSON.parse(details);details=Object.entries(parsed).map(([k,v])=>`${k}: ${Array.isArray(v)?v.join(', '):v}`).join('；')||'-';}catch{}return `<tr><td>${fmtTime(item.created_at)}</td><td class="mono">${esc(item.operation_id)}</td><td>${esc(item.actor_username||'-')}</td><td class="mono">${esc(item.actor_admin_id||'-')}</td><td>${esc(actionNames[item.action]||item.action)}</td><td>${esc(item.target_type)} · ${esc(item.target_id||'-')}</td><td><span class="badge ${item.success?'badge-success':'badge-danger'}">${item.success?'成功':'失败'}</span></td><td>${esc(item.client_ip||'-')}</td><td class="details" title="${esc(details)}">${esc(details)}</td></tr>`;}).join(''):'<tr><td class="empty" colspan="9">暂无操作日志</td></tr>';
+  $('logs-more-wrap').style.display = LOGS_MORE && rows.length ? '' : 'none';
+}
+$('log-search').oninput=renderLogs;
+$('logs-more').onclick = () => loadLogs(false);
+
+// ---------------- 用户活动 ----------------
+const UA_PAGE = 100;
+let UACT = []; let UACT_OFFSET = 0; let UACT_MORE = false; let UACT_TOTAL = 0;
+async function loadUserActivity(reset = true) {
+  if (reset) { UACT = []; UACT_OFFSET = 0; UACT_MORE = false; }
+  try {
+    const data = await api(`/api/user-activity?limit=${UA_PAGE}&offset=${UACT_OFFSET}`);
+    const rows = data.logs || [];
+    UACT = reset ? rows : UACT.concat(rows);
+    UACT_TOTAL = Number(data.total) || UACT.length;
+    UACT_OFFSET = rows.length ? UACT_OFFSET + rows.length : UACT_OFFSET;
+    UACT_MORE = !!data.has_more;
+    renderUserActivity();
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+}
+function renderUserActivity(){
+  const query=$('ua-search').value.trim().toLowerCase();
+  const rows=UACT.filter(item=>!query||`${item.operation_id} ${item.actor_username} ${item.actor_admin_id} ${item.action} ${item.target_id} ${item.target_type} ${item.type} ${typeLabels[item.type]||''}`.toLowerCase().includes(query));
+  $('ua-count').textContent=`显示 ${rows.length} / ${UACT_TOTAL} 条${UACT_MORE ? ' · 还有更多，可点击「加载更多」' : ''}`;
+  $('ua-body').innerHTML=rows.length?rows.map(item=>{let details=item.details_json||'{}';try{const parsed=JSON.parse(details);details=Object.entries(parsed).map(([k,v])=>`${k}: ${Array.isArray(v)?v.join(', '):v}`).join('；')||'-';}catch{}const actionLabel=actionNames[item.action]||(String(item.action||'').startsWith('ai.')?'AI 调用':item.action);return `<tr><td>${fmtTime(item.created_at)}</td><td><span class="badge badge-muted">${esc(typeLabels[item.type]||item.type||'其他')}</span></td><td>${esc(item.actor_username||'-')}</td><td class="mono">${esc(item.actor_admin_id||'-')}</td><td>${esc(actionLabel)}</td><td>${esc(item.target_type)} · ${esc(item.target_id||'-')}</td><td><span class="badge ${item.success?'badge-success':'badge-danger'}">${item.success?'成功':'失败'}</span></td><td>${esc(item.client_ip||'-')}</td><td class="details" title="${esc(details)}">${esc(details)}</td></tr>`;}).join(''):'<tr><td class="empty" colspan="9">暂无用户活动</td></tr>';
+  $('ua-more-wrap').style.display = UACT_MORE && rows.length ? '' : 'none';
+}
+$('ua-search').oninput=renderUserActivity;
+$('ua-more').onclick = () => loadUserActivity(false);
+
+// ---- 用户反馈 ----
+let FEEDBACKS = []; let FEEDBACK_OFFSET = 0; let FEEDBACK_MORE = false; let FEEDBACK_TOTAL = 0;
+const FB_PAGE = 100;
+const feedbackCategoryNames = { bug: '问题反馈', suggestion: '功能建议', other: '其他' };
+const feedbackStatusNames = { new: '待处理', processing: '处理中', resolved: '已解决' };
+let FEEDBACK_BADGE_TIMER = null;
+async function refreshFeedbackBadge() {
+  try {
+    const data = await api('/api/feedback/unread-count', { noAuth: true });
+    const count = Number(data.new_count) || 0;
+    const badge = $('fb-badge');
+    if (!badge) return;
+    if (count > 0) {
+      badge.textContent = count > 99 ? '99+' : String(count);
+      badge.hidden = false;
+    } else {
+      badge.hidden = true;
+    }
+  } catch (error) { /* 静默：未配置/未登录时不打扰 */ }
+}
+function startFeedbackBadgePolling() {
+  if (FEEDBACK_BADGE_TIMER) clearInterval(FEEDBACK_BADGE_TIMER);
+  refreshFeedbackBadge();
+  FEEDBACK_BADGE_TIMER = setInterval(refreshFeedbackBadge, 30000);
+}
+async function loadFeedback(reset = true) {
+  if (reset) { FEEDBACKS = []; FEEDBACK_OFFSET = 0; FEEDBACK_MORE = false; }
+  try {
+    const data = await api(`/api/feedback?limit=${FB_PAGE}&offset=${FEEDBACK_OFFSET}`);
+    const rows = data.feedback || [];
+    FEEDBACKS = reset ? rows : FEEDBACKS.concat(rows);
+    FEEDBACK_TOTAL = Number(data.total) || FEEDBACKS.length;
+    FEEDBACK_OFFSET = rows.length ? FEEDBACK_OFFSET + rows.length : FEEDBACK_OFFSET;
+    FEEDBACK_MORE = !!data.has_more;
+    renderFeedback();
+    // 进入反馈页即视为已查看：隐藏新反馈红点。
+    const badge = $('fb-badge');
+    if (badge) badge.hidden = true;
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+}
+async function openFeedbackImages(feedbackId) {
+  let imgs = [];
+  try {
+    const data = await api(`/api/feedback/${feedbackId}/images`);
+    imgs = Array.isArray(JSON.parse(data.images_json || '[]')) ? JSON.parse(data.images_json || '[]') : [];
+  } catch (error) {
+    if (error.message === '__AUTH__') return;
+    toast(error.message || '图片加载失败', 'error');
+    return;
+  }
+  if (!imgs.length) { toast('该反馈没有图片', 'error'); return; }
+  const item = FEEDBACKS.find((x) => x.feedback_id === feedbackId);
+  let index = 0;
+  const mask = document.createElement('div');
+  mask.className = 'fb-lightbox-mask';
+  mask.innerHTML = `<div class="fb-lightbox"><div class="fb-lightbox-head"><span>${esc((item && item.username) || '-')} 的反馈图片（${imgs.length} 张）</span><button class="fb-lightbox-close">×</button></div><img class="fb-lightbox-img" alt="反馈图片"><div class="fb-lightbox-foot"><button class="fb-lightbox-prev">上一张</button><span class="fb-lightbox-pos"></span><button class="fb-lightbox-next">下一张</button></div></div>`;
+  document.body.appendChild(mask);
+  const imgEl = mask.querySelector('.fb-lightbox-img');
+  const posEl = mask.querySelector('.fb-lightbox-pos');
+  const show = () => {
+    const im = imgs[index];
+    imgEl.src = `data:${im.mime || 'image/png'};base64,${im.data_b64 || ''}`;
+    posEl.textContent = `${index + 1} / ${imgs.length}`;
+  };
+  show();
+  mask.onclick = (e) => { if (e.target === mask) mask.remove(); };
+  mask.querySelector('.fb-lightbox-close').onclick = () => mask.remove();
+  mask.querySelector('.fb-lightbox-prev').onclick = () => { index = (index - 1 + imgs.length) % imgs.length; show(); };
+  mask.querySelector('.fb-lightbox-next').onclick = () => { index = (index + 1) % imgs.length; show(); };
+}
+function renderFeedback() {
+  const query = $('fb-search').value.trim().toLowerCase();
+  const rows = FEEDBACKS.filter((item) => !query || `${item.feedback_id} ${item.username} ${item.account_id} ${item.content} ${item.contact}`.toLowerCase().includes(query));
+  $('fb-count').textContent = `显示 ${rows.length} / ${FEEDBACK_TOTAL} 条${FEEDBACK_MORE ? ' · 还有更多，可点击「加载更多」' : ''}`;
+  $('fb-body').innerHTML = rows.length ? rows.map((item) => {
+    const imgsMeta = Array.isArray(item.images_meta) ? item.images_meta : [];
+    const statusBadge = item.status === 'resolved' ? 'badge-success' : item.status === 'processing' ? 'badge-warning' : 'badge-info';
+    return `<tr>
+      <td>${fmtTime(item.created_at)}</td>
+      <td>${esc(item.username || '-')}<br><small class="mono">${esc(item.account_id || '')}</small></td>
+      <td><span class="badge badge-muted">${esc(feedbackCategoryNames[item.category] || item.category)}</span></td>
+      <td><span class="badge ${statusBadge}">${esc(feedbackStatusNames[item.status] || item.status)}</span></td>
+      <td class="details">${esc(item.content || '-')}${item.contact ? `<br><small>联系方式：${esc(item.contact)}</small>` : ''}${item.admin_note ? `<br><small class="fb-note">回复：${esc(item.admin_note)}</small>` : ''}</td>
+      <td>${imgsMeta.length ? `<button class="link-btn" data-fb-view="${esc(item.feedback_id)}">查看 ${imgsMeta.length} 张图</button>` : '—'}</td>
+      <td>${esc(item.app_version || '-')}${item.platform ? `<br><small>${esc(item.platform)}</small>` : ''}</td>
+      <td class="fb-actions">
+        <select class="input fb-status-select" data-fb-status="${esc(item.feedback_id)}">
+          <option value="new"${item.status === 'new' ? ' selected' : ''}>待处理</option>
+          <option value="processing"${item.status === 'processing' ? ' selected' : ''}>处理中</option>
+          <option value="resolved"${item.status === 'resolved' ? ' selected' : ''}>已解决</option>
+        </select>
+        <input class="input fb-note-input" data-fb-note="${esc(item.feedback_id)}" placeholder="回复备注（用户可见）" value="${esc(item.admin_note || '')}">
+        <div class="fb-row-btns">
+          <button class="btn fb-save-btn" data-fb-save="${esc(item.feedback_id)}">保存</button>
+          <button class="btn fb-del-btn" data-fb-del="${esc(item.feedback_id)}">删除</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('') : '<tr><td class="empty" colspan="8">暂无用户反馈</td></tr>';
+  document.querySelectorAll('[data-fb-save]').forEach((btn) => {
+    btn.onclick = async () => {
+      const id = btn.dataset.fbSave;
+      const sel = document.querySelector(`[data-fb-status="${id}"]`);
+      const input = document.querySelector(`[data-fb-note="${id}"]`);
+      btn.disabled = true;
+      try {
+        await api(`/api/feedback/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status: sel.value, admin_note: input.value }) });
+        toast('已保存，用户可在个人中心看到状态与回复', 'success');
+        const item = FEEDBACKS.find((x) => x.feedback_id === id);
+        if (item) { item.status = sel.value; item.admin_note = input.value.trim(); }
+        renderFeedback();
+      } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); btn.disabled = false; }
+    };
+  });
+  document.querySelectorAll('[data-fb-view]').forEach((btn) => {
+    btn.onclick = () => openFeedbackImages(btn.dataset.fbView);
+  });
+  document.querySelectorAll('[data-fb-del]').forEach((btn) => {
+    btn.onclick = () => {
+      const id = btn.dataset.fbDel;
+      const item = FEEDBACKS.find((x) => x.feedback_id === id);
+      askConfirm(
+        '删除反馈',
+        `确定删除 ${item ? `${item.username}（${item.account_id}）` : ''} 的这条反馈吗？删除后用户个人中心也不再显示，且不可恢复。`,
+        async () => {
+          await api(`/api/feedback/${id}`, { method: 'DELETE' });
+          toast('反馈已删除', 'success');
+          await loadFeedback(true);
+        },
+      );
+    };
+  });
+}
+$('fb-search').oninput = renderFeedback;
+$('fb-more').onclick = () => loadFeedback(false);
+
+// ---------------- 分站申请 ----------------
+// 客户端「推广计划 · 申请加入」提交的申请：卡片展示申请时间 / 积分余额 / 消费流水，
+// 「批准成立分站」会调同机分站平台开户，并把专属账号密码以定向公告下发给该用户。
+const stationStatusNames = { pending: '待审核', approved: '已成立分站', rejected: '已驳回', revoked: '已撤销' };
+const stationStatusBadges = { pending: 'badge-warning', approved: 'badge-success', rejected: 'badge-danger', revoked: 'badge-muted' };
+const SA_AUTO_PROFILES = 12;   // 首屏自动拉取画像的卡片数，其余按需点击加载
+let STATION_APPLICATIONS = []; let STATION_COUNTS = {}; let STATION_PROFILES = {};
+let STATION_BADGE_TIMER = null;
+async function refreshStationBadge() {
+  try {
+    const data = await api('/api/station-applications?limit=1');
+    const count = Number((data.counts || {}).pending) || 0;
+    const badge = $('sa-badge');
+    if (!badge) return;
+    if (count > 0) { badge.textContent = count > 99 ? '99+' : String(count); badge.hidden = false; }
+    else { badge.hidden = true; }
+  } catch (error) { /* 静默：未配置/未登录时不打扰 */ }
+}
+function startStationBadgePolling() {
+  if (STATION_BADGE_TIMER) clearInterval(STATION_BADGE_TIMER);
+  refreshStationBadge();
+  STATION_BADGE_TIMER = setInterval(refreshStationBadge, 60000);
+}
+async function loadStationApplications() {
+  const status = $('sa-status').value;
+  try {
+    const data = await api(`/api/station-applications${status ? `?status=${encodeURIComponent(status)}` : ''}`);
+    STATION_APPLICATIONS = data.applications || [];
+    STATION_COUNTS = data.counts || {};
+    renderStationStats();
+    renderStationApplications();
+    await loadStationProfiles();
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+}
+function renderStationStats() {
+  const c = STATION_COUNTS || {};
+  const cards = [
+    { label: '待审核', value: Number(c.pending) || 0, sub: '需在 1~3 个工作日内答复', accent: true },
+    { label: '已成立分站', value: Number(c.approved) || 0, sub: '专属账号密码已定向公告下发' },
+    { label: '已驳回', value: Number(c.rejected) || 0, sub: '驳回理由同步展示给用户' },
+    { label: '已撤销', value: Number(c.revoked) || 0, sub: '分站账号已停用，无法登录' },
+  ];
+  $('sa-stats').innerHTML = cards.map(x => `<div class="stat-card${x.accent ? ' is-accent' : ''}"><div class="stat-label">${x.label}</div><div class="stat-value">${x.value.toLocaleString()}</div><div class="stat-sub">${x.sub}</div></div>`).join('');
+}
+async function loadStationProfiles() {
+  const missing = STATION_APPLICATIONS.filter(item => !(item.id in STATION_PROFILES)).slice(0, SA_AUTO_PROFILES);
+  if (!missing.length) return;
+  for (let i = 0; i < missing.length; i += 6) {
+    await Promise.all(missing.slice(i, i + 6).map(async item => {
+      try { STATION_PROFILES[item.id] = await api(`/api/station-applications/${item.id}/profile`); }
+      catch (error) { STATION_PROFILES[item.id] = null; }
+    }));
+  }
+  renderStationApplications();
+}
+function stationProfileHtml(item) {
+  const profile = STATION_PROFILES[item.id];
+  if (profile === undefined) {
+    return `<div class="sa-usage"><div class="sa-usage-title">积分余额与消费流水 <button class="link-btn" data-sa-action="profile" data-id="${item.id}">立即加载</button></div></div>`;
+  }
+  if (!profile) {
+    return '<div class="sa-usage"><div class="sa-usage-title">积分余额与消费流水：加载失败，刷新后重试</div></div>';
+  }
+  const w = profile.wallet || {};
+  const usage = Array.isArray(profile.usage) ? profile.usage : [];
+  const available = Number(w.points_balance || 0) - Number(w.locked_points || 0);
+  const items = [
+    { k: '积分余额', v: Number(w.points_balance || 0).toLocaleString() },
+    { k: '可用积分', v: available.toLocaleString() },
+    { k: '冻结积分', v: Number(w.locked_points || 0).toLocaleString() },
+    { k: '套餐', v: `${esc(w.plan_label || '体验版')} · ${Number(w.plan_balance || 0).toLocaleString()}` },
+  ];
+  const usageHtml = usage.length ? usage.map(row => {
+    const status = row.status === 'succeeded' ? '成功' : row.status === 'failed' ? '已释放' : '冻结中';
+    return `<div class="sa-usage-row"><span class="t">${fmtTime(row.created_at)}</span><span class="f" title="${esc(row.feature_key || '')}">${esc(row.feature_key || '-')} · ${status}</span><span class="p">${Number(row.charged_points || 0).toLocaleString()}</span></div>`;
+  }).join('') : '<div class="sa-usage-row"><span class="t">暂无消费流水</span></div>';
+  return `<div class="sa-kv">${items.map(x => `<div class="sa-item"><div class="k">${x.k}</div><div class="v">${x.v}</div></div>`).join('')}</div>
+    <div class="sa-usage"><div class="sa-usage-title">最近消费流水（${usage.length} 条）</div>${usageHtml}</div>`;
+}
+function renderStationApplications() {
+  const query = $('sa-search').value.trim().toLowerCase();
+  const rows = STATION_APPLICATIONS.filter(item => !query || `${item.username || ''} ${item.account_id || ''} ${item.email || ''} ${item.contact || ''} ${item.note || ''} ${item.station_username || ''}`.toLowerCase().includes(query));
+  $('sa-count').textContent = `显示 ${rows.length} / ${STATION_APPLICATIONS.length} 条申请`;
+  if (!rows.length) { $('sa-list').innerHTML = '<div class="sa-empty">当前筛选下暂无分站申请</div>'; return; }
+  $('sa-list').innerHTML = rows.map(item => {
+    const status = String(item.status || 'pending');
+    const name = item.username || item.account_id;
+    const badges = [`<span class="badge ${stationStatusBadges[status] || 'badge-muted'}">${esc(stationStatusNames[status] || status)}</span>`];
+    if (item.decided_at) badges.push(`<span class="badge badge-muted">审核 ${fmtTime(item.decided_at)}</span>`);
+    const meta = [
+      { k: '申请时间', v: fmtTime(item.applied_at) },
+      { k: '账号', v: `<b>${esc(item.username || '-')}</b> <span class="mono">${esc(item.account_id)}</span>` },
+      { k: '邮箱', v: esc(item.email || '-') },
+      { k: '联系方式', v: esc(item.contact || '-') },
+    ];
+    if (item.station_username) {
+      meta.push({ k: '分站账号', v: `<span class="mono">${esc(item.station_username)}</span>` });
+      meta.push({ k: '分站后台', v: `<a href="${esc(item.login_url)}" target="_blank" rel="noreferrer">${esc(item.login_url)}</a>` });
+    }
+    const actions = [];
+    if (status === 'pending' || status === 'rejected') actions.push(`<button class="btn btn-success btn-sm" data-sa-action="approve" data-id="${item.id}">批准成立分站</button>`);
+    if (status === 'pending') actions.push(`<button class="btn btn-ghost btn-sm" data-sa-action="reject" data-id="${item.id}" data-name="${esc(name)}">驳回</button>`);
+    if (status === 'approved') {
+      actions.push(`<button class="btn btn-ghost btn-sm" data-sa-action="password" data-id="${item.id}">查看专属密码</button>`);
+      actions.push(`<button class="btn btn-danger btn-sm" data-sa-action="revoke" data-id="${item.id}" data-name="${esc(name)}">撤销已批准</button>`);
+    }
+    return `<div class="sa-card">
+      <div class="sa-card-head"><span class="sa-title">${esc(name)} 的分站申请</span><span class="sa-badges">${badges.join('')}</span></div>
+      <div class="sa-kv">${meta.map(x => `<div class="sa-item"><div class="k">${x.k}</div><div class="v">${x.v}</div></div>`).join('')}</div>
+      ${item.note ? `<div class="sa-note">申请说明：${esc(item.note)}</div>` : ''}
+      ${item.reject_reason ? `<div class="sa-note">驳回理由：${esc(item.reject_reason)}</div>` : ''}
+      ${stationProfileHtml(item)}
+      ${actions.length ? `<div class="sa-card-actions">${actions.join('')}</div>` : ''}
+    </div>`;
+  }).join('');
+}
+$('sa-list').onclick = event => {
+  const button = event.target.closest('[data-sa-action]');
+  if (!button) return;
+  const id = Number(button.dataset.id);
+  const item = STATION_APPLICATIONS.find(x => Number(x.id) === id);
+  const name = (item && (item.username || item.account_id)) || button.dataset.name || '';
+  const action = button.dataset.saAction;
+  if (action === 'profile') {
+    api(`/api/station-applications/${id}/profile`)
+      .then(data => { STATION_PROFILES[id] = data; renderStationApplications(); })
+      .catch(error => { if (error.message !== '__AUTH__') { STATION_PROFILES[id] = null; renderStationApplications(); toast(error.message, 'error'); } });
+    return;
+  }
+  if (action === 'password') {
+    const app = item || {};
+    showSecret(
+      `分站专属账号密码 · ${app.station_username || ''}`,
+      `分站后台：${app.login_url || ''}\n专属账号：${app.station_username || ''}\n专属密码：${app.station_password || ''}`,
+    );
+    return;
+  }
+  if (action === 'approve') {
+    askConfirm(
+      '批准成立分站',
+      `将为 ${name} 开通分站后台账号并生成专属账号密码，随后以定向公告的形式发送给该用户。`,
+      async () => {
+        const data = await api(`/api/station-applications/${id}/approve`, { method: 'POST' });
+        const app = data.application || {};
+        toast('已批准并下发专属账号密码公告', 'success');
+        await loadStationApplications();
+        showSecret(
+          `分站专属账号密码 · ${app.station_username || ''}`,
+          `分站后台：${app.login_url || ''}\n专属账号：${app.station_username || ''}\n专属密码：${app.station_password || ''}`,
+        );
+      },
+    );
+    return;
+  }
+  if (action === 'reject') {
+    const reason = prompt(`驳回 ${name} 的分站申请，请填写驳回理由（会展示给该用户）`, '');
+    if (reason === null) return;
+    if (!reason.trim()) { toast('请填写驳回理由', 'error'); return; }
+    askConfirm('确认驳回申请', `将驳回 ${name} 的分站申请，理由会同步展示给该用户。`, async () => {
+      await api(`/api/station-applications/${id}/reject`, { method: 'POST', body: JSON.stringify({ reason: reason.trim() }) });
+      toast('已驳回该申请', 'success');
+      await loadStationApplications();
+    });
+    return;
+  }
+  if (action === 'revoke') {
+    askConfirm(
+      '撤销已批准的分站',
+      `将停用 ${name} 的分站账号，并下线对应的专属账号密码公告；该账号随即无法登录分站后台。`,
+      async () => {
+        await api(`/api/station-applications/${id}/revoke`, { method: 'POST' });
+        toast('已撤销该分站', 'success');
+        await loadStationApplications();
+      },
+    );
+  }
+};
+$('sa-status').onchange = () => loadStationApplications();
+$('sa-search').oninput = renderStationApplications;
+$('sa-refresh').onclick = () => loadStationApplications();
+
+function askConfirm(title,message,action){$('confirm-title').textContent=title;$('confirm-message').textContent=message;confirmAction=action;$('confirm-mask').classList.remove('hidden');}
+$('confirm-cancel').onclick=()=>{$('confirm-mask').classList.add('hidden');confirmAction=null;};
+$('confirm-ok').onclick=async()=>{$('confirm-mask').classList.add('hidden');const action=confirmAction;confirmAction=null;try{if(action)await action();}catch(error){if(error.message!=='__AUTH__')toast(error.message,'error');}};
+
+let forcePasswordChange=false;
+function openPasswordModal(force=false){forcePasswordChange=force;$('password-title').textContent=force?'首次登录 · 请修改密码':'修改密码';$('password-message').textContent=force?'为保证账号安全，首次登录必须修改初始密码后才能进入后台。':'新密码须为 8–128 位，并同时包含字母和数字。';$('password-cancel').classList.toggle('hidden',force);$('password-error').textContent='';$('current-password').value='';$('new-password').value='';$('confirm-password').value='';$('password-mask').classList.remove('hidden');}
+$('change-password-btn').onclick=()=>openPasswordModal(false);
+$('password-cancel').onclick=()=>{if(!forcePasswordChange)$('password-mask').classList.add('hidden');};
+$('password-submit').onclick=async()=>{const current_password=$('current-password').value,new_password=$('new-password').value;$('password-error').textContent='';if(new_password!==$('confirm-password').value){$('password-error').textContent='两次输入的新密码不一致';return;}try{const data=await api('/api/change-password',{method:'POST',body:JSON.stringify({current_password,new_password})});CURRENT_ADMIN=data.admin;$('password-mask').classList.add('hidden');forcePasswordChange=false;toast('密码修改成功','success');activateSection('dashboard');}catch(error){if(error.message!=='__AUTH__')$('password-error').textContent=error.message;}};
+
+function showSecret(title,value){$('secret-title').textContent=title;$('secret-value').textContent=value;$('secret-mask').classList.remove('hidden');}
+$('secret-copy').onclick=async()=>{try{await navigator.clipboard.writeText($('secret-value').textContent);toast('已复制','success');}catch{toast('复制失败，请手动复制','error');}};
+$('secret-close').onclick=()=>$('secret-mask').classList.add('hidden');
+
+$('logout-btn').onclick=async()=>{try{await api('/api/logout',{method:'POST'});}catch{}showAuth();};
+
+// ---------------- 数据看板 ----------------
+let DASH = null; let DASH_CHARTS = {}; let WAVE_RUNNERS = {};
+async function loadDashboard() {
+  try {
+    const data = await api('/api/dashboard');
+    DASH = data;
+    renderDashboardStats();
+    renderDashboardCharts();
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+}
+function renderDashboardStats() {
+  if (!DASH) return;
+  const s = DASH.stats || {};
+  const onlinePct = s.total_users ? Math.round(Number(s.online_users || 0) * 100 / Number(s.total_users)) : 0;
+  const revealed = s.total_revenue_cents != null;
+  const cards = [
+    { label: '当前在线用户', value: Number(s.online_users || 0).toLocaleString(), sub: `占总用户 ${onlinePct}%`, accent: true },
+    { label: '总用户数量', value: Number(s.total_users || 0).toLocaleString(), sub: '全部注册账号' },
+    { label: '总邀请码数量', value: Number(s.total_invites || 0).toLocaleString(), sub: '已创建的邀请码' },
+    { label: '当天流水金额', value: fmtMoney(s.today_revenue_cents), sub: `对应下发积分 ${Number(s.today_issued_points || 0).toLocaleString()}`, success: true },
+    { label: '当天积分消耗', value: Number(s.today_consumed_points || 0).toLocaleString(), sub: '今日全平台消耗积分', accent: true },
+    { label: '累计金额收入', value: revealed ? fmtMoney(s.total_revenue_cents) : '**** 点击查看', sub: revealed ? '全部已支付订单累计' : '需登录密码验证后显示', success: true, locked: !revealed },
+  ];
+  $('dashboard-stats').innerHTML = cards.map(x =>
+    `<div class="stat-card${x.accent ? ' is-accent' : ''}${x.success ? ' is-success' : ''}"><div class="stat-label">${x.label}</div><div class="stat-value${x.locked ? ' revenue-locked' : ''}"${x.locked ? ' data-revenue-lock="1"' : ''}>${x.value}</div><div class="stat-sub">${x.sub || ''}</div></div>`
+  ).join('');
+}
+function destroyCharts() {
+  Object.values(WAVE_RUNNERS).forEach(stop => { try { stop(); } catch (e) {} });
+  WAVE_RUNNERS = {};
+  Object.values(DASH_CHARTS).forEach(chart => { if (chart) chart.destroy(); });
+  DASH_CHARTS = {};
+}
+// 水流波纹动效：在折线图上方叠加独立 canvas，沿数据线下方的面积区域绘制随相位流动的正弦波纹
+function createWaveOverlay(chartId, opts) {
+  const canvas = $(chartId);
+  const chart = DASH_CHARTS[chartId];
+  if (!canvas || !chart) return;
+  const wrap = canvas.parentElement;
+  let overlay = wrap.querySelector('.wave-overlay');
+  if (!overlay) {
+    overlay = document.createElement('canvas');
+    overlay.className = 'wave-overlay';
+    overlay.style.cssText = 'position:absolute;inset:0;pointer-events:none;z-index:1;';
+    wrap.appendChild(overlay);
+  }
+  const ctx = overlay.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  let raf = 0, phase = 0, stopped = false;
+  const syncSize = () => {
+    const rect = canvas.getBoundingClientRect();
+    const w = Math.max(1, Math.round(rect.width * dpr));
+    const h = Math.max(1, Math.round(rect.height * dpr));
+    if (overlay.width !== w || overlay.height !== h) { overlay.width = w; overlay.height = h; }
+  };
+  syncSize();
+  const onResize = syncSize;
+  window.addEventListener('resize', onResize);
+  const datasetY = dataset => (dataset.yAxisID ? chart.scales[dataset.yAxisID] : chart.scales.y);
+  // 返回数据集折线在像素 x 处的 y 像素值（线性插值）
+  function lineYAt(xPx, dataset) {
+    const xScale = chart.scales.x, yScale = datasetY(dataset), area = chart.chartArea;
+    if (!xScale || !yScale || !area || xPx < area.left || xPx > area.right) return null;
+    const n = dataset.data.length;
+    const x0 = xScale.getPixelForValue(0), x1 = xScale.getPixelForValue(1);
+    const step = (x1 - x0) || 1;
+    let i = Math.floor((xPx - x0) / step);
+    i = Math.max(0, Math.min(n - 2, i));
+    const xa = xScale.getPixelForValue(i), xb = xScale.getPixelForValue(i + 1);
+    const ya = yScale.getPixelForValue(dataset.data[i]), yb = yScale.getPixelForValue(dataset.data[i + 1]);
+    const t = (xb - xa) ? (xPx - xa) / (xb - xa) : 0;
+    return ya + (yb - ya) * t;
+  }
+  function frame() {
+    if (stopped) return;
+    phase += 0.02;
+    // 看板区块隐藏时跳过绘制（display:none 时 offsetParent 为 null）
+    if (canvas.offsetParent !== null) {
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+      const area = chart.chartArea;
+      if (area) {
+        opts.forEach(o => {
+          const dataset = chart.data.datasets[o.index];
+          if (!dataset || !dataset.data || dataset.data.length < 2) return;
+          // 1) 裁剪到数据线下方区域
+          ctx.save();
+          ctx.beginPath();
+          const n = dataset.data.length, xScale = chart.scales.x, yScale = datasetY(dataset);
+          for (let i = 0; i < n; i++) {
+            const x = xScale.getPixelForValue(i), y = yScale.getPixelForValue(dataset.data[i]);
+            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+          }
+          ctx.lineTo(xScale.getPixelForValue(n - 1), area.bottom);
+          ctx.lineTo(xScale.getPixelForValue(0), area.bottom);
+          ctx.closePath();
+          ctx.clip();
+          // 2) 固定形状的水面底色：顶边始终贴着数据线，上下形状恒定
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = o.baseColor;
+          ctx.fill();
+          // 3) 水平传播的波纹纹理：仅透明度沿水平方向平移，不改变峰值与上下形状
+          const step = 2;
+          for (let x = area.left; x <= area.right; x += step) {
+            const lineY = lineYAt(x, dataset);
+            if (lineY == null) continue;
+            const depth = Math.max(1, area.bottom - lineY);
+            o.layers.forEach(layer => {
+              const shade = 0.5 + 0.5 * Math.sin(x * layer.freq + phase * layer.speed + layer.offset);
+              ctx.globalAlpha = layer.alpha * (0.35 + 0.65 * shade);
+              ctx.fillStyle = layer.color;
+              ctx.fillRect(x, lineY, step, depth * layer.height);
+            });
+          }
+          ctx.globalAlpha = 1;
+          ctx.restore();
+        });
+      }
+    }
+    raf = requestAnimationFrame(frame);
+  }
+  raf = requestAnimationFrame(frame);
+  WAVE_RUNNERS[chartId] = () => { stopped = true; cancelAnimationFrame(raf); window.removeEventListener('resize', onResize); };
+}
+function renderDashboardCharts() {
+  if (typeof Chart === 'undefined' || !DASH) return;
+  destroyCharts();
+  const flow = DASH.flow || [], growth = DASH.growth || [];
+  const labels = flow.map(x => String(x.day).slice(5));
+  const revenue = flow.map(x => Number(x.revenue_cents || 0) / 100);
+  const issued = flow.map(x => Number(x.issued_points || 0));
+  const consumed = flow.map(x => Number(x.consumed_points || 0));
+  const newUsers = growth.map(x => Number(x.new_users || 0));
+  const activeUsers = growth.map(x => Number(x.active_users || 0));
+  const s = DASH.stats || {};
+  DASH_CHARTS.pie = new Chart($('chart-user-pie'), {
+    type: 'doughnut',
+    data: {
+      labels: ['在线用户', '离线用户'],
+      datasets: [{ data: [Number(s.online_users || 0), Math.max(0, Number(s.total_users || 0) - Number(s.online_users || 0))], backgroundColor: ['#356df3', '#d9deea'], borderWidth: 0 }],
+    },
+    options: { responsive: true, maintainAspectRatio: false, cutout: '62%', plugins: { legend: { position: 'bottom', labels: { usePointStyle: true, boxWidth: 8 } } } },
+  });
+  DASH_CHARTS.flow = new Chart($('chart-flow'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: '充值金额（元）', data: revenue, borderColor: '#356df3', backgroundColor: 'rgba(53,109,243,.08)', fill: true, tension: .3, pointRadius: 2 },
+        { label: '积分消耗', data: consumed, borderColor: '#d98b20', backgroundColor: 'rgba(217,139,32,.08)', fill: true, tension: .3, pointRadius: 2, yAxisID: 'y1' },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { position: 'bottom', labels: { usePointStyle: true, boxWidth: 8 } } },
+      scales: {
+        x: { ticks: { maxTicksLimit: 10 } },
+        y: { beginAtZero: true, title: { display: true, text: '充值金额（元）' } },
+        y1: { type: 'linear', beginAtZero: true, position: 'right', grid: { drawOnChartArea: false }, title: { display: true, text: '积分消耗' } },
+      },
+    },
+  });
+  DASH_CHARTS.issue = new Chart($('chart-issue'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: '积分发放', data: issued, borderColor: '#21a366', backgroundColor: 'rgba(33,163,102,.10)', fill: true, tension: .3, pointRadius: 2 },
+        { label: '充值金额（元）', data: revenue, borderColor: '#8b5cf6', backgroundColor: 'rgba(139,92,246,.10)', fill: true, tension: .3, pointRadius: 2, yAxisID: 'y1' },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { position: 'bottom', labels: { usePointStyle: true, boxWidth: 8 } } },
+      scales: {
+        x: { ticks: { maxTicksLimit: 10 } },
+        y: { beginAtZero: true, title: { display: true, text: '积分发放' } },
+        y1: { type: 'linear', beginAtZero: true, position: 'right', grid: { drawOnChartArea: false }, title: { display: true, text: '充值金额（元）' } },
+      },
+    },
+  });
+  createWaveOverlay('chart-issue', [
+    { index: 0, baseColor: 'rgba(33,163,102,.18)', layers: [
+      { color: '#6ee7a0', freq: .05, speed: 3, offset: 0, height: .5, alpha: .35 },
+      { color: '#34d399', freq: .07, speed: -2, offset: 1.6, height: 1, alpha: .28 },
+    ]},
+    { index: 1, baseColor: 'rgba(139,92,246,.16)', layers: [
+      { color: '#c4b5fd', freq: .055, speed: -3, offset: .9, height: .45, alpha: .34 },
+      { color: '#a78bfa', freq: .075, speed: 2, offset: 2.2, height: 1, alpha: .26 },
+    ]},
+  ]);
+  DASH_CHARTS.growth = new Chart($('chart-growth'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: '新增用户', data: newUsers, borderColor: '#356df3', backgroundColor: 'rgba(53,109,243,.08)', fill: true, tension: .3, pointRadius: 2 },
+        { label: '活跃用户', data: activeUsers, borderColor: '#d98b20', backgroundColor: 'rgba(217,139,32,.08)', fill: true, tension: .3, pointRadius: 2 },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { position: 'bottom', labels: { usePointStyle: true, boxWidth: 8 } } },
+      scales: { x: { ticks: { maxTicksLimit: 10 } }, y: { beginAtZero: true, ticks: { precision: 0 } } },
+    },
+  });
+}
+$('dashboard-stats').onclick = event => {
+  if (!event.target.dataset.revenueLock) return;
+  $('revenue-error').textContent = ''; $('revenue-password').value = '';
+  $('revenue-mask').classList.remove('hidden'); $('revenue-password').focus();
+};
+$('revenue-cancel').onclick = () => $('revenue-mask').classList.add('hidden');
+$('revenue-submit').onclick = async () => {
+  const password = $('revenue-password').value;
+  if (!password) { $('revenue-error').textContent = '请输入登录密码'; return; }
+  $('revenue-submit').disabled = true;
+  try {
+    const data = await api('/api/dashboard/revenue', { method: 'POST', body: JSON.stringify({ password }) });
+    if (DASH) DASH.stats.total_revenue_cents = data.stats.total_revenue_cents;
+    renderDashboardStats();
+    $('revenue-mask').classList.add('hidden');
+    toast('验证通过，已显示累计收入', 'success');
+  } catch (error) {
+    if (error.message === '__AUTH__') return;
+    $('revenue-error').textContent = error.message || '验证失败，请稍后重试';
+  } finally { $('revenue-submit').disabled = false; }
+};
+
+// ---------------------------------------------------------------- 失败日志
+let FAILURE_LOGS = [], FAILURE_TOTAL = 0, FAILURE_OFFSET = 0, FAILURE_MORE = false;
+const debounce = (fn, wait) => { let timer; return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), wait); }; };
+function failureQuery(offset = 0) {
+  const params = new URLSearchParams();
+  params.set('limit', '100');
+  if (offset) params.set('offset', String(offset));
+  const account = $('failure-account').value.trim(), version = $('failure-version').value.trim(), site = $('failure-site').value.trim();
+  const from = $('failure-from').value ? new Date($('failure-from').value).toISOString() : '';
+  const to = $('failure-to').value ? new Date($('failure-to').value).toISOString() : '';
+  if (account) params.set('account', account);
+  if (version) params.set('app_version', version);
+  if (site) params.set('target_site', site);
+  if (from) params.set('start', from);
+  if (to) params.set('end', to);
+  return params.toString();
+}
+async function loadFailureLogs(reset = true) {
+  if (reset) { FAILURE_LOGS = []; FAILURE_OFFSET = 0; FAILURE_MORE = false; }
+  try {
+    const data = await api(`/api/failure-logs?${failureQuery(reset ? 0 : FAILURE_OFFSET)}`);
+    const rows = data.logs || [];
+    FAILURE_LOGS = reset ? rows : FAILURE_LOGS.concat(rows);
+    FAILURE_TOTAL = Number(data.total) || FAILURE_LOGS.length;
+    FAILURE_OFFSET = rows.length ? FAILURE_OFFSET + rows.length : FAILURE_OFFSET;
+    FAILURE_MORE = !!data.has_more;
+    renderFailureLogs(FAILURE_TOTAL);
+    if (reset) loadFailureSummary();
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+}
+async function loadFailureSummary() {
+  try {
+    const data = await api('/api/failure-logs/summary');
+    renderFailureStats(data);
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+}
+function renderFailureStats(s) {
+  if (!s) return;
+  const versionChip = (s.by_version || []).map(v => `${esc(v.app_version || '-')} × ${v.reports}`).join(' · ');
+  const errorChip = (s.error_type_distribution || []).slice(0, 6).map(([k, n]) => `${esc(k)} ${n}`).join(' · ');
+  const topError = (s.error_type_distribution || [])[0];
+  const cards = [
+    { label: '失败上报次数', value: Number(s.total_reports || 0).toLocaleString(), sub: `覆盖 ${Number(s.total_products || 0).toLocaleString()} 个商品`, accent: true },
+    { label: '失败商品数', value: Number(s.total_failed_items || 0).toLocaleString(), sub: `待确认 ${Number(s.total_attention_items || 0).toLocaleString()}`, accent: true },
+    { label: '自动补跑轮次', value: Number(s.repull_rounds || 0).toLocaleString(), sub: '失败项自动补跑累计轮次' },
+    { label: '版本分布', value: (s.by_version || []).length ? `${(s.by_version || []).length} 个版本` : '-', sub: versionChip || '暂无' },
+    { label: '主要错误类型', value: topError ? esc(topError[0]) : '-', sub: errorChip || '暂无' },
+  ];
+  $('failure-stats').innerHTML = cards.map(x => `<div class="stat-card${x.accent ? ' is-accent' : ''}"><div class="stat-label">${x.label}</div><div class="stat-value">${x.value}</div><div class="stat-sub">${x.sub || ''}</div></div>`).join('');
+}
+function failureBadge(status) {
+  if (status === 'success') return '<span class="badge badge-success">成功</span>';
+  if (status === 'failed') return '<span class="badge badge-danger">失败</span>';
+  if (status === 'attention_required') return '<span class="badge badge-warning">待确认</span>';
+  return `<span class="badge badge-muted">${esc(status || '-')}</span>`;
+}
+function renderFailureLogs(total) {
+  $('failure-count').textContent = `显示 ${FAILURE_LOGS.length} / ${total} 条${FAILURE_MORE ? ' · 还有更多，可点击「加载更多」' : ''}`;
+  $('failure-more-wrap').style.display = FAILURE_MORE && FAILURE_LOGS.length ? '' : 'none';
+  $('failure-logs-body').innerHTML = FAILURE_LOGS.length ? FAILURE_LOGS.map(log => {
+    const failed = Number(log.failed_count || 0), attention = Number(log.attention_required_count || 0);
+    let statusBadge;
+    if (log.task_status === 'completed' && failed === 0 && attention === 0) statusBadge = '<span class="badge badge-success">成功</span>';
+    else if (log.task_status === 'failed') statusBadge = '<span class="badge badge-danger">失败</span>';
+    else if (attention > 0) statusBadge = '<span class="badge badge-warning">待确认</span>';
+    else statusBadge = `<span class="badge badge-muted">${esc(log.task_status || '-')}</span>`;
+    const repull = Number(log.auto_repull_rounds || 0) > 0 ? `<span class="badge badge-warning">${log.auto_repull_rounds} 轮</span>` : '<span class="badge badge-muted">未触发</span>';
+    return `<tr>
+      <td>${fmtTime(log.created_at)}</td>
+      <td><b>${esc(log.username || '-')}</b><br><span class="mono">${esc(log.account_id)}</span></td>
+      <td>${esc(log.app_version || '-')}</td>
+      <td class="mono">${log.task_id || '-'}</td>
+      <td>${statusBadge}<br><span class="mono">${Number(log.total_count || 0)} 款 · 成功 ${Number(log.success_count || 0)} · 失败 ${failed} · 待确认 ${attention}</span></td>
+      <td>${repull}</td>
+      <td>${esc(log.target_site || '-')}</td>
+      <td><button class="link-btn" data-failure-detail="${log.id}">查看明细 (${(log.items || []).length})</button></td>
+    </tr>`;
+  }).join('') : '<tr><td class="empty" colspan="8">暂无失败日志上报</td></tr>';
+}
+['failure-account', 'failure-version', 'failure-site'].forEach(id => $(id).addEventListener('input', debounce(loadFailureLogs, 350)));
+$('failure-from').onchange = loadFailureLogs;
+$('failure-to').onchange = loadFailureLogs;
+$('failure-reset').onclick = () => { ['failure-account', 'failure-version', 'failure-site'].forEach(id => $(id).value = ''); $('failure-from').value = ''; $('failure-to').value = ''; loadFailureLogs(true); };
+$('failure-more').onclick = () => loadFailureLogs(false);
+$('failure-logs-body').onclick = event => {
+  const button = event.target.closest('[data-failure-detail]'); if (!button) return;
+  const log = FAILURE_LOGS.find(item => String(item.id) === button.dataset.failureDetail); if (!log) return;
+  $('failure-detail-title').textContent = `失败明细 · 任务 #${log.task_id || '-'}`;
+  $('failure-detail-sub').textContent = `${esc(log.username || '-')} · 版本 ${esc(log.app_version || '-')} · 站点 ${esc(log.target_site || '-')} · 上报于 ${fmtTime(log.created_at)}`;
+  const items = log.items || [];
+  $('failure-detail-body').innerHTML = items.length ? items.map(item => {
+    const notes = (item.ai_notes || []).length ? `<div class="form-note">AI 备注：${esc(item.ai_notes.join('；'))}</div>` : '';
+    const diag = [];
+    if (item.provider_status_classes && Object.keys(item.provider_status_classes).length) {
+      diag.push(`提供方状态：${esc(Object.entries(item.provider_status_classes).map(([k, v]) => `${k}=${v}`).join('，'))}`);
+    }
+    if (item.provider_attempts && Object.keys(item.provider_attempts).length) {
+      diag.push(`尝试次数：${esc(Object.entries(item.provider_attempts).map(([k, v]) => `${k}=${v}`).join('，'))}`);
+    }
+    if (item.stage_timings_ms && Object.keys(item.stage_timings_ms).length) {
+      diag.push(`阶段耗时(ms)：${esc(Object.entries(item.stage_timings_ms).map(([k, v]) => `${k}=${v}ms`).join('，'))}`);
+    }
+    const rejects = item.rejected_image_paths || [];
+    if (rejects.length) diag.push(`被拒原图：${rejects.length} 张`);
+    const diagHtml = diag.length ? `<div class="form-note">诊断：${diag.join('<br>')}</div>` : '';
+    return `<tr>
+      <td><span class="mono">${esc(item.skc || '-')}</span><br><span class="mono">${esc(item.spu || '')}</span></td>
+      <td>${esc(item.title || '-')}</td>
+      <td>${failureBadge(item.status)}</td>
+      <td>${esc(item.error_type || item.failure_class || '-')}</td>
+      <td><div>${esc(item.reason || '-')}</div>${item.operator_hint ? `<div class="form-note">操作提示：${esc(item.operator_hint)}</div>` : ''}${item.debug_hint ? `<div class="form-note">排错细节：${esc(item.debug_hint)}</div>` : ''}${notes}${diagHtml}</td>
+    </tr>`;
+  }).join('') : '<tr><td class="empty" colspan="5">该任务无失败明细</td></tr>';
+  $('failure-detail-mask').classList.remove('hidden');
+};
+$('failure-detail-close').onclick = () => $('failure-detail-mask').classList.add('hidden');
+$('failure-export-btn').onclick = async () => {
+  try {
+    const response = await fetch(apiPath(`/api/failure-logs/export?${failureQuery()}`), { headers: { 'X-Auth-Token': TOKEN } });
+    if (response.status === 401) { showAuth(); return; }
+    if (!response.ok) { const data = await response.json().catch(() => ({})); throw new Error(data.detail || '导出失败'); }
+    const blob = await response.blob(), link = document.createElement('a');
+    link.href = URL.createObjectURL(blob); link.download = `失败日志_${new Date().toISOString().slice(0, 10)}.xlsx`; link.click(); URL.revokeObjectURL(link.href);
+    toast('失败日志已导出', 'success');
+  } catch (error) { toast(error.message, 'error'); }
+};
+
+let LOGUPS = [], LOGUP_TOTAL = 0, LOGUP_OFFSET = 0, LOGUP_MORE = false;
+function logupQuery(offset = 0) {
+  const params = new URLSearchParams();
+  params.set('limit', '100');
+  if (offset) params.set('offset', String(offset));
+  const account = $('logup-account').value.trim(), version = $('logup-version').value.trim(), platform = $('logup-platform').value.trim();
+  const from = $('logup-from').value ? new Date($('logup-from').value).toISOString() : '';
+  const to = $('logup-to').value ? new Date($('logup-to').value).toISOString() : '';
+  if (account) params.set('account', account);
+  if (version) params.set('app_version', version);
+  if (platform) params.set('platform', platform);
+  if (from) params.set('start', from);
+  if (to) params.set('end', to);
+  return params.toString();
+}
+async function loadLogUploads(reset = true) {
+  if (reset) { LOGUPS = []; LOGUP_OFFSET = 0; LOGUP_MORE = false; }
+  try {
+    const data = await api(`/api/log-uploads?${logupQuery(reset ? 0 : LOGUP_OFFSET)}`);
+    const rows = data.logs || [];
+    LOGUPS = reset ? rows : LOGUPS.concat(rows);
+    LOGUP_TOTAL = Number(data.total) || LOGUPS.length;
+    LOGUP_OFFSET = rows.length ? LOGUP_OFFSET + rows.length : LOGUP_OFFSET;
+    LOGUP_MORE = !!data.has_more;
+    renderLogupTable(LOGUP_TOTAL);
+    if (reset) loadLogupSummary();
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+}
+async function loadLogupSummary() {
+  try {
+    const data = await api('/api/log-uploads/summary');
+    renderLogupStats(data);
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+}
+function formatBytes(n) {
+  const value = Number(n || 0);
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
+  return `${(value / 1024 / 1024 / 1024).toFixed(1)} GB`;
+}
+function renderLogupStats(s) {
+  if (!s) return;
+  const versionChip = (s.by_version || []).map(v => `${esc(v.app_version || '-')} × ${v.reports}`).join(' · ');
+  const userChip = (s.by_user || []).slice(0, 4).map(v => `${esc(v.username || '-')} ${v.reports}`).join(' · ');
+  const cards = [
+    { label: '上传总次数', value: Number(s.total_reports || 0).toLocaleString(), sub: '启动器主动上报日志次数', accent: true },
+    { label: '日志总大小', value: formatBytes(s.total_size), sub: '累计接收日志体量' },
+    { label: '版本分布', value: (s.by_version || []).length ? `${(s.by_version || []).length} 个版本` : '-', sub: versionChip || '暂无' },
+    { label: '上报用户', value: (s.by_user || []).length ? `${(s.by_user || []).length} 个用户` : '-', sub: userChip || '暂无' },
+  ];
+  $('logup-stats').innerHTML = cards.map(x => `<div class="stat-card${x.accent ? ' is-accent' : ''}"><div class="stat-label">${x.label}</div><div class="stat-value">${x.value}</div><div class="stat-sub">${x.sub || ''}</div></div>`).join('');
+}
+function renderLogupTable(total) {
+  $('logup-count').textContent = `显示 ${LOGUPS.length} / ${total} 条${LOGUP_MORE ? ' · 还有更多，可点击「加载更多」' : ''}`;
+  $('logup-more-wrap').style.display = LOGUP_MORE && LOGUPS.length ? '' : 'none';
+  $('logup-logs-body').innerHTML = LOGUPS.length ? LOGUPS.map(log => {
+    const hasContent = (Number(log.log_size || 0)) > 0;
+    return `<tr>
+      <td>${fmtTime(log.created_at)}</td>
+      <td><b>${esc(log.username || '-')}</b><br><span class="mono">${esc(log.account_id)}</span></td>
+      <td>${esc(log.app_version || '-')}</td>
+      <td>${esc(log.platform || '-')}</td>
+      <td>${esc(log.log_name || '-')}</td>
+      <td>${formatBytes(log.log_size)}</td>
+      <td class="mono">${esc(log.client_ip || '-')}</td>
+      <td><button class="link-btn" data-logup-detail="${log.upload_id}">${hasContent ? '查看日志' : '查看'}</button></td>
+    </tr>`;
+  }).join('') : '<tr><td class="empty" colspan="8">暂无日志上传</td></tr>';
+}
+['logup-account', 'logup-version', 'logup-platform'].forEach(id => $(id).addEventListener('input', debounce(loadLogUploads, 350)));
+$('logup-from').onchange = loadLogUploads;
+$('logup-to').onchange = loadLogUploads;
+$('logup-reset').onclick = () => { ['logup-account', 'logup-version', 'logup-platform'].forEach(id => $(id).value = ''); $('logup-from').value = ''; $('logup-to').value = ''; loadLogUploads(true); };
+$('logup-more').onclick = () => loadLogUploads(false);
+$('logup-logs-body').onclick = async event => {
+  const button = event.target.closest('[data-logup-detail]'); if (!button) return;
+  try {
+    const data = await api(`/api/log-uploads/${button.dataset.logupDetail}`);
+    const log = data.log || {};
+    $('logup-detail-title').textContent = `日志详情 · ${esc(log.log_name || '-')}`;
+    $('logup-detail-sub').textContent = `${esc(log.username || '-')} · 版本 ${esc(log.app_version || '-')} · 平台 ${esc(log.platform || '-')} · 大小 ${formatBytes(log.log_size)} · 上传于 ${fmtTime(log.created_at)}`;
+    $('logup-detail-content').textContent = (log.content || '').trim() || '（日志内容为空）';
+    $('logup-detail-mask').classList.remove('hidden');
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+};
+$('logup-detail-close').onclick = () => $('logup-detail-mask').classList.add('hidden');
+$('logup-export-btn').onclick = async () => {
+  try {
+    const response = await fetch(apiPath(`/api/log-uploads/export?${logupQuery()}`), { headers: { 'X-Auth-Token': TOKEN } });
+    if (response.status === 401) { showAuth(); return; }
+    if (!response.ok) { const data = await response.json().catch(() => ({})); throw new Error(data.detail || '导出失败'); }
+    const blob = await response.blob(), link = document.createElement('a');
+    link.href = URL.createObjectURL(blob); link.download = `日志上传_${new Date().toISOString().slice(0, 10)}.xlsx`; link.click(); URL.revokeObjectURL(link.href);
+    toast('日志上传已导出', 'success');
+  } catch (error) { toast(error.message, 'error'); }
+};
+
+let MULTIPLIERS = null; let MULTIPLIER_LOG = []; let MULTIPLIER_PRICING = {}; let MULTIPLIER_CHART = null;
+const MULTIPLIER_META = { ai: { name: 'AI 处理', unit: '商品链接', icon: '🤖' }, pod: { name: 'POD 定制', unit: '款式', icon: '🖼️' } };
+async function loadMultipliers() {
+  try {
+    const data = await api('/api/billing/multipliers');
+    MULTIPLIERS = data.multipliers || {}; MULTIPLIER_LOG = data.changelog || []; MULTIPLIER_PRICING = data.pricing || {};
+    renderMultipliers();
+    await loadProfitDetail();
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+}
+function multiplierCard(category) {
+  const m = MULTIPLIERS[category]; if (!m) return '';
+  const meta = MULTIPLIER_META[category];
+  const effective = Number(m.effective_points_per_unit || 0), base = Number(m.base_points_per_unit || 0), percent = Number(m.multiplier_percent || 100);
+  const valueBadge = m.auto_pricing ? '<span class="badge badge-muted">基础定价</span>' : '<span class="badge badge-success">固定单条价值</span>';
+  const updated = m.updated_at ? fmtTime(m.updated_at) : '—';
+  return `<div class="stat-card is-accent">
+    <div class="stat-label">${meta.icon} ${meta.name} · 单条${meta.unit}价值</div>
+    <div class="stat-value">${effective}<small class="multiplier-unit"> 积分 / ${meta.unit}</small></div>
+    <div class="stat-sub">基准 ${base} 积分 · 倍率 <b>${percent}%</b> ${valueBadge}</div>
+    <div class="stat-sub mono">${updated} · ${esc(m.updated_by || 'system')}${m.change_reason ? ' · ' + esc(m.change_reason) : ''}</div>
+    <div class="multiplier-ctrl">
+      <input id="multiplier-input-${category}" class="input multiplier-input" type="number" min="1" max="500" step="1" placeholder="目标单条价值（积分）" value="${m.auto_pricing ? '' : effective}">
+      <button class="btn btn-sm" data-mult-preset="${category}" data-pct="80">80%</button>
+      <button class="btn btn-sm" data-mult-preset="${category}" data-pct="90">90%</button>
+      <button class="btn btn-sm" data-mult-preset="${category}" data-pct="100">100%</button>
+      <button class="btn btn-sm" data-mult-preset="${category}" data-pct="110">110%</button>
+      <button class="btn btn-sm" data-mult-preset="${category}" data-pct="120">120%</button>
+      <button class="btn btn-primary btn-sm" data-mult-apply="${category}">应用</button>
+      <button class="link-btn" data-mult-reset="${category}">恢复基础定价</button>
+    </div>
+  </div>`;
+}
+async function submitMultiplier(category, body) {
+  const reason = prompt(`调整「${MULTIPLIER_META[category].name}」计费：请填写调整原因（会写入审计记录）`, '');
+  if (reason === null) return;
+  if (!String(reason).trim()) { toast('请填写调整原因', 'error'); return; }
+  body.change_reason = String(reason).trim();
+  try {
+    const data = await api('/api/billing/multipliers', { method: 'POST', body: JSON.stringify(body) });
+    toast(`${MULTIPLIER_META[category].name} 单条价值已更新`, 'success');
+    MULTIPLIERS = data.multipliers || {}; MULTIPLIER_LOG = data.changelog || [];
+    renderMultipliers();
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+}
+function renderMultiplierPreview() {
+  const ai = MULTIPLIER_PRICING.ai || {}, pod = MULTIPLIER_PRICING.pod || {};
+  const mA = MULTIPLIERS.ai || {}, mP = MULTIPLIERS.pod || {};
+  const items = ai.items || {};
+  const aiRows = Object.keys(items).map(key => `<tr><td class="mono">${esc(key)}</td><td>${Number(items[key].charge_points)}</td><td>${Number(items[key].charge_points)}</td></tr>`).join('');
+  const aiBase = Number(ai.max_charge_per_link || 0);
+  const aiActual = mA.points_per_unit != null ? Number(mA.points_per_unit) : Math.round(aiBase * Number(mA.multiplier_percent || 100) / 100);
+  $('multiplier-preview-ai-body').innerHTML = `<div class="preview-sum">单条链接基准 <b>${aiBase}</b> 积分 → 实际 <b class="preview-actual">${aiActual}</b> 积分（<b>${Number(mA.multiplier_percent || 100)}%</b>）</div>
+    <table><thead><tr><th>子项</th><th>基准（积分）</th><th>实际（积分）</th></tr></thead><tbody>${aiRows || '<tr><td class="empty" colspan="3">暂无子项定价</td></tr>'}</tbody></table>`;
+  const podImage = pod.items ? pod.items['pod.image'] : null;
+  const podBase = Number((podImage && podImage.charge_points) || 45);
+  const podActual = mP.points_per_unit != null ? Number(mP.points_per_unit) : null;
+  $('multiplier-preview-pod-body').innerHTML = `<div class="preview-sum">基准单款式 <b>${podBase}</b> 积分（默认随机 40-50） → 实际 <b class="preview-actual">${podActual != null ? podActual : '40-50（随款式随机）'}</b>（<b>${Number(mP.multiplier_percent || 100)}%</b>）</div>
+    <table><thead><tr><th>说明</th><th>默认</th><th>当前</th></tr></thead><tbody>
+    <tr><td>标题（辅助）</td><td>免费</td><td>免费</td></tr>
+    <tr><td>四宫格图片</td><td>40-50 随机</td><td>${podActual != null ? podActual + ' 固定' : '40-50 随机'}</td></tr>
+    <tr><td>付费重试</td><td>按款式价</td><td>按款式价</td></tr></tbody></table>`;
+}
+function renderMultiplierLog() {
+  const rows = MULTIPLIER_LOG.map(e => `<tr><td>${e.created_at ? fmtTime(e.created_at) : '—'}</td><td>${MULTIPLIER_META[e.category] ? MULTIPLIER_META[e.category].name : esc(e.category)}</td><td>${e.before_points == null ? '基础定价' : esc(e.before_points)} → ${e.after_points == null ? '基础定价' : esc(e.after_points)}</td><td>${e.before_percent}% → ${e.after_percent}%</td><td>${esc(e.changed_by || '-')}</td><td>${esc(e.change_reason || '-')}</td></tr>`).join('');
+  $('multiplier-log-body').innerHTML = rows || '<tr><td class="empty" colspan="6">暂无调整记录</td></tr>';
+}
+function renderMultiplierChart() {
+  const canvas = $('chart-multiplier'); if (!canvas) return;
+  if (MULTIPLIER_CHART) { MULTIPLIER_CHART.destroy(); MULTIPLIER_CHART = null; }
+  const timeline = []; const seen = new Set();
+  [...MULTIPLIER_LOG].reverse().forEach(e => { const key = e.created_at; if (key && !seen.has(key)) { seen.add(key); timeline.push(key); } });
+  if (!timeline.length || !window.Chart) return;
+  const fmtT = t => { const d = new Date(String(t).replace(' ', 'T')); return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+  const labels = timeline.map(fmtT);
+  const series = ['ai', 'pod'].map(cat => {
+    const meta = MULTIPLIER_META[cat];
+    const data = timeline.map(t => { const hit = MULTIPLIER_LOG.find(e => e.category === cat && e.created_at === t); return hit ? Number(hit.after_percent) : null; });
+    return { label: meta.name, data, borderColor: cat === 'ai' ? '#0b5cff' : '#f59e0b', backgroundColor: cat === 'ai' ? '#0b5cff' : '#f59e0b', tension: 0.3, spanGaps: true, pointRadius: 3, pointBackgroundColor: cat === 'ai' ? '#0b5cff' : '#f59e0b' };
+  });
+  MULTIPLIER_CHART = new Chart(canvas, { type: 'line', data: { labels, datasets: series }, options: { responsive: true, maintainAspectRatio: false, interaction: { mode: 'nearest', intersect: false }, scales: { x: { ticks: { maxTicksLimit: 10 } }, y: { min: 50, max: 200, title: { display: true, text: '倍率（%）' } } }, plugins: { legend: { position: 'top' } } } });
+}
+function renderMultipliers() {
+  $('multiplier-cards').innerHTML = ['ai', 'pod'].map(multiplierCard).join('');
+  renderMultiplierPreview(); renderMultiplierLog(); renderMultiplierChart();
+}
+$('multiplier-cards').onclick = event => {
+  const preset = event.target.closest('[data-mult-preset]');
+  if (preset) {
+    const category = preset.dataset.multPreset, m = MULTIPLIERS[category];
+    if (!m) return;
+    const percent = Number(preset.dataset.pct); const base = Number(m.base_points_per_unit || 0);
+    const target = Math.max(1, Math.round(base * percent / 100));
+    $('multiplier-input-' + category).value = target;
+    submitMultiplier(category, { [`${category}_multiplier_percent`]: percent });
+    return;
+  }
+  const applyBtn = event.target.closest('[data-mult-apply]');
+  if (applyBtn) {
+    const category = applyBtn.dataset.multApply, input = $('multiplier-input-' + category);
+    const raw = (input.value || '').trim();
+    if (!raw) { toast('请输入目标单条价值（积分）', 'error'); return; }
+    const points = Number.parseInt(raw, 10);
+    if (!Number.isInteger(points) || points < 1 || points > 500) { toast('单条价值应为 1-500 的整数积分', 'error'); return; }
+    submitMultiplier(category, { [`${category}_points_per_unit`]: points });
+    return;
+  }
+  const resetBtn = event.target.closest('[data-mult-reset]');
+  if (resetBtn) {
+    const category = resetBtn.dataset.multReset;
+    if (!window.confirm(`确认恢复「${MULTIPLIER_META[category].name}」为基础定价？`)) return;
+    submitMultiplier(category, { [`reset_${category}`]: true });
+  }
+};
+
+/* ---- 价格利润明细（只读试算，不写库） ---- */
+const PD_COLORS = {
+  ai: { line: '#0b5cff', soft: 'rgba(11,92,255,.42)' },
+  pod: { line: '#f59e0b', soft: 'rgba(245,158,11,.42)' },
+  combo: { line: '#10b981', soft: 'rgba(16,185,129,.42)' }
+};
+const PD_CONSUMPTION_RANGE = { ai: [5, 200], pod: [5, 200], combo: [10, 300] };
+const PD_DEFAULT_PLAN_TOTAL = 9600;
+let PD_DATA = null; let PD_CHART = null; let PD_VIEW = 'trend';
+const PD_STATE = { rate: 100, planTotal: PD_DEFAULT_PLAN_TOTAL, linkCost: 0.1, consumption: {} };
+
+const pdNum = (value, digits = 2) => Number(value || 0).toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: digits });
+const pdBaseRate = () => Number((PD_DATA && PD_DATA.base_points_per_cny) || 100);
+const pdItems = () => ((PD_DATA && PD_DATA.consumption) || []);
+const pdBonusPercent = rate => { const base = pdBaseRate(); return base > 0 ? (rate / base - 1) * 100 : 0; };
+const pdColor = key => PD_COLORS[key] || { line: '#64748b', soft: 'rgba(100,116,139,.42)' };
+
+function pdMetrics(rate, pointsPerUnit, linkCost) {
+  const perYuan = pointsPerUnit > 0 ? rate / pointsPerUnit : 0;      // 条/元 = 积分/元 ÷ 积分/条
+  const perLink = perYuan > 0 ? 1 / perYuan : 0;                     // 元/条 = 倒置
+  const profitPerLink = perLink - linkCost;
+  const costPerYuan = linkCost * perYuan;
+  const resellerMargin = pdBonusPercent(rate) / 100;                 // 分销/中转商：赠送倍率即合作商毛利
+  return {
+    perYuan, perLink, profitPerLink, costPerYuan, resellerMargin,
+    margin: perLink > 0 ? profitPerLink / perLink : 0,
+    directProfitPerYuan: 1 - costPerYuan,
+    platformProfitPerYuan: 1 - costPerYuan - resellerMargin,
+    breakEvenRate: linkCost > 0 ? pointsPerUnit / linkCost : 0
+  };
+}
+
+function pdTierRows() {
+  const plan = (PD_DATA && PD_DATA.plan) || {};
+  const rows = ((PD_DATA && PD_DATA.topup_tiers) || []).map(t => ({
+    label: `${pdNum(t.amount_yuan, 2)} 元档`,
+    detail: `+${Number(t.bonus_percent || 0)}% 赠送 · 基础 ${pdNum(t.base_points, 0)} + 赠送 ${pdNum(t.bonus_points, 0)}`,
+    total_points: Number(t.total_points || 0),
+    rate: Number(t.points_per_yuan || 0)
+  }));
+  const priceYuan = Number(plan.price_yuan || 0);
+  if (priceYuan > 0) {
+    rows.push({
+      label: `月卡 ${pdNum(priceYuan, 2)} 元`,
+      detail: `立得 ${pdNum(plan.grant_points, 0)} 固定 · 其余可控`,
+      total_points: Number(PD_STATE.planTotal || 0),
+      rate: Number(PD_STATE.planTotal || 0) / priceYuan
+    });
+  }
+  return rows;
+}
+
+async function loadProfitDetail() {
+  try {
+    const data = await api('/api/billing/profit-detail');
+    PD_DATA = data;
+    PD_STATE.linkCost = Number(data.default_link_cost_yuan != null ? data.default_link_cost_yuan : 0.1);
+    PD_STATE.rate = pdBaseRate();
+    PD_STATE.planTotal = PD_DEFAULT_PLAN_TOTAL;
+    PD_STATE.consumption = {};
+    (data.consumption || []).forEach(item => { PD_STATE.consumption[item.key] = Number(item.points_per_unit || 0); });
+    renderProfitControls();
+    renderProfitDetail();
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+}
+
+function renderProfitControls() {
+  $('pd-rate-presets').innerHTML = ((PD_DATA && PD_DATA.topup_tiers) || []).map(t =>
+    `<button class="btn btn-sm" data-pd-rate="${Math.round(Number(t.points_per_yuan || 0))}">${pdNum(t.amount_yuan, 2)} 元 · +${Number(t.bonus_percent || 0)}%</button>`).join('');
+  $('pd-consumption-controls').innerHTML = pdItems().map(item => {
+    const key = item.key, range = PD_CONSUMPTION_RANGE[key] || [1, 200];
+    const value = Number(PD_STATE.consumption[key] != null ? PD_STATE.consumption[key] : item.points_per_unit);
+    return `<div class="pd-control-row">
+      <div class="pd-control-head">
+        <span class="pd-control-label">变量二 · ${esc(item.label)} 单条消耗</span>
+        <span class="pd-control-value" id="pd-cons-${esc(key)}-value">—</span>
+      </div>
+      <input id="pd-cons-${esc(key)}" class="pd-range" type="range" min="${range[0]}" max="${range[1]}" step="1" value="${value}">
+      <div class="pd-scale"><span>${range[0]}</span><span>基准 ${pdNum(item.points_per_unit, 0)} 积分 / ${esc(item.unit)}</span><span>${range[1]}</span></div>
+    </div>`;
+  }).join('');
+  $('pd-rate').value = PD_STATE.rate;
+  $('pd-plan-total').value = PD_STATE.planTotal;
+  $('pd-link-cost').value = PD_STATE.linkCost;
+  const tag = $('pd-source-tag');
+  if (tag) tag.textContent = `基准 ${pdBaseRate()} 积分/元 · ${PD_DATA.promotion_name || '档位递增赠送'}`;
+}
+
+function renderProfitLabels() {
+  const bonus = pdBonusPercent(PD_STATE.rate);
+  $('pd-rate-value').textContent = `${pdNum(PD_STATE.rate)} 积分 / 元 · ${bonus > 0.01 ? '赠送 +' + pdNum(bonus, 1) + '%' : '无赠送'}`;
+  pdItems().forEach(item => {
+    const el = $('pd-cons-' + item.key + '-value');
+    if (el) el.textContent = `${pdNum(PD_STATE.consumption[item.key])} 积分 / ${item.unit}`;
+  });
+  const plan = (PD_DATA && PD_DATA.plan) || {};
+  const priceYuan = Number(plan.price_yuan || 0);
+  const planRate = priceYuan > 0 ? Number(PD_STATE.planTotal) / priceYuan : 0;
+  $('pd-plan-value').textContent = `${pdNum(PD_STATE.planTotal, 0)} 积分 · 折合 ${pdNum(planRate, 1)} 积分/元`;
+  $('pd-plan-scale').innerHTML = `<span>4000 · 立得固定</span><span>折合 ${pdNum(planRate, 1)} 积分/元</span><span>20000</span>`;
+  $('pd-cost-note').textContent = `保本兑换率：` + pdItems().map(item =>
+    `${item.label} ${pdNum(pdMetrics(0, Number(PD_STATE.consumption[item.key]), PD_STATE.linkCost).breakEvenRate, 0)}`).join(' · ') + ' 积分/元';
+}
+
+function renderProfitKpi() {
+  const cost = Number(PD_STATE.linkCost || 0);
+  $('pd-kpi-cards').innerHTML = pdItems().map(item => {
+    const points = Number(PD_STATE.consumption[item.key] || 0);
+    const m = pdMetrics(PD_STATE.rate, points, cost);
+    const badge = m.profitPerLink >= 0 ? '<span class="badge badge-success">盈利</span>' : '<span class="badge badge-danger">亏损</span>';
+    return `<div class="stat-card is-accent">
+      <div class="stat-label">${esc(item.label)} · ${esc(item.unit)}</div>
+      <div class="stat-value">${pdNum(m.perLink, 3)}<small class="multiplier-unit"> 元 / 条</small></div>
+      <div class="stat-sub">${pdNum(PD_STATE.rate)} 积分/元 ÷ ${pdNum(points)} 积分/条 = <b>${pdNum(m.perYuan, 3)}</b> 条/元 → 倒置 <b>${pdNum(m.perLink, 3)}</b> 元/条</div>
+      <div class="stat-sub">利润 <b class="preview-actual">${pdNum(m.profitPerLink, 3)}</b> 元/条 · 利润率 <b>${pdNum(m.margin * 100, 1)}%</b> ${badge}</div>
+      <div class="stat-sub">直营 <b>${pdNum(m.directProfitPerYuan, 3)}</b> · 分销平台 <b>${pdNum(m.platformProfitPerYuan, 3)}</b> · 合作商毛利 <b>${pdNum(m.resellerMargin, 3)}</b> 元/元</div>
+      <div class="stat-sub">保本兑换率 <b>${pdNum(m.breakEvenRate, 0)}</b> 积分/元（当前 ${pdNum(PD_STATE.rate)}）</div>
+    </div>`;
+  }).join('');
+}
+
+function renderProfitChart() {
+  const canvas = $('chart-profit-detail'); if (!canvas || !window.Chart) return;
+  if (PD_CHART) { PD_CHART.destroy(); PD_CHART = null; }
+  const cost = Number(PD_STATE.linkCost || 0);
+  const items = pdItems();
+  if (!items.length) return;
+
+  if (PD_VIEW === 'tier') {
+    const rows = pdTierRows();
+    const datasets = [];
+    items.forEach(item => {
+      const points = Number(PD_STATE.consumption[item.key] || 0), color = pdColor(item.key);
+      datasets.push({
+        label: `${item.label} · 直营利润/元`,
+        data: rows.map(row => pdMetrics(row.rate, points, cost).directProfitPerYuan),
+        backgroundColor: color.line
+      });
+      datasets.push({
+        label: `${item.label} · 分销平台利润/元`,
+        data: rows.map(row => pdMetrics(row.rate, points, cost).platformProfitPerYuan),
+        backgroundColor: color.soft
+      });
+    });
+    PD_CHART = new Chart(canvas, {
+      type: 'bar',
+      data: { labels: rows.map(row => row.label), datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        scales: { y: { title: { display: true, text: '利润（元 / 元收入）' } } },
+        plugins: {
+          legend: { position: 'top' },
+          tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}：${pdNum(ctx.parsed.y, 3)} 元` } }
+        }
+      }
+    });
+    $('pd-chart-title').textContent = '档位 × 口径 利润对比（直营 vs 分销）';
+    $('pd-chart-sub').textContent = `按各档位实得兑换率与当前滑块消耗值计算；分销口径下平台按基准 ${pdBaseRate()} 积分/元 结算，赠送部分即合作商毛利。`;
+    return;
+  }
+
+  const trendMax = Math.min(600, Math.max(300, Math.ceil(pdTierRows().reduce((max, row) => Math.max(max, row.rate), pdBaseRate()) / 50) * 50));
+  const rates = [];
+  for (let rate = pdBaseRate(); rate <= trendMax + 0.001; rate += trendMax / 30) rates.push(Math.round(rate));
+  const datasets = items.map(item => ({
+    label: `${item.label} · 元/条`,
+    data: rates.map(rate => pdMetrics(rate, Number(PD_STATE.consumption[item.key]), cost).perLink),
+    borderColor: pdColor(item.key).line, backgroundColor: pdColor(item.key).line,
+    yAxisID: 'y', tension: .25, pointRadius: 0, borderWidth: 2
+  }));
+  datasets.push({
+    label: `单条成本 ${pdNum(cost, 2)} 元`,
+    data: rates.map(() => cost),
+    borderColor: '#94a3b8', backgroundColor: '#94a3b8', borderDash: [6, 4],
+    yAxisID: 'y', pointRadius: 0, borderWidth: 1.5
+  });
+  items.forEach(item => {
+    datasets.push({
+      label: `${item.label} · 直营利润率`,
+      data: rates.map(rate => pdMetrics(rate, Number(PD_STATE.consumption[item.key]), cost).directProfitPerYuan * 100),
+      borderColor: pdColor(item.key).line, backgroundColor: pdColor(item.key).line, borderDash: [5, 3],
+      yAxisID: 'y1', pointRadius: 0, borderWidth: 1.5
+    });
+  });
+  PD_CHART = new Chart(canvas, {
+    type: 'line',
+    data: { labels: rates, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'nearest', intersect: false },
+      scales: {
+        x: { title: { display: true, text: '充值兑换率（积分 / 元）' }, ticks: { maxTicksLimit: 12 } },
+        y: { position: 'left', title: { display: true, text: '元 / 条' } },
+        y1: { position: 'right', title: { display: true, text: '直营利润率（%）' }, grid: { drawOnChartArea: false }, ticks: { callback: value => value + '%' } }
+      },
+      plugins: {
+        legend: { position: 'top' },
+        tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}：${pdNum(ctx.parsed.y, 3)}${ctx.dataset.yAxisID === 'y1' ? '%' : ' 元'}` } }
+      }
+    }
+  });
+  $('pd-chart-title').textContent = '兑换率 × 元/条 与直营利润率走势';
+  $('pd-chart-sub').textContent = `实线（左轴）为各口径「元/条」，灰色虚线为单条成本，成本线以上即为利润；虚线（右轴）为直营利润率。分销利润见柱状视图与下方矩阵。`;
+}
+
+function renderProfitMatrix() {
+  const cost = Number(PD_STATE.linkCost || 0);
+  const items = pdItems();
+  const rows = pdTierRows();
+  const cell = (value, digits, ok, suffix = '') => `<td class="${ok >= 0 ? 'pd-pos' : 'pd-neg'}">${pdNum(value, digits)}${suffix}</td>`;
+  const html = rows.map(row => items.map((item, index) => {
+    const m = pdMetrics(row.rate, Number(PD_STATE.consumption[item.key]), cost);
+    const head = index === 0
+      ? `<td rowspan="${items.length}"><b>${esc(row.label)}</b><br><span class="pd-sub">${esc(row.detail)}</span></td>
+         <td rowspan="${items.length}">${pdNum(row.total_points, 0)}</td>
+         <td rowspan="${items.length}">${pdNum(row.rate, 1)}</td>`
+      : '';
+    return `<tr>${head}<td>${esc(item.label)}</td>
+      <td>${pdNum(m.perYuan, 3)}</td>
+      <td>${pdNum(m.perLink, 3)}</td>
+      ${cell(m.profitPerLink, 3, m.profitPerLink)}
+      ${cell(m.margin * 100, 1, m.profitPerLink, '%')}
+      ${cell(m.directProfitPerYuan, 3, m.directProfitPerYuan)}
+      ${cell(m.platformProfitPerYuan, 3, m.platformProfitPerYuan)}
+      <td>${pdNum(m.resellerMargin, 3)}</td></tr>`;
+  }).join('')).join('');
+  $('pd-matrix-body').innerHTML = html || '<tr><td class="empty" colspan="11">暂无口径数据</td></tr>';
+  $('pd-matrix-sub').textContent = `单条成本按 ${pdNum(cost, 2)} 元计：条/元 = 兑换率 ÷ 消耗，元/条 = 消耗 ÷ 兑换率，利润/条 = 元/条 − 成本；直营利润 = 1 − 成本/元，分销平台利润 = 1 − 成本/元 − 合作商毛利，合作商毛利 = 赠送比例。`;
+}
+
+function renderProfitDetail() {
+  if (!PD_DATA) return;
+  renderProfitLabels();
+  renderProfitKpi();
+  renderProfitChart();
+  renderProfitMatrix();
+}
+
+$('profit-detail-block').addEventListener('input', event => {
+  const el = event.target;
+  if (el.id === 'pd-rate') PD_STATE.rate = Number(el.value);
+  else if (el.id === 'pd-plan-total') PD_STATE.planTotal = Number(el.value);
+  else if (el.id === 'pd-link-cost') PD_STATE.linkCost = Math.max(0, Number(el.value) || 0);
+  else if (el.id && el.id.startsWith('pd-cons-')) PD_STATE.consumption[el.id.slice(8)] = Number(el.value);
+  else return;
+  renderProfitDetail();
+});
+$('profit-detail-block').addEventListener('click', event => {
+  const preset = event.target.closest('[data-pd-rate]');
+  if (preset) {
+    PD_STATE.rate = Number(preset.dataset.pdRate);
+    $('pd-rate').value = PD_STATE.rate;
+    renderProfitDetail();
+    return;
+  }
+  const view = event.target.closest('[data-pd-view]');
+  if (view) {
+    PD_VIEW = view.dataset.pdView;
+    document.querySelectorAll('[data-pd-view]').forEach(btn => btn.classList.toggle('is-active', btn === view));
+    renderProfitChart();
+  }
+});
+
+/* ---- 软件更新发布（代理转发到 update-admin） ---- */
+const RELEASE_PHASES = ['uploading', 'evsign', 'authenticode', 'patching', 'publishing', 'completed'];
+const RELEASE_PHASE_LABELS = { uploading: '正在上传', evsign: 'EV Sign 签名中', authenticode: 'Authenticode 验证中', patching: '增量补丁生成中', publishing: '更新文件发布中', completed: '清单签名完成', failed: '发布失败' };
+const RELEASE_PHASE_PERCENT = { evsign: 28, authenticode: 44, patching: 62, publishing: 82, completed: 100, failed: 100 };
+const RELEASE_POLL_MS = 1500;
+const RELEASE_CHANNEL_LABELS = { public: '发布公共版', internal: '发布内测版', update_only: '仅更新通道' };
+let RELEASE_HISTORY_PAGE = 1;
+let RELEASE_LOGS_PAGE = 1;
+let RELEASE_SUBMITTING = false;
+
+function releaseChannelLabel(channel) {
+  if (channel === 'public') return '公共版';
+  if (channel === 'internal') return '内测版';
+  return '仅更新通道';
+}
+
+async function releaseApi(path, options = {}) {
+  const headers = { ...(options.headers || {}) };
+  if (options.body !== undefined) headers['Content-Type'] = 'application/json';
+  if (TOKEN) headers['X-Auth-Token'] = TOKEN;
+  const response = await fetch(apiPath(`/api/release/${path}`), { ...options, headers });
+  const data = await response.json().catch(() => ({}));
+  if (response.status === 401 && !options.noAuth) { showAuth(); throw new Error('__AUTH__'); }
+  if (!response.ok) {
+    const detail = data.detail;
+    const error = new Error(typeof detail === 'string' ? detail : (detail && detail.message) || `请求失败 ${response.status}`);
+    error.status = response.status;
+    error.code = (detail && detail.code) || '';
+    throw error;
+  }
+  return data;
+}
+
+function releaseSize(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value)) return '--';
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function releasePercent(job) {
+  if (job.phase === 'uploading') {
+    const total = Number(job.total_bytes || 0);
+    const uploaded = Number(job.uploaded_bytes || 0);
+    return total > 0 ? Math.min(20, Math.max(0, (uploaded / total) * 20)) : 0;
+  }
+  return RELEASE_PHASE_PERCENT[job.phase] ?? 0;
+}
+
+function renderReleaseJob(job) {
+  const card = $('release-progress-card');
+  if (!job) { card.classList.add('hidden'); return; }
+  const percent = releasePercent(job);
+  const failed = job.phase === 'failed';
+  const activeIndex = RELEASE_PHASES.indexOf(failed ? (job.failed_phase || 'uploading') : job.phase);
+  card.classList.remove('hidden');
+  card.classList.toggle('is-error', failed);
+  $('release-progress-version').textContent = `版本 ${job.version} · ${releaseChannelLabel(job.channel)}`;
+  $('release-progress-phase').textContent = RELEASE_PHASE_LABELS[job.phase] || job.phase;
+  $('release-progress-percent').textContent = `总进度 ${Math.round(percent)}%`;
+  $('release-progress-bar').style.width = `${percent}%`;
+  $('release-progress-bytes').textContent = Number(job.total_bytes || 0) > 0
+    ? `${releaseSize(job.uploaded_bytes)} / ${releaseSize(job.total_bytes)}`
+    : '等待安装包';
+  $('release-progress-message').textContent = failed ? (job.error || job.message || '发布失败') : (job.message || '');
+  $('release-progress-steps').querySelectorAll('li').forEach((item, index) => {
+    item.classList.remove('is-done', 'is-active', 'is-error');
+    if (failed) {
+      if (index < Math.max(activeIndex, 0)) item.classList.add('is-done');
+      else if (index === Math.max(activeIndex, 0)) item.classList.add('is-error');
+      return;
+    }
+    if (job.phase === 'completed' || index < activeIndex) item.classList.add('is-done');
+    else if (index === activeIndex) item.classList.add('is-active');
+  });
+}
+
+function renderReleasePagination(containerId, payload, onPageChange) {
+  const container = $(containerId);
+  const page = Number(payload.page || 1);
+  const pages = Math.max(1, Number(payload.pages || 1));
+  const total = Number(payload.total || 0);
+  const pageSize = Number(payload.page_size || 0);
+  container.replaceChildren();
+  const summary = document.createElement('span');
+  summary.className = 'pagination-summary';
+  summary.textContent = `共 ${total} 条 · 每页 ${pageSize} 条 · 第 ${page} / ${pages} 页`;
+  container.append(summary);
+  const addButton = (label, targetPage, opts = {}) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = label;
+    button.disabled = !!opts.disabled;
+    button.classList.toggle('is-current', !!opts.current);
+    if (opts.current) button.setAttribute('aria-current', 'page');
+    button.addEventListener('click', () => { if (!opts.disabled && !opts.current) onPageChange(targetPage); });
+    container.append(button);
+  };
+  addButton('首页', 1, { disabled: page <= 1 });
+  addButton('上一页', page - 1, { disabled: page <= 1 });
+  const start = Math.max(1, page - 2), end = Math.min(pages, page + 2);
+  for (let current = start; current <= end; current += 1) addButton(String(current), current, { current: current === page });
+  addButton('下一页', page + 1, { disabled: page >= pages });
+  addButton('末页', pages, { disabled: page >= pages });
+}
+
+function releasePatchCell(item) {
+  const status = item.patch_status || 'not_available';
+  if (status === 'published') {
+    return `<span class="badge badge-success">已发布 · ${releaseSize(item.patch_total_bytes)}</span><br><span class="form-note">${esc(item.patch_from_version || '-')} → ${esc(item.version)} · ${Number(item.patch_file_count || 0)} 个文件</span>`;
+  }
+  if (status === 'failed') return `<span class="badge badge-warning" title="${esc(item.patch_error || '补丁生成失败')}">生成失败，使用完整包</span>`;
+  if (status === 'prepared') return '<span class="badge badge-muted">正在发布…</span>';
+  if (status === 'disabled') return '<span class="badge badge-muted">未启用</span>';
+  return '<span class="badge badge-muted">无上一版本</span>';
+}
+
+function releasePublishedMessage(release, patch) {
+  const channel = release.channel || 'update_only';
+  const prefix = channel === 'update_only'
+    ? `版本 ${release.version} 已发布；官网下载文件未变更`
+    : `${releaseChannelLabel(channel)}版本 ${release.version} 已发布并同步官网下载`;
+  const status = (patch && (patch.patch_status || patch.status)) || release.patch_status;
+  if (status === 'published') {
+    const size = patch ? (patch.patch_total_bytes ?? patch.total_bytes) : release.patch_total_bytes;
+    return `${prefix}；增量补丁 ${releaseSize(size)} 已生成`;
+  }
+  if (status === 'failed') return `${prefix}；增量补丁生成失败，用户将使用完整安装包`;
+  return prefix;
+}
+
+async function loadReleaseEnv() {
+  try {
+    const [health, jobs] = await Promise.all([
+      releaseApi('health'),
+      releaseApi('publish-jobs').catch(() => ({ items: [] })),
+    ]);
+    const rows = [
+      ['清单签名密钥', health.signing_key_configured],
+      ['EV Sign 证书', health.evsign_configured],
+      ['Authenticode 校验', health.authenticode_verifier],
+      ['增量补丁', health.incremental_patch_enabled],
+      ['内嵌补丁', health.embedded_patch_supported],
+      ['innoextract', health.innoextract_configured],
+    ];
+    $('release-env-list').innerHTML = rows.map(([label, value]) => {
+      const ok = typeof value === 'boolean' ? value : Boolean(value);
+      const text = typeof value === 'boolean' ? (value ? '已启用' : '未启用') : (value || '未配置');
+      return `<div><span>${label}</span><span class="badge ${ok ? 'badge-success' : 'badge-danger'}">${esc(text)}</span></div>`;
+    }).join('');
+    const latest = (jobs.items || [])[0];
+    if (latest) renderReleaseJob(latest);
+  } catch (error) { if (error.message !== '__AUTH__') $('release-env-list').textContent = error.message; }
+}
+
+async function loadReleaseHistory(page = RELEASE_HISTORY_PAGE) {
+  try {
+    const data = await releaseApi(`releases?page=${encodeURIComponent(page)}`);
+    RELEASE_HISTORY_PAGE = Number(data.page || 1);
+    const items = data.items || [];
+    $('release-history-body').innerHTML = items.length ? items.map(item => `<tr>
+      <td><strong>${esc(item.version)}</strong>${item.mandatory ? ' <span class="badge badge-warning">强制</span>' : ''}</td>
+      <td><span class="badge badge-muted">${releaseChannelLabel(item.channel)}</span></td>
+      <td>${esc(item.created_by || '-')}</td>
+      <td>${fmtTime(item.published_at)}</td>
+      <td>${esc(item.installer_filename || '-')}<br><span class="form-note">${releaseSize(item.file_size)}</span><br><span class="mono hash-cell" title="${esc(item.sha256 || '')}">${esc(item.sha256 || '-')}</span></td>
+      <td>${releasePatchCell(item)}</td>
+      <td>${esc(item.authenticode_status || '-')}</td>
+    </tr>`).join('') : '<tr><td class="empty" colspan="7">尚未发布任何版本</td></tr>';
+    renderReleasePagination('release-history-pagination', data, next => loadReleaseHistory(next));
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+}
+
+async function loadReleaseLogs(page = RELEASE_LOGS_PAGE) {
+  try {
+    const data = await releaseApi(`audit-logs?page=${encodeURIComponent(page)}`);
+    RELEASE_LOGS_PAGE = Number(data.page || 1);
+    const items = data.items || [];
+    $('release-logs-body').innerHTML = items.length ? items.map(item => `<tr>
+      <td>${fmtTime(item.created_at)}</td>
+      <td>${esc(item.username || '-')}</td>
+      <td>${esc(item.action || '-')}</td>
+      <td>${esc(item.target || '-')}</td>
+      <td class="mono">${esc(item.ip_address || '-')}</td>
+    </tr>`).join('') : '<tr><td class="empty" colspan="5">暂无操作记录</td></tr>';
+    renderReleasePagination('release-logs-pagination', data, next => loadReleaseLogs(next));
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+}
+
+function uploadReleasePackage(form, job, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', apiPath('/api/release/releases/publish'));
+    if (TOKEN) xhr.setRequestHeader('X-Auth-Token', TOKEN);
+    xhr.responseType = 'json';
+    xhr.upload.addEventListener('progress', event => { if (event.lengthComputable) onProgress(event.loaded, event.total); });
+    xhr.addEventListener('load', () => {
+      const payload = xhr.response && typeof xhr.response === 'object' ? xhr.response : {};
+      if (xhr.status >= 200 && xhr.status < 300) { resolve(payload); return; }
+      if (xhr.status === 401) { showAuth(); reject(new Error('__AUTH__')); return; }
+      const detail = payload.detail;
+      const error = new Error(typeof detail === 'string' ? detail : (detail && detail.message) || `请求失败（${xhr.status}）`);
+      error.status = xhr.status;
+      reject(error);
+    });
+    xhr.addEventListener('error', () => reject(new Error('上传连接中断，请检查发布任务状态')));
+    xhr.addEventListener('abort', () => reject(new Error('上传已取消')));
+    form.set('job_id', job.id);
+    form.set('channel', job.channel || 'update_only');
+    xhr.send(form);
+  });
+}
+
+async function waitForReleaseJob(jobId, onJob, isCancelled) {
+  while (!isCancelled()) {
+    await new Promise(resolve => setTimeout(resolve, RELEASE_POLL_MS));
+    if (isCancelled()) return null;
+    const result = await releaseApi(`publish-jobs/${encodeURIComponent(jobId)}`);
+    onJob(result.job);
+    if (['completed', 'failed'].includes(result.job.phase)) return result.job;
+  }
+  return null;
+}
+
+function resetReleaseForm() {
+  $('release-version').value = '';
+  $('release-installer').value = '';
+  $('release-notes').value = '';
+  $('release-mandatory').checked = false;
+}
+
+const RELEASE_SUBMIT_BUTTONS = ['release-submit-internal', 'release-submit-public', 'release-submit-update-only'].map(id => $(id));
+
+async function submitRelease(button) {
+  if (RELEASE_SUBMITTING) return;
+  const version = ($('release-version').value || '').trim();
+  const installer = $('release-installer').files[0];
+  const notes = $('release-notes').value || '';
+  const mandatory = $('release-mandatory').checked;
+  if (!version) { toast('请填写版本号', 'error'); return; }
+  if (!installer || installer.size <= 0) { toast('请选择有效的 EXE 安装包', 'error'); return; }
+  RELEASE_SUBMITTING = true;
+  RELEASE_SUBMIT_BUTTONS.forEach(item => { item.disabled = true; });
+  button.textContent = '正在创建发布任务…';
+  let monitorCancelled = true;
+  try {
+    const created = await releaseApi('publish-jobs', {
+      method: 'POST',
+      body: JSON.stringify({
+        version,
+        channel: button.dataset.channel || 'update_only',
+        mandatory,
+        release_notes: notes,
+        installer_filename: installer.name,
+        total_bytes: installer.size,
+      }),
+    });
+    const job = created.job;
+    renderReleaseJob(job);
+    button.textContent = '正在上传安装包…';
+    const form = new FormData();
+    form.set('version', version);
+    form.set('release_notes', notes);
+    form.set('mandatory', mandatory ? 'true' : 'false');
+    form.set('installer', installer);
+    let lastReportedAt = 0;
+    monitorCancelled = false;
+    const uploadPromise = uploadReleasePackage(form, job, (uploaded, total) => {
+      renderReleaseJob({ ...job, uploaded_bytes: uploaded, total_bytes: total, phase: 'uploading', message: '正在上传安装包' });
+      const now = Date.now();
+      if (now - lastReportedAt >= 1000 || uploaded === total) {
+        lastReportedAt = now;
+        releaseApi(`publish-jobs/${encodeURIComponent(job.id)}/upload-progress`, { method: 'POST', body: JSON.stringify({ uploaded_bytes: uploaded, total_bytes: total }) }).catch(() => {});
+      }
+    });
+    const terminalPromise = waitForReleaseJob(job.id, nextJob => {
+      renderReleaseJob(nextJob);
+      button.textContent = nextJob.phase === 'completed' ? '发布完成' : nextJob.phase === 'failed' ? '发布失败' : (RELEASE_PHASE_LABELS[nextJob.phase] || '正在处理…');
+    }, () => monitorCancelled);
+    const outcome = await Promise.race([
+      uploadPromise.then(result => ({ source: 'response', result })),
+      terminalPromise.then(terminalJob => ({ source: 'job', terminalJob })),
+    ]);
+    monitorCancelled = true;
+    let message = '';
+    if (outcome.source === 'job') {
+      if (outcome.terminalJob && outcome.terminalJob.phase === 'failed') {
+        throw new Error(outcome.terminalJob.error || outcome.terminalJob.message || '发布失败');
+      }
+      const durable = await releaseApi(`releases/status/${encodeURIComponent(version)}`);
+      if (!(durable.published && durable.release)) throw new Error('任务已完成，但暂未读取到发布记录，请稍后刷新确认');
+      message = releasePublishedMessage(durable.release);
+    } else {
+      const result = outcome.result || {};
+      if (!result.release) {
+        const durable = await releaseApi(`releases/status/${encodeURIComponent(version)}`).catch(() => null);
+        if (!(durable && durable.published && durable.release)) throw new Error('服务器未返回发布结果，请稍后在发布记录中确认');
+        message = releasePublishedMessage(durable.release);
+      } else {
+        const status = result.authenticode && result.authenticode.status;
+        message = releasePublishedMessage(result.release, result.patch) + (status === 'Valid' ? '' : `；代码签名状态：${status || '未知'}`);
+      }
+    }
+    resetReleaseForm();
+    toast(message, 'success');
+    await loadReleaseHistory(1);
+    await loadReleaseEnv();
+  } catch (error) {
+    if (error.message !== '__AUTH__') {
+      let recovered = '';
+      try {
+        const durable = await releaseApi(`releases/status/${encodeURIComponent(version)}`);
+        if (durable.published && durable.release) recovered = releasePublishedMessage(durable.release);
+      } catch (_) { /* 忽略对账失败 */ }
+      if (recovered) { resetReleaseForm(); toast(recovered, 'success'); await loadReleaseHistory(1); await loadReleaseEnv(); }
+      else toast(error.message, 'error');
+    }
+  } finally {
+    monitorCancelled = true;
+    RELEASE_SUBMITTING = false;
+    RELEASE_SUBMIT_BUTTONS.forEach(item => { item.disabled = false; item.textContent = RELEASE_CHANNEL_LABELS[item.dataset.channel] || item.textContent; });
+  }
+}
+
+RELEASE_SUBMIT_BUTTONS.forEach(button => button.onclick = () => submitRelease(button));
+$('release-env-refresh').onclick = () => loadReleaseEnv();
+$('release-history-refresh').onclick = () => loadReleaseHistory(RELEASE_HISTORY_PAGE);
+$('release-logs-refresh').onclick = () => loadReleaseLogs(RELEASE_LOGS_PAGE);
+
+init();
+</script>
+</body>
+</html>

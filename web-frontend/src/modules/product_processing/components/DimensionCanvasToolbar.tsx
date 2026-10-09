@@ -1,0 +1,263 @@
+import { useEffect, useRef, useState } from "react";
+import type { DimensionEndpointStyle, DimensionKey, DimensionLineWidth, DimensionUnit, EditorState } from "../types/dimensionCanvas";
+import { centimetersToUnit, dimensionInputUnit, dimensionUnitLabel, unitToCentimeters } from "../data/dimensionCanvasModel";
+
+type Props = {
+  editor: EditorState;
+  canUndo: boolean;
+  canRedo: boolean;
+  onTool: (tool: DimensionKey | "select") => void;
+  onUndo: () => void;
+  onRedo: () => void;
+  onDelete: () => void;
+  onFit: () => void;
+  onZoomIn: () => void;
+  onZoomOut: () => void;
+  onReset: () => void;
+  onStyle: (style: "auto" | "dark" | "light" | "gray_dashed") => void;
+  onLineWidth: (lineWidth: DimensionLineWidth) => void;
+  onEndpointStyle: (endpointStyle: DimensionEndpointStyle) => void;
+  onCustomValueChange: (valueCm: number | null) => void;
+  onDisplayUnitChange: (unit: Extract<DimensionUnit, "cm" | "in">) => void;
+};
+
+const DIMENSION_TOOLS: Array<{ key: Exclude<DimensionKey, "custom">; label: string }> = [
+  { key: "length", label: "长" },
+  { key: "width", label: "宽" },
+  { key: "height", label: "高" },
+];
+
+const ANNOTATION_STYLES = [
+  { key: "auto", label: "自动", title: "自动颜色" },
+  { key: "dark", label: "黑", title: "黑色实线" },
+  { key: "light", label: "白", title: "白色实线" },
+  { key: "gray_dashed", label: "灰虚线", title: "灰色虚线" },
+] as const;
+
+const ENDPOINT_STYLES: Array<{ key: DimensionEndpointStyle; label: string; title: string }> = [
+  { key: "arrow", label: "三角", title: "两端三角箭头" },
+  { key: "bar", label: "横杠", title: "两端横杠端点" },
+  { key: "none", label: "无", title: "无端点直线" },
+];
+
+const DISPLAY_UNITS: Array<{ key: Extract<DimensionUnit, "cm" | "in">; label: string }> = [
+  { key: "cm", label: "cm" },
+  { key: "in", label: "inch" },
+];
+
+function EndpointStyleIcon({ style }: { style: DimensionEndpointStyle }) {
+  return (
+    <svg className={`dimension-endpoint-icon is-${style}`} viewBox="0 0 40 14" aria-hidden="true">
+      <line x1="7" y1="7" x2="33" y2="7" />
+      {style === "arrow" && <>
+        <path d="M7 7 L12 3 L12 11 Z" />
+        <path d="M33 7 L28 3 L28 11 Z" />
+      </>}
+      {style === "bar" && <>
+        <line x1="7" y1="2.5" x2="7" y2="11.5" />
+        <line x1="33" y1="2.5" x2="33" y2="11.5" />
+      </>}
+    </svg>
+  );
+}
+
+export function DimensionCanvasToolbar({
+  editor,
+  canUndo,
+  canRedo,
+  onTool,
+  onUndo,
+  onRedo,
+  onDelete,
+  onFit,
+  onZoomIn,
+  onZoomOut,
+  onReset,
+  onStyle,
+  onLineWidth,
+  onEndpointStyle,
+  onCustomValueChange,
+  onDisplayUnitChange,
+}: Props) {
+  const selectedAnnotation = editor.annotations.find((annotation) => annotation.id === editor.selectedAnnotationId);
+  const activeEndpointStyle = selectedAnnotation?.endpointStyle ?? editor.endpointStyle;
+  const inputUnit = dimensionInputUnit(editor.displayUnit);
+  const toolReason = (key: Exclude<DimensionKey, "custom">): string => {
+    const dimension = editor.dimensions[key];
+    if (dimension.valueCm == null || dimension.valueCm <= 0) return "缺少商品本体尺寸";
+    return "";
+  };
+  const toolHint = (key: Exclude<DimensionKey, "custom">, label: string): string => {
+    const provenance = editor.dimensions[key].provenance;
+    return provenance === "package_estimate" || provenance === "unconfirmed"
+      ? `点击确认${label}的数值并进入绘制`
+      : `绘制${label}尺寸线`;
+  };
+  const customReason = editor.customValueCm && editor.customValueCm > 0 ? "" : "请先填写自定义尺寸";
+
+  // H2: 自定义尺寸输入保留中间态(支持小数),失焦/回车提交;外部变更(撤销/切商品)自动同步
+  const customTextDisplay = editor.customValueCm == null
+    ? ""
+    : String(Number(centimetersToUnit(editor.customValueCm, inputUnit).toFixed(2)));
+  const [customText, setCustomText] = useState(customTextDisplay);
+  const customEditingRef = useRef(false);
+  useEffect(() => {
+    if (!customEditingRef.current) setCustomText(customTextDisplay);
+  }, [customTextDisplay]);
+
+  const commitCustomValue = () => {
+    customEditingRef.current = false;
+    const text = customText.trim();
+    if (text === "") {
+      setCustomText(customTextDisplay);
+      if (editor.customValueCm != null) onCustomValueChange(null);
+      return;
+    }
+    const parsed = Number(text);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      const nextCm = unitToCentimeters(parsed, inputUnit);
+      if (editor.customValueCm == null || Math.abs(editor.customValueCm - nextCm) > 0.001) {
+        onCustomValueChange(nextCm);
+      } else {
+        setCustomText(customTextDisplay);
+      }
+    } else {
+      // 非法输入:回退为当前值
+      setCustomText(customTextDisplay);
+    }
+  };
+
+  return (
+    <aside className="dimension-toolbar" aria-label="尺寸画布工具栏">
+      <div className="dimension-tool-group dimension-unit-tools">
+        <span className="dimension-tool-label">显示单位</span>
+        <div className="dimension-unit-row" role="group" aria-label="尺寸显示单位">
+          {DISPLAY_UNITS.map(({ key, label }) => (
+            <button
+              type="button"
+              key={key}
+              className={editor.displayUnit === "both" || editor.displayUnit === key ? "is-active" : ""}
+              onClick={() => onDisplayUnitChange(key)}
+              aria-pressed={editor.displayUnit === "both" || editor.displayUnit === key}
+              title={`以 ${label} 显示尺寸`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="dimension-tool-group dimension-tool-main">
+        <span className="dimension-tool-label">绘制工具</span>
+        <button className={`dimension-tool-primary${editor.activeTool === "select" ? " is-active" : ""}`} onClick={() => onTool("select")}>
+          <span aria-hidden="true">⌖</span>选择 / 移动
+        </button>
+        <span className="dimension-tool-label dimension-tool-sublabel">箭头模式</span>
+        <div className="dimension-endpoint-mode-row" role="group" aria-label="尺寸线箭头模式">
+          {ENDPOINT_STYLES.map(({ key, label, title }) => (
+            <button
+              type="button"
+              key={key}
+              className={activeEndpointStyle === key ? "is-active" : ""}
+              onClick={() => onEndpointStyle(key)}
+              aria-label={title}
+              aria-pressed={activeEndpointStyle === key}
+              title={title}
+            >
+              <EndpointStyleIcon style={key} />
+              <span>{label}</span>
+            </button>
+          ))}
+        </div>
+        {DIMENSION_TOOLS.map(({ key, label }) => {
+          const reason = toolReason(key);
+          return (
+            <button
+              key={key}
+              className={`dimension-tool-primary${editor.activeTool === key ? " is-active" : ""}`}
+              onClick={() => onTool(key)}
+              disabled={Boolean(reason)}
+              title={reason || toolHint(key, label)}
+              aria-pressed={editor.activeTool === key}
+            >
+              <span className="dimension-tool-axis" aria-hidden="true" />{label}
+            </button>
+          );
+        })}
+        <div className="dimension-custom-tool">
+          <button
+            className={`dimension-tool-primary${editor.activeTool === "custom" ? " is-active" : ""}`}
+            onClick={() => onTool("custom")}
+            disabled={Boolean(customReason)}
+            title={customReason || "绘制自定义尺寸线"}
+          ><span aria-hidden="true">＋</span>自定义</button>
+          <label className="dimension-custom-tool-value">
+            <span>尺寸</span>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              placeholder="输入数值"
+              aria-label="自定义尺寸数值"
+              value={customText}
+              onChange={(event) => { customEditingRef.current = true; setCustomText(event.target.value); }}
+              onBlur={() => commitCustomValue()}
+              onKeyDown={(event) => { if (event.key === "Enter") { commitCustomValue(); (event.target as HTMLInputElement).blur(); } }}
+            />
+            <em>{dimensionUnitLabel(inputUnit)}</em>
+          </label>
+        </div>
+      </div>
+      <div className="dimension-tool-group dimension-history-tools is-row" aria-label="编辑操作">
+        <button onClick={onUndo} disabled={!canUndo} title="撤销" aria-label="撤销">↶</button>
+        <button onClick={onRedo} disabled={!canRedo} title="重做" aria-label="重做">↷</button>
+        <button onClick={onDelete} disabled={!editor.selectedAnnotationId} title="删除选中的尺寸线">删除</button>
+      </div>
+      <div className="dimension-tool-group">
+        <span className="dimension-tool-label">视图</span>
+        <div className="dimension-tool-row">
+          <button onClick={onFit}>适应</button>
+          <button onClick={onZoomOut} aria-label="缩小">−</button>
+          <button onClick={onZoomIn} aria-label="放大">＋</button>
+        </div>
+        <button onClick={onReset}>重置视图</button>
+      </div>
+      <div className="dimension-tool-group dimension-appearance-tools">
+        <div className="dimension-tool-label-row">
+          <span className="dimension-tool-label">标注样式</span>
+          {!selectedAnnotation && <small>先选尺寸线</small>}
+        </div>
+        <div className="dimension-tool-row dimension-choice-row dimension-style-row">
+          {ANNOTATION_STYLES.map(({ key: style, label, title }) => (
+            <button
+              key={style}
+              className={selectedAnnotation?.style === style ? "is-active" : ""}
+              disabled={!selectedAnnotation}
+              onClick={() => onStyle(style)}
+              aria-pressed={selectedAnnotation?.style === style}
+              title={selectedAnnotation ? `设置为${title}` : "请先选择一条尺寸线"}
+            >
+              <span className={`dimension-color-dot is-${style}`} aria-hidden="true" />
+              {label}
+            </button>
+          ))}
+        </div>
+        <span className="dimension-tool-label dimension-tool-sublabel">线条粗细</span>
+        <div className="dimension-tool-row dimension-choice-row dimension-width-row">
+          {(["thin", "normal", "thick"] as const).map((lineWidth, index) => (
+            <button
+              key={lineWidth}
+              className={selectedAnnotation?.lineWidth === lineWidth ? "is-active" : ""}
+              disabled={!selectedAnnotation}
+              onClick={() => onLineWidth(lineWidth)}
+              title={selectedAnnotation ? `设置为${["细", "标准", "粗"][index]}线` : "请先选择一条尺寸线"}
+              aria-pressed={selectedAnnotation?.lineWidth === lineWidth}
+            >
+              <span className={`dimension-width-swatch is-${lineWidth}`} aria-hidden="true" />
+              {(["细", "标准", "粗"] as const)[index]}
+            </button>
+          ))}
+        </div>
+      </div>
+    </aside>
+  );
+}

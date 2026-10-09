@@ -1,0 +1,481 @@
+/* 组合套装板块样式 —— 统一到全局蓝色主题（卡片 #fbfdff / 边框 #d8e7f2 / 圆角18 /
+   主按钮 #087bf5→#14c8c0 渐变 / 文本 #20364d），避免与其他板块割裂。 */
+
+.combo-kit-page { padding: 6px; color: #20364d; box-sizing: border-box; min-height: calc(100vh - 200px); display: flex; flex-direction: column; }
+
+/* 页头 hero：与「产品处理草稿池 / 组合定制」等板块同款（min-height 142px / 主题渐变 / 大标题），
+   保证各板块页头容器尺寸与视觉层级一致。 */
+.combo-kit-header {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px;
+  min-height: 142px; margin-bottom: 18px; padding: clamp(24px, 3vw, 34px);
+  border: 1px solid var(--theme-module-border-strong, #1b91bd); border-radius: 18px;
+  color: #fff;
+  background: var(--theme-hero-gradient, linear-gradient(118deg, #0a497f 0%, #0d7fba 56%, #20b9ac 100%));
+  box-shadow: 0 14px 34px rgba(12, 91, 139, .18);
+}
+.combo-kit-title { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.combo-kit-title-icon { display: grid; place-items: center; width: 46px; height: 46px; flex: 0 0 auto; border: 1px solid rgba(255, 255, 255, .36); border-radius: 14px; color: #fff; background: rgba(255, 255, 255, .16); font-size: 1.25rem; }
+.combo-kit-title > div { min-width: 0; }
+.combo-kit-title > div > span { color: var(--theme-hero-eyebrow, #9edafa); font-size: .66rem; font-weight: 900; letter-spacing: .11em; }
+.combo-kit-title h1 { margin: 4px 0 4px; font-size: clamp(1.9rem, 3vw, 2.65rem); letter-spacing: -.045em; color: #fff; }
+.combo-kit-title p { margin: 0; color: var(--theme-hero-text, #d9f1fb); font-size: .84rem; }
+.combo-header-side { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.combo-header-stats { display: flex; gap: 12px; }
+.combo-header-stats span { display: grid; grid-template-columns: auto 1fr; align-items: center; column-gap: 8px; padding: 8px 14px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, .32); background: rgba(255, 255, 255, .14); color: var(--theme-hero-text, #d9f1fb); font-size: .76rem; }
+.combo-header-stats i.iconfont { grid-row: 1 / 3; font-size: 1.12rem; color: #9de7f3; }
+.combo-header-stats strong { font-size: 1.15rem; color: #fff; text-align: left; }
+.combo-header-stats em { font-style: normal; color: var(--theme-hero-text, #d9f1fb); font-size: .7rem; }
+.combo-header-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.combo-header-actions button { display: inline-flex; align-items: center; gap: 7px; padding: 9px 12px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, .42); background: rgba(255, 255, 255, .16); color: #fff; cursor: pointer; font-size: 13px; font-weight: 800; transition: background .18s ease, border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
+.combo-header-actions button:hover:not(:disabled) { background: rgba(255, 255, 255, .28); border-color: rgba(255, 255, 255, .72); box-shadow: 0 8px 18px rgba(7, 38, 69, .18); }
+.combo-header-actions button.primary { border: 0; color: var(--theme-primary, #056fc8); background: #fff; }
+
+@media (max-width: 800px) {
+  .combo-kit-header { flex-direction: column; align-items: flex-start; }
+}
+
+.combo-kit-message { padding: 11px 13px; border-radius: 10px; background: #f0faf3; color: #2b6a3e; border: 1px solid #d5ecdb; margin-bottom: 14px; font-size: 13px; }
+.combo-kit-message.error { background: #fff2f2; color: #b00020; border-color: #ffd0d2; }
+/* 浮层提示（组合生图页）：经 portal 挂到 body 后固定视口顶部居中，滚动到页面任意位置都能看到点击结果；
+   文案在数秒后由 ComboKitPage 的定时器自动清空。其它复用该类的页面不传 is-floating，保持原来的行内横幅。 */
+.combo-kit-message.is-floating { position: fixed; z-index: 120; top: 0; left: 50%; display: flex; align-items: center; gap: 9px; margin-bottom: 0; width: max-content; max-width: min(600px, calc(100vw - 32px)); padding: 11px 18px 13px; border-top: 0; border-radius: 0 0 14px 14px; line-height: 1.45; box-shadow: 0 14px 34px rgba(26, 73, 108, .18); transform: translateX(-50%); animation: combo-message-drop .34s cubic-bezier(.2, .85, .3, 1.12) both; }
+.combo-kit-message.is-floating .iconfont { font-size: 16px; flex: 0 0 auto; }
+@keyframes combo-message-drop {
+  from { opacity: 0; transform: translate(-50%, -110%); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+@media (prefers-reduced-motion: reduce) { .combo-kit-message.is-floating { animation: none; } }
+
+.combo-kit-body { display: flex; gap: 18px; align-items: flex-start; }
+.combo-kit-list { width: 240px; flex-shrink: 0; background: #fbfdff; border-radius: 18px; padding: 16px; border: 1px solid #d8e7f2; box-shadow: 0 12px 30px #265d8a0d; }
+.combo-kit-list h2 { font-size: 15px; margin: 0 0 12px; color: #18334d; }
+.combo-kit-list ul { list-style: none; margin: 12px 0 0; padding: 0; }
+.combo-kit-list li { padding: 10px; border-radius: 10px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.combo-kit-list li:hover { background: #f0f7fb; }
+.combo-kit-list li.active { background: #eaf7ff; }
+.combo-kit-list .empty { color: #9aacbd; }
+
+.combo-kit-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+
+/* 未打开套装时首页默认展示的新建套装界面 */
+.combo-create-panel { display: flex; flex-direction: column; gap: 12px; width: 100%; max-width: 520px; margin: 20px auto 0; padding: 24px; background: #fbfdff; border: 1px solid #d8e7f2; border-radius: 18px; box-shadow: 0 12px 30px #265d8a0d; }
+/* 空态铺满：白板撑满整个内容区，表单内容本身也一并铺开（放大选型卡/输入框/按钮并占满宽度），
+   而不是缩在中间一小块、四周留大片空白。 */
+.combo-kit-page.is-empty { flex: 1; }
+.combo-kit-page.is-empty .combo-kit-main { flex: 1; }
+.combo-kit-page.is-empty .combo-create-panel { flex: 1; max-width: none; margin: 0; justify-content: center; gap: clamp(16px, 2.4vh, 30px); padding: clamp(24px, 4vh, 52px) clamp(24px, 4vw, 64px); }
+.combo-kit-page.is-empty .combo-create-panel > * { width: 100%; max-width: min(1280px, 100%); margin-inline: auto; }
+.combo-kit-page.is-empty .combo-create-panel h2 { font-size: clamp(20px, 1.6vw, 26px); }
+.combo-kit-page.is-empty .combo-create-panel p { font-size: clamp(13px, 1vw, 15px); }
+.combo-kit-page.is-empty .combo-create-panel > .combo-mode-cards { gap: clamp(14px, 1.4vw, 22px); margin-bottom: 0; }
+.combo-kit-page.is-empty .combo-mode-card { min-height: clamp(150px, 19vh, 220px); padding: clamp(14px, 1.8vh, 20px); }
+.combo-kit-page.is-empty .combo-mode-card:has(.combo-mode-card-media) { grid-template-columns: clamp(140px, 21vh, 232px) minmax(0, 1fr); }
+.combo-kit-page.is-empty .combo-mode-card-icon { width: 38px; height: 38px; border-radius: 12px; font-size: 1.2rem; }
+.combo-kit-page.is-empty .combo-mode-card-body strong { font-size: clamp(15px, 1.15vw, 17px); }
+.combo-kit-page.is-empty .combo-mode-card-body small { font-size: clamp(12.5px, .95vw, 14px); }
+.combo-kit-page.is-empty .combo-create-panel > input { padding: clamp(12px, 1.7vh, 18px) 16px; font-size: clamp(14px, 1.05vw, 16px); }
+.combo-kit-page.is-empty .combo-create-panel .combo-modal-actions { margin-top: 0; gap: 12px; }
+.combo-kit-page.is-empty .combo-create-panel .combo-modal-actions button { padding: clamp(11px, 1.5vh, 15px) clamp(20px, 2vw, 30px); font-size: clamp(13px, 1vw, 15px); }
+
+/* 桌面端空态：外层白板一并与视口底边对齐，并把高度沿 白板→标签面板→页面 传下去，
+   让新建面板真正撑满整页（中间层高度是 auto，百分比高度传不到，必须用 flex 链）。
+   必须限定「当前激活的标签页」，否则隐藏的组合生图 tab 仍会命中 :has 并把白板拉高、影响其它页面。
+   前面加 .workspace-shell 是为了压过 apple 桌面模式同权重的 .workspace-main/.content-card 规则。 */
+@media (min-width: 801px) {
+  .workspace-shell .workspace-main:has(.workspace-tab-panel.is-active > .combo-kit-page.is-empty) { min-height: calc(100vh - var(--workspace-gutter, 18px) - var(--workspace-gutter, 18px)); grid-template-rows: auto minmax(0, 1fr); }
+  .workspace-shell .content-card:has(.workspace-tab-panel.is-active > .combo-kit-page.is-empty) { display: flex; flex-direction: column; align-self: stretch; }
+  .workspace-shell .content-card:has(.workspace-tab-panel.is-active > .combo-kit-page.is-empty) > .workspace-tab-panel.is-active { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+}
+.combo-create-panel h2 { margin: 0; font-size: 17px; color: #172b44; }
+.combo-create-panel p { margin: 0; color: #6f849a; font-size: 13px; line-height: 1.6; }
+.combo-create-panel input { width: 100%; padding: 10px 12px; border: 1px solid #cfe0eb; border-radius: 11px; font-size: 13px; color: #18334d; outline-color: #13a9f2; box-sizing: border-box; }
+.combo-create-panel .combo-modal-actions { margin-top: 4px; }
+
+.combo-section { background: #fbfdff; border: 1px solid #d8e7f2; border-radius: 18px; padding: 20px; box-shadow: 0 12px 30px #265d8a0d; margin-top: 16px; }
+.combo-section h2 { font-size: 16px; margin: 0 0 14px; color: #172b44; letter-spacing: -.01em; }
+.combo-subtitle { font-size: 14px; color: #172b44; margin: 16px 0 10px; font-weight: 800; }
+.combo-hint { color: #8aa0b4; font-size: 12px; margin-top: 10px; }
+
+.combo-extra-fields { border: 1px dashed #d6e0ea; border-radius: 12px; padding: 12px 14px; margin-bottom: 12px; }
+.combo-extra-fields > summary { cursor: pointer; font-size: 13px; font-weight: 700; color: #526a82; list-style: none; display: flex; align-items: center; gap: 6px; }
+.combo-extra-fields > summary::before { content: "▸"; transition: transform .15s ease; font-size: 12px; }
+.combo-extra-fields[open] > summary::before { transform: rotate(90deg); }
+.combo-extra-fields > summary:hover { color: #172b44; }
+.combo-extra-fields > .combo-grid { margin-top: 12px; margin-bottom: 0; }
+
+/* 水印设置：开关行与滑块（滑块不套用输入框的边框内边距样式）。 */
+.combo-watermark .combo-primary-toggle { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 13px; cursor: pointer; }
+.combo-watermark .combo-grid { margin-top: 12px; }
+.combo-watermark .combo-grid label { gap: 8px; }
+.combo-watermark .combo-grid input[type="range"] { padding: 0; border: 0; height: 22px; background: transparent; accent-color: #087bf5; }
+.combo-watermark .combo-grid select:disabled { color: #9caaba; background: #f5f8fb; }
+.combo-watermark .combo-actions { margin-top: 12px; }
+
+.combo-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 12px; }
+.combo-grid label, .combo-section > label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: #526a82; font-weight: 700; }
+.combo-grid .combo-grid-full { grid-column: 1 / -1; }
+.combo-grid input, .combo-grid select, .combo-grid textarea, .combo-section textarea, .combo-item input, .combo-edit-stage-info input, .combo-preset-custom input, .combo-preset-custom textarea, .combo-history-search input {
+  border: 1px solid #cfe0eb; border-radius: 11px; padding: 10px 12px; font-size: 13px; color: #18334d; background: #fff; outline-color: #13a9f2; width: 100%; box-sizing: border-box; line-height: 1.5;
+}
+.combo-grid textarea, .combo-section textarea, .combo-preset-custom textarea { resize: none; min-height: 72px; font-family: inherit; }
+
+.combo-actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+.combo-actions button, .combo-kit-list button { padding: 10px 14px; border-radius: 11px; border: 1px solid var(--theme-module-border, #cfe0eb); background: var(--theme-module-surface, #fff); color: var(--theme-text-secondary, #2f5878); cursor: pointer; font-size: 13px; font-weight: 800; transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
+.combo-actions button:hover:not(:disabled), .combo-kit-list button:hover:not(:disabled) { border-color: var(--theme-module-border-strong, #82c9ef); box-shadow: 0 8px 18px #188bd61a; }
+.combo-actions button:disabled { cursor: not-allowed; color: var(--theme-text-muted, #9caaba); background: var(--theme-module-surface-soft, #f5f8fb); }
+.combo-actions button.primary { border: 0; color: var(--theme-on-primary, #fff); background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0)); }
+.combo-actions button.danger, .combo-history-actions .btn-mini.danger { border: 1px solid #ffd5d5; color: #db5960; background: #fff8f8; }
+
+.combo-upload { display: inline-block; padding: 9px 14px; border: 1.5px dashed #bcd6ec; border-radius: 11px; cursor: pointer; font-size: 13px; color: #087bf5; background: #fbfdff; margin-bottom: 12px; font-weight: 800; }
+/* 与同排按钮统一为等高实心主按钮：虚线框会与实心按钮错位、层级也乱。 */
+.combo-actions .combo-upload {
+  display: inline-flex; align-items: center; justify-content: center;
+  margin: 0; padding: 10px 16px; border: 1px solid transparent; border-radius: 11px;
+  color: var(--theme-on-primary, #fff); font-size: 13px; font-weight: 800;
+  background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0));
+  box-shadow: 0 8px 18px #188bd626; transition: box-shadow .18s ease, transform .18s ease;
+}
+.combo-actions .combo-upload:hover { box-shadow: 0 10px 22px #188bd640; transform: translateY(-1px); }
+
+/* 生成选型卡片：套装组合 / 单品多视角二选一，决定后续生图方式。
+   版式按「广告横幅」来做：左侧商品实拍轮播（多视角）+ 右侧标题说明，整体可点选。 */
+.combo-mode-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
+.combo-mode-card {
+  position: relative; display: grid; grid-template-columns: minmax(0, 1fr); align-items: center;
+  gap: clamp(12px, 1.1vw, 18px); width: 100%; text-align: left; padding: 12px; border-radius: 16px;
+  border: 1px solid var(--theme-module-border, #d8e7f2); background: var(--theme-module-surface, #fbfdff);
+  color: var(--theme-text-primary, #20364d); font-family: inherit; cursor: pointer;
+  transition: border-color .2s ease, box-shadow .2s ease, background .2s ease, transform .2s ease;
+}
+/* 有广告位轮播时才分成「图 + 文」两栏；没有配图的选型退回整行文字，不会留空栏。 */
+.combo-mode-card:has(.combo-mode-card-media) { grid-template-columns: clamp(112px, 15vw, 190px) minmax(0, 1fr); }
+.combo-mode-card:hover { border-color: var(--theme-module-border-strong, #82c9ef); box-shadow: 0 14px 28px var(--theme-module-shadow, #265d8a14); transform: translateY(-1px); }
+.combo-mode-card:focus-visible { outline: 2px solid var(--theme-module-primary-strong, #087bf5); outline-offset: 2px; }
+.combo-mode-card.is-active { border-color: var(--theme-module-primary-strong, #087bf5); background: var(--theme-module-surface-tint, #f2f9ff); box-shadow: 0 14px 28px var(--theme-module-shadow, #265d8a1a); }
+.combo-mode-card-media { display: block; width: 100%; }
+
+/* 选型卡内的广告位轮播：方形画框 + 淡入翻页，悬停暂停并轻微推近，指示点可点选切换。 */
+.combo-card-carousel { position: relative; display: block; width: 100%; aspect-ratio: 1 / 1; overflow: hidden; border-radius: 12px; background: var(--theme-module-surface-soft, #eef6fc); box-shadow: inset 0 0 0 1px var(--theme-module-border, #dbe8f3); }
+.combo-card-carousel-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .6s ease, transform .6s ease; user-select: none; }
+.combo-card-carousel-img.is-active { opacity: 1; }
+.combo-mode-card:hover .combo-card-carousel-img.is-active { transform: scale(1.05); }
+.combo-card-carousel-footer { position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 18px 8px 7px; background: linear-gradient(to top, rgba(9, 28, 48, .58), rgba(9, 28, 48, 0)); }
+.combo-card-carousel-caption { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; color: #fff; background: rgba(9, 28, 48, .34); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+.combo-card-carousel-dots { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+.combo-card-carousel-dot { width: 6px; height: 6px; padding: 0; border: 0; border-radius: 999px; background: rgba(255, 255, 255, .62); box-shadow: 0 1px 3px rgba(9, 28, 48, .35); cursor: pointer; transition: width .25s ease, background .25s ease; }
+.combo-card-carousel-dot:hover { background: #fff; }
+.combo-card-carousel-dot.is-active { width: 16px; background: #fff; }
+
+.combo-mode-card-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.combo-mode-card-head { display: flex; align-items: center; gap: 8px; min-width: 0; padding-right: 24px; }
+.combo-mode-card-icon { display: grid; place-items: center; flex: 0 0 auto; width: 32px; height: 32px; border-radius: 10px; font-size: 1.02rem; color: var(--theme-module-primary-strong, #087bf5); background: var(--theme-module-surface-tint, #e8f5ff); }
+.combo-mode-card-body strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; color: var(--theme-text-primary, #172b44); }
+.combo-mode-card-body small { font-size: 12px; line-height: 1.6; color: var(--theme-text-secondary, #6f849a); }
+.combo-mode-card-check { position: absolute; top: 10px; right: 10px; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 999px; font-size: 1rem; color: var(--theme-module-border, #cfe0eb); background: var(--theme-module-surface-raised, #fff); box-shadow: 0 2px 8px rgba(26, 71, 110, .14); transition: color .2s ease; }
+.combo-mode-card.is-active .combo-mode-card-check { color: var(--theme-module-primary-strong, #14c8c0); }
+@media (max-width: 720px) { .combo-mode-cards { grid-template-columns: 1fr; } }
+@media (prefers-reduced-motion: reduce) {
+  .combo-mode-card { transition: none; transform: none !important; }
+  .combo-card-carousel-img { transition: none; transform: none !important; }
+}
+/* 弹窗内空间窄，选型卡竖排并把轮播收窄，避免文案被挤压。 */
+.combo-create-mode { margin-top: 12px; }
+.combo-create-mode .combo-mode-cards { grid-template-columns: 1fr; margin-bottom: 0; }
+.combo-create-mode .combo-mode-card { padding: 10px; }
+.combo-create-mode .combo-mode-card:has(.combo-mode-card-media) { grid-template-columns: clamp(92px, 12vw, 132px) minmax(0, 1fr); }
+
+/* 粘贴上传提示：说明可直接 Ctrl+V 粘贴截图/网页图。 */
+.combo-paste-zone { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; padding: 11px 14px; border: 1px dashed var(--theme-module-border-strong, #bcd6ec); border-radius: 12px; background: var(--theme-module-surface-soft, #f6fbff); color: var(--theme-text-secondary, #4a7597); font-size: 13px; }
+.combo-paste-zone i.iconfont { font-size: 1.1rem; color: var(--theme-module-primary-strong, #087bf5); }
+.combo-paste-zone kbd { padding: 1px 6px; border-radius: 6px; border: 1px solid var(--theme-module-border, #cfe0eb); background: var(--theme-module-surface-raised, #fff); font-family: inherit; font-size: 12px; color: var(--theme-text-secondary, #2f5878); }
+
+/* 工作流步骤卡：视觉与「产品处理工作流」步骤条保持一致（步骤卡样式来自 ProductFlowSteps.css）。 */
+.combo-flow-card { margin-bottom: 16px; padding: 18px; border: 1px solid #d8e7f2; border-radius: 18px; background: #fbfdff; box-shadow: 0 12px 30px #265d8a0d; }
+.combo-flow-heading { display: flex; align-items: center; gap: 8px; padding: 0 2px 14px; color: #23445e; }
+.combo-flow-heading > span { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 9px; background: #e0f8ff; color: #008bd6; }
+.combo-flow-heading strong { font-size: 1rem; color: #0a3a63; }
+.combo-flow-heading small { margin-left: auto; color: #7890a5; font-size: .78rem; }
+/* 六步沿用 ProductFlowSteps 的 3 列网格，自然排成两行；宽屏下额外放开为 6 列一行。 */
+@media (min-width: 1600px) {
+  .combo-flow-card .product-flow-steps { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+}
+.combo-kit-content { flex: 1; display: flex; flex-direction: column; gap: 16px; }
+/* 步骤内容容器跟随主区一起撑满，无数据时也不留大片空白。 */
+.combo-kit-content > .combo-section { flex: 1; }
+/* 每步底部的「下一步」：完成本步后手动推进到下一步。 */
+.combo-step-footer { display: flex; align-items: center; gap: 12px; padding: 2px 4px 4px; }
+.combo-step-footer-hint { margin-right: auto; color: #7890a5; font-size: 12px; font-weight: 700; }
+.combo-step-footer button { padding: 11px 24px; border: 0; border-radius: 11px; color: var(--theme-on-primary, #fff); font-size: 14px; font-weight: 800; cursor: pointer; background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0)); box-shadow: 0 10px 22px #188bd633; transition: box-shadow .18s ease, transform .18s ease; }
+.combo-step-footer button:hover { box-shadow: 0 12px 26px #188bd640; transform: translateY(-1px); }
+
+/* 主界面单图蒙版编辑区 */
+.combo-edit-stage { margin-top: 14px; border: 1px solid #e1ebf2; border-radius: 16px; padding: 16px; background: #f8fbfd; }
+.combo-edit-stage-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 12px; }
+.combo-edit-stage-title { font-size: 14px; color: #172b44; font-weight: 800; }
+.combo-edit-stage-grid { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 16px; align-items: flex-start; }
+.combo-edit-stage-mask { min-width: 0; }
+.combo-edit-stage-info { display: flex; flex-direction: column; gap: 10px; }
+.combo-edit-stage-info label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #526a82; font-weight: 700; }
+.combo-edit-stage-info .combo-primary-toggle { flex-direction: row; align-items: center; gap: 8px; cursor: pointer; }
+.combo-primary-toggle input { width: auto; height: auto; margin: 0; }
+.combo-primary-toggle span { color: #087bf5; font-weight: 700; }
+
+/* 右侧内联缩略图组：无需打开抽屉即可快速切换当前编辑的图。 */
+.combo-edit-stage-thumbs { margin-top: 2px; }
+.combo-edit-stage-thumbs-title { display: block; font-size: 12px; color: #7890a5; font-weight: 700; margin-bottom: 6px; }
+.combo-edit-stage-thumb-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.combo-edit-stage-thumb { position: relative; padding: 0; border: 2px solid transparent; border-radius: 10px; overflow: hidden; background: #eef4f9; cursor: pointer; aspect-ratio: 1 / 1; transition: border-color .16s ease, box-shadow .16s ease; }
+.combo-edit-stage-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.combo-edit-stage-thumb:hover { border-color: #82c9ef; }
+.combo-edit-stage-thumb.is-active { border-color: #087bf5; box-shadow: 0 6px 14px #188bd633; }
+.combo-edit-stage-thumb-idx { position: absolute; left: 4px; bottom: 4px; padding: 1px 6px; border-radius: 8px; background: rgba(15, 42, 66, .66); color: #fff; font-size: 11px; font-weight: 700; }
+.combo-edit-stage-thumb-primary { position: absolute; right: 4px; top: 4px; padding: 1px 6px; border-radius: 8px; background: #ffb020; color: #fff; font-size: 11px; font-weight: 700; }
+
+/* 素材 2×2 缩略格 */
+.combo-items { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+.combo-item { border: 1px solid #e1ebf2; border-radius: 14px; padding: 12px; background: #fbfdff; display: flex; flex-direction: column; gap: 8px; }
+.combo-item-thumb { position: relative; }
+.combo-item-thumb img { width: 100%; max-height: 160px; object-fit: contain; background: #f3f6f9; border-radius: 10px; }
+.combo-item .idx, .combo-item-thumb .idx { position: absolute; top: 6px; left: 6px; background: rgba(15, 42, 66, .66); color: #fff; padding: 2px 9px; border-radius: 10px; font-size: 12px; }
+.combo-item-thumb .btn-mini { position: absolute; top: 6px; right: 6px; }
+
+/* 通用 mini 按钮 */
+.btn-mini { padding: 5px 11px; border-radius: 8px; border: 1px solid var(--theme-module-border, #cfe0eb); background: var(--theme-module-surface, #fff); color: var(--theme-text-secondary, #2f5878); cursor: pointer; font-size: 12px; font-weight: 800; transition: border-color .16s ease, background .16s ease, box-shadow .16s ease; }
+.btn-mini:hover:not(:disabled) { border-color: #82c9ef; box-shadow: 0 6px 14px #188bd61a; }
+/* 进行中/不可用：降透明度并禁用指针，让「移除中…」「保存中…」有明确的可点击状态反馈。 */
+.btn-mini:disabled { cursor: not-allowed; opacity: .6; box-shadow: none; }
+.btn-mini.danger { color: #db5960; border-color: #f3c4c9; background: #fff8f8; }
+.btn-mini.danger:hover:not(:disabled) { border-color: #f28b93; background: #ffecee; }
+.btn-mini.primary { color: #087bf5; border-color: #bcd6ec; background: #eef8ff; }
+.btn-mini.primary:hover:not(:disabled) { border-color: #82c9ef; background: #e6f5ff; }
+
+/* 蒙版 */
+.combo-mask { border-top: 1px dashed #dbe7f1; padding-top: 10px; }
+.combo-mask-toolbar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+.combo-mask-stage { position: relative; }
+.combo-mask-hint { display: flex; align-items: center; gap: 6px; color: #8aa0b4; font-size: 11px; margin-top: 6px; }
+.combo-mask-hint .iconfont { font-size: 13px; flex: 0 0 auto; }
+/* 保存成功/失败的就地反馈色，避免用户只能在页面顶部找提示。 */
+.combo-mask-hint.is-saved { color: #2b6a3e; }
+.combo-mask-hint.is-error { color: #b00020; }
+
+.combo-fusion-preview { margin-top: 16px; }
+.combo-fusion-preview h3 { font-size: 14px; margin: 0 0 8px; color: #172b44; }
+.combo-fusion-preview img { width: 320px; max-width: 100%; border-radius: 12px; background: #f3f6f9; border: 1px solid #e1ebf2; }
+
+.combo-text-result { margin-top: 14px; background: #f8fbfd; border-radius: 12px; padding: 14px; border: 1px solid #e1ebf2; }
+.combo-text-result h3 { margin: 0 0 8px; font-size: 15px; color: #172b44; }
+.combo-text-result ul { margin: 8px 0 0; padding-left: 18px; }
+
+.combo-images { position: relative; display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 14px; }
+.combo-images figure { margin: 0; }
+.combo-images img { width: 100%; border-radius: 12px; background: #f3f6f9; border: 1px solid #e1ebf2; }
+.combo-images figcaption { text-align: center; font-size: 12px; color: #6f849a; margin-top: 4px; }
+/* 空数据占位：统一虚线框 + 居中，并横跨所在网格，避免大片留白。 */
+.combo-images .empty, .combo-items .empty, .combo-section > .empty {
+  grid-column: 1 / -1;
+  display: flex; align-items: center; justify-content: center; text-align: center;
+  min-height: 132px; margin: 0; padding: 16px;
+  border: 1px dashed var(--theme-module-border, #d8e7f2); border-radius: 14px;
+  background: var(--theme-module-surface-soft, #f8fbfd);
+  color: #8aa0b4; font-size: 13px;
+}
+.combo-image-card { position: relative; }
+.combo-image-actions { position: absolute; top: 8px; right: 8px; display: flex; gap: 6px; opacity: 0; transition: opacity .16s ease; }
+.combo-image-card:hover .combo-image-actions { opacity: 1; }
+
+.combo-billing { margin-top: 16px; }
+.combo-billing h3 { font-size: 14px; margin: 0 0 8px; color: #172b44; }
+.combo-billing ul { margin: 0; padding-left: 18px; }
+
+/* 预检面板 */
+.combo-preview-review { display: flex; flex-direction: column; gap: 10px; }
+/* 预检：分区卡片 + 紧凑事实表 + 缩略图，避免字段散落在整页空白上。 */
+.combo-preview-action { display: flex; align-items: center; gap: 16px; padding: 14px 16px; border: 1px dashed #cfe0ee; border-radius: 14px; background: #f8fbfd; }
+.combo-preview-action > div { display: flex; flex-direction: column; gap: 3px; margin-right: auto; }
+.combo-preview-action b { font-size: 14px; color: #172b44; }
+.combo-preview-action small { font-size: 12px; color: #7890a5; }
+.combo-preview-block { border: 1px solid #e6eff6; border-radius: 14px; padding: 0 16px 14px; background: #fdfeff; margin-bottom: 14px; }
+.combo-preview-block > .combo-subtitle { display: flex; align-items: baseline; gap: 8px; }
+.combo-preview-count { font-size: 12px; color: #7890a5; font-weight: 700; font-style: normal; }
+.combo-preview-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 22px; }
+.combo-preview-facts > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px dashed #edf3f8; }
+.combo-preview-facts span { flex: 0 0 auto; font-size: 12px; color: #7890a5; font-weight: 700; }
+.combo-preview-facts b { min-width: 0; font-size: 13px; color: #172b44; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.combo-preview-checks { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.combo-preview-thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+.combo-preview-thumb { margin: 0; border: 1px solid #e1ebf2; border-radius: 12px; overflow: hidden; background: #fbfdff; }
+.combo-preview-thumb img { display: block; width: 100%; aspect-ratio: 1 / 1; object-fit: contain; background: #f3f6f9; }
+.combo-preview-thumb figcaption { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; }
+.combo-preview-thumb figcaption b { font-size: 12px; color: #172b44; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.combo-preview-thumb figcaption small { font-size: 12px; color: #6f849a; }
+.combo-preview-status { margin: 0; color: #36526c; }
+.combo-preview-status strong { color: #087bf5; }
+.combo-preview-reason { display: block; margin-top: 6px; color: #db5960; font-style: normal; font-size: 13px; }
+.combo-field-check { padding: 8px 12px; border-radius: 10px; font-size: 13px; font-weight: 800; }
+.combo-field-check.is-ok { color: #07966f; background: #e8faf4; }
+.combo-field-check.is-missing { color: #b45309; background: #fef3c7; }
+.combo-item-info { display: flex; flex-direction: column; gap: 4px; }
+.combo-item-info b { font-size: 13px; color: #172b44; }
+.combo-item-info small { font-size: 12px; color: #6f849a; }
+.combo-cos-tag { position: absolute; bottom: 8px; left: 8px; padding: 3px 8px; border-radius: 8px; font-size: 11px; font-weight: 800; }
+.combo-cos-tag.is-ok { color: #07966f; background: #e8faf4; }
+.combo-cos-tag.is-missing { color: #b45309; background: #fef3c7; }
+
+/* 状态徽标 */
+.combo-status { font-size: 11px; padding: 2px 9px; border-radius: 10px; background: #eaf2f8; color: #526a82; font-weight: 800; }
+
+/* 右侧抽屉（素材总览 / 历史） */
+.combo-drawer-mask { position: fixed; inset: 0; background: rgba(23, 44, 68, .34); z-index: 900; backdrop-filter: blur(2px); }
+.combo-drawer { position: fixed; top: 0; right: 0; bottom: 0; width: 420px; max-width: 92vw; background: #fbfdff; z-index: 901; border-left: 1px solid #d8e7f2; box-shadow: -14px 0 34px rgba(38, 93, 138, .16); display: flex; flex-direction: column; }
+.combo-drawer-head { display: flex; justify-content: space-between; align-items: center; padding: 16px 18px; border-bottom: 1px solid #e6eef5; }
+.combo-drawer-head h3 { margin: 0; font-size: 16px; color: #172b44; }
+.combo-drawer-head button { border: 1px solid #cfe0eb; border-radius: 9px; background: #fff; color: #2f5878; padding: 7px 12px; font-size: 13px; cursor: pointer; font-weight: 800; }
+.combo-drawer > .combo-upload { margin: 12px 18px; }
+.combo-drawer-grid { flex: 1; overflow-y: auto; padding: 0 18px 18px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; align-content: start; }
+.combo-drawer-thumb { border: 1px solid #e1ebf2; border-radius: 12px; overflow: hidden; cursor: pointer; position: relative; background: #fff; transition: border-color .18s ease, box-shadow .18s ease; }
+.combo-drawer-thumb:hover { border-color: #82c9ef; }
+.combo-drawer-thumb.is-active { border-color: #087bf5; box-shadow: 0 0 0 2px rgba(8,123,245,.15); }
+.combo-drawer-thumb img { width: 100%; height: 110px; object-fit: contain; background: #f3f6f9; display: block; }
+.combo-drawer-thumb-label { display: block; padding: 6px 8px; font-size: 12px; color: #526a82; }
+.combo-drawer-thumb-remove { position: absolute; top: 6px; right: 6px; padding: 3px 8px; font-size: 11px; border: 1px solid #f3c4c9; background: #fff; color: #db5960; border-radius: 7px; cursor: pointer; }
+.combo-drawer-thumb-primary { position: absolute; top: 6px; left: 6px; padding: 2px 8px; font-size: 11px; background: #087bf5; color: #fff; border-radius: 7px; z-index: 1; }
+
+/* 提示词模板预设页 */
+.combo-preset-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+.combo-preset-tab { padding: 10px 18px; border-radius: 11px; border: 1px solid var(--theme-module-border, #cfe0eb); background: var(--theme-module-surface, #fff); color: var(--theme-text-secondary, #667d94); cursor: pointer; font-size: 14px; font-weight: 800; transition: border-color .18s ease, background .18s ease, box-shadow .18s ease; }
+.combo-preset-tab:hover { border-color: var(--theme-module-border-strong, #82c9ef); }
+.combo-preset-tab.is-active { color: var(--theme-on-primary, #fff); background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0)); border-color: transparent; box-shadow: 0 7px 14px rgba(var(--theme-module-primary-rgb, 8, 123, 245), 0.18); }
+.combo-preset-body { display: flex; flex-direction: column; gap: 16px; }
+.combo-preset-card { background: #fbfdff; border: 1px solid #d8e7f2; border-radius: 18px; padding: 20px; box-shadow: 0 12px 30px #265d8a0d; }
+.combo-preset-card.is-active { border-color: #9bd3ef; }
+.combo-preset-card h2 { font-size: 17px; margin: 0; color: #172b44; }
+.combo-preset-card h3 { font-size: 14px; margin: 16px 0 6px; color: #172b44; font-weight: 800; }
+.combo-preset-card-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.combo-preset-badge { font-size: 12px; padding: 2px 10px; border-radius: 10px; background: #e8faf4; color: #07966f; font-weight: 800; }
+.combo-preset-subtitle { color: #6f849a; font-size: 13px; margin: 8px 0 0; }
+.combo-preset-prompt { background: #f8fbfd; border: 1px solid #e1ebf2; border-radius: 10px; padding: 10px; font-size: 12px; white-space: pre-wrap; word-break: break-word; color: #36526c; margin: 0 0 6px; }
+.combo-preset-zh { color: #6f849a; font-size: 12px; line-height: 1.6; margin: 0 0 12px; padding: 0 2px; }
+.combo-preset-custom label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: #526a82; font-weight: 700; margin-bottom: 12px; }
+.combo-preset-custom textarea { max-height: 160px; }
+.combo-preset-tip { color: #8aa0b4; font-size: 12px; margin-top: 14px; }
+
+/* 历史组合套装页 */
+.combo-history-search { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+.combo-history-search input { flex: 1; }
+.combo-history-table { background: #fbfdff; border: 1px solid #d8e7f2; border-radius: 18px; overflow: hidden; box-shadow: 0 12px 30px #265d8a0d; }
+.combo-history-row { display: grid; grid-template-columns: 1.4fr 1.6fr 0.8fr 1.2fr 1.1fr; gap: 10px; padding: 12px 16px; border-bottom: 1px solid #edf4f9; align-items: center; font-size: 13px; color: #36526c; }
+.combo-history-row:last-child { border-bottom: none; }
+.combo-history-header { background: #f4f8fb; font-weight: 800; color: #667d94; }
+.combo-history-name { font-weight: 800; color: #172b44; }
+.combo-history-actions { display: flex; gap: 6px; }
+.combo-history-empty { padding: 32px; text-align: center; color: #8aa0b4; font-size: 13px; }
+.combo-history-pager { display: flex; justify-content: center; align-items: center; gap: 12px; margin-top: 16px; }
+.combo-history-pager button { padding: 9px 14px; border-radius: 11px; border: 1px solid var(--theme-module-border, #cfe0eb); background: var(--theme-module-surface, #fff); color: var(--theme-text-secondary, #2f5878); cursor: pointer; font-size: 13px; font-weight: 800; }
+.combo-history-pager button:disabled { opacity: .5; cursor: not-allowed; color: #9caaba; }
+
+/* 组合生图右上角历史弹窗列表 */
+.combo-history-drawer-list { flex: 1; overflow-y: auto; padding: 0 18px 18px; display: flex; flex-direction: column; gap: 8px; }
+.combo-history-drawer-item { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 11px 12px; border: 1px solid #e1ebf2; border-radius: 12px; background: #fff; cursor: pointer; text-align: left; width: 100%; transition: border-color .16s ease, background .16s ease; }
+.combo-history-drawer-item:hover { border-color: #82c9ef; background: #f4fafd; }
+.combo-history-drawer-name { font-weight: 800; color: #172b44; font-size: 13px; }
+
+/* 新建套装弹窗 */
+.combo-modal-mask { position: fixed; inset: 0; background: rgba(23, 44, 68, .34); display: flex; align-items: center; justify-content: center; z-index: 1000; backdrop-filter: blur(2px); }
+.combo-modal { background: #fff; border-radius: 16px; padding: 22px; width: 380px; max-width: 90vw; box-shadow: 0 24px 60px rgba(7, 38, 69, .24); }
+.combo-modal h3 { margin: 0 0 14px; font-size: 16px; color: #172b44; }
+.combo-modal input { width: 100%; padding: 10px 12px; border: 1px solid #cfe0eb; border-radius: 11px; font-size: 13px; color: #18334d; outline-color: #13a9f2; }
+.combo-modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
+.combo-modal-actions button { padding: 9px 14px; border-radius: 11px; border: 1px solid var(--theme-module-border, #cfe0eb); background: var(--theme-module-surface, #fff); color: var(--theme-text-secondary, #2f5878); cursor: pointer; font-size: 13px; font-weight: 800; }
+.combo-modal-actions button.primary { border: 0; color: #fff; background: linear-gradient(105deg, #087bf5, #14c8c0); }
+
+/* 组合生图任务的环形进度提示（沿用「AI 处理」页的圆环视觉） */
+.combo-progress-panel { position: relative; display: flex; align-items: center; gap: 18px; margin-top: 14px; padding: 16px 20px; border: 1px solid #d8e7f2; border-radius: 16px; background: radial-gradient(130% 170% at 0% 0%, #f2fbff 0%, #e9f5fd 48%, #f8fcff 100%); overflow: hidden; }
+/* 处理中缓慢扫过的光泽，强调「一直在动」 */
+.combo-progress-panel::after { content: ''; position: absolute; inset: 0; pointer-events: none; background: linear-gradient(115deg, transparent 38%, rgba(255, 255, 255, .75) 50%, transparent 62%); transform: translateX(-130%); animation: combo-progress-sheen 2.8s ease-in-out infinite; }
+.combo-progress-ring { position: relative; flex: 0 0 104px; width: 104px; height: 104px; }
+.combo-progress-ring svg { display: block; width: 100%; height: 100%; transform: rotate(-90deg); overflow: visible; }
+.combo-progress-ring circle { fill: none; stroke-width: 8; }
+.combo-progress-track { stroke: #dcecf3; }
+/* 弧长由 rAF 每帧写入，不能再叠 CSS transition，否则会持续追不上目标值 */
+.combo-progress-value { stroke-linecap: round; stroke-dasharray: 100; filter: drop-shadow(0 4px 10px rgba(11, 174, 192, .32)); }
+/* 并发任务增量未知时：一条短弧绕圈流动，直观表达「正在跑」 */
+.combo-progress-sweep { stroke: rgba(37, 99, 235, .5); stroke-linecap: round; stroke-dasharray: 8 92; animation: combo-progress-sweep 1.8s linear infinite; }
+.combo-progress-halo { position: absolute; inset: -10px; border-radius: 50%; background: radial-gradient(circle, rgba(11, 174, 192, .3) 0%, rgba(11, 174, 192, 0) 68%); opacity: 0; pointer-events: none; }
+.combo-progress-ring.is-live .combo-progress-halo { animation: combo-progress-halo 2.4s ease-in-out infinite; }
+.combo-progress-ring.is-live .combo-progress-value { animation: combo-progress-breathe 2.4s ease-in-out infinite; }
+.combo-progress-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; }
+.combo-progress-center strong { color: #0a3a63; font-size: 1.5rem; line-height: 1; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.combo-progress-center strong em { margin-left: 1px; color: #147a9b; font-size: .72rem; font-style: normal; }
+.combo-progress-center span { max-width: 88px; color: #5a738c; font-size: .66rem; line-height: 1.3; text-align: center; }
+.combo-progress-copy { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.combo-progress-copy strong { color: #0a3a63; font-size: 15px; font-weight: 800; }
+.combo-progress-copy span { color: #5a738c; font-size: 12.5px; line-height: 1.6; }
+@keyframes combo-progress-sweep { from { stroke-dashoffset: 100; } to { stroke-dashoffset: 0; } }
+@keyframes combo-progress-breathe { 0%, 100% { opacity: .86; } 50% { opacity: 1; } }
+@keyframes combo-progress-halo { 0%, 100% { opacity: .25; transform: scale(.95); } 50% { opacity: .8; transform: scale(1.05); } }
+@keyframes combo-progress-sheen { 0% { transform: translateX(-130%); } 60%, 100% { transform: translateX(130%); } }
+
+/* 按钮内联 spinner：纯 CSS 单元素，颜色跟随按钮文字 */
+.combo-spinner { display: inline-block; width: 13px; height: 13px; margin-right: 6px; vertical-align: -2px; border-radius: 50%; border: 2px solid currentColor; border-top-color: transparent; opacity: .85; animation: combo-spin .7s linear infinite; }
+.btn-mini .combo-spinner { width: 11px; height: 11px; margin-right: 5px; }
+@keyframes combo-spin { to { transform: rotate(360deg); } }
+
+/* AI 文本生成中的骨架屏占位 */
+.combo-text-skeleton { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; padding: 16px; border: 1px solid #e1ebf2; border-radius: 12px; background: #f8fbfd; }
+.combo-skeleton-caption { display: flex; align-items: center; color: #5a738c; font-size: 12.5px; font-weight: 700; }
+.combo-skeleton-line { position: relative; height: 12px; border-radius: 999px; overflow: hidden; background: #e4eef6; }
+.combo-skeleton-line::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .9), transparent); transform: translateX(-100%); animation: combo-skeleton-sheen 1.5s ease-in-out infinite; }
+@keyframes combo-skeleton-sheen { to { transform: translateX(100%); } }
+
+/* 自动框选：画布上的扫描动效 + 徽标 */
+.combo-mask-canvas-wrap { position: relative; }
+.combo-mask-scan { position: absolute; inset: 0; display: grid; place-items: center; overflow: hidden; background: rgba(9, 40, 66, .14); }
+.combo-mask-scan::before { content: ''; position: absolute; left: 0; right: 0; height: 34%; background: linear-gradient(180deg, transparent, rgba(20, 200, 192, .42) 46%, rgba(8, 123, 245, .5) 54%, transparent); transform: translateY(-120%); animation: combo-scan-sweep 1.5s cubic-bezier(.45, .05, .55, .95) infinite; }
+@keyframes combo-scan-sweep { 0% { transform: translateY(-120%); } 100% { transform: translateY(320%); } }
+.combo-mask-scan-badge { position: relative; z-index: 1; display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; border-radius: 999px; color: #fff; font-size: 12px; font-weight: 800; background: rgba(10, 58, 99, .84); box-shadow: 0 10px 22px rgba(7, 38, 69, .32); }
+.combo-mask-scan-badge .combo-spinner { margin-right: 0; }
+
+/* 水印烧制：成品图网格上的遮罩 */
+.combo-images-burning { position: absolute; inset: 0; z-index: 2; display: flex; align-items: center; justify-content: center; gap: 8px; border-radius: 14px; color: #fff; font-size: 13px; font-weight: 800; background: rgba(10, 58, 99, .42); backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px); }
+.combo-images-burning .combo-spinner { width: 16px; height: 16px; border-width: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .combo-spinner { animation-duration: 1.6s; }
+  .combo-mask-scan::before { animation: none; }
+  .combo-skeleton-line::after { animation: none; }
+}
+
+/* 主题覆盖：组合套装的旧蓝白表面统一接入全局主题色板。 */
+[data-theme] .combo-kit-page { color: var(--theme-text-primary); }
+[data-theme] :is(.combo-kit-list, .combo-section, .combo-flow-card, .combo-create-panel, .combo-edit-stage, .combo-text-result, .combo-preset-card, .combo-history-table, .combo-drawer, .combo-modal) {
+  border-color: var(--theme-module-border);
+  color: var(--theme-text-primary);
+  background: var(--theme-module-surface);
+  box-shadow: 0 10px 28px var(--theme-module-shadow);
+}
+[data-theme] :is(.combo-kit-list h2, .combo-section h2, .combo-section h3, .combo-subtitle, .combo-edit-stage-title, .combo-text-result h3, .combo-preset-card h2, .combo-preset-card h3, .combo-create-panel h2, .combo-history-name, .combo-modal h3, .combo-drawer-head h3) { color: var(--theme-text-primary); }
+[data-theme] :is(.combo-grid label, .combo-section > label, .combo-extra-fields > summary, .combo-hint, .combo-preset-subtitle, .combo-preset-zh, .combo-history-row, .combo-drawer-thumb-label) { color: var(--theme-text-secondary); }
+[data-theme] :is(.combo-grid input, .combo-grid select, .combo-grid textarea, .combo-section textarea, .combo-item input, .combo-edit-stage-info input, .combo-preset-custom input, .combo-preset-custom textarea, .combo-history-search input, .combo-modal input, .combo-create-panel input) {
+  border-color: var(--theme-module-border);
+  color: var(--theme-text-primary);
+  background: var(--theme-module-surface-raised);
+  outline-color: var(--theme-module-primary-strong);
+}
+[data-theme] :is(.combo-kit-list li:hover, .combo-history-drawer-item:hover) { background: var(--theme-module-surface-soft); }
+[data-theme] :is(.combo-kit-list li.active, .combo-history-header, .combo-preset-prompt) { color: var(--theme-text-secondary); background: var(--theme-module-surface-tint); }
+[data-theme] :is(.combo-history-drawer-item, .combo-drawer-head button) { border-color: var(--theme-module-border); color: var(--theme-text-secondary); background: var(--theme-module-surface-raised); }
+[data-theme] .combo-modal-actions button.primary { border-color: transparent; color: var(--theme-on-primary); background: var(--theme-primary-button-gradient); box-shadow: 0 7px 14px var(--theme-primary-button-shadow); }
+[data-theme] :is(.combo-drawer-mask, .combo-modal-mask) { background: var(--theme-module-overlay); }
+[data-theme] :is(.combo-preview-block, .combo-preview-action, .combo-preview-thumb) { border-color: var(--theme-module-border); background: var(--theme-module-surface-raised); }
+[data-theme] :is(.combo-preview-action b, .combo-preview-facts b, .combo-preview-thumb figcaption b) { color: var(--theme-text-primary); }
+[data-theme] :is(.combo-preview-action small, .combo-preview-facts span, .combo-preview-count, .combo-preview-thumb figcaption small, .combo-preview-status) { color: var(--theme-text-secondary); }
+[data-theme] .combo-preview-thumb img { background: var(--theme-module-surface-soft); }
+[data-theme] .combo-preview-facts > div { border-bottom-color: var(--theme-module-border); }
+[data-theme] .combo-progress-panel { border-color: var(--theme-module-border); background: var(--theme-module-surface-raised); }
+[data-theme] :is(.combo-progress-center strong, .combo-progress-copy strong) { color: var(--theme-text-primary); }
+[data-theme] :is(.combo-progress-center strong em, .combo-progress-center span, .combo-progress-copy span) { color: var(--theme-text-secondary); }
+[data-theme] .combo-progress-track { stroke: var(--theme-module-border); }
+[data-theme] .combo-text-skeleton { border-color: var(--theme-module-border); background: var(--theme-module-surface-raised); }
+[data-theme] .combo-skeleton-line { background: var(--theme-module-surface-soft); }
+[data-theme] .combo-skeleton-caption { color: var(--theme-text-secondary); }

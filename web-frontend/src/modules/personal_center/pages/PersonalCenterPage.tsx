@@ -1,0 +1,1999 @@
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+
+import { clearAuthSession, getAuthAccount, getAuthToken, saveAuthSession } from "../../../transport/http/client";
+import { notifyBalanceChanged } from "../../../shared/balanceEvents";
+import { AVATAR_CHANGED_EVENT, AVATAR_STORAGE_KEY } from "../../../app/layout/TopNavigation";
+import {
+  changeAccountPassword,
+  changeUsername,
+  claimBasicWeeklyPoints,
+  claimDailyExtraPoints,
+  createTopupOrder,
+  loadBillingLedgerHistory,
+  loadBillingSummary,
+  loadBillingUsageHistory,
+  loadImageModel,
+  loadPodImageModel,
+  loadStationPartnerDetail,
+  quoteCustomTopup,
+  saveImageModel,
+  savePodImageModel,
+  sendUsernameChangeCode,
+  type BillingLedgerCategory,
+  type BillingLedgerItem,
+  type BillingPackage,
+  type BillingSummary,
+  type BillingUsageEntry,
+  type ImageModelChoice,
+  type StationPartnerDetail,
+  type TopupOrderResponse,
+} from "../api/personalCenterApi";
+import { SystemVersionPanel } from "../components/SystemVersionPanel";
+import { PreferencesPanel } from "../components/PreferencesPanel";
+import { FeedbackPanel } from "../components/FeedbackPanel";
+import { PromotionPlanPanel } from "../components/PromotionPlanPanel";
+import "../styles/personalCenter.css";
+
+type AccountSnapshot = {
+  account_id?: string;
+  username?: string;
+  email?: string;
+  role?: string;
+  workspace_code?: string;
+  workspace_name?: string;
+};
+
+const providerMeta = {
+  wechat: { label: "微信支付", icon: "iconfont icon-wechat-fill", className: "is-wechat" },
+  alipay: { label: "支付宝", icon: "iconfont icon-alipay-circle-fill", className: "is-alipay" },
+} as const;
+
+/** 「升级体验」弹窗里的基础版套餐（¥39.9）：立得 4000 充值积分 + 28 天内每周可领 1000 永久积分。 */
+const PLAN_BASIC_PRODUCT: BillingPackage = {
+  package_id: "plan_basic",
+  label: "基础版",
+  amount_cents: 3990,
+};
+
+function money(amountCents: number) {
+  return `¥${(amountCents / 100).toFixed(2)}`;
+}
+
+/** 中转档位订单的 package_id，与主站约定一致：station:<中转编号>:<金额分>。 */
+function stationPackageId(stationCode: string, amountCents: number) {
+  return `station:${stationCode}:${amountCents}`;
+}
+
+/** 只有有限数字才当作有效数据；undefined/NaN 一律按「无数据」处理，
+ *  否则旧缓存缺字段时 `数字 + undefined` 会算出 NaN 并被原样渲染到界面上。 */
+function asFiniteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/** 数字滚动动画：目标值变化时从旧值 ease-out 滚到新值；首次直接展示（缓存值不闪）。 */
+function useAnimatedNumber(value: number | null | undefined, duration = 720): number | null {
+  const target = asFiniteNumber(value);
+  const [display, setDisplay] = useState<number | null>(() => target);
+  const fromRef = useRef<number>(target ?? 0);
+  const rafRef = useRef(0);
+  useEffect(() => {
+    if (target === null) {
+      setDisplay(null);
+      return;
+    }
+    const from = fromRef.current;
+    const to = target;
+    if (from === to) {
+      setDisplay(to);
+      return;
+    }
+    const start = performance.now();
+    const step = (now: number) => {
+      const p = Math.min(1, (now - start) / duration);
+      const eased = 1 - Math.pow(1 - p, 3);
+      const next = Math.round(from + (to - from) * eased);
+      setDisplay(next);
+      if (p < 1) {
+        rafRef.current = requestAnimationFrame(step);
+      } else {
+        fromRef.current = to;
+      }
+    };
+    cancelAnimationFrame(rafRef.current);
+    rafRef.current = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [target, duration]);
+  return display;
+}
+
+type PointsSnapshot = Pick<BillingPackage, "points" | "base_points" | "promotion_bonus_points" | "total_points">;
+
+function basePoints(product: PointsSnapshot) {
+  return product.base_points ?? product.points ?? 0;
+}
+
+function promotionBonusPoints(product: PointsSnapshot) {
+  return product.promotion_bonus_points ?? 0;
+}
+
+function totalPoints(product: PointsSnapshot) {
+  return product.total_points ?? basePoints(product) + promotionBonusPoints(product);
+}
+
+/** 服务端返回的计费流水时间为 UTC（如 2026-08-21T14:17:12+00:00），
+ *  这里转换为浏览器本地时区显示，避免直接截断显示成 UTC 时间。 */
+function formatUsageTime(iso: string): string {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return iso.replace("T", " ").slice(0, 19);
+  }
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return (
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
+    `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+  );
+}
+
+/** 积分入账明细的来源名（与服务端 billing_point_ledger.source_type 对齐）。 */
+const LEDGER_SOURCE_LABELS: Record<string, string> = {
+  payment_alipay: "支付宝充值",
+  payment_wechat: "微信充值",
+  topup_promotion_bonus: "充值档位赠送",
+  daily_extra_claim: "每日签到",
+  plan_basic_claim: "基础版每周领取",
+  plan_experience_claim: "体验版每周领取",
+  admin_adjustment: "管理员划拨",
+  test_grant: "测试划拨",
+};
+
+function ledgerSourceLabel(sourceType: string) {
+  return LEDGER_SOURCE_LABELS[sourceType] ?? sourceType;
+}
+
+/** 充值积分 = 支付本金 + 档位赠送；其余一律算活动积分（与后端口径一致）。 */
+const LEDGER_TOPUP_SOURCES = new Set(["payment_alipay", "payment_wechat", "topup_promotion_bonus"]);
+
+function ledgerSourceIcon(sourceType: string) {
+  return LEDGER_TOPUP_SOURCES.has(sourceType) ? "iconfont icon-moneycollect" : "iconfont icon-gift";
+}
+
+const pricingFeatures: Array<{ key: string; label: string; note: string }> = [
+  { key: "product_processing.image_grid_2k", label: "智能生图", note: "商品图片生成" },
+  { key: "product_processing.text", label: "商品文本", note: "标题 / 卖点 / 详情文案" },
+  { key: "product_processing.batch", label: "批量链接处理", note: "整批商品处理任务" },
+];
+
+/** 消费流水的「服务板块」归类：优先用 feature_key，其次回退解析 usage_id/source_ref。
+ *  组合套装的扣费通过 free_batch_points(idempotency_key=combo-kit:xxx) 写入，
+ *  usage_id 形如 batch:combo-kit:image:...，但 feature_key 可能被归为 product_processing.batch，
+ *  故需按 usage_id 前缀识别，才能把套餐组合/生图/文本等区分到对应板块，便于后续管理。 */
+export type UsageServiceGroup = "combo" | "pod" | "batch" | "image" | "text";
+
+export function usageServiceGroup(entry: BillingUsageEntry): UsageServiceGroup {
+  const fk = String(entry.feature_key || "");
+  if (fk === "pod_customization.batch") return "pod";
+  if (fk === "product_processing.image_grid_2k") return "image";
+  if (fk === "product_processing.text") return "text";
+  const ref = `${entry.usage_id || ""} ${entry.source_ref || ""}`;
+  if (ref.includes("combo-kit:image") || ref.includes("combo-kit:fusion")) return "combo";
+  if (ref.includes("combo-kit:")) return "combo";
+  return "batch";
+}
+
+export const USAGE_SERVICE_LABEL: Record<UsageServiceGroup, string> = {
+  combo: "套装组合",
+  pod: "POD 定制",
+  batch: "AI 批量处理",
+  image: "智能生图",
+  text: "商品文本",
+};
+
+export function usageServiceLabel(entry: BillingUsageEntry): string {
+  return USAGE_SERVICE_LABEL[usageServiceGroup(entry)];
+}
+
+function usageServiceSubLabel(entry: BillingUsageEntry): string | null {
+  const ref = `${entry.usage_id || ""} ${entry.source_ref || ""}`;
+  if (ref.includes("combo-kit:image") || ref.includes("combo-kit:fusion")) return "生图";
+  if (ref.includes("combo-kit:text") || ref.includes("combo-kit:subject")) return "文本/主体";
+  return null;
+}
+
+// 用量明细的调用信息：内部模型名（doubao-* 等供应商标识）不对外展示。
+function usageDetailText(entry: BillingUsageEntry): string | null {
+  const raw = entry.model || entry.provider || "";
+  if (!raw) return "等待上游";
+  if (/doubao/i.test(raw)) return null;
+  return raw;
+}
+
+/** 积分/钱包概要本地缓存：冷却窗口内页面刷新直接复用缓存，避免每次进入都请求服务器。 */
+const BALANCE_CACHE_PREFIX = "mainpg.billing.summary.cache.v1";
+
+type BalanceCachePayload = { summary: BillingSummary; fetchedAt: number };
+
+function balanceCacheKey(accountId?: string) {
+  return `${BALANCE_CACHE_PREFIX}.${accountId || "anonymous"}`;
+}
+
+function readBalanceCache(key: string): BalanceCachePayload | null {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(key) ?? "null") as BalanceCachePayload | null;
+    if (!parsed || typeof parsed.fetchedAt !== "number" || !parsed.summary) return null;
+    // 早期版本写入的缓存没有「永久积分子池」字段，回显时会被算成 NaN，直接判为失效重新拉取。
+    if (typeof parsed.summary.wallet?.plan?.extra_balance !== "number") return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeBalanceCache(key: string, summary: BillingSummary) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify({ summary, fetchedAt: Date.now() }));
+  } catch {
+    // localStorage 不可用（隐私模式等）时静默忽略，退化为每次请求
+  }
+}
+
+/** 消费流水本地缓存：与积分概要同理，按账号隔离，冷却窗口内同条件复用。 */
+const USAGE_CACHE_PREFIX = "mainpg.billing.usage.cache.v1";
+
+type UsageCachePayload = { items: BillingUsageEntry[]; filterKey: string; fetchedAt: number };
+
+function usageCacheKey(accountId?: string) {
+  return `${USAGE_CACHE_PREFIX}.${accountId || "anonymous"}`;
+}
+
+function buildUsageFilterKey(service: string, status: string, from: string, to: string) {
+  return `${service}|${status}|${from}|${to}`;
+}
+
+function readUsageCache(key: string): UsageCachePayload | null {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(key) ?? "null") as UsageCachePayload | null;
+    if (!parsed || typeof parsed.fetchedAt !== "number" || !Array.isArray(parsed.items)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeUsageCache(key: string, payload: UsageCachePayload) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(payload));
+  } catch {
+    // localStorage 不可用（隐私模式等）时静默忽略，退化为每次请求
+  }
+}
+
+/** 待支付订单号本地持久化：支付在新标签页完成后，即使本页刷新仍能恢复轮询识别到账。 */
+const PENDING_ORDER_STORAGE_KEY = "mainpg.billing.pending-order.v1";
+
+function readPendingOrderId(): string {
+  try {
+    return (window.localStorage.getItem(PENDING_ORDER_STORAGE_KEY) ?? "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function writePendingOrderId(orderId: string) {
+  try {
+    if (orderId) window.localStorage.setItem(PENDING_ORDER_STORAGE_KEY, orderId);
+    else window.localStorage.removeItem(PENDING_ORDER_STORAGE_KEY);
+  } catch {
+    // localStorage 不可用（隐私模式等）时静默忽略
+  }
+}
+
+/** 操作答疑答不上来时带过来的原问题；nonce 让同一问题重复点击也能再次触发。 */
+export type PersonalCenterFeedbackPrefill = { question: string; nonce: number };
+
+type PersonalCenterPageProps = {
+  feedbackPrefill?: PersonalCenterFeedbackPrefill | null;
+};
+
+export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPageProps) {
+  const account = getAuthAccount<AccountSnapshot>();
+  // 头像与右上角共享：读取同一 localStorage 键，并监听 storage 事件以实时同步。
+  const [avatarSrc, setAvatarSrc] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem(AVATAR_STORAGE_KEY);
+    } catch {
+      return null;
+    }
+  });
+  const [avatarPreviewOpen, setAvatarPreviewOpen] = useState(false);
+  useEffect(() => {
+    const syncAvatar = () => {
+      try {
+        setAvatarSrc(localStorage.getItem(AVATAR_STORAGE_KEY));
+      } catch {
+        // 读取失败时保留当前头像。
+      }
+    };
+    syncAvatar();
+    // storage 事件覆盖跨标签页修改；自定义事件覆盖同页面内修改（如右上角换头像）。
+    window.addEventListener("storage", syncAvatar);
+    window.addEventListener(AVATAR_CHANGED_EVENT, syncAvatar);
+    return () => {
+      window.removeEventListener("storage", syncAvatar);
+      window.removeEventListener(AVATAR_CHANGED_EVENT, syncAvatar);
+    };
+  }, []);
+  // 积分/钱包概要本地缓存：冷却窗口内页面刷新直接复用缓存，先展示、不阻塞。
+  const balanceCacheKeyValue = balanceCacheKey(account?.account_id);
+  const cachedBalance = readBalanceCache(balanceCacheKeyValue);
+  // 消费流水本地缓存：与概要缓存同理，按账号隔离、跨页面刷新复用。
+  const usageCacheKeyValue = usageCacheKey(account?.account_id);
+  const cachedUsage = readUsageCache(usageCacheKeyValue);
+  const defaultUsageFilterKey = buildUsageFilterKey("", "", "", "");
+
+  const [summary, setSummary] = useState<BillingSummary | null>(cachedBalance?.summary ?? null);
+  const [activePanel, setActivePanel] = useState<"wallet" | "usage" | "pricing" | "model" | "preferences" | "version" | "promo" | "feedback">("wallet");
+
+  // 可用积分与积分构成的数字滚动动画（首次直接用缓存值，不闪）。
+  const animatedAvailablePoints = useAnimatedNumber(summary?.wallet.available_points);
+  // 积分构成：永久积分=充值池+额外池（充值积分、基础版每周领取、首签新人礼），
+  // 限时积分=体验池（每日签到所得，每周一 00:00 过期作废）。
+  const permanentPoints = summary
+    ? (summary.wallet.points_balance ?? 0) + (summary.wallet.plan.extra_balance ?? 0)
+    : null;
+  const limitedPoints = summary ? summary.wallet.plan.plan_balance ?? 0 : null;
+  const animatedPermanentPoints = useAnimatedNumber(permanentPoints);
+  const animatedLimitedPoints = useAnimatedNumber(limitedPoints);
+  // 生图模型切换：下拉选项由服务端白名单给出，切换后所有生图任务立即跟随。
+  const [imageModel, setImageModel] = useState("");
+  const [imageModelChoices, setImageModelChoices] = useState<ImageModelChoice[]>([]);
+  const [imageModelBusy, setImageModelBusy] = useState(false);
+  const [imageModelMessage, setImageModelMessage] = useState("");
+  const [imageModelError, setImageModelError] = useState("");
+  const [podImageModel, setPodImageModel] = useState("");
+  const [podImageModelChoices, setPodImageModelChoices] = useState<ImageModelChoice[]>([]);
+  const [podImageModelBusy, setPodImageModelBusy] = useState(false);
+  const [podImageModelMessage, setPodImageModelMessage] = useState("");
+  const [podImageModelError, setPodImageModelError] = useState("");
+  const [usageEntries, setUsageEntries] = useState<BillingUsageEntry[]>(
+    cachedUsage && cachedUsage.filterKey === defaultUsageFilterKey ? cachedUsage.items : [],
+  );
+  const [usageLoading, setUsageLoading] = useState(false);
+  const [usageError, setUsageError] = useState("");
+  const [loading, setLoading] = useState(!cachedBalance?.summary);
+  const [error, setError] = useState("");
+  const [selectedPackage, setSelectedPackage] = useState("");
+  const [customAmount, setCustomAmount] = useState("");
+  const [customQuote, setCustomQuote] = useState<BillingPackage | null>(null);
+  const [customQuoteLoading, setCustomQuoteLoading] = useState(false);
+  const [customQuoteError, setCustomQuoteError] = useState("");
+  // 中转编号：不提供可选清单，由用户从上游中转商处拿到编号后手动填写（信息差），
+  // 填写并确认后档位表整体切换为该中转站在其自己网站上配置的档位（≤6 档），
+  // 与官方固定套餐是两套并行体系；留空表示使用官方档位。
+  const [stationCodeInput, setStationCodeInput] = useState("");
+  const [selectedStation, setSelectedStation] = useState("");
+  const [stationDetail, setStationDetail] = useState<StationPartnerDetail | null>(null);
+  const [stationLoading, setStationLoading] = useState(false);
+  const [stationError, setStationError] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [createdOrder, setCreatedOrder] = useState<TopupOrderResponse | null>(null);
+  const [paymentNotice, setPaymentNotice] = useState("");
+  const [pendingPaymentOrderId, setPendingPaymentOrderId] = useState(readPendingOrderId);
+  const [passwordOpen, setPasswordOpen] = useState(false);
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordBusy, setPasswordBusy] = useState(false);
+  const [passwordSuccess, setPasswordSuccess] = useState("");
+  const [passwordError, setPasswordError] = useState("");
+  const [usernameOpen, setUsernameOpen] = useState(false);
+  const [newUsername, setNewUsername] = useState("");
+  const [usernameCode, setUsernameCode] = useState("");
+  const [usernameBusy, setUsernameBusy] = useState(false);
+  const [usernameError, setUsernameError] = useState("");
+  const [usernameNotice, setUsernameNotice] = useState("");
+  const [codeBusy, setCodeBusy] = useState(false);
+  const [codeCooldown, setCodeCooldown] = useState(0);
+  // 消费流水刷新保护：30 秒内（含页面刷新，随缓存持久化）相同筛选条件不重复请求；筛选变更因缓存键变化自动重新拉取。
+  const USAGE_REFRESH_COOLDOWN_MS = 30_000;
+  // 消费流水筛选条件（服务板块/状态/日期）。
+  const [filterService, setFilterService] = useState<"" | UsageServiceGroup>("");
+  const [filterStatus, setFilterStatus] = useState("");
+  const [filterDateFrom, setFilterDateFrom] = useState("");
+  const [filterDateTo, setFilterDateTo] = useState("");
+  // 每页条数与当前页码：一次拉取上限（服务端 limit≤100），页码切分在客户端完成。
+  const USAGE_PAGE_SIZE = 10;
+  const USAGE_LOAD_LIMIT = 100;
+  const [usagePage, setUsagePage] = useState(1);
+
+  // 生图模型：进入「模型选择」面板时拉取当前值与可选白名单。
+  useEffect(() => {
+    if (activePanel !== "model") return;
+    let disposed = false;
+    setImageModelError("");
+    loadImageModel()
+      .then((payload) => {
+        if (disposed) return;
+        setImageModelChoices(payload.choices ?? []);
+        setImageModel(payload.model ?? "");
+      })
+      .catch((exc) => {
+        if (!disposed) setImageModelError(exc instanceof Error ? exc.message : "读取生图模型失败");
+      });
+    setPodImageModelError("");
+    loadPodImageModel()
+      .then((payload) => {
+        if (disposed) return;
+        setPodImageModelChoices(payload.choices ?? []);
+        setPodImageModel(payload.model ?? "");
+      })
+      .catch((exc) => {
+        if (!disposed) setPodImageModelError(exc instanceof Error ? exc.message : "读取 POD 生图模型失败");
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [activePanel]);
+
+  const saveImageModelSelection = useCallback(() => {
+    if (!imageModel) return;
+    setImageModelBusy(true);
+    setImageModelMessage("");
+    setImageModelError("");
+    saveImageModel(imageModel)
+      .then((payload) => {
+        setImageModel(payload.model ?? imageModel);
+        setImageModelMessage(payload.message || "生图模型已切换");
+      })
+      .catch((exc) => setImageModelError(exc instanceof Error ? exc.message : "切换生图模型失败"))
+      .finally(() => setImageModelBusy(false));
+  }, [imageModel]);
+
+  const savePodImageModelSelection = useCallback(() => {
+    if (!podImageModel) return;
+    setPodImageModelBusy(true);
+    setPodImageModelMessage("");
+    setPodImageModelError("");
+    savePodImageModel(podImageModel)
+      .then((payload) => {
+        setPodImageModel(payload.model ?? podImageModel);
+        setPodImageModelMessage(payload.message || "POD 生图模型已切换");
+      })
+      .catch((exc) => setPodImageModelError(exc instanceof Error ? exc.message : "切换 POD 生图模型失败"))
+      .finally(() => setPodImageModelBusy(false));
+  }, [podImageModel]);
+
+  const loadUsage = useCallback((force = false) => {
+    const filterKey = buildUsageFilterKey(filterService, filterStatus, filterDateFrom, filterDateTo);
+    const cached = readUsageCache(usageCacheKeyValue);
+    // 冷却窗口内同条件已有缓存：直接复用，不再请求服务器（页面刷新后依然有效）。
+    if (!force && cached && cached.filterKey === filterKey && Date.now() - cached.fetchedAt < USAGE_REFRESH_COOLDOWN_MS) {
+      setUsageEntries(cached.items);
+      setUsageError("");
+      return;
+    }
+    setUsageLoading(true);
+    setUsageError("");
+    loadBillingUsageHistory({ limit: USAGE_LOAD_LIMIT })
+      .then((payload) => {
+        setUsageEntries(payload.items);
+        setUsagePage(1);
+        writeUsageCache(usageCacheKeyValue, { items: payload.items, filterKey, fetchedAt: Date.now() });
+      })
+      .catch((exc) => setUsageError(exc instanceof Error ? exc.message : "读取消费流水失败"))
+      .finally(() => setUsageLoading(false));
+  }, [filterService, filterStatus, filterDateFrom, filterDateTo, usageCacheKeyValue]);
+
+  const hasUsageFilter = Boolean(filterService || filterStatus || filterDateFrom || filterDateTo);
+  const resetUsageFilters = () => {
+    setFilterService("");
+    setFilterStatus("");
+    setFilterDateFrom("");
+    setFilterDateTo("");
+    setUsagePage(1);
+    // 筛选变更后由下方 effect 依据新的筛选键自动重新拉取。
+  };
+
+  // 本地筛选（服务板块/状态/日期）：服务端按 feature_key 过滤无法区分组合套装的多个分类，
+  // 且某些环境只返回 cursor/limit，这里统一在客户端过滤，保证统计与分页正确。
+  const filteredUsageEntries = useMemo(() => {
+    const service = filterService;
+    const statusSet = filterStatus.split(",").map((s) => s.trim()).filter(Boolean);
+    const from = filterDateFrom;
+    const to = filterDateTo;
+    const dateOf = (iso: string) => (iso || "").slice(0, 10);
+    return usageEntries.filter((entry) => {
+      if (service && usageServiceGroup(entry) !== service) return false;
+      if (statusSet.length && !statusSet.includes(entry.status)) return false;
+      const day = dateOf(entry.created_at);
+      if (from && day < from) return false;
+      if (to && day > to) return false;
+      return true;
+    });
+  }, [usageEntries, filterService, filterStatus, filterDateFrom, filterDateTo]);
+
+  const usagePageCount = Math.max(1, Math.ceil(filteredUsageEntries.length / USAGE_PAGE_SIZE));
+  const safeUsagePage = Math.min(usagePage, usagePageCount);
+  const pagedUsageEntries = useMemo(
+    () => filteredUsageEntries.slice((safeUsagePage - 1) * USAGE_PAGE_SIZE, safeUsagePage * USAGE_PAGE_SIZE),
+    [filteredUsageEntries, safeUsagePage],
+  );
+
+  // 积分入账明细：服务端分页（充值积分 / 活动积分筛选在服务端完成，保证总数与页码准确）。
+  const LEDGER_PAGE_SIZE = 6;
+  const [ledgerCategory, setLedgerCategory] = useState<BillingLedgerCategory>("");
+  const [ledgerPage, setLedgerPage] = useState(1);
+  const [ledgerItems, setLedgerItems] = useState<BillingLedgerItem[]>([]);
+  const [ledgerTotal, setLedgerTotal] = useState(0);
+  const [ledgerLoading, setLedgerLoading] = useState(false);
+  const [ledgerError, setLedgerError] = useState("");
+
+  const loadLedger = useCallback((category: BillingLedgerCategory, page: number) => {
+    setLedgerLoading(true);
+    setLedgerError("");
+    loadBillingLedgerHistory({ category, limit: LEDGER_PAGE_SIZE, offset: (page - 1) * LEDGER_PAGE_SIZE })
+      .then((payload) => {
+        // 数据量变化可能让当前页越界，服务端返回空页时回退到第一页。
+        if (!payload.items.length && page > 1) {
+          setLedgerPage(1);
+          return;
+        }
+        setLedgerItems(payload.items);
+        setLedgerTotal(payload.total);
+      })
+      .catch((exc) => setLedgerError(exc instanceof Error ? exc.message : "读取积分入账明细失败"))
+      .finally(() => setLedgerLoading(false));
+  }, []);
+
+  // 进入钱包面板、切换筛选或翻页时拉取；离开面板不请求。
+  useEffect(() => {
+    if (activePanel !== "wallet") return;
+    loadLedger(ledgerCategory, ledgerPage);
+  }, [activePanel, ledgerCategory, ledgerPage, loadLedger]);
+
+  const ledgerPageCount = Math.max(1, Math.ceil(ledgerTotal / LEDGER_PAGE_SIZE));
+  const safeLedgerPage = Math.min(ledgerPage, ledgerPageCount);
+  const ledgerRangeStart = ledgerTotal ? (safeLedgerPage - 1) * LEDGER_PAGE_SIZE + 1 : 0;
+  const ledgerRangeEnd = Math.min(safeLedgerPage * LEDGER_PAGE_SIZE, ledgerTotal);
+
+  // 按日期统计总消费积分：统计当前筛选范围内「已结算」记录的实际扣费总和。
+  const usageStats = useMemo(() => {
+    let totalCharged = 0;
+    let totalReserved = 0;
+    let totalRefunded = 0;
+    let settledCount = 0;
+    for (const entry of filteredUsageEntries) {
+      totalReserved += Number(entry.reserved_points || 0);
+      if (entry.status === "succeeded") {
+        totalCharged += Number(entry.charged_points || 0);
+        totalRefunded += Number(entry.refunded_points || 0);
+        settledCount += 1;
+      }
+    }
+    return { totalCharged, totalReserved, totalRefunded, settledCount, count: filteredUsageEntries.length };
+  }, [filteredUsageEntries]);
+
+  // 确认中转编号：失焦或回车时才提交，避免每敲一个字就请求一次档位。
+  const commitStationCode = () => {
+    const code = stationCodeInput.trim();
+    if (code !== stationCodeInput) setStationCodeInput(code);
+    if (code === selectedStation) return;
+    setSelectedPackage("");
+    setCreatedOrder(null);
+    setPaymentNotice("");
+    setSelectedStation(code);
+  };
+
+  // 切换中转编号：读取该站在其自己网站上配置的档位，并默认选中第一档。
+  useEffect(() => {
+    setStationError("");
+    if (!selectedStation) {
+      setStationDetail(null);
+      return;
+    }
+    let disposed = false;
+    setStationLoading(true);
+    loadStationPartnerDetail(selectedStation)
+      .then((payload) => {
+        if (disposed) return;
+        setStationDetail(payload);
+        const first = payload.tiers[0];
+        setSelectedPackage(first ? stationPackageId(payload.station_code, first.amount_cents) : "");
+      })
+      .catch((exc) => {
+        if (disposed) return;
+        setStationDetail(null);
+        setSelectedPackage("");
+        setStationError(exc instanceof Error ? exc.message : "读取中转站档位失败");
+      })
+      .finally(() => {
+        if (!disposed) setStationLoading(false);
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [selectedStation]);
+
+  const customAmountCents = useMemo(() => {
+    if (!/^\d+$/.test(customAmount)) return 0;
+    const yuan = Number(customAmount);
+    return Number.isSafeInteger(yuan) && yuan >= 1 && yuan <= 3000 ? yuan * 100 : 0;
+  }, [customAmount]);
+
+  // 当前展示的档位表：选中中转编号时整体切换为该中转商自己的档位（到账积分 =
+  // 金额(元) × 倍率，不叠加官方固定套餐赠送），否则是官方套餐。
+  const topupProducts = useMemo<BillingPackage[]>(() => {
+    if (!selectedStation || !stationDetail) return summary?.topup_products ?? [];
+    // 与服务端 _display_billing_points 同一口径：先按 point_unit_scale 取整，再折回展示值。
+    const scale = Number(summary?.pricing?.point_unit_scale) || 10;
+    return stationDetail.tiers.map((tier) => {
+      const units = Math.round((tier.amount_cents / 100) * Number(tier.rate) * scale);
+      const points = units / scale;
+      return {
+        package_id: stationPackageId(stationDetail.station_code, tier.amount_cents),
+        label: `中转站充值 ${tier.amount_cents / 100} 元`,
+        amount_cents: tier.amount_cents,
+        base_points: points,
+        promotion_bonus_points: 0,
+        promotion_bonus_percent: 0,
+        total_points: points,
+      };
+    });
+  }, [selectedStation, stationDetail, summary]);
+
+  const activePackage = useMemo(() => {
+    if (selectedPackage === "custom") return customQuote;
+    return topupProducts.find((item) => item.package_id === selectedPackage) ?? topupProducts[0];
+  }, [customQuote, selectedPackage, topupProducts]);
+
+  useEffect(() => {
+    setCustomQuote(null);
+    setCustomQuoteError("");
+    if (!customAmountCents) return;
+
+    let disposed = false;
+    const timer = window.setTimeout(() => {
+      setCustomQuoteLoading(true);
+      quoteCustomTopup(customAmountCents)
+        .then((payload) => {
+          if (!disposed) setCustomQuote(payload.product);
+        })
+        .catch((exc) => {
+          if (!disposed) setCustomQuoteError(exc instanceof Error ? exc.message : "获取充值报价失败");
+        })
+        .finally(() => {
+          if (!disposed) setCustomQuoteLoading(false);
+        });
+    }, 250);
+
+    return () => {
+      disposed = true;
+      window.clearTimeout(timer);
+    };
+  }, [customAmountCents]);
+
+  const refresh = useCallback(() => {
+    setLoading(true);
+    setError("");
+    loadBillingSummary()
+      .then((payload) => {
+        setSummary(payload);
+        writeBalanceCache(balanceCacheKeyValue, payload);
+        lastBalanceRefreshAt.current = Date.now();
+        setSelectedPackage((current) => current || payload.topup_products[0]?.package_id || "");
+      })
+      .catch((exc) => setError(exc instanceof Error ? exc.message : "读取个人中心失败"))
+      .finally(() => setLoading(false));
+  }, [balanceCacheKeyValue]);
+
+  // 可用积分刷新冷却：30 秒内（含页面刷新，时间戳随缓存持久化到本地）不重复请求；
+  // 已读取的概要缓存到 localStorage，刷新页面时先展示缓存，新鲜则不再请求服务器。
+  const BALANCE_REFRESH_COOLDOWN_MS = 30_000;
+  const lastBalanceRefreshAt = useRef(cachedBalance?.fetchedAt ?? 0);
+  const [balanceCooldownSeconds, setBalanceCooldownSeconds] = useState(0);
+  const balanceCooldownActive = balanceCooldownSeconds > 0;
+
+  const refreshBalance = useCallback((force = false) => {
+    if (!force && Date.now() - lastBalanceRefreshAt.current < BALANCE_REFRESH_COOLDOWN_MS) {
+      return;
+    }
+    lastBalanceRefreshAt.current = Date.now();
+    setBalanceCooldownSeconds(BALANCE_REFRESH_COOLDOWN_MS / 1000);
+    refresh();
+  }, [refresh]);
+
+  useEffect(() => {
+    if (!balanceCooldownActive) return;
+    const timer = window.setInterval(
+      () => setBalanceCooldownSeconds((seconds) => Math.max(0, seconds - 1)),
+      1000,
+    );
+    return () => window.clearInterval(timer);
+  }, [balanceCooldownActive]);
+
+  useEffect(() => {
+    // 冷却窗口内已有新鲜缓存：直接复用，不再请求服务器。
+    if (Date.now() - lastBalanceRefreshAt.current < BALANCE_REFRESH_COOLDOWN_MS) {
+      setLoading(false);
+      return;
+    }
+    refreshBalance(true);
+  }, [refreshBalance]);
+
+  useEffect(() => {
+    if (activePanel !== "usage") return;
+    loadUsage(false);
+  }, [activePanel, loadUsage]);
+
+  // 操作答疑兜底按钮：切到「意见反馈」面板、滚到反馈区，并把原问题带过去预填。
+  //
+  // 事件由 WorkspaceShell 统一接收（个人中心没打开时也要能收到，所以监听不能放在这里），
+  // 本组件只消费它传下来的 feedbackPrefill。依赖整个对象而非其中的 question 字符串：
+  // nonce 变化时对象引用会变，同一问题重复点击也能再次触发。
+  const feedbackRef = useRef<HTMLDivElement>(null);
+  const [prefillFeedback, setPrefillFeedback] = useState("");
+  useEffect(() => {
+    if (!feedbackPrefill) return;
+    if (feedbackPrefill.question) setPrefillFeedback(feedbackPrefill.question);
+    setActivePanel("feedback");
+    window.requestAnimationFrame(() => {
+      feedbackRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }, [feedbackPrefill]);
+
+  useEffect(() => {
+    if (!pendingPaymentOrderId) return;
+
+    let disposed = false;
+    const refreshPaymentStatus = () => {
+      void loadBillingSummary()
+        .then((payload) => {
+          if (disposed) return;
+          setSummary(payload);
+          const order = payload.pending_order && payload.pending_order.order_id === pendingPaymentOrderId
+            ? payload.pending_order
+            : payload.recent_orders.find((item) => item.order_id === pendingPaymentOrderId);
+          if (order?.status === "paid") {
+            setPendingPaymentOrderId("");
+            writePendingOrderId("");
+            const promotionBonus = promotionBonusPoints(order);
+            setPaymentNotice(
+              `充值成功，${totalPoints(order).toLocaleString()} 积分已到账。${promotionBonus ? `含赠送 ${promotionBonus.toLocaleString()} 积分。` : ""}`,
+            );
+          }
+        })
+        .catch(() => {
+          // The regular refresh action remains available if the network is briefly unavailable.
+        });
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") refreshPaymentStatus();
+    };
+
+    refreshPaymentStatus();
+    const timer = window.setInterval(refreshPaymentStatus, 4000);
+    window.addEventListener("focus", refreshPaymentStatus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refreshPaymentStatus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [pendingPaymentOrderId]);
+
+  useEffect(() => {
+    if (!passwordOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !passwordBusy) setPasswordOpen(false);
+    };
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [passwordBusy, passwordOpen]);
+
+  const openPasswordDialog = () => {
+    setCurrentPassword("");
+    setNewPassword("");
+    setConfirmPassword("");
+    setPasswordError("");
+    setPasswordSuccess("");
+    setPasswordOpen(true);
+  };
+
+  const closePasswordDialog = () => {
+    if (!passwordBusy) setPasswordOpen(false);
+  };
+
+  const submitPasswordChange = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setPasswordError("");
+    setPasswordSuccess("");
+    if (newPassword.length < 6) {
+      setPasswordError("新密码至少需要 6 个字符");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordError("两次输入的新密码不一致");
+      return;
+    }
+    if (currentPassword === newPassword) {
+      setPasswordError("新密码不能与当前密码相同");
+      return;
+    }
+
+    setPasswordBusy(true);
+    try {
+      await changeAccountPassword({
+        account_id: summary?.account.account_id || account?.account_id,
+        username: account?.username || summary?.account.username,
+        email: account?.email,
+        current_password: currentPassword,
+        new_password: newPassword,
+      });
+      setPasswordSuccess("密码修改成功，即将退出并返回登录页…");
+      clearAuthSession();
+      window.setTimeout(() => window.location.reload(), 900);
+    } catch (exc) {
+      const message = exc instanceof Error ? exc.message : "修改密码失败";
+      setPasswordError(message.includes("invalid username/email or password") ? "当前密码不正确" : message);
+    } finally {
+      setPasswordBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (codeCooldown <= 0) return;
+    const timer = window.setInterval(
+      () => setCodeCooldown((seconds) => Math.max(0, seconds - 1)),
+      1000,
+    );
+    return () => window.clearInterval(timer);
+  }, [codeCooldown]);
+
+  useEffect(() => {
+    if (!usernameOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !usernameBusy) setUsernameOpen(false);
+    };
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [usernameBusy, usernameOpen]);
+
+  const openUsernameDialog = () => {
+    setNewUsername("");
+    setUsernameCode("");
+    setUsernameError("");
+    setUsernameNotice("");
+    setCodeCooldown(0);
+    setUsernameOpen(true);
+  };
+
+  const closeUsernameDialog = () => {
+    if (!usernameBusy) setUsernameOpen(false);
+  };
+
+  const sendUsernameCode = async () => {
+    const email = account?.email;
+    if (!email) {
+      setUsernameError("当前账号没有绑定邮箱，无法修改用户名");
+      return;
+    }
+    setUsernameError("");
+    setUsernameNotice("");
+    setCodeBusy(true);
+    try {
+      await sendUsernameChangeCode(email);
+      setCodeCooldown(60);
+      setUsernameNotice("验证码已发送到账号绑定邮箱，请查收");
+    } catch (exc) {
+      setUsernameError(exc instanceof Error ? exc.message : "验证码发送失败，请稍后重试");
+    } finally {
+      setCodeBusy(false);
+    }
+  };
+
+  const submitUsernameChange = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setUsernameError("");
+    setUsernameNotice("");
+    const trimmed = newUsername.trim();
+    if (!trimmed) {
+      setUsernameError("请输入新的用户名");
+      return;
+    }
+    if (trimmed.length < 3 || trimmed.length > 32) {
+      setUsernameError("用户名需要 3-32 个字符");
+      return;
+    }
+    if (trimmed === (account?.username || summary?.account.username)) {
+      setUsernameError("新用户名不能与当前用户名相同");
+      return;
+    }
+    if (!/^[\w\u4e00-\u9fa5-]+$/.test(trimmed)) {
+      setUsernameError("用户名只能包含中英文、数字、下划线和连字符");
+      return;
+    }
+    if (!/^\d{6}$/.test(usernameCode.trim())) {
+      setUsernameError("请输入 6 位数字验证码");
+      return;
+    }
+    setUsernameBusy(true);
+    try {
+      await changeUsername({ new_username: trimmed, code: usernameCode.trim() });
+      // 更新本地缓存的 account，保持登录态（改名不需要重新登录）
+      const current = getAuthAccount<AccountSnapshot>();
+      if (current) {
+        saveAuthSession(getAuthToken(), { ...current, username: trimmed });
+      }
+      setUsernameNotice("用户名修改成功，下次登录请使用新用户名");
+      setNewUsername("");
+      setUsernameCode("");
+      setUsernameOpen(false);
+      window.setTimeout(() => window.location.reload(), 600);
+    } catch (exc) {
+      const message = exc instanceof Error ? exc.message : "修改用户名失败";
+      setUsernameError(
+        message.includes("already taken") ? "这个用户名已被占用，换一个试试" : message,
+      );
+    } finally {
+      setUsernameBusy(false);
+    }
+  };
+
+  const submitTopup = async (product?: BillingPackage | null) => {
+    if (!product) return;
+    setCreating(true);
+    setError("");
+    setPaymentNotice("");
+    setCreatedOrder(null);
+    try {
+      const response = await createTopupOrder({
+        provider: "alipay",
+        package_id: product.package_id,
+        ...(product.package_id === "custom" ? { amount_cents: product.amount_cents } : {}),
+      });
+      setCreatedOrder(response);
+      const payload = await loadBillingSummary();
+      setSummary(payload);
+      writeBalanceCache(balanceCacheKeyValue, payload);
+      lastBalanceRefreshAt.current = Date.now();
+      setPendingPaymentOrderId(response.order.order_id);
+      writePendingOrderId(response.order.order_id);
+
+      if (response.payment.mode === "page_pay" && response.payment.pay_url) {
+        setPaymentNotice("正在新窗口打开支付宝付款页面，付款完成后回到本页会自动刷新积分。");
+        const popup = window.open(response.payment.pay_url, "_blank");
+        if (!popup) {
+          // 弹窗被浏览器拦截时，回退为当前页跳转（付款完成后需手动返回本工作台）。
+          window.location.assign(response.payment.pay_url);
+        }
+        return;
+      }
+      setPaymentNotice(response.payment.message || "支付宝付款暂不可用，请稍后重试。");
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : "创建充值订单失败");
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const [claimBusy, setClaimBusy] = useState(false);
+  const [claimNotice, setClaimNotice] = useState("");
+  const [dailyClaimBusy, setDailyClaimBusy] = useState(false);
+  const [dailyClaimNotice, setDailyClaimNotice] = useState("");
+
+  const claimBasicPoints = async () => {
+    if (claimBusy) return;
+    setClaimBusy(true);
+    setClaimNotice("");
+    setError("");
+    let result: Awaited<ReturnType<typeof claimBasicWeeklyPoints>> | null = null;
+    try {
+      result = await claimBasicWeeklyPoints();
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : "领取失败，请稍后重试");
+      setClaimBusy(false);
+      return;
+    }
+    // 领取已成功：先给即时反馈；后面 summary 刷新失败也不误报"领取失败"。
+    setClaimNotice(`已领取 ${result.claimed_points} 积分（第 ${result.claim_count}/${result.claim_max} 周）`);
+    notifyBalanceChanged();
+    loadLedger(ledgerCategory, ledgerPage);
+    try {
+      const payload = await loadBillingSummary();
+      setSummary(payload);
+      writeBalanceCache(balanceCacheKeyValue, payload);
+      lastBalanceRefreshAt.current = Date.now();
+    } catch {
+      // 概要刷新失败：用领取结果乐观更新当前展示，避免"已入账却显示没变"。
+      setSummary((current) =>
+        current
+          ? {
+              ...current,
+              wallet: {
+                ...current.wallet,
+                available_points:
+                  (current.wallet.available_points ?? 0) + result.claimed_points,
+                plan: {
+                  ...current.wallet.plan,
+                  extra_balance: (current.wallet.plan.extra_balance ?? 0) + result.claimed_points,
+                  basic_claim_count: result.claim_count,
+                  basic_claimable: false,
+                },
+              },
+            }
+          : current,
+      );
+    } finally {
+      setClaimBusy(false);
+    }
+  };
+
+  /** 每日签到：首签 +500 永久，之后每天 +100 限时（按北京自然日幂等）。 */
+  const claimDailyPoints = async () => {
+    if (dailyClaimBusy) return;
+    setDailyClaimBusy(true);
+    setDailyClaimNotice("");
+    setError("");
+    let result: Awaited<ReturnType<typeof claimDailyExtraPoints>> | null = null;
+    try {
+      result = await claimDailyExtraPoints();
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : "签到失败，请稍后重试");
+      setDailyClaimBusy(false);
+      return;
+    }
+    // 签到已成功：先给即时反馈；后面 summary 刷新失败也不误报"签到失败"。
+    setDailyClaimNotice(
+      result.first_claim_bonus
+        ? `首签礼包 +${result.claimed_points} 积分（永久有效），明日 00:00 后可再签到`
+        : `已签到 +${result.claimed_points} 积分（限时，周一 00:00 过期），明日 00:00 后可再签到`,
+    );
+    notifyBalanceChanged();
+    loadLedger(ledgerCategory, ledgerPage);
+    try {
+      const payload = await loadBillingSummary();
+      setSummary(payload);
+      writeBalanceCache(balanceCacheKeyValue, payload);
+      lastBalanceRefreshAt.current = Date.now();
+    } catch {
+      // 概要刷新失败：用签到结果乐观更新当前展示，避免"已入账却显示没变"。
+      setSummary((current) =>
+        current
+          ? {
+              ...current,
+              wallet: {
+                ...current.wallet,
+                available_points:
+                  (current.wallet.available_points ?? 0) + result.claimed_points,
+                plan: {
+                  ...current.wallet.plan,
+                  plan_balance: result.first_claim_bonus
+                    ? current.wallet.plan.plan_balance
+                    : (current.wallet.plan.plan_balance ?? 0) + result.claimed_points,
+                  extra_balance: result.first_claim_bonus
+                    ? (current.wallet.plan.extra_balance ?? 0) + result.claimed_points
+                    : current.wallet.plan.extra_balance,
+                  daily_claimable: false,
+                  daily_claim_date: result.period,
+                  daily_claim_points: 100,
+                  daily_first_claim_bonus: 0,
+                  daily_week_count: (current.wallet.plan.daily_week_count ?? 0) + 1,
+                  daily_next_claim_at: result.next_claim_at,
+                },
+              },
+            }
+          : current,
+      );
+    } finally {
+      setDailyClaimBusy(false);
+    }
+  };
+
+  return (
+    <section className="personal-center-page">
+      {/* portal 到 body：workspace-tab-panel 的 fill-mode 入场动画创建层叠上下文，
+          会把 fixed 弹层的 z-index 锁在面板内、被 sticky 顶栏(z:18)盖住 */}
+      {avatarPreviewOpen && avatarSrc && createPortal(
+        <div className="personal-avatar-preview-layer" onMouseDown={() => setAvatarPreviewOpen(false)} role="dialog" aria-modal="true" aria-label="头像预览">
+          <div className="personal-avatar-preview-panel" onMouseDown={(event) => event.stopPropagation()}>
+            <button className="personal-avatar-preview-close" type="button" onClick={() => setAvatarPreviewOpen(false)} aria-label="关闭预览">×</button>
+            <img className="personal-avatar-preview-img" src={avatarSrc} alt="头像大图" />
+          </div>
+        </div>, document.body)}
+
+      {passwordOpen && createPortal(
+        <div className="personal-password-layer" onMouseDown={closePasswordDialog}>
+          <section
+            className="personal-password-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="personal-password-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <header>
+              <div>
+                <span>ACCOUNT SECURITY</span>
+                <h2 id="personal-password-title">修改登录密码</h2>
+                <p>验证当前密码后设置新密码，修改成功会退出当前登录。</p>
+              </div>
+              <button type="button" onClick={closePasswordDialog} disabled={passwordBusy} aria-label="关闭">×</button>
+            </header>
+            <form onSubmit={(event) => void submitPasswordChange(event)}>
+              <label>
+                <span>当前密码</span>
+                <input
+                  autoFocus
+                  type="password"
+                  autoComplete="current-password"
+                  value={currentPassword}
+                  onChange={(event) => setCurrentPassword(event.target.value)}
+                  placeholder="请输入当前登录密码"
+                  required
+                />
+              </label>
+              <label>
+                <span>新密码</span>
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  value={newPassword}
+                  onChange={(event) => setNewPassword(event.target.value)}
+                  placeholder="至少 6 个字符"
+                  minLength={6}
+                  required
+                />
+              </label>
+              <label>
+                <span>确认新密码</span>
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  value={confirmPassword}
+                  onChange={(event) => setConfirmPassword(event.target.value)}
+                  placeholder="请再次输入新密码"
+                  minLength={6}
+                  required
+                />
+              </label>
+              {passwordError && <p className="personal-password-message is-error">{passwordError}</p>}
+              {passwordSuccess && <p className="personal-password-message is-success">{passwordSuccess}</p>}
+              <footer>
+                <button type="button" onClick={closePasswordDialog} disabled={passwordBusy || Boolean(passwordSuccess)}>取消</button>
+                <button className="is-primary" type="submit" disabled={passwordBusy || Boolean(passwordSuccess)}>
+                  {passwordBusy ? "正在修改…" : "确认修改"}
+                </button>
+              </footer>
+            </form>
+          </section>
+        </div>, document.body)}
+
+      {usernameOpen && createPortal(
+        <div className="personal-password-layer" onMouseDown={closeUsernameDialog}>
+          <section
+            className="personal-password-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="personal-username-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <header>
+              <div>
+                <span>ACCOUNT PROFILE</span>
+                <h2 id="personal-username-title">修改用户名</h2>
+                <p>新用户名会作为登录名使用，验证码将发送到账号绑定邮箱，30 天内只能修改一次。</p>
+              </div>
+              <button type="button" onClick={closeUsernameDialog} disabled={usernameBusy} aria-label="关闭">×</button>
+            </header>
+            <form onSubmit={(event) => void submitUsernameChange(event)}>
+              <label>
+                <span>新用户名</span>
+                <input
+                  autoFocus
+                  type="text"
+                  autoComplete="username"
+                  value={newUsername}
+                  onChange={(event) => setNewUsername(event.target.value)}
+                  placeholder="3-32 个字符，中英文、数字、下划线、连字符"
+                  minLength={3}
+                  maxLength={32}
+                  required
+                />
+              </label>
+              <label>
+                <span>邮箱验证码</span>
+                <div className="personal-username-code-row">
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    value={usernameCode}
+                    onChange={(event) => setUsernameCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
+                    placeholder="6 位数字验证码"
+                    required
+                  />
+                  <button
+                    type="button"
+                    className="personal-username-code-btn"
+                    onClick={() => void sendUsernameCode()}
+                    disabled={codeBusy || codeCooldown > 0}
+                  >
+                    {codeBusy ? "发送中…" : codeCooldown > 0 ? `${codeCooldown} 秒后重发` : "发送验证码"}
+                  </button>
+                </div>
+              </label>
+              {usernameError && <p className="personal-password-message is-error">{usernameError}</p>}
+              {usernameNotice && <p className="personal-password-message is-success">{usernameNotice}</p>}
+              <footer>
+                <button type="button" onClick={closeUsernameDialog} disabled={usernameBusy}>取消</button>
+                <button className="is-primary" type="submit" disabled={usernameBusy}>
+                  {usernameBusy ? "正在修改…" : "确认修改"}
+                </button>
+              </footer>
+            </form>
+          </section>
+        </div>, document.body)}
+
+      {upgradeOpen && createPortal(
+        <div className="personal-password-layer" onMouseDown={() => setUpgradeOpen(false)}>
+          <section
+            className="personal-password-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="personal-upgrade-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <header>
+              <div>
+                <span>PLAN UPGRADE</span>
+                <h2 id="personal-upgrade-title">升级体验</h2>
+                <p>购买基础版，立得 4000 积分，28 天内每周可直接领取 1000 积分，领到即永久。</p>
+              </div>
+              <button type="button" onClick={() => setUpgradeOpen(false)} aria-label="关闭">×</button>
+            </header>
+            <div className="personal-upgrade-body">
+              <div className="personal-upgrade-plan-card">
+                <div className="personal-upgrade-plan-head">
+                  <b>基础版</b>
+                  <span className="personal-upgrade-plan-price">{money(PLAN_BASIC_PRODUCT.amount_cents)}</span>
+                </div>
+                <ul className="personal-upgrade-plan-benefits">
+                  <li><b>购买立得 4000 积分</b>（充值积分，永久有效）</li>
+                  <li>28 天内<b>每周可直接领取 1000 积分</b>（领到即永久）</li>
+                  <li>28 天后到期，自动回落体验版（每日签到 +100 限时积分）</li>
+                </ul>
+                <button
+                  type="button"
+                  className="personal-upgrade-plan-buy"
+                  disabled={creating}
+                  onClick={() => submitTopup(PLAN_BASIC_PRODUCT)}
+                >
+                  {creating ? "正在创建订单…" : "立即购买"}
+                </button>
+                {paymentNotice && <p className="personal-upgrade-plan-notice">{paymentNotice}</p>}
+                {error && <p className="personal-upgrade-plan-error">{error}</p>}
+              </div>
+            </div>
+          </section>
+        </div>, document.body)}
+
+      {error && <div className="personal-alert is-error">{error}</div>}
+      {loading && <div className="personal-alert">正在读取服务器账户与积分数据...</div>}
+
+      <nav className="personal-subnav" aria-label="个人中心二级导航">
+        <button type="button" className={activePanel === "wallet" ? "is-active" : ""} onClick={() => setActivePanel("wallet")}>
+          <span className="iconfont icon-wallet-fill" aria-hidden="true" />
+          <span>积分钱包</span>
+        </button>
+        <button type="button" className={activePanel === "usage" ? "is-active" : ""} onClick={() => setActivePanel("usage")}>
+          <span className="iconfont icon-accountbook-fill" aria-hidden="true" />
+          <span>消费流水</span>
+        </button>
+        <button type="button" className={activePanel === "pricing" ? "is-active" : ""} onClick={() => setActivePanel("pricing")}>
+          <span className="iconfont icon-calculator" aria-hidden="true" />
+          <span>计费规则</span>
+        </button>
+        <button type="button" className={activePanel === "model" ? "is-active" : ""} onClick={() => setActivePanel("model")}>
+          <span className="iconfont icon-robot-fill" aria-hidden="true" />
+          <span>模型选择</span>
+        </button>
+        <button type="button" className={activePanel === "preferences" ? "is-active" : ""} onClick={() => setActivePanel("preferences")}>
+          <span className="iconfont icon-skin" aria-hidden="true" />
+          <span>偏好设置</span>
+        </button>
+        <button type="button" className={activePanel === "version" ? "is-active" : ""} onClick={() => setActivePanel("version")}>
+          <span className="iconfont icon-setting" aria-hidden="true" />
+          <span>系统版本</span>
+        </button>
+        <button type="button" className={activePanel === "promo" ? "is-active" : ""} onClick={() => setActivePanel("promo")}>
+          <span className="iconfont icon-gift" aria-hidden="true" />
+          <span>推广计划</span>
+        </button>
+        <button type="button" className={activePanel === "feedback" ? "is-active" : ""} onClick={() => setActivePanel("feedback")}>
+          <span className="iconfont icon-message" aria-hidden="true" />
+          <span>意见反馈</span>
+        </button>
+      </nav>
+
+      <div className="personal-content-layout">
+        <aside className="personal-sidebar" aria-label="个人中心侧栏">
+          <div className="personal-profile">
+            <div className="personal-profile-head">
+              <div className="personal-avatar" onClick={() => avatarSrc && setAvatarPreviewOpen(true)} title={avatarSrc ? "查看大图" : undefined}>
+                {avatarSrc ? (
+                  <img className="personal-avatar-img" src={avatarSrc} alt="用户头像" />
+                ) : (
+                  (account?.username || summary?.account.username || "U").slice(0, 1).toUpperCase()
+                )}
+              </div>
+              <div className="personal-profile-id">
+                <p>个人中心</p>
+                <h1>{account?.username || summary?.account.username || "当前用户"}</h1>
+              </div>
+              <div className="personal-profile-actions">
+                <button className="personal-password-entry" type="button" onClick={openPasswordDialog}>
+                  <span className="iconfont icon-key" aria-hidden="true" />
+                  <span>修改密码</span>
+                </button>
+                <button className="personal-password-entry" type="button" onClick={openUsernameDialog}>
+                  <span className="iconfont icon-user" aria-hidden="true" />
+                  <span>修改用户名</span>
+                </button>
+              </div>
+            </div>
+          </div>
+          <div className="personal-plan-card">
+            <div className="personal-plan-card-head">
+              <span className="personal-plan-card-label">
+                <span className="iconfont icon-gold" aria-hidden="true" />
+                {summary?.wallet.plan?.plan_label ?? "体验版"}
+              </span>
+              <button type="button" className="personal-plan-upgrade" onClick={() => setUpgradeOpen(true)}>
+                升级体验
+              </button>
+            </div>
+            {summary?.wallet.plan?.next_refresh_at && (
+              <div className="personal-plan-card-refresh">
+                下周一 {formatUsageTime(summary.wallet.plan.next_refresh_at).slice(5, 16)} 刷新
+              </div>
+            )}
+            <div className="personal-plan-block-head">
+              <span>限时积分</span>
+              <span>每周一 00:00 过期</span>
+            </div>
+            <div className="personal-plan-card-value">
+              <b>{summary?.wallet.plan?.plan_balance ?? "--"}</b>
+              <em>积分</em>
+            </div>
+            <div className="personal-plan-block-head">
+              <span>额外积分</span>
+              <span>永久有效</span>
+            </div>
+            <div className="personal-plan-card-value">
+              <b>{summary?.wallet.plan?.extra_balance ?? "--"}</b>
+              <em>积分</em>
+            </div>
+            <div className="personal-plan-claim">
+              <div className="personal-plan-claim-head">
+                <span>
+                  每日签到
+                  <i
+                    className="personal-plan-claim-hint"
+                    title="首签送 500 积分进额外积分（永久）；之后每天 +100 进限时积分（周一 00:00 过期）。"
+                  >
+                    ?
+                  </i>
+                </span>
+                <span className="personal-plan-claim-week">
+                  本周已签 {summary?.wallet.plan?.daily_week_count ?? 0}/{summary?.wallet.plan?.daily_week_max ?? 7} 天
+                </span>
+              </div>
+              <div
+                className="personal-plan-claim-meter"
+                role="progressbar"
+                aria-label="本周签到进度"
+                aria-valuemin={0}
+                aria-valuemax={summary?.wallet.plan?.daily_week_max ?? 7}
+                aria-valuenow={summary?.wallet.plan?.daily_week_count ?? 0}
+              >
+                <span
+                  style={{
+                    width: `${Math.min(100, Math.max(0, ((summary?.wallet.plan?.daily_week_count ?? 0) / (summary?.wallet.plan?.daily_week_max || 7)) * 100))}%`,
+                  }}
+                />
+              </div>
+              <div className="personal-plan-claim-meta">
+                {summary?.wallet.plan?.daily_claimable ?? true ? (
+                  <button
+                    type="button"
+                    className="personal-plan-claim-btn"
+                    disabled={dailyClaimBusy || !summary}
+                    onClick={claimDailyPoints}
+                  >
+                    {dailyClaimBusy
+                      ? "签到中…"
+                      : (summary?.wallet.plan?.daily_first_claim_bonus ?? 0) > 0
+                        ? `签到领 ${summary?.wallet.plan?.daily_first_claim_bonus} 新人礼`
+                        : `每日签到 +${summary?.wallet.plan?.daily_claim_points ?? 100} 积分`}
+                  </button>
+                ) : (
+                  <span>今日已签到，明天 00:00 再来</span>
+                )}
+              </div>
+              {dailyClaimNotice && <p className="personal-plan-claim-notice">{dailyClaimNotice}</p>}
+              {/* 基础版专属：28 天内每周另可领 1000（永久），与每日签到叠加 */}
+              {summary?.wallet.plan?.plan_type === "basic" && (
+                <div className="personal-plan-claim-basic">
+                  <div
+                    className="personal-plan-claim-meter"
+                    role="progressbar"
+                    aria-label="基础版每周领取进度"
+                    aria-valuemin={0}
+                    aria-valuemax={summary.wallet.plan.basic_claim_max}
+                    aria-valuenow={summary.wallet.plan.basic_claim_count}
+                  >
+                    <span
+                      style={{
+                        width: `${Math.min(100, Math.max(0, (summary.wallet.plan.basic_claim_count / (summary.wallet.plan.basic_claim_max || 4)) * 100))}%`,
+                      }}
+                    />
+                  </div>
+                  <div className="personal-plan-claim-meta">
+                    {summary.wallet.plan.basic_claimable ? (
+                      <button
+                        type="button"
+                        className="personal-plan-claim-btn is-secondary"
+                        disabled={claimBusy}
+                        onClick={claimBasicPoints}
+                      >
+                        {claimBusy ? "领取中…" : "领取基础版 1000 积分（永久）"}
+                      </button>
+                    ) : summary.wallet.plan.basic_claim_count >= summary.wallet.plan.basic_claim_max ? (
+                      <span>基础版四周领取已用完</span>
+                    ) : (
+                      <span>基础版本周已领，下周一再来</span>
+                    )}
+                  </div>
+                  {claimNotice && <p className="personal-plan-claim-notice">{claimNotice}</p>}
+                </div>
+              )}
+            </div>
+            {summary?.wallet.plan?.plan_expire_at && (
+              <div className="personal-plan-expire">
+                有效期至 {formatUsageTime(summary.wallet.plan.plan_expire_at).slice(0, 16)}
+              </div>
+            )}
+          </div>
+        </aside>
+
+        <div className="personal-panel-content">
+        {/* 积分总览横卡片：核心数据一行铺开，换算规则全站只在这里出现一次；仅积分钱包页展示。 */}
+        {activePanel === "wallet" && (
+        <section className="personal-overview" aria-label="积分总览">
+          <div className="personal-overview-primary">
+            <span className="personal-overview-label">可用积分</span>
+            <div className="personal-overview-value">
+              <b>{animatedAvailablePoints === null ? "--" : animatedAvailablePoints.toLocaleString()}</b>
+              <span>积分</span>
+              {loading && <span className="personal-spinner" aria-label="积分刷新中" />}
+            </div>
+          </div>
+          <div className="personal-overview-metrics">
+            <div className="personal-overview-metric">
+              <span>
+                长期积分
+                <i className="personal-overview-hint" title="充值积分与首签新人礼、基础版每周领取等永久有效的积分，不会过期。">?</i>
+              </span>
+              <b>{animatedPermanentPoints === null ? "--" : animatedPermanentPoints.toLocaleString()}</b>
+            </div>
+            <div className="personal-overview-metric">
+              <span>
+                限时积分
+                <i className="personal-overview-hint" title="每日签到所得，每周一 00:00 统一清空作废。">?</i>
+              </span>
+              <b>{animatedLimitedPoints === null ? "--" : animatedLimitedPoints.toLocaleString()}</b>
+            </div>
+            <div className="personal-overview-metric">
+              <span>
+                冻结积分
+                <i className="personal-overview-hint" title="任务进行中暂时占用的积分，任务结束后按实际用量结算。">?</i>
+              </span>
+              <b>{summary ? (summary.wallet.frozen_points ?? 0).toLocaleString() : "--"}</b>
+            </div>
+          </div>
+          <div className="personal-overview-aside">
+            <span className="personal-overview-ratio">{summary?.pricing.ratio_label ?? "1 元 = 100 积分"}</span>
+            <button
+              type="button"
+              className="personal-stats-refresh"
+              onClick={() => refreshBalance()}
+              disabled={balanceCooldownActive || loading}
+              aria-label="刷新积分数据"
+            >
+              {balanceCooldownActive
+                ? `${balanceCooldownSeconds} 秒`
+                : loading
+                  ? <><span className="personal-spinner" aria-hidden="true" />刷新中</>
+                  : <><span className="iconfont icon-refresh" aria-hidden="true" />刷新</>}
+            </button>
+          </div>
+        </section>
+        )}
+        <div className="personal-panel-anim" key={activePanel}>
+        {activePanel === "wallet" ? <div className="personal-grid">
+        <article className="personal-card topup-card">
+          <div className="topup-header">
+            <div className="personal-card-title">
+              <span className="iconfont icon-moneycollect" aria-hidden="true" />
+              <h2>充值积分</h2>
+            </div>
+            <div className="provider-switch">
+              <button type="button" className="is-wechat is-unavailable" disabled title="微信支付暂未开放">
+                <span className={providerMeta.wechat.icon} aria-hidden="true" />
+                <span>微信支付</span>
+                <small>暂未开放</small>
+              </button>
+              <button type="button" className="is-alipay is-active" aria-pressed="true">
+                <span className={providerMeta.alipay.icon} aria-hidden="true" />
+                <span>支付宝</span>
+              </button>
+            </div>
+          </div>
+          <div className="topup-hero">
+            <span className="topup-hero-coin" aria-hidden="true">
+              <span className="iconfont icon-gold" />
+            </span>
+            <div className="topup-hero-copy">
+              <span className="topup-hero-kicker">充值积分 · 长期有效</span>
+              <b>{(summary?.wallet.points_balance ?? 0).toLocaleString()}<i>积分</i></b>
+            </div>
+          </div>
+          <div className="topup-station">
+            <label>
+              <span>中转编号</span>
+              <input
+                type="text"
+                value={stationCodeInput}
+                placeholder="输入中转商提供的中转编号"
+                aria-label="输入合作中转站编号"
+                autoComplete="off"
+                spellCheck={false}
+                onChange={(event) => setStationCodeInput(event.target.value)}
+                onBlur={commitStationCode}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    commitStationCode();
+                  }
+                }}
+              />
+            </label>
+            <small>
+              {!selectedStation
+                ? "留空即按官方档位充值；填写中转编号后，档位与倍率按该中转站网站上的设置到账"
+                : stationLoading
+                  ? "正在读取该中转站的档位..."
+                  : stationError
+                    ? stationError
+                    : stationDetail
+                      ? stationDetail.tiers.length
+                        ? `中转商：${stationDetail.station_name} · 档位与倍率以该中转站网站设置为准`
+                        : "该中转站暂未配置充值档位"
+                      : ""}
+            </small>
+          </div>
+          <p className="topup-promotion-banner">
+            <span className={`iconfont ${selectedStation ? "icon-gold" : "icon-gift"}`} aria-hidden="true" />
+            {selectedStation
+              ? "当前为中转站档位：到账积分按该中转站网站上设置的倍率计算，不叠加官方套餐赠送。"
+              : `${summary?.topup_promotion?.name || "固定套餐档位递增赠送"}：仅固定套餐享赠送，自定义金额按原价到账。`}
+          </p>
+          <div className="topup-products">
+            {topupProducts.map((item) => (
+              <button
+                key={item.package_id}
+                type="button"
+                className={activePackage?.package_id === item.package_id ? "is-active" : ""}
+                onClick={() => setSelectedPackage(item.package_id)}
+              >
+                <span className="topup-product-points">{totalPoints(item).toLocaleString()}<i>积分</i></span>
+                <span className="topup-product-price">{money(item.amount_cents)}</span>
+                <span className="topup-product-bonus">
+                  {promotionBonusPoints(item) ? `含赠送 ${promotionBonusPoints(item).toLocaleString()} · ` : ""}
+                  基础 {basePoints(item).toLocaleString()}
+                </span>
+              </button>
+            ))}
+          </div>
+          {/* 中转站只有固定档位（≤6 档），没有自定义金额，故选中中转编号时隐藏该块。 */}
+          {!selectedStation && (
+            <div className={`custom-topup ${selectedPackage === "custom" ? "is-active" : ""}`}>
+              <label>
+                <span>自定义金额</span>
+                <div>
+                  <b>¥</b>
+                  <input
+                    type="number"
+                    min="1"
+                    max="3000"
+                    step="1"
+                    inputMode="numeric"
+                    value={customAmount}
+                    onFocus={() => setSelectedPackage("custom")}
+                    onChange={(event) => {
+                      setCustomAmount(event.target.value);
+                      setSelectedPackage("custom");
+                    }}
+                    placeholder="1 - 3000"
+                    aria-label="自定义充值金额，单位元"
+                  />
+                  <em>元</em>
+                </div>
+              </label>
+              <small>
+                {!customAmount
+                  ? "支持 1 - 3000 元整数充值"
+                  : !customAmountCents
+                    ? "请输入 1 到 3000 的整数金额"
+                    : customQuoteLoading
+                      ? "正在获取服务器报价..."
+                      : customQuoteError
+                        ? customQuoteError
+                        : customQuote
+                          ? `预计到账 ${totalPoints(customQuote).toLocaleString()} 积分（自定义金额不参与固定套餐赠送）`
+                          : "正在获取服务器报价..."}
+              </small>
+            </div>
+          )}
+          <button className="primary-topup" type="button" disabled={!activePackage || creating || customQuoteLoading} onClick={() => void submitTopup(activePackage)}>
+            {creating ? "正在创建服务器订单..." : "创建充值订单"}
+          </button>
+          {createdOrder && (
+            <div className="payment-result">
+              <strong>订单已创建：{createdOrder.order.out_trade_no}</strong>
+              <span>
+                本订单到账：基础 {basePoints(createdOrder.order).toLocaleString()}
+                {promotionBonusPoints(createdOrder.order) ? ` + 赠送 ${promotionBonusPoints(createdOrder.order).toLocaleString()}` : ""}
+                {` = 合计 ${totalPoints(createdOrder.order).toLocaleString()} 积分`}
+              </span>
+              <span>{createdOrder.payment.message}</span>
+            </div>
+          )}
+          {paymentNotice && <p className="payment-notice">{paymentNotice}</p>}
+        </article>
+
+        <article className="personal-card ledger-card">
+          <div className="personal-card-title">
+            <span className="iconfont icon-accountbook-fill" aria-hidden="true" />
+            <div>
+              <h2>积分入账明细</h2>
+              <small>充值、档位赠送、每日/每周领取与划拨的每一笔入账都在这里留痕。</small>
+            </div>
+          </div>
+          <div className="ledger-filters">
+            {([
+              ["", "全部"],
+              ["topup", "充值积分"],
+              ["reward", "活动积分"],
+            ] as Array<[BillingLedgerCategory, string]>).map(([value, label]) => (
+              <button
+                key={value || "all"}
+                type="button"
+                className={ledgerCategory === value ? "is-active" : ""}
+                aria-pressed={ledgerCategory === value}
+                onClick={() => {
+                  setLedgerCategory(value);
+                  setLedgerPage(1);
+                }}
+              >
+                {label}
+              </button>
+            ))}
+            <button
+              type="button"
+              className="ledger-refresh"
+              onClick={() => loadLedger(ledgerCategory, ledgerPage)}
+              disabled={ledgerLoading}
+            >
+              {ledgerLoading ? "读取中…" : "刷新"}
+            </button>
+          </div>
+          <div className="ledger-list">
+            {ledgerError ? (
+              <div className="empty-ledger">
+                <span className="iconfont icon-inbox" aria-hidden="true" />
+                <p>读取入账明细失败</p>
+                <span>{ledgerError}</span>
+              </div>
+            ) : ledgerItems.length ? ledgerItems.map((item) => (
+              <div key={item.entry_id} className="ledger-row">
+                <span className="ledger-row-icon">
+                  <span className={ledgerSourceIcon(item.source_type)} aria-hidden="true" />
+                </span>
+                <div className="ledger-row-main">
+                  <strong>{ledgerSourceLabel(item.source_type)}</strong>
+                  <span>{formatUsageTime(item.created_at)}</span>
+                </div>
+                <div className="ledger-row-side">
+                  <b>+{item.points_delta.toLocaleString()}</b>
+                  <span className="ledger-tag">
+                    {LEDGER_TOPUP_SOURCES.has(item.source_type) ? "充值积分" : "活动积分"}
+                  </span>
+                </div>
+              </div>
+            )) : (
+              <div className="empty-ledger">
+                <span className="iconfont icon-inbox" aria-hidden="true" />
+                <p>暂无积分入账记录</p>
+                <span>充值到账、每日/每周领取与划拨都会显示在这里</span>
+              </div>
+            )}
+          </div>
+          {!ledgerError && ledgerPageCount > 1 && (
+            <div className="ledger-pager">
+              <button type="button" disabled={safeLedgerPage <= 1 || ledgerLoading} onClick={() => setLedgerPage(safeLedgerPage - 1)}>
+                上一页
+              </button>
+              <span>第 {safeLedgerPage} / {ledgerPageCount} 页 · {ledgerRangeStart}-{ledgerRangeEnd} / 共 {ledgerTotal} 条</span>
+              <button type="button" disabled={safeLedgerPage >= ledgerPageCount || ledgerLoading} onClick={() => setLedgerPage(safeLedgerPage + 1)}>
+                下一页
+              </button>
+            </div>
+          )}
+        </article>
+        </div> : activePanel === "pricing" ? (
+          <article className="personal-card pricing-card">
+            <div className="personal-card-title">
+              <span className="iconfont icon-calculator" aria-hidden="true" />
+              <div><h2>计费规则</h2><small>服务端权威定价，按规则版本生效，客户端不参与报价。</small></div>
+              <button type="button" onClick={() => refreshBalance()} disabled={balanceCooldownActive || loading}>
+                {balanceCooldownActive ? `${balanceCooldownSeconds} 秒后` : "刷新"}
+              </button>
+            </div>
+
+            <div className="pricing-hero">
+              <span className="pricing-hero-kicker">单条处理链接 · 消费定价</span>
+              <div className="pricing-hero-range">
+                <b>{summary?.pricing.product_link.actual_charge_min_points.toLocaleString() ?? "--"}</b>
+                <em>~</em>
+                <b>{summary?.pricing.product_link.actual_charge_max_points.toLocaleString() ?? "--"}</b>
+                <i>积分 / 条</i>
+              </div>
+              <p className="pricing-hero-note">
+                受服务商模型波动影响，单条链接定价在{" "}
+                {summary?.pricing.product_link.actual_charge_min_points ?? "--"} 积分到{" "}
+                {summary?.pricing.product_link.actual_charge_max_points ?? "--"} 积分区间波动哦~
+              </p>
+            </div>
+
+            <div className="pricing-feature-grid">
+              {pricingFeatures.map(({ key, label, note }) => {
+                const feature = summary?.pricing.features[key];
+                if (!feature) return null;
+                return (
+                  <div key={key} className="pricing-feature">
+                    <span className="pricing-feature-name">
+                      <b>{label}</b>
+                      <small>{note}</small>
+                    </span>
+                    <span className="pricing-feature-points">
+                      <b>{feature.charge_points.toLocaleString()}</b>
+                      <i>积分 / 条</i>
+                      <small>预冻结 {feature.reserve_points.toLocaleString()}</small>
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="pricing-foot">
+              <span>充值换算：{summary?.pricing.ratio_label ?? "1 元 = 100 积分"}</span>
+              <span>规则版本 v{summary?.pricing.rule_version ?? "--"}{summary?.pricing.effective_at ? ` · 生效于 ${formatUsageTime(summary.pricing.effective_at).slice(0, 16)}` : ""}</span>
+            </div>
+          </article>
+        ) : activePanel === "model" ? (
+          <article className="personal-card version-card">
+            <div className="personal-card-title">
+              <span className="iconfont icon-robot-fill" aria-hidden="true" />
+              <div>
+                <h2>模型选择</h2>
+                <small>AI处理 与 POD 定制可分别选择生图模型，切换后立即生效，可随时改回。</small>
+              </div>
+            </div>
+            <div className="model-grid">
+              <section className="model-block">
+                <label className="model-field">
+                  <span>生图模型</span>
+                  <select
+                    value={imageModel}
+                    onChange={(event) => {
+                      setImageModel(event.target.value);
+                      setImageModelMessage("");
+                      setImageModelError("");
+                    }}
+                    disabled={imageModelBusy}
+                  >
+                    {imageModel === "" && <option value="">读取中…</option>}
+                    {imageModelChoices.map((choice) => (
+                      <option key={choice.value} value={choice.value}>{choice.label}</option>
+                    ))}
+                  </select>
+                </label>
+                <small className="model-field-hint">作用于 AI处理（商品图/详情图）链路。</small>
+                {imageModelMessage && <p className="version-message is-success">{imageModelMessage}</p>}
+                {imageModelError && <p className="version-message is-error" role="alert">{imageModelError}</p>}
+                <div className="version-actions">
+                  <button type="button" onClick={() => saveImageModelSelection()} disabled={imageModelBusy || !imageModel}>
+                    {imageModelBusy ? "保存中…" : "保存"}
+                  </button>
+                </div>
+              </section>
+
+              <section className="model-block">
+                <label className="model-field">
+                  <span>POD 生图模型</span>
+                  <select
+                    value={podImageModel}
+                    onChange={(event) => {
+                      setPodImageModel(event.target.value);
+                      setPodImageModelMessage("");
+                      setPodImageModelError("");
+                    }}
+                    disabled={podImageModelBusy}
+                  >
+                    {podImageModel === "" && <option value="">读取中…</option>}
+                    {podImageModelChoices.map((choice) => (
+                      <option key={choice.value} value={choice.value}>{choice.label}</option>
+                    ))}
+                  </select>
+                </label>
+                <small className="model-field-hint">仅作用于 POD 定制（直连速创）链路，与 AI处理 模型互不影响。</small>
+                {podImageModelMessage && <p className="version-message is-success">{podImageModelMessage}</p>}
+                {podImageModelError && <p className="version-message is-error" role="alert">{podImageModelError}</p>}
+                <div className="version-actions">
+                  <button
+                    type="button"
+                    onClick={() => savePodImageModelSelection()}
+                    disabled={podImageModelBusy || !podImageModel}
+                  >
+                    {podImageModelBusy ? "保存中…" : "保存"}
+                  </button>
+                </div>
+              </section>
+            </div>
+          </article>
+        ) : activePanel === "preferences" ? (
+          <PreferencesPanel />
+        ) : activePanel === "version" ? (
+          <SystemVersionPanel />
+        ) : activePanel === "promo" ? (
+          <PromotionPlanPanel />
+        ) : activePanel === "feedback" ? (
+          <div ref={feedbackRef}>
+            <FeedbackPanel initialContent={prefillFeedback} />
+          </div>
+        ) : (
+          <article className="personal-card usage-card">
+            <div className="personal-card-title">
+              <span className="iconfont icon-accountbook-fill" aria-hidden="true" />
+              <div><h2>消费流水</h2><small>每条记录包含冻结、实际扣费、释放、模型与结算状态。</small></div>
+              <button type="button" onClick={() => loadUsage(true)}>刷新</button>
+            </div>
+            <div className="usage-filters">
+              <label>
+                <span>开始日期</span>
+                <input
+                  type="date"
+                  value={filterDateFrom}
+                  max={filterDateTo || undefined}
+                  onChange={(event) => setFilterDateFrom(event.target.value)}
+                />
+              </label>
+              <label>
+                <span>结束日期</span>
+                <input
+                  type="date"
+                  value={filterDateTo}
+                  min={filterDateFrom || undefined}
+                  onChange={(event) => setFilterDateTo(event.target.value)}
+                />
+              </label>
+              <label>
+                <span>服务</span>
+                <select
+                  value={filterService}
+                  onChange={(event) => setFilterService(event.target.value as "" | UsageServiceGroup)}
+                >
+                  <option value="">全部服务</option>
+                  <option value="combo">套装组合</option>
+                  <option value="pod">POD 定制</option>
+                  <option value="batch">AI 批量处理</option>
+                  <option value="image">智能生图</option>
+                  <option value="text">商品文本</option>
+                </select>
+              </label>
+              <label>
+                <span>状态</span>
+                <select
+                  value={filterStatus}
+                  onChange={(event) => setFilterStatus(event.target.value)}
+                >
+                  <option value="">全部状态</option>
+                  <option value="succeeded">已结算</option>
+                  <option value="reserved,frozen">处理中</option>
+                  <option value="failed">已释放</option>
+                </select>
+              </label>
+              {hasUsageFilter && (
+                <button type="button" className="usage-filter-reset" onClick={resetUsageFilters}>
+                  重置筛选
+                </button>
+              )}
+            </div>
+            {usageLoading && <p className="usage-state">正在读取服务器消费账本…</p>}
+            {usageError && <p className="usage-state is-error">{usageError}</p>}
+            {!usageLoading && !usageError && (
+              <div className="usage-stats">
+                <div className="usage-stat is-total">
+                  <span>{hasUsageFilter ? "统计范围内总消费" : "累计总消费积分"}</span>
+                  <b>{usageStats.totalCharged.toLocaleString()}</b>
+                  <small>{usageStats.settledCount} 条已结算记录</small>
+                </div>
+                <div className="usage-stat">
+                  <span>累计冻结</span>
+                  <b>{usageStats.totalReserved.toLocaleString()}</b>
+                </div>
+                <div className="usage-stat">
+                  <span>累计释放</span>
+                  <b>{usageStats.totalRefunded.toLocaleString()}</b>
+                </div>
+                <div className="usage-stat">
+                  <span>{hasUsageFilter ? "匹配记录" : "已加载记录"}</span>
+                  <b>{usageStats.count.toLocaleString()}</b>
+                  {!hasUsageFilter && <small>统计基于已加载（上限 {USAGE_LOAD_LIMIT} 条）</small>}
+                </div>
+              </div>
+            )}
+            {!usageLoading && !usageError && (
+              <div className="usage-table-wrap">
+                <table className="usage-table">
+                  <thead><tr><th>时间</th><th>服务</th><th>状态</th><th>冻结</th><th>实际扣费</th><th>释放</th><th>规则</th><th>调用信息</th></tr></thead>
+                  <tbody>{pagedUsageEntries.length ? pagedUsageEntries.map((entry) => (
+                    <tr key={entry.usage_id}>
+                      <td><b>{formatUsageTime(entry.created_at)}</b><small>{entry.source_ref || entry.usage_id}</small></td>
+                      <td>{usageServiceLabel(entry)}{usageServiceSubLabel(entry) && <small>{usageServiceSubLabel(entry)}</small>}{usageDetailText(entry) && <small>{usageDetailText(entry)}</small>}</td>
+                      <td><span className={`usage-status is-${entry.status}`}>{entry.status === "succeeded" ? "已结算" : entry.status === "reserved" || entry.status === "frozen" ? "处理中" : "已释放"}</span>{entry.error_message && <small>{entry.error_message}</small>}</td>
+                      <td>{entry.reserved_points}</td><td>{entry.charged_points}</td><td>{entry.refunded_points}</td>
+                      <td>{entry.rule_version ? `v${entry.rule_version}` : "—"}</td><td><small>{entry.task ? `任务 #${entry.task} · ` : ""}{entry.usage_id.slice(0, 14)}…</small></td>
+                    </tr>
+                  )) : <tr><td colSpan={8} className="usage-empty">{hasUsageFilter ? "没有匹配的消费流水，试试调整筛选条件" : "暂无消费流水"}</td></tr>}</tbody>
+                </table>
+              </div>
+            )}
+            {!usageLoading && !usageError && usagePageCount > 1 && (
+              <div className="usage-pager">
+                <button type="button" disabled={safeUsagePage <= 1} onClick={() => setUsagePage(safeUsagePage - 1)}>上一页</button>
+                <span>第 {safeUsagePage} / {usagePageCount} 页 · 共 {filteredUsageEntries.length} 条</span>
+                <button type="button" disabled={safeUsagePage >= usagePageCount} onClick={() => setUsagePage(safeUsagePage + 1)}>下一页</button>
+              </div>
+            )}
+          </article>
+        )}
+        </div>
+        </div>
+      </div>
+    </section>
+  );
+}

@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "Price Verification Read-only Connector",
+  "version": "0.1.0",
+  "description": "Captures read-only Temu quote and 1688 sourcing evidence for local price verification.",
+  "action": {
+    "default_title": "Price Verification Connector",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": [
+    "alarms",
+    "scripting",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://127.0.0.1/*",
+    "https://localhost/*",
+    "https://*.temu.com/*",
+    "https://1688.com/*",
+    "https://*.1688.com/*"
+  ],
+  "price_verification": {
+    "capabilities": [
+      "temu_price_quote_discovery",
+      "source_browser_image_search"
+    ],
+    "bridge_paths": [
+      "/plugin/connect",
+      "/plugin/poll",
+      "/plugin/result"
+    ]
+  }
+}

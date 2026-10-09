@@ -1,0 +1,3730 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+import uuid
+from collections.abc import Mapping
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Iterator
+
+from ...pod_migrations import (
+    ensure_pod_migration,
+    pod_migration_effect_is_present,
+    recover_interrupted_pod_migrations,
+)
+from .billing_contract import PodCallOutcome, PodCallPlan, PodExecutionGrant
+from .contracts import (
+    BatchCreate,
+    BusinessFields,
+    Calibration,
+    ReplicaBatchCreate,
+    SemiBatchCreate,
+    grid_call_count,
+    style_grid_call_count,
+)
+from .errors import PodExecutionExpired, safe_error_message
+from .prompts import assign_style_elements, build_direct_listing_prompt, build_semi_pattern_base
+
+
+SEMI_PLACEHOLDER_TEMPLATE_ID = "semi-pattern-placeholder"
+SEMI_PLACEHOLDER_TEMPLATE_NAME = "半定制占位模板"
+REPLICA_INTERNAL_TEMPLATE_NAME = "复刻内部锚点模板"
+
+
+class ReplicaBatchIdempotentReturn(Exception):
+    """复刻批次已存在且请求哈希一致：携带既有 batch_id，由服务层幂等返回。"""
+
+    def __init__(self, batch_id: str) -> None:
+        self.batch_id = batch_id
+        super().__init__(batch_id)
+
+
+def _safe_error(value: object) -> str:
+    return safe_error_message(value) if str(value or "").strip() else ""
+
+
+class PodRepositoryError(RuntimeError):
+    def __init__(self, message: str, status_code: int = 400):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class PodCustomizationRepository:
+    def __init__(self, database_path: Path) -> None:
+        self.database_path = Path(database_path)
+        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._connect() as connection:
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS schema_migrations (
+                       migration_id TEXT PRIMARY KEY,
+                       module TEXT NOT NULL,
+                       applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+                   )"""
+            )
+            migration_root = Path(__file__).with_name("migrations")
+            migrations = sorted(migration_root.glob("[0-9][0-9][0-9]_*.sql"))
+            migration_sql = {
+                migration.stem: migration.read_text(encoding="utf-8")
+                for migration in migrations
+            }
+            recover_interrupted_pod_migrations(connection, migration_sql)
+            for migration in migrations:
+                ensure_pod_migration(
+                    connection,
+                    migration.stem,
+                    migration_sql[migration.stem],
+                )
+
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        connection = sqlite3.connect(self.database_path, timeout=30)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("PRAGMA synchronous=NORMAL")
+        connection.execute("PRAGMA busy_timeout=30000")
+        try:
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    _STYLE_EVENT_ERROR_LIMIT = 500
+
+    def record_style_event(
+        self,
+        batch_id: str,
+        event: str,
+        *,
+        style_index: int = 0,
+        variant_index: int = 0,
+        status: str = "",
+        error: str = "",
+    ) -> None:
+        """追加一条按款排查事件（只做一条 INSERT，不参与生成/导出逻辑）。"""
+        with self._connect() as connection:
+            self._insert_style_event(
+                connection,
+                batch_id,
+                event,
+                style_index=style_index,
+                variant_index=variant_index,
+                status=status,
+                error=error,
+            )
+
+    @staticmethod
+    def _insert_style_event(
+        connection: sqlite3.Connection,
+        batch_id: str,
+        event: str,
+        *,
+        style_index: int = 0,
+        variant_index: int = 0,
+        status: str = "",
+        error: str = "",
+    ) -> None:
+        connection.execute(
+            """INSERT INTO pod_customization_style_events
+               (batch_id, style_index, variant_index, event, status, error, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                batch_id,
+                int(style_index),
+                int(variant_index),
+                str(event),
+                str(status or ""),
+                _safe_error(error)[: PodCustomizationRepository._STYLE_EVENT_ERROR_LIMIT],
+                _now(),
+            ),
+        )
+
+    def _try_record_style_event(
+        self,
+        connection: sqlite3.Connection,
+        batch_id: str,
+        event: str,
+        *,
+        style_index: int = 0,
+        variant_index: int = 0,
+        status: str = "",
+        error: str = "",
+    ) -> None:
+        """热路径旁路写入：复用既有事务连接，任何异常都吞掉，绝不影响主流程。"""
+        try:
+            self._insert_style_event(
+                connection,
+                batch_id,
+                event,
+                style_index=style_index,
+                variant_index=variant_index,
+                status=status,
+                error=error,
+            )
+        except Exception:
+            pass
+
+    def create_asset(
+        self,
+        *,
+        workspace_id: str,
+        owner_user_id: str,
+        kind: str,
+        filename: str,
+        relative_path: str,
+        content_type: str,
+        byte_size: int,
+        sha256: str,
+        width: int,
+        height: int,
+    ) -> dict[str, Any]:
+        asset_id = uuid.uuid4().hex
+        now = _now()
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT INTO pod_customization_assets
+                   (asset_id, workspace_id, owner_user_id, kind, filename, relative_path, content_type,
+                    byte_size, sha256, width, height, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (asset_id, workspace_id, owner_user_id, kind, filename[:180], relative_path, content_type,
+                 byte_size, sha256, width, height, now),
+            )
+        return self.get_asset(asset_id, workspace_id, owner_user_id)
+
+    def get_asset(self, asset_id: str, workspace_id: str, owner_user_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM pod_customization_assets
+                   WHERE asset_id = ? AND workspace_id = ?
+                     AND (owner_user_id = ? OR kind = 'template')""",
+                (asset_id, workspace_id, owner_user_id),
+            ).fetchone()
+        if row is None:
+            raise PodRepositoryError("POD asset not found", 404)
+        return dict(row)
+
+    def create_template(
+        self,
+        *,
+        workspace_id: str,
+        owner_user_id: str,
+        name: str,
+        asset: dict[str, Any],
+        source: str = "personal",
+    ) -> dict[str, Any]:
+        template_id = uuid.uuid4().hex
+        snapshot_id = uuid.uuid4().hex
+        now = _now()
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT INTO pod_customization_templates
+                   (template_id, workspace_id, owner_user_id, name, source, asset_id, width, height,
+                    calibration_status, calibration_json, version, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'null', 1, ?, ?)""",
+                (template_id, workspace_id, owner_user_id, name[:120], source, asset["asset_id"],
+                 asset["width"], asset["height"], now, now),
+            )
+            connection.execute(
+                """INSERT INTO pod_customization_template_snapshots
+                   (snapshot_id, template_id, workspace_id, owner_user_id, version, name, source,
+                    asset_id, width, height, calibration_json, created_at)
+                   VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 'null', ?)""",
+                (snapshot_id, template_id, workspace_id, owner_user_id, name[:120], source,
+                 asset["asset_id"], asset["width"], asset["height"], now),
+            )
+        return self.get_template(template_id, workspace_id, owner_user_id)
+
+    def update_template_calibration(
+        self,
+        template_id: str,
+        workspace_id: str,
+        owner_user_id: str,
+        calibration: Calibration,
+    ) -> dict[str, Any]:
+        calibration_json = calibration.model_dump_json()
+        now = _now()
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM pod_customization_templates
+                   WHERE template_id = ? AND workspace_id = ? AND owner_user_id = ? AND deleted_at = ''""",
+                (template_id, workspace_id, owner_user_id),
+            ).fetchone()
+            if row is None:
+                raise PodRepositoryError("POD template not found", 404)
+            version = int(row["version"]) + 1
+            connection.execute(
+                """UPDATE pod_customization_templates
+                   SET calibration_status = 'ready', calibration_json = ?, error_message = '',
+                       version = ?, updated_at = ?
+                   WHERE template_id = ? AND workspace_id = ? AND owner_user_id = ?""",
+                (calibration_json, version, now, template_id, workspace_id, owner_user_id),
+            )
+            connection.execute(
+                """INSERT INTO pod_customization_template_snapshots
+                   (snapshot_id, template_id, workspace_id, owner_user_id, version, name, source,
+                    asset_id, width, height, calibration_json, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (uuid.uuid4().hex, template_id, workspace_id, row["owner_user_id"], version, row["name"], row["source"],
+                 row["asset_id"], row["width"], row["height"], calibration_json, now),
+            )
+        return self.get_template(template_id, workspace_id, owner_user_id)
+
+    def set_template_calibration_state(
+        self,
+        template_id: str,
+        workspace_id: str,
+        owner_user_id: str,
+        status: str,
+        error_message: str = "",
+    ) -> dict[str, Any]:
+        if status not in {"pending", "calibrating", "failed"}:
+            raise ValueError("invalid template calibration state")
+        with self._connect() as connection:
+            result = connection.execute(
+                """UPDATE pod_customization_templates
+                   SET calibration_status = ?, error_message = ?, updated_at = ?
+                   WHERE template_id = ? AND workspace_id = ? AND owner_user_id = ? AND deleted_at = ''""",
+                (status, _safe_error(error_message), _now(), template_id, workspace_id, owner_user_id),
+            )
+        if result.rowcount != 1:
+            raise PodRepositoryError("POD template not found", 404)
+        return self.get_template(template_id, workspace_id, owner_user_id)
+
+    def get_template(self, template_id: str, workspace_id: str, owner_user_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM pod_customization_templates
+                   WHERE template_id = ? AND workspace_id = ? AND owner_user_id = ? AND deleted_at = ''""",
+                (template_id, workspace_id, owner_user_id),
+            ).fetchone()
+        if row is None:
+            raise PodRepositoryError("POD template not found", 404)
+        return dict(row)
+
+    def list_templates(self, workspace_id: str, owner_user_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM pod_customization_templates
+                   WHERE workspace_id = ? AND owner_user_id = ? AND deleted_at = ''
+                   ORDER BY updated_at DESC, template_id""",
+                (workspace_id, owner_user_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_template_snapshots(self, template_id: str, workspace_id: str, owner_user_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM pod_customization_template_snapshots
+                   WHERE template_id = ? AND workspace_id = ? AND owner_user_id = ? ORDER BY version""",
+                (template_id, workspace_id, owner_user_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def create_direct_listing_trial(
+        self,
+        *,
+        trial_id: str,
+        workspace_id: str,
+        owner_user_id: str,
+        template_id: str,
+        status: str,
+        prompt_snapshot: str,
+        grid_attempt_asset_ids: list[str],
+        panel_asset_ids: dict[str, str],
+        public_urls: dict[str, str],
+        error_message: str = "",
+        title_result: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if status not in {"completed", "failed"}:
+            raise ValueError("invalid direct listing trial status")
+        now = _now()
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT INTO pod_customization_direct_listing_trials
+                   (trial_id, workspace_id, owner_user_id, template_id, status, prompt_snapshot,
+                    grid_attempt_asset_ids_json, panel_asset_ids_json, public_urls_json, error_message,
+                    created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    trial_id,
+                    workspace_id,
+                    owner_user_id,
+                    template_id,
+                    status,
+                    prompt_snapshot,
+                    json.dumps(grid_attempt_asset_ids),
+                    json.dumps(panel_asset_ids),
+                    json.dumps(public_urls),
+                    _safe_error(error_message),
+                    now,
+                    now,
+                ),
+            )
+            if title_result is not None:
+                self._insert_direct_title(connection, trial_id, title_result, now)
+        return self.get_direct_listing_trial(trial_id, workspace_id, owner_user_id)
+
+    def get_direct_listing_trial(
+        self, trial_id: str, workspace_id: str, owner_user_id: str
+    ) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM pod_customization_direct_listing_trials
+                   WHERE trial_id = ? AND workspace_id = ? AND owner_user_id = ?""",
+                (trial_id, workspace_id, owner_user_id),
+            ).fetchone()
+            title_row = connection.execute(
+                "SELECT * FROM pod_customization_direct_listing_titles WHERE trial_id = ?",
+                (trial_id,),
+            ).fetchone()
+        if row is None:
+            raise PodRepositoryError("POD direct listing trial not found", 404)
+        result = dict(row)
+        result["grid_attempt_asset_ids"] = json.loads(result.pop("grid_attempt_asset_ids_json"))
+        result["panel_asset_ids"] = json.loads(result.pop("panel_asset_ids_json"))
+        result["public_urls"] = json.loads(result.pop("public_urls_json"))
+        result["title_result"] = self._decode_title_row(title_row) if title_row else None
+        if result["title_result"] is not None:
+            result["title_result"]["listing_ready"] = (
+                result["title_result"]["status"] == "completed"
+                and len([url for url in result["public_urls"].values() if url]) == 4
+            )
+        return result
+
+    def list_direct_listing_trials(
+        self, workspace_id: str, owner_user_id: str, *, limit: int = 20
+    ) -> tuple[list[dict[str, Any]], int]:
+        with self._connect() as connection:
+            total = int(
+                connection.execute(
+                    """SELECT COUNT(*) FROM pod_customization_direct_listing_trials
+                       WHERE workspace_id = ? AND owner_user_id = ?""",
+                    (workspace_id, owner_user_id),
+                ).fetchone()[0]
+            )
+            rows = connection.execute(
+                """SELECT trial_id FROM pod_customization_direct_listing_trials
+                   WHERE workspace_id = ? AND owner_user_id = ?
+                   ORDER BY created_at DESC, trial_id LIMIT ?""",
+                (workspace_id, owner_user_id, max(1, min(limit, 100))),
+            ).fetchall()
+        return [self.get_direct_listing_trial(row["trial_id"], workspace_id, owner_user_id) for row in rows], total
+
+    def fail_direct_listing_trial(
+        self, trial_id: str, workspace_id: str, owner_user_id: str, error_message: str
+    ) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            result = connection.execute(
+                """UPDATE pod_customization_direct_listing_trials
+                   SET status = 'failed', error_message = ?, updated_at = ?
+                   WHERE trial_id = ? AND workspace_id = ? AND owner_user_id = ?""",
+                (_safe_error(error_message), _now(), trial_id, workspace_id, owner_user_id),
+            )
+        if result.rowcount != 1:
+            return None
+        return self.get_direct_listing_trial(trial_id, workspace_id, owner_user_id)
+
+    def create_batch(
+        self,
+        workspace_id: str,
+        owner_user_id: str,
+        request: BatchCreate,
+        *,
+        batch_id: str | None = None,
+    ) -> dict[str, Any]:
+        batch_id = str(batch_id or uuid.uuid4().hex)
+        now = _now()
+        prompt_snapshot = build_direct_listing_prompt(request.business_fields, request.creative_prompt)
+        # New batches are isolated from legacy batches by a companion row.  Do
+        # not reinterpret an existing batch while another runtime is working it.
+        initial_calls = style_grid_call_count(request.count)
+        max_refills = 0
+        with self._connect() as connection:
+            template = connection.execute(
+                """SELECT * FROM pod_customization_templates
+                   WHERE template_id = ? AND workspace_id = ? AND deleted_at = ''""",
+                (request.template_id, workspace_id),
+            ).fetchone()
+            if template is None:
+                raise PodRepositoryError("POD template not found", 404)
+            if template["calibration_status"] != "ready":
+                raise PodRepositoryError("POD template must be calibrated before use", 409)
+            snapshot = connection.execute(
+                """SELECT * FROM pod_customization_template_snapshots
+                   WHERE template_id = ? AND workspace_id = ? AND version = ?""",
+                (request.template_id, workspace_id, template["version"]),
+            ).fetchone()
+            if snapshot is None:
+                raise PodRepositoryError("POD template snapshot is unavailable", 409)
+            title = request.title.strip() or request.business_fields.product_name.strip() or template["name"]
+            connection.execute(
+                """INSERT INTO pod_customization_batches
+                   (batch_id, workspace_id, owner_user_id, title, status, template_id, template_snapshot_id,
+                    template_name, requested_count, initial_call_count, max_refill_calls, prompt_version,
+                    prompt_snapshot, business_fields_json, listing_fields_json, creative_prompt, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (batch_id, workspace_id, owner_user_id, title[:120], request.template_id, snapshot["snapshot_id"],
+                 snapshot["name"], request.count, initial_calls, max_refills, request.prompt_version,
+                 prompt_snapshot, request.business_fields.model_dump_json(), request.listing_fields.model_dump_json(),
+                 request.creative_prompt, now, now),
+            )
+            connection.executemany(
+                """INSERT INTO pod_customization_style_grid_results
+                   (result_id, batch_id, workspace_id, owner_user_id, style_index, variant_index, status,
+                    created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)""",
+                [
+                    (uuid.uuid4().hex, batch_id, workspace_id, owner_user_id, style_index, variant_index, now, now)
+                    for style_index in range(1, request.count + 1)
+                    for variant_index in range(1, 5)
+                ],
+            )
+            connection.executemany(
+                """INSERT INTO pod_customization_style_elements
+                   (batch_id, style_index, elements_json, updated_at)
+                   VALUES (?, ?, ?, ?)""",
+                [
+                    (
+                        batch_id,
+                        style_index,
+                        json.dumps(
+                            assign_style_elements(
+                                request.business_fields.style_keywords,
+                                style_index,
+                                batch_id,
+                            ),
+                            ensure_ascii=False,
+                        ),
+                        now,
+                    )
+                    for style_index in range(1, request.count + 1)
+                ],
+            )
+            connection.execute(
+                """INSERT INTO pod_customization_style_grid_batches (batch_id, created_at) VALUES (?, ?)""",
+                (batch_id, now),
+            )
+            connection.executemany(
+                """INSERT INTO pod_customization_style_titles
+                   (batch_id, style_index, status, created_at, updated_at)
+                   VALUES (?, ?, 'queued', ?, ?)""",
+                [(batch_id, style_index, now, now) for style_index in range(1, request.count + 1)],
+            )
+        return self.get_batch(batch_id, workspace_id, owner_user_id)
+
+    def ensure_semi_placeholder(
+        self,
+        workspace_id: str,
+        owner_user_id: str,
+        asset: dict[str, Any],
+    ) -> tuple[str, str, str]:
+        """惰性创建半定制占位模板（不接模板、只满足 batches 模板列的 NOT NULL + FK）。
+
+        ``deleted_at`` 非空使其不出现在 ``list_templates``（查询过滤 ``deleted_at = ''``），
+        半定制 worker 分支也永不读取该图。幂等：已存在时直接返回既有三元组。
+        """
+        now = _now()
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT version FROM pod_customization_templates
+                   WHERE template_id = ? AND workspace_id = ?""",
+                (SEMI_PLACEHOLDER_TEMPLATE_ID, workspace_id),
+            ).fetchone()
+            if row is not None:
+                snapshot = connection.execute(
+                    """SELECT snapshot_id, name FROM pod_customization_template_snapshots
+                       WHERE template_id = ? AND version = ?""",
+                    (SEMI_PLACEHOLDER_TEMPLATE_ID, row["version"]),
+                ).fetchone()
+                return (SEMI_PLACEHOLDER_TEMPLATE_ID, snapshot["snapshot_id"], snapshot["name"])
+            snapshot_id = uuid.uuid4().hex
+            connection.execute(
+                """INSERT INTO pod_customization_templates
+                   (template_id, workspace_id, owner_user_id, name, source, asset_id, width, height,
+                    calibration_status, calibration_json, version, deleted_at, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, 'system', ?, ?, ?, 'ready', 'null', 1, ?, ?, ?)""",
+                (SEMI_PLACEHOLDER_TEMPLATE_ID, workspace_id, owner_user_id, SEMI_PLACEHOLDER_TEMPLATE_NAME,
+                 asset["asset_id"], asset["width"], asset["height"], now, now, now),
+            )
+            connection.execute(
+                """INSERT INTO pod_customization_template_snapshots
+                   (snapshot_id, template_id, workspace_id, owner_user_id, version, name, source,
+                    asset_id, width, height, calibration_json, created_at)
+                   VALUES (?, ?, ?, ?, 1, ?, 'system', ?, ?, ?, 'null', ?)""",
+                (snapshot_id, SEMI_PLACEHOLDER_TEMPLATE_ID, workspace_id, owner_user_id,
+                 SEMI_PLACEHOLDER_TEMPLATE_NAME, asset["asset_id"], asset["width"], asset["height"], now),
+            )
+        return (SEMI_PLACEHOLDER_TEMPLATE_ID, snapshot_id, SEMI_PLACEHOLDER_TEMPLATE_NAME)
+
+    def create_semi_batch(
+        self,
+        workspace_id: str,
+        owner_user_id: str,
+        request: SemiBatchCreate,
+        *,
+        batch_id: str | None = None,
+    ) -> dict[str, Any]:
+        """创建半定制批次：4 格 = 4 款，``requested_count`` 存组数（款数 / 4）。
+
+        只写图片结果与元素分配，**不写 style_titles**；模板指向占位模板。
+        """
+        batch_id = str(batch_id or uuid.uuid4().hex)
+        now = _now()
+        groups = request.count // 4
+        prompt_snapshot = build_semi_pattern_base(request.business_fields, request.creative_prompt)
+        # 半定制没有「产品名」字段（纯图案），批次标题只取用户显式填写的 title。
+        title = request.title.strip() or f"POD-SEMI-{batch_id[:8]}"
+        with self._connect() as connection:
+            placeholder = connection.execute(
+                """SELECT version FROM pod_customization_templates
+                   WHERE template_id = ? AND workspace_id = ?""",
+                (SEMI_PLACEHOLDER_TEMPLATE_ID, workspace_id),
+            ).fetchone()
+            if placeholder is None:
+                raise PodRepositoryError("POD 半定制占位模板不可用", 409)
+            snapshot = connection.execute(
+                """SELECT snapshot_id, name FROM pod_customization_template_snapshots
+                   WHERE template_id = ? AND version = ?""",
+                (SEMI_PLACEHOLDER_TEMPLATE_ID, placeholder["version"]),
+            ).fetchone()
+            connection.execute(
+                """INSERT INTO pod_customization_batches
+                   (batch_id, workspace_id, owner_user_id, title, status, template_id, template_snapshot_id,
+                    template_name, requested_count, initial_call_count, max_refill_calls, prompt_version,
+                    prompt_snapshot, business_fields_json, listing_fields_json, creative_prompt, mode, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, 'semi', ?, ?)""",
+                (batch_id, workspace_id, owner_user_id, title[:120], SEMI_PLACEHOLDER_TEMPLATE_ID,
+                 snapshot["snapshot_id"], snapshot["name"], groups, groups, request.prompt_version,
+                 prompt_snapshot, request.business_fields.model_dump_json(), "{}", request.creative_prompt, now, now),
+            )
+            connection.executemany(
+                """INSERT INTO pod_customization_style_grid_results
+                   (result_id, batch_id, workspace_id, owner_user_id, style_index, variant_index, status,
+                    created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)""",
+                [
+                    (uuid.uuid4().hex, batch_id, workspace_id, owner_user_id, style_index, variant_index, now, now)
+                    for style_index in range(1, groups + 1)
+                    for variant_index in range(1, 5)
+                ],
+            )
+            connection.executemany(
+                """INSERT INTO pod_customization_style_elements
+                   (batch_id, style_index, elements_json, updated_at)
+                   VALUES (?, ?, ?, ?)""",
+                [
+                    (
+                        batch_id,
+                        # 半定制的元素分配按「款」而非按「组」：同组四格要生四份不同图案，
+                        # 所以四格（款号 (group-1)*4+1 .. group*4）各自需要一套主打/辅主/点缀。
+                        item_index,
+                        json.dumps(
+                            assign_style_elements(
+                                request.business_fields.style_keywords,
+                                item_index,
+                                batch_id,
+                            ),
+                            ensure_ascii=False,
+                        ),
+                        now,
+                    )
+                    for item_index in range(1, request.count + 1)
+                ],
+            )
+            connection.execute(
+                """INSERT INTO pod_customization_style_grid_batches (batch_id, created_at) VALUES (?, ?)""",
+                (batch_id, now),
+            )
+        return self.get_batch(batch_id, workspace_id, owner_user_id)
+
+    def find_replica_batch(
+        self, workspace_id: str, owner_user_id: str, client_request_id: str
+    ) -> dict[str, Any] | None:
+        """按 ``client_request_id`` 查找复刻批次（actor/workspace 内唯一）。"""
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT batch_id, request_hash FROM pod_customization_replica_batches
+                   WHERE workspace_id = ? AND owner_user_id = ? AND client_request_id = ?""",
+                (workspace_id, owner_user_id, client_request_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def create_replica_batch(
+        self,
+        workspace_id: str,
+        owner_user_id: str,
+        request: ReplicaBatchCreate,
+        *,
+        request_hash: str,
+        batch_id: str | None = None,
+    ) -> dict[str, Any]:
+        """创建复刻批次：父批次 mode=replica、requested_count=len(targets)。
+
+        一个本地事务写入：内部锚点模板及快照（隐藏状态、不进用户模板库）、来源关联、
+        全部目标快照、四宫格结果与标题占位。不生成用于原创设计的元素分配记录。
+        并发重复提交由 (workspace_id, owner_user_id, client_request_id) 唯一约束兜底。
+        """
+        batch_id = str(batch_id or uuid.uuid4().hex)
+        now = _now()
+        first_target = request.targets[0]
+        first_listing = first_target.listing_fields
+        first_business = BusinessFields(
+            product_name=first_target.product_name,
+            product_category=first_listing.category_name,
+        )
+        title = (
+            request.title.strip()
+            or first_target.product_name.strip()
+            or f"POD-REPLICA-{batch_id[:8]}"
+        )
+        try:
+            with self._connect() as connection:
+                existing = connection.execute(
+                    """SELECT batch_id, request_hash FROM pod_customization_replica_batches
+                       WHERE workspace_id = ? AND owner_user_id = ? AND client_request_id = ?""",
+                    (workspace_id, owner_user_id, request.client_request_id),
+                ).fetchone()
+                if existing is not None:
+                    if existing["request_hash"] == request_hash:
+                        raise ReplicaBatchIdempotentReturn(existing["batch_id"])
+                    raise PodRepositoryError("client_request_id 已用于不同的复刻请求", 409)
+                source_asset = connection.execute(
+                    """SELECT * FROM pod_customization_assets
+                       WHERE asset_id = ? AND workspace_id = ?""",
+                    (request.source_asset_id, workspace_id),
+                ).fetchone()
+                if source_asset is None:
+                    raise PodRepositoryError("POD 复刻样图资产不存在", 404)
+                target_rows: list[tuple[int, dict[str, Any], Any]] = []
+                for index, target in enumerate(request.targets, start=1):
+                    asset = connection.execute(
+                        """SELECT * FROM pod_customization_assets
+                           WHERE asset_id = ? AND workspace_id = ?""",
+                        (target.target_asset_id, workspace_id),
+                    ).fetchone()
+                    if asset is None:
+                        raise PodRepositoryError("POD 复刻目标资产不存在", 404)
+                    target_rows.append((index, dict(asset), target))
+                first_asset = target_rows[0][1]
+                template_id = uuid.uuid4().hex
+                snapshot_id = uuid.uuid4().hex
+                connection.execute(
+                    """INSERT INTO pod_customization_templates
+                       (template_id, workspace_id, owner_user_id, name, source, asset_id, width, height,
+                        calibration_status, calibration_json, version, deleted_at, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, 'system', ?, ?, ?, 'ready', 'null', 1, ?, ?, ?)""",
+                    (template_id, workspace_id, owner_user_id, REPLICA_INTERNAL_TEMPLATE_NAME,
+                     first_asset["asset_id"], first_asset["width"], first_asset["height"], now, now, now),
+                )
+                connection.execute(
+                    """INSERT INTO pod_customization_template_snapshots
+                       (snapshot_id, template_id, workspace_id, owner_user_id, version, name, source,
+                        asset_id, width, height, calibration_json, created_at)
+                       VALUES (?, ?, ?, ?, 1, ?, 'system', ?, ?, ?, 'null', ?)""",
+                    (snapshot_id, template_id, workspace_id, owner_user_id,
+                     REPLICA_INTERNAL_TEMPLATE_NAME, first_asset["asset_id"],
+                     first_asset["width"], first_asset["height"], now),
+                )
+                initial_calls = len(request.targets)
+                connection.execute(
+                    """INSERT INTO pod_customization_batches
+                       (batch_id, workspace_id, owner_user_id, title, status, template_id, template_snapshot_id,
+                        template_name, requested_count, initial_call_count, max_refill_calls, prompt_version,
+                        prompt_snapshot, business_fields_json, listing_fields_json, creative_prompt, mode, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, 0, 'v1', ?, ?, ?, '', 'replica', ?, ?)""",
+                    (batch_id, workspace_id, owner_user_id, title[:120], template_id, snapshot_id,
+                     REPLICA_INTERNAL_TEMPLATE_NAME, len(request.targets), initial_calls,
+                     "{}", first_business.model_dump_json(), first_listing.model_dump_json(), now, now),
+                )
+                connection.execute(
+                    """INSERT INTO pod_customization_replica_batches
+                       (batch_id, workspace_id, owner_user_id, source_asset_id, client_request_id, request_hash, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (batch_id, workspace_id, owner_user_id, request.source_asset_id,
+                     request.client_request_id, request_hash, now),
+                )
+                connection.executemany(
+                    """INSERT INTO pod_customization_replica_targets
+                       (batch_id, style_index, asset_id, business_fields_json, listing_fields_json, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    [
+                        (
+                            batch_id,
+                            style_index,
+                            asset["asset_id"],
+                            BusinessFields(
+                                product_name=target.product_name,
+                                product_category=target.listing_fields.category_name,
+                            ).model_dump_json(),
+                            target.listing_fields.model_dump_json(),
+                            now,
+                        )
+                        for style_index, asset, target in target_rows
+                    ],
+                )
+                connection.execute(
+                    """INSERT INTO pod_customization_style_grid_batches (batch_id, created_at) VALUES (?, ?)""",
+                    (batch_id, now),
+                )
+                connection.executemany(
+                    """INSERT INTO pod_customization_style_grid_results
+                       (result_id, batch_id, workspace_id, owner_user_id, style_index, variant_index, status,
+                        created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)""",
+                    [
+                        (uuid.uuid4().hex, batch_id, workspace_id, owner_user_id, style_index, variant_index, now, now)
+                        for style_index in range(1, len(request.targets) + 1)
+                        for variant_index in range(1, 5)
+                    ],
+                )
+                connection.executemany(
+                    """INSERT INTO pod_customization_style_titles
+                       (batch_id, style_index, status, created_at, updated_at)
+                       VALUES (?, ?, 'queued', ?, ?)""",
+                    [
+                        (batch_id, style_index, now, now)
+                        for style_index in range(1, len(request.targets) + 1)
+                    ],
+                )
+        except sqlite3.IntegrityError:
+            existing = self.find_replica_batch(workspace_id, owner_user_id, request.client_request_id)
+            if existing is not None and existing["request_hash"] == request_hash:
+                raise ReplicaBatchIdempotentReturn(existing["batch_id"]) from None
+            raise PodRepositoryError("client_request_id 已用于不同的复刻请求", 409) from None
+        return self.get_batch(batch_id, workspace_id, owner_user_id)
+
+    def preflight_batch(self, workspace_id: str, owner_user_id: str, request: BatchCreate) -> None:
+        """Validate all stable local prerequisites before remote points are frozen."""
+        del owner_user_id
+        with self._connect() as connection:
+            template = connection.execute(
+                """SELECT template_id, version, calibration_status
+                   FROM pod_customization_templates
+                   WHERE template_id = ? AND workspace_id = ? AND deleted_at = ''""",
+                (request.template_id, workspace_id),
+            ).fetchone()
+            if template is None:
+                raise PodRepositoryError("POD template not found", 404)
+            if template["calibration_status"] != "ready":
+                raise PodRepositoryError("POD template must be calibrated before use", 409)
+            snapshot = connection.execute(
+                """SELECT 1 FROM pod_customization_template_snapshots
+                   WHERE template_id = ? AND workspace_id = ? AND version = ?""",
+                (request.template_id, workspace_id, template["version"]),
+            ).fetchone()
+            if snapshot is None:
+                raise PodRepositoryError("POD template snapshot is unavailable", 409)
+
+    def get_batch(self, batch_id: str, workspace_id: str, owner_user_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            batch = connection.execute(
+                """SELECT * FROM pod_customization_batches
+                   WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ?""",
+                (batch_id, workspace_id, owner_user_id),
+            ).fetchone()
+            if batch is None:
+                raise PodRepositoryError("POD batch not found", 404)
+            snapshot = connection.execute(
+                """SELECT * FROM pod_customization_template_snapshots
+                   WHERE snapshot_id = ? AND workspace_id = ?""",
+                (batch["template_snapshot_id"], workspace_id),
+            ).fetchone()
+            style_grid = connection.execute(
+                "SELECT 1 FROM pod_customization_style_grid_batches WHERE batch_id = ?", (batch_id,)
+            ).fetchone() is not None
+            items = connection.execute(
+                """SELECT results.result_id AS item_id,
+                          ((results.style_index - 1) * 4 + results.variant_index) AS item_index,
+                          results.style_index, results.variant_index, results.status,
+                          results.pattern_asset_id, results.composite_asset_id,
+                          results.pattern_fingerprint, results.scene_optimized, results.error_message,
+                          results.created_at, results.updated_at,
+                          COALESCE(publications.role, '') AS role,
+                          COALESCE(publications.public_url, '') AS public_url
+                   FROM pod_customization_style_grid_results AS results
+                   LEFT JOIN pod_customization_style_grid_publications AS publications
+                     ON publications.result_id = results.result_id
+                   WHERE results.batch_id = ? AND results.workspace_id = ? AND results.owner_user_id = ?
+                   ORDER BY results.style_index, results.variant_index"""
+                if style_grid else
+                """SELECT *, item_index AS style_index, 1 AS variant_index FROM pod_customization_batch_items
+                   WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ? ORDER BY item_index""",
+                (batch_id, workspace_id, owner_user_id),
+            ).fetchall()
+            title_rows = connection.execute(
+                """SELECT titles.*,
+                          CASE WHEN titles.status = 'completed'
+                            AND EXISTS (
+                              SELECT 1 FROM pod_customization_style_copy AS copies
+                              WHERE copies.batch_id = titles.batch_id
+                                AND copies.style_index = titles.style_index
+                                AND TRIM(copies.title) <> ''
+                                AND TRIM(copies.english_title) <> ''
+                                AND TRIM(copies.description) <> ''
+                            ) AND
+                            (SELECT COUNT(*) FROM pod_customization_style_grid_results AS results
+                             INNER JOIN pod_customization_style_grid_publications AS publications
+                               ON publications.result_id = results.result_id
+                             WHERE results.batch_id = titles.batch_id
+                               AND results.style_index = titles.style_index
+                               AND results.status = 'completed'
+                               AND publications.public_url <> '') = 4
+                          THEN 1 ELSE 0 END AS listing_ready
+                   FROM pod_customization_style_titles AS titles
+                   WHERE titles.batch_id = ? ORDER BY titles.style_index""",
+                (batch_id,),
+            ).fetchall()
+            selection_rows = connection.execute(
+                """SELECT style_index, selected
+                   FROM pod_customization_style_export_selection
+                   WHERE batch_id = ?""",
+                (batch_id,),
+            ).fetchall()
+            element_rows = connection.execute(
+                """SELECT style_index, elements_json
+                   FROM pod_customization_style_elements
+                   WHERE batch_id = ?""",
+                (batch_id,),
+            ).fetchall()
+            replica_source: dict[str, Any] | None = None
+            replica_targets: list[dict[str, Any]] = []
+            if batch["mode"] == "replica":
+                replica_row = connection.execute(
+                    """SELECT source_asset_id FROM pod_customization_replica_batches
+                       WHERE batch_id = ?""",
+                    (batch_id,),
+                ).fetchone()
+                if replica_row is not None:
+                    source_asset = connection.execute(
+                        """SELECT * FROM pod_customization_assets WHERE asset_id = ?""",
+                        (replica_row["source_asset_id"],),
+                    ).fetchone()
+                    replica_source = dict(source_asset) if source_asset else None
+                target_rows = connection.execute(
+                    """SELECT * FROM pod_customization_replica_targets
+                       WHERE batch_id = ? ORDER BY style_index""",
+                    (batch_id,),
+                ).fetchall()
+                for row in target_rows:
+                    asset = connection.execute(
+                        """SELECT * FROM pod_customization_assets WHERE asset_id = ?""",
+                        (row["asset_id"],),
+                    ).fetchone()
+                    listing_fields = json.loads(row["listing_fields_json"])
+                    if isinstance(listing_fields, dict):
+                        listing_fields.setdefault("title_mode", "long")
+                    replica_targets.append(
+                        {
+                            "style_index": int(row["style_index"]),
+                            "asset_id": row["asset_id"],
+                            "asset": dict(asset) if asset else None,
+                            "business_fields": json.loads(row["business_fields_json"]),
+                            "listing_fields": listing_fields,
+                        }
+                    )
+        result = dict(batch)
+        result["business_fields"] = json.loads(result.pop("business_fields_json"))
+        result["listing_fields"] = json.loads(result.pop("listing_fields_json"))
+        if isinstance(result["listing_fields"], dict):
+            result["listing_fields"].setdefault("title_mode", "long")
+        result["template"] = dict(snapshot) if snapshot else None
+        result["items"] = [dict(item) for item in items]
+        result["style_grid"] = style_grid
+        result["style_elements"] = {
+            int(row["style_index"]): json.loads(row["elements_json"])
+            for row in element_rows
+        }
+        if replica_source is not None or replica_targets:
+            result["replica_source"] = replica_source
+            result["replica_targets"] = replica_targets
+            result["replica_targets_by_index"] = {
+                target["style_index"]: target for target in replica_targets
+            }
+        result["style_titles"] = [self._decode_title_row(row) for row in title_rows]
+        result["style_export_selections"] = {
+            int(row["style_index"]): bool(row["selected"])
+            for row in selection_rows
+        }
+        for title in result["style_titles"]:
+            title["export_selected"] = bool(title["listing_ready"]) and result[
+                "style_export_selections"
+            ].get(
+                int(title["style_index"]), True
+            )
+        listing_ready_by_style = {
+            int(title["style_index"]): bool(title["listing_ready"])
+            for title in result["style_titles"]
+        }
+        for item in result["items"]:
+            style_index = int(item["style_index"])
+            item["export_selected"] = listing_ready_by_style.get(
+                style_index, False
+            ) and result["style_export_selections"].get(
+                style_index, True
+            )
+        result["title_completed_count"] = sum(row["status"] == "completed" for row in result["style_titles"])
+        result["title_failed_count"] = sum(row["status"] == "failed" for row in result["style_titles"])
+        result["listing_ready_count"] = sum(bool(row["listing_ready"]) for row in result["style_titles"])
+        return result
+
+    def get_style_copies(
+        self, batch_id: str, workspace_id: str, owner_user_id: str
+    ) -> dict[int, dict[str, str]]:
+        with self._connect() as connection:
+            batch = connection.execute(
+                """SELECT 1 FROM pod_customization_batches
+                   WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ?""",
+                (batch_id, workspace_id, owner_user_id),
+            ).fetchone()
+            if batch is None:
+                raise PodRepositoryError("POD batch not found", 404)
+            rows = connection.execute(
+                """SELECT copies.style_index, copies.title, copies.english_title,
+                          copies.description, COALESCE(titles.source, 'ai') AS source
+                   FROM pod_customization_style_copy AS copies
+                   LEFT JOIN pod_customization_style_titles AS titles
+                     ON titles.batch_id = copies.batch_id
+                    AND titles.style_index = copies.style_index
+                   WHERE copies.batch_id = ? ORDER BY copies.style_index""",
+                (batch_id,),
+            ).fetchall()
+        return {
+            int(row["style_index"]): {
+                "title": row["title"],
+                "english_title": row["english_title"],
+                "description": row["description"],
+                "source": row["source"],
+            }
+            for row in rows
+        }
+
+    def upsert_style_copy(
+        self,
+        batch_id: str,
+        workspace_id: str,
+        owner_user_id: str,
+        style_index: int,
+        *,
+        title: str,
+        english_title: str,
+        description: str,
+    ) -> dict[str, str]:
+        values = self._style_copy_values(title, english_title, description)
+        now = _now()
+        with self._connect() as connection:
+            self._require_owned_style(connection, batch_id, workspace_id, owner_user_id, style_index)
+            self._upsert_style_copy_record(
+                connection, batch_id, style_index, values=values, now=now
+            )
+        return values
+
+    def upsert_style_export_selection(
+        self,
+        batch_id: str,
+        workspace_id: str,
+        owner_user_id: str,
+        style_index: int,
+        *,
+        selected: bool,
+    ) -> bool:
+        if not isinstance(selected, bool):
+            raise ValueError("selected must be a boolean")
+        with self._connect() as connection:
+            self._require_owned_listing_ready_style(
+                connection, batch_id, workspace_id, owner_user_id, style_index
+            )
+            connection.execute(
+                """INSERT INTO pod_customization_style_export_selection
+                   (batch_id, style_index, selected, updated_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(batch_id, style_index) DO UPDATE SET
+                     selected = excluded.selected,
+                     updated_at = excluded.updated_at""",
+                (batch_id, style_index, int(selected), _now()),
+            )
+        return selected
+
+    @staticmethod
+    def _style_copy_values(title: Any, english_title: Any, description: Any) -> dict[str, str]:
+        values = {
+            "title": title.strip() if isinstance(title, str) else "",
+            "english_title": english_title.strip() if isinstance(english_title, str) else "",
+            "description": description.strip() if isinstance(description, str) else "",
+        }
+        if not all(values.values()):
+            raise ValueError("title, english_title, and description are required")
+        return values
+
+    @staticmethod
+    def _require_owned_style(
+        connection: sqlite3.Connection,
+        batch_id: str,
+        workspace_id: str,
+        owner_user_id: str,
+        style_index: int,
+    ) -> None:
+        batch = connection.execute(
+            """SELECT requested_count FROM pod_customization_batches
+               WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ?""",
+            (batch_id, workspace_id, owner_user_id),
+        ).fetchone()
+        if batch is None:
+            raise PodRepositoryError("POD batch not found", 404)
+        if (
+            isinstance(style_index, bool)
+            or not isinstance(style_index, int)
+            or not 1 <= style_index <= int(batch["requested_count"])
+        ):
+            raise ValueError("style_index is outside the batch range")
+
+    @classmethod
+    def _require_owned_listing_ready_style(
+        cls,
+        connection: sqlite3.Connection,
+        batch_id: str,
+        workspace_id: str,
+        owner_user_id: str,
+        style_index: int,
+    ) -> None:
+        cls._require_owned_style(
+            connection, batch_id, workspace_id, owner_user_id, style_index
+        )
+        title = connection.execute(
+            """SELECT 1
+               FROM pod_customization_style_titles AS titles
+               INNER JOIN pod_customization_style_copy AS copies
+                 ON copies.batch_id = titles.batch_id
+                AND copies.style_index = titles.style_index
+               WHERE titles.batch_id = ? AND titles.style_index = ?
+                 AND titles.status = 'completed'
+                 AND TRIM(copies.title) <> ''
+                 AND TRIM(copies.english_title) <> ''
+                 AND TRIM(copies.description) <> ''""",
+            (batch_id, style_index),
+        ).fetchone()
+        images = connection.execute(
+            """SELECT COUNT(*)
+               FROM pod_customization_style_grid_results AS results
+               INNER JOIN pod_customization_style_grid_publications AS publications
+                 ON publications.result_id = results.result_id
+               WHERE results.batch_id = ? AND results.style_index = ?
+                 AND results.status = 'completed'
+                 AND TRIM(publications.public_url) <> ''""",
+            (batch_id, style_index),
+        ).fetchone()
+        if title is None or int(images[0]) != 4:
+            raise PodRepositoryError("POD style is not ready for Dianxiaomi export", 409)
+
+    @staticmethod
+    def _upsert_style_copy_record(
+        connection: sqlite3.Connection,
+        batch_id: str,
+        style_index: int,
+        *,
+        values: dict[str, str],
+        now: str,
+    ) -> None:
+        connection.execute(
+            """INSERT INTO pod_customization_style_copy
+               (batch_id, style_index, title, english_title, description, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(batch_id, style_index) DO UPDATE SET
+                 title = excluded.title,
+                 english_title = excluded.english_title,
+                 description = excluded.description,
+                 updated_at = excluded.updated_at""",
+            (
+                batch_id,
+                style_index,
+                values["title"],
+                values["english_title"],
+                values["description"],
+                now,
+                now,
+            ),
+        )
+
+    def get_batch_internal(self, batch_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT workspace_id, owner_user_id FROM pod_customization_batches WHERE batch_id = ?",
+                (batch_id,),
+            ).fetchone()
+        if row is None:
+            raise PodRepositoryError("POD batch not found", 404)
+        return self.get_batch(batch_id, row["workspace_id"], row["owner_user_id"])
+
+    def list_batches(
+        self,
+        workspace_id: str,
+        owner_user_id: str,
+        *,
+        limit: int,
+        offset: int,
+        mode: str | None = None,
+    ) -> tuple[list[dict[str, Any]], int]:
+        mode_clause = " AND mode = ?" if mode else ""
+        mode_args = (mode,) if mode else ()
+        with self._connect() as connection:
+            total = int(connection.execute(
+                f"""SELECT COUNT(*) FROM pod_customization_batches
+                   WHERE workspace_id = ? AND owner_user_id = ?{mode_clause}""",
+                (workspace_id, owner_user_id, *mode_args),
+            ).fetchone()[0])
+            rows = connection.execute(
+                f"""SELECT * FROM pod_customization_batches
+                   WHERE workspace_id = ? AND owner_user_id = ?{mode_clause}
+                   ORDER BY created_at DESC, batch_id LIMIT ? OFFSET ?""",
+                (workspace_id, owner_user_id, *mode_args, limit, offset),
+            ).fetchall()
+        return [
+            self.get_batch(row["batch_id"], workspace_id, owner_user_id)
+            for row in rows
+        ], total
+
+    def recover_interrupted_batches(self) -> int:
+        now = _now()
+        message = "上次运行未正常结束（强制关机或断电），批次已停止，未完成款式已记为失败，可整款重试"
+        with self._connect() as connection:
+            # 断电/强杀后批次可能停在任意非终态：既有正在生成的阶段，也有
+            # 只入队未开工的 queued，以及暂停/取消请求尚未落地的过渡态。
+            # 三者都必须收敛到终态，否则前端会一直显示「运行中」且无法重试。
+            rows = connection.execute(
+                """SELECT batch_id FROM pod_customization_batches
+                   WHERE status IN ('queued', 'generating_patterns', 'compositing',
+                                    'generating_titles', 'pausing', 'cancelling')"""
+            ).fetchall()
+            for row in rows:
+                batch_id = row["batch_id"]
+                connection.execute(
+                    """UPDATE pod_customization_generation_calls
+                       SET status = 'interrupted', error_message = ?, finished_at = ?
+                       WHERE batch_id = ? AND status IN ('queued', 'running')""",
+                    (message, now, batch_id),
+                )
+                connection.execute(
+                    """UPDATE pod_customization_style_titles
+                       SET status = 'failed', error_message = ?, updated_at = ?, finished_at = ?
+                       WHERE batch_id = ? AND status IN ('queued', 'generating')""",
+                    (message, now, now, batch_id),
+                )
+                connection.execute(
+                    """UPDATE pod_customization_batch_items
+                       SET status = CASE
+                             WHEN pattern_asset_id <> '' AND composite_asset_id <> '' THEN 'completed'
+                             ELSE 'failed'
+                           END,
+                           error_message = CASE
+                             WHEN pattern_asset_id <> '' AND composite_asset_id <> '' THEN error_message
+                             ELSE ?
+                           END,
+                           updated_at = ?
+                       WHERE batch_id = ? AND status IN ('queued', 'generating_pattern', 'compositing', 'optimizing_scene')""",
+                    (message, now, batch_id),
+                )
+                connection.execute(
+                    """UPDATE pod_customization_style_grid_results
+                       SET status = CASE
+                             WHEN pattern_asset_id <> '' AND composite_asset_id <> '' THEN 'completed'
+                             ELSE 'failed'
+                           END,
+                           error_message = CASE
+                             WHEN pattern_asset_id <> '' AND composite_asset_id <> '' THEN error_message
+                             ELSE ?
+                           END,
+                           updated_at = ?
+                       WHERE batch_id = ? AND status IN ('queued', 'generating_pattern', 'compositing', 'optimizing_scene')""",
+                    (message, now, batch_id),
+                )
+                self._refresh_counts(connection, batch_id, now)
+                counts = connection.execute(
+                    """SELECT completed_count, failed_count FROM pod_customization_batches WHERE batch_id = ?""",
+                    (batch_id,),
+                ).fetchone()
+                title_count = int(connection.execute(
+                    "SELECT COUNT(*) FROM pod_customization_style_titles WHERE batch_id = ?", (batch_id,)
+                ).fetchone()[0])
+                connection.execute(
+                    """UPDATE pod_customization_batches
+                       SET status = ?, execution_epoch = execution_epoch + 1,
+                           error_message = ?, updated_at = ?, finished_at = ? WHERE batch_id = ?""",
+                    ("partial_failure" if int(counts["completed_count"]) > 0 else "failed", message, now, now, batch_id),
+                )
+            # 关机围栏（pause_billing_runs_for_shutdown）在旧版本里只收敛了批次与在途
+            # 调用，漏掉 style_grid_results：那类批次当时已被判成 partial_failure/failed，
+            # 上面按「非终态批次」收敛的分支永远不会再选中它，剩下的 queued 款式就会
+            # 一直显示「等待生成」且无法整款重试。这里对已终态批次再兜一遍。
+            stranded = connection.execute(
+                """SELECT DISTINCT batches.batch_id FROM pod_customization_batches AS batches
+                   INNER JOIN pod_customization_style_grid_results AS results
+                     ON results.batch_id = batches.batch_id
+                   WHERE batches.status IN ('partial_failure', 'failed')
+                     AND results.status IN ('queued', 'generating_pattern', 'compositing',
+                                            'optimizing_scene')"""
+            ).fetchall()
+            for row in stranded:
+                batch_id = row["batch_id"]
+                connection.execute(
+                    """UPDATE pod_customization_style_grid_results
+                       SET status = CASE
+                             WHEN pattern_asset_id <> '' AND composite_asset_id <> '' THEN 'completed'
+                             ELSE 'failed'
+                           END,
+                           error_message = CASE
+                             WHEN pattern_asset_id <> '' AND composite_asset_id <> '' THEN error_message
+                             ELSE ?
+                           END,
+                           updated_at = ?
+                       WHERE batch_id = ?
+                         AND status IN ('queued', 'generating_pattern', 'compositing', 'optimizing_scene')""",
+                    (message, now, batch_id),
+                )
+                self._refresh_counts(connection, batch_id, now)
+            legacy_rows = connection.execute(
+                """SELECT batch_id, completed_count FROM pod_customization_batches
+                   WHERE status = 'billing_auth_required'"""
+            ).fetchall()
+            for row in legacy_rows:
+                connection.execute(
+                    """UPDATE pod_customization_batches
+                       SET status = ?, execution_epoch = execution_epoch + 1,
+                           error_message = ?, updated_at = ?, finished_at = ?
+                       WHERE batch_id = ? AND status = 'billing_auth_required'""",
+                    (
+                        "partial_failure" if int(row["completed_count"]) > 0 else "failed",
+                        message,
+                        now,
+                        now,
+                        row["batch_id"],
+                    ),
+                )
+            connection.execute(
+                """UPDATE pod_customization_billing_runs
+                   SET status = 'settlement_pending', error_message = ?, updated_at = ?
+                   WHERE status = 'auth_required'""",
+                (message, now),
+            )
+        return len(rows) + len(legacy_rows)
+
+    def list_queued_batch_ids(self) -> list[str]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT batches.batch_id FROM pod_customization_batches AS batches
+                   INNER JOIN pod_customization_style_grid_batches AS style_grids
+                     ON style_grids.batch_id = batches.batch_id
+                   WHERE batches.status = 'queued' ORDER BY batches.created_at"""
+            ).fetchall()
+        return [row["batch_id"] for row in rows]
+
+    def create_billing_run(
+        self,
+        *,
+        action_key: str,
+        action_type: str,
+        target_id: str,
+        batch_id: str,
+        actor_id: str,
+        workspace_id: str,
+        plan: PodCallPlan,
+        grant: PodExecutionGrant,
+        action_payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        run_id = uuid.uuid4().hex
+        now = _now()
+        plan_json = json.dumps(
+            {
+                "idempotency_key": plan.idempotency_key,
+                "calls": [call.payload() for call in plan.calls],
+                "semi_item_count": plan.semi_item_count,
+                "billing_profile": plan.billing_profile,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT INTO pod_customization_billing_runs
+                   (run_id, action_key, action_type, target_id, batch_id, workspace_id,
+                    owner_user_id, freeze_id, rule_version, grant_expires_at, plan_json, action_payload_json,
+                    status, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'authorized', ?, ?)""",
+                (
+                    run_id,
+                    action_key,
+                    action_type,
+                    target_id,
+                    batch_id,
+                    workspace_id,
+                    actor_id,
+                    grant.freeze_id,
+                    grant.rule_version,
+                    grant.expires_at,
+                    plan_json,
+                    json.dumps(action_payload or {}, ensure_ascii=False, separators=(",", ":")),
+                    now,
+                    now,
+                ),
+            )
+            connection.executemany(
+                """INSERT INTO pod_customization_billing_outcomes
+                   (run_id, call_id, feature, status, updated_at)
+                   VALUES (?, ?, ?, 'planned', ?)""",
+                [(run_id, call.call_id, call.feature, now) for call in plan.calls],
+            )
+        return self.get_billing_run(run_id, workspace_id, actor_id)
+
+    def get_billing_run(
+        self, run_id: str, workspace_id: str, owner_user_id: str
+    ) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM pod_customization_billing_runs
+                   WHERE run_id = ? AND workspace_id = ? AND owner_user_id = ?""",
+                (run_id, workspace_id, owner_user_id),
+            ).fetchone()
+            outcomes = (
+                connection.execute(
+                    """SELECT call_id, feature, status, updated_at
+                       FROM pod_customization_billing_outcomes
+                       WHERE run_id = ? ORDER BY rowid""",
+                    (run_id,),
+                ).fetchall()
+                if row is not None
+                else []
+            )
+        if row is None:
+            raise PodRepositoryError("POD billing run not found", 404)
+        result = dict(row)
+        result["plan"] = json.loads(result.pop("plan_json"))
+        result["action_payload"] = json.loads(result.pop("action_payload_json"))
+        result["outcomes"] = [dict(outcome) for outcome in outcomes]
+        return result
+
+    def list_pending_billing_runs(
+        self, workspace_id: str, owner_user_id: str
+    ) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT run_id FROM pod_customization_billing_runs
+                   WHERE workspace_id = ? AND owner_user_id = ?
+                     AND status IN ('authorized', 'settling', 'settlement_pending')
+                   ORDER BY created_at, run_id""",
+                (workspace_id, owner_user_id),
+            ).fetchall()
+        return [self.get_billing_run(row["run_id"], workspace_id, owner_user_id) for row in rows]
+
+    def list_settlement_pending_runs(self) -> list[tuple[str, str, str]]:
+        """List all settlement_pending billing runs for automatic release sweeps."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT run_id, workspace_id, owner_user_id
+                   FROM pod_customization_billing_runs
+                   WHERE status = 'settlement_pending'
+                   ORDER BY created_at, run_id"""
+            ).fetchall()
+        return [(str(row["run_id"]), str(row["workspace_id"]), str(row["owner_user_id"])) for row in rows]
+
+    def start_billing_call(self, action_key: str, call_id: str, feature: str) -> None:
+        now = _now()
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT outcomes.status, outcomes.feature
+                   FROM pod_customization_billing_outcomes AS outcomes
+                   INNER JOIN pod_customization_billing_runs AS runs ON runs.run_id = outcomes.run_id
+                   WHERE runs.action_key = ? AND outcomes.call_id = ?""",
+                (action_key, call_id),
+            ).fetchone()
+            if row is None or row["feature"] != feature:
+                raise PodRepositoryError("POD billing call is not in the frozen plan", 409)
+            if row["status"] != "planned":
+                raise PodRepositoryError("POD billing call was already started", 409)
+            connection.execute(
+                """UPDATE pod_customization_billing_outcomes
+                   SET status = 'started', updated_at = ?
+                   WHERE run_id = (SELECT run_id FROM pod_customization_billing_runs WHERE action_key = ?)
+                     AND call_id = ?""",
+                (now, action_key, call_id),
+            )
+            connection.execute(
+                """UPDATE pod_customization_billing_runs
+                   SET updated_at = ?, error_message = '' WHERE action_key = ?""",
+                (now, action_key),
+            )
+
+    def record_billing_outcome(
+        self, action_key: str, outcome: PodCallOutcome
+    ) -> None:
+        now = _now()
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT outcomes.status, outcomes.feature
+                   FROM pod_customization_billing_outcomes AS outcomes
+                   INNER JOIN pod_customization_billing_runs AS runs ON runs.run_id = outcomes.run_id
+                   WHERE runs.action_key = ? AND outcomes.call_id = ?""",
+                (action_key, outcome.call_id),
+            ).fetchone()
+            if row is None or row["feature"] != outcome.feature:
+                raise PodRepositoryError("POD billing call is not in the frozen plan", 409)
+            if row["status"] in {"success", "no_return"}:
+                if row["status"] != outcome.status:
+                    raise PodRepositoryError("POD billing call has conflicting outcomes", 409)
+                return
+            connection.execute(
+                """UPDATE pod_customization_billing_outcomes
+                   SET status = ?, updated_at = ?
+                   WHERE run_id = (SELECT run_id FROM pod_customization_billing_runs WHERE action_key = ?)
+                     AND call_id = ?""",
+                (outcome.status, now, action_key, outcome.call_id),
+            )
+            connection.execute(
+                "UPDATE pod_customization_billing_runs SET updated_at = ? WHERE action_key = ?",
+                (now, action_key),
+            )
+
+    def prepare_billing_settlement(self, action_key: str) -> tuple[PodCallOutcome, ...]:
+        """Freeze known outcomes for settlement without guessing crash-window calls."""
+        now = _now()
+        with self._connect() as connection:
+            uncertain = connection.execute(
+                """SELECT outcomes.call_id
+                   FROM pod_customization_billing_outcomes AS outcomes
+                   INNER JOIN pod_customization_billing_runs AS runs ON runs.run_id = outcomes.run_id
+                   WHERE runs.action_key = ? AND outcomes.status = 'started' LIMIT 1""",
+                (action_key,),
+            ).fetchone()
+        if uncertain is not None:
+            message = (
+                "POD provider call outcome is uncertain after interruption; "
+                "automatic settlement is blocked"
+            )
+            self.mark_billing_pending(action_key, message)
+            raise PodRepositoryError(message, 409)
+        with self._connect() as connection:
+            run = connection.execute(
+                "SELECT run_id, batch_id FROM pod_customization_billing_runs WHERE action_key = ?",
+                (action_key,),
+            ).fetchone()
+            if run is None:
+                raise PodRepositoryError("POD billing run not found", 404)
+            if run["batch_id"]:
+                batch = connection.execute(
+                    "SELECT status FROM pod_customization_batches WHERE batch_id = ?",
+                    (run["batch_id"],),
+                ).fetchone()
+                if batch is not None and batch["status"] != "settlement_pending":
+                    connection.execute(
+                        """UPDATE pod_customization_billing_runs
+                           SET result_status = ? WHERE action_key = ? AND result_status = ''""",
+                        (batch["status"], action_key),
+                    )
+            connection.execute(
+                """UPDATE pod_customization_billing_outcomes
+                   SET status = 'no_return', updated_at = ?
+                   WHERE run_id = ? AND status = 'planned'""",
+                (now, run["run_id"]),
+            )
+            connection.execute(
+                """UPDATE pod_customization_billing_runs
+                   SET status = 'settling', error_message = '', updated_at = ?
+                   WHERE run_id = ? AND status <> 'settled'""",
+                (now, run["run_id"]),
+            )
+            rows = connection.execute(
+                """SELECT call_id, feature, status FROM pod_customization_billing_outcomes
+                   WHERE run_id = ? ORDER BY rowid""",
+                (run["run_id"],),
+            ).fetchall()
+        return tuple(PodCallOutcome(row["call_id"], row["feature"], row["status"]) for row in rows)
+
+    def mark_billing_pending(self, action_key: str, error_message: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE pod_customization_billing_runs
+                   SET status = 'settlement_pending', error_message = ?, updated_at = ?
+                   WHERE action_key = ? AND status <> 'settled'""",
+                (_safe_error(error_message), _now(), action_key),
+            )
+
+    def mark_billing_auth_required(self, action_key: str, error_message: str) -> None:
+        """Backward-compatible alias for callers from the pre-fencing API.
+
+        ``auth_required`` is no longer used as a recovery gate.  Persisting the
+        action as ``settlement_pending`` keeps the old method harmless while
+        allowing the normal settlement/resume path to proceed.
+        """
+        self.mark_billing_pending(action_key, error_message)
+
+    def mark_billing_authorized(
+        self, action_key: str, *, rule_version: int, expires_at: str
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE pod_customization_billing_runs
+                   SET status = 'authorized', rule_version = ?, grant_expires_at = ?,
+                       error_message = '', updated_at = ?
+                   WHERE action_key = ? AND status <> 'settled'""",
+                (rule_version, expires_at, _now(), action_key),
+            )
+
+    def claim_billing_resume(
+        self, run_id: str, workspace_id: str, owner_user_id: str
+    ) -> bool:
+        with self._connect() as connection:
+            result = connection.execute(
+                """UPDATE pod_customization_billing_runs
+                   SET status = 'resume_claimed', error_message = '', updated_at = ?
+                   WHERE run_id = ? AND workspace_id = ? AND owner_user_id = ?
+                     AND status IN ('settlement_pending')""",
+                (_now(), run_id, workspace_id, owner_user_id),
+            )
+        return result.rowcount == 1
+
+    def mark_billing_settled(self, action_key: str) -> None:
+        now = _now()
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE pod_customization_billing_runs
+                   SET status = 'settled', error_message = '', updated_at = ?, settled_at = ?
+                   WHERE action_key = ?""",
+                (now, now, action_key),
+            )
+
+    def recover_billing_runs(self) -> int:
+        now = _now()
+        message = "本机服务中断，已完成结果保留，未完成调用按失败结算"
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT run_id FROM pod_customization_billing_runs
+                   WHERE status IN ('authorized', 'resume_claimed', 'settling')"""
+            ).fetchall()
+            connection.execute(
+                """UPDATE pod_customization_billing_runs
+                   SET status = 'settlement_pending', error_message = ?, updated_at = ?
+                   WHERE status IN ('authorized', 'resume_claimed', 'settling')""",
+                (message, now),
+            )
+        return len(rows)
+
+    def pause_billing_runs_for_shutdown(self) -> int:
+        """Fence every active POD execution before its thread pools are closed.
+
+        ThreadPoolExecutor cannot interrupt a provider call that is already
+        running.  Incrementing ``execution_epoch`` first makes any late result
+        from that call a no-op (the repository raises ``PodExecutionExpired``),
+        so an old worker can never mutate a subsequent service instance.
+        """
+        now = _now()
+        message = "本机服务中断，已完成结果保留，未完成调用按失败结算"
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT run_id, batch_id FROM pod_customization_billing_runs
+                   WHERE status = 'authorized'"""
+            ).fetchall()
+            connection.execute(
+                """UPDATE pod_customization_billing_runs
+                   SET status = 'settlement_pending', error_message = ?, updated_at = ?
+                   WHERE status = 'authorized'""",
+                (message, now),
+            )
+            active_batches = connection.execute(
+                """SELECT batch_id FROM pod_customization_batches
+                   WHERE status IN ('queued', 'generating_patterns', 'compositing', 'generating_titles')"""
+            ).fetchall()
+            active_ids = [str(row["batch_id"]) for row in active_batches]
+            if active_ids:
+                placeholders = ",".join("?" for _ in active_ids)
+                connection.execute(
+                    f"""UPDATE pod_customization_generation_calls
+                        SET status = 'interrupted', error_message = ?, finished_at = ?
+                        WHERE batch_id IN ({placeholders}) AND status IN ('queued', 'running')""",
+                    (message, now, *active_ids),
+                )
+                connection.execute(
+                    f"""UPDATE pod_customization_batch_items
+                        SET status = 'failed', error_message = ?, updated_at = ?
+                        WHERE batch_id IN ({placeholders})
+                          AND status IN ('queued', 'compositing', 'generating_pattern')""",
+                    (message, now, *active_ids),
+                )
+                # 风格网格（v2）批次的结果行存在 style_grid_results，而不是上面那张
+                # 旧表。漏掉它会让未完成款式永远停在 queued，前端一直显示
+                # 「等待生成」（既不是失败也不能整款重试）。
+                connection.execute(
+                    f"""UPDATE pod_customization_style_grid_results
+                        SET status = CASE
+                              WHEN pattern_asset_id <> '' AND composite_asset_id <> '' THEN 'completed'
+                              ELSE 'failed'
+                            END,
+                            error_message = CASE
+                              WHEN pattern_asset_id <> '' AND composite_asset_id <> '' THEN error_message
+                              ELSE ?
+                            END,
+                            updated_at = ?
+                        WHERE batch_id IN ({placeholders})
+                          AND status IN ('queued', 'generating_pattern', 'compositing', 'optimizing_scene')""",
+                    (message, now, *active_ids),
+                )
+                connection.execute(
+                    f"""UPDATE pod_customization_style_titles
+                        SET status = 'failed', error_message = ?, updated_at = ?, finished_at = ?
+                        WHERE batch_id IN ({placeholders}) AND status IN ('queued', 'generating')""",
+                    (message, now, now, *active_ids),
+                )
+            # Fence all active batches, including batches whose billing row was
+            # already moved to a non-authorized state.  This is deliberately a
+            # single SQL transition per batch so shutdown is atomic with respect
+            # to late worker writes.
+            connection.execute(
+                """UPDATE pod_customization_batches
+                   SET status = CASE WHEN completed_count > 0 THEN 'partial_failure' ELSE 'failed' END,
+                       execution_epoch = execution_epoch + 1,
+                       error_message = ?, updated_at = ?, last_progress_at = ?, finished_at = ?
+                   WHERE status IN ('queued', 'generating_patterns', 'compositing', 'generating_titles')""",
+                (message, now, now, now),
+            )
+        return len(rows)
+
+    def claim_batch(self, batch_id: str, *, allow_billing_resume: bool = False) -> bool:
+        now = _now()
+        with self._connect() as connection:
+            result = connection.execute(
+                """UPDATE pod_customization_batches
+                   SET status = 'generating_patterns', started_at = CASE WHEN started_at = '' THEN ? ELSE started_at END,
+                       updated_at = ?, error_message = ''
+                   WHERE batch_id = ? AND status = 'queued'""",
+                (now, now, batch_id),
+            )
+        return result.rowcount == 1
+
+    def claim_batch_with_epoch(
+        self, batch_id: str, *, allow_billing_resume: bool = False
+    ) -> int | None:
+        """Atomically claim a batch and return the new epoch, or None if not claimable.
+
+        The epoch is incremented on every successful claim so stale worker threads
+        can detect they are operating on a superseded execution context.
+        last_progress_at is initialised to the claim timestamp so the reaper has a
+        meaningful starting point for inactivity measurement.
+        """
+        now = _now()
+        with self._connect() as connection:
+            result = connection.execute(
+                """UPDATE pod_customization_batches
+                   SET status = 'generating_patterns',
+                       execution_epoch = execution_epoch + 1,
+                       started_at = CASE WHEN started_at = '' THEN ? ELSE started_at END,
+                       updated_at = ?,
+                       last_progress_at = ?,
+                       error_message = ''
+                   WHERE batch_id = ?
+                     AND status = 'queued'""",
+                (now, now, now, batch_id),
+            )
+            if result.rowcount != 1:
+                return None
+            row = connection.execute(
+                "SELECT execution_epoch FROM pod_customization_batches WHERE batch_id = ?",
+                (batch_id,),
+            ).fetchone()
+        return int(row["execution_epoch"]) if row else None
+
+    def touch_batch_progress(self, batch_id: str, *, execution_epoch: int | None = None) -> None:
+        """Refresh the inactivity heartbeat without reviving a stale worker."""
+        now = _now()
+        with self._connect() as connection:
+            if execution_epoch is None:
+                result = connection.execute(
+                    """UPDATE pod_customization_batches
+                       SET last_progress_at = ?, updated_at = ?
+                       WHERE batch_id = ?""",
+                    (now, now, batch_id),
+                )
+            else:
+                result = connection.execute(
+                    """UPDATE pod_customization_batches
+                       SET last_progress_at = ?, updated_at = ?
+                       WHERE batch_id = ? AND execution_epoch = ?""",
+                    (now, now, batch_id, execution_epoch),
+                )
+            if result.rowcount != 1:
+                if execution_epoch is not None:
+                    raise PodExecutionExpired(
+                        f"progress heartbeat for batch {batch_id} rejected: batch epoch has advanced"
+                    )
+                raise PodRepositoryError("POD batch not found", 404)
+
+    def reap_stuck_batches(
+        self, *, stale_after_seconds: int, limit: int = 100
+    ) -> list[dict[str, object]]:
+        """Atomically revoke the epoch of batches that have made no progress recently.
+
+        Only batches in active generation states are considered.  The epoch is
+        incremented so any in-flight worker thread whose write includes the old
+        epoch predicate will produce zero affected rows and should raise
+        PodExecutionExpired rather than silently succeeding.
+
+        Returns the list of reaped batches (batch_id, old_epoch, new_status).
+        """
+        from datetime import datetime, timedelta, timezone
+
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(seconds=stale_after_seconds)
+        ).isoformat(timespec="milliseconds")
+        now = _now()
+        finished_at = now
+        timeout_msg = f"batch timed out after {stale_after_seconds}s of inactivity"
+
+        with self._connect() as connection:
+            candidates = connection.execute(
+                """SELECT batch_id, execution_epoch, completed_count
+                   FROM pod_customization_batches
+                   WHERE status IN ('generating_patterns', 'compositing', 'generating_titles')
+                     AND last_progress_at != ''
+                     AND last_progress_at <= ?
+                   ORDER BY last_progress_at
+                   LIMIT ?""",
+                (cutoff, limit),
+            ).fetchall()
+
+            reaped: list[dict[str, object]] = []
+            for row in candidates:
+                batch_id = str(row["batch_id"])
+                old_epoch = int(row["execution_epoch"])
+                new_status = "partial_failure" if int(row["completed_count"]) > 0 else "failed"
+
+                updated = connection.execute(
+                    """UPDATE pod_customization_batches
+                       SET status = ?,
+                           execution_epoch = execution_epoch + 1,
+                           error_message = ?,
+                           updated_at = ?,
+                           last_progress_at = ?,
+                           finished_at = ?
+                       WHERE batch_id = ?
+                         AND execution_epoch = ?
+                         AND status IN ('generating_patterns', 'compositing', 'generating_titles')""",
+                    (
+                        new_status,
+                        timeout_msg,
+                        now,
+                        now,
+                        finished_at,
+                        batch_id,
+                        old_epoch,
+                    ),
+                )
+                if updated.rowcount != 1:
+                    continue
+
+                # Mark queued/running generation calls and titles terminal so the
+                # stale coordinator threads cannot resurrect them.
+                connection.execute(
+                    """UPDATE pod_customization_generation_calls
+                       SET status = 'interrupted', error_message = ?, finished_at = ?
+                       WHERE batch_id = ? AND status IN ('queued', 'running')""",
+                    (timeout_msg, now, batch_id),
+                )
+                connection.execute(
+                    """UPDATE pod_customization_style_titles
+                       SET status = 'failed', error_message = ?, updated_at = ?, finished_at = ?
+                       WHERE batch_id = ? AND status IN ('queued', 'generating')""",
+                    (timeout_msg, now, now, batch_id),
+                )
+                # Mark queued/running items terminal. Style-grid batches store
+                # their items in style_grid_results; legacy batches in batch_items.
+                # Updating the wrong table strands the rows non-terminal (stuck
+                # style, unretryable). Branch on the batch flavour like
+                # fail_remaining_items / recover_interrupted_batches do.
+                if self._is_style_grid_batch(connection, batch_id):
+                    connection.execute(
+                        """UPDATE pod_customization_style_grid_results
+                           SET status = 'failed', error_message = ?, updated_at = ?
+                           WHERE batch_id = ? AND status IN ('queued', 'generating_pattern', 'compositing')""",
+                        (timeout_msg, now, batch_id),
+                    )
+                else:
+                    connection.execute(
+                        """UPDATE pod_customization_batch_items
+                           SET status = 'failed', error_message = ?, updated_at = ?
+                           WHERE batch_id = ? AND status IN ('queued', 'generating_pattern', 'compositing', 'optimizing_scene')""",
+                        (timeout_msg, now, batch_id),
+                    )
+                # Mark any associated billing run settlement_pending when it has
+                # an uncertain 'started' outcome; never introduce a nonexistent status.
+                connection.execute(
+                    """UPDATE pod_customization_billing_runs
+                       SET status = 'settlement_pending', error_message = ?, updated_at = ?
+                       WHERE batch_id = ?
+                         AND status IN ('authorized', 'resume_claimed', 'settling')
+                         AND EXISTS (
+                             SELECT 1 FROM pod_customization_billing_outcomes o
+                             WHERE o.run_id = pod_customization_billing_runs.run_id
+                               AND o.status = 'started'
+                         )""",
+                    (timeout_msg, now, batch_id),
+                )
+
+                reaped.append(
+                    {"batch_id": batch_id, "old_epoch": old_epoch, "new_status": new_status}
+                )
+        return reaped
+
+    def set_batch_status(
+        self,
+        batch_id: str,
+        status: str,
+        error_message: str = "",
+        *,
+        execution_epoch: int | None = None,
+    ) -> None:
+        now = _now()
+        finished_at = now if status in {"completed", "partial_failure", "failed", "cancelled"} else ""
+        with self._connect() as connection:
+            if execution_epoch is not None:
+                result = connection.execute(
+                    """UPDATE pod_customization_batches SET status = ?, error_message = ?, updated_at = ?,
+                           finished_at = CASE WHEN ? <> '' THEN ? ELSE finished_at END
+                       WHERE batch_id = ? AND execution_epoch = ?""",
+                    (status, _safe_error(error_message), now, finished_at, finished_at, batch_id, execution_epoch),
+                )
+            else:
+                result = connection.execute(
+                    """UPDATE pod_customization_batches SET status = ?, error_message = ?, updated_at = ?,
+                           finished_at = CASE WHEN ? <> '' THEN ? ELSE finished_at END
+                       WHERE batch_id = ?""",
+                    (status, _safe_error(error_message), now, finished_at, finished_at, batch_id),
+                )
+            if result.rowcount == 1:
+                self._try_record_style_event(
+                    connection, batch_id, "batch_status", status=status, error=error_message
+                )
+        if result.rowcount != 1:
+            if execution_epoch is not None:
+                raise PodExecutionExpired(
+                    f"set_batch_status to {status!r} rejected for batch {batch_id}: epoch has advanced"
+                )
+            raise PodRepositoryError("POD batch not found", 404)
+
+    def get_batch_status(self, batch_id: str) -> str:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT status FROM pod_customization_batches WHERE batch_id = ?",
+                (batch_id,),
+            ).fetchone()
+        if row is None:
+            raise PodRepositoryError("POD batch not found", 404)
+        return str(row["status"])
+
+    @staticmethod
+    def _raise_if_execution_expired(
+        connection: sqlite3.Connection, batch_id: str, execution_epoch: int
+    ) -> None:
+        row = connection.execute(
+            "SELECT execution_epoch FROM pod_customization_batches WHERE batch_id = ?",
+            (batch_id,),
+        ).fetchone()
+        if row is not None and int(row["execution_epoch"]) != execution_epoch:
+            raise PodExecutionExpired(
+                f"POD batch {batch_id} write rejected: batch epoch has advanced"
+            )
+
+    def get_batch_execution_epoch(self, action_key: str) -> int | None:
+        """Return the current execution_epoch for the batch associated with this billing action key.
+
+        Returns None if the action key does not map to a known batch.
+        Used by PodBillingRun to fence billing writes against a reaped epoch.
+        """
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT b.execution_epoch
+                   FROM pod_customization_batches AS b
+                   INNER JOIN pod_customization_billing_runs AS r
+                       ON r.batch_id = b.batch_id
+                   WHERE r.action_key = ?""",
+                (action_key,),
+            ).fetchone()
+        return int(row["execution_epoch"]) if row is not None else None
+
+    def request_pause(self, batch_id: str) -> bool:
+        """Atomically ask the running worker to pause at its next checkpoint."""
+        now = _now()
+        with self._connect() as connection:
+            result = connection.execute(
+                """UPDATE pod_customization_batches SET status = 'pausing', updated_at = ?
+                   WHERE batch_id = ?
+                     AND status IN ('queued', 'generating_patterns', 'compositing', 'generating_titles')""",
+                (now, batch_id),
+            )
+            if result.rowcount == 1:
+                self._try_record_style_event(
+                    connection, batch_id, "pause_requested", status="pausing"
+                )
+        return result.rowcount == 1
+
+    def request_cancel(self, batch_id: str) -> bool:
+        """Atomically ask the running worker to cancel at its next checkpoint."""
+        now = _now()
+        with self._connect() as connection:
+            result = connection.execute(
+                """UPDATE pod_customization_batches SET status = 'cancelling', updated_at = ?
+                   WHERE batch_id = ?
+                     AND status IN ('queued', 'generating_patterns', 'compositing', 'generating_titles',
+                                    'pausing', 'paused')""",
+                (now, batch_id),
+            )
+            if result.rowcount == 1:
+                self._try_record_style_event(
+                    connection, batch_id, "cancel_requested", status="cancelling"
+                )
+        return result.rowcount == 1
+
+    def mark_batch_paused(self, batch_id: str, error_message: str = "") -> None:
+        now = _now()
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE pod_customization_batches
+                   SET status = 'paused', error_message = ?, updated_at = ?, finished_at = ''
+                   WHERE batch_id = ? AND status = 'pausing'""",
+                (_safe_error(error_message), now, batch_id),
+            )
+
+    def mark_batch_cancelled(self, batch_id: str, error_message: str = "") -> None:
+        now = _now()
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE pod_customization_batches
+                   SET status = 'cancelled', error_message = ?, updated_at = ?, finished_at = ?
+                   WHERE batch_id = ? AND status = 'cancelling'""",
+                (_safe_error(error_message), now, now, batch_id),
+            )
+
+    def resume_paused_batch(self, batch_id: str) -> bool:
+        """Move a paused batch back to queued so it can be resubmitted."""
+        now = _now()
+        with self._connect() as connection:
+            result = connection.execute(
+                """UPDATE pod_customization_batches
+                   SET status = 'queued', error_message = '', updated_at = ?, finished_at = ''
+                   WHERE batch_id = ? AND status = 'paused'""",
+                (now, batch_id),
+            )
+        return result.rowcount == 1
+
+    TERMINAL_BATCH_STATUSES = {"completed", "partial_failure", "failed", "cancelled"}
+
+    def delete_batch(self, batch_id: str, workspace_id: str, owner_user_id: str) -> list[str]:
+        """Delete a terminal batch and return now-unused local asset paths.
+
+        The owner-scoped lookup, terminal-state guard, billing-ledger cleanup
+        and child cascade all happen in a single transaction. Returns the
+        ``relative_path`` values whose files should be removed by the caller.
+        """
+        with self._connect() as connection:
+            batch = connection.execute(
+                """SELECT status, template_id FROM pod_customization_batches
+                   WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ?""",
+                (batch_id, workspace_id, owner_user_id),
+            ).fetchone()
+            if batch is None:
+                raise PodRepositoryError("POD batch not found", 404)
+            if batch["status"] not in self.TERMINAL_BATCH_STATUSES:
+                raise PodRepositoryError("仅已完成的 POD 批次可以删除", 409)
+
+            asset_ids: set[str] = set()
+            for column in ("pattern_asset_id", "composite_asset_id"):
+                for table in ("pod_customization_batch_items", "pod_customization_style_grid_results"):
+                    rows = connection.execute(
+                        f"SELECT {column} FROM {table} WHERE batch_id = ?",
+                        (batch_id,),
+                    ).fetchall()
+                    for row in rows:
+                        if row[column]:
+                            asset_ids.add(row[column])
+            rows = connection.execute(
+                "SELECT grid_asset_id FROM pod_customization_generation_calls WHERE batch_id = ?",
+                (batch_id,),
+            ).fetchall()
+            for row in rows:
+                if row["grid_asset_id"]:
+                    asset_ids.add(row["grid_asset_id"])
+            rows = connection.execute(
+                "SELECT pattern_asset_id FROM pod_customization_pattern_candidates WHERE batch_id = ?",
+                (batch_id,),
+            ).fetchall()
+            for row in rows:
+                if row["pattern_asset_id"]:
+                    asset_ids.add(row["pattern_asset_id"])
+
+            # 复刻批次：样图、目标图与内部锚点模板都要计入清理。
+            replica_template_id: str | None = None
+            replica_row = connection.execute(
+                "SELECT source_asset_id FROM pod_customization_replica_batches WHERE batch_id = ?",
+                (batch_id,),
+            ).fetchone()
+            if replica_row is not None:
+                if replica_row["source_asset_id"]:
+                    asset_ids.add(replica_row["source_asset_id"])
+                target_rows = connection.execute(
+                    "SELECT asset_id FROM pod_customization_replica_targets WHERE batch_id = ?",
+                    (batch_id,),
+                ).fetchall()
+                for row in target_rows:
+                    if row["asset_id"]:
+                        asset_ids.add(row["asset_id"])
+                replica_template_id = batch["template_id"]
+
+            # The billing ledger references batch_id without a cascade FK.
+            connection.execute(
+                "DELETE FROM pod_customization_billing_runs WHERE batch_id = ?", (batch_id,)
+            )
+            connection.execute(
+                "DELETE FROM pod_customization_batches WHERE batch_id = ?", (batch_id,)
+            )
+            if replica_template_id is not None:
+                # 内部锚点模板/快照是本批次专属的隐藏结构，随批次一并删除。
+                # 必须放在批次删除之后，避免批次行的 template_snapshot_id 外键先被解除前触发约束。
+                connection.execute(
+                    "DELETE FROM pod_customization_template_snapshots WHERE template_id = ?",
+                    (replica_template_id,),
+                )
+                connection.execute(
+                    "DELETE FROM pod_customization_templates WHERE template_id = ?",
+                    (replica_template_id,),
+                )
+            return self._delete_assets_and_collect_files(connection, asset_ids)
+
+    def reap_stale_local_cache(self, *, older_than_hours: int = 48) -> list[str]:
+        """Clear stale local image cache older than the given window.
+
+        Templates are never touched. Two categories are released:
+          - style-grid results older than the window whose images were already
+            published to the public image host (clear their local URL refs);
+          - asset rows older than the window that no table references anymore.
+        Returns ``relative_path`` values whose files should be removed on disk.
+        """
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=older_than_hours)).isoformat(
+            timespec="milliseconds"
+        )
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE pod_customization_style_grid_results
+                   SET pattern_asset_id = '', composite_asset_id = ''
+                   WHERE created_at < ?
+                     AND EXISTS (
+                         SELECT 1 FROM pod_customization_style_grid_publications AS p
+                         WHERE p.result_id = pod_customization_style_grid_results.result_id
+                           AND p.public_url <> ''
+                     )""",
+                (cutoff,),
+            )
+            # Release intermediate grid/candidate assets for batches whose
+            # lifecycle has ended, so they become orphans for the sweep below.
+            for statement in (
+                """UPDATE pod_customization_generation_calls
+                   SET grid_asset_id = ''
+                   WHERE grid_asset_id <> ''
+                     AND batch_id IN (
+                         SELECT batch_id FROM pod_customization_batches
+                         WHERE status IN ('completed', 'partial_failure', 'failed', 'cancelled', 'settlement_pending')
+                           AND updated_at < ?
+                     )""",
+                """UPDATE pod_customization_pattern_candidates
+                   SET pattern_asset_id = ''
+                   WHERE pattern_asset_id <> ''
+                     AND batch_id IN (
+                         SELECT batch_id FROM pod_customization_batches
+                         WHERE status IN ('completed', 'partial_failure', 'failed', 'cancelled', 'settlement_pending')
+                           AND updated_at < ?
+                     )""",
+            ):
+                connection.execute(statement, (cutoff,))
+            protected = self._collect_trial_asset_ids(connection)
+            rows = connection.execute(
+                """SELECT a.asset_id FROM pod_customization_assets AS a
+                   WHERE a.kind <> 'template'
+                     AND a.created_at < ?
+                     AND a.asset_id NOT IN (SELECT asset_id FROM pod_customization_templates)
+                     AND a.asset_id NOT IN (SELECT asset_id FROM pod_customization_template_snapshots)
+                     AND a.asset_id NOT IN (SELECT pattern_asset_id FROM pod_customization_batch_items WHERE pattern_asset_id <> '')
+                     AND a.asset_id NOT IN (SELECT composite_asset_id FROM pod_customization_batch_items WHERE composite_asset_id <> '')
+                     AND a.asset_id NOT IN (SELECT pattern_asset_id FROM pod_customization_style_grid_results WHERE pattern_asset_id <> '')
+                     AND a.asset_id NOT IN (SELECT composite_asset_id FROM pod_customization_style_grid_results WHERE composite_asset_id <> '')
+                     AND a.asset_id NOT IN (SELECT grid_asset_id FROM pod_customization_generation_calls WHERE grid_asset_id <> '')
+                     AND a.asset_id NOT IN (SELECT pattern_asset_id FROM pod_customization_pattern_candidates WHERE pattern_asset_id <> '')
+                     AND a.asset_id NOT IN (SELECT source_asset_id FROM pod_customization_replica_batches WHERE source_asset_id <> '')
+                     AND a.asset_id NOT IN (SELECT asset_id FROM pod_customization_replica_targets)""",
+                (cutoff,),
+            ).fetchall()
+            orphaned = {row["asset_id"] for row in rows if row["asset_id"] not in protected}
+            return self._delete_assets_and_collect_files(connection, orphaned)
+
+    @staticmethod
+    def _collect_trial_asset_ids(connection: sqlite3.Connection) -> set[str]:
+        """Collect asset ids stored as JSON on direct-listing trials."""
+        asset_ids: set[str] = set()
+        rows = connection.execute(
+            """SELECT grid_attempt_asset_ids_json, panel_asset_ids_json
+               FROM pod_customization_direct_listing_trials"""
+        ).fetchall()
+        for row in rows:
+            for raw in (row["grid_attempt_asset_ids_json"], row["panel_asset_ids_json"]):
+                try:
+                    data = json.loads(raw or "{}")
+                except (TypeError, ValueError):
+                    continue
+                values = data.values() if isinstance(data, dict) else data if isinstance(data, list) else ()
+                for value in values:
+                    if isinstance(value, str) and value:
+                        asset_ids.add(value)
+        return asset_ids
+
+    @staticmethod
+    def _delete_assets_and_collect_files(
+        connection: sqlite3.Connection, asset_ids: set[str]
+    ) -> list[str]:
+        """Delete non-template asset rows and return deduplicated unused paths."""
+        if not asset_ids:
+            return []
+        placeholders = ",".join("?" for _ in asset_ids)
+        params = tuple(asset_ids)
+        rows = connection.execute(
+            f"""SELECT asset_id, relative_path FROM pod_customization_assets
+                WHERE asset_id IN ({placeholders}) AND kind <> 'template'""",
+            params,
+        ).fetchall()
+        if not rows:
+            return []
+        connection.execute(
+            f"""DELETE FROM pod_customization_assets
+                WHERE asset_id IN ({placeholders}) AND kind <> 'template'""",
+            params,
+        )
+        relative_paths = {row["relative_path"] for row in rows}
+        unused: list[str] = []
+        for path in relative_paths:
+            remaining = connection.execute(
+                "SELECT COUNT(*) FROM pod_customization_assets WHERE relative_path = ?",
+                (path,),
+            ).fetchone()[0]
+            if remaining == 0:
+                unused.append(path)
+        return unused
+
+    def claim_style_title(
+        self,
+        batch_id: str,
+        style_index: int,
+        *,
+        style_task_id: str | None = None,
+        allow_billing_resume: bool = False,
+        execution_epoch: int | None = None,
+    ) -> dict[str, Any]:
+        """Atomically start a title attempt, optionally replacing its image task identity."""
+        now = _now()
+        with self._connect() as connection:
+            result = connection.execute(
+                """UPDATE pod_customization_style_titles
+                   SET style_task_id = CASE WHEN ? IS NULL THEN style_task_id ELSE ? END,
+                       status = 'generating', title = '', normalized_title = NULL,
+                       visual_tags_json = '{}', model = '', prompt_version = '', attempt_count = 0,
+                       error_message = '', started_at = ?, finished_at = '', updated_at = ?
+                   WHERE batch_id = ? AND style_index = ?
+                     AND (? IS NULL OR (SELECT execution_epoch FROM pod_customization_batches
+                                        WHERE batch_id = ?) = ?)
+                     AND (status IN ('queued', 'completed', 'failed')
+                          OR (? = 1 AND status = 'generating'))""",
+                (
+                    style_task_id,
+                    style_task_id,
+                    now,
+                    now,
+                    batch_id,
+                    style_index,
+                    execution_epoch,
+                    batch_id,
+                    execution_epoch,
+                    int(allow_billing_resume),
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM pod_customization_style_titles WHERE batch_id = ? AND style_index = ?",
+                (batch_id, style_index),
+            ).fetchone()
+            if result.rowcount != 1 or row is None:
+                if execution_epoch is not None:
+                    self._raise_if_execution_expired(connection, batch_id, execution_epoch)
+                raise PodRepositoryError("POD style title is not available for generation", 409)
+            connection.execute(
+                "DELETE FROM pod_customization_style_copy WHERE batch_id = ? AND style_index = ?",
+                (batch_id, style_index),
+            )
+            self._try_record_style_event(
+                connection, batch_id, "style_title_status",
+                style_index=style_index, status="generating",
+            )
+        return self._decode_title_row(row)
+
+    def claim_title_regeneration(
+        self, batch_id: str, style_index: int, workspace_id: str, owner_user_id: str
+    ) -> dict[str, Any]:
+        now = _now()
+        with self._connect() as connection:
+            batch = connection.execute(
+                """SELECT status FROM pod_customization_batches
+                   WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ?""",
+                (batch_id, workspace_id, owner_user_id),
+            ).fetchone()
+            if batch is None:
+                raise PodRepositoryError("POD batch not found", 404)
+            ready_images = int(connection.execute(
+                """SELECT COUNT(*) FROM pod_customization_style_grid_results AS results
+                   INNER JOIN pod_customization_style_grid_publications AS publications
+                     ON publications.result_id = results.result_id
+                   WHERE results.batch_id = ? AND results.style_index = ?
+                     AND results.status = 'completed' AND publications.public_url <> ''""",
+                (batch_id, style_index),
+            ).fetchone()[0])
+            if ready_images != 4:
+                raise PodRepositoryError("all four public POD images are required before regenerating a title", 409)
+            batch_claim = connection.execute(
+                """UPDATE pod_customization_batches
+                   SET status = 'generating_titles', error_message = '', updated_at = ?, finished_at = '',
+                       last_progress_at = ?, execution_epoch = execution_epoch + 1
+                   WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ?
+                     AND status IN ('completed', 'partial_failure', 'failed', 'cancelled', 'settlement_pending')""",
+                (now, now, batch_id, workspace_id, owner_user_id),
+            )
+            if batch_claim.rowcount != 1:
+                raise PodRepositoryError("POD batch must settle before regenerating its title", 409)
+            result = connection.execute(
+                """UPDATE pod_customization_style_titles
+                   SET status = 'generating', title = '', normalized_title = NULL,
+                       visual_tags_json = '{}', model = '', prompt_version = '', attempt_count = 0,
+                       error_message = '', started_at = ?, finished_at = '', updated_at = ?
+                   WHERE batch_id = ? AND style_index = ? AND style_task_id <> ''
+                     AND status IN ('failed', 'completed')""",
+                (now, now, batch_id, style_index),
+            )
+            if result.rowcount != 1:
+                raise PodRepositoryError("POD style title is not available for regeneration", 409)
+            connection.execute(
+                "DELETE FROM pod_customization_style_copy WHERE batch_id = ? AND style_index = ?",
+                (batch_id, style_index),
+            )
+            row = connection.execute(
+                "SELECT * FROM pod_customization_style_titles WHERE batch_id = ? AND style_index = ?",
+                (batch_id, style_index),
+            ).fetchone()
+            self._try_record_style_event(
+                connection, batch_id, "style_title_regenerate",
+                style_index=style_index, status="generating",
+            )
+        if row is None:
+            raise PodRepositoryError("POD style title is not available for regeneration", 409)
+        return self._decode_title_row(row)
+
+    def finish_style_title(
+        self,
+        batch_id: str,
+        style_index: int,
+        title_result: dict[str, Any],
+        *,
+        workspace_id: str | None = None,
+        owner_user_id: str | None = None,
+        style_copy: dict[str, Any] | None = None,
+        execution_epoch: int | None = None,
+    ) -> None:
+        now = _now()
+        title = str(title_result.get("title") or "").strip()
+        normalized = _normalize_title(str(title_result.get("normalized_title") or title)) or None
+        visual_tags = {
+            "visual_theme": str(title_result.get("visual_theme") or ""),
+            "motif_keywords": list(title_result.get("motif_keywords") or ()),
+            "color_keywords": list(title_result.get("color_keywords") or ()),
+            "visual_signature": str(title_result.get("visual_signature") or ""),
+        }
+        copy_values = None
+        if style_copy is not None:
+            if workspace_id is None or owner_user_id is None:
+                raise ValueError("workspace and owner are required when finishing listing copy")
+            copy_values = self._style_copy_values(
+                style_copy.get("title"), style_copy.get("english_title"), style_copy.get("description")
+            )
+        with self._connect() as connection:
+            if copy_values is not None:
+                self._require_owned_style(
+                    connection, batch_id, workspace_id, owner_user_id, style_index
+                )
+            result = connection.execute(
+                """UPDATE pod_customization_style_titles
+                   SET status = 'completed', source = 'ai', title = ?, normalized_title = ?,
+                       visual_tags_json = ?, model = ?, prompt_version = ?, attempt_count = ?,
+                       error_message = '', updated_at = ?, finished_at = ?
+                   WHERE batch_id = ? AND style_index = ? AND status = 'generating'
+                     AND (? IS NULL OR (SELECT execution_epoch FROM pod_customization_batches
+                                        WHERE batch_id = ?) = ?)""",
+                (
+                    title,
+                    normalized,
+                    json.dumps(visual_tags),
+                    str(title_result.get("model") or ""),
+                    str(title_result.get("prompt_version") or ""),
+                    int(title_result.get("attempt_count") or 0),
+                    now,
+                    now,
+                    batch_id,
+                    style_index,
+                    execution_epoch,
+                    batch_id,
+                    execution_epoch,
+                ),
+            )
+            if result.rowcount != 1:
+                if execution_epoch is not None:
+                    self._raise_if_execution_expired(connection, batch_id, execution_epoch)
+                raise PodRepositoryError("POD style title generation is not active", 409)
+            if copy_values is not None:
+                self._upsert_style_copy_record(
+                    connection, batch_id, style_index, values=copy_values, now=now
+                )
+                # A missing row is left by whole-style regeneration.  Keep an
+                # explicit row untouched so title-only regeneration preserves
+                # the user's existing export choice.
+                connection.execute(
+                    """INSERT INTO pod_customization_style_export_selection
+                       (batch_id, style_index, selected, updated_at)
+                       SELECT ?, ?, 1, ?
+                       WHERE NOT EXISTS (
+                         SELECT 1 FROM pod_customization_style_export_selection
+                         WHERE batch_id = ? AND style_index = ?
+                       )""",
+                    (batch_id, style_index, now, batch_id, style_index),
+                )
+            self._try_record_style_event(
+                connection, batch_id, "style_title_status",
+                style_index=style_index, status="completed",
+            )
+
+    def complete_manual_title(
+        self,
+        batch_id: str,
+        style_index: int,
+        title: str,
+        workspace_id: str,
+        owner_user_id: str,
+    ) -> dict[str, Any]:
+        """Atomically replace a finished title with a user-entered value.
+
+        Manual titles bypass AI copy validation and cross-style deduplication:
+        ``normalized_title`` stays NULL so the unique index cannot reject two
+        styles sharing the same user text.  Only titles that already reached a
+        terminal state (completed or failed) with all four public images are
+        eligible; no provider call or billing record is created.
+        """
+        clean = str(title or "").strip()
+        if not clean:
+            raise ValueError("manual title is required")
+        now = _now()
+        with self._connect() as connection:
+            self._require_owned_style(connection, batch_id, workspace_id, owner_user_id, style_index)
+            ready_images = int(connection.execute(
+                """SELECT COUNT(*) FROM pod_customization_style_grid_results AS results
+                   INNER JOIN pod_customization_style_grid_publications AS publications
+                     ON publications.result_id = results.result_id
+                   WHERE results.batch_id = ? AND results.style_index = ?
+                     AND results.status = 'completed' AND publications.public_url <> ''""",
+                (batch_id, style_index),
+            ).fetchone()[0])
+            if ready_images != 4:
+                raise PodRepositoryError(
+                    "all four public POD images are required before saving a manual title", 409
+                )
+            result = connection.execute(
+                """UPDATE pod_customization_style_titles
+                   SET status = 'completed', source = 'manual', title = ?, normalized_title = NULL,
+                       visual_tags_json = '{}', model = '', prompt_version = '',
+                       attempt_count = 0, error_message = '', updated_at = ?, finished_at = ?
+                   WHERE batch_id = ? AND style_index = ? AND status IN ('completed', 'failed')""",
+                (clean, now, now, batch_id, style_index),
+            )
+            if result.rowcount != 1:
+                raise PodRepositoryError("POD style title is not in a finished state", 409)
+            self._upsert_style_copy_record(
+                connection,
+                batch_id,
+                style_index,
+                values=self._style_copy_values(clean, clean, clean),
+                now=now,
+            )
+            row = connection.execute(
+                "SELECT * FROM pod_customization_style_titles WHERE batch_id = ? AND style_index = ?",
+                (batch_id, style_index),
+            ).fetchone()
+        if row is None:
+            raise PodRepositoryError("POD style title not found", 404)
+        return self._decode_title_row(row)
+
+    def fail_style_title(
+        self,
+        batch_id: str,
+        style_index: int,
+        error_message: str,
+        *,
+        style_task_id: str | None = None,
+        attempt_count: int = 0,
+        execution_epoch: int | None = None,
+    ) -> None:
+        now = _now()
+        with self._connect() as connection:
+            result = connection.execute(
+                """UPDATE pod_customization_style_titles
+                   SET style_task_id = CASE WHEN ? IS NULL THEN style_task_id ELSE ? END,
+                       status = 'failed', title = '', normalized_title = NULL,
+                       visual_tags_json = '{}', attempt_count = ?, error_message = ?,
+                       updated_at = ?, finished_at = ?
+                   WHERE batch_id = ? AND style_index = ? AND status IN ('queued', 'generating')
+                     AND (? IS NULL OR (SELECT execution_epoch FROM pod_customization_batches
+                                        WHERE batch_id = ?) = ?)""",
+                (
+                    style_task_id,
+                    style_task_id,
+                    max(0, int(attempt_count)),
+                    _safe_error(error_message),
+                    now,
+                    now,
+                    batch_id,
+                    style_index,
+                    execution_epoch,
+                    batch_id,
+                    execution_epoch,
+                ),
+            )
+            if result.rowcount == 1:
+                self._try_record_style_event(
+                    connection, batch_id, "style_title_status",
+                    style_index=style_index, status="failed", error=error_message,
+                )
+        if result.rowcount != 1:
+            if execution_epoch is not None:
+                with self._connect() as check_connection:
+                    self._raise_if_execution_expired(check_connection, batch_id, execution_epoch)
+            raise PodRepositoryError("POD style title generation is not active", 409)
+
+    def fail_unready_titles(
+        self, batch_id: str, error_message: str, *, execution_epoch: int | None = None
+    ) -> int:
+        now = _now()
+        with self._connect() as connection:
+            result = connection.execute(
+                """UPDATE pod_customization_style_titles AS titles
+                   SET style_task_id = CASE WHEN style_task_id = '' THEN COALESCE(
+                           (SELECT calls.call_id FROM pod_customization_generation_calls AS calls
+                            WHERE calls.batch_id = titles.batch_id
+                              AND calls.call_index = titles.style_index
+                            ORDER BY calls.created_at DESC, calls.rowid DESC LIMIT 1),
+                           style_task_id
+                       ) ELSE style_task_id END,
+                       status = 'failed', title = '', normalized_title = NULL,
+                       visual_tags_json = '{}', error_message = ?, updated_at = ?, finished_at = ?
+                   WHERE titles.batch_id = ? AND titles.status IN ('queued', 'generating')
+                     AND (? IS NULL OR (SELECT execution_epoch FROM pod_customization_batches
+                                        WHERE batch_id = ?) = ?)
+                     AND (SELECT COUNT(*) FROM pod_customization_style_grid_results AS results
+                          INNER JOIN pod_customization_style_grid_publications AS publications
+                            ON publications.result_id = results.result_id
+                          WHERE results.batch_id = titles.batch_id
+                            AND results.style_index = titles.style_index
+                            AND results.status = 'completed'
+                            AND publications.public_url <> '') <> 4""",
+                (_safe_error(error_message), now, now, batch_id, execution_epoch, batch_id, execution_epoch),
+            )
+            if execution_epoch is not None:
+                self._raise_if_execution_expired(connection, batch_id, execution_epoch)
+        return int(result.rowcount or 0)
+
+    def fail_orphaned_complete_titles(
+        self, batch_id: str, error_message: str, *, execution_epoch: int | None = None
+    ) -> int:
+        """Close titles that were left ``queued`` after their four images finished.
+
+        A style whose four public images are complete but whose title stayed
+        ``queued`` with no assigned task (``style_task_id = ''``) was never
+        submitted: the image pipeline skipped it (no planned provider title
+        call) and ``fail_unready_titles`` skips it too (its image count is 4).
+        Such a row is neither completed nor failed, so no retry path can ever
+        recover it.  Mark it failed (carrying the style's generation call id as
+        the title task id so batch title retries accept it) to make it retryable.
+        """
+        now = _now()
+        with self._connect() as connection:
+            result = connection.execute(
+                """UPDATE pod_customization_style_titles AS titles
+                   SET style_task_id = CASE WHEN style_task_id = '' THEN COALESCE(
+                           (SELECT calls.call_id FROM pod_customization_generation_calls AS calls
+                            WHERE calls.batch_id = titles.batch_id
+                              AND calls.call_index = titles.style_index
+                            ORDER BY calls.created_at DESC, calls.rowid DESC LIMIT 1),
+                           style_task_id
+                       ) ELSE style_task_id END,
+                       status = 'failed', title = '', normalized_title = NULL,
+                       visual_tags_json = '{}', error_message = ?, updated_at = ?, finished_at = ?
+                   WHERE titles.batch_id = ? AND titles.status = 'queued'
+                     AND titles.style_task_id = ''
+                     AND (? IS NULL OR (SELECT execution_epoch FROM pod_customization_batches
+                                        WHERE batch_id = ?) = ?)
+                     AND (SELECT COUNT(*) FROM pod_customization_style_grid_results AS results
+                          INNER JOIN pod_customization_style_grid_publications AS publications
+                            ON publications.result_id = results.result_id
+                          WHERE results.batch_id = titles.batch_id
+                            AND results.style_index = titles.style_index
+                            AND results.status = 'completed'
+                            AND publications.public_url <> '') = 4""",
+                (_safe_error(error_message), now, now, batch_id, execution_epoch, batch_id, execution_epoch),
+            )
+            if execution_epoch is not None:
+                self._raise_if_execution_expired(connection, batch_id, execution_epoch)
+        return int(result.rowcount or 0)
+
+    def fail_pending_titles(self, batch_id: str, error_message: str) -> int:
+        """Close every title attempt that cannot outlive a cancelled batch."""
+        now = _now()
+        with self._connect() as connection:
+            result = connection.execute(
+                """UPDATE pod_customization_style_titles
+                   SET status = 'failed', title = '', normalized_title = NULL,
+                       visual_tags_json = '{}', error_message = ?, updated_at = ?, finished_at = ?
+                   WHERE batch_id = ? AND status IN ('queued', 'generating')""",
+                (_safe_error(error_message), now, now, batch_id),
+            )
+        return int(result.rowcount or 0)
+
+    def accepted_style_titles(self, batch_id: str, *, exclude_style_index: int | None = None) -> tuple[str, ...]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT title FROM pod_customization_style_titles
+                   WHERE batch_id = ? AND status = 'completed' AND title <> ''
+                     AND (? IS NULL OR style_index <> ?)
+                   ORDER BY style_index""",
+                (batch_id, exclude_style_index, exclude_style_index),
+            ).fetchall()
+        return tuple(str(row["title"]) for row in rows)
+
+    def get_style_title_context(self, batch_id: str, style_index: int) -> dict[str, Any]:
+        batch = self.get_batch_internal(batch_id)
+        title = next((row for row in batch["style_titles"] if row["style_index"] == style_index), None)
+        lifestyle = next(
+            (
+                row for row in batch["items"]
+                if row.get("style_index") == style_index and row.get("role") == "lifestyle"
+                and row.get("status") == "completed" and row.get("public_url")
+            ),
+            None,
+        )
+        if title is None:
+            raise PodRepositoryError("POD style title not found", 404)
+        if lifestyle is None or not lifestyle.get("pattern_asset_id"):
+            raise PodRepositoryError("POD style lifestyle image is unavailable", 409)
+        return {"batch": batch, "title": title, "lifestyle": lifestyle}
+
+    def settle_batch_by_listing_readiness(self, batch_id: str, error_message: str = "", *, execution_epoch: int | None = None) -> str:
+        """Set a new title-aware batch terminal status while retaining legacy semantics."""
+        now = _now()
+        with self._connect() as connection:
+            title_count = int(connection.execute(
+                "SELECT COUNT(*) FROM pod_customization_style_titles WHERE batch_id = ?",
+                (batch_id,),
+            ).fetchone()[0])
+            if title_count == 0:
+                counts = connection.execute(
+                    "SELECT completed_count, failed_count FROM pod_customization_batches WHERE batch_id = ?",
+                    (batch_id,),
+                ).fetchone()
+                if counts is None:
+                    raise PodRepositoryError("POD batch not found", 404)
+                status = "completed" if counts["failed_count"] == 0 else (
+                    "partial_failure" if counts["completed_count"] else "failed"
+                )
+            else:
+                active_count = int(connection.execute(
+                    """SELECT COUNT(*) FROM pod_customization_style_titles
+                       WHERE batch_id = ? AND status = 'generating'""",
+                    (batch_id,),
+                ).fetchone()[0])
+                if active_count:
+                    result = connection.execute(
+                        """UPDATE pod_customization_batches
+                           SET status = 'generating_titles', error_message = '', updated_at = ?, finished_at = ''
+                           WHERE batch_id = ?
+                             AND (? IS NULL OR execution_epoch = ?)""",
+                        (now, batch_id, execution_epoch, execution_epoch),
+                    )
+                    if result.rowcount != 1 and execution_epoch is not None:
+                        self._raise_if_execution_expired(connection, batch_id, execution_epoch)
+                    return "generating_titles"
+                ready_count = int(connection.execute(
+                    """SELECT COUNT(*) FROM pod_customization_style_titles AS titles
+                       WHERE titles.batch_id = ? AND titles.status = 'completed'
+                         AND EXISTS (
+                           SELECT 1 FROM pod_customization_style_copy AS copies
+                           WHERE copies.batch_id = titles.batch_id
+                             AND copies.style_index = titles.style_index
+                             AND TRIM(copies.title) <> ''
+                             AND TRIM(copies.english_title) <> ''
+                             AND TRIM(copies.description) <> ''
+                         )
+                         AND (SELECT COUNT(*) FROM pod_customization_style_grid_results AS results
+                              INNER JOIN pod_customization_style_grid_publications AS publications
+                                ON publications.result_id = results.result_id
+                              WHERE results.batch_id = titles.batch_id
+                                AND results.style_index = titles.style_index
+                                AND results.status = 'completed'
+                                AND publications.public_url <> '') = 4""",
+                    (batch_id,),
+                ).fetchone()[0])
+                requested = connection.execute(
+                    "SELECT requested_count FROM pod_customization_batches WHERE batch_id = ?", (batch_id,)
+                ).fetchone()
+                if requested is None:
+                    raise PodRepositoryError("POD batch not found", 404)
+                status = "completed" if ready_count == int(requested["requested_count"]) else (
+                    "partial_failure" if ready_count else "failed"
+                )
+            result = connection.execute(
+                """UPDATE pod_customization_batches
+                   SET status = ?, error_message = ?, updated_at = ?, finished_at = ? WHERE batch_id = ?
+                     AND (? IS NULL OR execution_epoch = ?)""",
+                (status, _safe_error(error_message), now, now, batch_id, execution_epoch, execution_epoch),
+            )
+            if result.rowcount != 1:
+                if execution_epoch is not None:
+                    self._raise_if_execution_expired(connection, batch_id, execution_epoch)
+                raise PodRepositoryError("POD batch not found", 404)
+        return status
+
+    def reconcile_stale_generating_titles(self, batch_id: str) -> bool:
+        """Close an abandoned title phase only after all provider work is terminal.
+
+        A worker exception can leave a title in ``generating`` after every image
+        result and billing outcome has already settled.  That state cannot make
+        progress on its own, so it must become a retryable terminal batch.
+        """
+        now = _now()
+        message = "POD worker exited before title completion"
+        with self._connect() as connection:
+            batch = connection.execute(
+                "SELECT requested_count, status FROM pod_customization_batches WHERE batch_id = ?",
+                (batch_id,),
+            ).fetchone()
+            if batch is None or batch["status"] != "generating_titles":
+                return False
+            unfinished_images = int(connection.execute(
+                """SELECT COUNT(*) FROM pod_customization_style_grid_results
+                   WHERE batch_id = ? AND status NOT IN ('completed', 'failed')""",
+                (batch_id,),
+            ).fetchone()[0])
+            settled_images = int(connection.execute(
+                "SELECT COUNT(*) FROM pod_customization_style_grid_results WHERE batch_id = ?",
+                (batch_id,),
+            ).fetchone()[0])
+            active_calls = int(connection.execute(
+                """SELECT COUNT(*) FROM pod_customization_billing_outcomes AS outcomes
+                   INNER JOIN pod_customization_billing_runs AS runs ON runs.run_id = outcomes.run_id
+                   WHERE runs.batch_id = ? AND outcomes.status IN ('planned', 'started')""",
+                (batch_id,),
+            ).fetchone()[0])
+            active_titles = int(connection.execute(
+                """SELECT COUNT(*) FROM pod_customization_style_titles
+                   WHERE batch_id = ? AND status IN ('queued', 'generating')""",
+                (batch_id,),
+            ).fetchone()[0])
+            if (
+                not active_titles
+                or unfinished_images
+                or settled_images != int(batch["requested_count"]) * 4
+                or active_calls
+            ):
+                return False
+            connection.execute(
+                """UPDATE pod_customization_style_titles
+                   SET status = 'failed', title = '', normalized_title = NULL,
+                       visual_tags_json = '{}', error_message = ?, updated_at = ?, finished_at = ?
+                   WHERE batch_id = ? AND status IN ('queued', 'generating')""",
+                (message, now, now, batch_id),
+            )
+        self.settle_batch_by_listing_readiness(batch_id)
+        return True
+
+    def create_generation_call(
+        self,
+        batch: dict[str, Any],
+        *,
+        call_kind: str,
+        call_index: int,
+        prompt_snapshot: str | None = None,
+    ) -> dict[str, Any]:
+        call_id = uuid.uuid4().hex
+        now = _now()
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT INTO pod_customization_generation_calls
+                   (call_id, batch_id, workspace_id, owner_user_id, call_kind, call_index, status,
+                    prompt_snapshot, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)""",
+                (call_id, batch["batch_id"], batch["workspace_id"], batch["owner_user_id"], call_kind,
+                 call_index, prompt_snapshot if prompt_snapshot is not None else batch["prompt_snapshot"], now),
+            )
+            if call_kind == "refill":
+                connection.execute(
+                    """UPDATE pod_customization_batches SET refill_call_count = refill_call_count + 1, updated_at = ?
+                       WHERE batch_id = ?""",
+                    (now, batch["batch_id"]),
+                )
+        return {"call_id": call_id, "call_kind": call_kind, "call_index": call_index}
+
+    def get_or_create_generation_call(
+        self,
+        batch: dict[str, Any],
+        *,
+        call_kind: str,
+        call_index: int,
+        prompt_snapshot: str | None = None,
+    ) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM pod_customization_generation_calls
+                   WHERE batch_id = ? AND call_kind = ? AND call_index = ?""",
+                (batch["batch_id"], call_kind, call_index),
+            ).fetchone()
+        if row is not None:
+            return dict(row)
+        return self.create_generation_call(
+            batch,
+            call_kind=call_kind,
+            call_index=call_index,
+            prompt_snapshot=prompt_snapshot,
+        )
+
+    def billing_call_status(self, action_key: str, call_id: str) -> str:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT outcomes.status
+                   FROM pod_customization_billing_outcomes AS outcomes
+                   INNER JOIN pod_customization_billing_runs AS runs ON runs.run_id = outcomes.run_id
+                   WHERE runs.action_key = ? AND outcomes.call_id = ?""",
+                (action_key, call_id),
+            ).fetchone()
+        if row is None:
+            raise PodRepositoryError("POD billing call is not in the frozen plan", 409)
+        return str(row["status"])
+
+    def next_generation_call_index(self, batch_id: str, call_kind: str) -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT COALESCE(MAX(call_index), 0) + 1 FROM pod_customization_generation_calls
+                   WHERE batch_id = ? AND call_kind = ?""",
+                (batch_id, call_kind),
+            ).fetchone()
+        return int(row[0])
+
+    def mark_generation_call_running(self, call_id: str, execution_epoch: int | None = None) -> None:
+        with self._connect() as connection:
+            result = connection.execute(
+                """UPDATE pod_customization_generation_calls SET status = 'running', started_at = ?
+                   WHERE call_id = ? AND status = 'queued'
+                     AND (? IS NULL OR (SELECT execution_epoch FROM pod_customization_batches
+                                        WHERE batch_id = (SELECT batch_id FROM pod_customization_generation_calls
+                                                          WHERE call_id = ?)) = ?)""",
+                (_now(), call_id, execution_epoch, call_id, execution_epoch),
+            )
+            if result.rowcount != 1 and execution_epoch is not None:
+                batch_row = connection.execute(
+                    "SELECT batch_id FROM pod_customization_generation_calls WHERE call_id = ?", (call_id,)
+                ).fetchone()
+                if batch_row is not None:
+                    self._raise_if_execution_expired(connection, batch_row["batch_id"], execution_epoch)
+
+    def requeue_generation_call(self, call_id: str, execution_epoch: int | None = None) -> None:
+        """Undo a local start which was stopped before the provider accepted it."""
+        with self._connect() as connection:
+            result = connection.execute(
+                """UPDATE pod_customization_generation_calls
+                   SET status = 'queued', started_at = '', error_message = '', finished_at = ''
+                   WHERE call_id = ? AND status = 'running' AND grid_asset_id = ''
+                     AND (? IS NULL OR (SELECT execution_epoch FROM pod_customization_batches
+                                        WHERE batch_id = (SELECT batch_id FROM pod_customization_generation_calls
+                                                          WHERE call_id = ?)) = ?)""",
+                (call_id, execution_epoch, call_id, execution_epoch),
+            )
+            if result.rowcount != 1 and execution_epoch is not None:
+                batch_row = connection.execute(
+                    "SELECT batch_id FROM pod_customization_generation_calls WHERE call_id = ?", (call_id,)
+                ).fetchone()
+                if batch_row is not None:
+                    self._raise_if_execution_expired(connection, batch_row["batch_id"], execution_epoch)
+
+    def finish_generation_call(
+        self,
+        call_id: str,
+        *,
+        status: str,
+        grid_asset_id: str = "",
+        error_message: str = "",
+        execution_epoch: int | None = None,
+    ) -> None:
+        now = _now()
+        with self._connect() as connection:
+            if execution_epoch is not None:
+                result = connection.execute(
+                    """UPDATE pod_customization_generation_calls
+                       SET status = ?, grid_asset_id = ?, error_message = ?, finished_at = ?
+                       WHERE call_id = ?
+                         AND (SELECT execution_epoch FROM pod_customization_batches
+                              WHERE batch_id = (SELECT batch_id FROM pod_customization_generation_calls
+                                               WHERE call_id = ?)) = ?""",
+                    (status, grid_asset_id, _safe_error(error_message), now, call_id, call_id, execution_epoch),
+                )
+                if result.rowcount == 0:
+                    raise PodExecutionExpired(
+                        f"generation call {call_id} write rejected: batch epoch has advanced"
+                    )
+            else:
+                connection.execute(
+                    """UPDATE pod_customization_generation_calls
+                       SET status = ?, grid_asset_id = ?, error_message = ?, finished_at = ?
+                       WHERE call_id = ?""",
+                    (status, grid_asset_id, _safe_error(error_message), now, call_id),
+                )
+
+    def record_candidate(
+        self,
+        batch: dict[str, Any],
+        *,
+        call_id: str,
+        grid_cell: int,
+        status: str,
+        rejection_reason: str,
+        fingerprint: str,
+        pattern_asset_id: str,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT INTO pod_customization_pattern_candidates
+                   (candidate_id, batch_id, call_id, workspace_id, owner_user_id, grid_cell, status,
+                    rejection_reason, fingerprint, pattern_asset_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (uuid.uuid4().hex, batch["batch_id"], call_id, batch["workspace_id"], batch["owner_user_id"],
+                 grid_cell, status, _safe_error(rejection_reason), fingerprint, pattern_asset_id, _now()),
+            )
+
+    def accept_candidate(
+        self,
+        batch: dict[str, Any],
+        *,
+        call_id: str,
+        grid_cell: int,
+        fingerprint: str,
+        pattern_asset_id: str,
+        composite_asset_id: str,
+    ) -> dict[str, Any] | None:
+        now = _now()
+        with self._connect() as connection:
+            item = connection.execute(
+                """SELECT * FROM pod_customization_batch_items
+                   WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ? AND status = 'queued'
+                   ORDER BY item_index LIMIT 1""",
+                (batch["batch_id"], batch["workspace_id"], batch["owner_user_id"]),
+            ).fetchone()
+            if item is None:
+                connection.execute(
+                    """INSERT INTO pod_customization_pattern_candidates
+                       (candidate_id, batch_id, call_id, workspace_id, owner_user_id, grid_cell, status,
+                        rejection_reason, fingerprint, pattern_asset_id, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, 'surplus', 'surplus', ?, ?, ?)""",
+                    (uuid.uuid4().hex, batch["batch_id"], call_id, batch["workspace_id"], batch["owner_user_id"],
+                     grid_cell, fingerprint, pattern_asset_id, now),
+                )
+                return None
+            connection.execute(
+                """UPDATE pod_customization_batch_items
+                   SET status = 'completed', pattern_asset_id = ?, composite_asset_id = ?,
+                       pattern_fingerprint = ?, error_message = '', updated_at = ?
+                   WHERE item_id = ? AND status = 'queued'""",
+                (pattern_asset_id, composite_asset_id, fingerprint, now, item["item_id"]),
+            )
+            connection.execute(
+                """INSERT INTO pod_customization_pattern_candidates
+                   (candidate_id, batch_id, call_id, workspace_id, owner_user_id, grid_cell, status,
+                    rejection_reason, fingerprint, pattern_asset_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 'accepted', '', ?, ?, ?)""",
+                (uuid.uuid4().hex, batch["batch_id"], call_id, batch["workspace_id"], batch["owner_user_id"],
+                 grid_cell, fingerprint, pattern_asset_id, now),
+            )
+            self._refresh_counts(connection, batch["batch_id"], now)
+        return dict(item)
+
+    def finish_style_grid_result(
+        self,
+        batch: dict[str, Any],
+        *,
+        style_index: int,
+        variant_index: int,
+        call_id: str,
+        status: str,
+        fingerprint: str = "",
+        pattern_asset_id: str = "",
+        composite_asset_id: str = "",
+        role: str = "",
+        public_url: str = "",
+        error_message: str = "",
+        execution_epoch: int | None = None,
+    ) -> None:
+        now = _now()
+        with self._connect() as connection:
+            result = connection.execute(
+                """UPDATE pod_customization_style_grid_results
+                   SET status = ?, pattern_asset_id = CASE WHEN ? <> '' THEN ? ELSE pattern_asset_id END,
+                       composite_asset_id = CASE WHEN ? <> '' THEN ? ELSE composite_asset_id END,
+                       pattern_fingerprint = CASE WHEN ? <> '' THEN ? ELSE pattern_fingerprint END,
+                       scene_optimized = CASE WHEN ? <> '' THEN 0 ELSE scene_optimized END,
+                       error_message = ?, updated_at = ?
+                   WHERE batch_id = ? AND style_index = ? AND variant_index = ?
+                     AND (? IS NULL OR (SELECT execution_epoch FROM pod_customization_batches
+                                        WHERE batch_id = ?) = ?)""",
+                (status, pattern_asset_id, pattern_asset_id, composite_asset_id, composite_asset_id,
+                 fingerprint, fingerprint, pattern_asset_id, _safe_error(error_message), now,
+                 batch["batch_id"], style_index, variant_index,
+                 execution_epoch, batch["batch_id"], execution_epoch),
+            )
+            if result.rowcount != 1:
+                if execution_epoch is not None:
+                    self._raise_if_execution_expired(connection, batch["batch_id"], execution_epoch)
+                raise PodRepositoryError("POD style result not found", 404)
+            self._try_record_style_event(
+                connection, batch["batch_id"], "style_grid_status",
+                style_index=style_index, variant_index=variant_index,
+                status=status, error=error_message,
+            )
+            row = connection.execute(
+                """SELECT result_id FROM pod_customization_style_grid_results
+                   WHERE batch_id = ? AND style_index = ? AND variant_index = ?""",
+                (batch["batch_id"], style_index, variant_index),
+            ).fetchone()
+            if row is None:
+                raise PodRepositoryError("POD style result not found", 404)
+            if role or public_url:
+                connection.execute(
+                    """INSERT INTO pod_customization_style_grid_publications
+                       (result_id, role, public_url, updated_at) VALUES (?, ?, ?, ?)
+                       ON CONFLICT(result_id) DO UPDATE SET
+                         role = excluded.role, public_url = excluded.public_url, updated_at = excluded.updated_at""",
+                    (row["result_id"], role, public_url, now),
+                )
+            connection.execute(
+                """INSERT INTO pod_customization_pattern_candidates
+                   (candidate_id, batch_id, call_id, workspace_id, owner_user_id, grid_cell, status,
+                    rejection_reason, fingerprint, pattern_asset_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (uuid.uuid4().hex, batch["batch_id"], call_id, batch["workspace_id"], batch["owner_user_id"],
+                 variant_index, "accepted" if status == "completed" else "rejected",
+                 _safe_error(error_message), fingerprint, pattern_asset_id, now),
+            )
+            self._refresh_counts(connection, batch["batch_id"], now, execution_epoch)
+
+    def update_batch_spec_card(self, batch_id: str, spec_card_mapping: Mapping[str, Any] | None) -> bool:
+        """把规格卡配置写回批次快照的 ``listing_fields_json.spec_card``（其余键原样保留）。
+
+        方案 §10.3 D6：配置随批次冻结在既有 JSON 快照里，零 DB 迁移。返回是否命中批次。
+        """
+
+        now = _now()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT listing_fields_json FROM pod_customization_batches WHERE batch_id = ?",
+                (batch_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            try:
+                listing_fields = json.loads(row["listing_fields_json"] or "{}")
+            except (TypeError, ValueError):
+                listing_fields = {}
+            if not isinstance(listing_fields, dict):
+                listing_fields = {}
+            listing_fields["spec_card"] = (
+                dict(spec_card_mapping) if spec_card_mapping is not None else None
+            )
+            connection.execute(
+                """UPDATE pod_customization_batches SET listing_fields_json = ?, updated_at = ?
+                   WHERE batch_id = ?""",
+                (json.dumps(listing_fields, ensure_ascii=False), now, batch_id),
+            )
+        return True
+
+    def update_replica_target_spec_card(
+        self, batch_id: str, style_index: int, spec_card_mapping: Mapping[str, Any] | None
+    ) -> bool:
+        """复刻按款覆盖规格卡配置：只改该目标的 ``listing_fields_json.spec_card``。
+
+        复刻每款规格卡独立，重印必须只更新被指定款，绝不改动整批镜像配置或别的款。
+        返回是否命中该目标行。
+        """
+
+        index = int(style_index)
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT listing_fields_json FROM pod_customization_replica_targets
+                   WHERE batch_id = ? AND style_index = ?""",
+                (batch_id, index),
+            ).fetchone()
+            if row is None:
+                return False
+            try:
+                listing_fields = json.loads(row["listing_fields_json"] or "{}")
+            except (TypeError, ValueError):
+                listing_fields = {}
+            if not isinstance(listing_fields, dict):
+                listing_fields = {}
+            listing_fields["spec_card"] = (
+                dict(spec_card_mapping) if spec_card_mapping is not None else None
+            )
+            connection.execute(
+                """UPDATE pod_customization_replica_targets
+                   SET listing_fields_json = ? WHERE batch_id = ? AND style_index = ?""",
+                (json.dumps(listing_fields, ensure_ascii=False), batch_id, index),
+            )
+        return True
+
+    def list_spec_card_hero_targets(self, batch_id: str) -> list[dict[str, Any]]:
+        """列出该批次已完成的 hero 结果（style_index + 结果/母版指针 + 当前发布 URL）。
+
+        重印逐款替换 ``publications.public_url``；``pattern_asset_id`` 始终是干净母版。
+        """
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT results.style_index AS style_index,
+                          results.result_id AS result_id,
+                          results.pattern_asset_id AS pattern_asset_id,
+                          COALESCE(publications.role, '') AS role,
+                          COALESCE(publications.public_url, '') AS public_url
+                   FROM pod_customization_style_grid_results AS results
+                   LEFT JOIN pod_customization_style_grid_publications AS publications
+                     ON publications.result_id = results.result_id
+                   WHERE results.batch_id = ? AND results.status = 'completed'
+                     AND (COALESCE(publications.role, '') = 'hero'
+                          OR (COALESCE(publications.role, '') = '' AND results.variant_index = 1))
+                   ORDER BY results.style_index""",
+                (batch_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def set_style_grid_publication(self, result_id: str, role: str, public_url: str) -> bool:
+        """更新一格结果的发布指针（``result_id`` 主键 upsert，与 finish 里的写法一致）。
+
+        返回是否命中该结果行；重印只改指针，绝不触碰母版资产。
+        """
+
+        now = _now()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM pod_customization_style_grid_results WHERE result_id = ?",
+                (result_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            connection.execute(
+                """INSERT INTO pod_customization_style_grid_publications
+                   (result_id, role, public_url, updated_at) VALUES (?, ?, ?, ?)
+                   ON CONFLICT(result_id) DO UPDATE SET
+                     role = excluded.role, public_url = excluded.public_url, updated_at = excluded.updated_at""",
+                (result_id, role, public_url, now),
+            )
+        return True
+
+    def fail_style_grid(
+        self,
+        batch: dict[str, Any],
+        style_index: int,
+        error_message: str,
+        *,
+        execution_epoch: int | None = None,
+    ) -> None:
+        now = _now()
+        with self._connect() as connection:
+            if execution_epoch is not None:
+                epoch_row = connection.execute(
+                    "SELECT execution_epoch FROM pod_customization_batches WHERE batch_id = ?",
+                    (batch["batch_id"],),
+                ).fetchone()
+                if epoch_row is not None and int(epoch_row["execution_epoch"]) != execution_epoch:
+                    raise PodExecutionExpired(
+                        f"fail_style_grid for style {style_index} rejected: batch epoch has advanced"
+                    )
+            connection.execute(
+                """UPDATE pod_customization_style_grid_results
+                   SET status = 'failed', error_message = ?, updated_at = ?
+                   WHERE batch_id = ? AND style_index = ?
+                     AND status IN ('queued', 'generating_pattern', 'compositing')""",
+                (_safe_error(error_message), now, batch["batch_id"], style_index),
+            )
+            self._refresh_counts(connection, batch["batch_id"], now, execution_epoch)
+
+    def list_candidates(self, batch_id: str, workspace_id: str, owner_user_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM pod_customization_pattern_candidates
+                   WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ? ORDER BY created_at, rowid""",
+                (batch_id, workspace_id, owner_user_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def accepted_fingerprints(self, batch_id: str) -> list[str]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT pattern_fingerprint FROM pod_customization_style_grid_results
+                   WHERE batch_id = ? AND status = 'completed' AND pattern_fingerprint <> ''
+                   ORDER BY style_index, variant_index"""
+                if self._is_style_grid_batch(connection, batch_id) else
+                """SELECT pattern_fingerprint FROM pod_customization_batch_items
+                   WHERE batch_id = ? AND status = 'completed' AND pattern_fingerprint <> '' ORDER BY item_index""",
+                (batch_id,),
+            ).fetchall()
+        return [row["pattern_fingerprint"] for row in rows]
+
+    def fail_remaining_items(
+        self,
+        batch_id: str,
+        message: str,
+        *,
+        execution_epoch: int | None = None,
+    ) -> int:
+        now = _now()
+        with self._connect() as connection:
+            if execution_epoch is not None:
+                epoch_row = connection.execute(
+                    "SELECT execution_epoch FROM pod_customization_batches WHERE batch_id = ?",
+                    (batch_id,),
+                ).fetchone()
+                if epoch_row is not None and int(epoch_row["execution_epoch"]) != execution_epoch:
+                    raise PodExecutionExpired(
+                        f"fail_remaining_items rejected for batch {batch_id}: epoch has advanced"
+                    )
+            result = connection.execute(
+                """UPDATE pod_customization_style_grid_results SET status = 'failed', error_message = ?, updated_at = ?
+                   WHERE batch_id = ? AND status IN ('queued', 'generating_pattern', 'compositing')
+                     AND (? IS NULL OR (SELECT execution_epoch FROM pod_customization_batches
+                                        WHERE batch_id = ?) = ?)"""
+                if self._is_style_grid_batch(connection, batch_id) else
+                """UPDATE pod_customization_batch_items SET status = 'failed', error_message = ?, updated_at = ?
+                   WHERE batch_id = ? AND status = 'queued'
+                     AND (? IS NULL OR (SELECT execution_epoch FROM pod_customization_batches
+                                        WHERE batch_id = ?) = ?)""",
+                (_safe_error(message), now, batch_id, execution_epoch, batch_id, execution_epoch),
+            )
+            self._refresh_counts(connection, batch_id, now, execution_epoch)
+        return int(result.rowcount or 0)
+
+    def fail_all_items(
+        self,
+        batch_id: str,
+        message: str,
+        *,
+        execution_epoch: int | None = None,
+    ) -> int:
+        """Fail every non-terminal item when the batch-wide grant is unusable."""
+        now = _now()
+        with self._connect() as connection:
+            self._raise_if_execution_expired(connection, batch_id, execution_epoch) if execution_epoch is not None else None
+            if self._is_style_grid_batch(connection, batch_id):
+                result = connection.execute(
+                    """UPDATE pod_customization_style_grid_results
+                       SET status = 'failed', error_message = ?, updated_at = ?
+                       WHERE batch_id = ?
+                         AND (? IS NULL OR (SELECT execution_epoch FROM pod_customization_batches WHERE batch_id = ?) = ?)""",
+                    (_safe_error(message), now, batch_id, execution_epoch, batch_id, execution_epoch),
+                )
+            else:
+                result = connection.execute(
+                    """UPDATE pod_customization_batch_items
+                       SET status = 'failed', error_message = ?, updated_at = ?
+                       WHERE batch_id = ?
+                         AND (? IS NULL OR (SELECT execution_epoch FROM pod_customization_batches WHERE batch_id = ?) = ?)""",
+                    (_safe_error(message), now, batch_id, execution_epoch, batch_id, execution_epoch),
+                )
+            self._refresh_counts(connection, batch_id, now, execution_epoch)
+        return int(result.rowcount or 0)
+
+    def get_item(self, batch_id: str, item_id: str, workspace_id: str, owner_user_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT results.result_id AS item_id,
+                          ((results.style_index - 1) * 4 + results.variant_index) AS item_index,
+                          results.style_index, results.variant_index, results.status,
+                          results.pattern_asset_id, results.composite_asset_id,
+                          results.pattern_fingerprint, results.scene_optimized, results.error_message,
+                          results.created_at, results.updated_at,
+                          COALESCE(publications.role, '') AS role,
+                          COALESCE(publications.public_url, '') AS public_url
+                   FROM pod_customization_style_grid_results AS results
+                   LEFT JOIN pod_customization_style_grid_publications AS publications
+                     ON publications.result_id = results.result_id
+                   WHERE results.batch_id = ? AND results.result_id = ?
+                     AND results.workspace_id = ? AND results.owner_user_id = ?"""
+                if self._is_style_grid_batch(connection, batch_id) else
+                """SELECT *, item_index AS style_index, 1 AS variant_index FROM pod_customization_batch_items
+                   WHERE batch_id = ? AND item_id = ? AND workspace_id = ? AND owner_user_id = ?""",
+                (batch_id, item_id, workspace_id, owner_user_id),
+            ).fetchone()
+        if row is None:
+            raise PodRepositoryError("POD batch item not found", 404)
+        return dict(row)
+
+    def claim_scene_optimization(self, batch_id: str, item_id: str, workspace_id: str, owner_user_id: str) -> dict[str, Any]:
+        now = _now()
+        with self._connect() as connection:
+            result = connection.execute(
+                """UPDATE pod_customization_style_grid_results
+                   SET status = 'optimizing_scene', error_message = '', updated_at = ?
+                   WHERE batch_id = ? AND result_id = ? AND workspace_id = ? AND owner_user_id = ?
+                     AND status = 'completed' AND pattern_asset_id <> '' AND composite_asset_id <> ''"""
+                if self._is_style_grid_batch(connection, batch_id) else
+                """UPDATE pod_customization_batch_items SET status = 'optimizing_scene', error_message = '', updated_at = ?
+                   WHERE batch_id = ? AND item_id = ? AND workspace_id = ? AND owner_user_id = ?
+                     AND status = 'completed' AND pattern_asset_id <> '' AND composite_asset_id <> ''""",
+                (now, batch_id, item_id, workspace_id, owner_user_id),
+            )
+        if result.rowcount != 1:
+            raise PodRepositoryError("only a completed POD item can optimize its scene", 409)
+        return self.get_item(batch_id, item_id, workspace_id, owner_user_id)
+
+    def claim_item_regeneration(self, batch_id: str, item_id: str, workspace_id: str, owner_user_id: str) -> dict[str, Any]:
+        now = _now()
+        with self._connect() as connection:
+            batch = connection.execute(
+                """SELECT status FROM pod_customization_batches
+                   WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ?""",
+                (batch_id, workspace_id, owner_user_id),
+            ).fetchone()
+            if batch is None:
+                raise PodRepositoryError("POD batch not found", 404)
+            if batch["status"] not in {"completed", "partial_failure", "failed", "cancelled", "settlement_pending"}:
+                raise PodRepositoryError("POD batch must settle before regenerating one item", 409)
+            result = connection.execute(
+                """UPDATE pod_customization_batch_items
+                   SET status = 'generating_pattern', error_message = '', updated_at = ?
+                   WHERE batch_id = ? AND item_id = ? AND workspace_id = ? AND owner_user_id = ?
+                     AND status = 'failed'""",
+                (now, batch_id, item_id, workspace_id, owner_user_id),
+            )
+        if result.rowcount != 1:
+            raise PodRepositoryError("only a settled POD item can be regenerated", 409)
+        return self.get_item(batch_id, item_id, workspace_id, owner_user_id)
+
+    def claim_style_regeneration(
+        self, batch_id: str, style_index: int, workspace_id: str, owner_user_id: str
+    ) -> list[dict[str, Any]]:
+        now = _now()
+        with self._connect() as connection:
+            if not self._is_style_grid_batch(connection, batch_id):
+                raise PodRepositoryError("whole-style regeneration is only available for new POD batches", 409)
+            batch = connection.execute(
+                """SELECT status FROM pod_customization_batches
+                   WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ?""",
+                (batch_id, workspace_id, owner_user_id),
+            ).fetchone()
+            if batch is None:
+                raise PodRepositoryError("POD batch not found", 404)
+            if batch["status"] not in {"completed", "partial_failure", "failed", "cancelled", "settlement_pending"}:
+                raise PodRepositoryError("POD batch must settle before regenerating one style", 409)
+            result = connection.execute(
+                """UPDATE pod_customization_style_grid_results
+                   SET status = 'generating_pattern', error_message = '', updated_at = ?
+                   WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ? AND style_index = ?
+                     AND status IN ('failed', 'completed')""",
+                (now, batch_id, workspace_id, owner_user_id, style_index),
+            )
+            if result.rowcount != 4:
+                raise PodRepositoryError("only a settled POD style can be regenerated", 409)
+            self._try_record_style_event(
+                connection, batch_id, "style_regenerate",
+                style_index=style_index, status="generating_pattern",
+            )
+            title_reset = connection.execute(
+                """UPDATE pod_customization_style_titles
+                   SET style_task_id = '', status = 'queued', title = '', normalized_title = NULL,
+                       visual_tags_json = '{}', model = '', prompt_version = '', attempt_count = 0,
+                       error_message = '', started_at = '', finished_at = '', updated_at = ?
+                   WHERE batch_id = ? AND style_index = ?""",
+                (now, batch_id, style_index),
+            )
+            if title_reset.rowcount not in {0, 1}:
+                raise PodRepositoryError("POD style title reset failed", 409)
+            # Make this whole-style regeneration receive a fresh default
+            # selection once new images and title/copy have completed.
+            connection.execute(
+                """DELETE FROM pod_customization_style_export_selection
+                   WHERE batch_id = ? AND style_index = ?""",
+                (batch_id, style_index),
+            )
+            self._refresh_counts(connection, batch_id, now)
+            connection.execute(
+                """UPDATE pod_customization_batches SET status = 'generating_patterns', updated_at = ?, error_message = '',
+                       last_progress_at = ?, execution_epoch = execution_epoch + 1
+                   WHERE batch_id = ?""", (now, now, batch_id)
+            )
+            rows = connection.execute(
+                """SELECT results.result_id AS item_id,
+                          ((results.style_index - 1) * 4 + results.variant_index) AS item_index,
+                          results.style_index, results.variant_index, results.status,
+                          results.pattern_asset_id, results.composite_asset_id,
+                          results.pattern_fingerprint, results.scene_optimized, results.error_message,
+                          results.created_at, results.updated_at,
+                          COALESCE(publications.role, '') AS role,
+                          COALESCE(publications.public_url, '') AS public_url
+                   FROM pod_customization_style_grid_results AS results
+                   LEFT JOIN pod_customization_style_grid_publications AS publications
+                     ON publications.result_id = results.result_id
+                   WHERE results.batch_id = ? AND results.style_index = ?
+                   ORDER BY results.variant_index""", (batch_id, style_index)
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def claim_batch_retry(
+        self,
+        batch_id: str,
+        workspace_id: str,
+        owner_user_id: str,
+        *,
+        image_style_indices: tuple[int, ...],
+        title_style_indices: tuple[int, ...],
+    ) -> None:
+        """Atomically reserve selected terminal failures for one batch retry."""
+        if not image_style_indices and not title_style_indices:
+            raise PodRepositoryError("at least one failed POD style must be selected", 422)
+        if (
+            len(set(image_style_indices)) != len(image_style_indices)
+            or len(set(title_style_indices)) != len(title_style_indices)
+        ):
+            raise PodRepositoryError("POD retry styles must not contain duplicates", 422)
+        if set(image_style_indices).intersection(title_style_indices):
+            raise PodRepositoryError("a POD style cannot be retried as both image and title", 422)
+        now = _now()
+        with self._connect() as connection:
+            if not self._is_style_grid_batch(connection, batch_id):
+                raise PodRepositoryError("batch retry is only available for new POD batches", 409)
+            batch = connection.execute(
+                """SELECT status, requested_count FROM pod_customization_batches
+                   WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ?""",
+                (batch_id, workspace_id, owner_user_id),
+            ).fetchone()
+            if batch is None:
+                raise PodRepositoryError("POD batch not found", 404)
+            if batch["status"] not in {"completed", "partial_failure", "failed", "cancelled", "settlement_pending"}:
+                raise PodRepositoryError("POD batch must settle before retrying failed styles", 409)
+            requested_count = int(batch["requested_count"])
+            if any(not 1 <= index <= requested_count for index in (*image_style_indices, *title_style_indices)):
+                raise PodRepositoryError("POD style index is outside the batch range", 422)
+
+            for style_index in image_style_indices:
+                rows = connection.execute(
+                    """SELECT status FROM pod_customization_style_grid_results
+                       WHERE batch_id = ? AND style_index = ? ORDER BY variant_index""",
+                    (batch_id, style_index),
+                ).fetchall()
+                if len(rows) != 4 or all(row["status"] == "completed" for row in rows):
+                    raise PodRepositoryError("only styles with unfinished images can be retried", 409)
+
+            for style_index in title_style_indices:
+                title = connection.execute(
+                    """SELECT status, style_task_id FROM pod_customization_style_titles
+                       WHERE batch_id = ? AND style_index = ?""",
+                    (batch_id, style_index),
+                ).fetchone()
+                ready_images = int(connection.execute(
+                    """SELECT COUNT(*) FROM pod_customization_style_grid_results AS results
+                       INNER JOIN pod_customization_style_grid_publications AS publications
+                         ON publications.result_id = results.result_id
+                       WHERE results.batch_id = ? AND results.style_index = ?
+                         AND results.status = 'completed' AND publications.public_url <> ''""",
+                    (batch_id, style_index),
+                ).fetchone()[0])
+                if (
+                    title is None
+                    or title["status"] != "failed"
+                    or not title["style_task_id"]
+                    or ready_images != 4
+                ):
+                    raise PodRepositoryError(
+                        "only a failed POD title with four public images can be retried", 409
+                    )
+
+            next_status = "generating_patterns" if image_style_indices else "generating_titles"
+            claimed = connection.execute(
+                """UPDATE pod_customization_batches
+                   SET status = ?, error_message = '', updated_at = ?, finished_at = '',
+                       last_progress_at = ?, execution_epoch = execution_epoch + 1
+                   WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ?
+                     AND status IN ('completed', 'partial_failure', 'failed', 'cancelled', 'settlement_pending')""",
+                (next_status, now, now, batch_id, workspace_id, owner_user_id),
+            )
+            if claimed.rowcount != 1:
+                raise PodRepositoryError("POD batch must settle before retrying failed styles", 409)
+            self._try_record_style_event(
+                connection, batch_id, "batch_retry", status=next_status
+            )
+
+            for style_index in image_style_indices:
+                # 一款的四张图来自同一次 2×2 生图调用，重试即整款重生成，
+                # 因此这里连同已完成的槽位一起重置（部分完成的款式也能重试）。
+                updated = connection.execute(
+                    """UPDATE pod_customization_style_grid_results
+                       SET status = 'generating_pattern', error_message = '', updated_at = ?
+                       WHERE batch_id = ? AND style_index = ?""",
+                    (now, batch_id, style_index),
+                )
+                if updated.rowcount != 4:
+                    raise PodRepositoryError("POD style must keep its four image slots", 409)
+                self._try_record_style_event(
+                    connection, batch_id, "style_grid_status",
+                    style_index=style_index, status="generating_pattern",
+                )
+                title_reset = connection.execute(
+                    """UPDATE pod_customization_style_titles
+                       SET style_task_id = '', status = 'queued', title = '', normalized_title = NULL,
+                           visual_tags_json = '{}', model = '', prompt_version = '', attempt_count = 0,
+                           error_message = '', started_at = '', finished_at = '', updated_at = ?
+                       WHERE batch_id = ? AND style_index = ?""",
+                    (now, batch_id, style_index),
+                )
+                if title_reset.rowcount != 1:
+                    raise PodRepositoryError("POD style title reset failed", 409)
+                connection.execute(
+                    "DELETE FROM pod_customization_style_copy WHERE batch_id = ? AND style_index = ?",
+                    (batch_id, style_index),
+                )
+
+            for style_index in title_style_indices:
+                updated = connection.execute(
+                    """UPDATE pod_customization_style_titles
+                       SET status = 'generating', title = '', normalized_title = NULL,
+                           visual_tags_json = '{}', model = '', prompt_version = '', attempt_count = 0,
+                           error_message = '', started_at = ?, finished_at = '', updated_at = ?
+                       WHERE batch_id = ? AND style_index = ? AND style_task_id <> ''
+                         AND status = 'failed'""",
+                    (now, now, batch_id, style_index),
+                )
+                if updated.rowcount != 1:
+                    raise PodRepositoryError(
+                        "only a failed POD title with four public images can be retried", 409
+                    )
+                connection.execute(
+                    "DELETE FROM pod_customization_style_copy WHERE batch_id = ? AND style_index = ?",
+                    (batch_id, style_index),
+                )
+            self._refresh_counts(connection, batch_id, now)
+
+    def finish_item_regeneration(
+        self,
+        batch: dict[str, Any],
+        item_id: str,
+        *,
+        call_id: str,
+        grid_cell: int,
+        fingerprint: str,
+        pattern_asset_id: str,
+        composite_asset_id: str,
+    ) -> None:
+        now = _now()
+        with self._connect() as connection:
+            result = connection.execute(
+                """UPDATE pod_customization_batch_items
+                   SET status = 'completed', pattern_asset_id = ?, composite_asset_id = ?,
+                       pattern_fingerprint = ?, scene_optimized = 0, error_message = '', updated_at = ?
+                   WHERE batch_id = ? AND item_id = ? AND status = 'generating_pattern'""",
+                (pattern_asset_id, composite_asset_id, fingerprint, now, batch["batch_id"], item_id),
+            )
+            if result.rowcount != 1:
+                raise PodRepositoryError("POD item regeneration is not active", 409)
+            connection.execute(
+                """INSERT INTO pod_customization_pattern_candidates
+                   (candidate_id, batch_id, call_id, workspace_id, owner_user_id, grid_cell, status,
+                    rejection_reason, fingerprint, pattern_asset_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 'accepted', '', ?, ?, ?)""",
+                (uuid.uuid4().hex, batch["batch_id"], call_id, batch["workspace_id"], batch["owner_user_id"],
+                 grid_cell, fingerprint, pattern_asset_id, now),
+            )
+            self._refresh_counts(connection, batch["batch_id"], now)
+
+    def fail_item_regeneration(self, batch_id: str, item_id: str, error_message: str) -> None:
+        now = _now()
+        with self._connect() as connection:
+            item = connection.execute(
+                """SELECT pattern_asset_id, composite_asset_id FROM pod_customization_batch_items
+                   WHERE batch_id = ? AND item_id = ? AND status = 'generating_pattern'""",
+                (batch_id, item_id),
+            ).fetchone()
+            if item is None:
+                raise PodRepositoryError("POD item regeneration is not active", 409)
+            restored_status = "completed" if item["pattern_asset_id"] and item["composite_asset_id"] else "failed"
+            connection.execute(
+                """UPDATE pod_customization_batch_items SET status = ?, error_message = ?, updated_at = ?
+                   WHERE batch_id = ? AND item_id = ?""",
+                (restored_status, _safe_error(error_message), now, batch_id, item_id),
+            )
+            self._refresh_counts(connection, batch_id, now)
+
+    def finish_scene_optimization(
+        self,
+        batch_id: str,
+        item_id: str,
+        *,
+        composite_asset_id: str = "",
+        error_message: str = "",
+    ) -> None:
+        succeeded = bool(composite_asset_id)
+        now = _now()
+        with self._connect() as connection:
+            result = connection.execute(
+                """UPDATE pod_customization_style_grid_results
+                   SET status = 'completed', composite_asset_id = CASE WHEN ? <> '' THEN ? ELSE composite_asset_id END,
+                       scene_optimized = CASE WHEN ? <> '' THEN 1 ELSE scene_optimized END,
+                       error_message = ?, updated_at = ?
+                   WHERE batch_id = ? AND result_id = ? AND status = 'optimizing_scene'"""
+                if self._is_style_grid_batch(connection, batch_id) else
+                """UPDATE pod_customization_batch_items
+                   SET status = 'completed', composite_asset_id = CASE WHEN ? <> '' THEN ? ELSE composite_asset_id END,
+                       scene_optimized = CASE WHEN ? <> '' THEN 1 ELSE scene_optimized END,
+                       error_message = ?, updated_at = ?
+                   WHERE batch_id = ? AND item_id = ? AND status = 'optimizing_scene'""",
+                (composite_asset_id, composite_asset_id, composite_asset_id,
+                 "" if succeeded else _safe_error(error_message), now, batch_id, item_id),
+            )
+            self._refresh_counts(connection, batch_id, now)
+        if result.rowcount != 1:
+            raise PodRepositoryError("POD scene optimization is not active", 409)
+
+    @staticmethod
+    def _decode_title_row(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+        result = dict(row)
+        visual_tags = json.loads(result.pop("visual_tags_json") or "{}")
+        result["visual_theme"] = str(visual_tags.get("visual_theme") or "")
+        result["motif_keywords"] = list(visual_tags.get("motif_keywords") or [])
+        result["color_keywords"] = list(visual_tags.get("color_keywords") or [])
+        result["listing_ready"] = bool(result.get("listing_ready", 0))
+        return result
+
+    @classmethod
+    def _insert_direct_title(
+        cls,
+        connection: sqlite3.Connection,
+        trial_id: str,
+        title_result: dict[str, Any],
+        now: str,
+    ) -> None:
+        title = str(title_result.get("title") or "").strip()
+        normalized = _normalize_title(str(title_result.get("normalized_title") or title)) or None
+        visual_tags = {
+            "visual_theme": str(title_result.get("visual_theme") or ""),
+            "motif_keywords": list(title_result.get("motif_keywords") or ()),
+            "color_keywords": list(title_result.get("color_keywords") or ()),
+            "visual_signature": str(title_result.get("visual_signature") or ""),
+        }
+        connection.execute(
+            """INSERT INTO pod_customization_direct_listing_titles
+               (trial_id, style_task_id, status, title, normalized_title, visual_tags_json,
+                model, prompt_version, attempt_count, error_message, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                trial_id,
+                str(title_result.get("style_task_id") or trial_id),
+                str(title_result["status"]),
+                title,
+                normalized,
+                json.dumps(visual_tags),
+                str(title_result.get("model") or ""),
+                str(title_result.get("prompt_version") or ""),
+                max(0, int(title_result.get("attempt_count") or 0)),
+                str(title_result.get("error_message") or "")[:500],
+                now,
+                now,
+            ),
+        )
+
+    @staticmethod
+    def _refresh_counts(
+        connection: sqlite3.Connection,
+        batch_id: str,
+        now: str,
+        execution_epoch: int | None = None,
+    ) -> None:
+        style_grid = connection.execute(
+            "SELECT 1 FROM pod_customization_style_grid_batches WHERE batch_id = ?", (batch_id,)
+        ).fetchone() is not None
+        if style_grid:
+            result = connection.execute(
+                """WITH style_counts AS (
+                       SELECT style_index,
+                              SUM(CASE WHEN status IN ('completed', 'failed') THEN 1 ELSE 0 END) AS settled,
+                              SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed
+                       FROM pod_customization_style_grid_results WHERE batch_id = ? GROUP BY style_index
+                   )
+                   UPDATE pod_customization_batches
+                   SET processed_count = (SELECT COUNT(*) FROM style_counts WHERE settled = 4),
+                       completed_count = (SELECT COUNT(*) FROM style_counts WHERE completed = 4),
+                       failed_count = (SELECT COUNT(*) FROM style_counts WHERE settled = 4 AND completed < 4),
+                       updated_at = ?
+                   WHERE batch_id = ?"""
+                   + (" AND execution_epoch = ?" if execution_epoch is not None else ""),
+                (batch_id, now, batch_id, execution_epoch)
+                if execution_epoch is not None else (batch_id, now, batch_id),
+            )
+            if execution_epoch is not None and result.rowcount != 1:
+                # SQLite may report -1 for a CTE-backed UPDATE even when the
+                # epoch predicate matched.  Only the follow-up epoch check is
+                # authoritative for distinguishing that case from a stale run.
+                PodCustomizationRepository._raise_if_execution_expired(
+                    connection, batch_id, execution_epoch
+                )
+            return
+        result = connection.execute(
+            """UPDATE pod_customization_batches
+               SET processed_count = (SELECT COUNT(*) FROM pod_customization_batch_items
+                                      WHERE batch_id = ? AND status IN ('completed', 'failed')),
+                   completed_count = (SELECT COUNT(*) FROM pod_customization_batch_items
+                                      WHERE batch_id = ? AND status = 'completed'),
+                   failed_count = (SELECT COUNT(*) FROM pod_customization_batch_items
+                                   WHERE batch_id = ? AND status = 'failed'),
+                   updated_at = ?
+               WHERE batch_id = ?"""
+               + (" AND execution_epoch = ?" if execution_epoch is not None else ""),
+            (batch_id, batch_id, batch_id, now, batch_id, execution_epoch)
+            if execution_epoch is not None
+            else (batch_id, batch_id, batch_id, now, batch_id),
+        )
+        if execution_epoch is not None and result.rowcount != 1:
+            PodCustomizationRepository._raise_if_execution_expired(
+                connection, batch_id, execution_epoch
+            )
+
+    @staticmethod
+    def _is_style_grid_batch(connection: sqlite3.Connection, batch_id: str) -> bool:
+        return connection.execute(
+            "SELECT 1 FROM pod_customization_style_grid_batches WHERE batch_id = ?", (batch_id,)
+        ).fetchone() is not None
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+
+
+def _normalize_title(value: str) -> str:
+    return " ".join(str(value or "").split()).strip().casefold()
+
+
+def _migration_effect_is_present(connection: sqlite3.Connection, migration_name: str) -> bool:
+    return pod_migration_effect_is_present(connection, migration_name)

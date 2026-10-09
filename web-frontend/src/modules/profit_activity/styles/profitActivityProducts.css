@@ -1,0 +1,1522 @@
+.profit-products-page {
+  display: grid;
+  gap: 18px;
+  color: #20364d;
+}
+
+.profit-products-head,
+.profit-products-workspace {
+  border: 1px solid #d8e7f2;
+  border-radius: 18px;
+  background: #fbfdff;
+  box-shadow: 0 12px 30px #265d8a0d;
+}
+
+.profit-products-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  min-height: 142px;
+  padding: clamp(24px, 3vw, 34px);
+  border-color: #1b91bd;
+  color: #fff;
+  background: linear-gradient(118deg, #0a497f 0%, #0d7fba 56%, #20b9ac 100%);
+  box-shadow: 0 14px 34px rgba(12, 91, 139, .18);
+}
+
+.profit-products-head .eyebrow {
+  color: #9de7f3;
+}
+
+.profit-products-head h1 {
+  margin: 7px 0;
+  color: #fff;
+  font-size: clamp(1.9rem, 3vw, 2.65rem);
+  letter-spacing: 0;
+}
+
+.profit-products-head p:not(.eyebrow) {
+  margin: 0;
+  color: #d9f1fb;
+  line-height: 1.7;
+}
+
+.profit-products-hero-actions {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 10px;
+}
+
+.profit-products-workspace {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.profit-products-pagination {
+  display: grid;
+  gap: 14px;
+}
+
+/* 查询区固定排成一行：商品ID / 店铺 / 地区 / 查询范围 / 按钮组。
+   原来各列最小宽度之和约 900px，而内容区在 1280 窗口下只有约 990px、1100 窗口下
+   约 960px，窗口再窄一点第 5 列就被挤爆，按钮组溢出列外、与左边几个控件对不齐。
+   这里把最小宽度压到约 630px（宁可让下拉收窄，也不让按钮跑出这一行），
+   并统一用 align-items: end，让四个控件的底边和按钮底边落在同一条线上。 */
+.profit-products-search-bar {
+  --profit-search-control-height: 44px;
+  display: grid;
+  grid-template-columns:
+    minmax(150px, 1.5fr)
+    minmax(92px, .8fr)
+    minmax(92px, .8fr)
+    minmax(100px, .85fr)
+    /* 按钮组最小宽度 =「查询产品」约 110px + 间距 8px +「刷新」74px，留一点余量 */
+    minmax(200px, auto);
+  align-items: end;
+  gap: 14px;
+}
+
+.profit-products-search-field,
+.profit-products-select-field {
+  min-width: 0;
+}
+
+.profit-products-search-bar textarea,
+.profit-products-search-bar select,
+.profit-products-search-bar .profit-products-search-actions,
+.profit-products-search-bar .profit-products-query-button,
+.profit-products-search-bar .profit-products-refresh-button {
+  box-sizing: border-box;
+  height: var(--profit-search-control-height);
+  min-height: var(--profit-search-control-height);
+}
+
+.profit-products-page label {
+  display: grid;
+  gap: 7px;
+  color: #526a82;
+  font-size: .82rem;
+  font-weight: 800;
+}
+
+.profit-products-page input,
+.profit-products-page select,
+.profit-products-page textarea {
+  width: 100%;
+  border: 1px solid #cfe0eb;
+  border-radius: 11px;
+  padding: 10px 12px;
+  color: #18334d;
+  background: #fff;
+  outline-color: #13a9f2;
+}
+
+.profit-products-search-field textarea {
+  padding-top: 8px;
+  padding-bottom: 8px;
+  resize: none;
+  line-height: 1.25;
+}
+
+.profit-products-page button {
+  border: 1px solid #cfe0eb;
+  border-radius: 11px;
+  padding: 10px 14px;
+  color: #2f5878;
+  background: #fff;
+  font-weight: 850;
+}
+
+.profit-products-page button:hover:not(:disabled) {
+  border-color: #82c9ef;
+  box-shadow: 0 8px 18px #188bd61a;
+}
+
+.profit-products-page button:disabled {
+  cursor: not-allowed;
+  color: #9caaba;
+  background: #f5f8fb;
+}
+
+.profit-products-page .primary-button {
+  border: 0;
+  color: white;
+  background: linear-gradient(105deg, #087bf5, #14c8c0);
+}
+
+/* 按钮组与左侧四个控件同高（44px）、底边对齐；右对齐保持和下方表格右边缘成一条线 */
+.profit-products-search-actions {
+  display: flex;
+  justify-content: flex-end;
+  min-width: 0;
+  gap: 8px;
+}
+
+.profit-products-page .profit-products-query-button {
+  flex: 0 0 auto;
+  padding-inline: 22px;
+  white-space: nowrap;
+}
+
+/* 全局 .primary-button 带 margin-top: 8px（给上下堆叠的表单用），在查询行里只有
+   「查询产品」命中、「刷新」没有，导致「查询产品」比同排控件低 8px。这里清零，
+   让它和左侧四个控件的底边严格对齐。 */
+.profit-products-search-actions .primary-button {
+  margin-top: 0;
+}
+
+.profit-products-page .profit-products-refresh-button {
+  flex: 0 0 auto;
+  min-width: 74px;
+  padding-inline: 16px;
+  white-space: nowrap;
+}
+
+.profit-products-message {
+  margin: 0;
+  color: #657d94;
+  font-weight: 750;
+}
+
+.profit-products-pagination {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  padding-top: 6px;
+  color: #667d93;
+  font-size: .86rem;
+}
+
+.profit-products-pagination-summary,
+.profit-products-page-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.profit-products-pagination-summary > span {
+  margin-right: 4px;
+  color: #526a82;
+  font-weight: 800;
+}
+
+.profit-products-pagination-summary button {
+  padding: 7px 10px;
+  font-size: .8rem;
+}
+
+.profit-products-pagination .profit-products-page-size {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 3px;
+  color: #667d93;
+  white-space: nowrap;
+}
+
+.profit-products-pagination .profit-products-page-size select {
+  width: auto;
+  min-width: 76px;
+  padding: 7px 26px 7px 9px;
+  font-size: .8rem;
+}
+
+.profit-products-pagination input {
+  width: 64px;
+  text-align: center;
+}
+
+/* 页码跳转输入框：第 [页] 跳转 */
+.profit-products-pagination .profit-page-jump {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: #667d93;
+  font-size: .86rem;
+  font-weight: 750;
+}
+
+.profit-products-pagination .profit-page-jump input {
+  width: 56px;
+}
+
+.profit-source-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: #e6f6ff;
+  color: #0e7bb8;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 600;
+  vertical-align: 1px;
+  border: 1px solid #bfe6fb;
+}
+
+.profit-source-open {
+  width: 48px;
+  min-width: 48px;
+  border: 1px solid #cfe0eb !important;
+  border-radius: 9px;
+  padding: 3px 1px !important;
+  color: #0a8cf2 !important;
+  background: #f4fbff !important;
+  font-size: .56rem !important;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.profit-source-open:hover {
+  border-color: #82c9ef !important;
+  box-shadow: none !important;
+}
+
+/* 货源侧边栏（产品库「打开」右侧抽屉） */
+.profit-source-drawer-root {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.profit-source-drawer-mask {
+  position: absolute;
+  inset: 0;
+  background: rgba(13, 32, 52, 0.36);
+  backdrop-filter: blur(1px);
+}
+
+.profit-source-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  width: min(520px, 94vw);
+  max-width: 100%;
+  background: #fbfdff;
+  border-left: 1px solid #d8e7f2;
+  box-shadow: -18px 0 48px rgba(23, 61, 92, 0.18);
+  animation: profit-source-drawer-in 0.22s ease-out;
+}
+
+@keyframes profit-source-drawer-in {
+  from { transform: translateX(24px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+.profit-source-drawer-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 20px 22px 16px;
+  border-bottom: 1px solid #d8e7f2;
+  background: #f4fafd;
+}
+
+.profit-source-drawer-head h2 {
+  margin: 4px 0 8px;
+  color: #172b44;
+  font-size: 1.35rem;
+  letter-spacing: -0.02em;
+}
+
+.profit-source-drawer-head p:not(.eyebrow) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: #6d8399;
+  font-size: 0.84rem;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.profit-source-drawer-sep {
+  color: #b4c7d8;
+}
+
+.profit-source-drawer-close {
+  border: 1px solid #cfe0eb;
+  border-radius: 50%;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  color: #526a82;
+  background: #fff;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.profit-source-drawer-close:hover {
+  border-color: #82c9ef;
+  color: #0a8cf2;
+}
+
+/* 抽屉头部右侧操作区：修改货源按钮 + 关闭按钮 并排 */
+.profit-source-drawer-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  padding-top: 2px;
+}
+
+/* 头部“修改货源”按钮（与关闭按钮同排，置顶） */
+.profit-source-drawer-head .profit-source-edit-button {
+  border-color: #b8d9f2;
+  color: #0a8cf2;
+  background: #fff;
+  box-shadow: 0 6px 14px #188bd61a;
+}
+
+.profit-source-drawer-head .profit-source-edit-button:hover {
+  border-color: #0a8cf2;
+  background: #f2faff;
+}
+
+.profit-source-drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 18px 24px;
+}
+
+.profit-source-drawer-status {
+  margin: 14px 2px;
+  color: #657d94;
+  font-weight: 700;
+}
+
+.profit-source-drawer-status.is-error {
+  color: #b42318;
+  background: #fef3f2;
+  border: 1px solid #fecaca;
+  border-radius: 11px;
+  padding: 10px 12px;
+}
+
+.profit-source-card {
+  border: 1px solid #d8e7f2;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 10px 24px #265d8a0d;
+  margin-bottom: 14px;
+  overflow: hidden;
+}
+
+.profit-source-card-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  padding: 12px;
+}
+
+.profit-source-card-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.profit-source-card-main img,
+.profit-source-card-img-fallback {
+  width: 64px;
+  height: 64px;
+  flex: none;
+  border-radius: 12px;
+  object-fit: cover;
+  border: 1px solid #e2eef6;
+}
+
+/* 货源单图：一条链接一张图，放大便于查看商品规格 */
+.profit-source-card-shot {
+  width: 92px !important;
+  height: 92px !important;
+}
+
+.profit-source-card-img-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #7a93ab;
+  background: #eef6fb;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.profit-source-card-body {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.profit-source-card-title {
+  color: #1c3752;
+  font-size: 0.9rem;
+  font-weight: 800;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.profit-source-card-meta {
+  color: #7a93ab;
+  font-size: 0.76rem;
+  font-weight: 600;
+}
+
+.profit-source-card-main b {
+  flex: none;
+  color: #e2434c;
+  font-size: 0.95rem;
+  white-space: nowrap;
+}
+
+.profit-source-unlink {
+  align-self: flex-start;
+  flex: none;
+  border: 1px solid #f3c4c9;
+  border-radius: 10px;
+  padding: 7px 10px;
+  color: #b42318;
+  background: #fff6f6;
+  font-size: 0.8rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.profit-source-unlink:hover:not(:disabled) {
+  border-color: #f28b93;
+  background: #ffecee;
+}
+
+.profit-source-unlink:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* 非核价产品的简化货源卡片：图片 + 链接 + 修改/保存 */
+.profit-source-card-simple .profit-source-card-row {
+  align-items: center;
+}
+
+.profit-source-edit-button {
+  flex: none;
+  border: 1px solid #b8d9f2;
+  border-radius: 9px;
+  padding: 7px 12px;
+  color: #0a8cf2;
+  background: #f2faff;
+  font-size: 0.8rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.profit-source-edit-button:hover {
+  border-color: #82c9ef;
+  background: #e7f6ff;
+}
+
+.profit-source-card-url {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #0a8cf2 !important;
+}
+
+.profit-source-edit-main {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.profit-source-edit-image {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-radius: 12px;
+  outline: none;
+}
+
+.profit-source-edit-image:focus-within,
+.profit-source-edit-image:focus {
+  background: var(--theme-module-surface-tint, #eaf8ff);
+  box-shadow: 0 0 0 3px rgba(var(--theme-module-primary-rgb, 8, 119, 211), .14);
+}
+
+.profit-source-edit-image-button {
+  display: inline-block;
+  border: 1px solid #cfe0eb;
+  border-radius: 8px;
+  padding: 5px 9px;
+  color: #526a82;
+  background: #fff;
+  font-size: 0.74rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.profit-source-edit-image-button:hover {
+  border-color: #82c9ef;
+  color: #0a8cf2;
+}
+
+.profit-source-edit-url {
+  display: grid;
+  gap: 5px;
+}
+
+.profit-source-edit-url span {
+  color: #6d8399;
+  font-size: 0.76rem;
+  font-weight: 750;
+}
+
+.profit-source-edit-url input {
+  width: 100%;
+  border: 1px solid #cfe0eb;
+  border-radius: 10px;
+  padding: 8px 10px;
+  color: #18334d;
+  background: #fff;
+  outline-color: #13a9f2;
+}
+
+.profit-source-edit-actions {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 6px;
+  align-self: center;
+}
+
+.profit-source-edit-actions .profit-edit-save,
+.profit-source-edit-actions .profit-edit-cancel {
+  border-radius: 9px;
+  padding: 7px 12px;
+  font-size: 0.8rem;
+}
+
+/* 非核价产品多货源链接编辑面板：新增/删除链接（至少保留一条） */
+.profit-source-drawer-empty {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.profit-source-edit-panel {
+  border: 1px solid #dce9f2;
+  border-radius: 14px;
+  padding: 12px;
+  background: #f6fafd;
+  display: grid;
+  gap: 10px;
+}
+
+.profit-source-edit-rows {
+  display: grid;
+  gap: 10px;
+}
+
+.profit-source-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid #e4eef5;
+  border-radius: 12px;
+  padding: 10px;
+  background: #fff;
+}
+
+.profit-source-edit-row .profit-source-edit-main {
+  flex: 1;
+}
+
+.profit-source-remove-row {
+  flex: none;
+  align-self: center;
+  border: 1px solid #f2c9cd;
+  border-radius: 9px;
+  padding: 7px 12px;
+  color: #e24a57;
+  background: #fff7f8;
+  font-size: 0.8rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.profit-source-remove-row:hover:not(:disabled) {
+  border-color: #ef9aa3;
+  background: #ffecee;
+}
+
+.profit-source-remove-row:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.profit-source-edit-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.profit-source-add-row {
+  border: 1px dashed #9fc8e8;
+  border-radius: 9px;
+  padding: 8px 14px;
+  color: #0a8cf2;
+  background: #fff;
+  font-size: 0.8rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.profit-source-add-row:hover {
+  border-color: #0a8cf2;
+  background: #f2faff;
+}
+
+.profit-source-edit-toolbar-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.profit-source-edit-toolbar-actions .profit-edit-save,
+.profit-source-edit-toolbar-actions .profit-edit-cancel {
+  border-radius: 9px;
+  padding: 7px 14px;
+  font-size: 0.8rem;
+}
+
+/* 导入货源链接的货源组截图（截图1/2/3）与成本 */
+.profit-source-card-gallery {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 10px 12px;
+  border-top: 1px dashed #dce9f2;
+  background: #f6fafd;
+}
+
+.profit-source-gallery {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.profit-source-gallery-img {
+  width: 56px;
+  height: 56px;
+  border-radius: 10px;
+  object-fit: cover;
+  border: 1px solid #dce9f2;
+  background: #fff;
+}
+
+.profit-source-card-cost {
+  margin-left: auto;
+  color: #1c3752;
+  font-size: 0.8rem;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.profit-source-card-cost::before {
+  content: "成本 ";
+  color: #6d8399;
+  font-weight: 750;
+}
+
+.profit-source-card-profit {
+  border-top: 1px solid #eef4f9;
+  padding: 12px;
+  background: #f8fbfe;
+}
+
+.profit-source-card-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin: 0 0 10px;
+}
+
+.profit-source-card-fields > div {
+  display: grid;
+  gap: 5px;
+}
+
+.profit-source-card-fields dt,
+.profit-source-card-result-fields dt {
+  color: #6d8399;
+  font-size: 0.76rem;
+  font-weight: 750;
+}
+
+.profit-source-card-fields dd {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #1c3752;
+  font-weight: 800;
+  font-size: 0.86rem;
+}
+
+.profit-source-card-fields input {
+  width: 100%;
+  border: 1px solid #cfe0eb;
+  border-radius: 10px;
+  padding: 8px 10px;
+  color: #18334d;
+  background: #fff;
+  outline-color: #13a9f2;
+}
+
+.profit-source-card-result {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: #fff;
+  border: 1px solid #e2eef6;
+}
+
+.profit-source-card-result.is-qualified {
+  border-color: #b6e7cf;
+  background: #f0fdf6;
+}
+
+.profit-source-card-result.is-empty {
+  color: #7a93ab;
+  font-size: 0.82rem;
+  font-weight: 650;
+}
+
+.profit-source-card-result-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin: 0;
+}
+
+.profit-source-card-result-fields > div {
+  display: grid;
+  gap: 2px;
+}
+
+.profit-source-card-result-fields dd {
+  margin: 0;
+  color: #1c3752;
+  font-size: 0.86rem;
+  font-weight: 850;
+}
+
+.profit-source-card-result em {
+  flex: none;
+  border-radius: 999px;
+  padding: 5px 10px;
+  color: #9d2b2b;
+  background: #fdecec;
+  font-style: normal;
+  font-size: 0.78rem;
+  font-weight: 850;
+}
+
+.profit-source-card-result em.is-qualified {
+  color: #087c4a;
+  background: #d9f6e7;
+}
+
+.profit-source-card-result small {
+  color: #0a8cf2;
+  font-weight: 750;
+}
+
+/* 产品库表格编辑单元格与备注列 */
+/* 产品库表格：不做内部垂直滚动，表格随整页滚动；仅保留水平滚动处理超宽列 */
+.profit-table-wrap {
+  overflow-x: auto;
+  scrollbar-gutter: stable;
+}
+
+/* 拖拽平移中才显示抓取光标并禁止选中，平时保持默认光标与文本可复制 */
+.profit-table-wrap.is-dragging {
+  cursor: grabbing;
+  user-select: none;
+}
+
+/* 跟随视口的横向滚动条：sticky 贴在顶部，随时可拖，track 宽度与表格一致 */
+.profit-table-scrollbar {
+  position: sticky;
+  top: 0;
+  z-index: 8;
+  overflow-x: auto;
+  overflow-y: hidden;
+  height: 12px;
+  margin-top: 10px;
+  background: #f0f5fa;
+  border: 1px solid #e2edf5;
+  border-radius: 6px;
+}
+
+.profit-table-scrollbar-track {
+  height: 1px;
+}
+
+.profit-table-scrollbar::-webkit-scrollbar {
+  height: 12px;
+}
+
+.profit-table-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.profit-table-scrollbar::-webkit-scrollbar-thumb {
+  background: #b9cbd9;
+  border-radius: 6px;
+  border: 2px solid #f0f5fa;
+}
+
+.profit-table-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #8fa9bd;
+}
+
+/* 水平滚动条：加宽、常显、hover 高亮 */
+.profit-table-wrap::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+.profit-table-wrap::-webkit-scrollbar-track {
+  background: #f0f5fa;
+  border-radius: 6px;
+}
+
+.profit-table-wrap::-webkit-scrollbar-thumb {
+  background: #b9cbd9;
+  border-radius: 6px;
+  border: 2px solid #f0f5fa;
+}
+
+.profit-table-wrap::-webkit-scrollbar-thumb:hover {
+  background: #8fa9bd;
+}
+
+.profit-table-wrap::-webkit-scrollbar-corner {
+  background: #f0f5fa;
+}
+
+/* 固定表头克隆：原表头滚出可视区时显示，始终跟随内容区宽度与横向滚动位置 */
+.profit-table-head-sticky {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 500;
+  overflow: hidden;
+  display: none;
+  padding-top: 6px;
+  padding-bottom: 6px;
+  background: #f0f6fa;
+  border-bottom: 1px solid #d3e2ee;
+  box-shadow: 0 8px 22px rgba(23, 61, 92, 0.12);
+  /* 仅作视觉参考，不拦截下方表格内容的点击与选择 */
+  pointer-events: none;
+}
+
+.profit-table-head-sticky.is-visible {
+  display: block;
+}
+
+.profit-table-head-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.profit-table-head-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.profit-table-head-sticky .profit-table {
+  margin: 0;
+  border-collapse: collapse;
+  background: transparent;
+}
+
+.profit-table-head-sticky .profit-table th {
+  border-right: 1px solid #d3e2ee;
+  border-bottom: 0;
+  background: #f0f6fa;
+}
+
+.profit-table-head-sticky .profit-table th:last-child {
+  border-right: 0;
+}
+
+/* 紧凑只读产品表格 */
+.profit-table {
+  width: 100%;
+  min-width: 752px;
+  table-layout: fixed;
+  font-size: .72rem;
+}
+
+.profit-table th {
+  position: relative;
+}
+
+.profit-table-th-label {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profit-table-resize-handle {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  z-index: 2;
+  width: 8px;
+  height: 100%;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  cursor: col-resize;
+}
+
+.profit-table-resize-handle:hover {
+  background: rgba(10, 140, 242, 0.12) !important;
+}
+
+.profit-table tbody tr {
+  height: 34px;
+}
+
+.profit-table th,
+.profit-table td {
+  padding: 2px 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* SKC 对应图单元格 */
+.profit-product-image-cell {
+  display: inline-grid;
+  place-items: center;
+  min-width: 38px;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.profit-product-image,
+.profit-product-image-empty {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  object-fit: cover;
+  border: 1px solid #e2eef6;
+  display: block;
+}
+
+.profit-editable-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  min-width: 0;
+  cursor: text;
+}
+
+.profit-editable-cell:not(.is-readonly):hover .profit-editable-value {
+  color: #087ed1;
+}
+
+.profit-editable-cell.is-readonly {
+  cursor: default;
+}
+
+.profit-editable-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profit-inline-editor {
+  position: absolute;
+  top: 50%;
+  left: 4px;
+  z-index: 12;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: max-content;
+  min-width: 310px;
+  max-width: min(520px, calc(100vw - 48px));
+  min-height: 44px;
+  padding: 5px 7px;
+  transform: translateY(-50%);
+  border: 1px solid #9ad8fb;
+  border-radius: 11px;
+  background: #fff;
+  box-shadow: 0 10px 26px rgba(26, 78, 114, .18);
+  white-space: normal;
+}
+
+.profit-inline-editor input,
+.profit-inline-editor select,
+.profit-inline-editor textarea {
+  box-sizing: border-box;
+  min-width: 96px;
+  max-width: 190px;
+  border: 1px solid #b9daf0;
+  border-radius: 9px;
+  padding: 6px 8px;
+  color: #18334d;
+  background: #fff;
+  outline-color: #13a9f2;
+  font: inherit;
+}
+
+.profit-inline-editor textarea {
+  width: 170px;
+  min-height: 38px;
+  resize: vertical;
+}
+
+/* 编辑态使用覆盖式工具条，列再窄也能完整显示输入与保存操作。 */
+.profit-table td:has(.profit-inline-editor) {
+  position: relative;
+  z-index: 20;
+  overflow: visible;
+}
+
+/* 最后一列没有右侧空间，工具条自动向左展开。 */
+.profit-table td:last-child .profit-inline-editor {
+  right: 4px;
+  left: auto;
+}
+
+.profit-inline-editor.is-image {
+  min-width: 390px;
+  min-height: 48px;
+  padding: 7px 8px;
+}
+
+.profit-inline-image-drop {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: 250px;
+  min-width: 250px;
+  max-width: 250px;
+  min-height: 34px;
+  border: 1px dashed #8cccf7;
+  border-radius: 10px;
+  padding: 5px 8px;
+  color: #53708a;
+  background: #f6fbff;
+  outline-color: #13a9f2;
+}
+
+.profit-inline-image-drop span {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profit-inline-image-drop input {
+  width: 82px;
+  min-width: 82px;
+  max-width: 82px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: .72rem;
+}
+
+.profit-inline-save,
+.profit-inline-cancel {
+  width: 38px;
+  min-width: 38px;
+  padding: 4px 5px !important;
+  border-radius: 8px !important;
+  font-size: .74rem !important;
+  line-height: 1.25;
+}
+
+.profit-inline-remove-image {
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 !important;
+  border: 1px solid #ffd0d0 !important;
+  border-radius: 8px !important;
+  color: #df4f58 !important;
+  background: #fff7f7 !important;
+  font-size: 1.1rem !important;
+  line-height: 1 !important;
+}
+
+.profit-inline-save {
+  color: #fff !important;
+  background: #0a8cf2 !important;
+  border-color: #0a8cf2 !important;
+}
+
+.profit-inline-cancel {
+  color: #577089 !important;
+  background: #f4f8fb !important;
+}
+
+.profit-product-image-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #9cb1c3;
+  background: #f4f8fb;
+  font-size: .76rem;
+  font-weight: 750;
+}
+
+.profit-source-thumb {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  object-fit: cover;
+  border: 1px solid #e2eef6;
+  background: #f4f8fb;
+  display: block;
+}
+
+/* 图片列缩略图按钮：点击查看大图 */
+.profit-source-thumb-btn {
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 9px !important;
+  background: none !important;
+  line-height: 0;
+  cursor: zoom-in;
+  box-shadow: none !important;
+}
+
+.profit-source-thumb-btn:hover .profit-source-thumb {
+  border-color: #0a8cf2;
+  box-shadow: 0 0 0 2px #0a8cf21f;
+}
+
+.profit-source-images-cell {
+  position: relative;
+}
+
+.profit-source-image-count {
+  position: absolute;
+  right: -8px;
+  bottom: -7px;
+  min-width: 18px;
+  padding: 2px 4px;
+  border-radius: 10px;
+  background: #087fd8;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+/* 大图预览弹窗 */
+.profit-image-preview-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 1500;
+  background: rgba(10, 22, 36, 0.18);
+  backdrop-filter: blur(2px);
+}
+
+.profit-image-preview-modal {
+  position: fixed;
+  display: flex;
+  border: 1px solid rgba(188, 216, 235, .9);
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 20px 48px rgba(5, 16, 28, 0.26);
+  overflow: hidden;
+}
+
+.profit-image-preview-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.profit-image-preview-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  width: 36px;
+  height: 36px;
+  border: 0 !important;
+  border-radius: 50% !important;
+  color: #fff !important;
+  background: rgba(13, 32, 52, 0.55) !important;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25) !important;
+}
+
+.profit-image-preview-close:hover {
+  background: rgba(13, 32, 52, 0.8) !important;
+}
+
+.profit-image-preview-pager {
+  position: absolute;
+  right: 56px;
+  bottom: 12px;
+  left: 12px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: #4f6780;
+  font-size: 12px;
+}
+
+.profit-image-preview-pager button {
+  min-width: 58px;
+  padding: 6px 9px;
+  border: 1px solid #d3e3ef;
+  border-radius: 6px;
+  background: #fff;
+  color: #235b87;
+}
+
+.profit-image-preview-pager button:hover {
+  border-color: #0a8cf2;
+  color: #087fd8;
+}
+
+.profit-table .profit-note-input {
+  flex: 1 1 160px;
+  min-width: 120px;
+}
+
+.profit-product-edit-button {
+  width: 38px;
+  min-width: 38px;
+  padding: 3px 4px !important;
+  border-radius: 8px !important;
+  color: #0a8cf2 !important;
+  background: #f2faff !important;
+  font-size: .74rem !important;
+  line-height: 1.25;
+}
+
+.profit-table .profit-note-cell {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #526a82;
+  font-size: .82rem;
+}
+
+.profit-table th {
+  border-right: 1px solid #d3e2ee;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.profit-table .profit-source-cell,
+.profit-table .profit-product-action-cell {
+  padding-inline: 1px;
+}
+
+.profit-table th:last-child {
+  border-right: 0;
+}
+
+@media (max-width: 640px) {
+  .profit-source-card-fields {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 900px) {
+  .profit-products-pagination {
+    grid-template-columns: 1fr;
+  }
+
+  /* 窗口太窄已放不下一行：每个查询控件各占一行，按钮组留在最后一行左对齐 */
+  .profit-products-search-bar {
+    grid-template-columns: 1fr;
+  }
+
+  .profit-products-search-actions {
+    justify-content: flex-start;
+  }
+
+  .profit-products-page-controls {
+    justify-content: flex-start;
+  }
+}
+
+
+.profit-batch-store-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: var(--theme-module-overlay, rgba(15, 36, 56, .28));
+  backdrop-filter: blur(10px);
+}
+
+.profit-batch-store-dialog {
+  width: min(460px, calc(100vw - 32px));
+  display: grid;
+  gap: 18px;
+  border: 1px solid var(--theme-module-border, #cfe0eb);
+  border-radius: 18px;
+  padding: 22px;
+  color: var(--theme-text-primary, #18334d);
+  background: var(--theme-module-panel-gradient, var(--theme-module-surface-raised, #fff));
+  box-shadow: 0 22px 54px var(--theme-card-shadow-lg, rgba(16, 54, 84, .18));
+}
+
+.profit-batch-store-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.profit-batch-store-head h2 {
+  margin: 0;
+  color: var(--theme-text-primary, #18334d);
+  font-size: 1.18rem;
+  font-weight: 900;
+  letter-spacing: 0;
+}
+
+.profit-batch-store-head button {
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--theme-icon-button-border, #d7e3ed);
+  border-radius: 11px;
+  color: var(--theme-icon-button-color, #466079);
+  background: var(--theme-icon-button-bg, #fff);
+  font-size: 1.05rem;
+  line-height: 1;
+}
+
+.profit-batch-store-count {
+  margin: 0;
+  color: var(--theme-text-secondary, #526a82);
+  font-weight: 800;
+}
+
+.profit-batch-store-field {
+  display: grid;
+  gap: 8px;
+  color: var(--theme-text-secondary, #526a82);
+  font-size: .86rem;
+  font-weight: 850;
+}
+
+.profit-batch-store-field input {
+  height: 44px;
+  box-sizing: border-box;
+  width: 100%;
+  border: 1px solid var(--theme-module-border, #cfe0eb);
+  border-radius: 12px;
+  padding: 10px 13px;
+  color: var(--theme-text-primary, #18334d);
+  background: var(--theme-module-surface, #fff);
+  outline: none;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .72);
+}
+
+.profit-batch-store-field input:focus {
+  border-color: var(--theme-module-border-strong, #82c9ef);
+  box-shadow: 0 0 0 3px rgba(var(--theme-module-primary-rgb, 8, 119, 211), .14);
+}
+
+.profit-batch-store-field input::placeholder {
+  color: var(--theme-text-muted, #8295aa);
+}
+
+.profit-batch-store-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.profit-batch-store-actions button {
+  min-width: 92px;
+  border: 1px solid var(--theme-module-border, #cfe0eb);
+  border-radius: 12px;
+  padding: 10px 16px;
+  color: var(--theme-text-secondary, #2f5878);
+  background: var(--theme-module-surface, #fff);
+  font-weight: 850;
+}
+
+.profit-batch-store-actions .primary-button {
+  border: 0;
+  color: var(--theme-on-primary, #fff);
+  background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0));
+  box-shadow: 0 12px 24px var(--theme-primary-button-shadow, rgba(11, 147, 220, .2));
+}
+
+@media (max-width: 700px) {
+  .profit-products-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+}

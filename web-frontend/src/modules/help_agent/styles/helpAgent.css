@@ -1,0 +1,383 @@
+/* 操作答疑智能体：右下角悬浮球 + 聊天面板。
+ * 全部颜色走主题变量，8 套主题自动跟随，不写死色值。
+ */
+
+.help-agent-ball {
+  position: fixed;
+  z-index: 90;
+  width: 56px;
+  height: 56px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, .74);
+  border-radius: 50%;
+  color: #fff;
+  background: var(--theme-brand-gradient, linear-gradient(145deg, #008bff, #16d7c0));
+  box-shadow: 0 12px 28px var(--theme-brand-shadow, rgba(10, 145, 225, .3));
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  transition: box-shadow .2s ease, transform .2s ease;
+}
+.help-agent-ball:hover {
+  transform: translateY(-2px) scale(1.04);
+  box-shadow: 0 16px 34px rgba(8, 119, 181, .38);
+}
+.help-agent-ball:active { cursor: grabbing; }
+.help-agent-ball:focus-visible { outline: 3px solid rgba(24, 169, 218, .26); outline-offset: 3px; }
+.help-agent-ball.is-open {
+  background: var(--theme-icon-button-bg, #fff);
+  color: var(--theme-text-secondary, #527089);
+  border-color: var(--theme-card-border, rgba(184, 209, 230, .82));
+  box-shadow: 0 10px 24px var(--theme-card-shadow-lg, rgba(26, 65, 101, .1));
+}
+.help-agent-ball-symbol {
+  font-size: 1.55rem;
+  font-weight: var(--weight-semibold, 600);
+  line-height: 1;
+}
+
+/* -- 合并了积分球的双面球：正面可用积分、背面主题吉祥物 ------------------ */
+
+/* 尺寸随偏好设置（个人中心 → 悬浮球大小：小 / 中 / 大），中＝88px 为既有大小。
+   球面内的字号与积分宽度按球径等比适配（88px 时约 13 / 24 / 17 / 78px），
+   并设下限，避免小档把字缩到看不清。 */
+.help-agent-ball.is-balance {
+  --ba-size: 88px;
+  --ba-label: max(11px, calc(var(--ba-size) * 0.148));
+  --ba-points: max(19px, calc(var(--ba-size) * 0.273));
+  --ba-points-compact: max(14px, calc(var(--ba-size) * 0.193));
+  --ba-points-width: max(62px, calc(var(--ba-size) * 0.886));
+  width: var(--ba-size);
+  height: var(--ba-size);
+  perspective: 800px;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  filter: drop-shadow(0 8px 22px rgba(15, 23, 42, .26));
+  transition: filter .2s ease;
+}
+/* 双面球自带翻转，悬停不再整体平移缩放，只加深一点投影 */
+.help-agent-ball.is-balance:hover {
+  transform: none;
+  filter: drop-shadow(0 10px 26px rgba(15, 23, 42, .34));
+}
+.help-agent-ball.is-balance.is-open {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+html[data-ball-size="sm"] .help-agent-ball.is-balance { --ba-size: 68px; }
+html[data-ball-size="lg"] .help-agent-ball.is-balance { --ba-size: 110px; }
+
+.help-agent-ball-inner {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  transform-style: preserve-3d;
+  transition: transform .5s cubic-bezier(.4, .1, .2, 1);
+}
+.help-agent-ball.is-flipped .help-agent-ball-inner { transform: rotateY(180deg); }
+
+.help-agent-ball-face {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  border: 2px solid rgba(255, 255, 255, .55);
+  border-radius: 50%;
+  overflow: hidden;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  box-shadow: inset 0 -6px 14px rgba(2, 12, 40, .18), inset 0 6px 14px rgba(255, 255, 255, .35);
+}
+.help-agent-ball-face.is-front {
+  color: #fff;
+  background: linear-gradient(160deg, var(--theme-module-primary-soft, #3b82f6), var(--theme-module-primary-strong, #075985));
+}
+.help-agent-ball-label {
+  font-size: var(--ba-label, 13px);
+  font-weight: 750;
+  letter-spacing: .06em;
+  line-height: 1.1;
+  opacity: .92;
+}
+.help-agent-ball-face.is-front b {
+  max-width: var(--ba-points-width, 78px);
+  font-size: var(--ba-points, 24px);
+  font-weight: 800;
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.help-agent-ball-face.is-front b.is-compact { font-size: var(--ba-points-compact, 17px); }
+.help-agent-ball-face.is-back {
+  transform: rotateY(180deg);
+  background: var(--theme-hero-glow, #0f172a);
+}
+.help-agent-ball-face.is-back img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .help-agent-ball-inner { transition: none; }
+}
+
+/* -- 面板 ---------------------------------------------------------------- */
+
+.help-agent-panel {
+  position: fixed;
+  z-index: 91;
+  width: 380px;
+  height: 520px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 32px);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--theme-card-border, rgba(184, 209, 230, .82));
+  border-radius: 18px;
+  background: var(--theme-card-bg, rgba(255, 255, 255, .92));
+  box-shadow: 0 22px 52px var(--theme-card-shadow-lg, rgba(26, 65, 101, .1));
+  backdrop-filter: blur(14px);
+  overflow: hidden;
+}
+
+.help-agent-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--theme-page-tab-border, #e0eaf2);
+}
+.help-agent-panel-head h2 {
+  margin: 0;
+  font-size: .98rem;
+  font-weight: var(--weight-semibold, 600);
+  color: var(--theme-text-primary, #13233a);
+}
+.help-agent-panel-head p {
+  margin: 2px 0 0;
+  font-size: .74rem;
+  color: var(--theme-text-muted, #8295aa);
+}
+.help-agent-close {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--theme-icon-button-border, #d7e3ed);
+  border-radius: 8px;
+  background: var(--theme-icon-button-bg, #fff);
+  color: var(--theme-icon-button-color, #466079);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.help-agent-close:hover { background: var(--theme-sidebar-hover-bg, #f0f7fb); }
+
+/* -- 消息区 -------------------------------------------------------------- */
+
+.help-agent-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 14px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.help-agent-empty { padding: 6px 2px; }
+.help-agent-empty > p {
+  margin: 0 0 10px;
+  font-size: .82rem;
+  color: var(--theme-text-secondary, #527089);
+}
+.help-agent-samples { display: flex; flex-direction: column; gap: 6px; }
+.help-agent-sample {
+  padding: 8px 11px;
+  border: 1px dashed var(--theme-card-border, rgba(184, 209, 230, .82));
+  border-radius: 10px;
+  background: transparent;
+  color: var(--theme-text-secondary, #527089);
+  font-size: .78rem;
+  text-align: left;
+  cursor: pointer;
+}
+.help-agent-sample:hover {
+  background: var(--theme-primary-light, #e7f6ff);
+  border-color: var(--theme-page-tab-active-border, #a7dafa);
+  color: var(--theme-page-tab-active-color, #0877d3);
+}
+
+.help-agent-msg { display: flex; }
+.help-agent-msg.is-user { justify-content: flex-end; }
+.help-agent-bubble {
+  max-width: 86%;
+  padding: 9px 12px;
+  border-radius: 13px;
+  background: var(--theme-page-tab-bg, #f7fafc);
+  border: 1px solid var(--theme-page-tab-border, #e0eaf2);
+  color: var(--theme-text-primary, #13233a);
+}
+.help-agent-msg.is-user .help-agent-bubble {
+  background: var(--theme-sidebar-active-bg, linear-gradient(100deg, #ccecff, #d5f5ef));
+  border-color: var(--theme-sidebar-active-border, #8fd3ec);
+  color: var(--theme-sidebar-active-color, #056fc8);
+}
+.help-agent-tag {
+  display: inline-block;
+  margin-bottom: 5px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--theme-avatar-bg, #d9f4ff);
+  color: var(--theme-avatar-color, #075fa7);
+  font-size: .66rem;
+}
+.help-agent-text {
+  margin: 0;
+  font-size: .82rem;
+  line-height: 1.62;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.help-agent-candidates {
+  margin: 9px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.help-agent-candidates button {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 7px 10px;
+  border: 1px solid var(--theme-page-tab-active-border, #a7dafa);
+  border-radius: 9px;
+  background: var(--theme-icon-button-bg, #fff);
+  color: var(--theme-page-tab-active-color, #0877d3);
+  font-size: .78rem;
+  text-align: left;
+  cursor: pointer;
+}
+/* 候选条目上的分类标签：比正文小一号、低对比，只做区分不抢视线 */
+.help-agent-candidate-tag {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--theme-page-tab-bg, #f7fafc);
+  border: 1px solid var(--theme-page-tab-border, #e0eaf2);
+  color: var(--theme-text-muted, #8295aa);
+  font-size: .62rem;
+  line-height: 1.6;
+  /* 分类名长短不一（最短 4 字、最长 20 字），统一按一行显示，别在胶囊里折行 */
+  white-space: nowrap;
+}
+.help-agent-candidate-text { line-height: 1.45; word-break: break-word; }
+.help-agent-candidates button:hover:not(:disabled) { background: var(--theme-page-tab-active-bg, #eaf8ff); }
+.help-agent-candidates button:disabled { opacity: .55; cursor: default; }
+
+.help-agent-feedback-btn {
+  margin-top: 9px;
+  padding: 7px 13px;
+  border: none;
+  border-radius: 9px;
+  background: var(--theme-brand-gradient, linear-gradient(145deg, #008bff, #16d7c0));
+  color: #fff;
+  font-size: .78rem;
+  cursor: pointer;
+}
+.help-agent-feedback-btn:hover { filter: brightness(1.06); }
+
+.help-agent-bubble.is-typing { display: flex; gap: 4px; align-items: center; padding: 12px; }
+.help-agent-bubble.is-typing span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--theme-text-muted, #8295aa);
+  animation: help-agent-typing 1.2s infinite ease-in-out;
+}
+.help-agent-bubble.is-typing span:nth-child(2) { animation-delay: .18s; }
+.help-agent-bubble.is-typing span:nth-child(3) { animation-delay: .36s; }
+@keyframes help-agent-typing {
+  0%, 60%, 100% { opacity: .32; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-3px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .help-agent-bubble.is-typing span { animation: none; opacity: .6; }
+}
+
+/* -- 输入区 -------------------------------------------------------------- */
+
+.help-agent-foot {
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--theme-page-tab-border, #e0eaf2);
+}
+.help-agent-error {
+  margin: 0 0 7px;
+  font-size: .74rem;
+  color: #c0392b;
+}
+.help-agent-input-row { display: flex; gap: 8px; align-items: flex-end; }
+.help-agent-input {
+  flex: 1;
+  min-height: 38px;
+  max-height: 96px;
+  padding: 9px 11px;
+  border: 1px solid var(--theme-icon-button-border, #d7e3ed);
+  border-radius: 10px;
+  background: var(--theme-icon-button-bg, #fff);
+  color: var(--theme-text-primary, #13233a);
+  font: inherit;
+  font-size: .82rem;
+  line-height: 1.5;
+  resize: none;
+}
+.help-agent-input:focus {
+  outline: none;
+  border-color: var(--theme-page-tab-active-border, #a7dafa);
+  box-shadow: 0 0 0 3px rgba(24, 169, 218, .14);
+}
+.help-agent-send {
+  padding: 9px 15px;
+  border: none;
+  border-radius: 10px;
+  background: var(--theme-brand-gradient, linear-gradient(145deg, #008bff, #16d7c0));
+  color: #fff;
+  font-size: .8rem;
+  font-weight: var(--weight-semibold, 600);
+  cursor: pointer;
+}
+.help-agent-send:disabled { opacity: .5; cursor: default; }
+.help-agent-hint {
+  margin: 8px 0 0;
+  font-size: .68rem;
+  color: var(--theme-text-muted, #8295aa);
+  text-align: center;
+}
+
+/* -- 窄屏 ---------------------------------------------------------------- */
+
+@media (max-width: 560px) {
+  .help-agent-panel {
+    left: 12px !important;
+    top: 12px !important;
+    width: calc(100vw - 24px);
+    height: calc(100vh - 24px);
+  }
+}

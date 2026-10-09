@@ -1,0 +1,61 @@
+/* ---- 水墨青黛主题：点击墨迹特效 ---- */
+
+.ink-tap-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 30; /* 顶栏(18)之上、弹窗(60+)之下，与桃花源花瓣画布同级 */
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.ink-tap-spot {
+  position: absolute;
+  width: var(--ink-size, 44px);
+  height: var(--ink-size, 44px);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  /* 深墨主晕 + 青灰副晕：水墨青黛的墨色系 */
+  background:
+    radial-gradient(circle at 38% 34%, rgba(35, 48, 48, 0.58), rgba(35, 48, 48, 0.14) 58%, transparent 76%),
+    radial-gradient(circle at 64% 66%, rgba(82, 113, 108, 0.42), transparent 70%);
+  filter: blur(2px);
+  mix-blend-mode: multiply;
+  animation: ink-tap-bloom 0.9s cubic-bezier(0.22, 0.61, 0.36, 1) forwards;
+}
+
+/* 两颗错位小墨晕，形成泼墨的层次 */
+.ink-tap-spot::before,
+.ink-tap-spot::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(circle at 50% 50%, rgba(43, 58, 58, 0.5), transparent 68%);
+}
+.ink-tap-spot::before {
+  transform: translate(24%, 16%) scale(0.52);
+  opacity: 0.55;
+}
+.ink-tap-spot::after {
+  transform: translate(-28%, 26%) scale(0.38);
+  opacity: 0.4;
+  background: radial-gradient(circle at 50% 50%, rgba(82, 113, 108, 0.5), transparent 66%);
+}
+
+@keyframes ink-tap-bloom {
+  0% {
+    transform: translate(-50%, -50%) scale(0.12) rotate(0deg);
+    opacity: 0.9;
+    filter: blur(1px);
+  }
+  55% {
+    opacity: 0.62;
+    filter: blur(4px);
+  }
+  100% {
+    transform: translate(calc(-50% + var(--ink-drift-x, 0px)), calc(-50% + var(--ink-drift-y, 0px)))
+      scale(1.6) rotate(9deg);
+    opacity: 0;
+    filter: blur(8px);
+  }
+}

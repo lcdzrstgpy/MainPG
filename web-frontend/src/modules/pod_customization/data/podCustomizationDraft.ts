@@ -1,0 +1,652 @@
+import type { PodBriefHistoryItem, PodBusinessFieldsDraft, PodListingFieldsDraft, PodTemplate, PodTitleMode, SpecCardConfig } from "../types";
+
+export const POD_CUSTOMIZATION_DRAFT_VERSION = 4;
+const PREVIOUS_POD_CUSTOMIZATION_DRAFT_VERSION = 3;
+const OLDER_POD_CUSTOMIZATION_DRAFT_VERSION = 2;
+const LEGACY_POD_CUSTOMIZATION_DRAFT_VERSION = 1;
+
+export type PodCustomizationStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+
+export type PodSystemTemplate = {
+  id: string;
+  name: string;
+  creativePrompt: string;
+  templateId: string;
+  template: PodTemplate;
+  createdAt: string;
+};
+
+export type PodCustomizationDraft = {
+  version: typeof POD_CUSTOMIZATION_DRAFT_VERSION;
+  business_fields: PodBusinessFieldsDraft;
+  listing_fields: PodListingFieldsDraft;
+  // 规格卡配置随草稿按 account/workspace 维度保存在本地，随批次提交时冻结。
+  spec_card: SpecCardConfig;
+  batch_count: number;
+  custom_count_mode: boolean;
+  custom_count_input: string;
+  selected_template_id: string;
+  current_batch_edit: string | null;
+  system_templates: PodSystemTemplate[];
+  // 智能前置层「最近生成」历史：与业务字段同一草稿生命周期，缺失/损坏时归一化为 []。
+  brief_history: PodBriefHistoryItem[];
+};
+
+export type PodDraftLoadResult = { state: PodCustomizationDraft; error?: string };
+export type PodDraftSaveResult = { ok: true } | { ok: false; error: string };
+export type CreatePodSystemTemplateResult =
+  | { ok: true; template: PodSystemTemplate }
+  | { ok: false; error: string };
+export type ResolvePodSystemTemplateResult =
+  | { valid: true; template: PodTemplate }
+  | { valid: false; reason: string };
+
+const EMPTY_BUSINESS_FIELDS: PodBusinessFieldsDraft = {
+  product_name: "",
+  product_category: "",
+  target_market: "",
+  target_audience: "",
+  core_selling_points: "",
+  design_theme: "",
+  style_keywords: "",
+  color_preferences: "",
+  excluded_elements: "",
+  copy_restrictions: "",
+};
+
+const EMPTY_LISTING_FIELDS: PodListingFieldsDraft = {
+  title_mode: "long",
+  suggested_price_usd: "",
+  category_name: "",
+  skus: [{ name: "", declared_price: "", weight_g: "" }],
+};
+
+// 与 podCustomizationModel.EMPTY_SPEC_CARD 同形的空白表（1 行表头 + 1 个空 SKU 行 × 4 列）。
+// 这里刻意本地实现，不 import 模型模块：本文件会被 node --experimental-strip-types
+// 直接加载（podCustomizationDraft.test.ts），无扩展名的运行时导入在 Node ESM 下无法解析。
+const SPEC_CARD_DIMENSION_HEADER = ["SKU", "Length", "Width", "Height"];
+
+const EMPTY_SPEC_CARD_DRAFT: SpecCardConfig = {
+  enabled: true,
+  style: "light",
+  corner: "bottom-right",
+  display_unit: "cm",
+  cells: [[...SPEC_CARD_DIMENSION_HEADER], ["", "", "", ""]],
+};
+
+function createEmptySpecCard(): SpecCardConfig {
+  return { ...EMPTY_SPEC_CARD_DRAFT, cells: EMPTY_SPEC_CARD_DRAFT.cells.map((row) => [...row]) };
+}
+
+function cloneSpecCardConfig(config: SpecCardConfig): SpecCardConfig {
+  return { ...config, display_unit: config.display_unit ?? "cm", cells: config.cells.map((row) => [...row]) };
+}
+
+function isSpecCardConfig(value: unknown): value is SpecCardConfig {
+  return isRecord(value)
+    && typeof value.enabled === "boolean"
+    && (value.style === "light" || value.style === "dark")
+    && (value.corner === "bottom-right" || value.corner === "bottom-left"
+      || value.corner === "top-right" || value.corner === "top-left")
+    && (value.display_unit === undefined || value.display_unit === "cm" || value.display_unit === "in")
+    && Array.isArray(value.cells)
+    && value.cells.every((row) => Array.isArray(row) && row.every((cell) => typeof cell === "string"));
+}
+
+function versionedDraftStorageKey(version: number, accountId: string, workspaceId: string): string {
+  return `mainpg:pod-customization:v${version}:${encodeURIComponent(accountId)}:${encodeURIComponent(workspaceId)}`;
+}
+
+export function podCustomizationDraftStorageKey(accountId: string, workspaceId: string): string {
+  return versionedDraftStorageKey(POD_CUSTOMIZATION_DRAFT_VERSION, accountId, workspaceId);
+}
+
+/** 历代草稿键（由新到旧）；命中任一即迁移为当前版本。 */
+function historicalDraftStorageKeys(accountId: string, workspaceId: string): string[] {
+  return [
+    PREVIOUS_POD_CUSTOMIZATION_DRAFT_VERSION,
+    OLDER_POD_CUSTOMIZATION_DRAFT_VERSION,
+    LEGACY_POD_CUSTOMIZATION_DRAFT_VERSION,
+  ].map((version) => versionedDraftStorageKey(version, accountId, workspaceId));
+}
+
+export function createEmptyPodCustomizationDraft(): PodCustomizationDraft {
+  return {
+    version: POD_CUSTOMIZATION_DRAFT_VERSION,
+    business_fields: { ...EMPTY_BUSINESS_FIELDS },
+    listing_fields: { ...EMPTY_LISTING_FIELDS },
+    spec_card: createEmptySpecCard(),
+    batch_count: 20,
+    custom_count_mode: false,
+    custom_count_input: "20",
+    selected_template_id: "",
+    current_batch_edit: null,
+    system_templates: [],
+    brief_history: [],
+  };
+}
+
+export function loadPodCustomizationDraft(
+  accountId: string,
+  workspaceId: string,
+  storage: PodCustomizationStorage | null | undefined = browserStorage(),
+): PodDraftLoadResult {
+  const empty = createEmptyPodCustomizationDraft();
+  if (!storage) return { state: empty, error: "无法读取 POD 草稿：浏览器本地存储不可用。" };
+
+  const key = podCustomizationDraftStorageKey(accountId, workspaceId);
+  let sourceKey = key;
+  let raw: string | null;
+  try {
+    raw = storage.getItem(key);
+    if (!raw) {
+      for (const candidate of historicalDraftStorageKeys(accountId, workspaceId)) {
+        raw = storage.getItem(candidate);
+        if (raw) {
+          sourceKey = candidate;
+          break;
+        }
+      }
+    }
+  } catch {
+    return { state: empty, error: "无法读取 POD 草稿：浏览器本地存储不可用。" };
+  }
+  if (!raw) return { state: empty };
+
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (isPodCustomizationDraft(parsed)) return { state: cloneDraft(parsed) };
+    if (isPreviousPodCustomizationDraft(parsed) || isOlderPodCustomizationDraft(parsed) || isLegacyPodCustomizationDraft(parsed)) {
+      const state = migrateDraft(parsed);
+      try {
+        storage.setItem(key, JSON.stringify(cloneDraft(state)));
+      } catch {
+        // Reading a compatible old draft remains useful even if its current replacement cannot be persisted.
+      }
+      return { state };
+    }
+    throw new Error("invalid payload");
+  } catch {
+    try {
+      storage.removeItem(sourceKey);
+    } catch {
+      // A broken storage implementation must not prevent the page from opening with an empty draft.
+    }
+    return { state: empty, error: "POD 草稿数据已损坏，已清除当前账号的本地草稿。" };
+  }
+}
+
+export function savePodCustomizationDraft(
+  accountId: string,
+  workspaceId: string,
+  state: PodCustomizationDraft,
+  storage: PodCustomizationStorage | null | undefined = browserStorage(),
+): PodDraftSaveResult {
+  if (!storage) return { ok: false, error: "无法保存 POD 草稿：浏览器本地存储不可用。" };
+  try {
+    storage.setItem(podCustomizationDraftStorageKey(accountId, workspaceId), JSON.stringify(cloneDraft(state)));
+    return { ok: true };
+  } catch {
+    return { ok: false, error: "无法保存 POD 草稿：浏览器本地存储不可用。" };
+  }
+}
+
+export function createPodSystemTemplate(input: {
+  name: string;
+  creativePrompt: string;
+  template: PodTemplate;
+  id?: string;
+  createdAt?: string;
+}): CreatePodSystemTemplateResult {
+  const name = input.name.trim();
+  if (!name) return { ok: false, error: "请填写系统模板名称。" };
+  return {
+    ok: true,
+    template: {
+      id: input.id ?? nextSystemTemplateId(),
+      name,
+      creativePrompt: input.creativePrompt,
+      templateId: input.template.id,
+      template: clonePodTemplate(input.template),
+      createdAt: input.createdAt ?? new Date().toISOString(),
+    },
+  };
+}
+
+export function removePodSystemTemplate(templates: readonly PodSystemTemplate[], templateId: string): PodSystemTemplate[] {
+  return templates.filter((template) => template.id !== templateId).map(cloneSystemTemplate);
+}
+
+export function resolvePodSystemTemplate(
+  systemTemplate: PodSystemTemplate,
+  availableTemplates: readonly PodTemplate[],
+): ResolvePodSystemTemplateResult {
+  const available = availableTemplates.some((candidate) => candidate.id === systemTemplate.templateId);
+  return available
+    ? { valid: true, template: clonePodTemplate(systemTemplate.template) }
+    : { valid: false, reason: "关联的图片模板已不可用，无法用于本批次。" };
+}
+
+function browserStorage(): PodCustomizationStorage | null {
+  try {
+    return globalThis.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function cloneDraft(state: PodCustomizationDraft): PodCustomizationDraft {
+  return {
+    version: POD_CUSTOMIZATION_DRAFT_VERSION,
+    business_fields: businessFieldsOrDefault(state.business_fields),
+    listing_fields: {
+      ...state.listing_fields,
+      skus: state.listing_fields.skus.map((sku) => ({ ...sku })),
+    },
+    // v3 之前的草稿没有 spec_card，缺失/损坏时退回空白表，而不是丢弃整份草稿。
+    spec_card: specCardOrDefault(state.spec_card),
+    batch_count: state.batch_count,
+    custom_count_mode: state.custom_count_mode,
+    custom_count_input: state.custom_count_input,
+    selected_template_id: state.selected_template_id,
+    current_batch_edit: state.current_batch_edit,
+    system_templates: state.system_templates.map(cloneSystemTemplate),
+    // 后加的键：已存在的旧草稿缺失/损坏时退化为 []，而不是丢弃整份草稿。
+    brief_history: briefHistoryOrDefault(state.brief_history),
+  };
+}
+
+function briefHistoryOrDefault(value: unknown): PodBriefHistoryItem[] {
+  return isBriefHistory(value) ? value.map(cloneBriefHistoryItem) : [];
+}
+
+function cloneBriefHistoryItem(item: PodBriefHistoryItem): PodBriefHistoryItem {
+  return { ...item, fields: { ...item.fields } };
+}
+
+function isBriefHistory(value: unknown): value is PodBriefHistoryItem[] {
+  return Array.isArray(value) && value.every(isBriefHistoryItem);
+}
+
+function isBriefHistoryItem(value: unknown): value is PodBriefHistoryItem {
+  return isRecord(value)
+    && typeof value.id === "string"
+    && typeof value.input === "string"
+    && isBusinessFields(value.fields)
+    && typeof value.created_at === "string";
+}
+
+function specCardOrDefault(value: unknown): SpecCardConfig {
+  return isSpecCardConfig(value) ? cloneSpecCardConfig(value) : createEmptySpecCard();
+}
+
+function cloneSystemTemplate(template: PodSystemTemplate): PodSystemTemplate {
+  return { ...template, template: clonePodTemplate(template.template) };
+}
+
+function clonePodTemplate(template: PodTemplate): PodTemplate {
+  return {
+    ...template,
+    calibration: template.calibration
+      ? {
+        mask: { ...template.calibration.mask },
+        anchor: { ...template.calibration.anchor },
+      }
+      : null,
+  };
+}
+
+function isPodCustomizationDraft(value: unknown): value is PodCustomizationDraft {
+  if (!isRecord(value) || value.version !== POD_CUSTOMIZATION_DRAFT_VERSION) return false;
+  return isBusinessFields(value.business_fields)
+    && isListingFields(value.listing_fields)
+    // spec_card 为后加的键：已存在的 v3 草稿缺失该键时视为空白表（cloneDraft 归一化），不丢弃草稿。
+    && (value.spec_card === undefined || isSpecCardConfig(value.spec_card))
+    && typeof value.batch_count === "number"
+    && typeof value.custom_count_mode === "boolean"
+    && typeof value.custom_count_input === "string"
+    && typeof value.selected_template_id === "string"
+    && (typeof value.current_batch_edit === "string" || value.current_batch_edit === null)
+    && Array.isArray(value.system_templates)
+    && value.system_templates.every(isPodSystemTemplate)
+    // brief_history 为后加的键：缺失时视为 []（cloneDraft 归一化），不丢弃旧草稿。
+    && (value.brief_history === undefined || isBriefHistory(value.brief_history));
+}
+
+function isBusinessFields(value: unknown): value is PodBusinessFieldsDraft {
+  return isRecord(value)
+    && typeof value.product_name === "string"
+    && typeof value.product_category === "string"
+    && typeof value.target_market === "string"
+    && typeof value.target_audience === "string"
+    && typeof value.core_selling_points === "string"
+    && typeof value.design_theme === "string"
+    && typeof value.style_keywords === "string"
+    && typeof value.color_preferences === "string"
+    && typeof value.excluded_elements === "string"
+    // copy_restrictions 为后加的键：旧草稿与历史条目缺失时视为空串，不丢弃整份草稿。
+    && (value.copy_restrictions === undefined || typeof value.copy_restrictions === "string");
+}
+
+function businessFieldsOrDefault(fields: PodBusinessFieldsDraft): PodBusinessFieldsDraft {
+  return { ...fields, copy_restrictions: fields.copy_restrictions ?? "" };
+}
+
+function isListingFields(value: unknown): value is PodListingFieldsDraft {
+  return isRecord(value)
+    && (value.title_mode === "long" || value.title_mode === "short")
+    && typeof value.suggested_price_usd === "string"
+    && typeof value.category_name === "string"
+    && Array.isArray(value.skus)
+    && value.skus.every(isSkuDraft);
+}
+
+/** v3 草稿：SKU 自带长/宽/高与重量，申报价在顶层；尺寸详情还是自由表格。 */
+type PreviousSkuDraft = {
+  name: string;
+  length_cm: string;
+  width_cm: string;
+  height_cm: string;
+  weight_g: string;
+};
+
+type PreviousPodListingFieldsDraft = {
+  title_mode: PodTitleMode;
+  declared_price: string;
+  suggested_price_usd: string;
+  category_name: string;
+  skus: PreviousSkuDraft[];
+};
+
+type PreviousPodCustomizationDraft = Omit<PodCustomizationDraft, "version" | "listing_fields" | "spec_card" | "brief_history"> & {
+  version: typeof PREVIOUS_POD_CUSTOMIZATION_DRAFT_VERSION;
+  listing_fields: PreviousPodListingFieldsDraft;
+};
+
+/** v2 草稿：SKU 自带长/宽/高，重量挂在顶层。 */
+type OlderSkuDraft = {
+  name: string;
+  length_cm: string;
+  width_cm: string;
+  height_cm: string;
+};
+
+type OlderPodListingFieldsDraft = {
+  title_mode: PodTitleMode;
+  declared_price: string;
+  suggested_price_usd: string;
+  category_name: string;
+  weight_g: string;
+  skus: OlderSkuDraft[];
+};
+
+type OlderPodCustomizationDraft = Omit<PodCustomizationDraft, "version" | "listing_fields" | "spec_card" | "brief_history"> & {
+  version: typeof OLDER_POD_CUSTOMIZATION_DRAFT_VERSION;
+  listing_fields: OlderPodListingFieldsDraft;
+};
+
+/** v1 草稿：扁平字段 + 可选的 sku_names 列表。 */
+type LegacyPodListingFieldsDraft = {
+  title_mode: PodTitleMode;
+  declared_price: string;
+  suggested_price_usd: string;
+  length_cm: string;
+  width_cm: string;
+  height_cm: string;
+  weight_g: string;
+  category_name: string;
+  sku_names?: string[];
+};
+
+type LegacyPodCustomizationDraft = Omit<PodCustomizationDraft, "version" | "listing_fields" | "spec_card" | "brief_history"> & {
+  version: typeof LEGACY_POD_CUSTOMIZATION_DRAFT_VERSION;
+  listing_fields: LegacyPodListingFieldsDraft;
+};
+
+function isLegacyPodCustomizationDraft(value: unknown): value is LegacyPodCustomizationDraft {
+  if (!isRecord(value) || value.version !== LEGACY_POD_CUSTOMIZATION_DRAFT_VERSION) return false;
+  return isBusinessFields(value.business_fields)
+    && isLegacyListingFields(value.listing_fields)
+    && typeof value.batch_count === "number"
+    && typeof value.custom_count_mode === "boolean"
+    && typeof value.custom_count_input === "string"
+    && typeof value.selected_template_id === "string"
+    && (typeof value.current_batch_edit === "string" || value.current_batch_edit === null)
+    && Array.isArray(value.system_templates)
+    && value.system_templates.every(isPodSystemTemplate);
+}
+
+function isOlderPodCustomizationDraft(value: unknown): value is OlderPodCustomizationDraft {
+  if (!isRecord(value) || value.version !== OLDER_POD_CUSTOMIZATION_DRAFT_VERSION) return false;
+  return isBusinessFields(value.business_fields)
+    && isOlderListingFields(value.listing_fields)
+    && typeof value.batch_count === "number"
+    && typeof value.custom_count_mode === "boolean"
+    && typeof value.custom_count_input === "string"
+    && typeof value.selected_template_id === "string"
+    && (typeof value.current_batch_edit === "string" || value.current_batch_edit === null)
+    && Array.isArray(value.system_templates)
+    && value.system_templates.every(isPodSystemTemplate);
+}
+
+function isPreviousPodCustomizationDraft(value: unknown): value is PreviousPodCustomizationDraft {
+  if (!isRecord(value) || value.version !== PREVIOUS_POD_CUSTOMIZATION_DRAFT_VERSION) return false;
+  return isBusinessFields(value.business_fields)
+    && isPreviousListingFields(value.listing_fields)
+    && typeof value.batch_count === "number"
+    && typeof value.custom_count_mode === "boolean"
+    && typeof value.custom_count_input === "string"
+    && typeof value.selected_template_id === "string"
+    && (typeof value.current_batch_edit === "string" || value.current_batch_edit === null)
+    && Array.isArray(value.system_templates)
+    && value.system_templates.every(isPodSystemTemplate);
+}
+
+function isPreviousListingFields(value: unknown): value is PreviousPodListingFieldsDraft {
+  return isRecord(value)
+    && (value.title_mode === "long" || value.title_mode === "short")
+    && typeof value.declared_price === "string"
+    && typeof value.suggested_price_usd === "string"
+    && typeof value.category_name === "string"
+    && Array.isArray(value.skus)
+    && value.skus.every(isPreviousSkuDraft);
+}
+
+function isOlderListingFields(value: unknown): value is OlderPodListingFieldsDraft {
+  return isRecord(value)
+    && (value.title_mode === "long" || value.title_mode === "short")
+    && typeof value.declared_price === "string"
+    && typeof value.suggested_price_usd === "string"
+    && typeof value.weight_g === "string"
+    && typeof value.category_name === "string"
+    && Array.isArray(value.skus)
+    && value.skus.every(isOlderSkuDraft);
+}
+
+function isLegacyListingFields(value: unknown): value is LegacyPodListingFieldsDraft {
+  return isRecord(value)
+    && (value.title_mode === "long" || value.title_mode === "short")
+    && typeof value.declared_price === "string"
+    && typeof value.suggested_price_usd === "string"
+    && typeof value.length_cm === "string"
+    && typeof value.width_cm === "string"
+    && typeof value.height_cm === "string"
+    && typeof value.weight_g === "string"
+    && typeof value.category_name === "string"
+    && (value.sku_names === undefined || (Array.isArray(value.sku_names) && value.sku_names.every((name) => typeof name === "string")));
+}
+
+function isSkuDraft(value: unknown): boolean {
+  return isRecord(value)
+    && typeof value.name === "string"
+    && typeof value.declared_price === "string"
+    && typeof value.weight_g === "string";
+}
+
+function isPreviousSkuDraft(value: unknown): value is PreviousSkuDraft {
+  return isRecord(value)
+    && typeof value.name === "string"
+    && typeof value.length_cm === "string"
+    && typeof value.width_cm === "string"
+    && typeof value.height_cm === "string"
+    && typeof value.weight_g === "string";
+}
+
+function isOlderSkuDraft(value: unknown): value is OlderSkuDraft {
+  return isRecord(value)
+    && typeof value.name === "string"
+    && typeof value.length_cm === "string"
+    && typeof value.width_cm === "string"
+    && typeof value.height_cm === "string";
+}
+
+/** 迁移中间态：把各代草稿的 SKU 归一到「名称 + 申报价 + 重量 + 长宽高」。 */
+type MigratedSku = {
+  name: string;
+  declared_price: string;
+  weight_g: string;
+  length_cm: string;
+  width_cm: string;
+  height_cm: string;
+};
+
+function migratedCore(
+  legacy: PreviousPodCustomizationDraft | OlderPodCustomizationDraft | LegacyPodCustomizationDraft,
+): Pick<PodCustomizationDraft, "version" | "listing_fields" | "spec_card" | "brief_history"> {
+  let title_mode: PodTitleMode;
+  let suggested_price_usd: string;
+  let category_name: string;
+  let skus: MigratedSku[];
+
+  if (legacy.version === LEGACY_POD_CUSTOMIZATION_DRAFT_VERSION) {
+    const source = legacy.listing_fields;
+    title_mode = source.title_mode;
+    suggested_price_usd = source.suggested_price_usd;
+    category_name = source.category_name;
+    const names = source.sku_names?.length ? source.sku_names : ["默认款"];
+    skus = names.map((name) => ({
+      name,
+      declared_price: source.declared_price,
+      weight_g: source.weight_g,
+      length_cm: source.length_cm,
+      width_cm: source.width_cm,
+      height_cm: source.height_cm,
+    }));
+  } else if (legacy.version === OLDER_POD_CUSTOMIZATION_DRAFT_VERSION) {
+    // v2：重量在顶层，同一批 SKU 共用一个重量值。
+    const source = legacy.listing_fields;
+    title_mode = source.title_mode;
+    suggested_price_usd = source.suggested_price_usd;
+    category_name = source.category_name;
+    skus = source.skus.map((sku) => ({
+      name: sku.name,
+      declared_price: source.declared_price,
+      weight_g: source.weight_g,
+      length_cm: sku.length_cm,
+      width_cm: sku.width_cm,
+      height_cm: sku.height_cm,
+    }));
+  } else {
+    // v3：重量挂在各自 SKU 上。
+    const source = legacy.listing_fields;
+    title_mode = source.title_mode;
+    suggested_price_usd = source.suggested_price_usd;
+    category_name = source.category_name;
+    skus = source.skus.map((sku) => ({
+      name: sku.name,
+      declared_price: source.declared_price,
+      weight_g: sku.weight_g,
+      length_cm: sku.length_cm,
+      width_cm: sku.width_cm,
+      height_cm: sku.height_cm,
+    }));
+  }
+
+  return {
+    version: POD_CUSTOMIZATION_DRAFT_VERSION,
+    // 旧草稿没有智能填写历史，迁移时补空数组。
+    brief_history: [],
+    listing_fields: {
+      title_mode,
+      suggested_price_usd,
+      category_name,
+      skus: skus.map((sku) => ({
+        name: sku.name,
+        declared_price: sku.declared_price,
+        weight_g: sku.weight_g,
+      })),
+    },
+    // 旧草稿把长/宽/高放在 SKU 上：迁移时搬进尺寸详情表格（表头 + 每个 SKU 一行）。
+    spec_card: {
+      ...createEmptySpecCard(),
+      cells: [
+        [...SPEC_CARD_DIMENSION_HEADER],
+        ...skus.map((sku) => [sku.name, sku.length_cm, sku.width_cm, sku.height_cm]),
+      ],
+    },
+  };
+}
+
+function migrateDraft(
+  legacy: PreviousPodCustomizationDraft | OlderPodCustomizationDraft | LegacyPodCustomizationDraft,
+): PodCustomizationDraft {
+  return {
+    business_fields: businessFieldsOrDefault(legacy.business_fields),
+    batch_count: legacy.batch_count,
+    custom_count_mode: legacy.custom_count_mode,
+    custom_count_input: legacy.custom_count_input,
+    selected_template_id: legacy.selected_template_id,
+    current_batch_edit: legacy.current_batch_edit,
+    system_templates: legacy.system_templates,
+    ...migratedCore(legacy),
+  };
+}
+
+function isPodSystemTemplate(value: unknown): value is PodSystemTemplate {
+  return isRecord(value)
+    && typeof value.id === "string"
+    && typeof value.name === "string"
+    && typeof value.creativePrompt === "string"
+    && typeof value.templateId === "string"
+    && typeof value.createdAt === "string"
+    && isPodTemplate(value.template);
+}
+
+function isPodTemplate(value: unknown): value is PodTemplate {
+  if (!isRecord(value)) return false;
+  const calibration = value.calibration;
+  return typeof value.id === "string"
+    && typeof value.name === "string"
+    && (value.source === "system" || value.source === "personal")
+    && typeof value.preview_url === "string"
+    && typeof value.original_url === "string"
+    && typeof value.width === "number"
+    && typeof value.height === "number"
+    && (value.calibration_status === "pending" || value.calibration_status === "calibrating" || value.calibration_status === "ready" || value.calibration_status === "failed")
+    && typeof value.created_at === "string"
+    && typeof value.updated_at === "string"
+    && (calibration === null || isCalibration(calibration));
+}
+
+function isCalibration(value: unknown): boolean {
+  return isRecord(value)
+    && isPoint(value.anchor)
+    && isRecord(value.mask)
+    && isPoint(value.mask)
+    && typeof value.mask.width === "number"
+    && typeof value.mask.height === "number";
+}
+
+function isPoint(value: unknown): boolean {
+  return isRecord(value) && typeof value.x === "number" && typeof value.y === "number";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function nextSystemTemplateId(): string {
+  return typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? `pod-system-${crypto.randomUUID()}`
+    : `pod-system-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}

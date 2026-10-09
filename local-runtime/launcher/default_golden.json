@@ -1,0 +1,42 @@
+{
+  "version": "2026.09.07",
+  "config_name": "system_config.json",
+  "runtime": {
+    "limits": {
+      "text_workers": 30,
+      "image_workers": 15,
+      "text_request_limit": 30,
+      "image_request_limit": 15,
+      "image_retry_attempts": 3,
+      "image_provider_strategy": "primary_first",
+      "provider_backup_share_percent": 0,
+      "image_stop_after_billable_failure": true
+    },
+    "cos": {
+      "bucket": "",
+      "region": "ap-guangzhou"
+    },
+    "updates": {
+      "cos_prefix": "temu-y2-control",
+      "public_base_url": ""
+    }
+  },
+  "provider": {
+    "text_model": "gpt-5.6-terra",
+    "image_model": "image_gpt",
+    "image_size": "2048x2048",
+    "image_quality": "medium",
+    "premium_image_mode_model": "gpt-image-2-4k",
+    "premium_image_size": "4096x4096",
+    "text_timeout_seconds": 300.0,
+    "image_timeout_seconds": 600.0
+  },
+  "auth_base_url": "https://workbench.haocoming.top/auth-api",
+  "required_deps": [
+    "openpyxl",
+    "python_multipart",
+    "pillow",
+    "opencv",
+    "rapidocr"
+  ]
+}

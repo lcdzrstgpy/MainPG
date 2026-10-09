@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>界野·隐私政策</title>
+  <meta name="description" content="界野隐私政策与个人信息保护说明" />
+  <style>
+    :root {
+      --brand: #14b8a8;
+      --ink: #13233a;
+      --body: #3a5570;
+      --muted: #7c92a9;
+      --line: #e8eef4;
+      --line-soft: #eef4f9;
+      --bg: #f4f8fb;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--body);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+        "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+      font-size: 16px;
+      line-height: 1.9;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: inherit; text-decoration: none; }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 232px minmax(0, 1fr);
+      gap: 30px;
+      align-items: start;
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 34px 24px 72px;
+    }
+
+    /* 左侧固定目录 */
+    .sidebar { position: sticky; top: 34px; }
+    .sidebar .side-brand {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      font-size: .82rem;
+      font-weight: 700;
+      letter-spacing: .05em;
+      color: var(--muted);
+      margin-bottom: 20px;
+      padding-left: 2px;
+    }
+    .sidebar .side-brand .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--brand); }
+    .sidebar nav .toc-label {
+      font-size: .74rem;
+      letter-spacing: .12em;
+      color: var(--muted);
+      font-weight: 700;
+      text-transform: uppercase;
+      margin: 0 0 12px;
+      padding-left: 12px;
+    }
+    .sidebar nav a {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 12px;
+      border-radius: 10px;
+      border-left: 3px solid transparent;
+      color: var(--muted);
+      font-size: .9rem;
+      transition: color .15s ease, background .15s ease, border-color .15s ease;
+    }
+    .sidebar nav a small { color: #b6c6d6; font-size: .78rem; }
+    .sidebar nav a:hover { color: var(--ink); background: #fff; }
+    .sidebar nav a.active {
+      color: var(--brand);
+      border-left-color: var(--brand);
+      background: #fff;
+      font-weight: 600;
+    }
+
+    /* 右侧文档卡片 */
+    .document { background: #fff; border: 1px solid var(--line); border-radius: 16px; overflow: hidden; }
+    .document .head { padding: 30px 40px 22px; border-bottom: 1px solid var(--line-soft); }
+    .document .head .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: .78rem;
+      font-weight: 700;
+      letter-spacing: .05em;
+      color: var(--brand);
+      text-transform: uppercase;
+      margin-bottom: 14px;
+    }
+    .document .head .eyebrow .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--brand); }
+    .document .head h1 { margin: 0 0 16px; font-size: 2.1rem; letter-spacing: -.02em; color: var(--ink); line-height: 1.25; }
+    .document .head .meta { display: flex; flex-wrap: wrap; gap: 8px 22px; color: var(--muted); font-size: .88rem; }
+
+    .document .body { padding: 30px 40px 48px; }
+    .document .body h2 {
+      font-size: 1.18rem;
+      color: var(--ink);
+      letter-spacing: -.01em;
+      margin: 36px 0 14px;
+      padding: 2px 0 2px 12px;
+      border-left: 3px solid var(--brand);
+      line-height: 1.4;
+    }
+    .document .body h2:first-child { margin-top: 2px; }
+    .document .body h3 { margin: 22px 0 8px; font-size: 1rem; color: var(--ink); }
+    .document .body p { margin: 0 0 14px; }
+    .document .body p.lead { color: var(--muted); font-size: .92rem; }
+    .document .body strong { color: var(--ink); font-weight: 700; }
+    .document .body u { text-underline-offset: 2px; text-decoration-color: var(--brand); }
+    .document .body .hl {
+      display: block;
+      margin: 4px 0 16px;
+      padding: 12px 16px;
+      border-radius: 10px;
+      background: #f2fbfa;
+      border: 1px solid #d9f1ee;
+      color: #0f766e;
+      font-size: .94rem;
+    }
+
+    .document .foot { padding: 18px 40px 24px; border-top: 1px solid var(--line-soft); color: var(--muted); font-size: .82rem; }
+    .document .foot a { color: var(--brand); }
+
+    /* 移动端 */
+    @media (max-width: 920px) {
+      .layout { grid-template-columns: 1fr; gap: 18px; padding: 18px 14px 48px; }
+      .sidebar { position: static; }
+      .sidebar nav a { padding: 6px 10px; }
+      .document .head { padding: 24px 22px 18px; }
+      .document .head h1 { font-size: 1.6rem; }
+      .document .body { padding: 24px 22px 34px; }
+      .document .foot { padding: 16px 22px 20px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="side-brand"><span class="dot"></span>界野 · 隐私政策</div>
+      <nav id="toc">
+        <p class="toc-label">目录</p>
+        <a href="#intro" class="active"><small>前言</small></a>
+        <a href="#collect"><small>一、我们收集的信息</small></a>
+        <a href="#storage"><small>二、信息的存储</small></a>
+        <a href="#security"><small>三、信息安全</small></a>
+        <a href="#use"><small>四、我们如何使用信息</small></a>
+        <a href="#share"><small>五、对外提供</small></a>
+        <a href="#rights"><small>六、您的权利</small></a>
+        <a href="#change"><small>七、变更</small></a>
+        <a href="#minor"><small>八、未成年人保护</small></a>
+        <a href="#other"><small>九、其他</small></a>
+        <a href="#contact"><small>十、与我们联系</small></a>
+      </nav>
+    </aside>
+
+    <article class="document">
+      <header class="head">
+        <span class="eyebrow"><span class="dot"></span>隐私政策</span>
+        <h1>界野隐私政策</h1>
+        <div class="meta">
+          <span>更新日期：2026 年 9 月 2 日</span>
+          <span>生效日期：2026 年 9 月 2 日</span>
+          <span>版本：v1.1</span>
+        </div>
+      </header>
+
+      <div class="body">
+        <h2 id="intro">前言</h2>
+        <p class="lead">欢迎您使用界野（下称"我们"）。我们将通过本政策帮助您了解界野会如何收集、使用和存储您的相关信息以及您享有哪些权利。为达到这一目的，我们将向您逐一说明我们收集的信息种类、对应的处理方式、处理目的与保存方式。</p>
+        <p class="hl">继续使用本软件或工作台，即表示您已阅读并同意本《界野隐私政策》。如您不同意本政策的任何内容，请停止使用相关服务。</p>
+        <p>界野是面向跨境电商团队的<em>本地运营中台</em>，用于商品采集、AI 商品处理、核价找货源、利润核算、上架辅助、POD 定制与商品组合套装等业务，<u>不面向消费者提供在线交易或注册服务</u>。因此，我们<strong>不采集、不存储终端消费者的个人数据</strong>（包括但不限于买家姓名、收货地址、联系电话、电子邮箱与订单信息）。</p>
+
+        <h2 id="collect">一、我们收集的信息</h2>
+        <p>在您使用界野的过程中，我们会按照如下方式收集您主动提供或因使用服务而产生的信息，用以向您提供功能、优化服务以及保障账号安全：</p>
+        <h3>1. 商家员工账号信息</h3>
+        <p>当您注册或登录工作台时，我们会收集<strong>您的用户名、登录邮箱</strong>以及<strong>角色与权限、所属工作区</strong>。收集这些信息是为了帮助您完成账号注册与登录、保护您的账号安全并实现权限隔离。若您不提供这类信息，您可能无法正常使用本服务。</p>
+        <h3>2. 店铺与商品数据</h3>
+        <p>当您使用采集、AI 处理、核价、核算与上架等功能时，我们会处理<strong>商品采集记录、AI 处理结果、候选商品、报价批次、利润核算结果、业务规则与配置</strong>等信息，这些信息是实现相应功能所必需的。</p>
+        <h3>3. 第三方平台配置</h3>
+        <p>为连接或调用第三方业务平台，我们可能处理您配置的<strong>对接参数与接口凭据</strong>。</p>
+        <h3>4. 安全与稳定性信息</h3>
+        <p>为保障您正常使用服务、维护服务正常运行并改进体验，我们会生成必要的<strong>会话令牌</strong>与<strong>操作日志</strong>（如登录记录、功能使用记录与故障信息等）。</p>
+
+        <h2 id="storage">二、信息的存储</h2>
+        <p>界野业务软件安装于<strong>您或您的企业所控制的电脑及内部环境</strong>。店铺与商品等业务数据保存在<strong>本机或企业内部数据库（如 SQLite）</strong>中，访问范围以实际软件版本、安装方式与企业配置为准。</p>
+        <p>基于该<em>本地化部署</em>特性，您或您的企业拥有对本地业务数据的<u>控制权</u>。我们仅在提供工作台功能及履行法律义务所需期间保留相关信息，不做超出服务目的的数据留存。</p>
+
+        <h2 id="security">三、信息安全</h2>
+        <p>我们采取多种措施保护您的信息，以免遭受未经授权的访问、使用或披露：</p>
+        <p>1．<strong>加密存储</strong>：平台接口密钥采用 AES-256-GCM 或 Fernet 加密保存，登录口令使用 PBKDF2-SHA256 摘要（不可逆）保存，会话令牌使用 SHA-256 摘要保存，<u>不存储明文凭据</u>；<br />2．<strong>加密传输</strong>：本软件与远端账号服务、AI 服务及第三方接口之间的通信使用加密通道（TLS/HTTPS）；<br />3．<strong>访问控制</strong>：账号经服务端校验后方可访问，并按工作区隔离，依据角色遵循"最小权限"原则，仅授予履行职责所必需的权限。</p>
+
+        <h2 id="use">四、我们如何使用信息</h2>
+        <p>相关信息仅用于以下目的：提供工作台各项功能、排查故障与提升稳定性、保障系统与账号安全、改进产品体验，以及履行适用法律义务。</p>
+        <p><strong>我们不会将上述信息用于<b>合作协议约定之外</b>的用途。</strong></p>
+
+        <h2 id="share">五、对外提供</h2>
+        <p>界野可连接或兼容第三方业务平台，但这不表示我们与这些平台存在官方隶属关系。我们在以下情形可能对外提供必要信息：</p>
+        <p>1．相关法律法规或有权机关要求；<br />2．为提供您要求的功能所必需（如调用第三方平台接口）；<br />3．为完成合并、分立、收购或资产转让而转移；<br />4．取得您的明确授权。</p>
+        <p>第三方平台对其自身数据的处理同时受其自身隐私政策与法律约束，请在使用相关能力时一并留意。</p>
+
+        <h2 id="rights">六、您的权利</h2>
+        <p>在适用法律范围内，您有权：</p>
+        <p>1．查询并获取我们持有的您的相关信息；<br />2．对不准确的信息提出更正；<br />3．申请删除不再必要的个人信息；<br />4．停止使用并注销您的账号。</p>
+        <p>您可以基于本政策第十节的渠道提出上述请求。收到请求后，我们会核验您的身份，并按适用法律与我们的内部数据保护流程及时处理。</p>
+
+        <h2 id="change">七、变更</h2>
+        <p>我们会随功能演进与法律要求的变化适时更新本政策，并在本页面公布最新版本。对涉及您权益的重大变更，我们会以显著方式提示。</p>
+
+        <h2 id="minor">八、未成年人保护</h2>
+        <p>界野面向跨境电商团队及企业用户，并非面向未成年人个人提供服务。若您不具备完全民事行为能力，在使用本服务前，应事先取得您法定监护人的同意。</p>
+
+        <h2 id="other">九、其他</h2>
+        <p>本政策未涉及的个人信息保护相关事项，我们将在具体功能场景、相关协议或页面说明中另行约定。本政策与上述说明共同构成我们对个人信息保护的整体承诺。</p>
+
+        <h2 id="contact">十、与我们联系</h2>
+        <p>如您对本政策或个人信息处理有任何疑问，或希望行使上述权利，可通过工作台内的意见反馈与公告支持渠道与我们联系。</p>
+      </div>
+
+      <footer class="foot">界野 · 面向跨境电商团队的本地运营中台　·　<a href="/">返回工作台</a></footer>
+    </article>
+  </div>
+
+  <script>
+    // 目录滚动高亮
+    (function () {
+      var links = Array.prototype.slice.call(document.querySelectorAll('#toc a'));
+      var targets = links.map(function (a) { return document.querySelector(a.getAttribute('href')); });
+      function update() {
+        var pos = window.scrollY + 120;
+        var idx = 0;
+        for (var i = 0; i < targets.length; i++) { if (targets[i] && targets[i].offsetTop <= pos) { idx = i; } }
+        links.forEach(function (a, i) { a.classList.toggle('active', i === idx); });
+      }
+      window.addEventListener('scroll', update, { passive: true });
+      window.addEventListener('resize', update);
+      update();
+    })();
+  </script>
+</body>
+</html>

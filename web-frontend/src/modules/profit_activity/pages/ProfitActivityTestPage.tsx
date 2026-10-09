@@ -1,0 +1,1689 @@
+import { type ClipboardEvent, type DragEvent, type ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { getAuthToken, toUserMessage } from "../../../transport/http/client";
+import type { ProfitActivityPrefill } from "../types/products";
+import { ShippingWeightDrawer } from "../components/ShippingWeightDrawer";
+import "../styles/profitActivityTest.css";
+
+type Site = string;
+type Scope = "default" | "company";
+
+type ProductRow = {
+  id?: number;
+  skc: string;
+  site?: Site;
+  site_code?: Site;
+  workspace_name?: string;
+  created_by?: string;
+  created_by_username?: string;
+  store_name?: string;
+  selling_price?: number;
+  cost_price?: number;
+  weight_kg?: number;
+  net_profit?: number;
+  profit_rate?: number;
+  source_url?: string;
+  note?: string;
+  image_path?: string;
+  source_image_path?: string;
+  is_owner?: boolean;
+  can_edit?: boolean;
+};
+
+type CalculateResult = {
+  calculation?: Record<string, unknown>;
+  preview?: Record<string, unknown>;
+  settings?: Record<string, unknown>;
+};
+
+type ImportPreview = {
+  import_id?: string;
+  original_filename?: string;
+  site?: Site;
+  created_at?: string;
+  summary?: {
+    total_rows?: number;
+    importable_rows?: number;
+    warning_rows?: number;
+    blocked_rows?: number;
+    duplicate_rows?: number;
+    default_selected_rows?: number;
+    sites?: Record<string, number>;
+    [key: string]: unknown;
+  };
+  rows?: Array<Record<string, unknown>>;
+};
+
+type FilterDecision = {
+  record_id?: number;
+  skc?: string;
+  site?: string;
+  decision?: string;
+  reason_code?: string;
+};
+
+type FilterTask = {
+  task_id?: number;
+  filter_task_id?: number;
+  status?: string;
+  kept_skc_count?: number;
+  removed_skc_count?: number;
+  kept_row_count?: number;
+  removed_row_count?: number;
+  kept_activity_count?: number;
+  removed_activity_count?: number;
+  qualification_counts?: Record<string, number>;
+  filtered_path?: string;
+  removed_path?: string;
+  id?: number;
+  site_code?: string;
+  rule_version?: number;
+  minimum_net_profit?: number;
+  minimum_profit_rate?: number;
+  retained_count?: number;
+  excluded_count?: number;
+  created_at?: string;
+  decisions?: FilterDecision[];
+  [key: string]: unknown;
+};
+
+type ProductForm = {
+  skc: string;
+  store_name: string;
+  selling_price: string;
+  cost_price: string;
+  weight_kg: string;
+  note: string;
+  source_url: string;
+  source_urls: string[];
+};
+
+type RecentSavedProduct = {
+  skc: string;
+  site: Site;
+  form: ProductForm;
+  productImage?: File | null;
+  sourceImages?: (File | null)[];
+};
+
+type SiteSettingField = {
+  key: string;
+  label: string;
+  transform?: "percent";
+};
+
+const emptyProduct: ProductForm = {
+  skc: "",
+  store_name: "",
+  selling_price: "",
+  cost_price: "",
+  weight_kg: "",
+  note: "",
+  source_url: "",
+  source_urls: [],
+};
+
+type SiteSettingProfile = {
+  id: Site;
+  label: string;
+  fields: SiteSettingField[];
+  builtin: boolean;
+  data?: Record<string, unknown>;
+};
+
+// 站点设置由这张配置表驱动。后续新增站点时，只需追加一项及其后端对应字段，
+// 弹窗和站点切换会自动生成，无需再修改 JSX 结构。
+const genericSiteSettingFields: SiteSettingField[] = [
+  { key: "first_mile_rate", label: "当前站点头程每kg" },
+  { key: "first_mile_fixed", label: "当前站点头程固定费" },
+  { key: "domestic_fee", label: "国内操作费" },
+  { key: "shipping_subsidy", label: "运费补贴" },
+  { key: "end_fee", label: "尾程固定费" },
+  { key: "refund_rate", label: "退款率 %", transform: "percent" },
+];
+
+const builtinSiteSettingProfiles: SiteSettingProfile[] = [
+  {
+    id: "US",
+    label: "美区",
+    builtin: true,
+    fields: [
+      { key: "us_first_mile_rate", label: "当前站点头程每kg" },
+      { key: "us_first_mile_fixed", label: "当前站点头程固定费" },
+      { key: "us_domestic_fee", label: "国内操作费" },
+      { key: "us_shipping_subsidy", label: "运费补贴" },
+      { key: "us_refund_rate", label: "退款率 %", transform: "percent" },
+    ],
+  },
+  {
+    id: "CO",
+    label: "哥伦比亚",
+    builtin: true,
+    fields: [
+      { key: "co_first_mile_rate", label: "当前站点头程每kg" },
+      { key: "co_first_mile_fixed", label: "当前站点头程固定费" },
+      { key: "co_domestic_fee", label: "国内操作费" },
+      { key: "co_shipping_subsidy", label: "运费补贴" },
+      { key: "co_refund_rate", label: "退款率 %", transform: "percent" },
+    ],
+  },
+  {
+    id: "EC",
+    label: "厄瓜多尔",
+    builtin: true,
+    fields: [
+      { key: "ec_first_mile_rate", label: "当前站点头程每kg" },
+      { key: "ec_first_mile_fixed", label: "当前站点头程固定费" },
+      { key: "ec_domestic_fee", label: "国内操作费" },
+      { key: "ec_shipping_subsidy", label: "运费补贴" },
+      { key: "ec_shipping_subsidy_price_limit", label: "补贴售价上限（含）" },
+      { key: "ec_refund_rate", label: "退款率 %", transform: "percent" },
+    ],
+  },
+  {
+    id: "PE",
+    label: "秘鲁",
+    builtin: true,
+    fields: [
+      { key: "pe_first_mile_rate", label: "当前站点头程每kg" },
+      { key: "pe_first_mile_fixed", label: "当前站点头程固定费" },
+      { key: "pe_domestic_fee", label: "国内操作费" },
+      { key: "pe_shipping_subsidy", label: "运费补贴" },
+      { key: "pe_refund_rate", label: "退款率 %", transform: "percent" },
+    ],
+  },
+];
+
+const siteLabels: Record<string, string> = Object.fromEntries(
+  builtinSiteSettingProfiles.map(({ id, label }) => [id, label]),
+);
+
+function fieldsForSite(site: Site) {
+  return builtinSiteSettingProfiles.find((profile) => profile.id === site)?.fields ?? genericSiteSettingFields;
+}
+
+function siteLabel(site: Site) {
+  return siteLabels[site] || site;
+}
+
+function resolveSiteInput(value: string, profiles: SiteSettingProfile[]) {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  const normalized = trimmed.toUpperCase();
+  const matched = profiles.find((profile) => (
+    profile.id.toUpperCase() === normalized || profile.label === trimmed
+  ));
+  return matched?.id || normalized;
+}
+
+function toSiteSettingProfile(data: Record<string, unknown>): SiteSettingProfile {
+  const id = String(data.site_code || "").toUpperCase();
+  const builtin = builtinSiteSettingProfiles.find((profile) => profile.id === id);
+  return builtin || {
+    id,
+    label: String(data.display_name || id),
+    fields: genericSiteSettingFields,
+    builtin: false,
+    data,
+  };
+}
+
+// 内置站点均有系统默认值；用户保存后才形成当前站点的覆盖。
+const DEFAULT_PROFIT_SETTINGS: Record<string, number> = {
+  domestic_fee: 2.5,
+  shipping_subsidy: 21,
+  refund_rate: 0.05,
+  us_first_mile_rate: 72,
+  us_first_mile_fixed: 5,
+  us_domestic_fee: 2.5,
+  us_shipping_subsidy: 21,
+  us_refund_rate: 0.05,
+  co_first_mile_rate: 70,
+  co_first_mile_fixed: 0,
+  co_domestic_fee: 2.5,
+  co_shipping_subsidy: 21,
+  co_refund_rate: 0.05,
+  ec_domestic_fee: 2.5,
+  ec_shipping_subsidy: 15,
+  ec_shipping_subsidy_price_limit: 120,
+  ec_first_mile_rate: 108,
+  ec_first_mile_fixed: 0,
+  ec_end_fee: 27,
+  ec_refund_rate: 0.05,
+  pe_first_mile_rate: 80,
+  pe_first_mile_fixed: 0,
+  pe_domestic_fee: 2.5,
+  pe_shipping_subsidy: 21,
+  pe_refund_rate: 0.05,
+  activity_min_net_profit: 0,
+  activity_profit_rate_threshold: 0,
+};
+
+export function ProfitActivityTestPage({ isActive = true, prefill }: { isActive?: boolean; prefill?: ProfitActivityPrefill }) {
+  // API 地址固定为空：所有请求走同源相对路径，由 Vite 代理转发到后端 8010（团队约定端口）
+  const [apiBase, setApiBase] = useState("");
+  const [site, setSite] = useState<Site>("US");
+  const [siteDraft, setSiteDraft] = useState("美区");
+  const [siteDropdownOpen, setSiteDropdownOpen] = useState(false);
+  const [storeDropdownOpen, setStoreDropdownOpen] = useState(false);
+  const [scope, setScope] = useState<Scope>("default");
+  const [settings, setSettings] = useState<Record<string, unknown> | null>(null);
+  const [siteSettings, setSiteSettings] = useState<Record<string, string>>({});
+  const [activityThresholdConfigured, setActivityThresholdConfigured] = useState(false);
+  const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
+  // 站点费率设置（原在产品库页，现移到本页 hero 入口）：正在编辑的站点、草稿值与新增站点表单。
+  const [settingsSite, setSettingsSite] = useState<Site>("US");
+  const [settingsDraft, setSettingsDraft] = useState<Record<string, string>>({});
+  const [newSiteOpen, setNewSiteOpen] = useState(false);
+  const [newSiteCode, setNewSiteCode] = useState("");
+  const [newSiteName, setNewSiteName] = useState("");
+  const [newSiteCodeInvalid, setNewSiteCodeInvalid] = useState(false);
+  const [siteProfiles, setSiteProfiles] = useState<SiteSettingProfile[]>(builtinSiteSettingProfiles);
+  const [productForm, setProductForm] = useState<ProductForm>(emptyProduct);
+  const [productImage, setProductImage] = useState<File | null>(null);
+  // 重量侧边栏：粘贴/上传截图提取重量与长宽高；勾选后只按实际重量算（不算抛重）。
+  const [weightDrawerOpen, setWeightDrawerOpen] = useState(false);
+  const [weightUseActualOnly, setWeightUseActualOnly] = useState(false);
+  // 每个货源链接一张货源图：sourceImages[0] 对应货源链接 1，sourceImages[i+1] 对应第 i 个追加链接
+  const [sourceImages, setSourceImages] = useState<(File | null)[]>([null]);
+  const [calculation, setCalculation] = useState<CalculateResult | null>(null);
+  const [querySkcs, setQuerySkcs] = useState("");
+  const [products, setProducts] = useState<ProductRow[]>([]);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [importFiles, setImportFiles] = useState<File[]>([]);
+  const [importStoreName, setImportStoreName] = useState("");
+  const [storeOptions, setStoreOptions] = useState<string[]>([]);
+  const [importPreviews, setImportPreviews] = useState<ImportPreview[]>([]);
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
+  const [importGuidelinesOpen, setImportGuidelinesOpen] = useState(false);
+  const [lastImportFiles, setLastImportFiles] = useState<string[]>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("profitActivityImportFileNames") || "[]");
+      return Array.isArray(saved) ? saved.filter((item): item is string => typeof item === "string") : [];
+    } catch {
+      return [];
+    }
+  });
+  const [activityFile, setActivityFile] = useState<File | null>(null);
+  const [filterTask, setFilterTask] = useState<FilterTask | null>(null);
+  // 过滤任务进行中（含上传/轮询），控制“产品过滤中…”按钮与暂停按钮
+  const [filterBusy, setFilterBusy] = useState(false);
+  // 历史过滤结果（按时间倒序）
+  const [filterHistory, setFilterHistory] = useState<FilterTask[]>([]);
+  const filterPollRef = useRef<number | undefined>(undefined);
+  // 没有任何可申报产品时的提示弹窗
+  const [noEligibleOpen, setNoEligibleOpen] = useState(false);
+  const [busy, setBusy] = useState("");
+  const [message, setMessage] = useState("");
+  const [recentSaved, setRecentSaved] = useState<RecentSavedProduct[]>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("profitActivityRecentSaved") || "[]");
+      if (!Array.isArray(saved)) return [];
+      return saved.slice(0, 3).map((item): RecentSavedProduct | null => {
+        if (typeof item === "string") {
+          return { skc: item, site: "US", form: { ...emptyProduct, skc: item } };
+        }
+        if (item && typeof item === "object" && typeof item.skc === "string" && item.form) {
+          return {
+            skc: item.skc,
+            site: typeof item.site === "string" ? item.site : "US",
+            form: { ...emptyProduct, ...(item.form as ProductForm), skc: item.skc },
+          };
+        }
+        return null;
+      }).filter((item): item is RecentSavedProduct => Boolean(item));
+    } catch {
+      return [];
+    }
+  });
+  const [log, setLog] = useState<string[]>([]);
+  const debounceRef = useRef<number | undefined>();
+
+  useEffect(() => {
+    if (isActive) return;
+    setSettingsDialogOpen(false);
+    setImportDialogOpen(false);
+    setImportGuidelinesOpen(false);
+    setNoEligibleOpen(false);
+  }, [isActive]);
+
+  // 从「商品货源及成本展示」点「查看利润明细」跳转而来时，带入成本、货源链接与 SKU 图；
+  // 售价与重量留空，由用户补齐后自动预览利润。
+  useEffect(() => {
+    if (!prefill) return;
+    let cancelled = false;
+    setProductForm({
+      ...emptyProduct,
+      skc: prefill.skc ?? "",
+      store_name: prefill.store_name ?? "",
+      cost_price: prefill.cost_price ?? "",
+      source_url: prefill.source_url ?? "",
+      note: prefill.note ?? "",
+    });
+    setProductImage(null);
+    setSourceImages([null]);
+    setCalculation(null);
+    setMessage("已带入成本与货源链接，请填写售价与重量查看利润。");
+    // SKU 图是远程地址，取回成 File 才能走后续预览与入库的图片上传流程。
+    const imageUrl = (prefill.source_image_url ?? "").trim();
+    if (imageUrl) {
+      void fetchImageFile(imageUrl).then((file) => {
+        if (cancelled || !file) return;
+        setSourceImages([file]);
+        setMessage("已带入成本、货源链接与 SKU 图片，请填写售价与重量查看利润。");
+      });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [prefill]);
+
+  const selectedSkcs = useMemo(() => [...selected], [selected]);
+  const displaySiteLabel = (value: Site) => siteProfiles.find((profile) => profile.id === value)?.label || siteLabel(value);
+  const commitSiteDraft = (value = siteDraft) => {
+    const nextSite = resolveSiteInput(value, siteProfiles);
+    if (!nextSite) {
+      setSiteDraft(displaySiteLabel(site));
+      setSiteDropdownOpen(false);
+      return;
+    }
+    setSite(nextSite);
+    setSiteDraft(displaySiteLabel(nextSite));
+    setSiteDropdownOpen(false);
+  };
+  const selectSingleSite = (profile: SiteSettingProfile) => {
+    setSite(profile.id);
+    setSiteDraft(profile.label);
+    setSiteDropdownOpen(false);
+  };
+  const selectSingleStore = (storeName: string) => {
+    setProductForm((current) => ({ ...current, store_name: storeName }));
+    setStoreDropdownOpen(false);
+  };
+  const activityThresholds = parseActivityThresholds(siteSettings);
+  const formReadyForPreview = productForm.skc.trim() && positive(productForm.selling_price) && positive(productForm.cost_price) && positive(productForm.weight_kg);
+  // 货源图为可选补充资料；货源链接仍用于在产品库中关联货源。
+  const sourceLinks = [productForm.source_url, ...productForm.source_urls];
+  const sourceLinksReady = sourceLinks.some((url) => url.trim());
+  const formReadyForArchive = Boolean(formReadyForPreview && productImage && sourceLinksReady);
+  const storeOptionSites = useMemo(
+    () => [...new Set(siteProfiles.map((profile) => profile.id).filter(Boolean))],
+    [siteProfiles],
+  );
+  const singleStoreOptions = useMemo(() => storeOptions.filter((store) => store.trim()), [storeOptions]);
+
+  useEffect(() => {
+    void loadSettings();
+    void loadSites();
+    void queryProducts("");
+    void restoreImportSessions();
+    void loadFilterHistory();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiBase]);
+
+  // 组件卸载时清理过滤轮询定时器
+  useEffect(() => () => window.clearTimeout(filterPollRef.current), []);
+
+  useEffect(() => {
+    if (!settings) return;
+    setSiteSettings(extractSiteSettings(settings, site));
+    setActivityThresholdConfigured(settings.activity_threshold_configured === true);
+  }, [settings, site]);
+
+  useEffect(() => {
+    setSiteDraft(displaySiteLabel(site));
+  }, [site, siteProfiles]);
+
+  useEffect(() => {
+    window.clearTimeout(debounceRef.current);
+    if (!formReadyForPreview) {
+      setCalculation(null);
+      return;
+    }
+    debounceRef.current = window.setTimeout(() => {
+      void calculateProfit(false);
+    }, 350);
+    return () => window.clearTimeout(debounceRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [productForm.skc, productForm.selling_price, productForm.cost_price, productForm.weight_kg, site]);
+
+  const request = async <T,>(path: string, options: RequestInit = {}): Promise<T> => {
+    const url = `${apiBase}${path}`;
+    const headers = new Headers(options.headers);
+    // 令牌与其它板块（产品采集 / AI 处理）一致：每次请求现读登录会话令牌 wh_demo_token。
+    // 此前用的是模块加载时固化的 whLocalApiToken，打包版拿不到，会让本页所有请求变成
+    // 无鉴权 401，再被全局拦截器误判成「会话过期」把用户踢回登录页。
+    const token = getAuthToken();
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    const response = await fetch(url, { ...options, headers });
+    const text = await response.text();
+    let data: unknown = text;
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      // file download/text error
+    }
+    setLog((items) => [`${options.method || "GET"} ${url} -> ${response.status}`, ...items].slice(0, 10));
+    if (!response.ok) throw new Error(toUserMessage(typeof data === "string" ? data : JSON.stringify(data)));
+    return data as T;
+  };
+
+  const loadStoreOptions = async () => {
+    try {
+      const productLists = await Promise.all(storeOptionSites.map(async (optionSite) => {
+        const params = new URLSearchParams({ site: optionSite, scope, skcs: "" });
+        const data = await request<{ products: ProductRow[] }>(`/api/profit-activity/products?${params}`);
+        return data.products || [];
+      }));
+      const stores = [...new Set(productLists.flat().map((item) => (item.store_name || "").trim()).filter(Boolean))]
+        .sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
+      setStoreOptions(stores);
+    } catch {
+      setStoreOptions([]);
+    }
+  };
+
+  useEffect(() => {
+    void loadStoreOptions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiBase, scope, storeOptionSites]);
+
+  const download = async (path: string, filename: string) => {
+    const url = `${apiBase}${path}`;
+    const headers = new Headers();
+    const token = getAuthToken();
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    const response = await fetch(url, { headers });
+    setLog((items) => [`GET ${url} -> ${response.status}`, ...items].slice(0, 10));
+    if (!response.ok) throw new Error(toUserMessage(await response.text()));
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = filename;
+    anchor.click();
+    // 延迟释放 objectURL，避免个别浏览器在下载尚未开始时就把数据源回收导致下载失败
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  };
+
+  const withBusy = async (label: string, action: () => Promise<string | void>, successMessage?: string) => {
+    setBusy(label);
+    setMessage(`${label} 中...`);
+    try {
+      const result = await action();
+      if (typeof result === "string" && result) setMessage(result);
+      else if (successMessage) setMessage(successMessage);
+      else setMessage(`${label} 完成。`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  async function loadSettings() {
+    const data = await request<Record<string, unknown>>("/api/profit-activity/settings");
+    setSettings(data);
+    setSiteSettings(extractSiteSettings(data, site));
+    setActivityThresholdConfigured(data.activity_threshold_configured === true);
+    return data;
+  }
+
+  async function loadSites() {
+    const data = await request<{ sites: Array<Record<string, unknown>> }>("/api/profit-activity/sites");
+    setSiteProfiles(data.sites.map(toSiteSettingProfile));
+  }
+
+  // 保存设置；遇到版本冲突（settings_revision_conflict）时自动重取最新设置并以最新 revision 重试一次，避免被乐观锁卡住
+  const putSettings = async (payload: Record<string, unknown>) => {
+    const save = () => request<Record<string, unknown>>("/api/profit-activity/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    try {
+      return await save();
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("settings_revision_conflict")) {
+        const fresh = await loadSettings();
+        payload.expected_revision = Number(fresh?.revision || 0);
+        return await save();
+      }
+      throw error;
+    }
+  };
+
+  const openSettingsDialog = () => {
+    const firstSite = siteProfiles[0]?.id || site || "US";
+    const profile = siteProfiles.find((item) => item.id === firstSite);
+    setSettingsSite(firstSite);
+    setSettingsDraft(extractSiteSettings(profile?.builtin ? settings || {} : profile?.data || {}, firstSite));
+    setNewSiteOpen(false);
+    setNewSiteCodeInvalid(false);
+    setSettingsDialogOpen(true);
+  };
+
+  const selectSettingsSite = (nextSite: Site) => {
+    const profile = siteProfiles.find((item) => item.id === nextSite);
+    setSettingsSite(nextSite);
+    setSettingsDraft(extractSiteSettings(profile?.builtin ? settings || {} : profile?.data || {}, nextSite));
+  };
+
+  const createSite = () => withBusy("新增站点", async () => {
+    const siteCode = newSiteCode.trim().toUpperCase();
+    const displayName = newSiteName.trim();
+    if (!/^[A-Z0-9_]{2,12}$/.test(siteCode) || !displayName) {
+      setNewSiteCodeInvalid(true);
+      return;
+    }
+    const data = await request<{ site: Record<string, unknown> }>("/api/profit-activity/sites", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ site_code: siteCode, display_name: displayName }),
+    });
+    const created = toSiteSettingProfile(data.site);
+    setSiteProfiles((items) => [...items, created]);
+    setNewSiteCode("");
+    setNewSiteName("");
+    setNewSiteCodeInvalid(false);
+    setNewSiteOpen(false);
+    setSettingsSite(created.id);
+    setSettingsDraft(extractSiteSettings(created.data || {}, created.id));
+  }, "新站点已创建并切换，可直接设置费率。");
+
+  /** 保存费率后按新费率重算该站点产品库的利润，返回可直接展示的结果文案。 */
+  const recalculateSiteProducts = async () => {
+    const result = await request<{ updated?: number; failed?: number }>("/api/profit-activity/products/recalculate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sites: settingsSite, scope }),
+    });
+    const updated = Number(result.updated || 0);
+    const failed = Number(result.failed || 0);
+    return failed ? `已重算 ${updated} 个产品，失败 ${failed} 个。` : `已重算 ${updated} 个产品。`;
+  };
+
+  // 内置站点的费率存在全局 settings 里，自定义站点存在各自的 profile 里；
+  // 两种保存后都必须重算该站点产品，否则产品库里的利润列还是旧费率算出来的。
+  const siteRateValue = (field: SiteSettingField) => field.transform === "percent"
+    ? Number(settingsDraft[field.key] || 0) / 100
+    : Number(settingsDraft[field.key] || 0);
+
+  const saveSiteSettings = () => withBusy("保存站点费率", async () => {
+    const profile = siteProfiles.find((item) => item.id === settingsSite);
+    if (!profile) throw new Error("站点不存在，请刷新后重试。");
+    const rateFields = fieldsForSite(settingsSite);
+    if (!profile.builtin) {
+      const currentSettings = await putSettings({
+        expected_revision: Number(settings?.revision || 0),
+      });
+      const data = await request<{ site: Record<string, unknown> }>(`/api/profit-activity/sites/${encodeURIComponent(profile.id)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          site_code: profile.id,
+          display_name: profile.label,
+          ...Object.fromEntries(rateFields.map((field) => [field.key, siteRateValue(field)])),
+        }),
+      });
+      const updated = toSiteSettingProfile(data.site);
+      setSettings(currentSettings);
+      setSiteProfiles((items) => items.map((item) => item.id === updated.id ? updated : item));
+      setSettingsDraft(extractSiteSettings(updated.data || {}, updated.id));
+      return `站点费率已保存，${await recalculateSiteProducts()}`;
+    }
+    const payload: Record<string, unknown> = {
+      expected_revision: Number(settings?.revision || 0),
+    };
+    for (const field of rateFields) payload[field.key] = siteRateValue(field);
+    const data = await putSettings(payload);
+    setSettings(data);
+    setSettingsDraft(extractSiteSettings(data, settingsSite));
+    setSiteSettings(extractSiteSettings(data, site));
+    return `站点费率已保存，${await recalculateSiteProducts()}`;
+  });
+
+  const restoreDefaultSettings = () => withBusy("恢复默认费率", async () => {
+    const profile = siteProfiles.find((item) => item.id === settingsSite);
+    if (!profile) throw new Error("站点不存在，请刷新后重试。");
+    const rateFields = fieldsForSite(settingsSite);
+    if (!profile.builtin) {
+      const currentSettings = await putSettings({
+        expected_revision: Number(settings?.revision || 0),
+      });
+      const data = await request<{ site: Record<string, unknown> }>(`/api/profit-activity/sites/${encodeURIComponent(profile.id)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          site_code: profile.id,
+          display_name: profile.label,
+          ...Object.fromEntries(rateFields.map((field) => [field.key, 0])),
+        }),
+      });
+      const updated = toSiteSettingProfile(data.site);
+      setSettings(currentSettings);
+      setSiteProfiles((items) => items.map((item) => item.id === updated.id ? updated : item));
+      setSettingsDraft(extractSiteSettings(updated.data || {}, updated.id));
+      return `已恢复该站点默认费率，${await recalculateSiteProducts()}`;
+    }
+    const payload: Record<string, unknown> = {
+      expected_revision: Number(settings?.revision || 0),
+    };
+    for (const field of rateFields) payload[field.key] = 0;
+    const data = await putSettings(payload);
+    setSettings(data);
+    setSettingsDraft(extractSiteSettings(data, settingsSite));
+    setSiteSettings(extractSiteSettings(data, site));
+    return `已恢复该站点默认费率，${await recalculateSiteProducts()}`;
+  });
+
+  // 活动申报门槛：所有站点共用同一个全局值，保存/恢复只提交这两个字段
+  const updateActivityThreshold = (key: "activity_min_net_profit" | "activity_profit_rate_threshold", value: string) => {
+    setSiteSettings((current) => ({ ...current, [key]: value }));
+    setActivityThresholdConfigured(false);
+  };
+
+  const saveActivityThreshold = () => withBusy("保存活动门槛", async () => {
+    if (!activityThresholds) throw new Error("请填写正确的活动最低实际利润和最低利润率。");
+    const payload: Record<string, unknown> = {
+      expected_revision: Number(settings?.revision || 0),
+      activity_min_net_profit: activityThresholds.minNetProfit,
+      activity_profit_rate_threshold: activityThresholds.minProfitRatePercent / 100,
+      activity_threshold_configured: true,
+    };
+    const data = await putSettings(payload);
+    setSettings(data);
+    setSiteSettings(extractSiteSettings(data, site));
+    setActivityThresholdConfigured(data.activity_threshold_configured === true);
+  });
+
+  const restoreActivityThreshold = () => withBusy("恢复活动门槛默认", async () => {
+    const payload: Record<string, unknown> = {
+      expected_revision: Number(settings?.revision || 0),
+      activity_min_net_profit: 0,
+      activity_profit_rate_threshold: 0,
+      activity_threshold_configured: false,
+    };
+    const data = await putSettings(payload);
+    setSettings(data);
+    setSiteSettings(extractSiteSettings(data, site));
+    setActivityThresholdConfigured(false);
+  }, "已恢复活动门槛为默认值并保存。");
+
+  const queryProducts = async (overrideSkcs = querySkcs) => {
+    // 静默查询：仅用于刷新产品列表与按钮禁用，不写顶部状态条
+    setBusy("查询数据库产品");
+    try {
+      const params = new URLSearchParams({ site, scope, skcs: overrideSkcs });
+      const data = await request<{ products: ProductRow[] }>(`/api/profit-activity/products?${params}`);
+      setProducts(data.products || []);
+      setSelected(new Set());
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const persistImportFileNames = (files: File[]) => {
+    const names = files.map((item) => item.name);
+    setLastImportFiles(names);
+    try {
+      localStorage.setItem("profitActivityImportFileNames", JSON.stringify(names));
+    } catch {
+      // 本地存储不可用时静默跳过
+    }
+  };
+
+  const restoreImportSessions = async () => {
+    try {
+      const sessions = await request<ImportPreview[]>("/api/profit-activity/products/import/sessions");
+      if (Array.isArray(sessions) && sessions.some((item) => item?.import_id)) {
+        setImportPreviews(sessions);
+        setMessage(`已恢复最近 ${sessions.length} 次产品导入预览（${sessions.map((item) => item.original_filename).filter(Boolean).join("、")}），可继续确认导入。`);
+      }
+    } catch {
+      // 无最近导入会话或接口不可用时静默跳过
+    }
+  };
+
+  const calculateProfit = async (showBusy = true) => {
+    const action = async () => {
+      const data = await request<CalculateResult>("/api/profit-activity/calculate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ site, ...numericProductPayload(productForm) }),
+      });
+      setCalculation(data);
+    };
+    if (showBusy) await withBusy("单品利润预览", action);
+    else {
+      try {
+        await action();
+        setMessage("利润预览已刷新。");
+      } catch (error) {
+        setMessage(error instanceof Error ? error.message : String(error));
+      }
+    }
+  };
+
+  const saveProduct = () => withBusy("入产品库", async () => {
+    if (!formReadyForArchive) {
+      throw new Error("入档前必须填写商品ID、售价、成本、重量、商品主图和至少一条货源链接。");
+    }
+    if (!productImage) {
+      throw new Error("请选择商品主图。");
+    }
+    const sourceGroups = [productForm.source_url, ...productForm.source_urls]
+      .map((url) => url.trim())
+      .filter(Boolean)
+      .map((source_url) => ({ source_url, image_paths: [] }));
+    const form = new FormData();
+    form.append("site", site);
+    for (const [key, value] of Object.entries({ ...numericProductPayload(productForm), store_name: productForm.store_name.trim(), note: productForm.note, source_url: productForm.source_url })) {
+      form.append(key, String(value));
+    }
+    if (sourceGroups.length) {
+      form.append("source_groups_json", JSON.stringify(sourceGroups));
+    }
+    form.append("image", productImage);
+    // 每个货源链接一张货源图：source_group_images_{组号} 对应第 {组号} 个货源组
+    sourceImages.forEach((file, index) => {
+      if (file) form.append(`source_group_images_${index}`, file);
+    });
+    const data = await request<{ product: ProductRow }>("/api/profit-activity/products", { method: "POST", body: form });
+    const savedSkc = data.product.skc;
+    const snapshot: RecentSavedProduct = {
+      skc: savedSkc,
+      site,
+      form: { ...productForm, skc: savedSkc },
+      productImage,
+      sourceImages: [...sourceImages],
+    };
+    const nextRecent = [snapshot, ...recentSaved.filter((item) => item.skc !== savedSkc)].slice(0, 3);
+    setRecentSaved(nextRecent);
+    localStorage.setItem("profitActivityRecentSaved", JSON.stringify(nextRecent.map((item) => ({ skc: item.skc, site: item.site, form: item.form }))));
+    setQuerySkcs(savedSkc);
+    await queryProducts(savedSkc);
+    window.dispatchEvent(new Event("profit-activity-products-changed"));
+    clearProductForm();
+  }, `${productForm.skc} 入库成功`);
+
+  const clearProductForm = () => {
+    setProductForm(emptyProduct);
+    setProductImage(null);
+    setSourceImages([null]);
+    setCalculation(null);
+  };
+
+  const restoreRecentProduct = (item: RecentSavedProduct) => {
+    setSite(item.site);
+    setProductForm({ ...emptyProduct, ...item.form, skc: item.skc });
+    setProductImage(item.productImage ?? null);
+    setSourceImages(item.sourceImages?.length ? [...item.sourceImages] : [null]);
+    setCalculation(null);
+    setMessage(item.productImage || item.sourceImages?.some(Boolean)
+      ? `已恢复 ${item.skc} 的填写信息。`
+      : `已恢复 ${item.skc} 的文字信息，图片需要重新选择。`);
+  };
+
+  const addSourceUrl = () => {
+    setProductForm({ ...productForm, source_urls: [...productForm.source_urls, ""] });
+    setSourceImages((current) => [...current, null]);
+  };
+
+  const changeSourceUrl = (index: number, value: string) => {
+    const next = [...productForm.source_urls];
+    next[index] = value;
+    setProductForm({ ...productForm, source_urls: next });
+  };
+
+  const setSourceImageAt = (index: number, file: File | null) => {
+    setSourceImages((current) => current.map((item, i) => (i === index ? file : item)));
+  };
+
+  const removeSourceUrl = (index: number) => {
+    setProductForm({ ...productForm, source_urls: productForm.source_urls.filter((_, i) => i !== index) });
+    setSourceImages((current) => current.filter((_, i) => i !== index + 1));
+  };
+
+  const deleteSelected = () => withBusy("删除已选产品", async () => {
+    await request("/api/profit-activity/products", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ site, skcs: selectedSkcs }),
+    });
+    await queryProducts();
+  });
+
+  const previewImport = () => withBusy("产品 Excel 导入预览", async () => {
+    if (!importFiles.length) throw new Error("请选择产品 Excel 文件。");
+    const results: ImportPreview[] = [];
+    for (const file of importFiles) {
+      const form = new FormData();
+      form.append("site", site);
+      form.append("store_name", importStoreName.trim());
+      form.append("file", file);
+      results.push(await request<ImportPreview>("/api/profit-activity/products/import/preview", { method: "POST", body: form }));
+    }
+    setImportPreviews(results);
+    persistImportFileNames(importFiles);
+    setMessage(`已完成 ${results.length} 个文件的导入预览，可确认导入。`);
+  });
+
+  const confirmImport = () => withBusy("确认导入产品", async () => {
+    if (!importPreviews.length) throw new Error("请先预览导入文件。");
+    let imported = 0;
+    let replaced = 0;
+    let skipped = 0;
+    for (const preview of importPreviews) {
+      if (!preview.import_id) continue;
+      const result = await request<{ imported?: number; replaced?: number; skipped?: number }>("/api/profit-activity/products/import/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ import_id: preview.import_id, on_conflict: "replace" }),
+      });
+      imported += result.imported ?? 0;
+      replaced += result.replaced ?? 0;
+      skipped += result.skipped ?? 0;
+    }
+    setMessage(`确认导入完成：新增 ${imported}，替换 ${replaced}，跳过 ${skipped}。`);
+    await queryProducts();
+    window.dispatchEvent(new Event("profit-activity-products-changed"));
+  });
+
+  const filterTaskId = (task: FilterTask | null | undefined): number | null => {
+    const id = task?.task_id ?? task?.filter_task_id ?? task?.operation_task_id ?? null;
+    return typeof id === "number" ? id : null;
+  };
+
+  // 加载历史过滤结果（最新在前，最多保留 5 条）
+  const loadFilterHistory = async () => {
+    try {
+      const tasks = await request<FilterTask[]>("/api/profit-activity/activity-filter/tasks?limit=5");
+      setFilterHistory(Array.isArray(tasks) ? tasks.slice(0, 5) : []);
+    } catch {
+      // 历史接口不可用时静默忽略，不影响主流程
+    }
+  };
+
+  // 过滤完成后下载可申报产品：只走浏览器下载，不再额外往服务端落盘目录拷一份。
+  const finishFilteredDownload = async (task: FilterTask, kept: number, removed: number) => {
+    const taskId = filterTaskId(task);
+    if (!taskId) return;
+    if (kept > 0) {
+      await download(`/api/profit-activity/activity-filter/${taskId}/download?kind=filtered`, "可申报产品.xlsx");
+    }
+    setMessage(kept > 0
+      ? `已生成 ${kept} 条可申报、${removed} 条剔除，可申报产品已自动下载到浏览器默认下载目录。剔除产品可点下方“下载剔除产品”下载。`
+      : `活动表 ${removed} 条均未通过判定（产品库无此 SKC 或利润不达标），可申报为空，未生成下载。`);
+    if (kept <= 0) {
+      setNoEligibleOpen(true);
+    }
+  };
+
+  // 轮询过滤任务直到结束；downloadOnDone=true 时完成后自动保存并下载可申报产品
+  const startFilterTask = (taskId: number, downloadOnDone: boolean) => {
+    window.clearTimeout(filterPollRef.current);
+    setFilterBusy(true);
+    const tick = async () => {
+      try {
+        const data = await request<FilterTask>(`/api/profit-activity/activity-filter/tasks/${taskId}`);
+        setFilterTask(data);
+        const status = data.status ?? "running";
+        if (status === "completed") {
+          setFilterBusy(false);
+          void loadFilterHistory();
+          const kept = data.kept_row_count ?? data.kept_activity_count ?? data.kept_skc_count ?? 0;
+          const removed = data.removed_row_count ?? data.removed_activity_count ?? data.removed_skc_count ?? 0;
+          if (downloadOnDone) {
+            try {
+              await finishFilteredDownload(data, kept, removed);
+            } catch (error) {
+              setMessage(error instanceof Error ? error.message : String(error));
+            }
+          } else {
+            setMessage(`产品过滤完成：逐条匹配 ${kept + removed} 条，可申报 ${kept} 条，剔除 ${removed} 条。确认后可点“生成并下载可申报产品”下载报告。`);
+          }
+        } else if (status === "paused") {
+          setFilterBusy(false);
+          void loadFilterHistory();
+          setMessage("产品过滤已暂停。可重新点击“产品过滤”开始新的一次过滤。");
+        } else if (status === "failed") {
+          setFilterBusy(false);
+          void loadFilterHistory();
+          setMessage(`产品过滤失败：${typeof data.error === "string" ? toUserMessage(data.error) : "未知错误"}`);
+        } else {
+          // queued / running：继续轮询
+          filterPollRef.current = window.setTimeout(() => void tick(), 1000);
+        }
+      } catch (error) {
+        setFilterBusy(false);
+        setMessage(error instanceof Error ? error.message : String(error));
+      }
+    };
+    void tick();
+  };
+
+  // 产品过滤：上传活动 Excel 并异步启动过滤任务，轮询进度
+  const runActivityFilter = async () => {
+    if (!activityThresholds || !activityThresholdConfigured) {
+      setMessage("请先填写并保存活动最低实际利润和最低利润率。");
+      return;
+    }
+    if (!activityFile) {
+      setMessage("先选择活动 Excel。");
+      return;
+    }
+    if (filterBusy) return;
+    // 防止站点选错导致整表“站点不匹配”剔除，先与用户确认过滤站点
+    if (!window.confirm(`是否过滤${displaySiteLabel(site)}的产品？`)) {
+      setMessage("已取消产品过滤。");
+      return;
+    }
+    setFilterBusy(true);
+    setMessage("产品过滤中…");
+    try {
+      const form = new FormData();
+      form.append("site", site);
+      form.append("scope", scope);
+      form.append("file", activityFile);
+      const task = await request<FilterTask>("/api/profit-activity/activity-filter", { method: "POST", body: form });
+      const taskId = filterTaskId(task);
+      if (!taskId) throw new Error("过滤任务未返回任务编号。");
+      setFilterTask(task);
+      startFilterTask(taskId, false);
+    } catch (error) {
+      setFilterBusy(false);
+      setMessage(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const generateFiltered = async () => {
+    if (!activityThresholds || !activityThresholdConfigured) {
+      setMessage("请先填写并保存活动最低实际利润和最低利润率。");
+      return;
+    }
+    // 已有本次过滤的完成结果：直接基于该结果保存并下载可申报产品，避免重复过滤
+    const currentTaskId = filterTaskId(filterTask);
+    if (currentTaskId && filterTask?.status === "completed") {
+      try {
+        const kept = Number(filterTask.kept_row_count ?? filterTask.kept_activity_count ?? filterTask.kept_skc_count ?? 0);
+        const removed = Number(filterTask.removed_row_count ?? filterTask.removed_activity_count ?? filterTask.removed_skc_count ?? 0);
+        await finishFilteredDownload(filterTask, kept, removed);
+      } catch (error) {
+        setMessage(error instanceof Error ? error.message : String(error));
+      }
+      return;
+    }
+    if (!activityFile) {
+      setMessage("先选择活动 Excel。");
+      return;
+    }
+    if (filterBusy) return;
+    setFilterBusy(true);
+    setMessage("产品过滤中…");
+    try {
+      const form = new FormData();
+      form.append("site", site);
+      form.append("scope", scope);
+      form.append("file", activityFile);
+      const task = await request<FilterTask>("/api/profit-activity/activity-filter", { method: "POST", body: form });
+      const taskId = filterTaskId(task);
+      if (!taskId) throw new Error("生成任务未返回任务编号。");
+      setFilterTask(task);
+      startFilterTask(taskId, true);
+    } catch (error) {
+      setFilterBusy(false);
+      setMessage(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  // 暂停正在运行的过滤任务
+  const pauseFilter = async () => {
+    const taskId = filterTaskId(filterTask);
+    if (!taskId) return;
+    try {
+      const data = await request<FilterTask>(`/api/profit-activity/activity-filter/${taskId}/pause`, { method: "POST" });
+      // 后端只是置位了暂停标志，线程稍后才会落库为 paused；这里先按已暂停展示，
+      // 避免用户点了暂停却仍看到“过滤中…”
+      setFilterTask({ ...data, status: "paused" });
+      setFilterBusy(false);
+      setMessage("产品过滤已暂停。");
+      // 后台再同步一次最终状态，供历史列表刷新
+      window.clearTimeout(filterPollRef.current);
+      filterPollRef.current = window.setTimeout(() => {
+        void request<FilterTask>(`/api/profit-activity/activity-filter/tasks/${taskId}`)
+          .then((latest) => {
+            setFilterTask(latest);
+            void loadFilterHistory();
+          })
+          .catch(() => {});
+      }, 1500);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const downloadCatalog = () => withBusy("下载产品档案", async () => {
+    await download(`/api/profit-activity/catalog/rebuild?${new URLSearchParams({ site, scope })}`, `${site}_product_catalog.xlsx`);
+  });
+
+  const saveFilter = (kind: "filtered" | "removed") => withBusy(`下载${kind === "filtered" ? "可申报" : "剔除"}产品`, async () => {
+    const task = filterTask;
+    if (!task) throw new Error("暂无过滤结果。请先点击“生成并下载可申报产品”。");
+    const filename = kind === "filtered" ? "可申报产品.xlsx" : "剔除产品.xlsx";
+    // 产品过滤（filter-runs）返回批次 id，直接从批次导出报告；
+    // 活动模板过滤（activity-filter）返回任务 id，从任务生成的文件下载。
+    if (typeof task.id === "number" && !task.filtered_path) {
+      const runKind = kind === "filtered" ? "eligible" : "excluded";
+      await download(`/api/profit-activity/filter-runs/${task.id}/download?kind=${runKind}`, filename);
+    } else {
+      const taskId = task.task_id || task.filter_task_id;
+      if (!taskId) throw new Error("暂无活动过滤任务可下载。");
+      await download(`/api/profit-activity/activity-filter/${taskId}/download?kind=${kind}`, filename);
+    }
+    setMessage(`${kind === "filtered" ? "可申报" : "剔除"}产品报告已下载到浏览器默认下载目录。`);
+  });
+
+  return (
+    <div className="profit-test-page">
+      <section className="profit-activity-hero">
+        <div className="profit-hero-main">
+          <div>
+            <h1>利润活动</h1>
+            <p>核算单品利润、保存产品资料，并生成活动申报与剔除结果。</p>
+          </div>
+        </div>
+        <div className="profit-hero-actions">
+          <button className="profit-settings-toggle" type="button" aria-haspopup="dialog" onClick={openSettingsDialog}>
+            站点费率设置
+          </button>
+          <button className="profit-settings-toggle" type="button" aria-haspopup="dialog" onClick={() => setImportDialogOpen(true)}>
+            产品资料导入
+          </button>
+        </div>
+      </section>
+
+      {/* portal 到 body：workspace-tab-panel 的 fill-mode 入场动画创建层叠上下文，
+          会把 fixed 弹层的 z-index 锁在面板内、被 sticky 顶栏(z:18)盖住 */}
+      {settingsDialogOpen && createPortal(
+        <div className="profit-products-settings-backdrop" role="presentation" onMouseDown={() => !busy && setSettingsDialogOpen(false)}>
+          <section className="profit-products-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="profit-products-settings-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="profit-products-settings-head">
+              <div>
+                <h2 id="profit-products-settings-title">站点费率设置</h2>
+                <p>保存后会按当前费率重算该站点产品库的利润和利润率。</p>
+              </div>
+              <button className="profit-products-settings-close" type="button" aria-label="关闭站点费率设置" onClick={() => setSettingsDialogOpen(false)} disabled={!!busy}><span aria-hidden="true">×</span></button>
+            </div>
+            <div className="profit-products-settings-tabs" role="tablist" aria-label="站点费率">
+              {siteProfiles.map((profile) => (
+                <button key={profile.id} type="button" role="tab" aria-selected={settingsSite === profile.id} className={settingsSite === profile.id ? "is-active" : ""} onClick={() => selectSettingsSite(profile.id)}>{profile.label}</button>
+              ))}
+              <button className="profit-products-add-site-button" type="button" onClick={() => setNewSiteOpen((value) => !value)}>+ 新增站点</button>
+            </div>
+            {newSiteOpen ? (
+              <div className="profit-products-new-site-form">
+                <label>站点代码
+                  <input className={newSiteCodeInvalid ? "is-invalid" : undefined} aria-invalid={newSiteCodeInvalid} value={newSiteCode} maxLength={12} onChange={(event) => { setNewSiteCode(event.target.value.toUpperCase()); setNewSiteCodeInvalid(false); }} placeholder="例如 BR" />
+                </label>
+                <label>站点名称
+                  <input value={newSiteName} maxLength={80} onChange={(event) => setNewSiteName(event.target.value)} placeholder="例如 巴西" />
+                </label>
+                <button type="button" onClick={createSite} disabled={!!busy}>创建站点</button>
+              </div>
+            ) : null}
+            <p className="profit-products-formula-note">正在编辑 {siteProfiles.find((profile) => profile.id === settingsSite)?.label || siteLabel(settingsSite)} 的费率；未设置的费率默认按 0 计算。</p>
+            <div className="profit-products-settings-fields">
+              {fieldsForSite(settingsSite).map((field) => (
+                <label key={field.key}>{field.label}
+                  <input type="number" min="0" step="0.01" value={settingsDraft[field.key] ?? ""} onChange={(event) => setSettingsDraft((current) => ({ ...current, [field.key]: event.target.value }))} />
+                </label>
+              ))}
+            </div>
+            <div className="profit-products-settings-actions">
+              <button type="button" className="primary-button" onClick={saveSiteSettings} disabled={!!busy}>保存并重算</button>
+              <button type="button" onClick={restoreDefaultSettings} disabled={!!busy}>恢复默认并重算</button>
+            </div>
+          </section>
+        </div>, document.body)}
+
+      {importDialogOpen && createPortal(
+        <div className="profit-settings-dialog-backdrop" role="presentation" onMouseDown={() => !busy && setImportDialogOpen(false)}>
+          <section className="profit-settings-dialog profit-import-dialog" role="dialog" aria-modal="true" aria-labelledby="profit-import-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="profit-settings-dialog-head">
+              <div className="profit-settings-heading">
+                <h2 id="profit-import-dialog-title">产品资料导入</h2>
+                <p>选择本地维护的产品资料 Excel，预览无误后再确认导入产品库。</p>
+              </div>
+              <button className="profit-settings-dialog-close" type="button" aria-label="关闭产品资料导入" onClick={() => setImportDialogOpen(false)} disabled={!!busy}><span aria-hidden="true">×</span></button>
+            </div>
+            <div className="profit-upload-row">
+              <div className="profit-import-input-stack">
+                <label>产品资料 Excel（可多选）<input type="file" accept=".xlsx,.xlsm" multiple onChange={(event) => { const files = Array.from(event.target.files || []); setImportFiles(files); persistImportFileNames(files); }} /></label>
+                <label className="profit-import-store-field">店铺（可选）<input value={importStoreName} maxLength={120} onChange={(event) => setImportStoreName(event.target.value)} placeholder="例如：美区一店" /></label>
+              </div>
+              <div className="profit-import-actions">
+                <button className="profit-import-guidelines-trigger" type="button" aria-haspopup="dialog" onClick={() => setImportGuidelinesOpen(true)}>导入规范</button>
+                <div className="profit-import-actions-bottom">
+                  <button onClick={previewImport} disabled={!!busy}>预览入档</button>
+                  <button onClick={confirmImport} disabled={!!busy || !importPreviews.length}>确认导入</button>
+                </div>
+              </div>
+            </div>
+            {importFiles.length ? <p className="profit-warn">已选择 {importFiles.length} 个文件：{importFiles.map((item) => item.name).join("、")}</p> : lastImportFiles.length ? <p className="muted">上次选择的文件：{lastImportFiles.join("、")}（浏览器出于安全原因不保留本地完整路径，切换页面后需重新选择文件）</p> : null}
+            {importPreviews.length > 0 && <ImportPreviewSummary previews={importPreviews} />}
+          </section>
+        </div>, document.body)}
+
+      {importGuidelinesOpen && createPortal(
+        <div className="profit-settings-dialog-backdrop profit-import-guidelines-backdrop" role="presentation" onMouseDown={() => setImportGuidelinesOpen(false)}>
+          <section className="profit-settings-dialog profit-import-guidelines-dialog" role="dialog" aria-modal="true" aria-labelledby="profit-import-guidelines-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="profit-settings-dialog-head">
+              <div className="profit-settings-heading">
+                <h2 id="profit-import-guidelines-title">产品资料导入规范</h2>
+                <p>请按以下要求整理文件，先预览确认后再导入。</p>
+              </div>
+              <button className="profit-settings-dialog-close" type="button" aria-label="关闭导入规范" onClick={() => setImportGuidelinesOpen(false)}><span aria-hidden="true">×</span></button>
+            </div>
+            <div className="profit-import-guidelines-content">
+              <section>
+                <h3>必填信息</h3>
+                <ul>
+                  <li>每行至少应能识别出：商品 ID、售价、国内成本、重量（kg）。</li>
+                  <li>商品 ID 可来自 SKU、SKC 或 SPU 列；同一份表中请保持使用同一种商品标识。</li>
+                  <li>售价、国内成本和重量必须是大于 0 的数字；重量统一按 kg 填写。</li>
+                </ul>
+              </section>
+              <section>
+                <h3>成本与站点</h3>
+                <ul>
+                  <li>审核表的国内成本应填写商品维度成本，例如单价、损耗、包材和国内运输之和；不要填写含国际头程、尾程等的总成本。</li>
+                  <li>若文件含站点列，系统按每行站点导入；没有站点列时，按当前选择的站点导入。</li>
+                  <li>头程、尾程、操作费、运费补贴和退款率由“利润活动设置”的当前站点费率统一计算。</li>
+                </ul>
+              </section>
+              <section>
+                <h3>重复数据与确认</h3>
+                <ul>
+                  <li>同一站点、同一商品 ID 出现多次时，系统保守合并：售价取最低值，国内成本和重量取最高有效值。</li>
+                  <li>建议每个 Excel 保留一行表头和连续数据行，避免合并单元格、空白分段或非数据说明行。</li>
+                  <li>请先点击“预览入档”核对识别结果和异常提示，确认无误后再点击“确认导入”。</li>
+                </ul>
+              </section>
+            </div>
+          </section>
+        </div>, document.body)}
+
+      {message && <p className="profit-status" role="status">{message}</p>}
+
+      <section className="profit-business-grid">
+        <article className="profit-test-card">
+          <div className="profit-card-title">
+            <div className="profit-card-heading">
+              <span className="profit-title-icon iconfont icon-calculator-fill" aria-hidden="true" />
+              <h2>单品利润<span className="profit-help-tooltip" tabIndex={0} aria-label="单品利润填写说明"><span className="profit-help-tooltip-mark" aria-hidden="true">!</span><span className="profit-help-tooltip-content" role="tooltip">输入商品ID（支持 SKU、SKC、SPU）、售价、成本、重量后会自动预览利润。</span></span></h2>
+            </div>
+            <label className="profit-single-store-field">店铺（可选）
+              <span className="profit-single-select-control">
+                <input value={productForm.store_name} maxLength={120} onChange={(event) => { setProductForm({ ...productForm, store_name: event.target.value }); setStoreDropdownOpen(true); }} onFocus={() => setStoreDropdownOpen(true)} onClick={() => setStoreDropdownOpen(true)} onBlur={() => window.setTimeout(() => setStoreDropdownOpen(false), 120)} onKeyDown={(event) => { if (event.key === "Escape") setStoreDropdownOpen(false); }} placeholder="例如：美区一店" />
+                <button type="button" aria-label="展开店铺列表" onMouseDown={(event) => event.preventDefault()} onClick={() => setStoreDropdownOpen((value) => !value)}>⌄</button>
+                {storeDropdownOpen && singleStoreOptions.length > 0 && (
+                  <span className="profit-single-select-menu" role="listbox">
+                    {singleStoreOptions.map((store) => (
+                      <button key={store} type="button" role="option" aria-selected={productForm.store_name.trim() === store} className={productForm.store_name.trim() === store ? "is-active" : undefined} onMouseDown={(event) => event.preventDefault()} onClick={() => selectSingleStore(store)}>
+                        <span>{store}</span>
+                      </button>
+                    ))}
+                  </span>
+                )}
+              </span>
+            </label>
+            <label className="profit-single-site-field">站点
+              <span className="profit-single-select-control">
+                <input value={siteDraft} onChange={(event) => { setSiteDraft(event.target.value); setSiteDropdownOpen(true); }} onFocus={() => setSiteDropdownOpen(true)} onClick={() => setSiteDropdownOpen(true)} onBlur={() => window.setTimeout(() => commitSiteDraft(), 120)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); commitSiteDraft(event.currentTarget.value); } if (event.key === "Escape") setSiteDropdownOpen(false); }} placeholder="输入站点代码或名称" />
+                <button type="button" aria-label="展开站点列表" onMouseDown={(event) => event.preventDefault()} onClick={() => setSiteDropdownOpen((value) => !value)}>⌄</button>
+                {siteDropdownOpen && (
+                  <span className="profit-single-select-menu" role="listbox">
+                    {siteProfiles.map((profile) => (
+                      <button key={profile.id} type="button" role="option" aria-selected={site === profile.id} className={site === profile.id ? "is-active" : undefined} onMouseDown={(event) => event.preventDefault()} onClick={() => selectSingleSite(profile)}>
+                        <span>{profile.label}</span>
+                        <small>{profile.id}</small>
+                      </button>
+                    ))}
+                  </span>
+                )}
+              </span>
+            </label>
+          </div>
+          <div className="profit-form-grid">
+            <label>商品ID<input value={productForm.skc} onChange={(event) => setProductForm({ ...productForm, skc: event.target.value })} placeholder="支持 SKU、SKC 或 SPU" /></label>
+            <label>售价<input value={productForm.selling_price} onChange={(event) => setProductForm({ ...productForm, selling_price: event.target.value })} placeholder="必填" /></label>
+            <label>成本（商品采购成本，不包括国内外操作费/运费）<input value={productForm.cost_price} onChange={(event) => setProductForm({ ...productForm, cost_price: event.target.value })} placeholder="必填" /></label>
+            <label>重量 KG
+              <span className="profit-weight-field">
+                <input value={productForm.weight_kg} onChange={(event) => setProductForm({ ...productForm, weight_kg: event.target.value })} placeholder="必填" />
+                <button type="button" className="profit-weight-drawer-button" onClick={() => setWeightDrawerOpen(true)}>截图识别</button>
+              </span>
+            </label>
+          </div>
+          <ImageDrop title="商品主图 Ctrl+V" hint="必填：粘贴、拖入或选择图片" file={productImage} onFile={setProductImage} />
+          <div className="profit-source-head"><h3>货源</h3><button type="button" onClick={addSourceUrl}>新增货源</button></div>
+          <div className="profit-source-link-block">
+            <label className="profit-span-2">货源链接 1<input value={productForm.source_url} onChange={(event) => setProductForm({ ...productForm, source_url: event.target.value })} placeholder="必填" /></label>
+            <ImageDrop title="货源1 图片 Ctrl+V" hint="可选：粘贴、拖入或选择该链接截图" file={sourceImages[0] ?? null} onFile={(file) => setSourceImageAt(0, file)} />
+          </div>
+          {productForm.source_urls.map((url, index) => (
+            <div className="profit-source-link-block" key={index}>
+              <div className="profit-source-url-row">
+                <label className="profit-span-2">货源链接 {index + 2}<input value={url} onChange={(event) => changeSourceUrl(index, event.target.value)} placeholder="可选" /></label>
+                <button type="button" className="profit-source-url-remove" onClick={() => removeSourceUrl(index)}>删除</button>
+              </div>
+              <ImageDrop title={`货源${index + 2} 图片 Ctrl+V`} hint="可选：该链接截图" file={sourceImages[index + 1] ?? null} onFile={(file) => setSourceImageAt(index + 1, file)} />
+            </div>
+          ))}
+          <label className="profit-span-2">备注<input value={productForm.note} onChange={(event) => setProductForm({ ...productForm, note: event.target.value })} placeholder="可选填" /></label>
+          <h3>利润预览</h3>
+          <PreviewStrip calculation={calculation?.calculation} />
+          <div className="profit-actions">
+            <button onClick={() => calculateProfit(true)} disabled={!!busy || !formReadyForPreview}>手动刷新预览</button>
+            <button className="primary-button" onClick={saveProduct} disabled={!!busy || !formReadyForArchive}>入产品库</button>
+            <button type="button" onClick={clearProductForm} disabled={!!busy}>一键清空</button>
+          </div>
+          {!formReadyForArchive && <p className="muted">入档必填：商品ID、售价、成本、重量、商品主图和至少一条货源链接；货源图片可选。</p>}
+          {recentSaved.length > 0 && (
+            <p className="profit-recent-saved">最近入库：{recentSaved.map((item) => (
+              <button key={`${item.site}-${item.skc}`} type="button" onClick={() => restoreRecentProduct(item)} title={`恢复 ${item.skc} 的填写信息`}>
+                {item.skc}
+              </button>
+            ))}</p>
+          )}
+        </article>
+
+        <article className="profit-test-card">
+          <div className="profit-card-title">
+            <span className="profit-title-icon iconfont icon-filter-fill" aria-hidden="true" />
+            <h2>活动过滤</h2>
+          </div>
+          <div className="profit-activity-upload">
+            <label>
+              活动 Excel
+              <input type="file" accept=".xlsx,.xlsm" onChange={(event) => setActivityFile(event.target.files?.[0] || null)} />
+            </label>
+            <p className={`profit-file-status ${activityFile ? "is-selected" : ""}`}>
+              {activityFile ? `已选择：${activityFile.name}` : "请选择用于过滤的活动 Excel 文件"}
+            </p>
+          </div>
+          <div className="profit-threshold-box">
+            <h3>活动申报门槛</h3>
+            <p className="profit-formula-note">以下两个条件满足其中之一即可申报。</p>
+            <div className="profit-threshold-fields">
+              <label>活动最低实际利润 元<input type="number" value={siteSettings.activity_min_net_profit ?? ""} onChange={(event) => updateActivityThreshold("activity_min_net_profit", event.target.value)} /></label>
+              <label>活动最低利润率 %<input type="number" value={siteSettings.activity_profit_rate_threshold ?? ""} onChange={(event) => updateActivityThreshold("activity_profit_rate_threshold", event.target.value)} /></label>
+            </div>
+            <div className="profit-threshold-actions">
+              <button onClick={saveActivityThreshold} disabled={!!busy}>保存设置</button>
+              <button onClick={restoreActivityThreshold} disabled={!!busy}>恢复默认设置</button>
+            </div>
+          </div>
+          <div className="profit-actions">
+            <button className="primary-button" onClick={() => void runActivityFilter()} disabled={!!busy || filterBusy || !activityFile}>
+              {filterBusy ? "产品过滤中…" : "产品过滤"}
+            </button>
+            <button className="primary-button" onClick={() => void generateFiltered()} disabled={!!busy || filterBusy || !activityFile}>
+              生成并下载可申报产品
+            </button>
+            <button onClick={() => void pauseFilter()} disabled={!filterBusy}>暂停过滤</button>
+            <button onClick={() => saveFilter("removed")} disabled={!!busy || !filterTask}>下载剔除产品</button>
+          </div>
+          {filterTask && <FilterRunSummary task={filterTask} />}
+          {filterHistory.length > 0 && (
+            <div className="profit-filter-history">
+              <h3>历史过滤结果</h3>
+              <div className="profit-filter-history-list">
+                {filterHistory.map((item) => {
+                  const kept = Number(item.kept_row_count ?? item.kept_activity_count ?? item.kept_skc_count ?? 0) || 0;
+                  const removed = Number(item.removed_row_count ?? item.removed_activity_count ?? item.removed_skc_count ?? 0) || 0;
+                  const active = filterTaskId(item) === filterTaskId(filterTask);
+                  return (
+                    <button
+                      key={filterTaskId(item) ?? `${item.created_at ?? ""}-${item.original_filename ?? ""}`}
+                      type="button"
+                      className={`profit-filter-history-item ${active ? "is-active" : ""}`}
+                      onClick={() => setFilterTask(item)}
+                    >
+                      <strong title={String(item.original_filename || "活动表")}>{String(item.original_filename || "活动表")}</strong>
+                      <span>{formatImportTime(item.created_at) || "-"}</span>
+                      <span>{filterStatusLabel(item.status)}</span>
+                      {item.status === "completed" ? <em>可申报 {kept} · 剔除 {removed}</em> : null}
+                      {item.status !== "completed" && typeof item.error === "string" ? <em className="is-error">{item.error}</em> : null}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </article>
+      </section>
+
+      {noEligibleOpen && (
+        <div className="profit-modal-mask" onClick={() => setNoEligibleOpen(false)}>
+          <div className="profit-modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+            <span className="profit-modal-icon">!</span>
+            <h3>没有可申报的产品</h3>
+            <p>活动表中没有满足条件的可申报产品。请确认产品库中是否已导入活动表对应的 SKC，以及申报价、成本、重量是否正确。</p>
+            <div className="profit-modal-actions">
+              <button className="primary-button" onClick={() => setNoEligibleOpen(false)}>知道了</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {weightDrawerOpen && (
+        <ShippingWeightDrawer
+          initialWeightKg={productForm.weight_kg}
+          useActualOnly={weightUseActualOnly}
+          onUseActualOnlyChange={setWeightUseActualOnly}
+          onApply={(weight) => setProductForm((current) => ({ ...current, weight_kg: weight }))}
+          onClose={() => setWeightDrawerOpen(false)}
+        />
+      )}
+
+    </div>
+  );
+}
+
+function ImageDrop({ title, hint, file, onFile }: { title: string; hint: string; file: File | null; onFile: (file: File | null) => void }) {
+  const [previewUrl, setPreviewUrl] = useState("");
+  useEffect(() => {
+    if (!file) {
+      setPreviewUrl("");
+      return undefined;
+    }
+    const url = URL.createObjectURL(file);
+    setPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
+  const onPaste = (event: ClipboardEvent<HTMLDivElement>) => {
+    const image = [...event.clipboardData.files].find((item) => item.type.startsWith("image/"));
+    if (image) onFile(image);
+  };
+  const onDrop = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const image = [...event.dataTransfer.files].find((item) => item.type.startsWith("image/"));
+    if (image) onFile(image);
+  };
+  const onChange = (event: ChangeEvent<HTMLInputElement>) => {
+    onFile(event.target.files?.[0] || null);
+  };
+  return (
+    <div className="profit-image-drop" tabIndex={0} onPaste={onPaste} onDragOver={(event) => event.preventDefault()} onDrop={onDrop}>
+      {previewUrl ? <img className="profit-image-preview" src={previewUrl} alt={`${title}预览`} /> : <div className="profit-image-icon">▢</div>}
+      <div><strong>{title}</strong><span>{file ? file.name : hint}</span></div>
+      {file ? <button type="button" className="profit-image-remove" onClick={() => onFile(null)}>移除</button> : null}
+      <label className="profit-file-button">选择图片<input type="file" accept="image/*" onChange={onChange} /></label>
+    </div>
+  );
+}
+
+/** 「商品货源及成本展示」带过来的 SKU 图是远程地址，取回成 File 才能复用图片预览与入库上传。 */
+async function fetchImageFile(url: string): Promise<File | null> {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) return null;
+    const blob = await response.blob();
+    if (!blob.type.startsWith("image/")) return null;
+    const extension = blob.type.split("/")[1] || "png";
+    return new File([blob], `source-sku-${Date.now()}.${extension}`, { type: blob.type });
+  } catch {
+    // 远程站点未开放跨域时静默失败：留空由用户手动粘贴，不阻塞其余预填。
+    return null;
+  }
+}
+
+function PreviewStrip({ calculation }: { calculation?: Record<string, unknown> }) {
+  const items: Array<[string, unknown]> = [
+    ["总成本", calculation?.total_cost],
+    ["毛利润", calculation?.gross_profit],
+    ["净利润", calculation?.net_profit],
+    ["利润率", typeof calculation?.profit_rate === "number" ? `${(calculation.profit_rate * 100).toFixed(2)}%` : calculation?.profit_rate],
+  ];
+  return <div className="profit-preview-strip">{items.map(([label, value]) => <div key={label}><span>{label}</span><strong>{formatValue(value)}</strong></div>)}</div>;
+}
+
+function ImportPreviewSummary({ previews }: { previews: ImportPreview[] }) {
+  const allRows = previews.flatMap((item) => item.rows || []);
+  const totalRows = allRows.length;
+  const importableRows = previews.reduce((sum, item) => sum + (item.summary?.importable_rows ?? 0), 0);
+  const blockedRows = previews.reduce((sum, item) => sum + (item.summary?.blocked_rows ?? 0), 0);
+  const reasons = importBlockerSummary(allRows);
+  return (
+    <section className="profit-import-summary" aria-label="产品资料导入预览结果">
+      <div className="profit-import-summary-head">
+        <strong>产品资料导入结果（{previews.length} 个文件）</strong>
+        <span>{previews.some((item) => item.import_id) ? "已生成预览" : "等待预览"}</span>
+      </div>
+      {previews.map((preview) => (
+        <div className="profit-import-file" key={preview.import_id}>
+          <strong title={preview.original_filename || preview.import_id}>{preview.original_filename || preview.import_id}</strong>
+          <span className="profit-import-file-meta">
+            <span>共 {preview.summary?.total_rows ?? 0} 条，可入库 {preview.summary?.importable_rows ?? 0} 条，拦截 {preview.summary?.blocked_rows ?? 0} 条</span>
+            {formatImportSites(preview.summary?.sites) ? <span>{formatImportSites(preview.summary?.sites)}</span> : null}
+            {formatImportTime(preview.created_at) ? <time>{formatImportTime(preview.created_at)}</time> : null}
+          </span>
+        </div>
+      ))}
+      <div className="profit-import-stats">
+        <div><span>共读取</span><strong>{totalRows}</strong><em>条</em></div>
+        <div><span>可入库</span><strong>{importableRows}</strong><em>条</em></div>
+        <div><span>被拦截</span><strong>{blockedRows}</strong><em>条</em></div>
+      </div>
+      <div className="profit-import-reasons">
+        <span>主要原因</span>
+        {reasons.length ? (
+          <ul>
+            {reasons.map((item) => <li key={item.reason}>{item.label}：{item.count} 条</li>)}
+          </ul>
+        ) : (
+          <p>暂无拦截原因，可直接确认导入。</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function FilterRunSummary({ task }: { task: FilterTask }) {
+  const decisions = Array.isArray(task.decisions) ? task.decisions : [];
+  // 逐条统计：优先用“行”数（每条 SKC×活动×申报价 一条），兼容旧任务/产品过滤的 SKC 口径
+  const retained = task.retained_count
+    ?? task.kept_row_count
+    ?? task.kept_activity_count
+    ?? (typeof task.kept_skc_count === "number" ? task.kept_skc_count : decisions.filter((item) => item.decision === "eligible").length);
+  const excluded = task.excluded_count
+    ?? task.removed_row_count
+    ?? task.removed_activity_count
+    ?? (typeof task.removed_skc_count === "number" ? task.removed_skc_count : decisions.filter((item) => item.decision === "excluded").length);
+  const total = decisions.length || retained + excluded;
+  // 兼容两种任务来源：产品过滤返回 rule_version/minimum_*，活动模板过滤返回 activity_filter_rule_version/min_net_profit_threshold/profit_rate_threshold
+  const minNetProfit = (task.minimum_net_profit ?? task.min_net_profit_threshold ?? task.threshold) as number | undefined;
+  const minProfitRate = (task.minimum_profit_rate ?? task.profit_rate_threshold ?? task.activity_profit_rate_threshold) as number | undefined;
+  return (
+    <section className="profit-import-summary" aria-label="活动过滤任务结果">
+      <div className="profit-import-summary-head">
+        <strong>活动过滤结果</strong>
+        <span>{filterStatusLabel(task.status)}</span>
+      </div>
+      {task.status && task.status !== "completed" && (
+        <p className="profit-warn">
+          {task.status === "paused" ? "过滤已暂停，未生成可申报/剔除文件。" : task.status === "failed" ? `过滤失败：${typeof task.error === "string" ? toUserMessage(task.error) : "未知错误"}` : "过滤正在进行中，请稍候…"}
+        </p>
+      )}
+      <p className="profit-formula-note">
+        最低实际利润 {money(minNetProfit)} 元 · 最低利润率 {percent(minProfitRate)} · 任务时间 {formatImportTime(task.created_at) || "-"}
+      </p>
+      <div className="profit-import-stats">
+        <div><span>过滤产品</span><strong>{total}</strong><em>条</em></div>
+        <div><span>可申报</span><strong className="profit-good">{retained}</strong><em>条</em></div>
+        <div><span>剔除</span><strong className="profit-bad">{excluded}</strong><em>条</em></div>
+      </div>
+    </section>
+  );
+}
+
+function ProductTable({ products, selected, onSelected }: { products: ProductRow[]; selected: Set<string>; onSelected: (value: Set<string>) => void }) {
+  return (
+    <div className="profit-table-wrap">
+      <table className="profit-table">
+        <thead><tr><th>选择</th><th>商品ID</th><th>公司</th><th>创建人</th><th>售价</th><th>成本</th><th>重量</th><th>利润</th><th>利润率</th><th>货源</th><th>图片</th><th>操作</th></tr></thead>
+        <tbody>
+          {products.length ? products.map((item) => (
+            <tr key={`${item.site || item.site_code}-${item.skc}`}>
+              <td><input type="checkbox" checked={selected.has(item.skc)} onChange={(event) => onSelected(toggleSet(selected, item.skc, event.target.checked))} /></td>
+              <td>{item.skc}</td>
+              <td>{item.workspace_name || "-"}</td>
+              <td>{item.created_by_username || item.created_by || "-"}</td>
+              <td>{money(item.selling_price)}</td>
+              <td>{money(item.cost_price)}</td>
+              <td>{item.weight_kg ?? "-"}</td>
+              <td className={(item.net_profit ?? 0) >= 0 ? "profit-good" : "profit-bad"}>{money(item.net_profit)}</td>
+              <td>{percent(item.profit_rate)}</td>
+              <td>{item.source_url ? <a href={item.source_url} target="_blank" rel="noreferrer">打开</a> : "-"}</td>
+              <td>{item.image_path ? "主图" : "-"} {item.source_image_path ? "货源图" : ""}</td>
+              <td>{item.is_owner ? "本人" : item.can_edit ? "可编辑" : "只读"}</td>
+            </tr>
+          )) : <tr><td colSpan={12}>输入商品ID（SKU、SKC 或 SPU）后查询产品；留空查询会展示数据库中当前权限可见产品。</td></tr>}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function extractSiteSettings(settings: Record<string, unknown>, site: Site) {
+  const result: Record<string, string> = {};
+  for (const field of fieldsForSite(site)) {
+    // 数据库缺失的字段回退到内置默认值；已保存的值（包括 0）原样展示
+    const raw = settings[field.key] == null ? (DEFAULT_PROFIT_SETTINGS[field.key] ?? 0) : settings[field.key];
+    const value = Number(raw);
+    result[field.key] = String(field.transform === "percent" ? value * 100 : value);
+  }
+  // 活动申报门槛为所有站点共用的全局值，随当前站点一起展示
+  const activityThresholdKeys = ["activity_min_net_profit", "activity_profit_rate_threshold"] as const;
+  if (settings.activity_threshold_configured !== true) {
+    for (const key of activityThresholdKeys) result[key] = "";
+    return result;
+  }
+  for (const key of activityThresholdKeys) {
+    const raw = settings[key] == null ? (DEFAULT_PROFIT_SETTINGS[key] ?? 0) : settings[key];
+    const value = Number(raw);
+    result[key] = String(key === "activity_profit_rate_threshold" ? value * 100 : value);
+  }
+  return result;
+}
+
+function parseActivityThresholds(values: Record<string, string>) {
+  const minNetProfitRaw = (values.activity_min_net_profit ?? "").trim();
+  const minProfitRateRaw = (values.activity_profit_rate_threshold ?? "").trim();
+  if (!minNetProfitRaw || !minProfitRateRaw) return null;
+  const minNetProfit = Number(minNetProfitRaw);
+  const minProfitRatePercent = Number(minProfitRateRaw);
+  if (!Number.isFinite(minNetProfit) || minNetProfit < 0) return null;
+  if (!Number.isFinite(minProfitRatePercent) || minProfitRatePercent < 0 || minProfitRatePercent > 100) return null;
+  return { minNetProfit, minProfitRatePercent };
+}
+
+function numericProductPayload(form: ProductForm) {
+  return {
+    skc: form.skc.trim(),
+    product_id: form.skc.trim(),
+    selling_price: Number(form.selling_price),
+    cost_price: Number(form.cost_price),
+    weight_kg: Number(form.weight_kg),
+  };
+}
+
+const importBlockerLabels: Record<string, string> = {
+  missing_skc: "商品ID 缺失",
+  missing_product_id: "商品ID 缺失",
+  invalid_selling_price: "售价缺失或无效",
+  invalid_cost_price: "成本缺失或无效",
+  invalid_weight_kg: "重量缺失或无效",
+  duplicate_skc: "商品ID 重复",
+  duplicate_product_id: "商品ID 重复",
+  missing_product_image: "商品主图缺失",
+  missing_source_image: "货源图缺失",
+  missing_source_url: "货源链接缺失",
+  missing_note: "备注缺失",
+};
+
+function importBlockerSummary(rows: Array<Record<string, unknown>>) {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    const blockers = Array.isArray(row.blockers) ? row.blockers : [];
+    for (const blocker of blockers) {
+      if (typeof blocker === "string" && blocker) {
+        counts.set(blocker, (counts.get(blocker) || 0) + 1);
+      }
+    }
+  }
+  return [...counts.entries()]
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 5)
+    .map(([reason, count]) => ({ reason, count, label: importBlockerLabels[reason] || reason }));
+}
+
+function ResultPanel({ title, data }: { title: string; data: unknown }) {
+  return <details className="profit-result" open><summary>{title}</summary><pre>{JSON.stringify(data, null, 2)}</pre></details>;
+}
+
+function toggleSet(source: Set<string>, value: string, checked: boolean) {
+  const next = new Set(source);
+  if (checked) next.add(value);
+  else next.delete(value);
+  return next;
+}
+
+function positive(value: string) {
+  return Number(value) > 0;
+}
+
+function money(value: unknown) {
+  const numberValue = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(numberValue) ? numberValue.toFixed(2) : "-";
+}
+
+function percent(value: unknown) {
+  const numberValue = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(numberValue) ? `${(numberValue * 100).toFixed(2)}%` : "-";
+}
+
+function formatValue(value: unknown) {
+  return typeof value === "number" ? value.toFixed(2) : value === undefined || value === null ? "-" : String(value);
+}
+
+function formatImportTime(value?: string) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+const filterStatusLabels: Record<string, string> = {
+  running: "过滤中…",
+  queued: "排队中…",
+  paused: "已暂停",
+  failed: "失败",
+  completed: "已完成",
+};
+
+function filterStatusLabel(status?: string) {
+  return (status && filterStatusLabels[status]) || status || "-";
+}
+
+const importSiteNames: Record<string, string> = { US: "美区", CO: "哥伦比亚", EC: "厄瓜多尔" };
+
+function formatImportSites(sites?: Record<string, number>): string {
+  if (!sites) return "";
+  const entries = Object.entries(sites);
+  if (!entries.length) return "";
+  return entries.map(([site, count]) => `${importSiteNames[site] ?? site} ${count} 条`).join(" · ");
+}

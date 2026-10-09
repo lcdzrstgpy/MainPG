@@ -1,0 +1,1967 @@
+"""Persistence-facing, read-only browser sourcing workflow."""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+from collections import Counter
+from collections.abc import Callable, Mapping, Sequence
+from decimal import Decimal, InvalidOperation
+from typing import Any
+
+from ..contracts import PluginCommandRequest, PriceVerificationActor, PriceVerificationContractError
+from ..quote_normalizer import QuoteItem
+from ..repository import (
+    BatchSelectionRecord,
+    PluginCommandRecord,
+    PriceVerificationNotFound,
+    PriceVerificationRepository,
+    QuoteRunRecord,
+    SkcSourceLinkRecord,
+    SourcingRunRecord,
+)
+from ..plugin.service import PluginBridgeService
+from ..plugin.shared_gateway import SharedPluginGateway
+from .normalizer import canonical_source_url, normalize_source_candidates, offer_id_from_url
+from .profit_ranking import DEFAULT_CANDIDATE_LIMIT, DEFAULT_WEIGHT_KG, build_candidate_profit
+from .ranking import rank_candidates_by_image_order
+from .contracts import SourceBrowserImageSearchPayload, SourceSearchTask
+from .identity import evaluate_product_evidence
+from .task_builder import (
+    build_batch_sourcing_payload,
+    build_retained_source_browser_image_search_payload,
+)
+
+
+class QuoteDecisionRequiredError(ValueError):
+    """Raised when sourcing is requested before a human has reviewed quotes."""
+
+
+class NoRetainedQuotesError(ValueError):
+    """Raised when the current human decisions retain no official links."""
+
+
+class IncompleteRetainedQuotesError(ValueError):
+    """Raised when retained links lack a URL, image, or selected price."""
+
+
+class ProductLibraryLookupError(RuntimeError):
+    """Raised when the optional product-library lookup cannot be completed."""
+
+
+class SourcingService:
+    """Queue and materialize only read-only source browser discovery results."""
+
+    def __init__(
+        self,
+        *,
+        repository: PriceVerificationRepository,
+        plugin_gateway: SharedPluginGateway | None = None,
+        plugin_bridge: PluginBridgeService | None = None,
+        product_library_service: Any | None = None,
+        history_source_lookup: (
+            Callable[
+                [list[dict[str, Any]], str],
+                Mapping[str, Sequence[Mapping[str, Any]]],
+            ]
+            | None
+        ) = None,
+    ) -> None:
+        if not isinstance(repository, PriceVerificationRepository):
+            raise TypeError("repository must be PriceVerificationRepository")
+        if plugin_gateway is None and not isinstance(plugin_bridge, PluginBridgeService):
+            raise TypeError("plugin_gateway or plugin_bridge is required")
+        if plugin_gateway is not None and not isinstance(plugin_gateway, SharedPluginGateway):
+            raise TypeError("plugin_gateway must be SharedPluginGateway")
+        self._repository = repository
+        self._plugin_gateway = plugin_gateway
+        self._plugin_bridge = plugin_bridge
+        # Optional upstream product library (profit_activity service): when
+        # present, every retained SKC that has active 1688 source links is
+        # auto-synced into the product library after link/unlink operations.
+        self._product_library_service = product_library_service
+        self._history_source_lookup = history_source_lookup
+
+    def search_batch_selections_by_image(
+        self,
+        actor: PriceVerificationActor,
+        *,
+        batch_id: str,
+        provider_factory: Callable[[], Any],
+        ranking_mode: str = "image_order",
+        skc_ids: Sequence[str] | None = None,
+    ) -> dict[str, Any]:
+        """Run the established OB 1688 image-search chain for retained SKCs.
+
+        Each retained selection becomes one task whose main image is first
+        downloaded and uploaded through the already-verified data-collection
+        provider (upload_img), then matched via item_search_img.  Results are
+        returned as a source preview grouped by SKC, honoring each selection's
+        candidate cap, ranked by the requested mode, and topped with a profit
+        preview for the best candidate against the Temu adjusted price.
+
+        ``skc_ids`` restricts the search to the user-selected SKCs; when it is
+        ``None`` every retained selection is searched (backward compatible).
+        The Temu title stays local and is used only for category-conflict
+        filtering after image search; no title query is sent to OneBound.
+        """
+        from .onebound_adapter import OneBoundSourceAdapter
+
+        actor = _actor(actor)
+        selections = tuple(
+            item
+            for item in self._repository.list_batch_selections(
+                workspace_id=actor.workspace_id, batch_id=batch_id
+            )
+            if item.status == "retained"
+        )
+        existing_session = self._repository.get_batch_sourcing_session(
+            workspace_id=actor.workspace_id, batch_id=batch_id
+        )
+        if skc_ids is not None:
+            selected = {_text(skc) for skc in skc_ids if _text(skc)}
+            selections = tuple(item for item in selections if item.skc_id in selected)
+        session = existing_session or self.prepare_batch_sourcing(
+            actor, batch_id=batch_id, skc_ids=[item.skc_id for item in selections]
+        )
+        unresolved = set(session["unresolved_skc_ids"])
+        selections = tuple(item for item in selections if item.skc_id in unresolved)
+        if not selections:
+            return {"items": [], "skc_groups": [], "ranking_mode": "image_order", "counts": {"candidate_count": 0, "failed_quotes": 0}}
+        payload = build_batch_sourcing_payload(
+            (_selection_sourcing_view(item) for item in selections)
+        )
+        tasks = payload.tasks
+        if not tasks:
+            raise NoRetainedQuotesError("no retained SKC selections are available for sourcing")
+        adapter = OneBoundSourceAdapter(self._repository, provider_factory)
+        result = adapter.search_by_image(actor, tasks, keyword_search=False)
+        if self._history_source_lookup is not None:
+            try:
+                result_items = {
+                    _text(item.get("skc_id")): item
+                    for item in result.get("items") or []
+                    if isinstance(item, Mapping) and _text(item.get("skc_id"))
+                }
+                history_requests = []
+                for item in selections:
+                    source_item = result_items.get(item.skc_id, {})
+                    excluded_offer_ids = {
+                        _candidate_offer_id(candidate)
+                        for candidate in source_item.get("candidates") or []
+                        if isinstance(candidate, Mapping)
+                    }
+                    history_requests.append(
+                        {
+                            "skc": item.skc_id,
+                            "excluded_offer_ids": sorted(
+                                value for value in excluded_offer_ids if value
+                            ),
+                        }
+                    )
+                history_sources = self._history_source_lookup(
+                    history_requests, actor.workspace_id
+                )
+                history_candidates = adapter.lookup_history_sources(
+                    actor, history_sources
+                )
+                _append_history_candidates(result, history_candidates)
+            except Exception:
+                # Optional enrichment must never disturb the established five
+                # image-search candidates or fail the sourcing operation.
+                pass
+        quotes = [task.to_payload() for task in tasks]
+        preview = _apply_batch_ranking(
+            build_source_preview(quotes, result),
+            selections_by_skc={item.skc_id: item for item in selections},
+            ranking_mode=ranking_mode,
+        )
+        self._repository.save_batch_sourcing_session(
+            workspace_id=actor.workspace_id,
+            batch_id=batch_id,
+            selected_skc_ids=session["selected_skc_ids"],
+            unresolved_skc_ids=session["unresolved_skc_ids"],
+            matched_products=session["matched_products"],
+            preview=preview,
+            selected_candidates=session["selected_candidates"],
+        )
+        return preview
+
+    def prepare_batch_sourcing(
+        self, actor: PriceVerificationActor, *, batch_id: str, skc_ids: Sequence[str]
+    ) -> Mapping[str, Any]:
+        """Split this final-review selection into library hits and source-search misses."""
+        actor = _actor(actor)
+        requested = tuple(dict.fromkeys(_text(skc) for skc in skc_ids if _text(skc)))
+        retained = {
+            item.skc_id
+            for item in self._repository.list_batch_selections(
+                workspace_id=actor.workspace_id, batch_id=batch_id
+            )
+            if item.status == "retained"
+        }
+        selected = tuple(skc for skc in requested if skc in retained)
+        if not selected:
+            raise NoRetainedQuotesError("no retained SKC selections are available for sourcing")
+        existing = self._repository.get_batch_sourcing_session(
+            workspace_id=actor.workspace_id, batch_id=batch_id
+        )
+        products = self._product_library_products(actor, batch_id=batch_id, skc_ids=selected)
+        product_selection_skc_ids = {str(item.get("selection_skc_id") or "") for item in products}
+        unresolved = tuple(skc for skc in selected if skc not in product_selection_skc_ids)
+        same_selection = existing is not None and tuple(existing["selected_skc_ids"]) == selected
+        return self._repository.save_batch_sourcing_session(
+            workspace_id=actor.workspace_id,
+            batch_id=batch_id,
+            selected_skc_ids=selected,
+            unresolved_skc_ids=unresolved,
+            matched_products=products,
+            preview=existing["preview"] if same_selection and existing else None,
+            selected_candidates=existing["selected_candidates"] if same_selection and existing else (),
+        )
+
+    def get_batch_sourcing_state(
+        self, actor: PriceVerificationActor, *, batch_id: str
+    ) -> Mapping[str, Any]:
+        actor = _actor(actor)
+        session = self._repository.get_batch_sourcing_session(
+            workspace_id=actor.workspace_id, batch_id=batch_id
+        )
+        if session is not None:
+            selections = self._repository.list_batch_selections(
+                workspace_id=actor.workspace_id, batch_id=batch_id
+            )
+            preview, preview_updated = _hydrate_preview_main_images(
+                session["preview"],
+                {selection.skc_id: selection.main_image_url for selection in selections},
+            )
+            # Re-apply the category guard to previews saved before it existed;
+            # otherwise stale candidates such as a pet bowl can remain visible
+            # until the employee manually runs image search again.
+            if isinstance(preview, Mapping):
+                candidate_keys_before = _preview_candidate_keys(preview)
+                preview = _apply_batch_ranking(
+                    dict(preview),
+                    selections_by_skc={selection.skc_id: selection for selection in selections},
+                    ranking_mode="image_order",
+                )
+                preview_updated = preview_updated or candidate_keys_before != _preview_candidate_keys(preview)
+            # Sessions saved by the old implementation can contain standalone
+            # title-query hits. They are not visual matches, so invalidate that
+            # cached preview and put only the affected SKCs back into the image
+            # search queue instead of ever rendering/associating them again.
+            stale_keyword_skc_ids = _preview_keyword_skc_ids(preview)
+            stale_visual_skc_ids = _preview_unverified_visual_skc_ids(preview)
+            stale_skc_ids = tuple(dict.fromkeys((*stale_keyword_skc_ids, *stale_visual_skc_ids)))
+            if stale_skc_ids:
+                unresolved = tuple(dict.fromkeys((*session["unresolved_skc_ids"], *stale_skc_ids)))
+                selected_candidates = tuple(
+                    candidate
+                    for candidate in session["selected_candidates"]
+                    if _text(candidate.get("skc_id")) not in stale_skc_ids
+                )
+                session = self._repository.save_batch_sourcing_session(
+                    workspace_id=actor.workspace_id, batch_id=batch_id,
+                    selected_skc_ids=session["selected_skc_ids"], unresolved_skc_ids=unresolved,
+                    matched_products=session["matched_products"], preview=None,
+                    selected_candidates=selected_candidates,
+                )
+                return session
+            # 产品库命中展示每次读取都用耐久的货源关联记录补全，避免早期产品库
+            # 只保存 URL 时在 STEP 04 退化成重复的空白“1688 货源”。
+            products = self._product_library_products(
+                actor, batch_id=batch_id, skc_ids=session["selected_skc_ids"]
+            )
+            if products or preview_updated:
+                session = self._repository.save_batch_sourcing_session(
+                    workspace_id=actor.workspace_id, batch_id=batch_id,
+                    selected_skc_ids=session["selected_skc_ids"],
+                    unresolved_skc_ids=session["unresolved_skc_ids"], matched_products=products,
+                    preview=preview, selected_candidates=session["selected_candidates"],
+                )
+            return session
+        return {
+            "selected_skc_ids": (), "unresolved_skc_ids": (), "matched_products": (),
+            "preview": None, "selected_candidates": (), "updated_at": "",
+        }
+
+    def add_manual_source_candidate(
+        self,
+        actor: PriceVerificationActor,
+        *,
+        batch_id: str,
+        skc_id: str,
+        source_url: str,
+        provider_factory: Callable[[], Any],
+    ) -> Mapping[str, Any]:
+        """Look up one employee-supplied 1688 offer and pin it in this SKC's preview."""
+        actor = _actor(actor)
+        batch_id = _required_text(batch_id, "batch_id")
+        skc_id = _required_text(skc_id, "skc_id")
+        if not callable(provider_factory):
+            raise TypeError("provider_factory must be callable")
+        offer_id = offer_id_from_url(_required_text(source_url, "source_url"))
+        if not offer_id:
+            raise PriceVerificationContractError("source_url must be a standard 1688 product link")
+        source_url = canonical_source_url(source_url, offer_id=offer_id)
+        if not source_url:
+            raise PriceVerificationContractError("source_url must be a valid 1688 offer URL")
+        session = self.get_batch_sourcing_state(actor, batch_id=batch_id)
+        if skc_id not in session["unresolved_skc_ids"]:
+            raise PriceVerificationContractError("SKC does not need source search in this batch")
+        selection = self._repository.get_batch_selection_by_skc(
+            workspace_id=actor.workspace_id, batch_id=batch_id, skc_id=skc_id
+        )
+        provider = provider_factory()
+        detail_result = provider.get_item_detail(offer_id)
+        detail_error = getattr(detail_result, "error", None)
+        if detail_error is not None:
+            message = _text(getattr(detail_error, "message", ""))
+            raise PriceVerificationContractError(message or "万邦商品详情查询失败，请稍后重试")
+        detail = _onebound_detail_item(getattr(detail_result, "response", {}))
+        if not detail:
+            raise PriceVerificationContractError("未找到该 1688 商品，请检查链接是否有效或商品是否已下架")
+        candidates = normalize_source_candidates(
+            {
+                "product_title": selection.product_title,
+                "main_image_url": selection.main_image_url,
+            },
+            (
+                {
+                    **detail,
+                    "offer_id": offer_id,
+                    "source_url": source_url,
+                    "source_channel": "manual",
+                    "manual_lookup": True,
+                    "moq": detail.get("moq") or detail.get("min_num"),
+                },
+            ),
+            quote_key=selection.skc_id,
+        )
+        if not candidates:
+            raise PriceVerificationContractError("万邦返回的商品详情不完整，无法生成货源候选")
+        preview = _prepend_manual_candidate(session.get("preview"), skc_id, candidates[0])
+        preview = _apply_batch_ranking(
+            preview,
+            selections_by_skc={skc_id: selection},
+            ranking_mode="image_order",
+        )
+        return self._repository.save_batch_sourcing_session(
+            workspace_id=actor.workspace_id,
+            batch_id=batch_id,
+            selected_skc_ids=session["selected_skc_ids"],
+            unresolved_skc_ids=session["unresolved_skc_ids"],
+            matched_products=session["matched_products"],
+            preview=preview,
+            selected_candidates=session["selected_candidates"],
+        )
+
+    def select_batch_source_candidate(
+        self,
+        actor: PriceVerificationActor,
+        *,
+        batch_id: str,
+        skc_id: str,
+        candidate: Mapping[str, Any],
+        price_cny: object = None,
+        weight_kg: object = None,
+    ) -> Mapping[str, Any]:
+        actor = _actor(actor)
+        session = self.get_batch_sourcing_state(actor, batch_id=batch_id)
+        skc_id = _required_text(skc_id, "skc_id")
+        if skc_id not in session["unresolved_skc_ids"]:
+            raise PriceVerificationContractError("SKC does not need source search in this batch")
+        offer_id = _text(candidate.get("offer_id")) or _offer_id_from_url(_text(candidate.get("source_url")))
+        if not re.fullmatch(r"\d{3,}", offer_id):
+            raise PriceVerificationContractError("offer_id must be a 1688 offer id")
+        verified_candidate = _verified_preview_candidate(session.get("preview"), skc_id, offer_id)
+        if verified_candidate is None:
+            raise PriceVerificationContractError("candidate is not in the current verified image-search results")
+        source_url = canonical_source_url(_text(verified_candidate.get("source_url")), offer_id=offer_id)
+        if not source_url:
+            raise PriceVerificationContractError("source_url must be a valid 1688 offer URL")
+        selected = [dict(item) for item in session["selected_candidates"]
+                    if not (item.get("skc_id") == skc_id and item.get("offer_id") == offer_id)]
+        selected.append({
+            "skc_id": skc_id, "offer_id": offer_id, "source_url": source_url,
+            "source_title": _text(verified_candidate.get("source_title")),
+            "main_image_url": _text(verified_candidate.get("main_image_url")),
+            "price_cny": _nullable_decimal_text(price_cny if price_cny is not None else verified_candidate.get("promotion_price") or verified_candidate.get("price")),
+            "weight_kg": _nullable_positive_decimal_text(weight_kg) or str(DEFAULT_WEIGHT_KG),
+            "moq": _nullable_decimal_text(verified_candidate.get("moq")),
+            "domestic_freight_cny": _nullable_decimal_text(verified_candidate.get("domestic_freight")),
+            "source_decision": _text(verified_candidate.get("source_decision")),
+        })
+        return self._repository.save_batch_sourcing_session(
+            workspace_id=actor.workspace_id, batch_id=batch_id,
+            selected_skc_ids=session["selected_skc_ids"], unresolved_skc_ids=session["unresolved_skc_ids"],
+            matched_products=session["matched_products"], preview=session["preview"], selected_candidates=selected,
+        )
+
+    def unselect_batch_source_candidate(
+        self, actor: PriceVerificationActor, *, batch_id: str, skc_id: str, offer_id: str
+    ) -> Mapping[str, Any]:
+        actor = _actor(actor)
+        session = self.get_batch_sourcing_state(actor, batch_id=batch_id)
+        selected = [dict(item) for item in session["selected_candidates"]
+                    if not (item.get("skc_id") == skc_id and item.get("offer_id") == offer_id)]
+        return self._repository.save_batch_sourcing_session(
+            workspace_id=actor.workspace_id, batch_id=batch_id,
+            selected_skc_ids=session["selected_skc_ids"], unresolved_skc_ids=session["unresolved_skc_ids"],
+            matched_products=session["matched_products"], preview=session["preview"], selected_candidates=selected,
+        )
+
+    def complete_batch_sourcing(
+        self, actor: PriceVerificationActor, *, batch_id: str
+    ) -> Mapping[str, Any]:
+        actor = _actor(actor)
+        session = self.get_batch_sourcing_state(actor, batch_id=batch_id)
+        selected_candidates = tuple(session["selected_candidates"])
+        if not selected_candidates:
+            raise PriceVerificationContractError("select at least one 1688 candidate before completing")
+        linked_skc_ids: list[str] = []
+        try:
+            for candidate in selected_candidates:
+                skc_id = _required_text(candidate.get("skc_id"), "skc_id")
+                self.link_skc_source(
+                    actor, batch_id=batch_id, skc_id=skc_id,
+                    offer_id=_required_text(candidate.get("offer_id"), "offer_id"),
+                    source_url=_required_text(candidate.get("source_url"), "source_url"),
+                    source_title=_text(candidate.get("source_title")), main_image_url=_text(candidate.get("main_image_url")),
+                    price_cny=candidate.get("price_cny"), weight_kg=candidate.get("weight_kg"), moq=candidate.get("moq"),
+                    domestic_freight_cny=candidate.get("domestic_freight_cny"),
+                    source_decision=_text(candidate.get("source_decision")),
+                    auto_sync=False,
+                )
+                if skc_id not in linked_skc_ids:
+                    linked_skc_ids.append(skc_id)
+        finally:
+            # 每个受影响的 SKC 只同步一次（候选通常多条同 SKC）；中途异常时
+            # 已写入的关联也要兜底同步，避免产品库漏更新。
+            for skc_id in linked_skc_ids:
+                self._sync_skc_to_product_library(actor, batch_id=batch_id, skc_id=skc_id)
+        products = self._product_library_products(
+            actor, batch_id=batch_id, skc_ids=session["selected_skc_ids"]
+        )
+        selected_skc_ids = {
+            _text(candidate.get("skc_id"))
+            for candidate in selected_candidates
+        }
+        unresolved_skc_ids = tuple(
+            skc_id
+            for skc_id in session["unresolved_skc_ids"]
+            if skc_id not in selected_skc_ids
+        )
+        remaining_preview = _preview_for_skc_ids(session.get("preview"), unresolved_skc_ids)
+        self._repository.save_batch_sourcing_session(
+            workspace_id=actor.workspace_id, batch_id=batch_id,
+            selected_skc_ids=session["selected_skc_ids"], unresolved_skc_ids=unresolved_skc_ids,
+            matched_products=products, preview=remaining_preview, selected_candidates=(),
+        )
+        return self.get_batch_sourcing_state(actor, batch_id=batch_id)
+
+    def _product_library_products(
+        self, actor: PriceVerificationActor, skc_ids: Sequence[str], *, batch_id: str = ""
+    ) -> tuple[Mapping[str, Any], ...]:
+        if self._product_library_service is None or not skc_ids:
+            return ()
+        try:
+            selected_skc_ids = tuple(str(skc_id) for skc_id in skc_ids)
+            if batch_id:
+                batch = self._repository.get_quote_capture_batch(
+                    workspace_id=actor.workspace_id, batch_id=batch_id
+                )
+                selections = {
+                    selection.skc_id: selection
+                    for selection in self._repository.list_batch_selections(
+                        workspace_id=actor.workspace_id, batch_id=batch_id
+                    )
+                    if selection.skc_id in selected_skc_ids
+                }
+                archive_id_to_selection = {
+                    archive_id: selection.skc_id
+                    for selection in selections.values()
+                    for archive_id, _selling_price in self._archive_product_targets(
+                        selection, batch.archive_product_id_type
+                    )
+                }
+            else:
+                archive_id_to_selection = {
+                    skc_id: skc_id for skc_id in selected_skc_ids
+                }
+            if not archive_id_to_selection:
+                return ()
+            products = self._product_library_service.list_products(
+                skcs=list(archive_id_to_selection), actor=actor, include_workspace_shared=True
+            )
+            links_by_skc: dict[str, list[SkcSourceLinkRecord]] = {}
+            for link in self._repository.list_active_skc_source_links_for_skcs(
+                workspace_id=actor.workspace_id, skc_ids=selected_skc_ids
+            ):
+                links_by_skc.setdefault(link.skc_id, []).append(link)
+            enriched: list[Mapping[str, Any]] = []
+            for product in products:
+                payload = dict(product)
+                archive_id = _text(payload.get("skc"))
+                selection_skc_id = archive_id_to_selection.get(archive_id)
+                if not selection_skc_id:
+                    continue
+                links = links_by_skc.get(selection_skc_id, [])
+                if links:
+                    payload["source_groups"] = [
+                        {
+                            "source_url": link.source_url,
+                            "source_title": link.source_title,
+                            "main_image_url": link.main_image_url,
+                            "offer_id": link.offer_id,
+                            "price_cny": link.price_cny,
+                            "moq": link.moq,
+                            "domestic_freight_cny": link.domestic_freight_cny,
+                        }
+                        for link in links
+                    ]
+                source_groups = payload.get("source_groups")
+                valid_sources = [
+                    dict(group)
+                    for group in source_groups
+                    if isinstance(group, Mapping)
+                    and canonical_source_url(
+                        _text(group.get("source_url")),
+                        offer_id=_text(group.get("offer_id")),
+                    )
+                ] if isinstance(source_groups, Sequence) and not isinstance(source_groups, (str, bytes)) else []
+                if not valid_sources:
+                    continue
+                payload["source_groups"] = valid_sources
+                payload["selection_skc_id"] = selection_skc_id
+                enriched.append(payload)
+            return tuple(enriched)
+        except Exception as exc:
+            raise ProductLibraryLookupError("产品库货源查询失败") from exc
+
+    # existing code paths still use this direct link operation; the new batch
+    # wizard stages candidates above and calls it only from complete_batch_sourcing.
+
+    def preview_candidate_profit(
+        self,
+        *,
+        site: str,
+        selling_price: object,
+        price: object,
+        moq: object = None,
+        domestic_freight: object = None,
+        weight_kg: object = DEFAULT_WEIGHT_KG,
+    ) -> Mapping[str, Any]:
+        """Recompute the profit preview for one candidate with adjustable weight."""
+        site_code = _site_code(site)
+        if not site_code:
+            raise PriceVerificationContractError("site must be US, CO or EC")
+        return build_candidate_profit(
+            {
+                "price": price,
+                "promotion_price": None,
+                "moq": moq,
+                "domestic_freight": domestic_freight,
+            },
+            site=site_code,
+            selling_price=selling_price,
+            weight_kg=weight_kg,
+        )
+
+    def link_skc_source(
+        self,
+        actor: PriceVerificationActor,
+        *,
+        batch_id: str,
+        skc_id: str,
+        offer_id: str,
+        source_url: str,
+        source_title: str = "",
+        main_image_url: str = "",
+        price_cny: object = None,
+        weight_kg: object = None,
+        moq: object = None,
+        domestic_freight_cny: object = None,
+        source_decision: str = "",
+        note: str = "",
+        # 批量关联时由调用方在最后统一同步一次，避免每条候选都触发一次全量同步。
+        auto_sync: bool = True,
+    ) -> Mapping[str, Any]:
+        """Link one 1688 offer to a retained Temu SKC (idempotent, one SKC to many offers).
+
+        Only SKCs that were retained in the final review (and therefore written
+        to the draft pool) may be linked; this keeps the dropshipping record
+        closed: retain -> image-search -> link.
+        """
+        actor = _actor(actor)
+        batch_id = _required_text(batch_id, "batch_id")
+        skc_id = _required_text(skc_id, "skc_id")
+        offer_id = _required_text(offer_id, "offer_id")
+        if not re.fullmatch(r"\d{3,}", offer_id):
+            raise PriceVerificationContractError("offer_id must be a 1688 offer id")
+        source_url = canonical_source_url(source_url, offer_id=offer_id)
+        if not source_url:
+            raise PriceVerificationContractError("source_url must be a valid 1688 offer URL")
+        selection = self._repository.get_batch_selection_by_skc(
+            workspace_id=actor.workspace_id, batch_id=batch_id, skc_id=skc_id
+        )
+        if selection.status != "retained":
+            raise PriceVerificationContractError(
+                "only retained SKC selections can link 1688 sources"
+            )
+        record = self._repository.upsert_skc_source_link(
+            workspace_id=actor.workspace_id,
+            batch_id=batch_id,
+            skc_id=skc_id,
+            offer_id=offer_id,
+            source_url=source_url,
+            source_title=_text(source_title),
+            main_image_url=_text(main_image_url),
+            price_cny=_nullable_decimal_text(price_cny),
+            weight_kg=_nullable_positive_decimal_text(weight_kg),
+            moq=_nullable_decimal_text(moq),
+            domestic_freight_cny=_nullable_decimal_text(domestic_freight_cny),
+            source_decision=_text(source_decision),
+            note=_text(note),
+            now=_now_text(),
+            # 快照 Temu 侧上下文：覆盖式重新采集清空 selections 后，STEP 04 仍能展示站点与利润。
+            product_title=_text(selection.product_title),
+            site=_text(selection.site),
+            selling_price=_nullable_decimal_text(selection.adjusted_min),
+        )
+        if auto_sync:
+            self._sync_skc_to_product_library(actor, batch_id=batch_id, skc_id=skc_id)
+        return _source_link_response(record, selection=selection)
+
+    def list_skc_source_links(
+        self,
+        actor: PriceVerificationActor,
+        *,
+        batch_id: str,
+        skc_id: str | None = None,
+    ) -> tuple[Mapping[str, Any], ...]:
+        actor = _actor(actor)
+        links = self._repository.list_skc_source_links(
+            workspace_id=actor.workspace_id,
+            batch_id=batch_id,
+            skc_id=_text(skc_id) or None,
+        )
+        if not links:
+            return ()
+        selections = {
+            item.skc_id: item
+            for item in self._repository.list_batch_selections(
+                workspace_id=actor.workspace_id, batch_id=batch_id
+            )
+        }
+        return tuple(
+            _source_link_response(record, selection=selections.get(record.skc_id))
+            for record in links
+        )
+
+    def remove_skc_source_link(
+        self, actor: PriceVerificationActor, *, link_id: int
+    ) -> Mapping[str, Any]:
+        actor = _actor(actor)
+        record = self._repository.soft_remove_skc_source_link(
+            workspace_id=actor.workspace_id, link_id=int(link_id), now=_now_text()
+        )
+        self._sync_skc_to_product_library(actor, batch_id=record.batch_id, skc_id=record.skc_id)
+        return _source_link_response(record)
+
+    def _archive_product_targets(
+        self, selection: BatchSelectionRecord, archive_product_id_type: str
+    ) -> tuple[tuple[str, Decimal], ...]:
+        """Return the final library identities and their conservative selling prices."""
+        kind = _text(archive_product_id_type).upper() or "SKC"
+        if kind == "SKC":
+            price = _decimal(selection.adjusted_min)
+            return ((selection.skc_id, price),) if selection.skc_id and price and price > 0 else ()
+        values: dict[str, Decimal] = {}
+        key_name = "sku_id" if kind == "SKU" else "spu_id"
+        for row in selection.sku_prices:
+            if not isinstance(row, Mapping):
+                continue
+            product_id = _text(row.get(key_name))
+            price = _decimal(row.get("adjusted_declared_price_cny"))
+            if not product_id or price is None or price <= 0:
+                continue
+            previous = values.get(product_id)
+            values[product_id] = price if previous is None else min(previous, price)
+        return tuple(values.items())
+
+    def _sync_skc_to_product_library(
+        self,
+        actor: PriceVerificationActor,
+        *,
+        batch_id: str,
+        skc_id: str,
+    ) -> Mapping[str, Any] | None:
+        """Upsert one retained SKC into the product library with its active 1688 links.
+
+        The cost basis is the cheapest active link (source price plus allocated
+        domestic freight over MOQ); every active link is kept in
+        ``source_groups_json`` with its stored (default or user-adjusted)
+        price/freight and per-link profit. Auto-sync failures never raise:
+        linking/unlinking must succeed even if the library is unavailable.
+        """
+        if self._product_library_service is None:
+            return None
+        try:
+            batch = self._repository.get_quote_capture_batch(
+                workspace_id=actor.workspace_id, batch_id=batch_id
+            )
+            selection = self._repository.get_batch_selection_by_skc(
+                workspace_id=actor.workspace_id, batch_id=batch_id, skc_id=skc_id
+            )
+            if selection is None or selection.status != "retained":
+                return None
+            site = _site_code(selection.site)
+            if not site:
+                return None
+            links = tuple(
+                self._repository.list_skc_source_links(
+                    workspace_id=actor.workspace_id, batch_id=batch_id, skc_id=skc_id
+                )
+            )
+            if not links:
+                # 移除最后一条关联后，清空产品库里的货源链接，避免残留已删除货源。
+                for product_id, selling_price in self._archive_product_targets(
+                    selection, batch.archive_product_id_type
+                ):
+                    self._product_library_service.upsert_product({
+                        "site": site, "skc": product_id, "product_id": product_id,
+                        "selling_price": str(selling_price),
+                        "source_groups_json": "[]",
+                        "source_url": "",
+                        "source_type": "price_verification",
+                        "source_main_image_url": _text(selection.main_image_url),
+                        "store_name": batch.store_name,
+                        "visibility": "shared",
+                    }, actor=actor, allow_company_write=True)
+                return None
+            saved: Mapping[str, Any] | None = None
+            for product_id, selling_price in self._archive_product_targets(
+                selection, batch.archive_product_id_type
+            ):
+                groups: list[dict[str, Any]] = []
+                computed: list[tuple[Decimal, Mapping[str, Any]]] = []
+                for link in links:
+                    profit = build_candidate_profit(
+                        {"price": link.price_cny, "promotion_price": None, "moq": link.moq,
+                         "domestic_freight": link.domestic_freight_cny},
+                        site=site, selling_price=selling_price,
+                        weight_kg=link.weight_kg or DEFAULT_WEIGHT_KG,
+                    )
+                    group = {"source_url": link.source_url, "source_title": link.source_title,
+                        "main_image_url": link.main_image_url, "offer_id": link.offer_id,
+                        "price_cny": link.price_cny, "weight_kg": link.weight_kg or str(DEFAULT_WEIGHT_KG),
+                        "moq": link.moq, "domestic_freight_cny": link.domestic_freight_cny,
+                        "source_decision": link.source_decision, "note": link.note, "profit": profit}
+                    groups.append(group)
+                    cost = _decimal(profit.get("cost_price"))
+                    if profit.get("available") and cost is not None:
+                        computed.append((cost, group))
+                if not computed:
+                    continue
+                _cost, best_group = min(computed, key=lambda item: item[0])
+                best_profit = best_group["profit"]
+                saved = self._product_library_service.upsert_product({
+                    "site": site, "skc": product_id, "product_id": product_id,
+                    "selling_price": str(selling_price), "cost_price": str(best_profit["cost_price"]),
+                    "weight_kg": str(best_profit["weight_kg"]), "note": f"来自核价及货源 · 批次 {batch_id}",
+                    "source_url": str(best_group.get("source_url") or ""),
+                    "source_groups_json": json.dumps(groups, ensure_ascii=False, separators=(",", ":")),
+                    "source_type": "price_verification", "source_main_image_url": _text(selection.main_image_url),
+                    "store_name": batch.store_name, "visibility": "shared",
+                }, actor=actor, allow_company_write=True)
+            return saved
+        except Exception:
+            # 自动同步失败不能阻断关联/解除关联，但必须留痕：否则产品库
+            # 未更新时没有任何可排查的线索。
+            logging.getLogger(__name__).warning(
+                "price_verification product library sync failed (batch=%s skc=%s)",
+                batch_id, skc_id, exc_info=True,
+            )
+            return None
+
+    def sync_all_to_product_library(self) -> int:
+        """Backfill the product library for every retained SKC with active links.
+
+        Runs once at startup so previously-associated products appear in the
+        product library even though auto-sync is wired to link/unlink events.
+        """
+        if self._product_library_service is None:
+            return 0
+        synced = 0
+        for workspace_id, batch_id, skc_id in self._repository.active_skc_link_targets():
+            actor = PriceVerificationActor(actor_id=workspace_id, workspace_id=workspace_id)
+            if (
+                self._sync_skc_to_product_library(actor, batch_id=batch_id, skc_id=skc_id)
+                is not None
+            ):
+                synced += 1
+        return synced
+
+    def queue_browser_search(
+        self,
+        actor: PriceVerificationActor,
+        *,
+        session_id: str,
+        quote_run_id: str,
+        idempotency_key: str,
+        max_quotes: int = 50,
+    ) -> PluginCommandRecord:
+        """Queue one bounded image search command for complete saved quotes."""
+        actor = _actor(actor)
+        run, browser_payload = self._retained_browser_payload(
+            actor, quote_run_id=quote_run_id, max_quotes=max_quotes
+        )
+        frozen = [task.to_payload() for task in browser_payload.tasks]
+        payload = {
+            "quote_run_id": run.run_id,
+            "source_mode": "browser_image_search",
+            "source_quotes": frozen,
+            **browser_payload.to_payload(),
+        }
+        if self._plugin_gateway is not None:
+            return self._plugin_gateway.queue_command(
+                actor,
+                session_id=session_id,
+                command_type="source_browser_image_search",
+                payload=payload,
+                idempotency_key=idempotency_key,
+            )
+        assert self._plugin_bridge is not None
+        _owned_session(self._plugin_bridge, actor, session_id)
+        return self._repository.create_command(
+            workspace_id=actor.workspace_id,
+            session_id=session_id,
+            request=PluginCommandRequest(
+                command_type="source_browser_image_search", payload=payload, idempotency_key=idempotency_key
+            ),
+        )
+
+    def queue_batch_sourcing(
+        self,
+        actor: PriceVerificationActor,
+        *,
+        session_id: str,
+        batch_id: str,
+        idempotency_key: str,
+    ) -> PluginCommandRecord:
+        """Queue one bounded image-search command for retained SKC selections.
+
+        Each retained SKC becomes one search task carrying its requested
+        candidate cap.  The payload is tagged with a batch-scoped identifier
+        because the second panel drives sourcing without a quote-run snapshot.
+        """
+        actor = _actor(actor)
+        selections = tuple(
+            item
+            for item in self._repository.list_batch_selections(
+                workspace_id=actor.workspace_id, batch_id=batch_id
+            )
+            if item.status == "retained"
+        )
+        if not selections:
+            raise NoRetainedQuotesError("no retained SKC selections are available for sourcing")
+        browser_payload = build_batch_sourcing_payload(
+            (_selection_sourcing_view(item) for item in selections)
+        )
+        frozen = [task.to_payload() for task in browser_payload.tasks]
+        payload = {
+            "quote_run_id": f"batch-sourcing:{batch_id}",
+            "source_mode": "browser_image_search",
+            "source_quotes": frozen,
+            **browser_payload.to_payload(),
+        }
+        if self._plugin_gateway is not None:
+            return self._plugin_gateway.queue_command(
+                actor,
+                session_id=session_id,
+                command_type="source_browser_image_search",
+                payload=payload,
+                idempotency_key=idempotency_key,
+            )
+        assert self._plugin_bridge is not None
+        _owned_session(self._plugin_bridge, actor, session_id)
+        return self._repository.create_command(
+            workspace_id=actor.workspace_id,
+            session_id=session_id,
+            request=PluginCommandRequest(
+                command_type="source_browser_image_search", payload=payload, idempotency_key=idempotency_key
+            ),
+        )
+
+    def retained_search_tasks(
+        self,
+        actor: PriceVerificationActor,
+        *,
+        quote_run_id: str,
+        max_quotes: int = 50,
+    ) -> tuple[SourceSearchTask, ...]:
+        """Return validated one-link-per-task inputs for the direct provider adapter."""
+        actor = _actor(actor)
+        _, browser_payload = self._retained_browser_payload(
+            actor, quote_run_id=quote_run_id, max_quotes=max_quotes
+        )
+        return browser_payload.tasks
+
+    def _retained_browser_payload(
+        self,
+        actor: PriceVerificationActor,
+        *,
+        quote_run_id: str,
+        max_quotes: int,
+    ) -> tuple[QuoteRunRecord, SourceBrowserImageSearchPayload]:
+        run = self._repository.get_quote_run(workspace_id=actor.workspace_id, run_id=quote_run_id)
+        decisions = self._repository.list_current_quote_decisions(
+            workspace_id=actor.workspace_id, quote_run_id=quote_run_id
+        )
+        if not decisions:
+            raise QuoteDecisionRequiredError("quote decisions are required before sourcing")
+        retained_keys = {item.quote_key for item in decisions if item.decision == "retained"}
+        if not retained_keys:
+            raise NoRetainedQuotesError("no retained quotes are available for sourcing")
+        retained = [_frozen_source_quote(item) for item in run.items if _quote_key(item) in retained_keys]
+        incomplete = [item["quote_key"] for item in retained if not _complete_frozen_quote(item)]
+        if incomplete:
+            raise IncompleteRetainedQuotesError(
+                "retained quotes are incomplete: " + ", ".join(incomplete)
+            )
+        browser_payload = build_retained_source_browser_image_search_payload(
+            retained, max_quotes=max_quotes
+        )
+        return run, browser_payload
+
+    def materialize_browser_result(
+        self,
+        actor: PriceVerificationActor,
+        command: PluginCommandRecord,
+        *,
+        quote_run_id: str | None = None,
+    ) -> SourcingRunRecord:
+        """Persist completed candidates together with each task's terminal state.
+
+        An item marker deliberately persists failures and empty results, so a
+        later retry can target only unfinished quotes without discarding a
+        concurrent successful candidate.
+        """
+        actor = _actor(actor)
+        if not isinstance(command, PluginCommandRecord):
+            raise TypeError("command must be PluginCommandRecord")
+        persisted = (
+            self._plugin_gateway.get_command(actor, command.command_id)
+            if self._plugin_gateway is not None
+            else self._repository.get_command(
+                workspace_id=actor.workspace_id, command_id=command.command_id
+            )
+        )
+        if persisted.command_type != "source_browser_image_search":
+            raise PriceVerificationContractError("command must be a source browser image search")
+        if persisted.status != "succeeded":
+            raise ValueError("source command must have succeeded before materialization")
+        saved_run_id = persisted.payload.get("quote_run_id")
+        resolved_quote_run_id = quote_run_id or (saved_run_id if isinstance(saved_run_id, str) else "")
+        if not resolved_quote_run_id:
+            raise PriceVerificationContractError("quote_run_id is required")
+        frozen_quotes = persisted.payload.get("source_quotes")
+        if not isinstance(frozen_quotes, list) or not all(
+            isinstance(item, Mapping) for item in frozen_quotes
+        ):
+            frozen_quotes = list(
+                self._repository.get_quote_run(
+                    workspace_id=actor.workspace_id, run_id=resolved_quote_run_id
+                ).items
+            )
+        quotes = tuple(frozen_quotes)
+        source_result: Mapping[str, Any] = persisted.result
+        parent_run_id = _text(persisted.payload.get("retry_of_sourcing_run_id"))
+        if parent_run_id:
+            parent_run = self._repository.get_sourcing_run(
+                workspace_id=actor.workspace_id, run_id=parent_run_id
+            )
+            if parent_run.quote_run_id != resolved_quote_run_id:
+                raise PriceVerificationContractError("retry source run must use the same quote run")
+            source_result = _merge_retry_source_result(self.preview(actor, parent_run_id), persisted.result)
+        preview = build_source_preview(quotes, source_result)
+        snapshots: list[dict[str, Any]] = []
+        for item in preview["items"]:
+            quote_key = str(item["quote_key"])
+            snapshots.append({
+                "record_type": "source_item", "quote_key": quote_key,
+                "candidate_key": f"__source_item__:{quote_key}",
+                "status": item["source_search_status"], "error": item.get("source_search_error", ""),
+            })
+            for candidate in _all_item_candidates(item):
+                snapshots.append({"record_type": "candidate", **candidate})
+        return self._repository.create_sourcing_run(
+            workspace_id=actor.workspace_id,
+            quote_run_id=resolved_quote_run_id,
+            candidates=snapshots,
+            source_mode="browser_image_search",
+            status="partial" if preview["counts"]["failed_quotes"] else "succeeded",
+            task_count=len(preview["items"]),
+            source_quotes=tuple(frozen_quotes),
+        )
+
+    def preview(self, actor: PriceVerificationActor, sourcing_run_id: str) -> dict[str, Any]:
+        """Recreate a source preview solely from workspace-owned snapshots."""
+        actor = _actor(actor)
+        run = self._repository.get_sourcing_run(workspace_id=actor.workspace_id, run_id=sourcing_run_id)
+        frozen_quotes = self._repository.list_sourcing_run_quotes(
+            workspace_id=actor.workspace_id, sourcing_run_id=sourcing_run_id
+        )
+        quotes = (
+            tuple(item.snapshot for item in frozen_quotes)
+            if frozen_quotes
+            else self._repository.get_quote_run(
+                workspace_id=actor.workspace_id, run_id=run.quote_run_id
+            ).items
+        )
+        source_items: dict[str, dict[str, Any]] = {}
+        for snapshot in run.candidates:
+            quote_key = _text(snapshot.get("quote_key"))
+            if not quote_key:
+                continue
+            item = source_items.setdefault(quote_key, {"quote_key": quote_key, "status": "succeeded", "candidates": []})
+            if snapshot.get("record_type") == "source_item":
+                item["status"] = _text(snapshot.get("status")) or "succeeded"
+                item["error"] = _text(snapshot.get("error"))
+            elif snapshot.get("record_type") == "candidate":
+                item["candidates"].append(snapshot)
+        return build_source_preview(quotes, {"items": list(source_items.values())})
+
+    def retry_failed_items(
+        self,
+        actor: PriceVerificationActor,
+        *,
+        sourcing_run_id: str,
+        session_id: str,
+        idempotency_key: str,
+        max_quotes: int = 50,
+    ) -> PluginCommandRecord:
+        """Queue only failed source tasks; recommendations and reviews remain saved."""
+        actor = _actor(actor)
+        run = self._repository.get_sourcing_run(workspace_id=actor.workspace_id, run_id=sourcing_run_id)
+        current = self.preview(actor, sourcing_run_id)
+        retry_keys = set(current["retry_quote_keys"])
+        if not retry_keys:
+            raise ValueError("no failed source items to retry")
+        frozen_quotes = self._repository.list_sourcing_run_quotes(
+            workspace_id=actor.workspace_id, sourcing_run_id=sourcing_run_id
+        )
+        retry_quotes = [
+            dict(item.snapshot) for item in frozen_quotes if item.quote_key in retry_keys
+        ]
+        if not retry_quotes:
+            quote_run = self._repository.get_quote_run(
+                workspace_id=actor.workspace_id, run_id=run.quote_run_id
+            )
+            retry_quotes = [quote for quote in quote_run.items if _quote_key(quote) in retry_keys]
+        browser_payload = build_retained_source_browser_image_search_payload(
+            retry_quotes, max_quotes=max_quotes
+        )
+        source_quotes = [task.to_payload() for task in browser_payload.tasks]
+        payload = {
+            "quote_run_id": run.quote_run_id,
+            "retry_of_sourcing_run_id": run.run_id,
+            "source_mode": "browser_image_search",
+            "source_quotes": source_quotes,
+            **browser_payload.to_payload(),
+        }
+        if self._plugin_gateway is not None:
+            return self._plugin_gateway.queue_command(
+                actor,
+                session_id=session_id,
+                command_type="source_browser_image_search",
+                payload=payload,
+                idempotency_key=idempotency_key,
+            )
+        assert self._plugin_bridge is not None
+        _owned_session(self._plugin_bridge, actor, session_id)
+        return self._repository.create_command(
+            workspace_id=actor.workspace_id,
+            session_id=session_id,
+            request=PluginCommandRequest(
+                command_type="source_browser_image_search", payload=payload, idempotency_key=idempotency_key
+            ),
+        )
+
+
+def build_source_preview(
+    quotes: Sequence[QuoteItem | Mapping[str, Any]], source_result: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """Merge quote evidence and an already-captured browser result without I/O."""
+    result_by_key = _result_items_by_quote_key(source_result)
+    items: list[dict[str, Any]] = []
+    review_candidates: list[dict[str, Any]] = []
+    sku_targets: list[dict[str, Any]] = []
+    for quote in quotes:
+        quote_key = _quote_key(quote)
+        result = result_by_key.get(quote_key) or result_by_key.get(_quote_skc(quote))
+        status = _text(result.get("status")) if result else ("pending" if source_result is None else "failed")
+        status = status or "succeeded"
+        raw_candidates = result.get("candidates", []) if result else []
+        # A translated-title-only hit says nothing about visual equivalence and
+        # remains excluded.  Product-title conflicts on image-search hits are
+        # review labels, however, not visibility gates: the UI contract is to
+        # show five image candidates whenever OneBound supplied five usable
+        # offers, even if none is reliable enough to recommend automatically.
+        if isinstance(raw_candidates, Sequence) and not isinstance(raw_candidates, (str, bytes)):
+            raw_candidates = [
+                candidate
+                for candidate in raw_candidates
+                if (
+                    isinstance(candidate, Mapping)
+                    and candidate.get("source_channel") != "keyword"
+                )
+            ]
+        else:
+            raw_candidates = []
+        normalized = normalize_source_candidates(quote, raw_candidates, quote_key=quote_key)
+        recommended = [candidate for candidate in normalized if candidate["source_decision"] == "recommended"]
+        review = [candidate for candidate in normalized if candidate["source_decision"] == "review"]
+        validation = [candidate for candidate in normalized if candidate["source_decision"] == "sku_validation"]
+        item_decision, item_status = _item_decision(status, normalized, recommended, review, validation)
+        item = {
+            "quote_key": quote_key,
+            "skc_id": _quote_skc(quote),
+            "sku_id": _quote_sku(quote),
+            "product_title": _quote_value(quote, "product_title"),
+            "main_image_url": _quote_value(quote, "main_image_url"),
+            "source_search_status": item_status,
+            "source_search_error": _text(result.get("error")) if result else "",
+            "image_search_audit": _image_search_audit(result),
+            "visual_verification": dict(result.get("visual_verification") or {}) if result else {},
+            "total_elapsed_ms": _safe_nonnegative_int(result.get("total_elapsed_ms")) if result else None,
+            "source_decision": item_decision,
+            "max_candidates": _quote_candidate_cap(quote),
+            "candidates": recommended,
+            "source_review_candidates": review,
+            "source_sku_validation_targets": [_sku_validation_target(quote, candidate) for candidate in validation],
+            "all_candidates": normalized,
+        }
+        items.append(item)
+        review_candidates.extend(review)
+        sku_targets.extend(item["source_sku_validation_targets"])
+    counts = _counts(items)
+    result_status = _text(source_result.get("status")) if isinstance(source_result, Mapping) else ""
+    failed_skc_ids = (
+        [str(value) for value in source_result.get("failed_skc_ids") or [] if _text(value)]
+        if isinstance(source_result, Mapping)
+        else []
+    )
+    return {
+        "items": items,
+        "skc_groups": _group_source_items_by_skc(items),
+        "counts": counts,
+        "employee_action_summary": _employee_action_summary(counts),
+        "source_review_candidates": review_candidates,
+        "source_sku_validation_targets": sku_targets,
+        "retry_quote_keys": [item["quote_key"] for item in items if item["source_decision"] == "failed"],
+        "search_status": result_status or ("pending" if source_result is None else "succeeded"),
+        "all_failed": bool(source_result.get("all_failed")) if isinstance(source_result, Mapping) else False,
+        "failed_skc_ids": failed_skc_ids,
+    }
+
+
+def _append_history_candidates(
+    source_result: dict[str, Any],
+    history_candidates: Mapping[str, Mapping[str, Any]],
+) -> None:
+    """Append at most one non-duplicate history candidate after five image hits."""
+    added = 0
+    items = source_result.get("items")
+    if not isinstance(items, list):
+        return
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        skc_id = _text(item.get("skc_id"))
+        candidate = history_candidates.get(skc_id)
+        existing = item.get("candidates")
+        if (
+            not isinstance(candidate, Mapping)
+            or not isinstance(existing, list)
+            or len(existing) < DEFAULT_CANDIDATE_LIMIT
+        ):
+            continue
+        candidate_offer_id = _candidate_offer_id(candidate)
+        candidate_url = canonical_source_url(
+            _candidate_source_url(candidate), offer_id=candidate_offer_id
+        )
+        if not candidate_offer_id or not candidate_url:
+            continue
+        duplicate = any(
+            isinstance(value, Mapping)
+            and (
+                _candidate_offer_id(value) == candidate_offer_id
+                or canonical_source_url(
+                    _candidate_source_url(value), offer_id=_candidate_offer_id(value)
+                )
+                == candidate_url
+            )
+            for value in existing
+        )
+        if duplicate:
+            continue
+        item["candidates"] = [*existing, dict(candidate)]
+        added += 1
+    counts = source_result.get("counts")
+    if added and isinstance(counts, dict):
+        counts["candidate_count"] = int(counts.get("candidate_count") or 0) + added
+
+
+def _preview_for_skc_ids(
+    preview: Mapping[str, Any] | None,
+    skc_ids: Sequence[str],
+) -> dict[str, Any] | None:
+    """Keep only unresolved SKC rows after a partial source-link completion."""
+    if not isinstance(preview, Mapping):
+        return None
+    keep = {str(skc_id) for skc_id in skc_ids}
+    filtered = dict(preview)
+    filtered["items"] = [
+        dict(item)
+        for item in preview.get("items") or []
+        if isinstance(item, Mapping) and _text(item.get("skc_id")) in keep
+    ]
+    failed_skc_ids = [
+        _text(item.get("skc_id"))
+        for item in filtered["items"]
+        if _text(item.get("source_decision")) == "failed"
+    ]
+    filtered["failed_skc_ids"] = failed_skc_ids
+    filtered["all_failed"] = bool(filtered["items"]) and len(failed_skc_ids) == len(filtered["items"])
+    filtered["search_status"] = (
+        "failed"
+        if filtered["all_failed"]
+        else ("partial" if failed_skc_ids else "succeeded")
+    )
+    return filtered
+
+
+def _onebound_detail_item(response: object) -> Mapping[str, Any]:
+    if not isinstance(response, Mapping):
+        return {}
+    for key in ("item", "data", "result"):
+        value = response.get(key)
+        if isinstance(value, Mapping):
+            return value
+    return {}
+
+
+def _prepend_manual_candidate(
+    preview: object, skc_id: str, candidate: Mapping[str, Any]
+) -> dict[str, Any]:
+    if not isinstance(preview, Mapping):
+        raise PriceVerificationContractError("当前 SKC 没有可更新的图搜候选")
+    updated = dict(preview)
+    items = preview.get("items")
+    if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
+        raise PriceVerificationContractError("当前 SKC 没有可更新的图搜候选")
+    candidate_offer_id = _text(candidate.get("offer_id"))
+    found = False
+    updated_items: list[dict[str, Any]] = []
+    for source_item in items:
+        if not isinstance(source_item, Mapping):
+            continue
+        item = dict(source_item)
+        item_skc_id = _text(item.get("skc_id")) or _text(item.get("quote_key"))
+        if item_skc_id == skc_id:
+            existing = item.get("all_candidates")
+            existing_candidates = (
+                [dict(value) for value in existing if isinstance(value, Mapping)]
+                if isinstance(existing, Sequence) and not isinstance(existing, (str, bytes))
+                else []
+            )
+            item["all_candidates"] = [
+                dict(candidate),
+                *[
+                    value
+                    for value in existing_candidates
+                    if (_text(value.get("offer_id")) or _offer_id_from_url(value.get("source_url")))
+                    != candidate_offer_id
+                ],
+            ]
+            found = True
+        updated_items.append(item)
+    if not found:
+        raise PriceVerificationContractError("当前 SKC 没有可更新的图搜候选")
+    updated["items"] = updated_items
+    return updated
+
+
+def _apply_batch_ranking(
+    preview: dict[str, Any],
+    *,
+    selections_by_skc: Mapping[str, BatchSelectionRecord],
+    ranking_mode: str,
+) -> dict[str, Any]:
+    """Reorder each SKC's candidates by the user-selected mode and attach the top profit.
+
+    The first ranked candidate is priced against the Temu adjusted declared
+    price so the employee immediately sees whether the most-similar or cheapest
+    1688 match clears the profit thresholds.  The displayed list is capped at
+    ``DEFAULT_CANDIDATE_LIMIT`` (3-5 links) per the sourcing convention.
+    """
+    del ranking_mode
+    for item in preview.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        raw_candidates = item.get("all_candidates")
+        all_candidates = (
+            [
+                candidate
+                for candidate in raw_candidates
+                if (
+                    isinstance(candidate, Mapping)
+                    and candidate.get("source_channel") != "keyword"
+                )
+            ]
+            if isinstance(raw_candidates, list)
+            else []
+        )
+        history_candidates = [candidate for candidate in all_candidates if candidate.get("history_lookup")]
+        manual_candidates = [
+            candidate
+            for candidate in all_candidates
+            if candidate.get("manual_lookup") and not candidate.get("history_lookup")
+        ]
+        image_candidates = [
+            candidate
+            for candidate in all_candidates
+            if not candidate.get("manual_lookup") and not candidate.get("history_lookup")
+        ]
+        # The history match is a sixth supplement, not ranking input.  Keeping
+        # it last guarantees the established five results retain their order.
+        ranked = (
+            *manual_candidates,
+            *rank_candidates_by_image_order(image_candidates),
+            *history_candidates[:1],
+        )
+        selection = selections_by_skc.get(_text(item.get("skc_id")))
+        site = _site_code(selection.site) if selection is not None else ""
+        selling_price = _text(selection.adjusted_min) if selection is not None else ""
+        ranked_copies = [dict(candidate) for candidate in ranked]
+        for candidate in ranked_copies:
+            candidate["profit"] = _candidate_profit(candidate, site, selling_price)
+        item["all_candidates"] = ranked_copies
+        item["ranked_candidates"] = list(ranked_copies[:DEFAULT_CANDIDATE_LIMIT])
+        # Keep the legacy field recommendation-only for decision automation;
+        # the UI intentionally renders ``all_candidates`` so review/conflict
+        # image hits still fill the fixed five-card display.
+        item["candidates"] = [
+            candidate
+            for candidate in ranked_copies
+            if candidate.get("source_decision") == "recommended"
+        ]
+        item["profit_context"] = {
+            "site": site,
+            "selling_price": selling_price,
+            "weight_kg": str(DEFAULT_WEIGHT_KG),
+        }
+        item["top_profit"] = _top_candidate_profit(ranked_copies, selection)
+    preview["ranking_mode"] = "image_order"
+    preview["candidate_limit"] = DEFAULT_CANDIDATE_LIMIT
+    preview["skc_groups"] = _group_source_items_by_skc(preview.get("items") or [])
+    return preview
+
+
+def _image_search_audit(result: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Expose a small, safe proof of the image-search request chain.
+
+    The raw audit remains persisted but may contain provider-specific details.
+    The preview only needs to say whether the reference image was downloaded,
+    uploaded and searched, plus the final validated image URL and safe request
+    correlation/timestamp fields. This intentionally says nothing about visual
+    quality or matching confidence.
+    """
+    evidence = result.get("evidence") if isinstance(result, Mapping) else ()
+    if not isinstance(evidence, Sequence) or isinstance(evidence, (str, bytes)):
+        return {"downloaded": False, "uploaded": False, "searched": False}
+
+    operations: dict[str, Mapping[str, Any]] = {}
+    for entry in evidence:
+        if not isinstance(entry, Mapping):
+            continue
+        operation = _text(entry.get("operation"))
+        if operation and operation not in operations:
+            operations[operation] = entry
+
+    downloaded = operations.get("download_reference_image")
+    uploaded = operations.get("upload_img")
+    searched = operations.get("item_search_img")
+    download_summary = downloaded.get("response_summary") if isinstance(downloaded, Mapping) else {}
+    if not isinstance(download_summary, Mapping):
+        download_summary = {}
+    search_summary = searched.get("response_summary") if isinstance(searched, Mapping) else {}
+    if not isinstance(search_summary, Mapping):
+        search_summary = {}
+    return {
+        "downloaded": _text(download_summary.get("outcome")) == "success",
+        "uploaded": _audit_succeeded(uploaded),
+        "searched": _audit_succeeded(searched),
+        "reference_image_url": _text(download_summary.get("final_url")),
+        "image_size_bytes": _safe_positive_int(download_summary.get("image_size_bytes")),
+        "download_elapsed_ms": _safe_nonnegative_int(download_summary.get("elapsed_ms")),
+        "upload_elapsed_ms": _audit_elapsed_ms(uploaded),
+        "search_elapsed_ms": _safe_nonnegative_int(search_summary.get("elapsed_ms")),
+        "request_id": _text(search_summary.get("request_id")) or _text(searched.get("request_id") if isinstance(searched, Mapping) else ""),
+        "captured_at": _text(searched.get("captured_at") if isinstance(searched, Mapping) else ""),
+    }
+
+
+def _audit_succeeded(entry: Mapping[str, Any] | None) -> bool:
+    if not isinstance(entry, Mapping):
+        return False
+    summary = entry.get("response_summary")
+    return isinstance(summary, Mapping) and _text(summary.get("outcome")) == "success"
+
+
+def _safe_positive_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _safe_nonnegative_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number >= 0 else None
+
+
+def _audit_elapsed_ms(entry: Mapping[str, Any] | None) -> int | None:
+    if not isinstance(entry, Mapping):
+        return None
+    summary = entry.get("response_summary")
+    return _safe_nonnegative_int(summary.get("elapsed_ms")) if isinstance(summary, Mapping) else None
+
+
+def _preview_keyword_skc_ids(preview: Mapping[str, Any] | None) -> tuple[str, ...]:
+    """Return SKCs whose saved preview contains a standalone keyword hit."""
+    if not isinstance(preview, Mapping):
+        return ()
+    items = preview.get("items")
+    if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
+        return ()
+    invalid: list[str] = []
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        candidates = item.get("all_candidates") or item.get("ranked_candidates") or item.get("candidates")
+        if not isinstance(candidates, Sequence) or isinstance(candidates, (str, bytes)):
+            continue
+        if any(isinstance(candidate, Mapping) and candidate.get("source_channel") == "keyword" for candidate in candidates):
+            skc_id = _text(item.get("skc_id")) or _text(item.get("quote_key"))
+            if skc_id and skc_id not in invalid:
+                invalid.append(skc_id)
+    return tuple(invalid)
+
+
+def _preview_unverified_visual_skc_ids(preview: Mapping[str, Any] | None) -> tuple[str, ...]:
+    """Identify cached previews created before local visual verification existed."""
+    if not isinstance(preview, Mapping):
+        return ()
+    items = preview.get("items")
+    if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
+        return ()
+    invalid: list[str] = []
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        candidates = item.get("all_candidates") or item.get("ranked_candidates") or item.get("candidates")
+        if not isinstance(candidates, Sequence) or isinstance(candidates, (str, bytes)):
+            continue
+        if any(
+            isinstance(candidate, Mapping)
+            and not candidate.get("manual_lookup")
+            and not candidate.get("image_similarity_selected")
+            and not candidate.get("history_lookup")
+            for candidate in candidates
+        ):
+            skc_id = _text(item.get("skc_id")) or _text(item.get("quote_key"))
+            if skc_id and skc_id not in invalid:
+                invalid.append(skc_id)
+    return tuple(invalid)
+
+
+def _verified_preview_candidate(
+    preview: object, skc_id: str, offer_id: str
+) -> Mapping[str, Any] | None:
+    """Resolve the canonical image/link pair from the saved verified preview."""
+    if not isinstance(preview, Mapping):
+        return None
+    items = preview.get("items")
+    if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
+        return None
+    for item in items:
+        if not isinstance(item, Mapping) or (_text(item.get("skc_id")) or _text(item.get("quote_key"))) != skc_id:
+            continue
+        candidates = item.get("all_candidates") or item.get("ranked_candidates") or item.get("candidates")
+        if not isinstance(candidates, Sequence) or isinstance(candidates, (str, bytes)):
+            continue
+        for candidate in candidates:
+            if (
+                not isinstance(candidate, Mapping)
+                or (
+                    not candidate.get("manual_lookup")
+                    and not candidate.get("image_similarity_selected")
+                    and not candidate.get("history_lookup")
+                )
+            ):
+                continue
+            candidate_offer_id = _text(candidate.get("offer_id")) or _offer_id_from_url(candidate.get("source_url"))
+            if candidate_offer_id == offer_id:
+                return candidate
+    return None
+
+
+def _preview_candidate_keys(preview: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return ordered candidates so cached-preview rule upgrades are detectable."""
+    keys: list[str] = []
+    items = preview.get("items")
+    if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
+        return ()
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        candidates = item.get("all_candidates")
+        if not isinstance(candidates, Sequence) or isinstance(candidates, (str, bytes)):
+            continue
+        keys.extend(
+            _text(candidate.get("offer_id")) or _text(candidate.get("candidate_key"))
+            for candidate in candidates
+            if isinstance(candidate, Mapping)
+        )
+    return tuple(keys)
+
+
+def _hydrate_preview_main_images(
+    preview: Mapping[str, Any] | None, images_by_skc: Mapping[str, str]
+) -> tuple[Mapping[str, Any] | None, bool]:
+    """Backfill Temu images into previews saved before this field was returned."""
+    if not isinstance(preview, Mapping):
+        return preview, False
+    changed = False
+
+    def hydrate(item: Mapping[str, Any], fallback_skc: str = "") -> dict[str, Any]:
+        nonlocal changed
+        copied = dict(item)
+        skc_id = _text(copied.get("skc_id")) or fallback_skc
+        image = _text(images_by_skc.get(skc_id))
+        if image and not _text(copied.get("main_image_url")):
+            copied["main_image_url"] = image
+            changed = True
+        return copied
+
+    result = dict(preview)
+    items = preview.get("items")
+    if isinstance(items, list):
+        result["items"] = [hydrate(item) if isinstance(item, Mapping) else item for item in items]
+    groups = preview.get("skc_groups")
+    if isinstance(groups, list):
+        hydrated_groups: list[Any] = []
+        for group in groups:
+            if not isinstance(group, Mapping):
+                hydrated_groups.append(group)
+                continue
+            copied_group = dict(group)
+            skc_id = _text(copied_group.get("skc_id"))
+            group_items = copied_group.get("items")
+            if isinstance(group_items, list):
+                copied_group["items"] = [
+                    hydrate(item, skc_id) if isinstance(item, Mapping) else item
+                    for item in group_items
+                ]
+            hydrated_groups.append(copied_group)
+        result["skc_groups"] = hydrated_groups
+    return result, changed
+
+
+def _candidate_profit(
+    candidate: Mapping[str, Any], site: str, selling_price: str
+) -> Mapping[str, Any]:
+    """Per-candidate profit preview against the Temu adjusted declared price."""
+    if not site:
+        return {"available": False, "reason": "missing_site"}
+    if not selling_price:
+        return {"available": False, "reason": "missing_selling_price"}
+    return build_candidate_profit(candidate, site=site, selling_price=selling_price)
+
+
+def _top_candidate_profit(
+    ranked: Sequence[Mapping[str, Any]], selection: BatchSelectionRecord | None
+) -> Mapping[str, Any]:
+    top = ranked[0] if ranked else None
+    if top is None:
+        return {"available": False, "reason": "no_candidates"}
+    if selection is None:
+        return {"available": False, "reason": "missing_selection"}
+    site = _site_code(selection.site)
+    if not site:
+        return {"available": False, "reason": "missing_site"}
+    if not selection.adjusted_min:
+        return {"available": False, "reason": "missing_selling_price"}
+    return build_candidate_profit(top, site=site, selling_price=selection.adjusted_min)
+
+
+def _site_code(value: object) -> str:
+    """Map a stored site label (e.g. 美国站) to the profit engine's US/CO/EC code."""
+    text = _text(value)
+    upper = text.upper()
+    if upper in {"US", "CO", "EC"}:
+        return upper
+    if "美国" in text:
+        return "US"
+    if "哥伦比亚" in text:
+        return "CO"
+    if "厄瓜多尔" in text:
+        return "EC"
+    return ""
+
+
+def _offer_id_from_url(value: object) -> str:
+    match = re.search(r"(?:offer/|offerId=|offer_id=)(\d{3,})", _text(value), re.IGNORECASE)
+    return match.group(1) if match else ""
+
+
+def _candidate_source_url(candidate: Mapping[str, Any]) -> str:
+    for key in ("source_url", "detail_url", "item_url", "url", "product_url"):
+        value = _text(candidate.get(key))
+        if value:
+            return value
+    return ""
+
+
+def _candidate_offer_id(candidate: Mapping[str, Any]) -> str:
+    for key in ("offer_id", "num_iid", "item_id", "product_id"):
+        value = _text(candidate.get(key))
+        if value:
+            return value
+    return _offer_id_from_url(_candidate_source_url(candidate))
+
+
+def _group_source_items_by_skc(items: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Present completed sourcing evidence by SKC without coalescing search tasks."""
+    grouped: dict[str, dict[str, Any]] = {}
+    for item in items:
+        skc_id = _text(item.get("skc_id")) or _text(item.get("quote_key"))
+        group = grouped.setdefault(
+            skc_id,
+            {"skc_id": skc_id, "quote_keys": [], "sku_ids": [], "items": []},
+        )
+        quote_key = _text(item.get("quote_key"))
+        sku_id = _text(item.get("sku_id"))
+        if quote_key and quote_key not in group["quote_keys"]:
+            group["quote_keys"].append(quote_key)
+        if sku_id and sku_id not in group["sku_ids"]:
+            group["sku_ids"].append(sku_id)
+        group["items"].append(item)
+    return list(grouped.values())
+
+
+def _item_decision(status: str, normalized: Sequence[Mapping[str, Any]], recommended: Sequence[Mapping[str, Any]], review: Sequence[Mapping[str, Any]], validation: Sequence[Mapping[str, Any]]) -> tuple[str, str]:
+    if recommended:
+        return "recommended", "succeeded" if status == "succeeded" else "succeeded_partial"
+    if validation:
+        return "sku_validation", "needs_sku_validation"
+    if review:
+        return "review", "needs_review"
+    if normalized:
+        return "no_reliable_source", "no_reliable_source"
+    if status in {"failed", "error", "cancelled", "timeout"}:
+        return "failed", "failed"
+    if status in {"pending", "queued", "running", "leased"}:
+        return "pending", status
+    return "no_results", "no_results"
+
+
+def _result_items_by_quote_key(source_result: Mapping[str, Any] | None) -> dict[str, Mapping[str, Any]]:
+    output: dict[str, Mapping[str, Any]] = {}
+    if not isinstance(source_result, Mapping):
+        return output
+    entries = source_result.get("items")
+    if not isinstance(entries, list):
+        return output
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            continue
+        keys = [_text(entry.get("quote_key")), _text(entry.get("task_key")), _text(entry.get("skc_id"))]
+        source_keys = entry.get("source_quote_keys")
+        if isinstance(source_keys, list):
+            keys.extend(_text(key) for key in source_keys)
+        for key in keys:
+            if key and key not in output:
+                output[key] = entry
+    return output
+
+
+def _merge_retry_source_result(
+    parent_preview: Mapping[str, Any], retry_result: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Overlay returned retry items without losing terminal parent snapshots."""
+    retry_by_key = _result_items_by_quote_key(retry_result)
+    entries: list[dict[str, Any]] = []
+    parent_items = parent_preview.get("items")
+    if not isinstance(parent_items, list):
+        parent_items = []
+    for parent in parent_items:
+        if not isinstance(parent, Mapping):
+            continue
+        quote_key = _text(parent.get("quote_key"))
+        replacement = retry_by_key.get(quote_key) or retry_by_key.get(_text(parent.get("skc_id")))
+        if replacement is not None:
+            entries.append(dict(replacement))
+            continue
+        candidates = parent.get("all_candidates")
+        entries.append({
+            "quote_key": quote_key,
+            "status": _text(parent.get("source_search_status")) or "succeeded",
+            "error": _text(parent.get("source_search_error")),
+            "candidates": list(candidates) if isinstance(candidates, list) else [],
+            "visual_verification": dict(parent.get("visual_verification") or {}),
+        })
+    return {"items": entries}
+
+
+def _counts(items: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    decisions = Counter(_text(item.get("source_decision")) for item in items)
+    candidates = sum(len(item.get("candidates", [])) for item in items)
+    return {
+        "quotes": len(items), "processed_quotes": len(items) - decisions["pending"],
+        "recommended_quotes": decisions["recommended"], "candidate_count": candidates,
+        "review_source_quotes": decisions["review"], "sku_validation_quotes": decisions["sku_validation"],
+        "no_reliable_source_quotes": decisions["no_reliable_source"], "no_result_quotes": decisions["no_results"],
+        "failed_quotes": decisions["failed"], "pending_quotes": decisions["pending"],
+    }
+
+
+def _employee_action_summary(counts: Mapping[str, int]) -> dict[str, Any]:
+    if counts["recommended_quotes"]:
+        action = "confirm_recommended_sources"
+    elif counts["sku_validation_quotes"]:
+        action = "validate_sku_details"
+    elif counts["review_source_quotes"]:
+        action = "review_source_candidates"
+    elif counts["failed_quotes"]:
+        action = "retry_failed_items"
+    elif counts["no_reliable_source_quotes"] or counts["no_result_quotes"]:
+        action = "manual_source_search"
+    else:
+        action = "wait_for_source_search"
+    return {"next_action": action, "actionable_quotes": counts["recommended_quotes"] + counts["sku_validation_quotes"] + counts["review_source_quotes"]}
+
+
+def _sku_validation_target(quote: QuoteItem | Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[str, Any]:
+    return {"quote_key": _quote_key(quote), "skc_id": _quote_skc(quote), "sku_id": _quote_sku(quote), "offer_id": candidate.get("offer_id", ""), "source_url": candidate.get("source_url", ""), "source_title": candidate.get("source_title", ""), "validation_reason": candidate.get("source_decision_reason", "")}
+
+
+def _all_item_candidates(item: Mapping[str, Any]) -> Sequence[Mapping[str, Any]]:
+    values = item.get("all_candidates")
+    return values if isinstance(values, list) else []
+
+
+def _actor(value: PriceVerificationActor) -> PriceVerificationActor:
+    if not isinstance(value, PriceVerificationActor):
+        raise TypeError("actor must be PriceVerificationActor")
+    return value
+
+
+def _owned_session(bridge: PluginBridgeService, actor: PriceVerificationActor, session_id: str) -> None:
+    if not isinstance(session_id, str) or not session_id.strip():
+        raise PriceVerificationContractError("session_id is required")
+    if session_id not in {session.session_id for session in bridge.list_sessions(actor)}:
+        raise PriceVerificationNotFound("resource not found")
+
+
+def _quote_key(quote: QuoteItem | Mapping[str, Any]) -> str:
+    if isinstance(quote, Mapping) and _text(quote.get("quote_key")):
+        return _text(quote.get("quote_key"))
+    skc, sku = _quote_skc(quote), _quote_sku(quote)
+    return f"{skc}:{sku}" if skc and sku else skc or sku
+
+
+def _quote_skc(quote: QuoteItem | Mapping[str, Any]) -> str:
+    return _quote_value(quote, "skc_id")
+
+
+def _quote_sku(quote: QuoteItem | Mapping[str, Any]) -> str:
+    return _quote_value(quote, "sku_id")
+
+
+def _quote_value(quote: QuoteItem | Mapping[str, Any], name: str) -> str:
+    return _text(getattr(quote, name, "") if isinstance(quote, QuoteItem) else quote.get(name))
+
+
+def _quote_candidate_cap(quote: QuoteItem | Mapping[str, Any]) -> int:
+    raw = getattr(quote, "max_candidates", "") if isinstance(quote, QuoteItem) else quote.get("max_candidates")
+    try:
+        parsed = int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 10
+    return 10 if parsed < 1 or parsed > 100 else parsed
+
+
+def _selection_sourcing_view(selection: BatchSelectionRecord) -> dict[str, Any]:
+    return {
+        "skc_id": selection.skc_id,
+        "quote_keys": list(selection.quote_keys),
+        "product_title": selection.product_title,
+        "main_image_url": selection.main_image_url,
+        "official_link_url": selection.official_link_url,
+        "sku_prices": list(selection.sku_prices),
+        "max_candidates": selection.max_candidates,
+    }
+
+
+def _frozen_source_quote(quote: QuoteItem | Mapping[str, Any]) -> dict[str, Any]:
+    values = dict(quote) if isinstance(quote, Mapping) else {
+        name: getattr(quote, name) for name in quote.__dataclass_fields__
+    }
+    selected_price = next(
+        (
+            values.get(name)
+            for name in (
+                "adjusted_declared_price_cny",
+                "new_declared_price_cny",
+                "original_declared_price_cny",
+            )
+            if values.get(name) not in (None, "")
+        ),
+        "",
+    )
+    return {
+        **values,
+        "quote_key": _quote_key(quote),
+        "official_link_url": _text(values.get("official_link_url")),
+        "main_image_url": _text(values.get("main_image_url")),
+        "selected_price_cny": str(selected_price),
+    }
+
+
+def _complete_frozen_quote(quote: Mapping[str, Any]) -> bool:
+    return all(
+        _text(quote.get(name))
+        for name in ("quote_key", "official_link_url", "main_image_url", "selected_price_cny")
+    )
+
+
+def _text(value: object) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _now_text() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _required_text(value: object, field_name: str) -> str:
+    text = _text(value)
+    if not text:
+        raise PriceVerificationContractError(f"{field_name} is required")
+    return text
+
+
+def _nullable_decimal_text(value: object) -> str | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError):
+        return None
+    if not number.is_finite() or number < 0:
+        return None
+    return str(number)
+
+
+def _nullable_positive_decimal_text(value: object) -> str | None:
+    number = _decimal(value)
+    return str(number) if number is not None and number > 0 else None
+
+
+def _decimal(value: object) -> Decimal | None:
+    """Parse a stored text/float into a finite non-negative Decimal, else None."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = Decimal(str(value).strip().replace("¥", "").replace(",", ""))
+    except (InvalidOperation, ValueError, ArithmeticError):
+        return None
+    return number if number.is_finite() else None
+
+
+def _source_link_response(
+    record: SkcSourceLinkRecord,
+    *,
+    selection: BatchSelectionRecord | None = None,
+) -> Mapping[str, Any]:
+    response: dict[str, Any] = {
+        "id": record.id,
+        "workspace_id": record.workspace_id,
+        "batch_id": record.batch_id,
+        "skc_id": record.skc_id,
+        "offer_id": record.offer_id,
+        "source_url": record.source_url,
+        "source_title": record.source_title,
+        "main_image_url": record.main_image_url,
+        "price_cny": record.price_cny,
+        "weight_kg": record.weight_kg,
+        "moq": record.moq,
+        "domestic_freight_cny": record.domestic_freight_cny,
+        "source_decision": record.source_decision,
+        "note": record.note,
+        "status": record.status,
+        "created_at": record.created_at,
+        "updated_at": record.updated_at,
+    }
+    site = _site_code(selection.site) if selection is not None else _site_code(record.site)
+    selling_price = (
+        _text(selection.adjusted_min)
+        if selection is not None
+        else _text(record.selling_price)
+    )
+    response["product_title"] = (
+        _text(selection.product_title)
+        if selection is not None
+        else _text(record.product_title)
+    )
+    response["site"] = site
+    response["selling_price"] = selling_price
+    response["profit"] = _link_profit(record, site, selling_price)
+    return response
+
+
+def _link_profit(
+    record: SkcSourceLinkRecord, site: str, selling_price: str
+) -> Mapping[str, Any]:
+    """Profit for one linked 1688 source against the Temu adjusted price."""
+    if not site:
+        return {"available": False, "reason": "missing_site"}
+    if not selling_price:
+        return {"available": False, "reason": "missing_selling_price"}
+    if not record.price_cny:
+        return {"available": False, "reason": "missing_source_price"}
+    return build_candidate_profit(
+        {
+            "price": record.price_cny,
+            "promotion_price": None,
+            "moq": record.moq,
+            "domestic_freight": record.domestic_freight_cny,
+        },
+        site=site,
+        selling_price=selling_price,
+        weight_kg=record.weight_kg or DEFAULT_WEIGHT_KG,
+    )
