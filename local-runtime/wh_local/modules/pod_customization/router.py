@@ -225,24 +225,31 @@ def create_router(
         permitted(actor, "pod_customization.read")
         return _call(service.get_semi_batch, actor, batch_id)
 
+    # 以下四个操作端点复用共享 service 方法，而那些方法只按 owner 校验、不看 mode ——
+    # 不做拦截的话，拿任意 mode 的批次 id 打 /semi/... 就能删/停/取消全定制或复刻批次。
+    # 先用 get_semi_batch（内部已校验 mode == "semi"）挡一道，语义与 get/download 端点对齐。
     @router.delete("/semi/batches/{batch_id}")
     def delete_semi_batch(batch_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
         permitted(actor, "pod_customization.create")
+        _call(service.get_semi_batch, actor, batch_id)
         return _call(service.delete_batch, actor, batch_id)
 
     @router.post("/semi/batches/{batch_id}/pause")
     def pause_semi_batch(batch_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
         permitted(actor, "pod_customization.create")
+        _call(service.get_semi_batch, actor, batch_id)
         return _call(service.pause_batch, actor, batch_id)
 
     @router.post("/semi/batches/{batch_id}/cancel")
     def cancel_semi_batch(batch_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
         permitted(actor, "pod_customization.create")
+        _call(service.get_semi_batch, actor, batch_id)
         return _call(service.cancel_batch, actor, batch_id)
 
     @router.post("/semi/batches/{batch_id}/resume")
     def resume_semi_batch(batch_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
         permitted(actor, "pod_customization.create")
+        _call(service.get_semi_batch, actor, batch_id)
         return _call(service.resume_batch, actor, batch_id)
 
     @router.post("/semi/batches/{batch_id}/styles/{style_index}/regenerate")

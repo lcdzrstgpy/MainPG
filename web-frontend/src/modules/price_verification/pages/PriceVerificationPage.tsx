@@ -84,9 +84,12 @@ export function PriceVerificationPage({ isActive = true }: { isActive?: boolean 
   useEffect(() => { void refresh(false); }, []);
 
   // 容器级自动刷新：插件采集核价本页/核价确认后，批次 revision 变化即静默重拉数据。
+  // enabled: isActive —— 页签是隐藏保活（切页不卸载），不判 isActive 的话切到别的
+  // 模块后仍每 8s 打 revision，且一变就触发 3+ 个全量请求。
   useChangePoller({
     url: "/api/v1/price-verification/capture-batches/revision",
     onChange: () => void refresh(true),
+    enabled: isActive,
   });
 
   const savePrescreen = async (minAdjustedPriceCny: string) => {
