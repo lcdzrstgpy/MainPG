@@ -389,7 +389,7 @@ export type PreviewFinalizeRun = {
 /** 妙手导出模板类型：apparel=服饰类，general=非服饰类。 */
 export type MiaoshouTemplateKind = "apparel" | "general";
 
-/** 完成预审并导出的模板格式：dxm=店小秘，apparel=妙手服饰类，general=妙手非服饰类。 */
+/** 完成预检并导出的模板格式：dxm=店小秘，apparel=妙手服饰类，general=妙手非服饰类。 */
 export type PreviewExportFormat = "dxm" | MiaoshouTemplateKind;
 
 export type MiaoshouExportResponse = {

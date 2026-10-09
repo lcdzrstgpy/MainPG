@@ -134,6 +134,20 @@ def _collection_batch_display_name(table: str, row: Mapping[str, Any]) -> str:
     )
 
 
+def _claimable_source_image_condition(lease_expires_at: str):
+    """仍可领取的源图同步行：pending / failed，或租约已过期的 syncing。"""
+    return or_(
+        SourceImageAssetRow.sync_status.in_(["pending", "failed"]),
+        and_(
+            SourceImageAssetRow.sync_status == "syncing",
+            or_(
+                SourceImageAssetRow.sync_claimed_at == "",
+                SourceImageAssetRow.sync_claimed_at <= lease_expires_at,
+            ),
+        ),
+    )
+
+
 def _normalized_history_title(value: object) -> str:
     text_value = unicodedata.normalize("NFKC", str(value or "")).casefold()
     return re.sub(r"\s+", " ", text_value).strip()
@@ -2436,13 +2450,19 @@ class ProductProcessingRepository:
                 rows.append(row)
             return [self._source_image(row) for row in rows]
 
-    def claim_syncable_source_images(
-        self, product_draft_id: int, workspace_id: str = "local"
-    ) -> list[dict[str, Any]]:
-        claimed_at = utc_now()
+    def claimable_source_image_drafts(self, *, limit: int = 10) -> list[tuple[str, int]]:
+        """仍有「待同步」源图的 (workspace_id, product_draft_id)，最新草稿优先。
+
+        源图同步目前只在创建草稿时挂一次 FastAPI BackgroundTask，进程重启/被杀后
+        排队中的任务会永久丢失（行状态停在 ``pending``）。后台补偿线程靠这里把漏掉
+        的草稿重新捞回来。
+
+        只挑仍含 ``pending`` / 租约过期 ``syncing`` 的未删除草稿：单行 ``failed``
+        仍交由手动重试处理，避免对持续失败的图无限重试。
+        """
         lease_expires_at = (datetime.now(timezone.utc) - self.SOURCE_IMAGE_SYNC_LEASE).isoformat()
-        claimable = or_(
-            SourceImageAssetRow.sync_status.in_(["pending", "failed"]),
+        needs_sync = or_(
+            SourceImageAssetRow.sync_status == "pending",
             and_(
                 SourceImageAssetRow.sync_status == "syncing",
                 or_(
@@ -2451,6 +2471,26 @@ class ProductProcessingRepository:
                 ),
             ),
         )
+        with self.database.sessions() as session:
+            rows = session.execute(
+                select(ProductDraftRow.workspace_id, SourceImageAssetRow.product_draft_id)
+                .join(ProductDraftRow, ProductDraftRow.id == SourceImageAssetRow.product_draft_id)
+                .where(
+                    needs_sync,
+                    ProductDraftRow.status != "deleted",
+                )
+                .group_by(ProductDraftRow.workspace_id, SourceImageAssetRow.product_draft_id)
+                .order_by(SourceImageAssetRow.product_draft_id.desc())
+                .limit(limit)
+            ).all()
+        return [(str(row[0]), int(row[1])) for row in rows]
+
+    def claim_syncable_source_images(
+        self, product_draft_id: int, workspace_id: str = "local"
+    ) -> list[dict[str, Any]]:
+        claimed_at = utc_now()
+        lease_expires_at = (datetime.now(timezone.utc) - self.SOURCE_IMAGE_SYNC_LEASE).isoformat()
+        claimable = _claimable_source_image_condition(lease_expires_at)
         with self.database.sessions.begin() as session:
             rows = session.scalars(
                 select(SourceImageAssetRow)

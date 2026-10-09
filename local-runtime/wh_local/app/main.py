@@ -105,6 +105,7 @@ from ..modules.product_processing.infrastructure.database import create_database
 from ..modules.product_processing.infrastructure.repository import ProductProcessingRepository
 from ..modules.product_processing.provider_config import register_system_config_db_path
 from ..modules.product_processing.service import ProductProcessingService
+from ..modules.product_processing.source_image_sync import SourceImageSyncWorker
 from ..modules.clipforge import (
     ClipForgeService,
     create_router as create_clipforge_router,
@@ -446,6 +447,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         messages_sync = getattr(runtime_app.state, "messages_sync", None)
         reply_sync = getattr(runtime_app.state, "reply_sync", None)
         clipforge_service = getattr(runtime_app.state, "clipforge_service", None)
+        source_sync_worker = getattr(runtime_app.state, "source_image_sync_worker", None)
         if shop_worker is not None:
             logger.info("lifespan step: starting shop_worker")
             shop_worker.start()
@@ -467,12 +469,18 @@ def create_app(database_path: Path | None = None) -> FastAPI:
                 logger.info("lifespan step: clipforge state=%s message=%s", clipforge_status.state, clipforge_status.message)
             except Exception as exc:  # noqa: BLE001 - 子服务故障不得阻断主程序
                 logger.warning("lifespan step: clipforge start failed (ignored): %s", exc)
+        if source_sync_worker is not None:
+            logger.info("lifespan step: starting source_image_sync_worker")
+            source_sync_worker.start()
+            logger.info("lifespan step: source_image_sync_worker started")
         logger.info("lifespan step: startup done, yielding")
         try:
             yield
         finally:
             if shop_worker is not None:
                 shop_worker.close()
+            if source_sync_worker is not None:
+                source_sync_worker.close()
             if messages_sync is not None:
                 messages_sync.stop()
             if reply_sync is not None:
@@ -638,6 +646,9 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     TemporaryCosStore(runtime.cos).cleanup_stale()
     plugin_queue = DataCollectionPluginQueue(db_path)
     product_processing = _product_processing_service(db_path)
+    # 源图同步只在建草稿时挂一次 BackgroundTask，进程重启后排队中的任务会永久丢失，
+    # 行停在 pending、预检页图片出不来还会一直轮询。用常驻线程把漏掉的补跑完。
+    app.state.source_image_sync_worker = SourceImageSyncWorker(product_processing)
     # 桌面端：确认退出（关闭页面页面不再恢复）前取消所有仍在处理的任务并按 50% 结算，
     # 使「关前端页 → 任务已取消 + 按冻结积分 50% 扣费」可达成。服务器环境 watchdog 未
     # 启用，该回调不被触发。

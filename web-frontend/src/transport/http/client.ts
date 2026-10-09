@@ -247,14 +247,14 @@ export function toUserMessage(raw: string): string {
   if (/Cross-origin update actions are not allowed/i.test(message)) return "更新请求来源不被允许，请从工作台里点更新";
 
   // ---- 预检与导出（finalize）----
-  // 后端这批 detail 是英文抛出的，原先一条都不匹配：用户做完预检点「完成预审并
+  // 后端这批 detail 是英文抛出的，原先一条都不匹配：用户做完预检点「完成预检并
   // 导出」时，无论遇到哪种失败都只看到「操作失败，请稍后重试」，既分不清是数据
   // 没处理完、版本过期还是并发冲突，也不知道该做什么。这里逐条给出原因 + 下一步。
   if (/preview finalization exceeded the time budget/i.test(message)) {
     return "图片发布超时了，可以点「仅重试失败图片」再试一次";
   }
   if (/处理前图片尚未同步完成|source (proxy|media) is not ready/i.test(message)) {
-    return "这批商品的处理前图片还在同步，所以整单导不出来：请等它们同步完成后再点「完成预审并导出」，或先勾选「只看成功链接」只导出已成功的商品";
+    return "这批商品的处理前图片还在同步，所以整单导不出来：请等它们同步完成后再点「完成预检并导出」，或先勾选「只看成功链接」只导出已成功的商品";
   }
   if (/请先将处理前图片加入素材库/i.test(message)) {
     return "有商品的处理前图片还没加入素材库：请先在预检里把来源图加入素材库，或勾选「只看成功链接」只导出已成功的商品";
