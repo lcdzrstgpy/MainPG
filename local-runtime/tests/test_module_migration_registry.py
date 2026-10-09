@@ -52,6 +52,8 @@ def test_pod_customization_migrations_are_registered_in_forward_order() -> None:
         "pod_customization:014_semi_customization",
         "pod_customization:015_replica_customization",
         "pod_customization:016_pod_style_events",
+        "pod_customization:017_pod_composition",
+        "pod_customization:018_pod_composition_templates",
     ]
 
 
