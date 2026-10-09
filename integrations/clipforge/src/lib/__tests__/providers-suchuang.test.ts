@@ -89,6 +89,32 @@ describe("SuchuangProvider", () => {
     });
   });
 
+  it("MiniMax 的无扩展名成片地址必须判成视频（否则整片会报「未返回视频地址」）", async () => {
+    // 实测：MiniMax H3 的成片是 http://<host>/v1/videos/public/task-<uuid>，没有扩展名
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      code: 200,
+      data: { status: 2, result: ["http://122.228.216.60:3000/v1/videos/public/task-abc123"] },
+    }))));
+
+    await expect(provider().getTaskStatus("task-mini")).resolves.toMatchObject({
+      taskId: "task-mini",
+      status: "completed",
+      result: { videoUrls: ["http://122.228.216.60:3000/v1/videos/public/task-abc123"] },
+    });
+  });
+
+  it("图片结果仍然判成图片（不能被上面的放宽吞掉）", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      code: 200,
+      data: { status: 2, result: ["https://scapi.net/2f2a944672a030348dc98037a6333778ce2.png"] },
+    }))));
+
+    await expect(provider().getTaskStatus("task-img")).resolves.toMatchObject({
+      status: "completed",
+      result: { imageUrls: ["https://scapi.net/2f2a944672a030348dc98037a6333778ce2.png"] },
+    });
+  });
+
   it("数字状态 + result 里的成图 URL 判为完成，且不把回显的参考图当产出", async () => {
     // 实测报文：status 是数字（2=已完成），request 会把我们提交的参考图原样回显
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({

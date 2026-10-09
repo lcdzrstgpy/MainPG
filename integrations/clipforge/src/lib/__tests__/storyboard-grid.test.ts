@@ -93,9 +93,17 @@ describe("reusableGridCells（九宫格复用判定）", () => {
     expect(reusableGridCells(shots, [asset(1, 0, "把口红放进包里")])).toBeNull();
   });
 
-  it("某一镜的描述被改过 → 不复用（旧图与新脚本对不上）", () => {
+  it("描述被判官团改写 → 仍然复用（判据只看来源与格序号，不看描述文案）", () => {
     const existing = [asset(1, 0, "把口红放进包里"), asset(2, 1, "对镜头举起化妆包")];
-    expect(reusableGridCells([shots[0], { shotId: 2, description: "改成对镜头微笑" }], existing)).toBeNull();
+    expect(reusableGridCells([shots[0], { shotId: 2, description: "改成对镜头微笑" }], existing)).toEqual([
+      { shotId: 1, filePath: "/api/files/p/asset-1.png" },
+      { shotId: 2, filePath: "/api/files/p/asset-2.png" },
+    ]);
+  });
+
+  it("格序号错位（第2格的图挂到了第1镜）→ 不复用", () => {
+    const swapped = [asset(1, 1, "对镜头举起化妆包"), asset(2, 0, "把口红放进包里")];
+    expect(reusableGridCells(shots, swapped)).toBeNull();
   });
 
   it("不是九宫格产出的关键帧（逐镜生成等）不算复用", () => {

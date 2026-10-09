@@ -169,7 +169,7 @@ export class SuchuangProvider extends BaseProvider {
     const rawState = String(data.status ?? data.state ?? data.task_status ?? response.msg ?? "").toLowerCase();
     const failed = !urls.length && /fail|error|reject|cancel/.test(rawState);
     const status: TaskStatusEnum = urls.length ? "completed" : failed ? "failed" : normalizeStatus(rawState);
-    const video = urls.filter((url) => /\.(mp4|mov|webm|m4v)(?:\?|$)/i.test(url));
+    const video = urls.filter(isVideoResultUrl);
     const result = status === "completed" ? (video.length ? { taskId, videoUrls: video, modelId: "" } : { taskId, imageUrls: urls, modelId: "" }) : undefined;
     return {
       taskId,
@@ -205,6 +205,16 @@ export class SuchuangProvider extends BaseProvider {
     }
     return taskId;
   }
+}
+
+/**
+ * 成片判定不能只看扩展名：MiniMax H3 的成片地址是**没有扩展名**的
+ * `http://<host>/v1/videos/public/task-<uuid>`（实测），只看 `.mp4` 会把它判成图片，
+ * 整片就报「任务完成但未返回视频地址」——钱花了、片子也出来了，却被我们丢掉。
+ */
+function isVideoResultUrl(url: string): boolean {
+  if (/\.(mp4|mov|webm|m4v)(?:\?|$)/i.test(url)) return true;
+  return /\/videos?\//i.test(url);
 }
 
 function ratio(width?: number, height?: number): string {

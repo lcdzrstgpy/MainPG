@@ -197,8 +197,9 @@ describe("重复执行的短路（源码契约）", () => {
     expect(scriptPage).toContain('if ("skipped" in report) return;');
   });
 
-  it("九宫格路由：默认复用，只有 regenerate 才重画", () => {
+  it("九宫格路由：默认复用（按 scriptId 记录判定），只有 regenerate 才重画", () => {
     expect(gridRoute).toContain("if (!regenerate)");
+    expect(gridRoute).toContain('kind: "grid_generated"');
     expect(gridRoute).toContain("reusableGridCells(shots, existing)");
     expect(gridRoute).toContain("reused: true");
   });
