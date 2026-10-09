@@ -3,7 +3,9 @@
 设计要点（方案 docs/superpowers/specs/2026-09-10-pod-spec-card-plan.md）：
 * 纯本地 Pillow 渲染，不调用任何 provider，不计费；刻意不 import 产品处理链路
   （``product_processing``）的任何模块。
-* 单元格文本**原样印出**：不翻译、不做单位换算、不做变量替换、不换行（超宽只截断）。
+* 单元格文本**原样印出**：不翻译、不做单位换算、不做变量替换、不换行。
+  所有字段必须完整可见（2026-10-08 用户规格）：放不下先**加宽卡片**（上限 = 画布可用范围），
+  仍放不下才**自动缩小字号**；只有在缩到最小字号仍放不下时，才退回旧的「压缩列宽 + 省略号」兜底。
 * 卡片背景**不透明**（纯白 / 深色实底），不做半透明（2026-09-10 用户评审）。
 * 卡片**直角**，行与行之间画清晰的分隔线。
 * 字体为**宋体族**，字号严格固定：首行「四号」(14pt)，其余行「小四」(12pt)；
@@ -45,17 +47,22 @@ HEADER_FONT_PX_AT_800 = round(HEADER_FONT_PT * _PT_TO_PX)  # 19（scale = 1 时�
 BODY_FONT_PX_AT_800 = round(BODY_FONT_PT * _PT_TO_PX)  # 16（scale = 1 时的基准）
 
 # 用户规格（2026-09-10 最终）：
-#   * 字号固定不动：首行四号、其余行小四（14:12 比例，scale 恒为 1）
-#   * 行高固定 32px（@800 画布，随画布等比换算），不随字号变化
-#   * 卡片宽度拉到「九分之一区域」的宽度，即画布宽的 1/3
+#   * 字号基准：首行四号、其余行小四（14:12 比例，scale 恒为 1）
+#   * 行高基准 32px（@800 画布，随画布等比换算）
+#   * 卡片宽度下限拉到「九分之一区域」的宽度，即画布宽的 1/3
 ROW_HEIGHT_PX_AT_800 = 32
 CARD_TARGET_WIDTH_RATIO = 1 / 3
 
 # 几何比例（除内边距/行高/列间距外，均「相对画布边长」）。
 _MARGIN_RATIO = 0.0  # 外边距：0 = 卡片紧贴所选角落（2026-09-11 用户规格）
 _STROKE_RATIO = 0.0025  # 描边
-_CARD_WIDTH_RATIO = 0.46  # 卡片宽上限
-_CARD_HEIGHT_RATIO = 0.62  # 卡片高上限（12 行 × 32px ≈ 430px，需放宽）
+# 卡片尺寸上限：内容优先（2026-10-08 用户规格）—— 不再死守画布 46%/62%，
+# 先把卡片加到内容自然尺寸（上限 = 画布可用范围），保证字段不被吞。
+_CARD_WIDTH_RATIO = 1.0  # 卡片宽上限（相对画布宽）
+_CARD_HEIGHT_RATIO = 1.0  # 卡片高上限（相对画布高）
+# 自动缩号兜底：加宽到画布仍放不下时，字号按步递减（正文最小 8px，即 scale 0.5）。
+_FONT_SCALE_MIN = 0.5
+_FONT_SCALE_STEP = 0.05
 _PADDING_RATIO = 0.72  # 内边距 = 0.72 × 正文字号
 _LINE_HEIGHT_RATIO = 1.72  # 行高下限 = 1.72 × 该行字号（行高实际取 32px 与它的大者）
 _COLUMN_GAP_RATIO = 1.1  # 列间距 = 1.1 × 内边距
@@ -155,6 +162,8 @@ class _CardPlan:
     height: int
     padding: float
     column_gap: float
+    row_height_base: float = 0.0
+    overflowed: bool = False
 
     def row_font(self, index: int) -> Any:
         return self.header_font if index == 0 else self.body_font
@@ -163,13 +172,13 @@ class _CardPlan:
         return self.font_px if index == 0 else self.body_font_px
 
     def row_height(self, index: int) -> float:
-        return self.row_font_px(index) * _LINE_HEIGHT_RATIO
+        return max(self.row_height_base, self.row_font_px(index) * _LINE_HEIGHT_RATIO)
 
 
-def row_height_px(side: int) -> int:
-    """固定行高：32px @800 画布，随画布等比换算（用户指定）。"""
+def row_height_px(side: int, scale: float = 1.0) -> int:
+    """基准行高：32px @800 画布，随画布与自动缩号比例等比换算。"""
 
-    return max(12, round(ROW_HEIGHT_PX_AT_800 * side / REFERENCE_SIDE))
+    return max(12, round(ROW_HEIGHT_PX_AT_800 * side / REFERENCE_SIDE * float(scale)))
 
 
 def card_target_width(side: int) -> int:
@@ -199,7 +208,9 @@ def render_spec_card(
     """把 ``request.cells`` 原样合成到底图 ``base_content`` 的指定角落。
 
     ``base_content`` 必须是正方形图片（800×800 母版），输出为同尺寸 JPEG（q92, 4:4:4）。
-    字号严格按规格固定，不随内容缩放；放不下时只做列宽压缩、单元格截断与丢尾行。
+    排版优先「内容优先」：卡片先按内容自然尺寸放大（上限 = 画布可用范围，宽度不小于画布 1/3），
+    仍放不下才按 0.05 步长自动缩号（正文最小 8px）；只有缩到最小字号仍放不下时，
+    才退回「压缩列宽 + 省略号 + 丢尾行」的旧兜底，绝不静默吞掉字段。
     ``font_loader`` 仅供测试注入：``Callable[[font_px], font | None]``，返回 None 视为该字号不可用。
     """
 
@@ -217,26 +228,40 @@ def render_spec_card(
 
     margin = max(0, round(side * _MARGIN_RATIO))
     stroke = max(1, round(side * _STROKE_RATIO))
-    max_width = max(1, round(side * _CARD_WIDTH_RATIO))
-    max_height = max(1, round(side * _CARD_HEIGHT_RATIO))
+    # 卡片可用范围 = 画布减去外边距：内容优先时允许卡片加宽/加高到几乎铺满画布。
+    max_width = max(1, round(side * _CARD_WIDTH_RATIO) - 2 * margin)
+    max_height = max(1, round(side * _CARD_HEIGHT_RATIO) - 2 * margin)
+    target_width = card_target_width(side)
     loader: Callable[[int], Any] = font_loader if font_loader is not None else _default_font_loader
-    head_px = header_font_px(side)
-    text_px = body_font_px(side)
-    header_font = _load_font(loader, head_px)
-    body_font = _load_font(loader, text_px) or header_font
-    if header_font is None or body_font is None:
-        raise SpecCardRenderError("no usable font for the spec card renderer")
-    plan = _plan_card(
-        header_font,
-        head_px,
-        body_font,
-        text_px,
-        rows,
-        max_width=max_width,
-        max_height=max_height,
-        target_width=card_target_width(side),
-        row_height=row_height_px(side),
-    )
+
+    def layout(scale: float, *, allow_truncate: bool) -> _CardPlan:
+        head_px = header_font_px(side, scale)
+        text_px = body_font_px(side, scale)
+        header_font = _load_font(loader, head_px)
+        body_font = _load_font(loader, text_px) or header_font
+        if header_font is None or body_font is None:
+            raise SpecCardRenderError("no usable font for the spec card renderer")
+        return _plan_card(
+            header_font,
+            head_px,
+            body_font,
+            text_px,
+            rows,
+            max_width=max_width,
+            max_height=max_height,
+            target_width=target_width,
+            row_height=row_height_px(side, scale),
+            allow_truncate=allow_truncate,
+        )
+
+    scale = 1.0
+    plan = layout(scale, allow_truncate=False)
+    while plan.overflowed and scale > _FONT_SCALE_MIN:
+        scale = max(_FONT_SCALE_MIN, round(scale - _FONT_SCALE_STEP, 2))
+        plan = layout(scale, allow_truncate=False)
+    if plan.overflowed:
+        # 缩到最小字号仍放不下（极端内容）：退回旧的截断/丢尾行兜底，不允许画到卡片外。
+        plan = layout(scale, allow_truncate=True)
 
     composed = _draw_card(
         base,
@@ -306,16 +331,22 @@ def _plan_card(
     max_height: int,
     target_width: int | None = None,
     row_height: int | None = None,
+    allow_truncate: bool = False,
 ) -> _CardPlan:
-    """按固定字号排版：行高固定（默认 32px@800），列宽拉伸到目标宽度，
-    超宽按比例压缩 → 仍超则截断加省略号；超高则丢尾行。"""
+    """排版：行高 = max(``row_height``, 1.72 × 该行字号)，列宽先取内容自然宽度。
+
+    **内容优先（2026-10-08 用户规格）**：卡片宽度在「目标宽度（画布 1/3）」与 ``max_width``
+    之间随内容放大，字段一律完整显示。
+    放不下时：``allow_truncate=False`` → 返回 ``overflowed=True``，由调用方缩小字号重排；
+    ``allow_truncate=True``（缩到最小字号仍放不下）→ 压缩列宽 + 省略号、丢弃放不下的尾行。
+    """
 
     padding = body_px * _PADDING_RATIO
     column_gap = padding * _COLUMN_GAP_RATIO
     column_count = max(len(row) for row in rows)
     row_fonts = [header_font if index == 0 else body_font for index in range(len(rows))]
     row_px = [header_px if index == 0 else body_px for index in range(len(rows))]
-    # 行高固定：不低于字体所需的 1.72 × 字号
+    # 行高：不低于字体所需的 1.72 × 字号
     fixed_row_height = float(row_height) if row_height else 0.0
     row_heights = [max(fixed_row_height, px * _LINE_HEIGHT_RATIO) for px in row_px]
 
@@ -326,67 +357,80 @@ def _plan_card(
             if length > column_widths[index]:
                 column_widths[index] = length
 
-    natural_width = 2 * padding + sum(column_widths) + (column_count - 1) * column_gap
+    def natural_width() -> float:
+        return 2 * padding + sum(column_widths) + (column_count - 1) * column_gap
 
-    # 用户规格：宽度拉到「九分之一区域」的宽度（画布 1/3），列宽按内容比例分摊剩余空间。
-    if target_width and natural_width < target_width and target_width <= max_width:
-        extra = target_width - natural_width
+    if target_width and natural_width() < target_width <= max_width:
+        # 内容比目标宽度窄：卡片仍拉到「九分之一区域」的宽度（画布 1/3），列宽按内容比例分摊。
+        extra = target_width - natural_width()
         total = sum(column_widths)
         if total > 0:
             column_widths = [width + extra * (width / total) for width in column_widths]
         else:
             column_widths = [width + extra / column_count for width in column_widths]
-        natural_width = 2 * padding + sum(column_widths) + (column_count - 1) * column_gap
 
     truncated_cells = 0
-    if natural_width > max_width:
-        budget = max(0.0, max_width - 2 * padding - (column_count - 1) * column_gap)
-        total = sum(column_widths)
-        if total > 0:
-            # 先按比例压缩，并给每列留出至少一个省略号的宽度。
-            minimum = max(1.0, _text_length(header_font, ELLIPSIS))
-            column_widths = [max(minimum, width * (budget / total)) for width in column_widths]
-            # 极端情况（列数多 + 文本极长）再压一次，硬保证卡片不超宽。
-            if 2 * padding + sum(column_widths) + (column_count - 1) * column_gap > max_width:
-                total = sum(column_widths)
-                if total > 0:
-                    column_widths = [width * (budget / total) for width in column_widths]
-        rows = tuple(
-            tuple(
-                _truncate_text(cell, font, column_widths[index])
-                if length > column_widths[index]
-                else cell
-                for index, (cell, length) in enumerate(zip(row, row_lengths, strict=True))
+    overflowed = False
+    if natural_width() > max_width:
+        if allow_truncate:
+            # 旧兜底（仅在缩到最小字号仍放不下时使用）：压缩列宽 → 仍超再压一次 → 单元格截断。
+            budget = max(0.0, max_width - 2 * padding - (column_count - 1) * column_gap)
+            total = sum(column_widths)
+            if total > 0:
+                # 先按比例压缩，并给每列留出至少一个省略号的宽度。
+                minimum = max(1.0, _text_length(header_font, ELLIPSIS))
+                column_widths = [max(minimum, width * (budget / total)) for width in column_widths]
+                # 极端情况（列数多 + 文本极长）再压一次，硬保证卡片不超宽。
+                if natural_width() > max_width:
+                    total = sum(column_widths)
+                    if total > 0:
+                        column_widths = [width * (budget / total) for width in column_widths]
+            rows = tuple(
+                tuple(
+                    _truncate_text(cell, font, column_widths[index])
+                    if length > column_widths[index]
+                    else cell
+                    for index, (cell, length) in enumerate(zip(row, row_lengths, strict=True))
+                )
+                for font, row, row_lengths in zip(row_fonts, rows, lengths, strict=True)
             )
-            for font, row, row_lengths in zip(row_fonts, rows, lengths, strict=True)
-        )
-        truncated_cells = sum(
-            1
-            for row, row_lengths in zip(rows, lengths, strict=True)
-            for index, cell in enumerate(row)
-            if cell and row_lengths[index] > column_widths[index]
-        )
+            truncated_cells = sum(
+                1
+                for row, row_lengths in zip(rows, lengths, strict=True)
+                for index, cell in enumerate(row)
+                if cell and row_lengths[index] > column_widths[index]
+            )
+        else:
+            # 内容优先：不截断，只标记溢出，让调用方缩小字号重排；此处列宽先等比收进画布。
+            overflowed = True
+            budget = max(0.0, max_width - 2 * padding - (column_count - 1) * column_gap)
+            total = sum(column_widths)
+            if total > 0:
+                column_widths = [width * (budget / total) for width in column_widths]
 
-    # 高度上限：按每行实际行高贪心填充，放不下的尾行丢弃（字号不变）。
+    # 高度上限：兜底阶段按每行实际行高贪心填充、丢弃放不下的尾行；内容优先阶段只标记溢出。
     available = max_height - 2 * padding
-    kept = 0
-    used = 0.0
-    for height in row_heights:
-        if used + height > available:
-            break
-        used += height
-        kept += 1
-    kept = max(1, kept)
+    kept = len(rows)
+    if sum(row_heights) > available:
+        if allow_truncate:
+            kept = 0
+            used = 0.0
+            for height in row_heights:
+                if used + height > available:
+                    break
+                used += height
+                kept += 1
+            kept = max(1, kept)
+            row_heights = row_heights[:kept]
+            if kept < len(row_fonts):
+                row_fonts = [header_font] + [body_font] * (kept - 1)  # 首行始终是首行规格
+        else:
+            overflowed = True
     kept_rows = rows[:kept]
     dropped_rows = max(0, len(rows) - len(kept_rows))
-    if dropped_rows:
-        row_fonts = row_fonts[:kept]
-        row_px = row_px[:kept]
-        row_heights = row_heights[:kept]
-        row_fonts = [header_font] + [body_font] * (kept - 1)  # 首行始终是首行规格
 
-    width = min(max_width, math.ceil(2 * padding + sum(column_widths) + (column_count - 1) * column_gap))
-    height = math.ceil(2 * padding + sum(row_heights))
+    width = min(max_width, max(1, math.ceil(natural_width())))
+    height = min(max_height, math.ceil(2 * padding + sum(row_heights)))
     cell_count = sum(1 for row in kept_rows for cell in row if cell.strip())
     return _CardPlan(
         header_font=header_font,
@@ -402,6 +446,8 @@ def _plan_card(
         height=height,
         padding=padding,
         column_gap=column_gap,
+        row_height_base=fixed_row_height,
+        overflowed=overflowed,
     )
 
 

@@ -44,19 +44,14 @@ describe("/start 成为唯一主创建入口", () => {
     expect(startPage).not.toMatch(/<b>Atlas Cloud<\/b>/);
   });
 
-  it("三种出片策略都显式呈现，draft 文案写明非 AI 动态视频", () => {
-    expect(startPage).toMatch(/OUTPUT_STRATEGY_OPTIONS/);
-    for (const id of ["draft", "controlled-motion", "native-film"]) {
-      expect(startPage).toMatch(new RegExp(`"${id}"`));
-    }
+  it("三种出片策略在共享选项表里齐全，draft 标签写明非 AI 动态视频", () => {
+    // 开始页不再内联展示策略说明（hero 提示块已按产品要求移除），防误解文案由创建表单的选项卡承担
     expect(OUTPUT_STRATEGY_OPTIONS.map((option) => option.id)).toEqual(["draft", "controlled-motion", "native-film"]);
-    expect(startPage).toMatch(/非 AI 动态视频/);
-    // 共享词表里的 draft 标签同样必须点明「非 AI 动态视频」
     expect(OUTPUT_STRATEGY_OPTIONS.find((option) => option.id === "draft")?.label).toContain("非 AI 动态视频");
   });
 
-  it("出片策略默认 draft，并在创建时把策略写进 creationBrief", () => {
-    expect(DEFAULT_CREATION_BRIEF.outputStrategy).toBe("draft");
+  it("出片策略默认一次出片（原生整片），并在创建时把策略写进 creationBrief", () => {
+    expect(DEFAULT_CREATION_BRIEF.outputStrategy).toBe("native-film");
     expect(form).toMatch(/sanitizeCreationBrief/);
     expect(form).toMatch(/OutputStrategyPanel/);
     expect(startPage).toMatch(/creationBrief: /);

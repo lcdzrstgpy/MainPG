@@ -84,7 +84,7 @@ const podCustomization: WorkspaceModule = {
   id: "pod_customization",
   label: "全定制",
   icon: "",
-  iconClass: "iconfont icon-skin",
+  iconClass: "iconfont icon-appstore",
   description: "批量生成 POD 图片与标题并导出店小秘文件",
 };
 
@@ -92,7 +92,7 @@ const podSemiCustomization: WorkspaceModule = {
   id: "pod_semi_customization",
   label: "半定制",
   icon: "",
-  iconClass: "iconfont icon-skin",
+  iconClass: "iconfont icon-image",
   description: "按提示词生成纯图案花色图，按批次打包下载",
 };
 
@@ -100,7 +100,7 @@ const podReplica: WorkspaceModule = {
   id: "pod_replica",
   label: "爆款复刻",
   icon: "",
-  iconClass: "iconfont icon-skin",
+  iconClass: "iconfont icon-fire",
   description: "把一张 POD 样图图案复刻到多个白底产品，逐款填写上架信息并导出",
 };
 

@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, it, expect } from "vitest";
 import {
   buildStoryboardFilmPrompt,
@@ -275,6 +277,36 @@ describe("一键整片：模型解析与时长适配", () => {
     expect(modelMaxSeconds("bytedance/seedance-2.5/reference-to-video")).toBe(30);
     expect(modelMaxSeconds("minimax/h3/reference-to-video")).toBe(15);
     expect(modelMaxSeconds("who/knows")).toBeUndefined();
+  });
+
+  it("modelMaxSeconds：速创端点也要有自己的上限（它们不在 Atlas 参数表里）", () => {
+    // MiniMax H3 实测最长 15 秒：提交 30 秒它回 code=200 却只出 5.17 秒（静默降级）
+    expect(modelMaxSeconds("video_minimax_h3")).toBe(15);
+    expect(modelMaxSeconds("video_wan_3.0")).toBe(30);
+    expect(modelMaxSeconds("video_omni")).toBe(15);
+    expect(modelMaxSeconds("video_vidu")).toBe(16);
+  });
+
+  /**
+   * 源码契约：超时长必须**如实告知**。静默截断正是我们踩过的坑
+   * （提交 30 秒 → 模型回 200 → 成片只有 5 秒，用户白等）。
+   */
+  it("预览卡在 overflow 时必须显示时长提示（源码契约）", () => {
+    const page = readFileSync(resolve(process.cwd(), "src/app/project/[id]/script/page.tsx"), "utf8");
+    expect(page).toContain("filmPreview.durationOverflow");
+    expect(page).toContain("aiFilmDurationWarn");
+  });
+
+  it("filmDurationFit：30 秒脚本在 MiniMax H3 上被裁到 15 秒并标记 overflow", () => {
+    const long = [mkShot({ shotId: 1, duration: 30 })];
+    expect(filmDurationFit(long, "video_minimax_h3")).toEqual({
+      seconds: 15,
+      scriptSeconds: 30,
+      cap: 15,
+      overflow: true,
+    });
+    // 15 秒以内不裁剪
+    expect(filmDurationFit([mkShot({ shotId: 1, duration: 15 })], "video_minimax_h3").overflow).toBe(false);
   });
 
   it("filmDurationFit：按所选模型的上限夹取，超出时标记 overflow", () => {

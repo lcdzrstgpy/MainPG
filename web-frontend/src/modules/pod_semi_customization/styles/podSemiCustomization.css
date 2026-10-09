@@ -24,11 +24,10 @@
   min-height: calc(100dvh - 190px);
 }
 
-.pod-semi-customization-page button,
-.pod-semi-customization-page input,
-.pod-semi-customization-page textarea {
-  font: inherit;
-}
+/* 注意：本页不要用 `font` 简写给页面级的 button/input/textarea 设字体。
+   「智能填写」是全定制/半定制共用的组件，字号与字体由组件自身样式决定，
+   简写会把它的字号重置成继承值（16px），导致两边外观不一致。
+   按钮/输入框的字体继承已由 global.css 的 `button, input { font: inherit }` 负责。 */
 
 /* 复用全定制的次级顶栏；本页根容器用 flex gap 排版，顶栏自带的
    margin-bottom 会与 gap 叠加成双倍间距，这里归零。 */
@@ -78,63 +77,6 @@
   display: grid;
   gap: 12px;
   align-content: start;
-}
-
-.pod-semi-fields {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 9px;
-}
-
-.pod-semi-field {
-  display: grid;
-  min-width: 0;
-  gap: 4px;
-}
-
-.pod-semi-field > span {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  color: var(--pod-text-secondary);
-  font-size: .63rem;
-  font-weight: 800;
-}
-
-.pod-semi-field > span em {
-  margin-left: 2px;
-  color: #d65e58;
-  font-style: normal;
-}
-
-.pod-semi-field > span small {
-  margin-left: 4px;
-  color: var(--pod-text-muted);
-  font-size: .57rem;
-  font-weight: 500;
-}
-
-/* 文本框高度由 JS 按内容自适应（rows=1 起步），这里只给上限与内边距，
-   避免出现被裁掉的半行文本或大片空白。 */
-.pod-semi-field textarea {
-  width: 100%;
-  min-width: 0;
-  max-height: 260px;
-  overflow-y: auto;
-  padding: 7px 8px;
-  border: 1px solid var(--pod-border);
-  border-radius: 8px;
-  outline: 0;
-  color: var(--pod-text);
-  background: var(--pod-surface);
-  font-size: .69rem;
-  line-height: 1.48;
-  resize: none;
-}
-
-.pod-semi-field textarea:focus {
-  border-color: var(--pod-primary);
-  box-shadow: 0 0 0 3px rgba(var(--pod-primary-rgb), .13);
 }
 
 .pod-semi-count {
@@ -220,6 +162,32 @@
 }
 
 .pod-semi-batch-head small {
+  color: var(--pod-text-muted);
+  font-size: .6rem;
+}
+
+/* 批次进度条：与全定制结果区同一套观感（细条 + 右侧计数/百分比）。 */
+.pod-semi-progress {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  margin: 11px 0 13px;
+}
+.pod-semi-progress > div {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 9px;
+  background: var(--pod-surface-soft);
+}
+.pod-semi-progress > div span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--theme-primary-button-gradient, linear-gradient(90deg, #087bf5, #14c8c0));
+  transition: width .25s ease;
+}
+.pod-semi-progress small {
   color: var(--pod-text-muted);
   font-size: .6rem;
 }

@@ -10,13 +10,19 @@ import {
 import type { PodBriefFieldsDraft, PodBriefHistoryItem } from "../types";
 
 type Props = {
-  onGenerated: (fields: PodBriefFieldsDraft, input: string) => void;
+  /** 内置「智能生成」完成后的回调；由父级统一驱动生成（hideGenerate）时可省略。 */
+  onGenerated?: (fields: PodBriefFieldsDraft, input: string) => void;
   history: PodBriefHistoryItem[];
   onSelectHistory: (item: PodBriefHistoryItem) => void;
   /** 折叠标题下的副标题；默认是全定制（带产品名）口径。 */
   subtitle?: string;
   /** 未输入时的提示文案；半定制是纯图案，不带产品名。 */
   hint?: string;
+  /** 受控输入：父级需要拿到当前输入自行触发生成时传入（配合 onValueChange 使用）。 */
+  value?: string;
+  onValueChange?: (value: string) => void;
+  /** 隐藏内置「智能生成」按钮，由父级用一个按钮统一驱动「编辑提示词 + 开始生成」。 */
+  hideGenerate?: boolean;
 };
 
 const DEFAULT_SUBTITLE = "写「产品名 + 风格」，AI 自动填好下方业务字段";
@@ -46,9 +52,15 @@ export function PodBriefInput({
   onSelectHistory,
   subtitle = DEFAULT_SUBTITLE,
   hint = DEFAULT_HINT,
+  value,
+  onValueChange,
+  hideGenerate = false,
 }: Props) {
   const [open, setOpen] = useState(true);
-  const [brief, setBrief] = useState("");
+  // 受控优先：父级传了 value 就用父级的状态，便于它在自己的按钮里触发生成。
+  const [internalBrief, setInternalBrief] = useState("");
+  const brief = value ?? internalBrief;
+  const setBrief = onValueChange ?? setInternalBrief;
   const [loading, setLoading] = useState(false);
   const [stageIndex, setStageIndex] = useState(0);
   const [error, setError] = useState("");
@@ -80,7 +92,7 @@ export function PodBriefInput({
 
   // 异常一律在此收敛：后端不可用/返回结构异常时只展示可读错误，绝不让异常冒泡导致页面白屏。
   const generate = async () => {
-    if (loading || !isBriefRequestValid(brief)) return;
+    if (loading || !isBriefRequestValid(brief) || !onGenerated) return;
     const input = normalizeBriefInput(brief);
     setError("");
     setNotice("");
@@ -119,9 +131,9 @@ export function PodBriefInput({
           <span className={loading ? "pod-brief-input-stage" : ""}>{loading ? BRIEF_STAGES[stageIndex] : hint}</span>
           <small>{brief.length}/{POD_BRIEF_MAX_LENGTH}</small>
         </div>
-        <button type="button" className="pod-brief-input-generate" disabled={loading || !isBriefRequestValid(brief)} onClick={() => void generate()}>
+        {!hideGenerate && <button type="button" className="pod-brief-input-generate" disabled={loading || !isBriefRequestValid(brief)} onClick={() => void generate()}>
           {loading ? <><span className="iconfont icon-loading" aria-hidden="true" />{BRIEF_STAGES[stageIndex]}</> : <><span className="iconfont icon-robot" aria-hidden="true" />智能生成</>}
-        </button>
+        </button>}
         {error && <p className="pod-brief-input-error" role="alert"><span>{error}</span><button type="button" onClick={() => void generate()}>重试</button></p>}
         {!error && notice && <p className="pod-brief-input-notice" role="status">{notice}</p>}
         {history.length > 0 && <div className="pod-brief-history" aria-label="最近生成">

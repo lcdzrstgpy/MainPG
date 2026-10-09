@@ -1,6 +1,6 @@
 import { createPortal } from "react-dom";
 
-import { PodListingFieldsEditor, type SkuField, type SkuFieldErrors } from "../../pod_customization/components/PodListingFieldsEditor";
+import { PodListingFieldsEditor, REPLICA_PRODUCT_NAME_MAX_LENGTH, type SkuField, type SkuFieldErrors } from "../../pod_customization/components/PodListingFieldsEditor";
 import type { ReplicaTargetDraft } from "../data/podReplicaModel";
 
 type Props = {
@@ -8,6 +8,7 @@ type Props = {
   target: ReplicaTargetDraft | null;
   skuFieldErrors: SkuFieldErrors;
   skuLimitReached: boolean;
+  showRequiredErrors: boolean;
   onChangeProductName: (clientId: string, value: string) => void;
   onListingFieldChange: (clientId: string, key: "title_mode" | "suggested_price_usd" | "category_name", value: string) => void;
   onAddSku: (clientId: string) => void;
@@ -26,6 +27,7 @@ export function ReplicaTargetDrawer({
   target,
   skuFieldErrors,
   skuLimitReached,
+  showRequiredErrors,
   onChangeProductName,
   onListingFieldChange,
   onAddSku,
@@ -49,6 +51,7 @@ export function ReplicaTargetDrawer({
             <span>产品名称<em>*</em></span>
             <input
               value={target.productName}
+              maxLength={REPLICA_PRODUCT_NAME_MAX_LENGTH}
               aria-label="产品名称"
               aria-invalid={!target.productName.trim()}
               placeholder="例如：抱枕"
@@ -61,6 +64,7 @@ export function ReplicaTargetDrawer({
             specCard={target.specCard}
             skuFieldErrors={skuFieldErrors}
             skuLimitReached={skuLimitReached}
+            showRequiredErrors={showRequiredErrors}
             onListingFieldChange={(key, value) => onListingFieldChange(target.clientId, key, value)}
             onAddSku={() => onAddSku(target.clientId)}
             onUpdateSku={(index, key, value) => onUpdateSku(target.clientId, index, key, value)}

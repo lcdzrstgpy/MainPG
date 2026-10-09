@@ -126,6 +126,107 @@ class BriefFieldResponse(BaseModel):
     fields: BusinessFields
 
 
+# --- 构图/视角定制：一段大白话 → 四格画面指令（每账号+工作区只保留最新一份）---
+# 四格角色固定（由我们确定，用户只决定每格怎么拍）：
+#   panel_1 = 主图；panel_2 = 细节图 A；panel_3 = 细节图 B；panel_4 = 素材图。
+# 每格存两份文本：zh 供前端展示与手动编辑，en 由后台转写并注入生图提示词。
+COMPOSITION_PANEL_KEYS = ("panel_1", "panel_2", "panel_3", "panel_4")
+COMPOSITION_PANEL_SLOTS = {
+    "panel_1": "主图",
+    "panel_2": "细节图 A",
+    "panel_3": "细节图 B",
+    "panel_4": "素材图",
+}
+COMPOSITION_INPUT_MIN_LENGTH = 1
+COMPOSITION_INPUT_MAX_LENGTH = 500
+COMPOSITION_PANEL_MAX_LENGTH = 500
+
+
+class CompositionRequest(BaseModel):
+    """用户对四张图视角/构图的一段大白话描述，由后端 LLM 解析成四格画面指令。"""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    brief: str = Field(min_length=COMPOSITION_INPUT_MIN_LENGTH, max_length=COMPOSITION_INPUT_MAX_LENGTH)
+    locale: str = Field(default="zh-CN", max_length=16)
+
+
+class CompositionPanel(BaseModel):
+    """单格画面指令：中文供展示/编辑，英文由后台转写后注入提示词。"""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    zh: str = Field(min_length=1, max_length=COMPOSITION_PANEL_MAX_LENGTH)
+    en: str = Field(min_length=1, max_length=COMPOSITION_PANEL_MAX_LENGTH)
+
+
+class CompositionPanels(BaseModel):
+    """四格画面指令；键固定对应固定的四格角色。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    panel_1: CompositionPanel
+    panel_2: CompositionPanel
+    panel_3: CompositionPanel
+    panel_4: CompositionPanel
+
+
+class CompositionPanelsZh(BaseModel):
+    """四格中文画面指令（用户手动编辑后的提交形状）。"""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    panel_1: str = Field(min_length=1, max_length=COMPOSITION_PANEL_MAX_LENGTH)
+    panel_2: str = Field(min_length=1, max_length=COMPOSITION_PANEL_MAX_LENGTH)
+    panel_3: str = Field(min_length=1, max_length=COMPOSITION_PANEL_MAX_LENGTH)
+    panel_4: str = Field(min_length=1, max_length=COMPOSITION_PANEL_MAX_LENGTH)
+
+
+class CompositionUpdateRequest(BaseModel):
+    """保存用户手动编辑后的四格中文指令；后台据此重新转写英文。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    panels: CompositionPanelsZh
+
+
+COMPOSITION_NAME_MAX_LENGTH = 60
+
+
+class CompositionRenameRequest(BaseModel):
+    """给一份构图模板改名。"""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=COMPOSITION_NAME_MAX_LENGTH)
+
+
+class CompositionResponse(BaseModel):
+    """一份构图模板：raw_input 为原话，panels 为四格画面指令，is_active 标记是否生效。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    composition_id: str
+    name: str
+    raw_input: str
+    panels: CompositionPanels
+    model: str
+    prompt_version: str
+    is_active: bool
+    # 系统内置「默认模板」标记：不可编辑/重命名/删除，只能设为生效。
+    is_builtin: bool = False
+    updated_at: str
+
+
+class CompositionListResponse(BaseModel):
+    """构图模板列表；生效的排最前。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    templates: list[CompositionResponse]
+    total: int
+
+
 class ListingSku(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, allow_inf_nan=False)
 

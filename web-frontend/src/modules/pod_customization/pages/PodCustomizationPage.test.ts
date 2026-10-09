@@ -101,11 +101,13 @@ test("listing editor keeps declared price and weight on each SKU and appends a b
 });
 
 test("SKU validation marks each invalid field beside its own input", () => {
-  assert.match(source, /const \[skuFieldErrors, setSkuFieldErrors\] = useState<SkuFieldErrors>\(\{\}\);/);
-  assert.match(source, /validateSkuFields\(listingFields\.skus\)/);
-  assert.match(listingEditorSource, /aria-invalid=\{Boolean\(skuFieldErrors\[skuErrorKey\(index, "name"\)\]\)\}/);
+  // 实时校验：值一改就重算，不再等点击提交才提示。
+  assert.match(source, /const listingFieldErrors = useMemo\(\(\) => validateListingFields\(listingFields\), \[listingFields\]\);/);
+  assert.match(source, /showRequiredErrors=\{listingErrorsRevealed\}/);
+  // 每个字段的错误就近展示在自身输入框下，且错误槽位保留固定高度（提示出现/消失都不顶动输入框）。
+  assert.match(listingEditorSource, /aria-invalid=\{Boolean\(nameError\)\}/);
   assert.match(listingEditorSource, /className="pod-sku-field-error"/);
-  assert.match(listingEditorSource, /SKU「\$\{skuLabel\}」的\$\{SKU_FIELD_LABELS\[key\]\}/);
+  assert.match(listingEditorSource, /className="pod-listing-field-error"/);
 });
 
 test("SKU rows fit all three fields in the existing desktop setup panel and only wrap on narrow viewports", () => {
@@ -171,6 +173,20 @@ test("result header exposes a batch failed-retry entry beside the export action"
   assert.match(gallerySource, /onOpenFailedRetry: \(\) => void;/);
   assert.match(gallerySource, /onClick=\{onOpenFailedRetry\}>批量重试失败项<\/button>/);
   assert.match(gallerySource, /disabled=\{Boolean\(busyAction\)\}/);
+});
+
+test("result header offers a one-click invert selection beside the retry entry", () => {
+  assert.match(gallerySource, /onSetAllExportSelection: \(selected: boolean\) => void;/);
+  assert.match(gallerySource, /onSetAllExportSelection\(!allExportableSelected\)\}>一键反选<\/button>/);
+  assert.match(gallerySource, /const allExportableSelected = exportableStyles\.length > 0/);
+});
+
+test("the three exports collapse into one dropdown menu", () => {
+  assert.match(gallerySource, /className="pod-export-menu-trigger"/);
+  assert.match(gallerySource, /role="menu"/);
+  assert.match(gallerySource, /onExportDianxiaomi\(\); \}\}>导出店小秘表格<\/button>/);
+  assert.match(gallerySource, /onExportMiaoshou\("apparel"\); \}\}>导出妙手表格（服饰）<\/button>/);
+  assert.match(gallerySource, /onExportMiaoshou\("general"\); \}\}>导出妙手表格（非服饰）<\/button>/);
 });
 
 test("listing-ready styles expose an accessible export-selection toggle and export counters", () => {

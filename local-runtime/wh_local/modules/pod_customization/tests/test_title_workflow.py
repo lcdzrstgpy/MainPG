@@ -309,7 +309,7 @@ def test_batch_title_uses_generation_call_id_and_listing_ready_statistics(tmp_pa
         ).fetchone()[0]
 
     assert titles.requests[0].style_task_id == call_id
-    assert titles.requests[0].hero_image == split_grid_2x2(_grid(1))[3]
+    assert titles.requests[0].hero_image == split_grid_2x2(_grid(1))[0]
     assert stored["style_titles"][0]["style_task_id"] == call_id
     assert stored["style_titles"][0]["listing_ready"] is True
     assert service.repository.get_style_copies(batch["id"], actor.workspace_id, actor.id) == {
@@ -431,7 +431,7 @@ def test_title_submit_failure_does_not_interrupt_remaining_image_publications(tm
     service.worker.process_batch(batch["id"])
     stored = service.get_batch(actor, batch["id"])
 
-    assert images.published_roles == ["hero", "detail_a", "detail_b", "lifestyle"]
+    assert images.published_roles == ["lifestyle", "detail_a", "detail_b", "hero"]
     assert all(item["status"] == "completed" for item in stored["items"])
     assert stored["style_titles"][0]["status"] == "failed"
     assert "title executor unavailable" in stored["style_titles"][0]["error_message"]
@@ -461,8 +461,8 @@ def test_title_only_regeneration_preserves_task_id_and_does_not_call_image_runti
     assert len(images.requests) == image_call_count
     assert stored["style_titles"][0]["style_task_id"] == failed["style_task_id"]
     assert [request.hero_image for request in titles.requests] == [
-        split_grid_2x2(_grid(20))[3],
-        split_grid_2x2(_grid(20))[3],
+        split_grid_2x2(_grid(20))[0],
+        split_grid_2x2(_grid(20))[0],
     ]
     assert stored["style_titles"][0]["status"] == "completed"
     assert stored["listing_ready_count"] == 1
@@ -792,7 +792,7 @@ def test_direct_trial_generates_title_after_hero_even_if_a_detail_publication_fa
     )
 
     assert result["status"] == "failed"
-    assert [image["role"] for image in result["images"]] == ["hero", "detail_a", "detail_b", "lifestyle"]
+    assert [image["role"] for image in result["images"]] == ["lifestyle", "detail_a", "detail_b", "hero"]
     assert result["images"][0]["public_url"]
     assert result["title"]["status"] == "completed"
     assert result["title"]["listing_ready"] is False

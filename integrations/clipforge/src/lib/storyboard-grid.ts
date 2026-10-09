@@ -121,3 +121,51 @@ export function computeGridCells(
   }
   return cells;
 }
+
+/**
+ * 九宫格关键帧落库时写入的 prompt：带来源标记与格序号（复用判定只认这两者，见 isGridKeyframeFor）。
+ */
+export function gridKeyframePrompt(index: number, description?: string): string {
+  return `[storyboard-grid 第${index + 1}格] ${description ?? ""}`.trim();
+}
+
+/**
+ * 这张资产是不是「第 index 格」的九宫格关键帧？
+ *
+ * 只看**来源标记 + 格序号**，绝不比对描述文案：判官团会把 description 重写一遍，
+ * 拿描述当指纹会让复用永远失效（实测 7 镜里只有 1 镜逐字相同）。
+ * 「这批图是否仍属于当前脚本」由调用方用 project_events 里的 grid_generated 记录判断。
+ */
+export function isGridKeyframeFor(prompt: string | null, index: number): boolean {
+  return (prompt ?? "").startsWith(`[storyboard-grid 第${index + 1}格]`);
+}
+
+/** 复用判定需要的最小资产字段 */
+export interface GridKeyframeAsset {
+  shotId: number;
+  filePath: string | null;
+  prompt: string | null;
+}
+
+/**
+ * 已有的九宫格关键帧能不能直接复用，而不是重新画一遍？
+ *
+ * 判据：**每一镜**都有一张「由九宫格裁出来的、且格序号与镜头位置对应」的关键帧。
+ * 用户换了脚本 → 调用方的脚本指纹对不上 → 根本不走这里；画面描述被判官改写过不算失效。
+ * 为什么需要这道墙：整片链每次进入都会重跑，没有它就会把同一批分镜反复重画（真金白银）。
+ */
+export function reusableGridCells(
+  shots: { shotId: number; description?: string }[],
+  assets: GridKeyframeAsset[]
+): { shotId: number; filePath: string }[] | null {
+  if (shots.length === 0) return null;
+  const byShot = new Map(assets.map((a) => [a.shotId, a]));
+  const cells: { shotId: number; filePath: string }[] = [];
+  for (const [index, shot] of shots.entries()) {
+    const asset = byShot.get(shot.shotId);
+    if (!asset?.filePath) return null;
+    if (!isGridKeyframeFor(asset.prompt, index)) return null;
+    cells.push({ shotId: shot.shotId, filePath: asset.filePath });
+  }
+  return cells;
+}

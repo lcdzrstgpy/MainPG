@@ -2,6 +2,9 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { podCustomizationApi } from "../api/podCustomizationApi";
+import { CompositionEditDrawer } from "../components/CompositionEditDrawer";
+import { CompositionGenerateDrawer } from "../components/CompositionGenerateDrawer";
+import { CompositionManagerDrawer } from "../components/CompositionManagerDrawer";
 import { PodBatchGallery } from "../components/PodBatchGallery";
 import { PodBatchHistoryDrawer } from "../components/PodBatchHistoryDrawer";
 import { PodBriefInput } from "../components/PodBriefInput";
@@ -10,9 +13,13 @@ import { PodResultLightbox } from "../components/PodResultLightbox";
 import { SpecCardDrawer } from "../components/SpecCardDrawer";
 import { TemplateLibraryDrawer } from "../components/TemplateLibraryDrawer";
 import { PodUnsavedTemplateConfirmDialog } from "../components/PodUnsavedTemplateConfirmDialog";
-import { PodListingFieldsEditor, skuErrorKey, validateSkuFields, type SkuField, type SkuFieldErrors } from "../components/PodListingFieldsEditor";
+import { PodListingFieldsEditor, validateListingFields, type SkuField } from "../components/PodListingFieldsEditor";
 import {
   POD_BATCH_COUNTS,
+  POD_BUSINESS_LIST_ITEM_MAX_LENGTH,
+  POD_BUSINESS_LIST_MAX_ITEMS,
+  POD_BUSINESS_TEXT_MAX_LENGTH,
+  POD_COPY_RESTRICTIONS_MAX_LENGTH,
   EMPTY_SPEC_CARD,
   buildPromptV1,
   buildSpecCardCells,
@@ -28,6 +35,7 @@ import {
   resolveCreativePrompt,
   listingFieldsForApi,
   shouldPollPodBatch,
+  splitBusinessField,
   specCardSummaryText,
 } from "../data/podCustomizationModel";
 import { batchRetryCandidates, type PodBatchRetryRequest } from "../data/podBatchRetry";
@@ -51,6 +59,7 @@ import type {
   PodBriefFieldsDraft,
   PodBriefHistoryItem,
   PodBusinessFieldsDraft,
+  PodComposition,
   PodListingFieldsDraft,
   PodMiaoshouTemplateKind,
   PodTemplate,
@@ -76,47 +85,56 @@ const NOTICE_AUTO_DISMISS_MS = 6_000;
 const BUSINESS_FIELDS: Array<{
   key: keyof PodBusinessFieldsDraft;
   label: string;
-  multiline?: boolean;
   required?: boolean;
   hint?: string;
   placeholder?: string;
+  /** 单值字段的整段字符上限（原生 maxLength 硬挡）。
+   *  多值字段不设整段上限，改为按「单条 ≤200 / 最多 100 条」校验。 */
+  maxLength?: number;
+  /** 多值字段：提交前会按分隔符拆成数组。 */
+  list?: boolean;
 }> = [
-  { key: "product_name", label: "产品名称", required: true },
-  { key: "product_category", label: "产品品类", required: true },
-  { key: "target_market", label: "目标市场", required: true },
-  { key: "target_audience", label: "目标人群" },
-  { key: "core_selling_points", label: "核心卖点", multiline: true },
-  {
-    key: "design_theme",
-    label: "主题整批统一风格",
-    required: true,
-    hint: "整批统一的创意主题与风格基调，例如：美式西南复古牛仔荒野风、复古手绘插画风",
-  },
-  {
-    key: "style_keywords",
-    label: "元素关键词",
-    required: true,
-    hint: "用顿号或逗号分隔；每一项都要是具体事物（如奶昔杯、点唱机、霓虹灯牌），不要写形容词、风格词、配色或「xx元素」这类抽象词；建议 40 种以上；系统将按款式随机分配主打/辅主/点缀，其余元素不在该款出现；素材可跨款复用",
-  },
-  {
-    key: "color_preferences",
-    label: "偏好配色",
-    hint: "尽量多写（建议 10 种以上）；写具体颜色名，如「电光粉紫、落日金橙、霓虹青色」，不要写「高饱和度」「撞色」这类抽象词；系统按款式轮换强调色，颜色越多跨款差异越明显",
-  },
-  {
-    key: "excluded_elements",
-    label: "禁用元素",
-    multiline: true,
-    hint: "尽量多写，且务必覆盖侵权类（品牌 logo、商标、球队或联盟标识、影视动漫游戏角色、卡通 IP 形象、名人肖像、奢侈品牌老花、平台水印、受版权保护的海报封面）与危险违禁类（武器弹药、管制刀具、爆炸物、毒品、赌博、烟草电子烟、酒精、暴力血腥、恐怖或仇恨符号、纳粹标志、宗教或政治符号、国旗国徽、成人或色情内容、钞票图样、身份证件、二维码、真人照片），避免商品下架或店铺被封",
-  },
+  // 只保留需要人工确认的字段：目标市场/目标人群/卖点/主题/元素/配色/禁用元素由「智能填写」自动生成，
+  // 不在表单里展示（数据仍保存在 businessFields 中，照常进入 Prompt 与提交载荷）。
+  { key: "product_name", label: "产品名称", required: true, maxLength: POD_BUSINESS_TEXT_MAX_LENGTH },
+  { key: "product_category", label: "产品品类", required: true, maxLength: POD_BUSINESS_TEXT_MAX_LENGTH },
   {
     key: "copy_restrictions",
     label: "标题/描述限制",
-    multiline: true,
+    maxLength: POD_COPY_RESTRICTIONS_MAX_LENGTH,
     placeholder: "谨慎填写：如「标题不要出现刺绣」「明确带上 2D Flat」",
     hint: "选填，建议留空、谨慎填写。填了就请写明确说法，例如「标题不要出现刺绣」「标题和描述都要明确带上 2D Flat」；该限制只作用于 AI 生成的标题与描述，不影响图片，也不会放宽平台的违禁词、品牌、长度等硬性规则",
   },
 ];
+
+type BusinessFieldLimit = {
+  /** 多值字段最长一条的字符数（单值字段恒为 0）。 */
+  longest: number;
+  /** 是否超过后端字符上限。 */
+  over: boolean;
+};
+
+// 与后端一致的口径：单值字段按整段长度，多值字段按「最多 100 条、单条 ≤200」。
+function businessFieldLimit(
+  field: (typeof BUSINESS_FIELDS)[number],
+  value: string,
+): BusinessFieldLimit {
+  if (field.list) {
+    const items = splitBusinessField(value);
+    const longest = items.reduce((max, item) => Math.max(max, item.length), 0);
+    return {
+      longest,
+      over: items.length > POD_BUSINESS_LIST_MAX_ITEMS || longest > POD_BUSINESS_LIST_ITEM_MAX_LENGTH,
+    };
+  }
+  return { longest: 0, over: value.length > (field.maxLength ?? Number.POSITIVE_INFINITY) };
+}
+
+function businessFieldLimitMessage(field: (typeof BUSINESS_FIELDS)[number]): string {
+  return field.list
+    ? `${field.label}：每条最多 ${POD_BUSINESS_LIST_ITEM_MAX_LENGTH} 个字符、最多 ${POD_BUSINESS_LIST_MAX_ITEMS} 条，请先删减。`
+    : `${field.label}最多 ${field.maxLength} 个字符，请先删减。`;
+}
 
 function autoGrowBusinessTextarea(textarea: HTMLTextAreaElement): void {
   textarea.style.height = "36px";
@@ -190,6 +208,11 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   const [templateDrawerOpen, setTemplateDrawerOpen] = useState(false);
   const [specCardDrawerOpen, setSpecCardDrawerOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [compositionDrawerOpen, setCompositionDrawerOpen] = useState(false);
+  const [compositionManagerOpen, setCompositionManagerOpen] = useState(false);
+  const [compositionEditOpen, setCompositionEditOpen] = useState(false);
+  const [compositionEditTarget, setCompositionEditTarget] = useState<PodComposition | null>(null);
+  const [composition, setComposition] = useState<PodComposition | null>(null);
   const [failedRetryOpen, setFailedRetryOpen] = useState(false);
   const [pendingTemplateSwitch, setPendingTemplateSwitch] = useState<string | null>(null);
   const [switchingTemplate, setSwitchingTemplate] = useState(false);
@@ -197,7 +220,9 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   const [busyAction, setBusyAction] = useState("");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState(initialDraft.error ?? "");
-  const [skuFieldErrors, setSkuFieldErrors] = useState<SkuFieldErrors>({});
+  // 上架信息实时校验：值一改就重算，错误在内联槽位即时展示；「必填为空」在提交过一次后才提示。
+  const listingFieldErrors = useMemo(() => validateListingFields(listingFields), [listingFields]);
+  const [listingErrorsRevealed, setListingErrorsRevealed] = useState(false);
   const [visibility, setVisibility] = useState<DocumentVisibilityState>(() => document.visibilityState);
   const requestGenerationRef = useRef(0);
   const lastDraftSaveErrorRef = useRef("");
@@ -278,6 +303,22 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     const updateVisibility = () => setVisibility(document.visibilityState);
     document.addEventListener("visibilitychange", updateVisibility);
     return () => document.removeEventListener("visibilitychange", updateVisibility);
+  }, []);
+
+  // 读取该账号的最新构图（只保留最新一份），用于「新建批次将套用」提示。
+  useEffect(() => {
+    let stopped = false;
+    void (async () => {
+      try {
+        const latest = await podCustomizationApi.getLatestComposition();
+        if (!stopped) setComposition(latest);
+      } catch {
+        // 构图读取失败不影响主流程，静默忽略；用户打开抽屉时会再拉一次。
+      }
+    })();
+    return () => {
+      stopped = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -413,10 +454,6 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   };
 
   const updateSku = (index: number, key: SkuField, value: string) => {
-    setSkuFieldErrors((current) => {
-      const { [skuErrorKey(index, key)]: _cleared, ...remaining } = current;
-      return remaining;
-    });
     setListingFields((current) => ({
       ...current,
       skus: current.skus.map((sku, currentIndex) => currentIndex === index ? { ...sku, [key]: value } : sku),
@@ -424,7 +461,6 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   };
 
   const removeSku = (index: number) => {
-    setSkuFieldErrors({});
     setListingFields((current) => ({ ...current, skus: current.skus.filter((_, currentIndex) => currentIndex !== index) }));
   };
 
@@ -451,7 +487,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     setBusinessFields({ ...EMPTY_BUSINESS_FIELDS_FOR_SWITCH });
     setBriefHistory([]);
     setListingFields({ ...EMPTY_LISTING_FIELDS_FOR_SWITCH });
-    setSkuFieldErrors({});
+    setListingErrorsRevealed(false);
     setAdvancedOpen(false);
   };
 
@@ -553,11 +589,17 @@ export function PodCustomizationPage({ isActive = true }: Props) {
       setError(`请填写：${missingRequired.map((field) => field.label).join("、")}。`);
       return;
     }
+    // 前端硬挡不到的情况（智能填写回填、草稿恢复）在此拦截，避免超限被后端 422 拒绝。
+    const overLimitField = BUSINESS_FIELDS.find((field) => businessFieldLimit(field, businessFields[field.key]).over);
+    if (overLimitField) {
+      setError(businessFieldLimitMessage(overLimitField));
+      return;
+    }
     const listingFieldsResult = listingFieldsForApi(listingFields, specCard);
-    const nextSkuFieldErrors = validateSkuFields(listingFields.skus);
-    setSkuFieldErrors(nextSkuFieldErrors);
-    if (Object.keys(nextSkuFieldErrors).length) {
-      setError("请检查 SKU 预设中标红的字段。");
+    // 实时校验结果此刻已是最新：这里只需揭示「必填为空」并拒绝提交。
+    setListingErrorsRevealed(true);
+    if (Object.keys(listingFieldErrors).length) {
+      setError("请检查上架信息中标红的字段。");
       return;
     }
     if (!listingFieldsResult.value) {
@@ -724,6 +766,31 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     }
   };
 
+  /** 一键反选：把全部已就绪款式整体设为选中/取消选中，不用逐个点。 */
+  const setAllExportSelection = async (selected: boolean) => {
+    if (!activeBatch) return;
+    const readyTitles = (activeBatch.style_titles ?? []).filter((title) => title.listing_ready);
+    const changed = readyTitles.filter((title) => title.export_selected !== selected);
+    if (!changed.length) return;
+    clearMessages();
+    const previousBatch = activeBatch;
+    setActiveBatch((current) => current ? {
+      ...current,
+      dianxiaomi_export: current.dianxiaomi_export.selected_exportable_style_count === undefined ? current.dianxiaomi_export : {
+        ...current.dianxiaomi_export,
+        selected_exportable_style_count: selected ? readyTitles.length : 0,
+        user_excluded_style_count: current.dianxiaomi_export.user_excluded_style_count === undefined ? undefined : selected ? 0 : readyTitles.length,
+      },
+      style_titles: current.style_titles?.map((title) => title.listing_ready ? { ...title, export_selected: selected } : title),
+    } : current);
+    try {
+      await Promise.all(changed.map((title) => podCustomizationApi.updateExportSelection(activeBatch.id, title.style_index, selected)));
+    } catch (cause) {
+      setActiveBatch(previousBatch);
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
+
   const saveManualTitle = async (styleIndex: number, title: string) => {
     if (!activeBatch) return;
     setBusyAction(`save-title:${styleIndex}`);
@@ -883,12 +950,13 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   return (
     <section className="pod-customization-page" aria-label="POD 定制">
       <header className="pod-page-header">
-        <div className="pod-page-title"><span className="pod-page-title-icon iconfont icon-skin" aria-hidden="true" /><div><span>POD CUSTOMIZATION · DIRECT LISTING</span><h1>POD 定制</h1></div></div>
+        <div className="pod-page-title"><span className="pod-page-title-icon iconfont icon-skin" aria-hidden="true" /><div><span>POD CUSTOMIZATION · DIRECT LISTING</span><h1>POD 全定制</h1></div></div>
         <div className="pod-page-header-actions">
           {batchRunning && <span className="pod-live-badge"><i />批次后台运行中</span>}
           <button type="button" onClick={() => setTemplateDrawerOpen(true)}><span className="iconfont icon-upload" />上传当前批次模板</button>
           <button type="button" onClick={() => setTemplateDrawerOpen(true)}><span className="iconfont icon-appstore" />查看历史批次模板</button>
           <button type="button" onClick={() => setHistoryOpen(true)}><span className="iconfont icon-time-circle" />查看定制记录历史</button>
+          <button type="button" onClick={() => setCompositionManagerOpen(true)}><span className="iconfont icon-skin" />构图模板管理</button>
         </div>
       </header>
 
@@ -900,25 +968,45 @@ export function PodCustomizationPage({ isActive = true }: Props) {
       <div className="pod-workbench-grid">
         <aside className="pod-setup-column pod-brief-sidebar">
           <section className="pod-setup-card pod-business-editor">
-            <div className="pod-section-title"><span>BRIEF EDITOR</span><h2>业务信息编辑</h2><small>用于直出 Prompt</small></div>
+            <div className="pod-section-title"><span>BRIEF EDITOR</span><h2>创意描述</h2></div>
             <PodBriefInput onGenerated={handleBriefGenerated} history={briefHistory} onSelectHistory={selectBriefHistory} />
             <div className="pod-business-fields">
-              {BUSINESS_FIELDS.map((field, fieldIndex) => (
-                <label key={field.key} className={field.multiline ? "is-multiline" : ""}><span>{field.label}{field.required && <em>*</em>}{field.hint && <i className="pod-field-info" data-tip={field.hint} aria-hidden="true">ⓘ</i>}</span><textarea rows={1} placeholder={field.placeholder} ref={(el) => { businessTextareasRef.current[fieldIndex] = el; }} value={businessFields[field.key]} onChange={(event) => {
-                  updateBusinessField(field.key, event.currentTarget.value);
-                  autoGrowBusinessTextarea(event.currentTarget);
-                }} /></label>
-              ))}
+              {BUSINESS_FIELDS.map((field, fieldIndex) => {
+                const value = businessFields[field.key];
+                const limit = businessFieldLimit(field, value);
+                return (
+                  <label key={field.key} className={limit.over ? "is-over-limit" : undefined}>
+                    <span>{field.label}{field.required && <em>*</em>}{field.hint && <i className="pod-field-info" data-tip={field.hint} aria-hidden="true">ⓘ</i>}</span>
+                    <textarea rows={1} placeholder={field.placeholder} maxLength={field.maxLength} aria-invalid={limit.over || undefined} ref={(el) => { businessTextareasRef.current[fieldIndex] = el; }} value={value} onChange={(event) => {
+                      updateBusinessField(field.key, event.currentTarget.value);
+                      autoGrowBusinessTextarea(event.currentTarget);
+                    }} />
+                    <small className={limit.over ? "pod-field-counter is-over" : "pod-field-counter"}>{field.list ? `${limit.longest}/${POD_BUSINESS_LIST_ITEM_MAX_LENGTH}` : `${value.length}/${field.maxLength}`}</small>
+                  </label>
+                );
+              })}
             </div>
             <div className="pod-advanced-prompt">
               <button type="button" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((open) => !open)}><span><b>高级：本批次创意编辑</b><small>内置 POD Direct Listing Prompt v1</small></span><i className={`iconfont icon-down ${advancedOpen ? "is-open" : ""}`} /></button>
               {advancedOpen && <div className="pod-advanced-prompt-editor"><textarea value={currentBatchEdit ?? builtInPrompt} onChange={(event) => setCurrentBatchEdit(event.target.value)} aria-label="本批次创意提示词" /><div><span>{currentBatchEdit === null ? "正在使用内置 v1" : "已为本批次自定义"}</span><button type="button" onClick={() => setCurrentBatchEdit(null)}>重置为 v1</button></div></div>}
             </div>
+            <div className="pod-composition-entry">
+              <button type="button" className="pod-composition-entry-button" onClick={() => setCompositionDrawerOpen(true)}>
+                <span className="iconfont icon-skin" aria-hidden="true" />
+                构图定制
+              </button>
+              <span className={composition ? "pod-composition-entry-summary" : "pod-composition-entry-summary is-empty"}>
+                {composition
+                  ? (composition.is_builtin ? "系统默认模板（默认机位）" : "已配置最新构图，新建批次将自动套用")
+                  : "未配置：使用系统默认模板"}
+              </span>
+            </div>
             <PodListingFieldsEditor
               listingFields={listingFields}
               specCard={specCard}
-              skuFieldErrors={skuFieldErrors}
+              skuFieldErrors={listingFieldErrors}
               skuLimitReached={skuLimitReached}
+              showRequiredErrors={listingErrorsRevealed}
               onListingFieldChange={updateListingField}
               onAddSku={addSku}
               onUpdateSku={updateSku}
@@ -950,7 +1038,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
                 <div><dt>产品主体</dt><dd>{summaryFields.product_name || "未填写"}</dd></div>
                 <div><dt>目标市场</dt><dd>{summaryFields.target_market || "未填写"}</dd></div>
                 <div><dt>目标人群</dt><dd>{summaryFields.target_audience || "未填写"}</dd></div>
-                <div><dt>主题整批统一风格</dt><dd>{summaryFields.design_theme || "未填写"}</dd></div>
+                <div><dt>统一风格</dt><dd>{summaryFields.design_theme || "未填写"}</dd></div>
               </dl>
             </div>
           </section>
@@ -961,6 +1049,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
             onRegenerateStyle={(styleIndex) => void regenerateStyle(styleIndex)}
             onRegenerateTitle={(styleIndex) => void regenerateStyleTitle(styleIndex)}
             onUpdateExportSelection={(styleIndex, selected) => void updateExportSelection(styleIndex, selected)}
+            onSetAllExportSelection={(selected) => void setAllExportSelection(selected)}
             onSaveTitle={(styleIndex, title) => saveManualTitle(styleIndex, title)}
             onExportDianxiaomi={() => void exportDianxiaomi()}
             onExportMiaoshou={(kind) => void exportMiaoshou(kind)}
@@ -1041,6 +1130,40 @@ export function PodCustomizationPage({ isActive = true }: Props) {
             ? `全批重印完成：成功 ${result.reprinted} 款、失败 ${result.failed} 款，该批次需重新导出。`
             : `全批重印完成：${result.reprinted} 款已更新，该批次需重新导出。`);
           void refreshActiveBatch(batchId);
+        }}
+      />
+
+      <CompositionGenerateDrawer
+        open={compositionDrawerOpen}
+        onClose={() => setCompositionDrawerOpen(false)}
+        onChanged={(next: PodComposition | null) => {
+          setComposition(next);
+          if (next) setNotice("已生成新模板并设为生效，新建批次将自动套用。");
+        }}
+      />
+
+      <CompositionEditDrawer
+        open={compositionEditOpen}
+        target={compositionEditTarget}
+        onClose={() => setCompositionEditOpen(false)}
+        onChanged={(saved: PodComposition) => {
+          setComposition(saved);
+          setNotice("构图已保存，新建批次将自动套用。");
+        }}
+      />
+
+      <CompositionManagerDrawer
+        open={compositionManagerOpen}
+        onClose={() => setCompositionManagerOpen(false)}
+        onEdit={(template) => {
+          setCompositionManagerOpen(false);
+          setCompositionEditTarget(template);
+          setCompositionEditOpen(true);
+        }}
+        onActiveChanged={(active) => {
+          setComposition(active);
+          if (!active) setNotice("已无生效模板，四张图将使用系统默认模板。");
+          else setNotice(active.is_builtin ? "当前使用系统默认模板（默认机位）。" : `当前生效模板：${active.name.trim() || "未命名构图"}。`);
         }}
       />
     </section>

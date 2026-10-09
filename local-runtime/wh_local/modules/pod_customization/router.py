@@ -22,6 +22,9 @@ from .contracts import (
     BatchRetryFailedCreate,
     BriefFieldRequest,
     CalibrationUpdate,
+    CompositionRequest,
+    CompositionRenameRequest,
+    CompositionUpdateRequest,
     DirectListingTrialCreate,
     ExportSelectionUpdate,
     ManualTitleUpdate,
@@ -129,6 +132,7 @@ def create_router(
     *,
     title_runtime: Any | None = None,
     brief_runtime: Any | None = None,
+    composition_runtime: Any | None = None,
     billing_coordinator: PodBillingCoordinator | None = None,
     start_workers: bool = True,
 ) -> APIRouter:
@@ -139,6 +143,7 @@ def create_router(
         ai_runtime,
         title_runtime=title_runtime,
         brief_runtime=brief_runtime,
+        composition_runtime=composition_runtime,
         billing_coordinator=billing_coordinator,
         start_workers=start_workers,
     )
@@ -333,6 +338,56 @@ def create_router(
     ) -> dict[str, Any]:
         permitted(actor, "pod_customization.create")
         return _call(service.generate_brief_fields, actor, body)
+
+    # --- 构图/视角定制：一段大白话 → 四格画面指令（免费；可存多份模板，一份生效）---
+    @router.post("/compositions")
+    def generate_composition(
+        body: CompositionRequest, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        return _call(service.generate_composition, actor, body)
+
+    @router.get("/compositions")
+    def list_compositions(actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
+        permitted(actor, "pod_customization.read")
+        return _call(service.list_compositions, actor)
+
+    @router.put("/compositions/{composition_id}")
+    def save_composition(
+        composition_id: str,
+        body: CompositionUpdateRequest,
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        return _call(service.save_composition, actor, composition_id, body)
+
+    @router.patch("/compositions/{composition_id}")
+    def rename_composition(
+        composition_id: str,
+        body: CompositionRenameRequest,
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        return _call(service.rename_composition, actor, composition_id, body)
+
+    @router.post("/compositions/{composition_id}/activate")
+    def activate_composition(
+        composition_id: str, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        return _call(service.activate_composition, actor, composition_id)
+
+    @router.delete("/compositions/{composition_id}")
+    def delete_composition(
+        composition_id: str, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        return _call(service.delete_composition, actor, composition_id)
+
+    @router.get("/compositions/latest")
+    def get_active_composition(actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any] | None:
+        permitted(actor, "pod_customization.read")
+        return _call(service.get_active_composition, actor)
 
     @router.post("/direct-listing-trials")
     def run_direct_listing_trial(

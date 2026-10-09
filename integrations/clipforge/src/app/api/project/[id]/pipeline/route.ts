@@ -6,6 +6,7 @@ import { apiError } from "@/lib/api-error";
 import { startPipelineRun, isPipelineRunActive, type PipelineLlmConfig } from "@/lib/pipeline-runner";
 import { isPipelineStage } from "@/lib/pipeline-stages";
 import { getLatestPipelineRun } from "@/lib/pipeline-history";
+import { strategyChainGuard, strategyGateError } from "@/lib/strategy-chain-gate";
 
 const SAFE_ID = /^[a-zA-Z0-9\-]+$/;
 
@@ -24,6 +25,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   try {
     const { id } = await params;
     if (!id || !SAFE_ID.test(id)) return apiError(req, "无效的项目ID", "Invalid project ID");
+    // 服务端出片策略门禁（fail-closed）：免费草稿链只放行 draft 或「项目存在且无简报」的旧项目，
+    // 付费策略（controlled-motion / native-film）绝不能被这条链静默降级成静态草稿
+    const gate = await strategyChainGuard(id, "free");
+    if (!gate.allowed) {
+      const error = strategyGateError(gate, "free");
+      return apiError(req, error.zh, error.en, error.status);
+    }
     const body = (await req.json().catch(() => ({}))) as {
       scriptId?: unknown;
       llmConfig?: { baseUrl?: unknown; apiKey?: unknown; model?: unknown };

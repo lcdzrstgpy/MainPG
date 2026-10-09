@@ -33,6 +33,7 @@ import requests
 from ..domain.policy import is_safe_external_url, resolve_safe_external_url
 from ..server_ai_proxy import gateway_base_url, remote_token, usage_id
 from ....config import is_ip_literal_host
+from ....media_enhance import EnhanceOptions, sharpen
 from ...ai_service.temporary_cos import (
     TemporaryCosStore,
     TemporaryReference,
@@ -606,7 +607,12 @@ class ProductImageProcessor:
                 model_override=model,
             )
 
-    def split_four_grid(self, media: GeneratedMedia) -> list[GeneratedMedia]:
+    def split_four_grid(
+        self,
+        media: GeneratedMedia,
+        *,
+        enhance: EnhanceOptions | None = None,
+    ) -> list[GeneratedMedia]:
         """Split a generated 2x2 grid into four listing images plus its summary.
 
         The original workbench uses this contract for 店小秘 carousel images.
@@ -614,6 +620,10 @@ class ProductImageProcessor:
 
         对齐原项目 native_product_engine._split_4grid_to_jpegs / _square_image_to_jpeg_bytes：
         每格仅 trim 1% 边距后缩放到 DXM_IMAGE_TARGET_SIZE(800×800)，汇总图居中裁方后缩放到 800×800。
+
+        ``enhance`` 为显式 opt-in：默认 ``None`` 时**输出与历史逐字节一致**（product_processing
+        与 POD 共用本方法，绝不能默默改变既有两个模块的成品）。传入参数时在"缩放之后、
+        JPEG 编码之前"做轻度锐化——此时锐化才有效，且全流程只编一次码。
         """
         try:
             from PIL import Image  # type: ignore
@@ -644,6 +654,9 @@ class ProductImageProcessor:
             # 裁掉拆分后边缘残留的白色分隔线（模型实际画的分隔线常宽于 scaffold）。
             panel = _inset_grid_panel(panel)
             resized = panel.resize((target_size, target_size), Image.Resampling.LANCZOS)
+            if enhance is not None and enhance.enabled:
+                # 锐化必须在重采样之后（放前面会被插值抹掉），且在 JPEG 编码之前（全程只编一次码）。
+                resized = sharpen(resized, enhance)
             content = _image_to_jpeg_bytes(resized)
             result.append(
                 GeneratedMedia(
@@ -1966,13 +1979,26 @@ def _inset_grid_panel(image: Any) -> Any:
 
 def _image_to_jpeg_bytes(image: Any, *, quality: int = DXM_IMAGE_JPEG_QUALITY) -> bytes:
     """PIL Image → high-detail JPEG bytes for 800px marketplace images."""
+    try:
+        return _save_jpeg(image, quality=quality, optimize=True)
+    except OSError:
+        # 既有 Pillow/libjpeg 缺陷：极高频内容（1px 细线、密集雕刻纹理）下
+        # optimize=True 的霍夫曼优化会抛 "broken data stream when writing image
+        # file"（stderr: "Suspension not allowed here"）。optimize 只影响编码体积
+        # 与耗时，**不影响画质**（quality / subsampling 均不变），故回退到
+        # optimize=False 重编一次，避免生图被编码器 bug 整批打断。实测 393 张
+        # 真实母图中 2 张会命中，锐化后高频更强、命中面更大，必须兜底。
+        return _save_jpeg(image, quality=quality, optimize=False)
+
+
+def _save_jpeg(image: Any, *, quality: int, optimize: bool) -> bytes:
     buffer = BytesIO()
     image.save(
         buffer,
         format="JPEG",
         quality=quality,
         subsampling=0,
-        optimize=True,
+        optimize=optimize,
     )
     return buffer.getvalue()
 

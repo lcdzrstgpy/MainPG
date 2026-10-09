@@ -18,7 +18,6 @@ test("failed retry dialog has a responsive modal treatment and distinct retry co
   assert.match(styles, /\.pod-failed-retry-backdrop \{[\s\S]*?position: fixed;/);
   assert.match(styles, /\.pod-failed-retry-dialog \{[\s\S]*?max-width:/);
   assert.match(styles, /\.pod-failed-retry-confirm \{[\s\S]*?background:/);
-  assert.match(styles, /\.pod-open-failed-retry/);
 });
 
 test("failed retry dialog prevents empty submission and reports selected counts", () => {

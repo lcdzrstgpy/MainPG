@@ -32,7 +32,12 @@ from .contracts import (
     BatchCreate,
     BatchRetryFailedCreate,
     BriefFieldRequest,
+    COMPOSITION_NAME_MAX_LENGTH,
+    COMPOSITION_PANEL_KEYS,
     Calibration,
+    CompositionRenameRequest,
+    CompositionRequest,
+    CompositionUpdateRequest,
     DirectListingTrialCreate,
     NormalizedPoint,
     NormalizedRect,
@@ -43,6 +48,7 @@ from .contracts import (
     validate_spec_card,
 )
 from .brief_runtime import PodBriefRequest
+from .composition_runtime import PodCompositionLocalizeRequest, PodCompositionRequest
 from .export import (
     DianxiaomiExport,
     PodWorkbookExport,
@@ -55,6 +61,10 @@ from .errors import image_provider_outcome_for_exception, safe_error_message
 from .repository import PodCustomizationRepository, PodRepositoryError, ReplicaBatchIdempotentReturn
 from .spec_card_units import display_spec_card_cells
 from .prompts import (
+    DEFAULT_COMPOSITION_ID,
+    DEFAULT_COMPOSITION_NAME,
+    DEFAULT_COMPOSITION_PANELS,
+    DEFAULT_COMPOSITION_RAW_INPUT,
     LISTING_IMAGE_ROLES,
     assign_style_elements,
     build_direct_listing_prompt,
@@ -83,6 +93,13 @@ class BatchNotTerminalForSpecCard(PodRepositoryError):
 
 
 _PYDANTIC_VALUE_ERROR_PREFIX = "Value error, "
+
+
+def _composition_default_name(brief: str) -> str:
+    """默认模板名取原话摘要（压平空白 + 截断）；为空时给个占位名。"""
+
+    text = " ".join(str(brief or "").split())[:COMPOSITION_NAME_MAX_LENGTH]
+    return text or "未命名构图"
 
 
 def _spec_card_validation_message(exc: ValidationError) -> str:
@@ -132,6 +149,7 @@ class PodCustomizationService:
         *,
         title_runtime: Any | None = None,
         brief_runtime: Any | None = None,
+        composition_runtime: Any | None = None,
         billing_coordinator: PodBillingCoordinator | None = None,
         start_workers: bool = True,
     ) -> None:
@@ -140,6 +158,7 @@ class PodCustomizationService:
         self.ai_runtime = ai_runtime
         self.title_runtime = title_runtime
         self.brief_runtime = brief_runtime
+        self.composition_runtime = composition_runtime
         self.billing_coordinator = billing_coordinator
         self.repository = PodCustomizationRepository(self.database_path)
         self.export_records = PodExportRecordStore(self.database_path)
@@ -252,9 +271,13 @@ class PodCustomizationService:
     def create_batch(self, actor: Actor, request: BatchCreate, *, enqueue: bool = True) -> dict[str, Any]:
         batch_id = uuid.uuid4().hex
         self.repository.preflight_batch(actor.workspace_id, actor.id, request)
+        # 全定制新建批次自动套用该账号「生效中」的构图模板（若有）；仓库层把它冻结进 prompt_snapshot。
+        composition = self.repository.get_active_composition(actor.workspace_id, actor.id)
         billing_run = self._freeze_batch(actor, batch_id, request.count) if (enqueue or self.billing_coordinator) else None
         try:
-            batch = self.repository.create_batch(actor.workspace_id, actor.id, request, batch_id=batch_id)
+            batch = self.repository.create_batch(
+                actor.workspace_id, actor.id, request, batch_id=batch_id, composition=composition
+            )
         except Exception:
             if billing_run is not None:
                 billing_run.settle()
@@ -627,7 +650,7 @@ class PodCustomizationService:
                     public_urls[role] = self.ai_runtime.publish_listing_image(
                         panel, namespace=actor.workspace_id, role=role
                     )
-                    if role == "hero":
+                    if role == "lifestyle":
                         title_result = self._generate_direct_trial_title(
                             trial_id,
                             panel,
@@ -716,6 +739,185 @@ class PodCustomizationService:
             "prompt_version": result.prompt_version,
             "model": result.model,
             "fields": result.fields.model_dump(),
+        }
+
+    def generate_composition(self, actor: Actor, request: CompositionRequest) -> dict[str, Any]:
+        """构图定制：一段大白话 → 四格画面指令，新增一份模板并设为生效。
+
+        动作免费（服务端对 POD 画像的纯 title scope 显式零计费），但仍走完整的
+        冻结 → 发放短期密钥 → 调用 → 结算流程，保留幂等键与审计。
+        """
+        if self.composition_runtime is None:
+            raise RuntimeError("POD 构图定制服务未启用")
+        composition_id = uuid.uuid4().hex
+        billing_run = self._freeze_composition(actor, composition_id)
+        try:
+            return self._run_composition_authorized(actor, request, composition_id, billing_run)
+        except PodBillingAuthorizationRequired as exc:
+            raise RuntimeError(str(exc)) from exc
+        finally:
+            billing_run.settle()
+
+    def _run_composition_authorized(
+        self,
+        actor: Actor,
+        request: CompositionRequest,
+        composition_id: str,
+        billing_run: PodBillingRun,
+    ) -> dict[str, Any]:
+        call_ids = tuple(
+            call.call_id for call in billing_run.plan.calls if call.feature == "pod.title"
+        )
+        result = self.composition_runtime.generate_composition(
+            PodCompositionRequest(
+                composition_id=composition_id, brief=request.brief, locale=request.locale
+            ),
+            grant=billing_run.grant,
+            call_id=call_ids[0],
+            call_ids=call_ids,
+            on_start=lambda call_id: billing_run.start(call_id, "pod.title"),
+            on_outcome=lambda call_id, status: billing_run.record(call_id, "pod.title", status),
+        )
+        stored = self.repository.create_composition(
+            workspace_id=actor.workspace_id,
+            owner_user_id=actor.id,
+            composition_id=composition_id,
+            name=_composition_default_name(request.brief),
+            raw_input=request.brief,
+            panels=result.panels.model_dump(),
+            model=result.model,
+            prompt_version=result.prompt_version,
+        )
+        return self._composition_payload(stored)
+
+    def save_composition(
+        self, actor: Actor, composition_id: str, request: CompositionUpdateRequest
+    ) -> dict[str, Any]:
+        """保存对某一份模板的手动编辑：后台按中文重新转写英文，改原记录、不新增。"""
+        if self.composition_runtime is None:
+            raise RuntimeError("POD 构图定制服务未启用")
+        if self.repository.get_composition(actor.workspace_id, actor.id, composition_id) is None:
+            raise PodRepositoryError("POD composition not found", 404)
+        # 计费幂等键必须唯一：编辑沿用同一 composition_id 会与「生成」时的 run 撞键，
+        # 因此每次保存都用新 token（该动作零计费，不需要跨次幂等）。
+        billing_run = self._freeze_composition(actor, uuid.uuid4().hex)
+        try:
+            return self._run_composition_localize_authorized(actor, composition_id, request, billing_run)
+        except PodBillingAuthorizationRequired as exc:
+            raise RuntimeError(str(exc)) from exc
+        finally:
+            billing_run.settle()
+
+    def _run_composition_localize_authorized(
+        self,
+        actor: Actor,
+        composition_id: str,
+        request: CompositionUpdateRequest,
+        billing_run: PodBillingRun,
+    ) -> dict[str, Any]:
+        call_ids = tuple(
+            call.call_id for call in billing_run.plan.calls if call.feature == "pod.title"
+        )
+        result = self.composition_runtime.localize_composition(
+            PodCompositionLocalizeRequest(
+                composition_id=composition_id, panels=request.panels.model_dump()
+            ),
+            grant=billing_run.grant,
+            call_id=call_ids[0],
+            call_ids=call_ids,
+            on_start=lambda call_id: billing_run.start(call_id, "pod.title"),
+            on_outcome=lambda call_id, status: billing_run.record(call_id, "pod.title", status),
+        )
+        stored = self.repository.update_composition_panels(
+            actor.workspace_id,
+            actor.id,
+            composition_id,
+            panels=result.panels.model_dump(),
+            model=result.model,
+            prompt_version=result.prompt_version,
+        )
+        if stored is None:
+            raise PodRepositoryError("POD composition not found", 404)
+        return self._composition_payload(stored)
+
+    def list_compositions(self, actor: Actor) -> dict[str, Any]:
+        """列出构图模板：系统内置「默认模板」永远排第一，其余为用户模板（生效的排前）。"""
+
+        records = self.repository.list_compositions(actor.workspace_id, actor.id)
+        templates = [self._composition_payload(record) for record in records]
+        default = self._default_composition_payload()
+        # 没有任何用户模板生效时，即回退到系统默认模板。
+        default["is_active"] = not any(template["is_active"] for template in templates)
+        return {"templates": [default, *templates], "total": len(templates) + 1}
+
+    @staticmethod
+    def _default_composition_payload() -> dict[str, Any]:
+        return {
+            "composition_id": DEFAULT_COMPOSITION_ID,
+            "name": DEFAULT_COMPOSITION_NAME,
+            "raw_input": DEFAULT_COMPOSITION_RAW_INPUT,
+            "panels": {
+                key: {"zh": str(value["zh"]), "en": str(value["en"])}
+                for key, value in DEFAULT_COMPOSITION_PANELS.items()
+            },
+            "model": "",
+            "prompt_version": "pod-composition-default",
+            "is_active": False,
+            "is_builtin": True,
+            "updated_at": "",
+        }
+
+    def get_active_composition(self, actor: Actor) -> dict[str, Any] | None:
+        stored = self.repository.get_active_composition(actor.workspace_id, actor.id)
+        return self._composition_payload(stored) if stored else None
+
+    def rename_composition(
+        self, actor: Actor, composition_id: str, request: CompositionRenameRequest
+    ) -> dict[str, Any]:
+        stored = self.repository.rename_composition(
+            actor.workspace_id, actor.id, composition_id, request.name
+        )
+        if stored is None:
+            raise PodRepositoryError("POD composition not found", 404)
+        return self._composition_payload(stored)
+
+    def activate_composition(self, actor: Actor, composition_id: str) -> dict[str, Any]:
+        if composition_id == DEFAULT_COMPOSITION_ID:
+            # 选择系统默认模板 = 清空用户模板的生效标记（新建批次回退默认机位）。
+            self.repository.clear_active_compositions(actor.workspace_id, actor.id)
+            payload = self._default_composition_payload()
+            payload["is_active"] = True
+            return payload
+        stored = self.repository.activate_composition(actor.workspace_id, actor.id, composition_id)
+        if stored is None:
+            raise PodRepositoryError("POD composition not found", 404)
+        return self._composition_payload(stored)
+
+    def delete_composition(self, actor: Actor, composition_id: str) -> dict[str, Any]:
+        if not self.repository.delete_composition(actor.workspace_id, actor.id, composition_id):
+            raise PodRepositoryError("POD composition not found", 404)
+        return {"deleted": True}
+
+    @staticmethod
+    def _composition_payload(stored: dict[str, Any], *, is_builtin: bool = False) -> dict[str, Any]:
+        raw_panels = stored.get("panels") if isinstance(stored.get("panels"), dict) else {}
+        panels: dict[str, dict[str, str]] = {}
+        for key in COMPOSITION_PANEL_KEYS:
+            entry = raw_panels.get(key)
+            if isinstance(entry, dict):
+                panels[key] = {"zh": str(entry.get("zh") or ""), "en": str(entry.get("en") or "")}
+            else:
+                panels[key] = {"zh": str(entry or ""), "en": ""}
+        return {
+            "composition_id": str(stored.get("composition_id") or ""),
+            "name": str(stored.get("name") or ""),
+            "raw_input": str(stored.get("raw_input") or ""),
+            "panels": panels,
+            "model": str(stored.get("model") or ""),
+            "prompt_version": str(stored.get("prompt_version") or ""),
+            "is_active": bool(stored.get("is_active")),
+            "is_builtin": bool(is_builtin or stored.get("is_builtin")),
+            "updated_at": str(stored.get("updated_at") or ""),
         }
 
     def list_batches(self, actor: Actor, *, limit: int = 20, offset: int = 0) -> dict[str, Any]:
@@ -1954,6 +2156,20 @@ class PodCustomizationService:
             action_payload={"mode": "brief"},
         )
 
+    def _freeze_composition(self, actor: Actor, composition_id: str) -> PodBillingRun:
+        if self.billing_coordinator is None:
+            raise RuntimeError("POD billing coordinator is not configured")
+        plan = PodCallPlan.for_composition(composition_id)
+        # 与智能填写同口径：纯 pod.title scope 零计费，只留模式标记。
+        return self._freeze_action(
+            actor,
+            plan,
+            action_type="title_retry",
+            target_id=composition_id,
+            batch_id="",
+            action_payload={"mode": "composition"},
+        )
+
     def _freeze_style_retry(
         self,
         actor: Actor,
@@ -2283,6 +2499,7 @@ class PodCustomizationService:
             "listing_fields": None if semi else batch["listing_fields"],
             "dianxiaomi_export": export_payload,
             "creative_prompt": batch["creative_prompt"],
+            "composition": self._batch_composition_payload(batch),
             "error_message": batch["error_message"],
             "created_at": batch["created_at"],
             "updated_at": batch["updated_at"],
@@ -2298,6 +2515,19 @@ class PodCustomizationService:
                 for target in batch.get("replica_targets", [])
             ]
         return payload
+
+    @staticmethod
+    def _batch_composition_payload(batch: dict[str, Any]) -> dict[str, Any] | None:
+        raw = batch.get("composition_json")
+        if not raw:
+            return None
+        try:
+            record = json.loads(raw)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(record, dict):
+            return None
+        return PodCustomizationService._composition_payload(record)
 
     @staticmethod
     def _replica_source_payload(batch: dict[str, Any]) -> dict[str, Any]:

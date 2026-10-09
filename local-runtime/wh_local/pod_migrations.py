@@ -370,6 +370,25 @@ POD_MIGRATION_CONTRACTS: dict[str, MigrationEffect] = {
             ),
         },
     ),
+    "017_pod_composition": MigrationEffect(
+        tables={
+            "pod_customization_compositions": _table(
+                "composition_id workspace_id owner_user_id raw_input panels_json "
+                "model prompt_version created_at updated_at"
+            )
+        },
+        # 下标索引在 018 已由唯一改为普通（支持多份模板），这里不再断言其唯一性，
+        # 否则已应用 017 的库会因索引不匹配而重复执行 017（ALTER 重名列表会失败）。
+        column_additions={"pod_customization_batches": ("composition_json",)},
+    ),
+    "018_pod_composition_templates": MigrationEffect(
+        column_additions={"pod_customization_compositions": ("name", "is_active")},
+        indexes={
+            "idx_pod_compositions_owner": _index(
+                "pod_customization_compositions", "workspace_id owner_user_id"
+            ),
+        },
+    ),
 }
 
 

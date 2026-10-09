@@ -31,6 +31,14 @@ export type PodStyleRow = {
 export const POD_BATCH_COUNTS = [2, 10, 20, 40, 60, 100] as const satisfies readonly PodBatchCount[];
 export const MAX_POD_SKU_COUNT = 100;
 export const MAX_POD_SKU_NAME_LENGTH = 120;
+
+// 业务字段字符上限：与后端 contracts.py 的 BusinessFields 对齐，超限会被后端 422 拒绝。
+// 单值字段（产品名称/品类/市场/人群/主题）与文案限制为整段上限；
+// 多值字段（卖点/元素/配色/禁用）提交前按分隔符拆成数组，限制「单条 + 条数」。
+export const POD_BUSINESS_TEXT_MAX_LENGTH = 500;
+export const POD_COPY_RESTRICTIONS_MAX_LENGTH = 2000;
+export const POD_BUSINESS_LIST_ITEM_MAX_LENGTH = 200;
+export const POD_BUSINESS_LIST_MAX_ITEMS = 100;
 const POD_STYLE_PRESENTATION_ROLES = ["lifestyle", "detail_a", "detail_b", "hero"] as const;
 
 export const EMPTY_POD_BUSINESS_FIELDS: PodBusinessFieldsDraft = {
@@ -287,7 +295,7 @@ export function creativePromptSyncStatus(
   return "custom-stale";
 }
 
-function splitBusinessField(value: string): string[] {
+export function splitBusinessField(value: string): string[] {
   return value.split(/[、，,;；\n]+/).map((part) => part.trim()).filter(Boolean);
 }
 

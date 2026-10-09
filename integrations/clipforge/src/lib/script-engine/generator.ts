@@ -301,6 +301,22 @@ function validateScript(raw: Record<string, unknown>, fallbackStyleType: string)
 // ==================== Core functionality ====================
 
 /**
+ * 空 content 的原因判定：推理模型（实测 deepseek-flash）会把 max_tokens 全花在 reasoning_content 上，
+ * content 为空且 finish_reason=length。把这一点直接说清楚，比一句「未返回有效内容」有用得多——
+ * 否则只会看到一个看不出所以然的失败。
+ */
+function emptyContentReason(response: unknown, maxTokens?: number): string {
+  const choice = (response as { choices?: Array<{ finish_reason?: string; message?: { reasoning_content?: string } }> })?.choices?.[0];
+  const reasoningChars = typeof choice?.message?.reasoning_content === "string" ? choice.message.reasoning_content.length : 0;
+  const usage = (response as { usage?: { completion_tokens_details?: { reasoning_tokens?: number } } })?.usage;
+  const reasoningTokens = usage?.completion_tokens_details?.reasoning_tokens ?? 0;
+  if (choice?.finish_reason === "length" && (reasoningChars > 0 || reasoningTokens > 0)) {
+    return `LLM 把输出额度全用在推理上了（max_tokens=${maxTokens ?? "默认"}，reasoning_tokens=${reasoningTokens}，reasoning_content ${reasoningChars} 字），content 为空——请提高输出上限或改用非推理模型`;
+  }
+  return "LLM 未返回有效内容";
+}
+
+/**
  * Non-streaming chat call with ONE parse-driven retry ("repair first, then re-ask" — the last
  * rung of the JSON-robustness ladder): when the reply survives transport but fails to parse — bad JSON,
  * missing shots — the model gets its own output back plus the parse error and one chance to fix
@@ -322,7 +338,7 @@ export async function completeWithJsonRetry<T>(
       cfg,
     );
     const content = response.choices[0]?.message?.content;
-    if (!content) throw new Error("LLM 未返回有效内容");
+    if (!content) throw new Error(emptyContentReason(response, params.max_tokens ?? undefined));
     try {
       return parse(content);
     } catch (err) {
