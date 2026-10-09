@@ -111,7 +111,7 @@ export function ProductProcessingPage() {
           const mode = draft.raw_payload.collection_mode;
           return <article className="product-draft-card" key={draft.id}>
             <div className="product-draft-image">
-              {!imageFailed && <img src={source} alt={draft.title || `产品草稿 #${draft.id}`} onError={() => {
+              {!imageFailed && <img loading="lazy" src={source} alt={draft.title || `产品草稿 #${draft.id}`} onError={() => {
                 if (!useOriginalImage[draft.id] && draft.image_path && draft.image_url) {
                   setUseOriginalImage((items) => ({ ...items, [draft.id]: true }));
                   return;

@@ -77,9 +77,9 @@ export function DimensionChangeSetReview({ changeSetId, onChanged }: Props) {
             <span className="dimension-review-status">{item.status}</span>
           </header>
           <div className="dimension-review-diff">
-            <figure><figcaption>当前目标图</figcaption>{item.oldImageUrl ? <img src={item.oldImageUrl} alt="当前目标图" /> : <span>空槽位</span>}</figure>
+            <figure><figcaption>当前目标图</figcaption>{item.oldImageUrl ? <img src={item.oldImageUrl} alt="当前目标图" loading="lazy" /> : <span>空槽位</span>}</figure>
             <span aria-hidden="true">→</span>
-            <figure><figcaption>新尺寸图</figcaption>{item.newImageUrl ? <img src={item.newImageUrl} alt="新尺寸图" /> : <span>渲染图不可用</span>}</figure>
+            <figure><figcaption>新尺寸图</figcaption>{item.newImageUrl ? <img src={item.newImageUrl} alt="新尺寸图" loading="lazy" /> : <span>渲染图不可用</span>}</figure>
             <dl><dt>商品本体尺寸</dt><dd>{dimensionsText(item.physicalDimensions)}</dd><dt>回写位置</dt><dd>{item.targetSlotId}</dd></dl>
           </div>
           {item.conflictReason && <div className="dimension-banner is-warning">冲突：{item.conflictReason}。请回到画布或预检处理，不会静默覆盖。</div>}

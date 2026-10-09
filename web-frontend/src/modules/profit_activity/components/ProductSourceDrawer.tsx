@@ -516,7 +516,7 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
                           onPaste={(event) => onEditRowImagePaste(row.key, event)}
                         >
                           {row.imagePreview ? (
-                            <img className="profit-source-card-shot" src={row.imagePreview} alt="新货源截图" />
+                            <img className="profit-source-card-shot" src={row.imagePreview} alt="新货源截图" loading="lazy" />
                           ) : (
                             <SourceCardImage
                               skc={current.skc}

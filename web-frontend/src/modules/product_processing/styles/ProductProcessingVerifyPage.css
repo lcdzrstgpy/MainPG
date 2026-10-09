@@ -412,6 +412,12 @@
   background: #fff;
   overflow: hidden;
   transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+  /* 长列表：屏幕外的卡片跳过渲染（每页最多 100 张）。
+     卡片本身 overflow:hidden，paint 已裁剪在盒内，加 containment 不会影响任何浮层；
+     contain-intrinsic-size 的 auto 关键字会在卡片渲染过一次后记住真实高度，
+     只有从未渲染过的才用 180px 估算，避免滚动条跳动。 */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 180px;
 }
 
 .pool-card::before {

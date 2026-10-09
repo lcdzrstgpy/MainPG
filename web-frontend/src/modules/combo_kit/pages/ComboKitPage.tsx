@@ -852,7 +852,7 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
                           onClick={() => setSelectedItemId(it.item_id)}
                           title={it.subject_keywords || `第 ${idx + 1} 张`}
                         >
-                          <img src={comboKitOriginUrl(set.set_id, (it.original_url || '').split('/').pop() || '')} alt={it.subject_keywords || `第 ${idx + 1} 张`} referrerPolicy="no-referrer" />
+                          <img src={comboKitOriginUrl(set.set_id, (it.original_url || '').split('/').pop() || '')} alt={it.subject_keywords || `第 ${idx + 1} 张`} referrerPolicy="no-referrer" loading="lazy" />
                           <span className="combo-edit-stage-thumb-idx">{idx + 1}</span>
                           {it.is_primary && <span className="combo-edit-stage-thumb-primary">主</span>}
                         </button>
@@ -1009,7 +1009,7 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
               return (
                 <figure key={img.role}>
                   <div className="combo-image-card">
-                    <img src={comboKitGeneratedUrl(set.set_id, img.role)} alt={img.label} referrerPolicy="no-referrer" />
+                    <img src={comboKitGeneratedUrl(set.set_id, img.role)} alt={img.label} referrerPolicy="no-referrer" loading="lazy" />
                     <div className="combo-image-actions">
                       {canRegenerate && <button className="btn-mini primary" onClick={() => void onGenerateImages([img.role])}>替换</button>}
                       <button className="btn-mini danger" onClick={() => void onDeleteImage(img.role)}>删除</button>
@@ -1106,7 +1106,7 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
           <div className="combo-preview-thumbs">
             {set.items.length ? set.items.map((item, idx) => (
               <figure className="combo-preview-thumb" key={item.item_id}>
-                <img src={comboKitOriginUrl(set.set_id, (item.original_url || '').split('/').pop() || '')} alt={item.subject_keywords || '原图'} referrerPolicy="no-referrer" />
+                <img src={comboKitOriginUrl(set.set_id, (item.original_url || '').split('/').pop() || '')} alt={item.subject_keywords || '原图'} referrerPolicy="no-referrer" loading="lazy" />
                 <figcaption><b>{idx + 1}. {item.subject_keywords || '未填主体'}</b><small>规格：{item.spec_text || '—'}</small></figcaption>
               </figure>
             )) : <div className="empty">未上传原图</div>}
@@ -1119,7 +1119,7 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
             {images.map((img) => (
               <figure key={img.role}>
                 <div className="combo-image-card">
-                  <img src={comboKitGeneratedUrl(set.set_id, img.role)} alt={img.label} referrerPolicy="no-referrer" />
+                  <img src={comboKitGeneratedUrl(set.set_id, img.role)} alt={img.label} referrerPolicy="no-referrer" loading="lazy" />
                   <span className={`combo-cos-tag ${img.public_url ? 'is-ok' : 'is-missing'}`}>{img.public_url ? '已过图床' : '未过图床'}</span>
                 </div>
                 <figcaption>{img.label}</figcaption>
@@ -1257,7 +1257,7 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
                   className={`combo-drawer-thumb${selectedItemId === item.item_id ? ' is-active' : ''}`}
                   onClick={() => { setSelectedItemId(item.item_id); setDrawerOpen(false); }}
                 >
-                  <img src={comboKitOriginUrl(set.set_id, (item.original_url || '').split('/').pop() || '')} alt={item.subject_keywords || '原图'} referrerPolicy="no-referrer" />
+                  <img src={comboKitOriginUrl(set.set_id, (item.original_url || '').split('/').pop() || '')} alt={item.subject_keywords || '原图'} referrerPolicy="no-referrer" loading="lazy" />
                   {item.is_primary && <span className="combo-drawer-thumb-primary">主要</span>}
                   <span className="combo-drawer-thumb-label">{idx + 1}. {item.subject_keywords || '未填主体词'}</span>
                   <button className="combo-drawer-thumb-remove" onClick={(e) => { e.stopPropagation(); void onRemoveItem(item.item_id); }}>移除</button>
