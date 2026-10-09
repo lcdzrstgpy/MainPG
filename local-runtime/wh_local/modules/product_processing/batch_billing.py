@@ -43,15 +43,23 @@ def _open_freezes_path() -> Path:
     return Path(default_config().data_dir) / "product_processing" / "batch_freezes.json"
 
 
-def _load_open_freezes() -> dict[str, Any]:
+def _load_open_freezes(*, strict: bool = False) -> dict[str, Any]:
+    """读侧车；文件不存在视为空。
+
+    ``strict=True`` 供「读-改-写」路径使用：读失败必须抛出，**绝不能**当成空表后
+    把新内容整体写回 —— 那会把其它 freeze 记录一并抹掉，积分只能等 TTL 释放。
+    只读查询仍用宽松模式返回 {}，不因单个文件问题打断展示。
+    """
     path = _open_freezes_path()
     try:
         if path.is_file():
             data = json.loads(path.read_text(encoding="utf-8"))
             return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
         return {}
-    return {}
+    except (OSError, ValueError):
+        if strict:
+            raise
+        return {}
 
 
 def _save_open_freezes(data: dict[str, Any]) -> None:
@@ -88,7 +96,7 @@ def remember_freeze(
     保证与冻结的 link_count 严格一致（重试/混合状态任务不会多报）。
     """
     with _FREEZE_STORE_LOCK:
-        data = _load_open_freezes()
+        data = _load_open_freezes(strict=True)
         data[freeze_id] = {
             "account_id": account_id,
             "workspace_id": workspace_id,
@@ -104,7 +112,7 @@ def remember_freeze(
 
 def forget_freeze(freeze_id: str) -> None:
     with _FREEZE_STORE_LOCK:
-        data = _load_open_freezes()
+        data = _load_open_freezes(strict=True)
         if freeze_id in data:
             data[freeze_id]["settled"] = True
             _save_open_freezes(data)
@@ -118,7 +126,12 @@ def mark_freeze_settle_failure(freeze_id: str, error: str) -> None:
     and avoid silently hiding why points remain locked.
     """
     with _FREEZE_STORE_LOCK:
-        data = _load_open_freezes()
+        try:
+            data = _load_open_freezes(strict=True)
+        except (OSError, ValueError):
+            # 读不到就不能写：写入会把其它 freeze 记录整体抹掉。
+            # 这里只放弃打标，不能让「记录失败」这个动作反过来掩盖原始异常。
+            return
         record = data.get(str(freeze_id))
         if record is None:
             return
