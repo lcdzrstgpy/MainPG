@@ -19,6 +19,7 @@ import type {
 } from "../../pod_customization/types";
 import { podSemiCustomizationApi, blobForPath, downloadBlobAs } from "../api/podSemiCustomizationApi";
 import { PodSemiBatchDrawer } from "../components/PodSemiBatchDrawer";
+import { PodSemiDeleteConfirmDialog } from "../components/PodSemiDeleteConfirmDialog";
 import { PodSemiResultLightbox } from "../components/PodSemiResultLightbox";
 import {
   SEMI_BATCH_COUNTS,
@@ -120,6 +121,10 @@ export function PodSemiCustomizationPage({ isActive = true }: Props) {
   // 批次记录抽屉里的勾选删除（只对已结束的批次开放）。
   const [selectedBatchIds, setSelectedBatchIds] = useState<string[]>([]);
   const [deletingSelection, setDeletingSelection] = useState(false);
+  // 半定制删除的专用强确认（§6.3）：单删 / 批量删共用一个弹窗。
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [deleteConfirmMode, setDeleteConfirmMode] = useState<"single" | "batch">("single");
+  const [deleteConfirmBusy, setDeleteConfirmBusy] = useState(false);
 
   const noticeTimerRef = useRef<number | undefined>(undefined);
 
@@ -245,7 +250,7 @@ export function PodSemiCustomizationPage({ isActive = true }: Props) {
     }
   };
 
-  const control = async (action: "pause" | "cancel" | "resume" | "delete") => {
+  const control = async (action: "pause" | "cancel" | "resume") => {
     if (!activeBatch || busy) return;
     setBusy(true);
     setError("");
@@ -253,13 +258,6 @@ export function PodSemiCustomizationPage({ isActive = true }: Props) {
       if (action === "pause") await podSemiCustomizationApi.pauseBatch(activeBatch.id);
       if (action === "cancel") await podSemiCustomizationApi.cancelBatch(activeBatch.id);
       if (action === "resume") await podSemiCustomizationApi.resumeBatch(activeBatch.id);
-      if (action === "delete") {
-        await podSemiCustomizationApi.deleteBatch(activeBatch.id);
-        setActiveBatch(null);
-        void loadBatches();
-        setBusy(false);
-        return;
-      }
       await refreshActiveBatch();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -310,12 +308,24 @@ export function PodSemiCustomizationPage({ isActive = true }: Props) {
       : [...current, batchId]);
   };
 
-  /** 批量删除：只处理已结束的批次（抽屉里进行中的批次勾选框本来就是禁用的，这里再兜一次底）。 */
-  const deleteSelectedBatches = async () => {
-    const ids = selectedBatchIds.filter((id) => batches.some((batch) => batch.id === id && isSemiBatchTerminal(batch.status)));
+  /** 可删除的勾选批次：只处理已结束的批次（抽屉里进行中的批次勾选框本来就是禁用的，这里再兜一次底）。 */
+  const deletableSelectedIds = useMemo(
+    () => selectedBatchIds.filter((id) => batches.some((batch) => batch.id === id && isSemiBatchTerminal(batch.status))),
+    [selectedBatchIds, batches],
+  );
+
+  /** §6.3：删除前必须走专用强确认——半定制没有图床备份，删了就是永久丢失。 */
+  const requestDeleteSelectedBatches = () => {
+    if (!deletableSelectedIds.length || busy || deletingSelection) return;
+    setDeleteConfirmMode("batch");
+    setDeleteConfirmOpen(true);
+  };
+
+  const confirmDeleteSelectedBatches = async () => {
+    const ids = deletableSelectedIds;
     if (!ids.length || busy || deletingSelection) return;
-    if (!window.confirm(`确认删除选中的 ${ids.length} 个批次？删除后这些批次的本地图片将被清理，不可恢复。`)) return;
     setDeletingSelection(true);
+    setDeleteConfirmBusy(true);
     setError("");
     const deleted: string[] = [];
     let failed = false;
@@ -335,7 +345,33 @@ export function PodSemiCustomizationPage({ isActive = true }: Props) {
       }
       setSelectedBatchIds((current) => current.filter((id) => !deleted.includes(id)));
       if (!failed && deleted.length) showNotice(`${deleted.length} 个批次已删除。`);
+      else if (failed && deleted.length) showNotice(`已删除 ${deleted.length} 个批次，其余删除失败（原因见上方提示）。`);
       setDeletingSelection(false);
+      setDeleteConfirmBusy(false);
+      setDeleteConfirmOpen(false);
+    }
+  };
+
+  /** 单删同样走强确认（§6.3：原先点了直接删，明确不允许）。 */
+  const requestDeleteActiveBatch = () => {
+    if (!activeBatch || busy) return;
+    setDeleteConfirmMode("single");
+    setDeleteConfirmOpen(true);
+  };
+
+  const confirmDeleteActiveBatch = async () => {
+    if (!activeBatch) return;
+    setDeleteConfirmBusy(true);
+    setError("");
+    try {
+      await podSemiCustomizationApi.deleteBatch(activeBatch.id);
+      setActiveBatch(null);
+      void loadBatches();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setDeleteConfirmBusy(false);
+      setDeleteConfirmOpen(false);
     }
   };
 
@@ -458,7 +494,7 @@ export function PodSemiCustomizationPage({ isActive = true }: Props) {
                   {failedStyleIndexes.length > 0 && !isSemiBatchRunning(activeBatch.status) && !isSemiBatchPaused(activeBatch.status) && (
                     <button type="button" disabled={busy} onClick={() => void retryFailedGroups()}>重试失败款</button>
                   )}
-                  {isSemiBatchTerminal(activeBatch.status) && <button type="button" disabled={busy} onClick={() => void control("delete")}>删除</button>}
+                  {isSemiBatchTerminal(activeBatch.status) && <button type="button" disabled={busy} onClick={() => void requestDeleteActiveBatch()}>删除</button>}
                   {downloadable && <button type="button" className="pod-semi-download" disabled={busy} onClick={() => void downloadZip()}>下载 ZIP</button>}
                 </div>
               </header>
@@ -514,10 +550,20 @@ export function PodSemiCustomizationPage({ isActive = true }: Props) {
         deleting={deletingSelection}
         selectedIds={selectedBatchIds}
         onToggleSelect={toggleSelectBatch}
-        onDeleteSelected={() => void deleteSelectedBatches()}
+        onDeleteSelected={() => void requestDeleteSelectedBatches()}
         onOpen={(batchId) => void openBatch(batchId)}
         onRefresh={() => void loadBatches()}
         onClose={() => setHistoryOpen(false)}
+      />
+
+      <PodSemiDeleteConfirmDialog
+        open={deleteConfirmOpen}
+        count={deleteConfirmMode === "batch" ? deletableSelectedIds.length : 1}
+        busy={deleteConfirmBusy}
+        onClose={() => setDeleteConfirmOpen(false)}
+        onConfirm={() =>
+          void (deleteConfirmMode === "batch" ? confirmDeleteSelectedBatches() : confirmDeleteActiveBatch())
+        }
       />
     </div>
   );
