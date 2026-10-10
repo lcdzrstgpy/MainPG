@@ -48,6 +48,7 @@ def request_collect_credentials(
     username: str = "",
     workspace_code: str = "",
     timeout: float = 15,
+    token: str = "",
 ) -> Mapping[str, str]:
     """Request OneBound credentials from the collect-key endpoint and decrypt them.
 
@@ -83,7 +84,12 @@ def request_collect_credentials(
     request = Request(
         endpoint,
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            # 身份必须由服务端从会话 token 解析；body 里的 account_id/username 仅作兼容
+            # 透传，服务端一律以 token 为准 —— 否则任何人知道一个用户名即可冒领采集凭据。
+            **({"Authorization": f"Bearer {token}"} if token else {}),
+        },
         method="POST",
     )
     try:

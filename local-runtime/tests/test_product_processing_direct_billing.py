@@ -570,3 +570,108 @@ def test_settle_open_batch_failure_is_recorded_not_silent(tmp_path: Path, monkey
     assert record["settle_status"] == "failed"
     assert record["settle_attempts"] == 1
     assert "unavailable" in str(record.get("settle_error") or "")
+
+
+# ---------------------------------------------------------------------------
+# 侧车文件：并发读改写 + 「读不到就不许写」语义
+# ---------------------------------------------------------------------------
+
+
+def _sidecar_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    path = tmp_path / "product_processing" / "batch_freezes.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(batch_billing_module, "_open_freezes_path", lambda: path)
+    return path
+
+
+def test_sidecar_read_failure_must_not_wipe_other_freezes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """读失败时若把新内容整体写回，会抹掉其它 freeze 记录（积分滞留到 TTL）。
+
+    必须改为抛出，绝不允许「以为是空表 → 只写自己这一条」。
+    """
+    path = _sidecar_path(monkeypatch, tmp_path)
+    path.write_text("{ not valid json", encoding="utf-8")
+    with pytest.raises(ValueError):
+        batch_billing_module.remember_freeze(
+            "fz-new",
+            account_id="a",
+            workspace_id="w",
+            task_id=1,
+            link_count=1,
+            scope=[],
+            item_ids=[1],
+        )
+    assert path.read_text(encoding="utf-8") == "{ not valid json"
+
+
+def test_forget_freeze_read_failure_must_not_write(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    path = _sidecar_path(monkeypatch, tmp_path)
+    path.write_text("{ not valid json", encoding="utf-8")
+    with pytest.raises(ValueError):
+        batch_billing_module.forget_freeze("fz-x")
+    assert path.read_text(encoding="utf-8") == "{ not valid json"
+
+
+def test_mark_settle_failure_is_best_effort_and_never_wipes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """打「结算失败」标记是尽力而为：读不到就放弃打标，但绝不能写。
+
+    它常在 except 分支里被调用，不能让「记录失败」反过来掩盖原始异常。
+    """
+    path = _sidecar_path(monkeypatch, tmp_path)
+    path.write_text("{ not valid json", encoding="utf-8")
+    batch_billing_module.mark_freeze_settle_failure("fz-x", "boom")  # 不得抛出
+    assert path.read_text(encoding="utf-8") == "{ not valid json"
+
+
+def test_concurrent_sidecar_updates_keep_every_record(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """12 个线程同时「读-改-写」：不丢记录、不抛异常、不留 .tmp。
+
+    2026-10-09 实测：无锁 + 固定 .tmp 名的旧实现下，12 线程里 11 个抛
+    PermissionError 且最终只剩 1 条记录。
+    """
+    import threading
+
+    _sidecar_path(monkeypatch, tmp_path)
+    errors: list[BaseException] = []
+    barrier = threading.Barrier(12)
+
+    def worker(index: int) -> None:
+        try:
+            barrier.wait(timeout=10)
+            freeze_id = f"fz-{index}"
+            batch_billing_module.remember_freeze(
+                freeze_id,
+                account_id=f"a{index}",
+                workspace_id="w",
+                task_id=index,
+                link_count=1,
+                scope=[],
+                item_ids=[index],
+            )
+            if index % 2 == 0:
+                batch_billing_module.mark_freeze_settle_failure(freeze_id, "boom")
+            else:
+                batch_billing_module.forget_freeze(freeze_id)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(12)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=20)
+
+    assert errors == []
+    data = batch_billing_module._load_open_freezes()
+    assert set(data) == {f"fz-{i}" for i in range(12)}
+    assert sum(1 for v in data.values() if v.get("settled")) == 6
+    assert sum(1 for v in data.values() if v.get("settle_status") == "failed") == 6
+    assert not list(tmp_path.rglob("*.tmp"))

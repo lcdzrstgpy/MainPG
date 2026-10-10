@@ -66,6 +66,8 @@ export function PodReplicaPage({ isActive = true }: Props) {
   const [history, setHistory] = useState<ReplicaBatchSummary[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [failedRetryOpen, setFailedRetryOpen] = useState(false);
+  // 复刻历史抽屉的多选：勾选后可批量删除（只有终态批次可勾，见 canDeletePodBatch）。
+  const [selectedBatchIds, setSelectedBatchIds] = useState<string[]>([]);
   const [busyAction, setBusyAction] = useState("");
   const [error, setError] = useState(initialDraft.error ?? "");
   const [visibility, setVisibility] = useState<DocumentVisibilityState>(() => document.visibilityState);
@@ -237,6 +239,12 @@ export function PodReplicaPage({ isActive = true }: Props) {
     setTargets((current) => current.map((target) => target.clientId === clientId ? updater(target) : target));
   };
 
+  const toggleBatchSelected = (batchId: string) => {
+    setSelectedBatchIds((current) => current.includes(batchId)
+      ? current.filter((id) => id !== batchId)
+      : [...current, batchId]);
+  };
+
   // SKU 增减/改名后按顺序重建尺寸表结构，保留已填长/宽/高。
   const withSyncedSpecCard = (target: ReplicaTargetDraft, listingFields: ReplicaTargetDraft["listingFields"]): ReplicaTargetDraft => ({
     ...target,
@@ -338,6 +346,7 @@ export function PodReplicaPage({ isActive = true }: Props) {
       for (const id of ids) await podCustomizationApi.deleteBatch(id);
       setHistory((current) => current.filter((batch) => !ids.includes(batch.id)));
       if (activeBatch && ids.includes(activeBatch.id)) setActiveBatch(null);
+      setSelectedBatchIds((current) => current.filter((id) => !ids.includes(id)));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -589,9 +598,9 @@ export function PodReplicaPage({ isActive = true }: Props) {
         activeBatchId={activeBatch?.id}
         loading={busyAction.startsWith("batch:")}
         busyAction={busyAction}
-        selectedIds={[]}
-        onToggleSelect={() => undefined}
-        onDeleteSelected={() => void deleteBatches([])}
+        selectedIds={selectedBatchIds}
+        onToggleSelect={toggleBatchSelected}
+        onDeleteSelected={() => void deleteBatches(selectedBatchIds)}
         onOpen={(batchId) => void openBatch(batchId)}
         onRefresh={() => void podReplicaApi.listBatches().then((response) => setHistory(response.batches)).catch(() => undefined)}
         onClose={() => setHistoryOpen(false)}

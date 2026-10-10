@@ -448,7 +448,9 @@ export function ProductProcessingTestPage() {
 
   const downloadArtifact = (kind: 'dxm' | 'errors' | 'video_manifest', filename: string) => {
     if (!currentTask) return;
-    ppDownload(api, `${API_BASE}/tasks/${currentTask.task_id}/download?kind=${kind}`, filename);
+    // ppDownload 失败会 reject：不接住就成了未处理的 promise 拒绝，且界面毫无提示。
+    void ppDownload(api, `${API_BASE}/tasks/${currentTask.task_id}/download?kind=${kind}`, filename)
+      .catch((err) => setError(err instanceof Error ? err.message : '下载失败'));
   };
 
   const failureItems = useMemo(

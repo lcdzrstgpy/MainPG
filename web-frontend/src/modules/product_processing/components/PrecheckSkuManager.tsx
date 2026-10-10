@@ -902,7 +902,7 @@ export function PrecheckSkuManager({
                             onClick={() => onPreview(option.thumb || option.cropSrc)}
                             title="点击放大查看"
                           >
-                            <img src={option.thumb || option.cropSrc} alt={option.label} referrerPolicy="no-referrer" />
+                            <img src={option.thumb || option.cropSrc} alt={option.label} referrerPolicy="no-referrer" loading="lazy" />
                           </button>
                           <span className="precheck-sku-picker-label" title={option.label}>{option.label}</span>
                           <div className="precheck-sku-picker-actions">

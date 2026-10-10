@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -22,6 +24,10 @@ ENV_DIRECT = "WH_PRODUCT_AI_DIRECT"
 # 与 auth-api 的 billing_pricing_items.feature_key 对齐（顺序即展示顺序）。
 SUBITEM_FEATURES = ("title", "description", "product_dimensions", "four_grid", "detail_images")
 TEXT_SUBITEM_FEATURES = frozenset({"title", "description", "product_dimensions"})
+
+# 侧车文件是「读整文件 → 改 → 整文件写」，任务线程与对账线程并发时
+# 读改写会互相覆盖（结算失败标记丢失 / 已结算记录复活为 open）。这里串行化。
+_FREEZE_STORE_LOCK = threading.RLock()
 
 
 def direct_ai_enabled() -> bool:
@@ -37,23 +43,41 @@ def _open_freezes_path() -> Path:
     return Path(default_config().data_dir) / "product_processing" / "batch_freezes.json"
 
 
-def _load_open_freezes() -> dict[str, Any]:
+def _load_open_freezes(*, strict: bool = False) -> dict[str, Any]:
+    """读侧车；文件不存在视为空。
+
+    ``strict=True`` 供「读-改-写」路径使用：读失败必须抛出，**绝不能**当成空表后
+    把新内容整体写回 —— 那会把其它 freeze 记录一并抹掉，积分只能等 TTL 释放。
+    只读查询仍用宽松模式返回 {}，不因单个文件问题打断展示。
+    """
     path = _open_freezes_path()
     try:
         if path.is_file():
             data = json.loads(path.read_text(encoding="utf-8"))
             return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
         return {}
-    return {}
+    except (OSError, ValueError):
+        if strict:
+            raise
+        return {}
 
 
 def _save_open_freezes(data: dict[str, Any]) -> None:
     path = _open_freezes_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    # 唯一临时名 + 原子替换：原来所有写者共用 `.tmp`，并发时第二个 replace
+    # 会抛 FileNotFoundError。
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(data, ensure_ascii=False, indent=2))
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
 
 
 def remember_freeze(
@@ -71,25 +95,27 @@ def remember_freeze(
     ``item_ids`` 记录冻结时刻的 pending 商品条目；结算时按它过滤上报明细，
     保证与冻结的 link_count 严格一致（重试/混合状态任务不会多报）。
     """
-    data = _load_open_freezes()
-    data[freeze_id] = {
-        "account_id": account_id,
-        "workspace_id": workspace_id,
-        "task_id": int(task_id),
-        "link_count": int(link_count),
-        "scope": [str(item) for item in (scope or [])],
-        "item_ids": [int(item_id) for item_id in (item_ids or [])],
-        "opened_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "settled": False,
-    }
-    _save_open_freezes(data)
+    with _FREEZE_STORE_LOCK:
+        data = _load_open_freezes(strict=True)
+        data[freeze_id] = {
+            "account_id": account_id,
+            "workspace_id": workspace_id,
+            "task_id": int(task_id),
+            "link_count": int(link_count),
+            "scope": [str(item) for item in (scope or [])],
+            "item_ids": [int(item_id) for item_id in (item_ids or [])],
+            "opened_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "settled": False,
+        }
+        _save_open_freezes(data)
 
 
 def forget_freeze(freeze_id: str) -> None:
-    data = _load_open_freezes()
-    if freeze_id in data:
-        data[freeze_id]["settled"] = True
-        _save_open_freezes(data)
+    with _FREEZE_STORE_LOCK:
+        data = _load_open_freezes(strict=True)
+        if freeze_id in data:
+            data[freeze_id]["settled"] = True
+            _save_open_freezes(data)
 
 
 def mark_freeze_settle_failure(freeze_id: str, error: str) -> None:
@@ -99,17 +125,23 @@ def mark_freeze_settle_failure(freeze_id: str, error: str) -> None:
     server TTL can still settle/release it; the failure fields feed diagnostics
     and avoid silently hiding why points remain locked.
     """
-    data = _load_open_freezes()
-    record = data.get(str(freeze_id))
-    if record is None:
-        return
-    previous_attempts = int(record.get("settle_attempts") or 0)
-    record["settle_attempts"] = previous_attempts + 1
-    record["settle_status"] = "failed"
-    record["settle_error"] = str(error or "")[:300]
-    record["settle_last_error_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    data[str(freeze_id)] = record
-    _save_open_freezes(data)
+    with _FREEZE_STORE_LOCK:
+        try:
+            data = _load_open_freezes(strict=True)
+        except (OSError, ValueError):
+            # 读不到就不能写：写入会把其它 freeze 记录整体抹掉。
+            # 这里只放弃打标，不能让「记录失败」这个动作反过来掩盖原始异常。
+            return
+        record = data.get(str(freeze_id))
+        if record is None:
+            return
+        previous_attempts = int(record.get("settle_attempts") or 0)
+        record["settle_attempts"] = previous_attempts + 1
+        record["settle_status"] = "failed"
+        record["settle_error"] = str(error or "")[:300]
+        record["settle_last_error_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        data[str(freeze_id)] = record
+        _save_open_freezes(data)
 
 
 def open_freezes_for_account(account_id: str) -> list[dict[str, Any]]:

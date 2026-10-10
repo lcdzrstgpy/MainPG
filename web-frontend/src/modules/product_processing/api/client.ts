@@ -146,7 +146,9 @@ export async function ppDownload(
   anchor.href = objectUrl;
   anchor.download = filename;
   anchor.click();
-  URL.revokeObjectURL(objectUrl);
+  // 不能紧跟着同步回收：下载尚未真正读取 blob 时数据源已被释放，
+  // 个别浏览器会下到空文件。与 ProfitActivityTestPage / podCustomizationApi 保持一致。
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
 }
 
 export type { ApiContext };

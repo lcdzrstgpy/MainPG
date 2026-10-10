@@ -7,6 +7,7 @@ from typing import Any
 from ...customer.contracts import CustomerBillingPermissionError
 from ...session import Actor
 from .billing_contract import (
+    POD_BILLING_PROFILE_RANDOM,
     POD_BILLING_PROFILE_SEMI,
     PodBillingCoordinator,
     PodCallOutcome,
@@ -71,7 +72,7 @@ class RemotePodBillingCoordinator(PodBillingCoordinator):
             link_count = max(1, int(status.get("link_count") or 0))
         except (TypeError, ValueError) as exc:
             raise RuntimeError("POD billing service returned an invalid freeze status") from exc
-        billing_profile = str(status.get("billing_profile") or "pod_random_v1")
+        billing_profile = str(status.get("billing_profile") or POD_BILLING_PROFILE_RANDOM)
         payload = {
             "idempotency_key": freeze_id,
             "link_count": link_count,

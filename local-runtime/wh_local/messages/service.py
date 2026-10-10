@@ -220,10 +220,15 @@ class FeedbackReplySyncService:
                 return 0
             # 反馈回复以 feedback_replies 的 id 作为 server_id，加 10 亿偏移
             # 与公告（announcements.id）共享同一 messages 表但不冲突。
-            reply_items = [
-                {**item, "id": int(item.get("id") or 0) + 1_000_000_000}
-                for item in items
-            ]
+            reply_items = []
+            for item in items:
+                try:
+                    reply_items.append(
+                        {**item, "id": int(item.get("id") or 0) + 1_000_000_000}
+                    )
+                except (TypeError, ValueError):
+                    # 与公告同步保持一致：坏 id 单条跳过，不让一条坏数据废掉整轮同步。
+                    logger.warning("feedback reply sync: bad server id %r", item.get("id"))
             new_count = self.repository.upsert_server_announcements(
                 reply_items, kind="feedback_reply"
             )

@@ -1342,17 +1342,6 @@
   min-width: 120px;
 }
 
-.profit-product-edit-button {
-  width: 38px;
-  min-width: 38px;
-  padding: 3px 4px !important;
-  border-radius: 8px !important;
-  color: #0a8cf2 !important;
-  background: #f2faff !important;
-  font-size: .74rem !important;
-  line-height: 1.25;
-}
-
 .profit-table .profit-note-cell {
   overflow: hidden;
   text-overflow: ellipsis;

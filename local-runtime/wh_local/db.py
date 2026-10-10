@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .pod_migrations import (
+    POD_MIGRATION_CONTRACTS,
     ensure_pod_migration,
     pod_migration_effect_is_present,
     recover_interrupted_pod_migrations,
@@ -941,23 +942,11 @@ def _module_migrations() -> list[tuple[str, str, str]]:
                 dimension_templates_sql.read_text(encoding="utf-8"),
             )
         )
-    pod_customization_migrations = (
-        "001_pod_customization",
-        "002_direct_listing_trials",
-        "003_style_grid_v2",
-        "004_style_grid_publications",
-        "005_dianxiaomi_exports",
-        "006_pod_titles",
-        "007_requested_count_upgrade",
-        "008_persistent_billing_runs",
-        "009_export_records",
-        "010_pod_title_source",
-        "011_pod_style_export_selection",
-        "012_batch_execution_fencing",
-        "013_style_elements",
-        "014_semi_customization",
-    )
-    for migration_name in pod_customization_migrations:
+    # POD 迁移清单**从契约注册表派生**，不再手写一份：
+    # 手写清单曾漏过 `015_replica_customization`（2026-10-08 实测），导致走 init_db
+    # 的库永远不建复刻表 —— 只有 POD 仓储自己的迁移器建。两份清单必然漂移，
+    # 而 `POD_MIGRATION_CONTRACTS`（wh_local/pod_migrations.py）已是唯一权威注册表。
+    for migration_name in POD_MIGRATION_CONTRACTS:
         sql_path = (
             root
             / "modules"
@@ -1595,10 +1584,20 @@ def connect(database_path: Path) -> sqlite3.Connection:
     database_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(database_path, timeout=30)
     conn.row_factory = sqlite3.Row
-    # WAL 适合本地桌面运行时：读写互不容易阻塞，和开发文档的 SQLite WAL 保持一致。
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
+    # 先设等待策略与完整性开关（纯连接级设置，不写库）。
     conn.execute("PRAGMA busy_timeout=30000")
+    conn.execute("PRAGMA foreign_keys=ON")
+    # WAL 适合本地桌面运行时：读写互不容易阻塞。
+    # 但 `PRAGMA journal_mode=WAL` 是**写操作**且需要排他锁：并发 connect() 时后到的
+    # 连接会直接抛 `sqlite3.OperationalError: attempt to write a readonly database`
+    # （2026-10-08 实测：并发冻结 POD 积分随机失败）。所以先「读」当前模式，
+    # 已是 WAL 就不再写第二次；偶发切换失败也只是没拿到 WAL 优化，不该让建连接失败。
+    try:
+        current_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        if str(current_mode).lower() != "wal":
+            conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError:
+        pass
     return conn
 
 
@@ -1711,11 +1710,31 @@ def _pod_migration_effect_is_present(conn: sqlite3.Connection, migration_name: s
     return pod_migration_effect_is_present(conn, migration_name)
 
 
+# 并发争抢写锁时，`BEGIN IMMEDIATE` 在 Windows + WAL 下可能**不走 busy_timeout 等待**，
+# 而是直接抛 `sqlite3.OperationalError: attempt to write a readonly database`
+# （2026-10-08 实测：两线程同刻 BEGIN IMMEDIATE 失败率约 83%，纯 sqlite3 即可复现）。
+# 关键点：**失败后的连接已不可再用** —— 同一连接连续重试 8 次仍全部失败，
+# 必须 close + 重开连接才能恢复（实测重开后最多 2 次即成功）。故此处退避重开。
+_BEGIN_ATTEMPTS = 6
+
+
 @contextmanager
 def transaction(database_path: Path) -> Iterator[sqlite3.Connection]:
+    import time as _time  # noqa: PLC0415
+
     conn = connect(database_path)
     try:
-        conn.execute("BEGIN IMMEDIATE")
+        for attempt in range(1, _BEGIN_ATTEMPTS + 1):
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                break
+            except sqlite3.OperationalError:
+                # BEGIN 失败 = 事务根本没开启、无任何副作用，重试是安全的。
+                if attempt == _BEGIN_ATTEMPTS:
+                    raise
+                conn.close()
+                _time.sleep(0.05 * attempt)
+                conn = connect(database_path)
         yield conn
         conn.commit()
     except Exception:

@@ -283,6 +283,15 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
   }, []);
 
   useLayoutEffect(() => {
+    // 所有页签共用同一个滚动容器（.content-card），切页签时容器的 scrollTop 不会自己归零。
+    // 新页签（该 key 从未存过位置）必须**在本帧内同步归零** —— 只靠下面的 rAF 会晚一帧，
+    // 上一页签的 scrollTop 会残留到新内容上；主线程一忙（惰性模块加载/大列表渲染）
+    // 这一帧就能被肉眼看到，表现为「打开新页签，内容停在滚轮中间」。
+    // 有保存位置的页签不受影响，仍按下方保存值恢复。
+    if (!scrollPositions.current.restore(activeTabKey)) {
+      if (contentRef.current) contentRef.current.scrollTop = 0;
+      window.scrollTo({ top: 0, behavior: "auto" });
+    }
     const position = scrollPositions.current.restore(activeTabKey) ?? { windowY: 0, contentY: 0 };
     const frame = window.requestAnimationFrame(() => {
       contentRef.current?.scrollTo({ top: position.contentY, behavior: "auto" });

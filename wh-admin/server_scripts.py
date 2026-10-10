@@ -604,6 +604,103 @@ else:
 '''
 
 
+SERVER_UPDATE_INVITATION_SCRIPT = COMMON + r'''
+conn = _db()
+actor, error = _actor(conn, A[1])
+if actor is None:
+    _print({"ok": False, "error": error})
+else:
+    code = str(A[2] or "").strip()
+    max_uses = int(A[3])
+    client_ip = A[4]
+    row = conn.execute(
+        "SELECT code, max_uses, used_count FROM invitation_codes WHERE code = ?",
+        (code,),
+    ).fetchone()
+    if row is None:
+        _print({"ok": False, "error": "邀请码不存在"})
+    else:
+        max_uses = max(1, min(max_uses, 100000))
+        conn.execute(
+            "UPDATE invitation_codes SET max_uses = ? WHERE code = ?",
+            (max_uses, code),
+        )
+        _audit(conn, actor["admin_id"], actor["username"],
+               "invitation.update_max_uses", "invitation_code", code,
+               {"old_max_uses": row["max_uses"], "new_max_uses": max_uses,
+                "used_count": row["used_count"]},
+               1, client_ip)
+        conn.commit()
+        _print({"ok": True, "code": code, "max_uses": max_uses})
+'''
+
+SERVER_TRANSFER_INVITATION_SCRIPT = COMMON + r'''
+conn = _db()
+actor, error = _actor(conn, A[1])
+if actor is None:
+    _print({"ok": False, "error": error})
+else:
+    account_id = str(A[2] or "").strip()
+    new_code = str(A[3] or "").strip()
+    client_ip = A[4]
+    if not account_id:
+        _print({"ok": False, "error": "账号不能为空"})
+    elif not new_code:
+        _print({"ok": False, "error": "目标邀请码不能为空"})
+    else:
+        usage = conn.execute(
+            "SELECT code FROM invitation_code_usages WHERE account_id = ?",
+            (account_id,),
+        ).fetchone()
+        if usage is None:
+            _print({"ok": False, "error": "该账号尚未关联任何邀请码"})
+        else:
+            old_code = usage["code"]
+            if old_code == new_code:
+                _print({"ok": False, "error": "目标邀请码与当前一致"})
+            else:
+                target = conn.execute(
+                    "SELECT code, max_uses, used_count, expires_at FROM invitation_codes WHERE code = ?",
+                    (new_code,),
+                ).fetchone()
+                if target is None:
+                    _print({"ok": False, "error": "目标邀请码不存在"})
+                else:
+                    expired = False
+                    exp = str(target["expires_at"] or "")
+                    if exp:
+                        try:
+                            parsed = datetime.fromisoformat(exp.replace("Z", "+00:00"))
+                            if parsed.tzinfo is None:
+                                parsed = parsed.replace(tzinfo=timezone.utc)
+                            expired = parsed.astimezone(timezone.utc) < datetime.now(timezone.utc)
+                        except ValueError:
+                            expired = False
+                    if expired:
+                        _print({"ok": False, "error": "目标邀请码已过期"})
+                    elif int(target["used_count"]) >= int(target["max_uses"]):
+                        _print({"ok": False, "error": "目标邀请码已用尽"})
+                    else:
+                        conn.execute(
+                            "UPDATE invitation_code_usages SET code = ? WHERE account_id = ?",
+                            (new_code, account_id),
+                        )
+                        conn.execute(
+                            "UPDATE invitation_codes SET used_count = used_count - 1 WHERE code = ? AND used_count > 0",
+                            (old_code,),
+                        )
+                        conn.execute(
+                            "UPDATE invitation_codes SET used_count = used_count + 1 WHERE code = ?",
+                            (new_code,),
+                        )
+                        _audit(conn, actor["admin_id"], actor["username"],
+                               "invitation.transfer_account", "invitation_code", account_id,
+                               {"account_id": account_id, "from_code": old_code, "to_code": new_code},
+                               1, client_ip)
+                        conn.commit()
+                        _print({"ok": True, "account_id": account_id, "from_code": old_code, "to_code": new_code})
+'''
+
 SERVER_LIST_ADMINS_SCRIPT = COMMON + r'''
 conn = _db()
 rows = conn.execute("""
@@ -1041,4 +1138,169 @@ count = conn.execute(
     "SELECT COUNT(*) FROM customer_feedback WHERE status = 'new'"
 ).fetchone()[0]
 _print({"ok": True, "new_count": count})
+'''
+
+
+SERVER_MARK_ALL_FEEDBACK_READ_SCRIPT = COMMON + r'''
+conn = _db()
+actor, error = _actor(conn, A[1])
+if actor is None:
+    _print({"ok": False, "error": error})
+else:
+    now = _now()
+    updated = conn.execute(
+        "UPDATE customer_feedback SET status = 'processing', "
+        "status_updated_at = ? WHERE status = 'new'",
+        (now,),
+    ).rowcount
+    conn.commit()
+    _audit(conn, actor["admin_id"], actor["username"], "feedback.mark_all_read",
+           "customer_feedback", "", {"updated_count": updated})
+    conn.commit()
+    _print({"ok": True, "updated_count": updated})
+'''
+
+
+SERVER_SEND_FEEDBACK_REPLY_SCRIPT = COMMON + r'''
+conn = _db()
+actor, error = _actor(conn, A[1])
+if actor is None:
+    _print({"ok": False, "error": error})
+else:
+    row = conn.execute(
+        "SELECT feedback_id, account_id, username, content FROM customer_feedback "
+        "WHERE feedback_id = ?", (A[2],)
+    ).fetchone()
+    if row is None:
+        _print({"ok": False, "error": "feedback_not_found"})
+    else:
+        reply = str(A[3])[:2000]
+        status = str(A[4])
+        if status not in ("new", "processing", "resolved"):
+            status = "processing"
+        # 反馈原文：拼进 content 让用户在消息中心能对上号（不带图片）。
+        original = (row["content"] or "").strip()
+        content_payload = f"【我的反馈】{original}\n\n【回复】{reply}" if original else reply
+        now = _now()
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS feedback_replies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                feedback_id TEXT NOT NULL,
+                account_id TEXT NOT NULL DEFAULT '',
+                title TEXT NOT NULL DEFAULT '',
+                content TEXT NOT NULL DEFAULT '',
+                admin_id TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT ''
+            )"""
+        )
+        cur = conn.execute(
+            "INSERT INTO feedback_replies (feedback_id, account_id, title, content, admin_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (row["feedback_id"], row["account_id"], "反馈回复",
+             content_payload, actor["admin_id"], now),
+        )
+        conn.execute(
+            "UPDATE customer_feedback SET status = ?, admin_note = ?, "
+            "admin_id = ?, status_updated_at = ? WHERE feedback_id = ?",
+            (status, reply, actor["admin_id"], now, A[2]),
+        )
+        conn.commit()
+        _print({"ok": True, "reply_id": cur.lastrowid, "status": status,
+                "account_id": row["account_id"]})
+'''
+
+
+SERVER_LIST_FEEDBACK_REPLIES_SCRIPT = COMMON + r'''
+conn = _db()
+account_id = str(A[1]).strip()
+conn.execute(
+    """CREATE TABLE IF NOT EXISTS feedback_replies (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        feedback_id TEXT NOT NULL,
+        account_id TEXT NOT NULL DEFAULT '',
+        title TEXT NOT NULL DEFAULT '',
+        content TEXT NOT NULL DEFAULT '',
+        admin_id TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT ''
+    )"""
+)
+if account_id:
+    rows = conn.execute(
+        "SELECT * FROM feedback_replies WHERE account_id = ? ORDER BY id DESC",
+        (account_id,),
+    ).fetchall()
+else:
+    rows = []
+replies = []
+for r in rows:
+    d = dict(r)
+    replies.append({
+        "id": d["id"],
+        "title": d["title"],
+        "content": d["content"],
+        "published_at": d["created_at"],
+    })
+_print({"ok": True, "replies": replies})
+'''
+
+
+# 客户端会话令牌 -> 账号 ID。定向公告/反馈回复/分站申请按身份过滤的唯一可信依据。
+# 账号 ID 本身由邮箱哈希推导（cust_ + sha256(lower(email))[:16]），不能当身份用；
+# 只有持有该账号的有效会话令牌才可信，查不到一律返回空账号 = 匿名。
+# 过期比较必须用 datetime() 归一化：两侧时间串可能带不同 UTC 偏移，字符串比较会判错。
+SERVER_RESOLVE_CUSTOMER_SESSION_SCRIPT = COMMON + r'''
+conn = _db()
+token = str(A[1] or "").strip()
+account_id = ""
+if token:
+    row = conn.execute(
+        "SELECT account_id FROM auth_platform_sessions "
+        "WHERE token_hash = ? AND revoked_at = '' "
+        "  AND datetime(expires_at) > datetime(?) "
+        "ORDER BY last_used_at DESC LIMIT 1",
+        (_token_hash(token), _now()),
+    ).fetchone()
+    if row:
+        account_id = str(row["account_id"] or "")
+_print({"ok": True, "account_id": account_id})
+'''
+
+# 定向/分类投放用：把会话令牌解析成「账号 + 分类属性」。
+# 比 SERVER_RESOLVE_CUSTOMER_SESSION_SCRIPT 多带 plan_type 与 workspace_code，
+# 让公告分类匹配一次远端调用就能拿到全部所需属性（仍复用 app.py 侧的 60s 缓存）。
+#   plan_type 取自 billing_wallets；**无钱包行的账号按 'experience' 归类**——
+#   该列默认值就是 'experience'，无钱包 = 从未产生过计费 = 事实上处于体验档。
+SERVER_RESOLVE_CUSTOMER_PROFILE_SCRIPT = COMMON + r'''
+conn = _db()
+token = str(A[1] or "").strip()
+profile = {"ok": True, "account_id": "", "plan_type": "", "workspace_code": ""}
+if token:
+    row = conn.execute(
+        "SELECT s.account_id AS account_id, "
+        "       w.plan_type AS plan_type, "
+        "       ws.workspace_code AS workspace_code "
+        "FROM auth_platform_sessions s "
+        "LEFT JOIN billing_wallets w ON w.account_id = s.account_id "
+        "LEFT JOIN auth_accounts a ON a.account_id = s.account_id "
+        "LEFT JOIN workspaces ws ON ws.workspace_id = a.workspace_id "
+        "WHERE s.token_hash = ? AND s.revoked_at = '' "
+        "  AND datetime(s.expires_at) > datetime(?) "
+        "ORDER BY s.last_used_at DESC LIMIT 1",
+        (_token_hash(token), _now()),
+    ).fetchone()
+    if row:
+        profile["account_id"] = str(row["account_id"] or "")
+        profile["plan_type"] = str(row["plan_type"] or "") or "experience"
+        profile["workspace_code"] = str(row["workspace_code"] or "")
+_print(profile)
+'''
+
+# 分类投放的可选项：分站/工作区清单（后台表单的下拉数据源）。
+SERVER_LIST_WORKSPACES_SCRIPT = COMMON + r'''
+conn = _db()
+rows = conn.execute(
+    "SELECT workspace_id, workspace_code, workspace_name, status "
+    "FROM workspaces ORDER BY workspace_code"
+).fetchall()
+_print({"ok": True, "workspaces": [dict(row) for row in rows]})
 '''
