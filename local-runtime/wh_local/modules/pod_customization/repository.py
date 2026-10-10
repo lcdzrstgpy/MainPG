@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -2160,6 +2160,36 @@ class PodCustomizationRepository:
         "asset_id NOT IN (SELECT asset_id FROM pod_customization_replica_targets)",
     )
 
+    # 「存储空间」手动清扫的可勾选分类（docs/POD-本地图片缓存与清理说明.md §8）。
+    # 前三个是行级类别（同一个事务内按序执行），disk_orphans 是磁盘 ↔ DB 对账（service 层）。
+    SWEEP_CATEGORY_PUBLISHED_RELEASE = "published_release"
+    SWEEP_CATEGORY_TERMINAL_INTERMEDIATES = "terminal_intermediates"
+    SWEEP_CATEGORY_UNREFERENCED_RESIDUE = "unreferenced_residue"
+    SWEEP_CATEGORY_DISK_ORPHANS = "disk_orphans"
+    SWEEP_ROW_CATEGORIES = (
+        SWEEP_CATEGORY_PUBLISHED_RELEASE,
+        SWEEP_CATEGORY_TERMINAL_INTERMEDIATES,
+        SWEEP_CATEGORY_UNREFERENCED_RESIDUE,
+    )
+    SWEEP_CATEGORY_KEYS = SWEEP_ROW_CATEGORIES + (SWEEP_CATEGORY_DISK_ORPHANS,)
+
+    # 已发布图床、且创建时间超窗的样式网格结果 —— 本地副本可释放（图床还有一份）。
+    _PUBLISHED_STALE_RESULT_FILTER = """created_at < ?
+        AND EXISTS (
+            SELECT 1 FROM pod_customization_style_grid_publications AS p
+            WHERE p.result_id = pod_customization_style_grid_results.result_id
+              AND p.public_url <> ''
+        )"""
+
+    # 生命周期已结束、且超过保留窗的批次 —— 其中间图（网格图 / 候选图案）可解引用。
+    # 注意：这里的终态集合与历史 reap SQL 保持一致（比 TERMINAL_BATCH_STATUSES
+    # 多一个 settlement_pending），改动前先对齐产品语义。
+    _STALE_TERMINAL_BATCH_FILTER = """batch_id IN (
+            SELECT batch_id FROM pod_customization_batches
+            WHERE status IN ('completed', 'partial_failure', 'failed', 'cancelled', 'settlement_pending')
+              AND updated_at < ?
+        )"""
+
     def delete_batch(self, batch_id: str, workspace_id: str, owner_user_id: str) -> list[str]:
         """Delete a terminal batch and return now-unused local asset paths.
 
@@ -2244,59 +2274,169 @@ class PodCustomizationRepository:
     def reap_stale_local_cache(self, *, older_than_hours: int = 48) -> list[str]:
         """Clear stale local image cache older than the given window.
 
-        Templates are never touched. Two categories are released:
-          - style-grid results older than the window whose images were already
-            published to the public image host (clear their local URL refs);
-          - asset rows older than the window that no table references anymore.
+        Templates are never touched. Three row-level steps run in one transaction
+        （与「存储空间」选择性清扫共用同一套分类实现）:
+          - ``published_release``: style-grid results older than the window whose
+            images were already published to the public image host (clear their
+            local URL refs);
+          - ``terminal_intermediates``: release intermediate grid/candidate assets
+            of batches whose lifecycle has ended;
+          - ``unreferenced_residue``: asset rows older than the window that no
+            table references anymore.
         Returns ``relative_path`` values whose files should be removed on disk.
         """
-        cutoff = (datetime.now(timezone.utc) - timedelta(hours=older_than_hours)).isoformat(
+        cutoff = self._sweep_cutoff(older_than_hours)
+        with self._connect() as connection:
+            released = self._sweep_published_release_tx(connection, cutoff=cutoff)
+            intermediates = self._sweep_terminal_intermediates_tx(connection, cutoff=cutoff)
+            residue = self._sweep_unreferenced_residue_tx(connection, cutoff=cutoff)
+            return [*released, *intermediates, *residue]
+
+    # ---- 选择性清扫（「存储空间」手动勾选回收，docs/POD-本地图片缓存与清理说明.md §8）----
+
+    @staticmethod
+    def _sweep_cutoff(older_than_hours: int) -> str:
+        return (datetime.now(timezone.utc) - timedelta(hours=older_than_hours)).isoformat(
             timespec="milliseconds"
         )
+
+    def _sweep_published_release_tx(
+        self, connection: sqlite3.Connection, *, cutoff: str
+    ) -> list[str]:
+        """已发布图床的旧结果图：解引用 → 删除因此失去全部引用的资产行。"""
+        rows = connection.execute(
+            f"""SELECT pattern_asset_id, composite_asset_id
+                FROM pod_customization_style_grid_results
+                WHERE {self._PUBLISHED_STALE_RESULT_FILTER}""",
+            (cutoff,),
+        ).fetchall()
+        captured = {
+            value
+            for row in rows
+            for value in (row["pattern_asset_id"], row["composite_asset_id"])
+            if value
+        }
+        if not captured:
+            return []
+        connection.execute(
+            f"""UPDATE pod_customization_style_grid_results
+                SET pattern_asset_id = '', composite_asset_id = ''
+                WHERE {self._PUBLISHED_STALE_RESULT_FILTER}""",
+            (cutoff,),
+        )
+        captured -= self._collect_trial_asset_ids(connection)
+        return self._delete_assets_and_collect_files(
+            connection, captured, created_before=cutoff
+        )
+
+    def _sweep_terminal_intermediates_tx(
+        self, connection: sqlite3.Connection, *, cutoff: str
+    ) -> list[str]:
+        """已结束批次的中间图：解引用 → 删除因此失去全部引用的资产行。"""
+        calls = connection.execute(
+            f"""SELECT grid_asset_id FROM pod_customization_generation_calls
+                WHERE grid_asset_id <> '' AND {self._STALE_TERMINAL_BATCH_FILTER}""",
+            (cutoff,),
+        ).fetchall()
+        candidates = connection.execute(
+            f"""SELECT pattern_asset_id FROM pod_customization_pattern_candidates
+                WHERE pattern_asset_id <> '' AND {self._STALE_TERMINAL_BATCH_FILTER}""",
+            (cutoff,),
+        ).fetchall()
+        captured = {row["grid_asset_id"] for row in calls if row["grid_asset_id"]}
+        captured |= {row["pattern_asset_id"] for row in candidates if row["pattern_asset_id"]}
+        if not captured:
+            return []
+        for statement in (
+            f"""UPDATE pod_customization_generation_calls
+                SET grid_asset_id = ''
+                WHERE grid_asset_id <> '' AND {self._STALE_TERMINAL_BATCH_FILTER}""",
+            f"""UPDATE pod_customization_pattern_candidates
+                SET pattern_asset_id = ''
+                WHERE pattern_asset_id <> '' AND {self._STALE_TERMINAL_BATCH_FILTER}""",
+        ):
+            connection.execute(statement, (cutoff,))
+        captured -= self._collect_trial_asset_ids(connection)
+        return self._delete_assets_and_collect_files(
+            connection, captured, created_before=cutoff
+        )
+
+    def _sweep_unreferenced_residue_tx(
+        self, connection: sqlite3.Connection, *, cutoff: str
+    ) -> list[str]:
+        """历史无引用残留：超窗且没有任何表引用的资产行（连带其无主文件）。"""
+        protected = self._collect_trial_asset_ids(connection)
+        guards = " AND ".join(self._ASSET_IN_USE_PREDICATES)
+        rows = connection.execute(
+            f"""SELECT asset_id FROM pod_customization_assets
+                WHERE kind <> 'template'
+                  AND created_at < ?
+                  AND {guards}""",
+            (cutoff,),
+        ).fetchall()
+        orphaned = {row["asset_id"] for row in rows if row["asset_id"] not in protected}
+        return self._delete_assets_and_collect_files(
+            connection, orphaned, created_before=cutoff
+        )
+
+    def sweep_selected_categories(
+        self, *, categories: Sequence[str], older_than_hours: int = 48
+    ) -> dict[str, list[str]]:
+        """按选中的行级分类执行清扫（单事务），返回各分类可释放的文件路径。
+
+        未选中的分类一步都不执行；分类间存在共享引用时，资产会归属到
+        「最后一个解除引用的分类」，保证各分类释放量合计与全量清扫一致。
+        """
+        handlers = {
+            self.SWEEP_CATEGORY_PUBLISHED_RELEASE: self._sweep_published_release_tx,
+            self.SWEEP_CATEGORY_TERMINAL_INTERMEDIATES: self._sweep_terminal_intermediates_tx,
+            self.SWEEP_CATEGORY_UNREFERENCED_RESIDUE: self._sweep_unreferenced_residue_tx,
+        }
+        selected = [key for key in self.SWEEP_ROW_CATEGORIES if key in set(categories)]
+        freed: dict[str, list[str]] = {}
+        if not selected:
+            return freed
+        cutoff = self._sweep_cutoff(older_than_hours)
         with self._connect() as connection:
-            connection.execute(
-                """UPDATE pod_customization_style_grid_results
-                   SET pattern_asset_id = '', composite_asset_id = ''
-                   WHERE created_at < ?
-                     AND EXISTS (
-                         SELECT 1 FROM pod_customization_style_grid_publications AS p
-                         WHERE p.result_id = pod_customization_style_grid_results.result_id
-                           AND p.public_url <> ''
-                     )""",
-                (cutoff,),
-            )
-            # Release intermediate grid/candidate assets for batches whose
-            # lifecycle has ended, so they become orphans for the sweep below.
-            for statement in (
-                """UPDATE pod_customization_generation_calls
-                   SET grid_asset_id = ''
-                   WHERE grid_asset_id <> ''
-                     AND batch_id IN (
-                         SELECT batch_id FROM pod_customization_batches
-                         WHERE status IN ('completed', 'partial_failure', 'failed', 'cancelled', 'settlement_pending')
-                           AND updated_at < ?
-                     )""",
-                """UPDATE pod_customization_pattern_candidates
-                   SET pattern_asset_id = ''
-                   WHERE pattern_asset_id <> ''
-                     AND batch_id IN (
-                         SELECT batch_id FROM pod_customization_batches
-                         WHERE status IN ('completed', 'partial_failure', 'failed', 'cancelled', 'settlement_pending')
-                           AND updated_at < ?
-                     )""",
-            ):
-                connection.execute(statement, (cutoff,))
-            protected = self._collect_trial_asset_ids(connection)
-            guards = " AND ".join(self._ASSET_IN_USE_PREDICATES)
-            rows = connection.execute(
-                f"""SELECT asset_id FROM pod_customization_assets
-                   WHERE kind <> 'template'
-                     AND created_at < ?
-                     AND {guards}""",
-                (cutoff,),
-            ).fetchall()
-            orphaned = {row["asset_id"] for row in rows if row["asset_id"] not in protected}
-            return self._delete_assets_and_collect_files(connection, orphaned)
+            for key in selected:
+                freed[key] = handlers[key](connection, cutoff=cutoff)
+        return freed
+
+    def preview_selected_categories(self, *, older_than_hours: int = 48) -> dict[str, list[str]]:
+        """选择性清扫的预览：在**只回滚的事务**里跑与执行完全相同的逻辑。
+
+        每个分类独立试算（各自一个回滚事务）：报出的数量 = 该分类单独执行时的
+        释放量。因为与执行共用同一段 tx 实现（不是另一套查询），预览与执行按
+        构造一致，不给两套写法留漂移空间。
+        """
+        handlers = (
+            (self.SWEEP_CATEGORY_PUBLISHED_RELEASE, self._sweep_published_release_tx),
+            (self.SWEEP_CATEGORY_TERMINAL_INTERMEDIATES, self._sweep_terminal_intermediates_tx),
+            (self.SWEEP_CATEGORY_UNREFERENCED_RESIDUE, self._sweep_unreferenced_residue_tx),
+        )
+        cutoff = self._sweep_cutoff(older_than_hours)
+        preview: dict[str, list[str]] = {}
+        for key, handler in handlers:
+            with self._connect_preview() as connection:
+                preview[key] = handler(connection, cutoff=cutoff)
+        return preview
+
+    @contextmanager
+    def _connect_preview(self) -> Iterator[sqlite3.Connection]:
+        """``_connect`` 的「试算后回滚」版：选择性清扫预览专用。
+
+        预览复用执行路径的同一段事务逻辑（解引用 + 删行），跑完一律回滚——
+        保证「扫描报出的量」与「执行真正释放的量」不会出现两套实现漂移。
+        """
+        connection = sqlite3.connect(self.database_path, timeout=30)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("PRAGMA busy_timeout=30000")
+        try:
+            yield connection
+        finally:
+            connection.rollback()
+            connection.close()
 
     def list_asset_relative_paths(self) -> set[str]:
         """All registered asset paths (deduplicated).
@@ -2333,28 +2473,36 @@ class PodCustomizationRepository:
 
     @classmethod
     def _delete_assets_and_collect_files(
-        cls, connection: sqlite3.Connection, asset_ids: set[str]
+        cls,
+        connection: sqlite3.Connection,
+        asset_ids: set[str],
+        *,
+        created_before: str | None = None,
     ) -> list[str]:
         """Delete non-template asset rows and return deduplicated unused paths.
 
         只删「已无任何表引用」的资产：asset 是内容寻址存储，同一 asset_id 可能被
         其它批次 / 模板 / 快照共用，硬删会撞 FOREIGN KEY constraint failed。
+
+        ``created_before`` 非空时附加创建时间条件（选择性清扫按分类复用时，保持与
+        历史 reap 相同的「超窗才删」口径）。
         """
         if not asset_ids:
             return []
         placeholders = ",".join("?" for _ in asset_ids)
-        params = tuple(asset_ids)
+        window_sql = " AND created_at < ?" if created_before is not None else ""
+        params = tuple(asset_ids) + ((created_before,) if created_before is not None else ())
         guards = " AND ".join(cls._ASSET_IN_USE_PREDICATES)
         rows = connection.execute(
             f"""SELECT asset_id, relative_path FROM pod_customization_assets
-                WHERE asset_id IN ({placeholders}) AND kind <> 'template' AND {guards}""",
+                WHERE asset_id IN ({placeholders}) AND kind <> 'template' AND {guards}{window_sql}""",
             params,
         ).fetchall()
         if not rows:
             return []
         connection.execute(
             f"""DELETE FROM pod_customization_assets
-                WHERE asset_id IN ({placeholders}) AND kind <> 'template' AND {guards}""",
+                WHERE asset_id IN ({placeholders}) AND kind <> 'template' AND {guards}{window_sql}""",
             params,
         )
         relative_paths = {row["relative_path"] for row in rows}

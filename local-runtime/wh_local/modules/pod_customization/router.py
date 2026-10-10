@@ -622,16 +622,37 @@ def create_router(
             content_disposition_type="attachment" if download else "inline",
         )
 
-    @router.post("/cache/sweep")
-    def sweep_cache(
+    @router.get("/cache/sweep/scan")
+    def scan_cache(
         older_than_hours: int = Query(default=48, ge=1, le=24 * 30),
         actor: Actor = Depends(actor_from_authorization),
     ) -> dict[str, Any]:
+        # 「存储空间」扫描（只读）：按可勾选分类返回可释放的文件数 / 字节数，
+        # 让用户先看清再勾选清理，不删任何东西。权限与清扫保持一致。
+        permitted(actor, "pod_customization.create")
+        return _call(service.preview_local_cache, older_than_hours=older_than_hours)
+
+    @router.post("/cache/sweep")
+    def sweep_cache(
+        older_than_hours: int = Query(default=48, ge=1, le=24 * 30),
+        categories: str | None = Query(
+            default=None, description="逗号分隔的清扫分类键；省略 = 全部"
+        ),
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
         # 手动缓存清扫（docs/POD-本地图片缓存与清理说明.md §8）：与后台 48h 清扫同一套
-        # 安全规则 + 磁盘↔DB 孤儿对账。与自动清扫线程一致，作用于本机缓存目录全局；
+        # 安全规则 + 磁盘↔DB 孤儿对账。支持按分类勾选（categories 逗号分隔；省略 =
+        # 全选，兼容旧一键调用）。与自动清扫线程一致，作用于本机缓存目录全局；
         # 权限对齐删批次（两者都会删除本地图片文件）。
         permitted(actor, "pod_customization.create")
-        return _call(service.sweep_local_cache, older_than_hours=older_than_hours)
+        selected = None
+        if categories is not None:
+            selected = [item.strip() for item in categories.split(",") if item.strip()]
+        return _call(
+            service.sweep_local_cache,
+            older_than_hours=older_than_hours,
+            categories=selected,
+        )
 
     return router
 
