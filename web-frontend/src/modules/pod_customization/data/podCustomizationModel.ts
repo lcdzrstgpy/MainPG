@@ -8,7 +8,6 @@ import type {
   PodBusinessFieldsDraft,
   PodListingFields,
   PodListingFieldsDraft,
-  PodTemplateCalibration,
   PodStyleTitleStatus,
   PodStyleTitleSource,
   SpecCardConfig,
@@ -554,35 +553,6 @@ export function podStyleTitleStatusLabel(status?: PodStyleTitleStatus, listingRe
     completed: "标题已完成",
     failed: "待补标题",
   } as Record<PodStyleTitleStatus, string>)[status ?? "queued"];
-}
-
-function clamp01(value: number): number {
-  if (!Number.isFinite(value)) return 0;
-  return Math.min(1, Math.max(0, value));
-}
-
-export function clampTemplateCalibration(value: PodTemplateCalibration): PodTemplateCalibration {
-  const width = Math.min(1, Math.max(0.02, Number.isFinite(value.mask.width) ? value.mask.width : 0.02));
-  const height = Math.min(1, Math.max(0.02, Number.isFinite(value.mask.height) ? value.mask.height : 0.02));
-  return {
-    mask: {
-      x: Math.min(1 - width, clamp01(value.mask.x)),
-      y: Math.min(1 - height, clamp01(value.mask.y)),
-      width,
-      height,
-    },
-    anchor: {
-      x: clamp01(value.anchor.x),
-      y: clamp01(value.anchor.y),
-    },
-  };
-}
-
-export function defaultTemplateCalibration(): PodTemplateCalibration {
-  return {
-    mask: { x: 0.25, y: 0.25, width: 0.5, height: 0.5 },
-    anchor: { x: 0.5, y: 0.5 },
-  };
 }
 
 export function podBatchStatusLabel(

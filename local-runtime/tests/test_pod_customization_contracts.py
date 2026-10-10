@@ -6,10 +6,7 @@ from pydantic import ValidationError
 from wh_local.modules.pod_customization.contracts import (
     BatchCreate,
     BusinessFields,
-    Calibration,
     ListingFields,
-    NormalizedPoint,
-    NormalizedRect,
     style_grid_call_count,
 )
 
@@ -62,16 +59,3 @@ def test_batch_contract_requires_listing_category_and_safe_listing_fields() -> N
     unsafe["sku_prefix"] = "../escape"
     with pytest.raises(ValidationError):
         ListingFields.model_validate(unsafe)
-
-
-def test_calibration_must_stay_inside_normalized_canvas() -> None:
-    valid = Calibration(
-        mask=NormalizedRect(x=0.1, y=0.2, width=0.5, height=0.4),
-        anchor=NormalizedPoint(x=0.35, y=0.4),
-    )
-    assert valid.mask.width == 0.5
-    with pytest.raises(ValidationError):
-        Calibration(
-            mask=NormalizedRect(x=0.8, y=0.2, width=0.3, height=0.4),
-            anchor=NormalizedPoint(x=0.5, y=0.5),
-        )

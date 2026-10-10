@@ -4,10 +4,8 @@ import io
 
 from PIL import Image, ImageDraw
 
-from wh_local.modules.pod_customization.contracts import Calibration, NormalizedPoint, NormalizedRect
 from wh_local.modules.pod_customization.images import (
     PatternQualityGate,
-    compose_fixed_scene,
     split_grid_2x2,
 )
 
@@ -65,27 +63,3 @@ def test_quality_gate_rejects_invalid_blank_duplicate_and_visible_text_candidate
     assert blank.rejection_reason == "invalid"
     assert text.rejection_reason == "text_error"
     assert invalid.rejection_reason == "invalid"
-
-
-def test_fixed_scene_compositor_orders_template_pattern_and_overlay_layers() -> None:
-    template = Image.new("RGBA", (200, 160), "#284b63")
-    pattern = Image.open(io.BytesIO(_pattern("#e63946", "#ffb4ad"))).convert("RGBA")
-    overlay = Image.new("RGBA", template.size, (0, 0, 0, 0))
-    ImageDraw.Draw(overlay).rectangle((70, 48, 130, 112), outline="#50fa7b", width=8)
-    calibration = Calibration(
-        mask=NormalizedRect(x=0.25, y=0.25, width=0.5, height=0.5),
-        anchor=NormalizedPoint(x=0.5, y=0.5),
-    )
-
-    result = compose_fixed_scene(
-        _png(template),
-        _png(pattern),
-        calibration,
-        overlay_images=[_png(overlay)],
-    )
-    image = Image.open(io.BytesIO(result)).convert("RGB")
-
-    assert image.size == (200, 160)
-    assert image.getpixel((10, 10)) == (40, 75, 99)  # fixed template background
-    assert image.getpixel((100, 80))[0] > 200  # generated pattern layer
-    assert image.getpixel((70, 80))[1] > 200  # fixed foreground overlay wins

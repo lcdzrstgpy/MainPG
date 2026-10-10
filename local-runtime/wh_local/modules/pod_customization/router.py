@@ -21,7 +21,6 @@ from .contracts import (
     BatchCreate,
     BatchRetryFailedCreate,
     BriefFieldRequest,
-    CalibrationUpdate,
     CompositionRequest,
     CompositionRenameRequest,
     CompositionUpdateRequest,
@@ -181,20 +180,6 @@ def create_router(
             )
         finally:
             await upload.close()
-
-    @router.post("/templates/{template_id}/calibrate")
-    def calibrate_template(template_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
-        permitted(actor, "pod_customization.template_manage")
-        return _call(service.calibrate_template, actor, template_id)
-
-    @router.patch("/templates/{template_id}/calibration")
-    def update_calibration(
-        template_id: str,
-        body: CalibrationUpdate,
-        actor: Actor = Depends(actor_from_authorization),
-    ) -> dict[str, Any]:
-        permitted(actor, "pod_customization.template_manage")
-        return _call(service.update_template_calibration, actor, template_id, body.calibration)
 
     @router.get("/batches")
     def list_batches(

@@ -14,7 +14,6 @@ import type {
   PodMiaoshouTemplateKind,
   PodStyleTitle,
   PodTemplate,
-  PodTemplateCalibration,
   SpecCardPreviewRequest,
   SpecCardPreviewResponse,
   SpecCardReprintRequest,
@@ -134,14 +133,6 @@ function exportMiaoshou(
 export const podCustomizationApi = {
   listTemplates: () => httpJson<{ templates: PodTemplate[] }>(`${API_BASE}/templates`),
   uploadTemplate,
-  calibrateTemplate: (templateId: string) => httpJson<PodTemplate>(
-    `${API_BASE}/templates/${encodeURIComponent(templateId)}/calibrate`,
-    { method: "POST", body: {} },
-  ),
-  saveTemplateCalibration: (templateId: string, calibration: PodTemplateCalibration) => httpJson<PodTemplate>(
-    `${API_BASE}/templates/${encodeURIComponent(templateId)}/calibration`,
-    { method: "PATCH", body: { calibration } },
-  ),
   listBatches: (limit = 20, offset = 0) => httpJson<PodBatchListResponse>(
     `${API_BASE}/batches?${new URLSearchParams({ limit: String(limit), offset: String(offset) })}`,
   ),

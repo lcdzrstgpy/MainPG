@@ -34,6 +34,11 @@ MIGRATION_NAMES = (
     "012_batch_execution_fencing",
     "013_style_elements",
     "014_semi_customization",
+    "015_replica_customization",
+    "016_pod_style_events",
+    "017_pod_composition",
+    "018_pod_composition_templates",
+    "019_drop_template_calibration",
 )
 
 

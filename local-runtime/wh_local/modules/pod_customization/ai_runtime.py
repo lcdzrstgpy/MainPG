@@ -472,18 +472,6 @@ class PodCustomizationAiRuntime(AiRuntime):
             raise RuntimeError("published POD listing image is not publicly accessible")
         return url
 
-    def calibrate_template(self, _template_image: bytes) -> dict[str, object]:
-        """Provide a safe editable first calibration for newly uploaded scenes.
-
-        The initial release deliberately never mutates the source scene while
-        guessing a garment boundary.  Operators can adjust this normalized
-        draft in the Konva calibration canvas before submitting a batch.
-        """
-        return {
-            "mask": {"x": 0.2, "y": 0.2, "width": 0.6, "height": 0.6},
-            "anchor": {"x": 0.5, "y": 0.5},
-        }
-
     def close(self, *, wait: bool = True, cancel_futures: bool = True) -> None:
         super().close(wait=wait, cancel_futures=cancel_futures)
 

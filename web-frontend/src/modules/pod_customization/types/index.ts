@@ -1,20 +1,4 @@
 export type PodTemplateSource = "system" | "personal";
-export type PodTemplateCalibrationStatus = "pending" | "calibrating" | "ready" | "failed";
-
-export type PodNormalizedPoint = {
-  x: number;
-  y: number;
-};
-
-export type PodTemplateMask = PodNormalizedPoint & {
-  width: number;
-  height: number;
-};
-
-export type PodTemplateCalibration = {
-  mask: PodTemplateMask;
-  anchor: PodNormalizedPoint;
-};
 
 export type PodTemplate = {
   id: string;
@@ -24,9 +8,6 @@ export type PodTemplate = {
   original_url: string;
   width: number;
   height: number;
-  calibration_status: PodTemplateCalibrationStatus;
-  calibration: PodTemplateCalibration | null;
-  mask_preview_url?: string;
   error_message?: string;
   created_at: string;
   updated_at: string;
@@ -243,7 +224,8 @@ export type PodBatchItem = {
 
 export type PodBatch = PodBatchSummary & {
   template: PodTemplate;
-  prompt_version: "v1";
+  /** 该批次生成时所用「大提示词」的版本，由服务端 prompts.PATTERN_PROMPT_VERSION 决定（历史批次为 v1）。 */
+  prompt_version: "v1" | "v2";
   business_fields: PodBusinessFields;
   listing_fields: PodListingFields | null;
   dianxiaomi_export: PodDianxiaomiExportStatus;
@@ -329,6 +311,7 @@ export type PodBillingRunListResponse = {
 export type CreatePodBatchRequest = {
   template_id: string;
   count: PodBatchCount;
+  /** 兼容字段：提示词由服务端构造，实际入库版本以服务端 prompts.PATTERN_PROMPT_VERSION 为准。 */
   prompt_version: "v1";
   business_fields: PodBusinessFields;
   listing_fields: PodListingFields;

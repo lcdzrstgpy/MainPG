@@ -38,9 +38,6 @@ function template(id: string, previewUrl = `https://assets.example/${id}-preview
     original_url: `https://assets.example/${id}-original.png`,
     width: 1200,
     height: 900,
-    calibration_status: "ready",
-    calibration: { mask: { x: 0.1, y: 0.2, width: 0.7, height: 0.6 }, anchor: { x: 0.5, y: 0.5 } },
-    mask_preview_url: `https://assets.example/${id}-mask.png`,
     created_at: "2026-08-24T08:00:00.000Z",
     updated_at: "2026-08-24T08:00:00.000Z",
   };
@@ -224,11 +221,9 @@ test("system template creation trims its name and preserves the saved template i
   assert.equal(result.ok, true);
   if (!result.ok) return;
   source.preview_url = "https://assets.example/latest-upload.png";
-  source.calibration!.mask.width = 0.1;
   assert.equal(result.template.name, "露营收纳篮");
   assert.equal(result.template.templateId, "template-1");
   assert.equal(result.template.template.preview_url, "https://assets.example/original-choice.png");
-  assert.equal(result.template.template.calibration?.mask.width, 0.7);
 });
 
 test("system templates can be deleted and retain their saved snapshot when their linked template remains available", () => {
