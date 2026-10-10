@@ -63,7 +63,6 @@ import type {
   PodListingFieldsDraft,
   PodMiaoshouTemplateKind,
   PodTemplate,
-  PodTemplateCalibration,
   SpecCardConfig,
 } from "../types";
 import "../styles/podCustomization.css";
@@ -271,9 +270,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
       if (templateResult.status === "fulfilled") {
         setTemplates(templateResult.value.templates);
         setSelectedTemplateId((current) => {
-          const fallback = templateResult.value.templates.find((template) => template.calibration_status === "ready")?.id
-            || templateResult.value.templates[0]?.id
-            || "";
+          const fallback = templateResult.value.templates[0]?.id || "";
           return current && templateResult.value.templates.some((template) => template.id === current) ? current : fallback;
         });
       }
@@ -579,11 +576,6 @@ export function PodCustomizationPage({ isActive = true }: Props) {
       setError("请先从模板库选择一个产品模板。");
       return;
     }
-    if (selectedTemplate.calibration_status !== "ready") {
-      setError("当前模板尚未完成蒙版与锚点标定。");
-      setTemplateDrawerOpen(true);
-      return;
-    }
     const missingRequired = BUSINESS_FIELDS.filter((field) => field.required && !businessFields[field.key].trim());
     if (missingRequired.length) {
       setError(`请填写：${missingRequired.map((field) => field.label).join("、")}。`);
@@ -640,40 +632,8 @@ export function PodCustomizationPage({ isActive = true }: Props) {
       const created = await podCustomizationApi.uploadTemplate(file, name);
       setTemplates((current) => replaceTemplate(current, created));
       selectTemplate(created.id);
-      setNotice("模板上传成功，正在启动 AI 蒙版与锚点标定。");
+      setNotice("模板上传成功。");
       return created;
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-      throw cause;
-    } finally {
-      setBusyAction("");
-    }
-  };
-
-  const calibrateTemplate = async (templateId: string) => {
-    setBusyAction(`calibrate:${templateId}`);
-    clearMessages();
-    try {
-      const calibrated = await podCustomizationApi.calibrateTemplate(templateId);
-      setTemplates((current) => replaceTemplate(current, calibrated));
-      setNotice(calibrated.calibration_status === "ready" ? "AI 标定完成，可继续微调或直接使用。" : "AI 标定任务已提交。");
-      return calibrated;
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-      throw cause;
-    } finally {
-      setBusyAction("");
-    }
-  };
-
-  const saveTemplateCalibration = async (templateId: string, calibration: PodTemplateCalibration) => {
-    setBusyAction(`save-calibration:${templateId}`);
-    clearMessages();
-    try {
-      const saved = await podCustomizationApi.saveTemplateCalibration(templateId, calibration);
-      setTemplates((current) => replaceTemplate(current, saved));
-      setNotice("模板标定已保存。");
-      return saved;
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
       throw cause;
@@ -1103,8 +1063,6 @@ export function PodCustomizationPage({ isActive = true }: Props) {
         onApplySystemTemplate={applySystemTemplate}
         onDeleteSystemTemplate={deleteSystemTemplate}
         onUpload={uploadTemplate}
-        onCalibrate={calibrateTemplate}
-        onSaveCalibration={saveTemplateCalibration}
       />
 
       <PodUnsavedTemplateConfirmDialog

@@ -79,6 +79,14 @@ _distractor_models = ROOT / "wh_local" / "price_verification" / "sourcing" / "mo
 if _distractor_models.is_dir():
     datas.append((str(_distractor_models), "wh_local/price_verification/sourcing/models"))
 
+# POD 交付图清晰化模型（Real-ESRGAN 4× 超分）。media_enhance._model_path 按 __file__/_MEIPASS
+# 相对位置读取；缺失时只做 USM 锐化，不影响生图。
+_enhance_models = ROOT / "wh_local" / "models"
+if _enhance_models.is_dir():
+    datas.append((str(_enhance_models), "wh_local/models"))
+else:
+    print("[workbench.spec] WARNING: wh_local/models 不存在，清晰化将只做 USM 锐化")
+
 a = Analysis(
     [str(ROOT / "run_workbench.py")],
     pathex=[str(ROOT)],
