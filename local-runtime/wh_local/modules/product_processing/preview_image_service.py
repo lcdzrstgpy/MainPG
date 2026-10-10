@@ -1491,10 +1491,10 @@ class PreviewImageService:
         *,
         workspace_id: str = "local",
     ) -> dict[str, Any]:
-        """基于已完成预审的快照再次生成妙手导入模板。
+        """基于已完成预检的快照再次生成妙手导入模板。
 
         优先复用店小秘 finalize 发布时已持久化的图片公网地址；对尚未回写
-        public_url 的资产（如媒体支持的生成图），按预审相同的「物化 + 发布」
+        public_url 的资产（如媒体支持的生成图），按预检相同的「物化 + 发布」
         流程补齐地址（已发布的会命中 publication 记录，不重复上传），再套用
         妙手官方模板（服饰类/非服饰类）生成工作簿文件。
         """
@@ -1553,7 +1553,7 @@ class PreviewImageService:
             if url:
                 asset_urls[asset_id] = url
         # 对尚未回写 public_url 的资产（例如媒体支持的生成图，其预览记录不落
-        # content_hash/public_url），复用预审发布同样的「物化 + 发布」流程补齐地址；
+        # content_hash/public_url），复用预检发布同样的「物化 + 发布」流程补齐地址；
         # 已发布的图片会命中 publication 记录，不会重复上传。
         #
         # 性能：这些补齐动作包含逐张读盘/校验与 COS 公开性网络往返，串行会随图片数
@@ -2070,7 +2070,7 @@ class PreviewImageService:
         """Return the first public source image as a final main-image fallback.
 
         商品图片生成失败或未在预检中选择主图时，导出主图回退到来源主图，
-        保证预审可以一键导出（与「强制入库回退来源图」语义一致）。
+        保证预检可以一键导出（与「强制入库回退来源图」语义一致）。
         """
         candidates: list[str] = [
             str(value or "").strip()

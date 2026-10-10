@@ -14,6 +14,7 @@ export type PluginOneboundCaptureBatch = {
   batch_id: string;
   parent_batch_id: string;
   page_url: string;
+  display_name?: string;
   status: PluginOneboundCaptureStatus;
   cancelled: boolean;
   created_count: number;

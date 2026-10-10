@@ -7,6 +7,8 @@ export type Draft = {
   source_ref: string;
   candidate_id: string | null;
   selection_run_id: string | null;
+  // 采集批次展示名（后端按来源渠道回填；老批次或未分组为空串）。
+  batch_display_name?: string;
   handoff_id: string | null;
   handoff_idempotency_key: string | null;
   skc: string | null;
@@ -387,7 +389,7 @@ export type PreviewFinalizeRun = {
 /** 妙手导出模板类型：apparel=服饰类，general=非服饰类。 */
 export type MiaoshouTemplateKind = "apparel" | "general";
 
-/** 完成预审并导出的模板格式：dxm=店小秘，apparel=妙手服饰类，general=妙手非服饰类。 */
+/** 完成预检并导出的模板格式：dxm=店小秘，apparel=妙手服饰类，general=妙手非服饰类。 */
 export type PreviewExportFormat = "dxm" | MiaoshouTemplateKind;
 
 export type MiaoshouExportResponse = {

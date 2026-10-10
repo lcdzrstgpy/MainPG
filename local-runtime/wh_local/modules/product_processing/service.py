@@ -1862,11 +1862,19 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             (draft["id"] for draft in drafts),
             workspace_id=workspace_id,
         )
+        # 草稿列表不按批次过滤，直接带出批次展示名，免得前端在非「待处理」视图里
+        # 只能回落显示随机 UUID。
+        batch_display_names = self.repository.collection_batch_display_names(
+            draft.get("selection_run_id") or "" for draft in drafts
+        )
         drafts = [
             {
                 **draft,
                 "image_path": draft["image_path"] or ready_source_paths.get(draft["id"], ""),
                 "primary_source_image": primary_source_images.get(draft["id"]),
+                "batch_display_name": batch_display_names.get(
+                    str(draft.get("selection_run_id") or ""), ""
+                ),
             }
             for draft in drafts
         ]
@@ -2209,7 +2217,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
 
         media_types = _media_types()
         if not media_types:
-            raise MediaUnavailableError("图片处理依赖缺失：无法发布最终预审图片")
+            raise MediaUnavailableError("图片处理依赖缺失：无法发布最终预检图片")
         from .infrastructure.media import GeneratedMedia  # noqa: PLC0415
 
         namespace = hashlib.sha256(str(workspace_id).encode("utf-8")).hexdigest()[:20]
@@ -2244,6 +2252,10 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         ):
             return True
         return self._media_processor().is_configured_cos_url(value, require_public=True)
+
+    def claimable_source_image_drafts(self, *, limit: int = 10) -> list[tuple[str, int]]:
+        """仍有待同步源图的 (workspace_id, draft_id)，供启动补偿线程逐批推进。"""
+        return self.repository.claimable_source_image_drafts(limit=limit)
 
     def sync_draft_source_images(self, draft_id: int, workspace_id: str = "local") -> dict[str, int]:
         self.get_draft(draft_id, workspace_id)
@@ -3501,7 +3513,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             # A fixed legacy path cannot prove workspace, snapshot revision or COS
             # completion. New clients must use the run-specific gated endpoint.
             raise ProductProcessingConflict(
-                "请使用预审完成记录的专属下载链接，旧版固定路径已停用"
+                "请使用预检完成记录的专属下载链接，旧版固定路径已停用"
             )
         field = {
             "dxm": "output_file",
@@ -4930,7 +4942,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         *,
         workspace_id: str = "local",
     ) -> dict[str, Any]:
-        """基于已完成预审的最终快照再次生成妙手导入模板（服饰类/非服饰类）。"""
+        """基于已完成预检的最终快照再次生成妙手导入模板（服饰类/非服饰类）。"""
         self.preview_finalize_status(task_id, run_id, workspace_id=workspace_id)
         try:
             return self.preview_images.export_miaoshou_workbook(
@@ -7187,7 +7199,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         },
                     }
                 # 低置信但已识别出主体（或用户已确认）：放行主体识别门，沿用 AI 最佳猜测
-                # 主体继续文案与生图；保留原始低置信度证据供预审/导出参考。
+                # 主体继续文案与生图；保留原始低置信度证据供预检/导出参考。
                 vision_identity = {
                     **vision_identity,
                     "status": "user_override" if identity_override else "accepted",

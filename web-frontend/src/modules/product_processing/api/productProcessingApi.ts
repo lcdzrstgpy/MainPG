@@ -243,7 +243,7 @@ export async function listPreviewFinalizeRuns(
   return Array.isArray(payload.runs) ? payload.runs : [];
 }
 
-/** 基于已完成预审的最终快照再次生成妙手导入模板（服饰类/非服饰类）。 */
+/** 基于已完成预检的最终快照再次生成妙手导入模板（服饰类/非服饰类）。 */
 export function exportMiaoshouPreview(
   ctx: ApiContext,
   taskId: number,

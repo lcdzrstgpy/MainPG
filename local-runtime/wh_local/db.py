@@ -883,6 +883,10 @@ def _module_migrations() -> list[tuple[str, str, str]]:
             "data_collection:010_plugin_onebound_capture_persistent_columns",
             root / "data_collection" / "migrations" / "010_plugin_onebound_capture_persistent_columns.sql",
         ),
+        (
+            "data_collection:012_collection_batch_display_name",
+            root / "data_collection" / "migrations" / "012_collection_batch_display_name.sql",
+        ),
     ]
     for migration_id, sql_path in data_collection_migrations:
         if sql_path.exists():
@@ -1690,6 +1694,28 @@ def init_db(database_path: Path) -> None:
                     if column_name not in item_columns:
                         conn.execute(
                             f"ALTER TABLE plugin_onebound_capture_items ADD COLUMN {column_name} {definition}"
+                        )
+                conn.execute(
+                    "INSERT OR IGNORE INTO schema_migrations (migration_id, module) VALUES (?, ?)",
+                    (migration_id, module),
+                )
+                continue
+            if migration_id == "data_collection:012_collection_batch_display_name":
+                # 展示名列：按列存在性逐表幂等补齐（与 010 同类处理）。独立构造的
+                # 采集仓储可能已自行补列且未写标记，这里不能用 executescript 盲跑，
+                # 否则会对已存在的列重复 ALTER 而报错。
+                for table in (
+                    "daily_selection_runs",
+                    "shop_collection_batches",
+                    "plugin_onebound_capture_batches",
+                ):
+                    table_columns = {
+                        str(row["name"])
+                        for row in conn.execute(f"PRAGMA table_info({table})")
+                    }
+                    if table_columns and "display_name" not in table_columns:
+                        conn.execute(
+                            f"ALTER TABLE {table} ADD COLUMN display_name TEXT NOT NULL DEFAULT ''"
                         )
                 conn.execute(
                     "INSERT OR IGNORE INTO schema_migrations (migration_id, module) VALUES (?, ?)",

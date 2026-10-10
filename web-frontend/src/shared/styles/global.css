@@ -2150,6 +2150,14 @@ html[data-topbar-collapse="on"] .avatar-preview-layer {
   color: var(--theme-primary, #0ea5e9);
 }
 
+/* 加载说明里的补充提示：比主文案更轻，避免喧宾夺主。 */
+.app-loading-block .app-loading-hint {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--theme-text-muted, #94a3b8);
+  opacity: 0.85;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .app-spinner {
     animation-duration: 1.6s;

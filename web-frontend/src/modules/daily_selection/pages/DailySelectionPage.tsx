@@ -1723,7 +1723,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                     void openRun(run.run_id);
                   }}
                 >
-                  <span><strong>{run.run_id.slice(0, 8)}</strong><small>{formatDate(run.created_at)}</small></span>
+                  <span><strong>{run.display_name || run.run_id.slice(0, 8)}</strong><small>{formatDate(run.created_at)}</small></span>
                   <span><b>{run.candidate_count}</b><small>{STATUS_LABELS[run.status] ?? run.status}{duration ? ` · 耗时 ${duration}` : ""}</small></span>
                 </button>
               );

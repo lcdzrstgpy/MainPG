@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from ..db import connect, init_db
+from .batch_naming import plugin_display_name
 
 
 class PluginOneBoundCaptureRepository:
@@ -26,6 +27,16 @@ class PluginOneBoundCaptureRepository:
                 sql = Path(__file__).with_name("migrations").joinpath("011_plugin_onebound_capture_review.sql").read_text(encoding="utf-8")
                 conn.executescript(sql)
                 conn.execute("INSERT OR IGNORE INTO schema_migrations (migration_id, module) VALUES (?, 'data_collection')", (marker,))
+            # 展示名列（迁移 012）：按列存在性幂等补齐，兼容「标记已存在但旧表结构缺列」
+            # 的升级场景（如 008 老库被重建后仅回放 010）。
+            batch_columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(plugin_onebound_capture_batches)").fetchall()
+            }
+            if "display_name" not in batch_columns:
+                conn.execute(
+                    "ALTER TABLE plugin_onebound_capture_batches ADD COLUMN display_name TEXT NOT NULL DEFAULT ''"
+                )
             self._backfill_legacy_plugin_onebound(conn)
             self._reconcile_stale_active_batches(conn)
 
@@ -126,13 +137,14 @@ class PluginOneBoundCaptureRepository:
         skipped_count = sum(item.get("status") == "skipped" for item in items)
         failed_count = sum(item.get("status") == "failed" for item in items)
         unprocessed_count = sum(item.get("status", "pending") in {"pending", "running", "unprocessed"} for item in items)
+        display_name = plugin_display_name(page_url)
         with connect(self.database_path) as conn:
             conn.execute("""INSERT INTO plugin_onebound_capture_batches
                 (batch_id, parent_batch_id, actor_id, workspace_id, page_url, total_count, created_count,
-                 refreshed_count, skipped_count, failed_count, unprocessed_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                 refreshed_count, skipped_count, failed_count, unprocessed_count, display_name)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (batch_id, parent_batch_id, actor_id, workspace_id, page_url, total_count, created_count,
-                 refreshed_count, skipped_count, failed_count, unprocessed_count))
+                 refreshed_count, skipped_count, failed_count, unprocessed_count, display_name))
             conn.executemany("""INSERT INTO plugin_onebound_capture_items
                 (batch_id, offer_id, source_url, source_title, status, outcome) VALUES (?, ?, ?, ?, ?, ?)""",
                 [(batch_id, item["offer_id"], item["source_url"], item.get("source_title", ""),
@@ -237,13 +249,13 @@ class PluginOneBoundCaptureRepository:
         with connect(self.database_path) as conn:
             self._reconcile_stale_active_batches(conn)
             row = conn.execute("SELECT * FROM plugin_onebound_capture_batches WHERE workspace_id=? AND batch_id=?", (workspace_id, batch_id)).fetchone()
-        return dict(row) if row else None
+        return _with_display_name(row) if row else None
 
     def list(self, *, workspace_id: str, limit: int, offset: int) -> tuple[Mapping[str, Any], ...]:
         with connect(self.database_path) as conn:
             self._reconcile_stale_active_batches(conn)
             rows = conn.execute("SELECT * FROM plugin_onebound_capture_batches WHERE workspace_id=? ORDER BY created_at DESC, batch_id DESC LIMIT ? OFFSET ?", (workspace_id, limit, offset)).fetchall()
-        return tuple(dict(row) for row in rows)
+        return tuple(_with_display_name(row) for row in rows)
 
     def count(self, *, workspace_id: str) -> int:
         with connect(self.database_path) as conn:
@@ -276,4 +288,14 @@ class PluginOneBoundCaptureRepository:
                     WHEN 'prepared' THEN 1 WHEN 'queued' THEN 1 WHEN 'running' THEN 1
                     ELSE 2 END, updated_at DESC, batch_id DESC LIMIT 1""",
                 (workspace_id, parent_batch_id)).fetchone()
-        return dict(row) if row else None
+        return _with_display_name(row) if row else None
+
+
+def _with_display_name(row: Any) -> dict[str, Any]:
+    """Return a batch row as a dict, deriving a display name for legacy rows."""
+    data = dict(row)
+    if not str(data.get("display_name") or "").strip():
+        data["display_name"] = plugin_display_name(
+            str(data.get("page_url") or ""), created_at=data.get("created_at")
+        )
+    return data

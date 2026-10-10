@@ -1428,7 +1428,7 @@ class PreviewImageRepository:
             if row is None:
                 raise LookupError("preview finalization run not found")
             # 重试前按当前任务设置剔除已被用户排除的草稿，避免旧快照继续
-            # 被删除的链接阻挡（删除的链接不再参与预审导出）。
+            # 被删除的链接阻挡（删除的链接不再参与预检导出）。
             if row.status == "publish_failed":
                 task = session.scalar(
                     select(ProcessingTaskRow).where(

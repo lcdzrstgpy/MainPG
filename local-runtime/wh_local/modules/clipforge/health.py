@@ -14,7 +14,7 @@ import json
 import time
 from typing import TYPE_CHECKING, NamedTuple, Protocol
 from urllib.error import HTTPError
-from urllib.request import urlopen
+from urllib.request import ProxyHandler, build_opener
 
 if TYPE_CHECKING:
     import subprocess
@@ -22,6 +22,12 @@ if TYPE_CHECKING:
 
 _HTTP_TIMEOUT_SECONDS = 1.0
 _PROBE_INTERVAL_SECONDS = 0.25
+
+# 就绪探测必须绕过代理：用户设了 HTTP_PROXY 时 urlopen 会把 127.0.0.1 的探测请求
+# 送给代理 → 被拒 → 超时 → start() 反而把健康的 node 杀掉并报"启动失败"。
+_NO_PROXY_OPENER = build_opener(ProxyHandler({}))
+# 保留 `urlopen` 这个模块级名字：既绑到禁代理的 opener，又让测试能 monkeypatch 它。
+urlopen = _NO_PROXY_OPENER.open
 
 _HEALTH_PATH = "/api/health"
 _START_PATH = "/start?embed=mainpg"
