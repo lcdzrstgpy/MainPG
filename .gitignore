@@ -74,6 +74,9 @@ real-workbench/employee_workbench/product_processing/
 
 # 项目工作数据
 .workbuddy/
+# 协作工具生成的本地记忆/进度文件（非源码）
+.workbuddy-ai/
+.superpowers/
 
 # 测试残留的临时 SQLite 文件
 NONEXISTENT-NO-DB

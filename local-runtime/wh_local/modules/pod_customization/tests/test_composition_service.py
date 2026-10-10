@@ -257,6 +257,21 @@ def test_build_direct_listing_prompt_injects_english_and_keeps_hard_constraints(
         "Panel 4 (bottom-right — role: material image; user direction): front view on a plain neutral background"
         in with_composition
     )
+    # 四格趋同是实测暴露的致命失败模式：必须显式下「四格机位必须互不相同」的硬条款。
+    assert "MANDATORY DIFFERENCE CHECK" in with_composition
+    assert "Four identical viewpoints is a failed result" in with_composition
+    # 「禁止沿用模板背景」必须配一条反向澄清，否则模型会把背景做成空白棚拍（竞品观感差距主因）。
+    assert "It does NOT mean the background may be plain" in with_composition
+    assert "Standalone scene props beside the product ARE required" in with_composition
+    # 鲜艳度约束必须在：否则暗色板会出成灰冷发素的图。
+    assert "COLOR IMPACT" in with_composition
+    assert "never dull, grey or washed out" in with_composition
+    # 面料真实感必须在：否则会出成"喷漆在光滑塑料壳上"的劣质包。
+    assert "TEXTILE REALISM" in with_composition
+    assert "spray-painted surface" in with_composition
+    # 绗缝/填充是"结构"不是"装饰"，必须明确豁免——否则模型会把绗缝抹平成光滑壳（实测踩过）。
+    assert "CARVE-OUT" in with_composition
+    assert "do not flatten the quilted surface into a smooth shell" in with_composition
     # 硬约束仍然保留：同产品同图案、禁文字/品牌、内饰不印。
     assert "Keep the same exact product across all four panels" in with_composition
     assert "Do not invent another product" in with_composition

@@ -9,11 +9,18 @@ from typing import Any
 import pytest
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageStat, JpegImagePlugin
 
+from wh_local import media_enhance
 from wh_local.media_enhance import (
     DEFAULT_PERCENT,
+    DEFAULT_POST_PERCENT,
+    DEFAULT_POST_RADIUS,
     DEFAULT_RADIUS,
     DEFAULT_THRESHOLD,
+    MODEL_MAX_INPUT_EDGE,
+    MODE_ONNX,
+    MODE_USM,
     EnhanceOptions,
+    enhance_panel,
     options_from_env,
     sharpen,
     sharpness_score,
@@ -130,18 +137,49 @@ def test_sharpen_keeps_flat_areas_flat_thanks_to_threshold() -> None:
 def test_options_from_env_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (
         "WH_POD_IMAGE_ENHANCE",
+        "WH_POD_IMAGE_ENHANCE_MODE",
         "WH_POD_IMAGE_ENHANCE_RADIUS",
         "WH_POD_IMAGE_ENHANCE_PERCENT",
         "WH_POD_IMAGE_ENHANCE_THRESHOLD",
+        "WH_POD_IMAGE_ENHANCE_POST",
+        "WH_POD_IMAGE_ENHANCE_POST_RADIUS",
     ):
         monkeypatch.delenv(name, raising=False)
 
     options = options_from_env()
 
     assert options.enabled is True
+    assert options.mode == MODE_ONNX
     assert options.radius == DEFAULT_RADIUS
     assert options.percent == DEFAULT_PERCENT
     assert options.threshold == DEFAULT_THRESHOLD
+    assert options.post_percent == DEFAULT_POST_PERCENT
+    assert options.post_radius == DEFAULT_POST_RADIUS
+
+
+def test_options_from_env_post_compensation_is_tunable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """细结构补偿可以单独调，也可以设 0 关掉。"""
+
+    monkeypatch.setenv("WH_POD_IMAGE_ENHANCE_POST", "0")
+    assert options_from_env().post_percent == 0
+
+    monkeypatch.setenv("WH_POD_IMAGE_ENHANCE_POST", "80")
+    monkeypatch.setenv("WH_POD_IMAGE_ENHANCE_POST_RADIUS", "1.4")
+    options = options_from_env()
+    assert (options.post_percent, options.post_radius) == (80, 1.4)
+
+    # 负数属于非法输入：回退默认，绝不阻断生图。
+    monkeypatch.setenv("WH_POD_IMAGE_ENHANCE_POST", "-3")
+    assert options_from_env().post_percent == DEFAULT_POST_PERCENT
+
+
+def test_options_from_env_mode_can_force_usm(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WH_POD_IMAGE_ENHANCE_MODE", "usm")
+    assert options_from_env().mode == MODE_USM
+
+    # 非法/未知取值一律回退默认（onnx），不阻断生图。
+    monkeypatch.setenv("WH_POD_IMAGE_ENHANCE_MODE", "magic")
+    assert options_from_env().mode == MODE_ONNX
 
 
 @pytest.mark.parametrize("value", ["0", "false", "no", "off", "OFF"])
@@ -288,3 +326,105 @@ def test_sharpness_score_is_finite_for_extreme_inputs() -> None:
         value: Any = sharpness_score(image)
         assert isinstance(value, float)
         assert value == value  # 非 NaN
+
+
+# --- ONNX 超分：只在"确实要放大"时才跑，且任何异常都回退 USM ----------------------------
+
+
+def _soft_photo(size: int = 200) -> Image.Image:
+    """构造一张带软边细节的小图，避免依赖任何运行时素材。"""
+
+    image = Image.new("RGB", (size, size), (40, 60, 90))
+    drawing = ImageDraw.Draw(image)
+    for index in range(0, size, 24):
+        drawing.rectangle((index, 0, index + 10, size), fill=(230, 200, 120))
+        drawing.ellipse((index // 2, size // 3, index // 2 + 30, size // 3 + 40), fill=(200, 60, 70))
+    return image.filter(ImageFilter.GaussianBlur(1.4))
+
+
+def test_should_upscale_only_when_panel_is_smaller_than_target() -> None:
+    assert media_enhance._should_upscale(Image.new("RGB", (627, 627)), 800) is True
+    # 面板已不小于目标：没有"放大发软"，直接降采样即可。
+    assert media_enhance._should_upscale(Image.new("RGB", (1008, 1008)), 800) is False
+    # 超过安全上限：即便小于目标也不跑超分（4× 输出内存按平方涨）。
+    assert media_enhance._should_upscale(
+        Image.new("RGB", (MODEL_MAX_INPUT_EDGE + 4, 300)), MODEL_MAX_INPUT_EDGE + 100
+    ) is False
+
+
+def test_enhance_panel_onnx_upscales_and_beats_plain_resize() -> None:
+    panel = _soft_photo(200)
+    target = 400
+
+    enhanced = enhance_panel(panel, target, EnhanceOptions(mode=MODE_ONNX))
+    plain = panel.resize((target, target), Image.Resampling.LANCZOS)
+
+    assert enhanced.size == (target, target)
+    assert enhanced.tobytes() != plain.tobytes()
+    assert sharpness_score(enhanced) > sharpness_score(plain)
+
+
+def test_enhance_panel_falls_back_to_usm_when_session_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    panel = _soft_photo(200)
+    target = 400
+    monkeypatch.setattr(media_enhance, "_session", lambda: None)
+
+    result = enhance_panel(panel, target, EnhanceOptions(mode=MODE_ONNX))
+    expected = sharpen(panel.resize((target, target), Image.Resampling.LANCZOS), EnhanceOptions())
+
+    assert result.tobytes() == expected.tobytes()
+
+
+def test_enhance_panel_skips_inference_when_panel_needs_no_upscale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _boom() -> Any:
+        raise AssertionError("面板不小于目标时不应触发超分推理")
+
+    monkeypatch.setattr(media_enhance, "_session", _boom)
+
+    result = enhance_panel(_soft_photo(1008), 800, EnhanceOptions(mode=MODE_ONNX))
+
+    assert result.size == (800, 800)
+
+
+def test_post_sharpen_recovers_thin_structures_after_downscale() -> None:
+    """超分重建大块面纹理；但 4× → 目标尺寸的降采样会把提手/细线这类细结构再磨软，
+    小半径补偿专门把它提回来（大块面基本不受影响）。"""
+
+    panel = _soft_photo(200)
+
+    without = enhance_panel(panel, 400, EnhanceOptions(mode=MODE_ONNX, post_percent=0))
+    with_post = enhance_panel(panel, 400, EnhanceOptions(mode=MODE_ONNX))
+
+    assert with_post.tobytes() != without.tobytes()
+    assert sharpness_score(with_post) > sharpness_score(without)
+
+
+def test_post_sharpen_keeps_flat_areas_flat_thanks_to_threshold() -> None:
+    """阈值护栏：细结构补偿不能在平坦区啃出噪点/白边。"""
+
+    flat = Image.new("RGB", (400, 400), (120, 60, 180))
+
+    result = media_enhance._post_sharpen(flat, EnhanceOptions())
+
+    difference = ImageChops.difference(flat, result)
+    worst = max(high for _low, high in ImageStat.Stat(difference).extrema)
+    assert worst <= 2
+
+
+def test_split_four_grid_runs_onnx_when_panels_are_smaller_than_target() -> None:
+    """1024 母图 → 每格约 496px（<800），走真实 ONNX 超分；交付图仍是 800×800 JPEG。"""
+
+    processor = ProductImageProcessor(lambda: {})
+    parts = processor.split_four_grid(
+        _media(_grid_bytes(size=1024)), enhance=EnhanceOptions(mode=MODE_ONNX)
+    )
+
+    assert len(parts) == 5
+    for part in parts[:4]:
+        with Image.open(BytesIO(part.content)) as opened:
+            assert opened.size == (DXM_IMAGE_TARGET_SIZE, DXM_IMAGE_TARGET_SIZE)
+            assert opened.format == "JPEG"
