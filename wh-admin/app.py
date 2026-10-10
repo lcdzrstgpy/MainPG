@@ -57,7 +57,7 @@ from server_scripts import (
     SERVER_UPDATE_INVITATION_SCRIPT,
     SERVER_TRANSFER_INVITATION_SCRIPT,
     SERVER_LIST_USERS_SCRIPT,
-    SERVER_LIST_WORKSPACES_SCRIPT,
+    SERVER_LIST_INVITATION_OPTIONS_SCRIPT,
     SERVER_LIST_USER_ACTIVITY_SCRIPT,
     SERVER_LOGIN_SCRIPT,
     SERVER_LOGOUT_SCRIPT,
@@ -217,19 +217,19 @@ def cfg_ok(config: dict[str, Any]) -> bool:
 
 # 客户端身份解析缓存：令牌 sha256 -> (profile, 过期单调时刻)。轮询频繁，逐次查库浪费；
 # 只留 60 秒，键存令牌的 sha256（不落原文，降低内存转储泄露面）。
-_CUSTOMER_IDENTITY_CACHE: dict[str, tuple[dict[str, str], float]] = {}
+_CUSTOMER_IDENTITY_CACHE: dict[str, tuple[dict[str, Any], float]] = {}
 _CUSTOMER_IDENTITY_LOCK = threading.Lock()
 _CUSTOMER_IDENTITY_TTL = 60.0
 
 # 匿名身份：account_id 为空 = 无法证明是谁，调用方只给全员数据。
-_ANONYMOUS_PROFILE: dict[str, str] = {
+_ANONYMOUS_PROFILE: dict[str, Any] = {
     "account_id": "",
     "plan_type": "",
-    "workspace_code": "",
+    "invite_codes": [],
 }
 
 
-def _customer_account_profile(token: str) -> dict[str, str]:
+def _customer_account_profile(token: str) -> dict[str, Any]:
     """把客户端会话令牌解析成「账号 + 分类属性」——定向/分类投放唯一可信的身份来源。
 
     ⚠️ 绝不能拿客户端传来的 account_id 当身份：它是
@@ -237,8 +237,9 @@ def _customer_account_profile(token: str) -> dict[str, str]:
     **知道邮箱就能算出来**，等于没有鉴权。只有持有该账号有效会话令牌才可信。
     令牌缺失/无效一律返回匿名 profile（account_id 空串，调用方只给全员数据）。
 
-    除 account_id 外还带 ``plan_type``（套餐）与 ``workspace_code``（分站），
-    供分类投放匹配；两者随账号属性变化，故只缓存 60 秒。
+    除 account_id 外还带 ``plan_type``（套餐）与 ``invite_codes``（注册邀请码，
+    来自 invitation_code_usages；无关联记录的账号为空列表），供分类投放匹配；
+    属性随账号变化，故只缓存 60 秒。
     """
     clean = str(token or "").strip()
     if not clean:
@@ -255,7 +256,9 @@ def _customer_account_profile(token: str) -> dict[str, str]:
             profile = {
                 "account_id": str(result.get("account_id") or ""),
                 "plan_type": str(result.get("plan_type") or ""),
-                "workspace_code": str(result.get("workspace_code") or ""),
+                "invite_codes": [
+                    str(code) for code in (result.get("invite_codes") or []) if str(code).strip()
+                ],
             }
         else:
             profile = dict(_ANONYMOUS_PROFILE)
@@ -584,13 +587,6 @@ def users(
     return _run_remote(SERVER_LIST_USERS_SCRIPT, [limit, offset], "读取用户列表")
 
 
-@app.get("/api/workspaces")
-def workspaces(x_auth_token: str | None = Header(default=None)) -> dict[str, Any]:
-    """分站/工作区清单 —— 分类投放表单「按分站」下拉的数据源。"""
-    _check_auth(x_auth_token)
-    return _run_remote(SERVER_LIST_WORKSPACES_SCRIPT, [], "读取分站列表")
-
-
 @app.post("/api/users/{account_id}/status")
 def user_status(
     account_id: str,
@@ -661,7 +657,9 @@ def _announce_db() -> sqlite3.Connection:
             updated_at TEXT NOT NULL,
             target_account_ids TEXT NOT NULL DEFAULT '',
             image_rev INTEGER NOT NULL DEFAULT 0,
-            images TEXT NOT NULL DEFAULT '[]'
+            images TEXT NOT NULL DEFAULT '[]',
+            audience_rules TEXT NOT NULL DEFAULT '',
+            category TEXT NOT NULL DEFAULT ''
         )
         """
     )
@@ -678,12 +676,29 @@ def _announce_db() -> sqlite3.Connection:
     # 图片版本号：内容变化时自增，客户端据此判断本地缓存的图片是否过期。
     if "image_rev" not in cols:
         con.execute("ALTER TABLE announcements ADD COLUMN image_rev INTEGER NOT NULL DEFAULT 0")
-    # 分类投放：JSON 规则，形如 {"plan_types":[...], "workspace_codes":[...]}。
+    # 分类投放：JSON 规则，形如 {"plan_types":[...], "invite_codes":[...]}。
     # 空串 = 不限（等同只用 target_account_ids 或全员）。与 target_account_ids 并列，
     # 两者同时给出时取**交集**（既要在名单里、又要符合分类）—— 宁窄勿宽，避免误发。
     if "audience_rules" not in cols:
         con.execute(
             "ALTER TABLE announcements ADD COLUMN audience_rules TEXT NOT NULL DEFAULT ''"
+        )
+    # 旧库迁移：分区（分类）列缺失时补列（空串 = 未分区，兼容历史公告：客户端不加前缀）。
+    if "category" not in cols:
+        con.execute("ALTER TABLE announcements ADD COLUMN category TEXT NOT NULL DEFAULT ''")
+    # 公告分区字典：预置若干默认分类，管理员可在后台自行增删。
+    # 仅在本表首次创建时写入默认值，之后后台删除的分类不会被重新塞回来。
+    category_table_exists = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='announcement_categories'"
+    ).fetchone()
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS announcement_categories ("
+        "name TEXT PRIMARY KEY, created_at TEXT NOT NULL)"
+    )
+    if category_table_exists is None:
+        con.executemany(
+            "INSERT OR IGNORE INTO announcement_categories(name, created_at) VALUES(?,?)",
+            [(name, _now_beijing()) for name in ANNOUNCE_DEFAULT_CATEGORIES],
         )
     con.commit()
     return con
@@ -692,6 +707,24 @@ def _announce_db() -> sqlite3.Connection:
 ANNOUNCE_IMAGE_MAX_COUNT = 6
 ANNOUNCE_IMAGE_MAX_BYTES = 2 * 1024 * 1024
 ANNOUNCE_IMAGE_MIMES = {"image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"}
+
+# 公告分区（分类）：发布/编辑时必选，用户端标题以「【分区】标题」形式展示。
+# 默认分类在 announcement_categories 表首次创建时写入，之后可在后台增删。
+ANNOUNCE_DEFAULT_CATEGORIES = (
+    "版本更新",
+    "功能上新",
+    "问题修复",
+    "福利活动",
+    "维护通知",
+    "重要通知",
+    "企业版专属",
+)
+ANNOUNCE_CATEGORY_MAX_LEN = 20
+
+# 内部接口令牌：供同机兄弟服务（wh-customer-auth）发布定向公告（如下发企业版邀请码）。
+ANNOUNCE_INTERNAL_TOKEN = os.environ.get(
+    "ANNOUNCE_INTERNAL_TOKEN", "ann-int-7c3e9b52f1a8460d"
+)
 
 
 def _decode_image_payload(item: Any) -> dict[str, Any] | None:
@@ -783,22 +816,22 @@ def _dump_target_account_ids(targets: list[str]) -> str:
     return json.dumps(targets, ensure_ascii=False) if targets else ""
 
 
-# ---- 分类投放（按套餐 / 按分站） ----
+# ---- 分类投放（按套餐 / 按邀请码） ----
 # 支持的套餐维度取值。加新维度时：这里补一项 + `_audience_matches` 补一条判断 +
 # 后台表单补一个选项即可，落库与下发都走通用逻辑。
 AUDIENCE_RULE_PLAN_TYPES = ("experience", "basic")
-AUDIENCE_RULE_KEYS = ("plan_types", "workspace_codes")
+AUDIENCE_RULE_KEYS = ("plan_types", "invite_codes")
 
 
 def _normalize_audience_rules(payload: dict[str, Any]) -> dict[str, list[str]]:
-    """校验并规范化分类规则，返回 {plan_types, workspace_codes}（可能都为空）。"""
+    """校验并规范化分类规则，返回 {plan_types, invite_codes}（可能都为空）。"""
     raw = payload.get("audience_rules")
     if raw is None:
         return {}
     if not isinstance(raw, dict):
         raise HTTPException(status_code=400, detail="audience_rules must be an object")
     plans_raw = raw.get("plan_types") or []
-    codes_raw = raw.get("workspace_codes") or []
+    codes_raw = raw.get("invite_codes") or []
     if not isinstance(plans_raw, list) or not isinstance(codes_raw, list):
         raise HTTPException(status_code=400, detail="audience_rules 的取值必须是列表")
     plans: list[str] = []
@@ -814,7 +847,7 @@ def _normalize_audience_rules(payload: dict[str, Any]) -> dict[str, list[str]]:
         value = str(item or "").strip()
         if value and value not in codes:
             codes.append(value)
-    return {"plan_types": plans, "workspace_codes": codes}
+    return {"plan_types": plans, "invite_codes": codes}
 
 
 def _dump_audience_rules(rules: dict[str, list[str]]) -> str:
@@ -839,25 +872,53 @@ def _load_audience_rules(raw: Any) -> dict[str, list[str]]:
     return out
 
 
-def _audience_matches(rules: dict[str, list[str]], profile: dict[str, str]) -> bool:
+def _audience_matches(rules: dict[str, list[str]], profile: dict[str, Any]) -> bool:
     """分类匹配：**维度内是并集（OR）、维度间是交集（AND）**；空维度 = 不限。
 
-    匿名（account_id 为空）时 plan_type/workspace_code 都是空串，**不会命中任何
-    带分类规则的公告** —— 匿名不等于「体验版」，无法证明归属就一律不给。
+    匿名（account_id 为空）时 plan_type 是空串、invite_codes 是空列表，**不会命中
+    任何带分类规则的公告** —— 匿名不等于「体验版」，无法证明归属就一律不给。
+    邀请码无关联记录的账号（邀请码追踪上线前注册）同样命不中邀请码维度：宁漏勿误发。
     """
     if not rules:
         return True
     plans = rules.get("plan_types") or []
     if plans and profile.get("plan_type", "") not in plans:
         return False
-    codes = rules.get("workspace_codes") or []
-    if codes and profile.get("workspace_code", "") not in codes:
-        return False
+    codes = rules.get("invite_codes") or []
+    if codes:
+        profile_codes = set(profile.get("invite_codes") or [])
+        if not profile_codes.intersection(codes):
+            return False
     return True
 
 
-def _serialize_announcement(row, *, with_images: bool = True, include_targets: bool = True) -> dict[str, Any]:
+# ---- 公告分区（分类）字典 ----
+def _list_announcement_categories(con: sqlite3.Connection) -> list[str]:
+    """读取分区字典：预置 + 自建，按创建顺序返回。"""
+    return [
+        row[0]
+        for row in con.execute("SELECT name FROM announcement_categories ORDER BY rowid")
+    ]
+
+
+def _normalize_announcement_category(payload: dict[str, Any], con: sqlite3.Connection) -> str:
+    """校验分区：发布/编辑时必须选择字典里已有的分区。"""
+    raw = payload.get("category")
+    value = str(raw).strip() if raw is not None else ""
+    if not value:
+        raise HTTPException(status_code=400, detail="请选择公告分区")
+    if len(value) > ANNOUNCE_CATEGORY_MAX_LEN:
+        raise HTTPException(status_code=400, detail=f"公告分区名称不能超过 {ANNOUNCE_CATEGORY_MAX_LEN} 个字")
+    if value not in _list_announcement_categories(con):
+        raise HTTPException(status_code=400, detail="请选择有效的公告分区")
+    return value
+
+
+def _serialize_announcement(
+    row, *, with_images: bool = True, include_targets: bool = True, prefix_category: bool = False
+) -> dict[str, Any]:
     r = dict(row)
+    category = str(r.get("category") or "")
     try:
         targets = json.loads(r.get("target_account_ids") or "[]")
         if not isinstance(targets, list):
@@ -867,9 +928,14 @@ def _serialize_announcement(row, *, with_images: bool = True, include_targets: b
     images = _load_announcement_images(r.get("images"))
     # 列表场景（with_images=False）只回图片数量与版本号，避免每次轮询都搬运 base64；
     # 客户端按需再调 /api/announcements/{id}/images 取图片本体并本地缓存。
+    title = r["title"]
+    # 用户端（public 接口）把分区拼进标题：客户端无需改动即可看到【分区】标题。
+    if prefix_category and category:
+        title = f"【{category}】{title}"
     payload: dict[str, Any] = {
         "id": r["id"],
-        "title": r["title"],
+        "title": title,
+        "category": category,
         "content": r["content"],
         "published_at": r["published_at"],
         "active": bool(r["active"]),
@@ -925,7 +991,11 @@ def public_announcements(
             continue
         if not _audience_matches(_load_audience_rules(row["audience_rules"]), profile):
             continue
-        items.append(_serialize_announcement(row, with_images=include_images, include_targets=False))
+        items.append(
+            _serialize_announcement(
+                row, with_images=include_images, include_targets=False, prefix_category=True
+            )
+        )
     return {"announcements": items}
 
 
@@ -1001,9 +1071,10 @@ def create_announcement(payload: dict[str, Any], x_auth_token: str | None = Head
     now = _now_beijing()
     con = _announce_db()
     try:
+        category = _normalize_announcement_category(payload, con)
         cur = con.execute(
-            "INSERT INTO announcements(title, content, published_at, active, created_at, updated_at, target_account_ids, audience_rules, image_rev, images) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO announcements(title, content, published_at, active, created_at, updated_at, target_account_ids, audience_rules, image_rev, images, category) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
             (
                 title,
                 content,
@@ -1015,6 +1086,7 @@ def create_announcement(payload: dict[str, Any], x_auth_token: str | None = Head
                 _dump_audience_rules(rules),
                 1 if images else 0,
                 json.dumps(images, ensure_ascii=False),
+                category,
             ),
         )
         con.commit()
@@ -1038,6 +1110,7 @@ def update_announcement(announcement_id: int, payload: dict[str, Any], x_auth_to
     now = _now_beijing()
     con = _announce_db()
     try:
+        category = _normalize_announcement_category(payload, con)
         existing = con.execute(
             "SELECT images, image_rev FROM announcements WHERE id=?", (announcement_id,)
         ).fetchone()
@@ -1051,7 +1124,7 @@ def update_announcement(announcement_id: int, payload: dict[str, Any], x_auth_to
         else:
             image_rev = int(existing["image_rev"] or 0) + 1
         con.execute(
-            "UPDATE announcements SET title=?, content=?, updated_at=?, target_account_ids=?, audience_rules=?, image_rev=?, images=? WHERE id=?",
+            "UPDATE announcements SET title=?, content=?, updated_at=?, target_account_ids=?, audience_rules=?, image_rev=?, images=?, category=? WHERE id=?",
             (
                 title,
                 content,
@@ -1060,6 +1133,7 @@ def update_announcement(announcement_id: int, payload: dict[str, Any], x_auth_to
                 _dump_audience_rules(rules),
                 image_rev,
                 json.dumps(images, ensure_ascii=False),
+                category,
                 announcement_id,
             ),
         )
@@ -1101,6 +1175,69 @@ def delete_announcement(announcement_id: int, x_auth_token: str | None = Header(
     finally:
         con.close()
     return {"ok": True}
+
+
+@app.get("/api/announcement-categories")
+def get_announcement_categories(x_auth_token: str | None = Header(default=None)) -> dict[str, Any]:
+    # 管理端读取分区字典（预置 + 自建），用于发布表单下拉与列表筛选。
+    _check_auth(x_auth_token)
+    con = _announce_db()
+    try:
+        names = _list_announcement_categories(con)
+    finally:
+        con.close()
+    return {"categories": names}
+
+
+@app.post("/api/announcement-categories")
+def create_announcement_category(
+    payload: dict[str, Any], x_auth_token: str | None = Header(default=None)
+) -> dict[str, Any]:
+    # 后台自建分区：仅新增字典项，不影响已发布公告里已固化的分区文本。
+    _check_auth(x_auth_token)
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="分区名称不能为空")
+    if len(name) > ANNOUNCE_CATEGORY_MAX_LEN:
+        raise HTTPException(
+            status_code=400, detail=f"分区名称不能超过 {ANNOUNCE_CATEGORY_MAX_LEN} 个字"
+        )
+    if "【" in name or "】" in name:
+        raise HTTPException(status_code=400, detail="分区名称不能包含【】")
+    con = _announce_db()
+    try:
+        if con.execute(
+            "SELECT 1 FROM announcement_categories WHERE name=?", (name,)
+        ).fetchone():
+            raise HTTPException(status_code=400, detail="该分区已存在")
+        con.execute(
+            "INSERT INTO announcement_categories(name, created_at) VALUES(?,?)",
+            (name, _now_beijing()),
+        )
+        con.commit()
+        names = _list_announcement_categories(con)
+    finally:
+        con.close()
+    return {"ok": True, "categories": names}
+
+
+@app.delete("/api/announcement-categories/{name}")
+def delete_announcement_category(
+    name: str, x_auth_token: str | None = Header(default=None)
+) -> dict[str, Any]:
+    # 删除分区字典项。历史公告里已固化的分区文本保留（标题前缀不受影响）。
+    _check_auth(x_auth_token)
+    target = str(name or "").strip()
+    con = _announce_db()
+    try:
+        cur = con.execute("DELETE FROM announcement_categories WHERE name=?", (target,))
+        con.commit()
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="分区不存在")
+        names = _list_announcement_categories(con)
+    finally:
+        con.close()
+    return {"ok": True, "categories": names}
 
 
 # ------------------------------------------------------- 分站申请与成立分站
@@ -1246,7 +1383,12 @@ def _generate_station_username(con: sqlite3.Connection) -> str:
 
 
 def _publish_targeted_announcement(
-    con: sqlite3.Connection, *, title: str, content: str, targets: list[str]
+    con: sqlite3.Connection,
+    *,
+    title: str,
+    content: str,
+    targets: list[str],
+    category: str = "",
 ) -> int:
     """写一条只对指定账号可见的公告（复用定向公告通道，空名单会被拒绝）。"""
     if not targets:
@@ -1254,10 +1396,51 @@ def _publish_targeted_announcement(
     now = _now_beijing()
     cur = con.execute(
         "INSERT INTO announcements(title, content, published_at, active, created_at, updated_at,"
-        " target_account_ids, image_rev, images) VALUES(?,?,?,?,?,?,?,0,'[]')",
-        (title, content, now, 1, now, now, _dump_target_account_ids(targets)),
+        " target_account_ids, image_rev, images, category) VALUES(?,?,?,?,?,?,?,0,'[]',?)",
+        (title, content, now, 1, now, now, _dump_target_account_ids(targets), category),
     )
     return int(cur.lastrowid or 0)
+
+
+def _check_internal_token(token: str | None) -> None:
+    """校验同机兄弟服务调用凭证（与 wh-customer-auth 共享的静态令牌）。"""
+    if not token or not secrets.compare_digest(str(token), ANNOUNCE_INTERNAL_TOKEN):
+        raise HTTPException(status_code=401, detail="invalid internal token")
+
+
+@app.post("/api/internal/announcements")
+def publish_internal_announcement(
+    payload: dict[str, Any], x_internal_token: str | None = Header(default=None)
+) -> dict[str, Any]:
+    """内部接口：向指定账号定向发布一条公告（用于下发企业版邀请码等）。
+
+    仅限同机服务经回环/内网调用，用静态令牌鉴权；写入的公告只对该账号可见。
+    """
+    _check_internal_token(x_internal_token)
+    account_id = str(payload.get("account_id") or "").strip()
+    title = str(payload.get("title") or "").strip()
+    content = str(payload.get("content") or "")
+    category = str(payload.get("category") or "").strip()
+    if not account_id:
+        raise HTTPException(status_code=400, detail="account_id is required")
+    if not title:
+        raise HTTPException(status_code=400, detail="公告标题不能为空")
+    if not category:
+        raise HTTPException(status_code=400, detail="请选择公告分区")
+    con = _announce_db()
+    try:
+        # 专属分区：登记到分区字典，保证后台列表可筛选（已存在则不重复写）。
+        con.execute(
+            "INSERT OR IGNORE INTO announcement_categories(name, created_at) VALUES(?,?)",
+            (category, _now_beijing()),
+        )
+        announcement_id = _publish_targeted_announcement(
+            con, title=title, content=content, targets=[account_id], category=category
+        )
+        con.commit()
+    finally:
+        con.close()
+    return {"ok": True, "announcement_id": announcement_id}
 
 
 @app.post("/api/station-applications/public")
@@ -1776,6 +1959,13 @@ def invitations(
     return _run_remote(SERVER_LIST_INVITATIONS_SCRIPT, [limit, offset], "读取邀请码")
 
 
+@app.get("/api/invitations/options")
+def invitation_options(x_auth_token: str | None = Header(default=None)) -> dict[str, Any]:
+    """邀请码清单（含备注与已关联账号数）—— 分类投放表单「按邀请码」下拉的数据源。"""
+    _check_auth(x_auth_token)
+    return _run_remote(SERVER_LIST_INVITATION_OPTIONS_SCRIPT, [], "读取邀请码清单")
+
+
 def _normalize_expiry(value: str) -> str:
     clean = value.strip()
     if not clean:
@@ -1826,6 +2016,14 @@ def generate_invitations(
     remark = str(payload.get("remark", "")).strip()
     if len(remark) > 100:
         raise HTTPException(status_code=400, detail="备注不能超过 100 个字符")
+    try:
+        grant_points = int(payload.get("grant_points", 0) or 0)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="发放积分必须是整数") from exc
+    if grant_points < 0:
+        raise HTTPException(status_code=400, detail="发放积分不能为负数")
+    if grant_points > 1000000:
+        raise HTTPException(status_code=400, detail="发放积分不能超过 1000000")
     return _run_remote(
         SERVER_GENERATE_INVITATIONS_SCRIPT,
         [
@@ -1835,6 +2033,7 @@ def generate_invitations(
             expires_at,
             _client_ip(request),
             remark,
+            grant_points,
         ],
         "生成邀请码",
     )

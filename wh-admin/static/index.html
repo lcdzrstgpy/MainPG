@@ -371,14 +371,15 @@
             <label>生成数量<input id="invite-count" class="input" type="number" min="1" max="50" value="1"></label>
             <label>每个可用次数<input id="invite-max-uses" class="input" type="number" min="1" max="100000" value="1"></label>
             <label>到期日期（可不填）<input id="invite-expiry" class="input" type="date"></label>
+            <label>发放积分（每个邀请码，可不填）<input id="invite-grant-points" class="input" type="number" min="0" max="1000000" value="0" placeholder="例如：8000"></label>
             <label>备注（用于分类，可不填）<input id="invite-remark" class="input" maxlength="100" placeholder="例如：抖音渠道 / 内测用户"></label>
             <button id="generate-invite-btn" class="btn btn-primary">生成邀请码</button>
           </div>
-          <div class="form-note">邀请码格式保持为 MAINPG-XXXX-XXXX；到期日期按中国香港/北京时间当天结束计算。</div>
+          <div class="form-note">邀请码格式保持为 MAINPG-XXXX-XXXX；到期日期按中国香港/北京时间当天结束计算。填写「发放积分」后，用户注册时填码或在个人中心兑换该码即可获得对应永久积分。</div>
           <div id="invite-result" class="result-box hidden"><div class="result-head"><b>本次生成结果</b><button id="copy-invites-btn" class="btn btn-ghost btn-sm">复制全部</button></div><div id="invite-result-codes" class="code-list"></div><div id="invite-operation" class="form-note"></div></div>
         </div>
         <div class="card filters"><span id="invites-count" class="count"></span></div>
-        <div class="card table-wrap"><table><thead><tr><th>邀请码</th><th>备注</th><th>使用情况</th><th>使用账号</th><th>总收入</th><th>状态</th><th>到期时间（北京时间）</th><th>创建管理员</th><th>管理员 ID</th><th>操作 ID</th><th>创建时间（北京时间）</th></tr></thead><tbody id="invites-body"></tbody></table></div>
+        <div class="card table-wrap"><table><thead><tr><th>邀请码</th><th>备注</th><th>发放积分</th><th>使用情况</th><th>使用账号</th><th>总收入</th><th>状态</th><th>到期时间（北京时间）</th><th>创建管理员</th><th>管理员 ID</th><th>操作 ID</th><th>创建时间（北京时间）</th></tr></thead><tbody id="invites-body"></tbody></table></div>
         <div class="card" id="invites-more-wrap" style="display:none;text-align:center;"><button id="invites-more" class="btn">加载更多</button></div>
       </section>
 
@@ -408,6 +409,14 @@
           <h3 id="announcement-form-title">发布新公告</h3>
           <div class="inline-form" id="announcement-form-grid" style="grid-template-columns:1fr; align-items:start; gap:14px">
             <label>标题<input id="announcement-title" class="input" maxlength="120" placeholder="公告标题"></label>
+            <div>
+              <div class="label-text">分区（必选，用户端会以「【分区】标题」展示，如【福利活动】）</div>
+              <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:6px">
+                <select id="announcement-category" class="input" style="max-width:220px"><option value="">请选择分区</option></select>
+                <button type="button" class="btn btn-ghost" id="announcement-category-add">＋ 新建分区</button>
+                <button type="button" class="btn btn-ghost" id="announcement-category-del">删除选中分区</button>
+              </div>
+            </div>
             <label>正文（支持 Markdown：`# 小标题`、`- 要点`、`1. 步骤`、`**加粗**`、`::: tip 提示` 等）<textarea id="announcement-content" class="input announcement-textarea" rows="3" placeholder="公告内容，支持 Markdown 排版"></textarea></label>
             <div>
               <div class="label-text">公告图片（可选，最多 6 张，单张不超过 2MB）</div>
@@ -436,8 +445,8 @@
                       <option value="basic">基础版</option>
                     </select>
                   </label>
-                  <label style="display:grid;gap:4px;font-weight:normal;font-size:12px;color:#6d7789">分站 / 工作区
-                    <select id="ann-cat-workspace" class="input">
+                  <label style="display:grid;gap:4px;font-weight:normal;font-size:12px;color:#6d7789">邀请码
+                    <select id="ann-cat-invite" class="input">
                       <option value="">不限</option>
                     </select>
                   </label>
@@ -457,7 +466,10 @@
             </div>
           </div>
         </div>
-        <div class="card table-wrap"><table><thead><tr><th>状态</th><th>标题</th><th>正文</th><th>图片</th><th>范围</th><th>发布时间（北京时间）</th><th>操作</th></tr></thead><tbody id="announcements-body"></tbody></table></div>
+        <div class="card filters"><label style="display:flex;align-items:center;gap:8px;font-weight:normal">分区筛选
+          <select id="announcement-filter-category" class="input" style="max-width:200px"><option value="">全部分区</option></select>
+        </label><span id="announcement-count" class="count"></span></div>
+        <div class="card table-wrap"><table><thead><tr><th>状态</th><th>分区</th><th>标题</th><th>正文</th><th>图片</th><th>范围</th><th>发布时间（北京时间）</th><th>操作</th></tr></thead><tbody id="announcements-body"></tbody></table></div>
       </section>
 
       <section id="section-logs" class="section">
@@ -889,8 +901,8 @@ function renderInvitations() {
     const usedUp = Number(item.used_count) >= Number(item.max_uses), expired = item.expires_at && new Date(item.expires_at) < now;
     const state = usedUp ? ['badge-danger','已用尽'] : expired ? ['badge-warning','已过期'] : ['badge-success','可使用'];
     const accounts = item.accounts || [], unlinked = Math.max(0, Number(item.used_count) - accounts.length);
-    return `<tr><td class="mono"><b>${esc(item.code)}</b></td><td>${esc(item.remark || '-')}</td><td>${item.used_count} / ${item.max_uses}</td><td><button class="link-btn" data-invite-accounts="${esc(item.code)}">查看账号 (${accounts.length})</button>${unlinked ? `<span class="badge badge-warning">另有 ${unlinked} 次历史使用未关联</span>` : ''}</td><td>${fmtMoney(item.total_recharge_cents)}</td><td><span class="badge ${state[0]}">${state[1]}</span></td><td>${fmtTime(item.expires_at)}</td><td>${esc(item.created_by_username || '-')}</td><td class="mono">${esc(item.created_by_admin_id || item.created_by || '-')}</td><td class="mono">${esc(item.creation_operation_id || '-')}</td><td>${fmtTime(item.created_at)}</td></tr>`;
-  }).join('') : '<tr><td class="empty" colspan="11">暂无邀请码</td></tr>';
+    return `<tr><td class="mono"><b>${esc(item.code)}</b></td><td>${esc(item.remark || '-')}</td><td>${Number(item.grant_points) > 0 ? `<span class="badge badge-success">${Number(item.grant_points)}</span>` : '-'}</td><td>${item.used_count} / ${item.max_uses}</td><td><button class="link-btn" data-invite-accounts="${esc(item.code)}">查看账号 (${accounts.length})</button>${unlinked ? `<span class="badge badge-warning">另有 ${unlinked} 次历史使用未关联</span>` : ''}</td><td>${fmtMoney(item.total_recharge_cents)}</td><td><span class="badge ${state[0]}">${state[1]}</span></td><td>${fmtTime(item.expires_at)}</td><td>${esc(item.created_by_username || '-')}</td><td class="mono">${esc(item.created_by_admin_id || item.created_by || '-')}</td><td class="mono">${esc(item.creation_operation_id || '-')}</td><td>${fmtTime(item.created_at)}</td></tr>`;
+  }).join('') : '<tr><td class="empty" colspan="12">暂无邀请码</td></tr>';
 }
 
 $('invites-body').onclick = event => {
@@ -947,7 +959,7 @@ $('invite-profit-body').onclick = event => {
 $('generate-invite-btn').onclick = async () => {
   $('generate-invite-btn').disabled = true;
   try {
-    const data = await api('/api/invitations/generate', {method:'POST',body:JSON.stringify({count:Number($('invite-count').value),max_uses:Number($('invite-max-uses').value),expires_at:$('invite-expiry').value,remark:$('invite-remark').value.trim()})});
+    const data = await api('/api/invitations/generate', {method:'POST',body:JSON.stringify({count:Number($('invite-count').value),max_uses:Number($('invite-max-uses').value),expires_at:$('invite-expiry').value,remark:$('invite-remark').value.trim(),grant_points:Number($('invite-grant-points').value)||0})});
     $('invite-result').classList.remove('hidden'); $('invite-result').dataset.codes = JSON.stringify(data.codes || []);
     $('invite-result-codes').innerHTML = (data.codes || []).map(code => `<span class="code-pill mono">${esc(code)}</span>`).join('');
     $('invite-operation').textContent = `操作 ID：${data.operation_id}`;
@@ -1001,6 +1013,28 @@ let ANNOUNCE_IMAGES = [];          // 当前表单待上传图片：[{name,mime,
 const ANNOUNCE_IMAGE_MAX = 6;
 const ANNOUNCE_IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
 const ANNOUNCE_IMAGE_MAX_BYTES = 2 * 1024 * 1024;
+// 公告分区（分类）字典：预置 + 后台自建，发布必选、列表可筛选。
+// 用户端标题由后端 public 接口拼成「【分区】标题」，前端无需额外处理。
+let ANNOUNCE_CATEGORIES = [];
+function renderAnnounceCategoryOptions() {
+  const form = $('announcement-category');
+  const filter = $('announcement-filter-category');
+  const keepForm = form.value;
+  const keepFilter = filter.value;
+  form.innerHTML = '<option value="">请选择分区</option>' + ANNOUNCE_CATEGORIES.map(name => `<option value="${esc(name)}">${esc(name)}</option>`).join('');
+  filter.innerHTML = '<option value="">全部分区</option>' + ANNOUNCE_CATEGORIES.map(name => `<option value="${esc(name)}">${esc(name)}</option>`).join('') + '<option value="__none__">未分区</option>';
+  // 保留下拉已选项；分区被删除后自动回落到「未选择」。
+  form.value = ANNOUNCE_CATEGORIES.includes(keepForm) ? keepForm : '';
+  filter.value = (ANNOUNCE_CATEGORIES.includes(keepFilter) || keepFilter === '__none__') ? keepFilter : '';
+  renderAnnouncements();
+}
+async function loadAnnounceCategories() {
+  try {
+    const data = await api('/api/announcement-categories');
+    ANNOUNCE_CATEGORIES = data.categories || [];
+    renderAnnounceCategoryOptions();
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+}
 async function loadAnnounceUsers() {
   if (ANNOUNCE_USERS_LOADED) return;
   try {
@@ -1030,7 +1064,7 @@ function setAnnounceTargetMode(mode) {
   $('ann-target-custom').checked = mode === 'custom';
   $('ann-category-picker').classList.toggle('hidden', mode !== 'category');
   $('ann-target-picker').classList.toggle('hidden', mode !== 'custom');
-  if (mode === 'category') { loadAnnounceWorkspaces().then(renderAnnounceCategoryHint); }
+  if (mode === 'category') { loadAnnounceInviteCodes().then(renderAnnounceCategoryHint); }
   if (mode === 'custom') { loadAnnounceUsers().then(renderAnnounceUserPicker); }
 }
 $('ann-target-all').onchange = () => setAnnounceTargetMode('all');
@@ -1048,35 +1082,35 @@ $('ann-user-list').onchange = event => {
 function currentAnnounceTargets() {
   return announceTargetMode() === 'custom' ? ANNOUNCE_TARGET : [];
 }
-// 分类规则：{plan_types, workspace_codes}，空 = 不限。
+// 分类规则：{plan_types, invite_codes}，空 = 不限。
 // 语义与后端一致：同一维度内是「或」、两个维度之间是「且」；与指定名单同时给出时取交集。
 function currentAnnounceRules() {
   if (announceTargetMode() !== 'category') return {};
   const plan = $('ann-cat-plan').value;
-  const workspace = $('ann-cat-workspace').value;
+  const invite = $('ann-cat-invite').value;
   const rules = {};
   if (plan) rules.plan_types = [plan];
-  if (workspace) rules.workspace_codes = [workspace];
+  if (invite) rules.invite_codes = [invite];
   return rules;
 }
 function renderAnnounceCategoryHint() {
   const rules = currentAnnounceRules();
   const parts = [];
   if (rules.plan_types) parts.push('套餐=' + (rules.plan_types[0] === 'basic' ? '基础版' : '体验版'));
-  if (rules.workspace_codes) parts.push('分站=' + rules.workspace_codes[0]);
+  if (rules.invite_codes) parts.push('邀请码=' + rules.invite_codes[0]);
   $('ann-category-hint').textContent = parts.length
-    ? '只发给：' + parts.join(' 且 ') + '。同时填多项时，用户必须全部满足。'
+    ? '只发给：' + parts.join(' 且 ') + '。邀请码维度只覆盖注册时记录过邀请码的账号。'
     : '两项都留空 = 不限，等同于发给全部用户。';
 }
 $('ann-cat-plan').onchange = renderAnnounceCategoryHint;
-$('ann-cat-workspace').onchange = renderAnnounceCategoryHint;
-async function loadAnnounceWorkspaces() {
+$('ann-cat-invite').onchange = renderAnnounceCategoryHint;
+async function loadAnnounceInviteCodes() {
   try {
-    const data = await api('/api/workspaces');
-    const select = $('ann-cat-workspace');
+    const data = await api('/api/invitations/options');
+    const select = $('ann-cat-invite');
     const current = select.value;
-    select.innerHTML = '<option value="">不限</option>' + (data.workspaces || []).map(w =>
-      `<option value="${esc(w.workspace_code)}">${esc(w.workspace_name || w.workspace_code)}${w.status && w.status !== 'active' ? '（已停用）' : ''}</option>`
+    select.innerHTML = '<option value="">不限</option>' + (data.invite_codes || []).map(c =>
+      `<option value="${esc(c.code)}">${esc(c.code)}${c.remark ? '（' + esc(c.remark) + '）' : ''}${Number(c.linked_accounts) > 0 ? ' · ' + Number(c.linked_accounts) + ' 人' : ''}</option>`
     ).join('');
     select.value = current;
   } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
@@ -1259,12 +1293,13 @@ function resetAnnouncementForm() {
   $('announcement-cancel-btn').classList.add('hidden');
   $('announcement-title').value = '';
   $('announcement-content').value = '';
+  $('announcement-category').value = '';
   ANNOUNCE_TARGET = [];
   ANNOUNCE_IMAGES = [];
   renderAnnounceImages();
   $('ann-user-search').value = '';
   $('ann-cat-plan').value = '';
-  $('ann-cat-workspace').value = '';
+  $('ann-cat-invite').value = '';
   setAnnounceTargetMode('all');
   autoGrowAnnouncementTextarea();
 }
@@ -1275,6 +1310,7 @@ function fillAnnouncementForm(item) {
   $('announcement-cancel-btn').classList.remove('hidden');
   $('announcement-title').value = item.title;
   $('announcement-content').value = item.content || '';
+  $('announcement-category').value = item.category || '';
   ANNOUNCE_TARGET = Array.isArray(item.target_account_ids) ? item.target_account_ids.slice() : [];
   ANNOUNCE_IMAGES = Array.isArray(item.images) ? item.images.map(img => ({ name: img.name || '', mime: img.mime || 'image/png', size: img.size || 0, data: img.data || '' })).filter(img => img.data) : [];
   renderAnnounceImages();
@@ -1282,14 +1318,14 @@ function fillAnnouncementForm(item) {
   // 回填分类规则；三选一互斥，按「有规则优先于有名单」判定回到哪个模式。
   const rules = item.audience_rules || {};
   const plan = (rules.plan_types || [])[0] || '';
-  const workspace = (rules.workspace_codes || [])[0] || '';
+  const invite = (rules.invite_codes || [])[0] || '';
   $('ann-cat-plan').value = plan;
-  const applyWorkspace = () => { $('ann-cat-workspace').value = workspace; renderAnnounceCategoryHint(); };
-  if (plan || workspace) {
+  const applyInvite = () => { $('ann-cat-invite').value = invite; renderAnnounceCategoryHint(); };
+  if (plan || invite) {
     setAnnounceTargetMode('category');
-    loadAnnounceWorkspaces().then(applyWorkspace);
+    loadAnnounceInviteCodes().then(applyInvite);
   } else {
-    $('ann-cat-workspace').value = '';
+    $('ann-cat-invite').value = '';
     setAnnounceTargetMode(ANNOUNCE_TARGET.length > 0 ? 'custom' : 'all');
     renderAnnounceUserPicker();
   }
@@ -1297,14 +1333,29 @@ function fillAnnouncementForm(item) {
 }
 async function loadAnnouncements() {
   try {
+    await loadAnnounceCategories();
     const data = await api('/api/announcements');
     ANNOUNCEMENTS = data.announcements || [];
     renderAnnouncements();
   } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
 }
 function renderAnnouncements() {
-  $('announcements-body').innerHTML = ANNOUNCEMENTS.length ? ANNOUNCEMENTS.map(item => {
+  // 分区筛选：'' 全部 / '__none__' 未分区 / 其余精确匹配 category。
+  const filterVal = $('announcement-filter-category') ? $('announcement-filter-category').value : '';
+  const rows = ANNOUNCEMENTS.filter(item => {
+    const category = String(item.category || '');
+    if (filterVal === '') return true;
+    if (filterVal === '__none__') return !category;
+    return category === filterVal;
+  });
+  const countEl = $('announcement-count');
+  if (countEl) countEl.textContent = `共 ${rows.length} 条${filterVal ? '（已筛选）' : ''}`;
+  $('announcements-body').innerHTML = rows.length ? rows.map(item => {
     const on = !!item.active;
+    const category = String(item.category || '');
+    const categoryCell = category
+      ? `<span class="badge badge-info">【${esc(category)}】</span>`
+      : '<span class="badge badge-muted">未分区</span>';
     const content = item.content || '';
     const isLong = content.length > 100 || (content.match(/\n/g) || []).length >= 3;
     const targets = Array.isArray(item.target_account_ids) ? item.target_account_ids : [];
@@ -1312,7 +1363,7 @@ function renderAnnouncements() {
     const rules = item.audience_rules || {};
     const ruleParts = [];
     if ((rules.plan_types || []).length) ruleParts.push('套餐=' + rules.plan_types.map(p => p === 'basic' ? '基础版' : '体验版').join('/'));
-    if ((rules.workspace_codes || []).length) ruleParts.push('分站=' + rules.workspace_codes.join('/'));
+    if ((rules.invite_codes || []).length) ruleParts.push('邀请码=' + rules.invite_codes.join('/'));
     let scope;
     if (targets.length && ruleParts.length) {
       scope = `<span class="badge badge-warning">指定 ${targets.length} 人 ∩ ${esc(ruleParts.join(' 且 '))}</span>`;
@@ -1329,6 +1380,7 @@ function renderAnnouncements() {
       : '<span style="color:#9ca3af">-</span>';
     return `<tr>
       <td>${on ? '<span class="badge badge-success">已上线</span>' : '<span class="badge badge-muted">已下线</span>'}</td>
+      <td>${categoryCell}</td>
       <td><b>${esc(item.title)}</b></td>
       <td class="announcement-content-cell">
         <div class="announcement-body-clamp" data-ann-content data-id="${item.id}">${esc(content || '-')}</div>
@@ -1343,23 +1395,50 @@ function renderAnnouncements() {
         <button class="link-btn red" data-announcement-action="delete" data-id="${item.id}" data-title="${esc(item.title)}">删除</button>
       </td>
     </tr>`;
-  }).join('') : '<tr><td class="empty" colspan="7">暂无公告，发布第一条吧</td></tr>';
+  }).join('') : '<tr><td class="empty" colspan="8">暂无公告，发布第一条吧</td></tr>';
 }
+// 新建 / 删除分区，以及分区筛选联动。
+$('announcement-category-add').onclick = async () => {
+  const name = (prompt('请输入新分区名称，例如：福利活动') || '').trim();
+  if (!name) return;
+  try {
+    const data = await api('/api/announcement-categories', { method: 'POST', body: JSON.stringify({ name }) });
+    ANNOUNCE_CATEGORIES = data.categories || [];
+    renderAnnounceCategoryOptions();
+    $('announcement-category').value = name;
+    toast('分区已创建', 'success');
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+};
+$('announcement-category-del').onclick = () => {
+  const name = $('announcement-category').value;
+  if (!name) { toast('请先在下拉框选择要删除的分区', 'error'); return; }
+  askConfirm('确认删除分区', `确定删除分区「${name}」吗？已使用该分区的历史公告不会受影响。`, async () => {
+    try {
+      const data = await api(`/api/announcement-categories/${encodeURIComponent(name)}`, { method: 'DELETE' });
+      ANNOUNCE_CATEGORIES = data.categories || [];
+      renderAnnounceCategoryOptions();
+      toast('分区已删除', 'success');
+    } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+  });
+};
+$('announcement-filter-category').onchange = renderAnnouncements;
 resetAnnouncementForm();
 $('announcement-save-btn').onclick = async () => {
   const title = $('announcement-title').value.trim();
   const content = $('announcement-content').value;
+  const category = $('announcement-category').value;
   if (!title) { toast('请输入公告标题', 'error'); return; }
+  if (!category) { toast('请选择公告分区', 'error'); return; }
   $('announcement-save-btn').disabled = true;
   try {
     const targets = currentAnnounceTargets();
     const audienceRules = currentAnnounceRules();
     const images = ANNOUNCE_IMAGES.map(img => ({ name: img.name, mime: img.mime, data: img.data }));
     if (ANNOUNCEMENT_EDITING_ID == null) {
-      await api('/api/announcements', { method: 'POST', body: JSON.stringify({ title, content, target_account_ids: targets, audience_rules: audienceRules, images }) });
+      await api('/api/announcements', { method: 'POST', body: JSON.stringify({ title, content, category, target_account_ids: targets, audience_rules: audienceRules, images }) });
       toast('公告已发布', 'success');
     } else {
-      await api(`/api/announcements/${ANNOUNCEMENT_EDITING_ID}`, { method: 'PATCH', body: JSON.stringify({ title, content, target_account_ids: targets, audience_rules: audienceRules, images }) });
+      await api(`/api/announcements/${ANNOUNCEMENT_EDITING_ID}`, { method: 'PATCH', body: JSON.stringify({ title, content, category, target_account_ids: targets, audience_rules: audienceRules, images }) });
       toast('公告已保存', 'success');
     }
     resetAnnouncementForm();
