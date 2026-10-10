@@ -622,6 +622,17 @@ def create_router(
             content_disposition_type="attachment" if download else "inline",
         )
 
+    @router.post("/cache/sweep")
+    def sweep_cache(
+        older_than_hours: int = Query(default=48, ge=1, le=24 * 30),
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        # 手动缓存清扫（docs/POD-本地图片缓存与清理说明.md §8）：与后台 48h 清扫同一套
+        # 安全规则 + 磁盘↔DB 孤儿对账。与自动清扫线程一致，作用于本机缓存目录全局；
+        # 权限对齐删批次（两者都会删除本地图片文件）。
+        permitted(actor, "pod_customization.create")
+        return _call(service.sweep_local_cache, older_than_hours=older_than_hours)
+
     return router
 
 

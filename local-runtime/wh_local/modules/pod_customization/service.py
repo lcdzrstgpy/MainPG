@@ -5,6 +5,7 @@ import inspect
 import io
 import json
 import threading
+import time
 import uuid
 import zipfile
 from pathlib import Path
@@ -1626,18 +1627,87 @@ class PodCustomizationService:
             if self._cache_sweep_stop.wait(timeout=48 * 3600):
                 break
 
-    def reap_stale_local_cache_once(self, *, older_than_hours: int = 48) -> list[str]:
-        """Clear local image cache older than the given window and return removed paths."""
-        relative_paths = self.repository.reap_stale_local_cache(older_than_hours=older_than_hours)
+    def _remove_asset_files(self, relative_paths: list[str]) -> tuple[int, int]:
+        """Best-effort removal of stored asset files; returns (removed_count, freed_bytes).
+
+        Removal always goes through :meth:`PodAssetStore.remove` (path guard +
+        empty-parent cleanup). A failed removal must never abort the sweep —
+        whatever is left gets re-collected on the next pass.
+        """
+
+        import logging
+
+        logger = logging.getLogger(__name__)
+        removed = 0
+        freed = 0
         for relative_path in relative_paths:
+            size = 0
+            try:
+                size = self.assets.path(relative_path).stat().st_size
+            except (FileNotFoundError, OSError, ValueError):
+                size = 0
             try:
                 self.assets.remove(relative_path)
             except Exception:
-                import logging
-                logging.getLogger(__name__).warning(
+                logger.warning(
                     "POD stale-cache sweeper failed to remove %s", relative_path
                 )
+                continue
+            removed += 1
+            freed += size
+        return removed, freed
+
+    def reap_stale_local_cache_once(self, *, older_than_hours: int = 48) -> list[str]:
+        """Clear local image cache older than the given window and return removed paths."""
+        relative_paths = self.repository.reap_stale_local_cache(older_than_hours=older_than_hours)
+        self._remove_asset_files(relative_paths)
         return relative_paths
+
+    def sweep_local_cache(self, *, older_than_hours: int = 48) -> dict[str, Any]:
+        """手动缓存清扫：行级清扫 + 磁盘 ↔ DB 孤儿对账（见 docs/POD-本地图片缓存与清理说明.md）。
+
+        全程只碰本地缓存与资产行，不碰模板、业务数据与图床对象：
+
+        1. 行级清扫：复用 ``reap_stale_local_cache`` —— 已发布图床的旧结果释放本地指针、
+           终态批次的中间图解引用、超窗且无任何表引用的资产行删除；
+        2. 孤儿对账：磁盘上「不在 ``pod_customization_assets.relative_path`` 集合里且
+           mtime 超过保留期」的文件（跳过写入中的 ``*.tmp``）。这类文件没有任何资产行
+           引用，行级清扫永远回收不到（历史删行 / 删文件脱节的残留），必须反向扫描；
+        3. 释放量按删除前实际文件大小累加（文件缺失计 0，不中断）。
+        """
+
+        window_seconds = max(1, int(older_than_hours)) * 3600
+
+        reaped_paths = self.repository.reap_stale_local_cache(older_than_hours=older_than_hours)
+        files_removed, bytes_freed = self._remove_asset_files(reaped_paths)
+
+        known_paths = self.repository.list_asset_relative_paths()
+        now = time.time()
+        orphan_paths = [
+            relative_path
+            for relative_path, _size, mtime in self.assets.iter_stored_files()
+            if relative_path not in known_paths and now - mtime >= window_seconds
+        ]
+        orphan_removed, orphan_bytes = self._remove_asset_files(orphan_paths)
+
+        result = {
+            "older_than_hours": int(older_than_hours),
+            "files_removed": files_removed + orphan_removed,
+            "bytes_freed": bytes_freed + orphan_bytes,
+            "reaped_assets": len(reaped_paths),
+            "orphan_files_removed": orphan_removed,
+        }
+        import logging
+
+        logging.getLogger(__name__).info(
+            "POD manual cache sweep: files=%d bytes=%d reaped_assets=%d orphans=%d window_hours=%d",
+            result["files_removed"],
+            result["bytes_freed"],
+            result["reaped_assets"],
+            result["orphan_files_removed"],
+            result["older_than_hours"],
+        )
+        return result
 
     def reap_stuck_batches_once(self) -> list[dict]:
         """Reap batches that have not progressed within the inactivity window.

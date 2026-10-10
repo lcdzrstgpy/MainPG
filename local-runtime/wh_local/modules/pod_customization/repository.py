@@ -2298,6 +2298,19 @@ class PodCustomizationRepository:
             orphaned = {row["asset_id"] for row in rows if row["asset_id"] not in protected}
             return self._delete_assets_and_collect_files(connection, orphaned)
 
+    def list_asset_relative_paths(self) -> set[str]:
+        """All registered asset paths (deduplicated).
+
+        手动缓存清扫的「磁盘 ↔ DB 对账」以此为白名单：不在此集合里的文件没有任何
+        资产行引用（内容寻址下同一路径可能被多行共享，按集合判断即可）。
+        """
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT relative_path FROM pod_customization_assets"
+            ).fetchall()
+        return {str(row["relative_path"]) for row in rows if row["relative_path"]}
+
     @staticmethod
     def _collect_trial_asset_ids(connection: sqlite3.Connection) -> set[str]:
         """Collect asset ids stored as JSON on direct-listing trials."""

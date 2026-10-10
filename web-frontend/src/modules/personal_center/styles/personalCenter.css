@@ -3235,3 +3235,8 @@
   line-height: 1.7;
   color: var(--theme-text-muted, #64748b);
 }
+
+/* 存储空间：一键清理本机图片缓存 */
+.storage-card .personal-card-title > div { flex: 1; }
+.storage-card .personal-card-title small { display: block; margin-top: 3px; color: var(--theme-text-secondary, #718096); font-size: 12px; font-weight: 500; }
+.storage-result { margin: 14px 0 0; font-size: 13px; color: var(--theme-text-secondary, #718096); }

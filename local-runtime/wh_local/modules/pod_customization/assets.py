@@ -4,6 +4,7 @@ import hashlib
 import io
 import os
 import tempfile
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -102,6 +103,26 @@ class PodAssetStore:
             except OSError:
                 break
             parent = parent.parent
+
+    def iter_stored_files(self) -> Iterator[tuple[str, int, float]]:
+        """Yield ``(relative_path, byte_size, mtime)`` for stored image files.
+
+        Used by the manual cache sweep to reconcile the on-disk tree against the
+        database. In-flight temporaries are skipped: :meth:`save_image` writes
+        ``.<hash>.xxxx.tmp`` before the atomic ``os.replace``, so anything ending
+        with ``.tmp`` (or dot-prefixed) is unfinished and must never be collected.
+        """
+
+        for dirpath, _dirnames, filenames in os.walk(self.root):
+            for filename in filenames:
+                if filename.endswith(".tmp") or filename.startswith("."):
+                    continue
+                target = Path(dirpath) / filename
+                try:
+                    stat = target.stat()
+                except OSError:
+                    continue
+                yield target.relative_to(self.root).as_posix(), stat.st_size, stat.st_mtime
 
     def _require_managed(self, path: Path) -> None:
         if path != self.root and self.root not in path.parents:

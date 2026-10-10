@@ -470,3 +470,23 @@ export function loadStationPartnerDetail(stationCode: string) {
     `/api/customer/station-partners/${encodeURIComponent(stationCode)}`,
   );
 }
+
+export type PodCacheSweepResult = {
+  /** 本次生效的保留窗口（小时）。 */
+  older_than_hours: number;
+  /** 删除的本地文件数（行级清扫 + 孤儿对账）。 */
+  files_removed: number;
+  /** 释放字节数（按删除前实际文件大小累加）。 */
+  bytes_freed: number;
+  /** 行级清扫删除的资产行数。 */
+  reaped_assets: number;
+  /** 孤儿对账删除的文件数。 */
+  orphan_files_removed: number;
+};
+
+/** 一键清扫本机 POD 图片缓存；只清没有任何记录引用的文件（见 docs/POD-本地图片缓存与清理说明.md）。 */
+export function sweepPodCache() {
+  return httpJson<PodCacheSweepResult>("/api/pod-customization/cache/sweep", {
+    method: "POST",
+  });
+}
