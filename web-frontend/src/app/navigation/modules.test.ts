@@ -27,15 +27,15 @@ test("sidebar navigation groups the product workflow around its AI history entry
 test("POD customization is a grouped section with full, semi and replica customization", () => {
   assert.deepEqual(workspaceModules.map((module) => module.id), [
     "dashboard",
-    "ai_video",
     "product_workflow",
     "combo_workflow",
     "pod_workflow",
     "sourcing_workflow",
+    "ai_video",
     "personal_center",
   ]);
-  assert.equal(workspaceModules.find((module) => module.id === "ai_video")?.label, "AI 视频");
-  assert.equal(workspacePageModules.find((module) => module.id === "ai_video")?.label, "AI 视频");
+  assert.equal(workspaceModules.find((module) => module.id === "ai_video")?.label, "AI 视频（实验）");
+  assert.equal(workspacePageModules.find((module) => module.id === "ai_video")?.label, "AI 视频（实验）");
 
   const podWorkflow = workspaceModules.find((module) => module.id === "pod_workflow");
   assert.equal(podWorkflow?.defaultChildId, "pod_customization");

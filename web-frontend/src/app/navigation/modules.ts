@@ -106,7 +106,7 @@ const podReplica: WorkspaceModule = {
 
 const aiVideo: WorkspaceModule = {
   id: "ai_video",
-  label: "AI 视频",
+  label: "AI 视频（实验）",
   icon: "",
   iconClass: "iconfont icon-video",
   description: "通过 ClipForge 生成电商短视频",
@@ -204,7 +204,6 @@ const processingTasks: WorkspaceModule = {
 
 export const workspaceModules: WorkspaceNavigationItem[] = [
   dashboard,
-  aiVideo,
   {
     id: "product_workflow",
     label: "产品处理",
@@ -241,6 +240,7 @@ export const workspaceModules: WorkspaceNavigationItem[] = [
     defaultChildId: "price_verification",
     children: [priceVerification, profitActivity, productLibrary],
   },
+  aiVideo,
   personalCenter,
 ];
 
