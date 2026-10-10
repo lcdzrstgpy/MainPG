@@ -29,10 +29,14 @@ html[data-perf-mode="on"] .auth-screen::before {
   animation: none !important;
 }
 
-/* 4) 页签切换入场动画（面板淡入 + 内部卡片逐块浮现，串完最多约 1.6 秒）直接完成，
-      切页即到位。 */
-html[data-perf-mode="on"] .workspace-tab-panel.is-active,
-html[data-perf-mode="on"] .workspace-tab-panel.is-active > *,
+/* 4) 页签切换的「逐块浮现」排队动画（内部区块依次出现，串完最多约 1.6 秒）直接完成，
+      切页即到位。
+      ⚠️ 只关这一层（孙级区块）！**面板与页面根上的淡入动画必须保留**：它们带 fill-mode
+      both，播完后会持续保持「合成层提升」，而 alpine 等带整屏风景背景的主题正是靠这个
+      层级关系让内容压在风景图之上；把这两级一并关掉（animation: none），内容会被降级到
+      风景图后面整块盖住 —— 2026-10-10 实测复现：个人中心 → 偏好设置面板「什么都看不到了」，
+      去掉这两级后立即恢复。改这里之前，务必在 alpine 主题 + 流畅模式下实测
+      「个人中心 → 偏好设置」与「工作台」两个页面。 */
 html[data-perf-mode="on"] .workspace-tab-panel.is-active > * > section,
 html[data-perf-mode="on"] .workspace-tab-panel.is-active > * > [class*="-card"],
 html[data-perf-mode="on"] .workspace-tab-panel.is-active > * > [class*="-panel"] {

@@ -43,6 +43,16 @@ test("性能降级样式覆盖毛玻璃、仪表盘装饰与页签入场动画",
   assert.match(perfCss, /\.workspace-tab-panel\.is-active/);
 });
 
+test("性能降级样式不关面板/页面根两级的淡入动画（alpine 风景层依赖其合成层提升）", () => {
+  // 2026-10-10 实测事故：把这两级也 animation: none 后，alpine 主题下内容会被整屏
+  // 风景背景盖住（偏好设置「什么都看不到了」）。只允许关「孙级」的逐块浮现动画。
+  assert.doesNotMatch(perfCss, /data-perf-mode="on"\] \.workspace-tab-panel\.is-active \{/);
+  assert.doesNotMatch(perfCss, /data-perf-mode="on"\] \.workspace-tab-panel\.is-active > \* \{/);
+  assert.match(perfCss, /data-perf-mode="on"\] \.workspace-tab-panel\.is-active > \* > section/);
+  assert.match(perfCss, /data-perf-mode="on"\] \.workspace-tab-panel\.is-active > \* > \[class\*="-card"\]/);
+  assert.match(perfCss, /data-perf-mode="on"\] \.workspace-tab-panel\.is-active > \* > \[class\*="-panel"\]/);
+});
+
 test("main.tsx 在启动时引入流畅模式 hook 与降级样式", () => {
   assert.match(mainSource, /import "\.\/shared\/hooks\/usePerformanceMode"/);
   assert.match(mainSource, /import "\.\/shared\/styles\/perf-mode\.css"/);
