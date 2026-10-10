@@ -1,0 +1,40 @@
+/* 流畅模式：低性能设备的视觉降级，只影响「动效与模糊」——配色、布局、静态背景全部保留。
+   由 shared/hooks/usePerformanceMode.ts 写到 <html data-perf-mode="on|off">。
+   想验证降级是否生效：打开 <html> 看属性，并对比毛玻璃/装饰动画是否消失。 */
+
+/* 1) 全站去毛玻璃。backdrop-filter 是弱机（尤其浏览器硬件加速失效时）最重的
+      一项渲染成本，全站 50+ 处，一处不剩地关掉。 */
+html[data-perf-mode="on"] *,
+html[data-perf-mode="on"] *::before,
+html[data-perf-mode="on"] *::after {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* 2) 仪表盘常驻装饰（两团 blur(30px) 光斑 + hero 流光 + 流星）直接隐藏，不再重绘。 */
+html[data-perf-mode="on"] .dashboard-page::before,
+html[data-perf-mode="on"] .dashboard-page::after,
+html[data-perf-mode="on"] .dashboard-page .page-hero-card::before,
+html[data-perf-mode="on"] .dashboard-page .page-hero-card::after,
+html[data-perf-mode="on"] .dashboard-meteor {
+  display: none !important;
+}
+
+/* 3) 顶栏/侧栏流光、涟漪与登录页扫光停在原地（静态样式照旧，只是不再循环动画）。 */
+html[data-perf-mode="on"] .topbar-card::before,
+html[data-perf-mode="on"] .topbar-card::after,
+html[data-perf-mode="on"] .sidebar-card::before,
+html[data-perf-mode="on"] .sidebar-card::after,
+html[data-perf-mode="on"] .auth-screen::before {
+  animation: none !important;
+}
+
+/* 4) 页签切换入场动画（面板淡入 + 内部卡片逐块浮现，串完最多约 1.6 秒）直接完成，
+      切页即到位。 */
+html[data-perf-mode="on"] .workspace-tab-panel.is-active,
+html[data-perf-mode="on"] .workspace-tab-panel.is-active > *,
+html[data-perf-mode="on"] .workspace-tab-panel.is-active > * > section,
+html[data-perf-mode="on"] .workspace-tab-panel.is-active > * > [class*="-card"],
+html[data-perf-mode="on"] .workspace-tab-panel.is-active > * > [class*="-panel"] {
+  animation: none !important;
+}
