@@ -23,6 +23,8 @@ IMAGE_MODEL_CHOICES: tuple[tuple[str, str], ...] = (
     ("image_gpt_2.5", "GPT-Image-2.5（新版）"),
 )
 IMAGE_MODEL_DEFAULT = IMAGE_MODEL_CHOICES[0][0]
+# POD 独立默认：产品侧要求 POD 定制默认走 2.5；AI处理 的默认仍为 IMAGE_MODEL_DEFAULT，两者互不影响。
+POD_IMAGE_MODEL_DEFAULT = "image_gpt_2.5"
 
 # 这些字段不进入普通配置 JSON，避免 GET 接口把密钥明文返回给前端。
 SECRET_FIELDS: tuple[tuple[str, str], ...] = (
@@ -76,11 +78,11 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _normalized_image_model(value: Any) -> str:
+def _normalized_image_model(value: Any, default: str = IMAGE_MODEL_DEFAULT) -> str:
     """把模型名收敛到白名单；历史配置（如 gpt-image-2-2k）统一显示为默认模型。"""
     candidate = str(value or "").strip().lower()
     choices = {choice for choice, _label in IMAGE_MODEL_CHOICES}
-    return candidate if candidate in choices else IMAGE_MODEL_DEFAULT
+    return candidate if candidate in choices else default
 
 
 def default_system_config() -> dict[str, Any]:
@@ -93,7 +95,7 @@ def default_system_config() -> dict[str, Any]:
             "model": "gpt-image-2-2k",
             "reference_model": "gpt-image-2-2k",
         },
-        "pod_image": {"model": IMAGE_MODEL_DEFAULT},
+        "pod_image": {"model": POD_IMAGE_MODEL_DEFAULT},
         "backup_image": {"base_url": "", "model": "", "reference_model": ""},
         "cos": {"bucket": "", "region": "ap-guangzhou"},
         "limits": {
@@ -313,13 +315,13 @@ class SystemConfigService:
         config = self._load_raw_config()
         return {
             "ok": True,
-            "model": _normalized_image_model(config["pod_image"].get("model")),
+            "model": _normalized_image_model(config["pod_image"].get("model"), POD_IMAGE_MODEL_DEFAULT),
             "choices": [{"value": value, "label": label} for value, label in IMAGE_MODEL_CHOICES],
         }
 
     def save_pod_image_model(self, model: str, actor_id: str) -> dict[str, Any]:
         """只修改 POD 生图模型，不影响 AI处理 的图片模型。"""
-        selected = _normalized_image_model(model)
+        selected = _normalized_image_model(model, POD_IMAGE_MODEL_DEFAULT)
         config = self._load_raw_config()
         config["pod_image"]["model"] = selected
         now = utc_now()
@@ -417,7 +419,9 @@ class SystemConfigService:
                 "reference_model": payload.image.reference_model.strip(),
             },
             "pod_image": {
-                "model": _normalized_image_model((current.get("pod_image") or {}).get("model")),
+                "model": _normalized_image_model(
+                    (current.get("pod_image") or {}).get("model"), POD_IMAGE_MODEL_DEFAULT
+                ),
             },
             "backup_image": {
                 "base_url": payload.backup_image.base_url.strip(),
@@ -537,7 +541,7 @@ def _with_fixed_provider_defaults(config: dict[str, Any]) -> dict[str, Any]:
     config["ai"]["base_url"] = PRIMARY_AI_BASE_URL
     config["image"]["base_url"] = PRIMARY_AI_BASE_URL
     pod_image = config.setdefault("pod_image", {})
-    pod_image["model"] = _normalized_image_model(pod_image.get("model"))
+    pod_image["model"] = _normalized_image_model(pod_image.get("model"), POD_IMAGE_MODEL_DEFAULT)
     # 旧本地 DB 可能保存过 1k；产品处理默认要优先使用 2k，加载时自动迁移展示/运行值。
     if str(config["image"].get("model") or "").strip() in {"", "gpt-image-2", "gpt-image-2-1k"}:
         config["image"]["model"] = "gpt-image-2-2k"

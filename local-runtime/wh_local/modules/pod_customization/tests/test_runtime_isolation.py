@@ -612,16 +612,17 @@ def test_pod_model_resolver_reads_registered_database(monkeypatch, tmp_path) -> 
     assert pod_ai_runtime._resolve_pod_image_model() == "image_gpt_2.5"
 
 
-def test_pod_model_resolver_falls_back_to_2_0_when_unavailable(monkeypatch, tmp_path) -> None:
+def test_pod_model_resolver_falls_back_to_pod_default_when_unavailable(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
         "wh_local.modules.product_processing.provider_config.registered_system_config_db_path",
         lambda: None,
     )
-    assert pod_ai_runtime._resolve_pod_image_model() == "image_gpt"
+    # POD 默认模型（产品侧要求走 2.5）。
+    assert pod_ai_runtime._resolve_pod_image_model() == "image_gpt_2.5"
 
     # 注册了路径但库文件不存在时同样安全回退。
     monkeypatch.setattr(
         "wh_local.modules.product_processing.provider_config.registered_system_config_db_path",
         lambda: str(tmp_path / "missing.sqlite3"),
     )
-    assert pod_ai_runtime._resolve_pod_image_model() == "image_gpt"
+    assert pod_ai_runtime._resolve_pod_image_model() == "image_gpt_2.5"
