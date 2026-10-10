@@ -3261,3 +3261,7 @@
 .storage-actions button:not(:disabled):hover { border-color: var(--theme-module-primary-strong, #2563eb); color: var(--theme-module-primary-strong, #2563eb); }
 .storage-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
 .storage-actions .storage-select-all { border-color: transparent; background: transparent; color: var(--theme-text-secondary, #718096); padding-left: 6px; padding-right: 6px; }
+/* 两组缓存（POD / 产品处理）各自成组，避免用户把两边混在一起理解。 */
+.storage-group { margin-top: 14px; }
+.storage-group-title { margin: 0 0 8px; font-size: 12.5px; font-weight: 600; color: var(--theme-text-secondary, #718096); }
+.storage-group .storage-category-list { margin-top: 0; }

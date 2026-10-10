@@ -514,3 +514,17 @@ export function sweepPodCache(categories: string[]) {
     method: "POST",
   });
 }
+
+/** 扫描产品处理侧的本地缓存（只读）；返回结构与 POD 侧一致（后端同一套分类协议）。 */
+export function scanProductProcessingCache() {
+  return httpJson<PodCacheScanResult>("/api/product-processing/cache/sweep/scan");
+}
+
+/** 清扫勾选的产品处理分类；只清没有任何记录引用的文件（含任务结果 JSON 引用的复核原图一律保留）。 */
+export function sweepProductProcessingCache(categories: string[]) {
+  const query = new URLSearchParams({ categories: categories.join(",") });
+  return httpJson<PodCacheSweepResult>(
+    `/api/product-processing/cache/sweep?${query.toString()}`,
+    { method: "POST" },
+  );
+}

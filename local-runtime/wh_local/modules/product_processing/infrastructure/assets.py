@@ -4,6 +4,7 @@ import hashlib
 import mimetypes
 import os
 import tempfile
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -426,6 +427,49 @@ class ProductProcessingAssets:
         if preview_root != root and preview_root not in root.parents:
             raise ValueError("preview workspace path is outside the managed root")
         return root
+
+    def iter_stored_files(self) -> Iterator[tuple[Path, float]]:
+        """Yield ``(absolute_path, mtime)`` for stored files under the managed root.
+
+        Used by the manual cache sweep to reconcile the on-disk tree against the
+        database. In-flight temporaries are skipped: writers create dot-prefixed
+        ``*.tmp`` files before atomic replaces, so those must never be collected.
+        """
+
+        for dirpath, dirnames, filenames in os.walk(self.root):
+            dirnames[:] = [name for name in dirnames if not name.startswith(".")]
+            for filename in filenames:
+                if filename.startswith(".") or filename.endswith(".tmp"):
+                    continue
+                target = Path(dirpath) / filename
+                try:
+                    mtime = target.stat().st_mtime
+                except OSError:
+                    continue
+                yield target, mtime
+
+    def remove_stored_file(self, path: Path | str) -> None:
+        """Best-effort removal of one stored file, plus empty parent cleanup.
+
+        The managed-root guard mirrors the save paths: anything outside
+        ``self.root`` is rejected so the sweep can never delete elsewhere.
+        """
+
+        target = Path(path).resolve()
+        root = self.root.resolve()
+        if target != root and root not in target.parents:
+            raise ValueError("file is outside the product-processing managed root")
+        try:
+            target.unlink(missing_ok=True)
+        except OSError:
+            return
+        parent = target.parent
+        while parent != root and root in parent.parents:
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
 
     @staticmethod
     def _image_suffix(filename: str, content_type: str) -> str:

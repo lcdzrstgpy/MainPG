@@ -3,14 +3,25 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { showToast } from "../../../shared/components/toastStore";
 import {
   scanPodCache,
+  scanProductProcessingCache,
   sweepPodCache,
+  sweepProductProcessingCache,
   type PodCacheScanCategory,
-  type PodCacheSweepResult,
 } from "../api/personalCenterApi";
 import { computeScanSelection } from "./storageSelection";
 
+/** 扫描结果的来源（两套缓存各有独立后端与独立分组）。 */
+type CacheSource = "pod" | "pp";
+type StorageCategoryItem = PodCacheScanCategory & { source: CacheSource };
+
+const SOURCE_TITLE: Record<CacheSource, string> = {
+  pod: "POD 定制缓存",
+  pp: "产品处理缓存",
+};
+
 /** 分类键 → 展示文案（后端返回未知键时回退为原键名）。 */
 const CATEGORY_META: Record<string, { label: string; hint: string }> = {
+  // —— POD 定制（后端 key 无前缀，保持兼容）——
   published_release: {
     label: "已发布图床的旧结果图",
     hint: "出图结果已在图床备份，释放本地副本",
@@ -27,6 +38,15 @@ const CATEGORY_META: Record<string, { label: string; hint: string }> = {
     label: "磁盘孤儿文件",
     hint: "磁盘上没有任何记录认领的遗留文件",
   },
+  // —— 产品处理 ——
+  pp_asset_orphans: {
+    label: "媒体库无引用图片",
+    hint: "已无任何草稿、任务引用的图片",
+  },
+  pp_disk_orphans: {
+    label: "无引用遗留文件",
+    hint: "磁盘上没有记录认领的遗留文件（含任务结果引用的复核原图会保留）",
+  },
 };
 
 function formatBytes(bytes: number): string {
@@ -35,19 +55,23 @@ function formatBytes(bytes: number): string {
 }
 
 /**
- * 存储空间：先扫描、再勾选清理本机图片缓存（POD 本地缓存 + 无引用孤儿文件）。
+ * 存储空间：先扫描、再勾选清理本机缓存。
  *
- * 后端只清「没有任何记录引用的本地文件」：模板、在用资产与被其它记录共享的
- * 文件都有完整护栏（见 docs/POD-本地图片缓存与清理说明.md）。**未勾选的分类
- * 一步都不会执行**；重复清理是幂等的。
+ * 覆盖两块互相独立的缓存（各自单独的后端接口，互不影响）：
+ * - POD 定制（批次图片、图床备份副本、孤儿文件）；
+ * - 产品处理（媒体库无引用图片、无引用遗留文件）。
+ *
+ * 两套后端都只清「没有任何记录引用的本地文件」：模板、在用资产、被其它记录
+ * 共享的文件、被任务结果引用的复核原图都有完整护栏。**未勾选的分类一步都
+ * 不会执行**；重复清理是幂等的。
  */
 export function StorageSpacePanel() {
-  const [categories, setCategories] = useState<PodCacheScanCategory[]>([]);
+  const [categories, setCategories] = useState<StorageCategoryItem[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [scanning, setScanning] = useState(false);
   const [sweeping, setSweeping] = useState(false);
   const [scanError, setScanError] = useState("");
-  const [lastResult, setLastResult] = useState<PodCacheSweepResult | null>(null);
+  const [lastFreed, setLastFreed] = useState<{ files: number; bytes: number } | null>(null);
   const busyRef = useRef(false);
   const seenScanRef = useRef(false);
 
@@ -57,12 +81,40 @@ export function StorageSpacePanel() {
     setScanning(true);
     setScanError("");
     try {
-      const data = await scanPodCache();
-      setCategories(data.categories);
+      // 两块缓存独立扫描：一边失败（如旧版本后端没有该接口）不影响另一边展示。
+      const [podResult, ppResult] = await Promise.allSettled([
+        scanPodCache(),
+        scanProductProcessingCache(),
+      ]);
+      const items: StorageCategoryItem[] = [];
+      if (podResult.status === "fulfilled") {
+        items.push(
+          ...podResult.value.categories.map((item) => ({ ...item, source: "pod" as const })),
+        );
+      }
+      if (ppResult.status === "fulfilled") {
+        items.push(
+          ...ppResult.value.categories.map((item) => ({ ...item, source: "pp" as const })),
+        );
+      }
+      if (items.length === 0) {
+        const firstError =
+          podResult.status === "rejected"
+            ? podResult.reason
+            : ppResult.status === "rejected"
+              ? ppResult.reason
+              : null;
+        throw firstError instanceof Error ? firstError : new Error("扫描失败，请稍后重试");
+      }
+      setCategories(items);
+      const failures = [podResult, ppResult]
+        .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+        .map((result) => (result.reason instanceof Error ? result.reason.message : "扫描失败"));
+      setScanError(failures.length ? `部分缓存扫描失败：${failures.join("；")}` : "");
       // ⚠️ 必须在同步代码里先定「是否首次」：updater 延迟执行，内部读 ref 会永远是 false。
       const firstScan = !seenScanRef.current;
       seenScanRef.current = true;
-      setSelected((previous) => computeScanSelection(data.categories, previous, firstScan));
+      setSelected((previous) => computeScanSelection(items, previous, firstScan));
     } catch (error) {
       setScanError(error instanceof Error ? error.message : "扫描失败，请稍后重试");
     } finally {
@@ -90,9 +142,15 @@ export function StorageSpacePanel() {
   const allSelected = cleanable.length > 0 && selectedCleanable.length === cleanable.length;
   const busy = scanning || sweeping;
 
+  const groups: Array<{ source: CacheSource; items: StorageCategoryItem[] }> = [];
+  for (const item of categories) {
+    const group = groups.find((entry) => entry.source === item.source);
+    if (group) group.items.push(item);
+    else groups.push({ source: item.source, items: [item] });
+  }
+
   const sweep = async () => {
-    const keys = selectedCleanable.map((item) => item.key);
-    if (keys.length === 0) {
+    if (selectedCleanable.length === 0) {
       showToast("请先勾选要清理的项目", "info");
       return;
     }
@@ -100,18 +158,38 @@ export function StorageSpacePanel() {
     busyRef.current = true;
     setSweeping(true);
     try {
-      const result = await sweepPodCache(keys);
-      setLastResult(result);
-      if (result.files_removed > 0) {
-        showToast(
-          `已释放 ${formatBytes(result.bytes_freed)}，共清理 ${result.files_removed} 个缓存文件`,
-          "success",
-        );
+      const podKeys = selectedCleanable.filter((item) => item.source === "pod").map((item) => item.key);
+      const ppKeys = selectedCleanable.filter((item) => item.source === "pp").map((item) => item.key);
+      const failures: string[] = [];
+      let filesRemoved = 0;
+      let bytesFreed = 0;
+      if (podKeys.length) {
+        try {
+          const result = await sweepPodCache(podKeys);
+          filesRemoved += result.files_removed;
+          bytesFreed += result.bytes_freed;
+        } catch (error) {
+          failures.push(error instanceof Error ? error.message : "POD 缓存清理失败");
+        }
+      }
+      if (ppKeys.length) {
+        try {
+          const result = await sweepProductProcessingCache(ppKeys);
+          filesRemoved += result.files_removed;
+          bytesFreed += result.bytes_freed;
+        } catch (error) {
+          failures.push(error instanceof Error ? error.message : "产品处理缓存清理失败");
+        }
+      }
+      setLastFreed({ files: filesRemoved, bytes: bytesFreed });
+      if (failures.length) {
+        const prefix = filesRemoved > 0 ? `已释放 ${formatBytes(bytesFreed)}；` : "";
+        showToast(`${prefix}部分清理失败：${failures.join("；")}`, "error");
+      } else if (filesRemoved > 0) {
+        showToast(`已释放 ${formatBytes(bytesFreed)}，共清理 ${filesRemoved} 个缓存文件`, "success");
       } else {
         showToast("没有可释放的空间，勾选的项目已经很干净了", "info");
       }
-    } catch (error) {
-      showToast(error instanceof Error ? error.message : "清理失败，请稍后重试", "error");
     } finally {
       busyRef.current = false;
       setSweeping(false);
@@ -142,37 +220,40 @@ export function StorageSpacePanel() {
         </p>
       )}
 
-      {categories.length > 0 && (
-        <ul className="storage-category-list">
-          {categories.map((item) => {
-            const meta = CATEGORY_META[item.key] ?? { label: item.key, hint: "" };
-            const hasContent = item.files > 0;
-            const checked = hasContent && selected.has(item.key);
-            return (
-              <li
-                key={item.key}
-                className={hasContent ? "storage-category" : "storage-category is-clean"}
-              >
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    disabled={!hasContent || busy}
-                    onChange={(event) => toggle(item.key, event.target.checked)}
-                  />
-                  <span className="storage-category-body">
-                    <span className="storage-category-label">{meta.label}</span>
-                    {meta.hint && <span className="storage-category-hint">{meta.hint}</span>}
-                  </span>
-                  <span className="storage-category-size">
-                    {hasContent ? `${item.files} 个 · ${formatBytes(item.bytes)}` : "已干净"}
-                  </span>
-                </label>
-              </li>
-            );
-          })}
-        </ul>
-      )}
+      {groups.map((group) => (
+        <div key={group.source} className="storage-group">
+          <p className="storage-group-title">{SOURCE_TITLE[group.source]}</p>
+          <ul className="storage-category-list">
+            {group.items.map((item) => {
+              const meta = CATEGORY_META[item.key] ?? { label: item.key, hint: "" };
+              const hasContent = item.files > 0;
+              const checked = hasContent && selected.has(item.key);
+              return (
+                <li
+                  key={item.key}
+                  className={hasContent ? "storage-category" : "storage-category is-clean"}
+                >
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={!hasContent || busy}
+                      onChange={(event) => toggle(item.key, event.target.checked)}
+                    />
+                    <span className="storage-category-body">
+                      <span className="storage-category-label">{meta.label}</span>
+                      {meta.hint && <span className="storage-category-hint">{meta.hint}</span>}
+                    </span>
+                    <span className="storage-category-size">
+                      {hasContent ? `${item.files} 个 · ${formatBytes(item.bytes)}` : "已干净"}
+                    </span>
+                  </label>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ))}
 
       <div className="storage-actions">
         <button
@@ -198,9 +279,9 @@ export function StorageSpacePanel() {
         </button>
       </div>
 
-      {lastResult && (
+      {lastFreed && (
         <p className="storage-result" role="status">
-          上次清理：释放 {formatBytes(lastResult.bytes_freed)}（{lastResult.files_removed} 个文件）
+          上次清理：释放 {formatBytes(lastFreed.bytes)}（{lastFreed.files} 个文件）
         </p>
       )}
     </article>
