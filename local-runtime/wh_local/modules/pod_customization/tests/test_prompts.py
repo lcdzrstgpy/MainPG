@@ -67,11 +67,12 @@ def test_adjacent_styles_never_share_primary() -> None:
         assert current != following
 
 
-def test_style_assignment_has_no_internal_duplicates_and_at_most_two_accents() -> None:
+def test_style_assignment_has_no_internal_duplicates_and_at_most_four_accents() -> None:
     for style_index in range(1, 40):
         assignment = assign_style_elements(COWBOY_KEYWORDS, style_index, "batch-a")
         tokens = [assignment["primary"], assignment["co"], *assignment["accents"]]
-        assert len(assignment["accents"]) <= 2
+        # 每款元素数量调高后：1 主 + 1 辅 + ≤4 点缀（受池子大小限制）。
+        assert len(assignment["accents"]) <= 4
         assert len(tokens) == len(set(tokens))
 
 
@@ -165,3 +166,90 @@ def test_style_prompt_is_deterministic() -> None:
     first = _style_prompt({"design_theme": "牛仔荒野风"}, 7, style_elements=assignment)
     second = _style_prompt({"design_theme": "牛仔荒野风"}, 7, style_elements=assignment)
     assert first == second
+
+
+def test_style_prompt_includes_parameterized_set_design() -> None:
+    """背景不能是空白棚拍：必须带上按本款元素/配色参数化的场景美术指导。"""
+
+    prompt = _style_prompt(
+        {"color_preferences": "暗夜靛蓝、鎏金黄铜色"},
+        style_index=1,
+        style_elements={"primary": "猫", "co": "咖啡", "accents": ["樱花"]},
+    )
+
+    assert "SET DESIGN" in prompt
+    # 参数化：场景美感必须显式绑定「本款元素」，道具配色取本款色板。
+    assert "this style's PART 3 elements (猫, 咖啡)" in prompt
+    assert "鎏金黄铜色" in prompt
+    # 素材图必须保持纯净中性背景（不能因为加了道具而污染）。
+    assert "material panel (bottom-right) must stay a clean neutral ecommerce background" in prompt
+
+
+def test_set_design_applies_when_style_has_no_assigned_elements() -> None:
+    prompt = _style_prompt({"color_preferences": "米白、墨绿"}, style_index=2)
+
+    assert "SET DESIGN" in prompt
+    assert "this style's own subject" in prompt
+
+
+def test_style_prompt_asks_for_grouped_element_pairing() -> None:
+    """元素不能均匀散点平铺，必须成组、有主次（用户反馈"搭配不好看"）。"""
+
+    prompt = _style_prompt(
+        {},
+        style_index=1,
+        style_elements={"primary": "猫", "co": "咖啡", "accents": ["樱花", "蝴蝶"]},
+    )
+
+    assert "元素搭配要有主次与联系" in prompt
+    assert "不要均匀散点平铺" in prompt
+
+
+def test_prompt_is_organized_into_four_parts() -> None:
+    """提示词按产品侧指定的四段式组织，且顺序固定。"""
+
+    base = build_direct_listing_prompt(BusinessFields(product_name="Tote bag"), "")
+    prompt = build_style_listing_prompt(
+        base,
+        style_index=1,
+        attempt=1,
+        business_fields={"design_theme": "牛仔荒野风", "color_preferences": "米白、墨绿"},
+        style_elements={"primary": "马蹄铁", "co": "野花", "accents": ["仙人掌"]},
+    )
+
+    for header in (
+        "PART 1 · CORE CONTRACT",
+        "PART 2 · PANEL ROLES",
+        "PART 3 · ELEMENT ROTATION",
+        "PART 4 · ART DIRECTION",
+    ):
+        assert header in prompt
+    assert (
+        prompt.index("PART 1 ·")
+        < prompt.index("PART 2 ·")
+        < prompt.index("PART 3 ·")
+        < prompt.index("PART 4 ·")
+    )
+
+
+def test_set_design_scene_rotates_across_styles() -> None:
+    """同批次各款必须换场景，否则整批背景雷同（实测踩过）。"""
+
+    p1 = _style_prompt({"color_preferences": "圣诞正红、米白暖调"}, style_index=1)
+    p2 = _style_prompt({"color_preferences": "圣诞正红、米白暖调"}, style_index=2)
+
+    def scene(prompt: str) -> str:
+        return next(line for line in prompt.splitlines() if line.startswith("- Stage this ONE lived-in scene"))
+
+    assert scene(p1) != scene(p2)
+
+
+def test_style_assignment_can_use_up_to_four_accents() -> None:
+    """元素数量上调后：池子足够大时点缀可到 4 个（共 6 个元素/款）。"""
+
+    pool = [f"e{i}" for i in range(10)]
+    sizes = {
+        len(assign_style_elements(pool, index, "batch-a")["accents"])
+        for index in range(1, 9)
+    }
+    assert max(sizes) == 4

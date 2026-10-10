@@ -49,7 +49,7 @@ from .runtime_contracts import (
 # 240s 约为 3 倍 p95。原先 600s 的上限会让一个长尾任务独占 1/8 的生图槽位长达 10 分钟，
 # 把整批有效并发从 8 拖到 4~5，整批耗时直接翻倍。
 SUCHUANG_RESULT_TIMEOUT_SECONDS: float = 240.0
-POD_IMAGE_MODEL_DEFAULT = "image_gpt"
+POD_IMAGE_MODEL_DEFAULT = "image_gpt_2.5"
 SUCHUANG_BASE_URL = "https://api.wuyinkeji.com"
 SUCHUANG_IMAGE_SUBMIT_PATHS = {
     "image_gpt": "/api/async/image_gpt",
@@ -276,6 +276,15 @@ class PodCustomizationAiRuntime(AiRuntime):
             submit_path = SUCHUANG_IMAGE_SUBMIT_PATHS.get(
                 model, SUCHUANG_IMAGE_SUBMIT_PATHS[POD_IMAGE_MODEL_DEFAULT]
             )
+            # 诊断留痕：明确记录本次解析到的模型与真实提交端点，避免"以为切了 2.5 其实没切"。
+            business_logger("pod_processing").info(
+                "POD 生图提交 | trial_id=%s | model=%s | endpoint=%s | size=%s | 参考图=%d",
+                request.trial_id,
+                model,
+                f"{SUCHUANG_BASE_URL}{submit_path}",
+                size_value,
+                len(reference_urls),
+            )
             if model == "image_gpt_2.5":
                 body: dict[str, Any] = {
                     "prompt": request.prompt,
@@ -442,10 +451,11 @@ class PodCustomizationAiRuntime(AiRuntime):
     def split_listing_grid(self, media):
         """Reuse the established local four-grid splitter; no AI call is made.
 
-        在既有的"裁边 → 放大到 800×800"之后加一层**轻度锐化**：上游母图实测
-        1254×1254，拆四格后每格原生仅约 627×627，插值放大到 800 会发软；这里把
-        边缘对比度补回来，让交付图更利落（不产生新细节，参数见 media_enhance）。
-        默认开启，`WH_POD_IMAGE_ENHANCE=0` 可一键回退。
+        在既有的"裁边 → 放大到 800×800"之前加一层**清晰化**：上游母图实测 1254×1254，
+        拆四格后每格原生仅约 627×627，插值放大会发软；这里默认走 ONNX 4× 超分重建纹理
+        边界再降到 800（失败自动回退轻度 USM 锐化，不产生新细节，参数见 media_enhance）。
+        默认开启，`WH_POD_IMAGE_ENHANCE=0` 可一键回退，`WH_POD_IMAGE_ENHANCE_MODE=usm`
+        可强制只做锐化。
         """
 
         parts = self._media.split_four_grid(media, enhance=options_from_env())

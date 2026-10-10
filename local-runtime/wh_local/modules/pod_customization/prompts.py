@@ -93,7 +93,7 @@ def assign_style_elements(
 
     - 以 ``seed``（batch_id）洗牌元素数组；同一批次重放得到同一分配（重试可复现），
       不同批次种子不同 → 分配不同（跨批变化）。
-    - 每款结构：1 主打 + 1 辅主 + ≤2 点缀；款内不重复，
+    - 每款结构：1 主打 + 1 辅主 + ≤4 点缀（共 3~6 个）；款内不重复，
       相邻款式主打必不同（主打按款式顺序在洗牌序列上轮换）。
     """
     if style_index < 1:
@@ -112,7 +112,7 @@ def assign_style_elements(
         return {"primary": primary, "co": "", "accents": []}
     co = shuffled[(offset + (count + 1) // 2) % count]
     accents: list[str] = []
-    for step in (1, 2):
+    for step in (1, 2, 3, 4):
         candidate = shuffled[(offset + step) % count]
         if candidate != primary and candidate != co and candidate not in accents:
             accents.append(candidate)
@@ -171,10 +171,101 @@ _LISTING_PANEL_SLOTS = (
     ("panel_4", "bottom-right", "material image"),
 )
 # 有用户构图时，四格描述改成「用户指令最高优先级」的口径：避免用户指令被角色名默认机位淹没。
+# 实测：只写「按用户指令」模型仍会把四格画成同一机位，因此这里额外下「四格机位必须互不相同 +
+# 必须字面照做」的硬条款（用户反馈：四张图视角一模一样 = 失败）。
 _USER_DIRECTION_HEADER = (
-    "USER-SPECIFIED SHOOTING DIRECTIONS — HIGHEST PRIORITY: for each panel below, follow the user's "
-    "direction exactly as that panel's shot. These directions OVERRIDE the default shot normally implied "
-    "by the panel role name; do not fall back to the generic role shot or reuse another panel's framing."
+    "USER-SPECIFIED SHOOTING DIRECTIONS — HIGHEST PRIORITY, HARD REQUIREMENTS (not hints): shoot each "
+    "panel exactly as its own direction says. These directions OVERRIDE the default shot normally implied "
+    "by the panel role name; never fall back to the generic role shot and never reuse another panel's "
+    "framing. Read every direction literally: '45-degree downward' must be clearly shot from above, "
+    "'vertically top-down' must look straight down from directly overhead, 'low eye-level' must sit below "
+    "the product, 'front-facing eye-level' must be a straight on-axis view, and 'macro close-up' must fill "
+    "the frame with the surface. Do not average the four directions into one compromise framing."
+)
+# 四格趋同是这批图最致命的失败模式，单独再钉一句。
+_PANEL_DIFFERENTIATION_LINE = (
+    "MANDATORY DIFFERENCE CHECK — before finishing, verify the four quadrants show four clearly different "
+    "camera angles: different elevation (high / eye-level / low) and different distance (wide / medium / "
+    "close-up / macro) as each panel requests. If two quadrants end up sharing the SAME camera angle, the "
+    "image is WRONG — re-shoot one of them. Four identical viewpoints is a failed result."
+)
+
+
+# 竞品观感的另一个关键：图要"鲜艳通透有吸引力"。实测我们出的图偏暗、偏灰、偏素——
+# 因为整条提示词里没有任何"提饱和/提亮"的要求，模型只会照暗色板忠实输出。
+# 注意：不改变用户指定色板，只要求"在色板内拉满饱和度与亮度，别做灰做旧"。
+_COLOR_IMPACT_BLOCK = (
+    "COLOR IMPACT — the result must look vivid, rich and inviting, never dull, grey or washed out:\n"
+    "- Render the palette at its most saturated and luminous. Deep/dark colors must read as RICH and "
+    "JEWEL-LIKE (lacquer, enamel, velvet), never muddy, hazy, dusty or faded.\n"
+    "- Keep the picture crisp and high-contrast: clean bright highlights, clear mid-tones and deep rich "
+    "shadows. Avoid a flat, hazy, low-contrast, under-lit or aged-look image.\n"
+    "- Warm the white balance toward sunlight; do not let a cold blue-grey cast flatten the picture.\n"
+    "- Build the PRODUCT BODY itself on the strongest, most saturated signature color of the palette "
+    "(the batch-wide theme's hero color) as its dominant base — the product must be the boldest color "
+    "statement in the whole frame. A pale, white or neutral product shell with only faint motifs is a "
+    "FAILURE. Lighter palette colors may only fill the pattern's negative space, the interior/lining, "
+    "or the background.\n"
+    "- TONAL SEPARATION — the product must separate clearly from its background through a strong "
+    "difference in value and/or saturation. Never place a pale product on a pale background: if the "
+    "product reads light, the background must be clearly darker or richer, and vice versa. A "
+    "low-contrast, light-on-light, washed-out frame is a FAILURE.\n"
+    "- Keep props and the scene colorful and high-saturation too; a muted beige/grey set is a FAILURE."
+)
+
+# POD 绝大多数是布艺（帆布/棉/绗缝/PU）包袋。实测我们出的图"像把图案喷在光滑塑料壳上"——
+# 因为提示词从没要求过面料工艺与布面行为。这里补上真实的纺织品质感。
+_FABRIC_REALISM_BLOCK = (
+    "TEXTILE REALISM — this is a real sewn fabric product, never a flat spray-painted surface:\n"
+    "- The supplied template photo shows this product's TRUE construction — reproduce that construction "
+    "faithfully. If the template body is quilted/padded, the output MUST keep that same quilted relief; "
+    "do not smooth it away.\n"
+    "- Match the product's ACTUAL construction shown in the template: a padded/quilted body must show its "
+    "quilt grid and the puffy padding raised between the stitch lines; a plain canvas body must show clean "
+    "seams and topstitching. Never render a smooth, featureless, hard shell.\n"
+    "- QUILTING (apply only when the template body is quilted or padded; skip it for plain canvas): "
+    "reproduce the TEMPLATE's exact quilting type, cell size and stitch pitch — never invent a coarser, "
+    "larger or more irregular quilting than the template shows. The quilt grid must be REGULAR and "
+    "perfectly UNIFORM: every cell the same size, laid out in one consistent geometry (parallel diagonal "
+    "diamond or square grid) that aligns with the product's panels, seams and edges.\n"
+    "- Each quilted cell must be puffed to the SAME even, gentle height with a smooth rounded crown: a "
+    "soft highlight on the crown and a soft shadow in the valley between cells. Cell size must stay "
+    "small-to-medium and proportionate to the product — fine grain, never oversized pillows.\n"
+    "- The stitch lines must stay clearly readable: a continuous, straight line of fine dashed "
+    "topstitching runs along EVERY grid line, with a subtle indentation/groove and a faint thread shadow "
+    "where the stitching pulls the fabric down.\n"
+    "- QUILTING FAILURES — never produce: irregular lumpy blobs, marshmallow-like random bubbles, uneven "
+    "or oversized padding, a grid pitch that changes across the product, wavy or missing stitch lines, or "
+    "a surface that reads as a puffy duvet instead of a tailored quilted product.\n"
+    "- Show real fabric: visible woven canvas/cotton weave with a soft matte sheen, subtle fibre fuzz along "
+    "edges. Never glossy plastic, vinyl or airbrushed paint.\n"
+    "- Show natural fabric behaviour: gentle folds, soft creases, slight sag where the fabric hangs, and "
+    "tension lines where straps and zippers pull. Light must wrap these folds with soft shadows and highlights.\n"
+    "- Show real sewing details: topstitching along every edge and strap, a fabric zipper with tape, and "
+    "subtle seam shadowing.\n"
+    "- The printed/embroidered motifs must sit ON the weave and FOLLOW the fabric's folds and curvature "
+    "(they bend with the surface) — they must never look like flat stickers floating over a smooth shell.\n"
+    "- Keep the artwork itself unchanged and sharply readable while adding this textile realism."
+)
+
+# 生成提示词按四段式组织（产品侧指定的结构），段头显式标出，便于模型与人工都看清职责：
+#   PART 1 最高内置契约：2×2 四宫格格式 + 整批统一风格 + 全局硬规则
+#   PART 2 四格角色与机位：每格叫什么、怎么拍、视角怎么换（用户构图在此覆盖默认机位）
+#   PART 3 元素轮换：逐款元素分配，保证款间差异
+#   PART 4 美术指导：真实面料工艺 + 场景/背景美感（美感来源 = PART 1 的主题 + PART 3 的本款元素）
+_PART1_HEADER = (
+    "=== PART 1 · CORE CONTRACT (highest priority) — 2x2 four-panel format, batch-wide style, "
+    "global hard rules ==="
+)
+_PART2_HEADER = (
+    "=== PART 2 · PANEL ROLES, FRAMING & CAMERA — the four fixed slots and how each is shot ==="
+)
+_PART3_HEADER = (
+    "=== PART 3 · ELEMENT ROTATION (this style only) — per-style elements that guarantee cross-style variety ==="
+)
+_PART4_HEADER = (
+    "=== PART 4 · ART DIRECTION — real textile craft + scene beauty. The scene's beauty MUST be derived "
+    "from the PART 1 batch-wide theme together with THIS style's PART 3 elements ==="
 )
 
 
@@ -195,6 +286,7 @@ def _listing_panel_lines(composition: Mapping[str, str] | None) -> list[str]:
             f"Panel {index} ({position} — role: {role}; user direction): {panels[key]}"
             for index, (key, position, role) in enumerate(_LISTING_PANEL_SLOTS, start=1)
         ),
+        _PANEL_DIFFERENTIATION_LINE,
         _FIXED_PANEL_ROLE_LINE,
         "Every panel must still show the same exact product wearing the same unchanged newly invented artwork, with the four-panel divider clean and centered.",
     ]
@@ -216,15 +308,19 @@ def build_direct_listing_prompt(
     四格机位/构图描述，但保留全部硬约束（2×2、同产品同图案、禁文字/水印、内饰不印等）。
     """
     parts = [
+        _PART1_HEADER,
         "Create one square 2x2 ecommerce contact sheet with exactly four equal panels.",
-        "Treat the supplied template only as a structural product reference for product geometry, construction, proportions, material, scale, and printable surface location.",
-        "Do not copy, trace, preserve, or extend the template's existing artwork, decoration, product color, background, room, furniture, surface, lighting, shadows, camera framing, or scene.",
-        "The template is not a background plate and must not appear as the base image. Invent a completely new surface design and a fresh commercially suitable product color and presentation.",
+        "Treat the supplied template only as a structural product reference for product geometry, construction, proportions, material, scale, and printable surface location — including its sewn construction relief: the quilting/padding grid, the puffiness between stitch lines, seams, topstitching and hardware.",
+        "Do not copy, trace, preserve, or extend the template's existing artwork, decoration, colour scheme, background, room, furniture, lighting, shadows, camera framing, or scene.",
+        "CARVE-OUT: the template's quilting/padding relief, seams and stitching are STRUCTURE, not decoration. They MUST be preserved exactly as the template shows them — do not flatten the quilted surface into a smooth shell. Only the artwork, the colour scheme and the scene are to be replaced.",
+        "That restriction only forbids REUSING the template's own scene. It does NOT mean the background may be plain: a freshly styled, richly lit scene is required (see PART 4 ART DIRECTION).",
+        "The template is not a background plate and must not appear as the base image. Invent a completely new PRINTED pattern and a fresh commercially suitable colour scheme — while keeping the fabric's real quilted/padded relief and stitching.",
         "Keep the same exact product across all four panels: identical structure, material, proportions, base color, newly invented artwork, artwork scale, and artwork placement.",
-        "Do not invent another product, extra accessories, text, captions, logos, labels, watermarks, collages, or borders. Keep the four-panel divider clean and centered.",
+        "Do not invent another product, accessories attached to the product itself, text, captions, logos, labels, watermarks, collages, or borders. Keep the four-panel divider clean and centered. (Standalone scene props beside the product ARE required — see PART 4 ART DIRECTION.)",
         "Panel order is fixed and every panel must show the same exact product with the same unchanged newly invented artwork.",
         "When the product has an interior or lining (for example a laundry hamper, storage basket, or tote bag with an inner lining), keep the interior surface unprinted: a plain uniform solid color, black by default. Never extend the outer surface artwork onto the interior, and never add a second pattern inside.",
-        *_listing_panel_lines(composition),
+        _COLOR_IMPACT_BLOCK,
+        _FABRIC_REALISM_BLOCK,
         f"Product name: {fields.product_name or 'POD product'}.",
     ]
     for label, value in (
@@ -239,7 +335,57 @@ def build_direct_listing_prompt(
     ):
         if value:
             parts.append(f"{label}: {value}.")
+    # PART 2 只放四格角色与机位/构图，且用户构图在这里覆盖默认机位。
+    parts.append(_PART2_HEADER)
+    parts.extend(_listing_panel_lines(composition))
     return "\n".join(parts)
+
+
+# 从热卖 POD listing 反推出来的「场景美术（set design）」公式：背景若只是空白棚拍或空旷外景，
+# 观感就"死气沉沉"。这里给正向约束——具体生活场景 + 同题材道具 + 同色系 + 暖向光 + 浅景深。
+# 只作用于生活化主图（左上）与细节图背景；素材图（右下）必须保持纯净中性背景，不要道具。
+# 场景池：**逐款轮换**。原来给的是固定列表（模型每次都挑同一条）→ 同批次各款背景雷同。
+_STYLE_SCENES = (
+    "a sunlit windowsill with soft morning light",
+    "a warm wooden kitchen counter",
+    "a cozy festive tabletop corner",
+    "a styled living-room side table under warm lamplight",
+    "a rustic garden table in golden afternoon light",
+    "a linen-draped console table beside a bright window",
+    "a pale marble countertop with soft daylight",
+)
+
+
+def _set_design_block(theme: str, palette: str, scene: str) -> str:
+    subject = theme or "this style's own subject"
+    return (
+        "SET DESIGN — the lifestyle scene must look rich, warm and inviting; a plain studio wall or an "
+        "empty outdoor field is a FAILURE (this is the main quality gap versus top-selling listings):\n"
+        f"- Derive the scene's beauty from the PART 1 batch-wide theme together with this style's PART 3 "
+        f"elements ({subject}) — the setting must clearly belong to this exact collection.\n"
+        f"- Stage this ONE lived-in scene, adapted to that theme (starting point for this style: {scene}). "
+        "Only props that genuinely belong to that scene; never generic filler.\n"
+        f"- Dress it with 3-5 supporting props from the SAME subject family as the artwork ({subject}); "
+        "never generic filler, and never a duplicate of the product itself.\n"
+        f"- Prop colors must come from this style's own palette: {palette}. They must harmonize with the "
+        "artwork, never clash with it.\n"
+        "- Lighting: warm directional light (window light, golden afternoon light, or a warm lamp) with "
+        "clear highlights and soft natural shadows. Never flat, grey, even light.\n"
+        "- GLOW — in the lifestyle scene include at least ONE visible warm glowing light source (string "
+        "fairy lights, a lit candle, a lantern, a warmly lit window or a glowing lamp) that appears in "
+        "frame as a bright warm highlight with a soft warm halo or bokeh. The scene must contain a real "
+        "point of glow, not only diffuse ambient daylight; an evenly lit scene with no visible light "
+        "source is a FAILURE.\n"
+        "- Camera: shallow depth of field, soft background bokeh, optionally one blurred foreground prop "
+        "framing the product.\n"
+        "- Materials: include tactile surfaces (wood, linen, lace, marble, woven mat, checkered cloth).\n"
+        "- The product stays the hero: centered, fully visible, sharply in focus; props only support it.\n"
+        "- The scene must change from style to style inside this batch — never reuse one background set "
+        "across different styles.\n"
+        "- Applies to the lifestyle panel (top-left) and may softly continue into the detail panels' "
+        "backgrounds. The material panel (bottom-right) must stay a clean neutral ecommerce background "
+        "with no props."
+    )
 
 
 def build_style_listing_prompt(
@@ -271,7 +417,7 @@ def build_style_listing_prompt(
         token
         for token in (str(item).strip() for item in elements.get("accents") or [])
         if token and token not in (primary, co)
-    ][:2]
+    ][:4]
 
     composition = _STYLE_COMPOSITIONS[(offset * 3) % len(_STYLE_COMPOSITIONS)]
     color_preferences = _brief_color_preferences(business_fields)
@@ -299,7 +445,11 @@ def build_style_listing_prompt(
         if co:
             subject_lines.append(f"辅主：{co}（第二大尺度，0.6）")
         if accents:
-            subject_lines.append(f"点缀：{', '.join(accents)}（小尺度，0.25，至多 2 个）")
+            subject_lines.append(f"点缀：{', '.join(accents)}（小尺度，0.25，至多 4 个）")
+        subject_lines.append(
+            "元素搭配要有主次与联系：把本款元素组织成 2~3 处『成组的小景』（一处主元素 + 若干围绕它的陪衬），"
+            "不要均匀散点平铺；同一组内的元素在题材或形态上必须互相呼应，避免把不相干的元素硬凑在一起。"
+        )
         subject_lines.append(
             "清单中未分配给本款的元素在本款中禁止出现。"
         )
@@ -319,6 +469,7 @@ def build_style_listing_prompt(
     rules = [
         base_prompt.rstrip(),
         "",
+        _PART3_HEADER,
         "STYLE-SPECIFIC DIVERSITY CONTRACT:",
         f"Style creative signature: {signature}",
         subject_block,
@@ -340,6 +491,13 @@ def build_style_listing_prompt(
             "The first result was invalid, failed, or too similar to another style; reinvent the surface artwork from scratch while keeping this style's assigned elements and recipe, and the same product structure.",
             "Do not reuse the first attempt's focal shape, motif arrangement, or color blocking.",
         ))
+    # 场景美术：用本款元素与配色去布置一个具体生活场景，避免背景空洞灰冷（竞品观感差距的主因）。
+    # 场景逐款轮换，避免同批次所有款共用同一个背景。
+    theme_desc = ", ".join(token for token in (primary, co) if token)
+    scene = _STYLE_SCENES[(offset * 5) % len(_STYLE_SCENES)]
+    rules.append("")
+    rules.append(_PART4_HEADER)
+    rules.append(_set_design_block(theme_desc, palette, scene))
     rules.append(
         "Panel positions and roles stay fixed: top-left = PRIMARY image, top-right = detail A, "
         "bottom-left = detail B, bottom-right = material image. Do not swap, shift, or duplicate panels."
@@ -410,7 +568,7 @@ def build_semi_pattern_prompt(
             token
             for token in (str(item).strip() for item in elements.get("accents") or [])
             if token and token not in (primary, co)
-        ][:2]
+        ][:4]
 
         composition = _STYLE_COMPOSITIONS[(offset * 3) % len(_STYLE_COMPOSITIONS)]
         palette = (
