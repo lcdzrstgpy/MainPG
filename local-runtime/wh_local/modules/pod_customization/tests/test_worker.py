@@ -14,11 +14,8 @@ from PIL import Image, ImageDraw
 from wh_local.modules.pod_customization.contracts import (
     BatchCreate,
     BusinessFields,
-    Calibration,
     DirectListingTrialCreate,
     ListingFields,
-    NormalizedPoint,
-    NormalizedRect,
 )
 from wh_local.modules.pod_customization.billing_contract import (
     PodBillingAuthorizationRequired,
@@ -872,15 +869,7 @@ def _batch_request_for_test(template_id: str, *, count: int = 1) -> BatchCreate:
 
 def _ready_template(service: PodCustomizationService, actor: Actor) -> dict:
     scene = Image.new("RGB", (240, 200), "#e9ecef")
-    template = service.upload_template(actor, name="Fixed tote scene", filename="scene.png", content=_encode(scene))
-    return service.update_template_calibration(
-        actor,
-        template["id"],
-        Calibration(
-            mask=NormalizedRect(x=0.25, y=0.2, width=0.5, height=0.6),
-            anchor=NormalizedPoint(x=0.5, y=0.5),
-        ),
-    )
+    return service.upload_template(actor, name="Fixed tote scene", filename="scene.png", content=_encode(scene))
 
 
 def _create_batch(
@@ -2061,14 +2050,6 @@ def test_stale_epoch_write_does_not_complete_item_after_reap(tmp_path: Path) -> 
     actor = _actor()
 
     template = service.upload_template(actor, name="Stale test", filename="stale.png", content=_encode(_pattern(0)))
-    service.update_template_calibration(
-        actor,
-        template["id"],
-        Calibration(
-            mask=NormalizedRect(x=0.2, y=0.2, width=0.6, height=0.6),
-            anchor=NormalizedPoint(x=0.5, y=0.5),
-        ),
-    )
     batch = service.create_batch(
         actor,
         BatchCreate(
@@ -2164,14 +2145,6 @@ def test_reap_increments_epoch_so_current_epoch_differs(tmp_path: Path) -> None:
     actor = _actor()
 
     template = service.upload_template(actor, name="Epoch drift", filename="drift.png", content=_encode(_pattern(0)))
-    service.update_template_calibration(
-        actor,
-        template["id"],
-        Calibration(
-            mask=NormalizedRect(x=0.2, y=0.2, width=0.6, height=0.6),
-            anchor=NormalizedPoint(x=0.5, y=0.5),
-        ),
-    )
     batch = service.create_batch(
         actor,
         BatchCreate(
@@ -2222,14 +2195,6 @@ def test_current_epoch_worker_can_still_complete_normally(tmp_path: Path) -> Non
     actor = _actor()
 
     template = service.upload_template(actor, name="Valid epoch", filename="valid.png", content=_encode(_pattern(0)))
-    service.update_template_calibration(
-        actor,
-        template["id"],
-        Calibration(
-            mask=NormalizedRect(x=0.2, y=0.2, width=0.6, height=0.6),
-            anchor=NormalizedPoint(x=0.5, y=0.5),
-        ),
-    )
     batch = service.create_batch(
         actor,
         BatchCreate(
@@ -2335,14 +2300,6 @@ def test_coordinator_times_out_when_provider_never_returns(tmp_path: Path) -> No
         actor = _actor()
 
         template = service.upload_template(actor, name="Timeout test", filename="to.png", content=_encode(_pattern(0)))
-        service.update_template_calibration(
-            actor,
-            template["id"],
-            Calibration(
-                mask=NormalizedRect(x=0.2, y=0.2, width=0.6, height=0.6),
-                anchor=NormalizedPoint(x=0.5, y=0.5),
-            ),
-        )
         batch = service.create_batch(
             actor,
             BatchCreate(
@@ -2406,14 +2363,6 @@ def test_progress_resets_deadline_when_styles_complete(tmp_path: Path) -> None:
         actor = _actor()
 
         template = service.upload_template(actor, name="Progress reset", filename="pr.png", content=_encode(_pattern(0)))
-        service.update_template_calibration(
-            actor,
-            template["id"],
-            Calibration(
-                mask=NormalizedRect(x=0.2, y=0.2, width=0.6, height=0.6),
-                anchor=NormalizedPoint(x=0.5, y=0.5),
-            ),
-        )
         batch = service.create_batch(
             actor,
             BatchCreate(

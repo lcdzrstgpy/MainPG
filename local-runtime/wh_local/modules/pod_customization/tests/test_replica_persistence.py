@@ -10,10 +10,7 @@ from PIL import Image
 from wh_local.modules.pod_customization.contracts import (
     BatchCreate,
     BusinessFields,
-    Calibration,
     ListingFields,
-    NormalizedPoint,
-    NormalizedRect,
     ReplicaBatchCreate,
     ReplicaTargetCreate,
     SemiBatchCreate,
@@ -333,14 +330,6 @@ def test_full_and_semi_payloads_keep_backward_compatible_mode(tmp_path: Path) ->
     assert "targets" not in semi
 
     template = service.upload_template(actor, name="T", filename="t.png", content=_png())
-    service.update_template_calibration(
-        actor,
-        template["id"],
-        Calibration(
-            mask=NormalizedRect(x=0.2, y=0.2, width=0.6, height=0.6),
-            anchor=NormalizedPoint(x=0.5, y=0.5),
-        ),
-    )
     full = service.create_batch(
         actor,
         BatchCreate(

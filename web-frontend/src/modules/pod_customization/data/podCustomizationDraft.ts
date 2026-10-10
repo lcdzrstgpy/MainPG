@@ -285,15 +285,7 @@ function cloneSystemTemplate(template: PodSystemTemplate): PodSystemTemplate {
 }
 
 function clonePodTemplate(template: PodTemplate): PodTemplate {
-  return {
-    ...template,
-    calibration: template.calibration
-      ? {
-        mask: { ...template.calibration.mask },
-        anchor: { ...template.calibration.anchor },
-      }
-      : null,
-  };
+  return { ...template };
 }
 
 function isPodCustomizationDraft(value: unknown): value is PodCustomizationDraft {
@@ -614,7 +606,6 @@ function isPodSystemTemplate(value: unknown): value is PodSystemTemplate {
 
 function isPodTemplate(value: unknown): value is PodTemplate {
   if (!isRecord(value)) return false;
-  const calibration = value.calibration;
   return typeof value.id === "string"
     && typeof value.name === "string"
     && (value.source === "system" || value.source === "personal")
@@ -622,23 +613,8 @@ function isPodTemplate(value: unknown): value is PodTemplate {
     && typeof value.original_url === "string"
     && typeof value.width === "number"
     && typeof value.height === "number"
-    && (value.calibration_status === "pending" || value.calibration_status === "calibrating" || value.calibration_status === "ready" || value.calibration_status === "failed")
     && typeof value.created_at === "string"
-    && typeof value.updated_at === "string"
-    && (calibration === null || isCalibration(calibration));
-}
-
-function isCalibration(value: unknown): boolean {
-  return isRecord(value)
-    && isPoint(value.anchor)
-    && isRecord(value.mask)
-    && isPoint(value.mask)
-    && typeof value.mask.width === "number"
-    && typeof value.mask.height === "number";
-}
-
-function isPoint(value: unknown): boolean {
-  return isRecord(value) && typeof value.x === "number" && typeof value.y === "number";
+    && typeof value.updated_at === "string";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

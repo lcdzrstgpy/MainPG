@@ -2,13 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-# 复刻内部锚点模板的兜底校准：不作用于生图（生成只消费样图+目标参考图），
-# 仅保证「template」结构里存在合法 calibration 字段，供旧批次结构兼容消费。
-_REPLICA_ANCHOR_CALIBRATION_JSON = (
-    '{"mask": {"x": 0, "y": 0, "width": 1, "height": 1}, '
-    '"anchor": {"x": 0.5, "y": 0.5}}'
-)
-
 
 class ReplicaStyleSnapshotMissingError(RuntimeError):
     """复刻款快照缺失：明确失败，绝不回退首款数据。"""
@@ -47,7 +40,6 @@ def style_product_context(batch: dict[str, Any], style_index: int) -> dict[str, 
         "asset_id": str(asset.get("asset_id") or ""),
         "width": int(asset.get("width") or 0),
         "height": int(asset.get("height") or 0),
-        "calibration_json": _REPLICA_ANCHOR_CALIBRATION_JSON,
         "created_at": str(batch.get("created_at") or ""),
     }
     return {

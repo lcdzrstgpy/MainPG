@@ -12,6 +12,7 @@ export type SemiBatchItem = PodBatchItem & {
 
 export type CreateSemiBatchRequest = {
   count: number;
+  /** 兼容字段：提示词由服务端构造，实际入库版本以服务端 prompts.PATTERN_PROMPT_VERSION 为准。 */
   prompt_version: "v1";
   business_fields: PodBusinessFields;
   creative_prompt: string;

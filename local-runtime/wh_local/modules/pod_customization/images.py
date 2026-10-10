@@ -2,13 +2,10 @@ from __future__ import annotations
 
 import io
 import hashlib
-import math
 from dataclasses import dataclass
 from typing import Callable, Sequence
 
 from PIL import Image, ImageStat, UnidentifiedImageError
-
-from .contracts import Calibration
 
 
 @dataclass(frozen=True)
@@ -71,49 +68,6 @@ def split_grid_2x2(content: bytes) -> list[bytes]:
         (half_width, half_height, image.width, image.height),
     )
     return [_encode_png(image.crop(box)) for box in boxes]
-
-
-def compose_fixed_scene(
-    template_image: bytes,
-    pattern_image: bytes,
-    calibration: Calibration,
-    *,
-    overlay_images: Sequence[bytes] = (),
-) -> bytes:
-    base = _open_rgba(template_image, "fixed scene template")
-    pattern = _open_rgba(pattern_image, "POD pattern")
-    rect = calibration.mask
-    left = max(0, min(base.width - 1, round(rect.x * base.width)))
-    top = max(0, min(base.height - 1, round(rect.y * base.height)))
-    right = max(left + 1, min(base.width, round((rect.x + rect.width) * base.width)))
-    bottom = max(top + 1, min(base.height, round((rect.y + rect.height) * base.height)))
-    target_width, target_height = right - left, bottom - top
-    scale = max(target_width / pattern.width, target_height / pattern.height)
-    resized = pattern.resize(
-        (max(target_width, math.ceil(pattern.width * scale)), max(target_height, math.ceil(pattern.height * scale))),
-        Image.Resampling.LANCZOS,
-    )
-    excess_x = max(0, resized.width - target_width)
-    excess_y = max(0, resized.height - target_height)
-    crop_x = round(excess_x * calibration.anchor.x)
-    crop_y = round(excess_y * calibration.anchor.y)
-    tile = resized.crop((crop_x, crop_y, crop_x + target_width, crop_y + target_height))
-    base.alpha_composite(tile, dest=(left, top))
-    for raw_overlay in overlay_images:
-        overlay = _open_rgba(raw_overlay, "fixed scene overlay")
-        if overlay.size != base.size:
-            overlay = overlay.resize(base.size, Image.Resampling.LANCZOS)
-        base.alpha_composite(overlay)
-    return _encode_png(base)
-
-
-def _open_rgba(content: bytes, label: str) -> Image.Image:
-    try:
-        with Image.open(io.BytesIO(content)) as source:
-            source.load()
-            return source.convert("RGBA")
-    except (UnidentifiedImageError, OSError, ValueError) as exc:
-        raise ValueError(f"{label} is not a valid image") from exc
 
 
 def _encode_png(image: Image.Image) -> bytes:

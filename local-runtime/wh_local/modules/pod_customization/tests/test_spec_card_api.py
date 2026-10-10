@@ -23,10 +23,7 @@ from wh_local.modules.pod_customization.contracts import (
     SPEC_CARD_MAX_ROWS,
     BatchCreate,
     BusinessFields,
-    Calibration,
     ListingFields,
-    NormalizedPoint,
-    NormalizedRect,
 )
 from wh_local.modules.pod_customization.router import create_router
 from wh_local.modules.pod_customization.service import PodCustomizationService
@@ -175,14 +172,6 @@ def _upload_template(service: PodCustomizationService, *, side: int = 400) -> st
         name="Fixed tote scene",
         filename="scene.png",
         content=_encode(Image.new("RGB", (side, side), "#e9ecef")),
-    )
-    service.update_template_calibration(
-        ACTOR,
-        template["id"],
-        Calibration(
-            mask=NormalizedRect(x=0.25, y=0.2, width=0.5, height=0.6),
-            anchor=NormalizedPoint(x=0.5, y=0.5),
-        ),
     )
     return template["id"]
 

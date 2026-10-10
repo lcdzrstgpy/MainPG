@@ -1,5 +1,6 @@
 import { podItemStatusLabel } from "../data/podCustomizationModel";
-import { usePodAssetUrl } from "../data/usePodAssetUrl";
+import { podImageSource } from "../data/podImageSource";
+import { PodAssetImage, usePodAssetUrl } from "../data/usePodAssetUrl";
 import type { PodBatch, PodBatchItem } from "../types";
 
 type Props = {
@@ -10,7 +11,11 @@ type Props = {
 };
 
 export function PodBatchInspector({ batch, item, busyAction, onDownload }: Props) {
-  const compositePreview = usePodAssetUrl(item?.public_url || item?.composite_preview_url || item?.pattern_preview_url);
+  // 公网链接优先，加载失败或缺失时回退本地资产地址。
+  const { path: compositePreview, fallbackPath: compositeFallback } = podImageSource(
+    item?.public_url,
+    item?.composite_preview_url || item?.pattern_preview_url,
+  );
   const patternPreview = usePodAssetUrl(item?.pattern_preview_url);
 
   if (!batch || !item) {
@@ -31,7 +36,7 @@ export function PodBatchInspector({ batch, item, busyAction, onDownload }: Props
 
       <div className="pod-inspector-preview">
         {compositePreview
-          ? <img src={compositePreview} alt={`第 ${item.index} 款固定场景效果`} />
+          ? <PodAssetImage path={compositePreview} fallbackPath={compositeFallback} alt={`第 ${item.index} 款固定场景效果`} />
           : <div><span className="iconfont icon-image" /><p>固定场景效果生成中</p></div>}
         {item.scene_optimized && <span className="pod-inspector-optimized"><i className="iconfont icon-star" />AI 场景已优化</span>}
       </div>

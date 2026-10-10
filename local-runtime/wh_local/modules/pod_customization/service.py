@@ -34,13 +34,10 @@ from .contracts import (
     BriefFieldRequest,
     COMPOSITION_NAME_MAX_LENGTH,
     COMPOSITION_PANEL_KEYS,
-    Calibration,
     CompositionRenameRequest,
     CompositionRequest,
     CompositionUpdateRequest,
     DirectListingTrialCreate,
-    NormalizedPoint,
-    NormalizedRect,
     ReplicaBatchCreate,
     ReplicaImageUploadResponse,
     SEMI_PATTERN_ROLES,
@@ -66,6 +63,7 @@ from .prompts import (
     DEFAULT_COMPOSITION_PANELS,
     DEFAULT_COMPOSITION_RAW_INPUT,
     LISTING_IMAGE_ROLES,
+    PATTERN_PROMPT_VERSION,
     assign_style_elements,
     build_direct_listing_prompt,
     build_style_listing_prompt,
@@ -224,42 +222,6 @@ class PodCustomizationService:
         )
         return self._template_payload(template)
 
-    def update_template_calibration(
-        self,
-        actor: Actor,
-        template_id: str,
-        calibration: Calibration,
-    ) -> dict[str, Any]:
-        template = self.repository.update_template_calibration(
-            template_id,
-            actor.workspace_id,
-            actor.id,
-            calibration,
-        )
-        return self._template_payload(template)
-
-    def calibrate_template(self, actor: Actor, template_id: str) -> dict[str, Any]:
-        template = self.repository.set_template_calibration_state(
-            template_id, actor.workspace_id, actor.id, "calibrating"
-        )
-        try:
-            asset = self.repository.get_asset(template["asset_id"], actor.workspace_id, actor.id)
-            calibrator = getattr(self.ai_runtime, "calibrate_template", None)
-            calibration = (
-                Calibration.model_validate(calibrator(self.assets.read(asset["relative_path"])))
-                if callable(calibrator)
-                else Calibration(
-                    mask=NormalizedRect(x=0.2, y=0.2, width=0.6, height=0.6),
-                    anchor=NormalizedPoint(x=0.5, y=0.5),
-                )
-            )
-            return self.update_template_calibration(actor, template_id, calibration)
-        except Exception as exc:
-            self.repository.set_template_calibration_state(
-                template_id, actor.workspace_id, actor.id, "failed", str(exc)
-            )
-            raise
-
     def list_templates(self, actor: Actor) -> dict[str, Any]:
         return {
             "templates": [
@@ -269,6 +231,9 @@ class PodCustomizationService:
         }
 
     def create_batch(self, actor: Actor, request: BatchCreate, *, enqueue: bool = True) -> dict[str, Any]:
+        # 提示词版本以服务端为准：大提示词由本服务构造，客户端传值只作兼容。
+        # 否则改了提示词却忘了升版本，新旧批次会被记成同一版本，产出无法归因。
+        request = request.model_copy(update={"prompt_version": PATTERN_PROMPT_VERSION})
         batch_id = uuid.uuid4().hex
         self.repository.preflight_batch(actor.workspace_id, actor.id, request)
         # 全定制新建批次自动套用该账号「生效中」的构图模板（若有）；仓库层把它冻结进 prompt_snapshot。
@@ -329,6 +294,8 @@ class PodCustomizationService:
         return self.repository.ensure_semi_placeholder(actor.workspace_id, actor.id, asset)
 
     def create_semi_batch(self, actor: Actor, request: SemiBatchCreate, *, enqueue: bool = True) -> dict[str, Any]:
+        # 同全定制：提示词版本以服务端为准，客户端传值只作兼容。
+        request = request.model_copy(update={"prompt_version": PATTERN_PROMPT_VERSION})
         batch_id = uuid.uuid4().hex
         self._ensure_semi_placeholder(actor)
         billing_run = self._freeze_semi_batch(actor, batch_id, request.count) if (enqueue or self.billing_coordinator) else None
@@ -2405,7 +2372,6 @@ class PodCustomizationService:
     @staticmethod
     def _template_payload(template: dict[str, Any]) -> dict[str, Any]:
         template_id = template["template_id"]
-        calibration = json.loads(template["calibration_json"])
         return {
             "id": template_id,
             "name": template["name"],
@@ -2414,8 +2380,6 @@ class PodCustomizationService:
             "original_url": f"/api/pod-customization/assets/{template['asset_id']}",
             "width": template["width"],
             "height": template["height"],
-            "calibration_status": template["calibration_status"],
-            "calibration": calibration,
             "error_message": template["error_message"],
             "version": template["version"],
             "created_at": template["created_at"],
@@ -2437,8 +2401,6 @@ class PodCustomizationService:
                 "original_url": f"/api/pod-customization/assets/{snapshot['asset_id']}",
                 "width": snapshot["width"],
                 "height": snapshot["height"],
-                "calibration_status": "ready",
-                "calibration": json.loads(snapshot["calibration_json"]),
                 "created_at": snapshot["created_at"],
                 "updated_at": snapshot["created_at"],
             }

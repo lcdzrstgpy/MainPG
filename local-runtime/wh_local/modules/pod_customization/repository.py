@@ -19,19 +19,23 @@ from .contracts import (
     BatchCreate,
     BusinessFields,
     COMPOSITION_PANEL_KEYS,
-    Calibration,
     ReplicaBatchCreate,
     SemiBatchCreate,
     grid_call_count,
     style_grid_call_count,
 )
 from .errors import PodExecutionExpired, safe_error_message
-from .prompts import assign_style_elements, build_direct_listing_prompt, build_semi_pattern_base
+from .prompts import (
+    PATTERN_PROMPT_VERSION,
+    assign_style_elements,
+    build_direct_listing_prompt,
+    build_semi_pattern_base,
+)
 
 
 SEMI_PLACEHOLDER_TEMPLATE_ID = "semi-pattern-placeholder"
 SEMI_PLACEHOLDER_TEMPLATE_NAME = "半定制占位模板"
-REPLICA_INTERNAL_TEMPLATE_NAME = "复刻内部锚点模板"
+REPLICA_INTERNAL_TEMPLATE_NAME = "复刻内部模板"
 
 
 class ReplicaBatchIdempotentReturn(Exception):
@@ -239,75 +243,19 @@ class PodCustomizationRepository:
             connection.execute(
                 """INSERT INTO pod_customization_templates
                    (template_id, workspace_id, owner_user_id, name, source, asset_id, width, height,
-                    calibration_status, calibration_json, version, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'null', 1, ?, ?)""",
+                    version, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)""",
                 (template_id, workspace_id, owner_user_id, name[:120], source, asset["asset_id"],
                  asset["width"], asset["height"], now, now),
             )
             connection.execute(
                 """INSERT INTO pod_customization_template_snapshots
                    (snapshot_id, template_id, workspace_id, owner_user_id, version, name, source,
-                    asset_id, width, height, calibration_json, created_at)
-                   VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 'null', ?)""",
+                    asset_id, width, height, created_at)
+                   VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)""",
                 (snapshot_id, template_id, workspace_id, owner_user_id, name[:120], source,
                  asset["asset_id"], asset["width"], asset["height"], now),
             )
-        return self.get_template(template_id, workspace_id, owner_user_id)
-
-    def update_template_calibration(
-        self,
-        template_id: str,
-        workspace_id: str,
-        owner_user_id: str,
-        calibration: Calibration,
-    ) -> dict[str, Any]:
-        calibration_json = calibration.model_dump_json()
-        now = _now()
-        with self._connect() as connection:
-            row = connection.execute(
-                """SELECT * FROM pod_customization_templates
-                   WHERE template_id = ? AND workspace_id = ? AND owner_user_id = ? AND deleted_at = ''""",
-                (template_id, workspace_id, owner_user_id),
-            ).fetchone()
-            if row is None:
-                raise PodRepositoryError("POD template not found", 404)
-            version = int(row["version"]) + 1
-            connection.execute(
-                """UPDATE pod_customization_templates
-                   SET calibration_status = 'ready', calibration_json = ?, error_message = '',
-                       version = ?, updated_at = ?
-                   WHERE template_id = ? AND workspace_id = ? AND owner_user_id = ?""",
-                (calibration_json, version, now, template_id, workspace_id, owner_user_id),
-            )
-            connection.execute(
-                """INSERT INTO pod_customization_template_snapshots
-                   (snapshot_id, template_id, workspace_id, owner_user_id, version, name, source,
-                    asset_id, width, height, calibration_json, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (uuid.uuid4().hex, template_id, workspace_id, row["owner_user_id"], version, row["name"], row["source"],
-                 row["asset_id"], row["width"], row["height"], calibration_json, now),
-            )
-        return self.get_template(template_id, workspace_id, owner_user_id)
-
-    def set_template_calibration_state(
-        self,
-        template_id: str,
-        workspace_id: str,
-        owner_user_id: str,
-        status: str,
-        error_message: str = "",
-    ) -> dict[str, Any]:
-        if status not in {"pending", "calibrating", "failed"}:
-            raise ValueError("invalid template calibration state")
-        with self._connect() as connection:
-            result = connection.execute(
-                """UPDATE pod_customization_templates
-                   SET calibration_status = ?, error_message = ?, updated_at = ?
-                   WHERE template_id = ? AND workspace_id = ? AND owner_user_id = ? AND deleted_at = ''""",
-                (status, _safe_error(error_message), _now(), template_id, workspace_id, owner_user_id),
-            )
-        if result.rowcount != 1:
-            raise PodRepositoryError("POD template not found", 404)
         return self.get_template(template_id, workspace_id, owner_user_id)
 
     def get_template(self, template_id: str, workspace_id: str, owner_user_id: str) -> dict[str, Any]:
@@ -476,8 +424,6 @@ class PodCustomizationRepository:
             ).fetchone()
             if template is None:
                 raise PodRepositoryError("POD template not found", 404)
-            if template["calibration_status"] != "ready":
-                raise PodRepositoryError("POD template must be calibrated before use", 409)
             snapshot = connection.execute(
                 """SELECT * FROM pod_customization_template_snapshots
                    WHERE template_id = ? AND workspace_id = ? AND version = ?""",
@@ -726,16 +672,16 @@ class PodCustomizationRepository:
             connection.execute(
                 """INSERT INTO pod_customization_templates
                    (template_id, workspace_id, owner_user_id, name, source, asset_id, width, height,
-                    calibration_status, calibration_json, version, deleted_at, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, 'system', ?, ?, ?, 'ready', 'null', 1, ?, ?, ?)""",
+                    version, deleted_at, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, 'system', ?, ?, ?, 1, ?, ?, ?)""",
                 (SEMI_PLACEHOLDER_TEMPLATE_ID, workspace_id, owner_user_id, SEMI_PLACEHOLDER_TEMPLATE_NAME,
                  asset["asset_id"], asset["width"], asset["height"], now, now, now),
             )
             connection.execute(
                 """INSERT INTO pod_customization_template_snapshots
                    (snapshot_id, template_id, workspace_id, owner_user_id, version, name, source,
-                    asset_id, width, height, calibration_json, created_at)
-                   VALUES (?, ?, ?, ?, 1, ?, 'system', ?, ?, ?, 'null', ?)""",
+                    asset_id, width, height, created_at)
+                   VALUES (?, ?, ?, ?, 1, ?, 'system', ?, ?, ?, ?)""",
                 (snapshot_id, SEMI_PLACEHOLDER_TEMPLATE_ID, workspace_id, owner_user_id,
                  SEMI_PLACEHOLDER_TEMPLATE_NAME, asset["asset_id"], asset["width"], asset["height"], now),
             )
@@ -896,16 +842,16 @@ class PodCustomizationRepository:
                 connection.execute(
                     """INSERT INTO pod_customization_templates
                        (template_id, workspace_id, owner_user_id, name, source, asset_id, width, height,
-                        calibration_status, calibration_json, version, deleted_at, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, 'system', ?, ?, ?, 'ready', 'null', 1, ?, ?, ?)""",
+                        version, deleted_at, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, 'system', ?, ?, ?, 1, ?, ?, ?)""",
                     (template_id, workspace_id, owner_user_id, REPLICA_INTERNAL_TEMPLATE_NAME,
                      first_asset["asset_id"], first_asset["width"], first_asset["height"], now, now, now),
                 )
                 connection.execute(
                     """INSERT INTO pod_customization_template_snapshots
                        (snapshot_id, template_id, workspace_id, owner_user_id, version, name, source,
-                        asset_id, width, height, calibration_json, created_at)
-                       VALUES (?, ?, ?, ?, 1, ?, 'system', ?, ?, ?, 'null', ?)""",
+                        asset_id, width, height, created_at)
+                       VALUES (?, ?, ?, ?, 1, ?, 'system', ?, ?, ?, ?)""",
                     (snapshot_id, template_id, workspace_id, owner_user_id,
                      REPLICA_INTERNAL_TEMPLATE_NAME, first_asset["asset_id"],
                      first_asset["width"], first_asset["height"], now),
@@ -916,10 +862,11 @@ class PodCustomizationRepository:
                        (batch_id, workspace_id, owner_user_id, title, status, template_id, template_snapshot_id,
                         template_name, requested_count, initial_call_count, max_refill_calls, prompt_version,
                         prompt_snapshot, business_fields_json, listing_fields_json, creative_prompt, mode, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, 0, 'v1', ?, ?, ?, '', 'replica', ?, ?)""",
+                       VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, '', 'replica', ?, ?)""",
                     (batch_id, workspace_id, owner_user_id, title[:120], template_id, snapshot_id,
                      REPLICA_INTERNAL_TEMPLATE_NAME, len(request.targets), initial_calls,
-                     "{}", first_business.model_dump_json(), first_listing.model_dump_json(), now, now),
+                     PATTERN_PROMPT_VERSION, "{}", first_business.model_dump_json(),
+                     first_listing.model_dump_json(), now, now),
                 )
                 connection.execute(
                     """INSERT INTO pod_customization_replica_batches
@@ -983,15 +930,13 @@ class PodCustomizationRepository:
         del owner_user_id
         with self._connect() as connection:
             template = connection.execute(
-                """SELECT template_id, version, calibration_status
+                """SELECT template_id, version
                    FROM pod_customization_templates
                    WHERE template_id = ? AND workspace_id = ? AND deleted_at = ''""",
                 (request.template_id, workspace_id),
             ).fetchone()
             if template is None:
                 raise PodRepositoryError("POD template not found", 404)
-            if template["calibration_status"] != "ready":
-                raise PodRepositoryError("POD template must be calibrated before use", 409)
             snapshot = connection.execute(
                 """SELECT 1 FROM pod_customization_template_snapshots
                    WHERE template_id = ? AND workspace_id = ? AND version = ?""",

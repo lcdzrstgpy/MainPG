@@ -99,7 +99,10 @@ export function CompositionGenerateDrawer({ open, onClose, onChanged }: Props) {
               maxLength={COMPOSITION_INPUT_MAX_LENGTH}
               disabled={loading}
               aria-label="用大白话描述四张图的视角与构图"
-              placeholder="例：主图要俯拍平铺，细节图给图案微距特写，素材图正面居中摆净背景"
+              placeholder={
+                "描述四张图分别怎么拍：每张都要写到且互不相同；只写机位与角度、景别、构图留白、光线、背景处理，不要写具体物品或道具。\n" +
+                "例：主图略低机位斜侧 45 度中全景、主体居三分点留白；细节图 A 微距俯拍；细节图 B 四分之三近景；素材图正面平视居中、纯净背景。"
+              }
               onChange={(event) => {
                 setBrief(event.currentTarget.value);
                 setError("");

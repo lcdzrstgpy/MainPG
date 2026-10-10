@@ -1,4 +1,4 @@
-import { createElement, useEffect, useRef, useState, type ImgHTMLAttributes } from "react";
+import { createElement, useEffect, useRef, useState, type ImgHTMLAttributes, type SyntheticEvent } from "react";
 
 import { httpBlob } from "../../../transport/http/client";
 
@@ -47,11 +47,14 @@ export function usePodAssetUrl(path?: string, enabled = true): string {
 
 type PodAssetImageProps = Omit<ImgHTMLAttributes<HTMLImageElement>, "src"> & {
   path?: string;
+  /** 主地址（通常是图床公网链接）加载失败时回退的本地地址。 */
+  fallbackPath?: string;
 };
 
-export function PodAssetImage({ path, loading, ...props }: PodAssetImageProps) {
+export function PodAssetImage({ path, fallbackPath, loading, onError, ...props }: PodAssetImageProps) {
   const reference = useRef<HTMLSpanElement>(null);
   const [visible, setVisible] = useState(loading !== "lazy");
+  const [stage, setStage] = useState<"primary" | "fallback">("primary");
   useEffect(() => {
     if (loading !== "lazy") {
       setVisible(true);
@@ -71,7 +74,22 @@ export function PodAssetImage({ path, loading, ...props }: PodAssetImageProps) {
     observer.observe(target);
     return () => observer.disconnect();
   }, [loading]);
-  const url = usePodAssetUrl(path, visible);
+  // 切换图片（列表复用时）必须回到主地址，否则会沿用上一张的回退状态。
+  useEffect(() => {
+    setStage("primary");
+  }, [path, fallbackPath]);
+  const primaryUrl = usePodAssetUrl(path, visible && stage === "primary");
+  const fallbackUrl = usePodAssetUrl(fallbackPath, visible && stage === "fallback");
   if (!visible) return createElement("span", { ref: reference, "aria-hidden": true });
-  return url ? createElement("img", { ...props, src: url }) : null;
+  const url = stage === "fallback" ? fallbackUrl : primaryUrl;
+  if (!url) return null;
+  return createElement("img", {
+    ...props,
+    src: url,
+    onError: (event: SyntheticEvent<HTMLImageElement>) => {
+      onError?.(event);
+      // 图床链接不可用（被删、失效、跨域被拦）时，回退到本地资产地址。
+      if (stage === "primary" && fallbackPath) setStage("fallback");
+    },
+  });
 }

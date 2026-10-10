@@ -55,12 +55,6 @@ class RouterRuntime:
     def submit(self, function, *args, **kwargs):
         return self.executor.submit(function, *args, **kwargs)
 
-    def calibrate_template(self, _content: bytes):
-        return {
-            "mask": {"x": 0.25, "y": 0.2, "width": 0.5, "height": 0.6},
-            "anchor": {"x": 0.5, "y": 0.5},
-        }
-
     def generate_listing_grid(self, _request, *, grant, call_id):
         assert grant.provider_key("wuyin")
         return GeneratedMedia(
@@ -294,7 +288,7 @@ def test_real_remote_client_composition_preserves_pod_auth_status_without_detail
     assert "customer.example" not in response.text
 
 
-def test_template_upload_list_calibrate_and_asset_download_contract(tmp_path) -> None:
+def test_template_upload_list_and_asset_download_contract(tmp_path) -> None:
     client = _client(tmp_path)
     headers = {"Authorization": "Bearer dev-admin-token"}
 
@@ -307,15 +301,7 @@ def test_template_upload_list_calibrate_and_asset_download_contract(tmp_path) ->
     )
     assert uploaded.status_code == 200
     template = uploaded.json()
-    assert template["calibration_status"] == "pending"
 
-    calibrated = client.post(
-        f"/api/pod-customization/templates/{template['id']}/calibrate",
-        headers=headers,
-        json={},
-    )
-    assert calibrated.status_code == 200
-    assert calibrated.json()["calibration"]["mask"]["width"] == 0.5
     listed = client.get("/api/pod-customization/templates", headers=headers).json()["templates"]
     assert [item["id"] for item in listed] == [template["id"]]
 
@@ -333,16 +319,6 @@ def test_batch_create_list_detail_and_scene_optimization_contract(tmp_path) -> N
         data={"name": "Mug scene"},
         files={"file": ("scene.png", _png(), "image/png")},
     ).json()
-    client.patch(
-        f"/api/pod-customization/templates/{template['id']}/calibration",
-        headers=headers,
-        json={
-            "calibration": {
-                "mask": {"x": 0.2, "y": 0.2, "width": 0.6, "height": 0.6},
-                "anchor": {"x": 0.5, "y": 0.5},
-            }
-        },
-    )
 
     created = client.post(
         "/api/pod-customization/batches",
@@ -381,7 +357,8 @@ def test_batch_create_list_detail_and_scene_optimization_contract(tmp_path) -> N
     assert listed.json()["total"] == 1
     detail = client.get(f"/api/pod-customization/batches/{batch['id']}", headers=headers)
     assert detail.status_code == 200
-    assert detail.json()["prompt_version"] == "v1"
+    # 请求体里传的是 v1，但提示词由服务端构造，入库值以服务端版本为准。
+    assert detail.json()["prompt_version"] == "v2"
 
     scene = client.post(
         f"/api/pod-customization/batches/{batch['id']}/items/{batch['items'][0]['id']}/optimize-scene",
@@ -415,7 +392,6 @@ def test_export_selection_patch_contract_returns_current_selection(tmp_path) -> 
     service = getattr(router, "pod_customization_service")
     actor = Actor(id="local-demo-admin", username="local-demo", role="admin", workspace_id="default")
     template = service.upload_template(actor, name="Ready", filename="scene.png", content=_png())
-    service.calibrate_template(actor, template["id"])
     batch = service.create_batch(
         actor,
         BatchCreate(
