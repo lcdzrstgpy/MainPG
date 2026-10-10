@@ -49,7 +49,12 @@ def test_migrations_are_forward_only_and_007_expands_requested_count(tmp_path: P
 
 def test_007_preserves_existing_batch_and_foreign_keys(tmp_path: Path) -> None:
     database = tmp_path / "upgrade.sqlite3"
-    names = sorted(path.name for path in MIGRATIONS.glob("*.sql") if not path.name.startswith("007_"))
+    # 019 是删列迁移：本用例要停在「007 之前」的建表形态，故一并排除。
+    names = sorted(
+        path.name
+        for path in MIGRATIONS.glob("*.sql")
+        if not path.name.startswith(("007_", "019_"))
+    )
     apply_migrations(database, names)
     with sqlite3.connect(database) as connection:
         connection.execute("PRAGMA foreign_keys=ON")

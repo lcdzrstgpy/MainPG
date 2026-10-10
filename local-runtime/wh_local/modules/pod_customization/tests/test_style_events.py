@@ -13,10 +13,7 @@ from wh_local.modules.pod_customization.billing_contract import PodExecutionGran
 from wh_local.modules.pod_customization.contracts import (
     BatchCreate,
     BusinessFields,
-    Calibration,
     ListingFields,
-    NormalizedPoint,
-    NormalizedRect,
 )
 from wh_local.modules.pod_customization.images import split_grid_2x2
 from wh_local.modules.pod_customization.repository import PodCustomizationRepository
@@ -155,19 +152,11 @@ def _service(tmp_path: Path, images: ImageRuntime, titles: TitleRuntime) -> PodC
 
 
 def _ready_template(service: PodCustomizationService, actor: Actor) -> dict:
-    template = service.upload_template(
+    return service.upload_template(
         actor,
         name="Canvas tote",
         filename="scene.png",
         content=_encode(Image.new("RGB", (240, 200), "#e9ecef")),
-    )
-    return service.update_template_calibration(
-        actor,
-        template["id"],
-        Calibration(
-            mask=NormalizedRect(x=0.25, y=0.2, width=0.5, height=0.6),
-            anchor=NormalizedPoint(x=0.5, y=0.5),
-        ),
     )
 
 

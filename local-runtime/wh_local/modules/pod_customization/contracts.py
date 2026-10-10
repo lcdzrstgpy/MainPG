@@ -13,7 +13,9 @@ MAX_STYLE_COUNT = 200
 MIN_SEMI_ITEM_COUNT = 4
 MAX_SEMI_ITEM_COUNT = 200
 SEMI_PATTERN_ROLES = ("pattern_1", "pattern_2", "pattern_3", "pattern_4")
-PromptVersion = Literal["v1"]
+# 批次提示词版本。入库值**以服务端 prompts.PATTERN_PROMPT_VERSION 为准**（大提示词由服务端
+# 构造，客户端传值只作兼容保留）；这里放宽为多版本，避免旧客户端仍发送 v1 时被拒。
+PromptVersion = Literal["v1", "v2"]
 
 # 批次模式：全定制 full / 半定制 semi / 爆款复刻 replica。历史批次 mode 默认 full。
 PodBatchMode = Literal["full", "semi", "replica"]
@@ -38,35 +40,6 @@ def style_grid_call_count(style_count: int) -> int:
     if not MIN_STYLE_COUNT <= style_count <= MAX_STYLE_COUNT:
         raise ValueError("count must be between 1 and 200")
     return style_count
-
-
-class NormalizedPoint(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    x: float = Field(ge=0, le=1)
-    y: float = Field(ge=0, le=1)
-
-
-class NormalizedRect(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    x: float = Field(ge=0, le=1)
-    y: float = Field(ge=0, le=1)
-    width: float = Field(gt=0, le=1)
-    height: float = Field(gt=0, le=1)
-
-    @model_validator(mode="after")
-    def validate_bounds(self) -> "NormalizedRect":
-        if self.x + self.width > 1 or self.y + self.height > 1:
-            raise ValueError("mask must stay inside the normalized canvas")
-        return self
-
-
-class Calibration(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    mask: NormalizedRect
-    anchor: NormalizedPoint
 
 
 class BusinessFields(BaseModel):
@@ -362,12 +335,6 @@ class DirectListingTrialCreate(BaseModel):
     template_id: str = Field(min_length=1, max_length=64)
     business_fields: BusinessFields = Field(default_factory=BusinessFields)
     creative_prompt: str = Field(default="", max_length=4000)
-
-
-class CalibrationUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    calibration: Calibration
 
 
 class SceneOptimizationCreate(BaseModel):

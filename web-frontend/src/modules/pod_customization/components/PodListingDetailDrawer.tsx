@@ -7,6 +7,7 @@ import {
   podStyleTitleStatusLabel,
   type PodStyleRow,
 } from "../data/podCustomizationModel";
+import { podImageSource } from "../data/podImageSource";
 import { PodAssetImage } from "../data/usePodAssetUrl";
 import type { PodBatch } from "../types";
 
@@ -173,9 +174,13 @@ export function PodListingDetailDrawer({ batch, style, onClose, onSaveTitle }: P
           <header><div><span>LISTING IMAGES</span><h3>四张上架图片</h3></div><small>{style.results.filter((item) => item?.public_url).length} / 4 个公网链接</small></header>
           <div>
             {style.results.map((item, offset) => {
-              const preview = item?.public_url || item?.composite_preview_url || item?.pattern_preview_url;
+              // 公网链接优先，加载失败或缺失时回退本地资产地址。
+              const { path: preview, fallbackPath: previewFallback } = podImageSource(
+                item?.public_url,
+                item?.composite_preview_url || item?.pattern_preview_url,
+              );
               return <article key={item?.id ?? `listing-detail-${style.index}-${offset}`}>
-                <div className="pod-listing-detail-preview">{preview ? <PodAssetImage path={preview} alt={`${ROLE_LABELS[offset]}预览`} loading="lazy" decoding="async" /> : <span>暂无图片</span>}</div>
+                <div className="pod-listing-detail-preview">{preview ? <PodAssetImage path={preview} fallbackPath={previewFallback} alt={`${ROLE_LABELS[offset]}预览`} loading="lazy" decoding="async" /> : <span>暂无图片</span>}</div>
                 <div className="pod-listing-detail-link-copy">
                   <b>{ROLE_LABELS[offset]}</b>
                   <small>{podItemStatusLabel(item?.status ?? "queued")}</small>

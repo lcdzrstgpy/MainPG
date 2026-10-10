@@ -23,7 +23,7 @@ from .billing_contract import (
     PodCallPlan,
     PodExecutionGrant,
 )
-from .images import compose_fixed_scene, split_grid_2x2
+from .images import split_grid_2x2
 from .prompts import LISTING_IMAGE_ROLES, build_semi_pattern_prompt, build_style_listing_prompt
 from .contracts import BusinessFields, SEMI_PATTERN_ROLES
 from .replica_context import ReplicaStyleSnapshotMissingError, style_product_context
@@ -660,19 +660,13 @@ class PodBatchWorker:
             content = self.ai_runtime.submit(
                 self._generate_grid, batch, call, request, run, run.plan.calls[0].call_id
             ).result()
-            template_asset = self.repository.get_asset(
-                batch["template"]["asset_id"], batch["workspace_id"], batch["owner_user_id"]
-            )
-            template_content = self.assets.read(template_asset["relative_path"])
-            calibration = _calibration(batch["template"]["calibration_json"])
             for grid_cell, cell in enumerate(split_grid_2x2(content), start=1):
                 fingerprint = hashlib.sha256(cell).hexdigest()
                 pattern_asset = self._save_asset(
                     batch, "pattern_candidate", f"regenerate-{call['call_id']}-{grid_cell}.png", cell
                 )
-                composite = compose_fixed_scene(template_content, cell, calibration)
                 composite_asset = self._save_asset(
-                    batch, "fixed_composite", f"regenerate-composite-{item_id}.png", composite
+                    batch, "fixed_composite", f"regenerate-composite-{item_id}.png", cell
                 )
                 self.repository.finish_item_regeneration(
                     batch,
@@ -1485,47 +1479,6 @@ class PodBatchWorker:
             )
             raise
 
-    def _process_grids(
-        self,
-        batch: dict[str, Any],
-        grids: list[tuple[dict[str, Any], bytes]],
-        template_content: bytes,
-    ) -> None:
-        calibration = _calibration(batch["template"]["calibration_json"])
-        self._set_batch_stage(batch["batch_id"], "compositing")
-        for call, grid_content in grids:
-            try:
-                cells = split_grid_2x2(grid_content)
-            except ValueError as exc:
-                self.repository.record_candidate(
-                    batch, call_id=call["call_id"], grid_cell=0, status="rejected",
-                    rejection_reason="invalid", fingerprint="", pattern_asset_id="",
-                )
-                continue
-            for grid_cell, content in enumerate(cells, start=1):
-                fingerprint = hashlib.sha256(content).hexdigest()
-                pattern_asset = self._save_asset(batch, "pattern_candidate", f"pattern-{call['call_id']}-{grid_cell}.png", content)
-                try:
-                    composite = compose_fixed_scene(template_content, content, calibration)
-                    composite_asset = self._save_asset(
-                        batch, "fixed_composite", f"composite-{call['call_id']}-{grid_cell}.png", composite
-                    )
-                except Exception:
-                    self.repository.record_candidate(
-                        batch, call_id=call["call_id"], grid_cell=grid_cell, status="rejected",
-                        rejection_reason="composite_error", fingerprint=fingerprint,
-                        pattern_asset_id=pattern_asset["asset_id"],
-                    )
-                    continue
-                item = self.repository.accept_candidate(
-                    batch,
-                    call_id=call["call_id"],
-                    grid_cell=grid_cell,
-                    fingerprint=fingerprint,
-                    pattern_asset_id=pattern_asset["asset_id"],
-                    composite_asset_id=composite_asset["asset_id"],
-                )
-
     def _process_style_grids(
         self,
         batch: dict[str, Any],
@@ -1897,12 +1850,6 @@ class PodBatchWorker:
         with self._futures_lock:
             if self._billing_runs.get(key) is run:
                 self._billing_runs.pop(key, None)
-
-
-def _calibration(value: str):
-    from .contracts import Calibration
-
-    return Calibration.model_validate_json(value)
 
 
 def _accepts_keyword(function: Any, name: str) -> bool:

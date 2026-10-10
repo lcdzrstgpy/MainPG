@@ -8,7 +8,14 @@ from typing import Mapping, Sequence
 from .contracts import COMPOSITION_PANEL_KEYS, BusinessFields
 
 
-PATTERN_PROMPT_VERSION = "v1"
+# 整个「大提示词」的版本号：**只要改动任一处的提示词内容就必须递增**。
+# 覆盖范围 = 一次生图的全部内置提示词：四段式结构（PART 1 核心契约 / PART 2 四格机位 /
+# PART 3 元素轮换 / PART 4 美术指导）及其中的硬条款（色彩冲击、面料与绗缝、场景发光等）。
+# 该值随批次写进 `pod_customization_batches.prompt_version`，是事后区分「改前 / 改后」产出的
+# 依据；只改提示词不改版本号，新旧批次就会记成同一版本，结果无法归因。
+# v1：早期的单段式提示词。
+# v2：四部分共组的整批统一提示词（本版）。
+PATTERN_PROMPT_VERSION = "v2"
 # 位置↔角色固定：左上=主图(lifestyle)、右上=细节A(detail_a)、左下=细节B(detail_b)、右下=素材(hero)。
 # 标识符沿用历史值（lifestyle=主图、hero=素材），避免历史批次错标；仅位置分配按本元组顺序正确落位。
 LISTING_IMAGE_ROLES = ("lifestyle", "detail_a", "detail_b", "hero")

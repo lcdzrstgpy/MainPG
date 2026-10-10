@@ -15,10 +15,7 @@ from pydantic import ValidationError
 from wh_local.modules.pod_customization.contracts import (
     BatchCreate,
     BusinessFields,
-    Calibration,
     ListingFields,
-    NormalizedPoint,
-    NormalizedRect,
 )
 from wh_local.modules.pod_customization.export import (
     _is_public_https_url,
@@ -341,14 +338,6 @@ def _batch(
     display_unit: str = "cm",
 ) -> dict:
     template = service.upload_template(actor, name="Scene", filename="scene.png", content=_png())
-    service.update_template_calibration(
-        actor,
-        template["id"],
-        Calibration(
-            mask=NormalizedRect(x=0.2, y=0.2, width=0.6, height=0.6),
-            anchor=NormalizedPoint(x=0.5, y=0.5),
-        ),
-    )
     return service.create_batch(
         actor,
         BatchCreate(

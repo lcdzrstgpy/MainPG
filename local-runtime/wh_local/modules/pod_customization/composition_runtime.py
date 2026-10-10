@@ -41,7 +41,13 @@ from .title_runtime import (
 )
 
 
-PROMPT_VERSION = "pod-composition-v2"
+# 构图提示词版本：**只要改动生成侧的提示词内容就必须递增**（`_messages_for_generation`、
+# `_OUTPUT_SHAPE` 句式模板、`_SYSTEM_SAFETY_CONTRACT`、解析/校验规则等）。
+# 该值会随每份模板写进 `pod_compositions.prompt_version`，是事后区分「改前 / 改后」产出的
+# 唯一依据——只改提示词不改版本号，会让新旧模板都记成同一版本，结果无法归因。
+# v3：四格句式模板强化（每格一句话、固定「机位+景别+构图留白+光线+背景」句式、不得出现具体事物）、
+#     生成与转写统一关闭深度思考。
+PROMPT_VERSION = "pod-composition-v3"
 MAX_ATTEMPTS = COMPOSITION_ATTEMPTS
 RETRY_BACKOFF_SECONDS = 0.5
 # 开启深度思考后单次时延明显高于标题/智能填写，给到 150s（上游单次上限 240s）。

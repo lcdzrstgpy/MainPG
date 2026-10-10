@@ -38,6 +38,7 @@ MIGRATION_NAMES = (
     "016_pod_style_events",
     "017_pod_composition",
     "018_pod_composition_templates",
+    "019_drop_template_calibration",
 )
 
 
