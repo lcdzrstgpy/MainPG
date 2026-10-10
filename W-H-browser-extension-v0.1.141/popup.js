@@ -4,11 +4,15 @@ const FALLBACK_BASE_URLS = ["http://127.0.0.1:8010", "http://localhost:8010"];
 // 插件不持有任何固定口令，连接时从已登录的工作台页面读取当前登录态。
 const WORKBENCH_TAB_URLS = ["http://127.0.0.1:8010/*", "http://localhost:8010/*"];
 const WORKBENCH_TOKEN_KEY = "wh_demo_token";
+// 分阶段超时：任一步挂起时都如实报错，避免面板“点了没反应”。
+const TOKEN_READ_TIMEOUT_MS = 5000;
+const CONNECT_REQUEST_TIMEOUT_MS = 8000;
 const tenantContext = globalThis.WorkbenchTenantContext;
 
 const baseUrlInput = document.getElementById("baseUrl");
 const statusEl = document.getElementById("status");
 const companyEl = document.getElementById("company");
+const connectButton = document.getElementById("connect");
 
 function normalizeBaseUrl(value) {
   try {
@@ -34,6 +38,17 @@ function candidateBaseUrls(preferred, allowLoopbackFallback = false) {
       { allowLoopbackFallback }
     )
     .filter(isAllowedWorkbenchUrl);
+}
+
+// 给任意 Promise 套一层超时，超时后抛错，调用方据此给出明确提示。
+function withTimeout(promise, ms, label) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label}超时（${ms / 1000} 秒）`)), ms);
+    Promise.resolve(promise).then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); }
+    );
+  });
 }
 
 function showCompany(companyCode, connected = false) {
@@ -147,12 +162,31 @@ async function readWorkbenchApiToken() {
 async function connect() {
   const saved = await saveSettings();
   if (!saved) return;
+  connectButton.disabled = true;
+  // saveSettings 会把状态覆盖成“已保存…入口”，这里立刻给出“正在连接…”，
+  // 让按钮永远有反馈，不会看起来“点了没反应”。
+  statusEl.textContent = "正在连接…";
+  try {
+    await doConnect();
+  } finally {
+    connectButton.disabled = false;
+  }
+}
+
+async function doConnect() {
   const preferredBaseUrl = normalizeBaseUrl(baseUrlInput.value);
-  const apiToken = await readWorkbenchApiToken();
+  let apiToken = "";
+  try {
+    apiToken = await withTimeout(readWorkbenchApiToken(), TOKEN_READ_TIMEOUT_MS, "读取工作台登录态");
+  } catch (error) {
+    statusEl.textContent = `连接失败：${error?.message || error}。请确认已在当前浏览器打开并登录 http://127.0.0.1:8010 后重试`;
+    return;
+  }
   if (!apiToken) {
     statusEl.textContent = "连接失败：请先用浏览器打开并登录工作台 http://127.0.0.1:8010，再点“连接插件”";
     return;
   }
+  statusEl.textContent = "正在连接工作台…";
   const allowLoopbackFallback = tenantContext.isLoopbackHttpEntryUrl(preferredBaseUrl);
   const candidates = candidateBaseUrls(preferredBaseUrl, allowLoopbackFallback);
   if (!candidates.length) {
@@ -166,7 +200,7 @@ async function connect() {
   for (const baseUrl of candidates) {
     try {
       const entry = tenantContext.canonicalEntryBaseUrl(baseUrl);
-      const response = await fetch(tenantContext.buildEntryHttpUrl(baseUrl, "/plugin/connect"), {
+      const response = await withTimeout(fetch(tenantContext.buildEntryHttpUrl(baseUrl, "/plugin/connect"), {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -199,7 +233,7 @@ async function connect() {
             extension_version: manifest.version
           }
         })
-      });
+      }), CONNECT_REQUEST_TIMEOUT_MS, "连接工作台");
       if (!response.ok) {
         if (response.status === 401 && entry.mode === "tenant_capsule") {
           lastError = `公司 ${entry.companyCode} 的登录状态无效或已过期，请回到该公司工作台重新登录后再连接`;

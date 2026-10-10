@@ -147,6 +147,28 @@ class CustomerAuthClient:
             headers={"Authorization": f"Bearer {remote_token}"},
         )
 
+    def claim_enterprise_weekly(self, remote_token: str) -> dict[str, Any]:
+        """企业版每周直接领取 1000 积分（四周内每周一次，永久有效）。"""
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        return self._billing_result(
+            self._post,
+            "/api/customer/billing/plan-enterprise/claim",
+            {},
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
+    def redeem_invitation(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """客户自助兑换邀请码：按码面额发放永久积分，服务端幂等。"""
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        return self._billing_result(
+            self._post,
+            "/api/customer/invitations/redeem",
+            payload,
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
     def claim_daily_extra(self, remote_token: str) -> dict[str, Any]:
         """每日签到（首签 +500 永久，之后每天 +100 限时）；
         服务端按北京自然日幂等，重复请求返回 409。"""
@@ -213,6 +235,27 @@ class CustomerAuthClient:
             raise CustomerBillingPermissionError()
         return self._post(
             "/api/customer/billing/topup-quote",
+            payload,
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
+    def get_station_binding(self, remote_token: str) -> dict[str, Any]:
+        """读取当前客户绑定的中转站（未绑定返回 bound=False）。"""
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        return self._billing_result(
+            self._get,
+            "/api/customer/billing/station-binding",
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
+    def confirm_station_binding(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """确认/更换客户绑定的中转站；换绑冷却未到由远端返回 409 并透传 detail。"""
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        return self._billing_result(
+            self._post,
+            "/api/customer/billing/station-binding",
             payload,
             headers={"Authorization": f"Bearer {remote_token}"},
         )

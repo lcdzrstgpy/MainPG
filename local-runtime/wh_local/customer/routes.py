@@ -275,6 +275,30 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
         except Exception as exc:
             handle_auth_error(exc)
 
+    @router.get("/billing/station-binding")
+    def get_billing_station_binding(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        try:
+            if not hasattr(remote_auth, "get_station_binding"):
+                raise CustomerAuthUnavailable("remote billing service is not configured")
+            return remote_auth.get_station_binding(remote_token_from_local_session(authorization))
+        except Exception as exc:
+            handle_auth_error(exc)
+
+    @router.post("/billing/station-binding")
+    def confirm_billing_station_binding(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        try:
+            if not hasattr(remote_auth, "confirm_station_binding"):
+                raise CustomerAuthUnavailable("remote billing service is not configured")
+            return remote_auth.confirm_station_binding(
+                remote_token_from_local_session(authorization),
+                payload,
+            )
+        except Exception as exc:
+            handle_auth_error(exc)
+
     @router.post("/billing/plan-basic/claim")
     def claim_basic_weekly(authorization: str | None = Header(default=None)) -> dict[str, Any]:
         """基础版每周直接领取 1000 积分；真正的钱包写入在远端 customer-auth 服务。"""
@@ -282,6 +306,32 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
             if not hasattr(remote_auth, "claim_basic_weekly"):
                 raise CustomerAuthUnavailable("remote billing service is not configured")
             return remote_auth.claim_basic_weekly(remote_token_from_local_session(authorization))
+        except Exception as exc:
+            handle_auth_error(exc)
+
+    @router.post("/billing/plan-enterprise/claim")
+    def claim_enterprise_weekly(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        """企业版每周直接领取 1000 积分；真正的钱包写入在远端 customer-auth 服务。"""
+        try:
+            if not hasattr(remote_auth, "claim_enterprise_weekly"):
+                raise CustomerAuthUnavailable("remote billing service is not configured")
+            return remote_auth.claim_enterprise_weekly(remote_token_from_local_session(authorization))
+        except Exception as exc:
+            handle_auth_error(exc)
+
+    @router.post("/invitations/redeem")
+    def redeem_invitation(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """客户自助兑换邀请码：按码面额发放永久积分；真正的钱包写入在远端 customer-auth 服务。"""
+        try:
+            if not hasattr(remote_auth, "redeem_invitation"):
+                raise CustomerAuthUnavailable("remote billing service is not configured")
+            return remote_auth.redeem_invitation(
+                remote_token_from_local_session(authorization),
+                payload,
+            )
         except Exception as exc:
             handle_auth_error(exc)
 

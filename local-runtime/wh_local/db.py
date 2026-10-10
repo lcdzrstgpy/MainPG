@@ -301,7 +301,14 @@ CREATE TABLE IF NOT EXISTS invitation_codes (
     created_by TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     created_by_admin_id TEXT NOT NULL DEFAULT '',
-    creation_operation_id TEXT NOT NULL DEFAULT ''
+    creation_operation_id TEXT NOT NULL DEFAULT '',
+    remark TEXT NOT NULL DEFAULT '',
+    -- 发放积分：被使用（注册填写或工作台兑换）时向该账号永久积分池发放的积分数，
+    -- 0 表示纯归属码不发放积分。每次成功使用发一份，受 max_uses / used_count 约束。
+    grant_points INTEGER NOT NULL DEFAULT 0,
+    -- 套餐权益类型：非空时被使用后为账号激活该套餐（等同购买，含每周领取权益）。
+    -- 空串表示只发普通积分。企业版邀请码写 "enterprise"。
+    grant_plan_type TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_invitation_codes_status
@@ -1161,6 +1168,10 @@ def _migrate_core_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "billing_wallets", "signin_week_units", "INTEGER NOT NULL DEFAULT 0")
     # 登录状态字段：账号级单端登录限制（云端认证服务与本地工作台共用同一 schema）。
     _ensure_column(conn, "auth_accounts", "login_status", "TEXT NOT NULL DEFAULT 'offline'")
+    # 邀请码备注与发放积分：老库平滑补列（wh-admin 生成邀请码时按发放积分数发放）。
+    _ensure_column(conn, "invitation_codes", "remark", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "invitation_codes", "grant_points", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "invitation_codes", "grant_plan_type", "TEXT NOT NULL DEFAULT ''")
     # 本地会话表保存远端 wh_auth_* token，登出时联动撤销云端登录态。
     _ensure_column(conn, "customer_sessions", "remote_token", "TEXT NOT NULL DEFAULT ''")
     # 邮箱验证码失败次数用于限制暴力尝试；旧数据库平滑补列。
@@ -1270,6 +1281,26 @@ def _migrate_core_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_station_payouts_station_status"
         " ON station_payouts (station_code, status, applied_at)"
+    )
+    # 客户 ↔ 分站绑定（总部权威口径）：客户在充值页填入有效中转编号后落库绑定，
+    # 之后换绑受 STATION_BINDING_CHANGE_INTERVAL_DAYS（7 天）滚动窗口限制，防止
+    # 用户在多个中转站之间反复横跳套利。首绑不计次（change_count 从 0 起）。
+    # last_changed_at 既是换绑冷却起点，也是「下次可更换时间」的计算依据。
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS customer_station_bindings (
+            account_id TEXT PRIMARY KEY,
+            station_code TEXT NOT NULL,
+            station_name TEXT NOT NULL DEFAULT '',
+            bound_at TEXT NOT NULL DEFAULT (datetime('now')),
+            last_changed_at TEXT NOT NULL DEFAULT (datetime('now')),
+            change_count INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_customer_station_bindings_station"
+        " ON customer_station_bindings (station_code)"
     )
     # The retired 2x switch must not remain armed after the permanent package
     # rule ships. Existing orders already carry immutable bonus snapshots.

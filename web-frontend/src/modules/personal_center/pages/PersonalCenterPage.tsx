@@ -9,14 +9,18 @@ import {
   changeUsername,
   claimBasicWeeklyPoints,
   claimDailyExtraPoints,
+  claimEnterpriseWeeklyPoints,
+  confirmStationBinding,
   createTopupOrder,
   loadBillingLedgerHistory,
   loadBillingSummary,
   loadBillingUsageHistory,
   loadImageModel,
   loadPodImageModel,
+  loadStationBinding,
   loadStationPartnerDetail,
   quoteCustomTopup,
+  redeemInvitationCode,
   saveImageModel,
   savePodImageModel,
   sendUsernameChangeCode,
@@ -26,6 +30,7 @@ import {
   type BillingSummary,
   type BillingUsageEntry,
   type ImageModelChoice,
+  type StationBinding,
   type StationPartnerDetail,
   type TopupOrderResponse,
 } from "../api/personalCenterApi";
@@ -56,8 +61,28 @@ const PLAN_BASIC_PRODUCT: BillingPackage = {
   amount_cents: 3990,
 };
 
+/** 「升级体验」弹窗里的企业版套餐（¥499）：立得 8000 充值积分 + 28 天内每周可领 1000 永久积分。 */
+const PLAN_ENTERPRISE_PRODUCT: BillingPackage = {
+  package_id: "plan_enterprise",
+  label: "企业版",
+  amount_cents: 49900,
+};
+
 function money(amountCents: number) {
   return `¥${(amountCents / 100).toFixed(2)}`;
+}
+
+/** 把后端 ISO 时间格式化为本地「MM-DD HH:mm」，用于展示下次可换绑时间。 */
+function formatBindTime(iso: string) {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return date.toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 /** 中转档位订单的 package_id，与主站约定一致：station:<中转编号>:<金额分>。 */
@@ -289,6 +314,30 @@ function writePendingOrderId(orderId: string) {
   }
 }
 
+/** 中转编号本地持久化：刷新后仍回显上次填写/选中的中转站，档位不回落官方套餐。 */
+const STATION_CODE_STORAGE_PREFIX = "mainpg.billing.station-code.v1";
+
+function stationCodeStorageKey(accountId?: string) {
+  return `${STATION_CODE_STORAGE_PREFIX}.${accountId || "anonymous"}`;
+}
+
+function readStationCode(key: string): string {
+  try {
+    return (window.localStorage.getItem(key) ?? "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function writeStationCode(key: string, code: string) {
+  try {
+    if (code) window.localStorage.setItem(key, code);
+    else window.localStorage.removeItem(key);
+  } catch {
+    // localStorage 不可用（隐私模式等）时静默忽略
+  }
+}
+
 /** 操作答疑答不上来时带过来的原问题；nonce 让同一问题重复点击也能再次触发。 */
 export type PersonalCenterFeedbackPrefill = { question: string; nonce: number };
 
@@ -330,6 +379,8 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
   // 消费流水本地缓存：与概要缓存同理，按账号隔离、跨页面刷新复用。
   const usageCacheKeyValue = usageCacheKey(account?.account_id);
   const cachedUsage = readUsageCache(usageCacheKeyValue);
+  // 中转编号本地持久化键：按账号隔离，刷新后恢复上次填写/选中的中转站。
+  const stationCodeStorageKeyValue = stationCodeStorageKey(account?.account_id);
   const defaultUsageFilterKey = buildUsageFilterKey("", "", "", "");
 
   const [summary, setSummary] = useState<BillingSummary | null>(cachedBalance?.summary ?? null);
@@ -371,11 +422,16 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
   // 中转编号：不提供可选清单，由用户从上游中转商处拿到编号后手动填写（信息差），
   // 填写并确认后档位表整体切换为该中转站在其自己网站上配置的档位（≤6 档），
   // 与官方固定套餐是两套并行体系；留空表示使用官方档位。
-  const [stationCodeInput, setStationCodeInput] = useState("");
-  const [selectedStation, setSelectedStation] = useState("");
+  const [stationCodeInput, setStationCodeInput] = useState(() => readStationCode(stationCodeStorageKeyValue));
+  const [selectedStation, setSelectedStation] = useState(() => readStationCode(stationCodeStorageKeyValue));
   const [stationDetail, setStationDetail] = useState<StationPartnerDetail | null>(null);
   const [stationLoading, setStationLoading] = useState(false);
   const [stationError, setStationError] = useState("");
+  // 账号级绑定状态：客户「确认绑定」后与分站建立绑定，异站换绑受 7 天冷却限制。
+  const [stationBinding, setStationBinding] = useState<StationBinding | null>(null);
+  const [bindingBusy, setBindingBusy] = useState(false);
+  const [bindingNotice, setBindingNotice] = useState("");
+  const [bindingError, setBindingError] = useState("");
   const [creating, setCreating] = useState(false);
   const [createdOrder, setCreatedOrder] = useState<TopupOrderResponse | null>(null);
   const [paymentNotice, setPaymentNotice] = useState("");
@@ -583,6 +639,8 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
     setSelectedPackage("");
     setCreatedOrder(null);
     setPaymentNotice("");
+    setBindingNotice("");
+    setBindingError("");
     setSelectedStation(code);
   };
 
@@ -615,6 +673,60 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
       disposed = true;
     };
   }, [selectedStation]);
+
+  // 读取账号当前绑定的中转分站：用于在充值页展示绑定/换绑状态（未绑定返回 bound=false）。
+  useEffect(() => {
+    let disposed = false;
+    loadStationBinding()
+      .then((payload) => {
+        if (disposed) return;
+        setStationBinding(payload.binding);
+        // 服务端已有绑定但本地未记录（首次打开/换设备/持久化上线前已绑定）时回填，
+        // 避免刷新后输入框为空、档位回落官方套餐。
+        const boundCode = payload.binding?.bound ? payload.binding.station_code : "";
+        if (boundCode) {
+          setStationCodeInput((prev) => prev || boundCode);
+          setSelectedStation((prev) => prev || boundCode);
+        }
+      })
+      .catch(() => {
+        // 未登录或本地服务暂不可用时静默忽略，不阻塞充值页。
+      });
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  // 持久化当前填写/选中的中转编号：刷新后自动恢复，档位不回落官方套餐。
+  useEffect(() => {
+    writeStationCode(stationCodeStorageKeyValue, selectedStation);
+  }, [stationCodeStorageKeyValue, selectedStation]);
+
+  // 确认绑定：把当前账号与输入框内的中转编号绑定；异站换绑需距上次满 7 天。
+  const confirmBinding = () => {
+    const code = stationCodeInput.trim();
+    if (!code) {
+      setBindingError("请先填写中转编号");
+      return;
+    }
+    setBindingBusy(true);
+    setBindingError("");
+    setBindingNotice("");
+    confirmStationBinding(code)
+      .then((payload) => {
+        setStationBinding(payload.binding);
+        setBindingNotice(`已绑定：${payload.binding.station_name || payload.binding.station_code}`);
+      })
+      .catch((exc) => {
+        setBindingError(exc instanceof Error ? exc.message : "确认绑定失败");
+      })
+      .finally(() => {
+        setBindingBusy(false);
+      });
+  };
+
+  const boundToSelected =
+    stationBinding?.bound === true && !!selectedStation && stationBinding.station_code === selectedStation;
 
   const customAmountCents = useMemo(() => {
     if (!/^\d+$/.test(customAmount)) return 0;
@@ -991,8 +1103,14 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
 
   const [claimBusy, setClaimBusy] = useState(false);
   const [claimNotice, setClaimNotice] = useState("");
+  const [enterpriseClaimBusy, setEnterpriseClaimBusy] = useState(false);
+  const [enterpriseClaimNotice, setEnterpriseClaimNotice] = useState("");
   const [dailyClaimBusy, setDailyClaimBusy] = useState(false);
   const [dailyClaimNotice, setDailyClaimNotice] = useState("");
+  const [inviteCode, setInviteCode] = useState("");
+  const [redeemBusy, setRedeemBusy] = useState(false);
+  const [redeemNotice, setRedeemNotice] = useState("");
+  const [redeemError, setRedeemError] = useState("");
 
   const claimBasicPoints = async () => {
     if (claimBusy) return;
@@ -1038,6 +1156,78 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
       );
     } finally {
       setClaimBusy(false);
+    }
+  };
+
+  /** 企业版每周领取 1000 积分（28 天内每周一次，永久有效）。 */
+  const claimEnterprisePoints = async () => {
+    if (enterpriseClaimBusy) return;
+    setEnterpriseClaimBusy(true);
+    setEnterpriseClaimNotice("");
+    setError("");
+    let result: Awaited<ReturnType<typeof claimEnterpriseWeeklyPoints>> | null = null;
+    try {
+      result = await claimEnterpriseWeeklyPoints();
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : "领取失败，请稍后重试");
+      setEnterpriseClaimBusy(false);
+      return;
+    }
+    setEnterpriseClaimNotice(`已领取 ${result.claimed_points} 积分（第 ${result.claim_count}/${result.claim_max} 周）`);
+    notifyBalanceChanged();
+    loadLedger(ledgerCategory, ledgerPage);
+    try {
+      const payload = await loadBillingSummary();
+      setSummary(payload);
+      writeBalanceCache(balanceCacheKeyValue, payload);
+      lastBalanceRefreshAt.current = Date.now();
+    } catch {
+      setSummary((current) =>
+        current
+          ? {
+              ...current,
+              wallet: {
+                ...current.wallet,
+                available_points:
+                  (current.wallet.available_points ?? 0) + result.claimed_points,
+                plan: {
+                  ...current.wallet.plan,
+                  extra_balance: (current.wallet.plan.extra_balance ?? 0) + result.claimed_points,
+                  enterprise_claim_count: result.claim_count,
+                  enterprise_claimable: false,
+                },
+              },
+            }
+          : current,
+      );
+    } finally {
+      setEnterpriseClaimBusy(false);
+    }
+  };
+
+  /** 邀请码兑换：按码面额发放永久积分，服务端幂等。 */
+  const redeemInvite = async (event?: FormEvent) => {
+    event?.preventDefault();
+    const code = inviteCode.trim().toUpperCase();
+    if (!code || redeemBusy) return;
+    setRedeemBusy(true);
+    setRedeemNotice("");
+    setRedeemError("");
+    setError("");
+    try {
+      const result = await redeemInvitationCode(code);
+      setRedeemNotice(`兑换成功，已到账 ${result.granted_points.toLocaleString()} 积分（永久有效）`);
+      setInviteCode("");
+      notifyBalanceChanged();
+      loadLedger(ledgerCategory, ledgerPage);
+      const payload = await loadBillingSummary();
+      setSummary(payload);
+      writeBalanceCache(balanceCacheKeyValue, payload);
+      lastBalanceRefreshAt.current = Date.now();
+    } catch (exc) {
+      setRedeemError(exc instanceof Error ? exc.message : "兑换失败，请稍后重试");
+    } finally {
+      setRedeemBusy(false);
     }
   };
 
@@ -1249,7 +1439,7 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
       {upgradeOpen && createPortal(
         <div className="personal-password-layer" onMouseDown={() => setUpgradeOpen(false)}>
           <section
-            className="personal-password-dialog"
+            className="personal-password-dialog personal-upgrade-dialog"
             role="dialog"
             aria-modal="true"
             aria-labelledby="personal-upgrade-title"
@@ -1258,8 +1448,8 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
             <header>
               <div>
                 <span>PLAN UPGRADE</span>
-                <h2 id="personal-upgrade-title">升级体验</h2>
-                <p>购买基础版，立得 4000 积分，28 天内每周可直接领取 1000 积分，领到即永久。</p>
+                <h2 id="personal-upgrade-title">升级套餐</h2>
+                <p>购买基础版或企业版，立得积分，28 天内每周还可领取永久积分。</p>
               </div>
               <button type="button" onClick={() => setUpgradeOpen(false)} aria-label="关闭">×</button>
             </header>
@@ -1282,9 +1472,33 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
                 >
                   {creating ? "正在创建订单…" : "立即购买"}
                 </button>
-                {paymentNotice && <p className="personal-upgrade-plan-notice">{paymentNotice}</p>}
-                {error && <p className="personal-upgrade-plan-error">{error}</p>}
               </div>
+              <div className="personal-upgrade-plan-card">
+                <div className="personal-upgrade-plan-head">
+                  <b>企业版</b>
+                  <span className="personal-upgrade-plan-price">{money(PLAN_ENTERPRISE_PRODUCT.amount_cents)}</span>
+                </div>
+                <ul className="personal-upgrade-plan-benefits">
+                  <li><b>购买立得 8000 积分</b>（充值积分，永久有效）</li>
+                  <li>28 天内<b>每周可直接领取 1000 积分</b>（领到即永久）</li>
+                  <li><b>旗下最多 10 个账号均享受此优惠</b>：购买后自动生成 9 人邀请码，其他账号注册填码或在充值界面兑换码输入即可领取同等福利</li>
+                  <li>28 天后到期，自动回落体验版（每日签到 +100 限时积分）</li>
+                </ul>
+                <button
+                  type="button"
+                  className="personal-upgrade-plan-buy"
+                  disabled={creating}
+                  onClick={() => submitTopup(PLAN_ENTERPRISE_PRODUCT)}
+                >
+                  {creating ? "正在创建订单…" : "立即购买"}
+                </button>
+              </div>
+              {(paymentNotice || error) && (
+                <div className="personal-upgrade-plan-feedback">
+                  {paymentNotice && <p className="personal-upgrade-plan-notice">{paymentNotice}</p>}
+                  {error && <p className="personal-upgrade-plan-error">{error}</p>}
+                </div>
+              )}
             </div>
           </section>
         </div>, document.body)}
@@ -1469,6 +1683,42 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
                   {claimNotice && <p className="personal-plan-claim-notice">{claimNotice}</p>}
                 </div>
               )}
+              {/* 企业版专属：28 天内每周另可领 1000（永久），与每日签到叠加 */}
+              {summary?.wallet.plan?.plan_type === "enterprise" && (
+                <div className="personal-plan-claim-basic">
+                  <div
+                    className="personal-plan-claim-meter"
+                    role="progressbar"
+                    aria-label="企业版每周领取进度"
+                    aria-valuemin={0}
+                    aria-valuemax={summary.wallet.plan.enterprise_claim_max}
+                    aria-valuenow={summary.wallet.plan.enterprise_claim_count}
+                  >
+                    <span
+                      style={{
+                        width: `${Math.min(100, Math.max(0, (summary.wallet.plan.enterprise_claim_count / (summary.wallet.plan.enterprise_claim_max || 4)) * 100))}%`,
+                      }}
+                    />
+                  </div>
+                  <div className="personal-plan-claim-meta">
+                    {summary.wallet.plan.enterprise_claimable ? (
+                      <button
+                        type="button"
+                        className="personal-plan-claim-btn is-secondary"
+                        disabled={enterpriseClaimBusy}
+                        onClick={claimEnterprisePoints}
+                      >
+                        {enterpriseClaimBusy ? "领取中…" : "领取企业版 1000 积分（永久）"}
+                      </button>
+                    ) : summary.wallet.plan.enterprise_claim_count >= summary.wallet.plan.enterprise_claim_max ? (
+                      <span>企业版四周领取已用完</span>
+                    ) : (
+                      <span>企业版本周已领，下周一再来</span>
+                    )}
+                  </div>
+                  {enterpriseClaimNotice && <p className="personal-plan-claim-notice">{enterpriseClaimNotice}</p>}
+                </div>
+              )}
             </div>
             {summary?.wallet.plan?.plan_expire_at && (
               <div className="personal-plan-expire">
@@ -1580,6 +1830,16 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
                 }}
               />
             </label>
+            <button
+              type="button"
+              className="topup-station-bind"
+              disabled={
+                bindingBusy || stationLoading || !selectedStation || !stationDetail || boundToSelected
+              }
+              onClick={confirmBinding}
+            >
+              {bindingBusy ? "绑定中..." : boundToSelected ? "已绑定" : "确认绑定"}
+            </button>
             <small>
               {!selectedStation
                 ? "留空即按官方档位充值；填写中转编号后，档位与倍率按该中转站网站上的设置到账"
@@ -1593,6 +1853,23 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
                         : "该中转站暂未配置充值档位"
                       : ""}
             </small>
+            {(bindingError || bindingNotice || stationBinding?.bound) && (
+              <small
+                className={`topup-station-bind-status${
+                  bindingError ? " is-error" : bindingNotice ? " is-ok" : ""
+                }`}
+              >
+                {bindingError
+                  ? bindingError
+                  : bindingNotice
+                    ? bindingNotice
+                    : `当前已绑定：${stationBinding?.station_name || stationBinding?.station_code}${
+                        stationBinding?.can_change === false && stationBinding.next_change_at
+                          ? ` · ${formatBindTime(stationBinding.next_change_at)}后可更换`
+                          : ""
+                      }`}
+              </small>
+            )}
           </div>
           <p className="topup-promotion-banner">
             <span className={`iconfont ${selectedStation ? "icon-gold" : "icon-gift"}`} aria-hidden="true" />
@@ -1752,6 +2029,36 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
               </button>
             </div>
           )}
+        </article>
+
+        <article className="personal-card redeem-card">
+          <div className="personal-card-title">
+            <span className="iconfont icon-gift" aria-hidden="true" />
+            <div>
+              <h2>邀请码兑换</h2>
+              <small>输入管理后台发放的邀请码，兑换的积分直接进入长期积分（永久有效）。</small>
+            </div>
+          </div>
+          <form className="redeem-form" onSubmit={(event) => void redeemInvite(event)}>
+            <input
+              type="text"
+              value={inviteCode}
+              onChange={(event) => setInviteCode(event.target.value)}
+              placeholder="例如：MAINPG-XXXX-XXXX"
+              autoComplete="off"
+              spellCheck={false}
+              aria-label="邀请码"
+            />
+            <button
+              className="primary-topup"
+              type="submit"
+              disabled={redeemBusy || !inviteCode.trim()}
+            >
+              {redeemBusy ? "兑换中…" : "立即兑换"}
+            </button>
+          </form>
+          {redeemError && <p className="payment-notice is-error">{redeemError}</p>}
+          {redeemNotice && <p className="payment-notice">{redeemNotice}</p>}
         </article>
         </div> : activePanel === "pricing" ? (
           <article className="personal-card pricing-card">

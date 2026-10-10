@@ -79,6 +79,8 @@ STATION_REBATE_STATION_SHARE = 0.7
 STATION_REBATE_NEGATIVE_FLOOR_CENTS = -500
 # 结算周期：订单付款成功后 T+7 由「待到账」转为「可结算」。
 STATION_REBATE_SETTLE_DELAY_DAYS = 7
+# 客户换绑冷却：同一账号绑定分站后，7 天内只能更换一次（首绑不计次）。
+STATION_BINDING_CHANGE_INTERVAL_DAYS = 7
 # 单条成本口径（元 / 单位）：AI 与 POD 沿用 0.1 元；商品组合单独按 0.4 元计。
 LINK_COST_BY_UNIT_YUAN = {"ai": 0.1, "pod": 0.1, "combo": 0.4}
 LINK_USAGE_BY_UNIT = {"ai": 40, "pod": 45, "combo": 100}
@@ -118,6 +120,7 @@ STATION_MAX_WITHDRAW_CENTS = 50_000_000
 PLAN_TYPES = {
     "experience": {"label": "体验版"},
     "basic": {"label": "基础版"},
+    "enterprise": {"label": "企业版"},
     "flagship": {"label": "旗舰版"},
 }
 PLAN_DEFAULT_TYPE = "experience"
@@ -133,6 +136,45 @@ PLAN_BASIC_DURATION_DAYS = 28
 PLAN_BASIC_CLAIM_POINTS = 1000
 PLAN_BASIC_CLAIM_UNITS = PLAN_BASIC_CLAIM_POINTS * PLAN_UNIT_SCALE
 PLAN_BASIC_CLAIM_MAX = 4
+# 企业版（¥499 购买套餐）：立得 8000 充值积分（走普通充值入账）+ 4 周内每周可领
+# 1000 额外积分（每周 1 次、最多 4 次、领到即永久）。到期自动回落体验版。
+# 规则与基础版一致，复用同一套钱包领取列（basic_claim_period/basic_claim_count）。
+PLAN_ENTERPRISE_PACKAGE_ID = "plan_enterprise"
+PLAN_ENTERPRISE_PRICE_CENTS = 49900
+PLAN_ENTERPRISE_GRANT_POINTS = 8000
+PLAN_ENTERPRISE_DURATION_DAYS = 28
+PLAN_ENTERPRISE_CLAIM_POINTS = 1000
+PLAN_ENTERPRISE_CLAIM_UNITS = PLAN_ENTERPRISE_CLAIM_POINTS * PLAN_UNIT_SCALE
+PLAN_ENTERPRISE_CLAIM_MAX = 4
+# 企业版「旗下 10 个账号」：购买后自动生成一张限 9 人使用的邀请码
+# （购买者本人 + 9 个受邀账号 = 10 个账号均享受企业版优惠）。
+PLAN_ENTERPRISE_INVITE_MAX_USES = 9
+
+# 付费套餐的配置映射：按 plan_type 索引；package_id -> plan_type 反向表用于
+# 支付结算时激活对应套餐（settle_payment_order）。
+PLAN_PACKAGE_CONFIG = {
+    "basic": {
+        "package_id": PLAN_BASIC_PACKAGE_ID,
+        "price_cents": PLAN_BASIC_PRICE_CENTS,
+        "grant_points": PLAN_BASIC_GRANT_POINTS,
+        "duration_days": PLAN_BASIC_DURATION_DAYS,
+        "claim_points": PLAN_BASIC_CLAIM_POINTS,
+        "claim_max": PLAN_BASIC_CLAIM_MAX,
+        "label": "基础版",
+    },
+    "enterprise": {
+        "package_id": PLAN_ENTERPRISE_PACKAGE_ID,
+        "price_cents": PLAN_ENTERPRISE_PRICE_CENTS,
+        "grant_points": PLAN_ENTERPRISE_GRANT_POINTS,
+        "duration_days": PLAN_ENTERPRISE_DURATION_DAYS,
+        "claim_points": PLAN_ENTERPRISE_CLAIM_POINTS,
+        "claim_max": PLAN_ENTERPRISE_CLAIM_MAX,
+        "label": "企业版",
+    },
+}
+PLAN_PACKAGE_IDS = {
+    cfg["package_id"]: plan_type for plan_type, cfg in PLAN_PACKAGE_CONFIG.items()
+}
 
 # ---------------------------------------------------------------------------
 # 每日签到：新用户首签 +500（额外池，永久），之后每天 +100（体验池，限时）。
@@ -1591,28 +1633,71 @@ def _ensure_wallet(conn: Any, account_id: str, workspace_id: str) -> None:
     )
 
 
-def _activate_basic_plan(conn: Any, account_id: str, now: str) -> None:
-    """激活/续期基础版：28 天内每周可直接领取 1000 额外积分（永久，最多 4 次）。
+def _generate_invitation_code() -> str:
+    """生成人读友好的邀请码，形如 MAINPG-8F3K-2Q7M（字母表去掉易混淆的 I/O/0/1）。"""
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
-    立得 4000 积分由 settle_payment_order 的 base_points 普通充值入账处理，
+    def _chunk(size: int) -> str:
+        return "".join(secrets.choice(alphabet) for _ in range(size))
+
+    return f"MAINPG-{_chunk(4)}-{_chunk(4)}"
+
+
+def _issue_enterprise_invite_code(
+    conn: Any, *, account_id: str, now: str, created_by: str = ""
+) -> str:
+    """为企业版购买者生成一张限 9 人使用的邀请码（旗下 10 个账号口径）。
+
+    被使用（注册填写或工作台兑换）方将获得与购买者同等的企业版权益：
+    立得 PLAN_ENTERPRISE_GRANT_POINTS 充值积分 + 28 天企业版每周领取资格。
+    调用方负责事务边界（与结算同事务，付款只成功一次）。
+    """
+    code = _generate_invitation_code()
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO invitation_codes (
+            code, max_uses, used_count, expires_at, created_by, created_at,
+            remark, grant_points, grant_plan_type
+        ) VALUES (?, ?, 0, '', ?, ?, ?, ?, 'enterprise')
+        """,
+        (
+            code,
+            PLAN_ENTERPRISE_INVITE_MAX_USES,
+            created_by or account_id,
+            now,
+            "企业版购买自动生成（限 9 人，享同等企业版权益）",
+            PLAN_ENTERPRISE_GRANT_POINTS,
+        ),
+    )
+    return code
+
+
+def _activate_plan(conn: Any, account_id: str, now: str, *, plan_type: str) -> None:
+    """激活/续期付费套餐（基础版/企业版）：按套餐周期内每周可直接领取额外积分。
+
+    立得积分由 settle_payment_order 的 base_points 普通充值入账处理，
     这里只负责套餐状态。调用方必须先跑过 _ensure_wallet（含过期回落），
     保证 wallet 行存在且 plan_type 为干净状态。
     续期重置每周领取资格（basic_claim_period/basic_claim_count 清零，重新 4 周）。
     """
+    config = PLAN_PACKAGE_CONFIG.get(plan_type)
+    if config is None:
+        raise HTTPException(status_code=400, detail=f"unsupported plan type: {plan_type}")
+    duration_days = int(config["duration_days"])
     row = conn.execute(
         "SELECT plan_expire_at FROM billing_wallets WHERE account_id = ?",
         (account_id,),
     ).fetchone()
     existing_expire = str(row["plan_expire_at"] or "") if row is not None else ""
-    # 续期语义：当前仍在基础版有效期内 → 到期时间 +28 天；否则从此刻起算 28 天。
+    # 续期语义：当前仍在该套餐有效期内 → 到期时间 +周期；否则从此刻起算。
     base = existing_expire if existing_expire > now else now
     try:
         base_dt = datetime.fromisoformat(base)
         if base_dt.tzinfo is None:
             base_dt = base_dt.replace(tzinfo=timezone.utc)
-        expire_at = (base_dt + timedelta(days=PLAN_BASIC_DURATION_DAYS)).isoformat(timespec="seconds")
+        expire_at = (base_dt + timedelta(days=duration_days)).isoformat(timespec="seconds")
     except ValueError:
-        expire_at = (datetime.now(timezone.utc) + timedelta(days=PLAN_BASIC_DURATION_DAYS)).isoformat(timespec="seconds")
+        expire_at = (datetime.now(timezone.utc) + timedelta(days=duration_days)).isoformat(timespec="seconds")
     conn.execute(
         """
         UPDATE billing_wallets
@@ -1621,20 +1706,30 @@ def _activate_basic_plan(conn: Any, account_id: str, now: str) -> None:
             version = version + 1, updated_at = ?
         WHERE account_id = ?
         """,
-        ("basic", expire_at, now, account_id),
+        (plan_type, expire_at, now, account_id),
     )
 
 
-def claim_basic_weekly(
+def claim_plan_weekly(
     database_path: Path,
     account_id: str,
     workspace_id: str = "default",
+    *,
+    plan_type: str = "basic",
 ) -> dict[str, Any]:
-    """基础版每周直接领取：+1000 额外积分（进 extra_balance 子池，永久有效），每周 1 次、最多 4 次。
+    """付费套餐每周直接领取：+固定额外积分（进 extra_balance 子池，永久有效），每周 1 次、共 N 次。
 
-    领取资格校验：套餐为基础版、未到期、本周未领过、累计不足 4 次。
-    领到的积分进额外积分子池（非充值池）并写台账（source_type=plan_basic_claim，按周幂等）。
+    领取资格校验：套餐类型匹配、未到期、本周未领过、累计不足上限。
+    领到的积分进额外积分子池（非充值池）并写台账（按套餐+周幂等）。
+    基础版保持历史 key（plan_basic_claim / basic:{period}）不变，兼容既有台账。
     """
+    config = PLAN_PACKAGE_CONFIG.get(plan_type)
+    if config is None:
+        raise HTTPException(status_code=400, detail=f"unsupported plan type: {plan_type}")
+    claim_points = int(config["claim_points"])
+    claim_units = claim_points * PLAN_UNIT_SCALE
+    claim_max = int(config["claim_max"])
+    plan_label = str(config["label"])
     now = _utc_now()
     period = _plan_period_key()
     with transaction(database_path) as conn:
@@ -1648,16 +1743,16 @@ def claim_basic_weekly(
         ).fetchone()
         if wallet is None:
             raise HTTPException(status_code=409, detail="wallet missing")
-        if str(wallet["plan_type"]) != "basic":
-            raise HTTPException(status_code=409, detail="当前套餐无领取资格，购买基础版后可用")
+        if str(wallet["plan_type"]) != plan_type:
+            raise HTTPException(status_code=409, detail=f"当前套餐无领取资格，购买{plan_label}后可用")
         expire_at = str(wallet["plan_expire_at"] or "")
         if expire_at and expire_at <= now:
-            raise HTTPException(status_code=409, detail="基础版已到期，无法领取")
+            raise HTTPException(status_code=409, detail=f"{plan_label}已到期，无法领取")
         claim_count = int(wallet["basic_claim_count"] or 0)
-        if claim_count >= PLAN_BASIC_CLAIM_MAX:
+        if claim_count >= claim_max:
             raise HTTPException(
                 status_code=409,
-                detail=f"四周领取已用完（{PLAN_BASIC_CLAIM_MAX}/{PLAN_BASIC_CLAIM_MAX}）",
+                detail=f"周期领取已用完（{claim_max}/{claim_max}）",
             )
         if str(wallet["basic_claim_period"] or "") == period:
             raise HTTPException(status_code=409, detail="本周已领取，下周一再来")
@@ -1669,26 +1764,26 @@ def claim_basic_weekly(
                 version = version + 1, updated_at = ?
             WHERE account_id = ?
             """,
-            (PLAN_BASIC_CLAIM_UNITS, period, now, account_id),
+            (claim_units, period, now, account_id),
         )
         _append_ledger(
             conn,
             account_id=account_id,
             workspace_id=workspace_id or "default",
             direction="credit",
-            points_delta=PLAN_BASIC_CLAIM_UNITS,
-            source_type="plan_basic_claim",
-            source_id=f"basic:{period}",
-            idempotency_key=f"plan_basic_claim:{account_id}:{period}",
-            metadata={"claim_points": PLAN_BASIC_CLAIM_POINTS, "period": period, "pool": "extra"},
+            points_delta=claim_units,
+            source_type=f"plan_{plan_type}_claim",
+            source_id=f"{plan_type}:{period}",
+            idempotency_key=f"plan_{plan_type}_claim:{account_id}:{period}",
+            metadata={"claim_points": claim_points, "period": period, "pool": "extra"},
         )
         new_count = claim_count + 1
     cache.invalidate_wallet(account_id)
     return {
         "ok": True,
-        "claimed_points": PLAN_BASIC_CLAIM_POINTS,
+        "claimed_points": claim_points,
         "claim_count": new_count,
-        "claim_max": PLAN_BASIC_CLAIM_MAX,
+        "claim_max": claim_max,
         "period": period,
     }
 
@@ -1917,6 +2012,60 @@ def _append_ledger(
         "UPDATE billing_wallets SET ledger_head_hash = ? WHERE account_id = ?",
         (row_hash, account_id),
     )
+
+
+def grant_points_to_wallet(
+    conn: Any,
+    *,
+    account_id: str,
+    workspace_id: str,
+    points: int,
+    source_type: str,
+    source_id: str,
+    idempotency_key: str,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """向账号「永久充值池」(points_balance) 发放积分（幂等）。
+
+    用于邀请码注册/兑换等直接发放场景。调用方负责事务边界，本函数只在本事务内
+    更新余额 + 写台账；points 为人类可读的「积分」数（×PLAN_UNIT_SCALE 转存储单位）。
+    同一 idempotency_key 重复调用不会重复发放（先查台账再改余额）。
+    """
+    normalized_points = int(points or 0)
+    if normalized_points <= 0:
+        return {"granted_points": 0, "already": False}
+    units = normalized_points * PLAN_UNIT_SCALE
+    existing = conn.execute(
+        """
+        SELECT 1 FROM billing_point_ledger
+        WHERE account_id = ? AND idempotency_key = ?
+        """,
+        (account_id, idempotency_key),
+    ).fetchone()
+    if existing is not None:
+        return {"granted_points": 0, "already": True}
+    _ensure_wallet(conn, account_id, workspace_id or "default")
+    now = _utc_now()
+    conn.execute(
+        """
+        UPDATE billing_wallets
+        SET points_balance = points_balance + ?, version = version + 1, updated_at = ?
+        WHERE account_id = ?
+        """,
+        (units, now, account_id),
+    )
+    _append_ledger(
+        conn,
+        account_id=account_id,
+        workspace_id=workspace_id or "default",
+        direction="credit",
+        points_delta=units,
+        source_type=source_type,
+        source_id=source_id,
+        idempotency_key=idempotency_key,
+        metadata={"grant_points": normalized_points, **dict(metadata or {})},
+    )
+    return {"granted_points": normalized_points, "already": False}
 
 
 def _station_contract(conn: Any, station_code: str) -> dict[str, Any]:
@@ -2234,6 +2383,144 @@ def reject_station_payout(
     return {"payout_id": int(payout_id), "status": "rejected"}
 
 
+# ---------------------------------------------------------------------------
+# 客户 ↔ 分站绑定（总部权威口径）
+#
+# 客户在充值页填入有效「中转编号」后，账号与该分站商建立绑定并落库；此后换绑受
+# STATION_BINDING_CHANGE_INTERVAL_DAYS（7 天）滚动窗口限制。首绑不计次
+# （change_count 从 0 起），同站重复提交幂等、不消耗换绑次数也不重置冷却。
+# ---------------------------------------------------------------------------
+
+
+def _station_binding_row(conn: Any, account_id: str) -> Any:
+    return conn.execute(
+        "SELECT * FROM customer_station_bindings WHERE account_id=?",
+        (str(account_id or ""),),
+    ).fetchone()
+
+
+def _station_binding_view(row: Any, *, now: str, interval_days: int) -> dict[str, Any]:
+    """把绑定行整理成含「可换绑 / 下次可换时间」的只读视图；无绑定返回空视图。"""
+    if row is None:
+        return {
+            "bound": False,
+            "station_code": "",
+            "station_name": "",
+            "bound_at": "",
+            "last_changed_at": "",
+            "change_count": 0,
+            "can_change": True,
+            "next_change_at": "",
+            "remaining_seconds": 0,
+        }
+    last_changed = str(row["last_changed_at"] or "")
+    can_change = True
+    next_change_at = ""
+    remaining_seconds = 0
+    try:
+        changed_dt = datetime.fromisoformat(last_changed)
+        if changed_dt.tzinfo is None:
+            changed_dt = changed_dt.replace(tzinfo=timezone.utc)
+        now_dt = datetime.fromisoformat(str(now))
+        if now_dt.tzinfo is None:
+            now_dt = now_dt.replace(tzinfo=timezone.utc)
+        due_dt = changed_dt + timedelta(days=interval_days)
+        if due_dt > now_dt:
+            can_change = False
+            next_change_at = due_dt.isoformat(timespec="seconds")
+            remaining_seconds = max(0, int((due_dt - now_dt).total_seconds()))
+    except ValueError:
+        # 时间戳异常时放行换绑，避免脏数据把用户永久锁死。
+        can_change = True
+    return {
+        "bound": True,
+        "station_code": str(row["station_code"] or ""),
+        "station_name": str(row["station_name"] or ""),
+        "bound_at": str(row["bound_at"] or ""),
+        "last_changed_at": last_changed,
+        "change_count": int(row["change_count"] or 0),
+        "can_change": can_change,
+        "next_change_at": next_change_at,
+        "remaining_seconds": remaining_seconds,
+    }
+
+
+def get_customer_station_binding(
+    conn: Any, *, account_id: str, now: str | None = None
+) -> dict[str, Any]:
+    """读取客户当前绑定的分站与换绑冷却状态（无绑定返回 bound=False）。"""
+    if now is None:
+        now = _utc_now()
+    row = _station_binding_row(conn, account_id)
+    return _station_binding_view(
+        row, now=now, interval_days=STATION_BINDING_CHANGE_INTERVAL_DAYS
+    )
+
+
+def bind_customer_station(
+    conn: Any,
+    *,
+    account_id: str,
+    station_code: str,
+    station_name: str = "",
+    now: str | None = None,
+) -> dict[str, Any]:
+    """建立/更换客户与分站的绑定，返回最新绑定视图。
+
+    - 首绑：直接落库，change_count 保持 0；
+    - 同站：幂等，仅刷新展示名，不消耗换绑次数、不重置冷却；
+    - 异站：仅在距上次绑定/换绑满 interval_days 时允许，否则抛 409。
+    """
+    account_id = str(account_id or "")
+    station_code = str(station_code or "").strip()
+    if not account_id:
+        raise HTTPException(status_code=400, detail="缺少账号信息")
+    if not station_code:
+        raise HTTPException(status_code=400, detail="中转编号不能为空")
+    if now is None:
+        now = _utc_now()
+    station_name = str(station_name or "")
+    row = _station_binding_row(conn, account_id)
+    if row is None:
+        conn.execute(
+            "INSERT INTO customer_station_bindings"
+            " (account_id, station_code, station_name, bound_at, last_changed_at, change_count)"
+            " VALUES (?, ?, ?, ?, ?, 0)",
+            (account_id, station_code, station_name, now, now),
+        )
+        return get_customer_station_binding(conn, account_id=account_id, now=now)
+    if str(row["station_code"]) == station_code:
+        if station_name and station_name != str(row["station_name"] or ""):
+            conn.execute(
+                "UPDATE customer_station_bindings SET station_name=? WHERE account_id=?",
+                (station_name, account_id),
+            )
+        return get_customer_station_binding(conn, account_id=account_id, now=now)
+    view = _station_binding_view(
+        row, now=now, interval_days=STATION_BINDING_CHANGE_INTERVAL_DAYS
+    )
+    if not view["can_change"]:
+        raise HTTPException(
+            status_code=409,
+            detail="换绑周期未到，%s 后才能更换中转编号" % (view["next_change_at"],),
+        )
+    conn.execute(
+        "UPDATE customer_station_bindings SET station_code=?, station_name=?,"
+        " last_changed_at=?, change_count=change_count+1 WHERE account_id=?",
+        (station_code, station_name, now, account_id),
+    )
+    return get_customer_station_binding(conn, account_id=account_id, now=now)
+
+
+def station_rebate_settlement_sweep(database_path: Path) -> int:
+    """定时结转入口：把到期（T+7）的「待到账」台账转为「可结算」，返回结转行数。
+
+    幂等，可在任意时刻重复调用；供服务启动、常驻定时线程与读前兜底共用。
+    """
+    with transaction(database_path) as conn:
+        return settle_due_station_rebates(conn)
+
+
 def settle_payment_order(
     database_path: Path,
     *,
@@ -2363,10 +2650,17 @@ def settle_payment_order(
                 },
             )
         package_id = str(order["package_id"] or "")
-        if package_id == PLAN_BASIC_PACKAGE_ID:
-            # 基础版套餐：充值积分已按 base_points 入账，此处激活 4 周套餐
-            # （签到权益在 claim_daily_extra 按 plan_type 生效）。
-            _activate_basic_plan(conn, account_id, now)
+        plan_type = PLAN_PACKAGE_IDS.get(package_id)
+        enterprise_invite_code = ""
+        if plan_type:
+            # 付费套餐（基础版/企业版）：充值积分已按 base_points 入账，此处激活 4 周套餐
+            # （每周领取权益在 claim_plan_weekly 按 plan_type 生效）。
+            _activate_plan(conn, account_id, now, plan_type=plan_type)
+            if plan_type == "enterprise":
+                # 企业版「旗下 10 个账号」：购买者本人 + 9 个受邀账号，每次购买新生成一张 9 次码。
+                enterprise_invite_code = _issue_enterprise_invite_code(
+                    conn, account_id=account_id, now=now, created_by=account_id
+                )
         # 分站档位订单在此计提返利（非分站订单无 station_code，函数内直接返回）。
         _accrue_station_rebate(conn, order, now=now)
         # 惰性 T+7 结算：借每次付款回调把已到期的 accrued 台账转为 settled（幂等）。
@@ -2376,7 +2670,10 @@ def settle_payment_order(
             (str(order["order_id"]),),
         ).fetchone()
     cache.invalidate_wallet(account_id)
-    return {"already_paid": False, "order": dict(settled)}
+    result: dict[str, Any] = {"already_paid": False, "order": dict(settled)}
+    if enterprise_invite_code:
+        result["enterprise_invite_code"] = enterprise_invite_code
+    return result
 
 
 def purge_expired_pending_orders(database_path: Path) -> int:

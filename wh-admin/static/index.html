@@ -314,6 +314,7 @@
         <div class="card form-card">
           <h3 id="announcement-form-title">发布新公告</h3>
           <div class="inline-form" id="announcement-form-grid" style="grid-template-columns:1fr; align-items:start; gap:14px">
+            <label>分区<select id="announcement-category" class="input"><option value="">请选择分区</option></select></label>
             <label>标题<input id="announcement-title" class="input" maxlength="120" placeholder="公告标题"></label>
             <label>正文（支持 Markdown：`# 小标题`、`- 要点`、`1. 步骤`、`**加粗**`、`::: tip 提示` 等）<textarea id="announcement-content" class="input announcement-textarea" rows="3" placeholder="公告内容，支持 Markdown 排版"></textarea></label>
             <div>
@@ -346,6 +347,7 @@
             </div>
           </div>
         </div>
+        <div class="card filters"><label>分区筛选<select id="announcement-filter-category" class="input"><option value="">全部分区</option></select></label><span id="announcement-count" class="count"></span></div>
         <div class="card table-wrap"><table><thead><tr><th>状态</th><th>标题</th><th>正文</th><th>图片</th><th>范围</th><th>发布时间（北京时间）</th><th>操作</th></tr></thead><tbody id="announcements-body"></tbody></table></div>
       </section>
 
@@ -864,6 +866,19 @@ let ANNOUNCE_IMAGES = [];          // 当前表单待上传图片：[{name,mime,
 const ANNOUNCE_IMAGE_MAX = 6;
 const ANNOUNCE_IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
 const ANNOUNCE_IMAGE_MAX_BYTES = 2 * 1024 * 1024;
+// 公告分区（与后端 ANNOUNCE_CATEGORIES 保持一致）：发布时必选，客户端标题会带「【分区】」前缀。
+const ANNOUNCE_CATEGORIES = ['版本更新', '功能上新', '问题修复', '福利活动', '维护通知', '重要通知'];
+function initAnnounceCategoryOptions() {
+  const options = ANNOUNCE_CATEGORIES.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('');
+  $('announcement-category').insertAdjacentHTML('beforeend', options);
+  $('announcement-filter-category').insertAdjacentHTML('beforeend', options);
+}
+// 记录列表里标题前的分区前缀展示（与客户端展示口径一致）。
+function announceDisplayTitle(item) {
+  const category = String((item && item.category) || '').trim();
+  const title = (item && item.title) || '';
+  return category ? `【${category}】${title}` : title;
+}
 async function loadAnnounceUsers() {
   if (ANNOUNCE_USERS_LOADED) return;
   try {
@@ -1102,6 +1117,7 @@ function resetAnnouncementForm() {
   $('announcement-cancel-btn').classList.add('hidden');
   $('announcement-title').value = '';
   $('announcement-content').value = '';
+  $('announcement-category').value = '';
   ANNOUNCE_TARGET = [];
   ANNOUNCE_IMAGES = [];
   renderAnnounceImages();
@@ -1116,6 +1132,7 @@ function fillAnnouncementForm(item) {
   $('announcement-cancel-btn').classList.remove('hidden');
   $('announcement-title').value = item.title;
   $('announcement-content').value = item.content || '';
+  $('announcement-category').value = item.category || '';
   ANNOUNCE_TARGET = Array.isArray(item.target_account_ids) ? item.target_account_ids.slice() : [];
   ANNOUNCE_IMAGES = Array.isArray(item.images) ? item.images.map(img => ({ name: img.name || '', mime: img.mime || 'image/png', size: img.size || 0, data: img.data || '' })).filter(img => img.data) : [];
   renderAnnounceImages();
@@ -1132,9 +1149,14 @@ async function loadAnnouncements() {
   } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
 }
 function renderAnnouncements() {
-  $('announcements-body').innerHTML = ANNOUNCEMENTS.length ? ANNOUNCEMENTS.map(item => {
+  const filter = $('announcement-filter-category').value;
+  const rows = filter ? ANNOUNCEMENTS.filter(item => (item.category || '') === filter) : ANNOUNCEMENTS;
+  $('announcement-count').textContent = filter ? `已筛选 ${rows.length} / ${ANNOUNCEMENTS.length} 条` : `共 ${ANNOUNCEMENTS.length} 条`;
+  $('announcements-body').innerHTML = rows.length ? rows.map(item => {
     const on = !!item.active;
     const content = item.content || '';
+    const category = (item.category || '').trim();
+    const titleCell = `${category ? `<span class="badge badge-info">【${esc(category)}】</span>` : ''}<b>${esc(item.title)}</b>`;
     const isLong = content.length > 100 || (content.match(/\n/g) || []).length >= 3;
     const targets = Array.isArray(item.target_account_ids) ? item.target_account_ids : [];
     const scope = targets.length ? `<span class="badge badge-warning">指定 ${targets.length} 人</span>` : '<span class="badge badge-muted">全部用户</span>';
@@ -1144,7 +1166,7 @@ function renderAnnouncements() {
       : '<span style="color:#9ca3af">-</span>';
     return `<tr>
       <td>${on ? '<span class="badge badge-success">已上线</span>' : '<span class="badge badge-muted">已下线</span>'}</td>
-      <td><b>${esc(item.title)}</b></td>
+      <td>${titleCell}</td>
       <td class="announcement-content-cell">
         <div class="announcement-body-clamp" data-ann-content data-id="${item.id}">${esc(content || '-')}</div>
         ${isLong ? `<button class="announcement-toggle" data-ann-toggle data-id="${item.id}">展开</button>` : ''}
@@ -1158,22 +1180,26 @@ function renderAnnouncements() {
         <button class="link-btn red" data-announcement-action="delete" data-id="${item.id}" data-title="${esc(item.title)}">删除</button>
       </td>
     </tr>`;
-  }).join('') : '<tr><td class="empty" colspan="7">暂无公告，发布第一条吧</td></tr>';
+  }).join('') : `<tr><td class="empty" colspan="7">${filter ? '该分区下暂无公告' : '暂无公告，发布第一条吧'}</td></tr>`;
 }
+initAnnounceCategoryOptions();
 resetAnnouncementForm();
+$('announcement-filter-category').onchange = renderAnnouncements;
 $('announcement-save-btn').onclick = async () => {
   const title = $('announcement-title').value.trim();
   const content = $('announcement-content').value;
+  const category = $('announcement-category').value;
   if (!title) { toast('请输入公告标题', 'error'); return; }
+  if (!category) { toast('请选择公告分区', 'error'); return; }
   $('announcement-save-btn').disabled = true;
   try {
     const targets = currentAnnounceTargets();
     const images = ANNOUNCE_IMAGES.map(img => ({ name: img.name, mime: img.mime, data: img.data }));
     if (ANNOUNCEMENT_EDITING_ID == null) {
-      await api('/api/announcements', { method: 'POST', body: JSON.stringify({ title, content, target_account_ids: targets, images }) });
+      await api('/api/announcements', { method: 'POST', body: JSON.stringify({ title, content, category, target_account_ids: targets, images }) });
       toast('公告已发布', 'success');
     } else {
-      await api(`/api/announcements/${ANNOUNCEMENT_EDITING_ID}`, { method: 'PATCH', body: JSON.stringify({ title, content, target_account_ids: targets, images }) });
+      await api(`/api/announcements/${ANNOUNCEMENT_EDITING_ID}`, { method: 'PATCH', body: JSON.stringify({ title, content, category, target_account_ids: targets, images }) });
       toast('公告已保存', 'success');
     }
     resetAnnouncementForm();
@@ -1186,7 +1212,7 @@ $('announcements-body').onclick = event => {
   const preview = event.target.closest('[data-ann-preview]');
   if (preview) {
     const row = ANNOUNCEMENTS.find(item => item.id === Number(preview.dataset.annPreview));
-    if (row) openAnnouncementPreview(row.title, row.content, row.images);
+    if (row) openAnnouncementPreview(announceDisplayTitle(row), row.content, row.images);
     return;
   }
   const toggle = event.target.closest('.announcement-toggle');

@@ -26,7 +26,6 @@ type SourcingRow = {
   channel: string;
   batchId: string;
   cost: number | null;
-  declaredPrice: number | null;
   currency: string;
   status: string;
   createdAt: string;
@@ -305,7 +304,6 @@ function toRow(draft: Draft): SourcingRow {
     channel: String(raw.collection_channel || ""),
     batchId: draft.selection_run_id || "",
     cost: draft.cost,
-    declaredPrice: draft.declared_price,
     currency,
     status: draft.status,
     createdAt: draft.created_at,
@@ -633,7 +631,6 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
               <th>采集渠道</th>
               <th>采集批次</th>
               <th>成本</th>
-              <th>申报价</th>
               <th>采集时间</th>
               <th>处理后</th>
               <th>操作</th>
@@ -680,7 +677,6 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
                         </button>
                       )}
                     </td>
-                    <td>{formatMoney(row.declaredPrice, row.currency)}</td>
                     <td>{formatDate(row.createdAt)}</td>
                     <td>
                       <button
@@ -704,7 +700,7 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
                   </tr>
                   {expanded && (
                     <tr className="psc-sku-detail-row">
-                      <td colSpan={10}>
+                      <td colSpan={9}>
                         <table className="psc-sku-table">
                           <thead>
                             <tr>

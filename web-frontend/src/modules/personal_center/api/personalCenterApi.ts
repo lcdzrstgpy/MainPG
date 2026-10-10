@@ -59,7 +59,7 @@ export type BillingSummary = {
     ledger_head_hash: string;
     updated_at: string;
     plan: {
-      plan_type: "experience" | "flagship" | string;
+      plan_type: "experience" | "basic" | "enterprise" | "flagship" | string;
       plan_label: string;
       /** 限时积分余额（体验池，每周一 00:00 作废）。 */
       plan_balance: number;
@@ -78,6 +78,14 @@ export type BillingSummary = {
       basic_claim_max: number;
       /** 当前是否可领取（服务端已算好：套餐有效 + 未领满 + 本周未领）。 */
       basic_claimable: boolean;
+      /** 企业版每周直接领取：每次可领积分（非企业版为 0）。 */
+      enterprise_claim_points: number;
+      /** 已领取次数（与基础版共用同一计数）。 */
+      enterprise_claim_count: number;
+      /** 领取次数上限（4 次）。 */
+      enterprise_claim_max: number;
+      /** 当前是否可领取（服务端已算好：套餐有效 + 未领满 + 本周未领）。 */
+      enterprise_claimable: boolean;
       /** 每日签到：本次可领积分（首签 500，之后每天 100）。 */
       daily_claim_points: number;
       /** 今天是否还没签（服务端按北京自然日判定，所有套餐通用）。 */
@@ -266,6 +274,29 @@ export function claimBasicWeeklyPoints() {
     claim_max: number;
     period: string;
   }>("/api/customer/billing/plan-basic/claim", { method: "POST" });
+}
+
+/** 企业版每周直接领取 1000 积分（四周内每周一次，额外积分池，永久有效）。 */
+export function claimEnterpriseWeeklyPoints() {
+  return httpJson<{
+    ok: boolean;
+    claimed_points: number;
+    claim_count: number;
+    claim_max: number;
+    period: string;
+  }>("/api/customer/billing/plan-enterprise/claim", { method: "POST" });
+}
+
+/** 个人中心兑换邀请码：按码面额发放永久积分，服务端幂等。 */
+export function redeemInvitationCode(code: string) {
+  return httpJson<{
+    ok: boolean;
+    granted_points: number;
+    code: string;
+  }>("/api/customer/invitations/redeem", {
+    method: "POST",
+    body: { code },
+  });
 }
 
 /** 每日签到（首签 +500 永久，之后每天 +100 限时；按北京自然日幂等）。 */
@@ -468,5 +499,38 @@ export type StationPartnerDetail = {
 export function loadStationPartnerDetail(stationCode: string) {
   return httpJson<StationPartnerDetail>(
     `/api/customer/station-partners/${encodeURIComponent(stationCode)}`,
+  );
+}
+
+/** 客户与中转分站的绑定状态：换绑受 7 天冷却限制（can_change=false 时未到窗口）。 */
+export type StationBinding = {
+  bound: boolean;
+  station_code: string;
+  station_name: string;
+  bound_at: string;
+  last_changed_at: string;
+  /** 已完成的换绑次数（首绑不计次，从 0 起）。 */
+  change_count: number;
+  can_change: boolean;
+  /** 下次可换绑时刻（ISO 8601），当前可换绑时为空串。 */
+  next_change_at: string;
+  remaining_seconds: number;
+};
+
+/** 读取当前账号绑定的中转分站（未绑定时 bound=false）。 */
+export function loadStationBinding() {
+  return httpJson<{ ok: boolean; binding: StationBinding }>(
+    "/api/customer/billing/station-binding",
+  );
+}
+
+/**
+ * 确认绑定：把当前账号与给定中转编号对应的分站绑定。
+ * 首绑直接落库；异站换绑需距上次满 7 天，否则服务端返回 409。
+ */
+export function confirmStationBinding(stationCode: string) {
+  return httpJson<{ ok: boolean; binding: StationBinding }>(
+    "/api/customer/billing/station-binding",
+    { method: "POST", body: { station_code: stationCode } },
   );
 }

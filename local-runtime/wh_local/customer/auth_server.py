@@ -30,15 +30,19 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from ..billing import (
+    _activate_plan,
+    _generate_invitation_code,
     BATCH_BILLING_PROFILE_POD,
     BATCH_BILLING_PROFILE_POD_SEMI,
     BATCH_BILLING_PROFILE_PRODUCT,
     DAILY_EXTRA_POINTS,
     DAILY_FIRST_CLAIM_POINTS,
-    PLAN_BASIC_CLAIM_MAX,
-    PLAN_BASIC_CLAIM_POINTS,
     PLAN_BASIC_PACKAGE_ID,
     PLAN_BASIC_PRICE_CENTS,
+    PLAN_ENTERPRISE_GRANT_POINTS,
+    PLAN_ENTERPRISE_PACKAGE_ID,
+    PLAN_ENTERPRISE_PRICE_CENTS,
+    PLAN_PACKAGE_CONFIG,
     TOPUP_PROMOTION_ID,
     TOPUP_PROMOTION_NAME,
     _daily_next_refresh,
@@ -52,10 +56,13 @@ from ..billing import (
     batch_freeze_status,
     _daily_next_refresh,
     _daily_period_key,
-    claim_basic_weekly,
+    bind_customer_station,
     claim_daily_extra,
+    claim_plan_weekly,
     compute_batch_charge,
     freeze_batch_points,
+    get_customer_station_binding,
+    grant_points_to_wallet,
     pricing_changelog,
     pricing_items,
     point_ledger_history,
@@ -65,6 +72,7 @@ from ..billing import (
     reserve_ai_usage,
     settle_payment_order,
     station_rebate_cents,
+    station_rebate_settlement_sweep,
     settle_ai_usage_failure,
     settle_ai_usage_success,
     settle_batch_points,
@@ -89,7 +97,7 @@ from ..pod_billing import (
     update_pod_pricing_items,
 )
 from ..session import Actor
-from .auth_service import SQLiteCustomerAuthService, _log_security_event, purge_expired_action_logs, purge_expired_customer_feedback, refresh_stale_login_status
+from .auth_service import SQLiteCustomerAuthService, _invitation_expired, _log_security_event, purge_expired_action_logs, purge_expired_customer_feedback, refresh_stale_login_status
 from .credential_vault import CredentialVaultError, active_secret, enabled_secrets
 from .contracts import CustomerAuthActionResult, CustomerAuthResult, CustomerAuthUnavailable
 from .email_sender import TencentCloudSESEmailSender
@@ -126,6 +134,12 @@ TOPUP_PACKAGE_CENTS = {
 PLAN_BASIC_PACKAGE = {
     "amount_cents": PLAN_BASIC_PRICE_CENTS,
     "label": "基础版 · 四周体验",
+}
+# 企业版套餐（同上，不进入充值页套餐列表）：¥499 结算后激活企业版权益，
+# 固定到账 8000 充值积分（按产品文档口径，不套用标准充值倍率）。
+PLAN_ENTERPRISE_PACKAGE = {
+    "amount_cents": PLAN_ENTERPRISE_PRICE_CENTS,
+    "label": "企业版 · 四周体验",
 }
 CUSTOM_TOPUP_MIN_CENTS = 100
 CUSTOM_TOPUP_MAX_CENTS = 300_000
@@ -943,10 +957,37 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
     )
     status_thread.start()
 
+    # 分站返利定时结转：订单付款成功后计提的返利停在「待到账」，应在 T+7 后自动转为
+    # 「可结算」。此前只有支付回调会惰性触发，一旦没有新订单，到期台账会永远停在
+    # 待到账。这里启动即结转一次，之后每小时扫描一次，兜住无人下单的场景。
+    _rebate_stop_event = threading.Event()
+
+    def _run_station_rebate_settle_loop(
+        stop_event: threading.Event,
+        *,
+        interval_seconds: float = 3600.0,
+    ) -> None:
+        while not stop_event.is_set():
+            try:
+                station_rebate_settlement_sweep(db_path)
+            except Exception:
+                pass
+            stop_event.wait(interval_seconds)
+
+    rebate_thread = threading.Thread(
+        target=_run_station_rebate_settle_loop,
+        args=(_rebate_stop_event,),
+        name="station-rebate-settle",
+        daemon=True,
+    )
+    rebate_thread.start()
+
     @app.on_event("shutdown")
     def _stop_batch_ttl_sweep() -> None:
         _gateway_stop_event.set()
+        _rebate_stop_event.set()
         ttl_thread.join(timeout=5.0)
+        rebate_thread.join(timeout=5.0)
 
     @app.get("/health")
     def health() -> dict[str, Any]:
@@ -1580,16 +1621,68 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         _required_account(db_path, authorization)
         return _topup_quote(db_path, payload)
 
+    @app.get("/api/customer/billing/station-binding")
+    def get_billing_station_binding(
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """读取当前账号绑定的中转分站及换绑冷却状态（未绑定时 bound=False）。"""
+        account = _required_account(db_path, authorization)
+        with transaction(db_path) as conn:
+            binding = get_customer_station_binding(
+                conn, account_id=str(account["account_id"])
+            )
+        return {"ok": True, "binding": binding}
+
+    @app.post("/api/customer/billing/station-binding")
+    def confirm_billing_station_binding(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """确认绑定：客户在充值页填写中转编号后主动确认，与分站建立账号级绑定。
+
+        绑定/换绑规则与下单时完全一致（同一套 bind_customer_station）：首绑落库，
+        异站换绑受 7 天冷却限制，未满窗口抛 409。中转编号无效时返回 404。
+        """
+        account = _required_account(db_path, authorization)
+        station_code = str((payload or {}).get("station_code") or "").strip()
+        if not station_code:
+            raise HTTPException(status_code=400, detail="中转编号不能为空")
+        # 先校验编号确为合作中转站并取展示名（缓存命中，事务外完成，不持锁发网络请求）。
+        detail = _station_partner_detail(station_code)
+        station_name = str(detail.get("station_name") or "").strip() or station_code
+        with transaction(db_path) as conn:
+            binding = bind_customer_station(
+                conn,
+                account_id=str(account["account_id"]),
+                station_code=station_code,
+                station_name=station_name,
+            )
+        return {"ok": True, "binding": binding}
+
     @app.post("/api/customer/billing/plan-basic/claim")
     def claim_basic_plan_points(
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
         """基础版每周直接领取 1000 积分（额外积分池，永久有效）。"""
         account = _required_account(db_path, authorization)
-        return claim_basic_weekly(
+        return claim_plan_weekly(
             db_path,
             str(account["account_id"]),
             str(account.get("workspace_id") or "default"),
+            plan_type="basic",
+        )
+
+    @app.post("/api/customer/billing/plan-enterprise/claim")
+    def claim_enterprise_plan_points(
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """企业版每周直接领取 1000 积分（额外积分池，永久有效）。"""
+        account = _required_account(db_path, authorization)
+        return claim_plan_weekly(
+            db_path,
+            str(account["account_id"]),
+            str(account.get("workspace_id") or "default"),
+            plan_type="enterprise",
         )
 
     @app.post("/api/customer/billing/daily-extra/claim")
@@ -2042,7 +2135,7 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
                 for key, value in parse_qsl(raw_payload, keep_blank_values=True)
             }
             verified = verify_alipay_callback(payload)
-            settle_payment_order(
+            settled = settle_payment_order(
                 db_path,
                 provider="alipay",
                 out_trade_no=verified["out_trade_no"],
@@ -2051,6 +2144,13 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
                 provider_status=verified["trade_status"],
                 metadata={"buyer_id": verified["buyer_id"]},
             )
+            # 企业版购买：把自动生成的 9 人邀请码以专属分区定向公告下发给购买者。
+            enterprise_code = str(settled.get("enterprise_invite_code") or "")
+            if enterprise_code:
+                _publish_enterprise_invite_notice(
+                    str((settled.get("order") or {}).get("account_id") or ""),
+                    enterprise_code,
+                )
         except AlipayGatewayConfigurationError as exc:
             raise HTTPException(status_code=503, detail="Alipay payment is not configured") from exc
         except AlipaySignatureError as exc:
@@ -2181,25 +2281,32 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         try:
             count = int(payload.get("count", 1))
             max_uses = int(payload.get("max_uses", 100))
+            grant_points = int(payload.get("grant_points", 0) or 0)
             expires_at = str(payload.get("expires_at", "") or "")
+            remark = str(payload.get("remark", "") or "").strip()[:100]
         except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail="count/max_uses must be integers")
+            raise HTTPException(status_code=400, detail="count/max_uses/grant_points must be integers")
 
         count = max(1, min(count, 500))
         max_uses = max(1, max_uses)
-        codes = [_invitation_code() for _ in range(count)]
+        grant_points = max(0, grant_points)
+        codes = [_generate_invitation_code() for _ in range(count)]
         now = _utc_now()
         with transaction(db_path) as conn:
             conn.executemany(
                 """
                 INSERT OR IGNORE INTO invitation_codes (
-                    code, max_uses, used_count, expires_at, created_by, created_at
+                    code, max_uses, used_count, expires_at, created_by, created_at,
+                    remark, grant_points
                 )
-                VALUES (?, ?, 0, ?, ?, ?)
+                VALUES (?, ?, 0, ?, ?, ?, ?, ?)
                 """,
-                [(code, max_uses, expires_at, actor.get("username", ""), now) for code in codes],
+                [
+                    (code, max_uses, expires_at, actor.get("username", ""), now, remark, grant_points)
+                    for code in codes
+                ],
             )
-        return {"ok": True, "count": len(codes), "codes": codes}
+        return {"ok": True, "count": len(codes), "codes": codes, "grant_points": grant_points}
 
     @app.get("/api/customer/invitations")
     def list_invitations(
@@ -2220,7 +2327,8 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         with transaction(db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT code, max_uses, used_count, expires_at, created_by, created_at
+                SELECT code, max_uses, used_count, expires_at, created_by, created_at,
+                       remark, grant_points
                 FROM invitation_codes
                 ORDER BY created_at DESC
                 """,
@@ -2235,9 +2343,84 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
                     "expires_at": row["expires_at"],
                     "created_by": row["created_by"],
                     "created_at": row["created_at"],
+                    "remark": row["remark"],
+                    "grant_points": row["grant_points"],
                 }
                 for row in rows
             ],
+        }
+
+    @app.post("/api/customer/invitations/redeem")
+    def redeem_invitation(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """个人中心兑换邀请码：校验码有效后向当前账号永久充值池发放积分。
+
+        幂等：同账号同码仅可兑换一次（按台账 idempotency_key 去重）；
+        兑换成功 used_count + 1，占用一次领取名额。
+        """
+        account = _required_account(db_path, authorization)
+        account_id = str(account["account_id"])
+        workspace_id = str(account.get("workspace_id") or "default")
+        code = str(payload.get("code") or "").strip().upper()
+        if not code:
+            raise HTTPException(status_code=400, detail="邀请码不能为空")
+        idempotency_key = f"invitation_redeem:{account_id}:{code}"
+        with transaction(db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT code, max_uses, used_count, expires_at, grant_points, grant_plan_type, created_by
+                FROM invitation_codes WHERE code = ?
+                """,
+                (code,),
+            ).fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail="邀请码不存在")
+            if _invitation_expired(str(row["expires_at"] or "")):
+                raise HTTPException(status_code=409, detail="邀请码已过期")
+            if str(row["created_by"] or "") == account_id:
+                # 购买者本人已在购买时享受过该福利，不能再用自己生成的码兑换。
+                raise HTTPException(status_code=409, detail="这是您购买时生成的邀请码，不能由本账号兑换")
+            grant_points = int(row["grant_points"] or 0)
+            grant_plan_type = str(row["grant_plan_type"] or "")
+            if grant_points <= 0 and not grant_plan_type:
+                raise HTTPException(status_code=409, detail="该邀请码不含可兑换积分")
+            already = conn.execute(
+                """
+                SELECT 1 FROM billing_point_ledger
+                WHERE account_id = ? AND idempotency_key = ?
+                """,
+                (account_id, idempotency_key),
+            ).fetchone()
+            if already is not None:
+                raise HTTPException(status_code=409, detail="该邀请码已兑换过")
+            if int(row["used_count"]) >= int(row["max_uses"]):
+                raise HTTPException(status_code=409, detail="邀请码已被领完")
+            conn.execute(
+                "UPDATE invitation_codes SET used_count = used_count + 1 WHERE code = ?",
+                (code,),
+            )
+            grant_points_to_wallet(
+                conn,
+                account_id=account_id,
+                workspace_id=workspace_id,
+                points=grant_points,
+                source_type="invitation_redeem",
+                source_id=code,
+                idempotency_key=idempotency_key,
+                metadata={"code": code, "channel": "redeem", "plan_type": grant_plan_type},
+            )
+            if grant_plan_type:
+                # 企业版邀请码：被兑换账号同时获得与购买者同等的套餐权益
+                # （4 周内每周可领 1000 永久积分），立得积分已在上方入账。
+                _activate_plan(conn, account_id, _utc_now(), plan_type=grant_plan_type)
+        _cache.invalidate_wallet(account_id)
+        return {
+            "ok": True,
+            "granted_points": grant_points,
+            "plan_type": grant_plan_type,
+            "code": code,
         }
 
     # ---- 采集凭据下发（OneBound API key 只在服务器持有，按用户身份加密下发） ----
@@ -3454,12 +3637,22 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
     plan_type = str(wallet["plan_type"] if wallet else "experience")
     plan_balance_units = int(wallet["plan_balance"] if wallet else 0)
     plan_weekly_units = _plan_weekly_units(plan_type)
-    # 基础版每周直接领取状态：可领 = 套餐有效（过期已被 _ensure_wallet 回落）且未领满且本周未领。
+    # 付费套餐（基础版/企业版）每周直接领取状态：可领 = 套餐有效（过期已被 _ensure_wallet
+    # 回落）且未领满且本周未领。basic/enterprise 复用同一套钱包领取列。
     claim_count = int(wallet["basic_claim_count"] if wallet else 0)
+    claim_period = str(wallet["basic_claim_period"] if wallet else "")
+    now_period = _plan_period_key()
+    basic_config = PLAN_PACKAGE_CONFIG["basic"]
+    enterprise_config = PLAN_PACKAGE_CONFIG["enterprise"]
     basic_claimable = (
         plan_type == "basic"
-        and claim_count < PLAN_BASIC_CLAIM_MAX
-        and str(wallet["basic_claim_period"] if wallet else "") != _plan_period_key()
+        and claim_count < int(basic_config["claim_max"])
+        and claim_period != now_period
+    )
+    enterprise_claimable = (
+        plan_type == "enterprise"
+        and claim_count < int(enterprise_config["claim_max"])
+        and claim_period != now_period
     )
     # 每日签到状态：所有套餐通用，唯一条件是「今天还没签」。
     # 首签（从未签到过）送 500（永久），之后每天 100（限时）。
@@ -3493,10 +3686,14 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
                 "plan_used": _display_billing_points(max(0, plan_weekly_units - plan_balance_units), pricing),
                 "next_refresh_at": _plan_next_refresh(wallet["plan_period_key"] if wallet else ""),
                 "plan_expire_at": wallet["plan_expire_at"] if wallet else "",
-                "basic_claim_points": PLAN_BASIC_CLAIM_POINTS if plan_type == "basic" else 0,
+                "basic_claim_points": int(basic_config["claim_points"]) if plan_type == "basic" else 0,
                 "basic_claim_count": claim_count,
-                "basic_claim_max": PLAN_BASIC_CLAIM_MAX,
+                "basic_claim_max": int(basic_config["claim_max"]),
                 "basic_claimable": basic_claimable,
+                "enterprise_claim_points": int(enterprise_config["claim_points"]) if plan_type == "enterprise" else 0,
+                "enterprise_claim_count": claim_count,
+                "enterprise_claim_max": int(enterprise_config["claim_max"]),
+                "enterprise_claimable": enterprise_claimable,
                 "daily_claim_points": daily_claim_points,
                 "daily_claimable": daily_claimable,
                 "daily_claim_date": daily_claim_date,
@@ -3601,6 +3798,49 @@ def _parse_station_package_id(package_id: Any) -> tuple[str, int] | None:
     except ValueError:
         return None
     return (parts[1], amount_cents) if amount_cents > 0 else None
+
+
+# 企业版邀请码定向公告：与 wh-admin 共享的内部令牌与专属分区（见 wh-admin /api/internal/announcements）。
+ANNOUNCE_INTERNAL_TOKEN = os.environ.get(
+    "ANNOUNCE_INTERNAL_TOKEN", "ann-int-7c3e9b52f1a8460d"
+)
+ENTERPRISE_INVITE_NOTICE_CATEGORY = "企业版专属"
+
+
+def _publish_enterprise_invite_notice(account_id: str, code: str) -> None:
+    """企业版购买成功后，把自动生成的 9 人邀请码经 wh-admin 内部接口定向下发给购买者。
+
+    best-effort：公告通道异常不影响支付结算（结算与邀请码已落库，可在后台查询）。
+    """
+    account_id = str(account_id or "").strip()
+    code = str(code or "").strip()
+    if not account_id or not code:
+        return
+    base_url = str(default_config().announce_base_url or "").strip().rstrip("/")
+    if not base_url:
+        return
+    content = (
+        f"您的企业版专属邀请码：{code}\n\n"
+        "该邀请码最多可供 9 个账号使用，连同您本人共 10 个账号均享受同等企业版权益：\n"
+        "· 立得 8000 积分\n"
+        "· 28 天内每周可领取 1000 永久积分\n\n"
+        "使用方式：其他账号注册时在邀请码一栏填写，或老用户在工作台「充值」页面的兑换码处"
+        "输入并验证，即可领取同等福利。"
+    )
+    try:
+        requests.post(
+            f"{base_url}/api/internal/announcements",
+            json={
+                "account_id": account_id,
+                "title": "企业版邀请码已生成",
+                "content": content,
+                "category": ENTERPRISE_INVITE_NOTICE_CATEGORY,
+            },
+            headers={"X-Internal-Token": ANNOUNCE_INTERNAL_TOKEN},
+            timeout=8,
+        )
+    except requests.RequestException:
+        return
 
 
 def _station_partner_detail(station_code: str) -> dict[str, Any]:
@@ -3861,6 +4101,7 @@ def _create_topup_order(database_path: Path, account: dict[str, Any], payload: d
         station_package is None
         and package_id != "custom"
         and package_id != PLAN_BASIC_PACKAGE_ID
+        and package_id != PLAN_ENTERPRISE_PACKAGE_ID
         and package_id not in TOPUP_PACKAGE_CENTS
     ):
         raise HTTPException(status_code=400, detail="unknown topup package")
@@ -3869,9 +4110,14 @@ def _create_topup_order(database_path: Path, account: dict[str, Any], payload: d
 
     # 中转档位：金额与倍率都以中转站网站上配置的档位为准（≤6 档，与官方套餐两套体系）。
     station_rate: float | None = None
+    station_name = ""
     if station_package is not None:
         station_code, station_amount_cents = station_package
         station_rate = _station_tier_rate(station_code, station_amount_cents)
+        # 展示名随档位详情一起取（30s 缓存命中，不额外发网络请求），事务内只落库，
+        # 避免持锁发网络请求。
+        detail = _station_partner_detail(station_code)
+        station_name = str(detail.get("station_name") or "").strip() or station_code
         product = {
             "amount_cents": station_amount_cents,
             "label": f"中转站充值 {station_amount_cents // 100} 元",
@@ -3880,6 +4126,8 @@ def _create_topup_order(database_path: Path, account: dict[str, Any], payload: d
         product = {"amount_cents": _custom_topup_amount(payload), "label": "自定义积分充值"}
     elif package_id == PLAN_BASIC_PACKAGE_ID:
         product = {"amount_cents": PLAN_BASIC_PRICE_CENTS, "label": PLAN_BASIC_PACKAGE["label"]}
+    elif package_id == PLAN_ENTERPRISE_PACKAGE_ID:
+        product = {"amount_cents": PLAN_ENTERPRISE_PRICE_CENTS, "label": PLAN_ENTERPRISE_PACKAGE["label"]}
     else:
         product = TOPUP_PACKAGE_CENTS[package_id]
     pricing = active_pricing(database_path)
@@ -3897,13 +4145,19 @@ def _create_topup_order(database_path: Path, account: dict[str, Any], payload: d
     )
     with transaction(database_path) as conn:
         _ensure_wallet(conn, account_id, workspace_id)
-        base_points = (
-            int(round((int(product["amount_cents"]) // 100) * station_rate * int(pricing["point_unit_scale"])))
-            if station_rate is not None
-            else (int(product["amount_cents"]) // 100)
-            * int(pricing["points_per_cny"])
-            * int(pricing["point_unit_scale"])
-        )
+        if package_id == PLAN_ENTERPRISE_PACKAGE_ID:
+            # 企业版：按产品文档固定到账 8000 积分（不套用标准充值倍率）。
+            base_points = PLAN_ENTERPRISE_GRANT_POINTS * int(pricing["point_unit_scale"])
+        elif station_rate is not None:
+            base_points = int(
+                round((int(product["amount_cents"]) // 100) * station_rate * int(pricing["point_unit_scale"]))
+            )
+        else:
+            base_points = (
+                (int(product["amount_cents"]) // 100)
+                * int(pricing["points_per_cny"])
+                * int(pricing["point_unit_scale"])
+            )
         promotion_percent = (
             topup_bonus_percent(package_id)
             if package_id != "custom" and station_rate is None
@@ -3926,6 +4180,16 @@ def _create_topup_order(database_path: Path, account: dict[str, Any], payload: d
         # 分站档位订单：按总部合约口径在下单时冻结返利快照，付款成功后原样计提；
         # 官方套餐 / 自定义充值不涉及分站，快照留空。d / m / c 不下发客户端。
         station_code = station_package[0] if station_package is not None else ""
+        if station_package is not None:
+            # 客户填入有效中转编号即与分站建立绑定：首绑落库，异站换绑受 7 天冷却限制
+            # （未满窗口会抛 409，事务回滚，不会生成指向新站点的订单）。
+            bind_customer_station(
+                conn,
+                account_id=account_id,
+                station_code=station_code,
+                station_name=station_name,
+                now=now,
+            )
         tier_rate = float(station_rate or 0)
         station_rebate = (
             station_rebate_cents(
@@ -4010,6 +4274,8 @@ def _topup_order_response(
             package_label = f"中转站充值 {station_order[1] // 100} 元"
         elif order["package_id"] == PLAN_BASIC_PACKAGE_ID:
             package_label = PLAN_BASIC_PACKAGE["label"]
+        elif order["package_id"] == PLAN_ENTERPRISE_PACKAGE_ID:
+            package_label = PLAN_ENTERPRISE_PACKAGE["label"]
         else:
             package_label = TOPUP_PACKAGE_CENTS.get(str(order["package_id"]), {}).get(
                 "label", str(order["package_id"])
@@ -4106,14 +4372,6 @@ def _store_pp_failure_log(
 
 def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
-
-
-def _invitation_code() -> str:
-    """Generate a human-friendly invitation code, e.g. MAINPG-8F3K-2Q7M."""
-    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # 去掉易混淆的 I/O/0/1
-    def _chunk(size: int) -> str:
-        return "".join(secrets.choice(alphabet) for _ in range(size))
-    return f"MAINPG-{_chunk(4)}-{_chunk(4)}"
 
 
 # ---- 采集凭据（OneBound API key/secret）只在服务器持有 ----

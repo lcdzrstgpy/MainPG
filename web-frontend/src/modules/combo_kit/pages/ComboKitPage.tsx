@@ -40,6 +40,7 @@ import { MaskCanvas } from '../components/MaskCanvas';
 import { ModeCardCarousel, type ModeCardSlide } from '../components/ModeCardCarousel';
 import { TaskProgressRing } from '../components/TaskProgressRing';
 import { ProductFlowSteps, type ProductFlowStep } from '../../product_processing/components/ProductFlowSteps';
+import { ShippingWeightDrawer } from '../../profit_activity/components/ShippingWeightDrawer';
 import { COMBO_PRESET_TEMPLATES, resolveActiveTemplate } from '../presetTemplates';
 import '../styles/comboKit.css';
 
@@ -184,6 +185,9 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
   const [createMode, setCreateMode] = useState('bundle');
   const [step, setStep] = useState(1);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  // 「截图识别」侧边栏：从包装/物流截图提取重量与长宽高，回填到第①步店铺必填字段。
+  const [weightDrawerOpen, setWeightDrawerOpen] = useState(false);
+  const [weightUseActualOnly, setWeightUseActualOnly] = useState(false);
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyList, setHistoryList] = useState<ComboKitSet[]>([]);
@@ -764,7 +768,12 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
             <label>长（cm）<input type="number" value={form.length_cm} onChange={(e) => setForm({ ...form, length_cm: e.target.value })} /></label>
             <label>宽（cm）<input type="number" value={form.width_cm} onChange={(e) => setForm({ ...form, width_cm: e.target.value })} /></label>
             <label>高（cm）<input type="number" value={form.height_cm} onChange={(e) => setForm({ ...form, height_cm: e.target.value })} /></label>
-            <label>重量（g）<input type="number" value={form.weight_g} onChange={(e) => setForm({ ...form, weight_g: e.target.value })} /></label>
+            <label>重量（g）
+              <span className="shipping-weight-field">
+                <input type="number" value={form.weight_g} onChange={(e) => setForm({ ...form, weight_g: e.target.value })} />
+                <button type="button" className="shipping-weight-trigger" onClick={() => setWeightDrawerOpen(true)}>截图识别</button>
+              </span>
+            </label>
             <label>产品分类（必填，套装类目）
               <select value={form.category_name} onChange={(e) => setForm({ ...form, category_name: e.target.value })}>
                 <option value="">— 请选择套装类目 —</option>
@@ -1299,6 +1308,24 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
             </div>
           </div>
         </div>, document.body)}
+
+      {/* 截图识别：粘贴包装/物流截图，提取重量与长宽高回填到第①步店小秘必填字段 */}
+      {weightDrawerOpen && (
+        <ShippingWeightDrawer
+          initialWeightKg={Number(form.weight_g) > 0 ? String(Number(form.weight_g) / 1000) : ''}
+          useActualOnly={weightUseActualOnly}
+          onUseActualOnlyChange={setWeightUseActualOnly}
+          applyLabel="应用到重量（g）与尺寸"
+          onApply={({ weightKg, lengthCm, widthCm, heightCm }) => setForm((current) => ({
+            ...current,
+            weight_g: String(Math.round(Number(weightKg) * 1000)),
+            length_cm: lengthCm || current.length_cm,
+            width_cm: widthCm || current.width_cm,
+            height_cm: heightCm || current.height_cm,
+          }))}
+          onClose={() => setWeightDrawerOpen(false)}
+        />
+      )}
     </div>
   );
 }

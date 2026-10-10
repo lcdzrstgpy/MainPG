@@ -119,6 +119,11 @@
 }
 .combo-grid textarea, .combo-section textarea, .combo-preset-custom textarea { resize: none; min-height: 72px; font-family: inherit; }
 
+/* 「重量（g）」右侧的「截图识别」入口：输入框与按钮同排，覆盖 .combo-grid input 的整行宽。 */
+.combo-grid .shipping-weight-field { display: flex; flex-direction: row; align-items: center; gap: 8px; }
+.combo-grid .shipping-weight-field input { flex: 1 1 auto; min-width: 0; width: auto; }
+.combo-grid .shipping-weight-trigger { flex: none; padding: 10px 12px; line-height: 1.5; font-size: 13px; }
+
 .combo-actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
 .combo-actions button, .combo-kit-list button { padding: 10px 14px; border-radius: 11px; border: 1px solid var(--theme-module-border, #cfe0eb); background: var(--theme-module-surface, #fff); color: var(--theme-text-secondary, #2f5878); cursor: pointer; font-size: 13px; font-weight: 800; transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
 .combo-actions button:hover:not(:disabled), .combo-kit-list button:hover:not(:disabled) { border-color: var(--theme-module-border-strong, #82c9ef); box-shadow: 0 8px 18px #188bd61a; }

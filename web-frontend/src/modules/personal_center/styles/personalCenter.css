@@ -1182,6 +1182,44 @@
   font-weight: 600;
 }
 
+/* 「确认绑定」按钮：把当前账号与中转编号对应的分站绑定（换绑受 7 天冷却限制）。 */
+.topup-station-bind {
+  flex: 0 0 auto;
+  padding: 8px 16px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  color: #fff;
+  background: var(--theme-primary, #0ea5ff);
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
+  transition: opacity 0.18s ease, background 0.18s ease;
+}
+
+.topup-station-bind:not(:disabled):hover {
+  opacity: 0.9;
+}
+
+.topup-station-bind:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+  background: var(--theme-text-muted, #94a3b8);
+}
+
+/* 绑定状态提示：整行展示，位于档位说明下方。 */
+.topup-station-bind-status {
+  flex: 1 1 100%;
+  max-width: none;
+}
+
+.topup-station-bind-status.is-ok {
+  color: var(--theme-success, #16a34a);
+}
+
+.topup-station-bind-status.is-error {
+  color: var(--theme-danger, #dc2626);
+}
+
 .custom-topup {
   display: flex;
   align-items: center;
@@ -2156,6 +2194,117 @@
   font-size: 13px;
 }
 
+/* 版本说明（分组式）：标题 + 版本徽标 + 摘要 + 分组条目，替代原先单薄的纯列表 */
+.version-notes-rich {
+  padding: 16px 18px;
+}
+
+.version-notes-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.version-notes-badge {
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--theme-primary-light, #e7f6ff);
+  color: var(--theme-primary, #0877d3);
+  font-size: 12px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.version-notes-head small {
+  margin-left: auto;
+  color: var(--theme-text-muted, #8295aa);
+  font-size: 12px;
+}
+
+.version-notes-summary {
+  margin: 10px 0 0;
+  color: var(--theme-text-secondary, #334155);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.version-notes-section {
+  margin-top: 14px;
+}
+
+.version-notes-section h4 {
+  margin: 0 0 6px;
+  color: var(--theme-text-primary, #13233a);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.version-notes-rich .version-notes-section ul {
+  margin-top: 6px;
+}
+
+.version-notes-rich li + li {
+  margin-top: 5px;
+}
+
+.version-notes-rich ul ul {
+  margin-top: 4px;
+  padding-left: 16px;
+}
+
+.version-notes-note {
+  display: block;
+  margin-top: 3px;
+  color: var(--theme-text-muted, #8295aa);
+  font-size: 12px;
+  font-style: normal;
+}
+
+/* 无法在线更新时的官网手动下载入口 */
+.version-manual {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border-radius: 12px;
+  border: 1px dashed var(--theme-module-border-strong, #a7dafa);
+  padding: 14px 16px;
+  background: var(--theme-module-surface-tint, #eaf8ff);
+}
+
+.version-manual > .iconfont {
+  flex: none;
+  margin-top: 1px;
+  color: var(--theme-primary, #0877d3);
+  font-size: 18px;
+}
+
+.version-manual > div {
+  min-width: 0;
+}
+
+.version-manual strong {
+  display: block;
+  color: var(--theme-text-primary, #13233a);
+  font-size: 13px;
+}
+
+.version-manual small {
+  display: block;
+  margin-top: 3px;
+  color: var(--theme-text-muted, #8295aa);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.version-manual a {
+  display: inline-block;
+  margin-top: 6px;
+  color: var(--theme-primary, #0877d3);
+  font-size: 12px;
+  font-weight: 700;
+  word-break: break-all;
+}
+
 @media (max-width: 480px) {
   .version-fields {
     grid-template-columns: 1fr;
@@ -2402,22 +2551,41 @@
   color: #fff;
 }
 
+.personal-upgrade-dialog {
+  width: min(760px, 100%);
+}
+
 .personal-upgrade-body {
   padding: 26px 8px 30px;
   display: flex;
-  align-items: center;
+  flex-wrap: wrap;
+  align-items: stretch;
   justify-content: center;
+  gap: 18px;
 }
 .personal-upgrade-plan-card {
+  flex: 1 1 300px;
   width: 100%;
   max-width: 380px;
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 14px;
   padding: 22px;
   border: 1px solid var(--theme-module-border, #e2e8f0);
   border-radius: 16px;
   background: var(--theme-module-surface, #fff);
   box-shadow: 0 14px 34px rgba(15, 23, 42, 0.08);
+}
+@media (min-width: 620px) {
+  .personal-upgrade-body {
+    flex-wrap: nowrap;
+    align-items: stretch;
+  }
+  .personal-upgrade-plan-card {
+    flex: 1 1 0;
+    width: auto;
+    max-width: none;
+  }
 }
 .personal-upgrade-plan-head {
   display: flex;
@@ -2437,6 +2605,7 @@
 }
 .personal-upgrade-plan-benefits {
   display: grid;
+  flex: 1;
   gap: 8px;
   margin: 0;
   padding: 0;
@@ -2485,6 +2654,49 @@
   color: #dc2626;
   font-size: 0.84rem;
   line-height: 1.5;
+}
+.personal-upgrade-plan-feedback {
+  flex: 1 1 100%;
+  display: grid;
+  gap: 4px;
+  text-align: center;
+}
+
+/* 邀请码兑换卡片 */
+.redeem-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+.redeem-form input {
+  flex: 1 1 220px;
+  min-width: 0;
+  padding: 11px 14px;
+  border: 1px solid var(--theme-module-border, #dbe5ef);
+  border-radius: 12px;
+  background: var(--theme-module-surface, #fff);
+  color: var(--theme-text-primary, #0f172a);
+  font-size: 0.95rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.redeem-form input::placeholder {
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--theme-text-muted, #94a3b8);
+}
+.redeem-form .primary-topup {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 140px;
+  margin: 0;
+}
+.redeem-card .payment-notice {
+  margin-top: 12px;
+}
+.redeem-card .payment-notice.is-error {
+  color: #dc2626;
 }
 
 /* 体验卡上的基础版到期提示 */
