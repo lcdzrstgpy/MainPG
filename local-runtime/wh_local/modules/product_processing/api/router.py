@@ -551,6 +551,16 @@ def create_product_processing_router(
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "draft_ids is required")
         return service.delete_drafts(None if body.delete_all else body.draft_ids, _workspace(workspace_id))
 
+    @router.post("/drafts/purge")
+    def purge_drafts_batch(
+        body: DraftDeleteRequest,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        """批量物理删除草稿（不可恢复），用于货源成本等页面多选清理。"""
+        if not body.draft_ids:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "draft_ids is required")
+        return service.purge_drafts(body.draft_ids, _workspace(workspace_id))
+
     @router.post("/drafts/restore")
     def restore_drafts(
         body: DraftRestoreRequest,

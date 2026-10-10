@@ -343,6 +343,8 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [batchDeleting, setBatchDeleting] = useState(false);
 
   const load = useCallback(async (nextStatus: string) => {
     setLoading(true);
@@ -459,6 +461,41 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
     setPage(1);
   }, [status, platform, channel, batchId, keyword, dateFrom, dateTo, onlyMissingCost, pageSize]);
 
+  // 筛选/状态变化后可见集合会变，清空勾选，避免误删已隐藏的行。
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [status, platform, channel, batchId, keyword, dateFrom, dateTo, onlyMissingCost]);
+
+  const pageAllSelected = pageRows.length > 0 && pageRows.every((row) => selectedIds.has(row.id));
+  const pageSomeSelected = pageRows.some((row) => selectedIds.has(row.id));
+
+  const toggleSelect = (id: number) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const toggleSelectPage = () => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      const allSelected = pageRows.length > 0 && pageRows.every((row) => next.has(row.id));
+      for (const row of pageRows) {
+        if (allSelected) {
+          next.delete(row.id);
+        } else {
+          next.add(row.id);
+        }
+      }
+      return next;
+    });
+  };
+
   useEffect(() => {
     setPage((current) => (current > totalPages ? totalPages : current));
   }, [totalPages]);
@@ -522,6 +559,12 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
     try {
       await ppRequest(api(), `${API_BASE}/drafts/${row.id}/purge`, { method: "DELETE" });
       setRows((current) => current.filter((item) => item.id !== row.id));
+      setSelectedIds((current) => {
+        if (!current.has(row.id)) return current;
+        const next = new Set(current);
+        next.delete(row.id);
+        return next;
+      });
       setExpandedIds((current) => {
         if (!current.has(row.id)) return current;
         const next = new Set(current);
@@ -532,6 +575,29 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setDeletingId(null);
+    }
+  };
+
+  const batchDelete = async () => {
+    const ids = Array.from(selectedIds);
+    if (!ids.length) return;
+    if (!window.confirm(`确认删除选中的 ${ids.length} 个商品？该记录会从数据库彻底删除，不可恢复。`)) return;
+    setBatchDeleting(true);
+    setError("");
+    try {
+      await ppRequest(api(), `${API_BASE}/drafts/purge`, { body: { draft_ids: ids } });
+      const idSet = new Set(ids);
+      setRows((current) => current.filter((item) => !idSet.has(item.id)));
+      setSelectedIds(new Set());
+      setExpandedIds((current) => {
+        const next = new Set(current);
+        for (const id of ids) next.delete(id);
+        return next;
+      });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBatchDeleting(false);
     }
   };
 
@@ -631,6 +697,17 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
             onChange={(event) => setKeyword(event.target.value)}
           />
         </label>
+        <div className="psc-bulk-bar">
+          <span className="psc-bulk-count">已选 <strong>{selectedIds.size}</strong> 个商品</span>
+          <button
+            type="button"
+            className="psc-bulk-delete"
+            onClick={() => void batchDelete()}
+            disabled={selectedIds.size === 0 || batchDeleting}
+          >
+            {batchDeleting ? <><i className="app-spinner is-sm" aria-hidden="true" />删除中…</> : "批量删除"}
+          </button>
+        </div>
         <label className="psc-filter-toggle">
           <input type="checkbox" checked={onlyMissingCost} onChange={(event) => setOnlyMissingCost(event.target.checked)} />
           <span>只看缺失成本</span>
@@ -644,6 +721,17 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
         <table className="psc-table">
           <thead>
             <tr>
+              <th className="psc-cell-select">
+                <input
+                  type="checkbox"
+                  aria-label="全选本页"
+                  checked={pageAllSelected}
+                  ref={(el) => {
+                    if (el) el.indeterminate = pageSomeSelected && !pageAllSelected;
+                  }}
+                  onChange={toggleSelectPage}
+                />
+              </th>
               <th>商品</th>
               <th>平台</th>
               <th>店铺</th>
@@ -662,6 +750,14 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
               return (
                 <Fragment key={row.id}>
                   <tr className={expanded ? "psc-row is-expanded" : "psc-row"}>
+                    <td className="psc-cell-select">
+                      <input
+                        type="checkbox"
+                        aria-label={`选择「${row.title}」`}
+                        checked={selectedIds.has(row.id)}
+                        onChange={() => toggleSelect(row.id)}
+                      />
+                    </td>
                     <td className="psc-cell-product">
                       {row.imageUrl
                         ? <img src={row.imageUrl} alt="" loading="lazy" referrerPolicy="no-referrer" />
@@ -721,7 +817,7 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
                   </tr>
                   {expanded && (
                     <tr className="psc-sku-detail-row">
-                      <td colSpan={10}>
+                      <td colSpan={11}>
                         <table className="psc-sku-table">
                           <thead>
                             <tr>
