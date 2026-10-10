@@ -98,7 +98,7 @@ from ..pod_billing import (
     update_pod_pricing_items,
 )
 from ..session import Actor
-from .auth_service import SQLiteCustomerAuthService, _invitation_expired, _log_security_event, purge_expired_action_logs, purge_expired_customer_feedback, refresh_stale_login_status
+from .auth_service import SQLiteCustomerAuthService, _invitation_expired, _log_security_event, _normalize_client_type, purge_expired_action_logs, purge_expired_customer_feedback, refresh_stale_login_status
 from .credential_vault import CredentialVaultError, active_secret, enabled_secrets
 from .contracts import CustomerAuthActionResult, CustomerAuthResult, CustomerAuthUnavailable
 from .email_sender import TencentCloudSESEmailSender
@@ -1015,13 +1015,19 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
     @app.post("/api/customer/login")
     def login(payload: dict[str, Any], request: Request) -> dict[str, Any]:
         try:
+            client_type = _normalize_client_type(payload.get("client_type"))
             customer = service.login(payload)
             remote_session = _issue_platform_session(
                 db_path,
                 customer.customer_id,
                 user_agent=request.headers.get("user-agent", ""),
                 client_ip=request.client.host if request.client else "",
+                client_type=client_type,
             )
+            # 服务端已按 client_type 分组撤销旧会话，这里立即失效其会话缓存，
+            # 否则被顶替的 token 在缓存 TTL（120s）内仍能通过鉴权。
+            for revoked_hash in customer.raw.get("revoked_token_hashes", []) or []:
+                _cache.invalidate_session(str(revoked_hash))
             return {
                 "ok": True,
                 "token": remote_session["token"],
@@ -1277,6 +1283,369 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             "limit": limit,
             "offset": offset,
         }
+
+    # ---- 手机互通资产（拍照 / 相册上传，账号维度） --------------------- #
+    _ASSET_TYPES = {"photo", "gallery", "file"}
+    _ASSET_MAX_BYTES = 8 * 1024 * 1024
+    _ASSET_MIME_MAGIC: dict[str, tuple[bytes, ...]] = {
+        "image/png": (b"\x89PNG\r\n\x1a\n",),
+        "image/jpeg": (b"\xff\xd8\xff",),
+        "image/gif": (b"GIF87a", b"GIF89a"),
+    }
+
+    def _validate_asset_image(mime: str, raw: bytes) -> bool:
+        """校验资产图片真身：mime 白名单 + magic bytes。"""
+        mime = (mime or "").strip().lower()
+        if mime == "image/webp":
+            return raw.startswith(b"RIFF") and len(raw) >= 12 and raw[8:12] == b"WEBP"
+        magics = _ASSET_MIME_MAGIC.get(mime)
+        if magics is None:
+            return False
+        return any(raw.startswith(m) for m in magics)
+
+    @app.post("/api/customer/assets")
+    def customer_asset_upload(
+        payload: dict[str, Any],
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """手机端上传图片资产：base64 JSON body，按账号维度落库，供 PC 端同账号取用。"""
+        account = _required_account(db_path, authorization)
+        data_b64 = str(payload.get("data_b64") or "")
+        if not data_b64:
+            raise HTTPException(status_code=400, detail="asset data is required")
+        try:
+            raw = base64.b64decode(data_b64, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise HTTPException(status_code=400, detail="asset data is invalid") from exc
+        if not raw:
+            raise HTTPException(status_code=400, detail="asset data is empty")
+        if len(raw) > _ASSET_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="asset is too large (max 8MB)")
+        mime = str(payload.get("mime") or "").strip().lower()[:64]
+        if not _validate_asset_image(mime, raw):
+            raise HTTPException(
+                status_code=400,
+                detail="unsupported asset type (png/jpg/gif/webp)",
+            )
+        asset_type = str(payload.get("asset_type") or "photo").strip().lower()
+        if asset_type not in _ASSET_TYPES:
+            asset_type = "photo"
+        file_name = str(payload.get("file_name") or "").strip()[:255] or "asset"
+        note = str(payload.get("note") or "").strip()[:500]
+        source_site = str(payload.get("source_site") or "").strip()[:120]
+        device_name = str(payload.get("device_name") or "").strip()[:120]
+        platform = str(payload.get("platform") or "").strip()[:64]
+        app_version = str(payload.get("app_version") or "").strip()[:64]
+        client_type = str(payload.get("client_type") or account.get("client_type") or "mobile").strip().lower()[:16]
+        asset_id = f"asset_{secrets.token_urlsafe(18)}"
+        now = _utc_now()
+        with transaction(db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO mobile_assets (
+                    asset_id, account_id, username, workspace_id, asset_type,
+                    file_name, mime, size_bytes, data_b64, note, source_site,
+                    device_name, client_type, platform, app_version, client_ip, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    asset_id,
+                    str(account["account_id"]),
+                    str(account.get("username") or ""),
+                    str(account.get("workspace_id") or "default"),
+                    asset_type,
+                    file_name,
+                    mime,
+                    len(raw),
+                    data_b64,
+                    note,
+                    source_site,
+                    device_name,
+                    client_type or "mobile",
+                    platform,
+                    app_version,
+                    request.client.host if request.client else "",
+                    now,
+                ),
+            )
+        return {
+            "ok": True,
+            "asset_id": asset_id,
+            "file_name": file_name,
+            "mime": mime,
+            "size_bytes": len(raw),
+            "created_at": now,
+        }
+
+    @app.get("/api/customer/assets")
+    def customer_asset_list(
+        authorization: str | None = Header(default=None),
+        limit: int = 48,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """当前账号的资产元数据列表（不含 data_b64，避免响应过大）。"""
+        account = _required_account(db_path, authorization)
+        limit = max(1, min(int(limit), 200))
+        offset = max(0, int(offset))
+        with transaction(db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT asset_id, asset_type, file_name, mime, size_bytes, note,
+                       source_site, device_name, client_type, platform,
+                       app_version, created_at
+                FROM mobile_assets
+                WHERE account_id = ?
+                ORDER BY created_at DESC, asset_id DESC
+                LIMIT ? OFFSET ?
+                """,
+                (str(account["account_id"]), limit, offset),
+            ).fetchall()
+            total = conn.execute(
+                "SELECT COUNT(*) FROM mobile_assets WHERE account_id = ?",
+                (str(account["account_id"]),),
+            ).fetchone()[0]
+        return {
+            "ok": True,
+            "assets": [
+                {
+                    "asset_id": str(row["asset_id"]),
+                    "asset_type": str(row["asset_type"] or "photo"),
+                    "file_name": str(row["file_name"] or ""),
+                    "mime": str(row["mime"] or ""),
+                    "size_bytes": int(row["size_bytes"] or 0),
+                    "note": str(row["note"] or ""),
+                    "source_site": str(row["source_site"] or ""),
+                    "device_name": str(row["device_name"] or ""),
+                    "client_type": str(row["client_type"] or "mobile"),
+                    "platform": str(row["platform"] or ""),
+                    "app_version": str(row["app_version"] or ""),
+                    "created_at": str(row["created_at"] or ""),
+                }
+                for row in rows
+            ],
+            "total": int(total),
+            "limit": limit,
+            "offset": offset,
+        }
+
+    @app.get("/api/customer/assets/{asset_id}")
+    def customer_asset_detail(
+        asset_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """单个资产详情（含 data_b64），仅限本人账号。"""
+        account = _required_account(db_path, authorization)
+        with transaction(db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT asset_id, account_id, asset_type, file_name, mime,
+                       size_bytes, data_b64, note, source_site, device_name,
+                       client_type, platform, app_version, created_at
+                FROM mobile_assets
+                WHERE asset_id = ? AND account_id = ?
+                """,
+                (asset_id, str(account["account_id"])),
+            ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="asset not found")
+        return {
+            "ok": True,
+            "asset": {
+                "asset_id": str(row["asset_id"]),
+                "asset_type": str(row["asset_type"] or "photo"),
+                "file_name": str(row["file_name"] or ""),
+                "mime": str(row["mime"] or ""),
+                "size_bytes": int(row["size_bytes"] or 0),
+                "data_b64": str(row["data_b64"] or ""),
+                "note": str(row["note"] or ""),
+                "source_site": str(row["source_site"] or ""),
+                "device_name": str(row["device_name"] or ""),
+                "client_type": str(row["client_type"] or "mobile"),
+                "platform": str(row["platform"] or ""),
+                "app_version": str(row["app_version"] or ""),
+                "created_at": str(row["created_at"] or ""),
+            },
+        }
+
+    @app.delete("/api/customer/assets/{asset_id}")
+    def customer_asset_delete(
+        asset_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """删除本人账号下的单个资产。"""
+        account = _required_account(db_path, authorization)
+        with transaction(db_path) as conn:
+            cur = conn.execute(
+                "DELETE FROM mobile_assets WHERE asset_id = ? AND account_id = ?",
+                (asset_id, str(account["account_id"])),
+            )
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="asset not found")
+        return {"ok": True, "asset_id": asset_id}
+
+    # ---- 手机采集链接（手机端采集登记，账号维度） --------------------- #
+    @app.post("/api/customer/captures")
+    def customer_capture_create(
+        payload: dict[str, Any],
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """手机端采集登记：把商品链接按账号维度存档，供 PC 端同账号「手机端导入」。
+
+        幂等：以 (account_id, capture_id) 为主键，手机端重试上传同一 capture_id 只更新不重复。
+        """
+        account = _required_account(db_path, authorization)
+        source_url = str(payload.get("source_url") or "").strip()[:2048]
+        if not source_url:
+            raise HTTPException(status_code=400, detail="source_url is required")
+        capture_id = (
+            str(payload.get("capture_id") or "").strip()[:128]
+            or f"capture_{secrets.token_urlsafe(18)}"
+        )
+        source_site = str(payload.get("source_site") or "").strip()[:32]
+        title = str(payload.get("title") or "").strip()[:300]
+        note = str(payload.get("note") or "").strip()[:500]
+        device_name = str(payload.get("device_name") or "").strip()[:120]
+        platform = str(payload.get("platform") or "").strip()[:64]
+        app_version = str(payload.get("app_version") or "").strip()[:64]
+        client_type = str(
+            payload.get("client_type") or account.get("client_type") or "mobile"
+        ).strip().lower()[:16]
+        now = _utc_now()
+        with transaction(db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO mobile_capture_links (
+                    capture_id, account_id, username, workspace_id, source_url,
+                    source_site, title, note, status, client_type, device_name,
+                    platform, app_version, client_ip, created_at, imported_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, '')
+                ON CONFLICT (account_id, capture_id) DO UPDATE SET
+                    source_url = excluded.source_url,
+                    source_site = excluded.source_site,
+                    title = excluded.title,
+                    note = excluded.note
+                """,
+                (
+                    capture_id,
+                    str(account["account_id"]),
+                    str(account.get("username") or ""),
+                    str(account.get("workspace_id") or "default"),
+                    source_url,
+                    source_site,
+                    title,
+                    note,
+                    client_type or "mobile",
+                    device_name,
+                    platform,
+                    app_version,
+                    request.client.host if request.client else "",
+                    now,
+                ),
+            )
+        return {
+            "ok": True,
+            "capture_id": capture_id,
+            "source_url": source_url,
+            "status": "pending",
+            "created_at": now,
+        }
+
+    @app.get("/api/customer/captures")
+    def customer_capture_list(
+        authorization: str | None = Header(default=None),
+        status: str = "",
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """当前账号的手机采集链接列表；可按 status（pending/imported）过滤。"""
+        account = _required_account(db_path, authorization)
+        limit = max(1, min(int(limit), 200))
+        offset = max(0, int(offset))
+        status_filter = str(status or "").strip().lower()
+        where = "account_id = ?"
+        params: list[Any] = [str(account["account_id"])]
+        if status_filter in ("pending", "imported"):
+            where += " AND status = ?"
+            params.append(status_filter)
+        with transaction(db_path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT capture_id, source_url, source_site, title, note, status,
+                       client_type, device_name, platform, app_version,
+                       created_at, imported_at
+                FROM mobile_capture_links
+                WHERE {where}
+                ORDER BY created_at DESC, capture_id DESC
+                LIMIT ? OFFSET ?
+                """,
+                (*params, limit, offset),
+            ).fetchall()
+            total = conn.execute(
+                f"SELECT COUNT(*) FROM mobile_capture_links WHERE {where}",
+                tuple(params),
+            ).fetchone()[0]
+        return {
+            "ok": True,
+            "captures": [
+                {
+                    "capture_id": str(row["capture_id"]),
+                    "source_url": str(row["source_url"] or ""),
+                    "source_site": str(row["source_site"] or ""),
+                    "title": str(row["title"] or ""),
+                    "note": str(row["note"] or ""),
+                    "status": str(row["status"] or "pending"),
+                    "client_type": str(row["client_type"] or "mobile"),
+                    "device_name": str(row["device_name"] or ""),
+                    "platform": str(row["platform"] or ""),
+                    "app_version": str(row["app_version"] or ""),
+                    "created_at": str(row["created_at"] or ""),
+                    "imported_at": str(row["imported_at"] or ""),
+                }
+                for row in rows
+            ],
+            "total": int(total),
+            "limit": limit,
+            "offset": offset,
+        }
+
+    @app.post("/api/customer/captures/{capture_id}/imported")
+    def customer_capture_mark_imported(
+        capture_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """PC 端导入成功后回执：把该条标记为已导入，避免重复导入。"""
+        account = _required_account(db_path, authorization)
+        now = _utc_now()
+        with transaction(db_path) as conn:
+            cur = conn.execute(
+                """
+                UPDATE mobile_capture_links
+                SET status = 'imported', imported_at = ?
+                WHERE account_id = ? AND capture_id = ?
+                """,
+                (now, str(account["account_id"]), capture_id),
+            )
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="capture not found")
+        return {"ok": True, "capture_id": capture_id, "status": "imported", "imported_at": now}
+
+    @app.delete("/api/customer/captures/{capture_id}")
+    def customer_capture_delete(
+        capture_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """删除本人账号下的单条手机采集链接。"""
+        account = _required_account(db_path, authorization)
+        with transaction(db_path) as conn:
+            cur = conn.execute(
+                "DELETE FROM mobile_capture_links WHERE account_id = ? AND capture_id = ?",
+                (str(account["account_id"]), capture_id),
+            )
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="capture not found")
+        return {"ok": True, "capture_id": capture_id}
 
     @app.get("/api/customer/billing/summary")
     def billing_summary(authorization: str | None = Header(default=None)) -> dict[str, Any]:
@@ -2362,8 +2731,9 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
     ) -> dict[str, Any]:
         """个人中心兑换邀请码：校验码有效后向当前账号永久充值池发放积分。
 
-        幂等：同账号同码仅可兑换一次（按台账 idempotency_key 去重）；
-        兑换成功 used_count + 1，占用一次领取名额。
+        幂等：同一个邀请码同一账号全局只能使用一次 —— 兑换前校验该账号是否已在
+        注册环节用过此码（invitation_code_usages），并叠加台账 idempotency_key
+        拦截重复兑换；兑换成功 used_count + 1，占用一次领取名额。
         """
         account = _required_account(db_path, authorization)
         account_id = str(account["account_id"])
@@ -2387,6 +2757,16 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             if str(row["created_by"] or "") == account_id:
                 # 购买者本人已在购买时享受过该福利，不能再用自己生成的码兑换。
                 raise HTTPException(status_code=409, detail="这是您购买时生成的邀请码，不能由本账号兑换")
+            # 同一个邀请码同一账号只能使用一次：注册时已用该码则不可再兑换。
+            used_in_register = conn.execute(
+                """
+                SELECT 1 FROM invitation_code_usages
+                WHERE code = ? AND account_id = ?
+                """,
+                (code, account_id),
+            ).fetchone()
+            if used_in_register is not None:
+                raise HTTPException(status_code=409, detail="该邀请码本账号已使用过，不能重复领取")
             grant_points = int(row["grant_points"] or 0)
             grant_plan_type = str(row["grant_plan_type"] or "")
             if grant_points <= 0 and not grant_plan_type:
@@ -2537,6 +2917,7 @@ def _issue_platform_session(
     *,
     user_agent: str = "",
     client_ip: str = "",
+    client_type: str = "pc",
 ) -> dict[str, str]:
     token = f"wh_auth_{secrets.token_urlsafe(32)}"
     session_id = f"auth_sess_{secrets.token_urlsafe(24)}"
@@ -2547,11 +2928,11 @@ def _issue_platform_session(
             """
             INSERT INTO auth_platform_sessions (
                 session_id, account_id, token_hash, expires_at, revoked_at,
-                last_used_at, created_at, user_agent, client_ip
+                last_used_at, created_at, user_agent, client_ip, client_type
             )
-            VALUES (?, ?, ?, ?, '', ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, '', ?, ?, ?, ?, ?)
             """,
-            (session_id, account_id, _hash_token(token), expires_at, now, now, user_agent, client_ip),
+            (session_id, account_id, _hash_token(token), expires_at, now, now, user_agent, client_ip, client_type),
         )
     return {"session_id": session_id, "token": token, "expires_at": expires_at}
 
@@ -2584,6 +2965,7 @@ def _account_by_token(database_path: Path, token: str) -> dict[str, Any] | None:
                 a.workspace_id,
                 a.account_status,
                 a.login_status,
+                s.client_type,
                 w.workspace_code,
                 w.workspace_name
             FROM auth_platform_sessions s
@@ -2619,6 +3001,7 @@ def _account_by_token(database_path: Path, token: str) -> dict[str, Any] | None:
         "workspace_id": row["workspace_id"] or "default",
         "account_status": row["account_status"],
         "login_status": row["login_status"] if row["login_status"] is not None else "offline",
+        "client_type": row["client_type"] or "pc",
         "workspace_code": row["workspace_code"] or "",
         "workspace_name": row["workspace_name"] or "",
         "workspace": {"code": row["workspace_code"] or "", "name": row["workspace_name"] or ""},

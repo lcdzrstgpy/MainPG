@@ -344,6 +344,81 @@ class CustomerAuthClient:
             headers={"Authorization": f"Bearer {remote_token}"},
         )
 
+    def list_mobile_assets(self, remote_token: str, limit: int = 48, offset: int = 0) -> dict[str, Any]:
+        """按账号从云端拉取手机互通资产元数据列表（不含图片原数据）。"""
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        return self._get(
+            f"/api/customer/assets?limit={limit}&offset={offset}",
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
+    def get_mobile_asset(self, remote_token: str, asset_id: str) -> dict[str, Any]:
+        """取单个资产详情（含 base64 原数据），仅本人账号可见。"""
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        from urllib.parse import quote
+
+        return self._get(
+            f"/api/customer/assets/{quote(str(asset_id or '').strip(), safe='')}",
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
+    def delete_mobile_asset(self, remote_token: str, asset_id: str) -> dict[str, Any]:
+        """删除本人账号下的单个资产。"""
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        from urllib.parse import quote
+
+        return self._request(
+            "DELETE",
+            f"/api/customer/assets/{quote(str(asset_id or '').strip(), safe='')}",
+            {},
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
+    def list_mobile_captures(
+        self, remote_token: str, status: str = "", limit: int = 100, offset: int = 0
+    ) -> dict[str, Any]:
+        """按账号从云端拉取手机端采集链接列表（PC「手机端导入」面板用）。"""
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        from urllib.parse import quote
+
+        query = f"limit={limit}&offset={offset}"
+        status_value = str(status or "").strip()
+        if status_value:
+            query += f"&status={quote(status_value, safe='')}"
+        return self._get(
+            f"/api/customer/captures?{query}",
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
+    def mark_mobile_capture_imported(self, remote_token: str, capture_id: str) -> dict[str, Any]:
+        """PC 端导入成功后回执：把该条手机采集链接标记为已导入。"""
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        from urllib.parse import quote
+
+        return self._post(
+            f"/api/customer/captures/{quote(str(capture_id or '').strip(), safe='')}/imported",
+            {},
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
+    def delete_mobile_capture(self, remote_token: str, capture_id: str) -> dict[str, Any]:
+        """删除本人账号下的单条手机采集链接。"""
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        from urllib.parse import quote
+
+        return self._request(
+            "DELETE",
+            f"/api/customer/captures/{quote(str(capture_id or '').strip(), safe='')}",
+            {},
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
     def submit_station_application(
         self, payload: dict[str, Any], remote_token: str = ""
     ) -> dict[str, Any]:

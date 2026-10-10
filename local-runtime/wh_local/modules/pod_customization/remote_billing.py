@@ -158,7 +158,14 @@ def session_remote_token_resolver(sessions: Any) -> Callable[[Actor], str]:
         resolver = getattr(sessions, "remote_token_for_actor", None)
         if not callable(resolver):
             return ""
-        return str(resolver(actor.id, actor.workspace_id) or "")
+        # 各模块的 actor 契约并不统一：会话层的 Actor 暴露 ``id``，而
+        # daily-selection / 价格核验的 actor 只暴露 ``actor_id``。二者都要
+        # 兼容，否则取不到用户标识，采集凭据申请会不带 token 而被服务端 401
+        # 拒绝（前端展示为“登录状态已过期”）。
+        actor_id = getattr(actor, "id", None) or getattr(actor, "actor_id", "")
+        if not actor_id:
+            return ""
+        return str(resolver(actor_id, actor.workspace_id) or "")
 
     return resolve
 

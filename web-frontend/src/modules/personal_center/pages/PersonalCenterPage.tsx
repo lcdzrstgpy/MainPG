@@ -168,7 +168,10 @@ const LEDGER_SOURCE_LABELS: Record<string, string> = {
   topup_promotion_bonus: "充值档位赠送",
   daily_extra_claim: "每日签到",
   plan_basic_claim: "基础版每周领取",
+  plan_enterprise_claim: "企业版每周领取",
   plan_experience_claim: "体验版每周领取",
+  invitation_register: "邀请码注册奖励",
+  invitation_redeem: "邀请码兑换",
   admin_adjustment: "管理员划拨",
   test_grant: "测试划拨",
 };

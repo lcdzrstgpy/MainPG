@@ -291,6 +291,20 @@ export function toUserMessage(raw: string): string {
     return "提交的图片或商品数据和当前任务对不上：请点「重新加载」后再导出；一直失败请把提示截图发给我们";
   }
 
+  // ---- 采集链接（手机端导入 / 分享短链）----
+  if (/short link has expired or is invalid/i.test(message)) {
+    return "这个分享链接已经失效，请在手机淘宝/1688 里重新分享获取最新链接后再导入";
+  }
+  if (
+    /must be a public Taobao product URL|must be a public 1688 product URL/i.test(message) ||
+    /does not contain a (Taobao item|1688 offer) id/i.test(message)
+  ) {
+    return "链接识别不到商品：请用手机淘宝/1688 的「分享 → 复制链接」重新获取商品链接后再导入";
+  }
+  if (/source_url is required|source_url must be/i.test(message)) {
+    return "缺少商品链接，请重新分享后再导入";
+  }
+
   // ---- 其它 ----
   if (/unsupported miaoshou template kind/i.test(message)) return "妙手导出的模板类型不对，请选择「服饰类」或「非服饰类」";
   if (/\bis not configured\b/i.test(message)) return "相关服务还没配置好，请联系对接人处理";

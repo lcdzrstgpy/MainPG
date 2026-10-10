@@ -46,6 +46,7 @@ const PodSemiCustomizationPage = lazy(() => import("../../modules/pod_semi_custo
 const PodReplicaPage = lazy(() => import("../../modules/pod_replica/pages/PodReplicaPage").then((m) => ({ default: m.PodReplicaPage })));
 const AiVideoPage = lazy(() => import("../../modules/ai_video/pages/AiVideoPage").then((m) => ({ default: m.AiVideoPage })));
 const PersonalCenterPage = lazy(() => import("../../modules/personal_center/pages/PersonalCenterPage").then((m) => ({ default: m.PersonalCenterPage })));
+const PersonalAssetsPage = lazy(() => import("../../modules/personal_assets/pages/PersonalAssetsPage").then((m) => ({ default: m.PersonalAssetsPage })));
 import type { ProductProcessingOptions } from "../../modules/product_processing/types";
 import type { ProfitActivityPrefill } from "../../modules/profit_activity/types/products";
 import type { DimensionCanvasItem, DimensionNotification } from "../../modules/product_processing/types/dimensionCanvas";
@@ -807,6 +808,9 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         break;
       case "personal_center":
         content = <PersonalCenterPage feedbackPrefill={feedbackPrefill} />;
+        break;
+      case "personal_assets":
+        content = <PersonalAssetsPage onOpenModule={openModule} />;
         break;
       default:
         content = <EmptyModulePage module={modulesById.get(tab.moduleId)!} />;

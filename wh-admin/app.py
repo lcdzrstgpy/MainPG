@@ -61,6 +61,7 @@ from server_scripts import (
     SERVER_LIST_USER_ACTIVITY_SCRIPT,
     SERVER_LOGIN_SCRIPT,
     SERVER_LOGOUT_SCRIPT,
+    SERVER_MOBILE_OVERVIEW_SCRIPT,
     SERVER_PURGE_AUDIT_SCRIPT,
     SERVER_RESET_ADMIN_PASSWORD_SCRIPT,
     SERVER_RESET_USER_PASSWORD_SCRIPT,
@@ -582,6 +583,13 @@ def users(
     limit = max(1, min(limit, 500))
     offset = max(0, offset)
     return _run_remote(SERVER_LIST_USERS_SCRIPT, [limit, offset], "读取用户列表")
+
+
+@app.get("/api/mobile/overview")
+def mobile_overview(x_auth_token: str | None = Header(default=None)) -> dict[str, Any]:
+    """移动端用户统计：按 client_type='mobile' 从平台会话派生在线/注册统计与明细。"""
+    _check_auth(x_auth_token)
+    return _run_remote(SERVER_MOBILE_OVERVIEW_SCRIPT, [], "读取移动端用户统计")
 
 
 @app.get("/api/workspaces")

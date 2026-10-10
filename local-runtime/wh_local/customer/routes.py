@@ -403,6 +403,100 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
         except Exception as exc:
             handle_auth_error(exc)
 
+    @router.get("/assets")
+    def list_assets(
+        limit: int = 48,
+        offset: int = 0,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """手机互通资产列表（云端账号维度代理，返回元数据不含原图数据）。"""
+        try:
+            if not hasattr(remote_auth, "list_mobile_assets"):
+                raise CustomerAuthUnavailable("remote asset service is not configured")
+            return remote_auth.list_mobile_assets(
+                remote_token_from_local_session(authorization),
+                limit=limit,
+                offset=offset,
+            )
+        except Exception as exc:
+            handle_auth_error(exc)
+
+    @router.get("/assets/{asset_id}")
+    def get_asset(asset_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        """单个资产详情（含 base64 原数据），供 PC 端预览 / 下载 / 送入业务。"""
+        try:
+            if not hasattr(remote_auth, "get_mobile_asset"):
+                raise CustomerAuthUnavailable("remote asset service is not configured")
+            return remote_auth.get_mobile_asset(
+                remote_token_from_local_session(authorization),
+                asset_id,
+            )
+        except Exception as exc:
+            handle_auth_error(exc)
+
+    @router.delete("/assets/{asset_id}")
+    def delete_asset(asset_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        """删除本人账号下的单个资产。"""
+        try:
+            if not hasattr(remote_auth, "delete_mobile_asset"):
+                raise CustomerAuthUnavailable("remote asset service is not configured")
+            return remote_auth.delete_mobile_asset(
+                remote_token_from_local_session(authorization),
+                asset_id,
+            )
+        except Exception as exc:
+            handle_auth_error(exc)
+
+    @router.get("/captures")
+    def list_captures(
+        status: str = "",
+        limit: int = 100,
+        offset: int = 0,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """手机端采集链接列表（云端账号维度代理，PC「手机端导入」面板用）。"""
+        try:
+            if not hasattr(remote_auth, "list_mobile_captures"):
+                raise CustomerAuthUnavailable("remote capture service is not configured")
+            return remote_auth.list_mobile_captures(
+                remote_token_from_local_session(authorization),
+                status=status,
+                limit=limit,
+                offset=offset,
+            )
+        except Exception as exc:
+            handle_auth_error(exc)
+
+    @router.post("/captures/{capture_id}/imported")
+    def mark_capture_imported(
+        capture_id: str, authorization: str | None = Header(default=None)
+    ) -> dict[str, Any]:
+        """PC 端导入成功后回执：把该条手机采集链接标记为已导入。"""
+        try:
+            if not hasattr(remote_auth, "mark_mobile_capture_imported"):
+                raise CustomerAuthUnavailable("remote capture service is not configured")
+            return remote_auth.mark_mobile_capture_imported(
+                remote_token_from_local_session(authorization),
+                capture_id,
+            )
+        except Exception as exc:
+            handle_auth_error(exc)
+
+    @router.delete("/captures/{capture_id}")
+    def delete_capture(
+        capture_id: str, authorization: str | None = Header(default=None)
+    ) -> dict[str, Any]:
+        """删除本人账号下的单条手机采集链接。"""
+        try:
+            if not hasattr(remote_auth, "delete_mobile_capture"):
+                raise CustomerAuthUnavailable("remote capture service is not configured")
+            return remote_auth.delete_mobile_capture(
+                remote_token_from_local_session(authorization),
+                capture_id,
+            )
+        except Exception as exc:
+            handle_auth_error(exc)
+
     @router.post("/station-application")
     def submit_station_application(
         payload: dict[str, Any],

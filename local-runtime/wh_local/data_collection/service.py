@@ -35,7 +35,7 @@ from .repository import (
     DailySelectionRunSummary,
 )
 from .handoff import DailySelectionHandoff
-from .link_collection import canonical_platform_url, detail_seed
+from .link_collection import canonical_platform_url, detail_seed, resolve_short_link
 from .sku_repull import SkuRepullRunner, empty_repull_state, incomplete_candidates
 
 
@@ -249,6 +249,8 @@ class DailySelectionService:
         """Use a product detail URL as the seed for image-first similar search."""
         request_data = dict(request)
         source_url = request_data.pop("source_url", request_data.pop("product_url", None))
+        # 手机分享短链（e.tb.cn / m.tb.cn 等）不含商品 id，先展开成带 id 的最终地址。
+        source_url = resolve_short_link(source_url)
         platform = str(request_data.pop("collection_platform", "") or "").strip() or _detect_platform_from_url(source_url)
         canonical_url, offer_id = canonical_platform_url(platform, source_url)
         # Link collection derives its actual search seed from item_get.  Ignore

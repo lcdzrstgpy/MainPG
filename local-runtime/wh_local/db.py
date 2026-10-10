@@ -196,6 +196,9 @@ CREATE TABLE IF NOT EXISTS auth_platform_sessions (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     user_agent TEXT NOT NULL DEFAULT '',
     client_ip TEXT NOT NULL DEFAULT '',
+    -- 客户端类型：pc / mobile。单端登录互踢只在同一 client_type 分组内生效，
+    -- 手机端与 PC 端互不顶替（两者是并行的两类终端）。
+    client_type TEXT NOT NULL DEFAULT '',
     FOREIGN KEY (account_id) REFERENCES auth_accounts (account_id) ON DELETE CASCADE
 );
 
@@ -223,6 +226,59 @@ CREATE INDEX IF NOT EXISTS idx_launcher_log_uploads_account_time
 
 CREATE INDEX IF NOT EXISTS idx_launcher_log_uploads_time
     ON launcher_log_uploads (created_at);
+
+-- 手机互通资产表：手机端（拍照 / 相册）上传的图片资产，按账号维度存档。
+-- PC 端用同一账号登录即可看到并取用；图片以 base64 文本入库（与日志上传/用户反馈惯例一致）。
+CREATE TABLE IF NOT EXISTS mobile_assets (
+    asset_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL DEFAULT '',
+    username TEXT NOT NULL DEFAULT '',
+    workspace_id TEXT NOT NULL DEFAULT '',
+    asset_type TEXT NOT NULL DEFAULT 'photo',
+    file_name TEXT NOT NULL DEFAULT '',
+    mime TEXT NOT NULL DEFAULT '',
+    size_bytes INTEGER NOT NULL DEFAULT 0,
+    data_b64 TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    source_site TEXT NOT NULL DEFAULT '',
+    device_name TEXT NOT NULL DEFAULT '',
+    client_type TEXT NOT NULL DEFAULT 'mobile',
+    platform TEXT NOT NULL DEFAULT '',
+    app_version TEXT NOT NULL DEFAULT '',
+    client_ip TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_mobile_assets_account_time
+    ON mobile_assets (account_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_mobile_assets_account_type
+    ON mobile_assets (account_id, asset_type, created_at);
+
+-- 手机采集链接表：手机端「采集」登记的链接，按账号维度存档。
+-- PC 端同账号登录后可在「手机端导入」面板拉取并一键导入到采集流程。
+CREATE TABLE IF NOT EXISTS mobile_capture_links (
+    capture_id TEXT NOT NULL DEFAULT '',
+    account_id TEXT NOT NULL DEFAULT '',
+    username TEXT NOT NULL DEFAULT '',
+    workspace_id TEXT NOT NULL DEFAULT '',
+    source_url TEXT NOT NULL DEFAULT '',
+    source_site TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    client_type TEXT NOT NULL DEFAULT 'mobile',
+    device_name TEXT NOT NULL DEFAULT '',
+    platform TEXT NOT NULL DEFAULT '',
+    app_version TEXT NOT NULL DEFAULT '',
+    client_ip TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    imported_at TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (account_id, capture_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_mobile_capture_links_account_status
+    ON mobile_capture_links (account_id, status, created_at);
 
 -- 密码重置凭证表：忘记密码时生成一次性 token，只保存 token_hash，不保存明文 token。
 CREATE TABLE IF NOT EXISTS auth_password_reset_tokens (
@@ -1161,6 +1217,14 @@ def _migrate_core_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "billing_wallets", "signin_week_units", "INTEGER NOT NULL DEFAULT 0")
     # 登录状态字段：账号级单端登录限制（云端认证服务与本地工作台共用同一 schema）。
     _ensure_column(conn, "auth_accounts", "login_status", "TEXT NOT NULL DEFAULT 'offline'")
+    # 平台会话客户端类型（pc/mobile）：老库平滑补列，用于按端分组做单端登录互踢。
+    _ensure_column(conn, "auth_platform_sessions", "client_type", "TEXT NOT NULL DEFAULT ''")
+    # 该索引引用 client_type 列，必须在补列之后创建：老库的建表语句不含该列，
+    # 若把它放在 SCHEMA_SQL 里，executescript 会因列不存在而整段执行失败。
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_auth_platform_sessions_account_client "
+        "ON auth_platform_sessions (account_id, client_type, revoked_at)"
+    )
     # 邀请码备注与发放积分：老库平滑补列（wh-admin 生成邀请码时按发放积分数发放）。
     _ensure_column(conn, "invitation_codes", "remark", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "invitation_codes", "grant_points", "INTEGER NOT NULL DEFAULT 0")
