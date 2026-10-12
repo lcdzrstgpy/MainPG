@@ -130,7 +130,7 @@ function itemTitle(item: PreviewItem, draftId: number): string {
  * 预检页 SKU 规格图管理侧栏：逐个查看/放大 SKU 规格图，按条件筛选后批量或逐项
  * 删除 SKU 规格（导出时不进表）、用处理之后的图片替换规格图（支持框选裁剪后再替换），
  * 也可整体切换「规格原图 / 全部使用商品主图替代」。所有改动并入预检 edits，
- * 由「保存预检修改」或「完成预审并导出」写入生效。
+ * 由「保存预检修改」或「完成预检并导出」写入生效。
  */
 export function PrecheckSkuManager({
   items,
@@ -319,7 +319,7 @@ export function PrecheckSkuManager({
     const label = VARIANT_MODE_LABELS[mode];
     if (!window.confirm(`确定对${scopeHint}执行「${label}」？`)) return;
     onApplyMode(mode, draftIds);
-    setNotice(`已对${scopeHint}应用「${label}」，点击预检页「保存预检修改」或「完成预审并导出」后生效。`);
+    setNotice(`已对${scopeHint}应用「${label}」，点击预检页「保存预检修改」或「完成预检并导出」后生效。`);
   };
 
   const applyMode = (mode: VariantImageMode) => {
@@ -393,7 +393,7 @@ export function PrecheckSkuManager({
 
     const tail = [
       missing.length > 0 ? `未找到关键词：${missing.join('、')}（已跳过，相关链接不做处理）。` : '',
-      '未命中关键词的 SKU 保持不变。点击「保存预检修改」或「完成预审并导出」后生效。',
+      '未命中关键词的 SKU 保持不变。点击「保存预检修改」或「完成预检并导出」后生效。',
     ].filter(Boolean).join('');
 
     if (refs.length === 0) {
@@ -674,7 +674,7 @@ export function PrecheckSkuManager({
                         {`当前：${VARIANT_MODE_LABELS[mode]}`}
                         {modeSavedOf(row.draftId)
                           ? <span className="sku-mode-state is-saved" title="该策略已保存到草稿">已生效</span>
-                          : <span className="sku-mode-state is-dirty" title="仅本地编辑，需点「保存预检修改」或「完成预审并导出」才生效">待保存</span>}
+                          : <span className="sku-mode-state is-dirty" title="仅本地编辑，需点「保存预检修改」或「完成预检并导出」才生效">待保存</span>}
                         {' · '}
                         <span className={row.replacedCount > MAX_EDITED_VARIANT_IMAGES_PER_LINK ? 'is-over' : undefined}>
                           已换图 {row.replacedCount} / {MAX_EDITED_VARIANT_IMAGES_PER_LINK}

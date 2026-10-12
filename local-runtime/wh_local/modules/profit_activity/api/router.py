@@ -13,9 +13,9 @@ from fastapi.responses import FileResponse
 from starlette.concurrency import run_in_threadpool
 
 from ..domain.models import ProfitSettings, ProfitSiteProfile
-from ..domain.shipping_metrics import parse_shipping_metrics
+from ..domain.shipping_metrics import resolve_shipping_metrics
 from ..infrastructure.repository import SettingsSnapshot
-from ..infrastructure.shipping_ocr import ShippingOcrUnavailable, extract_text_lines
+from ..infrastructure.shipping_ocr import ShippingOcrUnavailable, extract_rows
 from ..service import ProfitActivityConflict, ProfitActivityNotFound, ProfitActivityService, _local_iso
 from .schemas import ArchiveRequest, FilterRequest, SettingsUpdateRequest, SiteProfilePayload
 from ....session import Actor, actor_from_bearer_token, actor_has_permission, require_permission
@@ -128,12 +128,17 @@ def create_profit_activity_router(
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "image_required")
         _filename, content = uploaded
         try:
-            lines = await run_in_threadpool(extract_text_lines, content)
+            rows = await run_in_threadpool(extract_rows, content)
         except ShippingOcrUnavailable as exc:
             raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "ocr_unavailable") from exc
         except ValueError as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
-        return {"metrics": parse_shipping_metrics(lines).to_dict(), "lines": lines}
+        metrics, candidates = resolve_shipping_metrics(rows)
+        return {
+            "metrics": metrics.to_dict(),
+            "candidates": [item.to_dict() for item in candidates],
+            "lines": rows,
+        }
 
     # Current module API kept for callers created before legacy screen parity.
     @router.post("/records", status_code=status.HTTP_201_CREATED)

@@ -114,7 +114,7 @@ class DraftProcessRequest(BaseModel):
     # 精品模式：勾选草稿走「1 张 4K 四宫格、本地拆成 4 张高清图」流程，其余逻辑一致
     premium_draft_ids: list[int] = []
     # 强制入库：用户对失败/待确认草稿点击「我已知晓，仍要入库」后重新提交时带上。
-    # 图片质量门不再阻断（回退来源图继续走完流水线），预审环节可人工修正信息。
+    # 图片质量门不再阻断（回退来源图继续走完流水线），预检环节可人工修正信息。
     force_import_draft_ids: list[int] = []
     # SKU 原图可用性分类（处理设置页检测结果）：{draft_id: "source"|"main"|"auto"}。
     # source=该链接每个 SKU 用规格原图；main=统一用商品主图（中文水印/无规格图/规格图过多）；
@@ -314,7 +314,7 @@ class PreviewExcludeRequest(BaseModel):
 
 
 class MiaoshouExportRequest(BaseModel):
-    """按预审完成记录再次导出妙手导入模板（服饰类 / 非服饰类）。"""
+    """按预检完成记录再次导出妙手导入模板（服饰类 / 非服饰类）。"""
 
     model_config = ConfigDict(extra="forbid")
 

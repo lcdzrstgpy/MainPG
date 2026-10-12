@@ -25,6 +25,7 @@ type SourcingRow = {
   shopName: string;
   channel: string;
   batchId: string;
+  batchDisplayName: string;
   cost: number | null;
   declaredPrice: number | null;
   currency: string;
@@ -63,6 +64,11 @@ const STATUS_OPTIONS = [
 ];
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
+
+// 单品采集（插件单品回传）不建批次，草稿的 selection_run_id 为空。用一个哨兵值把
+// 「未分组」也纳入批次筛选，与预检页、后端 list_drafts 的 __unassigned__ 口径一致。
+const UNASSIGNED_BATCH_ID = "__unassigned__";
+const UNASSIGNED_BATCH_LABEL = "未分组（单品采集）";
 
 function api(): ApiContext {
   return productProcessingApiContext();
@@ -304,6 +310,7 @@ function toRow(draft: Draft): SourcingRow {
     shopName: String(raw.shop_name || ""),
     channel: String(raw.collection_channel || ""),
     batchId: draft.selection_run_id || "",
+    batchDisplayName: draft.batch_display_name || "",
     cost: draft.cost,
     declaredPrice: draft.declared_price,
     currency,
@@ -336,6 +343,8 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [batchDeleting, setBatchDeleting] = useState(false);
 
   const load = useCallback(async (nextStatus: string) => {
     setLoading(true);
@@ -395,10 +404,16 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
     const seen = new Map<string, string>();
     for (const row of rows) {
       if (row.batchId && !seen.has(row.batchId)) {
-        seen.set(row.batchId, batchLabels.get(row.batchId) || row.batchId);
+        seen.set(row.batchId, batchLabels.get(row.batchId) || row.batchDisplayName || row.batchId);
       }
     }
-    return Array.from(seen.entries());
+    const options = Array.from(seen.entries());
+    // 当前视图里存在未归批的草稿时，才补上「未分组」这一项，避免空选项。
+    // 放在最前面，方便单品采集一眼就能筛到。
+    if (rows.some((row) => !row.batchId)) {
+      options.unshift([UNASSIGNED_BATCH_ID, UNASSIGNED_BATCH_LABEL]);
+    }
+    return options;
   }, [rows, batchLabels]);
 
   const filteredRows = useMemo(() => {
@@ -406,7 +421,11 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
     return rows.filter((row) => {
       if (platform && row.platform !== platform) return false;
       if (channel && row.channel !== channel) return false;
-      if (batchId && row.batchId !== batchId) return false;
+      if (batchId === UNASSIGNED_BATCH_ID) {
+        if (row.batchId) return false;
+      } else if (batchId && row.batchId !== batchId) {
+        return false;
+      }
       if (onlyMissingCost && rowCost(row) !== null) return false;
       if (dateFrom || dateTo) {
         const day = localDateKey(row.createdAt);
@@ -441,6 +460,41 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
   useEffect(() => {
     setPage(1);
   }, [status, platform, channel, batchId, keyword, dateFrom, dateTo, onlyMissingCost, pageSize]);
+
+  // 筛选/状态变化后可见集合会变，清空勾选，避免误删已隐藏的行。
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [status, platform, channel, batchId, keyword, dateFrom, dateTo, onlyMissingCost]);
+
+  const pageAllSelected = pageRows.length > 0 && pageRows.every((row) => selectedIds.has(row.id));
+  const pageSomeSelected = pageRows.some((row) => selectedIds.has(row.id));
+
+  const toggleSelect = (id: number) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const toggleSelectPage = () => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      const allSelected = pageRows.length > 0 && pageRows.every((row) => next.has(row.id));
+      for (const row of pageRows) {
+        if (allSelected) {
+          next.delete(row.id);
+        } else {
+          next.add(row.id);
+        }
+      }
+      return next;
+    });
+  };
 
   useEffect(() => {
     setPage((current) => (current > totalPages ? totalPages : current));
@@ -505,6 +559,12 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
     try {
       await ppRequest(api(), `${API_BASE}/drafts/${row.id}/purge`, { method: "DELETE" });
       setRows((current) => current.filter((item) => item.id !== row.id));
+      setSelectedIds((current) => {
+        if (!current.has(row.id)) return current;
+        const next = new Set(current);
+        next.delete(row.id);
+        return next;
+      });
       setExpandedIds((current) => {
         if (!current.has(row.id)) return current;
         const next = new Set(current);
@@ -515,6 +575,29 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setDeletingId(null);
+    }
+  };
+
+  const batchDelete = async () => {
+    const ids = Array.from(selectedIds);
+    if (!ids.length) return;
+    if (!window.confirm(`确认删除选中的 ${ids.length} 个商品？该记录会从数据库彻底删除，不可恢复。`)) return;
+    setBatchDeleting(true);
+    setError("");
+    try {
+      await ppRequest(api(), `${API_BASE}/drafts/purge`, { body: { draft_ids: ids } });
+      const idSet = new Set(ids);
+      setRows((current) => current.filter((item) => !idSet.has(item.id)));
+      setSelectedIds(new Set());
+      setExpandedIds((current) => {
+        const next = new Set(current);
+        for (const id of ids) next.delete(id);
+        return next;
+      });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBatchDeleting(false);
     }
   };
 
@@ -614,6 +697,17 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
             onChange={(event) => setKeyword(event.target.value)}
           />
         </label>
+        <div className="psc-bulk-bar">
+          <span className="psc-bulk-count">已选 <strong>{selectedIds.size}</strong> 个商品</span>
+          <button
+            type="button"
+            className="psc-bulk-delete"
+            onClick={() => void batchDelete()}
+            disabled={selectedIds.size === 0 || batchDeleting}
+          >
+            {batchDeleting ? <><i className="app-spinner is-sm" aria-hidden="true" />删除中…</> : "批量删除"}
+          </button>
+        </div>
         <label className="psc-filter-toggle">
           <input type="checkbox" checked={onlyMissingCost} onChange={(event) => setOnlyMissingCost(event.target.checked)} />
           <span>只看缺失成本</span>
@@ -627,6 +721,17 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
         <table className="psc-table">
           <thead>
             <tr>
+              <th className="psc-cell-select">
+                <input
+                  type="checkbox"
+                  aria-label="全选本页"
+                  checked={pageAllSelected}
+                  ref={(el) => {
+                    if (el) el.indeterminate = pageSomeSelected && !pageAllSelected;
+                  }}
+                  onChange={toggleSelectPage}
+                />
+              </th>
               <th>商品</th>
               <th>平台</th>
               <th>店铺</th>
@@ -645,6 +750,14 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
               return (
                 <Fragment key={row.id}>
                   <tr className={expanded ? "psc-row is-expanded" : "psc-row"}>
+                    <td className="psc-cell-select">
+                      <input
+                        type="checkbox"
+                        aria-label={`选择「${row.title}」`}
+                        checked={selectedIds.has(row.id)}
+                        onChange={() => toggleSelect(row.id)}
+                      />
+                    </td>
                     <td className="psc-cell-product">
                       {row.imageUrl
                         ? <img src={row.imageUrl} alt="" loading="lazy" referrerPolicy="no-referrer" />
@@ -666,7 +779,7 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
                     <td>{platformLabel(row.platform)}</td>
                     <td>{row.shopName || "—"}</td>
                     <td>{channelLabel(row.channel)}</td>
-                    <td title={row.batchId || undefined}>{row.batchId ? (batchLabels.get(row.batchId) || row.batchId) : "—"}</td>
+                    <td title={row.batchId || undefined}>{row.batchId ? (batchLabels.get(row.batchId) || row.batchDisplayName || row.batchId) : "未分组"}</td>
                     <td className={rowCost(row) === null ? "psc-cost-missing" : "psc-cost"}>
                       <span className="psc-cost-main">{formatCost(row)}</span>
                       {row.skus.length > 1 && (
@@ -704,7 +817,7 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
                   </tr>
                   {expanded && (
                     <tr className="psc-sku-detail-row">
-                      <td colSpan={10}>
+                      <td colSpan={11}>
                         <table className="psc-sku-table">
                           <thead>
                             <tr>

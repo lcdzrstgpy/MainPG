@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { DraftSummary, DraftVariant } from '../types';
 import {
@@ -117,6 +117,14 @@ export function SkuBatchManager({ drafts, baseDeletes, onSaveDeletes, onBatchSav
   const totalVariants = useMemo(() => rows.reduce((sum, r) => sum + r.variants.length, 0), [rows]);
   const maxVariantsPerDraft = useMemo(() => rows.reduce((max, r) => Math.max(max, r.variants.length), 0), [rows]);
   const active = filterActive(filter);
+
+  // 范围删除的两个输入框预填成有效区间（1 → 单商品最多 SKU 数），
+  // 否则用户打开面板只能看到灰色占位符，不知道能填什么。
+  useEffect(() => {
+    if (maxVariantsPerDraft <= 0) return;
+    setRangeStart((current) => current || '1');
+    setRangeEnd((current) => current || String(maxVariantsPerDraft));
+  }, [maxVariantsPerDraft]);
 
   const run = async (mode: 'delete' | 'keep') => {
     if (!active || saving) return;
@@ -249,42 +257,46 @@ export function SkuBatchManager({ drafts, baseDeletes, onSaveDeletes, onBatchSav
           <div className="sku-batch-summary">
             {active
               ? <>当前命中 <strong>{hitCount}</strong> 个 SKU（{rows.length} 个商品）</>
-              : '设置筛选条件后预览命中 SKU，再执行批量操作。'}
+              : '未设置筛选条件：下方已列出全部 SKU，可直接用上方按序号范围删除，或先设条件再做批量删除/保留。'}
           </div>
 
-          {active && (
-            <div className="sku-batch-preview">
-              {rows.map((row) => {
-                const base = new Set(baseDeletes(row.draft.id));
-                const afterDelete = nextDeletes(row.draft.id, row.variants, row.hitLabels, base, 'delete');
-                const afterKeep = nextDeletes(row.draft.id, row.variants, row.hitLabels, base, 'keep');
-                const remainingOnDelete = afterDelete ? row.variants.length - (afterDelete.length - base.size) : row.variants.length;
-                const remainingOnKeep = afterKeep ? row.hitLabels.size : 0;
-                const title = row.draft.title || row.draft.product_name || row.draft.source_ref || '未命名商品';
-                const titleStr = (row.variants.find((v) => v.attributes && Object.keys(v.attributes).length)?.display_name) || '';
-                return (
-                  <section key={row.draft.id} className="sku-batch-draft">
-                    <header>
-                      <div>
-                        <strong title={String(title)}>{String(title).slice(0, 60)}</strong>
-                        {titleStr && <small>{titleStr}</small>}
-                      </div>
-                      <span>命中 <b>{row.hitLabels.size}</b> / {row.variants.length}</span>
-                    </header>
-                    {row.hitLabels.size > 0 && (
-                      <div className="sku-batch-chips">
-                        {[...row.hitLabels].map((label) => <span key={label} title={label}>{label}</span>)}
-                      </div>
-                    )}
+          <div className="sku-batch-preview">
+            {rows.map((row) => {
+              const base = new Set(baseDeletes(row.draft.id));
+              const afterDelete = nextDeletes(row.draft.id, row.variants, row.hitLabels, base, 'delete');
+              const afterKeep = nextDeletes(row.draft.id, row.variants, row.hitLabels, base, 'keep');
+              const remainingOnDelete = afterDelete ? row.variants.length - (afterDelete.length - base.size) : row.variants.length;
+              const remainingOnKeep = afterKeep ? row.hitLabels.size : 0;
+              const title = row.draft.title || row.draft.product_name || row.draft.source_ref || '未命名商品';
+              const titleStr = (row.variants.find((v) => v.attributes && Object.keys(v.attributes).length)?.display_name) || '';
+              return (
+                <section key={row.draft.id} className="sku-batch-draft">
+                  <header>
+                    <div>
+                      <strong title={String(title)}>{String(title).slice(0, 60)}</strong>
+                      {titleStr && <small>{titleStr}</small>}
+                    </div>
+                    <span>
+                      {active
+                        ? <>命中 <b>{row.hitLabels.size}</b> / {row.variants.length}</>
+                        : <>共 <b>{row.variants.length}</b> 个 SKU</>}
+                    </span>
+                  </header>
+                  {row.hitLabels.size > 0 && (
+                    <div className="sku-batch-chips">
+                      {[...row.hitLabels].map((label) => <span key={label} title={label}>{label}</span>)}
+                    </div>
+                  )}
+                  {active && (
                     <p className="sku-batch-remaining">
                       删除命中后剩 <b>{remainingOnDelete}</b> 个 · 仅保留命中后剩 <b>{remainingOnKeep}</b> 个
                       {remainingOnKeep === 0 && <em>（无可保留，将跳过）</em>}
                     </p>
-                  </section>
-                );
-              })}
-            </div>
-          )}
+                  )}
+                </section>
+              );
+            })}
+          </div>
 
           {notice && <div className="verify-message">{notice}</div>}
         </div>
@@ -296,12 +308,14 @@ export function SkuBatchManager({ drafts, baseDeletes, onSaveDeletes, onBatchSav
             className="danger"
             onClick={() => void run('delete')}
             disabled={!active || saving}
-          >删除命中（{hitCount}）</button>
+            title={!active ? '请先设置筛选条件' : undefined}
+          >删除命中{active ? `（${hitCount}）` : ''}</button>
           <button
             type="button"
             className="primary"
             onClick={() => void run('keep')}
             disabled={!active || saving}
+            title={!active ? '请先设置筛选条件' : undefined}
           >仅保留命中（删除其余）</button>
         </footer>
       </section>

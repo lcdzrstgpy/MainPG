@@ -53,7 +53,13 @@ def file_sha256(path: Path) -> str:
 
 
 def collect_files(root: Path) -> dict[str, str]:
-    """Map relative forward-slash paths to sha256 for every file under root."""
+    """Map relative forward-slash paths to sha256 for every file under root.
+
+    Zero-byte files are skipped: the patch contract (both the builder and the
+    server/client validators) rejects empty add/replace entries, and empty files
+    in a PyInstaller bundle are only pip/dist-info marker files whose content
+    carries no meaning. Omitting them keeps the incremental patch valid.
+    """
     result: dict[str, str] = {}
     if not root.is_dir():
         return result
@@ -62,6 +68,8 @@ def collect_files(root: Path) -> dict[str, str]:
             continue
         rel = path.relative_to(root).as_posix()
         if rel in EXCLUDED_REL_PATHS or rel.startswith("updates/"):
+            continue
+        if path.stat().st_size <= 0:
             continue
         result[rel] = file_sha256(path)
     return result

@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from ..db import connect, init_db
+from .batch_naming import shop_display_name
 from .shop_contracts import ShopBatch, ShopBatchItem
 
 
@@ -126,6 +127,16 @@ class ShopCollectionRepository:
                     (marker,),
                 )
 
+            # 展示名列（迁移 012）：按列存在性幂等补齐，兼容旧表缺列的场景。
+            columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(shop_collection_batches)").fetchall()
+            }
+            if "display_name" not in columns:
+                conn.execute(
+                    "ALTER TABLE shop_collection_batches ADD COLUMN display_name TEXT NOT NULL DEFAULT ''"
+                )
+
     def record_api_call_reservation(
         self,
         *,
@@ -151,13 +162,14 @@ class ShopCollectionRepository:
     ) -> ShopBatch:
         if platform not in {"1688", "taobao"}:
             raise ValueError("platform must be one of 1688 or taobao")
+        display_name = shop_display_name(shop_name=shop_name, platform=platform)
         try:
             with connect(self.database_path) as conn:
                 conn.execute(
                     """INSERT INTO shop_collection_batches
-                    (batch_id, workspace_id, actor_id, platform, shop_sid, seller_id, shop_url, shop_name, seed_offer_id, max_pages)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (batch_id, workspace_id, actor_id, platform, shop_sid, seller_id, shop_url, shop_name, seed_offer_id, max_pages),
+                    (batch_id, workspace_id, actor_id, platform, shop_sid, seller_id, shop_url, shop_name, seed_offer_id, max_pages, display_name)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (batch_id, workspace_id, actor_id, platform, shop_sid, seller_id, shop_url, shop_name, seed_offer_id, max_pages, display_name),
                 )
         except sqlite3.IntegrityError as error:
             if "idx_shop_collection_active_shop" in str(error) or "shop_collection_batches.workspace_id, shop_collection_batches.shop_sid" in str(error):
@@ -170,13 +182,23 @@ class ShopCollectionRepository:
     ) -> ShopBatch:
         try:
             with connect(self.database_path) as conn:
-                cursor = conn.execute(
-                    """UPDATE shop_collection_batches SET shop_sid = ?, shop_name = ?, seller_id = ?,
-                    updated_at = datetime('now') WHERE batch_id = ?""",
-                    (shop_sid, shop_name, seller_id, batch_id),
-                )
-                if not cursor.rowcount:
+                row = conn.execute(
+                    "SELECT platform, created_at FROM shop_collection_batches WHERE batch_id = ?",
+                    (batch_id,),
+                ).fetchone()
+                if row is None:
                     raise ShopBatchNotFound("shop collection batch not found")
+                # 店铺名解析完成后刷新展示名（创建时商店名未知）。
+                display_name = shop_display_name(
+                    shop_name=shop_name,
+                    platform=str(row["platform"] or ""),
+                    created_at=row["created_at"],
+                )
+                conn.execute(
+                    """UPDATE shop_collection_batches SET shop_sid = ?, shop_name = ?, seller_id = ?, display_name = ?,
+                    updated_at = datetime('now') WHERE batch_id = ?""",
+                    (shop_sid, shop_name, seller_id, display_name, batch_id),
+                )
         except sqlite3.IntegrityError as error:
             raise ActiveShopBatchExists("an active batch already exists for this shop") from error
         return self.get_batch_internal(batch_id)
@@ -534,6 +556,13 @@ def _batch(row: sqlite3.Row) -> ShopBatch:
     for key in ("lease_owner", "lease_token", "lease_expires_at"):
         data.pop(key, None)
     data["listing_complete"] = bool(data["listing_complete"])
+    if not str(data.get("display_name") or "").strip():
+        # 历史批次没有落库展示名：按店铺名/平台/创建时间现算，保持界面可读。
+        data["display_name"] = shop_display_name(
+            shop_name=str(data.get("shop_name") or ""),
+            platform=str(data.get("platform") or ""),
+            created_at=data.get("created_at"),
+        )
     return ShopBatch.model_validate(data)
 
 

@@ -167,6 +167,13 @@
   align-items: center;
 }
 
+/* 「完成预检并导出」旁的前置动作提示：仅在存在失败链接时出现，独占一行。 */
+.verify-actions .verify-actions-hint {
+  flex: 1 1 100%;
+  font-size: 0.78rem;
+  color: #926314;
+}
+
 .verify-actions button,
 .verify-history button,
 .verify-row-actions button {

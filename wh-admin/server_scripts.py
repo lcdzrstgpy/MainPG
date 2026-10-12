@@ -423,6 +423,98 @@ _print({"ok": True, "users": [dict(row) for row in rows], "total": total,
 '''
 
 
+SERVER_MOBILE_OVERVIEW_SCRIPT = COMMON + r'''
+from datetime import datetime as _dt
+
+conn = _db()
+now = _now()
+today = now[:10]
+week_ago = (_dt.now(_CN_TZ) - timedelta(days=7)).isoformat(timespec="seconds")
+
+# 客户端类型：'mobile' 为手机端；'' 与其它值统一按 PC 处理（兼容老会话）。
+PC_GROUP = "COALESCE(NULLIF(client_type, ''), 'pc') = 'pc'"
+MOBILE_GROUP = "client_type = 'mobile'"
+ONLINE = "revoked_at = '' AND datetime(expires_at) > datetime(?)"
+
+
+def _count(sql, params=()):
+    row = conn.execute(sql, params).fetchone()
+    return int(row[0] or 0)
+
+
+summary = {
+    "mobile_online_sessions": _count(
+        "SELECT COUNT(*) FROM auth_platform_sessions WHERE " + MOBILE_GROUP + " AND " + ONLINE,
+        (now,)),
+    "mobile_active_accounts": _count(
+        "SELECT COUNT(DISTINCT account_id) FROM auth_platform_sessions WHERE " + MOBILE_GROUP + " AND " + ONLINE,
+        (now,)),
+    "pc_online_sessions": _count(
+        "SELECT COUNT(*) FROM auth_platform_sessions WHERE " + PC_GROUP + " AND " + ONLINE,
+        (now,)),
+    "pc_active_accounts": _count(
+        "SELECT COUNT(DISTINCT account_id) FROM auth_platform_sessions WHERE " + PC_GROUP + " AND " + ONLINE,
+        (now,)),
+    "mobile_today_sessions": _count(
+        "SELECT COUNT(*) FROM auth_platform_sessions WHERE " + MOBILE_GROUP +
+        " AND substr(datetime(created_at, '+8 hours'), 1, 10) = ?",
+        (today,)),
+    "mobile_7d_sessions": _count(
+        "SELECT COUNT(*) FROM auth_platform_sessions WHERE " + MOBILE_GROUP +
+        " AND datetime(created_at) >= datetime(?)",
+        (week_ago,)),
+    "mobile_total_accounts": _count(
+        "SELECT COUNT(DISTINCT account_id) FROM auth_platform_sessions WHERE " + MOBILE_GROUP, ()),
+    "mobile_total_sessions": _count(
+        "SELECT COUNT(*) FROM auth_platform_sessions WHERE " + MOBILE_GROUP, ()),
+}
+
+rows = conn.execute("""
+SELECT s.session_id, s.account_id, s.client_type, s.client_ip, s.user_agent,
+       s.created_at, s.last_used_at, s.expires_at, s.revoked_at,
+       COALESCE(a.username, '') AS username,
+       COALESCE(a.email, '') AS email,
+       COALESCE(a.account_status, '') AS account_status,
+       COALESCE(a.login_status, '') AS login_status
+FROM auth_platform_sessions s
+LEFT JOIN auth_accounts a ON a.account_id = s.account_id
+WHERE s.client_type = 'mobile'
+ORDER BY s.created_at DESC
+LIMIT 200
+""").fetchall()
+
+
+def _online(expires_at, revoked_at):
+    if revoked_at:
+        return False
+    try:
+        return _dt.fromisoformat(expires_at) > _dt.now(timezone.utc)
+    except (ValueError, TypeError):
+        return False
+
+
+sessions = []
+for row in rows:
+    sessions.append({
+        "session_id": row["session_id"],
+        "account_id": row["account_id"],
+        "username": row["username"],
+        "email": row["email"],
+        "account_status": row["account_status"],
+        "login_status": row["login_status"],
+        "client_ip": row["client_ip"],
+        "user_agent": row["user_agent"],
+        "created_at": row["created_at"],
+        "last_used_at": row["last_used_at"],
+        "expires_at": row["expires_at"],
+        "online": _online(row["expires_at"], row["revoked_at"]),
+        "revoked": bool(row["revoked_at"]),
+    })
+
+_print({"ok": True, "summary": summary, "sessions": sessions, "generated_at": now})
+'''
+
+
 SERVER_SET_USER_STATUS_SCRIPT = COMMON + r'''
 conn = _db()
 actor, error = _actor(conn, A[1])
@@ -1313,4 +1405,15 @@ rows = conn.execute(
     "FROM invitation_codes i ORDER BY i.created_at DESC"
 ).fetchall()
 _print({"ok": True, "invite_codes": [dict(row) for row in rows]})
+'''
+
+
+# 分类投放的可选项：分站/工作区清单（后台表单的下拉数据源）。
+SERVER_LIST_WORKSPACES_SCRIPT = COMMON + r'''
+conn = _db()
+rows = conn.execute(
+    "SELECT workspace_id, workspace_code, workspace_name, status "
+    "FROM workspaces ORDER BY workspace_code"
+).fetchall()
+_print({"ok": True, "workspaces": [dict(row) for row in rows]})
 '''

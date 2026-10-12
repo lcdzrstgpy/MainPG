@@ -580,7 +580,7 @@ export const PluginOneboundCapturePanel = forwardRef<PluginOneboundCapturePanelH
                       setBatchManagerOpen(false);
                     }}
                   >
-                    <span><strong>{batch.batch_id.slice(0, 8)}</strong><small>{pluginCaptureStatusLabel(batch.status)} · {formatDate(batch.created_at)}</small></span>
+                    <span><strong>{batch.display_name || batch.batch_id.slice(0, 8)}</strong><small>{pluginCaptureStatusLabel(batch.status)} · {formatDate(batch.created_at)}</small></span>
                     <b>{batchProgress.percent}%</b>
                   </button>
                 );

@@ -111,7 +111,7 @@ export function PrecheckFinalizeProgress({
       {run.status === "stale" && (
         <div className="precheck-finalize-stale">
           <strong>预检版本已变化，旧快照不会覆盖当前商品。</strong>
-          <p>页面中的未保存编辑仍保留。重新读取最新服务端版本后，可核对并再次完成预审。</p>
+          <p>页面中的未保存编辑仍保留。重新读取最新服务端版本后，可核对并再次完成预检。</p>
           <button type="button" onClick={onReloadStale}>保留本地编辑并刷新版本</button>
         </div>
       )}

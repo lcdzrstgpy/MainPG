@@ -196,6 +196,9 @@ CREATE TABLE IF NOT EXISTS auth_platform_sessions (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     user_agent TEXT NOT NULL DEFAULT '',
     client_ip TEXT NOT NULL DEFAULT '',
+    -- 客户端类型：pc / mobile。单端登录互踢只在同一 client_type 分组内生效，
+    -- 手机端与 PC 端互不顶替（两者是并行的两类终端）。
+    client_type TEXT NOT NULL DEFAULT '',
     FOREIGN KEY (account_id) REFERENCES auth_accounts (account_id) ON DELETE CASCADE
 );
 
@@ -223,6 +226,59 @@ CREATE INDEX IF NOT EXISTS idx_launcher_log_uploads_account_time
 
 CREATE INDEX IF NOT EXISTS idx_launcher_log_uploads_time
     ON launcher_log_uploads (created_at);
+
+-- 手机互通资产表：手机端（拍照 / 相册）上传的图片资产，按账号维度存档。
+-- PC 端用同一账号登录即可看到并取用；图片以 base64 文本入库（与日志上传/用户反馈惯例一致）。
+CREATE TABLE IF NOT EXISTS mobile_assets (
+    asset_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL DEFAULT '',
+    username TEXT NOT NULL DEFAULT '',
+    workspace_id TEXT NOT NULL DEFAULT '',
+    asset_type TEXT NOT NULL DEFAULT 'photo',
+    file_name TEXT NOT NULL DEFAULT '',
+    mime TEXT NOT NULL DEFAULT '',
+    size_bytes INTEGER NOT NULL DEFAULT 0,
+    data_b64 TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    source_site TEXT NOT NULL DEFAULT '',
+    device_name TEXT NOT NULL DEFAULT '',
+    client_type TEXT NOT NULL DEFAULT 'mobile',
+    platform TEXT NOT NULL DEFAULT '',
+    app_version TEXT NOT NULL DEFAULT '',
+    client_ip TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_mobile_assets_account_time
+    ON mobile_assets (account_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_mobile_assets_account_type
+    ON mobile_assets (account_id, asset_type, created_at);
+
+-- 手机采集链接表：手机端「采集」登记的链接，按账号维度存档。
+-- PC 端同账号登录后可在「手机端导入」面板拉取并一键导入到采集流程。
+CREATE TABLE IF NOT EXISTS mobile_capture_links (
+    capture_id TEXT NOT NULL DEFAULT '',
+    account_id TEXT NOT NULL DEFAULT '',
+    username TEXT NOT NULL DEFAULT '',
+    workspace_id TEXT NOT NULL DEFAULT '',
+    source_url TEXT NOT NULL DEFAULT '',
+    source_site TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    client_type TEXT NOT NULL DEFAULT 'mobile',
+    device_name TEXT NOT NULL DEFAULT '',
+    platform TEXT NOT NULL DEFAULT '',
+    app_version TEXT NOT NULL DEFAULT '',
+    client_ip TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    imported_at TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (account_id, capture_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_mobile_capture_links_account_status
+    ON mobile_capture_links (account_id, status, created_at);
 
 -- 密码重置凭证表：忘记密码时生成一次性 token，只保存 token_hash，不保存明文 token。
 CREATE TABLE IF NOT EXISTS auth_password_reset_tokens (
@@ -302,7 +358,14 @@ CREATE TABLE IF NOT EXISTS invitation_codes (
     created_by TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     created_by_admin_id TEXT NOT NULL DEFAULT '',
-    creation_operation_id TEXT NOT NULL DEFAULT ''
+    creation_operation_id TEXT NOT NULL DEFAULT '',
+    remark TEXT NOT NULL DEFAULT '',
+    -- 发放积分：被使用（注册填写或工作台兑换）时向该账号永久积分池发放的积分数，
+    -- 0 表示纯归属码不发放积分。每次成功使用发一份，受 max_uses / used_count 约束。
+    grant_points INTEGER NOT NULL DEFAULT 0,
+    -- 套餐权益类型：非空时被使用后为账号激活该套餐（等同购买，含每周领取权益）。
+    -- 空串表示只发普通积分。企业版邀请码写 "enterprise"。
+    grant_plan_type TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_invitation_codes_status
@@ -876,6 +939,10 @@ def _module_migrations() -> list[tuple[str, str, str]]:
             "data_collection:010_plugin_onebound_capture_persistent_columns",
             root / "data_collection" / "migrations" / "010_plugin_onebound_capture_persistent_columns.sql",
         ),
+        (
+            "data_collection:012_collection_batch_display_name",
+            root / "data_collection" / "migrations" / "012_collection_batch_display_name.sql",
+        ),
     ]
     for migration_id, sql_path in data_collection_migrations:
         if sql_path.exists():
@@ -1150,6 +1217,18 @@ def _migrate_core_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "billing_wallets", "signin_week_units", "INTEGER NOT NULL DEFAULT 0")
     # 登录状态字段：账号级单端登录限制（云端认证服务与本地工作台共用同一 schema）。
     _ensure_column(conn, "auth_accounts", "login_status", "TEXT NOT NULL DEFAULT 'offline'")
+    # 平台会话客户端类型（pc/mobile）：老库平滑补列，用于按端分组做单端登录互踢。
+    _ensure_column(conn, "auth_platform_sessions", "client_type", "TEXT NOT NULL DEFAULT ''")
+    # 该索引引用 client_type 列，必须在补列之后创建：老库的建表语句不含该列，
+    # 若把它放在 SCHEMA_SQL 里，executescript 会因列不存在而整段执行失败。
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_auth_platform_sessions_account_client "
+        "ON auth_platform_sessions (account_id, client_type, revoked_at)"
+    )
+    # 邀请码备注与发放积分：老库平滑补列（wh-admin 生成邀请码时按发放积分数发放）。
+    _ensure_column(conn, "invitation_codes", "remark", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "invitation_codes", "grant_points", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "invitation_codes", "grant_plan_type", "TEXT NOT NULL DEFAULT ''")
     # 本地会话表保存远端 wh_auth_* token，登出时联动撤销云端登录态。
     _ensure_column(conn, "customer_sessions", "remote_token", "TEXT NOT NULL DEFAULT ''")
     # 邮箱验证码失败次数用于限制暴力尝试；旧数据库平滑补列。
@@ -1259,6 +1338,26 @@ def _migrate_core_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_station_payouts_station_status"
         " ON station_payouts (station_code, status, applied_at)"
+    )
+    # 客户 ↔ 分站绑定（总部权威口径）：客户在充值页填入有效中转编号后落库绑定，
+    # 之后换绑受 STATION_BINDING_CHANGE_INTERVAL_DAYS（7 天）滚动窗口限制，防止
+    # 用户在多个中转站之间反复横跳套利。首绑不计次（change_count 从 0 起）。
+    # last_changed_at 既是换绑冷却起点，也是「下次可更换时间」的计算依据。
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS customer_station_bindings (
+            account_id TEXT PRIMARY KEY,
+            station_code TEXT NOT NULL,
+            station_name TEXT NOT NULL DEFAULT '',
+            bound_at TEXT NOT NULL DEFAULT (datetime('now')),
+            last_changed_at TEXT NOT NULL DEFAULT (datetime('now')),
+            change_count INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_customer_station_bindings_station"
+        " ON customer_station_bindings (station_code)"
     )
     # The retired 2x switch must not remain armed after the permanent package
     # rule ships. Existing orders already carry immutable bonus snapshots.
@@ -1659,6 +1758,28 @@ def init_db(database_path: Path) -> None:
                     if column_name not in item_columns:
                         conn.execute(
                             f"ALTER TABLE plugin_onebound_capture_items ADD COLUMN {column_name} {definition}"
+                        )
+                conn.execute(
+                    "INSERT OR IGNORE INTO schema_migrations (migration_id, module) VALUES (?, ?)",
+                    (migration_id, module),
+                )
+                continue
+            if migration_id == "data_collection:012_collection_batch_display_name":
+                # 展示名列：按列存在性逐表幂等补齐（与 010 同类处理）。独立构造的
+                # 采集仓储可能已自行补列且未写标记，这里不能用 executescript 盲跑，
+                # 否则会对已存在的列重复 ALTER 而报错。
+                for table in (
+                    "daily_selection_runs",
+                    "shop_collection_batches",
+                    "plugin_onebound_capture_batches",
+                ):
+                    table_columns = {
+                        str(row["name"])
+                        for row in conn.execute(f"PRAGMA table_info({table})")
+                    }
+                    if table_columns and "display_name" not in table_columns:
+                        conn.execute(
+                            f"ALTER TABLE {table} ADD COLUMN display_name TEXT NOT NULL DEFAULT ''"
                         )
                 conn.execute(
                     "INSERT OR IGNORE INTO schema_migrations (migration_id, module) VALUES (?, ?)",

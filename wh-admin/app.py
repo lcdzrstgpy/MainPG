@@ -57,10 +57,12 @@ from server_scripts import (
     SERVER_UPDATE_INVITATION_SCRIPT,
     SERVER_TRANSFER_INVITATION_SCRIPT,
     SERVER_LIST_USERS_SCRIPT,
+    SERVER_LIST_WORKSPACES_SCRIPT,
     SERVER_LIST_INVITATION_OPTIONS_SCRIPT,
     SERVER_LIST_USER_ACTIVITY_SCRIPT,
     SERVER_LOGIN_SCRIPT,
     SERVER_LOGOUT_SCRIPT,
+    SERVER_MOBILE_OVERVIEW_SCRIPT,
     SERVER_PURGE_AUDIT_SCRIPT,
     SERVER_RESET_ADMIN_PASSWORD_SCRIPT,
     SERVER_RESET_USER_PASSWORD_SCRIPT,
@@ -587,6 +589,20 @@ def users(
     return _run_remote(SERVER_LIST_USERS_SCRIPT, [limit, offset], "读取用户列表")
 
 
+@app.get("/api/mobile/overview")
+def mobile_overview(x_auth_token: str | None = Header(default=None)) -> dict[str, Any]:
+    """移动端用户统计：按 client_type='mobile' 从平台会话派生在线/注册统计与明细。"""
+    _check_auth(x_auth_token)
+    return _run_remote(SERVER_MOBILE_OVERVIEW_SCRIPT, [], "读取移动端用户统计")
+
+
+@app.get("/api/workspaces")
+def workspaces(x_auth_token: str | None = Header(default=None)) -> dict[str, Any]:
+    """分站/工作区清单 —— 分类投放表单「按分站」下拉的数据源。"""
+    _check_auth(x_auth_token)
+    return _run_remote(SERVER_LIST_WORKSPACES_SCRIPT, [], "读取分站列表")
+
+
 @app.post("/api/users/{account_id}/status")
 def user_status(
     account_id: str,
@@ -918,7 +934,7 @@ def _serialize_announcement(
     row, *, with_images: bool = True, include_targets: bool = True, prefix_category: bool = False
 ) -> dict[str, Any]:
     r = dict(row)
-    category = str(r.get("category") or "")
+    category = str(r.get("category") or "").strip()
     try:
         targets = json.loads(r.get("target_account_ids") or "[]")
         if not isinstance(targets, list):
@@ -989,6 +1005,7 @@ def public_announcements(
         # 指定名单与分类规则**取交集**：两者都给出时必须同时满足（宁窄勿宽，避免误发）。
         if targets and account_id not in targets:
             continue
+        # 定向名单不回给免登录端，避免泄露收件人；标题带「【分区】」前缀供客户端展示。
         if not _audience_matches(_load_audience_rules(row["audience_rules"]), profile):
             continue
         items.append(
@@ -1429,11 +1446,15 @@ def publish_internal_announcement(
         raise HTTPException(status_code=400, detail="请选择公告分区")
     con = _announce_db()
     try:
-        # 专属分区：登记到分区字典，保证后台列表可筛选（已存在则不重复写）。
-        con.execute(
-            "INSERT OR IGNORE INTO announcement_categories(name, created_at) VALUES(?,?)",
-            (category, _now_beijing()),
-        )
+        # 专属分区：字典表存在时登记，保证后台列表可筛选（不存在则仅落公告本身）。
+        has_category_table = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='announcement_categories'"
+        ).fetchone()
+        if has_category_table is not None:
+            con.execute(
+                "INSERT OR IGNORE INTO announcement_categories(name, created_at) VALUES(?,?)",
+                (category, _now_beijing()),
+            )
         announcement_id = _publish_targeted_announcement(
             con, title=title, content=content, targets=[account_id], category=category
         )

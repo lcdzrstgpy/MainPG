@@ -21,7 +21,7 @@ product_processing/
 │  ├─ database.py        # SQLAlchemy 引擎、SQLite WAL 与数据目录
 │  ├─ orm.py             # 草稿、任务、交接回执、接收快照、源图和提示词表
 │  ├─ repository.py      # 带 workspace 隔离的数据访问
-│  ├─ preview_image_orm.py # 预审资产、内容哈希发布回执和最终化任务
+│  ├─ preview_image_orm.py # 预检资产、内容哈希发布回执和最终化任务
 │  ├─ preview_image_repository.py # CAS 保存、幂等键、发布/最终化租约
 │  ├─ preview_image_files.py # JPEG/PNG/WebP 大小、像素与单帧质量门
 │  ├─ dimension_canvas_repository.py # 画布版本、渲染快照和审核变更集
@@ -62,11 +62,11 @@ SQLite 连接启用 WAL、外键、`synchronous=NORMAL` 和 30 秒 busy timeout�
 
 尺寸画布只消费已完成的产品处理结果，不增加模型调用。商品本体长宽高必须带明确单位和轴语义，包裹尺寸、估算值或冲突值不会自动用于标注。用户点击完成后才在本地渲染 2000×2000 图片，最多并行 3 张；渲染器按最终字体边界把有效标签做最小像素内移，确保完整文字留在 5% 安全区内。审核接受只覆盖 `carousel.dimension_background`，标题、描述及其他轮播图保持不变。
 
-相关接口位于 `/product-processing/dimension-canvas`。资产、项目、批次、变更集与通知均按 `X-Workspace-ID` 隔离；编辑、渲染和交回审核只使用本地受管文件，不调用 COS 或模型。审核接受后，尺寸图进入统一预审图片清单，和其他最终保留图片一起在预审完成时发布。
+相关接口位于 `/product-processing/dimension-canvas`。资产、项目、批次、变更集与通知均按 `X-Workspace-ID` 隔离；编辑、渲染和交回审核只使用本地受管文件，不调用 COS 或模型。审核接受后，尺寸图进入统一预检图片清单，和其他最终保留图片一起在预检完成时发布。
 
-## 预审图片与最终导出
+## 预检图片与最终导出
 
-AI 生成图、尺寸画布图和用户上传图首先只登记为本地稳定资产，不在生成或编辑阶段调用 COS。预审通过 `image_manifest_v2` 一次保存主图、轮播图、详情图和语义槽位；空详情图数组也会原样保留，不回退旧图片。
+AI 生成图、尺寸画布图和用户上传图首先只登记为本地稳定资产，不在生成或编辑阶段调用 COS。预检通过 `image_manifest_v2` 一次保存主图、轮播图、详情图和语义槽位；空详情图数组也会原样保留，不回退旧图片。
 
 `POST /product-processing/tasks/<task_id>/preview/finalize` 是唯一最终化入口。它先用 preview revision 做整批 CAS，再只对清单内仍保留的内容哈希发布 COS；相同内容按工作区复用发布回执，失败重试不会重新上传已成功图片。只有全部 URL 都通过配置桶、公网 HTTPS 和匿名可读校验后，才生成该最终化任务专属的店小秘工作簿并开放下载。
 

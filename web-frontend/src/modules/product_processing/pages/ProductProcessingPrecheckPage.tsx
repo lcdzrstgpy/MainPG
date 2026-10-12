@@ -461,11 +461,19 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     // image_ai_failed 是 item 自身属性，无需其它外部依赖。
     [failedDraftIds],
   );
+  // 带失败标记的商品数：导出前提示先剔除，避免把回退来源图的商品一起导出去。
+  const failedItemCount = useMemo(
+    () => allItems.filter(itemHasFailure).length,
+    [allItems, itemHasFailure],
+  );
   const filteredItems = useMemo(() => {
     const keyword = search.trim().toLowerCase();
     let scoped = allItems;
     if (onlySuccess) {
-      scoped = scoped.filter((item) => item.status === 'completed');
+      // 「成功链接」= 没有失败标记。原先按 item.status === 'completed' 判成功，但
+      // 生图失败回退来源图的商品同样是 completed，于是勾「只看成功链接」也筛不掉
+      // 失败项，看起来像筛选没生效；失败集合改由 itemHasFailure 统一定义。
+      scoped = scoped.filter((item) => !itemHasFailure(item));
     } else if (onlyFailed) {
       scoped = scoped.filter(itemHasFailure);
     }
@@ -532,6 +540,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
           <div className="app-loading-block">
             <i className="app-spinner" aria-hidden="true" />
             加载预检数据…
+            <small className="app-loading-hint">产品较多时加载较慢，请耐心等待</small>
           </div>
         ) : (
           <p className="verify-empty">任务尚未完成，无法预检</p>
@@ -1093,7 +1102,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
 
   const startFinalize = async (format: PreviewExportFormat = 'dxm') => {
     if (pendingUploads > 0) {
-      fail('图片仍在导入，请等待完成后再完成预审');
+      fail('图片仍在导入，请等待完成后再完成预检');
       return;
     }
     setStartingFinalize(true);
@@ -1158,7 +1167,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
   };
 
   const reloadAfterStale = async () => {
-    notify('正在读取最新版本；当前未保存编辑会继续保留，请重新核对后再完成预审。');
+    notify('正在读取最新版本；当前未保存编辑会继续保留，请重新核对后再完成预检。');
     await load(true);
     removeSession(runStorageKey);
     removeSession(idempotencyStorageKey);
@@ -1387,8 +1396,13 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
               ? <><i className="app-spinner is-sm" aria-hidden="true" />正在建立完成任务…</>
               : pendingUploads > 0
                 ? <><i className="app-spinner is-sm" aria-hidden="true" />正在导入图片（{pendingUploads}）</>
-                : '完成预审并导出'}
+                : '完成预检并导出'}
           </button>
+          {failedItemCount > 0 && (
+            <span className="verify-actions-hint">
+              有 {failedItemCount} 个失败链接：请先勾「只看失败链接」筛出并「删除所选」剔除，再完成预检并导出
+            </span>
+          )}
           <button type="button" onClick={reloadForRetry} disabled={loading || mutationsLocked}>
             {loading ? <><i className="app-spinner is-sm" aria-hidden="true" />重新加载</> : '重新加载'}
           </button>

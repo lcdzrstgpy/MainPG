@@ -298,7 +298,7 @@ export const ShopCollectionPanel = forwardRef<ShopCollectionPanelHandle, ShopCol
                   className={batch.batch_id === selectedBatchId ? "is-selected" : ""}
                   onClick={() => { setSelectedBatchId(batch.batch_id); setItemsOffset(0); setBatchManagerOpen(false); }}
                 >
-                  <span><strong>{batch.shop_name || batch.shop_sid || "等待识别店铺"}</strong><small>{shopBatchStatusLabel(batch.status)}</small></span>
+                  <span><strong>{batch.display_name || batch.shop_name || batch.shop_sid || "等待识别店铺"}</strong><small>{shopBatchStatusLabel(batch.status)}</small></span>
                   <b>{shopBatchProgress(batch)}%</b>
                 </button>
               ))}

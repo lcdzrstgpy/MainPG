@@ -554,6 +554,16 @@ def create_product_processing_router(
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "draft_ids is required")
         return service.delete_drafts(None if body.delete_all else body.draft_ids, _workspace(workspace_id))
 
+    @router.post("/drafts/purge")
+    def purge_drafts_batch(
+        body: DraftDeleteRequest,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        """批量物理删除草稿（不可恢复），用于货源成本等页面多选清理。"""
+        if not body.draft_ids:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "draft_ids is required")
+        return service.purge_drafts(body.draft_ids, _workspace(workspace_id))
+
     @router.post("/drafts/restore")
     def restore_drafts(
         body: DraftRestoreRequest,
@@ -1033,7 +1043,7 @@ def create_product_processing_router(
         """该任务的历史导出记录。
 
         导出的表格是服务端落盘的，记录一直在库里；前端原先只把 run id 存在页面会话里，
-        关掉页面就再也找不到之前生成的表格，只能反复点「完成预审并导出」并撞幂等冲突。
+        关掉页面就再也找不到之前生成的表格，只能反复点「完成预检并导出」并撞幂等冲突。
         """
         return {
             "runs": _call(

@@ -4,7 +4,7 @@ import json
 import re
 import time
 import unicodedata
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -56,6 +56,96 @@ def _iso_after(seconds: float) -> str:
     immediately instead of after the intended delay.
     """
     return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
+
+
+# 采集批次展示名来源表：批次 ID 与列名一一对应（三张表分别属于三个采集渠道）。
+_COLLECTION_BATCH_DISPLAY_NAME_SOURCES: tuple[tuple[str, str], ...] = (
+    ("daily_selection_runs", "run_id"),
+    ("shop_collection_batches", "batch_id"),
+    ("plugin_onebound_capture_batches", "batch_id"),
+)
+
+
+def _lookup_collection_batch_display_name(session: Any, batch_id: str) -> str:
+    """按 selection_run_id 解析批次展示名：优先落库值，老数据用源表字段现算。
+
+    老批次（展示名列落库前创建）的 ``display_name`` 为空，这里按渠道用采集
+    关键词 / 店铺名 / page_url 现场拼一个同格式名字，避免前端回落成随机 UUID。
+    """
+    if not batch_id or batch_id == "__unassigned__":
+        return ""
+    try:
+        available = {
+            str(row[0])
+            for row in session.execute(
+                text("SELECT name FROM sqlite_master WHERE type = 'table'")
+            ).all()
+        }
+    except Exception:
+        return ""
+    for table, key in _COLLECTION_BATCH_DISPLAY_NAME_SOURCES:
+        if table not in available:
+            continue
+        try:
+            row = (
+                session.execute(
+                    text(f"SELECT * FROM {table} WHERE {key} = :batch_id"),
+                    {"batch_id": batch_id},
+                )
+                .mappings()
+                .first()
+            )
+        except Exception:
+            continue
+        if row is None:
+            continue
+        display_name = _collection_batch_display_name(table, row)
+        if display_name:
+            return display_name
+    return ""
+
+
+def _collection_batch_display_name(table: str, row: Mapping[str, Any]) -> str:
+    """已落库的展示名优先；为空时按来源渠道用源表字段现算。"""
+    stored = str(row.get("display_name") or "").strip()
+    if stored:
+        return stored
+    # 懒加载：batch_naming 属 data_collection 包，避免模块级交叉导入。
+    from wh_local.data_collection.batch_naming import (
+        daily_selection_display_name,
+        plugin_display_name,
+        shop_display_name,
+    )
+
+    if table == "daily_selection_runs":
+        return daily_selection_display_name(
+            loads(row.get("criteria_json"), {}),
+            loads(row.get("metadata_json"), {}),
+            created_at=row.get("created_at"),
+        )
+    if table == "shop_collection_batches":
+        return shop_display_name(
+            shop_name=str(row.get("shop_name") or ""),
+            platform=str(row.get("platform") or ""),
+            created_at=row.get("created_at"),
+        )
+    return plugin_display_name(
+        str(row.get("page_url") or ""), created_at=row.get("created_at")
+    )
+
+
+def _claimable_source_image_condition(lease_expires_at: str):
+    """仍可领取的源图同步行：pending / failed，或租约已过期的 syncing。"""
+    return or_(
+        SourceImageAssetRow.sync_status.in_(["pending", "failed"]),
+        and_(
+            SourceImageAssetRow.sync_status == "syncing",
+            or_(
+                SourceImageAssetRow.sync_claimed_at == "",
+                SourceImageAssetRow.sync_claimed_at <= lease_expires_at,
+            ),
+        ),
+    )
 
 
 def _normalized_history_title(value: object) -> str:
@@ -747,6 +837,44 @@ class ProductProcessingRepository:
             rows = session.scalars(statement).all()
             return [self._draft(row) for row in rows[:limit]], len(rows) > limit
 
+    def collection_batch_display_names(self, batch_ids: Iterable[str]) -> dict[str, str]:
+        """批量解析采集批次展示名，供草稿列表直接带出。
+
+        草稿列表本身不按批次过滤，而 ``list_draft_batches`` 只统计草稿池内的
+        待处理批次，因此「已完成」等视图在前端拿不到批次名、只能回落显示 UUID。
+        这里对三张采集源表各做一次 IN 查询补上；未命中（手工录入 / 未分组）不进结果。
+        """
+        ids = [str(item).strip() for item in batch_ids]
+        ids = [item for item in dict.fromkeys(ids) if item and item != "__unassigned__"]
+        if not ids:
+            return {}
+        resolved: dict[str, str] = {}
+        with self.database.sessions() as session:
+            for table, key in _COLLECTION_BATCH_DISPLAY_NAME_SOURCES:
+                pending = [item for item in ids if item not in resolved]
+                if not pending:
+                    break
+                params = {f"batch_id_{index}": item for index, item in enumerate(pending)}
+                placeholders = ", ".join(f":{name}" for name in params)
+                try:
+                    rows = (
+                        session.execute(
+                            text(f"SELECT * FROM {table} WHERE {key} IN ({placeholders})"),
+                            params,
+                        )
+                        .mappings()
+                        .all()
+                    )
+                except Exception:
+                    continue
+                for row in rows:
+                    batch_id = str(row.get(key) or "")
+                    if batch_id and batch_id not in resolved:
+                        display_name = _collection_batch_display_name(table, row)
+                        if display_name:
+                            resolved[batch_id] = display_name
+        return resolved
+
     def list_draft_batches(
         self,
         limit: int,
@@ -822,7 +950,8 @@ class ProductProcessingRepository:
                         "source_type": source_type,
                         "collection_channel": str(raw.get("collection_channel") or "") or "",
                         "platform": str(raw.get("source_platform") or "") or "",
-                        "channel_name": str(raw.get("source_title") or raw.get("title") or "")[:60],
+                        "channel_name": _lookup_collection_batch_display_name(session, batch_id)
+                        or str(raw.get("source_title") or raw.get("title") or "")[:60],
                         "count": int(row.draft_count),
                         "first_created_at": str(row.first_created_at or ""),
                         "latest_updated_at": str(row.latest_updated_at or ""),
@@ -2321,13 +2450,19 @@ class ProductProcessingRepository:
                 rows.append(row)
             return [self._source_image(row) for row in rows]
 
-    def claim_syncable_source_images(
-        self, product_draft_id: int, workspace_id: str = "local"
-    ) -> list[dict[str, Any]]:
-        claimed_at = utc_now()
+    def claimable_source_image_drafts(self, *, limit: int = 10) -> list[tuple[str, int]]:
+        """仍有「待同步」源图的 (workspace_id, product_draft_id)，最新草稿优先。
+
+        源图同步目前只在创建草稿时挂一次 FastAPI BackgroundTask，进程重启/被杀后
+        排队中的任务会永久丢失（行状态停在 ``pending``）。后台补偿线程靠这里把漏掉
+        的草稿重新捞回来。
+
+        只挑仍含 ``pending`` / 租约过期 ``syncing`` 的未删除草稿：单行 ``failed``
+        仍交由手动重试处理，避免对持续失败的图无限重试。
+        """
         lease_expires_at = (datetime.now(timezone.utc) - self.SOURCE_IMAGE_SYNC_LEASE).isoformat()
-        claimable = or_(
-            SourceImageAssetRow.sync_status.in_(["pending", "failed"]),
+        needs_sync = or_(
+            SourceImageAssetRow.sync_status == "pending",
             and_(
                 SourceImageAssetRow.sync_status == "syncing",
                 or_(
@@ -2336,6 +2471,26 @@ class ProductProcessingRepository:
                 ),
             ),
         )
+        with self.database.sessions() as session:
+            rows = session.execute(
+                select(ProductDraftRow.workspace_id, SourceImageAssetRow.product_draft_id)
+                .join(ProductDraftRow, ProductDraftRow.id == SourceImageAssetRow.product_draft_id)
+                .where(
+                    needs_sync,
+                    ProductDraftRow.status != "deleted",
+                )
+                .group_by(ProductDraftRow.workspace_id, SourceImageAssetRow.product_draft_id)
+                .order_by(SourceImageAssetRow.product_draft_id.desc())
+                .limit(limit)
+            ).all()
+        return [(str(row[0]), int(row[1])) for row in rows]
+
+    def claim_syncable_source_images(
+        self, product_draft_id: int, workspace_id: str = "local"
+    ) -> list[dict[str, Any]]:
+        claimed_at = utc_now()
+        lease_expires_at = (datetime.now(timezone.utc) - self.SOURCE_IMAGE_SYNC_LEASE).isoformat()
+        claimable = _claimable_source_image_condition(lease_expires_at)
         with self.database.sessions.begin() as session:
             rows = session.scalars(
                 select(SourceImageAssetRow)

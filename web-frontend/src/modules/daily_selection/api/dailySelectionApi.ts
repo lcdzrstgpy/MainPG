@@ -23,6 +23,20 @@ export function startCollectionTask(criteria: DailySelectionCriteria): Promise<D
   });
 }
 
+/**
+ * 以单个商品链接为种子发起相似采集（手机端「手机端导入」用）。
+ * 后端按链接自动识别 1688 / 淘宝 / 天猫平台，先 `item_get` 取种子再做相似采集。
+ */
+export function importFromLink(sourceUrl: string, collectionPlatform?: string): Promise<DailySelectionRun> {
+  return apiRequest("/desktop/daily-selection/preview-from-link", {
+    method: "POST",
+    body: JSON.stringify({
+      source_url: sourceUrl,
+      ...(collectionPlatform ? { collection_platform: collectionPlatform } : {}),
+    }),
+  });
+}
+
 export function getCollectionTask(taskId: string): Promise<DailySelectionTaskStatus> {
   return apiRequest(`/desktop/daily-selection/preview-tasks/${encodeURIComponent(taskId)}`);
 }

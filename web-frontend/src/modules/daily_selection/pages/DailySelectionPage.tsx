@@ -18,6 +18,7 @@ import { getApiToken } from "../../../shared/api/apiClient";
 import { toUserMessage } from "../../../transport/http/client";
 import { ShopCollectionPanel, type ShopCollectionPanelHandle } from "../components/ShopCollectionPanel";
 import { PluginOneboundCapturePanel, type PluginOneboundCapturePanelHandle } from "../components/PluginOneboundCapturePanel";
+import { MobileCaptureImportPanel } from "../components/MobileCaptureImportPanel";
 import type {
   CollectionMode,
   CollectionPlatform,
@@ -320,7 +321,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   // 在预设页点方向卡再回到采集视图，而不再新开独立面板。
   const [internalView, setInternalView] = useState<"directions" | "collection">(view);
   const collectionView = internalView === "collection";
-  const [collectionWorkspaceMode, setCollectionWorkspaceMode] = useState<"daily" | "shop" | "plugin">("daily");
+  const [collectionWorkspaceMode, setCollectionWorkspaceMode] = useState<"daily" | "shop" | "plugin" | "mobile">("daily");
   const [customDirections, setCustomDirections] = useState<Direction[]>(loadCustomDirections);
   const [updatedDefaultDirections, setUpdatedDefaultDirections] = useState<Direction[]>(loadUpdatedDefaultDirections);
   const [removedDefaultDirectionIds, setRemovedDefaultDirectionIds] = useState<string[]>(loadRemovedDefaultDirectionIds);
@@ -376,6 +377,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false);
   const [shopBatchCount, setShopBatchCount] = useState(0);
   const [pluginBatchCount, setPluginBatchCount] = useState(0);
+  const [mobilePendingCount, setMobilePendingCount] = useState(0);
   const [skuRepull, setSkuRepull] = useState<SkuRepullState | null>(null);
   const [skuRepullBusy, setSkuRepullBusy] = useState(false);
   const [collectionRetry, setCollectionRetry] = useState<CollectionRetryState | null>(null);
@@ -1377,8 +1379,25 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                 className={collectionWorkspaceMode === "plugin" ? "is-active" : ""}
                 onClick={() => setCollectionWorkspaceMode("plugin")}
               ><span className="iconfont icon-cloud" aria-hidden="true"></span>插件采集</button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={collectionWorkspaceMode === "mobile"}
+                className={collectionWorkspaceMode === "mobile" ? "is-active" : ""}
+                onClick={() => setCollectionWorkspaceMode("mobile")}
+              ><span className="iconfont icon-phone" aria-hidden="true"></span>手机端导入{mobilePendingCount > 0 ? ` (${mobilePendingCount})` : ""}</button>
             </div>
-            {collectionWorkspaceMode === "plugin" ? (
+            {collectionWorkspaceMode === "mobile" ? (
+              <MobileCaptureImportPanel
+                isActive={isActive}
+                onPendingCountChange={setMobilePendingCount}
+                onImported={(runId) => {
+                  setCollectionWorkspaceMode("daily");
+                  void refreshRuns();
+                  void openRun(runId);
+                }}
+              />
+            ) : collectionWorkspaceMode === "plugin" ? (
               <PluginOneboundCapturePanel ref={pluginCapturePanelRef} isActive={isActive} onOpenDraft={onOpenProductProcessingDraft} onBatchCountChange={setPluginBatchCount} />
             ) : collectionWorkspaceMode === "shop" ? (
               <ShopCollectionPanel ref={shopCollectionPanelRef} isActive={isActive} onBatchCountChange={setShopBatchCount} />
@@ -1723,7 +1742,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                     void openRun(run.run_id);
                   }}
                 >
-                  <span><strong>{run.run_id.slice(0, 8)}</strong><small>{formatDate(run.created_at)}</small></span>
+                  <span><strong>{run.display_name || run.run_id.slice(0, 8)}</strong><small>{formatDate(run.created_at)}</small></span>
                   <span><b>{run.candidate_count}</b><small>{STATUS_LABELS[run.status] ?? run.status}{duration ? ` · 耗时 ${duration}` : ""}</small></span>
                 </button>
               );
