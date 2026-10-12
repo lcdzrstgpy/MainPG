@@ -52,6 +52,10 @@ const CATEGORY_META: Record<string, { label: string; hint: string }> = {
     label: "历史任务的复核原图",
     hint: "任务失败时留档的供应商原始图，超过 30 天可清理（删除后任务记录保留，但原图不再可查）",
   },
+  pp_task_exports: {
+    label: "历史任务的导出表格",
+    hint: "任务生成过的店小秘/妙手表格、失败报告与视频清单，超过 30 天可清理（删除后需回任务页重新导出）",
+  },
 };
 
 function formatBytes(bytes: number): string {
@@ -67,9 +71,10 @@ function formatBytes(bytes: number): string {
  * - 产品处理（媒体库无引用图片、无引用遗留文件）。
  *
  * 两套后端都只清「没有任何记录引用的本地文件」：模板、在用资产、被其它记录
- * 共享的文件都有完整护栏。唯一例外是「历史任务的复核原图」分类（默认不勾）：
- * 它按用户显式勾选清理超 30 天的留档原图，任务记录本身不动。**未勾选的分类
- * 一步都不会执行**；重复清理是幂等的。
+ * 共享的文件都有完整护栏。两个例外（默认都不勾、显式勾选才执行）：①「历史
+ * 任务的复核原图」——按显式勾选清理超 30 天的留档原图；②「历史任务的导出
+ * 表格」——按显式勾选清理超 30 天、登记在任务记录里的导出文件。两者的任务 /
+ * 导出记录本身都不动。**未勾选的分类一步都不会执行**；重复清理是幂等的。
  */
 export function StorageSpacePanel() {
   const [categories, setCategories] = useState<StorageCategoryItem[]>([]);
@@ -220,7 +225,7 @@ export function StorageSpacePanel() {
           <h2>存储空间</h2>
           <small>
             勾选要清理的项目释放磁盘空间；使用中的图片与模板不会被删除。仅清理超过 48
-            小时的文件（复核原图为 30 天），刚产生的文件会等过了保留期才出现在这里。
+            小时的文件（复核原图与导出表格为 30 天），刚产生的文件会等过了保留期才出现在这里。
           </small>
         </div>
         <button type="button" onClick={() => void scan()} disabled={busy}>

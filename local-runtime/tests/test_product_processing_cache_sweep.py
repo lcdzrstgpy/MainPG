@@ -2,7 +2,8 @@
 
 覆盖：扫描只读、分类计数、行级孤儿判定（绑定 / 预览 / 尺寸画布 / JSON 提及）、
 磁盘反向对账（含「被 JSON 引用的复核原图绝不删」这一关键回归场景）、选择性执行、
-未知分类拒绝、幂等。
+未知分类拒绝、幂等；以及两个「显式勾选才清理」的例外分类——历史任务的复核原图
+（pp_review_images）与历史任务的导出表格（pp_task_exports，含负向对照）。
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from wh_local.modules.product_processing.cache_sweep import (
     PP_CACHE_CATEGORY_ASSET_ORPHANS,
     PP_CACHE_CATEGORY_DISK_ORPHANS,
     PP_CACHE_CATEGORY_REVIEW_IMAGES,
+    PP_CACHE_CATEGORY_TASK_EXPORTS,
     ProductProcessingCacheSweep,
 )
 from wh_local.modules.product_processing.infrastructure.assets import ProductProcessingAssets
@@ -34,6 +36,9 @@ from wh_local.modules.product_processing.infrastructure.orm import (
     ProcessingTaskItemRow,
     ProcessingTaskRow,
     ProductDraftRow,
+)
+from wh_local.modules.product_processing.infrastructure.preview_image_orm import (
+    PreviewFinalizeRunRow,
 )
 from wh_local.modules.product_processing.service import ProductProcessingValidationError
 
@@ -355,4 +360,145 @@ def test_review_images_not_touched_without_explicit_selection(tmp_path: Path) ->
         older_than_hours=48, categories=[PP_CACHE_CATEGORY_REVIEW_IMAGES]
     )
     assert checked["categories"][PP_CACHE_CATEGORY_REVIEW_IMAGES]["files"] == 1
+    assert not stale.exists()
+
+
+# ---- 历史任务的导出表格（pp_task_exports） ----
+
+
+def _task_with_exports(database, **fields: str) -> int:
+    """建一条把导出文件登记在 ``*_file`` 列上的任务行（模拟真实任务记录）。"""
+    with database.sessions.begin() as session:
+        task = ProcessingTaskRow(
+            workspace_id=WORKSPACE,
+            title="export fixture",
+            status="completed",
+            output_file=fields.get("output_file", ""),
+            error_report_file=fields.get("error_report_file", ""),
+            video_manifest_file=fields.get("video_manifest_file", ""),
+        )
+        session.add(task)
+        session.flush()
+        return int(task.id)
+
+
+def _task_export_file(assets: ProductProcessingAssets, relative: str, age_seconds: float) -> Path:
+    path = _write(assets, relative, b"fake-workbook-bytes")
+    _age(path, age_seconds)
+    return path
+
+
+def test_task_exports_category_cleans_stale_registered_exports_only(tmp_path: Path) -> None:
+    """导出表格分类：命名匹配 + 被列登记 + 超 30 天 → 删；四种前缀全覆盖，记录不动。"""
+    database, assets, sweeper = _setup(tmp_path)
+    old = 31 * 86400
+
+    book = _task_export_file(assets, "outputs/task_21/dxm_import_task_21.xlsx", old)
+    errors = _task_export_file(assets, "outputs/task_21/error_report_task_21.csv", old)
+    video = _task_export_file(assets, "outputs/task_21/product_video_manifest_task_21.csv", old)
+    task_id = _task_with_exports(
+        database,
+        output_file=str(book),
+        error_report_file=str(errors),
+        video_manifest_file=str(video),
+    )
+
+    # 预检最终化按运行留档的表格：登记在运行行的 workbook_path（同一套列引用协议）
+    ms = _task_export_file(
+        assets,
+        "outputs/task_21/finalizations/run_1/miaoshou_general_task_21_deadbeef.xlsx",
+        old,
+    )
+    with database.sessions.begin() as session:
+        session.add(
+            PreviewFinalizeRunRow(
+                id=str(uuid.uuid4()),
+                workspace_id=WORKSPACE,
+                task_id=task_id,
+                idempotency_key=uuid.uuid4().hex,
+                request_hash=uuid.uuid4().hex * 2,
+                snapshot_hash=uuid.uuid4().hex * 2,
+                status="completed",
+                workbook_path=str(ms),
+            )
+        )
+
+    preview = sweeper.preview_local_cache(older_than_hours=48)
+    by_key = _category_map(preview)
+    assert by_key[PP_CACHE_CATEGORY_TASK_EXPORTS]["files"] == 4
+    # 被列登记 → 磁盘对账永不碰（两分类不重叠、不重复计数）
+    assert by_key[PP_CACHE_CATEGORY_DISK_ORPHANS]["files"] == 0
+    # 扫描只读：四个文件都必须还活着
+    assert book.exists() and errors.exists() and video.exists() and ms.exists()
+
+    swept = sweeper.sweep_local_cache(
+        older_than_hours=48, categories=[PP_CACHE_CATEGORY_TASK_EXPORTS]
+    )
+    assert swept["categories"][PP_CACHE_CATEGORY_TASK_EXPORTS]["files"] == 4
+    assert swept["task_exports_removed"] == 4
+    # 预览 == 执行（同一段事务逻辑，只少报不虚报）
+    assert (
+        swept["categories"][PP_CACHE_CATEGORY_TASK_EXPORTS]["bytes"]
+        == by_key[PP_CACHE_CATEGORY_TASK_EXPORTS]["bytes"]
+    )
+    assert not book.exists() and not errors.exists() and not video.exists() and not ms.exists()
+    # 只删文件、不改记录：任务行 / 预检运行行的登记字段原样保留
+    with database.sessions() as session:
+        task = session.get(ProcessingTaskRow, task_id)
+        assert task is not None and task.output_file == str(book)
+        assert task.error_report_file == str(errors)
+        assert task.video_manifest_file == str(video)
+        run = session.query(PreviewFinalizeRunRow).one()
+        assert run.workbook_path == str(ms)
+
+
+def test_task_exports_never_touch_fresh_unregistered_or_odd_names(tmp_path: Path) -> None:
+    """负向对照：未超期的 / 没登记的 / 命名不符的，一个都不删。"""
+    database, assets, sweeper = _setup(tmp_path)
+
+    fresh = _task_export_file(assets, "outputs/task_22/dxm_import_task_22.xlsx", 3 * 86400)
+    _task_with_exports(database, output_file=str(fresh))
+
+    unregistered = _task_export_file(
+        assets, "outputs/task_22/dxm_import_task_23.xlsx", 40 * 86400
+    )
+
+    odd_name = _task_export_file(assets, "outputs/task_22/result_summary.xlsx", 40 * 86400)
+    _task_with_exports(database, output_file=str(odd_name))
+
+    by_key = _category_map(sweeper.preview_local_cache(older_than_hours=48))
+    assert by_key[PP_CACHE_CATEGORY_TASK_EXPORTS]["files"] == 0
+    # 分工明确：没登记的杂散文件由磁盘对账常规回收，而不是归本分类
+    assert by_key[PP_CACHE_CATEGORY_DISK_ORPHANS]["files"] == 1
+
+    swept = sweeper.sweep_local_cache(
+        older_than_hours=48, categories=[PP_CACHE_CATEGORY_TASK_EXPORTS]
+    )
+    assert swept["task_exports_removed"] == 0
+    assert fresh.exists(), "30 天保留期内的导出表格不删"
+    assert unregistered.exists(), "没被任何列登记的同类命名文件不归本分类"
+    assert odd_name.exists(), "命名不符的文件即便登记过也不归本分类"
+
+
+def test_task_exports_not_touched_without_explicit_selection(tmp_path: Path) -> None:
+    """不勾选导出表格分类时，全量清扫其它三类也绝不碰它（区分好）。"""
+    database, assets, sweeper = _setup(tmp_path)
+    stale = _task_export_file(assets, "outputs/task_24/dxm_import_task_24.xlsx", 40 * 86400)
+    _task_with_exports(database, output_file=str(stale))
+
+    swept = sweeper.sweep_local_cache(
+        older_than_hours=48,
+        categories=[
+            PP_CACHE_CATEGORY_ASSET_ORPHANS,
+            PP_CACHE_CATEGORY_DISK_ORPHANS,
+            PP_CACHE_CATEGORY_REVIEW_IMAGES,
+        ],
+    )
+    assert swept["files_removed"] == 0
+    assert stale.exists(), "未勾选 pp_task_exports 时导出表格必须存活"
+
+    checked = sweeper.sweep_local_cache(
+        older_than_hours=48, categories=[PP_CACHE_CATEGORY_TASK_EXPORTS]
+    )
+    assert checked["categories"][PP_CACHE_CATEGORY_TASK_EXPORTS]["files"] == 1
     assert not stale.exists()

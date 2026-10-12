@@ -14,18 +14,24 @@ test("首次扫描：只默认勾「纯垃圾」分类，有保留价值的分�
       category("terminal_intermediates", 4),
       category("disk_orphans", 5),
       category("pp_review_images", 9),
+      category("pp_task_exports", 7),
     ],
     new Set(),
     true,
   );
-  // 纯垃圾默认勾上；published_release（结果图本地副本）与 pp_review_images（复核留档）
-  // 默认不勾——删除决定留给用户。
+  // 纯垃圾默认勾上；published_release（结果图本地副本）、pp_review_images（复核留档）
+  // 与 pp_task_exports（任务导出件）默认不勾——删除决定留给用户。
   assert.deepEqual([...selection].sort(), ["disk_orphans", "terminal_intermediates"]);
 });
 
 test("首次扫描：产品处理的纯垃圾分类默认勾选", () => {
   const selection = computeScanSelection(
-    [category("pp_asset_orphans", 1), category("pp_disk_orphans", 2), category("pp_review_images", 3)],
+    [
+      category("pp_asset_orphans", 1),
+      category("pp_disk_orphans", 2),
+      category("pp_review_images", 3),
+      category("pp_task_exports", 4),
+    ],
     new Set(),
     true,
   );

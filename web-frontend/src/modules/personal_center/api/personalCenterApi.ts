@@ -520,7 +520,7 @@ export function scanProductProcessingCache() {
   return httpJson<PodCacheScanResult>("/api/product-processing/cache/sweep/scan");
 }
 
-/** 清扫勾选的产品处理分类；只清没有任何记录引用的文件（含任务结果 JSON 引用的复核原图一律保留）。 */
+/** 清扫勾选的产品处理分类；默认只清没有任何记录引用的文件（复核原图 / 导出表格仅在显式勾选对应分类时清理，且不动记录）。 */
 export function sweepProductProcessingCache(categories: string[]) {
   const query = new URLSearchParams({ categories: categories.join(",") });
   return httpJson<PodCacheSweepResult>(

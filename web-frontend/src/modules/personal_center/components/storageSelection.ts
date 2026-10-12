@@ -5,7 +5,8 @@ import type { PodCacheScanCategory } from "../api/personalCenterApi";
  *
  * 有保留价值的分类**默认不勾**（由用户自己决定）：
  *  - published_release（已发布图床的旧结果图）：是出图结果的本地副本，有人想留本地；
- *  - pp_review_images（历史任务的复核原图）：留着是为了人工复核，勾了才删。
+ *  - pp_review_images（历史任务的复核原图）：留着是为了人工复核，勾了才删；
+ *  - pp_task_exports（历史任务的导出表格）：是任务的下载件，勾了才删。
  */
 const DEFAULT_CHECKED_KEYS = new Set([
   "terminal_intermediates",

@@ -29,12 +29,19 @@ function formatBytes(bytes: number): string {
 const UNRECOVERABLE_KEYS = new Set(["pp_review_images"]);
 
 /**
+ * 「删除后无法直接下载、但可回任务页重新导出」的分类——给一条琥珀色提示，
+ * 但不切危险按钮：导出表格可随时重新生成，不属于「不可恢复」。
+ */
+const EXPORT_TABLE_KEYS = new Set(["pp_task_exports"]);
+
+/**
  * 「存储空间」清理的删除确认弹窗。
  *
  * 清理虽不像「删除批次」那样整体不可逆，但一旦执行就无法在界面里「撤销」，
  * 且部分分类（复核原图）删除后彻底无法找回——所以必须先列清单、再确认：
  * - 列出每个勾选分类的名称、文件数与体积，以及总计；
  * - 勾选含不可恢复分类时给红色警示，确认按钮切换为危险色；
+ * - 勾选含导出表格分类时给琥珀色提示（可重新导出，不切危险色）；
  * - 默认焦点落在「取消」；点遮罩 / 按 Esc / 点 × 都等于取消。
  */
 export function StorageSweepConfirmDialog({ open, items, onClose, onConfirm }: Props) {
@@ -56,6 +63,7 @@ export function StorageSweepConfirmDialog({ open, items, onClose, onConfirm }: P
   const totalFiles = items.reduce((sum, item) => sum + item.files, 0);
   const totalBytes = items.reduce((sum, item) => sum + item.bytes, 0);
   const hasUnrecoverable = items.some((item) => UNRECOVERABLE_KEYS.has(item.key));
+  const hasExportTables = items.some((item) => EXPORT_TABLE_KEYS.has(item.key));
 
   // portal 到 body：tab 面板入场动画的层叠上下文会把 fixed 层压到顶栏下面。
   return createPortal(
@@ -98,6 +106,11 @@ export function StorageSweepConfirmDialog({ open, items, onClose, onConfirm }: P
           {hasUnrecoverable && (
             <p className="storage-sweep-confirm-warning">
               「历史任务的复核原图」删除后无法找回，请谨慎清理。
+            </p>
+          )}
+          {hasExportTables && (
+            <p className="storage-sweep-confirm-caution">
+              「历史任务的导出表格」删除后无法直接从工作台下载，需要时可回任务页重新导出。
             </p>
           )}
           <p className="storage-sweep-confirm-note">

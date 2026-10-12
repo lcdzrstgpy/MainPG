@@ -1,6 +1,7 @@
 """产品处理本地缓存清扫（个人中心「存储空间」的产品处理分区）。
 
-只回收「没有任何数据库记录引用」的本地文件，分两层（与 POD 侧同一套产品语义）：
+只回收「没有任何数据库记录引用」的本地文件（第 1、2 类）；第 3、4 类是
+**默认不勾、显式选择才清理**的例外。分四类（与 POD 侧同一套产品语义）：
 
 1. ``pp_asset_orphans``（媒体库无引用图片）：``product_processing_media_assets``
    里从任何地方都找不到引用的行（媒体绑定 / 预览资产 / 尺寸画布 / 任何 JSON 列里
@@ -15,6 +16,12 @@
    只认「纯 JSON 留档引用」的文件——凡被 ``*_path`` / ``*_file`` 列引用的一律
    不碰。单独勾选前两类永远删不到它们（JSON 引用算「有人要」），只有显式勾选
    本分类才会清理。
+4. ``pp_task_exports``（历史任务的导出表格）：任务产出的店小秘/妙手导入表、
+   失败报告与视频清单（含预检最终化按运行留档的表格）。这些文件**正是被**
+   ``*_file`` / ``*_path`` **列登记在用**的正式产出——磁盘对账永远不碰它们；
+   本分类只在用户显式勾选时，回收「命名匹配导出前缀 + 被列精确登记 + 超
+   30 天」的文件。与复核原图一样**只删文件、不改任务记录**：删除后任务页
+   「下载」会提示文件不存在，需要时重新导出即可。
 
 引用集合按**命名约定**通用地收集（不写死表名，自动涵盖未来新增的表）：
 - ``*_path`` / ``*_file`` 列：直接取值（PP 的路径列存的都是绝对路径）；
@@ -49,10 +56,12 @@ logger = logging.getLogger(__name__)
 PP_CACHE_CATEGORY_ASSET_ORPHANS = "pp_asset_orphans"
 PP_CACHE_CATEGORY_DISK_ORPHANS = "pp_disk_orphans"
 PP_CACHE_CATEGORY_REVIEW_IMAGES = "pp_review_images"
+PP_CACHE_CATEGORY_TASK_EXPORTS = "pp_task_exports"
 PP_CACHE_ROW_CATEGORIES = (PP_CACHE_CATEGORY_ASSET_ORPHANS,)
 PP_CACHE_CATEGORY_KEYS = PP_CACHE_ROW_CATEGORIES + (
     PP_CACHE_CATEGORY_DISK_ORPHANS,
     PP_CACHE_CATEGORY_REVIEW_IMAGES,
+    PP_CACHE_CATEGORY_TASK_EXPORTS,
 )
 
 # 反向对账排除的辅助文件：处理期的源图清单（体积可忽略、可再生，保守保留）。
@@ -63,6 +72,25 @@ _DISK_SCAN_SKIP_SUFFIXES = ("_source_images.txt",)
 _REVIEW_IMAGE_NAME_MARKER = "provider_original"
 # 复核原图保留期（天）：比通用 48h 窗口宽得多——留够人工复核的时间。
 _REVIEW_IMAGE_RETENTION_DAYS = 30
+
+# 任务导出文件的命名前缀（店小秘导入表 / 失败报告 / 视频清单 / 妙手两类模板）。
+# 命名匹配只是第一道筛子：还要求被 ``*_path`` / ``*_file`` 列精确登记（见
+# ``_task_export_paths_tx``），才认定为「任务的正式导出」。
+_TASK_EXPORT_NAME_PREFIXES = (
+    "dxm_import_task_",
+    "error_report_task_",
+    "product_video_manifest_task_",
+    "miaoshou_apparel_task_",
+    "miaoshou_general_task_",
+)
+_TASK_EXPORT_SUFFIXES = (".xlsx", ".csv")
+# 导出表格保留期（天）：与复核原图同一档——30 天内的导出件保证可直接下载。
+_TASK_EXPORT_RETENTION_DAYS = 30
+
+
+def _is_task_export_name(name: str) -> bool:
+    """任务导出文件命名：店小秘/妙手导入表、失败报告、视频清单（含 token 变体）。"""
+    return name.endswith(_TASK_EXPORT_SUFFIXES) and name.startswith(_TASK_EXPORT_NAME_PREFIXES)
 
 
 class ProductProcessingCacheSweep:
@@ -105,8 +133,9 @@ class ProductProcessingCacheSweep:
     ) -> dict[str, Any]:
         """按勾选分类清扫产品处理侧缓存。
 
-        ``categories=None`` 表示全选；显式空列表表示什么都不清。删行/删文件
-        只作用于「没有任何记录引用」的对象，未勾选分类一步都不执行。
+        ``categories=None`` 表示全选；显式空列表表示什么都不清。第 1、2 类只
+        作用于「没有任何记录引用」的对象；第 3、4 类（复核原图 / 导出表格）
+        只清「显式勾选 + 超期」的对应文件。未勾选分类一步都不执行。
         """
 
         selected: tuple[str, ...] = (
@@ -148,19 +177,31 @@ class ProductProcessingCacheSweep:
             files, freed_bytes = self._remove_files(review_paths)
             per_category[PP_CACHE_CATEGORY_REVIEW_IMAGES] = {"files": files, "bytes": freed_bytes}
 
+        if PP_CACHE_CATEGORY_TASK_EXPORTS in set(selected):
+            # 独立执行：导出表格被列登记（磁盘对账永不碰），只有显式勾选才回收。
+            # 与复核原图互斥——后者要求「纯 JSON 留档引用」，本类要求「被列登记」，
+            # 同一文件不会同时进两个分类。
+            export_paths = self._commit(
+                lambda connection: self._task_export_paths_tx(connection)
+            )
+            files, freed_bytes = self._remove_files(export_paths)
+            per_category[PP_CACHE_CATEGORY_TASK_EXPORTS] = {"files": files, "bytes": freed_bytes}
+
         total_files = sum(item["files"] for item in per_category.values())
         total_bytes = sum(item["bytes"] for item in per_category.values())
         orphan_files = per_category[PP_CACHE_CATEGORY_DISK_ORPHANS]["files"]
         review_files = per_category[PP_CACHE_CATEGORY_REVIEW_IMAGES]["files"]
+        export_files = per_category[PP_CACHE_CATEGORY_TASK_EXPORTS]["files"]
         row_files = per_category[PP_CACHE_CATEGORY_ASSET_ORPHANS]["files"]
 
         logger.info(
-            "PP manual cache sweep: files=%d bytes=%d reaped_assets=%d orphans=%d review_images=%d window_hours=%d categories=%s",
+            "PP manual cache sweep: files=%d bytes=%d reaped_assets=%d orphans=%d review_images=%d task_exports=%d window_hours=%d categories=%s",
             total_files,
             total_bytes,
             row_files,
             orphan_files,
             review_files,
+            export_files,
             int(older_than_hours),
             ",".join(selected),
         )
@@ -171,6 +212,7 @@ class ProductProcessingCacheSweep:
             "bytes_freed": total_bytes,
             "reaped_assets": row_files,
             "orphan_files_removed": orphan_files,
+            "task_exports_removed": export_files,
         }
 
     # ---- 分类实现 ----
@@ -191,6 +233,10 @@ class ProductProcessingCacheSweep:
         if key == PP_CACHE_CATEGORY_REVIEW_IMAGES:
             return self._run_in_rollback(
                 lambda connection: self._review_image_paths_tx(connection)
+            )
+        if key == PP_CACHE_CATEGORY_TASK_EXPORTS:
+            return self._run_in_rollback(
+                lambda connection: self._task_export_paths_tx(connection)
             )
         raise ProductProcessingValidationError(f"未知的缓存清扫分类: {key}")
 
@@ -293,6 +339,36 @@ class ProductProcessingCacheSweep:
                 continue  # 被业务字段指着 = 在用，绝不删
             review_paths.append(str(path))
         return review_paths
+
+    def _task_export_paths_tx(self, connection) -> list[str]:
+        """历史任务的导出表格：返回「命名匹配 + 被列登记 + 超 30 天」的路径。
+
+        三个条件全部满足才收（缺一不删）：
+        1. 命名匹配导出文件前缀（店小秘 / 妙手 / 失败报告 / 视频清单，含 token 变体）；
+        2. **被** ``*_path`` / ``*_file`` **列精确登记**——只有任务行的
+           ``output_file`` 等字段或预检运行行的 ``workbook_path`` 指着的那一份，
+           才算「任务的正式导出」；名称相像但没登记的文件不归本分类（无引用的
+           杂散文件由 ``pp_disk_orphans`` 常规回收）；
+        3. mtime 超过 30 天保留期。
+
+        只删文件、不改记录：删除后任务页/预检页的「下载」会提示文件不存在，
+        用户可在任务页重新导出（业务数据全部保留、导出记录不受影响）。
+        """
+
+        _references, column_references, _strings = self._collect_reference_data(connection)
+        threshold = (
+            datetime.now(timezone.utc) - timedelta(days=_TASK_EXPORT_RETENTION_DAYS)
+        ).timestamp()
+        export_paths: list[str] = []
+        for path, mtime in self.assets.iter_stored_files():
+            if mtime >= threshold:
+                continue
+            if not _is_task_export_name(path.name):
+                continue
+            if self._normalize(path) not in column_references:
+                continue
+            export_paths.append(str(path))
+        return export_paths
 
     # ---- 引用集合（命名约定，通用收集） ----
 

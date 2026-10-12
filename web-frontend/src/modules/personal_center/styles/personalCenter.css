@@ -3357,6 +3357,14 @@
   background: #fff1f2;
   font-weight: 700;
 }
+.storage-sweep-confirm-caution {
+  padding: 9px 11px;
+  border: 1px solid #fde68a;
+  border-radius: 10px;
+  color: #92400e;
+  background: #fffbeb;
+  font-weight: 600;
+}
 .storage-sweep-confirm-note { color: var(--theme-text-muted, #64748b); font-size: 12.5px; }
 .storage-sweep-confirm-dialog footer {
   display: flex;

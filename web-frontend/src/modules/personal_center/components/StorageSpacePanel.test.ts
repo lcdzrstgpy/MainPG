@@ -33,7 +33,7 @@ test("首次扫描的「全选」判定在 setState 之前同步求出（防 upd
   assert.match(panel, /computeScanSelection\(items, previous, firstScan\)/);
 });
 
-test("七个可清理分类都有可读文案，未知分类有回退", () => {
+test("八个可清理分类都有可读文案，未知分类有回退", () => {
   assert.match(panel, /已发布图床的旧结果图/);
   assert.match(panel, /已结束批次的中间图/);
   assert.match(panel, /历史无引用残留/);
@@ -41,12 +41,13 @@ test("七个可清理分类都有可读文案，未知分类有回退", () => {
   assert.match(panel, /媒体库无引用图片/);
   assert.match(panel, /无引用遗留文件/);
   assert.match(panel, /历史任务的复核原图/);
+  assert.match(panel, /历史任务的导出表格/);
   assert.match(panel, /CATEGORY_META\[item\.key\] \?\?/);
 });
 
-test("保留期对用户可见：提示 48 小时窗口与复核原图 30 天，空态不写「已干净」误导", () => {
+test("保留期对用户可见：提示 48 小时窗口与 30 天档（复核原图/导出表格），空态不写「已干净」误导", () => {
   assert.match(panel, /仅清理超过 48/);
-  assert.match(panel, /30 天/);
+  assert.match(panel, /复核原图与导出表格为 30 天/);
   assert.match(panel, /暂无可清理项/);
   assert.doesNotMatch(panel, /"已干净"/);
   assert.doesNotMatch(panel, /已经很干净了/);

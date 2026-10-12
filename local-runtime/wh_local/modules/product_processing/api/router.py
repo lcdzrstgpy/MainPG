@@ -1341,8 +1341,8 @@ def create_product_processing_router(
         older_than_hours: int = Query(default=48, ge=1, le=24 * 30),
         actor: Actor = Depends(actor_from_authorization),
     ) -> dict[str, Any]:
-        # 「存储空间」扫描（只读）：按可勾选分类返回可释放的文件数 / 字节数。
-        # 只统计「没有任何数据库记录引用」的本地文件，不删任何东西。
+        # 「存储空间」扫描（只读）：按可勾选分类返回可释放的文件数 / 字节数，
+        # 不删任何东西；分类语义与引用护栏见 cache_sweep.py 模块文档。
         return cache_sweep.preview_local_cache(older_than_hours=older_than_hours)
 
     @router.post("/cache/sweep")
@@ -1354,7 +1354,8 @@ def create_product_processing_router(
         actor: Actor = Depends(actor_from_authorization),
     ) -> dict[str, Any]:
         # 手动缓存清扫（产品处理侧）：与「存储空间」勾选联动，只清勾选的分类；
-        # 引用护栏见 cache_sweep.py（绑定 / 预览 / 尺寸画布 / JSON 引用一律不碰）。
+        # 引用护栏与两个「显式勾选才清」的例外分类（复核原图 / 导出表格）见
+        # cache_sweep.py 模块文档。
         selected = None
         if categories is not None:
             selected = [item.strip() for item in categories.split(",") if item.strip()]

@@ -32,6 +32,18 @@ test("不可恢复分类（复核原图）给红色警示且确认按钮切换�
   assert.match(dialog, /\{hasUnrecoverable && \(/);
 });
 
+test("导出表格分类给琥珀色「可重新导出」提示，且不混入不可恢复危险态", () => {
+  assert.match(dialog, /EXPORT_TABLE_KEYS = new Set\(\["pp_task_exports"\]\)/);
+  assert.match(
+    dialog,
+    /const hasExportTables = items\.some\(\(item\) => EXPORT_TABLE_KEYS\.has\(item\.key\)\)/,
+  );
+  assert.match(dialog, /\{hasExportTables && \(/);
+  assert.match(dialog, /「历史任务的导出表格」删除后无法直接从工作台下载，需要时可回任务页重新导出/);
+  // 危险按钮只属于不可恢复分类：导出表格可重新导出，绝不能混进去。
+  assert.doesNotMatch(dialog, /UNRECOVERABLE_KEYS = new Set\(\["pp_review_images", "pp_task_exports"\]\)/);
+});
+
 test("交互：alertdialog / 默认焦点在取消 / Esc 与遮罩取消 / portal 到 body", () => {
   assert.match(dialog, /role="alertdialog"/);
   assert.match(dialog, /cancelRef\.current\?\.focus\(\)/);
@@ -47,6 +59,7 @@ test("样式：backdrop 固定层最高、危险按钮与主色按钮都有定�
   assert.match(styles, /\.storage-sweep-confirm-danger \{/);
   assert.match(styles, /\.storage-sweep-confirm-primary \{/);
   assert.match(styles, /\.storage-sweep-confirm-warning \{/);
+  assert.match(styles, /\.storage-sweep-confirm-caution \{/);
 });
 
 test("该弹窗的警示文案覆盖「使用中/模板/任务记录不受影响」的安心说明", () => {
