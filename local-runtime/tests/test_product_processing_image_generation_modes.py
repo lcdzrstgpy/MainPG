@@ -46,7 +46,7 @@ class _Processor:
         )
 
     @staticmethod
-    def normalize_standalone_image(media, *, stage: str):
+    def normalize_standalone_image(media, *, stage: str, enhance=None):
         return SimpleNamespace(stage=stage, content=media.content)
 
     @staticmethod
@@ -57,7 +57,7 @@ class _Processor:
         ]
 
     @staticmethod
-    def split_four_grid(_media):
+    def split_four_grid(_media, *, enhance=None):
         return [
             SimpleNamespace(stage=f"grid_image_{slot}", content=f"slot-{slot}".encode())
             for slot in range(1, 5)
@@ -194,7 +194,7 @@ def test_unsplittable_four_grid_never_repeats_the_paid_whole_grid_call(monkeypat
     split_attempts = 0
     original_split = processor.split_four_grid
 
-    def split_after_retry(media):
+    def split_after_retry(media, *, enhance=None):
         nonlocal split_attempts
         split_attempts += 1
         if split_attempts == 1:

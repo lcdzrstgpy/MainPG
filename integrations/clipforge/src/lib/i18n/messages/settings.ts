@@ -160,7 +160,7 @@ export const settings: NamespaceMessages = {
     characterDescPlaceholder: "如：25岁护肤博主，活泼开朗",
     characterAppearanceLabel: "外貌特征（英文，用于 AI 生图 prompt）",
     characterAppearancePlaceholder:
-      "如：Young Asian woman, 25 years old, long black hair, oval face, fair skin, bright smile",
+      "如：Young Caucasian woman, 25 years old, light-brown hair, oval face, light-to-medium skin, bright smile",
     characterAppearanceTip: "描述越具体，不同分镜中人物的一致性越好",
     characterVoiceLabel: "声音风格",
     characterVoicePlaceholder: "如：温柔女声、活力女声、专业男声",
@@ -349,7 +349,7 @@ export const settings: NamespaceMessages = {
     characterDescPlaceholder: "e.g. 25-year-old skincare blogger, lively and cheerful",
     characterAppearanceLabel: "Appearance (in English, used for AI image prompts)",
     characterAppearancePlaceholder:
-      "e.g. Young Asian woman, 25 years old, long black hair, oval face, fair skin, bright smile",
+      "e.g. Young Caucasian woman, 25 years old, light-brown hair, oval face, light-to-medium skin, bright smile",
     characterAppearanceTip: "The more specific the description, the more consistent the character across shots",
     characterVoiceLabel: "Voice style",
     characterVoicePlaceholder: "e.g. gentle female, energetic female, professional male",

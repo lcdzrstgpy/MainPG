@@ -345,7 +345,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   const [keywords, setKeywords] = useState("");
   const [referenceImageUrl, setReferenceImageUrl] = useState("");
   const [scope, setScope] = useState<SelectionScope | "">("");
-  const [site, setSite] = useState<TargetSite | "">("");
+  const [site, setSite] = useState<TargetSite>("US");
   const [minPrice, setMinPrice] = useState("");
   const [maxPrice, setMaxPrice] = useState("");
   const [minMoq, setMinMoq] = useState("");
@@ -949,8 +949,8 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   }
 
   function buildCriteria(): DailySelectionCriteria {
-    if (!platform || !site || !scope) {
-      throw new Error("采集平台、站点和选品范围不能为空");
+    if (!platform || !scope) {
+      throw new Error("采集平台和选品范围不能为空");
     }
     const parsedTargetCount = numberOrUndefined(targetCount);
     if (parsedTargetCount === undefined || !Number.isInteger(parsedTargetCount) || parsedTargetCount < 1) {
@@ -1013,8 +1013,8 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     event.preventDefault();
     setError("");
     setNotice("");
-    if (!platform || !site || !scope) {
-      setError("请选择采集平台、站点和选品范围");
+    if (!platform || !scope) {
+      setError("请选择采集平台和选品范围");
       return;
     }
     const parsedTargetCount = numberOrUndefined(targetCount);
@@ -1430,7 +1430,6 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                 <option value="taobao">淘宝</option>
               </select>
             </label>
-            <label><span>站点</span><select value={site} onChange={(event) => setSite(event.target.value as TargetSite | "")}><option value="" disabled>请选择</option><option value="US">美国站 US</option><option value="CO">哥伦比亚 CO</option><option value="EC">厄瓜多尔 EC</option></select></label>
             <label><span>选品范围</span><select value={scope} onChange={(event) => setScope(event.target.value as SelectionScope | "")}><option value="" disabled>请选择</option><option value="divergent">发散相似款</option><option value="exact">精准匹配</option></select></label>
             <label><span>采集数量</span><input type="number" min="1" max="200" value={targetCount} onChange={(event) => setTargetCount(event.target.value)} /></label>
             <label className="collection-keyword-field">

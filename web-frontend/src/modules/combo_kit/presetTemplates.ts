@@ -28,7 +28,7 @@ export const COMBO_PRESET_TEMPLATES: ComboPresetTemplate[] = [
       carousel_2:
         'lifestyle scene: the complete bundled set placed on a real home surface in a modern American living room or game-night table, minimal natural props (glass, snack, small plant, linen) that never cover the products, unified soft window light, every member product clearly visible',
       carousel_3:
-        'second lifestyle scene: the complete bundled set used in a different real home setting (sunlit dining table or cozy reading corner), relaxed natural arrangement, realistic adult hands allowed, consistent soft light, every member product clearly recognizable',
+        'second lifestyle scene: the complete bundled set used in a different real home setting (sunlit dining table or cozy reading corner), relaxed natural arrangement, realistic adult hands allowed (Caucasian / Western European, light-to-medium skin tone), consistent soft light, every member product clearly recognizable',
       white_bg:
         'complete bundled set on a clean white background, full product visible, balanced layout, professional studio shot',
       detail_shot: '',

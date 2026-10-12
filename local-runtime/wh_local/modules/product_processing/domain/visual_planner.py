@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from typing import Any
 
@@ -627,8 +628,10 @@ def visual_style_for_family(family: str, traits: dict[str, bool]) -> str:
 def lighting_plan_for_family(family: str) -> str:
     base = str(visual_role_plan(family).get("lighting") or VISUAL_CATEGORY_ROLE_LIBRARY["general_small_goods"]["lighting"])
     return (
-        f"{base}; add directional soft side light, realistic rim highlights, contact shadows, "
-        "soft reflections, material luster, and crisp micro-contrast; avoid flat studio lighting"
+        f"{base}; light like a real commercial set: a large soft key from camera-left at about 45 degrees, "
+        "a fill that lifts the shadow side, and a rim/back light that separates the product from the background, "
+        "directional soft side light, realistic rim highlights, contact shadows, soft reflections, material luster, "
+        "and crisp micro-contrast; keep a legible in-focus background in the same light as the product; avoid flat studio lighting"
     )
 
 
@@ -654,8 +657,10 @@ def background_plan_for_family(family: str, traits: dict[str, bool]) -> str:
     else:
         base = str(visual_role_plan(family).get("background") or VISUAL_CATEGORY_ROLE_LIBRARY["general_small_goods"]["background"])
     return (
-        f"{base}; use premium category-matched surfaces such as walnut wood, micro-cement, linen, "
-        "stone, ceramic, glass reflection, or editorial home props, not a plain white/gray background"
+        f"{base}; build a three-layer scene (a foreground prop near the camera, a midground surface the product sits on, "
+        "and a legible backdrop in the same light) and use premium category-matched surfaces such as walnut wood, "
+        "micro-cement, linen, stone, ceramic, glass reflection, gradient sweep, or editorial home props; "
+        "never a plain white/gray background and never a background crushed to nothing behind the product"
     )
 
 
@@ -665,7 +670,12 @@ def composition_plan_for_family(family: str) -> str:
 
 def scene_plan_for_family(family: str, traits: dict[str, bool]) -> str:
     roles = list(visual_role_plan(family).get("roles") or VISUAL_CATEGORY_ROLE_LIBRARY["general_small_goods"]["roles"])
-    return "; ".join(f"{index} {role}" for index, role in enumerate(roles[:4], start=1)) + "."
+    role_text = "; ".join(f"{index} {role}" for index, role in enumerate(roles[:4], start=1)) + "."
+    return (
+        f"{role_text} Ground every scene in the product's real use: the real occasion, a real location where it is "
+        "used or displayed, the surface it rests on, and 2-4 companion objects that reveal its purpose and scale "
+        "(context only, never implied as included in the purchase)."
+    )
 
 
 def video_shot_plan_for_family(family: str, traits: dict[str, bool]) -> str:
@@ -685,6 +695,44 @@ def detail_plan_for_family(family: str, traits: dict[str, bool], *, trusted_mate
     return detail
 
 
+# 同类目去同质化：同一 visual family 的 SKU 原本会拿到完全相同的背景/风格字符串，
+# 出图彼此高度趋同，容易被 TEMU 聚成「同类」并锚定低价/持平。
+# 这里用「按 SKU 稳定哈希选表面/色调变体」在同 family 内制造确定性差异：
+# 同一 SKU 每次命中同一条（缓存与回执保持稳定），不同 SKU 则各不相同。
+VISUAL_VARIETY_MODIFIERS: tuple[str, ...] = (
+    "distinct surface and palette: warm walnut wood with a cozy amber-toned palette",
+    "distinct surface and palette: cool micro-cement and natural stone with a calm desaturated palette",
+    "distinct surface and palette: dark editorial backdrop with a deep charcoal and emerald palette",
+    "distinct surface and palette: raw linen and handmade ceramics with a warm earthy palette",
+    "distinct surface and palette: glass and brushed metal with a clean cool palette",
+    "distinct surface and palette: sunlit natural wood and greenery with a fresh green palette",
+    "distinct surface and palette: minimal plaster wall with a muted sand palette",
+    "distinct surface and palette: deep velvet drape with a rich jewel-tone palette",
+)
+
+
+def visual_variety_index(raw: dict[str, Any], *, title: str, category_path: str) -> int:
+    seed = " | ".join(
+        str(value or "").strip().lower()
+        for value in (
+            raw.get("title"),
+            raw.get("product_name"),
+            raw.get("source_category_path"),
+            raw.get("source_url"),
+            title,
+            category_path,
+        )
+    )
+    if not seed.strip(" |"):
+        return 0
+    digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()
+    return int(digest, 16) % len(VISUAL_VARIETY_MODIFIERS)
+
+
+def visual_variety_modifier(raw: dict[str, Any], *, title: str, category_path: str) -> str:
+    return VISUAL_VARIETY_MODIFIERS[visual_variety_index(raw, title=title, category_path=category_path)]
+
+
 def visual_prompt_plan(raw: dict[str, Any], *, title: str, category_path: str, category: str, category_match: dict[str, Any], trusted_material: str) -> dict[str, str]:
     text = visual_source_text(raw, title=title, category=category, category_path=category_path)
     family = visual_category_family(category_path, text)
@@ -697,13 +745,14 @@ def visual_prompt_plan(raw: dict[str, Any], *, title: str, category_path: str, c
         category_match=category_match,
         trusted_material=trusted_material,
     )
+    variety = visual_variety_modifier(raw, title=title, category_path=category_path)
     return {
         "product_visual_identity": product_identity,
         "visual_family": family,
         "visual_style": visual_style_for_family(family, traits),
         "lighting_plan": lighting_plan_for_family(family),
         "material_plan": material_plan_for_family(family, traits, trusted_material=trusted_material),
-        "background_plan": background_plan_for_family(family, traits),
+        "background_plan": f"{background_plan_for_family(family, traits)}; {variety}",
         "composition_plan": composition_plan_for_family(family),
         "scene_plan": scene_plan_for_family(family, traits),
         "video_shot_plan": video_shot_plan_for_family(family, traits),

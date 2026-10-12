@@ -12,6 +12,7 @@ import base64
 import hashlib
 import http.client
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -48,6 +49,8 @@ from .grid_layout import (
     locate_split_guides,
 )
 from .rate_limit import global_ai_request_limiter
+
+_LOGGER = logging.getLogger(__name__)
 
 # 模块级连接池：复用 TCP/TLS 握手与 HTTP 连接，避免每个请求新建连接（图片生成/参考图下载高频调用）。
 _SESSION = requests.Session()
@@ -870,8 +873,19 @@ class ProductImageProcessor:
         except Exception as exc:
             raise MediaProcessingError("generated two-image layout cannot be split") from exc
 
-    def normalize_standalone_image(self, media: GeneratedMedia, *, stage: str) -> GeneratedMedia:
-        """Normalize one independently generated product image for carousel use."""
+    def normalize_standalone_image(
+        self,
+        media: GeneratedMedia,
+        *,
+        stage: str,
+        enhance: EnhanceOptions | None = None,
+    ) -> GeneratedMedia:
+        """Normalize one independently generated product image for carousel use.
+
+        ``enhance`` 为显式 opt-in：默认 ``None`` 时**输出与历史逐字节一致**。传入参数时在
+        JPEG 编码之前做清晰化（与 ``split_four_grid`` 共用同一套能力，见
+        wh_local/media_enhance.py），全流程只编一次码。
+        """
         try:
             from PIL import Image  # type: ignore
 
@@ -879,7 +893,14 @@ class ProductImageProcessor:
             if min(source.size) < DXM_IMAGE_TARGET_SIZE:
                 raise ValueError("standalone source is too small for marketplace output")
             square = _center_crop_to_square(source)
-            resized = square.resize((DXM_IMAGE_TARGET_SIZE, DXM_IMAGE_TARGET_SIZE), Image.Resampling.LANCZOS)
+            if enhance is not None and enhance.enabled:
+                # 面板已不小于目标尺寸时 enhance_panel 只做 LANCZOS 缩放 + 轻度 USM；
+                # 只有在确实放大时才跑 ONNX 超分（失败自动回落），放缩放之前会被插值抹掉。
+                resized = enhance_panel(square, DXM_IMAGE_TARGET_SIZE, enhance)
+            else:
+                resized = square.resize(
+                    (DXM_IMAGE_TARGET_SIZE, DXM_IMAGE_TARGET_SIZE), Image.Resampling.LANCZOS
+                )
             return GeneratedMedia(
                 stage=stage,
                 content=_image_to_jpeg_bytes(resized),
@@ -1471,11 +1492,23 @@ class ProductImageProcessor:
             if response is not None:
                 response.close()
         if not isinstance(payload, dict) or not bool(payload.get("ok")):
+            # HTTP 2xx 但 body ok=false：网关在业务层拒绝了请求。原因必须落盘到
+            # runtime.log（此前仅 print 到 stdout，不落盘，线上无法复盘拒绝原因）。
+            detail = str(payload)[:300]
             print(
-                f"[image-gateway-diag] non-ok payload: {str(payload)[:300]}",
+                f"[image-gateway-diag] non-ok payload: {detail}",
                 flush=True,
             )
-            raise MediaProcessingError("server image gateway rejected the request")
+            _LOGGER.warning(
+                "server image gateway rejected the image request (ok=false): %s",
+                detail,
+            )
+            # 归类为可重试的网关错误（gateway_bad_response→server_error）：网关业务拒绝
+            # 多为瞬时/可恢复，应走正常重试预算；避免落到 non_retryable_local 在第一次就中止。
+            raise MediaProcessingError(
+                "server image gateway rejected the request",
+                status_class="gateway_bad_response",
+            )
         result_url = str(payload.get("result_url") or "").strip()
         if not result_url or not is_safe_external_url(result_url):
             raise MediaProcessingError("server image gateway returned no safe image result")

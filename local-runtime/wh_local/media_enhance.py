@@ -85,12 +85,12 @@ class EnhanceOptions:
 def enhance_panel(panel: Image.Image, target_size: int, options: EnhanceOptions) -> Image.Image:
     """把一格面板加工成交付尺寸的成品图。
 
-    - ``onnx`` 且**确实需要放大**（面板比目标尺寸小）时：4× 超分 → 降采样到 ``target_size``
-      → 细结构补偿锐化。
-    - 其余情况（usm 模式 / 面板已不小于目标 / 超分不可用）：LANCZOS 缩放 → USM 锐化。
+    - ``onnx`` 且**面板不超过安全上限**时：4× 超分 → 降采样到 ``target_size``
+      → 细结构补偿锐化（主图与 POD 走同一条链路）。
+    - 其余情况（usm 模式 / 面板超过安全上限 / 超分不可用）：LANCZOS 缩放 → USM 锐化。
     """
 
-    if options.mode == MODE_ONNX and _should_upscale(panel, target_size):
+    if options.mode == MODE_ONNX and _should_upscale(panel):
         upscaled = _upscale(panel)
         if upscaled is not None:
             resized = upscaled.resize((target_size, target_size), Image.Resampling.LANCZOS)
@@ -117,14 +117,15 @@ def _post_sharpen(image: Image.Image, options: EnhanceOptions) -> Image.Image:
     )
 
 
-def _should_upscale(panel: Image.Image, target_size: int) -> bool:
-    """仅在"确实在放大"（面板小于目标）且输入不超过安全上限时才跑超分。
+def _should_upscale(panel: Image.Image) -> bool:
+    """只要输入不超过安全上限就跑超分，与 POD 链路保持一致。
 
-    面板已不小于目标时没有"放大发软"问题，直接降采样更省，也避开 4× 的内存平方增长。
+    主图母图 2048 → 每格约 942（此前因 942 ≥ 800 被跳过，成品只剩轻度 USM），而 POD
+    母图约 1254 → 每格约 577 会走超分。两条链路口径必须一致，故不再以"面板是否小于
+    目标尺寸"作为门槛，只保留内存平方增长的安全上限。
     """
 
-    edge = max(panel.size)
-    return edge < target_size and edge <= MODEL_MAX_INPUT_EDGE
+    return max(panel.size) <= MODEL_MAX_INPUT_EDGE
 
 
 def _upscale(panel: Image.Image) -> Image.Image | None:

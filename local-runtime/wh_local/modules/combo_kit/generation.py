@@ -25,6 +25,7 @@ from ..product_processing.infrastructure.media import (
 from ..product_processing.service import (
     ProductProcessingService,
 )
+from ...media_enhance import options_from_env
 from .contracts import (
     FUSION_MAIN_ROLE,
     GENERATED_API_ROLES,
@@ -183,8 +184,10 @@ def generate_combo_images(
             reference_values=per_role_references.get(role) or reference_values,
             image_size="2048x2048",
         )
-        # 仅做尺寸归一到方图，不做 OCR 文字质检。
-        normalized = processor.normalize_standalone_image(media, stage=role)
+        # 仅做尺寸归一到方图（含轻度清晰化），不做 OCR 文字质检。
+        normalized = processor.normalize_standalone_image(
+            media, stage=role, enhance=options_from_env()
+        )
         return {
             "role": role,
             "label": label,

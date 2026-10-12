@@ -34,6 +34,7 @@ from wh_local.customer.contracts import (
     CustomerBillingProtocolError,
 )
 from wh_local.customer.remote_client import CustomerAuthClient
+from wh_local.media_enhance import options_from_env
 from wh_local.runtime_logs import business_logger
 
 from .batch_billing import (
@@ -902,6 +903,8 @@ class ProductProcessingService:
         "desc",
         "grid_image",
         "grid_image_b",
+        "grid_image_c",
+        "grid_image_d",
         "premium_image",
         "detail_image",
         "variant_values",
@@ -1389,7 +1392,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             reference_values=reference_values,
             image_size="2048x2048",
         )
-        normalized = processor.normalize_standalone_image(media, stage=stage)
+        normalized = processor.normalize_standalone_image(
+            media, stage=stage, enhance=options_from_env()
+        )
         inspection = inspect_visible_text(bytes(getattr(normalized, "content", b"")))
         if inspection is not None and (inspection.get("prominent") or inspection.get("chinese")):
             raise ValueError("组合图未通过文字质检，请调整提示词后重试")
@@ -2659,8 +2664,11 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             s["product_video_template"] = True
         s["skip_duplicates"] = _as_bool(s.get("skip_duplicates"), default=False)
         s["ip_check"] = _as_bool(s.get("ip_check"), default=True)
-        # 生图提示词模板：A=标准商品海报（现有），B=高端模特视觉（防比价）。
-        s["image_template"] = "B" if str(s.get("image_template") or "A").strip().upper() == "B" else "A"
+        # 生图提示词模板：A=影棚无缝主图，B=人景叙事（防比价），C=静物平铺俯拍，D=环境远景。
+        _image_template = str(s.get("image_template") or "A").strip().upper()
+        s["image_template"] = _image_template if _image_template in {"A", "B", "C", "D"} else "A"
+        # 五点描述模板：A=卖点前置（结果导向），B=场景代入（痛点导向）。
+        s["desc_template"] = "B" if str(s.get("desc_template") or "A").strip().upper() == "B" else "A"
         # 兼容未传该字段的历史 API 调用：继续走原有四宫格一次调用。
         s["image_generation_count"] = _image_generation_count(s.get("image_generation_count"), default=4)
         return s
@@ -7386,6 +7394,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             # repository. Switching or editing a template must invalidate a
             # cross-task text result even when every source field is unchanged.
             "active_prompt_additions": self._active_template_prompts(),
+            # A/B description writing style changes the generated bullets, so it
+            # must participate in the cache/receipt fingerprint.
+            "description_template": str(settings.get("desc_template") or "A"),
             # Learned bounds/defaults are part of the dimension result.
             # A changed template must invalidate an older stage receipt/cache.
             "dimension_template_signature": template_signature(dimension_template),
@@ -7498,6 +7509,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                             needs_dimensions=bool(needs_dimensions),
                             known_dimensions=known_dimensions,
                             dimension_template=dimension_template,
+                            description_template=str(settings.get("desc_template") or "A"),
                         )
                     except DoubaoTextError as exc:
                         text_failure = exc
@@ -8191,6 +8203,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         needs_dimensions: bool,
         known_dimensions: dict[str, Any] | None = None,
         dimension_template: dict[str, Any] | None = None,
+        description_template: str = "A",
     ) -> dict[str, Any]:
         """Generate every requested listing-text field in one text-only Doubao stage."""
         variant_values = self._unique_variant_values(raw)
@@ -8218,9 +8231,10 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         ai_notes.append(f"prompt-template:{_addition_key}:translated")
                 elif ai_notes is not None:
                     ai_notes.append(f"prompt-template:{_addition_key}:translate-failed-fallback")
+        description_prompt_key = "desc_b" if str(description_template or "A").strip().upper() == "B" else "desc"
         description_instructions = format_prompt(
             apply_language_contract_to_prompt(
-                DEFAULT_PROMPTS.get("desc", ""),
+                DEFAULT_PROMPTS.get(description_prompt_key, ""),
                 "desc",
                 target_language,
                 target_site,
@@ -8455,11 +8469,13 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         quality_override_used = False
         try:
             processor = self._media_processor()
-            is_b_template = str(image_template).strip().upper() == "B"
+            _template_suffix = {"A": "", "B": "_b", "C": "_c", "D": "_d"}.get(
+                str(image_template).strip().upper(), ""
+            )
             prompt_key = (
-                ("grid_image_b" if is_b_template else "grid_image")
+                ("grid_image" + _template_suffix)
                 if image_generation_count == 4
-                else ("image_set_b" if is_b_template else "image_set")
+                else ("image_set" + _template_suffix)
             )
             template = self._apply_user_image_additions(DEFAULT_PROMPTS.get(prompt_key, ""), prompt_key)
             contracted = apply_language_contract_to_prompt(template, "grid_image", target_language, target_site)
@@ -8480,7 +8496,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
 
             standalone_prompt = prompt
             if image_generation_count == 4:
-                standalone_key = "image_set_b" if is_b_template else "image_set"
+                standalone_key = "image_set" + _template_suffix
                 standalone_template = self._apply_user_image_additions(DEFAULT_PROMPTS.get(standalone_key, ""), standalone_key)
                 standalone_contracted = apply_language_contract_to_prompt(
                     standalone_template,
@@ -8563,7 +8579,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     # Scaffolded square transport is split deterministically at the
                     # exact center. Never redraw the whole 2K image for a local split
                     # concern; only identified bad slots may use the 1K repair path.
-                    split_parts = processor.split_four_grid(media)
+                    split_parts = processor.split_four_grid(media, enhance=options_from_env())
 
                     summary_parts = [
                         part
@@ -8670,6 +8686,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                             normalized = processor.normalize_standalone_image(
                                 replacement,
                                 stage=f"grid_image_{slot}",
+                                enhance=options_from_env(),
                             )
                             if panel_issues(normalized):
                                 raise ValueError(f"replacement slot {slot} still contains visible AI text")
@@ -8750,7 +8767,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 else:
                     def generate_standalone(slot: int, role: str) -> tuple[Any, Any]:
                         media = generate_one(single_prompt(role))
-                        return media, processor.normalize_standalone_image(media, stage=f"grid_image_{slot}")
+                        return media, processor.normalize_standalone_image(
+                            media, stage=f"grid_image_{slot}", enhance=options_from_env()
+                        )
 
                     with ThreadPoolExecutor(max_workers=4) as executor:
                         futures = {
@@ -8780,7 +8799,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     slot_recovery_used = True
                     def regenerate_slot(slot: int, role: str) -> tuple[Any, Any]:
                         media = generate_one(single_prompt(role))
-                        return media, processor.normalize_standalone_image(media, stage=f"grid_image_{slot}")
+                        return media, processor.normalize_standalone_image(
+                            media, stage=f"grid_image_{slot}", enhance=options_from_env()
+                        )
 
                     retry_failures: list[tuple[int, str]] = []
                     with ThreadPoolExecutor(max_workers=min(4, len(failed_slots))) as executor:
@@ -9033,6 +9054,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                             normalized = processor.normalize_standalone_image(
                                 replacement,
                                 stage=f"premium_image_{slot}",
+                                enhance=options_from_env(),
                             )
                             return slot, replacement, normalized
 
@@ -9557,6 +9579,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 model=DOUBAO_TEXT_MODEL_ID,
                 prompt_version=DOUBAO_TEXT_PROMPT_VERSION,
                 description_prompt=self._effective_prompt("desc"),
+                description_prompt_b=self._effective_prompt("desc_b"),
                 combined_prompt=self._effective_prompt("combined_text"),
             )
         elif stage_name == "images":
