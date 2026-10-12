@@ -47,6 +47,10 @@ const CATEGORY_META: Record<string, { label: string; hint: string }> = {
     label: "无引用遗留文件",
     hint: "磁盘上没有记录认领的遗留文件（含任务结果引用的复核原图会保留）",
   },
+  pp_review_images: {
+    label: "历史任务的复核原图",
+    hint: "任务失败时留档的供应商原始图，超过 30 天可清理（删除后任务记录保留，但原图不再可查）",
+  },
 };
 
 function formatBytes(bytes: number): string {
@@ -62,8 +66,9 @@ function formatBytes(bytes: number): string {
  * - 产品处理（媒体库无引用图片、无引用遗留文件）。
  *
  * 两套后端都只清「没有任何记录引用的本地文件」：模板、在用资产、被其它记录
- * 共享的文件、被任务结果引用的复核原图都有完整护栏。**未勾选的分类一步都
- * 不会执行**；重复清理是幂等的。
+ * 共享的文件都有完整护栏。唯一例外是「历史任务的复核原图」分类（默认不勾）：
+ * 它按用户显式勾选清理超 30 天的留档原图，任务记录本身不动。**未勾选的分类
+ * 一步都不会执行**；重复清理是幂等的。
  */
 export function StorageSpacePanel() {
   const [categories, setCategories] = useState<StorageCategoryItem[]>([]);
@@ -188,7 +193,7 @@ export function StorageSpacePanel() {
       } else if (filesRemoved > 0) {
         showToast(`已释放 ${formatBytes(bytesFreed)}，共清理 ${filesRemoved} 个缓存文件`, "success");
       } else {
-        showToast("没有可释放的空间，勾选的项目已经很干净了", "info");
+        showToast("没有可释放的空间；新产生的文件要超过保留期（48 小时）才会进入清理范围", "info");
       }
     } finally {
       busyRef.current = false;
@@ -204,7 +209,10 @@ export function StorageSpacePanel() {
         <span className="iconfont icon-database" aria-hidden="true" />
         <div>
           <h2>存储空间</h2>
-          <small>勾选要清理的项目释放磁盘空间；使用中的图片与模板不会被删除。</small>
+          <small>
+            勾选要清理的项目释放磁盘空间；使用中的图片与模板不会被删除。仅清理超过 48
+            小时的文件（复核原图为 30 天），刚产生的文件会等过了保留期才出现在这里。
+          </small>
         </div>
         <button type="button" onClick={() => void scan()} disabled={busy}>
           {scanning ? "扫描中…" : "重新扫描"}
@@ -245,7 +253,7 @@ export function StorageSpacePanel() {
                       {meta.hint && <span className="storage-category-hint">{meta.hint}</span>}
                     </span>
                     <span className="storage-category-size">
-                      {hasContent ? `${item.files} 个 · ${formatBytes(item.bytes)}` : "已干净"}
+                      {hasContent ? `${item.files} 个 · ${formatBytes(item.bytes)}` : "暂无可清理项"}
                     </span>
                   </label>
                 </li>

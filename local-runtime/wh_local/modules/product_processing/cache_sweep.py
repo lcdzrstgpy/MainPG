@@ -7,6 +7,14 @@
    的 id 提及），且超窗 → 删行；文件确认「全库再无引用」后才删。
 2. ``pp_disk_orphans``（无引用遗留文件）：磁盘 ↔ 数据库反向对账——遍历托管根
    目录，删除「归一化绝对路径不在全库引用集合里、且 mtime 超窗」的文件。
+3. ``pp_review_images``（历史任务的复核原图）：**有意区别于前两类**——这些是
+   任务结果 JSON（``result_json`` / ``output_json`` 的
+   ``provider_original_image_paths``）留档的不合格原图，程序只写不读（界面不
+   展示、没有读回接口），却是任务产出无限增长的大头。本分类**只删超 30 天的
+   文件、不改 JSON 记录**（记录里的路径悬空无害），且只认「复核原图」命名、
+   只认「纯 JSON 留档引用」的文件——凡被 ``*_path`` / ``*_file`` 列引用的一律
+   不碰。单独勾选前两类永远删不到它们（JSON 引用算「有人要」），只有显式勾选
+   本分类才会清理。
 
 引用集合按**命名约定**通用地收集（不写死表名，自动涵盖未来新增的表）：
 - ``*_path`` / ``*_file`` 列：直接取值（PP 的路径列存的都是绝对路径）；
@@ -40,11 +48,21 @@ logger = logging.getLogger(__name__)
 # 「存储空间」里产品处理侧的可勾选分类。
 PP_CACHE_CATEGORY_ASSET_ORPHANS = "pp_asset_orphans"
 PP_CACHE_CATEGORY_DISK_ORPHANS = "pp_disk_orphans"
+PP_CACHE_CATEGORY_REVIEW_IMAGES = "pp_review_images"
 PP_CACHE_ROW_CATEGORIES = (PP_CACHE_CATEGORY_ASSET_ORPHANS,)
-PP_CACHE_CATEGORY_KEYS = PP_CACHE_ROW_CATEGORIES + (PP_CACHE_CATEGORY_DISK_ORPHANS,)
+PP_CACHE_CATEGORY_KEYS = PP_CACHE_ROW_CATEGORIES + (
+    PP_CACHE_CATEGORY_DISK_ORPHANS,
+    PP_CACHE_CATEGORY_REVIEW_IMAGES,
+)
 
 # 反向对账排除的辅助文件：处理期的源图清单（体积可忽略、可再生，保守保留）。
 _DISK_SCAN_SKIP_SUFFIXES = ("_source_images.txt",)
+
+# 复核原图的命名特征（grid_image_provider_original_N.png）；只有这个命名才进
+# 「历史任务的复核原图」分类，避免误伤其它 JSON 留档引用的文件。
+_REVIEW_IMAGE_NAME_MARKER = "provider_original"
+# 复核原图保留期（天）：比通用 48h 窗口宽得多——留够人工复核的时间。
+_REVIEW_IMAGE_RETENTION_DAYS = 30
 
 
 class ProductProcessingCacheSweep:
@@ -121,16 +139,28 @@ class ProductProcessingCacheSweep:
             files, freed_bytes = self._remove_files(orphan_paths)
             per_category[PP_CACHE_CATEGORY_DISK_ORPHANS] = {"files": files, "bytes": freed_bytes}
 
+        if PP_CACHE_CATEGORY_REVIEW_IMAGES in set(selected):
+            # 有意放在 disk_orphans 之后并独立执行：复核原图是「被 JSON 引用」的，
+            # 磁盘对账永远不会碰它们，两分类天然不重叠、不会重复计数。
+            review_paths = self._commit(
+                lambda connection: self._review_image_paths_tx(connection)
+            )
+            files, freed_bytes = self._remove_files(review_paths)
+            per_category[PP_CACHE_CATEGORY_REVIEW_IMAGES] = {"files": files, "bytes": freed_bytes}
+
         total_files = sum(item["files"] for item in per_category.values())
         total_bytes = sum(item["bytes"] for item in per_category.values())
         orphan_files = per_category[PP_CACHE_CATEGORY_DISK_ORPHANS]["files"]
+        review_files = per_category[PP_CACHE_CATEGORY_REVIEW_IMAGES]["files"]
+        row_files = per_category[PP_CACHE_CATEGORY_ASSET_ORPHANS]["files"]
 
         logger.info(
-            "PP manual cache sweep: files=%d bytes=%d reaped_assets=%d orphans=%d window_hours=%d categories=%s",
+            "PP manual cache sweep: files=%d bytes=%d reaped_assets=%d orphans=%d review_images=%d window_hours=%d categories=%s",
             total_files,
             total_bytes,
-            total_files - orphan_files,
+            row_files,
             orphan_files,
+            review_files,
             int(older_than_hours),
             ",".join(selected),
         )
@@ -139,7 +169,7 @@ class ProductProcessingCacheSweep:
             "categories": per_category,
             "files_removed": total_files,
             "bytes_freed": total_bytes,
-            "reaped_assets": total_files - orphan_files,
+            "reaped_assets": row_files,
             "orphan_files_removed": orphan_files,
         }
 
@@ -157,6 +187,10 @@ class ProductProcessingCacheSweep:
                 lambda connection: self._disk_orphan_paths_tx(
                     connection, older_than_hours=older_than_hours
                 )
+            )
+        if key == PP_CACHE_CATEGORY_REVIEW_IMAGES:
+            return self._run_in_rollback(
+                lambda connection: self._review_image_paths_tx(connection)
             )
         raise ProductProcessingValidationError(f"未知的缓存清扫分类: {key}")
 
@@ -189,7 +223,7 @@ class ProductProcessingCacheSweep:
             return []
 
         # JSON 列里的提及同样算引用（防御性：id 或路径字符串出现在任何 JSON 里都不碰）。
-        _references, json_strings = self._collect_reference_data(connection)
+        _references, _column_references, json_strings = self._collect_reference_data(connection)
         target_rows = [
             row
             for row in orphan_rows
@@ -208,13 +242,13 @@ class ProductProcessingCacheSweep:
         )
 
         # 删行后重算全库引用：只有确认没有任何记录（含 JSON）再引用的路径才可删文件。
-        references_after, _strings = self._collect_reference_data(connection)
+        references_after, _columns_after, _strings = self._collect_reference_data(connection)
         return [path for path in candidate_paths if self._normalize(path) not in references_after]
 
     def _disk_orphan_paths_tx(self, connection, *, older_than_hours: int) -> list[str]:
         """磁盘 ↔ 数据库反向对账：返回「无任何引用且超窗」的绝对路径。"""
 
-        references, _strings = self._collect_reference_data(connection)
+        references, _column_references, _strings = self._collect_reference_data(connection)
         threshold = (
             datetime.now(timezone.utc) - timedelta(hours=older_than_hours)
         ).timestamp()
@@ -228,6 +262,37 @@ class ProductProcessingCacheSweep:
                 continue
             orphans.append(str(path))
         return orphans
+
+    def _review_image_paths_tx(self, connection) -> list[str]:
+        """历史任务的复核原图：返回「纯 JSON 留档引用 + 命名匹配 + 超 30 天」的路径。
+
+        三个条件全部满足才收（缺一不删）：
+        1. 命名含 ``provider_original``（复核原图的既定命名，防误伤其它 JSON 引用）；
+        2. **只**被 JSON 提及——凡被 ``*_path`` / ``*_file`` 列引用的说明还有业务
+           字段指着它，不碰；
+        3. mtime 超过 30 天保留期（比通用 48h 窗口宽，留够人工复核时间）。
+
+        只删文件、不改 JSON 记录（记录里的路径悬空无害——程序没有任何读回
+        接口；不动业务数据也符合说明书 §8.5）。
+        """
+
+        references, column_references, _strings = self._collect_reference_data(connection)
+        threshold = (
+            datetime.now(timezone.utc) - timedelta(days=_REVIEW_IMAGE_RETENTION_DAYS)
+        ).timestamp()
+        review_paths: list[str] = []
+        for path, mtime in self.assets.iter_stored_files():
+            if mtime >= threshold:
+                continue
+            if _REVIEW_IMAGE_NAME_MARKER not in path.name:
+                continue
+            normalized = self._normalize(path)
+            if normalized not in references:
+                continue  # 无引用的归 disk_orphans，不归本分类（避免重复计数）
+            if normalized in column_references:
+                continue  # 被业务字段指着 = 在用，绝不删
+            review_paths.append(str(path))
+        return review_paths
 
     # ---- 引用集合（命名约定，通用收集） ----
 
@@ -249,10 +314,18 @@ class ProductProcessingCacheSweep:
                 elif column.endswith("_json"):
                     yield table, column, "json"
 
-    def _collect_reference_data(self, connection) -> tuple[set[str], set[str]]:
-        """返回 (归一化绝对路径集合, JSON 中的全部字符串集合)。"""
+    def _collect_reference_data(
+        self, connection
+    ) -> tuple[set[str], set[str], set[str]]:
+        """返回 (全部归一化路径引用, 仅列引用路径, JSON 中的全部字符串集合)。
+
+        「仅列引用」= ``*_path`` / ``*_file`` 列给出的路径（真被业务字段指着、
+        属于在用数据）；JSON 提及单独算「留档引用」——只挡 ``pp_disk_orphans``,
+        但允许 ``pp_review_images`` 在超期后清理。
+        """
 
         references: set[str] = set()
+        column_references: set[str] = set()
         json_strings: set[str] = set()
         for table, column, kind in self._iter_reference_columns(connection):
             rows = connection.execute(
@@ -267,9 +340,12 @@ class ProductProcessingCacheSweep:
                     normalized = self._normalize(raw)
                     if normalized:
                         references.add(normalized)
+                        column_references.add(normalized)
                         if not os.path.isabs(raw):
                             # 保险绳：万一将来某个列存了相对路径，也按「相对托管根」保护。
-                            references.add(self._normalize(self.assets.root / raw))
+                            fallback = self._normalize(self.assets.root / raw)
+                            references.add(fallback)
+                            column_references.add(fallback)
                 else:
                     try:
                         payload = json.loads(value)
@@ -281,7 +357,7 @@ class ProductProcessingCacheSweep:
                             normalized = self._normalize(item)
                             if normalized:
                                 references.add(normalized)
-        return references, json_strings
+        return references, column_references, json_strings
 
     @classmethod
     def _json_strings(cls, value: Any) -> Iterator[str]:

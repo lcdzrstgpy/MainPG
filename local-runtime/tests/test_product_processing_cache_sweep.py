@@ -21,6 +21,7 @@ from PIL import Image
 from wh_local.modules.product_processing.cache_sweep import (
     PP_CACHE_CATEGORY_ASSET_ORPHANS,
     PP_CACHE_CATEGORY_DISK_ORPHANS,
+    PP_CACHE_CATEGORY_REVIEW_IMAGES,
     ProductProcessingCacheSweep,
 )
 from wh_local.modules.product_processing.infrastructure.assets import ProductProcessingAssets
@@ -267,3 +268,91 @@ def test_sweep_is_idempotent_on_second_run(tmp_path: Path) -> None:
     assert second["bytes_freed"] == 0
     assert second["reaped_assets"] == 0
     assert second["orphan_files_removed"] == 0
+
+
+# ---- 历史任务的复核原图（pp_review_images） ----
+
+
+def _review_image(assets: ProductProcessingAssets, relative: str, age_seconds: float) -> Path:
+    path = _write(assets, relative, _png("#818181"))
+    _age(path, age_seconds)
+    return path
+
+
+def test_review_images_category_cleans_stale_json_only_provider_originals(tmp_path: Path) -> None:
+    """复核原图分类：超 30 天 + 纯 JSON 留档引用 + 复核命名 → 只删文件不改记录。"""
+    database, assets, sweeper = _setup(tmp_path)
+    stale = _review_image(
+        assets, "outputs/task_2/images/draft_3/grid_image_provider_original_1.png", 31 * 86400
+    )
+    _task_item_result_json(database, {"provider_original_image_paths": [str(stale)]})
+
+    preview = sweeper.preview_local_cache(older_than_hours=48)
+    by_key = _category_map(preview)
+    assert by_key[PP_CACHE_CATEGORY_REVIEW_IMAGES]["files"] == 1
+    # JSON 引用挡住 disk_orphans：两分类不重叠、不重复计数
+    assert by_key[PP_CACHE_CATEGORY_DISK_ORPHANS]["files"] == 0
+
+    swept = sweeper.sweep_local_cache(
+        older_than_hours=48, categories=[PP_CACHE_CATEGORY_REVIEW_IMAGES]
+    )
+    assert swept["categories"][PP_CACHE_CATEGORY_REVIEW_IMAGES]["files"] == 1
+    assert not stale.exists()
+    # 只删文件、不改 JSON 记录（记录里的路径悬空无害，业务数据不动）
+    with database.sessions() as session:
+        row = session.query(ProcessingTaskItemRow).one()
+        assert "provider_original_image_paths" in str(row.result_json)
+
+
+def test_review_images_never_touch_column_referenced_or_renamed_or_fresh_files(tmp_path: Path) -> None:
+    """负向对照：列引用的 / 命名不符的 / 未超 30 天的，一个都不删。"""
+    database, assets, sweeper = _setup(tmp_path)
+    draft_id = _draft(database)
+
+    # ① 被 *_path 列（媒体绑定 → 资产行 managed_path）指着的复核命名文件
+    column_referenced = _review_image(
+        assets, "outputs/task_2/images/draft_1/grid_image_provider_original_2.png", 40 * 86400
+    )
+    _insert_media_asset(database, column_referenced)
+    _task_item_result_json(database, {"provider_original_image_paths": [str(column_referenced)]})
+
+    # ② 纯 JSON 引用但命名不符（不是复核原图）
+    other_name = _review_image(assets, "outputs/task_2/images/draft_1/other_keep.png", 40 * 86400)
+    _task_item_result_json(database, {"provider_original_image_paths": [str(other_name)]})
+
+    # ③ 纯 JSON 引用 + 复核命名但没超 30 天
+    fresh = _review_image(
+        assets, "outputs/task_2/images/draft_1/grid_image_provider_original_3.png", 3 * 86400
+    )
+    _task_item_result_json(database, {"provider_original_image_paths": [str(fresh)]})
+
+    swept = sweeper.sweep_local_cache(
+        older_than_hours=48, categories=[PP_CACHE_CATEGORY_REVIEW_IMAGES]
+    )
+    assert swept["categories"][PP_CACHE_CATEGORY_REVIEW_IMAGES]["files"] == 0
+    assert column_referenced.exists(), "被业务字段引用的文件绝不删"
+    assert other_name.exists(), "非复核原图命名的 JSON 留档文件不归本分类"
+    assert fresh.exists(), "30 天保留期内的复核原图不删"
+    _ = draft_id  # 夹具完整性：绑定表存在即可
+
+
+def test_review_images_not_touched_without_explicit_selection(tmp_path: Path) -> None:
+    """不勾选复核原图分类时，即便全量清扫其它分类也绝不碰它（区分好）。"""
+    database, assets, sweeper = _setup(tmp_path)
+    stale = _review_image(
+        assets, "outputs/task_2/images/draft_3/grid_image_provider_original_4.png", 31 * 86400
+    )
+    _task_item_result_json(database, {"provider_original_image_paths": [str(stale)]})
+
+    swept = sweeper.sweep_local_cache(
+        older_than_hours=48,
+        categories=[PP_CACHE_CATEGORY_ASSET_ORPHANS, PP_CACHE_CATEGORY_DISK_ORPHANS],
+    )
+    assert swept["files_removed"] == 0
+    assert stale.exists(), "未勾选 pp_review_images 时复核原图必须存活"
+
+    checked = sweeper.sweep_local_cache(
+        older_than_hours=48, categories=[PP_CACHE_CATEGORY_REVIEW_IMAGES]
+    )
+    assert checked["categories"][PP_CACHE_CATEGORY_REVIEW_IMAGES]["files"] == 1
+    assert not stale.exists()
