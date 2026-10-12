@@ -1091,7 +1091,19 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
         .filter((item) => item.product_draft_id != null)
         .map(collectDesiredState);
       const data = await saveProductPreview(ctx, taskId, items);
-      notify(`已保存 ${data.saved_count ?? items.length} 条商品的预检修改`);
+      // 后端保存时会把「不属于本任务/草稿」的图片引用剔除（dropped_asset_ids）。这种
+      // 情况必须明确提示，否则用户以为已保存成功，到导出时才发现少了几张图。
+      const droppedCount = (data.items ?? []).reduce(
+        (total, item) => total + (item.dropped_asset_ids?.length ?? 0),
+        0,
+      );
+      if (droppedCount > 0) {
+        notify(
+          `已保存 ${data.saved_count ?? items.length} 条商品的预检修改；其中 ${droppedCount} 张图片的引用已失效（不属于本单），已自动移除，请重新选择这几张图片`,
+        );
+      } else {
+        notify(`已保存 ${data.saved_count ?? items.length} 条商品的预检修改`);
+      }
       await load();
     } catch (err) {
       fail(err);

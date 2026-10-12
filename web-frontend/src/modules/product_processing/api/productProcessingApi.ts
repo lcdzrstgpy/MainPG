@@ -88,7 +88,12 @@ export type PreviewSavePayload = {
 
 export type PreviewSaveResponse = {
   saved_count: number;
-  items: Array<{ product_draft_id: number; preview_revision: number }>;
+  items: Array<{
+    product_draft_id: number;
+    preview_revision: number;
+    /** 保存时被后端剔除的失效引用（不属于本任务/草稿的图片），供界面提示用户重选。 */
+    dropped_asset_ids?: string[];
+  }>;
 };
 
 export type ListingAdvice = {
