@@ -34,6 +34,19 @@ test("更新日志：加载中 / 失败降级 / 空列表都有文案，失败�
   assert.match(panel, /暂无更新日志。/);
 });
 
+test("更新日志默认收起：点「更新日志」标题才展开内容，进页面不直接摊开", () => {
+  assert.match(panel, /const \[changelogOpen, setChangelogOpen\] = useState\(false\)/);
+  assert.match(panel, /aria-expanded=\{changelogOpen\}/);
+  assert.match(panel, /onClick=\{\(\) => setChangelogOpen\(\(value\) => !value\)\}/);
+  // 内容整体只在展开时渲染
+  assert.match(panel, /\{changelogOpen && \(/);
+  // 标题行可点 + 版本数提示 + 箭头
+  assert.match(panel, /className="version-changelog-head"/);
+  assert.match(panel, /version-changelog-count/);
+  assert.match(styles, /\.version-changelog-head \{/);
+  assert.match(styles, /\.version-changelog-chevron/);
+});
+
 test("更新日志：日期按北京时间（Asia/Shanghai）格式化，行级拆分保留逐条展示", () => {
   assert.match(panel, /timeZone: "Asia\/Shanghai"/);
   assert.match(panel, /function releaseNoteLines\(notes: string\)/);

@@ -122,6 +122,7 @@ export function SystemVersionPanel() {
   const [busy, setBusy] = useState(false);
   const [changelog, setChangelog] = useState<ChangelogSnapshot | null>(null);
   const [changelogExpanded, setChangelogExpanded] = useState(false);
+  const [changelogOpen, setChangelogOpen] = useState(false);
   const busyRef = useRef(false);
 
   useEffect(() => {
@@ -277,50 +278,63 @@ export function SystemVersionPanel() {
       </div>
 
       <div className="version-changelog">
-        <h3>更新日志</h3>
-        {changelog === null ? (
-          <p className="version-changelog-status">正在加载更新日志…</p>
-        ) : changelog.releases.length === 0 ? (
-          <p className="version-changelog-status">
-            {changelog.error ? "更新日志暂时无法获取，请稍后重试。" : "暂无更新日志。"}
-          </p>
-        ) : (
-          <>
-            <ol className="version-changelog-list">
-              {(changelogExpanded
-                ? changelog.releases
-                : changelog.releases.slice(0, CHANGELOG_PREVIEW_COUNT)
-              ).map((item) => (
-                <li className="version-changelog-entry" key={item.version}>
-                  <div className="version-changelog-entry-head">
-                    <span className="version-changelog-version">v{item.version}</span>
-                    {item.version === view.currentVersion && (
-                      <span className="version-changelog-current">当前版本</span>
+        <button
+          type="button"
+          className="version-changelog-head"
+          aria-expanded={changelogOpen}
+          onClick={() => setChangelogOpen((value) => !value)}
+        >
+          <span className={`version-changelog-chevron${changelogOpen ? " is-open" : ""}`} aria-hidden="true" />
+          <h3>更新日志</h3>
+          {changelog !== null && changelog.releases.length > 0 && (
+            <span className="version-changelog-count">共 {changelog.releases.length} 个版本</span>
+          )}
+        </button>
+        {changelogOpen && (
+          changelog === null ? (
+            <p className="version-changelog-status">正在加载更新日志…</p>
+          ) : changelog.releases.length === 0 ? (
+            <p className="version-changelog-status">
+              {changelog.error ? "更新日志暂时无法获取，请稍后重试。" : "暂无更新日志。"}
+            </p>
+          ) : (
+            <>
+              <ol className="version-changelog-list">
+                {(changelogExpanded
+                  ? changelog.releases
+                  : changelog.releases.slice(0, CHANGELOG_PREVIEW_COUNT)
+                ).map((item) => (
+                  <li className="version-changelog-entry" key={item.version}>
+                    <div className="version-changelog-entry-head">
+                      <span className="version-changelog-version">v{item.version}</span>
+                      {item.version === view.currentVersion && (
+                        <span className="version-changelog-current">当前版本</span>
+                      )}
+                      <span className="version-changelog-date">{formatReleaseDate(item.published_at)}</span>
+                    </div>
+                    {releaseNoteLines(item.release_notes).length > 0 ? (
+                      <ul className="version-changelog-notes">
+                        {releaseNoteLines(item.release_notes).map((line, index) => (
+                          <li key={`${index}-${line}`}>{line}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="version-changelog-empty">本次更新未填写说明</p>
                     )}
-                    <span className="version-changelog-date">{formatReleaseDate(item.published_at)}</span>
-                  </div>
-                  {releaseNoteLines(item.release_notes).length > 0 ? (
-                    <ul className="version-changelog-notes">
-                      {releaseNoteLines(item.release_notes).map((line, index) => (
-                        <li key={`${index}-${line}`}>{line}</li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="version-changelog-empty">本次更新未填写说明</p>
-                  )}
-                </li>
-              ))}
-            </ol>
-            {changelog.releases.length > CHANGELOG_PREVIEW_COUNT && (
-              <button
-                type="button"
-                className="version-changelog-toggle"
-                onClick={() => setChangelogExpanded((value) => !value)}
-              >
-                {changelogExpanded ? "收起" : `展开全部（共 ${changelog.releases.length} 个版本）`}
-              </button>
-            )}
-          </>
+                  </li>
+                ))}
+              </ol>
+              {changelog.releases.length > CHANGELOG_PREVIEW_COUNT && (
+                <button
+                  type="button"
+                  className="version-changelog-toggle"
+                  onClick={() => setChangelogExpanded((value) => !value)}
+                >
+                  {changelogExpanded ? "收起" : `展开全部（共 ${changelog.releases.length} 个版本）`}
+                </button>
+              )}
+            </>
+          )
         )}
       </div>
     </article>

@@ -2312,11 +2312,49 @@
   border-top: 1px dashed var(--theme-module-border, #dbe5ef);
 }
 
-.version-changelog > h3 {
+.version-changelog-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
   margin: 0 0 10px;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+}
+
+.version-changelog-head > h3 {
+  margin: 0;
   color: var(--theme-text-muted, #64748b);
   font-size: 12px;
   font-weight: 700;
+}
+
+.version-changelog-head:hover > h3 {
+  color: var(--theme-primary, #0877d3);
+}
+
+.version-changelog-chevron {
+  flex: none;
+  width: 0;
+  height: 0;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-left: 6px solid currentColor;
+  color: var(--theme-text-muted, #8295aa);
+  transition: transform 0.15s ease;
+}
+
+.version-changelog-chevron.is-open {
+  transform: rotate(90deg);
+}
+
+.version-changelog-count {
+  margin-left: auto;
+  color: var(--theme-text-muted, #8295aa);
+  font-size: 12px;
 }
 
 .version-changelog-status {
