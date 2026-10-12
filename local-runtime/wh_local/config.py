@@ -21,6 +21,9 @@ UPDATE_MANIFEST_URL = f"https://{UPDATE_RELEASE_HOST}/mainpg/windows/manifest.js
 # Incremental patch manifest: describes from_version -> to_version file diff.
 # Signed with the same Ed25519 key; verified by PatchManager before download.
 UPDATE_PATCH_MANIFEST_URL = f"https://{UPDATE_RELEASE_HOST}/mainpg/windows/patch-manifest.json"
+# Display-only release changelog, written by the release backend into the same
+# static directory as the manifests (unsigned; never used for update decisions).
+UPDATE_CHANGELOG_URL = f"https://{UPDATE_RELEASE_HOST}/mainpg/windows/changelog.json"
 UPDATE_MANIFEST_ALLOWED_HOSTS = frozenset({UPDATE_RELEASE_HOST})
 # Public verification key only. The matching private key belongs in the release
 # signing system and must never be distributed with the application.

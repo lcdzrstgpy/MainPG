@@ -5,11 +5,13 @@ import base64
 import binascii
 import hashlib
 import json
+import logging
 import os
 import re
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from functools import total_ordering
@@ -21,6 +23,9 @@ from urllib.request import urlopen
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from fastapi import APIRouter, HTTPException, Request
+
+
+logger = logging.getLogger(__name__)
 
 
 MANIFEST_FIELDS = (
@@ -983,3 +988,160 @@ def _same_origin_guard(request: Request) -> None:
     supplied_origin = _normalized_origin(origin)
     if supplied_origin is None or supplied_origin != local_origin:
         raise HTTPException(status_code=403, detail="Cross-origin update actions are not allowed.")
+
+
+# ---------------------------------------------------------------------------
+# Release changelog (display-only).
+#
+# 「系统版本 → 更新日志」展示的历史版本更新说明。发布后台把全部已发布版本写成
+# 官网静态目录下的 changelog.json（未签名、非安全关键）；这里抓取、校验并做
+# 短缓存，界面永远不直连外网。抓取失败时保留上一次成功的数据，由界面按
+# “暂时无法获取”降级展示。
+# ---------------------------------------------------------------------------
+
+CHANGELOG_CONTRACT_VERSION = "mainpg-changelog-v1"
+_CHANGELOG_MAX_RELEASES = 200
+_CHANGELOG_MAX_NOTES_CHARS = 20_000
+_CHANGELOG_MAX_FIELD_CHARS = 64
+_CHANGELOG_CACHE_SECONDS = 600.0
+_CHANGELOG_RETRY_SECONDS = 60.0
+
+
+class ChangelogValidationError(ValueError):
+    """changelog.json 不符合约定的契约格式。"""
+
+
+@dataclass(frozen=True)
+class ChangelogSettings:
+    changelog_url: str
+    allowed_hosts: frozenset[str]
+
+
+@dataclass(frozen=True)
+class ChangelogRelease:
+    version: str
+    published_at: str
+    release_notes: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "version": self.version,
+            "published_at": self.published_at,
+            "release_notes": self.release_notes,
+        }
+
+
+class ChangelogManager:
+    """抓取并缓存发布后台生成的 changelog.json（展示用，不做签名校验）。"""
+
+    def __init__(
+        self,
+        settings: ChangelogSettings,
+        fetcher: Callable[[str], Mapping[str, object] | str | bytes] | None = None,
+        clock: Callable[[], float] = time.monotonic,
+        cache_seconds: float = _CHANGELOG_CACHE_SECONDS,
+        retry_seconds: float = _CHANGELOG_RETRY_SECONDS,
+    ) -> None:
+        self.settings = settings
+        self._validate_allowed_url(settings.changelog_url)
+        self._fetcher = fetcher or self._fetch
+        self._clock = clock
+        self._cache_seconds = cache_seconds
+        self._retry_seconds = retry_seconds
+        self._lock = threading.Lock()
+        self._releases: list[ChangelogRelease] | None = None
+        self._error: str | None = None
+        self._refresh_at: float = 0.0
+
+    def snapshot(self) -> dict[str, object]:
+        """界面读取入口：返回版本列表（必要时先刷新，失败时回退缓存）。"""
+        with self._lock:
+            if self._clock() >= self._refresh_at:
+                self._refresh()
+            return {
+                "releases": [item.as_dict() for item in self._releases or []],
+                "error": self._error,
+            }
+
+    def _refresh(self) -> None:
+        try:
+            releases = self._parse(self._fetcher(self.settings.changelog_url))
+        except Exception as error:  # noqa: BLE001 - 展示功能任何失败都只降级，不冒泡
+            self._error = "更新日志暂时无法获取。"
+            self._refresh_at = self._clock() + self._retry_seconds
+            logger.warning("changelog refresh failed: %s", error)
+            return
+        self._releases = releases
+        self._error = None
+        self._refresh_at = self._clock() + self._cache_seconds
+
+    def _validate_allowed_url(self, value: str) -> None:
+        parsed = urlparse(value)
+        host = (parsed.hostname or "").lower()
+        if (
+            parsed.scheme != "https"
+            or not host
+            or host not in {item.lower() for item in self.settings.allowed_hosts}
+            or parsed.username
+            or parsed.password
+        ):
+            raise ChangelogValidationError("Changelog URL must use an allowlisted HTTPS host.")
+
+    def _fetch(self, url: str) -> bytes:
+        with urlopen(url, timeout=10) as response:  # nosec B310: URL is allowlisted before use
+            final_url = getattr(response, "geturl", None)
+            if callable(final_url):
+                self._validate_allowed_url(final_url())
+            return response.read()
+
+    @staticmethod
+    def _coerce_payload(value: Mapping[str, object] | str | bytes) -> Mapping[str, object]:
+        if isinstance(value, Mapping):
+            return value
+        try:
+            decoded = json.loads(value)
+        except (TypeError, ValueError) as error:
+            raise ChangelogValidationError("changelog is not valid JSON.") from error
+        if not isinstance(decoded, Mapping):
+            raise ChangelogValidationError("changelog must be an object.")
+        return decoded
+
+    @classmethod
+    def _parse(cls, payload: Mapping[str, object] | str | bytes) -> list[ChangelogRelease]:
+        data = cls._coerce_payload(payload)
+        if data.get("contract_version") != CHANGELOG_CONTRACT_VERSION:
+            raise ChangelogValidationError("unsupported changelog contract version.")
+        raw_items = data.get("releases")
+        if not isinstance(raw_items, list):
+            raise ChangelogValidationError("changelog releases must be a list.")
+        releases: list[ChangelogRelease] = []
+        for item in raw_items[:_CHANGELOG_MAX_RELEASES]:
+            if not isinstance(item, Mapping):
+                continue
+            version = item.get("version")
+            published_at = item.get("published_at")
+            notes = item.get("release_notes")
+            if not isinstance(version, str) or not version.strip() or len(version) > _CHANGELOG_MAX_FIELD_CHARS:
+                continue
+            if not isinstance(published_at, str) or len(published_at) > _CHANGELOG_MAX_FIELD_CHARS:
+                continue
+            if not isinstance(notes, str) or len(notes) > _CHANGELOG_MAX_NOTES_CHARS:
+                continue
+            releases.append(
+                ChangelogRelease(
+                    version=version.strip(),
+                    published_at=published_at.strip(),
+                    release_notes=notes,
+                )
+            )
+        return releases
+
+
+def create_changelog_router(manager: ChangelogManager) -> APIRouter:
+    router = APIRouter(prefix="/api/app-update", tags=["app-update"])
+
+    @router.get("/changelog")
+    def changelog_snapshot() -> dict[str, object]:
+        return manager.snapshot()
+
+    return router

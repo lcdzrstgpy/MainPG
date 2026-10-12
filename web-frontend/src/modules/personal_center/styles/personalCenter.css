@@ -2305,6 +2305,99 @@
   word-break: break-all;
 }
 
+/* 更新日志：历史版本更新说明列表（来源：发布后台 changelog.json） */
+.version-changelog {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--theme-module-border, #dbe5ef);
+}
+
+.version-changelog > h3 {
+  margin: 0 0 10px;
+  color: var(--theme-text-muted, #64748b);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.version-changelog-status {
+  margin: 0;
+  color: var(--theme-text-muted, #8295aa);
+  font-size: 12px;
+}
+
+.version-changelog-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.version-changelog-entry {
+  padding: 10px 12px;
+  border: 1px solid var(--theme-module-border, #dbe5ef);
+  border-radius: 10px;
+  background: var(--theme-module-surface-raised, rgba(255, 255, 255, 0.78));
+}
+
+.version-changelog-entry-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.version-changelog-version {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--theme-primary-light, #e7f6ff);
+  color: var(--theme-primary, #0877d3);
+  font-size: 12px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.version-changelog-current {
+  padding: 1px 7px;
+  border: 1px solid var(--theme-primary, #0877d3);
+  border-radius: 999px;
+  color: var(--theme-primary, #0877d3);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.version-changelog-date {
+  margin-left: auto;
+  color: var(--theme-text-muted, #8295aa);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.version-changelog-notes {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  line-height: 1.6;
+  color: var(--theme-text-secondary, #334155);
+  font-size: 13px;
+}
+
+.version-changelog-empty {
+  margin: 6px 0 0;
+  color: var(--theme-text-muted, #8295aa);
+  font-size: 12px;
+}
+
+.version-changelog-toggle {
+  margin-top: 10px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--theme-primary, #0877d3);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
 @media (max-width: 480px) {
   .version-fields {
     grid-template-columns: 1fr;

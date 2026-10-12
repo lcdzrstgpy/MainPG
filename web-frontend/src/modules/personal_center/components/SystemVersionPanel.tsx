@@ -5,6 +5,7 @@ import {
   preserveVerifiedRelease,
   shouldPollUpdateStatus,
   type AppUpdateStatus,
+  type ChangelogSnapshot,
   type PatchStatus,
 } from "../../app_update/updateState";
 
@@ -88,11 +89,39 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "更新请求失败，请稍后重试。";
 }
 
+const CHANGELOG_PREVIEW_COUNT = 3;
+
+function formatReleaseDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  try {
+    return new Intl.DateTimeFormat("zh-CN", {
+      timeZone: "Asia/Shanghai",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    })
+      .format(date)
+      .replace(/\//g, "-");
+  } catch {
+    return value;
+  }
+}
+
+function releaseNoteLines(notes: string) {
+  return notes
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
 export function SystemVersionPanel() {
   const [status, setStatus] = useState<AppUpdateStatus | null>(null);
   const [patch, setPatch] = useState<PatchStatus | null>(null);
   const [pollGeneration, setPollGeneration] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [changelog, setChangelog] = useState<ChangelogSnapshot | null>(null);
+  const [changelogExpanded, setChangelogExpanded] = useState(false);
   const busyRef = useRef(false);
 
   useEffect(() => {
@@ -129,6 +158,21 @@ export function SystemVersionPanel() {
     return () => {
       cancelled = true;
       if (timer !== null) clearTimeout(timer);
+    };
+  }, [pollGeneration]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void appUpdateApi
+      .changelog()
+      .then((next) => {
+        if (!cancelled) setChangelog(next);
+      })
+      .catch(() => {
+        if (!cancelled) setChangelog({ releases: [], error: "更新日志暂时无法获取。" });
+      });
+    return () => {
+      cancelled = true;
     };
   }, [pollGeneration]);
 
@@ -229,6 +273,54 @@ export function SystemVersionPanel() {
           <button type="button" onClick={() => void install()} disabled={busy}>立即更新</button>
         ) : (
           <button type="button" onClick={() => void check()} disabled={busy || inProgress}>{view.phase === "idle" ? "检查更新" : "刷新"}</button>
+        )}
+      </div>
+
+      <div className="version-changelog">
+        <h3>更新日志</h3>
+        {changelog === null ? (
+          <p className="version-changelog-status">正在加载更新日志…</p>
+        ) : changelog.releases.length === 0 ? (
+          <p className="version-changelog-status">
+            {changelog.error ? "更新日志暂时无法获取，请稍后重试。" : "暂无更新日志。"}
+          </p>
+        ) : (
+          <>
+            <ol className="version-changelog-list">
+              {(changelogExpanded
+                ? changelog.releases
+                : changelog.releases.slice(0, CHANGELOG_PREVIEW_COUNT)
+              ).map((item) => (
+                <li className="version-changelog-entry" key={item.version}>
+                  <div className="version-changelog-entry-head">
+                    <span className="version-changelog-version">v{item.version}</span>
+                    {item.version === view.currentVersion && (
+                      <span className="version-changelog-current">当前版本</span>
+                    )}
+                    <span className="version-changelog-date">{formatReleaseDate(item.published_at)}</span>
+                  </div>
+                  {releaseNoteLines(item.release_notes).length > 0 ? (
+                    <ul className="version-changelog-notes">
+                      {releaseNoteLines(item.release_notes).map((line, index) => (
+                        <li key={`${index}-${line}`}>{line}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="version-changelog-empty">本次更新未填写说明</p>
+                  )}
+                </li>
+              ))}
+            </ol>
+            {changelog.releases.length > CHANGELOG_PREVIEW_COUNT && (
+              <button
+                type="button"
+                className="version-changelog-toggle"
+                onClick={() => setChangelogExpanded((value) => !value)}
+              >
+                {changelogExpanded ? "收起" : `展开全部（共 ${changelog.releases.length} 个版本）`}
+              </button>
+            )}
+          </>
         )}
       </div>
     </article>

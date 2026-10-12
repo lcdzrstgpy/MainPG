@@ -7,6 +7,18 @@ export type AppUpdateRelease = {
   published_at: string;
 };
 
+/** 「更新日志」：发布后台维护的历史版本更新说明（changelog.json）。 */
+export type ChangelogRelease = {
+  version: string;
+  published_at: string;
+  release_notes: string;
+};
+
+export type ChangelogSnapshot = {
+  releases: ChangelogRelease[];
+  error: string | null;
+};
+
 export type AppUpdateProgress = {
   downloaded_bytes: number;
   total_bytes: number | null;
