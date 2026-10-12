@@ -8,6 +8,7 @@ from ...customer.contracts import CustomerBillingPermissionError
 from ...session import Actor
 from .billing_contract import (
     POD_BILLING_PROFILE_SEMI,
+    SEMI_STYLES_PER_GROUP,
     PodBillingCoordinator,
     PodCallOutcome,
     PodCallPlan,
@@ -29,7 +30,8 @@ class RemotePodBillingCoordinator(PodBillingCoordinator):
     def freeze(self, actor: Actor, plan: PodCallPlan) -> PodExecutionGrant:
         remote_token = self._required_remote_token(actor)
         payload = plan.product_batch_freeze_payload()
-        # 半定制走独立计费接口（固定 32/组），全定制/商品处理走通用 batch 接口。
+        # 半定制走独立计费接口（默认 32/组，实际单价由服务端倍率配置决定），
+        # 全定制/商品处理走通用 batch 接口。
         if plan.semi_item_count:
             response = self._remote_client.freeze_pod_semi_points(remote_token, payload)
         else:
@@ -80,6 +82,8 @@ class RemotePodBillingCoordinator(PodBillingCoordinator):
         }
         # 重新冻结也按画像分流：半定制走独立接口，避免被通用接口重新按全定制单价计价。
         if billing_profile == POD_BILLING_PROFILE_SEMI:
+            # 与初始冻结同口径：补款数（组数 × 4），供服务端校验 link_count/item_count。
+            payload["item_count"] = link_count * SEMI_STYLES_PER_GROUP
             response = self._remote_client.freeze_pod_semi_points(remote_token, payload)
         else:
             response = self._remote_client.freeze_batch_points(remote_token, payload)

@@ -249,7 +249,12 @@ class CustomerAuthClient:
         )
 
     def freeze_pod_semi_points(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
-        """Freeze points for a POD semi-customization batch (4 items = 1 link = fixed 32 points)."""
+        """Freeze points for a POD semi-customization batch (4 items = 1 link).
+
+        The per-group unit price defaults to 32 points but is driven by the
+        server multiplier config; the freeze response's ``link_prices`` /
+        ``frozen_points`` are the authoritative amounts.
+        """
         return self._billing_post("/api/customer/billing/pod-semi/freeze", remote_token, payload)
 
     def settle_pod_semi_points(self, remote_token: str, freeze_id: str, payload: dict[str, Any]) -> dict[str, Any]:
