@@ -10,6 +10,7 @@ import secrets
 import sqlite3
 from typing import Any
 
+from ..billing import _activate_plan, _ensure_wallet, grant_points_to_wallet
 from ..db import transaction
 from ..runtime_logs import business_logger
 from .contracts import CustomerAuthActionResult, CustomerAuthResult, CustomerAuthUnavailable
@@ -378,6 +379,28 @@ class SQLiteCustomerAuthService:
                     """,
                     (invitation_code, account_id, username, email, now),
                 )
+                # 邀请码携带的发放积分：一次性进该账号永久充值池（幂等：按账号+码）。
+                granted_points = int(row["grant_points"] or 0)
+                grant_plan_type = str(row["grant_plan_type"] or "")
+                if granted_points > 0:
+                    grant_points_to_wallet(
+                        conn,
+                        account_id=account_id,
+                        workspace_id=workspace_id,
+                        points=granted_points,
+                        source_type="invitation_register",
+                        source_id=invitation_code,
+                        idempotency_key=f"invitation_grant:{account_id}:{invitation_code}",
+                        metadata={
+                            "code": invitation_code,
+                            "channel": "register",
+                            "plan_type": grant_plan_type,
+                        },
+                    )
+                if grant_plan_type:
+                    # 企业版邀请码：注册账号同时获得同等企业版权益（4 周每周可领 1000）。
+                    _ensure_wallet(conn, account_id, workspace_id)
+                    _activate_plan(conn, account_id, now, plan_type=grant_plan_type)
                 conn.execute(
                     "UPDATE auth_email_verifications SET used_at = ? WHERE verification_id = ? AND used_at = ''",
                     (now, verification_id),
