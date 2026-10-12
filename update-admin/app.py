@@ -39,6 +39,10 @@ MANIFEST_FIELDS = (
     "release_notes",
     "published_at",
 )
+# 客户端「系统版本 → 更新日志」的展示用文件（未签名、纯展示内容）。
+CHANGELOG_CONTRACT_VERSION = "mainpg-changelog-v1"
+CHANGELOG_FILE_NAME = "changelog.json"
+CHANGELOG_MAX_RELEASES = 100
 PATCH_CONTRACT_VERSION = "wh-patch-manifest-v1"
 PATCH_MANIFEST_FIELDS = (
     "contract_version",
@@ -382,6 +386,10 @@ class PublishJobProgressBody(BaseModel):
 class LauncherGoldenUploadBody(BaseModel):
     version: str = Field(min_length=1, max_length=64)
     payload: dict[str, Any]
+
+
+class ReleaseNotesBody(BaseModel):
+    release_notes: str = ""
 
 
 class LauncherReportBody(BaseModel):
@@ -1040,6 +1048,88 @@ class UpdateAdminService:
                 """,
                 (status, from_version, file_count, total_bytes, error[:1000], version),
             )
+
+    def update_release_notes(
+        self,
+        version: str,
+        release_notes: str,
+        actor: str,
+        ip_address: str = "",
+    ) -> dict[str, Any]:
+        """编辑一个已发布版本的更新说明（客户端「更新日志」的来源）。"""
+        with self.db.connect() as connection:
+            row = connection.execute(
+                "SELECT version FROM releases WHERE version = ? LIMIT 1",
+                (version,),
+            ).fetchone()
+            if row is None:
+                raise api_error(404, "release_not_found", f"版本 {version} 不存在，无法编辑更新说明")
+            connection.execute(
+                "UPDATE releases SET release_notes = ? WHERE version = ?",
+                (release_notes, version),
+            )
+        self.db.audit(
+            actor,
+            "release_notes_updated",
+            target=version,
+            ip_address=ip_address,
+            details={"length": len(release_notes)},
+        )
+        return self.get_release(version) or {}
+
+    def rebuild_changelog(self) -> int:
+        """把全部已发布版本写成 publish_dir/changelog.json（客户端更新日志读取）。
+
+        展示用文件、未签名；发布成功、编辑说明、服务启动时都会重建。写入失败
+        由调用方兜底（记日志、不阻塞发布与编辑主流程）。
+        """
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT version, release_notes, published_at FROM releases
+                WHERE status = 'published'
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (CHANGELOG_MAX_RELEASES,),
+            ).fetchall()
+        payload = {
+            "contract_version": CHANGELOG_CONTRACT_VERSION,
+            "generated_at": iso_utc(),
+            "releases": [
+                {
+                    "version": row["version"],
+                    "published_at": row["published_at"],
+                    "release_notes": row["release_notes"],
+                }
+                for row in rows
+            ],
+        }
+        atomic_write_json(self.settings.publish_dir / CHANGELOG_FILE_NAME, payload)
+        return len(rows)
+
+    def resync_live_manifest_notes(self, version: str, release_notes: str) -> bool:
+        """编辑的版本恰是线上清单那个版本时，同步改写并重新签名清单。
+
+        客户端「发现新版本」提示里的更新说明取自签名清单；说明改了必须一起更新，
+        更新提示与更新日志两个界面才不会各说各话。返回是否改写了清单；版本对
+        不上、清单缺失或说明未变化时返回 False。
+        """
+        manifest_path = self.settings.publish_dir / "manifest.json"
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        if not isinstance(manifest, dict) or manifest.get("version") != version:
+            return False
+        if manifest.get("release_notes") == release_notes:
+            return False
+        manifest["release_notes"] = release_notes
+        signing_key = load_signing_key(self.settings)
+        signature = signing_key.sign(canonical_manifest_bytes(manifest))
+        manifest["signature"] = base64.b64encode(signature).decode("ascii")
+        atomic_write_json(manifest_path, manifest)
+        return True
 
     @staticmethod
     def _publish_job_payload(row: sqlite3.Row) -> dict[str, Any]:
@@ -1712,6 +1802,10 @@ def verify_authenticode(path: Path, settings: Settings) -> dict[str, str]:
                 check=False,
                 capture_output=True,
                 text=True,
+                # 中文 Windows 的 PowerShell 输出是 GBK；宿主 Python 若是 UTF-8
+                # 环境，严格解码会让读取线程崩溃。该输出只用于记录签名状态，
+                # 用 replace 兜底解码，避免整条发布流程被编码问题打断。
+                errors="replace",
                 timeout=60,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
@@ -1976,6 +2070,12 @@ def create_app(
     validate_evsign_settings(resolved)
     hasher = password_hasher or PasswordHasher(time_cost=3, memory_cost=65536, parallelism=4)
     service = UpdateAdminService(resolved, hasher)
+    # 启动时重建展示用 changelog.json：为历史版本一次性回填，也修复任何原因
+    # 造成的缺失。展示文件绝不阻塞服务启动，失败只记日志。
+    try:
+        service.rebuild_changelog()
+    except Exception:
+        LOGGER.exception("startup changelog rebuild failed")
     app = FastAPI(title="MainPG 更新发布后台", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.update_admin = service
 
@@ -2132,6 +2232,49 @@ def create_app(
             "published": bool(release and release["status"] == "published"),
             "release": release,
             "username": principal.username,
+        }
+
+    @app.post("/api/releases/{version}/notes")
+    async def update_release_notes(
+        version: str,
+        body: ReleaseNotesBody,
+        request: Request,
+        principal: AdminPrincipal = Depends(ready_admin),
+    ) -> dict[str, Any]:
+        ensure_same_origin(request)
+        try:
+            semantic_version = SemVer.parse(version)
+        except ValueError as exc:
+            raise api_error(422, "invalid_version", str(exc)) from exc
+        notes = body.release_notes.strip()
+        if len(notes) > 10_000:
+            raise api_error(422, "release_notes_too_long", "更新说明不能超过 10000 个字符")
+        # 与发布互斥：避免与发布流程并发写 manifest.json / changelog.json。
+        async with service.publish_lock:
+            release = await run_in_threadpool(
+                service.update_release_notes,
+                semantic_version.raw,
+                notes,
+                principal.username,
+                resolve_client_ip(request),
+            )
+            changelog_synced = True
+            try:
+                await run_in_threadpool(service.rebuild_changelog)
+            except Exception:
+                changelog_synced = False
+                LOGGER.exception("release notes updated but changelog rebuild failed")
+            manifest_synced = False
+            try:
+                manifest_synced = await run_in_threadpool(
+                    service.resync_live_manifest_notes, semantic_version.raw, notes
+                )
+            except Exception:
+                LOGGER.exception("release notes updated but live manifest resync failed")
+        return {
+            "release": release,
+            "changelog_synced": changelog_synced,
+            "manifest_synced": manifest_synced,
         }
 
     @app.get("/api/plugin-releases")
@@ -2480,6 +2623,10 @@ def create_app(
                 # manifest.json 最后替换；客户端只会看到完整的新清单。
                 atomic_write_json(resolved.publish_dir / "manifest.json", manifest)
                 manifest_published = True
+                try:
+                    await run_in_threadpool(service.rebuild_changelog)
+                except Exception:
+                    LOGGER.exception("release published but changelog rebuild failed")
 
                 if patch_manifest is not None and patch_work_dir is not None:
                     try:

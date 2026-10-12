@@ -177,7 +177,8 @@ CREATE TABLE IF NOT EXISTS invitation_codes (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     created_by_admin_id TEXT NOT NULL DEFAULT '',
     creation_operation_id TEXT NOT NULL DEFAULT '',
-    remark TEXT NOT NULL DEFAULT ''
+    remark TEXT NOT NULL DEFAULT '',
+    grant_points INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS invitation_code_usages (
@@ -207,6 +208,10 @@ if "creation_operation_id" not in columns:
 if "remark" not in columns:
     conn.execute(
         "ALTER TABLE invitation_codes ADD COLUMN remark TEXT NOT NULL DEFAULT ''"
+    )
+if "grant_points" not in columns:
+    conn.execute(
+        "ALTER TABLE invitation_codes ADD COLUMN grant_points INTEGER NOT NULL DEFAULT 0"
     )
 
 # 仅保留关键业务操作，并按自然月自动清理三个月以前的日志。
@@ -615,7 +620,7 @@ conn = _db()
 limit, offset = int(A[1]), int(A[2])
 rows = conn.execute("""
 SELECT i.code, i.max_uses, i.used_count, i.expires_at, i.created_at,
-       i.created_by, i.created_by_admin_id, i.creation_operation_id, i.remark,
+       i.created_by, i.created_by_admin_id, i.creation_operation_id, i.remark, i.grant_points,
        COALESCE(a.username, i.created_by) AS created_by_username
 FROM invitation_codes i
 LEFT JOIN admin_accounts a
@@ -666,6 +671,7 @@ if actor is None:
     _print({"ok": False, "error": error})
 else:
     count, max_uses, expires_at, client_ip, remark = int(A[2]), int(A[3]), A[4], A[5], str(A[6] or "").strip()
+    grant_points = int(A[7] or 0)
     alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     def chunk(size):
         return "".join(secrets.choice(alphabet) for _ in range(size))
@@ -679,16 +685,16 @@ else:
         cur = conn.execute("""
             INSERT OR IGNORE INTO invitation_codes (
                 code, max_uses, used_count, expires_at, created_by, created_at,
-                created_by_admin_id, creation_operation_id, remark
-            ) VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?)
+                created_by_admin_id, creation_operation_id, remark, grant_points
+            ) VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
         """, (code, max_uses, expires_at, actor["admin_id"], stamp,
-                actor["admin_id"], operation_id, remark))
+                actor["admin_id"], operation_id, remark, grant_points))
         if cur.rowcount:
             codes.append(code)
     _audit(conn, actor["admin_id"], actor["username"], "invitation.generate",
            "invitation_batch", operation_id,
            {"count": len(codes), "max_uses": max_uses, "expires_at": expires_at,
-            "remark": remark, "codes": codes},
+            "remark": remark, "grant_points": grant_points, "codes": codes},
            1, client_ip, operation_id)
     conn.commit()
     _print({"ok": True, "count": len(codes), "codes": codes,
@@ -1358,23 +1364,24 @@ _print({"ok": True, "account_id": account_id})
 '''
 
 # 定向/分类投放用：把会话令牌解析成「账号 + 分类属性」。
-# 比 SERVER_RESOLVE_CUSTOMER_SESSION_SCRIPT 多带 plan_type 与 workspace_code，
+# 比 SERVER_RESOLVE_CUSTOMER_SESSION_SCRIPT 多带 plan_type 与 invite_codes，
 # 让公告分类匹配一次远端调用就能拿到全部所需属性（仍复用 app.py 侧的 60s 缓存）。
 #   plan_type 取自 billing_wallets；**无钱包行的账号按 'experience' 归类**——
 #   该列默认值就是 'experience'，无钱包 = 从未产生过计费 = 事实上处于体验档。
+#   invite_codes 取自 invitation_code_usages（注册时记录的邀请码，account_id 唯一）；
+#   该表只覆盖功能上线后的注册，**历史账号取不到邀请码 → 空列表**，宁漏勿误发。
 SERVER_RESOLVE_CUSTOMER_PROFILE_SCRIPT = COMMON + r'''
 conn = _db()
 token = str(A[1] or "").strip()
-profile = {"ok": True, "account_id": "", "plan_type": "", "workspace_code": ""}
+profile = {"ok": True, "account_id": "", "plan_type": "", "invite_codes": []}
 if token:
     row = conn.execute(
         "SELECT s.account_id AS account_id, "
         "       w.plan_type AS plan_type, "
-        "       ws.workspace_code AS workspace_code "
+        "       u.code AS invite_code "
         "FROM auth_platform_sessions s "
         "LEFT JOIN billing_wallets w ON w.account_id = s.account_id "
-        "LEFT JOIN auth_accounts a ON a.account_id = s.account_id "
-        "LEFT JOIN workspaces ws ON ws.workspace_id = a.workspace_id "
+        "LEFT JOIN invitation_code_usages u ON u.account_id = s.account_id "
         "WHERE s.token_hash = ? AND s.revoked_at = '' "
         "  AND datetime(s.expires_at) > datetime(?) "
         "ORDER BY s.last_used_at DESC LIMIT 1",
@@ -1383,9 +1390,23 @@ if token:
     if row:
         profile["account_id"] = str(row["account_id"] or "")
         profile["plan_type"] = str(row["plan_type"] or "") or "experience"
-        profile["workspace_code"] = str(row["workspace_code"] or "")
+        code = str(row["invite_code"] or "").strip()
+        profile["invite_codes"] = [code] if code else []
 _print(profile)
 '''
+
+# 分类投放的可选项：邀请码清单（后台表单「按邀请码」下拉的数据源）。
+# 带 remark 与已关联账号数，运营一眼认出「这是发给谁的哪批码」。
+SERVER_LIST_INVITATION_OPTIONS_SCRIPT = COMMON + r'''
+conn = _db()
+rows = conn.execute(
+    "SELECT i.code, i.remark, i.used_count, i.max_uses, "
+    "       (SELECT COUNT(*) FROM invitation_code_usages u WHERE u.code = i.code) AS linked_accounts "
+    "FROM invitation_codes i ORDER BY i.created_at DESC"
+).fetchall()
+_print({"ok": True, "invite_codes": [dict(row) for row in rows]})
+'''
+
 
 # 分类投放的可选项：分站/工作区清单（后台表单的下拉数据源）。
 SERVER_LIST_WORKSPACES_SCRIPT = COMMON + r'''

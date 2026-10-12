@@ -65,6 +65,9 @@
 /* 分站账号密码是多行文本（后台地址 / 账号 / 密码），需要保留换行 */
 .secret-box { white-space: pre-wrap; text-align: left; }
 
+/* 更新日志：更新说明预览（多行压成一行，超出省略） */
+.changelog-preview { display: block; max-width: 460px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted-foreground); }
+
 </style>
 
 <!-- 旧自研样式已移除，样式全部来自 static/shadcn.css -->
@@ -118,7 +121,7 @@
       <button class="nav-item" data-section="feedback"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"/></svg><span class="nav-label">用户反馈</span><span id="fb-badge" class="nav-badge" hidden>0</span></button>
       <button class="nav-item" data-section="failure-logs"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg><span class="nav-label">失败日志</span></button>
       <button class="nav-item" data-section="log-uploads"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m17 8-5-5-5 5"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/></svg><span class="nav-label">用户日志上传</span></button>
-      <div class="nav-group"><div class="nav-group-title">软件更新发布</div><button class="nav-item nav-subitem" data-section="release-publish"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg><span class="nav-label">发布新版本</span></button><button class="nav-item nav-subitem" data-section="release-history"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg><span class="nav-label">发布记录</span></button><button class="nav-item nav-subitem" data-section="release-logs"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M12 11h4"/><path d="M12 16h4"/><path d="M8 11h.01"/><path d="M8 16h.01"/></svg><span class="nav-label">操作记录</span></button></div>
+      <div class="nav-group"><div class="nav-group-title">软件更新发布</div><button class="nav-item nav-subitem" data-section="release-publish"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg><span class="nav-label">发布新版本</span></button><button class="nav-item nav-subitem" data-section="release-history"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg><span class="nav-label">发布记录</span></button><button class="nav-item nav-subitem" data-section="release-changelog"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16"/><path d="M4 10h16"/><path d="M4 15h9"/><path d="M4 20h6"/><path d="m14 19 2.5 2.5L21 17"/></svg><span class="nav-label">更新日志</span></button><button class="nav-item nav-subitem" data-section="release-logs"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M12 11h4"/><path d="M12 16h4"/><path d="M8 11h.01"/><path d="M8 16h.01"/></svg><span class="nav-label">操作记录</span></button></div>
     </nav>
   </aside>
 
@@ -383,14 +386,15 @@
             <label>生成数量<input id="invite-count" class="input" type="number" min="1" max="50" value="1"></label>
             <label>每个可用次数<input id="invite-max-uses" class="input" type="number" min="1" max="100000" value="1"></label>
             <label>到期日期（可不填）<input id="invite-expiry" class="input" type="date"></label>
+            <label>发放积分（每个邀请码，可不填）<input id="invite-grant-points" class="input" type="number" min="0" max="1000000" value="0" placeholder="例如：8000"></label>
             <label>备注（用于分类，可不填）<input id="invite-remark" class="input" maxlength="100" placeholder="例如：抖音渠道 / 内测用户"></label>
             <button id="generate-invite-btn" class="btn btn-primary">生成邀请码</button>
           </div>
-          <div class="form-note">邀请码格式保持为 MAINPG-XXXX-XXXX；到期日期按中国香港/北京时间当天结束计算。</div>
+          <div class="form-note">邀请码格式保持为 MAINPG-XXXX-XXXX；到期日期按中国香港/北京时间当天结束计算。填写「发放积分」后，用户注册时填码或在个人中心兑换该码即可获得对应永久积分。</div>
           <div id="invite-result" class="result-box hidden"><div class="result-head"><b>本次生成结果</b><button id="copy-invites-btn" class="btn btn-ghost btn-sm">复制全部</button></div><div id="invite-result-codes" class="code-list"></div><div id="invite-operation" class="form-note"></div></div>
         </div>
         <div class="card filters"><span id="invites-count" class="count"></span></div>
-        <div class="card table-wrap"><table><thead><tr><th>邀请码</th><th>备注</th><th>使用情况</th><th>使用账号</th><th>总收入</th><th>状态</th><th>到期时间（北京时间）</th><th>创建管理员</th><th>管理员 ID</th><th>操作 ID</th><th>创建时间（北京时间）</th></tr></thead><tbody id="invites-body"></tbody></table></div>
+        <div class="card table-wrap"><table><thead><tr><th>邀请码</th><th>备注</th><th>发放积分</th><th>使用情况</th><th>使用账号</th><th>总收入</th><th>状态</th><th>到期时间（北京时间）</th><th>创建管理员</th><th>管理员 ID</th><th>操作 ID</th><th>创建时间（北京时间）</th></tr></thead><tbody id="invites-body"></tbody></table></div>
         <div class="card" id="invites-more-wrap" style="display:none;text-align:center;"><button id="invites-more" class="btn">加载更多</button></div>
       </section>
 
@@ -421,6 +425,14 @@
           <div class="inline-form" id="announcement-form-grid" style="grid-template-columns:1fr; align-items:start; gap:14px">
             <label>分区<select id="announcement-category" class="input"><option value="">请选择分区</option></select></label>
             <label>标题<input id="announcement-title" class="input" maxlength="120" placeholder="公告标题"></label>
+            <div>
+              <div class="label-text">分区（必选，用户端会以「【分区】标题」展示，如【福利活动】）</div>
+              <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:6px">
+                <select id="announcement-category" class="input" style="max-width:220px"><option value="">请选择分区</option></select>
+                <button type="button" class="btn btn-ghost" id="announcement-category-add">＋ 新建分区</button>
+                <button type="button" class="btn btn-ghost" id="announcement-category-del">删除选中分区</button>
+              </div>
+            </div>
             <label>正文（支持 Markdown：`# 小标题`、`- 要点`、`1. 步骤`、`**加粗**`、`::: tip 提示` 等）<textarea id="announcement-content" class="input announcement-textarea" rows="3" placeholder="公告内容，支持 Markdown 排版"></textarea></label>
             <div>
               <div class="label-text">公告图片（可选，最多 6 张，单张不超过 2MB）</div>
@@ -449,8 +461,8 @@
                       <option value="basic">基础版</option>
                     </select>
                   </label>
-                  <label style="display:grid;gap:4px;font-weight:normal;font-size:12px;color:#6d7789">分站 / 工作区
-                    <select id="ann-cat-workspace" class="input">
+                  <label style="display:grid;gap:4px;font-weight:normal;font-size:12px;color:#6d7789">邀请码
+                    <select id="ann-cat-invite" class="input">
                       <option value="">不限</option>
                     </select>
                   </label>
@@ -470,8 +482,10 @@
             </div>
           </div>
         </div>
-        <div class="card filters"><label>分区筛选<select id="announcement-filter-category" class="input"><option value="">全部分区</option></select></label><span id="announcement-count" class="count"></span></div>
-        <div class="card table-wrap"><table><thead><tr><th>状态</th><th>标题</th><th>正文</th><th>图片</th><th>范围</th><th>发布时间（北京时间）</th><th>操作</th></tr></thead><tbody id="announcements-body"></tbody></table></div>
+        <div class="card filters"><label style="display:flex;align-items:center;gap:8px;font-weight:normal">分区筛选
+          <select id="announcement-filter-category" class="input" style="max-width:200px"><option value="">全部分区</option></select>
+        </label><span id="announcement-count" class="count"></span></div>
+        <div class="card table-wrap"><table><thead><tr><th>状态</th><th>分区</th><th>标题</th><th>正文</th><th>图片</th><th>范围</th><th>发布时间（北京时间）</th><th>操作</th></tr></thead><tbody id="announcements-body"></tbody></table></div>
       </section>
 
       <section id="section-logs" class="section">
@@ -625,6 +639,17 @@
         <nav class="card pagination" id="release-history-pagination"></nav>
       </section>
 
+      <section id="section-release-changelog" class="section">
+        <div class="section-head"><div><h2>更新日志</h2><p>编辑各版本的更新说明——这里保存的内容会同步到客户端「系统版本」页的「更新日志」；编辑最新版本时，在线更新提示里的说明也会一起更新</p></div><button id="changelog-refresh" class="btn btn-ghost btn-sm">刷新</button></div>
+        <div class="card table-wrap">
+          <table style="min-width:760px;">
+            <thead><tr><th>版本</th><th>渠道</th><th>发布时间（北京时间）</th><th>更新说明</th><th>操作</th></tr></thead>
+            <tbody id="changelog-body"></tbody>
+          </table>
+        </div>
+        <nav class="card pagination" id="changelog-pagination"></nav>
+      </section>
+
       <section id="section-release-logs" class="section">
         <div class="section-head"><div><h2>操作记录</h2><p>发布后台的登录、发布、撤销等关键操作审计（按北京时间显示）</p></div><button id="release-logs-refresh" class="btn btn-ghost btn-sm">刷新</button></div>
         <div class="card table-wrap">
@@ -644,6 +669,8 @@
 <div id="password-mask" class="mask hidden"><div class="modal"><h3 id="password-title">修改密码</h3><p id="password-message" class="msg">新密码须为 8–128 位，并同时包含字母和数字。</p><label>当前密码<input id="current-password" class="input" type="password" autocomplete="current-password"></label><label>新密码<input id="new-password" class="input" type="password" autocomplete="new-password"></label><label>确认新密码<input id="confirm-password" class="input" type="password" autocomplete="new-password"></label><div id="password-error" class="form-error"></div><div class="modal-actions"><button id="password-cancel" class="btn btn-ghost">取消</button><button id="password-submit" class="btn btn-primary">保存新密码</button></div></div></div>
 
 <div id="secret-mask" class="mask hidden"><div class="modal"><h3 id="secret-title">临时密码</h3><p id="secret-message" class="msg">请立即复制并安全交给对应人员，此密码只显示一次。</p><div id="secret-value" class="secret-box"></div><div class="modal-actions"><button id="secret-copy" class="btn btn-primary">复制</button><button id="secret-close" class="btn btn-ghost">关闭</button></div></div></div>
+
+<div id="changelog-mask" class="mask hidden"><div class="modal modal-wide"><h3>编辑更新说明</h3><p id="changelog-message" class="msg"></p><label>更新说明（每行一条，将展示在客户端「系统版本 → 更新日志」）<textarea id="changelog-notes" class="input announcement-textarea" rows="8" maxlength="10000" placeholder="每行一条，例如：&#10;修复公告同步问题&#10;优化启动速度"></textarea></label><div id="changelog-error" class="form-error"></div><div class="modal-actions"><button id="changelog-cancel" class="btn btn-ghost">取消</button><button id="changelog-save" class="btn btn-primary">保存</button></div></div></div>
 <div id="payout-approve-mask" class="mask hidden"><div class="modal"><h3>审批打款单</h3><p id="payout-approve-message" class="msg">确认打款后，该笔占用额度转为已打款。</p><label>打款渠道<select id="payout-approve-channel" class="input"><option value="bank">对公银行转账</option><option value="alipay">支付宝转账</option><option value="wechat">微信转账</option><option value="offline">线下打款</option></select></label><label>打款凭证（可留空）<input id="payout-approve-voucher" class="input" placeholder="转账单号 / 凭证截图链接"></label><div id="payout-approve-error" class="form-error"></div><div class="modal-actions"><button id="payout-approve-cancel" class="btn btn-ghost">取消</button><button id="payout-approve-ok" class="btn btn-success">确认打款</button></div></div></div>
 <div id="invite-accounts-mask" class="mask hidden"><div class="modal modal-wide"><h3 id="invite-accounts-title">邀请码使用账号</h3><p id="invite-accounts-message" class="msg"></p><div class="table-wrap"><table style="min-width:760px"><thead><tr><th>用户名</th><th>邮箱</th><th>总充值金额</th><th>账号状态</th><th>登录状态</th><th>使用时间（北京时间）</th></tr></thead><tbody id="invite-accounts-body"></tbody></table></div><div class="modal-actions"><button id="invite-accounts-close" class="btn btn-primary">关闭</button></div></div></div>
 <div id="revenue-mask" class="mask hidden"><div class="modal"><h3>查看累计金额收入</h3><p class="msg">该数据仅限管理员查看，请输入当前账号的登录密码进行验证。</p><label>登录密码<input id="revenue-password" class="input" type="password" autocomplete="current-password"></label><div id="revenue-error" class="form-error"></div><div class="modal-actions"><button id="revenue-cancel" class="btn btn-ghost">取消</button><button id="revenue-submit" class="btn btn-primary">验证并查看</button></div></div></div>
@@ -796,13 +823,13 @@ $('setup-btn').onclick = async () => {
   finally { $('setup-btn').disabled = false; }
 };
 
-const sectionTitles = { dashboard: '数据看板', 'billing-wallet': '积分管理', 'billing-usage': '用户消费流水', credentials: '密钥管理', users: '账号状态管理', 'mobile-users': '移动端用户', invitations: '邀请码生成', 'invite-profit': '邀请码利润明细', admins: '管理员账号管理', announcements: '公告管理', 'station-applications': '分站申请', 'station-rebate': '分站返利', logs: '操作日志', 'user-activity': '用户活动', feedback: '用户反馈', 'failure-logs': '失败日志', 'log-uploads': '用户日志上传', multipliers: '价格倍率', 'profit-detail': '价格利润明细', 'release-publish': '发布新版本', 'release-history': '发布记录', 'release-logs': '发布操作记录' };
+const sectionTitles = { dashboard: '数据看板', 'billing-wallet': '积分管理', 'billing-usage': '用户消费流水', credentials: '密钥管理', users: '账号状态管理', 'mobile-users': '移动端用户', invitations: '邀请码生成', 'invite-profit': '邀请码利润明细', admins: '管理员账号管理', announcements: '公告管理', 'station-applications': '分站申请', 'station-rebate': '分站返利', logs: '操作日志', 'user-activity': '用户活动', feedback: '用户反馈', 'failure-logs': '失败日志', 'log-uploads': '用户日志上传', multipliers: '价格倍率', 'profit-detail': '价格利润明细', 'release-publish': '发布新版本', 'release-history': '发布记录', 'release-changelog': '更新日志', 'release-logs': '发布操作记录' };
 async function activateSection(name) {
   ACTIVE_SECTION = name;
   document.querySelectorAll('.nav-item').forEach(item => item.classList.toggle('active', item.dataset.section === name));
   document.querySelectorAll('.section').forEach(item => item.classList.toggle('active', item.id === `section-${name}`));
   $('page-title').textContent = sectionTitles[name];
-  await ({ dashboard: loadDashboard, users: loadUsers, 'mobile-users': loadMobileUsers, 'billing-wallet': loadBilling, 'billing-usage': () => { loadBilling(); loadBillingUsage(true); }, credentials: loadCredentials, invitations: loadInvitations, 'invite-profit': loadInvitationProfit, admins: loadAdmins, announcements: loadAnnouncements, 'station-applications': loadStationApplications, 'station-rebate': loadStationRebate, logs: loadLogs, 'user-activity': loadUserActivity, feedback: loadFeedback, 'failure-logs': loadFailureLogs, 'log-uploads': loadLogUploads, multipliers: loadMultipliers, 'profit-detail': loadProfitDetail, 'release-publish': loadReleaseEnv, 'release-history': () => loadReleaseHistory(1), 'release-logs': () => loadReleaseLogs(1) })[name]();
+  await ({ dashboard: loadDashboard, users: loadUsers, 'mobile-users': loadMobileUsers, 'billing-wallet': loadBilling, 'billing-usage': () => { loadBilling(); loadBillingUsage(true); }, credentials: loadCredentials, invitations: loadInvitations, 'invite-profit': loadInvitationProfit, admins: loadAdmins, announcements: loadAnnouncements, 'station-applications': loadStationApplications, 'station-rebate': loadStationRebate, logs: loadLogs, 'user-activity': loadUserActivity, feedback: loadFeedback, 'failure-logs': loadFailureLogs, 'log-uploads': loadLogUploads, multipliers: loadMultipliers, 'profit-detail': loadProfitDetail, 'release-publish': loadReleaseEnv, 'release-history': () => loadReleaseHistory(1), 'release-changelog': () => loadReleaseChangelog(1), 'release-logs': () => loadReleaseLogs(1) })[name]();
 }
 document.querySelectorAll('.nav-item').forEach(item => item.onclick = () => activateSection(item.dataset.section));
 $('refresh-btn').onclick = () => activateSection(ACTIVE_SECTION);
@@ -944,8 +971,8 @@ function renderInvitations() {
     const usedUp = Number(item.used_count) >= Number(item.max_uses), expired = item.expires_at && new Date(item.expires_at) < now;
     const state = usedUp ? ['badge-danger','已用尽'] : expired ? ['badge-warning','已过期'] : ['badge-success','可使用'];
     const accounts = item.accounts || [], unlinked = Math.max(0, Number(item.used_count) - accounts.length);
-    return `<tr><td class="mono"><b>${esc(item.code)}</b></td><td>${esc(item.remark || '-')}</td><td>${item.used_count} / ${item.max_uses}</td><td><button class="link-btn" data-invite-accounts="${esc(item.code)}">查看账号 (${accounts.length})</button>${unlinked ? `<span class="badge badge-warning">另有 ${unlinked} 次历史使用未关联</span>` : ''}</td><td>${fmtMoney(item.total_recharge_cents)}</td><td><span class="badge ${state[0]}">${state[1]}</span></td><td>${fmtTime(item.expires_at)}</td><td>${esc(item.created_by_username || '-')}</td><td class="mono">${esc(item.created_by_admin_id || item.created_by || '-')}</td><td class="mono">${esc(item.creation_operation_id || '-')}</td><td>${fmtTime(item.created_at)}</td></tr>`;
-  }).join('') : '<tr><td class="empty" colspan="11">暂无邀请码</td></tr>';
+    return `<tr><td class="mono"><b>${esc(item.code)}</b></td><td>${esc(item.remark || '-')}</td><td>${Number(item.grant_points) > 0 ? `<span class="badge badge-success">${Number(item.grant_points)}</span>` : '-'}</td><td>${item.used_count} / ${item.max_uses}</td><td><button class="link-btn" data-invite-accounts="${esc(item.code)}">查看账号 (${accounts.length})</button>${unlinked ? `<span class="badge badge-warning">另有 ${unlinked} 次历史使用未关联</span>` : ''}</td><td>${fmtMoney(item.total_recharge_cents)}</td><td><span class="badge ${state[0]}">${state[1]}</span></td><td>${fmtTime(item.expires_at)}</td><td>${esc(item.created_by_username || '-')}</td><td class="mono">${esc(item.created_by_admin_id || item.created_by || '-')}</td><td class="mono">${esc(item.creation_operation_id || '-')}</td><td>${fmtTime(item.created_at)}</td></tr>`;
+  }).join('') : '<tr><td class="empty" colspan="12">暂无邀请码</td></tr>';
 }
 
 $('invites-body').onclick = event => {
@@ -1002,7 +1029,7 @@ $('invite-profit-body').onclick = event => {
 $('generate-invite-btn').onclick = async () => {
   $('generate-invite-btn').disabled = true;
   try {
-    const data = await api('/api/invitations/generate', {method:'POST',body:JSON.stringify({count:Number($('invite-count').value),max_uses:Number($('invite-max-uses').value),expires_at:$('invite-expiry').value,remark:$('invite-remark').value.trim()})});
+    const data = await api('/api/invitations/generate', {method:'POST',body:JSON.stringify({count:Number($('invite-count').value),max_uses:Number($('invite-max-uses').value),expires_at:$('invite-expiry').value,remark:$('invite-remark').value.trim(),grant_points:Number($('invite-grant-points').value)||0})});
     $('invite-result').classList.remove('hidden'); $('invite-result').dataset.codes = JSON.stringify(data.codes || []);
     $('invite-result-codes').innerHTML = (data.codes || []).map(code => `<span class="code-pill mono">${esc(code)}</span>`).join('');
     $('invite-operation').textContent = `操作 ID：${data.operation_id}`;
@@ -1056,14 +1083,29 @@ let ANNOUNCE_IMAGES = [];          // 当前表单待上传图片：[{name,mime,
 const ANNOUNCE_IMAGE_MAX = 6;
 const ANNOUNCE_IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
 const ANNOUNCE_IMAGE_MAX_BYTES = 2 * 1024 * 1024;
-// 公告分区（与后端 ANNOUNCE_CATEGORIES 保持一致）：发布时必选，客户端标题会带「【分区】」前缀。
-const ANNOUNCE_CATEGORIES = ['版本更新', '功能上新', '问题修复', '福利活动', '维护通知', '重要通知'];
-function initAnnounceCategoryOptions() {
-  const options = ANNOUNCE_CATEGORIES.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('');
-  $('announcement-category').insertAdjacentHTML('beforeend', options);
-  $('announcement-filter-category').insertAdjacentHTML('beforeend', options);
+// 公告分区（分类）字典：预置 + 后台自建，发布必选、列表可筛选。
+// 用户端标题由后端 public 接口拼成「【分区】标题」，前端无需额外处理。
+let ANNOUNCE_CATEGORIES = [];
+function renderAnnounceCategoryOptions() {
+  const form = $('announcement-category');
+  const filter = $('announcement-filter-category');
+  const keepForm = form.value;
+  const keepFilter = filter.value;
+  form.innerHTML = '<option value="">请选择分区</option>' + ANNOUNCE_CATEGORIES.map(name => `<option value="${esc(name)}">${esc(name)}</option>`).join('');
+  filter.innerHTML = '<option value="">全部分区</option>' + ANNOUNCE_CATEGORIES.map(name => `<option value="${esc(name)}">${esc(name)}</option>`).join('') + '<option value="__none__">未分区</option>';
+  // 保留下拉已选项；分区被删除后自动回落到「未选择」。
+  form.value = ANNOUNCE_CATEGORIES.includes(keepForm) ? keepForm : '';
+  filter.value = (ANNOUNCE_CATEGORIES.includes(keepFilter) || keepFilter === '__none__') ? keepFilter : '';
+  renderAnnouncements();
 }
-// 记录列表里标题前的分区前缀展示（与客户端展示口径一致）。
+async function loadAnnounceCategories() {
+  try {
+    const data = await api('/api/announcement-categories');
+    ANNOUNCE_CATEGORIES = data.categories || [];
+    renderAnnounceCategoryOptions();
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+}
+// 记录列表/预览里标题前的分区前缀展示（与客户端展示口径一致）。
 function announceDisplayTitle(item) {
   const category = String((item && item.category) || '').trim();
   const title = (item && item.title) || '';
@@ -1098,7 +1140,7 @@ function setAnnounceTargetMode(mode) {
   $('ann-target-custom').checked = mode === 'custom';
   $('ann-category-picker').classList.toggle('hidden', mode !== 'category');
   $('ann-target-picker').classList.toggle('hidden', mode !== 'custom');
-  if (mode === 'category') { loadAnnounceWorkspaces().then(renderAnnounceCategoryHint); }
+  if (mode === 'category') { loadAnnounceInviteCodes().then(renderAnnounceCategoryHint); }
   if (mode === 'custom') { loadAnnounceUsers().then(renderAnnounceUserPicker); }
 }
 $('ann-target-all').onchange = () => setAnnounceTargetMode('all');
@@ -1116,35 +1158,35 @@ $('ann-user-list').onchange = event => {
 function currentAnnounceTargets() {
   return announceTargetMode() === 'custom' ? ANNOUNCE_TARGET : [];
 }
-// 分类规则：{plan_types, workspace_codes}，空 = 不限。
+// 分类规则：{plan_types, invite_codes}，空 = 不限。
 // 语义与后端一致：同一维度内是「或」、两个维度之间是「且」；与指定名单同时给出时取交集。
 function currentAnnounceRules() {
   if (announceTargetMode() !== 'category') return {};
   const plan = $('ann-cat-plan').value;
-  const workspace = $('ann-cat-workspace').value;
+  const invite = $('ann-cat-invite').value;
   const rules = {};
   if (plan) rules.plan_types = [plan];
-  if (workspace) rules.workspace_codes = [workspace];
+  if (invite) rules.invite_codes = [invite];
   return rules;
 }
 function renderAnnounceCategoryHint() {
   const rules = currentAnnounceRules();
   const parts = [];
   if (rules.plan_types) parts.push('套餐=' + (rules.plan_types[0] === 'basic' ? '基础版' : '体验版'));
-  if (rules.workspace_codes) parts.push('分站=' + rules.workspace_codes[0]);
+  if (rules.invite_codes) parts.push('邀请码=' + rules.invite_codes[0]);
   $('ann-category-hint').textContent = parts.length
-    ? '只发给：' + parts.join(' 且 ') + '。同时填多项时，用户必须全部满足。'
+    ? '只发给：' + parts.join(' 且 ') + '。邀请码维度只覆盖注册时记录过邀请码的账号。'
     : '两项都留空 = 不限，等同于发给全部用户。';
 }
 $('ann-cat-plan').onchange = renderAnnounceCategoryHint;
-$('ann-cat-workspace').onchange = renderAnnounceCategoryHint;
-async function loadAnnounceWorkspaces() {
+$('ann-cat-invite').onchange = renderAnnounceCategoryHint;
+async function loadAnnounceInviteCodes() {
   try {
-    const data = await api('/api/workspaces');
-    const select = $('ann-cat-workspace');
+    const data = await api('/api/invitations/options');
+    const select = $('ann-cat-invite');
     const current = select.value;
-    select.innerHTML = '<option value="">不限</option>' + (data.workspaces || []).map(w =>
-      `<option value="${esc(w.workspace_code)}">${esc(w.workspace_name || w.workspace_code)}${w.status && w.status !== 'active' ? '（已停用）' : ''}</option>`
+    select.innerHTML = '<option value="">不限</option>' + (data.invite_codes || []).map(c =>
+      `<option value="${esc(c.code)}">${esc(c.code)}${c.remark ? '（' + esc(c.remark) + '）' : ''}${Number(c.linked_accounts) > 0 ? ' · ' + Number(c.linked_accounts) + ' 人' : ''}</option>`
     ).join('');
     select.value = current;
   } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
@@ -1333,7 +1375,7 @@ function resetAnnouncementForm() {
   renderAnnounceImages();
   $('ann-user-search').value = '';
   $('ann-cat-plan').value = '';
-  $('ann-cat-workspace').value = '';
+  $('ann-cat-invite').value = '';
   setAnnounceTargetMode('all');
   autoGrowAnnouncementTextarea();
 }
@@ -1352,14 +1394,14 @@ function fillAnnouncementForm(item) {
   // 回填分类规则；三选一互斥，按「有规则优先于有名单」判定回到哪个模式。
   const rules = item.audience_rules || {};
   const plan = (rules.plan_types || [])[0] || '';
-  const workspace = (rules.workspace_codes || [])[0] || '';
+  const invite = (rules.invite_codes || [])[0] || '';
   $('ann-cat-plan').value = plan;
-  const applyWorkspace = () => { $('ann-cat-workspace').value = workspace; renderAnnounceCategoryHint(); };
-  if (plan || workspace) {
+  const applyInvite = () => { $('ann-cat-invite').value = invite; renderAnnounceCategoryHint(); };
+  if (plan || invite) {
     setAnnounceTargetMode('category');
-    loadAnnounceWorkspaces().then(applyWorkspace);
+    loadAnnounceInviteCodes().then(applyInvite);
   } else {
-    $('ann-cat-workspace').value = '';
+    $('ann-cat-invite').value = '';
     setAnnounceTargetMode(ANNOUNCE_TARGET.length > 0 ? 'custom' : 'all');
     renderAnnounceUserPicker();
   }
@@ -1367,27 +1409,37 @@ function fillAnnouncementForm(item) {
 }
 async function loadAnnouncements() {
   try {
+    await loadAnnounceCategories();
     const data = await api('/api/announcements');
     ANNOUNCEMENTS = data.announcements || [];
     renderAnnouncements();
   } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
 }
 function renderAnnouncements() {
-  const filter = $('announcement-filter-category').value;
-  const rows = filter ? ANNOUNCEMENTS.filter(item => (item.category || '') === filter) : ANNOUNCEMENTS;
-  $('announcement-count').textContent = filter ? `已筛选 ${rows.length} / ${ANNOUNCEMENTS.length} 条` : `共 ${ANNOUNCEMENTS.length} 条`;
+  // 分区筛选：'' 全部 / '__none__' 未分区 / 其余精确匹配 category。
+  const filterVal = $('announcement-filter-category') ? $('announcement-filter-category').value : '';
+  const rows = ANNOUNCEMENTS.filter(item => {
+    const category = String(item.category || '');
+    if (filterVal === '') return true;
+    if (filterVal === '__none__') return !category;
+    return category === filterVal;
+  });
+  const countEl = $('announcement-count');
+  if (countEl) countEl.textContent = `共 ${rows.length} 条${filterVal ? '（已筛选）' : ''}`;
   $('announcements-body').innerHTML = rows.length ? rows.map(item => {
     const on = !!item.active;
+    const category = String(item.category || '').trim();
+    const categoryCell = category
+      ? `<span class="badge badge-info">【${esc(category)}】</span>`
+      : '<span class="badge badge-muted">未分区</span>';
     const content = item.content || '';
-    const category = (item.category || '').trim();
-    const titleCell = `${category ? `<span class="badge badge-info">【${esc(category)}】</span>` : ''}<b>${esc(item.title)}</b>`;
     const isLong = content.length > 100 || (content.match(/\n/g) || []).length >= 3;
     const targets = Array.isArray(item.target_account_ids) ? item.target_account_ids : [];
     // 发送范围展示：指定名单 / 按分类 / 两者交集 / 全员，一眼看出这条发给谁。
     const rules = item.audience_rules || {};
     const ruleParts = [];
     if ((rules.plan_types || []).length) ruleParts.push('套餐=' + rules.plan_types.map(p => p === 'basic' ? '基础版' : '体验版').join('/'));
-    if ((rules.workspace_codes || []).length) ruleParts.push('分站=' + rules.workspace_codes.join('/'));
+    if ((rules.invite_codes || []).length) ruleParts.push('邀请码=' + rules.invite_codes.join('/'));
     let scope;
     if (targets.length && ruleParts.length) {
       scope = `<span class="badge badge-warning">指定 ${targets.length} 人 ∩ ${esc(ruleParts.join(' 且 '))}</span>`;
@@ -1404,7 +1456,8 @@ function renderAnnouncements() {
       : '<span style="color:#9ca3af">-</span>';
     return `<tr>
       <td>${on ? '<span class="badge badge-success">已上线</span>' : '<span class="badge badge-muted">已下线</span>'}</td>
-      <td>${titleCell}</td>
+      <td>${categoryCell}</td>
+      <td><b>${esc(item.title)}</b></td>
       <td class="announcement-content-cell">
         <div class="announcement-body-clamp" data-ann-content data-id="${item.id}">${esc(content || '-')}</div>
         ${isLong ? `<button class="announcement-toggle" data-ann-toggle data-id="${item.id}">展开</button>` : ''}
@@ -1418,9 +1471,33 @@ function renderAnnouncements() {
         <button class="link-btn red" data-announcement-action="delete" data-id="${item.id}" data-title="${esc(item.title)}">删除</button>
       </td>
     </tr>`;
-  }).join('') : `<tr><td class="empty" colspan="7">${filter ? '该分区下暂无公告' : '暂无公告，发布第一条吧'}</td></tr>`;
+  }).join('') : '<tr><td class="empty" colspan="8">暂无公告，发布第一条吧</td></tr>';
 }
-initAnnounceCategoryOptions();
+// 新建 / 删除分区，以及分区筛选联动。
+$('announcement-category-add').onclick = async () => {
+  const name = (prompt('请输入新分区名称，例如：福利活动') || '').trim();
+  if (!name) return;
+  try {
+    const data = await api('/api/announcement-categories', { method: 'POST', body: JSON.stringify({ name }) });
+    ANNOUNCE_CATEGORIES = data.categories || [];
+    renderAnnounceCategoryOptions();
+    $('announcement-category').value = name;
+    toast('分区已创建', 'success');
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+};
+$('announcement-category-del').onclick = () => {
+  const name = $('announcement-category').value;
+  if (!name) { toast('请先在下拉框选择要删除的分区', 'error'); return; }
+  askConfirm('确认删除分区', `确定删除分区「${name}」吗？已使用该分区的历史公告不会受影响。`, async () => {
+    try {
+      const data = await api(`/api/announcement-categories/${encodeURIComponent(name)}`, { method: 'DELETE' });
+      ANNOUNCE_CATEGORIES = data.categories || [];
+      renderAnnounceCategoryOptions();
+      toast('分区已删除', 'success');
+    } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+  });
+};
+$('announcement-filter-category').onchange = renderAnnouncements;
 resetAnnouncementForm();
 $('announcement-filter-category').onchange = renderAnnouncements;
 $('announcement-save-btn').onclick = async () => {
@@ -3732,6 +3809,61 @@ async function loadReleaseLogs(page = RELEASE_LOGS_PAGE) {
   } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
 }
 
+let CHANGELOG_PAGE = 1;
+let CHANGELOG_ITEMS = [];
+let CHANGELOG_EDITING = '';
+function changelogPreview(notes) {
+  const text = String(notes || '').trim().replace(/\s*\n+\s*/g, ' / ');
+  if (!text) return '（未填写更新说明）';
+  return text.length > 64 ? `${text.slice(0, 64)}…` : text;
+}
+async function loadReleaseChangelog(page = CHANGELOG_PAGE) {
+  try {
+    const data = await releaseApi(`releases?page=${encodeURIComponent(page)}`);
+    CHANGELOG_PAGE = Number(data.page || 1);
+    const items = data.items || [];
+    CHANGELOG_ITEMS = items;
+    $('changelog-body').innerHTML = items.length ? items.map(item => `<tr>
+      <td><strong>${esc(item.version)}</strong>${item.mandatory ? ' <span class="badge badge-warning">强制</span>' : ''}</td>
+      <td><span class="badge badge-muted">${releaseChannelLabel(item.channel)}</span></td>
+      <td>${fmtTime(item.published_at)}</td>
+      <td><span class="changelog-preview">${esc(changelogPreview(item.release_notes))}</span></td>
+      <td><button class="link-btn" data-changelog-edit="${esc(item.version)}">编辑</button></td>
+    </tr>`).join('') : '<tr><td class="empty" colspan="5">尚未发布任何版本</td></tr>';
+    renderReleasePagination('changelog-pagination', data, next => loadReleaseChangelog(next));
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+}
+function openChangelogEdit(version) {
+  const item = CHANGELOG_ITEMS.find(value => value.version === version);
+  if (!item) return;
+  CHANGELOG_EDITING = version;
+  $('changelog-message').textContent = `版本 v${version}（发表于 ${fmtTime(item.published_at)}）。修改后点「保存」立即同步到客户端。`;
+  $('changelog-notes').value = item.release_notes || '';
+  $('changelog-error').textContent = '';
+  $('changelog-mask').classList.remove('hidden');
+  $('changelog-notes').focus();
+}
+$('changelog-refresh').onclick = () => loadReleaseChangelog(CHANGELOG_PAGE);
+$('changelog-body').onclick = event => {
+  const button = event.target.closest('[data-changelog-edit]');
+  if (button) openChangelogEdit(button.dataset.changelogEdit);
+};
+$('changelog-cancel').onclick = () => { $('changelog-mask').classList.add('hidden'); CHANGELOG_EDITING = ''; };
+$('changelog-save').onclick = async () => {
+  if (!CHANGELOG_EDITING) return;
+  $('changelog-error').textContent = '';
+  $('changelog-save').disabled = true;
+  try {
+    const data = await releaseApi(`releases/${encodeURIComponent(CHANGELOG_EDITING)}/notes`, { method: 'POST', body: JSON.stringify({ release_notes: $('changelog-notes').value }) });
+    $('changelog-mask').classList.add('hidden');
+    CHANGELOG_EDITING = '';
+    if (data.changelog_synced === false) toast('更新说明已保存，但同步更新日志文件失败，请通知维护排查', 'error');
+    else toast('更新说明已保存，客户端刷新后可见', 'success');
+    await loadReleaseChangelog(CHANGELOG_PAGE);
+  } catch (error) {
+    if (error.message !== '__AUTH__') $('changelog-error').textContent = error.message;
+  } finally { $('changelog-save').disabled = false; }
+};
 function uploadReleasePackage(form, job, onProgress) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();

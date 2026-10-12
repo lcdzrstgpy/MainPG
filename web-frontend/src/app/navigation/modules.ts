@@ -17,7 +17,6 @@ export type WorkspaceModuleId =
   | "profit_activity"
   | "profit_activity_products"
   | "price_verification"
-  | "personal_assets"
   | "personal_center";
 
 export type WorkspaceNavigationGroupId = "product_workflow" | "combo_workflow" | "sourcing_workflow" | "pod_workflow";
@@ -185,14 +184,6 @@ const personalCenter: WorkspaceModule = {
   description: "账户资料、积分钱包、充值订单与服务器账本安全状态",
 };
 
-const personalAssets: WorkspaceModule = {
-  id: "personal_assets",
-  label: "个人资产",
-  icon: "",
-  iconClass: "iconfont icon-image",
-  description: "手机端拍照 / 相册上传的互通图片，可预览、下载、删除或送入业务",
-};
-
 const collectionPanel: WorkspaceModule = {
   id: "daily_selection_collection",
   label: "采集面板",
@@ -250,7 +241,6 @@ export const workspaceModules: WorkspaceNavigationItem[] = [
     defaultChildId: "price_verification",
     children: [priceVerification, profitActivity, productLibrary],
   },
-  personalAssets,
   personalCenter,
 ];
 
@@ -273,6 +263,5 @@ export const workspacePageModules: WorkspaceModule[] = [
   priceVerification,
   profitActivity,
   productLibrary,
-  personalAssets,
   personalCenter,
 ];

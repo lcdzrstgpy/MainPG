@@ -731,3 +731,103 @@ def test_rejects_non_executable_and_wrong_signing_key(test_context, tmp_path: Pa
     )
     assert mismatch.status_code == 503
     assert mismatch.json()["detail"]["code"] == "signing_key_mismatch"
+
+
+def _publish_release(client: TestClient, version: str, notes: str) -> dict:
+    payload = b"MZ" + (b"installer-" + version.encode("ascii")) * 64
+    response = client.post(
+        "/api/releases/publish",
+        data={"version": version, "mandatory": "false", "release_notes": notes},
+        files={"installer": (f"MainPG-Setup-{version}.exe", payload, "application/octet-stream")},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_release_notes_edit_syncs_changelog_and_live_manifest(test_context):
+    client, settings, private_key = test_context
+    assert login(client, "boss", "Boss-Test-Password!").status_code == 200
+    _publish_release(client, "1.3.4", "修复公告同步")
+    _publish_release(client, "1.3.5", "新增导出功能\n优化启动速度")
+
+    changelog_path = settings.publish_dir / "changelog.json"
+    changelog = json.loads(changelog_path.read_text(encoding="utf-8"))
+    assert changelog["contract_version"] == "mainpg-changelog-v1"
+    assert [item["version"] for item in changelog["releases"]] == ["1.3.5", "1.3.4"]
+    assert changelog["releases"][0]["release_notes"] == "新增导出功能\n优化启动速度"
+
+    # 编辑最新版（= 线上清单版本）：清单同步重签，签名必须仍可被客户端验证
+    edited = client.post(
+        "/api/releases/1.3.5/notes",
+        json={"release_notes": "新增导出功能\n优化启动速度\n补充：修复空文件导致的问题"},
+    )
+    assert edited.status_code == 200, edited.text
+    body = edited.json()
+    assert body["changelog_synced"] is True
+    assert body["manifest_synced"] is True
+    manifest = json.loads((settings.publish_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["release_notes"] == "新增导出功能\n优化启动速度\n补充：修复空文件导致的问题"
+    private_key.public_key().verify(
+        base64.b64decode(manifest["signature"]),
+        canonical_manifest_bytes(manifest),
+    )
+    changelog = json.loads(changelog_path.read_text(encoding="utf-8"))
+    assert changelog["releases"][0]["release_notes"] == "新增导出功能\n优化启动速度\n补充：修复空文件导致的问题"
+
+    # 编辑旧版本：只改更新日志，不动线上清单
+    manifest_before = (settings.publish_dir / "manifest.json").read_bytes()
+    edited_old = client.post("/api/releases/1.3.4/notes", json={"release_notes": "修复公告同步（补充说明）"})
+    assert edited_old.status_code == 200, edited_old.text
+    assert edited_old.json()["manifest_synced"] is False
+    assert (settings.publish_dir / "manifest.json").read_bytes() == manifest_before
+    changelog = json.loads(changelog_path.read_text(encoding="utf-8"))
+    assert changelog["releases"][1]["release_notes"] == "修复公告同步（补充说明）"
+
+    releases = client.get("/api/releases").json()["items"]
+    assert releases[0]["release_notes"] == "新增导出功能\n优化启动速度\n补充：修复空文件导致的问题"
+    audits = client.get("/api/audit-logs").json()["items"]
+    notes_audits = [item for item in audits if item["action"] == "release_notes_updated"]
+    assert {item["target"] for item in notes_audits} == {"1.3.4", "1.3.5"}
+
+
+def test_release_notes_edit_validation(test_context):
+    client, settings, _ = test_context
+    assert login(client, "boss", "Boss-Test-Password!").status_code == 200
+    _publish_release(client, "1.3.4", "首版说明")
+
+    missing = client.post("/api/releases/9.9.9/notes", json={"release_notes": "x"})
+    assert missing.status_code == 404
+    assert missing.json()["detail"]["code"] == "release_not_found"
+
+    too_long = client.post("/api/releases/1.3.4/notes", json={"release_notes": "长" * 10_001})
+    assert too_long.status_code == 422
+    assert too_long.json()["detail"]["code"] == "release_notes_too_long"
+
+    bad_version = client.post("/api/releases/not-a-version/notes", json={"release_notes": "x"})
+    assert bad_version.status_code == 422
+    assert bad_version.json()["detail"]["code"] == "invalid_version"
+
+
+def test_release_notes_edit_requires_login(test_context):
+    client, settings, _ = test_context
+    response = client.post("/api/releases/1.3.4/notes", json={"release_notes": "x"})
+    assert response.status_code == 401
+    assert response.json()["detail"]["code"] == "not_authenticated"
+
+
+def test_startup_rebuilds_missing_changelog(test_context):
+    client, settings, _ = test_context
+    assert login(client, "boss", "Boss-Test-Password!").status_code == 200
+    _publish_release(client, "1.3.4", "说明A")
+    changelog_path = settings.publish_dir / "changelog.json"
+    assert changelog_path.is_file()
+    changelog_path.unlink()
+
+    # 重启（重新创建应用）：启动回填应把文件重建出来
+    hasher = PasswordHasher(time_cost=1, memory_cost=8192, parallelism=1)
+    second_app = create_app(settings, password_hasher=hasher)
+    with TestClient(second_app):
+        pass
+    restored = json.loads(changelog_path.read_text(encoding="utf-8"))
+    assert [item["version"] for item in restored["releases"]] == ["1.3.4"]
+    assert restored["releases"][0]["release_notes"] == "说明A"

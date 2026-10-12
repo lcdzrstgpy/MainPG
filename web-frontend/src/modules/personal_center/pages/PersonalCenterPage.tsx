@@ -38,6 +38,7 @@ import { SystemVersionPanel } from "../components/SystemVersionPanel";
 import { PreferencesPanel } from "../components/PreferencesPanel";
 import { FeedbackPanel } from "../components/FeedbackPanel";
 import { PromotionPlanPanel } from "../components/PromotionPlanPanel";
+import { StorageSpacePanel } from "../components/StorageSpacePanel";
 import "../styles/personalCenter.css";
 
 type AccountSnapshot = {
@@ -387,7 +388,7 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
   const defaultUsageFilterKey = buildUsageFilterKey("", "", "", "");
 
   const [summary, setSummary] = useState<BillingSummary | null>(cachedBalance?.summary ?? null);
-  const [activePanel, setActivePanel] = useState<"wallet" | "usage" | "pricing" | "model" | "preferences" | "version" | "promo" | "feedback">("wallet");
+  const [activePanel, setActivePanel] = useState<"wallet" | "usage" | "pricing" | "model" | "preferences" | "version" | "storage" | "promo" | "feedback">("wallet");
 
   // 可用积分与积分构成的数字滚动动画（首次直接用缓存值，不闪）。
   const animatedAvailablePoints = useAnimatedNumber(summary?.wallet.available_points);
@@ -1538,6 +1539,10 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
           <span className="iconfont icon-setting" aria-hidden="true" />
           <span>系统版本</span>
         </button>
+        <button type="button" className={activePanel === "storage" ? "is-active" : ""} onClick={() => setActivePanel("storage")}>
+          <span className="iconfont icon-database" aria-hidden="true" />
+          <span>存储空间</span>
+        </button>
         <button type="button" className={activePanel === "promo" ? "is-active" : ""} onClick={() => setActivePanel("promo")}>
           <span className="iconfont icon-gift" aria-hidden="true" />
           <span>推广计划</span>
@@ -2192,6 +2197,8 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
           <PreferencesPanel />
         ) : activePanel === "version" ? (
           <SystemVersionPanel />
+        ) : activePanel === "storage" ? (
+          <StorageSpacePanel />
         ) : activePanel === "promo" ? (
           <PromotionPlanPanel />
         ) : activePanel === "feedback" ? (

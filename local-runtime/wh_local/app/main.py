@@ -21,15 +21,19 @@ from fastapi.staticfiles import StaticFiles
 logger = logging.getLogger("wh_local.app")
 
 from ..app_update import (
+    ChangelogManager,
+    ChangelogSettings,
     PatchManager,
     PatchSettings,
     UpdateManager,
     UpdateSettings,
+    create_changelog_router,
     create_patch_router,
     create_router as create_update_router,
 )
 from ..config import (
     APP_VERSION,
+    UPDATE_CHANGELOG_URL,
     UPDATE_ED25519_PUBLIC_KEY_B64,
     UPDATE_MANIFEST_ALLOWED_HOSTS,
     UPDATE_MANIFEST_URL,
@@ -461,6 +465,12 @@ def create_app(database_path: Path | None = None) -> FastAPI:
             install_root=config.install_root,
         )
     )
+    changelog_manager = ChangelogManager(
+        ChangelogSettings(
+            changelog_url=UPDATE_CHANGELOG_URL,
+            allowed_hosts=UPDATE_MANIFEST_ALLOWED_HOSTS,
+        )
+    )
 
     @asynccontextmanager
     async def app_lifespan(runtime_app: FastAPI):
@@ -569,8 +579,10 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     _register_frontend_shell(app)
     app.state.update_manager = update_manager
     app.state.patch_manager = patch_manager
+    app.state.changelog_manager = changelog_manager
     app.include_router(create_update_router(update_manager))
     app.include_router(create_patch_router(patch_manager))
+    app.include_router(create_changelog_router(changelog_manager))
 
     @app.get("/health")
     def health() -> dict[str, Any]:

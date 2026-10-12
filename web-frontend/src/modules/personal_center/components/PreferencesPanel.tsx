@@ -1,4 +1,5 @@
 import { useEffectPreferences } from "../../../shared/hooks/useEffectPreferences";
+import { usePerformanceMode } from "../../../shared/hooks/usePerformanceMode";
 import { useSidebarPreferences } from "../../../shared/hooks/useSidebarState";
 import { useTopbarCollapse } from "../../../shared/hooks/useTopbarCollapse";
 import { BALL_SIZE_OPTIONS, useBallSize } from "../../../shared/hooks/useBallSize";
@@ -12,6 +13,7 @@ import { useUiMode } from "../../../shared/hooks/useUiMode";
  */
 export function PreferencesPanel() {
   const { tap, ambient, setEffects } = useEffectPreferences();
+  const { enabled: performanceMode, toggleEnabled: togglePerformanceMode } = usePerformanceMode();
   const { collapsed: sidebarCollapsed, hoverExpand: sidebarHoverExpand, toggleCollapsed: toggleSidebar, toggleHoverExpand: toggleSidebarHoverExpand } = useSidebarPreferences();
   const { enabled: topbarCollapse, toggleEnabled: toggleTopbarCollapse } = useTopbarCollapse();
   const { size: ballSize, setSize: setBallSize } = useBallSize();
@@ -21,8 +23,9 @@ export function PreferencesPanel() {
 
   // 特效只存在于原版布局 + 水墨青黛 / 桃花源 / 暖阳橙 这几个主题上；
   // 其余情况（含桌面风格——它会把主题强制成经典）把开关置灰，避免点了没反应。
-  const tapAvailable = uiMode === "classic" && (theme === "chinese" || theme === "peach" || theme === "alpine");
-  const ambientAvailable = uiMode === "classic" && (theme === "chinese" || theme === "peach" || theme === "sunset" || theme === "alpine");
+  // 流畅模式开启时特效一律按关闭生效，两个开关同样置灰。
+  const tapAvailable = !performanceMode && uiMode === "classic" && (theme === "chinese" || theme === "peach" || theme === "alpine");
+  const ambientAvailable = !performanceMode && uiMode === "classic" && (theme === "chinese" || theme === "peach" || theme === "sunset" || theme === "alpine");
 
   return (
     <article className="personal-card preferences-card">
@@ -62,6 +65,20 @@ export function PreferencesPanel() {
             aria-label="显示积分数字"
             className={ballPointsVisible ? "preferences-switch is-on" : "preferences-switch"}
             onClick={toggleBallPointsVisible}
+          >
+            <span aria-hidden="true" />
+          </button>
+        </div>
+
+        <div className="preferences-row">
+          <span className="preferences-row-label">流畅模式</span>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={performanceMode}
+            aria-label="流畅模式"
+            className={performanceMode ? "preferences-switch is-on" : "preferences-switch"}
+            onClick={togglePerformanceMode}
           >
             <span aria-hidden="true" />
           </button>

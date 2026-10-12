@@ -5,10 +5,11 @@ import inspect
 import io
 import json
 import threading
+import time
 import uuid
 import zipfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from PIL import Image, ImageDraw
 from pydantic import ValidationError
@@ -1626,18 +1627,164 @@ class PodCustomizationService:
             if self._cache_sweep_stop.wait(timeout=48 * 3600):
                 break
 
-    def reap_stale_local_cache_once(self, *, older_than_hours: int = 48) -> list[str]:
-        """Clear local image cache older than the given window and return removed paths."""
-        relative_paths = self.repository.reap_stale_local_cache(older_than_hours=older_than_hours)
+    def _remove_asset_files(self, relative_paths: list[str]) -> tuple[int, int]:
+        """Best-effort removal of stored asset files; returns (removed_count, freed_bytes).
+
+        Removal always goes through :meth:`PodAssetStore.remove` (path guard +
+        empty-parent cleanup). A failed removal must never abort the sweep —
+        whatever is left gets re-collected on the next pass.
+        """
+
+        import logging
+
+        logger = logging.getLogger(__name__)
+        removed = 0
+        freed = 0
         for relative_path in relative_paths:
+            size = 0
+            try:
+                size = self.assets.path(relative_path).stat().st_size
+            except (FileNotFoundError, OSError, ValueError):
+                size = 0
             try:
                 self.assets.remove(relative_path)
             except Exception:
-                import logging
-                logging.getLogger(__name__).warning(
+                logger.warning(
                     "POD stale-cache sweeper failed to remove %s", relative_path
                 )
+                continue
+            removed += 1
+            freed += size
+        return removed, freed
+
+    def reap_stale_local_cache_once(self, *, older_than_hours: int = 48) -> list[str]:
+        """Clear local image cache older than the given window and return removed paths."""
+        relative_paths = self.repository.reap_stale_local_cache(older_than_hours=older_than_hours)
+        self._remove_asset_files(relative_paths)
         return relative_paths
+
+    def preview_local_cache(self, *, older_than_hours: int = 48) -> dict[str, Any]:
+        """扫描本机图片缓存（只读）：按「可勾选分类」返回可释放的文件数与字节数。
+
+        行级分类在回滚事务里试算（与执行共用同一段逻辑，见 repository 的
+        ``preview_selected_categories``）；磁盘孤儿只扫描、不删除。
+        """
+        path_map = self.repository.preview_selected_categories(older_than_hours=older_than_hours)
+        path_map[self.repository.SWEEP_CATEGORY_DISK_ORPHANS] = self._scan_disk_orphans(
+            older_than_hours=older_than_hours
+        )
+        categories: list[dict[str, Any]] = []
+        total_files = 0
+        total_bytes = 0
+        for key in self.repository.SWEEP_CATEGORY_KEYS:
+            files, freed = self._measure_asset_files(path_map.get(key, []))
+            categories.append({"key": key, "files": files, "bytes": freed})
+            total_files += files
+            total_bytes += freed
+        return {
+            "older_than_hours": int(older_than_hours),
+            "categories": categories,
+            "total_files": total_files,
+            "total_bytes": total_bytes,
+        }
+
+    def sweep_local_cache(
+        self,
+        *,
+        older_than_hours: int = 48,
+        categories: Sequence[str] | None = None,
+    ) -> dict[str, Any]:
+        """手动缓存清扫（支持按分类勾选；见 docs/POD-本地图片缓存与清理说明.md §8）。
+
+        ``categories=None`` 表示全选（旧「一键清理」语义，兼容旧调用）；显式空列表
+        表示什么都不清。全程只碰本地缓存与资产行，不碰模板、业务数据与图床对象：
+
+        1. 行级分类（``published_release`` / ``terminal_intermediates`` /
+           ``unreferenced_residue``）：已发布图床的旧结果释放本地指针、终态批次的
+           中间图解引用、超窗且无任何表引用的资产行删除——选中的分类在单事务内按序执行；
+        2. 磁盘对账（``disk_orphans``）：磁盘上「不在 ``pod_customization_assets``
+           ``.relative_path`` 集合里且 mtime 超窗」的文件（跳过写入中的临时文件）。
+           这类文件没有任何资产行引用，行级清扫永远回收不到，必须反向扫描；
+        3. 释放量按删除前实际文件大小累加（文件缺失计 0，不中断）。
+        """
+
+        selected: tuple[str, ...] = (
+            self.repository.SWEEP_CATEGORY_KEYS
+            if categories is None
+            else tuple(dict.fromkeys(categories))
+        )
+        unknown = [key for key in selected if key not in self.repository.SWEEP_CATEGORY_KEYS]
+        if unknown:
+            raise PodRepositoryError(f"未知的缓存清扫分类: {', '.join(unknown)}", 400)
+
+        per_category: dict[str, dict[str, int]] = {
+            key: {"files": 0, "bytes": 0} for key in self.repository.SWEEP_CATEGORY_KEYS
+        }
+
+        row_selected = [key for key in self.repository.SWEEP_ROW_CATEGORIES if key in set(selected)]
+        if row_selected:
+            freed_paths = self.repository.sweep_selected_categories(
+                categories=row_selected, older_than_hours=older_than_hours
+            )
+            for key in row_selected:
+                files, freed = self._remove_asset_files(freed_paths.get(key, []))
+                per_category[key] = {"files": files, "bytes": freed}
+
+        disk_key = self.repository.SWEEP_CATEGORY_DISK_ORPHANS
+        if disk_key in set(selected):
+            orphan_paths = self._scan_disk_orphans(older_than_hours=older_than_hours)
+            files, freed = self._remove_asset_files(orphan_paths)
+            per_category[disk_key] = {"files": files, "bytes": freed}
+
+        total_files = sum(item["files"] for item in per_category.values())
+        total_bytes = sum(item["bytes"] for item in per_category.values())
+        orphan_files = per_category[disk_key]["files"]
+
+        result = {
+            "older_than_hours": int(older_than_hours),
+            "categories": per_category,
+            "files_removed": total_files,
+            "bytes_freed": total_bytes,
+            "reaped_assets": total_files - orphan_files,
+            "orphan_files_removed": orphan_files,
+        }
+        import logging
+
+        logging.getLogger(__name__).info(
+            "POD manual cache sweep: files=%d bytes=%d reaped_assets=%d orphans=%d window_hours=%d categories=%s",
+            result["files_removed"],
+            result["bytes_freed"],
+            result["reaped_assets"],
+            result["orphan_files_removed"],
+            result["older_than_hours"],
+            ",".join(selected),
+        )
+        return result
+
+    def _scan_disk_orphans(self, *, older_than_hours: int) -> list[str]:
+        """磁盘上没有任何资产行引用、且超过保留期的文件（跳过写入中的临时文件）。"""
+
+        window_seconds = max(1, int(older_than_hours)) * 3600
+        known_paths = self.repository.list_asset_relative_paths()
+        now = time.time()
+        return [
+            relative_path
+            for relative_path, _size, mtime in self.assets.iter_stored_files()
+            if relative_path not in known_paths and now - mtime >= window_seconds
+        ]
+
+    def _measure_asset_files(self, relative_paths: list[str]) -> tuple[int, int]:
+        """按删除口径测量（文件缺失计 0，与 ``_remove_asset_files`` 的记账一致）。"""
+
+        files = 0
+        total = 0
+        for relative_path in relative_paths:
+            files += 1
+            try:
+                total += self.assets.path(relative_path).stat().st_size
+            except (FileNotFoundError, OSError, ValueError):
+                pass
+        return files, total
 
     def reap_stuck_batches_once(self) -> list[dict]:
         """Reap batches that have not progressed within the inactivity window.

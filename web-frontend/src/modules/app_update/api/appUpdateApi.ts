@@ -1,5 +1,5 @@
 import { httpJson, toUserMessage } from "../../../transport/http/client";
-import type { AppUpdateStatus, PatchStatus } from "../updateState";
+import type { AppUpdateStatus, ChangelogSnapshot, PatchStatus } from "../updateState";
 
 const STATUS_PATH = "/api/app-update/status";
 const CHECK_PATH = "/api/app-update/check";
@@ -8,6 +8,7 @@ const SNOOZE_PATH = "/api/app-update/snooze";
 const PATCH_STATUS_PATH = "/api/app-update/patch/status";
 const PATCH_CHECK_PATH = "/api/app-update/patch/check";
 const PATCH_INSTALL_PATH = "/api/app-update/patch/install";
+const CHANGELOG_PATH = "/api/app-update/changelog";
 
 /**
  * 后端把更新失败原因放在 `error` 里，内容是英文技术文案
@@ -27,4 +28,5 @@ export const appUpdateApi = {
   patchStatus: () => httpJson<PatchStatus>(PATCH_STATUS_PATH).then(localizeError),
   patchCheck: () => httpJson<PatchStatus>(PATCH_CHECK_PATH, { method: "POST" }).then(localizeError),
   patchInstall: () => httpJson<PatchStatus>(PATCH_INSTALL_PATH, { method: "POST" }).then(localizeError),
+  changelog: () => httpJson<ChangelogSnapshot>(CHANGELOG_PATH),
 };
