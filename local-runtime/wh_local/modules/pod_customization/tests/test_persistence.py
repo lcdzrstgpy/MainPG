@@ -10,10 +10,7 @@ from PIL import Image
 from wh_local.modules.pod_customization.contracts import (
     BatchCreate,
     BusinessFields,
-    Calibration,
     ListingFields,
-    NormalizedPoint,
-    NormalizedRect,
     SemiBatchCreate,
 )
 from wh_local.modules.pod_customization.service import PodCustomizationService
@@ -53,44 +50,23 @@ def _listing_fields() -> ListingFields:
     )
 
 
-def test_template_upload_and_calibration_create_immutable_versioned_snapshot(tmp_path: Path) -> None:
+def test_template_upload_creates_an_immutable_versioned_snapshot(tmp_path: Path) -> None:
     service = _service(tmp_path)
     actor = _actor()
     uploaded = service.upload_template(actor, name="Tote fixed scene", filename="scene.png", content=_png())
 
     assert uploaded["source"] == "personal"
-    assert uploaded["calibration_status"] == "pending"
     assert uploaded["width"] == 320
     assert uploaded["height"] == 240
 
-    ready = service.update_template_calibration(
-        actor,
-        uploaded["id"],
-        Calibration(
-            mask=NormalizedRect(x=0.25, y=0.2, width=0.5, height=0.6),
-            anchor=NormalizedPoint(x=0.5, y=0.5),
-        ),
-    )
-
     snapshots = service.repository.list_template_snapshots(uploaded["id"], actor.workspace_id, actor.id)
-    assert ready["calibration_status"] == "ready"
-    assert [snapshot["version"] for snapshot in snapshots] == [1, 2]
-    assert snapshots[0]["calibration_json"] == "null"
-    assert '"width":0.5' in snapshots[1]["calibration_json"]
+    assert [snapshot["version"] for snapshot in snapshots] == [1]
 
 
-def test_batch_keeps_template_and_builtin_prompt_snapshot_after_template_changes(tmp_path: Path) -> None:
+def test_batch_keeps_the_template_and_builtin_prompt_snapshot(tmp_path: Path) -> None:
     service = _service(tmp_path)
     actor = _actor()
     template = service.upload_template(actor, name="Mug scene", filename="mug.png", content=_png())
-    service.update_template_calibration(
-        actor,
-        template["id"],
-        Calibration(
-            mask=NormalizedRect(x=0.2, y=0.2, width=0.6, height=0.6),
-            anchor=NormalizedPoint(x=0.5, y=0.5),
-        ),
-    )
     batch = service.create_batch(
         actor,
         BatchCreate(
@@ -109,19 +85,13 @@ def test_batch_keeps_template_and_builtin_prompt_snapshot_after_template_changes
         enqueue=False,
     )
 
-    service.update_template_calibration(
-        actor,
-        template["id"],
-        Calibration(
-            mask=NormalizedRect(x=0.1, y=0.1, width=0.8, height=0.8),
-            anchor=NormalizedPoint(x=0.5, y=0.5),
-        ),
-    )
+    # 之后又上传了新模板，批次仍必须冻结在创建时绑定的那份模板快照上。
+    service.upload_template(actor, name="Later scene", filename="later.png", content=_png())
     stored = service.get_batch(actor, batch["id"])
 
     assert stored["template_snapshot_id"] == batch["template_snapshot_id"]
-    assert stored["template"]["calibration"]["mask"]["width"] == 0.6
-    assert stored["prompt_version"] == "v1"
+    # 提示词版本以服务端为准：请求里传的是 v1，入库必须被服务端改写成当前版本。
+    assert stored["prompt_version"] == "v2"
     assert "Stoneware mug" in stored["prompt_snapshot"]
     assert "quiet coastal geometry" in stored["prompt_snapshot"]
     assert stored["style_grid"] is True
@@ -140,32 +110,10 @@ def test_templates_are_workspace_shared_while_batches_remain_owner_private(tmp_p
     assert service.list_templates(outsider)["templates"] == []
 
 
-def test_calibration_has_a_deterministic_fallback_when_runtime_has_no_vision_calibrator(tmp_path: Path) -> None:
-    service = _service(tmp_path)
-    actor = _actor()
-    template = service.upload_template(actor, name="Fallback scene", filename="scene.png", content=_png())
-
-    calibrated = service.calibrate_template(actor, template["id"])
-
-    assert calibrated["calibration_status"] == "ready"
-    assert calibrated["calibration"] == {
-        "mask": {"x": 0.2, "y": 0.2, "width": 0.6, "height": 0.6},
-        "anchor": {"x": 0.5, "y": 0.5},
-    }
-
-
 def test_startup_recovery_marks_interrupted_batch_as_retryable_failure(tmp_path: Path) -> None:
     service = _service(tmp_path)
     actor = _actor()
     template = service.upload_template(actor, name="Recovery scene", filename="scene.png", content=_png())
-    service.update_template_calibration(
-        actor,
-        template["id"],
-        Calibration(
-            mask=NormalizedRect(x=0.2, y=0.2, width=0.6, height=0.6),
-            anchor=NormalizedPoint(x=0.5, y=0.5),
-        ),
-    )
     batch = service.create_batch(
         actor,
         BatchCreate(
@@ -259,14 +207,6 @@ def test_full_batch_list_excludes_semi_batches(tmp_path: Path) -> None:
     service = _service(tmp_path)
     actor = _actor()
     template = service.upload_template(actor, name="Mug scene", filename="mug.png", content=_png())
-    service.update_template_calibration(
-        actor,
-        template["id"],
-        Calibration(
-            mask=NormalizedRect(x=0.2, y=0.2, width=0.6, height=0.6),
-            anchor=NormalizedPoint(x=0.5, y=0.5),
-        ),
-    )
     full = service.create_batch(
         actor,
         BatchCreate(
@@ -306,14 +246,6 @@ def test_listing_snapshot_and_style_copy_are_persisted_with_historical_null_comp
     service = _service(tmp_path)
     actor = _actor()
     template = service.upload_template(actor, name="Mug scene", filename="mug.png", content=_png())
-    service.update_template_calibration(
-        actor,
-        template["id"],
-        Calibration(
-            mask=NormalizedRect(x=0.2, y=0.2, width=0.6, height=0.6),
-            anchor=NormalizedPoint(x=0.5, y=0.5),
-        ),
-    )
     batch = service.create_batch(
         actor,
         BatchCreate(
@@ -352,14 +284,6 @@ def test_style_copy_repository_preserves_batch_ownership(tmp_path: Path) -> None
     actor = _actor()
     stranger = _actor(user_id="operator-2")
     template = service.upload_template(actor, name="Scene", filename="scene.png", content=_png())
-    service.update_template_calibration(
-        actor,
-        template["id"],
-        Calibration(
-            mask=NormalizedRect(x=0.2, y=0.2, width=0.6, height=0.6),
-            anchor=NormalizedPoint(x=0.5, y=0.5),
-        ),
-    )
     batch = service.create_batch(
         actor,
         BatchCreate(
@@ -383,14 +307,6 @@ def test_claim_batch_with_epoch_returns_positive_epoch_on_first_claim(tmp_path: 
     service = _service(tmp_path)
     actor = _actor()
     template = service.upload_template(actor, name="Epoch test", filename="epoch.png", content=_png())
-    service.update_template_calibration(
-        actor,
-        template["id"],
-        Calibration(
-            mask=NormalizedRect(x=0.2, y=0.2, width=0.6, height=0.6),
-            anchor=NormalizedPoint(x=0.5, y=0.5),
-        ),
-    )
     batch = service.create_batch(
         actor,
         BatchCreate(
@@ -413,14 +329,6 @@ def test_claim_batch_with_epoch_returns_none_when_batch_already_active(tmp_path:
     service = _service(tmp_path)
     actor = _actor()
     template = service.upload_template(actor, name="Epoch test 2", filename="epoch2.png", content=_png())
-    service.update_template_calibration(
-        actor,
-        template["id"],
-        Calibration(
-            mask=NormalizedRect(x=0.2, y=0.2, width=0.6, height=0.6),
-            anchor=NormalizedPoint(x=0.5, y=0.5),
-        ),
-    )
     batch = service.create_batch(
         actor,
         BatchCreate(
@@ -450,14 +358,6 @@ def test_reap_stuck_batches_once_expires_stale_batch(tmp_path: Path) -> None:
     actor = _actor()
 
     template = service.upload_template(actor, name="Reaper test", filename="r.png", content=_png())
-    service.update_template_calibration(
-        actor,
-        template["id"],
-        Calibration(
-            mask=NormalizedRect(x=0.2, y=0.2, width=0.6, height=0.6),
-            anchor=NormalizedPoint(x=0.5, y=0.5),
-        ),
-    )
     batch = service.create_batch(
         actor,
         BatchCreate(

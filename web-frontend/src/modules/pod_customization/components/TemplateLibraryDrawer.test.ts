@@ -19,6 +19,8 @@ test("system template tab is backed by local snapshots and not server system tem
   assert.doesNotMatch(source, /templates\.filter\(\(template\) => template\.source === scope\)/);
 });
 
-test("switching saved system templates refreshes the read-only calibration snapshot", () => {
-  assert.match(source, /\[activeTemplate\?\.id, activeTemplate\?\.updated_at, activeSystemTemplate\?\.id\]/);
+test("the preview panel replaced the calibration canvas with a plain snapshot", () => {
+  assert.match(source, /pod-template-preview-panel/);
+  assert.match(source, /<PodAssetImage path=\{activeTemplate\.preview_url \|\| activeTemplate\.original_url\}/);
+  assert.doesNotMatch(source, /Calibration|calibration|蒙版|锚点/);
 });

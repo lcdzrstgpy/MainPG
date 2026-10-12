@@ -71,12 +71,12 @@ POD_MIGRATION_CONTRACTS: dict[str, MigrationEffect] = {
             ),
             "pod_customization_templates": _table(
                 "template_id workspace_id owner_user_id name source asset_id width height "
-                "calibration_status calibration_json error_message version deleted_at created_at updated_at",
+                "error_message version deleted_at created_at updated_at",
                 checks=("CHECK (source IN ('system', 'personal'))",),
             ),
             "pod_customization_template_snapshots": _table(
                 "snapshot_id template_id workspace_id owner_user_id version name source asset_id "
-                "width height calibration_json created_at"
+                "width height created_at"
             ),
             "pod_customization_batches": _table(
                 "batch_id workspace_id owner_user_id title status template_id template_snapshot_id "
@@ -389,6 +389,21 @@ POD_MIGRATION_CONTRACTS: dict[str, MigrationEffect] = {
             ),
         },
     ),
+    "019_drop_template_calibration": MigrationEffect(
+        tables={
+            "pod_customization_templates": _table(
+                "template_id workspace_id owner_user_id name source asset_id width height "
+                "error_message version deleted_at created_at updated_at",
+                checks=("CHECK (source IN ('system', 'personal'))",),
+                absent_checks=("calibration_status", "calibration_json"),
+            ),
+            "pod_customization_template_snapshots": _table(
+                "snapshot_id template_id workspace_id owner_user_id version name source asset_id "
+                "width height created_at",
+                absent_checks=("calibration_json",),
+            ),
+        },
+    ),
 }
 
 
@@ -453,6 +468,8 @@ def ensure_pod_migration(
         _apply_or_recover_007(connection, sql)
     elif migration_name == "008_persistent_billing_runs":
         _apply_or_recover_008(connection, sql, marker_exists=marker_exists)
+    elif migration_name == "019_drop_template_calibration":
+        _apply_019(connection, sql)
     else:
         connection.executescript(sql)
 
@@ -502,6 +519,34 @@ def _apply_005(connection: sqlite3.Connection, sql: str) -> None:
         connection, "pod_customization_batches"
     ):
         connection.execute(f"{alter_token}{alter_statement}")
+
+
+_DROPPED_CALIBRATION_COLUMNS = (
+    ("pod_customization_templates", "calibration_status"),
+    ("pod_customization_templates", "calibration_json"),
+    ("pod_customization_template_snapshots", "calibration_json"),
+)
+
+
+def _apply_019(connection: sqlite3.Connection, sql: str) -> None:
+    """删除存量库里的模板标定列。
+
+    001 已不再创建这些列，因此新库天然没有；这里逐列判断存在性后再 DROP，
+    保证中断重放时不会因「列已不存在」而失败。
+    """
+    statements = [
+        f"ALTER TABLE {_quoted(table)} DROP COLUMN {_quoted(column)};"
+        for table, column in _DROPPED_CALIBRATION_COLUMNS
+        if column in _table_columns(connection, table)
+    ]
+    if not statements:
+        return
+    rebuild_sql = (
+        "PRAGMA foreign_keys = OFF;\nBEGIN IMMEDIATE;\n"
+        + "\n".join(statements)
+        + "\nCOMMIT;\nPRAGMA foreign_keys = ON;\n"
+    )
+    _executescript_restoring_foreign_keys(connection, rebuild_sql)
 
 
 def _apply_or_recover_007(connection: sqlite3.Connection, sql: str) -> None:

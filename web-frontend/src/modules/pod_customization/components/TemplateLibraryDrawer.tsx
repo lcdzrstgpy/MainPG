@@ -2,10 +2,8 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 
 import type { PodSystemTemplate } from "../data/podCustomizationDraft";
-import { defaultTemplateCalibration } from "../data/podCustomizationModel";
 import { PodAssetImage } from "../data/usePodAssetUrl";
-import type { PodTemplate, PodTemplateCalibration } from "../types";
-import { TemplateCalibrationCanvas } from "./TemplateCalibrationCanvas";
+import type { PodTemplate } from "../types";
 
 type Props = {
   open: boolean;
@@ -18,18 +16,7 @@ type Props = {
   onApplySystemTemplate?: (template: PodSystemTemplate) => void;
   onDeleteSystemTemplate?: (templateId: string) => void;
   onUpload: (file: File, name: string) => Promise<PodTemplate>;
-  onCalibrate: (templateId: string) => Promise<PodTemplate>;
-  onSaveCalibration: (templateId: string, calibration: PodTemplateCalibration) => Promise<PodTemplate>;
 };
-
-function calibrationLabel(template: PodTemplate): string {
-  return ({
-    pending: "待标定",
-    calibrating: "AI 标定中",
-    ready: "标定完成",
-    failed: "标定失败",
-  } as const)[template.calibration_status];
-}
 
 function savedAtLabel(createdAt: string): string {
   const savedAt = new Date(createdAt);
@@ -48,13 +35,10 @@ export function TemplateLibraryDrawer({
   onApplySystemTemplate,
   onDeleteSystemTemplate,
   onUpload,
-  onCalibrate,
-  onSaveCalibration,
 }: Props) {
   const [scope, setScope] = useState<"system" | "personal">("system");
   const [activePersonalTemplateId, setActivePersonalTemplateId] = useState("");
   const [activeSystemTemplateId, setActiveSystemTemplateId] = useState("");
-  const [calibration, setCalibration] = useState<PodTemplateCalibration>(defaultTemplateCalibration());
   const [uploadName, setUploadName] = useState("");
   const [uploadFile, setUploadFile] = useState<File>();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -87,10 +71,6 @@ export function TemplateLibraryDrawer({
   }, [open, selectedTemplateId, systemTemplates, templates]);
 
   useEffect(() => {
-    setCalibration(activeTemplate?.calibration ?? defaultTemplateCalibration());
-  }, [activeTemplate?.id, activeTemplate?.updated_at, activeSystemTemplate?.id]);
-
-  useEffect(() => {
     if (!open) return;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
@@ -119,7 +99,8 @@ export function TemplateLibraryDrawer({
       setUploadFile(undefined);
       setUploadName("");
       if (fileRef.current) fileRef.current.value = "";
-      await onCalibrate(created.id);
+      // 上传即应用：模板已选中，直接收起抽屉回到批次表单。
+      onClose();
     } catch {
       // The page-level handlers surface the actionable API error.
     }
@@ -137,7 +118,7 @@ export function TemplateLibraryDrawer({
           <div>
             <span>POD TEMPLATE LIBRARY</span>
             <h2>产品模板库</h2>
-            <p>每个批次只绑定一个完成标定的产品模板。</p>
+            <p>每个批次只绑定一个产品模板。</p>
           </div>
           <button type="button" onClick={onClose} aria-label="关闭">×</button>
         </header>
@@ -157,7 +138,7 @@ export function TemplateLibraryDrawer({
                   <span>{uploadFile?.name || "选择 PNG / JPG 产品模板"}</span>
                   <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => setUploadFile(event.target.files?.[0])} />
                 </label>
-                <button type="submit" className="pod-primary-button" disabled={!uploadFile || Boolean(busyAction)}>{busyAction === "upload" ? "上传中…" : "上传并 AI 标定"}</button>
+                <button type="submit" className="pod-primary-button" disabled={!uploadFile || Boolean(busyAction)}>{busyAction === "upload" ? "上传中…" : "上传模板"}</button>
               </form>
             )}
 
@@ -184,7 +165,7 @@ export function TemplateLibraryDrawer({
                   }}
                 >
                   <PodAssetImage path={template.preview_url || template.original_url} alt="" loading="lazy" />
-                  <span><b>{template.name}</b><small className={`status-${template.calibration_status}`}>{calibrationLabel(template)}</small></span>
+                  <span><b>{template.name}</b><small>{savedAtLabel(template.created_at)}</small></span>
                   {selectedTemplateId === template.id && <i>本批次</i>}
                 </button>
               ))}
@@ -193,36 +174,29 @@ export function TemplateLibraryDrawer({
             </div>
           </section>
 
-          <section className="pod-template-calibration-panel">
+          <section className="pod-template-preview-panel">
             {activeTemplate ? (
               <>
                 <div className="pod-template-panel-title">
-                  <div><span>{scope === "system" ? "SAVED PROMPT &amp; SNAPSHOT" : "MASK & ANCHOR"}</span><h3>{scope === "system" ? activeSystemTemplate?.name : activeTemplate.name}</h3></div>
-                  {scope === "personal" && <span className={`pod-calibration-status status-${activeTemplate.calibration_status}`}>{calibrationLabel(activeTemplate)}</span>}
-                  {scope === "system" && <span className="pod-calibration-status status-ready">图片快照</span>}
+                  <div><span>{scope === "system" ? "SAVED PROMPT &amp; SNAPSHOT" : "TEMPLATE SNAPSHOT"}</span><h3>{scope === "system" ? activeSystemTemplate?.name : activeTemplate.name}</h3></div>
+                  {scope === "system" && <span className="pod-template-badge">图片快照</span>}
                 </div>
-                <TemplateCalibrationCanvas
-                  template={activeTemplate}
-                  calibration={calibration}
-                  disabled={scope === "system"}
-                  onChange={scope === "system" ? () => undefined : setCalibration}
-                />
+                {scope === "personal" && <p className="pod-template-hint">点左侧模板即应用于本批次，无需再确认。</p>}
+                <div className="pod-template-preview">
+                  <PodAssetImage path={activeTemplate.preview_url || activeTemplate.original_url} alt={activeTemplate.name} />
+                </div>
                 {scope === "system" && activeSystemTemplate && <details className="pod-system-template-prompt"><summary>查看已保存提示词</summary><pre>{activeSystemTemplate.creativePrompt}</pre></details>}
                 {scope === "personal" && activeTemplate.error_message && <p className="pod-template-error">{activeTemplate.error_message}</p>}
-                <div className="pod-template-calibration-actions">
-                  {scope === "personal" && <>
-                    <button type="button" disabled={Boolean(busyAction)} onClick={() => void onCalibrate(activeTemplate.id).catch(() => undefined)}><span className="iconfont icon-robot" /> AI 自动标定</button>
-                    <button type="button" className="pod-primary-button" disabled={Boolean(busyAction)} onClick={() => void onSaveCalibration(activeTemplate.id, calibration).catch(() => undefined)}>保存微调</button>
-                  </>}
-                  {scope === "system" && activeSystemTemplate ? <>
+                {scope === "system" && activeSystemTemplate && (
+                  <div className="pod-template-preview-actions">
                     {(!linkedTemplateAvailable || !systemTemplateActionsAvailable) && <p className="pod-system-template-unavailable">{linkedTemplateAvailable ? "系统模板操作暂不可用。" : "系统模板绑定的图片已不可用，无法用于本批次。"}</p>}
                     <button type="button" disabled={!onDeleteSystemTemplate} onClick={() => { onDeleteSystemTemplate?.(activeSystemTemplate.id); setActiveSystemTemplateId(""); }}>删除模板</button>
                     <button type="button" className="pod-primary-button" disabled={!linkedTemplateAvailable || !systemTemplateActionsAvailable} onClick={() => { if (!linkedTemplateAvailable || !onApplySystemTemplate) return; onApplySystemTemplate(activeSystemTemplate); onClose(); }}>用于本批次</button>
-                  </> : <button type="button" className={activeTemplate.calibration_status === "ready" ? "pod-primary-button" : ""} disabled={activeTemplate.calibration_status !== "ready"} onClick={() => { onSelect(activeTemplate.id); onClose(); }}>用于本批次</button>}
-                </div>
+                  </div>
+                )}
               </>
             ) : (
-              <div className="pod-template-empty pod-template-empty-large"><span className="iconfont icon-skin" /><p>选择模板后在这里查看标定。</p></div>
+              <div className="pod-template-empty pod-template-empty-large"><span className="iconfont icon-skin" /><p>选择模板后在这里查看预览。</p></div>
             )}
           </section>
         </div>

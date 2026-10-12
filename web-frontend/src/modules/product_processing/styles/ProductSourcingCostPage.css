@@ -65,8 +65,8 @@
 }
 
 .psc-filter-search {
-  flex: 1;
-  min-width: 200px;
+  flex: 0 1 200px;
+  min-width: 160px;
 }
 
 .psc-filter-date {
@@ -106,18 +106,20 @@
 }
 
 .psc-filter-reset {
-  padding: 9px 18px;
-  border: 1px solid #cfe0eb;
-  border-radius: 9px;
+  padding: 6px 14px;
+  border: 1px solid #dbe8f1;
+  border-radius: 8px;
   background: #fff;
-  color: #2f5878;
-  font-weight: 700;
+  color: #6b829a;
+  font-size: 0.8rem;
+  font-weight: 600;
   cursor: pointer;
 }
 
 .psc-filter-reset:hover {
   border-color: #82c9ef;
-  box-shadow: 0 6px 14px #188bd61a;
+  color: #2f5878;
+  box-shadow: 0 4px 10px #188bd61a;
 }
 
 .psc-message {
@@ -134,6 +136,57 @@
   background: #fff5f5;
   border-color: #ffd5d5;
   color: #db5960;
+}
+
+.psc-bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.psc-bulk-count {
+  font-size: 0.84rem;
+  color: #526a82;
+}
+
+.psc-bulk-count strong {
+  color: #0a8fca;
+}
+
+.psc-bulk-delete {
+  padding: 6px 16px;
+  border: 1px solid #f3c6c8;
+  border-radius: 8px;
+  background: #fdecec;
+  color: #c0392b;
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.psc-bulk-delete:hover:not(:disabled) {
+  border-color: #e79a9d;
+  background: #fbdedf;
+}
+
+.psc-bulk-delete:disabled {
+  cursor: not-allowed;
+  color: #c7a9ab;
+  background: #faf1f1;
+  border-color: #f2dfe0;
+}
+
+.psc-cell-select {
+  width: 40px;
+  text-align: center;
+}
+
+.psc-cell-select input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: #0a8fca;
 }
 
 .psc-table-wrap {

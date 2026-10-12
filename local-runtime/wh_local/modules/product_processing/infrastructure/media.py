@@ -33,7 +33,7 @@ import requests
 from ..domain.policy import is_safe_external_url, resolve_safe_external_url
 from ..server_ai_proxy import gateway_base_url, remote_token, usage_id
 from ....config import is_ip_literal_host
-from ....media_enhance import EnhanceOptions, sharpen
+from ....media_enhance import EnhanceOptions, enhance_panel
 from ...ai_service.temporary_cos import (
     TemporaryCosStore,
     TemporaryReference,
@@ -622,8 +622,8 @@ class ProductImageProcessor:
         每格仅 trim 1% 边距后缩放到 DXM_IMAGE_TARGET_SIZE(800×800)，汇总图居中裁方后缩放到 800×800。
 
         ``enhance`` 为显式 opt-in：默认 ``None`` 时**输出与历史逐字节一致**（product_processing
-        与 POD 共用本方法，绝不能默默改变既有两个模块的成品）。传入参数时在"缩放之后、
-        JPEG 编码之前"做轻度锐化——此时锐化才有效，且全流程只编一次码。
+        与 POD 共用本方法，绝不能默默改变既有两个模块的成品）。传入参数时在编码之前做清晰化
+        （默认 ONNX 4× 超分后退回目标尺寸，失败自动回退 USM 锐化）——全流程只编一次码。
         """
         try:
             from PIL import Image  # type: ignore
@@ -653,10 +653,12 @@ class ProductImageProcessor:
         for index, panel in enumerate(panels, start=1):
             # 裁掉拆分后边缘残留的白色分隔线（模型实际画的分隔线常宽于 scaffold）。
             panel = _inset_grid_panel(panel)
-            resized = panel.resize((target_size, target_size), Image.Resampling.LANCZOS)
             if enhance is not None and enhance.enabled:
-                # 锐化必须在重采样之后（放前面会被插值抹掉），且在 JPEG 编码之前（全程只编一次码）。
-                resized = sharpen(resized, enhance)
+                # 清晰化在 JPEG 编码之前，且全程只编一次码：ONNX 走"先 4× 超分再降到目标尺寸"，
+                # 失败自动回落 USM 锐化（见 wh_local/media_enhance.py）。放缩放之前会被插值抹掉。
+                resized = enhance_panel(panel, target_size, enhance)
+            else:
+                resized = panel.resize((target_size, target_size), Image.Resampling.LANCZOS)
             content = _image_to_jpeg_bytes(resized)
             result.append(
                 GeneratedMedia(
