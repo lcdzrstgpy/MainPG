@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
 import threading
 import time
@@ -291,6 +292,21 @@ class CustomerAuthClient:
             payload,
             headers={"Authorization": f"Bearer {remote_token}"},
         )
+
+    def upload_pod_log(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """上传本地 POD 业务日志（``pod_processing.log``）到平台。
+
+        **POD 专用新接口**（不是启动器那个 ``/api/customer/log-upload``）；路径可用
+        ``WH_LOCAL_POD_LOG_UPLOAD_PATH`` 覆盖，控制面挪接口时无需重发桌面版本。
+        body 为 base64 JSON：``log_name`` / ``content_b64`` / ``app_version`` / ``platform``。
+        """
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        path = (
+            os.environ.get("WH_LOCAL_POD_LOG_UPLOAD_PATH", "").strip()
+            or "/api/customer/pod-log"
+        )
+        return self._post(path, payload, headers={"Authorization": f"Bearer {remote_token}"})
 
     def list_my_feedback(self, remote_token: str, limit: int = 20, offset: int = 0) -> dict[str, Any]:
         """Fetch the current account's feedback history from the platform service."""

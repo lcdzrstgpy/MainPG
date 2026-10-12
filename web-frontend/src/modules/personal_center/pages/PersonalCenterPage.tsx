@@ -33,6 +33,7 @@ import { SystemVersionPanel } from "../components/SystemVersionPanel";
 import { PreferencesPanel } from "../components/PreferencesPanel";
 import { FeedbackPanel } from "../components/FeedbackPanel";
 import { PromotionPlanPanel } from "../components/PromotionPlanPanel";
+import { StorageSpacePanel } from "../components/StorageSpacePanel";
 import "../styles/personalCenter.css";
 
 type AccountSnapshot = {
@@ -333,7 +334,7 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
   const defaultUsageFilterKey = buildUsageFilterKey("", "", "", "");
 
   const [summary, setSummary] = useState<BillingSummary | null>(cachedBalance?.summary ?? null);
-  const [activePanel, setActivePanel] = useState<"wallet" | "usage" | "pricing" | "model" | "preferences" | "version" | "promo" | "feedback">("wallet");
+  const [activePanel, setActivePanel] = useState<"wallet" | "usage" | "pricing" | "model" | "preferences" | "version" | "storage" | "promo" | "feedback">("wallet");
 
   // 可用积分与积分构成的数字滚动动画（首次直接用缓存值，不闪）。
   const animatedAvailablePoints = useAnimatedNumber(summary?.wallet.available_points);
@@ -773,7 +774,12 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
     };
 
     refreshPaymentStatus();
-    const timer = window.setInterval(refreshPaymentStatus, 4000);
+    // 页面不可见时跳过本轮：用户切走模块或最小化窗口后不必每 4s 打接口；
+    // 重新可见时 visibilitychange / focus 会各补一次刷新，不影响到账感知。
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      refreshPaymentStatus();
+    }, 4000);
     window.addEventListener("focus", refreshPaymentStatus);
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
@@ -1272,7 +1278,6 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
                 <ul className="personal-upgrade-plan-benefits">
                   <li><b>购买立得 4000 积分</b>（充值积分，永久有效）</li>
                   <li>28 天内<b>每周可直接领取 1000 积分</b>（领到即永久）</li>
-                  <li>28 天后到期，自动回落体验版（每日签到 +100 限时积分）</li>
                 </ul>
                 <button
                   type="button"
@@ -1316,6 +1321,10 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
         <button type="button" className={activePanel === "version" ? "is-active" : ""} onClick={() => setActivePanel("version")}>
           <span className="iconfont icon-setting" aria-hidden="true" />
           <span>系统版本</span>
+        </button>
+        <button type="button" className={activePanel === "storage" ? "is-active" : ""} onClick={() => setActivePanel("storage")}>
+          <span className="iconfont icon-database" aria-hidden="true" />
+          <span>存储空间</span>
         </button>
         <button type="button" className={activePanel === "promo" ? "is-active" : ""} onClick={() => setActivePanel("promo")}>
           <span className="iconfont icon-gift" aria-hidden="true" />
@@ -1878,6 +1887,8 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
           <PreferencesPanel />
         ) : activePanel === "version" ? (
           <SystemVersionPanel />
+        ) : activePanel === "storage" ? (
+          <StorageSpacePanel />
         ) : activePanel === "promo" ? (
           <PromotionPlanPanel />
         ) : activePanel === "feedback" ? (

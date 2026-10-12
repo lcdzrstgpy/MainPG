@@ -79,6 +79,39 @@ test("legacy current-version drafts without a spec-card unit default to centimet
   assert.equal(loaded.state.spec_card.display_unit, "cm");
 });
 
+test("new POD drafts default the batch-wide craft and scene keys to empty strings", () => {
+  const fields = createEmptyPodCustomizationDraft().business_fields;
+  assert.equal(fields.fabric_craft, "");
+  assert.equal(fields.scene_mood, "");
+});
+
+test("batch-wide craft and scene round-trip through save and load", () => {
+  const storage = new MemoryStorage();
+  const draft = createEmptyPodCustomizationDraft();
+  draft.business_fields.fabric_craft = "绗缝";
+  draft.business_fields.scene_mood = "暖光木质厨房";
+  assert.deepEqual(savePodCustomizationDraft("account-a", "workspace-a", draft, storage), { ok: true });
+
+  const loaded = loadPodCustomizationDraft("account-a", "workspace-a", storage);
+  assert.equal(loaded.state.business_fields.fabric_craft, "绗缝");
+  assert.equal(loaded.state.business_fields.scene_mood, "暖光木质厨房");
+});
+
+test("old current-version drafts missing the batch-wide craft and scene keys normalize to empty strings", () => {
+  const storage = new MemoryStorage();
+  const draft = JSON.parse(JSON.stringify(createEmptyPodCustomizationDraft())) as Record<string, unknown>;
+  const business = draft.business_fields as Record<string, unknown>;
+  delete business.fabric_craft;
+  delete business.scene_mood;
+  storage.setItem(podCustomizationDraftStorageKey("account-a", "workspace-a"), JSON.stringify(draft));
+
+  const loaded = loadPodCustomizationDraft("account-a", "workspace-a", storage);
+
+  assert.equal(loaded.error, undefined);
+  assert.equal(loaded.state.business_fields.fabric_craft, "");
+  assert.equal(loaded.state.business_fields.scene_mood, "");
+});
+
 test("v2 POD drafts move their global weight and declared price into each SKU and dimensions into the spec card", () => {
   const storage = new MemoryStorage();
   const legacyKey = "mainpg:pod-customization:v2:account-a:workspace-a";

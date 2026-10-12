@@ -1,8 +1,11 @@
 /* 复用 pod_customization 的组件（如 PodBriefInput）依赖 --pod-* 主题变量，
    而这些变量只声明在 .pod-customization-page 上。半定制页根类不同，
    若不在此重复声明，`background: var(--pod-primary)` 会解析失败，
-   出现「白字 + 透明底」的隐形按钮。此处与全定制页保持同一套取值。 */
-.pod-semi-customization-page {
+   出现「白字 + 透明底」的隐形按钮。此处与全定制页保持同一套取值。
+   删除强确认弹窗 portal 到 body、脱离页面作用域（§6.3），其根类必须一并
+   挂进这条变量声明，否则弹窗背景会解析成透明。 */
+.pod-semi-customization-page,
+.pod-semi-delete-confirm-backdrop {
   --pod-surface: var(--theme-module-surface, #fff);
   --pod-surface-raised: var(--theme-module-surface-raised, #fff);
   --pod-surface-soft: var(--theme-module-surface-soft, #f7fafc);
@@ -15,7 +18,9 @@
   --pod-primary: var(--theme-primary, #0877d3);
   --pod-primary-rgb: var(--theme-module-primary-rgb, 8, 119, 211);
   --pod-shadow: var(--theme-module-shadow, rgba(26, 105, 149, .08));
+}
 
+.pod-semi-customization-page {
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -322,4 +327,27 @@
   .pod-semi-setup {
     max-width: 560px;
   }
+}
+
+/* ---- 半定制删除的专用强确认弹窗（§6.3）----
+   半定制没有图床备份，删除即永久丢失：弹窗必须明示「不可恢复」并引导先导出，
+   确认按钮用危险色（红）+ 表态文案，默认焦点在「取消」。 */
+.pod-semi-delete-confirm-backdrop { position: fixed; z-index: 300; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(16, 33, 54, .38); }
+.pod-semi-delete-confirm-dialog { display: grid; width: min(480px, 100%); overflow: hidden; border: 1px solid var(--pod-border-strong); border-radius: 16px; background: var(--pod-surface); box-shadow: 0 24px 72px rgba(16, 33, 54, .28); }
+.pod-semi-delete-confirm-dialog > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 18px 20px 14px; border-bottom: 1px solid var(--pod-border); }
+.pod-semi-delete-confirm-dialog > header > div > span { color: #c0392b; font-size: .6rem; font-weight: 900; letter-spacing: .12em; }
+.pod-semi-delete-confirm-dialog > header h2 { margin: 3px 0 0; color: var(--pod-text); font-size: 1.05rem; }
+.pod-semi-delete-confirm-dialog > header > button { width: 30px; height: 30px; flex: 0 0 auto; padding: 0; border: 1px solid var(--pod-border); border-radius: 9px; color: var(--pod-text-muted); background: var(--pod-surface); font-size: 1rem; cursor: pointer; }
+.pod-semi-delete-confirm-dialog > header > button:disabled { cursor: not-allowed; opacity: .55; }
+.pod-semi-delete-confirm-body { padding: 16px 20px; color: var(--pod-text-secondary); font-size: .72rem; line-height: 1.8; }
+.pod-semi-delete-confirm-body p { margin: 0 0 10px; }
+.pod-semi-delete-confirm-body p:last-child { margin-bottom: 0; }
+.pod-semi-delete-confirm-body strong { color: #c0392b; }
+.pod-semi-delete-confirm-count { display: block; margin-bottom: 8px; color: var(--pod-text); font-weight: 800; }
+.pod-semi-delete-confirm-dialog > footer { display: flex; justify-content: flex-end; gap: 8px; padding: 13px 20px; border-top: 1px solid var(--pod-border); background: var(--pod-surface-soft); }
+.pod-semi-delete-confirm-dialog > footer button { min-height: 32px; padding: 7px 12px; border: 1px solid var(--pod-border); border-radius: 8px; color: var(--pod-text-secondary); background: var(--pod-surface); font-size: .62rem; font-weight: 850; cursor: pointer; }
+.pod-semi-delete-confirm-dialog > footer button:disabled { cursor: not-allowed; opacity: .55; }
+.pod-semi-delete-confirm-danger { color: #fff !important; border-color: transparent !important; background: linear-gradient(105deg, #e2564d, #c0392b) !important; }
+@media (max-width: 820px) {
+  .pod-semi-delete-confirm-backdrop { padding: 12px; }
 }

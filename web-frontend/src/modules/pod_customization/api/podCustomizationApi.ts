@@ -142,7 +142,7 @@ export const podCustomizationApi = {
   }),
   getBatch: (batchId: string) => httpJson<PodBatch>(`${API_BASE}/batches/${encodeURIComponent(batchId)}`),
   // 智能前置层：把一句模糊输入转成结构化业务字段（权限与创建批次一致）。
-  generateBriefFields: (body: { brief: string; locale?: string }) => httpJson<PodBriefFieldsResponse>(
+  generateBriefFields: (body: { brief: string; locale?: string; fabric_craft?: string; scene_mood?: string }) => httpJson<PodBriefFieldsResponse>(
     `${API_BASE}/brief/fields`,
     { method: "POST", body, timeoutMs: BRIEF_GENERATE_TIMEOUT_MS },
   ),

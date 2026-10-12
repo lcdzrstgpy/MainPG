@@ -19,6 +19,8 @@ const EMPTY_BUSINESS_FIELDS: PodBusinessFieldsDraft = {
   target_audience: "",
   core_selling_points: "",
   design_theme: "",
+  fabric_craft: "",
+  scene_mood: "",
   style_keywords: "",
   color_preferences: "",
   excluded_elements: "",

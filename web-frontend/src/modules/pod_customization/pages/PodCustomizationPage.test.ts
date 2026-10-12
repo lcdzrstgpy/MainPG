@@ -9,6 +9,7 @@ const listingEditorSource = readFileSync(new URL("../components/PodListingFields
 const listingDrawerSource = readFileSync(new URL("../components/PodListingDetailDrawer.tsx", import.meta.url), "utf8");
 const modelSource = readFileSync(new URL("../data/podCustomizationModel.ts", import.meta.url), "utf8");
 const styles = readFileSync(new URL("../styles/podCustomization.css", import.meta.url), "utf8");
+const briefInputSource = readFileSync(new URL("../components/PodBriefInput.tsx", import.meta.url), "utf8");
 
 test("POD page does not render the pending billing authorization banner", () => {
   assert.doesNotMatch(source, /待恢复的 POD 任务/);
@@ -214,4 +215,22 @@ test("successful styles retain both regeneration actions until billing is interr
   assert.match(gallerySource, /canRegeneratePodStyleTitle\(batch\.status, style\.title_status, style\.results\)/);
   assert.match(modelSource, /styleStatus === "completed" && listingReady && !isBillingInterruptedPodBatch\(batchStatus\)/);
   assert.match(modelSource, /titleStatus === "completed" && !isBillingInterruptedPodBatch\(batchStatus\)/);
+});
+
+test("brief editor pre-fills the field template inside the textarea (no separate inputs)", () => {
+  // 字段模板直接预置在文本框里：产品名称 / 产品风格 / 产品工艺 / 使用场景 / 目标市场 / 目标人群。
+  assert.match(
+    briefInputSource,
+    /DEFAULT_BRIEF_TEMPLATE = \[[\s\S]*?产品名称：[\s\S]*?产品风格：[\s\S]*?产品工艺：[\s\S]*?使用场景：[\s\S]*?目标市场：[\s\S]*?目标人群：/,
+  );
+  assert.match(briefInputSource, /useState\(DEFAULT_BRIEF_TEMPLATE\)/);
+  // 不再另起独立输入控件。
+  assert.doesNotMatch(briefInputSource, /pod-brief-provided/);
+  assert.doesNotMatch(briefInputSource, /aria-label="产品工艺"/);
+  assert.doesNotMatch(briefInputSource, /aria-label="使用场景基调"/);
+});
+
+test("confirm summary shows the batch-wide craft and scene fields read-only", () => {
+  assert.match(source, /<dt>产品工艺<\/dt>/);
+  assert.match(source, /<dt>场景基调<\/dt>/);
 });

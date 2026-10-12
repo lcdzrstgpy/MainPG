@@ -140,6 +140,18 @@ def test_generation_prompt_states_the_required_output_shape() -> None:
     assert "不得出现任何东西的名字" in payload["output_shape"]
 
 
+def test_generation_prompt_declares_raking_light_quality_standard() -> None:
+    """光影归构图模版：生成规则里必须带上「掠射侧光 + 漫射补光」的光线质量标尺。"""
+
+    messages = _messages_for_generation(
+        PodCompositionRequest(composition_id="cmp1", brief="随便拍")
+    )
+    payload = json.loads(messages[1]["content"])
+    rules = " ".join(payload["hard_rules"])
+    assert "掠射侧光" in rules and "raking side-light" in rules
+    assert "漫射环境补光" in rules and "diffused fill" in rules
+
+
 def test_generate_composition_disables_thinking_and_returns_zh_and_en() -> None:
     session = _Session([_Response(_generated())])
     runtime = PodCompositionRuntime(session=session, sleeper=lambda _seconds: None)

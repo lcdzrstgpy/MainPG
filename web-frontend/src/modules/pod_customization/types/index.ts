@@ -20,6 +20,10 @@ export type PodBusinessFieldsDraft = {
   target_audience: string;
   core_selling_points: string;
   design_theme: string;
+  /** 批级全局字段：用户在「智能填写」区直接填写的产品工艺（如绗缝 / 缎面绣），留空即不约束。 */
+  fabric_craft: string;
+  /** 批级全局字段：整批统一的场景基调（款间在基调内变化），留空即回退默认场景轮换。 */
+  scene_mood: string;
   style_keywords: string;
   color_preferences: string;
   excluded_elements: string;
@@ -225,7 +229,7 @@ export type PodBatchItem = {
 export type PodBatch = PodBatchSummary & {
   template: PodTemplate;
   /** 该批次生成时所用「大提示词」的版本，由服务端 prompts.PATTERN_PROMPT_VERSION 决定（历史批次为 v1）。 */
-  prompt_version: "v1" | "v2";
+  prompt_version: "v1" | "v2" | "v3";
   business_fields: PodBusinessFields;
   listing_fields: PodListingFields | null;
   dianxiaomi_export: PodDianxiaomiExportStatus;

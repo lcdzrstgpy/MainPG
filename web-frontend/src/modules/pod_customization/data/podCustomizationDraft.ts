@@ -48,6 +48,8 @@ const EMPTY_BUSINESS_FIELDS: PodBusinessFieldsDraft = {
   target_audience: "",
   core_selling_points: "",
   design_theme: "",
+  fabric_craft: "",
+  scene_mood: "",
   style_keywords: "",
   color_preferences: "",
   excluded_elements: "",
@@ -316,12 +318,19 @@ function isBusinessFields(value: unknown): value is PodBusinessFieldsDraft {
     && typeof value.style_keywords === "string"
     && typeof value.color_preferences === "string"
     && typeof value.excluded_elements === "string"
-    // copy_restrictions 为后加的键：旧草稿与历史条目缺失时视为空串，不丢弃整份草稿。
+    // fabric_craft / scene_mood / copy_restrictions 均为后加的键：旧草稿缺失时视为空串，不丢弃整份草稿。
+    && (value.fabric_craft === undefined || typeof value.fabric_craft === "string")
+    && (value.scene_mood === undefined || typeof value.scene_mood === "string")
     && (value.copy_restrictions === undefined || typeof value.copy_restrictions === "string");
 }
 
 function businessFieldsOrDefault(fields: PodBusinessFieldsDraft): PodBusinessFieldsDraft {
-  return { ...fields, copy_restrictions: fields.copy_restrictions ?? "" };
+  return {
+    ...fields,
+    fabric_craft: fields.fabric_craft ?? "",
+    scene_mood: fields.scene_mood ?? "",
+    copy_restrictions: fields.copy_restrictions ?? "",
+  };
 }
 
 function isListingFields(value: unknown): value is PodListingFieldsDraft {

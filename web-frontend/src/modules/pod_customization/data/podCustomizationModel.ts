@@ -47,6 +47,8 @@ export const EMPTY_POD_BUSINESS_FIELDS: PodBusinessFieldsDraft = {
   target_audience: "",
   core_selling_points: "",
   design_theme: "",
+  fabric_craft: "",
+  scene_mood: "",
   style_keywords: "",
   color_preferences: "",
   excluded_elements: "",
@@ -306,6 +308,9 @@ export function businessFieldsForApi(fields: PodBusinessFieldsDraft): PodBusines
     target_audience: fields.target_audience.trim(),
     core_selling_points: splitBusinessField(fields.core_selling_points),
     design_theme: fields.design_theme.trim(),
+    // 批级全局字段：整段自然语言原样透传（不切分），留空即空串。
+    fabric_craft: fields.fabric_craft.trim(),
+    scene_mood: fields.scene_mood.trim(),
     style_keywords: splitBusinessField(fields.style_keywords),
     color_preferences: splitBusinessField(fields.color_preferences),
     excluded_elements: splitBusinessField(fields.excluded_elements),

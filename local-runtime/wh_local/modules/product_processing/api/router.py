@@ -21,6 +21,7 @@ from ....customer.contracts import (
 from ....customer.local_session import LocalSessionService
 from ....customer.remote_client import CustomerAuthClient
 from ....session import Actor, actor_from_authorization
+from ..cache_sweep import ProductProcessingCacheSweep
 from ..dimension_canvas_service import DimensionCanvasService
 from ..doubao_ark import DoubaoArkClient, DoubaoArkError
 from ..infrastructure.assets import ProductProcessingAssets
@@ -90,6 +91,8 @@ def create_product_processing_router(
             ProductProcessingRepository(owned_database),
             ProductProcessingAssets(assets_root),
         )
+    # 「存储空间」产品处理分区的清扫器：只碰本地缓存文件，不碰业务数据。
+    cache_sweep = ProductProcessingCacheSweep(service.assets, service.repository.database)
     dimension_service = getattr(service, "_dimension_canvas_service", None)
     owns_dimension_service = dimension_service is None
     if dimension_service is None:
@@ -550,16 +553,6 @@ def create_product_processing_router(
         if not body.delete_all and not body.draft_ids:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "draft_ids is required")
         return service.delete_drafts(None if body.delete_all else body.draft_ids, _workspace(workspace_id))
-
-    @router.post("/drafts/purge")
-    def purge_drafts_batch(
-        body: DraftDeleteRequest,
-        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
-    ) -> dict[str, Any]:
-        """批量物理删除草稿（不可恢复），用于货源成本等页面多选清理。"""
-        if not body.draft_ids:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "draft_ids is required")
-        return service.purge_drafts(body.draft_ids, _workspace(workspace_id))
 
     @router.post("/drafts/restore")
     def restore_drafts(
@@ -1040,7 +1033,7 @@ def create_product_processing_router(
         """该任务的历史导出记录。
 
         导出的表格是服务端落盘的，记录一直在库里；前端原先只把 run id 存在页面会话里，
-        关掉页面就再也找不到之前生成的表格，只能反复点「完成预检并导出」并撞幂等冲突。
+        关掉页面就再也找不到之前生成的表格，只能反复点「完成预审并导出」并撞幂等冲突。
         """
         return {
             "runs": _call(
@@ -1342,6 +1335,35 @@ def create_product_processing_router(
             _workspace(workspace_id),
         )
         return FileResponse(path, filename=path.name, media_type=_download_media_type(path))
+
+    @router.get("/cache/sweep/scan")
+    def scan_cache_sweep(
+        older_than_hours: int = Query(default=48, ge=1, le=24 * 30),
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        # 「存储空间」扫描（只读）：按可勾选分类返回可释放的文件数 / 字节数，
+        # 不删任何东西；分类语义与引用护栏见 cache_sweep.py 模块文档。
+        return cache_sweep.preview_local_cache(older_than_hours=older_than_hours)
+
+    @router.post("/cache/sweep")
+    def sweep_cache(
+        older_than_hours: int = Query(default=48, ge=1, le=24 * 30),
+        categories: str | None = Query(
+            default=None, description="逗号分隔的清扫分类键；省略 = 全部"
+        ),
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        # 手动缓存清扫（产品处理侧）：与「存储空间」勾选联动，只清勾选的分类；
+        # 引用护栏与两个「显式勾选才清」的例外分类（复核原图 / 导出表格）见
+        # cache_sweep.py 模块文档。
+        selected = None
+        if categories is not None:
+            selected = [item.strip() for item in categories.split(",") if item.strip()]
+        return _call(
+            cache_sweep.sweep_local_cache,
+            older_than_hours=older_than_hours,
+            categories=selected,
+        )
 
     return router
 

@@ -35,7 +35,7 @@ from .title_runtime import (
 )
 
 
-PROMPT_VERSION = "pod-brief-v1"
+PROMPT_VERSION = "pod-brief-v2"
 MAX_ATTEMPTS = BRIEF_ATTEMPTS
 RETRY_BACKOFF_SECONDS = 0.5
 # 单次 provider 调用超时。前置层一次要产出 40+ 元素 / 10+ 配色 / 12+ 禁用项，
@@ -136,6 +136,9 @@ _SCALAR_FIELDS = (
     "target_market",
     "target_audience",
     "design_theme",
+    # 批级全局字段：由用户在「智能填写」区告知，豆包只规范化（不发明）；允许返回空串。
+    "fabric_craft",
+    "scene_mood",
 )
 _LIST_FIELDS = (
     "core_selling_points",
@@ -167,6 +170,9 @@ _BRIEF_RESPONSE_FORMAT: dict[str, Any] = {
                 "target_market": {"type": "string", "minLength": 1},
                 "target_audience": {"type": "string", "minLength": 1},
                 "design_theme": {"type": "string", "minLength": 1},
+                # 允许空串（"必填但可为空"）：键必须在 required 里，但内容可以留空 → 不设 minLength。
+                "fabric_craft": {"type": "string"},
+                "scene_mood": {"type": "string"},
                 "core_selling_points": {
                     "type": "array",
                     "minItems": 0,
@@ -200,6 +206,9 @@ class PodBriefRequest:
     brief_id: str
     brief: str
     locale: str = "zh-CN"
+    # 用户在「智能填写」区显式填写的两个批级字段原文（可空）；豆包只做规范化、不发明。
+    fabric_craft: str = ""
+    scene_mood: str = ""
 
 
 @dataclass(frozen=True)
@@ -271,6 +280,8 @@ def validate_brief_fields(payload: Mapping[str, Any]) -> BusinessFields:
         target_audience=scalars["target_audience"],
         core_selling_points=lists["core_selling_points"],
         design_theme=scalars["design_theme"],
+        fabric_craft=scalars["fabric_craft"],
+        scene_mood=scalars["scene_mood"],
         style_keywords=lists["style_keywords"],
         color_preferences=lists["color_preferences"],
         excluded_elements=lists["excluded_elements"],
@@ -479,6 +490,12 @@ def _messages_for_brief(request: PodBriefRequest, *, rejection_feedback: str) ->
         "output_language": "中文（所有字段内容均使用中文，除非专有名词本身是英文）",
         "user_brief": _normalized_text(request.brief),
         "locale": _normalized_text(request.locale),
+        # 用户在「智能填写」区显式填写的两个批级字段原文（可能为空）：
+        # 豆包只能对此做规范化，绝不能自行推断或编造。
+        "user_provided": {
+            "fabric_craft": _normalized_text(request.fabric_craft),
+            "scene_mood": _normalized_text(request.scene_mood),
+        },
         "rejection_feedback": rejection_feedback,
         "field_contract": {
             "product_name": "商品名称，具体到品类，例如：复古印花托特包",
@@ -487,6 +504,18 @@ def _messages_for_brief(request: PodBriefRequest, *, rejection_feedback: str) ->
             "target_audience": "目标人群画像，例如：25-40 岁通勤女性",
             "core_selling_points": "3-6 条核心卖点，每条一个短句",
             "design_theme": "整批统一的创意主题与风格基调，例如：美式西南复古牛仔荒野风",
+            "fabric_craft": (
+                "批级产品工艺。若 user_provided.fabric_craft 非空，必须把它规范化后填入"
+                "（规范成绗缝 / 特种缝纫 / 刺绣 / 滚边等术语，**不得丢弃**）；"
+                "为空时再看 user_brief 里「产品工艺：」那一行的内容；两处都没有才返回空字符串。"
+                "严禁自行推断或编造工艺。"
+            ),
+            "scene_mood": (
+                "批级使用场景基调。若 user_provided.scene_mood 非空，必须把它规范化后填入——"
+                "即使用户填的是「桌面化妆产品收纳」这类使用场景措辞、而非「暖光木质厨房」式基调词，"
+                "也要保留，**不得因为『不是基调』而丢弃**；"
+                "为空时再看 user_brief 里「使用场景：」那一行；两处都没有才返回空字符串。"
+            ),
             "style_keywords": (
                 f"元素关键词，必须 {BRIEF_STYLE_KEYWORDS_MIN_ITEMS} 项以上（建议 40-60）；"
                 "每一项都是具体可绘制的事物，禁止形容词/风格词/配色词/手法词/场景类别词"

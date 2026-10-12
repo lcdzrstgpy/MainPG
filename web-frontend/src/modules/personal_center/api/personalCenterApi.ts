@@ -470,3 +470,61 @@ export function loadStationPartnerDetail(stationCode: string) {
     `/api/customer/station-partners/${encodeURIComponent(stationCode)}`,
   );
 }
+
+export type PodCacheSweepResult = {
+  /** 本次生效的保留窗口（小时）。 */
+  older_than_hours: number;
+  /** 删除的本地文件数（选中的行级分类 + 孤儿对账）。 */
+  files_removed: number;
+  /** 释放字节数（按删除前实际文件大小累加）。 */
+  bytes_freed: number;
+  /** 行级清扫删除的资产文件数。 */
+  reaped_assets: number;
+  /** 孤儿对账删除的文件数。 */
+  orphan_files_removed: number;
+  /** 各分类的本次释放明细（未勾选的分类恒为 0）。 */
+  categories: Record<string, PodCacheCategoryCount>;
+};
+
+/** 单个清扫分类的可释放量。 */
+export type PodCacheCategoryCount = {
+  files: number;
+  bytes: number;
+};
+
+export type PodCacheScanCategory = PodCacheCategoryCount & { key: string };
+
+export type PodCacheScanResult = {
+  older_than_hours: number;
+  /** 全部可勾选分类的可释放量（含为 0 的分类，用于展示）。 */
+  categories: PodCacheScanCategory[];
+  total_files: number;
+  total_bytes: number;
+};
+
+/** 扫描本机 POD 图片缓存（只读）：列出各分类可释放的文件数与字节数，供勾选。 */
+export function scanPodCache() {
+  return httpJson<PodCacheScanResult>("/api/pod-customization/cache/sweep/scan");
+}
+
+/** 清扫勾选的分类；只清没有任何记录引用的文件（见 docs/POD-本地图片缓存与清理说明.md）。 */
+export function sweepPodCache(categories: string[]) {
+  const query = new URLSearchParams({ categories: categories.join(",") });
+  return httpJson<PodCacheSweepResult>(`/api/pod-customization/cache/sweep?${query.toString()}`, {
+    method: "POST",
+  });
+}
+
+/** 扫描产品处理侧的本地缓存（只读）；返回结构与 POD 侧一致（后端同一套分类协议）。 */
+export function scanProductProcessingCache() {
+  return httpJson<PodCacheScanResult>("/api/product-processing/cache/sweep/scan");
+}
+
+/** 清扫勾选的产品处理分类；默认只清没有任何记录引用的文件（复核原图 / 导出表格仅在显式勾选对应分类时清理，且不动记录）。 */
+export function sweepProductProcessingCache(categories: string[]) {
+  const query = new URLSearchParams({ categories: categories.join(",") });
+  return httpJson<PodCacheSweepResult>(
+    `/api/product-processing/cache/sweep?${query.toString()}`,
+    { method: "POST" },
+  );
+}

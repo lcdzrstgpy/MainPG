@@ -156,6 +156,8 @@ const EMPTY_BUSINESS_FIELDS_FOR_SWITCH: Record<keyof PodBusinessFieldsDraft, str
   target_audience: "",
   core_selling_points: "",
   design_theme: "",
+  fabric_craft: "",
+  scene_mood: "",
   style_keywords: "",
   color_preferences: "",
   excluded_elements: "",
@@ -999,6 +1001,8 @@ export function PodCustomizationPage({ isActive = true }: Props) {
                 <div><dt>目标市场</dt><dd>{summaryFields.target_market || "未填写"}</dd></div>
                 <div><dt>目标人群</dt><dd>{summaryFields.target_audience || "未填写"}</dd></div>
                 <div><dt>统一风格</dt><dd>{summaryFields.design_theme || "未填写"}</dd></div>
+                <div><dt>产品工艺</dt><dd>{summaryFields.fabric_craft || "未填写"}</dd></div>
+                <div><dt>场景基调</dt><dd>{summaryFields.scene_mood || "未填写"}</dd></div>
               </dl>
             </div>
           </section>
