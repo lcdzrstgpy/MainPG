@@ -147,7 +147,7 @@ export function BatchReviewPanel({ batchId, items, busy, onConfirm, onDelete, on
                       <td className="batch-review-check-cell"><input type="checkbox" checked={Boolean(selected[item.skc_id])} onChange={(event) => toggle(item.skc_id, event.target.checked)} disabled={busy} /></td>
                       <td className="batch-review-sku-info-cell" data-label="商品">
                         <div className="batch-review-sku-info">
-                          {item.main_image_url ? <img src={item.main_image_url} alt="" referrerPolicy="no-referrer" /> : <div className="batch-review-no-image">无图</div>}
+                          {item.main_image_url ? <img src={item.main_image_url} alt="" referrerPolicy="no-referrer" loading="lazy" /> : <div className="batch-review-no-image">无图</div>}
                           <div>
                             <strong title={item.product_title}>{item.product_title || "未命名商品"}</strong>
                             <small>SKC：{item.skc_id}</small>

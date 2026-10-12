@@ -46,6 +46,7 @@ const PodSemiCustomizationPage = lazy(() => import("../../modules/pod_semi_custo
 const PodReplicaPage = lazy(() => import("../../modules/pod_replica/pages/PodReplicaPage").then((m) => ({ default: m.PodReplicaPage })));
 const AiVideoPage = lazy(() => import("../../modules/ai_video/pages/AiVideoPage").then((m) => ({ default: m.AiVideoPage })));
 const PersonalCenterPage = lazy(() => import("../../modules/personal_center/pages/PersonalCenterPage").then((m) => ({ default: m.PersonalCenterPage })));
+const PersonalAssetsPage = lazy(() => import("../../modules/personal_assets/pages/PersonalAssetsPage").then((m) => ({ default: m.PersonalAssetsPage })));
 import type { ProductProcessingOptions } from "../../modules/product_processing/types";
 import type { ProfitActivityPrefill } from "../../modules/profit_activity/types/products";
 import type { DimensionCanvasItem, DimensionNotification } from "../../modules/product_processing/types/dimensionCanvas";
@@ -283,6 +284,15 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
   }, []);
 
   useLayoutEffect(() => {
+    // 所有页签共用同一个滚动容器（.content-card），切页签时容器的 scrollTop 不会自己归零。
+    // 新页签（该 key 从未存过位置）必须**在本帧内同步归零** —— 只靠下面的 rAF 会晚一帧，
+    // 上一页签的 scrollTop 会残留到新内容上；主线程一忙（惰性模块加载/大列表渲染）
+    // 这一帧就能被肉眼看到，表现为「打开新页签，内容停在滚轮中间」。
+    // 有保存位置的页签不受影响，仍按下方保存值恢复。
+    if (!scrollPositions.current.restore(activeTabKey)) {
+      if (contentRef.current) contentRef.current.scrollTop = 0;
+      window.scrollTo({ top: 0, behavior: "auto" });
+    }
     const position = scrollPositions.current.restore(activeTabKey) ?? { windowY: 0, contentY: 0 };
     const frame = window.requestAnimationFrame(() => {
       contentRef.current?.scrollTo({ top: position.contentY, behavior: "auto" });
@@ -798,6 +808,9 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         break;
       case "personal_center":
         content = <PersonalCenterPage feedbackPrefill={feedbackPrefill} />;
+        break;
+      case "personal_assets":
+        content = <PersonalAssetsPage onOpenModule={openModule} />;
         break;
       default:
         content = <EmptyModulePage module={modulesById.get(tab.moduleId)!} />;

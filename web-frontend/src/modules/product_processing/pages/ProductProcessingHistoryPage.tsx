@@ -157,7 +157,12 @@ export function ProductProcessingHistoryPage({ onOpenTask, onOpenPrecheck }: Pro
                 <div className="processing-history-meta">
                   <span>共 <b>{task.total_count}</b> · 成功 <b className="ok">{task.success_count}</b> · 失败 <b className="bad">{task.failed_count}</b>{task.skipped_count > 0 && <> · 跳过 <b>{task.skipped_count}</b></>}</span>
                   <span>耗时 {formatDuration(task.elapsed_seconds)}</span>
-                  <time dateTime={task.created_at}>{new Date(task.created_at).toLocaleString("zh-CN")}</time>
+                  <time dateTime={task.created_at}>
+                    {/* created_at 为空/非法时不能直接 toLocaleString，否则渲染成 "Invalid Date" */}
+                    {Number.isNaN(new Date(task.created_at).getTime())
+                      ? (task.created_at || "—")
+                      : new Date(task.created_at).toLocaleString("zh-CN")}
+                  </time>
                   <span>{task.has_downloadable_output ? "输出已生成" : "暂未生成输出"}</span>
                 </div>
                 <div className="processing-history-actions">

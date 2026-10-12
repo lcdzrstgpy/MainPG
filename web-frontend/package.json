@@ -5,8 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "tsc --noEmit && vite build",
-    "preview": "vite preview --host 127.0.0.1"
+    "check:api-proxy": "node scripts/check-api-paths.mjs",
+    "build": "node scripts/check-api-paths.mjs && tsc --noEmit && vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "node --experimental-strip-types --test \"src/**/*.test.ts\"",
+    "verify": "node scripts/check-api-paths.mjs && node --experimental-strip-types --test \"src/**/*.test.ts\" && tsc --noEmit"
   },
   "dependencies": {
     "dompurify": "^3.4.15",

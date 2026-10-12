@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   BACKEND_OFFLINE_EVENT,
   BACKEND_ONLINE_EVENT,
+  backendHealthUrl,
 } from "../../transport/http/client";
 
 /**
@@ -12,6 +13,9 @@ import {
  * 页面还活着但所有接口都打不通——与其白屏，不如明说原因和自救办法。
  * 恢复：任意一次成功的 HTTP 响应广播 `mainpg:backend-online` 自动收起；
  * 或用户处理完杀软拦截后点「重试」。
+ *
+ * 注意：「重试」只重新探测后端是否已恢复，**不会拉起被杀的进程**。若后端进程
+ * 已被安全软件终止，必须回启动器点「重启主程序」或完全退出重开。
  */
 export function BackendOfflineNotice() {
   const [offline, setOffline] = useState(false);
@@ -49,9 +53,12 @@ export function BackendOfflineNotice() {
   const retry = async () => {
     setRetrying(true);
     try {
-      // 用 /docs 探活：FastAPI 恒有此端点，200 即本地后端已恢复。
-      const response = await fetch("/docs", { cache: "no-store" });
-      if (response.ok) {
+      // 探后端真实健康端点：打包版同源直连 8010；开发态由 vite 代理 /health 转发。
+      const response = await fetch(backendHealthUrl(), { cache: "no-store" });
+      // 必须校验返回 JSON：开发态 /health 若未被代理，vite 会回 SPA 的 index.html(200)，
+      // 只认 response.ok 会把这种「假成功」当成后端已恢复。
+      const contentType = response.headers.get("content-type") ?? "";
+      if (response.ok && contentType.includes("application/json")) {
         setOffline(false);
         window.location.reload();
         return;
@@ -74,8 +81,8 @@ export function BackendOfflineNotice() {
         </p>
         <ol>
           <li>打开杀毒软件（电脑管家/360/火绒等），把 MainPG 安装目录加入<b>信任区</b>；</li>
-          <li>完全退出 MainPG 后重新打开；</li>
-          <li>仍未恢复请点下方「重试」。</li>
+          <li>回到启动器点「重启主程序」（或完全退出 MainPG 后重新打开）；</li>
+          <li>「重试」只能重新检测后端是否已恢复，不会重启后端进程。</li>
         </ol>
         <button type="button" className="backend-offline-retry" disabled={retrying} onClick={retry}>
           {retrying ? "正在重试…" : "重试"}

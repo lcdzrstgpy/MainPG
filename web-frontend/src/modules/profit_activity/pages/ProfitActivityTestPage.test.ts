@@ -7,7 +7,9 @@ const styles = readFileSync(new URL("../styles/profitActivityTest.css", import.m
 
 test("profit settings open in a dialog from the save-directory button", () => {
   assert.match(source, /const \[settingsDialogOpen, setSettingsDialogOpen\] = useState\(false\)/);
-  assert.match(source, />\s*设置保存目录/);
+  // 入口文案随 2026-10-05「利润活动费率设置迁移」由产品库页移到本页 hero，
+  // 并改名 站点费率设置。
+  assert.match(source, />\s*站点费率设置/);
   assert.match(source, /role="dialog"/);
   assert.match(source, /className="profit-settings-dialog-backdrop"/);
   assert.doesNotMatch(source, /profit-settings-collapse/);
@@ -17,8 +19,9 @@ test("profit settings open in a dialog from the save-directory button", () => {
   assert.match(source, /siteProfiles\.map\(\(profile\) =>/);
   assert.match(source, /fieldsForSite\(settingsSite\)\.map/);
   assert.match(source, /value=\{settingsDraft\[field\.key\] \?\? ""\}/);
-  assert.match(source, /us_first_mile_rate: 0/);
-  assert.match(source, /shipping_subsidy: 0/);
+  // 内置站点带系统默认费率（迁移后由「全 0 占位」改为真实默认值）。
+  assert.match(source, /us_first_mile_rate: 72/);
+  assert.match(source, /shipping_subsidy: 21/);
   assert.match(styles, /\.profit-settings-dialog-backdrop\s*\{/);
   assert.match(styles, /\.profit-settings-dialog\s*\{/);
 });
@@ -29,7 +32,8 @@ test("profit settings can create and switch to a persisted custom site", () => {
   assert.match(source, />\+ 新增站点</);
   assert.match(source, /request<\{ site: Record<string, unknown> \}>\("\/api\/profit-activity\/sites", \{/);
   assert.match(source, /method: "POST"/);
-  assert.match(source, /setSite\(created\.id\)/);
+  // 新建站点后切换的是「设置弹窗内的站点」，页面主站点不变。
+  assert.match(source, /setSettingsSite\(created\.id\)/);
   assert.match(source, /<span aria-hidden="true">×<\/span>/);
   assert.match(styles, /\.profit-settings-dialog-close span\s*\{/);
   assert.match(styles, /\.profit-test-page \.profit-settings-dialog-close\s*\{/);

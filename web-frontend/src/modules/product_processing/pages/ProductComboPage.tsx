@@ -292,7 +292,7 @@ export function ProductComboPage({ onOpenPrecheck, isActive = true }: Props) {
               <article key={source.id} className="pool-card">
                 <div className="pool-card-body">
                   <div className="pool-thumb">
-                    {url ? <img src={url} alt={source.title} referrerPolicy="no-referrer" /> : <span>暂无图</span>}
+                    {url ? <img src={url} alt={source.title} referrerPolicy="no-referrer" loading="lazy" /> : <span>暂无图</span>}
                   </div>
                   <div className="pool-info">
                     <div className="pool-title-row">

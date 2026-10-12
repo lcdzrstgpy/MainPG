@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const source = readFileSync(new URL("./PodCustomizationPage.tsx", import.meta.url), "utf8");
+// 归一化换行：仓库里存的是 LF，但本机 core.autocrlf=true 会检出成 CRLF，
+// 而下面用 "\n" 做源码区间切分，不归一化会在 Windows 上误判（假失败）。
+const source = readFileSync(new URL("./PodCustomizationPage.tsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const gallerySource = readFileSync(new URL("../components/PodBatchGallery.tsx", import.meta.url), "utf8");
 // 店小秘上架编辑器已抽为受控组件，SKU 与规格卡入口的标记断言改为指向该共享组件。
 const listingEditorSource = readFileSync(new URL("../components/PodListingFieldsEditor.tsx", import.meta.url), "utf8");

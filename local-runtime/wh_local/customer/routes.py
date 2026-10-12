@@ -298,6 +298,30 @@ def create_customer_router(
         except Exception as exc:
             handle_auth_error(exc)
 
+    @router.get("/billing/station-binding")
+    def get_billing_station_binding(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        try:
+            if not hasattr(remote_auth, "get_station_binding"):
+                raise CustomerAuthUnavailable("remote billing service is not configured")
+            return remote_auth.get_station_binding(remote_token_from_local_session(authorization))
+        except Exception as exc:
+            handle_auth_error(exc)
+
+    @router.post("/billing/station-binding")
+    def confirm_billing_station_binding(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        try:
+            if not hasattr(remote_auth, "confirm_station_binding"):
+                raise CustomerAuthUnavailable("remote billing service is not configured")
+            return remote_auth.confirm_station_binding(
+                remote_token_from_local_session(authorization),
+                payload,
+            )
+        except Exception as exc:
+            handle_auth_error(exc)
+
     @router.post("/billing/plan-basic/claim")
     def claim_basic_weekly(authorization: str | None = Header(default=None)) -> dict[str, Any]:
         """基础版每周直接领取 1000 积分；真正的钱包写入在远端 customer-auth 服务。"""
@@ -305,6 +329,32 @@ def create_customer_router(
             if not hasattr(remote_auth, "claim_basic_weekly"):
                 raise CustomerAuthUnavailable("remote billing service is not configured")
             return remote_auth.claim_basic_weekly(remote_token_from_local_session(authorization))
+        except Exception as exc:
+            handle_auth_error(exc)
+
+    @router.post("/billing/plan-enterprise/claim")
+    def claim_enterprise_weekly(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        """企业版每周直接领取 1000 积分；真正的钱包写入在远端 customer-auth 服务。"""
+        try:
+            if not hasattr(remote_auth, "claim_enterprise_weekly"):
+                raise CustomerAuthUnavailable("remote billing service is not configured")
+            return remote_auth.claim_enterprise_weekly(remote_token_from_local_session(authorization))
+        except Exception as exc:
+            handle_auth_error(exc)
+
+    @router.post("/invitations/redeem")
+    def redeem_invitation(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """客户自助兑换邀请码：按码面额发放永久积分；真正的钱包写入在远端 customer-auth 服务。"""
+        try:
+            if not hasattr(remote_auth, "redeem_invitation"):
+                raise CustomerAuthUnavailable("remote billing service is not configured")
+            return remote_auth.redeem_invitation(
+                remote_token_from_local_session(authorization),
+                payload,
+            )
         except Exception as exc:
             handle_auth_error(exc)
 
@@ -372,6 +422,100 @@ def create_customer_router(
                 remote_token_from_local_session(authorization),
                 limit=limit,
                 offset=offset,
+            )
+        except Exception as exc:
+            handle_auth_error(exc)
+
+    @router.get("/assets")
+    def list_assets(
+        limit: int = 48,
+        offset: int = 0,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """手机互通资产列表（云端账号维度代理，返回元数据不含原图数据）。"""
+        try:
+            if not hasattr(remote_auth, "list_mobile_assets"):
+                raise CustomerAuthUnavailable("remote asset service is not configured")
+            return remote_auth.list_mobile_assets(
+                remote_token_from_local_session(authorization),
+                limit=limit,
+                offset=offset,
+            )
+        except Exception as exc:
+            handle_auth_error(exc)
+
+    @router.get("/assets/{asset_id}")
+    def get_asset(asset_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        """单个资产详情（含 base64 原数据），供 PC 端预览 / 下载 / 送入业务。"""
+        try:
+            if not hasattr(remote_auth, "get_mobile_asset"):
+                raise CustomerAuthUnavailable("remote asset service is not configured")
+            return remote_auth.get_mobile_asset(
+                remote_token_from_local_session(authorization),
+                asset_id,
+            )
+        except Exception as exc:
+            handle_auth_error(exc)
+
+    @router.delete("/assets/{asset_id}")
+    def delete_asset(asset_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        """删除本人账号下的单个资产。"""
+        try:
+            if not hasattr(remote_auth, "delete_mobile_asset"):
+                raise CustomerAuthUnavailable("remote asset service is not configured")
+            return remote_auth.delete_mobile_asset(
+                remote_token_from_local_session(authorization),
+                asset_id,
+            )
+        except Exception as exc:
+            handle_auth_error(exc)
+
+    @router.get("/captures")
+    def list_captures(
+        status: str = "",
+        limit: int = 100,
+        offset: int = 0,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """手机端采集链接列表（云端账号维度代理，PC「手机端导入」面板用）。"""
+        try:
+            if not hasattr(remote_auth, "list_mobile_captures"):
+                raise CustomerAuthUnavailable("remote capture service is not configured")
+            return remote_auth.list_mobile_captures(
+                remote_token_from_local_session(authorization),
+                status=status,
+                limit=limit,
+                offset=offset,
+            )
+        except Exception as exc:
+            handle_auth_error(exc)
+
+    @router.post("/captures/{capture_id}/imported")
+    def mark_capture_imported(
+        capture_id: str, authorization: str | None = Header(default=None)
+    ) -> dict[str, Any]:
+        """PC 端导入成功后回执：把该条手机采集链接标记为已导入。"""
+        try:
+            if not hasattr(remote_auth, "mark_mobile_capture_imported"):
+                raise CustomerAuthUnavailable("remote capture service is not configured")
+            return remote_auth.mark_mobile_capture_imported(
+                remote_token_from_local_session(authorization),
+                capture_id,
+            )
+        except Exception as exc:
+            handle_auth_error(exc)
+
+    @router.delete("/captures/{capture_id}")
+    def delete_capture(
+        capture_id: str, authorization: str | None = Header(default=None)
+    ) -> dict[str, Any]:
+        """删除本人账号下的单条手机采集链接。"""
+        try:
+            if not hasattr(remote_auth, "delete_mobile_capture"):
+                raise CustomerAuthUnavailable("remote capture service is not configured")
+            return remote_auth.delete_mobile_capture(
+                remote_token_from_local_session(authorization),
+                capture_id,
             )
         except Exception as exc:
             handle_auth_error(exc)

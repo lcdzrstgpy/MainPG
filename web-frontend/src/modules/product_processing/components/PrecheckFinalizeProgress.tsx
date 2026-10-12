@@ -84,7 +84,7 @@ export function PrecheckFinalizeProgress({
                 const previewUrl = asset?.preview_url || asset?.public_url || "";
                 return (
                   <li key={`${failure.asset_id}-${failure.product_draft_id}-${index}`}>
-                    {previewUrl ? <img src={previewUrl} alt="发布失败图片" /> : <span className="precheck-failure-placeholder">无预览</span>}
+                    {previewUrl ? <img src={previewUrl} alt="发布失败图片" loading="lazy" /> : <span className="precheck-failure-placeholder">无预览</span>}
                     <div>
                       <strong>商品 #{failure.product_draft_id}</strong>
                       <span>{sanitizedMessage(failure.message, failure.code)}</span>

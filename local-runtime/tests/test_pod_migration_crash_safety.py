@@ -42,6 +42,17 @@ MIGRATION_NAMES = (
 )
 
 
+def test_migration_name_list_matches_the_registry() -> None:
+    """MIGRATION_NAMES 是手写清单（逐级重放迁移用），必须与唯一权威注册表一致。
+
+    2026-10-08 一天内踩了三次同类漂移（015、016 各一次，外加资产引用保护一份）：
+    新增迁移时只改代码或只改测试，清单就静默落后。这里直接卡死。
+    """
+    from wh_local.pod_migrations import POD_MIGRATION_CONTRACTS
+
+    assert list(POD_MIGRATION_CONTRACTS) == list(MIGRATION_NAMES)
+
+
 def _migration_sql(name: str) -> str:
     return (MIGRATION_ROOT / f"{name}.sql").read_text(encoding="utf-8")
 

@@ -417,6 +417,8 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenPrecheck,
     url: `${API_BASE}/drafts/revision`,
     headers: { "X-Workspace-ID": ctx.workspaceId },
     onChange: () => { refresh(true).catch(() => undefined); refreshBatches(); refreshLatestTask(); },
+    // 页签隐藏保活：不判 isActive 的话切走后仍每 8s 打 revision 并全量重拉 500 条草稿。
+    enabled: isActive,
   });
 
   const toggleDraft = (id: number) => {

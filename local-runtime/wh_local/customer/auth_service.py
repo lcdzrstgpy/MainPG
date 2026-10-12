@@ -10,6 +10,7 @@ import secrets
 import sqlite3
 from typing import Any
 
+from ..billing import _activate_plan, _ensure_wallet, grant_points_to_wallet
 from ..db import transaction
 from ..runtime_logs import business_logger
 from .contracts import CustomerAuthActionResult, CustomerAuthResult, CustomerAuthUnavailable
@@ -31,6 +32,11 @@ DEFAULT_WORKSPACE_NAME = "本地演示工作区"
 # 会话失联阈值：前端心跳间隔约 30 秒，超过该阈值未刷新 last_used_at 视为
 # 已关闭页面/断线，允许该账号重新登录并撤销旧会话。
 SESSION_STALE_SECONDS = 300
+
+# 客户端类型：单端登录互踢按该维度分组，手机端与 PC 端互不顶替。
+CLIENT_TYPE_PC = "pc"
+CLIENT_TYPE_MOBILE = "mobile"
+_MOBILE_CLIENT_ALIASES = {"mobile", "app", "android", "ios", "phone", "companion"}
 
 # 登录防爆破：15 分钟内同账号连续失败 5 次即锁定，之后登录直接拒绝。
 LOGIN_MAX_FAILURES = 5
@@ -141,20 +147,25 @@ class SQLiteCustomerAuthService:
                 )
                 raise PermissionError("invalid username/email or password")
 
-            # 单端登录限制：账号存在"活跃且未失联"的平台会话时，禁止再次登录。
+            # 单端登录限制（按客户端类型分组）：同一 client_type 分组内存在"活跃且
+            # 未失联"的平台会话时禁止再次登录；手机端与 PC 端属于两类并行终端，
+            # 互不顶替（手机踢手机、PC 踢 PC，跨端不互踢）。
             # 失联判定：前端会周期性心跳刷新 last_used_at；超过阈值未心跳视为
-            # 已关闭页面/断线，此时允许重新登录并撤销旧会话，避免用户被锁死。
+            # 已关闭页面/断线，此时允许重新登录并撤销同组旧会话，避免用户被锁死。
             now = _utc_now()
+            client_type = _normalize_client_type(payload.get("client_type"))
             stale_before = _utc_ago(SESSION_STALE_SECONDS)
             active_session = conn.execute(
                 """
                 SELECT session_id, last_used_at FROM auth_platform_sessions
                 WHERE account_id = ?
+                  AND client_type = ?
                   AND revoked_at = ''
                   AND expires_at > ?
                 """,
-                (row["account_id"], now),
+                (row["account_id"], client_type, now),
             ).fetchone()
+            revoked_token_hashes: list[str] = []
             if active_session is not None:
                 last_used = str(active_session["last_used_at"] or "")
                 still_active = bool(last_used and last_used >= stale_before)
@@ -164,43 +175,37 @@ class SQLiteCustomerAuthService:
                         INSERT INTO auth_login_logs (account_id, username, email, success, failure_reason, created_at)
                         VALUES (?, ?, ?, 0, ?, ?)
                         """,
-                        (row["account_id"], row["username"], row["email"], "账号已在其他设备登录", now),
+                        (row["account_id"], row["username"], row["email"], "账号已在同类设备登录", now),
                     )
                     raise PermissionError("该账号已在其他设备登录，请先退出后再登录")
                 if still_active and force:
-                    # 用户明确选择强制登录：撤销旧会话，旧端下次请求收到 401 被顶替提示。
+                    # 用户明确选择强制登录：撤销同组旧会话，旧端下次请求收到 401 被顶替提示。
                     conn.execute(
                         """
                         INSERT INTO auth_login_logs (account_id, username, email, success, failure_reason, created_at)
                         VALUES (?, ?, ?, 1, ?, ?)
                         """,
-                        (row["account_id"], row["username"], row["email"], "强制登录，撤销其他设备会话", now),
+                        (row["account_id"], row["username"], row["email"], "强制登录，撤销同类型其他设备会话", now),
                     )
-                    conn.execute(
+                # 撤销同 client_type 分组内所有未撤销会话（含已失联会话），
+                # 并收集 token_hash 供上层立即失效会话缓存。
+                revoked_token_hashes = [
+                    str(item["token_hash"])
+                    for item in conn.execute(
                         """
-                        UPDATE auth_platform_sessions
-                        SET revoked_at = ?
-                        WHERE account_id = ? AND revoked_at = ''
+                        SELECT token_hash FROM auth_platform_sessions
+                        WHERE account_id = ? AND client_type = ? AND revoked_at = ''
                         """,
-                        (now, row["account_id"]),
-                    )
-                elif not still_active:
-                    # 旧会话已失联（如关闭页面未登出），撤销并允许本次登录。
-                    conn.execute(
-                        """
-                        UPDATE auth_platform_sessions
-                        SET revoked_at = ?
-                        WHERE account_id = ? AND revoked_at = ''
-                        """,
-                        (now, row["account_id"]),
-                    )
+                        (row["account_id"], client_type),
+                    ).fetchall()
+                ]
                 conn.execute(
                     """
                     UPDATE auth_platform_sessions
                     SET revoked_at = ?
-                    WHERE account_id = ? AND revoked_at = ''
+                    WHERE account_id = ? AND client_type = ? AND revoked_at = ''
                     """,
-                    (now, row["account_id"]),
+                    (now, row["account_id"], client_type),
                 )
 
             conn.execute(
@@ -228,7 +233,13 @@ class SQLiteCustomerAuthService:
                 role=row["role"],
                 workspace_code=row["workspace_code"] or DEFAULT_WORKSPACE_CODE,
                 workspace_name=row["workspace_name"] or DEFAULT_WORKSPACE_NAME,
-                raw={"provider": "sqlite", "account_id": row["account_id"], "login_status": "online"},
+                raw={
+                    "provider": "sqlite",
+                    "account_id": row["account_id"],
+                    "login_status": "online",
+                    "client_type": client_type,
+                    "revoked_token_hashes": revoked_token_hashes,
+                },
             )
 
     def register(self, payload: dict[str, Any]) -> CustomerAuthActionResult:
@@ -287,7 +298,7 @@ class SQLiteCustomerAuthService:
                 # 校验邀请码：存在、未过期、未用尽，通过后 used_count + 1
                 row = conn.execute(
                     """
-                    SELECT code, max_uses, used_count, expires_at
+                    SELECT code, max_uses, used_count, expires_at, grant_points, grant_plan_type
                     FROM invitation_codes
                     WHERE code = ?
                     """,
@@ -368,6 +379,28 @@ class SQLiteCustomerAuthService:
                     """,
                     (invitation_code, account_id, username, email, now),
                 )
+                # 邀请码携带的发放积分：一次性进该账号永久充值池（幂等：按账号+码）。
+                granted_points = int(row["grant_points"] or 0)
+                grant_plan_type = str(row["grant_plan_type"] or "")
+                if granted_points > 0:
+                    grant_points_to_wallet(
+                        conn,
+                        account_id=account_id,
+                        workspace_id=workspace_id,
+                        points=granted_points,
+                        source_type="invitation_register",
+                        source_id=invitation_code,
+                        idempotency_key=f"invitation_grant:{account_id}:{invitation_code}",
+                        metadata={
+                            "code": invitation_code,
+                            "channel": "register",
+                            "plan_type": grant_plan_type,
+                        },
+                    )
+                if grant_plan_type:
+                    # 企业版邀请码：注册账号同时获得同等企业版权益（4 周每周可领 1000）。
+                    _ensure_wallet(conn, account_id, workspace_id)
+                    _activate_plan(conn, account_id, now, plan_type=grant_plan_type)
                 conn.execute(
                     "UPDATE auth_email_verifications SET used_at = ? WHERE verification_id = ? AND used_at = ''",
                     (now, verification_id),
@@ -861,6 +894,15 @@ def _hash_token(token: str) -> str:
 def _email_code_digest(secret: str, verification_id: str, email: str, purpose: str, code: str) -> str:
     message = "\0".join((verification_id, email, purpose, code)).encode("utf-8")
     return hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
+
+
+def _normalize_client_type(value: Any) -> str:
+    """归一化客户端类型：手机端上报 mobile（兼容 app/android/ios 等别名），
+    其余（含未上报）一律视为 PC 端，保证既有客户端行为不变。"""
+    text = str(value or "").strip().lower()
+    if text in _MOBILE_CLIENT_ALIASES:
+        return CLIENT_TYPE_MOBILE
+    return CLIENT_TYPE_PC
 
 
 def _normalize_email(value: str) -> str:

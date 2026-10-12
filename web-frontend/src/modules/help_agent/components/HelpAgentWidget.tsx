@@ -16,6 +16,7 @@ import {
   type ChatMessage,
 } from "../data/chatMessage";
 import { useBallSize, type BallSizeId } from "../../../shared/hooks/useBallSize";
+import { useBallPointsVisible } from "../../../shared/hooks/useBallPointsVisible";
 import "../styles/helpAgent.css";
 
 const DRAG_THRESHOLD_PX = 4;
@@ -93,6 +94,8 @@ function clampAxis(value: number, max: number, min: number): number {
 export function HelpAgentWidget({ allowFeedback = true, showBalance = false }: HelpAgentWidgetProps = {}) {
   const { theme } = useTheme();
   const { size: ballSizePref } = useBallSize();
+  // 积分数字是否可见（个人中心 → 偏好设置）；关掉后球面显示「?」。
+  const { visible: ballPointsVisible } = useBallPointsVisible();
   const [open, setOpen] = useState(false);
   // 大小偏好只作用于合并了积分球的实例（登录页那个小 Q 球保持原尺寸）。
   const ballSize = showBalance ? BALANCE_BALL_SIZES[ballSizePref] : BALL_SIZE;
@@ -294,6 +297,8 @@ export function HelpAgentWidget({ allowFeedback = true, showBalance = false }: H
 
   // 积分数值面：和原积分悬浮球一致，位数多时缩字号避免撑破球体。
   const displayPoints = points == null ? "…" : String(points);
+  // 关掉「显示积分数字」时球面只留「?」—— 球一直浮在界面上，公共场合会被人一眼看到余额。
+  const ballPointsText = ballPointsVisible ? displayPoints : "?";
   const mascot = THEME_MASCOT[theme] ?? THEME_MASCOT.classic;
   // 悬停时翻到吉祥物面看一眼，移开回到积分面；闲置久了则停在吉祥物面。
   const flipped = showBalance && (idleFlipped || hovered);
@@ -416,14 +421,17 @@ export function HelpAgentWidget({ allowFeedback = true, showBalance = false }: H
         onMouseLeave={() => setHovered(false)}
         aria-label={open ? "收起操作答疑" : "打开操作答疑"}
         title={showBalance
-          ? `可用积分 ${points == null ? "加载中" : points}（点击打开操作答疑，可拖动）`
+          ? ballPointsVisible
+            ? `可用积分 ${points == null ? "加载中" : points}（点击打开操作答疑，可拖动）`
+            : "数字已隐藏（点击打开操作答疑，可拖动）"
           : "操作答疑（可拖动）"}
       >
         {showBalance ? (
           <span className="help-agent-ball-inner">
-            <span className="help-agent-ball-face is-front">
-              <span className="help-agent-ball-label">积分</span>
-              <b className={displayPoints.length >= 6 ? "is-compact" : undefined}>{displayPoints}</b>
+            <span className={`help-agent-ball-face is-front${ballPointsVisible ? "" : " is-points-masked"}`}>
+              {/* 关掉「显示积分数字」时球面只留「?」——连「积分」标签一起去掉，不留任何字。 */}
+              {ballPointsVisible && <span className="help-agent-ball-label">积分</span>}
+              <b className={ballPointsText.length >= 6 ? "is-compact" : undefined}>{ballPointsText}</b>
             </span>
             <span className="help-agent-ball-face is-back">
               <img src={mascot} alt="主题伙伴" draggable={false} />

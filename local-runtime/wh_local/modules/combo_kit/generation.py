@@ -272,8 +272,11 @@ def _compose_detail_page(
         images = [Image.open(io.BytesIO(content)).convert("RGB") for content in sources]
     except Exception:
         return None
+    # 循环取原始素材补足 4 张（原写法 `images[len(images) % len(images)]` 恒等于
+    # images[0]，素材只有 2~3 张时会把主图重复贴两次，排版单调）。
+    source_count = len(images)
     while len(images) < 4:
-        images.append(images[len(images) % len(images)])
+        images.append(images[len(images) % source_count])
 
     target = 1024
 

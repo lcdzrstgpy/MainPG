@@ -50,6 +50,14 @@ export function useClipForgeService(): {
         // 只暴露错误文案，不清空 status：后端持久化的 failed/error 必须继续可见。
         const message = cause instanceof Error ? cause.message : "";
         setError(message || (asStart ? "AI 视频服务启动失败" : "无法读取 AI 视频服务状态"));
+        // 一次瞬时失败（后端重启 / 503）不能让轮询永久停摆：否则 status 停在上一次
+        // 的值、徽标长期显示「已连接」，sidecar 已死也无从发现。退避续订，卸载时会被清理。
+        if (timerRef.current === null) {
+          timerRef.current = window.setTimeout(() => {
+            timerRef.current = null;
+            runRef.current(false);
+          }, 3000);
+        }
       });
   };
 

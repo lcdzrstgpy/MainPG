@@ -1,0 +1,37 @@
+# 统一换行：仓库内文本一律 LF，Windows 脚本除外（.bat/.cmd/.ps1 必须是 CRLF，
+# 否则 cmd.exe / PowerShell 解析可能异常）。
+#
+# 背景：本机 core.autocrlf=true 会把检出文件变成 CRLF，而部分前端测试是按 "\n"
+# 切源码区间做断言的，曾在 Windows 上产生假失败（2026-10-08）。
+# 安全性：索引内 1632 个文本文件当前**全为 LF**（`git ls-files --eol` 实测 0 个
+# i/crlf），所以加入本文件不会引发任何文件被重写。
+* text=auto eol=lf
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+*.sln  text eol=crlf
+
+# 二进制：显式声明，避免被 auto 误判为文本而做换行转换。
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+*.bmp   binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.otf   binary
+*.eot   binary
+*.pdf   binary
+*.zip   binary
+*.gz    binary
+*.7z    binary
+*.exe   binary
+*.dll   binary
+*.so    binary
+*.dylib binary
+*.node  binary
+*.db    binary
+*.sqlite3 binary

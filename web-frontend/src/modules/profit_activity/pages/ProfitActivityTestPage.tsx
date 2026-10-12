@@ -1260,9 +1260,9 @@ export function ProfitActivityTestPage({ isActive = true, prefill }: { isActive?
             <label>售价<input value={productForm.selling_price} onChange={(event) => setProductForm({ ...productForm, selling_price: event.target.value })} placeholder="必填" /></label>
             <label>成本（商品采购成本，不包括国内外操作费/运费）<input value={productForm.cost_price} onChange={(event) => setProductForm({ ...productForm, cost_price: event.target.value })} placeholder="必填" /></label>
             <label>重量 KG
-              <span className="profit-weight-field">
+              <span className="shipping-weight-field">
                 <input value={productForm.weight_kg} onChange={(event) => setProductForm({ ...productForm, weight_kg: event.target.value })} placeholder="必填" />
-                <button type="button" className="profit-weight-drawer-button" onClick={() => setWeightDrawerOpen(true)}>截图识别</button>
+                <button type="button" className="shipping-weight-trigger" onClick={() => setWeightDrawerOpen(true)}>截图识别</button>
               </span>
             </label>
           </div>
@@ -1383,7 +1383,7 @@ export function ProfitActivityTestPage({ isActive = true, prefill }: { isActive?
           initialWeightKg={productForm.weight_kg}
           useActualOnly={weightUseActualOnly}
           onUseActualOnlyChange={setWeightUseActualOnly}
-          onApply={(weight) => setProductForm((current) => ({ ...current, weight_kg: weight }))}
+          onApply={({ weightKg }) => setProductForm((current) => ({ ...current, weight_kg: weightKg }))}
           onClose={() => setWeightDrawerOpen(false)}
         />
       )}

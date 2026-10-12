@@ -55,13 +55,11 @@ test("plugin capture panel reviews candidates with SKU filter, selection and bac
   assert.match(panel, /backfillRunning/);
 });
 
-test("plugin candidate title is body text with an independent source link", () => {
-  // 候选标题不再是挂载在来源锚点上的链接，改为深色正文。
-  assert.match(panel, /<strong className="plugin-candidate-title">\{candidate\.source_title/);
-  assert.doesNotMatch(panel, /<a[^>]*>\{candidate\.source_title/);
-  // 独立“查看来源”操作保留新窗口打开 1688 页面。
+test("plugin candidate title links to the source and keeps an independent source action", () => {
+  // 当前（也是最终）设计：标题本身就是可点击的来源链接（单行省略），
+  // 行内另外保留一个独立的「查看来源」入口。
+  assert.match(panel, /<a className="plugin-title-link" href=\{candidate\.source_url\}[^>]*>\{candidate\.source_title\.trim\(\)/);
   assert.match(panel, /<a className="plugin-candidate-source" href=\{candidate\.source_url\} target="_blank" rel="noreferrer">查看来源<\/a>/);
-  // 来源/草稿操作归入独立操作区。
   assert.match(panel, /className="plugin-candidate-links"/);
 });
 
@@ -69,7 +67,6 @@ test("plugin candidate review area styles are scoped under .plugin-candidate-*",
   for (const selector of [
     ".plugin-candidate-review",
     ".plugin-candidate-list",
-    ".plugin-candidate-title",
     ".plugin-candidate-body",
     ".plugin-candidate-links",
     ".plugin-candidate-source",

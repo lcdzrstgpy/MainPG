@@ -414,10 +414,19 @@ export type ShippingMetrics = {
   volumetric_weight_kg: number | null;
   billable_weight_kg: number | null;
   divisor: number;
+  /** 商品名/行的标识（表格截图每行一个商品时用于展示与选择）。 */
+  label?: string;
   matched_lines?: string[];
+  /** 低置信提示（如双单位标注换算不一致），供前端高亮提醒用户核对。 */
+  warnings?: string[];
 };
 
-export type ShippingMetricsExtraction = { metrics: ShippingMetrics; lines: string[] };
+export type ShippingMetricsExtraction = {
+  metrics: ShippingMetrics;
+  /** 识别到的多行商品候选，供用户点选回填。 */
+  candidates?: ShippingMetrics[];
+  lines: string[];
+};
 
 /**
  * 物流/包装截图 → 实际重量与长宽高。
