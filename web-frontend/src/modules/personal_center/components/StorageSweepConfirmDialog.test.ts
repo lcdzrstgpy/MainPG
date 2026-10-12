@@ -26,7 +26,7 @@ test("弹窗先列清单：分类名称 + 文件数 + 体积 + 总计", () => {
 
 test("不可恢复分类（复核原图）给红色警示且确认按钮切换危险色", () => {
   assert.match(dialog, /UNRECOVERABLE_KEYS = new Set\(\["pp_review_images"\]\)/);
-  assert.match(dialog, /「历史任务的复核原图」没有云端备份，删除后无法找回/);
+  assert.match(dialog, /「历史任务的复核原图」删除后无法找回/);
   assert.match(dialog, /hasUnrecoverable \? "storage-sweep-confirm-danger" : "storage-sweep-confirm-primary"/);
   // 「无法找回」警示必须是条件渲染：只勾纯垃圾分类时不得出现吓人措辞。
   assert.match(dialog, /\{hasUnrecoverable && \(/);

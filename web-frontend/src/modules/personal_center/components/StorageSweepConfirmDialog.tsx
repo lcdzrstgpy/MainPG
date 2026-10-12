@@ -23,7 +23,7 @@ function formatBytes(bytes: number): string {
 
 /**
  * 「本机唯一副本、删除后不可恢复」的分类——确认按钮必须用危险色并给醒目警示。
- * 「历史任务的复核原图」没有云端备份；其余分类要么有图床链接兜底、要么本就
+ * 「历史任务的复核原图」删掉就没了；其余分类要么有图床链接兜底、要么本就
  * 是垃圾文件，风险不同，必须区分开。
  */
 const UNRECOVERABLE_KEYS = new Set(["pp_review_images"]);
@@ -97,7 +97,7 @@ export function StorageSweepConfirmDialog({ open, items, onClose, onConfirm }: P
           </ul>
           {hasUnrecoverable && (
             <p className="storage-sweep-confirm-warning">
-              「历史任务的复核原图」没有云端备份，删除后无法找回。
+              「历史任务的复核原图」删除后无法找回，请谨慎清理。
             </p>
           )}
           <p className="storage-sweep-confirm-note">
