@@ -8,6 +8,7 @@ import {
   sweepProductProcessingCache,
   type PodCacheScanCategory,
 } from "../api/personalCenterApi";
+import { StorageSweepConfirmDialog } from "./StorageSweepConfirmDialog";
 import { computeScanSelection } from "./storageSelection";
 
 /** 扫描结果的来源（两套缓存各有独立后端与独立分组）。 */
@@ -77,6 +78,8 @@ export function StorageSpacePanel() {
   const [sweeping, setSweeping] = useState(false);
   const [scanError, setScanError] = useState("");
   const [lastFreed, setLastFreed] = useState<{ files: number; bytes: number } | null>(null);
+  // 清理前必须先过确认弹窗（不可恢复分类给红色警示）；打开时冻结勾选快照。
+  const [confirmSelection, setConfirmSelection] = useState<StorageCategoryItem[] | null>(null);
   const busyRef = useRef(false);
   const seenScanRef = useRef(false);
 
@@ -159,12 +162,18 @@ export function StorageSpacePanel() {
       showToast("请先勾选要清理的项目", "info");
       return;
     }
+    // 先弹确认（列出清单与总量；不可恢复分类给红色警示），确认后才真正执行。
+    // 快照冻结在打开时刻，避免弹窗开着时后台刷新或勾选变化影响实际清理范围。
+    setConfirmSelection([...selectedCleanable]);
+  };
+
+  const runSweep = async (items: StorageCategoryItem[]) => {
     if (busyRef.current) return;
     busyRef.current = true;
     setSweeping(true);
     try {
-      const podKeys = selectedCleanable.filter((item) => item.source === "pod").map((item) => item.key);
-      const ppKeys = selectedCleanable.filter((item) => item.source === "pp").map((item) => item.key);
+      const podKeys = items.filter((item) => item.source === "pod").map((item) => item.key);
+      const ppKeys = items.filter((item) => item.source === "pp").map((item) => item.key);
       const failures: string[] = [];
       let filesRemoved = 0;
       let bytesFreed = 0;
@@ -292,6 +301,22 @@ export function StorageSpacePanel() {
           上次清理：释放 {formatBytes(lastFreed.bytes)}（{lastFreed.files} 个文件）
         </p>
       )}
+
+      <StorageSweepConfirmDialog
+        open={confirmSelection !== null}
+        items={(confirmSelection ?? []).map((item) => ({
+          key: item.key,
+          label: (CATEGORY_META[item.key] ?? { label: item.key }).label,
+          files: item.files,
+          bytes: item.bytes,
+        }))}
+        onClose={() => setConfirmSelection(null)}
+        onConfirm={() => {
+          const snapshot = confirmSelection ?? [];
+          setConfirmSelection(null);
+          void runSweep(snapshot);
+        }}
+      />
     </article>
   );
 }
