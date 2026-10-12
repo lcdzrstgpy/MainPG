@@ -18,6 +18,9 @@ export function semiBusinessFieldsForApi(fields: PodBusinessFieldsDraft): PodBus
     target_audience: "",
     core_selling_points: [],
     copy_restrictions: "",
+    // 工艺 / 场景基调是产品侧字段，半定制纯图案不消费，显式清空。
+    fabric_craft: "",
+    scene_mood: "",
   };
 }
 

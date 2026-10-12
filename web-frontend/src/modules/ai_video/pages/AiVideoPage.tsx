@@ -252,7 +252,7 @@ export function AiVideoPage() {
       <header className="ai-video-module-header">
         <div>
           <p className="ai-video-eyebrow">AI 创作工具</p>
-          <h2>AI 视频制作</h2>
+          <h2>AI 视频制作（实验）</h2>
           <p>从商品素材到分镜、生成与导出，全部在界野工作台内完成。</p>
         </div>
         <div className="ai-video-header-side">

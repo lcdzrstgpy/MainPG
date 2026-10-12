@@ -21,6 +21,8 @@ outputs/
 # 工作台出图/处理链路直接落在仓库根的输出产物，与 outputs/ 同类，不是源码素材
 generated-images/
 processed_image_*.png
+# POD 日志每日上传的本地去重状态（运行时产物，非源码）
+pod_log_upload_state.json
 
 # PyInstaller 打包产物
 local-runtime/dist/

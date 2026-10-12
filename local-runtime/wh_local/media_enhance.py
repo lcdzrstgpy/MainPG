@@ -26,6 +26,8 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -82,21 +84,79 @@ class EnhanceOptions:
     post_percent: int = DEFAULT_POST_PERCENT
 
 
-def enhance_panel(panel: Image.Image, target_size: int, options: EnhanceOptions) -> Image.Image:
+@dataclass(frozen=True)
+class EnhanceMetrics:
+    """单格清晰化的耗时与系统消耗（供日志/诊断；不参与业务决策）。"""
+
+    mode: str  # onnx（真跑了超分）| usm（回退锐化）
+    input_edge: int
+    target_size: int
+    wall_seconds: float
+    cpu_seconds: float
+    peak_rss_mb: float | None  # 进程峰值 RSS；取不到（如 Windows 无 resource）时为 None
+
+
+def _peak_rss_mb() -> float | None:
+    """进程峰值常驻内存（MB，best-effort）。Windows 无 ``resource`` 时返回 None。"""
+
+    try:
+        import resource
+    except ImportError:
+        return None
+    try:
+        usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    except (ValueError, OSError):
+        return None
+    # macOS 的 ru_maxrss 单位是字节；Linux 是 KB。
+    return usage / (1024 * 1024) if sys.platform == "darwin" else usage / 1024
+
+
+def enhance_panel(
+    panel: Image.Image,
+    target_size: int,
+    options: EnhanceOptions,
+    *,
+    on_metrics: Callable[[EnhanceMetrics], None] | None = None,
+) -> Image.Image:
     """把一格面板加工成交付尺寸的成品图。
 
     - ``onnx`` 且**面板不超过安全上限**时：4× 超分 → 降采样到 ``target_size``
       → 细结构补偿锐化（主图与 POD 走同一条链路）。
     - 其余情况（usm 模式 / 面板超过安全上限 / 超分不可用）：LANCZOS 缩放 → USM 锐化。
+
+    ``on_metrics`` 非空时回调本格耗时/CPU/内存（发不出去也不影响生图）。
     """
 
+    wall_started = time.perf_counter()
+    cpu_started = time.process_time()
+    mode = MODE_USM
     if options.mode == MODE_ONNX and _should_upscale(panel):
         upscaled = _upscale(panel)
         if upscaled is not None:
+            mode = MODE_ONNX
             resized = upscaled.resize((target_size, target_size), Image.Resampling.LANCZOS)
-            return _post_sharpen(resized, options)
-    resized = panel.resize((target_size, target_size), Image.Resampling.LANCZOS)
-    return sharpen(resized, options)
+            result = _post_sharpen(resized, options)
+        else:
+            resized = panel.resize((target_size, target_size), Image.Resampling.LANCZOS)
+            result = sharpen(resized, options)
+    else:
+        resized = panel.resize((target_size, target_size), Image.Resampling.LANCZOS)
+        result = sharpen(resized, options)
+
+    if on_metrics is not None:
+        metrics = EnhanceMetrics(
+            mode=mode,
+            input_edge=max(panel.size),
+            target_size=target_size,
+            wall_seconds=time.perf_counter() - wall_started,
+            cpu_seconds=time.process_time() - cpu_started,
+            peak_rss_mb=_peak_rss_mb(),
+        )
+        try:
+            on_metrics(metrics)
+        except Exception as exc:  # noqa: BLE001 - 度量回调失败绝不能影响生图
+            logger.warning("清晰化度量回调失败：%s", exc)
+    return result
 
 
 def _post_sharpen(image: Image.Image, options: EnhanceOptions) -> Image.Image:

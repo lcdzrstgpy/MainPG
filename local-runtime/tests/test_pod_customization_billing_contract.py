@@ -73,6 +73,39 @@ def test_pod_batch_reuses_product_processing_freeze_contract_per_style() -> None
     }
 
 
+def test_semi_freeze_payload_reports_group_and_item_counts() -> None:
+    """半定制冻结同时上报组数（link_count）与款数（item_count）。
+
+    远端据此校验 ``item_count == link_count * 4``，兜底「漏除 4、把款数当组数上报」
+    的接线错误（那会把冻结积分放大 4 倍）。初始/续跑/整组重试三种计划都必须自洽。
+    """
+    initial = PodCallPlan.for_semi_batch("semi-1", count=8)
+    resume = PodCallPlan.for_semi_batch_resume("semi-1", "resume-1", image_style_indices=(2, 3))
+    retry = PodCallPlan.for_semi_style_retry("semi-1:style:1:retry:uuid")
+
+    assert initial.product_batch_freeze_payload() == {
+        "idempotency_key": "pod:semi-batch:semi-1:initial",
+        "link_count": 2,
+        "item_count": 8,
+        "scope": ["four_grid"],
+        "billing_profile": "pod_semi_v1",
+    }
+    assert resume.product_batch_freeze_payload() == {
+        "idempotency_key": "pod:batch:semi-1:resume:resume-1",
+        "link_count": 2,
+        "item_count": 8,
+        "scope": ["four_grid"],
+        "billing_profile": "pod_semi_v1",
+    }
+    assert retry.product_batch_freeze_payload() == {
+        "idempotency_key": "pod:retry:semi-1:style:1:retry:uuid",
+        "link_count": 1,
+        "item_count": 4,
+        "scope": ["four_grid"],
+        "billing_profile": "pod_semi_v1",
+    }
+
+
 def test_resume_plan_freezes_only_the_remaining_style_with_original_call_identity() -> None:
     plan = PodCallPlan.for_batch_resume("batch-1", "resume-1", image_style_indices=(2,), title_style_indices=())
 

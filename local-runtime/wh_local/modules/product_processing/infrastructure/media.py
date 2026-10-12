@@ -34,7 +34,7 @@ import requests
 from ..domain.policy import is_safe_external_url, resolve_safe_external_url
 from ..server_ai_proxy import gateway_base_url, remote_token, usage_id
 from ....config import is_ip_literal_host
-from ....media_enhance import EnhanceOptions, enhance_panel
+from ....media_enhance import EnhanceMetrics, EnhanceOptions, enhance_panel
 from ...ai_service.temporary_cos import (
     TemporaryCosStore,
     TemporaryReference,
@@ -615,6 +615,7 @@ class ProductImageProcessor:
         media: GeneratedMedia,
         *,
         enhance: EnhanceOptions | None = None,
+        on_enhance_metrics: Callable[[EnhanceMetrics], None] | None = None,
     ) -> list[GeneratedMedia]:
         """Split a generated 2x2 grid into four listing images plus its summary.
 
@@ -659,7 +660,9 @@ class ProductImageProcessor:
             if enhance is not None and enhance.enabled:
                 # 清晰化在 JPEG 编码之前，且全程只编一次码：ONNX 走"先 4× 超分再降到目标尺寸"，
                 # 失败自动回落 USM 锐化（见 wh_local/media_enhance.py）。放缩放之前会被插值抹掉。
-                resized = enhance_panel(panel, target_size, enhance)
+                resized = enhance_panel(
+                    panel, target_size, enhance, on_metrics=on_enhance_metrics
+                )
             else:
                 resized = panel.resize((target_size, target_size), Image.Resampling.LANCZOS)
             content = _image_to_jpeg_bytes(resized)

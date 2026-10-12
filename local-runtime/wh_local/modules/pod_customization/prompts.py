@@ -14,8 +14,10 @@ from .contracts import COMPOSITION_PANEL_KEYS, BusinessFields
 # 该值随批次写进 `pod_customization_batches.prompt_version`，是事后区分「改前 / 改后」产出的
 # 依据；只改提示词不改版本号，新旧批次就会记成同一版本，结果无法归因。
 # v1：早期的单段式提示词。
-# v2：四部分共组的整批统一提示词（本版）。
-PATTERN_PROMPT_VERSION = "v2"
+# v2：四部分共组的整批统一提示词。
+# v3：新增批级全局字段（工艺 fabric_craft / 使用场景 scene_mood）、
+#     PART 3 元素三级 Tier 权重（hero/narrative/rhythm）、配色 60-30-10 契约，PART 4 光照降级（只留 GLOW）。
+PATTERN_PROMPT_VERSION = "v3"
 # 位置↔角色固定：左上=主图(lifestyle)、右上=细节A(detail_a)、左下=细节B(detail_b)、右下=素材(hero)。
 # 标识符沿用历史值（lifestyle=主图、hero=素材），避免历史批次错标；仅位置分配按本元组顺序正确落位。
 LISTING_IMAGE_ROLES = ("lifestyle", "detail_a", "detail_b", "hero")
@@ -96,34 +98,121 @@ def assign_style_elements(
     style_index: int,
     seed: str,
 ) -> dict[str, str | list[str]]:
-    """按款式确定性分配元素（种子随机 + 批内不重复）。
+    """按款式确定性分配元素（种子随机 + 批内不重复），并映射为三级视觉权重（Tier）。
 
     - 以 ``seed``（batch_id）洗牌元素数组；同一批次重放得到同一分配（重试可复现），
       不同批次种子不同 → 分配不同（跨批变化）。
-    - 每款结构：1 主打 + 1 辅主 + ≤4 点缀（共 3~6 个）；款内不重复，
-      相邻款式主打必不同（主打按款式顺序在洗牌序列上轮换）。
+    - Tier 映射（位置序 = 权重序）：
+      - ``hero``：Tier 1 Hero 主锚，按款序在洗牌序列上轮换取 1 个（相邻款必不同），尺度 1.0；
+      - ``narrative``：Tier 2，紧随 hero 的后续 2 个（第二尺度 0.6）；
+      - ``rhythm``：Tier 3，其余归为「1 组点缀纹样」（小尺度 0.25，≤4 个）。
+    - 款内不重复。
     """
     if style_index < 1:
         raise ValueError("style_index must be positive")
     pool = split_element_keywords(keywords)
     if not pool:
-        return {"primary": "", "co": "", "accents": []}
+        return {"hero": "", "narrative": [], "rhythm": []}
     digest = hashlib.sha256(str(seed).encode("utf-8")).digest()
     rng = random.Random(int.from_bytes(digest[:8], "big"))
     shuffled = list(pool)
     rng.shuffle(shuffled)
     count = len(shuffled)
     offset = style_index - 1
-    primary = shuffled[offset % count]
-    if count == 1:
-        return {"primary": primary, "co": "", "accents": []}
-    co = shuffled[(offset + (count + 1) // 2) % count]
-    accents: list[str] = []
-    for step in (1, 2, 3, 4):
+    hero = shuffled[offset % count]
+    narrative: list[str] = []
+    for step in (1, 2):
         candidate = shuffled[(offset + step) % count]
-        if candidate != primary and candidate != co and candidate not in accents:
-            accents.append(candidate)
-    return {"primary": primary, "co": co, "accents": accents}
+        if candidate != hero and candidate not in narrative:
+            narrative.append(candidate)
+    rhythm: list[str] = []
+    for step in range(1, count):
+        candidate = shuffled[(offset + step) % count]
+        if candidate != hero and candidate not in narrative and candidate not in rhythm:
+            rhythm.append(candidate)
+        if len(rhythm) == 4:
+            break
+    return {"hero": hero, "narrative": narrative, "rhythm": rhythm}
+
+
+def _coerce_style_elements(
+    elements: Mapping[str, object] | None,
+) -> tuple[str, list[str], list[str]]:
+    """归一化元素分配为 ``(hero, narrative, rhythm)``，兼容旧批次形状。
+
+    新形状 = ``{hero, narrative, rhythm}``；旧批次（v2 及更早）落库的是
+    ``{primary, co, accents}``，这里降级映射（primary→hero、co→narrative、accents→rhythm），
+    保证历史批次仍可渲染、不炸。
+    """
+    if not isinstance(elements, Mapping):
+        return "", [], []
+    if "hero" in elements or "narrative" in elements or "rhythm" in elements:
+        hero = str(elements.get("hero") or "").strip()
+        narrative = [str(item).strip() for item in (elements.get("narrative") or [])]
+        rhythm = [str(item).strip() for item in (elements.get("rhythm") or [])]
+    else:
+        hero = str(elements.get("primary") or "").strip()
+        co = str(elements.get("co") or "").strip()
+        narrative = [co] if co else []
+        rhythm = [str(item).strip() for item in (elements.get("accents") or [])]
+    clean_narrative: list[str] = []
+    for token in narrative:
+        if token and token != hero and token not in clean_narrative:
+            clean_narrative.append(token)
+    clean_rhythm: list[str] = []
+    for token in rhythm:
+        if token and token != hero and token not in clean_narrative and token not in clean_rhythm:
+            clean_rhythm.append(token)
+    return hero, clean_narrative[:2], clean_rhythm[:4]
+
+
+def _normalized_color_pool(color_preferences: str | Sequence[str]) -> list[str]:
+    if isinstance(color_preferences, str):
+        color_preferences = [color_preferences]
+    pool: list[str] = []
+    seen: set[str] = set()
+    for item in color_preferences or []:
+        token = str(item).strip()
+        if token and token not in seen:
+            seen.add(token)
+            pool.append(token)
+    return pool
+
+
+def assign_style_colors(
+    color_preferences: str | Sequence[str],
+    style_index: int,
+    seed: str,
+) -> dict[str, str]:
+    """按款式确定性分配 60-30-10 三角色配色（与元素 Tier 引擎同构）。
+
+    - 以 ``seed``（batch_id）洗牌配色池；同一批次重放得到同一分配，不同批次不同。
+    - 每款三角色互不相同；相邻款主基调不同（主基调按款序在洗牌序列上轮换）。
+    - 配色池不足 3 色时返回全空 → 调用方回退既有色板行为（不凭空造色）。
+    """
+    if style_index < 1:
+        raise ValueError("style_index must be positive")
+    pool = _normalized_color_pool(color_preferences)
+    if len(pool) < 3:
+        return {"base": "", "structural": "", "highlight": ""}
+    digest = hashlib.sha256(str(seed).encode("utf-8")).digest()
+    rng = random.Random(int.from_bytes(digest[:8], "big"))
+    shuffled = list(pool)
+    rng.shuffle(shuffled)
+    count = len(shuffled)
+    offset = style_index - 1
+    step = max(1, count // 3)
+    base = shuffled[offset % count]
+    structural = shuffled[(offset + step) % count]
+    if structural == base:
+        structural = shuffled[(offset + step + 1) % count]
+    taken = {base, structural}
+    probe = offset + 2 * step
+    highlight = shuffled[probe % count]
+    while highlight in taken:
+        probe += 1
+        highlight = shuffled[probe % count]
+    return {"base": base, "structural": structural, "highlight": highlight}
 
 
 def _brief_color_preferences(business_fields: Mapping[str, object] | None) -> list[str]:
@@ -217,7 +306,11 @@ _COLOR_IMPACT_BLOCK = (
     "difference in value and/or saturation. Never place a pale product on a pale background: if the "
     "product reads light, the background must be clearly darker or richer, and vice versa. A "
     "low-contrast, light-on-light, washed-out frame is a FAILURE.\n"
-    "- Keep props and the scene colorful and high-saturation too; a muted beige/grey set is a FAILURE."
+    "- Keep props and the scene colorful and high-saturation too; a muted beige/grey set is a FAILURE.\n"
+    "- 60-30-10 COLOR HARMONY (fixed ratio contract): build the frame on three roles — about 60% "
+    "DOMINANT BASE (the product's large-area body color), about 30% STRUCTURAL ACCENT (handles, "
+    "bindings, large patch blocks), and about 10% POP HIGHLIGHT (gold thread, metal hardware, small "
+    "charms). The three proportions must be clearly readable; an even, untiered color spread is a FAILURE."
 )
 
 # POD 绝大多数是布艺（帆布/棉/绗缝/PU）包袋。实测我们出的图"像把图案喷在光滑塑料壳上"——
@@ -254,6 +347,22 @@ _FABRIC_REALISM_BLOCK = (
     "(they bend with the surface) — they must never look like flat stickers floating over a smooth shell.\n"
     "- Keep the artwork itself unchanged and sharply readable while adding this textile realism."
 )
+
+
+def _fabric_craft_lines(craft: str) -> list[str]:
+    """批级工艺行：用户告知了工艺就渲染一行；留空则不渲染（回退静态面料块）。
+
+    措辞强调「优先使用」而非「必须使用」：CARVE-OUT（模板真实工艺）始终最高优先，
+    绝不凭空添加模板没有的工艺。
+    """
+    token = str(craft or "").strip()
+    if not token:
+        return []
+    return [
+        f"FABRIC CRAFT (this batch): {token}. Prefer these craft terms, but the template's TRUE "
+        "construction always wins — never add a craft the template does not show (the CARVE-OUT above "
+        "has the highest priority)."
+    ]
 
 # 生成提示词按四段式组织（产品侧指定的结构），段头显式标出，便于模型与人工都看清职责：
 #   PART 1 最高内置契约：2×2 四宫格格式 + 整批统一风格 + 全局硬规则
@@ -328,6 +437,7 @@ def build_direct_listing_prompt(
         "When the product has an interior or lining (for example a laundry hamper, storage basket, or tote bag with an inner lining), keep the interior surface unprinted: a plain uniform solid color, black by default. Never extend the outer surface artwork onto the interior, and never add a second pattern inside.",
         _COLOR_IMPACT_BLOCK,
         _FABRIC_REALISM_BLOCK,
+        *_fabric_craft_lines(fields.fabric_craft),
         f"Product name: {fields.product_name or 'POD product'}.",
     ]
     for label, value in (
@@ -363,21 +473,35 @@ _STYLE_SCENES = (
 )
 
 
-def _set_design_block(theme: str, palette: str, scene: str) -> str:
+def _set_design_block(theme: str, palette: str, scene: str, *, scene_mood: str = "") -> str:
+    """场景美术（set design）块。
+
+    - ``scene_mood`` 非空时作为**整批场景基调 / 场景族**，逐款 ``scene`` 降级为「该基调内的具体起点场景」；
+      留空则维持现状（逐款轮换 ``_STYLE_SCENES``）。
+    - 光影归属构图模版（见 composition_runtime），本块**不再写主导性光线**，只保留 GLOW 作为场景氛围。
+    """
     subject = theme or "this style's own subject"
+    mood = str(scene_mood or "").strip()
+    mood_lines = (
+        [
+            f"- BATCH SCENE MOOD (this batch): {mood}. Every style in this batch shares this same mood / "
+            "scene family; the concrete setting below is this style's own starting point within that mood."
+        ]
+        if mood
+        else []
+    )
     return (
         "SET DESIGN — the lifestyle scene must look rich, warm and inviting; a plain studio wall or an "
         "empty outdoor field is a FAILURE (this is the main quality gap versus top-selling listings):\n"
         f"- Derive the scene's beauty from the PART 1 batch-wide theme together with this style's PART 3 "
         f"elements ({subject}) — the setting must clearly belong to this exact collection.\n"
-        f"- Stage this ONE lived-in scene, adapted to that theme (starting point for this style: {scene}). "
+        f"- Stage this ONE lived-in scene, adapted to that theme (this style's own starting point: {scene}). "
         "Only props that genuinely belong to that scene; never generic filler.\n"
-        f"- Dress it with 3-5 supporting props from the SAME subject family as the artwork ({subject}); "
+        + ("\n".join(mood_lines) + "\n" if mood_lines else "")
+        + f"- Dress it with 3-5 supporting props from the SAME subject family as the artwork ({subject}); "
         "never generic filler, and never a duplicate of the product itself.\n"
         f"- Prop colors must come from this style's own palette: {palette}. They must harmonize with the "
         "artwork, never clash with it.\n"
-        "- Lighting: warm directional light (window light, golden afternoon light, or a warm lamp) with "
-        "clear highlights and soft natural shadows. Never flat, grey, even light.\n"
         "- GLOW — in the lifestyle scene include at least ONE visible warm glowing light source (string "
         "fairy lights, a lit candle, a lantern, a warmly lit window or a glowing lamp) that appears in "
         "frame as a bright warm highlight with a soft warm halo or bokeh. The scene must contain a real "
@@ -403,28 +527,24 @@ def build_style_listing_prompt(
     business_fields: Mapping[str, object] | None = None,
     creative_prompt: str = "",
     style_elements: Mapping[str, object] | None = None,
+    seed: str = "",
 ) -> str:
     """Append one deterministic, batch-diverse creative recipe to a listing prompt.
 
-    The recipe varies composition, palette, accent colors, rendering, and density.
-    The style's SUBJECT comes from the assigned element keywords (primary / co /
-    accents); when no assignment exists (legacy data), the model is told to invent
+    The recipe varies composition, palette, color tiers, rendering, and density.
+    The style's SUBJECT comes from the assigned element tiers (hero / narrative /
+    rhythm); when no assignment exists (legacy data), the model is told to invent
     one new subject within the batch-wide theme. Element keywords are never
     rendered wholesale.
+
+    ``seed``（batch_id）用于配色 60-30-10 的确定性洗牌；留空时退化为仅按款序取值。
     """
     if style_index < 1:
         raise ValueError("style_index must be positive")
     if attempt not in {1, 2}:
         raise ValueError("attempt must be 1 or 2")
     offset = style_index - 1
-    elements = style_elements if isinstance(style_elements, Mapping) else {}
-    primary = str(elements.get("primary") or "").strip()
-    co = str(elements.get("co") or "").strip()
-    accents = [
-        token
-        for token in (str(item).strip() for item in elements.get("accents") or [])
-        if token and token not in (primary, co)
-    ][:4]
+    hero, narrative, rhythm = _coerce_style_elements(style_elements)
 
     composition = _STYLE_COMPOSITIONS[(offset * 3) % len(_STYLE_COMPOSITIONS)]
     color_preferences = _brief_color_preferences(business_fields)
@@ -435,24 +555,28 @@ def build_style_listing_prompt(
         if color_preferences
         else _STYLE_PALETTES[(offset * 7) % len(_STYLE_PALETTES)]
     )
-    accent_colors = ""
-    if len(color_preferences) >= 2:
-        first = color_preferences[(offset * 7) % len(color_preferences)]
-        second = color_preferences[(offset * 7 + 3) % len(color_preferences)]
-        if second == first:
-            second = color_preferences[(offset * 7 + 1) % len(color_preferences)]
-        accent_colors = f"{first}, {second}"
+    colors = assign_style_colors(color_preferences, style_index, seed)
+    color_harmony = ""
+    if colors["base"]:
+        color_harmony = (
+            f"base≈{colors['base']}(60%) / structural≈{colors['structural']}(30%) / "
+            f"highlight≈{colors['highlight']}(10%)"
+        )
     rendering = _STYLE_RENDERINGS[(offset * 7) % len(_STYLE_RENDERINGS)]
     density = _STYLE_DENSITIES[(offset * 3) % len(_STYLE_DENSITIES)]
 
-    if primary:
+    if hero:
         subject_lines = [
-            f"本款素材主语：{primary}（视觉主角，尺度 1.0）"
+            f"本款素材主语：{hero}（Tier 1 Hero 主锚，视觉主角，尺度 1.0）"
         ]
-        if co:
-            subject_lines.append(f"辅主：{co}（第二大尺度，0.6）")
-        if accents:
-            subject_lines.append(f"点缀：{', '.join(accents)}（小尺度，0.25，至多 4 个）")
+        if narrative:
+            subject_lines.append(
+                f"叙事层 Narrative：{', '.join(narrative)}（Tier 2，第二尺度 0.6，围绕 Hero 成组）"
+            )
+        if rhythm:
+            subject_lines.append(
+                f"节奏层 Rhythm：{', '.join(rhythm)}（Tier 3，小尺度 0.25，归为一组点缀纹样）"
+            )
         subject_lines.append(
             "元素搭配要有主次与联系：把本款元素组织成 2~3 处『成组的小景』（一处主元素 + 若干围绕它的陪衬），"
             "不要均匀散点平铺；同一组内的元素在题材或形态上必须互相呼应，避免把不相干的元素硬凑在一起。"
@@ -467,10 +591,10 @@ def build_style_listing_prompt(
     subject_block = "\n".join(subject_lines)
 
     signature = (
-        f"STYLE-{style_index:03d} | elements=primary:{primary or '-'} co:{co or '-'} "
-        f"accents:{','.join(accents) or '-'} | composition={composition} | "
+        f"STYLE-{style_index:03d} | elements=hero:{hero or '-'} narrative:{','.join(narrative) or '-'} "
+        f"rhythm:{','.join(rhythm) or '-'} | composition={composition} | "
         f"palette={palette} | rendering={rendering} | density={density}"
-        + (f" | accent_colors={accent_colors}" if accent_colors else "")
+        + (f" | color_harmony={color_harmony}" if color_harmony else "")
     )
 
     rules = [
@@ -485,8 +609,12 @@ def build_style_listing_prompt(
         "素材可以在批次内复用，但每款必须拥有不同的视觉主角与花样：主打元素身份、尺度关系、排布逻辑、色彩重心、渲染工艺至少两项不同。禁止输出“把所有元素等权复制粘贴”的通用大杂烩图案。",
         f"整幅图案（含所有元素与底色）必须采用本款渲染工艺（{rendering}）表现，不得与其他款式共用同一视觉语言。",
     ]
-    if accent_colors:
-        rules.append(f"本款色彩重心：强调色 {accent_colors}，其余指定颜色退为辅助色。")
+    if color_harmony:
+        rules.append(
+            f"本款配色 60-30-10（高定调色契约）：{color_harmony}。"
+            "主基调色覆盖产品大面积底色，结构副色用于提手/包边/大面积拼接块，"
+            "点缀色只用于金线刺绣/金属件/小坠饰；三档比例必须读得出来，避免均等无主次的配色。"
+        )
     rules.append(
         "All four panels in this one contact sheet must nevertheless use exactly this one "
         "new design; do not create four design variants inside the sheet."
@@ -500,11 +628,12 @@ def build_style_listing_prompt(
         ))
     # 场景美术：用本款元素与配色去布置一个具体生活场景，避免背景空洞灰冷（竞品观感差距的主因）。
     # 场景逐款轮换，避免同批次所有款共用同一个背景。
-    theme_desc = ", ".join(token for token in (primary, co) if token)
+    theme_desc = ", ".join(token for token in (hero, *narrative) if token)
     scene = _STYLE_SCENES[(offset * 5) % len(_STYLE_SCENES)]
+    scene_mood = str((business_fields or {}).get("scene_mood") or "").strip()
     rules.append("")
     rules.append(_PART4_HEADER)
-    rules.append(_set_design_block(theme_desc, palette, scene))
+    rules.append(_set_design_block(theme_desc, palette, scene, scene_mood=scene_mood))
     rules.append(
         "Panel positions and roles stay fixed: top-left = PRIMARY image, top-right = detail A, "
         "bottom-left = detail B, bottom-right = material image. Do not swap, shift, or duplicate panels."
@@ -568,14 +697,12 @@ def build_semi_pattern_prompt(
         # 每格独立取配方：同组四格的 offset 连续，必然落在不同的构图/配色/渲染组合上。
         offset = (group_index - 1) * 4 + (panel - 1)
         raw_elements = supplied[panel - 1] if panel - 1 < len(supplied) else None
-        elements = raw_elements if isinstance(raw_elements, Mapping) else {}
-        primary = str(elements.get("primary") or "").strip()
-        co = str(elements.get("co") or "").strip()
-        accents = [
-            token
-            for token in (str(item).strip() for item in elements.get("accents") or [])
-            if token and token not in (primary, co)
-        ][:4]
+        # 半定制沿用「主打 / 辅主 / 点缀」措辞：这里把三级 Tier 归一化回收（hero→主打、
+        # narrative→辅主、rhythm→点缀），既兼容新形状也兼容历史批次的旧形状。
+        primary, narrative, accents = _coerce_style_elements(
+            raw_elements if isinstance(raw_elements, Mapping) else None
+        )
+        co = narrative[0] if narrative else ""
 
         composition = _STYLE_COMPOSITIONS[(offset * 3) % len(_STYLE_COMPOSITIONS)]
         palette = (

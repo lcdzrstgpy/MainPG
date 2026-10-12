@@ -2,8 +2,10 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { podCustomizationApi } from "../api/podCustomizationApi";
 import {
+  BRIEF_PROVIDED_FIELD_LABELS,
   POD_BRIEF_MAX_LENGTH,
   briefFieldsToDraft,
+  extractBriefFieldValue,
   isBriefRequestValid,
   normalizeBriefInput,
 } from "../data/podBrief";
@@ -25,15 +27,22 @@ type Props = {
   hideGenerate?: boolean;
 };
 
-const DEFAULT_SUBTITLE = "写「产品名 + 风格」，AI 自动填好下方业务字段";
-const DEFAULT_HINT = "请务必带上产品名，格式：产品名 + 风格（可再补目标人群、卖点）";
-
 // 阶段化文案：调用期间按固定节奏轮换，避免只显示一个静态的“生成中”。
 const BRIEF_STAGES = ["正在理解需求…", "正在组织字段…"];
 const BRIEF_STAGE_INTERVAL_MS = 1_800;
 const BRIEF_SUMMARY_MAX_LENGTH = 40;
 // 输入框随内容自适应高度；超过该高度后改为内部滚动，避免撑破侧栏。
 const BRIEF_TEXTAREA_MAX_HEIGHT = 240;
+// 全定制「智能填写」的字段模板：直接预置在文本框里，用户在每个标签后补内容即可。
+// 其中「产品工艺」「使用场景」是批级全局字段（豆包只做规范化，不发明）。
+const DEFAULT_BRIEF_TEMPLATE = [
+  "产品名称：",
+  "产品风格：",
+  "产品工艺：",
+  "使用场景：",
+  "目标市场：",
+  "目标人群：",
+].join("\n");
 
 function briefTimeLabel(createdAt: string): string {
   const parsed = Date.parse(createdAt);
@@ -50,15 +59,16 @@ export function PodBriefInput({
   onGenerated,
   history,
   onSelectHistory,
-  subtitle = DEFAULT_SUBTITLE,
-  hint = DEFAULT_HINT,
+  subtitle = "",
+  hint = "",
   value,
   onValueChange,
   hideGenerate = false,
 }: Props) {
   const [open, setOpen] = useState(true);
   // 受控优先：父级传了 value 就用父级的状态，便于它在自己的按钮里触发生成。
-  const [internalBrief, setInternalBrief] = useState("");
+  // 非受控（全定制页）时预置字段模板，用户直接在标签后补内容即可（含产品工艺 / 使用场景两个批级字段）。
+  const [internalBrief, setInternalBrief] = useState(DEFAULT_BRIEF_TEMPLATE);
   const brief = value ?? internalBrief;
   const setBrief = onValueChange ?? setInternalBrief;
   const [loading, setLoading] = useState(false);
@@ -98,7 +108,13 @@ export function PodBriefInput({
     setNotice("");
     setLoading(true);
     try {
-      const response = await podCustomizationApi.generateBriefFields({ brief: input, locale: "zh-CN" });
+      const response = await podCustomizationApi.generateBriefFields({
+        brief: input,
+        locale: "zh-CN",
+        // 模板里「产品工艺 / 使用场景」两行显式抽出来一起发，避免豆包漏抽（历史 bug：填了却不回填）。
+        fabric_craft: extractBriefFieldValue(input, BRIEF_PROVIDED_FIELD_LABELS.fabric_craft),
+        scene_mood: extractBriefFieldValue(input, BRIEF_PROVIDED_FIELD_LABELS.scene_mood),
+      });
       onGenerated(briefFieldsToDraft(response.fields), input);
       setNotice("已按描述自动填写业务字段，可继续在下方人工修改。");
     } catch (cause) {
@@ -111,7 +127,7 @@ export function PodBriefInput({
   return (
     <section className="pod-brief-input" aria-label="智能填写">
       <button type="button" className="pod-brief-input-toggle" aria-expanded={open} onClick={() => setOpen((current) => !current)}>
-        <span><b>智能填写</b><small>{subtitle}</small></span>
+        <span><b>智能填写</b>{subtitle && <small>{subtitle}</small>}</span>
         <i className={`iconfont icon-down ${open ? "is-open" : ""}`} aria-hidden="true" />
       </button>
       {open && <div className="pod-brief-input-body">

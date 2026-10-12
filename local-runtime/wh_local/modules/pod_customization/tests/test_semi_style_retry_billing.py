@@ -79,6 +79,7 @@ def test_semi_group_retry_freezes_images_only_and_folds_to_one_link(tmp_path: Pa
     assert plan.product_batch_freeze_payload() == {
         "idempotency_key": plan.idempotency_key,
         "link_count": 1,
+        "item_count": 4,
         "scope": ["four_grid"],
         "billing_profile": plan.billing_profile,
     }

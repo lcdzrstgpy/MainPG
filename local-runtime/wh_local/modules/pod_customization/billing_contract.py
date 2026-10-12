@@ -14,12 +14,23 @@ PodCallStatus = Literal["success", "no_return"]
 # 计费画像：字符串由远端计费服务解释，并据此决定每 link 的随机单价区间。
 POD_BILLING_PROFILE_RANDOM = "pod_random_v1"
 POD_BILLING_PROFILE_SEMI = "pod_semi_v1"
+# 爆款复刻画像。复刻与全定制同样按「款」计价（1 款 = 1 个 link、单价 40–50 随机，
+# 与 pod_random_v1 同区间），但用独立画像值上报，好让远端把「复刻」与「全定制」
+# 分到不同分类统计（两者生图/Prompt 链路不同，用量需要拆开看）。
+POD_BILLING_PROFILE_REPLICA = "pod_replica_v1"
 
 # 半定制使用的计费画像。
-# 半定制按「组」上报：4 款 = 1 个 link = 固定 32 积分（即 8 积分/款）。这与全定制
-# 按「款」计价（pod_random_v1，40–50/款）是两套口径，必须走独立画像，否则远端会
-# 按 POD 通用单价对「组」计价，单价直接翻 4 倍。
+# 半定制按「组」上报：4 款 = 1 个 link，默认 32 积分/组（即 8 积分/款），实际单价由
+# 服务端倍率配置决定，以 freeze 响应的 link_prices 为准。这与全定制按「款」计价
+# （pod_random_v1，40–50/款）是两套口径，必须走独立画像，否则远端会按 POD 通用单价
+# 对「组」计价，单价直接翻 4 倍。
 SEMI_BILLING_PROFILE = POD_BILLING_PROFILE_SEMI
+
+# 半定制一组（一次速创四宫格生图调用）包含的款数，与远端声明保持一致。
+# 冻结请求同时上报组数（link_count）与款数（item_count），远端据此校验
+# ``item_count == link_count * SEMI_STYLES_PER_GROUP``，兜底「漏除 4、把款数当组数上报」
+# 的接线错误（那会把冻结积分放大 4 倍）。
+SEMI_STYLES_PER_GROUP = 4
 
 _PRODUCT_BATCH_FEATURES: tuple[tuple[PodFeature, str], ...] = (
     ("pod.title", "title"),
@@ -79,11 +90,12 @@ class PodCallPlan:
         """半定制的「组」数（4 款一组），也是上报给远端的 link_count。
 
         冻结与结算都以「组」为单位：一组 4 款共享该组生图调用的成败，远端按 link
-        计费，一组固定 32 积分。非半定制计划、或款数不是 4 的倍数时返回 0。
+        计费。单价默认 32 积分/组，实际由服务端倍率配置决定，以 freeze 响应的
+        link_prices 为准。非半定制计划、或款数不是 4 的倍数时返回 0。
         """
-        if not self.semi_item_count or self.semi_item_count % 4 != 0:
+        if not self.semi_item_count or self.semi_item_count % SEMI_STYLES_PER_GROUP != 0:
             return 0
-        return self.semi_item_count // 4
+        return self.semi_item_count // SEMI_STYLES_PER_GROUP
 
     @classmethod
     def for_semi_batch(cls, batch_id: str, *, count: int) -> "PodCallPlan":
@@ -92,11 +104,11 @@ class PodCallPlan:
         生图调用仍按组下发（每组一次速创四宫格），计费按款展开
         （见 ``product_batch_freeze_payload`` / ``_semi_batch_settlement_payload``）。
         """
-        if isinstance(count, bool) or not isinstance(count, int) or not 4 <= count <= 200:
+        if isinstance(count, bool) or not isinstance(count, int) or not SEMI_STYLES_PER_GROUP <= count <= 200:
             raise ValueError("semi count must be between 4 and 200")
-        if count % 4 != 0:
+        if count % SEMI_STYLES_PER_GROUP != 0:
             raise ValueError("semi count must be a multiple of 4")
-        group_count = count // 4
+        group_count = count // SEMI_STYLES_PER_GROUP
         calls = tuple(
             call
             for group_index in range(1, group_count + 1)
@@ -136,7 +148,7 @@ class PodCallPlan:
             idempotency_key=f"pod:batch:{batch_id}:resume:{resume_id}",
             calls=calls,
             billing_profile=SEMI_BILLING_PROFILE,
-            semi_item_count=len(indices) * 4,
+            semi_item_count=len(indices) * SEMI_STYLES_PER_GROUP,
         )
 
     @classmethod
@@ -159,11 +171,17 @@ class PodCallPlan:
             idempotency_key=f"pod:retry:{action_id}",
             calls=calls,
             billing_profile=SEMI_BILLING_PROFILE,
-            semi_item_count=4,
+            semi_item_count=SEMI_STYLES_PER_GROUP,
         )
 
     @classmethod
-    def for_batch(cls, batch_id: str, *, style_count: int) -> "PodCallPlan":
+    def for_batch(
+        cls,
+        batch_id: str,
+        *,
+        style_count: int,
+        billing_profile: str = POD_BILLING_PROFILE_RANDOM,
+    ) -> "PodCallPlan":
         if isinstance(style_count, bool) or not isinstance(style_count, int) or not 1 <= style_count <= 200:
             raise ValueError("style_count must be between 1 and 200")
         calls = tuple(
@@ -178,7 +196,7 @@ class PodCallPlan:
                 ),
             )
         )
-        return cls(idempotency_key=f"pod:batch:{batch_id}:initial", calls=calls)
+        return cls(idempotency_key=f"pod:batch:{batch_id}:initial", calls=calls, billing_profile=billing_profile)
 
     @classmethod
     def for_retry(
@@ -239,7 +257,13 @@ class PodCallPlan:
         )
 
     @classmethod
-    def for_style_retry(cls, action_id: str, *, include_title: bool) -> "PodCallPlan":
+    def for_style_retry(
+        cls,
+        action_id: str,
+        *,
+        include_title: bool,
+        billing_profile: str = POD_BILLING_PROFILE_RANDOM,
+    ) -> "PodCallPlan":
         calls = [
             PodPlannedCall(f"{action_id}:image:1", "pod.image"),
             PodPlannedCall(f"{action_id}:image:2", "pod.image"),
@@ -249,7 +273,7 @@ class PodCallPlan:
                 PodPlannedCall(f"{action_id}:title:{attempt}", "pod.title")
                 for attempt in range(1, TITLE_ATTEMPTS + 1)
             )
-        return cls(idempotency_key=f"pod:retry:{action_id}", calls=tuple(calls))
+        return cls(idempotency_key=f"pod:retry:{action_id}", calls=tuple(calls), billing_profile=billing_profile)
 
     @classmethod
     def for_batch_retry(
@@ -259,6 +283,7 @@ class PodCallPlan:
         image_style_indices: Sequence[int],
         title_style_indices: Sequence[int],
         include_title: bool,
+        billing_profile: str = POD_BILLING_PROFILE_RANDOM,
     ) -> "PodCallPlan":
         """Build one durable plan for selected failed POD styles.
 
@@ -288,7 +313,7 @@ class PodCallPlan:
                 PodPlannedCall(f"{action_id}:style:{style_index}:title:{attempt}", "pod.title")
                 for attempt in range(1, TITLE_ATTEMPTS + 1)
             )
-        return cls(idempotency_key=f"pod:retry:{action_id}", calls=tuple(calls))
+        return cls(idempotency_key=f"pod:retry:{action_id}", calls=tuple(calls), billing_profile=billing_profile)
 
     @classmethod
     def for_batch_resume(
@@ -299,6 +324,7 @@ class PodCallPlan:
         image_style_indices: Sequence[int],
         title_style_indices: Sequence[int],
         include_title: bool = False,
+        billing_profile: str = POD_BILLING_PROFILE_RANDOM,
     ) -> "PodCallPlan":
         """Freeze only work that remains after a previously settled pause.
 
@@ -336,6 +362,7 @@ class PodCallPlan:
         return cls(
             idempotency_key=f"pod:batch:{batch_id}:resume:{resume_id}",
             calls=tuple(calls),
+            billing_profile=billing_profile,
         )
 
     def freeze_payload(self, *, encrypted_session_key: str) -> dict[str, object]:
@@ -354,11 +381,14 @@ class PodCallPlan:
         attempts and do not create additional billable subitems.
         """
         if self.semi_item_count:
-            # 半定制按「组」冻结：一组 4 款 = 1 个 link（固定 32 积分，即 8 积分/款）。
-            # 款数仍保留在 semi_item_count 里用于结算展开与界面展示，不上报。
+            # 半定制按「组」冻结：一组 4 款 = 1 个 link（默认 32 积分/组，即 8 积分/款，
+            # 实际单价由服务端倍率配置决定，以 freeze 响应的 link_prices 为准）。
+            # 同时上报款数 item_count：供服务端校验 item_count == link_count × 4，
+            # 兜底「漏除 4、把款数当组数上报」的接线错误（老服务端忽略该字段）。
             return {
                 "idempotency_key": self.idempotency_key,
                 "link_count": self.semi_group_count,
+                "item_count": self.semi_item_count,
                 "scope": ["four_grid"],
                 "billing_profile": self.billing_profile,
             }
@@ -415,7 +445,8 @@ class PodCallPlan:
         self,
         outcomes: Sequence[PodCallOutcome],
     ) -> dict[str, object]:
-        """半定制结算：按「组」折叠成一条 subitem（一组 = 1 个 link = 固定 32 积分）。
+        """半定制结算：按「组」折叠成一条 subitem（一组 = 1 个 link，默认 32 积分/组，
+        实际单价以 freeze 响应的 link_prices 为准）。
 
         组 g 的 4 个款共享该组速创调用的成败；上报给远端的 link 数与冻结时一致
         （= semi_group_count），否则服务端校验 item_results 条数 != link_count 会拒绝。

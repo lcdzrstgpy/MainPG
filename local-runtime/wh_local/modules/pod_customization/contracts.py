@@ -15,7 +15,8 @@ MAX_SEMI_ITEM_COUNT = 200
 SEMI_PATTERN_ROLES = ("pattern_1", "pattern_2", "pattern_3", "pattern_4")
 # 批次提示词版本。入库值**以服务端 prompts.PATTERN_PROMPT_VERSION 为准**（大提示词由服务端
 # 构造，客户端传值只作兼容保留）；这里放宽为多版本，避免旧客户端仍发送 v1 时被拒。
-PromptVersion = Literal["v1", "v2"]
+# v3：新增批级全局字段（工艺 / 使用场景）与元素 Tier / 配色 60-30-10 权重。
+PromptVersion = Literal["v1", "v2", "v3"]
 
 # 批次模式：全定制 full / 半定制 semi / 爆款复刻 replica。历史批次 mode 默认 full。
 PodBatchMode = Literal["full", "semi", "replica"]
@@ -53,6 +54,10 @@ class BusinessFields(BaseModel):
         default_factory=list, max_length=100
     )
     design_theme: Annotated[str, Field(max_length=500)] = ""
+    # 批级全局字段：由用户在「智能填写」区告知，brief 豆包只做规范化（不发明），渲染进 PART 1/PART 4。
+    # 用户未告知即留空 → 回退现有静态块行为（工艺 → _FABRIC_REALISM_BLOCK，场景 → _STYLE_SCENES 轮换）。
+    fabric_craft: Annotated[str, Field(max_length=500)] = ""
+    scene_mood: Annotated[str, Field(max_length=500)] = ""
     style_keywords: list[Annotated[str, Field(max_length=200)]] = Field(
         default_factory=list, max_length=100
     )
@@ -79,13 +84,21 @@ BRIEF_COLOR_PREFERENCES_MIN_ITEMS = 10
 BRIEF_EXCLUDED_ELEMENTS_MIN_ITEMS = 10
 
 
+# 用户在「智能填写」区显式输入项（产品工艺 / 使用场景基调）的原文上限；
+# 豆包只把这两段原文规范化成术语，不发明（见 brief_runtime）。
+BRIEF_PROVIDED_FIELD_MAX_LENGTH = 500
+
+
 class BriefFieldRequest(BaseModel):
-    """用户在前置层里写下的一句模糊主题/需求。"""
+    """用户在前置层里写下的一句模糊主题/需求（可附带显式填写的工艺 / 场景）。"""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     brief: str = Field(min_length=BRIEF_INPUT_MIN_LENGTH, max_length=BRIEF_INPUT_MAX_LENGTH)
     locale: str = Field(default="zh-CN", max_length=16)
+    # 可选入参：用户在「智能填写」区直接填写的产品工艺 / 使用场景基调（旧客户端不传即空）。
+    fabric_craft: str = Field(default="", max_length=BRIEF_PROVIDED_FIELD_MAX_LENGTH)
+    scene_mood: str = Field(default="", max_length=BRIEF_PROVIDED_FIELD_MAX_LENGTH)
 
 
 class BriefFieldResponse(BaseModel):

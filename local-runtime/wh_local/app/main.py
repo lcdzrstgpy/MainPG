@@ -49,6 +49,8 @@ from ..customer.local_session import LocalSessionService
 from ..customer.remote_client import CustomerAuthClient
 from ..customer.routes import create_customer_router
 from ..customer.admin_proxy import create_admin_proxy_router
+from ..pod_log_upload import PodLogUploadTask
+from ..runtime_logs import runtime_log_dir
 from ..data_collection import (
     DailySelectionActor,
     DailySelectionRouteDependencies,
@@ -490,6 +492,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         reply_sync = getattr(runtime_app.state, "reply_sync", None)
         clipforge_service = getattr(runtime_app.state, "clipforge_service", None)
         source_sync_worker = getattr(runtime_app.state, "source_image_sync_worker", None)
+        pod_log_task = getattr(runtime_app.state, "pod_log_upload_task", None)
         if shop_worker is not None:
             logger.info("lifespan step: starting shop_worker")
             shop_worker.start()
@@ -515,6 +518,10 @@ def create_app(database_path: Path | None = None) -> FastAPI:
             logger.info("lifespan step: starting source_image_sync_worker")
             source_sync_worker.start()
             logger.info("lifespan step: source_image_sync_worker started")
+        if pod_log_task is not None:
+            # 启动时必然还没有远端 token（它只存在进程内存），这次绝大多数情况直接跳过，
+            # 不建线程、不阻塞：真正生效的是「登录成功后」那次触发（见 customer/routes.py）。
+            logger.info("lifespan step: pod log upload due check -> %s", pod_log_task.run_if_due())
         logger.info("lifespan step: startup done, yielding")
         try:
             yield
@@ -604,6 +611,18 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         config.customer_auth_base_url,
         station_base_url=config.announce_base_url,
     )
+
+    def _trigger_pod_log_upload() -> None:
+        """POD 日志每日静默上传：启动时与每次登录成功后各做一次 due check。
+
+        零常驻：只在这一刻跑一次（登录时由 BackgroundTasks 在响应之后调），内部自带
+        当天去重；取不到远端 token（还没登录）或还没到上传时刻就直接跳过。
+        """
+        task = getattr(app.state, "pod_log_upload_task", None)
+        if task is not None:
+            task.run_if_due()
+
+
     customer_auth = (
         remote_customer_auth
         if remote_customer_auth.configured()
@@ -614,7 +633,13 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         )
     )
     customer_sessions = LocalSessionService(SQLiteCustomerSessionStore(db_path))
-    app.include_router(create_customer_router(customer_auth, customer_sessions))
+    app.include_router(
+        create_customer_router(
+            customer_auth,
+            customer_sessions,
+            on_login_success=_trigger_pod_log_upload,
+        )
+    )
     if remote_customer_auth.configured():
         app.include_router(create_admin_proxy_router(remote_customer_auth, customer_sessions))
 
@@ -808,6 +833,13 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         interval_seconds=30,
         account_id_provider=_current_remote_account_id,
         auth_token_provider=_current_remote_token,
+    )
+    # POD 日志每日静默上传：只在「启动」与「登录成功」各触发一次，全程零常驻线程。
+    # token 用同一套「最近活跃远端会话」provider（启动时必然为空 → 跳过，登录后才有值）。
+    app.state.pod_log_upload_task = PodLogUploadTask(
+        log_dir=runtime_log_dir(),
+        token_provider=_current_remote_token,
+        client_factory=lambda: remote_customer_auth,
     )
     app.include_router(
         create_messages_router(

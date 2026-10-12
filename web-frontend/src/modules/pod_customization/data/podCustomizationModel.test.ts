@@ -117,6 +117,8 @@ test("business list fields are normalized at the API boundary", () => {
     target_audience: "通勤",
     core_selling_points: "轻量、防漏",
     design_theme: "山野",
+    fabric_craft: "  绗缝 ",
+    scene_mood: "暖光木质厨房",
     style_keywords: "复古, 粗线条",
     color_preferences: "松绿、砂岩黄",
     excluded_elements: "Logo",
@@ -126,6 +128,9 @@ test("business list fields are normalized at the API boundary", () => {
   assert.deepEqual(payload.style_keywords, ["复古", "粗线条"]);
   // 上架文案限制是整段自然语言：只去首尾空白，不按分隔符切分。
   assert.equal(payload.copy_restrictions, "标题不要出现刺绣、务必带上 2D Flat");
+  // 批级全局字段同样整段透传，只去首尾空白。
+  assert.equal(payload.fabric_craft, "绗缝");
+  assert.equal(payload.scene_mood, "暖光木质厨房");
 });
 
 test("built-in v1 prompt carries the renamed batch-wide fields and never the element list", () => {

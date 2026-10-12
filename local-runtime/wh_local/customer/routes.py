@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import re
 import sys
+from collections.abc import Callable
 from typing import Any
+
+# 模块级 import：FastAPI 依赖注入必须能按**模块全局**解析这个注解名。本模块启用了
+# ``from __future__ import annotations``，注解是字符串；若写成函数内 import，
+# FastAPI 解析不到 BackgroundTasks（会当普通参数 → 钩子永不触发，且 /openapi.json 报
+# PydanticUserError）。其余 fastapi 符号仍保持函数内惰性 import。
+from fastapi import BackgroundTasks
 
 from ..config import APP_VERSION
 from ..runtime_logs import business_logger
@@ -81,14 +88,23 @@ def _public_station_application(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessionService):
+def create_customer_router(
+    remote_auth: CustomerAuthClient,
+    sessions: LocalSessionService,
+    *,
+    on_login_success: Callable[[], None] | None = None,
+):
     """Create FastAPI routes for customer account access.
 
     The import is intentionally inside the function so the module can still be
     imported in tests or tooling before FastAPI dependencies are installed.
+
+    ``on_login_success`` 在**登录成功、且远端 token 已就绪之后**用 BackgroundTasks
+    触发（响应发出后再跑，不拖慢登录）。POD 日志每日上传依赖它——远端 token 只存在
+    进程内存，启动那一刻必然还没有，只能等登录后。
     """
 
-    from fastapi import APIRouter, Header, HTTPException
+    from fastapi import APIRouter, BackgroundTasks, Header, HTTPException
 
     router = APIRouter(prefix="/api/customer", tags=["customer-auth"])
 
@@ -109,10 +125,17 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
         return authorization.removeprefix("Bearer ").strip()
 
     @router.post("/login")
-    def login(payload: dict[str, Any]) -> dict[str, Any]:
+    def login(payload: dict[str, Any], background: BackgroundTasks) -> dict[str, Any]:
         try:
             customer = remote_auth.login(payload)
             session = sessions.login_customer(customer)
+            if on_login_success is not None:
+                # 登录成功后才可能有远端 token；交给 BackgroundTasks 在响应之后执行，
+                # 既不拖慢登录，也不引入常驻线程。
+                # 注意：注解必须就是 BackgroundTasks，不能写成 ``BackgroundTasks | None``——
+                # 后者会让 FastAPI 不再把它当依赖注入，普通参数默认 None，钩子永不触发，
+                # 还会让 /openapi.json 生成报 PydanticUserError。
+                background.add_task(on_login_success)
             return {
                 "ok": True,
                 "user_id": session.user_id,

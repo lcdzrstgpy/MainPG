@@ -21,6 +21,7 @@ from . import spec_card
 from .assets import PodAssetStore
 from .billing_contract import (
     POD_BILLING_PROFILE_RANDOM,
+    POD_BILLING_PROFILE_REPLICA,
     PodBillingAuthorizationRequired,
     PodBillingCoordinator,
     PodCallOutcome,
@@ -383,7 +384,12 @@ class PodCustomizationService:
             raise PodRepositoryError("client_request_id 已用于不同的复刻请求", 409)
         batch_id = uuid.uuid4().hex
         billing_run = (
-            self._freeze_batch(actor, batch_id, len(request.targets))
+            self._freeze_batch(
+                actor,
+                batch_id,
+                len(request.targets),
+                billing_profile=POD_BILLING_PROFILE_REPLICA,
+            )
             if (enqueue or self.billing_coordinator)
             else None
         )
@@ -695,7 +701,13 @@ class PodCustomizationService:
             call.call_id for call in billing_run.plan.calls if call.feature == "pod.title"
         )
         result = self.brief_runtime.generate_brief_fields(
-            PodBriefRequest(brief_id=brief_id, brief=request.brief, locale=request.locale),
+            PodBriefRequest(
+                brief_id=brief_id,
+                brief=request.brief,
+                locale=request.locale,
+                fabric_craft=request.fabric_craft,
+                scene_mood=request.scene_mood,
+            ),
             grant=billing_run.grant,
             call_id=call_ids[0],
             call_ids=call_ids,
@@ -1340,6 +1352,7 @@ class PodCustomizationService:
         billing_run = self._freeze_style_retry(
             actor, action_id, batch_id, style_index, creative_prompt,
             semi=batch.get("mode") == "semi",
+            billing_profile=self._pod_billing_profile(batch),
         )
         try:
             results = self.repository.claim_style_regeneration(
@@ -2170,13 +2183,31 @@ class PodCustomizationService:
         if require_present and self.title_runtime is None:
             raise RuntimeError("POD 标题服务未启用")
 
-    def _freeze_batch(self, actor: Actor, batch_id: str, style_count: int) -> PodBillingRun:
+    def _freeze_batch(
+        self,
+        actor: Actor,
+        batch_id: str,
+        style_count: int,
+        *,
+        billing_profile: str = POD_BILLING_PROFILE_RANDOM,
+    ) -> PodBillingRun:
         if self.billing_coordinator is None:
             raise RuntimeError("POD billing coordinator is not configured")
-        plan = PodCallPlan.for_batch(batch_id, style_count=style_count)
+        plan = PodCallPlan.for_batch(
+            batch_id, style_count=style_count, billing_profile=billing_profile
+        )
         return self._freeze_action(
             actor, plan, action_type="batch_initial", target_id=batch_id, batch_id=batch_id
         )
+
+    @staticmethod
+    def _pod_billing_profile(batch: dict[str, Any]) -> str:
+        """按批次模式取计费画像：复刻单独上报 pod_replica_v1（供远端分类），全定制沿用
+        pod_random_v1。半定制走独立的 ``for_semi_*`` 计划，不使用本函数的返回值。
+        """
+        if str(batch.get("mode") or "") == "replica":
+            return POD_BILLING_PROFILE_REPLICA
+        return POD_BILLING_PROFILE_RANDOM
 
     def _freeze_semi_batch(self, actor: Actor, batch_id: str, count: int) -> PodBillingRun:
         if self.billing_coordinator is None:
@@ -2228,6 +2259,7 @@ class PodCustomizationService:
                 image_style_indices=image_indices,
                 title_style_indices=title_indices,
                 include_title=self.title_runtime is not None,
+                billing_profile=self._pod_billing_profile(batch),
             )
         return self._freeze_action(
             actor,
@@ -2293,6 +2325,7 @@ class PodCustomizationService:
         creative_prompt: str,
         *,
         semi: bool = False,
+        billing_profile: str = POD_BILLING_PROFILE_RANDOM,
     ) -> PodBillingRun:
         if self.billing_coordinator is None:
             raise RuntimeError("POD billing coordinator is not configured")
@@ -2300,7 +2333,9 @@ class PodCustomizationService:
             PodCallPlan.for_semi_style_retry(action_id)
             if semi
             else PodCallPlan.for_style_retry(
-                action_id, include_title=self.title_runtime is not None
+                action_id,
+                include_title=self.title_runtime is not None,
+                billing_profile=billing_profile,
             )
         )
         return self._freeze_action(
@@ -2322,11 +2357,13 @@ class PodCustomizationService:
     ) -> PodBillingRun:
         if self.billing_coordinator is None:
             raise RuntimeError("POD billing coordinator is not configured")
+        batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
         plan = PodCallPlan.for_batch_retry(
             action_id,
             image_style_indices=image_style_indices,
             title_style_indices=title_style_indices,
             include_title=self.title_runtime is not None,
+            billing_profile=self._pod_billing_profile(batch),
         )
         # The existing durable schema restricts action_type values. The payload
         # distinguishes this single-run batch retry without a table migration.
