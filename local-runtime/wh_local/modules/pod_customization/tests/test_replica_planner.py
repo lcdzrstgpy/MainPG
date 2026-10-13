@@ -101,6 +101,65 @@ def test_gel_material_generates_material_constraint() -> None:
     assert any("凝胶" in constraint for constraint in rules.generation_constraints)
 
 
+def test_lifestyle_scene_preference_forces_real_background_on_non_white_slots() -> None:
+    """勾选「生活场景」必须真的生效：非白底格强制真实环境背景。"""
+    target = _target()
+    preferences = PresentationPreferences(use_lifestyle_scene=True)
+    capabilities = match_capabilities(target, preferences)
+    rules = derive_rules(_source(), target, capabilities, preferences)
+    slots = build_default_composition_slots(target, capabilities, preferences)
+
+    # 规则层：硬约束进 PART 2。
+    assert any("生活场景背景" in constraint for constraint in rules.generation_constraints)
+    assert any("生活场景" in requirement for requirement in rules.display_requirements)
+
+    # 槽位层：panel_1/2/3 都必须有环境感背景。
+    for slot in slots[:3]:
+        assert any(token in slot.background for token in ("窗", "木", "室内", "居家", "scene")), slot.background
+
+
+def test_lifestyle_scene_preference_keeps_template_background_when_it_has_environment() -> None:
+    """模板已经写了具体场景时不覆盖，尊重用户的摄影描述。"""
+    from wh_local.modules.pod_customization.replica_planner import resolve_slot_background
+
+    target = _target()
+    preferences = PresentationPreferences(use_lifestyle_scene=True)
+    capabilities = match_capabilities(target, preferences)
+    slot = CompositionSlot(slot_id="panel_1", role="primary_image", background="窗边木质餐桌，自然散射光")
+
+    resolved = resolve_slot_background(slot, capabilities=capabilities, preferences=preferences)
+    assert resolved.background == "窗边木质餐桌，自然散射光"
+
+
+def test_lifestyle_preference_off_keeps_blank_background() -> None:
+    """关掉生活场景时不再强制背景，交回模板/模型决定。"""
+    from wh_local.modules.pod_customization.replica_planner import resolve_slot_background
+
+    target = _target()
+    preferences = PresentationPreferences(use_lifestyle_scene=False)
+    capabilities = match_capabilities(target, preferences)
+    rules = derive_rules(_source(), target, capabilities, preferences)
+    assert not any("生活场景背景" in constraint for constraint in rules.generation_constraints)
+
+    slot = CompositionSlot(slot_id="panel_1", role="primary_image", background="")
+    assert resolve_slot_background(slot, capabilities=capabilities, preferences=preferences).background == ""
+
+
+def test_white_background_slot_stays_white_even_with_lifestyle_scene() -> None:
+    """素材图格固定纯白，不受「生活场景」偏好影响。"""
+    from wh_local.modules.pod_customization.replica_planner import WHITE_BACKGROUND_SLOT_ID
+
+    target = _target()
+    preferences = PresentationPreferences(use_lifestyle_scene=True, use_white_background=True)
+    capabilities = match_capabilities(target, preferences)
+    assert "white_background" in capabilities.capabilities
+
+    slots = build_default_composition_slots(target, capabilities, preferences)
+    white_slot = next(slot for slot in slots if slot.slot_id == WHITE_BACKGROUND_SLOT_ID)
+    assert white_slot.white_background
+    assert "纯白" in white_slot.background
+
+
 def test_hand_supported_but_disabled_produces_no_hand_slot() -> None:
     target = _target()
     capabilities = match_capabilities(target, PresentationPreferences(use_hand_model=False))

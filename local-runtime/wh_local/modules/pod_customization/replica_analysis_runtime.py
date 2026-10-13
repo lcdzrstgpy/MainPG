@@ -33,6 +33,7 @@ from .replica_capabilities import CAPABILITY_REGISTRY
 from .replica_planner import (
     RULE_VERSION,
     build_default_composition_slots,
+    resolve_slot_background,
     validate_composition_plan,
 )
 from .replica_specs import (
@@ -483,18 +484,22 @@ def build_composition_plan(
     slots: list[CompositionSlot] = []
     for slot in defaults:
         override = provided.get(slot.slot_id)
-        if override is None:
-            slots.append(slot)
-            continue
+        merged = slot if override is None else slot.model_copy(
+            update={
+                "role": override["role"] or slot.role,
+                "shot": override["composition_notes"] or template.panel_instructions.get(slot.slot_id, ""),
+                "camera": override["camera"],
+                "lighting": override["lighting"],
+                "background": override["background"],
+            }
+        )
+        # 豆包的背景只是选项值：用户展示偏好（生活场景/白底）在合并后统一裁决，
+        # 保证「勾了生活场景就必须有真实环境背景」不被模板/模型措辞覆盖。
         slots.append(
-            slot.model_copy(
-                update={
-                    "role": override["role"] or slot.role,
-                    "shot": override["composition_notes"] or template.panel_instructions.get(slot.slot_id, ""),
-                    "camera": override["camera"],
-                    "lighting": override["lighting"],
-                    "background": override["background"],
-                }
+            resolve_slot_background(
+                merged,
+                capabilities=request.capability_set,
+                preferences=request.preferences,
             )
         )
 
