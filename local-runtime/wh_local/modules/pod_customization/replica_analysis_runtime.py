@@ -24,7 +24,11 @@ import requests
 
 from wh_local.modules.product_processing.doubao_ark import MODEL_ID, DoubaoArkError
 
-from .billing_contract import PodExecutionGrant
+from .billing_contract import (
+    REPLICA_ANALYSIS_ATTEMPTS,
+    REPLICA_COMPOSITION_ATTEMPTS,
+    PodExecutionGrant,
+)
 from .replica_capabilities import CAPABILITY_REGISTRY
 from .replica_planner import (
     RULE_VERSION,
@@ -54,9 +58,9 @@ from .title_runtime import (
 # 提示词版本：只要改动任一处的提示词内容或输出契约就必须递增。
 ANALYSIS_PROMPT_VERSION = "pod-replica-analysis-v1"
 COMPOSITION_PROMPT_VERSION = "pod-replica-composition-v1"
-# 单次调用的尝试上限（与既有豆包链路一致：一次坏输出可在预算内修复重试）。
-ANALYSIS_MAX_ATTEMPTS = 3
-COMPOSITION_MAX_ATTEMPTS = 3
+# 单次调用的尝试上限：与计费冻结的调用数保持一致（billing_contract）。
+ANALYSIS_MAX_ATTEMPTS = REPLICA_ANALYSIS_ATTEMPTS
+COMPOSITION_MAX_ATTEMPTS = REPLICA_COMPOSITION_ATTEMPTS
 RETRY_BACKOFF_SECONDS = 0.5
 # 多图视觉分析实测单次可超过 60s，放宽超时避免被误判为 transient。
 REQUEST_TIMEOUT_SECONDS = 120.0

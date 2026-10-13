@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import inspect
 import io
@@ -40,6 +41,7 @@ from .contracts import (
     CompositionRequest,
     CompositionUpdateRequest,
     DirectListingTrialCreate,
+    ReplicaAnalyzeRequest,
     ReplicaBatchCreate,
     ReplicaImageUploadResponse,
     SEMI_PATTERN_ROLES,
@@ -48,6 +50,17 @@ from .contracts import (
 )
 from .brief_runtime import PodBriefRequest
 from .composition_runtime import PodCompositionLocalizeRequest, PodCompositionRequest
+from .replica_analysis_runtime import ReplicaAssetImage
+from .replica_capabilities import match_capabilities
+from .replica_planner import derive_rules, validate_plan_ready
+from .replica_specs import (
+    REPLICA_ANALYSIS_SCHEMA_VERSION,
+    ReplicaPlan,
+    ReplicaPlanNotReadyError,
+    SourceArtworkSpec,
+    TargetProductSpec,
+    normalize_target_analysis,
+)
 from .export import (
     DianxiaomiExport,
     PodWorkbookExport,
@@ -376,6 +389,8 @@ class PodCustomizationService:
     ) -> dict[str, Any]:
         """创建复刻批次：先完成全部本地校验与幂等判重，再冻结计费并在一个事务里落库。"""
         self._replica_assets(actor, request)
+        # 先冻结每款计划（事实/能力/规则）：事实不完整或冲突时立即失败，不冻结计费。
+        plans = self._resolve_replica_plans(actor, request)
         request_hash = _replica_request_hash(request)
         existing = self.repository.find_replica_batch(
             actor.workspace_id, actor.id, request.client_request_id
@@ -414,6 +429,8 @@ class PodCustomizationService:
             raise
         if billing_run is not None and self.worker is not None:
             self.worker.register_billing_run(batch_id, billing_run)
+        if plans:
+            self.repository.save_replica_plans(batch_id, actor.workspace_id, actor.id, plans)
         if enqueue and self.worker is not None:
             self.worker.submit(batch_id, billing_run)
         try:
@@ -442,6 +459,194 @@ class PodCustomizationService:
         if batch.get("mode") != "replica":
             raise PodRepositoryError("POD replica batch not found", 404)
         return self._batch_payload(batch)
+
+    def analyze_replica_assets(self, actor: Actor, request: ReplicaAnalyzeRequest) -> dict[str, Any]:
+        """识图分析 A/B 两张图并落库分析快照。
+
+        动作免费（纯 pod.title scope），但仍走完整的冻结 → 短期密钥 → 调用 → 结算
+        底座，保留幂等键与审计。相同资产与 schema 版本的成功分析直接复用；失败记录
+        保留并允许重新分析。
+        """
+        if self.analysis_runtime is None:
+            raise RuntimeError("POD 复刻识图服务未启用")
+        source = self.repository.get_asset(request.source_asset_id, actor.workspace_id, actor.id)
+        if source.get("kind") != "replica_source":
+            raise ValueError("样图资产角色错误，必须通过 role=source 上传")
+        target = self.repository.get_asset(request.target_asset_id, actor.workspace_id, actor.id)
+        if target.get("kind") != "replica_target":
+            raise ValueError("目标产品资产角色错误，必须通过 role=target 上传")
+
+        cached = self.repository.find_replica_analysis(
+            actor.workspace_id,
+            actor.id,
+            request.source_asset_id,
+            request.target_asset_id,
+            REPLICA_ANALYSIS_SCHEMA_VERSION,
+        )
+        if cached is not None and cached["status"] == "succeeded":
+            return self._replica_analysis_payload(cached, request.presentation_preferences)
+
+        analysis_id = uuid.uuid4().hex
+        billing_run = self._freeze_replica_analysis(actor, analysis_id)
+        try:
+            return self._run_replica_analysis_authorized(actor, request, analysis_id, billing_run)
+        except PodBillingAuthorizationRequired as exc:
+            raise RuntimeError(str(exc)) from exc
+        finally:
+            billing_run.settle()
+
+    def _run_replica_analysis_authorized(
+        self,
+        actor: Actor,
+        request: ReplicaAnalyzeRequest,
+        analysis_id: str,
+        billing_run: PodBillingRun,
+    ) -> dict[str, Any]:
+        call_ids = tuple(
+            call.call_id for call in billing_run.plan.calls if call.feature == "pod.title"
+        )
+        source = self.repository.get_asset(request.source_asset_id, actor.workspace_id, actor.id)
+        target = self.repository.get_asset(request.target_asset_id, actor.workspace_id, actor.id)
+        try:
+            result = self.analysis_runtime.analyze_assets(
+                ReplicaAssetImage(
+                    asset_id=source["asset_id"], data_url=self._asset_data_url(source)
+                ),
+                ReplicaAssetImage(
+                    asset_id=target["asset_id"], data_url=self._asset_data_url(target)
+                ),
+                grant=billing_run.grant,
+                call_id=call_ids[0],
+                call_ids=call_ids,
+                on_start=lambda call_id: billing_run.start(call_id, "pod.title"),
+                on_outcome=lambda call_id, status: billing_run.record(call_id, "pod.title", status),
+            )
+        except Exception as exc:  # noqa: BLE001 - 失败也要落库，供重新分析
+            self.repository.save_replica_analysis(
+                analysis_id=analysis_id,
+                workspace_id=actor.workspace_id,
+                owner_user_id=actor.id,
+                source_asset_id=request.source_asset_id,
+                target_asset_id=request.target_asset_id,
+                analysis_version=REPLICA_ANALYSIS_SCHEMA_VERSION,
+                status="failed",
+                model_version="",
+                schema_version=REPLICA_ANALYSIS_SCHEMA_VERSION,
+                error_code=type(exc).__name__,
+            )
+            raise
+        # 用户在分析阶段的修正直接写进事实快照（source=user），随分析一起冻结。
+        target_spec = (
+            normalize_target_analysis(result.raw_target, target["asset_id"], request.fact_overrides)
+            if request.fact_overrides is not None
+            else result.target_product_spec
+        )
+        self.repository.save_replica_analysis(
+            analysis_id=analysis_id,
+            workspace_id=actor.workspace_id,
+            owner_user_id=actor.id,
+            source_asset_id=request.source_asset_id,
+            target_asset_id=request.target_asset_id,
+            analysis_version=REPLICA_ANALYSIS_SCHEMA_VERSION,
+            status="succeeded",
+            source_spec_json=result.source_artwork_spec.model_dump_json(),
+            target_spec_json=target_spec.model_dump_json(),
+            raw_source_json=json.dumps(result.raw_source, ensure_ascii=False),
+            raw_target_json=json.dumps(result.raw_target, ensure_ascii=False),
+            model_version=result.model,
+            schema_version=result.schema_version,
+        )
+        stored = self.repository.get_replica_analysis(analysis_id, actor.workspace_id, actor.id)
+        return self._replica_analysis_payload(stored, request.presentation_preferences)
+
+    def _asset_data_url(self, asset: dict[str, Any]) -> str:
+        """资产字节 → data URL（与豆包视觉入参一致的形状）。"""
+        content = self.assets.read(str(asset["relative_path"]))
+        content_type = str(asset.get("content_type") or "image/png")
+        encoded = base64.b64encode(content).decode("ascii")
+        return f"data:{content_type};base64,{encoded}"
+
+    @staticmethod
+    def _replica_analysis_payload(record: dict[str, Any], preferences: Any) -> dict[str, Any]:
+        """分析响应：A/B 事实 + 候选能力 + 版本，供前端确认与修正。"""
+        source_spec = SourceArtworkSpec.model_validate_json(record["source_spec_json"])
+        target_spec = TargetProductSpec.model_validate_json(record["target_spec_json"])
+        capabilities = match_capabilities(target_spec, preferences)
+        return {
+            "analysis_id": record["analysis_id"],
+            "status": record["status"],
+            "source_asset_id": record["source_asset_id"],
+            "target_asset_id": record["target_asset_id"],
+            "source": source_spec.model_dump(),
+            "target": target_spec.model_dump(),
+            "source_needs_confirmation": source_spec.needs_confirmation,
+            "target_needs_confirmation": target_spec.needs_confirmation,
+            "candidate_capabilities": list(capabilities.capabilities),
+            "unknown_capability": list(capabilities.unknown_capability),
+            "model_version": record["model_version"],
+            "schema_version": record["schema_version"],
+            "error_code": record["error_code"],
+        }
+
+    def _resolve_replica_plans(
+        self, actor: Actor, request: ReplicaBatchCreate
+    ) -> dict[int, dict[str, Any]]:
+        """为每个带 analysis_id 的目标款冻结 ReplicaPlan（缺分析时保持旧行为）。
+
+        构图计划（CompositionPlan）在 Task 4 接入全定制构图模板后补齐；此处先冻结
+        事实 / 能力 / 规则与版本号，保证「同一输入 → 同一计划」可复现。
+        """
+        if not any(target.analysis_id for target in request.targets):
+            return {}
+        plans: dict[int, dict[str, Any]] = {}
+        for style_index, target in enumerate(request.targets, start=1):
+            if not target.analysis_id:
+                continue
+            record = self.repository.get_replica_analysis(
+                target.analysis_id, actor.workspace_id, actor.id
+            )
+            if record["status"] != "succeeded":
+                raise PodRepositoryError("复刻分析尚未完成，无法提交", 409)
+            if record["source_asset_id"] != request.source_asset_id:
+                raise PodRepositoryError("复刻分析与原素材样图不匹配", 409)
+            if record["target_asset_id"] != target.target_asset_id:
+                raise PodRepositoryError("复刻分析与目标产品资产不匹配", 409)
+            source_spec = SourceArtworkSpec.model_validate_json(record["source_spec_json"])
+            target_spec = TargetProductSpec.model_validate_json(record["target_spec_json"])
+            if target.fact_overrides is not None:
+                target_spec = normalize_target_analysis(
+                    json.loads(record["raw_target_json"]),
+                    target_spec.target_asset_id,
+                    target.fact_overrides,
+                )
+            preferences = target.presentation_preferences
+            capabilities = match_capabilities(target_spec, preferences)
+            rules = derive_rules(source_spec, target_spec, capabilities, preferences)
+            try:
+                validate_plan_ready(source_spec, target_spec, capabilities, preferences)
+            except ReplicaPlanNotReadyError as exc:
+                raise PodRepositoryError(str(exc), 400) from exc
+            plan = ReplicaPlan(
+                source_artwork_spec=source_spec,
+                target_product_spec=target_spec,
+                capability_set=capabilities,
+                rule_set=rules,
+                analysis_schema_version=REPLICA_ANALYSIS_SCHEMA_VERSION,
+                capability_registry_version=capabilities.registry_version,
+                rule_version=rules.rule_version,
+            )
+            plans[style_index] = {
+                "analysis_id": target.analysis_id,
+                "replica_plan_json": plan.model_dump_json(),
+                "prompt_snapshot": plan.compiled_prompt,
+                "capability_registry_version": plan.capability_registry_version,
+                "rule_version": plan.rule_version,
+                "template_version": plan.composition_template_version,
+                "compiler_version": plan.prompt_compiler_version,
+                "generation_strategy": plan.generation_strategy,
+            }
+        return plans
+
 
     def list_semi_batches(self, actor: Actor, *, limit: int = 20, offset: int = 0) -> dict[str, Any]:
         rows, total = self.repository.list_batches(
@@ -2316,6 +2521,20 @@ class PodCustomizationService:
             target_id=composition_id,
             batch_id="",
             action_payload={"mode": "composition"},
+        )
+
+    def _freeze_replica_analysis(self, actor: Actor, analysis_id: str) -> PodBillingRun:
+        if self.billing_coordinator is None:
+            raise RuntimeError("POD billing coordinator is not configured")
+        plan = PodCallPlan.for_replica_analysis(analysis_id)
+        # 与 brief/composition 同口径：纯 pod.title scope 零计费，只留模式标记。
+        return self._freeze_action(
+            actor,
+            plan,
+            action_type="title_retry",
+            target_id=analysis_id,
+            batch_id="",
+            action_payload={"mode": "replica_analysis"},
         )
 
     def _freeze_style_retry(

@@ -47,6 +47,11 @@ BRIEF_ATTEMPTS = 3
 # 构图定制一次生成预留的文本调用次数：与 brief 同口径（纯 pod.title，零计费）。
 COMPOSITION_ATTEMPTS = 3
 
+# 复刻识图分析与「按模板选构图参数」各预留的调用次数：与 brief/composition 同口径
+# （纯 pod.title，零计费）。分析是视觉调用，但走同一条冻结 → 短期密钥 → 结算底座。
+REPLICA_ANALYSIS_ATTEMPTS = 3
+REPLICA_COMPOSITION_ATTEMPTS = 3
+
 
 class PodBillingAuthorizationRequired(RuntimeError):
     """The durable billing action must pause until a fresh grant is issued."""
@@ -253,6 +258,31 @@ class PodCallPlan:
             calls=tuple(
                 PodPlannedCall(f"{composition_id}:composition:{attempt}", "pod.title")
                 for attempt in range(1, COMPOSITION_ATTEMPTS + 1)
+            ),
+        )
+
+    @classmethod
+    def for_replica_analysis(cls, analysis_id: str) -> "PodCallPlan":
+        """复刻识图分析：一次视觉调用（含契约修复重试）。
+
+        与 ``for_brief`` 同构：只冻结 ``pod.title``，服务端对纯 title scope 零计费。
+        """
+        return cls(
+            idempotency_key=f"pod:replica-analysis:{analysis_id}",
+            calls=tuple(
+                PodPlannedCall(f"{analysis_id}:analysis:{attempt}", "pod.title")
+                for attempt in range(1, REPLICA_ANALYSIS_ATTEMPTS + 1)
+            ),
+        )
+
+    @classmethod
+    def for_replica_composition(cls, batch_id: str) -> "PodCallPlan":
+        """复刻「按模板选构图参数」：一次文本调用（含契约修复重试），同为零计费口径。"""
+        return cls(
+            idempotency_key=f"pod:replica-composition:{batch_id}",
+            calls=tuple(
+                PodPlannedCall(f"{batch_id}:composition:{attempt}", "pod.title")
+                for attempt in range(1, REPLICA_COMPOSITION_ATTEMPTS + 1)
             ),
         )
 

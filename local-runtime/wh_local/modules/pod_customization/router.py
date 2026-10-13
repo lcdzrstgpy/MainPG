@@ -28,6 +28,7 @@ from .contracts import (
     ExportSelectionUpdate,
     ManualTitleUpdate,
     RegenerateItemCreate,
+    ReplicaAnalyzeRequest,
     ReplicaBatchCreate,
     SceneOptimizationCreate,
     SemiBatchCreate,
@@ -306,6 +307,13 @@ def create_router(
             )
         finally:
             await upload.close()
+
+    @router.post("/replica/analyze")
+    def analyze_replica_assets(
+        body: ReplicaAnalyzeRequest, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        return _call(service.analyze_replica_assets, actor, body)
 
     @router.post("/replica/batches")
     def create_replica_batch(body: ReplicaBatchCreate, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:

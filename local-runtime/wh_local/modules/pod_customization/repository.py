@@ -925,6 +925,133 @@ class PodCustomizationRepository:
             raise PodRepositoryError("client_request_id 已用于不同的复刻请求", 409) from None
         return self.get_batch(batch_id, workspace_id, owner_user_id)
 
+    def save_replica_analysis(
+        self,
+        *,
+        analysis_id: str,
+        workspace_id: str,
+        owner_user_id: str,
+        source_asset_id: str,
+        target_asset_id: str,
+        analysis_version: str,
+        status: str,
+        source_spec_json: str = "{}",
+        target_spec_json: str = "{}",
+        raw_source_json: str = "{}",
+        raw_target_json: str = "{}",
+        model_version: str = "",
+        schema_version: str = "",
+        error_code: str = "",
+    ) -> None:
+        """写入或更新一条复刻分析快照（成功与失败都落库，供审计与复用）。
+
+        同一 (资产对, 版本) 允许存在多条记录：失败记录保留，重新分析新增一条成功记录。
+        """
+        now = _now()
+        with self._connect() as connection:
+            existing = connection.execute(
+                "SELECT analysis_id FROM pod_customization_replica_analyses WHERE analysis_id = ?",
+                (analysis_id,),
+            ).fetchone()
+            if existing is None:
+                connection.execute(
+                    """INSERT INTO pod_customization_replica_analyses
+                       (analysis_id, workspace_id, owner_user_id, source_asset_id, target_asset_id,
+                        analysis_version, status, source_spec_json, target_spec_json, raw_source_json,
+                        raw_target_json, model_version, schema_version, error_code, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (analysis_id, workspace_id, owner_user_id, source_asset_id, target_asset_id,
+                     analysis_version, status, source_spec_json, target_spec_json, raw_source_json,
+                     raw_target_json, model_version, schema_version, error_code, now, now),
+                )
+                return
+            connection.execute(
+                """UPDATE pod_customization_replica_analyses
+                   SET status = ?, source_spec_json = ?, target_spec_json = ?, raw_source_json = ?,
+                       raw_target_json = ?, model_version = ?, schema_version = ?, error_code = ?,
+                       updated_at = ?
+                   WHERE analysis_id = ?""",
+                (status, source_spec_json, target_spec_json, raw_source_json, raw_target_json,
+                 model_version, schema_version, error_code, now, existing["analysis_id"]),
+            )
+
+    def find_replica_analysis(
+        self,
+        workspace_id: str,
+        owner_user_id: str,
+        source_asset_id: str,
+        target_asset_id: str,
+        analysis_version: str,
+    ) -> dict[str, Any] | None:
+        """取该资产对 + 版本下最近的一条分析：优先最近的成功记录，其次最近的失败记录。"""
+        base = """SELECT * FROM pod_customization_replica_analyses
+                  WHERE workspace_id = ? AND owner_user_id = ? AND source_asset_id = ?
+                    AND target_asset_id = ? AND analysis_version = ?"""
+        params = (workspace_id, owner_user_id, source_asset_id, target_asset_id, analysis_version)
+        with self._connect() as connection:
+            row = connection.execute(
+                base + " AND status = 'succeeded' ORDER BY created_at DESC, analysis_id DESC LIMIT 1",
+                params,
+            ).fetchone()
+            if row is None:
+                row = connection.execute(
+                    base + " ORDER BY created_at DESC, analysis_id DESC LIMIT 1", params
+                ).fetchone()
+        return dict(row) if row else None
+
+    def get_replica_analysis(
+        self, analysis_id: str, workspace_id: str, owner_user_id: str
+    ) -> dict[str, Any]:
+        """按归属读取分析快照；不存在或不属于该用户一律 404（不泄露他人资产）。"""
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM pod_customization_replica_analyses
+                   WHERE analysis_id = ? AND workspace_id = ? AND owner_user_id = ?""",
+                (analysis_id, workspace_id, owner_user_id),
+            ).fetchone()
+        if row is None:
+            raise PodRepositoryError("POD 复刻分析记录不存在", 404)
+        return dict(row)
+
+    def save_replica_plans(
+        self,
+        batch_id: str,
+        workspace_id: str,
+        owner_user_id: str,
+        plans: Mapping[int, Mapping[str, Any]],
+    ) -> None:
+        """把每款的冻结计划与版本号写回目标表（键为 style_index）。"""
+        if not plans:
+            return
+        with self._connect() as connection:
+            owned = connection.execute(
+                """SELECT 1 FROM pod_customization_batches
+                   WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ?""",
+                (batch_id, workspace_id, owner_user_id),
+            ).fetchone()
+            if owned is None:
+                raise PodRepositoryError("POD 复刻批次不存在", 404)
+            for style_index, plan in plans.items():
+                connection.execute(
+                    """UPDATE pod_customization_replica_targets
+                       SET analysis_id = ?, replica_plan_json = ?, prompt_snapshot = ?,
+                           capability_registry_version = ?, rule_version = ?, template_version = ?,
+                           compiler_version = ?, generation_strategy = ?
+                       WHERE batch_id = ? AND style_index = ?""",
+                    (
+                        str(plan.get("analysis_id") or ""),
+                        str(plan.get("replica_plan_json") or ""),
+                        str(plan.get("prompt_snapshot") or ""),
+                        str(plan.get("capability_registry_version") or ""),
+                        str(plan.get("rule_version") or ""),
+                        str(plan.get("template_version") or ""),
+                        str(plan.get("compiler_version") or ""),
+                        str(plan.get("generation_strategy") or ""),
+                        batch_id,
+                        int(style_index),
+                    ),
+                )
+
     def preflight_batch(self, workspace_id: str, owner_user_id: str, request: BatchCreate) -> None:
         """Validate all stable local prerequisites before remote points are frozen."""
         del owner_user_id
