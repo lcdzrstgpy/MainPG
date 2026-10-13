@@ -5,6 +5,12 @@ from typing import Annotated, Any, Literal, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
 
+from .replica_specs import (
+    FactOverrides,
+    GenerationStrategy,
+    PresentationPreferences,
+)
+
 
 SUPPORTED_PATTERN_COUNTS = (20, 40, 100)
 MIN_STYLE_COUNT = 1
@@ -293,13 +299,31 @@ class ReplicaImageUploadResponse(BaseModel):
 
 
 class ReplicaTargetCreate(BaseModel):
-    """复刻创建时的单项目标产品：一张白底图 + 商品名 + 复用现有上架字段。"""
+    """复刻创建时的单项目标产品：一张白底图 + 商品名 + 复用现有上架字段。
+
+    ``analysis_id`` / ``fact_overrides`` / ``presentation_preferences`` 为识图主流程
+    引入的选填字段：老客户端（无分析）不传时保持既有行为。
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     target_asset_id: str = Field(min_length=1, max_length=64)
     product_name: str = Field(min_length=1, max_length=500)
     listing_fields: ListingFields
+    analysis_id: str = Field(default="", max_length=200)
+    fact_overrides: FactOverrides | None = None
+    presentation_preferences: PresentationPreferences = Field(default_factory=PresentationPreferences)
+
+
+class ReplicaAnalyzeRequest(BaseModel):
+    """识图分析请求：A 原素材图 + B 目标产品图，外加可选的用户覆盖与展示偏好。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_asset_id: str = Field(min_length=1, max_length=64)
+    target_asset_id: str = Field(min_length=1, max_length=64)
+    fact_overrides: FactOverrides | None = None
+    presentation_preferences: PresentationPreferences = Field(default_factory=PresentationPreferences)
 
 
 class ReplicaBatchCreate(BaseModel):
@@ -315,6 +339,9 @@ class ReplicaBatchCreate(BaseModel):
     source_asset_id: str = Field(min_length=1, max_length=64)
     title: str = Field(default="", max_length=120)
     creative_prompt: str = Field(default="", max_length=4000)
+    # 构图模板与生成策略：留空时由服务端按能力推荐 / 冻结计划决定。
+    composition_id: str = Field(default="", max_length=100)
+    generation_strategy: GenerationStrategy | None = None
     targets: list[ReplicaTargetCreate] = Field(
         min_length=MIN_REPLICA_TARGETS, max_length=MAX_REPLICA_TARGETS
     )
