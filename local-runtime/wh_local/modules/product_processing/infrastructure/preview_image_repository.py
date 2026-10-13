@@ -1078,6 +1078,7 @@ class PreviewImageRepository:
             live_ids = manifest.live_asset_ids()
             library_ids = tuple(manifest.library_asset_ids)
             referenced_ids = tuple(dict.fromkeys((*live_ids, *library_ids)))
+            dropped_asset_ids: list[str] = []
             rows_by_id: dict[str, PreviewImageAssetRow] = {}
             if referenced_ids:
                 rows = session.scalars(
@@ -1089,10 +1090,53 @@ class PreviewImageRepository:
                     )
                 ).all()
                 rows_by_id = {row.id: row for row in rows}
-                if set(rows_by_id) != set(referenced_ids):
-                    raise LookupError(
-                        "preview manifest references an asset outside its task or draft"
+                foreign_ids = tuple(
+                    value for value in referenced_ids if value not in rows_by_id
+                )
+                if foreign_ids:
+                    if require_complete_finalize:
+                        # 导出：仍然严格拦截，但把草稿号与对不上的 asset id 带出来。
+                        # 原来只有一句笼统英文，线上看不出是哪张图、属于谁。
+                        raise LookupError(
+                            "preview manifest references an asset outside its task or draft: "
+                            f"draft={draft_id}, ids=[{', '.join(foreign_ids)}]"
+                        )
+                    # 保存（非导出）：自愈。引用串了（页面状态与库里的草稿/素材对不上）时
+                    # 若直接报错，用户保存和导出都会被这一条脏引用整单卡死，界面上还看不出
+                    # 是哪张图。这里把不属于本任务/草稿的引用剔除后落库，并把剔除的 id 回传
+                    # 给前端提示用户重选；导出阶段依旧严格拦截。
+                    allowed = set(rows_by_id)
+                    manifest = PreviewImageManifest(
+                        main_asset_id=(
+                            manifest.main_asset_id
+                            if manifest.main_asset_id in allowed
+                            else ""
+                        ),
+                        carousel_asset_ids=tuple(
+                            value
+                            for value in manifest.carousel_asset_ids
+                            if value in allowed
+                        ),
+                        detail_asset_ids=tuple(
+                            value
+                            for value in manifest.detail_asset_ids
+                            if value in allowed
+                        ),
+                        library_asset_ids=tuple(
+                            value
+                            for value in manifest.library_asset_ids
+                            if value in allowed
+                        ),
+                        semantic_asset_ids={
+                            slot: value
+                            for slot, value in manifest.semantic_asset_ids.items()
+                            if value in allowed
+                        },
                     )
+                    overrides[MANIFEST_KEY] = manifest.as_dict()
+                    live_ids = manifest.live_asset_ids()
+                    library_ids = tuple(manifest.library_asset_ids)
+                    dropped_asset_ids = list(foreign_ids)
             # A source proxy must be added to the library before it may be
             # selected for export. Processed assets are always library-eligible.
             for asset_id in live_ids:
@@ -1136,6 +1180,8 @@ class PreviewImageRepository:
                     "overrides": overrides,
                     "manifest": manifest.as_dict(),
                     "live_asset_ids": list(live_ids),
+                    # 保存时被剔除的跨任务/草稿引用（正常为空），供前端提示用户重选这几张图。
+                    "dropped_asset_ids": dropped_asset_ids,
                 }
             )
         return snapshots

@@ -1016,6 +1016,8 @@ class PreviewImageService:
                 "product_draft_id": entry["product_draft_id"],
                 "overrides": entry["overrides"],
                 "preview_revision": entry["preview_revision"],
+                # 保存时被剔除的跨任务/草稿引用（正常为空列表），前端据此提示用户重选这几张图。
+                "dropped_asset_ids": list(entry.get("dropped_asset_ids") or []),
             }
             for entry in snapshots
         ]
