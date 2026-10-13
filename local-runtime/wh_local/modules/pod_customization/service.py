@@ -150,6 +150,7 @@ class PodCustomizationService:
         title_runtime: Any | None = None,
         brief_runtime: Any | None = None,
         composition_runtime: Any | None = None,
+        analysis_runtime: Any | None = None,
         billing_coordinator: PodBillingCoordinator | None = None,
         start_workers: bool = True,
     ) -> None:
@@ -159,6 +160,7 @@ class PodCustomizationService:
         self.title_runtime = title_runtime
         self.brief_runtime = brief_runtime
         self.composition_runtime = composition_runtime
+        self.analysis_runtime = analysis_runtime
         self.billing_coordinator = billing_coordinator
         self.repository = PodCustomizationRepository(self.database_path)
         self.export_records = PodExportRecordStore(self.database_path)

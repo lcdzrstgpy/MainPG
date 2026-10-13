@@ -132,6 +132,7 @@ def create_router(
     title_runtime: Any | None = None,
     brief_runtime: Any | None = None,
     composition_runtime: Any | None = None,
+    analysis_runtime: Any | None = None,
     billing_coordinator: PodBillingCoordinator | None = None,
     start_workers: bool = True,
 ) -> APIRouter:
@@ -143,6 +144,7 @@ def create_router(
         title_runtime=title_runtime,
         brief_runtime=brief_runtime,
         composition_runtime=composition_runtime,
+        analysis_runtime=analysis_runtime,
         billing_coordinator=billing_coordinator,
         start_workers=start_workers,
     )
