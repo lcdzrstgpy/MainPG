@@ -1,7 +1,7 @@
 import { useRef, type ClipboardEvent, type DragEvent } from "react";
 
 import { PodAssetImage } from "../../pod_customization/data/usePodAssetUrl";
-import { isReplicaTargetComplete, replicaAssetPath, type ReplicaTargetDraft } from "../data/podReplicaModel";
+import { REPLICA_ANALYSIS_STATUS_LABELS, isReplicaTargetComplete, replicaAssetPath, type ReplicaTargetDraft } from "../data/podReplicaModel";
 
 type Props = {
   targets: readonly ReplicaTargetDraft[];
@@ -59,6 +59,7 @@ export function ReplicaTargetList({ targets, busy, onFiles, onRemove, onOpen }: 
               </span>
               <span className="pod-replica-target-meta">
                 <b>{target.productName.trim() || `产品 ${index + 1}`}</b>
+                <small className={`pod-replica-target-analysis is-${target.analysisStatus}`}>{REPLICA_ANALYSIS_STATUS_LABELS[target.analysisStatus]}</small>
                 <small className={complete ? "is-ok" : "is-warning"}>{complete ? "信息完整" : "待完善"}</small>
               </span>
               <button type="button" className="pod-replica-target-edit" disabled={busy} aria-label={`编辑第 ${index + 1} 个产品的店小秘导出信息与尺寸图`} onClick={() => onOpen(target.clientId)}>导出信息编辑</button>

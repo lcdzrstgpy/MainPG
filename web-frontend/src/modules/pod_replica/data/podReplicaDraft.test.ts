@@ -10,7 +10,7 @@ import {
   type PodReplicaDraft,
   type PodReplicaStorage,
 } from "./podReplicaDraft.ts";
-import { createEmptyReplicaTarget, type ReplicaTargetDraft } from "./podReplicaModel.ts";
+import { createEmptyReplicaTarget, defaultReplicaPresentationPreferences, type ReplicaTargetDraft } from "./podReplicaModel.ts";
 
 /** 内存版 localStorage，用于隔离测试草稿的读写行为。 */
 function memoryStorage(initial: Record<string, string> = {}): PodReplicaStorage & { dump: () => Record<string, string> } {
@@ -96,4 +96,61 @@ test("unavailable storage fails closed without throwing", () => {
   assert.ok(loadPodReplicaDraft("acc", "ws", null).error);
   assert.deepEqual(loadPodReplicaDraft("acc", "ws", null).state, createEmptyPodReplicaDraft());
   assert.deepEqual(savePodReplicaDraft("acc", "ws", createEmptyPodReplicaDraft(), null), { ok: false, error: "无法保存爆款复刻草稿：浏览器本地存储不可用。" });
+});
+
+test("analysis confirmation and presentation choices survive a draft round-trip", () => {
+  const storage = memoryStorage();
+  const confirmed: ReplicaTargetDraft = {
+    ...target("c1", "asset_a", "美甲套装"),
+    analysisId: "analysis-1",
+    analysisStatus: "confirmed",
+    sourceArtworkSpec: { artwork_motifs: { value: ["玫瑰"], confidence: 0.9, source: "model" } },
+    targetProductSpec: { product_type: { value: "nail_tip_set", confidence: 0.9, source: "model" } },
+    candidateCapabilities: ["multi_piece", "gel_material"],
+    unknownCapabilities: ["hand_painted"],
+    factOverrides: { material: "gel" },
+    presentationPreferences: { ...defaultReplicaPresentationPreferences(), use_hand_model: true },
+  };
+  savePodReplicaDraft("acc", "ws", { version: POD_REPLICA_DRAFT_VERSION, source: null, targets: [confirmed] }, storage);
+
+  const loaded = loadPodReplicaDraft("acc", "ws", storage);
+  const restored = loaded.state.targets[0];
+  assert.equal(restored.analysisId, "analysis-1");
+  assert.equal(restored.analysisStatus, "confirmed");
+  assert.deepEqual(restored.candidateCapabilities, ["multi_piece", "gel_material"]);
+  assert.deepEqual(restored.unknownCapabilities, ["hand_painted"]);
+  assert.deepEqual(restored.factOverrides, { material: "gel" });
+  assert.equal(restored.presentationPreferences.use_hand_model, true);
+  assert.equal(restored.presentationPreferences.use_body_model, false);
+});
+
+test("in-flight analysis is not persisted as analyzing", () => {
+  const storage = memoryStorage();
+  const analyzing: ReplicaTargetDraft = {
+    ...target("c1", "asset_a", "抱枕"),
+    analysisId: "analysis-2",
+    analysisStatus: "analyzing",
+  };
+  savePodReplicaDraft("acc", "ws", { version: POD_REPLICA_DRAFT_VERSION, source: null, targets: [analyzing] }, storage);
+
+  // 恢复后回到待识别，由用户重新触发分析，而不是卡在「识别中」。
+  assert.equal(loadPodReplicaDraft("acc", "ws", storage).state.targets[0].analysisStatus, "pending");
+});
+
+test("legacy draft without analysis fields loads as pending instead of crashing", () => {
+  const storage = memoryStorage();
+  const legacy = { ...target("c1", "asset_a", "抱枕") } as Record<string, unknown>;
+  for (const key of ["analysisId", "analysisStatus", "analysisError", "sourceArtworkSpec", "targetProductSpec", "candidateCapabilities", "unknownCapabilities", "factOverrides", "presentationPreferences"]) {
+    delete legacy[key];
+  }
+  storage.setItem(podReplicaDraftStorageKey("acc", "ws"), JSON.stringify({ version: POD_REPLICA_DRAFT_VERSION, source: null, targets: [legacy] }));
+
+  const loaded = loadPodReplicaDraft("acc", "ws", storage);
+  assert.equal(loaded.error, undefined);
+  const restored = loaded.state.targets[0];
+  assert.equal(restored.analysisStatus, "pending");
+  assert.deepEqual(restored.candidateCapabilities, []);
+  assert.deepEqual(restored.factOverrides, {});
+  assert.equal(restored.presentationPreferences.use_lifestyle_scene, true);
+  assert.equal(restored.productName, "抱枕");
 });

@@ -18,6 +18,9 @@ function readyTarget(clientId: string, assetId: string, productName: string): Re
     assetId,
     filename: `${assetId}.png`,
     productName,
+    // 提交门禁：该款识图必须已确认。
+    analysisId: "analysis-1",
+    analysisStatus: "confirmed",
     listingFields: { title_mode: "long", suggested_price_usd: "19.99", category_name: "抱枕", skus: [{ name: "40cm", declared_price: "6", weight_g: "300" }] },
     specCard: { enabled: true, style: "light", corner: "bottom-right", display_unit: "cm", cells: [["SKU", "Length", "Width", "Height"], ["40cm", "40", "40", "10"]] },
   };
@@ -45,8 +48,9 @@ test("create payload uses snake_case keys required by the backend contract", () 
     source_asset_id: "asset_source",
     targets: [readyTarget("c1", "asset_a", "抱枕")],
   });
-  assert.deepEqual(Object.keys(request), ["client_request_id", "source_asset_id", "title", "creative_prompt", "targets"]);
-  assert.deepEqual(Object.keys(request.targets[0]), ["target_asset_id", "product_name", "listing_fields"]);
+  assert.deepEqual(Object.keys(request), ["client_request_id", "source_asset_id", "title", "creative_prompt", "composition_id", "generation_strategy", "targets"]);
+  // 已确认识图的款会携带 analysis_id / fact_overrides / presentation_preferences。
+  assert.deepEqual(Object.keys(request.targets[0]), ["target_asset_id", "product_name", "listing_fields", "analysis_id", "fact_overrides", "presentation_preferences"]);
   const listing = request.targets[0].listing_fields;
   assert.ok("suggested_price_usd" in listing);
   assert.ok("category_name" in listing);

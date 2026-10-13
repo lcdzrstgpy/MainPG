@@ -404,3 +404,197 @@
   color: var(--pod-primary);
   font-size: 12px;
 }
+
+/* --- 识图状态与确认区 --- */
+
+.pod-replica-target-analysis {
+  color: var(--pod-text-muted);
+}
+
+.pod-replica-target-analysis.is-analyzing { color: var(--pod-primary); }
+.pod-replica-target-analysis.is-needs_confirmation { color: #b7791f; }
+.pod-replica-target-analysis.is-confirmed { color: #2f7d54; }
+.pod-replica-target-analysis.is-failed { color: #a84c48; }
+
+.pod-replica-submit-note {
+  margin: 0;
+  color: var(--pod-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.pod-replica-analysis {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--pod-border);
+  border-radius: 12px;
+  background: var(--pod-surface-soft);
+}
+
+.pod-replica-analysis-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.pod-replica-analysis-head span {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  color: var(--pod-text-muted);
+}
+
+.pod-replica-analysis-head h3 {
+  margin: 2px 0 0;
+  font-size: 15px;
+}
+
+.pod-replica-analysis-badge {
+  flex: 0 0 auto;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--pod-surface-muted);
+  color: var(--pod-text-secondary);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.pod-replica-analysis-badge.is-analyzing { background: var(--pod-surface-tint); color: var(--pod-primary); }
+.pod-replica-analysis-badge.is-needs_confirmation { background: #fdf3e2; color: #b7791f; }
+.pod-replica-analysis-badge.is-confirmed { background: #e8f5ee; color: #2f7d54; }
+.pod-replica-analysis-badge.is-failed { background: #fdf0ef; color: #a84c48; }
+
+.pod-replica-analysis-hint {
+  margin: 0;
+  color: var(--pod-text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.pod-replica-analysis-hint.is-warning {
+  color: #b7791f;
+}
+
+.pod-replica-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+}
+
+.pod-replica-fact-row {
+  display: grid;
+  grid-template-columns: minmax(96px, 34%) minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+
+.pod-replica-fact-row dt {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--pod-text-secondary);
+  font-size: 12px;
+}
+
+.pod-replica-fact-row dt em {
+  font-style: normal;
+  font-size: 11px;
+}
+
+.pod-replica-fact-row dt em.is-ok { color: var(--pod-text-muted); }
+.pod-replica-fact-row dt em.is-low { color: #b7791f; }
+.pod-replica-fact-row dt em.is-user { color: var(--pod-primary); }
+
+.pod-replica-fact-row dd {
+  margin: 0;
+}
+
+.pod-replica-fact-row dd span {
+  display: block;
+  color: var(--pod-text);
+  font-size: 13px;
+  word-break: break-word;
+}
+
+.pod-replica-fact-row dd input {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--pod-border-strong);
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.pod-replica-capabilities,
+.pod-replica-preferences {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pod-replica-capabilities-label,
+.pod-replica-preferences-label {
+  color: var(--pod-text-muted);
+  font-size: 12px;
+}
+
+.pod-replica-capability-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.pod-replica-capability-tag {
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--pod-surface-tint);
+  color: var(--pod-primary);
+  font-size: 12px;
+}
+
+.pod-replica-capability-tag.is-unknown {
+  background: var(--pod-surface-muted);
+  color: var(--pod-text-muted);
+}
+
+.pod-replica-preference {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.pod-replica-preference small {
+  color: var(--pod-text-muted);
+  font-size: 11px;
+}
+
+.pod-replica-analysis-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.pod-replica-analysis-actions button {
+  padding: 8px 14px;
+  border: 1px solid var(--pod-border-strong);
+  border-radius: 9px;
+  background: var(--pod-surface);
+  color: var(--pod-text-secondary);
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.pod-replica-analysis-actions button.is-primary {
+  border-color: transparent;
+  color: var(--theme-on-primary, #fff);
+  background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0));
+}
+
+.pod-replica-analysis-actions button:disabled {
+  opacity: .55;
+  cursor: not-allowed;
+}

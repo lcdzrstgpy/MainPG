@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  applyReplicaAnalysis,
   buildReplicaBatchRequest,
   copyReplicaListingInfo,
   createEmptyReplicaTarget,
@@ -9,14 +10,20 @@ import {
   firstInvalidReplicaTargetIndex,
   isReplicaTargetComplete,
   nextReplicaClientId,
+  parseReplicaListFact,
+  replicaAnalysesConfirmed,
+  replicaAnalysisBlockReason,
+  replicaEffectiveFactText,
   replicaFeeEstimate,
   replicaFeeEstimateText,
   removeReplicaTarget,
+  setReplicaFactOverrides,
   validateReplicaTargetDraft,
   type ReplicaTargetDraft,
 } from "./podReplicaModel.ts";
+import type { ReplicaAnalyzeResponse, ReplicaSpec } from "../types.ts";
 
-/** 构造一份可通过校验的目标产品：白底图 + 名称 + 类目 + 售价 + 一个合法 SKU + 已填尺寸。 */
+/** 构造一份可通过校验的目标产品：白底图 + 名称 + 类目 + 售价 + 一个合法 SKU + 已填尺寸 + 已确认识图。 */
 function validTarget(overrides: Partial<ReplicaTargetDraft> = {}): ReplicaTargetDraft {
   const base = createEmptyReplicaTarget("client-1");
   return {
@@ -42,6 +49,9 @@ function validTarget(overrides: Partial<ReplicaTargetDraft> = {}): ReplicaTarget
         ["40cm", "40", "40", "10"],
       ],
     },
+    // 提交门禁：该款识图必须已确认。
+    analysisId: "analysis-1",
+    analysisStatus: "confirmed",
     ...overrides,
   };
 }
@@ -152,4 +162,71 @@ test("fee estimate follows the full-custom per-product billing range", () => {
   assert.deepEqual(replicaFeeEstimate(0), { min: 0, max: 0 });
   assert.deepEqual(replicaFeeEstimate(2), { min: 80, max: 100 });
   assert.equal(replicaFeeEstimateText(3), "约 120–150 积分");
+});
+
+test("submit gate requires every target to be confirmed", () => {
+  const pending = validTarget({ analysisStatus: "pending", analysisId: "" });
+  assert.equal(replicaAnalysesConfirmed([validTarget()]), true);
+  assert.equal(replicaAnalysesConfirmed([validTarget(), pending]), false);
+  assert.equal(replicaAnalysesConfirmed([]), false);
+
+  assert.equal(replicaAnalysisBlockReason(pending), "请等待识图分析完成。");
+  assert.equal(replicaAnalysisBlockReason(validTarget({ analysisStatus: "analyzing" })), "识图分析进行中，请稍候。");
+  assert.equal(replicaAnalysisBlockReason(validTarget({ analysisStatus: "needs_confirmation" })), "请先确认识别结果。");
+  assert.equal(replicaAnalysisBlockReason(validTarget({ analysisStatus: "failed" })), "识图分析失败，请重新分析。");
+  assert.equal(validateReplicaTargetDraft(pending).ok, false);
+});
+
+function analysisResponse(overrides: Partial<ReplicaAnalyzeResponse> = {}): ReplicaAnalyzeResponse {
+  return {
+    analysis_id: "a1",
+    status: "succeeded",
+    source_asset_id: "asset_source",
+    target_asset_id: "asset_target",
+    source: {},
+    target: {},
+    source_needs_confirmation: false,
+    target_needs_confirmation: false,
+    candidate_capabilities: ["multi_piece"],
+    unknown_capability: [],
+    model_version: "m",
+    schema_version: "s",
+    error_code: "",
+    ...overrides,
+  };
+}
+
+test("applyReplicaAnalysis confirms high-confidence results and flags low-confidence ones", () => {
+  const base = createEmptyReplicaTarget("c1");
+
+  const high = applyReplicaAnalysis(base, analysisResponse());
+  assert.equal(high.analysisStatus, "confirmed");
+  assert.equal(high.analysisId, "a1");
+  assert.deepEqual(high.candidateCapabilities, ["multi_piece"]);
+
+  const low = applyReplicaAnalysis(base, analysisResponse({ target_needs_confirmation: true }));
+  assert.equal(low.analysisStatus, "needs_confirmation");
+
+  const failed = applyReplicaAnalysis(base, analysisResponse({ status: "failed", error_code: "boom" }));
+  assert.equal(failed.analysisStatus, "failed");
+  assert.equal(failed.analysisError, "boom");
+});
+
+test("fact overrides take precedence over recognised values and mark the target confirmed", () => {
+  const spec: ReplicaSpec = {
+    product_type: { value: "抱枕", confidence: 0.9, source: "model" },
+    printable_regions: { value: ["正面"], confidence: 0.3, source: "model" },
+  };
+  const target = validTarget({ analysisStatus: "needs_confirmation", targetProductSpec: spec });
+  assert.equal(replicaEffectiveFactText(target, "product_type"), "抱枕");
+  assert.equal(replicaEffectiveFactText(target, "printable_regions"), "正面");
+
+  const corrected = setReplicaFactOverrides(target, {
+    product_type: "方形抱枕",
+    printable_regions: parseReplicaListFact("正面、背面"),
+  });
+  assert.equal(corrected.analysisStatus, "confirmed");
+  assert.equal(replicaEffectiveFactText(corrected, "product_type"), "方形抱枕");
+  assert.equal(replicaEffectiveFactText(corrected, "printable_regions"), "正面、背面");
+  assert.deepEqual(parseReplicaListFact("a、b, c"), ["a", "b", "c"]);
 });
