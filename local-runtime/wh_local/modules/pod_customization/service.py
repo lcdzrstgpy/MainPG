@@ -404,29 +404,30 @@ class PodCustomizationService:
                 return self.get_replica_batch(actor, existing["batch_id"])
             raise PodRepositoryError("client_request_id 已用于不同的复刻请求", 409)
         batch_id = uuid.uuid4().hex
-        billing_run = (
-            self._freeze_batch(
-                actor,
-                batch_id,
-                len(request.targets),
-                billing_profile=POD_BILLING_PROFILE_REPLICA,
-            )
-            if (enqueue or self.billing_coordinator)
-            else None
-        )
         plans: dict[int, dict[str, Any]] = {}
+        billing_run: PodBillingRun | None = None
+        strategy: GenerationStrategy = "grid"
         try:
-            # 冻结每款计划（事实/能力/规则/构图）：失败即拦，绝不落库、不扣费。
+            # 先冻结每款计划（事实/能力/规则/构图）并据此确定批次生成策略：失败即拦，
+            # 绝不落库、不扣费。计费必须在策略确定之后冻结（grid 2 次/款 vs 独立面板 8 次/款）。
             if any(target.analysis_id for target in request.targets):
                 composition_run = self._freeze_replica_composition(
                     actor, batch_id, len(request.targets)
                 )
                 try:
+                    strategy = self._replica_batch_strategy(actor, request)
                     plans = self._resolve_replica_plans(
-                        actor, request, composition_run=composition_run
+                        actor,
+                        request,
+                        composition_run=composition_run,
+                        generation_strategy=strategy,
                     )
                 finally:
                     composition_run.settle()
+            if enqueue or self.billing_coordinator:
+                billing_run = self._freeze_replica_batch(
+                    actor, batch_id, len(request.targets), strategy
+                )
             batch = self.repository.create_replica_batch(
                 actor.workspace_id,
                 actor.id,
@@ -654,8 +655,43 @@ class PodCustomizationService:
             return "independent_panels"
         return "grid"
 
+    def _replica_batch_strategy(
+        self, actor: Actor, request: ReplicaBatchCreate
+    ) -> GenerationStrategy:
+        """批次级生成策略：任一目标需要独立面板，则整批按独立面板冻结。
+
+        计费与 worker 的调用形状都是批次级的，因此必须整批统一；用户显式指定优先。
+        """
+        requested = request.generation_strategy
+        if requested in ("grid", "independent_panels"):
+            return requested  # type: ignore[return-value]
+        for target in request.targets:
+            if not target.analysis_id:
+                continue
+            record = self.repository.get_replica_analysis(
+                target.analysis_id, actor.workspace_id, actor.id
+            )
+            if record["status"] != "succeeded":
+                continue
+            target_spec = TargetProductSpec.model_validate_json(record["target_spec_json"])
+            if target.fact_overrides is not None:
+                target_spec = normalize_target_analysis(
+                    json.loads(record["raw_target_json"]),
+                    target_spec.target_asset_id,
+                    target.fact_overrides,
+                )
+            capabilities = match_capabilities(target_spec, target.presentation_preferences)
+            if self._replica_generation_strategy(capabilities, None) == "independent_panels":
+                return "independent_panels"
+        return "grid"
+
     def _resolve_replica_plans(
-        self, actor: Actor, request: ReplicaBatchCreate, *, composition_run: PodBillingRun
+        self,
+        actor: Actor,
+        request: ReplicaBatchCreate,
+        *,
+        composition_run: PodBillingRun,
+        generation_strategy: GenerationStrategy = "grid",
     ) -> dict[int, dict[str, Any]]:
         """为每个带 analysis_id 的目标款冻结 ReplicaPlan（缺分析时保持旧行为）。
 
@@ -721,9 +757,7 @@ class PodCustomizationService:
                 capability_set=capabilities,
                 rule_set=rules,
                 composition_plan=composition_plan,
-                generation_strategy=self._replica_generation_strategy(
-                    capabilities, request.generation_strategy
-                ),
+                generation_strategy=generation_strategy,
                 analysis_schema_version=REPLICA_ANALYSIS_SCHEMA_VERSION,
                 capability_registry_version=capabilities.registry_version,
                 rule_version=rules.rule_version,
@@ -1657,6 +1691,7 @@ class PodCustomizationService:
             actor, action_id, batch_id, style_index, creative_prompt,
             semi=batch.get("mode") == "semi",
             billing_profile=self._pod_billing_profile(batch),
+            replica_generation_strategy=self._batch_replica_generation_strategy(batch_id),
         )
         try:
             results = self.repository.claim_style_regeneration(
@@ -2504,6 +2539,19 @@ class PodCustomizationService:
             actor, plan, action_type="batch_initial", target_id=batch_id, batch_id=batch_id
         )
 
+    def _freeze_replica_batch(
+        self, actor: Actor, batch_id: str, style_count: int, generation_strategy: str
+    ) -> PodBillingRun:
+        """复刻批次计费：按生成策略冻结每款图片调用形状（grid 2 次 / 独立面板 8 次）。"""
+        if self.billing_coordinator is None:
+            raise RuntimeError("POD billing coordinator is not configured")
+        plan = PodCallPlan.for_replica_batch(
+            batch_id, style_count=style_count, generation_strategy=generation_strategy
+        )
+        return self._freeze_action(
+            actor, plan, action_type="batch_initial", target_id=batch_id, batch_id=batch_id
+        )
+
     @staticmethod
     def _pod_billing_profile(batch: dict[str, Any]) -> str:
         """按批次模式取计费画像：复刻单独上报 pod_replica_v1（供远端分类），全定制沿用
@@ -2512,6 +2560,19 @@ class PodCustomizationService:
         if str(batch.get("mode") or "") == "replica":
             return POD_BILLING_PROFILE_REPLICA
         return POD_BILLING_PROFILE_RANDOM
+
+    def _batch_replica_generation_strategy(self, batch_id: str) -> str:
+        """从款级快照读取批次生成策略；任一款为独立面板即整批独立面板，否则 grid。"""
+        try:
+            batch = self.repository.get_batch_internal(batch_id)
+        except Exception:  # noqa: BLE001
+            return "grid"
+        if str(batch.get("mode") or "") != "replica":
+            return "grid"
+        for target in batch.get("replica_targets") or []:
+            if str(target.get("generation_strategy") or "") == "independent_panels":
+                return "independent_panels"
+        return "grid"
 
     def _freeze_semi_batch(self, actor: Actor, batch_id: str, count: int) -> PodBillingRun:
         if self.billing_coordinator is None:
@@ -2557,14 +2618,23 @@ class PodCustomizationService:
                 image_style_indices=image_indices,
             )
         else:
-            plan = PodCallPlan.for_batch_resume(
-                batch_id,
-                uuid.uuid4().hex,
-                image_style_indices=image_indices,
-                title_style_indices=title_indices,
-                include_title=self.title_runtime is not None,
-                billing_profile=self._pod_billing_profile(batch),
-            )
+            if self._batch_replica_generation_strategy(batch_id) == "independent_panels":
+                plan = PodCallPlan.for_replica_batch_resume(
+                    batch_id,
+                    uuid.uuid4().hex,
+                    image_style_indices=image_indices,
+                    title_style_indices=title_indices,
+                    include_title=self.title_runtime is not None,
+                )
+            else:
+                plan = PodCallPlan.for_batch_resume(
+                    batch_id,
+                    uuid.uuid4().hex,
+                    image_style_indices=image_indices,
+                    title_style_indices=title_indices,
+                    include_title=self.title_runtime is not None,
+                    billing_profile=self._pod_billing_profile(batch),
+                )
         return self._freeze_action(
             actor,
             plan,
@@ -2660,18 +2730,22 @@ class PodCustomizationService:
         *,
         semi: bool = False,
         billing_profile: str = POD_BILLING_PROFILE_RANDOM,
+        replica_generation_strategy: str = "grid",
     ) -> PodBillingRun:
         if self.billing_coordinator is None:
             raise RuntimeError("POD billing coordinator is not configured")
-        plan = (
-            PodCallPlan.for_semi_style_retry(action_id)
-            if semi
-            else PodCallPlan.for_style_retry(
+        if semi:
+            plan = PodCallPlan.for_semi_style_retry(action_id)
+        elif replica_generation_strategy == "independent_panels":
+            plan = PodCallPlan.for_replica_style_retry(
+                action_id, include_title=self.title_runtime is not None
+            )
+        else:
+            plan = PodCallPlan.for_style_retry(
                 action_id,
                 include_title=self.title_runtime is not None,
                 billing_profile=billing_profile,
             )
-        )
         return self._freeze_action(
             actor,
             plan,
@@ -2692,13 +2766,21 @@ class PodCustomizationService:
         if self.billing_coordinator is None:
             raise RuntimeError("POD billing coordinator is not configured")
         batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
-        plan = PodCallPlan.for_batch_retry(
-            action_id,
-            image_style_indices=image_style_indices,
-            title_style_indices=title_style_indices,
-            include_title=self.title_runtime is not None,
-            billing_profile=self._pod_billing_profile(batch),
-        )
+        if self._batch_replica_generation_strategy(batch_id) == "independent_panels":
+            plan = PodCallPlan.for_replica_batch_retry(
+                action_id,
+                image_style_indices=image_style_indices,
+                title_style_indices=title_style_indices,
+                include_title=self.title_runtime is not None,
+            )
+        else:
+            plan = PodCallPlan.for_batch_retry(
+                action_id,
+                image_style_indices=image_style_indices,
+                title_style_indices=title_style_indices,
+                include_title=self.title_runtime is not None,
+                billing_profile=self._pod_billing_profile(batch),
+            )
         # The existing durable schema restricts action_type values. The payload
         # distinguishes this single-run batch retry without a table migration.
         return self._freeze_action(

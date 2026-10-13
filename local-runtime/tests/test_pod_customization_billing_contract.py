@@ -200,6 +200,32 @@ def test_replica_independent_panels_keep_two_styles_as_two_links() -> None:
         PodCallPlan.for_replica_batch("rb-3", style_count=1, generation_strategy="nope")
 
 
+def test_replica_panel_retry_and_resume_plans_reuse_the_panel_call_shape() -> None:
+    from wh_local.modules.pod_customization.billing_contract import REPLICA_PANEL_COUNT
+
+    style_retry = PodCallPlan.for_replica_style_retry("rb:style:1:retry:x", include_title=False)
+    image_ids = [call.call_id for call in style_retry.calls if call.feature == "pod.image"]
+    assert len(image_ids) == REPLICA_PANEL_COUNT * 2
+    assert all(":style:1:image:p" in call_id for call_id in image_ids)
+
+    batch_retry = PodCallPlan.for_replica_batch_retry(
+        "rb:batch-retry:y",
+        image_style_indices=(1,),
+        title_style_indices=(),
+        include_title=False,
+    )
+    assert all(call.feature == "pod.image" for call in batch_retry.calls)
+    assert len(batch_retry.calls) == REPLICA_PANEL_COUNT * 2
+
+    resume = PodCallPlan.for_replica_batch_resume(
+        "rb", "resume-1", image_style_indices=(2,), title_style_indices=(), include_title=False
+    )
+    assert all(":style:2:image:p" in call.call_id for call in resume.calls)
+    # 款级分组仍把这一款认成一条 link。
+    assert resume.product_batch_freeze_payload()["link_count"] == 1
+    assert resume.billing_profile == "pod_replica_v1"
+
+
 def test_batch_plan_accepts_200_styles_as_exactly_1400_calls_and_rejects_more() -> None:
     plan = PodCallPlan.for_batch("batch-max-200", style_count=200)
 

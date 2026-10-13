@@ -17,6 +17,8 @@ from ...session import Actor
 from .assets import PodAssetStore
 from .errors import PodExecutionExpired, image_provider_outcome_for_exception, safe_error_message
 from .billing_contract import (
+    REPLICA_PANEL_ATTEMPTS,
+    REPLICA_PANEL_COUNT,
     PodBillingAuthorizationRequired,
     PodBillingCoordinator,
     PodCallOutcome,
@@ -32,7 +34,7 @@ from .replica_context import (
     load_frozen_plan,
     style_product_context,
 )
-from .replica_prompt_compiler import compile_replica_prompt
+from .replica_prompt_compiler import compile_replica_panel_prompt, compile_replica_prompt
 from .replica_prompts import build_replica_listing_prompt
 from .repository import PodCustomizationRepository, PodRepositoryError
 from .runtime import RuntimeClosedError
@@ -728,6 +730,7 @@ class PodBatchWorker:
         prepared: list[tuple[dict[str, Any], Any, list[Any], list[str]]] = []
         last_error = "整款重新生成未返回完整结果"
         last_call_id = ""
+        panel_strategy = self._style_generation_strategy(batch, style_index) == "independent_panels"
         try:
             for attempt in (1, 2):
                 call_kind = "regenerate_style" if attempt == 1 else "regenerate_style_retry"
@@ -752,12 +755,36 @@ class PodBatchWorker:
                     **request_kwargs,
                 )
                 try:
-                    provider_call_id = self._image_call_id(run, style_index, attempt)
-                    grid = self.ai_runtime.submit(
-                        self._generate_listing_grid, batch, call, request, run, provider_call_id
-                    ).result()
-                    panels, fingerprints = self._validate_style_grid(grid)
-                    prepared = [(call, grid, panels, fingerprints)]
+                    if panel_strategy:
+                        provider_call_ids = self._fresh_panel_attempt(run, style_index, attempt)
+                        if provider_call_ids is None:
+                            last_error = "provider call outcome was uncertain during restart"
+                            continue
+                        requests = self._panel_generation_requests(
+                            batch,
+                            style_index,
+                            attempt,
+                            template_content=template_content,
+                            template_content_type=template_content_type,
+                            base_prompt=base_prompt,
+                        )
+                        panels = self.ai_runtime.submit(
+                            self._generate_listing_panels,
+                            batch,
+                            call,
+                            requests,
+                            run,
+                            provider_call_ids,
+                        ).result()
+                        fingerprints = [hashlib.sha256(panel.content).hexdigest() for panel in panels]
+                        prepared = [(call, None, panels, fingerprints)]
+                    else:
+                        provider_call_id = self._image_call_id(run, style_index, attempt)
+                        grid = self.ai_runtime.submit(
+                            self._generate_listing_grid, batch, call, request, run, provider_call_id
+                        ).result()
+                        panels, fingerprints = self._validate_style_grid(grid)
+                        prepared = [(call, grid, panels, fingerprints)]
                     break
                 except PodBillingAuthorizationRequired:
                     raise
@@ -920,17 +947,115 @@ class PodBatchWorker:
         style_index: int,
         attempt: int,
         fields: BusinessFields,
+        panel_index: int | None = None,
     ) -> str:
         """复刻提示词：优先使用款级冻结计划编译的四段式文本。
 
         识图主流程的批次在冻结时就写入了 ``compiled_prompt``，生成/重试/暂停恢复与进程
         重启都复用同一份文本；旧批次没有冻结计划时，回退到固定单函数提示词。
+        ``panel_index`` 非空时编译单面板提示词（independent_panels 策略）。
         """
         try:
             plan = load_frozen_plan(batch, style_index)
         except (ReplicaPlanMissingError, ReplicaStyleSnapshotMissingError):
             return build_replica_listing_prompt(fields, attempt=attempt)
-        return compile_replica_prompt(plan, attempt=attempt)
+        if panel_index is None:
+            return compile_replica_prompt(plan, attempt=attempt)
+        return compile_replica_panel_prompt(plan, panel_index, attempt=attempt)
+
+    def _style_generation_strategy(self, batch: dict[str, Any], style_index: int) -> str:
+        """按款读取冻结生成策略；无冻结计划（旧批次/非复刻）一律按 grid 处理。"""
+        if batch.get("mode") != "replica":
+            return "grid"
+        try:
+            strategy = load_frozen_plan(batch, style_index).generation_strategy
+        except (ReplicaPlanMissingError, ReplicaStyleSnapshotMissingError):
+            return "grid"
+        return "independent_panels" if strategy == "independent_panels" else "grid"
+
+    @staticmethod
+    def _panel_image_call_id(
+        billing_run: PodBillingRun, style_index: int, panel_index: int, attempt: int
+    ) -> str:
+        marker = f":style:{style_index}:"
+        suffix = f":image:p{panel_index}:{attempt}"
+        matching = [
+            call.call_id
+            for call in billing_run.plan.calls
+            if call.feature == "pod.image" and marker in call.call_id and call.call_id.endswith(suffix)
+        ]
+        if len(matching) == 1:
+            return matching[0]
+        raise RuntimeError(
+            f"POD panel call plan is missing style {style_index} panel {panel_index} attempt {attempt}"
+        )
+
+    @staticmethod
+    def _fresh_panel_attempt(
+        billing_run: PodBillingRun, style_index: int, attempt: int
+    ) -> tuple[str, ...] | None:
+        """该尝试下 4 个面板调用是否全部尚未产生结果；否则返回 None。"""
+        ids = tuple(
+            PodBatchWorker._panel_image_call_id(billing_run, style_index, panel_index, attempt)
+            for panel_index in range(1, REPLICA_PANEL_COUNT + 1)
+        )
+        if all(billing_run.call_status(call_id) == "planned" for call_id in ids):
+            return ids
+        return None
+
+    def _generate_listing_panels(
+        self,
+        batch: dict[str, Any],
+        call: dict[str, Any],
+        requests: list[DirectListingGridRequest],
+        billing_run: PodBillingRun,
+        provider_call_ids: tuple[str, ...],
+        execution_epoch: int | None = None,
+    ) -> list[Any]:
+        """independent_panels：对同一款逐面板各发一次 provider 调用，返回 4 张单面板图。"""
+        panels: list[Any] = []
+        for request, provider_call_id in zip(requests, provider_call_ids):
+            panels.append(
+                self._generate_listing_grid(
+                    batch, call, request, billing_run, provider_call_id, execution_epoch
+                )
+            )
+        return panels
+
+    def _panel_generation_requests(
+        self,
+        batch: dict[str, Any],
+        style_index: int,
+        attempt: int,
+        *,
+        template_content: bytes,
+        template_content_type: str,
+        base_prompt: str | None = None,
+    ) -> list[DirectListingGridRequest]:
+        """构造 4 个单面板生成请求（同一款、同一冻结计划，仅面板视图不同）。"""
+        requests: list[DirectListingGridRequest] = []
+        for panel_index in range(1, REPLICA_PANEL_COUNT + 1):
+            prompt, request_kwargs = self._style_generation_inputs(
+                batch,
+                style_index,
+                attempt,
+                template_content=template_content,
+                template_content_type=template_content_type,
+                base_prompt=base_prompt,
+                panel_index=panel_index,
+            )
+            requests.append(
+                DirectListingGridRequest(
+                    trial_id=(
+                        f"{batch['batch_id']}-style-{style_index}-panel-{panel_index}-"
+                        f"attempt-{attempt}"
+                    ),
+                    prompt=prompt,
+                    attempt=attempt,
+                    **request_kwargs,
+                )
+            )
+        return requests
 
     def _style_generation_inputs(
         self,
@@ -941,6 +1066,7 @@ class PodBatchWorker:
         template_content: bytes,
         template_content_type: str,
         base_prompt: str | None = None,
+        panel_index: int | None = None,
     ) -> tuple[str, dict[str, Any]]:
         """按款解析该款生图所需的 prompt 与请求参数。
 
@@ -966,7 +1092,7 @@ class PodBatchWorker:
         context = style_product_context(batch, style_index)
         if mode == "replica":
             fields = BusinessFields.model_validate(context["business_fields"])
-            prompt = self._replica_style_prompt(batch, style_index, attempt, fields)
+            prompt = self._replica_style_prompt(batch, style_index, attempt, fields, panel_index)
             source = batch.get("replica_source")
             if not isinstance(source, dict) or not source.get("relative_path"):
                 raise ReplicaStyleSnapshotMissingError(
@@ -1170,7 +1296,7 @@ class PodBatchWorker:
         only after its full publish/link step succeeds; validation and
         generation failures stay retryable for the second attempt.
         """
-        image_futures: dict[Future[Any], tuple[dict[str, Any], int]] = {}
+        image_futures: dict[Future[Any], tuple[dict[str, Any], int, str]] = {}
         postprocess_futures: dict[Future[Any], int] = {}
         processed: set[int] = set()
         errors: dict[int, str] = {}
@@ -1192,10 +1318,25 @@ class PodBatchWorker:
             except Exception as exc:
                 errors[style_index] = str(exc).strip() or exc.__class__.__name__
                 return
+            enqueue_postprocess(style_index, call, panels, fingerprints)
+
+        def submit_postprocess_panels(
+            style_index: int, call: dict[str, Any], panels: list[Any]
+        ) -> None:
+            """independent_panels：4 张单面板图直接进入后处理，无需拆图。"""
+            if len(panels) != REPLICA_PANEL_COUNT:
+                errors[style_index] = "独立面板生成未返回四张面板"
+                return
+            fingerprints = [hashlib.sha256(panel.content).hexdigest() for panel in panels]
+            enqueue_postprocess(style_index, call, panels, fingerprints)
+
+        def enqueue_postprocess(
+            style_index: int, call: dict[str, Any], panels: list[Any], fingerprints: list[str]
+        ) -> None:
             future = self._style_postprocess_pool.submit(
                 self._process_style_grids,
                 batch,
-                [(call, grid, panels, fingerprints)],
+                [(call, None, panels, fingerprints)],
                 billing_run,
             )
             postprocess_futures[future] = style_index
@@ -1204,7 +1345,60 @@ class PodBatchWorker:
         # generation failure isn't retried a third time.
         retried: set[int] = set()
 
+        def submit_panel_style(style_index: int, attempt_value: int) -> None:
+            """independent_panels：整款一次提交 4 个单面板 provider 调用。
+
+            只用「4 个面板调用全部还是 planned」的尝试序号；已产生结果的调用绝不重复发起，
+            避免重复扣费或 outcome 冲突（重启后自动落到下一个尝试）。
+            """
+            chosen: tuple[int, tuple[str, ...]] | None = None
+            for candidate in (attempt_value, 2 if attempt_value == 1 else 1):
+                ids = self._fresh_panel_attempt(billing_run, style_index, candidate)
+                if ids is not None:
+                    chosen = (candidate, ids)
+                    break
+            if chosen is None:
+                errors[style_index] = "provider call outcome was uncertain during restart"
+                return
+            candidate, provider_call_ids = chosen
+            attempt_kind = "initial" if candidate == 1 else "retry"
+            full_prompt, _ = self._style_generation_inputs(
+                batch,
+                style_index,
+                candidate,
+                template_content=template_content,
+                template_content_type=template_content_type,
+            )
+            call = self.repository.get_or_create_generation_call(
+                batch, call_kind=attempt_kind, call_index=style_index, prompt_snapshot=full_prompt
+            )
+            call["style_index"] = style_index
+            if not billing_run.grant.provider_key("wuyin"):
+                raise PodBillingAuthorizationRequired(
+                    "POD provider grant expired before the next image call started"
+                )
+            requests = self._panel_generation_requests(
+                batch,
+                style_index,
+                candidate,
+                template_content=template_content,
+                template_content_type=template_content_type,
+            )
+            future = self.ai_runtime.submit(
+                self._generate_listing_panels,
+                batch,
+                call,
+                requests,
+                billing_run,
+                provider_call_ids,
+                execution_epoch,
+            )
+            image_futures[future] = (call, style_index, "independent_panels")
+
         def submit_style(style_index: int, attempt_value: int) -> None:
+            if self._style_generation_strategy(batch, style_index) == "independent_panels":
+                submit_panel_style(style_index, attempt_value)
+                return
             attempt_kind = "initial" if attempt_value == 1 else "retry"
             prompt, request_kwargs = self._style_generation_inputs(
                 batch,
@@ -1268,7 +1462,7 @@ class PodBatchWorker:
                 provider_call_id,
                 execution_epoch,
             )
-            image_futures[future] = (call, style_index)
+            image_futures[future] = (call, style_index, "grid")
 
         while True:
             # Fill the bounded generation window while not paused.
@@ -1309,9 +1503,9 @@ class PodBatchWorker:
                 continue
             for future in done:
                 if future in image_futures:
-                    call, style_index = image_futures.pop(future)
+                    call, style_index, strategy = image_futures.pop(future)
                     try:
-                        grid = future.result()
+                        result = future.result()
                     except PodBillingAuthorizationRequired:
                         # A grant failure invalidates the remaining calls in
                         # this batch.  Best-effort cancellation prevents a
@@ -1341,7 +1535,10 @@ class PodBatchWorker:
                             continue
                         errors[style_index] = str(exc).strip() or exc.__class__.__name__
                         continue
-                    submit_postprocess(style_index, call, grid)
+                    if strategy == "independent_panels":
+                        submit_postprocess_panels(style_index, call, result)
+                    else:
+                        submit_postprocess(style_index, call, result)
                 elif future in postprocess_futures:
                     style_index = postprocess_futures.pop(future)
                     try:

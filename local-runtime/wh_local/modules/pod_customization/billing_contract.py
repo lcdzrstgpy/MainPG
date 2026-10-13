@@ -252,6 +252,105 @@ class PodCallPlan:
             billing_profile=POD_BILLING_PROFILE_REPLICA,
         )
 
+    @staticmethod
+    def _replica_panel_image_calls(prefix: str) -> tuple[PodPlannedCall, ...]:
+        """独立面板策略下某款（或某次重试）的 4 面板 × 2 次尝试图片调用。"""
+        return tuple(
+            PodPlannedCall(f"{prefix}:image:p{panel_index}:{attempt}", "pod.image")
+            for panel_index in range(1, REPLICA_PANEL_COUNT + 1)
+            for attempt in range(1, REPLICA_PANEL_ATTEMPTS + 1)
+        )
+
+    @classmethod
+    def for_replica_style_retry(
+        cls, action_id: str, *, include_title: bool
+    ) -> "PodCallPlan":
+        """复刻「整款重试」的独立面板形态：4 面板 × 2 次尝试（+ 标题）。"""
+        calls: list[PodPlannedCall] = list(cls._replica_panel_image_calls(action_id))
+        if include_title:
+            calls.extend(
+                PodPlannedCall(f"{action_id}:title:{attempt}", "pod.title")
+                for attempt in range(1, TITLE_ATTEMPTS + 1)
+            )
+        return cls(
+            idempotency_key=f"pod:retry:{action_id}",
+            calls=tuple(calls),
+            billing_profile=POD_BILLING_PROFILE_REPLICA,
+        )
+
+    @classmethod
+    def for_replica_batch_retry(
+        cls,
+        action_id: str,
+        *,
+        image_style_indices: Sequence[int],
+        title_style_indices: Sequence[int],
+        include_title: bool,
+    ) -> "PodCallPlan":
+        """复刻「批量失败重试」的独立面板形态；与 ``for_batch_retry`` 同语义。"""
+        image_indices = tuple(image_style_indices)
+        title_indices = tuple(title_style_indices)
+        if not image_indices and not title_indices:
+            raise ValueError("at least one failed style is required")
+        calls: list[PodPlannedCall] = []
+        for style_index in image_indices:
+            calls.extend(cls._replica_panel_image_calls(f"{action_id}:style:{style_index}"))
+            if include_title:
+                calls.extend(
+                    PodPlannedCall(
+                        f"{action_id}:style:{style_index}:title:{attempt}", "pod.title"
+                    )
+                    for attempt in range(1, TITLE_ATTEMPTS + 1)
+                )
+        for style_index in title_indices:
+            calls.extend(
+                PodPlannedCall(f"{action_id}:style:{style_index}:title:{attempt}", "pod.title")
+                for attempt in range(1, TITLE_ATTEMPTS + 1)
+            )
+        return cls(
+            idempotency_key=f"pod:retry:{action_id}",
+            calls=tuple(calls),
+            billing_profile=POD_BILLING_PROFILE_REPLICA,
+        )
+
+    @classmethod
+    def for_replica_batch_resume(
+        cls,
+        batch_id: str,
+        resume_id: str,
+        *,
+        image_style_indices: Sequence[int],
+        title_style_indices: Sequence[int],
+        include_title: bool,
+    ) -> "PodCallPlan":
+        """复刻「暂停续跑」的独立面板形态；调用 id 沿用原批次样式键以便接回状态。"""
+        image_indices = tuple(image_style_indices)
+        title_indices = tuple(title_style_indices)
+        if not image_indices and not title_indices:
+            raise ValueError("at least one remaining POD style is required")
+        if set(image_indices) & set(title_indices):
+            raise ValueError("a resumed style cannot be both image and title only")
+        calls: list[PodPlannedCall] = []
+        for style_index in image_indices:
+            calls.extend(cls._replica_panel_image_calls(f"{batch_id}:style:{style_index}"))
+            if include_title:
+                calls.extend(
+                    PodPlannedCall(
+                        f"{batch_id}:style:{style_index}:title:{attempt}", "pod.title"
+                    )
+                    for attempt in range(1, TITLE_ATTEMPTS + 1)
+                )
+        for style_index in title_indices:
+            calls.extend(
+                PodPlannedCall(f"{batch_id}:style:{style_index}:title:{attempt}", "pod.title")
+                for attempt in range(1, TITLE_ATTEMPTS + 1)
+            )
+        return cls(
+            idempotency_key=f"pod:batch:{batch_id}:resume:{resume_id}",
+            calls=tuple(calls),
+            billing_profile=POD_BILLING_PROFILE_REPLICA,
+        )
+
     @classmethod
     def for_retry(
         cls, action_id: str, *, feature: PodFeature, max_attempts: int = 1
