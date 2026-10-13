@@ -18,7 +18,6 @@ import { getApiToken } from "../../../shared/api/apiClient";
 import { toUserMessage } from "../../../transport/http/client";
 import { ShopCollectionPanel, type ShopCollectionPanelHandle } from "../components/ShopCollectionPanel";
 import { PluginOneboundCapturePanel, type PluginOneboundCapturePanelHandle } from "../components/PluginOneboundCapturePanel";
-import { MobileCaptureImportPanel } from "../components/MobileCaptureImportPanel";
 import type {
   CollectionMode,
   CollectionPlatform,
@@ -377,7 +376,6 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false);
   const [shopBatchCount, setShopBatchCount] = useState(0);
   const [pluginBatchCount, setPluginBatchCount] = useState(0);
-  const [mobilePendingCount, setMobilePendingCount] = useState(0);
   const [skuRepull, setSkuRepull] = useState<SkuRepullState | null>(null);
   const [skuRepullBusy, setSkuRepullBusy] = useState(false);
   const [collectionRetry, setCollectionRetry] = useState<CollectionRetryState | null>(null);
@@ -1385,18 +1383,15 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                 aria-selected={collectionWorkspaceMode === "mobile"}
                 className={collectionWorkspaceMode === "mobile" ? "is-active" : ""}
                 onClick={() => setCollectionWorkspaceMode("mobile")}
-              ><span className="iconfont icon-phone" aria-hidden="true"></span>手机端导入{mobilePendingCount > 0 ? ` (${mobilePendingCount})` : ""}</button>
+              ><span className="iconfont icon-phone" aria-hidden="true"></span>手机端导入</button>
             </div>
             {collectionWorkspaceMode === "mobile" ? (
-              <MobileCaptureImportPanel
-                isActive={isActive}
-                onPendingCountChange={setMobilePendingCount}
-                onImported={(runId) => {
-                  setCollectionWorkspaceMode("daily");
-                  void refreshRuns();
-                  void openRun(runId);
-                }}
-              />
+              // 手机端导入面板尚未接入：给出明确说明，避免出现空白页。
+              <div className="result-empty">
+                <span>○</span>
+                <strong>手机端导入功能建设中</strong>
+                <p>当前请使用「插件采集」或「店铺采集」导入商品链接。</p>
+              </div>
             ) : collectionWorkspaceMode === "plugin" ? (
               <PluginOneboundCapturePanel ref={pluginCapturePanelRef} isActive={isActive} onOpenDraft={onOpenProductProcessingDraft} onBatchCountChange={setPluginBatchCount} />
             ) : collectionWorkspaceMode === "shop" ? (
