@@ -89,7 +89,7 @@ class AnnouncementSyncService:
                 logger.warning("announcement sync: unexpected payload from %s", url)
                 return 0
             new_count = self.repository.upsert_server_announcements(items)
-            # 撤回：服务器返回完整在线列表时，把已下线/已删除的本地消息一并移除。
+            # 撤回：服务器返回完整在线列表时，把已下线/已删除的本地消息隐藏（保留已读状态）。
             # id 异常（非数字）的条目单独跳过，避免单个坏数据让整轮撤回清理被跳过。
             active_ids: list[int] = []
             for item in items:
@@ -232,7 +232,7 @@ class FeedbackReplySyncService:
             new_count = self.repository.upsert_server_announcements(
                 reply_items, kind="feedback_reply"
             )
-            # 撤回：服务器已删除的反馈回复，本地对应消息一并移除。
+            # 撤回：服务器已删除的反馈回复，本地对应消息隐藏（保留已读状态）。
             # 同样要求带身份：匿名轮该接口返回的是合法空列表，按它撤回会清空整类消息。
             active_ids = [int(item.get("id") or 0) for item in reply_items]
             if headers.get("x-auth-token"):

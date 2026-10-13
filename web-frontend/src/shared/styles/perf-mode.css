@@ -42,3 +42,13 @@ html[data-perf-mode="on"] .workspace-tab-panel.is-active > * > [class*="-card"],
 html[data-perf-mode="on"] .workspace-tab-panel.is-active > * > [class*="-panel"] {
   animation: none !important;
 }
+
+/* 5) 登录页美化动效：流动光斑直接隐藏（同仪表盘光斑的处置），
+      玻璃卡与品牌区的入场动画直接到位。 */
+html[data-perf-mode="on"] .auth-halo {
+  display: none !important;
+}
+html[data-perf-mode="on"] .auth-form-card,
+html[data-perf-mode="on"] .auth-brand-card > * {
+  animation: none !important;
+}

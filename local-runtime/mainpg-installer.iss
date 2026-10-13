@@ -51,6 +51,11 @@ Name: "{userprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingD
 ; 数据根目录键（DataRoot 值由 [Code] 在安装收尾写入）；卸载时一并清理
 [Registry]
 Root: HKCU; Subkey: "Software\{#MyAppNameEn}"; ValueType: none; Flags: uninsdeletekey
+; mainpg:// 协议：工作台页「重新连接」借它重新拉起主程序。应用每次启动也会自注册，
+; 这里补声明保证卸载时一并清理（uninsdeletekey 递归删除子键）。
+Root: HKCU; Subkey: "Software\Classes\mainpg"; ValueType: string; ValueName: ""; ValueData: "URL:MainPG Protocol"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\mainpg"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""
+Root: HKCU; Subkey: "Software\Classes\mainpg\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" --no-browser"
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "立即启动 {#MyAppName}"; Flags: nowait postinstall skipifsilent

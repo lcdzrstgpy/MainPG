@@ -38,6 +38,7 @@ from wh_local.media_enhance import options_from_env
 from wh_local.runtime_logs import business_logger
 
 from .batch_billing import (
+    abandon_freeze as _abandon_batch_freeze,
     billing_client as _batch_billing_client,
     derive_item_results as _derive_batch_item_results,
     forget_freeze as _forget_batch_freeze,
@@ -5549,6 +5550,20 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             _forget_batch_freeze(freeze_id)
             if retry_mode:
                 self.repository.merge_task_settings(task_id, workspace_id, _retry_mode="")
+        except CustomerAuthRejected as exc:
+            # 4xx 是终态拒绝：批次已被服务端 TTL 释放（409「batch freeze is no
+            # longer active」，服务端明确要求客户端停止重试）或明细契约不符
+            # （400/404 等），同参数重试永远不会成功 —— 保留 open 会让每次任务
+            # 收尾/对账都再打一轮必然失败的请求。作废记录（settled=True + void 留痕）。
+            _abandon_batch_freeze(
+                freeze_id, f"rejected {exc.status_code}: {exc.message}"
+            )
+            _LOGGER.warning(
+                "batch freeze abandoned after terminal rejection: freeze=%s task=%s code=%s",
+                freeze_id,
+                task_id,
+                exc.status_code,
+            )
         except Exception as exc:
             # 保留 open 记录：任务结束后的对账、下次提交任务的对账、服务端 TTL
             # 会继续结算/释放；失败详情写入侧车便于定位（不落任何密钥）。
@@ -5606,6 +5621,19 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 )
                 _forget_batch_freeze(freeze_id)
                 settled_count += 1
+            except CustomerAuthRejected as exc:
+                # 4xx 终态（如批次已被服务端 TTL 释放的 409）：再对账也永远不会
+                # 成功。作废记录（留痕），否则每次对账都会重复打一轮必然失败的请求。
+                _abandon_batch_freeze(
+                    freeze_id, f"rejected {exc.status_code}: {exc.message}"
+                )
+                _LOGGER.warning(
+                    "batch freeze abandoned during reconcile: freeze=%s account=%s code=%s",
+                    freeze_id,
+                    account_id,
+                    exc.status_code,
+                )
+                continue
             except Exception:
                 continue
         return settled_count

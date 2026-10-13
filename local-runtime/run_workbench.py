@@ -207,6 +207,75 @@ def _workbench_url(host: str, port: int, app_version: str) -> str:
     return f"http://{host}:{port}/?app_version={version}"
 
 
+# --------------------------------------------------------------- 恢复协议
+
+# 工作台页「重新连接」借 mainpg:// 协议重新拉起本程序——浏览器唯一被允许「叫醒」
+# 本机程序的通道。应用每次启动时在 HKCU 自注册/自修复该协议（无需管理员权限）；
+# 安装脚本里同时声明同名键，负责卸载时清理。
+URL_PROTOCOL_SCHEME = "mainpg"
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="H Smart Ecommerce Local Workbench")
+    parser.add_argument("--host", default=DEFAULT_HOST, help="监听地址，默认 127.0.0.1")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="监听端口，默认 8010")
+    parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
+    # 协议注册命令带回：启动前切到此目录（源码运行的数据目录跟随 cwd；打包不带）。
+    parser.add_argument("--chdir", default="", help="启动前先切换到的工作目录")
+    return parser
+
+
+def _windowless_python() -> str:
+    """源码运行时优先用 pythonw 解释器，避免协议拉起时闪出黑色控制台窗口。"""
+    exe = Path(sys.executable)
+    candidate = exe.with_name("pythonw.exe")
+    if os.name == "nt" and candidate.is_file():
+        return str(candidate)
+    return str(exe)
+
+
+def _protocol_open_command() -> str:
+    """协议触发时执行的命令行：静默拉起本程序（不开新浏览器页，旧页面会自动恢复）。
+
+    末尾 "%1" 为 URL 协议标准占位符（系统替换为被触发的 URI，程序自行忽略）；
+    源码运行额外用 --chdir 固定工作目录，保证数据目录与手动开发启动一致。
+    """
+    if getattr(sys, "frozen", False):
+        return f'"{Path(sys.executable)}" --no-browser "%1"'
+    script = Path(__file__).resolve()
+    return (
+        f'"{_windowless_python()}" "{script}" --no-browser'
+        f' --chdir "{script.parent}" "%1"'
+    )
+
+
+def ensure_url_protocol() -> bool:
+    """在 HKCU 注册 mainpg:// 协议（幂等，每次启动自修复）；失败静默返回 False。
+
+    主程序被安全软件终止后，已打开的工作台页面无法自行拉起进程，只能经系统协议
+    重启本程序（页面点「重新连接」→ 浏览器确认 → 系统执行本命令）。
+    """
+    if os.name != "nt":
+        return False
+    try:
+        import winreg
+
+        base = rf"Software\Classes\{URL_PROTOCOL_SCHEME}"
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, base, 0, winreg.KEY_WRITE) as key:
+            winreg.SetValueEx(key, "", 0, winreg.REG_SZ, f"URL:{URL_PROTOCOL_SCHEME} Protocol")
+            winreg.SetValueEx(key, "URL Protocol", 0, winreg.REG_SZ, "")
+        with winreg.CreateKeyEx(
+            winreg.HKEY_CURRENT_USER, base + r"\shell\open\command", 0, winreg.KEY_WRITE
+        ) as key:
+            winreg.SetValueEx(key, "", 0, winreg.REG_SZ, _protocol_open_command())
+        return True
+    except OSError:
+        # 注册表不可写（策略限制等）不阻塞启动；页面侧会自动退化为手动引导。
+        return False
+
+
+
+
 # 日志文件放在数据目录下（与 workbench.sqlite3 同级），避免 read-only 安装目录。
 # 打包运行时在 %APPDATA%\MainPG；源码运行在当前目录。
 def _runtime_log_path() -> Path:
@@ -312,15 +381,23 @@ _UVICORN_LOG_CONFIG = {
 
 
 def main() -> int:
+    parser = _build_parser()
+    # 忽略未知参数：协议拉起时系统会把 mainpg://... 追加在命令行末尾。
+    args, _ignored = parser.parse_known_args()
+    # 协议注册命令带回的显式工作目录（源码运行的数据目录跟随 cwd，打包版与 cwd
+    # 无关、不带该参数）：必须赶在日志初始化之前切换。
+    if args.chdir:
+        try:
+            os.chdir(args.chdir)
+        except OSError:
+            pass
+
     # 尽早初始化文件日志：即便后端在 import / init_db 阶段崩溃，也能落盘定位。
     log_path = _configure_runtime_logging()
     _log = logging.getLogger("run_workbench")
 
-    parser = argparse.ArgumentParser(description="H Smart Ecommerce Local Workbench")
-    parser.add_argument("--host", default=DEFAULT_HOST, help="监听地址，默认 127.0.0.1")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="监听端口，默认 8010")
-    parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
-    args = parser.parse_args()
+    # 自注册/自修复 mainpg:// 协议（页面「重新连接」据此拉起本程序）；失败静默。
+    ensure_url_protocol()
 
     # 默认端口被占时：尝试释放占用进程（插件默认只连默认端口）。这里的探测用于
     # 释放「历史残留」实例；真正的端口独占由下方 _bind_server_socket 的原子 bind

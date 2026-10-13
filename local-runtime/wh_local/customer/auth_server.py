@@ -69,6 +69,7 @@ from ..billing import (
     point_ledger_history,
     purge_all_pending_orders,
     purge_expired_pending_orders,
+    release_expired_ai_reservations,
     release_expired_batch_freezes,
     reserve_ai_usage,
     settle_payment_order,
@@ -907,8 +908,8 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
     # 服务端文本密钥池：多 key 负载均衡 + 429 冷却（桌面端永不接触上游密钥）。
     text_credential_pool = _TextCredentialPool()
 
-    # TTL 兜底：每小时释放超过 7 天未结算的批次冻结积分，防止崩溃/断网
-    # 导致用户积分被永久锁定。线程为守护线程，服务退出自动终止。
+    # TTL 兜底：每小时释放超期未结算的批次冻结（6h TTL）与 AI 预留（6h TTL）
+    # 积分，防止崩溃/断网导致用户积分被永久锁定。线程为守护线程，服务退出自动终止。
     # Stop event 使 shutdown 处理器可以及时停止循环，而不必等待整个 sleep 周期。
     _gateway_stop_event = threading.Event()
 
@@ -923,15 +924,16 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             try:
                 if time.monotonic() >= release_due_at:
                     release_expired_batch_freezes(db_path)
+                    release_expired_ai_reservations(db_path)
                     release_due_at = time.monotonic() + 60 * 60
                 # 每 5 分钟清理一次超 30 分钟仍未支付的订单。
                 if time.monotonic() >= pending_purge_due_at:
                     purge_expired_pending_orders(db_path)
                     pending_purge_due_at = time.monotonic() + 5 * 60
             except Exception:
-                # 这是过期冻结积分唯一的兜底释放路径：失败必须留痕，
+                # 这是过期冻结/AI 预留积分唯一的兜底释放路径：失败必须留痕，
                 # 否则用户积分长期不释放时运维无从下手（due 时间未推进，下一轮会重试）。
-                _LOGGER.exception("batch freeze TTL sweep failed")
+                _LOGGER.exception("batch freeze / ai reservation TTL sweep failed")
             stop_event.wait(interval_seconds)
 
     ttl_thread = threading.Thread(

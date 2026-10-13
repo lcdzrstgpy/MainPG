@@ -6,7 +6,13 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
-from wh_local.billing import _plan_period_key, reserve_ai_usage, settle_ai_usage_success
+from wh_local.billing import (
+    _plan_period_key,
+    release_expired_ai_reservations,
+    reserve_ai_usage,
+    settle_ai_usage_failure,
+    settle_ai_usage_success,
+)
 from wh_local.db import init_db, transaction
 from wh_local.session import Actor
 
@@ -167,3 +173,114 @@ def test_retry_premium_skipped_without_marker_or_on_text_usage(tmp_path: Path) -
         ).fetchone()
     # 1000 - 50 - 350 = 600
     assert wallet["points_balance"] == 600
+
+
+
+def test_ai_reservation_sweep_refunds_orphaned_reservation(tmp_path: Path) -> None:
+    """超时未结算的 AI 预留被清扫：解锁、行转 failed 全额退还、台账 :fail-unlock。"""
+    database_path = tmp_path / "billing.sqlite3"
+    init_db(database_path)
+    actor = Actor(id="sweep-user", username="sweep-user", role="operator")
+    _wallet_with(database_path, actor, balance=1000)
+    reserved = reserve_ai_usage(
+        database_path,
+        actor,
+        feature_key="product_processing.image_grid_2k",
+        idempotency_key="task:sweep:item:1:image",
+    )
+    # 把创建时间拨回 TTL（6 小时）之外。
+    with transaction(database_path) as conn:
+        conn.execute(
+            "UPDATE billing_ai_usage_events SET created_at = ? WHERE usage_id = ?",
+            ("2020-01-01T00:00:00+00:00", reserved["usage_id"]),
+        )
+    released = release_expired_ai_reservations(database_path)
+    assert released == 1
+    # 幂等：已清扫的行不会二次释放。
+    assert release_expired_ai_reservations(database_path) == 0
+    with transaction(database_path) as conn:
+        row = conn.execute(
+            """
+            SELECT status, reserved_points, refunded_points, settled_at
+            FROM billing_ai_usage_events WHERE usage_id = ?
+            """,
+            (reserved["usage_id"],),
+        ).fetchone()
+        wallet = conn.execute(
+            "SELECT points_balance, locked_points FROM billing_wallets WHERE account_id = ?",
+            (actor.id,),
+        ).fetchone()
+        ledger = conn.execute(
+            "SELECT direction, points_delta FROM billing_point_ledger WHERE account_id = ? AND idempotency_key = ?",
+            (actor.id, "task:sweep:item:1:image:fail-unlock"),
+        ).fetchone()
+    assert row["status"] == "failed"
+    assert row["refunded_points"] == row["reserved_points"] == reserved["reserved_points"]
+    assert row["settled_at"]
+    # 预留从未真正扣费：余额不动、锁定全释放。
+    assert dict(wallet) == {"points_balance": 1000, "locked_points": 0}
+    assert dict(ledger) == {"direction": "unlock", "points_delta": reserved["reserved_points"]}
+
+
+def test_ai_reservation_sweep_leaves_fresh_reservations_alone(tmp_path: Path) -> None:
+    """TTL 内的新鲜预留不受清扫影响。"""
+    database_path = tmp_path / "billing.sqlite3"
+    init_db(database_path)
+    actor = Actor(id="fresh-user", username="fresh-user", role="operator")
+    _wallet_with(database_path, actor, balance=1000)
+    reserved = reserve_ai_usage(
+        database_path,
+        actor,
+        feature_key="product_processing.text",
+        idempotency_key="task:fresh:item:1:text",
+    )
+    assert release_expired_ai_reservations(database_path) == 0
+    with transaction(database_path) as conn:
+        row = conn.execute(
+            "SELECT status FROM billing_ai_usage_events WHERE usage_id = ?",
+            (reserved["usage_id"],),
+        ).fetchone()
+        wallet = conn.execute(
+            "SELECT locked_points FROM billing_wallets WHERE account_id = ?",
+            (actor.id,),
+        ).fetchone()
+    assert row["status"] == "reserved"
+    assert wallet["locked_points"] == reserved["reserved_points"]
+
+
+def test_ai_reservation_sweep_skips_rows_settled_by_client(tmp_path: Path) -> None:
+    """客户端失败结算先到时清扫跳过（同一 :fail-unlock 台账键不重复入账）。"""
+    database_path = tmp_path / "billing.sqlite3"
+    init_db(database_path)
+    actor = Actor(id="race-user", username="race-user", role="operator")
+    _wallet_with(database_path, actor, balance=1000)
+    reserved = reserve_ai_usage(
+        database_path,
+        actor,
+        feature_key="product_processing.text",
+        idempotency_key="task:race:item:1:text",
+    )
+    with transaction(database_path) as conn:
+        conn.execute(
+            "UPDATE billing_ai_usage_events SET created_at = ? WHERE usage_id = ?",
+            ("2020-01-01T00:00:00+00:00", reserved["usage_id"]),
+        )
+    settle_ai_usage_failure(
+        database_path,
+        reserved["usage_id"],
+        error_message="client failed",
+        expected_account_id=actor.id,
+    )
+    assert release_expired_ai_reservations(database_path) == 0
+    with transaction(database_path) as conn:
+        ledger_count = conn.execute(
+            "SELECT count(*) AS n FROM billing_point_ledger WHERE account_id = ? AND idempotency_key = ?",
+            (actor.id, "task:race:item:1:text:fail-unlock"),
+        ).fetchone()["n"]
+        wallet = conn.execute(
+            "SELECT points_balance, locked_points FROM billing_wallets WHERE account_id = ?",
+            (actor.id,),
+        ).fetchone()
+    assert ledger_count == 1
+    assert wallet["locked_points"] == 0
+
