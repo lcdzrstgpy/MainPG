@@ -14,6 +14,7 @@ import {
   replicaAnalysesConfirmed,
   replicaAnalysisBlockReason,
   replicaEffectiveFactText,
+  replicaSourceNeedsConfirmation,
   replicaFeeEstimate,
   replicaFeeEstimateText,
   removeReplicaTarget,
@@ -156,6 +157,25 @@ test("deepCopyReplicaTarget and removeReplicaTarget do not mutate the original l
   assert.notEqual(clone.specCard.cells, original[0].specCard.cells);
   assert.deepEqual(removeReplicaTarget(original, "a").map((target) => target.clientId), ["b"]);
   assert.equal(original.length, 2);
+});
+
+test("source confirmation flag follows A confidence and rides the batch payload", () => {
+  const ok = validTarget({ sourceNeedsConfirmation: false });
+  const needs = validTarget({ sourceNeedsConfirmation: true });
+  assert.equal(replicaSourceNeedsConfirmation([ok]), false);
+  assert.equal(replicaSourceNeedsConfirmation([ok, needs]), true);
+
+  const request = buildReplicaBatchRequest({
+    client_request_id: "req-src",
+    source_asset_id: "asset_source",
+    source_confirmed: true,
+    targets: [ok],
+  });
+  assert.equal(request.source_confirmed, true);
+  assert.equal(
+    buildReplicaBatchRequest({ client_request_id: "req-src2", source_asset_id: "asset_source", targets: [ok] }).source_confirmed,
+    false,
+  );
 });
 
 test("fee estimate follows the full-custom per-product billing range", () => {

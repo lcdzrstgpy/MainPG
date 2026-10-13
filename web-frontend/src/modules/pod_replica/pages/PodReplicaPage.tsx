@@ -33,6 +33,7 @@ import {
   nextReplicaClientRequestId,
   removeReplicaTarget,
   replicaAnalysesConfirmed,
+  replicaSourceNeedsConfirmation,
   setReplicaFactOverrides,
   setReplicaPresentationPreference,
   validateReplicaTargetDraft,
@@ -66,7 +67,9 @@ export function PodReplicaPage({ isActive = true }: Props) {
 
   const [source, setSource] = useState<ReplicaSourceView>(() => {
     const stored = initialDraft.state.source;
-    return stored?.assetId ? { assetId: stored.assetId, filename: stored.filename } : null;
+    return stored?.assetId
+      ? { assetId: stored.assetId, filename: stored.filename, confirmed: stored.confirmed === true }
+      : null;
   });
   const [targets, setTargets] = useState<ReplicaTargetDraft[]>(initialDraft.state.targets);
   const [activeTargetId, setActiveTargetId] = useState<string>();
@@ -173,7 +176,7 @@ export function PodReplicaPage({ isActive = true }: Props) {
     if (!draftScope) return;
     const result = savePodReplicaDraft(draftScope.accountId, draftScope.workspaceId, {
       version: POD_REPLICA_DRAFT_VERSION,
-      source: source ? { assetId: source.assetId, filename: source.filename } : null,
+      source: source ? { assetId: source.assetId, filename: source.filename, confirmed: source.confirmed === true } : null,
       targets,
     });
     if (!result.ok && lastDraftErrorRef.current !== result.error) {
@@ -232,8 +235,8 @@ export function PodReplicaPage({ isActive = true }: Props) {
     setBusyAction("upload-source");
     try {
       const uploaded = await podReplicaApi.uploadImage(file, "source");
-      setSource({ assetId: uploaded.asset_id, filename: file.name });
-      // 换样图即换 A：所有目标旧分析（基于上一张 A）全部失效，回到待识别。
+      // 换样图即换 A：A 识别结果需重新确认，所有目标旧分析（基于上一张 A）也全部失效。
+      setSource({ assetId: uploaded.asset_id, filename: file.name, confirmed: false });
       setTargets((current) => current.map((target) => ({ ...target, ...emptyReplicaAnalysisFields() })));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -312,6 +315,10 @@ export function PodReplicaPage({ isActive = true }: Props) {
   const changePresentation = (clientId: string, key: keyof ReplicaPresentationPreferences, value: boolean) =>
     updateTarget(clientId, (target) => setReplicaPresentationPreference(target, key, value));
 
+  /** 用户确认原素材（A）识别结果：A 有低置信度字段时必须先点这一步。 */
+  const confirmSourceAnalysis = () =>
+    setSource((current) => (current ? { ...current, confirmed: true } : current));
+
   const toggleBatchSelected = (batchId: string) => {
     setSelectedBatchIds((current) => current.includes(batchId)
       ? current.filter((id) => id !== batchId)
@@ -369,6 +376,12 @@ export function PodReplicaPage({ isActive = true }: Props) {
       return;
     }
 
+    // A（原素材）低置信度：必须先被用户确认，否则错误图案会被迁移到目标产品上。
+    if (sourceNeedsConfirmation && !sourceConfirmed) {
+      setError("原素材（样图）识别结果置信度不足，请先确认「原素材识别结果」再提交。");
+      return;
+    }
+
     let request;
     try {
       const title = `${source.filename || "POD 样图"} 复刻`;
@@ -377,6 +390,7 @@ export function PodReplicaPage({ isActive = true }: Props) {
         source: source.assetId,
         title,
         composition: compositionId ?? "",
+        sourceConfirmed,
         targets: targets.map((target) => ({
           asset: target.assetId,
           name: target.productName,
@@ -392,6 +406,7 @@ export function PodReplicaPage({ isActive = true }: Props) {
         source_asset_id: source.assetId,
         title,
         composition_id: compositionId,
+        source_confirmed: sourceConfirmed,
         targets,
       });
     } catch (cause) {
@@ -584,7 +599,10 @@ export function PodReplicaPage({ isActive = true }: Props) {
   const resolveStyleProductName = (styleIndex: number) => targets[styleIndex - 1]?.productName.trim() || undefined;
   const specCardBatchContext: SpecCardBatchContext | null = activeBatch ? { id: activeBatch.id, status: activeBatch.status, count: activeBatch.count } : null;
   const specCardStyleIndex = specCardTarget ? targets.findIndex((target) => target.clientId === specCardTarget.clientId) + 1 : undefined;
-  const canSubmit = Boolean(source) && targets.length > 0 && replicaAnalysesConfirmed(targets) && !busyAction;
+  const sourceNeedsConfirmation = replicaSourceNeedsConfirmation(targets);
+  const sourceConfirmed = source?.confirmed === true;
+  const canSubmit = Boolean(source) && targets.length > 0 && replicaAnalysesConfirmed(targets)
+    && (!sourceNeedsConfirmation || sourceConfirmed) && !busyAction;
   const compositionName = composition
     ? (composition.is_builtin ? "系统默认模板（默认机位）" : (composition.name.trim() || "未命名构图"))
     : "系统默认模板（默认机位）";
@@ -611,6 +629,14 @@ export function PodReplicaPage({ isActive = true }: Props) {
       <div className="pod-replica-layout">
         <div className="pod-replica-setup">
           <ReplicaSourceUploader source={source} busy={busyAction === "upload-source"} onFiles={(files) => void uploadSource(files)} onClear={() => setSource(null)} />
+          {source && sourceNeedsConfirmation && (
+            <div className={`pod-replica-source-confirm${sourceConfirmed ? " is-done" : ""}`}>
+              <span>原素材识别结果置信度不足，需确认后再提交。</span>
+              {sourceConfirmed
+                ? <b>已确认</b>
+                : <button type="button" onClick={confirmSourceAnalysis}>确认识别结果</button>}
+            </div>
+          )}
           <ReplicaTargetList
             targets={targets}
             busy={busyAction === "upload-target"}

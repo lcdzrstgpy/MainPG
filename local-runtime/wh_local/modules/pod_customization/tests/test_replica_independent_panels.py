@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
@@ -338,6 +339,22 @@ def test_independent_panels_generates_four_single_panel_requests(tmp_path: Path)
         stored = service.get_batch(actor, batch["id"])
         assert stored["status"] == "completed"
         assert len([item for item in stored["items"] if item["style_index"] == 1]) == 4
+
+        # 调用级快照 = 本次真实提交的 4 个单面板提示词（不是款级四宫格文本）。
+        with service.repository._connect() as connection:
+            row = connection.execute(
+                """SELECT prompt_snapshot FROM pod_customization_generation_calls
+                   WHERE batch_id = ? ORDER BY rowid DESC LIMIT 1""",
+                (batch["id"],),
+            ).fetchone()
+        manifest = json.loads(row["prompt_snapshot"])
+        assert manifest["strategy"] == "independent_panels"
+        assert len(manifest["panels"]) == 4
+        assert [entry["panel_index"] for entry in manifest["panels"]] == [1, 2, 3, 4]
+        assert all(
+            "Create ONE single full-frame square ecommerce image" in entry["prompt"]
+            for entry in manifest["panels"]
+        )
 
         # 整款重试：同样走 4 次单面板调用（重试动作自带新的面板调用计划）。
         panel_runtime.requests.clear()

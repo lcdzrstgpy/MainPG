@@ -141,6 +141,21 @@ def test_low_confidence_facts_block_submission() -> None:
     assert excinfo.value.code == "needs_confirmation"
 
 
+def test_low_confidence_source_blocks_until_confirmed() -> None:
+    """A（原素材）低置信度必须由用户确认后才放行，不能只拦目标产品。"""
+    target = _target()
+    capabilities = match_capabilities(target, PresentationPreferences())
+    low_source = normalize_source_analysis({}, "asset-source")
+    assert low_source.needs_confirmation
+
+    with pytest.raises(ReplicaPlanNotReadyError):
+        validate_plan_ready(low_source, target, capabilities, PresentationPreferences())
+    # 用户确认 A 识别结果后放行（B 仍按原门禁校验）。
+    validate_plan_ready(
+        low_source, target, capabilities, PresentationPreferences(), source_confirmed=True
+    )
+
+
 def test_conflicting_print_regions_block_submission() -> None:
     target = _target(printable_regions=["front_surface"], non_printable_regions=["front_surface"])
     capabilities = match_capabilities(target, PresentationPreferences())

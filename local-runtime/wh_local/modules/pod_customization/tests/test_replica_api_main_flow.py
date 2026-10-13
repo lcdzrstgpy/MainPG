@@ -464,6 +464,8 @@ def test_frozen_plan_carries_default_composition_and_versions(tmp_path: Path) ->
     assert plan["compiled_prompt"].startswith("=== PART 1")
     assert "PART 4" in plan["compiled_prompt"]
     assert plan["prompt_compiler_version"]
+    # 生图模型版本同样随计划冻结（事后可归因），不得为空。
+    assert plan["image_model_version"]
     assert runtime.composition_calls == 1
 
     # 冻结计划可原样读回（重试/恢复只读快照，不重新推导）。

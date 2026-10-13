@@ -36,6 +36,8 @@ export type ReplicaTargetDraft = {
   analysisError: string;
   /** A 原素材事实（同一批次内一致）。 */
   sourceArtworkSpec: ReplicaSpec | null;
+  /** A 原素材识别是否存在低置信度字段（需用户确认整批 A 结果）。 */
+  sourceNeedsConfirmation: boolean;
   /** B 目标产品事实；展示与修正都基于这份数据。 */
   targetProductSpec: ReplicaSpec | null;
   candidateCapabilities: string[];
@@ -169,6 +171,7 @@ export function emptyReplicaAnalysisFields(): Pick<
   | "analysisStatus"
   | "analysisError"
   | "sourceArtworkSpec"
+  | "sourceNeedsConfirmation"
   | "targetProductSpec"
   | "candidateCapabilities"
   | "unknownCapabilities"
@@ -180,6 +183,7 @@ export function emptyReplicaAnalysisFields(): Pick<
     analysisStatus: "pending",
     analysisError: "",
     sourceArtworkSpec: null,
+    sourceNeedsConfirmation: false,
     targetProductSpec: null,
     candidateCapabilities: [],
     unknownCapabilities: [],
@@ -231,6 +235,7 @@ function cloneReplicaAnalysisFields(target: ReplicaTargetDraft) {
     analysisStatus: target.analysisStatus ?? fallback.analysisStatus,
     analysisError: target.analysisError ?? fallback.analysisError,
     sourceArtworkSpec: target.sourceArtworkSpec ?? null,
+    sourceNeedsConfirmation: Boolean(target.sourceNeedsConfirmation),
     targetProductSpec: target.targetProductSpec ?? null,
     candidateCapabilities: [...(target.candidateCapabilities ?? [])],
     unknownCapabilities: [...(target.unknownCapabilities ?? [])],
@@ -339,6 +344,7 @@ export function applyReplicaAnalysis(
     analysisError: "",
     analysisStatus: needsConfirmation ? "needs_confirmation" : "confirmed",
     sourceArtworkSpec: response.source,
+    sourceNeedsConfirmation: response.source_needs_confirmation,
     targetProductSpec: response.target,
     candidateCapabilities: [...response.candidate_capabilities],
     unknownCapabilities: [...response.unknown_capability],
@@ -417,6 +423,11 @@ export function replicaAnalysesConfirmed(targets: readonly ReplicaTargetDraft[])
   return targets.length > 0 && targets.every(isReplicaAnalysisConfirmed);
 }
 
+/** 原素材（A）识别是否有低置信度字段：需要用户整批确认 A 之后才能提交。 */
+export function replicaSourceNeedsConfirmation(targets: readonly ReplicaTargetDraft[]): boolean {
+  return targets.some((target) => target.sourceNeedsConfirmation);
+}
+
 export function validateReplicaTargetDraft(target: ReplicaTargetDraft): ReplicaTargetValidation {
   const productName = target.productName.trim();
   if (!productName) return { ok: false, error: "请填写产品名称。" };
@@ -470,6 +481,7 @@ export function buildReplicaBatchRequest(input: {
   title?: string;
   composition_id?: string;
   generation_strategy?: ReplicaGenerationStrategy | null;
+  source_confirmed?: boolean;
   targets: readonly ReplicaTargetDraft[];
 }): CreateReplicaBatchRequest {
   if (!input.client_request_id.trim()) throw new Error("缺少 client_request_id。");
@@ -488,6 +500,7 @@ export function buildReplicaBatchRequest(input: {
     creative_prompt: "",
     composition_id: input.composition_id?.trim() || undefined,
     generation_strategy: input.generation_strategy ?? null,
+    source_confirmed: Boolean(input.source_confirmed),
     targets: requests,
   };
 }

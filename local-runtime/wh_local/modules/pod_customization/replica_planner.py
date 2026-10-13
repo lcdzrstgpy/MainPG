@@ -283,8 +283,19 @@ def validate_plan_ready(
     target: TargetProductSpec,
     capabilities,
     preferences: PresentationPreferences,
+    *,
+    source_confirmed: bool = False,
 ) -> None:
-    """提交门禁：低置信度或事实冲突时阻止提交，交由用户确认/修正。"""
+    """提交门禁：低置信度或事实冲突时阻止提交，交由用户确认/修正。
+
+    A（原素材）与 B（目标产品）都要检查：A 的低置信度图案必须由用户显式确认
+    （``source_confirmed``）后才允许进入生成，否则错误图案会被迁移到目标产品上。
+    """
+    if source.needs_confirmation and not source_confirmed:
+        raise ReplicaPlanNotReadyError(
+            "source_needs_confirmation",
+            "原素材识别结果置信度不足，需确认后再提交：" + "、".join(source.low_confidence_fields()),
+        )
     low_confidence = target.low_confidence_fields()
     if low_confidence:
         raise ReplicaPlanNotReadyError(

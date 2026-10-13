@@ -347,6 +347,8 @@ class ReplicaBatchCreate(BaseModel):
     # 构图模板与生成策略：留空时由服务端按能力推荐 / 冻结计划决定。
     composition_id: str = Field(default="", max_length=100)
     generation_strategy: GenerationStrategy | None = None
+    # 原素材（A）识别结果确认：A 有低置信度字段时必须由用户确认后才允许提交。
+    source_confirmed: bool = False
     targets: list[ReplicaTargetCreate] = Field(
         min_length=MIN_REPLICA_TARGETS, max_length=MAX_REPLICA_TARGETS
     )

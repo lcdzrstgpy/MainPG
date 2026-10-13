@@ -235,6 +235,34 @@ def test_worker_falls_back_to_legacy_prompt_without_frozen_plan() -> None:
     assert "Reference image 1 provides ONLY the surface pattern to replicate" in prompt
 
 
+def test_worker_refuses_silent_fallback_when_main_flow_plan_is_missing() -> None:
+    """主流程款（带 analysis_id）缺冻结计划必须硬失败，只有历史批次才回退旧 Prompt。"""
+    from wh_local.modules.pod_customization.contracts import BusinessFields as Fields
+    from wh_local.modules.pod_customization.replica_context import ReplicaPlanMissingError
+    from wh_local.modules.pod_customization.worker import PodBatchWorker
+
+    fields = Fields(product_name="美甲套装", product_category="美甲")
+    main_flow = {
+        "mode": "replica",
+        "replica_targets_by_index": {
+            1: {"style_index": 1, "analysis_id": "analysis-1", "business_fields": {"product_name": "美甲套装"}}
+        },
+    }
+    with pytest.raises(ReplicaPlanMissingError):
+        PodBatchWorker._replica_style_prompt(None, main_flow, 1, 1, fields)  # type: ignore[arg-type]
+    with pytest.raises(ReplicaPlanMissingError):
+        PodBatchWorker._style_generation_strategy(None, main_flow, 1)  # type: ignore[arg-type]
+
+    legacy = {
+        "mode": "replica",
+        "replica_targets_by_index": {
+            1: {"style_index": 1, "business_fields": {"product_name": "美甲套装"}}
+        },
+    }
+    prompt = PodBatchWorker._replica_style_prompt(None, legacy, 1, 1, fields)  # type: ignore[arg-type]
+    assert "Reference image 1 provides ONLY the surface pattern to replicate" in prompt
+
+
 # --- independent_panels：单面板提示词 -------------------------------------------
 
 

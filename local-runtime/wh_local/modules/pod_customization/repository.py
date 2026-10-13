@@ -808,11 +808,13 @@ class PodCustomizationRepository:
         request_hash: str,
         batch_id: str | None = None,
         prompt_snapshot: str = "{}",
+        plans: Mapping[int, Mapping[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """创建复刻批次：父批次 mode=replica、requested_count=len(targets)。
 
         一个本地事务写入：内部锚点模板及快照（隐藏状态、不进用户模板库）、来源关联、
-        全部目标快照、四宫格结果与标题占位。不生成用于原创设计的元素分配记录。
+        全部目标快照（含款级冻结计划）、四宫格结果与标题占位。不生成用于原创设计的元素分配记录。
+        计划与目标行同事务落库：中途崩溃也不会留下「有 analysis_id 却没有计划」的批次。
         并发重复提交由 (workspace_id, owner_user_id, client_request_id) 唯一约束兜底。
         """
         batch_id = str(batch_id or uuid.uuid4().hex)
@@ -895,10 +897,13 @@ class PodCustomizationRepository:
                     (batch_id, workspace_id, owner_user_id, request.source_asset_id,
                      request.client_request_id, request_hash, now),
                 )
+                plan_map = plans or {}
                 connection.executemany(
                     """INSERT INTO pod_customization_replica_targets
-                       (batch_id, style_index, asset_id, business_fields_json, listing_fields_json, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
+                       (batch_id, style_index, asset_id, business_fields_json, listing_fields_json, created_at,
+                        analysis_id, replica_plan_json, prompt_snapshot, capability_registry_version,
+                        rule_version, template_version, compiler_version, generation_strategy)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     [
                         (
                             batch_id,
@@ -910,6 +915,14 @@ class PodCustomizationRepository:
                             ).model_dump_json(),
                             target.listing_fields.model_dump_json(),
                             now,
+                            str(plan_map.get(style_index, {}).get("analysis_id") or ""),
+                            str(plan_map.get(style_index, {}).get("replica_plan_json") or ""),
+                            str(plan_map.get(style_index, {}).get("prompt_snapshot") or ""),
+                            str(plan_map.get(style_index, {}).get("capability_registry_version") or ""),
+                            str(plan_map.get(style_index, {}).get("rule_version") or ""),
+                            str(plan_map.get(style_index, {}).get("template_version") or ""),
+                            str(plan_map.get(style_index, {}).get("compiler_version") or ""),
+                            str(plan_map.get(style_index, {}).get("generation_strategy") or ""),
                         )
                         for style_index, asset, target in target_rows
                     ],
@@ -1032,45 +1045,6 @@ class PodCustomizationRepository:
         if row is None:
             raise PodRepositoryError("POD 复刻分析记录不存在", 404)
         return dict(row)
-
-    def save_replica_plans(
-        self,
-        batch_id: str,
-        workspace_id: str,
-        owner_user_id: str,
-        plans: Mapping[int, Mapping[str, Any]],
-    ) -> None:
-        """把每款的冻结计划与版本号写回目标表（键为 style_index）。"""
-        if not plans:
-            return
-        with self._connect() as connection:
-            owned = connection.execute(
-                """SELECT 1 FROM pod_customization_batches
-                   WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ?""",
-                (batch_id, workspace_id, owner_user_id),
-            ).fetchone()
-            if owned is None:
-                raise PodRepositoryError("POD 复刻批次不存在", 404)
-            for style_index, plan in plans.items():
-                connection.execute(
-                    """UPDATE pod_customization_replica_targets
-                       SET analysis_id = ?, replica_plan_json = ?, prompt_snapshot = ?,
-                           capability_registry_version = ?, rule_version = ?, template_version = ?,
-                           compiler_version = ?, generation_strategy = ?
-                       WHERE batch_id = ? AND style_index = ?""",
-                    (
-                        str(plan.get("analysis_id") or ""),
-                        str(plan.get("replica_plan_json") or ""),
-                        str(plan.get("prompt_snapshot") or ""),
-                        str(plan.get("capability_registry_version") or ""),
-                        str(plan.get("rule_version") or ""),
-                        str(plan.get("template_version") or ""),
-                        str(plan.get("compiler_version") or ""),
-                        str(plan.get("generation_strategy") or ""),
-                        batch_id,
-                        int(style_index),
-                    ),
-                )
 
     def preflight_batch(self, workspace_id: str, owner_user_id: str, request: BatchCreate) -> None:
         """Validate all stable local prerequisites before remote points are frozen."""

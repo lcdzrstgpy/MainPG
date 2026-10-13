@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import inspect
 import threading
@@ -33,6 +34,7 @@ from .replica_context import (
     ReplicaStyleSnapshotMissingError,
     load_frozen_plan,
     style_product_context,
+    target_requires_frozen_plan,
 )
 from .replica_prompt_compiler import compile_replica_panel_prompt, compile_replica_prompt
 from .replica_prompts import build_replica_listing_prompt
@@ -735,24 +737,33 @@ class PodBatchWorker:
             for attempt in (1, 2):
                 call_kind = "regenerate_style" if attempt == 1 else "regenerate_style_retry"
                 call_index = self.repository.next_generation_call_index(batch_id, call_kind)
-                prompt, request_kwargs = self._style_generation_inputs(
-                    batch,
-                    style_index,
-                    attempt,
-                    template_content=template_content,
-                    template_content_type=template_content_type,
-                    base_prompt=base_prompt,
-                )
+                request_kwargs: dict[str, Any] = {}
+                if panel_strategy:
+                    # independent_panels：调用级快照存本次真实提交的 4 个单面板提示词。
+                    prompt = self._replica_panel_prompt_manifest(batch, style_index, attempt)
+                else:
+                    prompt, request_kwargs = self._style_generation_inputs(
+                        batch,
+                        style_index,
+                        attempt,
+                        template_content=template_content,
+                        template_content_type=template_content_type,
+                        base_prompt=base_prompt,
+                    )
                 call = self.repository.create_generation_call(
                     batch, call_kind=call_kind, call_index=call_index, prompt_snapshot=prompt
                 )
                 last_call_id = call["call_id"]
                 call["style_index"] = style_index
-                request = DirectListingGridRequest(
-                    trial_id=f"{batch_id}-style-{style_index}-{call['call_id']}-attempt-{attempt}",
-                    prompt=prompt,
-                    attempt=attempt,
-                    **request_kwargs,
+                request = (
+                    None
+                    if panel_strategy
+                    else DirectListingGridRequest(
+                        trial_id=f"{batch_id}-style-{style_index}-{call['call_id']}-attempt-{attempt}",
+                        prompt=prompt,
+                        attempt=attempt,
+                        **request_kwargs,
+                    )
                 )
                 try:
                     if panel_strategy:
@@ -951,24 +962,34 @@ class PodBatchWorker:
         """复刻提示词：优先使用款级冻结计划编译的四段式文本。
 
         识图主流程的批次在冻结时就写入了 ``compiled_prompt``，生成/重试/暂停恢复与进程
-        重启都复用同一份文本；旧批次没有冻结计划时，回退到固定单函数提示词。
+        重启都复用同一份文本。**带 analysis_id 的主流程款缺计划属于批次写入不完整，
+        直接失败等待修复**（回退旧 Prompt 会产出错误结果）；只有明确的历史批次（无
+        analysis_id）才允许回退固定单函数提示词。
         ``panel_index`` 非空时编译单面板提示词（independent_panels 策略）。
         """
         try:
             plan = load_frozen_plan(batch, style_index)
         except (ReplicaPlanMissingError, ReplicaStyleSnapshotMissingError):
+            if target_requires_frozen_plan(batch, style_index):
+                raise
             return build_replica_listing_prompt(fields, attempt=attempt)
         if panel_index is None:
             return compile_replica_prompt(plan, attempt=attempt)
         return compile_replica_panel_prompt(plan, panel_index, attempt=attempt)
 
     def _style_generation_strategy(self, batch: dict[str, Any], style_index: int) -> str:
-        """按款读取冻结生成策略；无冻结计划（旧批次/非复刻）一律按 grid 处理。"""
+        """按款读取冻结生成策略。
+
+        非复刻批次一律 grid；复刻主流程款缺计划必须硬失败（不得静默降级为 grid），
+        只有无 analysis_id 的历史批次才回退 grid。
+        """
         if batch.get("mode") != "replica":
             return "grid"
         try:
             strategy = load_frozen_plan(batch, style_index).generation_strategy
         except (ReplicaPlanMissingError, ReplicaStyleSnapshotMissingError):
+            if target_requires_frozen_plan(batch, style_index):
+                raise
             return "grid"
         return "independent_panels" if strategy == "independent_panels" else "grid"
 
@@ -1050,6 +1071,32 @@ class PodBatchWorker:
             ) from last_error
         raise RuntimeError(
             f"POD panel {panel_index} of style {style_index} has no remaining provider call"
+        )
+
+    def _replica_panel_prompt_manifest(
+        self, batch: dict[str, Any], style_index: int, attempt: int
+    ) -> str:
+        """independent_panels：把该款本次真实提交的 4 个单面板提示词存成审计快照。
+
+        款级 ``prompt_snapshot`` 是计划里的四宫格规范文本（与真实单图提交不同），
+        因此这里把逐面板的真实提交文本写进本次调用快照，保证调用级审计完整。
+        """
+        context = style_product_context(batch, style_index)
+        fields = BusinessFields.model_validate(context["business_fields"])
+        return json.dumps(
+            {
+                "strategy": "independent_panels",
+                "panels": [
+                    {
+                        "panel_index": panel_index,
+                        "prompt": self._replica_style_prompt(
+                            batch, style_index, attempt, fields, panel_index
+                        ),
+                    }
+                    for panel_index in range(1, REPLICA_PANEL_COUNT + 1)
+                ],
+            },
+            ensure_ascii=False,
         )
 
     def _panel_generation_request(
@@ -1378,15 +1425,14 @@ class PodBatchWorker:
             只落到尚未产生结果的调用，避免重复计费或 outcome 冲突。
             """
             attempt_kind = "initial" if attempt_value == 1 else "retry"
-            full_prompt, _ = self._style_generation_inputs(
-                batch,
-                style_index,
-                attempt_value,
-                template_content=template_content,
-                template_content_type=template_content_type,
-            )
             call = self.repository.get_or_create_generation_call(
-                batch, call_kind=attempt_kind, call_index=style_index, prompt_snapshot=full_prompt
+                batch,
+                call_kind=attempt_kind,
+                call_index=style_index,
+                # 调用级快照 = 本次真实提交的 4 个单面板提示词（款级快照是四宫格规范文本）。
+                prompt_snapshot=self._replica_panel_prompt_manifest(
+                    batch, style_index, attempt_value
+                ),
             )
             call["style_index"] = style_index
             if not billing_run.grant.provider_key("wuyin"):

@@ -50,6 +50,7 @@ from .contracts import (
     SemiBatchCreate,
     validate_spec_card,
 )
+from .ai_runtime import resolve_pod_image_model
 from .brief_runtime import PodBriefRequest
 from .composition_runtime import PodCompositionLocalizeRequest, PodCompositionRequest
 from .replica_analysis_runtime import (
@@ -437,6 +438,7 @@ class PodCustomizationService:
                 request_hash=request_hash,
                 batch_id=batch_id,
                 prompt_snapshot=str(plans.get(1, {}).get("prompt_snapshot") or "{}"),
+                plans=plans,
             )
         except ReplicaBatchIdempotentReturn as duplicate:
             # 并发下同请求已由另一提交者落库：结算本次冻结并按既有批次返回。
@@ -449,8 +451,6 @@ class PodCustomizationService:
             raise
         if billing_run is not None and self.worker is not None:
             self.worker.register_billing_run(batch_id, billing_run)
-        if plans:
-            self.repository.save_replica_plans(batch_id, actor.workspace_id, actor.id, plans)
         if enqueue and self.worker is not None:
             self.worker.submit(batch_id, billing_run)
         try:
@@ -737,7 +737,13 @@ class PodCustomizationService:
             capabilities = match_capabilities(target_spec, preferences)
             rules = derive_rules(source_spec, target_spec, capabilities, preferences)
             try:
-                validate_plan_ready(source_spec, target_spec, capabilities, preferences)
+                validate_plan_ready(
+                    source_spec,
+                    target_spec,
+                    capabilities,
+                    preferences,
+                    source_confirmed=request.source_confirmed,
+                )
             except ReplicaPlanNotReadyError as exc:
                 raise PodRepositoryError(str(exc), 400) from exc
             style_calls = tuple(cid for cid in call_ids if f":composition:{style_index}:" in cid)
@@ -770,6 +776,8 @@ class PodCustomizationService:
                 rule_version=rules.rule_version,
                 composition_template_version=composition_plan.template_version,
                 prompt_compiler_version=PROMPT_COMPILER_VERSION,
+                # 冻结本次生图模型版本，供事后归因（换模型不改变已冻结计划）。
+                image_model_version=resolve_pod_image_model(),
             )
             # 冻结真实最终 Prompt：生成/重试/恢复都直接复用这份文本。
             plan = plan.model_copy(update={"compiled_prompt": compile_replica_prompt(plan)})

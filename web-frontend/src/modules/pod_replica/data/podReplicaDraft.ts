@@ -13,6 +13,8 @@ export type PodReplicaSourceDraft = {
   filename: string;
   width?: number;
   height?: number;
+  /** 原素材识别结果是否已被用户确认（有低置信度字段时才需要）。 */
+  confirmed?: boolean;
 };
 
 export type PodReplicaDraft = {
@@ -105,6 +107,7 @@ function analysisOrDefault(target: Partial<ReplicaTargetDraft>): Pick<
   | "analysisStatus"
   | "analysisError"
   | "sourceArtworkSpec"
+  | "sourceNeedsConfirmation"
   | "targetProductSpec"
   | "candidateCapabilities"
   | "unknownCapabilities"
@@ -125,6 +128,7 @@ function analysisOrDefault(target: Partial<ReplicaTargetDraft>): Pick<
     analysisStatus: target.analysisId ? status : "pending",
     analysisError: typeof target.analysisError === "string" ? target.analysisError : "",
     sourceArtworkSpec: isReplicaSpec(target.sourceArtworkSpec) ? target.sourceArtworkSpec : null,
+    sourceNeedsConfirmation: Boolean(target.sourceNeedsConfirmation),
     targetProductSpec: isReplicaSpec(target.targetProductSpec) ? target.targetProductSpec : null,
     candidateCapabilities: Array.isArray(target.candidateCapabilities)
       ? target.candidateCapabilities.filter((item): item is string => typeof item === "string")
@@ -160,6 +164,7 @@ function sourceOrDefault(value: unknown): PodReplicaSourceDraft | null {
     filename: typeof value.filename === "string" ? value.filename : "",
     width: typeof value.width === "number" ? value.width : undefined,
     height: typeof value.height === "number" ? value.height : undefined,
+    confirmed: value.confirmed === true,
   };
 }
 

@@ -33,6 +33,18 @@ def load_frozen_plan(batch: dict[str, Any], style_index: int) -> ReplicaPlan:
     return ReplicaPlan.model_validate_json(raw)
 
 
+def target_requires_frozen_plan(batch: dict[str, Any], style_index: int) -> bool:
+    """该款是否属于识图主流程（带 analysis_id）。
+
+    属于主流程的款必须有款级冻结计划；缺计划说明批次写入不完整，调用方应硬失败
+    等待修复，绝不能回退旧 Prompt / grid 策略继续生成（那会产出错误结果）。
+    """
+    target = (batch.get("replica_targets_by_index") or {}).get(int(style_index))
+    if not isinstance(target, dict):
+        return False
+    return bool(str(target.get("analysis_id") or "").strip())
+
+
 def style_product_context(batch: dict[str, Any], style_index: int) -> dict[str, Any]:
     """返回 ``template``、``business_fields``、``listing_fields``。
 

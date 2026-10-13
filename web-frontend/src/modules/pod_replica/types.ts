@@ -61,6 +61,8 @@ export type CreateReplicaBatchRequest = {
   /** 构图模板与生成策略：留空时由服务端按能力推荐并冻结。 */
   composition_id?: string;
   generation_strategy?: ReplicaGenerationStrategy | null;
+  /** 原素材（A）识别结果确认：A 有低置信度字段时必须为 true 才允许提交。 */
+  source_confirmed?: boolean;
   targets: CreateReplicaTargetRequest[];
 };
 
