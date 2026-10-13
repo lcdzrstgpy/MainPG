@@ -621,6 +621,8 @@ export function PodReplicaPage({ isActive = true }: Props) {
         <div className="pod-page-header-actions">
           {batchRunning && <span className="pod-live-badge"><i />批次后台运行中</span>}
           <button type="button" onClick={() => setHistoryOpen(true)}><span className="iconfont icon-time-circle" />复刻历史</button>
+          {/* 管理模板与全定制一致放页头右侧，构图卡片里只留「生成新构图」。 */}
+          <button type="button" onClick={() => setCompositionManagerOpen(true)}><span className="iconfont icon-skin" />管理模板</button>
         </div>
       </header>
 
@@ -644,7 +646,7 @@ export function PodReplicaPage({ isActive = true }: Props) {
             onRemove={(clientId) => setTargets((current) => removeReplicaTarget(current, clientId))}
             onOpen={setActiveTargetId}
           />
-          {/* 构图入口：与全定制分开的复刻专用模板池，摘要 + 生成 / 管理两个入口。 */}
+          {/* 构图入口：与全定制分开的复刻专用模板池；管理入口在页头右侧，这里只留生成。 */}
           <section className="pod-replica-composition-entry" aria-label="构图模板">
             <div className="pod-replica-composition-info">
               <span>COMPOSITION · 构图模板</span>
@@ -654,9 +656,6 @@ export function PodReplicaPage({ isActive = true }: Props) {
             <div className="pod-replica-composition-actions">
               <button type="button" onClick={() => setCompositionDrawerOpen(true)}>
                 <span className="iconfont icon-robot" aria-hidden="true" />生成新构图
-              </button>
-              <button type="button" onClick={() => setCompositionManagerOpen(true)}>
-                <span className="iconfont icon-skin" aria-hidden="true" />管理模板
               </button>
             </div>
           </section>
