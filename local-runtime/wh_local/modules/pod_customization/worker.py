@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from functools import wraps
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Callable
 
 from ...runtime_logs import business_logger
 from ...session import Actor
@@ -756,25 +756,24 @@ class PodBatchWorker:
                 )
                 try:
                     if panel_strategy:
-                        provider_call_ids = self._fresh_panel_attempt(run, style_index, attempt)
-                        if provider_call_ids is None:
-                            last_error = "provider call outcome was uncertain during restart"
-                            continue
-                        requests = self._panel_generation_requests(
-                            batch,
-                            style_index,
-                            attempt,
-                            template_content=template_content,
-                            template_content_type=template_content_type,
-                            base_prompt=base_prompt,
-                        )
+                        def build_request(panel_attempt: int, panel_index: int) -> DirectListingGridRequest:
+                            return self._panel_generation_request(
+                                batch,
+                                style_index,
+                                panel_attempt,
+                                panel_index,
+                                template_content=template_content,
+                                template_content_type=template_content_type,
+                                base_prompt=base_prompt,
+                            )
+
                         panels = self.ai_runtime.submit(
                             self._generate_listing_panels,
                             batch,
                             call,
-                            requests,
+                            style_index,
+                            build_request,
                             run,
-                            provider_call_ids,
                         ).result()
                         fingerprints = [hashlib.sha256(panel.content).hexdigest() for panel in panels]
                         prepared = [(call, None, panels, fingerprints)]
@@ -990,72 +989,99 @@ class PodBatchWorker:
             f"POD panel call plan is missing style {style_index} panel {panel_index} attempt {attempt}"
         )
 
-    @staticmethod
-    def _fresh_panel_attempt(
-        billing_run: PodBillingRun, style_index: int, attempt: int
-    ) -> tuple[str, ...] | None:
-        """该尝试下 4 个面板调用是否全部尚未产生结果；否则返回 None。"""
-        ids = tuple(
-            PodBatchWorker._panel_image_call_id(billing_run, style_index, panel_index, attempt)
-            for panel_index in range(1, REPLICA_PANEL_COUNT + 1)
-        )
-        if all(billing_run.call_status(call_id) == "planned" for call_id in ids):
-            return ids
-        return None
-
     def _generate_listing_panels(
         self,
         batch: dict[str, Any],
         call: dict[str, Any],
-        requests: list[DirectListingGridRequest],
+        style_index: int,
+        build_request: Callable[[int, int], DirectListingGridRequest],
         billing_run: PodBillingRun,
-        provider_call_ids: tuple[str, ...],
         execution_epoch: int | None = None,
     ) -> list[Any]:
-        """independent_panels：对同一款逐面板各发一次 provider 调用，返回 4 张单面板图。"""
+        """independent_panels：逐面板生成，单个面板失败只重试该面板的备用调用。"""
         panels: list[Any] = []
-        for request, provider_call_id in zip(requests, provider_call_ids):
+        for panel_index in range(1, REPLICA_PANEL_COUNT + 1):
             panels.append(
-                self._generate_listing_grid(
-                    batch, call, request, billing_run, provider_call_id, execution_epoch
+                self._generate_one_panel(
+                    batch, call, style_index, panel_index, build_request, billing_run, execution_epoch
                 )
             )
         return panels
 
-    def _panel_generation_requests(
+    def _generate_one_panel(
+        self,
+        batch: dict[str, Any],
+        call: dict[str, Any],
+        style_index: int,
+        panel_index: int,
+        build_request: Callable[[int, int], DirectListingGridRequest],
+        billing_run: PodBillingRun,
+        execution_epoch: int | None,
+    ) -> Any:
+        """一个面板最多两次尝试：只用「尚未产生结果」的调用，失败后落到备用调用。"""
+        last_error: Exception | None = None
+        for attempt in (1, 2):
+            provider_call_id = self._panel_image_call_id(
+                billing_run, style_index, panel_index, attempt
+            )
+            if billing_run.call_status(provider_call_id) != "planned":
+                continue
+            try:
+                return self._generate_listing_grid(
+                    batch,
+                    call,
+                    build_request(attempt, panel_index),
+                    billing_run,
+                    provider_call_id,
+                    execution_epoch,
+                )
+            except (
+                PodBillingAuthorizationRequired,
+                PodBatchPaused,
+                PodBatchCancelled,
+                PodExecutionExpired,
+            ):
+                raise
+            except Exception as exc:  # noqa: BLE001 - 记录后尝试该面板的备用调用
+                last_error = exc
+        if last_error is not None:
+            raise RuntimeError(
+                f"POD panel {panel_index} of style {style_index} failed both attempts: {last_error}"
+            ) from last_error
+        raise RuntimeError(
+            f"POD panel {panel_index} of style {style_index} has no remaining provider call"
+        )
+
+    def _panel_generation_request(
         self,
         batch: dict[str, Any],
         style_index: int,
         attempt: int,
+        panel_index: int,
         *,
         template_content: bytes,
         template_content_type: str,
         base_prompt: str | None = None,
-    ) -> list[DirectListingGridRequest]:
-        """构造 4 个单面板生成请求（同一款、同一冻结计划，仅面板视图不同）。"""
-        requests: list[DirectListingGridRequest] = []
-        for panel_index in range(1, REPLICA_PANEL_COUNT + 1):
-            prompt, request_kwargs = self._style_generation_inputs(
-                batch,
-                style_index,
-                attempt,
-                template_content=template_content,
-                template_content_type=template_content_type,
-                base_prompt=base_prompt,
-                panel_index=panel_index,
-            )
-            requests.append(
-                DirectListingGridRequest(
-                    trial_id=(
-                        f"{batch['batch_id']}-style-{style_index}-panel-{panel_index}-"
-                        f"attempt-{attempt}"
-                    ),
-                    prompt=prompt,
-                    attempt=attempt,
-                    **request_kwargs,
-                )
-            )
-        return requests
+    ) -> DirectListingGridRequest:
+        """构造单个面板的生成请求（同一款、同一冻结计划，仅面板视图不同）。"""
+        prompt, request_kwargs = self._style_generation_inputs(
+            batch,
+            style_index,
+            attempt,
+            template_content=template_content,
+            template_content_type=template_content_type,
+            base_prompt=base_prompt,
+            panel_index=panel_index,
+        )
+        return DirectListingGridRequest(
+            trial_id=(
+                f"{batch['batch_id']}-style-{style_index}-panel-{panel_index}-"
+                f"attempt-{attempt}"
+            ),
+            prompt=prompt,
+            attempt=attempt,
+            **request_kwargs,
+        )
 
     def _style_generation_inputs(
         self,
@@ -1346,26 +1372,16 @@ class PodBatchWorker:
         retried: set[int] = set()
 
         def submit_panel_style(style_index: int, attempt_value: int) -> None:
-            """independent_panels：整款一次提交 4 个单面板 provider 调用。
+            """independent_panels：整款一次提交，逐面板各自解析调用与备用尝试。
 
-            只用「4 个面板调用全部还是 planned」的尝试序号；已产生结果的调用绝不重复发起，
-            避免重复扣费或 outcome 冲突（重启后自动落到下一个尝试）。
+            面板级失败只重试该面板（见 :meth:`_generate_one_panel`），失败重试/重启
+            只落到尚未产生结果的调用，避免重复计费或 outcome 冲突。
             """
-            chosen: tuple[int, tuple[str, ...]] | None = None
-            for candidate in (attempt_value, 2 if attempt_value == 1 else 1):
-                ids = self._fresh_panel_attempt(billing_run, style_index, candidate)
-                if ids is not None:
-                    chosen = (candidate, ids)
-                    break
-            if chosen is None:
-                errors[style_index] = "provider call outcome was uncertain during restart"
-                return
-            candidate, provider_call_ids = chosen
-            attempt_kind = "initial" if candidate == 1 else "retry"
+            attempt_kind = "initial" if attempt_value == 1 else "retry"
             full_prompt, _ = self._style_generation_inputs(
                 batch,
                 style_index,
-                candidate,
+                attempt_value,
                 template_content=template_content,
                 template_content_type=template_content_type,
             )
@@ -1377,20 +1393,24 @@ class PodBatchWorker:
                 raise PodBillingAuthorizationRequired(
                     "POD provider grant expired before the next image call started"
                 )
-            requests = self._panel_generation_requests(
-                batch,
-                style_index,
-                candidate,
-                template_content=template_content,
-                template_content_type=template_content_type,
-            )
+
+            def build_request(attempt: int, panel_index: int) -> DirectListingGridRequest:
+                return self._panel_generation_request(
+                    batch,
+                    style_index,
+                    attempt,
+                    panel_index,
+                    template_content=template_content,
+                    template_content_type=template_content_type,
+                )
+
             future = self.ai_runtime.submit(
                 self._generate_listing_panels,
                 batch,
                 call,
-                requests,
+                style_index,
+                build_request,
                 billing_run,
-                provider_call_ids,
                 execution_epoch,
             )
             image_futures[future] = (call, style_index, "independent_panels")

@@ -206,7 +206,7 @@ def test_replica_panel_retry_and_resume_plans_reuse_the_panel_call_shape() -> No
     style_retry = PodCallPlan.for_replica_style_retry("rb:style:1:retry:x", include_title=False)
     image_ids = [call.call_id for call in style_retry.calls if call.feature == "pod.image"]
     assert len(image_ids) == REPLICA_PANEL_COUNT * 2
-    assert all(":style:1:image:p" in call_id for call_id in image_ids)
+    assert all(":style:1:" in call_id and ":image:p" in call_id for call_id in image_ids)
 
     batch_retry = PodCallPlan.for_replica_batch_retry(
         "rb:batch-retry:y",
