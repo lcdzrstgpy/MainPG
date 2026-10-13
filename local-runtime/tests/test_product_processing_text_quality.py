@@ -783,65 +783,79 @@ def test_low_confidence_subject_passes_when_user_confirms_sellable(monkeypatch) 
 
 
 @pytest.mark.parametrize(
-    ("error", "expected_status", "expected_failure_class"),
+    "error",
     [
-        (
-            DoubaoVisionError(
-                "temporary",
-                error_kind="transient",
-                retryable=True,
-            ),
-            "failed",
-            "technical_retryable",
+        DoubaoVisionError(
+            "temporary",
+            error_kind="transient",
+            retryable=True,
         ),
-        (
-            DoubaoVisionError(
-                "missing key",
-                error_kind="configuration",
-                retryable=False,
-            ),
-            "attention_required",
-            "configuration_blocked",
+        DoubaoVisionError(
+            "missing key",
+            error_kind="configuration",
+            retryable=False,
         ),
-        (
-            DoubaoVisionError(
-                "invalid subject JSON",
-                error_kind="invalid_response",
-                retryable=False,
-            ),
-            "attention_required",
-            "identity_review_required",
+        DoubaoVisionError(
+            "invalid subject JSON",
+            error_kind="invalid_response",
+            retryable=False,
         ),
     ],
 )
-def test_doubao_failure_blocks_gpt_with_stable_task_status(
-    monkeypatch, error, expected_status: str, expected_failure_class: str
+def test_doubao_failure_falls_back_to_source_title_without_blocking(
+    monkeypatch, error
 ) -> None:
+    """视觉主体识别失败不再硬拦截：改用源标题兜底，继续文案与生图并正常完成。"""
     service = _process_service(monkeypatch)
     monkeypatch.setattr(
         service,
         "_recognize_doubao_subject",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(error),
     )
-    monkeypatch.setattr(
-        service,
-        "_generate_doubao_text",
-        lambda *_args, **_kwargs: pytest.fail("GPT text must not run"),
-    )
-    monkeypatch.setattr(
-        service,
-        "_generate_grid_images",
-        lambda *_args, **_kwargs: pytest.fail("GPT image must not run"),
-    )
+    calls = {"text": 0, "grid": 0}
+
+    def combined(*_args, **_kwargs):
+        calls["text"] += 1
+        return {
+            "title": "Insulated Stainless Steel Travel Mug, 500 ml Portable Drink Cup",
+            "description": VALID_DESCRIPTION,
+            "variant_translations": {},
+            "vision_subject": "travel mug",
+            "vision_preliminary_title": "",
+            "product_dimensions": {},
+        }
+
+    def grid(*_args, **_kwargs):
+        calls["grid"] += 1
+        return GridImageOutput(
+            carousel_urls=tuple(
+                f"https://example.com/grid-{index}.jpg" for index in range(4)
+            ),
+            attempt_count=1,
+            provider_status_class="success",
+        )
+
+    monkeypatch.setattr(service, "_generate_doubao_text", combined)
+    monkeypatch.setattr(service, "_generate_grid_images", grid)
 
     result = service._process_one({"id": 1}, _draft(), _settings(), False, task_id=12)
 
-    assert result["status"] == expected_status
-    assert result["result"]["error_type"] == "vision_service_unavailable"
-    assert result["result"]["failure_class"] == expected_failure_class
+    assert result["status"] == "completed"
+    notes = result["result"]["ai_notes"]
+    assert "subject_identity:source-title-fallback" in notes
+    assert f"subject_identity:vision-fallback:{error.error_kind}" in notes
+    assert result["result"]["vision_identity"]["status"] == "accepted"
+    assert (
+        result["result"]["provider_status_classes"]["doubao_vision"]
+        == error.error_kind
+    )
+    assert calls == {"text": 1, "grid": 1}
 
 
-def test_doubao_retry_exhaustion_reports_two_provider_attempts(monkeypatch) -> None:
+def test_doubao_retry_exhaustion_still_falls_back_and_reports_attempts(
+    monkeypatch,
+) -> None:
+    """视觉重试耗尽也改用源标题兜底继续，但已消耗的重试次数仍如实上报。"""
     service = _process_service(monkeypatch)
     error = DoubaoVisionError(
         "temporary",
@@ -854,11 +868,23 @@ def test_doubao_retry_exhaustion_reports_two_provider_attempts(monkeypatch) -> N
         "_recognize_doubao_subject",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(error),
     )
+    monkeypatch.setattr(
+        service,
+        "_generate_grid_images",
+        lambda *_args, **_kwargs: GridImageOutput(
+            carousel_urls=tuple(
+                f"https://example.com/grid-{index}.jpg" for index in range(4)
+            ),
+            attempt_count=1,
+            provider_status_class="success",
+        ),
+    )
 
     result = service._process_one({"id": 1}, _draft(), _settings(), False, task_id=12)
 
-    assert result["status"] == "failed"
+    assert result["status"] == "completed"
     assert result["result"]["provider_attempts"]["doubao_vision"] == 2
+    assert "subject_identity:source-title-fallback" in result["result"]["ai_notes"]
 
 
 def test_doubao_identity_receipt_avoids_repeat_recognition_on_task_retry(monkeypatch) -> None:
@@ -1514,8 +1540,8 @@ def test_branch_receipt_inputs_track_real_dependencies_without_cross_scope(monke
     )
 
 
-def test_process_grid_quality_failure_is_retryable_and_never_marks_completed(monkeypatch) -> None:
-    """四宫格失败必须明确失败，不能用零轮播结果伪装完成。"""
+def test_process_grid_quality_failure_falls_back_to_source_images(monkeypatch) -> None:
+    """四宫格未凑满 4 张不再硬拦截，改用可用图片兜底并完成商品。"""
     service = _process_service(monkeypatch)
     monkeypatch.setattr(service_module, "_ai_enabled", lambda: True)
     monkeypatch.setattr(
@@ -1537,19 +1563,17 @@ def test_process_grid_quality_failure_is_retryable_and_never_marks_completed(mon
 
     result = service._process_one({"id": 1}, _draft(), _settings(), False, task_id=12)
 
-    assert result["status"] == "attention_required"
-    assert result["result"]["error_type"] == "image_grid_incomplete"
-    assert result["result"]["failure_class"] == "technical_retryable"
-    assert result["result"]["partial_result"] is True
-    assert result["result"]["pending_stage"] == "carousel_images"
-    assert result["result"]["retryable"] is True
+    assert result["status"] == "completed"
+    assert result["result"]["provider_status_classes"]["four_grid"] == "source_fallback"
+    notes = result["result"]["ai_notes"]
+    assert "grid:partial:allowed" in notes
+    assert any(note.startswith("grid:missing:") for note in notes)
     assert result["result"]["optimized_title"].startswith(
         "Insulated Stainless Steel Travel Mug"
     )
     assert result["result"]["description"] == VALID_DESCRIPTION
     assert result["result"]["text_generation"]["status"] == "success"
-    assert result["result"]["rejected_image_paths"] == ["/tmp/provider-original.png"]
-    assert "force_import_acknowledged" not in "|".join(result["result"]["ai_notes"])
+    assert "force_import_acknowledged" not in "|".join(notes)
 
 
 def test_image_failure_preserves_successful_doubao_text_receipt(monkeypatch) -> None:
@@ -1571,18 +1595,15 @@ def test_image_failure_preserves_successful_doubao_text_receipt(monkeypatch) -> 
         {"id": 1, "item_id": 101}, _draft(), _settings(), False, task_id=12
     )
 
-    assert result["status"] == "attention_required"
-    assert result["reason"] == "商品图片待补充"
-    assert result["result"]["error_type"] == "image_grid_incomplete"
-    assert "本地质量门" in result["result"]["debug_hint"]
-    assert (
-        "底层原因：reference image download failed: DNS lookup failed" in result["result"]["debug_hint"]
-    )
+    assert result["status"] == "completed"
+    assert result["result"]["provider_status_classes"]["four_grid"] == "source_fallback"
+    notes = result["result"]["ai_notes"]
+    assert "grid:partial:allowed" in notes
+    assert any(note.startswith("grid:fallback:") for note in notes)
     assert "doubao_text" in service.repository.receipts
     assert service.repository.receipts["doubao_text"]["output"]["title"].startswith(
         "Insulated Stainless Steel Travel Mug"
     )
-    assert "images" not in service.repository.receipts
 
 
 def test_process_force_import_enables_explicit_grid_quality_override(monkeypatch) -> None:

@@ -40,7 +40,6 @@ from wh_local.runtime_logs import business_logger
 from .batch_billing import (
     billing_client as _batch_billing_client,
     derive_item_results as _derive_batch_item_results,
-    direct_ai_enabled as _direct_ai_enabled,
     forget_freeze as _forget_batch_freeze,
     mark_freeze_settle_failure as _mark_freeze_settle_failure,
     open_freeze_record as _open_batch_freeze_record,
@@ -50,6 +49,8 @@ from .batch_billing import (
 from .doubao_vision import (
     MODEL_ID as DOUBAO_VISION_MODEL_ID,
     PROMPT_VERSION as DOUBAO_VISION_PROMPT_VERSION,
+    VISION_IMAGE_JPEG_QUALITY,
+    VISION_IMAGE_MAX_EDGE,
     DoubaoVisionClient,
     DoubaoVisionError,
     SubjectAnalysis,
@@ -123,7 +124,7 @@ from .preview_image_service import PreviewImageService
 from .infrastructure.media_asset_repository import MediaAssetRepository, MediaMaterializationConflict
 from .media_asset_service import MediaAssetService, canonical_source_url, is_awaiting_sync
 from .provider_config import PREMIUM_IMAGE_MODEL, PREMIUM_IMAGE_SIZE, resolve_ai_provider
-from .server_ai_proxy import server_ai_context
+from .server_ai_proxy import merge_builtin_keys, server_ai_context
 
 _MEDIA_TYPES: tuple | None = None
 _LOGGER = logging.getLogger(__name__)
@@ -608,12 +609,11 @@ def _image_generation_count(value: Any, *, default: int = 4) -> int:
 def _max_concurrent_tasks() -> int:
     """进程内最多同时执行的产品处理任务数（默认 4=受限并行）。
 
-    可经 WH_PRODUCT_MAX_CONCURRENT_TASKS 覆盖（上限 8）。文本/识图请求总量
-    由服务器网关门 _SERVER_AI_REQUEST_GATE=2 兜底限流，任务并发远超该值时
-    只会让 AI 请求排队、放大超时重试（60s×3），整体反而比串行更慢；默认 4
-    在「本地图片合成填隙」与「AI 排队」之间取平衡，可据实测在 2~4 间调整。
-    图片侧为每任务实例内的信号量（默认 4），多任务并发时图片总在途可能达
-    任务数 x4，需结合无印/中转承载合理设置。
+    可经 WH_PRODUCT_MAX_CONCURRENT_TASKS 覆盖（上限 8）。客户端直连模式下 AI 请求
+    直接发往火山方舟/无印，并发过高会触发上游限流并放大超时重试（180s×3），整体
+    反而比串行更慢；默认 4 在「本地图片合成填隙」与「直连上游限流」之间取平衡，
+    可据实测在 2~4 间调整。图片侧为每任务实例内的信号量（默认 4），多任务并发时
+    图片总在途可能达任务数 x4，需结合无印/中转承载合理设置。
     """
     raw = os.environ.get("WH_PRODUCT_MAX_CONCURRENT_TASKS", "")
     try:
@@ -826,15 +826,13 @@ class ProductProcessingService:
             if capability["enabled"] and not capability["ready"]:
                 unavailable_reasons.append(str(capability["reason"]))
         ready = not unavailable_reasons
-        direct_enabled = _direct_ai_enabled()
         config = {
             "ai_provider": "server-managed" if text_ready else "local-deterministic",
             "ai_model": "server-managed-text" if text_ready else "product-processing-local-v1",
             "ai_configured": text_ready,
-            "direct_ai_enabled": direct_enabled,
-            "direct_mode": direct_enabled and bool(
-                (resolve_ai_provider().get("_sys_image_ai") or {}).get("base_url") != "server-managed-wuyin"
-            ),
+            # 客户端固定直连：不再有灰度开关，始终走批次冻结 + 直连第三方。
+            "direct_ai_enabled": True,
+            "direct_mode": True,
             "backup_ai_configured": False,
             "image_provider": provider["provider"] if image_ready else "local-source-pass-through",
             "image_model": provider.get("reference_image_model") or provider.get("image_model") or "source-image-preservation-v1",
@@ -1444,11 +1442,19 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         if not freeze_id:
             raise ProductProcessingValidationError("batch freeze failed: no freeze_id returned")
         keys = freeze_payload.get("keys") if isinstance(freeze_payload, dict) else []
-        granted = {
+        granted = merge_builtin_keys({
             str(key.get("provider") or ""): str(key.get("api_key") or "")
             for key in keys
             if isinstance(key, dict) and key.get("api_key")
-        }
+        })
+        required = self._required_direct_providers({
+            "processing_scope": scope,
+            "title_optimize": False,
+            "description": False,
+            "size": False,
+            "grid_image": False,
+            "image_rewrite": False,
+        })
         _remember_batch_freeze(
             freeze_id,
             account_id=str(account_id or ""),
@@ -1459,6 +1465,16 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             item_ids=[int(draft_id)],
         )
         try:
+            missing = sorted(provider for provider in required if not granted.get(provider))
+            if missing:
+                # 冻结成功但「既未下发、也无客户端内置兜底」所需直连密钥：说明服务端签发
+                # 异常且客户端未内置该 provider 密钥，绝不能回落到托管网关烧平台额度，
+                # 立即中止并上报。放在 try 内让 except 全退本批次。
+                raise ProductProcessingValidationError(
+                    "批次冻结未下发直连密钥（缺少 "
+                    + "、".join(missing)
+                    + "），无法客户端直连，任务已中止"
+                )
             with server_ai_context(remote_token, {}, granted_keys=granted, freeze_id=freeze_id):
                 result = run()
         except Exception:
@@ -1719,6 +1735,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         candidate: Mapping[str, Any],
         shop_fence: Mapping[str, Any] | None = None,
         collection_channel: str = "shop_collection",
+        allow_existing: bool = False,
     ) -> Mapping[str, Any]:
         """Idempotently place one normalized shop candidate into the draft pool."""
         if not isinstance(candidate, Mapping):
@@ -1768,6 +1785,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             workspace_id=workspace,
             candidate_id=candidate_id,
             shop_fence=dict(shop_fence) if shop_fence is not None else None,
+            allow_existing=allow_existing,
         )
         return {"action": action, "draft": draft}
 
@@ -2697,7 +2715,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         max_products = max(0, int(payload.get("max_products") or 0))
         if max_products:
             draft_ids = draft_ids[:max_products]
-        if _direct_ai_enabled() and remote_token and request_billing_account:
+        if remote_token and request_billing_account:
             # 直连模式对账：把本账号仍 open 的冻结批次补结算，避免历史批次积分滞留。
             # 对账是补偿路径，失败不能阻塞提交；但必须留痕——否则冻结积分滞留到 TTL
             # （只退 85%）时毫无线索可查。
@@ -5388,31 +5406,37 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             )
 
     def _execute_task(self, task_id: int, workspace_id: str = "local") -> dict[str, Any]:
-        """任务执行统一入口：先过任务级串行闸门，避免多任务并发叠加打爆 AI 供应商。
+        """任务执行统一入口：固定客户端直连，先冻结批次领短期密钥再执行。
 
-        直连模式（WH_PRODUCT_AI_DIRECT=1）下先冻结批次领短期密钥，再在
-        密钥上下文中执行任务，结束后按子项状态结算；无会话 token 或预检
-        任务退回旧路径。
+        客户端已写死直连（不走服务器 AI 网关托管）。无计费会话 token 时无法冻结
+        批次 → 直接中止任务并让失败收尾上报具体原因，绝不回落到托管网关。
         """
-        if not _direct_ai_enabled():
+        task = self._require_task(task_id, workspace_id)
+        if task.get("preflight_only") or task["status"] in {"paused", "cancelled"}:
+            # 预检任务不发 AI 调用；暂停/取消后也不再重新冻结批次（避免冻结-立即退款空转）。
             with self._task_execution_gate:
                 return self._execute_task_impl(task_id, workspace_id)
         token = self._task_remote_token(task_id)
         if not token:
-            with self._task_execution_gate:
-                return self._execute_task_impl(task_id, workspace_id)
+            raise ProductProcessingValidationError(
+                "客户端直连已强制启用，但任务缺少计费会话 token（未登录或计费会话已失效），"
+                "无法冻结直连批次，任务已中止"
+            )
         return self._execute_task_direct(task_id, workspace_id, token)
+
+    def _required_direct_providers(self, settings: dict[str, Any]) -> set[str]:
+        """根据处理范围推导直连所需第三方密钥：文本/视觉走 ark，生图走 wuyin。"""
+        kinds = {kind for kind, _feature in self._billable_product_processing_features(settings)}
+        providers: set[str] = set()
+        if kinds & {"text", "vision"}:
+            providers.add("ark")
+        if "image_grid" in kinds:
+            providers.add("wuyin")
+        return providers
 
     def _execute_task_direct(self, task_id: int, workspace_id: str, token: str) -> dict[str, Any]:
         """直连模式任务执行：冻结 → 密钥上下文 → 处理 → 结算。"""
         task = self._require_task(task_id, workspace_id)
-        if task.get("preflight_only"):
-            with self._task_execution_gate:
-                return self._execute_task_impl(task_id, workspace_id)
-        if task["status"] in {"paused", "cancelled"}:
-            # 暂停/取消后不再重新冻结批次，直接按状态返回（避免冻结-立即退款空转）。
-            with self._task_execution_gate:
-                return self._execute_task_impl(task_id, workspace_id)
         settings = task["settings"]
         billing = settings.get("_billing") if isinstance(settings.get("_billing"), dict) else {}
         account_id = self._text(billing.get("account_id"))
@@ -5438,11 +5462,11 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         if not freeze_id:
             raise ProductProcessingValidationError("batch freeze failed: no freeze_id returned")
         keys = freeze_payload.get("keys") if isinstance(freeze_payload, dict) else []
-        granted = {
+        granted = merge_builtin_keys({
             str(key.get("provider") or ""): str(key.get("api_key") or "")
             for key in keys
             if isinstance(key, dict) and key.get("api_key")
-        }
+        })
         _remember_batch_freeze(
             freeze_id,
             account_id=account_id,
@@ -5453,6 +5477,18 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             item_ids=[int(item["item_id"]) for item in pending],
         )
         try:
+            required = self._required_direct_providers(settings)
+            missing = sorted(provider for provider in required if not granted.get(provider))
+            if missing:
+                # 冻结成功但「既未下发、也无客户端内置兜底」所需直连密钥：说明服务端签发
+                # 异常且客户端未内置该 provider 密钥，绝不能回落到托管网关烧平台额度，
+                # 立即中止并上报，交由服务器侧排查密钥签发。
+                # 放在 try 内：让 finally 结算/退款本批次，避免冻结积分滞留到 TTL。
+                raise ProductProcessingValidationError(
+                    "批次冻结未下发直连密钥（缺少 "
+                    + "、".join(missing)
+                    + "），无法客户端直连，任务已中止"
+                )
             with server_ai_context(token, {}, granted_keys=granted, freeze_id=freeze_id):
                 with self._task_execution_gate:
                     result = self._execute_task_impl(task_id, workspace_id)
@@ -5629,7 +5665,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 "批次执行 | task_id=%s | 待处理=%d | 已成功=%d | 已失败=%d | "
                 "并发=%d | provider预算=%d | 预检=%s | direct_ai=%s",
                 task_id, len(items_to_process), len(successes), len(failures),
-                max_workers, provider_budget, preflight_only, _direct_ai_enabled())
+                max_workers, provider_budget, preflight_only, True)
         except Exception:  # noqa: BLE001
             pass
 
@@ -5639,52 +5675,26 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             draft = drafts.get(item["product_draft_id"])
             item_id = int(item["item_id"])
             try:
-                if _direct_ai_enabled():
-                    # 直连模式：批次已冻结并下发密钥，外层 server_ai_context 已生效，
-                    # 不再逐项预留/结算 usage（避免双重扣费）。
-                    return self._run_with_item_heartbeat(
-                        task_id,
-                        item_id,
-                        workspace_id,
-                        lambda: self._process_one(
-                            item,
-                            draft,
-                            settings,
-                            preflight_only,
-                            task_id=task_id,
-                            workspace_id=workspace_id,
-                        ),
-                    )
-                usage_ids = self._reserve_product_processing_item_usage(
+                # 客户端直连：批次已冻结并下发密钥，外层 server_ai_context 已生效，
+                # 不逐项预留/结算 usage（整批按子项统一结算，避免双重扣费）。
+                return self._run_with_item_heartbeat(
                     task_id,
                     item_id,
-                    settings,
-                    workspace_id=workspace_id,
+                    workspace_id,
+                    lambda: self._process_one(
+                        item,
+                        draft,
+                        settings,
+                        preflight_only,
+                        task_id=task_id,
+                        workspace_id=workspace_id,
+                    ),
                 )
-                with server_ai_context(self._task_remote_token(task_id), usage_ids):
-                    return self._run_with_item_heartbeat(
-                        task_id,
-                        item_id,
-                        workspace_id,
-                        lambda: self._process_one(
-                            item,
-                            draft,
-                            settings,
-                            preflight_only,
-                            task_id=task_id,
-                            workspace_id=workspace_id,
-                        ),
-                    )
             except _TaskControlStopped:
                 # 暂停/取消：本条目保持原状态（pending/running），等待恢复后断点续跑；
                 # 取消的未处理项由 cancel_task 统一标记失败并释放。
                 return None
             except Exception as exc:
-                self._settle_product_processing_item_failure_for_item(
-                    task_id,
-                    item_id,
-                    {"status": "failed", "reason": self._task_safe_error_reason(task_id, exc)},
-                )
                 safe_reason = self._task_safe_error_reason(task_id, exc)
                 if safe_reason != _ai_error_reason(exc):
                     raise RuntimeError(safe_reason) from None
@@ -5734,36 +5744,6 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                             str(_result.get("failure_class") or "-"), _timing_text or "-")
                 except Exception:  # noqa: BLE001 日志失败不阻断进度落库
                     pass
-                if str(processed.get("status") or "") == "completed":
-                    if not _direct_ai_enabled():
-                        # 计费结算失败不阻断任务：进度落库与任务完成优先，结算异常只记日志。
-                        # 此前结算异常会穿透 _persist_progress：串行模式任务永久卡 running，
-                        # 并行模式整批被作废（已完成项全部丢弃）。
-                        try:
-                            self._settle_product_processing_item_success(
-                                task_id,
-                                int(item_id),
-                                settings,
-                                processed.get("result") or {},
-                            )
-                        except Exception:  # noqa: BLE001
-                            _level.exception(
-                                "AI 计费结算失败（不影响任务进度）| task_id=%s | item_id=%s",
-                                task_id, item_id,
-                            )
-                else:
-                    if not _direct_ai_enabled():
-                        try:
-                            self._settle_product_processing_item_failure_for_item(
-                                task_id,
-                                int(item_id),
-                                processed,
-                            )
-                        except Exception:  # noqa: BLE001
-                            _level.exception(
-                                "AI 计费失败结算失败（不影响任务进度）| task_id=%s | item_id=%s",
-                                task_id, item_id,
-                            )
             except LookupError:
                 # 任务已被清理时忽略进度写入，不阻塞整体流程
                 pass
@@ -8207,7 +8187,11 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
     ) -> dict[str, Any]:
         """Generate every requested listing-text field in one text-only Doubao stage."""
         variant_values = self._unique_variant_values(raw)
-        prompt_variant_values = variant_values[:_VARIANT_TRANSLATION_BATCH_SIZE]
+        # 主调用一次性带上全部变体值。此前只请求前 20 个，其余靠补漏循环按每批 20 个
+        # 串行补翻，变体多时会叠加多次 ~90s 的大模型请求（实测 108 个变体 → 1 次主调用
+        # + 5 次补漏 ≈ 500s）。补漏循环保留为「模型漏项/输出不全」的兜底，不再承担常规
+        # 批量翻译，通常不再触发。
+        prompt_variant_values = variant_values
         profile = language_profile(target_language)
         context = listing_prompt_context(raw, title=source_title, category=category)
         combined_template = apply_language_contract_to_prompt(
@@ -10378,7 +10362,43 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             or getattr(image, "content_type", None)
             or "image/jpeg"
         ).split(";", 1)[0].strip()
-        value = f"data:{content_type or 'image/jpeg'};base64,{base64.b64encode(content).decode('ascii')}"
+        encoded_content = content
+        encoded_type = content_type or "image/jpeg"
+        # 视觉识别只做主体判定，不需要原始分辨率。原图（单张可达 8MB、最多 6 张）直接
+        # base64 送多模态会显著拖慢单次识别（实测单次 ~118s）。这里按长边缩放到
+        # VISION_IMAGE_MAX_EDGE 并转 JPEG 再编码；任何解码/处理异常都回退原图，确保
+        # 不会因为缩放失败而丢失视觉输入。
+        try:
+            from io import BytesIO  # noqa: PLC0415
+
+            from PIL import Image, ImageOps  # type: ignore  # noqa: PLC0415
+
+            with Image.open(BytesIO(content)) as opened:
+                frame = ImageOps.exif_transpose(opened).convert("RGB")
+                longest_edge = max(frame.size)
+                if longest_edge > VISION_IMAGE_MAX_EDGE:
+                    scale = VISION_IMAGE_MAX_EDGE / float(longest_edge)
+                    frame = frame.resize(
+                        (
+                            max(1, round(frame.width * scale)),
+                            max(1, round(frame.height * scale)),
+                        ),
+                        Image.Resampling.LANCZOS,
+                    )
+                buffer = BytesIO()
+                frame.save(
+                    buffer,
+                    format="JPEG",
+                    quality=VISION_IMAGE_JPEG_QUALITY,
+                    optimize=True,
+                )
+                downsampled = buffer.getvalue()
+            if downsampled:
+                encoded_content = downsampled
+                encoded_type = "image/jpeg"
+        except Exception:
+            pass
+        value = f"data:{encoded_type};base64,{base64.b64encode(encoded_content).decode('ascii')}"
         with self._source_data_url_lock:
             if len(self._source_data_url_cache) >= 64:
                 self._source_data_url_cache.pop(next(iter(self._source_data_url_cache)))

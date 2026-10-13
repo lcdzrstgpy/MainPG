@@ -2,7 +2,7 @@
   if (window.__temuWorkbenchConnector) return;
   window.__temuWorkbenchConnector = true;
   const tenantContext = globalThis.WorkbenchTenantContext;
-  const PRODUCT_CAPTURE_HOST_RE = /(^|\.)(temu|1688|alibaba|pinduoduo|yangkeduo|amazon)\.com$/i;
+  const PRODUCT_CAPTURE_HOST_RE = /(^|\.)(temu|1688|alibaba|pinduoduo|yangkeduo|amazon|taobao|tmall)\.com$/i;
   let productListCaptureBusy = false;
   let priceQuoteCaptureBusy = false;
   let oneboundPageCapture = null;
@@ -361,6 +361,9 @@
       return /\/(?:dp|gp\/product|product)\/[A-Z0-9]{10}(?:[/?#]|$)/i.test(parsed.pathname)
         || /[?&](?:asin|ASIN)=([A-Z0-9]{10})(?:&|$)/.test(parsed.search)
         || Boolean(document.querySelector("#productTitle, #dp"));
+    }
+    if (/(^|\.)(taobao|tmall)\.com$/i.test(parsed.hostname)) {
+      return isTaobaoItemDetailPage(parsed);
     }
     const isTemu = /(^|\.)temu\.com$/i.test(parsed.hostname);
     if (isTemu) {

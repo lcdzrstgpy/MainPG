@@ -624,6 +624,21 @@ def _issue_batch_keys(
     return granted
 
 
+def _missing_batch_providers(issued_keys: list[dict[str, str]]) -> list[str]:
+    """Report required providers that were not granted (vault/env credential missing).
+
+    ``_issue_batch_keys`` silently skips providers whose upstream secret is absent.
+    Returning the missing set lets the freeze response stay non-blocking (200) while
+    surfacing the gap for observability and client-side built-in fallback.
+    """
+    issued = {str(item.get("provider") or "") for item in issued_keys}
+    return sorted(
+        provider_name
+        for _kind, provider_name, _environment_name in BATCH_KEY_PROVIDERS
+        if provider_name not in issued
+    )
+
+
 def _issue_pod_grant_envelope(
     database_path: Path,
     account: dict[str, Any],
@@ -1826,7 +1841,20 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             app_version=str(payload.get("app_version") or "")[:40],
         )
         keys = _issue_batch_keys(db_path, account, freeze["freeze_id"])
-        return {"ok": True, "freeze": {**freeze, "keys": keys}}
+        missing_providers = _missing_batch_providers(keys)
+        if missing_providers:
+            # 不阻塞冻结：仍返回 200，但明确上报缺失的 provider，供客户端内置兜底继续
+            # 客户端直连，并由服务端日志暴露凭证未配置问题以便排查。
+            _LOGGER.warning(
+                "batch freeze issued partial keys (freeze=%s account=%s missing=%s)",
+                freeze.get("freeze_id"),
+                account.get("account_id"),
+                "、".join(missing_providers),
+            )
+        return {
+            "ok": True,
+            "freeze": {**freeze, "keys": keys, "missing_providers": missing_providers},
+        }
 
     @app.post("/api/customer/billing/batch/settle")
     def customer_billing_batch_settle(
@@ -1897,7 +1925,19 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
             app_version=str(payload.get("app_version") or "")[:40],
         )
         keys = _issue_batch_keys(db_path, account, freeze["freeze_id"])
-        return {"ok": True, "freeze": {**freeze, "keys": keys}}
+        missing_providers = _missing_batch_providers(keys)
+        if missing_providers:
+            # 不阻塞冻结：同上，缺失凭证仅上报，交由客户端内置兜底继续直连。
+            _LOGGER.warning(
+                "pod-semi freeze issued partial keys (freeze=%s account=%s missing=%s)",
+                freeze.get("freeze_id"),
+                account.get("account_id"),
+                "、".join(missing_providers),
+            )
+        return {
+            "ok": True,
+            "freeze": {**freeze, "keys": keys, "missing_providers": missing_providers},
+        }
 
     @app.post("/api/customer/billing/pod-semi/settle")
     def customer_pod_semi_settle(

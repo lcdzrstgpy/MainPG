@@ -1496,7 +1496,7 @@ def test_image_submit_rejects_malformed_provider_code(tmp_path: Path, monkeypatc
     assert response.json() == {"detail": "server image submit outcome is uncertain"}
 
 
-def test_provider_config_is_server_managed_and_ignores_local_upstream_keys(monkeypatch) -> None:
+def test_provider_config_ignores_local_upstream_keys_and_targets_direct(monkeypatch) -> None:
     from types import SimpleNamespace
 
     runtime_config = SimpleNamespace(
@@ -1521,8 +1521,9 @@ def test_provider_config_is_server_managed_and_ignores_local_upstream_keys(monke
 
     assert resolved["base_url"] == "server-managed"
     assert resolved["api_key"] == ""
-    assert resolved["_sys_image_ai"]["base_url"] == "server-managed-wuyin"
-    assert resolved["_sys_image_ai"]["api_key"] == "server-managed"
+    # 客户端固定直连：生图恒用 wuyin 直连地址，无任务密钥时用占位符而非托管网关地址。
+    assert resolved["_sys_image_ai"]["base_url"] == "https://api.wuyinkeji.com"
+    assert resolved["_sys_image_ai"]["api_key"] == "direct-pending"
     assert resolved["_sys_backup_image_ai"] is None
     assert summary["api_key_masked"] == "server-managed"
     assert summary["enabled"] is True
@@ -1534,13 +1535,9 @@ def test_provider_config_is_server_managed_and_ignores_local_upstream_keys(monke
     assert "direct-backup.example" not in serialized
     providers = ProductImageProcessor._providers({
         "image": resolved["_sys_image_ai"],
-        "backup_image": {
-            "base_url": "https://direct-backup.example/v1",
-            "api_key": "local-backup-secret",
-            "model": "backup-model",
-        },
+        "backup_image": {},
     })
-    assert [item["base_url"] for item in providers] == ["server-managed-wuyin"]
+    assert [item["base_url"] for item in providers] == ["https://api.wuyinkeji.com"]
     assert "local-backup-secret" not in json.dumps(providers)
 
 
@@ -1579,144 +1576,6 @@ def test_provider_resolution_uses_public_and_cos_only_runtime_accessor(tmp_path:
     assert resolved["_sys_cos"]["secret_id"] == "cos-value"
     assert resolved["_sys_cos"]["secret_key"] == "cos-value"
     assert decrypted == ["cos-id-ciphertext", "cos-key-ciphertext"]
-
-
-def test_image_adapter_calls_platform_gateway_and_downloads_safe_result(monkeypatch) -> None:
-    requests_seen: list[tuple[str, dict]] = []
-
-    class _MediaSession:
-        def post(self, url, **kwargs):
-            requests_seen.append((url, kwargs))
-            return _Response({"ok": True, "result_url": "https://images.example.test/result.png"})
-
-    monkeypatch.setattr(media_module, "_SESSION", _MediaSession())
-    monkeypatch.setattr(media_module, "is_safe_external_url", lambda _url: True)
-    monkeypatch.setattr(
-        media_module,
-        "_download_pinned_public_image",
-        lambda *_args, **_kwargs: (b"image-bytes", "image/png"),
-    )
-    processor = ProductImageProcessor(lambda: {})
-    provider = {
-        "base_url": "server-managed-wuyin",
-        "api_key": "server-managed",
-        "model": "image_gpt",
-        "reference_model": "image_gpt",
-        "image_size": "2048x2048",
-    }
-
-    with server_ai_context("platform-token", {"image_grid": "usage-image"}):
-        content, content_type = processor._request_edit(
-            provider,
-            "product prompt",
-            [(b"source", "source.jpg", "image/jpeg", "https://images.example.test/source.jpg")],
-        )
-
-    assert (content, content_type) == (b"image-bytes", "image/png")
-    gateway_url, gateway_request = requests_seen[0]
-    assert gateway_url.endswith("/api/customer/ai/image")
-    assert gateway_request["headers"]["Authorization"] == "Bearer platform-token"
-    assert gateway_request["json"]["usage_id"] == "usage-image"
-    assert gateway_request["json"]["urls"] == ["https://images.example.test/source.jpg"]
-
-
-def test_server_managed_images_are_not_globally_serialized(monkeypatch) -> None:
-    entered = threading.Barrier(2)
-    active_lock = threading.Lock()
-    active = 0
-    max_active = 0
-    requests_seen: list[str] = []
-
-    class _ConcurrentMediaSession:
-        def post(self, _url, **kwargs):
-            nonlocal active, max_active
-            usage = str(kwargs["json"]["usage_id"])
-            with active_lock:
-                requests_seen.append(usage)
-                active += 1
-                max_active = max(max_active, active)
-            try:
-                entered.wait(timeout=2)
-                return _Response({"ok": True, "result_url": "https://images.example.test/result.png"})
-            finally:
-                with active_lock:
-                    active -= 1
-
-    monkeypatch.setattr(media_module, "_SESSION", _ConcurrentMediaSession())
-    monkeypatch.setattr(media_module, "is_safe_external_url", lambda _url: True)
-    monkeypatch.setattr(
-        media_module,
-        "_download_pinned_public_image",
-        lambda *_args, **_kwargs: (b"image-bytes", "image/png"),
-    )
-    provider = {
-        "base_url": "server-managed-wuyin",
-        "api_key": "server-managed",
-        "model": "image_gpt",
-        "reference_model": "image_gpt",
-        "image_size": "2048x2048",
-    }
-
-    def request_image(index: int) -> tuple[bytes, str]:
-        processor = ProductImageProcessor(lambda: {})
-        with server_ai_context(f"platform-token-{index}", {"image_grid": f"usage-{index}"}):
-            return processor._request_edit(
-                provider,
-                f"product prompt {index}",
-                [(b"source", "source.jpg", "image/jpeg", "https://images.example.test/source.jpg")],
-            )
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(request_image, (1, 2)))
-
-    assert results == [(b"image-bytes", "image/png")] * 2
-    assert sorted(requests_seen) == ["usage-1", "usage-2"]
-    assert max_active == 2
-
-
-@pytest.mark.parametrize(
-    ("status_code", "expected_class", "retryable"),
-    [
-        (402, "billing_payment_required", False),
-        (403, "billing_forbidden", False),
-        (409, "gateway_in_progress", True),
-        (502, "gateway_bad_response", True),
-        (503, "gateway_unavailable", True),
-    ],
-)
-def test_image_adapter_preserves_stable_gateway_status_without_body_leak(
-    monkeypatch, status_code: int, expected_class: str, retryable: bool
-) -> None:
-    secret = "remote-body-secret platform-token"
-
-    class _MediaSession:
-        def post(self, *_args, **_kwargs):
-            return _Response({"detail": secret}, status_code=status_code)
-
-    monkeypatch.setattr(media_module, "_SESSION", _MediaSession())
-    processor = ProductImageProcessor(lambda: {})
-    provider = {
-        "base_url": "server-managed-wuyin",
-        "api_key": "server-managed",
-        "model": "image_gpt",
-        "reference_model": "image_gpt",
-        "image_size": "2048x2048",
-    }
-
-    with server_ai_context("platform-token", {"image_grid": "usage-image"}):
-        with pytest.raises(media_module.MediaProcessingError) as caught:
-            processor._request_server_managed_wuyin_image(
-                provider,
-                "product prompt",
-                [],
-                timeout_seconds=60,
-            )
-
-    assert caught.value.status_code == status_code
-    assert caught.value.status_class == expected_class
-    assert secret not in str(caught.value)
-    assert "platform-token" not in str(caught.value)
-    assert (media_module._retry_class(caught.value) not in {"non_retryable_4xx", "non_retryable_local"}) is retryable
 
 
 def test_provider_result_download_pins_validated_ip_and_keeps_original_tls_host(

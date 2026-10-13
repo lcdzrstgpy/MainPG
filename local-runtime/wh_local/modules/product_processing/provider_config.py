@@ -1,8 +1,10 @@
-"""产品处理 AI 的服务端托管路由配置。
+"""产品处理 AI 的客户端直连路由配置。
 
-桌面端只携带当前客户会话和已预留的 usage id；文本与图片上游凭据均由
-平台服务持有。BasicSettings 仍可提供非 AI 密钥配置（例如 COS 发布），但
-不得把已保存的上游 AI key 接回产品处理调用链。
+生图/文本请求一律由客户端直连上游：批次冻结时服务端下发短期密钥（ark/wuyin），
+客户端在此解析出直连地址与密钥；批次未下发时回落到客户端内置兜底密钥
+（见 direct_credentials），仍无凭据则任务中止，绝不回落到平台托管网关。
+BasicSettings 仍可提供非 AI 密钥配置（例如 COS 发布），但不得把已保存的上游
+AI key 接回产品处理调用链。
 """
 
 from __future__ import annotations
@@ -116,12 +118,13 @@ def resolve_ai_provider() -> dict[str, Any]:
 
     fallback = list(TEXT_MODEL_FALLBACK_ORDER)
 
-    # 直连模式：批次冻结时服务端下发短期密钥。有 wuyin key 时图片直接打无印
-    # 上游（media._request_wuyin_image 已存在），有 ark key 时文本/识图由
-    # doubao_ark 直连火山方舟。无下发密钥时保持服务端托管（灰度双轨）。
+    # 客户端固定直连：批次冻结时服务端下发短期密钥（ark/wuyin）。这里恒用无印
+    # 生图直连地址，不再有托管回落；有下发密钥时用真实短期密钥。
+    # granted_keys_snapshot 已把批次未下发的 provider 用客户端内置兜底密钥补齐，
+    # 因此 direct_wuyin_key 可能来自内置兜底（见 direct_credentials）。
     granted = granted_keys_snapshot()
     direct_wuyin_key = str(granted.get("wuyin") or "").strip()
-    direct_mode = bool(direct_wuyin_key or granted.get("ark"))
+    direct_mode = True
 
     # 解密后的 COS 配置仅作为后端内部运行时数据传给图片发布器；安全摘要不会回显它。
     sys_cos: dict[str, str] = (
@@ -158,15 +161,19 @@ def resolve_ai_provider() -> dict[str, Any]:
         "image_timeout_seconds": IMAGE_AI_TIMEOUT_SECONDS,
         # 系统配置附加信息（供 _media_config_provider 使用）
         "_sys_image_ai": {
-            "base_url": IMAGE_AI_BASE_URL if direct_wuyin_key else "server-managed-wuyin",
-            "api_key": direct_wuyin_key if direct_wuyin_key else "server-managed",
+            "base_url": IMAGE_AI_BASE_URL,
+            # 真实请求只发生在任务上下文（server_ai_context 内），使用冻结下发的
+            # 短期密钥，未下发时回落客户端内置兜底密钥；无任务上下文（如启动自检
+            # engine_status）时用占位符，仅为让图片能力报告为已配置，绝不会发起
+            # 真实请求。既未下发、也无内置兜底的任务会在
+            # service._execute_task_direct 中止，不回落到平台托管网关。
+            "api_key": direct_wuyin_key or "direct-pending",
             "model": image_model,
             "reference_model": reference_image_model,
             "reference_model_1k": REFERENCE_IMAGE_MODEL_1K,
             "reference_size_1k": REFERENCE_IMAGE_SIZE_1K,
         },
-        # Product processing may only use the billed server-managed route.
-        # Never expose decrypted desktop backup-provider credentials here.
+        # 产品处理只走客户端直连；不再暴露任何桌面侧备份图片提供方凭据。
         "_sys_backup_image_ai": None,
         "_sys_limits": dict(sys_cfg.limits) if sys_cfg and sys_cfg.limits else {},
         "_sys_updates": dict(sys_cfg.updates) if sys_cfg and sys_cfg.updates else {},

@@ -1123,9 +1123,7 @@ class ComboKitService:
 
         组合套装生图在 ThreadPoolExecutor 子线程里调用
         ``processor.generate()``，而 ``server_ai_context`` 的 ContextVar 只在
-        主线程可见，子线程读不到 granted_keys → ``resolve_ai_provider()``
-        会退回 server-managed-wuyin 托管分支，进而因缺少 ``usage_id(image_grid)``
-        报 "server-managed image usage is not reserved"。
+        主线程可见，子线程读不到 granted_keys。
 
         这里把冻结下发的中转 wuyin 密钥直接写入 config 的 image 段，使
         provider 在任何线程都解析为直连地址（https://api.wuyinkeji.com），
@@ -1134,8 +1132,17 @@ class ComboKitService:
         base_config = dict(_static_config())
         wuyin_key = str((freeze.get("keys") or {}).get("wuyin") or "").strip()
         if not wuyin_key:
-            # 无直连密钥：退回默认（可能仍走托管，由下层给出可读报错）。
-            return _make_media_processor()
+            # 回落到客户端内置兜底密钥（env > 打包资源文件 > 源码常量）。
+            from ..product_processing.direct_credentials import builtin_provider_key
+
+            wuyin_key = builtin_provider_key("wuyin")
+        if not wuyin_key:
+            # 客户端固定直连：批次冻结必须下发 wuyin 短期密钥。既未下发、也无内置兜底
+            # 说明服务端签发异常且客户端未内置该密钥，绝不回落到平台托管网关烧额度，
+            # 立即中止交由上层上报服务器。
+            raise MediaConfigurationError(
+                "批次冻结未下发 wuyin 直连密钥，无法客户端直连，套装生图已中止"
+            )
         imports = self._import_provider_config_direct()
         base_url = imports["IMAGE_AI_BASE_URL"]
         image_section = dict(base_config.get("image") or {})

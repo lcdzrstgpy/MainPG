@@ -32,8 +32,6 @@ from urllib.parse import urlsplit
 import requests
 
 from ..domain.policy import is_safe_external_url, resolve_safe_external_url
-from ..server_ai_proxy import gateway_base_url, remote_token, usage_id
-from ....config import is_ip_literal_host
 from ....media_enhance import EnhanceMetrics, EnhanceOptions, enhance_panel
 from ...ai_service.temporary_cos import (
     TemporaryCosStore,
@@ -120,11 +118,12 @@ WUYIN_IMAGE_POLL_INTERVAL_SECONDS = 3.0
 # 直接读出「有没有进展」，只能用时间基线做间接判定。实测真实商品图完成耗时：
 #   image_gpt_2.5(1K)  66.2~95.5s（median 72.1s）→ max×2≈191s / median×3≈216s
 #   image_gpt(2048)    62.6~146.6s（median 68.2s）→ max×2≈293s / median×3≈204s
-# 两档阈值均按 max×2 量级取整，给慢尾样本留足余量以避免误杀。超过阈值仍无任何字段
-# 变化，即视为本次提交大概率卡死（多为上游抓不到参考图 URL，任务被 worker 静默丢弃），
-# 提前放弃以免占满图片并发槽。
+# 2K 档原按 max×2≈293s 取 300s；但实测正常出图仅 120~160s，而卡死样本恒在 300s 以上，
+# 300s 只会在无谓等待上多花约 100s。为压缩最坏情况，2K 阈值收紧到 200s（仍高于实测
+# max 146.6s，预留约 36% 余量）。超过阈值仍无任何字段变化，即视为本次提交大概率卡死
+# （多为上游抓不到参考图 URL，任务被 worker 静默丢弃），提前放弃以免占满图片并发槽。
 WUYIN_IMAGE_STALL_THRESHOLD_SECONDS = 180.0
-WUYIN_IMAGE_STALL_THRESHOLD_2K_SECONDS = 300.0
+WUYIN_IMAGE_STALL_THRESHOLD_2K_SECONDS = 200.0
 MAX_PROVIDER_RESULT_BYTES = 32 * 1024 * 1024
 MAX_PROVIDER_JSON_BYTES = 8 * 1024 * 1024
 REFERENCE_DOWNLOAD_ATTEMPTS = 3
@@ -287,28 +286,6 @@ def _bounded_response_json(response: requests.Response) -> Any:
         raise MediaProcessingError("provider returned invalid JSON") from exc
 
 
-def _gateway_image_status_error(status_code: int) -> MediaProcessingError:
-    mapping = {
-        402: ("server image gateway requires sufficient points", "billing_payment_required"),
-        403: ("server image gateway permission denied", "billing_forbidden"),
-        409: ("server image gateway request is still in progress", "gateway_in_progress"),
-        502: ("server image gateway returned an invalid response", "gateway_bad_response"),
-        503: ("server image gateway is temporarily unavailable", "gateway_unavailable"),
-    }
-    message, status_class = mapping.get(
-        status_code,
-        (
-            "server image gateway rejected the request",
-            "server_error" if status_code >= 500 else "non_retryable_4xx",
-        ),
-    )
-    return MediaProcessingError(
-        message,
-        status_code=status_code,
-        status_class=status_class,
-    )
-
-
 @dataclass(frozen=True)
 class GeneratedMedia:
     stage: str
@@ -417,39 +394,24 @@ class ProductImageProcessor:
             for raw in reference_values
             if _normalize_reference_url(str(raw or "").strip())
         ]
-        server_managed_only = bool(providers) and all(
-            _is_server_managed_wuyin_provider(provider) for provider in providers
-        )
-        if server_managed_only:
-            # 服务器统一走中转：本地不下载参考图，只做结构校验后把 URL 交给网关，
-            # 由网关自行下载。避免本地代理 TUN fake-ip 下 DNS/下载不稳定导致失败。
-            url_references = [
-                (b"", "reference.png", "image/jpeg", str(raw).strip())
-                for raw in reference_values
-                if _plausible_public_http_url(str(raw or "").strip())
-            ][:reference_limit]
-            if not url_references:
-                raise MediaProcessingError("a confirmed source image URL is required for image processing")
-            ordinary_references = url_references
-            candidate_values: list[str] = []
-        else:
-            # 直连提供方只能接收可公网访问的参考图 URL（它需要自己下载图片），
-            # 本地缓存文件路径无法传递给提供方。采集链路保存的本地文件不带 URL，
-            # 若直接取本地路径会导致提交给提供方的 urls=[]，图生图任务静默失败
-            # （提供方返回 status=3 且无图无原因）。因此直连模式把远端 URL 排到
-            # 前面，保证 _load_references 取到的前 N 个参考都带 URL（元组第 4 项）。
-            candidate_values = [
-                *[value for value in reference_values if _plausible_public_http_url(value)],
-                *[value for value in reference_values if not _plausible_public_http_url(value)],
-            ]
-            ordinary_references = self._load_references(candidate_values, limit=reference_limit)
-            if not ordinary_references:
-                raise MediaProcessingError("a confirmed source image is required for image processing")
+        # 客户端固定直连：参考图由本地下载/缓存后随请求体上传，不再经平台网关转发。
+        # 直连提供方只能接收可公网访问的参考图 URL（它需要自己下载图片），
+        # 本地缓存文件路径无法传递给提供方。采集链路保存的本地文件不带 URL，
+        # 若直接取本地路径会导致提交给提供方的 urls=[]，图生图任务静默失败
+        # （提供方返回 status=3 且无图无原因）。因此直连模式把远端 URL 排到
+        # 前面，保证 _load_references 取到的前 N 个参考都带 URL（元组第 4 项）。
+        candidate_values = [
+            *[value for value in reference_values if _plausible_public_http_url(value)],
+            *[value for value in reference_values if not _plausible_public_http_url(value)],
+        ]
+        ordinary_references = self._load_references(candidate_values, limit=reference_limit)
+        if not ordinary_references:
+            raise MediaProcessingError("a confirmed source image is required for image processing")
         ordinary_reference_count = len(ordinary_references)
         # 参考图在两次尝试之间可能被替换（停滞时改走 COS 中转、或换下一张候选图），
         # 这里按「当前普通参考图 + 额外参考图 + 底板」统一组装本次尝试要发的图。
         extra_reference_list = list(extra_references or [])
-        scaffold_required = bool(layout_scaffold) and not server_managed_only
+        scaffold_required = bool(layout_scaffold)
 
         def assemble_attempt_references(new_ordinary: list[tuple]) -> list[tuple]:
             built = [*new_ordinary, *extra_reference_list]
@@ -524,6 +486,15 @@ class ProductImageProcessor:
                             break
                         time.sleep(delay)
                     if status_class == "provider_stalled":
+                        # 四宫格单次生成成本极高（2K 四格 ≈ 300s 起步）：一旦停滞就不再
+                        # 换参考图重试，立即放弃让上层回退来源图，避免最坏情况被两次
+                        # 尝试拖到十几分钟。
+                        if stage == "grid_image":
+                            raise MediaProcessingError(
+                                "; ".join(errors),
+                                attempt_count=attempt_count,
+                                status_class="provider_stalled",
+                            ) from exc
                         # 停滞 = 上游很可能静默丢弃了任务（多为抓不到参考图 URL：防盗链 /
                         # 出网策略差异）。优先把本地已成功下载的参考图改走 COS 中转，交给
                         # 上游一个它一定能抓到的临时 URL；无法中转时退回换下一张候选参考图。
@@ -539,11 +510,7 @@ class ProductImageProcessor:
                                 references_relayed = True
                                 ordinary_references = relayed
                                 escalated = True
-                        remaining_candidates = (
-                            candidate_values[reference_offset + 1 :]
-                            if not server_managed_only
-                            else []
-                        )
+                        remaining_candidates = candidate_values[reference_offset + 1 :]
                         if (
                             has_budget
                             and not escalated
@@ -1169,23 +1136,14 @@ class ProductImageProcessor:
         未配置模型池时退化为单模型条目。primary/backup 两段可各自携带模型池。
         """
         providers: list[dict[str, str]] = []
-        sections = [dict(config.get(name) or {}) for name in ("image", "backup_image")]
-        server_managed = any(
-            str(section.get("base_url") or "").strip().rstrip("/") == "server-managed-wuyin"
-            for section in sections
-        )
         for name, section_name in (("primary", "image"), ("backup", "backup_image")):
             section = dict(config.get(section_name) or {})
             base_url = str(section.get("base_url") or "").strip().rstrip("/")
             api_key = str(section.get("api_key") or "").strip()
             if not (base_url and api_key):
                 continue
-            if server_managed and base_url != "server-managed-wuyin":
-                continue
             parsed = urlsplit(base_url)
-            if base_url != "server-managed-wuyin" and (
-                parsed.scheme not in {"http", "https"} or not parsed.netloc
-            ):
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
                 continue
             models = [
                 str(model).strip()
@@ -1371,15 +1329,6 @@ class ProductImageProcessor:
         reference_model: str | None = None,
     ) -> tuple[bytes, str]:
         model = str(reference_model or provider.get("reference_model") or provider.get("model") or "").strip()
-        if _is_server_managed_wuyin_provider(provider):
-            return self._request_server_managed_wuyin_image(
-                provider,
-                prompt,
-                references,
-                timeout_seconds=timeout_seconds,
-                image_size=image_size,
-                model=model,
-            )
         if _is_wuyin_image_provider(provider):
             return self._request_wuyin_image(
                 provider,
@@ -1434,88 +1383,6 @@ class ProductImageProcessor:
         if not url or not is_safe_external_url(url):
             raise MediaProcessingError("provider response does not contain a safe image result")
         return _download_provider_result_image(url)
-
-    def _request_server_managed_wuyin_image(
-        self,
-        provider: dict[str, str],
-        prompt: str,
-        references: list[tuple[bytes, str, str] | tuple[bytes, str, str, str]],
-        *,
-        timeout_seconds: float,
-        image_size: str | None = None,
-        model: str = "",
-    ) -> tuple[bytes, str]:
-        token = remote_token()
-        reservation = usage_id("image_grid")
-        if not token or not reservation:
-            raise MediaProcessingError("server-managed image usage is not reserved")
-        urls = [
-            str(ref[3]).strip()
-            for ref in references
-            if len(ref) >= 4 and _plausible_public_http_url(str(ref[3]).strip())
-        ]
-        response: requests.Response | None = None
-        try:
-            # Do not serialize server-managed image requests globally. Batch and
-            # provider concurrency are already bounded by ProductImageProcessor's
-            # configured image semaphore; a process-wide single slot makes every
-            # later product wait for all earlier image generations to finish.
-            response = _SESSION.post(
-                f"{gateway_base_url()}/api/customer/ai/image",
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "usage_id": reservation,
-                    "prompt": prompt,
-                    "size": _wuyin_size(image_size or provider.get("image_size")),
-                    # 服务端持有上游凭据与端点，客户端只声明所选模型名（白名单校验）。
-                    **({"model": model} if model else {}),
-                    **({"urls": urls} if urls else {}),
-                },
-                timeout=max(30.0, min(float(timeout_seconds), 660.0)),
-                allow_redirects=False,
-                verify=not is_ip_literal_host(gateway_base_url()),
-                stream=True,
-            )
-            status_code = int(response.status_code)
-            if not 200 <= status_code < 300:
-                raise _gateway_image_status_error(status_code)
-            payload = _bounded_response_json(response)
-        except MediaProcessingError:
-            raise
-        except requests.RequestException as exc:
-            print(
-                f"[image-gateway-diag] RequestException: {type(exc).__name__}: {exc}",
-                flush=True,
-            )
-            raise MediaProcessingError("server image gateway is temporarily unavailable") from exc
-        finally:
-            if response is not None:
-                response.close()
-        if not isinstance(payload, dict) or not bool(payload.get("ok")):
-            # HTTP 2xx 但 body ok=false：网关在业务层拒绝了请求。原因必须落盘到
-            # runtime.log（此前仅 print 到 stdout，不落盘，线上无法复盘拒绝原因）。
-            detail = str(payload)[:300]
-            print(
-                f"[image-gateway-diag] non-ok payload: {detail}",
-                flush=True,
-            )
-            _LOGGER.warning(
-                "server image gateway rejected the image request (ok=false): %s",
-                detail,
-            )
-            # 归类为可重试的网关错误（gateway_bad_response→server_error）：网关业务拒绝
-            # 多为瞬时/可恢复，应走正常重试预算；避免落到 non_retryable_local 在第一次就中止。
-            raise MediaProcessingError(
-                "server image gateway rejected the request",
-                status_class="gateway_bad_response",
-            )
-        result_url = str(payload.get("result_url") or "").strip()
-        if not result_url or not is_safe_external_url(result_url):
-            raise MediaProcessingError("server image gateway returned no safe image result")
-        return _download_provider_result_image(result_url)
 
     def _request_wuyin_image(
         self,
@@ -1770,17 +1637,12 @@ def _is_wuyin_image_provider(provider: dict[str, str]) -> bool:
     return urlsplit(str(provider.get("base_url") or "")).netloc.lower() == "api.wuyinkeji.com"
 
 
-def _is_server_managed_wuyin_provider(provider: dict[str, str]) -> bool:
-    return str(provider.get("base_url") or "") == "server-managed-wuyin"
-
-
 def _plausible_public_http_url(value: str) -> bool:
     """Structural http(s) URL check that never touches DNS.
 
-    Server-managed image generation forwards source URLs to the platform
-    gateway, which downloads them itself.  The local desktop only needs a
-    syntactic sanity check; requiring a DNS round-trip here makes the request
-    flaky under proxy TUN fake-ip setups.
+    Direct image providers need a publicly reachable source URL; the desktop
+    only needs a syntactic sanity check.  Requiring a DNS round-trip here makes
+    the request flaky under proxy TUN fake-ip setups.
     """
     text = str(value or "").strip()
     if not text or len(text) > 4096 or any(ord(char) < 32 or ord(char) == 127 for char in text):

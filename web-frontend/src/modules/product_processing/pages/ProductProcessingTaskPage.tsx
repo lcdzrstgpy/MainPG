@@ -4,6 +4,7 @@ import { ppDownload, ppRequest, type ApiContext } from '../api/client';
 import { productProcessingApiContext } from '../api/context';
 import { checkDraftSkuAvailability } from '../api/productProcessingApi';
 import { PromptCustomizePanel } from '../components/PromptCustomizePanel';
+import { TemplateGalleryDrawer } from '../components/TemplateGalleryDrawer';
 import type {
   DraftSkuAvailabilityItem,
   ProductProcessingOptions,
@@ -21,20 +22,6 @@ const SITES = [
   { code: 'CO', label: '哥伦比亚站' },
   { code: 'EC', label: '厄瓜多尔站' },
 ] as const;
-
-// 生图提示词模板（对齐后端 IMAGE_TEMPLATES：A/B/C/D 直观标题区分四套生图逻辑）
-const IMAGE_TEMPLATES: { id: 'A' | 'B' | 'C' | 'D'; name: string; description: string }[] = [
-  { id: 'A', name: '影棚无缝主图', description: '干净影棚无缝背景：主体居中对称、三点柔光棚拍、极简几何道具，标准电商主图质感，画面无文字' },
-  { id: 'B', name: '人景叙事（防比价）', description: '人+空间编辑大片：局部模特入镜、中景三分构图、真实居家叙事场景，材质显贵、难以搜图比价，画面无文字' },
-  { id: 'C', name: '静物平铺俯拍', description: '90° 正俯视平铺 knolling：桌面即背景、行列对齐编排、顶部均匀柔光，清爽目录级质感，画面无文字' },
-  { id: 'D', name: '环境远景', description: '广角环境建立镜头：主体小、空间主导、前中后三层纵深、真实家具软装+自然窗光，电影感生活氛围，画面无文字' },
-];
-
-// 五点描述模板（对齐后端 DESC_TEMPLATES：A/B 直观标题区分两套文案写法）
-const DESC_TEMPLATES: { id: 'A' | 'B'; name: string; description: string }[] = [
-  { id: 'A', name: '卖点前置（结果导向）', description: '每条先给买家结果/收益，再用可核验的产品事实佐证，说服力强' },
-  { id: 'B', name: '场景代入（痛点导向）', description: '每条先锚定具体使用场景或人群，再用可核验事实解决，代入感强' },
-];
 
 // 失败类型列对客户统一展示为「已过滤」，不暴露内部排错分类（身份待复核/
 // 技术可重试等词只对运营排错有用，客户看到成功/失败/需重试即可）。
@@ -614,7 +601,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
           {initialTaskId == null && <section className="verify-section">
             <div className="verify-section-head">
               <h2>处理设置</h2>
-              <span className="verify-sub">站点 / 语言 / 生图模板</span>
+              <span className="verify-sub">站点 / 语言 / 模板</span>
             </div>
             <div className="verify-form-row">
               <label>站点
@@ -632,36 +619,12 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                 </select>
               </label>
             </div>
-            <div className="verify-form-row">
-              <span className="verify-scope-label">生图模板：</span>
-              {IMAGE_TEMPLATES.map((template) => (
-                <label key={template.id} className="verify-template-card" title={template.description}>
-                  <input
-                    type="radio"
-                    name="image-template"
-                    checked={(options.imageTemplate || 'A') === template.id}
-                    onChange={() => setOptions((p) => ({ ...p, imageTemplate: template.id }))}
-                  />
-                  <span className="verify-template-name">{template.name}</span>
-                  <span className="verify-template-desc">{template.description}</span>
-                </label>
-              ))}
-            </div>
-            <div className="verify-form-row">
-              <span className="verify-scope-label">描述模板：</span>
-              {DESC_TEMPLATES.map((template) => (
-                <label key={template.id} className="verify-template-card" title={template.description}>
-                  <input
-                    type="radio"
-                    name="desc-template"
-                    checked={(options.descriptionTemplate || 'A') === template.id}
-                    onChange={() => setOptions((p) => ({ ...p, descriptionTemplate: template.id }))}
-                  />
-                  <span className="verify-template-name">{template.name}</span>
-                  <span className="verify-template-desc">{template.description}</span>
-                </label>
-              ))}
-            </div>
+            <TemplateGalleryDrawer
+              imageTemplate={options.imageTemplate || 'A'}
+              descriptionTemplate={options.descriptionTemplate || 'A'}
+              onSelectImage={(id) => setOptions((p) => ({ ...p, imageTemplate: id }))}
+              onSelectDescription={(id) => setOptions((p) => ({ ...p, descriptionTemplate: id }))}
+            />
             <div className="verify-scope-row">
               <label className="verify-scope-check" title="任务结束后自动重试失败/待确认的链接，默认开启；关闭后失败项需在结果页手动重新处理">
                 <input

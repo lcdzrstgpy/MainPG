@@ -942,7 +942,7 @@ def test_provider_config_uses_image_gpt_with_explicit_1k_reference_profile(monke
     assert provider["premium_image_size"] == "4096x4096"
 
 
-def test_provider_config_ignores_saved_image_key_for_server_managed_wuyin(monkeypatch) -> None:
+def test_provider_config_ignores_saved_image_key_and_targets_direct_wuyin(monkeypatch) -> None:
     runtime_config = SimpleNamespace(
         text_ai=SimpleNamespace(base_url="https://text.example/v1", api_key="text-key"),
         image_ai=SimpleNamespace(
@@ -961,8 +961,11 @@ def test_provider_config_ignores_saved_image_key_for_server_managed_wuyin(monkey
 
     provider = provider_config_module.resolve_ai_provider()
 
-    assert provider["_sys_image_ai"]["base_url"] == "server-managed-wuyin"
-    assert provider["_sys_image_ai"]["api_key"] == "server-managed"
+    # 客户端固定直连无印生图：桌面侧保存的 image_ai 凭据一律忽略，恒用无印直连地址；
+    # 无任务上下文时 api_key 是占位符（真实短期密钥由批次冻结下发）。
+    assert provider["_sys_image_ai"]["base_url"] == "https://api.wuyinkeji.com"
+    assert provider["_sys_image_ai"]["api_key"] == "direct-pending"
+    assert provider["_sys_backup_image_ai"] is None
     assert "image-key" not in json.dumps(provider)
 
 
@@ -1033,7 +1036,7 @@ def test_ocr_inspection_flags_large_added_copy_but_not_small_product_mark(monkey
 
     monkeypatch.setattr(ocr_gate, "_get_engine", lambda: _Engine())
     # OCR 质检门默认关闭（对齐 POD 生图管线）；本用例显式开启以验证检测逻辑。
-    monkeypatch.setenv("WH_PRODUCT_OCR_GATE", "1")
+    monkeypatch.setattr(ocr_gate, "ocr_gate_enabled", lambda: True)
     inspection = ocr_gate.inspect_visible_text(_grid_bytes())
     assert inspection is not None
     assert inspection["prominent"] == ["FACTORY DIRECT"]
@@ -1058,7 +1061,7 @@ def test_ocr_inference_uses_dedicated_two_worker_gate(monkeypatch) -> None:
 
     monkeypatch.setattr(ocr_gate, "_get_engine", lambda: _Engine())
     monkeypatch.setattr(ocr_gate, "_OCR_INFERENCE_SEMAPHORE", threading.BoundedSemaphore(2))
-    monkeypatch.setenv("WH_PRODUCT_OCR_GATE", "1")
+    monkeypatch.setattr(ocr_gate, "ocr_gate_enabled", lambda: True)
 
     with ThreadPoolExecutor(max_workers=5) as pool:
         results = list(pool.map(lambda _index: ocr_gate.inspect_visible_text(_grid_bytes()), range(5)))
@@ -1088,7 +1091,7 @@ def test_ocr_inspection_ignores_large_print_on_product_face(monkeypatch) -> None
             )
 
     monkeypatch.setattr(ocr_gate, "_get_engine", lambda: _Engine())
-    monkeypatch.setenv("WH_PRODUCT_OCR_GATE", "1")
+    monkeypatch.setattr(ocr_gate, "ocr_gate_enabled", lambda: True)
     inspection = ocr_gate.inspect_visible_text(_grid_bytes())
     assert inspection is not None
     assert inspection["prominent"] == []

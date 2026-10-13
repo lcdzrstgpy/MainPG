@@ -367,7 +367,7 @@ CRITICAL LAYOUT UNDERSTANDING (fixed - read first):
 
 COMPOSITION PILLAR (fixed - this set is the CLEAN STUDIO SEAMLESS HERO pillar; the four axes below are what makes this set visually unique):
 - Layout & composition: centered, symmetrical and calm. The product is the single hero, placed centered (or exactly on a rule-of-thirds point) on a seamless studio sweep, surrounded by generous, even, uncluttered negative space. No storytelling clutter, no busy room.
-- Camera distance & angle: controlled studio framing - one straight-on or slightly elevated hero angle for the main shot, then clean alternate studio angles (three-quarter, profile, elevated) for the rest. No wide environmental shots and no extreme perspective.
+- Camera distance & angle: controlled studio framing with FOUR DIFFERENT CAMERA POSITIONS, one per panel - Panel 1 a straight-on front hero, Panel 2 a 45-degree three-quarter view, Panel 3 a tight macro detail / in-use close-up, Panel 4 a clean orthographic side or top view. You must MOVE THE CAMERA between panels, not merely change the backdrop. No wide environmental shots and no extreme perspective.
 - Scene & prop staging: a seamless studio backdrop ONLY (a smooth paper / vinyl sweep, or a soft vertical gradient in a curated solid tone); props are minimal, geometric and secondary (a plain riser block, a soft disc, an acrylic or stone plinth) and only when they help read scale or function - never a lived-in room.
 - Light & tone: a professional three-point studio rig - a large softbox key at about 45 degrees, a broad fill that opens the shadow side, and a top/back rim that separates the product from the sweep; clean, bright, neutral, evenly lit, with a crisp grounded contact shadow. One cohesive, controlled, low-saturation studio palette per set.
 
@@ -393,6 +393,7 @@ Global Visual Rules (fixed - clean studio hero logic):
 - Background design: no monotonous plain cream-white / light-gray / flat white stone and no busy room. Each panel uses a distinct seamless sweep - for example a soft warm-grey gradient sweep, a muted sage paper sweep, a blush-tinted sweep, or a charcoal-to-graphite gradient - matched to [SKU Category] but never competing with the product for the visual center.
 - Studio lighting rig: light each panel like a real commercial studio - a large softbox key from camera-left at about 45 degrees, a broad fill that lifts the shadow side without flattening it, and a top/back rim light that traces the product silhouette against the sweep; add clean specular highlights on glossy surfaces, a crisp grounded contact shadow where the product meets the floor, and a subtle reflection or reflection-card bounce. Vary the key direction and tonality across the four panels.
 - Brand consistency: keep one cohesive studio brand tone across the set, but no two panels may share the same sweep tone, gradient, surface finish, or lighting direction - each panel must be a visibly different studio set, not the same shot with a swapped background.
+- CAMERA-ANGLE DIVERSITY (hard rule, violates the brief if ignored): the four panels must show FOUR genuinely different viewing angles of the exact same product - Panel 1 straight-on front, Panel 2 45-degree three-quarter, Panel 3 macro detail / in-use close-up, Panel 4 orthographic side or top. Cosmetically swapping the backdrop while keeping the identical front camera position is the single most common failure and is FORBIDDEN. Before finishing, verify no two panels could be mistaken for the same camera angle; if two share a viewpoint, re-render the later one from a genuinely different angle.
 - Typography is rendered locally after the grid is split. Generate NO letters, words, numbers, labels, slogans, badges, logos, watermarks, arrows, UI, rulers, or measurement marks anywhere in the AI image. Preserve only markings that are physically printed on the real sellable product in the reference.
 - Forbidden: added Chinese or English text, brand names, logos, watermarks, infringing elements, AI gibberish, or malformed hands.
 
@@ -459,34 +460,36 @@ Grid construction rules (fixed - clean edges after splitting):
 - Absolutely forbidden: any global headline, banner, background shape, product, box, prop, shadow, table, frame, or sentence that continues across two or more panels. No half words at panel edges. No shared poster title outside an individual panel.
 - No borders, no double lines, no rounded corners on the outer edge of the grid.
 
-Panel 1 - Centered Studio Hero (top-left):
-- Show the complete sellable product or complete verified set, centered on a seamless studio sweep; no cropped parts and no partial stacking that hides quantity or structure. Product occupies about 55%-70% with balanced, even negative space on all sides, shot at a straight-on or slightly elevated hero angle for a clean, tangible, ready-to-ship look.
+Panel 1 - Straight-On Studio Hero (top-left) - FRONT VIEW:
+- Camera: a straight-on (0-degree) front hero angle. This is the ONLY straight-on frontal panel in the whole grid; the other three must move the camera off this axis.
+- Show the complete sellable product or complete verified set, centered on a seamless studio sweep; no cropped parts and no partial stacking that hides quantity or structure. Product occupies about 55%-70% with balanced, even negative space on all sides for a clean, tangible, ready-to-ship look.
 - Keep the full product centered (or exactly on a rule-of-thirds point) with symmetrical breathing room; keep it inside the safe area, never touching or clipping the panel edges.
 - Commercial studio light (softbox key plus top/back rim); emphasize material, structure, thickness, transparency, and edge details. Every product must sit on the seamless studio floor with a crisp grounded contact shadow - never floating.
 - Background is a clean seamless sweep, clearly different from the plain white template.
 - No AI-generated copy. No headline, fact card, or typography is added after splitting.
 
-Panel 2 - Studio Detail / Alternate Angle (top-right):
+Panel 2 - 45-Degree Three-Quarter View (top-right):
+- Camera MUST move off the front axis: show the complete product from a 45-degree three-quarter angle so the front face, one side face, and the top/front edge are all readable in perspective - a clearly different viewpoint, never a repeat of the Panel 1 straight-on shot with a new background.
 - Must differ from Panel 1 in at least 3 of: sweep tone, surface finish, camera angle, arrangement, props, lighting direction.
-- Style options: Clean Commercial, Soft Gradient, High-Key Minimal, Cool Neutral, Warm Neutral.
-- Show the complete product at about 48%-60% from a clearly different studio angle (three-quarter, profile, or elevated), plus at most one small magnifier-style inset close-up of a real detail (material grain, printing texture, edge finish, hardware). The inset must blend as a soft optical zoom - borderless, seamless, with no frame, ring, or divider around it (nested collage frames are forbidden). A pure macro crop without the complete product is forbidden.
+- Show the complete product at about 48%-60%; you may add at most one small magnifier-style inset close-up of a real detail (material grain, printing texture, edge finish, hardware). The inset must blend as a soft optical zoom - borderless, seamless, with no frame, ring, or divider around it (nested collage frames are forbidden). A pure macro crop without the complete product is forbidden.
 - No AI-generated copy or labels.
 
-Panel 3 - Studio Function / Prop shot (bottom-left):
-- Keep the same clean studio language, but add at most 1-2 minimal geometric props that reveal scale or function (a plain riser, a simple stand, a neutral support block), placed on a distinct seamless sweep under a distinct studio light.
-- The product must stay complete, sharp, centered, and exactly the original SKU; props must remain neutral, unbranded, and visually subordinate.
-- No lifestyle room and no scene storytelling: this panel is still a studio shot.
-- No AI-generated copy or scene phrase.
+Panel 3 - Macro Detail / In-Use Close-Up (bottom-left):
+- Camera MUST change again: move to a tight, close macro viewpoint that shows real surface craft at a much larger scale than Panels 1-2 - material grain, weave, stitching, plating, glaze, glass refraction, carved relief, edge polish, or hardware.
+- Show the complete product (or a genuine in-use close-up) large in frame. When the product is wearable, worn, held, or used by hand (hair accessories, jewelry, hooks, kitchen tools, drinkware), you may show a partial hand actually using or wearing it so the shopper reads the real look, placement, and scale - keep the product the clear focal point and the hand partial, anatomically natural, with a realistic Caucasian (Western European) light-to-medium skin tone.
+- Keep the same clean studio language, with a distinct seamless sweep under a distinct studio light; any props stay neutral, unbranded, and subordinate.
+- No lifestyle room, no AI-generated copy, and no scene phrase or labels.
 
-Panel 4 - Dimension Annotation Background (bottom-right):
-- Create a clean front, side, or top view on a simple seamless studio surface with clear silhouette separation, suitable for later deterministic dimension annotation.
+Panel 4 - Dimension Annotation Background (bottom-right) - ORTHOGRAPHIC VIEW:
+- Camera MUST differ from Panel 1: show the complete product as a clean orthographic side profile or straight top (plan) view on a simple seamless studio surface, with clear silhouette separation and suitable for later deterministic dimension annotation. Do NOT reuse the Panel 1 straight-on front angle here.
 - Keep the complete product sharp and leave 12%-18% clear space around it.
 - Never render measurements, numbers, units, dimension lines, arrows, rulers, scales, labels, or size claims.
-- If no useful orthographic view is possible, create a clean alternate product angle with the same empty safe area.
+- If no useful orthographic view is possible, create a clean alternate product angle (a 45-degree or profile view) with the same empty safe area - never a repeat of the Panel 1 front angle.
 
 Generate-then-self-check (fixed):
 - Confirm product quantity, silhouette, proportions, structure, color, material, transparency, texture, edges, and accessory count all match the reference.
 - Confirm every panel stands alone: no element crosses a divider, nothing touches a panel edge, and each panel has its own complete composition.
+- Confirm camera-angle diversity (hard): Panel 1 is straight-on front, Panel 2 is 45-degree three-quarter, Panel 3 is a macro/in-use close-up, Panel 4 is an orthographic side or top view; if any two panels share the same camera position, re-render the later one from a different angle before finishing.
 - Confirm physical realism: every product is grounded with contact and drop shadows, has directional lighting and readable material texture; no flat, floating, or pasted-looking product.
 - Confirm the studio look: a seamless sweep with no room or horizon, a centered product-first composition, a controlled three-point studio light, and no busy lifestyle set.
 - If any SKU error is found, fix the product body first, then adjust background and polish.

@@ -1,4 +1,13 @@
-"""Scoped credentials for product-processing calls through the platform gateway."""
+"""Scoped credentials/context for product-processing AI calls (client-direct mode).
+
+产品处理固定客户端直连：批次冻结时服务端下发短期 provider 密钥（ark/wuyin），
+AI 请求由客户端直接发往第三方，不再经平台网关转发。本模块只承载任务级上下文
+（token、usage 预留、直连密钥、freeze_id）。
+
+为规避「服务端密钥签发异常导致客户端拿不到密钥而中止任务」，批次未下发的
+provider 密钥会回落客户端内置兜底密钥（见 direct_credentials）；是否可用最终由
+服务端冻结（余额/积分门控）决定。回落只发生在本模块的读取层，绝不回落到托管网关。
+"""
 
 from __future__ import annotations
 
@@ -6,7 +15,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Iterator
 
-from ...config import default_config
+from .direct_credentials import builtin_provider_key
 
 
 _REMOTE_TOKEN: ContextVar[str] = ContextVar("product_processing_remote_token", default="")
@@ -48,18 +57,28 @@ def usage_id(kind: str) -> str:
 
 
 def granted_key(provider: str) -> str:
-    """Return the granted short-lived provider key for the current batch, if any."""
-    return str(_GRANTED_KEYS.get().get(provider) or "")
+    """Return the granted short-lived provider key, falling back to the built-in client key.
+
+    批次下发的短期密钥优先；未下发时回落客户端内置兜底密钥（可能为空）。
+    """
+    return str(_GRANTED_KEYS.get().get(provider) or "") or builtin_provider_key(provider)
 
 
 def batch_freeze_id() -> str:
     return str(_FREEZE_ID.get() or "")
 
 
+def merge_builtin_keys(granted: dict[str, str] | None) -> dict[str, str]:
+    """把批次未下发的 provider 用客户端内置兜底密钥补齐（补齐后用于缺密钥判定与上下文）。"""
+    merged = {str(provider): str(value) for provider, value in (granted or {}).items() if value}
+    for provider in ("ark", "wuyin"):
+        if not merged.get(provider):
+            builtin = builtin_provider_key(provider)
+            if builtin:
+                merged[provider] = builtin
+    return merged
+
+
 def granted_keys_snapshot() -> dict[str, Any]:
-    """Expose current granted keys (used by provider config to build direct clients)."""
-    return dict(_GRANTED_KEYS.get())
-
-
-def gateway_base_url() -> str:
-    return default_config().customer_auth_base_url.rstrip("/")
+    """Expose current granted keys merged with built-in fallbacks (used to build direct clients)."""
+    return merge_builtin_keys(_GRANTED_KEYS.get())

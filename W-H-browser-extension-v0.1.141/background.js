@@ -3,7 +3,7 @@ importScripts("tenant_context.js", "onebound_page_capture.js");
 const DEFAULT_BASE_URL = "http://127.0.0.1:8010";
 const tenantContext = self.WorkbenchTenantContext;
 const BUSINESS_HOST_RE = /(^|\.)((temu)|(dianxiaomi))\.com$/i;
-const PRODUCT_CAPTURE_HOST_RE = /(^|\.)(temu|1688|alibaba|pinduoduo|yangkeduo|amazon)\.com$/i;
+const PRODUCT_CAPTURE_HOST_RE = /(^|\.)(temu|1688|alibaba|pinduoduo|yangkeduo|amazon|taobao|tmall)\.com$/i;
 const CAPTURE_COMMANDS = new Set(["capture_temu_goods", "capture_temu_flux", "capture_temu_orders"]);
 const FLUX_PAGE_URL = "https://agentseller-us.temu.com/main/flux-analysis";
 const GOODS_PAGE_URL = "https://agentseller.temu.com/goods/list";
@@ -11816,7 +11816,7 @@ async function captureProductFromTab(tab, { commandType, expectedProductId = "" 
       supported: false,
       error: "unsupported_product_page",
       statusText: "当前页不是支持的商品采集页",
-      help: "请打开 1688、拼多多、TEMU 的商品详情页后再采集。",
+      help: "请打开 1688、淘宝/天猫、拼多多、TEMU 的商品详情页后再采集。",
       url: rawUrl,
       capturedAt: new Date().toISOString()
     };
@@ -12776,6 +12776,7 @@ function extractProductFromCurrentPage(expectedProductId = "") {
       /[?&]itemId=(\d+)/i,
       /[?&]spu_id=(\d+)/i,
       /[?&]spuId=(\d+)/i,
+      /[?&]id=(\d{6,})/i,
       /\/(\d{8,})(?:\.html|[/?#]|$)/i,
     ];
     for (const pattern of patterns) {
@@ -12798,6 +12799,9 @@ function extractProductFromCurrentPage(expectedProductId = "") {
         parsed.search = "";
         parsed.hash = "";
         return parsed.href;
+      }
+      if (/(^|\.)(taobao|tmall)\.com$/.test(parsedHost) && /^\d{6,}$/.test(productId)) {
+        return `https://item.taobao.com/item.htm?id=${productId}`;
       }
     } catch (_error) {
       return raw;
@@ -13438,7 +13442,11 @@ function extractProductFromCurrentPage(expectedProductId = "") {
 
   const platform = /1688\.com|alibaba\.com/.test(host)
     ? "1688"
-    : (/pinduoduo\.com|yangkeduo\.com/.test(host) ? "pinduoduo" : (/temu\.com/.test(host) ? "temu" : "generic"));
+    : (/pinduoduo\.com|yangkeduo\.com/.test(host)
+      ? "pinduoduo"
+      : (/temu\.com/.test(host)
+        ? "temu"
+        : (/(^|\.)(taobao|tmall)\.com$/.test(host) ? "taobao" : "generic")));
   const bodyText = text(document.body?.innerText || "");
   const priceMeta = pick(
     attr("meta[property='product:price:amount']", "content"),

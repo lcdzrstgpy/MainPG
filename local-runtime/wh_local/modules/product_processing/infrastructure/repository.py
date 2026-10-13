@@ -580,6 +580,7 @@ class ProductProcessingRepository:
         workspace_id: str,
         candidate_id: str,
         shop_fence: dict[str, Any] | None = None,
+        allow_existing: bool = False,
     ) -> tuple[str, dict[str, Any]]:
         """Create or refresh one shop draft and its source-media bindings atomically."""
         for attempt in range(3):
@@ -590,6 +591,7 @@ class ProductProcessingRepository:
                     workspace_id=workspace_id,
                     candidate_id=candidate_id,
                     shop_fence=shop_fence,
+                    allow_existing=allow_existing,
                 )
             except IntegrityError:
                 if attempt == 2:
@@ -608,6 +610,7 @@ class ProductProcessingRepository:
         workspace_id: str,
         candidate_id: str,
         shop_fence: dict[str, Any] | None = None,
+        allow_existing: bool = False,
     ) -> tuple[str, dict[str, Any]]:
         with self._shop_intake_transaction() as session:
             if shop_fence is not None:
@@ -626,7 +629,10 @@ class ProductProcessingRepository:
                 .limit(1)
             )
             if draft_row is not None and draft_row.status in {"processing", "processed"}:
-                return "skipped", self._draft(draft_row)
+                # 默认去重：已处理/处理中草稿跳过。放行开关只复活 processed 草稿为草稿态刷新，
+                # processing 仍跳过，避免与进行中的处理任务互相覆盖。
+                if not (allow_existing and draft_row.status == "processed"):
+                    return "skipped", self._draft(draft_row)
 
             if draft_row is None:
                 draft_row = ProductDraftRow(media_contract_version=2, **draft_values)
