@@ -26,7 +26,13 @@ from .billing_contract import (
 from .images import split_grid_2x2
 from .prompts import LISTING_IMAGE_ROLES, build_semi_pattern_prompt, build_style_listing_prompt
 from .contracts import BusinessFields, SEMI_PATTERN_ROLES
-from .replica_context import ReplicaStyleSnapshotMissingError, style_product_context
+from .replica_context import (
+    ReplicaPlanMissingError,
+    ReplicaStyleSnapshotMissingError,
+    load_frozen_plan,
+    style_product_context,
+)
+from .replica_prompt_compiler import compile_replica_prompt
 from .replica_prompts import build_replica_listing_prompt
 from .repository import PodCustomizationRepository, PodRepositoryError
 from .runtime import RuntimeClosedError
@@ -908,6 +914,24 @@ class PodBatchWorker:
         config = getattr(self.ai_runtime, "config", None)
         return max(1, int(getattr(config, "executor_workers", 1)))
 
+    def _replica_style_prompt(
+        self,
+        batch: dict[str, Any],
+        style_index: int,
+        attempt: int,
+        fields: BusinessFields,
+    ) -> str:
+        """复刻提示词：优先使用款级冻结计划编译的四段式文本。
+
+        识图主流程的批次在冻结时就写入了 ``compiled_prompt``，生成/重试/暂停恢复与进程
+        重启都复用同一份文本；旧批次没有冻结计划时，回退到固定单函数提示词。
+        """
+        try:
+            plan = load_frozen_plan(batch, style_index)
+        except (ReplicaPlanMissingError, ReplicaStyleSnapshotMissingError):
+            return build_replica_listing_prompt(fields, attempt=attempt)
+        return compile_replica_prompt(plan, attempt=attempt)
+
     def _style_generation_inputs(
         self,
         batch: dict[str, Any],
@@ -942,7 +966,7 @@ class PodBatchWorker:
         context = style_product_context(batch, style_index)
         if mode == "replica":
             fields = BusinessFields.model_validate(context["business_fields"])
-            prompt = build_replica_listing_prompt(fields, attempt=attempt)
+            prompt = self._replica_style_prompt(batch, style_index, attempt, fields)
             source = batch.get("replica_source")
             if not isinstance(source, dict) or not source.get("relative_path"):
                 raise ReplicaStyleSnapshotMissingError(

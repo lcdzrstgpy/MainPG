@@ -57,6 +57,7 @@ from .replica_analysis_runtime import (
 )
 from .replica_capabilities import match_capabilities
 from .replica_planner import derive_rules, validate_plan_ready
+from .replica_prompt_compiler import PROMPT_COMPILER_VERSION, compile_replica_prompt
 from .replica_specs import (
     REPLICA_ANALYSIS_SCHEMA_VERSION,
     GenerationStrategy,
@@ -432,6 +433,7 @@ class PodCustomizationService:
                 request,
                 request_hash=request_hash,
                 batch_id=batch_id,
+                prompt_snapshot=str(plans.get(1, {}).get("prompt_snapshot") or "{}"),
             )
         except ReplicaBatchIdempotentReturn as duplicate:
             # 并发下同请求已由另一提交者落库：结算本次冻结并按既有批次返回。
@@ -726,7 +728,10 @@ class PodCustomizationService:
                 capability_registry_version=capabilities.registry_version,
                 rule_version=rules.rule_version,
                 composition_template_version=composition_plan.template_version,
+                prompt_compiler_version=PROMPT_COMPILER_VERSION,
             )
+            # 冻结真实最终 Prompt：生成/重试/恢复都直接复用这份文本。
+            plan = plan.model_copy(update={"compiled_prompt": compile_replica_prompt(plan)})
             plans[style_index] = {
                 "analysis_id": target.analysis_id,
                 "replica_plan_json": plan.model_dump_json(),

@@ -788,6 +788,7 @@ class PodCustomizationRepository:
         *,
         request_hash: str,
         batch_id: str | None = None,
+        prompt_snapshot: str = "{}",
     ) -> dict[str, Any]:
         """创建复刻批次：父批次 mode=replica、requested_count=len(targets)。
 
@@ -865,7 +866,7 @@ class PodCustomizationRepository:
                        VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, '', 'replica', ?, ?)""",
                     (batch_id, workspace_id, owner_user_id, title[:120], template_id, snapshot_id,
                      REPLICA_INTERNAL_TEMPLATE_NAME, len(request.targets), initial_calls,
-                     PATTERN_PROMPT_VERSION, "{}", first_business.model_dump_json(),
+                     PATTERN_PROMPT_VERSION, prompt_snapshot or "{}", first_business.model_dump_json(),
                      first_listing.model_dump_json(), now, now),
                 )
                 connection.execute(

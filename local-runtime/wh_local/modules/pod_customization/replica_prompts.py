@@ -13,6 +13,11 @@ from .contracts import BusinessFields
 def build_replica_listing_prompt(fields: BusinessFields, *, attempt: int) -> str:
     """构造一次「爆款复刻」四宫格商品图提示词。
 
+    **兼容入口（旧批次专用）**：识图主流程的批次在冻结时会用
+    ``replica_prompt_compiler.compile_replica_prompt`` 生成四段式提示词并落库，
+    worker 优先读取该冻结文本，不再走本函数。仅当某个复刻批次没有款级冻结计划
+    （历史批次）时，才回退到这里，保持旧行为不变。
+
     参考图顺序固定为 ``[pattern_source, target_product]``：第 1 图只提供图案，
     第 2 图只提供目标产品；生成画面只能出现目标产品。图案颜色、元素与排列关系
     尽量取自样图，仅按目标表面做透视/缩放/重复适配，不能随意变色、换元素或重新设计。

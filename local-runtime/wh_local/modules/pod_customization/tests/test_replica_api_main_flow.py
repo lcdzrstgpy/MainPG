@@ -453,6 +453,10 @@ def test_frozen_plan_carries_default_composition_and_versions(tmp_path: Path) ->
     assert [slot["slot_id"] for slot in slots] == list(COMPOSITION_PANEL_KEYS)
     assert plan["capability_set"]["registry_version"]
     assert plan["rule_set"]["rule_version"]
+    # 冻结真实最终 Prompt（四段式），不再写空对象。
+    assert plan["compiled_prompt"].startswith("=== PART 1")
+    assert "PART 4" in plan["compiled_prompt"]
+    assert plan["prompt_compiler_version"]
     assert runtime.composition_calls == 1
 
     # 冻结计划可原样读回（重试/恢复只读快照，不重新推导）。
