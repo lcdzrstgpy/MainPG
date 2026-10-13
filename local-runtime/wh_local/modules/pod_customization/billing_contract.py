@@ -276,15 +276,19 @@ class PodCallPlan:
         )
 
     @classmethod
-    def for_replica_composition(cls, batch_id: str) -> "PodCallPlan":
-        """复刻「按模板选构图参数」：一次文本调用（含契约修复重试），同为零计费口径。"""
-        return cls(
-            idempotency_key=f"pod:replica-composition:{batch_id}",
-            calls=tuple(
-                PodPlannedCall(f"{batch_id}:composition:{attempt}", "pod.title")
-                for attempt in range(1, REPLICA_COMPOSITION_ATTEMPTS + 1)
-            ),
+    def for_replica_composition(cls, batch_id: str, *, style_count: int) -> "PodCallPlan":
+        """复刻「按模板选构图参数」：逐款各一次文本调用（含契约修复重试），同为零计费口径。
+
+        ``style_index`` 从 1 开始，与款级冻结计划一一对应。
+        """
+        if isinstance(style_count, bool) or not isinstance(style_count, int) or style_count < 1:
+            raise ValueError("style_count must be a positive integer")
+        calls = tuple(
+            PodPlannedCall(f"{batch_id}:composition:{style_index}:{attempt}", "pod.title")
+            for style_index in range(1, style_count + 1)
+            for attempt in range(1, REPLICA_COMPOSITION_ATTEMPTS + 1)
         )
+        return cls(idempotency_key=f"pod:replica-composition:{batch_id}", calls=calls)
 
     @classmethod
     def for_style_retry(

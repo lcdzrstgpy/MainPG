@@ -1177,6 +1177,15 @@ class PodCustomizationRepository:
                             "asset": dict(asset) if asset else None,
                             "business_fields": json.loads(row["business_fields_json"]),
                             "listing_fields": listing_fields,
+                            # 识图主流程的款级冻结数据（旧批次留空）。
+                            "analysis_id": str(row["analysis_id"] or ""),
+                            "replica_plan_json": str(row["replica_plan_json"] or ""),
+                            "prompt_snapshot": str(row["prompt_snapshot"] or ""),
+                            "capability_registry_version": str(row["capability_registry_version"] or ""),
+                            "rule_version": str(row["rule_version"] or ""),
+                            "template_version": str(row["template_version"] or ""),
+                            "compiler_version": str(row["compiler_version"] or ""),
+                            "generation_strategy": str(row["generation_strategy"] or ""),
                         }
                     )
         result = dict(batch)

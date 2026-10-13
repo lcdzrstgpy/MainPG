@@ -15,8 +15,18 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from wh_local.modules.pod_customization.billing_contract import PodExecutionGrant
-from wh_local.modules.pod_customization.replica_analysis_runtime import ReplicaAnalysisResult
+from wh_local.modules.pod_customization.contracts import COMPOSITION_PANEL_KEYS
+from wh_local.modules.pod_customization.replica_analysis_runtime import (
+    ReplicaAnalysisResult,
+    build_composition_plan,
+)
+from wh_local.modules.pod_customization.replica_context import (
+    ReplicaPlanMissingError,
+    load_frozen_plan,
+)
+from wh_local.modules.pod_customization.prompts import DEFAULT_COMPOSITION_ID
 from wh_local.modules.pod_customization.replica_specs import (
+    CompositionPlan,
     REPLICA_ANALYSIS_SCHEMA_VERSION,
     SOURCE_FACT_FIELDS,
     TARGET_FACT_FIELDS,
@@ -87,10 +97,11 @@ class Billing:
 
 
 class AnalysisRuntime:
-    """假豆包分析：按设置返回成功或抛错。"""
+    """假豆包：按设置返回成功/失败的分析，并实现构图参数选择。"""
 
     def __init__(self, *, fail: bool = False, target_confidence: float = 0.9) -> None:
         self.calls = 0
+        self.composition_calls = 0
         self.fail = fail
         self.target_confidence = target_confidence
 
@@ -114,6 +125,33 @@ class AnalysisRuntime:
             prompt_version="pod-replica-analysis-v1",
             attempt_count=1,
         )
+
+    def generate_composition_plan(
+        self, request, *, grant, call_id, call_ids=None, on_start=None, on_outcome=None
+    ) -> CompositionPlan:
+        self.composition_calls += 1
+        if on_outcome is not None:
+            on_outcome(call_id, "success")
+        payload = {
+            "template_id": request.template.template_id,
+            "template_version": request.template.template_version,
+            "panels": [
+                {
+                    "slot_id": slot_id,
+                    "role": f"role_{slot_id}",
+                    "camera": "",
+                    "lighting": "",
+                    "background": "",
+                    "composition_notes": "",
+                }
+                for slot_id in request.template.panel_slots
+            ],
+            "camera": "",
+            "lighting": "",
+            "background": "",
+            "composition_notes": "",
+        }
+        return build_composition_plan(payload, request)
 
 
 def _png(color: str = "#f5f2ea") -> bytes:
@@ -359,3 +397,138 @@ def test_create_batch_rejects_analysis_target_mismatch(tmp_path: Path) -> None:
         json=_create_body(source_id, target_b, analysis_id=analysis["analysis_id"], client_request_id="req-mismatch"),
     )
     assert response.status_code == 409
+
+
+# --- Task 4：构图模板接入与 CompositionPlan 冻结 ---------------------------------
+
+
+def _create_composition(service: PodCustomizationService, composition_id: str, version: str) -> None:
+    panels = {
+        key: {"zh": f"{key} 中文指令", "en": f"{key} english instruction"}
+        for key in COMPOSITION_PANEL_KEYS
+    }
+    service.repository.create_composition(
+        workspace_id="default",
+        owner_user_id="local-demo-admin",
+        composition_id=composition_id,
+        name=composition_id,
+        raw_input=composition_id,
+        panels=panels,
+        model="doubao-fake",
+        prompt_version=version,
+    )
+
+
+def _stored_plan(service: PodCustomizationService, batch_id: str) -> dict:
+    with service.repository._connect() as connection:
+        row = connection.execute(
+            "SELECT replica_plan_json FROM pod_customization_replica_targets WHERE batch_id = ?",
+            (batch_id,),
+        ).fetchone()
+    return json.loads(row["replica_plan_json"])
+
+
+def _create_with_analysis(client: TestClient, service, runtime, *, composition_id: str = "", request_id: str) -> dict:
+    source_id = _upload(client, "source", "#dd0000")
+    target_id = _upload(client, "target", "#00aa00")
+    analysis = _analyze(client, source_id, target_id)
+    body = _create_body(
+        source_id, target_id, analysis_id=analysis["analysis_id"], client_request_id=request_id
+    )
+    if composition_id:
+        body["composition_id"] = composition_id
+    response = client.post(f"{API}/replica/batches", headers=HEADERS, json=body)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_frozen_plan_carries_default_composition_and_versions(tmp_path: Path) -> None:
+    runtime = AnalysisRuntime()
+    client, service, _billing = _client(tmp_path, runtime)
+    batch = _create_with_analysis(client, service, runtime, request_id="req-default-comp")
+
+    plan = _stored_plan(service, batch["id"])
+    assert plan["composition_plan"]["template_id"] == DEFAULT_COMPOSITION_ID
+    slots = plan["composition_plan"]["slots"]
+    assert [slot["slot_id"] for slot in slots] == list(COMPOSITION_PANEL_KEYS)
+    assert plan["capability_set"]["registry_version"]
+    assert plan["rule_set"]["rule_version"]
+    assert runtime.composition_calls == 1
+
+    # 冻结计划可原样读回（重试/恢复只读快照，不重新推导）。
+    stored_batch = service.repository.get_batch(batch["id"], "default", "local-demo-admin")
+    frozen = load_frozen_plan(stored_batch, 1)
+    assert frozen.composition_plan is not None
+    assert frozen.composition_plan.template_id == DEFAULT_COMPOSITION_ID
+    assert frozen.generation_strategy == "independent_panels"
+    assert all(not slot.hand_worn for slot in frozen.composition_plan.slots)
+
+
+def test_create_batch_uses_selected_active_template(tmp_path: Path) -> None:
+    runtime = AnalysisRuntime()
+    client, service, _billing = _client(tmp_path, runtime)
+    _create_composition(service, "comp-active", "pod-composition-v9")
+
+    batch = _create_with_analysis(
+        client, service, runtime, composition_id="comp-active", request_id="req-active-comp"
+    )
+
+    plan = _stored_plan(service, batch["id"])
+    assert plan["composition_plan"]["template_id"] == "comp-active"
+    assert plan["composition_plan"]["template_version"] == "pod-composition-v9"
+    assert plan["composition_template_version"] == "pod-composition-v9"
+    # 模板四格指令作为 shot 缺省文本被冻结。
+    assert plan["composition_plan"]["slots"][0]["shot"] == "panel_1 english instruction"
+
+
+def test_create_batch_rejects_unknown_or_inactive_template(tmp_path: Path) -> None:
+    runtime = AnalysisRuntime()
+    client, service, _billing = _client(tmp_path, runtime)
+    _create_composition(service, "comp-old", "v1")
+    _create_composition(service, "comp-new", "v2")  # 新建即生效，comp-old 变为停用
+
+    source_id = _upload(client, "source", "#dd0000")
+    target_id = _upload(client, "target", "#00aa00")
+    analysis = _analyze(client, source_id, target_id)
+    body = _create_body(
+        source_id, target_id, analysis_id=analysis["analysis_id"], client_request_id="req-inactive"
+    )
+    body["composition_id"] = "comp-old"
+    inactive = client.post(f"{API}/replica/batches", headers=HEADERS, json=body)
+    assert inactive.status_code == 409
+
+    body["composition_id"] = "definitely-missing"
+    body["client_request_id"] = "req-missing"
+    missing = client.post(f"{API}/replica/batches", headers=HEADERS, json=body)
+    assert missing.status_code == 404
+
+
+def test_load_frozen_plan_rejects_legacy_batch_without_plan(tmp_path: Path) -> None:
+    runtime = AnalysisRuntime()
+    client, service, _billing = _client(tmp_path, runtime)
+    source_id = _upload(client, "source", "#dd0000")
+    target_id = _upload(client, "target", "#00aa00")
+    batch = client.post(
+        f"{API}/replica/batches",
+        headers=HEADERS,
+        json=_create_body(source_id, target_id, client_request_id="req-no-plan"),
+    )
+    assert batch.status_code == 200
+
+    stored = service.repository.get_batch(batch.json()["id"], "default", "local-demo-admin")
+    with pytest.raises(ReplicaPlanMissingError):
+        load_frozen_plan(stored, 1)
+
+
+def test_multi_piece_plan_requires_full_component_panel(tmp_path: Path) -> None:
+    runtime = AnalysisRuntime()
+    client, service, _billing = _client(tmp_path, runtime)
+    batch = _create_with_analysis(client, service, runtime, request_id="req-multi-piece")
+
+    plan = _stored_plan(service, batch["id"])
+    assert "multi_piece" in plan["capability_set"]["capabilities"]
+    assert any(slot["show_all_components"] for slot in plan["composition_plan"]["slots"])
+    # 未选择手部展示：任何槽位都不得出现手部。
+    assert all(not slot["hand_worn"] for slot in plan["composition_plan"]["slots"])
+    assert plan["generation_strategy"] == "independent_panels"
+

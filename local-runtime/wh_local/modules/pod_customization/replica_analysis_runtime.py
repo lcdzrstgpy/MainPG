@@ -236,6 +236,8 @@ class CompositionTemplateOptions:
     lighting_options: tuple[str, ...] = ()
     background_options: tuple[str, ...] = ()
     composition_options: tuple[str, ...] = ()
+    # 模板自带的每格拍摄指令（en）：豆包须在此基础上细化，也是缺省 shot 文本。
+    panel_instructions: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -391,6 +393,7 @@ def _messages_for_composition(request: ReplicaCompositionRequest) -> list[dict[s
             "lighting_options": list(template.lighting_options),
             "background_options": list(template.background_options),
             "composition_options": list(template.composition_options),
+            "panel_instructions": dict(template.panel_instructions),
         },
         "target_product": {
             "product_type": target.product_type.value,
@@ -487,7 +490,7 @@ def build_composition_plan(
             slot.model_copy(
                 update={
                     "role": override["role"] or slot.role,
-                    "shot": override["composition_notes"],
+                    "shot": override["composition_notes"] or template.panel_instructions.get(slot.slot_id, ""),
                     "camera": override["camera"],
                     "lighting": override["lighting"],
                     "background": override["background"],
