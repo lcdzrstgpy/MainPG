@@ -202,6 +202,88 @@ def test_ttl_release_frees_locked_points(tmp_path: Path) -> None:
     assert dict(wallet) == {"points_balance": 932, "locked_points": 0}
 
 
+
+def test_ttl_release_clamps_when_locked_below_frozen(tmp_path: Path) -> None:
+    """账户倒挂（locked < frozen）不再整笔跳过，按实际锁定量钳制释放。
+
+    回归用例：旧守卫「locked < frozen → continue」无兜底、无告警，账户账目倒挂的
+    冻结会被每轮清扫永久跳过（2026-10-13 生产实例：34240 单位锁死 27 天）。
+    """
+    database_path = tmp_path / "billing.sqlite3"
+    actor = _service_account(database_path, balance=1000)
+    freeze = freeze_batch_points(database_path, actor, link_count=1, idempotency_key="freeze:clamp-1")
+    with transaction(database_path) as conn:
+        conn.execute(
+            "UPDATE billing_batch_freezes SET expires_at = '2020-01-01T00:00:00' WHERE freeze_id = ?",
+            (freeze["freeze_id"],),
+        )
+        frozen_units = conn.execute(
+            "SELECT frozen_points FROM billing_batch_freezes WHERE freeze_id = ?",
+            (freeze["freeze_id"],),
+        ).fetchone()["frozen_points"]
+        # 模拟管理员手动释放 20 单位未与冻结记录对账，制造 locked < frozen 倒挂。
+        conn.execute(
+            "UPDATE billing_wallets SET locked_points = locked_points - 20 WHERE account_id = ?",
+            (actor.id,),
+        )
+    released = release_expired_batch_freezes(database_path)
+    assert released == 1
+    unlock_units = frozen_units - 20
+    expected_release = unlock_units * 85 // 100
+    expected_retain = unlock_units - expected_release
+    status = batch_freeze_status(database_path, freeze["freeze_id"], expected_account_id=actor.id)
+    assert status["status"] == "released"
+    with transaction(database_path) as conn:
+        wallet = conn.execute(
+            "SELECT points_balance, locked_points FROM billing_wallets WHERE account_id = ?",
+            (actor.id,),
+        ).fetchone()
+        unlock_row = conn.execute(
+            "SELECT points_delta FROM billing_point_ledger WHERE account_id = ? AND idempotency_key = ?",
+            (actor.id, f"batch_expiry:{freeze['freeze_id']}:unlock"),
+        ).fetchone()
+        retain_row = conn.execute(
+            "SELECT points_delta FROM billing_point_ledger WHERE account_id = ? AND idempotency_key = ?",
+            (actor.id, f"batch_expiry:{freeze['freeze_id']}:retain"),
+        ).fetchone()
+    # 解锁量 = 钱包实际锁定量（不再是 0 释放、不是整笔跳过），85/15 按实际量拆。
+    assert dict(wallet) == {"points_balance": 1000 - expected_retain, "locked_points": 0}
+    assert unlock_row["points_delta"] == expected_release
+    assert retain_row["points_delta"] == expected_retain
+
+
+def test_ttl_release_clamps_penalty_to_available_balance(tmp_path: Path) -> None:
+    """余额不足时过期惩罚按余额截断释放（不跳过，且台账按实扣记录）。"""
+    database_path = tmp_path / "billing.sqlite3"
+    actor = _service_account(database_path, balance=1000)
+    freeze = freeze_batch_points(database_path, actor, link_count=1, idempotency_key="freeze:clamp-2")
+    with transaction(database_path) as conn:
+        conn.execute(
+            "UPDATE billing_batch_freezes SET expires_at = '2020-01-01T00:00:00' WHERE freeze_id = ?",
+            (freeze["freeze_id"],),
+        )
+        # 冻结后余额被花到只剩 10 单位（锁定不受影响）。
+        conn.execute(
+            "UPDATE billing_wallets SET points_balance = 10 WHERE account_id = ?",
+            (actor.id,),
+        )
+    released = release_expired_batch_freezes(database_path)
+    assert released == 1
+    with transaction(database_path) as conn:
+        wallet = conn.execute(
+            "SELECT points_balance, locked_points FROM billing_wallets WHERE account_id = ?",
+            (actor.id,),
+        ).fetchone()
+        retain_row = conn.execute(
+            "SELECT points_delta FROM billing_point_ledger WHERE account_id = ? AND idempotency_key = ?",
+            (actor.id, f"batch_expiry:{freeze['freeze_id']}:retain"),
+        ).fetchone()
+    # 名义保留 68 → 实扣 10（余额底）：locked 全额解锁，余额不为负。
+    assert dict(wallet) == {"points_balance": 0, "locked_points": 0}
+    assert retain_row["points_delta"] == 10
+
+
+
 def test_usage_history_links_batch_to_task_id(tmp_path: Path) -> None:
     database_path = tmp_path / "billing.sqlite3"
     actor = _service_account(database_path, balance=1000)
