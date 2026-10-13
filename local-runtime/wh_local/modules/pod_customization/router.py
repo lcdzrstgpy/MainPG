@@ -342,17 +342,22 @@ def create_router(
         return _call(service.generate_brief_fields, actor, body)
 
     # --- 构图/视角定制：一段大白话 → 四格画面指令（免费；可存多份模板，一份生效）---
+    # scope 区分模块模板池：full=全定制，replica=爆款复刻；两池各自独立「生效」。
     @router.post("/compositions")
     def generate_composition(
-        body: CompositionRequest, actor: Actor = Depends(actor_from_authorization)
+        body: CompositionRequest,
+        scope: str = "full",
+        actor: Actor = Depends(actor_from_authorization),
     ) -> dict[str, Any]:
         permitted(actor, "pod_customization.create")
-        return _call(service.generate_composition, actor, body)
+        return _call(service.generate_composition, actor, body, scope=scope)
 
     @router.get("/compositions")
-    def list_compositions(actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
+    def list_compositions(
+        scope: str = "full", actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
         permitted(actor, "pod_customization.read")
-        return _call(service.list_compositions, actor)
+        return _call(service.list_compositions, actor, scope=scope)
 
     @router.put("/compositions/{composition_id}")
     def save_composition(
@@ -374,10 +379,12 @@ def create_router(
 
     @router.post("/compositions/{composition_id}/activate")
     def activate_composition(
-        composition_id: str, actor: Actor = Depends(actor_from_authorization)
+        composition_id: str,
+        scope: str = "full",
+        actor: Actor = Depends(actor_from_authorization),
     ) -> dict[str, Any]:
         permitted(actor, "pod_customization.create")
-        return _call(service.activate_composition, actor, composition_id)
+        return _call(service.activate_composition, actor, composition_id, scope=scope)
 
     @router.delete("/compositions/{composition_id}")
     def delete_composition(
@@ -387,9 +394,11 @@ def create_router(
         return _call(service.delete_composition, actor, composition_id)
 
     @router.get("/compositions/latest")
-    def get_active_composition(actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any] | None:
+    def get_active_composition(
+        scope: str = "full", actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any] | None:
         permitted(actor, "pod_customization.read")
-        return _call(service.get_active_composition, actor)
+        return _call(service.get_active_composition, actor, scope=scope)
 
     @router.post("/direct-listing-trials")
     def run_direct_listing_trial(

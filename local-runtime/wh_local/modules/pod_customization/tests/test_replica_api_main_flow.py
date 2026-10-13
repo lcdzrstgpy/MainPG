@@ -402,7 +402,13 @@ def test_create_batch_rejects_analysis_target_mismatch(tmp_path: Path) -> None:
 # --- Task 4：构图模板接入与 CompositionPlan 冻结 ---------------------------------
 
 
-def _create_composition(service: PodCustomizationService, composition_id: str, version: str) -> None:
+def _create_composition(
+    service: PodCustomizationService,
+    composition_id: str,
+    version: str,
+    *,
+    scope: str = "replica",
+) -> None:
     panels = {
         key: {"zh": f"{key} 中文指令", "en": f"{key} english instruction"}
         for key in COMPOSITION_PANEL_KEYS
@@ -416,6 +422,7 @@ def _create_composition(service: PodCustomizationService, composition_id: str, v
         panels=panels,
         model="doubao-fake",
         prompt_version=version,
+        scope=scope,
     )
 
 
@@ -505,6 +512,29 @@ def test_create_batch_rejects_unknown_or_inactive_template(tmp_path: Path) -> No
     body["client_request_id"] = "req-missing"
     missing = client.post(f"{API}/replica/batches", headers=HEADERS, json=body)
     assert missing.status_code == 404
+
+
+def test_replica_ignores_full_custom_composition_pool(tmp_path: Path) -> None:
+    runtime = AnalysisRuntime()
+    client, service, _billing = _client(tmp_path, runtime)
+    # 全定制池里有一份「生效」模板，但复刻池为空。
+    _create_composition(service, "comp-full", "v-full", scope="full")
+
+    batch = _create_with_analysis(client, service, runtime, request_id="req-scope-isolation")
+    plan = _stored_plan(service, batch["id"])
+    # 复刻回退系统默认机位，绝不借用全定制的产品化模板。
+    assert plan["composition_plan"]["template_id"] == DEFAULT_COMPOSITION_ID
+
+    # 也不能显式把全定制的模板挂到复刻批次上。
+    source_id = _upload(client, "source", "#dd0000")
+    target_id = _upload(client, "target", "#00aa00")
+    analysis = _analyze(client, source_id, target_id)
+    body = _create_body(
+        source_id, target_id, analysis_id=analysis["analysis_id"], client_request_id="req-cross"
+    )
+    body["composition_id"] = "comp-full"
+    rejected = client.post(f"{API}/replica/batches", headers=HEADERS, json=body)
+    assert rejected.status_code == 409
 
 
 def test_load_frozen_plan_rejects_legacy_batch_without_plan(tmp_path: Path) -> None:

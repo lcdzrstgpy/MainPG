@@ -19,6 +19,8 @@ from .contracts import (
     BatchCreate,
     BusinessFields,
     COMPOSITION_PANEL_KEYS,
+    COMPOSITION_SCOPE_FULL,
+    COMPOSITION_SCOPES,
     ReplicaBatchCreate,
     SemiBatchCreate,
     grid_call_count,
@@ -48,6 +50,13 @@ class ReplicaBatchIdempotentReturn(Exception):
 
 def _safe_error(value: object) -> str:
     return safe_error_message(value) if str(value or "").strip() else ""
+
+
+def _composition_scope(value: object) -> str:
+    """构图模板模块归属：full（全定制）/ replica（爆款复刻）；非法值一律回退 full。"""
+
+    scope = str(value or "").strip().lower()
+    return scope if scope in COMPOSITION_SCOPES else COMPOSITION_SCOPE_FULL
 
 
 def _normalized_composition_panels(panels: object) -> dict[str, dict[str, str]]:
@@ -488,15 +497,17 @@ class PodCustomizationRepository:
             )
         return self.get_batch(batch_id, workspace_id, owner_user_id)
 
-    def list_compositions(self, workspace_id: str, owner_user_id: str) -> list[dict[str, Any]]:
-        """列出该账号+工作区的全部构图模板；生效的排最前，其余按更新时间倒序。"""
+    def list_compositions(
+        self, workspace_id: str, owner_user_id: str, *, scope: str = "full"
+    ) -> list[dict[str, Any]]:
+        """列出该账号+工作区+模块（scope）的构图模板；生效的排最前，其余按更新时间倒序。"""
 
         with self._connect() as connection:
             rows = connection.execute(
                 """SELECT * FROM pod_customization_compositions
-                   WHERE workspace_id = ? AND owner_user_id = ?
+                   WHERE workspace_id = ? AND owner_user_id = ? AND scope = ?
                    ORDER BY is_active DESC, updated_at DESC, rowid DESC""",
-                (workspace_id, owner_user_id),
+                (workspace_id, owner_user_id, _composition_scope(scope)),
             ).fetchall()
         return [self._composition_record(dict(row)) for row in rows]
 
@@ -511,15 +522,17 @@ class PodCustomizationRepository:
             ).fetchone()
         return self._composition_record(dict(row)) if row is not None else None
 
-    def get_active_composition(self, workspace_id: str, owner_user_id: str) -> dict[str, Any] | None:
-        """读取当前生效的那份构图模板；没有则返回 None（新建批次用它）。"""
+    def get_active_composition(
+        self, workspace_id: str, owner_user_id: str, *, scope: str = "full"
+    ) -> dict[str, Any] | None:
+        """读取该模块当前生效的那份构图模板；没有则返回 None（新建批次用它）。"""
 
         with self._connect() as connection:
             row = connection.execute(
                 """SELECT * FROM pod_customization_compositions
-                   WHERE workspace_id = ? AND owner_user_id = ? AND is_active = 1
+                   WHERE workspace_id = ? AND owner_user_id = ? AND scope = ? AND is_active = 1
                    ORDER BY updated_at DESC, rowid DESC LIMIT 1""",
-                (workspace_id, owner_user_id),
+                (workspace_id, owner_user_id, _composition_scope(scope)),
             ).fetchone()
         return self._composition_record(dict(row)) if row is not None else None
 
@@ -534,25 +547,27 @@ class PodCustomizationRepository:
         panels: Mapping[str, Any],
         model: str,
         prompt_version: str,
+        scope: str = "full",
     ) -> dict[str, Any]:
-        """新增一份构图模板并设为生效（同一账号同时只有一份生效）。"""
+        """新增一份构图模板并设为生效（同一账号同一模块同时只有一份生效）。"""
 
         now = _now()
+        scope_value = _composition_scope(scope)
         payload = json.dumps(_normalized_composition_panels(panels), ensure_ascii=False)
         with self._connect() as connection:
             connection.execute(
                 """UPDATE pod_customization_compositions SET is_active = 0
-                   WHERE workspace_id = ? AND owner_user_id = ?""",
-                (workspace_id, owner_user_id),
+                   WHERE workspace_id = ? AND owner_user_id = ? AND scope = ?""",
+                (workspace_id, owner_user_id, scope_value),
             )
             connection.execute(
                 """INSERT INTO pod_customization_compositions
                    (composition_id, workspace_id, owner_user_id, name, raw_input, panels_json,
-                    model, prompt_version, is_active, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)""",
+                    model, prompt_version, is_active, scope, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)""",
                 (
                     composition_id, workspace_id, owner_user_id, name, raw_input, payload,
-                    model, prompt_version, now, now,
+                    model, prompt_version, scope_value, now, now,
                 ),
             )
         return self.get_composition(workspace_id, owner_user_id, composition_id)  # type: ignore[return-value]
@@ -594,30 +609,34 @@ class PodCustomizationRepository:
                 return None
         return self.get_composition(workspace_id, owner_user_id, composition_id)
 
-    def clear_active_compositions(self, workspace_id: str, owner_user_id: str) -> None:
-        """清空该账号的生效标记（用于「回退到系统默认模板」）。"""
+    def clear_active_compositions(
+        self, workspace_id: str, owner_user_id: str, *, scope: str = "full"
+    ) -> None:
+        """清空该账号该模块的生效标记（用于「回退到系统默认模板」）。"""
 
         with self._connect() as connection:
             connection.execute(
                 """UPDATE pod_customization_compositions SET is_active = 0
-                   WHERE workspace_id = ? AND owner_user_id = ?""",
-                (workspace_id, owner_user_id),
+                   WHERE workspace_id = ? AND owner_user_id = ? AND scope = ?""",
+                (workspace_id, owner_user_id, _composition_scope(scope)),
             )
 
     def activate_composition(
-        self, workspace_id: str, owner_user_id: str, composition_id: str
+        self, workspace_id: str, owner_user_id: str, composition_id: str, *, scope: str = "full"
     ) -> dict[str, Any] | None:
         now = _now()
+        scope_value = _composition_scope(scope)
         with self._connect() as connection:
             connection.execute(
                 """UPDATE pod_customization_compositions SET is_active = 0
-                   WHERE workspace_id = ? AND owner_user_id = ?""",
-                (workspace_id, owner_user_id),
+                   WHERE workspace_id = ? AND owner_user_id = ? AND scope = ?""",
+                (workspace_id, owner_user_id, scope_value),
             )
             updated = connection.execute(
                 """UPDATE pod_customization_compositions SET is_active = 1, updated_at = ?
-                   WHERE workspace_id = ? AND owner_user_id = ? AND composition_id = ?""",
-                (now, workspace_id, owner_user_id, composition_id),
+                   WHERE workspace_id = ? AND owner_user_id = ? AND scope = ?
+                     AND composition_id = ?""",
+                (now, workspace_id, owner_user_id, scope_value, composition_id),
             )
             if updated.rowcount == 0:
                 return None

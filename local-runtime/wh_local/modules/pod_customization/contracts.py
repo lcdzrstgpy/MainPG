@@ -123,6 +123,11 @@ class BriefFieldResponse(BaseModel):
 #   panel_1 = 主图；panel_2 = 细节图 A；panel_3 = 细节图 B；panel_4 = 素材图。
 # 每格存两份文本：zh 供前端展示与手动编辑，en 由后台转写并注入生图提示词。
 COMPOSITION_PANEL_KEYS = ("panel_1", "panel_2", "panel_3", "panel_4")
+
+# 构图模板模块归属：全定制与爆款复刻各自独立成池、各自独立「生效」，互不覆盖。
+COMPOSITION_SCOPE_FULL = "full"
+COMPOSITION_SCOPE_REPLICA = "replica"
+COMPOSITION_SCOPES = (COMPOSITION_SCOPE_FULL, COMPOSITION_SCOPE_REPLICA)
 COMPOSITION_PANEL_SLOTS = {
     "panel_1": "主图",
     "panel_2": "细节图 A",

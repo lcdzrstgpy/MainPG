@@ -10,8 +10,8 @@ const api = readFileSync(new URL("../api/podCustomizationApi.ts", import.meta.ur
 const page = readFileSync(new URL("../pages/PodCustomizationPage.tsx", import.meta.url), "utf8");
 
 test("generate drawer owns the AI block and hands the result to the shared panel editor", () => {
-  assert.match(generateDrawer, /podCustomizationApi\.generateComposition\(\{ brief: input, locale: "zh-CN" \}\)/);
-  assert.match(generateDrawer, /podCustomizationApi\.getLatestComposition\(\)/);
+  assert.match(generateDrawer, /podCustomizationApi\.generateComposition\(\{ brief: input, locale: "zh-CN" \}, scope\)/);
+  assert.match(generateDrawer, /podCustomizationApi\.getLatestComposition\(scope\)/);
   assert.match(generateDrawer, /import \{ CompositionPanelsEditor \} from "\.\/CompositionPanelsEditor";/);
   assert.match(generateDrawer, /<CompositionPanelsEditor/);
   assert.match(generateDrawer, /const COMPOSITION_INPUT_MAX_LENGTH = 500;/);
@@ -53,8 +53,8 @@ test("the outdated single-template explainer is gone from every drawer", () => {
 });
 
 test("composition manager lists templates with a built-in default plus activate / edit / rename / delete", () => {
-  assert.match(manager, /podCustomizationApi\.listCompositions\(\)/);
-  assert.match(manager, /podCustomizationApi\.activateComposition\(template\.composition_id\)/);
+  assert.match(manager, /podCustomizationApi\.listCompositions\(scope\)/);
+  assert.match(manager, /podCustomizationApi\.activateComposition\(template\.composition_id, scope\)/);
   assert.match(manager, /podCustomizationApi\.renameComposition\(template\.composition_id, name\)/);
   assert.match(manager, /podCustomizationApi\.deleteComposition\(template\.composition_id\)/);
   // 内置「默认模板」只能设为生效：编辑/重命名/删除都按 is_builtin 隐藏。
@@ -69,15 +69,15 @@ test("composition manager lists templates with a built-in default plus activate 
 });
 
 test("pod api exposes the composition template endpoints", () => {
-  assert.match(api, /generateComposition: \(body: \{ brief: string; locale\?: string \}\)/);
-  assert.match(api, /listCompositions: \(\) => httpJson<PodCompositionListResponse>/);
+  assert.match(api, /generateComposition: \(body: \{ brief: string; locale\?: string \}, scope: PodCompositionScope = "full"\)/);
+  assert.match(api, /listCompositions: \(scope: PodCompositionScope = "full"\) => httpJson<PodCompositionListResponse>/);
   assert.match(api, /updateComposition: \(compositionId: string, body: \{ panels: PodCompositionPanelsZh \}\)/);
   assert.match(api, /renameComposition: \(compositionId: string, name: string\)/);
-  assert.match(api, /activateComposition: \(compositionId: string\)/);
+  assert.match(api, /activateComposition: \(compositionId: string, scope: PodCompositionScope = "full"\)/);
   assert.match(api, /deleteComposition: \(compositionId: string\)/);
   assert.match(api, /method: "PUT"/);
   assert.match(api, /method: "PATCH"/);
-  assert.match(api, /\/activate`/);
+  assert.match(api, /\/activate\$\{compositionScopeQuery\(scope\)\}`/);
   assert.match(api, /method: "DELETE"/);
 });
 

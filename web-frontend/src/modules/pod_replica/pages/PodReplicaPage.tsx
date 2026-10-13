@@ -184,10 +184,10 @@ export function PodReplicaPage({ isActive = true }: Props) {
     }
   }, [draftScope?.accountId, draftScope?.workspaceId, source, targets]);
 
-  // 当前生效的构图模板：提交时把 composition_id 一起冻结进计划。
+  // 当前生效的复刻构图模板（复刻独立模板池）：提交时把 composition_id 一起冻结进计划。
   useEffect(() => {
     let stopped = false;
-    void podCustomizationApi.getLatestComposition()
+    void podCustomizationApi.getLatestComposition("replica")
       .then((latest) => { if (!stopped) setComposition(latest); })
       .catch(() => undefined);
     return () => { stopped = true; };
@@ -602,8 +602,6 @@ export function PodReplicaPage({ isActive = true }: Props) {
         </div>
         <div className="pod-page-header-actions">
           {batchRunning && <span className="pod-live-badge"><i />批次后台运行中</span>}
-          <button type="button" onClick={() => setCompositionDrawerOpen(true)}><span className="iconfont icon-robot" />构图定制</button>
-          <button type="button" onClick={() => setCompositionManagerOpen(true)}><span className="iconfont icon-skin" />构图模板管理</button>
           <button type="button" onClick={() => setHistoryOpen(true)}><span className="iconfont icon-time-circle" />复刻历史</button>
         </div>
       </header>
@@ -620,10 +618,23 @@ export function PodReplicaPage({ isActive = true }: Props) {
             onRemove={(clientId) => setTargets((current) => removeReplicaTarget(current, clientId))}
             onOpen={setActiveTargetId}
           />
+          {/* 构图入口：与全定制分开的复刻专用模板池，摘要 + 生成 / 管理两个入口。 */}
+          <section className="pod-replica-composition-entry" aria-label="构图模板">
+            <div className="pod-replica-composition-info">
+              <span>COMPOSITION · 构图模板</span>
+              <b>{compositionName}</b>
+              <small>只作用于爆款复刻；产品支持手部使用 ≠ 本次必须生成手部画面。</small>
+            </div>
+            <div className="pod-replica-composition-actions">
+              <button type="button" onClick={() => setCompositionDrawerOpen(true)}>
+                <span className="iconfont icon-robot" aria-hidden="true" />生成新构图
+              </button>
+              <button type="button" onClick={() => setCompositionManagerOpen(true)}>
+                <span className="iconfont icon-skin" aria-hidden="true" />管理模板
+              </button>
+            </div>
+          </section>
           <div className="pod-replica-submit">
-            <p className="pod-replica-submit-note">
-              构图模板：{compositionName}；产品支持手部使用 ≠ 本次必须生成手部画面。
-            </p>
             <div className="pod-replica-submit-actions">
               <button type="button" className="pod-replica-start" disabled={!canSubmit} onClick={() => void startBatch()}>
                 {busyAction === "create-batch" ? "正在提交…" : `开始复刻 ${targets.length} 个产品`}
@@ -707,9 +718,10 @@ export function PodReplicaPage({ isActive = true }: Props) {
         onClose={() => setHistoryOpen(false)}
       />
 
-      {/* 构图入口：复用全定制的生成 / 管理 / 编辑抽屉；生效模板随批次一起冻结。 */}
+      {/* 构图入口：复刻独立模板池（scope=replica），与全定制互不覆盖。 */}
       <CompositionGenerateDrawer
         open={compositionDrawerOpen}
+        scope="replica"
         onClose={() => setCompositionDrawerOpen(false)}
         onChanged={(next) => setComposition(next)}
       />
@@ -721,6 +733,7 @@ export function PodReplicaPage({ isActive = true }: Props) {
       />
       <CompositionManagerDrawer
         open={compositionManagerOpen}
+        scope="replica"
         onClose={() => setCompositionManagerOpen(false)}
         onEdit={(template) => {
           setCompositionManagerOpen(false);

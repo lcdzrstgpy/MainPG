@@ -4,13 +4,15 @@ import { createPortal } from "react-dom";
 import { podCustomizationApi } from "../api/podCustomizationApi";
 import { AutoGrowTextarea } from "./AutoGrowTextarea";
 import { CompositionPanelsEditor } from "./CompositionPanelsEditor";
-import type { PodComposition } from "../types";
+import type { PodComposition, PodCompositionScope } from "../types";
 
 type Props = {
   open: boolean;
   onClose: () => void;
   /** 生成/保存后回调，供页面同步提示与状态。 */
   onChanged?: (composition: PodComposition | null) => void;
+  /** 模板池归属：full=全定制（默认），replica=爆款复刻。 */
+  scope?: PodCompositionScope;
 };
 
 const COMPOSITION_INPUT_MAX_LENGTH = 500;
@@ -21,7 +23,7 @@ const COMPOSITION_STAGE_INTERVAL_MS = 1_800;
  * 「构图定制」：写一句大白话 → 生成一份新模板（自动生效）。
  * 生成结果可继续手动微调；只负责「生成 + 微调」，模板的选择/重命名/删除在「构图模板管理」里。
  */
-export function CompositionGenerateDrawer({ open, onClose, onChanged }: Props) {
+export function CompositionGenerateDrawer({ open, onClose, onChanged, scope = "full" }: Props) {
   const [brief, setBrief] = useState("");
   const [composition, setComposition] = useState<PodComposition | null>(null);
   const [loading, setLoading] = useState(false);
@@ -37,7 +39,7 @@ export function CompositionGenerateDrawer({ open, onClose, onChanged }: Props) {
     setNotice("");
     void (async () => {
       try {
-        const latest = await podCustomizationApi.getLatestComposition();
+        const latest = await podCustomizationApi.getLatestComposition(scope);
         if (!stopped) setComposition(latest);
       } catch (cause) {
         if (!stopped) setError(cause instanceof Error ? cause.message : String(cause));
@@ -46,7 +48,7 @@ export function CompositionGenerateDrawer({ open, onClose, onChanged }: Props) {
     return () => {
       stopped = true;
     };
-  }, [open]);
+  }, [open, scope]);
 
   useEffect(() => {
     if (!loading) {
@@ -66,7 +68,7 @@ export function CompositionGenerateDrawer({ open, onClose, onChanged }: Props) {
     setNotice("");
     setLoading(true);
     try {
-      const saved = await podCustomizationApi.generateComposition({ brief: input, locale: "zh-CN" });
+      const saved = await podCustomizationApi.generateComposition({ brief: input, locale: "zh-CN" }, scope);
       setComposition(saved);
       onChanged?.(saved);
       setNotice("已生成一份新模板并设为生效；可在下方手动微调每一格。");
@@ -87,7 +89,7 @@ export function CompositionGenerateDrawer({ open, onClose, onChanged }: Props) {
           <div>
             <span>COMPOSITION · 视角与构图</span>
             <h2>构图定制</h2>
-            <p>写一句大白话生成一份新模板并自动生效；生成后可在下方手动微调每一格。</p>
+            <p>{scope === "replica" ? "爆款复刻专用" : "全定制专用"}：写一句大白话生成一份新模板并自动生效；生成后可在下方手动微调每一格。</p>
           </div>
           <button type="button" onClick={onClose} aria-label="关闭">×</button>
         </header>

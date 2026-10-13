@@ -443,6 +443,14 @@ POD_MIGRATION_CONTRACTS: dict[str, MigrationEffect] = {
             ),
         },
     ),
+    "021_composition_scope": MigrationEffect(
+        column_additions={"pod_customization_compositions": ("scope",)},
+        indexes={
+            "idx_pod_compositions_scope": _index(
+                "pod_customization_compositions", "workspace_id owner_user_id scope"
+            ),
+        },
+    ),
 }
 
 

@@ -37,6 +37,8 @@ from .contracts import (
     BriefFieldRequest,
     COMPOSITION_NAME_MAX_LENGTH,
     COMPOSITION_PANEL_KEYS,
+    COMPOSITION_SCOPE_FULL,
+    COMPOSITION_SCOPE_REPLICA,
     CompositionRenameRequest,
     CompositionRequest,
     CompositionUpdateRequest,
@@ -621,10 +623,15 @@ class PodCustomizationService:
             record = self.repository.get_composition(actor.workspace_id, actor.id, requested)
             if record is None:
                 raise PodRepositoryError("构图模板不存在", 404)
+            if str(record.get("scope") or COMPOSITION_SCOPE_FULL) != COMPOSITION_SCOPE_REPLICA:
+                raise PodRepositoryError("该构图模板属于全定制，不能用于爆款复刻", 409)
             if not record.get("is_active"):
                 raise PodRepositoryError("构图模板未生效，无法用于复刻批次", 409)
         else:
-            record = self.repository.get_active_composition(actor.workspace_id, actor.id)
+            # 复刻只认复刻池的生效模板；没有则回退系统内置默认机位（不借全定制的模板）。
+            record = self.repository.get_active_composition(
+                actor.workspace_id, actor.id, scope=COMPOSITION_SCOPE_REPLICA
+            )
         if record is None:
             return CompositionTemplateOptions(
                 template_id=DEFAULT_COMPOSITION_ID,
@@ -1059,18 +1066,21 @@ class PodCustomizationService:
             "fields": result.fields.model_dump(),
         }
 
-    def generate_composition(self, actor: Actor, request: CompositionRequest) -> dict[str, Any]:
+    def generate_composition(
+        self, actor: Actor, request: CompositionRequest, *, scope: str = COMPOSITION_SCOPE_FULL
+    ) -> dict[str, Any]:
         """构图定制：一段大白话 → 四格画面指令，新增一份模板并设为生效。
 
         动作免费（服务端对 POD 画像的纯 title scope 显式零计费），但仍走完整的
         冻结 → 发放短期密钥 → 调用 → 结算流程，保留幂等键与审计。
+        ``scope`` 决定写入哪个模块的模板池（full / replica），两个池各自独立生效。
         """
         if self.composition_runtime is None:
             raise RuntimeError("POD 构图定制服务未启用")
         composition_id = uuid.uuid4().hex
         billing_run = self._freeze_composition(actor, composition_id)
         try:
-            return self._run_composition_authorized(actor, request, composition_id, billing_run)
+            return self._run_composition_authorized(actor, request, composition_id, billing_run, scope)
         except PodBillingAuthorizationRequired as exc:
             raise RuntimeError(str(exc)) from exc
         finally:
@@ -1082,6 +1092,7 @@ class PodCustomizationService:
         request: CompositionRequest,
         composition_id: str,
         billing_run: PodBillingRun,
+        scope: str = COMPOSITION_SCOPE_FULL,
     ) -> dict[str, Any]:
         call_ids = tuple(
             call.call_id for call in billing_run.plan.calls if call.feature == "pod.title"
@@ -1105,6 +1116,7 @@ class PodCustomizationService:
             panels=result.panels.model_dump(),
             model=result.model,
             prompt_version=result.prompt_version,
+            scope=scope,
         )
         return self._composition_payload(stored)
 
@@ -1158,18 +1170,20 @@ class PodCustomizationService:
             raise PodRepositoryError("POD composition not found", 404)
         return self._composition_payload(stored)
 
-    def list_compositions(self, actor: Actor) -> dict[str, Any]:
-        """列出构图模板：系统内置「默认模板」永远排第一，其余为用户模板（生效的排前）。"""
+    def list_compositions(
+        self, actor: Actor, *, scope: str = COMPOSITION_SCOPE_FULL
+    ) -> dict[str, Any]:
+        """列出该模块的构图模板：系统内置「默认模板」永远排第一，其余为用户模板（生效的排前）。"""
 
-        records = self.repository.list_compositions(actor.workspace_id, actor.id)
+        records = self.repository.list_compositions(actor.workspace_id, actor.id, scope=scope)
         templates = [self._composition_payload(record) for record in records]
-        default = self._default_composition_payload()
+        default = self._default_composition_payload(scope)
         # 没有任何用户模板生效时，即回退到系统默认模板。
         default["is_active"] = not any(template["is_active"] for template in templates)
         return {"templates": [default, *templates], "total": len(templates) + 1}
 
     @staticmethod
-    def _default_composition_payload() -> dict[str, Any]:
+    def _default_composition_payload(scope: str = COMPOSITION_SCOPE_FULL) -> dict[str, Any]:
         return {
             "composition_id": DEFAULT_COMPOSITION_ID,
             "name": DEFAULT_COMPOSITION_NAME,
@@ -1183,10 +1197,13 @@ class PodCustomizationService:
             "is_active": False,
             "is_builtin": True,
             "updated_at": "",
+            "scope": COMPOSITION_SCOPE_REPLICA if scope == COMPOSITION_SCOPE_REPLICA else COMPOSITION_SCOPE_FULL,
         }
 
-    def get_active_composition(self, actor: Actor) -> dict[str, Any] | None:
-        stored = self.repository.get_active_composition(actor.workspace_id, actor.id)
+    def get_active_composition(
+        self, actor: Actor, *, scope: str = COMPOSITION_SCOPE_FULL
+    ) -> dict[str, Any] | None:
+        stored = self.repository.get_active_composition(actor.workspace_id, actor.id, scope=scope)
         return self._composition_payload(stored) if stored else None
 
     def rename_composition(
@@ -1199,15 +1216,23 @@ class PodCustomizationService:
             raise PodRepositoryError("POD composition not found", 404)
         return self._composition_payload(stored)
 
-    def activate_composition(self, actor: Actor, composition_id: str) -> dict[str, Any]:
+    def activate_composition(
+        self, actor: Actor, composition_id: str, *, scope: str = COMPOSITION_SCOPE_FULL
+    ) -> dict[str, Any]:
         if composition_id == DEFAULT_COMPOSITION_ID:
-            # 选择系统默认模板 = 清空用户模板的生效标记（新建批次回退默认机位）。
-            self.repository.clear_active_compositions(actor.workspace_id, actor.id)
-            payload = self._default_composition_payload()
+            # 选择系统默认模板 = 清空该模块用户模板的生效标记（新建批次回退默认机位）。
+            self.repository.clear_active_compositions(actor.workspace_id, actor.id, scope=scope)
+            payload = self._default_composition_payload(scope)
             payload["is_active"] = True
             return payload
-        stored = self.repository.activate_composition(actor.workspace_id, actor.id, composition_id)
+        stored = self.repository.activate_composition(
+            actor.workspace_id, actor.id, composition_id, scope=scope
+        )
         if stored is None:
+            # 可能是不属于该模块（scope）的模板：明确 404，避免跨池误激活。
+            existing = self.repository.get_composition(actor.workspace_id, actor.id, composition_id)
+            if existing is not None:
+                raise PodRepositoryError("构图模板不属于当前模块，无法激活", 409)
             raise PodRepositoryError("POD composition not found", 404)
         return self._composition_payload(stored)
 
@@ -1236,6 +1261,7 @@ class PodCustomizationService:
             "is_active": bool(stored.get("is_active")),
             "is_builtin": bool(is_builtin or stored.get("is_builtin")),
             "updated_at": str(stored.get("updated_at") or ""),
+            "scope": str(stored.get("scope") or COMPOSITION_SCOPE_FULL),
         }
 
     def list_batches(self, actor: Actor, *, limit: int = 20, offset: int = 0) -> dict[str, Any]:
