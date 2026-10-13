@@ -52,6 +52,11 @@ COMPOSITION_ATTEMPTS = 3
 REPLICA_ANALYSIS_ATTEMPTS = 3
 REPLICA_COMPOSITION_ATTEMPTS = 3
 
+# 复刻独立面板策略（independent_panels）：每款 4 个面板，每个面板预留 2 次图片调用
+# （失败回溯预算），与 grid 每款 2 次尝试的口径一致。
+REPLICA_PANEL_COUNT = 4
+REPLICA_PANEL_ATTEMPTS = 2
+
 
 class PodBillingAuthorizationRequired(RuntimeError):
     """The durable billing action must pause until a fresh grant is issued."""
@@ -202,6 +207,50 @@ class PodCallPlan:
             )
         )
         return cls(idempotency_key=f"pod:batch:{batch_id}:initial", calls=calls, billing_profile=billing_profile)
+
+    @classmethod
+    def for_replica_batch(
+        cls, batch_id: str, *, style_count: int, generation_strategy: str = "grid"
+    ) -> "PodCallPlan":
+        """复刻批次冻结：按生成策略决定每款预留的图片调用形状。
+
+        - ``grid``：与 ``for_batch`` 同形（每款 1 次四宫格 × 2 次尝试）；
+        - ``independent_panels``：每款 4 个面板 × 2 次尝试（共 8 次图片调用）。
+
+        产品批次计费以 link 为单位（1 款 = 1 link），单款内部多出来的图片调用不会
+        增加 link_count，只用于结算时逐调用对齐 outcomes；未使用的调用补 no_return。
+        """
+        if generation_strategy == "grid":
+            return cls.for_batch(
+                batch_id, style_count=style_count, billing_profile=POD_BILLING_PROFILE_REPLICA
+            )
+        if generation_strategy != "independent_panels":
+            raise ValueError(f"unknown replica generation strategy: {generation_strategy}")
+        if isinstance(style_count, bool) or not isinstance(style_count, int) or not 1 <= style_count <= 200:
+            raise ValueError("style_count must be between 1 and 200")
+        calls = tuple(
+            call
+            for style_index in range(1, style_count + 1)
+            for call in (
+                *(
+                    PodPlannedCall(
+                        f"{batch_id}:style:{style_index}:image:p{panel_index}:{attempt}",
+                        "pod.image",
+                    )
+                    for panel_index in range(1, REPLICA_PANEL_COUNT + 1)
+                    for attempt in range(1, REPLICA_PANEL_ATTEMPTS + 1)
+                ),
+                *(
+                    PodPlannedCall(f"{batch_id}:style:{style_index}:title:{attempt}", "pod.title")
+                    for attempt in range(1, TITLE_ATTEMPTS + 1)
+                ),
+            )
+        )
+        return cls(
+            idempotency_key=f"pod:batch:{batch_id}:initial",
+            calls=calls,
+            billing_profile=POD_BILLING_PROFILE_REPLICA,
+        )
 
     @classmethod
     def for_retry(

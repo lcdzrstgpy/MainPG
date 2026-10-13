@@ -12,6 +12,7 @@ from wh_local.modules.pod_customization.replica_planner import (
 from wh_local.modules.pod_customization.replica_prompt_compiler import (
     PROMPT_COMPILER_VERSION,
     capability_ids_in,
+    compile_replica_panel_prompt,
     compile_replica_prompt,
     inert_text,
 )
@@ -232,4 +233,37 @@ def test_worker_falls_back_to_legacy_prompt_without_frozen_plan() -> None:
     fields = Fields(product_name="美甲套装", product_category="美甲")
     prompt = PodBatchWorker._replica_style_prompt(None, _worker_batch(None), 1, 1, fields)  # type: ignore[arg-type]
     assert "Reference image 1 provides ONLY the surface pattern to replicate" in prompt
-    assert "=== PART 1" not in prompt
+
+
+# --- independent_panels：单面板提示词 -------------------------------------------
+
+
+def _part_block(prompt: str, start: str, end: str) -> str:
+    return prompt.split(start, 1)[1].split(end, 1)[0]
+
+
+def test_panel_prompt_renders_single_frame_with_only_the_requested_slot() -> None:
+    plan = _plan()
+    assert plan.composition_plan is not None
+    first = compile_replica_panel_prompt(plan, 1)
+    assert "Create ONE single full-frame square ecommerce image for top-left = panel_1." in first
+    assert "2x2" not in first
+    assert "Never swap, shift, merge or duplicate panels." not in first
+    # 只保留该格的拍法，其余格子不出现。
+    first_slot = plan.composition_plan.slots[0].slot_id
+    assert f"- {first_slot}:" in first
+    for slot in plan.composition_plan.slots[1:]:
+        assert f"- {slot.slot_id}:" not in first
+
+
+def test_panel_prompt_shares_frozen_facts_and_is_deterministic() -> None:
+    plan = _plan()
+    full = compile_replica_prompt(plan)
+    full_part2 = _part_block(full, "=== PART 2", "=== PART 3")
+    for panel_index in range(1, 5):
+        panel = compile_replica_panel_prompt(plan, panel_index)
+        assert panel == compile_replica_panel_prompt(plan, panel_index)
+        # PART 2 与四格版本逐字一致（同一冻结事实）。
+        assert _part_block(panel, "=== PART 2", "=== PART 3") == full_part2
+    with pytest.raises(ValueError):
+        compile_replica_panel_prompt(plan, 5)
