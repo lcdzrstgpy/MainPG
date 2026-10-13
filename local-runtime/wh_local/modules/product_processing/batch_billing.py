@@ -118,6 +118,32 @@ def forget_freeze(freeze_id: str) -> None:
             _save_open_freezes(data)
 
 
+def abandon_freeze(freeze_id: str, reason: str) -> None:
+    """作废一个已不可能再结算的冻结记录（服务端 4xx 终态拒绝）。
+
+    批次超过服务端 TTL 被释放后，``/batch/settle`` 会永远返回 409
+    （"batch freeze is no longer active"）；若只打失败标记而保留 open，
+    每次对账都会再打一轮必然失败的请求，形成永久重试。这里置
+    ``settled=True`` 停止重试，同时写入 void 痕迹供排查（记录不删除）。
+    """
+    with _FREEZE_STORE_LOCK:
+        try:
+            data = _load_open_freezes(strict=True)
+        except (OSError, ValueError):
+            # 与 mark_freeze_settle_failure 相同：读不到就不能写，
+            # 否则会把其它 freeze 记录整体抹掉。
+            return
+        record = data.get(str(freeze_id))
+        if record is None:
+            return
+        record["settled"] = True
+        record["settle_status"] = "void"
+        record["settle_error"] = str(reason or "")[:300]
+        record["settle_abandoned_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        data[str(freeze_id)] = record
+        _save_open_freezes(data)
+
+
 def mark_freeze_settle_failure(freeze_id: str, error: str) -> None:
     """Record a failed settlement attempt on the open-freeze sidecar.
 
