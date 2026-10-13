@@ -568,3 +568,146 @@ def test_multi_piece_plan_requires_full_component_panel(tmp_path: Path) -> None:
     assert all(not slot["hand_worn"] for slot in plan["composition_plan"]["slots"])
     assert plan["generation_strategy"] == "independent_panels"
 
+
+# --- 计划指纹复用：已复刻产品不再重复调豆包 -------------------------------------
+
+
+def _stored_fingerprints(service: PodCustomizationService, batch_id: str) -> list[str]:
+    with service.repository._connect() as connection:
+        rows = connection.execute(
+            "SELECT plan_fingerprint FROM pod_customization_replica_targets WHERE batch_id = ?",
+            (batch_id,),
+        ).fetchall()
+    return [row["plan_fingerprint"] for row in rows]
+
+
+def test_resubmitting_same_input_reuses_frozen_plan_without_doubao(tmp_path: Path) -> None:
+    runtime = AnalysisRuntime()
+    client, service, _billing = _client(tmp_path, runtime)
+    source_id = _upload(client, "source", "#dd0000")
+    target_id = _upload(client, "target", "#00aa00")
+    analysis = _analyze(client, source_id, target_id)
+
+    first = client.post(
+        f"{API}/replica/batches",
+        headers=HEADERS,
+        json=_create_body(source_id, target_id, analysis_id=analysis["analysis_id"], client_request_id="req-first"),
+    )
+    assert first.status_code == 200, first.text
+    assert runtime.composition_calls == 1
+
+    second = client.post(
+        f"{API}/replica/batches",
+        headers=HEADERS,
+        json=_create_body(source_id, target_id, analysis_id=analysis["analysis_id"], client_request_id="req-second"),
+    )
+    assert second.status_code == 200, second.text
+    # 已复刻产品再次提交：直接复用冻结计划，不再调豆包。
+    assert runtime.composition_calls == 1
+
+    plan_first = _stored_plan(service, first.json()["id"])
+    plan_second = _stored_plan(service, second.json()["id"])
+    assert plan_second["composition_plan"] == plan_first["composition_plan"]
+    assert plan_second["compiled_prompt"] == plan_first["compiled_prompt"]
+    # 复用不等于丢记录：生图模型版本仍随本次提交刷新冻结。
+    assert plan_second["image_model_version"]
+    assert _stored_fingerprints(service, second.json()["id"]) == _stored_fingerprints(
+        service, first.json()["id"]
+    )
+
+
+def test_changed_facts_preferences_or_template_fetch_new_plan(tmp_path: Path) -> None:
+    runtime = AnalysisRuntime()
+    client, service, _billing = _client(tmp_path, runtime)
+    source_id = _upload(client, "source", "#dd0000")
+    target_id = _upload(client, "target", "#00aa00")
+    analysis = _analyze(client, source_id, target_id)
+
+    def submit(request_id: str, *, target_extra: dict | None = None, composition_id: str = "") -> dict:
+        body = _create_body(
+            source_id, target_id, analysis_id=analysis["analysis_id"], client_request_id=request_id
+        )
+        if target_extra:
+            body["targets"][0].update(target_extra)
+        if composition_id:
+            body["composition_id"] = composition_id
+        response = client.post(f"{API}/replica/batches", headers=HEADERS, json=body)
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    submit("req-base")
+    assert runtime.composition_calls == 1
+    submit("req-base-again")
+    assert runtime.composition_calls == 1  # 同输入：命中指纹，不重推
+
+    # 改展示偏好 → 新指纹、新计划、重新调豆包。
+    preferred = submit("req-pref", target_extra={"presentation_preferences": {"use_white_background": True}})
+    assert runtime.composition_calls == 2
+    # 改事实 → 新指纹、新计划。
+    submit("req-facts", target_extra={"fact_overrides": {"product_name": "珍珠美甲套装"}})
+    assert runtime.composition_calls == 3
+
+    # 换构图模板 → 新指纹、新计划。
+    _create_composition(service, "comp-alt", "pod-composition-v9")
+    templated = submit("req-template", composition_id="comp-alt")
+    assert runtime.composition_calls == 4
+    submit("req-template-again", composition_id="comp-alt")
+    assert runtime.composition_calls == 4
+
+    # 每种输入各冻结自己的计划，互不串用。
+    assert _stored_plan(service, preferred["id"])["composition_plan"]["template_id"] == DEFAULT_COMPOSITION_ID
+    assert _stored_plan(service, templated["id"])["composition_plan"]["template_id"] == "comp-alt"
+
+
+def test_same_input_twice_in_one_batch_calls_doubao_once(tmp_path: Path) -> None:
+    runtime = AnalysisRuntime()
+    client, service, _billing = _client(tmp_path, runtime)
+    source_id = _upload(client, "source", "#dd0000")
+    target_id = _upload(client, "target", "#00aa00")
+    analysis = _analyze(client, source_id, target_id)
+    target = {
+        "target_asset_id": target_id,
+        "product_name": "美甲套装",
+        "listing_fields": _listing_fields(),
+        "analysis_id": analysis["analysis_id"],
+    }
+    response = client.post(
+        f"{API}/replica/batches",
+        headers=HEADERS,
+        json={
+            "client_request_id": "req-dup-targets",
+            "source_asset_id": source_id,
+            "targets": [target, dict(target)],
+        },
+    )
+    assert response.status_code == 200, response.text
+    # 同批次同输入只推一次，另一款直接复用。
+    assert runtime.composition_calls == 1
+    fingerprints = _stored_fingerprints(service, response.json()["id"])
+    assert len(fingerprints) == 2
+    assert len(set(fingerprints)) == 1
+
+
+def test_frozen_plan_is_never_reused_across_users(tmp_path: Path) -> None:
+    runtime = AnalysisRuntime()
+    client, service, _billing = _client(tmp_path, runtime)
+    source_id = _upload(client, "source", "#dd0000")
+    target_id = _upload(client, "target", "#00aa00")
+    analysis = _analyze(client, source_id, target_id)
+    response = client.post(
+        f"{API}/replica/batches",
+        headers=HEADERS,
+        json=_create_body(source_id, target_id, analysis_id=analysis["analysis_id"], client_request_id="req-owner"),
+    )
+    assert response.status_code == 200, response.text
+    (fingerprint,) = _stored_fingerprints(service, response.json()["id"])
+    assert fingerprint
+
+    assert service.repository.find_frozen_replica_plan(
+        "default", "local-demo-admin", fingerprint
+    ) is not None
+    # 他人 / 别的工作区绝不复用这份计划；空指纹一律不命中。
+    assert service.repository.find_frozen_replica_plan("default", "someone-else", fingerprint) is None
+    assert service.repository.find_frozen_replica_plan("other-workspace", "local-demo-admin", fingerprint) is None
+    assert service.repository.find_frozen_replica_plan("default", "local-demo-admin", "") is None
+

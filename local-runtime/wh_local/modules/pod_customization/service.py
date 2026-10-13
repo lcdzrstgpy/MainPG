@@ -10,7 +10,7 @@ import time
 import uuid
 import zipfile
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from PIL import Image, ImageDraw
 from pydantic import ValidationError
@@ -409,24 +409,33 @@ class PodCustomizationService:
         batch_id = uuid.uuid4().hex
         plans: dict[int, dict[str, Any]] = {}
         billing_run: PodBillingRun | None = None
+        composition_run: PodBillingRun | None = None
         strategy: GenerationStrategy = "grid"
         try:
             # 先冻结每款计划（事实/能力/规则/构图）并据此确定批次生成策略：失败即拦，
             # 绝不落库、不扣费。计费必须在策略确定之后冻结（grid 2 次/款 vs 独立面板 8 次/款）。
             if any(target.analysis_id for target in request.targets):
-                composition_run = self._freeze_replica_composition(
-                    actor, batch_id, len(request.targets)
-                )
+                strategy = self._replica_batch_strategy(actor, request)
+
+                # 构图计费惰性冻结：全部命中已冻结计划时不产生任何构图调用与计费。
+                def make_composition_run() -> PodBillingRun:
+                    nonlocal composition_run
+                    if composition_run is None:
+                        composition_run = self._freeze_replica_composition(
+                            actor, batch_id, len(request.targets)
+                        )
+                    return composition_run
+
                 try:
-                    strategy = self._replica_batch_strategy(actor, request)
                     plans = self._resolve_replica_plans(
                         actor,
                         request,
-                        composition_run=composition_run,
+                        composition_run_factory=make_composition_run,
                         generation_strategy=strategy,
                     )
                 finally:
-                    composition_run.settle()
+                    if composition_run is not None:
+                        composition_run.settle()
             if enqueue or self.billing_coordinator:
                 billing_run = self._freeze_replica_batch(
                     actor, batch_id, len(request.targets), strategy
@@ -692,27 +701,81 @@ class PodCustomizationService:
                 return "independent_panels"
         return "grid"
 
+    @staticmethod
+    def _replica_plan_fingerprint(
+        *,
+        source_spec: SourceArtworkSpec,
+        target_spec: TargetProductSpec,
+        capabilities: Any,
+        rules: Any,
+        preferences: Any,
+        template: Any,
+        generation_strategy: str,
+    ) -> str:
+        """计划输入指纹：决定 ``ReplicaPlan`` 的全部输入的确定性哈希。
+
+        同一指纹必然对应同一份计划，因此已冻结过的输入可以直接复用旧计划，
+        不再调用豆包重推构图参数。生图模型版本不进指纹（不影响构图参数本身，
+        只在复用时刷新记录），版本号变更才作废旧计划。
+        """
+        payload = json.dumps(
+            {
+                "source_spec": source_spec.model_dump(mode="json"),
+                "target_spec": target_spec.model_dump(mode="json"),
+                "capabilities": list(capabilities.capabilities),
+                "unknown_capability": list(capabilities.unknown_capability),
+                "rules": rules.model_dump(mode="json"),
+                "preferences": preferences.model_dump(mode="json"),
+                "template_id": template.template_id,
+                "template_version": template.template_version,
+                "generation_strategy": generation_strategy,
+                "analysis_schema_version": REPLICA_ANALYSIS_SCHEMA_VERSION,
+                "prompt_compiler_version": PROMPT_COMPILER_VERSION,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
     def _resolve_replica_plans(
         self,
         actor: Actor,
         request: ReplicaBatchCreate,
         *,
-        composition_run: PodBillingRun,
+        composition_run_factory: Callable[[], PodBillingRun],
         generation_strategy: GenerationStrategy = "grid",
     ) -> dict[int, dict[str, Any]]:
         """为每个带 analysis_id 的目标款冻结 ReplicaPlan（缺分析时保持旧行为）。
 
-        含构图计划：先选定全定制构图模板，再由豆包在模板允许范围内选参数，最后把
-        事实/能力/规则/构图/版本一并冻结。``plan_version`` 从 1 起：用户改事实、偏好或
-        模板后走新建批次（新计划版本），旧计划与旧结果原样保留。
+        先按「计划输入指纹」查同款已冻结计划：命中直接复用，不调豆包、不占构图调用；
+        只有没命中时才选定构图模板、调豆包在模板允许范围内选参数，再把事实/能力/
+        规则/构图/版本一并冻结。``plan_version`` 从 1 起：用户改事实、偏好或模板后
+        走新建批次（新指纹、新计划），旧计划与旧结果原样保留。
+
+        ``composition_run_factory`` 惰性创建构图计费 run：全部命中缓存时不会产生
+        任何构图计费动作。
         """
         if not any(target.analysis_id for target in request.targets):
             return {}
         template = self.resolve_replica_composition_template(actor, request.composition_id)
-        call_ids = tuple(
-            call.call_id for call in composition_run.plan.calls if call.feature == "pod.title"
-        )
+        composition_run: PodBillingRun | None = None
+        call_ids: tuple[str, ...] = ()
+
+        def composition_calls(style_index: int) -> tuple[tuple[str, ...], PodBillingRun]:
+            """取该款的构图调用 id；首次调用时才冻结构图计费 run。"""
+            nonlocal composition_run, call_ids
+            if composition_run is None:
+                composition_run = composition_run_factory()
+                call_ids = tuple(
+                    call.call_id for call in composition_run.plan.calls if call.feature == "pod.title"
+                )
+            run = composition_run
+            return tuple(cid for cid in call_ids if f":composition:{style_index}:" in cid), run
+
         plans: dict[int, dict[str, Any]] = {}
+        # 同批次内同指纹也只推一次：款表落库发生在全部计划解析之后，
+        # 单靠库内指纹查不到同批刚算出的计划。
+        fresh_plans: dict[str, ReplicaPlan] = {}
         for style_index, target in enumerate(request.targets, start=1):
             if not target.analysis_id:
                 continue
@@ -746,7 +809,34 @@ class PodCustomizationService:
                 )
             except ReplicaPlanNotReadyError as exc:
                 raise PodRepositoryError(str(exc), 400) from exc
-            style_calls = tuple(cid for cid in call_ids if f":composition:{style_index}:" in cid)
+
+            fingerprint = self._replica_plan_fingerprint(
+                source_spec=source_spec,
+                target_spec=target_spec,
+                capabilities=capabilities,
+                rules=rules,
+                preferences=preferences,
+                template=template,
+                generation_strategy=generation_strategy,
+            )
+            reused: ReplicaPlan | None = fresh_plans.get(fingerprint)
+            if reused is None:
+                cached = self.repository.find_frozen_replica_plan(
+                    actor.workspace_id, actor.id, fingerprint
+                )
+                if cached is not None:
+                    reused = ReplicaPlan.model_validate_json(cached["replica_plan_json"])
+            if reused is not None:
+                # 同输入同计划：复用旧冻结计划，跳过豆包。仅刷新生图模型记录。
+                reused = reused.model_copy(
+                    update={"image_model_version": resolve_pod_image_model()}
+                )
+                plans[style_index] = self._replica_plan_row(
+                    target.analysis_id, reused, fingerprint
+                )
+                continue
+
+            style_calls, composition_run_for_style = composition_calls(style_index)
             if not style_calls:
                 raise RuntimeError("复刻构图计划缺少冻结的 provider 调用")
             composition_plan = self.analysis_runtime.generate_composition_plan(
@@ -758,11 +848,11 @@ class PodCustomizationService:
                     rule_set=rules,
                     preferences=preferences,
                 ),
-                grant=composition_run.grant,
+                grant=composition_run_for_style.grant,
                 call_id=style_calls[0],
                 call_ids=style_calls,
-                on_start=lambda cid: composition_run.start(cid, "pod.title"),
-                on_outcome=lambda cid, status: composition_run.record(cid, "pod.title", status),
+                on_start=lambda cid: composition_run_for_style.start(cid, "pod.title"),
+                on_outcome=lambda cid, status: composition_run_for_style.record(cid, "pod.title", status),
             )
             plan = ReplicaPlan(
                 source_artwork_spec=source_spec,
@@ -781,17 +871,26 @@ class PodCustomizationService:
             )
             # 冻结真实最终 Prompt：生成/重试/恢复都直接复用这份文本。
             plan = plan.model_copy(update={"compiled_prompt": compile_replica_prompt(plan)})
-            plans[style_index] = {
-                "analysis_id": target.analysis_id,
-                "replica_plan_json": plan.model_dump_json(),
-                "prompt_snapshot": plan.compiled_prompt,
-                "capability_registry_version": plan.capability_registry_version,
-                "rule_version": plan.rule_version,
-                "template_version": plan.composition_template_version,
-                "compiler_version": plan.prompt_compiler_version,
-                "generation_strategy": plan.generation_strategy,
-            }
+            fresh_plans[fingerprint] = plan
+            plans[style_index] = self._replica_plan_row(target.analysis_id, plan, fingerprint)
         return plans
+
+    @staticmethod
+    def _replica_plan_row(
+        analysis_id: str, plan: ReplicaPlan, fingerprint: str
+    ) -> dict[str, Any]:
+        """把冻结计划展开成款表一行所需的快照字段。"""
+        return {
+            "analysis_id": analysis_id,
+            "replica_plan_json": plan.model_dump_json(),
+            "prompt_snapshot": plan.compiled_prompt,
+            "capability_registry_version": plan.capability_registry_version,
+            "rule_version": plan.rule_version,
+            "template_version": plan.composition_template_version,
+            "compiler_version": plan.prompt_compiler_version,
+            "generation_strategy": plan.generation_strategy,
+            "plan_fingerprint": fingerprint,
+        }
 
 
     def list_semi_batches(self, actor: Actor, *, limit: int = 20, offset: int = 0) -> dict[str, Any]:

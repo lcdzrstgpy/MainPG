@@ -902,8 +902,8 @@ class PodCustomizationRepository:
                     """INSERT INTO pod_customization_replica_targets
                        (batch_id, style_index, asset_id, business_fields_json, listing_fields_json, created_at,
                         analysis_id, replica_plan_json, prompt_snapshot, capability_registry_version,
-                        rule_version, template_version, compiler_version, generation_strategy)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        rule_version, template_version, compiler_version, generation_strategy, plan_fingerprint)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     [
                         (
                             batch_id,
@@ -923,6 +923,7 @@ class PodCustomizationRepository:
                             str(plan_map.get(style_index, {}).get("template_version") or ""),
                             str(plan_map.get(style_index, {}).get("compiler_version") or ""),
                             str(plan_map.get(style_index, {}).get("generation_strategy") or ""),
+                            str(plan_map.get(style_index, {}).get("plan_fingerprint") or ""),
                         )
                         for style_index, asset, target in target_rows
                     ],
@@ -1045,6 +1046,30 @@ class PodCustomizationRepository:
         if row is None:
             raise PodRepositoryError("POD 复刻分析记录不存在", 404)
         return dict(row)
+
+    def find_frozen_replica_plan(
+        self, workspace_id: str, owner_user_id: str, plan_fingerprint: str
+    ) -> dict[str, Any] | None:
+        """按计划输入指纹查该用户已冻结的同款计划；无命中返回 None。
+
+        命中即复用，不再调用豆包重推构图参数——同一份分析/事实覆盖/展示偏好/
+        构图模板/版本必须得到同一份 ``ReplicaPlan``。只在本用户自己的批次里找，
+        跨用户绝不复用。
+        """
+        if not plan_fingerprint:
+            return None
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT t.replica_plan_json
+                   FROM pod_customization_replica_targets AS t
+                   JOIN pod_customization_batches AS b ON b.batch_id = t.batch_id
+                   WHERE b.workspace_id = ? AND b.owner_user_id = ?
+                     AND t.plan_fingerprint = ?
+                     AND t.replica_plan_json IS NOT NULL AND t.replica_plan_json != ''
+                   ORDER BY t.rowid DESC LIMIT 1""",
+                (workspace_id, owner_user_id, plan_fingerprint),
+            ).fetchone()
+        return dict(row) if row is not None else None
 
     def preflight_batch(self, workspace_id: str, owner_user_id: str, request: BatchCreate) -> None:
         """Validate all stable local prerequisites before remote points are frozen."""

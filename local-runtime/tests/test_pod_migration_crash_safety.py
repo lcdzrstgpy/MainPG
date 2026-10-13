@@ -41,6 +41,7 @@ MIGRATION_NAMES = (
     "019_drop_template_calibration",
     "020_replica_analysis_plan",
     "021_composition_scope",
+    "022_replica_plan_fingerprint",
 )
 
 

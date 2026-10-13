@@ -451,6 +451,14 @@ POD_MIGRATION_CONTRACTS: dict[str, MigrationEffect] = {
             ),
         },
     ),
+    "022_replica_plan_fingerprint": MigrationEffect(
+        column_additions={"pod_customization_replica_targets": ("plan_fingerprint",)},
+        indexes={
+            "idx_pod_replica_targets_plan_fingerprint": _index(
+                "pod_customization_replica_targets", "plan_fingerprint"
+            ),
+        },
+    ),
 }
 
 
