@@ -1,8 +1,16 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 
 import { BRAND_LOGO_URL, BRAND_NAME } from "../../../shared/brand";
 import { resetMessagesSync, syncMessages } from "../../../shared/api/messagesApi";
 import { httpJson, saveAuthSession } from "../../../transport/http/client";
+import {
+  clearSavedPassword,
+  deleteSavedLogin,
+  fetchSavedLogins,
+  revealSavedPassword,
+  saveLogin,
+} from "../loginCredentials";
+import { matchSavedAccount, type SavedLoginAccount } from "../loginCredentialsModel";
 
 type AuthPageProps = { onEnter: () => void };
 type AuthMode = "login" | "register" | "forgot";
@@ -77,6 +85,15 @@ export function AuthPage({ onEnter }: AuthPageProps) {
   });
   // 政策同意：登录与注册均需勾选《界野隐私政策》后才可提交。
   const [agreed, setAgreed] = useState(false);
+  // 账号管理：本机保存登录过的账号（含可选保存的密码，见 loginCredentials.ts）。
+  // 列表来自本地加密存储；本地服务不可用时静默为空，登录流程不受影响。
+  const [savedAccounts, setSavedAccounts] = useState<SavedLoginAccount[]>([]);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  // 「记住密码」默认不勾；勾选（或选中已保存密码的账号）时登录成功才保存密码。
+  const [rememberPassword, setRememberPassword] = useState(false);
+  const accountFieldRef = useRef<HTMLDivElement | null>(null);
+  const identifierRef = useRef(identifier);
+  const pickSequenceRef = useRef(0);
 
   useEffect(() => {
     if (codeCooldown <= 0) return;
@@ -93,6 +110,86 @@ export function AuthPage({ onEnter }: AuthPageProps) {
     }, 1000);
     return () => window.clearInterval(timer);
   }, [forgotCodeCooldown]);
+
+  // 记录最新账号输入值：异步取回密码时用于判断选择是否已被后续操作覆盖。
+  useEffect(() => {
+    identifierRef.current = identifier;
+  }, [identifier]);
+
+  // 登录页加载：拉取本机保存的账号，自动填充最近使用的账号（及其密码），
+  // 让高频用户打开即登录；仅在用户尚未输入时填充，不覆盖手输内容。
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const accounts = await fetchSavedLogins();
+      if (cancelled || accounts.length === 0) return;
+      setSavedAccounts(accounts);
+      const latest = accounts[0];
+      setIdentifier((current) => current || latest.identifier);
+      if (latest.has_password) {
+        // 已保存过密码：勾选框回显为「记住」，并尽力取回密码填充。
+        setRememberPassword(true);
+        const pwd = await revealSavedPassword(latest.identifier);
+        if (!cancelled && pwd) setPassword((current) => current || pwd);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // 账号下拉：点击字段以外区域或按 Esc 关闭。
+  useEffect(() => {
+    if (!accountMenuOpen) return;
+    function handlePointerDown(event: MouseEvent) {
+      if (!accountFieldRef.current?.contains(event.target as Node)) {
+        setAccountMenuOpen(false);
+      }
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setAccountMenuOpen(false);
+    }
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [accountMenuOpen]);
+
+  function handleIdentifierChange(value: string) {
+    setIdentifier(value);
+    // 手输值与已保存账号精确一致时回显其「记住密码」状态；否则回到默认不勾。
+    const match = matchSavedAccount(savedAccounts, value);
+    setRememberPassword(Boolean(match?.has_password));
+  }
+
+  async function pickSavedAccount(account: SavedLoginAccount) {
+    setIdentifier(account.identifier);
+    setAccountMenuOpen(false);
+    setRememberPassword(account.has_password);
+    if (!account.has_password) {
+      setPassword("");
+      return;
+    }
+    const sequence = ++pickSequenceRef.current;
+    const pwd = await revealSavedPassword(account.identifier);
+    // 慢响应守卫：期间又选了别的账号或改动了输入框则丢弃本次填充。
+    if (
+      pickSequenceRef.current !== sequence ||
+      identifierRef.current.trim() !== account.identifier
+    ) {
+      return;
+    }
+    setPassword(pwd ?? "");
+  }
+
+  async function removeSavedAccount(target: string) {
+    await deleteSavedLogin(target);
+    const next = savedAccounts.filter((item) => item.identifier !== target);
+    setSavedAccounts(next);
+    if (next.length === 0) setAccountMenuOpen(false);
+  }
 
   async function handleSendEmailCode() {
     setError("");
@@ -164,6 +261,8 @@ export function AuthPage({ onEnter }: AuthPageProps) {
         token: "",
       });
       if (data.ok === false) throw new Error(data.message ?? "重置失败");
+      // 密码已重置：清掉本机此前保存的该账号旧密码，避免下次自动填入过期密码。
+      void clearSavedPassword(forgotEmail.trim());
       setMode("login");
       setForgotEmail("");
       setForgotCode("");
@@ -199,6 +298,9 @@ export function AuthPage({ onEnter }: AuthPageProps) {
       });
       if (!data.token) throw new Error("登录失败：服务端未返回登录凭证");
       saveAuthSession(data.token, data.account ?? {});
+      // 登录成功：记住账号（勾了「记住密码」才连同密码保存）；失败静默，
+      // 不阻塞进入工作台（本地请求毫秒级，页面切换不影响其完成）。
+      void saveLogin(identifier.trim(), password, rememberPassword);
       // 换号后本地消息表还留着上一个账号的定向公告：立刻同步一次，让服务端
       // 在线列表把无关消息撤回。不 await（登录不该被公告服务拖慢），工作台里
       // 的公告弹窗/消息中心会复用同一个在飞请求先等它完成再渲染。
@@ -262,6 +364,8 @@ export function AuthPage({ onEnter }: AuthPageProps) {
 
   return (
     <main className="auth-screen">
+      <span className="auth-halo auth-halo-a" aria-hidden="true" />
+      <span className="auth-halo auth-halo-b" aria-hidden="true" />
       <section className="auth-brand-card">
         <img className="brand-logo-large" src={BRAND_LOGO_URL} alt={BRAND_NAME} />
         <p className="eyebrow">JIEYE ECOMMERCE PLATFORM</p>
@@ -289,7 +393,23 @@ export function AuthPage({ onEnter }: AuthPageProps) {
           <>
             <form onSubmit={handleSubmit}>
               {isLogin ? (
-                <label>账号（用户名或邮箱）<input type="text" value={identifier} onChange={(e) => setIdentifier(e.target.value)} onInvalid={(e) => e.currentTarget.setCustomValidity("请输入账号")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder="name@example.com" autoComplete="username" required /></label>
+                <div className="auth-saved-field" ref={accountFieldRef}>
+                  <label>账号（用户名或邮箱）<input type="text" value={identifier} onChange={(e) => handleIdentifierChange(e.target.value)} onFocus={() => setAccountMenuOpen(true)} onClick={() => setAccountMenuOpen(true)} onInvalid={(e) => e.currentTarget.setCustomValidity("请输入账号")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder="name@example.com" autoComplete="off" required /></label>
+                  {accountMenuOpen && savedAccounts.length > 0 && (
+                    <div className="auth-saved-menu" role="listbox" aria-label="已保存的账号">
+                      <p className="auth-saved-menu-head">已保存的账号</p>
+                      {savedAccounts.map((account) => (
+                        <div key={account.identifier} role="option" aria-selected={identifier.trim() === account.identifier} tabIndex={0} className="auth-saved-item" onClick={() => void pickSavedAccount(account)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); void pickSavedAccount(account); } }}>
+                          <span className="auth-saved-avatar" aria-hidden="true">{account.identifier.slice(0, 1).toUpperCase()}</span>
+                          <span className="auth-saved-name">{account.identifier}</span>
+                          {account.has_password ? <span className="auth-saved-tag is-on">已记密码</span> : <span className="auth-saved-tag">不含密码</span>}
+                          <button type="button" className="auth-saved-remove" title="移除账号" aria-label={`移除账号 ${account.identifier}`} onClick={(e) => { e.stopPropagation(); void removeSavedAccount(account.identifier); }}>×</button>
+                        </div>
+                      ))}
+                      <p className="auth-saved-menu-foot">登录成功后会记住新账号</p>
+                    </div>
+                  )}
+                </div>
               ) : (
                 <>
                   <label>用户名<input type="text" value={identifier} onChange={(e) => setIdentifier(e.target.value)} onInvalid={(e) => e.currentTarget.setCustomValidity("请输入用户名")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder="例如：ops-team-a" autoComplete="username" required /></label>
@@ -297,7 +417,10 @@ export function AuthPage({ onEnter }: AuthPageProps) {
                   <label>邮箱验证码<div className="auth-code-row"><input type="text" value={emailCode} onChange={(e) => setEmailCode(e.target.value.replace(/\D/g, "").slice(0, 6))} onInvalid={(e) => e.currentTarget.setCustomValidity(e.currentTarget.validity.patternMismatch ? "请输入 6 位数字验证码" : "请输入邮箱验证码")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder="输入 6 位验证码" inputMode="numeric" autoComplete="one-time-code" pattern="\d{6}" required /><button type="button" onClick={handleSendEmailCode} disabled={codeBusy || codeCooldown > 0}>{codeBusy ? "发送中…" : codeCooldown > 0 ? `${codeCooldown}s 后重发` : "获取验证码"}</button></div></label>
                 </>
               )}
-              <label>密码<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} onInvalid={(e) => e.currentTarget.setCustomValidity("请输入密码")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder={isLogin ? "输入密码" : "至少 8 位"} autoComplete={isLogin ? "current-password" : "new-password"} required /></label>
+              {/* 密码框统一 new-password：密码记忆由应用内「账号管理」接管（登录页下拉自动
+                  填充），避免浏览器原生密码管理器重复弹窗、且其自动填充不会同步进受控组件。 */}
+              <label>密码<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} onInvalid={(e) => e.currentTarget.setCustomValidity("请输入密码")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder={isLogin ? "输入密码" : "至少 8 位"} autoComplete="new-password" required /></label>
+              {isLogin && <label className="auth-agree auth-remember"><input type="checkbox" checked={rememberPassword} onChange={(e) => setRememberPassword(e.target.checked)} /><span>记住密码，下次自动填充</span></label>}
               {!isLogin && <label>确认密码<input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} onInvalid={(e) => e.currentTarget.setCustomValidity("请再次输入密码")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder="再次输入密码" autoComplete="new-password" required /></label>}
               {!isLogin && <label>邀请码<input type="text" value={invitationCode} onChange={(e) => setInvitationCode(e.target.value)} placeholder="选填" autoComplete="off" /></label>}
               <label className="auth-agree"><input type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} /><span>我已阅读并同意 <a className="link-button" href="/privacy" target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}>《界野隐私政策》</a></span></label>

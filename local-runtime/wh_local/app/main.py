@@ -66,6 +66,10 @@ from ..data_collection.shop_routes import (
 )
 from ..data_collection.shop_worker import ShopCollectionWorker
 from ..db import init_db
+from ..login_credentials import (
+    LoginCredentialStore,
+    create_router as create_login_credentials_router,
+)
 from ..modules.basic_settings.router import create_router as create_basic_settings_router
 from ..modules.themes.router import create_themes_router
 from ..modules.ai_service import create_router as create_ai_service_router
@@ -619,6 +623,14 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         app.include_router(create_admin_proxy_router(remote_customer_auth, customer_sessions))
 
     app.include_router(create_basic_settings_router(db_path))
+    # 登录页「账号管理」：本地记住登录过的账号与（可选保存的）密码，DPAPI 加密
+    # 存储于数据目录。登录页调用时用户尚未登录，因此不挂业务会话鉴权；服务仅
+    # 监听回环地址，与本机浏览器存储同属「本机信任域」。
+    app.include_router(
+        create_login_credentials_router(
+            LoginCredentialStore(config.data_dir / "login-credentials.bin")
+        )
+    )
     app.include_router(create_clipforge_router(clipforge))
     app.state.clipforge_service = clipforge
     # 新手引导配置：前端播放引导时读取，管理员在工作台里可视化编辑后写回。
