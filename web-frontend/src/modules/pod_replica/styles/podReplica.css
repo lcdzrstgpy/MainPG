@@ -377,6 +377,44 @@
   gap: 14px;
 }
 
+/* 抽屉自身滚动，保存条粘在底部，避免用户误以为没有保存入口。 */
+.pod-replica-drawer-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 18px -18px -18px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--pod-border);
+  background: var(--pod-surface, #fff);
+}
+
+.pod-replica-drawer-footer > span {
+  color: var(--pod-text-muted);
+  font-size: 12px;
+}
+
+.pod-replica-drawer-footer > button {
+  flex: 0 0 auto;
+  padding: 9px 16px;
+  border: 1px solid var(--pod-border-strong);
+  border-radius: 9px;
+  background: var(--pod-surface);
+  color: var(--pod-text-secondary);
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.pod-replica-drawer-footer > button.is-primary {
+  border-color: transparent;
+  color: var(--theme-on-primary, #fff);
+  background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0));
+}
+
 .pod-replica-name-field {
   display: flex;
   flex-direction: column;

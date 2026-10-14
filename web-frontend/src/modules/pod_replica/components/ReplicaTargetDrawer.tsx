@@ -187,6 +187,11 @@ export function ReplicaTargetDrawer({
             onOpenSpecCardDrawer={() => onOpenSpecCardDrawer(target.clientId)}
           />
         </div>
+
+        <footer className="pod-replica-drawer-footer">
+          <span>改动实时保存到本批次草稿，提交时一并生效。</span>
+          <button type="button" className="is-primary" onClick={onClose}>保存并关闭</button>
+        </footer>
       </aside>
     </div>,
     document.body,
