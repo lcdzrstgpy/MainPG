@@ -236,3 +236,23 @@ test("confirm summary shows the batch-wide craft and scene fields read-only", ()
   assert.match(source, /<dt>产品工艺<\/dt>/);
   assert.match(source, /<dt>场景基调<\/dt>/);
 });
+
+test("typing into the title/description restriction asks for an explicit confirmation first", () => {
+  const dialogSource = readFileSync(new URL("../components/PodCopyRestrictionsConfirmDialog.tsx", import.meta.url), "utf8");
+  // 红字强提示 + 「依旧填写」/「取消」两个按钮。
+  assert.match(
+    dialogSource,
+    /该提示仅用于极少数需要在标题强制说明的特定品类特点，请谨慎填写，同时极易触发平台标题风控，默认建议留空！！！/,
+  );
+  assert.match(dialogSource, /pod-copy-restrictions-warning/);
+  assert.match(dialogSource, />取消<\/button>/);
+  assert.match(dialogSource, />依旧填写<\/button>/);
+  assert.match(styles, /\.pod-copy-restrictions-warning \{[^}]*color: #c0392b;/);
+  // 输入先走统一入口：copy_restrictions 有新内容且未确认时打开确认弹窗。
+  assert.match(source, /handleBusinessFieldInput\(field\.key, event\.currentTarget\.value\)/);
+  assert.match(source, /key === "copy_restrictions"[\s\S]{0,400}setCopyRestrictionsOpen\(true\)/);
+  // 取消回退本次输入；确认后本次编辑期间不再重复弹窗。
+  assert.match(source, /updateBusinessField\("copy_restrictions", copyRestrictionsRestoreRef\.current\)/);
+  assert.match(source, /const \[copyRestrictionsConfirmed, setCopyRestrictionsConfirmed\] = useState\(false\)/);
+  assert.match(source, /<PodCopyRestrictionsConfirmDialog[\s\S]{0,200}onKeep=\{keepCopyRestrictions\}[\s\S]{0,120}onCancel=\{cancelCopyRestrictions\}/);
+});

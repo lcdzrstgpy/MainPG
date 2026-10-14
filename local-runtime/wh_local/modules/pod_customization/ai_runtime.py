@@ -540,6 +540,11 @@ def _resolve_pod_image_model() -> str:
     return POD_IMAGE_MODEL_DEFAULT
 
 
+def resolve_pod_image_model() -> str:
+    """公开入口：当前 POD 生图模型版本（用于随计划冻结，便于事后归因）。"""
+    return _resolve_pod_image_model()
+
+
 def _suchuang_size(value: str | None) -> str:
     raw = str(value or "").strip().lower()
     if raw in {"1024x1024", "2048x2048", "4096x4096"}:

@@ -7,6 +7,8 @@ import { replicaAssetPath } from "../data/podReplicaModel";
 export type ReplicaSourceView = {
   assetId: string;
   filename: string;
+  /** 原素材识别结果是否已被用户确认（有低置信度字段时才需要）。 */
+  confirmed?: boolean;
 } | null;
 
 type Props = {

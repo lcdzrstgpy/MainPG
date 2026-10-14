@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  applyReplicaAnalysis,
   buildReplicaBatchRequest,
   copyReplicaListingInfo,
   createEmptyReplicaTarget,
@@ -9,14 +10,22 @@ import {
   firstInvalidReplicaTargetIndex,
   isReplicaTargetComplete,
   nextReplicaClientId,
+  parseReplicaListFact,
+  replicaAnalysesConfirmed,
+  replicaAnalysisBlockReason,
+  replicaEffectiveFactText,
+  replicaFactText,
+  replicaSourceNeedsConfirmation,
   replicaFeeEstimate,
   replicaFeeEstimateText,
   removeReplicaTarget,
+  setReplicaFactOverrides,
   validateReplicaTargetDraft,
   type ReplicaTargetDraft,
 } from "./podReplicaModel.ts";
+import type { ReplicaAnalyzeResponse, ReplicaSpec } from "../types.ts";
 
-/** 构造一份可通过校验的目标产品：白底图 + 名称 + 类目 + 售价 + 一个合法 SKU + 已填尺寸。 */
+/** 构造一份可通过校验的目标产品：白底图 + 名称 + 类目 + 售价 + 一个合法 SKU + 已填尺寸 + 已确认识图。 */
 function validTarget(overrides: Partial<ReplicaTargetDraft> = {}): ReplicaTargetDraft {
   const base = createEmptyReplicaTarget("client-1");
   return {
@@ -28,7 +37,6 @@ function validTarget(overrides: Partial<ReplicaTargetDraft> = {}): ReplicaTarget
     productName: "抱枕",
     listingFields: {
       title_mode: "long",
-      suggested_price_usd: "19.99",
       category_name: "抱枕",
       skus: [{ name: "40cm", declared_price: "6", weight_g: "300" }],
     },
@@ -42,6 +50,9 @@ function validTarget(overrides: Partial<ReplicaTargetDraft> = {}): ReplicaTarget
         ["40cm", "40", "40", "10"],
       ],
     },
+    // 提交门禁：该款识图必须已确认。
+    analysisId: "analysis-1",
+    analysisStatus: "confirmed",
     ...overrides,
   };
 }
@@ -67,13 +78,13 @@ test("field validation requires product name, category, SKU numbers and a config
 
   // 类目必填复用全定制 listingFieldsForApi 的既有口径。
   const missingCategory = validTarget({
-    listingFields: { title_mode: "long", suggested_price_usd: "19.99", category_name: "", skus: [{ name: "40cm", declared_price: "6", weight_g: "300" }] },
+    listingFields: { title_mode: "long", category_name: "", skus: [{ name: "40cm", declared_price: "6", weight_g: "300" }] },
   });
   assert.deepEqual(validateReplicaTargetDraft(missingCategory), { ok: false, error: "请填写店小秘类目。" });
 
   // SKU 申报价 / 重量约束同样复用 helper。
   const badPrice = validTarget({
-    listingFields: { title_mode: "long", suggested_price_usd: "19.99", category_name: "抱枕", skus: [{ name: "40cm", declared_price: "0", weight_g: "300" }] },
+    listingFields: { title_mode: "long", category_name: "抱枕", skus: [{ name: "40cm", declared_price: "0", weight_g: "300" }] },
   });
   assert.equal(validateReplicaTargetDraft(badPrice).ok, false);
 
@@ -103,7 +114,6 @@ test("buildReplicaBatchRequest keeps target order, snake_case shape and an empty
   assert.equal(request.creative_prompt, "");
   assert.deepEqual(request.targets.map((target) => target.target_asset_id), ["asset_a", "asset_b"]);
   assert.deepEqual(request.targets.map((target) => target.product_name), ["抱枕", "收纳篮"]);
-  assert.equal(request.targets[0].listing_fields.suggested_price_usd, 19.99);
   assert.equal(request.targets[0].listing_fields.skus[0].declared_price, 6);
   assert.equal(request.targets[0].listing_fields.spec_card?.cells[1][1], "40");
 });
@@ -131,7 +141,6 @@ test("copying another product's listing info deep-copies SKUs and spec card whil
   assert.equal(copied.listingFields.category_name, "抱枕");
 
   // 上架信息 / SKU / 规格卡来自来源且为深拷贝。
-  assert.equal(copied.listingFields.suggested_price_usd, source.listingFields.suggested_price_usd);
   assert.notEqual(copied.listingFields.skus, source.listingFields.skus);
   copied.listingFields.skus[0].name = "改动";
   copied.specCard.cells[1][1] = "999";
@@ -148,8 +157,110 @@ test("deepCopyReplicaTarget and removeReplicaTarget do not mutate the original l
   assert.equal(original.length, 2);
 });
 
+test("source confirmation flag follows A confidence and rides the batch payload", () => {
+  const ok = validTarget({ sourceNeedsConfirmation: false });
+  const needs = validTarget({ sourceNeedsConfirmation: true });
+  assert.equal(replicaSourceNeedsConfirmation([ok]), false);
+  assert.equal(replicaSourceNeedsConfirmation([ok, needs]), true);
+
+  const request = buildReplicaBatchRequest({
+    client_request_id: "req-src",
+    source_asset_id: "asset_source",
+    source_confirmed: true,
+    targets: [ok],
+  });
+  assert.equal(request.source_confirmed, true);
+  assert.equal(
+    buildReplicaBatchRequest({ client_request_id: "req-src2", source_asset_id: "asset_source", targets: [ok] }).source_confirmed,
+    false,
+  );
+});
+
 test("fee estimate follows the full-custom per-product billing range", () => {
   assert.deepEqual(replicaFeeEstimate(0), { min: 0, max: 0 });
   assert.deepEqual(replicaFeeEstimate(2), { min: 80, max: 100 });
   assert.equal(replicaFeeEstimateText(3), "约 120–150 积分");
+});
+
+test("submit gate requires every target to be confirmed", () => {
+  const pending = validTarget({ analysisStatus: "pending", analysisId: "" });
+  assert.equal(replicaAnalysesConfirmed([validTarget()]), true);
+  assert.equal(replicaAnalysesConfirmed([validTarget(), pending]), false);
+  assert.equal(replicaAnalysesConfirmed([]), false);
+
+  assert.equal(replicaAnalysisBlockReason(pending), "请等待识图分析完成。");
+  assert.equal(replicaAnalysisBlockReason(validTarget({ analysisStatus: "analyzing" })), "识图分析进行中，请稍候。");
+  assert.equal(replicaAnalysisBlockReason(validTarget({ analysisStatus: "needs_confirmation" })), "请先确认识别结果。");
+  assert.equal(replicaAnalysisBlockReason(validTarget({ analysisStatus: "failed" })), "识图分析失败，请重新分析。");
+  assert.equal(validateReplicaTargetDraft(pending).ok, false);
+});
+
+function analysisResponse(overrides: Partial<ReplicaAnalyzeResponse> = {}): ReplicaAnalyzeResponse {
+  return {
+    analysis_id: "a1",
+    status: "succeeded",
+    source_asset_id: "asset_source",
+    target_asset_id: "asset_target",
+    source: {},
+    target: {},
+    source_needs_confirmation: false,
+    target_needs_confirmation: false,
+    candidate_capabilities: ["multi_piece"],
+    unknown_capability: [],
+    model_version: "m",
+    schema_version: "s",
+    error_code: "",
+    ...overrides,
+  };
+}
+
+test("applyReplicaAnalysis confirms high-confidence results and flags low-confidence ones", () => {
+  const base = createEmptyReplicaTarget("c1");
+
+  const high = applyReplicaAnalysis(base, analysisResponse());
+  assert.equal(high.analysisStatus, "confirmed");
+  assert.equal(high.analysisId, "a1");
+  assert.deepEqual(high.candidateCapabilities, ["multi_piece"]);
+
+  const low = applyReplicaAnalysis(base, analysisResponse({ target_needs_confirmation: true }));
+  assert.equal(low.analysisStatus, "needs_confirmation");
+
+  const failed = applyReplicaAnalysis(base, analysisResponse({ status: "failed", error_code: "boom" }));
+  assert.equal(failed.analysisStatus, "failed");
+  assert.equal(failed.analysisError, "boom");
+});
+
+test("fact overrides take precedence over recognised values and mark the target confirmed", () => {
+  const spec: ReplicaSpec = {
+    product_type: { value: "抱枕", confidence: 0.9, source: "model" },
+    printable_regions: { value: ["正面"], confidence: 0.3, source: "model" },
+  };
+  const target = validTarget({ analysisStatus: "needs_confirmation", targetProductSpec: spec });
+  assert.equal(replicaEffectiveFactText(target, "product_type"), "抱枕");
+  assert.equal(replicaEffectiveFactText(target, "printable_regions"), "正面");
+
+  const corrected = setReplicaFactOverrides(target, {
+    product_type: "方形抱枕",
+    printable_regions: parseReplicaListFact("正面、背面"),
+  });
+  assert.equal(corrected.analysisStatus, "confirmed");
+  assert.equal(replicaEffectiveFactText(corrected, "product_type"), "方形抱枕");
+  assert.equal(replicaEffectiveFactText(corrected, "printable_regions"), "正面、背面");
+  assert.deepEqual(parseReplicaListFact("a、b, c"), ["a", "b", "c"]);
+});
+
+test("english fact identifiers are shown as chinese and unknown values pass through", () => {
+  const spec: ReplicaSpec = {
+    product_type: { value: "duffel_bag", confidence: 0.9, source: "model" },
+    material: { value: "gel", confidence: 0.9, source: "model" },
+    supported_usage_modes: { value: ["hand_carried", "wall_mounted"], confidence: 0.9, source: "model" },
+    // 词表里没有的值原样显示，绝不吞掉或编造。
+    surface_texture: { value: "mystery_finish", confidence: 0.9, source: "model" },
+  };
+  const target = validTarget({ targetProductSpec: spec });
+  assert.equal(replicaFactText(spec, "product_type"), "圆筒旅行包");
+  assert.equal(replicaFactText(spec, "material"), "凝胶");
+  assert.equal(replicaFactText(spec, "supported_usage_modes"), "手提、墙面悬挂");
+  assert.equal(replicaFactText(spec, "surface_texture"), "mystery_finish");
+  assert.equal(replicaEffectiveFactText(target, "supported_usage_modes"), "手提、墙面悬挂");
 });

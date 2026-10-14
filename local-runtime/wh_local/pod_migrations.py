@@ -404,6 +404,61 @@ POD_MIGRATION_CONTRACTS: dict[str, MigrationEffect] = {
             ),
         },
     ),
+    "020_replica_analysis_plan": MigrationEffect(
+        tables={
+            "pod_customization_replica_analyses": _table(
+                "analysis_id workspace_id owner_user_id source_asset_id target_asset_id "
+                "analysis_version status source_spec_json target_spec_json raw_source_json "
+                "raw_target_json model_version schema_version error_code created_at updated_at",
+                checks=("CHECK (status IN ('succeeded', 'failed'))",),
+            ),
+            "pod_customization_replica_targets": _table(
+                "batch_id style_index asset_id business_fields_json listing_fields_json created_at "
+                "analysis_id replica_plan_json prompt_snapshot capability_registry_version "
+                "rule_version template_version compiler_version generation_strategy",
+                checks=("CHECK (style_index >= 1)",),
+            ),
+        },
+        column_additions={
+            "pod_customization_replica_targets": (
+                "analysis_id",
+                "replica_plan_json",
+                "prompt_snapshot",
+                "capability_registry_version",
+                "rule_version",
+                "template_version",
+                "compiler_version",
+                "generation_strategy",
+            )
+        },
+        indexes={
+            "idx_pod_replica_analyses_owner": _index(
+                "pod_customization_replica_analyses",
+                "workspace_id owner_user_id created_at",
+                descending=(False, False, True),
+            ),
+            "idx_pod_replica_analyses_pair": _index(
+                "pod_customization_replica_analyses",
+                "workspace_id owner_user_id source_asset_id target_asset_id analysis_version",
+            ),
+        },
+    ),
+    "021_composition_scope": MigrationEffect(
+        column_additions={"pod_customization_compositions": ("scope",)},
+        indexes={
+            "idx_pod_compositions_scope": _index(
+                "pod_customization_compositions", "workspace_id owner_user_id scope"
+            ),
+        },
+    ),
+    "022_replica_plan_fingerprint": MigrationEffect(
+        column_additions={"pod_customization_replica_targets": ("plan_fingerprint",)},
+        indexes={
+            "idx_pod_replica_targets_plan_fingerprint": _index(
+                "pod_customization_replica_targets", "plan_fingerprint"
+            ),
+        },
+    ),
 }
 
 

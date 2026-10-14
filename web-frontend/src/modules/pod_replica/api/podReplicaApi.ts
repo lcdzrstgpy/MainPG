@@ -1,6 +1,8 @@
 import { getAuthToken, httpJson, toUserMessage } from "../../../transport/http/client";
 import type {
   CreateReplicaBatchRequest,
+  ReplicaAnalyzeRequest,
+  ReplicaAnalyzeResponse,
   ReplicaBatch,
   ReplicaBatchListResponse,
   ReplicaImageRole,
@@ -50,6 +52,11 @@ async function assetExists(assetId: string): Promise<boolean> {
 
 export const podReplicaApi = {
   uploadImage,
+  /** 识图分析 A/B 两张图：一次一目标，返回事实、候选标签与版本。 */
+  analyzeAssets: (body: ReplicaAnalyzeRequest) => httpJson<ReplicaAnalyzeResponse>(`${API_BASE}/replica/analyze`, {
+    method: "POST",
+    body,
+  }),
   createBatch: (body: CreateReplicaBatchRequest) => httpJson<ReplicaBatch>(`${API_BASE}/replica/batches`, {
     method: "POST",
     body,

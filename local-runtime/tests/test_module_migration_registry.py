@@ -55,6 +55,9 @@ def test_pod_customization_migrations_are_registered_in_forward_order() -> None:
         "pod_customization:017_pod_composition",
         "pod_customization:018_pod_composition_templates",
         "pod_customization:019_drop_template_calibration",
+        "pod_customization:020_replica_analysis_plan",
+        "pod_customization:021_composition_scope",
+        "pod_customization:022_replica_plan_fingerprint",
     ]
 
 

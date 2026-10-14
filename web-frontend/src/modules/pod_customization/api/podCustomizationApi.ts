@@ -11,6 +11,7 @@ import type {
   PodComposition,
   PodCompositionListResponse,
   PodCompositionPanelsZh,
+  PodCompositionScope,
   PodMiaoshouTemplateKind,
   PodStyleTitle,
   PodTemplate,
@@ -21,6 +22,11 @@ import type {
 } from "../types";
 
 const API_BASE = "/api/pod-customization";
+
+/** 构图模板池的 query 片段：默认 full 不追加，replica 才显式带上，保持旧请求形状。 */
+function compositionScopeQuery(scope: PodCompositionScope): string {
+  return scope === "replica" ? "?scope=replica" : "";
+}
 
 // 智能前置层生成为大输出（40+ 元素 / 10+ 配色 / 12+ 禁用项），沿用默认 30s 会被前端提前中断。
 // 后端最坏为 3 次尝试 × 90s 单次超时，这里给到 300s，确保拿到后端的结果或真实错误再收尾。
@@ -146,14 +152,19 @@ export const podCustomizationApi = {
     `${API_BASE}/brief/fields`,
     { method: "POST", body, timeoutMs: BRIEF_GENERATE_TIMEOUT_MS },
   ),
-  // 构图/视角定制：一段大白话 → 四格画面指令，并覆盖为该账号的最新构图（免费）。
-  generateComposition: (body: { brief: string; locale?: string }) => httpJson<PodComposition>(
-    `${API_BASE}/compositions`,
+  // 构图/视角定制：一段大白话 → 四格画面指令，并覆盖为该账号该模块的最新构图（免费）。
+  // scope 区分模板池：full=全定制（默认），replica=爆款复刻；两池各自独立生效。
+  generateComposition: (body: { brief: string; name?: string; locale?: string }, scope: PodCompositionScope = "full") => httpJson<PodComposition>(
+    `${API_BASE}/compositions${compositionScopeQuery(scope)}`,
     { method: "POST", body, timeoutMs: COMPOSITION_GENERATE_TIMEOUT_MS },
   ),
-  getLatestComposition: () => httpJson<PodComposition | null>(`${API_BASE}/compositions/latest`),
+  getLatestComposition: (scope: PodCompositionScope = "full") => httpJson<PodComposition | null>(
+    `${API_BASE}/compositions/latest${compositionScopeQuery(scope)}`,
+  ),
   // 构图模板列表（系统内置默认模板排最前，其余生效的排前）。
-  listCompositions: () => httpJson<PodCompositionListResponse>(`${API_BASE}/compositions`),
+  listCompositions: (scope: PodCompositionScope = "full") => httpJson<PodCompositionListResponse>(
+    `${API_BASE}/compositions${compositionScopeQuery(scope)}`,
+  ),
   // 保存对某一份模板的手动编辑：只提交四格中文，后台据此重新转写英文，改原记录、不新增。
   updateComposition: (compositionId: string, body: { panels: PodCompositionPanelsZh }) => httpJson<PodComposition>(
     `${API_BASE}/compositions/${encodeURIComponent(compositionId)}`,
@@ -163,8 +174,8 @@ export const podCustomizationApi = {
     `${API_BASE}/compositions/${encodeURIComponent(compositionId)}`,
     { method: "PATCH", body: { name } },
   ),
-  activateComposition: (compositionId: string) => httpJson<PodComposition>(
-    `${API_BASE}/compositions/${encodeURIComponent(compositionId)}/activate`,
+  activateComposition: (compositionId: string, scope: PodCompositionScope = "full") => httpJson<PodComposition>(
+    `${API_BASE}/compositions/${encodeURIComponent(compositionId)}/activate${compositionScopeQuery(scope)}`,
     { method: "POST", body: {} },
   ),
   deleteComposition: (compositionId: string) => httpJson<{ deleted: boolean }>(

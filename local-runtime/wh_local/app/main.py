@@ -96,6 +96,7 @@ from ..modules.pod_customization.remote_billing import (
 )
 from ..modules.pod_customization.brief_runtime import PodBriefRuntime
 from ..modules.pod_customization.composition_runtime import PodCompositionRuntime
+from ..modules.pod_customization.replica_analysis_runtime import PodReplicaAnalysisRuntime
 from ..modules.pod_customization.title_runtime import PodTitleRuntime
 from ..modules.combo_kit import (
     create_combo_kit_router,
@@ -682,6 +683,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     pod_title_runtime = PodTitleRuntime(executor_workers=8, provider_concurrency=8)
     pod_brief_runtime = PodBriefRuntime(executor_workers=2, provider_concurrency=2)
     pod_composition_runtime = PodCompositionRuntime(executor_workers=2, provider_concurrency=1)
+    pod_replica_analysis_runtime = PodReplicaAnalysisRuntime(executor_workers=2, provider_concurrency=2)
     remote_token_resolver = session_remote_token_resolver(customer_sessions)
     # 让 _provider_config 能拿到远端会话 token：collect-key 已改为按 token 认身份，
     # 没有 token 服务端会拒绝（fail closed）。
@@ -698,6 +700,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         title_runtime=pod_title_runtime,
         brief_runtime=pod_brief_runtime,
         composition_runtime=pod_composition_runtime,
+        analysis_runtime=pod_replica_analysis_runtime,
         billing_coordinator=pod_billing,
     )
     app.include_router(pod_router)
@@ -708,6 +711,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     app.state.pod_customization_title_runtime = pod_title_runtime
     app.state.pod_customization_brief_runtime = pod_brief_runtime
     app.state.pod_customization_composition_runtime = pod_composition_runtime
+    app.state.pod_customization_replica_analysis_runtime = pod_replica_analysis_runtime
 
     # 商品组合套装：独立业务模块，与产品处理 / POD 完全隔离。
     combo_kit_repo = ComboKitRepository(db_path.parent / "combo-kit" / "combo_kit.sqlite3")

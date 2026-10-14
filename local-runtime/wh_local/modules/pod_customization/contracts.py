@@ -5,6 +5,12 @@ from typing import Annotated, Any, Literal, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
 
+from .replica_specs import (
+    FactOverrides,
+    GenerationStrategy,
+    PresentationPreferences,
+)
+
 
 SUPPORTED_PATTERN_COUNTS = (20, 40, 100)
 MIN_STYLE_COUNT = 1
@@ -117,6 +123,11 @@ class BriefFieldResponse(BaseModel):
 #   panel_1 = 主图；panel_2 = 细节图 A；panel_3 = 细节图 B；panel_4 = 素材图。
 # 每格存两份文本：zh 供前端展示与手动编辑，en 由后台转写并注入生图提示词。
 COMPOSITION_PANEL_KEYS = ("panel_1", "panel_2", "panel_3", "panel_4")
+
+# 构图模板模块归属：全定制与爆款复刻各自独立成池、各自独立「生效」，互不覆盖。
+COMPOSITION_SCOPE_FULL = "full"
+COMPOSITION_SCOPE_REPLICA = "replica"
+COMPOSITION_SCOPES = (COMPOSITION_SCOPE_FULL, COMPOSITION_SCOPE_REPLICA)
 COMPOSITION_PANEL_SLOTS = {
     "panel_1": "主图",
     "panel_2": "细节图 A",
@@ -126,6 +137,7 @@ COMPOSITION_PANEL_SLOTS = {
 COMPOSITION_INPUT_MIN_LENGTH = 1
 COMPOSITION_INPUT_MAX_LENGTH = 500
 COMPOSITION_PANEL_MAX_LENGTH = 500
+COMPOSITION_NAME_MAX_LENGTH = 60
 
 
 class CompositionRequest(BaseModel):
@@ -134,6 +146,8 @@ class CompositionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     brief: str = Field(min_length=COMPOSITION_INPUT_MIN_LENGTH, max_length=COMPOSITION_INPUT_MAX_LENGTH)
+    # 用户给这份新模板起的名字；留空时回退到原话摘要（兼容老客户端）。
+    name: str = Field(default="", max_length=COMPOSITION_NAME_MAX_LENGTH)
     locale: str = Field(default="zh-CN", max_length=16)
 
 
@@ -174,9 +188,6 @@ class CompositionUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     panels: CompositionPanelsZh
-
-
-COMPOSITION_NAME_MAX_LENGTH = 60
 
 
 class CompositionRenameRequest(BaseModel):
@@ -226,7 +237,9 @@ class ListingFields(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, allow_inf_nan=False)
 
     title_mode: Literal["long", "short"] = "long"
-    suggested_price_usd: float = Field(strict=True, gt=0)
+    # 店小秘上架不要求建议售价：新客户端不再上报，导出时该列留空。
+    # 保留字段只为兼容旧客户端与历史快照（历史批次 JSON 里可能仍有该键）。
+    suggested_price_usd: float = Field(default=0.0, strict=True, ge=0)
     category_name: str = Field(min_length=1, max_length=120)
     skus: list[ListingSku] = Field(
         min_length=1,
@@ -293,13 +306,31 @@ class ReplicaImageUploadResponse(BaseModel):
 
 
 class ReplicaTargetCreate(BaseModel):
-    """复刻创建时的单项目标产品：一张白底图 + 商品名 + 复用现有上架字段。"""
+    """复刻创建时的单项目标产品：一张白底图 + 商品名 + 复用现有上架字段。
+
+    ``analysis_id`` / ``fact_overrides`` / ``presentation_preferences`` 为识图主流程
+    引入的选填字段：老客户端（无分析）不传时保持既有行为。
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     target_asset_id: str = Field(min_length=1, max_length=64)
     product_name: str = Field(min_length=1, max_length=500)
     listing_fields: ListingFields
+    analysis_id: str = Field(default="", max_length=200)
+    fact_overrides: FactOverrides | None = None
+    presentation_preferences: PresentationPreferences = Field(default_factory=PresentationPreferences)
+
+
+class ReplicaAnalyzeRequest(BaseModel):
+    """识图分析请求：A 原素材图 + B 目标产品图，外加可选的用户覆盖与展示偏好。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_asset_id: str = Field(min_length=1, max_length=64)
+    target_asset_id: str = Field(min_length=1, max_length=64)
+    fact_overrides: FactOverrides | None = None
+    presentation_preferences: PresentationPreferences = Field(default_factory=PresentationPreferences)
 
 
 class ReplicaBatchCreate(BaseModel):
@@ -315,6 +346,11 @@ class ReplicaBatchCreate(BaseModel):
     source_asset_id: str = Field(min_length=1, max_length=64)
     title: str = Field(default="", max_length=120)
     creative_prompt: str = Field(default="", max_length=4000)
+    # 构图模板与生成策略：留空时由服务端按能力推荐 / 冻结计划决定。
+    composition_id: str = Field(default="", max_length=100)
+    generation_strategy: GenerationStrategy | None = None
+    # 原素材（A）识别结果确认：A 有低置信度字段时必须由用户确认后才允许提交。
+    source_confirmed: bool = False
     targets: list[ReplicaTargetCreate] = Field(
         min_length=MIN_REPLICA_TARGETS, max_length=MAX_REPLICA_TARGETS
     )

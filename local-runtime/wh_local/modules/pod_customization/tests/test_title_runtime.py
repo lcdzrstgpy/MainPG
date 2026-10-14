@@ -374,6 +374,31 @@ def test_title_validator_rejects_policy_word_classes(prohibited_content: str) ->
 
 
 @pytest.mark.parametrize(
+    "risky_word",
+    ["gothic", "pentagram", "skull", "dagger", "raven", "coffin", "blood", "replica", "casino", "spider"],
+)
+def test_title_validator_rejects_temu_platform_risk_words(risky_word: str) -> None:
+    """Temu 风控的暗黑/邪典/武器/仿品/赌博类词零容忍，命中即判不合格。"""
+    from wh_local.modules.pod_customization.title_runtime import validate_title_result, title_result_from_dict
+
+    with pytest.raises(ValueError, match="prohibited term"):
+        validate_title_result(
+            title_result_from_dict(_payload(title=_title(f"dark {risky_word} motif", "ocean fern")))
+        )
+
+
+def test_title_contract_normalizes_typographic_punctuation_into_ascii() -> None:
+    """模型写出全角/弯体横杠时先归一成半角 ASCII，标题照样可过审、不再被平台判非英文。"""
+    from wh_local.modules.pod_customization.title_runtime import validate_title_result, title_result_from_dict
+
+    result = title_result_from_dict(_payload(title=_title("moody\u2010toned print", "ocean fern")))
+
+    assert result.title.isascii()
+    assert "moody-toned" in result.title
+    validate_title_result(result)
+
+
+@pytest.mark.parametrize(
     "field,value,expected_reason",
     [
         ("english_title", "Temu exclusive canvas tote", "english_title contains prohibited term"),

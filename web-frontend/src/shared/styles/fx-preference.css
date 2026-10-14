@@ -68,3 +68,25 @@ html[data-fx-ambient="off"] .alpine-meadow-clouds::before,
 html[data-fx-ambient="off"] .alpine-meadow-clouds::after {
   animation: none !important;
 }
+
+/* ---------- 首页常驻装饰：两团流体斑 + hero 流光/扫光 ----------
+   它们同样是「常驻装饰动画」，此前只受流畅模式（display:none）控制、不听「环境动效」开关，
+   导致关掉环境动效后首页仍在动。且流体斑动的是 border-radius 且元素带 blur(30px)，
+   属于全站最贵的常驻动画之一 —— 用户此前根本没有开关能关掉它。 */
+html[data-fx-ambient="off"] .dashboard-page::before,
+html[data-fx-ambient="off"] .dashboard-page::after,
+html[data-fx-ambient="off"] .dashboard-page .page-hero-card::before,
+html[data-fx-ambient="off"] .dashboard-page .page-hero-card::after {
+  animation: none !important;
+}
+
+/* ---------- 顶栏 / 侧栏流光（各主题共用基线）----------
+   文件头声明 ambient=off 应停「顶栏侧栏流光」，但此前只对水墨青黛、暖阳橙写了
+   主题限定规则 → 其余主题（经典/钻石黑/紫罗兰/甜点/怪趣/高山草原/桃花源）的
+   顶栏侧栏流光不受开关控制。这里补一条不带主题限定的通用规则。 */
+html[data-fx-ambient="off"] .topbar-card::before,
+html[data-fx-ambient="off"] .topbar-card::after,
+html[data-fx-ambient="off"] .sidebar-card::before,
+html[data-fx-ambient="off"] .sidebar-card::after {
+  animation: none !important;
+}

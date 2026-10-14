@@ -12,6 +12,7 @@ import { PodFailedRetryDialog } from "../components/PodFailedRetryDialog";
 import { PodResultLightbox } from "../components/PodResultLightbox";
 import { SpecCardDrawer } from "../components/SpecCardDrawer";
 import { TemplateLibraryDrawer } from "../components/TemplateLibraryDrawer";
+import { PodCopyRestrictionsConfirmDialog } from "../components/PodCopyRestrictionsConfirmDialog";
 import { PodUnsavedTemplateConfirmDialog } from "../components/PodUnsavedTemplateConfirmDialog";
 import { PodListingFieldsEditor, validateListingFields, type SkuField } from "../components/PodListingFieldsEditor";
 import {
@@ -101,7 +102,7 @@ const BUSINESS_FIELDS: Array<{
     key: "copy_restrictions",
     label: "标题/描述限制",
     maxLength: POD_COPY_RESTRICTIONS_MAX_LENGTH,
-    placeholder: "谨慎填写：如「标题不要出现刺绣」「明确带上 2D Flat」",
+    placeholder: "例：标题不要出现刺绣",
     hint: "选填，建议留空、谨慎填写。填了就请写明确说法，例如「标题不要出现刺绣」「标题和描述都要明确带上 2D Flat」；该限制只作用于 AI 生成的标题与描述，不影响图片，也不会放宽平台的违禁词、品牌、长度等硬性规则",
   },
 ];
@@ -166,7 +167,6 @@ const EMPTY_BUSINESS_FIELDS_FOR_SWITCH: Record<keyof PodBusinessFieldsDraft, str
 
 const EMPTY_LISTING_FIELDS_FOR_SWITCH: PodListingFieldsDraft = {
   title_mode: "long",
-  suggested_price_usd: "",
   category_name: "",
   skus: [{ name: "", declared_price: "", weight_g: "" }],
 };
@@ -215,6 +215,10 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   const [compositionEditTarget, setCompositionEditTarget] = useState<PodComposition | null>(null);
   const [composition, setComposition] = useState<PodComposition | null>(null);
   const [failedRetryOpen, setFailedRetryOpen] = useState(false);
+  // 「标题/描述限制」的强提示：用户真的输入内容时弹一次，取消则回退本次输入。
+  const [copyRestrictionsOpen, setCopyRestrictionsOpen] = useState(false);
+  const [copyRestrictionsConfirmed, setCopyRestrictionsConfirmed] = useState(false);
+  const copyRestrictionsRestoreRef = useRef("");
   const [pendingTemplateSwitch, setPendingTemplateSwitch] = useState<string | null>(null);
   const [switchingTemplate, setSwitchingTemplate] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -229,6 +233,14 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   const lastDraftSaveErrorRef = useRef("");
   const activeBatchEpochRef = useRef(0);
   const businessTextareasRef = useRef<Array<HTMLTextAreaElement | null>>([]);
+
+  // 文本框高度始终跟随内容：取消填写、套用模板等「程序化改值」不会触发 onChange，
+  // 不重算就会残留上一次输入撑高的内联高度，看起来像弹窗一出现画面就跳。
+  useEffect(() => {
+    businessTextareasRef.current.forEach((element) => {
+      if (element) autoGrowBusinessTextarea(element);
+    });
+  }, [businessFields]);
 
   const selectedTemplate = templates.find((template) => template.id === selectedTemplateId);
   const summaryTemplate = selectedTemplateSnapshot ?? selectedTemplate;
@@ -430,6 +442,33 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     setBusinessFields((current) => ({ ...current, [key]: value }));
   };
 
+  /**
+   * 字段输入统一入口：往「标题/描述限制」里输入内容前先弹一次强提示，
+   * 「取消」回退本次输入，「依旧填写」才保留（本次编辑期间不再重复提示）。
+   */
+  const handleBusinessFieldInput = (key: keyof PodBusinessFieldsDraft, value: string) => {
+    if (key === "copy_restrictions") {
+      if (!value.trim()) {
+        setCopyRestrictionsConfirmed(false);
+      } else if (!copyRestrictionsConfirmed && !copyRestrictionsOpen) {
+        copyRestrictionsRestoreRef.current = businessFields.copy_restrictions;
+        setCopyRestrictionsOpen(true);
+      }
+    }
+    updateBusinessField(key, value);
+  };
+
+  const keepCopyRestrictions = () => {
+    setCopyRestrictionsConfirmed(true);
+    setCopyRestrictionsOpen(false);
+  };
+
+  const cancelCopyRestrictions = () => {
+    updateBusinessField("copy_restrictions", copyRestrictionsRestoreRef.current);
+    setCopyRestrictionsConfirmed(false);
+    setCopyRestrictionsOpen(false);
+  };
+
   // 智能填写：生成结果直接覆盖同名字段，并把本次输入记入「最近生成」历史。
   const handleBriefGenerated = (fields: PodBriefFieldsDraft, input: string) => {
     setBusinessFields((current) => mergeBusinessFields(current, fields));
@@ -440,7 +479,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     setBusinessFields((current) => mergeBusinessFields(current, item.fields));
   };
 
-  const updateListingField = (key: "title_mode" | "suggested_price_usd" | "category_name", value: string) => {
+  const updateListingField = (key: "title_mode" | "category_name", value: string) => {
     setListingFields((current) => ({ ...current, [key]: value }));
   };
 
@@ -470,7 +509,6 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     }
     const currentTemplateHasArchive = systemTemplates.some((template) => template.templateId === selectedTemplateId);
     const formHasContent = Object.values(businessFields).some((value) => value.trim())
-      || listingFields.suggested_price_usd.trim()
       || listingFields.category_name.trim() || listingFields.skus.some((sku) => Object.values(sku).some((value) => value.trim()));
     if (!currentTemplateHasArchive && selectedTemplateId && formHasContent) {
       setPendingTemplateSwitch(templateId);
@@ -484,6 +522,8 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     setSelectedTemplateSnapshot(null);
     setCurrentBatchEdit(null);
     setBusinessFields({ ...EMPTY_BUSINESS_FIELDS_FOR_SWITCH });
+    setCopyRestrictionsConfirmed(false);
+    setCopyRestrictionsOpen(false);
     setBriefHistory([]);
     setListingFields({ ...EMPTY_LISTING_FIELDS_FOR_SWITCH });
     setListingErrorsRevealed(false);
@@ -940,7 +980,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
                   <label key={field.key} className={limit.over ? "is-over-limit" : undefined}>
                     <span>{field.label}{field.required && <em>*</em>}{field.hint && <i className="pod-field-info" data-tip={field.hint} aria-hidden="true">ⓘ</i>}</span>
                     <textarea rows={1} placeholder={field.placeholder} maxLength={field.maxLength} aria-invalid={limit.over || undefined} ref={(el) => { businessTextareasRef.current[fieldIndex] = el; }} value={value} onChange={(event) => {
-                      updateBusinessField(field.key, event.currentTarget.value);
+                      handleBusinessFieldInput(field.key, event.currentTarget.value);
                       autoGrowBusinessTextarea(event.currentTarget);
                     }} />
                     <small className={limit.over ? "pod-field-counter is-over" : "pod-field-counter"}>{field.list ? `${limit.longest}/${POD_BUSINESS_LIST_ITEM_MAX_LENGTH}` : `${value.length}/${field.maxLength}`}</small>
@@ -959,7 +999,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
               </button>
               <span className={composition ? "pod-composition-entry-summary" : "pod-composition-entry-summary is-empty"}>
                 {composition
-                  ? (composition.is_builtin ? "系统默认模板（默认机位）" : "已配置最新构图，新建批次将自动套用")
+                  ? `当前生效模板：${composition.is_builtin ? "系统默认模板（默认机位）" : (composition.name.trim() || "未命名构图")}`
                   : "未配置：使用系统默认模板"}
               </span>
             </div>
@@ -1075,6 +1115,12 @@ export function PodCustomizationPage({ isActive = true }: Props) {
         busy={switchingTemplate}
         onClose={() => setPendingTemplateSwitch(null)}
         onConfirm={confirmTemplateSwitch}
+      />
+
+      <PodCopyRestrictionsConfirmDialog
+        open={copyRestrictionsOpen}
+        onKeep={keepCopyRestrictions}
+        onCancel={cancelCopyRestrictions}
       />
 
       <SpecCardDrawer

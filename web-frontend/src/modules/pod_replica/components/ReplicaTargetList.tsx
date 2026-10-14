@@ -1,11 +1,13 @@
 import { useRef, type ClipboardEvent, type DragEvent } from "react";
 
 import { PodAssetImage } from "../../pod_customization/data/usePodAssetUrl";
-import { isReplicaTargetComplete, replicaAssetPath, type ReplicaTargetDraft } from "../data/podReplicaModel";
+import { REPLICA_ANALYSIS_STATUS_LABELS, isReplicaTargetComplete, replicaAssetPath, type ReplicaTargetDraft } from "../data/podReplicaModel";
 
 type Props = {
   targets: readonly ReplicaTargetDraft[];
   busy: boolean;
+  /** 提交被拦下时定位到的那一款：标红提示用户去补，不自动打开侧边栏。 */
+  invalidClientId?: string;
   onFiles: (files: File[]) => void;
   onRemove: (clientId: string) => void;
   onOpen: (clientId: string) => void;
@@ -16,7 +18,7 @@ function imageFiles(list: FileList | null | undefined): File[] {
 }
 
 /** 中部「目标产品」白底图卡片列表：按添加顺序显示名称、缩略图与信息完整度。 */
-export function ReplicaTargetList({ targets, busy, onFiles, onRemove, onOpen }: Props) {
+export function ReplicaTargetList({ targets, busy, invalidClientId = "", onFiles, onRemove, onOpen }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
 
   const handleDrop = (event: DragEvent<HTMLElement>) => {
@@ -50,8 +52,12 @@ export function ReplicaTargetList({ targets, busy, onFiles, onRemove, onOpen }: 
       >
         {targets.map((target, index) => {
           const complete = isReplicaTargetComplete(target);
+          const invalid = target.clientId === invalidClientId;
           return (
-            <article className={`pod-replica-target-card${complete ? " is-complete" : ""}`} key={target.clientId}>
+            <article
+              className={`pod-replica-target-card${complete ? " is-complete" : ""}${invalid ? " is-invalid" : ""}`}
+              key={target.clientId}
+            >
               <span className="pod-replica-target-thumb">
                 {target.assetId
                   ? <PodAssetImage path={replicaAssetPath(target.assetId)} alt="" loading="lazy" />
@@ -59,7 +65,9 @@ export function ReplicaTargetList({ targets, busy, onFiles, onRemove, onOpen }: 
               </span>
               <span className="pod-replica-target-meta">
                 <b>{target.productName.trim() || `产品 ${index + 1}`}</b>
+                <small className={`pod-replica-target-analysis is-${target.analysisStatus}`}>{REPLICA_ANALYSIS_STATUS_LABELS[target.analysisStatus]}</small>
                 <small className={complete ? "is-ok" : "is-warning"}>{complete ? "信息完整" : "待完善"}</small>
+                {invalid && <small className="pod-replica-target-invalid-hint">提交被拦下：点「导出信息编辑」补全后重试</small>}
               </span>
               <button type="button" className="pod-replica-target-edit" disabled={busy} aria-label={`编辑第 ${index + 1} 个产品的店小秘导出信息与尺寸图`} onClick={() => onOpen(target.clientId)}>导出信息编辑</button>
               <button type="button" className="pod-replica-target-remove" disabled={busy} aria-label={`删除第 ${index + 1} 个产品`} onClick={() => onRemove(target.clientId)}>×</button>
