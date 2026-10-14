@@ -14,6 +14,7 @@
 环境变量（非法值一律回退默认并告警，**绝不抛错阻断生图**）：
 - `WH_POD_IMAGE_ENHANCE`           1/0，默认 1（开）
 - `WH_POD_IMAGE_ENHANCE_MODE`      onnx/usm，默认 onnx
+- `WH_POD_IMAGE_ENHANCE_DEVICE`    auto/cpu，默认 auto（有可用 GPU 后端就用 GPU，CPU 兜底）
 - `WH_POD_IMAGE_ENHANCE_POST`      超分后的细结构补偿强度，默认 50，设 0 关闭
 - `WH_POD_IMAGE_ENHANCE_POST_RADIUS` 默认 0.8（半径越大越容易出白边）
 - `WH_POD_IMAGE_ENHANCE_RADIUS`    默认 1.0（usm 模式用）
@@ -41,6 +42,7 @@ logger = logging.getLogger(__name__)
 
 ENV_ENABLED = "WH_POD_IMAGE_ENHANCE"
 ENV_MODE = "WH_POD_IMAGE_ENHANCE_MODE"
+ENV_DEVICE = "WH_POD_IMAGE_ENHANCE_DEVICE"
 ENV_RADIUS = "WH_POD_IMAGE_ENHANCE_RADIUS"
 ENV_PERCENT = "WH_POD_IMAGE_ENHANCE_PERCENT"
 ENV_THRESHOLD = "WH_POD_IMAGE_ENHANCE_THRESHOLD"
@@ -206,6 +208,39 @@ def _upscale(panel: Image.Image) -> Image.Image | None:
         return None
 
 
+# 优先尝试的执行后端：厂商专用 GPU → 通用 GPU（Windows DirectML，N/A/I 通吃）→ CPU。
+# 只按 onnxruntime 自己上报的可用 provider 挑，缺驱动/缺库时它压根不会出现在列表里。
+# - DirectML 来自 Windows 发布包：构建时在 Windows 构建机上装 onnxruntime-directml
+#   （见 build_installer.ps1 第 3 步），workbench.spec 的 collect_all("onnxruntime") 会
+#   把它一并打进包，用户除了显卡驱动外无需再装任何东西（不需要 CUDA）。
+# - 刻意不选 Apple CoreML：同一个模型实测反而比 CPU 慢数倍（算子大量回落 CPU +
+#   设备间来回拷贝），所以即使它在 macOS 上可用也不纳入候选。
+_PROVIDER_PREFERENCE = (
+    "TensorrtExecutionProvider",
+    "CUDAExecutionProvider",
+    "DmlExecutionProvider",
+)
+
+
+def _select_providers(ort: Any) -> list[str]:
+    """按「有可用 GPU 后端就用它」挑 providers；CPU 永远兜底。
+
+    ``WH_POD_IMAGE_ENHANCE_DEVICE=cpu`` 可强制回退 CPU（万一核显上 DirectML 还不如
+    CPU，或想复现纯 CPU 结果）。任何探测异常都退回 CPU，绝不阻断生图。
+    """
+
+    forced = (os.environ.get(ENV_DEVICE) or "").strip().lower()
+    if forced == "cpu":
+        return ["CPUExecutionProvider"]
+    try:
+        available = set(ort.get_available_providers())
+    except Exception:  # noqa: BLE001 - 探测失败当作无 GPU
+        return ["CPUExecutionProvider"]
+    chosen = [name for name in _PROVIDER_PREFERENCE if name in available]
+    chosen.append("CPUExecutionProvider")
+    return chosen
+
+
 @lru_cache(maxsize=1)
 def _session() -> Any | None:
     """惰性创建并复用 onnxruntime 会话（创建有开销，全程只建一次）。"""
@@ -223,9 +258,19 @@ def _session() -> Any | None:
         session_options = ort.SessionOptions()
         session_options.log_severity_level = 3
         session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        return ort.InferenceSession(
-            str(path), sess_options=session_options, providers=["CPUExecutionProvider"]
+        session = ort.InferenceSession(
+            str(path), sess_options=session_options, providers=_select_providers(ort)
         )
+        # 留痕：确认这次到底跑在哪个后端上（排查「以为上了 GPU 其实还在 CPU」）。
+        try:
+            from .runtime_logs import business_logger
+
+            business_logger("pod_processing").info(
+                "POD 超分执行后端 | %s", ", ".join(session.get_providers())
+            )
+        except Exception:  # noqa: BLE001 - 日志失败不影响推理
+            pass
+        return session
     except Exception as exc:  # noqa: BLE001 - 加载失败同样回退，不影响生图
         logger.warning("加载超分模型失败，回退 USM：%s", exc)
         return None
