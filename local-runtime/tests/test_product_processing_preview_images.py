@@ -530,6 +530,15 @@ def test_startup_requeues_interrupted_finalize_and_releases_publication_lease(
         content_type=str(stored_asset["content_type"]),
         byte_size=int(stored_asset["byte_size"]),
     )
+    # 恢复是租约式的：只有 claim 租约真正过期（上次进程已中断）才会被复位。
+    # 这里把 finalize run 与 publication 的 claim 时间戳回拨到远古来模拟断线。
+    with repository.database.sessions.begin() as session:
+        run_row = session.get(PreviewFinalizeRunRow, started["id"])
+        assert run_row is not None
+        run_row.claimed_at = "2000-01-01T00:00:00+00:00"
+        publication_row = session.get(PreviewImagePublicationRow, ("workspace-a", digest))
+        assert publication_row is not None
+        publication_row.claimed_at = "2000-01-01T00:00:00+00:00"
     launched: list[tuple[str, str]] = []
     monkeypatch.setattr(
         service.preview_images,
@@ -763,7 +772,7 @@ def test_preview_exclude_removes_item_from_finalize_eligibility(tmp_path: Path) 
             "image_manifest_v2": excluded_preview["image_manifest"],
         },
     }]
-    with pytest.raises(ValueError, match="must contain every exportable draft"):
+    with pytest.raises(ValueError, match="contains drafts that are not exportable"):
         service.preview_images.begin_finalize(
             task["id"], excluded_items, workspace_id="workspace-a", idempotency_key="excluded-only", launch=False
         )

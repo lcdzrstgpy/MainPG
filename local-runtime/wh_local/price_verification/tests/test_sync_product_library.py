@@ -28,7 +28,9 @@ class _Library:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
 
-    def upsert_product(self, payload: dict[str, Any], *, actor: Any = None) -> dict[str, Any]:
+    def upsert_product(
+        self, payload: dict[str, Any], *, actor: Any = None, allow_company_write: bool = False
+    ) -> dict[str, Any]:
         self.calls.append(dict(payload))
         return dict(payload)
 

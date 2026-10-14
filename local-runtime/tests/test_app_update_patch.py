@@ -76,6 +76,8 @@ class _BytesSource:
 
 @pytest.fixture(scope="module")
 def updater_present():
+    if sys.platform != "win32":
+        pytest.skip("MainPG-Updater.exe 只在 Windows 上编译与运行")
     if not UPDATER_EXE.is_file():
         pytest.skip("MainPG-Updater.exe not compiled; run updater build first")
     return UPDATER_EXE

@@ -3,13 +3,21 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from wh_local import login_credentials
 from wh_local.login_credentials import LoginCredentialStore, create_router
+
+# DPAPI 加密仅在 Windows 可用；其它平台接口按设计降级为 503（见 test_router_save_...）。
+requires_dpapi = pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="DPAPI 凭据存储仅在 Windows 可用",
+)
 
 
 def _store(tmp_path: Path, **kwargs) -> LoginCredentialStore:
@@ -22,6 +30,7 @@ def _client(store: LoginCredentialStore) -> TestClient:
     return TestClient(app)
 
 
+@requires_dpapi
 def test_save_and_reveal_round_trip(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.save("alex@example.com", password="secret-123", remember=True)
@@ -33,6 +42,7 @@ def test_save_and_reveal_round_trip(tmp_path: Path) -> None:
     assert store.reveal("alex@example.com") == "secret-123"
 
 
+@requires_dpapi
 def test_file_on_disk_is_encrypted(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.save("alex@example.com", password="topsecret-value", remember=True)
@@ -44,6 +54,7 @@ def test_file_on_disk_is_encrypted(tmp_path: Path) -> None:
     assert b"alex@example.com" not in raw
 
 
+@requires_dpapi
 def test_remember_false_keeps_account_without_password(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.save("alex@example.com", password="secret-123", remember=False)
@@ -55,6 +66,7 @@ def test_remember_false_keeps_account_without_password(tmp_path: Path) -> None:
     assert store.reveal("alex@example.com") is None
 
 
+@requires_dpapi
 def test_unchecked_remember_clears_previously_saved_password(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.save("alex@example.com", password="old-secret", remember=True)
@@ -65,6 +77,7 @@ def test_unchecked_remember_clears_previously_saved_password(tmp_path: Path) -> 
     assert store.list_entries()[0]["has_password"] is False
 
 
+@requires_dpapi
 def test_save_updates_password_and_moves_account_to_front(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.save("first@example.com", password="one", remember=True)
@@ -80,6 +93,7 @@ def test_save_updates_password_and_moves_account_to_front(tmp_path: Path) -> Non
     assert store.reveal("first@example.com") == "one-updated"
 
 
+@requires_dpapi
 def test_remember_true_without_password_keeps_existing_password(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.save("alex@example.com", password="secret-123", remember=True)
@@ -89,6 +103,7 @@ def test_remember_true_without_password_keeps_existing_password(tmp_path: Path) 
     assert store.reveal("alex@example.com") == "secret-123"
 
 
+@requires_dpapi
 def test_delete_account(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.save("alex@example.com", password="secret", remember=True)
@@ -98,6 +113,7 @@ def test_delete_account(tmp_path: Path) -> None:
     assert store.delete("alex@example.com") is False
 
 
+@requires_dpapi
 def test_account_limit_evicts_oldest(tmp_path: Path) -> None:
     store = _store(tmp_path, max_accounts=3)
     for index in range(4):
@@ -111,6 +127,7 @@ def test_account_limit_evicts_oldest(tmp_path: Path) -> None:
     assert identifiers[0] == "user3@example.com"
 
 
+@requires_dpapi
 def test_clear_password_keeps_account(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.save("alex@example.com", password="secret", remember=True)
@@ -120,6 +137,7 @@ def test_clear_password_keeps_account(tmp_path: Path) -> None:
     assert store.clear_password("alex@example.com") is False
 
 
+@requires_dpapi
 def test_corrupt_file_is_quarantined_and_recovered(tmp_path: Path) -> None:
     path = tmp_path / "login-credentials.bin"
     path.write_bytes(b"not-a-dpapi-blob")
@@ -133,6 +151,7 @@ def test_corrupt_file_is_quarantined_and_recovered(tmp_path: Path) -> None:
     assert store.reveal("alex@example.com") == "secret"
 
 
+@requires_dpapi
 def test_identifier_is_trimmed_and_password_keeps_spaces(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.save("  alex@example.com  ", password="  pad  ", remember=True)
@@ -142,6 +161,7 @@ def test_identifier_is_trimmed_and_password_keeps_spaces(tmp_path: Path) -> None
     assert store.reveal("alex@example.com") == "  pad  "
 
 
+@requires_dpapi
 def test_router_round_trip(tmp_path: Path) -> None:
     client = _client(_store(tmp_path))
 

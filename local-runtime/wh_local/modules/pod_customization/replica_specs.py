@@ -26,6 +26,11 @@ FactSource = Literal["model", "user", "system"]
 GenerationStrategy = Literal["grid", "independent_panels"]
 GENERATION_STRATEGIES: tuple[str, ...] = ("grid", "independent_panels")
 
+# 高清直出（independent_panels）暂时下线：分镜提示词还没定稿（四张视角趋同），
+# 先统一按 grid（一款一图后本地拆四格）生成。计划、提示词与计费相关代码都保留，
+# 把这个开关打开即可恢复「用户显式选择生成方式」。详见 service._replica_batch_strategy。
+REPLICA_PANEL_STRATEGY_ENABLED = False
+
 
 class ReplicaPlanNotReadyError(RuntimeError):
     """事实低置信度或冲突，或构图计划非法：必须阻止提交，由用户先确认。"""

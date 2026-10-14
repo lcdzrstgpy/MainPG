@@ -394,7 +394,7 @@ def _complete_listing_title(service: PodCustomizationService, batch_id: str, sty
         )
 
 
-def test_service_exports_exact_42_cell_row_and_skips_invalid_styles(tmp_path: Path) -> None:
+def test_service_exports_exact_51_cell_row_and_skips_invalid_styles(tmp_path: Path) -> None:
     service = _service(tmp_path)
     actor = _actor()
     batch = _batch(service, actor)
@@ -428,7 +428,7 @@ def test_service_exports_exact_42_cell_row_and_skips_invalid_styles(tmp_path: Pa
         workbook.close()
     assert list(values[0]) == DXM_COLUMNS
     row = list(values[1])
-    assert len(row) == 42
+    assert len(row) == 51
     assert row[:6] == [
         "Coastal Tote", "Coastal Tote",
         'Carry calm everywhere.\n<img src="https://images.example.com/pod/1/lifestyle.png" />\n<img src="https://images.example.com/pod/1/detail_a.png" />\n<img src="https://images.example.com/pod/1/detail_b.png" />\n<img src="https://images.example.com/pod/1/hero.png" />',
@@ -446,10 +446,11 @@ def test_service_exports_exact_42_cell_row_and_skips_invalid_styles(tmp_path: Pa
             "https://images.example.com/pod/1/hero.png",
         ]
     )
-    assert row[19:24] == ["https://images.example.com/pod/1/hero.png", None, None, None, 29.99]
-    assert row[24:30] == [None, None, "家居收纳 > 包袋", "家居收纳 > 包袋", "家居收纳 > 包袋", None]
-    assert row[30:33] == ["单品", 1, "件"]
-    assert row[33:] == [None] * 9
+    # 第 23 列（建议售价）店小秘不要求，统一留空；申报价走每个 SKU 的第 9 列。
+    assert row[19:24] == ["https://images.example.com/pod/1/hero.png", None, None, None, None]
+    assert row[24:31] == [None] * 7
+    assert row[31:34] == ["单品", 1, "件"]
+    assert row[34:] == [None] * 17
 
 
 def test_service_export_repeats_each_style_for_saved_skus_and_uses_last_scene_as_preview(

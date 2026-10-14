@@ -1272,7 +1272,8 @@ def test_ocr_inspection_flags_large_added_copy_but_not_small_product_mark(monkey
             )
 
     monkeypatch.setattr(ocr_gate, "_get_engine", lambda: _Engine())
-    # OCR 质检门默认关闭（对齐 POD 生图管线）；本用例显式开启以验证检测逻辑。
+    # OCR 质检门已在业务上彻底关闭（ocr_gate_enabled() 恒为 False）；本用例直接打开
+    # 该判据以继续验证检测逻辑本身。
     monkeypatch.setattr(ocr_gate, "ocr_gate_enabled", lambda: True)
     inspection = ocr_gate.inspect_visible_text(_grid_bytes())
     assert inspection is not None

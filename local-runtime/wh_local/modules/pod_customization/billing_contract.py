@@ -14,10 +14,13 @@ PodCallStatus = Literal["success", "no_return"]
 # 计费画像：字符串由远端计费服务解释，并据此决定每 link 的随机单价区间。
 POD_BILLING_PROFILE_RANDOM = "pod_random_v1"
 POD_BILLING_PROFILE_SEMI = "pod_semi_v1"
-# 爆款复刻画像。复刻与全定制同样按「款」计价（1 款 = 1 个 link、单价 40–50 随机，
-# 与 pod_random_v1 同区间），但用独立画像值上报，好让远端把「复刻」与「全定制」
-# 分到不同分类统计（两者生图/Prompt 链路不同，用量需要拆开看）。
-POD_BILLING_PROFILE_REPLICA = "pod_replica_v1"
+# 爆款复刻画像（A/B 两档，远端按档位决定「一次上报」的计价倍率）：
+#   A = pod_replica_v1_a：普通生成（grid，本地拆图）——一次上报扣 1 次全定制积分；
+#   B = pod_replica_v1_b：高清直出（independent_panels，直出 4 张）——一次上报扣 4 倍积分。
+# 两者都与全定制按「款」计价同区间（单价 40–50 随机，与 pod_random_v1 同区间），但用
+# 独立画像值上报：远端据此把「复刻」与「全定制」分到不同分类统计，并按 A/B 区分倍率。
+POD_BILLING_PROFILE_REPLICA = "pod_replica_v1_a"
+POD_BILLING_PROFILE_REPLICA_HD = "pod_replica_v1_b"
 
 # 半定制使用的计费画像。
 # 半定制按「组」上报：4 款 = 1 个 link，默认 32 积分/组（即 8 积分/款），实际单价由
@@ -249,7 +252,7 @@ class PodCallPlan:
         return cls(
             idempotency_key=f"pod:batch:{batch_id}:initial",
             calls=calls,
-            billing_profile=POD_BILLING_PROFILE_REPLICA,
+            billing_profile=POD_BILLING_PROFILE_REPLICA_HD,
         )
 
     @staticmethod
@@ -275,7 +278,7 @@ class PodCallPlan:
         return cls(
             idempotency_key=f"pod:retry:{action_id}",
             calls=tuple(calls),
-            billing_profile=POD_BILLING_PROFILE_REPLICA,
+            billing_profile=POD_BILLING_PROFILE_REPLICA_HD,
         )
 
     @classmethod
@@ -310,7 +313,7 @@ class PodCallPlan:
         return cls(
             idempotency_key=f"pod:retry:{action_id}",
             calls=tuple(calls),
-            billing_profile=POD_BILLING_PROFILE_REPLICA,
+            billing_profile=POD_BILLING_PROFILE_REPLICA_HD,
         )
 
     @classmethod
@@ -348,7 +351,7 @@ class PodCallPlan:
         return cls(
             idempotency_key=f"pod:batch:{batch_id}:resume:{resume_id}",
             calls=tuple(calls),
-            billing_profile=POD_BILLING_PROFILE_REPLICA,
+            billing_profile=POD_BILLING_PROFILE_REPLICA_HD,
         )
 
     @classmethod
