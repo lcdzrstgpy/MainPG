@@ -3475,6 +3475,11 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             except Exception:
                 # 收尾卡死兜底同样是尽力而为的后台维护，异常不终止循环。
                 pass
+            try:
+                self._heal_orphan_items_once()
+            except Exception:
+                # 孤儿项自愈同为尽力而为的后台维护，异常不终止循环。
+                pass
 
     def _sweep_stale_heartbeats_once(self) -> None:
         """单次清扫：心跳超时的 running/queued 任务自动置为暂停。
@@ -3515,6 +3520,36 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 # 已进入终态的任务不再需要跟踪心跳。
                 with self._task_last_seen_lock:
                     self._task_last_seen.pop((workspace_id, task_id), None)
+
+    def _heal_orphan_items_once(self) -> None:
+        """终态任务孤儿项自愈：标记失败 + 释放草稿（随清扫循环低频执行）。
+
+        背景（2026-10-14）：收尾竞态曾把仍有未处理项的任务误判「完成」（收尾与
+        finish 判定已修）；存量任务与其它异常终止路径仍可能残留孤儿 pending/
+        running 项——它们永远不会被再执行，且草稿卡在 processing 会拦截用户
+        重新提交。自愈后这些链接变为「失败」，用户可在结果页手动重新处理。
+        """
+        for task in self.repository.terminal_tasks_with_unfinished_items():
+            auto_repull = (task.get("settings") or {}).get("_auto_repull")
+            if isinstance(auto_repull, dict) and str(auto_repull.get("status") or "") == "running":
+                # 自动补跑轮进行中（含进程重启后未归一的 stale 标记）：pending 是
+                # 重试轮的正常中间态，交由补跑流程收口，不在自愈里清理。
+                continue
+            try:
+                healed = self.repository.heal_terminal_orphan_items(
+                    int(task["id"]), str(task.get("workspace_id") or "local")
+                )
+            except Exception:  # noqa: BLE001 - 单条失败不影响其它任务
+                continue
+            if not healed:
+                continue
+            try:
+                business_logger("ai_processing").warning(
+                    "终态任务孤儿项自愈 | task_id=%s | workspace=%s | 条目数=%d",
+                    task.get("id"), task.get("workspace_id"), healed,
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
     def _finalize_wedged_tasks_once(self) -> None:
         """收尾卡死兜底：全部条目已终态但任务仍停在 running 的超时任务，直接从
@@ -6207,6 +6242,20 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             # 本地工作簿/错误报告收尾，避免任务停在 6/6、99% 且无法导出。
             if self._task_has_unfinished_items(final_task):
                 return final_task
+        elif self._task_has_unfinished_items(final_task):
+            # 竞态防御（2026-10-14）：任务状态虽为 queued/running，但仍有未处理条目
+            # ——典型来源：「暂停 → 立刻继续」时旧 worker 正在收尾，读到的是被 resume
+            # 改写的 queued（此时 _launch_background_execute 因旧 worker 存活不会启动
+            # 新 worker）。绝不能继续走 finish——pending 不计失败会被洗成「已完成」
+            # 黑洞（线上实例：55 条判完成、仅处理 27 条）。回退为暂停，由用户
+            # 「继续处理」拉起新 worker 从断点续跑。
+            with self._task_last_seen_lock:
+                self._task_last_seen.pop((workspace_id, int(task_id)), None)
+            try:
+                self.repository.pause_task_execution(task_id, workspace_id)
+            except Exception:  # noqa: BLE001
+                pass
+            return self._require_task(task_id, workspace_id)
 
         preserve = settings.get("source_image_to_library")
         if preserve is None:

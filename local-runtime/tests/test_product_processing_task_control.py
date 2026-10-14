@@ -359,3 +359,143 @@ def test_task_outputs_touches_heartbeat(tmp_path: Path) -> None:
     service.task_outputs(task["id"], workspace_id="local")
 
     assert ("local", task["id"]) in service._task_last_seen
+
+
+def test_finish_task_keeps_paused_when_items_still_unfinished(tmp_path: Path) -> None:
+    """收尾竞态防御（2026-10-14）：仍有未处理条目时 finish_task 不得判「完成」。
+
+    历史线上实例：55 条任务被收尾竞态判 completed，仅处理 27 条，剩余条目
+    在 UI 上完全消失。pending/running 不计失败（failed_count==0）正是缺口。
+    """
+    service = _service(tmp_path)
+    task, item_a, item_b = _task_with_two_items(service)
+    service.repository.update_item_progress(
+        task["id"],
+        int(item_a["item_id"]),
+        status="completed",
+        result={"optimized_title": "done"},
+        workspace_id="local",
+    )
+    service.repository.set_task_status(task["id"], "running", "local")
+
+    finished = service.repository.finish_task(
+        task["id"],
+        [],
+        output_file="",
+        error_report_file="",
+        video_manifest_file="",
+        workspace_id="local",
+    )
+
+    assert finished is not None and finished["status"] == "paused"
+    items = {int(item["item_id"]): item for item in finished["items"]}
+    assert items[int(item_b["item_id"])]["status"] == "pending"
+
+
+def test_finish_task_marks_completed_only_when_all_items_terminal(tmp_path: Path) -> None:
+    """正常路径保护：全部条目终态时 finish_task 仍应判「完成」。"""
+    service = _service(tmp_path)
+    task, item_a, item_b = _task_with_two_items(service)
+    for item in (item_a, item_b):
+        service.repository.update_item_progress(
+            task["id"],
+            int(item["item_id"]),
+            status="completed",
+            result={"optimized_title": "done"},
+            workspace_id="local",
+        )
+    service.repository.set_task_status(task["id"], "running", "local")
+
+    finished = service.repository.finish_task(
+        task["id"],
+        [],
+        output_file="",
+        error_report_file="",
+        video_manifest_file="",
+        workspace_id="local",
+    )
+
+    assert finished is not None and finished["status"] == "completed"
+
+
+def test_execute_task_impl_falls_back_to_paused_when_items_remain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """收尾竞态防御：worker 收尾读到 running 但仍有未处理条目 → 回退暂停。
+
+    模拟「暂停 → 立刻继续」竞态：旧 worker 收尾时任务状态已被 resume 改写，
+    处理函数本轮不再产出终态（返回 None），未处理条目留在库中。
+    """
+    service = _service(tmp_path)
+    task, item_a, item_b = _task_with_two_items(service)
+    service.repository.update_item_progress(
+        task["id"],
+        int(item_a["item_id"]),
+        status="completed",
+        result={"optimized_title": "done"},
+        workspace_id="local",
+    )
+    # 处理函数返回 None：条目保持未终态（等同竞态窗口内的中断）
+    monkeypatch.setattr(service, "_process_one", lambda *args, **kwargs: None)
+
+    final = service._execute_task_impl(task["id"], "local")
+
+    assert final["status"] == "paused"
+    items = {int(item["item_id"]): item for item in final["items"]}
+    assert items[int(item_b["item_id"])]["status"] in {"pending", "running"}
+    assert items[int(item_a["item_id"])]["status"] == "completed"
+
+
+def test_execute_task_impl_completes_when_all_items_reach_terminal(tmp_path: Path) -> None:
+    """正常路径保护：条目全部终态时收尾仍判「完成」。"""
+    service = _service(tmp_path)
+    task, item_a, item_b = _task_with_two_items(service)
+    for item in (item_a, item_b):
+        service.repository.update_item_progress(
+            task["id"],
+            int(item["item_id"]),
+            status="completed",
+            result={"optimized_title": "done"},
+            workspace_id="local",
+        )
+
+    final = service._execute_task_impl(task["id"], "local")
+
+    assert final["status"] == "completed"
+
+
+def test_heal_terminal_orphan_items_marks_failed_and_releases_drafts(tmp_path: Path) -> None:
+    """孤儿项自愈：终态任务残留 pending 项 → 标失败 + 草稿回草稿池 + 计数同步。"""
+    service = _service(tmp_path)
+    task, item_a, item_b = _task_with_two_items(service)
+    service.repository.update_item_progress(
+        task["id"],
+        int(item_a["item_id"]),
+        status="completed",
+        result={"optimized_title": "done"},
+        workspace_id="local",
+    )
+    # 复刻历史竞态产物：任务被判 completed，但 item_b 从未处理；草稿卡 processing
+    service.repository.set_task_status(task["id"], "completed", "local")
+    draft_b_id = int(item_b["product_draft_id"])
+    service.repository.mark_drafts_status([draft_b_id], "processing", workspace_id="local")
+
+    orphans = service.repository.terminal_tasks_with_unfinished_items()
+    assert any(int(t["id"]) == int(task["id"]) for t in orphans)
+
+    healed = service.repository.heal_terminal_orphan_items(task["id"], "local")
+    assert healed == 1
+
+    final = service.repository.get_task(task["id"], "local")
+    items = {int(item["item_id"]): item for item in final["items"]}
+    healed_item = items[int(item_b["item_id"])]
+    assert healed_item["status"] == "failed"
+    assert healed_item["reason"] == "任务已结束时仍未处理，已自动终止"
+    assert (healed_item["result"] or {}).get("failure_class") == "task_control"
+    assert final["success_count"] == 1
+    assert final["failed_count"] == 1
+    # 任务状态保持原有终态，不被自愈改动
+    assert final["status"] == "completed"
+
+    drafts = service.repository.get_drafts([draft_b_id], workspace_id="local")
+    assert drafts and drafts[0]["status"] == "draft"
