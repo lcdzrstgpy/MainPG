@@ -999,7 +999,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
               </button>
               <span className={composition ? "pod-composition-entry-summary" : "pod-composition-entry-summary is-empty"}>
                 {composition
-                  ? (composition.is_builtin ? "系统默认模板（默认机位）" : "已配置最新构图，新建批次将自动套用")
+                  ? `当前生效模板：${composition.is_builtin ? "系统默认模板（默认机位）" : (composition.name.trim() || "未命名构图")}`
                   : "未配置：使用系统默认模板"}
               </span>
             </div>
