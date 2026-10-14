@@ -191,6 +191,17 @@
   border-color: #9fceb3;
 }
 
+/* 提交被拦下时定位到的那一款：只标红定位，不自动打开侧边栏。 */
+.pod-replica-target-card.is-invalid {
+  border-color: #d75b52;
+  box-shadow: 0 0 0 2px rgba(215, 91, 82, .16);
+}
+
+.pod-replica-target-meta small.pod-replica-target-invalid-hint {
+  color: #a84c48;
+  font-size: 11px;
+}
+
 .pod-replica-target-thumb {
   flex: 0 0 auto;
   display: flex;

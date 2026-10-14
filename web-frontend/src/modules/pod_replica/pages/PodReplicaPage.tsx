@@ -72,6 +72,8 @@ export function PodReplicaPage({ isActive = true }: Props) {
   });
   const [targets, setTargets] = useState<ReplicaTargetDraft[]>(initialDraft.state.targets);
   const [activeTargetId, setActiveTargetId] = useState<string>();
+  /** 提交被拦下时定位到的那一款：列表里标红，但不自动打开侧边栏。 */
+  const [invalidTargetId, setInvalidTargetId] = useState("");
   // 上架信息实时校验：抽屉里按当前产品实时重算并内联展示；「必填为空」在提交过一次后才提示。
   const [listingErrorsRevealed, setListingErrorsRevealed] = useState(false);
   const [specCardTargetId, setSpecCardTargetId] = useState<string>();
@@ -126,6 +128,7 @@ export function PodReplicaPage({ isActive = true }: Props) {
     setTargets([]);
     setListingErrorsRevealed(false);
     setActiveTargetId(undefined);
+    setInvalidTargetId("");
     setSpecCardTargetId(undefined);
     requestIdRef.current = null;
     setError("");
@@ -271,6 +274,8 @@ export function PodReplicaPage({ isActive = true }: Props) {
 
   const updateTarget = (clientId: string, updater: (target: ReplicaTargetDraft) => ReplicaTargetDraft) => {
     setTargets((current) => current.map((target) => target.clientId === clientId ? updater(target) : target));
+    // 用户开始补这一款时撤掉提交失败的标红，不必等他再次点提交。
+    setInvalidTargetId((current) => (current === clientId ? "" : current));
   };
 
   /** 调一次 A/B 识图；成功落分析结果，失败记录原因供「重新识别」。 */
@@ -355,12 +360,13 @@ export function PodReplicaPage({ isActive = true }: Props) {
     if (!targets.length) { setError("请至少添加一个目标产品。"); return; }
 
     // 上架信息是实时校验的：这里揭示「必填为空」，并拦截比后端合约更严的字符/格式问题。
+    // 只标红出问题的那一款 + 顶部提示，不自动打开侧边栏（用户自己点「导出信息编辑」去补）。
     setListingErrorsRevealed(true);
     const invalidListingTarget = targets.find((target) => Object.keys(validateListingFields(target.listingFields)).length > 0);
     if (invalidListingTarget) {
       const index = targets.indexOf(invalidListingTarget);
-      setActiveTargetId(invalidListingTarget.clientId);
-      setError(`第 ${index + 1} 个产品有误：请检查上架信息中标红的字段。`);
+      setInvalidTargetId(invalidListingTarget.clientId);
+      setError(`第 ${index + 1} 个产品有误：请点该款的「导出信息编辑」，检查上架信息中标红的字段。`);
       return;
     }
 
@@ -368,10 +374,11 @@ export function PodReplicaPage({ isActive = true }: Props) {
     if (firstInvalid >= 0) {
       const target = targets[firstInvalid];
       const reason = validateReplicaTargetDraft(target);
-      setActiveTargetId(target.clientId);
-      setError(`第 ${firstInvalid + 1} 个产品有误：${reason.ok ? "请检查填写内容。" : reason.error}`);
+      setInvalidTargetId(target.clientId);
+      setError(`第 ${firstInvalid + 1} 个产品有误：${reason.ok ? "请检查填写内容。" : reason.error}请点该款的「导出信息编辑」补全。`);
       return;
     }
+    setInvalidTargetId("");
 
     // A（原素材）低置信度：必须先被用户确认，否则错误图案会被迁移到目标产品上。
     if (sourceNeedsConfirmation && !sourceConfirmed) {
@@ -639,8 +646,12 @@ export function PodReplicaPage({ isActive = true }: Props) {
           <ReplicaTargetList
             targets={targets}
             busy={busyAction === "upload-target"}
+            invalidClientId={invalidTargetId}
             onFiles={(files) => void uploadTargets(files)}
-            onRemove={(clientId) => setTargets((current) => removeReplicaTarget(current, clientId))}
+            onRemove={(clientId) => {
+              setTargets((current) => removeReplicaTarget(current, clientId));
+              setInvalidTargetId((current) => (current === clientId ? "" : current));
+            }}
             onOpen={setActiveTargetId}
           />
           {/* 构图入口：与全定制分开的复刻专用模板池；管理入口在页头右侧，这里只留生成。 */}
