@@ -231,6 +231,26 @@ export function toUserMessage(raw: string): string {
     return "表格里还缺必填项，请把商品 ID、售价、成本、重量、商品主图和货源链接补齐后再导入";
   }
 
+  // ---- 计费授权（产品处理的「继续处理」/重试等在计费服务侧的鉴权失败）----
+  // 这批错误原先只落通用兜底「操作失败，请稍后重试」，用户与客服都无法判断
+  // 该重登、该重试还是该等——已知真实案例：令牌失效导致「继续处理」点不动，
+  // 退出重新登录即可恢复。逐条映射为可操作提示，区分「重登即可」与「服务抖动」。
+  if (/remote billing session was rejected/i.test(message)) {
+    return "登录的计费授权已失效（账号可能在别处登录过），请退出后重新登录再试";
+  }
+  if (/server billing session is unavailable/i.test(message)) {
+    return "本地登录状态缺少计费授权（本地服务重启过会出现），请退出后重新登录再试";
+  }
+  if (/remote billing service is unavailable/i.test(message)) {
+    return "计费服务暂时不可用，请稍后重试；一直失败就把提示发给我们";
+  }
+  if (/remote billing service returned an invalid/i.test(message)) {
+    return "计费服务返回异常，请稍后重试；一直失败就把提示发给我们";
+  }
+  if (/remote billing request was rejected/i.test(message)) {
+    return "计费服务拒绝了这次请求，请稍后重试；一直失败就把提示发给我们";
+  }
+
   // ---- POD 定制 ----
   if (/POD billing request was rejected/i.test(message)) return "计费服务拒绝了这次请求，请稍后重试；一直失败就把提示发给我们";
   if (/POD billing (permission|authentication) is required/i.test(message)) return "当前账号的 POD 计费权限有问题，请联系对接人";
