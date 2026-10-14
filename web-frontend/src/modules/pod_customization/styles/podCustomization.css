@@ -590,14 +590,19 @@
 .pod-batch-status-detail { color: var(--pod-text-secondary); font-size: .67rem; line-height: 1.35; text-align: right; }
 
 .pod-failed-retry-backdrop { position: fixed; z-index: 90; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(16, 33, 54, .38); }
-.pod-failed-retry-dialog { display: grid; width: min(680px, 100%); max-height: min(720px, calc(100dvh - 40px)); overflow: hidden; border: 1px solid var(--pod-border-strong); border-radius: 18px; background: var(--pod-surface); box-shadow: 0 24px 72px rgba(16, 33, 54, .28); }
+.pod-failed-retry-dialog { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; width: min(680px, 100%); max-height: min(720px, calc(100dvh - 40px)); overflow: hidden; border: 1px solid var(--pod-border-strong); border-radius: 18px; background: var(--pod-surface); box-shadow: 0 24px 72px rgba(16, 33, 54, .28); }
 .pod-failed-retry-dialog > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 18px 20px 14px; border-bottom: 1px solid var(--pod-border); }
 .pod-failed-retry-dialog > header span { color: var(--pod-primary); font-size: .6rem; font-weight: 900; letter-spacing: .12em; }
 .pod-failed-retry-dialog > header h2 { margin: 3px 0 5px; color: var(--pod-text); font-size: 1.05rem; }
 .pod-failed-retry-dialog > header p { max-width: 500px; margin: 0; color: var(--pod-text-secondary); font-size: .67rem; line-height: 1.55; }
 .pod-failed-retry-dialog > header > button { width: 30px; height: 30px; flex: 0 0 auto; padding: 0; border: 1px solid var(--pod-border); border-radius: 9px; color: var(--pod-text-muted); background: var(--pod-surface); font-size: 1rem; }
-.pod-failed-retry-groups { display: grid; gap: 12px; max-height: 430px; padding: 16px 20px; overflow: auto; }
-.pod-failed-retry-group { overflow: hidden; border: 1px solid var(--pod-border); border-radius: 11px; }
+/* 弹窗中间的可滚动区。这里刻意用 flex column + 子项 flex-shrink:0，而不是 grid：
+   网格一旦带上 max-height，就会按可用高度去撑 auto 行、把卡片压扁，卡片再被自己的
+   overflow:hidden 裁掉长列表——外层因此没有可滚内容，列表滚不动；若强行用
+   min-height 兜底，卡片又会超出所在行、和下一张卡片重叠。flex 纵向下子项不收缩，
+   卡片始终等于内容高度，溢出交给本层滚动。 */
+.pod-failed-retry-groups { display: flex; flex-direction: column; gap: 12px; min-height: 0; max-height: 430px; padding: 16px 20px; overflow-y: auto; overscroll-behavior: contain; }
+.pod-failed-retry-group { flex: 0 0 auto; overflow: hidden; border: 1px solid var(--pod-border); border-radius: 11px; }
 .pod-failed-retry-group h3 { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0; padding: 9px 11px; color: var(--pod-text-secondary); background: var(--pod-surface-soft); font-size: .7rem; }
 .pod-failed-retry-group h3 small { color: var(--pod-text-muted); font-size: .58rem; }
 .pod-failed-retry-group > p { margin: 0; padding: 12px; color: var(--pod-text-muted); font-size: .63rem; }

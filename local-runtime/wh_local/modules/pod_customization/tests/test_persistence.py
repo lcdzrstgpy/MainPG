@@ -198,6 +198,73 @@ def test_startup_recovery_converges_rows_stranded_by_an_old_shutdown_fence(tmp_p
     assert stored["failed_count"] == 1
 
 
+def _title_statuses(service: PodCustomizationService, batch_id: str) -> dict[int, dict]:
+    with service.repository._connect() as connection:
+        return {
+            int(row["style_index"]): dict(row)
+            for row in connection.execute(
+                """SELECT style_index, status, style_task_id, error_message
+                   FROM pod_customization_style_titles WHERE batch_id = ?""",
+                (batch_id,),
+            ).fetchall()
+        }
+
+
+def test_startup_recovery_converges_titles_stranded_in_a_terminal_batch(tmp_path: Path) -> None:
+    """批次已是终态、标题行仍停在 queued/generating 时，启动恢复必须把它收敛为失败。
+
+    取消/失败路径只收敛「四图不全」的标题，四图已齐却仍在生成中的标题会被落在终态
+    批次里：它既不是失败（重试入口看不到），也没有任务在跑，只能永久卡住。
+    """
+    service = _service(tmp_path)
+    actor = _actor()
+    template = service.upload_template(actor, name="Tote scene", filename="tote.png", content=_png())
+    batch = service.create_batch(
+        actor,
+        BatchCreate(
+            template_id=template["id"],
+            count=3,
+            business_fields=BusinessFields(product_name="Tote", product_category="bags"),
+            listing_fields=_listing_fields(),
+        ),
+        enqueue=False,
+    )
+    paused = service.create_batch(
+        actor,
+        BatchCreate(
+            template_id=template["id"],
+            count=2,
+            business_fields=BusinessFields(product_name="Tote", product_category="bags"),
+            listing_fields=_listing_fields(),
+        ),
+        enqueue=False,
+    )
+    with service.repository._connect() as connection:
+        connection.execute(
+            """UPDATE pod_customization_style_titles
+               SET status = 'generating', error_message = 'POD 批次已取消'
+               WHERE batch_id = ? AND style_index = 2""",
+            (batch["id"],),
+        )
+        connection.execute(
+            "UPDATE pod_customization_batches SET status = 'cancelled' WHERE batch_id = ?",
+            (batch["id"],),
+        )
+        connection.execute(
+            "UPDATE pod_customization_batches SET status = 'paused' WHERE batch_id = ?",
+            (paused["id"],),
+        )
+
+    service.recover_interrupted_work()
+
+    leaked = _title_statuses(service, batch["id"])[2]
+    assert leaked["status"] == "failed"
+    assert "未正常结束" in leaked["error_message"]
+    assert service.get_batch(actor, batch["id"])["status"] == "cancelled"
+    # 已暂停批次仍可继续，其 queued 标题不能被收敛。
+    assert {title["status"] for title in _title_statuses(service, paused["id"]).values()} == {"queued"}
+
+
 def test_full_batch_list_excludes_semi_batches(tmp_path: Path) -> None:
     """全定制批次列表必须排除半定制批次。
 

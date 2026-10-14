@@ -16,6 +16,22 @@ openpyxl>=3.1
 Pillow>=11.0,<13
 numpy>=2.0,<3
 onnxruntime>=1.20,<2
+# ============================================================================
+# 【Windows 源码(GitHub)版 · 先装依赖再启动，才能调用 GPU 加速】
+# POD 图片清晰化（超分）默认跑在 CPU 上，很慢。想让显卡来跑，就把上面这行
+# onnxruntime 换成 DirectML 版——NVIDIA / AMD / Intel 核显独显都能用，只需显卡驱动，
+# 不需要 CUDA。换好之后不用改任何配置，程序会自动优选 DmlExecutionProvider：
+#     pip uninstall -y onnxruntime
+#     pip install --no-deps "onnxruntime-directml>=1.20,<2"
+# 注意：
+#   - onnxruntime-directml 与 onnxruntime 是同一个 onnxruntime 模块，官方要求二选一；
+#   - --no-deps 是为了避开 rapidocr-onnxruntime / rembg 对 onnxruntime 发行名的硬依赖；
+#   - 装完自检一次：python -c "import onnxruntime, rapidocr_onnxruntime"
+#     再确认后端：python -c "import onnxruntime; print(onnxruntime.get_available_providers())"
+#     看到 DmlExecutionProvider 即已启用 GPU；
+#   - 想强制回退 CPU：设环境变量 WH_POD_IMAGE_ENHANCE_DEVICE=cpu。
+# macOS / Linux 以及官方安装包无需改动：安装包构建时已内置 DirectML 版。
+# ============================================================================
 rapidocr-onnxruntime>=1.4,<2
 # 组合套装主体自动框选：rembg 本地分割（isnet-general-use 权重），走已有 onnxruntime。
 # 传递依赖会带入 opencv-python-headless（autosegment 的轮廓处理依赖）。

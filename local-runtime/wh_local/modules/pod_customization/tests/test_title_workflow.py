@@ -713,6 +713,50 @@ def test_concurrent_completed_title_regenerations_claim_only_one_batch_action(tm
     images.close()
 
 
+def test_batch_title_retry_finishes_instead_of_deadlocking_on_the_batch_lock(tmp_path: Path) -> None:
+    """批量重试标题必须收敛：无锁核心提交到 title_runtime，不能与批级锁互相等待。"""
+    images = ImageRuntime([_grid(51)])
+    titles = TitleRuntime()
+    billing = BillingCoordinator()
+    service = _service(tmp_path, images, titles, billing)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _batch_request(template["id"]), enqueue=False)
+    service.worker.process_batch(batch["id"])
+    # 还原「取消后」的终态：四张图已发布、标题失败且已带 style_task_id。
+    with sqlite3.connect(service.database_path) as connection:
+        connection.execute(
+            """UPDATE pod_customization_style_titles
+               SET status = 'failed', title = '', error_message = 'POD 批次已取消'
+               WHERE batch_id = ? AND style_index = 1""",
+            (batch["id"],),
+        )
+        connection.execute(
+            "UPDATE pod_customization_batches SET status = 'cancelled' WHERE batch_id = ?",
+            (batch["id"],),
+        )
+        connection.commit()
+
+    service.retry_failed(
+        actor, batch["id"], image_style_indices=[], title_style_indices=[1], enqueue=False
+    )
+    done: list[bool] = []
+
+    def run_batch_retry() -> None:
+        service.worker.process_batch_retry(batch["id"], (), (1,))
+        done.append(True)
+
+    worker_thread = threading.Thread(target=run_batch_retry, daemon=True)
+    worker_thread.start()
+    worker_thread.join(timeout=15)
+
+    assert done, "batch title retry deadlocked against the batch action lock"
+    assert service.get_batch(actor, batch["id"])["style_titles"][0]["status"] == "completed"
+    service.close()
+    titles.close()
+    images.close()
+
+
 def test_completed_style_regeneration_replaces_images_and_resets_export_to_default(tmp_path: Path) -> None:
     images = ImageRuntime([_grid(30), _grid(40)])
     titles = TitleRuntime()
