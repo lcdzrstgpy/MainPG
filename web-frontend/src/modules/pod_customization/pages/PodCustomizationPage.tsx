@@ -234,6 +234,14 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   const activeBatchEpochRef = useRef(0);
   const businessTextareasRef = useRef<Array<HTMLTextAreaElement | null>>([]);
 
+  // 文本框高度始终跟随内容：取消填写、套用模板等「程序化改值」不会触发 onChange，
+  // 不重算就会残留上一次输入撑高的内联高度，看起来像弹窗一出现画面就跳。
+  useEffect(() => {
+    businessTextareasRef.current.forEach((element) => {
+      if (element) autoGrowBusinessTextarea(element);
+    });
+  }, [businessFields]);
+
   const selectedTemplate = templates.find((template) => template.id === selectedTemplateId);
   const summaryTemplate = selectedTemplateSnapshot ?? selectedTemplate;
   const summaryTemplatePreview = usePodAssetUrl(summaryTemplate?.preview_url || summaryTemplate?.original_url);

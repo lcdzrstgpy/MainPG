@@ -24,7 +24,8 @@ export function PodCopyRestrictionsConfirmDialog({ open, onKeep, onCancel }: Pro
       if (event.key === "Escape") onCancel();
     };
     window.addEventListener("keydown", closeOnEscape);
-    keepRef.current?.focus();
+    // preventScroll：弹窗是 fixed 居中的，抢焦点时不要让浏览器把页面滚一下（会表现为画面跳动）。
+    keepRef.current?.focus({ preventScroll: true });
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [open, onCancel]);
 
