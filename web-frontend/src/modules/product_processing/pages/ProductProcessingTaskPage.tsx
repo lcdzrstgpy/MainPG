@@ -777,6 +777,12 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                   <div className="verify-count success">成功 <b>{batch.success_count}</b></div>
                   <div className="verify-count failed">失败 <b>{batch.failed_count}</b></div>
                   <div className="verify-count">跳过 <b>{batch.skipped_count}</b></div>
+                  {/* 未处理：任务已到终态但仍有没跑完的条目（正常终态应为 0，恒不显示）。
+                      历史收尾竞态曾把这类任务误判「完成」，未处理项在汇总里完全隐形；
+                      保留该格子让剩余条目可见，用户可循「失败项重新处理」或重提草稿处置。 */}
+                  {(batch.not_processed_count ?? 0) > 0 && (
+                    <div className="verify-count">未处理 <b>{batch.not_processed_count}</b></div>
+                  )}
                   <div className="verify-count">待确认 <b>{batch.attention_required_count}</b></div>
                   <div className="verify-count">技术可重试 <b>{batch.technical_retryable_count}</b></div>
                   <div className="verify-count">配置阻断 <b>{batch.configuration_blocked_count}</b></div>
