@@ -304,7 +304,6 @@ export function createEmptyReplicaTarget(clientId = nextReplicaClientId()): Repl
     productName: "",
     listingFields: {
       title_mode: "long",
-      suggested_price_usd: "",
       category_name: "",
       skus: [{ name: "", declared_price: "", weight_g: "" }],
     },
@@ -323,7 +322,6 @@ export function deepCopyReplicaTarget(target: ReplicaTargetDraft): ReplicaTarget
     productName: target.productName,
     listingFields: {
       title_mode: target.listingFields.title_mode,
-      suggested_price_usd: target.listingFields.suggested_price_usd,
       category_name: target.listingFields.category_name,
       skus: target.listingFields.skus.map((sku) => ({ ...sku })),
     },
@@ -390,7 +388,6 @@ export function copyReplicaListingInfo(
     productName: target.productName,
     listingFields: {
       title_mode: source.listingFields.title_mode,
-      suggested_price_usd: source.listingFields.suggested_price_usd,
       category_name: target.listingFields.category_name,
       skus: source.listingFields.skus.map((sku) => ({ ...sku })),
     },
@@ -535,7 +532,7 @@ export function validateReplicaTargetDraft(target: ReplicaTargetDraft): ReplicaT
   // 提交门禁：该款识图必须已确认（未识别 / 识别中 / 待确认 / 失败都不允许提交）。
   const analysisBlock = replicaAnalysisBlockReason(target);
   if (analysisBlock) return { ok: false, error: analysisBlock };
-  // 复用全定制的 SKU / 售价 / 申报价 / 重量 / 类目 / 规格卡尺寸校验。
+  // 复用全定制的 SKU / 申报价 / 重量 / 类目 / 规格卡尺寸校验。
   const listing = listingFieldsForApi(target.listingFields, target.specCard);
   if (!listing.value) return { ok: false, error: listing.error };
   if (!isSpecCardConfigured(target.specCard)) {

@@ -237,7 +237,9 @@ class ListingFields(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, allow_inf_nan=False)
 
     title_mode: Literal["long", "short"] = "long"
-    suggested_price_usd: float = Field(strict=True, gt=0)
+    # 店小秘上架不要求建议售价：新客户端不再上报，导出时该列留空。
+    # 保留字段只为兼容旧客户端与历史快照（历史批次 JSON 里可能仍有该键）。
+    suggested_price_usd: float = Field(default=0.0, strict=True, ge=0)
     category_name: str = Field(min_length=1, max_length=120)
     skus: list[ListingSku] = Field(
         min_length=1,

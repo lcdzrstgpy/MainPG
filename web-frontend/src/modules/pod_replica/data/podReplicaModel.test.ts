@@ -37,7 +37,6 @@ function validTarget(overrides: Partial<ReplicaTargetDraft> = {}): ReplicaTarget
     productName: "抱枕",
     listingFields: {
       title_mode: "long",
-      suggested_price_usd: "19.99",
       category_name: "抱枕",
       skus: [{ name: "40cm", declared_price: "6", weight_g: "300" }],
     },
@@ -79,13 +78,13 @@ test("field validation requires product name, category, SKU numbers and a config
 
   // 类目必填复用全定制 listingFieldsForApi 的既有口径。
   const missingCategory = validTarget({
-    listingFields: { title_mode: "long", suggested_price_usd: "19.99", category_name: "", skus: [{ name: "40cm", declared_price: "6", weight_g: "300" }] },
+    listingFields: { title_mode: "long", category_name: "", skus: [{ name: "40cm", declared_price: "6", weight_g: "300" }] },
   });
   assert.deepEqual(validateReplicaTargetDraft(missingCategory), { ok: false, error: "请填写店小秘类目。" });
 
   // SKU 申报价 / 重量约束同样复用 helper。
   const badPrice = validTarget({
-    listingFields: { title_mode: "long", suggested_price_usd: "19.99", category_name: "抱枕", skus: [{ name: "40cm", declared_price: "0", weight_g: "300" }] },
+    listingFields: { title_mode: "long", category_name: "抱枕", skus: [{ name: "40cm", declared_price: "0", weight_g: "300" }] },
   });
   assert.equal(validateReplicaTargetDraft(badPrice).ok, false);
 
@@ -115,7 +114,6 @@ test("buildReplicaBatchRequest keeps target order, snake_case shape and an empty
   assert.equal(request.creative_prompt, "");
   assert.deepEqual(request.targets.map((target) => target.target_asset_id), ["asset_a", "asset_b"]);
   assert.deepEqual(request.targets.map((target) => target.product_name), ["抱枕", "收纳篮"]);
-  assert.equal(request.targets[0].listing_fields.suggested_price_usd, 19.99);
   assert.equal(request.targets[0].listing_fields.skus[0].declared_price, 6);
   assert.equal(request.targets[0].listing_fields.spec_card?.cells[1][1], "40");
 });
@@ -143,7 +141,6 @@ test("copying another product's listing info deep-copies SKUs and spec card whil
   assert.equal(copied.listingFields.category_name, "抱枕");
 
   // 上架信息 / SKU / 规格卡来自来源且为深拷贝。
-  assert.equal(copied.listingFields.suggested_price_usd, source.listingFields.suggested_price_usd);
   assert.notEqual(copied.listingFields.skus, source.listingFields.skus);
   copied.listingFields.skus[0].name = "改动";
   copied.specCard.cells[1][1] = "999";

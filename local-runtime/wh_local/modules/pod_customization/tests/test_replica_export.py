@@ -247,8 +247,9 @@ def test_replica_export_expands_each_product_sku_without_cross_style_fallback(tm
     ]
     # 重量归对应产品。
     assert [row[14] for row in rows] == [300, 500, 200]
-    # 建议售价归对应产品。
-    assert [row[23] for row in rows] == [19.99, 19.99, 12.5]
+    # 建议售价列（第 24 列）店小秘不要求，统一留空；申报价走每个 SKU 的第 9 列。
+    assert [row[23] for row in rows] == [None, None, None]
+    assert [row[9] for row in rows] == [6, 8, 4]
     # 尺寸：款 1 保留 cm，款 2 从 cm 换算成 in（30/2.54≈11.81，20/2.54≈7.87）。
     assert [row[11:14] for row in rows] == [
         (40.0, 40.0, 10.0),

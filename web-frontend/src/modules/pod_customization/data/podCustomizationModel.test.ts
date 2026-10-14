@@ -172,7 +172,6 @@ test("listing fields normalize every SKU with its declared price and weight, and
   };
   const result = listingFieldsForApi({
     title_mode: "long",
-    suggested_price_usd: "29.99",
     category_name: " 家居收纳 > 洗衣篮 ",
     skus: [
       { name: "  米白 ", declared_price: "18.5", weight_g: "450" },
@@ -183,7 +182,6 @@ test("listing fields normalize every SKU with its declared price and weight, and
   assert.deepEqual(result, {
     value: {
       title_mode: "long",
-      suggested_price_usd: 29.99,
       category_name: "家居收纳 > 洗衣篮",
       skus: [
         { name: "米白", declared_price: 18.5, weight_g: 450 },
@@ -197,7 +195,6 @@ test("listing fields normalize every SKU with its declared price and weight, and
 test("listing fields require one complete SKU with its dimensions", () => {
   const base = {
     title_mode: "long" as const,
-    suggested_price_usd: "29.99",
     category_name: "家居收纳",
   };
   const specCard = {
@@ -240,7 +237,6 @@ test("listing fields require one complete SKU with its dimensions", () => {
 test("listing fields reject more than 100 SKUs", () => {
   const result = listingFieldsForApi({
     title_mode: "long",
-    suggested_price_usd: "29.99",
     category_name: "家居收纳",
     skus: Array.from({ length: 101 }, (_, index) => ({
       name: `SKU ${index + 1}`,
@@ -255,7 +251,6 @@ test("listing fields reject more than 100 SKUs", () => {
 test("listing fields reject SKU names longer than 120 characters", () => {
   const result = listingFieldsForApi({
     title_mode: "long",
-    suggested_price_usd: "29.99",
     category_name: "家居收纳",
     skus: [{ name: "款".repeat(121), declared_price: "18.5", weight_g: "450" }],
   });

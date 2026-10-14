@@ -331,7 +331,7 @@ export function PodReplicaPage({ isActive = true }: Props) {
 
   const changeProductName = (clientId: string, value: string) => updateTarget(clientId, (target) => ({ ...target, productName: value }));
 
-  const changeListingField = (clientId: string, key: "title_mode" | "suggested_price_usd" | "category_name", value: string) =>
+  const changeListingField = (clientId: string, key: "title_mode" | "category_name", value: string) =>
     updateTarget(clientId, (target) => ({ ...target, listingFields: { ...target.listingFields, [key]: value } as ReplicaTargetDraft["listingFields"] }));
 
   const addSku = (clientId: string) => updateTarget(clientId, (target) => {

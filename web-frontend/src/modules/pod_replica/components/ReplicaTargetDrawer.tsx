@@ -22,7 +22,7 @@ type Props = {
   /** 该目标正在识别中（用于禁用触发按钮）。 */
   analyzing: boolean;
   onChangeProductName: (clientId: string, value: string) => void;
-  onListingFieldChange: (clientId: string, key: "title_mode" | "suggested_price_usd" | "category_name", value: string) => void;
+  onListingFieldChange: (clientId: string, key: "title_mode" | "category_name", value: string) => void;
   onAddSku: (clientId: string) => void;
   onUpdateSku: (clientId: string, index: number, key: SkuField, value: string) => void;
   onRemoveSku: (clientId: string, index: number) => void;

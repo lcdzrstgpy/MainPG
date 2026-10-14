@@ -60,7 +60,6 @@ function cloneTarget(target: ReplicaTargetDraft): ReplicaTargetDraft {
     productName: target.productName,
     listingFields: {
       title_mode: target.listingFields.title_mode,
-      suggested_price_usd: target.listingFields.suggested_price_usd,
       category_name: target.listingFields.category_name,
       skus: target.listingFields.skus.map((sku) => ({ ...sku })),
     },
@@ -144,7 +143,6 @@ function analysisOrDefault(target: Partial<ReplicaTargetDraft>): Pick<
 function isListingFields(value: unknown): value is PodListingFieldsDraft {
   return isRecord(value)
     && (value.title_mode === "long" || value.title_mode === "short")
-    && typeof value.suggested_price_usd === "string"
     && typeof value.category_name === "string"
     && Array.isArray(value.skus)
     && value.skus.every((sku) => isRecord(sku)

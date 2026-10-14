@@ -32,7 +32,7 @@ function target(clientId: string, assetId: string, productName: string): Replica
     width: 800,
     height: 800,
     productName,
-    listingFields: { title_mode: "long", suggested_price_usd: "9.99", category_name: "抱枕", skus: [{ name: "S", declared_price: "3", weight_g: "120" }] },
+    listingFields: { title_mode: "long", category_name: "抱枕", skus: [{ name: "S", declared_price: "3", weight_g: "120" }] },
   };
 }
 

@@ -106,7 +106,6 @@ export function PodListingDetailDrawer({ batch, style, onClose, onSaveTitle }: P
     };
   });
   const listingDetails = listingFields ? [
-    ["建议售价（USD）", listingFields.suggested_price_usd.toFixed(2)],
     ["店小秘类目", listingFields.category_name],
   ] as const : [];
   const legacyWeight = legacyListingFields && skuRows.length === 0 && legacyListingFields.weight_g !== undefined

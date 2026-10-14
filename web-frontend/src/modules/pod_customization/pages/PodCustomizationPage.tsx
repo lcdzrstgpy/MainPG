@@ -166,7 +166,6 @@ const EMPTY_BUSINESS_FIELDS_FOR_SWITCH: Record<keyof PodBusinessFieldsDraft, str
 
 const EMPTY_LISTING_FIELDS_FOR_SWITCH: PodListingFieldsDraft = {
   title_mode: "long",
-  suggested_price_usd: "",
   category_name: "",
   skus: [{ name: "", declared_price: "", weight_g: "" }],
 };
@@ -440,7 +439,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     setBusinessFields((current) => mergeBusinessFields(current, item.fields));
   };
 
-  const updateListingField = (key: "title_mode" | "suggested_price_usd" | "category_name", value: string) => {
+  const updateListingField = (key: "title_mode" | "category_name", value: string) => {
     setListingFields((current) => ({ ...current, [key]: value }));
   };
 
@@ -470,7 +469,6 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     }
     const currentTemplateHasArchive = systemTemplates.some((template) => template.templateId === selectedTemplateId);
     const formHasContent = Object.values(businessFields).some((value) => value.trim())
-      || listingFields.suggested_price_usd.trim()
       || listingFields.category_name.trim() || listingFields.skus.some((sku) => Object.values(sku).some((value) => value.trim()));
     if (!currentTemplateHasArchive && selectedTemplateId && formHasContent) {
       setPendingTemplateSwitch(templateId);

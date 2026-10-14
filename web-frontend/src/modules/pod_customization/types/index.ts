@@ -75,7 +75,6 @@ export type PodSku = {
 
 export type PodListingFieldsDraft = {
   title_mode: PodTitleMode;
-  suggested_price_usd: string;
   category_name: string;
   skus: PodSkuDraft[];
 };
@@ -132,7 +131,6 @@ export type SpecCardReprintResponse = {
 
 export type PodListingFields = {
   title_mode: PodTitleMode;
-  suggested_price_usd: number;
   category_name: string;
   skus: PodSku[];
   /** 批次冻结快照里的规格卡配置；旧批次快照可能缺失该键。 */
