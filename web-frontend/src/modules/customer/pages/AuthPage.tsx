@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 
 import { BRAND_LOGO_URL, BRAND_NAME } from "../../../shared/brand";
+import { clearPrivacyConsent, readPrivacyConsent, savePrivacyConsent } from "../../../shared/privacyConsent";
 import { resetMessagesSync, syncMessages } from "../../../shared/api/messagesApi";
 import { httpJson, saveAuthSession } from "../../../transport/http/client";
 import {
@@ -84,7 +85,9 @@ export function AuthPage({ onEnter }: AuthPageProps) {
     return "";
   });
   // 政策同意：登录与注册均需勾选《界野隐私政策》后才可提交。
-  const [agreed, setAgreed] = useState(false);
+  // 首次必须由用户**主动**勾选（不默认勾选同意，合规要求，见 shared/privacyConsent.ts）；
+  // 勾过之后本地记住、下次直接回填；取消勾选即撤回记录；协议版本变更会自动失效并重新征求。
+  const [agreed, setAgreed] = useState(() => readPrivacyConsent());
   // 账号管理：本机保存登录过的账号（含可选保存的密码，见 loginCredentials.ts）。
   // 列表来自本地加密存储；本地服务不可用时静默为空，登录流程不受影响。
   const [savedAccounts, setSavedAccounts] = useState<SavedLoginAccount[]>([]);
@@ -169,6 +172,13 @@ export function AuthPage({ onEnter }: AuthPageProps) {
     // 手输值与已保存账号精确一致时回显其「记住密码」状态；否则回到默认不勾。
     const match = matchSavedAccount(savedAccounts, value);
     setRememberPassword(Boolean(match?.has_password));
+  }
+
+  /** 勾选即记录「已同意」；取消勾选同时撤回该记录（合规要求提供便捷的撤回方式）。 */
+  function handleAgreeChange(next: boolean) {
+    setAgreed(next);
+    if (next) savePrivacyConsent();
+    else clearPrivacyConsent();
   }
 
   /** 切换「登录 / 注册」：两者账号框语义不同（登录=用户名或邮箱，注册=用户名），
@@ -450,7 +460,8 @@ export function AuthPage({ onEnter }: AuthPageProps) {
               {isLogin && <label className="auth-agree auth-remember"><input type="checkbox" checked={rememberPassword} onChange={(e) => setRememberPassword(e.target.checked)} /><span>记住密码，下次自动填充</span></label>}
               {!isLogin && <label>确认密码<input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} onInvalid={(e) => e.currentTarget.setCustomValidity("请再次输入密码")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder="再次输入密码" autoComplete="new-password" required /></label>}
               {!isLogin && <label>邀请码<input type="text" value={invitationCode} onChange={(e) => setInvitationCode(e.target.value)} placeholder="选填" autoComplete="off" /></label>}
-              <label className="auth-agree"><input type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} /><span>我已阅读并同意 <a className="link-button" href="/privacy" target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}>《界野隐私政策》</a></span></label>
+              <label className="auth-agree"><input type="checkbox" checked={agreed} onChange={(e) => handleAgreeChange(e.target.checked)} /><span>我已阅读并同意 <a className="link-button" href="/privacy" target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}>《界野隐私政策》</a></span></label>
+              {!agreed && <p className="auth-agree-hint">勾选后才能{isLogin ? "登录" : "注册"}</p>}
               {error && <p className="auth-error">{error}</p>}
               {forceLogin && (
                 <button
@@ -463,7 +474,7 @@ export function AuthPage({ onEnter }: AuthPageProps) {
                 </button>
               )}
               {notice && <p className="auth-notice">{notice}</p>}
-              <button className="primary-button" type="submit" disabled={busy}>{busy ? "处理中…" : isLogin ? "登录并进入工作台 →" : "注册并进入工作台 →"}</button>
+              <button className="primary-button" type="submit" disabled={busy || !agreed} title={!agreed ? "请先勾选同意《界野隐私政策》" : undefined}>{busy ? "处理中…" : isLogin ? "登录并进入工作台 →" : "注册并进入工作台 →"}</button>
             </form>
             {isLogin && <p className="form-hint"><button type="button" className="link-button" onClick={() => { setMode("forgot"); setForgotConfirmPassword(""); setError(""); setNotice(""); }}>忘记密码？</button></p>}
             {mode === "register" && <p className="form-hint">注册成功后自动切换到登录页。</p>}
