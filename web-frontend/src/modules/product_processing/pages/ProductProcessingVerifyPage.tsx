@@ -87,7 +87,9 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenPrecheck,
     skipDuplicates: false,
     ipCheck: true,
     maxParallelDrafts: 8,
-    autoRepull: false,
+    // 默认开启失败项自动重跑：生图回退导致的详情图缺失等可重试失败会自动重试一次
+    // （上限 1 轮，系统轮不向用户计费）；用户可在「处理设置」页勾选关闭以避免再次调用 AI 生图。
+    autoRepull: true,
   });
   const [drafts, setDrafts] = useState<DraftSummary[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());

@@ -113,21 +113,23 @@ WUYIN_IMAGE_ASPECT_RATIO_2_5 = {
     "1:2": "768x1536",
 }
 WUYIN_IMAGE_POLL_INTERVAL_SECONDS = 3.0
-# 上游异步生图 detail 没有任何进度字段：实测「正常出图」与「任务卡死」两种情况下响应
-# 逐字节同构（status 恒为 0、result=null、message 为空、updated_at 也不是心跳），因此无法
-# 直接读出「有没有进展」，只能用时间基线做间接判定。实测真实商品图完成耗时：
-#   image_gpt_2.5(1K)  66.2~95.5s（median 72.1s）→ max×2≈191s / median×3≈216s
-#   image_gpt(2048)    62.6~146.6s（median 68.2s）→ max×2≈293s / median×3≈204s
-# 2K 档原按 max×2≈293s 取 300s；但实测正常出图仅 120~160s，而卡死样本恒在 300s 以上，
-# 300s 只会在无谓等待上多花约 100s。为压缩最坏情况，2K 阈值收紧到 180s（仍高于实测
-# max 146.6s，预留约 23% 余量）。超过阈值仍无任何字段变化，即视为本次提交大概率卡死
-# （多为上游抓不到参考图 URL，任务被 worker 静默丢弃），提前放弃以免占满图片并发槽。
-# 1K 档原 180s 亦偏高：实测 max 95.5s，收紧到 120s（约 26% 余量），让停滞更早被发现、
-# 更快进入重试（换 provider / 换参考图），把「偶发停滞直接回退来源图」压到接近 0。
+# 上游异步生图 detail 没有任何进度字段：任务执行期间 status 恒为 3（排队/准备/等待/
+# 处理中/发布都无字段变化），因此「无字段变化超过阈值」实际等价于「该任务已运行 N 秒」，
+# 停滞阈值 = 变相的整任务超时。达到阈值也不判死，只作为「触发再提交一次」的信号，原任务
+# 继续被轮询；唯一硬边界仍是总时长预算与提交次数上限（见下方）。
+# 现场实测的四宫格(2K, image_gpt 2048x2048)成功样本耗时分布（n=69）：
+#   min 88s / p50 148s / p90 206s / p95 210s / max 216s
+# 回退样本（n=13）的整条 pipeline 耗时：p50 293s、p90/p95 668s（= 660s 总预算烧完）。
+# 旧值 180s 落在成功分布的 p82 附近 → 约 17% 的正常生成被误判为「停滞」，进而触发重复
+# 提交（多付费）、真卡死时烧完 660s 预算、最终回退来源图。现按「成功 max 216s + 约 40%
+# 余量」重定标为 300s：正常任务（<300s）绝不触发任何额外提交，只有超过 300s 仍无字段变化
+# 才追加一次提交（对冲/同链路重试，见 _request_wuyin_image_hedged）。
+# 1K 档（image_gpt_2.5 恒为 1K；旧端点 1024x1024 的槽位重绘等）实测 max 95.5s，用
+# 120s（约 26% 余量）已足够，本次维持不变：1K 不用于四宫格主链路（四宫格恒发 2048x2048）。
 # 两档阈值均可由配置 ``limits.image_stall_threshold_seconds`` /
 # ``limits.image_stall_threshold_2k_seconds`` 覆盖，现场可按上游波动再调。
 WUYIN_IMAGE_STALL_THRESHOLD_SECONDS = 120.0
-WUYIN_IMAGE_STALL_THRESHOLD_2K_SECONDS = 180.0
+WUYIN_IMAGE_STALL_THRESHOLD_2K_SECONDS = 300.0
 MAX_PROVIDER_RESULT_BYTES = 32 * 1024 * 1024
 MAX_PROVIDER_JSON_BYTES = 8 * 1024 * 1024
 REFERENCE_DOWNLOAD_ATTEMPTS = 3
@@ -207,6 +209,8 @@ class _WuyinImageTask:
     last_message: str = ""
     last_status_value: str = ""
     last_code: int = 0
+    # 该任务对应的「提交事件」记录（可观测性）；直接调用方/非对冲路径为 None。
+    event: dict[str, Any] | None = None
 
 
 class _GridSubmitBudget:
@@ -354,6 +358,9 @@ class GeneratedMedia:
     reference_count: int
     attempt_count: int = 1
     provider_status_class: str = "success"
+    # 每次上游提交的紧凑追踪（相对本次生成开始的时间 + 该次提交的最终结果 + 合计），
+    # 让排障时能看出「实际提交了几次、每次是什么结果」。不含任何原始响应体。
+    provider_attempt_notes: tuple[str, ...] = ()
 
 
 class ProductImageProcessor:
@@ -482,7 +489,11 @@ class ProductImageProcessor:
         retries = max(1, min(int((config.get("limits") or {}).get("image_retry_attempts") or 3), 5))
         errors: list[str] = []
         attempt_count = 0
-        generation_deadline = time.monotonic() + IMAGE_GENERATION_TOTAL_TIMEOUT_SECONDS
+        generation_started_at = time.monotonic()
+        generation_deadline = generation_started_at + IMAGE_GENERATION_TOTAL_TIMEOUT_SECONDS
+        # 可观测性：记录本次生成内每一次真实上游提交（时间点 + 最终结果），供
+        # attempt_count / provider_status_class 反映「真实提交次数」而非外层轮次数。
+        submit_events: list[dict[str, Any]] = []
         # provider 轮换：外层按「轮次」、内层遍历所有已配置 provider，保证每个 provider 都
         # 拿到尝试机会。此前四宫格把 max_total_attempts 压到 2，首个 provider 吃满预算后备用
         # provider 从未被使用；一旦首个 provider 停滞就直接回退来源图。现在四宫格改为
@@ -512,6 +523,7 @@ class ProductImageProcessor:
                     break
                 request_timeout = min(IMAGE_EDIT_REQUEST_TIMEOUT_SECONDS, remaining_seconds)
                 attempt_count += 1
+                events_before = len(submit_events)
                 try:
                     content, content_type = self._request_edit(
                         provider,
@@ -523,9 +535,15 @@ class ProductImageProcessor:
                         hedge_candidates=hedge_candidates,
                         submit_budget=submit_budget,
                         generation_deadline=generation_deadline,
+                        submit_events=submit_events,
+                        generation_started_at=generation_started_at,
                     )
+                    # 单次 _request_edit 内部（四宫格 hedge）可能向上游提交多个任务：把超出
+                    # 1 次的部分补进来，使 attempt_count 反映真实远程提交数而非外层轮次数。
+                    attempt_count += max(0, (len(submit_events) - events_before) - 1)
                     self._record_provider_success(provider)
                     suffix = _suffix_for_content_type(content_type)
+                    attempt_notes = _submit_trace_notes(submit_events, generation_started_at)
                     return GeneratedMedia(
                         stage=stage,
                         content=content,
@@ -535,8 +553,11 @@ class ProductImageProcessor:
                         model=model_override or provider["reference_model"] or provider["model"],
                         reference_count=ordinary_reference_count,
                         attempt_count=attempt_count,
+                        provider_status_class=_submit_trace_status_class("success", attempt_notes),
+                        provider_attempt_notes=attempt_notes,
                     )
                 except (requests.RequestException, TimeoutError, ValueError, MediaProcessingError) as exc:
+                    attempt_count += max(0, (len(submit_events) - events_before) - 1)
                     errors.append(f"{provider['name']} attempt {attempt}: {_safe_error(exc)}")
                     status_class = _retry_class(exc)
                     if status_class in {
@@ -555,9 +576,11 @@ class ProductImageProcessor:
                         # 对冲」（无不同链路时退化为「同链路有界重试」）：走到这里说明对冲/重试
                         # 与时长预算均已耗尽。继续用外层轮巡重试只会突破提交上限并重复计费，
                         # 故直接抛出，交由上层走既有可见回退（service.py 记 source_fallback +
-                        # 失败明细）。
+                        # 失败明细）。消息末尾附上「提交追踪」，让 ai_notes 也能看出真实提交
+                        # 次数与每次结果（service.py 会把它转成 four_grid:ai-failed: 备注）。
                         raise MediaProcessingError(
-                            "; ".join(errors),
+                            "; ".join(errors)
+                            + _submit_trace_suffix(submit_events, generation_started_at),
                             attempt_count=attempt_count,
                             status_class=status_class,
                         ) from exc
@@ -1397,6 +1420,8 @@ class ProductImageProcessor:
         hedge_candidates: list[dict[str, str]] | None = None,
         submit_budget: "_GridSubmitBudget | None" = None,
         generation_deadline: float | None = None,
+        submit_events: list[dict[str, Any]] | None = None,
+        generation_started_at: float | None = None,
     ) -> tuple[bytes, str]:
         model = str(reference_model or provider.get("reference_model") or provider.get("model") or "").strip()
         if _is_wuyin_image_provider(provider):
@@ -1410,6 +1435,8 @@ class ProductImageProcessor:
                 hedge_candidates=hedge_candidates,
                 submit_budget=submit_budget,
                 generation_deadline=generation_deadline,
+                submit_events=submit_events,
+                generation_started_at=generation_started_at,
             )
         files: Any
         if len(references) == 1:
@@ -1469,6 +1496,8 @@ class ProductImageProcessor:
         hedge_candidates: list[dict[str, str]] | None = None,
         submit_budget: "_GridSubmitBudget | None" = None,
         generation_deadline: float | None = None,
+        submit_events: list[dict[str, Any]] | None = None,
+        generation_started_at: float | None = None,
     ) -> tuple[bytes, str]:
         resolved_model = str(model or provider.get("model") or "").strip()
         if hedge_candidates is not None:
@@ -1483,6 +1512,8 @@ class ProductImageProcessor:
                 hedge_candidates=hedge_candidates,
                 submit_budget=submit_budget,
                 generation_deadline=generation_deadline,
+                submit_events=submit_events,
+                generation_started_at=generation_started_at,
             )
         # 既有直连路径（非四宫格 / 直接调用）：单任务提交 + 阻塞轮询。
         urls, temporary_store, temporary_references = self._wuyin_reference_urls(references)
@@ -1521,6 +1552,8 @@ class ProductImageProcessor:
         hedge_candidates: list[dict[str, str]],
         submit_budget: "_GridSubmitBudget | None",
         generation_deadline: float | None,
+        submit_events: list[dict[str, Any]] | None = None,
+        generation_started_at: float | None = None,
     ) -> tuple[bytes, str]:
         """四宫格生图对冲：交替轮询多个无印异步任务，先到先用。
 
@@ -1535,6 +1568,8 @@ class ProductImageProcessor:
         - 总时长沿用 ``generation_deadline``，不会被 hedge/重试拉长；预算耗尽仍无结果即抛
           ``provider_stalled``，交给上层走既有可见回退。
         - 任一条任务先返回图片 URL 立即采用，并停止对其余任务的轮询与清理。
+        - 传入 ``submit_events`` 时，记录每次真实上游提交的时间点与最终结果（出图/停滞/
+          被拒/失败/被取代），供上层汇总成真实提交次数与可观测备注。
         """
         stall_threshold = _wuyin_stall_threshold_seconds(resolved_model, image_size, self._config())
         deadline = (
@@ -1554,6 +1589,15 @@ class ProductImageProcessor:
 
         def start_task(target: dict[str, str]) -> None:
             urls, store, temporary = self._wuyin_reference_urls(references)
+            # 提交前先记一条「提交事件」：时间点即本次上游提交的时刻，结果随后回填。
+            event: dict[str, Any] | None = None
+            if submit_events is not None:
+                event = {
+                    "provider": str(target.get("name") or ""),
+                    "at": time.monotonic(),
+                    "outcome": "processing",
+                }
+                submit_events.append(event)
             try:
                 task_id = self._submit_wuyin_image_task(
                     target,
@@ -1563,10 +1607,12 @@ class ProductImageProcessor:
                     image_size=image_size,
                     timeout_seconds=timeout_seconds,
                 )
-            except BaseException:
+            except BaseException as exc:
                 if store is not None:
                     for created in temporary:
                         store.delete(created)
+                if event is not None:
+                    event["outcome"] = _submit_outcome_from_error(exc)
                 raise
             now = time.monotonic()
             active.append(
@@ -1580,6 +1626,7 @@ class ProductImageProcessor:
                     store=store,
                     temporary_references=list(temporary),
                     last_progress_at=now,
+                    event=event,
                 )
             )
 
@@ -1598,6 +1645,9 @@ class ProductImageProcessor:
                     )
                 remaining = deadline - time.monotonic()
                 if remaining <= 1.0:
+                    # 预算耗尽仍无结果：仍在轮询的任务，其最终结果记为「停滞」。
+                    for task in active:
+                        _mark_submit_outcome(task, "stalled")
                     raise MediaProcessingError(
                         "; ".join(errors) or "provider image task stalled",
                         status_class="provider_stalled",
@@ -1608,12 +1658,23 @@ class ProductImageProcessor:
                         result_url = self._probe_wuyin_image_task(task)
                     except MediaProcessingError as exc:
                         errors.append(f"{task.provider.get('name', '')} task: {_safe_error(exc)}")
+                        _mark_submit_outcome(task, _submit_outcome_from_error(exc))
                         active.remove(task)
                         continue
                     if result_url:
-                        # 先到先用：立即采用本任务结果，其余任务在 finally 中停止并清理。
+                        # 先到先用：本任务记为「出图」；其余仍在轮询的任务若尚未判停滞则记为
+                        # 「被取代」（已判停滞的保留「停滞」——它确实长时间无进展）。
+                        _mark_submit_outcome(task, "ok")
+                        for other in active:
+                            if other is not task and (other.event or {}).get("outcome") == "processing":
+                                _mark_submit_outcome(other, "superseded")
                         return _download_provider_result_image(result_url)
-                if any(self._wuyin_task_stalled(task) for task in active):
+                stalled_tasks = [task for task in active if self._wuyin_task_stalled(task)]
+                if stalled_tasks:
+                    # 达阈值但未判死：仅作为「触发再提交一次」的信号；各停滞任务记为「停滞」
+                    # （若之后又出图会被回填为「出图」）。
+                    for task in stalled_tasks:
+                        _mark_submit_outcome(task, "stalled")
                     # 优先对冲「不同链路」目标；没有不同链路（单链路场景）时，若同链路重试
                     # 预算尚有余量则退化为「向同一条链路再提交 1 次」（先到先用）。
                     if hedge_index < len(hedge_pool):
@@ -2029,6 +2090,77 @@ def _positive_float(value: Any, default: float) -> float:
     except (TypeError, ValueError):
         return default
     return parsed if parsed > 0 else default
+
+
+# 一次上游提交的最终结果标签（可观测性用，固定取值避免自由文本）。
+#   ok         出图成功
+#   stalled    停滞（达阈值/预算耗尽仍无图）
+#   rejected   提交被上游网关/鉴权/参数拒绝（重试无意义）
+#   failed     任务显式失败
+#   superseded 先到先用：被其它提交的结果取代
+_SUBMIT_OUTCOME_BY_STATUS: dict[str, str] = {
+    "gateway_rejected": "rejected",
+    "non_retryable_4xx": "rejected",
+    "non_retryable_local": "rejected",
+}
+
+
+def _submit_outcome_from_error(error: BaseException) -> str:
+    """把一次提交/轮询异常的 status_class 归类为最终结果标签。"""
+    status_class = str(getattr(error, "status_class", "") or "")
+    return _SUBMIT_OUTCOME_BY_STATUS.get(status_class, "failed")
+
+
+def _mark_submit_outcome(task: Any, outcome: str) -> None:
+    """回填某个任务的提交事件最终结果（无事件记录时为 no-op）。"""
+    event = getattr(task, "event", None)
+    if event is not None:
+        event["outcome"] = outcome
+
+
+def _submit_trace_notes(
+    submit_events: list[dict[str, Any]] | None, generation_started_at: float
+) -> tuple[str, ...]:
+    """把一次生成的多次提交压成紧凑备注；仅当确实发生多次提交时才返回非空。
+
+    每条备注形如 ``s1@0ms=stalled``、``submits=2``、``total=419880ms``，不含任何原始响应体。
+    """
+    events = list(submit_events or [])
+    if len(events) <= 1:
+        return ()
+    notes: list[str] = []
+    for index, event in enumerate(events, start=1):
+        at_ms = max(
+            0,
+            round(
+                (float(event.get("at", generation_started_at)) - generation_started_at) * 1000
+            ),
+        )
+        notes.append(f"s{index}@{at_ms}ms={event.get('outcome') or 'processing'}")
+    notes.append(f"submits={len(events)}")
+    notes.append(f"total={max(0, round((time.monotonic() - generation_started_at) * 1000))}ms")
+    return tuple(notes)
+
+
+def _submit_trace_status_class(status_class: str, attempt_notes: tuple[str, ...]) -> str:
+    """把多次提交的追踪并入 provider_status_class（result_json 唯一可控的字符串通道）。
+
+    单次提交（或未产生追踪的普通路径）保持原类名，不改变既有语义；只有真正发生多次提交
+    时才追加 ``;s1@...=...`` 形式的追踪，便于排障时看出真实提交次数与每次结果。
+    """
+    if not attempt_notes:
+        return status_class
+    return ";".join([str(status_class), *attempt_notes])
+
+
+def _submit_trace_suffix(
+    submit_events: list[dict[str, Any]] | None, generation_started_at: float
+) -> str:
+    """失败路径用：把提交追踪拼进异常消息，使其随 ``ai-failed`` 备注进入 ai_notes。"""
+    notes = _submit_trace_notes(submit_events, generation_started_at)
+    if not notes:
+        return ""
+    return f" [提交追踪:{';'.join(notes)}]"
 
 
 def _wuyin_stall_threshold_seconds(

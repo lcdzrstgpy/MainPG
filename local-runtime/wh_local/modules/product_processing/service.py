@@ -308,13 +308,14 @@ def _safe_shop_candidate_value(value: Any) -> Any:
         return str(value) if value.is_finite() else _DROP_SHOP_CANDIDATE_VALUE
     return _DROP_SHOP_CANDIDATE_VALUE
 
-# 失败项自动补跑轮数：WH_PP_AUTO_REPULL_ROUNDS，默认 2（任务收尾统一把所有失败
-# 链接重新投入完整处理链路，最多跑 2 轮），0 关闭；系统自动轮不向用户计费。
+# 失败项自动补跑轮数：WH_PP_AUTO_REPULL_ROUNDS，默认 1（任务收尾把本轮失败链接重新
+# 投入处理链路自动重试一次）。上限明确为「每条链接最多 1 次自动重试」，避免因生图回退
+# 等可重试失败被无限重试、反复产生不可控的 AI 生图费用；0 关闭。系统自动轮不向用户计费。
 def _auto_repull_rounds() -> int:
     try:
-        return max(0, int(os.environ.get("WH_PP_AUTO_REPULL_ROUNDS", "2")))
+        return max(0, int(os.environ.get("WH_PP_AUTO_REPULL_ROUNDS", "1")))
     except ValueError:
-        return 2
+        return 1
 
 
 def _iso_utc_now() -> str:
@@ -6206,7 +6207,8 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         规则：
         - 处理全部完成后，把本轮失败的链接（失败 + 待确认）像草稿池进入
           处理一样重新投入完整链路，最多自动重试 WH_PP_AUTO_REPULL_ROUNDS
-          （默认 2）轮；每轮内部仍并行，全部跑完才向用户展示最终结果。
+          （默认 1，即每条链接最多自动重试一次）轮；每轮内部仍并行，全部跑完
+          才向用户展示最终结果。
         - 系统自动重试轮不消耗积分（结算不加重试溢价、失败链接全额退款）。
         - 直连计费任务必须仍有可用远程 token 才会自动补跑；否则保持现状，
           留给用户在结果页手动重新处理。
@@ -8029,10 +8031,22 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 )
                 if image_failure_detail:
                     ai_notes.append(f"grid:fallback:{image_failure_detail}")
+        # 四宫格是否为「来源图回退」：回退时四宫格的"图"其实是来源图，本地合成出的详情图
+        # 只是原图拼装，不能冒充 AI 处理成果。该情形直接判详情图未产出（留空）——既不本地
+        # 合成也不发起 AI 详情图，避免把原图当成果对外展示、也避免产生 AI 费用（留 notes 证据）。
+        grid_source_fallback = (
+            str(provider_status_classes.get("four_grid") or "") == "source_fallback"
+        )
+        # 只有真正调用了 AI 详情图并成功才为 True；本地合成/未产出均保持 False，
+        # 避免无条件追加误导性的 detail_images:ai。
+        detail_images_via_ai = False
         if need_detail and not images_receipt_hit:
             # 检查点：任务被暂停/取消时不再合成或发起详情图生成。
             self._raise_if_task_stopped(task_id, workspace_id)
-            if grid_image_paths:
+            if grid_source_fallback:
+                ai_notes.append("detail_images:skipped:grid_not_ai")
+                detail_image_paths = []
+            if grid_image_paths and not grid_source_fallback:
                 stage_started = time.perf_counter()
                 detail_image_paths = self._generate_detail_images_local(
                     task_id,
@@ -8045,7 +8059,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     workspace_id=workspace_id,
                 )
                 record_stage("local_detail", stage_started)
-            if not detail_image_paths:
+            if not detail_image_paths and not grid_source_fallback:
                 if direct_detail_future is not None:
                     # 详情图生成在独立线程中推进；被中止的 future 抛出的
                     # _TaskControlStopped 在此自然冒泡。
@@ -8078,32 +8092,46 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                         batch_image_prompt=batch_image_prompt,
                     )
                     record_stage("detail_generation", stage_started)
+                detail_images_via_ai = bool(detail_image_paths)
         if grid_image_paths:
             ai_notes.append(
                 "premium_images:ai"
                 if premium_mode
                 else f"image_set:{image_generation_count}:ai"
             )
-        if detail_image_paths:
+        if detail_images_via_ai:
             ai_notes.append("detail_images:ai")
         if need_detail and not detail_image_paths:
             detail_failure_detail = self._latest_ai_failure_detail(ai_notes)
+            if grid_source_fallback:
+                # 客户可读文案：说明是生图回退导致详情图缺失、已用原图兜底、系统会自动重试一次；
+                # 内部术语与技术原因留在 debug_hint（前端可展开）供运营排障。
+                item_reason = "生图服务未返回可用图片，已用原图兜底；详情图未生成（系统会自动重试一次）"
+                debug_hint = (
+                    "生图回退（four_grid=source_fallback）：该链接的四宫格来自来源图，"
+                    "已跳过本地合成与 AI 详情图，详情图判为未产出；可重试图片分支重新生成四宫格"
+                    + (
+                        f"；底层原因：{detail_failure_detail}" if detail_failure_detail else ""
+                    )
+                )
+            else:
+                item_reason = "详情图待补充"
+                debug_hint = "详情图未生成可用结果；文本结果已保留；请重试图片分支或检查图片服务配置"
+                if detail_failure_detail:
+                    debug_hint += f"；底层原因：{detail_failure_detail}"
             return {
                 **item,
                 "title": optimized_title,
                 "image_url": image_url,
                 "status": "attention_required",
-                "reason": "详情图待补充",
+                "reason": item_reason,
                 "result": {
                     "error_type": "detail_images_incomplete",
                     "failure_class": "technical_retryable",
                     "partial_result": True,
                     "pending_stage": "detail_images",
                     "operator_hint": "可重试生成详情图",
-                    "debug_hint": "详情图未生成可用结果；文本结果已保留；请重试图片分支或检查图片服务配置"
-                    + (
-                        f"；底层原因：{detail_failure_detail}" if detail_failure_detail else ""
-                    ),
+                    "debug_hint": debug_hint,
                     "retryable": True,
                     "optimized_title": optimized_title,
                     "description": description,

@@ -3270,6 +3270,24 @@
   margin-top: 2px;
 }
 
+/* ── 失败商品区：可展开的「技术详情」（客户看可读原因，运营展开看原始技术原因） ── */
+.verify-failure-detail {
+  margin-top: 4px;
+  color: #6b7d90;
+  font-size: 0.75rem;
+}
+.verify-failure-detail summary {
+  cursor: pointer;
+  color: #4a6b8a;
+  font-weight: 700;
+}
+.verify-failure-detail span {
+  display: block;
+  margin-top: 4px;
+  word-break: break-word;
+  line-height: 1.5;
+}
+
 .verify-advanced-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));

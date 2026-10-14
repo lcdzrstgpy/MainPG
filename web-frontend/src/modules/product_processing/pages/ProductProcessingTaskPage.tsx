@@ -173,7 +173,8 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       maxParallelDrafts: 8,
       imageTemplate: 'A',
       descriptionTemplate: 'A',
-      autoRepull: false,
+      // 默认开启失败项自动重跑（上限 1 轮）；用户可在此页勾选关闭以避免再次产生 AI 生图费用。
+      autoRepull: true,
     }
   );
   const [batch, setBatch] = useState<TaskOutputsResponse | null>(null);
@@ -226,7 +227,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
 
   // 实时处理进度：processed_count / total_count，与后端轮询结果同步刷新。
   // 自动补跑轮（含轮间切换的短暂窗口）仍视为「处理中」：处理过程中不展示
-  // 失败信息，进度条在全部轮次（含最多 2 轮自动重试）跑完前不显示 100%。
+  // 失败信息，进度条在全部轮次（含最多 1 轮自动重试）跑完前不显示 100%。
   // 暂停单独识别（含重试轮中的暂停），给用户明确的「已暂停」反馈。
   const processingStatuses = ['queued', 'running'];
   const batchProcessing = batch
@@ -631,13 +632,14 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
               onSelectDescription={(id) => setOptions((p) => ({ ...p, descriptionTemplate: id }))}
             />
             <div className="verify-scope-row">
-              <label className="verify-scope-check" title="任务结束后自动重试失败/待确认的链接，默认开启；关闭后失败项需在结果页手动重新处理">
+              <label className="verify-scope-check" title="任务结束后自动重试失败/待确认的链接（每条最多自动重试 1 次，避免无限重试）。重试会再次调用 AI 生图、产生 AI 生图费用；默认开启，关闭后失败项需在结果页手动重新处理">
                 <input
                   type="checkbox"
                   checked={options.autoRepull !== false}
                   onChange={(e) => setOptions((p) => ({ ...p, autoRepull: e.target.checked }))}
                 />
                 <span>自动重跑失败项</span>
+                <span className="verify-sub">（最多 1 次；重试会再次调用 AI 生图并产生费用，可关闭）</span>
               </label>
             </div>
             <div className="verify-scope-row">
@@ -853,7 +855,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
             {!batch && <p className="verify-empty">尚未提交处理批次。请配置参数后点击"开始处理"。</p>}
           </section>
 
-          {/* 失败明细只在全部处理（含 2 轮自动重试）跑完后展示最终失败链接及原因 */}
+          {/* 失败明细只在全部处理（含最多 1 轮自动重试）跑完后展示最终失败链接及原因 */}
           {failureItems.length > 0 && !taskActive && (
             <section className="verify-section">
               <div className="verify-section-head">
@@ -894,8 +896,18 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                         <td>{item.skc || '-'}</td><td>{item.title || '-'}</td>
                         <td>失败</td>
                         <td>{FAILURE_CLASS_LABELS[failureClass] || '已过滤'}</td>
-                        <td>{item.reason || FAILURE_FILTER_HINT}</td>
-                        <td>{FAILURE_FILTER_HINT}</td>
+                        <td>
+                          {item.reason || FAILURE_FILTER_HINT}
+                          {result.debug_hint ? (
+                            // 客户只看可读原因；原始技术原因（生图回退/底层异常等）折叠在
+                            // 「技术详情」里，供运营排障，不干扰客户阅读。
+                            <details className="verify-failure-detail">
+                              <summary>技术详情</summary>
+                              <span>{String(result.debug_hint)}</span>
+                            </details>
+                          ) : null}
+                        </td>
+                        <td>{String(result.operator_hint || '') || FAILURE_FILTER_HINT}</td>
                         <td>{result.retryable ? '是' : '否'}</td>
                         <td>
                           {draftId != null ? (

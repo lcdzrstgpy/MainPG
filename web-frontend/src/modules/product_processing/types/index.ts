@@ -171,7 +171,7 @@ export interface ProductProcessingOptions {
   descriptionTemplate?: 'A' | 'B';
   /** 历史/API 兼容字段；新前端任务固定发送 4，不再向用户暴露。 */
   imageGenerationCount?: 1 | 2 | 4;
-  /** 失败项自动补跑：任务收尾统一把所有失败链接重新投入处理链路，自动重跑最多 2 轮（系统轮不向用户计费，默认开启） */
+  /** 失败项自动补跑：任务收尾把失败链接重新投入处理链路，每条链接最多自动重跑 1 次（系统轮不向用户计费，默认开启） */
   autoRepull?: boolean;
   /** 「本批次 AI 生图专项提示词」：默认关闭；开启后批次开头基于本批全部标题生成一条面向该品类的生图指南（定点爆破规避异形），注入本批各条生图提示词。 */
   batchImagePromptEnabled?: boolean;

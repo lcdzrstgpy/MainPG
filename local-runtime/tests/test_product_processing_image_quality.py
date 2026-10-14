@@ -750,10 +750,15 @@ def test_wuyin_reference_relay_exhaustion_is_retryable_not_terminal(monkeypatch)
     assert media_module._retry_class(caught.value) == "reference_relay_failed"
 
 
-def test_stall_threshold_defaults_are_lowered_and_configurable() -> None:
+def test_stall_threshold_defaults_are_recalibrated_and_configurable() -> None:
+    """2K（四宫格）停滞阈值按实测成功分布重定标为 300s，1K 维持 120s，两档均可配置覆盖。"""
+    # 1K 档维持不变（image_gpt_2.5 恒 1K；实测 max 95.5s → 120s 约 26% 余量）。
     assert media_module.WUYIN_IMAGE_STALL_THRESHOLD_SECONDS == 120.0
-    assert media_module.WUYIN_IMAGE_STALL_THRESHOLD_2K_SECONDS == 180.0
-    assert media_module._wuyin_stall_threshold_seconds("image_gpt", "2048x2048") == 180.0
+    # 2K 档：成功样本 max 216s + 约 40% 余量 → 300s（旧值 180s 落在 p82，误杀约 17%）。
+    assert media_module.WUYIN_IMAGE_STALL_THRESHOLD_2K_SECONDS == 300.0
+    assert media_module._wuyin_stall_threshold_seconds("image_gpt", "2048x2048") == 300.0
+    assert media_module._wuyin_stall_threshold_seconds("image_gpt", "2048x1024") == 300.0
+    assert media_module._wuyin_stall_threshold_seconds("image_gpt", None) == 120.0
     assert media_module._wuyin_stall_threshold_seconds("image_gpt_2.5", "1024x1024") == 120.0
     override = {
         "limits": {
@@ -1864,4 +1869,129 @@ def test_grid_hedge_first_ready_result_wins_and_stops_polling_other(monkeypatch)
     )
     assert all(event[0] == "submit" for event in events[winning_index + 1 :])
     assert poll_counts["task-2"] == 1
+
+
+# ---------------------------------------------------------------------------
+# 2K（四宫格）停滞阈值重定标 + 每次提交可观测性
+# ---------------------------------------------------------------------------
+# 背景：2K 成功样本实测 max 216s，阈值由 180s 重定标为 300s。阈值仅作「触发再提交一次」
+# 的信号，正常耗时（<300s）绝不触发额外提交；同时 attempt_count 反映真实提交次数，
+# provider_status_class / provider_attempt_notes 记录每次提交的时间点与最终结果。
+
+
+def test_two_k_grid_normal_duration_never_triggers_extra_submit(monkeypatch) -> None:
+    """正常耗时（≈222s < 300s 2K 阈值）：提交数保持 1、最终成功，绝不因阈值多提交。"""
+    config = _grid_hedge_config(stall_seconds=300.0)
+    processor, _clock = _grid_hedge_processor(monkeypatch, config, total_budget=400.0)
+    ready_url = "https://result.example/normal.png"
+
+    def responder(_base, task_id, poll_index):
+        # 主任务在第 74 次轮询（≈222s）出图；期间从未达到 300s 阈值。
+        if task_id == "task-1" and poll_index >= 74:
+            return _wuyin_ready(ready_url)
+        return _wuyin_processing()
+
+    submissions, _polls, _counts, _events = _install_wuyin_transport(monkeypatch, responder)
+
+    media = processor.generate(
+        stage="grid_image",
+        prompt="contract",
+        reference_values=["https://cdn.example/source.png"],
+        image_size="2048x2048",
+    )
+
+    assert len(submissions) == 1
+    assert media.attempt_count == 1
+    assert media.provider_status_class == "success"
+    assert media.provider_attempt_notes == ()
+    assert media.content == ready_url.encode("utf-8")
+
+
+def test_two_k_grid_over_threshold_triggers_one_more_submit_and_keeps_polling(monkeypatch) -> None:
+    """超过 300s 阈值仍无图：向不同链路再提交 1 次，原任务继续轮询并最终出图。"""
+    config = _grid_hedge_config(stall_seconds=300.0)
+    processor, _clock = _grid_hedge_processor(monkeypatch, config, total_budget=400.0)
+    original_url = "https://result.example/original.png"
+
+    def responder(_base, task_id, poll_index):
+        # 主任务在第 104 次轮询（≈312s，已越过 300s 阈值）出图；对冲任务恒为处理中。
+        if task_id == "task-1" and poll_index >= 104:
+            return _wuyin_ready(original_url)
+        return _wuyin_processing()
+
+    submissions, _polls, _counts, events = _install_wuyin_transport(monkeypatch, responder)
+
+    media = processor.generate(
+        stage="grid_image",
+        prompt="contract",
+        reference_values=["https://cdn.example/source.png"],
+        image_size="2048x2048",
+    )
+
+    # 恰好再提交 1 次（不同链路），总提交 2 次。
+    assert [base for base, _ in submissions] == [
+        "https://api.wuyinkeji.com",
+        "https://api.wuyinkeji.com/mirror",
+    ]
+    # 原任务在对冲提交之后仍被继续轮询，并最终采用原任务结果（先到先用）。
+    hedge_submit_index = next(i for i, event in enumerate(events) if event == ("submit", "task-2"))
+    assert any(event == ("poll", "task-1") for event in events[hedge_submit_index + 1 :])
+    assert media.content == original_url.encode("utf-8")
+    assert media.attempt_count == 2
+
+
+def test_two_k_grid_hedge_reports_real_submit_count_and_outcomes(monkeypatch) -> None:
+    """首次提交停滞、第二次提交出图：字段如实反映真实提交次数与每次结果。"""
+    config = _grid_hedge_config(stall_seconds=300.0)
+    processor, _clock = _grid_hedge_processor(monkeypatch, config, total_budget=400.0)
+    backup_url = "https://result.example/backup.png"
+
+    def responder(_base, task_id, _poll_index):
+        if task_id == "task-2":
+            return _wuyin_ready(backup_url)  # 对冲任务首次轮询即出图
+        return _wuyin_processing()  # 原任务始终处理中（在 300s 阈值处被判停滞）
+
+    submissions, _polls, _counts, _events = _install_wuyin_transport(monkeypatch, responder)
+
+    media = processor.generate(
+        stage="grid_image",
+        prompt="contract",
+        reference_values=["https://cdn.example/source.png"],
+        image_size="2048x2048",
+    )
+
+    assert len(submissions) == 2
+    assert media.attempt_count == 2
+    assert media.content == backup_url.encode("utf-8")
+    # 每条提交的相对时间点 + 最终结果；s1 在阈值处被判停滞，s2 出图；含总次数与总耗时。
+    assert media.provider_attempt_notes[0] == "s1@0ms=stalled"
+    assert media.provider_attempt_notes[1] == "s2@303000ms=ok"
+    assert media.provider_attempt_notes[2] == "submits=2"
+    assert media.provider_attempt_notes[3].startswith("total=")
+    # provider_status_class 保留类名前缀并附追踪，随 result_json 对排障可见。
+    assert media.provider_status_class.startswith("success;")
+    assert "submits=2" in media.provider_status_class
+
+
+def test_two_k_grid_stall_failure_carries_submit_trace_and_real_count(monkeypatch) -> None:
+    """真卡死（预算耗尽）：异常携带真实提交次数，提交追踪进入异常消息（→ ai_notes）。"""
+    config = _grid_hedge_config(stall_seconds=6.0)
+    processor, _clock = _grid_hedge_processor(monkeypatch, config, total_budget=30.0)
+    submissions, _polls, _counts, _events = _install_wuyin_transport(
+        monkeypatch, lambda _base, _task_id, _n: _wuyin_processing()
+    )
+
+    with pytest.raises(MediaProcessingError) as caught:
+        processor.generate(
+            stage="grid_image",
+            prompt="contract",
+            reference_values=["https://cdn.example/source.png"],
+            image_size="2048x2048",
+        )
+
+    assert caught.value.status_class == "provider_stalled"
+    assert caught.value.attempt_count == len(submissions) == 2
+    assert "提交追踪:" in str(caught.value)
+    assert "submits=2" in str(caught.value)
+    assert "stalled" in str(caught.value)
 

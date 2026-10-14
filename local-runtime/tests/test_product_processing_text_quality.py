@@ -1622,6 +1622,103 @@ def test_image_failure_falls_back_and_preserves_successful_doubao_text_receipt(m
     )
 
 
+def test_source_fallback_grid_skips_detail_local_synthesis_and_ai(monkeypatch) -> None:
+    """四宫格回退来源图时：详情图判为未产出，不得本地合成、不得记误导性 detail_images:ai。"""
+    service = _process_service(monkeypatch)
+    monkeypatch.setattr(
+        service,
+        "_generate_detail_images_local",
+        lambda *args, **kwargs: pytest.fail("四宫格回退来源图时不得本地合成详情图"),
+    )
+    monkeypatch.setattr(
+        service,
+        "_generate_detail_images",
+        lambda *args, **kwargs: pytest.fail("四宫格回退来源图时不得发起 AI 详情图"),
+    )
+    monkeypatch.setattr(
+        service,
+        "_generate_grid_images",
+        lambda *args, **kwargs: GridImageOutput(
+            rejected_image_paths=("/tmp/provider-original.png",)
+        ),
+    )
+    settings = {
+        **_settings(),
+        "processing_scope": ["title", "details", "four_grid", "detail_images"],
+    }
+
+    result = service._process_one({"id": 1}, _draft(), settings, False, task_id=12)
+
+    assert result["status"] == "attention_required"
+    assert result["result"]["provider_status_classes"]["four_grid"] == "source_fallback"
+    assert result["result"]["error_type"] == "detail_images_incomplete"
+    notes = result["result"]["ai_notes"]
+    assert "detail_images:skipped:grid_not_ai" in notes
+    assert "detail_images:ai" not in notes
+    assert "detail_images:local_synthesis" not in notes
+    # 客户可读失败原因 + 原始技术原因保留在可展开的 debug_hint 里供运营排障。
+    assert "已用原图兜底" in result["reason"]
+    assert "source_fallback" in result["result"]["debug_hint"]
+
+
+def test_ai_detail_success_appends_detail_ai_note(monkeypatch) -> None:
+    """真走 AI 详情图并成功时才追加 detail_images:ai。"""
+    service = _process_service(monkeypatch)
+    monkeypatch.setattr(service, "_generate_detail_images_local", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        service,
+        "_generate_detail_images",
+        lambda *args, **kwargs: ["https://example.com/generated-detail.jpg"],
+    )
+    monkeypatch.setattr(
+        service,
+        "_generate_grid_images",
+        lambda *args, **kwargs: GridImageOutput(
+            carousel_urls=tuple(f"https://example.com/grid-{index}.jpg" for index in range(4)),
+            attempt_count=1,
+            provider_status_class="success",
+        ),
+    )
+    settings = {
+        **_settings(),
+        "processing_scope": ["title", "details", "four_grid", "detail_images"],
+    }
+
+    result = service._process_one({"id": 1}, _draft(), settings, False, task_id=12)
+
+    assert result["status"] == "completed"
+    assert result["result"]["detail_image_paths"] == [
+        "https://example.com/generated-detail.jpg"
+    ]
+    assert "detail_images:ai" in result["result"]["ai_notes"]
+
+
+def test_local_detail_synthesis_keeps_existing_notes(monkeypatch) -> None:
+    """真 AI 四宫格下本地合成语义不变：记 detail_images:local_synthesis，且不误记 detail_images:ai。"""
+    service = object.__new__(ProductProcessingService)
+    notes: list[str] = []
+    monkeypatch.setattr(service_module, "_media_types", lambda: (object, RuntimeError, ValueError))
+    monkeypatch.setattr(service_module, "detect_chinese_text", lambda _content: None)
+    monkeypatch.setattr(service, "_media_processor", lambda: object())
+    monkeypatch.setattr(
+        service, "_compose_local_detail_image", lambda *args, **kwargs: b"jpeg-bytes"
+    )
+    monkeypatch.setattr(
+        service,
+        "_persist_media_for_preview",
+        lambda *args, **kwargs: ["https://example.com/local-detail.jpg"],
+    )
+
+    paths = service._generate_detail_images_local(
+        12, 7, [b"grid-bytes"], "Title", "Kitchen", "en", notes
+    )
+
+    assert paths == ["https://example.com/local-detail.jpg"]
+    assert "detail_images:local_synthesis" in notes
+    assert "detail_images:ocr_unavailable" in notes
+    assert "detail_images:ai" not in notes
+
+
 def test_process_force_import_enables_explicit_grid_quality_override(monkeypatch) -> None:
     service = _process_service(monkeypatch)
     captured: dict[str, object] = {}
