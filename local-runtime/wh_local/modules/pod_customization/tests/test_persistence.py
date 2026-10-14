@@ -98,7 +98,7 @@ def test_batch_keeps_the_template_and_builtin_prompt_snapshot(tmp_path: Path) ->
     assert len(stored["items"]) == 80
 
 
-def test_templates_are_workspace_shared_while_batches_remain_owner_private(tmp_path: Path) -> None:
+def test_templates_are_owner_private_like_batches(tmp_path: Path) -> None:
     service = _service(tmp_path)
     owner = _actor()
     teammate = _actor(user_id="operator-2")
@@ -106,7 +106,8 @@ def test_templates_are_workspace_shared_while_batches_remain_owner_private(tmp_p
     template = service.upload_template(owner, name="Shared template", filename="shared.png", content=_png())
 
     assert service.list_templates(owner)["templates"][0]["id"] == template["id"]
-    assert service.list_templates(teammate)["templates"][0]["id"] == template["id"]
+    # 模板按 owner 私有隔离：同工作区内的其他成员看不到别人上传的模板。
+    assert service.list_templates(teammate)["templates"] == []
     assert service.list_templates(outsider)["templates"] == []
 
 
