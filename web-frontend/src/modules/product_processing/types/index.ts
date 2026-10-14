@@ -173,8 +173,6 @@ export interface ProductProcessingOptions {
   imageGenerationCount?: 1 | 2 | 4;
   /** 失败项自动补跑：任务收尾把失败链接重新投入处理链路，每条链接最多自动重跑 1 次（系统轮不向用户计费，默认开启） */
   autoRepull?: boolean;
-  /** 「本批次 AI 生图专项提示词」：默认关闭；开启后批次开头基于本批全部标题生成一条面向该品类的生图指南（定点爆破规避异形），注入本批各条生图提示词。 */
-  batchImagePromptEnabled?: boolean;
   /** 「一键随机模板」：默认关闭；开启后忽略选定的模板，本批次每条链接随机分配生图/描述模板（一个批次内混搭多套处理方式）。 */
   randomTemplate?: boolean;
 }

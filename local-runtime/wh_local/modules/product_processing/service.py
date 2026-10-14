@@ -38,6 +38,7 @@ from wh_local.media_enhance import options_from_env
 from wh_local.runtime_logs import business_logger
 
 from .batch_billing import (
+    SUBITEM_FEATURES as _BATCH_SUBITEM_FEATURES,
     abandon_freeze as _abandon_batch_freeze,
     billing_client as _batch_billing_client,
     derive_item_results as _derive_batch_item_results,
@@ -912,6 +913,7 @@ class ProductProcessingService:
         "grid_image_d",
         "premium_image",
         "detail_image",
+        "batch_image_prompt",
         "variant_values",
     )
 
@@ -950,6 +952,221 @@ class ProductProcessingService:
         if not self.repository.delete_prompt_template(template_id):
             raise ProductProcessingNotFound("prompt template not found")
         return {**self.prompt_templates(), "message": "预设模板已删除"}
+
+    def generate_batch_image_prompt(
+        self,
+        payload: dict[str, Any],
+        *,
+        workspace_id: str = "local",
+        remote_token: str = "",
+    ) -> dict[str, Any]:
+        """「本批次辅助提词」：按本批商品标题生成面向该批次的辅助生图提词。
+
+        供前端「提示词预设模板」板块的「根据本批次标题生成」按钮调用：优先用请求里直接
+        给出的 titles，否则按 draft_ids 从草稿池取标题。复用 _generate_batch_image_guidelines
+        （英文、best-effort）。
+
+        该按钮在**批次开始前**触发，此时没有批次上下文，granted_key("ark") 为空，
+        DoubaoArkClient 会直接拒建。因此这里先按批次启动完全相同的 /batch/freeze 机制
+        申请一份批次级短期 Ark 密钥（放进 server_ai_context 的 granted_key 上下文）再
+        直连豆包，生成结束后立即结算释放冻结（成功/失败都释放）。
+
+        错误语义区分：
+        - 密钥申请失败（额度不足/会话失效/授权服务不可用）→ ok=False + 可区分的 message；
+        - 豆包生成失败/空结果 → ok=False + “AI 未返回有效提词” message；
+        - 完全取不到标题 → 抛校验错误，由路由转为 422。
+        以上都不把 500 抛给前端。
+        """
+        titles = [self._text(item) for item in (payload.get("titles") or []) if self._text(item)]
+        if not titles:
+            draft_ids = [int(item) for item in (payload.get("draft_ids") or []) if int(item) > 0]
+            if draft_ids:
+                for draft in self.repository.get_drafts(draft_ids, workspace_id=workspace_id):
+                    title = self._text(
+                        draft.get("title")
+                        or draft.get("product_name")
+                        or (draft.get("raw_payload") or {}).get("source_title")
+                    )
+                    if title:
+                        titles.append(title)
+        if not titles:
+            raise ProductProcessingValidationError("未找到可用于生成的商品标题，请先选择本批次商品")
+
+        # 申请批次级短期 Ark 密钥（与批次启动同机制）。失败则不调用豆包，返回可区分文案。
+        grant = self._grant_short_lived_ark_key(remote_token)
+        if grant["error"]:
+            return {
+                "batch_image_prompt": "",
+                "title_count": len(titles),
+                "ok": False,
+                "message": grant["error"],
+            }
+        try:
+            with server_ai_context(
+                remote_token,
+                {},
+                granted_keys=grant["granted"],
+                freeze_id=grant["freeze_id"],
+            ):
+                guidelines = self._generate_batch_image_guidelines(
+                    titles,
+                    target_language=str(payload.get("target_language") or "en"),
+                    target_site=str(payload.get("target_site") or "US"),
+                    category=str(payload.get("category") or ""),
+                )
+        finally:
+            # 成功或失败都要释放：结算本批次冻结（全额退回预扣额度）并清空密钥上下文。
+            self._release_batch_key_grant(remote_token, grant["freeze_id"])
+        if not guidelines:
+            return {
+                "batch_image_prompt": "",
+                "title_count": len(titles),
+                "ok": False,
+                "message": "AI 未返回有效的辅助提词，请稍后重试（可继续手动填写）",
+            }
+        return {
+            "batch_image_prompt": guidelines,
+            "title_count": len(titles),
+            "ok": True,
+            "message": f"已根据 {len(titles)} 条商品标题生成本批次辅助提词",
+        }
+
+    def _grant_short_lived_ark_key(self, remote_token: str) -> dict[str, Any]:
+        """为「批次开始前的一次性 AI 调用」申请一份批次级短期 Ark 密钥。
+
+        复用批次启动完全相同的 /batch/freeze 机制（不另造密钥体系、不硬编码密钥、
+        不回落平台托管网关）：冻结 1 条链接领取服务端下发的短期密钥（约 6h TTL），
+        与批次未下发的 provider 一样用客户端内置兜底密钥补齐（merge_builtin_keys）。
+
+        返回 {"freeze_id", "granted", "account_id", "error"}；error 非空表示申请失败，
+        调用方据此返回可区分文案且绝不调用豆包。申请到冻结但缺可用 ark 密钥时，也会
+        先释放该冻结再报错，避免预扣额度滞留。
+        """
+        if not remote_token:
+            return {
+                "freeze_id": "",
+                "granted": {},
+                "account_id": "",
+                "error": "计费会话不可用（未登录或会话已失效），无法申请 AI 密钥，请重新登录后重试",
+            }
+        try:
+            client = _batch_billing_client()
+            freeze = _billing_call_with_retry(
+                client.freeze_batch_points,
+                remote_token,
+                {
+                    "link_count": 1,
+                    # 仅为领密钥，不按处理范围计费；结算按 no_return 全额退回。
+                    "scope": [],
+                    "task_id": "",
+                },
+            )
+        except CustomerAuthRejected as exc:
+            status_code = getattr(exc, "status_code", None)
+            detail = str(getattr(exc, "message", "") or "").strip()
+            if status_code == 402:
+                return {
+                    "freeze_id": "",
+                    "granted": {},
+                    "account_id": "",
+                    "error": f"AI 额度不足，无法申请密钥：{detail or '请充值后重试'}",
+                }
+            return {
+                "freeze_id": "",
+                "granted": {},
+                "account_id": "",
+                "error": "计费会话被拒绝（未登录或已失效），无法申请 AI 密钥，请重新登录后重试",
+            }
+        except CustomerAuthUnavailable:
+            return {
+                "freeze_id": "",
+                "granted": {},
+                "account_id": "",
+                "error": "计费/授权服务暂不可用，无法申请 AI 密钥，请稍后重试",
+            }
+        except (CustomerBillingPermissionError, CustomerBillingProtocolError):
+            return {
+                "freeze_id": "",
+                "granted": {},
+                "account_id": "",
+                "error": "计费/授权服务响应异常，无法申请 AI 密钥，请稍后重试",
+            }
+        except Exception as exc:  # noqa: BLE001 - 申请密钥失败必须转成可读文案，绝不 500
+            _LOGGER.warning("batch prompt ark key grant failed: %s", exc)
+            return {
+                "freeze_id": "",
+                "granted": {},
+                "account_id": "",
+                "error": "申请 AI 密钥失败，请稍后重试",
+            }
+        freeze_payload = (
+            freeze.get("freeze")
+            if isinstance(freeze, dict) and isinstance(freeze.get("freeze"), dict)
+            else (freeze if isinstance(freeze, dict) else {})
+        )
+        freeze_id = str(freeze_payload.get("freeze_id") or "")
+        if not freeze_id:
+            return {
+                "freeze_id": "",
+                "granted": {},
+                "account_id": "",
+                "error": "申请 AI 密钥失败：服务端未返回批次标识",
+            }
+        keys = freeze_payload.get("keys") if isinstance(freeze_payload, dict) else []
+        granted = merge_builtin_keys(
+            {
+                str(key.get("provider") or ""): str(key.get("api_key") or "")
+                for key in keys
+                if isinstance(key, dict) and key.get("api_key")
+            }
+        )
+        if not granted.get("ark"):
+            # 冻结成功但无可用 ark 密钥（服务端未下发且无内置兜底）：先释放冻结再报错。
+            self._release_batch_key_grant(remote_token, freeze_id)
+            return {
+                "freeze_id": "",
+                "granted": {},
+                "account_id": "",
+                "error": "AI 密钥申请失败：服务端未下发可用的 Ark 密钥，请稍后重试",
+            }
+        return {
+            "freeze_id": freeze_id,
+            "granted": granted,
+            "account_id": str(freeze_payload.get("account_id") or ""),
+            "error": "",
+        }
+
+    def _release_batch_key_grant(self, remote_token: str, freeze_id: str) -> None:
+        """释放一次性密钥冻结：按全子项 no_return 结算 → 全额退回预扣额度并解冻。
+
+        生成辅助提词不属于商品处理计费子项，冻结只为领密钥；按 no_return 结算等价于
+        「未消耗任何计费子项」，服务端据此解锁并全额退还，不向用户扣费。结算失败只记录
+        告警，保留服务端 TTL 兜底（不登记侧车，避免按钮点击记录累积）。
+        """
+        if not freeze_id or not remote_token:
+            return
+        try:
+            client = _batch_billing_client()
+            _billing_call_with_retry(
+                client.settle_batch_points,
+                remote_token,
+                freeze_id,
+                {
+                    "items": [
+                        {
+                            "link_idx": 1,
+                            "subitems": [
+                                {"feature": feature, "status": "no_return"}
+                                for feature in _BATCH_SUBITEM_FEATURES
+                            ],
+                        }
+                    ]
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - 释放失败只告警，服务端 TTL 会兜底
+            _LOGGER.warning(
+                "batch prompt ark key grant settle failed (freeze=%s): %s", freeze_id, exc
+            )
 
     def _active_template_prompts(self) -> dict[str, str]:
         """当前激活模板的板块附加词（追加指令模式）；无激活模板时返回空。"""
@@ -1043,9 +1260,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         生图指南，用于定点爆破规避 AI 异形问题（肢体畸形、手指错乱、比例失调、文字
         水印扭曲等）。
 
-        只在用户手动开启 batch_image_prompt_enabled 时在批次开头调用一次；best-effort，
-        任何失败或空结果都返回 ""，绝不阻塞批次。结果是不渲染的「生图指令」而非图中文本，
-        因此统一用英文产出，避免额外翻译的第二次付费调用，也无需语言契约校验。
+        由前端「提示词预设模板」板块的生成按钮显式触发一次（generate_batch_image_prompt），
+        best-effort，任何失败或空结果都返回 ""，绝不阻塞。结果是不渲染的「生图指令」而非
+        图中文本，因此统一用英文产出，避免额外翻译的第二次付费调用，也无需语言契约校验。
         """
         usable = [str(t).strip() for t in (titles or []) if str(t).strip()]
         if not usable:
@@ -5810,35 +6027,13 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         ]
         lock = threading.Lock()
 
-        # 「本批次 AI 生图专项提示词」：用户手动开启 batch_image_prompt_enabled 时，
-        # 在批次正式处理前，用本批全部草稿标题（+目标站点/语言）调用一次 AI 生成面向
-        # 该品类的生图指南（定点爆破规避异形）。整批只生成一次并缓存在本地变量，随
-        # _process_one 注入到本批每条的轮播/精品/详情图片提示词。best-effort，失败或
-        # 空结果一律返回 ""，绝不阻塞批次，也不写入全局模板（批次作用域、临时）。
+        # 「本批次辅助提词（区域辅助出图）」：由用户在「提示词预设模板」板块生成/编辑，
+        # 随开始处理请求以 batch_image_prompt 传入（非空才生效）。整批只取一次缓存在本地
+        # 变量，随 _process_one 注入到本批每条的轮播/精品/详情图片提示词；为空则完全不注入，
+        # 保持系统默认行为。批次内不再自动调用 AI 生成，避免隐式付费。
         batch_image_prompt = ""
-        if (
-            not preflight_only
-            and bool(settings.get("batch_image_prompt_enabled"))
-            and items_to_process
-        ):
-            batch_titles: list[str] = []
-            for _batch_item in items_to_process:
-                _draft = drafts.get(_batch_item.get("product_draft_id"))
-                if not _draft:
-                    continue
-                _t = self._text(
-                    _draft.get("title")
-                    or _draft.get("product_name")
-                    or (_draft.get("raw_payload") or {}).get("source_title")
-                )
-                if _t:
-                    batch_titles.append(_t)
-            if batch_titles:
-                batch_image_prompt = self._generate_batch_image_guidelines(
-                    batch_titles,
-                    target_language=str(settings.get("target_language") or "en"),
-                    target_site=str(settings.get("target_site") or "US"),
-                )
+        if not preflight_only and items_to_process:
+            batch_image_prompt = self._text(settings.get("batch_image_prompt"))
 
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -7512,6 +7707,9 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 media_kwargs: dict[str, Any] = {
                     "vision_identity": vision_identity,
                     "workspace_id": workspace_id,
+                    # 「本批次辅助提词」必须随主生成链路一并下发，否则会在真正生图前被静默丢弃
+                    # （本条是实际被调用的媒体提前启动分支；_generate_*_images 内部再注入提示词）。
+                    "batch_image_prompt": batch_image_prompt,
                 }
                 if not premium_mode:
                     media_kwargs.update(

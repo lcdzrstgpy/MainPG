@@ -1749,3 +1749,49 @@ def test_process_force_import_enables_explicit_grid_quality_override(monkeypatch
     assert result["status"] == "completed"
     assert len(result["result"]["carousel_image_paths"]) == 4
     assert result["result"]["provider_status_classes"]["four_grid"] == "quality_override"
+
+
+BATCH_GUIDELINE = "GUARD: render exactly five fingers, crisp printed labels, stable proportions."
+
+
+def test_process_injects_batch_image_prompt_into_live_grid_chain(monkeypatch) -> None:
+    """「本批次辅助提词」必须真正传到实际被调用的轮播生图链路（_process_one 主路径）。
+
+    回归点：媒体「提前启动」分支调用 _generate_grid_images 时，必须把批次的
+    batch_image_prompt 一并传入，否则该提词在真正生图前被静默丢弃。
+    """
+    service = _process_service(monkeypatch)
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(service_module, "_ai_enabled", lambda: True)
+    monkeypatch.setattr(
+        service,
+        "_generate_doubao_text",
+        lambda *args, **kwargs: {
+            "title": "Insulated Stainless Steel Travel Mug, 500 ml Portable Drink Cup",
+            "description": VALID_DESCRIPTION,
+            "variant_translations": {},
+        },
+    )
+
+    def generate_grid(*_args, **kwargs):
+        captured["batch_image_prompt"] = kwargs.get("batch_image_prompt")
+        return GridImageOutput(
+            carousel_urls=tuple(f"https://example.com/grid-{index}.jpg" for index in range(4)),
+            attempt_count=1,
+            provider_status_class="success",
+        )
+
+    monkeypatch.setattr(service, "_generate_grid_images", generate_grid)
+
+    settings = {**_settings(), "batch_image_prompt": BATCH_GUIDELINE}
+    result = service._process_one(
+        {"id": 1},
+        _draft(),
+        settings,
+        False,
+        task_id=12,
+        batch_image_prompt=BATCH_GUIDELINE,
+    )
+
+    assert result["status"] == "completed"
+    assert captured["batch_image_prompt"] == BATCH_GUIDELINE

@@ -439,46 +439,58 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
   const startBatch = async () => {
     if (!initialDraftIds?.length) { setError('没有可处理的草稿'); return; }
     if (startInFlightRef.current || batchProcessing) return;
-    const body = {
-      title: '产品处理任务',
-      draft_ids: initialDraftIds.slice(0, options.maxProducts || 100),
-      max_products: options.maxProducts,
-      async_mode: true,
-      target_site: options.targetSite,
-      target_language: options.targetLanguage,
-      processing_scope: options.processingScope,
-      qualification_mode: options.qualificationMode,
-      include_product_video: options.includeProductVideo,
-      skip_duplicates: options.skipDuplicates,
-      ip_check: options.ipCheck,
-      max_parallel_drafts: options.maxParallelDrafts,
-      image_template: options.imageTemplate || 'A',
-      desc_template: options.descriptionTemplate || 'A',
-      // 本批次 AI 生图专项提词：默认关闭，用户手动打开后在批次开头生成并注入本批各条生图提示词。
-      batch_image_prompt_enabled: options.batchImagePromptEnabled === true,
-      // 一键随机模板：默认关闭，打开后本批次每条链接随机分配生图/描述模板。
-      random_template: options.randomTemplate === true,
-      // 用户选择是否对技术可重试的失败项自动补跑（默认关闭）
-      auto_repull: options.autoRepull !== false,
-      // 兼容旧 API 字段；新任务统一走智能生图策略，不再由用户选择。
-      image_generation_count: 4,
-      // SKU 原图可用性分类（处理设置页检测结果）：写入草稿预检覆盖，导出按此分流。
-      variant_image_classification: skuPlan.classification,
-      // 「优化链接 SKU」命中的来源变种：导出时整行剔除。
-      variant_image_exclusions: skuPlan.exclusions,
-    };
-    const signature = JSON.stringify(body);
-    if (!startRequestRef.current || startRequestRef.current.signature !== signature) {
-      startRequestRef.current = {
-        signature,
-        key: globalThis.crypto?.randomUUID?.() || `pp-${Date.now()}-${Math.random()}`,
-      };
-    }
     startInFlightRef.current = true;
     setLoading(true);
     setMessage('');
     setError('');
     try {
+      // 「本批次辅助提词」：读取「提示词预设模板」当前使用模板里保存的文本；读取失败/为空则
+      // 不注入（后端保持系统默认行为）。功能已从任务页勾选框迁移到预设板块。
+      let batchImagePrompt = '';
+      try {
+        const tpl = await ppRequest<{ templates?: { is_active?: boolean; prompts?: Record<string, string> }[] }>(
+          ctx,
+          `${API_BASE}/engine/prompt-templates`,
+        );
+        batchImagePrompt = ((tpl.templates || []).find((t) => t.is_active)?.prompts?.batch_image_prompt || '').trim();
+      } catch {
+        batchImagePrompt = '';
+      }
+      const body = {
+        title: '产品处理任务',
+        draft_ids: initialDraftIds.slice(0, options.maxProducts || 100),
+        max_products: options.maxProducts,
+        async_mode: true,
+        target_site: options.targetSite,
+        target_language: options.targetLanguage,
+        processing_scope: options.processingScope,
+        qualification_mode: options.qualificationMode,
+        include_product_video: options.includeProductVideo,
+        skip_duplicates: options.skipDuplicates,
+        ip_check: options.ipCheck,
+        max_parallel_drafts: options.maxParallelDrafts,
+        image_template: options.imageTemplate || 'A',
+        desc_template: options.descriptionTemplate || 'A',
+        // 本批次辅助提词（区域辅助出图）：来自预设模板板块，非空时注入本批各条生图提示词。
+        batch_image_prompt: batchImagePrompt,
+        // 一键随机模板：默认关闭，打开后本批次每条链接随机分配生图/描述模板。
+        random_template: options.randomTemplate === true,
+        // 用户选择是否对技术可重试的失败项自动补跑（默认关闭）
+        auto_repull: options.autoRepull !== false,
+        // 兼容旧 API 字段；新任务统一走智能生图策略，不再由用户选择。
+        image_generation_count: 4,
+        // SKU 原图可用性分类（处理设置页检测结果）：写入草稿预检覆盖，导出按此分流。
+        variant_image_classification: skuPlan.classification,
+        // 「优化链接 SKU」命中的来源变种：导出时整行剔除。
+        variant_image_exclusions: skuPlan.exclusions,
+      };
+      const signature = JSON.stringify(body);
+      if (!startRequestRef.current || startRequestRef.current.signature !== signature) {
+        startRequestRef.current = {
+          signature,
+          key: globalThis.crypto?.randomUUID?.() || `pp-${Date.now()}-${Math.random()}`,
+        };
+      }
       const premiumIds = (initialPremiumDraftIds || []).filter((id) => initialDraftIds.includes(id));
       const data = await ppRequest<TaskOutputsResponse>(ctx, `${API_BASE}/drafts/process`, {
         body: { ...body, premium_draft_ids: premiumIds },
@@ -643,16 +655,6 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
               </label>
             </div>
             <div className="verify-scope-row">
-              <label className="verify-scope-check" title="批次正式处理前，用本批全部商品标题调用 AI 生成一条面向该品类的生图专项提示词（定点爆破规避异形/肢体畸形/手指错乱/文字水印扭曲等），自动注入本批各条轮播/精品/详情图的生图提示词。默认关闭，仅在你勾选时启用并产生一次 AI 调用（失败不阻塞、不计入本批结果）。">
-                <input
-                  type="checkbox"
-                  checked={options.batchImagePromptEnabled === true}
-                  onChange={(e) => setOptions((p) => ({ ...p, batchImagePromptEnabled: e.target.checked }))}
-                />
-                <span>本批次 AI 生图专项提词</span>
-              </label>
-            </div>
-            <div className="verify-scope-row">
               <label className="verify-scope-check" title="开启后忽略上面选定的模板：本批次每条链接随机分配生图模板（A/B/C/D）与描述模板（A/B），一个批次内混搭多套处理方式，便于批量测试不同风格。默认关闭；开启后同一条链接在重试/自动补跑时仍固定用同一套模板。">
                 <input
                   type="checkbox"
@@ -662,7 +664,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                 <span>一键随机模板</span>
               </label>
             </div>
-            <PromptCustomizePanel />
+            <PromptCustomizePanel draftIds={initialDraftIds} />
             <div className="verify-sku-check">
               <div className="verify-sku-check-head">
                 <span className="verify-sku-check-title">SKU 原图可用性检测</span>

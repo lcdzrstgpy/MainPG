@@ -137,6 +137,29 @@
   background: #fff;
 }
 
+/* 「根据本批次标题生成」：辅助提词生成按钮与提示 */
+.prompt-block-generate {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.prompt-block-generate-hint {
+  font-size: 0.72rem;
+  color: #7d94aa;
+  flex: 1 1 auto;
+  min-width: 160px;
+}
+
+.prompt-block-generate-notice {
+  flex-basis: 100%;
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: #0a8fca;
+}
+
 .prompt-panel-actions {
   display: flex;
   flex-wrap: wrap;

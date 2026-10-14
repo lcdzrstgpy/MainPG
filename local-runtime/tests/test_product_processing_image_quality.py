@@ -108,6 +108,45 @@ def test_wuyin_result_download_uses_pinned_transport(monkeypatch) -> None:
     assert download_urls == ["https://scapi.net/result.png"]
 
 
+def test_wuyin_submit_payload_carries_full_prompt_without_truncation(monkeypatch) -> None:
+    """上游请求体里的 prompt 必须与传入完全一致，任何长度都不做截断/丢弃。
+
+    回归保护：批次辅助提词可能很长（多品类 bullet 拼接），请求侧不得有
+    隐藏的长度上限把它静默截断，否则用户填写的内容会「看起来生效、实际丢失」。
+    """
+    captured: dict[str, object] = {}
+
+    class _SubmitResponse:
+        ok = True
+
+        def iter_content(self, chunk_size: int = 64 * 1024):
+            yield b'{"code":200,"data":{"id":"task-long"}}'
+
+        def close(self) -> None:
+            return
+
+    def fake_post(_url, *, params=None, headers=None, json=None, **_kwargs):
+        captured["json"] = json
+        return _SubmitResponse()
+
+    monkeypatch.setattr(media_module._SESSION, "post", fake_post)
+    processor = ProductImageProcessor(lambda: {})
+
+    long_prompt = "BATCH-LEVEL CATEGORY EXPERT GUIDELINES\n" + ("GUARD: exactly five fingers, crisp labels.\n" * 4000)
+    task_id = processor._submit_wuyin_image_task(
+        {"base_url": "https://api.wuyinkeji.com", "api_key": "secret", "model": "image_gpt"},
+        long_prompt,
+        ["https://example.test/source.png"],
+        model="image_gpt",
+        image_size="2K",
+        timeout_seconds=30,
+    )
+
+    assert task_id == "task-long"
+    assert captured["json"]["prompt"] == long_prompt
+    assert len(captured["json"]["prompt"]) == len(long_prompt)
+
+
 def test_wuyin_result_download_never_downgrades_https_to_http(monkeypatch) -> None:
     class _SubmitResponse:
         ok = True
