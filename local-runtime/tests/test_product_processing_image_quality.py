@@ -15,6 +15,7 @@ from PIL import Image, JpegImagePlugin
 
 from wh_local.modules.product_processing import service as service_module
 from wh_local.modules.product_processing import provider_config as provider_config_module
+from wh_local.modules.ai_service.temporary_cos import TemporaryReferenceError
 from wh_local.modules.product_processing.domain.prompts import (
     GRID_IMAGE_PROMPT,
     GRID_IMAGE_PROMPT_B,
@@ -539,6 +540,242 @@ def test_image_early_500_retries_only_once(monkeypatch, tmp_path) -> None:
     assert calls == 2
     assert media.attempt_count == 2
     assert media.reference_count == 1
+
+
+def _image_provider_config_with_backup(source_path):
+    config = _image_provider_config(source_path)
+    config["backup_image"] = {
+        "base_url": "https://backup.example/v1",
+        "api_key": "configured",
+        "model": "gpt-image-backup",
+        "reference_model": "gpt-image-backup",
+        "image_size": "2048x2048",
+    }
+    config["limits"]["image_provider_strategy"] = "primary_first"
+    return config
+
+
+def _stalled_error() -> MediaProcessingError:
+    return MediaProcessingError(
+        "provider image task stalled: no field change for 121s status=3 code=200 成功",
+        status_class="provider_stalled",
+    )
+
+
+def test_grid_stall_retries_in_place_for_single_provider(monkeypatch, tmp_path) -> None:
+    """单 provider 停滞时必须原地重试一次，而不是直接回退来源图。"""
+    source = tmp_path / "source.png"
+    source.write_bytes(_grid_bytes())
+    calls: list[str] = []
+
+    def respond(provider, *_args, **_kwargs):
+        calls.append(provider["name"])
+        if len(calls) == 1:
+            raise _stalled_error()
+        return _grid_bytes(), "image/png"
+
+    monkeypatch.setattr(ProductImageProcessor, "_request_edit", staticmethod(respond))
+    processor = ProductImageProcessor(lambda: _image_provider_config(source))
+
+    media = processor.generate(stage="grid_image", prompt="contract", reference_values=[str(source)])
+
+    assert calls == ["primary:gpt-image-test", "primary:gpt-image-test"]
+    assert media.attempt_count == 2
+    assert media.provider == "primary:gpt-image-test"
+
+
+def test_grid_stall_switches_provider_before_retrying_same(monkeypatch, tmp_path) -> None:
+    """多 provider 时，停滞后的第二次尝试必须先换 provider。"""
+    source = tmp_path / "source.png"
+    source.write_bytes(_grid_bytes())
+    calls: list[str] = []
+
+    def respond(provider, *_args, **_kwargs):
+        calls.append(provider["name"])
+        if provider["name"].startswith("primary"):
+            raise _stalled_error()
+        return _grid_bytes(), "image/png"
+
+    monkeypatch.setattr(ProductImageProcessor, "_request_edit", staticmethod(respond))
+    processor = ProductImageProcessor(lambda: _image_provider_config_with_backup(source))
+
+    media = processor.generate(stage="grid_image", prompt="contract", reference_values=[str(source)])
+
+    assert calls == ["primary:gpt-image-test", "backup:gpt-image-backup"]
+    assert media.provider == "backup:gpt-image-backup"
+    assert media.attempt_count == 2
+
+
+def test_grid_relay_failure_is_retryable_and_switches_provider(monkeypatch, tmp_path) -> None:
+    """参考图 COS 中转失败不再一次即回退：标记可重试并换 provider 再试。"""
+    source = tmp_path / "source.png"
+    source.write_bytes(_grid_bytes())
+    calls: list[str] = []
+
+    def respond(provider, *_args, **_kwargs):
+        calls.append(provider["name"])
+        if provider["name"].startswith("primary"):
+            raise MediaProcessingError(
+                "failed to relay local reference image to the direct image provider",
+                status_class="reference_relay_failed",
+            )
+        return _grid_bytes(), "image/png"
+
+    monkeypatch.setattr(ProductImageProcessor, "_request_edit", staticmethod(respond))
+    processor = ProductImageProcessor(lambda: _image_provider_config_with_backup(source))
+
+    media = processor.generate(stage="grid_image", prompt="contract", reference_values=[str(source)])
+
+    assert calls == ["primary:gpt-image-test", "backup:gpt-image-backup"]
+    assert media.provider == "backup:gpt-image-backup"
+
+
+def test_grid_gateway_rejection_is_retryable_not_terminal(monkeypatch, tmp_path) -> None:
+    """网关拒绝（可重试类）不得一次即中止，必须再试一次。"""
+    source = tmp_path / "source.png"
+    source.write_bytes(_grid_bytes())
+    calls: list[str] = []
+
+    def respond(provider, *_args, **_kwargs):
+        calls.append(provider["name"])
+        if len(calls) == 1:
+            raise MediaProcessingError(
+                "provider submit failed: server image gateway rejected the request",
+                status_class="gateway_rejected",
+            )
+        return _grid_bytes(), "image/png"
+
+    monkeypatch.setattr(ProductImageProcessor, "_request_edit", staticmethod(respond))
+    processor = ProductImageProcessor(lambda: _image_provider_config(source))
+
+    media = processor.generate(stage="grid_image", prompt="contract", reference_values=[str(source)])
+
+    assert calls == ["primary:gpt-image-test", "primary:gpt-image-test"]
+    assert media.attempt_count == 2
+
+
+def _cos_config() -> dict:
+    return {
+        "cos": {
+            "bucket": "bucket",
+            "region": "ap-guangzhou",
+            "secret_id": "secret-id",
+            "secret_key": "secret-key",
+        }
+    }
+
+
+def test_wuyin_reference_relay_retries_publish_with_backoff(monkeypatch) -> None:
+    """COS 中转发布瞬时失败必须带退避重试，成功即返回临时 URL。"""
+
+    class _FlakyStore:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def publish(self, content: bytes, content_type: str):
+            self.calls += 1
+            if self.calls < 3:
+                raise TemporaryReferenceError("transient cos failure")
+            return SimpleNamespace(
+                key="ai-service/transient/ref.image",
+                url="https://bucket.cos.ap-guangzhou.myqcloud.com/ref.image?sig=1",
+            )
+
+        def delete(self, reference) -> None:
+            return
+
+    store = _FlakyStore()
+    sleeps: list[float] = []
+    monkeypatch.setattr(media_module, "TemporaryCosStore", lambda _config: store)
+    monkeypatch.setattr(media_module.time, "sleep", lambda seconds: sleeps.append(seconds))
+    processor = ProductImageProcessor(lambda: _cos_config())
+
+    urls, _store, temporary = processor._wuyin_reference_urls(
+        [(b"reference", "source.png", "image/jpeg")]
+    )
+
+    assert store.calls == 3
+    assert urls == ["https://bucket.cos.ap-guangzhou.myqcloud.com/ref.image?sig=1"]
+    assert sleeps == [0.5, 1.5]
+    assert len(temporary) == 1
+
+
+def test_wuyin_reference_relay_failure_falls_back_to_public_url(monkeypatch) -> None:
+    """COS 中转始终失败但参考图带原始公网 URL 时，退回该 URL 而不是失败。"""
+
+    class _DeadStore:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def publish(self, *_args, **_kwargs):
+            self.calls += 1
+            raise TemporaryReferenceError("cos down")
+
+        def delete(self, reference) -> None:
+            return
+
+    store = _DeadStore()
+    monkeypatch.setattr(media_module, "TemporaryCosStore", lambda _config: store)
+    monkeypatch.setattr(media_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(media_module, "is_safe_external_url", lambda _url: True)
+    processor = ProductImageProcessor(lambda: _cos_config())
+
+    urls, _store, temporary = processor._wuyin_reference_urls(
+        [(b"reference", "source.png", "image/jpeg", "https://cdn.example/source.png")]
+    )
+
+    assert urls == ["https://cdn.example/source.png"]
+    assert temporary == []
+    assert store.calls == media_module.COS_RELAY_PUBLISH_ATTEMPTS
+
+
+def test_wuyin_reference_relay_exhaustion_is_retryable_not_terminal(monkeypatch) -> None:
+    """本地独有参考图中转彻底失败时，错误必须可重试（交上层换 provider/换参考图）。"""
+
+    class _DeadStore:
+        def publish(self, *_args, **_kwargs):
+            raise TemporaryReferenceError("cos down")
+
+        def delete(self, reference) -> None:
+            return
+
+    monkeypatch.setattr(media_module, "TemporaryCosStore", lambda _config: _DeadStore())
+    monkeypatch.setattr(media_module.time, "sleep", lambda _seconds: None)
+    processor = ProductImageProcessor(lambda: _cos_config())
+
+    with pytest.raises(MediaProcessingError) as caught:
+        processor._wuyin_reference_urls([(b"reference", "source.png", "image/jpeg")])
+
+    assert caught.value.status_class == "reference_relay_failed"
+    assert media_module._retry_class(caught.value) == "reference_relay_failed"
+
+
+def test_stall_threshold_defaults_are_lowered_and_configurable() -> None:
+    assert media_module.WUYIN_IMAGE_STALL_THRESHOLD_SECONDS == 120.0
+    assert media_module.WUYIN_IMAGE_STALL_THRESHOLD_2K_SECONDS == 180.0
+    assert media_module._wuyin_stall_threshold_seconds("image_gpt", "2048x2048") == 180.0
+    assert media_module._wuyin_stall_threshold_seconds("image_gpt_2.5", "1024x1024") == 120.0
+    override = {
+        "limits": {
+            "image_stall_threshold_seconds": 90,
+            "image_stall_threshold_2k_seconds": 150,
+        }
+    }
+    assert media_module._wuyin_stall_threshold_seconds("image_gpt_2.5", None, override) == 90.0
+    assert media_module._wuyin_stall_threshold_seconds("image_gpt", "2048x2048", override) == 150.0
+
+
+def test_submit_rejection_classification() -> None:
+    assert (
+        media_module._submit_rejection_class({"msg": "server image gateway rejected the request"})
+        == "gateway_rejected"
+    )
+    assert (
+        media_module._retry_class(MediaProcessingError("x", status_class="gateway_rejected"))
+        == "gateway_rejected"
+    )
+    assert media_module._submit_rejection_class({"msg": "余额不足"}) == "non_retryable_4xx"
+    assert media_module._submit_rejection_class({"msg": "invalid api key"}) == "non_retryable_4xx"
 
 
 def test_layout_scaffold_keeps_original_1688_image_as_first_provider_reference(
@@ -1325,3 +1562,305 @@ def test_wuyin_poll_status_4_5_are_processing_not_failure(monkeypatch) -> None:
             )
         assert "timed out" in str(caught.value)
         assert caught.value.status_class == ""  # 超时不属于非重试失败
+
+
+# ---------------------------------------------------------------------------
+# 四宫格生图停滞：对冲请求（hedge）+ 硬封顶
+# ---------------------------------------------------------------------------
+# 背景：上游无印没有进度字段，任务执行期间 status 恒为 3，因此「无字段变化超过阈值」
+# 实际等价于「任务已运行 N 秒」。此前的实现会在阈值处丢弃任务，导致慢但合法的任务
+# 达到阈值时保持对原任务的轮询，同时向「不同链路」
+# provider 追发一个任务并行推进，先到先用，且提交次数与总时长都硬封顶。
+
+
+WUYIN_SUBMIT_PATH = media_module.WUYIN_IMAGE_SUBMIT_PATH
+WUYIN_DETAIL_PATH = media_module.WUYIN_IMAGE_DETAIL_PATH
+
+
+def _grid_hedge_config(*, stall_seconds: float = 6.0) -> dict:
+    """两个「不同链路」（base_url 与 api_key 均不同）的无印 provider。"""
+    return {
+        "image": {
+            "base_url": "https://api.wuyinkeji.com",
+            "api_key": "primary-key",
+            "model": "image_gpt",
+            "reference_model": "image_gpt",
+            "image_size": "2048x2048",
+        },
+        "backup_image": {
+            "base_url": "https://api.wuyinkeji.com/mirror",
+            "api_key": "backup-key",
+            "model": "image_gpt",
+            "reference_model": "image_gpt",
+            "image_size": "2048x2048",
+        },
+        "limits": {
+            "image_stall_threshold_seconds": stall_seconds,
+            "image_stall_threshold_2k_seconds": stall_seconds,
+            "image_provider_strategy": "primary_first",
+        },
+    }
+
+
+def _wuyin_processing():
+    return _poll_response({"code": 200, "data": {"status": 3, "msg": "处理中"}})
+
+
+def _wuyin_ready(url: str):
+    return _poll_response({"code": 200, "data": {"status": 1, "image": url}})
+
+
+def _install_wuyin_transport(monkeypatch, responder):
+    """把无印 submit/detail 两个 HTTP 动作换成受控 mock，记录提交与轮询顺序。"""
+    submissions: list[tuple[str, str]] = []
+    polls: list[tuple[str, str]] = []
+    events: list[tuple[str, str]] = []
+    counter = {"n": 0}
+    poll_counts: dict[str, int] = {}
+
+    def fake_post(url, **_kwargs):
+        base = url[: -len(WUYIN_SUBMIT_PATH)] if url.endswith(WUYIN_SUBMIT_PATH) else url
+        counter["n"] += 1
+        task_id = f"task-{counter['n']}"
+        submissions.append((base, task_id))
+        events.append(("submit", task_id))
+        return _poll_response({"code": 200, "data": {"id": task_id}})
+
+    def fake_get(url, **kwargs):
+        base = url[: -len(WUYIN_DETAIL_PATH)] if url.endswith(WUYIN_DETAIL_PATH) else url
+        task_id = str((kwargs.get("params") or {}).get("id") or "")
+        polls.append((base, task_id))
+        events.append(("poll", task_id))
+        poll_counts[task_id] = poll_counts.get(task_id, 0) + 1
+        return responder(base, task_id, poll_counts[task_id])
+
+    monkeypatch.setattr(media_module._SESSION, "post", fake_post)
+    monkeypatch.setattr(media_module._SESSION, "get", fake_get)
+    return submissions, polls, poll_counts, events
+
+
+def _grid_hedge_processor(monkeypatch, config, *, total_budget: float = 60.0):
+    """受控（假）时钟 + 无网络参考图/结果下载，避免任何真实付费调用。"""
+    clock = [1000.0]
+
+    def fake_sleep(seconds):
+        clock[0] += max(float(seconds), 1.0)
+
+    monkeypatch.setattr(media_module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(media_module.time, "sleep", fake_sleep)
+    monkeypatch.setattr(media_module, "IMAGE_GENERATION_TOTAL_TIMEOUT_SECONDS", total_budget)
+    monkeypatch.setattr(media_module, "is_safe_external_url", lambda _url: True)
+    monkeypatch.setattr(
+        media_module,
+        "_download_provider_result_image",
+        lambda url: (url.encode("utf-8"), "image/png"),
+    )
+    processor = ProductImageProcessor(lambda: config)
+    monkeypatch.setattr(
+        processor,
+        "_load_references",
+        lambda _values, *, limit: [
+            (b"reference", "source.png", "image/png", "https://cdn.example/source.png")
+        ],
+    )
+    return processor, clock
+
+
+def test_grid_stall_hedges_to_different_link_and_keeps_polling_original(monkeypatch) -> None:
+    """主 provider 停滞且存在不同链路备用 provider：追发第二个任务并继续轮询原任务，
+    第二个先返回时采用它（断言提交序列、轮询序列与最终来源）。"""
+    config = _grid_hedge_config(stall_seconds=6.0)
+    processor, _clock = _grid_hedge_processor(monkeypatch, config, total_budget=60.0)
+    backup_url = "https://result.example/backup.png"
+
+    def responder(_base, task_id, _poll_index):
+        if task_id == "task-2":
+            return _wuyin_ready(backup_url)  # 对冲任务首次轮询即出图
+        return _wuyin_processing()  # 原任务始终“处理中”
+
+    submissions, _polls, poll_counts, events = _install_wuyin_transport(monkeypatch, responder)
+
+    media = processor.generate(
+        stage="grid_image",
+        prompt="contract",
+        reference_values=["https://cdn.example/source.png"],
+        image_size="1024x1024",
+    )
+
+    # 1) 主任务先提交，停滞阈值后追发第二个（不同链路）任务。
+    assert [base for base, _ in submissions] == [
+        "https://api.wuyinkeji.com",
+        "https://api.wuyinkeji.com/mirror",
+    ]
+    # 2) 原任务在对冲提交之后仍被继续轮询（没有被放弃）。
+    hedge_submit_index = next(i for i, event in enumerate(events) if event == ("submit", "task-2"))
+    assert any(
+        event == ("poll", "task-1") for event in events[hedge_submit_index + 1 :]
+    )
+    assert poll_counts["task-1"] >= 4
+    # 3) 先到先用：采用先返回的对冲结果（内容即该任务返回的图片 URL）。
+    assert media.content == backup_url.encode("utf-8")
+
+
+def test_grid_stall_with_single_link_retries_once_and_keeps_polling_original(monkeypatch) -> None:
+    """只有一条链路（无「不同链路」可对冲）时退化为「同链路有界重试」：达停滞阈值后向
+    同一条链路再提交 1 次（总提交数 == 2），原任务继续被轮询；后续某次返回图片即采用它，
+    不再干等到总预算耗尽。（此前实现：单链路完全不追加提交，直接等到预算耗尽。）"""
+    config = _grid_hedge_config(stall_seconds=6.0)
+    # 备用 provider 与主 provider 链路完全一致（同 base_url、同 api_key）→ 只有一条链路。
+    config["backup_image"]["base_url"] = "https://api.wuyinkeji.com"
+    config["backup_image"]["api_key"] = "primary-key"
+    processor, _clock = _grid_hedge_processor(monkeypatch, config, total_budget=60.0)
+    retry_url = "https://result.example/same-link-retry.png"
+
+    def responder(_base, task_id, poll_index):
+        # 同链路重试任务（task-2）在第 2 次轮询出图；主任务（task-1）恒为处理中。
+        if task_id == "task-2" and poll_index >= 2:
+            return _wuyin_ready(retry_url)
+        return _wuyin_processing()
+
+    submissions, _polls, poll_counts, events = _install_wuyin_transport(monkeypatch, responder)
+
+    media = processor.generate(
+        stage="grid_image",
+        prompt="contract",
+        reference_values=["https://cdn.example/source.png"],
+        image_size="1024x1024",
+    )
+
+    # 1) 主任务先提交，停滞阈值过后向「同一条链路」再提交 1 次（总提交数 == 2）。
+    assert [base for base, _ in submissions] == [
+        "https://api.wuyinkeji.com",
+        "https://api.wuyinkeji.com",
+    ]
+    # 2) 原任务在重试提交之后仍被继续轮询（没有被放弃）。
+    retry_submit_index = next(i for i, event in enumerate(events) if event == ("submit", "task-2"))
+    assert any(event == ("poll", "task-1") for event in events[retry_submit_index + 1 :])
+    assert poll_counts["task-1"] >= 4
+    # 3) 先到先用：采用后到的重试任务结果（内容即该任务返回的图片 URL）。
+    assert media.content == retry_url.encode("utf-8")
+
+
+def test_grid_stall_with_single_link_retries_are_capped_at_two(monkeypatch) -> None:
+    """单链路持续停滞：同链路重试有独立且更紧的上限——最多再提交 1 次（总提交数封顶为 2，
+    而不是全局硬顶 3），且不延长总时长预算；预算耗尽仍无结果 → 抛 provider_stalled
+    （不静默成功、不无限循环）。"""
+    config = _grid_hedge_config(stall_seconds=6.0)
+    config["backup_image"]["base_url"] = "https://api.wuyinkeji.com"
+    config["backup_image"]["api_key"] = "primary-key"
+    total_budget = 30.0
+    processor, clock = _grid_hedge_processor(monkeypatch, config, total_budget=total_budget)
+
+    submissions, _polls, _counts, _events = _install_wuyin_transport(
+        monkeypatch, lambda _base, _task_id, _n: _wuyin_processing()
+    )
+
+    with pytest.raises(MediaProcessingError) as caught:
+        processor.generate(
+            stage="grid_image",
+            prompt="contract",
+            reference_values=["https://cdn.example/source.png"],
+            image_size="1024x1024",
+        )
+
+    assert caught.value.status_class == "provider_stalled"
+    # 同链路重试独立上限：总提交数封顶为 2（1 主 + 1 重试），绝不用到全局硬顶 3。
+    assert len(submissions) == media_module.GRID_IMAGE_SINGLE_LINK_MAX_SUBMITS == 2
+    assert media_module.GRID_IMAGE_SINGLE_LINK_MAX_SUBMITS < media_module.GRID_IMAGE_MAX_SUBMITS
+    # 预算不延长：重试不追加时长，总耗时不超过一次生成的总时长预算。
+    assert clock[0] - 1000.0 <= total_budget + media_module.WUYIN_IMAGE_POLL_INTERVAL_SECONDS
+
+
+def test_grid_stall_hedge_submissions_are_capped_at_three(monkeypatch) -> None:
+    """连续停滞时总提交次数硬封顶为 3（1 主 + 至多 2 hedge），不会无限新增请求。"""
+    config = _grid_hedge_config(stall_seconds=6.0)
+    config["limits"]["image_provider_strategy"] = "primary_first"
+    processor, _clock = _grid_hedge_processor(monkeypatch, config, total_budget=60.0)
+    providers = [
+        {
+            "name": f"link-{index}",
+            "base_url": base_url,
+            "api_key": f"key-{index}",
+            "model": "image_gpt",
+            "reference_model": "image_gpt",
+            "image_size": "1024x1024",
+        }
+        for index, base_url in enumerate(
+            (
+                "https://api.wuyinkeji.com",
+                "https://api.wuyinkeji.com/a",
+                "https://api.wuyinkeji.com/b",
+                "https://api.wuyinkeji.com/c",
+            ),
+            start=1,
+        )
+    ]
+    submissions, _polls, _counts, _events = _install_wuyin_transport(
+        monkeypatch, lambda _base, _task_id, _n: _wuyin_processing()
+    )
+
+    with pytest.raises(MediaProcessingError) as caught:
+        processor._generate_with_limits(
+            stage="grid_image",
+            prompt="contract",
+            reference_values=["https://cdn.example/source.png"],
+            providers=providers,
+            config=config,
+        )
+
+    assert caught.value.status_class == "provider_stalled"
+    assert len(submissions) == media_module.GRID_IMAGE_MAX_SUBMITS == 3
+
+
+def test_grid_stall_budget_exhaustion_raises_provider_stalled(monkeypatch) -> None:
+    """对冲两条链路都长停滞：预算耗尽仍无结果 → 抛 provider_stalled，绝不静默成功或死循环。"""
+    config = _grid_hedge_config(stall_seconds=6.0)
+    processor, _clock = _grid_hedge_processor(monkeypatch, config, total_budget=30.0)
+    submissions, _polls, _counts, _events = _install_wuyin_transport(
+        monkeypatch, lambda _base, _task_id, _n: _wuyin_processing()
+    )
+
+    with pytest.raises(MediaProcessingError) as caught:
+        processor.generate(
+            stage="grid_image",
+            prompt="contract",
+            reference_values=["https://cdn.example/source.png"],
+            image_size="1024x1024",
+        )
+
+    assert caught.value.status_class == "provider_stalled"
+    assert 1 <= len(submissions) <= media_module.GRID_IMAGE_MAX_SUBMITS
+
+
+def test_grid_hedge_first_ready_result_wins_and_stops_polling_other(monkeypatch) -> None:
+    """两条任务并行时，先返回图片的那条被采用；采用后不再继续轮询另一条。"""
+    config = _grid_hedge_config(stall_seconds=6.0)
+    processor, _clock = _grid_hedge_processor(monkeypatch, config, total_budget=60.0)
+    backup_url = "https://result.example/backup-first.png"
+
+    def responder(_base, task_id, poll_index):
+        # 对冲任务（task-2）第一次轮询就出图；主任务（task-1）恒为处理中。
+        if task_id == "task-2":
+            return _wuyin_ready(backup_url)
+        return _wuyin_processing()
+
+    submissions, _polls, poll_counts, events = _install_wuyin_transport(monkeypatch, responder)
+
+    media = processor.generate(
+        stage="grid_image",
+        prompt="contract",
+        reference_values=["https://cdn.example/source.png"],
+        image_size="1024x1024",
+    )
+
+    assert len(submissions) == 2
+    assert media.content == backup_url.encode("utf-8")
+    # 采用先到的对冲结果后立即返回，最后一个事件是那次成功的轮询，之后不再有任何轮询。
+    winning_index = next(
+        i
+        for i, event in enumerate(events)
+        if event == ("poll", "task-2")
+    )
+    assert all(event[0] == "submit" for event in events[winning_index + 1 :])
+    assert poll_counts["task-2"] == 1
+

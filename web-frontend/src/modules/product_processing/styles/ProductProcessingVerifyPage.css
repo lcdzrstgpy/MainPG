@@ -2411,6 +2411,12 @@
   color: #086f9f;
 }
 
+.precheck-origin-badge.origin-composite {
+  border-color: #ecd9b6;
+  background: #fdf4e3;
+  color: #9a6b18;
+}
+
 .precheck-origin-badge.origin-dimension {
   border-color: #d8cfef;
   background: #f2effb;

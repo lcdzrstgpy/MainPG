@@ -150,6 +150,12 @@ class DraftProcessRequest(BaseModel):
         default=4,
         description="旧客户端兼容字段；当前固定为 4，普通与精品均一次生成智能生图后本地拆分",
     )
+    # 「本批次 AI 生图专项提示词」：默认关闭，用户手动打开后在批次开头基于本批全部标题
+    # 生成一条面向该品类的生图指南（定点爆破规避异形），注入本批每条的生图提示词。
+    batch_image_prompt_enabled: bool = False
+    # 「一键随机模板」：默认关闭，打开后忽略选定的模板，本批次每条链接稳定随机分配到
+    # A/B/C/D 生图模板与 A/B 描述模板（一个批次内混搭多套处理方式）。
+    random_template: bool = False
 
     @field_validator("draft_ids")
     @classmethod

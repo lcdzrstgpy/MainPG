@@ -35,6 +35,8 @@ const ORIGIN_LABELS: Record<PreviewImageAsset["origin"], string> = {
   generated: "AI 生成",
   dimension: "尺寸图",
   upload: "本地导入",
+  // 详情图本地合成（Pillow 把来源图贴进版式）不是 AI 生成，如实标注来源，避免误导用户。
+  composite: "来源图合成",
 };
 
 const PUBLICATION_LABELS: Record<PreviewImageAsset["publication_status"], string> = {

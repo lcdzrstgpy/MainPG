@@ -130,6 +130,11 @@ from .server_ai_proxy import merge_builtin_keys, server_ai_context
 _MEDIA_TYPES: tuple | None = None
 _LOGGER = logging.getLogger(__name__)
 
+# 源图作为生图参考可用的最小边（像素）：采集常保存 180px 缩略图（如 kwcdn imageView2），
+# 上游生图服务无法据此生成 2K 商品图而直接失败。入库预检低于该值的图判为不可用，
+# 避免脏图进入草稿池被当成参考图拖垮整条生图。
+_SOURCE_IMAGE_MIN_EDGE = 300
+
 # 来源尺寸/重量确定性提取（对齐原项目 five-stage 的 deterministic_fact_build，0 AI）
 _DIMENSION_TRIPLE = re.compile(
     r"(\d+(?:\.\d+)?)\s*[xX*×]\s*(\d+(?:\.\d+)?)\s*[xX*×]\s*(\d+(?:\.\d+)?)\s*(mm|cm|毫米|厘米)?",
@@ -1024,6 +1029,88 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
 - The four-grid/single-image structure, exact dividers, split logic, panel roles, product fidelity, typography and safety rules defined above are FIXED and always take precedence.
 - Apply the user requirements ONLY to content planning inside the panels (composition, scene, props, lighting, style choices), never to layout structure or generated text.
 - {additions}"""
+
+    def _generate_batch_image_guidelines(
+        self,
+        titles: list[str],
+        *,
+        target_language: str = "en",
+        target_site: str = "US",
+        category: str = "",
+    ) -> str:
+        """本批次 AI 生图专项提示词：基于本批全部标题（+品类）生成一条面向该品类的
+        生图指南，用于定点爆破规避 AI 异形问题（肢体畸形、手指错乱、比例失调、文字
+        水印扭曲等）。
+
+        只在用户手动开启 batch_image_prompt_enabled 时在批次开头调用一次；best-effort，
+        任何失败或空结果都返回 ""，绝不阻塞批次。结果是不渲染的「生图指令」而非图中文本，
+        因此统一用英文产出，避免额外翻译的第二次付费调用，也无需语言契约校验。
+        """
+        usable = [str(t).strip() for t in (titles or []) if str(t).strip()]
+        if not usable:
+            return ""
+        deduped = list(dict.fromkeys(usable))[:24]
+        catalog = ", ".join(repr(t) for t in deduped)
+        prompt_body = (
+            "You are a senior e-commerce product-photo art director. The following are "
+            "the product titles in one processing batch:\n"
+            f"{catalog}\n\n"
+        )
+        if str(category or "").strip():
+            prompt_body += f"The batch category is: {category!r}\n\n"
+        prompt_body += (
+            f"The target storefront is {target_site} and visible text inside images is in "
+            f"{target_language}. Write a concise set of specialized IMAGE-GENERATION "
+            "guidelines (in English) for producing carousel/detail images for THIS product "
+            "category, focused on pre-empting common AI malformation problems: anatomical "
+            "and limb anomalies, duplicated or misshapen fingers, broken hand-object "
+            "interactions, warped or garbled text/logo printing, wrong proportions, "
+            "extra limbs, and inconsistent product identity across panels. Be specific to "
+            "the category (e.g. realistic materials, correct number of fingers, crisp "
+            "printed labels, stable proportions) and actionable for a text-to-image model. "
+            "Output ONLY plain English bullet points, no preamble, no headings, no markdown fences."
+        )
+        try:
+            result = (
+                DoubaoArkClient()
+                .complete(
+                    [
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are an expert e-commerce image-prompt strategist. "
+                                "Produce crisp, specific, English image-generation guidelines."
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": prompt_body,
+                        },
+                    ]
+                )
+                .strip()
+            )
+        except Exception:
+            return ""
+        if not result:
+            return ""
+        return result
+
+    def _apply_batch_image_guidelines(self, template: str, batch_prompt: str) -> str:
+        """把「本批次 AI 专项提示词」包裹进固定约束声明后拼接到图片提示词末尾。
+
+        batch_prompt 仅为品类级内容/质量建议（定点爆破规避异形），与用户附加同理，
+        绝不能覆盖四宫格结构、分界、面板角色、产品保真、文字与安全等固定运行时契约。
+        """
+        if not batch_prompt or not str(batch_prompt).strip():
+            return template
+        prompt = str(batch_prompt).strip()
+        return f"""{template}
+
+BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MUST NOT override the fixed runtime contracts above):
+- The four-grid/single-image structure, exact dividers, split logic, panel roles, product fidelity, typography and safety rules defined above are FIXED and always take precedence.
+- Follow these guidelines ONLY for depiction quality inside the shown panels (anatomy, proportions, hands, printed text/logo legibility, material realism, product identity consistency); never for layout structure or generated text.
+- {prompt}"""
 
     def create_draft(
         self,
@@ -2286,7 +2373,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         ready = failed = 0
         for image in self.repository.claim_syncable_source_images(draft_id, workspace_id):
             try:
-                fetched = self._public_image_fetcher(image["url"])
+                fetched = self._fetch_usable_source_image(image["url"])
                 path = self.assets.save_source_image(fetched.content, fetched.final_url, fetched.media_type)
             except Exception as error:
                 if self.repository.fail_source_image(image["id"], str(error), image["_sync_claim_token"], workspace_id):
@@ -2295,6 +2382,41 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 if self.repository.complete_source_image(image["id"], str(path), image["_sync_claim_token"], workspace_id):
                     ready += 1
         return {"ready": ready, "failed": failed}
+
+    def _fetch_usable_source_image(self, url: str) -> Any:
+        """下载源图并预检可生成性。
+
+        采集保存的地址常带缩略参数（如 kwcdn imageView2，实际只返回 180px 图），上游生图
+        无法据此生成 2K 商品图而直接失败。这里先把这类地址提升为高清版本再下载；下载后
+        若仍是过小的缩略图，直接判为同步失败，避免脏图进入草稿池被当成参考图拖垮整条生图。
+        """
+        from .infrastructure.media import _normalize_reference_url  # noqa: PLC0415
+
+        raw = str(url or "").strip()
+        target = _normalize_reference_url(raw) or raw
+        fetched = self._public_image_fetcher(target)
+        self._require_generation_usable_source(fetched.content, raw)
+        return fetched
+
+    @staticmethod
+    def _require_generation_usable_source(content: bytes, source_url: str) -> None:
+        """源图过小（缩略图）直接拒绝；无法解码的格式保持原样放行，交由下游链路处理。"""
+        try:
+            from io import BytesIO  # noqa: PLC0415
+
+            from PIL import Image  # type: ignore
+        except ImportError:
+            return
+        try:
+            with Image.open(BytesIO(bytes(content))) as image:
+                width, height = (int(value) for value in image.size)
+        except Exception:
+            return
+        if min(width, height) < _SOURCE_IMAGE_MIN_EDGE:
+            raise ValueError(
+                f"source image is a {width}x{height} thumbnail, "
+                f"below the {_SOURCE_IMAGE_MIN_EDGE}px generation floor: {source_url[:120]}"
+            )
 
     def retry_draft_source_images(self, draft_id: int, workspace_id: str = "local") -> dict[str, int]:
         return self.sync_draft_source_images(draft_id, workspace_id)
@@ -2688,6 +2810,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         s["image_template"] = _image_template if _image_template in {"A", "B", "C", "D"} else "A"
         # 五点描述模板：A=卖点前置（结果导向），B=场景代入（痛点导向）。
         s["desc_template"] = "B" if str(s.get("desc_template") or "A").strip().upper() == "B" else "A"
+        # 一键随机模板：开启后忽略上面选定的模板，本批次每条链接稳定随机分配生图/描述模板。
+        s["random_template"] = _as_bool(s.get("random_template"), default=False)
         # 兼容未传该字段的历史 API 调用：继续走原有四宫格一次调用。
         s["image_generation_count"] = _image_generation_count(s.get("image_generation_count"), default=4)
         return s
@@ -5685,6 +5809,36 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         ]
         lock = threading.Lock()
 
+        # 「本批次 AI 生图专项提示词」：用户手动开启 batch_image_prompt_enabled 时，
+        # 在批次正式处理前，用本批全部草稿标题（+目标站点/语言）调用一次 AI 生成面向
+        # 该品类的生图指南（定点爆破规避异形）。整批只生成一次并缓存在本地变量，随
+        # _process_one 注入到本批每条的轮播/精品/详情图片提示词。best-effort，失败或
+        # 空结果一律返回 ""，绝不阻塞批次，也不写入全局模板（批次作用域、临时）。
+        batch_image_prompt = ""
+        if (
+            not preflight_only
+            and bool(settings.get("batch_image_prompt_enabled"))
+            and items_to_process
+        ):
+            batch_titles: list[str] = []
+            for _batch_item in items_to_process:
+                _draft = drafts.get(_batch_item.get("product_draft_id"))
+                if not _draft:
+                    continue
+                _t = self._text(
+                    _draft.get("title")
+                    or _draft.get("product_name")
+                    or (_draft.get("raw_payload") or {}).get("source_title")
+                )
+                if _t:
+                    batch_titles.append(_t)
+            if batch_titles:
+                batch_image_prompt = self._generate_batch_image_guidelines(
+                    batch_titles,
+                    target_language=str(settings.get("target_language") or "en"),
+                    target_site=str(settings.get("target_site") or "US"),
+                )
+
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         # 本地 AI 处理日志：批次执行参数（并发、断点续跑数量等）。
@@ -5716,6 +5870,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         preflight_only,
                         task_id=task_id,
                         workspace_id=workspace_id,
+                        batch_image_prompt=batch_image_prompt,
                     ),
                 )
             except _TaskControlStopped:
@@ -6878,6 +7033,21 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             if not has_unsettled:
                 self._task_remote_tokens.pop(task_id, None)
 
+    @staticmethod
+    def _random_templates_for_draft(task_id: int, draft_id: int) -> tuple[str, str]:
+        """一键随机模板：按 (task, draft) 稳定哈希分配生图/描述模板。
+
+        用稳定哈希而非 random：同一条链接在重试 / 自动补跑时始终拿到同一套模板，
+        不会因重试而结果漂移；不同链接之间仍是随机分布（一个批次内混搭多套模板）。
+        """
+        digest = hashlib.sha256(
+            f"random-template:{int(task_id)}:{int(draft_id)}".encode("utf-8")
+        ).digest()
+        image_ids = ("A", "B", "C", "D")
+        image_template = image_ids[digest[0] % len(image_ids)]
+        desc_template = "B" if digest[1] % 2 else "A"
+        return image_template, desc_template
+
     def _process_one(
         self,
         item: dict[str, Any],
@@ -6887,6 +7057,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         *,
         task_id: int,
         workspace_id: str = "local",
+        batch_image_prompt: str = "",
     ) -> dict[str, Any]:
         processing_started = time.perf_counter()
         stage_timings_ms: dict[str, int] = {}
@@ -6916,6 +7087,14 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 },
             }
         raw = draft["raw_payload"]
+        # 一键随机模板：开启后本批次每条链接按 (task, draft) 稳定随机分配生图/描述模板；
+        # 关闭时沿用设置里选定的模板。后续所有取模板处一律用这两个局部变量。
+        effective_image_template = str(settings.get("image_template") or "A")
+        effective_desc_template = str(settings.get("desc_template") or "A")
+        if _as_bool(settings.get("random_template"), default=False):
+            effective_image_template, effective_desc_template = self._random_templates_for_draft(
+                task_id, int(draft["id"])
+            )
         title = self._text(draft.get("title") or draft.get("product_name") or raw.get("source_title"))
         # ``draft.title`` is the operator-editable Chinese reference title from
         # the draft pool. Keep the collected title in raw_payload for traceability,
@@ -7260,7 +7439,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     "need_grid": need_grid,
                     "need_detail": need_detail,
                     "premium_mode": premium_mode,
-                    "image_template": str(settings.get("image_template") or "A"),
+                    "image_template": effective_image_template,
                     "image_generation_count": _image_generation_count(
                         settings.get("image_generation_count"), default=4
                     ),
@@ -7335,7 +7514,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 if not premium_mode:
                     media_kwargs.update(
                         {
-                            "image_template": str(settings.get("image_template") or "A"),
+                            "image_template": effective_image_template,
                             "image_generation_count": image_generation_count,
                             "allow_quality_override": int(draft["id"])
                             in {
@@ -7376,6 +7555,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     vision_subject,
                     vision_identity=vision_identity,
                     workspace_id=workspace_id,
+                    batch_image_prompt=batch_image_prompt,
                 )
         dimension_repository = getattr(self, "dimension_templates", None)
         dimension_template = (
@@ -7404,7 +7584,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "active_prompt_additions": self._active_template_prompts(),
             # A/B description writing style changes the generated bullets, so it
             # must participate in the cache/receipt fingerprint.
-            "description_template": str(settings.get("desc_template") or "A"),
+            "description_template": effective_desc_template,
             # Learned bounds/defaults are part of the dimension result.
             # A changed template must invalidate an older stage receipt/cache.
             "dimension_template_signature": template_signature(dimension_template),
@@ -7517,7 +7697,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                             needs_dimensions=bool(needs_dimensions),
                             known_dimensions=known_dimensions,
                             dimension_template=dimension_template,
-                            description_template=str(settings.get("desc_template") or "A"),
+                            description_template=effective_desc_template,
                         )
                     except DoubaoTextError as exc:
                         text_failure = exc
@@ -7681,6 +7861,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         vision_subject,
                         vision_identity=vision_identity,
                         workspace_id=workspace_id,
+                        batch_image_prompt=batch_image_prompt,
                     )
                 else:
                     grid_future = _submit_with_context(
@@ -7696,10 +7877,11 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         target_site,
                         media_ai_notes,
                         vision_subject,
-                        image_template=str(settings.get("image_template") or "A"),
+                        image_template=effective_image_template,
                         image_generation_count=image_generation_count,
                         vision_identity=vision_identity,
                         workspace_id=workspace_id,
+                        batch_image_prompt=batch_image_prompt,
                     )
             elif need_detail:
                 direct_detail_future = _submit_with_context(
@@ -7717,6 +7899,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     vision_subject,
                     vision_identity=vision_identity,
                     workspace_id=workspace_id,
+                    batch_image_prompt=batch_image_prompt,
                 )
 
         # 标题/描述/尺寸来自主文本请求；大量或漏翻规格由同一计费阶段分批补齐。
@@ -7796,7 +7979,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     target_site,
                     ai_notes,
                     vision_subject,
-                    image_template=str(settings.get("image_template") or "A"),
+                    image_template=effective_image_template,
                     image_generation_count=image_generation_count,
                     vision_identity=vision_identity,
                     workspace_id=workspace_id,
@@ -7806,6 +7989,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         for value in settings.get("force_import_draft_ids", [])
                         if str(value).isdigit()
                     },
+                    batch_image_prompt=batch_image_prompt,
                 )
                 record_stage("grid_pipeline", stage_started)
             grid_image_paths, grid_summary_path = grid_output
@@ -7891,6 +8075,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         vision_subject,
                         vision_identity=vision_identity,
                         workspace_id=workspace_id,
+                        batch_image_prompt=batch_image_prompt,
                     )
                     record_stage("detail_generation", stage_started)
         if grid_image_paths:
@@ -8460,6 +8645,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         vision_identity: dict[str, Any] | None = None,
         workspace_id: str = "local",
         allow_quality_override: bool = False,
+        batch_image_prompt: str = "",
     ) -> GridImageOutput:
         """Generate four carousel images with a selectable 1/2/4-image transport layout."""
         if not _ai_enabled() or not reference_urls:
@@ -8489,7 +8675,10 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 if image_generation_count == 4
                 else ("image_set" + _template_suffix)
             )
-            template = self._apply_user_image_additions(DEFAULT_PROMPTS.get(prompt_key, ""), prompt_key)
+            template = self._apply_batch_image_guidelines(
+                self._apply_user_image_additions(DEFAULT_PROMPTS.get(prompt_key, ""), prompt_key),
+                batch_image_prompt,
+            )
             contracted = apply_language_contract_to_prompt(template, "grid_image", target_language, target_site)
             context = listing_prompt_context(raw, title=optimized_title, category=category)
             if vision_subject:
@@ -8509,7 +8698,10 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             standalone_prompt = prompt
             if image_generation_count == 4:
                 standalone_key = "image_set" + _template_suffix
-                standalone_template = self._apply_user_image_additions(DEFAULT_PROMPTS.get(standalone_key, ""), standalone_key)
+                standalone_template = self._apply_batch_image_guidelines(
+                    self._apply_user_image_additions(DEFAULT_PROMPTS.get(standalone_key, ""), standalone_key),
+                    batch_image_prompt,
+                )
                 standalone_contracted = apply_language_contract_to_prompt(
                     standalone_template,
                     "grid_image",
@@ -8935,6 +9127,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         vision_subject: str = "",
         vision_identity: dict[str, Any] | None = None,
         workspace_id: str = "local",
+        batch_image_prompt: str = "",
     ) -> GridImageOutput:
         """精品模式：一次 4K 四宫格，本地拆成四张不降采样的高清轮播图。"""
         if not _ai_enabled() or not reference_urls:
@@ -8952,7 +9145,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             premium_image_size = str(_image_cfg.get("premium_image_size") or "").strip() or PREMIUM_IMAGE_SIZE
         except Exception:
             pass
-        template = self._effective_prompt("premium_image")
+        template = self._apply_batch_image_guidelines(self._effective_prompt("premium_image"), batch_image_prompt)
         contracted = apply_language_contract_to_prompt(template, "premium_image", target_language, target_site)
         context = listing_prompt_context(raw, title=optimized_title, category=category)
         if vision_subject:
@@ -9163,6 +9356,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         vision_subject: str = "",
         vision_identity: dict[str, Any] | None = None,
         workspace_id: str = "local",
+        batch_image_prompt: str = "",
     ) -> list[str]:
         if not _ai_enabled() or not reference_urls:
             return []
@@ -9172,7 +9366,10 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         processor_cls, media_config_error, media_error = media_types
         try:
             processor = self._media_processor()
-            template = self._apply_user_image_additions(DEFAULT_PROMPTS.get("detail_image", ""), "detail_image")
+            template = self._apply_batch_image_guidelines(
+                self._apply_user_image_additions(DEFAULT_PROMPTS.get("detail_image", ""), "detail_image"),
+                batch_image_prompt,
+            )
             contracted = apply_language_contract_to_prompt(template, "detail_image", target_language, target_site)
             context = listing_prompt_context(raw, title=optimized_title, category=category)
             if vision_subject:
@@ -9237,7 +9434,12 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 return []
             if ai_notes is not None:
                 ai_notes.append("detail_images:local_synthesis")
-                ai_notes.append("detail_images:ocr_passed")
+                # OCR 不可用（返回 None）时无法判定中文，不得记 ocr_passed，标记为未校验。
+                ai_notes.append(
+                    "detail_images:ocr_unavailable"
+                    if chinese is None
+                    else "detail_images:ocr_passed"
+                )
             from .infrastructure.media import GeneratedMedia  # noqa: PLC0415
 
             media = GeneratedMedia(

@@ -173,6 +173,10 @@ export interface ProductProcessingOptions {
   imageGenerationCount?: 1 | 2 | 4;
   /** 失败项自动补跑：任务收尾统一把所有失败链接重新投入处理链路，自动重跑最多 2 轮（系统轮不向用户计费，默认开启） */
   autoRepull?: boolean;
+  /** 「本批次 AI 生图专项提示词」：默认关闭；开启后批次开头基于本批全部标题生成一条面向该品类的生图指南（定点爆破规避异形），注入本批各条生图提示词。 */
+  batchImagePromptEnabled?: boolean;
+  /** 「一键随机模板」：默认关闭；开启后忽略选定的模板，本批次每条链接随机分配生图/描述模板（一个批次内混搭多套处理方式）。 */
+  randomTemplate?: boolean;
 }
 
 /** 生图提示词模板注册表（对齐后端 IMAGE_TEMPLATES） */
@@ -223,7 +227,7 @@ export type ShippingPackageRecordOverride = Pick<
   "length_cm" | "width_cm" | "height_cm" | "volume_cm3" | "weight_g"
 >;
 
-export type PreviewImageOrigin = "source" | "generated" | "dimension" | "upload";
+export type PreviewImageOrigin = "source" | "generated" | "dimension" | "upload" | "composite";
 
 export type PreviewImageBucket = "source" | "processed";
 
@@ -268,6 +272,7 @@ export type PreviewImageManifest = {
 export type MediaAssetOrigin =
   | "remote_source"
   | "ai_generated"
+  | "local_synthesis"
   | "preview_upload"
   | "dimension_rendered";
 

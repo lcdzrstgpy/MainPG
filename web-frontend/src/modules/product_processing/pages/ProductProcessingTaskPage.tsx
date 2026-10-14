@@ -453,6 +453,10 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       max_parallel_drafts: options.maxParallelDrafts,
       image_template: options.imageTemplate || 'A',
       desc_template: options.descriptionTemplate || 'A',
+      // 本批次 AI 生图专项提词：默认关闭，用户手动打开后在批次开头生成并注入本批各条生图提示词。
+      batch_image_prompt_enabled: options.batchImagePromptEnabled === true,
+      // 一键随机模板：默认关闭，打开后本批次每条链接随机分配生图/描述模板。
+      random_template: options.randomTemplate === true,
       // 用户选择是否对技术可重试的失败项自动补跑（默认关闭）
       auto_repull: options.autoRepull !== false,
       // 兼容旧 API 字段；新任务统一走智能生图策略，不再由用户选择。
@@ -622,6 +626,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
             <TemplateGalleryDrawer
               imageTemplate={options.imageTemplate || 'A'}
               descriptionTemplate={options.descriptionTemplate || 'A'}
+              random={options.randomTemplate === true}
               onSelectImage={(id) => setOptions((p) => ({ ...p, imageTemplate: id }))}
               onSelectDescription={(id) => setOptions((p) => ({ ...p, descriptionTemplate: id }))}
             />
@@ -633,6 +638,26 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                   onChange={(e) => setOptions((p) => ({ ...p, autoRepull: e.target.checked }))}
                 />
                 <span>自动重跑失败项</span>
+              </label>
+            </div>
+            <div className="verify-scope-row">
+              <label className="verify-scope-check" title="批次正式处理前，用本批全部商品标题调用 AI 生成一条面向该品类的生图专项提示词（定点爆破规避异形/肢体畸形/手指错乱/文字水印扭曲等），自动注入本批各条轮播/精品/详情图的生图提示词。默认关闭，仅在你勾选时启用并产生一次 AI 调用（失败不阻塞、不计入本批结果）。">
+                <input
+                  type="checkbox"
+                  checked={options.batchImagePromptEnabled === true}
+                  onChange={(e) => setOptions((p) => ({ ...p, batchImagePromptEnabled: e.target.checked }))}
+                />
+                <span>本批次 AI 生图专项提词</span>
+              </label>
+            </div>
+            <div className="verify-scope-row">
+              <label className="verify-scope-check" title="开启后忽略上面选定的模板：本批次每条链接随机分配生图模板（A/B/C/D）与描述模板（A/B），一个批次内混搭多套处理方式，便于批量测试不同风格。默认关闭；开启后同一条链接在重试/自动补跑时仍固定用同一套模板。">
+                <input
+                  type="checkbox"
+                  checked={options.randomTemplate === true}
+                  onChange={(e) => setOptions((p) => ({ ...p, randomTemplate: e.target.checked }))}
+                />
+                <span>一键随机模板</span>
               </label>
             </div>
             <PromptCustomizePanel />

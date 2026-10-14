@@ -119,16 +119,32 @@ WUYIN_IMAGE_POLL_INTERVAL_SECONDS = 3.0
 #   image_gpt_2.5(1K)  66.2~95.5s（median 72.1s）→ max×2≈191s / median×3≈216s
 #   image_gpt(2048)    62.6~146.6s（median 68.2s）→ max×2≈293s / median×3≈204s
 # 2K 档原按 max×2≈293s 取 300s；但实测正常出图仅 120~160s，而卡死样本恒在 300s 以上，
-# 300s 只会在无谓等待上多花约 100s。为压缩最坏情况，2K 阈值收紧到 200s（仍高于实测
-# max 146.6s，预留约 36% 余量）。超过阈值仍无任何字段变化，即视为本次提交大概率卡死
+# 300s 只会在无谓等待上多花约 100s。为压缩最坏情况，2K 阈值收紧到 180s（仍高于实测
+# max 146.6s，预留约 23% 余量）。超过阈值仍无任何字段变化，即视为本次提交大概率卡死
 # （多为上游抓不到参考图 URL，任务被 worker 静默丢弃），提前放弃以免占满图片并发槽。
-WUYIN_IMAGE_STALL_THRESHOLD_SECONDS = 180.0
-WUYIN_IMAGE_STALL_THRESHOLD_2K_SECONDS = 200.0
+# 1K 档原 180s 亦偏高：实测 max 95.5s，收紧到 120s（约 26% 余量），让停滞更早被发现、
+# 更快进入重试（换 provider / 换参考图），把「偶发停滞直接回退来源图」压到接近 0。
+# 两档阈值均可由配置 ``limits.image_stall_threshold_seconds`` /
+# ``limits.image_stall_threshold_2k_seconds`` 覆盖，现场可按上游波动再调。
+WUYIN_IMAGE_STALL_THRESHOLD_SECONDS = 120.0
+WUYIN_IMAGE_STALL_THRESHOLD_2K_SECONDS = 180.0
 MAX_PROVIDER_RESULT_BYTES = 32 * 1024 * 1024
 MAX_PROVIDER_JSON_BYTES = 8 * 1024 * 1024
 REFERENCE_DOWNLOAD_ATTEMPTS = 3
 PROVIDER_RESULT_DOWNLOAD_ATTEMPTS = 3
 DOWNLOAD_RETRY_BACKOFF_SECONDS = (0.2, 0.6)
+# 参考图私有 COS 中转的带退避重试：中转失败会让无印拿不到参考图而静默卡死，
+# 因此发布临时对象允许小步重试，避免一次瞬时抖动就升级为整条回退来源图。
+COS_RELAY_PUBLISH_ATTEMPTS = 3
+COS_RELAY_PUBLISH_BACKOFF_SECONDS = (0.5, 1.5)
+# 四宫格生图对冲（hedge）的提交次数硬上限：单次生成最多向上游提交 3 个异步任务
+# （1 个主任务 + 至多 2 个对冲）。达到上限后只等待已提交任务，绝不新增请求，
+# 既避免同源重复计费，也杜绝「停滞即无限重试」。
+GRID_IMAGE_MAX_SUBMITS = 3
+# 无「不同链路」可对冲时退化为「同链路有界重试」的独立更紧上限：总计最多 2 次提交
+# （1 个主任务 + 至多 1 次同链路重试）。同一上游重复提交意味着同源重复计费，因此这里
+# 比全局 GRID_IMAGE_MAX_SUBMITS=3 更紧；它只约束同链路重试，全局硬顶仍对所有路径生效。
+GRID_IMAGE_SINGLE_LINK_MAX_SUBMITS = 2
 
 # 图片 provider 轮巡游标（对齐原项目 native_product_engine._PROVIDER_CURSORS）：
 # 进程内全局共享、线程锁保护，按"每次图片请求"取模轮转起始 provider，实现负载均衡。
@@ -167,6 +183,47 @@ class MediaProcessingError(RuntimeError):
         self.status_code = status_code
         self.attempt_count = attempt_count
         self.status_class = status_class
+
+
+@dataclass
+class _WuyinImageTask:
+    """无印异步生图任务的运行时状态。
+
+    无印没有进度字段：任务执行期间 status 恒为 3，故只能用「距上次字段变化的时间」
+    作为间接进展信号。这里把提交后的任务状态独立出来，便于对多个任务做交替轮询
+    （对冲请求无需线程）。
+    """
+
+    provider: dict[str, str]
+    task_id: str
+    model: str
+    stall_threshold_seconds: float
+    started_at: float
+    deadline: float
+    store: Any
+    temporary_references: list[Any]
+    last_signature: tuple[str, bool] | None = None
+    last_progress_at: float = 0.0
+    last_message: str = ""
+    last_status_value: str = ""
+    last_code: int = 0
+
+
+class _GridSubmitBudget:
+    """单次四宫格生成的提交次数硬上限（含主提交与 hedge 追发）。"""
+
+    def __init__(self, limit: int = GRID_IMAGE_MAX_SUBMITS) -> None:
+        self.limit = max(1, int(limit))
+        self.used = 0
+
+    def remaining(self) -> int:
+        return max(0, self.limit - self.used)
+
+    def consume(self) -> bool:
+        if self.used >= self.limit:
+            return False
+        self.used += 1
+        return True
 
 
 class _PinnedHTTPSConnection(http.client.HTTPSConnection):
@@ -426,15 +483,28 @@ class ProductImageProcessor:
         errors: list[str] = []
         attempt_count = 0
         generation_deadline = time.monotonic() + IMAGE_GENERATION_TOTAL_TIMEOUT_SECONDS
-        # 四宫格单次生成成本高：串行闸下一条一条发，失败最多重试一次即放行下一条商品
-        # （provider 轮巡叠加时按 provider 数放行）。
-        max_total_attempts = min(retries, 2) if stage == "grid_image" else retries * max(1, len(providers))
-        # 停滞升级状态：整次调用最多做一次 COS 中转 + 一次换候选参考图，避免无限重试。
+        # provider 轮换：外层按「轮次」、内层遍历所有已配置 provider，保证每个 provider 都
+        # 拿到尝试机会。此前四宫格把 max_total_attempts 压到 2，首个 provider 吃满预算后备用
+        # provider 从未被使用；一旦首个 provider 停滞就直接回退来源图。现在四宫格改为
+        # 「provider 数 × 每 provider 2 次」，其余 stage 沿用 image_retry_attempts。
+        # 总时长预算 IMAGE_GENERATION_TOTAL_TIMEOUT_SECONDS 仍为硬上限。
+        ordered_providers = self._provider_order(providers, config)
+        per_provider_attempts = 2 if stage == "grid_image" else retries
+        max_total_attempts = per_provider_attempts * max(1, len(ordered_providers))
+        # 四宫格生图对冲（hedge）：命中停滞阈值时不再直接丢弃原任务，而是「保持对原任务的
+        # 轮询 + 向不同链路 provider 追发一个任务」并行推进，任一条先出图即采用。
+        # 提交次数由 submit_budget 硬封顶（≤ GRID_IMAGE_MAX_SUBMITS），总时长沿用既有生成
+        # 预算 generation_deadline，因此 hedge 既不会无限请求，也不会拉长总时长。
+        # 非四宫格 stage 不启用 hedge，语义与行为保持原样。
+        hedge_enabled = stage == "grid_image"
+        hedge_candidates = ordered_providers if hedge_enabled else None
+        submit_budget = _GridSubmitBudget() if hedge_enabled else None
+        # 停滞升级状态：整次调用最多换一次候选参考图，避免无限重试；换 provider 由轮巡完成。
         reference_offset = 0
-        references_relayed = False
         references_rotated = False
-        for provider in self._provider_order(providers, config):
-            for attempt in range(1, retries + 1):
+        for round_index in range(per_provider_attempts):
+            for provider in ordered_providers:
+                attempt = round_index + 1
                 if attempt_count >= max_total_attempts:
                     break
                 remaining_seconds = generation_deadline - time.monotonic()
@@ -450,6 +520,9 @@ class ProductImageProcessor:
                         timeout_seconds=request_timeout,
                         image_size=image_size,
                         reference_model=model_override,
+                        hedge_candidates=hedge_candidates,
+                        submit_budget=submit_budget,
+                        generation_deadline=generation_deadline,
                     )
                     self._record_provider_success(provider)
                     suffix = _suffix_for_content_type(content_type)
@@ -471,8 +544,23 @@ class ProductImageProcessor:
                         "server_error",
                         "unknown_outcome_timeout",
                         "connection_error",
+                        # 停滞 / 网关拒绝：都记一次短暂失败，使该 provider 在后续调用里被轮巡
+                        # 降权（连续 2 次进入冷却），把流量推向仍健康的备用 provider。
+                        "provider_stalled",
+                        "gateway_rejected",
                     }:
                         self._record_provider_transient_failure(provider)
+                    if status_class == "provider_stalled" and _is_wuyin_image_provider(provider):
+                        # 无印四宫格停滞已在 _request_wuyin_image 内部完成「保持轮询 + 不同链路
+                        # 对冲」（无不同链路时退化为「同链路有界重试」）：走到这里说明对冲/重试
+                        # 与时长预算均已耗尽。继续用外层轮巡重试只会突破提交上限并重复计费，
+                        # 故直接抛出，交由上层走既有可见回退（service.py 记 source_fallback +
+                        # 失败明细）。
+                        raise MediaProcessingError(
+                            "; ".join(errors),
+                            attempt_count=attempt_count,
+                            status_class=status_class,
+                        ) from exc
                     if status_class in {"non_retryable_4xx", "unknown_outcome_timeout", "non_retryable_local"}:
                         raise MediaProcessingError(
                             "; ".join(errors),
@@ -485,38 +573,18 @@ class ProductImageProcessor:
                         if time.monotonic() + delay >= generation_deadline:
                             break
                         time.sleep(delay)
-                    if status_class == "provider_stalled":
-                        # 四宫格单次生成成本极高（2K 四格 ≈ 300s 起步）：一旦停滞就不再
-                        # 换参考图重试，立即放弃让上层回退来源图，避免最坏情况被两次
-                        # 尝试拖到十几分钟。
-                        if stage == "grid_image":
-                            raise MediaProcessingError(
-                                "; ".join(errors),
-                                attempt_count=attempt_count,
-                                status_class="provider_stalled",
-                            ) from exc
-                        # 停滞 = 上游很可能静默丢弃了任务（多为抓不到参考图 URL：防盗链 /
-                        # 出网策略差异）。优先把本地已成功下载的参考图改走 COS 中转，交给
-                        # 上游一个它一定能抓到的临时 URL；无法中转时退回换下一张候选参考图。
-                        # 两者都不可用（或没有剩余重试预算）就立即放弃，不再等满剩余预算。
+                    if status_class in {"provider_stalled", "gateway_rejected", "reference_relay_failed"}:
+                        # 停滞 / 网关拒绝 / 参考图中转失败：都不是上游的显式终态失败，重试有
+                        # 意义。先尽量把「换候选参考图」做满（换掉可能不合规或抓不到的参考），
+                        # 随后 continue 会轮巡到下一个 provider；单 provider 时下一轮原地重试。
+                        # 四宫格此前遇到停滞会立即放弃，导致客户看到「处理后仍是原图」；现在按
+                        # provider 各试 2 次（受总预算约束），确保「换 provider + 换参考图」可组合。
                         has_budget = (
                             attempt_count < max_total_attempts
                             and generation_deadline - time.monotonic() > 1.0
                         )
-                        escalated = False
-                        if has_budget and not references_relayed and _cos_configured(config):
-                            relayed = self._relay_references(ordinary_references)
-                            if relayed is not None:
-                                references_relayed = True
-                                ordinary_references = relayed
-                                escalated = True
                         remaining_candidates = candidate_values[reference_offset + 1 :]
-                        if (
-                            has_budget
-                            and not escalated
-                            and not references_rotated
-                            and remaining_candidates
-                        ):
+                        if has_budget and not references_rotated and remaining_candidates:
                             try:
                                 rotated = self._load_references(
                                     remaining_candidates, limit=reference_limit
@@ -527,14 +595,13 @@ class ProductImageProcessor:
                                 reference_offset += 1
                                 references_rotated = True
                                 ordinary_references = rotated
-                                escalated = True
-                        if escalated:
+                        if has_budget:
                             references = assemble_attempt_references(ordinary_references)
                             continue
                         raise MediaProcessingError(
                             "; ".join(errors),
                             attempt_count=attempt_count,
-                            status_class="provider_stalled",
+                            status_class=status_class,
                         ) from exc
             if attempt_count >= max_total_attempts:
                 break
@@ -1327,6 +1394,9 @@ class ProductImageProcessor:
         timeout_seconds: float = IMAGE_EDIT_REQUEST_TIMEOUT_SECONDS,
         image_size: str | None = None,
         reference_model: str | None = None,
+        hedge_candidates: list[dict[str, str]] | None = None,
+        submit_budget: "_GridSubmitBudget | None" = None,
+        generation_deadline: float | None = None,
     ) -> tuple[bytes, str]:
         model = str(reference_model or provider.get("reference_model") or provider.get("model") or "").strip()
         if _is_wuyin_image_provider(provider):
@@ -1337,6 +1407,9 @@ class ProductImageProcessor:
                 timeout_seconds=timeout_seconds,
                 image_size=image_size,
                 model=model,
+                hedge_candidates=hedge_candidates,
+                submit_budget=submit_budget,
+                generation_deadline=generation_deadline,
             )
         files: Any
         if len(references) == 1:
@@ -1393,8 +1466,228 @@ class ProductImageProcessor:
         timeout_seconds: float,
         image_size: str | None = None,
         model: str = "",
+        hedge_candidates: list[dict[str, str]] | None = None,
+        submit_budget: "_GridSubmitBudget | None" = None,
+        generation_deadline: float | None = None,
     ) -> tuple[bytes, str]:
+        resolved_model = str(model or provider.get("model") or "").strip()
+        if hedge_candidates is not None:
+            # 四宫格 hedge 模式：由 _generate_with_limits 显式开启。
+            return self._request_wuyin_image_hedged(
+                provider,
+                prompt,
+                references,
+                resolved_model=resolved_model,
+                timeout_seconds=timeout_seconds,
+                image_size=image_size,
+                hedge_candidates=hedge_candidates,
+                submit_budget=submit_budget,
+                generation_deadline=generation_deadline,
+            )
+        # 既有直连路径（非四宫格 / 直接调用）：单任务提交 + 阻塞轮询。
         urls, temporary_store, temporary_references = self._wuyin_reference_urls(references)
+        try:
+            task_id = self._submit_wuyin_image_task(
+                provider,
+                prompt,
+                urls,
+                model=resolved_model,
+                image_size=image_size,
+                timeout_seconds=timeout_seconds,
+            )
+            result_url = self._poll_wuyin_image_result(
+                provider,
+                task_id,
+                timeout_seconds=timeout_seconds,
+                stall_threshold_seconds=_wuyin_stall_threshold_seconds(
+                    resolved_model, image_size, self._config()
+                ),
+            )
+            return _download_provider_result_image(result_url)
+        finally:
+            if temporary_store is not None:
+                for temporary in temporary_references:
+                    temporary_store.delete(temporary)
+
+    def _request_wuyin_image_hedged(
+        self,
+        provider: dict[str, str],
+        prompt: str,
+        references: list[tuple[bytes, str, str] | tuple[bytes, str, str, str]],
+        *,
+        resolved_model: str,
+        timeout_seconds: float,
+        image_size: str | None,
+        hedge_candidates: list[dict[str, str]],
+        submit_budget: "_GridSubmitBudget | None",
+        generation_deadline: float | None,
+    ) -> tuple[bytes, str]:
+        """四宫格生图对冲：交替轮询多个无印异步任务，先到先用。
+
+        - 达到停滞阈值且尚无结果时，**不放弃原任务**，而是向「不同链路」（base_url 与
+          api_key 均不同）的健康 provider 再提交一个任务，两条并行推进（交替轮询即可，
+          不需要线程）。
+        - 找不到「不同链路」目标（单链路场景）时退化为「同链路有界重试」：向同一条链路
+          再提交至多 1 个任务（总计 ≤ GRID_IMAGE_SINGLE_LINK_MAX_SUBMITS = 2），原任务
+          继续轮询、先到先用。避免单链路「停滞即干等到总预算耗尽」。
+        - 提交总次数受 ``submit_budget`` 硬封顶（≤ GRID_IMAGE_MAX_SUBMITS）；同链路重试
+          另有更紧的独立上限，绝不无限新增请求（避免同源重复计费）。
+        - 总时长沿用 ``generation_deadline``，不会被 hedge/重试拉长；预算耗尽仍无结果即抛
+          ``provider_stalled``，交给上层走既有可见回退。
+        - 任一条任务先返回图片 URL 立即采用，并停止对其余任务的轮询与清理。
+        """
+        stall_threshold = _wuyin_stall_threshold_seconds(resolved_model, image_size, self._config())
+        deadline = (
+            float(generation_deadline)
+            if generation_deadline is not None
+            else time.monotonic()
+            + max(10.0, min(float(timeout_seconds), IMAGE_EDIT_REQUEST_TIMEOUT_SECONDS))
+        )
+        hedge_pool = self._hedge_targets(provider, hedge_candidates)
+        # 单链路回退：没有任何「不同链路」目标时，允许向主链路再提交 1 次。该计数独立于
+        # 全局 submit_budget，且更紧（最多 1 次额外提交 → 总计 2 次），避免同源重复计费。
+        same_link_retry_remaining = (
+            0 if hedge_pool else GRID_IMAGE_SINGLE_LINK_MAX_SUBMITS - 1
+        )
+        active: list[_WuyinImageTask] = []
+        errors: list[str] = []
+
+        def start_task(target: dict[str, str]) -> None:
+            urls, store, temporary = self._wuyin_reference_urls(references)
+            try:
+                task_id = self._submit_wuyin_image_task(
+                    target,
+                    prompt,
+                    urls,
+                    model=resolved_model,
+                    image_size=image_size,
+                    timeout_seconds=timeout_seconds,
+                )
+            except BaseException:
+                if store is not None:
+                    for created in temporary:
+                        store.delete(created)
+                raise
+            now = time.monotonic()
+            active.append(
+                _WuyinImageTask(
+                    provider=target,
+                    task_id=task_id,
+                    model=resolved_model,
+                    stall_threshold_seconds=stall_threshold,
+                    started_at=now,
+                    deadline=deadline,
+                    store=store,
+                    temporary_references=list(temporary),
+                    last_progress_at=now,
+                )
+            )
+
+        try:
+            if submit_budget is not None and not submit_budget.consume():
+                raise MediaProcessingError(
+                    "four-grid image submit budget exhausted", status_class="provider_stalled"
+                )
+            start_task(provider)
+            hedge_index = 0
+            while True:
+                if not active:
+                    raise MediaProcessingError(
+                        "; ".join(errors) or "image provider request failed",
+                        status_class="provider_stalled",
+                    )
+                remaining = deadline - time.monotonic()
+                if remaining <= 1.0:
+                    raise MediaProcessingError(
+                        "; ".join(errors) or "provider image task stalled",
+                        status_class="provider_stalled",
+                    )
+                time.sleep(min(WUYIN_IMAGE_POLL_INTERVAL_SECONDS, max(0.0, remaining)))
+                for task in list(active):
+                    try:
+                        result_url = self._probe_wuyin_image_task(task)
+                    except MediaProcessingError as exc:
+                        errors.append(f"{task.provider.get('name', '')} task: {_safe_error(exc)}")
+                        active.remove(task)
+                        continue
+                    if result_url:
+                        # 先到先用：立即采用本任务结果，其余任务在 finally 中停止并清理。
+                        return _download_provider_result_image(result_url)
+                if any(self._wuyin_task_stalled(task) for task in active):
+                    # 优先对冲「不同链路」目标；没有不同链路（单链路场景）时，若同链路重试
+                    # 预算尚有余量则退化为「向同一条链路再提交 1 次」（先到先用）。
+                    if hedge_index < len(hedge_pool):
+                        target: dict[str, str] | None = hedge_pool[hedge_index]
+                    elif same_link_retry_remaining > 0:
+                        target = provider
+                    else:
+                        target = None
+                    if target is not None and (submit_budget is None or submit_budget.consume()):
+                        if target is provider:
+                            same_link_retry_remaining -= 1
+                        else:
+                            hedge_index += 1
+                        try:
+                            start_task(target)
+                        except MediaProcessingError as exc:
+                            errors.append(f"{target.get('name', '')} submit: {_safe_error(exc)}")
+        finally:
+            for task in active:
+                if task.store is not None:
+                    for created in task.temporary_references:
+                        task.store.delete(created)
+
+    def _hedge_targets(
+        self,
+        primary: dict[str, str],
+        candidates: list[dict[str, str]] | None,
+    ) -> list[dict[str, str]]:
+        """筛选可用的对冲目标：链路（base_url 与 api_key）与主 provider 均不同。
+
+        只挑无印异步链路（``_is_wuyin_image_provider``），因为 hedge 依赖异步提交 +
+        detail 轮询；与主 provider 同上游（base_url 相同）或同密钥（api_key 相同）的
+        候选一律排除，避免同源重复计费。``candidates`` 已由 _provider_order 过滤掉
+        处于冷却中的 provider，因此这里拿到的都是「健康」provider。
+        """
+        if not candidates:
+            return []
+        primary_base = str(primary.get("base_url") or "")
+        primary_key = str(primary.get("api_key") or "")
+        seen: set[tuple[str, str]] = set()
+        targets: list[dict[str, str]] = []
+        for candidate in candidates:
+            if candidate is primary or not _is_wuyin_image_provider(candidate):
+                continue
+            base = str(candidate.get("base_url") or "")
+            key = str(candidate.get("api_key") or "")
+            if base == primary_base or key == primary_key:
+                continue
+            signature = (base, key)
+            if signature in seen:
+                continue
+            seen.add(signature)
+            targets.append(candidate)
+        return targets
+
+    def _wuyin_task_stalled(self, task: _WuyinImageTask) -> bool:
+        """任务是否已超过停滞阈值仍无字段变化（等价于「已运行很久」）。"""
+        return bool(
+            task.stall_threshold_seconds
+            and task.last_signature is not None
+            and time.monotonic() - task.last_progress_at >= task.stall_threshold_seconds
+        )
+
+    def _submit_wuyin_image_task(
+        self,
+        provider: dict[str, str],
+        prompt: str,
+        urls: list[str],
+        *,
+        model: str,
+        image_size: str | None,
+        timeout_seconds: float,
+    ) -> str:
+        """向无印提交一个异步生图任务，返回 task_id。"""
         resolved_model = str(model or provider.get("model") or "").strip()
         submit_path = WUYIN_IMAGE_SUBMIT_PATHS.get(resolved_model, WUYIN_IMAGE_SUBMIT_PATH)
         size_value = _wuyin_size(image_size or provider.get("image_size"))
@@ -1408,116 +1701,117 @@ class ProductImageProcessor:
             }
         else:
             payload = {"prompt": prompt, "size": size_value, "urls": urls}
+        global_ai_request_limiter().acquire()
+        response = _SESSION.post(
+            f"{provider['base_url']}{submit_path}",
+            params={"key": provider["api_key"]},
+            headers={
+                "Authorization": provider["api_key"],
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=max(1.0, min(30.0, float(timeout_seconds))),
+            stream=True,
+        )
         try:
-            global_ai_request_limiter().acquire()
-            response = _SESSION.post(
-                f"{provider['base_url']}{submit_path}",
-                params={"key": provider["api_key"]},
-                headers={
-                    "Authorization": provider["api_key"],
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-                timeout=max(1.0, min(30.0, float(timeout_seconds))),
-                stream=True,
-            )
-            try:
-                if not response.ok:
-                    raise MediaProcessingError(
-                        f"provider returned HTTP {response.status_code}",
-                        status_code=response.status_code,
-                    )
-                payload = _bounded_response_json(response)
-            finally:
-                response.close()
-            if not isinstance(payload, dict) or int(payload.get("code") or 0) != 200:
-                raise MediaProcessingError(f"provider submit failed: {_provider_message(payload)}")
-            data = payload.get("data") or {}
-            task_id = str(data.get("id") or data.get("task_id") or "").strip() if isinstance(data, dict) else ""
-            if not task_id:
-                raise MediaProcessingError("provider response does not contain image task id")
-            result_url = self._poll_wuyin_image_result(
-                provider,
-                task_id,
-                timeout_seconds=timeout_seconds,
-                stall_threshold_seconds=_wuyin_stall_threshold_seconds(resolved_model, image_size),
-            )
-            return _download_provider_result_image(result_url)
-        finally:
-            if temporary_store is not None:
-                for temporary in temporary_references:
-                    temporary_store.delete(temporary)
-
-    @staticmethod
-    def _relay_references(
-        references: list[tuple[bytes, str, str] | tuple[bytes, str, str, str]],
-    ) -> list[tuple[bytes, str, str]] | None:
-        """把「直传给上游的公网 URL」换成本地字节，交给 COS 中转成上游能抓到的临时 URL。
-
-        上游抓不到源站图（防盗链、出网策略差异）是异步任务静默卡死的主因，而本地往往
-        能正常下载。这里丢掉参考图上的原始 URL，让 ``_wuyin_reference_urls`` 改走 COS。
-        全部参考都已是本地字节（无 URL 可替换）时返回 None，表示无需中转。
-        """
-        relayed: list[tuple[bytes, str, str]] = []
-        changed = False
-        for reference in references:
-            url = str(reference[3]).strip() if len(reference) >= 4 else ""
-            if url and reference[0]:
-                changed = True
-            relayed.append(
-                (
-                    bytes(reference[0]),
-                    str(reference[1] or "reference.png"),
-                    str(reference[2] or "image/jpeg"),
+            if not response.ok:
+                raise MediaProcessingError(
+                    f"provider returned HTTP {response.status_code}",
+                    status_code=response.status_code,
                 )
+            response_payload = _bounded_response_json(response)
+        finally:
+            response.close()
+        if not isinstance(response_payload, dict) or int(response_payload.get("code") or 0) != 200:
+            # 提交被上游拒绝：区分「计费/鉴权类硬失败」（重试无意义，可能重复计费）与
+            # 「网关容量/参数类拒绝」（可重试）。后者交由上层轮换参考图 / 换 provider 再试，
+            # 避免一次拒绝就把四宫格整条推给来源图。
+            raise MediaProcessingError(
+                f"provider submit failed: {_provider_message(response_payload)}",
+                status_class=_submit_rejection_class(response_payload),
             )
-        return relayed if changed else None
+        data = response_payload.get("data") or {}
+        task_id = str(data.get("id") or data.get("task_id") or "").strip() if isinstance(data, dict) else ""
+        if not task_id:
+            raise MediaProcessingError("provider response does not contain image task id")
+        return task_id
 
     def _wuyin_reference_urls(
         self,
         references: list[tuple[bytes, str, str] | tuple[bytes, str, str, str]],
     ) -> tuple[list[str], TemporaryCosStore | None, list[TemporaryReference]]:
-        """Return provider-fetchable URLs, relaying local-only references through private COS."""
-        urls: list[str] = []
-        local_references: list[tuple[bytes, str]] = []
+        """Return provider-fetchable URLs, preferring a private COS relay.
+
+        直连生图提供方需要自己去抓参考图，而 1688 / Temu 等源站图常有防盗链或出网策略
+        差异，上游抓不到时会把异步任务静默丢弃（我方只能观测到长时间无进展，最终判停滞
+        并回退来源图）。因此只要本地已有参考图字节且 COS 已配置，就优先上传私有 COS 换取
+        一个上游一定能抓到的临时 URL，从源头避免这类停滞；COS 不可用时再退回原始公网 URL。
+        临时对象由调用方在生成结束后删除（见 ``_request_wuyin_image`` 的 finally）。
+        """
+        config = self._config()
+        relay_available = _cos_configured(config)
+
+        # 先按参考图顺序排好槽位：能中转的走 COS，其余用原始公网 URL 兜底。
+        slots: list[dict[str, Any]] = []
         for reference in references:
             candidate = str(reference[3]).strip() if len(reference) >= 4 else ""
-            if candidate and is_safe_external_url(candidate):
-                urls.append(candidate)
-            else:
-                local_references.append((bytes(reference[0]), str(reference[2] or "image/jpeg")))
+            safe_candidate = candidate if candidate and is_safe_external_url(candidate) else ""
+            content = bytes(reference[0]) if reference[0] else b""
+            if content and relay_available:
+                slots.append({
+                    "bytes": content,
+                    "content_type": str(reference[2] or "image/jpeg"),
+                    "fallback": safe_candidate,
+                })
+            elif safe_candidate:
+                slots.append({"url": safe_candidate})
+            elif content:
+                slots.append({
+                    "bytes": content,
+                    "content_type": str(reference[2] or "image/jpeg"),
+                    "fallback": "",
+                })
 
-        if not local_references:
-            if not urls:
-                raise MediaProcessingError("direct image provider requires a reference image")
-            return urls, None, []
-
-        cos = dict(self._config().get("cos") or {})
-        store = TemporaryCosStore(
-            RuntimeCosConfig(
-                bucket=str(cos.get("bucket") or "").strip(),
-                region=str(cos.get("region") or "").strip(),
-                secret_id=str(cos.get("secret_id") or "").strip(),
-                secret_key=str(cos.get("secret_key") or "").strip(),
-            )
-        )
+        relay_slots = [slot for slot in slots if "bytes" in slot]
+        store: TemporaryCosStore | None = None
         temporary_references: list[TemporaryReference] = []
-        try:
-            for content, content_type in local_references:
-                temporary = store.publish(content, content_type)
-                if not _plausible_public_http_url(temporary.url):
-                    raise TemporaryReferenceError(
-                        "temporary COS reference did not return a provider-fetchable URL"
+        if relay_slots:
+            cos = dict(config.get("cos") or {})
+            store = TemporaryCosStore(
+                RuntimeCosConfig(
+                    bucket=str(cos.get("bucket") or "").strip(),
+                    region=str(cos.get("region") or "").strip(),
+                    secret_id=str(cos.get("secret_id") or "").strip(),
+                    secret_key=str(cos.get("secret_key") or "").strip(),
+                )
+            )
+            for slot in relay_slots:
+                try:
+                    temporary = _publish_reference_with_retry(
+                        store, slot["bytes"], slot["content_type"]
+                    )
+                except TemporaryReferenceError:
+                    # 带退避重试仍失败：优先退回原始公网 URL（同一张图的可用替代），
+                    # 连兜底都没有才标记为「参考图中转失败」交给上层轮换参考图 / 换 provider，
+                    # 而不是一条失败就回退来源图。
+                    if slot["fallback"]:
+                        slot["url"] = slot["fallback"]
+                        continue
+                    for created in temporary_references:
+                        store.delete(created)
+                    raise MediaProcessingError(
+                        "failed to relay local reference image to the direct image provider",
+                        status_class="reference_relay_failed",
                     )
                 temporary_references.append(temporary)
-                urls.append(temporary.url)
-        except TemporaryReferenceError as exc:
-            for temporary in temporary_references:
-                store.delete(temporary)
-            raise MediaProcessingError(
-                "failed to relay local reference image to the direct image provider"
-            ) from exc
+                slot["url"] = temporary.url
 
+        urls = [str(slot.get("url") or "") for slot in slots if str(slot.get("url") or "")]
+        if not urls:
+            if store is not None:
+                for created in temporary_references:
+                    store.delete(created)
+            raise MediaProcessingError("direct image provider requires a reference image")
         return urls, store, temporary_references
 
     def _poll_wuyin_image_result(
@@ -1528,109 +1822,126 @@ class ProductImageProcessor:
         timeout_seconds: float,
         stall_threshold_seconds: float = 0.0,
     ) -> str:
+        # 单任务阻塞轮询（既有直连路径 / 直接调用）。上游没有进度字段，只能用「距上次
+        # 字段发生变化的时间」当进展信号：阈值内不干预；超过阈值仍无任何变化才提前放弃。
+        # 注意：任务执行期间 status 恒为 3，故「无字段变化超过阈值」实际等价于「任务已
+        # 运行很久」。四宫格走的 hedge 路径不再据此丢弃任务，而是在此基础上并行追发
+        # （见 _request_wuyin_image_hedged）；本方法保留给非四宫格与直接调用方。
         started_at = time.monotonic()
         deadline = started_at + max(10.0, min(float(timeout_seconds), IMAGE_EDIT_REQUEST_TIMEOUT_SECONDS))
-        # 上游没有进度字段，只能用「距上次字段发生变化的时间」当进展信号。阈值内不干预；
-        # 超过阈值仍无任何变化就提前放弃，避免等满整个 600s 才失败。
-        stall_threshold = max(0.0, float(stall_threshold_seconds))
-        last_progress_at = started_at
-        last_signature: tuple[str, bool] | None = None
-        last_message = ""
-
-        def _stalled() -> bool:
-            return bool(
-                stall_threshold
-                and last_signature is not None
-                and time.monotonic() - last_progress_at >= stall_threshold
-            )
-
-        def _raise_stalled(message: str, status_value: str, code: int) -> None:
-            raise MediaProcessingError(
-                f"provider image task stalled: no field change for "
-                f"{int(time.monotonic() - last_progress_at)}s "
-                f"status={status_value or 'unknown'} code={code} {message}",
-                status_class="provider_stalled",
-            )
-
+        task = _WuyinImageTask(
+            provider=provider,
+            task_id=task_id,
+            model="",
+            stall_threshold_seconds=max(0.0, float(stall_threshold_seconds)),
+            started_at=started_at,
+            deadline=deadline,
+            store=None,
+            temporary_references=[],
+            last_progress_at=started_at,
+        )
         while time.monotonic() < deadline:
             time.sleep(WUYIN_IMAGE_POLL_INTERVAL_SECONDS)
-            response = _SESSION.get(
-                f"{provider['base_url']}{WUYIN_IMAGE_DETAIL_PATH}",
-                params={"key": provider["api_key"], "id": task_id},
-                headers={"Authorization": provider["api_key"]},
-                timeout=30,
-                stream=True,
-            )
-            try:
-                if not response.ok:
-                    last_message = f"detail HTTP {response.status_code}"
-                    continue
-                payload = _bounded_response_json(response)
-            finally:
-                response.close()
-            if not isinstance(payload, dict):
-                last_message = "detail response is incompatible"
-                continue
-            code = int(payload.get("code") or 0)
-            if code and code != 200:
-                last_message = _provider_message(payload)
-                if code in {400, 401, 403, 404}:
-                    raise MediaProcessingError(f"provider image task failed: {last_message}")
-                continue
-            data = payload.get("data") or {}
-            status_value = str(data.get("status") or payload.get("status") or "").strip().lower() if isinstance(data, dict) else ""
-            result_url = _first_image_url(data) or _first_image_url(payload)
+            result_url = self._probe_wuyin_image_task(task)
             if result_url:
                 return result_url
-            message = _provider_message(payload)
-            message_lower = message.lower()
-            # 进展信号：detail 里任何可见变化（status 变动、出现 result）都算进展并重置计时。
-            # 字段长期完全不变 = 大概率卡死（上游抓不到参考图时 worker 会静默丢弃任务）。
-            signature = (status_value, False)
-            if signature != last_signature:
-                last_signature = signature
-                last_progress_at = time.monotonic()
-            # 上游 status 为异步任务状态码（含纯数字、英文与中文文本三种表达）。语义：
-            #   1      任务处理完成（成功）；≥0 且命中文末（0/2/3/4/5/6）= 排队/准备/等待/处理中/发布
-            #   <0     任务处理失败；fail/failed/error/cancelled / 失败= 明确失败
-            # 数字状态无法安全按文本失败集归类（3/4/5 实为“处理中”，会误判成失败终态），
-            # 先尝试转数字：≥0 一律视为处理中继续轮询等图片；<0 才判失败。
-            try:
-                numeric_status = int(float(status_value)) if status_value else None
-            except (TypeError, ValueError):
-                numeric_status = None
-            if numeric_status is not None:
-                if numeric_status < 0:
-                    raise MediaProcessingError(
-                        f"provider image task failed: status={status_value} code={code} {message}",
-                        status_class="transient",
-                    )
-                # status ∈ {0,2,3,4,5,6}: 处理中，等图片就绪后返回
-                if _stalled():
-                    _raise_stalled(message, status_value, code)
-                last_message = message or f"status={status_value}"
-                continue
-            # 上游可能返回中文状态（如“成功/失败”）；`.lower()` 不影响中文，需单独归并。
-            # 命中成功终态却无图片 URL 时立即报错，避免一直轮询到超时。
-            if status_value in {
-                "success", "succeeded", "finish", "finished", "completed", "done",
-                "成功", "已完成", "完成", "处理完成",
-            }:
+            if self._wuyin_task_stalled(task):
                 raise MediaProcessingError(
-                    f"provider image task succeeded without image url: status={status_value} code={code} {message}"
+                    f"provider image task stalled: no field change for "
+                    f"{int(time.monotonic() - task.last_progress_at)}s "
+                    f"status={task.last_status_value or 'unknown'} code={task.last_code} "
+                    f"{task.last_message}",
+                    status_class="provider_stalled",
                 )
-            if status_value in {
-                "fail", "failed", "error", "cancelled", "canceled",
-                "失败", "处理失败", "生成失败", "已完成失败",
-            }:
+        raise MediaProcessingError(f"provider image task timed out: {task.last_message}")
+
+    def _probe_wuyin_image_task(self, task: _WuyinImageTask) -> str | None:
+        """对单个无印异步任务做一次 detail 探测。
+
+        返回图片 URL 表示任务完成；返回 None 表示仍在处理中（由调用方按 stall 阈值决定
+        是否对冲）；遇到上游显式终态失败则抛错。上游没有进度字段，用「status 是否变化」
+        当进展信号（签名 ``(status_value, False)``）：任务执行期间 status 恒为 3，因此
+        「长时间无字段变化」等价于「任务已运行很久」。
+        """
+        provider = task.provider
+        response = _SESSION.get(
+            f"{provider['base_url']}{WUYIN_IMAGE_DETAIL_PATH}",
+            params={"key": provider["api_key"], "id": task.task_id},
+            headers={"Authorization": provider["api_key"]},
+            timeout=30,
+            stream=True,
+        )
+        try:
+            if not response.ok:
+                task.last_message = f"detail HTTP {response.status_code}"
+                return None
+            payload = _bounded_response_json(response)
+        finally:
+            response.close()
+        if not isinstance(payload, dict):
+            task.last_message = "detail response is incompatible"
+            return None
+        code = int(payload.get("code") or 0)
+        if code and code != 200:
+            task.last_message = _provider_message(payload)
+            if code in {400, 401, 403, 404}:
+                raise MediaProcessingError(f"provider image task failed: {task.last_message}")
+            return None
+        data = payload.get("data") or {}
+        status_value = (
+            str(data.get("status") or payload.get("status") or "").strip().lower()
+            if isinstance(data, dict)
+            else ""
+        )
+        result_url = _first_image_url(data) or _first_image_url(payload)
+        if result_url:
+            return result_url
+        message = _provider_message(payload)
+        task.last_status_value = status_value
+        task.last_code = code
+        # 进展信号：detail 里 status 变动才算进展并重置计时。
+        # 字段长期完全不变 = 大概率卡死（上游抓不到参考图时 worker 会静默丢弃任务）。
+        signature = (status_value, False)
+        if signature != task.last_signature:
+            task.last_signature = signature
+            task.last_progress_at = time.monotonic()
+        # 上游 status 为异步任务状态码（含纯数字、英文与中文文本三种表达）。语义：
+        #   1      任务处理完成（成功）；≥0 且命中文末（0/2/3/4/5/6）= 排队/准备/等待/处理中/发布
+        #   <0     任务处理失败；fail/failed/error/cancelled / 失败= 明确失败
+        # 数字状态无法安全按文本失败集归类（3/4/5 实为“处理中”，会误判成失败终态），
+        # 先尝试转数字：≥0 一律视为处理中继续轮询等图片；<0 才判失败。
+        try:
+            numeric_status = int(float(status_value)) if status_value else None
+        except (TypeError, ValueError):
+            numeric_status = None
+        if numeric_status is not None:
+            if numeric_status < 0:
                 raise MediaProcessingError(
                     f"provider image task failed: status={status_value} code={code} {message}",
                     status_class="transient",
                 )
-            if _stalled():
-                _raise_stalled(message, status_value, code)
-            last_message = message or f"status={status_value or 'processing'}"
-        raise MediaProcessingError(f"provider image task timed out: {last_message}")
+            # status ∈ {0,2,3,4,5,6}: 处理中，等图片就绪后返回
+            task.last_message = message or f"status={status_value}"
+            return None
+        # 上游可能返回中文状态（如“成功/失败”）；`.lower()` 不影响中文，需单独归并。
+        # 命中成功终态却无图片 URL 时立即报错，避免一直轮询到超时。
+        if status_value in {
+            "success", "succeeded", "finish", "finished", "completed", "done",
+            "成功", "已完成", "完成", "处理完成",
+        }:
+            raise MediaProcessingError(
+                f"provider image task succeeded without image url: status={status_value} code={code} {message}"
+            )
+        if status_value in {
+            "fail", "failed", "error", "cancelled", "canceled",
+            "失败", "处理失败", "生成失败", "已完成失败",
+        }:
+            raise MediaProcessingError(
+                f"provider image task failed: status={status_value} code={code} {message}",
+                status_class="transient",
+            )
+        task.last_message = message or f"status={status_value or 'processing'}"
+        return None
 
 
 def _is_wuyin_image_provider(provider: dict[str, str]) -> bool:
@@ -1711,17 +2022,62 @@ def _wuyin_size(value: str | None) -> str:
     return "1:1"
 
 
-def _wuyin_stall_threshold_seconds(model: str, image_size: str | None) -> float:
+def _positive_float(value: Any, default: float) -> float:
+    """把可选的数值配置解析为正浮点；非法/缺省时回落到默认阈值。"""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _wuyin_stall_threshold_seconds(
+    model: str, image_size: str | None, config: dict[str, Any] | None = None
+) -> float:
     """按端点与尺寸档位选停滞阈值：1K 与 2K/4K 的真实生成耗时差异明显。
 
     2.5 端点恒为 1K；旧端点 image_gpt 的 2K/4K transport 更慢，用更宽的阈值避免误杀。
+    两档阈值均可由 ``limits.image_stall_threshold_seconds`` /
+    ``limits.image_stall_threshold_2k_seconds`` 覆盖（现场按上游波动调节）。
     """
+    limits = (config or {}).get("limits") or {}
     if str(model or "").strip() == "image_gpt_2.5":
-        return WUYIN_IMAGE_STALL_THRESHOLD_SECONDS
+        return _positive_float(
+            limits.get("image_stall_threshold_seconds"), WUYIN_IMAGE_STALL_THRESHOLD_SECONDS
+        )
     raw_size = str(image_size or "").strip().lower()
     if raw_size in {"2048x2048", "4096x4096", "2048x1024", "1024x2048"}:
-        return WUYIN_IMAGE_STALL_THRESHOLD_2K_SECONDS
-    return WUYIN_IMAGE_STALL_THRESHOLD_SECONDS
+        return _positive_float(
+            limits.get("image_stall_threshold_2k_seconds"), WUYIN_IMAGE_STALL_THRESHOLD_2K_SECONDS
+        )
+    return _positive_float(
+        limits.get("image_stall_threshold_seconds"), WUYIN_IMAGE_STALL_THRESHOLD_SECONDS
+    )
+
+
+def _publish_reference_with_retry(
+    store: TemporaryCosStore, content: bytes, content_type: str
+) -> TemporaryReference:
+    """把参考图发布到私有 COS，换取上游可抓取的临时 URL；带小步退避重试。
+
+    COS 发布是瞬时抖动敏感的网络动作，且失败会直接让无印抓不到参考图而静默卡死，
+    因此允许少量带退避重试，避免一次抖动升级为整条生成失败。
+    """
+    attempts = max(1, int(COS_RELAY_PUBLISH_ATTEMPTS))
+    for attempt in range(1, attempts + 1):
+        try:
+            temporary = store.publish(content, content_type)
+            if not _plausible_public_http_url(temporary.url):
+                raise TemporaryReferenceError(
+                    "temporary COS reference did not return a provider-fetchable URL"
+                )
+            return temporary
+        except TemporaryReferenceError:
+            if attempt >= attempts:
+                raise
+            backoff = COS_RELAY_PUBLISH_BACKOFF_SECONDS
+            time.sleep(backoff[min(attempt - 1, len(backoff) - 1)])
+    raise TemporaryReferenceError("failed to publish temporary reference image")
 
 
 def _cos_configured(config: dict[str, Any]) -> bool:
@@ -1778,6 +2134,35 @@ def _provider_message(payload: Any) -> str:
         return "provider returned an error"
 
 
+def _submit_rejection_class(payload: Any) -> str:
+    """区分「计费/鉴权类硬失败」与「网关容量/参数类可重试拒绝」。
+
+    上游（如 ``server image gateway rejected the request``）在提交阶段返回非 200 时，
+    若属欠费、密钥无效、无权限等业务性拒绝则重试无意义（且存在重复计费风险），判不可重试；
+    其余拒绝多为网关过载 / 参考图格式或参数不被接受，标记为可重试，交由上层轮换参考图 /
+    换 provider 再试一次，而不是一条拒绝就回退来源图。
+    """
+    message = _provider_message(payload).lower()
+    for keyword in (
+        "欠费",
+        "余额",
+        "额度",
+        "无权限",
+        "未授权",
+        "密钥",
+        "payment",
+        "insufficient",
+        "forbidden",
+        "unauthorized",
+        "invalid key",
+        "api key",
+        "api_key",
+    ):
+        if keyword in message:
+            return "non_retryable_4xx"
+    return "gateway_rejected"
+
+
 def _safe_error(error: BaseException) -> str:
     message = str(error).replace("\n", " ").strip()
     return message[:180] or error.__class__.__name__
@@ -1789,6 +2174,9 @@ def _retry_class(error: BaseException) -> str:
     if explicit_class == "provider_stalled":
         # 停滞不是上游显式失败，可通过 COS 中转参考图 / 换候选参考图后重试一次。
         return "provider_stalled"
+    if explicit_class in {"gateway_rejected", "reference_relay_failed"}:
+        # 网关拒绝 / 参考图中转失败：先轮换参考图或换 provider 再试，避免一次失败就回退来源图。
+        return explicit_class
     if explicit_class in {"billing_payment_required", "billing_forbidden", "non_retryable_4xx"}:
         return "non_retryable_4xx"
     if explicit_class in {
