@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { podCustomizationApi } from "../api/podCustomizationApi";
-import type { PodComposition } from "../types";
+import type { PodComposition, PodCompositionScope } from "../types";
 
 type Props = {
   open: boolean;
@@ -11,6 +11,8 @@ type Props = {
   onEdit: (composition: PodComposition) => void;
   /** 生效模板发生变化（设为生效 / 删除）时回调，供页面同步提示。 */
   onActiveChanged?: (composition: PodComposition | null) => void;
+  /** 模板池归属：full=全定制（默认），replica=爆款复刻。 */
+  scope?: PodCompositionScope;
 };
 
 function displayName(template: PodComposition): string {
@@ -31,7 +33,7 @@ function timeLabel(updatedAt: string): string {
   });
 }
 
-export function CompositionManagerDrawer({ open, onClose, onEdit, onActiveChanged }: Props) {
+export function CompositionManagerDrawer({ open, onClose, onEdit, onActiveChanged, scope = "full" }: Props) {
   const [templates, setTemplates] = useState<PodComposition[]>([]);
   const [loading, setLoading] = useState(false);
   const [busyId, setBusyId] = useState("");
@@ -42,7 +44,7 @@ export function CompositionManagerDrawer({ open, onClose, onEdit, onActiveChange
     setLoading(true);
     setError("");
     try {
-      const response = await podCustomizationApi.listCompositions();
+      const response = await podCustomizationApi.listCompositions(scope);
       setTemplates(response.templates);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -55,7 +57,9 @@ export function CompositionManagerDrawer({ open, onClose, onEdit, onActiveChange
     if (!open) return;
     setNotice("");
     void refresh();
-  }, [open]);
+    // 打开/切换模板池时重新拉取。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, scope]);
 
   const notifyActive = (items: PodComposition[]) => {
     onActiveChanged?.(items.find((item) => item.is_active) ?? null);
@@ -67,8 +71,8 @@ export function CompositionManagerDrawer({ open, onClose, onEdit, onActiveChange
     setError("");
     setNotice("");
     try {
-      await podCustomizationApi.activateComposition(template.composition_id);
-      const response = await podCustomizationApi.listCompositions();
+      await podCustomizationApi.activateComposition(template.composition_id, scope);
+      const response = await podCustomizationApi.listCompositions(scope);
       setTemplates(response.templates);
       notifyActive(response.templates);
       setNotice(`已把「${displayName(template)}」设为生效，之后新建批次会用它。`);
@@ -107,7 +111,7 @@ export function CompositionManagerDrawer({ open, onClose, onEdit, onActiveChange
     setNotice("");
     try {
       await podCustomizationApi.deleteComposition(template.composition_id);
-      const response = await podCustomizationApi.listCompositions();
+      const response = await podCustomizationApi.listCompositions(scope);
       setTemplates(response.templates);
       notifyActive(response.templates);
       setNotice("已删除该模板。");
@@ -128,7 +132,7 @@ export function CompositionManagerDrawer({ open, onClose, onEdit, onActiveChange
           <div>
             <span>COMPOSITION TEMPLATES</span>
             <h2>构图模板管理</h2>
-            <p>系统内置「默认模板」可直接选用；新建批次用「生效中」的那一份，未新建时回退默认模板。</p>
+            <p>{scope === "replica" ? "爆款复刻专用" : "全定制专用"}模板池：系统内置「默认模板」可直接选用；新建批次用「生效中」的那一份，未新建时回退默认模板。</p>
           </div>
           <button type="button" onClick={onClose} aria-label="关闭">×</button>
         </header>

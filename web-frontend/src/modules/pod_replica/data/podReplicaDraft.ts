@@ -1,5 +1,10 @@
-import type { ReplicaTargetDraft } from "./podReplicaModel";
+import { emptyReplicaAnalysisFields, defaultReplicaPresentationPreferences, type ReplicaTargetDraft } from "./podReplicaModel.ts";
 import type { PodListingFieldsDraft, SpecCardConfig } from "../../pod_customization/types";
+import type {
+  ReplicaAnalysisStatus,
+  ReplicaPresentationPreferences,
+  ReplicaSpec,
+} from "../types";
 
 export const POD_REPLICA_DRAFT_VERSION = 1;
 
@@ -8,6 +13,8 @@ export type PodReplicaSourceDraft = {
   filename: string;
   width?: number;
   height?: number;
+  /** 原素材识别结果是否已被用户确认（有低置信度字段时才需要）。 */
+  confirmed?: boolean;
 };
 
 export type PodReplicaDraft = {
@@ -43,6 +50,7 @@ export function podReplicaDraftStorageKey(accountId: string, workspaceId: string
 }
 
 function cloneTarget(target: ReplicaTargetDraft): ReplicaTargetDraft {
+  const analysis = analysisOrDefault(target);
   return {
     clientId: target.clientId,
     assetId: target.assetId,
@@ -52,11 +60,11 @@ function cloneTarget(target: ReplicaTargetDraft): ReplicaTargetDraft {
     productName: target.productName,
     listingFields: {
       title_mode: target.listingFields.title_mode,
-      suggested_price_usd: target.listingFields.suggested_price_usd,
       category_name: target.listingFields.category_name,
       skus: target.listingFields.skus.map((sku) => ({ ...sku })),
     },
     specCard: cloneSpecCardDraft(target.specCard),
+    ...analysis,
   };
 }
 
@@ -69,10 +77,72 @@ function isTarget(value: unknown): value is ReplicaTargetDraft {
     && isSpecCardConfigDraft(value.specCard);
 }
 
+const ANALYSIS_STATUSES: readonly ReplicaAnalysisStatus[] = [
+  "pending", "analyzing", "needs_confirmation", "confirmed", "failed",
+];
+
+function isReplicaSpec(value: unknown): value is ReplicaSpec {
+  return isRecord(value);
+}
+
+function isPresentationPreferences(value: unknown): value is ReplicaPresentationPreferences {
+  return isRecord(value)
+    && typeof value.use_hand_model === "boolean"
+    && typeof value.use_body_model === "boolean"
+    && typeof value.use_wall_display === "boolean"
+    && typeof value.use_white_background === "boolean"
+    && typeof value.use_lifestyle_scene === "boolean";
+}
+
+/**
+ * 归一化识图相关字段。
+ *
+ * 旧草稿（v1 及更早，没有这些字段）→ 全部回退默认值，显示「待识别」而不是崩溃。
+ * 正在进行的识别状态（analyzing）不落库：恢复后应回到待识别，由用户重新触发分析。
+ */
+function analysisOrDefault(target: Partial<ReplicaTargetDraft>): Pick<
+  ReplicaTargetDraft,
+  | "analysisId"
+  | "analysisStatus"
+  | "analysisError"
+  | "sourceArtworkSpec"
+  | "sourceNeedsConfirmation"
+  | "targetProductSpec"
+  | "candidateCapabilities"
+  | "unknownCapabilities"
+  | "factOverrides"
+  | "presentationPreferences"
+> {
+  const fallback = emptyReplicaAnalysisFields();
+  const rawStatus = target.analysisStatus;
+  const status: ReplicaAnalysisStatus = ANALYSIS_STATUSES.includes(rawStatus as ReplicaAnalysisStatus)
+    && rawStatus !== "analyzing"
+    ? (rawStatus as ReplicaAnalysisStatus)
+    : "pending";
+  const preferences = isPresentationPreferences(target.presentationPreferences)
+    ? target.presentationPreferences
+    : defaultReplicaPresentationPreferences();
+  return {
+    analysisId: typeof target.analysisId === "string" ? target.analysisId : fallback.analysisId,
+    analysisStatus: target.analysisId ? status : "pending",
+    analysisError: typeof target.analysisError === "string" ? target.analysisError : "",
+    sourceArtworkSpec: isReplicaSpec(target.sourceArtworkSpec) ? target.sourceArtworkSpec : null,
+    sourceNeedsConfirmation: Boolean(target.sourceNeedsConfirmation),
+    targetProductSpec: isReplicaSpec(target.targetProductSpec) ? target.targetProductSpec : null,
+    candidateCapabilities: Array.isArray(target.candidateCapabilities)
+      ? target.candidateCapabilities.filter((item): item is string => typeof item === "string")
+      : [],
+    unknownCapabilities: Array.isArray(target.unknownCapabilities)
+      ? target.unknownCapabilities.filter((item): item is string => typeof item === "string")
+      : [],
+    factOverrides: isRecord(target.factOverrides) ? (target.factOverrides as typeof fallback.factOverrides) : {},
+    presentationPreferences: preferences,
+  };
+}
+
 function isListingFields(value: unknown): value is PodListingFieldsDraft {
   return isRecord(value)
     && (value.title_mode === "long" || value.title_mode === "short")
-    && typeof value.suggested_price_usd === "string"
     && typeof value.category_name === "string"
     && Array.isArray(value.skus)
     && value.skus.every((sku) => isRecord(sku)
@@ -92,6 +162,7 @@ function sourceOrDefault(value: unknown): PodReplicaSourceDraft | null {
     filename: typeof value.filename === "string" ? value.filename : "",
     width: typeof value.width === "number" ? value.width : undefined,
     height: typeof value.height === "number" ? value.height : undefined,
+    confirmed: value.confirmed === true,
   };
 }
 

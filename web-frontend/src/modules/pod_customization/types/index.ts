@@ -20,6 +20,10 @@ export type PodBusinessFieldsDraft = {
   target_audience: string;
   core_selling_points: string;
   design_theme: string;
+  /** 批级全局字段：用户在「智能填写」区直接填写的产品工艺（如绗缝 / 缎面绣），留空即不约束。 */
+  fabric_craft: string;
+  /** 批级全局字段：整批统一的场景基调（款间在基调内变化），留空即回退默认场景轮换。 */
+  scene_mood: string;
   style_keywords: string;
   color_preferences: string;
   excluded_elements: string;
@@ -71,7 +75,6 @@ export type PodSku = {
 
 export type PodListingFieldsDraft = {
   title_mode: PodTitleMode;
-  suggested_price_usd: string;
   category_name: string;
   skus: PodSkuDraft[];
 };
@@ -128,7 +131,6 @@ export type SpecCardReprintResponse = {
 
 export type PodListingFields = {
   title_mode: PodTitleMode;
-  suggested_price_usd: number;
   category_name: string;
   skus: PodSku[];
   /** 批次冻结快照里的规格卡配置；旧批次快照可能缺失该键。 */
@@ -225,7 +227,7 @@ export type PodBatchItem = {
 export type PodBatch = PodBatchSummary & {
   template: PodTemplate;
   /** 该批次生成时所用「大提示词」的版本，由服务端 prompts.PATTERN_PROMPT_VERSION 决定（历史批次为 v1）。 */
-  prompt_version: "v1" | "v2";
+  prompt_version: "v1" | "v2" | "v3";
   business_fields: PodBusinessFields;
   listing_fields: PodListingFields | null;
   dianxiaomi_export: PodDianxiaomiExportStatus;
@@ -262,6 +264,9 @@ export type PodCompositionPanelsZh = {
   panel_4: string;
 };
 
+/** 构图模板所属模块：全定制 / 爆款复刻，两池各自独立「生效」。 */
+export type PodCompositionScope = "full" | "replica";
+
 /** 一份构图模板：中文供展示/编辑，英文由后台转写后注入生图提示词。 */
 export type PodComposition = {
   composition_id: string;
@@ -275,6 +280,8 @@ export type PodComposition = {
   /** 系统内置「默认模板」：不可编辑/重命名/删除，只能设为生效。 */
   is_builtin: boolean;
   updated_at: string;
+  /** 归属模块（full / replica）。 */
+  scope?: PodCompositionScope;
 };
 
 export type PodCompositionListResponse = {

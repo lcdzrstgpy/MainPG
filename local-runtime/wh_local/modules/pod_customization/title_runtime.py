@@ -76,18 +76,100 @@ _SYSTEM_SAFETY_CONTRACT = (
 
 # These names are deliberately conservative: a title cannot make platform,
 # brand/IP, superlative, medical, or child-safety claims.
+# 平台/品牌/绝对化/医疗/儿童类禁用词（我们维护，可按平台反馈继续追加）。
+# 匹配口径：整词匹配（词边界），因此 "perfect" 命中而 "perfectly" 不命中；
+# 追加时务必确认不会误伤合法词（例如不要把 "apple"、"blade"、"pill" 这类常见词加进来）。
 _PROHIBITED_TERMS = frozenset(
     {
+        # 平台名
         "amazon", "ebay", "etsy", "walmart", "target", "temu", "aliexpress", "1688", "shopify", "tiktok",
-        "instagram", "facebook", "youtube", "disney", "marvel", "pokemon", "harry potter", "star wars", "nike",
-        "adidas", "lego", "barbie", "minecraft", "coca-cola", "coca cola", "best", "ultimate", "perfect",
-        "guaranteed", "miracle", "revolutionary", "unbeatable", "flawless", "certified", "official", "luxury",
-        "premium", "free shipping", "discount", "cure", "treat", "treatment", "heal", "healing", "therapeutic",
-        "medical", "medicine", "diagnose", "clinically", "clinically proven", "pain relief", "pain-relief", "fda",
-        "ce", "anxiety", "depression", "kid", "kids", "child", "children", "toddler", "baby", "infant", "nursery",
-        "youth",
+        "instagram", "facebook", "youtube", "taobao", "pinduoduo", "alibaba", "shein", "wish", "dhgate",
+        "lazada", "shopee", "netflix", "google",
+        # 品牌 / IP
+        "disney", "marvel", "pixar", "pokemon", "harry potter", "star wars", "nike", "adidas", "lego", "barbie",
+        "minecraft", "roblox", "nintendo", "playstation", "xbox", "coca-cola", "coca cola", "gucci", "chanel",
+        "louis vuitton", "rolex", "hello kitty", "sanrio", "kuromi", "cinnamoroll", "my melody", "mickey mouse",
+        "spiderman", "batman", "superman", "paw patrol", "peppa pig", "naruto", "dragon ball", "squid game",
+        "among us", "nba", "nfl", "fifa", "olympic", "olympics", "world cup",
+        # 绝对化 / 夸大 / 促销
+        "best", "best seller", "bestseller", "ultimate", "perfect", "guaranteed", "miracle", "revolutionary",
+        "unbeatable", "flawless", "certified", "official", "genuine", "authentic", "luxury", "premium",
+        "top rated", "number one", "no. 1", "world class", "high end",
+        "free shipping", "discount", "clearance", "coupon", "promo code", "hot sale", "wholesale", "cheap",
+        "buy one get one",
+        # 医疗 / 功效声称
+        "cure", "treat", "treatment", "heal", "healing", "therapeutic", "medical", "medicine", "diagnose",
+        "clinically", "clinically proven", "clinical", "pain relief", "pain-relief", "painkiller",
+        "pain killer", "fda", "ce", "pharmaceutical", "prescription", "antibacterial", "anti-bacterial",
+        "antiviral", "anti-viral", "disinfect", "sterilize", "sterilization", "sterile", "detox",
+        "symptom", "infection", "anxiety", "depression",
+        # 儿童 / 母婴
+        "kid", "kids", "child", "children", "toddler", "baby", "infant", "newborn", "nursery", "youth",
+        "teen", "teens", "preschool", "kindergarten",
+        # 联系方式 / 外链
+        "whatsapp", "wechat", "weixin", "telegram", "contact us", "http", "www",
     }
 )
+
+# Temu 风控重点拦截的暗黑、邪典、暴力、成瘾与仿品类词：不在上面的品牌/夸大/医疗类里，
+# 但平台照样以 “contains non-compliant words” 驳回（gothic / pentagram / skull / dagger 已实测踩中）。
+# 命中即判不合格，让模型改用中性描述（如 black bird motifs 代替 raven）。
+_PLATFORM_RISK_TERMS = frozenset(
+    {
+        # 暗黑 / 邪典 / 恐怖
+        "gothic", "occult", "satanic", "satan", "pentagram", "ouija", "voodoo", "witch", "witchcraft",
+        "wicca", "pagan", "demon", "devil", "hell", "hex", "curse", "necromancy", "macabre", "sinister",
+        "horror", "gore", "gruesome", "torture", "mutilation", "corpse", "zombie", "creepy", "edgy",
+        "blood", "bloody", "blood spatter", "blood-spatter", "coffin", "grave", "tombstone", "skull",
+        "skeleton", "dark aesthetic", "dark academia",
+        # 暴力 / 武器
+        "weapon", "gun", "firearm", "pistol", "rifle", "shotgun", "ammo", "ammunition", "bullet",
+        "bomb", "explosive", "grenade", "sword", "dagger", "machete", "knife", "crossbow", "taser",
+        "brass knuckle", "handcuff", "pepper spray",
+        # 成瘾物 / 违禁品
+        "drug", "narcotic", "opioid", "cocaine", "heroin", "methamphetamine", "cannabis", "marijuana",
+        "cbd", "thc", "vape", "vaping", "e-cigarette", "nicotine", "tobacco", "cigarette", "cigar",
+        "syringe",
+        # 成人向（"nude" 常作口红色号名，不列入，避免误伤美妆标题）
+        "sexy", "sexual", "porn", "porno", "xxx", "nudity", "erotic", "fetish", "bdsm",
+        "adult toy", "sex toy", "escort",
+        # 赌博
+        "casino", "gambling", "lottery", "roulette", "slot machine", "betting", "poker chip",
+        # 仿品 / 侵权
+        "replica", "counterfeit", "knockoff", "bootleg", "fake", "imitation", "unauthorized", "dupe",
+        # 仇恨 / 恐怖主义 / 政治敏感
+        "nazi", "swastika", "terrorist", "terrorism", "jihad", "extremist", "hate speech", "supremacist",
+        "political", "election", "propaganda",
+        # 蜘蛛 / 荆棘（Temu 对暗黑元素的高频拦截词）
+        "spider", "thorn", "raven",
+    }
+)
+
+# 店小秘/Temu 的英文文案只接受 ASCII：模型偶尔写出中文全角横杠、弯引号、零宽字符等
+# 隐形变体，肉眼几乎一样，平台却判成「非英文字符」直接驳回。这里先做确定性归一。
+_INVISIBLE_CHARS = ("\u200b", "\u200c", "\u200d", "\u2060", "\ufeff", "\u00ad")
+_DASH_CHARS = ("\u2010", "\u2011", "\u2012", "\u2013", "\u2014", "\u2015", "\u2212", "\uff0d", "\u30fc")
+_ASCII_PUNCTUATION = {
+    "\u2018": "'", "\u2019": "'", "\u201b": "'", "\u2032": "'",
+    "\u201c": '"', "\u201d": '"', "\u201e": '"', "\u201f": '"', "\u2033": '"',
+    "\u3001": ",", "\uff0c": ",", "\uff0e": ".", "\u3002": ".",
+    "\uff1a": ":", "\uff1b": ";", "\uff01": "!", "\uff1f": "?",
+    "\uff08": "(", "\uff09": ")", "\uff3b": "[", "\uff3d": "]",
+    "\uff05": "%", "\uff06": "&", "\uff03": "#", "\uff20": "@",
+    "\uff0f": "/", "\uff3c": "\\", "\uff0b": "+", "\uff1d": "=",
+    "\u3000": " ", "\u00a0": " ",
+    **{char: "-" for char in _DASH_CHARS},
+}
+
+
+def _normalize_listing_punctuation(value: str) -> str:
+    """隐形字符与全角/弯体标点 → ASCII 等价字符（全角横杠一律归成半角连字符）。"""
+    text = value
+    for char in _INVISIBLE_CHARS:
+        text = text.replace(char, "")
+    for source, target in _ASCII_PUNCTUATION.items():
+        text = text.replace(source, target)
+    return text
 
 
 @dataclass(frozen=True)
@@ -120,9 +202,9 @@ def title_result_from_dict(payload: Mapping[str, Any]) -> PodTitleResult:
     """Parse the exact provider JSON contract without accepting extra keys."""
     if not isinstance(payload, Mapping) or set(payload) != _RESULT_KEYS:
         raise _invalid_response("POD title output fields failed validation")
-    raw_title = _normalized_text(payload.get("title"))
-    english_title = _normalized_text(payload.get("english_title"))
-    description = _normalized_text(payload.get("description"))
+    raw_title = _listing_copy_text(payload.get("title"))
+    english_title = _listing_copy_text(payload.get("english_title"))
+    description = _listing_copy_text(payload.get("description"))
     visual_theme = _normalized_text(payload.get("visual_theme"))
     motifs = _string_tuple(payload.get("motif_keywords"), field="motif keywords")
     colors = _string_tuple(payload.get("color_keywords"), field="color keywords")
@@ -387,9 +469,13 @@ def _messages_for_request(request: PodTitleRequest, *, rejection_feedback: str) 
         ),
         "contract": {
             "market": "United States",
-            "language": "English ASCII only",
+            "language": (
+                "English ASCII only: plain half-width letters, digits and punctuation "
+                "(, . ' & ( ) and the half-width hyphen). Never output full-width or CJK punctuation, "
+                "typographic dashes, curly quotes, emoji, or invisible characters."
+            ),
             "title_length": "80-195 ASCII characters after normalized whitespace; always at least 80, so if a draft is shorter, enrich it with concrete image-grounded detail until it reaches 80+, and never let it run past 195 — trim the trailing qualifier instead",
-            "prohibited_terms": sorted(_PROHIBITED_TERMS),
+            "prohibited_terms": sorted(_PROHIBITED_TERMS | _PLATFORM_RISK_TERMS),
             "title_composition": (
                 "Write a complete natural US-English noun phrase with a leading visual segment that names a "
                 "visible style-specific visual theme, motif, or color. Avoid reproducing an accepted title "
@@ -405,6 +491,13 @@ def _messages_for_request(request: PodTitleRequest, *, rejection_feedback: str) 
                 "detail clause, and the closing qualifier to different positions, and paraphrase any wording "
                 "that already appears in an accepted title instead of repeating the same tail again. Keep every "
                 "clause grounded in this image and the supplied business fields."
+            ),
+            "risk_term_rewording": (
+                "prohibited_terms are platform risk words: never output one even when the image really shows "
+                "such a motif, because the platform rejects the whole title. Name the same visible motif with "
+                "neutral wording instead, for example 'ornate decorative patterns' or 'black bird motifs' "
+                "instead of a charged word, and 'dark color palette' instead of a style label. Never invent a "
+                "motif that is not visible, and never change the real product identity."
             ),
             "title_generation_recipe": (
                 "Plan silently before writing. First choose a distinct visual lead of two to five meaningful words "
@@ -517,6 +610,17 @@ def _normalized_text(value: Any) -> str:
     return " ".join(value.split()).strip() if isinstance(value, str) else ""
 
 
+def _listing_copy_text(value: Any) -> str:
+    """英文上架文案（标题/英文标题/描述）：先归一半角标点，再压平空白。
+
+    只对这三个英文文案字段生效：构图、智能填写等模块复用 ``_normalized_text``，
+    中文里的全角标点必须原样保留。
+    """
+    if not isinstance(value, str):
+        return ""
+    return " ".join(_normalize_listing_punctuation(value).split()).strip()
+
+
 def _normalize_title(value: Any) -> str:
     return _normalized_text(value)
 
@@ -561,7 +665,7 @@ def _display_listing_title(title: str, english_title: str, description: str) -> 
 
 def _prohibited_term(title: str) -> str:
     folded = title.casefold()
-    for term in _PROHIBITED_TERMS:
+    for term in _PROHIBITED_TERMS | _PLATFORM_RISK_TERMS:
         if re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", folded):
             return term
     return ""

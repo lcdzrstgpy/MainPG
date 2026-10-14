@@ -488,7 +488,7 @@ def _build_row(
         14: sku["weight_g"],
         18: "\n".join(image_urls),
         19: images["hero"],
-        23: listing_fields["suggested_price_usd"],
+        # 第 23 列（建议售价）店小秘不要求，统一留空；申报价走每个 SKU 的第 9 列。
         31: "单品",
         32: 1,
         33: "件",

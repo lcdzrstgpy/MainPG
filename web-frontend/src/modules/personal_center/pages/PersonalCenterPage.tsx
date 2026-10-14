@@ -219,8 +219,17 @@ export const USAGE_SERVICE_LABEL: Record<UsageServiceGroup, string> = {
   text: "商品文本",
 };
 
+/** POD 三类服务的展示名：消费流水「服务」按 billing_profile 细分，而非统一叫「POD 定制」。 */
+const POD_SERVICE_LABEL: Record<string, string> = {
+  pod_random_v1: "POD 全定制",
+  pod_semi_v1: "POD 半定制",
+  pod_replica_v1: "POD 爆款复刻",
+};
+
 export function usageServiceLabel(entry: BillingUsageEntry): string {
-  return USAGE_SERVICE_LABEL[usageServiceGroup(entry)];
+  const group = usageServiceGroup(entry);
+  if (group === "pod") return POD_SERVICE_LABEL[entry.billing_profile] ?? USAGE_SERVICE_LABEL.pod;
+  return USAGE_SERVICE_LABEL[group];
 }
 
 function usageServiceSubLabel(entry: BillingUsageEntry): string | null {

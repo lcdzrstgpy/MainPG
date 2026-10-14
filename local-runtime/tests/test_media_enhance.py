@@ -255,6 +255,54 @@ def test_split_four_grid_with_enhance_keeps_marketplace_shape_and_sampling() -> 
             assert JpegImagePlugin.get_sampling(opened) == 0
 
 
+# --- 耗时/系统消耗度量：只读回调，绝不改变产出，也绝不因回调失败而中断 -------------------
+
+
+def test_enhance_panel_reports_metrics_without_changing_output() -> None:
+    panel = Image.new("RGB", (200, 200), (60, 90, 120))
+    options = EnhanceOptions(mode=MODE_USM)
+    seen: list[Any] = []
+
+    result = enhance_panel(panel, 400, options, on_metrics=seen.append)
+    baseline = enhance_panel(panel, 400, options)
+
+    assert result.tobytes() == baseline.tobytes()
+    assert len(seen) == 1
+    metrics = seen[0]
+    assert metrics.mode == MODE_USM
+    assert metrics.input_edge == 200
+    assert metrics.target_size == 400
+    assert metrics.wall_seconds >= 0.0
+    assert metrics.cpu_seconds >= 0.0
+    assert metrics.peak_rss_mb is None or metrics.peak_rss_mb > 0
+
+
+def test_enhance_panel_metrics_callback_failure_never_breaks_generation() -> None:
+    def boom(_metrics: Any) -> None:
+        raise RuntimeError("metrics sink down")
+
+    result = enhance_panel(
+        Image.new("RGB", (64, 64)), 128, EnhanceOptions(mode=MODE_USM), on_metrics=boom
+    )
+
+    assert result.size == (128, 128)
+
+
+def test_split_four_grid_forwards_enhance_metrics_per_panel() -> None:
+    processor = ProductImageProcessor(lambda: {})
+    seen: list[Any] = []
+
+    processor.split_four_grid(
+        _media(_grid_bytes(size=1024)),
+        enhance=EnhanceOptions(mode=MODE_USM),
+        on_enhance_metrics=seen.append,
+    )
+
+    # 四格各回调一次；未要求锐化时仍回传度量。
+    assert len(seen) == 4
+    assert all(metric.target_size == DXM_IMAGE_TARGET_SIZE for metric in seen)
+
+
 def test_split_four_grid_with_enhance_is_actually_sharper_than_without() -> None:
     processor = ProductImageProcessor(lambda: {})
     grid = _media(_grid_bytes(lines=True))

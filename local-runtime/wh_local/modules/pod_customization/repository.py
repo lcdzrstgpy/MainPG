@@ -19,6 +19,8 @@ from .contracts import (
     BatchCreate,
     BusinessFields,
     COMPOSITION_PANEL_KEYS,
+    COMPOSITION_SCOPE_FULL,
+    COMPOSITION_SCOPES,
     ReplicaBatchCreate,
     SemiBatchCreate,
     grid_call_count,
@@ -48,6 +50,13 @@ class ReplicaBatchIdempotentReturn(Exception):
 
 def _safe_error(value: object) -> str:
     return safe_error_message(value) if str(value or "").strip() else ""
+
+
+def _composition_scope(value: object) -> str:
+    """构图模板模块归属：full（全定制）/ replica（爆款复刻）；非法值一律回退 full。"""
+
+    scope = str(value or "").strip().lower()
+    return scope if scope in COMPOSITION_SCOPES else COMPOSITION_SCOPE_FULL
 
 
 def _normalized_composition_panels(panels: object) -> dict[str, dict[str, str]]:
@@ -488,15 +497,17 @@ class PodCustomizationRepository:
             )
         return self.get_batch(batch_id, workspace_id, owner_user_id)
 
-    def list_compositions(self, workspace_id: str, owner_user_id: str) -> list[dict[str, Any]]:
-        """列出该账号+工作区的全部构图模板；生效的排最前，其余按更新时间倒序。"""
+    def list_compositions(
+        self, workspace_id: str, owner_user_id: str, *, scope: str = "full"
+    ) -> list[dict[str, Any]]:
+        """列出该账号+工作区+模块（scope）的构图模板；生效的排最前，其余按更新时间倒序。"""
 
         with self._connect() as connection:
             rows = connection.execute(
                 """SELECT * FROM pod_customization_compositions
-                   WHERE workspace_id = ? AND owner_user_id = ?
+                   WHERE workspace_id = ? AND owner_user_id = ? AND scope = ?
                    ORDER BY is_active DESC, updated_at DESC, rowid DESC""",
-                (workspace_id, owner_user_id),
+                (workspace_id, owner_user_id, _composition_scope(scope)),
             ).fetchall()
         return [self._composition_record(dict(row)) for row in rows]
 
@@ -511,15 +522,17 @@ class PodCustomizationRepository:
             ).fetchone()
         return self._composition_record(dict(row)) if row is not None else None
 
-    def get_active_composition(self, workspace_id: str, owner_user_id: str) -> dict[str, Any] | None:
-        """读取当前生效的那份构图模板；没有则返回 None（新建批次用它）。"""
+    def get_active_composition(
+        self, workspace_id: str, owner_user_id: str, *, scope: str = "full"
+    ) -> dict[str, Any] | None:
+        """读取该模块当前生效的那份构图模板；没有则返回 None（新建批次用它）。"""
 
         with self._connect() as connection:
             row = connection.execute(
                 """SELECT * FROM pod_customization_compositions
-                   WHERE workspace_id = ? AND owner_user_id = ? AND is_active = 1
+                   WHERE workspace_id = ? AND owner_user_id = ? AND scope = ? AND is_active = 1
                    ORDER BY updated_at DESC, rowid DESC LIMIT 1""",
-                (workspace_id, owner_user_id),
+                (workspace_id, owner_user_id, _composition_scope(scope)),
             ).fetchone()
         return self._composition_record(dict(row)) if row is not None else None
 
@@ -534,25 +547,27 @@ class PodCustomizationRepository:
         panels: Mapping[str, Any],
         model: str,
         prompt_version: str,
+        scope: str = "full",
     ) -> dict[str, Any]:
-        """新增一份构图模板并设为生效（同一账号同时只有一份生效）。"""
+        """新增一份构图模板并设为生效（同一账号同一模块同时只有一份生效）。"""
 
         now = _now()
+        scope_value = _composition_scope(scope)
         payload = json.dumps(_normalized_composition_panels(panels), ensure_ascii=False)
         with self._connect() as connection:
             connection.execute(
                 """UPDATE pod_customization_compositions SET is_active = 0
-                   WHERE workspace_id = ? AND owner_user_id = ?""",
-                (workspace_id, owner_user_id),
+                   WHERE workspace_id = ? AND owner_user_id = ? AND scope = ?""",
+                (workspace_id, owner_user_id, scope_value),
             )
             connection.execute(
                 """INSERT INTO pod_customization_compositions
                    (composition_id, workspace_id, owner_user_id, name, raw_input, panels_json,
-                    model, prompt_version, is_active, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)""",
+                    model, prompt_version, is_active, scope, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)""",
                 (
                     composition_id, workspace_id, owner_user_id, name, raw_input, payload,
-                    model, prompt_version, now, now,
+                    model, prompt_version, scope_value, now, now,
                 ),
             )
         return self.get_composition(workspace_id, owner_user_id, composition_id)  # type: ignore[return-value]
@@ -594,30 +609,34 @@ class PodCustomizationRepository:
                 return None
         return self.get_composition(workspace_id, owner_user_id, composition_id)
 
-    def clear_active_compositions(self, workspace_id: str, owner_user_id: str) -> None:
-        """清空该账号的生效标记（用于「回退到系统默认模板」）。"""
+    def clear_active_compositions(
+        self, workspace_id: str, owner_user_id: str, *, scope: str = "full"
+    ) -> None:
+        """清空该账号该模块的生效标记（用于「回退到系统默认模板」）。"""
 
         with self._connect() as connection:
             connection.execute(
                 """UPDATE pod_customization_compositions SET is_active = 0
-                   WHERE workspace_id = ? AND owner_user_id = ?""",
-                (workspace_id, owner_user_id),
+                   WHERE workspace_id = ? AND owner_user_id = ? AND scope = ?""",
+                (workspace_id, owner_user_id, _composition_scope(scope)),
             )
 
     def activate_composition(
-        self, workspace_id: str, owner_user_id: str, composition_id: str
+        self, workspace_id: str, owner_user_id: str, composition_id: str, *, scope: str = "full"
     ) -> dict[str, Any] | None:
         now = _now()
+        scope_value = _composition_scope(scope)
         with self._connect() as connection:
             connection.execute(
                 """UPDATE pod_customization_compositions SET is_active = 0
-                   WHERE workspace_id = ? AND owner_user_id = ?""",
-                (workspace_id, owner_user_id),
+                   WHERE workspace_id = ? AND owner_user_id = ? AND scope = ?""",
+                (workspace_id, owner_user_id, scope_value),
             )
             updated = connection.execute(
                 """UPDATE pod_customization_compositions SET is_active = 1, updated_at = ?
-                   WHERE workspace_id = ? AND owner_user_id = ? AND composition_id = ?""",
-                (now, workspace_id, owner_user_id, composition_id),
+                   WHERE workspace_id = ? AND owner_user_id = ? AND scope = ?
+                     AND composition_id = ?""",
+                (now, workspace_id, owner_user_id, scope_value, composition_id),
             )
             if updated.rowcount == 0:
                 return None
@@ -788,11 +807,14 @@ class PodCustomizationRepository:
         *,
         request_hash: str,
         batch_id: str | None = None,
+        prompt_snapshot: str = "{}",
+        plans: Mapping[int, Mapping[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """创建复刻批次：父批次 mode=replica、requested_count=len(targets)。
 
         一个本地事务写入：内部锚点模板及快照（隐藏状态、不进用户模板库）、来源关联、
-        全部目标快照、四宫格结果与标题占位。不生成用于原创设计的元素分配记录。
+        全部目标快照（含款级冻结计划）、四宫格结果与标题占位。不生成用于原创设计的元素分配记录。
+        计划与目标行同事务落库：中途崩溃也不会留下「有 analysis_id 却没有计划」的批次。
         并发重复提交由 (workspace_id, owner_user_id, client_request_id) 唯一约束兜底。
         """
         batch_id = str(batch_id or uuid.uuid4().hex)
@@ -865,7 +887,7 @@ class PodCustomizationRepository:
                        VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, '', 'replica', ?, ?)""",
                     (batch_id, workspace_id, owner_user_id, title[:120], template_id, snapshot_id,
                      REPLICA_INTERNAL_TEMPLATE_NAME, len(request.targets), initial_calls,
-                     PATTERN_PROMPT_VERSION, "{}", first_business.model_dump_json(),
+                     PATTERN_PROMPT_VERSION, prompt_snapshot or "{}", first_business.model_dump_json(),
                      first_listing.model_dump_json(), now, now),
                 )
                 connection.execute(
@@ -875,10 +897,13 @@ class PodCustomizationRepository:
                     (batch_id, workspace_id, owner_user_id, request.source_asset_id,
                      request.client_request_id, request_hash, now),
                 )
+                plan_map = plans or {}
                 connection.executemany(
                     """INSERT INTO pod_customization_replica_targets
-                       (batch_id, style_index, asset_id, business_fields_json, listing_fields_json, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
+                       (batch_id, style_index, asset_id, business_fields_json, listing_fields_json, created_at,
+                        analysis_id, replica_plan_json, prompt_snapshot, capability_registry_version,
+                        rule_version, template_version, compiler_version, generation_strategy, plan_fingerprint)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     [
                         (
                             batch_id,
@@ -890,6 +915,15 @@ class PodCustomizationRepository:
                             ).model_dump_json(),
                             target.listing_fields.model_dump_json(),
                             now,
+                            str(plan_map.get(style_index, {}).get("analysis_id") or ""),
+                            str(plan_map.get(style_index, {}).get("replica_plan_json") or ""),
+                            str(plan_map.get(style_index, {}).get("prompt_snapshot") or ""),
+                            str(plan_map.get(style_index, {}).get("capability_registry_version") or ""),
+                            str(plan_map.get(style_index, {}).get("rule_version") or ""),
+                            str(plan_map.get(style_index, {}).get("template_version") or ""),
+                            str(plan_map.get(style_index, {}).get("compiler_version") or ""),
+                            str(plan_map.get(style_index, {}).get("generation_strategy") or ""),
+                            str(plan_map.get(style_index, {}).get("plan_fingerprint") or ""),
                         )
                         for style_index, asset, target in target_rows
                     ],
@@ -924,6 +958,118 @@ class PodCustomizationRepository:
                 raise ReplicaBatchIdempotentReturn(existing["batch_id"]) from None
             raise PodRepositoryError("client_request_id 已用于不同的复刻请求", 409) from None
         return self.get_batch(batch_id, workspace_id, owner_user_id)
+
+    def save_replica_analysis(
+        self,
+        *,
+        analysis_id: str,
+        workspace_id: str,
+        owner_user_id: str,
+        source_asset_id: str,
+        target_asset_id: str,
+        analysis_version: str,
+        status: str,
+        source_spec_json: str = "{}",
+        target_spec_json: str = "{}",
+        raw_source_json: str = "{}",
+        raw_target_json: str = "{}",
+        model_version: str = "",
+        schema_version: str = "",
+        error_code: str = "",
+    ) -> None:
+        """写入或更新一条复刻分析快照（成功与失败都落库，供审计与复用）。
+
+        同一 (资产对, 版本) 允许存在多条记录：失败记录保留，重新分析新增一条成功记录。
+        """
+        now = _now()
+        with self._connect() as connection:
+            existing = connection.execute(
+                "SELECT analysis_id FROM pod_customization_replica_analyses WHERE analysis_id = ?",
+                (analysis_id,),
+            ).fetchone()
+            if existing is None:
+                connection.execute(
+                    """INSERT INTO pod_customization_replica_analyses
+                       (analysis_id, workspace_id, owner_user_id, source_asset_id, target_asset_id,
+                        analysis_version, status, source_spec_json, target_spec_json, raw_source_json,
+                        raw_target_json, model_version, schema_version, error_code, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (analysis_id, workspace_id, owner_user_id, source_asset_id, target_asset_id,
+                     analysis_version, status, source_spec_json, target_spec_json, raw_source_json,
+                     raw_target_json, model_version, schema_version, error_code, now, now),
+                )
+                return
+            connection.execute(
+                """UPDATE pod_customization_replica_analyses
+                   SET status = ?, source_spec_json = ?, target_spec_json = ?, raw_source_json = ?,
+                       raw_target_json = ?, model_version = ?, schema_version = ?, error_code = ?,
+                       updated_at = ?
+                   WHERE analysis_id = ?""",
+                (status, source_spec_json, target_spec_json, raw_source_json, raw_target_json,
+                 model_version, schema_version, error_code, now, existing["analysis_id"]),
+            )
+
+    def find_replica_analysis(
+        self,
+        workspace_id: str,
+        owner_user_id: str,
+        source_asset_id: str,
+        target_asset_id: str,
+        analysis_version: str,
+    ) -> dict[str, Any] | None:
+        """取该资产对 + 版本下最近的一条分析：优先最近的成功记录，其次最近的失败记录。"""
+        base = """SELECT * FROM pod_customization_replica_analyses
+                  WHERE workspace_id = ? AND owner_user_id = ? AND source_asset_id = ?
+                    AND target_asset_id = ? AND analysis_version = ?"""
+        params = (workspace_id, owner_user_id, source_asset_id, target_asset_id, analysis_version)
+        with self._connect() as connection:
+            row = connection.execute(
+                base + " AND status = 'succeeded' ORDER BY created_at DESC, analysis_id DESC LIMIT 1",
+                params,
+            ).fetchone()
+            if row is None:
+                row = connection.execute(
+                    base + " ORDER BY created_at DESC, analysis_id DESC LIMIT 1", params
+                ).fetchone()
+        return dict(row) if row else None
+
+    def get_replica_analysis(
+        self, analysis_id: str, workspace_id: str, owner_user_id: str
+    ) -> dict[str, Any]:
+        """按归属读取分析快照；不存在或不属于该用户一律 404（不泄露他人资产）。"""
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM pod_customization_replica_analyses
+                   WHERE analysis_id = ? AND workspace_id = ? AND owner_user_id = ?""",
+                (analysis_id, workspace_id, owner_user_id),
+            ).fetchone()
+        if row is None:
+            raise PodRepositoryError("POD 复刻分析记录不存在", 404)
+        return dict(row)
+
+    def find_frozen_replica_plan(
+        self, workspace_id: str, owner_user_id: str, plan_fingerprint: str
+    ) -> dict[str, Any] | None:
+        """按计划输入指纹查该用户已冻结的同款计划；无命中返回 None。
+
+        命中即复用，不再调用豆包重推构图参数——同一份分析/事实覆盖/展示偏好/
+        构图模板/版本必须得到同一份 ``ReplicaPlan``。只在本用户自己的批次里找，
+        跨用户绝不复用。
+        """
+        if not plan_fingerprint:
+            return None
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT t.replica_plan_json
+                   FROM pod_customization_replica_targets AS t
+                   JOIN pod_customization_batches AS b ON b.batch_id = t.batch_id
+                   WHERE b.workspace_id = ? AND b.owner_user_id = ?
+                     AND t.plan_fingerprint = ?
+                     AND t.replica_plan_json IS NOT NULL AND t.replica_plan_json != ''
+                   ORDER BY t.rowid DESC LIMIT 1""",
+                (workspace_id, owner_user_id, plan_fingerprint),
+            ).fetchone()
+        return dict(row) if row is not None else None
 
     def preflight_batch(self, workspace_id: str, owner_user_id: str, request: BatchCreate) -> None:
         """Validate all stable local prerequisites before remote points are frozen."""
@@ -1050,6 +1196,15 @@ class PodCustomizationRepository:
                             "asset": dict(asset) if asset else None,
                             "business_fields": json.loads(row["business_fields_json"]),
                             "listing_fields": listing_fields,
+                            # 识图主流程的款级冻结数据（旧批次留空）。
+                            "analysis_id": str(row["analysis_id"] or ""),
+                            "replica_plan_json": str(row["replica_plan_json"] or ""),
+                            "prompt_snapshot": str(row["prompt_snapshot"] or ""),
+                            "capability_registry_version": str(row["capability_registry_version"] or ""),
+                            "rule_version": str(row["rule_version"] or ""),
+                            "template_version": str(row["template_version"] or ""),
+                            "compiler_version": str(row["compiler_version"] or ""),
+                            "generation_strategy": str(row["generation_strategy"] or ""),
                         }
                     )
         result = dict(batch)

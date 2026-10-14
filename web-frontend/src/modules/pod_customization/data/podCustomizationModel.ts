@@ -47,6 +47,8 @@ export const EMPTY_POD_BUSINESS_FIELDS: PodBusinessFieldsDraft = {
   target_audience: "",
   core_selling_points: "",
   design_theme: "",
+  fabric_craft: "",
+  scene_mood: "",
   style_keywords: "",
   color_preferences: "",
   excluded_elements: "",
@@ -55,7 +57,6 @@ export const EMPTY_POD_BUSINESS_FIELDS: PodBusinessFieldsDraft = {
 
 export const EMPTY_POD_LISTING_FIELDS: PodListingFieldsDraft = {
   title_mode: "long",
-  suggested_price_usd: "",
   category_name: "",
   skus: [{ name: "", declared_price: "", weight_g: "" }],
 };
@@ -306,6 +307,9 @@ export function businessFieldsForApi(fields: PodBusinessFieldsDraft): PodBusines
     target_audience: fields.target_audience.trim(),
     core_selling_points: splitBusinessField(fields.core_selling_points),
     design_theme: fields.design_theme.trim(),
+    // 批级全局字段：整段自然语言原样透传（不切分），留空即空串。
+    fabric_craft: fields.fabric_craft.trim(),
+    scene_mood: fields.scene_mood.trim(),
     style_keywords: splitBusinessField(fields.style_keywords),
     color_preferences: splitBusinessField(fields.color_preferences),
     excluded_elements: splitBusinessField(fields.excluded_elements),
@@ -327,13 +331,12 @@ function positiveListingNumber(value: string, label: string): number | { error: 
  * 组装提交载荷里的 listing_fields 快照。
  * 申报价改为每个 SKU 各一个；长/宽/高不在 SKU 上，而是从尺寸详情表格按 SKU 反查校验，
  * 随 specCard 冻结进 `spec_card`；不传配置时载荷结构与旧版本保持一致。
+ * 建议售价不作为上架必填项，不再上报（导出时该列留空）。
  */
 export function listingFieldsForApi(
   fields: PodListingFieldsDraft,
   specCard?: SpecCardConfig | null,
 ): PodListingFieldsResult {
-  const suggestedPriceUsd = positiveListingNumber(fields.suggested_price_usd, "建议美元售价");
-  if (typeof suggestedPriceUsd !== "number") return suggestedPriceUsd;
   const categoryName = fields.category_name.trim();
   if (!categoryName) return { error: "请填写店小秘类目。" };
 
@@ -361,7 +364,6 @@ export function listingFieldsForApi(
   return {
     value: {
       title_mode: fields.title_mode,
-      suggested_price_usd: suggestedPriceUsd,
       category_name: categoryName,
       skus,
       // 规格卡随批次一起冻结；不传配置时载荷结构与旧版本保持一致。

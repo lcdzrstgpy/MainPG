@@ -22,7 +22,7 @@ from wh_local.modules.product_processing.domain.policy import is_safe_external_u
 from wh_local.modules.product_processing.infrastructure.media import GeneratedMedia, MediaProcessingError
 from wh_local.modules.product_processing.infrastructure.media import ProductImageProcessor
 from wh_local.modules.product_processing.service import ProductProcessingService
-from wh_local.media_enhance import options_from_env
+from wh_local.media_enhance import EnhanceMetrics, options_from_env
 from wh_local.data_collection.public_image_fetch import (
     FetchedPublicImage,
     PublicImageFetchError,
@@ -458,8 +458,27 @@ class PodCustomizationAiRuntime(AiRuntime):
         可强制只做锐化。
         """
 
-        parts = self._media.split_four_grid(media, enhance=options_from_env())
+        parts = self._media.split_four_grid(
+            media,
+            enhance=options_from_env(),
+            on_enhance_metrics=self._log_enhance_metrics,
+        )
         return [part for part in parts if part.stage.startswith("grid_image_") and part.stage != "grid_image_summary"]
+
+    @staticmethod
+    def _log_enhance_metrics(metrics: EnhanceMetrics) -> None:
+        """把本地清晰化（ONNX 超分 / USM 回退）单格的耗时与系统消耗写进 POD 日志。"""
+
+        rss = f"{metrics.peak_rss_mb:.0f}MB" if metrics.peak_rss_mb is not None else "-"
+        business_logger("pod_processing").info(
+            "POD 本地清晰化 | 模式=%s | 输入=%dpx → 输出=%dpx | 墙钟=%.2fs | CPU=%.2fs | 进程峰值内存=%s",
+            metrics.mode,
+            metrics.input_edge,
+            metrics.target_size,
+            metrics.wall_seconds,
+            metrics.cpu_seconds,
+            rss,
+        )
 
     def publish_listing_image(self, media, *, namespace: str, role: str) -> str:
         url = self._media.upload_content_addressed_to_cos(
@@ -519,6 +538,11 @@ def _resolve_pod_image_model() -> str:
     except Exception:
         pass
     return POD_IMAGE_MODEL_DEFAULT
+
+
+def resolve_pod_image_model() -> str:
+    """公开入口：当前 POD 生图模型版本（用于随计划冻结，便于事后归因）。"""
+    return _resolve_pod_image_model()
 
 
 def _suchuang_size(value: str | None) -> str:

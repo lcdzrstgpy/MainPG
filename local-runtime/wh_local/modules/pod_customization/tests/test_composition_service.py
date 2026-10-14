@@ -125,6 +125,22 @@ def test_generate_creates_active_template_and_stays_free(tmp_path: pathlib.Path)
     assert len(coordinator.settlements) == 1
 
 
+def test_generate_uses_the_user_supplied_template_name(tmp_path: pathlib.Path) -> None:
+    service = _service(tmp_path, _CompositionRuntime(), _Coordinator())
+    actor = _actor()
+
+    # 用户在弹窗里输入的名字直接作为模板名，不再回落到提示词原文。
+    named = service.generate_composition(
+        actor, CompositionRequest(brief="四张图想这样拍", name="冷调俯拍四格")
+    )
+    assert named["name"] == "冷调俯拍四格"
+    assert named["raw_input"] == "四张图想这样拍"
+
+    # 不传名字（老客户端）时保持原行为：取原话摘要。
+    fallback = service.generate_composition(actor, CompositionRequest(brief="暖光生活场景"))
+    assert fallback["name"].startswith("暖光生活场景")
+
+
 def test_generate_twice_accumulates_templates_and_newest_is_active(tmp_path: pathlib.Path) -> None:
     service = _service(tmp_path, _CompositionRuntime(), _Coordinator())
     actor = _actor()

@@ -48,6 +48,8 @@ const EMPTY_BUSINESS_FIELDS: PodBusinessFieldsDraft = {
   target_audience: "",
   core_selling_points: "",
   design_theme: "",
+  fabric_craft: "",
+  scene_mood: "",
   style_keywords: "",
   color_preferences: "",
   excluded_elements: "",
@@ -56,7 +58,6 @@ const EMPTY_BUSINESS_FIELDS: PodBusinessFieldsDraft = {
 
 const EMPTY_LISTING_FIELDS: PodListingFieldsDraft = {
   title_mode: "long",
-  suggested_price_usd: "",
   category_name: "",
   skus: [{ name: "", declared_price: "", weight_g: "" }],
 };
@@ -316,18 +317,24 @@ function isBusinessFields(value: unknown): value is PodBusinessFieldsDraft {
     && typeof value.style_keywords === "string"
     && typeof value.color_preferences === "string"
     && typeof value.excluded_elements === "string"
-    // copy_restrictions 为后加的键：旧草稿与历史条目缺失时视为空串，不丢弃整份草稿。
+    // fabric_craft / scene_mood / copy_restrictions 均为后加的键：旧草稿缺失时视为空串，不丢弃整份草稿。
+    && (value.fabric_craft === undefined || typeof value.fabric_craft === "string")
+    && (value.scene_mood === undefined || typeof value.scene_mood === "string")
     && (value.copy_restrictions === undefined || typeof value.copy_restrictions === "string");
 }
 
 function businessFieldsOrDefault(fields: PodBusinessFieldsDraft): PodBusinessFieldsDraft {
-  return { ...fields, copy_restrictions: fields.copy_restrictions ?? "" };
+  return {
+    ...fields,
+    fabric_craft: fields.fabric_craft ?? "",
+    scene_mood: fields.scene_mood ?? "",
+    copy_restrictions: fields.copy_restrictions ?? "",
+  };
 }
 
 function isListingFields(value: unknown): value is PodListingFieldsDraft {
   return isRecord(value)
     && (value.title_mode === "long" || value.title_mode === "short")
-    && typeof value.suggested_price_usd === "string"
     && typeof value.category_name === "string"
     && Array.isArray(value.skus)
     && value.skus.every(isSkuDraft);
@@ -506,14 +513,12 @@ function migratedCore(
   legacy: PreviousPodCustomizationDraft | OlderPodCustomizationDraft | LegacyPodCustomizationDraft,
 ): Pick<PodCustomizationDraft, "version" | "listing_fields" | "spec_card" | "brief_history"> {
   let title_mode: PodTitleMode;
-  let suggested_price_usd: string;
   let category_name: string;
   let skus: MigratedSku[];
 
   if (legacy.version === LEGACY_POD_CUSTOMIZATION_DRAFT_VERSION) {
     const source = legacy.listing_fields;
     title_mode = source.title_mode;
-    suggested_price_usd = source.suggested_price_usd;
     category_name = source.category_name;
     const names = source.sku_names?.length ? source.sku_names : ["默认款"];
     skus = names.map((name) => ({
@@ -528,7 +533,6 @@ function migratedCore(
     // v2：重量在顶层，同一批 SKU 共用一个重量值。
     const source = legacy.listing_fields;
     title_mode = source.title_mode;
-    suggested_price_usd = source.suggested_price_usd;
     category_name = source.category_name;
     skus = source.skus.map((sku) => ({
       name: sku.name,
@@ -542,7 +546,6 @@ function migratedCore(
     // v3：重量挂在各自 SKU 上。
     const source = legacy.listing_fields;
     title_mode = source.title_mode;
-    suggested_price_usd = source.suggested_price_usd;
     category_name = source.category_name;
     skus = source.skus.map((sku) => ({
       name: sku.name,
@@ -560,7 +563,6 @@ function migratedCore(
     brief_history: [],
     listing_fields: {
       title_mode,
-      suggested_price_usd,
       category_name,
       skus: skus.map((sku) => ({
         name: sku.name,

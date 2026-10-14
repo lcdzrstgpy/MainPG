@@ -13,6 +13,24 @@ export function isBriefRequestValid(brief: string): boolean {
   return normalized.length >= 1 && normalized.length <= POD_BRIEF_MAX_LENGTH;
 }
 
+/** 「智能填写」文本框模板里两个批级字段对应的标签（用户按标签行填写）。 */
+export const BRIEF_PROVIDED_FIELD_LABELS = {
+  fabric_craft: ["产品工艺", "工艺"],
+  scene_mood: ["使用场景", "使用场景基调", "场景基调"],
+} as const;
+
+/**
+ * 从文本框里按「标签：值」行抽取一个字段值（全/半角冒号均可）。
+ * 命中第一行即返回其冒号后的内容；都没有则返回空串。
+ */
+export function extractBriefFieldValue(text: string, labels: readonly string[]): string {
+  for (const label of labels) {
+    const match = text.match(new RegExp(`^[ \\t]*${label}[ \\t]*[:：][ \\t]*(.*)$`, "m"));
+    if (match) return match[1].trim();
+  }
+  return "";
+}
+
 function joinBriefList(values: string[]): string {
   return values.map((value) => value.trim()).filter(Boolean).join("、");
 }
@@ -29,6 +47,8 @@ export function briefFieldsToDraft(fields: PodBusinessFields): PodBriefFieldsDra
     target_audience: fields.target_audience,
     core_selling_points: joinBriefList(fields.core_selling_points),
     design_theme: fields.design_theme,
+    fabric_craft: fields.fabric_craft,
+    scene_mood: fields.scene_mood,
     style_keywords: joinBriefList(fields.style_keywords),
     color_preferences: joinBriefList(fields.color_preferences),
     excluded_elements: joinBriefList(fields.excluded_elements),

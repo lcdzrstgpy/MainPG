@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  BRIEF_PROVIDED_FIELD_LABELS,
   POD_BRIEF_HISTORY_LIMIT,
   briefFieldsToDraft,
   createBriefHistoryItem,
+  extractBriefFieldValue,
   isBriefRequestValid,
   mergeBusinessFields,
   normalizeBriefInput,
@@ -24,13 +26,15 @@ const EMPTY_DRAFT: PodBusinessFieldsDraft = {
   target_audience: "",
   core_selling_points: "",
   design_theme: "",
+  fabric_craft: "",
+  scene_mood: "",
   style_keywords: "",
   color_preferences: "",
   excluded_elements: "",
   copy_restrictions: "",
 };
 
-/** 前置层实际代填的 9 个字段。 */
+/** 前置层实际代填的字段（业务字段去掉「上架文案限制」）。 */
 const EMPTY_BRIEF_DRAFT: PodBriefFieldsDraft = {
   product_name: "",
   product_category: "",
@@ -38,6 +42,8 @@ const EMPTY_BRIEF_DRAFT: PodBriefFieldsDraft = {
   target_audience: "",
   core_selling_points: "",
   design_theme: "",
+  fabric_craft: "",
+  scene_mood: "",
   style_keywords: "",
   color_preferences: "",
   excluded_elements: "",
@@ -51,6 +57,8 @@ function briefFields(overrides: Partial<PodBusinessFields> = {}): PodBusinessFie
     target_audience: "通勤女性",
     core_selling_points: ["耐用", "大容量"],
     design_theme: "美式西南复古",
+    fabric_craft: "绗缝",
+    scene_mood: "暖光木质厨房",
     style_keywords: ["仙人掌", "纳瓦霍几何"],
     color_preferences: ["棕", "米白"],
     excluded_elements: ["品牌 logo"],
@@ -67,6 +75,9 @@ test("brief fields convert array columns into 、-joined draft strings", () => {
   assert.equal(draft.color_preferences, "棕、米白");
   assert.equal(draft.excluded_elements, "品牌 logo");
   assert.equal(draft.product_name, "托特包");
+  // 批级全局字段原样回填（仍是字符串口径）。
+  assert.equal(draft.fabric_craft, "绗缝");
+  assert.equal(draft.scene_mood, "暖光木质厨房");
 });
 
 test("blank array columns become empty strings without leftover separators", () => {
@@ -133,4 +144,23 @@ test("brief request validation normalizes whitespace and enforces the 1..500 win
   assert.equal(isBriefRequestValid("   "), false);
   assert.equal(isBriefRequestValid("a".repeat(500)), true);
   assert.equal(isBriefRequestValid("a".repeat(501)), false);
+});
+
+test("template fields are extracted from the textarea by their labels", () => {
+  const text = [
+    "产品名称：化妆包",
+    "产品风格：清新可爱动漫画",
+    "产品工艺：绗缝，布料褶皱",
+    "使用场景：桌面化妆产品收纳",
+    "目标市场：美国市场",
+    "目标人群：高中生，大学生",
+  ].join("\n");
+
+  assert.equal(extractBriefFieldValue(text, BRIEF_PROVIDED_FIELD_LABELS.fabric_craft), "绗缝，布料褶皱");
+  assert.equal(extractBriefFieldValue(text, BRIEF_PROVIDED_FIELD_LABELS.scene_mood), "桌面化妆产品收纳");
+  // 半角冒号同样识别；缺行返回空串。
+  assert.equal(extractBriefFieldValue("产品工艺: 帆布平缝", BRIEF_PROVIDED_FIELD_LABELS.fabric_craft), "帆布平缝");
+  assert.equal(extractBriefFieldValue("只有产品名称：包", BRIEF_PROVIDED_FIELD_LABELS.scene_mood), "");
+  // 标签近似行不得误命中。
+  assert.equal(extractBriefFieldValue("产品风格：复古", BRIEF_PROVIDED_FIELD_LABELS.fabric_craft), "");
 });

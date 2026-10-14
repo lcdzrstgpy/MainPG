@@ -56,16 +56,11 @@ export function validateSkuFields(skus: PodListingFieldsDraft["skus"]): SkuField
 }
 
 /**
- * 上架信息整表校验：SKU 行 + 建议售价 + 店小秘类目。
- * 错误键沿用 `index:field`（SKU）与字段名本身（suggested_price_usd / category_name），供编辑器内联展示。
+ * 上架信息整表校验：SKU 行 + 店小秘类目。
+ * 错误键沿用 `index:field`（SKU）与字段名本身（category_name），供编辑器内联展示。
  */
 export function validateListingFields(fields: PodListingFieldsDraft): SkuFieldErrors {
   const errors = { ...validateSkuFields(fields.skus) };
-
-  const price = fields.suggested_price_usd.trim();
-  if (!price) errors.suggested_price_usd = "不能为空。";
-  else if (!MONEY_PATTERN.test(price)) errors.suggested_price_usd = "只能填数字，最多两位小数。";
-  else if (Number(price) <= 0) errors.suggested_price_usd = "必须大于 0。";
 
   const category = fields.category_name.trim();
   if (!category) errors.category_name = "不能为空。";
@@ -76,12 +71,11 @@ export function validateListingFields(fields: PodListingFieldsDraft): SkuFieldEr
 }
 
 const LISTING_FIELDS: Array<{
-  key: "suggested_price_usd" | "category_name";
+  key: "category_name";
   label: string;
   inputMode?: "decimal" | "numeric";
   maxLength?: number;
 }> = [
-  { key: "suggested_price_usd", label: "建议售价（USD）", inputMode: "decimal" },
   { key: "category_name", label: "店小秘类目", maxLength: LISTING_CATEGORY_MAX_LENGTH },
 ];
 
@@ -92,7 +86,7 @@ type Props = {
   skuLimitReached: boolean;
   /** 提交过一次后连「必填为空」也一起提示；在此之前只提示「已填但不合规」，避免新表单一片红。 */
   showRequiredErrors?: boolean;
-  onListingFieldChange: (key: "title_mode" | "suggested_price_usd" | "category_name", value: string) => void;
+  onListingFieldChange: (key: "title_mode" | "category_name", value: string) => void;
   onAddSku: () => void;
   onUpdateSku: (index: number, key: SkuField, value: string) => void;
   onRemoveSku: (index: number) => void;
@@ -108,7 +102,7 @@ function visibleFieldError(error: string | undefined, value: string, showRequire
 }
 
 /**
- * 受控的「店小秘上架信息」编辑器：售价、标题模式、店小秘类目、SKU（名称/申报价/重量）与规格卡入口。
+ * 受控的「店小秘上架信息」编辑器：标题模式、店小秘类目、SKU（名称/申报价/重量）与规格卡入口。
  * 全定制页与爆款复刻页共用同一套字段与校验，尺寸-SKU 同步仍由宿主页面调用 podCustomizationModel 的
  * buildSpecCardCells 完成（本组件只管渲染与回调，不持有自己的尺寸规则）。
  */

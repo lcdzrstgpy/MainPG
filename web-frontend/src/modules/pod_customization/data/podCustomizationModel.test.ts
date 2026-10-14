@@ -117,6 +117,8 @@ test("business list fields are normalized at the API boundary", () => {
     target_audience: "通勤",
     core_selling_points: "轻量、防漏",
     design_theme: "山野",
+    fabric_craft: "  绗缝 ",
+    scene_mood: "暖光木质厨房",
     style_keywords: "复古, 粗线条",
     color_preferences: "松绿、砂岩黄",
     excluded_elements: "Logo",
@@ -126,6 +128,9 @@ test("business list fields are normalized at the API boundary", () => {
   assert.deepEqual(payload.style_keywords, ["复古", "粗线条"]);
   // 上架文案限制是整段自然语言：只去首尾空白，不按分隔符切分。
   assert.equal(payload.copy_restrictions, "标题不要出现刺绣、务必带上 2D Flat");
+  // 批级全局字段同样整段透传，只去首尾空白。
+  assert.equal(payload.fabric_craft, "绗缝");
+  assert.equal(payload.scene_mood, "暖光木质厨房");
 });
 
 test("built-in v1 prompt carries the renamed batch-wide fields and never the element list", () => {
@@ -167,7 +172,6 @@ test("listing fields normalize every SKU with its declared price and weight, and
   };
   const result = listingFieldsForApi({
     title_mode: "long",
-    suggested_price_usd: "29.99",
     category_name: " 家居收纳 > 洗衣篮 ",
     skus: [
       { name: "  米白 ", declared_price: "18.5", weight_g: "450" },
@@ -178,7 +182,6 @@ test("listing fields normalize every SKU with its declared price and weight, and
   assert.deepEqual(result, {
     value: {
       title_mode: "long",
-      suggested_price_usd: 29.99,
       category_name: "家居收纳 > 洗衣篮",
       skus: [
         { name: "米白", declared_price: 18.5, weight_g: 450 },
@@ -192,7 +195,6 @@ test("listing fields normalize every SKU with its declared price and weight, and
 test("listing fields require one complete SKU with its dimensions", () => {
   const base = {
     title_mode: "long" as const,
-    suggested_price_usd: "29.99",
     category_name: "家居收纳",
   };
   const specCard = {
@@ -235,7 +237,6 @@ test("listing fields require one complete SKU with its dimensions", () => {
 test("listing fields reject more than 100 SKUs", () => {
   const result = listingFieldsForApi({
     title_mode: "long",
-    suggested_price_usd: "29.99",
     category_name: "家居收纳",
     skus: Array.from({ length: 101 }, (_, index) => ({
       name: `SKU ${index + 1}`,
@@ -250,7 +251,6 @@ test("listing fields reject more than 100 SKUs", () => {
 test("listing fields reject SKU names longer than 120 characters", () => {
   const result = listingFieldsForApi({
     title_mode: "long",
-    suggested_price_usd: "29.99",
     category_name: "家居收纳",
     skus: [{ name: "款".repeat(121), declared_price: "18.5", weight_g: "450" }],
   });

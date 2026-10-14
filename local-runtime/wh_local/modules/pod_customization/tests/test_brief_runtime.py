@@ -19,6 +19,7 @@ from wh_local.modules.pod_customization.brief_runtime import (
     PROMPT_VERSION,
     PodBriefRequest,
     PodBriefRuntime,
+    _BRIEF_RESPONSE_FORMAT,
     _SAFETY_EXCLUDED_BASELINE,
     is_concrete_style_element,
     validate_brief_fields,
@@ -57,6 +58,9 @@ def _fields(keyword_count: int = 45) -> dict[str, object]:
         "target_audience": "25-40 岁通勤女性",
         "core_selling_points": ["耐磨帆布", "大容量"],
         "design_theme": "美式西南复古牛仔荒野风",
+        # 批级全局字段：键必须存在（strict schema 的 required），但内容允许为空串。
+        "fabric_craft": "",
+        "scene_mood": "",
         "style_keywords": [f"具体物件{i}" for i in range(keyword_count)],
         "color_preferences": [f"配色{i}" for i in range(12)],
         "excluded_elements": [f"本主题禁用项{i}" for i in range(12)],
@@ -243,3 +247,50 @@ def test_generate_brief_fields_requires_an_ark_grant() -> None:
             grant=PodExecutionGrant("freeze", 1, "2099-01-01T00:00:00Z", {}),
             call_id="brf4:brief:1",
         )
+
+
+def test_validate_brief_fields_allows_empty_craft_and_scene() -> None:
+    """工艺 / 场景是"必填但可为空"：键必须在，内容可以留空。"""
+    fields = validate_brief_fields(_fields())
+    assert fields.fabric_craft == ""
+    assert fields.scene_mood == ""
+
+
+def test_validate_brief_fields_requires_craft_and_scene_keys() -> None:
+    """strict schema 的 required 必须包含两键：缺任一键即判不合格（触发契约修复）。"""
+    payload = _fields()
+    payload.pop("fabric_craft")
+    with pytest.raises(ValueError, match="failed validation"):
+        validate_brief_fields(payload)
+
+
+def test_brief_schema_declares_craft_and_scene_without_min_length() -> None:
+    schema = _BRIEF_RESPONSE_FORMAT["json_schema"]["schema"]
+    assert {"fabric_craft", "scene_mood"} <= set(schema["required"])
+    # 不设 minLength 才能让"留空"合法。
+    assert "minLength" not in schema["properties"]["fabric_craft"]
+    assert "minLength" not in schema["properties"]["scene_mood"]
+
+
+def test_generate_brief_fields_forwards_user_provided_craft_and_scene() -> None:
+    """用户在「智能填写」区显式填写的两段原文必须原样交给豆包（只做规范化）。"""
+    session = _Session([_Response(_fields())])
+    runtime = PodBriefRuntime(session=session, sleeper=lambda _seconds: None)
+
+    runtime.generate_brief_fields(
+        PodBriefRequest(
+            brief_id="brf5",
+            brief="主题",
+            fabric_craft="绗缝被子那种",
+            scene_mood="暖光木质厨房",
+        ),
+        grant=_grant(),
+        call_id="brf5:brief:1",
+        call_ids=_call_ids("brf5"),
+    )
+
+    user_prompt = json.loads(str(session.requests[0]["json"]["messages"][1]["content"]))
+    assert user_prompt["user_provided"] == {
+        "fabric_craft": "绗缝被子那种",
+        "scene_mood": "暖光木质厨房",
+    }

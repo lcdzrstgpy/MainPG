@@ -376,7 +376,8 @@
 /* 标签列要能容下最长的「标题/描述限制 + ⓘ」，否则会换行把标签块撑高。 */
 .pod-business-editor > .pod-business-fields > label { grid-template-columns: 120px minmax(0, 1fr); min-height: var(--pod-business-row-height); align-items: stretch; }
 .pod-business-editor > .pod-business-fields > label > span { min-height: var(--pod-business-row-height); height: 100%; align-items: center; padding-top: 0; }
-.pod-business-editor > .pod-business-fields > label > :is(input, textarea) { min-height: var(--pod-business-row-height); }
+/* 窄侧栏里字号略缩：输入/占位文字一行放得下的字更多，不再折行。 */
+.pod-business-editor > .pod-business-fields > label > :is(input, textarea) { min-height: var(--pod-business-row-height); font-size: .64rem; }
 .pod-business-editor > .pod-business-fields > label > input { height: var(--pod-business-row-height); }
 .pod-business-editor > .pod-business-fields > label > textarea { height: var(--pod-business-row-height); overflow-y: hidden; resize: none; }
 /* 业务字段字数提示：与后端字符上限对齐。单值字段显示「已用/上限」，
@@ -507,21 +508,29 @@
 .pod-lightbox-optimizer { display: grid; gap: 6px; margin-top: 12px; color: var(--pod-text-secondary); font-size: .66rem; font-weight: 800; }
 .pod-lightbox-optimizer textarea { min-height: 60px; padding: 8px; border: 1px solid var(--pod-border); border-radius: 8px; color: var(--pod-text); background: var(--pod-surface); resize: vertical; }
 
-.pod-listing-fields { display: grid; gap: 9px; margin-top: 14px; padding-top: 13px; border-top: 1px solid var(--pod-border); }
+.pod-listing-fields { display: grid; gap: 9px; margin-top: 14px; padding-top: 13px; border-top: 1px solid var(--pod-border); --pod-listing-label-width: 98px; --pod-listing-row-height: 36px; }
 .pod-listing-fields-heading { display: grid; gap: 2px; }
 .pod-listing-fields-heading > span { color: var(--pod-primary); font-size: .56rem; font-weight: 900; letter-spacing: .1em; }
 .pod-listing-fields-heading h3 { margin: 0; color: var(--pod-text); font-size: .78rem; }
 .pod-listing-fields-heading small { color: var(--pod-text-muted); font-size: .57rem; line-height: 1.45; }
-.pod-title-mode { display: grid; grid-template-columns: 98px minmax(0, 1fr); gap: 0; }
-.pod-title-mode > span { display: flex; align-items: center; min-height: 42px; padding: 7px 9px; border: 1px solid var(--pod-border); border-radius: 8px 0 0 8px; color: var(--pod-text-secondary); background: var(--pod-surface-soft); font-size: .62rem; font-weight: 800; }
+/* 标题模式与店小秘类目两行共用同一套「标签列 + 控件列」：标签样式、行高、控件高度全部对齐，
+   按钮不再随容器无限拉宽，两个模块宽度不同时也保持同一比例。 */
+.pod-title-mode { display: grid; grid-template-columns: var(--pod-listing-label-width) minmax(0, 1fr); align-items: start; gap: 8px; }
+.pod-title-mode > span { display: flex; align-items: center; height: var(--pod-listing-row-height); min-height: var(--pod-listing-row-height); padding: 0 10px; border-radius: 8px; color: var(--pod-text); background: var(--pod-surface-tint); font-size: .66rem; font-weight: 800; }
 .pod-title-mode > span em { margin-left: 2px; color: #f05b50; font-style: normal; }
-.pod-title-mode > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; padding-left: 6px; }
-.pod-title-mode button { display: grid; gap: 2px; justify-items: start; min-width: 0; padding: 6px 9px; border: 1px solid var(--pod-border); border-radius: 8px; color: var(--pod-text-secondary); background: var(--pod-surface); text-align: left; }
+.pod-title-mode > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; max-width: 300px; }
+.pod-title-mode button { display: flex; align-items: center; min-height: var(--pod-listing-row-height); padding: 0 12px; border: 1px solid var(--pod-border); border-radius: 8px; color: var(--pod-text-secondary); background: var(--pod-surface); text-align: left; }
 .pod-title-mode button b { font-size: .63rem; }
 .pod-title-mode button small { color: var(--pod-text-muted); font-size: .52rem; }
 .pod-title-mode button.is-active { border-color: var(--pod-primary); color: var(--pod-primary); background: color-mix(in srgb, var(--pod-primary) 8%, var(--pod-surface)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pod-primary) 28%, transparent); }
 .pod-listing-fields .pod-business-fields { gap: 7px; }
-.pod-listing-fields .pod-business-fields label > span { min-height: 34px; }
+/* 与标题模式同一套标签列 / 行高：两行标签长得一样、控件高度也对齐。
+   右侧格子是「输入框 + 错误提示槽位」，标签必须按行顶对齐，否则会被错误槽位顶下去。 */
+.pod-listing-fields .pod-business-fields label { grid-template-columns: var(--pod-listing-label-width) minmax(0, 1fr); align-items: start; gap: 8px; }
+.pod-listing-fields .pod-business-fields label > span { height: var(--pod-listing-row-height); min-height: var(--pod-listing-row-height); border-radius: 8px; font-size: .66rem; }
+.pod-listing-fields .pod-business-fields input,
+.pod-listing-fields .pod-business-fields textarea { min-height: var(--pod-listing-row-height); }
+.pod-listing-fields .pod-business-fields input { height: var(--pod-listing-row-height); }
 .pod-sku-editor { display: grid; gap: 6px; padding: 7px; border: 1px dashed var(--pod-border-strong); border-radius: 10px; background: color-mix(in srgb, var(--pod-primary) 4%, var(--pod-surface)); }
 .pod-sku-editor-heading { display: flex; align-items: center; justify-content: space-between; gap: 9px; }
 .pod-sku-editor-heading > span { display: grid; gap: 2px; color: var(--pod-text-secondary); font-size: .62rem; font-weight: 850; }
@@ -614,6 +623,8 @@
 .pod-unsaved-confirm-dialog > header > button { width: 30px; height: 30px; flex: 0 0 auto; padding: 0; border: 1px solid var(--pod-border); border-radius: 9px; color: var(--pod-text-muted); background: var(--pod-surface); font-size: 1rem; }
 .pod-unsaved-confirm-message { margin: 0; padding: 16px 20px; color: var(--pod-text-secondary); font-size: .7rem; line-height: 1.7; }
 .pod-unsaved-confirm-name { color: var(--pod-text); font-weight: 850; }
+/* 「标题/描述限制」强提示：红字告警，默认引导留空。 */
+.pod-copy-restrictions-warning { margin: 0; padding: 16px 20px; color: #c0392b; font-size: .74rem; font-weight: 850; line-height: 1.75; }
 .pod-unsaved-confirm-dialog > footer { display: flex; justify-content: flex-end; gap: 8px; padding: 13px 20px; border-top: 1px solid var(--pod-border); background: var(--pod-surface-soft); }
 .pod-unsaved-confirm-dialog > footer button { min-height: 32px; padding: 7px 12px; border: 1px solid var(--pod-border); border-radius: 8px; color: var(--pod-text-secondary); background: var(--pod-surface); font-size: .62rem; font-weight: 850; }
 .pod-unsaved-confirm-dialog > footer button:disabled { cursor: not-allowed; opacity: .55; }
@@ -656,6 +667,7 @@
   .pod-business-fields { grid-template-columns: 1fr; }
   .pod-business-fields label,
   .pod-business-fields label.is-wide { grid-template-columns: 92px minmax(0, 1fr); }
+  .pod-listing-fields { --pod-listing-label-width: 92px; }
   .pod-count-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .pod-current-template-body { grid-template-columns: 104px minmax(0, 1fr); gap: 12px; }
   .pod-current-template-body dl { grid-template-columns: 1fr; gap: 7px; }
@@ -871,6 +883,22 @@
 .pod-composition-clear:disabled { opacity: .55; cursor: not-allowed; }
 .pod-composition-error { margin: 0; padding: 6px 9px; border-radius: 8px; color: #a84c48; background: #fff4f3; font-size: .64rem; }
 .pod-composition-notice { margin: 0; color: #246f61; font-size: .64rem; }
+/* 生成前的命名弹窗：挂在构图抽屉层（z-index 520）内，只需盖住同层的抽屉本体。 */
+.pod-composition-name-layer { position: fixed; z-index: 2; inset: 0; display: grid; place-items: center; padding: 20px; }
+.pod-composition-name-backdrop { position: absolute; inset: 0; border: 0; background: rgba(16, 33, 54, .4); }
+.pod-composition-name-dialog { position: relative; display: grid; width: min(420px, 100%); overflow: hidden; border: 1px solid var(--pod-border-strong); border-radius: 16px; color: var(--pod-text); background: var(--pod-surface); box-shadow: 0 24px 72px rgba(16, 33, 54, .28); }
+.pod-composition-name-dialog > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 18px 20px 14px; border-bottom: 1px solid var(--pod-border); }
+.pod-composition-name-dialog > header span { color: var(--pod-primary); font-size: .6rem; font-weight: 900; letter-spacing: .12em; }
+.pod-composition-name-dialog > header h2 { margin: 3px 0 0; font-size: 1.05rem; }
+.pod-composition-name-dialog > header button { width: 30px; height: 30px; flex: 0 0 auto; padding: 0; border: 1px solid var(--pod-border); border-radius: 9px; color: var(--pod-text-muted); background: var(--pod-surface); font-size: 1rem; }
+.pod-composition-name-field { display: grid; gap: 6px; padding: 16px 20px; }
+.pod-composition-name-field > span { color: var(--pod-text-secondary); font-size: .66rem; font-weight: 800; }
+.pod-composition-name-field input { min-height: 38px; padding: 8px 11px; border: 1px solid var(--pod-border-strong); border-radius: 10px; outline: 0; color: var(--pod-text); background: var(--pod-surface-soft); font-size: .74rem; }
+.pod-composition-name-field input:focus { border-color: var(--pod-primary); box-shadow: 0 0 0 3px rgba(var(--pod-primary-rgb), .13); }
+.pod-composition-name-dialog > footer { display: flex; justify-content: flex-end; gap: 8px; padding: 13px 20px; border-top: 1px solid var(--pod-border); background: var(--pod-surface-soft); }
+.pod-composition-name-dialog > footer button { min-height: 32px; padding: 7px 12px; border: 1px solid var(--pod-border); border-radius: 8px; color: var(--pod-text-secondary); background: var(--pod-surface); font-size: .62rem; font-weight: 850; }
+.pod-composition-name-dialog > footer button:disabled { cursor: not-allowed; opacity: .55; }
+.pod-composition-name-dialog > footer .pod-composition-name-confirm { color: #fff; border-color: transparent; background: var(--pod-primary); }
 .pod-composition-result-title { display: flex; align-items: baseline; gap: 8px; }
 .pod-composition-result-title > span { color: var(--pod-primary); font-size: .58rem; font-weight: 900; letter-spacing: .1em; }
 .pod-composition-result-title h3 { margin: 0; font-size: .86rem; }

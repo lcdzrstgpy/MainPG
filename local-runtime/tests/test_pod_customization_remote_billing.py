@@ -56,6 +56,56 @@ class RealClientShapeRemoteBilling(FakeRemoteBilling):
             }
         }
 
+class FakeSemiRemoteBilling(FakeRemoteBilling):
+    """Status reports a semi profile so regrant re-freezes through the pod-semi route."""
+
+    def freeze_pod_semi_points(self, token: str, payload: dict[str, object]) -> dict[str, object]:
+        self.calls.append(("freeze-semi", token, payload))
+        return {
+            "freeze": {
+                "freeze_id": str(payload.get("idempotency_key") or "semi-freeze-1"),
+                "rule_version": 7,
+                "expires_at": "2099-01-08T00:00:00Z",
+                "keys": [
+                    {"provider": "ark", "api_key": "short-ark", "expires_at": "2099-01-01T00:00:00Z"},
+                ],
+            }
+        }
+
+    def batch_freeze_status(self, token: str, freeze_id: str) -> dict[str, object]:
+        self.calls.append(("status", token, freeze_id))
+        return {
+            "freeze": {
+                "freeze_id": freeze_id,
+                "status": "frozen",
+                "link_count": 2,
+                "scope": ["four_grid"],
+                "billing_profile": "pod_semi_v1",
+                "expires_at": "2099-01-01T00:00:00Z",
+            }
+        }
+
+
+def test_semi_regrant_reports_item_count_for_crash_recovery() -> None:
+    remote = FakeSemiRemoteBilling()
+    coordinator = RemotePodBillingCoordinator(remote, lambda _actor: "remote-session")
+    actor = Actor(id="user-1", username="user", role="operator", workspace_id="workspace-1")
+
+    coordinator.regrant(actor, "semi-freeze-1")
+
+    assert remote.calls[-1] == (
+        "freeze-semi",
+        "remote-session",
+        {
+            "idempotency_key": "semi-freeze-1",
+            "link_count": 2,
+            "scope": ["four_grid"],
+            "billing_profile": "pod_semi_v1",
+            "item_count": 8,
+        },
+    )
+
+
 def test_remote_coordinator_adapts_exact_plan_and_keeps_token_out_of_repr() -> None:
     remote = FakeRemoteBilling()
     coordinator = RemotePodBillingCoordinator(remote, lambda _actor: "remote-session")

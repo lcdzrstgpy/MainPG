@@ -47,7 +47,8 @@ from .title_runtime import (
 # 唯一依据——只改提示词不改版本号，会让新旧模板都记成同一版本，结果无法归因。
 # v3：四格句式模板强化（每格一句话、固定「机位+景别+构图留白+光线+背景」句式、不得出现具体事物）、
 #     生成与转写统一关闭深度思考。
-PROMPT_VERSION = "pod-composition-v3"
+# v4：新增光线质量标尺（低角度掠射侧光 + 漫射环境补光），光影从此统一归构图模版。
+PROMPT_VERSION = "pod-composition-v4"
 MAX_ATTEMPTS = COMPOSITION_ATTEMPTS
 RETRY_BACKOFF_SECONDS = 0.5
 # 开启深度思考后单次时延明显高于标题/智能填写，给到 150s（上游单次上限 240s）。
@@ -439,6 +440,14 @@ _SELF_CHECK_RULE = (
     "输出前逐格自检：只要出现了任何具体东西的名字（杯子、花草、桌子、窗户…）或产品品类名，"
     "就改写成只讲机位、景别、构图、光线、背景与抽象主体的句子。"
 )
+# 光线质量标尺（光影归属构图模版：大提示词不再写光线，由这里统一约束）：
+# 固定「低角度掠射侧光 + 漫射环境补光」，掠射光在针脚/绗缝凸起边缘投微阴影以显工艺立体感，
+# 漫射补光防暗部死黑。仍属「怎么拍」，不得带出任何具体事物名。
+_LIGHTING_QUALITY_RULE = (
+    "光线质量标尺：优先使用「低角度掠射侧光（raking side-light）+ 漫射环境补光（diffused fill）」——"
+    "掠射光在主体表面针脚/绗缝凸起的边缘投下微阴影以显出工艺立体感，漫射补光防止暗部死黑；"
+    "避免平铺均匀、发灰、无明暗层次的影棚光。仍不得写出任何具体事物名。"
+)
 # 产品侧要的"输出形状"：每格一句话，句式固定为 机位+景别 → 构图/位置与留白 → 光线 → 背景处理，
 # 且全程不出现任何东西的名字。给出范例让模型照着写"形状"，避免它自由发挥带出物体。
 _OUTPUT_SHAPE = (
@@ -468,6 +477,7 @@ def _messages_for_generation(request: PodCompositionRequest) -> list[dict[str, A
             _ALLOWED_DIMENSION_RULE,
             _ABSTRACT_SUBJECT_RULE,
             _SELF_CHECK_RULE,
+            _LIGHTING_QUALITY_RULE,
         ],
         "panel_contract": {
             key: f"{COMPOSITION_PANEL_SLOTS[key]}：{_slot_guidance(key)}"

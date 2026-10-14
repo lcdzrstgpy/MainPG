@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import inspect
 import io
@@ -9,7 +10,7 @@ import time
 import uuid
 import zipfile
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from PIL import Image, ImageDraw
 from pydantic import ValidationError
@@ -21,6 +22,7 @@ from . import spec_card
 from .assets import PodAssetStore
 from .billing_contract import (
     POD_BILLING_PROFILE_RANDOM,
+    POD_BILLING_PROFILE_REPLICA,
     PodBillingAuthorizationRequired,
     PodBillingCoordinator,
     PodCallOutcome,
@@ -35,18 +37,39 @@ from .contracts import (
     BriefFieldRequest,
     COMPOSITION_NAME_MAX_LENGTH,
     COMPOSITION_PANEL_KEYS,
+    COMPOSITION_SCOPE_FULL,
+    COMPOSITION_SCOPE_REPLICA,
     CompositionRenameRequest,
     CompositionRequest,
     CompositionUpdateRequest,
     DirectListingTrialCreate,
+    ReplicaAnalyzeRequest,
     ReplicaBatchCreate,
     ReplicaImageUploadResponse,
     SEMI_PATTERN_ROLES,
     SemiBatchCreate,
     validate_spec_card,
 )
+from .ai_runtime import resolve_pod_image_model
 from .brief_runtime import PodBriefRequest
 from .composition_runtime import PodCompositionLocalizeRequest, PodCompositionRequest
+from .replica_analysis_runtime import (
+    CompositionTemplateOptions,
+    ReplicaAssetImage,
+    ReplicaCompositionRequest,
+)
+from .replica_capabilities import match_capabilities
+from .replica_planner import derive_rules, validate_plan_ready
+from .replica_prompt_compiler import PROMPT_COMPILER_VERSION, compile_replica_prompt
+from .replica_specs import (
+    REPLICA_ANALYSIS_SCHEMA_VERSION,
+    GenerationStrategy,
+    ReplicaPlan,
+    ReplicaPlanNotReadyError,
+    SourceArtworkSpec,
+    TargetProductSpec,
+    normalize_target_analysis,
+)
 from .export import (
     DianxiaomiExport,
     PodWorkbookExport,
@@ -149,6 +172,7 @@ class PodCustomizationService:
         title_runtime: Any | None = None,
         brief_runtime: Any | None = None,
         composition_runtime: Any | None = None,
+        analysis_runtime: Any | None = None,
         billing_coordinator: PodBillingCoordinator | None = None,
         start_workers: bool = True,
     ) -> None:
@@ -158,6 +182,7 @@ class PodCustomizationService:
         self.title_runtime = title_runtime
         self.brief_runtime = brief_runtime
         self.composition_runtime = composition_runtime
+        self.analysis_runtime = analysis_runtime
         self.billing_coordinator = billing_coordinator
         self.repository = PodCustomizationRepository(self.database_path)
         self.export_records = PodExportRecordStore(self.database_path)
@@ -382,18 +407,47 @@ class PodCustomizationService:
                 return self.get_replica_batch(actor, existing["batch_id"])
             raise PodRepositoryError("client_request_id 已用于不同的复刻请求", 409)
         batch_id = uuid.uuid4().hex
-        billing_run = (
-            self._freeze_batch(actor, batch_id, len(request.targets))
-            if (enqueue or self.billing_coordinator)
-            else None
-        )
+        plans: dict[int, dict[str, Any]] = {}
+        billing_run: PodBillingRun | None = None
+        composition_run: PodBillingRun | None = None
+        strategy: GenerationStrategy = "grid"
         try:
+            # 先冻结每款计划（事实/能力/规则/构图）并据此确定批次生成策略：失败即拦，
+            # 绝不落库、不扣费。计费必须在策略确定之后冻结（grid 2 次/款 vs 独立面板 8 次/款）。
+            if any(target.analysis_id for target in request.targets):
+                strategy = self._replica_batch_strategy(actor, request)
+
+                # 构图计费惰性冻结：全部命中已冻结计划时不产生任何构图调用与计费。
+                def make_composition_run() -> PodBillingRun:
+                    nonlocal composition_run
+                    if composition_run is None:
+                        composition_run = self._freeze_replica_composition(
+                            actor, batch_id, len(request.targets)
+                        )
+                    return composition_run
+
+                try:
+                    plans = self._resolve_replica_plans(
+                        actor,
+                        request,
+                        composition_run_factory=make_composition_run,
+                        generation_strategy=strategy,
+                    )
+                finally:
+                    if composition_run is not None:
+                        composition_run.settle()
+            if enqueue or self.billing_coordinator:
+                billing_run = self._freeze_replica_batch(
+                    actor, batch_id, len(request.targets), strategy
+                )
             batch = self.repository.create_replica_batch(
                 actor.workspace_id,
                 actor.id,
                 request,
                 request_hash=request_hash,
                 batch_id=batch_id,
+                prompt_snapshot=str(plans.get(1, {}).get("prompt_snapshot") or "{}"),
+                plans=plans,
             )
         except ReplicaBatchIdempotentReturn as duplicate:
             # 并发下同请求已由另一提交者落库：结算本次冻结并按既有批次返回。
@@ -434,6 +488,410 @@ class PodCustomizationService:
         if batch.get("mode") != "replica":
             raise PodRepositoryError("POD replica batch not found", 404)
         return self._batch_payload(batch)
+
+    def analyze_replica_assets(self, actor: Actor, request: ReplicaAnalyzeRequest) -> dict[str, Any]:
+        """识图分析 A/B 两张图并落库分析快照。
+
+        动作免费（纯 pod.title scope），但仍走完整的冻结 → 短期密钥 → 调用 → 结算
+        底座，保留幂等键与审计。相同资产与 schema 版本的成功分析直接复用；失败记录
+        保留并允许重新分析。
+        """
+        if self.analysis_runtime is None:
+            raise RuntimeError("POD 复刻识图服务未启用")
+        source = self.repository.get_asset(request.source_asset_id, actor.workspace_id, actor.id)
+        if source.get("kind") != "replica_source":
+            raise ValueError("样图资产角色错误，必须通过 role=source 上传")
+        target = self.repository.get_asset(request.target_asset_id, actor.workspace_id, actor.id)
+        if target.get("kind") != "replica_target":
+            raise ValueError("目标产品资产角色错误，必须通过 role=target 上传")
+
+        cached = self.repository.find_replica_analysis(
+            actor.workspace_id,
+            actor.id,
+            request.source_asset_id,
+            request.target_asset_id,
+            REPLICA_ANALYSIS_SCHEMA_VERSION,
+        )
+        if cached is not None and cached["status"] == "succeeded":
+            return self._replica_analysis_payload(cached, request.presentation_preferences)
+
+        analysis_id = uuid.uuid4().hex
+        billing_run = self._freeze_replica_analysis(actor, analysis_id)
+        try:
+            return self._run_replica_analysis_authorized(actor, request, analysis_id, billing_run)
+        except PodBillingAuthorizationRequired as exc:
+            raise RuntimeError(str(exc)) from exc
+        finally:
+            billing_run.settle()
+
+    def _run_replica_analysis_authorized(
+        self,
+        actor: Actor,
+        request: ReplicaAnalyzeRequest,
+        analysis_id: str,
+        billing_run: PodBillingRun,
+    ) -> dict[str, Any]:
+        call_ids = tuple(
+            call.call_id for call in billing_run.plan.calls if call.feature == "pod.title"
+        )
+        source = self.repository.get_asset(request.source_asset_id, actor.workspace_id, actor.id)
+        target = self.repository.get_asset(request.target_asset_id, actor.workspace_id, actor.id)
+        try:
+            result = self.analysis_runtime.analyze_assets(
+                ReplicaAssetImage(
+                    asset_id=source["asset_id"], data_url=self._asset_data_url(source)
+                ),
+                ReplicaAssetImage(
+                    asset_id=target["asset_id"], data_url=self._asset_data_url(target)
+                ),
+                grant=billing_run.grant,
+                call_id=call_ids[0],
+                call_ids=call_ids,
+                on_start=lambda call_id: billing_run.start(call_id, "pod.title"),
+                on_outcome=lambda call_id, status: billing_run.record(call_id, "pod.title", status),
+            )
+        except Exception as exc:  # noqa: BLE001 - 失败也要落库，供重新分析
+            self.repository.save_replica_analysis(
+                analysis_id=analysis_id,
+                workspace_id=actor.workspace_id,
+                owner_user_id=actor.id,
+                source_asset_id=request.source_asset_id,
+                target_asset_id=request.target_asset_id,
+                analysis_version=REPLICA_ANALYSIS_SCHEMA_VERSION,
+                status="failed",
+                model_version="",
+                schema_version=REPLICA_ANALYSIS_SCHEMA_VERSION,
+                error_code=type(exc).__name__,
+            )
+            raise
+        # 用户在分析阶段的修正直接写进事实快照（source=user），随分析一起冻结。
+        target_spec = (
+            normalize_target_analysis(result.raw_target, target["asset_id"], request.fact_overrides)
+            if request.fact_overrides is not None
+            else result.target_product_spec
+        )
+        self.repository.save_replica_analysis(
+            analysis_id=analysis_id,
+            workspace_id=actor.workspace_id,
+            owner_user_id=actor.id,
+            source_asset_id=request.source_asset_id,
+            target_asset_id=request.target_asset_id,
+            analysis_version=REPLICA_ANALYSIS_SCHEMA_VERSION,
+            status="succeeded",
+            source_spec_json=result.source_artwork_spec.model_dump_json(),
+            target_spec_json=target_spec.model_dump_json(),
+            raw_source_json=json.dumps(result.raw_source, ensure_ascii=False),
+            raw_target_json=json.dumps(result.raw_target, ensure_ascii=False),
+            model_version=result.model,
+            schema_version=result.schema_version,
+        )
+        stored = self.repository.get_replica_analysis(analysis_id, actor.workspace_id, actor.id)
+        return self._replica_analysis_payload(stored, request.presentation_preferences)
+
+    def _asset_data_url(self, asset: dict[str, Any]) -> str:
+        """资产字节 → data URL（与豆包视觉入参一致的形状）。"""
+        content = self.assets.read(str(asset["relative_path"]))
+        content_type = str(asset.get("content_type") or "image/png")
+        encoded = base64.b64encode(content).decode("ascii")
+        return f"data:{content_type};base64,{encoded}"
+
+    @staticmethod
+    def _replica_analysis_payload(record: dict[str, Any], preferences: Any) -> dict[str, Any]:
+        """分析响应：A/B 事实 + 候选能力 + 版本，供前端确认与修正。"""
+        source_spec = SourceArtworkSpec.model_validate_json(record["source_spec_json"])
+        target_spec = TargetProductSpec.model_validate_json(record["target_spec_json"])
+        capabilities = match_capabilities(target_spec, preferences)
+        return {
+            "analysis_id": record["analysis_id"],
+            "status": record["status"],
+            "source_asset_id": record["source_asset_id"],
+            "target_asset_id": record["target_asset_id"],
+            "source": source_spec.model_dump(),
+            "target": target_spec.model_dump(),
+            "source_needs_confirmation": source_spec.needs_confirmation,
+            "target_needs_confirmation": target_spec.needs_confirmation,
+            "candidate_capabilities": list(capabilities.capabilities),
+            "unknown_capability": list(capabilities.unknown_capability),
+            "model_version": record["model_version"],
+            "schema_version": record["schema_version"],
+            "error_code": record["error_code"],
+        }
+
+    def resolve_replica_composition_template(
+        self, actor: Actor, composition_id: str
+    ) -> CompositionTemplateOptions:
+        """选定复刻批次使用的构图模板。
+
+        复用全定制构图模板（``pod_customization_compositions``）：模板只负责摄影表达，
+        不负责产品事实与复刻硬约束。显式指定时必须是本人**生效中**的模板；未指定时取
+        当前生效模板，没有则回退系统内置默认模板。
+        """
+        requested = str(composition_id or "").strip()
+        record: dict[str, Any] | None
+        if requested and requested != DEFAULT_COMPOSITION_ID:
+            record = self.repository.get_composition(actor.workspace_id, actor.id, requested)
+            if record is None:
+                raise PodRepositoryError("构图模板不存在", 404)
+            if str(record.get("scope") or COMPOSITION_SCOPE_FULL) != COMPOSITION_SCOPE_REPLICA:
+                raise PodRepositoryError("该构图模板属于全定制，不能用于爆款复刻", 409)
+            if not record.get("is_active"):
+                raise PodRepositoryError("构图模板未生效，无法用于复刻批次", 409)
+        else:
+            # 复刻只认复刻池的生效模板；没有则回退系统内置默认机位（不借全定制的模板）。
+            record = self.repository.get_active_composition(
+                actor.workspace_id, actor.id, scope=COMPOSITION_SCOPE_REPLICA
+            )
+        if record is None:
+            return CompositionTemplateOptions(
+                template_id=DEFAULT_COMPOSITION_ID,
+                template_version="1",
+                panel_slots=tuple(COMPOSITION_PANEL_KEYS),
+                required_slots=tuple(COMPOSITION_PANEL_KEYS),
+                panel_instructions={
+                    key: str(DEFAULT_COMPOSITION_PANELS[key]["en"]) for key in COMPOSITION_PANEL_KEYS
+                },
+            )
+        panels = record.get("panels") or {}
+        return CompositionTemplateOptions(
+            template_id=str(record["composition_id"]),
+            template_version=str(record.get("prompt_version") or "1"),
+            panel_slots=tuple(COMPOSITION_PANEL_KEYS),
+            required_slots=tuple(COMPOSITION_PANEL_KEYS),
+            panel_instructions={
+                key: str((panels.get(key) or {}).get("en") or "") for key in COMPOSITION_PANEL_KEYS
+            },
+        )
+
+    @staticmethod
+    def _replica_generation_strategy(capabilities: Any, requested: str | None) -> GenerationStrategy:
+        """生成策略：多部件/佩戴/墙面类用独立面板，其余用四宫格；用户显式选择优先。"""
+        if requested in ("grid", "independent_panels"):
+            return requested  # type: ignore[return-value]
+        if {"multi_piece", "hand_worn", "body_worn", "wall_mounted"} & set(capabilities.capabilities):
+            return "independent_panels"
+        return "grid"
+
+    def _replica_batch_strategy(
+        self, actor: Actor, request: ReplicaBatchCreate
+    ) -> GenerationStrategy:
+        """批次级生成策略：任一目标需要独立面板，则整批按独立面板冻结。
+
+        计费与 worker 的调用形状都是批次级的，因此必须整批统一；用户显式指定优先。
+        """
+        requested = request.generation_strategy
+        if requested in ("grid", "independent_panels"):
+            return requested  # type: ignore[return-value]
+        for target in request.targets:
+            if not target.analysis_id:
+                continue
+            record = self.repository.get_replica_analysis(
+                target.analysis_id, actor.workspace_id, actor.id
+            )
+            if record["status"] != "succeeded":
+                continue
+            target_spec = TargetProductSpec.model_validate_json(record["target_spec_json"])
+            if target.fact_overrides is not None:
+                target_spec = normalize_target_analysis(
+                    json.loads(record["raw_target_json"]),
+                    target_spec.target_asset_id,
+                    target.fact_overrides,
+                )
+            capabilities = match_capabilities(target_spec, target.presentation_preferences)
+            if self._replica_generation_strategy(capabilities, None) == "independent_panels":
+                return "independent_panels"
+        return "grid"
+
+    @staticmethod
+    def _replica_plan_fingerprint(
+        *,
+        source_spec: SourceArtworkSpec,
+        target_spec: TargetProductSpec,
+        capabilities: Any,
+        rules: Any,
+        preferences: Any,
+        template: Any,
+        generation_strategy: str,
+    ) -> str:
+        """计划输入指纹：决定 ``ReplicaPlan`` 的全部输入的确定性哈希。
+
+        同一指纹必然对应同一份计划，因此已冻结过的输入可以直接复用旧计划，
+        不再调用豆包重推构图参数。生图模型版本不进指纹（不影响构图参数本身，
+        只在复用时刷新记录），版本号变更才作废旧计划。
+        """
+        payload = json.dumps(
+            {
+                "source_spec": source_spec.model_dump(mode="json"),
+                "target_spec": target_spec.model_dump(mode="json"),
+                "capabilities": list(capabilities.capabilities),
+                "unknown_capability": list(capabilities.unknown_capability),
+                "rules": rules.model_dump(mode="json"),
+                "preferences": preferences.model_dump(mode="json"),
+                "template_id": template.template_id,
+                "template_version": template.template_version,
+                "generation_strategy": generation_strategy,
+                "analysis_schema_version": REPLICA_ANALYSIS_SCHEMA_VERSION,
+                "prompt_compiler_version": PROMPT_COMPILER_VERSION,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def _resolve_replica_plans(
+        self,
+        actor: Actor,
+        request: ReplicaBatchCreate,
+        *,
+        composition_run_factory: Callable[[], PodBillingRun],
+        generation_strategy: GenerationStrategy = "grid",
+    ) -> dict[int, dict[str, Any]]:
+        """为每个带 analysis_id 的目标款冻结 ReplicaPlan（缺分析时保持旧行为）。
+
+        先按「计划输入指纹」查同款已冻结计划：命中直接复用，不调豆包、不占构图调用；
+        只有没命中时才选定构图模板、调豆包在模板允许范围内选参数，再把事实/能力/
+        规则/构图/版本一并冻结。``plan_version`` 从 1 起：用户改事实、偏好或模板后
+        走新建批次（新指纹、新计划），旧计划与旧结果原样保留。
+
+        ``composition_run_factory`` 惰性创建构图计费 run：全部命中缓存时不会产生
+        任何构图计费动作。
+        """
+        if not any(target.analysis_id for target in request.targets):
+            return {}
+        template = self.resolve_replica_composition_template(actor, request.composition_id)
+        composition_run: PodBillingRun | None = None
+        call_ids: tuple[str, ...] = ()
+
+        def composition_calls(style_index: int) -> tuple[tuple[str, ...], PodBillingRun]:
+            """取该款的构图调用 id；首次调用时才冻结构图计费 run。"""
+            nonlocal composition_run, call_ids
+            if composition_run is None:
+                composition_run = composition_run_factory()
+                call_ids = tuple(
+                    call.call_id for call in composition_run.plan.calls if call.feature == "pod.title"
+                )
+            run = composition_run
+            return tuple(cid for cid in call_ids if f":composition:{style_index}:" in cid), run
+
+        plans: dict[int, dict[str, Any]] = {}
+        # 同批次内同指纹也只推一次：款表落库发生在全部计划解析之后，
+        # 单靠库内指纹查不到同批刚算出的计划。
+        fresh_plans: dict[str, ReplicaPlan] = {}
+        for style_index, target in enumerate(request.targets, start=1):
+            if not target.analysis_id:
+                continue
+            record = self.repository.get_replica_analysis(
+                target.analysis_id, actor.workspace_id, actor.id
+            )
+            if record["status"] != "succeeded":
+                raise PodRepositoryError("复刻分析尚未完成，无法提交", 409)
+            if record["source_asset_id"] != request.source_asset_id:
+                raise PodRepositoryError("复刻分析与原素材样图不匹配", 409)
+            if record["target_asset_id"] != target.target_asset_id:
+                raise PodRepositoryError("复刻分析与目标产品资产不匹配", 409)
+            source_spec = SourceArtworkSpec.model_validate_json(record["source_spec_json"])
+            target_spec = TargetProductSpec.model_validate_json(record["target_spec_json"])
+            if target.fact_overrides is not None:
+                target_spec = normalize_target_analysis(
+                    json.loads(record["raw_target_json"]),
+                    target_spec.target_asset_id,
+                    target.fact_overrides,
+                )
+            preferences = target.presentation_preferences
+            capabilities = match_capabilities(target_spec, preferences)
+            rules = derive_rules(source_spec, target_spec, capabilities, preferences)
+            try:
+                validate_plan_ready(
+                    source_spec,
+                    target_spec,
+                    capabilities,
+                    preferences,
+                    source_confirmed=request.source_confirmed,
+                )
+            except ReplicaPlanNotReadyError as exc:
+                raise PodRepositoryError(str(exc), 400) from exc
+
+            fingerprint = self._replica_plan_fingerprint(
+                source_spec=source_spec,
+                target_spec=target_spec,
+                capabilities=capabilities,
+                rules=rules,
+                preferences=preferences,
+                template=template,
+                generation_strategy=generation_strategy,
+            )
+            reused: ReplicaPlan | None = fresh_plans.get(fingerprint)
+            if reused is None:
+                cached = self.repository.find_frozen_replica_plan(
+                    actor.workspace_id, actor.id, fingerprint
+                )
+                if cached is not None:
+                    reused = ReplicaPlan.model_validate_json(cached["replica_plan_json"])
+            if reused is not None:
+                # 同输入同计划：复用旧冻结计划，跳过豆包。仅刷新生图模型记录。
+                reused = reused.model_copy(
+                    update={"image_model_version": resolve_pod_image_model()}
+                )
+                plans[style_index] = self._replica_plan_row(
+                    target.analysis_id, reused, fingerprint
+                )
+                continue
+
+            style_calls, composition_run_for_style = composition_calls(style_index)
+            if not style_calls:
+                raise RuntimeError("复刻构图计划缺少冻结的 provider 调用")
+            composition_plan = self.analysis_runtime.generate_composition_plan(
+                ReplicaCompositionRequest(
+                    template=template,
+                    source_artwork_spec=source_spec,
+                    target_product_spec=target_spec,
+                    capability_set=capabilities,
+                    rule_set=rules,
+                    preferences=preferences,
+                ),
+                grant=composition_run_for_style.grant,
+                call_id=style_calls[0],
+                call_ids=style_calls,
+                on_start=lambda cid: composition_run_for_style.start(cid, "pod.title"),
+                on_outcome=lambda cid, status: composition_run_for_style.record(cid, "pod.title", status),
+            )
+            plan = ReplicaPlan(
+                source_artwork_spec=source_spec,
+                target_product_spec=target_spec,
+                capability_set=capabilities,
+                rule_set=rules,
+                composition_plan=composition_plan,
+                generation_strategy=generation_strategy,
+                analysis_schema_version=REPLICA_ANALYSIS_SCHEMA_VERSION,
+                capability_registry_version=capabilities.registry_version,
+                rule_version=rules.rule_version,
+                composition_template_version=composition_plan.template_version,
+                prompt_compiler_version=PROMPT_COMPILER_VERSION,
+                # 冻结本次生图模型版本，供事后归因（换模型不改变已冻结计划）。
+                image_model_version=resolve_pod_image_model(),
+            )
+            # 冻结真实最终 Prompt：生成/重试/恢复都直接复用这份文本。
+            plan = plan.model_copy(update={"compiled_prompt": compile_replica_prompt(plan)})
+            fresh_plans[fingerprint] = plan
+            plans[style_index] = self._replica_plan_row(target.analysis_id, plan, fingerprint)
+        return plans
+
+    @staticmethod
+    def _replica_plan_row(
+        analysis_id: str, plan: ReplicaPlan, fingerprint: str
+    ) -> dict[str, Any]:
+        """把冻结计划展开成款表一行所需的快照字段。"""
+        return {
+            "analysis_id": analysis_id,
+            "replica_plan_json": plan.model_dump_json(),
+            "prompt_snapshot": plan.compiled_prompt,
+            "capability_registry_version": plan.capability_registry_version,
+            "rule_version": plan.rule_version,
+            "template_version": plan.composition_template_version,
+            "compiler_version": plan.prompt_compiler_version,
+            "generation_strategy": plan.generation_strategy,
+            "plan_fingerprint": fingerprint,
+        }
+
 
     def list_semi_batches(self, actor: Actor, *, limit: int = 20, offset: int = 0) -> dict[str, Any]:
         rows, total = self.repository.list_batches(
@@ -695,7 +1153,13 @@ class PodCustomizationService:
             call.call_id for call in billing_run.plan.calls if call.feature == "pod.title"
         )
         result = self.brief_runtime.generate_brief_fields(
-            PodBriefRequest(brief_id=brief_id, brief=request.brief, locale=request.locale),
+            PodBriefRequest(
+                brief_id=brief_id,
+                brief=request.brief,
+                locale=request.locale,
+                fabric_craft=request.fabric_craft,
+                scene_mood=request.scene_mood,
+            ),
             grant=billing_run.grant,
             call_id=call_ids[0],
             call_ids=call_ids,
@@ -709,18 +1173,21 @@ class PodCustomizationService:
             "fields": result.fields.model_dump(),
         }
 
-    def generate_composition(self, actor: Actor, request: CompositionRequest) -> dict[str, Any]:
+    def generate_composition(
+        self, actor: Actor, request: CompositionRequest, *, scope: str = COMPOSITION_SCOPE_FULL
+    ) -> dict[str, Any]:
         """构图定制：一段大白话 → 四格画面指令，新增一份模板并设为生效。
 
         动作免费（服务端对 POD 画像的纯 title scope 显式零计费），但仍走完整的
         冻结 → 发放短期密钥 → 调用 → 结算流程，保留幂等键与审计。
+        ``scope`` 决定写入哪个模块的模板池（full / replica），两个池各自独立生效。
         """
         if self.composition_runtime is None:
             raise RuntimeError("POD 构图定制服务未启用")
         composition_id = uuid.uuid4().hex
         billing_run = self._freeze_composition(actor, composition_id)
         try:
-            return self._run_composition_authorized(actor, request, composition_id, billing_run)
+            return self._run_composition_authorized(actor, request, composition_id, billing_run, scope)
         except PodBillingAuthorizationRequired as exc:
             raise RuntimeError(str(exc)) from exc
         finally:
@@ -732,6 +1199,7 @@ class PodCustomizationService:
         request: CompositionRequest,
         composition_id: str,
         billing_run: PodBillingRun,
+        scope: str = COMPOSITION_SCOPE_FULL,
     ) -> dict[str, Any]:
         call_ids = tuple(
             call.call_id for call in billing_run.plan.calls if call.feature == "pod.title"
@@ -750,11 +1218,12 @@ class PodCustomizationService:
             workspace_id=actor.workspace_id,
             owner_user_id=actor.id,
             composition_id=composition_id,
-            name=_composition_default_name(request.brief),
+            name=request.name or _composition_default_name(request.brief),
             raw_input=request.brief,
             panels=result.panels.model_dump(),
             model=result.model,
             prompt_version=result.prompt_version,
+            scope=scope,
         )
         return self._composition_payload(stored)
 
@@ -808,18 +1277,20 @@ class PodCustomizationService:
             raise PodRepositoryError("POD composition not found", 404)
         return self._composition_payload(stored)
 
-    def list_compositions(self, actor: Actor) -> dict[str, Any]:
-        """列出构图模板：系统内置「默认模板」永远排第一，其余为用户模板（生效的排前）。"""
+    def list_compositions(
+        self, actor: Actor, *, scope: str = COMPOSITION_SCOPE_FULL
+    ) -> dict[str, Any]:
+        """列出该模块的构图模板：系统内置「默认模板」永远排第一，其余为用户模板（生效的排前）。"""
 
-        records = self.repository.list_compositions(actor.workspace_id, actor.id)
+        records = self.repository.list_compositions(actor.workspace_id, actor.id, scope=scope)
         templates = [self._composition_payload(record) for record in records]
-        default = self._default_composition_payload()
+        default = self._default_composition_payload(scope)
         # 没有任何用户模板生效时，即回退到系统默认模板。
         default["is_active"] = not any(template["is_active"] for template in templates)
         return {"templates": [default, *templates], "total": len(templates) + 1}
 
     @staticmethod
-    def _default_composition_payload() -> dict[str, Any]:
+    def _default_composition_payload(scope: str = COMPOSITION_SCOPE_FULL) -> dict[str, Any]:
         return {
             "composition_id": DEFAULT_COMPOSITION_ID,
             "name": DEFAULT_COMPOSITION_NAME,
@@ -833,10 +1304,13 @@ class PodCustomizationService:
             "is_active": False,
             "is_builtin": True,
             "updated_at": "",
+            "scope": COMPOSITION_SCOPE_REPLICA if scope == COMPOSITION_SCOPE_REPLICA else COMPOSITION_SCOPE_FULL,
         }
 
-    def get_active_composition(self, actor: Actor) -> dict[str, Any] | None:
-        stored = self.repository.get_active_composition(actor.workspace_id, actor.id)
+    def get_active_composition(
+        self, actor: Actor, *, scope: str = COMPOSITION_SCOPE_FULL
+    ) -> dict[str, Any] | None:
+        stored = self.repository.get_active_composition(actor.workspace_id, actor.id, scope=scope)
         return self._composition_payload(stored) if stored else None
 
     def rename_composition(
@@ -849,15 +1323,23 @@ class PodCustomizationService:
             raise PodRepositoryError("POD composition not found", 404)
         return self._composition_payload(stored)
 
-    def activate_composition(self, actor: Actor, composition_id: str) -> dict[str, Any]:
+    def activate_composition(
+        self, actor: Actor, composition_id: str, *, scope: str = COMPOSITION_SCOPE_FULL
+    ) -> dict[str, Any]:
         if composition_id == DEFAULT_COMPOSITION_ID:
-            # 选择系统默认模板 = 清空用户模板的生效标记（新建批次回退默认机位）。
-            self.repository.clear_active_compositions(actor.workspace_id, actor.id)
-            payload = self._default_composition_payload()
+            # 选择系统默认模板 = 清空该模块用户模板的生效标记（新建批次回退默认机位）。
+            self.repository.clear_active_compositions(actor.workspace_id, actor.id, scope=scope)
+            payload = self._default_composition_payload(scope)
             payload["is_active"] = True
             return payload
-        stored = self.repository.activate_composition(actor.workspace_id, actor.id, composition_id)
+        stored = self.repository.activate_composition(
+            actor.workspace_id, actor.id, composition_id, scope=scope
+        )
         if stored is None:
+            # 可能是不属于该模块（scope）的模板：明确 404，避免跨池误激活。
+            existing = self.repository.get_composition(actor.workspace_id, actor.id, composition_id)
+            if existing is not None:
+                raise PodRepositoryError("构图模板不属于当前模块，无法激活", 409)
             raise PodRepositoryError("POD composition not found", 404)
         return self._composition_payload(stored)
 
@@ -886,6 +1368,7 @@ class PodCustomizationService:
             "is_active": bool(stored.get("is_active")),
             "is_builtin": bool(is_builtin or stored.get("is_builtin")),
             "updated_at": str(stored.get("updated_at") or ""),
+            "scope": str(stored.get("scope") or COMPOSITION_SCOPE_FULL),
         }
 
     def list_batches(self, actor: Actor, *, limit: int = 20, offset: int = 0) -> dict[str, Any]:
@@ -1340,6 +1823,8 @@ class PodCustomizationService:
         billing_run = self._freeze_style_retry(
             actor, action_id, batch_id, style_index, creative_prompt,
             semi=batch.get("mode") == "semi",
+            billing_profile=self._pod_billing_profile(batch),
+            replica_generation_strategy=self._batch_replica_generation_strategy(batch_id),
         )
         try:
             results = self.repository.claim_style_regeneration(
@@ -2170,13 +2655,57 @@ class PodCustomizationService:
         if require_present and self.title_runtime is None:
             raise RuntimeError("POD 标题服务未启用")
 
-    def _freeze_batch(self, actor: Actor, batch_id: str, style_count: int) -> PodBillingRun:
+    def _freeze_batch(
+        self,
+        actor: Actor,
+        batch_id: str,
+        style_count: int,
+        *,
+        billing_profile: str = POD_BILLING_PROFILE_RANDOM,
+    ) -> PodBillingRun:
         if self.billing_coordinator is None:
             raise RuntimeError("POD billing coordinator is not configured")
-        plan = PodCallPlan.for_batch(batch_id, style_count=style_count)
+        plan = PodCallPlan.for_batch(
+            batch_id, style_count=style_count, billing_profile=billing_profile
+        )
         return self._freeze_action(
             actor, plan, action_type="batch_initial", target_id=batch_id, batch_id=batch_id
         )
+
+    def _freeze_replica_batch(
+        self, actor: Actor, batch_id: str, style_count: int, generation_strategy: str
+    ) -> PodBillingRun:
+        """复刻批次计费：按生成策略冻结每款图片调用形状（grid 2 次 / 独立面板 8 次）。"""
+        if self.billing_coordinator is None:
+            raise RuntimeError("POD billing coordinator is not configured")
+        plan = PodCallPlan.for_replica_batch(
+            batch_id, style_count=style_count, generation_strategy=generation_strategy
+        )
+        return self._freeze_action(
+            actor, plan, action_type="batch_initial", target_id=batch_id, batch_id=batch_id
+        )
+
+    @staticmethod
+    def _pod_billing_profile(batch: dict[str, Any]) -> str:
+        """按批次模式取计费画像：复刻单独上报 pod_replica_v1（供远端分类），全定制沿用
+        pod_random_v1。半定制走独立的 ``for_semi_*`` 计划，不使用本函数的返回值。
+        """
+        if str(batch.get("mode") or "") == "replica":
+            return POD_BILLING_PROFILE_REPLICA
+        return POD_BILLING_PROFILE_RANDOM
+
+    def _batch_replica_generation_strategy(self, batch_id: str) -> str:
+        """从款级快照读取批次生成策略；任一款为独立面板即整批独立面板，否则 grid。"""
+        try:
+            batch = self.repository.get_batch_internal(batch_id)
+        except Exception:  # noqa: BLE001
+            return "grid"
+        if str(batch.get("mode") or "") != "replica":
+            return "grid"
+        for target in batch.get("replica_targets") or []:
+            if str(target.get("generation_strategy") or "") == "independent_panels":
+                return "independent_panels"
+        return "grid"
 
     def _freeze_semi_batch(self, actor: Actor, batch_id: str, count: int) -> PodBillingRun:
         if self.billing_coordinator is None:
@@ -2222,13 +2751,23 @@ class PodCustomizationService:
                 image_style_indices=image_indices,
             )
         else:
-            plan = PodCallPlan.for_batch_resume(
-                batch_id,
-                uuid.uuid4().hex,
-                image_style_indices=image_indices,
-                title_style_indices=title_indices,
-                include_title=self.title_runtime is not None,
-            )
+            if self._batch_replica_generation_strategy(batch_id) == "independent_panels":
+                plan = PodCallPlan.for_replica_batch_resume(
+                    batch_id,
+                    uuid.uuid4().hex,
+                    image_style_indices=image_indices,
+                    title_style_indices=title_indices,
+                    include_title=self.title_runtime is not None,
+                )
+            else:
+                plan = PodCallPlan.for_batch_resume(
+                    batch_id,
+                    uuid.uuid4().hex,
+                    image_style_indices=image_indices,
+                    title_style_indices=title_indices,
+                    include_title=self.title_runtime is not None,
+                    billing_profile=self._pod_billing_profile(batch),
+                )
         return self._freeze_action(
             actor,
             plan,
@@ -2284,6 +2823,36 @@ class PodCustomizationService:
             action_payload={"mode": "composition"},
         )
 
+    def _freeze_replica_composition(
+        self, actor: Actor, batch_id: str, style_count: int
+    ) -> PodBillingRun:
+        if self.billing_coordinator is None:
+            raise RuntimeError("POD billing coordinator is not configured")
+        plan = PodCallPlan.for_replica_composition(batch_id, style_count=style_count)
+        # 与 brief/composition 同口径：纯 pod.title scope 零计费，只留模式标记。
+        return self._freeze_action(
+            actor,
+            plan,
+            action_type="title_retry",
+            target_id=batch_id,
+            batch_id=batch_id,
+            action_payload={"mode": "replica_composition"},
+        )
+
+    def _freeze_replica_analysis(self, actor: Actor, analysis_id: str) -> PodBillingRun:
+        if self.billing_coordinator is None:
+            raise RuntimeError("POD billing coordinator is not configured")
+        plan = PodCallPlan.for_replica_analysis(analysis_id)
+        # 与 brief/composition 同口径：纯 pod.title scope 零计费，只留模式标记。
+        return self._freeze_action(
+            actor,
+            plan,
+            action_type="title_retry",
+            target_id=analysis_id,
+            batch_id="",
+            action_payload={"mode": "replica_analysis"},
+        )
+
     def _freeze_style_retry(
         self,
         actor: Actor,
@@ -2293,16 +2862,23 @@ class PodCustomizationService:
         creative_prompt: str,
         *,
         semi: bool = False,
+        billing_profile: str = POD_BILLING_PROFILE_RANDOM,
+        replica_generation_strategy: str = "grid",
     ) -> PodBillingRun:
         if self.billing_coordinator is None:
             raise RuntimeError("POD billing coordinator is not configured")
-        plan = (
-            PodCallPlan.for_semi_style_retry(action_id)
-            if semi
-            else PodCallPlan.for_style_retry(
+        if semi:
+            plan = PodCallPlan.for_semi_style_retry(action_id)
+        elif replica_generation_strategy == "independent_panels":
+            plan = PodCallPlan.for_replica_style_retry(
                 action_id, include_title=self.title_runtime is not None
             )
-        )
+        else:
+            plan = PodCallPlan.for_style_retry(
+                action_id,
+                include_title=self.title_runtime is not None,
+                billing_profile=billing_profile,
+            )
         return self._freeze_action(
             actor,
             plan,
@@ -2322,12 +2898,22 @@ class PodCustomizationService:
     ) -> PodBillingRun:
         if self.billing_coordinator is None:
             raise RuntimeError("POD billing coordinator is not configured")
-        plan = PodCallPlan.for_batch_retry(
-            action_id,
-            image_style_indices=image_style_indices,
-            title_style_indices=title_style_indices,
-            include_title=self.title_runtime is not None,
-        )
+        batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
+        if self._batch_replica_generation_strategy(batch_id) == "independent_panels":
+            plan = PodCallPlan.for_replica_batch_retry(
+                action_id,
+                image_style_indices=image_style_indices,
+                title_style_indices=title_style_indices,
+                include_title=self.title_runtime is not None,
+            )
+        else:
+            plan = PodCallPlan.for_batch_retry(
+                action_id,
+                image_style_indices=image_style_indices,
+                title_style_indices=title_style_indices,
+                include_title=self.title_runtime is not None,
+                billing_profile=self._pod_billing_profile(batch),
+            )
         # The existing durable schema restricts action_type values. The payload
         # distinguishes this single-run batch retry without a table migration.
         return self._freeze_action(

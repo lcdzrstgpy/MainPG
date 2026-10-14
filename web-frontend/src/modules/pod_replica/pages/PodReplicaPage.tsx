@@ -2,6 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { getAuthAccount } from "../../../transport/http/client";
 import { podCustomizationApi } from "../../pod_customization/api/podCustomizationApi";
+import { CompositionEditDrawer } from "../../pod_customization/components/CompositionEditDrawer";
+import { CompositionGenerateDrawer } from "../../pod_customization/components/CompositionGenerateDrawer";
+import { CompositionManagerDrawer } from "../../pod_customization/components/CompositionManagerDrawer";
 import { PodBatchGallery } from "../../pod_customization/components/PodBatchGallery";
 import { PodBatchHistoryDrawer } from "../../pod_customization/components/PodBatchHistoryDrawer";
 import { PodFailedRetryDialog } from "../../pod_customization/components/PodFailedRetryDialog";
@@ -10,19 +13,28 @@ import { SpecCardDrawer, type SpecCardBatchContext } from "../../pod_customizati
 import { validateListingFields, type SkuField } from "../../pod_customization/components/PodListingFieldsEditor";
 import { buildSpecCardCells, groupPodStyleRows, isActiveBatchStatus, isActivePodItemStatus, isActivePodStyleTitleStatus, shouldPollPodBatch } from "../../pod_customization/data/podCustomizationModel";
 import { batchRetryCandidates, type PodBatchRetryRequest } from "../../pod_customization/data/podBatchRetry";
-import type { PodBatchItem, PodMiaoshouTemplateKind } from "../../pod_customization/types";
+import type { PodBatchItem, PodComposition, PodMiaoshouTemplateKind } from "../../pod_customization/types";
 
 import { podReplicaApi } from "../api/podReplicaApi";
 import { ReplicaSourceUploader, type ReplicaSourceView } from "../components/ReplicaSourceUploader";
 import { ReplicaTargetDrawer } from "../components/ReplicaTargetDrawer";
 import { ReplicaTargetList } from "../components/ReplicaTargetList";
 import {
+  applyReplicaAnalysis,
   attachReplicaTargetAsset,
   buildReplicaBatchRequest,
+  confirmReplicaAnalysis,
   createEmptyReplicaTarget,
+  emptyReplicaAnalysisFields,
   firstInvalidReplicaTargetIndex,
+  hasReplicaFactOverrides,
+  markReplicaAnalysisAnalyzing,
+  markReplicaAnalysisFailed,
   nextReplicaClientRequestId,
   removeReplicaTarget,
+  replicaAnalysesConfirmed,
+  replicaSourceNeedsConfirmation,
+  setReplicaPresentationPreference,
   validateReplicaTargetDraft,
   type ReplicaTargetDraft,
 } from "../data/podReplicaModel";
@@ -31,7 +43,7 @@ import {
   loadPodReplicaDraft,
   savePodReplicaDraft,
 } from "../data/podReplicaDraft";
-import type { ReplicaBatch, ReplicaBatchSummary } from "../types";
+import type { ReplicaBatch, ReplicaBatchSummary, ReplicaPresentationPreferences } from "../types";
 import "../styles/podReplica.css";
 // 复用全定制的次级顶栏与图库等共享皮肤（.pod-page-header 等），直接进本页也要有样式。
 import "../../pod_customization/styles/podCustomization.css";
@@ -54,10 +66,14 @@ export function PodReplicaPage({ isActive = true }: Props) {
 
   const [source, setSource] = useState<ReplicaSourceView>(() => {
     const stored = initialDraft.state.source;
-    return stored?.assetId ? { assetId: stored.assetId, filename: stored.filename } : null;
+    return stored?.assetId
+      ? { assetId: stored.assetId, filename: stored.filename, confirmed: stored.confirmed === true }
+      : null;
   });
   const [targets, setTargets] = useState<ReplicaTargetDraft[]>(initialDraft.state.targets);
   const [activeTargetId, setActiveTargetId] = useState<string>();
+  /** 提交被拦下时定位到的那一款：列表里标红，但不自动打开侧边栏。 */
+  const [invalidTargetId, setInvalidTargetId] = useState("");
   // 上架信息实时校验：抽屉里按当前产品实时重算并内联展示；「必填为空」在提交过一次后才提示。
   const [listingErrorsRevealed, setListingErrorsRevealed] = useState(false);
   const [specCardTargetId, setSpecCardTargetId] = useState<string>();
@@ -73,6 +89,15 @@ export function PodReplicaPage({ isActive = true }: Props) {
   const [visibility, setVisibility] = useState<DocumentVisibilityState>(() => document.visibilityState);
   const requestIdRef = useRef<{ signature: string; id: string } | null>(null);
   const lastDraftErrorRef = useRef("");
+  // 复合场景：同一目标可能因状态变化重复触发分析，用 ref 去重。
+  const analyzingRef = useRef<Set<string>>(new Set());
+  const targetsRef = useRef<ReplicaTargetDraft[]>(targets);
+  targetsRef.current = targets;
+  const [composition, setComposition] = useState<PodComposition | null>(null);
+  const [compositionDrawerOpen, setCompositionDrawerOpen] = useState(false);
+  const [compositionManagerOpen, setCompositionManagerOpen] = useState(false);
+  const [compositionEditOpen, setCompositionEditOpen] = useState(false);
+  const [compositionEditTarget, setCompositionEditTarget] = useState<PodComposition | null>(null);
 
   // 同一份提交内容（含网络重试）复用同一 client_request_id；草稿改动后签名变化即换新 ID。
   const stableRequestId = (signature: string): string => {
@@ -103,6 +128,7 @@ export function PodReplicaPage({ isActive = true }: Props) {
     setTargets([]);
     setListingErrorsRevealed(false);
     setActiveTargetId(undefined);
+    setInvalidTargetId("");
     setSpecCardTargetId(undefined);
     requestIdRef.current = null;
     setError("");
@@ -152,7 +178,7 @@ export function PodReplicaPage({ isActive = true }: Props) {
     if (!draftScope) return;
     const result = savePodReplicaDraft(draftScope.accountId, draftScope.workspaceId, {
       version: POD_REPLICA_DRAFT_VERSION,
-      source: source ? { assetId: source.assetId, filename: source.filename } : null,
+      source: source ? { assetId: source.assetId, filename: source.filename, confirmed: source.confirmed === true } : null,
       targets,
     });
     if (!result.ok && lastDraftErrorRef.current !== result.error) {
@@ -162,6 +188,15 @@ export function PodReplicaPage({ isActive = true }: Props) {
       lastDraftErrorRef.current = "";
     }
   }, [draftScope?.accountId, draftScope?.workspaceId, source, targets]);
+
+  // 当前生效的复刻构图模板（复刻独立模板池）：提交时把 composition_id 一起冻结进计划。
+  useEffect(() => {
+    let stopped = false;
+    void podCustomizationApi.getLatestComposition("replica")
+      .then((latest) => { if (!stopped) setComposition(latest); })
+      .catch(() => undefined);
+    return () => { stopped = true; };
+  }, []);
 
   // 结果轮询：仅在被激活且页面可见、批次运行中时进行。
   useEffect(() => {
@@ -202,7 +237,9 @@ export function PodReplicaPage({ isActive = true }: Props) {
     setBusyAction("upload-source");
     try {
       const uploaded = await podReplicaApi.uploadImage(file, "source");
-      setSource({ assetId: uploaded.asset_id, filename: file.name });
+      // 换样图即换 A：A 识别结果需重新确认，所有目标旧分析（基于上一张 A）也全部失效。
+      setSource({ assetId: uploaded.asset_id, filename: file.name, confirmed: false });
+      setTargets((current) => current.map((target) => ({ ...target, ...emptyReplicaAnalysisFields() })));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -237,7 +274,52 @@ export function PodReplicaPage({ isActive = true }: Props) {
 
   const updateTarget = (clientId: string, updater: (target: ReplicaTargetDraft) => ReplicaTargetDraft) => {
     setTargets((current) => current.map((target) => target.clientId === clientId ? updater(target) : target));
+    // 用户开始补这一款时撤掉提交失败的标红，不必等他再次点提交。
+    setInvalidTargetId((current) => (current === clientId ? "" : current));
   };
+
+  /** 调一次 A/B 识图；成功落分析结果，失败记录原因供「重新识别」。 */
+  const analyzeTarget = async (clientId: string) => {
+    const sourceAssetId = source?.assetId;
+    const target = targetsRef.current.find((item) => item.clientId === clientId);
+    if (!sourceAssetId || !target?.assetId) { setError("请先上传 POD 样图与该产品的白底图。"); return; }
+    if (analyzingRef.current.has(clientId)) return;
+    analyzingRef.current.add(clientId);
+    updateTarget(clientId, markReplicaAnalysisAnalyzing);
+    try {
+      const response = await podReplicaApi.analyzeAssets({
+        source_asset_id: sourceAssetId,
+        target_asset_id: target.assetId,
+        fact_overrides: hasReplicaFactOverrides(target.factOverrides) ? target.factOverrides : null,
+        presentation_preferences: { ...target.presentationPreferences },
+      });
+      updateTarget(clientId, (current) => applyReplicaAnalysis(current, response));
+    } catch (cause) {
+      updateTarget(clientId, (current) => markReplicaAnalysisFailed(current, cause instanceof Error ? cause.message : String(cause)));
+    } finally {
+      analyzingRef.current.delete(clientId);
+    }
+  };
+
+  // A/B 资产齐备后自动识图：仅触发「待识别」的目标；失败不自动重试，交给用户点「重新识别」。
+  useEffect(() => {
+    if (!source?.assetId) return;
+    for (const target of targets) {
+      if (target.assetId && target.analysisStatus === "pending" && !analyzingRef.current.has(target.clientId)) {
+        void analyzeTarget(target.clientId);
+      }
+    }
+    // analyzeTarget 通过 targetsRef 读取最新目标，这里按状态变化触发即可。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source?.assetId, targets]);
+
+  const confirmAnalysis = (clientId: string) => updateTarget(clientId, confirmReplicaAnalysis);
+  const changePresentation = (clientId: string, key: keyof ReplicaPresentationPreferences, value: boolean) =>
+    updateTarget(clientId, (target) => setReplicaPresentationPreference(target, key, value));
+
+  /** 用户确认原素材（A）识别结果：A 有低置信度字段时必须先点这一步。 */
+  const confirmSourceAnalysis = () =>
+    setSource((current) => (current ? { ...current, confirmed: true } : current));
 
   const toggleBatchSelected = (batchId: string) => {
     setSelectedBatchIds((current) => current.includes(batchId)
@@ -254,7 +336,7 @@ export function PodReplicaPage({ isActive = true }: Props) {
 
   const changeProductName = (clientId: string, value: string) => updateTarget(clientId, (target) => ({ ...target, productName: value }));
 
-  const changeListingField = (clientId: string, key: "title_mode" | "suggested_price_usd" | "category_name", value: string) =>
+  const changeListingField = (clientId: string, key: "title_mode" | "category_name", value: string) =>
     updateTarget(clientId, (target) => ({ ...target, listingFields: { ...target.listingFields, [key]: value } as ReplicaTargetDraft["listingFields"] }));
 
   const addSku = (clientId: string) => updateTarget(clientId, (target) => {
@@ -278,12 +360,13 @@ export function PodReplicaPage({ isActive = true }: Props) {
     if (!targets.length) { setError("请至少添加一个目标产品。"); return; }
 
     // 上架信息是实时校验的：这里揭示「必填为空」，并拦截比后端合约更严的字符/格式问题。
+    // 只标红出问题的那一款 + 顶部提示，不自动打开侧边栏（用户自己点「导出信息编辑」去补）。
     setListingErrorsRevealed(true);
     const invalidListingTarget = targets.find((target) => Object.keys(validateListingFields(target.listingFields)).length > 0);
     if (invalidListingTarget) {
       const index = targets.indexOf(invalidListingTarget);
-      setActiveTargetId(invalidListingTarget.clientId);
-      setError(`第 ${index + 1} 个产品有误：请检查上架信息中标红的字段。`);
+      setInvalidTargetId(invalidListingTarget.clientId);
+      setError(`第 ${index + 1} 个产品有误：请点该款的「导出信息编辑」，检查上架信息中标红的字段。`);
       return;
     }
 
@@ -291,19 +374,43 @@ export function PodReplicaPage({ isActive = true }: Props) {
     if (firstInvalid >= 0) {
       const target = targets[firstInvalid];
       const reason = validateReplicaTargetDraft(target);
-      setActiveTargetId(target.clientId);
-      setError(`第 ${firstInvalid + 1} 个产品有误：${reason.ok ? "请检查填写内容。" : reason.error}`);
+      setInvalidTargetId(target.clientId);
+      setError(`第 ${firstInvalid + 1} 个产品有误：${reason.ok ? "请检查填写内容。" : reason.error}请点该款的「导出信息编辑」补全。`);
+      return;
+    }
+    setInvalidTargetId("");
+
+    // A（原素材）低置信度：必须先被用户确认，否则错误图案会被迁移到目标产品上。
+    if (sourceNeedsConfirmation && !sourceConfirmed) {
+      setError("原素材（样图）识别结果置信度不足，请先确认「原素材识别结果」再提交。");
       return;
     }
 
     let request;
     try {
       const title = `${source.filename || "POD 样图"} 复刻`;
-      const signature = JSON.stringify({ source: source.assetId, title, targets: targets.map((target) => ({ asset: target.assetId, name: target.productName, listing: target.listingFields, spec: target.specCard })) });
+      const compositionId = composition?.composition_id;
+      const signature = JSON.stringify({
+        source: source.assetId,
+        title,
+        composition: compositionId ?? "",
+        sourceConfirmed,
+        targets: targets.map((target) => ({
+          asset: target.assetId,
+          name: target.productName,
+          listing: target.listingFields,
+          spec: target.specCard,
+          analysis: target.analysisId,
+          overrides: target.factOverrides,
+          preferences: target.presentationPreferences,
+        })),
+      });
       request = buildReplicaBatchRequest({
         client_request_id: stableRequestId(signature),
         source_asset_id: source.assetId,
         title,
+        composition_id: compositionId,
+        source_confirmed: sourceConfirmed,
         targets,
       });
     } catch (cause) {
@@ -496,7 +603,13 @@ export function PodReplicaPage({ isActive = true }: Props) {
   const resolveStyleProductName = (styleIndex: number) => targets[styleIndex - 1]?.productName.trim() || undefined;
   const specCardBatchContext: SpecCardBatchContext | null = activeBatch ? { id: activeBatch.id, status: activeBatch.status, count: activeBatch.count } : null;
   const specCardStyleIndex = specCardTarget ? targets.findIndex((target) => target.clientId === specCardTarget.clientId) + 1 : undefined;
-  const canSubmit = Boolean(source) && targets.length > 0 && !busyAction;
+  const sourceNeedsConfirmation = replicaSourceNeedsConfirmation(targets);
+  const sourceConfirmed = source?.confirmed === true;
+  const canSubmit = Boolean(source) && targets.length > 0 && replicaAnalysesConfirmed(targets)
+    && (!sourceNeedsConfirmation || sourceConfirmed) && !busyAction;
+  const compositionName = composition
+    ? (composition.is_builtin ? "系统默认模板（默认机位）" : (composition.name.trim() || "未命名构图"))
+    : "系统默认模板（默认机位）";
 
   return (
     <section className="pod-replica-page" aria-label="POD 爆款复刻">
@@ -512,6 +625,8 @@ export function PodReplicaPage({ isActive = true }: Props) {
         <div className="pod-page-header-actions">
           {batchRunning && <span className="pod-live-badge"><i />批次后台运行中</span>}
           <button type="button" onClick={() => setHistoryOpen(true)}><span className="iconfont icon-time-circle" />复刻历史</button>
+          {/* 管理模板与全定制一致放页头右侧，构图卡片里只留「生成新构图」。 */}
+          <button type="button" onClick={() => setCompositionManagerOpen(true)}><span className="iconfont icon-skin" />管理模板</button>
         </div>
       </header>
 
@@ -520,13 +635,37 @@ export function PodReplicaPage({ isActive = true }: Props) {
       <div className="pod-replica-layout">
         <div className="pod-replica-setup">
           <ReplicaSourceUploader source={source} busy={busyAction === "upload-source"} onFiles={(files) => void uploadSource(files)} onClear={() => setSource(null)} />
+          {source && sourceNeedsConfirmation && (
+            <div className={`pod-replica-source-confirm${sourceConfirmed ? " is-done" : ""}`}>
+              <span>原素材识别结果置信度不足，需确认后再提交。</span>
+              {sourceConfirmed
+                ? <b>已确认</b>
+                : <button type="button" onClick={confirmSourceAnalysis}>确认识别结果</button>}
+            </div>
+          )}
           <ReplicaTargetList
             targets={targets}
             busy={busyAction === "upload-target"}
+            invalidClientId={invalidTargetId}
             onFiles={(files) => void uploadTargets(files)}
-            onRemove={(clientId) => setTargets((current) => removeReplicaTarget(current, clientId))}
+            onRemove={(clientId) => {
+              setTargets((current) => removeReplicaTarget(current, clientId));
+              setInvalidTargetId((current) => (current === clientId ? "" : current));
+            }}
             onOpen={setActiveTargetId}
           />
+          {/* 构图入口：与全定制分开的复刻专用模板池；管理入口在页头右侧，这里只留生成。 */}
+          <section className="pod-replica-composition-entry" aria-label="构图模板">
+            <div className="pod-replica-composition-info">
+              <span>COMPOSITION · 构图模板</span>
+              <b>当前生效模板：{compositionName}</b>
+            </div>
+            <div className="pod-replica-composition-actions">
+              <button type="button" onClick={() => setCompositionDrawerOpen(true)}>
+                <span className="iconfont icon-robot" aria-hidden="true" />生成新构图
+              </button>
+            </div>
+          </section>
           <div className="pod-replica-submit">
             <div className="pod-replica-submit-actions">
               <button type="button" className="pod-replica-start" disabled={!canSubmit} onClick={() => void startBatch()}>
@@ -564,12 +703,16 @@ export function PodReplicaPage({ isActive = true }: Props) {
         skuFieldErrors={activeTarget ? validateListingFields(activeTarget.listingFields) : {}}
         skuLimitReached={Boolean(activeTarget && activeTarget.listingFields.skus.length >= MAX_SKU)}
         showRequiredErrors={listingErrorsRevealed}
+        analyzing={activeTarget?.analysisStatus === "analyzing"}
         onChangeProductName={changeProductName}
         onListingFieldChange={changeListingField}
         onAddSku={addSku}
         onUpdateSku={updateSku}
         onRemoveSku={removeSku}
         onOpenSpecCardDrawer={setSpecCardTargetId}
+        onAnalyze={(clientId) => void analyzeTarget(clientId)}
+        onConfirmAnalysis={confirmAnalysis}
+        onPresentationChange={changePresentation}
         onClose={() => setActiveTargetId(undefined)}
       />
 
@@ -604,6 +747,31 @@ export function PodReplicaPage({ isActive = true }: Props) {
         onOpen={(batchId) => void openBatch(batchId)}
         onRefresh={() => void podReplicaApi.listBatches().then((response) => setHistory(response.batches)).catch(() => undefined)}
         onClose={() => setHistoryOpen(false)}
+      />
+
+      {/* 构图入口：复刻独立模板池（scope=replica），与全定制互不覆盖。 */}
+      <CompositionGenerateDrawer
+        open={compositionDrawerOpen}
+        scope="replica"
+        onClose={() => setCompositionDrawerOpen(false)}
+        onChanged={(next) => setComposition(next)}
+      />
+      <CompositionEditDrawer
+        open={compositionEditOpen}
+        target={compositionEditTarget}
+        onClose={() => setCompositionEditOpen(false)}
+        onChanged={(saved) => setComposition(saved)}
+      />
+      <CompositionManagerDrawer
+        open={compositionManagerOpen}
+        scope="replica"
+        onClose={() => setCompositionManagerOpen(false)}
+        onEdit={(template) => {
+          setCompositionManagerOpen(false);
+          setCompositionEditTarget(template);
+          setCompositionEditOpen(true);
+        }}
+        onActiveChanged={(active) => setComposition(active)}
       />
     </section>
   );
