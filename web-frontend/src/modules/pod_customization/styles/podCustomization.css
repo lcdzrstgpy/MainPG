@@ -622,6 +622,8 @@
 .pod-unsaved-confirm-dialog > header > button { width: 30px; height: 30px; flex: 0 0 auto; padding: 0; border: 1px solid var(--pod-border); border-radius: 9px; color: var(--pod-text-muted); background: var(--pod-surface); font-size: 1rem; }
 .pod-unsaved-confirm-message { margin: 0; padding: 16px 20px; color: var(--pod-text-secondary); font-size: .7rem; line-height: 1.7; }
 .pod-unsaved-confirm-name { color: var(--pod-text); font-weight: 850; }
+/* 「标题/描述限制」强提示：红字告警，默认引导留空。 */
+.pod-copy-restrictions-warning { margin: 0; padding: 16px 20px; color: #c0392b; font-size: .74rem; font-weight: 850; line-height: 1.75; }
 .pod-unsaved-confirm-dialog > footer { display: flex; justify-content: flex-end; gap: 8px; padding: 13px 20px; border-top: 1px solid var(--pod-border); background: var(--pod-surface-soft); }
 .pod-unsaved-confirm-dialog > footer button { min-height: 32px; padding: 7px 12px; border: 1px solid var(--pod-border); border-radius: 8px; color: var(--pod-text-secondary); background: var(--pod-surface); font-size: .62rem; font-weight: 850; }
 .pod-unsaved-confirm-dialog > footer button:disabled { cursor: not-allowed; opacity: .55; }

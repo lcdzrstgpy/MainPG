@@ -12,6 +12,7 @@ import { PodFailedRetryDialog } from "../components/PodFailedRetryDialog";
 import { PodResultLightbox } from "../components/PodResultLightbox";
 import { SpecCardDrawer } from "../components/SpecCardDrawer";
 import { TemplateLibraryDrawer } from "../components/TemplateLibraryDrawer";
+import { PodCopyRestrictionsConfirmDialog } from "../components/PodCopyRestrictionsConfirmDialog";
 import { PodUnsavedTemplateConfirmDialog } from "../components/PodUnsavedTemplateConfirmDialog";
 import { PodListingFieldsEditor, validateListingFields, type SkuField } from "../components/PodListingFieldsEditor";
 import {
@@ -214,6 +215,10 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   const [compositionEditTarget, setCompositionEditTarget] = useState<PodComposition | null>(null);
   const [composition, setComposition] = useState<PodComposition | null>(null);
   const [failedRetryOpen, setFailedRetryOpen] = useState(false);
+  // 「标题/描述限制」的强提示：用户真的输入内容时弹一次，取消则回退本次输入。
+  const [copyRestrictionsOpen, setCopyRestrictionsOpen] = useState(false);
+  const [copyRestrictionsConfirmed, setCopyRestrictionsConfirmed] = useState(false);
+  const copyRestrictionsRestoreRef = useRef("");
   const [pendingTemplateSwitch, setPendingTemplateSwitch] = useState<string | null>(null);
   const [switchingTemplate, setSwitchingTemplate] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -429,6 +434,33 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     setBusinessFields((current) => ({ ...current, [key]: value }));
   };
 
+  /**
+   * 字段输入统一入口：往「标题/描述限制」里输入内容前先弹一次强提示，
+   * 「取消」回退本次输入，「依旧填写」才保留（本次编辑期间不再重复提示）。
+   */
+  const handleBusinessFieldInput = (key: keyof PodBusinessFieldsDraft, value: string) => {
+    if (key === "copy_restrictions") {
+      if (!value.trim()) {
+        setCopyRestrictionsConfirmed(false);
+      } else if (!copyRestrictionsConfirmed && !copyRestrictionsOpen) {
+        copyRestrictionsRestoreRef.current = businessFields.copy_restrictions;
+        setCopyRestrictionsOpen(true);
+      }
+    }
+    updateBusinessField(key, value);
+  };
+
+  const keepCopyRestrictions = () => {
+    setCopyRestrictionsConfirmed(true);
+    setCopyRestrictionsOpen(false);
+  };
+
+  const cancelCopyRestrictions = () => {
+    updateBusinessField("copy_restrictions", copyRestrictionsRestoreRef.current);
+    setCopyRestrictionsConfirmed(false);
+    setCopyRestrictionsOpen(false);
+  };
+
   // 智能填写：生成结果直接覆盖同名字段，并把本次输入记入「最近生成」历史。
   const handleBriefGenerated = (fields: PodBriefFieldsDraft, input: string) => {
     setBusinessFields((current) => mergeBusinessFields(current, fields));
@@ -482,6 +514,8 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     setSelectedTemplateSnapshot(null);
     setCurrentBatchEdit(null);
     setBusinessFields({ ...EMPTY_BUSINESS_FIELDS_FOR_SWITCH });
+    setCopyRestrictionsConfirmed(false);
+    setCopyRestrictionsOpen(false);
     setBriefHistory([]);
     setListingFields({ ...EMPTY_LISTING_FIELDS_FOR_SWITCH });
     setListingErrorsRevealed(false);
@@ -938,7 +972,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
                   <label key={field.key} className={limit.over ? "is-over-limit" : undefined}>
                     <span>{field.label}{field.required && <em>*</em>}{field.hint && <i className="pod-field-info" data-tip={field.hint} aria-hidden="true">ⓘ</i>}</span>
                     <textarea rows={1} placeholder={field.placeholder} maxLength={field.maxLength} aria-invalid={limit.over || undefined} ref={(el) => { businessTextareasRef.current[fieldIndex] = el; }} value={value} onChange={(event) => {
-                      updateBusinessField(field.key, event.currentTarget.value);
+                      handleBusinessFieldInput(field.key, event.currentTarget.value);
                       autoGrowBusinessTextarea(event.currentTarget);
                     }} />
                     <small className={limit.over ? "pod-field-counter is-over" : "pod-field-counter"}>{field.list ? `${limit.longest}/${POD_BUSINESS_LIST_ITEM_MAX_LENGTH}` : `${value.length}/${field.maxLength}`}</small>
@@ -1073,6 +1107,12 @@ export function PodCustomizationPage({ isActive = true }: Props) {
         busy={switchingTemplate}
         onClose={() => setPendingTemplateSwitch(null)}
         onConfirm={confirmTemplateSwitch}
+      />
+
+      <PodCopyRestrictionsConfirmDialog
+        open={copyRestrictionsOpen}
+        onKeep={keepCopyRestrictions}
+        onCancel={cancelCopyRestrictions}
       />
 
       <SpecCardDrawer
