@@ -137,6 +137,7 @@ COMPOSITION_PANEL_SLOTS = {
 COMPOSITION_INPUT_MIN_LENGTH = 1
 COMPOSITION_INPUT_MAX_LENGTH = 500
 COMPOSITION_PANEL_MAX_LENGTH = 500
+COMPOSITION_NAME_MAX_LENGTH = 60
 
 
 class CompositionRequest(BaseModel):
@@ -145,6 +146,8 @@ class CompositionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     brief: str = Field(min_length=COMPOSITION_INPUT_MIN_LENGTH, max_length=COMPOSITION_INPUT_MAX_LENGTH)
+    # 用户给这份新模板起的名字；留空时回退到原话摘要（兼容老客户端）。
+    name: str = Field(default="", max_length=COMPOSITION_NAME_MAX_LENGTH)
     locale: str = Field(default="zh-CN", max_length=16)
 
 
@@ -185,9 +188,6 @@ class CompositionUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     panels: CompositionPanelsZh
-
-
-COMPOSITION_NAME_MAX_LENGTH = 60
 
 
 class CompositionRenameRequest(BaseModel):

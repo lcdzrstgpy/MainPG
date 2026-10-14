@@ -10,7 +10,7 @@ const api = readFileSync(new URL("../api/podCustomizationApi.ts", import.meta.ur
 const page = readFileSync(new URL("../pages/PodCustomizationPage.tsx", import.meta.url), "utf8");
 
 test("generate drawer owns the AI block and hands the result to the shared panel editor", () => {
-  assert.match(generateDrawer, /podCustomizationApi\.generateComposition\(\{ brief: input, locale: "zh-CN" \}, scope\)/);
+  assert.match(generateDrawer, /podCustomizationApi\.generateComposition\(\{ brief: input, name: name\.trim\(\), locale: "zh-CN" \}, scope\)/);
   assert.match(generateDrawer, /podCustomizationApi\.getLatestComposition\(scope\)/);
   assert.match(generateDrawer, /import \{ CompositionPanelsEditor \} from "\.\/CompositionPanelsEditor";/);
   assert.match(generateDrawer, /<CompositionPanelsEditor/);
@@ -18,6 +18,15 @@ test("generate drawer owns the AI block and hands the result to the shared panel
   // 保存改原记录的逻辑收敛到共用编辑器里。
   assert.doesNotMatch(generateDrawer, /updateComposition/);
   assert.doesNotMatch(generateDrawer, /clearComposition/);
+});
+
+test("generate drawer asks the user to name the new template before generating", () => {
+  // 点「生成并新增模板」先弹命名弹窗，不再拿提示词原文当模板名。
+  assert.match(generateDrawer, /const COMPOSITION_NAME_MAX_LENGTH = 60;/);
+  assert.match(generateDrawer, /className="pod-composition-generate"[\s\S]{0,200}onClick=\{openNameDialog\}/);
+  assert.match(generateDrawer, /给新模板起个名字/);
+  assert.match(generateDrawer, /className="pod-composition-name-confirm"[\s\S]{0,120}onClick=\{confirmName\}/);
+  assert.match(generateDrawer, /disabled=\{!draftName\.trim\(\)\}/);
 });
 
 test("edit drawer is manual-editing only: no AI generation at all", () => {
@@ -69,7 +78,7 @@ test("composition manager lists templates with a built-in default plus activate 
 });
 
 test("pod api exposes the composition template endpoints", () => {
-  assert.match(api, /generateComposition: \(body: \{ brief: string; locale\?: string \}, scope: PodCompositionScope = "full"\)/);
+  assert.match(api, /generateComposition: \(body: \{ brief: string; name\?: string; locale\?: string \}, scope: PodCompositionScope = "full"\)/);
   assert.match(api, /listCompositions: \(scope: PodCompositionScope = "full"\) => httpJson<PodCompositionListResponse>/);
   assert.match(api, /updateComposition: \(compositionId: string, body: \{ panels: PodCompositionPanelsZh \}\)/);
   assert.match(api, /renameComposition: \(compositionId: string, name: string\)/);

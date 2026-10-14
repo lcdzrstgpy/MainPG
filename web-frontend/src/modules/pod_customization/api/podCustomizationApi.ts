@@ -154,7 +154,7 @@ export const podCustomizationApi = {
   ),
   // 构图/视角定制：一段大白话 → 四格画面指令，并覆盖为该账号该模块的最新构图（免费）。
   // scope 区分模板池：full=全定制（默认），replica=爆款复刻；两池各自独立生效。
-  generateComposition: (body: { brief: string; locale?: string }, scope: PodCompositionScope = "full") => httpJson<PodComposition>(
+  generateComposition: (body: { brief: string; name?: string; locale?: string }, scope: PodCompositionScope = "full") => httpJson<PodComposition>(
     `${API_BASE}/compositions${compositionScopeQuery(scope)}`,
     { method: "POST", body, timeoutMs: COMPOSITION_GENERATE_TIMEOUT_MS },
   ),

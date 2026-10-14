@@ -871,6 +871,22 @@
 .pod-composition-clear:disabled { opacity: .55; cursor: not-allowed; }
 .pod-composition-error { margin: 0; padding: 6px 9px; border-radius: 8px; color: #a84c48; background: #fff4f3; font-size: .64rem; }
 .pod-composition-notice { margin: 0; color: #246f61; font-size: .64rem; }
+/* 生成前的命名弹窗：挂在构图抽屉层（z-index 520）内，只需盖住同层的抽屉本体。 */
+.pod-composition-name-layer { position: fixed; z-index: 2; inset: 0; display: grid; place-items: center; padding: 20px; }
+.pod-composition-name-backdrop { position: absolute; inset: 0; border: 0; background: rgba(16, 33, 54, .4); }
+.pod-composition-name-dialog { position: relative; display: grid; width: min(420px, 100%); overflow: hidden; border: 1px solid var(--pod-border-strong); border-radius: 16px; color: var(--pod-text); background: var(--pod-surface); box-shadow: 0 24px 72px rgba(16, 33, 54, .28); }
+.pod-composition-name-dialog > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 18px 20px 14px; border-bottom: 1px solid var(--pod-border); }
+.pod-composition-name-dialog > header span { color: var(--pod-primary); font-size: .6rem; font-weight: 900; letter-spacing: .12em; }
+.pod-composition-name-dialog > header h2 { margin: 3px 0 0; font-size: 1.05rem; }
+.pod-composition-name-dialog > header button { width: 30px; height: 30px; flex: 0 0 auto; padding: 0; border: 1px solid var(--pod-border); border-radius: 9px; color: var(--pod-text-muted); background: var(--pod-surface); font-size: 1rem; }
+.pod-composition-name-field { display: grid; gap: 6px; padding: 16px 20px; }
+.pod-composition-name-field > span { color: var(--pod-text-secondary); font-size: .66rem; font-weight: 800; }
+.pod-composition-name-field input { min-height: 38px; padding: 8px 11px; border: 1px solid var(--pod-border-strong); border-radius: 10px; outline: 0; color: var(--pod-text); background: var(--pod-surface-soft); font-size: .74rem; }
+.pod-composition-name-field input:focus { border-color: var(--pod-primary); box-shadow: 0 0 0 3px rgba(var(--pod-primary-rgb), .13); }
+.pod-composition-name-dialog > footer { display: flex; justify-content: flex-end; gap: 8px; padding: 13px 20px; border-top: 1px solid var(--pod-border); background: var(--pod-surface-soft); }
+.pod-composition-name-dialog > footer button { min-height: 32px; padding: 7px 12px; border: 1px solid var(--pod-border); border-radius: 8px; color: var(--pod-text-secondary); background: var(--pod-surface); font-size: .62rem; font-weight: 850; }
+.pod-composition-name-dialog > footer button:disabled { cursor: not-allowed; opacity: .55; }
+.pod-composition-name-dialog > footer .pod-composition-name-confirm { color: #fff; border-color: transparent; background: var(--pod-primary); }
 .pod-composition-result-title { display: flex; align-items: baseline; gap: 8px; }
 .pod-composition-result-title > span { color: var(--pod-primary); font-size: .58rem; font-weight: 900; letter-spacing: .1em; }
 .pod-composition-result-title h3 { margin: 0; font-size: .86rem; }

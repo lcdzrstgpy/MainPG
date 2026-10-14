@@ -1218,7 +1218,7 @@ class PodCustomizationService:
             workspace_id=actor.workspace_id,
             owner_user_id=actor.id,
             composition_id=composition_id,
-            name=_composition_default_name(request.brief),
+            name=request.name or _composition_default_name(request.brief),
             raw_input=request.brief,
             panels=result.panels.model_dump(),
             model=result.model,
