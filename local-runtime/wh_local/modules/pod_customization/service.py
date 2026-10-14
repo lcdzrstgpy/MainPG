@@ -63,6 +63,7 @@ from .replica_planner import derive_rules, validate_plan_ready
 from .replica_prompt_compiler import PROMPT_COMPILER_VERSION, compile_replica_prompt
 from .replica_specs import (
     REPLICA_ANALYSIS_SCHEMA_VERSION,
+    REPLICA_PANEL_STRATEGY_ENABLED,
     GenerationStrategy,
     ReplicaPlan,
     ReplicaPlanNotReadyError,
@@ -410,12 +411,12 @@ class PodCustomizationService:
         plans: dict[int, dict[str, Any]] = {}
         billing_run: PodBillingRun | None = None
         composition_run: PodBillingRun | None = None
-        strategy: GenerationStrategy = "grid"
+        # 生成策略完全由用户在前端指定：必须在冻结计划/计费之前固定，因为计费形状
+        # （grid 2 次/款 vs 独立面板 8 次/款）与 worker 的调用形状都由它决定。
+        strategy: GenerationStrategy = self._replica_batch_strategy(request)
         try:
-            # 先冻结每款计划（事实/能力/规则/构图）并据此确定批次生成策略：失败即拦，
-            # 绝不落库、不扣费。计费必须在策略确定之后冻结（grid 2 次/款 vs 独立面板 8 次/款）。
+            # 先冻结每款计划（事实/能力/规则/构图）：失败即拦，绝不落库、不扣费。
             if any(target.analysis_id for target in request.targets):
-                strategy = self._replica_batch_strategy(actor, request)
 
                 # 构图计费惰性冻结：全部命中已冻结计划时不产生任何构图调用与计费。
                 def make_composition_run() -> PodBillingRun:
@@ -663,42 +664,18 @@ class PodCustomizationService:
         )
 
     @staticmethod
-    def _replica_generation_strategy(capabilities: Any, requested: str | None) -> GenerationStrategy:
-        """生成策略：多部件/佩戴/墙面类用独立面板，其余用四宫格；用户显式选择优先。"""
-        if requested in ("grid", "independent_panels"):
-            return requested  # type: ignore[return-value]
-        if {"multi_piece", "hand_worn", "body_worn", "wall_mounted"} & set(capabilities.capabilities):
-            return "independent_panels"
-        return "grid"
+    def _replica_batch_strategy(request: ReplicaBatchCreate) -> GenerationStrategy:
+        """批次级生成策略：暂时强制 ``grid``（一款一图后本地拆四格）。
 
-    def _replica_batch_strategy(
-        self, actor: Actor, request: ReplicaBatchCreate
-    ) -> GenerationStrategy:
-        """批次级生成策略：任一目标需要独立面板，则整批按独立面板冻结。
-
-        计费与 worker 的调用形状都是批次级的，因此必须整批统一；用户显式指定优先。
+        高清直出（``independent_panels``）的分镜提示词还没定稿（四张视角趋同），前端已
+        下掉该入口；这里同样强制回退，避免老客户端 / 直接调 API 又把它打开。计划、提示词
+        与计费相关代码都保留，把 ``REPLICA_PANEL_STRATEGY_ENABLED`` 打开即可恢复。
         """
+        if not REPLICA_PANEL_STRATEGY_ENABLED:
+            return "grid"
         requested = request.generation_strategy
         if requested in ("grid", "independent_panels"):
             return requested  # type: ignore[return-value]
-        for target in request.targets:
-            if not target.analysis_id:
-                continue
-            record = self.repository.get_replica_analysis(
-                target.analysis_id, actor.workspace_id, actor.id
-            )
-            if record["status"] != "succeeded":
-                continue
-            target_spec = TargetProductSpec.model_validate_json(record["target_spec_json"])
-            if target.fact_overrides is not None:
-                target_spec = normalize_target_analysis(
-                    json.loads(record["raw_target_json"]),
-                    target_spec.target_asset_id,
-                    target.fact_overrides,
-                )
-            capabilities = match_capabilities(target_spec, target.presentation_preferences)
-            if self._replica_generation_strategy(capabilities, None) == "independent_panels":
-                return "independent_panels"
         return "grid"
 
     @staticmethod
@@ -710,13 +687,15 @@ class PodCustomizationService:
         rules: Any,
         preferences: Any,
         template: Any,
-        generation_strategy: str,
     ) -> str:
-        """计划输入指纹：决定 ``ReplicaPlan`` 的全部输入的确定性哈希。
+        """计划输入指纹：决定「豆包构图参数」的全部输入的确定性哈希。
 
-        同一指纹必然对应同一份计划，因此已冻结过的输入可以直接复用旧计划，
-        不再调用豆包重推构图参数。生图模型版本不进指纹（不影响构图参数本身，
-        只在复用时刷新记录），版本号变更才作废旧计划。
+        同一指纹必然对应同一份构图计划，因此已冻结过的输入可以直接复用旧计划，
+        不再调用豆包重推构图参数。有两样东西刻意不进指纹：
+
+        - 生图模型版本：不影响构图参数本身，只在复用时刷新记录；
+        - 生成方式（grid / 独立面板）：豆包的构图调用入参里根本没有它，它只影响本地
+          编译出的最终 Prompt，复用时本地重编译即可，不该因此再调一次豆包。
         """
         payload = json.dumps(
             {
@@ -728,7 +707,6 @@ class PodCustomizationService:
                 "preferences": preferences.model_dump(mode="json"),
                 "template_id": template.template_id,
                 "template_version": template.template_version,
-                "generation_strategy": generation_strategy,
                 "analysis_schema_version": REPLICA_ANALYSIS_SCHEMA_VERSION,
                 "prompt_compiler_version": PROMPT_COMPILER_VERSION,
             },
@@ -747,7 +725,8 @@ class PodCustomizationService:
     ) -> dict[int, dict[str, Any]]:
         """为每个带 analysis_id 的目标款冻结 ReplicaPlan（缺分析时保持旧行为）。
 
-        先按「计划输入指纹」查同款已冻结计划：命中直接复用，不调豆包、不占构图调用；
+        先按「计划输入指纹」查同款已冻结计划：命中直接复用，不调豆包、不占构图调用
+        （并按当前生成方式本地重编译 Prompt，故切换普通生成/高清直出也不会重调豆包）；
         只有没命中时才选定构图模板、调豆包在模板允许范围内选参数，再把事实/能力/
         规则/构图/版本一并冻结。``plan_version`` 从 1 起：用户改事实、偏好或模板后
         走新建批次（新指纹、新计划），旧计划与旧结果原样保留。
@@ -817,7 +796,6 @@ class PodCustomizationService:
                 rules=rules,
                 preferences=preferences,
                 template=template,
-                generation_strategy=generation_strategy,
             )
             reused: ReplicaPlan | None = fresh_plans.get(fingerprint)
             if reused is None:
@@ -827,9 +805,16 @@ class PodCustomizationService:
                 if cached is not None:
                     reused = ReplicaPlan.model_validate_json(cached["replica_plan_json"])
             if reused is not None:
-                # 同输入同计划：复用旧冻结计划，跳过豆包。仅刷新生图模型记录。
+                # 同输入同计划：复用旧冻结计划，跳过豆包。生成方式不进指纹，这里本地覆盖
+                # 生成方式并重编译 Prompt（纯本地、零豆包调用），再刷新生图模型记录。
                 reused = reused.model_copy(
-                    update={"image_model_version": resolve_pod_image_model()}
+                    update={
+                        "image_model_version": resolve_pod_image_model(),
+                        "generation_strategy": generation_strategy,
+                    }
+                )
+                reused = reused.model_copy(
+                    update={"compiled_prompt": compile_replica_prompt(reused)}
                 )
                 plans[style_index] = self._replica_plan_row(
                     target.analysis_id, reused, fingerprint
@@ -2687,8 +2672,9 @@ class PodCustomizationService:
 
     @staticmethod
     def _pod_billing_profile(batch: dict[str, Any]) -> str:
-        """按批次模式取计费画像：复刻单独上报 pod_replica_v1（供远端分类），全定制沿用
-        pod_random_v1。半定制走独立的 ``for_semi_*`` 计划，不使用本函数的返回值。
+        """按批次模式取计费画像（普通形态）：复刻单独上报 pod_replica_v1_a（供远端分类），
+        全定制沿用 pod_random_v1。半定制走独立的 ``for_semi_*`` 计划、复刻「高清直出」
+        走独立的 ``for_replica_panel*`` 计划（画像 pod_replica_v1_b），都不使用本函数。
         """
         if str(batch.get("mode") or "") == "replica":
             return POD_BILLING_PROFILE_REPLICA

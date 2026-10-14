@@ -1,6 +1,6 @@
 """爆款复刻计费：N 款冻结/结算、余额不足、幂等、暂停取消与部分失败。
 
-复刻单独上报 ``pod_replica_v1`` 画像（与全定制同 40–50/款区间，仅分类不同），
+复刻单独上报 ``pod_replica_v1_a`` 画像（与全定制同 40–50/款区间，仅分类不同），
 沿用 ``:style:{款}:image:{尝试}`` 调用 ID；断言一款一次成功生图只对应一次图像调用，
 绝不因两张参考图重复计费。
 """
@@ -257,7 +257,7 @@ def test_replica_batch_freezes_one_replica_link_per_style_and_settles(tmp_path: 
         actor, _batch_request(service, actor, count=3, request_id="req-billing-3"), enqueue=False
     )
 
-    # 冻结一次，画像为 pod_replica_v1（复刻专用分类），调用 ID 沿用 :style:{款}:image:{尝试}。
+    # 冻结一次，画像为 pod_replica_v1_a（复刻专用分类），调用 ID 沿用 :style:{款}:image:{尝试}。
     assert len(billing.freezes) == 1
     plan = billing.freezes[0]
     assert plan.billing_profile == POD_BILLING_PROFILE_REPLICA
@@ -294,7 +294,7 @@ def test_replica_batch_freezes_one_replica_link_per_style_and_settles(tmp_path: 
 # --------------------------------------------------------------------------- #
 
 def test_pod_billing_profile_distinguishes_replica_from_full() -> None:
-    """复刻单独上报 pod_replica_v1（供远端分类）；全定制与历史批次沿用 pod_random_v1。"""
+    """复刻单独上报 pod_replica_v1_a（供远端分类）；全定制与历史批次沿用 pod_random_v1。"""
     assert PodCustomizationService._pod_billing_profile({"mode": "replica"}) == POD_BILLING_PROFILE_REPLICA
     assert PodCustomizationService._pod_billing_profile({"mode": "full"}) == POD_BILLING_PROFILE_RANDOM
     assert PodCustomizationService._pod_billing_profile({}) == POD_BILLING_PROFILE_RANDOM

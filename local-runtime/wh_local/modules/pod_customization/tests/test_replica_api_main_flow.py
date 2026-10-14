@@ -33,6 +33,7 @@ from wh_local.modules.pod_customization.replica_specs import (
     normalize_source_analysis,
     normalize_target_analysis,
 )
+from wh_local.modules.pod_customization import service as pod_service_module
 from wh_local.modules.pod_customization.router import create_router
 from wh_local.modules.pod_customization.service import PodCustomizationService
 
@@ -435,7 +436,9 @@ def _stored_plan(service: PodCustomizationService, batch_id: str) -> dict:
     return json.loads(row["replica_plan_json"])
 
 
-def _create_with_analysis(client: TestClient, service, runtime, *, composition_id: str = "", request_id: str) -> dict:
+def _create_with_analysis(
+    client: TestClient, service, runtime, *, composition_id: str = "", request_id: str
+) -> dict:
     source_id = _upload(client, "source", "#dd0000")
     target_id = _upload(client, "target", "#00aa00")
     analysis = _analyze(client, source_id, target_id)
@@ -473,7 +476,8 @@ def test_frozen_plan_carries_default_composition_and_versions(tmp_path: Path) ->
     frozen = load_frozen_plan(stored_batch, 1)
     assert frozen.composition_plan is not None
     assert frozen.composition_plan.template_id == DEFAULT_COMPOSITION_ID
-    assert frozen.generation_strategy == "independent_panels"
+    # 生成策略不再由服务端按能力自动切换：未显式指定时统一按成本最低的 grid。
+    assert frozen.generation_strategy == "grid"
     assert all(not slot.hand_worn for slot in frozen.composition_plan.slots)
 
 
@@ -566,7 +570,8 @@ def test_multi_piece_plan_requires_full_component_panel(tmp_path: Path) -> None:
     assert any(slot["show_all_components"] for slot in plan["composition_plan"]["slots"])
     # 未选择手部展示：任何槽位都不得出现手部。
     assert all(not slot["hand_worn"] for slot in plan["composition_plan"]["slots"])
-    assert plan["generation_strategy"] == "independent_panels"
+    # 高清直出暂时下线：生成策略统一为 grid（一款一图后本地拆四格）。
+    assert plan["generation_strategy"] == "grid"
 
 
 # --- 计划指纹复用：已复刻产品不再重复调豆包 -------------------------------------
@@ -614,6 +619,50 @@ def test_resubmitting_same_input_reuses_frozen_plan_without_doubao(tmp_path: Pat
     assert _stored_fingerprints(service, second.json()["id"]) == _stored_fingerprints(
         service, first.json()["id"]
     )
+
+
+def test_switching_generation_strategy_reuses_plan_without_doubao(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """换生成方式（普通生成 ↔ 高清直出）不该重调豆包。
+
+    豆包的构图调用入参里没有生成方式，它只影响本地编译的 Prompt：因此同一输入换生成
+    方式仍命中同一份冻结计划，只本地重编译 Prompt（零豆包调用）。
+
+    高清直出暂时下线（``REPLICA_PANEL_STRATEGY_ENABLED=False``），这里显式打开开关，
+    保住该保证的回归覆盖。
+    """
+    monkeypatch.setattr(pod_service_module, "REPLICA_PANEL_STRATEGY_ENABLED", True)
+    runtime = AnalysisRuntime()
+    client, service, _billing = _client(tmp_path, runtime)
+    source_id = _upload(client, "source", "#dd0000")
+    target_id = _upload(client, "target", "#00aa00")
+    analysis = _analyze(client, source_id, target_id)
+
+    def submit(request_id: str, strategy: str) -> dict:
+        body = _create_body(
+            source_id, target_id, analysis_id=analysis["analysis_id"], client_request_id=request_id
+        )
+        body["generation_strategy"] = strategy
+        response = client.post(f"{API}/replica/batches", headers=HEADERS, json=body)
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    grid = submit("req-strategy-grid", "grid")
+    assert runtime.composition_calls == 1
+
+    panels = submit("req-strategy-panels", "independent_panels")
+    # 同输入换生成方式：命中同一份冻结计划，不再调豆包。
+    assert runtime.composition_calls == 1
+    assert _stored_fingerprints(service, panels["id"]) == _stored_fingerprints(service, grid["id"])
+
+    grid_plan = _stored_plan(service, grid["id"])
+    panel_plan = _stored_plan(service, panels["id"])
+    # 构图参数原样复用；生成方式与本地编译的 Prompt 按本次选择刷新。
+    assert panel_plan["composition_plan"] == grid_plan["composition_plan"]
+    assert grid_plan["generation_strategy"] == "grid"
+    assert panel_plan["generation_strategy"] == "independent_panels"
+    assert panel_plan["compiled_prompt"] != grid_plan["compiled_prompt"]
 
 
 def test_changed_facts_preferences_or_template_fetch_new_plan(tmp_path: Path) -> None:

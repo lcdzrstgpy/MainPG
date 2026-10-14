@@ -12,6 +12,7 @@ import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 from wh_local.modules.pod_customization.billing_contract import (
@@ -40,6 +41,17 @@ from wh_local.modules.product_processing.infrastructure.media import GeneratedMe
 from wh_local.modules.pod_customization.service import PodCustomizationService
 from wh_local.modules.pod_customization.title_runtime import PodTitleResult
 from wh_local.session import Actor
+from wh_local.modules.pod_customization import service as pod_service_module
+
+
+@pytest.fixture(autouse=True)
+def _enable_panel_strategy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """高清直出暂时下线（``REPLICA_PANEL_STRATEGY_ENABLED=False``）。
+
+    本组用例显式打开开关，保住 independent_panels 面板路径的回归覆盖，等分镜提示词
+    定稿、重新放开入口时直接可用。
+    """
+    monkeypatch.setattr(pod_service_module, "REPLICA_PANEL_STRATEGY_ENABLED", True)
 
 _SOURCE_VALUES: dict[str, object] = {
     "source_product_name": "原素材帆布袋",
@@ -55,7 +67,7 @@ _SOURCE_VALUES: dict[str, object] = {
     "source_people_and_props": ["模特"],
     "source_watermarks_and_labels": ["水印"],
 }
-# 五片凝胶美甲：命中 multi_piece，服务端据此整批选择 independent_panels。
+# 五片凝胶美甲：命中 multi_piece；生成策略由用户在请求里显式选择 independent_panels。
 _TARGET_VALUES: dict[str, object] = {
     "product_name": "美甲套装",
     "product_type": "nail_tip_set",
@@ -291,6 +303,7 @@ def test_independent_panels_generates_four_single_panel_requests(tmp_path: Path)
             ReplicaBatchCreate(
                 client_request_id="req-panel-1",
                 source_asset_id=source_id,
+                generation_strategy="independent_panels",
                 targets=[
                     ReplicaTargetCreate(
                         target_asset_id=target_id,
@@ -435,6 +448,7 @@ def _prepare(
         ReplicaBatchCreate(
             client_request_id=request_id,
             source_asset_id=source_id,
+            generation_strategy="independent_panels",
             targets=[
                 ReplicaTargetCreate(
                     target_asset_id=target_id,

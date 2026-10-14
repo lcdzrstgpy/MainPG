@@ -153,7 +153,7 @@ def test_replica_grid_strategy_matches_the_shared_batch_shape_with_replica_profi
     shared = PodCallPlan.for_batch("rb-1", style_count=2)
     assert [call.call_id for call in replica.calls] == [call.call_id for call in shared.calls]
     assert [call.feature for call in replica.calls] == [call.feature for call in shared.calls]
-    assert replica.billing_profile == "pod_replica_v1"
+    assert replica.billing_profile == "pod_replica_v1_a"
 
 
 def test_replica_independent_panels_reserve_four_panels_per_style() -> None:
@@ -171,7 +171,7 @@ def test_replica_independent_panels_reserve_four_panels_per_style() -> None:
         "rb-1:style:1:image:p4:1",
         "rb-1:style:1:image:p4:2",
     ]
-    assert plan.billing_profile == "pod_replica_v1"
+    assert plan.billing_profile == "pod_replica_v1_b"
     # 一款仍是一个 link：4 个面板 × 2 次尝试全部折叠进同一条 subitem。
     assert plan.product_batch_freeze_payload()["link_count"] == 1
     outcomes = tuple(
@@ -223,7 +223,7 @@ def test_replica_panel_retry_and_resume_plans_reuse_the_panel_call_shape() -> No
     assert all(":style:2:image:p" in call.call_id for call in resume.calls)
     # 款级分组仍把这一款认成一条 link。
     assert resume.product_batch_freeze_payload()["link_count"] == 1
-    assert resume.billing_profile == "pod_replica_v1"
+    assert resume.billing_profile == "pod_replica_v1_b"
 
 
 def test_batch_plan_accepts_200_styles_as_exactly_1400_calls_and_rejects_more() -> None:

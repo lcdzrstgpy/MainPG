@@ -35,7 +35,6 @@ def rank_candidates_by_image_order(
             candidates,
             key=lambda candidate: (
                 -_similarity(candidate.get("image_similarity_score")),
-                not bool(candidate.get("title_search_confirmed")),
                 _number(candidate.get("image_search_rank")),
                 str(candidate.get("candidate_key") or candidate.get("offer_id") or ""),
             ),

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import inspect
 import threading
 import time
@@ -61,6 +62,19 @@ POD_PROGRESS_TIMEOUT_SECONDS: int = 900
 
 # How often the deadline-aware wait loop polls for new completions.
 POD_WAIT_POLL_SECONDS: float = 5.0
+
+# 款式后处理（校验 + 切图 + 本地超分 + COS 发布 + 落库）的并发线程数。
+# 刻意**不**跟生图并发（image_workers=8）对齐：单款后处理实测约 32s，几乎全是
+# ONNX 4× 超分的 CPU 开销（不超分时只要 0.3s），本机仅 8 核，若开到 8 会与生图
+# 轮询互相抢核、单款退化到 100s+。3 线程的吞吐（3×60/32 ≈ 5.6 款/分）已明显高于
+# 生图实际到达率（实测 ≈ 2.8 款/分），同时给生图留下足够核。
+POD_POSTPROCESS_WORKERS: int = 3
+
+# ---- 临时诊断开关（定位「生图窗口填不满」用，定位后连同打点代码一并删除）----
+# 仅当 WH_POD_FILL_TRACE=1 时才输出回填打点日志：默认关闭，避免同步日志 I/O 影响
+# 对时序敏感的用例（如 test_four_grid_generation_and_postprocess_stay_within_image_workers）
+# 与正常运行时性能。
+POD_FILL_TRACE_ENABLED: bool = os.environ.get("WH_POD_FILL_TRACE", "").strip() == "1"
 
 # Provider status classes whose failure should be auto-retried once on the first
 # image-generation attempt (e.g. the 600s polling timeout is "transient"). These
@@ -197,6 +211,35 @@ def _serial_batch_action(function):
     return wrapped
 
 
+@dataclass(frozen=True)
+class _StyleAttemptPolicy:
+    """「为某一款登记并解析生图调用」的策略：初次生成与重跑唯一的差别都在这里。
+
+    有了它，重跑可以直接复用 :meth:`PodBatchWorker._process_style_grids_streaming` 的
+    有界生图窗口与独立后处理池（原先逐款调用 ``regenerate_style`` 是串行的，而且每款
+    还要单独抢一次批级锁）。
+    """
+
+    # attempt 1 / 2 对应的调用记录类型（审计与计费对齐用）。
+    call_kinds: tuple[str, str]
+    # True：每次重跑都新建调用记录；False：沿用初次/续跑的幂等复用语义。
+    fresh_calls: bool = False
+    # True：provider 调用 id 从计费计划里解析（重跑计划的调用 id 以 action_id 开头）；
+    # False：沿用 ``{batch_id}:style:{款}:image:{尝试}`` 拼装。
+    plan_aware_call_ids: bool = False
+    # 图片款两次都失败时，是否同步把标题行标记失败（保持 regenerate_style 的旧行为）。
+    fail_title_with_image: bool = False
+
+
+INITIAL_STYLE_POLICY = _StyleAttemptPolicy(call_kinds=("initial", "retry"))
+REGENERATE_STYLE_POLICY = _StyleAttemptPolicy(
+    call_kinds=("regenerate_style", "regenerate_style_retry"),
+    fresh_calls=True,
+    plan_aware_call_ids=True,
+    fail_title_with_image=True,
+)
+
+
 class PodBatchWorker:
     """Coordinates POD jobs without borrowing product-processing workers or gates."""
 
@@ -221,10 +264,11 @@ class PodBatchWorker:
         self._futures: dict[tuple[str, str], Future[Any]] = {}
         self._futures_lock = threading.Lock()
         self._billing_runs: dict[str, PodBillingRun] = {}
-        # 独立的款式后处理执行池：容量与速创生图并发一致（image_workers），
-        # 使四图返回后的校验、切图、COS 发布与结果落库也能最多 8 款并行。
+        # 独立的款式后处理执行池：容量为 POD_POSTPROCESS_WORKERS（默认 3），但不超过
+        # 生图并发——后处理任务本就由生图完成喂入，超过生图并发没有意义。后处理几乎
+        # 全是本地 ONNX 超分的 CPU 开销，开满会与生图轮询抢核、反而更慢（见该常量注释）。
         self._style_postprocess_pool = ThreadPoolExecutor(
-            max_workers=self._image_worker_count(),
+            max_workers=max(1, min(int(POD_POSTPROCESS_WORKERS), self._image_worker_count())),
             thread_name_prefix="pod-style-postprocess",
         )
         self._closing = threading.Event()
@@ -889,21 +933,50 @@ class PodBatchWorker:
         title_style_indices: tuple[int, ...],
         billing_run: PodBillingRun | None = None,
     ) -> None:
-        """Process the selected retry actions serially and settle one billing run."""
+        """重跑用户勾选的失败款，全部结束后结算同一个计费 run。
+
+        图片款**直接复用初次生成那条流水线**（:meth:`_process_style_grids_streaming`：
+        有界生图窗口 ``image_workers`` + 独立后处理池），只把调用登记策略换成重跑策略。
+        原先逐款调用 ``regenerate_style`` 是串行的（每款还要单独抢一次批级锁），132 款要
+        跑两小时以上。标题款同样提交到 ``title_runtime`` 并发池（与初次生成的语义一致），
+        不再逐款串行。
+        """
         run = billing_run or self._billing_runs.get(f"batch-retry:{batch_id}")
         if run is None:
             raise RuntimeError("POD batch retry requires a fresh short-lived billing grant")
         try:
-            for style_index in image_style_indices:
-                self.regenerate_style(
-                    batch_id,
-                    style_index,
-                    "",
+            if image_style_indices:
+                batch = self.repository.get_batch_internal(batch_id)
+                if batch.get("mode") in {"semi", "replica"}:
+                    # 半定制零参考图；复刻按款解析目标白底图，都不用批次级锚点模板。
+                    template_content, template_content_type = b"", ""
+                else:
+                    template_asset = self.repository.get_asset(
+                        batch["template"]["asset_id"], batch["workspace_id"], batch["owner_user_id"]
+                    )
+                    template_content = self.assets.read(template_asset["relative_path"])
+                    template_content_type = template_asset["content_type"]
+                self._process_style_grids_streaming(
+                    batch,
+                    template_content,
+                    template_content_type,
                     run,
-                    finalize=False,
+                    style_indices=list(image_style_indices),
+                    policy=REGENERATE_STYLE_POLICY,
                 )
-            for style_index in title_style_indices:
-                self.regenerate_title(batch_id, style_index, run, finalize=False)
+            if title_style_indices:
+                if self.title_runtime is None:
+                    raise RuntimeError("POD title runtime is disabled")
+                # 标题重试复用初次的并发语义：提交到 title_runtime 并发池后统一等待，
+                # 不再逐款串行。
+                title_futures = [
+                    self.title_runtime.submit(
+                        self.regenerate_title, batch_id, style_index, run, finalize=False
+                    )
+                    for style_index in title_style_indices
+                ]
+                for future in as_completed(title_futures):
+                    future.result()
             self.repository.settle_batch_by_listing_readiness(batch_id)
         finally:
             try:
@@ -911,6 +984,7 @@ class PodBatchWorker:
             except Exception as exc:
                 self.repository.mark_billing_pending(run.action_key, safe_error_message(exc))
             self._discard_billing_run(f"batch-retry:{batch_id}", run)
+
 
     def close(self) -> None:
         if self._closing.is_set():
@@ -1213,6 +1287,8 @@ class PodBatchWorker:
         billing_run: PodBillingRun,
         *,
         execution: BatchExecutionContext | None = None,
+        style_indices: list[int] | None = None,
+        policy: _StyleAttemptPolicy = INITIAL_STYLE_POLICY,
     ) -> None:
         """Generate and persist styles with a bounded generation window and a
         parallel post-processing pool.
@@ -1224,17 +1300,25 @@ class PodBatchWorker:
         time instead of queuing behind a single-threaded post-processing phase.
         Titles stay serialized inside the title runtime and continue to use
         already-accepted titles and visual themes as deduplication context.
+
+        ``style_indices`` 缺省时按批次里尚未完成的款推导（初次/续跑）；重跑失败款时由
+        调用方显式传入勾选的款，并通过 ``policy`` 换成重跑的调用登记策略。
         """
         completed_by_style: dict[int, int] = {}
         for item in batch.get("items", []):
             if item.get("status") == "completed":
                 style_index = int(item.get("style_index") or 0)
                 completed_by_style[style_index] = completed_by_style.get(style_index, 0) + 1
-        style_indices = [
-            index
-            for index in range(1, batch["requested_count"] + 1)
-            if completed_by_style.get(index, 0) < 4
-        ]
+        if style_indices is None:
+            style_indices = [
+                index
+                for index in range(1, batch["requested_count"] + 1)
+                if completed_by_style.get(index, 0) < 4
+            ]
+        else:
+            style_indices = [int(index) for index in style_indices]
+        if not style_indices:
+            return
         processed: set[int] = set()
         retry_reasons: dict[int, str] = {}
         in_loop_retried: set[int] = set()
@@ -1254,6 +1338,7 @@ class PodBatchWorker:
                 attempt=attempt,
                 billing_run=billing_run,
                 execution_epoch=execution.epoch if execution is not None else None,
+                policy=policy,
             )
             retry_reasons.update(attempt_errors)
             processed |= attempt_processed
@@ -1274,12 +1359,22 @@ class PodBatchWorker:
 
         for style_index in style_indices:
             if style_index not in processed:
+                reason = retry_reasons.get(style_index, "本款两次图片生成均失败")
                 self.repository.fail_style_grid(
                     batch,
                     style_index,
-                    retry_reasons.get(style_index, "本款两次图片生成均失败"),
+                    reason,
                     execution_epoch=execution.epoch if execution is not None else None,
                 )
+                # 重跑要与 regenerate_style 的旧行为一致：图片款彻底失败时标题行也一并
+                # 标记失败，否则该标题会一直是 generating/queued 而永不收敛。
+                if policy.fail_title_with_image and self._title_enabled(batch):
+                    self.repository.fail_style_title(
+                        batch["batch_id"],
+                        style_index,
+                        reason,
+                        execution_epoch=execution.epoch if execution is not None else None,
+                    )
 
     def _process_pending_titles_from_existing_images(
         self,
@@ -1359,6 +1454,7 @@ class PodBatchWorker:
         attempt: int,
         billing_run: PodBillingRun,
         execution_epoch: int | None = None,
+        policy: _StyleAttemptPolicy = INITIAL_STYLE_POLICY,
     ) -> tuple[set[int], dict[int, str], bool, set[int]]:
         """Pipeline one generation attempt with per-style post-processing.
 
@@ -1378,6 +1474,28 @@ class PodBatchWorker:
         pause_requested = False
         max_in_flight = self._image_worker_count()
         _progress_deadline = time.monotonic() + POD_PROGRESS_TIMEOUT_SECONDS
+
+        # ---- 临时诊断打点：排查「生图窗口为何填不满 / 提交卡在哪」，定位后删除 ----
+        def _trace(message: str, *args: Any) -> None:
+            if not POD_FILL_TRACE_ENABLED:
+                return
+            try:
+                business_logger("pod_processing").info(
+                    "POD回填打点 | " + message, *args
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+        def _window() -> str:
+            return (
+                f"在飞图={len(image_futures)} 在飞后处理={len(postprocess_futures)}"
+                f" 上限={max_in_flight}"
+            )
+
+        _trace(
+            "进入 _stream_style_attempts | 款数=%d", len(list(style_indices)),
+        )
+        # --------------------------------------------------------------------
 
         def cancel_inflight() -> None:
             for future in (*image_futures, *postprocess_futures):
@@ -1424,15 +1542,13 @@ class PodBatchWorker:
             面板级失败只重试该面板（见 :meth:`_generate_one_panel`），失败重试/重启
             只落到尚未产生结果的调用，避免重复计费或 outcome 冲突。
             """
-            attempt_kind = "initial" if attempt_value == 1 else "retry"
-            call = self.repository.get_or_create_generation_call(
+            call = self._open_generation_call(
                 batch,
-                call_kind=attempt_kind,
-                call_index=style_index,
+                policy,
+                attempt_kind=policy.call_kinds[attempt_value - 1],
+                style_index=style_index,
                 # 调用级快照 = 本次真实提交的 4 个单面板提示词（款级快照是四宫格规范文本）。
-                prompt_snapshot=self._replica_panel_prompt_manifest(
-                    batch, style_index, attempt_value
-                ),
+                prompt=self._replica_panel_prompt_manifest(batch, style_index, attempt_value),
             )
             call["style_index"] = style_index
             if not billing_run.grant.provider_key("wuyin"):
@@ -1465,7 +1581,7 @@ class PodBatchWorker:
             if self._style_generation_strategy(batch, style_index) == "independent_panels":
                 submit_panel_style(style_index, attempt_value)
                 return
-            attempt_kind = "initial" if attempt_value == 1 else "retry"
+            attempt_kind = policy.call_kinds[attempt_value - 1]
             prompt, request_kwargs = self._style_generation_inputs(
                 batch,
                 style_index,
@@ -1473,11 +1589,15 @@ class PodBatchWorker:
                 template_content=template_content,
                 template_content_type=template_content_type,
             )
-            call = self.repository.get_or_create_generation_call(
-                batch, call_kind=attempt_kind, call_index=style_index, prompt_snapshot=prompt
+            call = self._open_generation_call(
+                batch, policy, attempt_kind=attempt_kind, style_index=style_index, prompt=prompt
             )
             call["style_index"] = style_index
-            provider_call_id = f"{batch['batch_id']}:style:{style_index}:image:{attempt_value}"
+            provider_call_id = (
+                self._image_call_id(billing_run, style_index, attempt_value)
+                if policy.plan_aware_call_ids
+                else f"{batch['batch_id']}:style:{style_index}:image:{attempt_value}"
+            )
             billing_status = billing_run.call_status(provider_call_id)
             if billing_status == "success":
                 asset_id = str(call.get("grid_asset_id") or "")
@@ -1532,12 +1652,16 @@ class PodBatchWorker:
 
         while True:
             # Fill the bounded generation window while not paused.
+            _fill_started = time.monotonic()
+            _submitted_now = 0
             while not pause_requested and not exhausted and len(image_futures) < max_in_flight:
                 if self._closing.is_set():
                     raise PodBillingAuthorizationRequired(
                         "POD worker stopped before the remaining provider calls started"
                     )
+                _probe_started = time.monotonic()
                 status = self.repository.get_batch_status(batch["batch_id"])
+                _probe_ms = (time.monotonic() - _probe_started) * 1000.0
                 if status == "cancelling":
                     raise PodBatchCancelled("POD 批次已取消")
                 if status == "pausing":
@@ -1548,10 +1672,32 @@ class PodBatchWorker:
                 except StopIteration:
                     exhausted = True
                     break
+                _submit_started = time.monotonic()
                 submit_style(style_index, attempt)
+                _submit_ms = (time.monotonic() - _submit_started) * 1000.0
+                _submitted_now += 1
+                _trace(
+                    "提交 款=%s 轮次=%s | submit耗时=%.0fms 查状态=%.0fms | %s",
+                    style_index,
+                    attempt,
+                    _submit_ms,
+                    _probe_ms,
+                    _window(),
+                )
+            _fill_ms = (time.monotonic() - _fill_started) * 1000.0
+            if _submitted_now or _fill_ms > 300.0:
+                _trace(
+                    "fill结束 | 本轮提交=%d 填充耗时=%.0fms 暂停=%s 耗尽=%s | %s",
+                    _submitted_now,
+                    _fill_ms,
+                    pause_requested,
+                    exhausted,
+                    _window(),
+                )
 
             # Nothing left in flight; the attempt is complete.
             if not image_futures and not postprocess_futures:
+                _trace("无在飞任务，本轮流水线结束 | 轮次=%s", attempt)
                 break
 
             # Wait for the first completion across generation and post-processing.
@@ -1560,16 +1706,30 @@ class PodBatchWorker:
                 raise RuntimeError(
                     f"batch coordinator timed out after {POD_PROGRESS_TIMEOUT_SECONDS}s of inactivity"
                 )
+            _wait_started = time.monotonic()
             done, _ = wait(
                 tuple(image_futures) + tuple(postprocess_futures),
                 timeout=min(remaining, POD_WAIT_POLL_SECONDS),
                 return_when=FIRST_COMPLETED,
             )
+            _wait_ms = (time.monotonic() - _wait_started) * 1000.0
             if not done:
+                _trace(
+                    "wait空转 %.0fms（无任何完成）| %s", _wait_ms, _window()
+                )
                 continue
+            _trace(
+                "wait返回 %.0fms 完成数=%d | %s", _wait_ms, len(done), _window()
+            )
             for future in done:
                 if future in image_futures:
                     call, style_index, strategy = image_futures.pop(future)
+                    _trace(
+                        "收到生图结果 款=%s strategy=%s | %s",
+                        style_index,
+                        strategy,
+                        _window(),
+                    )
                     try:
                         result = future.result()
                     except PodBillingAuthorizationRequired:
@@ -1607,6 +1767,7 @@ class PodBatchWorker:
                         submit_postprocess(style_index, call, result)
                 elif future in postprocess_futures:
                     style_index = postprocess_futures.pop(future)
+                    _trace("收到后处理完成 款=%s | %s", style_index, _window())
                     try:
                         future.result()
                         self.repository.touch_batch_progress(
@@ -2037,6 +2198,31 @@ class PodBatchWorker:
         if len(fallback) == 1:
             return fallback[0]
         raise RuntimeError(f"POD image call plan is missing style {style_index} attempt {attempt}")
+
+    def _open_generation_call(
+        self,
+        batch: dict[str, Any],
+        policy: _StyleAttemptPolicy,
+        *,
+        attempt_kind: str,
+        style_index: int,
+        prompt: str,
+    ) -> dict[str, Any]:
+        """按策略登记本次生图调用记录。
+
+        初次/续跑走幂等复用（重启后接回同一款）；重跑每次都新建一条，与
+        :meth:`regenerate_style` 的旧行为一致。
+        """
+        if not policy.fresh_calls:
+            return self.repository.get_or_create_generation_call(
+                batch, call_kind=attempt_kind, call_index=style_index, prompt_snapshot=prompt
+            )
+        return self.repository.create_generation_call(
+            batch,
+            call_kind=attempt_kind,
+            call_index=self.repository.next_generation_call_index(batch["batch_id"], attempt_kind),
+            prompt_snapshot=prompt,
+        )
 
     def _lifestyle_media(self, context: dict[str, Any]) -> Any:
         batch = context["batch"]

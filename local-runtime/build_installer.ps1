@@ -144,7 +144,29 @@ if ($LASTEXITCODE -ne 0) {
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller install failed" }
 }
 
-# 3. PyInstaller bundle (onedir -> dist\MainPG)
+# 3. DirectML GPU acceleration for the bundled super-resolution (Windows builds).
+# workbench.spec collects the "onnxruntime" package from THIS interpreter, so the
+# DirectML build must be the one installed here. onnxruntime-directml and
+# onnxruntime both ship the same "onnxruntime" module (official guidance: pick
+# one). rapidocr/rembg only need that module at runtime, so: uninstall the CPU
+# build, install the DirectML build with --no-deps, then verify both still
+# import. DirectML covers NVIDIA / AMD / Intel GPUs and needs no CUDA, so end
+# users install nothing beyond the normal graphics driver.
+# Runtime side: wh_local/media_enhance.py::_select_providers() auto-detects
+# DmlExecutionProvider (env WH_POD_IMAGE_ENHANCE_DEVICE=cpu forces CPU).
+# If this swap ever breaks the build machine, restore it with:
+#   $python -m pip install --force-reinstall onnxruntime
+& $python -c "import onnxruntime, sys; sys.exit(0 if 'DmlExecutionProvider' in onnxruntime.get_available_providers() else 1)"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[build] switching onnxruntime -> onnxruntime-directml (GPU: NVIDIA/AMD/Intel) ..."
+    & $python -m pip uninstall -y onnxruntime
+    & $python -m pip install --no-deps "onnxruntime-directml>=1.20,<2"
+    if ($LASTEXITCODE -ne 0) { throw "onnxruntime-directml install failed" }
+    & $python -c "import onnxruntime, rapidocr_onnxruntime"
+    if ($LASTEXITCODE -ne 0) { throw "onnxruntime/rapidocr import failed after DirectML swap; restore CPU build with: pip install --force-reinstall onnxruntime" }
+}
+
+# 4. PyInstaller bundle (onedir -> dist\MainPG)
 Write-Host "[build] running PyInstaller ..."
 & $python -m PyInstaller workbench.spec --noconfirm --clean
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed" }

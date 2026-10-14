@@ -90,9 +90,10 @@ def _cross_language_category_mismatch(quote_title: str, source_title: str) -> bo
 
     Temu titles are often English while 1688 titles are Chinese.  We keep
     ambiguous results reviewable, but when the English product class has a
-    direct Chinese equivalent in the candidate title, require every stated
-    class (for example, ``cooling`` + ``mat``) to be present.  This runs for
-    every image hit, not just whichever one OneBound returned first.
+    direct Chinese equivalent in the candidate title, at least one stated
+    class (for example, ``cooling`` or ``mat``) must be present; only when
+    none of them appear is it a hard conflict.  This runs for every image
+    hit, not just whichever one OneBound returned first.
     """
     if _has_shared_language(quote_title, source_title):
         return False
@@ -103,8 +104,12 @@ def _cross_language_category_mismatch(quote_title: str, source_title: str) -> bo
     if any(term in quote for term in _TOY_TERMS) and not any(term in source for term in _TOY_TERMS):
         return True
     required = [aliases for triggers, aliases in _ENGLISH_CATEGORY_TERMS if any(trigger in quote for trigger in triggers)]
-    if required and any(not any(alias in source for alias in aliases) for aliases in required):
-        return True
+    if required:
+        # Temu 已明确说出商品类目：只要 1688 候选命中其中任一类目就不算硬冲突，
+        # 全部落空才判为类目冲突。仅凭 1688 标题的词（如“玩具”）反推 Temu 类目
+        # 并排除候选，是此前修过的 bug，这里不再复现。
+        return all(not any(alias in source for alias in aliases) for aliases in required)
+    # Temu 标题没有可识别的类目时，才用“强不相关商品名”兜底噪声。
     # Strongly unrelated merchandise nouns are a hard conflict when none of
     # them occur in the Temu title.  This catches noisy image hits such as pet
     # medicine, chew toys or food for a cooling mat before any link is exposed.

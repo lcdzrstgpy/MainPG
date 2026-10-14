@@ -27,6 +27,10 @@ hiddenimports: list = []
 # 第三方包完整收集（datas/binaries/hiddenimports）
 # 说明：uvicorn 在运行期会惰性加载 websockets/wsproto，若不显式 collect 会导致
 # 打包产物启动时出现 "Unsupported upgrade request" 警告，故补充进收集列表。
+# 注意 onnxruntime：这里按「导入包名」收集，收的就是构建机上当前装的那个发行版。
+# Windows 构建机在 build_installer.ps1 第 3 步装了 onnxruntime-directml（DirectML GPU
+# 加速，N/A/I 通吃、免 CUDA），所以 Windows 包内置 GPU 版；mac 构建机仍是 CPU 版。
+# 运行期选哪个后端见 wh_local/media_enhance.py 的 _select_providers()。
 for _pkg in ("uvicorn", "qcloud_cos", "rapidocr_onnxruntime", "onnxruntime", "openpyxl", "PIL", "websockets", "wsproto"):
     _d, _b, _h = collect_all(_pkg)
     datas += _d

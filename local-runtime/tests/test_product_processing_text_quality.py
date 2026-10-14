@@ -783,7 +783,7 @@ def test_low_confidence_subject_passes_when_user_confirms_sellable(monkeypatch) 
 
 
 @pytest.mark.parametrize(
-    ("error", "expected_status", "expected_failure_class"),
+    ("error", "expected_vision_status_class"),
     [
         (
             DoubaoVisionError(
@@ -791,8 +791,7 @@ def test_low_confidence_subject_passes_when_user_confirms_sellable(monkeypatch) 
                 error_kind="transient",
                 retryable=True,
             ),
-            "failed",
-            "technical_retryable",
+            "transient",
         ),
         (
             DoubaoVisionError(
@@ -800,8 +799,7 @@ def test_low_confidence_subject_passes_when_user_confirms_sellable(monkeypatch) 
                 error_kind="configuration",
                 retryable=False,
             ),
-            "attention_required",
-            "configuration_blocked",
+            "configuration",
         ),
         (
             DoubaoVisionError(
@@ -809,14 +807,14 @@ def test_low_confidence_subject_passes_when_user_confirms_sellable(monkeypatch) 
                 error_kind="invalid_response",
                 retryable=False,
             ),
-            "attention_required",
-            "identity_review_required",
+            "invalid_response",
         ),
     ],
 )
-def test_doubao_failure_blocks_gpt_with_stable_task_status(
-    monkeypatch, error, expected_status: str, expected_failure_class: str
+def test_doubao_failure_falls_back_to_source_title_and_still_runs_text(
+    monkeypatch, error, expected_vision_status_class: str
 ) -> None:
+    """主体识别失败按「尽量放行」处理：不再拦截整条商品，改用源标题兜底并继续文案/生图。"""
     service = _process_service(monkeypatch)
     monkeypatch.setattr(
         service,
@@ -825,20 +823,20 @@ def test_doubao_failure_blocks_gpt_with_stable_task_status(
     )
     monkeypatch.setattr(
         service,
-        "_generate_doubao_text",
-        lambda *_args, **_kwargs: pytest.fail("GPT text must not run"),
-    )
-    monkeypatch.setattr(
-        service,
         "_generate_grid_images",
-        lambda *_args, **_kwargs: pytest.fail("GPT image must not run"),
+        lambda *_args, **_kwargs: GridImageOutput(),
     )
 
     result = service._process_one({"id": 1}, _draft(), _settings(), False, task_id=12)
 
-    assert result["status"] == expected_status
-    assert result["result"]["error_type"] == "vision_service_unavailable"
-    assert result["result"]["failure_class"] == expected_failure_class
+    assert result["status"] == "completed"
+    # 识别失败不再阻断文案生成：文案照常产出。
+    assert result["result"]["text_generation"]["status"] == "success"
+    assert (
+        result["result"]["provider_status_classes"]["doubao_vision"]
+        == expected_vision_status_class
+    )
+    assert "subject_identity:source-title-fallback" in result["result"]["ai_notes"]
 
 
 def test_doubao_retry_exhaustion_reports_two_provider_attempts(monkeypatch) -> None:
@@ -857,7 +855,8 @@ def test_doubao_retry_exhaustion_reports_two_provider_attempts(monkeypatch) -> N
 
     result = service._process_one({"id": 1}, _draft(), _settings(), False, task_id=12)
 
-    assert result["status"] == "failed"
+    # 识别失败不在批次层面判失败（尽量放行），但仍如实记录底层重试次数。
+    assert result["status"] == "completed"
     assert result["result"]["provider_attempts"]["doubao_vision"] == 2
 
 
@@ -1514,8 +1513,8 @@ def test_branch_receipt_inputs_track_real_dependencies_without_cross_scope(monke
     )
 
 
-def test_process_grid_quality_failure_is_retryable_and_never_marks_completed(monkeypatch) -> None:
-    """四宫格失败必须明确失败，不能用零轮播结果伪装完成。"""
+def test_grid_quality_failure_falls_back_to_source_images_and_completes(monkeypatch) -> None:
+    """四宫格未凑满时按「尽量放行」处理：用源图兜底继续完成，并留下部分放行证据。"""
     service = _process_service(monkeypatch)
     monkeypatch.setattr(service_module, "_ai_enabled", lambda: True)
     monkeypatch.setattr(
@@ -1537,22 +1536,20 @@ def test_process_grid_quality_failure_is_retryable_and_never_marks_completed(mon
 
     result = service._process_one({"id": 1}, _draft(), _settings(), False, task_id=12)
 
-    assert result["status"] == "attention_required"
-    assert result["result"]["error_type"] == "image_grid_incomplete"
-    assert result["result"]["failure_class"] == "technical_retryable"
-    assert result["result"]["partial_result"] is True
-    assert result["result"]["pending_stage"] == "carousel_images"
-    assert result["result"]["retryable"] is True
+    assert result["status"] == "completed"
+    assert result["result"]["text_generation"]["status"] == "success"
+    # 轮播用源图兜底，并记录「部分放行」证据。
+    assert result["result"]["carousel_image_paths"] == ["https://example.com/source.jpg"]
+    assert result["result"]["provider_status_classes"]["four_grid"] == "source_fallback"
+    assert "grid:partial:allowed" in result["result"]["ai_notes"]
     assert result["result"]["optimized_title"].startswith(
         "Insulated Stainless Steel Travel Mug"
     )
     assert result["result"]["description"] == VALID_DESCRIPTION
-    assert result["result"]["text_generation"]["status"] == "success"
-    assert result["result"]["rejected_image_paths"] == ["/tmp/provider-original.png"]
     assert "force_import_acknowledged" not in "|".join(result["result"]["ai_notes"])
 
 
-def test_image_failure_preserves_successful_doubao_text_receipt(monkeypatch) -> None:
+def test_image_failure_falls_back_and_preserves_successful_doubao_text_receipt(monkeypatch) -> None:
     service = _process_service(monkeypatch)
     service.repository = _ReceiptRepository()
     def fail_grid(*args, **_kwargs):
@@ -1571,13 +1568,11 @@ def test_image_failure_preserves_successful_doubao_text_receipt(monkeypatch) -> 
         {"id": 1, "item_id": 101}, _draft(), _settings(), False, task_id=12
     )
 
-    assert result["status"] == "attention_required"
-    assert result["reason"] == "商品图片待补充"
-    assert result["result"]["error_type"] == "image_grid_incomplete"
-    assert "本地质量门" in result["result"]["debug_hint"]
-    assert (
-        "底层原因：reference image download failed: DNS lookup failed" in result["result"]["debug_hint"]
-    )
+    # 生图失败按「尽量放行」处理：源图兜底继续完成，同时保留已成功的文案回执。
+    assert result["status"] == "completed"
+    notes = "|".join(result["result"]["ai_notes"])
+    assert "image_set:ai-failed: reference image download failed: DNS lookup failed" in notes
+    assert "grid:partial:allowed" in notes
     assert "doubao_text" in service.repository.receipts
     assert service.repository.receipts["doubao_text"]["output"]["title"].startswith(
         "Insulated Stainless Steel Travel Mug"
