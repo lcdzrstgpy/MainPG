@@ -48,6 +48,7 @@ from ..customer.email_sender import TencentCloudSESEmailSender
 from ..customer.local_session import LocalSessionService
 from ..customer.remote_client import CustomerAuthClient
 from ..customer.routes import create_customer_router
+from ..customer.session_keepalive import start_remote_session_keepalive
 from ..customer.admin_proxy import create_admin_proxy_router
 from ..pod_log_upload import PodLogUploadTask
 from ..runtime_logs import runtime_log_dir
@@ -485,6 +486,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         # cannot delay or make the desktop runtime unhealthy.
         # 分步打点：让启动挂起时能从 runtime.log 精确定位卡在哪一步。
         logger.info("lifespan step: startup begin")
+        session_keepalive = None
         update_manager.start_check()
         logger.info("lifespan step: update_manager started")
         patch_manager.start_check()
@@ -527,6 +529,21 @@ def create_app(database_path: Path | None = None) -> FastAPI:
             # 启动时必然还没有远端 token（它只存在进程内存），这次绝大多数情况直接跳过，
             # 不建线程、不阻塞：真正生效的是「登录成功后」那次触发（见 customer/routes.py）。
             logger.info("lifespan step: pod log upload due check -> %s", pod_log_task.run_if_due())
+        # 远端会话保活：本地请求多走本地会话、不触达远端，闲置后远端会把会话判为
+        # "失联"，此后同类设备的重复登录会**静默撤销**当前会话（用户表现为"登录态
+        # 莫名其妙掉了"）。这里周期性地用活跃远端令牌做一次只读 /me，刷新远端
+        # last_used_at，使重复登录被明确拒绝而不是顶掉当前会话。
+        # 保活属可选增强，任何失败都不得阻断启动。
+        try:
+            session_keepalive = start_remote_session_keepalive(
+                remote_customer_auth, customer_sessions, logger=logger
+            )
+            logger.info(
+                "lifespan step: session keepalive -> %s",
+                f"on({session_keepalive.interval_seconds}s)" if session_keepalive else "off",
+            )
+        except Exception as exc:  # noqa: BLE001 - 保活故障不得阻断主程序
+            logger.warning("lifespan step: session keepalive start failed (ignored): %s", exc)
         logger.info("lifespan step: startup done, yielding")
         try:
             yield
@@ -550,6 +567,8 @@ def create_app(database_path: Path | None = None) -> FastAPI:
                 pod_ai_runtime.close(wait=False, cancel_futures=True)
             if clipforge_service is not None:
                 clipforge_service.stop()
+            if session_keepalive is not None:
+                session_keepalive.stop()
 
     app = FastAPI(
         title="H Smart Ecommerce Local Runtime",
