@@ -650,8 +650,7 @@ export function PodReplicaPage({ isActive = true }: Props) {
           <section className="pod-replica-composition-entry" aria-label="构图模板">
             <div className="pod-replica-composition-info">
               <span>COMPOSITION · 构图模板</span>
-              <b>{compositionName}</b>
-              <small>只作用于爆款复刻；产品支持手部使用 ≠ 本次必须生成手部画面。</small>
+              <b>当前生效模板：{compositionName}</b>
             </div>
             <div className="pod-replica-composition-actions">
               <button type="button" onClick={() => setCompositionDrawerOpen(true)}>

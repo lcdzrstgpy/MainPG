@@ -482,12 +482,6 @@
   word-break: break-word;
 }
 
-.pod-replica-composition-info small {
-  color: var(--pod-text-secondary);
-  font-size: 11px;
-  line-height: 1.5;
-}
-
 .pod-replica-composition-actions {
   flex: 0 0 auto;
   display: flex;
