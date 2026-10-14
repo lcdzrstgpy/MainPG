@@ -223,7 +223,10 @@ export const USAGE_SERVICE_LABEL: Record<UsageServiceGroup, string> = {
 const POD_SERVICE_LABEL: Record<string, string> = {
   pod_random_v1: "POD 全定制",
   pod_semi_v1: "POD 半定制",
+  // 复刻按 A/B 分档：A=普通生成（1 次全定制积分）、B=高清直出（4 倍）。历史流水沿用无后缀值。
   pod_replica_v1: "POD 爆款复刻",
+  pod_replica_v1_a: "POD 爆款复刻 · 普通生成",
+  pod_replica_v1_b: "POD 爆款复刻 · 高清直出",
 };
 
 export function usageServiceLabel(entry: BillingUsageEntry): string {

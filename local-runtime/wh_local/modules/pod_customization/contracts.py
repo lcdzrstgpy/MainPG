@@ -346,7 +346,7 @@ class ReplicaBatchCreate(BaseModel):
     source_asset_id: str = Field(min_length=1, max_length=64)
     title: str = Field(default="", max_length=120)
     creative_prompt: str = Field(default="", max_length=4000)
-    # 构图模板与生成策略：留空时由服务端按能力推荐 / 冻结计划决定。
+    # 构图模板由服务端按当前生效模板冻结；生成策略必须由前端用户显式下发，缺失按 grid 处理。
     composition_id: str = Field(default="", max_length=100)
     generation_strategy: GenerationStrategy | None = None
     # 原素材（A）识别结果确认：A 有低置信度字段时必须由用户确认后才允许提交。
