@@ -108,6 +108,119 @@ export const REPLICA_TARGET_FACT_FIELDS: readonly { key: string; label: string }
   { key: "occlusion_risk", label: "遮挡风险" },
 ];
 
+/**
+ * 事实值的英文稳定标识 → 中文展示名。
+ *
+ * 豆包按契约把产品类型 / 材质 / 使用方式返回成英文标识（后端据此做能力匹配），
+ * 所以只能在展示层翻译：绝不回写、不参与匹配。词表里没有的值原样显示。
+ */
+const REPLICA_FACT_VALUE_LABELS: Record<string, Record<string, string>> = {
+  product_type: {
+    tote_bag: "托特包",
+    duffel_bag: "圆筒旅行包",
+    backpack: "双肩包",
+    shoulder_bag: "单肩包",
+    crossbody_bag: "斜挎包",
+    drawstring_bag: "抽绳袋",
+    cosmetic_bag: "化妆包",
+    pouch: "收纳袋",
+    t_shirt: "T 恤",
+    tshirt: "T 恤",
+    hoodie: "连帽卫衣",
+    sweatshirt: "圆领卫衣",
+    cap: "帽子",
+    hat: "帽子",
+    pillow: "抱枕",
+    pillowcase: "抱枕套",
+    cushion: "靠垫",
+    blanket: "毛毯",
+    towel: "毛巾",
+    apron: "围裙",
+    socks: "袜子",
+    mug: "马克杯",
+    tumbler: "保温杯",
+    bottle: "水杯",
+    coaster: "杯垫",
+    placemat: "餐垫",
+    poster: "海报",
+    canvas: "装饰画",
+    phone_case: "手机壳",
+    mouse_pad: "鼠标垫",
+    sticker: "贴纸",
+    notebook: "笔记本",
+    journal: "手账本",
+    puzzle: "拼图",
+    keychain: "钥匙扣",
+    magnet: "冰箱贴",
+    nail_tip_set: "美甲片套装",
+    nail_tips: "美甲片",
+    pet_bed: "宠物窝",
+    pet_collar: "宠物项圈",
+    clock: "挂钟",
+    flag: "旗帜",
+  },
+  material: {
+    gel: "凝胶",
+    fabric: "织物",
+    cloth: "布料",
+    cotton: "棉",
+    canvas: "帆布",
+    linen: "亚麻",
+    denim: "牛仔",
+    polyester: "涤纶",
+    nylon: "尼龙",
+    velvet: "天鹅绒",
+    satin: "缎面",
+    leather: "皮革",
+    paper: "纸质",
+    cardboard: "硬纸板",
+    plastic: "塑料",
+    acrylic: "亚克力",
+    silicone: "硅胶",
+    rubber: "橡胶",
+    metal: "金属",
+    stainless_steel: "不锈钢",
+    aluminum: "铝合金",
+    wood: "木质",
+    bamboo: "竹",
+    glass: "玻璃",
+    ceramic: "陶瓷",
+    resin: "树脂",
+  },
+  supported_usage_modes: {
+    hand_worn: "手持佩戴",
+    hand_carried: "手提",
+    hand_carry: "手提",
+    carried: "手提",
+    shoulder_carried: "肩背",
+    back_carried: "背负",
+    body_worn: "人体穿着",
+    worn: "穿戴",
+    neck_worn: "颈部佩戴",
+    wall_mounted: "墙面悬挂",
+    wall_hung: "墙面悬挂",
+    hanging: "悬挂",
+    standalone: "独立摆放",
+    freestanding: "独立摆放",
+    tabletop: "桌面摆放",
+    desktop: "桌面摆放",
+    floor_standing: "落地摆放",
+  },
+};
+
+/** 单条事实值的展示文本：命中词表按中文展示，否则原样返回。 */
+function replicaFactValueText(key: string, value: unknown): string {
+  const table = REPLICA_FACT_VALUE_LABELS[key];
+  const label = (item: unknown): string => {
+    const text = String(item ?? "").trim();
+    if (!text) return "";
+    return table?.[text.toLowerCase().replace(/[\s-]+/g, "_")] ?? text;
+  };
+  if (Array.isArray(value)) return value.map(label).filter(Boolean).join("、");
+  if (value === null || value === undefined) return "";
+  return label(value);
+}
+
 /** 15 项固定能力的中文标签（候选标签、构图入口共用）。 */
 export const REPLICA_CAPABILITY_LABELS: Record<string, string> = {
   flat_print: "平面印花",
@@ -375,10 +488,7 @@ export function setReplicaPresentationPreference(
 export function replicaFactText(spec: ReplicaSpec | null, key: string): string {
   const fact = spec?.[key];
   if (!fact) return "";
-  const value = fact.value;
-  if (Array.isArray(value)) return value.map((item) => String(item)).filter(Boolean).join("、");
-  if (value === null || value === undefined) return "";
-  return String(value);
+  return replicaFactValueText(key, fact.value);
 }
 
 /** 读取一条事实的置信度；缺失返回 0。 */
@@ -394,12 +504,11 @@ export function replicaFactNeedsConfirmation(spec: ReplicaSpec | null, key: stri
   return replicaFactConfidence(spec, key) < REPLICA_FACT_CONFIDENCE_THRESHOLD;
 }
 
-/** 事实的生效文本：优先取用户修正，其次取识别结果。 */
+/** 事实的生效文本：优先取用户修正，其次取识别结果；英文标识按词表翻成中文展示。 */
 export function replicaEffectiveFactText(target: ReplicaTargetDraft, key: string): string {
   const override = (target.factOverrides as Record<string, unknown>)[key];
   if (override !== null && override !== undefined) {
-    if (Array.isArray(override)) return override.map((item) => String(item)).filter(Boolean).join("、");
-    return String(override);
+    return replicaFactValueText(key, override);
   }
   return replicaFactText(target.targetProductSpec, key);
 }

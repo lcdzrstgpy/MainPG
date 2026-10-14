@@ -14,6 +14,7 @@ import {
   replicaAnalysesConfirmed,
   replicaAnalysisBlockReason,
   replicaEffectiveFactText,
+  replicaFactText,
   replicaSourceNeedsConfirmation,
   replicaFeeEstimate,
   replicaFeeEstimateText,
@@ -249,4 +250,20 @@ test("fact overrides take precedence over recognised values and mark the target 
   assert.equal(replicaEffectiveFactText(corrected, "product_type"), "方形抱枕");
   assert.equal(replicaEffectiveFactText(corrected, "printable_regions"), "正面、背面");
   assert.deepEqual(parseReplicaListFact("a、b, c"), ["a", "b", "c"]);
+});
+
+test("english fact identifiers are shown as chinese and unknown values pass through", () => {
+  const spec: ReplicaSpec = {
+    product_type: { value: "duffel_bag", confidence: 0.9, source: "model" },
+    material: { value: "gel", confidence: 0.9, source: "model" },
+    supported_usage_modes: { value: ["hand_carried", "wall_mounted"], confidence: 0.9, source: "model" },
+    // 词表里没有的值原样显示，绝不吞掉或编造。
+    surface_texture: { value: "mystery_finish", confidence: 0.9, source: "model" },
+  };
+  const target = validTarget({ targetProductSpec: spec });
+  assert.equal(replicaFactText(spec, "product_type"), "圆筒旅行包");
+  assert.equal(replicaFactText(spec, "material"), "凝胶");
+  assert.equal(replicaFactText(spec, "supported_usage_modes"), "手提、墙面悬挂");
+  assert.equal(replicaFactText(spec, "surface_texture"), "mystery_finish");
+  assert.equal(replicaEffectiveFactText(target, "supported_usage_modes"), "手提、墙面悬挂");
 });
