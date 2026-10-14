@@ -102,7 +102,7 @@ const BUSINESS_FIELDS: Array<{
     key: "copy_restrictions",
     label: "标题/描述限制",
     maxLength: POD_COPY_RESTRICTIONS_MAX_LENGTH,
-    placeholder: "谨慎填写：如「标题不要出现刺绣」「明确带上 2D Flat」",
+    placeholder: "例：标题不要出现刺绣",
     hint: "选填，建议留空、谨慎填写。填了就请写明确说法，例如「标题不要出现刺绣」「标题和描述都要明确带上 2D Flat」；该限制只作用于 AI 生成的标题与描述，不影响图片，也不会放宽平台的违禁词、品牌、长度等硬性规则",
   },
 ];

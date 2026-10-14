@@ -376,7 +376,8 @@
 /* 标签列要能容下最长的「标题/描述限制 + ⓘ」，否则会换行把标签块撑高。 */
 .pod-business-editor > .pod-business-fields > label { grid-template-columns: 120px minmax(0, 1fr); min-height: var(--pod-business-row-height); align-items: stretch; }
 .pod-business-editor > .pod-business-fields > label > span { min-height: var(--pod-business-row-height); height: 100%; align-items: center; padding-top: 0; }
-.pod-business-editor > .pod-business-fields > label > :is(input, textarea) { min-height: var(--pod-business-row-height); }
+/* 窄侧栏里字号略缩：输入/占位文字一行放得下的字更多，不再折行。 */
+.pod-business-editor > .pod-business-fields > label > :is(input, textarea) { min-height: var(--pod-business-row-height); font-size: .64rem; }
 .pod-business-editor > .pod-business-fields > label > input { height: var(--pod-business-row-height); }
 .pod-business-editor > .pod-business-fields > label > textarea { height: var(--pod-business-row-height); overflow-y: hidden; resize: none; }
 /* 业务字段字数提示：与后端字符上限对齐。单值字段显示「已用/上限」，
