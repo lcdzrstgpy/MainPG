@@ -52,3 +52,12 @@ html[data-perf-mode="on"] .auth-form-card,
 html[data-perf-mode="on"] .auth-brand-card > * {
   animation: none !important;
 }
+
+/* 6) 框架级「布局过渡」在流畅模式下瞬时到位。侧栏折叠改的是 grid 列宽、子菜单展开改的是
+      grid-template-rows —— 两者都**逐帧重排**（不只是重绘），弱机上最容易掉帧；
+      此前流畅模式只关了动画与毛玻璃，没管 transition，这几条仍在逐帧触发重排。 */
+html[data-perf-mode="on"] .workspace-shell,
+html[data-perf-mode="on"] .sidebar-card,
+html[data-perf-mode="on"] .sidebar-submenu {
+  transition: none !important;
+}

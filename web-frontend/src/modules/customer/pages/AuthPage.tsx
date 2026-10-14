@@ -125,13 +125,20 @@ export function AuthPage({ onEnter }: AuthPageProps) {
       if (cancelled || accounts.length === 0) return;
       setSavedAccounts(accounts);
       const latest = accounts[0];
+      // 只有「用户还没动账号框」时才自动填充。用户一旦已经输入（含浏览器自动填充），
+      // 后续的密码回填与「记住密码」回显必须一并放弃 —— 否则会把 accounts[0] 的密码
+      // 填进用户自己敲的另一个账号里，变成「账号 A + 密码 B」。
+      const canAutofill = !identifierRef.current.trim();
       setIdentifier((current) => current || latest.identifier);
-      if (latest.has_password) {
-        // 已保存过密码：勾选框回显为「记住」，并尽力取回密码填充。
-        setRememberPassword(true);
-        const pwd = await revealSavedPassword(latest.identifier);
-        if (!cancelled && pwd) setPassword((current) => current || pwd);
-      }
+      if (!canAutofill || !latest.has_password) return;
+      // 与 pickSavedAccount 共用同一个序号：两者互相作废，谁后发起谁生效。
+      const sequence = ++pickSequenceRef.current;
+      // 已保存过密码：勾选框回显为「记住」，并尽力取回密码填充。
+      setRememberPassword(true);
+      const pwd = await revealSavedPassword(latest.identifier);
+      if (cancelled || pickSequenceRef.current !== sequence) return;
+      if (identifierRef.current.trim() !== latest.identifier) return;
+      if (pwd) setPassword((current) => current || pwd);
     })();
     return () => {
       cancelled = true;
@@ -164,6 +171,19 @@ export function AuthPage({ onEnter }: AuthPageProps) {
     setRememberPassword(Boolean(match?.has_password));
   }
 
+  /** 切换「登录 / 注册」：两者账号框语义不同（登录=用户名或邮箱，注册=用户名），
+   *  必须一并复位，否则登录页输入的邮箱会被带进注册页当用户名提交。 */
+  function switchAuthMode(next: AuthMode) {
+    setMode(next);
+    setIdentifier("");
+    setPassword("");
+    setConfirmPassword("");
+    setRememberPassword(false);
+    setAccountMenuOpen(false);
+    setError("");
+    setNotice("");
+  }
+
   async function pickSavedAccount(account: SavedLoginAccount) {
     setIdentifier(account.identifier);
     setAccountMenuOpen(false);
@@ -189,6 +209,13 @@ export function AuthPage({ onEnter }: AuthPageProps) {
     const next = savedAccounts.filter((item) => item.identifier !== target);
     setSavedAccounts(next);
     if (next.length === 0) setAccountMenuOpen(false);
+    // 删掉的正是当前输入框里的账号时，同步清掉已回填的密码与「记住密码」勾选：
+    // 否则下一次点登录时 saveLogin(identifier, password, rememberPassword) 会把刚
+    // 删掉的账号连密码原样写回本机存储，删除等于白做。
+    if (identifierRef.current.trim() === target) {
+      setPassword("");
+      setRememberPassword(false);
+    }
   }
 
   async function handleSendEmailCode() {
@@ -374,7 +401,7 @@ export function AuthPage({ onEnter }: AuthPageProps) {
         <div className="auth-feature-list"><span>✓ 模块化工作流</span><span>✓ 本地运行时</span></div>
       </section>
       <section className="auth-form-card">
-        <div className="auth-tabs"><button type="button" className={isLogin ? "is-selected" : ""} onClick={() => { setMode("login"); setConfirmPassword(""); setError(""); setNotice(""); }}>登录</button><button type="button" className={mode === "register" ? "is-selected" : ""} onClick={() => { setMode("register"); setConfirmPassword(""); setError(""); setNotice(""); }}>注册</button></div>
+        <div className="auth-tabs"><button type="button" className={isLogin ? "is-selected" : ""} onClick={() => switchAuthMode("login")}>登录</button><button type="button" className={mode === "register" ? "is-selected" : ""} onClick={() => switchAuthMode("register")}>注册</button></div>
         <p className="eyebrow">{isLogin ? "WELCOME BACK" : mode === "register" ? "CREATE ACCOUNT" : "RESET PASSWORD"}</p>
         <h2>{isLogin ? "登录工作台" : mode === "register" ? "注册账号" : "找回密码"}</h2>
         {sessionHint && <p className="auth-notice">{sessionHint}</p>}
