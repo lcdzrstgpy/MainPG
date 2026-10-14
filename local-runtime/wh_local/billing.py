@@ -2764,6 +2764,11 @@ BATCH_FREEZE_TTL_HOURS = 6
 # 超时未结算冻结积分的释放比例（百分比）：退还该比例的积分，其余由服务端留存。
 # 仅在服务端 TTL 清扫时生效，不向客户端提示。
 BATCH_EXPIRY_RELEASE_PERCENT = 85
+# AI 预留 TTL 兜底：客户端结算超时未收口（崩溃/断网/强杀）的 AI 预留由服务端
+# 自动全额退还。对齐批次冻结的 6 小时：客户端侧结算重试窗口仅秒级，超时即孤儿。
+AI_RESERVATION_TTL_HOURS = 6
+# AI 预留清扫写入 usage 行的失败原因（error_message），便于客服/审计识别自动收口。
+AI_RESERVATION_EXPIRED_MESSAGE = "auto sweep: reservation expired without settlement"
 # 重试溢价：链接发生过 AI 重试/重绘/修复时，该链接加收 10 积分（100 单位）。
 # 语义是「单条链接计一次重试溢价」，不按重试次数累加，也不跨链接共享。
 RETRY_PREMIUM_UNITS = 100
@@ -3959,6 +3964,10 @@ def release_expired_batch_freezes(database_path: Path, *, now_iso: str = "") -> 
     points back to the wallet; the retained remainder stays with the server. The
     retain is recorded in the server-side ledger only and is never surfaced to
     the client.
+
+    账户账目倒挂（locked < frozen，如管理员手动释放未与冻结记录对账）时按实际锁定量
+    钳制释放并告警，而不是跳过整笔——旧「跳过守卫」无兜底无告警，会让倒挂的冻结
+    被永久跳过、用户积分永久卡死（2026-10-13 cust_b38b5ae 34240 单位锁死 27 天实例）。
     """
     now_iso = now_iso or _utc_now()
     released = 0
@@ -3972,21 +3981,33 @@ def release_expired_batch_freezes(database_path: Path, *, now_iso: str = "") -> 
         ).fetchall()
         for freeze in rows:
             frozen_units = int(freeze["frozen_points"])
-            release_units = frozen_units * BATCH_EXPIRY_RELEASE_PERCENT // 100
-            retained_units = frozen_units - release_units
-            # 防御：若该账户钱包锁定额/余额不足以覆盖本次释放（历史倒挂或并发扣减
-            # 所致），跳过本条而非让 CHECK(points_balance >= 0 / locked_points >= 0)
-            # 约束使整个清扫事务回滚——避免单条坏账拖垮所有用户的过期积分释放。
+            account_id = str(freeze["account_id"])
             wallet = conn.execute(
-                "SELECT points_balance, locked_points FROM billing_wallets WHERE account_id = ?",
-                (str(freeze["account_id"]),),
+                """
+                SELECT plan_balance, points_balance, locked_points
+                FROM billing_wallets WHERE account_id = ?
+                """,
+                (account_id,),
             ).fetchone()
-            if (
-                wallet is None
-                or int(wallet["locked_points"]) < frozen_units
-                or int(wallet["points_balance"]) < retained_units
-            ):
+            if wallet is None:
+                # 钱包行缺失（数据损坏）：无锁定可释放，留痕后跳过本条。
+                _LOGGER.warning(
+                    "batch expiry sweep: wallet missing, skip freeze=%s account=%s frozen=%s",
+                    freeze["freeze_id"], account_id, frozen_units,
+                )
                 continue
+            locked_now = max(0, int(wallet["locked_points"]))
+            # 钳制式释放：解锁量按钱包实际锁定量截断（_debit_wallet 内部还有一层
+            # 不超过 locked 的兜底，双保险不会把 locked_points 击穿成负数）。
+            unlock_units = min(frozen_units, locked_now)
+            if unlock_units < frozen_units:
+                _LOGGER.warning(
+                    "batch expiry sweep: clamped release, freeze=%s account=%s frozen=%s locked=%s",
+                    freeze["freeze_id"], account_id, frozen_units, locked_now,
+                )
+            # 85/15 拆分基于实际可释放量，保证台账 delta 与钱包变动严格一致。
+            release_units = unlock_units * BATCH_EXPIRY_RELEASE_PERCENT // 100
+            retained_units = unlock_units - release_units
             # 竞态防护：状态仍为 frozen 才允许转为 released。若结算等路径已抢先
             # 提交（status 已变），rowcount 为 0 → 跳过，避免同一笔冻结被解锁两次。
             cursor = conn.execute(
@@ -3999,46 +4020,144 @@ def release_expired_batch_freezes(database_path: Path, *, now_iso: str = "") -> 
             )
             if cursor.rowcount == 0:
                 continue
-            _append_ledger(
-                conn,
-                account_id=str(freeze["account_id"]),
-                workspace_id=str(freeze["workspace_id"] or "default"),
-                direction="unlock",
-                points_delta=release_units,
-                source_type="batch_expiry_release",
-                source_id=str(freeze["freeze_id"]),
-                idempotency_key=f"batch_expiry:{freeze['freeze_id']}:unlock",
-                metadata={"link_count": int(freeze["link_count"]), "retained_units": retained_units},
+            # 兜底：过期惩罚先按余额上限截断再写台账（不跳过、不写超出实扣的台账），
+            # 避免余额不足时把钱包扣成负数（points_balance 有 CHECK 会抛 500；
+            # plan_balance 无 CHECK 会静默变负）。
+            charge_units = retained_units
+            total_available = (
+                int(wallet["plan_balance"])
+                + _wallet_extra_balance(conn, account_id)
+                + int(wallet["points_balance"])
             )
-            if retained_units:
+            if charge_units > total_available:
+                charge_units = total_available
+            if release_units:
                 _append_ledger(
                     conn,
-                    account_id=str(freeze["account_id"]),
+                    account_id=account_id,
+                    workspace_id=str(freeze["workspace_id"] or "default"),
+                    direction="unlock",
+                    points_delta=release_units,
+                    source_type="batch_expiry_release",
+                    source_id=str(freeze["freeze_id"]),
+                    idempotency_key=f"batch_expiry:{freeze['freeze_id']}:unlock",
+                    metadata={"link_count": int(freeze["link_count"]), "retained_units": retained_units},
+                )
+            if charge_units:
+                _append_ledger(
+                    conn,
+                    account_id=account_id,
                     workspace_id=str(freeze["workspace_id"] or "default"),
                     direction="debit",
-                    points_delta=retained_units,
+                    points_delta=charge_units,
                     source_type="batch_expiry_retain",
                     source_id=str(freeze["freeze_id"]),
                     idempotency_key=f"batch_expiry:{freeze['freeze_id']}:retain",
-                    metadata={"link_count": int(freeze["link_count"])},
+                    metadata={
+                        "link_count": int(freeze["link_count"]),
+                        "nominal_retained_units": retained_units,
+                    },
                 )
-            # 兜底：过期惩罚按余额上限截断，避免余额不足时把钱包扣成负数
-            # （points_balance 有 CHECK 会抛 500；plan_balance 无 CHECK 会静默变负）。
-            wallet = conn.execute(
-                "SELECT plan_balance, points_balance FROM billing_wallets WHERE account_id = ?",
-                (str(freeze["account_id"]),),
-            ).fetchone()
-            charge_units = retained_units
-            if wallet is not None:
-                total_available = int(wallet["plan_balance"]) + int(wallet["points_balance"])
-                if charge_units > total_available:
-                    charge_units = total_available
             _debit_wallet(
                 conn,
-                str(freeze["account_id"]),
+                account_id,
                 charge_units,
                 _utc_now(),
-                unlock_units=frozen_units,
+                unlock_units=unlock_units,
             )
             released += 1
+    if released:
+        _LOGGER.info("batch expiry sweep: released %s expired freezes", released)
+    return released
+
+
+def release_expired_ai_reservations(
+    database_path: Path,
+    *,
+    ttl_hours: int = AI_RESERVATION_TTL_HOURS,
+    now_iso: str = "",
+) -> int:
+    """TTL sweep: refund AI reservations the client never settled.
+
+    客户端主动结算（成功/失败）是 AI 预留的唯一收口路径；客户端崩溃、断网或被强杀
+    后，预留会一直挂在 reserved 状态锁住用户积分（2026-10-13 清理的 57 笔历史滞留
+    即此机制，最久躺了一个月）。本清扫复刻 ``settle_ai_usage_failure`` 的标准失败
+    序列：解锁钱包 → 行转 failed 并全额退还 → 台账 ``:fail-unlock`` 留痕，与客户端
+    失败结算通过同一 idempotency_key 天然幂等互斥（先到先赢）。
+
+    超时判定对齐批次冻结的 6 小时 TTL：客户端结算重试窗口仅秒级，超时预留按孤儿
+    处理、全额退还（无法验证交付，平台自担，不向用户追扣）。
+
+    Called periodically by the auth server; returns the number of releases.
+    """
+    now = now_iso or _utc_now()
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(hours=max(1, int(ttl_hours)))
+    ).isoformat(timespec="seconds")
+    released = 0
+    with transaction(database_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM billing_ai_usage_events
+            WHERE status = 'reserved' AND julianday(created_at) <= julianday(?)
+            """,
+            (cutoff,),
+        ).fetchall()
+        for row in rows:
+            usage_id = str(row["usage_id"])
+            account_id = str(row["account_id"])
+            reserved_units = int(row["reserved_points"])
+            # 竞态防护：状态仍为 reserved 才允许终态化。客户端结算/失败路径若抢先
+            # 提交（status 已变），rowcount 为 0 → 跳过，避免双重退款。
+            cursor = conn.execute(
+                """
+                UPDATE billing_ai_usage_events
+                SET refunded_points = reserved_points, status = 'failed',
+                    error_message = ?, settled_at = ?
+                WHERE usage_id = ? AND status = 'reserved'
+                """,
+                (AI_RESERVATION_EXPIRED_MESSAGE, now, usage_id),
+            )
+            if cursor.rowcount == 0:
+                continue
+            # 钳制式解锁：账户账目倒挂（locked < reserved，如管理员手动释放未对账）
+            # 时按实际锁定量截断，而不是跳过留成永久孤儿（与批次清扫同一原则）。
+            wallet = conn.execute(
+                "SELECT locked_points FROM billing_wallets WHERE account_id = ?",
+                (account_id,),
+            ).fetchone()
+            locked_now = max(0, int(wallet["locked_points"])) if wallet is not None else 0
+            unlock_units = min(reserved_units, locked_now)
+            if unlock_units < reserved_units:
+                _LOGGER.warning(
+                    "ai reservation sweep: clamped unlock, usage=%s account=%s reserved=%s locked=%s",
+                    usage_id, account_id, reserved_units, locked_now,
+                )
+            if unlock_units:
+                conn.execute(
+                    """
+                    UPDATE billing_wallets
+                    SET locked_points = locked_points - ?, version = version + 1, updated_at = ?
+                    WHERE account_id = ?
+                    """,
+                    (unlock_units, now, account_id),
+                )
+                _append_ledger(
+                    conn,
+                    account_id=account_id,
+                    workspace_id=str(row["workspace_id"] or "default"),
+                    direction="unlock",
+                    points_delta=unlock_units,
+                    source_type="ai_usage",
+                    source_id=usage_id,
+                    idempotency_key=f"{row['idempotency_key']}:fail-unlock",
+                    metadata={
+                        "error": AI_RESERVATION_EXPIRED_MESSAGE,
+                        "auto_sweep": True,
+                        "reserved_units": reserved_units,
+                    },
+                )
+            released += 1
+    if released:
+        _LOGGER.info("ai reservation sweep: released %s expired reservations", released)
     return released

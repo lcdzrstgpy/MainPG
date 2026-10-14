@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS messages (
     content TEXT NOT NULL DEFAULT '',
     published_at TEXT NOT NULL DEFAULT '',
     read INTEGER NOT NULL DEFAULT 0,
+    hidden INTEGER NOT NULL DEFAULT 0,
     received_at TEXT NOT NULL DEFAULT (datetime('now')),
     kind TEXT NOT NULL DEFAULT 'announcement',
     image_count INTEGER NOT NULL DEFAULT 0,
@@ -55,6 +56,17 @@ def _ensure_image_columns(con: sqlite3.Connection) -> None:
         con.execute("ALTER TABLE messages ADD COLUMN images TEXT NOT NULL DEFAULT '[]'")
 
 
+def _ensure_hidden_column(con: sqlite3.Connection) -> None:
+    """旧库迁移：补 hidden 列。
+
+    服务端撤回的消息不再物理删除，而是 ``hidden=1`` 本地隐藏（保留已读状态）；
+    重新下发时恢复显示。老库缺列时补上，已有消息默认可见。
+    """
+    cols = {row[1] for row in con.execute("PRAGMA table_info(messages)")}
+    if "hidden" not in cols:
+        con.execute("ALTER TABLE messages ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
+
+
 def _load_images(raw: Any) -> list[dict[str, Any]]:
     try:
         items = json.loads(raw or "[]")
@@ -76,6 +88,7 @@ class MessagesRepository:
             con.executescript(SCHEMA_SQL)
             _ensure_kind_column(con)
             _ensure_image_columns(con)
+            _ensure_hidden_column(con)
             con.commit()
         finally:
             con.close()
@@ -91,7 +104,8 @@ class MessagesRepository:
     ) -> int:
         """按 server_id 同步服务器消息，返回新增条数（新消息默认未读）。
 
-        已存在的消息会更新服务端字段，但保留本机 ``read`` 状态。
+        已存在的消息会更新服务端字段，但保留本机 ``read`` 状态；服务端撤回
+        （prune_retracted）改为隐藏的消息，重新下发时恢复可见，同样保留已读。
         ``kind`` 区分来源：announcement（公告）或 feedback_reply（反馈回复）。
         用户主动删除过的 server_id 记录在黑名单里，同步时跳过，避免删了又回来。
         """
@@ -136,7 +150,7 @@ class MessagesRepository:
                     """
                     UPDATE messages
                     SET title = ?, content = ?, published_at = ?, kind = ?,
-                        image_count = ?, image_rev = ?,
+                        image_count = ?, image_rev = ?, hidden = 0,
                         images = CASE WHEN image_rev = ? THEN images ELSE '[]' END
                     WHERE server_id = ?
                     """,
@@ -164,6 +178,7 @@ class MessagesRepository:
                 SELECT id, server_id, title, content, published_at, read, kind,
                        image_count, image_rev, images
                 FROM messages
+                WHERE hidden = 0
                 ORDER BY published_at DESC, id DESC
                 """
             ).fetchall()
@@ -184,7 +199,7 @@ class MessagesRepository:
             rows = con.execute(
                 """
                 SELECT server_id, image_rev FROM messages
-                WHERE kind = 'announcement' AND image_count > 0 AND images = '[]'
+                WHERE hidden = 0 AND kind = 'announcement' AND image_count > 0 AND images = '[]'
                 ORDER BY published_at DESC, id DESC
                 LIMIT ?
                 """,
@@ -211,7 +226,9 @@ class MessagesRepository:
     def unread_count(self) -> int:
         con = self._connect()
         try:
-            row = con.execute("SELECT COUNT(*) AS c FROM messages WHERE read = 0").fetchone()
+            row = con.execute(
+                "SELECT COUNT(*) AS c FROM messages WHERE read = 0 AND hidden = 0"
+            ).fetchone()
             return int(row["c"])
         finally:
             con.close()
@@ -268,16 +285,22 @@ class MessagesRepository:
     def prune_retracted(self, active_server_ids: list[int], kind: str = "announcement") -> int:
         """按服务器在线消息 id 列表撤回本地消息。
 
-        服务器上已下线/已删除的消息，本地对应消息一并移除（含已读状态）。
+        服务器上已下线/已删除的消息，本地对应消息转为**隐藏**（``hidden=1``）而非物理
+        删除：已读状态必须保留 —— 服务端在「令牌失效/身份降级」时只返回全员公告，
+        定向公告会短暂缺席在线列表；若照单物理删除，重新登录后公告重新下发会以
+        「未读」重插，已消掉的红点就会复活（2026-10-13 实锤：两条定向公告被删后
+        重插，AUTOINCREMENT id 跳跃 + received_at 重写）。隐藏的消息不出现在列表
+        与未读数中，后续重新下发时自动恢复显示且已读状态不变。
+
         仅在本轮同步**带身份**、且服务端返回了完整在线列表时调用；服务器不可达时不得调用，
-        避免断网误删本地消息。
+        避免断网误隐藏本地消息。
 
         **空列表一律不撤回**：空既可能是"服务端一条在线消息都没有"，也可能是"该接口按
-        身份过滤后为空"（匿名轮查反馈回复就是合法空列表）。两者无法区分，而批量删除
-        不可逆 —— 宁可留下一条已下线的残留（换号/重新登录时会清），也不能误删整类消息。
+        身份过滤后为空"（匿名轮查反馈回复就是合法空列表）。两者无法区分，而批量隐藏
+        同样不可逆 —— 宁可留下一条已下线的残留（换号/重新登录时会清），也不能误伤整类消息。
 
         ``kind`` 限定撤回的消息类型：公告与反馈回复各自独立撤回，
-        不会因公告在线列表把反馈回复误删（反之亦然）。
+        不会因公告在线列表把反馈回复误伤（反之亦然）。
         """
         ids = [int(value) for value in active_server_ids if int(value) > 0]
         if not ids:
@@ -289,11 +312,11 @@ class MessagesRepository:
             return 0
         con = self._connect()
         try:
-            # 只撤回同一 kind 的消息，避免公告的在线列表把反馈回复误删（反之亦然）。
+            # 只撤回同一 kind 的消息，避免公告的在线列表把反馈回复误伤（反之亦然）。
             placeholders = ",".join("?" * len(ids))
             cur = con.execute(
-                f"DELETE FROM messages WHERE server_id > 0 AND kind = ? "
-                f"AND server_id NOT IN ({placeholders})",
+                f"UPDATE messages SET hidden = 1 WHERE server_id > 0 AND kind = ? "
+                f"AND hidden = 0 AND server_id NOT IN ({placeholders})",
                 [kind, *ids],
             )
             con.commit()

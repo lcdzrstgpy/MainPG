@@ -1,0 +1,54 @@
+/* 流畅模式：低性能设备的视觉降级，只影响「动效与模糊」——配色、布局、静态背景全部保留。
+   由 shared/hooks/usePerformanceMode.ts 写到 <html data-perf-mode="on|off">。
+   想验证降级是否生效：打开 <html> 看属性，并对比毛玻璃/装饰动画是否消失。 */
+
+/* 1) 全站去毛玻璃。backdrop-filter 是弱机（尤其浏览器硬件加速失效时）最重的
+      一项渲染成本，全站 50+ 处，一处不剩地关掉。 */
+html[data-perf-mode="on"] *,
+html[data-perf-mode="on"] *::before,
+html[data-perf-mode="on"] *::after {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* 2) 仪表盘常驻装饰（两团 blur(30px) 光斑 + hero 流光 + 流星）直接隐藏，不再重绘。 */
+html[data-perf-mode="on"] .dashboard-page::before,
+html[data-perf-mode="on"] .dashboard-page::after,
+html[data-perf-mode="on"] .dashboard-page .page-hero-card::before,
+html[data-perf-mode="on"] .dashboard-page .page-hero-card::after,
+html[data-perf-mode="on"] .dashboard-meteor {
+  display: none !important;
+}
+
+/* 3) 顶栏/侧栏流光、涟漪与登录页扫光停在原地（静态样式照旧，只是不再循环动画）。 */
+html[data-perf-mode="on"] .topbar-card::before,
+html[data-perf-mode="on"] .topbar-card::after,
+html[data-perf-mode="on"] .sidebar-card::before,
+html[data-perf-mode="on"] .sidebar-card::after,
+html[data-perf-mode="on"] .auth-screen::before {
+  animation: none !important;
+}
+
+/* 4) 页签切换的「逐块浮现」排队动画（内部区块依次出现，串完最多约 1.6 秒）直接完成，
+      切页即到位。
+      ⚠️ 只关这一层（孙级区块）！**面板与页面根上的淡入动画必须保留**：它们带 fill-mode
+      both，播完后会持续保持「合成层提升」，而 alpine 等带整屏风景背景的主题正是靠这个
+      层级关系让内容压在风景图之上；把这两级一并关掉（animation: none），内容会被降级到
+      风景图后面整块盖住 —— 2026-10-10 实测复现：个人中心 → 偏好设置面板「什么都看不到了」，
+      去掉这两级后立即恢复。改这里之前，务必在 alpine 主题 + 流畅模式下实测
+      「个人中心 → 偏好设置」与「工作台」两个页面。 */
+html[data-perf-mode="on"] .workspace-tab-panel.is-active > * > section,
+html[data-perf-mode="on"] .workspace-tab-panel.is-active > * > [class*="-card"],
+html[data-perf-mode="on"] .workspace-tab-panel.is-active > * > [class*="-panel"] {
+  animation: none !important;
+}
+
+/* 5) 登录页美化动效：流动光斑直接隐藏（同仪表盘光斑的处置），
+      玻璃卡与品牌区的入场动画直接到位。 */
+html[data-perf-mode="on"] .auth-halo {
+  display: none !important;
+}
+html[data-perf-mode="on"] .auth-form-card,
+html[data-perf-mode="on"] .auth-brand-card > * {
+  animation: none !important;
+}

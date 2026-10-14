@@ -320,7 +320,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   // 在预设页点方向卡再回到采集视图，而不再新开独立面板。
   const [internalView, setInternalView] = useState<"directions" | "collection">(view);
   const collectionView = internalView === "collection";
-  const [collectionWorkspaceMode, setCollectionWorkspaceMode] = useState<"daily" | "shop" | "plugin" | "mobile">("daily");
+  const [collectionWorkspaceMode, setCollectionWorkspaceMode] = useState<"daily" | "shop" | "plugin">("daily");
   const [customDirections, setCustomDirections] = useState<Direction[]>(loadCustomDirections);
   const [updatedDefaultDirections, setUpdatedDefaultDirections] = useState<Direction[]>(loadUpdatedDefaultDirections);
   const [removedDefaultDirectionIds, setRemovedDefaultDirectionIds] = useState<string[]>(loadRemovedDefaultDirectionIds);
@@ -1377,22 +1377,8 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                 className={collectionWorkspaceMode === "plugin" ? "is-active" : ""}
                 onClick={() => setCollectionWorkspaceMode("plugin")}
               ><span className="iconfont icon-cloud" aria-hidden="true"></span>插件采集</button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={collectionWorkspaceMode === "mobile"}
-                className={collectionWorkspaceMode === "mobile" ? "is-active" : ""}
-                onClick={() => setCollectionWorkspaceMode("mobile")}
-              ><span className="iconfont icon-phone" aria-hidden="true"></span>手机端导入</button>
             </div>
-            {collectionWorkspaceMode === "mobile" ? (
-              // 手机端导入面板尚未接入：给出明确说明，避免出现空白页。
-              <div className="result-empty">
-                <span>○</span>
-                <strong>手机端导入功能建设中</strong>
-                <p>当前请使用「插件采集」或「店铺采集」导入商品链接。</p>
-              </div>
-            ) : collectionWorkspaceMode === "plugin" ? (
+            {collectionWorkspaceMode === "plugin" ? (
               <PluginOneboundCapturePanel ref={pluginCapturePanelRef} isActive={isActive} onOpenDraft={onOpenProductProcessingDraft} onBatchCountChange={setPluginBatchCount} />
             ) : collectionWorkspaceMode === "shop" ? (
               <ShopCollectionPanel ref={shopCollectionPanelRef} isActive={isActive} onBatchCountChange={setShopBatchCount} />

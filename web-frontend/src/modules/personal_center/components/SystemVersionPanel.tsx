@@ -5,9 +5,9 @@ import {
   preserveVerifiedRelease,
   shouldPollUpdateStatus,
   type AppUpdateStatus,
+  type ChangelogSnapshot,
   type PatchStatus,
 } from "../../app_update/updateState";
-import { OFFICIAL_DOWNLOAD_URL, RELEASE_NOTES } from "../data/releaseNotes";
 
 const POLL_INTERVAL_MS = 1200;
 
@@ -89,11 +89,40 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "更新请求失败，请稍后重试。";
 }
 
+const CHANGELOG_PREVIEW_COUNT = 3;
+
+function formatReleaseDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  try {
+    return new Intl.DateTimeFormat("zh-CN", {
+      timeZone: "Asia/Shanghai",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    })
+      .format(date)
+      .replace(/\//g, "-");
+  } catch {
+    return value;
+  }
+}
+
+function releaseNoteLines(notes: string) {
+  return notes
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
 export function SystemVersionPanel() {
   const [status, setStatus] = useState<AppUpdateStatus | null>(null);
   const [patch, setPatch] = useState<PatchStatus | null>(null);
   const [pollGeneration, setPollGeneration] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [changelog, setChangelog] = useState<ChangelogSnapshot | null>(null);
+  const [changelogExpanded, setChangelogExpanded] = useState(false);
+  const [changelogOpen, setChangelogOpen] = useState(false);
   const busyRef = useRef(false);
 
   useEffect(() => {
@@ -130,6 +159,21 @@ export function SystemVersionPanel() {
     return () => {
       cancelled = true;
       if (timer !== null) clearTimeout(timer);
+    };
+  }, [pollGeneration]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void appUpdateApi
+      .changelog()
+      .then((next) => {
+        if (!cancelled) setChangelog(next);
+      })
+      .catch(() => {
+        if (!cancelled) setChangelog({ releases: [], error: "更新日志暂时无法获取。" });
+      });
+    return () => {
+      cancelled = true;
     };
   }, [pollGeneration]);
 
@@ -219,46 +263,9 @@ export function SystemVersionPanel() {
         {view.progressDetail && <small>{view.progressDetail}</small>}
       </div>}
 
-      {!inProgress && view.notes.length > 0 && <div className="version-notes">
-        <h3>新版本更新说明{view.targetVersion ? ` · v${view.targetVersion}` : ""}</h3>
-        <ul>{view.notes.map((note) => <li key={note}>{note}</li>)}</ul>
-      </div>}
-
-      {!inProgress && view.notes.length === 0 && <div className="version-notes version-notes-rich">
-        <div className="version-notes-head">
-          <h3>更新内容</h3>
-          <span className="version-notes-badge">v{RELEASE_NOTES.version}</span>
-          {RELEASE_NOTES.publishedAt && <small>{RELEASE_NOTES.publishedAt} 发布</small>}
-        </div>
-        {RELEASE_NOTES.summary && <p className="version-notes-summary">{RELEASE_NOTES.summary}</p>}
-        {RELEASE_NOTES.sections.map((section) => (
-          <section className="version-notes-section" key={section.title}>
-            <h4>{section.title}</h4>
-            <ul>
-              {section.items.map((item) => (
-                <li key={item.text}>
-                  {item.text}
-                  {item.children && item.children.length > 0 && <ul>
-                    {item.children.map((child) => <li key={child}>{child}</li>)}
-                  </ul>}
-                  {item.note && <em className="version-notes-note">{item.note}</em>}
-                </li>
-              ))}
-            </ul>
-          </section>
-        ))}
-      </div>}
+      {view.notes.length > 0 && !inProgress && <div className="version-notes"><h3>更新说明</h3><ul>{view.notes.map((note) => <li key={note}>{note}</li>)}</ul></div>}
 
       {view.phase === "failed" && <p className="version-message is-error" role="alert">{view.error || "更新失败，请稍后重试。"}</p>}
-
-      {!inProgress && <div className="version-manual">
-        <span className="iconfont icon-cloud-download" aria-hidden="true" />
-        <div>
-          <strong>无法完成在线更新？</strong>
-          <small>可前往官网下载最新安装包手动覆盖安装，账号登录与本地数据不会丢失。</small>
-          <a href={OFFICIAL_DOWNLOAD_URL} target="_blank" rel="noreferrer">官网下载地址：{OFFICIAL_DOWNLOAD_URL}</a>
-        </div>
-      </div>}
 
       <div className="version-actions">
         {view.phase === "failed" ? (
@@ -267,6 +274,67 @@ export function SystemVersionPanel() {
           <button type="button" onClick={() => void install()} disabled={busy}>立即更新</button>
         ) : (
           <button type="button" onClick={() => void check()} disabled={busy || inProgress}>{view.phase === "idle" ? "检查更新" : "刷新"}</button>
+        )}
+      </div>
+
+      <div className="version-changelog">
+        <button
+          type="button"
+          className="version-changelog-head"
+          aria-expanded={changelogOpen}
+          onClick={() => setChangelogOpen((value) => !value)}
+        >
+          <span className={`version-changelog-chevron${changelogOpen ? " is-open" : ""}`} aria-hidden="true" />
+          <h3>更新日志</h3>
+          {changelog !== null && changelog.releases.length > 0 && (
+            <span className="version-changelog-count">共 {changelog.releases.length} 个版本</span>
+          )}
+        </button>
+        {changelogOpen && (
+          changelog === null ? (
+            <p className="version-changelog-status">正在加载更新日志…</p>
+          ) : changelog.releases.length === 0 ? (
+            <p className="version-changelog-status">
+              {changelog.error ? "更新日志暂时无法获取，请稍后重试。" : "暂无更新日志。"}
+            </p>
+          ) : (
+            <>
+              <ol className="version-changelog-list">
+                {(changelogExpanded
+                  ? changelog.releases
+                  : changelog.releases.slice(0, CHANGELOG_PREVIEW_COUNT)
+                ).map((item) => (
+                  <li className="version-changelog-entry" key={item.version}>
+                    <div className="version-changelog-entry-head">
+                      <span className="version-changelog-version">v{item.version}</span>
+                      {item.version === view.currentVersion && (
+                        <span className="version-changelog-current">当前版本</span>
+                      )}
+                      <span className="version-changelog-date">{formatReleaseDate(item.published_at)}</span>
+                    </div>
+                    {releaseNoteLines(item.release_notes).length > 0 ? (
+                      <ul className="version-changelog-notes">
+                        {releaseNoteLines(item.release_notes).map((line, index) => (
+                          <li key={`${index}-${line}`}>{line}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="version-changelog-empty">本次更新未填写说明</p>
+                    )}
+                  </li>
+                ))}
+              </ol>
+              {changelog.releases.length > CHANGELOG_PREVIEW_COUNT && (
+                <button
+                  type="button"
+                  className="version-changelog-toggle"
+                  onClick={() => setChangelogExpanded((value) => !value)}
+                >
+                  {changelogExpanded ? "收起" : `展开全部（共 ${changelog.releases.length} 个版本）`}
+                </button>
+              )}
+            </>
+          )
         )}
       </div>
     </article>

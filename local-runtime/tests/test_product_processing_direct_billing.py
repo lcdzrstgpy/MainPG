@@ -572,6 +572,134 @@ def test_settle_open_batch_failure_is_recorded_not_silent(tmp_path: Path, monkey
     assert "unavailable" in str(record.get("settle_error") or "")
 
 
+class RejectingSettleClient(RecordingBatchClient):
+    """结算接口抛服务端 4xx 终态拒绝（如批次已被 TTL 释放后的 409）。"""
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__()
+        self._error = error
+
+    def settle_batch_points(self, remote_token: str, freeze_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        self.settle_calls.append((remote_token, freeze_id, payload))
+        raise self._error
+
+
+def test_settle_open_batch_voids_record_on_terminal_rejection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """服务端 4xx 终态（批次已被 TTL 释放等）时作废记录：置 settled=True 停止
+    重试并保留 void 痕迹——保留 open 会让每次任务收尾/对账都重打一轮必然失败的请求。"""
+    monkeypatch.setenv("WH_PRODUCT_AI_DIRECT", "1")
+    service, task_id = _make_service(tmp_path)
+    _isolate_batch_freezes(monkeypatch, tmp_path)
+    from wh_local.customer.contracts import CustomerAuthRejected
+
+    client = RejectingSettleClient(
+        CustomerAuthRejected(409, "batch freeze is no longer active")
+    )
+    monkeypatch.setattr("wh_local.modules.product_processing.service._batch_billing_client", lambda: client)
+    batch_billing_module.remember_freeze(
+        "fz-released-1",
+        account_id="acct-direct",
+        workspace_id="local",
+        task_id=task_id,
+        link_count=1,
+        scope=[],
+        item_ids=[1],
+    )
+    try:
+        service._settle_open_batch(task_id, "local", "remote-token", "fz-released-1")
+    finally:
+        service.repository.database.dispose()
+    assert len(client.settle_calls) == 1
+    assert batch_billing_module.open_freezes_for_account("acct-direct") == []
+    raw = jsonlib.loads((tmp_path / "batch_freezes.json").read_text(encoding="utf-8"))
+    assert raw["fz-released-1"]["settle_status"] == "void"
+    assert "409" in raw["fz-released-1"]["settle_error"]
+
+
+@pytest.mark.parametrize(
+    "status_code,detail",
+    [(409, "batch freeze is no longer active"), (404, "batch freeze not found")],
+)
+def test_reconcile_voids_freeze_on_terminal_rejection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status_code: int, detail: str
+) -> None:
+    """对账遇 4xx 终态 → 作废记录；下次对账不再重复打请求（修复永久重试风暴）。"""
+    monkeypatch.setenv("WH_PRODUCT_AI_DIRECT", "1")
+    service, task_id = _make_service(tmp_path)
+    _isolate_batch_freezes(monkeypatch, tmp_path)
+    from wh_local.customer.contracts import CustomerAuthRejected
+
+    client = RejectingSettleClient(CustomerAuthRejected(status_code, detail))
+    monkeypatch.setattr("wh_local.modules.product_processing.service._batch_billing_client", lambda: client)
+    task = service.repository.get_task(task_id, workspace_id="local")
+    item_id = int(task["items"][0]["item_id"])
+    service.repository.finish_task(
+        task_id,
+        [{"item_id": item_id, "status": "completed"}],
+        output_file="",
+        error_report_file="",
+        video_manifest_file="",
+        workspace_id="local",
+    )
+    batch_billing_module.remember_freeze(
+        "fz-released-2",
+        account_id="acct-direct",
+        workspace_id="local",
+        task_id=task_id,
+        link_count=1,
+        scope=[],
+    )
+    try:
+        first = service.reconcile_open_batches("remote-token", account_id="acct-direct")
+        second = service.reconcile_open_batches("remote-token", account_id="acct-direct")
+    finally:
+        service.repository.database.dispose()
+    assert first == 0 and second == 0
+    # 只打了第一轮；记录已作废，第二轮不再发起请求
+    assert len(client.settle_calls) == 1
+    assert batch_billing_module.open_freezes_for_account("acct-direct") == []
+    raw = jsonlib.loads((tmp_path / "batch_freezes.json").read_text(encoding="utf-8"))
+    assert raw["fz-released-2"]["settle_status"] == "void"
+
+
+def test_reconcile_keeps_freeze_open_on_network_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """网络不可达不是终态：记录保持 open，等待后续对账/服务端 TTL 兜底（回归保护）。"""
+    monkeypatch.setenv("WH_PRODUCT_AI_DIRECT", "1")
+    service, task_id = _make_service(tmp_path)
+    _isolate_batch_freezes(monkeypatch, tmp_path)
+    client = FailingSettleClient()
+    monkeypatch.setattr("wh_local.modules.product_processing.service._batch_billing_client", lambda: client)
+    task = service.repository.get_task(task_id, workspace_id="local")
+    item_id = int(task["items"][0]["item_id"])
+    service.repository.finish_task(
+        task_id,
+        [{"item_id": item_id, "status": "completed"}],
+        output_file="",
+        error_report_file="",
+        video_manifest_file="",
+        workspace_id="local",
+    )
+    batch_billing_module.remember_freeze(
+        "fz-network-1",
+        account_id="acct-direct",
+        workspace_id="local",
+        task_id=task_id,
+        link_count=1,
+        scope=[],
+    )
+    try:
+        count = service.reconcile_open_batches("remote-token", account_id="acct-direct")
+    finally:
+        service.repository.database.dispose()
+    assert count == 0
+    remaining = batch_billing_module.open_freezes_for_account("acct-direct")
+    assert [record["freeze_id"] for record in remaining] == ["fz-network-1"]
+
+
 # ---------------------------------------------------------------------------
 # 侧车文件：并发读改写 + 「读不到就不许写」语义
 # ---------------------------------------------------------------------------

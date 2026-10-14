@@ -32,7 +32,6 @@ test("POD customization is a grouped section with full, semi and replica customi
     "pod_workflow",
     "sourcing_workflow",
     "ai_video",
-    "personal_assets",
     "personal_center",
   ]);
   assert.equal(workspaceModules.find((module) => module.id === "ai_video")?.label, "AI 视频（实验）");
