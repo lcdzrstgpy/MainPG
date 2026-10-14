@@ -3,11 +3,8 @@ import { createPortal } from "react-dom";
 import { PodListingFieldsEditor, REPLICA_PRODUCT_NAME_MAX_LENGTH, type SkuField, type SkuFieldErrors } from "../../pod_customization/components/PodListingFieldsEditor";
 import {
   REPLICA_ANALYSIS_STATUS_LABELS,
-  REPLICA_EDITABLE_FACT_KEYS,
-  REPLICA_LIST_FACT_KEYS,
   REPLICA_PRESENTATION_OPTIONS,
   REPLICA_TARGET_FACT_FIELDS,
-  parseReplicaListFact,
   replicaAnalysisBlockReason,
   replicaCapabilityLabel,
   replicaEffectiveFactText,
@@ -15,7 +12,6 @@ import {
   replicaFactNeedsConfirmation,
   type ReplicaTargetDraft,
 } from "../data/podReplicaModel";
-import type { ReplicaFactOverrides } from "../types";
 
 type Props = {
   open: boolean;
@@ -35,24 +31,10 @@ type Props = {
   onAnalyze: (clientId: string) => void;
   /** 确认识别结果（低置信度时由用户手动确认）。 */
   onConfirmAnalysis: (clientId: string) => void;
-  /** 修正事实（写入覆盖项并标记已确认）。 */
-  onFactOverride: (clientId: string, patch: ReplicaFactOverrides) => void;
   /** 切换展示偏好。 */
   onPresentationChange: (clientId: string, key: (typeof REPLICA_PRESENTATION_OPTIONS)[number]["key"], value: boolean) => void;
   onClose: () => void;
 };
-
-/** 编辑框文本 → 事实覆盖 patch：数字、数组、字符串三类分别解析。 */
-function buildFactPatch(key: string, raw: string): ReplicaFactOverrides {
-  if (key === "component_count") {
-    const parsed = Number(raw.trim());
-    return { component_count: raw.trim() === "" || !Number.isFinite(parsed) ? null : parsed };
-  }
-  if (REPLICA_LIST_FACT_KEYS.includes(key)) {
-    return { [key]: parseReplicaListFact(raw) } as ReplicaFactOverrides;
-  }
-  return { [key]: raw.trim() === "" ? null : raw.trim() } as ReplicaFactOverrides;
-}
 
 function analysisHint(target: ReplicaTargetDraft): string {
   switch (target.analysisStatus) {
@@ -84,7 +66,6 @@ export function ReplicaTargetDrawer({
   onOpenSpecCardDrawer,
   onAnalyze,
   onConfirmAnalysis,
-  onFactOverride,
   onPresentationChange,
   onClose,
 }: Props) {
@@ -114,7 +95,6 @@ export function ReplicaTargetDrawer({
                 {REPLICA_TARGET_FACT_FIELDS.map(({ key, label }) => {
                   const override = (target.factOverrides as Record<string, unknown>)[key];
                   const hasOverride = override !== null && override !== undefined;
-                  const editable = REPLICA_EDITABLE_FACT_KEYS.includes(key);
                   const confidence = replicaFactConfidence(target.targetProductSpec, key);
                   const needsConfirm = !hasOverride && replicaFactNeedsConfirmation(target.targetProductSpec, key);
                   const text = replicaEffectiveFactText(target, key);
@@ -131,16 +111,7 @@ export function ReplicaTargetDrawer({
                         )}
                       </dt>
                       <dd>
-                        {editable ? (
-                          <input
-                            aria-label={label}
-                            value={text}
-                            placeholder="（识别为空，可手动填写）"
-                            onChange={(event) => onFactOverride(target.clientId, buildFactPatch(key, event.target.value))}
-                          />
-                        ) : (
-                          <span>{text || "—"}</span>
-                        )}
+                        <span>{text || "—"}</span>
                       </dd>
                     </div>
                   );

@@ -34,7 +34,6 @@ import {
   removeReplicaTarget,
   replicaAnalysesConfirmed,
   replicaSourceNeedsConfirmation,
-  setReplicaFactOverrides,
   setReplicaPresentationPreference,
   validateReplicaTargetDraft,
   type ReplicaTargetDraft,
@@ -44,7 +43,7 @@ import {
   loadPodReplicaDraft,
   savePodReplicaDraft,
 } from "../data/podReplicaDraft";
-import type { ReplicaBatch, ReplicaBatchSummary, ReplicaFactOverrides, ReplicaPresentationPreferences } from "../types";
+import type { ReplicaBatch, ReplicaBatchSummary, ReplicaPresentationPreferences } from "../types";
 import "../styles/podReplica.css";
 // 复用全定制的次级顶栏与图库等共享皮肤（.pod-page-header 等），直接进本页也要有样式。
 import "../../pod_customization/styles/podCustomization.css";
@@ -310,8 +309,6 @@ export function PodReplicaPage({ isActive = true }: Props) {
   }, [source?.assetId, targets]);
 
   const confirmAnalysis = (clientId: string) => updateTarget(clientId, confirmReplicaAnalysis);
-  const overrideFacts = (clientId: string, patch: ReplicaFactOverrides) =>
-    updateTarget(clientId, (target) => setReplicaFactOverrides(target, patch));
   const changePresentation = (clientId: string, key: keyof ReplicaPresentationPreferences, value: boolean) =>
     updateTarget(clientId, (target) => setReplicaPresentationPreference(target, key, value));
 
@@ -704,7 +701,6 @@ export function PodReplicaPage({ isActive = true }: Props) {
         onOpenSpecCardDrawer={setSpecCardTargetId}
         onAnalyze={(clientId) => void analyzeTarget(clientId)}
         onConfirmAnalysis={confirmAnalysis}
-        onFactOverride={overrideFacts}
         onPresentationChange={changePresentation}
         onClose={() => setActiveTargetId(undefined)}
       />

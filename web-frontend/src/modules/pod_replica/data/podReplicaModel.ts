@@ -107,15 +107,6 @@ export const REPLICA_TARGET_FACT_FIELDS: readonly { key: string; label: string }
   { key: "supported_usage_modes", label: "支持使用方式" },
   { key: "occlusion_risk", label: "遮挡风险" },
 ];
-// 可由用户修正的事实字段（与后端 FactOverrides 对齐）；不可印区域只读展示。
-export const REPLICA_EDITABLE_FACT_KEYS: readonly string[] = [
-  "product_type", "component_count", "component_structure", "material",
-  "surface_texture", "printable_regions", "supported_usage_modes",
-];
-// 数组类事实：编辑框以顿号/逗号分隔。
-export const REPLICA_LIST_FACT_KEYS: readonly string[] = [
-  "printable_regions", "supported_usage_modes",
-];
 
 /** 15 项固定能力的中文标签（候选标签、构图入口共用）。 */
 export const REPLICA_CAPABILITY_LABELS: Record<string, string> = {

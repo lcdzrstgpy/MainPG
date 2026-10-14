@@ -604,14 +604,6 @@
   word-break: break-word;
 }
 
-.pod-replica-fact-row dd input {
-  width: 100%;
-  padding: 6px 8px;
-  border: 1px solid var(--pod-border-strong);
-  border-radius: 8px;
-  font-size: 13px;
-}
-
 .pod-replica-capabilities,
 .pod-replica-preferences {
   display: flex;
