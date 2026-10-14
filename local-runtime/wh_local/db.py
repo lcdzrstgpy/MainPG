@@ -120,7 +120,9 @@ CREATE TABLE IF NOT EXISTS user_permission_overrides (
 );
 
 -- 登录会话表：只保存 token_hash，不保存明文 token。
--- remote_token：兼容旧库保留的空列；远端 token 仅存在当前进程内存，会在 init_db 时清除历史明文。
+-- remote_token：远端令牌的 Windows DPAPI 密文（``dpapi:v1:`` 前缀，见 customer/token_vault.py）。
+--   进程内存里另有一份明文副本用于调用远端；init_db 会清除历史明文/脏值，但保留密文，
+--   以便本地后端重启后恢复远端会话（否则用户表现为"登录态过一会儿就掉"）。
 CREATE TABLE IF NOT EXISTS customer_sessions (
     session_id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
@@ -1674,7 +1676,13 @@ def init_db(database_path: Path) -> None:
     try:
         conn.executescript(SCHEMA_SQL)
         _migrate_core_schema(conn)
-        conn.execute("UPDATE customer_sessions SET remote_token = '' WHERE remote_token <> ''")
+        # 只清历史明文/脏值，保留 DPAPI 密文（driven by customer/token_vault.py）：
+        # 密文绑定当前 Windows 用户，换机器/换用户都解不开，保留它不扩大暴露面，
+        # 却能让本地后端重启后恢复远端会话。
+        conn.execute(
+            "UPDATE customer_sessions SET remote_token = '' "
+            "WHERE remote_token <> '' AND remote_token NOT LIKE 'dpapi:v1:%'"
+        )
         conn.execute(
             """
             INSERT OR IGNORE INTO workspaces (workspace_id, workspace_code, workspace_name, status)

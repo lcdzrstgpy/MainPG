@@ -14,8 +14,8 @@ import type { UiModeId } from "../hooks/useUiMode";
  *
  * 交互:
  *  - 种子随风飘落 + 正弦摇摆 + 绕竖轴翻面,光标靠近形成"气流"推开(160px 内);
- *  - 单击:种子爆散 + 草绿涟漪;
- *  - 双击:更大规模的爆散(草甸扬絮);
+ *  - 单击:草叶被惊起四处飞散(掺少量野花碎点) + 草绿涟漪;
+ *  - 双击:更大规模的草叶扬散(风掠草甸);
  *  - 尊重 prefers-reduced-motion(定格一帧静态种子)与页面可见性(隐藏时暂停)。
  *
  * 结构与 PeachGarden 保持一致,便于两套主题一起维护。
@@ -42,6 +42,8 @@ type Seed = {
 };
 
 type Burst = {
+  /** 爆散元素:草叶为主,野花碎点作点缀。 */
+  kind: "blade" | "flower";
   x: number;
   y: number;
   vx: number;
@@ -60,6 +62,12 @@ type Ripple = { x: number; y: number; r: number; alpha: number };
 const TAU = Math.PI * 2;
 /** 蒲公英白絮为主,掺入草绿与野花金,呼应主题配色。 */
 const SEED_COLORS = ["#ffffff", "#f7fbf4", "#eaf5e0", "#c9e8b4", "#8fbf6a", "#e8cf8f"];
+/**
+ * 点击爆散元素:高原草叶为主(深草绿 → 嫩绿,呼应主题主色 #2f7d52),
+ * 掺少量野花碎点(高原金 / 白 / 龙胆蓝紫)点亮。
+ */
+const BLADE_COLORS = ["#2f7d52", "#4a8f3f", "#6aa84f", "#8fc663", "#b6d98a", "#d8ecc0"];
+const FLOWER_COLORS = ["#e8cf8f", "#f5e6b4", "#f4f8ec", "#9fb0dd"];
 
 /**
  * 蒲公英种子:一根细柄拖着顶端的小伞与放射冠毛。
@@ -117,6 +125,96 @@ function getSeedSprite(color: string): HTMLCanvasElement {
 
 function drawSeedSprite(ctx: CanvasRenderingContext2D, x: number, y: number, size: number, rot: number, scaleX: number, alpha: number, color: string) {
   const sprite = getSeedSprite(color);
+  const scale = size / SPRITE_BASE;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(rot);
+  ctx.scale(scaleX * scale, scale);
+  ctx.globalAlpha = alpha;
+  ctx.drawImage(sprite, -sprite.width / 2, -sprite.height / 2);
+  ctx.restore();
+}
+
+/**
+ * 草叶:叶基略宽、叶尖收细,一侧外弧一侧内弧,带一条浅色中脉。
+ * 比花瓣更长更窄 —— 与桃花源的圆润花瓣、水墨青黛的圆墨点在剪影上就能区分开。
+ */
+function drawBladeShape(ctx: CanvasRenderingContext2D, x: number, y: number, size: number, rot: number, scaleX: number, alpha: number, color: string) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(rot);
+  ctx.scale(scaleX, 1);
+  ctx.globalAlpha = alpha;
+
+  const half = size * 0.5;
+  const width = size * 0.17;
+
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(0, half);
+  ctx.quadraticCurveTo(width * 1.55, 0, width * 0.28, -half);
+  ctx.quadraticCurveTo(-width * 0.95, 0, 0, half);
+  ctx.closePath();
+  ctx.fill();
+
+  // 中脉:比叶身浅一点,叶片不是一块死绿
+  ctx.globalAlpha = alpha * 0.42;
+  ctx.strokeStyle = "#eef7e4";
+  ctx.lineWidth = Math.max(0.5, size * 0.05);
+  ctx.beginPath();
+  ctx.moveTo(0, half * 0.84);
+  ctx.quadraticCurveTo(width * 0.8, 0, width * 0.24, -half * 0.84);
+  ctx.stroke();
+  ctx.restore();
+}
+
+/** 野花碎点:五瓣小花 + 亮色花心,给一片绿里添一点高原花色。 */
+function drawFlowerShape(ctx: CanvasRenderingContext2D, x: number, y: number, size: number, rot: number, alpha: number, color: string) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(rot);
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = color;
+  for (let i = 0; i < 5; i += 1) {
+    const angle = (i / 5) * TAU;
+    ctx.beginPath();
+    ctx.ellipse(Math.cos(angle) * size * 0.26, Math.sin(angle) * size * 0.26, size * 0.27, size * 0.2, angle, 0, TAU);
+    ctx.fill();
+  }
+  ctx.globalAlpha = alpha * 0.85;
+  ctx.fillStyle = "#f7e9a8";
+  ctx.beginPath();
+  ctx.arc(0, 0, size * 0.16, 0, TAU);
+  ctx.fill();
+  ctx.restore();
+}
+
+const bladeSpriteCache = new Map<string, HTMLCanvasElement>();
+const flowerSpriteCache = new Map<string, HTMLCanvasElement>();
+
+function getShapeSprite(cache: Map<string, HTMLCanvasElement>, color: string, draw: (c: CanvasRenderingContext2D) => void): HTMLCanvasElement {
+  const cached = cache.get(color);
+  if (cached) return cached;
+  const sprite = document.createElement("canvas");
+  sprite.width = Math.ceil(SPRITE_BASE * 2);
+  sprite.height = Math.ceil(SPRITE_BASE * 2);
+  const sctx = sprite.getContext("2d");
+  if (sctx) draw(sctx);
+  cache.set(color, sprite);
+  return sprite;
+}
+
+function getBladeSprite(color: string): HTMLCanvasElement {
+  return getShapeSprite(bladeSpriteCache, color, (sctx) =>
+    drawBladeShape(sctx, SPRITE_BASE, SPRITE_BASE, SPRITE_BASE, 0, 1, 1, color));
+}
+
+function getFlowerSprite(color: string): HTMLCanvasElement {
+  return getShapeSprite(flowerSpriteCache, color, (sctx) =>
+    drawFlowerShape(sctx, SPRITE_BASE, SPRITE_BASE, SPRITE_BASE, 0, 1, color));
+}
+
+function drawShapeSprite(ctx: CanvasRenderingContext2D, sprite: HTMLCanvasElement, x: number, y: number, size: number, rot: number, scaleX: number, alpha: number) {
   const scale = size / SPRITE_BASE;
   ctx.save();
   ctx.translate(x, y);
@@ -230,23 +328,44 @@ export const AlpineMeadow = memo(function AlpineMeadow({ theme, uiMode, tapEffec
         }
       }
 
-      // 种子碎片(白絮)
-      const count = Math.round(9 * power);
-      for (let i = 0; i < count; i += 1) {
+      // 草叶被惊起:细长叶片向四周弹开并翻滚(点击特效的主体)
+      const bladeCount = Math.round(8 * power);
+      for (let i = 0; i < bladeCount; i += 1) {
         const angle = Math.random() * TAU;
-        const speed = 1.1 + Math.random() * 3.2 * power;
+        const speed = 1.1 + Math.random() * 3.4 * power;
         bursts.push({
+          kind: "blade",
           x,
           y,
           vx: Math.cos(angle) * speed,
-          vy: Math.sin(angle) * speed - 1.2,
-          size: 2.2 + Math.random() * 4,
+          vy: Math.sin(angle) * speed - 1.4,
+          size: 7 + Math.random() * 9,
           rot: Math.random() * TAU,
-          vr: (Math.random() - 0.5) * 0.28,
+          vr: (Math.random() - 0.5) * 0.36,
           life: 1,
-          decay: 0.008 + Math.random() * 0.01,
-          color: SEED_COLORS[(Math.random() * SEED_COLORS.length) | 0],
-          alpha: 0.82,
+          decay: 0.0028 + Math.random() * 0.0022,
+          color: BLADE_COLORS[(Math.random() * BLADE_COLORS.length) | 0],
+          alpha: 0.9,
+        });
+      }
+      // 野花碎点:少量点缀,让一片绿里有一点亮色(数量随力度增长)
+      const flowerCount = Math.max(1, Math.round(3 * power));
+      for (let i = 0; i < flowerCount; i += 1) {
+        const angle = Math.random() * TAU;
+        const speed = 0.9 + Math.random() * 2.6 * power;
+        bursts.push({
+          kind: "flower",
+          x,
+          y,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed - 1.1,
+          size: 5 + Math.random() * 4,
+          rot: Math.random() * TAU,
+          vr: (Math.random() - 0.5) * 0.18,
+          life: 1,
+          decay: 0.0024 + Math.random() * 0.0018,
+          color: FLOWER_COLORS[(Math.random() * FLOWER_COLORS.length) | 0],
+          alpha: 0.92,
         });
       }
       if (bursts.length > 380) bursts.splice(0, bursts.length - 380);
@@ -305,7 +424,7 @@ export const AlpineMeadow = memo(function AlpineMeadow({ theme, uiMode, tapEffec
         drawSeedSprite(ctx, seed.x, seed.y, seed.size, seed.rot, seed.flip * tumble, seed.alpha, seed.color);
       }
 
-      // 爆散碎片
+      // 爆散碎片(草叶 / 野花碎点)
       for (let i = bursts.length - 1; i >= 0; i -= 1) {
         const b = bursts[i];
         b.life -= b.decay * dt;
@@ -317,7 +436,14 @@ export const AlpineMeadow = memo(function AlpineMeadow({ theme, uiMode, tapEffec
         b.x += b.vx * k;
         b.y += b.vy * k;
         b.rot += b.vr * dt;
-        drawSeedSprite(ctx, b.x, b.y, b.size, b.rot, 1, Math.max(0, b.life) * b.alpha, b.color);
+        const fade = Math.max(0, b.life) * b.alpha;
+        if (b.kind === "flower") {
+          drawShapeSprite(ctx, getFlowerSprite(b.color), b.x, b.y, b.size, b.rot, 1, fade);
+        } else {
+          // 草叶翻滚:用 rot 驱动横向压缩,叶片在空中翻面,而不是一直平面正对着看
+          const tumble = 0.34 + 0.66 * Math.abs(Math.sin(b.rot));
+          drawShapeSprite(ctx, getBladeSprite(b.color), b.x, b.y, b.size, b.rot, tumble, fade);
+        }
       }
 
       // 涟漪(压扁的椭圆,呼应草甸的圆形花丛)
