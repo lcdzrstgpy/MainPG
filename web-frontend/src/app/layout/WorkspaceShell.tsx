@@ -145,7 +145,8 @@ type RestoredWorkspaceTabs = {
 
 /**
  * 恢复上次的页签布局。恢复页签不只是体验问题：任务继续跑的前提是「还有页面在看它」，
- * 页签一丢（浏览器刷新、前端自动重载）就等于没人看了，任务会被后端自动暂停。
+ * 页签一丢（浏览器刷新、前端自动重载）就等于没人看了（刷新时页面自己也发了离开信标），
+ * 连续静默后任务会被后端自动暂停。
  *
  * localStorage 里的数据一律当不可信输入，清洗失败就退回只有一个「工作台首页」页签的默认状态。
  */
@@ -173,8 +174,8 @@ function restoreWorkspaceTabs(isAdmin: boolean): RestoredWorkspaceTabs {
       // 页签标题是动态文案（"处理·12项"）时沿用持久化值，缺失时才回落到模块默认名。
       const base = moduleTab(tab.moduleId, modules);
       const restored: WorkspaceTab = { ...tab, label: tab.label || base.label, icon: tab.icon || base.icon, iconClass: tab.iconClass ?? base.iconClass };
-      // 开工中的处理页签按「任务详情」恢复：它因此继续轮询 /outputs（= 任务心跳，不再被
-      // 页面离开清扫器自动暂停），页面上也没有「开始处理」入口，不会再建出一个重复任务。
+      // 开工中的处理页签按「任务详情」恢复：它因此继续轮询 /outputs（= 还有人在看），
+      // 页面上也没有「开始处理」入口，不会再建出一个重复任务。
       if (restored.taskRunId == null && restored.activeTaskId != null) restored.taskRunId = restored.activeTaskId;
       return restored;
     });
@@ -221,7 +222,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
   const [expandedGroupId, setExpandedGroupId] = useState<WorkspaceNavigationGroupId | null>(null);
   const isAdmin = isAdminRole(currentRole);
   // 页签布局持久化：刷新 / 前端自动重载后恢复上次打开的页签与当前页签，任务页因此能继续轮询
-  // 心跳（页签丢失 = 心跳中断超时 = 任务被自动暂停）。清洗逻辑见 restoreWorkspaceTabs。
+  // （页签丢失 = 没人再看 = 连续静默后任务被自动暂停）。清洗逻辑见 restoreWorkspaceTabs。
   const [initialWorkspace] = useState(() => restoreWorkspaceTabs(isAdmin));
   const [activeTabKey, setActiveTabKey] = useState(initialWorkspace.activeTabKey);
   const [tabs, setTabs] = useState<WorkspaceTab[]>(initialWorkspace.tabs);

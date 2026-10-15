@@ -245,20 +245,29 @@ _COMMON_VARIANT_TRANSLATIONS: dict[str, dict[str, str]] = {
 _TASK_HEARTBEAT_SECONDS = 10.0
 # 自动暂停只认**真实事件**，不再用「多久没心跳」猜：
 #
-#   ① 页面关闭：任务页在 pagehide 时发一个离开信标（/tasks/{id}/leave），清扫器在宽限期后
-#      暂停该任务；刷新/重开/别的页签还在看会在宽限期内重新轮询，撤销这次离开。
+#   ① 页面关闭：任务页在 pagehide 时发一个离开信标（/tasks/{id}/leave），之后连续静默
+#      （_TASK_LEAVE_QUIET_SECONDS）才暂停该任务；刷新/重开/别的页签还在看都会继续轮询，
+#      撤销这次离开。
 #   ② 整机退出：桌面端 local runtime 的 watchdog 在最后一个页面离开后退出后端进程，
 #      退出前取消并结算运行中的任务（另见 wh_local/app/main.py 的 _RuntimeExitController）。
 #
-# 为什么删掉静默超时：页面被浏览器节流/冻结、整机休眠时定时器根本跑不起来，静默超时会把
+# 为什么删掉静默心跳超时：页面被浏览器节流/冻结、整机休眠时定时器根本跑不起来，静默超时会把
 # 「页面还在，只是被系统冻住」误判成「用户走了」——这是「工作台明明开着却被暂停」工单的
 # 主要来源，且无法用调大阈值根治（冻结时长无上界）。开着就一直跑，只有真的关了页面才停。
-_TASK_LEAVE_GRACE_SECONDS = 60.0
-# 撤销一次「页面离开」需要的**持续**轮询时长：关页面那一瞬间可能还有一次在途请求落到服务端，
-# 单独那一次不能算「页面回来了」（否则关了页面又没人看，任务会一直跑下去）。刷新/重开/另一个
-# 页签还在看都会持续轮询，30 秒足够把它们与「在途的最后一次」区分开。
-_TASK_LEAVE_REVOKE_MIN_SECONDS = 30.0
+#
+# 静默阈值（大于退出宽限，见下）：
+#   - 必须盖住浏览器对隐藏页的节流节奏（隐藏满 5 分钟后定时器被压到约 1 分钟一次），
+#     否则「刷新后把窗口切到后台」会被误停；
+#   - 关页面瞬间那一次在途请求撑不过这  个窗口，所以暂停不会被它误撤销。
+# 与退出路径的先后（**不能改小到退出宽限以下**）：关闭整个工作台时，runtime watchdog 会在
+# 退出宽限（默认 60 秒）后退出后端并执行「取消任务 + 按冻结积分 50% 结算」（beforeunload
+# 弹窗里向用户承诺的就是这个）；任务级暂停必须在它之后才可能发生，否则两条路会抢同一个任务，
+# 出现「有时暂停、有时取消」的不确定结果。有 TestAssert 守着这个大小关系。
+_TASK_LEAVE_QUIET_SECONDS = 120.0
 _TASK_AUTO_PAUSE_SWEEP_SECONDS = 15.0
+# 退出宽限的默认值（wh_local/app/main.py 的 WH_LOCAL_RUNTIME_EXIT_GRACE_S 默认值）：
+# 仅用于断言上面那条大小关系，不参与运行逻辑。
+_RUNTIME_EXIT_GRACE_SECONDS = 60.0
 # 心跳记录（_task_last_seen）只用于「离开之后有没有人再回来看」，超过这个时长没被任何
 # 页面轮询过的记录直接清掉，避免长会话里无限增长。
 _TASK_HEARTBEAT_RETENTION_SECONDS = 3600.0
@@ -738,8 +747,11 @@ class ProductProcessingService:
         self._task_last_seen: dict[tuple[str, int], float] = {}
         self._task_last_seen_lock = threading.Lock()
         self._task_maintenance_started = False
-        # 页面离开信标 (workspace_id, task_id) -> 离开时刻：宽限期内重新轮询即撤销该次离开，
-        # 宽限期后仍无人看才暂停任务（见 _sweep_departed_tasks_once）。
+        # 上一次清扫时刻：识别「进程自己也被冻住了」（整机休眠/挂起），那一轮不判离开
+        # —— 所以第一次调用（None）不判、也不影响后续判断。
+        self._last_sweep_at: float | None = None
+        # 页面离开信标 (workspace_id, task_id) -> 离开时刻：连续静默超过
+        # _TASK_LEAVE_QUIET_SECONDS 才暂停；期间任何轮询都撤销（见 _sweep_departed_tasks_once）。
         self._task_left_keys: dict[tuple[str, int], float] = {}
         self._task_left_lock = threading.Lock()
         # 任务级串行闸门：限制同时执行的任务数，避免旧任务与新任务并发叠加打爆 AI 供应商。
@@ -3129,9 +3141,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
     def mark_task_left(self, task_id: int, workspace_id: str = "local") -> None:
         """页面离开信标（任务页 pagehide 时 sendBeacon 触发，尽力而为）。
 
-        只做**标记**：真正暂停由维护循环在宽限期（_TASK_LEAVE_GRACE_SECONDS）之后执行，
-        且宽限期内任何一次轮询都会撤销本次离开——刷新、重开工作台、或另一个页签还在看
-        这个任务，都算「没有离开」。信标丢了就继续跑：宁可不暂停，也不误停。
+        只做**标记**：真正暂停由维护循环在「连续静默超过 _TASK_LEAVE_QUIET_SECONDS」之后
+        执行；期间任何轮询（刷新、重开工作台、另一个页签还在看，包括被浏览器节流到
+        1 分钟一次的隐藏页）都会撤销本次离开。信标丢了就继续跑：宁可不暂停，也不误停。
         """
         try:
             key = (workspace_id, int(task_id))
@@ -3167,27 +3179,40 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         页面被浏览器节流/冻结、整机休眠都不会触发 pagehide，那不算离开，任务照跑——
         「工作台明明开着却被暂停」类工单就出在猜测式判定上。
 
-        宽限期内的任何一次轮询都会撤销该次离开（刷新、重开工作台、另一个页签还在看）。
+        判定只用一条：**离开之后连续静默**（_TASK_LEAVE_QUIET_SECONDS 内没有任何轮询）
+        才暂停；期间只要还有页面在轮询（刷新、重开工作台、另一个页签还在看，甚至只是被
+        浏览器节流到 1 分钟一次）就撤销这次离开。关页面瞬间在途的那一次请求只有一次，
+        撑不过静默窗口，不会误撤销。
+
         暂停与手动暂停语义一致：已完成项保留、未处理项由结算链路按真实结果退款，用户可
         从历史记录继续处理；商品已全部终态、只剩本地收尾的任务不暂停（否则会卡在 99%）。
 
         顺带清理过期心跳记录（_TASK_HEARTBEAT_RETENTION_SECONDS 内没再被轮询过的）。
         """
         now = time.monotonic()
+        previous_sweep = self._last_sweep_at
+        self._last_sweep_at = now
+        if (
+            previous_sweep is not None
+            and now - previous_sweep > _TASK_AUTO_PAUSE_SWEEP_SECONDS * 4
+        ):
+            # 进程自己也被冻住了（整机休眠/挂起、长时间卡死）：这段时间的「静默」不算数，
+            # 本轮不判。否则「刷新页面后合盖走人」会在醒来的一瞬间被判成「页面已离开」而误停
+            # —— 醒来后页面的定时器会立刻恢复轮询，下一轮自然按新时间线判断。
+            return
         with self._task_left_lock:
             departed = list(self._task_left_keys.items())
         for (workspace_id, task_id), left_at in departed:
             with self._task_last_seen_lock:
                 last_seen = self._task_last_seen.get((workspace_id, task_id))
-            if last_seen is not None and last_seen >= left_at + _TASK_LEAVE_REVOKE_MIN_SECONDS:
-                # 离开之后**持续**有人轮询（≥ _TASK_LEAVE_REVOKE_MIN_SECONDS）才算页面回来了：
-                # 刷新/重开/另一个页签还在看 —— 撤销这次离开。关页面瞬间在途的那一次请求
-                # 不算数（它落在离开后几秒内），否则「关了页面却一直跑」会漏网。
-                with self._task_left_lock:
-                    self._task_left_keys.pop((workspace_id, task_id), None)
+            if last_seen is not None and now - last_seen < _TASK_LEAVE_QUIET_SECONDS:
+                # 页面还在轮询（隐藏页被节流到 1 分钟一次也算）→ 这一轮不暂停。
+                # 离开标记已经够老说明这段时间一直有人看：顺手撤销，别留着。
+                if now - left_at >= _TASK_LEAVE_QUIET_SECONDS:
+                    with self._task_left_lock:
+                        self._task_left_keys.pop((workspace_id, task_id), None)
                 continue
-            if now - left_at < _TASK_LEAVE_GRACE_SECONDS:
-                continue
+            # 静默超过阈值：页面真的走了（关掉、进程没了）→ 暂停，语义与手动暂停一致。
             with self._task_left_lock:
                 self._task_left_keys.pop((workspace_id, task_id), None)
             try:
@@ -3210,8 +3235,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 continue
             # 自动暂停必须留痕：与手动暂停区分，便于排查「页面明明开着却暂停」类工单。
             business_logger("ai_processing").warning(
-                "页面离开自动暂停 | task_id=%s | workspace=%s | 离开已 %.0f 秒且无人再看",
-                task_id, workspace_id, now - left_at,
+                "页面离开自动暂停 | task_id=%s | workspace=%s | 离开后已静默 %.0f 秒无人轮询",
+                task_id, workspace_id, now - (last_seen if last_seen is not None else left_at),
             )
             with self._task_last_seen_lock:
                 self._task_last_seen.pop((workspace_id, task_id), None)

@@ -4,7 +4,6 @@ import { ppDownload, ppRequest, type ApiContext } from '../api/client';
 import { productProcessingApiContext } from '../api/context';
 import { checkDraftSkuAvailability } from '../api/productProcessingApi';
 import { PromptCustomizePanel } from '../components/PromptCustomizePanel';
-import { useTaskHeartbeatKeepAlive } from '../hooks/useTaskHeartbeatKeepAlive';
 import type {
   DraftSkuAvailabilityItem,
   ProductProcessingOptions,
@@ -412,14 +411,10 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
     } catch (err) { fail(err); }
   };
 
-  // 任务跑着的时候持有 Web Lock：切到别的界面 / 最小化窗口后，浏览器不再节流或冻结本页，
-  // 下面这条 1 秒轮询（= 页面还在看任务的凭证）不会断。
-  // 只在 queued/running 时持有：暂停/终态的任务已经不需要它，没必要拦着浏览器省电。
-  useTaskHeartbeatKeepAlive(batch?.task.status === 'queued' || batch?.task.status === 'running');
-
-  // 关闭页面时告诉后端「这个任务不用再跑了」：pagehide 里用 sendBeacon 发离开信标，
-  // 后端宽限期内重新轮询（刷新/重开工作台/另一个页签还在看）会撤销这次离开。
-  // 只认 pagehide——页面被浏览器节流/冻结、电脑休眠都不会触发它，那些情况任务照跑，
+  // 关闭页面时告诉后端「这个任务别再跑了」：pagehide 里用 sendBeacon 发离开信标。
+  // 之后只要还有页面在轮询（刷新/重开工作台/另一个页签还在看，包括被浏览器节流到、
+  // 1 分钟一次的隐藏页），这次离开就会被撤销；只有连续静默才会真的暂停。
+  // 只认 pagehide——页面被节流/冻结、电脑休眠都不会触发它，那些情况任务照跑，
   // 不再按「多久没心跳」猜（猜测式判定正是「工作台开着却被暂停」的来源）。
   useEffect(() => {
     const status = batch?.task.status;

@@ -30,7 +30,7 @@ test("workspace keeps every open tab mounted and restores scroll by tab key", ()
   assert.match(source, /hidden=\{activeTabKey !== tab\.key\}/);
 });
 
-// 任务页开着时前端轮询后端 = 任务心跳；页签一丢（刷新/自动重载）心跳中断超时后任务会被自动暂停。
+// 任务页开着时前端轮询后端 = 还有人在看；页签一丢（刷新/自动重载）就没人轮询了，连续静默后任务会被自动暂停。
 // 恢复页签是这条链路的兜底，别让它在后续重构里被顺手删掉。
 test("workspace persists and restores open tabs across a refresh", () => {
   assert.match(source, /restoreWorkspaceTabs\(isAdmin\)/);

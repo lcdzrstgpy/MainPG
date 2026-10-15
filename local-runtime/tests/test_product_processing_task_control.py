@@ -263,8 +263,8 @@ def test_sweep_pauses_task_after_page_leave_without_new_polling(tmp_path: Path) 
     assert ("local", task["id"]) not in service._task_last_seen
 
 
-def test_page_leave_waits_out_the_grace_period(tmp_path: Path) -> None:
-    """刚发出的离开信标不会立刻生效：宽限期内刷新/重开还来得及撤销。"""
+def test_page_leave_defers_while_polling_continues(tmp_path: Path) -> None:
+    """离开信标发出后页面还在轮询（刷新/重开刚开始）→ 这一轮不暂停，标记先留着。"""
     service = _service(tmp_path)
     task, _a, _b = _task_with_two_items(service)
     service.repository.set_task_status(task["id"], "running", "local")
@@ -277,8 +277,8 @@ def test_page_leave_waits_out_the_grace_period(tmp_path: Path) -> None:
     assert ("local", task["id"]) in service._task_left_keys
 
 
-def test_page_leave_is_cancelled_by_sustained_polling(tmp_path: Path) -> None:
-    """离开之后持续轮询（≥30 秒）＝刷新/重开/另一个页签还在看 → 撤销这次离开。"""
+def test_page_leave_is_revoked_by_ongoing_polling(tmp_path: Path) -> None:
+    """离开之后还有轮询＝刷新/重开/另一个页签还在看 → 撤销这次离开。"""
     service = _service(tmp_path)
     task, _a, _b = _task_with_two_items(service)
     service.repository.set_task_status(task["id"], "running", "local")
@@ -302,7 +302,8 @@ def test_single_in_flight_poll_does_not_revoke_page_leave(tmp_path: Path) -> Non
     task, _a, _b = _task_with_two_items(service)
     service.repository.set_task_status(task["id"], "running", "local")
     now = time.monotonic()
-    # 时间线：300 秒前关掉页面；关页面瞬间那一次在途请求 295 秒前才被服务端处理
+    # 时间线：300 秒前关掉页面；关页面瞬间那一次在途请求 295 秒前被服务端处理，
+    # 之后再没有任何轮询（静默 295 秒，远超阈值）→ 该暂停
     with service._task_left_lock:
         service._task_left_keys[("local", task["id"])] = now - 300.0
     service._task_last_seen[("local", task["id"])] = now - 295.0
@@ -310,6 +311,69 @@ def test_single_in_flight_poll_does_not_revoke_page_leave(tmp_path: Path) -> Non
     service._sweep_departed_tasks_once()
 
     assert service.repository.get_task(task["id"])["status"] == "paused"
+
+
+def test_throttled_polling_keeps_task_running_after_page_leave(tmp_path: Path) -> None:
+    """隐藏页被浏览器节流到「约 1 分钟一次」也算还在看：刷新后切到后台不该被误停。
+
+    阈值必须盖住节流节奏（Chrome/Edge 隐藏满 5 分钟后定时器约 1 分钟一次），
+    否则「刷新一下、切去别的窗口」就会把任务停掉 —— 正是这轮要消灭的那类误停。
+    """
+    service = _service(tmp_path)
+    task, _a, _b = _task_with_two_items(service)
+    service.repository.set_task_status(task["id"], "running", "local")
+    now = time.monotonic()
+    with service._task_left_lock:
+        service._task_left_keys[("local", task["id"])] = now - 300.0
+    # 被节流：最近一次轮询是 70 秒前（> 节流节奏，但仍在静默阈值之内）
+    service._task_last_seen[("local", task["id"])] = now - 70.0
+
+    service._sweep_departed_tasks_once()
+
+    assert service.repository.get_task(task["id"])["status"] == "running"
+
+
+def test_sweep_skips_round_after_process_was_suspended(tmp_path: Path) -> None:
+    """整机休眠唤醒那一轮不判：进程自己也被冻住了，期间的「静默」不算页面离开。
+
+    否则「刷新一下页面、合上盖子走人」会在醒来瞬间被判成页面已离开而误停；醒来后页面
+    会立刻恢复轮询，下一轮按新时间线判断（并有轮询就撤销这次离开）。
+    """
+    service = _service(tmp_path)
+    task, _a, _b = _task_with_two_items(service)
+    service.repository.set_task_status(task["id"], "running", "local")
+    now = time.monotonic()
+    with service._task_left_lock:
+        service._task_left_keys[("local", task["id"])] = now - 4000.0
+    service._task_last_seen[("local", task["id"])] = now - 3900.0
+    # 上一轮清扫是一小时前：本进程自己刚被冻过（休眠/挂起）
+    service._last_sweep_at = now - 3600.0
+
+    service._sweep_departed_tasks_once()
+
+    assert service.repository.get_task(task["id"])["status"] == "running"
+
+    # 醒来后页面恢复轮询 → 下一轮撤销这次离开
+    service._touch_task_heartbeat(task["id"], "local")
+    service._sweep_departed_tasks_once()
+
+    assert service.repository.get_task(task["id"])["status"] == "running"
+    assert ("local", task["id"]) not in service._task_left_keys
+
+
+def test_leave_quiet_threshold_stays_above_runtime_exit_grace() -> None:
+    """静默阈值必须大于 runtime 退出宽限：否则关掉整个工作台时两条路会抢同一个任务。
+
+    关闭整个工作台时，watchdog 会在退出宽限（默认 60 秒）后退出后端并执行「取消任务 +
+    按冻结积分 50% 结算」（beforeunload 弹窗向用户承诺的正是这个）。任务级暂停必须在它
+    之后才可能发生，否则结果会在「暂停（可继续）」与「取消（按 50% 收费）」之间摇摆。
+    """
+    assert service_module._TASK_LEAVE_QUIET_SECONDS > service_module._RUNTIME_EXIT_GRACE_SECONDS
+    # 留出清扫间隔的余量，别贴着边界。
+    assert (
+        service_module._TASK_LEAVE_QUIET_SECONDS
+        >= service_module._RUNTIME_EXIT_GRACE_SECONDS + service_module._TASK_AUTO_PAUSE_SWEEP_SECONDS * 2
+    )
 
 
 def test_page_leave_does_not_pause_task_during_export_finalization(

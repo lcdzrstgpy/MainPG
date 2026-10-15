@@ -13,8 +13,8 @@ import {
   writeWorkspaceTabsSnapshot,
 } from "./workspaceTabsPersistence.ts";
 
-// 真实案例背景：任务页开着时前端轮询后端 = 任务心跳，页签一丢（刷新/自动重载）心跳中断超时后任务会被
-// 自动暂停。这组断言锁定「恢复页签」的读写与清洗：能原样往返，坏数据一律退回默认而不是崩。
+// 真实案例背景：任务页开着时前端轮询后端 = 还有人在看，页签一丢（刷新/自动重载）就没人轮询了，
+// 连续静默后任务会被自动暂停。这组断言锁定「恢复页签」的读写与清洗：能原样往返，坏数据一律退回默认而不是崩。
 
 class MemoryStorage implements WorkspaceTabsStorage {
   private readonly values = new Map<string, string>();
