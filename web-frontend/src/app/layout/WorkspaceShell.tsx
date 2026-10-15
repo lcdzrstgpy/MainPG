@@ -144,8 +144,8 @@ type RestoredWorkspaceTabs = {
 };
 
 /**
- * 恢复上次的页签布局。恢复页签不只是体验问题：任务页负责轮询后端进度（= 任务心跳），
- * 页签一丢（浏览器刷新、前端自动重载），任务会在心跳超时（约 3 分钟）后自动暂停。
+ * 恢复上次的页签布局。恢复页签不只是体验问题：任务继续跑的前提是「还有页面在看它」，
+ * 页签一丢（浏览器刷新、前端自动重载）就等于没人看了，任务会被后端自动暂停。
  *
  * localStorage 里的数据一律当不可信输入，清洗失败就退回只有一个「工作台首页」页签的默认状态。
  */
@@ -174,7 +174,7 @@ function restoreWorkspaceTabs(isAdmin: boolean): RestoredWorkspaceTabs {
       const base = moduleTab(tab.moduleId, modules);
       const restored: WorkspaceTab = { ...tab, label: tab.label || base.label, icon: tab.icon || base.icon, iconClass: tab.iconClass ?? base.iconClass };
       // 开工中的处理页签按「任务详情」恢复：它因此继续轮询 /outputs（= 任务心跳，不再被
-      // 心跳超时清扫器自动暂停），页面上也没有「开始处理」入口，不会再建出一个重复任务。
+      // 页面离开清扫器自动暂停），页面上也没有「开始处理」入口，不会再建出一个重复任务。
       if (restored.taskRunId == null && restored.activeTaskId != null) restored.taskRunId = restored.activeTaskId;
       return restored;
     });

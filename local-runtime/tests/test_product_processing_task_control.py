@@ -229,52 +229,75 @@ def test_pause_transition_cannot_regress_completed_task(tmp_path: Path) -> None:
     assert service.repository.get_task(task["id"])["status"] == "completed"
 
 
-def test_sweep_stale_heartbeats_auto_pauses_running_task(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_sweep_does_not_pause_running_task_without_page_leave(tmp_path: Path) -> None:
+    """页面没发离开信标就不许暂停——哪怕已经很久没有轮询。
+
+    背景（2026-10-15）：此前按「多久没心跳」猜用户走了（90/180 秒），页面被浏览器冻结、
+    整机休眠时定时器根本不跑，正在跑的任务就这样被误停。现在只认真实事件（pagehide 信标）。
+    """
     service = _service(tmp_path)
     task, _a, _b = _task_with_two_items(service)
     service.repository.set_task_status(task["id"], "running", "local")
-
-    # 模拟页面已关闭：最后一次 /outputs 心跳已远超超时阈值
+    # 心跳停在很久以前（标签被冻结、电脑睡了一觉都可能长这样）
     service._task_last_seen[("local", task["id"])] = time.monotonic() - 10_000.0
-    monkeypatch.setattr(
-        "wh_local.modules.product_processing.service._TASK_AUTO_PAUSE_TIMEOUT_SECONDS", 90.0
-    )
 
-    service._sweep_stale_heartbeats_once()
-
-    final = service.repository.get_task(task["id"])
-    assert final is not None and final["status"] == "paused"
-    # 暂停后不再跟踪该任务心跳（等待 resume 后重新轮询刷新）
-    assert ("local", task["id"]) not in service._task_last_seen
-
-
-def test_sweep_keeps_task_with_fresh_heartbeat_running(tmp_path: Path) -> None:
-    service = _service(tmp_path)
-    task, _a, _b = _task_with_two_items(service)
-    service.repository.set_task_status(task["id"], "running", "local")
-    service._task_last_seen[("local", task["id"])] = time.monotonic()
-
-    service._sweep_stale_heartbeats_once()
+    service._sweep_departed_tasks_once()
 
     assert service.repository.get_task(task["id"])["status"] == "running"
 
 
-def test_auto_pause_threshold_stays_well_above_browser_throttle_cadence() -> None:
-    """自动暂停阈值必须显著长于「隐藏页被节流后的心跳节奏」。
+def test_sweep_pauses_task_after_page_leave_without_new_polling(tmp_path: Path) -> None:
+    """页面关闭信标送达、宽限期内也没人再看 → 暂停（与手动暂停同语义，可从历史记录继续）。"""
+    service = _service(tmp_path)
+    task, _a, _b = _task_with_two_items(service)
+    service.repository.set_task_status(task["id"], "running", "local")
+    # 时间线：400 秒前最后轮询 → 300 秒前关掉页面 → 之后没人再看
+    service._task_last_seen[("local", task["id"])] = time.monotonic() - 400.0
+    service.mark_task_left(task["id"], "local")
+    service._task_left_keys[("local", task["id"])] = time.monotonic() - 300.0
 
-    浏览器把隐藏页的定时器压到约 60 秒一次（Chrome/Edge 隐藏满 5 分钟进入密集节流），
-    90 秒的阈值只剩 30 秒余量，主线程一忙就被误判成「页面已关」——这是「工作台明明
-    开着却被暂停」工单的主要来源。这条断言是防止阈值被改回短值（前端另有 Web Lock 豁免
-    节流，此处是第二道防线）。
-    """
-    assert service_module._TASK_AUTO_PAUSE_TIMEOUT_SECONDS >= 150.0
-    # 清扫节奏要远小于阈值，否则「超时」本身会被清扫间隔拖成一个大区间。
-    assert service_module._TASK_AUTO_PAUSE_SWEEP_SECONDS * 4 <= service_module._TASK_AUTO_PAUSE_TIMEOUT_SECONDS
+    service._sweep_departed_tasks_once()
+
+    assert service.repository.get_task(task["id"])["status"] == "paused"
+    assert ("local", task["id"]) not in service._task_left_keys
+    assert ("local", task["id"]) not in service._task_last_seen
 
 
-def test_sweep_does_not_pause_task_during_export_finalization(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_page_leave_waits_out_the_grace_period(tmp_path: Path) -> None:
+    """刚发出的离开信标不会立刻生效：宽限期内刷新/重开还来得及撤销。"""
+    service = _service(tmp_path)
+    task, _a, _b = _task_with_two_items(service)
+    service.repository.set_task_status(task["id"], "running", "local")
+    service._task_last_seen[("local", task["id"])] = time.monotonic() - 5.0
+    service.mark_task_left(task["id"], "local")
+
+    service._sweep_departed_tasks_once()
+
+    assert service.repository.get_task(task["id"])["status"] == "running"
+    assert ("local", task["id"]) in service._task_left_keys
+
+
+def test_page_leave_is_cancelled_by_new_polling(tmp_path: Path) -> None:
+    """离开信标之后又出现轮询（刷新/重开/另一个页签还在看）→ 撤销这次离开。"""
+    service = _service(tmp_path)
+    task, _a, _b = _task_with_two_items(service)
+    service.repository.set_task_status(task["id"], "running", "local")
+    service.mark_task_left(task["id"], "local")
+    service._task_left_keys[("local", task["id"])] = time.monotonic() - 300.0
+
+    # 刷新后的页面重新开始轮询
+    service._touch_task_heartbeat(task["id"], "local")
+
+    service._sweep_departed_tasks_once()
+
+    assert service.repository.get_task(task["id"])["status"] == "running"
+    assert ("local", task["id"]) not in service._task_left_keys
+
+
+def test_page_leave_does_not_pause_task_during_export_finalization(
+    tmp_path: Path,
 ) -> None:
+    """商品已全部终态、只剩本地收尾时即使页面离开也不暂停：否则会卡在 99% 并阻断预检/导出。"""
     service = _service(tmp_path)
     task, item_a, item_b = _task_with_two_items(service)
     for item in (item_a, item_b):
@@ -286,15 +309,42 @@ def test_sweep_does_not_pause_task_during_export_finalization(
             workspace_id="local",
         )
     service.repository.set_task_status(task["id"], "running", "local")
-    service._task_last_seen[("local", task["id"])] = time.monotonic() - 10_000.0
-    monkeypatch.setattr(
-        "wh_local.modules.product_processing.service._TASK_AUTO_PAUSE_TIMEOUT_SECONDS", 90.0
-    )
+    service._task_last_seen[("local", task["id"])] = time.monotonic() - 400.0
+    service.mark_task_left(task["id"], "local")
+    service._task_left_keys[("local", task["id"])] = time.monotonic() - 300.0
 
-    service._sweep_stale_heartbeats_once()
+    service._sweep_departed_tasks_once()
 
     assert service.repository.get_task(task["id"])["status"] == "running"
+
+
+def test_sweep_prunes_expired_heartbeat_records(tmp_path: Path) -> None:
+    """心跳记录只服务于「离开之后有没有人回来」：过期即弃，避免长会话里无限增长。"""
+    service = _service(tmp_path)
+    task, _a, _b = _task_with_two_items(service)
+    service._task_last_seen[("local", task["id"])] = time.monotonic() - 7200.0
+
+    service._sweep_departed_tasks_once()
+
     assert ("local", task["id"]) not in service._task_last_seen
+
+
+def test_task_leave_beacon_route_is_reachable(tmp_path: Path) -> None:
+    """前端 pagehide 的信标地址（写死在 ProductProcessingTaskPage 里）必须真的能通。
+
+    路径一旦对不上，「关掉页面就暂停」会静默失效（信标打空、任务继续跑），界面上看不出来。
+    同时锁定语义：任务号不存在也返回 ok —— 信标是尽力而为的，任何时候都不许抛错。
+    """
+    from fastapi.testclient import TestClient
+
+    from wh_local.app.main import create_app
+
+    client = TestClient(create_app(tmp_path / "workbench.sqlite3"))
+
+    response = client.post("/api/product-processing/tasks/999999/leave?workspace=local")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
 
 
 def test_execute_finishes_export_when_pause_lands_after_last_item(

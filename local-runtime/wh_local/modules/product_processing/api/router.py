@@ -1125,6 +1125,20 @@ def create_product_processing_router(
     ) -> dict[str, Any]:
         return _call(service.pause_task, task_id, _workspace(workspace_id))
 
+    @router.post("/tasks/{task_id}/leave")
+    def leave_task(
+        task_id: int,
+        workspace: str = Query(default="local"),
+    ) -> dict[str, Any]:
+        """页面关闭信标（pagehide 时 sendBeacon 触发）：只标记「这个页面不再看这个任务」。
+
+        参数走 query 是因为 sendBeacon 带不了自定义头。这里**不会立刻停任务**：维护循环
+        在宽限期之后才暂停，且宽限期内任何一次轮询（刷新/重开/另一个页签还在看）都会撤销。
+        信标是尽力而为的——丢了最多是任务继续跑，不会误停。
+        """
+        service.mark_task_left(task_id, _workspace(workspace))
+        return {"ok": True}
+
     @router.post("/tasks/{task_id}/cancel")
     def cancel_task(
         task_id: int,

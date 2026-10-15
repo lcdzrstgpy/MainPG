@@ -22,11 +22,12 @@ test("未处理格子位于终态汇总区内（处理中/已暂停不展示）"
   assert.match(page, /\{!taskActive && \(\s*<div className="verify-summary">/);
 });
 
-// 背景（2026-10-15）：任务页 1 秒轮询 /outputs 就是「任务心跳」，而浏览器会把隐藏页的
-// 定时器压到约 1 分钟一次（Chrome/Edge 隐藏满 5 分钟）/在节能模式下冻结后台页 —— 用户只是
-// 切到别的界面或最小化窗口，任务就被误判成「页面关了」自动暂停（工单来源）。
-// 修复：任务运行期间持有 Web Lock（浏览器认可的「后台仍要干活」信号，可豁免上述压制）。
-test("任务运行期间持 Web Lock 保活，避免隐藏页被节流/冻结导致误停", () => {
+// 背景（2026-10-15）：任务是否继续跑，只该由**真实事件**决定。后端此前按「多久没心跳」
+// 猜用户离开（90/180 秒），而浏览器会把隐藏页的定时器压到约 1 分钟一次、节能模式/休眠还会
+// 直接冻结页面 —— 「工作台明明开着却被暂停」就是这么来的。现在的分工：
+//   ① 页面开着（哪怕被冻结）→ 照跑：任务运行期间持 Web Lock 豁免节流，且后端不再猜；
+//   ② 页面真的关掉 → pagehide 发离开信标，后端宽限期后暂停（刷新会撤销）。
+test("任务运行期间持 Web Lock 保活：切走/最小化不再被节流误伤", () => {
   assert.match(
     page,
     /useTaskHeartbeatKeepAlive\(batch\?\.task\.status === 'queued' \|\| batch\?\.task\.status === 'running'\)/,
@@ -37,4 +38,15 @@ test("任务运行期间持 Web Lock 保活，避免隐藏页被节流/冻结导
   assert.match(keepAlive, /mode: "shared"/);
   // 任务结束/页面卸载时必须释放，否则等于永远拦着浏览器省电
   assert.match(keepAlive, /controller\.abort\(\)/);
+});
+
+test("关闭页面用 pagehide 信标通知后端，不再按静默时长猜", () => {
+  assert.match(page, /window\.addEventListener\('pagehide', leave\)/);
+  assert.ok(
+    page.includes("navigator.sendBeacon?.(`${API_BASE}/tasks/${taskId}/leave?workspace="),
+    "pagehide 必须发送 leave 信标（后端据此暂停；地址与后端路由对齐）",
+  );
+  // 「约 X 秒/分钟后自动暂停」这类猜测式文案不许回来
+  assert.doesNotMatch(page, /约 \d+ 秒后任务将自动暂停/);
+  assert.doesNotMatch(page, /约 \d+ 分钟后任务将自动暂停/);
 });
