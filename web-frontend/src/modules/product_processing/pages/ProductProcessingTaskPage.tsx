@@ -4,6 +4,7 @@ import { ppDownload, ppRequest, type ApiContext } from '../api/client';
 import { productProcessingApiContext } from '../api/context';
 import { checkDraftSkuAvailability } from '../api/productProcessingApi';
 import { PromptCustomizePanel } from '../components/PromptCustomizePanel';
+import { useTaskHeartbeatKeepAlive } from '../hooks/useTaskHeartbeatKeepAlive';
 import type {
   DraftSkuAvailabilityItem,
   ProductProcessingOptions,
@@ -73,6 +74,12 @@ type Props = {
   initialOptions?: ProductProcessingOptions;
   /** 任务完成后打开预检页（生成表格 → 预检修改 → 导出最终版） */
   onOpenPrecheck?: (taskId: number) => void;
+  /**
+   * 本页签接手了真实任务（首次「开始处理」或重试失败项）时回调，由工作台把 task_id 记到页签上。
+   * 刷新恢复后该页签按「任务详情」恢复：继续轮询 /outputs（= 心跳，不再被心跳超时自动暂停），
+   * 也不会因为不知道任务已存在而再点一次「开始处理」建出重复任务。
+   */
+  onTaskStarted?: (taskId: number) => void;
 };
 
 function api(): ApiContext {
@@ -161,7 +168,7 @@ function useSmoothProgress(target: number): number {
   return value;
 }
 
-export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, initialPremiumDraftIds, initialOptions, onOpenPrecheck }: Props) {
+export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, initialPremiumDraftIds, initialOptions, onOpenPrecheck, onTaskStarted }: Props) {
   const ctx = api();
   // 处理参数全部为系统默认（范围全开、全部数量、8 线程并行、自动补跑等），
   // 精简设置界面后不再向用户暴露这些项；仅站点 / 语言 / 生图模板可选。
@@ -405,6 +412,11 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
     } catch (err) { fail(err); }
   };
 
+  // 任务跑着的时候持有 Web Lock：切到别的界面 / 最小化窗口后，浏览器不再节流或冻结本页，
+  // 下面这条 1 秒轮询（= 任务心跳）不会断，任务不会被误判成「页面关了」而自动暂停。
+  // 只在 queued/running 时持有：暂停/终态的任务已经不需要心跳，没必要拦着浏览器省电。
+  useTaskHeartbeatKeepAlive(batch?.task.status === 'queued' || batch?.task.status === 'running');
+
   useEffect(() => {
     if (!batch) return;
     const running = ['queued', 'running', 'paused'];
@@ -483,6 +495,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
         headers: { 'Idempotency-Key': startRequestRef.current.key },
       });
       setBatch(data);
+      onTaskStarted?.(data.task_id);
       notify(premiumIds.length ? data.message || `批次已提交（含 ${premiumIds.length} 条精品单图）` : (data.message || '批次已提交'));
     } catch (err) { fail(err); } finally { startInFlightRef.current = false; setLoading(false); }
   };
@@ -567,6 +580,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
         body: { draft_ids: draftIds, auto_repull: options.autoRepull !== false },
       });
       setBatch(data);
+      onTaskStarted?.(data.task_id);
       notify(data.message || `已提交 ${draftIds.length} 个失败项重新处理`);
     } catch (err) { fail(err); } finally { startInFlightRef.current = false; setLoading(false); }
   };
@@ -589,7 +603,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       <header className="verify-commandbar">
         <div className="verify-command-title">
           <h1>{initialTaskId != null ? '历史任务详情' : '处理设置与进度'}</h1>
-          <p>{initialTaskId != null ? '继续处理中的历史任务；关闭本页约 90 秒后任务将自动暂停，避免后台继续消耗 AI 额度，可从左侧“历史记录”继续。' : '配置处理参数后开始，结果实时轮询。暂停/取消都会立即停止后续 AI 调用。'}</p>
+          <p>{initialTaskId != null ? '继续处理中的历史任务；关闭本页约 3 分钟后任务将自动暂停，避免后台继续消耗 AI 额度，可从左侧“历史记录”继续。' : '配置处理参数后开始，结果实时轮询。暂停/取消都会立即停止后续 AI 调用。'}</p>
         </div>
       </header>
 
@@ -797,7 +811,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                 {(taskPaused || autoRepullRunning || autoRepullDone || autoRepullFailed) && (taskPaused || autoRepull) && (
                   <div className={`verify-repull-banner ${taskPaused ? 'paused' : (autoRepull?.status ?? '')}`} role="status">
                     <i className={`iconfont ${taskPaused ? 'icon-infomation' : autoRepullRunning ? 'icon-loading' : autoRepullDone ? 'icon-check-circle' : 'icon-infomation'}`} aria-hidden="true" />
-                    <span>{taskPaused ? '任务已暂停：停止后续 AI 调用，可从断点继续（含自动重试轮）；关闭本页约 90 秒后也会自动暂停' : (autoRepull?.message ?? '')}</span>
+                    <span>{taskPaused ? '任务已暂停：停止后续 AI 调用，可从断点继续（含自动重试轮）；关闭本页约 3 分钟后也会自动暂停' : (autoRepull?.message ?? '')}</span>
                     {!taskPaused && autoRepullRunning && <em>无需手动操作，完成后自动刷新</em>}
                   </div>
                 )}

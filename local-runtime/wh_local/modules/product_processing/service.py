@@ -243,9 +243,16 @@ _COMMON_VARIANT_TRANSLATIONS: dict[str, dict[str, str]] = {
     },
 }
 _TASK_HEARTBEAT_SECONDS = 10.0
-# 前端任务页轮询 /tasks/{id}/outputs 即为心跳；超过该时长没有心跳（页面关闭/
-# 切走/浏览器标签被回收）自动把任务置为暂停，避免用户已不在看却继续烧 AI 成本。
-_TASK_AUTO_PAUSE_TIMEOUT_SECONDS = 90.0
+# 前端任务页轮询 /tasks/{id}/outputs 即为心跳；超过该时长没有心跳（页面已关闭、浏览器
+# 把标签回收/冻结）自动把任务置为暂停，避免用户已不在看却继续烧 AI 成本。
+#
+# 阈值取 180 秒而不是更短：浏览器会把**隐藏页**的定时器压到约 1 分钟一次
+# （Chrome/Edge 隐藏满 5 分钟进入密集节流），90 秒只剩 30 秒余量，主线程一忙或被拖动
+# 就被误判成「页面没了」——这是「工作台明明开着却被暂停」工单的主要来源。
+# 180 秒 = 节流节奏的 3 倍余量，同时把真正关掉页面后的继续消耗控制在 3 分钟内；
+# 前端在任务运行期间还会持有 Web Lock 豁免节流（useTaskHeartbeatKeepAlive），
+# 这条超时是第二道防线。
+_TASK_AUTO_PAUSE_TIMEOUT_SECONDS = 180.0
 _TASK_AUTO_PAUSE_SWEEP_SECONDS = 15.0
 # 收尾卡死兜底阈值：全部条目已终态（非 pending/running）但任务仍停在 running，且
 # worker 已退场（崩溃）或长时间无任何条目进展（卡在本地导出/落库）。正常收尾由
@@ -719,8 +726,9 @@ class ProductProcessingService:
         self._media_materialization_lock = threading.Lock()
         self._media_materialization_workers: dict[str, threading.Thread] = {}
         # 前端任务页轮询心跳：(workspace_id, task_id) -> time.monotonic() 最近一次
-        # /outputs 轮询时间。超时未收到心跳自动暂停（页面关闭/切走），避免用户已
-        # 不在看却继续调用 AI 烧成本。
+        # /outputs 轮询时间。超时未收到心跳自动暂停（页面关闭/标签被冻结），避免用户已
+        # 不在看却继续调用 AI 烧成本。切到别的界面/最小化窗口不算离开：前端持有
+        # Web Lock 对抗隐藏页节流，轮询照常。
         self._task_last_seen: dict[tuple[str, int], float] = {}
         self._task_last_seen_lock = threading.Lock()
         self._auto_pause_sweeper_started = False
@@ -2997,7 +3005,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         self, task_id: int, *, summary_only: bool = False, workspace_id: str = "local"
     ) -> dict[str, Any]:
         # 前端任务页轮询该接口即为心跳：页面在（轮询在）任务保持运行；页面关闭/
-        # 切走后心跳超时由清扫器自动暂停，避免用户已不在看仍继续调用 AI 烧成本。
+        # 页面关闭后心跳超时由清扫器自动暂停，避免用户已不在看仍继续调用 AI 烧成本。
+        # （切到别的界面/最小化窗口不算离开：前端用 Web Lock 保住隐藏页的轮询。）
         self._touch_task_heartbeat(task_id, workspace_id)
         task = self._require_task(task_id, workspace_id)
         response = self._task_response(task)
@@ -3126,7 +3135,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         """单次清扫：心跳超时的 running/queued 任务自动置为暂停。
 
         桌面端整个退出时进程随之终止、AI 调用自然停止，无需此机制；这里覆盖
-        「浏览器关页面/切走后本地服务仍在运行、AI 调用继续烧成本」的场景。
+        「浏览器关页面/标签被冻结后本地服务仍在运行、AI 调用继续烧成本」的场景。
         自动暂停与手动暂停语义一致：已完成项保留，未处理项由结算链路按真实
         结果退款（已完成扣费、未完成全退），用户可从历史记录继续处理。
         """

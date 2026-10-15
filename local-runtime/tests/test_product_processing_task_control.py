@@ -15,6 +15,7 @@ from wh_local.modules.product_processing.service import (
     ProductProcessingService,
     _TaskControlStopped,
 )
+from wh_local.modules.product_processing import service as service_module
 
 
 def _service(tmp_path: Path) -> ProductProcessingService:
@@ -256,6 +257,19 @@ def test_sweep_keeps_task_with_fresh_heartbeat_running(tmp_path: Path) -> None:
     service._sweep_stale_heartbeats_once()
 
     assert service.repository.get_task(task["id"])["status"] == "running"
+
+
+def test_auto_pause_threshold_stays_well_above_browser_throttle_cadence() -> None:
+    """自动暂停阈值必须显著长于「隐藏页被节流后的心跳节奏」。
+
+    浏览器把隐藏页的定时器压到约 60 秒一次（Chrome/Edge 隐藏满 5 分钟进入密集节流），
+    90 秒的阈值只剩 30 秒余量，主线程一忙就被误判成「页面已关」——这是「工作台明明
+    开着却被暂停」工单的主要来源。这条断言是防止阈值被改回短值（前端另有 Web Lock 豁免
+    节流，此处是第二道防线）。
+    """
+    assert service_module._TASK_AUTO_PAUSE_TIMEOUT_SECONDS >= 150.0
+    # 清扫节奏要远小于阈值，否则「超时」本身会被清扫间隔拖成一个大区间。
+    assert service_module._TASK_AUTO_PAUSE_SWEEP_SECONDS * 4 <= service_module._TASK_AUTO_PAUSE_TIMEOUT_SECONDS
 
 
 def test_sweep_does_not_pause_task_during_export_finalization(
