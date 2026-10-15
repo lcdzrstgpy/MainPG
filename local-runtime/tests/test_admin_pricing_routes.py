@@ -7,6 +7,9 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from wh_local.customer.admin_proxy import create_admin_proxy_router
+
+# auth_server 为服务器侧模块、未随仓库分发（c053f438c 已移除）；缺失时本组用例整体跳过。
+pytest.importorskip("wh_local.customer.auth_server")
 from wh_local.customer.auth_server import create_auth_app
 from wh_local.customer.contracts import LocalSession
 from wh_local.db import transaction
