@@ -254,6 +254,10 @@ _TASK_HEARTBEAT_SECONDS = 10.0
 # 「页面还在，只是被系统冻住」误判成「用户走了」——这是「工作台明明开着却被暂停」工单的
 # 主要来源，且无法用调大阈值根治（冻结时长无上界）。开着就一直跑，只有真的关了页面才停。
 _TASK_LEAVE_GRACE_SECONDS = 60.0
+# 撤销一次「页面离开」需要的**持续**轮询时长：关页面那一瞬间可能还有一次在途请求落到服务端，
+# 单独那一次不能算「页面回来了」（否则关了页面又没人看，任务会一直跑下去）。刷新/重开/另一个
+# 页签还在看都会持续轮询，30 秒足够把它们与「在途的最后一次」区分开。
+_TASK_LEAVE_REVOKE_MIN_SECONDS = 30.0
 _TASK_AUTO_PAUSE_SWEEP_SECONDS = 15.0
 # 心跳记录（_task_last_seen）只用于「离开之后有没有人再回来看」，超过这个时长没被任何
 # 页面轮询过的记录直接清掉，避免长会话里无限增长。
@@ -3175,8 +3179,10 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         for (workspace_id, task_id), left_at in departed:
             with self._task_last_seen_lock:
                 last_seen = self._task_last_seen.get((workspace_id, task_id))
-            if last_seen is not None and last_seen >= left_at:
-                # 离开之后又来了心跳：刷新/重开/另一个页签还在看 —— 撤销这次离开。
+            if last_seen is not None and last_seen >= left_at + _TASK_LEAVE_REVOKE_MIN_SECONDS:
+                # 离开之后**持续**有人轮询（≥ _TASK_LEAVE_REVOKE_MIN_SECONDS）才算页面回来了：
+                # 刷新/重开/另一个页签还在看 —— 撤销这次离开。关页面瞬间在途的那一次请求
+                # 不算数（它落在离开后几秒内），否则「关了页面却一直跑」会漏网。
                 with self._task_left_lock:
                     self._task_left_keys.pop((workspace_id, task_id), None)
                 continue

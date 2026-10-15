@@ -277,21 +277,39 @@ def test_page_leave_waits_out_the_grace_period(tmp_path: Path) -> None:
     assert ("local", task["id"]) in service._task_left_keys
 
 
-def test_page_leave_is_cancelled_by_new_polling(tmp_path: Path) -> None:
-    """离开信标之后又出现轮询（刷新/重开/另一个页签还在看）→ 撤销这次离开。"""
+def test_page_leave_is_cancelled_by_sustained_polling(tmp_path: Path) -> None:
+    """离开之后持续轮询（≥30 秒）＝刷新/重开/另一个页签还在看 → 撤销这次离开。"""
     service = _service(tmp_path)
     task, _a, _b = _task_with_two_items(service)
     service.repository.set_task_status(task["id"], "running", "local")
-    service.mark_task_left(task["id"], "local")
-    service._task_left_keys[("local", task["id"])] = time.monotonic() - 300.0
+    now = time.monotonic()
+    service._task_last_seen[("local", task["id"])] = now - 400.0
+    with service._task_left_lock:
+        service._task_left_keys[("local", task["id"])] = now - 300.0
 
-    # 刷新后的页面重新开始轮询
+    # 刷新后的页面从 300 秒前一直轮询到现在
     service._touch_task_heartbeat(task["id"], "local")
 
     service._sweep_departed_tasks_once()
 
     assert service.repository.get_task(task["id"])["status"] == "running"
     assert ("local", task["id"]) not in service._task_left_keys
+
+
+def test_single_in_flight_poll_does_not_revoke_page_leave(tmp_path: Path) -> None:
+    """关页面瞬间在途的那一次轮询不算「页面回来了」——否则关了页面任务会一直跑下去。"""
+    service = _service(tmp_path)
+    task, _a, _b = _task_with_two_items(service)
+    service.repository.set_task_status(task["id"], "running", "local")
+    now = time.monotonic()
+    # 时间线：300 秒前关掉页面；关页面瞬间那一次在途请求 295 秒前才被服务端处理
+    with service._task_left_lock:
+        service._task_left_keys[("local", task["id"])] = now - 300.0
+    service._task_last_seen[("local", task["id"])] = now - 295.0
+
+    service._sweep_departed_tasks_once()
+
+    assert service.repository.get_task(task["id"])["status"] == "paused"
 
 
 def test_page_leave_does_not_pause_task_during_export_finalization(
