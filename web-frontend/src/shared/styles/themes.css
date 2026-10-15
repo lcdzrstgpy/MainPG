@@ -13,6 +13,10 @@
    ================================================================ *//* ---- 默认主题变量（经典蓝青）---- */:root {
   --theme-page-bg: #edf4fb;
   --theme-card-bg: rgba(255, 255, 255, .92);
+  /* 实心卡片底色：压在深色遮罩上的浮层（新手引导面板/提示卡/编辑器等）用它。
+     不能直接用 --theme-card-bg —— peach/alpine 的卡片底色是 20% 透明的"风景玻璃"，
+     浮层落在深色遮罩上会把内容整片"洗掉"（2026-10-15 修复）。 */
+  --theme-card-bg-solid: #ffffff;
   --theme-card-border: rgba(184, 209, 230, .82);
   --theme-card-shadow: rgba(26, 65, 101, .10);
   --theme-card-shadow-lg: rgba(26, 65, 101, .1);
@@ -101,6 +105,7 @@
 }/* ---- 暖阳橙 ---- */[data-theme="sunset"] {
   --theme-page-bg: #fdf5ec;
   --theme-card-bg: rgba(255, 253, 248, .92);
+  --theme-card-bg-solid: #fffdf8;
   --theme-card-border: rgba(228, 195, 150, .55);
   --theme-card-shadow: rgba(120, 60, 10, .08);
   --theme-card-shadow-lg: rgba(120, 60, 10, .12);
@@ -195,7 +200,7 @@
    主题商店的完整 CSS 会在运行时追加到 head 末尾，因此仍可覆盖下面的基础
    调色板。这里仅保证离线、缓存被清理或主题包临时不可用时，不会回退成经典蓝。 */
 [data-theme="violet"] {
-  --theme-page-bg: #f8f3fb; --theme-card-bg: rgba(255, 252, 255, .92); --theme-card-border: rgba(214, 191, 224, .7);
+  --theme-page-bg: #f8f3fb; --theme-card-bg: rgba(255, 252, 255, .92); --theme-card-bg-solid: #fffcff; --theme-card-border: rgba(214, 191, 224, .7);
   --theme-card-shadow: rgba(96, 67, 114, .1); --theme-card-shadow-lg: rgba(96, 67, 114, .15);
   --theme-text-primary: #352640; --theme-text-secondary: #745f80; --theme-text-muted: #a392ad;
   --theme-primary: #8b5cf6; --theme-primary-light: #f3edff; --theme-accent: #d06cae;
@@ -212,7 +217,7 @@
 }
 
 [data-theme="dessert"] {
-  --theme-page-bg: #f8f0e8; --theme-card-bg: rgba(255, 251, 246, .93); --theme-card-border: rgba(219, 190, 166, .72);
+  --theme-page-bg: #f8f0e8; --theme-card-bg: rgba(255, 251, 246, .93); --theme-card-bg-solid: #fffbf6; --theme-card-border: rgba(219, 190, 166, .72);
   --theme-card-shadow: rgba(100, 57, 36, .1); --theme-card-shadow-lg: rgba(100, 57, 36, .15);
   --theme-text-primary: #4b2f26; --theme-text-secondary: #80624f; --theme-text-muted: #aa907d;
   --theme-primary: #a8613f; --theme-primary-light: #fff3e7; --theme-accent: #c58a5a;
@@ -230,7 +235,7 @@
 
 [data-theme="diamond"] {
   color-scheme: dark;
-  --theme-page-bg: #111318; --theme-card-bg: rgba(25, 28, 34, .94); --theme-card-border: rgba(105, 114, 129, .65);
+  --theme-page-bg: #111318; --theme-card-bg: rgba(25, 28, 34, .94); --theme-card-bg-solid: #191c22; --theme-card-border: rgba(105, 114, 129, .65);
   --theme-card-shadow: rgba(0, 0, 0, .34); --theme-card-shadow-lg: rgba(0, 0, 0, .5);
   --theme-text-primary: #f1f4f7; --theme-text-secondary: #b5bdc9; --theme-text-muted: #8993a2;
   --theme-primary: #e7ebf0; --theme-primary-light: #2b3039; --theme-accent: #aeb8c6;
@@ -247,7 +252,7 @@
 }
 
 [data-theme="quirky"] {
-  --theme-page-bg: #fff8cf; --theme-card-bg: rgba(255, 254, 239, .94); --theme-card-border: rgba(82, 51, 113, .48);
+  --theme-page-bg: #fff8cf; --theme-card-bg: rgba(255, 254, 239, .94); --theme-card-bg-solid: #fffeef; --theme-card-border: rgba(82, 51, 113, .48);
   --theme-card-shadow: rgba(49, 28, 76, .16); --theme-card-shadow-lg: rgba(49, 28, 76, .24);
   --theme-text-primary: #2e1b48; --theme-text-secondary: #5e4778; --theme-text-muted: #917b9d;
   --theme-primary: #7c3aed; --theme-primary-light: #f0e8ff; --theme-accent: #f43f5e;
@@ -264,7 +269,7 @@
 }
 
 [data-theme="chinese"] {
-  --theme-page-bg: #efede4; --theme-card-bg: rgba(250, 249, 244, .94); --theme-card-border: rgba(147, 166, 157, .7);
+  --theme-page-bg: #efede4; --theme-card-bg: rgba(250, 249, 244, .94); --theme-card-bg-solid: #faf9f4; --theme-card-border: rgba(147, 166, 157, .7);
   --theme-card-shadow: rgba(40, 59, 55, .1); --theme-card-shadow-lg: rgba(40, 59, 55, .16);
   --theme-text-primary: #253a3a; --theme-text-secondary: #536b67; --theme-text-muted: #82928d;
   --theme-primary: #476f6a; --theme-primary-light: #e5eee8; --theme-accent: #a74736;
@@ -284,6 +289,7 @@
 [data-theme="peach"] {
   --theme-page-bg: #fdf0ec;
   --theme-card-bg: rgba(255, 250, 247, .2);
+  --theme-card-bg-solid: #fffaf7;
   --theme-card-border: rgba(217, 93, 120, .22);
   --theme-card-shadow: rgba(140, 61, 82, .08);
   --theme-card-shadow-lg: rgba(140, 61, 82, .14);
@@ -380,6 +386,7 @@
 [data-theme="alpine"] {
   --theme-page-bg: #eef5ec;
   --theme-card-bg: rgba(252, 255, 252, .22);
+  --theme-card-bg-solid: #fcfffc;
   --theme-card-border: rgba(47, 125, 82, .26);
   --theme-card-shadow: rgba(31, 74, 56, .08);
   --theme-card-shadow-lg: rgba(31, 74, 56, .14);
