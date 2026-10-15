@@ -2964,6 +2964,15 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             self.repository.set_task_status(
                 int(task["id"]), "paused", str(task["workspace_id"])
             )
+            # 自动暂停必须留痕：本路径与页面开闭无关（重启 + 计费任务缺远端令牌
+            # 即触发），此前无日志导致「页面明明开着却变成已暂停」难以定位。
+            try:
+                business_logger("ai_processing").warning(
+                    "计费任务缺少远端令牌，已暂停等待重新登录 | task_id=%s | workspace=%s",
+                    task.get("id"), task.get("workspace_id"),
+                )
+            except Exception:  # noqa: BLE001
+                pass
         launchable = [task for task in queued if int(task["id"]) not in blocked_ids]
         launched = sum(
             self._launch_background_execute(int(task["id"]), str(task["workspace_id"]))
@@ -3141,7 +3150,17 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 # 把 6/6 的任务卡在 99%，并阻断预检/导出。
                 if self._task_has_unfinished_items(task):
                     try:
-                        self.repository.pause_task_execution(task_id, workspace_id)
+                        paused = self.repository.pause_task_execution(task_id, workspace_id)
+                        if paused:
+                            # 自动暂停必须留痕：与手动暂停区分，便于排查「页面明明
+                            # 开着却暂停」类工单（此前清扫器暂停无任何日志）。
+                            with self._task_last_seen_lock:
+                                last_seen = self._task_last_seen.get((workspace_id, task_id))
+                            age = (now - last_seen) if last_seen is not None else -1.0
+                            business_logger("ai_processing").warning(
+                                "心跳超时自动暂停 | task_id=%s | workspace=%s | 最后心跳=%.0f 秒前",
+                                task_id, workspace_id, age,
+                            )
                     except Exception:
                         pass
                 # 移除心跳记录：resume 后由前端重新轮询重建，避免用陈旧时间戳
