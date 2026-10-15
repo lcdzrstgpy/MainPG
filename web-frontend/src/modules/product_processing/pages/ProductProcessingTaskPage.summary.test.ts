@@ -38,3 +38,20 @@ test("关闭页面用 pagehide 信标通知后端，不再按静默时长猜", (
   assert.doesNotMatch(page, /约 \d+ 秒后任务将自动暂停/);
   assert.doesNotMatch(page, /约 \d+ 分钟后任务将自动暂停/);
 });
+
+// 最坏的一条路径：信标里的工作区与轮询用的工作区不一致 —— 信标会记下一个「没有对应心跳」
+// 的标记，于是页面开着也会被判静默而暂停。两处必须取同一个值（ctx.workspaceId）。
+test("信标与轮询用同一个 workspace 值（不一致会让页面开着也被暂停）", () => {
+  const client = readFileSync(new URL("../api/client.ts", import.meta.url), "utf8");
+  const context = readFileSync(new URL("../api/context.ts", import.meta.url), "utf8");
+  // 轮询：请求头取 ctx.workspaceId
+  assert.match(client, /"X-Workspace-ID": context\.workspaceId/);
+  // 信标：查询参数取同一个 ctx.workspaceId
+  assert.match(page, /const workspace = ctx\.workspaceId;/);
+  assert.ok(
+    page.includes("?workspace=${encodeURIComponent(workspace)}"),
+    "信标必须把 workspace 带在查询串里（sendBeacon 带不了自定义头）",
+  );
+  // 两处都来自同一个上下文工厂，避免有人另起一套取值
+  assert.match(context, /workspaceId:/);
+});

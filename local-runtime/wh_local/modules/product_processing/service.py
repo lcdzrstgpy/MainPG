@@ -742,11 +742,14 @@ class ProductProcessingService:
         self._diagnostic_dispatcher: ProductProcessingDiagnosticOutboxDispatcher | None = None
         self._media_materialization_lock = threading.Lock()
         self._media_materialization_workers: dict[str, threading.Thread] = {}
-        # 前端任务页轮询 (workspace_id, task_id) -> 最近一次 /outputs 轮询时刻。只用来判断
-        # 「页面离开之后有没有人再回来看」（撤销离开信标），本身不再触发任何暂停。
+        # 心跳记录（_task_last_seen）只用于「离开之后有没有人再回来看」，超过这个时长没被任何
+        # 页面轮询过的记录直接清掉，避免长会话里无限增长。
         self._task_last_seen: dict[tuple[str, int], float] = {}
         self._task_last_seen_lock = threading.Lock()
         self._task_maintenance_started = False
+        # 「工作台正在退出」探针（桌面端在 create_app 里接到 runtime watchdog 上）：
+        # 为真时任务级暂停让位给退出前的「取消 + 结算」，见 _sweep_departed_tasks_once。
+        self._shutdown_probe: Callable[[], bool] | None = None
         # 上一次清扫时刻：识别「进程自己也被冻住了」（整机休眠/挂起），那一轮不判离开
         # —— 所以第一次调用（None）不判、也不影响后续判断。
         self._last_sweep_at: float | None = None
@@ -3138,16 +3141,29 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 name="pp-task-maintenance",
             ).start()
 
+    def set_shutdown_probe(self, probe: Callable[[], bool] | None) -> None:
+        """注入「工作台正在退出」探针（桌面端接到 runtime watchdog 上，见 create_app）。
+
+        为真时任务级暂停让位：退出流程会「取消任务 + 按冻结积分 50% 结算」，那是 beforeunload
+        弹窗向用户承诺过的语义，不能被任务级暂停抢先（否则同一个任务时而暂停、时而取消）。
+        """
+        self._shutdown_probe = probe
+
     def mark_task_left(self, task_id: int, workspace_id: str = "local") -> None:
         """页面离开信标（任务页 pagehide 时 sendBeacon 触发，尽力而为）。
 
         只做**标记**：真正暂停由维护循环在「连续静默超过 _TASK_LEAVE_QUIET_SECONDS」之后
         执行；期间任何轮询（刷新、重开工作台、另一个页签还在看，包括被浏览器节流到
         1 分钟一次的隐藏页）都会撤销本次离开。信标丢了就继续跑：宁可不暂停，也不误停。
+
+        **先确认任务确实存在于该工作区**才记标记：信标地址写死在前端、参数也不做鉴权，
+        万一键对不上（工作区传错/任务号写错），照记就会留下一个「没有对应心跳」的标记
+        —— 那会让页面开着也被判成静默而误停。查不到就当没这回事（无效信标必须是空操作）。
         """
         try:
             key = (workspace_id, int(task_id))
-        except (TypeError, ValueError):
+            self._require_task(key[1], key[0])
+        except Exception:  # noqa: BLE001 - 无效信标一律忽略，绝不能影响请求
             return
         with self._task_left_lock:
             self._task_left_keys[key] = time.monotonic()
@@ -3190,6 +3206,14 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         顺带清理过期心跳记录（_TASK_HEARTBEAT_RETENTION_SECONDS 内没再被轮询过的）。
         """
         now = time.monotonic()
+        if self._shutdown_probe is not None:
+            try:
+                if self._shutdown_probe():
+                    # 工作台正在退出：退出流程负责「取消任务 + 按冻结积分 50% 结算」（用户看到过
+                    # 弹窗承诺），任务级暂停让位，避免两条路抢同一个任务。探针异常当作「没在退出」。
+                    return
+            except Exception:  # noqa: BLE001 - 维护循环不允许被探针异常打断
+                pass
         previous_sweep = self._last_sweep_at
         self._last_sweep_at = now
         if (

@@ -315,6 +315,16 @@ class _RuntimeExitController:
         """注入「释放会话」回调；在取消/结算回调之后执行一次。"""
         self._on_release_sessions = callback
 
+    def is_exiting(self) -> bool:
+        """是否已确认退出（已经收到最后一个页面的 bye，正在等退出宽限走完）。
+
+        任务级自动暂停要在这个窗口里让位：退出前会执行「取消任务 + 按冻结积分 50% 结算」，
+        那是 beforeunload 弹窗向用户承诺过的语义，不能被任务级的暂停抢先（否则同一个任务
+        会时而「暂停（可继续）」、时而「取消（按 50% 收费）」，计费口径就不一致了）。
+        """
+        with self._lock:
+            return self._bye_deadline is not None
+
     def start(self) -> None:
         if not self.enabled or self._watchdog is not None:
             return
@@ -782,6 +792,9 @@ def create_app(database_path: Path | None = None) -> FastAPI:
                 continue
 
     runtime_exit.set_on_release_sessions(_release_customer_sessions)
+    # 任务级自动暂停让位给退出流程：工作台正在退出时，任务是「取消 + 按冻结积分 50% 结算」
+    # （见 is_exiting 的说明），不能再被任务级的「页面离开暂停」抢先。
+    product_processing.set_shutdown_probe(runtime_exit.is_exiting)
     app.include_router(
         create_product_processing_router(
             product_processing,

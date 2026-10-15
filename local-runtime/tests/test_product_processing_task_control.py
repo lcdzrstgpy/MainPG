@@ -58,6 +58,40 @@ def _task_with_two_items(service: ProductProcessingService) -> tuple[dict[str, A
     return task, task["items"][0], task["items"][1]
 
 
+def _task_with_two_items_in_workspace(
+    service: ProductProcessingService, workspace_id: str
+) -> dict[str, Any]:
+    """在指定工作区建一个两件商品的任务（用于验证信标与轮询必须用同一个 workspace 键）。"""
+    drafts: list[dict[str, Any]] = []
+    for index in (1, 2):
+        draft, _created = service.create_draft(
+            {
+                "source_type": "manual",
+                "title": f"workspace-product-{index}",
+                "image_url": "https://example.test/product.jpg",
+            },
+            workspace_id=workspace_id,
+        )
+        drafts.append(draft)
+    return service.repository.create_task(
+        title="workspace-task",
+        preflight_only=False,
+        settings={
+            "processing_scope": ["title"],
+            "title_optimize": True,
+            "async_mode": True,
+            "_billing": {
+                "account_id": "account-1",
+                "source_ref": "task:workspace",
+                "pricing_version": "v1",
+            },
+        },
+        drafts=drafts,
+        idempotency_key=None,
+        workspace_id=workspace_id,
+    )
+
+
 def test_raise_if_task_stopped_raises_when_paused_or_cancelled(tmp_path: Path) -> None:
     service = _service(tmp_path)
     task, _a, _b = _task_with_two_items(service)
@@ -361,12 +395,37 @@ def test_sweep_skips_round_after_process_was_suspended(tmp_path: Path) -> None:
     assert ("local", task["id"]) not in service._task_left_keys
 
 
-def test_leave_quiet_threshold_stays_above_runtime_exit_grace() -> None:
-    """静默阈值必须大于 runtime 退出宽限：否则关掉整个工作台时两条路会抢同一个任务。
+def test_leave_sweep_yields_while_workspace_is_exiting(tmp_path: Path) -> None:
+    """工作台正在退出时任务级暂停让位：退出流程负责「取消 + 50% 结算」，不许抢。
 
-    关闭整个工作台时，watchdog 会在退出宽限（默认 60 秒）后退出后端并执行「取消任务 +
-    按冻结积分 50% 结算」（beforeunload 弹窗向用户承诺的正是这个）。任务级暂停必须在它
-    之后才可能发生，否则结果会在「暂停（可继续）」与「取消（按 50% 收费）」之间摇摆。
+    否则「关掉整个工作台」这一个动作会时而记成暂停（可继续、未完成全退）、时而记成取消
+    （按冻结积分 50% 收费）——计费口径随两条路谁先跑而变，这正是要避免的。
+    """
+    service = _service(tmp_path)
+    task, _a, _b = _task_with_two_items(service)
+    task_id = int(task["id"])
+    service.repository.set_task_status(task_id, "running", "local")
+    now = time.monotonic()
+    with service._task_left_lock:
+        service._task_left_keys[("local", task_id)] = now - 300.0
+    service._task_last_seen[("local", task_id)] = now - 400.0
+
+    service.set_shutdown_probe(lambda: True)
+    service._sweep_departed_tasks_once()
+    assert service.repository.get_task(task_id)["status"] == "running"
+
+    # 退出被取消（例如刷新回来的心跳）→ 该暂停照旧
+    service.set_shutdown_probe(lambda: False)
+    service._sweep_departed_tasks_once()
+    assert service.repository.get_task(task_id)["status"] == "paused"
+
+
+def test_leave_quiet_threshold_stays_above_runtime_exit_grace() -> None:
+    """兜底断言：静默阈值不该小于退出宽限（默认 60 秒）。
+
+    真正的先后由 set_shutdown_probe/is_exiting 保证（工作台一进入退出流程，任务级暂停就
+    整轮跳过）；这条只是防止有人把阈值调到「暂停比退出还早」这种配置——那样在默认参数下
+    也会出现两条路同时想接管同一个任务的窗口。
     """
     assert service_module._TASK_LEAVE_QUIET_SECONDS > service_module._RUNTIME_EXIT_GRACE_SECONDS
     # 留出清扫间隔的余量，别贴着边界。
@@ -409,6 +468,81 @@ def test_sweep_prunes_expired_heartbeat_records(tmp_path: Path) -> None:
     service._sweep_departed_tasks_once()
 
     assert ("local", task["id"]) not in service._task_last_seen
+
+
+def test_leave_marker_and_heartbeat_share_the_same_workspace_key(tmp_path: Path) -> None:
+    """信标与轮询必须落在同一个 (workspace, task) 键上，否则「页面开着也会被暂停」。
+
+    前端两处用的是同一个值（轮询走 X-Workspace-ID 请求头、信标走 workspace 查询参数），
+    后端两条路都经 _workspace() 归一。这里用**非默认** workspace 钉死：任何一边用了别的
+    键，撤销就失效、任务会被误停 —— 下面第二个任务就是这个反例（证明用例是有效的）。
+    """
+    service = _service(tmp_path)
+    task = _task_with_two_items_in_workspace(service, "default")
+    task_id = int(task["id"])
+    service.repository.set_task_status(task_id, "running", "default")
+    now = time.monotonic()
+    with service._task_left_lock:
+        service._task_left_keys[("default", task_id)] = now - 300.0
+    service._task_last_seen[("default", task_id)] = now - 400.0
+
+    # 页面重新开始轮询：task_outputs 落心跳用的键必须与信标一致
+    service.task_outputs(task_id, workspace_id="default")
+    service._sweep_departed_tasks_once()
+
+    assert service.repository.get_task(task_id, "default")["status"] == "running"
+    assert ("default", task_id) not in service._task_left_keys
+
+    # 反例：心跳落在别的工作区 → 撤销不了 → 被判静默而暂停
+    other = _task_with_two_items_in_workspace(service, "default")
+    other_id = int(other["id"])
+    service.repository.set_task_status(other_id, "running", "default")
+    with service._task_left_lock:
+        service._task_left_keys[("default", other_id)] = now - 300.0
+    service._touch_task_heartbeat(other_id, "local")
+    service._sweep_departed_tasks_once()
+
+    assert service.repository.get_task(other_id, "default")["status"] == "paused"
+
+
+def test_leave_beacon_is_ignored_for_unknown_or_mismatched_workspace(tmp_path: Path) -> None:
+    """无效信标必须是空操作：任务不存在 / 工作区不匹配时不许留下标记。
+
+    信标地址写死在前端、参数不做鉴权；若照记，就会留下一个「没有对应心跳」的标记，
+    让页面开着也被判成静默而误停。宁可不暂停，也不接受无效信标。
+    """
+    service = _service(tmp_path)
+    task = _task_with_two_items_in_workspace(service, "default")
+    task_id = int(task["id"])
+
+    service.mark_task_left(task_id, "default")
+    assert ("default", task_id) in service._task_left_keys
+
+    service.mark_task_left(task_id, "local")
+    assert ("local", task_id) not in service._task_left_keys
+
+    service.mark_task_left(999999, "default")
+    assert ("default", 999999) not in service._task_left_keys
+
+
+def test_task_leave_route_reads_workspace_query_param(tmp_path: Path) -> None:
+    """leave 路由必须真的读 workspace 查询参数：参数名对不上会静默退回 local。
+
+    前端信标把任务所在工作区放在查询串里（sendBeacon 带不了自定义头）。这里用「只有空白
+    字符的 workspace」逼后端报 400 —— 参数被忽略时不会报错，用例就会失败。
+    """
+    from fastapi.testclient import TestClient
+
+    from wh_local.app.main import create_app
+
+    client = TestClient(create_app(tmp_path / "workbench.sqlite3"))
+
+    blank = client.post("/api/product-processing/tasks/999999/leave?workspace=%20")
+    ok = client.post("/api/product-processing/tasks/999999/leave?workspace=default")
+
+    assert blank.status_code == 400
+    assert ok.status_code == 200
+    assert ok.json() == {"ok": True}
 
 
 def test_task_leave_beacon_route_is_reachable(tmp_path: Path) -> None:
