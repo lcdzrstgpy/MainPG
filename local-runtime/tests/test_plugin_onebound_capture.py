@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event, Lock
@@ -688,8 +689,19 @@ def test_ttl_finalizer_closes_before_waiting_for_an_inflight_item(tmp_path: Path
             source_url="https://detail.1688.com/offer/12345678.html",
         )
         assert provider.entered.wait(timeout=1)
-        import time
-        time.sleep(0.03)
+        # TTL 终结器跑在独立的定时器线程上：原先固定 sleep(0.03) 等它「应该已经关掉批次了」，
+        # 满载机器上这个线程可能还没被调度到，于是下面的 item 调用没被拒 —— 用例偶发失败。
+        # 改为轮询到批次真的进入 closing 为止：start() 不阻塞（批次已启动会立即返回），
+        # 且和 item/finish 一样先过 _raise_if_unavailable，是现成的「批次可用性」探针。
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                service.start(session_token=session["session_token"], batch_token=prepared["batch_token"])
+            except RuntimeError:
+                break
+            assert time.monotonic() < deadline, "TTL 终结器未在预期时间内关闭批次"
+            time.sleep(0.005)
+        # 批次已关闭，但正在跑的 item 不受影响：新调用一律被拒。
         with pytest.raises(RuntimeError):
             service.item(
                 session_token=session["session_token"], batch_token=prepared["batch_token"],
