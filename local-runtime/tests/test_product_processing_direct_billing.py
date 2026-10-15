@@ -9,7 +9,7 @@ import pytest
 from wh_local.modules.product_processing import batch_billing as batch_billing_module
 from wh_local.modules.product_processing import provider_config as provider_config_module
 from wh_local.modules.product_processing import server_ai_proxy
-from wh_local.modules.product_processing.doubao_ark import DoubaoArkClient
+from wh_local.modules.product_processing.doubao_ark import DoubaoArkClient, DoubaoArkError
 from wh_local.modules.product_processing.infrastructure.assets import ProductProcessingAssets
 from wh_local.modules.product_processing.infrastructure.database import create_database
 from wh_local.modules.product_processing.infrastructure.repository import ProductProcessingRepository
@@ -78,28 +78,21 @@ def test_doubao_ark_direct_uses_granted_key_and_upstream_url(monkeypatch: pytest
     assert recorded["json"]["model"] == "doubao-seed-2-1-lite-260915"
 
 
-def test_doubao_ark_gateway_fallback_without_granted_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    import requests
+def test_doubao_ark_requires_granted_key_without_gateway_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """无 ark 短期密钥时不再回落到平台网关，直接报错（由上层中止并上报）。"""
+    calls: list[Any] = []
 
-    recorded: dict[str, Any] = {}
-
-    def fake_post(url: str, *, headers: dict[str, str], json: dict[str, Any], **_: Any):
-        recorded["url"] = url
-        recorded["auth"] = headers.get("Authorization")
-        recorded["json"] = json
-        response = requests.Response()
-        response.status_code = 200
-        response._content = jsonlib.dumps({"choices": [{"message": {"content": "reply"}}]}).encode("utf-8")
-        return response
+    def fake_post(*args: Any, **kwargs: Any):
+        calls.append((args, kwargs))
 
     monkeypatch.setattr("wh_local.modules.product_processing.doubao_ark._HTTP_SESSION.post", fake_post)
     with server_ai_proxy.server_ai_context("token-1", {"text": "usage-1"}):
-        client = DoubaoArkClient()
-        assert client.direct is False
-        client.complete([{"role": "user", "content": "hi"}])
-    assert "gateway" not in recorded["url"]
-    assert recorded["auth"] == "Bearer token-1"
-    assert "usage_id" in recorded["json"]
+        with pytest.raises(DoubaoArkError):
+            DoubaoArkClient()
+    # 缺少直连密钥时绝不能发出任何上游/网关请求
+    assert calls == []
 
 
 def test_provider_config_direct_image_section_with_granted_wuyin_key(
@@ -113,15 +106,18 @@ def test_provider_config_direct_image_section_with_granted_wuyin_key(
         assert sys_image["api_key"] == "WUYIN-KEY"
 
 
-def test_provider_config_stays_server_managed_without_granted_keys(
+def test_provider_config_direct_placeholder_without_granted_keys(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """无任务密钥时恒用直连地址 + 占位符，绝不回落到托管网关地址。"""
     with server_ai_proxy.server_ai_context("t", {}):
         provider = provider_config_module.resolve_ai_provider()
-        assert provider["direct_mode"] is False
+        assert provider["direct_mode"] is True
         sys_image = provider["_sys_image_ai"]
-        assert sys_image["base_url"] == "server-managed-wuyin"
-        assert sys_image["api_key"] == "server-managed"
+        assert sys_image["base_url"] == "https://api.wuyinkeji.com"
+        # 占位符仅为让启动自检报告图片能力就绪；无任务上下文时不会发起真实请求。
+        assert sys_image["api_key"] == "direct-pending"
+        assert provider["_sys_backup_image_ai"] is None
 
 
 def test_derive_batch_item_results_maps_completed_and_failed() -> None:
@@ -397,7 +393,6 @@ def test_execute_task_direct_freezes_grants_and_settles(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("WH_PRODUCT_AI_DIRECT", "1")
     service, task_id = _make_service(tmp_path)
     service._task_remote_tokens[task_id] = "remote-token"
     _isolate_batch_freezes(monkeypatch, tmp_path)
@@ -437,13 +432,15 @@ def test_execute_task_direct_freezes_grants_and_settles(
     assert batch_billing_module.open_freezes_for_account("acct-direct") == []
 
 
-def test_execute_task_legacy_path_skips_freeze_when_disabled(
+def test_execute_task_direct_ignores_legacy_env_switch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """直连已写死：遗留开关 WH_PRODUCT_AI_DIRECT=0 不再生效，仍走冻结直连。"""
     monkeypatch.setenv("WH_PRODUCT_AI_DIRECT", "0")
     service, task_id = _make_service(tmp_path)
     service._task_remote_tokens[task_id] = "remote-token"
+    _isolate_batch_freezes(monkeypatch, tmp_path)
     client = RecordingBatchClient()
     monkeypatch.setattr("wh_local.modules.product_processing.service._batch_billing_client", lambda: client)
     monkeypatch.setattr(
@@ -455,15 +452,33 @@ def test_execute_task_legacy_path_skips_freeze_when_disabled(
         service._execute_task(task_id, "local")
     finally:
         service.repository.database.dispose()
+    assert len(client.freeze_calls) == 1
+    assert len(client.settle_calls) == 1
+
+
+def test_execute_task_without_remote_token_stops(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """无计费会话 token 时无法冻结直连批次 → 直接中止（不回落到托管网关）。"""
+    from wh_local.modules.product_processing.service import ProductProcessingValidationError
+
+    service, task_id = _make_service(tmp_path)
+    _isolate_batch_freezes(monkeypatch, tmp_path)
+    client = RecordingBatchClient()
+    monkeypatch.setattr("wh_local.modules.product_processing.service._batch_billing_client", lambda: client)
+    try:
+        with pytest.raises(ProductProcessingValidationError):
+            service._execute_task(task_id, "local")
+    finally:
+        service.repository.database.dispose()
     assert client.freeze_calls == []
-    assert client.settle_calls == []
 
 
 def test_reconcile_open_batches_settles_pending_freezes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("WH_PRODUCT_AI_DIRECT", "1")
     service, task_id = _make_service(tmp_path)
     _isolate_batch_freezes(monkeypatch, tmp_path)
     client = RecordingBatchClient()
@@ -499,7 +514,6 @@ def test_reconcile_open_batches_settles_pending_freezes(
 def test_reconcile_open_batches_skips_still_running_tasks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """对账不得对仍在执行/暂停中的任务批次提前按全失败退款：
     任务后续成功会导致用户白拿退款且服务端幂等拒绝再次结算。"""
-    monkeypatch.setenv("WH_PRODUCT_AI_DIRECT", "1")
     service, task_id = _make_service(tmp_path)
     _isolate_batch_freezes(monkeypatch, tmp_path)
     client = RecordingBatchClient()
@@ -547,7 +561,6 @@ class FailingSettleClient(RecordingBatchClient):
 
 def test_settle_open_batch_failure_is_recorded_not_silent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """结算失败不再被静默吞掉：侧车记录失败原因/次数，供对账与后台定位。"""
-    monkeypatch.setenv("WH_PRODUCT_AI_DIRECT", "1")
     service, task_id = _make_service(tmp_path)
     _isolate_batch_freezes(monkeypatch, tmp_path)
     client = FailingSettleClient()

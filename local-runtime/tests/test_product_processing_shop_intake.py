@@ -90,11 +90,19 @@ def _candidate(**overrides: object) -> dict[str, object]:
     return candidate
 
 
-def _intake(service: ProductProcessingService, candidate: dict[str, object], *, batch_id: str = "batch-1", workspace_id: str = "ws") -> dict:
+def _intake(
+    service: ProductProcessingService,
+    candidate: dict[str, object],
+    *,
+    batch_id: str = "batch-1",
+    workspace_id: str = "ws",
+    allow_existing: bool = False,
+) -> dict:
     return service.intake_shop_candidate(
         batch_id=batch_id,
         workspace_id=workspace_id,
         candidate=candidate,
+        allow_existing=allow_existing,
     )
 
 
@@ -204,6 +212,42 @@ def test_shop_candidate_intake_skips_processing_and_processed_drafts(tmp_path: P
     assert processed["action"] == "skipped"
     assert processed["draft"]["status"] == "processed"
     assert service.repository.get_draft(draft_id, include_deleted=True, workspace_id="ws")["title"] == "Original shop item"
+
+
+def test_shop_candidate_intake_allow_existing_refreshes_processed_draft(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    created = _intake(service, _candidate())
+    draft_id = created["draft"]["id"]
+    service.repository.mark_drafts_status([draft_id], "processed", workspace_id="ws")
+
+    refreshed = _intake(
+        service,
+        _candidate(source_title="Recollected shop item"),
+        batch_id="batch-2",
+        allow_existing=True,
+    )
+
+    assert refreshed["action"] == "refreshed"
+    assert refreshed["draft"]["id"] == draft_id
+    assert refreshed["draft"]["status"] == "draft"
+    assert refreshed["draft"]["title"] == "Recollected shop item"
+
+
+def test_shop_candidate_intake_allow_existing_still_skips_processing_draft(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    created = _intake(service, _candidate())
+    draft_id = created["draft"]["id"]
+    service.repository.mark_drafts_status([draft_id], "processing", workspace_id="ws")
+
+    skipped = _intake(
+        service,
+        _candidate(source_title="must not replace"),
+        batch_id="batch-2",
+        allow_existing=True,
+    )
+
+    assert skipped["action"] == "skipped"
+    assert skipped["draft"]["status"] == "processing"
 
 
 def test_shop_candidate_intake_revives_deleted_draft(tmp_path: Path) -> None:

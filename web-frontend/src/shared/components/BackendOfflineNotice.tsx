@@ -4,6 +4,7 @@ import {
   BACKEND_ONLINE_EVENT,
   backendHealthUrl,
 } from "../../transport/http/client";
+import { hasRunningTask } from "../runtime/taskActivity";
 
 /** 弹窗期间自动探活间隔：后端恢复后不用等用户操作，自动刷新回工作台。 */
 const AUTO_RECHECK_INTERVAL_MS = 5_000;
@@ -106,6 +107,13 @@ export function BackendOfflineNotice() {
   }, []);
 
   const reloadWhenRecovered = useCallback(() => {
+    // 有任务在跑时绝不整页刷新：应用内标签页是内存态，刷新会把处理页标签一起清掉，
+    // 处理页卸载 → 心跳断 → 后端 90 秒后把任务自动暂停（2026-10-15 线上复现）。
+    // 这里只收起提示，让页面自己继续轮询恢复。
+    if (hasRunningTask()) {
+      setOffline(false);
+      return;
+    }
     // 弹窗已被其它成功请求收起时不再强行刷新。
     if (recoveringRef.current || !offlineRef.current) return;
     recoveringRef.current = true;

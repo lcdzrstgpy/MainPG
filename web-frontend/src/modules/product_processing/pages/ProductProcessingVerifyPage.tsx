@@ -87,7 +87,9 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenPrecheck,
     skipDuplicates: false,
     ipCheck: true,
     maxParallelDrafts: 8,
-    autoRepull: false,
+    // 默认开启失败项自动重跑：生图回退导致的详情图缺失等可重试失败会自动重试一次
+    // （上限 1 轮，系统轮不向用户计费）；用户可在「处理设置」页勾选关闭以避免再次调用 AI 生图。
+    autoRepull: true,
   });
   const [drafts, setDrafts] = useState<DraftSummary[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
@@ -115,8 +117,6 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenPrecheck,
   const [searchTerm, setSearchTerm] = useState('');
   // SKU 数量筛选：0 = 全部，否则为最大变种数（少于 N）
   const [skuCountFilter, setSkuCountFilter] = useState(0);
-  // 不看单规格：隐藏无变种 / 仅 1 个变种的草稿
-  const [hideSingleSpec, setHideSingleSpec] = useState(false);
   const [isStickyToolbar, setIsStickyToolbar] = useState(false);
   const [deletedBatch, setDeletedBatch] = useState<DeletedDraftBatch | null>(null);
   // 采集批次管理：批次列表（按来源分组）、选中删除、当前筛选批次
@@ -253,15 +253,13 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenPrecheck,
       const variantCount = Array.isArray(raw.source_variant_records) ? raw.source_variant_records.length : 0;
       // SKU 数量筛选：少于 N 个变种
       if (skuCountFilter > 1 && variantCount >= skuCountFilter) return false;
-      // 不看单规格：隐藏无变种 / 仅 1 个变种的单规格草稿
-      if (hideSingleSpec && variantCount <= 1) return false;
       if (!keyword) return true;
       // 搜索框只按标题搜索
       return [d.title, d.product_name, raw.source_title]
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(keyword));
     });
-  }, [selectableDrafts, searchTerm, skuCountFilter, hideSingleSpec]);
+  }, [selectableDrafts, searchTerm, skuCountFilter]);
   const totalDrafts = filteredDrafts.length;
   const totalPages = Math.max(1, Math.ceil(totalDrafts / pageSize));
   const pageStart = (page - 1) * pageSize;
@@ -725,7 +723,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenPrecheck,
               {hiddenSelectedCount > 0 && <em>（{hiddenSelectedCount} 条被筛选隐藏）</em>}
             </span>
             <span><i className="iconfont icon-file-text" aria-hidden="true" />本页 <strong>{pageDrafts.length}</strong></span>
-            {(skuCountFilter > 1 || hideSingleSpec) && (
+            {skuCountFilter > 1 && (
               <span><i className="iconfont icon-filter" aria-hidden="true" />筛选后 <strong>{totalDrafts}</strong></span>
             )}
             {dirtyCount > 0 && <span className="dirty"><i className="iconfont icon-save" aria-hidden="true" />未保存修改 <strong>{dirtyCount}</strong></span>}
@@ -769,14 +767,6 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenPrecheck,
                 <option value={5}>小于 5 个</option>
                 <option value={10}>小于 10 个</option>
               </select>
-              <label className="verify-hide-single" title="隐藏无变种 / 仅 1 个变种的单规格草稿">
-                <input
-                  type="checkbox"
-                  checked={hideSingleSpec}
-                  onChange={(e) => { setHideSingleSpec(e.target.checked); setPage(1); }}
-                />
-                不看单规格
-              </label>
             </div>
           </div>
         </div>
@@ -895,7 +885,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenPrecheck,
                 ) : selectableDrafts.length > 0 ? (
                   <button
                     type="button"
-                    onClick={() => { setSearchTerm(''); setSkuCountFilter(0); setHideSingleSpec(false); setPage(1); }}
+                    onClick={() => { setSearchTerm(''); setSkuCountFilter(0); setPage(1); }}
                   >
                     <i className="iconfont icon-reload" aria-hidden="true" />清空筛选
                   </button>

@@ -814,32 +814,58 @@ def test_low_confidence_subject_passes_when_user_confirms_sellable(monkeypatch) 
 def test_doubao_failure_falls_back_to_source_title_and_still_runs_text(
     monkeypatch, error, expected_vision_status_class: str
 ) -> None:
-    """主体识别失败按「尽量放行」处理：不再拦截整条商品，改用源标题兜底并继续文案/生图。"""
+    """视觉主体识别失败不再硬拦截：改用源标题兜底，继续文案与生图并正常完成。"""
     service = _process_service(monkeypatch)
     monkeypatch.setattr(
         service,
         "_recognize_doubao_subject",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(error),
     )
-    monkeypatch.setattr(
-        service,
-        "_generate_grid_images",
-        lambda *_args, **_kwargs: GridImageOutput(),
-    )
+    calls = {"text": 0, "grid": 0}
+
+    def combined(*_args, **_kwargs):
+        calls["text"] += 1
+        return {
+            "title": "Insulated Stainless Steel Travel Mug, 500 ml Portable Drink Cup",
+            "description": VALID_DESCRIPTION,
+            "variant_translations": {},
+            "vision_subject": "travel mug",
+            "vision_preliminary_title": "",
+            "product_dimensions": {},
+        }
+
+    def grid(*_args, **_kwargs):
+        calls["grid"] += 1
+        return GridImageOutput(
+            carousel_urls=tuple(
+                f"https://example.com/grid-{index}.jpg" for index in range(4)
+            ),
+            attempt_count=1,
+            provider_status_class="success",
+        )
+
+    monkeypatch.setattr(service, "_generate_doubao_text", combined)
+    monkeypatch.setattr(service, "_generate_grid_images", grid)
 
     result = service._process_one({"id": 1}, _draft(), _settings(), False, task_id=12)
 
     assert result["status"] == "completed"
-    # 识别失败不再阻断文案生成：文案照常产出。
-    assert result["result"]["text_generation"]["status"] == "success"
+    notes = result["result"]["ai_notes"]
+    assert "subject_identity:source-title-fallback" in notes
+    assert f"subject_identity:vision-fallback:{error.error_kind}" in notes
+    assert result["result"]["vision_identity"]["status"] == "accepted"
     assert (
         result["result"]["provider_status_classes"]["doubao_vision"]
         == expected_vision_status_class
     )
-    assert "subject_identity:source-title-fallback" in result["result"]["ai_notes"]
+    assert result["result"]["text_generation"]["status"] == "success"
+    assert calls == {"text": 1, "grid": 1}
 
 
-def test_doubao_retry_exhaustion_reports_two_provider_attempts(monkeypatch) -> None:
+def test_doubao_retry_exhaustion_still_falls_back_and_reports_attempts(
+    monkeypatch,
+) -> None:
+    """视觉重试耗尽也改用源标题兜底继续，但已消耗的重试次数仍如实上报。"""
     service = _process_service(monkeypatch)
     error = DoubaoVisionError(
         "temporary",
@@ -852,12 +878,24 @@ def test_doubao_retry_exhaustion_reports_two_provider_attempts(monkeypatch) -> N
         "_recognize_doubao_subject",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(error),
     )
+    monkeypatch.setattr(
+        service,
+        "_generate_grid_images",
+        lambda *_args, **_kwargs: GridImageOutput(
+            carousel_urls=tuple(
+                f"https://example.com/grid-{index}.jpg" for index in range(4)
+            ),
+            attempt_count=1,
+            provider_status_class="success",
+        ),
+    )
 
     result = service._process_one({"id": 1}, _draft(), _settings(), False, task_id=12)
 
     # 识别失败不在批次层面判失败（尽量放行），但仍如实记录底层重试次数。
     assert result["status"] == "completed"
     assert result["result"]["provider_attempts"]["doubao_vision"] == 2
+    assert "subject_identity:source-title-fallback" in result["result"]["ai_notes"]
 
 
 def test_doubao_identity_receipt_avoids_repeat_recognition_on_task_retry(monkeypatch) -> None:
@@ -1514,7 +1552,7 @@ def test_branch_receipt_inputs_track_real_dependencies_without_cross_scope(monke
 
 
 def test_grid_quality_failure_falls_back_to_source_images_and_completes(monkeypatch) -> None:
-    """四宫格未凑满时按「尽量放行」处理：用源图兜底继续完成，并留下部分放行证据。"""
+    """四宫格未凑满 4 张不再硬拦截：改用源图兜底继续完成，并留下部分放行证据。"""
     service = _process_service(monkeypatch)
     monkeypatch.setattr(service_module, "_ai_enabled", lambda: True)
     monkeypatch.setattr(
@@ -1541,12 +1579,14 @@ def test_grid_quality_failure_falls_back_to_source_images_and_completes(monkeypa
     # 轮播用源图兜底，并记录「部分放行」证据。
     assert result["result"]["carousel_image_paths"] == ["https://example.com/source.jpg"]
     assert result["result"]["provider_status_classes"]["four_grid"] == "source_fallback"
-    assert "grid:partial:allowed" in result["result"]["ai_notes"]
+    notes = result["result"]["ai_notes"]
+    assert "grid:partial:allowed" in notes
+    assert any(note.startswith("grid:missing:") for note in notes)
     assert result["result"]["optimized_title"].startswith(
         "Insulated Stainless Steel Travel Mug"
     )
     assert result["result"]["description"] == VALID_DESCRIPTION
-    assert "force_import_acknowledged" not in "|".join(result["result"]["ai_notes"])
+    assert "force_import_acknowledged" not in "|".join(notes)
 
 
 def test_image_failure_falls_back_and_preserves_successful_doubao_text_receipt(monkeypatch) -> None:
@@ -1570,14 +1610,113 @@ def test_image_failure_falls_back_and_preserves_successful_doubao_text_receipt(m
 
     # 生图失败按「尽量放行」处理：源图兜底继续完成，同时保留已成功的文案回执。
     assert result["status"] == "completed"
-    notes = "|".join(result["result"]["ai_notes"])
-    assert "image_set:ai-failed: reference image download failed: DNS lookup failed" in notes
+    assert result["result"]["provider_status_classes"]["four_grid"] == "source_fallback"
+    notes = result["result"]["ai_notes"]
     assert "grid:partial:allowed" in notes
+    assert any(note.startswith("grid:fallback:") for note in notes)
+    joined_notes = "|".join(notes)
+    assert "image_set:ai-failed: reference image download failed: DNS lookup failed" in joined_notes
     assert "doubao_text" in service.repository.receipts
     assert service.repository.receipts["doubao_text"]["output"]["title"].startswith(
         "Insulated Stainless Steel Travel Mug"
     )
-    assert "images" not in service.repository.receipts
+
+
+def test_source_fallback_grid_skips_detail_local_synthesis_and_ai(monkeypatch) -> None:
+    """四宫格回退来源图时：详情图判为未产出，不得本地合成、不得记误导性 detail_images:ai。"""
+    service = _process_service(monkeypatch)
+    monkeypatch.setattr(
+        service,
+        "_generate_detail_images_local",
+        lambda *args, **kwargs: pytest.fail("四宫格回退来源图时不得本地合成详情图"),
+    )
+    monkeypatch.setattr(
+        service,
+        "_generate_detail_images",
+        lambda *args, **kwargs: pytest.fail("四宫格回退来源图时不得发起 AI 详情图"),
+    )
+    monkeypatch.setattr(
+        service,
+        "_generate_grid_images",
+        lambda *args, **kwargs: GridImageOutput(
+            rejected_image_paths=("/tmp/provider-original.png",)
+        ),
+    )
+    settings = {
+        **_settings(),
+        "processing_scope": ["title", "details", "four_grid", "detail_images"],
+    }
+
+    result = service._process_one({"id": 1}, _draft(), settings, False, task_id=12)
+
+    assert result["status"] == "attention_required"
+    assert result["result"]["provider_status_classes"]["four_grid"] == "source_fallback"
+    assert result["result"]["error_type"] == "detail_images_incomplete"
+    notes = result["result"]["ai_notes"]
+    assert "detail_images:skipped:grid_not_ai" in notes
+    assert "detail_images:ai" not in notes
+    assert "detail_images:local_synthesis" not in notes
+    # 客户可读失败原因 + 原始技术原因保留在可展开的 debug_hint 里供运营排障。
+    assert "已用原图兜底" in result["reason"]
+    assert "source_fallback" in result["result"]["debug_hint"]
+
+
+def test_ai_detail_success_appends_detail_ai_note(monkeypatch) -> None:
+    """真走 AI 详情图并成功时才追加 detail_images:ai。"""
+    service = _process_service(monkeypatch)
+    monkeypatch.setattr(service, "_generate_detail_images_local", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        service,
+        "_generate_detail_images",
+        lambda *args, **kwargs: ["https://example.com/generated-detail.jpg"],
+    )
+    monkeypatch.setattr(
+        service,
+        "_generate_grid_images",
+        lambda *args, **kwargs: GridImageOutput(
+            carousel_urls=tuple(f"https://example.com/grid-{index}.jpg" for index in range(4)),
+            attempt_count=1,
+            provider_status_class="success",
+        ),
+    )
+    settings = {
+        **_settings(),
+        "processing_scope": ["title", "details", "four_grid", "detail_images"],
+    }
+
+    result = service._process_one({"id": 1}, _draft(), settings, False, task_id=12)
+
+    assert result["status"] == "completed"
+    assert result["result"]["detail_image_paths"] == [
+        "https://example.com/generated-detail.jpg"
+    ]
+    assert "detail_images:ai" in result["result"]["ai_notes"]
+
+
+def test_local_detail_synthesis_keeps_existing_notes(monkeypatch) -> None:
+    """真 AI 四宫格下本地合成语义不变：记 detail_images:local_synthesis，且不误记 detail_images:ai。"""
+    service = object.__new__(ProductProcessingService)
+    notes: list[str] = []
+    monkeypatch.setattr(service_module, "_media_types", lambda: (object, RuntimeError, ValueError))
+    monkeypatch.setattr(service_module, "detect_chinese_text", lambda _content: None)
+    monkeypatch.setattr(service, "_media_processor", lambda: object())
+    monkeypatch.setattr(
+        service, "_compose_local_detail_image", lambda *args, **kwargs: b"jpeg-bytes"
+    )
+    monkeypatch.setattr(
+        service,
+        "_persist_media_for_preview",
+        lambda *args, **kwargs: ["https://example.com/local-detail.jpg"],
+    )
+
+    paths = service._generate_detail_images_local(
+        12, 7, [b"grid-bytes"], "Title", "Kitchen", "en", notes
+    )
+
+    assert paths == ["https://example.com/local-detail.jpg"]
+    assert "detail_images:local_synthesis" in notes
+    assert "detail_images:ocr_unavailable" in notes
+    assert "detail_images:ai" not in notes
 
 
 def test_process_force_import_enables_explicit_grid_quality_override(monkeypatch) -> None:
@@ -1610,3 +1749,49 @@ def test_process_force_import_enables_explicit_grid_quality_override(monkeypatch
     assert result["status"] == "completed"
     assert len(result["result"]["carousel_image_paths"]) == 4
     assert result["result"]["provider_status_classes"]["four_grid"] == "quality_override"
+
+
+BATCH_GUIDELINE = "GUARD: render exactly five fingers, crisp printed labels, stable proportions."
+
+
+def test_process_injects_batch_image_prompt_into_live_grid_chain(monkeypatch) -> None:
+    """「本批次辅助提词」必须真正传到实际被调用的轮播生图链路（_process_one 主路径）。
+
+    回归点：媒体「提前启动」分支调用 _generate_grid_images 时，必须把批次的
+    batch_image_prompt 一并传入，否则该提词在真正生图前被静默丢弃。
+    """
+    service = _process_service(monkeypatch)
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(service_module, "_ai_enabled", lambda: True)
+    monkeypatch.setattr(
+        service,
+        "_generate_doubao_text",
+        lambda *args, **kwargs: {
+            "title": "Insulated Stainless Steel Travel Mug, 500 ml Portable Drink Cup",
+            "description": VALID_DESCRIPTION,
+            "variant_translations": {},
+        },
+    )
+
+    def generate_grid(*_args, **kwargs):
+        captured["batch_image_prompt"] = kwargs.get("batch_image_prompt")
+        return GridImageOutput(
+            carousel_urls=tuple(f"https://example.com/grid-{index}.jpg" for index in range(4)),
+            attempt_count=1,
+            provider_status_class="success",
+        )
+
+    monkeypatch.setattr(service, "_generate_grid_images", generate_grid)
+
+    settings = {**_settings(), "batch_image_prompt": BATCH_GUIDELINE}
+    result = service._process_one(
+        {"id": 1},
+        _draft(),
+        settings,
+        False,
+        task_id=12,
+        batch_image_prompt=BATCH_GUIDELINE,
+    )
+
+    assert result["status"] == "completed"
+    assert captured["batch_image_prompt"] == BATCH_GUIDELINE

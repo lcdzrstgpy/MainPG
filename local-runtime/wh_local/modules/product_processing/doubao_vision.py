@@ -26,6 +26,11 @@ MAX_VISION_IMAGES = 6
 # HTTP 413/400 秒拒（provider_http）。超限时先丢弃最重的图片再重试，仍超限则用可读
 # 错误提前拦截，避免不透光的 `provider_http`。
 MAX_VISION_PAYLOAD_BYTES = 10 * 1024 * 1024
+# 视觉识别前的图像下采样：原图（单张可达 8MB、最多 6 张）直接 base64 送多模态会显著
+# 拖慢单次识别（实测单次 ~118s）。主体识别不需要原始分辨率，按长边缩放并转 JPEG，
+# 既能大幅压缩请求体、又能降低上游解码/推理耗时；处理后无法解码时回退原图。
+VISION_IMAGE_MAX_EDGE = 1280
+VISION_IMAGE_JPEG_QUALITY = 85
 
 SUBJECT_ANALYSIS_PROMPT = """Analyze the supplied original product images and identify the actual sellable product.
 Ignore people, hands, rooms, furniture, surfaces, scenery, decorative props, packaging, and other background elements unless they are physically part of the sellable product.
@@ -187,10 +192,11 @@ class DoubaoVisionClient:
                 return _parse_subject_analysis(content)
             except DoubaoVisionError as exc:
                 exc.attempt_count = attempt
-                # 视觉输出是随机的：偶发的非法 JSON / 不符合主体合同也可在预算内重试
-                # （与文本客户端一致），避免一次坏输出就把整单判 dead。
-                if exc.error_kind == "invalid_response":
-                    exc.retryable = True
+                # 契约级失败（invalid_response：解析不出 JSON / 主体合同不符 / 尺寸歧义）
+                # 是确定性的：同一份输入复跑只会得到同样的坏输出；而视觉推理单次约需
+                # 数十秒、烧数千 reasoning tokens，重试只会把整单拖成分钟级等待。
+                # 因此只对网络/超时等 transient 失败重试，invalid_response 立即上抛，
+                # 交由上层按「源标题兜底」快速降级，不再空烧两次昂贵的推理调用。
                 # 错误自带的预算（如未归类 4xx 只追加一次）优先；缺省时用常规三次。
                 limit = min(MAX_ATTEMPTS, exc.max_attempts or MAX_ATTEMPTS)
                 if not exc.retryable or attempt >= limit:
@@ -272,6 +278,23 @@ def _subject_analysis_from_payload(payload: dict[str, Any]) -> SubjectAnalysis:
     )
 
 
+_MEASUREMENT_LIMITS = {
+    "length_cm": 1000.0,
+    "width_cm": 1000.0,
+    "height_cm": 1000.0,
+    "weight_g": 1_000_000.0,
+}
+_MEASUREMENT_NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
+
+
+def _invalid_measurement() -> DoubaoVisionError:
+    return DoubaoVisionError(
+        "Doubao vision explicit measurement failed validation",
+        error_kind="invalid_response",
+        retryable=False,
+    )
+
+
 def _measurement_map(value: Any) -> dict[str, float]:
     if value is None:
         return {}
@@ -282,27 +305,42 @@ def _measurement_map(value: Any) -> dict[str, float]:
             retryable=False,
         )
     result: dict[str, float] = {}
-    limits = {"length_cm": 1000.0, "width_cm": 1000.0, "height_cm": 1000.0, "weight_g": 1_000_000.0}
-    for key, limit in limits.items():
+    for key, limit in _MEASUREMENT_LIMITS.items():
         raw = value.get(key)
         if raw is None:
             continue
-        try:
-            number = float(raw)
-        except (TypeError, ValueError) as exc:
-            raise DoubaoVisionError(
-                "Doubao vision explicit measurement failed validation",
-                error_kind="invalid_response",
-                retryable=False,
-            ) from exc
-        if isinstance(raw, bool) or not 0 < number <= limit:
-            raise DoubaoVisionError(
-                "Doubao vision explicit measurement failed validation",
-                error_kind="invalid_response",
-                retryable=False,
-            )
+        number = _coerce_measurement(raw, limit)
+        if number is None:
+            # 多尺码变体等「歧义」输出（如 "29.5 (small variant) / 40 (large variant)"）
+            # 描述的是真实印刷数据，但单个数值字段无法承载多值语义；按提示词
+            # “ambiguous → null”的约定落空，而不是判整条视觉失败并触发无效重试。
+            continue
         result[key] = number
     return result
+
+
+def _coerce_measurement(raw: Any, limit: float) -> float | None:
+    """Best-effort measurement extraction; returns None for ambiguous values."""
+    if isinstance(raw, bool):
+        raise _invalid_measurement()
+    if isinstance(raw, (int, float)):
+        number = float(raw)
+        if not 0 < number <= limit:
+            raise _invalid_measurement()
+        return number
+    if not isinstance(raw, str):
+        raise _invalid_measurement()
+    numbers = _MEASUREMENT_NUMBER.findall(raw)
+    if len(numbers) >= 2:
+        # 多个数值 → 无法确定对应哪个 SKU/变体，视为未提供。
+        return None
+    if not numbers:
+        # 完全没有数值的字符串（如 "heavy"）仍是契约违规。
+        raise _invalid_measurement()
+    number = float(numbers[0])
+    if not 0 < number <= limit:
+        raise _invalid_measurement()
+    return number
 
 
 def _bounded_text(value: Any, *, limit: int, allow_empty: bool = False) -> str:

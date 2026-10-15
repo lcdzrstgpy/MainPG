@@ -175,6 +175,34 @@ def test_confirm_candidates_creates_drafts_idempotently(tmp_path: Path) -> None:
     assert item["outcome"] == "created"
 
 
+def test_confirm_forwards_include_existing_to_intake(tmp_path: Path) -> None:
+    provider = _DetailProvider()
+    drafts = _Drafts()
+    service, session = _service(tmp_path, provider, drafts)
+    token = session["session_token"]
+    prepared = service.prepare(
+        session_token=token,
+        page_url="https://detail.1688.com/offer/12345678.html",
+        source_urls=["https://detail.1688.com/offer/12345678.html"],
+        include_existing=True,
+    )
+    service.start(session_token=token, batch_token=prepared["batch_token"])
+    service.item(
+        session_token=token, batch_token=prepared["batch_token"],
+        source_url="https://detail.1688.com/offer/12345678.html",
+    )
+    service.finish(session_token=token, batch_token=prepared["batch_token"], cancelled=False)
+    _wait_for_sku_repull(service, prepared["batch_id"])
+
+    service.confirm_candidates(
+        actor_id="actor-1", workspace_id="workspace-1", batch_id=prepared["batch_id"],
+        offer_ids=["12345678"],
+    )
+
+    assert len(drafts.intakes) == 1
+    assert drafts.intakes[0]["allow_existing"] is True
+
+
 def test_confirm_ignores_unselected_and_non_pending_candidates(tmp_path: Path) -> None:
     provider = _DetailProvider()
     drafts = _Drafts()

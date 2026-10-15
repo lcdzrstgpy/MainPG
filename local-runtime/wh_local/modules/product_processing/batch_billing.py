@@ -19,8 +19,6 @@ from typing import Any
 from ...config import default_config
 from ...customer.remote_client import CustomerAuthClient
 
-ENV_DIRECT = "WH_PRODUCT_AI_DIRECT"
-
 # 与 auth-api 的 billing_pricing_items.feature_key 对齐（顺序即展示顺序）。
 SUBITEM_FEATURES = ("title", "description", "product_dimensions", "four_grid", "detail_images")
 TEXT_SUBITEM_FEATURES = frozenset({"title", "description", "product_dimensions"})
@@ -28,11 +26,6 @@ TEXT_SUBITEM_FEATURES = frozenset({"title", "description", "product_dimensions"}
 # 侧车文件是「读整文件 → 改 → 整文件写」，任务线程与对账线程并发时
 # 读改写会互相覆盖（结算失败标记丢失 / 已结算记录复活为 open）。这里串行化。
 _FREEZE_STORE_LOCK = threading.RLock()
-
-
-def direct_ai_enabled() -> bool:
-    """灰度开关：WH_PRODUCT_AI_DIRECT=1 时任务走批次冻结 + 客户端直连。"""
-    return os.environ.get(ENV_DIRECT, "").strip().lower() in {"1", "true", "yes"}
 
 
 def billing_client() -> CustomerAuthClient:

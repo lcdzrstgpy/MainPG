@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import json
-import threading
-import time
-from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 import requests
@@ -31,6 +28,9 @@ VALID_TEXT = {
         "weight_g": 300,
     },
 }
+
+# 直连模式下客户端只使用批次冻结下发的短期 Ark 密钥，不再经平台网关。
+ARK_KEY = "ark-direct-key"
 
 
 class _Response:
@@ -77,12 +77,16 @@ def _success(payload: dict = VALID_TEXT) -> _Response:
 
 
 @pytest.fixture(autouse=True)
-def _reserved_server_text_usage():
-    with server_ai_context("platform-token", {"text": "usage-text"}):
+def _direct_ark_granted_key():
+    with server_ai_context(
+        "platform-token",
+        {"text": "usage-text"},
+        granted_keys={"ark": ARK_KEY},
+    ):
         yield
 
 
-def test_text_request_uses_platform_gateway_and_contains_no_image(monkeypatch) -> None:
+def test_text_request_uses_direct_ark_and_contains_no_image(monkeypatch) -> None:
     session = _Session([_success()])
     monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
 
@@ -92,54 +96,20 @@ def test_text_request_uses_platform_gateway_and_contains_no_image(monkeypatch) -
 
     assert result.as_dict() == VALID_TEXT
     request = session.requests[0]
-    assert request["url"].endswith("/api/customer/ai/chat")
-    assert request["json"]["model"] == "gpt-5.6-terra"
-    assert request["json"]["usage_id"] == "usage-text"
+    assert request["url"] == doubao_ark.API_URL
+    assert request["json"]["model"] == doubao_ark.MODEL_ID
+    assert "usage_id" not in request["json"]
     assert request["json"]["messages"] == [
         {"role": "user", "content": "STRICT LISTING PROMPT"}
     ]
     assert "image_url" not in json.dumps(request["json"])
     assert request["allow_redirects"] is False
-    assert request["headers"]["Authorization"] == "Bearer platform-token"
-
-
-def test_server_ai_gateway_requests_share_two_slot_gate(monkeypatch) -> None:
-    lock = threading.Lock()
-    in_flight = 0
-    peak = 0
-
-    class SlowSession:
-        def post(self, *_args, **_kwargs):
-            nonlocal in_flight, peak
-            with lock:
-                in_flight += 1
-                peak = max(peak, in_flight)
-            time.sleep(0.03)
-            with lock:
-                in_flight -= 1
-            return _success()
-
-    monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", SlowSession())
-    clients = [doubao_ark.DoubaoArkClient() for _index in range(6)]
-
-    with ThreadPoolExecutor(max_workers=6) as pool:
-        results = list(
-            pool.map(
-                lambda client: client.complete(
-                    [{"role": "user", "content": "same prompt"}]
-                ),
-                clients,
-            )
-        )
-
-    assert len(results) == 6
-    assert peak == 2
+    assert request["headers"]["Authorization"] == f"Bearer {ARK_KEY}"
 
 
 def test_invalid_contract_retries_whole_text_stage_until_third_success(monkeypatch) -> None:
     invalid = {**VALID_TEXT, "description": "not five points"}
     session = _Session([_success(invalid), _success(invalid), _success()])
-    monkeypatch.setenv("ARK_API_KEY", "ark-secret")
     monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
     monkeypatch.setattr(doubao_text.time, "sleep", lambda _seconds: None)
 
@@ -170,7 +140,6 @@ def test_transient_errors_share_the_three_attempt_budget(monkeypatch) -> None:
     session = _Session(
         [requests.Timeout("secret socket detail"), _Response({}, status_code=429), _success()]
     )
-    monkeypatch.setenv("ARK_API_KEY", "ark-secret")
     monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
     monkeypatch.setattr(doubao_text.time, "sleep", lambda _seconds: None)
 
@@ -187,7 +156,6 @@ def test_transient_errors_share_the_three_attempt_budget(monkeypatch) -> None:
 
 def test_invalid_ark_envelope_json_uses_the_same_three_attempt_budget(monkeypatch) -> None:
     session = _Session([_Response("not-json"), _Response("still-not-json"), _success()])
-    monkeypatch.setenv("ARK_API_KEY", "ark-secret")
     monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
     monkeypatch.setattr(doubao_text.time, "sleep", lambda _seconds: None)
 
@@ -202,7 +170,6 @@ def test_invalid_ark_envelope_json_uses_the_same_three_attempt_budget(monkeypatc
 def test_three_invalid_responses_raise_sanitized_retryable_error(monkeypatch) -> None:
     invalid_body = "provider-secret-body"
     session = _Session([_success({}), _success({}), _success({})])
-    monkeypatch.setenv("ARK_API_KEY", "ark-secret")
     monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
     monkeypatch.setattr(doubao_text.time, "sleep", lambda _seconds: None)
 
@@ -213,80 +180,16 @@ def test_three_invalid_responses_raise_sanitized_retryable_error(monkeypatch) ->
     assert captured.value.retryable is True
     assert captured.value.attempt_count == 3
     assert invalid_body not in str(captured.value)
-    assert "ark-secret" not in str(captured.value)
+    assert ARK_KEY not in str(captured.value)
     assert len(session.requests) == 3
 
 
-def test_in_flight_gateway_conflict_waits_and_replays_cached_result(monkeypatch) -> None:
-    session = _Session(
-        [
-            _Response(
-                {"detail": "identical gateway request is already in progress"},
-                status_code=409,
-                headers={"Retry-After": "5"},
-            ),
-            _success(),
-        ]
-    )
-    monkeypatch.setenv("ARK_API_KEY", "ark-secret")
-    monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
-    monkeypatch.setattr(doubao_ark.time, "sleep", lambda _seconds: None)
-
-    client = doubao_text.DoubaoTextClient()
-    result = client.generate_listing_text("prompt")
-
-    assert result.optimized_title == VALID_TEXT["optimized_title"]
-    # 在途 409 只说明服务端还在处理同一请求，不能算一次失败的尝试。
-    assert client.last_attempt_count == 1
-    assert len(session.requests) == 2
-    assert {
-        request["json"]["messages"][0]["content"] for request in session.requests
-    } == {"prompt"}
-
-
-def test_exhausted_gateway_budget_is_terminal_and_not_retried(monkeypatch) -> None:
-    detail = "gateway request limit reached for reserved usage"
-    session = _Session([_Response({"detail": detail}, status_code=409)])
-    monkeypatch.setenv("ARK_API_KEY", "ark-secret")
-    monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
-    monkeypatch.setattr(doubao_ark.time, "sleep", lambda _seconds: None)
-
-    with pytest.raises(doubao_text.DoubaoTextError) as captured:
-        doubao_text.DoubaoTextClient().generate_listing_text("prompt")
-
-    assert captured.value.error_kind == "quota_exhausted"
-    assert captured.value.retryable is False
-    assert captured.value.upstream_detail == detail
-    assert captured.value.attempt_count == 1
-    assert len(session.requests) == 1
-
-
-def test_in_flight_conflict_polls_at_a_bounded_interval(monkeypatch) -> None:
-    session = _Session(
-        [
-            _Response(
-                {"detail": "identical gateway request is already in progress"},
-                status_code=409,
-                headers={"Retry-After": "5"},
-            ),
-            _success(),
-        ]
-    )
-    monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
-    sleeps: list[float] = []
-    monkeypatch.setattr(doubao_ark.time, "sleep", sleeps.append)
-
-    doubao_text.DoubaoTextClient().generate_listing_text("prompt")
-
-    assert sleeps == [doubao_ark.GATEWAY_IN_PROGRESS_POLL_SECONDS]
-
-
-def test_old_gateway_retry_limit_preserves_contract_failure(monkeypatch) -> None:
+def test_409_after_contract_failures_preserves_contract_error(monkeypatch) -> None:
     session = _Session(
         [
             _success({}),
             _success({}),
-            _Response({"detail": "gateway request limit reached"}, status_code=409),
+            _Response({"detail": "upstream conflict"}, status_code=409),
         ]
     )
     monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
@@ -305,7 +208,6 @@ def test_unclassified_4xx_retries_once_then_succeeds(monkeypatch) -> None:
     """文本链路同样只追加一次：未归类 4xx 过去一次就判死。"""
     flaky = _Response({"error": {"message": "upstream refused"}}, status_code=400)
     session = _Session([flaky, _success()])
-    monkeypatch.setenv("ARK_API_KEY", "ark-secret")
     monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
     monkeypatch.setattr(doubao_text.time, "sleep", lambda _seconds: None)
 
@@ -317,7 +219,6 @@ def test_unclassified_4xx_retries_once_then_succeeds(monkeypatch) -> None:
 
 def test_configuration_error_does_not_retry_or_expose_provider_body(monkeypatch) -> None:
     session = _Session([_Response("permission-secret", status_code=403)])
-    monkeypatch.setenv("ARK_API_KEY", "ark-secret")
     monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
 
     with pytest.raises(doubao_text.DoubaoTextError) as captured:
@@ -330,7 +231,7 @@ def test_configuration_error_does_not_retry_or_expose_provider_body(monkeypatch)
     assert len(session.requests) == 1
 
 
-def test_missing_reserved_usage_is_configuration_error_without_provider_attempt() -> None:
+def test_missing_granted_key_is_configuration_error_without_provider_attempt() -> None:
     with server_ai_context("", {}):
         with pytest.raises(doubao_text.DoubaoTextError) as captured:
             doubao_text.DoubaoTextClient()
@@ -350,7 +251,6 @@ def test_missing_reserved_usage_is_configuration_error_without_provider_attempt(
 )
 def test_structural_contract_is_strict(monkeypatch, payload: dict) -> None:
     session = _Session([_success(payload)] * 3)
-    monkeypatch.setenv("ARK_API_KEY", "ark-secret")
     monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
     monkeypatch.setattr(doubao_text.time, "sleep", lambda _seconds: None)
 

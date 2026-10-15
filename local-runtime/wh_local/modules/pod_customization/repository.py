@@ -1566,6 +1566,33 @@ class PodCustomizationRepository:
                     (message, now, batch_id),
                 )
                 self._refresh_counts(connection, batch_id, now)
+            # 同样兜底标题行：旧版取消/失败路径（fail_unready_titles 只收敛四图不全
+            # 的款）会把「四图已齐、标题仍停在 queued/generating」的款式留在已终态批次
+            # 里；这类批次不会再进入上面的「非终态批次」分支，于是标题既不失败也无法
+            # 重试（标题重试要求 status='failed' 且 style_task_id 非空）。这里按已终态
+            # 批次再兜一遍，并把缺失的 style_task_id 从生成调用回填，使其可重试。
+            leaked_titles = connection.execute(
+                """SELECT DISTINCT batches.batch_id FROM pod_customization_batches AS batches
+                   INNER JOIN pod_customization_style_titles AS titles
+                     ON titles.batch_id = batches.batch_id
+                   WHERE batches.status IN ('completed', 'partial_failure', 'failed', 'cancelled')
+                     AND titles.status IN ('queued', 'generating')"""
+            ).fetchall()
+            for row in leaked_titles:
+                connection.execute(
+                    """UPDATE pod_customization_style_titles AS titles
+                       SET style_task_id = CASE WHEN style_task_id = '' THEN COALESCE(
+                               (SELECT calls.call_id FROM pod_customization_generation_calls AS calls
+                                WHERE calls.batch_id = titles.batch_id
+                                  AND calls.call_index = titles.style_index
+                                ORDER BY calls.created_at DESC, calls.rowid DESC LIMIT 1),
+                               style_task_id
+                           ) ELSE style_task_id END,
+                           status = 'failed', title = '', normalized_title = NULL,
+                           visual_tags_json = '{}', error_message = ?, updated_at = ?, finished_at = ?
+                       WHERE titles.batch_id = ? AND titles.status IN ('queued', 'generating')""",
+                    (message, now, now, row["batch_id"]),
+                )
             legacy_rows = connection.execute(
                 """SELECT batch_id, completed_count FROM pod_customization_batches
                    WHERE status = 'billing_auth_required'"""

@@ -10,16 +10,24 @@ const API_BASE = '/api/product-processing';
  * 提示词预设模板面板：按账号（本机全局）保存多个命名模板，可启用一个用于处理任务。
  *
  * 追加指令模式：用户在各板块填写的提示词附加在系统默认提示词之上，不覆盖默认。
- * 生图板块（grid_image/grid_image_b/premium_image）只允许附加「宫内规划」
+ * 生图板块（grid_image/grid_image_b/grid_image_c/grid_image_d/premium_image）只允许附加「宫内规划」
  * （构图、场景、道具、光影、风格），图片结构、分界线、拆分逻辑由系统固定不可改变。
  */
-const PROMPT_SECTIONS: { key: string; label: string; hint: string }[] = [
+const PROMPT_SECTIONS: { key: string; label: string; hint: string; generator?: boolean }[] = [
   { key: 'title', label: '标题优化', hint: '英文商品标题的附加要求（约 180 字母，贴合买家搜索习惯）' },
   { key: 'desc', label: '描述 / 卖点', hint: '五点式描述文案的附加要求（Amazon 风格卖点）' },
-  { key: 'grid_image', label: '智能生图 · 标准海报', hint: 'A 模板附加：仅可写宫内规划（构图/场景/光影/风格），图片结构固定' },
-  { key: 'grid_image_b', label: '智能生图 · 高端模特', hint: 'B 模板附加：仅可写宫内规划，图片结构固定' },
+  { key: 'grid_image', label: '智能生图 · 影棚无缝主图', hint: 'A 模板附加：仅可写宫内规划（构图/场景/光影/风格），图片结构固定' },
+  { key: 'grid_image_b', label: '智能生图 · 人景叙事', hint: 'B 模板附加：仅可写宫内规划，图片结构固定' },
+  { key: 'grid_image_c', label: '智能生图 · 静物平铺俯拍', hint: 'C 模板附加：仅可写宫内规划，图片结构固定' },
+  { key: 'grid_image_d', label: '智能生图 · 环境远景', hint: 'D 模板附加：仅可写宫内规划，图片结构固定' },
   { key: 'premium_image', label: '精品生图', hint: '4K 精品生图附加：仅可写宫内规划，结构固定' },
   { key: 'detail_image', label: '详情图', hint: '详情页海报合成的附加要求（主图 + 细节放大 + 说明标签）' },
+  {
+    key: 'batch_image_prompt',
+    label: '本批次辅助提词（区域辅助出图）',
+    hint: '按本批次商品标题生成，作为附加要求注入本批轮播/精品/详情生图，用于定点爆破、规避异形/搞笑画面；可编辑可清空',
+    generator: true,
+  },
   { key: 'variant_values', label: '变体翻译', hint: 'SKU 选项翻译的附加要求（颜色 / 规格 / 尺寸等）' },
 ];
 
@@ -34,7 +42,7 @@ type PromptTemplate = {
 
 type TemplatesResponse = { templates: PromptTemplate[]; template?: PromptTemplate; message?: string };
 
-export function PromptCustomizePanel() {
+export function PromptCustomizePanel({ draftIds }: { draftIds?: number[] } = {}) {
   const ctx = productProcessingApiContext();
   const [open, setOpen] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -46,6 +54,8 @@ export function PromptCustomizePanel() {
   const [values, setValues] = useState<Record<string, string>>({});
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [batchPromptBusy, setBatchPromptBusy] = useState(false);
+  const [batchPromptNotice, setBatchPromptNotice] = useState('');
 
   const activeTemplate = useMemo(
     () => templates.find((t) => t.is_active) ?? null,
@@ -94,6 +104,35 @@ export function PromptCustomizePanel() {
     setValues((prev) => ({ ...prev, [key]: value }));
   };
 
+  // 「根据本批次标题生成」：取当前所选/本批次商品标题，调后端申请批次级短期 Ark 密钥后
+  // 调用 AI 生成辅助提词并回填文本框（会调用 AI；申请密钥时的积分冻结会自动全额退回，
+  // 不扣积分）。生成结果可继续手动编辑/清空。
+  const generateBatchPrompt = async () => {
+    if (!draftIds?.length) {
+      setBatchPromptNotice('当前没有可用的本批次商品标题，请先在处理设置页选择商品');
+      return;
+    }
+    setBatchPromptBusy(true);
+    setBatchPromptNotice('');
+    try {
+      const data = await ppRequest<{ batch_image_prompt?: string; message?: string }>(
+        ctx,
+        `${API_BASE}/engine/batch-image-prompt`,
+        { body: { draft_ids: draftIds } }
+      );
+      if (data.batch_image_prompt) {
+        setValue('batch_image_prompt', data.batch_image_prompt);
+        setBatchPromptNotice(data.message || '已生成，可继续手动编辑后再保存模板');
+      } else {
+        setBatchPromptNotice(data.message || 'AI 未返回有效提词，请稍后重试');
+      }
+    } catch (err) {
+      setBatchPromptNotice(err instanceof Error ? err.message : '生成失败，请稍后重试');
+    } finally {
+      setBatchPromptBusy(false);
+    }
+  };
+
   const refreshList = (data: TemplatesResponse) => {
     const list = data.templates || [];
     setTemplates(list);
@@ -129,15 +168,17 @@ export function PromptCustomizePanel() {
     }
   };
 
-  const activate = async () => {
-    if (selectedId == null) return;
+  // 一键填入：点选模板即载入编辑区，并立即设为当前使用（对后续所有新任务生效）。
+  const applyAndActivate = async (template: PromptTemplate) => {
+    applyTemplate(template);
+    if (template.is_active) return;
     setSaving(true);
     setError('');
     setMessage('');
     try {
-      const data = await ppRequest<TemplatesResponse>(ctx, `${API_BASE}/engine/prompt-templates/${selectedId}/activate`, { body: {} });
+      const data = await ppRequest<TemplatesResponse>(ctx, `${API_BASE}/engine/prompt-templates/${template.id}/activate`, { body: {} });
       refreshList(data);
-      setMessage(data.message || '已设为当前使用模板');
+      setMessage(data.message || `已启用「${template.name}」`);
     } catch (err) {
       setError(err instanceof Error ? err.message : '启用模板失败');
     } finally {
@@ -232,40 +273,34 @@ export function PromptCustomizePanel() {
             拆分逻辑与产品保真规则由系统固定，不可被提示词改变。模板保存在当前账号本机，
             不随工作区变化，启用后对所有新任务生效，下次打开自动带出。
           </p>
-          <div className="prompt-template-status">
-            <span>
-              当前使用：
-              <strong>{activeTemplate ? `「${activeTemplate.name}」` : '系统默认提示词（未启用模板）'}</strong>
-            </span>
-            <button
-              type="button"
-              className="prompt-btn"
-              onClick={deactivate}
-              disabled={saving || loading || !activeTemplate}
-            >不使用模板</button>
-          </div>
-          <div className="prompt-template-bar">
-            <label className="prompt-template-select-label">
-              选择 / 编辑模板
-              <select
-                value={selectedId ?? ''}
-                onChange={(e) => {
-                  const id = e.target.value ? Number(e.target.value) : null;
-                  applyTemplate(templates.find((t) => t.id === id) ?? null);
-                }}
-                disabled={loading}
+          <div className="prompt-template-picker">
+            <p className="prompt-template-picker-hint">点选即一键填入并启用，对后续所有新任务生效。</p>
+            <div className="prompt-template-cards">
+              <button
+                type="button"
+                className={`prompt-template-card ${!activeTemplate ? 'is-active' : ''}`}
+                onClick={() => void deactivate()}
+                disabled={saving || loading || !activeTemplate}
               >
-                {templates.length === 0 && <option value="">（暂无模板，可新建）</option>}
-                {templates.map((t) => (
-                  <option key={t.id} value={t.id}>{t.name}{t.is_active ? '（当前使用）' : ''}</option>
-                ))}
-              </select>
-              <small className="prompt-template-select-hint">选中只是载入编辑，需点「设为当前使用」才会生效</small>
-            </label>
+                <strong>系统默认提示词</strong>
+                <small>{activeTemplate ? '不使用任何模板' : '当前使用'}</small>
+              </button>
+              {templates.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  className={`prompt-template-card ${t.is_active ? 'is-active' : ''} ${selectedId === t.id ? 'is-selected' : ''}`}
+                  onClick={() => void applyAndActivate(t)}
+                  disabled={saving || loading}
+                >
+                  <strong>{t.name}</strong>
+                  <small>{t.is_active ? '当前使用' : '一键启用'}</small>
+                </button>
+              ))}
+            </div>
             <div className="prompt-template-actions">
-              <button type="button" className="prompt-btn" onClick={resetValues} disabled={loading}>新建</button>
+              <button type="button" className="prompt-btn" onClick={resetValues} disabled={loading}>新建空白</button>
               <button type="button" className="prompt-btn" onClick={() => save(true)} disabled={saving || loading}>另存为新模板</button>
-              <button type="button" className="prompt-btn" onClick={activate} disabled={saving || loading || selectedId == null}>设为当前使用</button>
               <button type="button" className="prompt-btn danger" onClick={remove} disabled={saving || loading || selectedId == null}>删除</button>
             </div>
           </div>
@@ -307,6 +342,24 @@ export function PromptCustomizePanel() {
                     rows={3}
                     spellCheck={false}
                   />
+                  {section.generator && (
+                    <div className="prompt-block-generate">
+                      <button
+                        type="button"
+                        className="prompt-btn"
+                        onClick={() => void generateBatchPrompt()}
+                        disabled={batchPromptBusy || loading}
+                      >
+                        {batchPromptBusy ? '生成中…' : '根据本批次标题生成'}
+                      </button>
+                      <small className="prompt-block-generate-hint">
+                        点击会调用 AI 生成（申请密钥时会短暂冻结一笔积分用于领取短期密钥，随后自动全额退回，不扣积分）；结果自动填入上方文本框，可手动编辑，保存模板后随模板持久化
+                      </small>
+                      {batchPromptNotice && (
+                        <small className="prompt-block-generate-notice">{batchPromptNotice}</small>
+                      )}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

@@ -23,6 +23,9 @@ VALID_ANALYSIS = {
 
 SOURCE_TITLE = "麻将麻将牌麻将手搓家用大号麻将牌"
 
+# 直连模式下客户端只使用批次冻结下发的短期 Ark 密钥，不再经平台网关。
+ARK_KEY = "ark-direct-key"
+
 
 class _Response:
     def __init__(self, payload: dict | str, *, status_code: int = 200) -> None:
@@ -65,15 +68,18 @@ def _success_response(analysis: dict = VALID_ANALYSIS) -> _Response:
 
 
 @pytest.fixture(autouse=True)
-def _reserved_server_text_usage():
-    with server_ai_context("platform-token", {"text": "usage-text"}):
+def _direct_ark_granted_key():
+    with server_ai_context(
+        "platform-token",
+        {"text": "usage-text"},
+        granted_keys={"ark": ARK_KEY},
+    ):
         yield
 
 
 def test_recognize_subject_sends_fixed_model_image_and_prompt(monkeypatch) -> None:
     response = _success_response()
     session = _Session([response])
-    monkeypatch.setenv("ARK_API_KEY", "ark-secret-key")
     monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
 
     result = doubao_vision.DoubaoVisionClient().recognize_subject(
@@ -84,9 +90,9 @@ def test_recognize_subject_sends_fixed_model_image_and_prompt(monkeypatch) -> No
     assert result.as_dict() == VALID_ANALYSIS
     assert len(session.requests) == 1
     request = session.requests[0]
-    assert request["url"].endswith("/api/customer/ai/chat")
-    assert request["json"]["model"] == "gpt-5.6-terra"
-    assert request["json"]["usage_id"] == "usage-text"
+    assert request["url"] == doubao_ark.API_URL
+    assert request["json"]["model"] == doubao_ark.MODEL_ID
+    assert "usage_id" not in request["json"]
     assert request["json"]["messages"][0]["content"][0] == {
         "type": "image_url",
         "image_url": {"url": "data:image/jpeg;base64,dGVzdA=="},
@@ -97,13 +103,13 @@ def test_recognize_subject_sends_fixed_model_image_and_prompt(monkeypatch) -> No
     assert "UNTRUSTED ORIGINAL 1688 TITLE" in prompt
     assert SOURCE_TITLE in prompt
     assert "If the image and title materially conflict" in prompt
-    assert request["headers"]["Authorization"] == "Bearer platform-token"
+    assert request["headers"]["Authorization"] == f"Bearer {ARK_KEY}"
     assert request["allow_redirects"] is False
     assert response.closed is True
 
+
 def test_recognize_subject_reads_multiple_source_images_in_one_call(monkeypatch) -> None:
     session = _Session([_success_response({**VALID_ANALYSIS, "explicit_measurements": {"weight_g": 320}})])
-    monkeypatch.setenv("ARK_API_KEY", "ark-secret-key")
     monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
 
     result = doubao_vision.DoubaoVisionClient().recognize_subject(
@@ -121,12 +127,9 @@ def test_recognize_subject_reads_multiple_source_images_in_one_call(monkeypatch)
     assert "explicit_measurements" in content[2]["text"]
 
 
-
-
 def test_transient_failure_retries_once_then_succeeds(monkeypatch) -> None:
     busy = _Response({"error": {"message": "busy-secret-detail"}}, status_code=429)
     session = _Session([busy, _success_response()])
-    monkeypatch.setenv("ARK_API_KEY", "ark-secret-key")
     monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
     monkeypatch.setattr(doubao_vision.time, "sleep", lambda _seconds: None)
 
@@ -148,7 +151,6 @@ def test_unclassified_4xx_retries_once_then_succeeds(monkeypatch) -> None:
     """
     flaky = _Response({"error": {"message": "upstream refused"}}, status_code=400)
     session = _Session([flaky, _success_response()])
-    monkeypatch.setenv("ARK_API_KEY", "ark-secret-key")
     monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
     monkeypatch.setattr(doubao_vision.time, "sleep", lambda _seconds: None)
 
@@ -166,7 +168,6 @@ def test_unclassified_4xx_stops_at_its_own_budget_not_the_full_three(monkeypatch
     session = _Session(
         [_Response({"error": {"message": "nope"}}, status_code=400) for _ in range(3)]
     )
-    monkeypatch.setenv("ARK_API_KEY", "ark-secret-key")
     monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
     monkeypatch.setattr(doubao_vision.time, "sleep", lambda _seconds: None)
 
@@ -182,8 +183,6 @@ def test_unclassified_4xx_stops_at_its_own_budget_not_the_full_three(monkeypatch
 
 
 def test_recognize_subject_rejects_missing_original_title(monkeypatch) -> None:
-    monkeypatch.setenv("ARK_API_KEY", "ark-secret-key")
-
     with pytest.raises(doubao_vision.DoubaoVisionError) as captured:
         doubao_vision.DoubaoVisionClient().recognize_subject(
             "data:image/jpeg;base64,dGVzdA==", "   "
@@ -203,16 +202,15 @@ def test_recognize_subject_rejects_missing_original_title(monkeypatch) -> None:
         json.dumps({**VALID_ANALYSIS, "explicit_measurements": {"weight_g": "heavy"}}),
     ],
 )
-def test_invalid_contract_is_retried_within_budget_then_rejected(
+def test_invalid_contract_is_rejected_without_retry(
     monkeypatch, content: str
 ) -> None:
-    # 视觉输出是随机的：契约内的坏输出在三次预算内重试（见 doubao_vision 的注释），
-    # 只有预算耗尽后才把 invalid_response 抛给调用方。坏输出必须每次都复现才能证明
-    # 这一路径，因此这里给足三份相同响应。
+    # 契约级失败是确定性的：同一份输入复跑只会得到同样的坏输出，而视觉推理单次成本极高
+    # （数十秒 / 数千 reasoning tokens）。因此 invalid_response 不再重试，首次即上抛，
+    # 由上层按「源标题兜底」快速降级，避免把整单拖成分钟级等待。
     session = _Session(
         [_Response({"choices": [{"message": {"content": content}}]}) for _ in range(3)]
     )
-    monkeypatch.setenv("ARK_API_KEY", "ark-secret-key")
     monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
     monkeypatch.setattr(doubao_vision.time, "sleep", lambda _seconds: None)
 
@@ -221,15 +219,14 @@ def test_invalid_contract_is_retried_within_budget_then_rejected(
         client.recognize_subject("data:image/jpeg;base64,dGVzdA==", SOURCE_TITLE)
 
     assert captured.value.error_kind == "invalid_response"
-    assert captured.value.attempt_count == 3
-    assert client.last_attempt_count == 3
-    assert len(session.requests) == 3
+    assert captured.value.attempt_count == 1
+    assert client.last_attempt_count == 1
+    assert len(session.requests) == 1
 
 
 def test_provider_error_does_not_expose_key_or_response_body(monkeypatch) -> None:
     secret_body = "provider-secret-response-body"
     session = _Session([_Response(secret_body, status_code=403)])
-    monkeypatch.setenv("ARK_API_KEY", "ark-secret-key")
     monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
 
     with pytest.raises(doubao_vision.DoubaoVisionError) as captured:
@@ -238,7 +235,7 @@ def test_provider_error_does_not_expose_key_or_response_body(monkeypatch) -> Non
         )
 
     message = str(captured.value)
-    assert "ark-secret-key" not in message
+    assert ARK_KEY not in message
     assert secret_body not in message
     assert captured.value.status_code == 403
     assert captured.value.error_kind == "configuration"
@@ -252,7 +249,6 @@ def test_network_failure_retries_once_then_returns_retryable_error(monkeypatch) 
             requests.Timeout("thrice"),
         ]
     )
-    monkeypatch.setenv("ARK_API_KEY", "ark-secret-key")
     monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
     monkeypatch.setattr(doubao_vision.time, "sleep", lambda _seconds: None)
 
@@ -268,7 +264,7 @@ def test_network_failure_retries_once_then_returns_retryable_error(monkeypatch) 
     assert len(session.requests) == 3
 
 
-def test_missing_reserved_usage_is_configuration_error() -> None:
+def test_missing_granted_key_is_configuration_error() -> None:
     with server_ai_context("", {}):
         with pytest.raises(doubao_vision.DoubaoVisionError) as captured:
             doubao_vision.DoubaoVisionClient()
@@ -310,9 +306,9 @@ def test_instruction_like_subject_content_is_rejected(
     monkeypatch, field: str, value: str | list[str]
 ) -> None:
     analysis = {**VALID_ANALYSIS, field: value}
-    # 与上面的契约失败一样：prompt 注入类坏输出也在三次预算内重试后才抛出。
+    # 与上面的契约失败一样：prompt 注入类坏输出同样属于确定性 invalid_response，
+    # 首次即上抛、不再重试。
     session = _Session([_success_response(analysis) for _ in range(3)])
-    monkeypatch.setenv("ARK_API_KEY", "ark-secret-key")
     monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
     monkeypatch.setattr(doubao_vision.time, "sleep", lambda _seconds: None)
 
@@ -321,5 +317,5 @@ def test_instruction_like_subject_content_is_rejected(
         client.recognize_subject("data:image/jpeg;base64,dGVzdA==", SOURCE_TITLE)
 
     assert captured.value.error_kind == "invalid_response"
-    assert captured.value.attempt_count == 3
-    assert len(session.requests) == 3
+    assert captured.value.attempt_count == 1
+    assert len(session.requests) == 1

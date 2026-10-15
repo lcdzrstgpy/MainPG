@@ -895,6 +895,23 @@ class PodBatchWorker:
         *,
         finalize: bool = True,
     ) -> None:
+        self._regenerate_title(batch_id, style_index, billing_run, finalize=finalize)
+
+    def _regenerate_title(
+        self,
+        batch_id: str,
+        style_index: int,
+        billing_run: PodBillingRun | None = None,
+        *,
+        finalize: bool = True,
+    ) -> None:
+        """无需持批级锁的标题重生成核心。
+
+        批量重试本身已由 ``_serial_batch_action`` 持有 ``_batch_action_lock``，若再把
+        加锁的 :meth:`regenerate_title` 提交到 ``title_runtime`` 的线程池，其它线程会
+        永久阻塞在这把锁上，与等待 future 的批级线程形成死锁。这里暴露无锁核心供
+        批量重试的标题并发调用。
+        """
         if self.title_runtime is None:
             raise RuntimeError("POD title runtime is disabled")
         run = billing_run or self._billing_runs.get(f"title:{batch_id}:{style_index}")
@@ -971,7 +988,7 @@ class PodBatchWorker:
                 # 不再逐款串行。
                 title_futures = [
                     self.title_runtime.submit(
-                        self.regenerate_title, batch_id, style_index, run, finalize=False
+                        self._regenerate_title, batch_id, style_index, run, finalize=False
                     )
                     for style_index in title_style_indices
                 ]

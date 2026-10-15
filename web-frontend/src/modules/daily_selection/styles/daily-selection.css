@@ -110,8 +110,8 @@
 .collection-panel { padding-bottom: 16px; }
 .mode-tabs { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin: 15px 16px; padding: 5px; border-radius: 11px; background: var(--theme-module-surface-soft, #edf4f8); }
 .mode-tabs button { display: grid; gap: 3px; padding: 10px; border: 1px solid transparent; border-radius: 8px; color: var(--theme-text-secondary, #6a7f93); background: transparent; text-align: left; }.mode-tabs button span { font-size: .69rem; }.mode-tabs button.is-active { border-color: var(--theme-module-border-strong, #c7e7f4); color: var(--theme-module-primary-strong, #087bb5); background: var(--theme-module-surface, #fff); box-shadow: 0 3px 9px rgba(42, 103, 138, .1); }
-.collection-primary-fields { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(280px, 1.75fr); gap: 13px; padding: 0 16px; }
-.collection-primary-fields.is-image-mode { grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(220px, 1.3fr) minmax(300px, 1.7fr); }
+.collection-primary-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(280px, 1.75fr); gap: 13px; padding: 0 16px; }
+.collection-primary-fields.is-image-mode { grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(220px, 1.3fr) minmax(300px, 1.7fr); }
 .collection-primary-fields label,
 .collection-fields label { display: grid; gap: 6px; }
 .collection-primary-fields label > span,

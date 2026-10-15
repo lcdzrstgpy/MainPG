@@ -45,6 +45,7 @@ from ..service import (
     ProductProcessingValidationError,
 )
 from .schemas import (
+    BatchImagePromptRequest,
     ComboProcessRequest,
     ComboSourceAddRequest,
     DailySelectionIntakeRequest,
@@ -186,6 +187,24 @@ def create_product_processing_router(
     @router.post("/engine/prompt-templates/{template_id}/delete")
     def delete_prompt_template(template_id: int) -> dict[str, Any]:
         return _call(service.delete_prompt_template, template_id)
+
+    @router.post("/engine/batch-image-prompt")
+    def generate_batch_image_prompt(
+        request: Request,
+        body: BatchImagePromptRequest,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        """按本批次商品标题生成「本批次辅助提词」，供预设模板板块的生成按钮调用。
+
+        该按钮在批次开始前触发，没有批次上下文；service 会先用此处的计费会话令牌
+        申请一份批次级短期 Ark 密钥再直连豆包，生成后立即释放冻结。
+        """
+        return _call(
+            service.generate_batch_image_prompt,
+            body.model_dump(),
+            workspace_id=_workspace(workspace_id),
+            remote_token=_remote_token(request, customer_sessions),
+        )
 
     @router.post("/demo-draft")
     async def create_demo_draft(
