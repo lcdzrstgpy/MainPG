@@ -281,14 +281,14 @@ def test_sweep_does_not_pause_running_task_without_page_leave(tmp_path: Path) ->
 
 
 def test_sweep_pauses_task_after_page_leave_without_new_polling(tmp_path: Path) -> None:
-    """页面关闭信标送达、宽限期内也没人再看 → 暂停（与手动暂停同语义，可从历史记录继续）。"""
+    """页面关闭信标送达、之后半小时都没人再看 → 暂停（与手动暂停同语义，可从历史记录继续）。"""
     service = _service(tmp_path)
     task, _a, _b = _task_with_two_items(service)
     service.repository.set_task_status(task["id"], "running", "local")
-    # 时间线：400 秒前最后轮询 → 300 秒前关掉页面 → 之后没人再看
-    service._task_last_seen[("local", task["id"])] = time.monotonic() - 400.0
+    # 时间线：2000 秒前最后轮询 → 1900 秒前关掉页面 → 之后没人再看（静默已超过半小时阈值）
+    service._task_last_seen[("local", task["id"])] = time.monotonic() - 2000.0
     service.mark_task_left(task["id"], "local")
-    service._task_left_keys[("local", task["id"])] = time.monotonic() - 300.0
+    service._task_left_keys[("local", task["id"])] = time.monotonic() - 1900.0
 
     service._sweep_departed_tasks_once()
 
@@ -317,11 +317,11 @@ def test_page_leave_is_revoked_by_ongoing_polling(tmp_path: Path) -> None:
     task, _a, _b = _task_with_two_items(service)
     service.repository.set_task_status(task["id"], "running", "local")
     now = time.monotonic()
-    service._task_last_seen[("local", task["id"])] = now - 400.0
+    service._task_last_seen[("local", task["id"])] = now - 2000.0
     with service._task_left_lock:
-        service._task_left_keys[("local", task["id"])] = now - 300.0
+        service._task_left_keys[("local", task["id"])] = now - 1900.0
 
-    # 刷新后的页面从 300 秒前一直轮询到现在
+    # 刷新后的页面从半小时前一直轮询到现在
     service._touch_task_heartbeat(task["id"], "local")
 
     service._sweep_departed_tasks_once()
@@ -336,11 +336,11 @@ def test_single_in_flight_poll_does_not_revoke_page_leave(tmp_path: Path) -> Non
     task, _a, _b = _task_with_two_items(service)
     service.repository.set_task_status(task["id"], "running", "local")
     now = time.monotonic()
-    # 时间线：300 秒前关掉页面；关页面瞬间那一次在途请求 295 秒前被服务端处理，
-    # 之后再没有任何轮询（静默 295 秒，远超阈值）→ 该暂停
+    # 时间线：2000 秒前关掉页面；关页面瞬间那一次在途请求 1995 秒前被服务端处理，
+    # 之后再没有任何轮询（静默 1995 秒，超过半小时阈值）→ 该暂停
     with service._task_left_lock:
-        service._task_left_keys[("local", task["id"])] = now - 300.0
-    service._task_last_seen[("local", task["id"])] = now - 295.0
+        service._task_left_keys[("local", task["id"])] = now - 2000.0
+    service._task_last_seen[("local", task["id"])] = now - 1995.0
 
     service._sweep_departed_tasks_once()
 
@@ -407,8 +407,8 @@ def test_leave_sweep_yields_while_workspace_is_exiting(tmp_path: Path) -> None:
     service.repository.set_task_status(task_id, "running", "local")
     now = time.monotonic()
     with service._task_left_lock:
-        service._task_left_keys[("local", task_id)] = now - 300.0
-    service._task_last_seen[("local", task_id)] = now - 400.0
+        service._task_left_keys[("local", task_id)] = now - 1900.0
+    service._task_last_seen[("local", task_id)] = now - 2000.0
 
     service.set_shutdown_probe(lambda: True)
     service._sweep_departed_tasks_once()
@@ -421,12 +421,15 @@ def test_leave_sweep_yields_while_workspace_is_exiting(tmp_path: Path) -> None:
 
 
 def test_leave_quiet_threshold_stays_above_runtime_exit_grace() -> None:
-    """兜底断言：静默阈值不该小于退出宽限（默认 60 秒）。
+    """兜底断言：静默阈值不小于 30 分钟（安全网），且大于退出宽限（默认 60 秒）。
 
+    2026-10-15 产品口径：关掉页面不等于想停任务——「关页面暂停」是安全网而不是即时停止
+    （真想立刻停用「暂停 / 取消」，关掉整个工作台走退出流程）。阈值不许被调回「几分钟级」。
     真正的先后由 set_shutdown_probe/is_exiting 保证（工作台一进入退出流程，任务级暂停就
-    整轮跳过）；这条只是防止有人把阈值调到「暂停比退出还早」这种配置——那样在默认参数下
+    整轮跳过）；这条只是防止有人把它调到「暂停比退出还早」这种配置——那样在默认参数下
     也会出现两条路同时想接管同一个任务的窗口。
     """
+    assert service_module._TASK_LEAVE_QUIET_SECONDS >= 1800.0
     assert service_module._TASK_LEAVE_QUIET_SECONDS > service_module._RUNTIME_EXIT_GRACE_SECONDS
     # 留出清扫间隔的余量，别贴着边界。
     assert (
@@ -450,9 +453,9 @@ def test_page_leave_does_not_pause_task_during_export_finalization(
             workspace_id="local",
         )
     service.repository.set_task_status(task["id"], "running", "local")
-    service._task_last_seen[("local", task["id"])] = time.monotonic() - 400.0
+    service._task_last_seen[("local", task["id"])] = time.monotonic() - 2000.0
     service.mark_task_left(task["id"], "local")
-    service._task_left_keys[("local", task["id"])] = time.monotonic() - 300.0
+    service._task_left_keys[("local", task["id"])] = time.monotonic() - 1900.0
 
     service._sweep_departed_tasks_once()
 
@@ -483,8 +486,8 @@ def test_leave_marker_and_heartbeat_share_the_same_workspace_key(tmp_path: Path)
     service.repository.set_task_status(task_id, "running", "default")
     now = time.monotonic()
     with service._task_left_lock:
-        service._task_left_keys[("default", task_id)] = now - 300.0
-    service._task_last_seen[("default", task_id)] = now - 400.0
+        service._task_left_keys[("default", task_id)] = now - 1900.0
+    service._task_last_seen[("default", task_id)] = now - 2000.0
 
     # 页面重新开始轮询：task_outputs 落心跳用的键必须与信标一致
     service.task_outputs(task_id, workspace_id="default")

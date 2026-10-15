@@ -614,7 +614,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       <header className="verify-commandbar">
         <div className="verify-command-title">
           <h1>{initialTaskId != null ? '历史任务详情' : '处理设置与进度'}</h1>
-          <p>{initialTaskId != null ? '继续处理中的历史任务；关闭本页会暂停任务（可从左侧“历史记录”继续），切到别的界面或最小化窗口都不影响运行。' : '配置处理参数后开始，结果实时轮询。暂停/取消都会立即停止后续 AI 调用。'}</p>
+          <p>{initialTaskId != null ? '继续处理中的历史任务；关闭本页后超过半小时没人回来看才会暂停（可从左侧“历史记录”继续），切到别的界面或最小化窗口都不影响运行。' : '配置处理参数后开始，结果实时轮询。暂停/取消都会立即停止后续 AI 调用。'}</p>
         </div>
       </header>
 
