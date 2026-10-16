@@ -60,9 +60,8 @@
 
 .pod-semi-grid {
   display: grid;
-  /* 与全定制页一致：设置列窄（约 290–340px），结果列吃掉剩余宽度。
-     设置列过宽会让短文本框拉成整行，观感很差。 */
-  grid-template-columns: minmax(270px, 340px) minmax(0, 1fr);
+  /* 左右按黄金比例 0.382 : 0.618 分栏（左小右大），与全定制、爆款复刻、爆款裂变一致。 */
+  grid-template-columns: minmax(300px, 0.382fr) minmax(0, 0.618fr);
   gap: 14px;
   align-items: start;
   min-width: 0;

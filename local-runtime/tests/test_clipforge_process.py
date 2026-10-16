@@ -55,10 +55,12 @@ def test_posix_popen_options_detach_a_new_session(monkeypatch) -> None:
 def test_windows_popen_options_create_a_process_group(monkeypatch) -> None:
     monkeypatch.setattr(process_module, "_is_windows", lambda: True)
     monkeypatch.setattr(process_module.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200, raising=False)
+    monkeypatch.setattr(process_module.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
 
     options = popen_group_options()
 
-    assert options["creationflags"] == 0x00000200
+    # 进程组（可整树回收）+ 无窗口（不弹出 node 控制台黑框）两个标志必须都在。
+    assert options["creationflags"] == 0x08000200
 
 
 def test_posix_terminates_the_process_group_without_escalating(monkeypatch) -> None:

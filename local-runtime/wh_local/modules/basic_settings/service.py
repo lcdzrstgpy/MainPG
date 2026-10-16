@@ -23,8 +23,18 @@ IMAGE_MODEL_CHOICES: tuple[tuple[str, str], ...] = (
     ("image_gpt_2.5", "GPT-Image-2.5（新版）"),
 )
 IMAGE_MODEL_DEFAULT = IMAGE_MODEL_CHOICES[0][0]
-# POD 独立默认：产品侧要求 POD 定制默认走 2.5；AI处理 的默认仍为 IMAGE_MODEL_DEFAULT，两者互不影响。
-POD_IMAGE_MODEL_DEFAULT = "image_gpt_2.5"
+
+
+def _pod_image_catalog() -> Any:
+    """延迟导入 POD 生图模型目录（三个模型，速创两个 + 豆包一个）。
+
+    basic_settings 不能在模块加载期导入 pod_customization：POD 的包 ``__init__``
+    会拉起路由与业务服务，而业务服务又反向依赖本模块（media 需要 RuntimeCosConfig），
+    模块级导入会直接形成环。
+    """
+    from wh_local.modules.pod_customization.image_providers import catalog
+
+    return catalog
 
 # 这些字段不进入普通配置 JSON，避免 GET 接口把密钥明文返回给前端。
 SECRET_FIELDS: tuple[tuple[str, str], ...] = (
@@ -95,7 +105,7 @@ def default_system_config() -> dict[str, Any]:
             "model": "gpt-image-2-2k",
             "reference_model": "gpt-image-2-2k",
         },
-        "pod_image": {"model": POD_IMAGE_MODEL_DEFAULT},
+        "pod_image": {"model": _pod_image_catalog().POD_IMAGE_MODEL_DEFAULT},
         "backup_image": {"base_url": "", "model": "", "reference_model": ""},
         "cos": {"bucket": "", "region": "ap-guangzhou"},
         "limits": {
@@ -311,17 +321,18 @@ class SystemConfigService:
         return {"ok": True, "model": selected, "message": "生图模型已切换"}
 
     def get_pod_image_model(self) -> dict[str, Any]:
-        """读取 POD 独立生图模型与可选项。"""
+        """读取 POD 生图模型与可选项（三个模型：速创两个 + 豆包一个）。"""
+        catalog = _pod_image_catalog()
         config = self._load_raw_config()
         return {
             "ok": True,
-            "model": _normalized_image_model(config["pod_image"].get("model"), POD_IMAGE_MODEL_DEFAULT),
-            "choices": [{"value": value, "label": label} for value, label in IMAGE_MODEL_CHOICES],
+            "model": catalog.normalize_model(config["pod_image"].get("model")),
+            "choices": catalog.model_choices(),
         }
 
     def save_pod_image_model(self, model: str, actor_id: str) -> dict[str, Any]:
         """只修改 POD 生图模型，不影响 AI处理 的图片模型。"""
-        selected = _normalized_image_model(model, POD_IMAGE_MODEL_DEFAULT)
+        selected = _pod_image_catalog().normalize_model(model)
         config = self._load_raw_config()
         config["pod_image"]["model"] = selected
         now = utc_now()
@@ -418,11 +429,7 @@ class SystemConfigService:
                 "model": payload.image.model.strip(),
                 "reference_model": payload.image.reference_model.strip(),
             },
-            "pod_image": {
-                "model": _normalized_image_model(
-                    (current.get("pod_image") or {}).get("model"), POD_IMAGE_MODEL_DEFAULT
-                ),
-            },
+            "pod_image": _preserved_pod_image(current),
             "backup_image": {
                 "base_url": payload.backup_image.base_url.strip(),
                 "model": payload.backup_image.model.strip(),
@@ -536,12 +543,18 @@ def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]
     return result
 
 
+def _preserved_pod_image(current: dict[str, Any]) -> dict[str, str]:
+    """整表保存系统配置时保留 POD 生图模型（前端表单不提交这个字段）。"""
+    section = current.get("pod_image") or {}
+    # 旧库可能残留已废弃的 provider 字段：这里只收敛模型名，写回时自然把它丢掉。
+    return {"model": _pod_image_catalog().normalize_model(section.get("model"))}
+
+
 def _with_fixed_provider_defaults(config: dict[str, Any]) -> dict[str, Any]:
     """Keep provider defaults fixed even when an old local DB has stale values."""
     config["ai"]["base_url"] = PRIMARY_AI_BASE_URL
     config["image"]["base_url"] = PRIMARY_AI_BASE_URL
-    pod_image = config.setdefault("pod_image", {})
-    pod_image["model"] = _normalized_image_model(pod_image.get("model"), POD_IMAGE_MODEL_DEFAULT)
+    config["pod_image"] = _preserved_pod_image(config)
     # 旧本地 DB 可能保存过 1k；产品处理默认要优先使用 2k，加载时自动迁移展示/运行值。
     if str(config["image"].get("model") or "").strip() in {"", "gpt-image-2", "gpt-image-2-1k"}:
         config["image"]["model"] = "gpt-image-2-2k"
