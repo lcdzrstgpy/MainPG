@@ -784,9 +784,6 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     runtime_exit.set_on_before_exit(
         _compose_exit_cleanup(product_processing.cancel_all_active_for_shutdown, clipforge.stop)
     )
-    # 桌面端：结算完成后登出远端平台会话并撤销本机本地会话。远端 token 只存在后端
-    # 进程内存里，关页退出即丢失且用户再也无法主动登出；不在这里抢着登出，远端会残留
-    # 一个"活跃"平台会话，导致用户重新打开页面登录时被单端登录限制拒绝。
     def _release_customer_sessions() -> None:
         """退出时释放全部会话：撤销本机本地会话 + 逐条远端登出。
 
