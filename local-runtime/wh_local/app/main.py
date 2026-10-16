@@ -15,7 +15,7 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 logger = logging.getLogger("wh_local.app")
@@ -43,6 +43,7 @@ from ..config import (
 )
 from ..customer.auth_service import SQLiteCustomerAuthService
 from ..customer.collect_credentials import CollectCredentialsError, request_collect_credentials
+from ..customer.contracts import CustomerAuthPermissionError
 from ..customer.db_store import SQLiteCustomerSessionStore
 from ..customer.email_sender import TencentCloudSESEmailSender
 from ..customer.local_session import LocalSessionService
@@ -769,6 +770,25 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     )
     app.include_router(combo_kit_router)
     register_combo_kit_exception_handlers(app)
+
+    @app.exception_handler(CustomerAuthPermissionError)
+    async def _customer_auth_permission_handler(  # noqa: ARG001
+        request: Request, exc: CustomerAuthPermissionError
+    ) -> JSONResponse:
+        """会话失效类 401 的全局兜底。
+
+        POD / 商品处理 / combo_kit 的 ``_call`` 包装只捕
+        ``CustomerBillingPermissionError``，而 ``CustomerAuthPermissionError``
+        继承 ``PermissionError``、不在它们的兜底链里，会逃逸出路由变成 500。
+        这里统一映回上游状态码 + 原文，让前端 transport/http/client.ts 的
+        ``isSessionExpired()``（要求 ``status === 401`` 且 detail 命中会话关键词）
+        能把用户送回登录页，而不是显示 500。
+
+        不会泄露上游细节：能走到这里的基本是 ``_SESSION_FAILURE_DETAIL`` 白名单
+        内的 4 个会话短语（账号操作类由 customer/routes.py 自行映射，不经过此处）。
+        """
+        return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
+
     app.state.combo_kit_service = getattr(combo_kit_router, "combo_kit_service")
     app.state.combo_kit_task_worker = getattr(combo_kit_router, "combo_kit_worker")
 

@@ -601,6 +601,15 @@ class CustomerAuthClient:
                 ) from exc
             except CustomerBillingPermissionError:
                 raise
+            except CustomerAuthPermissionError:
+                # 会话失效类 401（被顶替/过期）由 _request:658-661 抛出，必须原样透传。
+                # 落进下面的 PermissionError 兜底会被折成 CustomerBillingPermissionError
+                # （固定话术 "remote billing session was rejected"），前端
+                # client.ts:90-99 硬性要求 status === 401 才判会话失效并回登录页，
+                # 折掉之后用户只会看到「操作失败」而卡在坏掉的登录态。
+                # 不泄露上游细节：这条路径只可能携带 _SESSION_FAILURE_DETAIL 白名单
+                # 里的 4 个已知短语，与 contracts.py「计费侧不透服务端细节」不冲突。
+                raise
             except PermissionError as exc:
                 raise CustomerBillingPermissionError() from exc
             if not isinstance(response, dict):
@@ -696,6 +705,13 @@ class CustomerAuthClient:
         if status >= 400:
             detail = _detail_from_text(response.text)
             if status in (401, 403):
+                if status == 401 and detail and _SESSION_FAILURE_DETAIL.search(detail):
+                    # 会话失效类 401（被顶替/过期）：与 _request:665-670 保持同一契约，
+                    # 透传 detail 让前端 client.ts:90-99 判定会话失效并回登录页。
+                    # 此前这里一律折成 CustomerBillingPermissionError，
+                    # GET 类计费端点（billing/summary、assets、feedback…）的会话失效
+                    # 信号在客户端就断了。
+                    raise CustomerAuthPermissionError(status, detail) from None
                 raise CustomerBillingPermissionError(status) from None
             if 400 <= status < 500:
                 raise CustomerAuthRejected(
