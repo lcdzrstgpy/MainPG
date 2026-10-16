@@ -41,6 +41,7 @@ from .replica_prompt_compiler import compile_replica_panel_prompt, compile_repli
 from .replica_prompts import build_replica_listing_prompt
 from .repository import PodCustomizationRepository, PodRepositoryError
 from .runtime import RuntimeClosedError
+from .fission_registry import FissionRegistryService
 from .runtime_contracts import (
     DirectListingGridRequest,
     ListingReferenceImage,
@@ -168,6 +169,7 @@ class PodBillingRun:
                         f"billing settle rejected: batch epoch has advanced (expected {self.execution_epoch}, got {current})"
                     )
             outcomes = self.repository.prepare_billing_settlement(self.action_key)
+            outcomes = self.repository.project_fission_settlement(self.action_key, outcomes)
         else:
             with self._lock:
                 outcomes = tuple(
@@ -565,7 +567,7 @@ class PodBatchWorker:
                 # 半定制不用模板、不用参考图：跳过模板图读取，交给纯文生图分支。
                 template_content = b""
                 template_content_type = ""
-            elif batch.get("mode") == "replica":
+            elif batch.get("mode") in {"replica", "fission"}:
                 # 复刻按款解析各自目标白底图与来源样图；批次级内部锚点模板仅作结构
                 # 锚点，不参与生图，因此不读取、也不把同一个模板字节传给所有款。
                 template_content = b""
@@ -758,12 +760,13 @@ class PodBatchWorker:
         batch = self.repository.get_batch_internal(batch_id)
         semi = batch.get("mode") == "semi"
         replica = batch.get("mode") == "replica"
+        fission = batch.get("mode") == "fission"
         base_prompt = batch["prompt_snapshot"]
         if creative_prompt.strip():
             # 复刻不使用创作指示词：其提示词只由该款业务字段与样图锁定规则构造。
-            if not replica:
+            if not (replica or fission):
                 base_prompt += f"\n\nWhole-style regeneration direction: {creative_prompt.strip()}"
-        if semi or replica:
+        if semi or replica or fission:
             # 半定制零参考图；复刻按款解析目标白底图，不使用批次级锚点模板。
             template_content = b""
             template_content_type = ""
@@ -776,9 +779,11 @@ class PodBatchWorker:
         prepared: list[tuple[dict[str, Any], Any, list[Any], list[str]]] = []
         last_error = "整款重新生成未返回完整结果"
         last_call_id = ""
+        failure_kind = "infrastructure"
         panel_strategy = self._style_generation_strategy(batch, style_index) == "independent_panels"
         try:
             for attempt in (1, 2):
+                failure_kind = "infrastructure"
                 call_kind = "regenerate_style" if attempt == 1 else "regenerate_style_retry"
                 call_index = self.repository.next_generation_call_index(batch_id, call_kind)
                 request_kwargs: dict[str, Any] = {}
@@ -837,6 +842,7 @@ class PodBatchWorker:
                         grid = self.ai_runtime.submit(
                             self._generate_listing_grid, batch, call, request, run, provider_call_id
                         ).result()
+                        failure_kind = "artifact_validation"
                         panels, fingerprints = self._validate_style_grid(grid)
                         prepared = [(call, grid, panels, fingerprints)]
                     break
@@ -844,8 +850,11 @@ class PodBatchWorker:
                     raise
                 except Exception as exc:
                     last_error = str(exc).strip() or exc.__class__.__name__
+                    if failure_kind != "artifact_validation":
+                        failure_kind = self._fission_generation_failure_kind(exc)
             if not prepared:
                 self.repository.fail_style_grid(batch, style_index, last_error)
+                self._record_fission_image_outcome(batch, style_index, "failed", failure_kind)
                 if self._title_enabled(batch):
                     self.repository.fail_style_title(
                         batch_id,
@@ -964,7 +973,7 @@ class PodBatchWorker:
         try:
             if image_style_indices:
                 batch = self.repository.get_batch_internal(batch_id)
-                if batch.get("mode") in {"semi", "replica"}:
+                if batch.get("mode") in {"semi", "replica", "fission"}:
                     # 半定制零参考图；复刻按款解析目标白底图，都不用批次级锚点模板。
                     template_content, template_content_type = b"", ""
                 else:
@@ -1221,6 +1230,16 @@ class PodBatchWorker:
             **request_kwargs,
         )
 
+    def _fission_style_prompt(self, batch: dict[str, Any], style_index: int, attempt: int) -> str:
+        variant = next((row for row in batch.get("fission_variants", [])
+                        if int(row["style_index"]) == style_index), None)
+        if not variant or not variant.get("prompt_snapshot"):
+            raise RuntimeError(f"POD 裂变款冻结方案缺失：style_index={style_index}")
+        prompt = str(variant["prompt_snapshot"])
+        if attempt > 1:
+            prompt += "\nRetry: preserve product B structure and the exact frozen style/element/palette combination. Return all four complete panels."
+        return prompt
+
     def _style_generation_inputs(
         self,
         batch: dict[str, Any],
@@ -1244,6 +1263,18 @@ class PodBatchWorker:
         :class:`DirectListingGridRequest`。
         """
         mode = batch.get("mode")
+        if mode == "fission":
+            prompt = self._fission_style_prompt(batch, style_index, attempt)
+            references = []
+            for key, role in (("fission_source", "style_reference"), ("fission_target", "target_product")):
+                asset = batch.get(key) or {}
+                if not asset.get("relative_path"):
+                    raise RuntimeError("POD 裂变参考图快照缺失")
+                references.append(ListingReferenceImage(
+                    role=role, content=self.assets.read(asset["relative_path"]),
+                    content_type=str(asset.get("content_type") or ""),
+                ))
+            return prompt, {"reference_images": tuple(references)}
         if mode == "semi":
             prompt = build_semi_pattern_prompt(
                 base_prompt if base_prompt is not None else batch["prompt_snapshot"],
@@ -1321,6 +1352,7 @@ class PodBatchWorker:
         ``style_indices`` 缺省时按批次里尚未完成的款推导（初次/续跑）；重跑失败款时由
         调用方显式传入勾选的款，并通过 ``policy`` 换成重跑的调用登记策略。
         """
+        batch["_fission_failure_kinds"] = {}
         completed_by_style: dict[int, int] = {}
         for item in batch.get("items", []):
             if item.get("status") == "completed":
@@ -1383,6 +1415,10 @@ class PodBatchWorker:
                     reason,
                     execution_epoch=execution.epoch if execution is not None else None,
                 )
+                self._record_fission_image_outcome(
+                    batch, style_index, "failed",
+                    batch.get("_fission_failure_kinds", {}).get(style_index, "infrastructure"),
+                )
                 # 重跑要与 regenerate_style 的旧行为一致：图片款彻底失败时标题行也一并
                 # 标记失败，否则该标题会一直是 generating/queued 而永不收敛。
                 if policy.fail_title_with_image and self._title_enabled(batch):
@@ -1392,6 +1428,28 @@ class PodBatchWorker:
                         reason,
                         execution_epoch=execution.epoch if execution is not None else None,
                     )
+
+    def _record_fission_image_outcome(
+        self, batch: dict[str, Any], style_index: int, outcome: str, failure_kind: str = ""
+    ) -> None:
+        if batch.get("mode") != "fission":
+            return
+        FissionRegistryService(self.repository).record_variant_outcome(
+            batch_id=batch["batch_id"], style_index=style_index,
+            capability_version=int(batch.get("capability_registry_version") or 0),
+            rule_version=int(batch.get("rule_registry_version") or 0),
+            outcome=outcome, failure_kind=failure_kind,
+        )
+
+    @staticmethod
+    def _fission_generation_failure_kind(exc: Exception) -> str:
+        if (
+            isinstance(exc, (ConnectionError, TimeoutError, OSError, RuntimeClosedError))
+            or _is_retryable_generation_error(exc)
+            or getattr(exc, "status_class", "") in {"non_retryable_local", "non_retryable_4xx"}
+        ):
+            return "infrastructure"
+        return "image_generation"
 
     def _process_pending_titles_from_existing_images(
         self,
@@ -1525,6 +1583,7 @@ class PodBatchWorker:
                 raise
             except Exception as exc:
                 errors[style_index] = str(exc).strip() or exc.__class__.__name__
+                batch.setdefault("_fission_failure_kinds", {})[style_index] = "artifact_validation"
                 return
             enqueue_postprocess(style_index, call, panels, fingerprints)
 
@@ -1777,6 +1836,9 @@ class PodBatchWorker:
                             submit_style(style_index, 2)
                             continue
                         errors[style_index] = str(exc).strip() or exc.__class__.__name__
+                        batch.setdefault("_fission_failure_kinds", {})[style_index] = (
+                            self._fission_generation_failure_kind(exc)
+                        )
                         continue
                     if strategy == "independent_panels":
                         submit_postprocess_panels(style_index, call, result)
@@ -1806,6 +1868,7 @@ class PodBatchWorker:
                         raise
                     except Exception as exc:
                         errors[style_index] = str(exc).strip() or exc.__class__.__name__
+                        batch.setdefault("_fission_failure_kinds", {})[style_index] = "infrastructure"
 
             # Re-check control state after draining this wave of completions.
             status = self.repository.get_batch_status(batch["batch_id"])
@@ -2052,6 +2115,17 @@ class PodBatchWorker:
                                 )
                             except Exception:
                                 pass
+            if batch.get("mode") == "fission":
+                current = self.repository.get_batch_internal(batch["batch_id"])
+                images = [row for row in current["items"] if int(row.get("style_index") or 0) == style_index]
+                complete = len(images) == 4 and all(
+                    row.get("status") == "completed" and row.get("public_url") for row in images
+                )
+                # Image quality events must not depend on a later title call's authorization.
+                self._record_fission_image_outcome(
+                    batch, style_index, "succeeded" if complete else "failed",
+                    "" if complete else "infrastructure",
+                )
             if semi or self.title_runtime is None:
                 continue
             if not lifestyle_public_ready:

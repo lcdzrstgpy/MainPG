@@ -229,3 +229,106 @@ def test_repository_completes_a_partially_applied_008_before_marking_it(tmp_path
         "idx_pod_billing_outcomes_run_status",
     }
     assert marker is not None
+
+
+def test_023_creates_global_append_only_fission_registry_tables(tmp_path: Path) -> None:
+    database = tmp_path / "fission-registry.sqlite3"
+    names = sorted(path.name for path in MIGRATIONS.glob("[0-9][0-9][0-9]_*.sql"))
+    apply_migrations(database, names)
+
+    with sqlite3.connect(database) as connection:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'pod_customization_%registry%'"
+            )
+        }
+        learning_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(pod_customization_learning_events)")
+        }
+        version_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(pod_customization_capability_registry_versions)"
+            )
+        }
+        triggers = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'trg_fission_registry_%'"
+            )
+        }
+
+    assert tables == {
+        "pod_customization_capability_registry_versions",
+        "pod_customization_rule_registry_versions",
+        "pod_customization_registry_current",
+    }
+    assert {
+        "analysis_id",
+        "input_sha256",
+        "candidate_json",
+        "capability_version",
+        "rule_version",
+        "status",
+        "reason",
+        "created_at",
+    } <= learning_columns
+    assert not {"workspace_id", "owner_user_id"} & version_columns
+    assert len(triggers) == 4
+
+    PodCustomizationRepository(database)
+    PodCustomizationRepository(database)
+    with sqlite3.connect(database) as connection:
+        marker_count = connection.execute(
+            "SELECT COUNT(*) FROM schema_migrations WHERE migration_id = 'pod_customization:023_fission_registry'"
+        ).fetchone()[0]
+    assert marker_count == 1
+
+
+def test_023_upgrades_legacy_learning_events_before_creating_indexes(tmp_path: Path) -> None:
+    database = tmp_path / "legacy-fission-learning.sqlite3"
+    names = sorted(path.name for path in MIGRATIONS.glob("[0-9][0-9][0-9]_*.sql")
+                   if int(path.name[:3]) < 23)
+    apply_migrations(database, names)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """CREATE TABLE pod_customization_learning_events (
+                   event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   analysis_id TEXT NOT NULL DEFAULT '', input_sha256 TEXT NOT NULL DEFAULT '',
+                   candidate_json TEXT NOT NULL DEFAULT '{}', capability_version INTEGER NOT NULL DEFAULT 0,
+                   rule_version INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL,
+                   reason TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now'))
+               )"""
+        )
+        connection.execute(
+            "INSERT INTO pod_customization_learning_events (analysis_id, status) VALUES ('old-analysis', 'published')"
+        )
+    PodCustomizationRepository(database)
+    with sqlite3.connect(database) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(pod_customization_learning_events)")}
+        old_row = connection.execute(
+            "SELECT analysis_id, status FROM pod_customization_learning_events WHERE analysis_id='old-analysis'"
+        ).fetchone()
+    assert {"batch_id", "style_index", "outcome", "failure_kind"} <= columns
+    assert old_row == ("old-analysis", "published")
+
+
+def test_024_creates_fission_domain_snapshots_with_public_batch_fk(tmp_path: Path) -> None:
+    database = tmp_path / "fission-domain.sqlite3"
+    names = sorted(path.name for path in MIGRATIONS.glob("[0-9][0-9][0-9]_*.sql"))
+    apply_migrations(database, names)
+
+    with sqlite3.connect(database) as connection:
+        analysis_columns = {row[1] for row in connection.execute("PRAGMA table_info(pod_customization_fission_analyses)")}
+        batch_columns = {row[1] for row in connection.execute("PRAGMA table_info(pod_customization_fission_batches)")}
+        variant_columns = {row[1] for row in connection.execute("PRAGMA table_info(pod_customization_fission_variants)")}
+        batch_foreign_keys = connection.execute(
+            "PRAGMA foreign_key_list(pod_customization_fission_batches)"
+        ).fetchall()
+
+    assert {"analysis_id", "source_spec_json", "target_spec_json", "candidate_payload_json"} <= analysis_columns
+    assert {"batch_id", "client_request_id", "request_hash", "requested_count", "listing_fields_json"} <= batch_columns
+    assert {"style_index", "variant_plan_json", "combination_fingerprint", "prompt_snapshot"} <= variant_columns
+    assert any(row[2] == "pod_customization_batches" for row in batch_foreign_keys)

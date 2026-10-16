@@ -407,23 +407,30 @@ class PodCustomizationAiRuntime(AiRuntime):
                 return result_url
             status_value = str(data.get("status") or payload.get("status") or "").strip().lower() if isinstance(data, dict) else ""
             last_status = status_value
+            # 顶层 msg 只说「这次查询成功」，任务本身的状态在 data.message / data.msg 里：
+            # 上游对生成失败会回 status=3 且 message="generate image failed"，只按状态码判断
+            # 会把它当成「处理中」白等到分段超时，真实原因（生成失败）被吞掉。
             message = _suchuang_message(payload)
+            task_message = _suchuang_task_message(data)
+            if _suchuang_task_failed(task_message):
+                raise fail(f"速创图片任务失败：{task_message}")
             # 上游 status 为异步任务状态码（纯数字或文本）：≥0 为排队/准备/等待/处理中/发布，
-            # 1<0 为失败，1/成功文本才表示完成。3/4/5 数字实为“处理中”，不能按文本失败集误判成失败。
+            # 1<0 为失败，1/成功文本才表示完成。3/4/5 数字在任务消息未报失败时实为“处理中”，
+            # 不能按文本失败集误判成失败。
             try:
                 numeric_status = int(float(status_value)) if status_value else None
             except (TypeError, ValueError):
                 numeric_status = None
             if numeric_status is not None:
                 if numeric_status < 0:
-                    raise fail(f"速创图片任务失败：{message}")
-                last_message = message or f"status={status_value}"
+                    raise fail(f"速创图片任务失败：{task_message or message}")
+                last_message = task_message or message or f"status={status_value}"
                 continue
             if status_value in {"success", "succeeded", "finish", "finished", "completed", "done"}:
-                raise fail(f"速创已完成但没有图片地址：{message}")
+                raise fail(f"速创已完成但没有图片地址：{task_message or message}")
             if status_value in {"fail", "failed", "error", "cancelled", "canceled"}:
-                raise fail(f"速创图片任务失败：{message}")
-            last_message = message or f"status={status_value or 'processing'}"
+                raise fail(f"速创图片任务失败：{task_message or message}")
+            last_message = task_message or message or f"status={status_value or 'processing'}"
         raise fail(f"速创图片任务分段超时（{self._result_timeout_seconds:.0f}s）：{last_message}")
 
     def _download_suchuang_grid(self, result_url: str) -> tuple[bytes, str]:
@@ -595,6 +602,52 @@ def _suchuang_message(payload: object) -> str:
         if isinstance(value, str) and value.strip():
             return safe_error_message(value, fallback="未提供错误说明")[:180]
     return "未提供错误说明"
+
+
+# 上游「任务级」消息里的失败语义：生成失败时 data.message 形如 "generate image failed"。
+# 审核拒绝也走同一条路径（"此内容可能违反了我们的内容政策 请更换提示词或图片内容后重试"），
+# 不收录这些词就会退化成「还在处理中」，白轮询到 240s 超时并报错成「分段超时」。
+_SUCHUANG_TASK_FAILURE_TOKENS: tuple[str, ...] = (
+    "failed",
+    "failure",
+    "fail",
+    "失败",
+    "错误",
+    "异常",
+    "违反",
+    "违规",
+    "内容政策",
+    "敏感",
+    "请更换提示词",
+    "policy",
+    "violat",
+    "sensitive",
+    "blocked",
+    "rejected",
+)
+
+
+def _suchuang_task_message(data: object) -> str:
+    """读任务级消息（data.message / data.msg）；顶层 msg 只说明这次查询成功与否。
+
+    上游对失败的生成会回 ``status=3`` 且 ``data.message="generate image failed"``：
+    状态码本身区分不了「还在处理」与「生成失败」，唯一的判据是这条消息。
+    """
+
+    if not isinstance(data, dict):
+        return ""
+    for key in ("message", "msg", "error", "reason"):
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return safe_error_message(value, fallback="")[:180]
+    return ""
+
+
+def _suchuang_task_failed(task_message: str) -> bool:
+    lowered = str(task_message or "").strip().casefold()
+    if not lowered:
+        return False
+    return any(token in lowered for token in _SUCHUANG_TASK_FAILURE_TOKENS)
 
 
 # 留痕时屏蔽的敏感键：上游详情响应理论上不含密钥，但这些内容会落库/落盘，先兜一层。

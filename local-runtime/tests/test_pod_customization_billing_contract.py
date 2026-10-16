@@ -156,6 +156,28 @@ def test_replica_grid_strategy_matches_the_shared_batch_shape_with_replica_profi
     assert replica.billing_profile == "pod_replica_v1_a"
 
 
+def test_fission_analysis_reserves_exactly_two_title_calls() -> None:
+    plan = PodCallPlan.for_fission_analysis("analysis-1")
+
+    assert plan.idempotency_key == "pod:fission-analysis:analysis-1"
+    assert [call.payload() for call in plan.calls] == [
+        {"call_id": "analysis-1:analysis:1", "feature": "pod.title"},
+        {"call_id": "analysis-1:analysis:2", "feature": "pod.title"},
+    ]
+    assert plan.freeze_payload(encrypted_session_key="rsa-envelope")["title_call_count"] == 2
+    assert plan.freeze_payload(encrypted_session_key="rsa-envelope")["image_call_count"] == 0
+    assert plan.product_batch_freeze_payload()["scope"] == ["title"]
+
+    outcomes = [
+        PodCallOutcome(call.call_id, call.feature, "success" if index == 0 else "no_return")
+        for index, call in enumerate(plan.calls)
+    ]
+    assert plan.settlement_payload("freeze-1", outcomes)["items"] == [
+        {"call_id": "analysis-1:analysis:1", "feature": "pod.title", "status": "success"},
+        {"call_id": "analysis-1:analysis:2", "feature": "pod.title", "status": "no_return"},
+    ]
+
+
 def test_replica_independent_panels_reserve_four_panels_per_style() -> None:
     plan = PodCallPlan.for_replica_batch(
         "rb-1", style_count=1, generation_strategy="independent_panels"

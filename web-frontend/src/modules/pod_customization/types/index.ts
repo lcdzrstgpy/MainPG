@@ -265,7 +265,7 @@ export type PodCompositionPanelsZh = {
 };
 
 /** 构图模板所属模块：全定制 / 爆款复刻，两池各自独立「生效」。 */
-export type PodCompositionScope = "full" | "replica";
+export type PodCompositionScope = "full" | "replica" | "fission";
 
 /** 一份构图模板：中文供展示/编辑，英文由后台转写后注入生图提示词。 */
 export type PodComposition = {
