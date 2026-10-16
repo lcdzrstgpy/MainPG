@@ -42,3 +42,14 @@ test("计费授权映射必须位于「服务器繁忙」通用兜底之前，�
     "计费授权映射被移到通用兜底之后会再次吞掉真实原因",
   );
 });
+
+test("高频英文错误继续覆盖（素材过大/模型不支持聊天）", () => {
+  assert.match(client, /uploaded material is too large[\s\S]{0,200}上传的文件太大了/);
+  assert.match(client, /selected model does not support chat[\s\S]{0,200}不支持对话/);
+});
+
+test("低频黑洞也覆盖（素材不可用/数据格式/素材授权）", () => {
+  assert.match(client, /asset is unavailable[\s\S]{0,200}素材暂时不可用/);
+  assert.match(client, /title must be a string[\s\S]{0,200}数据格式不对/);
+  assert.match(client, /missing asset token[\s\S]{0,200}素材授权已失效/);
+});

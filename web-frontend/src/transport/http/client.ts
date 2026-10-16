@@ -327,6 +327,11 @@ export function toUserMessage(raw: string): string {
 
   // ---- 其它 ----
   if (/unsupported miaoshou template kind/i.test(message)) return "妙手导出的模板类型不对，请选择「服饰类」或「非服饰类」";
+  if (/uploaded material is too large/i.test(message)) return "上传的文件太大了，请换小一点的文件再传";
+  if (/selected model does not support chat/i.test(message)) return "当前选择的模型不支持对话，请换一个模型再试";
+  if (/asset is unavailable/i.test(message)) return "相关素材暂时不可用，请稍后重试；一直失败请联系对接人";
+  if (/title must be a string/i.test(message)) return "提交的数据格式不对，请刷新页面后重试";
+  if (/missing asset token/i.test(message)) return "素材授权已失效，请重新进入该页面再试";
   if (/\bis not configured\b/i.test(message)) return "相关服务还没配置好，请联系对接人处理";
   if (/provider is unavailable/i.test(message)) return "上游服务暂时不可用，请稍后重试";
 

@@ -92,7 +92,20 @@ WUYIN_IMAGE_SUBMIT_PATH = "/api/async/image_gpt"
 WUYIN_IMAGE_SUBMIT_PATHS = {
     "image_gpt": "/api/async/image_gpt",
     "image_gpt_2.5": "/api/async/image_gpt_2.5",
+    # 无印自营的 nanoBanana（Gemini 系）：与 gpt-image 属不同上游，用于「gpt-image 整族
+    # 维护/限流」时的替换或兜底。提交协议同属无印异步链路（返回 data.id，轮询走
+    # WUYIN_IMAGE_DETAIL_PATH），但 size 是画质档（1K/2K/4K）而非比例，比例用 aspectRatio。
+    "nanoBanana_pro": "/api/async/image_nanoBanana_pro",
+    # gemini-3.1-flash-lite-image：极快、最便宜，但**只支持 1K**（传 2K/4K 会被拒）。
+    "nanoBanana2Lite": "/api/async/image_nanoBanana2Lite",
 }
+# 仅支持 1K 档的 nanoBanana 型号（键为归一化模型名，见 _normalize_model_key）。
+WUYIN_NANO_BANANA_1K_ONLY = ("nanobanana2lite",)
+# 火山方舟官方生图（Seedream）：同步 JSON 接口，参考图以 data URI 直传，无需公网 URL。
+# 该链路必须显式 watermark=False —— 方舟生图默认会打「豆包AI生成」水印（实测），
+# 而我们卖的是商品图，绝不能带第三方水印。域名用于识别链路。
+ARK_IMAGE_HOST_SUFFIX = "ark.cn-beijing.volces.com"
+ARK_IMAGE_SIZE_DEFAULT = "2K"
 WUYIN_IMAGE_DETAIL_PATH = "/api/async/detail"
 # image_gpt_2.5 只提供 1K 档，尺寸字段是像素串 aspectRatio（没有 size）。
 WUYIN_IMAGE_ASPECT_RATIO_2_5 = {
@@ -121,15 +134,21 @@ WUYIN_IMAGE_POLL_INTERVAL_SECONDS = 3.0
 #   min 88s / p50 148s / p90 206s / p95 210s / max 216s
 # 回退样本（n=13）的整条 pipeline 耗时：p50 293s、p90/p95 668s（= 660s 总预算烧完）。
 # 旧值 180s 落在成功分布的 p82 附近 → 约 17% 的正常生成被误判为「停滞」，进而触发重复
-# 提交（多付费）、真卡死时烧完 660s 预算、最终回退来源图。现按「成功 max 216s + 约 40%
-# 余量」重定标为 300s：正常任务（<300s）绝不触发任何额外提交，只有超过 300s 仍无字段变化
-# 才追加一次提交（对冲/同链路重试，见 _request_wuyin_image_hedged）。
+# 提交（多付费）、真卡死时烧完 660s 预算、最终回退来源图。2026-10-15 曾按「成功 max
+# 216s + 约 40% 余量」定标为 300s。
+# 2026-10-16 复测（无印出图全线回归当天）：3 条并发里 2 条首发在上游挂死，300s 阈值下单条
+# 要吃满 486s（300s 等阈值 + 追加提交再跑 130s 才出图）。同源同尺寸母图的 POD 链路实测
+# 基线（近千次调用 p95 115s、健康日上限 136s，见 pod_customization/ai_runtime.py 的
+# SUCHUANG_RESULT_TIMEOUT_SECONDS）与其 240s 分段超时（≈3×p95）交叉印证：240s 更贴近上游
+# 真实分布。故 2K 档由 300s 下调到 240s——仍在历史成功 max 216s 之上，又少等 60s。
+# 超阈值仍**不判死**，只作为「追加一次提交」的信号；原任务继续被轮询（先到先用），
+# 唯一硬边界仍是总时长预算与提交次数上限（见下方）。
 # 1K 档（image_gpt_2.5 恒为 1K；旧端点 1024x1024 的槽位重绘等）实测 max 95.5s，用
 # 120s（约 26% 余量）已足够，本次维持不变：1K 不用于四宫格主链路（四宫格恒发 2048x2048）。
 # 两档阈值均可由配置 ``limits.image_stall_threshold_seconds`` /
 # ``limits.image_stall_threshold_2k_seconds`` 覆盖，现场可按上游波动再调。
 WUYIN_IMAGE_STALL_THRESHOLD_SECONDS = 120.0
-WUYIN_IMAGE_STALL_THRESHOLD_2K_SECONDS = 300.0
+WUYIN_IMAGE_STALL_THRESHOLD_2K_SECONDS = 240.0
 MAX_PROVIDER_RESULT_BYTES = 32 * 1024 * 1024
 MAX_PROVIDER_JSON_BYTES = 8 * 1024 * 1024
 REFERENCE_DOWNLOAD_ATTEMPTS = 3
@@ -578,6 +597,14 @@ class ProductImageProcessor:
                         # 故直接抛出，交由上层走既有可见回退（service.py 记 source_fallback +
                         # 失败明细）。消息末尾附上「提交追踪」，让 ai_notes 也能看出真实提交
                         # 次数与每次结果（service.py 会把它转成 four_grid:ai-failed: 备注）。
+                        # 例外：池里还有「对冲覆盖不到」的同步协议链路（中转的 /images/edits）
+                        # 时，改用外层轮巡把它试掉——直接抛会让这类备用永远没有机会，用户只能
+                        # 看到「整批回退来源图」。
+                        if attempt_count < max_total_attempts and any(
+                            item is not provider and not _is_wuyin_image_provider(item)
+                            for item in ordered_providers
+                        ):
+                            continue
                         raise MediaProcessingError(
                             "; ".join(errors)
                             + _submit_trace_suffix(submit_events, generation_started_at),
@@ -1438,6 +1465,14 @@ class ProductImageProcessor:
                 submit_events=submit_events,
                 generation_started_at=generation_started_at,
             )
+        if _is_ark_image_provider(provider):
+            return self._request_ark_image(
+                provider,
+                prompt,
+                references,
+                timeout_seconds=timeout_seconds,
+                image_size=image_size,
+            )
         files: Any
         if len(references) == 1:
             content, filename, content_type = references[0][:3]
@@ -1481,7 +1516,83 @@ class ProductImageProcessor:
                 raise MediaProcessingError("provider returned invalid image data") from exc
         url = str(item.get("url") or "").strip()
         if not url or not is_safe_external_url(url):
-            raise MediaProcessingError("provider response does not contain a safe image result")
+            # 带上上游原话：中转返回 HTTP 200 但不是可用的 data[0].url（限流 / 审核 /
+            # 参数被拒等）时，只报「没有安全图片结果」会让排障无从下手——与无印提交
+            # 路径一致地把上游原因带进错误信息。
+            # 同时必须给出 status_class：否则 _retry_class 会落到 non_retryable_local，
+            # 外层直接放弃（实测：上游 rate_limited 时 17s 就结束、一次退避重试都没有）。
+            raise MediaProcessingError(
+                "provider response does not contain a safe image result: "
+                + _provider_message(payload),
+                status_class=_submit_rejection_class(payload),
+            )
+        return _download_provider_result_image(url)
+
+    def _request_ark_image(
+        self,
+        provider: dict[str, str],
+        prompt: str,
+        references: list[tuple[bytes, str, str] | tuple[bytes, str, str, str]],
+        *,
+        timeout_seconds: float,
+        image_size: str | None = None,
+    ) -> tuple[bytes, str]:
+        """火山方舟官方生图（Seedream）：同步 JSON 一步出图。
+
+        与该链路两个实测踩过的坑：
+        - ``watermark`` 必须显式 False：方舟生图默认会打「豆包AI生成」水印，商品图不能带；
+        - 参考图用 **Base64 data URI** 直传（``image`` 支持 URL 或 data URI），
+          因此不必先把参考图传上公网，天然免疫「上游抓不到参考图」那类问题。
+        """
+        images: list[str] = []
+        for reference in references:
+            content, _filename, content_type = reference[:3]
+            images.append(
+                "data:"
+                + (str(content_type) or "image/png")
+                + ";base64,"
+                + base64.b64encode(content).decode("ascii")
+            )
+        payload: dict[str, Any] = {
+            "model": str(provider.get("reference_model") or provider.get("model") or "").strip(),
+            "prompt": prompt,
+            "size": _ark_image_size(image_size or provider.get("image_size")),
+            "output_format": "png",
+            "response_format": "url",
+            "watermark": False,
+        }
+        if images:
+            payload["image"] = images
+        global_ai_request_limiter().acquire()
+        response = _SESSION.post(
+            f"{str(provider['base_url']).rstrip('/')}/images/generations",
+            headers={
+                "Authorization": f"Bearer {provider['api_key']}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=max(1.0, min(float(timeout_seconds), IMAGE_EDIT_REQUEST_TIMEOUT_SECONDS)),
+            stream=True,
+        )
+        try:
+            if not response.ok:
+                raise MediaProcessingError(
+                    f"provider returned HTTP {response.status_code}",
+                    status_code=response.status_code,
+                )
+            response_payload = _bounded_response_json(response)
+        finally:
+            response.close()
+        item = ((response_payload.get("data") or [{}])[0] if isinstance(response_payload, dict) else {})
+        if not isinstance(item, dict):
+            raise MediaProcessingError("provider response is incompatible")
+        url = str(item.get("url") or "").strip()
+        if not url or not is_safe_external_url(url):
+            raise MediaProcessingError(
+                "provider response does not contain a safe image result: "
+                + _provider_message(response_payload),
+                status_class=_submit_rejection_class(response_payload),
+            )
         return _download_provider_result_image(url)
 
     def _request_wuyin_image(
@@ -1579,6 +1690,14 @@ class ProductImageProcessor:
             + max(10.0, min(float(timeout_seconds), IMAGE_EDIT_REQUEST_TIMEOUT_SECONDS))
         )
         hedge_pool = self._hedge_targets(provider, hedge_candidates)
+        # hedge 只支持无印异步链路（提交 + detail 轮询）；池里若还有同步协议的中转链路
+        # （OpenAI 兼容的 /images/edits），它永远进不了对冲，只能由外层轮巡接手。这里先
+        # 标记出来：一旦本链路停滞，就提早把控制权交还外层，别把整段预算烧在必然停滞的
+        # 链路上（实测：池里只有无印时，660s 预算会被停滞判定全部烧完，备用一次都没试）。
+        cross_protocol_fallback = any(
+            item is not provider and not _is_wuyin_image_provider(item)
+            for item in (hedge_candidates or [])
+        )
         # 单链路回退：没有任何「不同链路」目标时，允许向主链路再提交 1 次。该计数独立于
         # 全局 submit_budget，且更紧（最多 1 次额外提交 → 总计 2 次），避免同源重复计费。
         same_link_retry_remaining = (
@@ -1675,6 +1794,13 @@ class ProductImageProcessor:
                     # （若之后又出图会被回填为「出图」）。
                     for task in stalled_tasks:
                         _mark_submit_outcome(task, "stalled")
+                    # 有跨协议备用可用、且没有任何可对冲的同协议链路时，立即交还控制权：
+                    # 继续同链路重试/轮询只会把剩余预算耗尽，让备用彻底失去机会。
+                    if cross_protocol_fallback and not hedge_pool:
+                        raise MediaProcessingError(
+                            "; ".join(errors) or "provider image task stalled",
+                            status_class="provider_stalled",
+                        )
                     # 优先对冲「不同链路」目标；没有不同链路（单链路场景）时，若同链路重试
                     # 预算尚有余量则退化为「向同一条链路再提交 1 次」（先到先用）。
                     if hedge_index < len(hedge_pool):
@@ -1750,7 +1876,7 @@ class ProductImageProcessor:
     ) -> str:
         """向无印提交一个异步生图任务，返回 task_id。"""
         resolved_model = str(model or provider.get("model") or "").strip()
-        submit_path = WUYIN_IMAGE_SUBMIT_PATHS.get(resolved_model, WUYIN_IMAGE_SUBMIT_PATH)
+        submit_path = _wuyin_image_submit_path(resolved_model)
         size_value = _wuyin_size(image_size or provider.get("image_size"))
         if resolved_model == "image_gpt_2.5":
             # 2.5 端点的 urls 要求逗号拼接字符串，传数组上游会返回 500；
@@ -1759,6 +1885,17 @@ class ProductImageProcessor:
                 "prompt": prompt,
                 "aspectRatio": WUYIN_IMAGE_ASPECT_RATIO_2_5.get(size_value, "1024x1024"),
                 "urls": ",".join(urls),
+            }
+        elif _is_wuyin_nano_banana(resolved_model):
+            # 无印 nanoBanana 系：size 是画质档（1K/2K/4K），比例单独用 aspectRatio，
+            # urls 与 image_gpt 一样传数组（见其接口文档）。
+            payload = {
+                "prompt": prompt,
+                "size": _wuyin_image_tier(
+                    image_size or provider.get("image_size"), model=resolved_model
+                ),
+                "aspectRatio": size_value,
+                "urls": urls,
             }
         else:
             payload = {"prompt": prompt, "size": size_value, "urls": urls}
@@ -2005,6 +2142,24 @@ class ProductImageProcessor:
         return None
 
 
+def _is_ark_image_provider(provider: dict[str, str]) -> bool:
+    """是否火山方舟官方生图链路（Seedream）。"""
+    host = urlsplit(str(provider.get("base_url") or "")).netloc.lower()
+    return host == ARK_IMAGE_HOST_SUFFIX
+
+
+def _ark_image_size(value: str | None) -> str:
+    """像素尺寸 → 方舟支持的档位（1K / 1.5K / 2K / 4K）；默认 2K（四宫格按 2048 生成）。"""
+    raw = str(value or "").strip().lower()
+    if raw in {"4k", "4096x4096"} or raw.startswith("4096x"):
+        return "4K"
+    if raw in {"1k", "1024x1024"} or raw.startswith("1024x"):
+        return "1K"
+    if raw in {"1.5k", "1536x1536"}:
+        return "1.5K"
+    return ARK_IMAGE_SIZE_DEFAULT
+
+
 def _is_wuyin_image_provider(provider: dict[str, str]) -> bool:
     return urlsplit(str(provider.get("base_url") or "")).netloc.lower() == "api.wuyinkeji.com"
 
@@ -2057,6 +2212,56 @@ def _normalize_reference_url(value: str) -> str:
     if not query.startswith("imageView2/"):
         return text
     return parts._replace(query="imageView2/2/w/1200/q/90").geturl()
+
+
+def _normalize_model_key(value: str) -> str:
+    """模型名归一化（小写、去掉 -/_/空格）：容忍 NanoBanana-2-Lite 这类书写差异。"""
+    return "".join(ch for ch in str(value or "").lower() if ch.isalnum())
+
+
+def _wuyin_image_submit_path(model: str) -> str:
+    """按模型名解析无印异步提交路径；未登记的模型回落 image_gpt 路径（保持旧行为）。"""
+    raw = str(model or "").strip()
+    direct = WUYIN_IMAGE_SUBMIT_PATHS.get(raw)
+    if direct:
+        return direct
+    key = _normalize_model_key(raw)
+    for name, path in WUYIN_IMAGE_SUBMIT_PATHS.items():
+        if _normalize_model_key(name) == key:
+            return path
+    return WUYIN_IMAGE_SUBMIT_PATH
+
+
+def _is_wuyin_nano_banana_1k_only(model: str) -> bool:
+    """该 nanoBanana 型号是否只支持 1K 档（传 2K/4K 会被上游拒绝）。"""
+    return _normalize_model_key(model) in WUYIN_NANO_BANANA_1K_ONLY
+
+
+def _is_wuyin_nano_banana(model: str) -> bool:
+    """是否无印 nanoBanana 系（Gemini 图像模型）。
+
+    该系的请求体与 image_gpt 不同：size 传画质档（1K/2K/4K）而不是比例，比例用
+    aspectRatio；URL 路径也不同（见 WUYIN_IMAGE_SUBMIT_PATHS）。大小写与分隔符
+    以文档的 ``nanoBanana_pro`` 为准，这里做宽松匹配。
+    """
+    return str(model or "").strip().lower().replace("-", "_").startswith("nanobanana")
+
+
+def _wuyin_image_tier(value: str | None, *, model: str = "") -> str:
+    """像素尺寸 → 无印 nanoBanana 的画质档（1K/2K/4K）。
+
+    默认 2K：四宫格固定按 2048x2048 生成，档位应与之一致；未知值也给 2K，
+    避免误落到 1K 让四宫格每格只有 512px。但只支持 1K 的型号必须压到 1K，
+    否则上游直接拒绝（400）。
+    """
+    if _is_wuyin_nano_banana_1k_only(model):
+        return "1K"
+    raw = str(value or "").strip().lower()
+    if raw in {"4k", "4096x4096"} or raw.startswith("4096x"):
+        return "4K"
+    if raw in {"1k", "1024x1024"} or raw.startswith("1024x"):
+        return "1K"
+    return "2K"
 
 
 def _wuyin_size(value: str | None) -> str:
@@ -2248,20 +2453,23 @@ def _first_image_url(value: Any) -> str:
 
 
 def _provider_message(payload: Any) -> str:
+    # 400 字：上游错误体常是嵌套 JSON（如 {"error":{"attempts":3,"code":"upstream_..."}}），
+    # 180 字会把 code 截在半截，排障时看不出真实原因。
+    limit = 400
     if not isinstance(payload, dict):
         return "provider response is incompatible"
     for key in ("msg", "message", "error", "reason"):
         value = payload.get(key)
         if isinstance(value, str) and value.strip():
-            return value.strip()[:180]
+            return value.strip()[:limit]
     data = payload.get("data")
     if isinstance(data, dict):
         for key in ("msg", "message", "error", "reason"):
             value = data.get(key)
             if isinstance(value, str) and value.strip():
-                return value.strip()[:180]
+                return value.strip()[:limit]
     try:
-        return json.dumps(payload, ensure_ascii=False)[:180]
+        return json.dumps(payload, ensure_ascii=False)[:limit]
     except Exception:
         return "provider returned an error"
 
@@ -2289,15 +2497,27 @@ def _submit_rejection_class(payload: Any) -> str:
         "invalid key",
         "api key",
         "api_key",
+        # 内容审核（如方舟 InputTextSensitiveContentDetected）：同一份内容重试必然再被拒，
+        # 归为不可重试，避免把预算耗在注定失败的请求上。
+        "sensitive",
+        "敏感",
     ):
         if keyword in message:
             return "non_retryable_4xx"
+    # 上游限流（如中转返回 {"error":{"code":"upstream_rate_limited"}}）：退避重试有意义，
+    # 必须与普通网关拒绝区分开，否则会落到「不可重试」而被直接放弃。
+    for keyword in ("rate limit", "rate_limit", "ratelimit", "限流", "too many requests", "并发", "繁忙", "busy"):
+        if keyword in message:
+            return "rate_limited"
     return "gateway_rejected"
 
 
 def _safe_error(error: BaseException) -> str:
+    # 400 字：这里截断后的字符串会进入 ai_notes / 失败诊断上报，是排障唯一的证据来源。
+    # 180 字会把上游嵌套错误体（如 {"error":{"attempts":3,"code":"upstream_..."}}）截断在
+    # code 中间，导致看不到真实原因。
     message = str(error).replace("\n", " ").strip()
-    return message[:180] or error.__class__.__name__
+    return message[:400] or error.__class__.__name__
 
 
 def _retry_class(error: BaseException) -> str:
@@ -2309,6 +2529,9 @@ def _retry_class(error: BaseException) -> str:
     if explicit_class in {"gateway_rejected", "reference_relay_failed"}:
         # 网关拒绝 / 参考图中转失败：先轮换参考图或换 provider 再试，避免一次失败就回退来源图。
         return explicit_class
+    if explicit_class == "rate_limited":
+        # 显式标记的限流同样要退避重试；不显式处理会掉进末尾的 non_retryable_local。
+        return "rate_limited"
     if explicit_class in {"billing_payment_required", "billing_forbidden", "non_retryable_4xx"}:
         return "non_retryable_4xx"
     if explicit_class in {

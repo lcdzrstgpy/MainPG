@@ -1119,48 +1119,63 @@ class ComboKitService:
         )
 
     def _direct_media_processor(self, freeze: dict[str, Any]) -> ProductImageProcessor:
-        """构造一个固化 wuyin 直连密钥的图片处理器。
+        """构造一个固化直连链路凭据的图片处理器。
 
-        组合套装生图在 ThreadPoolExecutor 子线程里调用
-        ``processor.generate()``，而 ``server_ai_context`` 的 ContextVar 只在
-        主线程可见，子线程读不到 granted_keys。
+        组合套装生图在 ThreadPoolExecutor 子线程里调用 ``processor.generate()``，
+        而 ``server_ai_context`` 的 ContextVar 只在主线程可见，子线程读不到上下文，
+        因此这里把链路配置直接写进 config。
 
-        这里把冻结下发的中转 wuyin 密钥直接写入 config 的 image 段，使
-        provider 在任何线程都解析为直连地址（https://api.wuyinkeji.com），
-        不依赖线程上下文。
+        链路完全跟随服务端下发的策略（``freeze.image_plan``）：第 1 条作主链路、
+        第 2 条作备用兜底；开关与切换权都在服务器。未下发策略时退化为内置无印直连，
+        此时仍要求批次冻结下发 wuyin 短期密钥。
         """
-        base_config = dict(_static_config())
-        wuyin_key = str((freeze.get("keys") or {}).get("wuyin") or "").strip()
-        if not wuyin_key:
-            # 回落到客户端内置兜底密钥（env > 打包资源文件 > 源码常量）。
-            from ..product_processing.direct_credentials import builtin_provider_key
+        from ..product_processing.provider_config import IMAGE_AI_BASE_URL, parse_image_chain
 
-            wuyin_key = builtin_provider_key("wuyin")
-        if not wuyin_key:
-            # 客户端固定直连：批次冻结必须下发 wuyin 短期密钥。既未下发、也无内置兜底
-            # 说明服务端签发异常且客户端未内置该密钥，绝不回落到平台托管网关烧额度，
-            # 立即中止交由上层上报服务器。
-            raise MediaConfigurationError(
-                "批次冻结未下发 wuyin 直连密钥，无法客户端直连，套装生图已中止"
-            )
-        imports = self._import_provider_config_direct()
-        base_url = imports["IMAGE_AI_BASE_URL"]
+        base_config = dict(_static_config())
+        chain = parse_image_chain(freeze.get("image_plan"))
+        if not chain:
+            wuyin_key = str((freeze.get("keys") or {}).get("wuyin") or "").strip()
+            if not wuyin_key:
+                # 回落到客户端内置兜底密钥（env > 打包资源文件 > 源码常量）。
+                from ..product_processing.direct_credentials import builtin_provider_key
+
+                wuyin_key = builtin_provider_key("wuyin")
+            if not wuyin_key:
+                # 客户端固定直连：批次冻结必须下发 wuyin 短期密钥。既未下发、也无内置
+                # 兜底说明服务端签发异常且客户端未内置该密钥，绝不回落到平台托管网关
+                # 烧额度，立即中止交由上层上报服务器。
+                raise MediaConfigurationError(
+                    "批次冻结未下发 wuyin 直连密钥，无法客户端直连，套装生图已中止"
+                )
+            chain = [
+                {
+                    "base_url": IMAGE_AI_BASE_URL,
+                    "api_key": wuyin_key,
+                    "model": "image_gpt",
+                    "reference_model": "image_gpt",
+                }
+            ]
+        primary = chain[0]
         image_section = dict(base_config.get("image") or {})
-        image_section["base_url"] = base_url
-        image_section["api_key"] = wuyin_key
-        image_section["model"] = str(image_section.get("model") or "image_gpt")
-        image_section["reference_model"] = str(image_section.get("reference_model") or image_section["model"])
-        image_section["image_models"] = [str(image_section.get("model") or "image_gpt")]
+        image_section["base_url"] = primary["base_url"]
+        image_section["api_key"] = primary["api_key"]
+        image_section["model"] = primary["model"]
+        image_section["reference_model"] = primary["reference_model"]
+        image_section["image_models"] = [primary["model"]]
         base_config["image"] = image_section
-        base_config["backup_image"] = {}
+        backup = chain[1] if len(chain) > 1 else None
+        base_config["backup_image"] = (
+            {
+                "base_url": backup["base_url"],
+                "api_key": backup["api_key"],
+                "model": backup["model"],
+                "reference_model": backup["reference_model"],
+            }
+            if backup
+            else {}
+        )
         # 直连时不再有任何托管 provider，避免 server_managed 分支干扰。
         return ProductImageProcessor(config_provider=lambda: dict(base_config))
-
-    @staticmethod
-    def _import_provider_config_direct() -> dict[str, str]:
-        from ..product_processing.provider_config import IMAGE_AI_BASE_URL
-
-        return {"IMAGE_AI_BASE_URL": IMAGE_AI_BASE_URL}
 
     def _settle_billing(self, billing_id: str, freeze: dict[str, Any], *, success: bool, actor: Any) -> None:
         try:
@@ -1362,7 +1377,10 @@ def image_context(freeze: dict[str, Any]):
 
     keys = _granted_keys(freeze)
     token = str(freeze.get("token") or "")
-    return server_ai_context(token, {}, granted_keys=keys, freeze_id=str(freeze.get("freeze_id") or ""))
+    plan = freeze.get("image_plan") if isinstance(freeze.get("image_plan"), dict) else {}
+    return server_ai_context(
+        token, {}, granted_keys=keys, freeze_id=str(freeze.get("freeze_id") or ""), image_plan=plan
+    )
 
 
 def _granted_keys(freeze: dict[str, Any]) -> dict[str, str]:

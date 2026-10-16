@@ -91,6 +91,10 @@ from .domain.policy import PolicyIssue, is_safe_external_url, product_policy_iss
 from .domain.preview_images import task_item_result_version
 from .domain import sku_availability as sku_availability_domain
 from .domain.prompts import (
+    ARK_GRID_IMAGE_PROMPT,
+    ARK_GRID_IMAGE_PROMPT_B,
+    ARK_GRID_IMAGE_PROMPT_C,
+    ARK_GRID_IMAGE_PROMPT_D,
     GRID_RUNTIME_CONTRACT,
     SINGLE_IMAGE_RUNTIME_CONTRACT,
     TWO_IMAGE_RUNTIME_CONTRACT,
@@ -125,8 +129,18 @@ from .infrastructure.preview_image_repository import (
 from .preview_image_service import PreviewImageService
 from .infrastructure.media_asset_repository import MediaAssetRepository, MediaMaterializationConflict
 from .media_asset_service import MediaAssetService, canonical_source_url, is_awaiting_sync
-from .provider_config import PREMIUM_IMAGE_MODEL, PREMIUM_IMAGE_SIZE, resolve_ai_provider
-from .server_ai_proxy import merge_builtin_keys, server_ai_context
+from .provider_config import (
+    PREMIUM_IMAGE_MODEL,
+    PREMIUM_IMAGE_SIZE,
+    image_chain_supplied,
+    resolve_ai_provider,
+)
+from .server_ai_proxy import (
+    granted_image_plan,
+    merge_builtin_keys,
+    parse_image_plan,
+    server_ai_context,
+)
 
 _MEDIA_TYPES: tuple | None = None
 _LOGGER = logging.getLogger(__name__)
@@ -251,10 +265,38 @@ _COMMON_VARIANT_TRANSLATIONS: dict[str, dict[str, str]] = {
     },
 }
 _TASK_HEARTBEAT_SECONDS = 10.0
-# 前端任务页轮询 /tasks/{id}/outputs 即为心跳；超过该时长没有心跳（页面关闭/
-# 切走/浏览器标签被回收）自动把任务置为暂停，避免用户已不在看却继续烧 AI 成本。
-_TASK_AUTO_PAUSE_TIMEOUT_SECONDS = 90.0
+# 自动暂停只认**真实事件**，不再用「多久没心跳」猜：
+#
+#   ① 页面关闭：任务页在 pagehide 时发一个离开信标（/tasks/{id}/leave），之后连续静默
+#      （_TASK_LEAVE_QUIET_SECONDS）才暂停该任务；刷新/重开/别的页签还在看都会继续轮询，
+#      撤销这次离开。
+#   ② 整机退出：桌面端 local runtime 的 watchdog 在最后一个页面离开后退出后端进程，
+#      退出前取消并结算运行中的任务（另见 wh_local/app/main.py 的 _RuntimeExitController）。
+#
+# 为什么删掉静默心跳超时：页面被浏览器节流/冻结、整机休眠时定时器根本跑不起来，静默超时会把
+# 「页面还在，只是被系统冻住」误判成「用户走了」——这是「工作台明明开着却被暂停」工单的
+# 主要来源，且无法用调大阈值根治（冻结时长无上界）。开着就一直跑，只有真的关了页面才停。
+#
+# 静默阈值：把「关页面暂停」当**安全网**用、不当即时停止（2026-10-15 由 120 秒上调为 30 分钟）——
+# 关掉页面不等于想停任务：刷新/重开/从历史记录打开都会继续轮询并撤销这次离开；真想立刻停用
+# 「暂停 / 取消」按钮，关掉整个工作台走退出流程。关页面后最多再跑这个时长（成本上界），
+# 大多数任务在这之内就跑完了。
+# 下限约束（仍远大于退出宽限，见下）：
+#   - 必须盖住浏览器对隐藏页的节流节奏（隐藏满 5 分钟后定时器被压到约 1 分钟一次），
+#     否则「刷新后把窗口切到后台」会被误停；
+#   - 关页面瞬间那一次在途请求撑不过这  个窗口，所以暂停不会被它误撤销。
+# 与退出路径的先后（**不能改小到退出宽限以下**）：关闭整个工作台时，runtime watchdog 会在
+# 退出宽限（默认 60 秒）后退出后端并执行「取消任务 + 按冻结积分 50% 结算」（beforeunload
+# 弹窗里向用户承诺的就是这个）；任务级暂停必须在它之后才可能发生，否则两条路会抢同一个任务，
+# 出现「有时暂停、有时取消」的不确定结果。有 TestAssert 守着这个大小关系。
+_TASK_LEAVE_QUIET_SECONDS = 1800.0
 _TASK_AUTO_PAUSE_SWEEP_SECONDS = 15.0
+# 退出宽限的默认值（wh_local/app/main.py 的 WH_LOCAL_RUNTIME_EXIT_GRACE_S 默认值）：
+# 仅用于断言上面那条大小关系，不参与运行逻辑。
+_RUNTIME_EXIT_GRACE_SECONDS = 60.0
+# 心跳记录（_task_last_seen）只用于「离开之后有没有人再回来看」，超过这个时长没被任何
+# 页面轮询过的记录直接清掉，避免长会话里无限增长。
+_TASK_HEARTBEAT_RETENTION_SECONDS = 3600.0
 # 收尾卡死兜底阈值：全部条目已终态（非 pending/running）但任务仍停在 running，且
 # worker 已退场（崩溃）或长时间无任何条目进展（卡在本地导出/落库）。正常收尾由
 # finish_task 在数秒内把任务置为终态；超过该时间仍未完成即判定卡死，从数据库重建
@@ -614,6 +656,49 @@ def _image_generation_count(value: Any, *, default: int = 4) -> int:
     return normalized if normalized in {1, 2, 4} else default
 
 
+def _effective_image_generation_count(value: Any) -> int:
+    """服务端下发 image_mode=single 时，强制走「4 张独立方图」路径。
+
+    nanoBanana / Gemini 系模型不遵守严格 2x2 运输四宫格契约（会出自由拼版），
+    本地切分必然失败；这类链路改用单图模式：4 张并行独立方图，无需切分。
+    开关与切换权都在服务器（后台「出图链路」的链路模式/模型），客户端只照做。
+    """
+    count = _image_generation_count(value, default=4)
+    plan = granted_image_plan()
+    if str(plan.get("image_mode") or "").strip().lower() == "single":
+        return 1
+    return count
+
+
+# 四张「生图模板卡」在方舟链路上的紧凑对应版（键为 image_template 的模板后缀）。
+# 方舟链路不能用 A/B/C/D 那份长模板（会被输入审核 400），但界面上的选择必须同样生效，
+# 所以这里做一对一映射：A=影棚无缝主图（默认）、B=人景叙事、C=静物平铺俯拍、D=环境远景。
+_ARK_GRID_TEMPLATES_BY_SUFFIX: dict[str, str] = {
+    "": ARK_GRID_IMAGE_PROMPT,
+    "_b": ARK_GRID_IMAGE_PROMPT_B,
+    "_c": ARK_GRID_IMAGE_PROMPT_C,
+    "_d": ARK_GRID_IMAGE_PROMPT_D,
+}
+
+
+def _image_prompt_profile() -> str:
+    """当前出图链路的提示词档位：'ark'（方舟 Seedream，用精简模板）或 'default'。
+
+    方舟会对**输入文本**做内容审核：为 gpt-image 调优的 3 万字符指令模板会被判
+    InputTextSensitiveContentDetected 直接 400（实测 1.4s 秒回）；而 Seedream 属自然语言
+    友好型模型，精简模板出图更稳。链路由服务端下发，客户端据此选模板。
+    """
+    plan = granted_image_plan()
+    providers = plan.get("providers") if isinstance(plan, dict) else None
+    if isinstance(providers, list) and providers:
+        first = providers[0]
+        if isinstance(first, dict):
+            host = str(first.get("base_url") or "").lower()
+            if "ark.cn-beijing.volces.com" in host:
+                return "ark"
+    return "default"
+
+
 def _max_concurrent_tasks() -> int:
     """进程内最多同时执行的产品处理任务数（默认 4=受限并行）。
 
@@ -726,12 +811,21 @@ class ProductProcessingService:
         self._diagnostic_dispatcher: ProductProcessingDiagnosticOutboxDispatcher | None = None
         self._media_materialization_lock = threading.Lock()
         self._media_materialization_workers: dict[str, threading.Thread] = {}
-        # 前端任务页轮询心跳：(workspace_id, task_id) -> time.monotonic() 最近一次
-        # /outputs 轮询时间。超时未收到心跳自动暂停（页面关闭/切走），避免用户已
-        # 不在看却继续调用 AI 烧成本。
+        # 心跳记录（_task_last_seen）只用于「离开之后有没有人再回来看」，超过这个时长没被任何
+        # 页面轮询过的记录直接清掉，避免长会话里无限增长。
         self._task_last_seen: dict[tuple[str, int], float] = {}
         self._task_last_seen_lock = threading.Lock()
-        self._auto_pause_sweeper_started = False
+        self._task_maintenance_started = False
+        # 「工作台正在退出」探针（桌面端在 create_app 里接到 runtime watchdog 上）：
+        # 为真时任务级暂停让位给退出前的「取消 + 结算」，见 _sweep_departed_tasks_once。
+        self._shutdown_probe: Callable[[], bool] | None = None
+        # 上一次清扫时刻：识别「进程自己也被冻住了」（整机休眠/挂起），那一轮不判离开
+        # —— 所以第一次调用（None）不判、也不影响后续判断。
+        self._last_sweep_at: float | None = None
+        # 页面离开信标 (workspace_id, task_id) -> 离开时刻：连续静默超过
+        # _TASK_LEAVE_QUIET_SECONDS 才暂停；期间任何轮询都撤销（见 _sweep_departed_tasks_once）。
+        self._task_left_keys: dict[tuple[str, int], float] = {}
+        self._task_left_lock = threading.Lock()
         # 任务级串行闸门：限制同时执行的任务数，避免旧任务与新任务并发叠加打爆 AI 供应商。
         self._task_execution_gate = threading.BoundedSemaphore(_max_concurrent_tasks())
         self.media_assets = MediaAssetService(
@@ -1257,8 +1351,15 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         category: str = "",
     ) -> str:
         """本批次 AI 生图专项提示词：基于本批全部标题（+品类）生成一条面向该品类的
-        生图指南，用于定点爆破规避 AI 异形问题（肢体畸形、手指错乱、比例失调、文字
-        水印扭曲等）。
+        生图指南，包含三部分：(1) 日常场景 / 台面 / 配套道具方向——修正纯白无缝棚拍
+        过于空洞、呆板的问题；(2) 定点爆破规避 AI 异形问题（肢体畸形、手指错乱、
+        比例失调、文字水印扭曲等）；(3) 价值与用法展示建议——数量陈列、叠放显厚、
+        内容物、佩戴实拍、尺寸参照、套装清点、组装演示、微距嵌图、手作故事、承重演示、
+        性能证明、季节礼赠、悬挂陈列等**只写本批品类真正适用的那几条**（这部分原先被
+        四份生图模板各自罗列一遍、每次全量下发，现已归位到本批次提词，模板不再重复）。
+
+        三部分都必须带明确限制（道具从属、无品牌文字、无人物宠物、陈列物不得暗示随附）
+        与引导（具体道具名、台面材质、低饱和同色系、浅景深、每格只用一个展示手法）。
 
         由前端「提示词预设模板」板块的生成按钮显式触发一次（generate_batch_image_prompt），
         best-effort，任何失败或空结果都返回 ""，绝不阻塞。结果是不渲染的「生图指令」而非
@@ -1280,12 +1381,68 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             f"The target storefront is {target_site} and visible text inside images is in "
             f"{target_language}. Write a concise set of specialized IMAGE-GENERATION "
             "guidelines (in English) for producing carousel/detail images for THIS product "
-            "category, focused on pre-empting common AI malformation problems: anatomical "
-            "and limb anomalies, duplicated or misshapen fingers, broken hand-object "
-            "interactions, warped or garbled text/logo printing, wrong proportions, "
-            "extra limbs, and inconsistent product identity across panels. Be specific to "
-            "the category (e.g. realistic materials, correct number of fingers, crisp "
-            "printed labels, stable proportions) and actionable for a text-to-image model. "
+            "category. Cover ALL FOUR parts below, in this order.\n\n"
+            "PART 1 — SCENE, SURFACE AND REAL-LIFE COMPANION PROPS. The current renders are "
+            "too clinical: pure-white seamless studio frames with nothing else in shot. For "
+            "THIS category, describe a believable everyday setting and name the real-life "
+            "companion props that a buyer would actually use alongside the product. Give "
+            "2-4 concrete props per panel (name the objects, do not stay vague), an everyday "
+            "surface/backdrop (matte wood, stone, linen, felt, soft gradient), a muted colour "
+            "story that harmonises with the product, and a shallow depth of field so the props "
+            "sit slightly soft behind the hero.\n\n"
+            "PART 2 — QUALITY GUARDRAILS to pre-empt common AI malformation problems: "
+            "anatomical and limb anomalies, duplicated or misshapen fingers, broken "
+            "hand-object interactions, warped or garbled text/logo printing, wrong "
+            "proportions, extra limbs, and inconsistent product identity across panels. "
+            "Also name the structural features of THIS category that image models most often "
+            "get wrong - for example a handle's true curvature and attachment, a lid or spout "
+            "opening shape, a sole or base outline, a clasp, hinge or seam, the real facet "
+            "count of a polygon body - and require each of them to match the reference exactly "
+            "instead of being simplified, flattened or invented. Be "
+            "specific to the category and actionable for a text-to-image model.\n\n"
+            "PART 3 — VALUE AND USAGE DEMONSTRATION. The image templates no longer list every "
+            "possible demonstration device, so name the ones that GENUINELY apply to THIS "
+            "category and skip the rest - do not pad the list. Draw only from: quantity-forward "
+            "stacking for multipacks/sets (visible count must match the real sellable quantity); "
+            "layered overlapping stack with raking light to prove real thickness for flat or "
+            "cut-out goods; real unbranded contents staged inside containers, bags, holders or "
+            "organizers to show capacity; a partial person actually wearing the item for "
+            "wearables; a believable scale anchor (a real hand or a familiar everyday object) for "
+            "small items; laying out every real component of a bundle or kit together; the "
+            "flat/unassembled versus assembled state for goods that genuinely ship flat; one "
+            "small borderless macro inset proving real tactile detail; the real raw materials plus "
+            "the crafting tool for handmade goods; the product actually carrying the items it is "
+            "made for (hooks, racks, holders); a physically plausible real-world performance "
+            "moment for durability or water-resistance claims; seasonal or gift-cluster styling "
+            "for seasonal, holiday, gift or decorative goods; suspended/hanging staging for "
+            "ornaments and hanging decor. State explicitly that contents, companion objects, "
+            "packaging and raw materials are context only and must never look included in the "
+            "purchase, that no packaging or set content may be invented, and that each panel uses "
+            "at most ONE such demonstration device.\n\n"
+            "PART 4 — FOUR SCENE CARDS, ONE PER PANEL (they must not collide). Write a separate "
+            "scene card for each of the four panels and make the four cards clearly different from "
+            "each other. Each card must state: (a) the real space it is shot in (study desk corner, "
+            "kitchen counter, dining table, bedside table, balcony ledge, entryway console, outdoor "
+            "stone slab, or a pure studio sweep with no space at all); (b) the surface material; "
+            "(c) the light position and the time of day; (d) 2-4 named companion props; (e) the "
+            "colour tone; (f) the composition rule. Then give each card a short human-readable "
+            "one-line label in exactly this shape: `panel N | space · surface · props | light`. "
+            "HOW TO CHOOSE (state this reasoning briefly): map the category to where and when it is "
+            "really used; match the surface tone against the product colour so they contrast instead "
+            "of blending; and across the four cards cover at least three different spaces and at "
+            "least two different colour temperatures. Keep panel 1 (the marketplace hero) on a "
+            "clean pure-white seamless background with zero props.\n\n"
+            "State these HARD LIMITS explicitly in the guidelines you write:\n"
+            "- Props are strictly subordinate: visibly smaller than the product, low "
+            "saturation, same colour family, never covering, cropping, pressing on or "
+            "outshining the product, and never crossing the panel dividers.\n"
+            "- No other brands, trademarks, packaging text, price tags or slogans anywhere "
+            "in frame; no full people, no faces, no pets, no unrelated clutter; keep clean "
+            "breathing space and a visible contact shadow around the product.\n"
+            "- The product itself stays 100% identical to the reference image.\n"
+            "- The marketplace MAIN image panel (the front-view pure-white hero panel) is "
+            "EXEMPT: it must stay pure white seamless with no props, surface or scene. The "
+            "scene and prop direction applies ONLY to the remaining panels.\n\n"
             "Output ONLY plain English bullet points, no preamble, no headings, no markdown fences."
         )
         try:
@@ -1317,8 +1474,10 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
     def _apply_batch_image_guidelines(self, template: str, batch_prompt: str) -> str:
         """把「本批次 AI 专项提示词」包裹进固定约束声明后拼接到图片提示词末尾。
 
-        batch_prompt 仅为品类级内容/质量建议（定点爆破规避异形），与用户附加同理，
+        batch_prompt 为品类级内容/场景/质量建议（日常场景与配套道具方向 + 定点爆破规避
+        异形），与用户附加同理，可以改变非主图格子的背景、台面、场景、光影与道具，但
         绝不能覆盖四宫格结构、分界、面板角色、产品保真、文字与安全等固定运行时契约。
+        主图格（平台主图 / 正面白底英雄格）豁免：始终纯白无缝、不带道具与场景。
         """
         if not batch_prompt or not str(batch_prompt).strip():
             return template
@@ -1327,7 +1486,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
 
 BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MUST NOT override the fixed runtime contracts above):
 - The four-grid/single-image structure, exact dividers, split logic, panel roles, product fidelity, typography and safety rules defined above are FIXED and always take precedence.
-- Follow these guidelines ONLY for depiction quality inside the shown panels (anatomy, proportions, hands, printed text/logo legibility, material realism, product identity consistency); never for layout structure or generated text.
+- Follow these guidelines for depiction quality inside the shown panels (anatomy, proportions, hands, printed text/logo legibility, material realism, product identity consistency); never for layout structure or generated text.
+- You MAY change the background, surface, everyday scene, lighting and companion props of the NON-MAIN panels to follow these guidelines. The marketplace MAIN image panel (the front-view pure-white hero panel / first carousel image) is EXEMPT and stays pure white seamless with no props, surface or scene.
+- PROP AND SCENE SAFETY (always wins over the guidelines below): props stay strictly subordinate - visibly smaller than the product, low-saturation, same colour family, never covering, cropping, pressing on or outshining the product; no other brands, trademarks, packaging text, price tags or slogans; no full people, faces or pets, no unrelated clutter; keep clean breathing space and a visible contact shadow around the product; nothing may cross or touch the panel dividers; the product stays 100% identical to the reference image.
 - {prompt}"""
 
     def create_draft(
@@ -1753,14 +1914,19 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             for key in keys
             if isinstance(key, dict) and key.get("api_key")
         })
-        required = self._required_direct_providers({
-            "processing_scope": scope,
-            "title_optimize": False,
-            "description": False,
-            "size": False,
-            "grid_image": False,
-            "image_rewrite": False,
-        })
+        # 出图链路策略由服务端下发（开关与切换权都在服务器）；未下发时沿用内置无印直连。
+        image_plan = parse_image_plan(freeze_payload)
+        required = self._required_direct_providers(
+            {
+                "processing_scope": scope,
+                "title_optimize": False,
+                "description": False,
+                "size": False,
+                "grid_image": False,
+                "image_rewrite": False,
+            },
+            image_chain=image_chain_supplied(image_plan),
+        )
         _remember_batch_freeze(
             freeze_id,
             account_id=str(account_id or ""),
@@ -1781,7 +1947,9 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     + "、".join(missing)
                     + "），无法客户端直连，任务已中止"
                 )
-            with server_ai_context(remote_token, {}, granted_keys=granted, freeze_id=freeze_id):
+            with server_ai_context(
+                remote_token, {}, granted_keys=granted, freeze_id=freeze_id, image_plan=image_plan
+            ):
                 result = run()
         except Exception:
             self._settle_combo_freeze(remote_token, freeze_id, scope, success=False)
@@ -3332,6 +3500,15 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             self.repository.set_task_status(
                 int(task["id"]), "paused", str(task["workspace_id"])
             )
+            # 自动暂停必须留痕：本路径与页面开闭无关（重启 + 计费任务缺远端令牌
+            # 即触发），此前无日志导致「页面明明开着却变成已暂停」难以定位。
+            try:
+                business_logger("ai_processing").warning(
+                    "计费任务缺少远端令牌，已暂停等待重新登录 | task_id=%s | workspace=%s",
+                    task.get("id"), task.get("workspace_id"),
+                )
+            except Exception:  # noqa: BLE001
+                pass
         launchable = [task for task in queued if int(task["id"]) not in blocked_ids]
         launched = sum(
             self._launch_background_execute(int(task["id"]), str(task["workspace_id"]))
@@ -3355,8 +3532,10 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
     def task_outputs(
         self, task_id: int, *, summary_only: bool = False, workspace_id: str = "local"
     ) -> dict[str, Any]:
-        # 前端任务页轮询该接口即为心跳：页面在（轮询在）任务保持运行；页面关闭/
-        # 切走后心跳超时由清扫器自动暂停，避免用户已不在看仍继续调用 AI 烧成本。
+        # 前端任务页轮询该接口，就代表「页面还在看这个任务」：轮询时刻会被记录，用来撤销
+        # 页面关闭时发出的离开信标（刷新/重开/多页签都算没离开）。暂停只由**真实事件**触发
+        # ——页面关闭信标、手动暂停、应用退出时的取消结算，不再用「多久没心跳」猜：页面被
+        # 浏览器冻结/整机休眠时定时器根本不跑，猜测式判定会把正在跑的任务误停。
         self._touch_task_heartbeat(task_id, workspace_id)
         task = self._require_task(task_id, workspace_id)
         response = self._task_response(task)
@@ -3444,29 +3623,60 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             raise _TaskControlStopped(reason)
 
     def _touch_task_heartbeat(self, task_id: int, workspace_id: str) -> None:
-        """记录前端任务页轮询心跳，并懒启动自动暂停清扫器。
+        """记录前端任务页的轮询时刻，并懒启动任务维护循环。
+
+        这个时刻只用于判断「离开信标之后有没有人再回来看」（撤销离开）与过期记录清理，
+        **不再用「多久没心跳」判用户离开**：页面被浏览器冻结/整机休眠时定时器根本不跑，
+        那条路会把「页面还在」误判成「用户走了」。
 
         只在确有前端在看任务时跟踪；从未被 /outputs 轮询过的任务（API 提交等）
-        不进入自动暂停名单，避免误伤非页面驱动的任务。
+        不进入维护名单，避免误伤非页面驱动的任务。
         """
         key = (workspace_id, int(task_id))
         with self._task_last_seen_lock:
             self._task_last_seen[key] = time.monotonic()
-            started = self._auto_pause_sweeper_started
-            self._auto_pause_sweeper_started = True
+            started = self._task_maintenance_started
+            self._task_maintenance_started = True
         if not started:
             threading.Thread(
-                target=self._auto_pause_stale_tasks_loop,
+                target=self._task_maintenance_loop,
                 daemon=True,
-                name="pp-auto-pause-sweeper",
+                name="pp-task-maintenance",
             ).start()
 
-    def _auto_pause_stale_tasks_loop(self) -> None:
-        """后台清扫循环：每 _TASK_AUTO_PAUSE_SWEEP_SECONDS 秒执行一次心跳检查。"""
+    def set_shutdown_probe(self, probe: Callable[[], bool] | None) -> None:
+        """注入「工作台正在退出」探针（桌面端接到 runtime watchdog 上，见 create_app）。
+
+        为真时任务级暂停让位：退出流程会「取消任务 + 按冻结积分 50% 结算」，那是 beforeunload
+        弹窗向用户承诺过的语义，不能被任务级暂停抢先（否则同一个任务时而暂停、时而取消）。
+        """
+        self._shutdown_probe = probe
+
+    def mark_task_left(self, task_id: int, workspace_id: str = "local") -> None:
+        """页面离开信标（任务页 pagehide 时 sendBeacon 触发，尽力而为）。
+
+        只做**标记**：真正暂停由维护循环在「连续静默超过 _TASK_LEAVE_QUIET_SECONDS」之后
+        执行；期间任何轮询（刷新、重开工作台、另一个页签还在看，包括被浏览器节流到
+        1 分钟一次的隐藏页）都会撤销本次离开。信标丢了就继续跑：宁可不暂停，也不误停。
+
+        **先确认任务确实存在于该工作区**才记标记：信标地址写死在前端、参数也不做鉴权，
+        万一键对不上（工作区传错/任务号写错），照记就会留下一个「没有对应心跳」的标记
+        —— 那会让页面开着也被判成静默而误停。查不到就当没这回事（无效信标必须是空操作）。
+        """
+        try:
+            key = (workspace_id, int(task_id))
+            self._require_task(key[1], key[0])
+        except Exception:  # noqa: BLE001 - 无效信标一律忽略，绝不能影响请求
+            return
+        with self._task_left_lock:
+            self._task_left_keys[key] = time.monotonic()
+
+    def _task_maintenance_loop(self) -> None:
+        """后台维护循环：离开清扫 + 收尾卡死兜底 + 孤儿项自愈，每 _TASK_AUTO_PAUSE_SWEEP_SECONDS 秒一轮。"""
         while True:
             time.sleep(_TASK_AUTO_PAUSE_SWEEP_SECONDS)
             try:
-                self._sweep_stale_heartbeats_once()
+                self._sweep_departed_tasks_once()
             except Exception:
                 # 清扫是尽力而为的后台维护，任何异常都不允许终止循环。
                 pass
@@ -3481,76 +3691,91 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 # 孤儿项自愈同为尽力而为的后台维护，异常不终止循环。
                 pass
 
-    def _sweep_stale_heartbeats_once(self) -> None:
-        """单次清扫：心跳超时的 running/queued 任务自动置为暂停。
+    def _sweep_departed_tasks_once(self) -> None:
+        """单次清扫：把「页面已明确离开、离开后也没人再回来看」的任务暂停。
 
-        桌面端整个退出时进程随之终止、AI 调用自然停止，无需此机制；这里覆盖
-        「浏览器关页面/切走后本地服务仍在运行、AI 调用继续烧成本」的场景。
-        自动暂停与手动暂停语义一致：已完成项保留，未处理项由结算链路按真实
-        结果退款（已完成扣费、未完成全退），用户可从历史记录继续处理。
+        暂停依据是**真实事件**（任务页关闭时发的离开信标），不是「多久没心跳」的猜测：
+        页面被浏览器节流/冻结、整机休眠都不会触发 pagehide，那不算离开，任务照跑——
+        「工作台明明开着却被暂停」类工单就出在猜测式判定上。
+
+        判定只用一条：**离开之后连续静默**（_TASK_LEAVE_QUIET_SECONDS 内没有任何轮询）
+        才暂停；期间只要还有页面在轮询（刷新、重开工作台、另一个页签还在看，甚至只是被
+        浏览器节流到 1 分钟一次）就撤销这次离开。关页面瞬间在途的那一次请求只有一次，
+        撑不过静默窗口，不会误撤销。
+
+        暂停与手动暂停语义一致：已完成项保留、未处理项由结算链路按真实结果退款，用户可
+        从历史记录继续处理；商品已全部终态、只剩本地收尾的任务不暂停（否则会卡在 99%）。
+
+        顺带清理过期心跳记录（_TASK_HEARTBEAT_RETENTION_SECONDS 内没再被轮询过的）。
         """
         now = time.monotonic()
-        with self._task_last_seen_lock:
-            stale_keys = [
-                (key, now - seen_at)
-                for key, seen_at in self._task_last_seen.items()
-                if now - seen_at > _TASK_AUTO_PAUSE_TIMEOUT_SECONDS
-            ]
-        for (workspace_id, task_id), stale_for in stale_keys:
+        if self._shutdown_probe is not None:
+            try:
+                if self._shutdown_probe():
+                    # 工作台正在退出：退出流程负责「取消任务 + 按冻结积分 50% 结算」（用户看到过
+                    # 弹窗承诺），任务级暂停让位，避免两条路抢同一个任务。探针异常当作「没在退出」。
+                    return
+            except Exception:  # noqa: BLE001 - 维护循环不允许被探针异常打断
+                pass
+        previous_sweep = self._last_sweep_at
+        self._last_sweep_at = now
+        if (
+            previous_sweep is not None
+            and now - previous_sweep > _TASK_AUTO_PAUSE_SWEEP_SECONDS * 4
+        ):
+            # 进程自己也被冻住了（整机休眠/挂起、长时间卡死）：这段时间的「静默」不算数，
+            # 本轮不判。否则「刷新页面后合盖走人」会在醒来的一瞬间被判成「页面已离开」而误停
+            # —— 醒来后页面的定时器会立刻恢复轮询，下一轮自然按新时间线判断。
+            return
+        with self._task_left_lock:
+            departed = list(self._task_left_keys.items())
+        for (workspace_id, task_id), left_at in departed:
+            with self._task_last_seen_lock:
+                last_seen = self._task_last_seen.get((workspace_id, task_id))
+            if last_seen is not None and now - last_seen < _TASK_LEAVE_QUIET_SECONDS:
+                # 页面还在轮询（隐藏页被节流到 1 分钟一次也算）→ 这一轮不暂停。
+                # 离开标记已经够老说明这段时间一直有人看：顺手撤销，别留着。
+                if now - left_at >= _TASK_LEAVE_QUIET_SECONDS:
+                    with self._task_left_lock:
+                        self._task_left_keys.pop((workspace_id, task_id), None)
+                continue
+            # 静默超过阈值：页面真的走了（关掉、进程没了）→ 暂停，语义与手动暂停一致。
+            with self._task_left_lock:
+                self._task_left_keys.pop((workspace_id, task_id), None)
             try:
                 task = self._require_task(task_id, workspace_id)
             except Exception:
                 with self._task_last_seen_lock:
                     self._task_last_seen.pop((workspace_id, task_id), None)
                 continue
-            status = str(task.get("status") or "")
-            if status in {"queued", "running"}:
-                # 商品已经全部得到终态时，worker 只剩本地文件收尾；此时暂停会
-                # 把 6/6 的任务卡在 99%，并阻断预检/导出。
-                if self._task_has_unfinished_items(task):
-                    # 自动补跑轮进行中不暂停：轮次之间任务行会短暂回到 completed，补跑线程
-                    # 随后又把它置回 running；这段时间的心跳断档往往只是页面抖动（例如失联
-                    # 自动刷新把处理页标签清掉），直接暂停会把补跑轮掐死。
-                    if self._task_in_auto_repull_round(task):
-                        try:
-                            business_logger("task_control").info(
-                                "跳过自动暂停（自动补跑轮进行中）| task_id=%s | workspace=%s | "
-                                "最后心跳距今=%.0fs | 阈值=%.0fs",
-                                task_id, workspace_id, stale_for, _TASK_AUTO_PAUSE_TIMEOUT_SECONDS,
-                            )
-                        except Exception:  # noqa: BLE001 业务日志绝不影响清扫
-                            pass
-                        with self._task_last_seen_lock:
-                            self._task_last_seen.pop((workspace_id, task_id), None)
-                        continue
-                    try:
-                        self.repository.pause_task_execution(task_id, workspace_id)
-                        # 自动暂停留痕：客服据此区分「用户确实走了」与「页面抖动/误判」。
-                        try:
-                            business_logger("task_control").info(
-                                "自动暂停（心跳超时）| task_id=%s | workspace=%s | "
-                                "最后心跳距今=%.0fs | 阈值=%.0fs",
-                                task_id, workspace_id, stale_for, _TASK_AUTO_PAUSE_TIMEOUT_SECONDS,
-                            )
-                        except Exception:  # noqa: BLE001 业务日志绝不影响清扫
-                            pass
-                    except Exception:
-                        pass
-                # 移除心跳记录：resume 后由前端重新轮询重建，避免用陈旧时间戳
-                # 在 resume 的首个轮询窗口再次误暂停。
-                with self._task_last_seen_lock:
-                    self._task_last_seen.pop((workspace_id, task_id), None)
-            elif status not in {"paused", "cancelled"}:
-                # 已进入终态的任务不再需要跟踪心跳。
-                with self._task_last_seen_lock:
-                    self._task_last_seen.pop((workspace_id, task_id), None)
-
-    @staticmethod
-    def _task_in_auto_repull_round(task: dict[str, Any]) -> bool:
-        """任务是否正处于自动补跑轮（settings._auto_repull.status == running）。"""
-        settings = task.get("settings")
-        state = settings.get("_auto_repull") if isinstance(settings, dict) else None
-        return isinstance(state, dict) and str(state.get("status") or "") == "running"
+            if str(task.get("status") or "") not in {"queued", "running"}:
+                continue
+            if not self._task_has_unfinished_items(task):
+                # 商品已经全部得到终态时，worker 只剩本地文件收尾；此时暂停会把
+                # 6/6 的任务卡在 99%，并阻断预检/导出。
+                continue
+            try:
+                paused = self.repository.pause_task_execution(task_id, workspace_id)
+            except Exception:
+                continue
+            if not paused:
+                continue
+            # 自动暂停必须留痕：与手动暂停区分，便于排查「页面明明开着却暂停」类工单。
+            business_logger("ai_processing").warning(
+                "页面离开自动暂停 | task_id=%s | workspace=%s | 离开后已静默 %.0f 秒无人轮询",
+                task_id, workspace_id, now - (last_seen if last_seen is not None else left_at),
+            )
+            with self._task_last_seen_lock:
+                self._task_last_seen.pop((workspace_id, task_id), None)
+        # 心跳记录只服务于「离开后有没有人回来」：过期即弃，避免长会话里无限增长。
+        with self._task_last_seen_lock:
+            expired = [
+                key
+                for key, seen_at in self._task_last_seen.items()
+                if now - seen_at > _TASK_HEARTBEAT_RETENTION_SECONDS
+            ]
+            for key in expired:
+                self._task_last_seen.pop(key, None)
 
     def _heal_orphan_items_once(self) -> None:
         """终态任务孤儿项自愈：标记失败 + 释放草稿（随清扫循环低频执行）。
@@ -4617,6 +4842,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         workspace_id: str = "local",
         force: bool = False,
         persist: bool = True,
+        skip_text_check: bool = False,
     ) -> dict[str, Any]:
         """处理设置页级「SKU 规格图可用性判断」（严格口径 + 并行 OCR）。
 
@@ -4635,6 +4861,11 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
           即落 ``not_square_image`` 判不可用，导出回退商品主图（我们生成的方图），
           并跳过该链接的 OCR；
         - 所有图片一次性提交线程池并行 OCR，实际并发受 ocr_gate 推理上限约束；
+        - ``skip_text_check=True``（前端「跳过中文检测」）：只做零成本的 1:1 尺寸口径判断，
+          完全跳过中文 OCR（实测约 277ms/张，4 并发下 1400 张约 98 秒），据此落
+          ``clean`` + ``reason=text_check_skipped``（并在结论里留下 ``text_check_skipped``
+          标记），导出侧因此按「规格原图可用」处理；非 1:1 仍照常拦住，保住店小秘
+          「变种预览图必须方图，否则整单拒收」这条硬合规。
         - 返回 ``chinese_variant_keys``（检出中文的变种导出键）与 ``all_sku_chinese``
           （全部有图 SKU 都含中文），供前端「优化链接 SKU」决定剔除哪些变种；
         - 另返回 ``not_square_variant_keys``（规格原图非 1:1 的变种导出键），供前端提示
@@ -4707,6 +4938,10 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 continue
             plan["status"] = "pending"
             plan["_sku_keys"] = {key for _asset_id, key in sku_targets if key}
+            if skip_text_check:
+                # 只判尺寸、跳过中文 OCR：不再进 OCR 队列，收尾处按「尺寸口径可用」定论。
+                plan["text_check_skipped"] = True
+                continue
             tasks.extend(
                 (draft_id, asset_id, variant_key) for asset_id, variant_key in sku_targets
             )
@@ -4738,6 +4973,12 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             plan["all_sku_chinese"] = bool(sku_keys) and sku_keys <= chinese_keys
             plan["chinese_variant_keys"] = sorted(chinese_keys)
             if plan["status"] != "pending":
+                continue
+            if plan.get("text_check_skipped"):
+                # 用户选择「只判尺寸、跳过中文检测」：1:1 已在上面拦过，这里直接按
+                # 尺寸口径判可用，导出侧因此使用规格原图。结论里保留 text_check_skipped
+                # 标记与 reason，便于事后分辨「真的没检出中文」与「根本没检」。
+                plan.update(status="clean", clean=True, reason="text_check_skipped")
                 continue
             if plan["failed"]:
                 plan.update(status="unavailable", reason="text_check_failed")
@@ -5833,13 +6074,17 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             )
         return self._execute_task_direct(task_id, workspace_id, token)
 
-    def _required_direct_providers(self, settings: dict[str, Any]) -> set[str]:
-        """根据处理范围推导直连所需第三方密钥：文本/视觉走 ark，生图走 wuyin。"""
+    def _required_direct_providers(self, settings: dict[str, Any], *, image_chain: bool = False) -> set[str]:
+        """根据处理范围推导直连所需第三方密钥：文本/视觉走 ark，生图走 wuyin。
+
+        ``image_chain=True``：服务端已下发可用出图链路（例如故障期切到中转），生图不再
+        依赖 wuyin 短期密钥，因此不再把它算作必需。
+        """
         kinds = {kind for kind, _feature in self._billable_product_processing_features(settings)}
         providers: set[str] = set()
         if kinds & {"text", "vision"}:
             providers.add("ark")
-        if "image_grid" in kinds:
+        if "image_grid" in kinds and not image_chain:
             providers.add("wuyin")
         return providers
 
@@ -5876,6 +6121,8 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             for key in keys
             if isinstance(key, dict) and key.get("api_key")
         })
+        # 出图链路策略由服务端下发（开关与切换权都在服务器）；未下发时沿用内置无印直连。
+        image_plan = parse_image_plan(freeze_payload)
         _remember_batch_freeze(
             freeze_id,
             account_id=account_id,
@@ -5886,7 +6133,9 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             item_ids=[int(item["item_id"]) for item in pending],
         )
         try:
-            required = self._required_direct_providers(settings)
+            required = self._required_direct_providers(
+                settings, image_chain=image_chain_supplied(image_plan)
+            )
             missing = sorted(provider for provider in required if not granted.get(provider))
             if missing:
                 # 冻结成功但「既未下发、也无客户端内置兜底」所需直连密钥：说明服务端签发
@@ -5898,7 +6147,9 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     + "、".join(missing)
                     + "），无法客户端直连，任务已中止"
                 )
-            with server_ai_context(token, {}, granted_keys=granted, freeze_id=freeze_id):
+            with server_ai_context(
+                token, {}, granted_keys=granted, freeze_id=freeze_id, image_plan=image_plan
+            ):
                 with self._task_execution_gate:
                     result = self._execute_task_impl(task_id, workspace_id)
         finally:
@@ -7717,8 +7968,8 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     "need_detail": need_detail,
                     "premium_mode": premium_mode,
                     "image_template": effective_image_template,
-                    "image_generation_count": _image_generation_count(
-                        settings.get("image_generation_count"), default=4
+                    "image_generation_count": _effective_image_generation_count(
+                        settings.get("image_generation_count")
                     ),
                     "target_site": target_site,
                     "target_language": target_language,
@@ -7763,8 +8014,8 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
 
         # Once the authoritative subject is accepted, media starts immediately.
         # It deliberately uses the source title, never Doubao-generated listing copy.
-        image_generation_count = _image_generation_count(
-            settings.get("image_generation_count"), default=4
+        image_generation_count = _effective_image_generation_count(
+            settings.get("image_generation_count")
         )
         media_executor = None
         grid_future = None
@@ -8960,7 +9211,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         if not media_types:
             return GridImageOutput()
         processor_cls, media_config_error, media_error = media_types
-        image_generation_count = _image_generation_count(image_generation_count, default=4)
+        image_generation_count = _effective_image_generation_count(image_generation_count)
         note_key = "four_grid" if image_generation_count == 4 else "image_set"
         attempt_count = 0
         provider_status_class = "success"
@@ -8981,8 +9232,19 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 if image_generation_count == 4
                 else ("image_set" + _template_suffix)
             )
+            base_template = DEFAULT_PROMPTS.get(prompt_key, "")
+            if image_generation_count == 4 and _image_prompt_profile() == "ark":
+                # 方舟对输入文本做内容审核：为 gpt-image 调优的长指令模板会被判敏感直接 400
+                # （实测 1.4s 秒回 3 万字符那份）。因此这里换成与四张模板卡一一对应的
+                # 「方舟紧凑版」（各约 1.5 千字符）：结构/保真/几何/文字仍在
+                # GRID_RUNTIME_CONTRACT 里，紧凑版只承载画面方向 + 区域规划，
+                # 这样界面上选「影棚无缝主图 / 人景叙事 / 静物平铺俯拍 / 环境远景」在方舟
+                # 链路上同样生效（此前无论选哪张都会被同一份模板覆盖）。
+                base_template = _ARK_GRID_TEMPLATES_BY_SUFFIX.get(
+                    _template_suffix, ARK_GRID_IMAGE_PROMPT
+                )
             template = self._apply_batch_image_guidelines(
-                self._apply_user_image_additions(DEFAULT_PROMPTS.get(prompt_key, ""), prompt_key),
+                self._apply_user_image_additions(base_template, prompt_key),
                 batch_image_prompt,
             )
             contracted = apply_language_contract_to_prompt(template, "grid_image", target_language, target_site)

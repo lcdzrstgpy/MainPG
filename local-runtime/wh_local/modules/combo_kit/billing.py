@@ -72,6 +72,8 @@ class ComboKitBillingCoordinator:
             "points": points,
             "rule_version": int(freeze.get("rule_version") or 0),
             "keys": granted,
+            # 出图链路策略：原样带出，由调用方按需解析（切换权在服务器）。
+            "image_plan": freeze.get("image_plan") if isinstance(freeze.get("image_plan"), Mapping) else {},
             "token": token,
         }
 

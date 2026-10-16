@@ -418,6 +418,7 @@ class ProfitActivityService:
         rows = json.loads(session.rows_json)
         selected = set(selected_row_ids) if selected_row_ids is not None else {row["row_id"] for row in rows if row["status"] == "ready"}
         products: list[dict[str, Any]] = []
+        failures: list[dict[str, Any]] = []
         imported = skipped = replaced = 0
         grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for row in rows:
@@ -425,36 +426,42 @@ class ProfitActivityService:
                 row_site = _site(row.get("site") or session.site)
                 grouped.setdefault((row_site, row["skc"]), []).append(row)
         for (row_site, skc), candidates in grouped.items():
-            existing = self._repository.find_product(skc, row_site, context.workspace_id)
-            if existing is not None and on_conflict == "skip":
-                skipped += 1
-                continue
-            row = _conservative_import_row(candidates, existing)
-            image = _asset_tuple(row.get("product_image_path"))
-            source_image = _asset_tuple(row.get("source_image_path"))
-            source_groups = row.get("source_groups") or []
-            payload = {**row, "site": row_site, "visibility": "shared"}
-            if source_groups:
-                payload["source_groups_json"] = json.dumps(source_groups)
-            group_images: dict[int, list[tuple[str, bytes]]] = {}
-            for group_index, paths in (row.get("source_group_images") or {}).items():
-                files = [file for file in (_asset_tuple(path) for path in paths) if file]
-                if files:
-                    group_images[int(group_index)] = files
-            product = self.upsert_product(
-                payload,
-                image=image,
-                actor=actor,
-                allow_company_write=True,
-                source_image=source_image,
-                source_group_images=group_images or None,
-            )
-            products.append(product)
-            if existing is not None:
-                replaced += 1
-            else:
-                imported += 1
-        result = {"imported": imported, "skipped": skipped, "replaced": replaced, "products": products, "summary": _import_summary(rows)}
+            try:
+                existing = self._repository.find_product(skc, row_site, context.workspace_id)
+                if existing is not None and on_conflict == "skip":
+                    skipped += 1
+                    continue
+                row = _conservative_import_row(candidates, existing)
+                image = _asset_tuple(row.get("product_image_path"))
+                source_image = _asset_tuple(row.get("source_image_path"))
+                source_groups = row.get("source_groups") or []
+                payload = {**row, "site": row_site, "visibility": "shared"}
+                if source_groups:
+                    payload["source_groups_json"] = json.dumps(source_groups)
+                group_images: dict[int, list[tuple[str, bytes]]] = {}
+                for group_index, paths in (row.get("source_group_images") or {}).items():
+                    files = [file for file in (_asset_tuple(path) for path in paths) if file]
+                    if files:
+                        group_images[int(group_index)] = files
+                product = self.upsert_product(
+                    payload,
+                    image=image,
+                    actor=actor,
+                    allow_company_write=True,
+                    source_image=source_image,
+                    source_group_images=group_images or None,
+                )
+                products.append(product)
+                if existing is not None:
+                    replaced += 1
+                else:
+                    imported += 1
+            except Exception as exc:  # noqa: BLE001 - 逐条隔离：单条失败不阻断批量导入（与 recalculate_products 同款）
+                logger.warning("confirm_import failed for %s/%s: %s", row_site, skc, exc)
+                failures.append({"skc": skc, "site": row_site, "error": str(exc)[:200]})
+        # 任务记录必须落库（2026-10-15）：此前循环抛异常会跳过 create_import_task，
+        # 用户看到「导入失败」却已部分导入且无任务记录可查（数据/状态不一致）。
+        result = {"imported": imported, "skipped": skipped, "replaced": replaced, "failures": failures, "products": products, "summary": _import_summary(rows)}
         task = self._repository.create_import_task(context.workspace_id, import_id, result)
         return {"task_id": task.id, "status": "completed", "task_status": "completed", "task": {"id": task.id, "status": "completed", "updated_at": task.updated_at}, **result}
 

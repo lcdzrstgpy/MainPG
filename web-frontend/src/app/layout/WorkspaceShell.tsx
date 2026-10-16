@@ -25,8 +25,6 @@ import {
   listDimensionNotifications,
   markDimensionNotificationRead,
 } from "../../modules/product_processing/api/dimensionCanvasApi";
-import { keepTaskWatchAlive } from "../../modules/product_processing/api/productProcessingApi";
-import { runningTaskIds } from "../../shared/runtime/taskActivity";
 
 // 页面组件按需懒加载（路由级代码分割，缩小首屏 bundle）。
 // dashboard 是默认首屏 tab，保持同步加载，避免首屏出现加载闪烁。
@@ -85,6 +83,12 @@ import { fetchMessages, markMessageRead, syncMessages, type InboxMessage } from 
 import { showToast } from "../../shared/components/toastStore";
 import { HelpAgentWidget } from "../../modules/help_agent/components/HelpAgentWidget";
 import { WorkspaceTabScrollStore } from "./workspaceTabState";
+import {
+  readWorkspaceTabsSnapshot,
+  trailingSequence,
+  writeWorkspaceTabsSnapshot,
+  type WorkspaceTabsSnapshot,
+} from "./workspaceTabsPersistence";
 
 type WorkspaceShellProps = {
   currentRole?: string;
@@ -126,42 +130,70 @@ function moduleTab(id: WorkspaceModuleId, flatModules: WorkspaceModule[]): Works
   return { key: id, moduleId: id, label: module.label, icon: module.icon, iconClass: module.iconClass };
 }
 
-// 标签页持久化：应用内标签是内存态，整页刷新（失联自动刷新、手动刷新）会把它们清空，
-// 处理页被关掉 → 心跳断 → 后端 90 秒后自动暂停任务（2026-10-15 线上复现）。这里落到
-// sessionStorage，刷新后在同一个浏览器标签内恢复。
-const TABS_STORAGE_KEY = "mainpg:workspace-tabs:v1";
-const MAX_RESTORED_TABS = 12;
-// 运行中任务的心跳兜底节奏：与桌面端 runtime 心跳一致（15 秒）。
-const TASK_WATCH_HEARTBEAT_MS = 15_000;
+/**
+ * 采集面板与插件会话、进行中的采集批次绑定：恢复出来只会拿到失效会话，还可能误触发重新采集，
+ * 因此不参与页签持久化（用户从侧栏或插件重新打开即可）。
+ */
+const NON_RESTORABLE_MODULE_IDS: ReadonlySet<string> = new Set(["daily_selection_collection"]);
 
-function isWorkspaceTab(value: unknown): value is WorkspaceTab {
-  if (!value || typeof value !== "object") return false;
-  const tab = value as Partial<WorkspaceTab>;
-  return typeof tab.key === "string" && typeof tab.moduleId === "string" && typeof tab.label === "string";
-}
+type RestoredWorkspaceTabs = {
+  tabs: WorkspaceTab[];
+  activeTabKey: string;
+  collectionSequence: number;
+  processingSequence: number;
+  precheckSequence: number;
+};
 
-/** 读取上次的标签页（含激活项）；读不到/结构不对时回落到默认的「工作台」标签。 */
-function readStoredTabs(): { tabs: WorkspaceTab[]; activeKey: string } {
-  const fallbackTab = moduleTab("dashboard", workspacePageModules);
-  const fallback = { tabs: [fallbackTab], activeKey: fallbackTab.key };
+/**
+ * 恢复上次的页签布局。恢复页签不只是体验问题：任务继续跑的前提是「还有页面在看它」，
+ * 页签一丢（浏览器刷新、前端自动重载）就等于没人看了（刷新时页面自己也发了离开信标），
+ * 连续静默后任务会被后端自动暂停。
+ *
+ * localStorage 里的数据一律当不可信输入，清洗失败就退回只有一个「工作台首页」页签的默认状态。
+ */
+function restoreWorkspaceTabs(isAdmin: boolean): RestoredWorkspaceTabs {
+  const modules = filterModulesForRole(workspacePageModules, isAdmin) as WorkspaceModule[];
+  const fallback: RestoredWorkspaceTabs = {
+    tabs: [moduleTab("dashboard", modules)],
+    activeTabKey: "dashboard",
+    collectionSequence: 0,
+    processingSequence: 0,
+    precheckSequence: 0,
+  };
+
+  let snapshot: WorkspaceTabsSnapshot | null;
   try {
-    const raw = sessionStorage.getItem(TABS_STORAGE_KEY);
-    if (!raw) return fallback;
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return fallback;
-    const stored = parsed as { tabs?: unknown; activeKey?: unknown };
-    const tabs = Array.isArray(stored.tabs)
-      ? stored.tabs.filter(isWorkspaceTab).slice(0, MAX_RESTORED_TABS)
-      : [];
-    if (!tabs.length) return fallback;
-    const activeKey =
-      typeof stored.activeKey === "string" && tabs.some((tab) => tab.key === stored.activeKey)
-        ? stored.activeKey
-        : tabs[tabs.length - 1].key;
-    return { tabs, activeKey };
+    snapshot = readWorkspaceTabsSnapshot(window.localStorage, new Set(modules.map((module) => module.id)));
   } catch {
-    return fallback;
+    return fallback; // localStorage 被禁用（隐私模式等）：直接用默认布局。
   }
+  if (!snapshot) return fallback;
+
+  const tabs = snapshot.tabs
+    .filter((tab) => !NON_RESTORABLE_MODULE_IDS.has(tab.moduleId))
+    .map((tab) => {
+      // 页签标题是动态文案（"处理·12项"）时沿用持久化值，缺失时才回落到模块默认名。
+      const base = moduleTab(tab.moduleId, modules);
+      const restored: WorkspaceTab = { ...tab, label: tab.label || base.label, icon: tab.icon || base.icon, iconClass: tab.iconClass ?? base.iconClass };
+      // 开工中的处理页签按「任务详情」恢复：它因此继续轮询 /outputs（= 还有人在看），
+      // 页面上也没有「开始处理」入口，不会再建出一个重复任务。
+      if (restored.taskRunId == null && restored.activeTaskId != null) restored.taskRunId = restored.activeTaskId;
+      return restored;
+    });
+  if (!tabs.length) return fallback;
+
+  const keys = tabs.map((tab) => tab.key);
+  return {
+    tabs,
+    activeTabKey: keys.includes(snapshot.activeTabKey) ? snapshot.activeTabKey : keys[0],
+    // 续上 key 里的递增序号，避免恢复后新开页签与恢复的 key 撞车。
+    collectionSequence: trailingSequence(keys, "daily-selection-collection-"),
+    processingSequence: Math.max(
+      trailingSequence(keys, "product-processing-tasks-"),
+      trailingSequence(keys, "product-processing-task-"),
+    ),
+    precheckSequence: trailingSequence(keys, "product-processing-precheck-"),
+  };
 }
 
 /** 懒加载模块的加载占位：轻量骨架，避免切换模块时出现空白闪烁。 */
@@ -189,16 +221,18 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
   const [sidebarHovered, setSidebarHovered] = useState(false);
   const [isNarrowDesktop, setIsNarrowDesktop] = useState(() => window.matchMedia(NARROW_DESKTOP_QUERY).matches);
   const [expandedGroupId, setExpandedGroupId] = useState<WorkspaceNavigationGroupId | null>(null);
-  // 标签页只在内存里、刷新即丢：挂载时读一次 sessionStorage 恢复（见 readStoredTabs）。
-  const [restoredTabs] = useState(readStoredTabs);
-  const [activeTabKey, setActiveTabKey] = useState(() => restoredTabs.activeKey);
-  const [tabs, setTabs] = useState<WorkspaceTab[]>(() => restoredTabs.tabs);
+  const isAdmin = isAdminRole(currentRole);
+  // 页签布局持久化：刷新 / 前端自动重载后恢复上次打开的页签与当前页签，任务页因此能继续轮询
+  // （页签丢失 = 没人再看 = 连续静默后任务被自动暂停）。清洗逻辑见 restoreWorkspaceTabs。
+  const [initialWorkspace] = useState(() => restoreWorkspaceTabs(isAdmin));
+  const [activeTabKey, setActiveTabKey] = useState(initialWorkspace.activeTabKey);
+  const [tabs, setTabs] = useState<WorkspaceTab[]>(initialWorkspace.tabs);
   const [workspaceNotice, setWorkspaceNotice] = useState("");
   const [dimensionNotifications, setDimensionNotifications] = useState<DimensionNotification[]>([]);
   const [showScrollTop, setShowScrollTop] = useState(false);
-  const collectionSequence = useRef(0);
-  const processingSequence = useRef(0);
-  const precheckSequence = useRef(0);
+  const collectionSequence = useRef(initialWorkspace.collectionSequence);
+  const processingSequence = useRef(initialWorkspace.processingSequence);
+  const precheckSequence = useRef(initialWorkspace.precheckSequence);
   const dimensionOpenRequests = useRef(new Map<string, Promise<DimensionCanvasItem>>());
   const contentRef = useRef<HTMLDivElement>(null);
   const scrollPositions = useRef(new WorkspaceTabScrollStore());
@@ -208,28 +242,18 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
   useEffect(() => {
     tabsRef.current = tabs;
   }, [tabs]);
-
-  // 标签页落 sessionStorage：整页刷新后能回到原来的页面（含正在处理的任务页）。
+  // 页签变化即写回 localStorage：只在浏览器本地存一份布局，不上传、不影响后端。
+  // 采集面板不存：它与插件会话绑定，恢复出来只会拿到失效会话（见 NON_RESTORABLE_MODULE_IDS）。
   useEffect(() => {
     try {
-      sessionStorage.setItem(TABS_STORAGE_KEY, JSON.stringify({ tabs, activeKey: activeTabKey }));
+      writeWorkspaceTabsSnapshot(window.localStorage, {
+        tabs: tabs.filter((tab) => !NON_RESTORABLE_MODULE_IDS.has(tab.moduleId)),
+        activeTabKey,
+      });
     } catch {
-      // sessionStorage 不可用（隐私模式/配额满）时静默忽略，仅失去"刷新后恢复"的能力。
+      // localStorage 被禁用：忽略，不影响本次使用。
     }
   }, [tabs, activeTabKey]);
-
-  // 运行中任务的心跳兜底：任务页轮询是主心跳，但只要工作台还开着，这里也替被盯着的
-  // 运行中任务续心跳。这样即使某个页面抖动/被刷新导致处理页标签丢掉，任务也不会因
-  // 心跳断档被后端误判「用户已离开」而自动暂停（2026-10-15 线上复现的根因）。
-  useEffect(() => {
-    const beat = () => {
-      for (const taskId of runningTaskIds()) void keepTaskWatchAlive(taskId);
-    };
-    beat();
-    const timer = window.setInterval(beat, TASK_WATCH_HEARTBEAT_MS);
-    return () => window.clearInterval(timer);
-  }, []);
-  const isAdmin = isAdminRole(currentRole);
   const visibleModules = useMemo(() => filterModulesForRole(workspaceModules, isAdmin), [isAdmin]);
   const flatModules = useMemo(() => filterModulesForRole(workspacePageModules, isAdmin) as WorkspaceModule[], [isAdmin]);
   const navigationGroups = useMemo(() => visibleModules.filter(isWorkspaceNavigationGroup), [visibleModules]);
@@ -728,6 +752,12 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
     return true;
   };
 
+  // 处理页签开工/接手任务后，把任务号记到页签元数据上（只影响刷新后的恢复，不参与实时渲染）。
+  // 记了它，刷新恢复出来的就是这个任务本身（继续轮询心跳），而不是一张空的「处理设置」页。
+  const markTabActiveTask = (tabKey: string, taskId: number) => {
+    setTabs((current) => current.map((tab) => (tab.key === tabKey ? { ...tab, activeTaskId: taskId } : tab)));
+  };
+
   const openProcessingTaskDetail = (taskId: number) => {
     const existing = tabsRef.current.find((tab) => tab.taskRunId === taskId);
     if (existing) {
@@ -842,6 +872,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
             initialPremiumDraftIds={tab.premiumDraftIds}
             initialOptions={tab.processingOptions as ProductProcessingOptions | undefined}
             onOpenPrecheck={openProcessingPrecheck}
+            onTaskStarted={(taskId) => markTabActiveTask(tab.key, taskId)}
           />
         );
         break;

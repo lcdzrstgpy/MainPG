@@ -15,6 +15,9 @@ from fastapi.testclient import TestClient
 
 import wh_local.billing as billing_module
 import wh_local.cache as cache_mod
+
+# auth_server 为服务器侧模块、未随仓库分发（c053f438c 已移除）；缺失时本组用例整体跳过。
+pytest.importorskip("wh_local.customer.auth_server")
 from wh_local.customer.auth_server import (
     _account_by_token,
     _billing_summary,
