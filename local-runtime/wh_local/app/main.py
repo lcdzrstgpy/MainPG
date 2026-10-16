@@ -424,8 +424,9 @@ class _RuntimeExitController:
         # 使「关闭页面→任务取消/已取消+按冻结积分 50% 扣费」可达成。仅在真正
         # 决定退出（非刷新重载）时执行；回调带超时保护，绝不无限阻塞。
         self._run_before_exit()
-        # 结算完成后再释放会话：远端 token 只存活在本进程内存里，进程一退出就无法
-        # 再登出，远端会残留一个"活跃"平台会话，用户重开页面登录时会被单端登录拒绝。
+        # 会话释放钩子保留但默认**未接线**（见下方 set_on_release_sessions 处的说明）：
+        # 登录态现已完整落盘（本地会话 + DPAPI 加密的 remote_token），关程序后应当
+        # 保留，让用户下次打开直接回到工作台，而不是被迫重新登录。
         self._run_session_release()
         # 硬退出整个进程（含所有守护工作线程），释放被锁定的 MainPG.exe。
         os._exit(0)  # noqa: PLR1722 - deliberate hard exit on desktop page close
@@ -787,6 +788,11 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     # 进程内存里，关页退出即丢失且用户再也无法主动登出；不在这里抢着登出，远端会残留
     # 一个"活跃"平台会话，导致用户重新打开页面登录时被单端登录限制拒绝。
     def _release_customer_sessions() -> None:
+        """退出时释放全部会话：撤销本机本地会话 + 逐条远端登出。
+
+        ⚠️ 当前**未接线**（见下方 set_on_release_sessions 处的说明）：关程序应当
+        保留登录态，不释放会话。需要恢复旧行为时，把接线那行取消注释即可。
+        """
         remote_tokens = customer_sessions.release_all_sessions()
         if not remote_customer_auth.configured():
             return
@@ -797,7 +803,24 @@ def create_app(database_path: Path | None = None) -> FastAPI:
                 # 单个 token 登出失败不影响其余 token；服务端 TTL 兜底。
                 continue
 
-    runtime_exit.set_on_release_sessions(_release_customer_sessions)
+    # 退出时**不再释放客户会话**（2026-10-16 决策）。
+    #
+    # 原来的接线会在关程序时调 release_all_sessions()：撤销本机全部本地会话、把
+    # 落盘的 remote_token 密文清空、逐条登出远端。结果是「关掉程序再打开就要重新
+    # 登录」—— 与 db_store.save_session 注释里「避免登录态过一会儿就掉」的目标直接
+    # 冲突，也让 7 天 TTL 与滑动续期形同虚设（实测本地库 148 条会话中 146 条被撤销；
+    # 10-13 一早上连续 6 条会话全部被撤销，即每次开关程序掉一次登录）。
+    #
+    # 保留会话的代价可控：远端会话不再被主动注销，但程序退出后保活线程停止，
+    # last_used_at 超过 SESSION_STALE_SECONDS(3600) 后同类型设备即可正常登录
+    # （见 auth_service 的单端登录判定）；若在这 1 小时内于另一台同类设备登录，会
+    # 提示「该账号已在其他设备登录」，用户可用登录页的「强制登录」顶替
+    # （AuthPage 的 forceLogin）。
+    #
+    # 主动退出登录仍走 /api/customer/logout（只撤销当前一条会话），不受影响。
+    # 接口与回调保留但不接线，便于将来需要时恢复。
+    #
+    # runtime_exit.set_on_release_sessions(_release_customer_sessions)
     # 任务级自动暂停让位给退出流程：工作台正在退出时，任务是「取消 + 按冻结积分 50% 结算」
     # （见 is_exiting 的说明），不能再被任务级的「页面离开暂停」抢先。
     product_processing.set_shutdown_probe(runtime_exit.is_exiting)
