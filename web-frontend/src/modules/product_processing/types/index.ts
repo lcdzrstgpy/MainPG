@@ -380,6 +380,8 @@ export type PreviewFinalizeRun = {
   task_id: number;
   status: "queued" | "publishing" | "publish_failed" | "stale" | "completed";
   workbook_format: PreviewExportFormat;
+  /** 该次导出已生成过哪些妙手模板（文件留在本机，可直接重新下载，无需再生成）。 */
+  miaoshou_generated?: MiaoshouTemplateKind[];
   total_count: number;
   published_count: number;
   failed_count: number;

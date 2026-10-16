@@ -1,14 +1,19 @@
-import type { MiaoshouTemplateKind, PreviewFinalizeRun, PreviewImageAsset } from "../types";
+import type { PreviewExportFormat, PreviewFinalizeRun, PreviewImageAsset } from "../types";
+
+/** 导出工作簿的格式文案：界面各处标清「下的是哪一种表」，避免下错。 */
+export const EXPORT_FORMAT_LABELS: Record<PreviewExportFormat, string> = {
+  dxm: "店小秘",
+  apparel: "妙手·服饰类",
+  general: "妙手·非服饰类",
+};
 
 type PrecheckFinalizeProgressProps = {
   run: PreviewFinalizeRun;
   assets: PreviewImageAsset[];
   retrying: boolean;
-  downloading: boolean;
-  msExporting: MiaoshouTemplateKind | null;
+  /** 本次导出的本地时间文案（下载入口在历史导出列表里，卡片这里只标清是哪一次）。 */
+  createdLabel?: string;
   onRetry: () => void;
-  onDownload: () => void;
-  onExportMiaoshou: (kind: MiaoshouTemplateKind) => void;
   onReloadStale: () => void;
   onExcludeFailed: () => void;
 };
@@ -28,11 +33,8 @@ export function PrecheckFinalizeProgress({
   run,
   assets,
   retrying,
-  downloading,
-  msExporting,
+  createdLabel,
   onRetry,
-  onDownload,
-  onExportMiaoshou,
   onReloadStale,
   onExcludeFailed,
 }: PrecheckFinalizeProgressProps) {
@@ -49,7 +51,9 @@ export function PrecheckFinalizeProgress({
     <section className={`precheck-finalize status-${run.status}`} aria-live="polite">
       <header>
         <div>
-          <span className="precheck-finalize-kicker">完成任务 · {run.id}</span>
+          <span className="precheck-finalize-kicker" title={run.id}>
+            完成任务 · {createdLabel || run.id}
+          </span>
           <h2>{active ? "正在发布最终保留图片" : run.status === "completed" ? "最终版已生成" : "完成任务需要处理"}</h2>
         </div>
         <span className={`precheck-finalize-status status-${run.status}`}>
@@ -120,33 +124,8 @@ export function PrecheckFinalizeProgress({
         <div className="precheck-finalize-completed">
           <div><strong>{run.product_count}</strong><span>商品</span></div>
           <div><strong>{run.row_count}</strong><span>表格行</span></div>
-          <div className="precheck-finalize-downloads">
-            <span className="precheck-finalize-downloads-label">下载表格：</span>
-            <button
-              type="button"
-              className="primary"
-              disabled={downloading || !run.workbook_ready || !run.download}
-              onClick={onDownload}
-            >
-              {downloading ? "下载中…" : "店小秘"}
-            </button>
-            <button
-              type="button"
-              className="primary"
-              disabled={msExporting !== null}
-              onClick={() => onExportMiaoshou("apparel")}
-            >
-              {msExporting === "apparel" ? "正在生成…" : "妙手·服饰类"}
-            </button>
-            <button
-              type="button"
-              className="primary"
-              disabled={msExporting !== null}
-              onClick={() => onExportMiaoshou("general")}
-            >
-              {msExporting === "general" ? "正在生成…" : "妙手·非服饰类"}
-            </button>
-          </div>
+          {/* 下载入口统一放在下方「历史导出」列表里（那里是永久记录、且带导入格式与
+              "已生成→重新下载" 的二态）；卡片这里不再重复一组按钮。 */}
         </div>
       )}
     </section>

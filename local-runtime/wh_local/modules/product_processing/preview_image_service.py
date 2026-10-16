@@ -2309,7 +2309,27 @@ class PreviewImageService:
                 if ready
                 else ""
             ),
+            # 该次导出已生成过哪些妙手模板：妙手是从快照「现场生成」的、不登记新记录，
+            # 但文件会一直留在该 run 的目录里。历史导出据此把它列出来，用户可直接重新下载
+            # 而不用再生成一次（2026-10-16）。
+            "miaoshou_generated": self._miaoshou_generated_kinds(run, task_id),
         }
+
+    def _miaoshou_generated_kinds(
+        self, run: Mapping[str, Any], task_id: int
+    ) -> list[str]:
+        """该次导出已生成过哪些妙手模板（服饰类/非服饰类），按磁盘上文件是否存在判断。"""
+        if str(run.get("status") or "") != "completed":
+            return []
+        kinds: list[str] = []
+        for kind in (MS_KIND_APPAREL, MS_KIND_GENERAL):
+            try:
+                path = self._miaoshou_destination(run, task_id, kind)
+            except (FileNotFoundError, OSError):
+                return kinds
+            if path.is_file():
+                kinds.append(kind)
+        return kinds
 
     @staticmethod
     def _bounded_error(exc: Exception) -> str:

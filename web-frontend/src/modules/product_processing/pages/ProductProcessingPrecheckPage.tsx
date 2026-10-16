@@ -10,6 +10,8 @@ import {
   getPreviewFinalizeRun,
   importPreviewAssetFromUrl,
   listPreviewFinalizeRuns,
+  miaoshouDownloadUrl,
+  miaoshouFileName,
   regeneratePreviewDetail,
   retryMediaAsset,
   retryPreviewFinalizeRun,
@@ -20,7 +22,7 @@ import {
 } from '../api/productProcessingApi';
 import { DimensionChangeSetReview } from '../components/DimensionChangeSetReview';
 import { ProductFlowCard } from '../components/ProductFlowSteps';
-import { PrecheckFinalizeProgress } from '../components/PrecheckFinalizeProgress';
+import { EXPORT_FORMAT_LABELS, PrecheckFinalizeProgress } from '../components/PrecheckFinalizeProgress';
 import { PrecheckImageManager } from '../components/PrecheckImageManager';
 import {
   PrecheckSkuManager,
@@ -331,11 +333,20 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     }
   }, [ctx, downloadedStorageKey, fail, notify]);
 
-  const exportMiaoshou = useCallback(async (kind: MiaoshouTemplateKind) => {
-    if (!finalizeRun?.id) return;
+  /**
+   * 生成并下载妙手模板（服饰类 / 非服饰类）。
+   *
+   * 显式接收 runId：妙手是从**某一次已完成的导出快照**现场生成的，后端只要求该 run 是
+   * completed 且有快照（见 export_miaoshou_workbook），与页面会话无关。历史导出列表也要
+   * 用它——否则一旦「最终版已生成」卡片丢失（从「历史记录」进入预检、页面会话被清、或排除
+   * 商品后主动作废 run），妙手就再无入口，用户只能重新点「完成预检并导出」，还会撞上幂等
+   * 保护提示「这次导出和上一次重复提交了」。
+   */
+  const exportMiaoshou = useCallback(async (runId: string, kind: MiaoshouTemplateKind) => {
+    if (!runId) return;
     setMsExporting(kind);
     try {
-      const payload = await exportMiaoshouPreview(ctx, taskId, finalizeRun.id, kind);
+      const payload = await exportMiaoshouPreview(ctx, taskId, runId, kind);
       if (!payload.download) throw new Error('妙手导出未生成下载链接');
       await ppDownload(ctx, payload.download, payload.file || `miaoshou_${kind}_task_${taskId}.xlsx`);
       const kindLabel = kind === 'apparel' ? '服饰类' : '非服饰类';
@@ -345,7 +356,36 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     } finally {
       setMsExporting(null);
     }
-  }, [ctx, taskId, finalizeRun, fail, notify]);
+  }, [ctx, taskId, fail, notify]);
+
+  /**
+   * 直接重新下载此前已生成的妙手模板（不重新生成）。
+   *
+   * 妙手文件生成后一直留在该次导出的目录里（后端 miaoshou-download 直接取文件），
+   * 历史导出据此给出「重新下载」，省掉每次都要重跑一遍生成。
+   */
+  const downloadMiaoshou = useCallback(async (runId: string, kind: MiaoshouTemplateKind) => {
+    if (!runId) return;
+    setMsExporting(kind);
+    try {
+      await ppDownload(ctx, miaoshouDownloadUrl(taskId, runId, kind), miaoshouFileName(kind, taskId));
+      const kindLabel = kind === 'apparel' ? '服饰类' : '非服饰类';
+      notify(`妙手${kindLabel}表已重新下载（文件一直保存在本机，未重新生成）`);
+    } catch (err) {
+      fail(err);
+    } finally {
+      setMsExporting(null);
+    }
+  }, [ctx, taskId, fail, notify]);
+
+  /** 妙手按钮：该次导出已生成过就直接重下，否则按快照现场生成。 */
+  const runMiaoshouAction = useCallback((run: PreviewFinalizeRun, kind: MiaoshouTemplateKind) => {
+    if ((run.miaoshou_generated ?? []).includes(kind)) {
+      void downloadMiaoshou(run.id, kind);
+      return;
+    }
+    void exportMiaoshou(run.id, kind);
+  }, [downloadMiaoshou, exportMiaoshou]);
 
   const refreshHistory = useCallback(async () => {
     try {
@@ -407,9 +447,29 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     document.addEventListener('visibilitychange', updateVisibility);
 
     const storedRunId = readSession(runStorageKey);
-    if (storedRunId) refresh.watch(storedRunId);
+    let cancelled = false;
+    if (storedRunId) {
+      refresh.watch(storedRunId);
+    } else {
+      // 「历史记录 → 进入预检」是新开的页标签，页面会话里没有 run，「最终版已生成」卡片会整个
+      // 消失——连带丢掉「妙手·服饰类 / 妙手·非服饰类」的生成入口（只有店小秘还能从历史导出重下）。
+      // 这里回落到最近一次已完成的导出：卡片和三种格式的下载入口都回来。
+      void (async () => {
+        try {
+          const runs = await listPreviewFinalizeRuns(ctx, taskId);
+          if (cancelled) return;
+          const latest = runs.find((run) => run.status === 'completed');
+          if (!latest) return;
+          writeSession(runStorageKey, latest.id);
+          acceptFinalizeRun(latest);
+        } catch {
+          // 只影响「能不能找回已生成的表格」，失败不该打断预检主流程。
+        }
+      })();
+    }
 
     return () => {
+      cancelled = true;
       document.removeEventListener('visibilitychange', updateVisibility);
       refresh.stop();
       if (refreshRef.current === refresh) refreshRef.current = null;
@@ -1508,11 +1568,8 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
           run={finalizeRun}
           assets={allAssets}
           retrying={retrying}
-          downloading={downloading}
-          msExporting={msExporting}
+          createdLabel={formatFinalizeTime(finalizeRun.created_at)}
           onRetry={() => void retryFinalize()}
-          onDownload={() => void downloadRun(finalizeRun, false)}
-          onExportMiaoshou={(kind) => void exportMiaoshou(kind)}
           onReloadStale={() => void reloadAfterStale()}
           onExcludeFailed={() => void excludeFailedItems()}
         />
@@ -1522,7 +1579,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
         <section className="precheck-finalize-history">
           <header>
             <h2>历史导出</h2>
-            <span>表格生成后一直保存在本机，这里可以直接重新下载，不用再导出一次</span>
+            <span>每次导出的表格都一直保存在本机，这里是唯一下载入口（重新下载 = 不重新生成）；妙手模板也能按任意一次导出现场生成</span>
           </header>
           <ul>
             {historyRuns.map((run) => (
@@ -1543,8 +1600,32 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
                 >
                   {downloading
                     ? <><i className="app-spinner is-sm" aria-hidden="true" />重新下载</>
-                    : run.workbook_ready ? '重新下载' : '暂无表格'}
+                    : run.workbook_ready
+                      ? `重新下载（${EXPORT_FORMAT_LABELS[run.workbook_format] ?? run.workbook_format}）`
+                      : '暂无表格'}
                 </button>
+                {/* 妙手模板按这一条历史导出现场生成：它是结果卡片的兜底入口——从「历史记录」进入
+                    预检时卡片不存在，没有这两个按钮就再也拿不到妙手表格。已生成过的直接重下
+                    （文件一直留在本机），不再重跑一遍生成。 */}
+                {run.status === 'completed' && (['apparel', 'general'] as const).map((kind) => {
+                  const kindLabel = kind === 'apparel' ? '服饰类' : '非服饰类';
+                  const generated = (run.miaoshou_generated ?? []).includes(kind);
+                  return (
+                    <button
+                      key={kind}
+                      type="button"
+                      disabled={msExporting !== null}
+                      title={generated
+                        ? '该文件已生成并保存在本机，直接重新下载（不会重新生成）'
+                        : '按这次导出的快照现场生成妙手模板'}
+                      onClick={() => runMiaoshouAction(run, kind)}
+                    >
+                      {msExporting === kind
+                        ? <><i className="app-spinner is-sm" aria-hidden="true" />正在处理…</>
+                        : `妙手·${kindLabel}（${generated ? '重新下载' : '生成'}）`}
+                    </button>
+                  );
+                })}
               </li>
             ))}
           </ul>
