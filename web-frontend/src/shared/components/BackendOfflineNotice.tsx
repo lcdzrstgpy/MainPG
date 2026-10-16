@@ -3,6 +3,7 @@ import {
   BACKEND_OFFLINE_EVENT,
   BACKEND_ONLINE_EVENT,
   backendHealthUrl,
+  resetBackendOfflineState,
 } from "../../transport/http/client";
 import { hasRunningTask } from "../runtime/taskActivity";
 
@@ -51,7 +52,12 @@ async function probeHealth(): Promise<boolean> {
       // 必须校验返回 JSON：开发态 /health 若未被代理，vite 会回 SPA 的 index.html(200)，
       // 只认 response.ok 会把这种「假成功」当成后端已恢复。
       const contentType = response.headers.get("content-type") ?? "";
-      return response.ok && contentType.includes("application/json");
+      const healthy = response.ok && contentType.includes("application/json");
+      // 探活成功同样是「后端活着」的铁证，必须让 client 的失联状态机复位：
+      // probeHealth 走裸 fetch，不经过 httpJson，不复位就会让状态机停在「已通知
+      // 离线」，之后真掉线时不再弹提示（2026-10-16 复查发现的漏报路径）。
+      if (healthy) resetBackendOfflineState();
+      return healthy;
     } finally {
       window.clearTimeout(timeoutId);
     }
@@ -95,6 +101,8 @@ export function BackendOfflineNotice() {
       timerRef.current = window.setTimeout(() => {
         timerRef.current = null;
         setPhase("idle");
+        // 重新掉线时收起上一次的「已恢复」提示条，避免两条浮层同时在场。
+        setResumeNotice(false);
         setOffline(true);
       }, 1000);
     };

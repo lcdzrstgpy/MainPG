@@ -19,6 +19,16 @@ from pathlib import Path
 import run_workbench
 
 
+def _fake_open(opened: list[str]):
+    """替身：记录 URL 并返回 True —— 必须返回真值，复用路径会检查打开是否成功。"""
+
+    def _open(url: str) -> bool:
+        opened.append(url)
+        return True
+
+    return _open
+
+
 @contextlib.contextmanager
 def _serve(payload: object, *, raw: str | None = None):
     """起一个只回 /health 的临时服务，yield 出它的端口号。"""
@@ -82,7 +92,7 @@ def test_same_path_ignores_case_and_separators() -> None:
 def test_reuse_opens_page_and_skips_notice_for_same_data_dir(monkeypatch) -> None:
     opened: list[str] = []
     notices: list[str] = []
-    monkeypatch.setattr(run_workbench.webbrowser, "open", lambda url: opened.append(url))
+    monkeypatch.setattr(run_workbench.webbrowser, "open", _fake_open(opened))
     monkeypatch.setattr(run_workbench, "_show_notice_box", notices.append)
     monkeypatch.setattr(run_workbench, "_expected_database_path", lambda: r"D:\Data\wh.sqlite3")
 
@@ -101,7 +111,7 @@ def test_reuse_opens_page_and_skips_notice_for_same_data_dir(monkeypatch) -> Non
 def test_reuse_warns_when_data_dir_differs(monkeypatch) -> None:
     opened: list[str] = []
     notices: list[str] = []
-    monkeypatch.setattr(run_workbench.webbrowser, "open", lambda url: opened.append(url))
+    monkeypatch.setattr(run_workbench.webbrowser, "open", _fake_open(opened))
     monkeypatch.setattr(run_workbench, "_show_notice_box", notices.append)
     monkeypatch.setattr(run_workbench, "_expected_database_path", lambda: r"D:\Mine\wh.sqlite3")
 
@@ -120,7 +130,7 @@ def test_reuse_warns_when_data_dir_differs(monkeypatch) -> None:
 
 def test_reuse_respects_no_browser(monkeypatch) -> None:
     opened: list[str] = []
-    monkeypatch.setattr(run_workbench.webbrowser, "open", lambda url: opened.append(url))
+    monkeypatch.setattr(run_workbench.webbrowser, "open", _fake_open(opened))
     monkeypatch.setattr(run_workbench, "_show_notice_box", lambda message: None)
     monkeypatch.setattr(run_workbench, "_expected_database_path", lambda: None)
 
@@ -194,3 +204,22 @@ def test_main_releases_port_when_holder_is_not_the_workbench(monkeypatch, tmp_pa
 
     assert run_workbench.main() == 1
     assert calls == {"release": 1, "reuse": 0}
+
+
+def test_reuse_notifies_when_browser_open_fails(monkeypatch) -> None:
+    """打开浏览器失败时不能静默退出：否则用户双击后毫无反应、以为程序坏了。"""
+    notices: list[str] = []
+    monkeypatch.setattr(run_workbench.webbrowser, "open", lambda url: False)
+    monkeypatch.setattr(run_workbench, "_show_notice_box", notices.append)
+    monkeypatch.setattr(run_workbench, "_expected_database_path", lambda: None)
+
+    class _Args:
+        host = "127.0.0.1"
+        port = 8010
+        no_browser = False
+
+    run_workbench._reuse_running_workbench(_Args(), "")
+
+    assert len(notices) == 1
+    assert "手动在浏览器打开" in notices[0]
+    assert "http://127.0.0.1:8010/" in notices[0]

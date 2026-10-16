@@ -222,23 +222,30 @@ def _reuse_running_workbench(args: argparse.Namespace, running_db: str) -> None:
             f"　　正在运行：{running_db}\n"
             f"　　本次启动：{expected_db}\n\n"
             "为避免看到或改错数据，建议先完全退出那个程序，再启动本次的。\n"
-            "现在将打开已在运行的那一个。"
+            "本次不会重复启动后台服务。"
         )
     try:
         from wh_local.config import APP_VERSION as app_version
     except Exception:  # noqa: BLE001
         app_version = "unknown"
     url = _workbench_url(args.host, args.port, app_version)
+    _log.info("reusing running workbench at %s (data dir: %s)", url, running_db or "(unknown)")
+    print(f"[run-workbench] reusing running workbench at {url}")
     if not args.no_browser:
         # 后端已就绪，无需像冷启动那样等 2.5 秒；这里同步打开——本实例马上要退出，
         # daemon 线程来不及跑完就会被解释器回收（_open_browser_later 的延时在复用
         # 路径下必然丢）。
+        opened = False
         try:
-            webbrowser.open(url)
-        except Exception:  # noqa: BLE001 - 打开失败不阻断复用
-            pass
-    _log.info("reusing running workbench at %s (data dir: %s)", url, running_db or "(unknown)")
-    print(f"[run-workbench] reusing running workbench at {url}")
+            opened = webbrowser.open(url)
+        except Exception:  # noqa: BLE001 - 打开失败下面会给手动指引
+            opened = False
+        if not opened:
+            # 不能静默退出：用户双击后毫无反应会以为程序坏了。
+            _show_notice_box(
+                "界野电商平台已经在运行，本次没有重复启动后台服务。\n\n"
+                f"请手动在浏览器打开：\n{url}"
+            )
 
 
 def _first_free_port(host: str, start: int) -> int:

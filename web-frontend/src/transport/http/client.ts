@@ -413,15 +413,28 @@ function notifyBackendOffline(): void {
   }, BACKEND_OFFLINE_CONFIRM_MS);
 }
 
-function notifyBackendOnline(): void {
+/** 复位失联确认状态，但不广播恢复事件。
+ *
+ * 供「探活」使用：BackendOfflineNotice 的 probeHealth 走的是裸 fetch，不经过
+ * httpJson，因此拿不到 notifyBackendOnline 里的复位。若不复位，「点一次重新连接
+ * 成功」会让状态机永远停在「已通知离线」—— 之后真的掉线时 notifyBackendOffline
+ * 会直接 return，用户再也看不到掉线提示（2026-10-16 复查发现的漏报路径）。
+ * 只清状态、不广播：调用方自己知道该怎么收拾 UI。
+ */
+export function resetBackendOfflineState(): void {
   offlineSince = null;
+  offlineNotified = false;
   if (offlineConfirmTimer !== null) {
     window.clearTimeout(offlineConfirmTimer);
     offlineConfirmTimer = null;
   }
+}
+
+function notifyBackendOnline(): void {
+  const wasNotified = offlineNotified;
+  resetBackendOfflineState();
   // 从未广播过离线 → 无需广播恢复（避免每个成功请求都空跑一次事件分发）。
-  if (!offlineNotified) return;
-  offlineNotified = false;
+  if (!wasNotified) return;
   window.dispatchEvent(new CustomEvent(BACKEND_ONLINE_EVENT));
 }
 

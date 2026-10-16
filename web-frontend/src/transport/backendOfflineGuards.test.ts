@@ -62,3 +62,20 @@ test("恢复提示条压在页面之上，底色必须用实心变量", () => {
   );
   assert.ok(block.includes("z-index"), "提示条需显式 z-index 才能压在内容之上");
 });
+
+test("探活成功必须复位失联状态机，否则后续掉线不再弹提示", () => {
+  const src = readClient();
+  assert.ok(
+    /export function resetBackendOfflineState\(\)/.test(src),
+    "client.ts 应导出 resetBackendOfflineState 供探活复位",
+  );
+  const notice = readNotice();
+  const probeStart = notice.indexOf("async function probeHealth");
+  const componentStart = notice.indexOf("export function BackendOfflineNotice");
+  assert.ok(probeStart > -1 && componentStart > probeStart, "应能找到 probeHealth 函数体");
+  const probe = notice.slice(probeStart, componentStart);
+  assert.ok(
+    /if \(healthy\) resetBackendOfflineState\(\)/.test(probe),
+    "probeHealth 探测成功时必须复位失联状态机",
+  );
+});
