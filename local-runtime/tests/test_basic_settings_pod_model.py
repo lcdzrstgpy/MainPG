@@ -36,7 +36,12 @@ def test_pod_image_model_defaults_to_image_gpt_2_5(tmp_path: Path) -> None:
     assert payload["ok"] is True
     # 产品侧要求：POD 定制默认走 2.5（AI处理 的默认不受影响，仍是 image_gpt）。
     assert payload["model"] == "image_gpt_2.5"
-    assert {choice["value"] for choice in payload["choices"]} == {"image_gpt", "image_gpt_2.5"}
+    # 对外只有一份模型清单：速创两个 + 豆包一个。
+    assert {choice["value"] for choice in payload["choices"]} == {
+        "image_gpt",
+        "image_gpt_2.5",
+        "doubao-seedream-5-0-flash-260915",
+    }
 
 
 def test_saving_pod_model_does_not_touch_ai_processing_model(tmp_path: Path) -> None:
@@ -103,3 +108,50 @@ def test_legacy_database_without_pod_section_gains_default(tmp_path: Path) -> No
     # 旧库没有 pod_image 段：加载时补 POD 默认值，且不回退 AI处理 已选模型。
     assert service.get_pod_image_model()["model"] == "image_gpt_2.5"
     assert service.get_image_model()["model"] == "image_gpt_2.5"
+
+
+def test_pod_image_choices_cover_both_suchuang_models_and_doubao(tmp_path: Path) -> None:
+    service = _service(tmp_path / "workbench.sqlite3")
+
+    payload = service.get_pod_image_model()
+
+    # 对外只有一份模型清单：速创两个 + 豆包一个，没有"平台"这一级。
+    assert [choice["value"] for choice in payload["choices"]] == [
+        "image_gpt",
+        "image_gpt_2.5",
+        "doubao-seedream-5-0-flash-260915",
+    ]
+    assert "platforms" not in payload
+    assert "provider" not in payload
+
+
+def test_saving_the_doubao_model_is_kept_and_does_not_touch_ai_processing(tmp_path: Path) -> None:
+    service = _service(tmp_path / "workbench.sqlite3")
+    service.save_image_model("image_gpt", actor_id="tester")
+
+    service.save_pod_image_model("doubao-seedream-5-0-flash-260915", actor_id="tester")
+
+    assert service.get_pod_image_model()["model"] == "doubao-seedream-5-0-flash-260915"
+    assert service.get_image_model()["model"] == "image_gpt"
+
+
+def test_legacy_provider_field_is_dropped_on_load(tmp_path: Path) -> None:
+    database_path = tmp_path / "workbench.sqlite3"
+    service = _service(database_path)
+    config = {
+        "ai": {"base_url": "https://station-88.aicoming.top/v1", "model": "gpt-5.6-terra"},
+        "image": {"base_url": "https://station-88.aicoming.top/v1", "model": "gpt-image-2-2k"},
+        "pod_image": {"provider": "doubao", "model": "doubao-seedream-5-0-flash-260915"},
+        "backup_image": {"base_url": "", "model": "", "reference_model": ""},
+        "cos": {"bucket": "", "region": "ap-guangzhou"},
+        "limits": {},
+        "updates": {},
+    }
+    with transaction(database_path) as conn:
+        conn.execute(
+            "INSERT INTO workbench_settings(key, value_json, updated_by, updated_at) VALUES(?, ?, ?, ?)",
+            (CONFIG_KEY, json.dumps(config), "legacy", "2026-01-01T00:00:00Z"),
+        )
+
+    # 已废弃的 provider 字段不该再影响读取；模型名本身仍然保留。
+    assert service.get_pod_image_model()["model"] == "doubao-seedream-5-0-flash-260915"

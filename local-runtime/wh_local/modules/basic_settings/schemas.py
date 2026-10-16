@@ -66,7 +66,10 @@ class ImageModelSelection(BaseModel):
 
 
 class PodImageModelSelection(BaseModel):
-    """个人中心提交的 POD 独立生图模型名。"""
+    """个人中心提交的 POD 生图模型（服务端按目录白名单校验）。
+
+    没有"平台"字段：模型名全局唯一，服务端按模型反查走哪条上游。
+    """
 
     model: str = ""
 

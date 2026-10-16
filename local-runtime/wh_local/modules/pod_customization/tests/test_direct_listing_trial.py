@@ -138,7 +138,7 @@ def test_direct_listing_trial_makes_one_reference_grid_and_returns_four_public_r
     assert runtime.requests[0].template_image == _png("#ffffff")
     assert runtime.requests[0].template_id == template["id"]
     assert "same exact product" in runtime.requests[0].prompt
-    assert "The template is not a background plate" in runtime.requests[0].prompt
+    assert "Never use the template as the base image" in runtime.requests[0].prompt
     assert "template's existing artwork" in runtime.requests[0].prompt
     assert "Panel 1 — PRIMARY IMAGE" in runtime.requests[0].prompt
     assert "Panel 2 — DETAIL IMAGE A" in runtime.requests[0].prompt
