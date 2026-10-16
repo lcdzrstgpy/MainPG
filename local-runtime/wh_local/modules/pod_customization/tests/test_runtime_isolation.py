@@ -271,6 +271,158 @@ def test_suchuang_poll_abandons_a_stalled_task_at_the_segment_timeout() -> None:
         runtime.close()
 
 
+def test_suchuang_poll_fails_fast_when_the_task_reports_generation_failure() -> None:
+    """上游对失败的生成回 status=3 + data.message="generate image failed"。
+
+    状态码本身区分不了「处理中」与「生成失败」，必须按任务级消息立即判失败并带出真实原因；
+    否则会白等到分段超时，把真实错误伪装成「分段超时：成功」。
+    """
+
+    class Response:
+        status_code = 200
+        ok = True
+
+        def json(self):
+            return {
+                "code": 200,
+                "msg": "成功",
+                "data": {"status": 3, "result": None, "message": "generate image failed"},
+            }
+
+        def close(self):
+            return None
+
+    class FailingSession:
+        def get(self, _url, **_kwargs):
+            return Response()
+
+        def close(self):
+            return None
+
+    runtime = PodCustomizationAiRuntime(
+        image_workers=1,
+        requests_per_minute=0,
+        session=FailingSession(),
+        poll_interval_seconds=0.02,
+        result_timeout_seconds=30.0,
+    )
+    try:
+        started = time.monotonic()
+        with pytest.raises(MediaProcessingError) as caught:
+            runtime._poll_suchuang_grid(_grant(wuyin="fresh-image-key"), "suchuang-task-fail")
+        assert caught.value.status_class == "transient"
+        assert "速创图片任务失败" in str(caught.value)
+        assert "generate image failed" in str(caught.value)
+        assert "分段超时" not in str(caught.value)
+        assert time.monotonic() - started < 5.0
+    finally:
+        runtime.close()
+
+
+def test_suchuang_poll_fails_fast_when_the_task_is_refused_by_content_moderation() -> None:
+    """上游审核拒绝也走 status=3 + data.message，且文案里不含 failed/失败 一类的词。
+
+    实测 data.message="此内容可能违反了我们的内容政策 请更换提示词或图片内容后重试"：
+    不收录审核措辞会退化成「处理中」并白等到 240s 才报「分段超时」。
+    """
+
+    class Response:
+        status_code = 200
+        ok = True
+
+        def json(self):
+            return {
+                "code": 200,
+                "msg": "成功",
+                "data": {
+                    "status": 3,
+                    "result": None,
+                    "message": "此内容可能违反了我们的内容政策 请更换提示词或图片内容后重试",
+                },
+            }
+
+        def close(self):
+            return None
+
+    class RefusingSession:
+        def get(self, _url, **_kwargs):
+            return Response()
+
+        def close(self):
+            return None
+
+    runtime = PodCustomizationAiRuntime(
+        image_workers=1,
+        requests_per_minute=0,
+        session=RefusingSession(),
+        poll_interval_seconds=0.02,
+        result_timeout_seconds=30.0,
+    )
+    try:
+        started = time.monotonic()
+        with pytest.raises(MediaProcessingError) as caught:
+            runtime._poll_suchuang_grid(_grant(wuyin="fresh-image-key"), "suchuang-task-moderation")
+        assert "违反" in str(caught.value)
+        assert "分段超时" not in str(caught.value)
+        assert time.monotonic() - started < 5.0
+    finally:
+        runtime.close()
+
+
+def test_suchuang_poll_keeps_waiting_on_status_three_without_a_failure_message() -> None:
+    """status=3 且任务消息未报失败（data.msg="成功"）仍是「处理中」，要等到出图才返回。"""
+
+    class Processing:
+        status_code = 200
+        ok = True
+
+        def json(self):
+            return {"code": 200, "msg": "成功", "data": {"status": 3, "msg": "成功"}}
+
+        def close(self):
+            return None
+
+    class Ready:
+        status_code = 200
+        ok = True
+
+        def json(self):
+            return {
+                "code": 200,
+                "msg": "成功",
+                "data": {"status": 1, "url": "https://1.1.1.1/result.png"},
+            }
+
+        def close(self):
+            return None
+
+    class Session:
+        def __init__(self):
+            self.calls = 0
+
+        def get(self, _url, **_kwargs):
+            self.calls += 1
+            return Processing() if self.calls < 3 else Ready()
+
+        def close(self):
+            return None
+
+    runtime = PodCustomizationAiRuntime(
+        image_workers=1,
+        requests_per_minute=0,
+        session=Session(),
+        poll_interval_seconds=0.01,
+        result_timeout_seconds=5.0,
+    )
+    try:
+        assert (
+            runtime._poll_suchuang_grid(_grant(wuyin="fresh-image-key"), "suchuang-task-ok")
+            == "https://1.1.1.1/result.png"
+        )
+    finally:
+        runtime.close()
+
+
 def test_direct_listing_grid_fails_closed_without_wuyin_grant() -> None:
     runtime = PodCustomizationAiRuntime(image_workers=1, requests_per_minute=0)
     try:

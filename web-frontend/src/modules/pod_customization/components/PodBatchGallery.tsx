@@ -10,6 +10,8 @@ import { PodListingDetailDrawer } from "./PodListingDetailDrawer";
 type Props = {
   batch: PodBatch | null;
   busyAction: string;
+  emptyTitle?: string;
+  emptyDescription?: string;
   /** 复刻等按款解析产品名的场景：按 style_index 提供当前款的产品名兜底展示，全定制不传则维持原行为。 */
   resolveStyleProductName?: (styleIndex: number) => string | undefined;
   onOpenResult: (item: PodBatchItem, styleIndex: number) => void;
@@ -65,7 +67,7 @@ function PodWaitingTime({ createdAt, finishedAt, updatedAt, live }: { createdAt:
   return <>已等待 {formatPodBatchWaitingTime(createdAt, end)} · </>;
 }
 
-export function PodBatchGallery({ batch, busyAction, resolveStyleProductName, onOpenResult, onRegenerateStyle, onRegenerateTitle, onUpdateExportSelection, onSetAllExportSelection, onSaveTitle, onExportDianxiaomi, onExportMiaoshou, onOpenFailedRetry, onPauseBatch, onCancelBatch, onResumeBatch }: Props) {
+export function PodBatchGallery({ batch, busyAction, emptyTitle = "从一个模板开始本批次", emptyDescription = "生成结果会固定归在对应款式下。", resolveStyleProductName, onOpenResult, onRegenerateStyle, onRegenerateTitle, onUpdateExportSelection, onSetAllExportSelection, onSaveTitle, onExportDianxiaomi, onExportMiaoshou, onOpenFailedRetry, onPauseBatch, onCancelBatch, onResumeBatch }: Props) {
   const [selectedStyleIndex, setSelectedStyleIndex] = useState<number>();
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const exportMenuRef = useRef<HTMLDivElement>(null);
@@ -80,7 +82,7 @@ export function PodBatchGallery({ batch, busyAction, resolveStyleProductName, on
     return () => document.removeEventListener("mousedown", closeOnOutside);
   }, [exportMenuOpen]);
 
-  if (!batch) return <section className="pod-gallery pod-gallery-empty" aria-label="POD 批次画廊"><span className="iconfont icon-skin" aria-hidden="true" /><h2>从一个模板开始本批次</h2><p>生成结果会固定归在对应款式下。</p></section>;
+  if (!batch) return <section className="pod-gallery pod-gallery-empty" aria-label="POD 批次画廊"><span className="iconfont icon-skin" aria-hidden="true" /><h2>{emptyTitle}</h2><p>{emptyDescription}</p></section>;
 
   const progress = batchProgress(batch);
   const progressCounts = podBatchProgressCounts(batch);

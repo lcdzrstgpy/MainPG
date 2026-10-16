@@ -44,6 +44,7 @@ const DimensionCanvasPage = lazy(() => import("../../modules/product_processing/
 const PodCustomizationPage = lazy(() => import("../../modules/pod_customization/pages/PodCustomizationPage").then((m) => ({ default: m.PodCustomizationPage })));
 const PodSemiCustomizationPage = lazy(() => import("../../modules/pod_semi_customization/pages/PodSemiCustomizationPage").then((m) => ({ default: m.PodSemiCustomizationPage })));
 const PodReplicaPage = lazy(() => import("../../modules/pod_replica/pages/PodReplicaPage").then((m) => ({ default: m.PodReplicaPage })));
+const PodFissionPage = lazy(() => import("../../modules/pod_fission/pages/PodFissionPage").then((m) => ({ default: m.PodFissionPage })));
 const AiVideoPage = lazy(() => import("../../modules/ai_video/pages/AiVideoPage").then((m) => ({ default: m.AiVideoPage })));
 const PersonalCenterPage = lazy(() => import("../../modules/personal_center/pages/PersonalCenterPage").then((m) => ({ default: m.PersonalCenterPage })));
 import type { ProductProcessingOptions } from "../../modules/product_processing/types";
@@ -801,6 +802,9 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         break;
       case "pod_replica":
         content = <PodReplicaPage isActive={isActive} />;
+        break;
+      case "pod_fission":
+        content = <PodFissionPage />;
         break;
       case "ai_video":
         content = <AiVideoPage />;

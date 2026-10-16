@@ -94,16 +94,18 @@ class PodRequestLimitTests(unittest.TestCase):
         async def send(message: dict[str, object]) -> None:
             sent.append(message)
 
-        scope = {
-            "type": "http",
-            "method": "POST",
-            "path": "/api/pod-customization/templates/",
-            "headers": [(b"content-type", b"multipart/form-data; boundary=test")],
-        }
-        asyncio.run(PodRequestLimitMiddleware(downstream)(scope, receive, send))
-
-        self.assertEqual(sent[0]["type"], "http.response.start")
-        self.assertEqual(sent[0]["status"], 307)
+        for path in ("templates/", "fission/images", "fission/images/"):
+            with self.subTest(path=path):
+                sent.clear()
+                chunks[:] = [b"x" * (POD_JSON_REQUEST_MAX_BYTES + 1)]
+                scope = {
+                    "type": "http", "method": "POST",
+                    "path": f"/api/pod-customization/{path}",
+                    "headers": [(b"content-type", b"multipart/form-data; boundary=test")],
+                }
+                asyncio.run(PodRequestLimitMiddleware(downstream)(scope, receive, send))
+                self.assertEqual(sent[0]["type"], "http.response.start")
+                self.assertEqual(sent[0]["status"], 307)
 
 
 if __name__ == "__main__":

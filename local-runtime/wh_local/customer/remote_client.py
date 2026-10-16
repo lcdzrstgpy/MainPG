@@ -317,6 +317,21 @@ class CustomerAuthClient:
             headers={"Authorization": f"Bearer {remote_token}"},
         )
 
+    def freeze_pod_fission_points(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Freeze points for a POD fission batch (one style = one link).
+
+        独立通道：与全定制同价（按款），但走自己的接口，便于单独配置倍率与账单归类。
+        """
+        return self._billing_post("/api/customer/billing/pod-fission/freeze", remote_token, payload)
+
+    def settle_pod_fission_points(self, remote_token: str, freeze_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Settle a frozen POD fission batch (per-style four_grid/title subitem statuses)."""
+        return self._billing_post(
+            "/api/customer/billing/pod-fission/settle",
+            remote_token,
+            {**payload, "freeze_id": freeze_id},
+        )
+
     def submit_pp_failure_log(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Upload product-processing failure diagnostics for server-side storage.
 

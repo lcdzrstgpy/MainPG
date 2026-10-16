@@ -24,6 +24,7 @@ TEST_GRANT_POINTS = int(os.environ.get("WH_BILLING_TEST_GRANT_POINTS", "10000") 
 GATEWAY_LEGACY_LEASE_SECONDS = 900
 BATCH_BILLING_PROFILE_PRODUCT = "product_processing"
 BATCH_BILLING_PROFILE_POD = "pod_random_v1"
+BATCH_BILLING_PROFILE_POD_FISSION = "pod_fission_v1"
 # 半定制（纯图案）独立计费画像：按「组」上报，一组 4 款固定 32 积分（即 8 积分/款）。
 # 客户端半定制把 4 款折叠成 1 个 link 上报（link_count = 组数），故这里按 link 固定 32。
 BATCH_BILLING_PROFILE_POD_SEMI = "pod_semi_v1"
@@ -788,7 +789,7 @@ def usage_history(
     for row in batch_rows:
         raw_status = str(row["status"] or "")
         billing_profile = str(row["billing_profile"] or BATCH_BILLING_PROFILE_PRODUCT)
-        is_pod = billing_profile in {BATCH_BILLING_PROFILE_POD, BATCH_BILLING_PROFILE_POD_SEMI}
+        is_pod = billing_profile in {BATCH_BILLING_PROFILE_POD, BATCH_BILLING_PROFILE_POD_SEMI, BATCH_BILLING_PROFILE_POD_FISSION}
         # 半定制按「组」上报（一组 4 款），展示时要把 link_count 还原成款数。
         is_semi = billing_profile == BATCH_BILLING_PROFILE_POD_SEMI
         freeze_id = str(row["freeze_id"] or "")
@@ -3121,7 +3122,7 @@ def freeze_batch_points(
     """
     link_count = max(1, int(link_count))
     profile = str(billing_profile or BATCH_BILLING_PROFILE_PRODUCT).strip()
-    if profile not in {BATCH_BILLING_PROFILE_PRODUCT, BATCH_BILLING_PROFILE_POD, BATCH_BILLING_PROFILE_POD_SEMI}:
+    if profile not in {BATCH_BILLING_PROFILE_PRODUCT, BATCH_BILLING_PROFILE_POD, BATCH_BILLING_PROFILE_POD_SEMI, BATCH_BILLING_PROFILE_POD_FISSION}:
         raise HTTPException(status_code=400, detail="invalid batch billing profile")
     # 冻结时读取当前生效单条价值/倍率；固定价值模式按 points_per_unit 精确扣费。
     multipliers = active_multipliers(database_path)
@@ -3174,7 +3175,7 @@ def freeze_batch_points(
                 return _batch_freeze_response(
                     existing, pricing=display_pricing, already_frozen=True
                 )
-        if profile in {BATCH_BILLING_PROFILE_POD, BATCH_BILLING_PROFILE_POD_SEMI}:
+        if profile in {BATCH_BILLING_PROFILE_POD, BATCH_BILLING_PROFILE_POD_SEMI, BATCH_BILLING_PROFILE_POD_FISSION}:
             allowed_scope = {"title", "four_grid"}
             if (
                 not normalized_scope
@@ -3690,12 +3691,12 @@ def settle_batch_points(
         )
         freeze_rule_version = (
             int(freeze["rule_version"] or pricing["rule_version"])
-            if profile in {BATCH_BILLING_PROFILE_POD, BATCH_BILLING_PROFILE_POD_SEMI}
+            if profile in {BATCH_BILLING_PROFILE_POD, BATCH_BILLING_PROFILE_POD_SEMI, BATCH_BILLING_PROFILE_POD_FISSION}
             else int(pricing["rule_version"])
         )
         pod_link_price_units: list[int] = []
         pod_scope: tuple[str, ...] = ()
-        if profile in {BATCH_BILLING_PROFILE_POD, BATCH_BILLING_PROFILE_POD_SEMI}:
+        if profile in {BATCH_BILLING_PROFILE_POD, BATCH_BILLING_PROFILE_POD_SEMI, BATCH_BILLING_PROFILE_POD_FISSION}:
             try:
                 pod_link_price_units = [
                     int(value)
@@ -3734,7 +3735,7 @@ def settle_batch_points(
         for index, entry in enumerate(item_results, start=1):
             if not isinstance(entry, dict):
                 raise HTTPException(status_code=400, detail="item_results entry must be an object")
-            if profile in {BATCH_BILLING_PROFILE_POD, BATCH_BILLING_PROFILE_POD_SEMI}:
+            if profile in {BATCH_BILLING_PROFILE_POD, BATCH_BILLING_PROFILE_POD_SEMI, BATCH_BILLING_PROFILE_POD_FISSION}:
                 try:
                     supplied_link_index = int(entry.get("link_idx"))
                 except (TypeError, ValueError) as exc:
@@ -3744,7 +3745,7 @@ def settle_batch_points(
             link_results = entry.get("subitems")
             if not isinstance(link_results, list):
                 raise HTTPException(status_code=400, detail="subitems must be a list")
-            if profile in {BATCH_BILLING_PROFILE_POD, BATCH_BILLING_PROFILE_POD_SEMI}:
+            if profile in {BATCH_BILLING_PROFILE_POD, BATCH_BILLING_PROFILE_POD_SEMI, BATCH_BILLING_PROFILE_POD_FISSION}:
                 statuses: dict[str, str] = {}
                 for result in link_results:
                     if not isinstance(result, dict):

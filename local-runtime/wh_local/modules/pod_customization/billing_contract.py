@@ -6,6 +6,7 @@ from types import MappingProxyType
 from typing import Literal, Mapping, Protocol, Sequence
 
 from ...session import Actor
+from .contracts import MAX_FISSION_STYLES, MIN_FISSION_STYLES
 
 
 PodFeature = Literal["pod.title", "pod.image"]
@@ -13,6 +14,7 @@ PodCallStatus = Literal["success", "no_return"]
 
 # 计费画像：字符串由远端计费服务解释，并据此决定每 link 的随机单价区间。
 POD_BILLING_PROFILE_RANDOM = "pod_random_v1"
+POD_BILLING_PROFILE_FISSION = "pod_fission_v1"
 POD_BILLING_PROFILE_SEMI = "pod_semi_v1"
 # 爆款复刻画像（A/B 两档，远端按档位决定「一次上报」的计价倍率）：
 #   A = pod_replica_v1_a：普通生成（grid，本地拆图）——一次上报扣 1 次全定制积分；
@@ -54,6 +56,8 @@ COMPOSITION_ATTEMPTS = 3
 # （纯 pod.title，零计费）。分析是视觉调用，但走同一条冻结 → 短期密钥 → 结算底座。
 REPLICA_ANALYSIS_ATTEMPTS = 3
 REPLICA_COMPOSITION_ATTEMPTS = 3
+# Fission A/B analysis is one provider call plus one contract repair call.
+FISSION_ANALYSIS_ATTEMPTS = 2
 
 # 复刻独立面板策略（independent_panels）：每款 4 个面板，每个面板预留 2 次图片调用
 # （失败回溯预算），与 grid 每款 2 次尝试的口径一致。
@@ -210,6 +214,18 @@ class PodCallPlan:
             )
         )
         return cls(idempotency_key=f"pod:batch:{batch_id}:initial", calls=calls, billing_profile=billing_profile)
+
+    @classmethod
+    def for_fission_batch(cls, batch_id: str, *, style_count: int) -> "PodCallPlan":
+        if (
+            isinstance(style_count, bool)
+            or not isinstance(style_count, int)
+            or not MIN_FISSION_STYLES <= style_count <= MAX_FISSION_STYLES
+        ):
+            raise ValueError(
+                f"fission style count must be between {MIN_FISSION_STYLES} and {MAX_FISSION_STYLES}"
+            )
+        return cls.for_batch(batch_id, style_count=style_count, billing_profile=POD_BILLING_PROFILE_FISSION)
 
     @classmethod
     def for_replica_batch(
@@ -423,6 +439,19 @@ class PodCallPlan:
             calls=tuple(
                 PodPlannedCall(f"{analysis_id}:analysis:{attempt}", "pod.title")
                 for attempt in range(1, REPLICA_ANALYSIS_ATTEMPTS + 1)
+            ),
+        )
+
+    @classmethod
+    def for_fission_analysis(cls, analysis_id: str) -> "PodCallPlan":
+        """联合 A/B 分析：预留首次分析与一次契约修复调用。"""
+        if not str(analysis_id).strip():
+            raise ValueError("analysis_id is required")
+        return cls(
+            idempotency_key=f"pod:fission-analysis:{analysis_id}",
+            calls=tuple(
+                PodPlannedCall(f"{analysis_id}:analysis:{attempt}", "pod.title")
+                for attempt in range(1, FISSION_ANALYSIS_ATTEMPTS + 1)
             ),
         )
 

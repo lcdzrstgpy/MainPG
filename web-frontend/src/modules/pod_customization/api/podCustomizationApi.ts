@@ -25,7 +25,7 @@ const API_BASE = "/api/pod-customization";
 
 /** 构图模板池的 query 片段：默认 full 不追加，replica 才显式带上，保持旧请求形状。 */
 function compositionScopeQuery(scope: PodCompositionScope): string {
-  return scope === "replica" ? "?scope=replica" : "";
+  return scope === "full" ? "" : `?scope=${encodeURIComponent(scope)}`;
 }
 
 // 智能前置层生成为大输出（40+ 元素 / 10+ 配色 / 12+ 禁用项），沿用默认 30s 会被前端提前中断。
