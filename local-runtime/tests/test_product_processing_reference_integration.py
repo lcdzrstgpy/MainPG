@@ -15,6 +15,7 @@ from wh_local.modules.product_processing.domain.content_reference_library import
 from wh_local.modules.product_processing.domain.prompts import (
     COMBINED_TEXT_PROMPT,
     GRID_IMAGE_PROMPT,
+    GRID_RUNTIME_CONTRACT,
     default_image_context,
     format_prompt,
 )
@@ -101,15 +102,17 @@ def test_image_reference_append_preserves_exact_grid_and_product_fidelity_rules(
     )
 
     combined = append_content_reference(prompt, reference, kind="image")
+    # 结构 / 保真规则现已归位到 GRID_RUNTIME_CONTRACT，按运行时真实拼装顺序
+    # （模板 -> 内容参考 -> 运行时契约）复现，验证参考图注入不会挤掉这两类契约。
+    combined = f"{combined.rstrip()}\n\n{GRID_RUNTIME_CONTRACT}"
 
     assert combined.startswith(prompt.rstrip())
     assert "CONTENT REFERENCE ONLY — IMAGE:" in combined
-    assert "ONLY source of truth for the SKU" in combined
-    assert "exact four-panel 2x2 e-commerce grid" in combined
-    assert "Keep an exact four-panel 2x2 grid with clean straight dividers" in combined
-    assert "Do not change the four-grid structure, divider layout, or split logic" in combined
-    assert "Lock before generating" in combined
-    assert "Do not change the product itself" in combined
+    assert "NON-OVERRIDABLE FOUR-GRID RUNTIME CONTRACT" in combined
+    assert "2x2 transport grid" in combined
+    assert "are the ONLY source of truth" in combined
+    assert "PRODUCT FIDELITY" in combined
+    assert "PANEL ROLES" in combined
 
 
 def test_service_has_exactly_four_narrow_content_reference_integration_points() -> None:
@@ -334,7 +337,8 @@ def test_grid_image_reference_does_not_add_provider_calls(monkeypatch) -> None:
 
     assert len(processor.prompts) == 1
     assert "CONTENT REFERENCE ONLY — IMAGE:" in processor.prompts[0]
-    assert "exact four-panel 2x2" in processor.prompts[0]
+    # 结构契约由 GRID_RUNTIME_CONTRACT 承载（模板已减重，不再自带结构段落）。
+    assert "NON-OVERRIDABLE FOUR-GRID RUNTIME CONTRACT" in processor.prompts[0]
     assert "AUTHORITATIVE SUBJECT ANALYSIS FROM THE ORIGINAL 1688 IMAGE:" in processor.prompts[0]
     assert '"sellable_subject": "insulated stainless steel travel mug"' in processor.prompts[0]
     assert processor.prompts[0].rstrip().endswith(

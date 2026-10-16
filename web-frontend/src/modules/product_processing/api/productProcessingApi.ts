@@ -291,14 +291,20 @@ export function retryMediaAsset(
   );
 }
 
-/** 处理设置页「SKU 规格图可用性判断」：检测所选链接的 SKU 规格图是否含中文水印。 */
+/**
+ * 处理设置页「SKU 规格图可用性判断」：检测所选链接的 SKU 规格图是否含中文水印、是否为 1:1 方图。
+ *
+ * `skipTextCheck=true` 时只判 1:1 尺寸（读已存宽高元数据，零成本），跳过逐张中文 OCR
+ * （实测约 277ms/张，4 并发下 1400 张约 98 秒）。
+ */
 export function checkDraftSkuAvailability(
   ctx: ApiContext,
   draftIds: number[],
   force = false,
+  skipTextCheck = false,
 ): Promise<DraftSkuAvailabilityResponse> {
   return ppRequest(ctx, `/api/product-processing/drafts/sku-availability`, {
     method: "POST",
-    body: { draft_ids: draftIds, force },
+    body: { draft_ids: draftIds, force, skip_text_check: skipTextCheck },
   });
 }

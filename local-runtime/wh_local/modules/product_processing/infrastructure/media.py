@@ -134,15 +134,21 @@ WUYIN_IMAGE_POLL_INTERVAL_SECONDS = 3.0
 #   min 88s / p50 148s / p90 206s / p95 210s / max 216s
 # 回退样本（n=13）的整条 pipeline 耗时：p50 293s、p90/p95 668s（= 660s 总预算烧完）。
 # 旧值 180s 落在成功分布的 p82 附近 → 约 17% 的正常生成被误判为「停滞」，进而触发重复
-# 提交（多付费）、真卡死时烧完 660s 预算、最终回退来源图。现按「成功 max 216s + 约 40%
-# 余量」重定标为 300s：正常任务（<300s）绝不触发任何额外提交，只有超过 300s 仍无字段变化
-# 才追加一次提交（对冲/同链路重试，见 _request_wuyin_image_hedged）。
+# 提交（多付费）、真卡死时烧完 660s 预算、最终回退来源图。2026-10-15 曾按「成功 max
+# 216s + 约 40% 余量」定标为 300s。
+# 2026-10-16 复测（无印出图全线回归当天）：3 条并发里 2 条首发在上游挂死，300s 阈值下单条
+# 要吃满 486s（300s 等阈值 + 追加提交再跑 130s 才出图）。同源同尺寸母图的 POD 链路实测
+# 基线（近千次调用 p95 115s、健康日上限 136s，见 pod_customization/ai_runtime.py 的
+# SUCHUANG_RESULT_TIMEOUT_SECONDS）与其 240s 分段超时（≈3×p95）交叉印证：240s 更贴近上游
+# 真实分布。故 2K 档由 300s 下调到 240s——仍在历史成功 max 216s 之上，又少等 60s。
+# 超阈值仍**不判死**，只作为「追加一次提交」的信号；原任务继续被轮询（先到先用），
+# 唯一硬边界仍是总时长预算与提交次数上限（见下方）。
 # 1K 档（image_gpt_2.5 恒为 1K；旧端点 1024x1024 的槽位重绘等）实测 max 95.5s，用
 # 120s（约 26% 余量）已足够，本次维持不变：1K 不用于四宫格主链路（四宫格恒发 2048x2048）。
 # 两档阈值均可由配置 ``limits.image_stall_threshold_seconds`` /
 # ``limits.image_stall_threshold_2k_seconds`` 覆盖，现场可按上游波动再调。
 WUYIN_IMAGE_STALL_THRESHOLD_SECONDS = 120.0
-WUYIN_IMAGE_STALL_THRESHOLD_2K_SECONDS = 300.0
+WUYIN_IMAGE_STALL_THRESHOLD_2K_SECONDS = 240.0
 MAX_PROVIDER_RESULT_BYTES = 32 * 1024 * 1024
 MAX_PROVIDER_JSON_BYTES = 8 * 1024 * 1024
 REFERENCE_DOWNLOAD_ATTEMPTS = 3

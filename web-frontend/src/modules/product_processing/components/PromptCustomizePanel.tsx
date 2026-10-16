@@ -25,7 +25,7 @@ const PROMPT_SECTIONS: { key: string; label: string; hint: string; generator?: b
   {
     key: 'batch_image_prompt',
     label: '本批次辅助提词（区域辅助出图）',
-    hint: '按本批次商品标题生成，作为附加要求注入本批轮播/精品/详情生图：给出该品类的日常场景与配套道具方向（主图保持纯白合规，道具只作用于其余画面），并定点爆破规避异形/搞笑画面；可编辑可清空',
+    hint: '按本批次商品标题生成，作为附加要求注入本批轮播/精品/详情生图：给出该品类的日常场景、配套道具与价值展示方向（道具与陈列物只作用于非主图画面、不得暗示随附），并定点爆破规避异形/搞笑画面；可编辑可清空',
     generator: true,
   },
   { key: 'variant_values', label: '变体翻译', hint: 'SKU 选项翻译的附加要求（颜色 / 规格 / 尺寸等）' },

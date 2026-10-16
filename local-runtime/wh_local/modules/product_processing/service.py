@@ -92,6 +92,9 @@ from .domain.preview_images import task_item_result_version
 from .domain import sku_availability as sku_availability_domain
 from .domain.prompts import (
     ARK_GRID_IMAGE_PROMPT,
+    ARK_GRID_IMAGE_PROMPT_B,
+    ARK_GRID_IMAGE_PROMPT_C,
+    ARK_GRID_IMAGE_PROMPT_D,
     GRID_RUNTIME_CONTRACT,
     SINGLE_IMAGE_RUNTIME_CONTRACT,
     TWO_IMAGE_RUNTIME_CONTRACT,
@@ -665,6 +668,17 @@ def _effective_image_generation_count(value: Any) -> int:
     if str(plan.get("image_mode") or "").strip().lower() == "single":
         return 1
     return count
+
+
+# 四张「生图模板卡」在方舟链路上的紧凑对应版（键为 image_template 的模板后缀）。
+# 方舟链路不能用 A/B/C/D 那份长模板（会被输入审核 400），但界面上的选择必须同样生效，
+# 所以这里做一对一映射：A=影棚无缝主图（默认）、B=人景叙事、C=静物平铺俯拍、D=环境远景。
+_ARK_GRID_TEMPLATES_BY_SUFFIX: dict[str, str] = {
+    "": ARK_GRID_IMAGE_PROMPT,
+    "_b": ARK_GRID_IMAGE_PROMPT_B,
+    "_c": ARK_GRID_IMAGE_PROMPT_C,
+    "_d": ARK_GRID_IMAGE_PROMPT_D,
+}
 
 
 def _image_prompt_profile() -> str:
@@ -1337,10 +1351,15 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         category: str = "",
     ) -> str:
         """本批次 AI 生图专项提示词：基于本批全部标题（+品类）生成一条面向该品类的
-        生图指南，包含两部分：(1) 日常场景 / 台面 / 配套道具方向——修正纯白无缝棚拍
+        生图指南，包含三部分：(1) 日常场景 / 台面 / 配套道具方向——修正纯白无缝棚拍
         过于空洞、呆板的问题；(2) 定点爆破规避 AI 异形问题（肢体畸形、手指错乱、
-        比例失调、文字水印扭曲等）。两部分都必须带明确限制（道具从属、无品牌文字、
-        无人物宠物、主图豁免）与引导（具体道具名、台面材质、低饱和同色系、浅景深）。
+        比例失调、文字水印扭曲等）；(3) 价值与用法展示建议——数量陈列、叠放显厚、
+        内容物、佩戴实拍、尺寸参照、套装清点、组装演示、微距嵌图、手作故事、承重演示、
+        性能证明、季节礼赠、悬挂陈列等**只写本批品类真正适用的那几条**（这部分原先被
+        四份生图模板各自罗列一遍、每次全量下发，现已归位到本批次提词，模板不再重复）。
+
+        三部分都必须带明确限制（道具从属、无品牌文字、无人物宠物、陈列物不得暗示随附）
+        与引导（具体道具名、台面材质、低饱和同色系、浅景深、每格只用一个展示手法）。
 
         由前端「提示词预设模板」板块的生成按钮显式触发一次（generate_batch_image_prompt），
         best-effort，任何失败或空结果都返回 ""，绝不阻塞。结果是不渲染的「生图指令」而非
@@ -1362,7 +1381,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             f"The target storefront is {target_site} and visible text inside images is in "
             f"{target_language}. Write a concise set of specialized IMAGE-GENERATION "
             "guidelines (in English) for producing carousel/detail images for THIS product "
-            "category. Cover BOTH parts below, in this order.\n\n"
+            "category. Cover ALL FOUR parts below, in this order.\n\n"
             "PART 1 — SCENE, SURFACE AND REAL-LIFE COMPANION PROPS. The current renders are "
             "too clinical: pure-white seamless studio frames with nothing else in shot. For "
             "THIS category, describe a believable everyday setting and name the real-life "
@@ -1374,8 +1393,45 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "PART 2 — QUALITY GUARDRAILS to pre-empt common AI malformation problems: "
             "anatomical and limb anomalies, duplicated or misshapen fingers, broken "
             "hand-object interactions, warped or garbled text/logo printing, wrong "
-            "proportions, extra limbs, and inconsistent product identity across panels. Be "
+            "proportions, extra limbs, and inconsistent product identity across panels. "
+            "Also name the structural features of THIS category that image models most often "
+            "get wrong - for example a handle's true curvature and attachment, a lid or spout "
+            "opening shape, a sole or base outline, a clasp, hinge or seam, the real facet "
+            "count of a polygon body - and require each of them to match the reference exactly "
+            "instead of being simplified, flattened or invented. Be "
             "specific to the category and actionable for a text-to-image model.\n\n"
+            "PART 3 — VALUE AND USAGE DEMONSTRATION. The image templates no longer list every "
+            "possible demonstration device, so name the ones that GENUINELY apply to THIS "
+            "category and skip the rest - do not pad the list. Draw only from: quantity-forward "
+            "stacking for multipacks/sets (visible count must match the real sellable quantity); "
+            "layered overlapping stack with raking light to prove real thickness for flat or "
+            "cut-out goods; real unbranded contents staged inside containers, bags, holders or "
+            "organizers to show capacity; a partial person actually wearing the item for "
+            "wearables; a believable scale anchor (a real hand or a familiar everyday object) for "
+            "small items; laying out every real component of a bundle or kit together; the "
+            "flat/unassembled versus assembled state for goods that genuinely ship flat; one "
+            "small borderless macro inset proving real tactile detail; the real raw materials plus "
+            "the crafting tool for handmade goods; the product actually carrying the items it is "
+            "made for (hooks, racks, holders); a physically plausible real-world performance "
+            "moment for durability or water-resistance claims; seasonal or gift-cluster styling "
+            "for seasonal, holiday, gift or decorative goods; suspended/hanging staging for "
+            "ornaments and hanging decor. State explicitly that contents, companion objects, "
+            "packaging and raw materials are context only and must never look included in the "
+            "purchase, that no packaging or set content may be invented, and that each panel uses "
+            "at most ONE such demonstration device.\n\n"
+            "PART 4 — FOUR SCENE CARDS, ONE PER PANEL (they must not collide). Write a separate "
+            "scene card for each of the four panels and make the four cards clearly different from "
+            "each other. Each card must state: (a) the real space it is shot in (study desk corner, "
+            "kitchen counter, dining table, bedside table, balcony ledge, entryway console, outdoor "
+            "stone slab, or a pure studio sweep with no space at all); (b) the surface material; "
+            "(c) the light position and the time of day; (d) 2-4 named companion props; (e) the "
+            "colour tone; (f) the composition rule. Then give each card a short human-readable "
+            "one-line label in exactly this shape: `panel N | space · surface · props | light`. "
+            "HOW TO CHOOSE (state this reasoning briefly): map the category to where and when it is "
+            "really used; match the surface tone against the product colour so they contrast instead "
+            "of blending; and across the four cards cover at least three different spaces and at "
+            "least two different colour temperatures. Keep panel 1 (the marketplace hero) on a "
+            "clean pure-white seamless background with zero props.\n\n"
             "State these HARD LIMITS explicitly in the guidelines you write:\n"
             "- Props are strictly subordinate: visibly smaller than the product, low "
             "saturation, same colour family, never covering, cropping, pressing on or "
@@ -4786,6 +4842,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         workspace_id: str = "local",
         force: bool = False,
         persist: bool = True,
+        skip_text_check: bool = False,
     ) -> dict[str, Any]:
         """处理设置页级「SKU 规格图可用性判断」（严格口径 + 并行 OCR）。
 
@@ -4804,6 +4861,11 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
           即落 ``not_square_image`` 判不可用，导出回退商品主图（我们生成的方图），
           并跳过该链接的 OCR；
         - 所有图片一次性提交线程池并行 OCR，实际并发受 ocr_gate 推理上限约束；
+        - ``skip_text_check=True``（前端「跳过中文检测」）：只做零成本的 1:1 尺寸口径判断，
+          完全跳过中文 OCR（实测约 277ms/张，4 并发下 1400 张约 98 秒），据此落
+          ``clean`` + ``reason=text_check_skipped``（并在结论里留下 ``text_check_skipped``
+          标记），导出侧因此按「规格原图可用」处理；非 1:1 仍照常拦住，保住店小秘
+          「变种预览图必须方图，否则整单拒收」这条硬合规。
         - 返回 ``chinese_variant_keys``（检出中文的变种导出键）与 ``all_sku_chinese``
           （全部有图 SKU 都含中文），供前端「优化链接 SKU」决定剔除哪些变种；
         - 另返回 ``not_square_variant_keys``（规格原图非 1:1 的变种导出键），供前端提示
@@ -4876,6 +4938,10 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 continue
             plan["status"] = "pending"
             plan["_sku_keys"] = {key for _asset_id, key in sku_targets if key}
+            if skip_text_check:
+                # 只判尺寸、跳过中文 OCR：不再进 OCR 队列，收尾处按「尺寸口径可用」定论。
+                plan["text_check_skipped"] = True
+                continue
             tasks.extend(
                 (draft_id, asset_id, variant_key) for asset_id, variant_key in sku_targets
             )
@@ -4907,6 +4973,12 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             plan["all_sku_chinese"] = bool(sku_keys) and sku_keys <= chinese_keys
             plan["chinese_variant_keys"] = sorted(chinese_keys)
             if plan["status"] != "pending":
+                continue
+            if plan.get("text_check_skipped"):
+                # 用户选择「只判尺寸、跳过中文检测」：1:1 已在上面拦过，这里直接按
+                # 尺寸口径判可用，导出侧因此使用规格原图。结论里保留 text_check_skipped
+                # 标记与 reason，便于事后分辨「真的没检出中文」与「根本没检」。
+                plan.update(status="clean", clean=True, reason="text_check_skipped")
                 continue
             if plan["failed"]:
                 plan.update(status="unavailable", reason="text_check_failed")
@@ -9162,9 +9234,15 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             )
             base_template = DEFAULT_PROMPTS.get(prompt_key, "")
             if image_generation_count == 4 and _image_prompt_profile() == "ark":
-                # 方舟对输入文本做内容审核：gpt-image 那份 3 万字符指令模板会被判敏感、
-                # 直接 400。改用实测通过的精简模板（2×2 版式合规、切分通过、无水印）。
-                base_template = ARK_GRID_IMAGE_PROMPT
+                # 方舟对输入文本做内容审核：为 gpt-image 调优的长指令模板会被判敏感直接 400
+                # （实测 1.4s 秒回 3 万字符那份）。因此这里换成与四张模板卡一一对应的
+                # 「方舟紧凑版」（各约 1.5 千字符）：结构/保真/几何/文字仍在
+                # GRID_RUNTIME_CONTRACT 里，紧凑版只承载画面方向 + 区域规划，
+                # 这样界面上选「影棚无缝主图 / 人景叙事 / 静物平铺俯拍 / 环境远景」在方舟
+                # 链路上同样生效（此前无论选哪张都会被同一份模板覆盖）。
+                base_template = _ARK_GRID_TEMPLATES_BY_SUFFIX.get(
+                    _template_suffix, ARK_GRID_IMAGE_PROMPT
+                )
             template = self._apply_batch_image_guidelines(
                 self._apply_user_image_additions(base_template, prompt_key),
                 batch_image_prompt,

@@ -17,8 +17,14 @@ from wh_local.modules.product_processing import service as service_module
 from wh_local.modules.product_processing import provider_config as provider_config_module
 from wh_local.modules.ai_service.temporary_cos import TemporaryReferenceError
 from wh_local.modules.product_processing.domain.prompts import (
+    ARK_GRID_IMAGE_PROMPT,
+    ARK_GRID_IMAGE_PROMPT_B,
+    ARK_GRID_IMAGE_PROMPT_C,
+    ARK_GRID_IMAGE_PROMPT_D,
     GRID_IMAGE_PROMPT,
     GRID_IMAGE_PROMPT_B,
+    GRID_IMAGE_PROMPT_C,
+    GRID_IMAGE_PROMPT_D,
     GRID_IMAGE_REPAIR_PROMPT,
     GRID_RUNTIME_CONTRACT,
     PREMIUM_IMAGE_PROMPT,
@@ -474,15 +480,111 @@ def test_wuyin_poll_does_not_print_provider_response(monkeypatch, capsys) -> Non
     assert capsys.readouterr().out == ""
 
 
-def test_four_grid_prompt_forbids_all_typography_and_requires_validated_dividers() -> None:
-    assert "zero AI-added visible text" in GRID_IMAGE_PROMPT
-    assert "No AI-generated copy" in GRID_IMAGE_PROMPT
-    assert "No headline, fact card, or typography is added after splitting" in GRID_IMAGE_PROMPT
-    assert "separator is mandatory and is validated" in GRID_IMAGE_PROMPT
+def test_four_grid_contract_owns_typography_dividers_and_fidelity_rules() -> None:
+    """结构 / 保真 / 文字禁令统一归 GRID_RUNTIME_CONTRACT，四份模板不再各写一遍。"""
+    assert "zero AI-added visible text" in GRID_RUNTIME_CONTRACT
+    assert "separator is mandatory and is validated" in GRID_RUNTIME_CONTRACT
     assert "uniform, and uninterrupted" in GRID_RUNTIME_CONTRACT
-    assert "zero AI-added visible text" in GRID_IMAGE_PROMPT_B
-    assert "pure macro crop without the complete sellable product is forbidden" in GRID_IMAGE_PROMPT_B
+    assert "PRODUCT FIDELITY" in GRID_RUNTIME_CONTRACT
+    # 几何畸变（多边形化 / 臆造手柄 / 多出分层）是现场高频缺陷，契约必须带这段硬约束。
+    assert "GEOMETRY INTEGRITY" in GRID_RUNTIME_CONTRACT
+    # 四格趋同（只有背景在变）是现场高频缺陷，契约必须带「变异矩阵 + 差异下限 + 生成后自查」。
+    assert "FRAME VARIATION MATRIX" in GRID_RUNTIME_CONTRACT
+    assert "DIFFERENTIATION FLOORS" in GRID_RUNTIME_CONTRACT
+    assert "POST-GENERATION SELF-CHECK" in GRID_RUNTIME_CONTRACT
+    # 关键：只统一品质，绝不统一机位/光位/景别/色温，否则模型会收敛到同一张图。
+    assert "QUALITY FLOOR vs STYLE UNITY" in GRID_RUNTIME_CONTRACT
+    assert "never unify camera position" in GRID_RUNTIME_CONTRACT
+    assert "15 degrees" in GRID_RUNTIME_CONTRACT
+    assert "30 degrees" in GRID_RUNTIME_CONTRACT
+    assert "never polygonise" in GRID_RUNTIME_CONTRACT
+    assert "handle into a flat bar" in GRID_RUNTIME_CONTRACT
+    assert "PANEL ROLES" in GRID_RUNTIME_CONTRACT
+    assert "pure macro crop without the complete sellable product is forbidden" in GRID_RUNTIME_CONTRACT
+    # 只有 Panel 4 的语义与「1-3 格必须三个互不相同」是全局的；各套模板自己的机位留在模板里。
+    assert "Panel 4 (bottom-right) is ALWAYS the dimension-annotation background" in GRID_RUNTIME_CONTRACT
     assert "Do not invent packaging" in GRID_IMAGE_PROMPT_B
+
+
+def test_grid_templates_delegate_structure_and_skip_conditional_branches() -> None:
+    """减重回归护栏：模板只保留各自创作方向，结构契约与条件性分支不得再回到模板里。
+
+    条件性内容（价值/用法展示、季节礼赠、悬挂陈列）已归位到「本批次辅助提词」按品类生成，
+    结构/保真/文字禁令已归位到 GRID_RUNTIME_CONTRACT；模板重新膨胀会让单次请求变重、
+    上游耗时回升（2026-10-16 实测：模板越重，速创单次出图越慢）。
+    """
+    templates = (
+        GRID_IMAGE_PROMPT,
+        GRID_IMAGE_PROMPT_B,
+        GRID_IMAGE_PROMPT_C,
+        GRID_IMAGE_PROMPT_D,
+    )
+    duplicated_sections = (
+        "CRITICAL LAYOUT UNDERSTANDING",
+        "Grid & splitting infrastructure",
+        "Output contract (fixed",
+        "Generate-then-self-check",
+        "Product Integrity Constraints",
+        "Value & usage demonstration",
+        "Seasonal & gift styling",
+        "Display & light staging",
+    )
+    for template in templates:
+        # 占位符注入仍然必须齐备（format_prompt 依赖它们）。
+        for placeholder in (
+            "{category_path}",
+            "{title}",
+            "{value_evidence}",
+            "{scene_plan}",
+            "{visual_style}",
+            "{background_plan}",
+            "{verified_material_evidence}",
+        ):
+            assert placeholder in template
+        for section in duplicated_sections:
+            assert section not in template, section
+        assert "Panel 4 (bottom-right)" in template
+        assert len(template) < 12_000, len(template)
+
+
+def test_ark_grid_template_is_region_planned_and_delegates_the_contract() -> None:
+    """四份方舟紧凑版都必须：区域规划成篇、带光影与自然度、且不抄契约条款。"""
+    variants = {
+        "A": ARK_GRID_IMAGE_PROMPT,
+        "B": ARK_GRID_IMAGE_PROMPT_B,
+        "C": ARK_GRID_IMAGE_PROMPT_C,
+        "D": ARK_GRID_IMAGE_PROMPT_D,
+    }
+    for name, template in variants.items():
+        assert "【区域规划" in template, name
+        for panel in ("【第①格", "【第②格", "【第③格", "【第④格"):
+            assert panel in template, (name, panel)
+        assert "光影技法" in template, name
+        assert "自然度要点" in template, name
+        # 四格趋同的两个根因必须被钉死：逐格参数矩阵（硬参数）+ 不再统一布光。
+        assert "逐格参数矩阵" in template, name
+        assert "四格不得复用同一套参数" in template, name
+        assert "不统一机位、光位、景别与色温" in template, name
+        assert "四格不得沿用同一套布光" in template, name
+        # 矩阵必须给到具体的角度/光比/色温数值，不能只说「不同」
+        for numeric in ("平视 0°", "光比 3:1", "5500K"):
+            assert numeric in template, (name, numeric)
+        # 契约已承载的条款不再抄一遍（两处规则打架 / 体量膨胀）
+        for duplicated in ("版式：", "以参考图为唯一依据", "画面内不出现任何文字", "GEOMETRY"):
+            assert duplicated not in template, (name, duplicated)
+        # 方舟对输入文本做审核：每份紧凑版都必须保持精简
+        assert len(template) < 2_500, (name, len(template))
+    # 四份必须彼此不同：否则界面上的模板选择等于没生效
+    assert len({*variants.values()}) == 4
+
+
+def test_ark_chain_keeps_the_ui_template_selection_effective() -> None:
+    """方舟链路必须按界面选的模板后缀挑对应紧凑版，而不是一律用同一份。"""
+    mapping = service_module._ARK_GRID_TEMPLATES_BY_SUFFIX
+    assert mapping[""] is ARK_GRID_IMAGE_PROMPT
+    assert mapping["_b"] is ARK_GRID_IMAGE_PROMPT_B
+    assert mapping["_c"] is ARK_GRID_IMAGE_PROMPT_C
+    assert mapping["_d"] is ARK_GRID_IMAGE_PROMPT_D
 
 
 def test_split_four_grid_uses_exact_center_and_preserves_outer_edges() -> None:
@@ -991,13 +1093,14 @@ def test_wuyin_reference_relay_exhaustion_is_retryable_not_terminal(monkeypatch)
 
 
 def test_stall_threshold_defaults_are_recalibrated_and_configurable() -> None:
-    """2K（四宫格）停滞阈值按实测成功分布重定标为 300s，1K 维持 120s，两档均可配置覆盖。"""
+    """2K（四宫格）停滞阈值按实测重定标为 240s，1K 维持 120s，两档均可配置覆盖。"""
     # 1K 档维持不变（image_gpt_2.5 恒 1K；实测 max 95.5s → 120s 约 26% 余量）。
     assert media_module.WUYIN_IMAGE_STALL_THRESHOLD_SECONDS == 120.0
-    # 2K 档：成功样本 max 216s + 约 40% 余量 → 300s（旧值 180s 落在 p82，误杀约 17%）。
-    assert media_module.WUYIN_IMAGE_STALL_THRESHOLD_2K_SECONDS == 300.0
-    assert media_module._wuyin_stall_threshold_seconds("image_gpt", "2048x2048") == 300.0
-    assert media_module._wuyin_stall_threshold_seconds("image_gpt", "2048x1024") == 300.0
+    # 2K 档：仍在成功样本 max 216s 之上，同时对齐上游真实分布（POD 链路 p95 115s、
+    # 健康日上限 136s → 240s ≈ 3×p95）。旧值 300s 在 2026-10-16 复测中让单条吃满 486s。
+    assert media_module.WUYIN_IMAGE_STALL_THRESHOLD_2K_SECONDS == 240.0
+    assert media_module._wuyin_stall_threshold_seconds("image_gpt", "2048x2048") == 240.0
+    assert media_module._wuyin_stall_threshold_seconds("image_gpt", "2048x1024") == 240.0
     assert media_module._wuyin_stall_threshold_seconds("image_gpt", None) == 120.0
     assert media_module._wuyin_stall_threshold_seconds("image_gpt_2.5", "1024x1024") == 120.0
     override = {
