@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+from ...runtime_logs import business_logger
 from ...pod_migrations import (
     ensure_pod_migration,
     pod_migration_effect_is_present,
@@ -2128,6 +2129,14 @@ class PodCustomizationRepository:
                 if updated.rowcount != 1:
                     continue
 
+                try:
+                    business_logger("pod_processing").warning(
+                        "批次超时收割 | batch_id=%s | 新状态=%s | %s",
+                        batch_id, new_status, timeout_msg,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+
                 # Mark queued/running generation calls and titles terminal so the
                 # stale coordinator threads cannot resurrect them.
                 connection.execute(
@@ -3124,13 +3133,19 @@ class PodCustomizationRepository:
             ).fetchone()[0])
             if title_count == 0:
                 counts = connection.execute(
-                    "SELECT completed_count, failed_count FROM pod_customization_batches WHERE batch_id = ?",
+                    "SELECT requested_count, completed_count, failed_count FROM pod_customization_batches WHERE batch_id = ?",
                     (batch_id,),
                 ).fetchone()
                 if counts is None:
                     raise PodRepositoryError("POD batch not found", 404)
-                status = "completed" if counts["failed_count"] == 0 else (
-                    "partial_failure" if counts["completed_count"] else "failed"
+                # 对齐总数（2026-10-15）：还有条目没处理完的批次不得判「完成」——此前仅按
+                # failed_count==0 判定，会把「未跑完」的批次洗成 completed（同 product_processing
+                # 已修的判定漏洞）。未跑完的最多判 partial_failure/failed，保持结算即终态语义。
+                status = (
+                    "completed"
+                    if counts["failed_count"] == 0
+                    and int(counts["completed_count"]) >= int(counts["requested_count"])
+                    else ("partial_failure" if counts["completed_count"] else "failed")
                 )
             else:
                 active_count = int(connection.execute(
@@ -3187,6 +3202,13 @@ class PodCustomizationRepository:
                 if execution_epoch is not None:
                     self._raise_if_execution_expired(connection, batch_id, execution_epoch)
                 raise PodRepositoryError("POD batch not found", 404)
+            try:
+                business_logger("pod_processing").warning(
+                    "批次自动结算置终态 | batch_id=%s | status=%s | error=%s",
+                    batch_id, status, _safe_error(error_message)[:120],
+                )
+            except Exception:  # noqa: BLE001
+                pass
         return status
 
     def reconcile_stale_generating_titles(self, batch_id: str) -> bool:
@@ -3239,6 +3261,12 @@ class PodCustomizationRepository:
                    WHERE batch_id = ? AND status IN ('queued', 'generating')""",
                 (message, now, now, batch_id),
             )
+        try:
+            business_logger("pod_processing").warning(
+                "批次标题段卡死收敛 | batch_id=%s | %s", batch_id, message,
+            )
+        except Exception:  # noqa: BLE001
+            pass
         self.settle_batch_by_listing_readiness(batch_id)
         return True
 

@@ -262,10 +262,38 @@ _COMMON_VARIANT_TRANSLATIONS: dict[str, dict[str, str]] = {
     },
 }
 _TASK_HEARTBEAT_SECONDS = 10.0
-# 前端任务页轮询 /tasks/{id}/outputs 即为心跳；超过该时长没有心跳（页面关闭/
-# 切走/浏览器标签被回收）自动把任务置为暂停，避免用户已不在看却继续烧 AI 成本。
-_TASK_AUTO_PAUSE_TIMEOUT_SECONDS = 90.0
+# 自动暂停只认**真实事件**，不再用「多久没心跳」猜：
+#
+#   ① 页面关闭：任务页在 pagehide 时发一个离开信标（/tasks/{id}/leave），之后连续静默
+#      （_TASK_LEAVE_QUIET_SECONDS）才暂停该任务；刷新/重开/别的页签还在看都会继续轮询，
+#      撤销这次离开。
+#   ② 整机退出：桌面端 local runtime 的 watchdog 在最后一个页面离开后退出后端进程，
+#      退出前取消并结算运行中的任务（另见 wh_local/app/main.py 的 _RuntimeExitController）。
+#
+# 为什么删掉静默心跳超时：页面被浏览器节流/冻结、整机休眠时定时器根本跑不起来，静默超时会把
+# 「页面还在，只是被系统冻住」误判成「用户走了」——这是「工作台明明开着却被暂停」工单的
+# 主要来源，且无法用调大阈值根治（冻结时长无上界）。开着就一直跑，只有真的关了页面才停。
+#
+# 静默阈值：把「关页面暂停」当**安全网**用、不当即时停止（2026-10-15 由 120 秒上调为 30 分钟）——
+# 关掉页面不等于想停任务：刷新/重开/从历史记录打开都会继续轮询并撤销这次离开；真想立刻停用
+# 「暂停 / 取消」按钮，关掉整个工作台走退出流程。关页面后最多再跑这个时长（成本上界），
+# 大多数任务在这之内就跑完了。
+# 下限约束（仍远大于退出宽限，见下）：
+#   - 必须盖住浏览器对隐藏页的节流节奏（隐藏满 5 分钟后定时器被压到约 1 分钟一次），
+#     否则「刷新后把窗口切到后台」会被误停；
+#   - 关页面瞬间那一次在途请求撑不过这  个窗口，所以暂停不会被它误撤销。
+# 与退出路径的先后（**不能改小到退出宽限以下**）：关闭整个工作台时，runtime watchdog 会在
+# 退出宽限（默认 60 秒）后退出后端并执行「取消任务 + 按冻结积分 50% 结算」（beforeunload
+# 弹窗里向用户承诺的就是这个）；任务级暂停必须在它之后才可能发生，否则两条路会抢同一个任务，
+# 出现「有时暂停、有时取消」的不确定结果。有 TestAssert 守着这个大小关系。
+_TASK_LEAVE_QUIET_SECONDS = 1800.0
 _TASK_AUTO_PAUSE_SWEEP_SECONDS = 15.0
+# 退出宽限的默认值（wh_local/app/main.py 的 WH_LOCAL_RUNTIME_EXIT_GRACE_S 默认值）：
+# 仅用于断言上面那条大小关系，不参与运行逻辑。
+_RUNTIME_EXIT_GRACE_SECONDS = 60.0
+# 心跳记录（_task_last_seen）只用于「离开之后有没有人再回来看」，超过这个时长没被任何
+# 页面轮询过的记录直接清掉，避免长会话里无限增长。
+_TASK_HEARTBEAT_RETENTION_SECONDS = 3600.0
 # 收尾卡死兜底阈值：全部条目已终态（非 pending/running）但任务仍停在 running，且
 # worker 已退场（崩溃）或长时间无任何条目进展（卡在本地导出/落库）。正常收尾由
 # finish_task 在数秒内把任务置为终态；超过该时间仍未完成即判定卡死，从数据库重建
@@ -769,12 +797,21 @@ class ProductProcessingService:
         self._diagnostic_dispatcher: ProductProcessingDiagnosticOutboxDispatcher | None = None
         self._media_materialization_lock = threading.Lock()
         self._media_materialization_workers: dict[str, threading.Thread] = {}
-        # 前端任务页轮询心跳：(workspace_id, task_id) -> time.monotonic() 最近一次
-        # /outputs 轮询时间。超时未收到心跳自动暂停（页面关闭/切走），避免用户已
-        # 不在看却继续调用 AI 烧成本。
+        # 心跳记录（_task_last_seen）只用于「离开之后有没有人再回来看」，超过这个时长没被任何
+        # 页面轮询过的记录直接清掉，避免长会话里无限增长。
         self._task_last_seen: dict[tuple[str, int], float] = {}
         self._task_last_seen_lock = threading.Lock()
-        self._auto_pause_sweeper_started = False
+        self._task_maintenance_started = False
+        # 「工作台正在退出」探针（桌面端在 create_app 里接到 runtime watchdog 上）：
+        # 为真时任务级暂停让位给退出前的「取消 + 结算」，见 _sweep_departed_tasks_once。
+        self._shutdown_probe: Callable[[], bool] | None = None
+        # 上一次清扫时刻：识别「进程自己也被冻住了」（整机休眠/挂起），那一轮不判离开
+        # —— 所以第一次调用（None）不判、也不影响后续判断。
+        self._last_sweep_at: float | None = None
+        # 页面离开信标 (workspace_id, task_id) -> 离开时刻：连续静默超过
+        # _TASK_LEAVE_QUIET_SECONDS 才暂停；期间任何轮询都撤销（见 _sweep_departed_tasks_once）。
+        self._task_left_keys: dict[tuple[str, int], float] = {}
+        self._task_left_lock = threading.Lock()
         # 任务级串行闸门：限制同时执行的任务数，避免旧任务与新任务并发叠加打爆 AI 供应商。
         self._task_execution_gate = threading.BoundedSemaphore(_max_concurrent_tasks())
         self.media_assets = MediaAssetService(
@@ -3407,6 +3444,15 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             self.repository.set_task_status(
                 int(task["id"]), "paused", str(task["workspace_id"])
             )
+            # 自动暂停必须留痕：本路径与页面开闭无关（重启 + 计费任务缺远端令牌
+            # 即触发），此前无日志导致「页面明明开着却变成已暂停」难以定位。
+            try:
+                business_logger("ai_processing").warning(
+                    "计费任务缺少远端令牌，已暂停等待重新登录 | task_id=%s | workspace=%s",
+                    task.get("id"), task.get("workspace_id"),
+                )
+            except Exception:  # noqa: BLE001
+                pass
         launchable = [task for task in queued if int(task["id"]) not in blocked_ids]
         launched = sum(
             self._launch_background_execute(int(task["id"]), str(task["workspace_id"]))
@@ -3430,8 +3476,10 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
     def task_outputs(
         self, task_id: int, *, summary_only: bool = False, workspace_id: str = "local"
     ) -> dict[str, Any]:
-        # 前端任务页轮询该接口即为心跳：页面在（轮询在）任务保持运行；页面关闭/
-        # 切走后心跳超时由清扫器自动暂停，避免用户已不在看仍继续调用 AI 烧成本。
+        # 前端任务页轮询该接口，就代表「页面还在看这个任务」：轮询时刻会被记录，用来撤销
+        # 页面关闭时发出的离开信标（刷新/重开/多页签都算没离开）。暂停只由**真实事件**触发
+        # ——页面关闭信标、手动暂停、应用退出时的取消结算，不再用「多久没心跳」猜：页面被
+        # 浏览器冻结/整机休眠时定时器根本不跑，猜测式判定会把正在跑的任务误停。
         self._touch_task_heartbeat(task_id, workspace_id)
         task = self._require_task(task_id, workspace_id)
         response = self._task_response(task)
@@ -3519,29 +3567,60 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             raise _TaskControlStopped(reason)
 
     def _touch_task_heartbeat(self, task_id: int, workspace_id: str) -> None:
-        """记录前端任务页轮询心跳，并懒启动自动暂停清扫器。
+        """记录前端任务页的轮询时刻，并懒启动任务维护循环。
+
+        这个时刻只用于判断「离开信标之后有没有人再回来看」（撤销离开）与过期记录清理，
+        **不再用「多久没心跳」判用户离开**：页面被浏览器冻结/整机休眠时定时器根本不跑，
+        那条路会把「页面还在」误判成「用户走了」。
 
         只在确有前端在看任务时跟踪；从未被 /outputs 轮询过的任务（API 提交等）
-        不进入自动暂停名单，避免误伤非页面驱动的任务。
+        不进入维护名单，避免误伤非页面驱动的任务。
         """
         key = (workspace_id, int(task_id))
         with self._task_last_seen_lock:
             self._task_last_seen[key] = time.monotonic()
-            started = self._auto_pause_sweeper_started
-            self._auto_pause_sweeper_started = True
+            started = self._task_maintenance_started
+            self._task_maintenance_started = True
         if not started:
             threading.Thread(
-                target=self._auto_pause_stale_tasks_loop,
+                target=self._task_maintenance_loop,
                 daemon=True,
-                name="pp-auto-pause-sweeper",
+                name="pp-task-maintenance",
             ).start()
 
-    def _auto_pause_stale_tasks_loop(self) -> None:
-        """后台清扫循环：每 _TASK_AUTO_PAUSE_SWEEP_SECONDS 秒执行一次心跳检查。"""
+    def set_shutdown_probe(self, probe: Callable[[], bool] | None) -> None:
+        """注入「工作台正在退出」探针（桌面端接到 runtime watchdog 上，见 create_app）。
+
+        为真时任务级暂停让位：退出流程会「取消任务 + 按冻结积分 50% 结算」，那是 beforeunload
+        弹窗向用户承诺过的语义，不能被任务级暂停抢先（否则同一个任务时而暂停、时而取消）。
+        """
+        self._shutdown_probe = probe
+
+    def mark_task_left(self, task_id: int, workspace_id: str = "local") -> None:
+        """页面离开信标（任务页 pagehide 时 sendBeacon 触发，尽力而为）。
+
+        只做**标记**：真正暂停由维护循环在「连续静默超过 _TASK_LEAVE_QUIET_SECONDS」之后
+        执行；期间任何轮询（刷新、重开工作台、另一个页签还在看，包括被浏览器节流到
+        1 分钟一次的隐藏页）都会撤销本次离开。信标丢了就继续跑：宁可不暂停，也不误停。
+
+        **先确认任务确实存在于该工作区**才记标记：信标地址写死在前端、参数也不做鉴权，
+        万一键对不上（工作区传错/任务号写错），照记就会留下一个「没有对应心跳」的标记
+        —— 那会让页面开着也被判成静默而误停。查不到就当没这回事（无效信标必须是空操作）。
+        """
+        try:
+            key = (workspace_id, int(task_id))
+            self._require_task(key[1], key[0])
+        except Exception:  # noqa: BLE001 - 无效信标一律忽略，绝不能影响请求
+            return
+        with self._task_left_lock:
+            self._task_left_keys[key] = time.monotonic()
+
+    def _task_maintenance_loop(self) -> None:
+        """后台维护循环：离开清扫 + 收尾卡死兜底 + 孤儿项自愈，每 _TASK_AUTO_PAUSE_SWEEP_SECONDS 秒一轮。"""
         while True:
             time.sleep(_TASK_AUTO_PAUSE_SWEEP_SECONDS)
             try:
-                self._sweep_stale_heartbeats_once()
+                self._sweep_departed_tasks_once()
             except Exception:
                 # 清扫是尽力而为的后台维护，任何异常都不允许终止循环。
                 pass
@@ -3556,76 +3635,91 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 # 孤儿项自愈同为尽力而为的后台维护，异常不终止循环。
                 pass
 
-    def _sweep_stale_heartbeats_once(self) -> None:
-        """单次清扫：心跳超时的 running/queued 任务自动置为暂停。
+    def _sweep_departed_tasks_once(self) -> None:
+        """单次清扫：把「页面已明确离开、离开后也没人再回来看」的任务暂停。
 
-        桌面端整个退出时进程随之终止、AI 调用自然停止，无需此机制；这里覆盖
-        「浏览器关页面/切走后本地服务仍在运行、AI 调用继续烧成本」的场景。
-        自动暂停与手动暂停语义一致：已完成项保留，未处理项由结算链路按真实
-        结果退款（已完成扣费、未完成全退），用户可从历史记录继续处理。
+        暂停依据是**真实事件**（任务页关闭时发的离开信标），不是「多久没心跳」的猜测：
+        页面被浏览器节流/冻结、整机休眠都不会触发 pagehide，那不算离开，任务照跑——
+        「工作台明明开着却被暂停」类工单就出在猜测式判定上。
+
+        判定只用一条：**离开之后连续静默**（_TASK_LEAVE_QUIET_SECONDS 内没有任何轮询）
+        才暂停；期间只要还有页面在轮询（刷新、重开工作台、另一个页签还在看，甚至只是被
+        浏览器节流到 1 分钟一次）就撤销这次离开。关页面瞬间在途的那一次请求只有一次，
+        撑不过静默窗口，不会误撤销。
+
+        暂停与手动暂停语义一致：已完成项保留、未处理项由结算链路按真实结果退款，用户可
+        从历史记录继续处理；商品已全部终态、只剩本地收尾的任务不暂停（否则会卡在 99%）。
+
+        顺带清理过期心跳记录（_TASK_HEARTBEAT_RETENTION_SECONDS 内没再被轮询过的）。
         """
         now = time.monotonic()
-        with self._task_last_seen_lock:
-            stale_keys = [
-                (key, now - seen_at)
-                for key, seen_at in self._task_last_seen.items()
-                if now - seen_at > _TASK_AUTO_PAUSE_TIMEOUT_SECONDS
-            ]
-        for (workspace_id, task_id), stale_for in stale_keys:
+        if self._shutdown_probe is not None:
+            try:
+                if self._shutdown_probe():
+                    # 工作台正在退出：退出流程负责「取消任务 + 按冻结积分 50% 结算」（用户看到过
+                    # 弹窗承诺），任务级暂停让位，避免两条路抢同一个任务。探针异常当作「没在退出」。
+                    return
+            except Exception:  # noqa: BLE001 - 维护循环不允许被探针异常打断
+                pass
+        previous_sweep = self._last_sweep_at
+        self._last_sweep_at = now
+        if (
+            previous_sweep is not None
+            and now - previous_sweep > _TASK_AUTO_PAUSE_SWEEP_SECONDS * 4
+        ):
+            # 进程自己也被冻住了（整机休眠/挂起、长时间卡死）：这段时间的「静默」不算数，
+            # 本轮不判。否则「刷新页面后合盖走人」会在醒来的一瞬间被判成「页面已离开」而误停
+            # —— 醒来后页面的定时器会立刻恢复轮询，下一轮自然按新时间线判断。
+            return
+        with self._task_left_lock:
+            departed = list(self._task_left_keys.items())
+        for (workspace_id, task_id), left_at in departed:
+            with self._task_last_seen_lock:
+                last_seen = self._task_last_seen.get((workspace_id, task_id))
+            if last_seen is not None and now - last_seen < _TASK_LEAVE_QUIET_SECONDS:
+                # 页面还在轮询（隐藏页被节流到 1 分钟一次也算）→ 这一轮不暂停。
+                # 离开标记已经够老说明这段时间一直有人看：顺手撤销，别留着。
+                if now - left_at >= _TASK_LEAVE_QUIET_SECONDS:
+                    with self._task_left_lock:
+                        self._task_left_keys.pop((workspace_id, task_id), None)
+                continue
+            # 静默超过阈值：页面真的走了（关掉、进程没了）→ 暂停，语义与手动暂停一致。
+            with self._task_left_lock:
+                self._task_left_keys.pop((workspace_id, task_id), None)
             try:
                 task = self._require_task(task_id, workspace_id)
             except Exception:
                 with self._task_last_seen_lock:
                     self._task_last_seen.pop((workspace_id, task_id), None)
                 continue
-            status = str(task.get("status") or "")
-            if status in {"queued", "running"}:
-                # 商品已经全部得到终态时，worker 只剩本地文件收尾；此时暂停会
-                # 把 6/6 的任务卡在 99%，并阻断预检/导出。
-                if self._task_has_unfinished_items(task):
-                    # 自动补跑轮进行中不暂停：轮次之间任务行会短暂回到 completed，补跑线程
-                    # 随后又把它置回 running；这段时间的心跳断档往往只是页面抖动（例如失联
-                    # 自动刷新把处理页标签清掉），直接暂停会把补跑轮掐死。
-                    if self._task_in_auto_repull_round(task):
-                        try:
-                            business_logger("task_control").info(
-                                "跳过自动暂停（自动补跑轮进行中）| task_id=%s | workspace=%s | "
-                                "最后心跳距今=%.0fs | 阈值=%.0fs",
-                                task_id, workspace_id, stale_for, _TASK_AUTO_PAUSE_TIMEOUT_SECONDS,
-                            )
-                        except Exception:  # noqa: BLE001 业务日志绝不影响清扫
-                            pass
-                        with self._task_last_seen_lock:
-                            self._task_last_seen.pop((workspace_id, task_id), None)
-                        continue
-                    try:
-                        self.repository.pause_task_execution(task_id, workspace_id)
-                        # 自动暂停留痕：客服据此区分「用户确实走了」与「页面抖动/误判」。
-                        try:
-                            business_logger("task_control").info(
-                                "自动暂停（心跳超时）| task_id=%s | workspace=%s | "
-                                "最后心跳距今=%.0fs | 阈值=%.0fs",
-                                task_id, workspace_id, stale_for, _TASK_AUTO_PAUSE_TIMEOUT_SECONDS,
-                            )
-                        except Exception:  # noqa: BLE001 业务日志绝不影响清扫
-                            pass
-                    except Exception:
-                        pass
-                # 移除心跳记录：resume 后由前端重新轮询重建，避免用陈旧时间戳
-                # 在 resume 的首个轮询窗口再次误暂停。
-                with self._task_last_seen_lock:
-                    self._task_last_seen.pop((workspace_id, task_id), None)
-            elif status not in {"paused", "cancelled"}:
-                # 已进入终态的任务不再需要跟踪心跳。
-                with self._task_last_seen_lock:
-                    self._task_last_seen.pop((workspace_id, task_id), None)
-
-    @staticmethod
-    def _task_in_auto_repull_round(task: dict[str, Any]) -> bool:
-        """任务是否正处于自动补跑轮（settings._auto_repull.status == running）。"""
-        settings = task.get("settings")
-        state = settings.get("_auto_repull") if isinstance(settings, dict) else None
-        return isinstance(state, dict) and str(state.get("status") or "") == "running"
+            if str(task.get("status") or "") not in {"queued", "running"}:
+                continue
+            if not self._task_has_unfinished_items(task):
+                # 商品已经全部得到终态时，worker 只剩本地文件收尾；此时暂停会把
+                # 6/6 的任务卡在 99%，并阻断预检/导出。
+                continue
+            try:
+                paused = self.repository.pause_task_execution(task_id, workspace_id)
+            except Exception:
+                continue
+            if not paused:
+                continue
+            # 自动暂停必须留痕：与手动暂停区分，便于排查「页面明明开着却暂停」类工单。
+            business_logger("ai_processing").warning(
+                "页面离开自动暂停 | task_id=%s | workspace=%s | 离开后已静默 %.0f 秒无人轮询",
+                task_id, workspace_id, now - (last_seen if last_seen is not None else left_at),
+            )
+            with self._task_last_seen_lock:
+                self._task_last_seen.pop((workspace_id, task_id), None)
+        # 心跳记录只服务于「离开后有没有人回来」：过期即弃，避免长会话里无限增长。
+        with self._task_last_seen_lock:
+            expired = [
+                key
+                for key, seen_at in self._task_last_seen.items()
+                if now - seen_at > _TASK_HEARTBEAT_RETENTION_SECONDS
+            ]
+            for key in expired:
+                self._task_last_seen.pop(key, None)
 
     def _heal_orphan_items_once(self) -> None:
         """终态任务孤儿项自愈：标记失败 + 释放草稿（随清扫循环低频执行）。

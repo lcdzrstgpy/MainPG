@@ -13,6 +13,10 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+import pytest
+
+# auth_server 为服务器侧模块、未随仓库分发（c053f438c 已移除）；缺失时本组用例整体跳过。
+pytest.importorskip("wh_local.customer.auth_server")
 from wh_local.customer.auth_server import create_auth_app
 from wh_local.customer.auth_service import _email_code_digest
 from wh_local.db import transaction
