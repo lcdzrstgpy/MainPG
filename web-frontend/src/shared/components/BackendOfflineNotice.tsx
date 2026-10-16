@@ -19,14 +19,22 @@ const RESTART_POLL_INTERVAL_MS = 1_500;
 const MAINPG_RECOVER_URL = "mainpg://recover";
 
 /** 「重新连接」状态机：idle → connecting →(仍失联)recovering →(等待)idle / timeout。 */
-type RetryPhase = "idle" | "connecting" | "recovering" | "timeout";
+type RetryPhase = "idle" | "connecting" | "recovering" | "timeout" | "dev-manual";
 
 const STATUS_TEXT: Record<RetryPhase, string> = {
   idle: "已开启自动检测，恢复后页面会自动刷新",
   connecting: "正在重新连接本地服务…",
   recovering: "正在重新启动本地程序——若系统弹出「打开」确认框，请点「打开」",
   timeout: "本地程序未在预期时间内恢复——请按下方方法手动重启",
+  // 开发态不拉起 mainpg:// 协议：该协议注册的是「最后一次启动的程序」，本地开发
+  // 时它指向已安装的 MainPG.exe（实测注册表 command 就是安装目录下那个 exe）。
+  // 点一下「重新连接」会静默拉起安装版、把它绑到 8010，页面看着恢复了，实际连的
+  // 是另一套数据源（%APPDATA%\MainPG），比不恢复更难排查。
+  "dev-manual": "开发模式下不会自动重启本地服务——请在项目根目录运行 start-dev.bat 重启前后端",
 };
+
+/** 恢复提示条的自动消失时间（有任务在跑时不会整页刷新，用提示条代替）。 */
+const RESUME_NOTICE_MS = 8_000;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -70,6 +78,8 @@ export function BackendOfflineNotice() {
   const [retrying, setRetrying] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [phase, setPhase] = useState<RetryPhase>("idle");
+  /** 「已恢复、但为保任务未整页刷新」的提示条。 */
+  const [resumeNotice, setResumeNotice] = useState(false);
   const timerRef = useRef<number | null>(null);
   const offlineRef = useRef(false);
   const recoveringRef = useRef(false);
@@ -93,6 +103,9 @@ export function BackendOfflineNotice() {
         window.clearTimeout(timerRef.current);
         timerRef.current = null;
       }
+      // 遮罩确实弹过、且有任务在跑（不能整页刷新）→ 用提示条明确告知「已恢复」。
+      // 否则遮罩凭空消失，用户以为点了「重新连接」没反应（2026-10-16 反馈）。
+      if (offlineRef.current && hasRunningTask()) setResumeNotice(true);
       setPhase("idle");
       setOffline(false);
       setRetrying(false);
@@ -112,6 +125,7 @@ export function BackendOfflineNotice() {
     // 这里只收起提示，让页面自己继续轮询恢复。
     if (hasRunningTask()) {
       setOffline(false);
+      setResumeNotice(true);
       return;
     }
     // 弹窗已被其它成功请求收起时不再强行刷新。
@@ -132,7 +146,14 @@ export function BackendOfflineNotice() {
     return () => window.clearInterval(timer);
   }, [offline, reloadWhenRecovered]);
 
-  if (!offline) return null;
+  // 恢复提示条自动消失，不长期占位。
+  useEffect(() => {
+    if (!resumeNotice) return;
+    const timer = window.setTimeout(() => setResumeNotice(false), RESUME_NOTICE_MS);
+    return () => window.clearTimeout(timer);
+  }, [resumeNotice]);
+
+  if (!offline && !resumeNotice) return null;
 
   const retry = async () => {
     if (retrying) return;
@@ -141,6 +162,13 @@ export function BackendOfflineNotice() {
     try {
       if (await probeHealth()) {
         reloadWhenRecovered();
+        return;
+      }
+      if (import.meta.env.DEV) {
+        // 开发态绝不拉起 mainpg:// 协议：该协议注册的是「最后一次启动的程序」，本地
+        // 开发时指向已安装的 MainPG.exe，拉起来会静默把它绑到 8010 并换掉数据源
+        // （%APPDATA%\MainPG），页面看着恢复了、实际连的是另一套数据，更难排查。
+        setPhase("dev-manual");
         return;
       }
       // 仍失联：借系统协议重新拉起主程序。只在用户点击时触发，自动探活不触发，
@@ -167,6 +195,22 @@ export function BackendOfflineNotice() {
     : "重新连接";
 
   return (
+    <>
+      {resumeNotice && (
+        <div className="backend-resume-toast" role="status">
+          <span className="backend-resume-toast-text">
+            本地服务已恢复。因为有任务正在运行，没有自动刷新页面，以免打断任务。
+          </span>
+          <button
+            type="button"
+            className="backend-resume-toast-close"
+            onClick={() => setResumeNotice(false)}
+          >
+            知道了
+          </button>
+        </div>
+      )}
+      {offline && (
     <div className="backend-offline-mask" role="alertdialog" aria-modal="true" aria-labelledby="backend-offline-title">
       <div className="backend-offline-card">
         <svg className="backend-offline-illo" viewBox="0 0 200 118" aria-hidden="true">
@@ -233,5 +277,7 @@ export function BackendOfflineNotice() {
         )}
       </div>
     </div>
+      )}
+    </>
   );
 }

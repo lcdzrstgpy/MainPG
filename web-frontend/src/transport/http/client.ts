@@ -385,11 +385,43 @@ const REQUEST_TIMEOUT_MS = 30_000;
 export const BACKEND_OFFLINE_EVENT = "mainpg:backend-offline";
 export const BACKEND_ONLINE_EVENT = "mainpg:backend-online";
 
+/**
+ * 失联确认窗口：只有「持续失败」超过该时长才判定掉线并弹整屏遮罩。
+ *
+ * 单次网络层失败不足以判死。开发态 vite 代理在依赖预构建/重编译瞬间会拒连；
+ * 页面切换、组件卸载主动 abort 后紧邻的重发也会命中；后端重启的第一秒同样是拒连。
+ * 这类瞬时抖动以前会立刻弹整屏「本地服务掉线了」——用户观感就是「界面还开着却
+ * 突然掉线」（2026-10-16 实测排查）。真实后端挂掉时窗口内不会有任何请求成功，
+ * 6 秒后照常弹出，不影响判定时效。
+ */
+const BACKEND_OFFLINE_CONFIRM_MS = 6_000;
+
+/** 首次失败时刻；期间任意一次成功响应即清零（见 notifyBackendOnline）。 */
+let offlineSince: number | null = null;
+/** 是否已真正广播过离线事件（用于决定恢复时是否需要广播 online）。 */
+let offlineNotified = false;
+let offlineConfirmTimer: number | null = null;
+
 function notifyBackendOffline(): void {
-  window.dispatchEvent(new CustomEvent(BACKEND_OFFLINE_EVENT));
+  if (offlineSince !== null) return;
+  offlineSince = Date.now();
+  offlineConfirmTimer = window.setTimeout(() => {
+    offlineConfirmTimer = null;
+    if (offlineSince === null || offlineNotified) return;
+    offlineNotified = true;
+    window.dispatchEvent(new CustomEvent(BACKEND_OFFLINE_EVENT));
+  }, BACKEND_OFFLINE_CONFIRM_MS);
 }
 
 function notifyBackendOnline(): void {
+  offlineSince = null;
+  if (offlineConfirmTimer !== null) {
+    window.clearTimeout(offlineConfirmTimer);
+    offlineConfirmTimer = null;
+  }
+  // 从未广播过离线 → 无需广播恢复（避免每个成功请求都空跑一次事件分发）。
+  if (!offlineNotified) return;
+  offlineNotified = false;
   window.dispatchEvent(new CustomEvent(BACKEND_ONLINE_EVENT));
 }
 
