@@ -1,24 +1,17 @@
-"""POD-only AI runtime with a dedicated SuChuang transport lane.
+"""POD-only AI runtime.
 
-Legacy pattern and scene features retain the established image-edit adapter.
-The direct listing trial uses the same asynchronous SuChuang image protocol as
-Product Processing, but keeps its own HTTP pool, permits, and executor.
+四个 POD 模块（全定制 / 半定制 / 爆款复刻 / 爆款裂变）共用同一套生图执行资源：
+并发槽位、限流令牌、参考图发布、结果下载都集中在这里；平台各自的协议实现放在
+``image_providers``（速创与豆包各一个文件），运行时按「模型 → 平台」自动选择。
 """
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import inspect
-import io
-import json
-import time
 from pathlib import Path
 from typing import Any, Callable
 
-from PIL import Image, ImageDraw
-
-from wh_local.modules.product_processing.domain.policy import is_safe_external_url
 from wh_local.modules.product_processing.infrastructure.media import GeneratedMedia, MediaProcessingError
 from wh_local.modules.product_processing.infrastructure.media import ProductImageProcessor
 from wh_local.modules.product_processing.service import ProductProcessingService
@@ -32,50 +25,32 @@ from wh_local.data_collection.public_image_fetch import (
 from ...runtime_logs import business_logger
 
 from .assets import MAX_IMAGE_BYTES, inspect_pod_image
-from .billing_contract import PodExecutionGrant
-from .billing_contract import PodBillingAuthorizationRequired
+from .billing_contract import PodBillingAuthorizationRequired, PodExecutionGrant
 from .errors import PodProviderResultReceivedError, safe_error_message
-from .runtime import AiRuntime, AiRuntimeConfig, RuntimeClosedError
-from .runtime_contracts import (
-    SUPPORTED_TEMPLATE_IMAGE_CONTENT_TYPES,
-    DirectListingGridRequest,
-    PatternGridRequest,
-    SceneOptimizationRequest,
+from .image_providers import (
+    GridImageProvider,
+    GridImageRequest,
+    GridReference,
+    POD_IMAGE_MODEL_DEFAULT,
+    SUCHUANG_PLATFORM,
+    SUCHUANG_RESULT_TIMEOUT_SECONDS,
+    SuChuangImageProvider,
+    build_grid_providers,
+    grant_provider_for_model,
+    image_data_url,
+    normalize_model,
+    provider_for_model,
+    suffix_for_content_type,
 )
+from .runtime import AiRuntime, AiRuntimeConfig, RuntimeClosedError
+from .runtime_contracts import DirectListingGridRequest, PatternGridRequest, SceneOptimizationRequest
 
-
-# 单次速创生图的分段超时：超过该时长仍未拿到图片地址就丢弃这次调用，交给已规划的重试
-# 立刻重投。依据本地真实时延（近千次调用均值 ~74s、p95 ~115s、上游健康日上限 136s），
-# 240s 约为 3 倍 p95。原先 600s 的上限会让一个长尾任务独占 1/8 的生图槽位长达 10 分钟，
-# 把整批有效并发从 8 拖到 4~5，整批耗时直接翻倍。
-SUCHUANG_RESULT_TIMEOUT_SECONDS: float = 240.0
-POD_IMAGE_MODEL_DEFAULT = "image_gpt_2.5"
-SUCHUANG_BASE_URL = "https://api.wuyinkeji.com"
-SUCHUANG_IMAGE_SUBMIT_PATHS = {
-    "image_gpt": "/api/async/image_gpt",
-    "image_gpt_2.5": "/api/async/image_gpt_2.5",
-}
-SUCHUANG_IMAGE_ASPECT_RATIO_2_5 = {
-    "1:1": "1024x1024",
-    "16:9": "1280x720",
-    "9:16": "720x1280",
-    "4:3": "1152x864",
-    "3:4": "864x1152",
-    "3:2": "1536x1024",
-    "2:3": "1024x1536",
-    "5:4": "1120x896",
-    "4:5": "896x1120",
-    "21:9": "1456x624",
-    "9:21": "624x1456",
-    "1:3": "688x2048",
-    "3:1": "2048x688",
-    "2:1": "1536x768",
-    "1:2": "768x1536",
-}
+# 兼容旧调用点：这个工具过去定义在本模块，实现已移到 image_providers.base。
+_image_data_url = image_data_url
 
 
 class PodCustomizationAiRuntime(AiRuntime):
-    """Dedicated POD execution lane which reuses the tested image-edit chain."""
+    """Dedicated POD execution lane shared by the four POD modules."""
 
     def __init__(
         self,
@@ -111,11 +86,12 @@ class PodCustomizationAiRuntime(AiRuntime):
             session=session,
         )
         # Reuse only the local splitter and existing COS publisher. Provider
-        # generation is implemented above and always receives an explicit grant.
+        # generation is implemented in image_providers and always receives an
+        # explicit grant key.
         self._media = ProductImageProcessor(
             config_provider=ProductProcessingService._media_config_provider,
         )
-        # 速创直连不能继承桌面环境中的 HTTP(S)_PROXY；历史 AI 处理链路
+        # 速创/豆包直连不能继承桌面环境中的 HTTP(S)_PROXY；历史 AI 处理链路
         # 同样固定直连，避免代理在 TLS 握手阶段截断长时间图片请求。
         if hasattr(self.session, "trust_env"):
             self.session.trust_env = False
@@ -123,6 +99,13 @@ class PodCustomizationAiRuntime(AiRuntime):
         self._result_timeout_seconds = max(0.0, float(result_timeout_seconds))
         self._public_image_fetcher = public_image_fetcher or fetch_public_image
         self._public_image_timeout_seconds = max(1.0, min(float(public_image_timeout_seconds), 60.0))
+        # 平台实现随运行时构建一次，共用同一套槽位/限流/下载资源。
+        self._grid_providers = build_grid_providers(
+            result_timeout_seconds=self._result_timeout_seconds,
+            poll_interval_seconds=self._poll_interval_seconds,
+        )
+
+    # ---- 四个 POD 模块共用的生图入口 ----
 
     def generate_pattern_grid(self, request: PatternGridRequest, *, grant: PodExecutionGrant, call_id: str) -> bytes:
         raise MediaProcessingError(
@@ -144,31 +127,35 @@ class PodCustomizationAiRuntime(AiRuntime):
         call_id: str,
         on_start: Callable[[], None] | None = None,
     ) -> GeneratedMedia:
-        """Generate one reference-locked grid through POD's SuChuang client.
+        """Generate one reference-locked grid through the selected platform.
 
         This remains one provider request per service-level attempt.  The
         service decides whether a malformed grid receives its single retry.
         """
-        _required_provider_key(grant, "wuyin")
         model = _resolve_pod_image_model()
-        # 复刻传两张（样图 + 目标白底图），全定制沿用旧 template_* 单图路径；
-        # 半定制纯文生图没有任何参考图时，不发布、不校验公网，提交体也不带 urls。
-        reference_urls = self._listing_reference_urls(request)
+        provider = self._provider_for(model)
+        _required_provider_key(grant, provider.grant_provider)
+        references = self._grid_references(request)
+        # 参考图准备（速创发布公网地址、豆包转 base64）刻意放在 provider 槽位之前：
+        # 这是本地/网络开销，不该占用生图槽位；发布失败也必须在提交上游之前失败。
+        prepared = provider.prepare(self, references, namespace=request.trial_id)
+        grid_request = GridImageRequest(
+            prompt=request.prompt,
+            size=request.size,
+            trial_id=request.trial_id,
+        )
         try:
             with self.provider_slot():
-                _required_provider_key(grant, "wuyin")
-                submit_kwargs = {"on_start": on_start} if on_start is not None else {}
-                task_id = self._submit_suchuang_grid(
-                    grant, request, reference_urls, model=model, **submit_kwargs
+                # 等槽位期间冻结的短期密钥可能已经过期，必须重新校验后再提交上游。
+                api_key = _required_provider_key(grant, provider.grant_provider)
+                result = provider.generate(
+                    self,
+                    grid_request,
+                    prepared,
+                    model=model,
+                    api_key=api_key,
+                    on_start=on_start,
                 )
-                result_url = self._poll_suchuang_grid(grant, task_id)
-                try:
-                    content, content_type = self._download_suchuang_grid(result_url)
-                except Exception as exc:
-                    raise PodProviderResultReceivedError(
-                        "wuyin",
-                        f"速创已返回结果，但本地下载或解析失败：{safe_error_message(exc)}",
-                    ) from exc
         except PodProviderResultReceivedError:
             raise
         except PodBillingAuthorizationRequired:
@@ -179,66 +166,55 @@ class PodCustomizationAiRuntime(AiRuntime):
             raise
         except Exception as exc:
             raise MediaProcessingError(
-                f"速创图片服务暂时不可用：{exc.__class__.__name__}",
+                f"{provider.name} 图片服务暂时不可用：{exc.__class__.__name__}",
                 attempt_count=1,
                 status_class="transient",
             ) from exc
         return GeneratedMedia(
             stage="grid_image",
-            content=content,
-            content_type=content_type,
-            suffix=_suffix_for_content_type(content_type),
-            provider="suchuang",
+            content=result.content,
+            content_type=result.content_type,
+            suffix=suffix_for_content_type(result.content_type),
+            provider=provider.name,
             model=model,
-            reference_count=len(reference_urls),
+            reference_count=len(references),
             attempt_count=1,
         )
 
-    def _listing_reference_urls(self, request: DirectListingGridRequest) -> list[str]:
-        """resolve all listing reference images to provider-fetchable public URLs.
+    def _provider_for(self, model: str) -> GridImageProvider:
+        return self._grid_providers.get(provider_for_model(model)) or self._grid_providers[
+            SUCHUANG_PLATFORM
+        ]
 
-        复刻按 ``request.reference_images`` 逐图发布（保持传入顺序）；
-        全定制沿用旧 ``template_image/template_content_type`` 单图路径；
-        半定制两处皆空，返回空列表，提交体不带 urls。
-        """
+    @staticmethod
+    def _grid_references(request: DirectListingGridRequest) -> tuple[GridReference, ...]:
+        """复刻按传入顺序保留多张参考图；全定制沿用模板单图；半定制零参考图。"""
         if request.reference_images:
-            return self._publish_listing_references(request)
-        if request.template_image:
-            return [self._publish_listing_reference(request)]
-        return []
-
-    def _publish_listing_references(self, request: DirectListingGridRequest) -> list[str]:
-        """逐图内容寻址发布复刻参考图，顺序保持 ``reference_images`` 原序。
-
-        任何一张发布失败都会抛 MediaProcessingError(non_retryable_local)，
-        由 generate_listing_grid 沿用既有错误分类，不会提交生图。
-        """
-        urls: list[str] = []
-        for image in request.reference_images:
-            urls.append(
-                self._publish_listing_reference_content(
-                    content=image.content,
-                    content_type=image.content_type,
-                    namespace=request.trial_id,
-                )
+            return tuple(
+                GridReference(content=image.content, content_type=image.content_type)
+                for image in request.reference_images
             )
-        return urls
+        if request.template_image:
+            return (
+                GridReference(
+                    content=request.template_image,
+                    content_type=request.template_content_type,
+                ),
+            )
+        return ()
 
-    def _publish_listing_reference(self, request: DirectListingGridRequest) -> str:
-        return self._publish_listing_reference_content(
-            content=request.template_image,
-            content_type=request.template_content_type,
-            namespace=request.trial_id,
-        )
+    # ---- 平台实现可用的执行资源（GridProviderHost） ----
 
-    def _publish_listing_reference_content(
-        self, *, content: bytes, content_type: str, namespace: str
-    ) -> str:
+    def ensure_open(self) -> None:
+        self._ensure_open()
+
+    def publish_reference(self, content: bytes, content_type: str, *, namespace: str) -> str:
+        """把本地参考图发布成上游可访问的公网地址（速创用）。"""
         reference = GeneratedMedia(
             stage="pod_listing_reference",
             content=content,
             content_type=content_type,
-            suffix=_suffix_for_content_type(content_type),
+            suffix=suffix_for_content_type(content_type),
             provider="local-template",
             model="",
             reference_count=0,
@@ -256,203 +232,20 @@ class PodCustomizationAiRuntime(AiRuntime):
             )
         return url
 
-    def _submit_suchuang_grid(
-        self,
-        grant: PodExecutionGrant,
-        request: DirectListingGridRequest,
-        reference_urls: list[str],
-        *,
-        model: str,
-        on_start: Callable[[], None] | None = None,
-    ) -> str:
-        self.acquire_request_token()
-        with self.connection_slot(timeout_seconds=30.0):
-            image_key = _required_provider_key(grant, "wuyin")
-            self._ensure_open()
-            if on_start is not None:
-                on_start()
-            self._ensure_open()
-            size_value = _suchuang_size(request.size)
-            submit_path = SUCHUANG_IMAGE_SUBMIT_PATHS.get(
-                model, SUCHUANG_IMAGE_SUBMIT_PATHS[POD_IMAGE_MODEL_DEFAULT]
-            )
-            # 诊断留痕：明确记录本次解析到的模型与真实提交端点，避免"以为切了 2.5 其实没切"。
-            business_logger("pod_processing").info(
-                "POD 生图提交 | trial_id=%s | model=%s | endpoint=%s | size=%s | 参考图=%d",
-                request.trial_id,
-                model,
-                f"{SUCHUANG_BASE_URL}{submit_path}",
-                size_value,
-                len(reference_urls),
-            )
-            if model == "image_gpt_2.5":
-                body: dict[str, Any] = {
-                    "prompt": request.prompt,
-                    "aspectRatio": SUCHUANG_IMAGE_ASPECT_RATIO_2_5.get(size_value, "1024x1024"),
-                }
-                if reference_urls:
-                    # 2.5 端点的 urls 要求逗号拼接字符串，传数组上游会返回 500。
-                    body["urls"] = ",".join(reference_urls)
-            else:
-                body = {"prompt": request.prompt, "size": size_value}
-                if reference_urls:
-                    body["urls"] = list(reference_urls)
-            response = self.session.post(
-                f"{SUCHUANG_BASE_URL}{submit_path}",
-                params={"key": image_key},
-                headers={"Authorization": image_key, "Content-Type": "application/json"},
-                json=body,
-                timeout=30.0,
-                allow_redirects=False,
-            )
-            try:
-                if not bool(response.ok):
-                    raise MediaProcessingError(
-                        f"速创提交返回 HTTP {int(response.status_code)}",
-                        status_code=int(response.status_code),
-                        attempt_count=1,
-                        status_class=_suchuang_status_class(int(response.status_code)),
-                    )
-                payload = response.json()
-            finally:
-                response.close()
-        if not isinstance(payload, dict) or int(payload.get("code") or 0) != 200:
-            raise MediaProcessingError(
-                f"速创提交失败：{_suchuang_message(payload)}",
-                attempt_count=1,
-                status_class="non_retryable_4xx" if _suchuang_code_is_auth_or_request_error(payload) else "transient",
-            )
-        data = payload.get("data") or {}
-        task_id = str(data.get("id") or data.get("task_id") or "").strip() if isinstance(data, dict) else ""
-        if not task_id:
-            raise MediaProcessingError("速创返回中没有生图任务 ID", attempt_count=1, status_class="transient")
-        return task_id
-
-    def _poll_suchuang_grid(self, grant: PodExecutionGrant, task_id: str) -> str:
-        deadline = time.monotonic() + self._result_timeout_seconds
-        started_at = time.monotonic()
-        last_message = ""
-        last_payload: object = None
-        last_status = ""
-        polls = 0
-
-        def trace(raw_limit: int) -> str:
-            """失败留痕：上游只回「调用成功」这类套话，缺任务 ID 与原始响应就无从回查。"""
-
-            return suchuang_poll_trace(
-                task_id,
-                polls,
-                time.monotonic() - started_at,
-                last_payload,
-                last_status,
-                raw_limit=raw_limit,
-            )
-
-        def fail(reason: str, status_class: str = "transient") -> MediaProcessingError:
-            """日志留全量留痕，落库的错误信息里嵌精简版（safe_error_message 还会再截到 500 字符）。"""
-
-            business_logger("pod_processing").warning(
-                "POD 速创生图失败：%s | %s", reason, trace(2000)
-            )
-            return MediaProcessingError(
-                f"{reason} | {trace(200)}", attempt_count=1, status_class=status_class
-            )
-
-        while time.monotonic() < deadline:
-            polls += 1
-            if self._poll_interval_seconds:
-                self.interruptible_wait(self._poll_interval_seconds)
-            self.acquire_request_token()
-            with self.connection_slot(timeout_seconds=30.0):
-                image_key = _required_provider_key(grant, "wuyin")
-                response = self.session.get(
-                    "https://api.wuyinkeji.com/api/async/detail",
-                    params={"key": image_key, "id": task_id},
-                    headers={"Authorization": image_key},
-                    timeout=30.0,
-                    allow_redirects=False,
-                )
-                try:
-                    if not bool(response.ok):
-                        status = int(response.status_code)
-                        if 400 <= status < 500:
-                            raise MediaProcessingError(
-                                f"速创轮询返回 HTTP {status}",
-                                status_code=status,
-                                attempt_count=1,
-                                status_class="non_retryable_4xx",
-                            )
-                        last_message = f"detail HTTP {status}"
-                        continue
-                    payload = response.json()
-                    last_payload = payload
-                finally:
-                    response.close()
-            if not isinstance(payload, dict):
-                last_message = "detail response is incompatible"
-                continue
-            code = int(payload.get("code") or 0)
-            if code and code != 200:
-                last_message = _suchuang_message(payload)
-                if code in {400, 401, 403, 404}:
-                    raise MediaProcessingError(
-                        f"速创图片任务失败：{last_message}",
-                        attempt_count=1,
-                        status_class="non_retryable_4xx",
-                    )
-                continue
-            data = payload.get("data") or {}
-            result_url = _first_suchuang_image_url(data) or _first_suchuang_image_url(payload)
-            if result_url:
-                return result_url
-            status_value = str(data.get("status") or payload.get("status") or "").strip().lower() if isinstance(data, dict) else ""
-            last_status = status_value
-            # 顶层 msg 只说「这次查询成功」，任务本身的状态在 data.message / data.msg 里：
-            # 上游对生成失败会回 status=3 且 message="generate image failed"，只按状态码判断
-            # 会把它当成「处理中」白等到分段超时，真实原因（生成失败）被吞掉。
-            message = _suchuang_message(payload)
-            task_message = _suchuang_task_message(data)
-            if _suchuang_task_failed(task_message):
-                raise fail(f"速创图片任务失败：{task_message}")
-            # 上游 status 为异步任务状态码（纯数字或文本）：≥0 为排队/准备/等待/处理中/发布，
-            # 1<0 为失败，1/成功文本才表示完成。3/4/5 数字在任务消息未报失败时实为“处理中”，
-            # 不能按文本失败集误判成失败。
-            try:
-                numeric_status = int(float(status_value)) if status_value else None
-            except (TypeError, ValueError):
-                numeric_status = None
-            if numeric_status is not None:
-                if numeric_status < 0:
-                    raise fail(f"速创图片任务失败：{task_message or message}")
-                last_message = task_message or message or f"status={status_value}"
-                continue
-            if status_value in {"success", "succeeded", "finish", "finished", "completed", "done"}:
-                raise fail(f"速创已完成但没有图片地址：{task_message or message}")
-            if status_value in {"fail", "failed", "error", "cancelled", "canceled"}:
-                raise fail(f"速创图片任务失败：{task_message or message}")
-            last_message = task_message or message or f"status={status_value or 'processing'}"
-        raise fail(f"速创图片任务分段超时（{self._result_timeout_seconds:.0f}s）：{last_message}")
-
-    def _download_suchuang_grid(self, result_url: str) -> tuple[bytes, str]:
-        try:
-            self._ensure_open()
-            fetch_kwargs: dict[str, Any] = {
-                "max_bytes": MAX_IMAGE_BYTES,
-                "max_redirects": 0,
-                "timeout_seconds": self._public_image_timeout_seconds,
-            }
-            if _accepts_keyword(self._public_image_fetcher, "shutdown_event"):
-                fetch_kwargs["shutdown_event"] = self.shutdown_event
-            fetched = self._public_image_fetcher(result_url, **fetch_kwargs)
-            self._ensure_open()
-            content = bytes(fetched.content)
-            content_type, _suffix, _width, _height = inspect_pod_image(content)
-        except (PublicImageFetchError, ValueError, OSError) as exc:
-            raise MediaProcessingError(
-                "provider result is not a safe valid image",
-                attempt_count=1,
-                status_class="transient",
-            ) from exc
+    def download_result(self, result_url: str) -> tuple[bytes, str]:
+        """下载并校验上游返回的图片地址（原始异常交给平台层包装成收据）。"""
+        self._ensure_open()
+        fetch_kwargs: dict[str, Any] = {
+            "max_bytes": MAX_IMAGE_BYTES,
+            "max_redirects": 0,
+            "timeout_seconds": self._public_image_timeout_seconds,
+        }
+        if _accepts_keyword(self._public_image_fetcher, "shutdown_event"):
+            fetch_kwargs["shutdown_event"] = self.shutdown_event
+        fetched = self._public_image_fetcher(result_url, **fetch_kwargs)
+        self._ensure_open()
+        content = bytes(fetched.content)
+        content_type, _suffix, _width, _height = inspect_pod_image(content)
         return content, content_type
 
     def split_listing_grid(self, media):
@@ -498,25 +291,29 @@ class PodCustomizationAiRuntime(AiRuntime):
             raise RuntimeError("published POD listing image is not publicly accessible")
         return url
 
+    # ---- 速创链路的兼容入口（实现已移到 image_providers/suchuang.py） ----
+
+    def _poll_suchuang_grid(self, grant: PodExecutionGrant, task_id: str) -> str:
+        provider = self._grid_providers[SUCHUANG_PLATFORM]
+        if not isinstance(provider, SuChuangImageProvider):
+            raise RuntimeError("POD 速创平台实现未注册")
+        return provider.poll(
+            self, task_id, resolve_key=lambda: _required_provider_key(grant, "wuyin")
+        )
+
+    def _download_suchuang_grid(self, result_url: str) -> tuple[bytes, str]:
+        """旧签名：把本地下载/解析失败折叠成一个可重试的媒体错误。"""
+        try:
+            return self.download_result(result_url)
+        except (PublicImageFetchError, ValueError, OSError) as exc:
+            raise MediaProcessingError(
+                "provider result is not a safe valid image",
+                attempt_count=1,
+                status_class="transient",
+            ) from exc
+
     def close(self, *, wait: bool = True, cancel_futures: bool = True) -> None:
         super().close(wait=wait, cancel_futures=cancel_futures)
-
-
-def _grid_scaffold_data_url() -> str:
-    image = Image.new("RGB", (1024, 1024), "#ffffff")
-    drawing = ImageDraw.Draw(image)
-    drawing.line((512, 0, 512, 1024), fill="#d9d9d9", width=3)
-    drawing.line((0, 512, 1024, 512), fill="#d9d9d9", width=3)
-    output = io.BytesIO()
-    image.save(output, "PNG", optimize=True)
-    return _image_data_url(output.getvalue())
-
-
-def _image_data_url(content: bytes, content_type: str = "image/png") -> str:
-    normalized_content_type = str(content_type or "").strip().lower()
-    if normalized_content_type not in SUPPORTED_TEMPLATE_IMAGE_CONTENT_TYPES:
-        raise ValueError("POD reference image must be JPEG, PNG, or WEBP")
-    return f"data:{normalized_content_type};base64," + base64.b64encode(content).decode("ascii")
 
 
 def _accepts_keyword(function: Callable[..., Any], name: str) -> bool:
@@ -531,7 +328,7 @@ def _accepts_keyword(function: Callable[..., Any], name: str) -> bool:
 
 
 def _resolve_pod_image_model() -> str:
-    """按调用读取 POD 独立模型配置；任何本地配置故障都安全回退到 2.0。"""
+    """按调用读取 POD 生图模型配置；任何本地配置故障都安全回退到默认模型。"""
     try:
         from wh_local.modules.basic_settings.service import SystemConfigService
         from wh_local.modules.product_processing.provider_config import registered_system_config_db_path
@@ -539,9 +336,8 @@ def _resolve_pod_image_model() -> str:
         database_path = registered_system_config_db_path()
         if not database_path:
             return POD_IMAGE_MODEL_DEFAULT
-        selected = str(SystemConfigService(Path(database_path)).get_pod_image_model().get("model") or "").strip()
-        if selected in SUCHUANG_IMAGE_SUBMIT_PATHS:
-            return selected
+        selection = SystemConfigService(Path(database_path)).get_pod_image_model()
+        return normalize_model(selection.get("model"))
     except Exception:
         pass
     return POD_IMAGE_MODEL_DEFAULT
@@ -552,160 +348,13 @@ def resolve_pod_image_model() -> str:
     return _resolve_pod_image_model()
 
 
-def _suchuang_size(value: str | None) -> str:
-    raw = str(value or "").strip().lower()
-    if raw in {"1024x1024", "2048x2048", "4096x4096"}:
-        return "1:1"
-    if raw in {"auto", "1:1", "3:2", "2:3", "16:9", "9:16", "4:3", "3:4", "21:9", "9:21", "1:3", "3:1", "2:1", "1:2"}:
-        return raw
-    return "1:1"
+def pod_image_grant_provider() -> str:
+    """当前 POD 生图平台需要冻结下发的 provider key 名（速创=wuyin，豆包=ark）。
 
-
-def _suchuang_status_class(status_code: int) -> str:
-    return "non_retryable_4xx" if 400 <= status_code < 500 else "transient"
-
-
-def _suchuang_code_is_auth_or_request_error(payload: object) -> bool:
-    if not isinstance(payload, dict):
-        return False
-    return int(payload.get("code") or 0) in {400, 401, 403, 404}
-
-
-def _first_suchuang_image_url(value: Any) -> str:
-    if isinstance(value, str):
-        candidate = value.strip()
-        if is_safe_external_url(candidate):
-            return candidate
-        return ""
-    if isinstance(value, dict):
-        for key in ("url", "image_url", "image", "src", "href"):
-            found = _first_suchuang_image_url(value.get(key))
-            if found:
-                return found
-        for key in ("result", "results", "images", "urls", "output", "outputs"):
-            found = _first_suchuang_image_url(value.get(key))
-            if found:
-                return found
-    if isinstance(value, (list, tuple)):
-        for item in value:
-            found = _first_suchuang_image_url(item)
-            if found:
-                return found
-    return ""
-
-
-def _suchuang_message(payload: object) -> str:
-    if not isinstance(payload, dict):
-        return "响应格式不兼容"
-    for key in ("msg", "message", "error", "reason"):
-        value = payload.get(key)
-        if isinstance(value, str) and value.strip():
-            return safe_error_message(value, fallback="未提供错误说明")[:180]
-    return "未提供错误说明"
-
-
-# 上游「任务级」消息里的失败语义：生成失败时 data.message 形如 "generate image failed"。
-# 审核拒绝也走同一条路径（"此内容可能违反了我们的内容政策 请更换提示词或图片内容后重试"），
-# 不收录这些词就会退化成「还在处理中」，白轮询到 240s 超时并报错成「分段超时」。
-_SUCHUANG_TASK_FAILURE_TOKENS: tuple[str, ...] = (
-    "failed",
-    "failure",
-    "fail",
-    "失败",
-    "错误",
-    "异常",
-    "违反",
-    "违规",
-    "内容政策",
-    "敏感",
-    "请更换提示词",
-    "policy",
-    "violat",
-    "sensitive",
-    "blocked",
-    "rejected",
-)
-
-
-def _suchuang_task_message(data: object) -> str:
-    """读任务级消息（data.message / data.msg）；顶层 msg 只说明这次查询成功与否。
-
-    上游对失败的生成会回 ``status=3`` 且 ``data.message="generate image failed"``：
-    状态码本身区分不了「还在处理」与「生成失败」，唯一的判据是这条消息。
+    平台的密钥偏好只能由这里给出：把 wuyin 写死会让切到豆包后的批次卡在
+    「授权不可用」并无限暂停。
     """
-
-    if not isinstance(data, dict):
-        return ""
-    for key in ("message", "msg", "error", "reason"):
-        value = data.get(key)
-        if isinstance(value, str) and value.strip():
-            return safe_error_message(value, fallback="")[:180]
-    return ""
-
-
-def _suchuang_task_failed(task_message: str) -> bool:
-    lowered = str(task_message or "").strip().casefold()
-    if not lowered:
-        return False
-    return any(token in lowered for token in _SUCHUANG_TASK_FAILURE_TOKENS)
-
-
-# 留痕时屏蔽的敏感键：上游详情响应理论上不含密钥，但这些内容会落库/落盘，先兜一层。
-_TRACE_REDACT_KEYS = frozenset({"key", "api_key", "apikey", "token", "access_token", "authorization"})
-
-
-def _trace_payload(value: Any, depth: int = 0) -> Any:
-    """把上游响应裁剪成可安全留痕的形状：限深、限宽，并屏蔽密钥类字段。
-
-    深度要留够（code → data → images → item → url 已经 4 层）：截太浅会把最关键的
-    图片地址本身换成省略号，反而看不出"上游到底给没给图、挂在哪个键下"。
-    """
-
-    if depth >= 8:
-        return "…"
-    if isinstance(value, dict):
-        return {
-            str(name): (
-                "***" if str(name).lower() in _TRACE_REDACT_KEYS else _trace_payload(item, depth + 1)
-            )
-            for name, item in list(value.items())[:20]
-        }
-    if isinstance(value, (list, tuple)):
-        return [_trace_payload(item, depth + 1) for item in list(value)[:8]]
-    return value
-
-
-def suchuang_poll_trace(
-    task_id: str,
-    polls: int,
-    elapsed: float,
-    payload: object,
-    status: str,
-    *,
-    raw_limit: int = 200,
-) -> str:
-    """把上游任务 ID 与最后一次轮询原文压成一行，用于生图失败留痕。
-
-    上游失败时只回「调用成功」这类套话，而任务 ID 与原始状态此前既不落库也不打日志，
-    一旦分段超时，事后既无法回查上游任务、也判断不出是上游卡住还是我们没认出已完成的响应。
-    """
-
-    try:
-        raw = json.dumps(_trace_payload(payload), ensure_ascii=False, default=str)
-    except (TypeError, ValueError):
-        raw = repr(payload)
-    return (
-        f"task={task_id or '<none>'} polls={polls} elapsed={elapsed:.0f}s "
-        f"status={status or '<empty>'} raw={raw[:raw_limit]}"
-    )
-
-
-def _suffix_for_content_type(content_type: str) -> str:
-    return {
-        "image/jpeg": ".jpg",
-        "image/webp": ".webp",
-        "image/gif": ".gif",
-    }.get(content_type, ".png")
+    return grant_provider_for_model(_resolve_pod_image_model())
 
 
 def _required_provider_key(grant: PodExecutionGrant, provider: str) -> str:

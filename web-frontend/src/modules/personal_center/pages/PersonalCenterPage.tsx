@@ -422,6 +422,7 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
   const [podImageModel, setPodImageModel] = useState("");
   const [podImageModelChoices, setPodImageModelChoices] = useState<ImageModelChoice[]>([]);
   const [podImageModelBusy, setPodImageModelBusy] = useState(false);
+  const [podImageLoading, setPodImageLoading] = useState(false);
   const [podImageModelMessage, setPodImageModelMessage] = useState("");
   const [podImageModelError, setPodImageModelError] = useState("");
   const [usageEntries, setUsageEntries] = useState<BillingUsageEntry[]>(
@@ -496,14 +497,21 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
         if (!disposed) setImageModelError(exc instanceof Error ? exc.message : "读取生图模型失败");
       });
     setPodImageModelError("");
+    setPodImageLoading(true);
     loadPodImageModel()
       .then((payload) => {
         if (disposed) return;
         setPodImageModelChoices(payload.choices ?? []);
         setPodImageModel(payload.model ?? "");
+        if ((payload.choices ?? []).length === 0) {
+          setPodImageModelError("服务端未返回 POD 生图模型清单，请重启本地服务后重试");
+        }
       })
       .catch((exc) => {
         if (!disposed) setPodImageModelError(exc instanceof Error ? exc.message : "读取 POD 生图模型失败");
+      })
+      .finally(() => {
+        if (!disposed) setPodImageLoading(false);
       });
     return () => {
       disposed = true;
@@ -2183,15 +2191,19 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
                       setPodImageModelMessage("");
                       setPodImageModelError("");
                     }}
-                    disabled={podImageModelBusy}
+                    disabled={podImageModelBusy || podImageLoading}
                   >
-                    {podImageModel === "" && <option value="">读取中…</option>}
+                    {podImageModel === "" && (
+                      <option value="">{podImageLoading ? "读取中…" : "未读取到模型"}</option>
+                    )}
                     {podImageModelChoices.map((choice) => (
                       <option key={choice.value} value={choice.value}>{choice.label}</option>
                     ))}
                   </select>
                 </label>
-                <small className="model-field-hint">仅作用于 POD 定制（直连速创）链路，与 AI处理 模型互不影响。</small>
+                <small className="model-field-hint">
+                  仅作用于 POD 定制（全定制 / 半定制 / 爆款复刻 / 爆款裂变）链路，与 AI处理 模型互不影响。
+                </small>
                 {podImageModelMessage && <p className="version-message is-success">{podImageModelMessage}</p>}
                 {podImageModelError && <p className="version-message is-error" role="alert">{podImageModelError}</p>}
                 <div className="version-actions">

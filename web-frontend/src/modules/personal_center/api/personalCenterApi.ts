@@ -389,12 +389,12 @@ export function saveImageModel(model: string) {
 
 export type PodImageModelSetting = ImageModelSetting;
 
-/** 读取 POD 独立生图模型，不跟随 AI处理 的模型配置。 */
+/** 读取 POD 生图模型（速创两个 + 豆包一个，同一份清单），不跟随 AI处理 的模型配置。 */
 export function loadPodImageModel() {
   return httpJson<PodImageModelSetting>("/desktop/basic-settings/pod-image-model");
 }
 
-/** 切换 POD 独立生图模型。 */
+/** 切换 POD 生图模型；走哪个上游由模型名决定，前端不需要选平台。 */
 export function savePodImageModel(model: string) {
   return httpJson<{ ok: boolean; model: string; message: string }>(
     "/desktop/basic-settings/pod-image-model",

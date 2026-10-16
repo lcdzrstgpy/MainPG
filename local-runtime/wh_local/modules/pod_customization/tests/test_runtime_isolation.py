@@ -19,6 +19,7 @@ from wh_local.modules.pod_customization.billing_contract import (
     PodExecutionGrant,
 )
 from wh_local.modules.pod_customization.errors import PodProviderResultReceivedError
+from wh_local.modules.pod_customization.image_providers import SUCHUANG_PLATFORM
 from wh_local.modules.pod_customization.runtime_contracts import DirectListingGridRequest
 from wh_local.modules.product_processing.infrastructure.media import MediaProcessingError
 from wh_local.data_collection.public_image_fetch import (
@@ -471,9 +472,10 @@ def test_direct_listing_grid_rejects_grant_without_provider_key_even_if_remote_t
 
 def test_wuyin_result_url_receipt_survives_local_download_failure_and_redacts_detail() -> None:
     runtime = PodCustomizationAiRuntime(image_workers=1, requests_per_minute=0, poll_interval_seconds=0)
-    runtime._publish_listing_reference = lambda _request: "https://cos.example.test/reference.png"  # type: ignore[method-assign]
-    runtime._submit_suchuang_grid = lambda *_args, **_kwargs: "task-1"  # type: ignore[method-assign]
-    runtime._poll_suchuang_grid = lambda *_args: "https://provider.example.test/result?token=URL-SECRET"  # type: ignore[method-assign]
+    provider = runtime._grid_providers[SUCHUANG_PLATFORM]
+    runtime.publish_reference = lambda *_args, **_kwargs: "https://cos.example.test/reference.png"  # type: ignore[method-assign]
+    provider.submit = lambda *_args, **_kwargs: "task-1"  # type: ignore[method-assign]
+    provider.poll = lambda *_args, **_kwargs: "https://provider.example.test/result?token=URL-SECRET"  # type: ignore[method-assign]
 
     def fail_download(_url: str):
         raise MediaProcessingError(
@@ -481,7 +483,7 @@ def test_wuyin_result_url_receipt_survives_local_download_failure_and_redacts_de
             status_class="transient",
         )
 
-    runtime._download_suchuang_grid = fail_download  # type: ignore[method-assign]
+    runtime.download_result = fail_download  # type: ignore[method-assign]
     try:
         try:
             runtime.generate_listing_grid(
@@ -534,17 +536,19 @@ def test_wuyin_grant_is_rechecked_after_waiting_for_provider_slot() -> None:
             return "short-lived-key" if self.clock < 1 else ""
 
     runtime = PodCustomizationAiRuntime(image_workers=1, requests_per_minute=0, poll_interval_seconds=0)
+    provider = runtime._grid_providers[SUCHUANG_PLATFORM]
     grant = ClockGrant()
     reference_published = Event()
     provider_submitted = Event()
-    runtime._publish_listing_reference = (  # type: ignore[method-assign]
-        lambda _request: reference_published.set() or "https://cos.example.test/reference.png"
+    runtime.publish_reference = (  # type: ignore[method-assign]
+        lambda *_args, **_kwargs: reference_published.set()
+        or "https://cos.example.test/reference.png"
     )
-    runtime._submit_suchuang_grid = (  # type: ignore[method-assign]
+    provider.submit = (  # type: ignore[method-assign]
         lambda *_args, **_kwargs: provider_submitted.set() or "task-should-not-run"
     )
-    runtime._poll_suchuang_grid = lambda *_args: "https://1.1.1.1/result.png"  # type: ignore[method-assign]
-    runtime._download_suchuang_grid = lambda _url: (b"image", "image/png")  # type: ignore[method-assign]
+    provider.poll = lambda *_args, **_kwargs: "https://1.1.1.1/result.png"  # type: ignore[method-assign]
+    runtime.download_result = lambda _url: (b"image", "image/png")  # type: ignore[method-assign]
     gate = BlockingGate()
     runtime._providers = gate  # type: ignore[assignment]
     future = runtime.submit(

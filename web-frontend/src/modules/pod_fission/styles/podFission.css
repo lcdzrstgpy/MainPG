@@ -23,9 +23,9 @@
   color: var(--pod-text);
 }
 
-/* 两列布局（对齐全定制的 .pod-workbench-grid）：左侧窄设置列放三步卡片，
-   右侧结果列吃满剩余宽度；1080px 以下收成单列。 */
-.pod-fission-layout { display: grid; grid-template-columns: minmax(285px, 330px) minmax(0, 1fr); gap: 16px; align-items: start; min-width: 0; }
+/* 两列布局（对齐全定制的 .pod-workbench-grid）：左右按黄金比例 0.382 : 0.618 分栏
+   （左小右大），左侧放三步卡片，右侧结果列吃满剩余宽度；1080px 以下收成单列。 */
+.pod-fission-layout { display: grid; grid-template-columns: minmax(300px, 0.382fr) minmax(0, 0.618fr); gap: 16px; align-items: start; min-width: 0; }
 .pod-fission-setup { display: grid; gap: 12px; min-width: 0; }
 .pod-fission-results { display: grid; gap: 12px; min-width: 0; align-content: start; }
 

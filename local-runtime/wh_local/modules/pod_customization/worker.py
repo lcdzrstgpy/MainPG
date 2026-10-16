@@ -17,6 +17,7 @@ from typing import Any, Callable
 from ...runtime_logs import business_logger
 from ...session import Actor
 from .assets import PodAssetStore
+from .ai_runtime import pod_image_grant_provider
 from .errors import PodExecutionExpired, image_provider_outcome_for_exception, safe_error_message
 from .billing_contract import (
     REPLICA_PANEL_ATTEMPTS,
@@ -144,7 +145,9 @@ class PodBillingRun:
             self._outcomes[call_id] = outcome
 
     def start(self, call_id: str, feature: str) -> None:
-        provider = "ark" if feature == "pod.title" else "wuyin"
+        # 生图的 provider key 取决于当前选中的平台（速创=wuyin / 豆包=ark）；
+        # 写死 wuyin 会让切到豆包后的批次卡在「授权不可用」并无限暂停。
+        provider = "ark" if feature == "pod.title" else pod_image_grant_provider()
         if not self.grant.provider_key(provider):
             raise PodBillingAuthorizationRequired(
                 "POD provider grant unavailable; this call will be recorded as failed"
@@ -1627,7 +1630,7 @@ class PodBatchWorker:
                 prompt=self._replica_panel_prompt_manifest(batch, style_index, attempt_value),
             )
             call["style_index"] = style_index
-            if not billing_run.grant.provider_key("wuyin"):
+            if not billing_run.grant.provider_key(pod_image_grant_provider()):
                 raise PodBillingAuthorizationRequired(
                     "POD provider grant expired before the next image call started"
                 )
@@ -1705,7 +1708,7 @@ class PodBatchWorker:
                         else "provider returned no result"
                     )
                 return
-            if not billing_run.grant.provider_key("wuyin"):
+            if not billing_run.grant.provider_key(pod_image_grant_provider()):
                 raise PodBillingAuthorizationRequired(
                     "POD provider grant expired before the next image call started"
                 )

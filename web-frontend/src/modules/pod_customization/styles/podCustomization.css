@@ -360,7 +360,7 @@
 .pod-page-header-actions { align-items: stretch; flex-direction: column; }
 .pod-page-header-actions > button { min-width: 224px; justify-content: center; padding: 11px 16px; }
 .pod-live-badge { justify-content: flex-end; }
-.pod-workbench-grid { grid-template-columns: minmax(285px, 330px) minmax(0, 1fr); grid-template-areas: "setup gallery"; align-items: stretch; gap: 16px; }
+.pod-workbench-grid { grid-template-columns: minmax(300px, 0.382fr) minmax(0, 0.618fr); grid-template-areas: "setup gallery"; align-items: stretch; gap: 16px; }
 .pod-setup-column { position: static; display: flex; flex-direction: column; height: 100%; gap: 10px; padding-right: 2px; }
 .pod-brief-sidebar .pod-setup-card { padding: 16px; }
 .pod-business-editor { border-radius: 20px; flex: 1 1 auto; min-height: 0; }
@@ -643,7 +643,7 @@
 .pod-start-button .icon-loading { display: inline-block; animation: pod-spin .8s linear infinite; }
 
 @media (max-width: 1180px) {
-  .pod-workbench-grid { grid-template-columns: minmax(250px, .62fr) minmax(460px, 1.38fr); grid-template-areas: "setup gallery"; }
+  .pod-workbench-grid { grid-template-columns: minmax(300px, 0.382fr) minmax(0, 0.618fr); grid-template-areas: "setup gallery"; }
   .pod-inspector { align-self: start; }
   .pod-gallery-grid { grid-template-columns: repeat(auto-fill, minmax(145px, 1fr)); }
 }

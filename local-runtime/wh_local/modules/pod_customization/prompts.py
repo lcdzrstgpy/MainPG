@@ -226,12 +226,11 @@ def _brief_color_preferences(business_fields: Mapping[str, object] | None) -> li
 
 # 四格固定角色/机位的默认描述（未配置用户构图时使用）。
 _DEFAULT_LISTING_PANEL_LINES = (
-    "Panel 1 — PRIMARY IMAGE (top-left): show the same complete product in one newly generated, natural, commercially useful lifestyle setting. Keep the full product and unchanged artwork visible; this is the marketplace primary image and title reference. Do not reuse the template background or add another product.",
-    "Panel 1 must be a wide lifestyle scene with the whole product inside a real environment, shot at a normal eye-level product angle, with the full silhouette in frame. It must never be a close-up, macro, cropped, partial, extreme-angle, or three-quarter detail shot: those belong to Panel 2 and Panel 3 and must not be repeated in the top-left panel.",
-    "Panel 2 — DETAIL IMAGE A (top-right): show a tight high-resolution close-up of the newly invented surface artwork on this same product. Make color, edges, print or material texture, and manufacturing detail easy to inspect; do not alter the artwork or its placement. This close-up belongs to the top-right panel only.",
-    "Panel 3 — DETAIL IMAGE B (bottom-left): show a different close product detail or three-quarter product view. Choose a product-appropriate structural or material detail, while keeping the artwork visibly identical to Panel 1 and Panel 2. This detail view belongs to the bottom-left panel only.",
-    "Panel 4 — MATERIAL IMAGE (bottom-right): show one complete product against a newly generated clean neutral ecommerce background. Keep the whole product clearly visible, make it fill most of the panel, and show the full design sharply. This is supporting material imagery, not the marketplace primary image.",
-    "Final check on the fixed order by position: top-left = the complete product in a lifestyle primary scene, top-right = tight artwork close-up, bottom-left = a different close product detail, bottom-right = the complete product on a neutral background. Do not swap, shift, or duplicate panels.",
+    "Panel 1 — PRIMARY IMAGE (top-left): the complete product in one newly generated, commercially useful lifestyle setting, shot wide at a normal eye-level product angle with the full silhouette in frame. It must never be a close-up, macro, cropped, partial or three-quarter detail shot — those belong to Panels 2-3 and must not be repeated here. This is the marketplace primary image and the title reference.",
+    "Panel 2 — DETAIL IMAGE A (top-right): a tight high-resolution close-up of the newly invented artwork on this same product, making colour, edges, print/material texture and manufacturing detail easy to inspect. Do not alter the artwork or its placement.",
+    "Panel 3 — DETAIL IMAGE B (bottom-left): a different close product detail or three-quarter view — a product-appropriate structural or material detail — with the artwork visibly identical to Panels 1-2.",
+    "Panel 4 — MATERIAL IMAGE (bottom-right): the complete product on a newly generated clean neutral ecommerce background, filling most of the panel with the full design sharply visible. Supporting material imagery, not the marketplace primary image.",
+    "Final check on the fixed order by position: top-left = complete product in a lifestyle scene, top-right = tight artwork close-up, bottom-left = a different close product detail, bottom-right = complete product on a neutral background. Do not swap, shift or duplicate panels.",
 )
 # 系统「默认模板」的四格描述（等价于未配置构图时的默认机位）；内置项，不需要用户新建。
 DEFAULT_COMPOSITION_ID = "__default__"
@@ -271,19 +270,17 @@ _LISTING_PANEL_SLOTS = (
 # 必须字面照做」的硬条款（用户反馈：四张图视角一模一样 = 失败）。
 _USER_DIRECTION_HEADER = (
     "USER-SPECIFIED SHOOTING DIRECTIONS — HIGHEST PRIORITY, HARD REQUIREMENTS (not hints): shoot each "
-    "panel exactly as its own direction says. These directions OVERRIDE the default shot normally implied "
-    "by the panel role name; never fall back to the generic role shot and never reuse another panel's "
-    "framing. Read every direction literally: '45-degree downward' must be clearly shot from above, "
-    "'vertically top-down' must look straight down from directly overhead, 'low eye-level' must sit below "
-    "the product, 'front-facing eye-level' must be a straight on-axis view, and 'macro close-up' must fill "
-    "the frame with the surface. Do not average the four directions into one compromise framing."
+    "panel exactly as its own direction says. These OVERRIDE the default shot implied by the panel role "
+    "name, and never reuse another panel's framing. Read each direction literally (e.g. 'vertically "
+    "top-down' = shot straight down from overhead; 'macro close-up' = the surface fills the frame). "
+    "Never average the four directions into one compromise framing."
 )
 # 四格趋同是这批图最致命的失败模式，单独再钉一句。
 _PANEL_DIFFERENTIATION_LINE = (
-    "MANDATORY DIFFERENCE CHECK — before finishing, verify the four quadrants show four clearly different "
-    "camera angles: different elevation (high / eye-level / low) and different distance (wide / medium / "
-    "close-up / macro) as each panel requests. If two quadrants end up sharing the SAME camera angle, the "
-    "image is WRONG — re-shoot one of them. Four identical viewpoints is a failed result."
+    "MANDATORY DIFFERENCE CHECK — the four quadrants must show clearly different elevations "
+    "(high / eye-level / low) and distances (wide / close-up / macro), as each panel requests. If two "
+    "quadrants share the same camera angle, re-shoot one of them: Four identical viewpoints is a "
+    "failed result."
 )
 
 
@@ -292,60 +289,37 @@ _PANEL_DIFFERENTIATION_LINE = (
 # 注意：不改变用户指定色板，只要求"在色板内拉满饱和度与亮度，别做灰做旧"。
 _COLOR_IMPACT_BLOCK = (
     "COLOR IMPACT — the result must look vivid, rich and inviting, never dull, grey or washed out:\n"
-    "- Render the palette at its most saturated and luminous. Deep/dark colors must read as RICH and "
-    "JEWEL-LIKE (lacquer, enamel, velvet), never muddy, hazy, dusty or faded.\n"
-    "- Keep the picture crisp and high-contrast: clean bright highlights, clear mid-tones and deep rich "
-    "shadows. Avoid a flat, hazy, low-contrast, under-lit or aged-look image.\n"
-    "- Warm the white balance toward sunlight; do not let a cold blue-grey cast flatten the picture.\n"
-    "- Build the PRODUCT BODY itself on the strongest, most saturated signature color of the palette "
-    "(the batch-wide theme's hero color) as its dominant base — the product must be the boldest color "
-    "statement in the whole frame. A pale, white or neutral product shell with only faint motifs is a "
-    "FAILURE. Lighter palette colors may only fill the pattern's negative space, the interior/lining, "
-    "or the background.\n"
+    "- Max out saturation and luminosity inside the palette: bright clean highlights, clear mid-tones, "
+    "deep rich shadows; dark colors must read jewel-like (lacquer, enamel, velvet), never muddy or faded. "
+    "Warm the white balance toward sunlight — no cold blue-grey cast.\n"
+    "- Build the PRODUCT BODY itself on the palette's strongest, most saturated signature colour (the "
+    "batch theme's hero colour) as its dominant base: the product must be the boldest colour statement "
+    "in frame. A pale, white or neutral product shell with only faint motifs is a FAILURE; lighter "
+    "palette colours may only fill pattern negative space, the interior/lining, or the background.\n"
     "- TONAL SEPARATION — the product must separate clearly from its background through a strong "
-    "difference in value and/or saturation. Never place a pale product on a pale background: if the "
-    "product reads light, the background must be clearly darker or richer, and vice versa. A "
-    "low-contrast, light-on-light, washed-out frame is a FAILURE.\n"
-    "- Keep props and the scene colorful and high-saturation too; a muted beige/grey set is a FAILURE.\n"
-    "- 60-30-10 COLOR HARMONY (fixed ratio contract): build the frame on three roles — about 60% "
-    "DOMINANT BASE (the product's large-area body color), about 30% STRUCTURAL ACCENT (handles, "
-    "bindings, large patch blocks), and about 10% POP HIGHLIGHT (gold thread, metal hardware, small "
-    "charms). The three proportions must be clearly readable; an even, untiered color spread is a FAILURE."
+    "difference in value and/or saturation. Never place a pale product on a pale background, and keep "
+    "props and the scene colourful too: a muted beige/grey set or a washed-out frame is a FAILURE.\n"
+    "- 60-30-10 COLOR HARMONY (fixed ratio contract): about 60% DOMINANT BASE (the product's large-area "
+    "body colour), about 30% STRUCTURAL ACCENT (handles, bindings, large patch blocks), about 10% POP "
+    "HIGHLIGHT (gold thread, metal hardware, small charms). The three proportions must be clearly "
+    "readable; an even, untiered spread is a FAILURE."
 )
 
 # POD 绝大多数是布艺（帆布/棉/绗缝/PU）包袋。实测我们出的图"像把图案喷在光滑塑料壳上"——
 # 因为提示词从没要求过面料工艺与布面行为。这里补上真实的纺织品质感。
 _FABRIC_REALISM_BLOCK = (
     "TEXTILE REALISM — this is a real sewn fabric product, never a flat spray-painted surface:\n"
-    "- The supplied template photo shows this product's TRUE construction — reproduce that construction "
-    "faithfully. If the template body is quilted/padded, the output MUST keep that same quilted relief; "
-    "do not smooth it away.\n"
-    "- Match the product's ACTUAL construction shown in the template: a padded/quilted body must show its "
-    "quilt grid and the puffy padding raised between the stitch lines; a plain canvas body must show clean "
-    "seams and topstitching. Never render a smooth, featureless, hard shell.\n"
-    "- QUILTING (apply only when the template body is quilted or padded; skip it for plain canvas): "
-    "reproduce the TEMPLATE's exact quilting type, cell size and stitch pitch — never invent a coarser, "
-    "larger or more irregular quilting than the template shows. The quilt grid must be REGULAR and "
-    "perfectly UNIFORM: every cell the same size, laid out in one consistent geometry (parallel diagonal "
-    "diamond or square grid) that aligns with the product's panels, seams and edges.\n"
-    "- Each quilted cell must be puffed to the SAME even, gentle height with a smooth rounded crown: a "
-    "soft highlight on the crown and a soft shadow in the valley between cells. Cell size must stay "
-    "small-to-medium and proportionate to the product — fine grain, never oversized pillows.\n"
-    "- The stitch lines must stay clearly readable: a continuous, straight line of fine dashed "
-    "topstitching runs along EVERY grid line, with a subtle indentation/groove and a faint thread shadow "
-    "where the stitching pulls the fabric down.\n"
-    "- QUILTING FAILURES — never produce: irregular lumpy blobs, marshmallow-like random bubbles, uneven "
-    "or oversized padding, a grid pitch that changes across the product, wavy or missing stitch lines, or "
-    "a surface that reads as a puffy duvet instead of a tailored quilted product.\n"
-    "- Show real fabric: visible woven canvas/cotton weave with a soft matte sheen, subtle fibre fuzz along "
-    "edges. Never glossy plastic, vinyl or airbrushed paint.\n"
-    "- Show natural fabric behaviour: gentle folds, soft creases, slight sag where the fabric hangs, and "
-    "tension lines where straps and zippers pull. Light must wrap these folds with soft shadows and highlights.\n"
-    "- Show real sewing details: topstitching along every edge and strap, a fabric zipper with tape, and "
-    "subtle seam shadowing.\n"
-    "- The printed/embroidered motifs must sit ON the weave and FOLLOW the fabric's folds and curvature "
-    "(they bend with the surface) — they must never look like flat stickers floating over a smooth shell.\n"
-    "- Keep the artwork itself unchanged and sharply readable while adding this textile realism."
+    "- Reproduce the template's TRUE construction. If its body is quilted/padded, keep the same quilt "
+    "relief: regular uniform cells at the template's own cell size and stitch pitch, fine dashed "
+    "topstitching along every grid line, each cell gently puffed with a soft crown highlight and a soft "
+    "valley shadow. Never smooth it into a featureless hard shell, and never invent coarser, larger or "
+    "irregular quilting, random bubbles or a puffy-duvet look.\n"
+    "- Show real woven fibre: visible canvas/cotton weave with a soft matte sheen, subtle edge fuzz, "
+    "natural folds, creases and tension lines. Never glossy plastic, vinyl or airbrushed paint.\n"
+    "- Show real sewing detail: topstitching along every edge, a fabric zipper with tape, subtle seam "
+    "shadowing.\n"
+    "- Printed/embroidered motifs must sit ON the weave and bend with the fabric's folds and curvature "
+    "— never look like flat stickers floating over a smooth shell, and stay sharply readable."
 )
 
 
@@ -404,7 +378,6 @@ def _listing_panel_lines(composition: Mapping[str, str] | None) -> list[str]:
         ),
         _PANEL_DIFFERENTIATION_LINE,
         _FIXED_PANEL_ROLE_LINE,
-        "Every panel must still show the same exact product wearing the same unchanged newly invented artwork, with the four-panel divider clean and centered.",
     ]
 
 
@@ -426,15 +399,18 @@ def build_direct_listing_prompt(
     parts = [
         _PART1_HEADER,
         "Create one square 2x2 ecommerce contact sheet with exactly four equal panels.",
-        "Treat the supplied template only as a structural product reference for product geometry, construction, proportions, material, scale, and printable surface location — including its sewn construction relief: the quilting/padding grid, the puffiness between stitch lines, seams, topstitching and hardware.",
-        "Do not copy, trace, preserve, or extend the template's existing artwork, decoration, colour scheme, background, room, furniture, lighting, shadows, camera framing, or scene.",
-        "CARVE-OUT: the template's quilting/padding relief, seams and stitching are STRUCTURE, not decoration. They MUST be preserved exactly as the template shows them — do not flatten the quilted surface into a smooth shell. Only the artwork, the colour scheme and the scene are to be replaced.",
+        # 精简原则：一条约束只说一遍。原先同一件事（别复用模板 / 保留绗缝 / 同款同图）各写了 3-4 遍，
+        # 长提示词会把关键契约（色彩冲击、工艺）稀释掉；这里逐条去重，语义一条不减。
+        "Treat the supplied template only as a STRUCTURAL reference for this product: geometry, proportions, construction, material, printable surface location, and its sewn relief (quilting/padding grid, seams, topstitching, hardware).",
+        # 几何锁定：模板白底图是唯一的结构基准，显式禁止拉伸/压扁/熔形等畸变，避免四格之间结构漂移。
+        "GEOMETRY LOCK: the product's silhouette, seam lines, panel divisions, quilting grid, hardware positions and strap/handle drop must match the template exactly. Do not stretch, squash, melt, bend, reshape or re-proportion any part, and do not add, merge or delete structural parts.",
+        "Do not copy the template's existing artwork, decoration, colour scheme, background, lighting or scene.",
+        "CARVE-OUT: the template's quilting/padding relief, seams and stitching are STRUCTURE, not decoration — preserve them exactly as shown; do not flatten the quilted surface into a smooth shell. Only the artwork, the colour scheme and the scene are to be replaced.",
         "That restriction only forbids REUSING the template's own scene. It does NOT mean the background may be plain: a freshly styled, richly lit scene is required (see PART 4 ART DIRECTION).",
-        "The template is not a background plate and must not appear as the base image. Invent a completely new PRINTED pattern and a fresh commercially suitable colour scheme — while keeping the fabric's real quilted/padded relief and stitching.",
-        "Keep the same exact product across all four panels: identical structure, material, proportions, base color, newly invented artwork, artwork scale, and artwork placement.",
-        "Do not invent another product, accessories attached to the product itself, text, captions, logos, labels, watermarks, collages, or borders. Keep the four-panel divider clean and centered. (Standalone scene props beside the product ARE required — see PART 4 ART DIRECTION.)",
-        "Panel order is fixed and every panel must show the same exact product with the same unchanged newly invented artwork.",
-        "When the product has an interior or lining (for example a laundry hamper, storage basket, or tote bag with an inner lining), keep the interior surface unprinted: a plain uniform solid color, black by default. Never extend the outer surface artwork onto the interior, and never add a second pattern inside.",
+        "Never use the template as the base image: invent a completely new PRINTED pattern and a fresh commercially suitable colour scheme over its real fabric construction.",
+        "Keep the same exact product across all four panels: identical structure, material, proportions, base color, artwork, artwork scale and artwork placement.",
+        "Do not invent another product, extra accessories attached to the product, text, captions, logos, labels, watermarks, collages or borders; keep the four-panel divider clean and centered. (Standalone scene props beside the product ARE required — see PART 4 ART DIRECTION.)",
+        "If the product has an interior or lining, keep the interior surface unprinted (one plain solid color, black by default) and never extend the outer artwork inside.",
         _COLOR_IMPACT_BLOCK,
         _FABRIC_REALISM_BLOCK,
         *_fabric_craft_lines(fields.fabric_craft),
@@ -495,22 +471,17 @@ def _set_design_block(theme: str, palette: str, scene: str, *, scene_mood: str =
         "empty outdoor field is a FAILURE (this is the main quality gap versus top-selling listings):\n"
         f"- Derive the scene's beauty from the PART 1 batch-wide theme together with this style's PART 3 "
         f"elements ({subject}) — the setting must clearly belong to this exact collection.\n"
-        f"- Stage this ONE lived-in scene, adapted to that theme (this style's own starting point: {scene}). "
-        "Only props that genuinely belong to that scene; never generic filler.\n"
+        f"- Stage this ONE lived-in scene, adapted to that theme (this style's own starting point: {scene}).\n"
         + ("\n".join(mood_lines) + "\n" if mood_lines else "")
-        + f"- Dress it with 3-5 supporting props from the SAME subject family as the artwork ({subject}); "
-        "never generic filler, and never a duplicate of the product itself.\n"
-        f"- Prop colors must come from this style's own palette: {palette}. They must harmonize with the "
-        "artwork, never clash with it.\n"
-        "- GLOW — in the lifestyle scene include at least ONE visible warm glowing light source (string "
-        "fairy lights, a lit candle, a lantern, a warmly lit window or a glowing lamp) that appears in "
-        "frame as a bright warm highlight with a soft warm halo or bokeh. The scene must contain a real "
-        "point of glow, not only diffuse ambient daylight; an evenly lit scene with no visible light "
-        "source is a FAILURE.\n"
-        "- Camera: shallow depth of field, soft background bokeh, optionally one blurred foreground prop "
-        "framing the product.\n"
-        "- Materials: include tactile surfaces (wood, linen, lace, marble, woven mat, checkered cloth).\n"
-        "- The product stays the hero: centered, fully visible, sharply in focus; props only support it.\n"
+        + f"- Dress it with 3-5 supporting props from the same subject family as the artwork ({subject}) — "
+        f"never generic filler, never a duplicate of the product itself — in colours from this style's "
+        f"palette ({palette}) so they harmonize with the artwork.\n"
+        "- GLOW — the scene must contain at least ONE visible warm light source in frame (fairy lights, "
+        "candle, lantern, warmly lit window or glowing lamp) reading as a bright warm highlight with a "
+        "soft halo or bokeh; an evenly lit scene with no visible light source is a FAILURE.\n"
+        "- Camera and surfaces: shallow depth of field, soft background bokeh, one optional blurred "
+        "foreground prop; tactile materials (wood, linen, lace, marble, woven mat, checkered cloth). The "
+        "product stays the hero — centered, fully visible, sharply in focus; props only support it.\n"
         "- The scene must change from style to style inside this batch — never reuse one background set "
         "across different styles.\n"
         "- Applies to the lifestyle panel (top-left) and may softly continue into the detail panels' "
