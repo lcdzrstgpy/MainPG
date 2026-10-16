@@ -1,5 +1,8 @@
 /* 新手引导（driver.js）：让蒙版提示卡与工作台的主题、设计 token 保持一致。
-   在 main.tsx 中于 driver.css 之后引入，用于覆写其默认外观。 */
+   在 main.tsx 中于 driver.css 之后引入，用于覆写其默认外观。
+   注意：本文件里的浮层（提示卡/板块面板/编辑器）都压在深色遮罩上，底色一律用
+   --theme-card-bg-solid（实心）；用半透明的 --theme-card-bg 会在 peach(桃花源)/
+   alpine(高山草原) 下看不到（2026-10-15 修复，别改回去）。 */
 
 .driver-popover {
   box-sizing: border-box;
@@ -9,7 +12,7 @@
   border: 1px solid var(--theme-card-border, rgba(184, 209, 230, .82));
   border-radius: var(--radius-lg, 16px);
   color: var(--theme-text-primary, #13233a);
-  background: var(--theme-card-bg, #fff);
+  background: var(--theme-card-bg-solid, var(--theme-card-bg, #fff));
   box-shadow: 0 18px 42px var(--theme-card-shadow, rgba(26, 65, 101, .10)), 0 2px 8px rgba(19, 35, 58, .06);
   backdrop-filter: blur(14px);
   font-family: var(--font-sans, inherit);
@@ -146,7 +149,7 @@
   border: 1px solid var(--theme-card-border, rgba(184, 209, 230, .82));
   border-radius: var(--radius-lg, 18px);
   color: var(--theme-text-primary, #13233a);
-  background: var(--theme-card-bg, #fff);
+  background: var(--theme-card-bg-solid, var(--theme-card-bg, #fff));
   box-shadow: 0 22px 54px rgba(15, 33, 58, .22), 0 2px 8px rgba(19, 35, 58, .06);
   font-family: var(--font-sans, inherit);
   animation: guide-board-in .24s ease-out;
@@ -566,7 +569,7 @@ body.driver-active .workspace-tab-panel.is-active > * > [class*="-panel"] {
   border: 1px solid var(--theme-card-border, rgba(184, 209, 230, .82));
   border-radius: 14px;
   color: var(--theme-text-primary, #13233a);
-  background: var(--theme-card-bg, #fff);
+  background: var(--theme-card-bg-solid, var(--theme-card-bg, #fff));
   box-shadow: 0 24px 60px rgba(15, 33, 58, .26);
   font-family: var(--font-sans, inherit);
   pointer-events: auto;
@@ -847,7 +850,7 @@ body.driver-active .workspace-tab-panel.is-active > * > [class*="-panel"] {
   border: 1px solid var(--theme-icon-button-border, #d7e3ed);
   border-radius: var(--radius-sm, 8px);
   color: var(--theme-text-primary, #13233a);
-  background: var(--theme-card-bg, #fff);
+  background: var(--theme-card-bg-solid, var(--theme-card-bg, #fff));
   font-family: inherit;
   font-size: 12.5px;
   line-height: 1.5;

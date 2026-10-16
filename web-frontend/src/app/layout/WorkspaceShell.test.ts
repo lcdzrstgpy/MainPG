@@ -30,6 +30,26 @@ test("workspace keeps every open tab mounted and restores scroll by tab key", ()
   assert.match(source, /hidden=\{activeTabKey !== tab\.key\}/);
 });
 
+// 任务页开着时前端轮询后端 = 还有人在看；页签一丢（刷新/自动重载）就没人轮询了，连续静默后任务会被自动暂停。
+// 恢复页签是这条链路的兜底，别让它在后续重构里被顺手删掉。
+test("workspace persists and restores open tabs across a refresh", () => {
+  assert.match(source, /restoreWorkspaceTabs\(isAdmin\)/);
+  assert.match(source, /readWorkspaceTabsSnapshot/);
+  assert.match(source, /writeWorkspaceTabsSnapshot/);
+  assert.match(source, /trailingSequence\(keys, "product-processing-task-"\)/);
+  assert.match(source, /NON_RESTORABLE_MODULE_IDS/);
+});
+
+// 从核价页开出来的处理页签只带 draftIds、不带 task_id：开工后若不把任务号记回页签，
+// 刷新恢复出来就是一张空的「处理设置」页，既不轮询（心跳断→超时暂停）又能再点一次「开始处理」。
+test("processing tabs remember the task they started so a refresh resumes polling", () => {
+  assert.match(source, /const markTabActiveTask = \(tabKey: string, taskId: number\) =>/);
+  assert.match(source, /onTaskStarted=\{\(taskId\) => markTabActiveTask\(tab\.key, taskId\)\}/);
+  assert.match(source, /restored\.taskRunId == null && restored\.activeTaskId != null/);
+  assert.match(taskPageSource, /onTaskStarted\?: \(taskId: number\) => void/);
+  assert.match(taskPageSource, /onTaskStarted\?\.\(data\.task_id\)/);
+});
+
 test("workspace does not import or render the AI service page", () => {
   assert.doesNotMatch(source, /AiServicePage/);
   assert.doesNotMatch(source, /case "ai_service":/);

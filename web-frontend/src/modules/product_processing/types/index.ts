@@ -165,16 +165,27 @@ export interface ProductProcessingOptions {
   skipDuplicates: boolean;
   ipCheck: boolean;
   maxParallelDrafts: number;
-  /** 生图提示词模板：A=标准商品海报，B=高端模特视觉（防比价） */
-  imageTemplate?: 'A' | 'B';
+  /** 生图提示词模板：A=影棚无缝主图，B=人景叙事（防比价），C=静物平铺俯拍，D=环境远景 */
+  imageTemplate?: 'A' | 'B' | 'C' | 'D';
+  /** 五点描述文案模板：A=卖点前置（结果导向），B=场景代入（痛点导向） */
+  descriptionTemplate?: 'A' | 'B';
   /** 历史/API 兼容字段；新前端任务固定发送 4，不再向用户暴露。 */
   imageGenerationCount?: 1 | 2 | 4;
-  /** 失败项自动补跑：任务收尾统一把所有失败链接重新投入处理链路，自动重跑最多 2 轮（系统轮不向用户计费，默认开启） */
+  /** 失败项自动补跑：任务收尾把失败链接重新投入处理链路，每条链接最多自动重跑 1 次（系统轮不向用户计费，默认开启） */
   autoRepull?: boolean;
+  /** 「一键随机模板」：默认关闭；开启后忽略选定的模板，本批次每条链接随机分配生图/描述模板（一个批次内混搭多套处理方式）。 */
+  randomTemplate?: boolean;
 }
 
 /** 生图提示词模板注册表（对齐后端 IMAGE_TEMPLATES） */
 export interface ImageTemplateOption {
+  id: 'A' | 'B' | 'C' | 'D';
+  name: string;
+  description: string;
+}
+
+/** 五点描述模板注册表（对齐后端 DESC_TEMPLATES） */
+export interface DescriptionTemplateOption {
   id: 'A' | 'B';
   name: string;
   description: string;
@@ -214,7 +225,7 @@ export type ShippingPackageRecordOverride = Pick<
   "length_cm" | "width_cm" | "height_cm" | "volume_cm3" | "weight_g"
 >;
 
-export type PreviewImageOrigin = "source" | "generated" | "dimension" | "upload";
+export type PreviewImageOrigin = "source" | "generated" | "dimension" | "upload" | "composite";
 
 export type PreviewImageBucket = "source" | "processed";
 
@@ -259,6 +270,7 @@ export type PreviewImageManifest = {
 export type MediaAssetOrigin =
   | "remote_source"
   | "ai_generated"
+  | "local_synthesis"
   | "preview_upload"
   | "dimension_rendered";
 

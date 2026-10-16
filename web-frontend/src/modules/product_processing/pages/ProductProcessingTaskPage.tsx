@@ -4,14 +4,22 @@ import { ppDownload, ppRequest, type ApiContext } from '../api/client';
 import { productProcessingApiContext } from '../api/context';
 import { checkDraftSkuAvailability } from '../api/productProcessingApi';
 import { PromptCustomizePanel } from '../components/PromptCustomizePanel';
+import { TemplateGalleryDrawer } from '../components/TemplateGalleryDrawer';
 import type {
   DraftSkuAvailabilityItem,
   ProductProcessingOptions,
   TaskOutputsResponse,
 } from '../types';
+import { registerRunningTask } from '../../../shared/runtime/taskActivity';
 import '../styles/ProductProcessingVerifyPage.css';
 
 const API_BASE = '/api/product-processing';
+
+// 任务终态后的慢速追跟窗口：任务行在「第一轮结束 → 自动补跑轮启动」之间会短暂回到
+// completed，若此刻立刻停止轮询，就再也看不到后续轮次，心跳也会在补跑轮进行中断掉
+// （后端 90 秒后会把正在补跑的任务自动暂停）。这里终态后每 3 秒再看 2 分钟。
+const TERMINAL_POLL_GRACE_MS = 120_000;
+const TERMINAL_POLL_INTERVAL_MS = 3_000;
 
 // SKU 原图可用性检测按批提交：逐批更新进度，避免一次性几百条把单个请求拖成分钟级。
 const SKU_CHECK_BATCH_SIZE = 20;
@@ -21,12 +29,6 @@ const SITES = [
   { code: 'CO', label: '哥伦比亚站' },
   { code: 'EC', label: '厄瓜多尔站' },
 ] as const;
-
-// 生图提示词模板（对齐后端 IMAGE_TEMPLATES：A/B 直观标题区分两套生图逻辑）
-const IMAGE_TEMPLATES: { id: 'A' | 'B'; name: string; description: string }[] = [
-  { id: 'A', name: '标准商品海报', description: 'Amazon 高级电商视觉：大主体主图 + 精品展示 + 生活方式场景，画面不新增文字' },
-  { id: 'B', name: '高端模特视觉（防比价）', description: '人设+空间故事叙事、杂志编辑大片感，材质显贵、难以搜图比价，画面无文字' },
-];
 
 // 失败类型列对客户统一展示为「已过滤」，不暴露内部排错分类（身份待复核/
 // 技术可重试等词只对运营排错有用，客户看到成功/失败/需重试即可）。
@@ -73,6 +75,12 @@ type Props = {
   initialOptions?: ProductProcessingOptions;
   /** 任务完成后打开预检页（生成表格 → 预检修改 → 导出最终版） */
   onOpenPrecheck?: (taskId: number) => void;
+  /**
+   * 本页签接手了真实任务（首次「开始处理」或重试失败项）时回调，由工作台把 task_id 记到页签上。
+   * 刷新恢复后该页签按「任务详情」恢复：继续轮询 /outputs（页面在看 = 不会被暂停），
+   * 也不会因为不知道任务已存在而再点一次「开始处理」建出重复任务。
+   */
+  onTaskStarted?: (taskId: number) => void;
 };
 
 function api(): ApiContext {
@@ -161,7 +169,7 @@ function useSmoothProgress(target: number): number {
   return value;
 }
 
-export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, initialPremiumDraftIds, initialOptions, onOpenPrecheck }: Props) {
+export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, initialPremiumDraftIds, initialOptions, onOpenPrecheck, onTaskStarted }: Props) {
   const ctx = api();
   // 处理参数全部为系统默认（范围全开、全部数量、8 线程并行、自动补跑等），
   // 精简设置界面后不再向用户暴露这些项；仅站点 / 语言 / 生图模板可选。
@@ -177,7 +185,9 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       ipCheck: true,
       maxParallelDrafts: 8,
       imageTemplate: 'A',
-      autoRepull: false,
+      descriptionTemplate: 'A',
+      // 默认开启失败项自动重跑（上限 1 轮）；用户可在此页勾选关闭以避免再次产生 AI 生图费用。
+      autoRepull: true,
     }
   );
   const [batch, setBatch] = useState<TaskOutputsResponse | null>(null);
@@ -230,7 +240,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
 
   // 实时处理进度：processed_count / total_count，与后端轮询结果同步刷新。
   // 自动补跑轮（含轮间切换的短暂窗口）仍视为「处理中」：处理过程中不展示
-  // 失败信息，进度条在全部轮次（含最多 2 轮自动重试）跑完前不显示 100%。
+  // 失败信息，进度条在全部轮次（含最多 1 轮自动重试）跑完前不显示 100%。
   // 暂停单独识别（含重试轮中的暂停），给用户明确的「已暂停」反馈。
   const processingStatuses = ['queued', 'running'];
   const batchProcessing = batch
@@ -405,23 +415,59 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
     } catch (err) { fail(err); }
   };
 
+  // 关闭页面时告诉后端「这个任务别再跑了」：pagehide 里用 sendBeacon 发离开信标。
+  // 之后只要还有页面在轮询（刷新/重开工作台/另一个页签还在看，包括被浏览器节流到、
+  // 1 分钟一次的隐藏页），这次离开就会被撤销；只有连续静默才会真的暂停。
+  // 只认 pagehide——页面被节流/冻结、电脑休眠都不会触发它，那些情况任务照跑，
+  // 不再按「多久没心跳」猜（猜测式判定正是「工作台开着却被暂停」的来源）。
+  useEffect(() => {
+    const status = batch?.task.status;
+    if (!batch || (status !== 'queued' && status !== 'running')) return;
+    const taskId = batch.task_id;
+    const workspace = ctx.workspaceId;
+    const leave = () => {
+      navigator.sendBeacon?.(`${API_BASE}/tasks/${taskId}/leave?workspace=${encodeURIComponent(workspace)}`);
+    };
+    window.addEventListener('pagehide', leave);
+    return () => window.removeEventListener('pagehide', leave);
+  }, [batch?.task.status, batch?.task_id, ctx.workspaceId]);
+
   useEffect(() => {
     if (!batch) return;
-    const running = ['queued', 'running', 'paused'];
-    // 自动补跑轮（含轮间 task 状态短暂回到 completed 的窗口）必须继续轮询，
-    // 否则重试轮的进度与耗时更新会永远停在第 1 轮结束前。
-    const active = running.includes(batch.task.status) || batch.auto_repull?.status === 'running';
-    if (!active) return;
+    const activeStatuses = ['queued', 'running', 'paused'];
+    const isActive = (status: string, repullStatus?: string) =>
+      activeStatuses.includes(status) || repullStatus === 'running';
     const generation = ++pollGenerationRef.current;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let stopped = false;
+    // 只在"确实盯过运行中任务"之后才做终态追跟，避免打开历史终态任务时空转轮询。
+    let sawActive = isActive(batch.task.status, batch.auto_repull?.status);
+    let terminalSince: number | null = null;
+    // 运行中登记（供应用壳续心跳 / 失联恢复时避免整页刷新把本页清掉）。
+    let unregisterRunning: (() => void) | null = null;
+    const syncWatch = (stillActive: boolean) => {
+      if (stillActive && !unregisterRunning) {
+        unregisterRunning = registerRunningTask(batch.task_id);
+      } else if (!stillActive && unregisterRunning) {
+        unregisterRunning();
+        unregisterRunning = null;
+      }
+    };
     const poll = async () => {
       try {
         const data = await ppRequest<TaskOutputsResponse>(ctx, `${API_BASE}/tasks/${batch.task_id}/outputs`);
         if (stopped || pollGenerationRef.current !== generation) return;
         setBatch(data);
-        const stillActive = running.includes(data.task.status) || data.auto_repull?.status === 'running';
-        if (!stillActive) {
+        const stillActive = isActive(data.task.status, data.auto_repull?.status);
+        syncWatch(stillActive);
+        if (stillActive) {
+          sawActive = true;
+          terminalSince = null;
+        } else {
+          if (!sawActive) return;
+          terminalSince = terminalSince ?? Date.now();
+          if (Date.now() - terminalSince >= TERMINAL_POLL_GRACE_MS) return;
+          timer = setTimeout(poll, TERMINAL_POLL_INTERVAL_MS);
           return;
         }
       } catch (err) {
@@ -430,11 +476,13 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       }
       timer = setTimeout(poll, 1000);
     };
+    syncWatch(sawActive);
     timer = setTimeout(poll, 1000);
     return () => {
       stopped = true;
       pollGenerationRef.current += 1;
       if (timer) clearTimeout(timer);
+      if (unregisterRunning) unregisterRunning();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [batch?.task_id, batch?.task.status, batch?.auto_repull?.status]);
@@ -442,47 +490,65 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
   const startBatch = async () => {
     if (!initialDraftIds?.length) { setError('没有可处理的草稿'); return; }
     if (startInFlightRef.current || batchProcessing) return;
-    const body = {
-      title: '产品处理任务',
-      draft_ids: initialDraftIds.slice(0, options.maxProducts || 100),
-      max_products: options.maxProducts,
-      async_mode: true,
-      target_site: options.targetSite,
-      target_language: options.targetLanguage,
-      processing_scope: options.processingScope,
-      qualification_mode: options.qualificationMode,
-      include_product_video: options.includeProductVideo,
-      skip_duplicates: options.skipDuplicates,
-      ip_check: options.ipCheck,
-      max_parallel_drafts: options.maxParallelDrafts,
-      image_template: options.imageTemplate || 'A',
-      // 用户选择是否对技术可重试的失败项自动补跑（默认关闭）
-      auto_repull: options.autoRepull !== false,
-      // 兼容旧 API 字段；新任务统一走智能生图策略，不再由用户选择。
-      image_generation_count: 4,
-      // SKU 原图可用性分类（处理设置页检测结果）：写入草稿预检覆盖，导出按此分流。
-      variant_image_classification: skuPlan.classification,
-      // 「优化链接 SKU」命中的来源变种：导出时整行剔除。
-      variant_image_exclusions: skuPlan.exclusions,
-    };
-    const signature = JSON.stringify(body);
-    if (!startRequestRef.current || startRequestRef.current.signature !== signature) {
-      startRequestRef.current = {
-        signature,
-        key: globalThis.crypto?.randomUUID?.() || `pp-${Date.now()}-${Math.random()}`,
-      };
-    }
     startInFlightRef.current = true;
     setLoading(true);
     setMessage('');
     setError('');
     try {
+      // 「本批次辅助提词」：读取「提示词预设模板」当前使用模板里保存的文本；读取失败/为空则
+      // 不注入（后端保持系统默认行为）。功能已从任务页勾选框迁移到预设板块。
+      let batchImagePrompt = '';
+      try {
+        const tpl = await ppRequest<{ templates?: { is_active?: boolean; prompts?: Record<string, string> }[] }>(
+          ctx,
+          `${API_BASE}/engine/prompt-templates`,
+        );
+        batchImagePrompt = ((tpl.templates || []).find((t) => t.is_active)?.prompts?.batch_image_prompt || '').trim();
+      } catch {
+        batchImagePrompt = '';
+      }
+      const body = {
+        title: '产品处理任务',
+        draft_ids: initialDraftIds.slice(0, options.maxProducts || 100),
+        max_products: options.maxProducts,
+        async_mode: true,
+        target_site: options.targetSite,
+        target_language: options.targetLanguage,
+        processing_scope: options.processingScope,
+        qualification_mode: options.qualificationMode,
+        include_product_video: options.includeProductVideo,
+        skip_duplicates: options.skipDuplicates,
+        ip_check: options.ipCheck,
+        max_parallel_drafts: options.maxParallelDrafts,
+        image_template: options.imageTemplate || 'A',
+        desc_template: options.descriptionTemplate || 'A',
+        // 本批次辅助提词（区域辅助出图）：来自预设模板板块，非空时注入本批各条生图提示词。
+        batch_image_prompt: batchImagePrompt,
+        // 一键随机模板：默认关闭，打开后本批次每条链接随机分配生图/描述模板。
+        random_template: options.randomTemplate === true,
+        // 用户选择是否对技术可重试的失败项自动补跑（默认关闭）
+        auto_repull: options.autoRepull !== false,
+        // 兼容旧 API 字段；新任务统一走智能生图策略，不再由用户选择。
+        image_generation_count: 4,
+        // SKU 原图可用性分类（处理设置页检测结果）：写入草稿预检覆盖，导出按此分流。
+        variant_image_classification: skuPlan.classification,
+        // 「优化链接 SKU」命中的来源变种：导出时整行剔除。
+        variant_image_exclusions: skuPlan.exclusions,
+      };
+      const signature = JSON.stringify(body);
+      if (!startRequestRef.current || startRequestRef.current.signature !== signature) {
+        startRequestRef.current = {
+          signature,
+          key: globalThis.crypto?.randomUUID?.() || `pp-${Date.now()}-${Math.random()}`,
+        };
+      }
       const premiumIds = (initialPremiumDraftIds || []).filter((id) => initialDraftIds.includes(id));
       const data = await ppRequest<TaskOutputsResponse>(ctx, `${API_BASE}/drafts/process`, {
         body: { ...body, premium_draft_ids: premiumIds },
         headers: { 'Idempotency-Key': startRequestRef.current.key },
       });
       setBatch(data);
+      onTaskStarted?.(data.task_id);
       notify(premiumIds.length ? data.message || `批次已提交（含 ${premiumIds.length} 条精品单图）` : (data.message || '批次已提交'));
     } catch (err) { fail(err); } finally { startInFlightRef.current = false; setLoading(false); }
   };
@@ -567,6 +633,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
         body: { draft_ids: draftIds, auto_repull: options.autoRepull !== false },
       });
       setBatch(data);
+      onTaskStarted?.(data.task_id);
       notify(data.message || `已提交 ${draftIds.length} 个失败项重新处理`);
     } catch (err) { fail(err); } finally { startInFlightRef.current = false; setLoading(false); }
   };
@@ -589,7 +656,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       <header className="verify-commandbar">
         <div className="verify-command-title">
           <h1>{initialTaskId != null ? '历史任务详情' : '处理设置与进度'}</h1>
-          <p>{initialTaskId != null ? '继续处理中的历史任务；关闭本页约 90 秒后任务将自动暂停，避免后台继续消耗 AI 额度，可从左侧“历史记录”继续。' : '配置处理参数后开始，结果实时轮询。暂停/取消都会立即停止后续 AI 调用。'}</p>
+          <p>{initialTaskId != null ? '继续处理中的历史任务；关闭本页后超过半小时没人回来看才会暂停（可从左侧“历史记录”继续），切到别的界面或最小化窗口都不影响运行。' : '配置处理参数后开始，结果实时轮询。暂停/取消都会立即停止后续 AI 调用。'}</p>
         </div>
       </header>
 
@@ -604,7 +671,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
           {initialTaskId == null && <section className="verify-section">
             <div className="verify-section-head">
               <h2>处理设置</h2>
-              <span className="verify-sub">站点 / 语言 / 生图模板</span>
+              <span className="verify-sub">站点 / 语言 / 模板</span>
             </div>
             <div className="verify-form-row">
               <label>站点
@@ -622,32 +689,35 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                 </select>
               </label>
             </div>
-            <div className="verify-form-row">
-              <span className="verify-scope-label">生图模板：</span>
-              {IMAGE_TEMPLATES.map((template) => (
-                <label key={template.id} className="verify-template-card" title={template.description}>
-                  <input
-                    type="radio"
-                    name="image-template"
-                    checked={(options.imageTemplate || 'A') === template.id}
-                    onChange={() => setOptions((p) => ({ ...p, imageTemplate: template.id }))}
-                  />
-                  <span className="verify-template-name">{template.name}</span>
-                  <span className="verify-template-desc">{template.description}</span>
-                </label>
-              ))}
-            </div>
+            <TemplateGalleryDrawer
+              imageTemplate={options.imageTemplate || 'A'}
+              descriptionTemplate={options.descriptionTemplate || 'A'}
+              random={options.randomTemplate === true}
+              onSelectImage={(id) => setOptions((p) => ({ ...p, imageTemplate: id }))}
+              onSelectDescription={(id) => setOptions((p) => ({ ...p, descriptionTemplate: id }))}
+            />
             <div className="verify-scope-row">
-              <label className="verify-scope-check" title="任务结束后自动重试失败/待确认的链接，默认开启；关闭后失败项需在结果页手动重新处理">
+              <label className="verify-scope-check" title="任务结束后自动重试失败/待确认的链接（每条最多自动重试 1 次，避免无限重试）。重试会再次调用 AI 生图、产生 AI 生图费用；默认开启，关闭后失败项需在结果页手动重新处理">
                 <input
                   type="checkbox"
                   checked={options.autoRepull !== false}
                   onChange={(e) => setOptions((p) => ({ ...p, autoRepull: e.target.checked }))}
                 />
                 <span>自动重跑失败项</span>
+                <span className="verify-sub">（最多 1 次；重试会再次调用 AI 生图并产生费用，可关闭）</span>
               </label>
             </div>
-            <PromptCustomizePanel />
+            <div className="verify-scope-row">
+              <label className="verify-scope-check" title="开启后忽略上面选定的模板：本批次每条链接随机分配生图模板（A/B/C/D）与描述模板（A/B），一个批次内混搭多套处理方式，便于批量测试不同风格。默认关闭；开启后同一条链接在重试/自动补跑时仍固定用同一套模板。">
+                <input
+                  type="checkbox"
+                  checked={options.randomTemplate === true}
+                  onChange={(e) => setOptions((p) => ({ ...p, randomTemplate: e.target.checked }))}
+                />
+                <span>一键随机模板</span>
+              </label>
+            </div>
+            <PromptCustomizePanel draftIds={initialDraftIds} />
             <div className="verify-sku-check">
               <div className="verify-sku-check-head">
                 <span className="verify-sku-check-title">SKU 原图可用性检测</span>
@@ -777,6 +847,12 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                   <div className="verify-count success">成功 <b>{batch.success_count}</b></div>
                   <div className="verify-count failed">失败 <b>{batch.failed_count}</b></div>
                   <div className="verify-count">跳过 <b>{batch.skipped_count}</b></div>
+                  {/* 未处理：任务已到终态但仍有没跑完的条目（正常终态应为 0，恒不显示）。
+                      历史收尾竞态曾把这类任务误判「完成」，未处理项在汇总里完全隐形；
+                      保留该格子让剩余条目可见，用户可循「失败项重新处理」或重提草稿处置。 */}
+                  {(batch.not_processed_count ?? 0) > 0 && (
+                    <div className="verify-count">未处理 <b>{batch.not_processed_count}</b></div>
+                  )}
                   <div className="verify-count">待确认 <b>{batch.attention_required_count}</b></div>
                   <div className="verify-count">技术可重试 <b>{batch.technical_retryable_count}</b></div>
                   <div className="verify-count">配置阻断 <b>{batch.configuration_blocked_count}</b></div>
@@ -791,7 +867,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                 {(taskPaused || autoRepullRunning || autoRepullDone || autoRepullFailed) && (taskPaused || autoRepull) && (
                   <div className={`verify-repull-banner ${taskPaused ? 'paused' : (autoRepull?.status ?? '')}`} role="status">
                     <i className={`iconfont ${taskPaused ? 'icon-infomation' : autoRepullRunning ? 'icon-loading' : autoRepullDone ? 'icon-check-circle' : 'icon-infomation'}`} aria-hidden="true" />
-                    <span>{taskPaused ? '任务已暂停：停止后续 AI 调用，可从断点继续（含自动重试轮）；关闭本页约 90 秒后也会自动暂停' : (autoRepull?.message ?? '')}</span>
+                    <span>{taskPaused ? '任务已暂停：停止后续 AI 调用，可从断点继续（含自动重试轮）' : (autoRepull?.message ?? '')}</span>
                     {!taskPaused && autoRepullRunning && <em>无需手动操作，完成后自动刷新</em>}
                   </div>
                 )}
@@ -840,7 +916,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
             {!batch && <p className="verify-empty">尚未提交处理批次。请配置参数后点击"开始处理"。</p>}
           </section>
 
-          {/* 失败明细只在全部处理（含 2 轮自动重试）跑完后展示最终失败链接及原因 */}
+          {/* 失败明细只在全部处理（含最多 1 轮自动重试）跑完后展示最终失败链接及原因 */}
           {failureItems.length > 0 && !taskActive && (
             <section className="verify-section">
               <div className="verify-section-head">
@@ -881,8 +957,18 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                         <td>{item.skc || '-'}</td><td>{item.title || '-'}</td>
                         <td>失败</td>
                         <td>{FAILURE_CLASS_LABELS[failureClass] || '已过滤'}</td>
-                        <td>{item.reason || FAILURE_FILTER_HINT}</td>
-                        <td>{FAILURE_FILTER_HINT}</td>
+                        <td>
+                          {item.reason || FAILURE_FILTER_HINT}
+                          {result.debug_hint ? (
+                            // 客户只看可读原因；原始技术原因（生图回退/底层异常等）折叠在
+                            // 「技术详情」里，供运营排障，不干扰客户阅读。
+                            <details className="verify-failure-detail">
+                              <summary>技术详情</summary>
+                              <span>{String(result.debug_hint)}</span>
+                            </details>
+                          ) : null}
+                        </td>
+                        <td>{String(result.operator_hint || '') || FAILURE_FILTER_HINT}</td>
                         <td>{result.retryable ? '是' : '否'}</td>
                         <td>
                           {draftId != null ? (

@@ -230,6 +230,46 @@ def test_auto_repull_launches_for_billed_task_with_token(monkeypatch: pytest.Mon
     assert state["status"] == "running"
 
 
+def test_auto_repull_default_caps_each_link_at_one_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """默认上限 1 轮：失败链接最多自动重试一次，重试后仍失败不再进入下一轮（不无限循环）。"""
+    monkeypatch.delenv("WH_PP_AUTO_REPULL_ROUNDS", raising=False)
+    task = _task_with_failures()
+    # 已处于自动补跑第 1 轮（running），补跑后草稿 100 仍失败
+    task["settings"] = {"_auto_repull": {"status": "running", "round": 1, "total": 1}}
+    repository = FakeRepository(task)
+    service = _make_service(repository)
+    launched: list = []
+    monkeypatch.setattr(service, "_launch_auto_repull", lambda *args: launched.append(args))
+
+    service._maybe_launch_auto_repull(1, "local", _retryable_failures())
+
+    assert launched == []  # 已达默认上限 1 轮，不再发起下一轮
+    state = repository.settings_updates[-1]["_auto_repull"]
+    assert state["status"] == "completed"
+    assert "自动重试 1 轮" in state["message"]
+
+
+def test_auto_repull_default_launches_single_round_then_stops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """首次收尾触发恰好 1 轮自动重试；该轮结束仍失败即达到上限并停止。"""
+    monkeypatch.delenv("WH_PP_AUTO_REPULL_ROUNDS", raising=False)
+    repository = FakeRepository(_task_with_failures())
+    service = _make_service(repository)
+    launched: list = []
+    monkeypatch.setattr(service, "_launch_auto_repull", lambda *args, **kwargs: launched.append(args))
+
+    # 第一次：任务收尾 → 发起第 1 轮
+    service._maybe_launch_auto_repull(1, "local", _retryable_failures())
+    assert len(launched) == 1
+    assert repository.settings_updates[-1]["_auto_repull"]["round"] == 1
+
+    # 第 1 轮结束仍失败 → 达到上限，不再发起下一轮
+    service._maybe_launch_auto_repull(1, "local", _retryable_failures())
+    assert len(launched) == 1
+    assert repository.settings_updates[-1]["_auto_repull"]["status"] == "completed"
+
+
 def test_auto_repull_waits_for_original_worker_to_leave(monkeypatch: pytest.MonkeyPatch) -> None:
     """补跑线程必须等待原执行线程注销后再重置并执行。
 

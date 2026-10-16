@@ -15,6 +15,7 @@ from typing import Any
 
 from ..product_processing.doubao_ark import DoubaoArkClient, DoubaoArkError
 from ..product_processing.infrastructure.media import ProductImageProcessor
+from ...media_enhance import options_from_env
 from .contracts import DEFAULT_GENERATION_MODE, IMAGE_ROLES, ComboKitValidationError
 from .prompts import VIEW_LABEL_SET, VIEW_OTHER
 
@@ -127,7 +128,9 @@ class ComboKitAiRuntime:
             reference_values=reference_values,
             image_size="2048x2048",
         )
-        normalized = processor.normalize_standalone_image(media, stage="main")
+        normalized = processor.normalize_standalone_image(
+            media, stage="main", enhance=options_from_env()
+        )
         return {
             "role": "main",
             "content": bytes(getattr(normalized, "content", b"") or b""),

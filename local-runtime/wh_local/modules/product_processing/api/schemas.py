@@ -150,6 +150,13 @@ class DraftProcessRequest(BaseModel):
         default=4,
         description="旧客户端兼容字段；当前固定为 4，普通与精品均一次生成智能生图后本地拆分",
     )
+    # 「本批次辅助提词（区域辅助出图）」：由前端「提示词预设模板」板块生成/编辑后随请求传入。
+    # 非空时作为附加要求注入本批每条的轮播/精品/详情生图提示词（由 _apply_batch_image_guidelines
+    # 包裹固定约束声明，绝不覆盖结构/保真逻辑）；为空则不注入，保持系统默认行为。
+    batch_image_prompt: str = ""
+    # 「一键随机模板」：默认关闭，打开后忽略选定的模板，本批次每条链接稳定随机分配到
+    # A/B/C/D 生图模板与 A/B 描述模板（一个批次内混搭多套处理方式）。
+    random_template: bool = False
 
     @field_validator("draft_ids")
     @classmethod
@@ -341,6 +348,18 @@ class PromptTemplateRequest(BaseModel):
     name: str = ""
     prompts: dict[str, str] = Field(default_factory=dict)
     activate: bool = True
+
+
+class BatchImagePromptRequest(BaseModel):
+    """「本批次辅助提词」生成请求：按草稿 ids 或直接标题列表生成本批生图辅助提词。"""
+
+    model_config = ConfigDict(extra="allow")
+
+    draft_ids: list[int] = Field(default_factory=list)
+    titles: list[str] = Field(default_factory=list)
+    target_site: SiteCode = "US"
+    target_language: TargetLanguage = "en"
+    category: str = ""
 
 
 class DailySelectionIntakeRequest(DailySelectionRun):

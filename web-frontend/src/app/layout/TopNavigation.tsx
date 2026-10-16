@@ -24,6 +24,11 @@ export type WorkspaceTab = {
   processingOptions?: unknown;
   taskRunId?: number;
   taskId?: number;
+  /**
+   * 本页签开工中的任务号：页面内点「开始处理」/重试失败项后由页面回调写入。
+   * 刷新恢复时按任务详情页恢复（继续轮询心跳）；实时渲染不读这个字段。
+   */
+  activeTaskId?: number;
   dimensionBatchId?: string;
   dimensionItemId?: string;
   returnTaskId?: number;

@@ -580,6 +580,7 @@ class ProductProcessingRepository:
         workspace_id: str,
         candidate_id: str,
         shop_fence: dict[str, Any] | None = None,
+        allow_existing: bool = False,
     ) -> tuple[str, dict[str, Any]]:
         """Create or refresh one shop draft and its source-media bindings atomically."""
         for attempt in range(3):
@@ -590,6 +591,7 @@ class ProductProcessingRepository:
                     workspace_id=workspace_id,
                     candidate_id=candidate_id,
                     shop_fence=shop_fence,
+                    allow_existing=allow_existing,
                 )
             except IntegrityError:
                 if attempt == 2:
@@ -608,6 +610,7 @@ class ProductProcessingRepository:
         workspace_id: str,
         candidate_id: str,
         shop_fence: dict[str, Any] | None = None,
+        allow_existing: bool = False,
     ) -> tuple[str, dict[str, Any]]:
         with self._shop_intake_transaction() as session:
             if shop_fence is not None:
@@ -626,7 +629,10 @@ class ProductProcessingRepository:
                 .limit(1)
             )
             if draft_row is not None and draft_row.status in {"processing", "processed"}:
-                return "skipped", self._draft(draft_row)
+                # 默认去重：已处理/处理中草稿跳过。放行开关只复活 processed 草稿为草稿态刷新，
+                # processing 仍跳过，避免与进行中的处理任务互相覆盖。
+                if not (allow_existing and draft_row.status == "processed"):
+                    return "skipped", self._draft(draft_row)
 
             if draft_row is None:
                 draft_row = ProductDraftRow(media_contract_version=2, **draft_values)
@@ -1969,10 +1975,22 @@ class ProductProcessingRepository:
             success_count = sum(value == "completed" for value in statuses)
             skipped_count = sum(value == "skipped" for value in statuses)
             failed_count = sum(value not in {"pending", "running", "completed", "skipped"} for value in statuses)
+            unfinished_count = sum(value in {"pending", "running"} for value in statuses)
             task.success_count = success_count
             task.failed_count = failed_count
             task.skipped_count = skipped_count
-            task.status = "completed" if failed_count == 0 else ("failed" if success_count == 0 else "partial_failure")
+            if unfinished_count:
+                # 防御（2026-10-14）：仍有未处理条目时绝不能判「完成」。历史竞态下
+                # 收尾读到被 resume 改写的 queued 会直接 finish：pending 不计失败
+                # （failed_count==0）→ 任务被标 completed，未处理项在 UI 上完全消失。
+                # 这里保持可恢复的暂停态，等用户「继续处理」从断点续跑。
+                task.status = "paused"
+            elif failed_count == 0:
+                task.status = "completed"
+            elif success_count == 0:
+                task.status = "failed"
+            else:
+                task.status = "partial_failure"
             task.output_file = output_file
             task.error_report_file = error_report_file
             task.video_manifest_file = video_manifest_file
@@ -1981,6 +1999,97 @@ class ProductProcessingRepository:
         if task_result is None:
             raise LookupError("product processing task not found")
         return task_result
+
+    def terminal_tasks_with_unfinished_items(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        """终态任务中仍残留 pending/running 条目的任务（孤儿项自愈用）。
+
+        这些条目永远不会再被执行（任务已终态，没有任何路径会重新调度它们），
+        且对应草稿卡在 processing 会拦截用户重新提交——需要自愈清理（见
+        ``heal_terminal_orphan_items``）。paused/queued/running 的未处理项是
+        正常断点/在途状态，不在本查询范围内。
+        """
+        with self.database.sessions.begin() as session:
+            rows = session.execute(
+                select(ProcessingTaskRow.id, ProcessingTaskRow.workspace_id)
+                .join(
+                    ProcessingTaskItemRow,
+                    ProcessingTaskItemRow.task_id == ProcessingTaskRow.id,
+                )
+                .where(
+                    ProcessingTaskRow.status.in_(
+                        ("completed", "failed", "partial_failure", "cancelled")
+                    ),
+                    ProcessingTaskItemRow.status.in_(("pending", "running")),
+                )
+                .distinct()
+                .limit(limit)
+            ).all()
+        tasks: list[dict[str, Any]] = []
+        for task_id, workspace_id in rows:
+            task = self.get_task(int(task_id), str(workspace_id))
+            if task is not None:
+                tasks.append(task)
+        return tasks
+
+    def heal_terminal_orphan_items(self, task_id: int, workspace_id: str = "local") -> int:
+        """终态任务的孤儿未处理项：标记失败并释放草稿；返回处理的条目数。
+
+        背景（2026-10-14）：收尾竞态曾把仍有 pending/running 条目的任务误判
+        「完成」（该路径已修）。存量任务与其它异常终止场景仍可能残留孤儿项——
+        它们永远不会被再执行，且草稿卡在 processing 会拦截用户重新提交。
+        标记为失败后，用户可在结果页对失败项手动「重新处理」。
+        """
+        with self.database.sessions.begin() as session:
+            task = session.scalar(
+                select(ProcessingTaskRow)
+                .options(selectinload(ProcessingTaskRow.items))
+                .where(
+                    ProcessingTaskRow.id == task_id,
+                    ProcessingTaskRow.workspace_id == workspace_id,
+                    ProcessingTaskRow.status.in_(
+                        ("completed", "failed", "partial_failure", "cancelled")
+                    ),
+                )
+            )
+            if task is None:
+                return 0
+            now = utc_now()
+            healed = 0
+            for item in task.items:
+                if item.status not in {"pending", "running"}:
+                    continue
+                item.status = "failed"
+                item.reason = "任务已结束时仍未处理，已自动终止"
+                item.result_json = dumps(
+                    {
+                        "failure_class": "task_control",
+                        "retryable": False,
+                        "operator_hint": "任务已结束，未处理项不会自动重跑；可在结果页对失败项手动重新处理",
+                        "error_type": "orphan_unprocessed",
+                    }
+                )
+                item.updated_at = now
+                healed += 1
+                if item.product_draft_id is not None:
+                    draft = session.get(ProductDraftRow, item.product_draft_id)
+                    if (
+                        draft is not None
+                        and draft.workspace_id == workspace_id
+                        and draft.status == "processing"
+                    ):
+                        draft.status = "draft"
+                        draft.updated_at = now
+            if healed:
+                statuses = [item.status for item in task.items]
+                task.success_count = sum(value == "completed" for value in statuses)
+                task.skipped_count = sum(value == "skipped" for value in statuses)
+                task.failed_count = sum(
+                    value not in {"pending", "running", "completed", "skipped"}
+                    for value in statuses
+                )
+                # 刻意不更新 task.updated_at：任务本身没有业务变更，避免它在
+                # 历史记录里因自愈而跳动排序、被误认为"刚刚更新过"。
+            return healed
 
     def update_item_progress(
         self,

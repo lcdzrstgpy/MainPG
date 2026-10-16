@@ -37,6 +37,11 @@ class PluginOneBoundCaptureRepository:
                 conn.execute(
                     "ALTER TABLE plugin_onebound_capture_batches ADD COLUMN display_name TEXT NOT NULL DEFAULT ''"
                 )
+            # 采集偏好列（幂等补列）：批次是否放行「此前已处理过的商品」，供确认入池阶段读取。
+            if "include_existing" not in batch_columns:
+                conn.execute(
+                    "ALTER TABLE plugin_onebound_capture_batches ADD COLUMN include_existing INTEGER NOT NULL DEFAULT 0"
+                )
             self._backfill_legacy_plugin_onebound(conn)
             self._reconcile_stale_active_batches(conn)
 
@@ -130,7 +135,7 @@ class PluginOneBoundCaptureRepository:
                 updated_at=datetime('now')
             WHERE batch_id=?""", (batch_id, batch_id, batch_id, batch_id, batch_id, batch_id))
 
-    def create(self, *, batch_id: str, actor_id: str, workspace_id: str, page_url: str = "", parent_batch_id: str = "", items: Sequence[Mapping[str, str]]) -> None:
+    def create(self, *, batch_id: str, actor_id: str, workspace_id: str, page_url: str = "", parent_batch_id: str = "", items: Sequence[Mapping[str, str]], include_existing: bool = False) -> None:
         total_count = len(items)
         created_count = sum(item.get("outcome") == "created" for item in items)
         refreshed_count = sum(item.get("outcome") == "refreshed" for item in items)
@@ -141,10 +146,10 @@ class PluginOneBoundCaptureRepository:
         with connect(self.database_path) as conn:
             conn.execute("""INSERT INTO plugin_onebound_capture_batches
                 (batch_id, parent_batch_id, actor_id, workspace_id, page_url, total_count, created_count,
-                 refreshed_count, skipped_count, failed_count, unprocessed_count, display_name)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                 refreshed_count, skipped_count, failed_count, unprocessed_count, display_name, include_existing)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (batch_id, parent_batch_id, actor_id, workspace_id, page_url, total_count, created_count,
-                 refreshed_count, skipped_count, failed_count, unprocessed_count, display_name))
+                 refreshed_count, skipped_count, failed_count, unprocessed_count, display_name, int(include_existing)))
             conn.executemany("""INSERT INTO plugin_onebound_capture_items
                 (batch_id, offer_id, source_url, source_title, status, outcome) VALUES (?, ?, ?, ?, ?, ?)""",
                 [(batch_id, item["offer_id"], item["source_url"], item.get("source_title", ""),

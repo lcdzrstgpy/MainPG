@@ -45,7 +45,8 @@ MULTIVIEW_BASE_PROMPT = (
 # 套用 BASE_PROMPT_A 的 no human / clean neutral background 会把场景元素直接压掉。
 SCENE_BASE_PROMPT = (
     "professional lifestyle e-commerce photography, real home environment, "
-    "soft natural window light, realistic adult hands allowed, sharp focus, "
+    "soft natural window light, realistic adult hands allowed (Caucasian / "
+    "Western European, light-to-medium skin tone), sharp focus, "
     "accurate color and material, no watermark"
 )
 
@@ -58,7 +59,8 @@ DEFAULT_ROLE_DIRECTIONS: dict[str, str] = {
                   "unified soft window light, every member product clearly visible",
     "carousel_3": "second lifestyle scene: the complete bundled set used in a different real "
                   "home setting (sunlit dining table or cozy reading corner), relaxed natural "
-                  "arrangement, realistic adult hands allowed, consistent soft light, "
+                  "arrangement, realistic adult hands allowed (Caucasian / Western European, "
+                  "light-to-medium skin tone), consistent soft light, "
                   "every member product clearly recognizable",
     "white_bg": "complete bundled set on a clean white background, full product visible, "
                 "balanced layout, professional studio shot",
@@ -73,10 +75,12 @@ MULTIVIEW_ROLE_DIRECTIONS: dict[str, str] = {
     "carousel_2": "lifestyle scene: this same product placed and used in a real home environment, "
                   "only one single copy of the product in the frame, "
                   "minimal natural props that never cover the product, soft window light, "
-                  "realistic adult hands allowed, product unchanged in design, color and material",
+                  "realistic adult hands allowed (Caucasian / Western European, "
+                  "light-to-medium skin tone), product unchanged in design, color and material",
     "carousel_3": "second lifestyle scene: the same product in a different real home setting and "
                   "usage moment, only one single copy of the product in the frame, "
-                  "relaxed natural arrangement, realistic adult hands allowed, "
+                  "relaxed natural arrangement, realistic adult hands allowed (Caucasian / "
+                  "Western European, light-to-medium skin tone), "
                   "consistent soft light, product unchanged in design, color and material",
     # 原措辞含 "interior / package structure clearly readable"，那是容器/包装类商品的描述；
     # 对鼠标等实心商品属错位指令，会诱导模型凭空补出内部结构或多视角拼贴。

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event, Lock
@@ -64,7 +65,7 @@ class _Drafts:
     def draft_by_candidate(self, candidate_id: str, workspace_id: str):
         return self.by_candidate.get(candidate_id)
 
-    def intake_shop_candidate(self, *, batch_id: str, workspace_id: str, candidate: dict):
+    def intake_shop_candidate(self, *, batch_id: str, workspace_id: str, candidate: dict, **_kwargs: object):
         self.intakes.append({"batch_id": batch_id, "workspace_id": workspace_id, "candidate": candidate})
         draft = {"id": len(self.intakes), "status": "draft", "candidate_id": candidate["candidate_id"]}
         self.by_candidate[candidate["candidate_id"]] = draft
@@ -184,6 +185,27 @@ def test_prepare_skips_active_onebound_drafts_allows_deleted_and_limits_identity
     assert first.json()["pending_urls"] == ["https://detail.1688.com/offer/87654321.html"]
     assert client.post("/plugin/product-capture/onebound-batches/prepare", json=payload).status_code == 200
     assert client.post("/plugin/product-capture/onebound-batches/prepare", json=payload).status_code == 409
+
+
+def test_prepare_include_existing_recaptures_active_onebound_drafts(tmp_path: Path) -> None:
+    client, session, _provider, drafts = _client(tmp_path)
+    token = session["session_token"]
+    drafts.by_candidate["1688:12345678"] = {
+        "id": 9,
+        "status": "processed",
+        "source_type": "onebound_api",
+    }
+    payload = {
+        "session_token": token,
+        "page_url": "https://detail.1688.com/offer/12345678.html",
+        "source_urls": ["https://detail.1688.com/offer/12345678.html"],
+        "include_existing": True,
+    }
+
+    prepared = client.post("/plugin/product-capture/onebound-batches/prepare", json=payload)
+    assert prepared.status_code == 200
+    assert prepared.json()["existing_offer_ids"] == []
+    assert prepared.json()["pending_urls"] == ["https://detail.1688.com/offer/12345678.html"]
 
 
 def test_start_resolves_credentials_once_and_item_failures_do_not_block_other_items(tmp_path: Path) -> None:
@@ -688,8 +710,19 @@ def test_ttl_finalizer_closes_before_waiting_for_an_inflight_item(tmp_path: Path
             source_url="https://detail.1688.com/offer/12345678.html",
         )
         assert provider.entered.wait(timeout=1)
-        import time
-        time.sleep(0.03)
+        # TTL 终结器跑在独立的定时器线程上：原先固定 sleep(0.03) 等它「应该已经关掉批次了」，
+        # 满载机器上这个线程可能还没被调度到，于是下面的 item 调用没被拒 —— 用例偶发失败。
+        # 改为轮询到批次真的进入 closing 为止：start() 不阻塞（批次已启动会立即返回），
+        # 且和 item/finish 一样先过 _raise_if_unavailable，是现成的「批次可用性」探针。
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                service.start(session_token=session["session_token"], batch_token=prepared["batch_token"])
+            except RuntimeError:
+                break
+            assert time.monotonic() < deadline, "TTL 终结器未在预期时间内关闭批次"
+            time.sleep(0.005)
+        # 批次已关闭，但正在跑的 item 不受影响：新调用一律被拒。
         with pytest.raises(RuntimeError):
             service.item(
                 session_token=session["session_token"], batch_token=prepared["batch_token"],

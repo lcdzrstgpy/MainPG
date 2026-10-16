@@ -42,6 +42,8 @@ MIGRATION_NAMES = (
     "020_replica_analysis_plan",
     "021_composition_scope",
     "022_replica_plan_fingerprint",
+    "023_fission_registry",
+    "024_fission_domain",
 )
 
 

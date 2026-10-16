@@ -330,6 +330,44 @@ def test_split_four_grid_survives_encoder_defect_on_pathological_content() -> No
             assert opened.size == (DXM_IMAGE_TARGET_SIZE, DXM_IMAGE_TARGET_SIZE)
 
 
+# --- standalone 归一化：默认透传，增强为显式 opt-in ----------------------------------
+
+
+def test_normalize_standalone_image_enhance_is_opt_in_by_signature() -> None:
+    signature = inspect.signature(ProductImageProcessor.normalize_standalone_image)
+    assert signature.parameters["enhance"].default is None
+
+
+def test_normalize_standalone_image_default_equals_explicitly_disabled_output() -> None:
+    processor = ProductImageProcessor(lambda: {})
+    media = _media(_grid_bytes(1024, lines=True))
+
+    default = processor.normalize_standalone_image(media, stage="grid_image_1")
+    disabled = processor.normalize_standalone_image(
+        media, stage="grid_image_1", enhance=EnhanceOptions(enabled=False)
+    )
+
+    assert default.content == disabled.content
+
+
+def test_normalize_standalone_image_with_enhance_is_sharper_than_without() -> None:
+    processor = ProductImageProcessor(lambda: {})
+    media = _media(_grid_bytes(1024, lines=True))
+
+    enhanced = processor.normalize_standalone_image(
+        media, stage="grid_image_1", enhance=EnhanceOptions()
+    )
+    plain = processor.normalize_standalone_image(
+        media, stage="grid_image_1", enhance=EnhanceOptions(enabled=False)
+    )
+
+    assert enhanced.content != plain.content
+    assert sharpness_score(_open(enhanced.content)) > sharpness_score(_open(plain.content))
+    with Image.open(BytesIO(enhanced.content)) as opened:
+        assert opened.format == "JPEG"
+        assert opened.size == (DXM_IMAGE_TARGET_SIZE, DXM_IMAGE_TARGET_SIZE)
+
+
 # --- POD 接线：默认开启，且可回退 ---------------------------------------------------
 
 
@@ -390,13 +428,14 @@ def _soft_photo(size: int = 200) -> Image.Image:
     return image.filter(ImageFilter.GaussianBlur(1.4))
 
 
-def test_should_upscale_only_when_panel_is_smaller_than_target() -> None:
-    assert media_enhance._should_upscale(Image.new("RGB", (627, 627)), 800) is True
-    # 面板已不小于目标：没有"放大发软"，直接降采样即可。
-    assert media_enhance._should_upscale(Image.new("RGB", (1008, 1008)), 800) is False
-    # 超过安全上限：即便小于目标也不跑超分（4× 输出内存按平方涨）。
+def test_should_upscale_gates_only_on_safety_limit() -> None:
+    # 主图约 942 面板与 POD 约 627 面板走同一条超分链路，保持一致。
+    assert media_enhance._should_upscale(Image.new("RGB", (627, 627))) is True
+    assert media_enhance._should_upscale(Image.new("RGB", (942, 942))) is True
+    assert media_enhance._should_upscale(Image.new("RGB", (1008, 1008))) is True
+    # 超过安全上限：不跑超分（4× 输出内存按平方涨）。
     assert media_enhance._should_upscale(
-        Image.new("RGB", (MODEL_MAX_INPUT_EDGE + 4, 300)), MODEL_MAX_INPUT_EDGE + 100
+        Image.new("RGB", (MODEL_MAX_INPUT_EDGE + 4, 300))
     ) is False
 
 
@@ -425,15 +464,15 @@ def test_enhance_panel_falls_back_to_usm_when_session_unavailable(
     assert result.tobytes() == expected.tobytes()
 
 
-def test_enhance_panel_skips_inference_when_panel_needs_no_upscale(
+def test_enhance_panel_skips_inference_above_safety_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def _boom() -> Any:
-        raise AssertionError("面板不小于目标时不应触发超分推理")
+        raise AssertionError("面板超过安全上限时不应触发超分推理")
 
     monkeypatch.setattr(media_enhance, "_session", _boom)
 
-    result = enhance_panel(_soft_photo(1008), 800, EnhanceOptions(mode=MODE_ONNX))
+    result = enhance_panel(_soft_photo(MODEL_MAX_INPUT_EDGE + 8), 800, EnhanceOptions(mode=MODE_ONNX))
 
     assert result.size == (800, 800)
 

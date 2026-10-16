@@ -254,11 +254,15 @@ class PreviewImageService:
                 "text_review_reason": str(asset.get("text_review_reason") or ""),
             }
         media_view = self.media_assets.public_asset(media_asset)
+        media_status = str(media_asset.get("status") or "pending")
+        # 代理行本身永远没有 managed_path，availability 会一直停在 materializing；
+        # 展示状态必须跟随底层统一素材：ready 即视为「待发布」，否则沿用自身状态。
+        publication_status = "local" if media_status == "ready" else str(asset.get("availability") or "local")
         return {
             "id": str(asset.get("id") or ""),
             "origin": str(asset.get("origin") or "source"),
             "preview_url": str(media_view.get("preview_url") or ""),
-            "publication_status": str(asset.get("availability") or "local"),
+            "publication_status": publication_status,
             "public_url": self._safe_public_value(asset.get("public_url")),
             "width": int(media_asset.get("width") or 0),
             "height": int(media_asset.get("height") or 0),
@@ -266,7 +270,7 @@ class PreviewImageService:
             "source_kind": str(asset.get("source_kind") or ""),
             "sku_id": str(asset.get("sku_id") or ""),
             "media_asset_id": media_asset_id,
-            "media_status": str(media_asset.get("status") or "pending"),
+            "media_status": media_status,
             "text_review_status": str(asset.get("text_review_status") or ""),
             "text_review_reason": str(asset.get("text_review_reason") or ""),
         }
@@ -410,6 +414,7 @@ class PreviewImageService:
         return {
             "remote_source": "source",
             "ai_generated": "generated",
+            "local_synthesis": "composite",
             "preview_upload": "upload",
             "dimension_rendered": "dimension",
         }.get(str(origin or ""), "source")
@@ -546,14 +551,23 @@ class PreviewImageService:
             decoded.suffix,
             workspace_id=workspace_id,
         )
+        # 详情图「本地合成」（Pillow 把来源图贴进版式，provider=local-synthesis）不是 AI
+        # 生成结果，必须如实标记来源，否则预检卡片会把来源图合成误标成「AI 生成」。
+        is_local_synthesis = str(getattr(media, "provider", "") or "").strip().lower() in {
+            "local-synthesis",
+            "local_synthesis",
+        }
         media_asset_id = self._unified_media_asset_id(
-            workspace_id, "ai_generated", decoded.content, decoded.content_type
+            workspace_id,
+            "local_synthesis" if is_local_synthesis else "ai_generated",
+            decoded.content,
+            decoded.content_type,
         )
         row = self.repository.register_asset(
             workspace_id=workspace_id,
             task_id=task_id,
             product_draft_id=product_draft_id,
-            origin="generated",
+            origin="composite" if is_local_synthesis else "generated",
             identity_hash=decoded.content_hash,
             managed_path=str(path),
             source_url="",
@@ -804,6 +818,9 @@ class PreviewImageService:
         entries: list[dict[str, Any]] = []
         indexed: dict[tuple[str, str], dict[str, Any]] = {}
         proxy_id_by_media: dict[str, str] = {}
+        # 来源媒体「原始 source_url → 代理 id」：供四宫格生图失败回退来源图时，
+        # 把清单里没登记成素材的回退图（原始来源 URL）映射回已登记的来源代理。
+        source_proxy_by_url: dict[str, str] = {}
 
         def add_entry(
             media_id: str,
@@ -841,6 +858,10 @@ class PreviewImageService:
             }
             indexed[entry_key] = entry
             proxy_id_by_media.setdefault(media_id, str(proxy["id"]))
+            if bucket == "source":
+                url = str(media_asset.get("source_url") or "").strip()
+                if url:
+                    source_proxy_by_url.setdefault(url, str(proxy["id"]))
             entries.append(entry)
 
         for binding in self.media_assets.list_bindings(
@@ -887,6 +908,19 @@ class PreviewImageService:
         def proxy_id_for_media(media_id: str) -> str:
             return proxy_id_by_media.get(str(media_id or "").strip(), "")
 
+        def ensure_proxy_for_media(media_id: str) -> str:
+            """返回媒体对应的代理 id，没有就现注册一个。
+
+            V2 清单可能引用尚未建立 active binding 的成品媒体（例如四宫格拆出的
+            4 张轮播图）。此前映射不到就静默丢弃，导致轮播区渲染成 0 张；这里补建
+            no-copy 代理，保证清单、素材库与各分区展示一致。
+            """
+            existing = proxy_id_for_media(media_id)
+            if existing:
+                return existing
+            add_entry(str(media_id or "").strip(), "", "", 0)
+            return proxy_id_for_media(media_id)
+
         proxy_by_id = {str(entry["proxy"]["id"]): entry for entry in entries}
 
         def resolve_saved_asset_id(saved_id: str) -> str:
@@ -908,6 +942,9 @@ class PreviewImageService:
             return proxy_id_by_media.get(saved_id, "")
 
         saved_manifest: PreviewImageManifest | None = None
+        # 四宫格回退时补进轮播的来源代理：这些来源素材要同步进素材库，否则保存/导出会被
+        # 「来源图未加入素材库」拦截（与用户手动把来源图加进轮播的规则一致）。
+        fallback_carousel_source_ids: list[str] = []
         if MANIFEST_KEY in saved:
             saved_manifest = PreviewImageManifest.from_value(saved.get(MANIFEST_KEY))
             manifest = PreviewImageManifest(
@@ -943,14 +980,28 @@ class PreviewImageService:
             carousel = [
                 proxy_id
                 for value in (v2.get("carousel_asset_ids") or [])
-                if (proxy_id := proxy_id_for_media(value))
+                if (proxy_id := ensure_proxy_for_media(value))
             ]
             detail = [
                 proxy_id
                 for value in (v2.get("detail_asset_ids") or [])
-                if (proxy_id := proxy_id_for_media(value))
+                if (proxy_id := ensure_proxy_for_media(value))
             ]
-            main = proxy_id_for_media(str(v2.get("main_asset_id") or ""))
+            if not carousel:
+                # 四宫格生图失败回退来源图时，result.carousel_image_paths 是原始来源 URL，
+                # 从未登记为素材，故 image_manifest_v2.carousel_asset_ids 为空。按 source_url
+                # 映射回已登记的来源代理，让预检轮播区如实显示这几张回退来源图（origin=来源图）。
+                fallback_carousel = [
+                    proxy_id
+                    for value in (result.get("carousel_image_paths") or [])
+                    if (
+                        proxy_id := source_proxy_by_url.get(str(value or "").strip())
+                    )
+                ]
+                carousel = list(dict.fromkeys(fallback_carousel))
+                if carousel:
+                    fallback_carousel_source_ids = list(carousel)
+            main = ensure_proxy_for_media(str(v2.get("main_asset_id") or ""))
             manifest = PreviewImageManifest(
                 main_asset_id=main,
                 carousel_asset_ids=tuple(carousel),
@@ -971,6 +1022,9 @@ class PreviewImageService:
         library_ids = processed_ids + [
             asset_id for asset_id in manifest.library_asset_ids if asset_id in source_id_set
         ]
+        for asset_id in fallback_carousel_source_ids:
+            if asset_id not in library_ids:
+                library_ids.append(asset_id)
         manifest = PreviewImageManifest(
             main_asset_id=manifest.main_asset_id,
             carousel_asset_ids=manifest.carousel_asset_ids,
@@ -1016,6 +1070,8 @@ class PreviewImageService:
                 "product_draft_id": entry["product_draft_id"],
                 "overrides": entry["overrides"],
                 "preview_revision": entry["preview_revision"],
+                # 保存时被剔除的跨任务/草稿引用（正常为空列表），前端据此提示用户重选这几张图。
+                "dropped_asset_ids": list(entry.get("dropped_asset_ids") or []),
             }
             for entry in snapshots
         ]

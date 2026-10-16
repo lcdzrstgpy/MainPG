@@ -231,6 +231,26 @@ export function toUserMessage(raw: string): string {
     return "表格里还缺必填项，请把商品 ID、售价、成本、重量、商品主图和货源链接补齐后再导入";
   }
 
+  // ---- 计费授权（产品处理的「继续处理」/重试等在计费服务侧的鉴权失败）----
+  // 这批错误原先只落通用兜底「操作失败，请稍后重试」，用户与客服都无法判断
+  // 该重登、该重试还是该等——已知真实案例：令牌失效导致「继续处理」点不动，
+  // 退出重新登录即可恢复。逐条映射为可操作提示，区分「重登即可」与「服务抖动」。
+  if (/remote billing session was rejected/i.test(message)) {
+    return "登录的计费授权已失效（账号可能在别处登录过），请退出后重新登录再试";
+  }
+  if (/server billing session is unavailable/i.test(message)) {
+    return "本地登录状态缺少计费授权（本地服务重启过会出现），请退出后重新登录再试";
+  }
+  if (/remote billing service is unavailable/i.test(message)) {
+    return "计费服务暂时不可用，请稍后重试；一直失败就把提示发给我们";
+  }
+  if (/remote billing service returned an invalid/i.test(message)) {
+    return "计费服务返回异常，请稍后重试；一直失败就把提示发给我们";
+  }
+  if (/remote billing request was rejected/i.test(message)) {
+    return "计费服务拒绝了这次请求，请稍后重试；一直失败就把提示发给我们";
+  }
+
   // ---- POD 定制 ----
   if (/POD billing request was rejected/i.test(message)) return "计费服务拒绝了这次请求，请稍后重试；一直失败就把提示发给我们";
   if (/POD billing (permission|authentication) is required/i.test(message)) return "当前账号的 POD 计费权限有问题，请联系对接人";
@@ -307,6 +327,11 @@ export function toUserMessage(raw: string): string {
 
   // ---- 其它 ----
   if (/unsupported miaoshou template kind/i.test(message)) return "妙手导出的模板类型不对，请选择「服饰类」或「非服饰类」";
+  if (/uploaded material is too large/i.test(message)) return "上传的文件太大了，请换小一点的文件再传";
+  if (/selected model does not support chat/i.test(message)) return "当前选择的模型不支持对话，请换一个模型再试";
+  if (/asset is unavailable/i.test(message)) return "相关素材暂时不可用，请稍后重试；一直失败请联系对接人";
+  if (/title must be a string/i.test(message)) return "提交的数据格式不对，请刷新页面后重试";
+  if (/missing asset token/i.test(message)) return "素材授权已失效，请重新进入该页面再试";
   if (/\bis not configured\b/i.test(message)) return "相关服务还没配置好，请联系对接人处理";
   if (/provider is unavailable/i.test(message)) return "上游服务暂时不可用，请稍后重试";
 
@@ -360,11 +385,56 @@ const REQUEST_TIMEOUT_MS = 30_000;
 export const BACKEND_OFFLINE_EVENT = "mainpg:backend-offline";
 export const BACKEND_ONLINE_EVENT = "mainpg:backend-online";
 
+/**
+ * 失联确认窗口：只有「持续失败」超过该时长才判定掉线并弹整屏遮罩。
+ *
+ * 单次网络层失败不足以判死。开发态 vite 代理在依赖预构建/重编译瞬间会拒连；
+ * 页面切换、组件卸载主动 abort 后紧邻的重发也会命中；后端重启的第一秒同样是拒连。
+ * 这类瞬时抖动以前会立刻弹整屏「本地服务掉线了」——用户观感就是「界面还开着却
+ * 突然掉线」（2026-10-16 实测排查）。真实后端挂掉时窗口内不会有任何请求成功，
+ * 6 秒后照常弹出，不影响判定时效。
+ */
+const BACKEND_OFFLINE_CONFIRM_MS = 6_000;
+
+/** 首次失败时刻；期间任意一次成功响应即清零（见 notifyBackendOnline）。 */
+let offlineSince: number | null = null;
+/** 是否已真正广播过离线事件（用于决定恢复时是否需要广播 online）。 */
+let offlineNotified = false;
+let offlineConfirmTimer: number | null = null;
+
 function notifyBackendOffline(): void {
-  window.dispatchEvent(new CustomEvent(BACKEND_OFFLINE_EVENT));
+  if (offlineSince !== null) return;
+  offlineSince = Date.now();
+  offlineConfirmTimer = window.setTimeout(() => {
+    offlineConfirmTimer = null;
+    if (offlineSince === null || offlineNotified) return;
+    offlineNotified = true;
+    window.dispatchEvent(new CustomEvent(BACKEND_OFFLINE_EVENT));
+  }, BACKEND_OFFLINE_CONFIRM_MS);
+}
+
+/** 复位失联确认状态，但不广播恢复事件。
+ *
+ * 供「探活」使用：BackendOfflineNotice 的 probeHealth 走的是裸 fetch，不经过
+ * httpJson，因此拿不到 notifyBackendOnline 里的复位。若不复位，「点一次重新连接
+ * 成功」会让状态机永远停在「已通知离线」—— 之后真的掉线时 notifyBackendOffline
+ * 会直接 return，用户再也看不到掉线提示（2026-10-16 复查发现的漏报路径）。
+ * 只清状态、不广播：调用方自己知道该怎么收拾 UI。
+ */
+export function resetBackendOfflineState(): void {
+  offlineSince = null;
+  offlineNotified = false;
+  if (offlineConfirmTimer !== null) {
+    window.clearTimeout(offlineConfirmTimer);
+    offlineConfirmTimer = null;
+  }
 }
 
 function notifyBackendOnline(): void {
+  const wasNotified = offlineNotified;
+  resetBackendOfflineState();
+  // 从未广播过离线 → 无需广播恢复（避免每个成功请求都空跑一次事件分发）。
+  if (!wasNotified) return;
   window.dispatchEvent(new CustomEvent(BACKEND_ONLINE_EVENT));
 }
 

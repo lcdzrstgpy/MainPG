@@ -15,6 +15,7 @@ from wh_local.modules.product_processing.service import (
     ProductProcessingService,
     _TaskControlStopped,
 )
+from wh_local.modules.product_processing import service as service_module
 
 
 def _service(tmp_path: Path) -> ProductProcessingService:
@@ -55,6 +56,40 @@ def _task_with_two_items(service: ProductProcessingService) -> tuple[dict[str, A
         idempotency_key=None,
     )
     return task, task["items"][0], task["items"][1]
+
+
+def _task_with_two_items_in_workspace(
+    service: ProductProcessingService, workspace_id: str
+) -> dict[str, Any]:
+    """在指定工作区建一个两件商品的任务（用于验证信标与轮询必须用同一个 workspace 键）。"""
+    drafts: list[dict[str, Any]] = []
+    for index in (1, 2):
+        draft, _created = service.create_draft(
+            {
+                "source_type": "manual",
+                "title": f"workspace-product-{index}",
+                "image_url": "https://example.test/product.jpg",
+            },
+            workspace_id=workspace_id,
+        )
+        drafts.append(draft)
+    return service.repository.create_task(
+        title="workspace-task",
+        preflight_only=False,
+        settings={
+            "processing_scope": ["title"],
+            "title_optimize": True,
+            "async_mode": True,
+            "_billing": {
+                "account_id": "account-1",
+                "source_ref": "task:workspace",
+                "pricing_version": "v1",
+            },
+        },
+        drafts=drafts,
+        idempotency_key=None,
+        workspace_id=workspace_id,
+    )
 
 
 def test_raise_if_task_stopped_raises_when_paused_or_cancelled(tmp_path: Path) -> None:
@@ -228,39 +263,185 @@ def test_pause_transition_cannot_regress_completed_task(tmp_path: Path) -> None:
     assert service.repository.get_task(task["id"])["status"] == "completed"
 
 
-def test_sweep_stale_heartbeats_auto_pauses_running_task(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_sweep_does_not_pause_running_task_without_page_leave(tmp_path: Path) -> None:
+    """页面没发离开信标就不许暂停——哪怕已经很久没有轮询。
+
+    背景（2026-10-15）：此前按「多久没心跳」猜用户走了（90/180 秒），页面被浏览器冻结、
+    整机休眠时定时器根本不跑，正在跑的任务就这样被误停。现在只认真实事件（pagehide 信标）。
+    """
     service = _service(tmp_path)
     task, _a, _b = _task_with_two_items(service)
     service.repository.set_task_status(task["id"], "running", "local")
-
-    # 模拟页面已关闭：最后一次 /outputs 心跳已远超超时阈值
+    # 心跳停在很久以前（标签被冻结、电脑睡了一觉都可能长这样）
     service._task_last_seen[("local", task["id"])] = time.monotonic() - 10_000.0
-    monkeypatch.setattr(
-        "wh_local.modules.product_processing.service._TASK_AUTO_PAUSE_TIMEOUT_SECONDS", 90.0
-    )
 
-    service._sweep_stale_heartbeats_once()
-
-    final = service.repository.get_task(task["id"])
-    assert final is not None and final["status"] == "paused"
-    # 暂停后不再跟踪该任务心跳（等待 resume 后重新轮询刷新）
-    assert ("local", task["id"]) not in service._task_last_seen
-
-
-def test_sweep_keeps_task_with_fresh_heartbeat_running(tmp_path: Path) -> None:
-    service = _service(tmp_path)
-    task, _a, _b = _task_with_two_items(service)
-    service.repository.set_task_status(task["id"], "running", "local")
-    service._task_last_seen[("local", task["id"])] = time.monotonic()
-
-    service._sweep_stale_heartbeats_once()
+    service._sweep_departed_tasks_once()
 
     assert service.repository.get_task(task["id"])["status"] == "running"
 
 
-def test_sweep_does_not_pause_task_during_export_finalization(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_sweep_pauses_task_after_page_leave_without_new_polling(tmp_path: Path) -> None:
+    """页面关闭信标送达、之后半小时都没人再看 → 暂停（与手动暂停同语义，可从历史记录继续）。"""
+    service = _service(tmp_path)
+    task, _a, _b = _task_with_two_items(service)
+    service.repository.set_task_status(task["id"], "running", "local")
+    # 时间线：2000 秒前最后轮询 → 1900 秒前关掉页面 → 之后没人再看（静默已超过半小时阈值）
+    service._task_last_seen[("local", task["id"])] = time.monotonic() - 2000.0
+    service.mark_task_left(task["id"], "local")
+    service._task_left_keys[("local", task["id"])] = time.monotonic() - 1900.0
+
+    service._sweep_departed_tasks_once()
+
+    assert service.repository.get_task(task["id"])["status"] == "paused"
+    assert ("local", task["id"]) not in service._task_left_keys
+    assert ("local", task["id"]) not in service._task_last_seen
+
+
+def test_page_leave_defers_while_polling_continues(tmp_path: Path) -> None:
+    """离开信标发出后页面还在轮询（刷新/重开刚开始）→ 这一轮不暂停，标记先留着。"""
+    service = _service(tmp_path)
+    task, _a, _b = _task_with_two_items(service)
+    service.repository.set_task_status(task["id"], "running", "local")
+    service._task_last_seen[("local", task["id"])] = time.monotonic() - 5.0
+    service.mark_task_left(task["id"], "local")
+
+    service._sweep_departed_tasks_once()
+
+    assert service.repository.get_task(task["id"])["status"] == "running"
+    assert ("local", task["id"]) in service._task_left_keys
+
+
+def test_page_leave_is_revoked_by_ongoing_polling(tmp_path: Path) -> None:
+    """离开之后还有轮询＝刷新/重开/另一个页签还在看 → 撤销这次离开。"""
+    service = _service(tmp_path)
+    task, _a, _b = _task_with_two_items(service)
+    service.repository.set_task_status(task["id"], "running", "local")
+    now = time.monotonic()
+    service._task_last_seen[("local", task["id"])] = now - 2000.0
+    with service._task_left_lock:
+        service._task_left_keys[("local", task["id"])] = now - 1900.0
+
+    # 刷新后的页面从半小时前一直轮询到现在
+    service._touch_task_heartbeat(task["id"], "local")
+
+    service._sweep_departed_tasks_once()
+
+    assert service.repository.get_task(task["id"])["status"] == "running"
+    assert ("local", task["id"]) not in service._task_left_keys
+
+
+def test_single_in_flight_poll_does_not_revoke_page_leave(tmp_path: Path) -> None:
+    """关页面瞬间在途的那一次轮询不算「页面回来了」——否则关了页面任务会一直跑下去。"""
+    service = _service(tmp_path)
+    task, _a, _b = _task_with_two_items(service)
+    service.repository.set_task_status(task["id"], "running", "local")
+    now = time.monotonic()
+    # 时间线：2000 秒前关掉页面；关页面瞬间那一次在途请求 1995 秒前被服务端处理，
+    # 之后再没有任何轮询（静默 1995 秒，超过半小时阈值）→ 该暂停
+    with service._task_left_lock:
+        service._task_left_keys[("local", task["id"])] = now - 2000.0
+    service._task_last_seen[("local", task["id"])] = now - 1995.0
+
+    service._sweep_departed_tasks_once()
+
+    assert service.repository.get_task(task["id"])["status"] == "paused"
+
+
+def test_throttled_polling_keeps_task_running_after_page_leave(tmp_path: Path) -> None:
+    """隐藏页被浏览器节流到「约 1 分钟一次」也算还在看：刷新后切到后台不该被误停。
+
+    阈值必须盖住节流节奏（Chrome/Edge 隐藏满 5 分钟后定时器约 1 分钟一次），
+    否则「刷新一下、切去别的窗口」就会把任务停掉 —— 正是这轮要消灭的那类误停。
+    """
+    service = _service(tmp_path)
+    task, _a, _b = _task_with_two_items(service)
+    service.repository.set_task_status(task["id"], "running", "local")
+    now = time.monotonic()
+    with service._task_left_lock:
+        service._task_left_keys[("local", task["id"])] = now - 300.0
+    # 被节流：最近一次轮询是 70 秒前（> 节流节奏，但仍在静默阈值之内）
+    service._task_last_seen[("local", task["id"])] = now - 70.0
+
+    service._sweep_departed_tasks_once()
+
+    assert service.repository.get_task(task["id"])["status"] == "running"
+
+
+def test_sweep_skips_round_after_process_was_suspended(tmp_path: Path) -> None:
+    """整机休眠唤醒那一轮不判：进程自己也被冻住了，期间的「静默」不算页面离开。
+
+    否则「刷新一下页面、合上盖子走人」会在醒来瞬间被判成页面已离开而误停；醒来后页面
+    会立刻恢复轮询，下一轮按新时间线判断（并有轮询就撤销这次离开）。
+    """
+    service = _service(tmp_path)
+    task, _a, _b = _task_with_two_items(service)
+    service.repository.set_task_status(task["id"], "running", "local")
+    now = time.monotonic()
+    with service._task_left_lock:
+        service._task_left_keys[("local", task["id"])] = now - 4000.0
+    service._task_last_seen[("local", task["id"])] = now - 3900.0
+    # 上一轮清扫是一小时前：本进程自己刚被冻过（休眠/挂起）
+    service._last_sweep_at = now - 3600.0
+
+    service._sweep_departed_tasks_once()
+
+    assert service.repository.get_task(task["id"])["status"] == "running"
+
+    # 醒来后页面恢复轮询 → 下一轮撤销这次离开
+    service._touch_task_heartbeat(task["id"], "local")
+    service._sweep_departed_tasks_once()
+
+    assert service.repository.get_task(task["id"])["status"] == "running"
+    assert ("local", task["id"]) not in service._task_left_keys
+
+
+def test_leave_sweep_yields_while_workspace_is_exiting(tmp_path: Path) -> None:
+    """工作台正在退出时任务级暂停让位：退出流程负责「取消 + 50% 结算」，不许抢。
+
+    否则「关掉整个工作台」这一个动作会时而记成暂停（可继续、未完成全退）、时而记成取消
+    （按冻结积分 50% 收费）——计费口径随两条路谁先跑而变，这正是要避免的。
+    """
+    service = _service(tmp_path)
+    task, _a, _b = _task_with_two_items(service)
+    task_id = int(task["id"])
+    service.repository.set_task_status(task_id, "running", "local")
+    now = time.monotonic()
+    with service._task_left_lock:
+        service._task_left_keys[("local", task_id)] = now - 1900.0
+    service._task_last_seen[("local", task_id)] = now - 2000.0
+
+    service.set_shutdown_probe(lambda: True)
+    service._sweep_departed_tasks_once()
+    assert service.repository.get_task(task_id)["status"] == "running"
+
+    # 退出被取消（例如刷新回来的心跳）→ 该暂停照旧
+    service.set_shutdown_probe(lambda: False)
+    service._sweep_departed_tasks_once()
+    assert service.repository.get_task(task_id)["status"] == "paused"
+
+
+def test_leave_quiet_threshold_stays_above_runtime_exit_grace() -> None:
+    """兜底断言：静默阈值不小于 30 分钟（安全网），且大于退出宽限（默认 60 秒）。
+
+    2026-10-15 产品口径：关掉页面不等于想停任务——「关页面暂停」是安全网而不是即时停止
+    （真想立刻停用「暂停 / 取消」，关掉整个工作台走退出流程）。阈值不许被调回「几分钟级」。
+    真正的先后由 set_shutdown_probe/is_exiting 保证（工作台一进入退出流程，任务级暂停就
+    整轮跳过）；这条只是防止有人把它调到「暂停比退出还早」这种配置——那样在默认参数下
+    也会出现两条路同时想接管同一个任务的窗口。
+    """
+    assert service_module._TASK_LEAVE_QUIET_SECONDS >= 1800.0
+    assert service_module._TASK_LEAVE_QUIET_SECONDS > service_module._RUNTIME_EXIT_GRACE_SECONDS
+    # 留出清扫间隔的余量，别贴着边界。
+    assert (
+        service_module._TASK_LEAVE_QUIET_SECONDS
+        >= service_module._RUNTIME_EXIT_GRACE_SECONDS + service_module._TASK_AUTO_PAUSE_SWEEP_SECONDS * 2
+    )
+
+
+def test_page_leave_does_not_pause_task_during_export_finalization(
+    tmp_path: Path,
 ) -> None:
+    """商品已全部终态、只剩本地收尾时即使页面离开也不暂停：否则会卡在 99% 并阻断预检/导出。"""
     service = _service(tmp_path)
     task, item_a, item_b = _task_with_two_items(service)
     for item in (item_a, item_b):
@@ -272,15 +453,117 @@ def test_sweep_does_not_pause_task_during_export_finalization(
             workspace_id="local",
         )
     service.repository.set_task_status(task["id"], "running", "local")
-    service._task_last_seen[("local", task["id"])] = time.monotonic() - 10_000.0
-    monkeypatch.setattr(
-        "wh_local.modules.product_processing.service._TASK_AUTO_PAUSE_TIMEOUT_SECONDS", 90.0
-    )
+    service._task_last_seen[("local", task["id"])] = time.monotonic() - 2000.0
+    service.mark_task_left(task["id"], "local")
+    service._task_left_keys[("local", task["id"])] = time.monotonic() - 1900.0
 
-    service._sweep_stale_heartbeats_once()
+    service._sweep_departed_tasks_once()
 
     assert service.repository.get_task(task["id"])["status"] == "running"
+
+
+def test_sweep_prunes_expired_heartbeat_records(tmp_path: Path) -> None:
+    """心跳记录只服务于「离开之后有没有人回来」：过期即弃，避免长会话里无限增长。"""
+    service = _service(tmp_path)
+    task, _a, _b = _task_with_two_items(service)
+    service._task_last_seen[("local", task["id"])] = time.monotonic() - 7200.0
+
+    service._sweep_departed_tasks_once()
+
     assert ("local", task["id"]) not in service._task_last_seen
+
+
+def test_leave_marker_and_heartbeat_share_the_same_workspace_key(tmp_path: Path) -> None:
+    """信标与轮询必须落在同一个 (workspace, task) 键上，否则「页面开着也会被暂停」。
+
+    前端两处用的是同一个值（轮询走 X-Workspace-ID 请求头、信标走 workspace 查询参数），
+    后端两条路都经 _workspace() 归一。这里用**非默认** workspace 钉死：任何一边用了别的
+    键，撤销就失效、任务会被误停 —— 下面第二个任务就是这个反例（证明用例是有效的）。
+    """
+    service = _service(tmp_path)
+    task = _task_with_two_items_in_workspace(service, "default")
+    task_id = int(task["id"])
+    service.repository.set_task_status(task_id, "running", "default")
+    now = time.monotonic()
+    with service._task_left_lock:
+        service._task_left_keys[("default", task_id)] = now - 1900.0
+    service._task_last_seen[("default", task_id)] = now - 2000.0
+
+    # 页面重新开始轮询：task_outputs 落心跳用的键必须与信标一致
+    service.task_outputs(task_id, workspace_id="default")
+    service._sweep_departed_tasks_once()
+
+    assert service.repository.get_task(task_id, "default")["status"] == "running"
+    assert ("default", task_id) not in service._task_left_keys
+
+    # 反例：心跳落在别的工作区 → 撤销不了 → 被判静默而暂停
+    other = _task_with_two_items_in_workspace(service, "default")
+    other_id = int(other["id"])
+    service.repository.set_task_status(other_id, "running", "default")
+    with service._task_left_lock:
+        service._task_left_keys[("default", other_id)] = now - 300.0
+    service._touch_task_heartbeat(other_id, "local")
+    service._sweep_departed_tasks_once()
+
+    assert service.repository.get_task(other_id, "default")["status"] == "paused"
+
+
+def test_leave_beacon_is_ignored_for_unknown_or_mismatched_workspace(tmp_path: Path) -> None:
+    """无效信标必须是空操作：任务不存在 / 工作区不匹配时不许留下标记。
+
+    信标地址写死在前端、参数不做鉴权；若照记，就会留下一个「没有对应心跳」的标记，
+    让页面开着也被判成静默而误停。宁可不暂停，也不接受无效信标。
+    """
+    service = _service(tmp_path)
+    task = _task_with_two_items_in_workspace(service, "default")
+    task_id = int(task["id"])
+
+    service.mark_task_left(task_id, "default")
+    assert ("default", task_id) in service._task_left_keys
+
+    service.mark_task_left(task_id, "local")
+    assert ("local", task_id) not in service._task_left_keys
+
+    service.mark_task_left(999999, "default")
+    assert ("default", 999999) not in service._task_left_keys
+
+
+def test_task_leave_route_reads_workspace_query_param(tmp_path: Path) -> None:
+    """leave 路由必须真的读 workspace 查询参数：参数名对不上会静默退回 local。
+
+    前端信标把任务所在工作区放在查询串里（sendBeacon 带不了自定义头）。这里用「只有空白
+    字符的 workspace」逼后端报 400 —— 参数被忽略时不会报错，用例就会失败。
+    """
+    from fastapi.testclient import TestClient
+
+    from wh_local.app.main import create_app
+
+    client = TestClient(create_app(tmp_path / "workbench.sqlite3"))
+
+    blank = client.post("/api/product-processing/tasks/999999/leave?workspace=%20")
+    ok = client.post("/api/product-processing/tasks/999999/leave?workspace=default")
+
+    assert blank.status_code == 400
+    assert ok.status_code == 200
+    assert ok.json() == {"ok": True}
+
+
+def test_task_leave_beacon_route_is_reachable(tmp_path: Path) -> None:
+    """前端 pagehide 的信标地址（写死在 ProductProcessingTaskPage 里）必须真的能通。
+
+    路径一旦对不上，「关掉页面就暂停」会静默失效（信标打空、任务继续跑），界面上看不出来。
+    同时锁定语义：任务号不存在也返回 ok —— 信标是尽力而为的，任何时候都不许抛错。
+    """
+    from fastapi.testclient import TestClient
+
+    from wh_local.app.main import create_app
+
+    client = TestClient(create_app(tmp_path / "workbench.sqlite3"))
+
+    response = client.post("/api/product-processing/tasks/999999/leave?workspace=local")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
 
 
 def test_execute_finishes_export_when_pause_lands_after_last_item(
@@ -359,3 +642,143 @@ def test_task_outputs_touches_heartbeat(tmp_path: Path) -> None:
     service.task_outputs(task["id"], workspace_id="local")
 
     assert ("local", task["id"]) in service._task_last_seen
+
+
+def test_finish_task_keeps_paused_when_items_still_unfinished(tmp_path: Path) -> None:
+    """收尾竞态防御（2026-10-14）：仍有未处理条目时 finish_task 不得判「完成」。
+
+    历史线上实例：55 条任务被收尾竞态判 completed，仅处理 27 条，剩余条目
+    在 UI 上完全消失。pending/running 不计失败（failed_count==0）正是缺口。
+    """
+    service = _service(tmp_path)
+    task, item_a, item_b = _task_with_two_items(service)
+    service.repository.update_item_progress(
+        task["id"],
+        int(item_a["item_id"]),
+        status="completed",
+        result={"optimized_title": "done"},
+        workspace_id="local",
+    )
+    service.repository.set_task_status(task["id"], "running", "local")
+
+    finished = service.repository.finish_task(
+        task["id"],
+        [],
+        output_file="",
+        error_report_file="",
+        video_manifest_file="",
+        workspace_id="local",
+    )
+
+    assert finished is not None and finished["status"] == "paused"
+    items = {int(item["item_id"]): item for item in finished["items"]}
+    assert items[int(item_b["item_id"])]["status"] == "pending"
+
+
+def test_finish_task_marks_completed_only_when_all_items_terminal(tmp_path: Path) -> None:
+    """正常路径保护：全部条目终态时 finish_task 仍应判「完成」。"""
+    service = _service(tmp_path)
+    task, item_a, item_b = _task_with_two_items(service)
+    for item in (item_a, item_b):
+        service.repository.update_item_progress(
+            task["id"],
+            int(item["item_id"]),
+            status="completed",
+            result={"optimized_title": "done"},
+            workspace_id="local",
+        )
+    service.repository.set_task_status(task["id"], "running", "local")
+
+    finished = service.repository.finish_task(
+        task["id"],
+        [],
+        output_file="",
+        error_report_file="",
+        video_manifest_file="",
+        workspace_id="local",
+    )
+
+    assert finished is not None and finished["status"] == "completed"
+
+
+def test_execute_task_impl_falls_back_to_paused_when_items_remain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """收尾竞态防御：worker 收尾读到 running 但仍有未处理条目 → 回退暂停。
+
+    模拟「暂停 → 立刻继续」竞态：旧 worker 收尾时任务状态已被 resume 改写，
+    处理函数本轮不再产出终态（返回 None），未处理条目留在库中。
+    """
+    service = _service(tmp_path)
+    task, item_a, item_b = _task_with_two_items(service)
+    service.repository.update_item_progress(
+        task["id"],
+        int(item_a["item_id"]),
+        status="completed",
+        result={"optimized_title": "done"},
+        workspace_id="local",
+    )
+    # 处理函数返回 None：条目保持未终态（等同竞态窗口内的中断）
+    monkeypatch.setattr(service, "_process_one", lambda *args, **kwargs: None)
+
+    final = service._execute_task_impl(task["id"], "local")
+
+    assert final["status"] == "paused"
+    items = {int(item["item_id"]): item for item in final["items"]}
+    assert items[int(item_b["item_id"])]["status"] in {"pending", "running"}
+    assert items[int(item_a["item_id"])]["status"] == "completed"
+
+
+def test_execute_task_impl_completes_when_all_items_reach_terminal(tmp_path: Path) -> None:
+    """正常路径保护：条目全部终态时收尾仍判「完成」。"""
+    service = _service(tmp_path)
+    task, item_a, item_b = _task_with_two_items(service)
+    for item in (item_a, item_b):
+        service.repository.update_item_progress(
+            task["id"],
+            int(item["item_id"]),
+            status="completed",
+            result={"optimized_title": "done"},
+            workspace_id="local",
+        )
+
+    final = service._execute_task_impl(task["id"], "local")
+
+    assert final["status"] == "completed"
+
+
+def test_heal_terminal_orphan_items_marks_failed_and_releases_drafts(tmp_path: Path) -> None:
+    """孤儿项自愈：终态任务残留 pending 项 → 标失败 + 草稿回草稿池 + 计数同步。"""
+    service = _service(tmp_path)
+    task, item_a, item_b = _task_with_two_items(service)
+    service.repository.update_item_progress(
+        task["id"],
+        int(item_a["item_id"]),
+        status="completed",
+        result={"optimized_title": "done"},
+        workspace_id="local",
+    )
+    # 复刻历史竞态产物：任务被判 completed，但 item_b 从未处理；草稿卡 processing
+    service.repository.set_task_status(task["id"], "completed", "local")
+    draft_b_id = int(item_b["product_draft_id"])
+    service.repository.mark_drafts_status([draft_b_id], "processing", workspace_id="local")
+
+    orphans = service.repository.terminal_tasks_with_unfinished_items()
+    assert any(int(t["id"]) == int(task["id"]) for t in orphans)
+
+    healed = service.repository.heal_terminal_orphan_items(task["id"], "local")
+    assert healed == 1
+
+    final = service.repository.get_task(task["id"], "local")
+    items = {int(item["item_id"]): item for item in final["items"]}
+    healed_item = items[int(item_b["item_id"])]
+    assert healed_item["status"] == "failed"
+    assert healed_item["reason"] == "任务已结束时仍未处理，已自动终止"
+    assert (healed_item["result"] or {}).get("failure_class") == "task_control"
+    assert final["success_count"] == 1
+    assert final["failed_count"] == 1
+    # 任务状态保持原有终态，不被自愈改动
+    assert final["status"] == "completed"
+
+    drafts = service.repository.get_drafts([draft_b_id], workspace_id="local")
+    assert drafts and drafts[0]["status"] == "draft"

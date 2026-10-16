@@ -110,6 +110,7 @@ class _Batch:
     items: dict[str, _Item]
     existing_offer_ids: tuple[str, ...]
     platform: str = "1688"
+    include_existing: bool = False
     provider: Any | None = None
     started: bool = False
     closing: bool = False
@@ -185,12 +186,22 @@ class PluginOneBoundCaptureService:
         self._sku_repull_lock = threading.Lock()
         self._lock = threading.RLock()
 
-    def prepare(self, *, session_token: str, page_url: str, source_urls: list[str]) -> Mapping[str, Any]:
+    def prepare(
+        self, *, session_token: str, page_url: str, source_urls: list[str], include_existing: bool = False
+    ) -> Mapping[str, Any]:
         identity = self._identity(session_token)
-        return self._prepare_for_identity(identity, page_url=page_url, source_urls=source_urls)
+        return self._prepare_for_identity(
+            identity, page_url=page_url, source_urls=source_urls, include_existing=include_existing
+        )
 
     def _prepare_for_identity(
-        self, identity: Mapping[str, str], *, page_url: str, source_urls: list[str], parent_batch_id: str = ""
+        self,
+        identity: Mapping[str, str],
+        *,
+        page_url: str,
+        source_urls: list[str],
+        parent_batch_id: str = "",
+        include_existing: bool = False,
     ) -> Mapping[str, Any]:
         if not isinstance(page_url, str) or not page_url.strip():
             raise ValueError("page_url is required")
@@ -213,7 +224,7 @@ class PluginOneBoundCaptureService:
                 f"{platform}:{offer_id}",
                 identity["workspace_id"],
             )
-            if _is_active_onebound_draft(draft):
+            if _is_active_onebound_draft(draft) and not include_existing:
                 existing.append(offer_id)
                 persisted_items.append({"offer_id": offer_id, "source_url": canonical_url, "status": "skipped", "outcome": "skipped"})
                 continue
@@ -248,6 +259,7 @@ class PluginOneBoundCaptureService:
                 expires_at_text=expiry_text,
                 items=prepared,
                 existing_offer_ids=tuple(existing),
+                include_existing=include_existing,
             )
             self._batches[token] = batch
         if self._repository is not None:
@@ -256,6 +268,7 @@ class PluginOneBoundCaptureService:
                     batch_id=batch.batch_id, actor_id=batch.actor_id, workspace_id=batch.workspace_id,
                     parent_batch_id=parent_batch_id,
                     page_url=batch.page_url, items=tuple(persisted_items),
+                    include_existing=include_existing,
                 )
             except Exception:
                 with self._lock:
@@ -451,6 +464,7 @@ class PluginOneBoundCaptureService:
                         for item in persisted_items
                         if str(item.get("status") or "") == "skipped"
                     ),
+                    include_existing=bool(persistent.get("include_existing")),
                 )
                 self._batches[token] = batch
                 restored = True
@@ -649,7 +663,8 @@ class PluginOneBoundCaptureService:
         """Confirm selected pending candidates into the draft pool, idempotently."""
         if self._repository is None:
             raise LookupError("persistent capture storage is unavailable")
-        self._require_persistent_batch(workspace_id, batch_id)
+        batch = self._require_persistent_batch(workspace_id, batch_id)
+        include_existing = bool(batch.get("include_existing"))
         with self._sku_repull_lock:
             job = self._sku_repull_jobs.get(batch_id)
             if job is not None and job.status == "running":
@@ -670,6 +685,7 @@ class PluginOneBoundCaptureService:
                 workspace_id=workspace_id,
                 candidate=candidate,
                 collection_channel="plugin_capture",
+                allow_existing=include_existing,
             )
             action = str(intake.get("action") or "created")
             draft = intake.get("draft")
@@ -1100,6 +1116,7 @@ def register_plugin_onebound_capture_routes(
                 session_token=_required_text(payload.get("session_token"), "session_token"),
                 page_url=_required_text(payload.get("page_url"), "page_url"),
                 source_urls=list(source_urls) if isinstance(source_urls, list) else source_urls,
+                include_existing=bool(payload.get("include_existing")),
             )
         except PermissionError as error:
             raise HTTPException(status_code=401, detail="invalid plugin session") from error

@@ -44,6 +44,27 @@ def test_default_last_tab_exit_grace_is_sixty_seconds(monkeypatch) -> None:
     assert controller._grace_s == 60
 
 
+def test_is_exiting_reports_pending_exit_and_clears_on_heartbeat(monkeypatch) -> None:
+    """任务级暂停要让位给「退出前取消 + 结算」，所以控制器必须能报出「正在退出」。
+
+    产品处理的自动暂停会读这个信号（service.set_shutdown_probe）：为真时让位，避免
+    「关掉工作台」这一个动作有时被记成暂停（可继续）、有时被记成取消（按 50% 收费）。
+    """
+    controller = _controller(monkeypatch)
+    controller.touch("tab-a")
+
+    assert controller.is_exiting() is False
+
+    controller.bye("tab-a")
+
+    assert controller.is_exiting() is True
+
+    # 刷新回来的心跳会取消这次退出（新页面重新心跳，后端不该退）
+    controller.touch("tab-a")
+
+    assert controller.is_exiting() is False
+
+
 def test_reload_heartbeat_cancels_last_tab_exit(monkeypatch) -> None:
     controller = _controller(monkeypatch)
     controller.touch("old-page")

@@ -137,6 +137,29 @@
   background: #fff;
 }
 
+/* 「根据本批次标题生成」：辅助提词生成按钮与提示 */
+.prompt-block-generate {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.prompt-block-generate-hint {
+  font-size: 0.72rem;
+  color: #7d94aa;
+  flex: 1 1 auto;
+  min-width: 160px;
+}
+
+.prompt-block-generate-notice {
+  flex-basis: 100%;
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: #0a8fca;
+}
+
 .prompt-panel-actions {
   display: flex;
   flex-wrap: wrap;
@@ -187,61 +210,71 @@
   color: #d64545;
 }
 
-/* 当前使用状态 + 「不使用模板」入口 */
-.prompt-template-status {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin: 0 0 10px;
-  padding: 8px 10px;
-  border: 1px solid #dcebf5;
-  border-radius: 9px;
-  background: #f2f8fc;
-  font-size: 0.78rem;
-  color: #526a82;
+/* 一键填入：模板卡片列表 */
+.prompt-template-picker {
+  margin: 0 0 12px;
 }
 
-.prompt-template-status strong {
-  color: #18334d;
-  font-weight: 800;
-}
-
-.prompt-template-select-hint {
-  font-size: 0.72rem;
-  font-weight: 500;
+.prompt-template-picker-hint {
+  margin: 0 0 8px;
+  font-size: 0.76rem;
   color: #7d94aa;
 }
 
-/* 模板管理栏 */
-.prompt-template-bar {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin: 0 0 10px;
+.prompt-template-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
 }
 
-.prompt-template-select-label {
+.prompt-template-card {
   display: flex;
   flex-direction: column;
-  gap: 5px;
-  min-width: 200px;
-  font-size: 0.78rem;
-  font-weight: 800;
-  color: #526a82;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid #dcebf5;
+  border-radius: 10px;
+  background: #fff;
+  text-align: left;
+  cursor: pointer;
+  transition: color, background-color, border-color, box-shadow, opacity, transform 0.15s ease;
 }
 
-.prompt-template-select-label select {
-  padding: 7px 10px;
-  border: 1px solid #cfe0eb;
-  border-radius: 9px;
-  background: #fff;
+.prompt-template-card strong {
+  font-size: 0.84rem;
+  font-weight: 800;
   color: #18334d;
-  outline-color: #13a9f2;
-  font-size: 0.86rem;
+}
+
+.prompt-template-card small {
+  font-size: 0.72rem;
+  color: #7d94aa;
+}
+
+.prompt-template-card:hover:not(:disabled) {
+  border-color: #82c9ef;
+  box-shadow: 0 6px 14px #188bd61a;
+}
+
+.prompt-template-card.is-selected {
+  border-color: #9fd4e8;
+}
+
+.prompt-template-card.is-active {
+  border-color: transparent;
+  background: linear-gradient(100deg, #0a8fca, #0ab3c0);
+  box-shadow: 0 6px 14px rgba(10, 155, 202, 0.24);
+}
+
+.prompt-template-card.is-active strong,
+.prompt-template-card.is-active small {
+  color: #fff;
+}
+
+.prompt-template-card:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .prompt-template-actions {
@@ -323,9 +356,8 @@
     min-width: 0;
   }
 
-  .prompt-template-bar {
-    flex-direction: column;
-    align-items: stretch;
+  .prompt-template-cards {
+    grid-template-columns: 1fr;
   }
 
   .prompt-template-actions {

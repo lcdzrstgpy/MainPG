@@ -34,13 +34,14 @@ from wh_local.customer.contracts import (
     CustomerBillingProtocolError,
 )
 from wh_local.customer.remote_client import CustomerAuthClient
+from wh_local.media_enhance import options_from_env
 from wh_local.runtime_logs import business_logger
 
 from .batch_billing import (
+    SUBITEM_FEATURES as _BATCH_SUBITEM_FEATURES,
     abandon_freeze as _abandon_batch_freeze,
     billing_client as _batch_billing_client,
     derive_item_results as _derive_batch_item_results,
-    direct_ai_enabled as _direct_ai_enabled,
     forget_freeze as _forget_batch_freeze,
     mark_freeze_settle_failure as _mark_freeze_settle_failure,
     open_freeze_record as _open_batch_freeze_record,
@@ -50,6 +51,8 @@ from .batch_billing import (
 from .doubao_vision import (
     MODEL_ID as DOUBAO_VISION_MODEL_ID,
     PROMPT_VERSION as DOUBAO_VISION_PROMPT_VERSION,
+    VISION_IMAGE_JPEG_QUALITY,
+    VISION_IMAGE_MAX_EDGE,
     DoubaoVisionClient,
     DoubaoVisionError,
     SubjectAnalysis,
@@ -123,10 +126,15 @@ from .preview_image_service import PreviewImageService
 from .infrastructure.media_asset_repository import MediaAssetRepository, MediaMaterializationConflict
 from .media_asset_service import MediaAssetService, canonical_source_url, is_awaiting_sync
 from .provider_config import PREMIUM_IMAGE_MODEL, PREMIUM_IMAGE_SIZE, resolve_ai_provider
-from .server_ai_proxy import server_ai_context
+from .server_ai_proxy import merge_builtin_keys, server_ai_context
 
 _MEDIA_TYPES: tuple | None = None
 _LOGGER = logging.getLogger(__name__)
+
+# 源图作为生图参考可用的最小边（像素）：采集常保存 180px 缩略图（如 kwcdn imageView2），
+# 上游生图服务无法据此生成 2K 商品图而直接失败。入库预检低于该值的图判为不可用，
+# 避免脏图进入草稿池被当成参考图拖垮整条生图。
+_SOURCE_IMAGE_MIN_EDGE = 300
 
 # 来源尺寸/重量确定性提取（对齐原项目 five-stage 的 deterministic_fact_build，0 AI）
 _DIMENSION_TRIPLE = re.compile(
@@ -243,10 +251,38 @@ _COMMON_VARIANT_TRANSLATIONS: dict[str, dict[str, str]] = {
     },
 }
 _TASK_HEARTBEAT_SECONDS = 10.0
-# 前端任务页轮询 /tasks/{id}/outputs 即为心跳；超过该时长没有心跳（页面关闭/
-# 切走/浏览器标签被回收）自动把任务置为暂停，避免用户已不在看却继续烧 AI 成本。
-_TASK_AUTO_PAUSE_TIMEOUT_SECONDS = 90.0
+# 自动暂停只认**真实事件**，不再用「多久没心跳」猜：
+#
+#   ① 页面关闭：任务页在 pagehide 时发一个离开信标（/tasks/{id}/leave），之后连续静默
+#      （_TASK_LEAVE_QUIET_SECONDS）才暂停该任务；刷新/重开/别的页签还在看都会继续轮询，
+#      撤销这次离开。
+#   ② 整机退出：桌面端 local runtime 的 watchdog 在最后一个页面离开后退出后端进程，
+#      退出前取消并结算运行中的任务（另见 wh_local/app/main.py 的 _RuntimeExitController）。
+#
+# 为什么删掉静默心跳超时：页面被浏览器节流/冻结、整机休眠时定时器根本跑不起来，静默超时会把
+# 「页面还在，只是被系统冻住」误判成「用户走了」——这是「工作台明明开着却被暂停」工单的
+# 主要来源，且无法用调大阈值根治（冻结时长无上界）。开着就一直跑，只有真的关了页面才停。
+#
+# 静默阈值：把「关页面暂停」当**安全网**用、不当即时停止（2026-10-15 由 120 秒上调为 30 分钟）——
+# 关掉页面不等于想停任务：刷新/重开/从历史记录打开都会继续轮询并撤销这次离开；真想立刻停用
+# 「暂停 / 取消」按钮，关掉整个工作台走退出流程。关页面后最多再跑这个时长（成本上界），
+# 大多数任务在这之内就跑完了。
+# 下限约束（仍远大于退出宽限，见下）：
+#   - 必须盖住浏览器对隐藏页的节流节奏（隐藏满 5 分钟后定时器被压到约 1 分钟一次），
+#     否则「刷新后把窗口切到后台」会被误停；
+#   - 关页面瞬间那一次在途请求撑不过这  个窗口，所以暂停不会被它误撤销。
+# 与退出路径的先后（**不能改小到退出宽限以下**）：关闭整个工作台时，runtime watchdog 会在
+# 退出宽限（默认 60 秒）后退出后端并执行「取消任务 + 按冻结积分 50% 结算」（beforeunload
+# 弹窗里向用户承诺的就是这个）；任务级暂停必须在它之后才可能发生，否则两条路会抢同一个任务，
+# 出现「有时暂停、有时取消」的不确定结果。有 TestAssert 守着这个大小关系。
+_TASK_LEAVE_QUIET_SECONDS = 1800.0
 _TASK_AUTO_PAUSE_SWEEP_SECONDS = 15.0
+# 退出宽限的默认值（wh_local/app/main.py 的 WH_LOCAL_RUNTIME_EXIT_GRACE_S 默认值）：
+# 仅用于断言上面那条大小关系，不参与运行逻辑。
+_RUNTIME_EXIT_GRACE_SECONDS = 60.0
+# 心跳记录（_task_last_seen）只用于「离开之后有没有人再回来看」，超过这个时长没被任何
+# 页面轮询过的记录直接清掉，避免长会话里无限增长。
+_TASK_HEARTBEAT_RETENTION_SECONDS = 3600.0
 # 收尾卡死兜底阈值：全部条目已终态（非 pending/running）但任务仍停在 running，且
 # worker 已退场（崩溃）或长时间无任何条目进展（卡在本地导出/落库）。正常收尾由
 # finish_task 在数秒内把任务置为终态；超过该时间仍未完成即判定卡死，从数据库重建
@@ -301,13 +337,14 @@ def _safe_shop_candidate_value(value: Any) -> Any:
         return str(value) if value.is_finite() else _DROP_SHOP_CANDIDATE_VALUE
     return _DROP_SHOP_CANDIDATE_VALUE
 
-# 失败项自动补跑轮数：WH_PP_AUTO_REPULL_ROUNDS，默认 2（任务收尾统一把所有失败
-# 链接重新投入完整处理链路，最多跑 2 轮），0 关闭；系统自动轮不向用户计费。
+# 失败项自动补跑轮数：WH_PP_AUTO_REPULL_ROUNDS，默认 1（任务收尾把本轮失败链接重新
+# 投入处理链路自动重试一次）。上限明确为「每条链接最多 1 次自动重试」，避免因生图回退
+# 等可重试失败被无限重试、反复产生不可控的 AI 生图费用；0 关闭。系统自动轮不向用户计费。
 def _auto_repull_rounds() -> int:
     try:
-        return max(0, int(os.environ.get("WH_PP_AUTO_REPULL_ROUNDS", "2")))
+        return max(0, int(os.environ.get("WH_PP_AUTO_REPULL_ROUNDS", "1")))
     except ValueError:
-        return 2
+        return 1
 
 
 def _iso_utc_now() -> str:
@@ -608,12 +645,11 @@ def _image_generation_count(value: Any, *, default: int = 4) -> int:
 def _max_concurrent_tasks() -> int:
     """进程内最多同时执行的产品处理任务数（默认 4=受限并行）。
 
-    可经 WH_PRODUCT_MAX_CONCURRENT_TASKS 覆盖（上限 8）。文本/识图请求总量
-    由服务器网关门 _SERVER_AI_REQUEST_GATE=2 兜底限流，任务并发远超该值时
-    只会让 AI 请求排队、放大超时重试（60s×3），整体反而比串行更慢；默认 4
-    在「本地图片合成填隙」与「AI 排队」之间取平衡，可据实测在 2~4 间调整。
-    图片侧为每任务实例内的信号量（默认 4），多任务并发时图片总在途可能达
-    任务数 x4，需结合无印/中转承载合理设置。
+    可经 WH_PRODUCT_MAX_CONCURRENT_TASKS 覆盖（上限 8）。客户端直连模式下 AI 请求
+    直接发往火山方舟/无印，并发过高会触发上游限流并放大超时重试（180s×3），整体
+    反而比串行更慢；默认 4 在「本地图片合成填隙」与「直连上游限流」之间取平衡，
+    可据实测在 2~4 间调整。图片侧为每任务实例内的信号量（默认 4），多任务并发时
+    图片总在途可能达任务数 x4，需结合无印/中转承载合理设置。
     """
     raw = os.environ.get("WH_PRODUCT_MAX_CONCURRENT_TASKS", "")
     try:
@@ -718,12 +754,21 @@ class ProductProcessingService:
         self._diagnostic_dispatcher: ProductProcessingDiagnosticOutboxDispatcher | None = None
         self._media_materialization_lock = threading.Lock()
         self._media_materialization_workers: dict[str, threading.Thread] = {}
-        # 前端任务页轮询心跳：(workspace_id, task_id) -> time.monotonic() 最近一次
-        # /outputs 轮询时间。超时未收到心跳自动暂停（页面关闭/切走），避免用户已
-        # 不在看却继续调用 AI 烧成本。
+        # 心跳记录（_task_last_seen）只用于「离开之后有没有人再回来看」，超过这个时长没被任何
+        # 页面轮询过的记录直接清掉，避免长会话里无限增长。
         self._task_last_seen: dict[tuple[str, int], float] = {}
         self._task_last_seen_lock = threading.Lock()
-        self._auto_pause_sweeper_started = False
+        self._task_maintenance_started = False
+        # 「工作台正在退出」探针（桌面端在 create_app 里接到 runtime watchdog 上）：
+        # 为真时任务级暂停让位给退出前的「取消 + 结算」，见 _sweep_departed_tasks_once。
+        self._shutdown_probe: Callable[[], bool] | None = None
+        # 上一次清扫时刻：识别「进程自己也被冻住了」（整机休眠/挂起），那一轮不判离开
+        # —— 所以第一次调用（None）不判、也不影响后续判断。
+        self._last_sweep_at: float | None = None
+        # 页面离开信标 (workspace_id, task_id) -> 离开时刻：连续静默超过
+        # _TASK_LEAVE_QUIET_SECONDS 才暂停；期间任何轮询都撤销（见 _sweep_departed_tasks_once）。
+        self._task_left_keys: dict[tuple[str, int], float] = {}
+        self._task_left_lock = threading.Lock()
         # 任务级串行闸门：限制同时执行的任务数，避免旧任务与新任务并发叠加打爆 AI 供应商。
         self._task_execution_gate = threading.BoundedSemaphore(_max_concurrent_tasks())
         self.media_assets = MediaAssetService(
@@ -826,15 +871,13 @@ class ProductProcessingService:
             if capability["enabled"] and not capability["ready"]:
                 unavailable_reasons.append(str(capability["reason"]))
         ready = not unavailable_reasons
-        direct_enabled = _direct_ai_enabled()
         config = {
             "ai_provider": "server-managed" if text_ready else "local-deterministic",
             "ai_model": "server-managed-text" if text_ready else "product-processing-local-v1",
             "ai_configured": text_ready,
-            "direct_ai_enabled": direct_enabled,
-            "direct_mode": direct_enabled and bool(
-                (resolve_ai_provider().get("_sys_image_ai") or {}).get("base_url") != "server-managed-wuyin"
-            ),
+            # 客户端固定直连：不再有灰度开关，始终走批次冻结 + 直连第三方。
+            "direct_ai_enabled": True,
+            "direct_mode": True,
             "backup_ai_configured": False,
             "image_provider": provider["provider"] if image_ready else "local-source-pass-through",
             "image_model": provider.get("reference_image_model") or provider.get("image_model") or "source-image-preservation-v1",
@@ -903,8 +946,11 @@ class ProductProcessingService:
         "desc",
         "grid_image",
         "grid_image_b",
+        "grid_image_c",
+        "grid_image_d",
         "premium_image",
         "detail_image",
+        "batch_image_prompt",
         "variant_values",
     )
 
@@ -943,6 +989,221 @@ class ProductProcessingService:
         if not self.repository.delete_prompt_template(template_id):
             raise ProductProcessingNotFound("prompt template not found")
         return {**self.prompt_templates(), "message": "预设模板已删除"}
+
+    def generate_batch_image_prompt(
+        self,
+        payload: dict[str, Any],
+        *,
+        workspace_id: str = "local",
+        remote_token: str = "",
+    ) -> dict[str, Any]:
+        """「本批次辅助提词」：按本批商品标题生成面向该批次的辅助生图提词。
+
+        供前端「提示词预设模板」板块的「根据本批次标题生成」按钮调用：优先用请求里直接
+        给出的 titles，否则按 draft_ids 从草稿池取标题。复用 _generate_batch_image_guidelines
+        （英文、best-effort）。
+
+        该按钮在**批次开始前**触发，此时没有批次上下文，granted_key("ark") 为空，
+        DoubaoArkClient 会直接拒建。因此这里先按批次启动完全相同的 /batch/freeze 机制
+        申请一份批次级短期 Ark 密钥（放进 server_ai_context 的 granted_key 上下文）再
+        直连豆包，生成结束后立即结算释放冻结（成功/失败都释放）。
+
+        错误语义区分：
+        - 密钥申请失败（额度不足/会话失效/授权服务不可用）→ ok=False + 可区分的 message；
+        - 豆包生成失败/空结果 → ok=False + “AI 未返回有效提词” message；
+        - 完全取不到标题 → 抛校验错误，由路由转为 422。
+        以上都不把 500 抛给前端。
+        """
+        titles = [self._text(item) for item in (payload.get("titles") or []) if self._text(item)]
+        if not titles:
+            draft_ids = [int(item) for item in (payload.get("draft_ids") or []) if int(item) > 0]
+            if draft_ids:
+                for draft in self.repository.get_drafts(draft_ids, workspace_id=workspace_id):
+                    title = self._text(
+                        draft.get("title")
+                        or draft.get("product_name")
+                        or (draft.get("raw_payload") or {}).get("source_title")
+                    )
+                    if title:
+                        titles.append(title)
+        if not titles:
+            raise ProductProcessingValidationError("未找到可用于生成的商品标题，请先选择本批次商品")
+
+        # 申请批次级短期 Ark 密钥（与批次启动同机制）。失败则不调用豆包，返回可区分文案。
+        grant = self._grant_short_lived_ark_key(remote_token)
+        if grant["error"]:
+            return {
+                "batch_image_prompt": "",
+                "title_count": len(titles),
+                "ok": False,
+                "message": grant["error"],
+            }
+        try:
+            with server_ai_context(
+                remote_token,
+                {},
+                granted_keys=grant["granted"],
+                freeze_id=grant["freeze_id"],
+            ):
+                guidelines = self._generate_batch_image_guidelines(
+                    titles,
+                    target_language=str(payload.get("target_language") or "en"),
+                    target_site=str(payload.get("target_site") or "US"),
+                    category=str(payload.get("category") or ""),
+                )
+        finally:
+            # 成功或失败都要释放：结算本批次冻结（全额退回预扣额度）并清空密钥上下文。
+            self._release_batch_key_grant(remote_token, grant["freeze_id"])
+        if not guidelines:
+            return {
+                "batch_image_prompt": "",
+                "title_count": len(titles),
+                "ok": False,
+                "message": "AI 未返回有效的辅助提词，请稍后重试（可继续手动填写）",
+            }
+        return {
+            "batch_image_prompt": guidelines,
+            "title_count": len(titles),
+            "ok": True,
+            "message": f"已根据 {len(titles)} 条商品标题生成本批次辅助提词",
+        }
+
+    def _grant_short_lived_ark_key(self, remote_token: str) -> dict[str, Any]:
+        """为「批次开始前的一次性 AI 调用」申请一份批次级短期 Ark 密钥。
+
+        复用批次启动完全相同的 /batch/freeze 机制（不另造密钥体系、不硬编码密钥、
+        不回落平台托管网关）：冻结 1 条链接领取服务端下发的短期密钥（约 6h TTL），
+        与批次未下发的 provider 一样用客户端内置兜底密钥补齐（merge_builtin_keys）。
+
+        返回 {"freeze_id", "granted", "account_id", "error"}；error 非空表示申请失败，
+        调用方据此返回可区分文案且绝不调用豆包。申请到冻结但缺可用 ark 密钥时，也会
+        先释放该冻结再报错，避免预扣额度滞留。
+        """
+        if not remote_token:
+            return {
+                "freeze_id": "",
+                "granted": {},
+                "account_id": "",
+                "error": "计费会话不可用（未登录或会话已失效），无法申请 AI 密钥，请重新登录后重试",
+            }
+        try:
+            client = _batch_billing_client()
+            freeze = _billing_call_with_retry(
+                client.freeze_batch_points,
+                remote_token,
+                {
+                    "link_count": 1,
+                    # 仅为领密钥，不按处理范围计费；结算按 no_return 全额退回。
+                    "scope": [],
+                    "task_id": "",
+                },
+            )
+        except CustomerAuthRejected as exc:
+            status_code = getattr(exc, "status_code", None)
+            detail = str(getattr(exc, "message", "") or "").strip()
+            if status_code == 402:
+                return {
+                    "freeze_id": "",
+                    "granted": {},
+                    "account_id": "",
+                    "error": f"AI 额度不足，无法申请密钥：{detail or '请充值后重试'}",
+                }
+            return {
+                "freeze_id": "",
+                "granted": {},
+                "account_id": "",
+                "error": "计费会话被拒绝（未登录或已失效），无法申请 AI 密钥，请重新登录后重试",
+            }
+        except CustomerAuthUnavailable:
+            return {
+                "freeze_id": "",
+                "granted": {},
+                "account_id": "",
+                "error": "计费/授权服务暂不可用，无法申请 AI 密钥，请稍后重试",
+            }
+        except (CustomerBillingPermissionError, CustomerBillingProtocolError):
+            return {
+                "freeze_id": "",
+                "granted": {},
+                "account_id": "",
+                "error": "计费/授权服务响应异常，无法申请 AI 密钥，请稍后重试",
+            }
+        except Exception as exc:  # noqa: BLE001 - 申请密钥失败必须转成可读文案，绝不 500
+            _LOGGER.warning("batch prompt ark key grant failed: %s", exc)
+            return {
+                "freeze_id": "",
+                "granted": {},
+                "account_id": "",
+                "error": "申请 AI 密钥失败，请稍后重试",
+            }
+        freeze_payload = (
+            freeze.get("freeze")
+            if isinstance(freeze, dict) and isinstance(freeze.get("freeze"), dict)
+            else (freeze if isinstance(freeze, dict) else {})
+        )
+        freeze_id = str(freeze_payload.get("freeze_id") or "")
+        if not freeze_id:
+            return {
+                "freeze_id": "",
+                "granted": {},
+                "account_id": "",
+                "error": "申请 AI 密钥失败：服务端未返回批次标识",
+            }
+        keys = freeze_payload.get("keys") if isinstance(freeze_payload, dict) else []
+        granted = merge_builtin_keys(
+            {
+                str(key.get("provider") or ""): str(key.get("api_key") or "")
+                for key in keys
+                if isinstance(key, dict) and key.get("api_key")
+            }
+        )
+        if not granted.get("ark"):
+            # 冻结成功但无可用 ark 密钥（服务端未下发且无内置兜底）：先释放冻结再报错。
+            self._release_batch_key_grant(remote_token, freeze_id)
+            return {
+                "freeze_id": "",
+                "granted": {},
+                "account_id": "",
+                "error": "AI 密钥申请失败：服务端未下发可用的 Ark 密钥，请稍后重试",
+            }
+        return {
+            "freeze_id": freeze_id,
+            "granted": granted,
+            "account_id": str(freeze_payload.get("account_id") or ""),
+            "error": "",
+        }
+
+    def _release_batch_key_grant(self, remote_token: str, freeze_id: str) -> None:
+        """释放一次性密钥冻结：按全子项 no_return 结算 → 全额退回预扣额度并解冻。
+
+        生成辅助提词不属于商品处理计费子项，冻结只为领密钥；按 no_return 结算等价于
+        「未消耗任何计费子项」，服务端据此解锁并全额退还，不向用户扣费。结算失败只记录
+        告警，保留服务端 TTL 兜底（不登记侧车，避免按钮点击记录累积）。
+        """
+        if not freeze_id or not remote_token:
+            return
+        try:
+            client = _batch_billing_client()
+            _billing_call_with_retry(
+                client.settle_batch_points,
+                remote_token,
+                freeze_id,
+                {
+                    "items": [
+                        {
+                            "link_idx": 1,
+                            "subitems": [
+                                {"feature": feature, "status": "no_return"}
+                                for feature in _BATCH_SUBITEM_FEATURES
+                            ],
+                        }
+                    ]
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - 释放失败只告警，服务端 TTL 会兜底
+            _LOGGER.warning(
+                "batch prompt ark key grant settle failed (freeze=%s): %s", freeze_id, exc
+            )
 
     def _active_template_prompts(self) -> dict[str, str]:
         """当前激活模板的板块附加词（追加指令模式）；无激活模板时返回空。"""
@@ -1023,6 +1284,88 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
 - The four-grid/single-image structure, exact dividers, split logic, panel roles, product fidelity, typography and safety rules defined above are FIXED and always take precedence.
 - Apply the user requirements ONLY to content planning inside the panels (composition, scene, props, lighting, style choices), never to layout structure or generated text.
 - {additions}"""
+
+    def _generate_batch_image_guidelines(
+        self,
+        titles: list[str],
+        *,
+        target_language: str = "en",
+        target_site: str = "US",
+        category: str = "",
+    ) -> str:
+        """本批次 AI 生图专项提示词：基于本批全部标题（+品类）生成一条面向该品类的
+        生图指南，用于定点爆破规避 AI 异形问题（肢体畸形、手指错乱、比例失调、文字
+        水印扭曲等）。
+
+        由前端「提示词预设模板」板块的生成按钮显式触发一次（generate_batch_image_prompt），
+        best-effort，任何失败或空结果都返回 ""，绝不阻塞。结果是不渲染的「生图指令」而非
+        图中文本，因此统一用英文产出，避免额外翻译的第二次付费调用，也无需语言契约校验。
+        """
+        usable = [str(t).strip() for t in (titles or []) if str(t).strip()]
+        if not usable:
+            return ""
+        deduped = list(dict.fromkeys(usable))[:24]
+        catalog = ", ".join(repr(t) for t in deduped)
+        prompt_body = (
+            "You are a senior e-commerce product-photo art director. The following are "
+            "the product titles in one processing batch:\n"
+            f"{catalog}\n\n"
+        )
+        if str(category or "").strip():
+            prompt_body += f"The batch category is: {category!r}\n\n"
+        prompt_body += (
+            f"The target storefront is {target_site} and visible text inside images is in "
+            f"{target_language}. Write a concise set of specialized IMAGE-GENERATION "
+            "guidelines (in English) for producing carousel/detail images for THIS product "
+            "category, focused on pre-empting common AI malformation problems: anatomical "
+            "and limb anomalies, duplicated or misshapen fingers, broken hand-object "
+            "interactions, warped or garbled text/logo printing, wrong proportions, "
+            "extra limbs, and inconsistent product identity across panels. Be specific to "
+            "the category (e.g. realistic materials, correct number of fingers, crisp "
+            "printed labels, stable proportions) and actionable for a text-to-image model. "
+            "Output ONLY plain English bullet points, no preamble, no headings, no markdown fences."
+        )
+        try:
+            result = (
+                DoubaoArkClient()
+                .complete(
+                    [
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are an expert e-commerce image-prompt strategist. "
+                                "Produce crisp, specific, English image-generation guidelines."
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": prompt_body,
+                        },
+                    ]
+                )
+                .strip()
+            )
+        except Exception:
+            return ""
+        if not result:
+            return ""
+        return result
+
+    def _apply_batch_image_guidelines(self, template: str, batch_prompt: str) -> str:
+        """把「本批次 AI 专项提示词」包裹进固定约束声明后拼接到图片提示词末尾。
+
+        batch_prompt 仅为品类级内容/质量建议（定点爆破规避异形），与用户附加同理，
+        绝不能覆盖四宫格结构、分界、面板角色、产品保真、文字与安全等固定运行时契约。
+        """
+        if not batch_prompt or not str(batch_prompt).strip():
+            return template
+        prompt = str(batch_prompt).strip()
+        return f"""{template}
+
+BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MUST NOT override the fixed runtime contracts above):
+- The four-grid/single-image structure, exact dividers, split logic, panel roles, product fidelity, typography and safety rules defined above are FIXED and always take precedence.
+- Follow these guidelines ONLY for depiction quality inside the shown panels (anatomy, proportions, hands, printed text/logo legibility, material realism, product identity consistency); never for layout structure or generated text.
+- {prompt}"""
 
     def create_draft(
         self,
@@ -1390,7 +1733,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             reference_values=reference_values,
             image_size="2048x2048",
         )
-        normalized = processor.normalize_standalone_image(media, stage=stage)
+        normalized = processor.normalize_standalone_image(
+            media, stage=stage, enhance=options_from_env()
+        )
         inspection = inspect_visible_text(bytes(getattr(normalized, "content", b"")))
         if inspection is not None and (inspection.get("prominent") or inspection.get("chinese")):
             raise ValueError("组合图未通过文字质检，请调整提示词后重试")
@@ -1440,11 +1785,19 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         if not freeze_id:
             raise ProductProcessingValidationError("batch freeze failed: no freeze_id returned")
         keys = freeze_payload.get("keys") if isinstance(freeze_payload, dict) else []
-        granted = {
+        granted = merge_builtin_keys({
             str(key.get("provider") or ""): str(key.get("api_key") or "")
             for key in keys
             if isinstance(key, dict) and key.get("api_key")
-        }
+        })
+        required = self._required_direct_providers({
+            "processing_scope": scope,
+            "title_optimize": False,
+            "description": False,
+            "size": False,
+            "grid_image": False,
+            "image_rewrite": False,
+        })
         _remember_batch_freeze(
             freeze_id,
             account_id=str(account_id or ""),
@@ -1455,6 +1808,16 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             item_ids=[int(draft_id)],
         )
         try:
+            missing = sorted(provider for provider in required if not granted.get(provider))
+            if missing:
+                # 冻结成功但「既未下发、也无客户端内置兜底」所需直连密钥：说明服务端签发
+                # 异常且客户端未内置该 provider 密钥，绝不能回落到托管网关烧平台额度，
+                # 立即中止并上报。放在 try 内让 except 全退本批次。
+                raise ProductProcessingValidationError(
+                    "批次冻结未下发直连密钥（缺少 "
+                    + "、".join(missing)
+                    + "），无法客户端直连，任务已中止"
+                )
             with server_ai_context(remote_token, {}, granted_keys=granted, freeze_id=freeze_id):
                 result = run()
         except Exception:
@@ -1715,6 +2078,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         candidate: Mapping[str, Any],
         shop_fence: Mapping[str, Any] | None = None,
         collection_channel: str = "shop_collection",
+        allow_existing: bool = False,
     ) -> Mapping[str, Any]:
         """Idempotently place one normalized shop candidate into the draft pool."""
         if not isinstance(candidate, Mapping):
@@ -1764,6 +2128,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             workspace_id=workspace,
             candidate_id=candidate_id,
             shop_fence=dict(shop_fence) if shop_fence is not None else None,
+            allow_existing=allow_existing,
         )
         return {"action": action, "draft": draft}
 
@@ -2263,7 +2628,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         ready = failed = 0
         for image in self.repository.claim_syncable_source_images(draft_id, workspace_id):
             try:
-                fetched = self._public_image_fetcher(image["url"])
+                fetched = self._fetch_usable_source_image(image["url"])
                 path = self.assets.save_source_image(fetched.content, fetched.final_url, fetched.media_type)
             except Exception as error:
                 if self.repository.fail_source_image(image["id"], str(error), image["_sync_claim_token"], workspace_id):
@@ -2272,6 +2637,41 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 if self.repository.complete_source_image(image["id"], str(path), image["_sync_claim_token"], workspace_id):
                     ready += 1
         return {"ready": ready, "failed": failed}
+
+    def _fetch_usable_source_image(self, url: str) -> Any:
+        """下载源图并预检可生成性。
+
+        采集保存的地址常带缩略参数（如 kwcdn imageView2，实际只返回 180px 图），上游生图
+        无法据此生成 2K 商品图而直接失败。这里先把这类地址提升为高清版本再下载；下载后
+        若仍是过小的缩略图，直接判为同步失败，避免脏图进入草稿池被当成参考图拖垮整条生图。
+        """
+        from .infrastructure.media import _normalize_reference_url  # noqa: PLC0415
+
+        raw = str(url or "").strip()
+        target = _normalize_reference_url(raw) or raw
+        fetched = self._public_image_fetcher(target)
+        self._require_generation_usable_source(fetched.content, raw)
+        return fetched
+
+    @staticmethod
+    def _require_generation_usable_source(content: bytes, source_url: str) -> None:
+        """源图过小（缩略图）直接拒绝；无法解码的格式保持原样放行，交由下游链路处理。"""
+        try:
+            from io import BytesIO  # noqa: PLC0415
+
+            from PIL import Image  # type: ignore
+        except ImportError:
+            return
+        try:
+            with Image.open(BytesIO(bytes(content))) as image:
+                width, height = (int(value) for value in image.size)
+        except Exception:
+            return
+        if min(width, height) < _SOURCE_IMAGE_MIN_EDGE:
+            raise ValueError(
+                f"source image is a {width}x{height} thumbnail, "
+                f"below the {_SOURCE_IMAGE_MIN_EDGE}px generation floor: {source_url[:120]}"
+            )
 
     def retry_draft_source_images(self, draft_id: int, workspace_id: str = "local") -> dict[str, int]:
         return self.sync_draft_source_images(draft_id, workspace_id)
@@ -2660,8 +3060,13 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             s["product_video_template"] = True
         s["skip_duplicates"] = _as_bool(s.get("skip_duplicates"), default=False)
         s["ip_check"] = _as_bool(s.get("ip_check"), default=True)
-        # 生图提示词模板：A=标准商品海报（现有），B=高端模特视觉（防比价）。
-        s["image_template"] = "B" if str(s.get("image_template") or "A").strip().upper() == "B" else "A"
+        # 生图提示词模板：A=影棚无缝主图，B=人景叙事（防比价），C=静物平铺俯拍，D=环境远景。
+        _image_template = str(s.get("image_template") or "A").strip().upper()
+        s["image_template"] = _image_template if _image_template in {"A", "B", "C", "D"} else "A"
+        # 五点描述模板：A=卖点前置（结果导向），B=场景代入（痛点导向）。
+        s["desc_template"] = "B" if str(s.get("desc_template") or "A").strip().upper() == "B" else "A"
+        # 一键随机模板：开启后忽略上面选定的模板，本批次每条链接稳定随机分配生图/描述模板。
+        s["random_template"] = _as_bool(s.get("random_template"), default=False)
         # 兼容未传该字段的历史 API 调用：继续走原有四宫格一次调用。
         s["image_generation_count"] = _image_generation_count(s.get("image_generation_count"), default=4)
         return s
@@ -2690,7 +3095,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         max_products = max(0, int(payload.get("max_products") or 0))
         if max_products:
             draft_ids = draft_ids[:max_products]
-        if _direct_ai_enabled() and remote_token and request_billing_account:
+        if remote_token and request_billing_account:
             # 直连模式对账：把本账号仍 open 的冻结批次补结算，避免历史批次积分滞留。
             # 对账是补偿路径，失败不能阻塞提交；但必须留痕——否则冻结积分滞留到 TTL
             # （只退 85%）时毫无线索可查。
@@ -2964,6 +3369,15 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             self.repository.set_task_status(
                 int(task["id"]), "paused", str(task["workspace_id"])
             )
+            # 自动暂停必须留痕：本路径与页面开闭无关（重启 + 计费任务缺远端令牌
+            # 即触发），此前无日志导致「页面明明开着却变成已暂停」难以定位。
+            try:
+                business_logger("ai_processing").warning(
+                    "计费任务缺少远端令牌，已暂停等待重新登录 | task_id=%s | workspace=%s",
+                    task.get("id"), task.get("workspace_id"),
+                )
+            except Exception:  # noqa: BLE001
+                pass
         launchable = [task for task in queued if int(task["id"]) not in blocked_ids]
         launched = sum(
             self._launch_background_execute(int(task["id"]), str(task["workspace_id"]))
@@ -2987,8 +3401,10 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
     def task_outputs(
         self, task_id: int, *, summary_only: bool = False, workspace_id: str = "local"
     ) -> dict[str, Any]:
-        # 前端任务页轮询该接口即为心跳：页面在（轮询在）任务保持运行；页面关闭/
-        # 切走后心跳超时由清扫器自动暂停，避免用户已不在看仍继续调用 AI 烧成本。
+        # 前端任务页轮询该接口，就代表「页面还在看这个任务」：轮询时刻会被记录，用来撤销
+        # 页面关闭时发出的离开信标（刷新/重开/多页签都算没离开）。暂停只由**真实事件**触发
+        # ——页面关闭信标、手动暂停、应用退出时的取消结算，不再用「多久没心跳」猜：页面被
+        # 浏览器冻结/整机休眠时定时器根本不跑，猜测式判定会把正在跑的任务误停。
         self._touch_task_heartbeat(task_id, workspace_id)
         task = self._require_task(task_id, workspace_id)
         response = self._task_response(task)
@@ -3076,29 +3492,60 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             raise _TaskControlStopped(reason)
 
     def _touch_task_heartbeat(self, task_id: int, workspace_id: str) -> None:
-        """记录前端任务页轮询心跳，并懒启动自动暂停清扫器。
+        """记录前端任务页的轮询时刻，并懒启动任务维护循环。
+
+        这个时刻只用于判断「离开信标之后有没有人再回来看」（撤销离开）与过期记录清理，
+        **不再用「多久没心跳」判用户离开**：页面被浏览器冻结/整机休眠时定时器根本不跑，
+        那条路会把「页面还在」误判成「用户走了」。
 
         只在确有前端在看任务时跟踪；从未被 /outputs 轮询过的任务（API 提交等）
-        不进入自动暂停名单，避免误伤非页面驱动的任务。
+        不进入维护名单，避免误伤非页面驱动的任务。
         """
         key = (workspace_id, int(task_id))
         with self._task_last_seen_lock:
             self._task_last_seen[key] = time.monotonic()
-            started = self._auto_pause_sweeper_started
-            self._auto_pause_sweeper_started = True
+            started = self._task_maintenance_started
+            self._task_maintenance_started = True
         if not started:
             threading.Thread(
-                target=self._auto_pause_stale_tasks_loop,
+                target=self._task_maintenance_loop,
                 daemon=True,
-                name="pp-auto-pause-sweeper",
+                name="pp-task-maintenance",
             ).start()
 
-    def _auto_pause_stale_tasks_loop(self) -> None:
-        """后台清扫循环：每 _TASK_AUTO_PAUSE_SWEEP_SECONDS 秒执行一次心跳检查。"""
+    def set_shutdown_probe(self, probe: Callable[[], bool] | None) -> None:
+        """注入「工作台正在退出」探针（桌面端接到 runtime watchdog 上，见 create_app）。
+
+        为真时任务级暂停让位：退出流程会「取消任务 + 按冻结积分 50% 结算」，那是 beforeunload
+        弹窗向用户承诺过的语义，不能被任务级暂停抢先（否则同一个任务时而暂停、时而取消）。
+        """
+        self._shutdown_probe = probe
+
+    def mark_task_left(self, task_id: int, workspace_id: str = "local") -> None:
+        """页面离开信标（任务页 pagehide 时 sendBeacon 触发，尽力而为）。
+
+        只做**标记**：真正暂停由维护循环在「连续静默超过 _TASK_LEAVE_QUIET_SECONDS」之后
+        执行；期间任何轮询（刷新、重开工作台、另一个页签还在看，包括被浏览器节流到
+        1 分钟一次的隐藏页）都会撤销本次离开。信标丢了就继续跑：宁可不暂停，也不误停。
+
+        **先确认任务确实存在于该工作区**才记标记：信标地址写死在前端、参数也不做鉴权，
+        万一键对不上（工作区传错/任务号写错），照记就会留下一个「没有对应心跳」的标记
+        —— 那会让页面开着也被判成静默而误停。查不到就当没这回事（无效信标必须是空操作）。
+        """
+        try:
+            key = (workspace_id, int(task_id))
+            self._require_task(key[1], key[0])
+        except Exception:  # noqa: BLE001 - 无效信标一律忽略，绝不能影响请求
+            return
+        with self._task_left_lock:
+            self._task_left_keys[key] = time.monotonic()
+
+    def _task_maintenance_loop(self) -> None:
+        """后台维护循环：离开清扫 + 收尾卡死兜底 + 孤儿项自愈，每 _TASK_AUTO_PAUSE_SWEEP_SECONDS 秒一轮。"""
         while True:
             time.sleep(_TASK_AUTO_PAUSE_SWEEP_SECONDS)
             try:
-                self._sweep_stale_heartbeats_once()
+                self._sweep_departed_tasks_once()
             except Exception:
                 # 清扫是尽力而为的后台维护，任何异常都不允许终止循环。
                 pass
@@ -3107,46 +3554,127 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             except Exception:
                 # 收尾卡死兜底同样是尽力而为的后台维护，异常不终止循环。
                 pass
+            try:
+                self._heal_orphan_items_once()
+            except Exception:
+                # 孤儿项自愈同为尽力而为的后台维护，异常不终止循环。
+                pass
 
-    def _sweep_stale_heartbeats_once(self) -> None:
-        """单次清扫：心跳超时的 running/queued 任务自动置为暂停。
+    def _sweep_departed_tasks_once(self) -> None:
+        """单次清扫：把「页面已明确离开、离开后也没人再回来看」的任务暂停。
 
-        桌面端整个退出时进程随之终止、AI 调用自然停止，无需此机制；这里覆盖
-        「浏览器关页面/切走后本地服务仍在运行、AI 调用继续烧成本」的场景。
-        自动暂停与手动暂停语义一致：已完成项保留，未处理项由结算链路按真实
-        结果退款（已完成扣费、未完成全退），用户可从历史记录继续处理。
+        暂停依据是**真实事件**（任务页关闭时发的离开信标），不是「多久没心跳」的猜测：
+        页面被浏览器节流/冻结、整机休眠都不会触发 pagehide，那不算离开，任务照跑——
+        「工作台明明开着却被暂停」类工单就出在猜测式判定上。
+
+        判定只用一条：**离开之后连续静默**（_TASK_LEAVE_QUIET_SECONDS 内没有任何轮询）
+        才暂停；期间只要还有页面在轮询（刷新、重开工作台、另一个页签还在看，甚至只是被
+        浏览器节流到 1 分钟一次）就撤销这次离开。关页面瞬间在途的那一次请求只有一次，
+        撑不过静默窗口，不会误撤销。
+
+        暂停与手动暂停语义一致：已完成项保留、未处理项由结算链路按真实结果退款，用户可
+        从历史记录继续处理；商品已全部终态、只剩本地收尾的任务不暂停（否则会卡在 99%）。
+
+        顺带清理过期心跳记录（_TASK_HEARTBEAT_RETENTION_SECONDS 内没再被轮询过的）。
         """
         now = time.monotonic()
-        with self._task_last_seen_lock:
-            stale_keys = [
-                key
-                for key, seen_at in self._task_last_seen.items()
-                if now - seen_at > _TASK_AUTO_PAUSE_TIMEOUT_SECONDS
-            ]
-        for workspace_id, task_id in stale_keys:
+        if self._shutdown_probe is not None:
+            try:
+                if self._shutdown_probe():
+                    # 工作台正在退出：退出流程负责「取消任务 + 按冻结积分 50% 结算」（用户看到过
+                    # 弹窗承诺），任务级暂停让位，避免两条路抢同一个任务。探针异常当作「没在退出」。
+                    return
+            except Exception:  # noqa: BLE001 - 维护循环不允许被探针异常打断
+                pass
+        previous_sweep = self._last_sweep_at
+        self._last_sweep_at = now
+        if (
+            previous_sweep is not None
+            and now - previous_sweep > _TASK_AUTO_PAUSE_SWEEP_SECONDS * 4
+        ):
+            # 进程自己也被冻住了（整机休眠/挂起、长时间卡死）：这段时间的「静默」不算数，
+            # 本轮不判。否则「刷新页面后合盖走人」会在醒来的一瞬间被判成「页面已离开」而误停
+            # —— 醒来后页面的定时器会立刻恢复轮询，下一轮自然按新时间线判断。
+            return
+        with self._task_left_lock:
+            departed = list(self._task_left_keys.items())
+        for (workspace_id, task_id), left_at in departed:
+            with self._task_last_seen_lock:
+                last_seen = self._task_last_seen.get((workspace_id, task_id))
+            if last_seen is not None and now - last_seen < _TASK_LEAVE_QUIET_SECONDS:
+                # 页面还在轮询（隐藏页被节流到 1 分钟一次也算）→ 这一轮不暂停。
+                # 离开标记已经够老说明这段时间一直有人看：顺手撤销，别留着。
+                if now - left_at >= _TASK_LEAVE_QUIET_SECONDS:
+                    with self._task_left_lock:
+                        self._task_left_keys.pop((workspace_id, task_id), None)
+                continue
+            # 静默超过阈值：页面真的走了（关掉、进程没了）→ 暂停，语义与手动暂停一致。
+            with self._task_left_lock:
+                self._task_left_keys.pop((workspace_id, task_id), None)
             try:
                 task = self._require_task(task_id, workspace_id)
             except Exception:
                 with self._task_last_seen_lock:
                     self._task_last_seen.pop((workspace_id, task_id), None)
                 continue
-            status = str(task.get("status") or "")
-            if status in {"queued", "running"}:
-                # 商品已经全部得到终态时，worker 只剩本地文件收尾；此时暂停会
-                # 把 6/6 的任务卡在 99%，并阻断预检/导出。
-                if self._task_has_unfinished_items(task):
-                    try:
-                        self.repository.pause_task_execution(task_id, workspace_id)
-                    except Exception:
-                        pass
-                # 移除心跳记录：resume 后由前端重新轮询重建，避免用陈旧时间戳
-                # 在 resume 的首个轮询窗口再次误暂停。
-                with self._task_last_seen_lock:
-                    self._task_last_seen.pop((workspace_id, task_id), None)
-            elif status not in {"paused", "cancelled"}:
-                # 已进入终态的任务不再需要跟踪心跳。
-                with self._task_last_seen_lock:
-                    self._task_last_seen.pop((workspace_id, task_id), None)
+            if str(task.get("status") or "") not in {"queued", "running"}:
+                continue
+            if not self._task_has_unfinished_items(task):
+                # 商品已经全部得到终态时，worker 只剩本地文件收尾；此时暂停会把
+                # 6/6 的任务卡在 99%，并阻断预检/导出。
+                continue
+            try:
+                paused = self.repository.pause_task_execution(task_id, workspace_id)
+            except Exception:
+                continue
+            if not paused:
+                continue
+            # 自动暂停必须留痕：与手动暂停区分，便于排查「页面明明开着却暂停」类工单。
+            business_logger("ai_processing").warning(
+                "页面离开自动暂停 | task_id=%s | workspace=%s | 离开后已静默 %.0f 秒无人轮询",
+                task_id, workspace_id, now - (last_seen if last_seen is not None else left_at),
+            )
+            with self._task_last_seen_lock:
+                self._task_last_seen.pop((workspace_id, task_id), None)
+        # 心跳记录只服务于「离开后有没有人回来」：过期即弃，避免长会话里无限增长。
+        with self._task_last_seen_lock:
+            expired = [
+                key
+                for key, seen_at in self._task_last_seen.items()
+                if now - seen_at > _TASK_HEARTBEAT_RETENTION_SECONDS
+            ]
+            for key in expired:
+                self._task_last_seen.pop(key, None)
+
+    def _heal_orphan_items_once(self) -> None:
+        """终态任务孤儿项自愈：标记失败 + 释放草稿（随清扫循环低频执行）。
+
+        背景（2026-10-14）：收尾竞态曾把仍有未处理项的任务误判「完成」（收尾与
+        finish 判定已修）；存量任务与其它异常终止路径仍可能残留孤儿 pending/
+        running 项——它们永远不会被再执行，且草稿卡在 processing 会拦截用户
+        重新提交。自愈后这些链接变为「失败」，用户可在结果页手动重新处理。
+        """
+        for task in self.repository.terminal_tasks_with_unfinished_items():
+            auto_repull = (task.get("settings") or {}).get("_auto_repull")
+            if isinstance(auto_repull, dict) and str(auto_repull.get("status") or "") == "running":
+                # 自动补跑轮进行中（含进程重启后未归一的 stale 标记）：pending 是
+                # 重试轮的正常中间态，交由补跑流程收口，不在自愈里清理。
+                continue
+            try:
+                healed = self.repository.heal_terminal_orphan_items(
+                    int(task["id"]), str(task.get("workspace_id") or "local")
+                )
+            except Exception:  # noqa: BLE001 - 单条失败不影响其它任务
+                continue
+            if not healed:
+                continue
+            try:
+                business_logger("ai_processing").warning(
+                    "终态任务孤儿项自愈 | task_id=%s | workspace=%s | 条目数=%d",
+                    task.get("id"), task.get("workspace_id"), healed,
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
     def _finalize_wedged_tasks_once(self) -> None:
         """收尾卡死兜底：全部条目已终态但任务仍停在 running 的超时任务，直接从
@@ -5381,31 +5909,37 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             )
 
     def _execute_task(self, task_id: int, workspace_id: str = "local") -> dict[str, Any]:
-        """任务执行统一入口：先过任务级串行闸门，避免多任务并发叠加打爆 AI 供应商。
+        """任务执行统一入口：固定客户端直连，先冻结批次领短期密钥再执行。
 
-        直连模式（WH_PRODUCT_AI_DIRECT=1）下先冻结批次领短期密钥，再在
-        密钥上下文中执行任务，结束后按子项状态结算；无会话 token 或预检
-        任务退回旧路径。
+        客户端已写死直连（不走服务器 AI 网关托管）。无计费会话 token 时无法冻结
+        批次 → 直接中止任务并让失败收尾上报具体原因，绝不回落到托管网关。
         """
-        if not _direct_ai_enabled():
+        task = self._require_task(task_id, workspace_id)
+        if task.get("preflight_only") or task["status"] in {"paused", "cancelled"}:
+            # 预检任务不发 AI 调用；暂停/取消后也不再重新冻结批次（避免冻结-立即退款空转）。
             with self._task_execution_gate:
                 return self._execute_task_impl(task_id, workspace_id)
         token = self._task_remote_token(task_id)
         if not token:
-            with self._task_execution_gate:
-                return self._execute_task_impl(task_id, workspace_id)
+            raise ProductProcessingValidationError(
+                "客户端直连已强制启用，但任务缺少计费会话 token（未登录或计费会话已失效），"
+                "无法冻结直连批次，任务已中止"
+            )
         return self._execute_task_direct(task_id, workspace_id, token)
+
+    def _required_direct_providers(self, settings: dict[str, Any]) -> set[str]:
+        """根据处理范围推导直连所需第三方密钥：文本/视觉走 ark，生图走 wuyin。"""
+        kinds = {kind for kind, _feature in self._billable_product_processing_features(settings)}
+        providers: set[str] = set()
+        if kinds & {"text", "vision"}:
+            providers.add("ark")
+        if "image_grid" in kinds:
+            providers.add("wuyin")
+        return providers
 
     def _execute_task_direct(self, task_id: int, workspace_id: str, token: str) -> dict[str, Any]:
         """直连模式任务执行：冻结 → 密钥上下文 → 处理 → 结算。"""
         task = self._require_task(task_id, workspace_id)
-        if task.get("preflight_only"):
-            with self._task_execution_gate:
-                return self._execute_task_impl(task_id, workspace_id)
-        if task["status"] in {"paused", "cancelled"}:
-            # 暂停/取消后不再重新冻结批次，直接按状态返回（避免冻结-立即退款空转）。
-            with self._task_execution_gate:
-                return self._execute_task_impl(task_id, workspace_id)
         settings = task["settings"]
         billing = settings.get("_billing") if isinstance(settings.get("_billing"), dict) else {}
         account_id = self._text(billing.get("account_id"))
@@ -5431,11 +5965,11 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         if not freeze_id:
             raise ProductProcessingValidationError("batch freeze failed: no freeze_id returned")
         keys = freeze_payload.get("keys") if isinstance(freeze_payload, dict) else []
-        granted = {
+        granted = merge_builtin_keys({
             str(key.get("provider") or ""): str(key.get("api_key") or "")
             for key in keys
             if isinstance(key, dict) and key.get("api_key")
-        }
+        })
         _remember_batch_freeze(
             freeze_id,
             account_id=account_id,
@@ -5446,6 +5980,18 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             item_ids=[int(item["item_id"]) for item in pending],
         )
         try:
+            required = self._required_direct_providers(settings)
+            missing = sorted(provider for provider in required if not granted.get(provider))
+            if missing:
+                # 冻结成功但「既未下发、也无客户端内置兜底」所需直连密钥：说明服务端签发
+                # 异常且客户端未内置该 provider 密钥，绝不能回落到托管网关烧平台额度，
+                # 立即中止并上报，交由服务器侧排查密钥签发。
+                # 放在 try 内：让 finally 结算/退款本批次，避免冻结积分滞留到 TTL。
+                raise ProductProcessingValidationError(
+                    "批次冻结未下发直连密钥（缺少 "
+                    + "、".join(missing)
+                    + "），无法客户端直连，任务已中止"
+                )
             with server_ai_context(token, {}, granted_keys=granted, freeze_id=freeze_id):
                 with self._task_execution_gate:
                     result = self._execute_task_impl(task_id, workspace_id)
@@ -5641,6 +6187,14 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         ]
         lock = threading.Lock()
 
+        # 「本批次辅助提词（区域辅助出图）」：由用户在「提示词预设模板」板块生成/编辑，
+        # 随开始处理请求以 batch_image_prompt 传入（非空才生效）。整批只取一次缓存在本地
+        # 变量，随 _process_one 注入到本批每条的轮播/精品/详情图片提示词；为空则完全不注入，
+        # 保持系统默认行为。批次内不再自动调用 AI 生成，避免隐式付费。
+        batch_image_prompt = ""
+        if not preflight_only and items_to_process:
+            batch_image_prompt = self._text(settings.get("batch_image_prompt"))
+
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         # 本地 AI 处理日志：批次执行参数（并发、断点续跑数量等）。
@@ -5649,7 +6203,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 "批次执行 | task_id=%s | 待处理=%d | 已成功=%d | 已失败=%d | "
                 "并发=%d | provider预算=%d | 预检=%s | direct_ai=%s",
                 task_id, len(items_to_process), len(successes), len(failures),
-                max_workers, provider_budget, preflight_only, _direct_ai_enabled())
+                max_workers, provider_budget, preflight_only, True)
         except Exception:  # noqa: BLE001
             pass
 
@@ -5659,52 +6213,27 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             draft = drafts.get(item["product_draft_id"])
             item_id = int(item["item_id"])
             try:
-                if _direct_ai_enabled():
-                    # 直连模式：批次已冻结并下发密钥，外层 server_ai_context 已生效，
-                    # 不再逐项预留/结算 usage（避免双重扣费）。
-                    return self._run_with_item_heartbeat(
-                        task_id,
-                        item_id,
-                        workspace_id,
-                        lambda: self._process_one(
-                            item,
-                            draft,
-                            settings,
-                            preflight_only,
-                            task_id=task_id,
-                            workspace_id=workspace_id,
-                        ),
-                    )
-                usage_ids = self._reserve_product_processing_item_usage(
+                # 客户端直连：批次已冻结并下发密钥，外层 server_ai_context 已生效，
+                # 不逐项预留/结算 usage（整批按子项统一结算，避免双重扣费）。
+                return self._run_with_item_heartbeat(
                     task_id,
                     item_id,
-                    settings,
-                    workspace_id=workspace_id,
+                    workspace_id,
+                    lambda: self._process_one(
+                        item,
+                        draft,
+                        settings,
+                        preflight_only,
+                        task_id=task_id,
+                        workspace_id=workspace_id,
+                        batch_image_prompt=batch_image_prompt,
+                    ),
                 )
-                with server_ai_context(self._task_remote_token(task_id), usage_ids):
-                    return self._run_with_item_heartbeat(
-                        task_id,
-                        item_id,
-                        workspace_id,
-                        lambda: self._process_one(
-                            item,
-                            draft,
-                            settings,
-                            preflight_only,
-                            task_id=task_id,
-                            workspace_id=workspace_id,
-                        ),
-                    )
             except _TaskControlStopped:
                 # 暂停/取消：本条目保持原状态（pending/running），等待恢复后断点续跑；
                 # 取消的未处理项由 cancel_task 统一标记失败并释放。
                 return None
             except Exception as exc:
-                self._settle_product_processing_item_failure_for_item(
-                    task_id,
-                    item_id,
-                    {"status": "failed", "reason": self._task_safe_error_reason(task_id, exc)},
-                )
                 safe_reason = self._task_safe_error_reason(task_id, exc)
                 if safe_reason != _ai_error_reason(exc):
                     raise RuntimeError(safe_reason) from None
@@ -5754,36 +6283,6 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                             str(_result.get("failure_class") or "-"), _timing_text or "-")
                 except Exception:  # noqa: BLE001 日志失败不阻断进度落库
                     pass
-                if str(processed.get("status") or "") == "completed":
-                    if not _direct_ai_enabled():
-                        # 计费结算失败不阻断任务：进度落库与任务完成优先，结算异常只记日志。
-                        # 此前结算异常会穿透 _persist_progress：串行模式任务永久卡 running，
-                        # 并行模式整批被作废（已完成项全部丢弃）。
-                        try:
-                            self._settle_product_processing_item_success(
-                                task_id,
-                                int(item_id),
-                                settings,
-                                processed.get("result") or {},
-                            )
-                        except Exception:  # noqa: BLE001
-                            _level.exception(
-                                "AI 计费结算失败（不影响任务进度）| task_id=%s | item_id=%s",
-                                task_id, item_id,
-                            )
-                else:
-                    if not _direct_ai_enabled():
-                        try:
-                            self._settle_product_processing_item_failure_for_item(
-                                task_id,
-                                int(item_id),
-                                processed,
-                            )
-                        except Exception:  # noqa: BLE001
-                            _level.exception(
-                                "AI 计费失败结算失败（不影响任务进度）| task_id=%s | item_id=%s",
-                                task_id, item_id,
-                            )
             except LookupError:
                 # 任务已被清理时忽略进度写入，不阻塞整体流程
                 pass
@@ -5868,6 +6367,20 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             # 本地工作簿/错误报告收尾，避免任务停在 6/6、99% 且无法导出。
             if self._task_has_unfinished_items(final_task):
                 return final_task
+        elif self._task_has_unfinished_items(final_task):
+            # 竞态防御（2026-10-14）：任务状态虽为 queued/running，但仍有未处理条目
+            # ——典型来源：「暂停 → 立刻继续」时旧 worker 正在收尾，读到的是被 resume
+            # 改写的 queued（此时 _launch_background_execute 因旧 worker 存活不会启动
+            # 新 worker）。绝不能继续走 finish——pending 不计失败会被洗成「已完成」
+            # 黑洞（线上实例：55 条判完成、仅处理 27 条）。回退为暂停，由用户
+            # 「继续处理」拉起新 worker 从断点续跑。
+            with self._task_last_seen_lock:
+                self._task_last_seen.pop((workspace_id, int(task_id)), None)
+            try:
+                self.repository.pause_task_execution(task_id, workspace_id)
+            except Exception:  # noqa: BLE001
+                pass
+            return self._require_task(task_id, workspace_id)
 
         preserve = settings.get("source_image_to_library")
         if preserve is None:
@@ -6063,7 +6576,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         规则：
         - 处理全部完成后，把本轮失败的链接（失败 + 待确认）像草稿池进入
           处理一样重新投入完整链路，最多自动重试 WH_PP_AUTO_REPULL_ROUNDS
-          （默认 2）轮；每轮内部仍并行，全部跑完才向用户展示最终结果。
+          （默认 1，即每条链接最多自动重试一次）轮；每轮内部仍并行，全部跑完
+          才向用户展示最终结果。
         - 系统自动重试轮不消耗积分（结算不加重试溢价、失败链接全额退款）。
         - 直连计费任务必须仍有可用远程 token 才会自动补跑；否则保持现状，
           留给用户在结果页手动重新处理。
@@ -6890,6 +7404,21 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             if not has_unsettled:
                 self._task_remote_tokens.pop(task_id, None)
 
+    @staticmethod
+    def _random_templates_for_draft(task_id: int, draft_id: int) -> tuple[str, str]:
+        """一键随机模板：按 (task, draft) 稳定哈希分配生图/描述模板。
+
+        用稳定哈希而非 random：同一条链接在重试 / 自动补跑时始终拿到同一套模板，
+        不会因重试而结果漂移；不同链接之间仍是随机分布（一个批次内混搭多套模板）。
+        """
+        digest = hashlib.sha256(
+            f"random-template:{int(task_id)}:{int(draft_id)}".encode("utf-8")
+        ).digest()
+        image_ids = ("A", "B", "C", "D")
+        image_template = image_ids[digest[0] % len(image_ids)]
+        desc_template = "B" if digest[1] % 2 else "A"
+        return image_template, desc_template
+
     def _process_one(
         self,
         item: dict[str, Any],
@@ -6899,6 +7428,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         *,
         task_id: int,
         workspace_id: str = "local",
+        batch_image_prompt: str = "",
     ) -> dict[str, Any]:
         processing_started = time.perf_counter()
         stage_timings_ms: dict[str, int] = {}
@@ -6928,6 +7458,14 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 },
             }
         raw = draft["raw_payload"]
+        # 一键随机模板：开启后本批次每条链接按 (task, draft) 稳定随机分配生图/描述模板；
+        # 关闭时沿用设置里选定的模板。后续所有取模板处一律用这两个局部变量。
+        effective_image_template = str(settings.get("image_template") or "A")
+        effective_desc_template = str(settings.get("desc_template") or "A")
+        if _as_bool(settings.get("random_template"), default=False):
+            effective_image_template, effective_desc_template = self._random_templates_for_draft(
+                task_id, int(draft["id"])
+            )
         title = self._text(draft.get("title") or draft.get("product_name") or raw.get("source_title"))
         # ``draft.title`` is the operator-editable Chinese reference title from
         # the draft pool. Keep the collected title in raw_payload for traceability,
@@ -7272,7 +7810,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     "need_grid": need_grid,
                     "need_detail": need_detail,
                     "premium_mode": premium_mode,
-                    "image_template": str(settings.get("image_template") or "A"),
+                    "image_template": effective_image_template,
                     "image_generation_count": _image_generation_count(
                         settings.get("image_generation_count"), default=4
                     ),
@@ -7343,11 +7881,14 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 media_kwargs: dict[str, Any] = {
                     "vision_identity": vision_identity,
                     "workspace_id": workspace_id,
+                    # 「本批次辅助提词」必须随主生成链路一并下发，否则会在真正生图前被静默丢弃
+                    # （本条是实际被调用的媒体提前启动分支；_generate_*_images 内部再注入提示词）。
+                    "batch_image_prompt": batch_image_prompt,
                 }
                 if not premium_mode:
                     media_kwargs.update(
                         {
-                            "image_template": str(settings.get("image_template") or "A"),
+                            "image_template": effective_image_template,
                             "image_generation_count": image_generation_count,
                             "allow_quality_override": int(draft["id"])
                             in {
@@ -7388,6 +7929,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     vision_subject,
                     vision_identity=vision_identity,
                     workspace_id=workspace_id,
+                    batch_image_prompt=batch_image_prompt,
                 )
         dimension_repository = getattr(self, "dimension_templates", None)
         dimension_template = (
@@ -7414,6 +7956,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             # repository. Switching or editing a template must invalidate a
             # cross-task text result even when every source field is unchanged.
             "active_prompt_additions": self._active_template_prompts(),
+            # A/B description writing style changes the generated bullets, so it
+            # must participate in the cache/receipt fingerprint.
+            "description_template": effective_desc_template,
             # Learned bounds/defaults are part of the dimension result.
             # A changed template must invalidate an older stage receipt/cache.
             "dimension_template_signature": template_signature(dimension_template),
@@ -7526,6 +8071,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                             needs_dimensions=bool(needs_dimensions),
                             known_dimensions=known_dimensions,
                             dimension_template=dimension_template,
+                            description_template=effective_desc_template,
                         )
                     except DoubaoTextError as exc:
                         text_failure = exc
@@ -7689,6 +8235,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         vision_subject,
                         vision_identity=vision_identity,
                         workspace_id=workspace_id,
+                        batch_image_prompt=batch_image_prompt,
                     )
                 else:
                     grid_future = _submit_with_context(
@@ -7704,10 +8251,11 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         target_site,
                         media_ai_notes,
                         vision_subject,
-                        image_template=str(settings.get("image_template") or "A"),
+                        image_template=effective_image_template,
                         image_generation_count=image_generation_count,
                         vision_identity=vision_identity,
                         workspace_id=workspace_id,
+                        batch_image_prompt=batch_image_prompt,
                     )
             elif need_detail:
                 direct_detail_future = _submit_with_context(
@@ -7725,6 +8273,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     vision_subject,
                     vision_identity=vision_identity,
                     workspace_id=workspace_id,
+                    batch_image_prompt=batch_image_prompt,
                 )
 
         # 标题/描述/尺寸来自主文本请求；大量或漏翻规格由同一计费阶段分批补齐。
@@ -7804,7 +8353,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     target_site,
                     ai_notes,
                     vision_subject,
-                    image_template=str(settings.get("image_template") or "A"),
+                    image_template=effective_image_template,
                     image_generation_count=image_generation_count,
                     vision_identity=vision_identity,
                     workspace_id=workspace_id,
@@ -7814,6 +8363,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         for value in settings.get("force_import_draft_ids", [])
                         if str(value).isdigit()
                     },
+                    batch_image_prompt=batch_image_prompt,
                 )
                 record_stage("grid_pipeline", stage_started)
             grid_image_paths, grid_summary_path = grid_output
@@ -7853,10 +8403,22 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 )
                 if image_failure_detail:
                     ai_notes.append(f"grid:fallback:{image_failure_detail}")
+        # 四宫格是否为「来源图回退」：回退时四宫格的"图"其实是来源图，本地合成出的详情图
+        # 只是原图拼装，不能冒充 AI 处理成果。该情形直接判详情图未产出（留空）——既不本地
+        # 合成也不发起 AI 详情图，避免把原图当成果对外展示、也避免产生 AI 费用（留 notes 证据）。
+        grid_source_fallback = (
+            str(provider_status_classes.get("four_grid") or "") == "source_fallback"
+        )
+        # 只有真正调用了 AI 详情图并成功才为 True；本地合成/未产出均保持 False，
+        # 避免无条件追加误导性的 detail_images:ai。
+        detail_images_via_ai = False
         if need_detail and not images_receipt_hit:
             # 检查点：任务被暂停/取消时不再合成或发起详情图生成。
             self._raise_if_task_stopped(task_id, workspace_id)
-            if grid_image_paths:
+            if grid_source_fallback:
+                ai_notes.append("detail_images:skipped:grid_not_ai")
+                detail_image_paths = []
+            if grid_image_paths and not grid_source_fallback:
                 stage_started = time.perf_counter()
                 detail_image_paths = self._generate_detail_images_local(
                     task_id,
@@ -7869,7 +8431,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     workspace_id=workspace_id,
                 )
                 record_stage("local_detail", stage_started)
-            if not detail_image_paths:
+            if not detail_image_paths and not grid_source_fallback:
                 if direct_detail_future is not None:
                     # 详情图生成在独立线程中推进；被中止的 future 抛出的
                     # _TaskControlStopped 在此自然冒泡。
@@ -7899,34 +8461,49 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         vision_subject,
                         vision_identity=vision_identity,
                         workspace_id=workspace_id,
+                        batch_image_prompt=batch_image_prompt,
                     )
                     record_stage("detail_generation", stage_started)
+                detail_images_via_ai = bool(detail_image_paths)
         if grid_image_paths:
             ai_notes.append(
                 "premium_images:ai"
                 if premium_mode
                 else f"image_set:{image_generation_count}:ai"
             )
-        if detail_image_paths:
+        if detail_images_via_ai:
             ai_notes.append("detail_images:ai")
         if need_detail and not detail_image_paths:
             detail_failure_detail = self._latest_ai_failure_detail(ai_notes)
+            if grid_source_fallback:
+                # 客户可读文案：说明是生图回退导致详情图缺失、已用原图兜底、系统会自动重试一次；
+                # 内部术语与技术原因留在 debug_hint（前端可展开）供运营排障。
+                item_reason = "生图服务未返回可用图片，已用原图兜底；详情图未生成（系统会自动重试一次）"
+                debug_hint = (
+                    "生图回退（four_grid=source_fallback）：该链接的四宫格来自来源图，"
+                    "已跳过本地合成与 AI 详情图，详情图判为未产出；可重试图片分支重新生成四宫格"
+                    + (
+                        f"；底层原因：{detail_failure_detail}" if detail_failure_detail else ""
+                    )
+                )
+            else:
+                item_reason = "详情图待补充"
+                debug_hint = "详情图未生成可用结果；文本结果已保留；请重试图片分支或检查图片服务配置"
+                if detail_failure_detail:
+                    debug_hint += f"；底层原因：{detail_failure_detail}"
             return {
                 **item,
                 "title": optimized_title,
                 "image_url": image_url,
                 "status": "attention_required",
-                "reason": "详情图待补充",
+                "reason": item_reason,
                 "result": {
                     "error_type": "detail_images_incomplete",
                     "failure_class": "technical_retryable",
                     "partial_result": True,
                     "pending_stage": "detail_images",
                     "operator_hint": "可重试生成详情图",
-                    "debug_hint": "详情图未生成可用结果；文本结果已保留；请重试图片分支或检查图片服务配置"
-                    + (
-                        f"；底层原因：{detail_failure_detail}" if detail_failure_detail else ""
-                    ),
+                    "debug_hint": debug_hint,
                     "retryable": True,
                     "optimized_title": optimized_title,
                     "description": description,
@@ -8219,10 +8796,15 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         needs_dimensions: bool,
         known_dimensions: dict[str, Any] | None = None,
         dimension_template: dict[str, Any] | None = None,
+        description_template: str = "A",
     ) -> dict[str, Any]:
         """Generate every requested listing-text field in one text-only Doubao stage."""
         variant_values = self._unique_variant_values(raw)
-        prompt_variant_values = variant_values[:_VARIANT_TRANSLATION_BATCH_SIZE]
+        # 主调用一次性带上全部变体值。此前只请求前 20 个，其余靠补漏循环按每批 20 个
+        # 串行补翻，变体多时会叠加多次 ~90s 的大模型请求（实测 108 个变体 → 1 次主调用
+        # + 5 次补漏 ≈ 500s）。补漏循环保留为「模型漏项/输出不全」的兜底，不再承担常规
+        # 批量翻译，通常不再触发。
+        prompt_variant_values = variant_values
         profile = language_profile(target_language)
         context = listing_prompt_context(raw, title=source_title, category=category)
         combined_template = apply_language_contract_to_prompt(
@@ -8246,9 +8828,10 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         ai_notes.append(f"prompt-template:{_addition_key}:translated")
                 elif ai_notes is not None:
                     ai_notes.append(f"prompt-template:{_addition_key}:translate-failed-fallback")
+        description_prompt_key = "desc_b" if str(description_template or "A").strip().upper() == "B" else "desc"
         description_instructions = format_prompt(
             apply_language_contract_to_prompt(
-                DEFAULT_PROMPTS.get("desc", ""),
+                DEFAULT_PROMPTS.get(description_prompt_key, ""),
                 "desc",
                 target_language,
                 target_site,
@@ -8462,6 +9045,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         vision_identity: dict[str, Any] | None = None,
         workspace_id: str = "local",
         allow_quality_override: bool = False,
+        batch_image_prompt: str = "",
     ) -> GridImageOutput:
         """Generate four carousel images with a selectable 1/2/4-image transport layout."""
         if not _ai_enabled() or not reference_urls:
@@ -8483,13 +9067,18 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         quality_override_used = False
         try:
             processor = self._media_processor()
-            is_b_template = str(image_template).strip().upper() == "B"
-            prompt_key = (
-                ("grid_image_b" if is_b_template else "grid_image")
-                if image_generation_count == 4
-                else ("image_set_b" if is_b_template else "image_set")
+            _template_suffix = {"A": "", "B": "_b", "C": "_c", "D": "_d"}.get(
+                str(image_template).strip().upper(), ""
             )
-            template = self._apply_user_image_additions(DEFAULT_PROMPTS.get(prompt_key, ""), prompt_key)
+            prompt_key = (
+                ("grid_image" + _template_suffix)
+                if image_generation_count == 4
+                else ("image_set" + _template_suffix)
+            )
+            template = self._apply_batch_image_guidelines(
+                self._apply_user_image_additions(DEFAULT_PROMPTS.get(prompt_key, ""), prompt_key),
+                batch_image_prompt,
+            )
             contracted = apply_language_contract_to_prompt(template, "grid_image", target_language, target_site)
             context = listing_prompt_context(raw, title=optimized_title, category=category)
             if vision_subject:
@@ -8508,8 +9097,11 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
 
             standalone_prompt = prompt
             if image_generation_count == 4:
-                standalone_key = "image_set_b" if is_b_template else "image_set"
-                standalone_template = self._apply_user_image_additions(DEFAULT_PROMPTS.get(standalone_key, ""), standalone_key)
+                standalone_key = "image_set" + _template_suffix
+                standalone_template = self._apply_batch_image_guidelines(
+                    self._apply_user_image_additions(DEFAULT_PROMPTS.get(standalone_key, ""), standalone_key),
+                    batch_image_prompt,
+                )
                 standalone_contracted = apply_language_contract_to_prompt(
                     standalone_template,
                     "grid_image",
@@ -8591,7 +9183,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     # Scaffolded square transport is split deterministically at the
                     # exact center. Never redraw the whole 2K image for a local split
                     # concern; only identified bad slots may use the 1K repair path.
-                    split_parts = processor.split_four_grid(media)
+                    split_parts = processor.split_four_grid(media, enhance=options_from_env())
 
                     summary_parts = [
                         part
@@ -8698,6 +9290,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                             normalized = processor.normalize_standalone_image(
                                 replacement,
                                 stage=f"grid_image_{slot}",
+                                enhance=options_from_env(),
                             )
                             if panel_issues(normalized):
                                 raise ValueError(f"replacement slot {slot} still contains visible AI text")
@@ -8778,7 +9371,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 else:
                     def generate_standalone(slot: int, role: str) -> tuple[Any, Any]:
                         media = generate_one(single_prompt(role))
-                        return media, processor.normalize_standalone_image(media, stage=f"grid_image_{slot}")
+                        return media, processor.normalize_standalone_image(
+                            media, stage=f"grid_image_{slot}", enhance=options_from_env()
+                        )
 
                     with ThreadPoolExecutor(max_workers=4) as executor:
                         futures = {
@@ -8808,7 +9403,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     slot_recovery_used = True
                     def regenerate_slot(slot: int, role: str) -> tuple[Any, Any]:
                         media = generate_one(single_prompt(role))
-                        return media, processor.normalize_standalone_image(media, stage=f"grid_image_{slot}")
+                        return media, processor.normalize_standalone_image(
+                            media, stage=f"grid_image_{slot}", enhance=options_from_env()
+                        )
 
                     retry_failures: list[tuple[int, str]] = []
                     with ThreadPoolExecutor(max_workers=min(4, len(failed_slots))) as executor:
@@ -8930,6 +9527,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         vision_subject: str = "",
         vision_identity: dict[str, Any] | None = None,
         workspace_id: str = "local",
+        batch_image_prompt: str = "",
     ) -> GridImageOutput:
         """精品模式：一次 4K 四宫格，本地拆成四张不降采样的高清轮播图。"""
         if not _ai_enabled() or not reference_urls:
@@ -8947,7 +9545,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             premium_image_size = str(_image_cfg.get("premium_image_size") or "").strip() or PREMIUM_IMAGE_SIZE
         except Exception:
             pass
-        template = self._effective_prompt("premium_image")
+        template = self._apply_batch_image_guidelines(self._effective_prompt("premium_image"), batch_image_prompt)
         contracted = apply_language_contract_to_prompt(template, "premium_image", target_language, target_site)
         context = listing_prompt_context(raw, title=optimized_title, category=category)
         if vision_subject:
@@ -9061,6 +9659,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                             normalized = processor.normalize_standalone_image(
                                 replacement,
                                 stage=f"premium_image_{slot}",
+                                enhance=options_from_env(),
                             )
                             return slot, replacement, normalized
 
@@ -9157,6 +9756,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         vision_subject: str = "",
         vision_identity: dict[str, Any] | None = None,
         workspace_id: str = "local",
+        batch_image_prompt: str = "",
     ) -> list[str]:
         if not _ai_enabled() or not reference_urls:
             return []
@@ -9166,7 +9766,10 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         processor_cls, media_config_error, media_error = media_types
         try:
             processor = self._media_processor()
-            template = self._apply_user_image_additions(DEFAULT_PROMPTS.get("detail_image", ""), "detail_image")
+            template = self._apply_batch_image_guidelines(
+                self._apply_user_image_additions(DEFAULT_PROMPTS.get("detail_image", ""), "detail_image"),
+                batch_image_prompt,
+            )
             contracted = apply_language_contract_to_prompt(template, "detail_image", target_language, target_site)
             context = listing_prompt_context(raw, title=optimized_title, category=category)
             if vision_subject:
@@ -9231,7 +9834,12 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 return []
             if ai_notes is not None:
                 ai_notes.append("detail_images:local_synthesis")
-                ai_notes.append("detail_images:ocr_passed")
+                # OCR 不可用（返回 None）时无法判定中文，不得记 ocr_passed，标记为未校验。
+                ai_notes.append(
+                    "detail_images:ocr_unavailable"
+                    if chinese is None
+                    else "detail_images:ocr_passed"
+                )
             from .infrastructure.media import GeneratedMedia  # noqa: PLC0415
 
             media = GeneratedMedia(
@@ -9585,6 +10193,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 model=DOUBAO_TEXT_MODEL_ID,
                 prompt_version=DOUBAO_TEXT_PROMPT_VERSION,
                 description_prompt=self._effective_prompt("desc"),
+                description_prompt_b=self._effective_prompt("desc_b"),
                 combined_prompt=self._effective_prompt("combined_text"),
             )
         elif stage_name == "images":
@@ -10383,7 +10992,43 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             or getattr(image, "content_type", None)
             or "image/jpeg"
         ).split(";", 1)[0].strip()
-        value = f"data:{content_type or 'image/jpeg'};base64,{base64.b64encode(content).decode('ascii')}"
+        encoded_content = content
+        encoded_type = content_type or "image/jpeg"
+        # 视觉识别只做主体判定，不需要原始分辨率。原图（单张可达 8MB、最多 6 张）直接
+        # base64 送多模态会显著拖慢单次识别（实测单次 ~118s）。这里按长边缩放到
+        # VISION_IMAGE_MAX_EDGE 并转 JPEG 再编码；任何解码/处理异常都回退原图，确保
+        # 不会因为缩放失败而丢失视觉输入。
+        try:
+            from io import BytesIO  # noqa: PLC0415
+
+            from PIL import Image, ImageOps  # type: ignore  # noqa: PLC0415
+
+            with Image.open(BytesIO(content)) as opened:
+                frame = ImageOps.exif_transpose(opened).convert("RGB")
+                longest_edge = max(frame.size)
+                if longest_edge > VISION_IMAGE_MAX_EDGE:
+                    scale = VISION_IMAGE_MAX_EDGE / float(longest_edge)
+                    frame = frame.resize(
+                        (
+                            max(1, round(frame.width * scale)),
+                            max(1, round(frame.height * scale)),
+                        ),
+                        Image.Resampling.LANCZOS,
+                    )
+                buffer = BytesIO()
+                frame.save(
+                    buffer,
+                    format="JPEG",
+                    quality=VISION_IMAGE_JPEG_QUALITY,
+                    optimize=True,
+                )
+                downsampled = buffer.getvalue()
+            if downsampled:
+                encoded_content = downsampled
+                encoded_type = "image/jpeg"
+        except Exception:
+            pass
+        value = f"data:{encoded_type};base64,{base64.b64encode(encoded_content).decode('ascii')}"
         with self._source_data_url_lock:
             if len(self._source_data_url_cache) >= 64:
                 self._source_data_url_cache.pop(next(iter(self._source_data_url_cache)))

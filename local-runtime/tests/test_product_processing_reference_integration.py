@@ -288,7 +288,7 @@ class _CapturingImageProcessor:
         return SimpleNamespace(stage=stage, content=b"image", content_type="image/png", attempt_count=1)
 
     @staticmethod
-    def split_four_grid(media: SimpleNamespace) -> list[SimpleNamespace]:
+    def split_four_grid(media: SimpleNamespace, *, enhance=None) -> list[SimpleNamespace]:
         return [
             SimpleNamespace(stage="grid_image_1", content=b"one"),
             SimpleNamespace(stage="grid_image_2", content=b"two"),

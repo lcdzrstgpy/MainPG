@@ -45,6 +45,7 @@ from ..service import (
     ProductProcessingValidationError,
 )
 from .schemas import (
+    BatchImagePromptRequest,
     ComboProcessRequest,
     ComboSourceAddRequest,
     DailySelectionIntakeRequest,
@@ -186,6 +187,24 @@ def create_product_processing_router(
     @router.post("/engine/prompt-templates/{template_id}/delete")
     def delete_prompt_template(template_id: int) -> dict[str, Any]:
         return _call(service.delete_prompt_template, template_id)
+
+    @router.post("/engine/batch-image-prompt")
+    def generate_batch_image_prompt(
+        request: Request,
+        body: BatchImagePromptRequest,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        """按本批次商品标题生成「本批次辅助提词」，供预设模板板块的生成按钮调用。
+
+        该按钮在批次开始前触发，没有批次上下文；service 会先用此处的计费会话令牌
+        申请一份批次级短期 Ark 密钥再直连豆包，生成后立即释放冻结。
+        """
+        return _call(
+            service.generate_batch_image_prompt,
+            body.model_dump(),
+            workspace_id=_workspace(workspace_id),
+            remote_token=_remote_token(request, customer_sessions),
+        )
 
     @router.post("/demo-draft")
     async def create_demo_draft(
@@ -1124,6 +1143,20 @@ def create_product_processing_router(
         workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
     ) -> dict[str, Any]:
         return _call(service.pause_task, task_id, _workspace(workspace_id))
+
+    @router.post("/tasks/{task_id}/leave")
+    def leave_task(
+        task_id: int,
+        workspace: str = Query(default="local"),
+    ) -> dict[str, Any]:
+        """页面关闭信标（pagehide 时 sendBeacon 触发）：只标记「这个页面不再看这个任务」。
+
+        参数走 query 是因为 sendBeacon 带不了自定义头。这里**不会立刻停任务**：维护循环
+        在宽限期之后才暂停，且宽限期内任何一次轮询（刷新/重开/另一个页签还在看）都会撤销。
+        信标是尽力而为的——丢了最多是任务继续跑，不会误停。
+        """
+        service.mark_task_left(task_id, _workspace(workspace))
+        return {"ok": True}
 
     @router.post("/tasks/{task_id}/cancel")
     def cancel_task(

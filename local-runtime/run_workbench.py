@@ -35,11 +35,6 @@ if sys.stdout is None:
 if sys.stderr is None:
     sys.stderr = open(os.devnull, "w", encoding="utf-8")
 
-# 全量开启产品处理客户端直连模式：任务走批次冻结 + 客户端直连（火山方舟/无印），
-# 不再经服务器 AI 网关中转（网关并发闸会串行化图片生成导致处理变慢）。
-# setdefault 允许运维用显式环境变量覆盖关闭（WH_PRODUCT_AI_DIRECT=0）。
-os.environ.setdefault("WH_PRODUCT_AI_DIRECT", "1")
-
 # 桌面端：关闭前端页面后自动终止后端进程（服务器 systemd 不设此变量，永不自动退出）。
 # 浏览器插件默认只连 8010；关页即停可避免后端残留进程锁定 MainPG.exe 导致安装失败。
 os.environ.setdefault("WH_LOCAL_RUNTIME_EXIT_ON_CLOSE", "1")
@@ -151,6 +146,106 @@ def _release_default_port(host: str, port: int) -> bool:
         if not _port_in_use(host, port):
             return True
     return False
+
+
+def _probe_running_workbench(host: str, port: int, timeout: float = 1.5) -> str | None:
+    """探测端口上是否已有本程序后端在正常服务。
+
+    返回它自报的数据目录（/health 的 database_path，空串表示没上报）；不可达、或
+    回应得不像本程序时返回 None。
+
+    为什么需要它：「端口被占」不等于「有残留」—— 真正的残留进程早已退出、端口会
+    自动释放；反过来，能正常应答 /health 恰恰说明**有实例正在干活**（页面开着、
+    可能还有任务在跑）。旧逻辑只看「端口被占」就弹窗让用户 taskkill 掉占用者，
+    于是「再启动一次」变成「把正在用的那个杀掉」，前一个页面的接口全部失败、立刻
+    弹「本地服务掉线了」（2026-10-16 实测复现）。
+
+    用 http.client 而不是 urllib：前者不读 http_proxy 环境变量，避免本机探测被
+    系统代理劫持（本仓库多次踩到 127.0.0.1 走代理变 502 的坑）。
+    """
+    import http.client
+    import json
+
+    try:
+        conn = http.client.HTTPConnection(host, port, timeout=timeout)
+        try:
+            conn.request("GET", "/health")
+            response = conn.getresponse()
+            if response.status != 200:
+                return None
+            payload = json.loads(response.read().decode("utf-8", "replace"))
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 - 探测失败一律按「不是本程序」处理
+        return None
+    if not isinstance(payload, dict) or payload.get("ok") is not True:
+        return None
+    database_path = payload.get("database_path")
+    return database_path if isinstance(database_path, str) else ""
+
+
+def _expected_database_path() -> str | None:
+    """本实例期望的数据库路径（用于识别端口上那个实例是否同一套数据）。"""
+    try:
+        from wh_local.config import default_config
+
+        return str(default_config().database_path)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _same_path(left: str, right: str) -> bool:
+    """路径比较：忽略大小写与分隔符差异（Windows）。"""
+    try:
+        return os.path.normcase(os.path.abspath(left)) == os.path.normcase(os.path.abspath(right))
+    except Exception:  # noqa: BLE001
+        return left == right
+
+
+def _reuse_running_workbench(args: argparse.Namespace, running_db: str) -> None:
+    """复用已在运行的实例：把页面指向它，本实例不启动后端、不杀任何进程。
+
+    --no-browser（协议拉起、页面点「重新连接」）时不另开页面 —— 旧页面自己会恢复，
+    这正是该参数的原意。
+    """
+    _log = logging.getLogger("run_workbench")
+    expected_db = _expected_database_path()
+    if running_db and expected_db and not _same_path(running_db, expected_db):
+        # 端口上跑的是「另一套数据的 MainPG」（例如安装版被本地开发后端占着端口）。
+        # 静默复用会让用户以为打开了 A、实际连的是 B，必须明说。
+        _log.warning(
+            "port %s already serves MainPG with a different data dir: running=%s expected=%s",
+            args.port, running_db, expected_db,
+        )
+        _show_notice_box(
+            f"{args.port} 端口上已经有一个界野电商平台在运行，但它用的是另一套数据目录：\n\n"
+            f"　　正在运行：{running_db}\n"
+            f"　　本次启动：{expected_db}\n\n"
+            "为避免看到或改错数据，建议先完全退出那个程序，再启动本次的。\n"
+            "本次不会重复启动后台服务。"
+        )
+    try:
+        from wh_local.config import APP_VERSION as app_version
+    except Exception:  # noqa: BLE001
+        app_version = "unknown"
+    url = _workbench_url(args.host, args.port, app_version)
+    _log.info("reusing running workbench at %s (data dir: %s)", url, running_db or "(unknown)")
+    print(f"[run-workbench] reusing running workbench at {url}")
+    if not args.no_browser:
+        # 后端已就绪，无需像冷启动那样等 2.5 秒；这里同步打开——本实例马上要退出，
+        # daemon 线程来不及跑完就会被解释器回收（_open_browser_later 的延时在复用
+        # 路径下必然丢）。
+        opened = False
+        try:
+            opened = webbrowser.open(url)
+        except Exception:  # noqa: BLE001 - 打开失败下面会给手动指引
+            opened = False
+        if not opened:
+            # 不能静默退出：用户双击后毫无反应会以为程序坏了。
+            _show_notice_box(
+                "界野电商平台已经在运行，本次没有重复启动后台服务。\n\n"
+                f"请手动在浏览器打开：\n{url}"
+            )
 
 
 def _first_free_port(host: str, start: int) -> int:
@@ -365,6 +460,14 @@ def _show_fatal_box(message: str) -> None:
         pass
 
 
+def _show_notice_box(message: str) -> None:
+    """普通告知弹窗（同样为了 windowed 模式下用户能看到）。"""
+    try:
+        ctypes.windll.user32.MessageBoxW(0, message, "界野电商平台", _MB_ICONWARNING)
+    except Exception:
+        pass
+
+
 # uvicorn 默认 LOGGING_CONFIG 会 disable_existing_loggers=True，从而禁用我们
 # 挂到 root 的 file handler。这里用 False，并向三个关键 logger 关闭 propagate，
 # 让其错误也能被 root/file handler 捕获，完整落盘。
@@ -404,11 +507,23 @@ def main() -> int:
     # 自注册/自修复 mainpg:// 协议（页面「重新连接」据此拉起本程序）；失败静默。
     ensure_url_protocol()
 
-    # 默认端口被占时：尝试释放占用进程（插件默认只连默认端口）。这里的探测用于
-    # 释放「历史残留」实例；真正的端口独占由下方 _bind_server_socket 的原子 bind
-    # 保证，防止并发拉起时多个实例竞态选中同一端口导致 WinError 10048 崩溃弹窗。
-    if args.port == DEFAULT_PORT and _port_in_use(args.host, args.port):
-        _release_default_port(args.host, args.port)
+    # 端口被占时先问一句：占着它的是不是本程序在正常服务？
+    #
+    # 「端口被占」不等于「有残留」（详见 _probe_running_workbench）。能应答 /health
+    # 的实例是「正在运行的兄弟」——它的页面还开着、可能还有任务在跑。旧逻辑一律弹窗
+    # 让用户 taskkill 掉占用者，于是「再启动一次」＝「把正在用的那个杀掉」，前一个
+    # 页面的请求全部失败、立刻弹「本地服务掉线了」（2026-10-16 实测复现）。
+    # 真正的「历史残留」进程早已退出、端口自动释放，轮不到这里杀。
+    # 端口独占仍由下方 _bind_server_socket 的原子 bind 保证，防并发拉起竞态。
+    if _port_in_use(args.host, args.port):
+        running_db = _probe_running_workbench(args.host, args.port)
+        if running_db is not None:
+            # 已经有可用实例 → 复用它：只把页面指向它，本实例不启后端、不杀任何进程。
+            _reuse_running_workbench(args, running_db)
+            return 0
+        if args.port == DEFAULT_PORT:
+            # 端口被别的程序（或卡死的后端）占着 → 才走原有的「征询后释放」流程。
+            _release_default_port(args.host, args.port)
 
     try:
         sock, port = _bind_server_socket(args.host, args.port)
