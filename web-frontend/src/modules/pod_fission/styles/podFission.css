@@ -1,0 +1,134 @@
+/* 爆款裂变页面样式：沿用 POD 主题变量，在本页作用域内补齐裂变独有的布局与皮肤。
+   共享皮肤（.pod-page-header / .pod-setup-card / .pod-start-button / .pod-count-options /
+   .pod-custom-count / .pod-composition-entry / .pod-gallery-*）来自 pod_customization.css，
+   本页第 17 行已 import。 */
+
+.pod-fission-page {
+  --pod-surface: var(--theme-module-surface, #fff);
+  --pod-surface-raised: var(--theme-module-surface-raised, #fff);
+  --pod-surface-soft: var(--theme-module-surface-soft, #f7fafc);
+  --pod-surface-tint: var(--theme-module-surface-tint, #eaf8ff);
+  --pod-surface-muted: var(--theme-module-surface-soft, #f6f7fb);
+  --pod-border: var(--theme-module-border, #d8e9f3);
+  --pod-border-strong: var(--theme-module-border-strong, #a7dafa);
+  --pod-text: var(--theme-text-primary, #13233a);
+  --pod-text-secondary: var(--theme-text-secondary, #527089);
+  --pod-text-muted: var(--theme-text-muted, #8295aa);
+  --pod-primary: var(--theme-primary, #0877d3);
+  --pod-primary-rgb: var(--theme-module-primary-rgb, 8, 119, 211);
+  --pod-shadow: var(--theme-module-shadow, rgba(26, 105, 149, .08));
+
+  min-width: 0;
+  min-height: calc(100dvh - 190px);
+  color: var(--pod-text);
+}
+
+/* 两列布局（对齐全定制的 .pod-workbench-grid）：左侧窄设置列放三步卡片，
+   右侧结果列吃满剩余宽度；1080px 以下收成单列。 */
+.pod-fission-layout { display: grid; grid-template-columns: minmax(285px, 330px) minmax(0, 1fr); gap: 16px; align-items: start; min-width: 0; }
+.pod-fission-setup { display: grid; gap: 12px; min-width: 0; }
+.pod-fission-results { display: grid; gap: 12px; min-width: 0; align-content: start; }
+
+@media (max-width: 1080px) {
+  .pod-fission-layout { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* --- 顶栏 Hero：覆盖 pod_customization.css 里未限定的「style-grid v2」规则
+   （它会把 .pod-page-header 撑到 126px；这里只在本页作用域内收敛头部内边距，
+   右上按钮保持与全定制一致的纵向堆叠形态，不影响其他模块）。 --- */
+.pod-fission-page .pod-page-header { min-height: 0; padding: 20px 24px; align-items: center; flex-wrap: wrap; gap: 14px; }
+/* 右上操作按钮纵向堆叠（沿用 pod_customization.css 里未限定的 v2 规则形态）。 */
+.pod-fission-page .pod-page-header-actions { flex-direction: column; align-items: stretch; }
+.pod-fission-flow { display: flex; align-items: center; flex-wrap: wrap; margin-left: auto; gap: 8px; padding: 8px 12px; border: 1px solid var(--pod-border); border-radius: 999px; background: var(--pod-surface-soft); }
+.pod-fission-flow > span { display: inline-flex; align-items: center; gap: 5px; color: var(--pod-text-secondary); font-size: .64rem; font-weight: 800; }
+.pod-fission-flow > span .iconfont { color: var(--pod-primary); }
+.pod-fission-flow > .icon-arrowright { color: var(--pod-text-muted); font-size: .58rem; }
+
+/* --- 卡片头部：步骤徽标 + 共享 .pod-section-title --- */
+.pod-fission-card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.pod-fission-card-head > .pod-section-title { margin-bottom: 0; padding-right: 0; }
+.pod-fission-card-badge { display: grid; place-items: center; width: 30px; height: 30px; flex: 0 0 auto; border: 1px solid var(--pod-border-strong); border-radius: 10px; color: var(--pod-primary); background: var(--pod-surface-tint); font-size: .68rem; font-weight: 900; }
+
+/* --- 三张设置卡：外观交给共享 .pod-setup-card，这里只控间距 --- */
+.pod-fission-inputs,
+.pod-fission-confirm,
+.pod-fission-output { display: grid; gap: 12px; padding: 16px; }
+
+/* --- A/B 上传区：窄设置列内上下堆叠，虚线拖拽卡（对齐爆款复刻的上传区皮肤） --- */
+.pod-fission-uploads { display: grid; gap: 14px; }
+.pod-fission-upload { display: grid; min-width: 0; gap: 8px; }
+.pod-fission-upload-heading { display: grid; gap: 2px; }
+.pod-fission-upload-heading b { color: var(--pod-text); font-size: .7rem; }
+.pod-fission-upload-heading small { color: var(--pod-text-muted); font-size: .58rem; overflow-wrap: anywhere; }
+.pod-fission-upload-zone { display: grid; place-items: center; min-height: 140px; padding: 12px; border: 1.5px dashed var(--pod-border-strong); border-radius: 14px; background: var(--pod-surface-muted); transition: border-color .16s ease, background .16s ease; }
+.pod-fission-upload-zone.has-image { border-style: solid; background: var(--pod-surface); }
+.pod-fission-upload-zone:focus-visible { outline: 2px solid var(--pod-primary); outline-offset: 2px; }
+.pod-fission-upload-empty { display: grid; justify-items: center; gap: 6px; border: 0; color: var(--pod-text-muted); background: transparent; text-align: center; }
+.pod-fission-upload-empty .iconfont { color: var(--pod-primary); font-size: 1.5rem; }
+.pod-fission-upload-empty b { color: var(--pod-text-secondary); font-size: .68rem; }
+.pod-fission-upload-empty small { font-size: .57rem; }
+.pod-fission-upload-preview { display: grid; justify-items: center; min-width: 0; gap: 9px; }
+.pod-fission-upload-preview img { max-width: 100%; max-height: 190px; border: 1px solid var(--pod-border); border-radius: 12px; background: #fff; object-fit: contain; }
+.pod-fission-upload-preview > small { max-width: 100%; overflow: hidden; color: var(--pod-text-muted); font-size: .55rem; text-overflow: ellipsis; white-space: nowrap; }
+.pod-fission-upload-actions { display: flex; gap: 8px; }
+.pod-fission-upload-actions button { padding: 6px 13px; border: 1px solid var(--pod-border-strong); border-radius: 9px; color: var(--pod-primary); background: var(--pod-surface); font-size: .63rem; font-weight: 800; }
+.pod-fission-upload-actions button:disabled { cursor: not-allowed; opacity: .55; }
+
+/* --- 识别摘要 / 等待态 / 次级按钮 / 提示 --- */
+.pod-fission-summaries { display: grid; gap: 8px; margin: 0; }
+.pod-fission-summaries > div { display: grid; grid-template-columns: 72px minmax(0, 1fr); align-items: start; gap: 8px; }
+.pod-fission-summaries dt { padding: 7px 9px; border-radius: 8px; color: var(--pod-text); background: var(--pod-surface-tint); font-size: .64rem; font-weight: 850; text-align: center; }
+.pod-fission-summaries dd { margin: 0; padding: 7px 9px; border-radius: 8px; color: var(--pod-text-secondary); background: var(--pod-surface-soft); font-size: .66rem; line-height: 1.6; overflow-wrap: anywhere; }
+.pod-fission-review-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 4px; }
+.pod-fission-secondary-button { padding: 8px 14px; border: 1px solid var(--pod-border-strong); border-radius: 10px; color: var(--pod-text-secondary); background: var(--pod-surface); font-size: .66rem; font-weight: 800; white-space: nowrap; }
+.pod-fission-secondary-button:disabled { cursor: not-allowed; opacity: .5; }
+.pod-fission-hint { margin: 0; color: var(--pod-text-muted); font-size: .6rem; line-height: 1.5; }
+.pod-fission-awaiting { display: grid; justify-items: center; gap: 10px; margin: 0; padding: 30px 16px; border: 1px dashed var(--pod-border); border-radius: 14px; color: var(--pod-text-muted); background: linear-gradient(160deg, var(--pod-surface-soft), var(--pod-surface-tint)); font-size: .66rem; line-height: 1.6; text-align: center; }
+.pod-fission-awaiting::before { content: ""; width: 46px; height: 46px; border: 1px solid var(--pod-border-strong); border-radius: 15px; background: radial-gradient(circle at 50% 45%, rgba(var(--pod-primary-rgb), .22), transparent 70%); box-shadow: inset 0 0 0 8px rgba(var(--pod-primary-rgb), .06); }
+
+/* --- 提示条（对齐爆款复刻的 .pod-replica-message） --- */
+.pod-fission-message { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; padding: 10px 14px; border: 1px solid #b9e5d7; border-radius: 10px; color: #246f61; background: #effbf7; font-size: .7rem; }
+.pod-fission-message.is-error { border-color: #f0cdca; color: #a84c48; background: #fdf0ef; }
+.pod-fission-message > span { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; color: #fff; background: #2ab398; }
+.pod-fission-message.is-error > span { background: #d76862; }
+.pod-fission-message p { flex: 1; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.pod-fission-message button { border: 0; color: currentColor; background: transparent; font-size: 1rem; }
+
+/* --- 构图模板入口（对齐爆款复刻的 .pod-replica-composition-entry） --- */
+.pod-fission-output .pod-composition-entry { flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 14px; border: 1px solid var(--pod-border-strong); border-radius: 13px; background: var(--pod-surface-tint); }
+.pod-fission-composition-info { display: grid; min-width: 0; gap: 3px; }
+.pod-fission-composition-info small { color: var(--pod-text-muted); font-size: .57rem; }
+.pod-fission-composition-info b { overflow: hidden; color: var(--pod-text); font-size: .72rem; text-overflow: ellipsis; white-space: nowrap; }
+
+/* --- 当前批次输入条 --- */
+.pod-fission-batch-inputs { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; }
+.pod-fission-batch-inputs figure { display: grid; gap: 6px; margin: 0; }
+.pod-fission-batch-inputs img { width: 112px; height: 94px; border: 1px solid var(--pod-border); border-radius: 11px; background: #fff; object-fit: cover; }
+.pod-fission-batch-inputs figcaption { color: var(--pod-text-muted); font-size: .58rem; text-align: center; }
+.pod-fission-batch-inputs > div { display: grid; min-width: 0; gap: 3px; }
+.pod-fission-batch-inputs > div b { overflow: hidden; color: var(--pod-text); font-size: .72rem; text-overflow: ellipsis; white-space: nowrap; }
+.pod-fission-batch-inputs > div p { margin: 0; color: var(--pod-text-muted); font-size: .58rem; }
+
+/* --- 结果区空态：加一点插画感 --- */
+.pod-fission-results .pod-gallery-empty { border-radius: 18px; background: linear-gradient(165deg, var(--pod-surface), var(--pod-surface-tint)); }
+.pod-fission-results .pod-gallery-empty > span { border-radius: 20px; box-shadow: 0 10px 26px rgba(var(--pod-primary-rgb), .12); }
+
+/* --- 微动效 --- */
+.pod-fission-setup > .pod-setup-card { animation: pod-fission-rise .34s ease-out backwards; }
+.pod-fission-setup > .pod-setup-card:nth-child(2) { animation-delay: .06s; }
+.pod-fission-setup > .pod-setup-card:nth-child(3) { animation-delay: .12s; }
+.pod-fission-upload-zone:hover:not(.has-image) { border-color: var(--pod-primary); background: var(--pod-surface-tint); }
+.pod-fission-page .pod-start-button:not(:disabled):hover { transform: translateY(-1px); }
+@keyframes pod-fission-rise { from { opacity: 0; transform: translateY(8px); } }
+
+@media (max-width: 760px) {
+  .pod-fission-page .pod-page-header { padding: 14px; }
+  .pod-fission-flow { margin-left: 0; }
+  .pod-fission-batch-inputs img { width: 88px; height: 76px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pod-fission-page *,
+  .pod-fission-page *::before,
+  .pod-fission-page *::after { animation: none !important; transition: none !important; }
+}

@@ -543,6 +543,20 @@ def test_replica_ignores_full_custom_composition_pool(tmp_path: Path) -> None:
     assert rejected.status_code == 409
 
 
+def test_fission_composition_pool_is_independent_from_full_and_replica(tmp_path: Path) -> None:
+    runtime = AnalysisRuntime()
+    client, service, _billing = _client(tmp_path, runtime)
+    _create_composition(service, "comp-fission", "v-fission", scope="fission")
+
+    fission = client.get(f"{API}/compositions?scope=fission", headers=HEADERS).json()
+    full = client.get(f"{API}/compositions?scope=full", headers=HEADERS).json()
+    replica = client.get(f"{API}/compositions?scope=replica", headers=HEADERS).json()
+
+    assert "comp-fission" in {item["composition_id"] for item in fission["templates"]}
+    assert "comp-fission" not in {item["composition_id"] for item in full["templates"]}
+    assert "comp-fission" not in {item["composition_id"] for item in replica["templates"]}
+
+
 def test_load_frozen_plan_rejects_legacy_batch_without_plan(tmp_path: Path) -> None:
     runtime = AnalysisRuntime()
     client, service, _billing = _client(tmp_path, runtime)

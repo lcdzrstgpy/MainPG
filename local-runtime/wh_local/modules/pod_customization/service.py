@@ -22,6 +22,7 @@ from . import spec_card
 from .assets import PodAssetStore
 from .billing_contract import (
     POD_BILLING_PROFILE_RANDOM,
+    POD_BILLING_PROFILE_FISSION,
     POD_BILLING_PROFILE_REPLICA,
     PodBillingAuthorizationRequired,
     PodBillingCoordinator,
@@ -38,11 +39,16 @@ from .contracts import (
     COMPOSITION_NAME_MAX_LENGTH,
     COMPOSITION_PANEL_KEYS,
     COMPOSITION_SCOPE_FULL,
+    COMPOSITION_SCOPE_FISSION,
     COMPOSITION_SCOPE_REPLICA,
     CompositionRenameRequest,
     CompositionRequest,
     CompositionUpdateRequest,
     DirectListingTrialCreate,
+    FissionAnalyzeRequest,
+    FissionBatchCreate,
+    FissionImageRole,
+    FissionImageUploadResponse,
     ReplicaAnalyzeRequest,
     ReplicaBatchCreate,
     ReplicaImageUploadResponse,
@@ -53,6 +59,13 @@ from .contracts import (
 from .ai_runtime import resolve_pod_image_model
 from .brief_runtime import PodBriefRequest
 from .composition_runtime import PodCompositionLocalizeRequest, PodCompositionRequest
+from .fission_runtime import (
+    FissionAnalysisRequest as RuntimeFissionAnalysisRequest,
+    FissionAssetImage,
+)
+from .fission_registry import FissionRegistryService
+from .fission_planner import plan_fission_variants
+from .fission_prompts import FISSION_PROMPT_COMPILER_VERSION, default_fission_composition
 from .replica_analysis_runtime import (
     CompositionTemplateOptions,
     ReplicaAssetImage,
@@ -80,7 +93,7 @@ from .export import (
 )
 from .export_records import PodExportRecordStore
 from .errors import image_provider_outcome_for_exception, safe_error_message
-from .repository import PodCustomizationRepository, PodRepositoryError, ReplicaBatchIdempotentReturn
+from .repository import PodCustomizationRepository, PodRepositoryError, ReplicaBatchIdempotentReturn, RegistryVersionConflict
 from .spec_card_units import display_spec_card_cells
 from .prompts import (
     DEFAULT_COMPOSITION_ID,
@@ -174,6 +187,7 @@ class PodCustomizationService:
         brief_runtime: Any | None = None,
         composition_runtime: Any | None = None,
         analysis_runtime: Any | None = None,
+        fission_analysis_runtime: Any | None = None,
         billing_coordinator: PodBillingCoordinator | None = None,
         start_workers: bool = True,
     ) -> None:
@@ -184,6 +198,7 @@ class PodCustomizationService:
         self.brief_runtime = brief_runtime
         self.composition_runtime = composition_runtime
         self.analysis_runtime = analysis_runtime
+        self.fission_analysis_runtime = fission_analysis_runtime
         self.billing_coordinator = billing_coordinator
         self.repository = PodCustomizationRepository(self.database_path)
         self.export_records = PodExportRecordStore(self.database_path)
@@ -378,6 +393,200 @@ class PodCustomizationService:
             height=stored.height,
             preview_url=f"/api/pod-customization/assets/{asset['asset_id']}",
         ).model_dump()
+
+    def upload_fission_image(
+        self,
+        actor: Actor,
+        *,
+        role: FissionImageRole,
+        filename: str,
+        content: bytes,
+    ) -> dict[str, Any]:
+        if role not in ("source_artwork", "target_product"):
+            raise ValueError("裂变图片角色必须是 source_artwork 或 target_product")
+        stored = self.assets.save_image(actor.workspace_id, actor.id, content)
+        asset = self.repository.create_asset(
+            workspace_id=actor.workspace_id,
+            owner_user_id=actor.id,
+            kind=f"fission_{role}",
+            filename=filename,
+            relative_path=stored.relative_path,
+            content_type=stored.content_type,
+            byte_size=stored.byte_size,
+            sha256=stored.sha256,
+            width=stored.width,
+            height=stored.height,
+        )
+        return FissionImageUploadResponse(
+            asset_id=asset["asset_id"],
+            role=role,
+            width=stored.width,
+            height=stored.height,
+            preview_url=f"/api/pod-customization/assets/{asset['asset_id']}",
+        ).model_dump()
+
+    def analyze_fission_assets(self, actor: Actor, request: FissionAnalyzeRequest) -> dict[str, Any]:
+        if self.fission_analysis_runtime is None:
+            raise RuntimeError("POD 爆款裂变识图服务未启用")
+        source = self.repository.get_asset(request.source_asset_id, actor.workspace_id, actor.id)
+        target = self.repository.get_asset(request.target_asset_id, actor.workspace_id, actor.id)
+        if source.get("kind") != "fission_source_artwork":
+            raise ValueError("样图资产角色错误，必须通过 role=source_artwork 上传")
+        if target.get("kind") != "fission_target_product":
+            raise ValueError("白底产品图资产角色错误，必须通过 role=target_product 上传")
+
+        analysis_id = uuid.uuid4().hex
+        billing_run = self._freeze_fission_analysis(actor, analysis_id)
+        try:
+            call_ids = tuple(call.call_id for call in billing_run.plan.calls)
+            try:
+                result = self.fission_analysis_runtime.analyze_assets(
+                    RuntimeFissionAnalysisRequest(
+                        source_asset_id=request.source_asset_id,
+                        target_asset_id=request.target_asset_id,
+                    ),
+                    FissionAssetImage(request.source_asset_id, self._asset_data_url(source)),
+                    FissionAssetImage(request.target_asset_id, self._asset_data_url(target)),
+                    grant=billing_run.grant,
+                    call_ids=call_ids,
+                    on_start=lambda call_id: billing_run.start(call_id, "pod.title"),
+                    on_outcome=lambda call_id, status: billing_run.record(call_id, "pod.title", status),
+                )
+            except Exception as exc:
+                self.repository.create_fission_analysis(
+                    analysis_id=analysis_id,
+                    workspace_id=actor.workspace_id,
+                    owner_user_id=actor.id,
+                    source_asset_id=request.source_asset_id,
+                    target_asset_id=request.target_asset_id,
+                    status="failed",
+                    error_code=type(exc).__name__,
+                )
+                raise
+            self.repository.create_fission_analysis(
+                analysis_id=analysis_id,
+                workspace_id=actor.workspace_id,
+                owner_user_id=actor.id,
+                source_asset_id=request.source_asset_id,
+                target_asset_id=request.target_asset_id,
+                status="succeeded",
+                source_spec=result.source_spec,
+                target_spec=result.target_spec,
+                user_summary=result.user_summary,
+                candidate_payload={
+                    "style_vocabulary": result.style_vocabulary,
+                    "element_vocabulary": result.element_vocabulary,
+                    "palette_vocabulary": result.palette_vocabulary,
+                    "capabilities": result.capability_candidates,
+                    "product_mappings": getattr(result, "product_mapping_candidates", ()),
+                    "rules": result.rule_candidates,
+                },
+                raw_response=getattr(result, "raw_response", {}),
+                model_version=result.model_version,
+                schema_version=result.schema_version,
+            )
+            return {
+                "analysis_id": analysis_id,
+                "status": "succeeded",
+                "product_summary": result.user_summary["target_summary"],
+                "artwork_summary": result.user_summary["source_summary"],
+            }
+        finally:
+            billing_run.settle()
+
+    def _fission_composition(self, actor: Actor) -> dict[str, Any]:
+        record = self.repository.get_active_composition(actor.workspace_id, actor.id, scope=COMPOSITION_SCOPE_FISSION)
+        if record is None:
+            result = default_fission_composition()
+            for panel, key in zip(result['panels'], COMPOSITION_PANEL_KEYS, strict=True):
+                panel['shot'] = str(DEFAULT_COMPOSITION_PANELS[key]['en'])
+            return result
+        result = default_fission_composition()
+        result['template_id'] = record['composition_id']
+        result['template_version'] = str(record.get('version') or record.get('updated_at') or '1')
+        for panel, key in zip(result['panels'], COMPOSITION_PANEL_KEYS, strict=True):
+            panel['shot'] = str((record.get('panels', {}).get(key) or {}).get('en') or '')
+            if not panel['shot']:
+                raise PodRepositoryError('生效构图模板不完整，请重新保存模板', 409)
+        return result
+
+    def create_fission_batch(self, actor: Actor, request: FissionBatchCreate, *, enqueue: bool = True) -> dict[str, Any]:
+        request_hash = hashlib.sha256(json.dumps(request.model_dump(mode='json'), sort_keys=True,
+                                                ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+        # Serialize submissions within this service; the repository also fences cross-process races.
+        with self._regeneration_lock:
+            existing = self.repository.find_fission_batch(actor.workspace_id, actor.id, request.client_request_id)
+            if existing is not None:
+                if existing['request_hash'] != request_hash:
+                    raise PodRepositoryError('client_request_id 已用于不同的裂变请求', 409)
+                return self.get_fission_batch(actor, existing['batch_id'])
+            analysis = self.repository.get_fission_analysis_for_actor(request.analysis_id, actor.workspace_id, actor.id)
+            if analysis['status'] != 'succeeded':
+                raise PodRepositoryError('识别未成功，请重传图片后重新分析', 409)
+            for field, kind in (('source_asset_id', 'fission_source_artwork'), ('target_asset_id', 'fission_target_product')):
+                asset = self.repository.get_asset(analysis[field], actor.workspace_id, actor.id)
+                if asset['kind'] != kind:
+                    raise PodRepositoryError('裂变图片角色不匹配，请重新上传', 409)
+            candidate_payload = analysis['candidate_payload']
+            registry = FissionRegistryService(self.repository)
+            candidates = registry.validate_candidates({key: candidate_payload.get(key, [])
+                                                       for key in ('capabilities', 'product_mappings', 'rules')})
+            composition = self._fission_composition(actor)
+            batch_id = uuid.uuid4().hex
+            billing_run = None
+            try:
+                for submission in range(3):
+                    current, projected = registry.preview_candidates(candidates)
+                    planning_input = {**candidate_payload, 'source_spec': analysis['source_spec'],
+                                      'target_spec': analysis['target_spec']}
+                    plans = plan_fission_variants(planning_input, request.requested_count, batch_id,
+                                                  projected.model_dump(mode='json'), composition)
+                    if billing_run is None and (enqueue or self.billing_coordinator is not None):
+                        billing_run = self._freeze_batch(actor, batch_id, request.requested_count,
+                                                        billing_profile=POD_BILLING_PROFILE_FISSION)
+                    try:
+                        batch = self.repository.create_fission_batch_with_registry(
+                            workspace_id=actor.workspace_id, owner_user_id=actor.id, analysis_id=request.analysis_id,
+                            client_request_id=request.client_request_id, request_hash=request_hash,
+                            requested_count=request.requested_count, listing_fields=request.listing_fields.model_dump(mode='json'),
+                            candidates=candidates, plans={int(plan['style_index']): plan for plan in plans},
+                            expected_capability_version=current.capability_version,
+                            expected_rule_version=current.rule_version, composition=composition,
+                            prompt_version=FISSION_PROMPT_COMPILER_VERSION, compiler_version=FISSION_PROMPT_COMPILER_VERSION,
+                            title=request.title, batch_id=batch_id,
+                        )
+                        break
+                    except RegistryVersionConflict:
+                        if submission == 2:
+                            raise PodRepositoryError('能力库正在更新，请稍后重试确认', 409)
+                if batch['batch_id'] != batch_id:
+                    if billing_run is not None:
+                        billing_run.settle()
+                    return self.get_fission_batch(actor, batch['batch_id'])
+            except Exception:
+                if billing_run is not None:
+                    billing_run.settle()
+                raise
+            if billing_run is not None and self.worker is not None:
+                self.worker.register_billing_run(batch_id, billing_run)
+            if enqueue and self.worker is not None:
+                self.worker.submit(batch_id, billing_run)
+            return self.get_fission_batch(actor, batch_id)
+
+    def get_fission_batch(self, actor: Actor, batch_id: str) -> dict[str, Any]:
+        batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
+        if batch.get('mode') != 'fission':
+            raise PodRepositoryError('POD fission batch not found', 404)
+        return self._batch_payload(batch)
+
+    def list_fission_batches(self, actor: Actor, *, limit: int = 20, offset: int = 0) -> dict[str, Any]:
+        rows, total = self.repository.list_batches(actor.workspace_id, actor.id,
+                                                  limit=max(1, min(limit, 100)), offset=max(0, offset), mode='fission')
+        return {'batches': [self._batch_summary(row) for row in rows], 'total': total}
+
+    def retry_fission_style(self, actor: Actor, batch_id: str, style_index: int, *, enqueue: bool = True) -> dict[str, Any]:
+        self.get_fission_batch(actor, batch_id)
+        return self.regenerate_style(actor, batch_id, style_index, enqueue=enqueue)
 
     def _replica_assets(
         self, actor: Actor, request: ReplicaBatchCreate
@@ -1165,7 +1374,7 @@ class PodCustomizationService:
 
         动作免费（服务端对 POD 画像的纯 title scope 显式零计费），但仍走完整的
         冻结 → 发放短期密钥 → 调用 → 结算流程，保留幂等键与审计。
-        ``scope`` 决定写入哪个模块的模板池（full / replica），两个池各自独立生效。
+        ``scope`` 决定写入哪个模块的模板池（full / replica / fission），各池独立生效。
         """
         if self.composition_runtime is None:
             raise RuntimeError("POD 构图定制服务未启用")
@@ -1289,7 +1498,7 @@ class PodCustomizationService:
             "is_active": False,
             "is_builtin": True,
             "updated_at": "",
-            "scope": COMPOSITION_SCOPE_REPLICA if scope == COMPOSITION_SCOPE_REPLICA else COMPOSITION_SCOPE_FULL,
+            "scope": scope if scope in (COMPOSITION_SCOPE_FULL, COMPOSITION_SCOPE_REPLICA, COMPOSITION_SCOPE_FISSION) else COMPOSITION_SCOPE_FULL,
         }
 
     def get_active_composition(
@@ -2676,6 +2885,8 @@ class PodCustomizationService:
         全定制沿用 pod_random_v1。半定制走独立的 ``for_semi_*`` 计划、复刻「高清直出」
         走独立的 ``for_replica_panel*`` 计划（画像 pod_replica_v1_b），都不使用本函数。
         """
+        if str(batch.get("mode") or "") == "fission":
+            return POD_BILLING_PROFILE_FISSION
         if str(batch.get("mode") or "") == "replica":
             return POD_BILLING_PROFILE_REPLICA
         return POD_BILLING_PROFILE_RANDOM
@@ -2837,6 +3048,19 @@ class PodCustomizationService:
             target_id=analysis_id,
             batch_id="",
             action_payload={"mode": "replica_analysis"},
+        )
+
+    def _freeze_fission_analysis(self, actor: Actor, analysis_id: str) -> PodBillingRun:
+        if self.billing_coordinator is None:
+            raise RuntimeError("POD billing coordinator is not configured")
+        plan = PodCallPlan.for_fission_analysis(analysis_id)
+        return self._freeze_action(
+            actor,
+            plan,
+            action_type="title_retry",
+            target_id=analysis_id,
+            batch_id="",
+            action_payload={"mode": "fission_analysis"},
         )
 
     def _freeze_style_retry(
@@ -3195,6 +3419,20 @@ class PodCustomizationService:
                 self._replica_target_payload(target)
                 for target in batch.get("replica_targets", [])
             ]
+        if mode == "fission":
+            payload.pop("prompt_snapshot", None)
+            payload.pop("creative_prompt", None)
+            for key in ("template_id", "template_snapshot_id", "template_name"):
+                payload.pop(key, None)
+            payload["template"] = None
+            payload["source"] = self._replica_source_payload({"replica_source": batch.get("fission_source")})
+            payload["target"] = self._replica_source_payload({"replica_source": batch.get("fission_target")})
+            payload["variants"] = [
+                {key: variant.get(key) for key in (
+                    "style_index", "image_status", "title_status", "spec_card_status", "error_message"
+                )}
+                for variant in batch.get("fission_variants", [])
+            ]
         return payload
 
     @staticmethod
@@ -3208,6 +3446,18 @@ class PodCustomizationService:
             return None
         if not isinstance(record, dict):
             return None
+        if batch.get("mode") == "fission":
+            template_id = str(record.get("template_id") or "")
+            record = {
+                "composition_id": template_id,
+                "name": "默认构图" if template_id == "fission_default_v1" else "已冻结构图",
+                "scope": COMPOSITION_SCOPE_FISSION,
+                "is_builtin": template_id == "fission_default_v1",
+                "panels": {
+                    key: {"zh": "", "en": str(panel.get("shot") or "")}
+                    for key, panel in zip(COMPOSITION_PANEL_KEYS, record.get("panels", []))
+                },
+            }
         return PodCustomizationService._composition_payload(record)
 
     @staticmethod

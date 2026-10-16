@@ -149,6 +149,7 @@ export type BillingUsageEntry = {
     | "ai_usage"
     | "product_processing"
     | "pod_random_v1"
+    | "pod_fission_v1"
     | "pod_semi_v1"
     | "pod_replica_v1"
     | "pod_replica_v1_a"

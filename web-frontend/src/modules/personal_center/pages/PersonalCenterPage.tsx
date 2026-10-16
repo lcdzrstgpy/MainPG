@@ -221,6 +221,7 @@ export const USAGE_SERVICE_LABEL: Record<UsageServiceGroup, string> = {
 
 /** POD 三类服务的展示名：消费流水「服务」按 billing_profile 细分，而非统一叫「POD 定制」。 */
 const POD_SERVICE_LABEL: Record<string, string> = {
+  pod_fission_v1: "POD 爆款裂变",
   pod_random_v1: "POD 全定制",
   pod_semi_v1: "POD 半定制",
   // 复刻按 A/B 分档：A=普通生成（1 次全定制积分）、B=高清直出（4 倍）。历史流水沿用无后缀值。
