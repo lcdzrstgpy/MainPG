@@ -147,6 +147,141 @@ def test_wuyin_submit_payload_carries_full_prompt_without_truncation(monkeypatch
     assert len(captured["json"]["prompt"]) == len(long_prompt)
 
 
+def test_wuyin_nano_banana_submit_uses_tier_size_and_dedicated_path(monkeypatch) -> None:
+    """无印 nanoBanana 系：走专用路径，size 传画质档（2K），比例走 aspectRatio。
+
+    该模型与 gpt-image 属不同上游，用于「gpt-image 整族维护/不可用」时的替换/兜底。
+    请求体若沿用 image_gpt 的「size=比例」，上游会按默认 1K 出图（四宫格每格仅 512px），
+    因此这里的字段语义必须有回归保护。
+    """
+    captured: dict[str, object] = {}
+
+    class _SubmitResponse:
+        ok = True
+
+        def iter_content(self, chunk_size: int = 64 * 1024):
+            yield b'{"code":200,"data":{"id":"task-nano"}}'
+
+        def close(self) -> None:
+            return
+
+    def fake_post(url, *, params=None, headers=None, json=None, **_kwargs):
+        captured["url"] = url
+        captured["json"] = json
+        return _SubmitResponse()
+
+    monkeypatch.setattr(media_module._SESSION, "post", fake_post)
+    processor = ProductImageProcessor(lambda: {})
+
+    task_id = processor._submit_wuyin_image_task(
+        {"base_url": "https://api.wuyinkeji.com", "api_key": "secret", "model": "nanoBanana_pro"},
+        "grid contract",
+        ["https://example.test/a.png", "https://example.test/b.png"],
+        model="nanoBanana_pro",
+        image_size="2048x2048",
+        timeout_seconds=30,
+    )
+
+    assert task_id == "task-nano"
+    assert captured["url"].endswith("/api/async/image_nanoBanana_pro")
+    assert captured["json"]["size"] == "2K"
+    assert captured["json"]["aspectRatio"] == "1:1"
+    assert captured["json"]["urls"] == ["https://example.test/a.png", "https://example.test/b.png"]
+    assert captured["json"]["prompt"] == "grid contract"
+
+
+def test_wuyin_nano_banana_lite_forces_1k_and_matches_path_by_normalized_name(monkeypatch) -> None:
+    """NanoBanana-2-Lite 只支持 1K：size 必须压到 1K，且按归一化模型名命中专用路径。
+
+    回归保护：文档写明「仅支持 1K」，沿用 2K/4K 档会被上游拒绝；模型名写法各页
+    不一致（NanoBanana-2-Lite / nanoBanana2Lite），必须能匹配到同一路径。
+    """
+    captured: dict[str, object] = {}
+
+    class _SubmitResponse:
+        ok = True
+
+        def iter_content(self, chunk_size: int = 64 * 1024):
+            yield b'{"code":200,"data":{"id":"task-lite"}}'
+
+        def close(self) -> None:
+            return
+
+    def fake_post(url, *, params=None, headers=None, json=None, **_kwargs):
+        captured["url"] = url
+        captured["json"] = json
+        return _SubmitResponse()
+
+    monkeypatch.setattr(media_module._SESSION, "post", fake_post)
+    processor = ProductImageProcessor(lambda: {})
+
+    task_id = processor._submit_wuyin_image_task(
+        {"base_url": "https://api.wuyinkeji.com", "api_key": "secret", "model": "NanoBanana-2-Lite"},
+        "panel prompt",
+        ["https://example.test/a.png"],
+        model="NanoBanana-2-Lite",
+        image_size="2048x2048",
+        timeout_seconds=30,
+    )
+
+    assert task_id == "task-lite"
+    assert captured["url"].endswith("/api/async/image_nanoBanana2Lite")
+    assert captured["json"]["size"] == "1K"
+    assert captured["json"]["aspectRatio"] == "1:1"
+
+
+def test_ark_image_request_sends_data_uri_refs_and_disables_watermark(monkeypatch) -> None:
+    """方舟生图：参考图用 data URI 直传，且必须显式 watermark=False。
+
+    回归保护（实测）：方舟生图默认会打「豆包AI生成」水印，商品图绝不能带；参考图走
+    data URI 则不必先把图传上公网，天然免疫「上游抓不到参考图」。
+    """
+    captured: dict[str, object] = {}
+
+    class _Resp:
+        ok = True
+        status_code = 200
+
+        def iter_content(self, chunk_size: int = 64 * 1024):
+            yield b'{"data":[{"url":"https://ark.example/out.png"}]}'
+
+        def close(self) -> None:
+            return
+
+    def fake_post(url, *, headers=None, json=None, **_kwargs):
+        captured["url"] = url
+        captured["json"] = json
+        return _Resp()
+
+    monkeypatch.setattr(media_module._SESSION, "post", fake_post)
+    monkeypatch.setattr(
+        media_module, "_download_provider_result_image", lambda _url: (b"image-bytes", "image/png")
+    )
+
+    processor = ProductImageProcessor(lambda: {})
+    content, content_type = processor._request_ark_image(
+        {
+            "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+            "api_key": "secret",
+            "model": "doubao-seedream-5-0-pro-260628",
+            "reference_model": "doubao-seedream-5-0-pro-260628",
+            "image_size": "2048x2048",
+        },
+        "grid contract",
+        [(b"ref-bytes", "a.png", "image/png")],
+        timeout_seconds=30,
+    )
+
+    assert content == b"image-bytes"
+    assert content_type == "image/png"
+    assert captured["url"].endswith("/images/generations")
+    assert captured["json"]["watermark"] is False
+    assert captured["json"]["size"] == "2K"
+    assert captured["json"]["output_format"] == "png"
+    assert captured["json"]["response_format"] == "url"
+    assert captured["json"]["image"][0].startswith("data:image/png;base64,")
+
+
 def test_wuyin_result_download_never_downgrades_https_to_http(monkeypatch) -> None:
     class _SubmitResponse:
         ok = True
@@ -554,6 +689,72 @@ def test_transient_provider_cooldown_skips_to_backup_but_never_removes_only_rout
     only_key = only_primary._provider_health_key(only_primary._providers(_image_provider_config(source))[0])
     only_primary._provider_cooldown_until[only_key] = time.monotonic() + 60
     assert len(only_primary._provider_order(only_primary._providers(_image_provider_config(source)), _image_provider_config(source))) == 1
+
+
+def test_stalled_wuyin_hands_over_to_cross_protocol_backup(monkeypatch, tmp_path) -> None:
+    """无印停滞、且池里存在同步协议备用时，必须轮到备用。
+
+    回归保护（线上实测）：hedge 只认无印异步链路，中转的 /images/edits 永远进不了对冲；
+    旧逻辑在无印停滞时直接抛错并把整段时长预算烧在主链路上，备用一次都没被调用，用户
+    只能看到「整批回退来源图」。
+    """
+    source = tmp_path / "source.png"
+    source.write_bytes(_grid_bytes())
+    calls: list[str] = []
+
+    config = _image_provider_config(source)
+    config["image"]["base_url"] = "https://api.wuyinkeji.com"
+    config["image"]["model"] = "nanoBanana_pro"
+    config["image"]["reference_model"] = "nanoBanana_pro"
+    config["backup_image"] = {
+        "base_url": "https://api.aicoming.top/v1",
+        "api_key": "relay-key",
+        "model": "gpt-image-2-2k",
+        "reference_model": "gpt-image-2-2k",
+        "image_size": "2048x2048",
+    }
+    config["limits"]["image_provider_strategy"] = "primary_first"
+
+    def respond(provider, *_args, **_kwargs):
+        calls.append(provider["name"])
+        if provider["name"].startswith("primary"):
+            raise MediaProcessingError("provider image task stalled", status_class="provider_stalled")
+        return _grid_bytes(), "image/png"
+
+    monkeypatch.setattr(ProductImageProcessor, "_request_edit", staticmethod(respond))
+    media = ProductImageProcessor(lambda: config).generate(
+        stage="grid_image", prompt="contract", reference_values=[str(source)]
+    )
+
+    assert media.provider.startswith("backup")
+    assert calls == ["primary:nanoBanana_pro", "backup:gpt-image-2-2k"]
+
+
+def test_provider_rate_limit_payload_is_retryable() -> None:
+    """中转/上游返回 HTTP 200 + rate_limited 错误体时，必须判为可退避重试。
+
+    回归保护（线上实测）：此前这类响应没有 status_class，_retry_class 落到
+    non_retryable_local，外层直接放弃——上游限流时 17s 就结束、一次重试都没有。
+    """
+    payload = {
+        "error": {
+            "attempts": 3,
+            "code": "upstream_rate_limited",
+            "detail": '{"error":{"code":"rate_limited"}}',
+        }
+    }
+    assert media_module._submit_rejection_class(payload) == "rate_limited"
+    error = media_module.MediaProcessingError(
+        "provider response does not contain a safe image result",
+        status_class=media_module._submit_rejection_class(payload),
+    )
+    assert media_module._retry_class(error) == "rate_limited"
+
+
+def test_provider_billing_rejection_stays_non_retryable() -> None:
+    """欠费/鉴权类拒绝仍判不可重试（重试无意义且有重复计费风险）。"""
+    payload = {"error": {"code": "insufficient_balance", "message": "账户余额不足"}}
+    assert media_module._submit_rejection_class(payload) == "non_retryable_4xx"
 
 
 def test_image_early_500_retries_only_once(monkeypatch, tmp_path) -> None:

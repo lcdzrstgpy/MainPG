@@ -184,6 +184,73 @@ def test_three_invalid_responses_raise_sanitized_retryable_error(monkeypatch) ->
     assert len(session.requests) == 3
 
 
+def _raw_content(text: str) -> _Response:
+    """把任意字符串塞进 Ark 的 message.content，模拟模型的原始返回。"""
+    return _Response({"choices": [{"message": {"content": text}}]})
+
+
+def test_markdown_fenced_json_response_is_accepted(monkeypatch) -> None:
+    """豆包常把契约 JSON 包进 ```json 代码块；这只是包装问题，不应整条判失败。"""
+    fenced = f"```json\n{json.dumps(VALID_TEXT, ensure_ascii=False)}\n```"
+    session = _Session([_raw_content(fenced)])
+    monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
+
+    result = doubao_text.DoubaoTextClient().generate_listing_text("prompt")
+
+    assert result.as_dict() == VALID_TEXT
+    assert len(session.requests) == 1
+
+
+def test_prose_wrapped_json_response_is_accepted(monkeypatch) -> None:
+    """前后夹带说明文字（含 BOM）同样只按包装处理，直接取配平的对象。"""
+    wrapped = (
+        "\ufeff好的，以下是结果：\n"
+        f"{json.dumps(VALID_TEXT, ensure_ascii=False)}\n\n"
+        "如需调整描述长度请告诉我。"
+    )
+    session = _Session([_raw_content(wrapped)])
+    monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
+
+    result = doubao_text.DoubaoTextClient().generate_listing_text("prompt")
+
+    assert result.as_dict() == VALID_TEXT
+    assert len(session.requests) == 1
+
+
+def test_truncated_json_response_still_fails_with_shape_diagnostic(monkeypatch) -> None:
+    """被截断的 JSON 绝不能猜测补全；失败详情要能指明「未配平」。"""
+    truncated = json.dumps(VALID_TEXT, ensure_ascii=False)[:80]
+    session = _Session([_raw_content(truncated)] * 3)
+    monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
+    monkeypatch.setattr(doubao_text.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(doubao_text.DoubaoTextError) as captured:
+        doubao_text.DoubaoTextClient().generate_listing_text("prompt")
+
+    message = str(captured.value)
+    assert captured.value.error_kind == "invalid_response"
+    assert captured.value.attempt_count == 3
+    assert "object_balanced=False" in message
+    assert VALID_TEXT["optimized_title"] not in message
+
+
+def test_fenced_json_still_fails_the_strict_structural_contract(monkeypatch) -> None:
+    """取 JSON 变宽松、校验不变宽松：围栏里的结构错误照样拒绝。"""
+    fenced_extra = "```json\n" + json.dumps(
+        {**VALID_TEXT, "unexpected": "field"}, ensure_ascii=False
+    ) + "\n```"
+    session = _Session([_raw_content(fenced_extra)] * 3)
+    monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
+    monkeypatch.setattr(doubao_text.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(doubao_text.DoubaoTextError) as captured:
+        doubao_text.DoubaoTextClient().generate_listing_text("prompt")
+
+    assert captured.value.error_kind == "invalid_response"
+    assert captured.value.attempt_count == 3
+    assert "output fields failed validation" in str(captured.value)
+
+
 def test_409_after_contract_failures_preserves_contract_error(monkeypatch) -> None:
     session = _Session(
         [

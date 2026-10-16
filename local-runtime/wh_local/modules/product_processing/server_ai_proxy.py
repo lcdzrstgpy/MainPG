@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any, Iterator
+from typing import Any, Iterator, Mapping
 
 from .direct_credentials import builtin_provider_key
 
@@ -24,6 +24,9 @@ _USAGE_IDS: ContextVar[dict[str, str]] = ContextVar("product_processing_usage_id
 # 以及当前批次 freeze_id（启动对账/结算用）。明文只在内存上下文里存在。
 _GRANTED_KEYS: ContextVar[dict[str, str]] = ContextVar("product_processing_granted_keys", default={})
 _FREEZE_ID: ContextVar[str] = ContextVar("product_processing_freeze_id", default="")
+# 出图链路生效策略：由服务端在批次冻结响应里下发（见 _image_provider_plan）。
+# 客户端只负责对接，不自行决定走哪条链路、也不携带任何链路凭据。
+_IMAGE_PLAN: ContextVar[dict[str, Any]] = ContextVar("product_processing_image_plan", default={})
 
 
 @contextmanager
@@ -32,6 +35,7 @@ def server_ai_context(
     usage_ids: dict[str, str],
     granted_keys: dict[str, str] | None = None,
     freeze_id: str = "",
+    image_plan: Mapping[str, Any] | None = None,
 ) -> Iterator[None]:
     token_marker = _REMOTE_TOKEN.set(str(token or "").strip())
     usage_marker = _USAGE_IDS.set({str(key): str(value) for key, value in usage_ids.items() if value})
@@ -39,9 +43,11 @@ def server_ai_context(
         {str(provider): str(value) for provider, value in (granted_keys or {}).items() if value}
     )
     freeze_marker = _FREEZE_ID.set(str(freeze_id or "").strip())
+    plan_marker = _IMAGE_PLAN.set(dict(image_plan) if isinstance(image_plan, Mapping) else {})
     try:
         yield
     finally:
+        _IMAGE_PLAN.reset(plan_marker)
         _FREEZE_ID.reset(freeze_marker)
         _GRANTED_KEYS.reset(keys_marker)
         _USAGE_IDS.reset(usage_marker)
@@ -66,6 +72,23 @@ def granted_key(provider: str) -> str:
 
 def batch_freeze_id() -> str:
     return str(_FREEZE_ID.get() or "")
+
+
+def parse_image_plan(payload: Mapping[str, Any] | None) -> dict[str, Any]:
+    """从批次冻结响应里取出服务端下发的出图链路策略。
+
+    缺失或格式不符一律视为「未下发」——此时客户端沿用内置默认链路（无印直连），
+    与旧服务端保持兼容。出图链路的开关与切换权完全在服务器（运维改服务器配置 +
+    重启即生效），客户端不自行判断。
+    """
+    plan = payload.get("image_plan") if isinstance(payload, Mapping) else None
+    return dict(plan) if isinstance(plan, Mapping) else {}
+
+
+def granted_image_plan() -> dict[str, Any]:
+    """当前任务上下文里的出图链路策略（未下发时为空 dict）。"""
+    plan = _IMAGE_PLAN.get()
+    return dict(plan) if isinstance(plan, Mapping) else {}
 
 
 def merge_builtin_keys(granted: dict[str, str] | None) -> dict[str, str]:
