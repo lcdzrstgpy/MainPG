@@ -84,7 +84,8 @@ def analyze_dianxiaomi_export(
 ) -> ExportAnalysis:
     requested_count = int(batch["requested_count"])
     status = batch["status"]
-    if status not in EXPORT_CANDIDATE_BATCH_STATUSES:
+    fission = batch.get("mode") == "fission"
+    if status not in EXPORT_CANDIDATE_BATCH_STATUSES and not fission:
         return ExportAnalysis({}, requested_count, "active_batch")
     if not batch.get("listing_fields"):
         return ExportAnalysis({}, requested_count, "listing_fields_missing")
@@ -96,6 +97,13 @@ def analyze_dianxiaomi_export(
     for item in batch.get("items", []):
         grouped.setdefault(int(item["style_index"]), []).append(item)
     for style_index in range(1, requested_count + 1):
+        if fission and not any(
+            int(title.get("style_index") or 0) == style_index
+            and title.get("status") == "completed"
+            and title.get("listing_ready")
+            for title in batch.get("style_titles", [])
+        ):
+            continue
         images = _style_images(grouped.get(style_index, []))
         if images is None:
             continue

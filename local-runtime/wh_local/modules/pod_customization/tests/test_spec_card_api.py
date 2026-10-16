@@ -599,9 +599,11 @@ def test_spec_card_reprint_writes_an_audit_line_per_style(
     seed.close()
     client, service = _client(tmp_path, runtime, billing)
 
-    # 业务日志在测试环境关闭了向 root 传播（runtime_logs._is_testing），
-    # 这里临时打开，让 caplog 能抓到该 logger 的记录；断言内容不变。
-    monkeypatch.setattr(logging.getLogger("business.pod_processing"), "propagate", True)
+    # 显式只挂一次 caplog：新版 pytest 也会捕获不传播的 logger，
+    # 再开启 root 传播会将同一 LogRecord 捕获两次；旧版则需自行挂载。
+    audit_logger = logging.getLogger("business.pod_processing")
+    monkeypatch.setattr(audit_logger, "handlers", [caplog.handler])
+    monkeypatch.setattr(audit_logger, "propagate", False)
     with caplog.at_level(logging.INFO, logger="business.pod_processing"):
         response = client.post(
             f"{API}/batches/{batch['id']}/spec-card/reprint",

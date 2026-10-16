@@ -17,3 +17,9 @@ test("consumption history distinguishes POD batches from product processing", ()
   assert.match(source, /pod_customization\.batch/);
   assert.match(source, /POD 定制/);
 });
+
+test("fission consumption uses its own POD service label", () => {
+  assert.match(source, /pod_fission_v1: "POD 爆款裂变"/);
+  const contract = readFileSync(new URL("../api/personalCenterApi.ts", import.meta.url), "utf8");
+  assert.match(contract, /"pod_fission_v1"/);
+});

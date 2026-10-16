@@ -11,9 +11,11 @@ from dataclasses import dataclass
 from typing import Any
 
 import requests
+from urllib3.util import Timeout
 
 from wh_local.modules.product_processing.doubao_ark import MODEL_ID, DoubaoArkError
 
+from ...runtime_logs import business_logger
 from .billing_contract import PodBillingAuthorizationRequired, PodExecutionGrant
 from .contracts import BusinessFields
 from .runtime import AiRuntime, AiRuntimeConfig
@@ -22,6 +24,14 @@ from .runtime import AiRuntime, AiRuntimeConfig
 PROMPT_VERSION = "pod-title-v1"
 MAX_ATTEMPTS = 5
 RETRY_BACKOFF_SECONDS = 0.5
+# 单次标题调用的**硬性总时长**上限。``requests`` 的 float timeout 只约束「单次读间隔」，
+# 遇到半死不活的代理链路（TCP 连着、数据长时间不来）时整批标题会被一款拖住。这里额外
+# 用 urllib3 的 ``Timeout.total`` 给整次调用（连接 + 读）一个总预算，超时按可重试的
+# 上游故障处理（实测：total 生效时会在预算处中断，而不是无限等）。
+TITLE_CALL_TOTAL_TIMEOUT_SECONDS = 90.0
+# 一次标题生成（含全部重试）的总预算。超预算就不再重试、直接判失败，保证一定收敛，
+# 不会出现「一款标题重试挂十几分钟」。
+TITLE_TOTAL_BUDGET_SECONDS = 300.0
 TITLE_MIN_LENGTH = 80
 TITLE_MAX_LENGTH = 200
 _TITLE_TRAILING_CONNECTORS = frozenset({"and", "or", "with", "for", "of", "in", "to"})
@@ -326,10 +336,31 @@ class PodTitleRuntime(AiRuntime):
         if not planned_call_ids or len(planned_call_ids) > MAX_ATTEMPTS:
             raise ValueError(f"POD title runtime requires one to {MAX_ATTEMPTS} frozen provider calls")
         max_attempts = len(planned_call_ids)
+        # 总预算（跨全部重试）+ 单次调用硬上限，见文件头常量的说明。
+        pod_log = business_logger("pod_processing")
+        budget_deadline = time.monotonic() + TITLE_TOTAL_BUDGET_SECONDS
         for attempt in range(1, max_attempts + 1):
             self._ensure_open()
             attempt_call_id = planned_call_ids[attempt - 1]
             outcome_recorded = False
+            attempt_started = time.monotonic()
+            remaining_budget = budget_deadline - attempt_started
+            if remaining_budget <= 0:
+                # 总预算耗尽：不再重试，直接以可诊断的失败收敛。
+                raise DoubaoArkError(
+                    "POD title generation exhausted its total time budget before the next attempt",
+                    error_kind="transient",
+                    retryable=False,
+                    attempt_count=attempt - 1,
+                )
+            attempt_timeout = min(TITLE_CALL_TOTAL_TIMEOUT_SECONDS, remaining_budget)
+            pod_log.info(
+                "POD 标题调用 | 第%d/%d次 | 单次上限=%.0fs | 剩余总预算=%.0fs",
+                attempt,
+                max_attempts,
+                attempt_timeout,
+                remaining_budget,
+            )
             try:
                 self.acquire_request_token()
                 with self.provider_slot(), self.connection_slot(timeout_seconds=REQUEST_TIMEOUT_SECONDS):
@@ -338,7 +369,9 @@ class PodTitleRuntime(AiRuntime):
                         on_start(attempt_call_id)
                     self._ensure_open()
                     messages = _messages_for_request(request, rejection_feedback=last_feedback)
-                    content = self._complete(_required_ark_key(grant), messages)
+                    content = self._complete(
+                        _required_ark_key(grant), messages, timeout_seconds=attempt_timeout
+                    )
                 if on_outcome is not None:
                     on_outcome(attempt_call_id, "success")
                     outcome_recorded = True
@@ -346,6 +379,11 @@ class PodTitleRuntime(AiRuntime):
                 validate_title_result(
                     result,
                     accepted_titles=request.accepted_titles,
+                )
+                pod_log.info(
+                    "POD 标题调用成功 | 第%d次 | 耗时=%.1fs",
+                    attempt,
+                    time.monotonic() - attempt_started,
                 )
                 return PodTitleResult(
                     title=result.title,
@@ -368,6 +406,15 @@ class PodTitleRuntime(AiRuntime):
                 exc.attempt_count = attempt
                 if exc.error_kind == "invalid_response":
                     exc.retryable = True
+                pod_log.warning(
+                    "POD 标题调用失败 | 第%d/%d次 | 类型=%s 可重试=%s | 耗时=%.1fs | %s",
+                    attempt,
+                    max_attempts,
+                    exc.error_kind,
+                    exc.retryable,
+                    time.monotonic() - attempt_started,
+                    str(exc)[:200],
+                )
                 if not exc.retryable or attempt >= max_attempts:
                     raise
                 last_feedback = _normalized_text(str(exc)) or "provider response was invalid"
@@ -375,6 +422,13 @@ class PodTitleRuntime(AiRuntime):
                 # A contract-invalid title still came back from the provider,
                 # so its attempt was already reported as success above.
                 reason = _normalized_text(str(exc)) or "title output violated the listing contract"
+                pod_log.warning(
+                    "POD 标题调用输出不合格 | 第%d/%d次 | 耗时=%.1fs | %s",
+                    attempt,
+                    max_attempts,
+                    time.monotonic() - attempt_started,
+                    reason[:200],
+                )
                 error = _invalid_response(
                     f"POD title output failed the listing contract: {reason}", attempt_count=attempt
                 )
@@ -395,8 +449,17 @@ class PodTitleRuntime(AiRuntime):
         self._sleeper(seconds)
         self._ensure_open()
 
-    def _complete(self, api_key: str, messages: list[dict[str, Any]]) -> str:
+    def _complete(
+        self, api_key: str, messages: list[dict[str, Any]], *, timeout_seconds: float
+    ) -> str:
         response: Any | None = None
+        # urllib3 的 Timeout.total 才是「整次调用」的硬上限：只给 float 时，requests 仅按
+        # 单次读间隔计超时，代理链路半死不活（连接在、数据不来）时可能一直挂着不返回。
+        timeout = Timeout(
+            connect=min(REQUEST_TIMEOUT_SECONDS, timeout_seconds),
+            read=timeout_seconds,
+            total=timeout_seconds,
+        )
         try:
             self._ensure_open()
             response = self.session.post(

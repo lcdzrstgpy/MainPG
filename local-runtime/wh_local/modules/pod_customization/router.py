@@ -25,6 +25,8 @@ from .contracts import (
     CompositionRenameRequest,
     CompositionUpdateRequest,
     DirectListingTrialCreate,
+    FissionAnalyzeRequest,
+    FissionBatchCreate,
     ExportSelectionUpdate,
     ManualTitleUpdate,
     RegenerateItemCreate,
@@ -67,6 +69,7 @@ class PodRequestLimitMiddleware:
         multipart_paths = {
             f"{_POD_API_PREFIX}/templates",
             f"{_POD_API_PREFIX}/replica/images",
+            f"{_POD_API_PREFIX}/fission/images",
         }
         max_bytes = (
             POD_TEMPLATE_MULTIPART_MAX_BYTES
@@ -134,6 +137,7 @@ def create_router(
     brief_runtime: Any | None = None,
     composition_runtime: Any | None = None,
     analysis_runtime: Any | None = None,
+    fission_analysis_runtime: Any | None = None,
     billing_coordinator: PodBillingCoordinator | None = None,
     start_workers: bool = True,
 ) -> APIRouter:
@@ -146,6 +150,7 @@ def create_router(
         brief_runtime=brief_runtime,
         composition_runtime=composition_runtime,
         analysis_runtime=analysis_runtime,
+        fission_analysis_runtime=fission_analysis_runtime,
         billing_coordinator=billing_coordinator,
         start_workers=start_workers,
     )
@@ -334,6 +339,62 @@ def create_router(
         permitted(actor, "pod_customization.read")
         return _call(service.get_replica_batch, actor, batch_id)
 
+    # --- 爆款裂变：独立 A/B 分析与批次领域 ---
+    @router.post("/fission/images")
+    async def upload_fission_image(request: Request, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        length = request.headers.get("content-length", "")
+        if length.isdigit() and int(length) > POD_TEMPLATE_MULTIPART_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="POD image upload is too large")
+        form = await request.form()
+        upload = form.get("file")
+        role = str(form.get("role") or "").strip()
+        if upload is None or not hasattr(upload, "read"):
+            raise HTTPException(status_code=400, detail="file is required")
+        try:
+            content = await upload.read(MAX_TEMPLATE_UPLOAD_BYTES + 1)
+            if len(content) > MAX_TEMPLATE_UPLOAD_BYTES:
+                raise HTTPException(status_code=413, detail="POD image upload is too large")
+            return _call(
+                service.upload_fission_image,
+                actor,
+                role=role,
+                filename=str(getattr(upload, "filename", "fission-image")),
+                content=content,
+            )
+        finally:
+            await upload.close()
+
+    @router.post("/fission/analyze")
+    def analyze_fission_assets(
+        body: FissionAnalyzeRequest, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        return _call(service.analyze_fission_assets, actor, body)
+
+    @router.post('/fission/batches')
+    def create_fission_batch(body: FissionBatchCreate, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
+        permitted(actor, 'pod_customization.create')
+        return _call(service.create_fission_batch, actor, body, enqueue=start_workers)
+
+    @router.get('/fission/batches')
+    def list_fission_batches(
+        limit: int = Query(default=20, ge=1, le=100), offset: int = Query(default=0, ge=0),
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        permitted(actor, 'pod_customization.read')
+        return _call(service.list_fission_batches, actor, limit=limit, offset=offset)
+
+    @router.get('/fission/batches/{batch_id}')
+    def get_fission_batch(batch_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
+        permitted(actor, 'pod_customization.read')
+        return _call(service.get_fission_batch, actor, batch_id)
+
+    @router.post('/fission/batches/{batch_id}/styles/{style_index}/retry')
+    def retry_fission_style(batch_id: str, style_index: int, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
+        permitted(actor, 'pod_customization.create')
+        return _call(service.retry_fission_style, actor, batch_id, style_index, enqueue=start_workers)
+
     @router.post("/brief/fields")
     def generate_brief_fields(
         body: BriefFieldRequest, actor: Actor = Depends(actor_from_authorization)
@@ -342,7 +403,7 @@ def create_router(
         return _call(service.generate_brief_fields, actor, body)
 
     # --- 构图/视角定制：一段大白话 → 四格画面指令（免费；可存多份模板，一份生效）---
-    # scope 区分模块模板池：full=全定制，replica=爆款复刻；两池各自独立「生效」。
+    # scope 区分模块模板池：full=全定制，replica=爆款复刻，fission=爆款裂变。
     @router.post("/compositions")
     def generate_composition(
         body: CompositionRequest,

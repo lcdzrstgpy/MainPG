@@ -459,6 +459,77 @@ POD_MIGRATION_CONTRACTS: dict[str, MigrationEffect] = {
             ),
         },
     ),
+    "023_fission_registry": MigrationEffect(
+        tables={
+            "pod_customization_capability_registry_versions": _table(
+                "version content_hash content_json analysis_id input_sha256 created_at"
+            ),
+            "pod_customization_rule_registry_versions": _table(
+                "version content_hash content_json analysis_id input_sha256 created_at"
+            ),
+            "pod_customization_registry_current": _table(
+                "registry_kind version updated_at",
+                checks=("CHECK (registry_kind IN ('capability', 'rule'))",),
+            ),
+            "pod_customization_learning_events": _table(
+                "event_id batch_id style_index analysis_id input_sha256 candidate_json capability_version "
+                "rule_version status outcome failure_kind reason created_at"
+            ),
+        },
+        indexes={
+            "idx_pod_fission_learning_versions": _index(
+                "pod_customization_learning_events", "capability_version rule_version event_id"
+            ),
+            "uq_pod_fission_variant_outcome": _index(
+                "pod_customization_learning_events",
+                "batch_id style_index capability_version rule_version",
+                unique=True,
+            ),
+        },
+        column_additions={
+            "pod_customization_learning_events": ("batch_id", "style_index", "outcome", "failure_kind"),
+        },
+    ),
+    "024_fission_domain": MigrationEffect(
+        tables={
+            "pod_customization_fission_analyses": _table(
+                "analysis_id workspace_id owner_user_id source_asset_id target_asset_id status "
+                "source_spec_json target_spec_json user_summary_json raw_response_json candidate_payload_json "
+                "model_version schema_version capability_registry_version rule_registry_version error_code "
+                "created_at updated_at",
+                checks=("CHECK (status IN ('succeeded', 'failed'))",),
+            ),
+            "pod_customization_fission_batches": _table(
+                "batch_id workspace_id owner_user_id analysis_id client_request_id request_hash requested_count "
+                "listing_fields_json composition_json capability_registry_version rule_registry_version "
+                "prompt_version compiler_version status error_message created_at updated_at",
+            ),
+            "pod_customization_fission_variants": _table(
+                "variant_id batch_id workspace_id owner_user_id style_index variant_plan_json "
+                "combination_fingerprint prompt_snapshot image_status title_status spec_card_status "
+                "panel_asset_ids_json public_urls_json error_message created_at updated_at",
+            ),
+        },
+        indexes={
+            "idx_pod_fission_analyses_owner": _index(
+                "pod_customization_fission_analyses", "workspace_id owner_user_id created_at", descending=(False, False, True)
+            ),
+            "idx_pod_fission_analyses_pair": _index(
+                "pod_customization_fission_analyses",
+                "workspace_id owner_user_id source_asset_id target_asset_id created_at",
+                descending=(False, False, False, False, True),
+            ),
+            "idx_pod_fission_batches_owner": _index(
+                "pod_customization_fission_batches", "workspace_id owner_user_id created_at", descending=(False, False, True)
+            ),
+            "idx_pod_fission_batches_status": _index(
+                "pod_customization_fission_batches", "status updated_at"
+            ),
+            "idx_pod_fission_variants_owner": _index(
+                "pod_customization_fission_variants", "workspace_id owner_user_id batch_id style_index"
+            ),
+        },
+    ),
 }
 
 
@@ -525,6 +596,8 @@ def ensure_pod_migration(
         _apply_or_recover_008(connection, sql, marker_exists=marker_exists)
     elif migration_name == "019_drop_template_calibration":
         _apply_019(connection, sql)
+    elif migration_name == "023_fission_registry":
+        _apply_023(connection, sql)
     else:
         connection.executescript(sql)
 
@@ -574,6 +647,23 @@ def _apply_005(connection: sqlite3.Connection, sql: str) -> None:
         connection, "pod_customization_batches"
     ):
         connection.execute(f"{alter_token}{alter_statement}")
+
+
+def _apply_023(connection: sqlite3.Connection, sql: str) -> None:
+    """Add fission event fields to legacy learning tables before 023 creates indexes."""
+    table = "pod_customization_learning_events"
+    if _table_exists(connection, table):
+        existing = _table_columns(connection, table)
+        additions = (
+            ("batch_id", "TEXT NOT NULL DEFAULT ''"),
+            ("style_index", "INTEGER NOT NULL DEFAULT 0"),
+            ("outcome", "TEXT NOT NULL DEFAULT ''"),
+            ("failure_kind", "TEXT NOT NULL DEFAULT ''"),
+        )
+        for name, definition in additions:
+            if name not in existing:
+                connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+    connection.executescript(sql)
 
 
 _DROPPED_CALIBRATION_COLUMNS = (

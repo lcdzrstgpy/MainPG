@@ -13,11 +13,15 @@ test("workspace exposes only the new POD customization page", () => {
   assert.doesNotMatch(shellSource, /case "ai_service":/);
 });
 
-test("POD group exposes replica as a third entry beside full and semi customization", () => {
+test("POD group exposes replica and fission entries beside full and semi customization", () => {
   assert.match(modulesSource, /"pod_replica"/);
+  assert.match(modulesSource, /"pod_fission"/);
+  assert.match(modulesSource, /label: "爆款裂变"/);
   assert.match(modulesSource, /label: "爆款复刻"/);
   assert.match(shellSource, /PodReplicaPage/);
   assert.match(shellSource, /case "pod_replica":/);
+  assert.match(shellSource, /PodFissionPage/);
+  assert.match(shellSource, /case "pod_fission":/);
   // 原两个入口保持可用。
   assert.match(modulesSource, /label: "全定制"/);
   assert.match(modulesSource, /label: "半定制"/);

@@ -7,6 +7,7 @@ from typing import Any
 from ...customer.contracts import CustomerBillingPermissionError
 from ...session import Actor
 from .billing_contract import (
+    POD_BILLING_PROFILE_FISSION,
     POD_BILLING_PROFILE_RANDOM,
     POD_BILLING_PROFILE_SEMI,
     SEMI_STYLES_PER_GROUP,
@@ -31,10 +32,14 @@ class RemotePodBillingCoordinator(PodBillingCoordinator):
     def freeze(self, actor: Actor, plan: PodCallPlan) -> PodExecutionGrant:
         remote_token = self._required_remote_token(actor)
         payload = plan.product_batch_freeze_payload()
-        # 半定制走独立计费接口（默认 32/组，实际单价由服务端倍率配置决定），
-        # 全定制/商品处理走通用 batch 接口。
+        # 各 POD 模式按画像分流到自己的计费通道：
+        # 半定制走 pod-semi（默认 32/组，实际单价由服务端倍率配置决定）；
+        # 爆款裂变走 pod-fission（独立通道，按款计价，与全定制同价）；
+        # 全定制/商品处理/复刻走通用 batch 接口。
         if plan.semi_item_count:
             response = self._remote_client.freeze_pod_semi_points(remote_token, payload)
+        elif plan.billing_profile == POD_BILLING_PROFILE_FISSION:
+            response = self._remote_client.freeze_pod_fission_points(remote_token, payload)
         else:
             response = self._remote_client.freeze_batch_points(remote_token, payload)
         freeze = response.get("freeze") if isinstance(response, Mapping) else None
@@ -53,6 +58,12 @@ class RemotePodBillingCoordinator(PodBillingCoordinator):
         payload = plan.product_batch_settlement_payload(outcomes)
         if plan.semi_item_count:
             self._remote_client.settle_pod_semi_points(
+                grant.remote_token,
+                grant.freeze_id,
+                payload,
+            )
+        elif plan.billing_profile == POD_BILLING_PROFILE_FISSION:
+            self._remote_client.settle_pod_fission_points(
                 grant.remote_token,
                 grant.freeze_id,
                 payload,
@@ -81,11 +92,14 @@ class RemotePodBillingCoordinator(PodBillingCoordinator):
             "scope": list(status.get("scope") or []),
             "billing_profile": billing_profile,
         }
-        # 重新冻结也按画像分流：半定制走独立接口，避免被通用接口重新按全定制单价计价。
+        # 重新冻结也按画像分流：半定制走独立接口（补 item_count），裂变走独立接口，
+        # 其余走通用接口，避免被通用接口重新按全定制单价计价。
         if billing_profile == POD_BILLING_PROFILE_SEMI:
             # 与初始冻结同口径：补款数（组数 × 4），供服务端校验 link_count/item_count。
             payload["item_count"] = link_count * SEMI_STYLES_PER_GROUP
             response = self._remote_client.freeze_pod_semi_points(remote_token, payload)
+        elif billing_profile == POD_BILLING_PROFILE_FISSION:
+            response = self._remote_client.freeze_pod_fission_points(remote_token, payload)
         else:
             response = self._remote_client.freeze_batch_points(remote_token, payload)
         freeze = response.get("freeze") if isinstance(response, Mapping) else None

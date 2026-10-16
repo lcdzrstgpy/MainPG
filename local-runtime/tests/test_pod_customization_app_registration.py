@@ -17,3 +17,9 @@ def test_app_registers_new_pod_router_and_service(tmp_path: Path) -> None:
     assert app.state.pod_customization_service is not None
     assert app.state.pod_customization_ai_runtime is not None
     assert app.state.pod_customization_title_runtime is not None
+    assert app.state.pod_customization_fission_analysis_runtime is not None
+    for path in ("fission/batches", "fission/batches/unknown"):
+        assert client.get(f"/api/pod-customization/{path}").status_code in (401, 403)
+    for path in ("fission/images", "fission/analyze", "fission/batches",
+                 "fission/batches/unknown/styles/1/retry"):
+        assert client.post(f"/api/pod-customization/{path}", json={}).status_code in (401, 403)

@@ -25,13 +25,42 @@ SEMI_PATTERN_ROLES = ("pattern_1", "pattern_2", "pattern_3", "pattern_4")
 PromptVersion = Literal["v1", "v2", "v3"]
 
 # 批次模式：全定制 full / 半定制 semi / 爆款复刻 replica。历史批次 mode 默认 full。
-PodBatchMode = Literal["full", "semi", "replica"]
-POD_BATCH_MODES = ("full", "semi", "replica")
+PodBatchMode = Literal["full", "semi", "replica", "fission"]
+POD_BATCH_MODES = ("full", "semi", "replica", "fission")
 # 复刻：一张样图 + 1–200 张目标白底图，每张对应一款。
 MIN_REPLICA_TARGETS = 1
 MAX_REPLICA_TARGETS = 200
 REPLICA_IMAGE_ROLES = ("source", "target")
 ReplicaImageRole = Literal["source", "target"]
+
+# 爆款裂变：A 样图与 B 白底产品图共同分析，单批最多生成 10 款。
+MIN_FISSION_STYLES = 1
+MAX_FISSION_STYLES = 10
+FISSION_IMAGE_ROLES = ("source_artwork", "target_product")
+FissionImageRole = Literal["source_artwork", "target_product"]
+
+
+class FissionAnalyzeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    source_asset_id: str = Field(min_length=1, max_length=64)
+    target_asset_id: str = Field(min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def distinct_assets(self) -> "FissionAnalyzeRequest":
+        if self.source_asset_id == self.target_asset_id:
+            raise ValueError("样图与白底产品图必须是不同资产")
+        return self
+
+
+class FissionImageUploadResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    asset_id: str
+    role: FissionImageRole
+    width: int
+    height: int
+    preview_url: str
 
 
 def grid_call_count(pattern_count: int) -> int:
@@ -127,7 +156,8 @@ COMPOSITION_PANEL_KEYS = ("panel_1", "panel_2", "panel_3", "panel_4")
 # 构图模板模块归属：全定制与爆款复刻各自独立成池、各自独立「生效」，互不覆盖。
 COMPOSITION_SCOPE_FULL = "full"
 COMPOSITION_SCOPE_REPLICA = "replica"
-COMPOSITION_SCOPES = (COMPOSITION_SCOPE_FULL, COMPOSITION_SCOPE_REPLICA)
+COMPOSITION_SCOPE_FISSION = "fission"
+COMPOSITION_SCOPES = (COMPOSITION_SCOPE_FULL, COMPOSITION_SCOPE_REPLICA, COMPOSITION_SCOPE_FISSION)
 COMPOSITION_PANEL_SLOTS = {
     "panel_1": "主图",
     "panel_2": "细节图 A",
@@ -247,6 +277,16 @@ class ListingFields(BaseModel):
     )
     # 第 4 张图「规格卡」：表头 + 每个 SKU 一行的尺寸详情表格，同时是导出长/宽/高的取值来源。
     spec_card: SpecCardConfig | None = None
+
+
+class FissionBatchCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    client_request_id: str = Field(min_length=1, max_length=128)
+    analysis_id: str = Field(min_length=1, max_length=64)
+    requested_count: StrictInt = Field(ge=MIN_FISSION_STYLES, le=MAX_FISSION_STYLES)
+    listing_fields: ListingFields
+    title: str = Field(default="", max_length=120)
 
 
 class BatchCreate(BaseModel):

@@ -41,8 +41,8 @@ def _request(*targets: ReplicaTargetCreate, client_request_id: str = "req-1") ->
     )
 
 
-def test_pod_batch_modes_accept_full_semi_replica() -> None:
-    assert POD_BATCH_MODES == ("full", "semi", "replica")
+def test_pod_batch_modes_accept_full_semi_replica_fission() -> None:
+    assert POD_BATCH_MODES == ("full", "semi", "replica", "fission")
 
 
 @pytest.mark.parametrize("count", [0, 201])
