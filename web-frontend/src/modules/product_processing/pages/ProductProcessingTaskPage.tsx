@@ -10,9 +10,16 @@ import type {
   ProductProcessingOptions,
   TaskOutputsResponse,
 } from '../types';
+import { registerRunningTask } from '../../../shared/runtime/taskActivity';
 import '../styles/ProductProcessingVerifyPage.css';
 
 const API_BASE = '/api/product-processing';
+
+// 任务终态后的慢速追跟窗口：任务行在「第一轮结束 → 自动补跑轮启动」之间会短暂回到
+// completed，若此刻立刻停止轮询，就再也看不到后续轮次，心跳也会在补跑轮进行中断掉
+// （后端 90 秒后会把正在补跑的任务自动暂停）。这里终态后每 3 秒再看 2 分钟。
+const TERMINAL_POLL_GRACE_MS = 120_000;
+const TERMINAL_POLL_INTERVAL_MS = 3_000;
 
 // SKU 原图可用性检测按批提交：逐批更新进度，避免一次性几百条把单个请求拖成分钟级。
 const SKU_CHECK_BATCH_SIZE = 20;
@@ -404,21 +411,40 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
 
   useEffect(() => {
     if (!batch) return;
-    const running = ['queued', 'running', 'paused'];
-    // 自动补跑轮（含轮间 task 状态短暂回到 completed 的窗口）必须继续轮询，
-    // 否则重试轮的进度与耗时更新会永远停在第 1 轮结束前。
-    const active = running.includes(batch.task.status) || batch.auto_repull?.status === 'running';
-    if (!active) return;
+    const activeStatuses = ['queued', 'running', 'paused'];
+    const isActive = (status: string, repullStatus?: string) =>
+      activeStatuses.includes(status) || repullStatus === 'running';
     const generation = ++pollGenerationRef.current;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let stopped = false;
+    // 只在"确实盯过运行中任务"之后才做终态追跟，避免打开历史终态任务时空转轮询。
+    let sawActive = isActive(batch.task.status, batch.auto_repull?.status);
+    let terminalSince: number | null = null;
+    // 运行中登记（供应用壳续心跳 / 失联恢复时避免整页刷新把本页清掉）。
+    let unregisterRunning: (() => void) | null = null;
+    const syncWatch = (stillActive: boolean) => {
+      if (stillActive && !unregisterRunning) {
+        unregisterRunning = registerRunningTask(batch.task_id);
+      } else if (!stillActive && unregisterRunning) {
+        unregisterRunning();
+        unregisterRunning = null;
+      }
+    };
     const poll = async () => {
       try {
         const data = await ppRequest<TaskOutputsResponse>(ctx, `${API_BASE}/tasks/${batch.task_id}/outputs`);
         if (stopped || pollGenerationRef.current !== generation) return;
         setBatch(data);
-        const stillActive = running.includes(data.task.status) || data.auto_repull?.status === 'running';
-        if (!stillActive) {
+        const stillActive = isActive(data.task.status, data.auto_repull?.status);
+        syncWatch(stillActive);
+        if (stillActive) {
+          sawActive = true;
+          terminalSince = null;
+        } else {
+          if (!sawActive) return;
+          terminalSince = terminalSince ?? Date.now();
+          if (Date.now() - terminalSince >= TERMINAL_POLL_GRACE_MS) return;
+          timer = setTimeout(poll, TERMINAL_POLL_INTERVAL_MS);
           return;
         }
       } catch (err) {
@@ -427,11 +453,13 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       }
       timer = setTimeout(poll, 1000);
     };
+    syncWatch(sawActive);
     timer = setTimeout(poll, 1000);
     return () => {
       stopped = true;
       pollGenerationRef.current += 1;
       if (timer) clearTimeout(timer);
+      if (unregisterRunning) unregisterRunning();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [batch?.task_id, batch?.task.status, batch?.auto_repull?.status]);

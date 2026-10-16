@@ -3567,11 +3567,11 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         now = time.monotonic()
         with self._task_last_seen_lock:
             stale_keys = [
-                key
+                (key, now - seen_at)
                 for key, seen_at in self._task_last_seen.items()
                 if now - seen_at > _TASK_AUTO_PAUSE_TIMEOUT_SECONDS
             ]
-        for workspace_id, task_id in stale_keys:
+        for (workspace_id, task_id), stale_for in stale_keys:
             try:
                 task = self._require_task(task_id, workspace_id)
             except Exception:
@@ -3583,8 +3583,32 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 # 商品已经全部得到终态时，worker 只剩本地文件收尾；此时暂停会
                 # 把 6/6 的任务卡在 99%，并阻断预检/导出。
                 if self._task_has_unfinished_items(task):
+                    # 自动补跑轮进行中不暂停：轮次之间任务行会短暂回到 completed，补跑线程
+                    # 随后又把它置回 running；这段时间的心跳断档往往只是页面抖动（例如失联
+                    # 自动刷新把处理页标签清掉），直接暂停会把补跑轮掐死。
+                    if self._task_in_auto_repull_round(task):
+                        try:
+                            business_logger("task_control").info(
+                                "跳过自动暂停（自动补跑轮进行中）| task_id=%s | workspace=%s | "
+                                "最后心跳距今=%.0fs | 阈值=%.0fs",
+                                task_id, workspace_id, stale_for, _TASK_AUTO_PAUSE_TIMEOUT_SECONDS,
+                            )
+                        except Exception:  # noqa: BLE001 业务日志绝不影响清扫
+                            pass
+                        with self._task_last_seen_lock:
+                            self._task_last_seen.pop((workspace_id, task_id), None)
+                        continue
                     try:
                         self.repository.pause_task_execution(task_id, workspace_id)
+                        # 自动暂停留痕：客服据此区分「用户确实走了」与「页面抖动/误判」。
+                        try:
+                            business_logger("task_control").info(
+                                "自动暂停（心跳超时）| task_id=%s | workspace=%s | "
+                                "最后心跳距今=%.0fs | 阈值=%.0fs",
+                                task_id, workspace_id, stale_for, _TASK_AUTO_PAUSE_TIMEOUT_SECONDS,
+                            )
+                        except Exception:  # noqa: BLE001 业务日志绝不影响清扫
+                            pass
                     except Exception:
                         pass
                 # 移除心跳记录：resume 后由前端重新轮询重建，避免用陈旧时间戳
@@ -3595,6 +3619,13 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 # 已进入终态的任务不再需要跟踪心跳。
                 with self._task_last_seen_lock:
                     self._task_last_seen.pop((workspace_id, task_id), None)
+
+    @staticmethod
+    def _task_in_auto_repull_round(task: dict[str, Any]) -> bool:
+        """任务是否正处于自动补跑轮（settings._auto_repull.status == running）。"""
+        settings = task.get("settings")
+        state = settings.get("_auto_repull") if isinstance(settings, dict) else None
+        return isinstance(state, dict) and str(state.get("status") or "") == "running"
 
     def _heal_orphan_items_once(self) -> None:
         """终态任务孤儿项自愈：标记失败 + 释放草稿（随清扫循环低频执行）。

@@ -25,6 +25,8 @@ import {
   listDimensionNotifications,
   markDimensionNotificationRead,
 } from "../../modules/product_processing/api/dimensionCanvasApi";
+import { keepTaskWatchAlive } from "../../modules/product_processing/api/productProcessingApi";
+import { runningTaskIds } from "../../shared/runtime/taskActivity";
 
 // 页面组件按需懒加载（路由级代码分割，缩小首屏 bundle）。
 // dashboard 是默认首屏 tab，保持同步加载，避免首屏出现加载闪烁。
@@ -123,6 +125,44 @@ function moduleTab(id: WorkspaceModuleId, flatModules: WorkspaceModule[]): Works
   return { key: id, moduleId: id, label: module.label, icon: module.icon, iconClass: module.iconClass };
 }
 
+// 标签页持久化：应用内标签是内存态，整页刷新（失联自动刷新、手动刷新）会把它们清空，
+// 处理页被关掉 → 心跳断 → 后端 90 秒后自动暂停任务（2026-10-15 线上复现）。这里落到
+// sessionStorage，刷新后在同一个浏览器标签内恢复。
+const TABS_STORAGE_KEY = "mainpg:workspace-tabs:v1";
+const MAX_RESTORED_TABS = 12;
+// 运行中任务的心跳兜底节奏：与桌面端 runtime 心跳一致（15 秒）。
+const TASK_WATCH_HEARTBEAT_MS = 15_000;
+
+function isWorkspaceTab(value: unknown): value is WorkspaceTab {
+  if (!value || typeof value !== "object") return false;
+  const tab = value as Partial<WorkspaceTab>;
+  return typeof tab.key === "string" && typeof tab.moduleId === "string" && typeof tab.label === "string";
+}
+
+/** 读取上次的标签页（含激活项）；读不到/结构不对时回落到默认的「工作台」标签。 */
+function readStoredTabs(): { tabs: WorkspaceTab[]; activeKey: string } {
+  const fallbackTab = moduleTab("dashboard", workspacePageModules);
+  const fallback = { tabs: [fallbackTab], activeKey: fallbackTab.key };
+  try {
+    const raw = sessionStorage.getItem(TABS_STORAGE_KEY);
+    if (!raw) return fallback;
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return fallback;
+    const stored = parsed as { tabs?: unknown; activeKey?: unknown };
+    const tabs = Array.isArray(stored.tabs)
+      ? stored.tabs.filter(isWorkspaceTab).slice(0, MAX_RESTORED_TABS)
+      : [];
+    if (!tabs.length) return fallback;
+    const activeKey =
+      typeof stored.activeKey === "string" && tabs.some((tab) => tab.key === stored.activeKey)
+        ? stored.activeKey
+        : tabs[tabs.length - 1].key;
+    return { tabs, activeKey };
+  } catch {
+    return fallback;
+  }
+}
+
 /** 懒加载模块的加载占位：轻量骨架，避免切换模块时出现空白闪烁。 */
 function ModuleFallback() {
   return (
@@ -148,8 +188,10 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
   const [sidebarHovered, setSidebarHovered] = useState(false);
   const [isNarrowDesktop, setIsNarrowDesktop] = useState(() => window.matchMedia(NARROW_DESKTOP_QUERY).matches);
   const [expandedGroupId, setExpandedGroupId] = useState<WorkspaceNavigationGroupId | null>(null);
-  const [activeTabKey, setActiveTabKey] = useState("dashboard");
-  const [tabs, setTabs] = useState<WorkspaceTab[]>([moduleTab("dashboard", workspacePageModules)]);
+  // 标签页只在内存里、刷新即丢：挂载时读一次 sessionStorage 恢复（见 readStoredTabs）。
+  const [restoredTabs] = useState(readStoredTabs);
+  const [activeTabKey, setActiveTabKey] = useState(() => restoredTabs.activeKey);
+  const [tabs, setTabs] = useState<WorkspaceTab[]>(() => restoredTabs.tabs);
   const [workspaceNotice, setWorkspaceNotice] = useState("");
   const [dimensionNotifications, setDimensionNotifications] = useState<DimensionNotification[]>([]);
   const [showScrollTop, setShowScrollTop] = useState(false);
@@ -165,6 +207,27 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
   useEffect(() => {
     tabsRef.current = tabs;
   }, [tabs]);
+
+  // 标签页落 sessionStorage：整页刷新后能回到原来的页面（含正在处理的任务页）。
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(TABS_STORAGE_KEY, JSON.stringify({ tabs, activeKey: activeTabKey }));
+    } catch {
+      // sessionStorage 不可用（隐私模式/配额满）时静默忽略，仅失去"刷新后恢复"的能力。
+    }
+  }, [tabs, activeTabKey]);
+
+  // 运行中任务的心跳兜底：任务页轮询是主心跳，但只要工作台还开着，这里也替被盯着的
+  // 运行中任务续心跳。这样即使某个页面抖动/被刷新导致处理页标签丢掉，任务也不会因
+  // 心跳断档被后端误判「用户已离开」而自动暂停（2026-10-15 线上复现的根因）。
+  useEffect(() => {
+    const beat = () => {
+      for (const taskId of runningTaskIds()) void keepTaskWatchAlive(taskId);
+    };
+    beat();
+    const timer = window.setInterval(beat, TASK_WATCH_HEARTBEAT_MS);
+    return () => window.clearInterval(timer);
+  }, []);
   const isAdmin = isAdminRole(currentRole);
   const visibleModules = useMemo(() => filterModulesForRole(workspaceModules, isAdmin), [isAdmin]);
   const flatModules = useMemo(() => filterModulesForRole(workspacePageModules, isAdmin) as WorkspaceModule[], [isAdmin]);

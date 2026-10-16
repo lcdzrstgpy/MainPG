@@ -1,5 +1,6 @@
 import { apiRequest } from "../../../shared/api/apiClient";
 import { ppRequest, ppUpload, type ApiContext } from "./client";
+import { productProcessingApiContext } from "./context";
 import type {
   DraftMediaResponse,
   DraftSkuAvailabilityResponse,
@@ -148,6 +149,16 @@ export async function importPreviewAssetFromUrl(
     method: 'POST',
     body: { draft_id: draftId, url },
   });
+}
+
+/**
+ * 任务心跳兜底：只取任务摘要（后端在该接口上记心跳）。
+ *
+ * 应用壳在"存在被页面盯着的运行中任务"时周期性调用，避免处理页因整页刷新/重载被清掉后，
+ * 任务被后端判为「用户已离开」而在 90 秒后自动暂停。
+ */
+export async function keepTaskWatchAlive(taskId: number): Promise<void> {
+  await ppRequest(productProcessingApiContext(), `/api/product-processing/tasks/${taskId}/summary`);
 }
 
 export function saveProductPreview(
