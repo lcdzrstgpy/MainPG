@@ -589,6 +589,37 @@ def test_check_draft_sku_availability_flags_not_square_sku(tmp_path: Path) -> No
     assert [values[10] for values in _dxm_export_rows(row)] == ["sku-a", "sku-b"]
 
 
+def test_check_draft_sku_availability_can_skip_text_ocr(tmp_path: Path) -> None:
+    """skip_text_check=True：只判 1:1，完全不进 OCR；按尺寸口径判可用并留下跳过标记。
+
+    1:1 判定读的是库里已存的宽高元数据（零成本），中文检测才要逐张跑 OCR
+    （实测约 277ms/张）。用户勾选「跳过中文检测」时应绕开 OCR，同时仍然拦住非 1:1。
+    """
+    service = _service(tmp_path)
+    draft_id, _chinese_asset = _draft_with_sku_images(service)
+    service._inspect_sku_asset = lambda asset_id, workspace_id: (_ for _ in ()).throw(
+        AssertionError("skip_text_check=True 时不应触发 OCR")
+    )
+
+    plan = service.check_draft_sku_availability(
+        [draft_id], workspace_id="local", skip_text_check=True
+    )["results"][0]
+
+    assert plan["status"] == sku_availability.STATUS_CLEAN
+    assert plan["clean"] is True
+    assert plan["reason"] == "text_check_skipped"
+    assert plan["text_check_skipped"] is True
+    # 没跑 OCR，因此没有任何「检出中文」的结论
+    assert plan["checked"] == 0
+    assert plan["chinese_variant_keys"] == []
+    assert plan["chinese"] == []
+
+    # 导出侧按「规格原图可用」处理（这正是用户勾选此选项的意图）
+    row = _variant_row()
+    service.mark_row_sku_availability(row, draft_id, workspace_id="local")
+    assert row["sku_source_usable"] is True
+
+
 def test_mark_row_sku_availability_excludes_chinese_detected_sku(tmp_path: Path) -> None:
     """服务端兜底：检出中文的 SKU 变种并入剔除键，导出行里不再出现该 SKU。"""
     service = _service(tmp_path)

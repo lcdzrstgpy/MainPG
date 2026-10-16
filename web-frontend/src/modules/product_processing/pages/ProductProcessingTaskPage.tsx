@@ -211,6 +211,8 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
   const [skuCheckDone, setSkuCheckDone] = useState(false);
   const [skuCheckError, setSkuCheckError] = useState('');
   const [skuCheckProgress, setSkuCheckProgress] = useState({ done: 0, total: 0 });
+  /** 只判尺寸、跳过中文 OCR：1:1 读元数据零成本，中文检测要逐张跑 OCR（很慢）。 */
+  const [skipSkuTextCheck, setSkipSkuTextCheck] = useState(false);
   const skuCheckRunRef = useRef(0);
 
   // 失败项自动补跑（后台自动重处理）状态
@@ -382,7 +384,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
     try {
       for (let offset = 0; offset < draftIds.length; offset += SKU_CHECK_BATCH_SIZE) {
         const chunk = draftIds.slice(offset, offset + SKU_CHECK_BATCH_SIZE);
-        const data = await checkDraftSkuAvailability(ctx, chunk);
+        const data = await checkDraftSkuAvailability(ctx, chunk, false, skipSkuTextCheck);
         if (skuCheckRunRef.current !== runId) return;
         for (const item of data.results) collected[item.draft_id] = item;
         setSkuResults({ ...collected });
@@ -741,17 +743,36 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                   />
                   <span>优化链接 SKU</span>
                 </label>
+                <label
+                  className="verify-scope-check"
+                  title="勾选后：只判规格图是否为 1:1 方图（读元数据，零成本），跳过逐张中文 OCR（实测约 277ms/张，4 并发下 1400 张约 98 秒）。非 1:1 仍会被拦住；代价是规格原图上的中文水印不会被发现，导出风险自负。"
+                >
+                  <input
+                    type="checkbox"
+                    checked={skipSkuTextCheck}
+                    onChange={(e) => setSkipSkuTextCheck(e.target.checked)}
+                  />
+                  <span>跳过中文检测（只判 1:1，快）</span>
+                </label>
                 <button
                   className="btn-mini"
                   disabled={skuCheckBusy || !initialDraftIds?.length}
                   onClick={() => void runSkuAvailabilityCheck()}
-                  title="重新检测所选链接的 SKU 规格图是否含中文水印、以及是否为 1:1 方图"
+                  title={
+                    skipSkuTextCheck
+                      ? '重新检测：只判规格图是否为 1:1 方图，跳过中文 OCR（快）'
+                      : '重新检测所选链接的 SKU 规格图是否含中文水印、以及是否为 1:1 方图'
+                  }
                 >{skuCheckBusy ? <><i className="app-spinner is-sm" aria-hidden="true" />检测中…</> : '重新检测'}</button>
               </div>
               {skuCheckBusy && (
                 <div className="verify-repull-banner" role="status">
                   <i className="iconfont icon-loading" aria-hidden="true" />
-                  <span>正在检测所选链接的 SKU 规格图是否含中文水印、是否为 1:1 方图…</span>
+                  <span>
+                    {skipSkuTextCheck
+                      ? '正在检测所选链接的 SKU 规格图是否为 1:1 方图（已跳过中文 OCR）…'
+                      : '正在检测所选链接的 SKU 规格图是否含中文水印、是否为 1:1 方图…'}
+                  </span>
                   <em>已完成 {skuCheckProgress.done} / {skuCheckProgress.total} 条</em>
                 </div>
               )}

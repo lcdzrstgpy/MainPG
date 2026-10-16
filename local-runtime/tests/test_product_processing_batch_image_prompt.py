@@ -416,6 +416,54 @@ def test_batch_image_prompt_not_injected_when_empty(monkeypatch) -> None:
     assert all(MARKER not in call["prompt"] for call in processor.calls)
 
 
+def test_batch_image_prompt_wrapper_grants_scene_on_non_main_panels_only(monkeypatch) -> None:
+    """非主图格允许改背景/场景/道具，但必须带上道具安全契约与主图豁免声明。"""
+    svc, processor = _grid_service(monkeypatch)
+
+    svc._generate_grid_images(
+        1,
+        2,
+        _raw(),
+        "Travel Mug",
+        "Drinkware",
+        ["https://example.com/source.jpg"],
+        "en",
+        "US",
+        image_generation_count=1,
+        batch_image_prompt=GUIDELINE,
+    )
+
+    assert processor.calls
+    for call in processor.calls:
+        assert "PROP AND SCENE SAFETY" in call["prompt"]
+        assert "EXEMPT" in call["prompt"]
+
+
+def test_generate_batch_image_guidelines_asks_for_props_with_hard_limits(
+    service, monkeypatch
+) -> None:
+    """生成辅助提词的提示词必须同时要求：日常场景与配套道具方向 + 硬性限制 + 主图豁免。"""
+    _patch_batch_client(monkeypatch, _FakeBatchClient())
+    captured: dict = {}
+
+    def _complete(self, messages, **kwargs):  # noqa: ANN001
+        captured["messages"] = messages
+        return GUIDELINE
+
+    monkeypatch.setattr(DoubaoArkClient, "complete", _complete)
+
+    out = service.generate_batch_image_prompt(
+        {"titles": ["Panda Ceramic Mug", "Insulated Travel Tumbler"]},
+        remote_token="remote-token",
+    )
+
+    assert out["ok"] is True
+    body = captured["messages"][-1]["content"]
+    assert "COMPANION PROPS" in body
+    assert "HARD LIMITS" in body
+    assert "MAIN image panel" in body
+
+
 class _PremiumProcessor:
     """精品模式 mock：记录 4K 四宫格调用，不触发网络/OCR。"""
 

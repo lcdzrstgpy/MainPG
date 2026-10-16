@@ -13,14 +13,194 @@ from typing import Any
 
 GRID_RUNTIME_CONTRACT = """NON-OVERRIDABLE FOUR-GRID RUNTIME CONTRACT:
 - Output one 2048 x 2048 square 2x2 transport grid using the supplied fixed-layout scaffold as a structural constraint.
-- Keep the vertical separator at x=1016..1031 and the horizontal separator at y=1016..1031. Preserve both as continuous neutral light-gray bands, straight, uniform, and uninterrupted from edge to edge.
-- Keep Panel 1 inside x=0..1015, y=0..1015; Panel 2 inside x=1032..2047, y=0..1015; Panel 3 inside x=0..1015, y=1032..2047; Panel 4 inside x=1032..2047, y=1032..2047.
-- Do not render these coordinates, panel numbers, instructions, guides, or any other text into the image.
-- Draw no second full-height or full-width divider, inset frame, nested collage border, split-panel line, or internal grid inside any quadrant.
-- Each quadrant is a complete standalone product photo. No subject, prop, shadow, surface, background shape, or typography may cross a cut boundary.
-- Show the complete sellable product or verified complete set in every quadrant; no pure macro crop and no hidden or invented parts.
-- Generate zero added letters, words, numbers, labels, slogans, badges, logos, watermarks, arrows, rulers, or measurement marks. No copy is added after splitting either.
-- Keep Panel 4 clean for later deterministic dimension annotation."""
+- Keep the vertical separator at x=1016..1031 and the horizontal separator at y=1016..1031. Preserve both as continuous neutral light-gray bands, straight, uniform, and uninterrupted from edge to edge. This separator is mandatory and is validated before splitting. Draw no second full-height or full-width divider, inset frame, nested collage border, split-panel line, or internal grid inside any quadrant.
+- Keep Panel 1 inside x=0..1015, y=0..1015; Panel 2 inside x=1032..2047, y=0..1015; Panel 3 inside x=0..1015, y=1032..2047; Panel 4 inside x=1032..2047, y=1032..2047. Do not render these coordinates, panel numbers, instructions, guides, or any other text into the image.
+- Each quadrant is a complete standalone product photo with its own background and lighting. No subject, prop, shadow, surface, background shape, or typography may cross a cut boundary, touch a panel edge, or continue across two panels. Never build one continuous poster: do not share lighting, shadows, surfaces, props, or backgrounds across panels.
+- Show the complete sellable product or verified complete set in every quadrant at about 52%-65% of the panel (a detail panel may go smaller when it also carries an inset close-up), with a 10% inner safe margin on all sides including the center divider. No pure macro crop without the complete sellable product is forbidden - keep the whole product or the verified complete set readable. No hidden or invented parts, and no product or prop touching a panel edge.
+- PRODUCT FIDELITY (red line; overrides any style direction that follows): the reference image(s) are the ONLY source of truth. Lock silhouette, proportions, color, material, transparency, structure, layers, thickness, corners, edges, texture, pattern, printed text, digits, and visible quantity; never add, remove, replace, redraw, recolor, resize, stretch, compress, merge, or invent structure or accessories. Do not guess details the reference cannot confirm. You may only redesign placement, camera angle, composition, background, props, lighting, and scene; the product body itself must never change.
+- GEOMETRY INTEGRITY (hard rule, checked before finishing): keep the product's real curved surfaces, radii and smooth transitions; never polygonise, facet, bevel or flatten a curved body into hard-edged planes. Reproduce every structural feature exactly as the reference shows it - handles, spouts, hinges, lids, rims, bases, feet, seams and joints - with the same count, position, thickness, curvature, attachment points and opening shape; never turn a handle into a flat bar, a square hole or an extra plate, and never merge two separate parts into one. Do not add stepped layers, inset panels, double walls, stacked bases, raised rims, floating pieces, ghosted second edges or any structure the reference does not have. Straight lines stay straight, circles stay circular, and ellipse perspective stays physically consistent; never stretch, squash, shear, warp, mirror, melt or bend the product, and never use fisheye or extreme wide-angle distortion. Avoid fragments, notches, pin-holes, cracks, torn or jagged edges, misaligned joints and duplicated outlines. The same product must keep identical geometry and proportions in all four panels, and every prop or hand follows the same real-world geometry and physics. If a feature is unclear in the reference, render it conservatively instead of inventing a new shape.
+- FRAME VARIATION MATRIX (hard rule): the four panels must read as four genuinely different photographs, not one photograph with four swapped backdrops. Lock these nine parameters and give each panel its own value: (1) camera angle and camera eye height; (2) where the product sits in the frame and how much of the frame it fills; (3) shot scale (macro / medium / full); (4) key-light direction; (5) light ratio; (6) colour temperature; (7) surface and backdrop material class; (8) prop count and role; (9) composition rule. Keeping one camera position, one eye level, one centred placement and one light direction while only swapping the backdrop, props or colour is the most common failure and is FORBIDDEN.
+- PRODUCT ORIENTATION (hard rule): keep the product in its normal in-use orientation - upright, the way a buyer would use it. Never tip it over, lay it on its side, turn it upside down or suspend it, unless that is genuinely how the product is used or the panel's stated purpose is to reveal its interior, base or mechanism. A tipped-over product reads as damaged goods and is a listing-quality defect (observed in a real render: a mug lying on its side in the macro panel).
+- DIFFERENTIATION FLOORS (judge pairwise, not "it looks different to me"): Panel 1 is the straight-on hero; each of Panels 2-4 must differ from Panel 1 by at least 15 degrees of camera angle, and Panels 2-4 must differ from EACH OTHER in at least 6 of the 9 parameters above, including at least one shot-scale difference and at least 30 degrees of key-light-direction difference. Across the four panels: at least two light ratios, at least two colour temperatures, all three shot scales present, at most two panels may place the product dead centre, and no two panels may share the same surface material class.
+- POST-GENERATION SELF-CHECK (run before finishing; if a check fails, re-render that panel): (1) does each of Panels 2-4 differ from Panel 1 by 15 degrees or more of camera angle? (2) do Panels 2-4 differ from each other in 6 or more of the nine parameters, including shot scale and key-light direction? (3) are at least two panels off-centre? (4) are macro, medium and full scale all present? (5) are at least two colour temperatures present? (6) have I kept a single camera position and a single light direction and only changed backdrop, props or colour? If any answer is wrong, re-render that panel.
+- QUALITY FLOOR vs STYLE UNITY: this contract and any style section unify QUALITY ONLY - realism, sharpness, product fidelity, geometry integrity, no rendered text. They never unify camera position, camera eye level, product placement, shot scale, light direction, light ratio or colour temperature; those must differ per panel exactly as specified above.
+- PANEL ROLES (hard rules): Panel 4 (bottom-right) is ALWAYS the dimension-annotation background - a clean orthographic, front, side or top view of the complete product on a plain calm surface with 12%-18% clear space and clear silhouette separation; never render measurements, numbers, units, dimension lines, arrows, rulers, scales, size claims or labels. Panels 1-3 must be THREE genuinely different framings of the exact same product: no two of them may share a camera position, framing or background, and Panel 1 (top-left) is the marketplace hero (the first carousel image). This template's own pillar rules define what each of the four panels depicts. Cosmetically swapping the backdrop while keeping the same camera position is the single most common failure and is FORBIDDEN: if any two panels share a camera position, re-render the later one before finishing.
+- Generate zero added letters, words, numbers, labels, slogans, badges, logos, watermarks, arrows, rulers, UI, or measurement marks anywhere in the image, and add no copy after splitting either. Preserve only markings physically printed on the real sellable product; if the product itself carries decorative characters, symbols, or patterns, keep them only as product design.
+- Marketplace authenticity: the product must be complete, sharp, prominent, and unobstructed in every panel. Do not crop away key attributes, hide important parts behind props/text/hands, make the product tiny or blurry, use an unrelated background, or apply deceptive retouching.
+- Final text rule: zero AI-added visible text. Realistic, bright, sharp, clean, marketplace-ready for US/EU shoppers."""
+
+
+# ── 方舟（Seedream）专用四宫格模板 ──────────────────────────────────────────
+# 为什么单独一份：方舟对**输入文本**做内容审核，为 gpt-image 调优的 3 万字符指令模板
+# 会被判 InputTextSensitiveContentDetected 直接 400（实测，1.4s 秒回）；且 Seedream 属
+# 自然语言友好型模型，精简模板反而更稳。
+# 分工（与四套 A/B/C/D 同一套归位原则）：版式 / 保真 / 几何完整性 / 文字禁令 / 面板通用
+# 角色都在 GRID_RUNTIME_CONTRACT 里，由运行时拼接；本模板只承载两件事——
+#   1) 本套的画面方向：真实摄影感、光影技法、自然度要点、构图通用约束；
+#   2) 【区域规划】：逐格写清机位、构图、背景、场景道具、光影与景深。
+# 已知问题：service._generate_grid_images 在方舟链路上会把界面上选的 A/B/C/D 覆盖成本模板
+# （见该处注释），因此方舟链路下「生图模板」选择当前不生效，方案待定。
+ARK_GRID_IMAGE_PROMPT = """本套是「影棚无缝主图」风格的四宫格商品图。上方的运行时契约固定优先，下面只描述本套的画面方向与区域规划。
+
+【画面风格与技法】
+- 真实摄影感：像真实单反/微单拍出来的成品电商图，不是插画、不是 3D 渲染、不是 CAD 硬表面。曲面有连续圆角过渡，直线笔直，圆保持正圆，椭圆透视符合真实镜头。不要过度平滑、塑料感或 HDR 硬压。
+- 光影技法（这是品质下限，不是统一布光）：每格都要有体积感与高光滚降、对侧补光抬亮暗部、轮廓光把商品从背景里勾出来、一层弱环境光做层次；高光要有形状不死白，暗部留细节不压死；材质按真实反射走——金属锐利镜面高光、哑光柔和散射、玻璃与透明体有折射和内透光、织物有纤维感。但**每一格的灯位方向、光比与色温必须按下方逐格参数矩阵执行，四格不得沿用同一套布光**。
+- 自然度要点：浅景深让背景轻微虚化、画面四角轻微光衰减、高光轻微溢出、冷暖色温分层（暖主光配冷环境或反之）；保留轻微颗粒与真实噪声；不要完美对称、不要过度锐化、不要整张同样亮度。
+- 构图通用：主体不顶边、不被道具挤满，四周留呼吸空间；商品落在台面上并有清晰接地阴影与柔和渐变投影，不得悬空或平贴。
+- 整体调性：干净、通透、高级的影棚感——无缝背景、不要房间、不要地平线、不要杂乱堆叠；每格用不同的色纸与台面。只统一品质下限（真实、锐利、保真、无 AI 感、无文字），**不统一机位、光位、景别与色温**——四格必须是四张不同的照片。
+- 逐格参数矩阵（四格不得复用同一套参数；同一维度四格两两不同）：
+  · ①（主图）：平视 0°、视线=产品中腰｜正中对称｜中景｜前侧 45° 主光｜光比 3:1｜5500K｜纯白无缝｜0 道具｜居中对称
+  · ②（45°三视角）：俯视 35°-45°（相机高于产品）｜三分线右侧 1/3｜中近景｜后侧逆光｜光比 5:1｜暖 4000-4500K｜深色木台｜2-3 件道具｜三分构图
+  · ③（微距特写）：微距同高（等效 100mm）｜局部充满 80%-100%｜极特写｜顶光/侧顶光｜光比 6:1｜偏冷 6000K｜亚麻或毡｜1-2 件道具｜对角线填充
+  · ④（正投影）：俯视 90° 正投影｜正中、四周留白 15%-18%｜全景｜正上方大柔光箱｜光比 1.5:1｜5200K｜石或玻璃｜0-1 件道具｜正投影留白
+- 背景色纸：避免单调的死白或一整片浅灰；每格换用不同的柔和色纸或渐变（暖灰、鼠尾草绿、藕粉、炭黑到石墨渐变等），与商品同色系但不抢主体。
+
+【区域规划（四格机位必须互不相同，不得只是换背景）】
+【第①格 · 左上 · 平台主图（纯白合规）】
+- 机位与构图：0° 正视平视，商品居中，约占画幅 55%-70%，四周留白均衡、不顶边。
+- 背景：纯白无缝影棚（必须是 #FFFFFF 到 #FAFAFA 之间的纯白，不得偏灰、偏黄或偏蓝，除极轻微渐变外不得有任何纹理）；本格严禁道具、台面、布景、生活场景、地平线、房间元素。
+- 光影：柔光箱主光加顶部轮廓光；清晰接地阴影与柔和渐变投影。
+- 清晰度：整格清晰，商品边缘锐利。
+【第②格 · 右上 · 45° 三视角（换色纸 + 配套道具）】
+- 机位与构图：离开正面中轴，同时看到正面、一个侧面与顶缘的透视；与①在“背景色调、台面材质、机位、排列、道具、光向”中至少 3 项不同。
+- 背景与道具：换一套色纸与哑光台面，配 2-3 件该商品真实配套的日常道具（马克杯配茶包/托盘/书；保温杯配钥匙/运动水壶；餐具配餐布/餐垫；灯具配小物/绿植），道具只做配角并略靠后。
+- 光影：侧逆主光，台面出现方向性投影与材质边缘高光。
+- 景深：商品全清晰，道具轻微虚化形成前后层次。
+【第③格 · 左下 · 微距细节 / 使用中特写】
+- 机位与构图：近距离特写，放大真实工艺细节（纹理、织法、缝线、镀层、釉面、雕花、边缘抛光、内壁厚度）。
+- 背景与道具：再用一套不同色纸，1-2 件道具作陪衬与景深层次。
+- 光影：贴近的柔光加局部高光，把材质微观起伏打出来；细节不能被虚化吃掉。
+- 人或手：若商品可穿戴或手持，可只出现局部手部正在使用它（自然手部、五指正常、比例正确；不要整人、不要复杂人脸、不要完整模特）。
+【第④格 · 右下 · 正投影留白图】
+- 机位与构图：侧视或俯视正投影，与前三格机位再次不同；商品清晰完整，四周留白 12%-18%，便于后期标注尺寸。
+- 背景与道具：简洁色纸或哑光台面，可放 1 件道具。
+- 光影：均匀柔光，轮廓干净利落，接地阴影清晰。
+- 严禁：尺寸线、数字、单位、箭头、尺子或任何标注。
+
+【道具与场景硬性限制（②③④ 通用，违反即视为废图）】
+道具只做配角：体积明显小于商品、低饱和、并与商品同色系，绝不遮挡、切割、压盖商品或抢走视觉焦点；不得出现其他品牌、商标、包装文字、价格牌、广告语；不得出现整人、人脸、宠物或与商品无关的杂物；不得堆成杂乱堆叠；商品四周留出干净呼吸空间。"""
+
+
+ARK_GRID_IMAGE_PROMPT_B = """本套是「人景叙事」风格的四宫格商品图。上方的运行时契约固定优先，下面只描述本套的画面方向与区域规划。
+
+【画面风格与技法】
+- 真实摄影感：像真实单反/微单拍出来的成品电商图，不是插画、不是 3D 渲染、不是 CAD 硬表面。曲面有连续圆角过渡，直线笔直，圆保持正圆，椭圆透视符合真实镜头。不要过度平滑、塑料感或 HDR 硬压。
+- 光影技法（这是品质下限，不是统一布光）：每格都要有体积感与高光滚降、对侧补光抬亮暗部、轮廓光把商品从背景里勾出来、一层弱环境光做层次；高光要有形状不死白，暗部留细节不压死；材质按真实反射走——金属锐利镜面高光、哑光柔和散射、玻璃与透明体有折射和内透光、织物有纤维感。但**每一格的灯位方向、光比与色温必须按下方逐格参数矩阵执行，四格不得沿用同一套布光**。
+- 自然度要点：浅景深让背景轻微虚化、画面四角轻微光衰减、高光轻微溢出、冷暖色温分层（暖主光配冷环境或反之）；保留轻微颗粒与真实噪声；不要完美对称、不要过度锐化、不要整张同样亮度。
+- 构图通用：主体不顶边、不被道具挤满，四周留呼吸空间；商品落在台面上并有清晰接地阴影与柔和渐变投影，不得悬空或平贴。
+- 整体调性：像真人生活里拍到的画面——不对称构图、留白有呼吸、有人的痕迹但不出现完整模特；彻底避开千篇一律的白底摆拍。只统一品质下限（真实、锐利、保真、无 AI 感、无文字），**不统一机位、光位、景别与色温**——四格必须是四张不同的照片。
+- 逐格参数矩阵（四格不得复用同一套参数；同一维度四格两两不同）：
+  · ①（主图）：平视 0°、视线=产品中腰｜正中对称｜中景｜前侧 45° 主光｜光比 3:1｜5500K｜纯白无缝｜0 道具｜居中对称
+  · ②（45°三视角）：俯视 35°-45°｜三分线左侧 1/3｜中近景｜侧窗侧逆光｜光比 5:1｜暖 4000-4500K｜木质书桌或石材台面｜2-4 件生活道具（可加局部手部）｜三分构图
+  · ③（使用瞬间/细节）：与细节同高、贴近（等效 100mm）｜局部充满｜极特写｜顶光/侧顶光｜光比 6:1｜偏冷 6000K｜亚麻或布｜1-3 件道具｜对角线
+  · ④（正投影）：俯视 90° 或侧视正投影｜正中、四周留白 15%｜全景｜正上方柔光｜光比 1.5:1｜5200K｜石材或木｜0-1 件道具｜正投影留白
+- 叙事方向：先在心里设定“谁在什么场合用它”，再据此选空间、台面、道具与光线；同一个商品在四格里讲四个不同的使用时刻。
+
+【区域规划（四格机位必须互不相同，不得只是换背景）】
+【第①格 · 左上 · 平台主图（纯白合规）】
+- 机位与构图：0° 正视平视，商品居中，约占画幅 55%-70%，四周留白均衡、不顶边。
+- 背景：纯白无缝影棚（必须是 #FFFFFF 到 #FAFAFA 之间的纯白，不得偏灰、偏黄或偏蓝，除极轻微渐变外不得有任何纹理）；本格严禁道具、台面、布景、生活场景、地平线、房间元素。
+- 光影：柔光箱主光加顶部轮廓光；清晰接地阴影与柔和渐变投影。
+- 清晰度：整格清晰，商品边缘锐利。
+【第②格 · 右上 · 45° 三视角 + 真实生活空间】
+- 机位与构图：离开正面中轴，同时看到正面、一个侧面与顶缘的透视；与①在「背景色调、台面材质、机位、排列、道具、光向」中至少 3 项不同。
+- 场景与道具：与该商品真实配套的生活空间（书桌、床头柜、厨房台面、梳妆台、玄关台），铺 2-4 件符合使用场景的道具；可只出现局部人物（手、手腕、侧影）正在使用它。
+- 光影：柔和方向光（侧窗光或暖台灯），有光影方向与空间纵深，背景不要全虚化消失。
+- 景深：商品全清晰，背景自然轻微虚化，保留三层空间感。
+【第③格 · 左下 · 使用中的真实瞬间 / 细节特写】
+- 机位与构图：相机再换一次——贴近的使用瞬间或局部特写，放大真实工艺与真实使用关系。
+- 场景与道具：保留 1-3 件使用场景道具；如出现手，只能是局部自然手部（五指正常、比例正确）。
+- 光影：故事感的侧光或窗光，高光落在材质关键处。
+【第④格 · 右下 · 正投影留白图】
+- 机位与构图：侧视或俯视正投影，与前三格机位再次不同；商品清晰完整，四周留白 12%-18%，便于后期标注尺寸。
+- 背景与道具：简洁台面，可放 1 件道具，不要堆叠。
+- 光影：均匀柔光，轮廓干净，接地阴影清晰。
+- 严禁：尺寸线、数字、单位、箭头、尺子或任何标注。
+
+【道具与场景硬性限制（②③④ 通用，违反即视为废图）】
+道具只做配角：体积明显小于商品、低饱和、并与商品同色系，绝不遮挡、切割、压盖商品或抢走视觉焦点；不得出现其他品牌、商标、包装文字、价格牌、广告语；不得出现完整人像、可辨认人脸、宠物或与商品无关的杂物；不得堆成杂乱堆叠；商品四周留出干净呼吸空间。"""
+
+
+ARK_GRID_IMAGE_PROMPT_C = """本套是「静物平铺俯拍」风格的四宫格商品图。上方的运行时契约固定优先，下面只描述本套的画面方向与区域规划。
+
+【画面风格与技法】
+- 真实摄影感：像真实单反/微单拍出来的成品电商图，不是插画、不是 3D 渲染、不是 CAD 硬表面。曲面有连续圆角过渡，直线笔直，圆保持正圆，椭圆透视符合真实镜头。不要过度平滑、塑料感或 HDR 硬压。
+- 光影技法（这是品质下限，不是统一布光）：每格都要有体积感与高光滚降、对侧补光抬亮暗部、轮廓光把商品从背景里勾出来、一层弱环境光做层次；高光要有形状不死白，暗部留细节不压死；材质按真实反射走——金属锐利镜面高光、哑光柔和散射、玻璃与透明体有折射和内透光、织物有纤维感。但**每一格的灯位方向、光比与色温必须按下方逐格参数矩阵执行，四格不得沿用同一套布光**。
+- 自然度要点：浅景深让背景轻微虚化、画面四角轻微光衰减、高光轻微溢出、冷暖色温分层（暖主光配冷环境或反之）；保留轻微颗粒与真实噪声；不要完美对称、不要过度锐化、不要整张同样亮度。
+- 构图通用：主体不顶边、不被道具挤满，四周留呼吸空间；商品落在台面上并有清晰接地阴影与柔和渐变投影，不得悬空或平贴。
+- 整体调性：整齐、克制、目录级的俯拍——台面就是整个画面，商品与道具按 knolling 方式对齐排列，间距均匀、朝向一致。只统一品质下限（真实、锐利、保真、无 AI 感、无文字），**不统一机位、光位、景别与色温**——四格必须是四张不同的照片。（本套 ②③④ 都是俯视，差异靠景别、光位、光比与台面材质拉开）
+- 逐格参数矩阵（四格不得复用同一套参数；同一维度四格两两不同）：
+  · ①（主图）：平视 0°、视线=产品中腰｜正中对称｜中景｜前侧 45° 主光｜光比 3:1｜5500K｜纯白无缝｜0 道具｜居中对称
+  · ②（铺开全貌）：俯视 90°｜正中或三分｜**全景（商品+道具铺开）**｜大顶光（投影短而柔）｜光比 2:1｜5500K｜木桌或牛皮纸｜2-4 件道具｜居中对称
+  · ③（俯视特写）：俯视 90° 贴近｜局部充满｜**极特写（材质/内容物）**｜**侧顶光（制造方向性投影与纹理）**｜光比 6:1｜偏冷 6000K｜亚麻或毡｜1-2 件道具｜对角线
+  · ④（俯视正投影）：俯视 90° 正投影｜正中、四周留白 15%｜全景｜正上方柔光｜光比 1.5:1｜5200K｜石或玻璃｜0-1 件道具｜正投影留白
+- 俯拍专门要求：相机垂直于台面、近似正交透视，不要眼平/四分之三/低角度；不要竖立的物件、家具或房间；景深要整格清晰（不要靠虚化做层次，用间距与大小差做层次）。
+
+【区域规划（四格俯拍但每格台面与排列都不同）】
+【第①格 · 左上 · 平台主图（纯白合规）】
+- 机位与构图：0° 正视平视，商品居中，约占画幅 55%-70%，四周留白均衡、不顶边。
+- 背景：纯白无缝影棚（必须是 #FFFFFF 到 #FAFAFA 之间的纯白，不得偏灰、偏黄或偏蓝，除极轻微渐变外不得有任何纹理）；本格严禁道具、台面、布景、生活场景、地平线、房间元素。
+- 光影：柔光箱主光加顶部轮廓光；清晰接地阴影与柔和渐变投影。
+- 清晰度：整格清晰，商品边缘锐利。
+【第②格 · 右上 · 90° 俯视 knolling 主体】
+- 机位与构图：真正 90° 俯视，商品居中并占画幅 55%-68%，四周等距留白、不顶边。
+- 台面与道具：换一种台面（木桌、亚麻、浅色大理石、牛皮纸、哑光板）；商品与道具按行列对齐、间距均匀、旋转角一致地铺开。
+- 光影：大面积均匀顶光，投影短而柔。
+- 清晰度：整格清晰，商品与道具都在同一焦平面。
+【第③格 · 左下 · 俯视使用情境 / 内容物陈列】
+- 机位与构图：仍是 90° 俯视，但换成另一种排列（例如商品与它配套使用的物件并排、或打开状态的内容物）。
+- 台面与道具：再换一种台面材质与配色，2-4 件平铺道具，间距均匀。
+- 光影：均匀顶光加轻微侧向补光，让材质纹理可辨。
+- 人或手：可只出现一只平放入镜的局部手（自然、五指正常、比例正确）。
+【第④格 · 右下 · 俯视正投影留白图】
+- 机位与构图：正俯视（或干净的正视/侧视），与前三格排列方式再次不同；商品清晰完整，四周留白 12%-18%，便于后期标注尺寸。
+- 台面与道具：简洁台面，可放 1 件道具。
+- 光影：均匀柔光，轮廓干净，接地阴影清晰。
+- 严禁：尺寸线、数字、单位、箭头、尺子或任何标注。
+
+【道具与场景硬性限制（②③④ 通用，违反即视为废图）】
+道具只做配角：体积明显小于商品、低饱和、并与商品同色系，绝不遮挡、切割、压盖商品或抢走视觉焦点；不得出现其他品牌、商标、包装文字、价格牌、广告语；不得出现完整人像、可辨认人脸、宠物或与商品无关的杂物；不得堆成杂乱堆叠；商品四周留出干净呼吸空间。"""
+
+
+ARK_GRID_IMAGE_PROMPT_D = """本套是「环境远景」风格的四宫格商品图。上方的运行时契约固定优先，下面只描述本套的画面方向与区域规划。
+
+【画面风格与技法】
+- 真实摄影感：像真实单反/微单拍出来的成品电商图，不是插画、不是 3D 渲染、不是 CAD 硬表面。曲面有连续圆角过渡，直线笔直，圆保持正圆，椭圆透视符合真实镜头。不要过度平滑、塑料感或 HDR 硬压。
+- 光影技法（这是品质下限，不是统一布光）：每格都要有体积感与高光滚降、对侧补光抬亮暗部、轮廓光把商品从背景里勾出来、一层弱环境光做层次；高光要有形状不死白，暗部留细节不压死；材质按真实反射走——金属锐利镜面高光、哑光柔和散射、玻璃与透明体有折射和内透光、织物有纤维感。但**每一格的灯位方向、光比与色温必须按下方逐格参数矩阵执行，四格不得沿用同一套布光**。
+- 自然度要点：浅景深让背景轻微虚化、画面四角轻微光衰减、高光轻微溢出、冷暖色温分层（暖主光配冷环境或反之）；保留轻微颗粒与真实噪声；不要完美对称、不要过度锐化、不要整张同样亮度。
+- 构图通用：主体不顶边、不被道具挤满，四周留呼吸空间；商品落在台面上并有清晰接地阴影与柔和渐变投影，不得悬空或平贴。
+- 整体调性：商品作为真实空间里的一件物品被远远拍下来——环境主导画面、商品小而清晰，有真实的纵深与生活气息。只统一品质下限（真实、锐利、保真、无 AI 感、无文字），**不统一机位、光位、景别与色温**——四格必须是四张不同的照片。
+- 逐格参数矩阵（四格不得复用同一套参数；同一维度四格两两不同）：
+  · ①（主图）：平视 0°、视线=产品中腰｜正中对称｜中景｜前侧 45° 主光｜光比 3:1｜5500K｜纯白无缝｜0 道具｜居中对称
+  · ②（客厅远景）：广角、平视略低、机位离远｜商品在三分线｜中远景｜自然窗光侧逆｜光比 4:1｜暖 4000-4500K｜客厅木桌或边柜｜3-5 件家具软装｜三分构图
+  · ③（另一空间远景）：换空间换时段、机位改为略俯或略仰｜商品在右下 1/3｜中远景｜天光（冷、通透）｜光比 2:1｜偏冷 6000K｜阳台石台或庭院石板｜3-5 件环境元素｜对角线
+  · ④（正投影）：俯视 90° 或侧视正投影｜正中、四周留白 15%｜全景｜正上方柔光｜光比 1.5:1｜5200K｜简洁台面｜0-1 件道具｜正投影留白
+- 远景专门要求：广角建立镜头、机位离远，前景/中景/远景三层清晰可辨，背景不要全虚化；商品约占画幅 18%-38%，但必须完整、锐利、不被遮挡。
+
+【区域规划（四格机位必须互不相同，不得只是换房间）】
+【第①格 · 左上 · 平台主图（纯白合规）】
+- 机位与构图：0° 正视平视，商品居中，约占画幅 55%-70%，四周留白均衡、不顶边。
+- 背景：纯白无缝影棚（必须是 #FFFFFF 到 #FAFAFA 之间的纯白，不得偏灰、偏黄或偏蓝，除极轻微渐变外不得有任何纹理）；本格严禁道具、台面、布景、生活场景、地平线、房间元素。
+- 光影：柔光箱主光加顶部轮廓光；清晰接地阴影与柔和渐变投影。
+- 清晰度：整格清晰，商品边缘锐利。
+【第②格 · 右上 · 广角远景（客厅 / 卧室 / 餐厅一类）】
+- 机位与构图：广角、机位离远，商品自然地放在它真实会出现的家具或台面上，占画幅 18%-38%；与①在「房间、家具、色调、机位、光向、时段」中至少 3 项不同。
+- 场景与道具：一个完整的真实空间（沙发/床/餐桌/边柜/地毯/窗帘/绿植/挂画等 3-5 件家具软装），商品只是其中一件物品。
+- 光影：自然光为主（窗光、午后斜射、柔和天光），有方向性长投影与空间明暗层次。
+- 景深：前景清晰、商品清晰、远处房间自然轻微虚化，保留完整纵深。
+【第③格 · 左下 · 户外或另一空间的使用情境远景】
+- 机位与构图：再换一个空间与时段（阳台、庭院、露台、门厅、厨房岛台），机位再次不同，商品依旧小而清晰。
+- 场景与道具：3-5 件真实环境元素，构成可信的生活场景。
+- 光影：自然光与新时段（例如傍晚暖光或阴天柔光），与环境一致。
+- 人或手：可只出现远处局部身影（手或侧影，小比例、不可辨认面孔）。
+【第④格 · 右下 · 正投影留白图】
+- 机位与构图：侧视或俯视正投影，与前三格机位再次不同；商品清晰完整，四周留白 12%-18%，便于后期标注尺寸。
+- 背景与道具：简洁台面，可放 1 件道具。
+- 光影：均匀柔光，轮廓干净，接地阴影清晰。
+- 严禁：尺寸线、数字、单位、箭头、尺子或任何标注。
+
+【道具与场景硬性限制（②③④ 通用，违反即视为废图）】
+环境与道具只做配角：绝不遮挡、切割、压盖商品或抢走视觉焦点；不得出现其他品牌、商标、包装文字、价格牌、广告语；不得出现可辨认人脸、完整人像或与商品无关的杂物；不得堆成杂乱堆叠；商品四周留出干净呼吸空间。"""
 
 
 SINGLE_IMAGE_RUNTIME_CONTRACT = """NON-OVERRIDABLE SINGLE-IMAGE RUNTIME CONTRACT:
@@ -357,27 +537,10 @@ Return ONLY a JSON object with exactly three keys, no explanation:
 {{"optimized_title": "...", "description": "...", "variant_translations": [{{"raw_value": "exact raw value", "export_value": "translated value"}}]}}"""
 
 
-GRID_IMAGE_PROMPT = """Role & Core Mission (fixed):
-You are a senior e-commerce still-life studio photographer serving TEMU, TikTok Shop, and Amazon US listings. Treat the uploaded reference image(s) as the ONLY source of truth for the SKU. The task is to rebuild a clean, high-click, high-conversion STUDIO HERO visual system WITHOUT changing the product itself (the product body must stay 100% unchanged).
+GRID_IMAGE_PROMPT = """Role & Core Mission:
+You are a senior e-commerce still-life studio photographer serving TEMU, TikTok Shop and Amazon US listings. This set is the CLEAN STUDIO SEAMLESS HERO pillar: rebuild the SKU as four calm, clean, high-conversion studio shots. The runtime contract above is fixed and always wins over anything below.
 
-CRITICAL LAYOUT UNDERSTANDING (fixed - read first):
-- The 2x2 grid is a pure "shipping container" for backend code. You are NOT creating a single poster.
-- You are creating FOUR independently perfect, standalone product shots that happen to share one square canvas for local splitting.
-- Generation logic: four distinct finished carousel images, perfectly aligned on one canvas. NEVER build one continuous scene across panels; NEVER share lighting, shadows, surfaces, props, or backgrounds across panels.
-
-COMPOSITION PILLAR (fixed - this set is the CLEAN STUDIO SEAMLESS HERO pillar; the four axes below are what makes this set visually unique):
-- Layout & composition: centered, symmetrical and calm. The product is the single hero, placed centered (or exactly on a rule-of-thirds point) on a seamless studio sweep, surrounded by generous, even, uncluttered negative space. No storytelling clutter, no busy room.
-- Camera distance & angle: controlled studio framing with FOUR DIFFERENT CAMERA POSITIONS, one per panel - Panel 1 a straight-on front hero, Panel 2 a 45-degree three-quarter view, Panel 3 a tight macro detail / in-use close-up, Panel 4 a clean orthographic side or top view. You must MOVE THE CAMERA between panels, not merely change the backdrop. No wide environmental shots and no extreme perspective.
-- Scene & prop staging: a seamless studio backdrop ONLY (a smooth paper / vinyl sweep, or a soft vertical gradient in a curated solid tone); props are minimal, geometric and secondary (a plain riser block, a soft disc, an acrylic or stone plinth) and only when they help read scale or function - never a lived-in room.
-- Light & tone: a professional three-point studio rig - a large softbox key at about 45 degrees, a broad fill that opens the shadow side, and a top/back rim that separates the product from the sweep; clean, bright, neutral, evenly lit, with a crisp grounded contact shadow. One cohesive, controlled, low-saturation studio palette per set.
-
-Execution Priority (fixed): SKU accuracy > crop-safety (every panel works alone) > physical world realism > centered studio composition clarity > clean seamless backdrop > visual polish.
-
-Product Integrity Constraints (fixed - safety red line):
-- Lock before generating: product silhouette, proportions, color, material, transparency, structure, layers, thickness, corners, edges, texture, pattern, text, and digits. Never add, remove, replace, redraw, recolor, resize, stretch, compress, merge, or invent structure. Preserve exact geometry and aspect ratio; never stretch, compress, or deform the product beyond a real camera angle. Do not guess details the reference cannot confirm.
-- Allowed: redesign placement, camera angle, composition, background, lighting, and scene. The product body must never change.
-
-Variable Inputs (batch template - fill per SKU):
+Variable inputs (batch template - filled per SKU):
 [SKU Category]   : {category_path}
 [Product Name]   : {title}
 [Key Features]   : {value_evidence}
@@ -385,122 +548,31 @@ Variable Inputs (batch template - fill per SKU):
 [Color Palette]  : {visual_style} / {background_plan}
 Verified material evidence: {verified_material_evidence}
 
-Global Visual Rules (fixed - clean studio hero logic):
-- Seamless-backdrop rule: every panel is shot on a seamless studio sweep with no visible horizon, floor line, corner, or room architecture - the backdrop curves smoothly into the floor and reads as one continuous surface in a curated solid tone or soft vertical gradient. Choose a different sweep tone, gradient, and surface finish per panel.
-- Centered composition rule: the product is the single hero, placed centered (or exactly on a rule-of-thirds point) with balanced, even, symmetrical negative space on all sides; the composition must feel deliberate, calm, and product-first, never crowded or scene-heavy.
-- Safe composition: product and any minimal riser together cover 55%-70% of each panel; keep 8%-12% inner safe margin on all sides and around the center divider. Never crop, clip, or let product/props touch panel edges (except a dimension panel may use more whitespace).
-- Studio depth rule: keep a clean separation between the product and the sweep - a subtle contact shadow and falloff on the studio floor, plus a gentle light pool or gradient behind the product - so the shot never looks flat or pasted, while the sweep stays smooth and empty. Never introduce a room, a wall corner, a window, or a lifestyle set.
-- Background design: no monotonous plain cream-white / light-gray / flat white stone and no busy room. Each panel uses a distinct seamless sweep - for example a soft warm-grey gradient sweep, a muted sage paper sweep, a blush-tinted sweep, or a charcoal-to-graphite gradient - matched to [SKU Category] but never competing with the product for the visual center.
-- Studio lighting rig: light each panel like a real commercial studio - a large softbox key from camera-left at about 45 degrees, a broad fill that lifts the shadow side without flattening it, and a top/back rim light that traces the product silhouette against the sweep; add clean specular highlights on glossy surfaces, a crisp grounded contact shadow where the product meets the floor, and a subtle reflection or reflection-card bounce. Vary the key direction and tonality across the four panels.
-- Brand consistency: keep one cohesive studio brand tone across the set, but no two panels may share the same sweep tone, gradient, surface finish, or lighting direction - each panel must be a visibly different studio set, not the same shot with a swapped background.
-- CAMERA-ANGLE DIVERSITY (hard rule, violates the brief if ignored): the four panels must show FOUR genuinely different viewing angles of the exact same product - Panel 1 straight-on front, Panel 2 45-degree three-quarter, Panel 3 macro detail / in-use close-up, Panel 4 orthographic side or top. Cosmetically swapping the backdrop while keeping the identical front camera position is the single most common failure and is FORBIDDEN. Before finishing, verify no two panels could be mistaken for the same camera angle; if two share a viewpoint, re-render the later one from a genuinely different angle.
-- Typography is rendered locally after the grid is split. Generate NO letters, words, numbers, labels, slogans, badges, logos, watermarks, arrows, UI, rulers, or measurement marks anywhere in the AI image. Preserve only markings that are physically printed on the real sellable product in the reference.
-- Forbidden: added Chinese or English text, brand names, logos, watermarks, infringing elements, AI gibberish, or malformed hands.
+This pillar's four axes (what makes this set visually unique; apply on top of the fixed panel roles above):
+- Layout & composition: centered, symmetrical and calm - the product is the single hero on a seamless studio sweep with generous, even, uncluttered negative space. No storytelling clutter, no busy room.
+- Camera: controlled studio framing; MOVE the camera between panels, never just swap the backdrop. No wide environmental shots and no extreme perspective.
+- Scene & prop staging: seamless studio backdrop only (smooth paper/vinyl sweep, or a soft vertical gradient in one curated solid tone); props stay minimal, geometric and secondary (plain riser block, soft disc, acrylic or stone plinth) and only when they help read scale or function - never a lived-in room.
+- Light & tone: professional three-point studio rig - large softbox key at about 45 degrees, broad fill opening the shadow side, top/back rim separating product from sweep; clean, bright, neutral, evenly lit, crisp grounded contact shadow, one cohesive low-saturation palette per set.
 
-Physical World Realism (fixed - anti-AI feel):
-- Anchored physicality: every product must be physically grounded. Give it a realistic contact shadow plus a soft drop shadow that matches its base shape and height. Every visible surface needs specular highlights and diffuse lighting that define its form (sharp edge glints for metal, soft sheen for matte materials, clear refraction for glass). Use a directional key light (e.g. a 45-degree main light) so the product has depth and readable volume. Forbidden: flat, shadowless, "floating" compositions, or products that look pasted onto the background.
-- Category-specific detail emphasis (only for details the reference actually shows): game/toy pieces must have real thickness, chamfered edges and smooth enamel/glaze instead of paper-thin stickers; home/kitchen items must show brushed metal, glass refraction and ergonomic handles; jewelry/accessories must show realistic plating, stone facets and chain links.
-- Human & prop integrity: when a lifestyle panel includes hands, show only partial hands (fingers holding or using the product), anatomically natural with defined knuckles and a real Caucasian (Western European) light-to-medium skin tone, never waxy or deformed. Do not generate full-body models or complex human faces. Props must be high-end editorial objects (smooth river stones, raw linen, solid wood slices, ceramic, glassware); no cheap plastic-looking staging.
+Studio rules for this pillar:
+- Seamless backdrop: no visible horizon, floor line, corner or room architecture in any panel; the sweep curves smoothly into the floor as one continuous surface. Choose a different sweep tone, gradient and surface finish per panel.
+- Background design: avoid monotonous plain cream-white / light-gray / flat white stone, and avoid busy rooms. Give each panel a distinct curated sweep - soft warm-grey gradient, muted sage paper, blush tint, or charcoal-to-graphite gradient - matched to the SKU but never competing with the product for the visual center.
+- Studio depth: a clean separation between product and sweep - subtle contact shadow and falloff on the floor plus a gentle light pool or gradient behind the product - so the shot never looks flat or pasted while the sweep stays smooth and empty.
+- Lighting rig: softbox key from camera-left at about 45 degrees, a broad fill that lifts the shadow side without flattening it, and a top/back rim tracing the silhouette; clean specular highlights on glossy surfaces, crisp grounded contact shadow, subtle reflection-card bounce. Vary key direction and tonality across the four panels.
+- Brand consistency: one cohesive studio tone across the set, but no two panels may share the same sweep tone, gradient, surface finish or lighting direction - four visibly different studio setups, not four recolors of one shot.
+- Realism & finish: ground every product with a realistic contact shadow plus a soft drop shadow matching its base shape and height; define form with specular highlights and diffuse light (sharp edge glints for metal, soft sheen for matte, clear refraction for glass) and a directional key so volume reads. Show real material and craft wherever the reference supports it - grain, weave, stitching, metal finish, glass refraction, edge polish, transparent thickness, enamel shine, leather pores, ceramic glaze, wood grain. Keep premium product-photography optics: natural perspective, crisp focal product, background on the same focal plane with only very slight falloff (never heavy bokeh, so the product never looks pasted on), sRGB-accurate color, photorealistic high-resolution finish. Never flat, shadowless, floating, over-smoothed plastic/waxy, or heavy-HDR looks.
+- Human & prop integrity: if a hand appears, show only partial hands (fingers holding or using the product), anatomically natural with defined knuckles and a realistic light-to-medium skin tone; never full-body models or complex faces. Props must be high-end and neutral (river stones, raw linen, solid wood, ceramic, glassware) - no cheap plastic staging.
 
-Premium feel & material polish (fixed - make every panel look expensive and well-finished):
-- Light is the star: use directional side light or soft window light so the material shows natural luster, subtle highlights, layered shadows and craft detail; never flat, harsh or plasticky lighting.
-- Texture first: deliberately show surface grain, weave, stitching, metal finish, glass refraction, edge polish, transparent thickness, enamel shine, leather pores, ceramic glaze, or wood grain whenever those details are visible in the reference.
-- Lens & depth realism: use premium product-photography optics (natural perspective, crisp focal product). Keep the background naturally clear and on the same focal plane and light as the product, with only a very slight depth falloff; never heavy bokeh or large blurred areas, so the product never looks pasted onto the scene. The product itself must stay sharp and readable.
-- Finish realism: preserve natural grain, weave, and surface texture; keep sRGB-accurate color and a photorealistic high-resolution finish; never over-smooth into plastic sheen, waxy AI surfaces, or heavy HDR/ACES flattening.
-- Tone control: keep one cohesive low-saturation premium palette per set; colors must feel curated, not clashing or garish.
+Prop discipline:
+- At most 1-2 minimal studio props per panel - neutral, unbranded, geometric, visually subordinate to the product. Build the per-panel styling brief from the real product: sweep tone -> resting surface -> minimal prop (if any) -> light direction.
+- Props are context only: never look bundled, boxed or implied as included; never stage a prop in packaging, a gift box or a price tag; never stage an accessory the reference cannot support, and never invent packaging that does not truly exist.
+- Give every panel a deliberate 2-3 tone studio story (dominant sweep tone, mid support tone, one accent tying to the product color) plus one clean atmospheric cue (soft gradient falloff, subtle vignette, or gentle light pool) so the set reads rich but controlled, never flat or monotonous.
 
-Studio prop & styling design (fixed - props must stay minimal and studio-clean; no lifestyle rooms):
-- Build a silent styling brief per panel from the REAL product: [the seamless sweep tone] -> [the surface the product rests on] -> [the minimal geometric prop, if any] -> [the studio lighting direction]. Props exist only to prove scale, function, or material - never to tell a lifestyle story.
-- Prop discipline: use at most 1-2 minimal studio props per panel (a plain riser block, a soft disc, an acrylic or stone plinth, a simple folded backdrop card). Props must be neutral, unbranded, geometric, and visually subordinate to the product; never a lived-in room, furniture, or a scene set.
-- Honest props rule: props are context only. They must never look bundled, boxed, or implied as included in the purchase; never stage a prop in packaging, a gift box, or a price tag, and never stage an accessory the reference cannot support.
-- One styling variation per panel: give each of the four panels a different sweep tone, surface finish, prop, and light direction so the set reads as four distinct studio setups, not four recolors of one shot.
-- Visual richness (expand perceived value): give every panel a deliberate 2-3 tone studio story (a dominant sweep tone, a mid support tone, and one accent that ties to the product color), a crisp separation between the product, the studio floor, and its falloff, and one clean atmospheric cue (a soft gradient falloff, a subtle vignette, or a gentle light pool behind the product). Clean and controlled, never flat or monotonous.
-
-Value & usage demonstration (fixed - let the image answer "how many" and "what for"):
-- Quantity-forward display: when the SKU is a multipack or set, stage several identical units stacked with one unit standing forward so the shopper instantly reads the piece count and the real thickness; the visible count must honestly match the sellable quantity.
-- Layered overlap & thickness proof (only for flat, sheet-like, or cut-out goods such as wooden tags, ornaments, cards, or coasters): arrange several real pieces in a fanned, overlapping stack so multiple different designs and their hanging loops all show at once, and let a raking light catch the cut side edge so the piece's real solid thickness and carved relief read clearly - proving it is a solid, substantial material rather than a thin flat print; keep every piece the exact same real product and never imply a thicker or layered construction the product does not truly have.
-- Multi-use anchoring: when the product genuinely serves more than one use, let different panels demonstrate different real uses (for example storage, gift-giving, decoration, or travel) so the listing speaks to more shoppers instead of showing four recolors of one use.
-- Contents demonstration (only for containers, bags, holders, or organizers): you may place unbranded, plainly-styled small items inside the product to reveal capacity and real scale - these contents are scene props only and must never read as included in the purchase.
-- Wearable in-use display (only for wearables such as hair accessories, jewelry, or apparel add-ons): at least one panel must show the product actually worn on a real person (styled in hair, on a wrist, or on a garment) in a partial view, so the shopper instantly reads the real look, placement, and scale; keep the product the clear focal point.
-- Scale reference (for small items): include one believable scale anchor - a real hand or a familiar everyday object - so the shopper can judge the true size; keep it a plain prop and never render printed measurements, rulers, or labels (any text is added later by operations, never by the generator).
-- Bundle & kit display: when the SKU is a bundle or set that pairs different components (for example gift boxes plus socks, a holder plus its accessories, a bottle plus a brush), lay out every real included component together in one panel - the container and its contents, or the kit and all its parts - so the shopper reads exactly what is included; these are real sellable components, not scene props, and you must never add a component the bundle does not truly contain.
-- Assembly demonstration (only if the real product truly ships flat or requires assembly): one panel may show the component both in its flat / unassembled state and its assembled state so the shopper understands the real construction and that assembly is intended; reproduce only the real parts and never invent a cleverer mechanism.
-- Macro proof inset (only for tactile, soft, or highly detailed goods): in one detail panel, beside the full product, include a single small inset crop that zooms into the most convincing real detail - fleece nap, knitted weave, stitching, hardware, or a sculpted 3D element - so the shopper can judge softness and craft up close; the inset must show the same real product and material, never an invented texture, and it must stay fully inside the panel without touching any edge.
-- Craft & materials storytelling (only for handmade, artisanal, or crafted goods): one panel may pair the finished product with the real raw materials and the crafting tool it was made with (yarn and hook, leather and needle, clay and wooden tool) so the shopper reads genuine handcraft and workmanship; these materials are storytelling context only and must never look bundled with or implied as included in the purchase.
-- Functional load demonstration (only for hooks, racks, holders, organizers, and other load-bearing goods): in the lifestyle panels, show the product actually carrying the real items it is made for - a coat, scarf, or tote on a hook, towels on a rail, tools in a holder - so the shopper instantly reads the function and real capacity; hang only plain, unbranded, realistic items and keep the product itself clearly visible, never buried.
-- Performance proof panel (only when the product's real function is durability, water resistance, or strength): one panel may show a believable real-world test on the product itself - water or soap suds running over a water-resistant or bathroom-rated item, or a visibly heavy, bulky item hanging from a load-bearing hook or rack - so the shopper reads the real performance; make the action physically plausible with natural splashes, drips, and contact shadows, and never add labels, numbers, or claim text.
-
-Seasonal & gift styling (apply only when the SKU is a seasonal, holiday, gift, or decorative item; skip for everyday goods):
-- Gift-cluster staging: when the product suits gifting, build a festive prop cluster around it as context - a season-colored gift box, pinecones or berries, twine or ribbon, an unlit pillar candle, and warm string lights - revealing occasion and mood. Props are context only, never implied as included in the purchase.
-- Warm string-light ambience: add warm golden bokeh from string lights or candle glow as the accent point light so the set reads as a warm evening holiday moment instead of flat studio light.
-- Multi-item display: when the reference itself shows several pieces or variants, arrange 4-6 of them together on one styled surface (wood tray, soft throw, linen table) so the shopper instantly reads the range and real scale; never fabricate extra variants.
-- Variant & colorway grid (only when the reference itself shows several distinct designs or colorways): one panel may present the whole real assortment - every design and every color version - as a tidy, evenly spaced grid on a clean neutral seamless backdrop, each piece hung or laid flat at the same size and even spacing, so the shopper instantly reads the full range and sees that the pieces are all different; reproduce only variants that truly exist and never fabricate an extra design or color.
-- Packaged-as-gift display (only if the real product truly ships gift-ready): one panel may show the product in its real retail/gift packaging (printed hang tag plus clear bag) to signal "ready to give" - reproduce only packaging that actually exists, never invent one.
-- Three-tone seasonal palette: unify the set with one seasonal dominant color, one natural neutral (wood, linen, or cream), and one metallic accent (gold or copper) so the set feels premium and cohesive, never clashing or garish.
-
-Display & light staging (apply only when the SKU is a hanging, pendant, decorative, or light-catching item; skip for everyday goods):
-- Hanging display: when the product is made to hang (ornaments, charms, suncatchers, wind chimes, hanging decor), show it genuinely suspended - hung from a real branch, twig, ribbon loop, hook, or against a wall or window - so the shopper instantly reads it as a hanging piece and sees its real drop and swing; keep the whole item inside the safe zone in every panel.
-- Cross-setting demonstration: for decorative items, let the four panels show the same product in different real display settings (a warm holiday tree, a gift-wrap moment, a bright outdoor branch, an indoor sunlit window) so the shopper sees where it fits, while keeping one consistent product identity across all panels.
-- Prism light-cast accent (only when the product contains crystal, glass, or faceted reflective elements): let one strong directional light pass through the faceted or crystal part so it casts a real caustic rainbow or star-shaped light pattern onto the nearby plain surface (wall or table) as an atmospheric accent; keep it soft-edged and physically plausible, never a hard graphic overlay or added text.
-- Kinetic & sensory cue (only for hanging chimes, bells, or moving decor): in one panel, imply real motion and sound - catch the piece mid-swing with a gentle blurred trailing edge, or show a partial hand just touching it so it sways - so the shopper senses that it moves and rings; never draw sound waves, music notes, arrows, or any motion glyph, and keep the gesture anatomically natural with a partial hand only.
-- Multi-hangpoint room styling (only for hanging decor): one panel may show two or three identical pieces hung at different real points in a single room (door, wall hook, window, branch) so the shopper reads that the piece decorates a whole space; keep every piece the exact same real product and keep them clearly separated, fully inside the panel.
-
-One square exact four-panel 2x2 e-commerce grid with clean straight dividers, generated for: {title}
-
-Output contract (fixed - preserve existing backend logic):
-- Generate ONE single square image only: a 2x2 four-panel grid. Do NOT generate separate images, do NOT output a carousel, do NOT output a collage with more or fewer panels.
-- This one generated grid image will be split by backend code after generation, so the four equal panels and straight center dividers are mandatory.
-- Important: the single square image is only a transport container. It must look like FOUR fully independent finished listing images placed in a 2x2 layout, not one continuous poster chopped into four pieces.
-
-Grid construction rules (fixed - clean edges after splitting):
-- The horizontal and vertical cut boundaries must be EXACTLY at the center (50%/50%) of the image. Draw a neutral light-gray separator on both boundaries, 0.4%-0.8% of the full image wide, straight, uniform, and uninterrupted from edge to edge. This separator is mandatory and is validated before splitting.
-- All four panels must be exactly equal in size; no content may cross or touch the divider lines.
-- Each panel must work independently when the grid is cut: its own clear subject, its own background, its own lighting, no dangling props, and no half-composed elements at the panel edges.
-- Safe Margin Rule (anti-crop logic): keep the product fully inside a 10% inner safe zone from ALL panel edges, including the center divider. Do not let the product crowd or fill the panel: in hero and lifestyle panels the main product should occupy about 52%-65% of the panel area, leaving at least a third of the panel as intentional, in-focus background. In a detail panel the complete product may sit smaller (45%-58%) when it includes an inset close-up. Long products (spoons, rulers, strips) must be placed at a 10-15 degree angle or scaled down enough to fit entirely inside the safe zone without touching any border.
-- Absolutely forbidden: any global headline, banner, background shape, product, box, prop, shadow, table, frame, or sentence that continues across two or more panels. No half words at panel edges. No shared poster title outside an individual panel.
-- No borders, no double lines, no rounded corners on the outer edge of the grid.
-
-Panel 1 - Straight-On Studio Hero (top-left) - FRONT VIEW:
-- Camera: a straight-on (0-degree) front hero angle. This is the ONLY straight-on frontal panel in the whole grid; the other three must move the camera off this axis.
-- Show the complete sellable product or complete verified set, centered on a seamless studio sweep; no cropped parts and no partial stacking that hides quantity or structure. Product occupies about 55%-70% with balanced, even negative space on all sides for a clean, tangible, ready-to-ship look.
-- Keep the full product centered (or exactly on a rule-of-thirds point) with symmetrical breathing room; keep it inside the safe area, never touching or clipping the panel edges.
-- Commercial studio light (softbox key plus top/back rim); emphasize material, structure, thickness, transparency, and edge details. Every product must sit on the seamless studio floor with a crisp grounded contact shadow - never floating.
-- Background is a clean seamless sweep, clearly different from the plain white template.
-- No AI-generated copy. No headline, fact card, or typography is added after splitting.
-
-Panel 2 - 45-Degree Three-Quarter View (top-right):
-- Camera MUST move off the front axis: show the complete product from a 45-degree three-quarter angle so the front face, one side face, and the top/front edge are all readable in perspective - a clearly different viewpoint, never a repeat of the Panel 1 straight-on shot with a new background.
-- Must differ from Panel 1 in at least 3 of: sweep tone, surface finish, camera angle, arrangement, props, lighting direction.
-- Show the complete product at about 48%-60%; you may add at most one small magnifier-style inset close-up of a real detail (material grain, printing texture, edge finish, hardware). The inset must blend as a soft optical zoom - borderless, seamless, with no frame, ring, or divider around it (nested collage frames are forbidden). A pure macro crop without the complete product is forbidden.
-- No AI-generated copy or labels.
-
-Panel 3 - Macro Detail / In-Use Close-Up (bottom-left):
-- Camera MUST change again: move to a tight, close macro viewpoint that shows real surface craft at a much larger scale than Panels 1-2 - material grain, weave, stitching, plating, glaze, glass refraction, carved relief, edge polish, or hardware.
-- Show the complete product (or a genuine in-use close-up) large in frame. When the product is wearable, worn, held, or used by hand (hair accessories, jewelry, hooks, kitchen tools, drinkware), you may show a partial hand actually using or wearing it so the shopper reads the real look, placement, and scale - keep the product the clear focal point and the hand partial, anatomically natural, with a realistic Caucasian (Western European) light-to-medium skin tone.
-- Keep the same clean studio language, with a distinct seamless sweep under a distinct studio light; any props stay neutral, unbranded, and subordinate.
-- No lifestyle room, no AI-generated copy, and no scene phrase or labels.
-
-Panel 4 - Dimension Annotation Background (bottom-right) - ORTHOGRAPHIC VIEW:
-- Camera MUST differ from Panel 1: show the complete product as a clean orthographic side profile or straight top (plan) view on a simple seamless studio surface, with clear silhouette separation and suitable for later deterministic dimension annotation. Do NOT reuse the Panel 1 straight-on front angle here.
-- Keep the complete product sharp and leave 12%-18% clear space around it.
-- Never render measurements, numbers, units, dimension lines, arrows, rulers, scales, labels, or size claims.
-- If no useful orthographic view is possible, create a clean alternate product angle (a 45-degree or profile view) with the same empty safe area - never a repeat of the Panel 1 front angle.
-
-Generate-then-self-check (fixed):
-- Confirm product quantity, silhouette, proportions, structure, color, material, transparency, texture, edges, and accessory count all match the reference.
-- Confirm every panel stands alone: no element crosses a divider, nothing touches a panel edge, and each panel has its own complete composition.
-- Confirm camera-angle diversity (hard): Panel 1 is straight-on front, Panel 2 is 45-degree three-quarter, Panel 3 is a macro/in-use close-up, Panel 4 is an orthographic side or top view; if any two panels share the same camera position, re-render the later one from a different angle before finishing.
-- Confirm physical realism: every product is grounded with contact and drop shadows, has directional lighting and readable material texture; no flat, floating, or pasted-looking product.
-- Confirm the studio look: a seamless sweep with no room or horizon, a centered product-first composition, a controlled three-point studio light, and no busy lifestyle set.
-- If any SKU error is found, fix the product body first, then adjust background and polish.
-- Final goal: SKU-accurate, instantly recognizable, differentiated seamless studio sets, full premium composition, matching US consumer taste.
-
-Grid & splitting infrastructure (fixed - do not change):
-- Keep an exact four-panel 2x2 grid with clean straight dividers. Do not change the four-grid structure, divider layout, or split logic.
-- Each panel must be an independent standalone marketplace carousel image with its own complete mini-layout; never merge panels into one continuous scene and never share props, typography, subject, shadow, table surface, or background across panels.
-- Official authenticity rules: the sellable product must be complete, sharp, prominent, and unobstructed in every panel. Do not show only a packaging bag unless the product being sold is packaging bags. Do not crop away key attributes, hide important parts behind props/text/hands, make the product tiny, blur it, use an unrelated background, or perform deceptive Photoshop-style edits.
-- Strict rules: differentiate panels only through style, lighting, background, scene, and composition; do not repeat or lightly recolor the same panel. Do not change the product itself. Do not invent material, dimensions, functions, accessories, certifications, brand, or claims. Generate no added text, arrows, UI, logo, watermark, price, discount badge, certification badge, medical claim, exaggerated claim, or promotional text. If the product itself contains decorative characters, symbols, or patterns, keep them only as product design.
-- Final text rule: zero AI-added visible text. Realistic, bright, sharp, clean, marketplace-ready for US/EU shoppers."""
+Panel briefs for this pillar:
+- Panel 1 (top-left) - Studio Hero, FRONT VIEW: straight-on 0-degree front angle, and it is the ONLY straight-on frontal panel in this set. Complete product centered on a seamless studio sweep at about 55%-70% with balanced, even negative space and a crisp grounded contact shadow.
+- Panel 2 (top-right) - 45-Degree Three-Quarter View: move the camera off the front axis so the front face, one side face and the top edge all read in perspective. Must differ from Panel 1 in at least 3 of sweep tone, surface finish, camera angle, arrangement, props, light direction. Complete product at about 48%-60%; at most one small borderless magnifier-style inset on a real detail.
+- Panel 3 (bottom-left) - Macro Detail / In-Use Close-Up: a much closer macro viewpoint showing real surface craft at a far larger scale - material grain, weave, stitching, plating, glaze, glass refraction, carved relief, edge polish, hardware. When the product is wearable, worn, held or used by hand, a partial hand may actually use or wear it; keep the product the clear focal point.
+- Panel 4 (bottom-right) - Dimension Annotation Background: per the runtime contract (a clean orthographic side or top view with 12%-18% clear space)."""
 
 
 DETAIL_IMAGE_PROMPT = """Use the reference image as the non-negotiable source of truth. Preserve the same product type, shape, color, material, pattern, quantity, proportions, structure, and visible details. Do not redesign or change the product itself.
@@ -597,32 +669,17 @@ JSON schema:
 {{"mappings":[{{"raw_value":"exact input raw value","export_value":"translated shopper-readable value","confidence":"high|medium|low"}}]}}"""
 
 
-GRID_IMAGE_PROMPT_B = """Role & Core Mission (fixed):
-You are a senior visual art director serving TEMU, TikTok Shop, and Amazon US listings. Build on the reference image's model logic but fully upgrade originality. First build a 【character persona + spatial story】 for the product, then shoot it; reject generic studio backgrounds. The final goal: the product looks like an independent designer piece that is hard to reverse-image-search for price comparison.
+GRID_IMAGE_PROMPT_B = """Role & Core Mission:
+You are a senior visual art director serving TEMU, TikTok Shop and Amazon US listings. This set is the HUMAN + SPACE EDITORIAL NARRATIVE pillar: build on the reference image's model logic but fully upgrade originality. First invent a 【character persona + spatial story】 for the product, then shoot it; reject generic studio backgrounds. The goal is that the product reads as an independent designer piece that is hard to reverse-image-search for price comparison. The runtime contract above is fixed and always wins over anything below.
 
-CRITICAL LAYOUT UNDERSTANDING (fixed - read first):
-- The 2x2 grid is a pure "shipping container" for backend code. You are NOT creating a single editorial poster.
-- You are creating FOUR independently perfect, standalone editorial shots that happen to share one square canvas for local splitting.
-- Generation logic: four distinct finished carousel images, perfectly aligned on one canvas. NEVER build one continuous scene across panels; NEVER share lighting, shadows, surfaces, props, model crops, or backgrounds across panels.
+Core philosophy (iron rule): anti-price-comparison / uniqueness > character & spatial storytelling > premium material feel > creative composition. Product accuracy remains the bottom line, but the visual packaging must be full of story.
 
-Core Philosophy (fixed - anti-price-comparison core):
-Execution iron rule: 【anti-price-comparison / uniqueness > character & spatial storytelling > premium material feel > creative composition > product accuracy】. (Product accuracy is still the bottom line, but the visual packaging must be full of story.)
-
-COMPOSITION PILLAR (fixed - this set is the HUMAN + SPACE EDITORIAL NARRATIVE pillar; the four axes below are what makes this set visually unique):
-- Layout & composition: asymmetric editorial magazine layout that deliberately breaks the frame - off-center subjects, dynamic negative space, and human/space shapes cropped by the panel edge. Never centered, never symmetric, never a clean dead-center studio hero.
-- Camera distance & angle: close-up and medium editorial shots that emphasize the relationship between the product and a person or a space - collarbone / wrist / side-profile partial framings, plus one wider environmental moment. Never a straight-on product-only studio shot.
-- Scene & prop staging: a lived-in narrative space tied to an invented persona (a private art study, the end of a light hallway, a wabi-sabi living room, a penthouse window) with non-standard private props (collected art books, one-off ceramics, Belgian linen, mineral specimens). Never a seamless studio sweep.
-- Light & tone: cinematic editorial light - window light, slanting afternoon sun, or a moody wall lamp - directional and story-driven, with a slightly filmic color grade. Never flat even studio light.
-
-Product Integrity Constraints (fixed - safety red line):
-Lock the reference image's silhouette, proportions, color, material, structure, thickness, and texture before generating. Never add, remove, replace, recolor, resize, stretch, or deform. Preserve exact geometry and aspect ratio; never stretch, compress, or deform the product beyond a real camera angle. Redesign the model pose, scene, lighting, props, and composition freely, but the product body must never change.
-
-Variable Inputs (batch template - fill per SKU):
-[SKU Category]     : {category_path}
-[Product Name]     : {title}
-[Key Features]     : {value_evidence}
-[Scene Scenario]   : {scene_plan}
-[Color Palette]    : {visual_style} / {background_plan}
+Variable inputs (batch template - filled per SKU):
+[SKU Category]   : {category_path}
+[Product Name]   : {title}
+[Key Features]   : {value_evidence}
+[Scene Scenario] : {scene_plan}
+[Color Palette]  : {visual_style} / {background_plan}
 Verified material evidence: {verified_material_evidence}
 
 Self-invented story inputs (create internally per SKU, do not ask the user):
@@ -631,129 +688,44 @@ Self-invented story inputs (create internally per SKU, do not ask the user):
 - [Hero Scene]       : invent one distinctive narrative location (e.g. private art study, end of a light hallway, wabi-sabi living room, penthouse window).
 - [Styling Props]    : invent non-standard private props (e.g. collected art books, one-off ceramics, Belgian linen, natural mineral specimens).
 
-Global Visual Rules (fixed - anti-price-comparison / premium logic):
-- Scene uniqueness: no generic studio backgrounds. Always use the [Hero Scene]; the scene must be narrative and show traces of [Character Persona]'s life.
-- Premium props: props must be non-standard private objects (custom jewelry box, imported bouquet, designer objet, rare fabric) to strengthen an "hard to copy" private premium feel.
-- Anti-duplication hardening: reject the mass-market catalogue look and the common category cliche that most listings in this category share. Commit to ONE distinctive, hard-to-replicate styling signature per SKU (an uncommon surface, a signature prop, a specific color story, or an unusual camera framing) so that if the same SKU were shot elsewhere, the result would clearly look different from this set.
-- Composition & cropping: editorial magazine framing (magazine spread, artist portrait); crop "break the frame" - never show the full model, only advanced partial relationships between product and person; any visible person or skin must read as Caucasian (Western European) with a realistic light-to-medium skin tone.
-- Safe composition: keep the sellable product, model-product interaction, and any important prop fully inside each panel with 8%-12% inner safe margin; crop the model creatively if needed, but never crop or clip the product itself. Let the product sit at a natural size rather than filling the frame, so the scene and background stay clearly readable around it.
-- Material emphasis: light must define the product's texture, luster, layers, and craft details; use side light or window light to make the material look expensive.
-- Luxury luster: each panel must show one refined highlight - soft sheen on metal/leather, glass edge light, fabric nap, polished hardware, enamel glow, ceramic glaze, or wood grain catching the light; never flat plastic look; every surface must feel expensive and tactile.
-- Editorial realism: use believable camera optics, natural Caucasian (Western European) skin/hand anatomy with realistic light-to-medium tones, cinematic but clean color grading, a naturally clear background with only a very slight depth falloff (never heavy bokeh or large blurred areas, so the product never looks pasted on), and controlled shadows. Avoid waxy AI skin, generic catalog posing, distorted fingers, muddy low-contrast surfaces, over-smoothed product texture, or fake CGI shine.
-- Human & prop integrity: show only partial hands (fingers, wrist, side profile, collarbone), always with a realistic Caucasian (Western European) light-to-medium skin tone; never full hands with complex gestures, never full-body models, never complex faces. Every product or prop must be physically grounded with a believable contact shadow and soft drop shadow; no floating or pasted-looking elements.
-- Scene depth (anti-flat): every panel must read as a real three-layer space - a foreground detail near the camera, a midground surface the product rests on, and a legible background that stays visibly present and in the same light as the product. Never crush, blur out, or darken the background until it disappears behind the product.
-- Lighting rig per panel: light each panel like a real editorial set - a large soft key light from camera-left at about 45 degrees, a fill that lifts the shadow side, and a rim/back light that separates the product from the background; add one specular highlight, a believable contact shadow, and a gentle reflection-card bounce. Vary the light direction and mood across the four panels so no two share the same rig.
-- Detail placement: the single most premium real detail of the SKU must be placed at a clear focal point (macro zone, golden-ratio spot); nothing dangles at the panel edges.
-- Forbidden (strict): no AI-added text, logo, brand name, watermark, label, badge, number, slogan, arrow, ruler, or distortion in any panel. Preserve only markings physically printed on the real sellable product.
+This pillar's four axes (what makes this set visually unique; apply on top of the fixed panel roles above):
+- Layout & composition: asymmetric editorial magazine layout that deliberately breaks the frame - off-center subjects, dynamic negative space, human/space shapes cropped by the panel edge. Never centered, never symmetric, never a clean dead-center studio hero.
+- Camera: close-up and medium editorial framings that emphasize the relationship between the product and a person or a space - collarbone / wrist / side-profile partial framings plus one wider environmental moment. Never a straight-on product-only studio shot.
+- Scene & prop staging: a lived-in narrative space tied to the invented persona (a private art study, the end of a light hallway, a wabi-sabi living room, a penthouse window) with non-standard private props (collected art books, one-off ceramics, Belgian linen, mineral specimens). Never a seamless studio sweep.
+- Light & tone: cinematic editorial light - window light, slanting afternoon sun, or a moody wall lamp - directional and story-driven, with a slightly filmic color grade. Never flat even studio light.
 
-Usage-grounded scene design (fixed - the [Hero Scene] must fit real use; no generic or monotonous backdrops):
-- Ground the invented story in real use: for each panel derive [the real occasion] -> [the real location] -> [the surface] -> [2-4 companion objects that reveal the SKU's use] -> [time of day and light] from how the product is actually used, then style it with the [Character Persona] and [Hero Scene]. The narrative must stay believable for this exact product.
-- Usage-scenario fit: the setting must be a real place where this SKU is used or displayed (writing desk, bedside console, gallery ledge, kitchen island, dressing table, entryway console), chosen to match [SKU Category] and the product's real function - not a random pretty interior.
+Pillar rules:
+- Scene uniqueness: no generic studio backgrounds; always use the [Hero Scene], which must be narrative and show traces of the [Character Persona]'s life.
+- Premium props: props must be non-standard private objects (custom jewelry box, imported bouquet, designer objet, rare fabric) to strengthen a hard-to-copy private premium feel.
+- Anti-duplication hardening: reject the mass-market catalogue look and the category cliche most listings share. Commit to ONE distinctive, hard-to-replicate styling signature per SKU (an uncommon surface, a signature prop, a specific color story, or an unusual camera framing) so the same SKU shot elsewhere would clearly look different from this set.
+- Composition & cropping: editorial magazine framing; crop "break the frame" - never show a full model, only advanced partial relationships between product and person. Any visible person or skin must read as Caucasian (Western European) with a realistic light-to-medium skin tone.
+- Material emphasis & luxury luster: light must define the product's texture, luster, layers and craft details - use side or window light so the material looks expensive, and give every panel one refined highlight (soft sheen on metal/leather, glass edge light, fabric nap, polished hardware, enamel glow, ceramic glaze, or wood grain catching the light). Never a flat plastic look.
+- Editorial realism: believable optics, natural hand and skin anatomy, cinematic but clean color grading, a naturally clear background with only a very slight depth falloff (never heavy bokeh, so the product never looks pasted on), controlled shadows. Avoid waxy AI skin, generic catalog posing, distorted fingers, muddy low-contrast surfaces, over-smoothed product texture and fake CGI shine.
+- Human & prop integrity: show only partial hands (fingers, wrist, side profile, collarbone) with a realistic light-to-medium skin tone; never full hands with complex gestures, full-body models, or complex faces. Every product and prop must be physically grounded with a believable contact shadow and soft drop shadow; no floating or pasted-looking elements.
+- Scene depth (anti-flat): every panel must read as a real three-layer space - a foreground detail near the camera, a midground surface the product rests on, and a legible background that stays visibly present and in the same light as the product. Never crush, blur out, or darken the background until it disappears.
+- Lighting rig per panel: a large soft key from camera-left at about 45 degrees, a fill that lifts the shadow side, and a rim/back light separating product from background; add one specular highlight, a believable contact shadow and a gentle reflection-card bounce. Vary direction and mood across the four panels so no two share the same rig.
+- Detail placement: put the single most premium real detail of the SKU at a clear focal point (macro zone or golden-ratio spot); nothing dangling at the panel edges.
+
+Usage-grounded scene design (the [Hero Scene] must fit real use; no generic or monotonous backdrops):
+- Ground the invented story in real use: per panel derive [the real occasion] -> [the real location] -> [the surface] -> [2-4 companion objects that reveal the SKU's use] -> [time of day and light] from how the product is actually used, then style it with the [Character Persona] and [Hero Scene]. The narrative must stay believable for this exact product.
+- Usage-scenario fit: the setting must be a real place where this SKU is used or displayed (writing desk, bedside console, gallery ledge, kitchen island, dressing table, entryway console), matched to [SKU Category] and the product's real function - not a random pretty interior.
 - Usage-habit fit: stage the scene the way a real owner of this persona would actually use and hold the item, so a shopper instantly recognizes the natural use.
 - Companion objects (use-context props): include 2-4 believable companion objects that reveal purpose and real scale (the items the product holds, serves, organizes, or is used alongside), styled as the persona's own possessions. Never leave a blank background.
-- Honest props rule: companion objects are context only. They must never look bundled, boxed, or implied as included in the purchase; never stage a companion object in packaging, a gift box, a price tag, or a "what is in the box" layout, and never stage an accessory the reference cannot support.
-- One occasion per panel: each of the four panels must use a different occasion, location, and companion set so the set tells four distinct usage stories, not four recolors of one scene.
-- Visual richness (expand perceived value): give every panel a deliberate 2-3 color story, a clear foreground / midground / background separation with slight size, focus, and tonal differences, and one atmospheric cue (soft window streak, morning haze, dappled light, gentle steam, or a warm lamp pool). Rich and layered, never flat or monotone.
+- Honest props rule: companion objects are context only - never look bundled, boxed or implied as included; never stage one in packaging, a gift box, a price tag or a "what is in the box" layout; never stage an accessory the reference cannot support. Do not invent packaging, storage cases, cards, ribbons or set contents that are absent from the reference.
+- One occasion per panel: each of the four panels must use a different occasion, location and companion set, so the set tells four distinct usage stories rather than four recolors of one scene.
+- Visual richness (expand perceived value): give every panel a deliberate 2-3 color story, a clear foreground / midground / background separation with slight size, focus and tonal differences, and one atmospheric cue (soft window streak, morning haze, dappled light, gentle steam, or a warm lamp pool). Rich and layered, never flat or monotone.
 
-Value & usage demonstration (fixed - let the image answer "how many" and "what for"):
-- Quantity-forward display: when the SKU is a multipack or set, stage several identical units stacked with one unit standing forward so the shopper instantly reads the piece count and the real thickness; the visible count must honestly match the sellable quantity.
-- Layered overlap & thickness proof (only for flat, sheet-like, or cut-out goods such as wooden tags, ornaments, cards, or coasters): arrange several real pieces in a fanned, overlapping stack so multiple different designs and their hanging loops all show at once, and let a raking light catch the cut side edge so the piece's real solid thickness and carved relief read clearly - proving it is a solid, substantial material rather than a thin flat print; keep every piece the exact same real product and never imply a thicker or layered construction the product does not truly have.
-- Multi-use anchoring: when the product genuinely serves more than one use, let different panels demonstrate different real uses (for example storage, gift-giving, decoration, or travel) so the set speaks to more shoppers instead of showing four recolors of one use.
-- Contents demonstration (only for containers, bags, holders, or organizers): you may place unbranded, plainly-styled small items inside the product to reveal capacity and real scale - these contents are scene props only and must never read as included in the purchase.
-- Wearable in-use display (only for wearables such as hair accessories, jewelry, or apparel add-ons): at least one panel must show the product actually worn on a real person (styled in hair, on a wrist, or on a garment) in a partial view, so the shopper instantly reads the real look, placement, and scale; keep the product the clear focal point.
-- Scale reference (for small items): include one believable scale anchor - a real hand or a familiar everyday object - so the shopper can judge the true size; keep it a plain prop and never render printed measurements, rulers, or labels (any text is added later by operations, never by the generator).
-- Bundle & kit display: when the SKU is a bundle or set that pairs different components (for example gift boxes plus socks, a holder plus its accessories, a bottle plus a brush), lay out every real included component together in one panel - the container and its contents, or the kit and all its parts - so the shopper reads exactly what is included; these are real sellable components, not scene props, and you must never add a component the bundle does not truly contain.
-- Assembly demonstration (only if the real product truly ships flat or requires assembly): one panel may show the component both in its flat / unassembled state and its assembled state so the shopper understands the real construction and that assembly is intended; reproduce only the real parts and never invent a cleverer mechanism.
-- Macro proof inset (only for tactile, soft, or highly detailed goods): in one detail panel, beside the full product, include a single small inset crop that zooms into the most convincing real detail - fleece nap, knitted weave, stitching, hardware, or a sculpted 3D element - so the shopper can judge softness and craft up close; the inset must show the same real product and material, never an invented texture, and it must stay fully inside the panel without touching any edge.
-- Craft & materials storytelling (only for handmade, artisanal, or crafted goods): one panel may pair the finished product with the real raw materials and the crafting tool it was made with (yarn and hook, leather and needle, clay and wooden tool) so the shopper reads genuine handcraft and workmanship; these materials are storytelling context only and must never look bundled with or implied as included in the purchase.
-- Functional load demonstration (only for hooks, racks, holders, organizers, and other load-bearing goods): in the lifestyle panels, show the product actually carrying the real items it is made for - a coat, scarf, or tote on a hook, towels on a rail, tools in a holder - so the shopper instantly reads the function and real capacity; hang only plain, unbranded, realistic items and keep the product itself clearly visible, never buried.
-- Performance proof panel (only when the product's real function is durability, water resistance, or strength): one panel may show a believable real-world test on the product itself - water or soap suds running over a water-resistant or bathroom-rated item, or a visibly heavy, bulky item hanging from a load-bearing hook or rack - so the shopper reads the real performance; make the action physically plausible with natural splashes, drips, and contact shadows, and never add labels, numbers, or claim text.
-
-Seasonal & gift styling (apply only when the SKU is a seasonal, holiday, gift, or decorative item; skip for everyday goods):
-- Gift-cluster staging: when the product suits gifting, build a festive prop cluster around it as the persona's own styling - a season-colored gift box, pinecones or berries, twine or ribbon, an unlit pillar candle, and warm string lights - revealing occasion and mood. Props are context only, never implied as included in the purchase.
-- Warm string-light ambience: add warm golden bokeh from string lights or candle glow as the accent point light so the [Hero Scene] reads as a warm evening holiday moment instead of flat studio light.
-- Multi-item display: when the reference itself shows several pieces or variants, arrange 4-6 of them together on a styled [Hero Scene] surface so the shopper instantly reads the range and real scale; never fabricate extra variants.
-- Variant & colorway grid (only when the reference itself shows several distinct designs or colorways): one panel may present the whole real assortment - every design and every color version - as a tidy, evenly spaced grid on a clean neutral seamless backdrop, each piece hung or laid flat at the same size and even spacing, so the shopper instantly reads the full range and sees that the pieces are all different; reproduce only variants that truly exist and never fabricate an extra design or color.
-- Packaged-as-gift display (only if the real product truly ships gift-ready): one panel may show the product in its real retail/gift packaging (printed hang tag plus clear bag) to signal "ready to give" - reproduce only packaging that actually exists, never invent one.
-- Three-tone seasonal palette: unify the set with one seasonal dominant color, one natural neutral (wood, linen, or cream), and one metallic accent (gold or copper) so the set feels premium and cohesive, never clashing or garish.
-
-Display & light staging (apply only when the SKU is a hanging, pendant, decorative, or light-catching item; skip for everyday goods):
-- Hanging display: when the product is made to hang (ornaments, charms, suncatchers, wind chimes, hanging decor), show it genuinely suspended - hung from a real branch, twig, ribbon loop, hook, or against a wall or window - so the shopper instantly reads it as a hanging piece and sees its real drop and swing; keep the whole item inside the safe zone in every panel.
-- Cross-setting demonstration: for decorative items, let the four panels show the same product in different real display settings (a warm holiday tree, a gift-wrap moment, a bright outdoor branch, an indoor sunlit window) so the shopper sees where it fits, while keeping one consistent product identity across all panels.
-- Prism light-cast accent (only when the product contains crystal, glass, or faceted reflective elements): let one strong directional light pass through the faceted or crystal part so it casts a real caustic rainbow or star-shaped light pattern onto the nearby plain surface (wall or table) as an atmospheric accent; keep it soft-edged and physically plausible, never a hard graphic overlay or added text.
-- Kinetic & sensory cue (only for hanging chimes, bells, or moving decor): in one panel, imply real motion and sound - catch the piece mid-swing with a gentle blurred trailing edge, or show a partial hand just touching it so it sways - so the shopper senses that it moves and rings; never draw sound waves, music notes, arrows, or any motion glyph, and keep the gesture anatomically natural with a partial hand only.
-- Multi-hangpoint room styling (only for hanging decor): one panel may show two or three identical pieces hung at different real points in a single room (door, wall hook, window, branch) so the shopper reads that the piece decorates a whole space; keep every piece the exact same real product and keep them clearly separated, fully inside the panel.
-
-One square exact four-panel 2x2 e-commerce grid with clean straight dividers, generated for: {title}
-
-Output contract (fixed - preserve existing backend logic):
-- Generate ONE single square image only: a 2x2 four-panel grid. Do NOT generate four separate images, do NOT output a carousel, do NOT output a collage with more or fewer panels.
-- This one generated grid image will be split by backend code after generation, so the four equal panels and straight center dividers are mandatory.
-- Important: the single square image is only a transport container. It must look like FOUR fully independent finished listing/editorial images placed in a 2x2 layout, not one continuous poster chopped into four pieces.
-
-Grid construction rules (fixed - clean edges after splitting):
-- The horizontal and vertical cut boundaries must be EXACTLY at the center (50%/50%) of the image. A clean uniform separator may be used, but it must be no wider than 0.8% of the full image.
-- All four panels must be exactly equal in size; no content may cross or touch the divider lines.
-- Each panel must work independently when the grid is cut: its own clear subject, its own background, its own lighting, no dangling props or half-composed elements at the panel edges.
-- Safe Margin Rule (anti-crop logic): the complete product must stay fully inside a 10% inner safe zone from ALL panel edges including the center divider; in hero panels it should occupy about 52%-65% of the panel area so at least a third of the panel stays as intentional, in-focus scene and background. Long or thin products must be angled or scaled down enough to avoid any local split/crop loss.
-- Absolutely forbidden: any global headline, banner, background shape, product, model body, prop, shadow, table, frame, or sentence that continues across two or more panels. No half words at panel edges.
-- No borders, no double lines, no rounded corners on the outer edge of the grid.
-
-Panel 1 - Hero Shot (top-left): the best moment the persona wears/uses the SKU.
-- Framing: magazine-cover close-up or medium shot (only collarbone, wrist, side profile), emphasizing the relationship between product and person.
-- Scene & light: locked in the [Hero Scene]; natural window light, afternoon slanting sun, or moody wall lamp for a storytelling feel.
-- Narrative: the visual center stays on the product; ambient light and [Styling Props] must reinforce the [Target Vibe]. The product and model must be physically grounded with believable contact and drop shadows.
-
-Panel 2 - Complete Product + Integrated Detail (top-right): show the complete product at about 48%-60% and emphasize one real material, edge, hardware, or structure detail through camera angle, lighting, or a tight macro framing inside one unified scene. Keep the surrounding scene naturally clear and visible rather than heavily blurred.
-- A pure macro crop without the complete sellable product is forbidden. Do not add an inset frame, split-panel border, nested collage, or second divider inside this panel.
-
-Panel 3 - Credible Lifestyle (bottom-left): show the complete product in a believable use or display context supported by the source category, with 2-4 companion objects that reveal its purpose and real scale (context only, never implied as included in the purchase).
-- Do not invent packaging, storage cases, accessories, cards, ribbons, or set contents that are absent from the reference. Companion objects are use-context props only, never packaged, boxed, or presented as part of the set.
-- If hands appear, show only partial hands (fingers, wrist) with natural anatomy and a realistic Caucasian (Western European) light-to-medium skin tone; keep the product sharp, unobstructed, and exactly the original SKU.
-
-Panel 4 - Dimension Annotation Background (bottom-right):
-- Create a clean front, side, or top view that is suitable for later deterministic dimension annotation.
-- Keep the complete product sharp and leave 12%-18% clear space around it.
-- Never render measurements, numbers, units, dimension lines, arrows, rulers, scales, labels, or size claims.
-- If no useful orthographic view is possible, create a clean alternate product angle with the same empty safe area.
-
-Generate-then-self-check (fixed):
-- Product integrity check: confirm the product body (proportions, color, structure) strictly matches the reference - no stretching or deformation.
-- Anti-price-comparison check: strong editorial-magazine feel? Clearly not a plain white-background or generic studio image?
-- Anti-duplication check: does the styling clearly break away from the mass-market catalogue look and the common category cliche, with one distinctive signature that is hard to replicate?
-- Premium material check: are luster and texture fully defined by light, looking worth a higher verification price?
-- Physical realism check: every product and prop is grounded with contact and drop shadows and directional lighting; no flat, floating, or pasted-looking elements.
-- Violation check: reconfirm no text, logo, watermark, or AI distortion anywhere.
-
-Grid & splitting infrastructure (fixed - do not change):
-- Keep an exact four-panel 2x2 grid with clean straight dividers. Do not change the four-grid structure, divider layout, or split logic.
-- Each panel must be an independent standalone marketplace carousel image with its own complete mini-layout; never merge panels into one continuous scene and never share props, subject, shadow, table surface, model crop, or background across panels.
-- Official authenticity rules: the sellable product must be complete, sharp, prominent, and unobstructed in every panel. Do not crop away key attributes, hide important parts behind props/text/hands, make the product tiny, blur it, use an unrelated background, or perform deceptive Photoshop-style edits.
-- Strict rules: differentiate panels only through story, style, lighting, scene, and composition; do not repeat or lightly recolor the same panel. Do not change the product itself. Do not invent material, dimensions, functions, accessories, certifications, brand, or claims. No added text overlays, labels, arrows, UI, logo, watermark, price, discount badge, certification badge, medical claim, exaggerated claim, or promotional text. If the product itself contains decorative characters, symbols, or patterns, keep them only as product design.
-- Final text rule: zero AI-added visible text. Preserve only markings physically printed on the real sellable product. Realistic, bright, sharp, clean, marketplace-ready for US/EU shoppers."""
+Panel briefs for this pillar:
+- Panel 1 (top-left) - Hero Shot: the best moment the persona wears or uses the SKU; magazine-cover close-up or medium shot (collarbone / wrist / side profile only), locked in the [Hero Scene], story-driven light. The visual center stays on the product and everything is physically grounded.
+- Panel 2 (top-right) - Complete Product + Integrated Detail: show the complete product at about 48%-60% and emphasize one real material, edge, hardware or structure detail through camera angle, lighting or a tight framing within one unified scene. A pure macro crop without the complete sellable product is forbidden, and no inset frame, split-panel border, nested collage or second divider may be added inside a panel.
+- Panel 3 (bottom-left) - Credible Lifestyle: the complete product in a believable use or display context supported by the source category, with 2-4 companion objects that reveal its purpose and real scale (context only, never implied as included).
+- Panel 4 (bottom-right) - Dimension Annotation Background: per the runtime contract (a clean front, side or top view with 12%-18% clear space)."""
 
 
-GRID_IMAGE_PROMPT_C = """Role & Core Mission (fixed):
-You are a senior e-commerce still-life photographer serving TEMU, TikTok Shop, and Amazon US listings, specializing in top-down flat-lay and knolling photography. Treat the uploaded reference image(s) as the ONLY source of truth for the SKU. The task is to rebuild a high-click, high-quality, high-conversion commercial visual system as orderly overhead flat-lay compositions WITHOUT changing the product itself (the product body must stay 100% unchanged).
+GRID_IMAGE_PROMPT_C = """Role & Core Mission:
+You are a senior e-commerce still-life photographer serving TEMU, TikTok Shop and Amazon US listings, specializing in top-down flat-lay and knolling photography. This set is the TOP-DOWN FLAT-LAY KNOLLING pillar: rebuild the SKU as orderly overhead flat-lay compositions. The runtime contract above is fixed and always wins over anything below.
 
-CRITICAL LAYOUT UNDERSTANDING (fixed - read first):
-- The 2x2 grid is a pure "shipping container" for backend code. You are NOT creating a single poster.
-- You are creating FOUR independently perfect, standalone product shots that happen to share one square canvas for local splitting.
-- Generation logic: four distinct finished carousel images, perfectly aligned on one canvas. NEVER build one continuous scene across panels; NEVER share lighting, shadows, surfaces, props, or backgrounds across panels.
-
-COMPOSITION PILLAR (fixed - this set is the TOP-DOWN FLAT-LAY KNOLLING pillar; the four axes below are what makes this set visually unique):
-- Layout & composition: strictly overhead and orderly - the flat surface is the whole canvas, and the product plus its laid-flat props are arranged in a precise knolling layout (aligned edges, even gaps, 90-degree rotations, grouped by category). Calm, orderly, grid-like, never a standing scene.
-- Camera distance & angle: a true 90-degree top-down / bird's-eye view, camera perpendicular to the surface, so every item reads as a flat silhouette from directly above. No eye-level, three-quarter, or low angle.
-- Scene & prop staging: the surface itself is the stage (a wood tabletop, natural linen, pale marble, kraft paper, or a matte board). Supporting props are laid flat around the product in knolling order - arranged, aligned, and evenly spaced - and reveal how the product is used or what it includes; never a standing object, furniture, or room.
-- Light & tone: even, soft, shadow-controlled overhead light (a large overhead softbox or diffused daylight) with soft, short, uniform shadows and a light neutral palette; minimal falloff, no dramatic side light.
-
-Execution Priority (fixed): SKU accuracy > crop-safety (every panel works alone) > physical world realism > strict 90-degree top-down composition clarity > orderly knolling arrangement > visual polish.
-
-Product Integrity Constraints (fixed - safety red line):
-- Lock before generating: product silhouette, proportions, color, material, transparency, structure, layers, thickness, corners, edges, texture, pattern, text, and digits. Never add, remove, replace, redraw, recolor, resize, stretch, compress, merge, or invent structure. Preserve exact geometry and aspect ratio; never stretch, compress, or deform the product beyond a real camera angle. Do not guess details the reference cannot confirm.
-- Allowed: redesign placement, camera angle, composition, background, lighting, and scene. The product body must never change.
-
-Variable Inputs (batch template - fill per SKU):
+Variable inputs (batch template - filled per SKU):
 [SKU Category]   : {category_path}
 [Product Name]   : {title}
 [Key Features]   : {value_evidence}
@@ -761,145 +733,44 @@ Variable Inputs (batch template - fill per SKU):
 [Color Palette]  : {visual_style} / {background_plan}
 Verified material evidence: {verified_material_evidence}
 
-Global Visual Rules (fixed - top-down flat-lay knolling logic):
-- Overall mood: strictly overhead, orderly, and editorial - a curated flat surface seen from directly above, with the product and its props arranged in a calm, precise knolling layout. Clean, composed, catalog-like; never a standing scene, never moody side light.
-- Surface-as-backdrop rule: the flat surface IS the background (a wood tabletop, natural linen, pale marble, concrete, kraft paper, or a matte seamless board). No walls, no horizon, no room, and no vertical backdrop - the entire frame is the top plane. Choose a different surface tone and texture per panel.
-- Knolling arrangement rule: lay the product and its laid-flat props out in a deliberate knolling grid - items aligned to the same axes, rotated to consistent 90/45-degree angles, evenly spaced, grouped by function, and neatly de-cluttered. The arrangement must read as intentional and orderly, never scattered or random.
-- Camera & perspective: one true 90-degree top-down view per panel with a flat, even perspective (near-orthographic, minimal convergence). No oblique eye-level angles, no dramatic vanishing point, no horizon line.
-- Overhead lighting rig: light each panel with a large, even overhead source (a big overhead softbox or diffused daylight from above) so shadows are short, soft, and fall evenly beneath the objects; add a subtle contact shadow under each item and a gentle ambient fill so nothing goes muddy. Vary the surface, arrangement, and overhead light angle across the four panels.
-- Safe composition: product and laid-flat props together cover 65%-82% of each panel; keep 8%-12% inner safe margin on all sides and around the center divider. Never crop, clip, or let the product/props touch panel edges (except a dimension panel may use more whitespace).
-- Depth is minimal on purpose (anti-flat but still flat-lay): create separation between items with even spacing, soft individual contact shadows, and slight scale differences - NOT with foreground blur or layered depth. Keep every item on the same top plane and fully in focus.
-- Brand consistency: keep one cohesive flat-lay tone across the set, but no two panels may share the same surface material, colour, arrangement, or overhead light angle - each panel must be a visibly different flat-lay set, not the same layout with a swapped surface.
-- Typography is rendered locally after the grid is split. Generate NO letters, words, numbers, labels, slogans, badges, logos, watermarks, arrows, UI, rulers, or measurement marks anywhere in the AI image. Preserve only markings that are physically printed on the real sellable product in the reference.
-- Forbidden: added Chinese or English text, brand names, logos, watermarks, infringing elements, AI gibberish, or malformed hands.
+This pillar's four axes (what makes this set visually unique; apply on top of the fixed panel roles above):
+- Layout & composition: strictly overhead and orderly - the flat surface IS the whole canvas, and the product plus its laid-flat props are arranged in a precise knolling layout (aligned edges, even gaps, 90-degree rotations, grouped by category). Calm, orderly, grid-like, never a standing scene.
+- Camera: every panel is a true 90-degree top-down / bird's-eye view with the camera perpendicular to the surface, so every item reads as a flat silhouette from directly above. No eye-level, three-quarter or low angles anywhere.
+- Scene & prop staging: the surface itself is the stage (wood tabletop, natural linen, pale marble, kraft paper, matte board); supporting props are laid flat around the product in knolling order - arranged, aligned, evenly spaced - and reveal how the product is used or what it includes. Never a standing object, furniture or room.
+- Light & tone: even, soft, shadow-controlled overhead light (large overhead softbox or diffused daylight) with soft, short, uniform shadows and a light neutral palette; minimal falloff, no dramatic side light.
 
-Physical World Realism (fixed - anti-AI feel):
-- Anchored physicality: every product must be physically grounded. Give it a realistic contact shadow plus a soft drop shadow that matches its base shape and height. Every visible surface needs specular highlights and diffuse lighting that define its form (sharp edge glints for metal, soft sheen for matte materials, clear refraction for glass). Use a directional key light (e.g. a 45-degree main light) so the product has depth and readable volume. Forbidden: flat, shadowless, "floating" compositions, or products that look pasted onto the background.
-- Category-specific detail emphasis (only for details the reference actually shows): game/toy pieces must have real thickness, chamfered edges and smooth enamel/glaze instead of paper-thin stickers; home/kitchen items must show brushed metal, glass refraction and ergonomic handles; jewelry/accessories must show realistic plating, stone facets and chain links.
-- Human & prop integrity: when a flat-lay panel includes a hand, show only a partial hand laid flat into frame (a hand entering from the edge, resting flat or arranging the items), anatomically natural with a real Caucasian (Western European) light-to-medium skin tone, never waxy or deformed. Do not generate full-body models or complex human faces. Props must be clean, natural flat-lay objects (raw linen, kraft paper, wood slices, ceramic, small tools, dried botanicals); no cheap plastic-looking staging.
+Pillar rules:
+- Overall mood: strictly overhead, orderly and editorial - a curated flat surface seen from directly above with a calm, precise knolling layout. Clean, composed, catalog-like; never a standing scene, never moody side light.
+- Surface-as-backdrop rule: the flat surface IS the background (wood tabletop, natural linen, pale marble, concrete, kraft paper, or a matte seamless board). No walls, no horizon, no room, no vertical backdrop - the entire frame is the top plane. Choose a different surface tone and texture per panel.
+- Knolling arrangement rule: lay the product and its laid-flat props out in a deliberate knolling grid - items aligned to the same axes, rotated to consistent 90/45-degree angles, evenly spaced, grouped by function, neatly de-cluttered. Intentional and orderly, never scattered or random.
+- Perspective: a flat, even, near-orthographic top-down perspective with minimal convergence. No oblique eye-level angles, no dramatic vanishing point, no horizon line. Keep the set's framings genuinely different from one another by varying scale, arrangement pattern and detail level - a macro detail and a plan-style view are both achievable from directly overhead.
+- Overhead lighting rig: a large, even overhead source (big overhead softbox or diffused daylight from above) so shadows are short, soft and fall evenly beneath objects; a subtle contact shadow under each item plus a gentle ambient fill so nothing goes muddy. Vary surface, arrangement and overhead light angle across the four panels.
+- Safe composition: product and laid-flat props together cover 65%-82% of each panel; keep 8%-12% inner safe margin on all sides. Never crop, clip, or let the product/props touch panel edges (a dimension panel may use more whitespace).
+- Depth is minimal on purpose (anti-flat but still flat-lay): create separation with even spacing, soft individual contact shadows and slight scale differences - NOT with foreground blur or layered depth. Keep every item on the same top plane and fully in focus.
+- Brand consistency: one cohesive flat-lay tone across the set, but no two panels may share the same surface material, colour, arrangement or overhead light angle - four visibly different flat-lay sets, not one layout with a swapped surface.
+- Realism & finish: ground every item with a realistic contact shadow and define its form with clear specular highlights and diffuse light (sharp edge glints for metal, soft sheen for matte, clear refraction for glass); show real grain, weave, stitching, metal finish, edge polish, transparent thickness, enamel shine or ceramic glaze wherever the reference supports it. Use clean flat-lay optics - fully in focus edge to edge, even focus across the whole layout, sRGB-accurate color, photorealistic finish; never heavy bokeh, never a shallow depth-of-field that makes an item look pasted on, never over-smoothed plastic or waxy surfaces.
+- If a hand appears, show only a partial hand laid flat into frame (entering from the edge, resting flat or arranging the items), anatomically natural with a realistic light-to-medium skin tone; never full-body models or complex faces.
 
-Premium feel & material polish (fixed - make every panel look expensive and well-finished):
-- Light is the star: use broad, even overhead light so the material shows natural luster, crisp highlights, short soft shadows and craft detail; never flat, harsh, or raking side lighting.
-- Texture first: deliberately show surface grain, weave, stitching, metal finish, glass refraction, edge polish, transparent thickness, enamel shine, leather pores, ceramic glaze, or wood grain whenever those details are visible in the reference.
-- Lens & depth realism: use clean flat-lay optics (near top-down, minimal perspective, fully in focus). Keep every item on the same top plane and sharp from edge to edge, with even focus across the whole layout; never heavy bokeh or blurred areas, and never a shallow depth-of-field that makes an item look pasted on.
-- Finish realism: preserve natural grain, weave, and surface texture; keep sRGB-accurate color and a photorealistic high-resolution finish; never over-smooth into plastic sheen, waxy AI surfaces, or heavy HDR/ACES flattening.
-- Tone control: keep one cohesive light, clean flat-lay palette per set (a natural surface tone, a soft neutral, and one accent tied to the product colour); colors must feel curated, never clashing or garish.
-
-Flat-lay surface & knolling design (fixed - build a deliberate overhead layout; no generic or monotonous surfaces):
+Flat-lay surface & knolling design (build a deliberate overhead layout; no generic or monotonous surfaces):
 - Build a silent layout brief per panel from the REAL product: [who uses it] -> [the real occasion] -> [the surface it is laid on] -> [the laid-flat companion items that reveal its use] -> [the overhead light direction]. The flat-lay must grow out of this brief, never a random empty desk.
 - Surface-choice fit: choose the top surface to match this exact product (wood tabletop, natural linen, pale marble, concrete slab, kraft paper, matte board), picked to suit [SKU Category] and the product's real function.
-- Knolling discipline: arrange the product and its props in aligned rows and columns with even gaps and consistent rotation angles; group related items, keep lines parallel or at clean 90/45-degree angles, and leave deliberate negative space between clusters. Orderly and de-cluttered, never scattered.
+- Knolling discipline: arrange product and props in aligned rows and columns with even gaps and consistent rotation angles; group related items, keep lines parallel or at clean 90/45-degree angles, and leave deliberate negative space between clusters. Orderly and de-cluttered, never scattered.
 - Laid-flat companion items (use-context props): surround the product with 2-4 believable companion objects laid flat in the same top plane (the items it holds, serves, organizes, or is used alongside) to reveal purpose and true scale. Never leave a blank, empty surface.
-- Honest props rule: companion objects are context only. They must never look bundled, boxed, or implied as included in the purchase; never stage a companion object in packaging, a gift box, a price tag, or a "what is in the box" layout, and never stage an accessory the reference cannot support.
-- One layout per panel: give each of the four panels a different surface, arrangement pattern, and companion set, so the set tells four different overhead stories instead of four recolors of one layout.
-- Visual richness (expand perceived value): give every panel a deliberate 2-3 colour story (a dominant surface tone, a supporting neutral, and one accent tied to the product colour), a clean grid rhythm with even spacing, and one subtle overhead atmospheric cue (a soft even light gradient, muted shadows, or a natural fibre texture). Rich and orderly, never flat or monotone.
+- Honest props rule: companion objects are context only - never look bundled, boxed or implied as included; never stage one in packaging, a gift box, a price tag or a "what is in the box" layout; never stage an accessory the reference cannot support. Never invent packaging or set contents that are absent from the reference.
+- One layout per panel: give each of the four panels a different surface, arrangement pattern and companion set, so the set tells four different overhead stories instead of four recolors of one layout.
+- Visual richness (expand perceived value): give every panel a deliberate 2-3 colour story (dominant surface tone, supporting neutral, one accent tied to the product colour), a clean grid rhythm with even spacing, and one subtle overhead atmospheric cue (soft even light gradient, muted shadows, natural fibre texture). Rich and orderly, never flat or monotone.
 
-Value & usage demonstration (fixed - let the image answer "how many" and "what for"):
-- Quantity-forward display: when the SKU is a multipack or set, stage several identical units stacked with one unit standing forward so the shopper instantly reads the piece count and the real thickness; the visible count must honestly match the sellable quantity.
-- Layered overlap & thickness proof (only for flat, sheet-like, or cut-out goods such as wooden tags, ornaments, cards, or coasters): arrange several real pieces in a fanned, overlapping stack so multiple different designs and their hanging loops all show at once, and let a raking light catch the cut side edge so the piece's real solid thickness and carved relief read clearly - proving it is a solid, substantial material rather than a thin flat print; keep every piece the exact same real product and never imply a thicker or layered construction the product does not truly have.
-- Multi-use anchoring: when the product genuinely serves more than one use, let different panels demonstrate different real uses (for example storage, gift-giving, decoration, or travel) so the listing speaks to more shoppers instead of showing four recolors of one use.
-- Contents demonstration (only for containers, bags, holders, or organizers): you may place unbranded, plainly-styled small items inside the product to reveal capacity and real scale - these contents are scene props only and must never read as included in the purchase.
-- Wearable in-use display (only for wearables such as hair accessories, jewelry, or apparel add-ons): at least one panel must show the product actually worn on a real person (styled in hair, on a wrist, or on a garment) in a partial view, so the shopper instantly reads the real look, placement, and scale; keep the product the clear focal point.
-- Scale reference (for small items): include one believable scale anchor - a real hand or a familiar everyday object - so the shopper can judge the true size; keep it a plain prop and never render printed measurements, rulers, or labels (any text is added later by operations, never by the generator).
-- Bundle & kit display: when the SKU is a bundle or set that pairs different components (for example gift boxes plus socks, a holder plus its accessories, a bottle plus a brush), lay out every real included component together in one panel - the container and its contents, or the kit and all its parts - so the shopper reads exactly what is included; these are real sellable components, not scene props, and you must never add a component the bundle does not truly contain.
-- Assembly demonstration (only if the real product truly ships flat or requires assembly): one panel may show the component both in its flat / unassembled state and its assembled state so the shopper understands the real construction and that assembly is intended; reproduce only the real parts and never invent a cleverer mechanism.
-- Macro proof inset (only for tactile, soft, or highly detailed goods): in one detail panel, beside the full product, include a single small inset crop that zooms into the most convincing real detail - fleece nap, knitted weave, stitching, hardware, or a sculpted 3D element - so the shopper can judge softness and craft up close; the inset must show the same real product and material, never an invented texture, and it must stay fully inside the panel without touching any edge.
-- Craft & materials storytelling (only for handmade, artisanal, or crafted goods): one panel may pair the finished product with the real raw materials and the crafting tool it was made with (yarn and hook, leather and needle, clay and wooden tool) so the shopper reads genuine handcraft and workmanship; these materials are storytelling context only and must never look bundled with or implied as included in the purchase.
-- Functional load demonstration (only for hooks, racks, holders, organizers, and other load-bearing goods): in the lifestyle panels, show the product actually carrying the real items it is made for - a coat, scarf, or tote on a hook, towels on a rail, tools in a holder - so the shopper instantly reads the function and real capacity; hang only plain, unbranded, realistic items and keep the product itself clearly visible, never buried.
-- Performance proof panel (only when the product's real function is durability, water resistance, or strength): one panel may show a believable real-world test on the product itself - water or soap suds running over a water-resistant or bathroom-rated item, or a visibly heavy, bulky item hanging from a load-bearing hook or rack - so the shopper reads the real performance; make the action physically plausible with natural splashes, drips, and contact shadows, and never add labels, numbers, or claim text.
-
-Seasonal & gift styling (apply only when the SKU is a seasonal, holiday, gift, or decorative item; skip for everyday goods):
-- Gift-cluster staging: when the product suits gifting, build a festive prop cluster around it as context - a season-colored gift box, pinecones or berries, twine or ribbon, an unlit pillar candle, and warm string lights - revealing occasion and mood. Props are context only, never implied as included in the purchase.
-- Warm string-light ambience: add warm golden bokeh from string lights or candle glow as the accent point light so the set reads as a warm evening holiday moment instead of flat studio light.
-- Multi-item display: when the reference itself shows several pieces or variants, arrange 4-6 of them together in a tidy knolling grid on one styled flat surface (wood tray, linen mat, marble board) so the shopper instantly reads the range and real scale; never fabricate extra variants.
-- Variant & colorway grid (only when the reference itself shows several distinct designs or colorways): one panel may present the whole real assortment - every design and every color version - as a tidy, evenly spaced grid on a clean neutral seamless backdrop, each piece hung or laid flat at the same size and even spacing, so the shopper instantly reads the full range and sees that the pieces are all different; reproduce only variants that truly exist and never fabricate an extra design or color.
-- Packaged-as-gift display (only if the real product truly ships gift-ready): one panel may show the product in its real retail/gift packaging (printed hang tag plus clear bag) to signal "ready to give" - reproduce only packaging that actually exists, never invent one.
-- Three-tone seasonal palette: unify the set with one seasonal dominant color, one natural neutral (wood, linen, or stone), and one soft accent (gold, brass, or copper) so the set feels premium and cohesive, never clashing or garish.
-
-Display & light staging (apply only when the SKU is a hanging, pendant, decorative, or light-catching item; skip for everyday goods):
-- Hanging display: when the product is made to hang (ornaments, charms, suncatchers, wind chimes, hanging decor), show it genuinely suspended - hung from a real branch, twig, ribbon loop, hook, or against a wall or window - so the shopper instantly reads it as a hanging piece and sees its real drop and swing; keep the whole item inside the safe zone in every panel.
-- Cross-setting demonstration: for decorative items, let the four panels show the same product in different real flat-lay settings (a wood tabletop, a linen runner, a marble board, a matte studio surface) so the shopper sees where it fits, while keeping one consistent product identity across all panels.
-- Prism light-cast accent (only when the product contains crystal, glass, or faceted reflective elements): let one strong directional light pass through the faceted or crystal part so it casts a real caustic rainbow or star-shaped light pattern onto the nearby plain surface (wall or table) as an atmospheric accent; keep it soft-edged and physically plausible, never a hard graphic overlay or added text.
-- Kinetic & sensory cue (only for hanging chimes, bells, or moving decor): in one panel, imply real motion and sound - catch the piece mid-swing with a gentle blurred trailing edge, or show a partial hand just touching it so it sways - so the shopper senses that it moves and rings; never draw sound waves, music notes, arrows, or any motion glyph, and keep the gesture anatomically natural with a partial hand only.
-- Multi-hangpoint room styling (only for hanging decor): one panel may show two or three identical pieces hung at different real points in a single bright room (door, wall hook, window, branch) so the shopper reads that the piece decorates a whole space; keep every piece the exact same real product and keep them clearly separated, fully inside the panel.
-
-One square exact four-panel 2x2 e-commerce grid with clean straight dividers, generated for: {title}
-
-Output contract (fixed - preserve existing backend logic):
-- Generate ONE single square image only: a 2x2 four-panel grid. Do NOT generate separate images, do NOT output a carousel, do NOT output a collage with more or fewer panels.
-- This one generated grid image will be split by backend code after generation, so the four equal panels and straight center dividers are mandatory.
-- Important: the single square image is only a transport container. It must look like FOUR fully independent finished listing images placed in a 2x2 layout, not one continuous poster chopped into four pieces.
-
-Grid construction rules (fixed - clean edges after splitting):
-- The horizontal and vertical cut boundaries must be EXACTLY at the center (50%/50%) of the image. Draw a neutral light-gray separator on both boundaries, 0.4%-0.8% of the full image wide, straight, uniform, and uninterrupted from edge to edge. This separator is mandatory and is validated before splitting.
-- All four panels must be exactly equal in size; no content may cross or touch the divider lines.
-- Each panel must work independently when the grid is cut: its own clear subject, its own background, its own lighting, no dangling props, and no half-composed elements at the panel edges.
-- Safe Margin Rule (anti-crop logic): keep the product fully inside a 10% inner safe zone from ALL panel edges, including the center divider. Do not let the product crowd or fill the panel: in hero and lifestyle panels the main product should occupy about 52%-65% of the panel area, leaving at least a third of the panel as intentional, in-focus background. In a detail panel the complete product may sit smaller (45%-58%) when it includes an inset close-up. Long products (spoons, rulers, strips) must be placed at a 10-15 degree angle or scaled down enough to fit entirely inside the safe zone without touching any border.
-- Absolutely forbidden: any global headline, banner, background shape, product, box, prop, shadow, table, frame, or sentence that continues across two or more panels. No half words at panel edges. No shared poster title outside an individual panel.
-- No borders, no double lines, no rounded corners on the outer edge of the grid.
-
-Panel 1 - Top-down Knolling Hero (top-left):
-- Show the complete sellable product or complete verified set laid flat and centred on a distinct surface, shot from a true 90-degree overhead view, with the product and its aligned props arranged in a neat knolling layout; product occupies about 55%-68% with even, orderly spacing. No cropped parts and no partial stacking that hides quantity or structure.
-- Keep every item aligned to clean axes with even gaps, fully inside the safe area, never touching or clipping the panel edges.
-- Emphasize material, structure, thickness, transparency, and edge details with even overhead light and short, soft contact shadows - never floating.
-- Surface is clearly a flat top plane (no wall, no horizon) and visibly different from the other panels.
-- No AI-generated copy. No headline, fact card, or typography is added after splitting.
-
-Panel 2 - Flat-lay Detail / Alternate Arrangement (top-right):
-- Must differ from Panel 1 in at least 3 of: surface material and colour, arrangement pattern, rotation angles, prop set, overhead light direction.
-- Style options: Minimal Knolling, Warm Wood Editorial, Linen & Ceramic, Marble Studio Flat-lay, Kraft & Craft.
-- Stay strictly 90-degree overhead. Keep the complete product visible at about 48%-60%, plus at most one small magnifier-style inset close-up of a real detail (material grain, printing texture, edge finish, hardware). The inset must blend as a soft optical zoom - borderless, seamless, with no frame, ring, or divider around it (nested collage frames are forbidden). A pure macro crop without the complete product is forbidden.
-- No AI-generated copy or labels.
-
-Panel 3 - Flat-lay Use / Contents Arrangement (bottom-left):
-- Lay the product flat alongside the real items it is used with - aligned and evenly spaced in the same top plane - so the shopper instantly reads the function, capacity, and true scale (context only, never implied as included in the purchase).
-- May add one partial adult hand laid flat into the frame from an edge (arranging or touching the product; natural, anatomically correct, with a realistic Caucasian (Western European) light-to-medium skin tone, no waxy skin or deformities); the product must stay sharp and exactly the original SKU.
-- Lighting: even, broad overhead light with short soft shadows so the whole layout reads cleanly from above.
-- Keep every item fully inside the panel and on the same top plane. No AI-generated copy or scene phrase.
-
-Panel 4 - Dimension Annotation Background (bottom-right):
-- Create a clean top-down (or flat front / side) view that is suitable for later deterministic dimension annotation, on a simple flat seamless surface with clear silhouette separation.
-- Keep the complete product sharp and leave 12%-18% clear space around it.
-- Never render measurements, numbers, units, dimension lines, arrows, rulers, scales, labels, or size claims.
-- If no useful orthographic view is possible, create a clean alternate overhead angle with the same empty safe area.
-
-Generate-then-self-check (fixed):
-- Confirm product quantity, silhouette, proportions, structure, color, material, transparency, texture, edges, and accessory count all match the reference.
-- Confirm every panel stands alone: no element crosses a divider, nothing touches a panel edge, and each panel has its own complete composition.
-- Confirm physical realism: every product is grounded with contact and drop shadows, has directional lighting and readable material texture; no flat, floating, or pasted-looking product.
-- Confirm the flat-lay mood: a true 90-degree overhead view, an orderly knolling arrangement, even overhead light, and short soft shadows with no horizon or standing scene.
-- If any SKU error is found, fix the product body first, then adjust background and polish.
-- Final goal: SKU-accurate, instantly recognizable, differentiated flat-lay sets, full premium composition, matching US consumer taste.
-
-Grid & splitting infrastructure (fixed - do not change):
-- Keep an exact four-panel 2x2 grid with clean straight dividers. Do not change the four-grid structure, divider layout, or split logic.
-- Each panel must be an independent standalone marketplace carousel image with its own complete mini-layout; never merge panels into one continuous scene and never share props, typography, subject, shadow, table surface, or background across panels.
-- Official authenticity rules: the sellable product must be complete, sharp, prominent, and unobstructed in every panel. Do not show only a packaging bag unless the product being sold is packaging bags. Do not crop away key attributes, hide important parts behind props/text/hands, make the product tiny, blur it, use an unrelated background, or perform deceptive Photoshop-style edits.
-- Strict rules: differentiate panels only through style, lighting, background, scene, and composition; do not repeat or lightly recolor the same panel. Do not change the product itself. Do not invent material, dimensions, functions, accessories, certifications, brand, or claims. Generate no added text, arrows, UI, logo, watermark, price, discount badge, certification badge, medical claim, exaggerated claim, or promotional text. If the product itself contains decorative characters, symbols, or patterns, keep them only as product design.
-- Final text rule: zero AI-added visible text. Realistic, orderly top-down flat-lay, sharp, clean, marketplace-ready for US/EU shoppers."""
+Panel briefs for this pillar:
+- Panel 1 (top-left) - Top-down Knolling Hero: the complete product or verified complete set laid flat and centred on a distinct surface, shot from a true 90-degree overhead view with the product and its aligned props arranged in a neat knolling layout; product about 55%-68% with even, orderly spacing.
+- Panel 2 (top-right) - Flat-lay Detail / Alternate Arrangement: must differ from Panel 1 in at least 3 of surface material and colour, arrangement pattern, rotation angles, prop set, overhead light direction. Stay strictly 90-degree overhead; complete product at about 48%-60% plus at most one small borderless magnifier-style inset on a real detail.
+- Panel 3 (bottom-left) - Flat-lay Use / Contents: lay the product flat alongside the real items it is used with, aligned and evenly spaced in the same top plane, so function, capacity and true scale read instantly; one partial adult hand may enter flat from an edge while the product stays sharp and exact.
+- Panel 4 (bottom-right) - Dimension Annotation Background: per the runtime contract (a clean top-down or flat front/side view with 12%-18% clear space)."""
 
 
-GRID_IMAGE_PROMPT_D = """Role & Core Mission (fixed):
-You are a senior environmental lifestyle photographer serving TEMU, TikTok Shop, and Amazon US listings, specializing in wide environmental interior and outdoor photography. Treat the uploaded reference image(s) as the ONLY source of truth for the SKU. The task is to rebuild a high-click, high-quality, high-conversion commercial visual system as wide establishing lifestyle scenes WITHOUT changing the product itself (the product body must stay 100% unchanged).
+GRID_IMAGE_PROMPT_D = """Role & Core Mission:
+You are a senior environmental lifestyle photographer serving TEMU, TikTok Shop and Amazon US listings, specializing in wide environmental interior and outdoor photography. This set is the ENVIRONMENTAL WIDE LIFESTYLE pillar: rebuild the SKU as wide establishing lifestyle scenes. The runtime contract above is fixed and always wins over anything below.
 
-CRITICAL LAYOUT UNDERSTANDING (fixed - read first):
-- The 2x2 grid is a pure "shipping container" for backend code. You are NOT creating a single poster.
-- You are creating FOUR independently perfect, standalone product shots that happen to share one square canvas for local splitting.
-- Generation logic: four distinct finished carousel images, perfectly aligned on one canvas. NEVER build one continuous scene across panels; NEVER share lighting, shadows, surfaces, props, or backgrounds across panels.
-
-COMPOSITION PILLAR (fixed - this set is the ENVIRONMENTAL WIDE LIFESTYLE pillar; the four axes below are what makes this set visually unique):
-- Layout & composition: wide and environmental - the product sits relatively small inside a fully dressed real space, and the environment dominates the frame. Off-centre, natural, and unposed, with generous empty space and a strong sense of place; the product is an authentic in-context detail, never the bulky centre of a still-life.
-- Camera distance & angle: a wide-angle establishing shot from a distance, at eye level or slightly low, showing a whole room, corner, or outdoor setting, with deliberate three-dimensional depth (a clear foreground, midground, and far background) and the room's own perspective lines.
-- Scene & prop staging: a complete, real living environment (living room, bedroom, kitchen, dining corner, balcony, garden, patio) fully dressed with real furniture, textiles, plants, and lived-in props; the product is placed naturally exactly where it would really sit or be used.
-- Light & tone: natural environmental light - golden-hour sun through a window, light streaming across the floor, or soft ambient daylight - with real atmospheric depth, gentle falloff into the room, and a warm, cinematic, liveable tone.
-
-Execution Priority (fixed): SKU accuracy > crop-safety (every panel works alone) > physical world realism > wide environmental composition clarity > real space depth > visual polish.
-
-Product Integrity Constraints (fixed - safety red line):
-- Lock before generating: product silhouette, proportions, color, material, transparency, structure, layers, thickness, corners, edges, texture, pattern, text, and digits. Never add, remove, replace, redraw, recolor, resize, stretch, compress, merge, or invent structure. Preserve exact geometry and aspect ratio; never stretch, compress, or deform the product beyond a real camera angle. Do not guess details the reference cannot confirm.
-- Allowed: redesign placement, camera angle, composition, background, lighting, and scene. The product body must never change.
-
-Variable Inputs (batch template - fill per SKU):
+Variable inputs (batch template - filled per SKU):
 [SKU Category]   : {category_path}
 [Product Name]   : {title}
 [Key Features]   : {value_evidence}
@@ -907,121 +778,36 @@ Variable Inputs (batch template - fill per SKU):
 [Color Palette]  : {visual_style} / {background_plan}
 Verified material evidence: {verified_material_evidence}
 
-Global Visual Rules (fixed - environmental wide lifestyle logic):
-- Overall mood: wide, real, and atmospheric - a genuine lived-in space photographed as an establishing scene, with the product naturally placed in it. Warm, cinematic, inviting; never a tight studio still-life and never an empty backdrop.
+This pillar's four axes (what makes this set visually unique; apply on top of the fixed panel roles above):
+- Layout & composition: wide and environmental - the product sits relatively small inside a fully dressed real space and the environment dominates the frame. Off-centre, natural and unposed, with generous empty space and a strong sense of place; the product is an authentic in-context detail, never the bulky centre of a still-life.
+- Camera: a wide-angle establishing shot from a distance, at eye level or slightly low, showing a whole room, corner or outdoor setting, with deliberate three-dimensional depth and the room's own perspective lines.
+- Scene & prop staging: a complete, real living environment (living room, bedroom, kitchen, dining corner, balcony, garden, patio) fully dressed with real furniture, textiles, plants and lived-in props; the product is placed naturally exactly where it would really sit or be used.
+- Light & tone: natural environmental light - golden-hour sun through a window, light streaming across the floor, or soft ambient daylight - with real atmospheric depth, gentle falloff into the room and a warm, cinematic, liveable tone.
+
+Pillar rules:
+- Overall mood: wide, real and atmospheric - a genuine lived-in space photographed as an establishing scene with the product naturally placed in it. Warm, cinematic, inviting; never a tight studio still-life and never an empty backdrop.
 - Environmental-backdrop rule: every panel shows a real three-dimensional environment (a furnished interior corner, a window wall, an outdoor terrace, a garden view), not a flat studio sweep. Name the space and its key furniture per panel, and pick a different environment for each panel.
 - Wide establishing rule: the camera stands back and shows the whole space; the product is deliberately small within the frame (about 18%-38% of the panel) and reads as a real object living in the room. Never fill the frame with the product and never crop the environment so tightly that the sense of place disappears.
 - Depth is mandatory (anti-flat): every panel must have a clear foreground (a rug edge, a chair back, a plant near the camera), a midground where the product truly sits, and a far background (a far wall, a doorway, a window, or outdoor greenery) that stays visible and in the same light. Strong, believable depth; never a flat two-plane image.
-- Environmental lighting rig: use real natural light - golden-hour sun raking through a window, a bright window pool on the floor, or soft overcast daylight filling the room - with the product lit by the same source as the room, a soft long directional shadow, and gentle ambient falloff into the interior. Vary the light direction, time of day, and warmth across the four panels.
-- Safe composition: the product is small and off-centre, but must still stay fully inside a 10% inner safe zone from ALL panel edges including the center divider. Never let the product touch or cross a panel edge or the divider, even at small scale.
-- Brand consistency: keep one cohesive warm lifestyle tone across the set, but no two panels may share the same room, furniture, palette, or light direction - each panel must be a visibly different real environment, not the same corner with a swapped prop.
-- Typography is rendered locally after the grid is split. Generate NO letters, words, numbers, labels, slogans, badges, logos, watermarks, arrows, UI, rulers, or measurement marks anywhere in the AI image. Preserve only markings that are physically printed on the real sellable product in the reference.
-- Forbidden: added Chinese or English text, brand names, logos, watermarks, infringing elements, AI gibberish, or malformed hands.
+- Environmental lighting rig: real natural light - golden-hour sun raking through a window, a bright window pool on the floor, or soft overcast daylight filling the room - with the product lit by the same source as the room, a soft long directional shadow and gentle ambient falloff into the interior. Vary light direction, time of day and warmth across the four panels.
+- Brand consistency: one cohesive warm lifestyle tone across the set, but no two panels may share the same room, furniture, palette or light direction - each panel must be a visibly different real environment, not the same corner with a swapped prop.
+- Realism & finish: use a wide-angle environmental lens with genuine three-dimensional depth (near foreground, midground product, far background) and the room's own perspective, with natural atmospheric falloff into the space. The product stays the sharp focal detail while the room recedes naturally; never a flat two-plane image and never an empty uniform backdrop. Show real grain, weave, stitching, metal finish, edge polish, glass refraction or ceramic glaze wherever the reference supports it; keep sRGB-accurate color and a photorealistic finish - never over-smoothed plastic/waxy surfaces or heavy HDR flattening.
+- When a person appears, show only a distant, anonymous, partial figure (a hand, a forearm, or a soft-focus figure far in the background at small scale with no readable face), with natural light-to-medium skin; never prominent full-body models or complex readable faces. Props are real home and outdoor objects (furniture, textiles, plants, ceramics, baskets, books) - no cheap plastic staging.
 
-Physical World Realism (fixed - anti-AI feel):
-- Anchored physicality: every product must be physically grounded. Give it a realistic contact shadow plus a soft drop shadow that matches its base shape and height. Every visible surface needs specular highlights and diffuse lighting that define its form (sharp edge glints for metal, soft sheen for matte materials, clear refraction for glass). Use a directional key light (e.g. a 45-degree main light) so the product has depth and readable volume. Forbidden: flat, shadowless, "floating" compositions, or products that look pasted onto the background.
-- Category-specific detail emphasis (only for details the reference actually shows): game/toy pieces must have real thickness, chamfered edges and smooth enamel/glaze instead of paper-thin stickers; home/kitchen items must show brushed metal, glass refraction and ergonomic handles; jewelry/accessories must show realistic plating, stone facets and chain links.
-- Human & prop integrity: when an environmental panel includes a person, show only a distant, anonymous, partial figure (a hand, a forearm, or a soft-focus figure far in the background at small scale with no readable face); keep any visible skin natural with a realistic Caucasian (Western European) light-to-medium skin tone, never waxy or deformed. Do not generate prominent full-body models or complex readable faces. Props are real home and outdoor objects (furniture, textiles, plants, ceramics, baskets, books); no cheap plastic-looking staging.
-
-Premium feel & material polish (fixed - make every panel look expensive and well-finished):
-- Light is the star: use real natural environmental light (golden-hour sun, a bright window pool, or soft ambient daylight) so the material shows natural luster, gentle highlights, open shadows and craft detail; never flat, harsh, or plasticky lighting.
-- Texture first: deliberately show surface grain, weave, stitching, metal finish, glass refraction, edge polish, transparent thickness, enamel shine, leather pores, ceramic glaze, or wood grain whenever those details are visible in the reference.
-- Lens & depth realism: use a wide-angle environmental lens with genuine three-dimensional depth (a near foreground, a midground product, and a far background), the room's own perspective, and natural atmospheric falloff into the space. The product stays the sharp focal detail while the room recedes naturally; never a flat two-plane image and never an empty uniform backdrop.
-- Finish realism: preserve natural grain, weave, and surface texture; keep sRGB-accurate color and a photorealistic high-resolution finish; never over-smooth into plastic sheen, waxy AI surfaces, or heavy HDR/ACES flattening.
-- Tone control: keep one cohesive warm, cinematic, naturally-lit palette per set (a dominant environment tone, a warm neutral, and one accent tied to the product color); colors must feel curated, never clashing or garish.
-
-Environmental space design (fixed - the real space must earn its place; no generic or empty backdrops):
+Environmental space design (the real space must earn its place; no generic or empty backdrops):
 - Build a silent space brief per panel from the REAL product: [who uses it] -> [the real occasion] -> [the real room or outdoor space] -> [the spot the product really sits on] -> [3-5 real furniture or decor elements that dress the space] -> [time of day and natural light]. The environment must grow out of this brief, never a random bare wall.
-- Usage-scenario fit: place the product where this exact item genuinely lives and is used (a living-room side table, a bedroom corner, a kitchen counter seen wide, a dining area, a balcony, a garden patio), chosen to match [SKU Category] and the product's real function, staged as a warm natural-light moment.
+- Usage-scenario fit: place the product where this exact item genuinely lives and is used (a living-room side table, a bedroom corner, a kitchen counter seen wide, a dining area, a balcony, a garden patio), matched to [SKU Category] and the product's real function, staged as a warm natural-light moment.
 - Wide-composition fit: keep the camera back and the product small so the whole space reads; the room's furniture and architecture provide the frame, and the product is the natural focal detail within it, not a large foreground hero.
-- Environment dressing (context props): fill the space with 3-5 believable furniture and decor elements that make it read as a real room (a sofa, a rug, framed art, a floor lamp, a plant, curtains, a wooden table), so the scene feels genuinely inhabited. Never leave an empty, bare, or studio-like space.
-- Honest props rule: environment dressing is context only. It must never look bundled, boxed, or implied as included in the purchase; never stage the product in packaging, a gift box, or a price-tag layout, and never stage an accessory the reference cannot support.
-- One space per panel: give each of the four panels a different room or outdoor setting, occasion, and furniture set, so the set tells four different real-life environmental stories instead of four recolors of one corner.
-- Visual richness (expand perceived value): give every panel a deliberate 2-3 color story (a dominant environment tone, a supporting neutral, and one accent tied to the product color), a clear foreground / midground / far-background depth with real size and tonal differences, and one natural atmospheric cue (a sunbeam across the floor, drifting dust motes, sheer curtain light, or outdoor foliage shadow). Warm and layered, never flat or monotone.
+- Environment dressing (context props): fill the space with 3-5 believable furniture and decor elements that make it read as a real room (a sofa, a rug, framed art, a floor lamp, a plant, curtains, a wooden table), so the scene feels genuinely inhabited. Never leave an empty, bare or studio-like space.
+- Honest props rule: environment dressing is context only - never look bundled, boxed or implied as included; never stage the product in packaging, a gift box or a price-tag layout; never stage an accessory the reference cannot support, and never invent packaging that does not truly exist.
+- One space per panel: give each of the four panels a different room or outdoor setting, occasion and furniture set, so the set tells four different real-life environmental stories instead of four recolors of one corner.
+- Visual richness (expand perceived value): give every panel a deliberate 2-3 color story (dominant environment tone, supporting neutral, one accent tied to the product color), a clear foreground / midground / far-background depth with real size and tonal differences, and one natural atmospheric cue (a sunbeam across the floor, drifting dust motes, sheer curtain light, or outdoor foliage shadow). Warm and layered, never flat or monotone.
 
-Value & usage demonstration (fixed - let the image answer "how many" and "what for"):
-- Quantity-forward display: when the SKU is a multipack or set, stage several identical units stacked with one unit standing forward so the shopper instantly reads the piece count and the real thickness; the visible count must honestly match the sellable quantity.
-- Layered overlap & thickness proof (only for flat, sheet-like, or cut-out goods such as wooden tags, ornaments, cards, or coasters): arrange several real pieces in a fanned, overlapping stack so multiple different designs and their hanging loops all show at once, and let a raking light catch the cut side edge so the piece's real solid thickness and carved relief read clearly - proving it is a solid, substantial material rather than a thin flat print; keep every piece the exact same real product and never imply a thicker or layered construction the product does not truly have.
-- Multi-use anchoring: when the product genuinely serves more than one use, let different panels demonstrate different real uses (for example storage, gift-giving, decoration, or travel) so the listing speaks to more shoppers instead of showing four recolors of one use.
-- Contents demonstration (only for containers, bags, holders, or organizers): you may place unbranded, plainly-styled small items inside the product to reveal capacity and real scale - these contents are scene props only and must never read as included in the purchase.
-- Wearable in-use display (only for wearables such as hair accessories, jewelry, or apparel add-ons): at least one panel must show the product actually worn on a real person (styled in hair, on a wrist, or on a garment) in a partial view, so the shopper instantly reads the real look, placement, and scale; keep the product the clear focal point.
-- Scale reference (for small items): include one believable scale anchor - a real hand or a familiar everyday object - so the shopper can judge the true size; keep it a plain prop and never render printed measurements, rulers, or labels (any text is added later by operations, never by the generator).
-- Bundle & kit display: when the SKU is a bundle or set that pairs different components (for example gift boxes plus socks, a holder plus its accessories, a bottle plus a brush), lay out every real included component together in one panel - the container and its contents, or the kit and all its parts - so the shopper reads exactly what is included; these are real sellable components, not scene props, and you must never add a component the bundle does not truly contain.
-- Assembly demonstration (only if the real product truly ships flat or requires assembly): one panel may show the component both in its flat / unassembled state and its assembled state so the shopper understands the real construction and that assembly is intended; reproduce only the real parts and never invent a cleverer mechanism.
-- Macro proof inset (only for tactile, soft, or highly detailed goods): in one detail panel, beside the full product, include a single small inset crop that zooms into the most convincing real detail - fleece nap, knitted weave, stitching, hardware, or a sculpted 3D element - so the shopper can judge softness and craft up close; the inset must show the same real product and material, never an invented texture, and it must stay fully inside the panel without touching any edge.
-- Craft & materials storytelling (only for handmade, artisanal, or crafted goods): one panel may pair the finished product with the real raw materials and the crafting tool it was made with (yarn and hook, leather and needle, clay and wooden tool) so the shopper reads genuine handcraft and workmanship; these materials are storytelling context only and must never look bundled with or implied as included in the purchase.
-- Functional load demonstration (only for hooks, racks, holders, organizers, and other load-bearing goods): in the lifestyle panels, show the product actually carrying the real items it is made for - a coat, scarf, or tote on a hook, towels on a rail, tools in a holder - so the shopper instantly reads the function and real capacity; hang only plain, unbranded, realistic items and keep the product itself clearly visible, never buried.
-- Performance proof panel (only when the product's real function is durability, water resistance, or strength): one panel may show a believable real-world test on the product itself - water or soap suds running over a water-resistant or bathroom-rated item, or a visibly heavy, bulky item hanging from a load-bearing hook or rack - so the shopper reads the real performance; make the action physically plausible with natural splashes, drips, and contact shadows, and never add labels, numbers, or claim text.
-
-Seasonal & gift styling (apply only when the SKU is a seasonal, holiday, gift, or decorative item; skip for everyday goods):
-- Gift-cluster staging: when the product suits gifting, build a festive prop cluster around it as context - a season-colored gift box, pinecones or berries, twine or ribbon, an unlit pillar candle, and fresh greenery - revealing occasion and mood. Props are context only, never implied as included in the purchase.
-- Warm string-light ambience: add soft warm bokeh from string lights or a sunlit window as the accent point light so the set reads as a warm, cheerful daytime moment instead of flat studio light.
-- Multi-item display: when the reference itself shows several pieces or variants, arrange 4-6 of them together on one styled light surface (white-oak tray, soft cotton throw, linen table) so the shopper instantly reads the range and real scale; never fabricate extra variants.
-- Variant & colorway grid (only when the reference itself shows several distinct designs or colorways): one panel may present the whole real assortment - every design and every color version - as a tidy, evenly spaced grid on a clean neutral seamless backdrop, each piece hung or laid flat at the same size and even spacing, so the shopper instantly reads the full range and sees that the pieces are all different; reproduce only variants that truly exist and never fabricate an extra design or color.
-- Packaged-as-gift display (only if the real product truly ships gift-ready): one panel may show the product in its real retail/gift packaging (printed hang tag plus clear bag) to signal "ready to give" - reproduce only packaging that actually exists, never invent one.
-- Three-tone seasonal palette: unify the set with one fresh seasonal dominant color, one natural neutral (light wood, linen, or cream), and one soft metallic accent (gold or copper) so the set feels premium and cohesive, never clashing or garish.
-
-Display & light staging (apply only when the SKU is a hanging, pendant, decorative, or light-catching item; skip for everyday goods):
-- Hanging display: when the product is made to hang (ornaments, charms, suncatchers, wind chimes, hanging decor), show it genuinely suspended - hung from a real branch, twig, ribbon loop, hook, or against a wall or window - so the shopper instantly reads it as a hanging piece and sees its real drop and swing; keep the whole item inside the safe zone in every panel.
-- Cross-setting demonstration: for decorative items, let the four panels show the same product in different real display settings (a sunlit window, a bright garden branch, a fresh gift-wrap moment, a light living-room shelf) so the shopper sees where it fits, while keeping one consistent product identity across all panels.
-- Prism light-cast accent (only when the product contains crystal, glass, or faceted reflective elements): let one strong directional daylight pass through the faceted or crystal part so it casts a real caustic rainbow or star-shaped light pattern onto the nearby plain surface (wall or table) as an atmospheric accent; keep it soft-edged and physically plausible, never a hard graphic overlay or added text.
-- Kinetic & sensory cue (only for hanging chimes, bells, or moving decor): in one panel, imply real motion and sound - catch the piece mid-swing with a gentle blurred trailing edge, or show a partial hand just touching it so it sways - so the shopper senses that it moves and rings; never draw sound waves, music notes, arrows, or any motion glyph, and keep the gesture anatomically natural with a partial hand only.
-- Multi-hangpoint room styling (only for hanging decor): one panel may show two or three identical pieces hung at different real points in a single bright room (door, wall hook, window, branch) so the shopper reads that the piece decorates a whole space; keep every piece the exact same real product and keep them clearly separated, fully inside the panel.
-
-One square exact four-panel 2x2 e-commerce grid with clean straight dividers, generated for: {title}
-
-Output contract (fixed - preserve existing backend logic):
-- Generate ONE single square image only: a 2x2 four-panel grid. Do NOT generate separate images, do NOT output a carousel, do NOT output a collage with more or fewer panels.
-- This one generated grid image will be split by backend code after generation, so the four equal panels and straight center dividers are mandatory.
-- Important: the single square image is only a transport container. It must look like FOUR fully independent finished listing images placed in a 2x2 layout, not one continuous poster chopped into four pieces.
-
-Grid construction rules (fixed - clean edges after splitting):
-- The horizontal and vertical cut boundaries must be EXACTLY at the center (50%/50%) of the image. Draw a neutral light-gray separator on both boundaries, 0.4%-0.8% of the full image wide, straight, uniform, and uninterrupted from edge to edge. This separator is mandatory and is validated before splitting.
-- All four panels must be exactly equal in size; no content may cross or touch the divider lines.
-- Each panel must work independently when the grid is cut: its own clear subject, its own background, its own lighting, no dangling props, and no half-composed elements at the panel edges.
-- Safe Margin Rule (anti-crop logic): keep the product fully inside a 10% inner safe zone from ALL panel edges, including the center divider. Do not let the product crowd or fill the panel: in hero and lifestyle panels the main product should occupy about 52%-65% of the panel area, leaving at least a third of the panel as intentional, in-focus background. In a detail panel the complete product may sit smaller (45%-58%) when it includes an inset close-up. Long products (spoons, rulers, strips) must be placed at a 10-15 degree angle or scaled down enough to fit entirely inside the safe zone without touching any border.
-- Absolutely forbidden: any global headline, banner, background shape, product, box, prop, shadow, table, frame, or sentence that continues across two or more panels. No half words at panel edges. No shared poster title outside an individual panel.
-- No borders, no double lines, no rounded corners on the outer edge of the grid.
-
-Panel 1 - Wide Environmental Hero (top-left):
-- Show the whole real space as an establishing shot: the complete sellable product or complete verified set placed naturally inside a fully dressed room or outdoor setting, with the product a relatively small but clearly readable focal detail (about 18%-38% of the panel). No cropped parts and no partial stacking that hides quantity or structure.
-- Compose with strong three-dimensional depth: a near foreground element (a rug edge, a chair back, a plant, or a curtain near the camera), the midground where the product truly sits, and a legible far background (a far wall, a doorway, a window, or outdoor greenery) in the same light.
-- Let the environment dominate while the product stays the sharp, exact original SKU, lit by the same natural source as the room and grounded by a real contact shadow - never floating and never a tight studio still-life.
-- Place the space off-centre so it breathes; keep the full product inside the safe area, never touching or clipping the panel edges or the divider.
-- No AI-generated copy. No headline, fact card, or typography is added after splitting.
-
-Panel 2 - Environmental Detail / Alternate Setting (top-right):
-- Must differ from Panel 1 in at least 3 of: the room or outdoor setting, furniture set, palette, camera angle, light direction and time of day, and dressings.
-- Style options: warm Scandinavian living corner, organic-modern bedroom, airy coastal living room, fresh farmhouse kitchen, sunlit garden terrace.
-- Show the product living in a different real space, still small in the wide frame (about 20%-40%), with a real three-dimensional foreground / midground / far-background and the room's own perspective lines; optionally pair the wide scene with at most one small borderless optical zoom on a real material detail (weave, grain, finish) that stays inside the panel. The complete product must always remain visible; a pure macro crop is forbidden.
-- No AI-generated copy or labels.
-
-Panel 3 - Environmental Use / In-context Moment (bottom-left):
-- Stage the product in a real, inhabited moment of use inside a believable lived-in space matching [SKU Category] (a living room seen wide, a bedroom corner, a kitchen with a window wall, a dining nook, a balcony, a garden patio), showing the product exactly where it would really sit or be used.
-- Dress the space with 3-5 real furniture and decor elements (a sofa, a rug, framed art, a floor lamp, a plant, curtains) so it reads as a genuine home; these are context only, never implied as included in the purchase.
-- Lighting: natural environmental light - golden-hour sun raking through a window, a bright window pool across the floor, or soft ambient daylight - with real atmospheric depth and gentle falloff into the room.
-- Keep the product unobstructed and readable as a natural in-context detail, not a large foreground hero; show a real three-layer space (a foreground detail near the camera, the surface the product sits on, and a legible room backdrop in the same light). No AI-generated copy or scene phrase.
-
-Panel 4 - Dimension Annotation Background (bottom-right):
-- Create a clean front, side, or top view of the product that is suitable for later deterministic dimension annotation, on a simple, calm, seamless surface with clear silhouette separation and soft natural light.
-- Keep the complete product sharp and leave 12%-18% clear space around it.
-- Never render measurements, numbers, units, dimension lines, arrows, rulers, scales, labels, or size claims.
-- If no useful orthographic view is possible, create a clean alternate product angle with the same empty safe area.
-
-Generate-then-self-check (fixed):
-- Confirm product quantity, silhouette, proportions, structure, color, material, transparency, texture, edges, and accessory count all match the reference.
-- Confirm every panel stands alone: no element crosses a divider, nothing touches a panel edge, and each panel has its own complete composition.
-- Confirm physical realism: every product is grounded with contact and drop shadows, has directional lighting and readable material texture; no flat, floating, or pasted-looking product.
-- Confirm the environmental wide lifestyle mood: a real, inhabited space with a genuine foreground / midground / far-background, natural environmental light (golden-hour window sun or soft ambient daylight), and a believable sense of place - never a tight studio still-life or an empty backdrop.
-- If any SKU error is found, fix the product body first, then adjust background and polish.
-- Final goal: SKU-accurate, instantly recognizable, differentiated wide environmental sets, full premium composition, matching US consumer taste.
-
-Grid & splitting infrastructure (fixed - do not change):
-- Keep an exact four-panel 2x2 grid with clean straight dividers. Do not change the four-grid structure, divider layout, or split logic.
-- Each panel must be an independent standalone marketplace carousel image with its own complete mini-layout; never merge panels into one continuous scene and never share props, typography, subject, shadow, table surface, or background across panels.
-- Official authenticity rules: the sellable product must be complete, sharp, prominent, and unobstructed in every panel. Do not show only a packaging bag unless the product being sold is packaging bags. Do not crop away key attributes, hide important parts behind props/text/hands, make the product tiny, blur it, use an unrelated background, or perform deceptive Photoshop-style edits.
-- Strict rules: differentiate panels only through style, lighting, background, scene, and composition; do not repeat or lightly recolor the same panel. Do not change the product itself. Do not invent material, dimensions, functions, accessories, certifications, brand, or claims. Generate no added text, arrows, UI, logo, watermark, price, discount badge, certification badge, medical claim, exaggerated claim, or promotional text. If the product itself contains decorative characters, symbols, or patterns, keep them only as product design.
-- Final text rule: zero AI-added visible text. Realistic, wide and atmospheric, naturally lit, sharp, clean, marketplace-ready for US/EU shoppers."""
+Panel briefs for this pillar:
+- Panel 1 (top-left) - Wide Environmental Hero: the complete product placed naturally inside a fully dressed real space, small but clearly readable (about 18%-38%), with a near foreground element, the midground where the product truly sits, and a legible far background in the same light. The environment dominates while the product stays the sharp, exact original SKU and is grounded by a real contact shadow.
+- Panel 2 (top-right) - Environmental Detail / Alternate Setting: must differ from Panel 1 in at least 3 of the room or outdoor setting, furniture set, palette, camera angle, light direction and time of day, dressings. The product still sits small in the wide frame (about 20%-40%), optionally paired with at most one small borderless optical zoom on a real material detail that stays inside the panel.
+- Panel 3 (bottom-left) - Environmental Use / In-context Moment: a real, inhabited moment of use inside a believable lived-in space matching [SKU Category] (a living room seen wide, a bedroom corner, a kitchen with a window wall, a dining nook, a balcony, a garden patio), dressed with 3-5 real furniture and decor elements so it reads as a genuine home.
+- Panel 4 (bottom-right) - Dimension Annotation Background: per the runtime contract (a clean front, side or top view on a simple, calm, seamless surface with 12%-18% clear space)."""
 
 
 PREMIUM_IMAGE_PROMPT = """Role & Core Mission (fixed):

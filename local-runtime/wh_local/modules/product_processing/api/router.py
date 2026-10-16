@@ -594,6 +594,7 @@ def create_product_processing_router(
             body.draft_ids,
             workspace_id=_workspace(workspace_id),
             force=bool(body.force),
+            skip_text_check=bool(body.skip_text_check),
         )
 
     @router.post("/drafts/process")

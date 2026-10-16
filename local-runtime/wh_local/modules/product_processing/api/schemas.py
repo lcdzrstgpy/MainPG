@@ -93,6 +93,10 @@ class DraftSkuAvailabilityRequest(BaseModel):
     draft_ids: list[int] = Field(default_factory=list)
     # 强制检测：忽略「SKU 规格图 ≥ 20 张即跳过」的性能阈值，把大图集链接也检一遍。
     force: bool = False
+    # 只判尺寸、跳过中文 OCR：1:1 判定读的是库里已存的宽高元数据（零成本），
+    # 中文检测要逐张跑 OCR（实测约 277ms/张，4 并发下 1400 张要 ~98 秒）。
+    # 勾选后跳过 OCR，按「尺寸口径可用」落库（仍会拦住非 1:1，保住店小秘整单拒收这条硬合规）。
+    skip_text_check: bool = False
 
     @field_validator("draft_ids")
     @classmethod
