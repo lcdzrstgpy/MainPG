@@ -413,7 +413,13 @@ class _RuntimeExitController:
                     self._exit("frontend heartbeat idle timeout")
 
     def _exit(self, reason: str) -> None:
-        print(f"[runtime] exiting because {reason}", flush=True)
+        # 退出原因必须走 logging 留痕：windowed 打包（PyInstaller console=False）下
+        # sys.stdout 被替换成 devnull，原来这里的 print 等于没写 —— 安装版运行日志里
+        # 只有一串「Application startup complete」，没有任何「为什么退出」的记录，
+        # 于是「页面还开着后端突然没了」无法区分是关页/空闲自退，还是被强杀（杀软、
+        # 任务管理器、清理软件），只能靠猜（2026-10-16 实测：3037 行日志 41 次启动
+        # / 0 次退出记录）。logger 的 handler 每次 emit 后 flush，os._exit 前已落盘。
+        logger.warning("本地后端即将退出：%s", reason)
         # 确认真退出前，先优雅取消仍 in-flight 的处理任务并按 50% 结算，
         # 使「关闭页面→任务取消/已取消+按冻结积分 50% 扣费」可达成。仅在真正
         # 决定退出（非刷新重载）时执行；回调带超时保护，绝不无限阻塞。
