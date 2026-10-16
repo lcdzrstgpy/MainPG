@@ -39,6 +39,7 @@ import { PreferencesPanel } from "../components/PreferencesPanel";
 import { FeedbackPanel } from "../components/FeedbackPanel";
 import { PromotionPlanPanel } from "../components/PromotionPlanPanel";
 import { StorageSpacePanel } from "../components/StorageSpacePanel";
+import { DataMigrationPanel } from "../components/DataMigrationPanel";
 import "../styles/personalCenter.css";
 
 type AccountSnapshot = {
@@ -401,7 +402,7 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
   const defaultUsageFilterKey = buildUsageFilterKey("", "", "", "");
 
   const [summary, setSummary] = useState<BillingSummary | null>(cachedBalance?.summary ?? null);
-  const [activePanel, setActivePanel] = useState<"wallet" | "usage" | "pricing" | "model" | "preferences" | "version" | "storage" | "promo" | "feedback">("wallet");
+  const [activePanel, setActivePanel] = useState<"wallet" | "usage" | "pricing" | "model" | "preferences" | "version" | "storage" | "migration" | "promo" | "feedback">("wallet");
 
   // 可用积分与积分构成的数字滚动动画（首次直接用缓存值，不闪）。
   const animatedAvailablePoints = useAnimatedNumber(summary?.wallet.available_points);
@@ -1564,6 +1565,10 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
           <span className="iconfont icon-database" aria-hidden="true" />
           <span>存储空间</span>
         </button>
+        <button type="button" className={activePanel === "migration" ? "is-active" : ""} onClick={() => setActivePanel("migration")}>
+          <span className="iconfont icon-upload" aria-hidden="true" />
+          <span>数据迁移</span>
+        </button>
         <button type="button" className={activePanel === "promo" ? "is-active" : ""} onClick={() => setActivePanel("promo")}>
           <span className="iconfont icon-gift" aria-hidden="true" />
           <span>推广计划</span>
@@ -2224,6 +2229,8 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
           <SystemVersionPanel />
         ) : activePanel === "storage" ? (
           <StorageSpacePanel />
+        ) : activePanel === "migration" ? (
+          <DataMigrationPanel />
         ) : activePanel === "promo" ? (
           <PromotionPlanPanel />
         ) : activePanel === "feedback" ? (

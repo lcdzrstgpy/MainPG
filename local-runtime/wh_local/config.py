@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import logging
 import os
 import secrets
 import shutil
@@ -10,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from wh_local.secrets import load_credential_config
+
+logger = logging.getLogger("wh_local.config")
 
 
 # Release automation updates this single value when producing a desktop build.
@@ -122,8 +125,33 @@ def _migrate_legacy_database(config: LocalRuntimeConfig, target_db: Path) -> Non
         return
 
 
+def _apply_pending_migration(config: LocalRuntimeConfig, target_db: Path) -> None:
+    """把上次导入暂存的数据迁移包顶上（导入后的首次启动执行）。
+
+    必须在任何连接打开数据库**之前**调用：导入时归档库先落到
+    <data_dir>/.migration-pending/，这里负责替换（替换前把当前库备份成
+    ``workbench.sqlite3.pre-import-<时间戳>.bak``）。
+
+    迁移是用户主动做的一次性动作，失败只记日志、绝不阻断启动——否则一个坏包
+    会让用户连工作台都打不开，反而更难救。
+    """
+    try:
+        from wh_local.migration import apply_pending
+
+        result = apply_pending(config.data_dir, target_db)
+    except Exception:  # noqa: BLE001 - 迁移失败不能阻断启动
+        logger.exception("应用待生效的数据迁移包失败")
+        return
+    if result.get("applied"):
+        logger.warning(
+            "数据迁移包已生效：database=%s，原库备份=%s",
+            target_db,
+            result.get("backup") or "（无，原库不存在）",
+        )
+
+
 def ensure_data_dir_ready(config: LocalRuntimeConfig, database_path: Path | None = None) -> None:
-    """启动前置检查：数据目录可写（含老库迁移）。失败抛 RuntimeError(E002)。
+    """启动前置检查：数据目录可写（含老库迁移、待生效的导入）。失败抛 RuntimeError(E002)。
 
     在真正建库之前先试写一脚——目录不可写（权限/磁盘满/杀软锁定）时立刻
     以明确错误码失败，而不是一路崩到 SQLite 报错变成白屏。
@@ -132,7 +160,9 @@ def ensure_data_dir_ready(config: LocalRuntimeConfig, database_path: Path | None
         config.data_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         raise RuntimeError(f"E002 无法创建数据目录 {config.data_dir}: {exc}") from exc
-    _migrate_legacy_database(config, database_path or config.database_path)
+    target_db = database_path or config.database_path
+    _migrate_legacy_database(config, target_db)
+    _apply_pending_migration(config, target_db)
     probe = config.data_dir / ".write-test"
     try:
         probe.write_text("ok", encoding="utf-8")

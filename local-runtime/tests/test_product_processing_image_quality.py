@@ -501,6 +501,34 @@ def test_four_grid_contract_owns_typography_dividers_and_fidelity_rules() -> Non
     assert "handle into a flat bar" in GRID_RUNTIME_CONTRACT
     assert "PANEL ROLES" in GRID_RUNTIME_CONTRACT
     assert "pure macro crop without the complete sellable product is forbidden" in GRID_RUNTIME_CONTRACT
+    # 首图填幅按平台惯例提上来，内边距同步收紧（85% 填幅与 10% 边距在数学上互斥）。
+    assert "COMPLETENESS & FRAME FILL" in GRID_RUNTIME_CONTRACT
+    assert "78%-85%" in GRID_RUNTIME_CONTRACT
+    assert "7% inner safe margin" in GRID_RUNTIME_CONTRACT
+    # 四条通用能力上提到契约（原先在四套模板里逐字重复）：真实感与光影物理 / 反 AI 痕迹 /
+    # 手部解剖 / 艺术方向层 / 策略 1 的尺度锚与卖点证据。
+    assert "REALISM & LIGHT PHYSICS" in GRID_RUNTIME_CONTRACT
+    assert "ambient-occlusion contact shadow" in GRID_RUNTIME_CONTRACT
+    assert "reflection anchor" in GRID_RUNTIME_CONTRACT
+    assert "flat grey metal is forbidden" in GRID_RUNTIME_CONTRACT
+    assert "caustic pool" in GRID_RUNTIME_CONTRACT
+    assert "ANTI-AI-TELL" in GRID_RUNTIME_CONTRACT
+    assert "HAND & HUMAN ANATOMY" in GRID_RUNTIME_CONTRACT
+    assert "exactly five fingers" in GRID_RUNTIME_CONTRACT
+    # 艺术方向层：只允许统一这五类，且必须显式列清「不允许统一」的十项，否则模型会收敛。
+    assert "ART DIRECTION LOCK" in GRID_RUNTIME_CONTRACT
+    assert "colour grade" in GRID_RUNTIME_CONTRACT
+    assert "unifying any of those ten is a failure" in GRID_RUNTIME_CONTRACT
+    # 调色优先级：调色底座可统一，但照明色温仍须各格不同——否则模型会二选一。
+    assert "NOT the scene's lighting colour" in GRID_RUNTIME_CONTRACT
+    assert "PANEL 2 SCALE ANCHOR" in GRID_RUNTIME_CONTRACT
+    assert "PANEL 3 BENEFIT PROOF" in GRID_RUNTIME_CONTRACT
+    # 尺度锚优先无文字参照物（手是 AI 第一穿帮点、硬币自带文字可能被误判为加字），
+    # Panel 4 必须是真正交而非 45° 视角，Panel 3 还要能指出证据在画面里的位置。
+    assert "PREFER an inanimate, text-free reference" in GRID_RUNTIME_CONTRACT
+    assert "preferably an A4 sheet or a phone" in GRID_RUNTIME_CONTRACT
+    assert "never a 45-degree three-quarter view" in GRID_RUNTIME_CONTRACT
+    assert "AND point at exactly where in the frame it is visible" in GRID_RUNTIME_CONTRACT
     # 只有 Panel 4 的语义与「1-3 格必须三个互不相同」是全局的；各套模板自己的机位留在模板里。
     assert "Panel 4 (bottom-right) is ALWAYS the dimension-annotation background" in GRID_RUNTIME_CONTRACT
     assert "Do not invent packaging" in GRID_IMAGE_PROMPT_B
@@ -559,8 +587,22 @@ def test_ark_grid_template_is_region_planned_and_delegates_the_contract() -> Non
         assert "【区域规划" in template, name
         for panel in ("【第①格", "【第②格", "【第③格", "【第④格"):
             assert panel in template, (name, panel)
-        assert "光影技法" in template, name
-        assert "自然度要点" in template, name
+        assert "光影技法" not in template, name
+        assert "自然度要点" not in template, name
+        # 真实感/光影物理/反 AI 痕迹已上提到契约，模板只留一句委派，不再各写一遍。
+        assert "布光与真实感" in template, name
+        assert "REALISM & LIGHT PHYSICS" in template, name
+        # 首图填幅与契约同步（平台惯例：白底主图必须做大）。
+        assert "78%-85%" in template, name
+        # 策略 1/2 必须落在模板的逐格指令里（写在契约里模型注意力会被稀释，实测不生效）。
+        assert "尺度锚（本格硬要求）" in template, name
+        # 尺度锚优先无文字参照物（A4 纸 / 手机），只有「环境远景」套允许以画面里的已知尺寸物为先。
+        assert "A4 纸或手机优先" in template, name
+        assert "卖点证据（本格硬要求）" in template, name
+        assert "具体位置" in template, name
+        assert "正交硬要求" in template, name
+        assert "调色与成像底座" in template, name
+        assert "不是场景照明色" in template, name
         # 四格趋同的两个根因必须被钉死：逐格参数矩阵（硬参数）+ 不再统一布光。
         assert "逐格参数矩阵" in template, name
         assert "四格不得复用同一套参数" in template, name
