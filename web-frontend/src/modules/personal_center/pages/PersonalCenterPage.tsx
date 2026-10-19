@@ -2039,6 +2039,11 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
                 </span>
                 <div className="ledger-row-main">
                   <strong>{ledgerSourceLabel(item.source_type)}</strong>
+                  {item.note ? (
+                    <span className="ledger-row-note" title={item.note}>
+                      {item.note}
+                    </span>
+                  ) : null}
                   <span>{formatUsageTime(item.created_at)}</span>
                 </div>
                 <div className="ledger-row-side">
