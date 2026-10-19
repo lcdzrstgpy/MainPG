@@ -76,9 +76,11 @@ export function PrescreenPanel({ isChecking, totalItems, totalSkc, passedItems, 
         </label>
       </div>
       <div className="price-verification-prescreen-result">
-        <span>初筛结果</span>
-        <strong>{passedItems} 个 SKC</strong>
-        <small>{thresholdActive ? `申报价 ≥ ${prescreen?.min_adjusted_price_cny}；` : "未设置门槛；"}进入 STEP 02{filteredCount > 0 ? `，过滤 ${filteredCount} 个` : ""}</small>
+        <div className="price-verification-prescreen-summary">
+          <span>初筛结果</span>
+          <strong>{passedItems} 个 SKC</strong>
+          <small>{thresholdActive ? `申报价 ≥ ${prescreen?.min_adjusted_price_cny}；` : "未设置门槛；"}进入 STEP 02{filteredCount > 0 ? `，过滤 ${filteredCount} 个` : ""}</small>
+        </div>
         <WorkflowActionBar label="数据初筛操作">
           <div className="price-verification-action-buttons">
             <button className="price-verification-text-action" onClick={onRefresh} disabled={isChecking}>{isChecking ? "正在刷新…" : "↻ 刷新"}</button>

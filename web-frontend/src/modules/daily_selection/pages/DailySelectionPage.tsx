@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import {
@@ -321,6 +321,39 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   const [internalView, setInternalView] = useState<"directions" | "collection">(view);
   const collectionView = internalView === "collection";
   const [collectionWorkspaceMode, setCollectionWorkspaceMode] = useState<"daily" | "shop" | "plugin">("daily");
+  const [collectionTabThumb, setCollectionTabThumb] = useState({ x: 0, y: 0, width: 0, height: 0 });
+  const [collectionTabThumbReady, setCollectionTabThumbReady] = useState(false);
+  const collectionTabsRef = useRef<HTMLDivElement>(null);
+
+  // 采集入口胶囊 Tab：和首页时间范围同一套共享滑块（SwiftUI matchedGeometryEffect）。
+  // 高亮不是每个按钮各自换背景，而是同一块滑块在选中项之间做弹簧插值；
+  // 移动端三栏会堆叠成竖排，所以 x/y/宽/高都要量。
+  useLayoutEffect(() => {
+    if (!collectionView) return;
+    const group = collectionTabsRef.current;
+    if (!group) return;
+    const syncThumb = () => {
+      const active = group.querySelector<HTMLButtonElement>("button.is-active");
+      if (!active) return;
+      const groupRect = group.getBoundingClientRect();
+      const activeRect = active.getBoundingClientRect();
+      setCollectionTabThumb({
+        x: activeRect.left - groupRect.left - group.clientLeft,
+        y: activeRect.top - groupRect.top - group.clientTop,
+        width: activeRect.width,
+        height: activeRect.height,
+      });
+    };
+    syncThumb();
+    // 首帧只定位不播放动画，下一帧再开启过渡，避免页面加载时滑块从原点滑入。
+    const frame = window.requestAnimationFrame(() => setCollectionTabThumbReady(true));
+    const observer = new ResizeObserver(syncThumb);
+    observer.observe(group);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [collectionView, collectionWorkspaceMode]);
   const [customDirections, setCustomDirections] = useState<Direction[]>(loadCustomDirections);
   const [updatedDefaultDirections, setUpdatedDefaultDirections] = useState<Direction[]>(loadUpdatedDefaultDirections);
   const [removedDefaultDirectionIds, setRemovedDefaultDirectionIds] = useState<string[]>(loadRemovedDefaultDirectionIds);
@@ -960,7 +993,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
       throw new Error("关键词不能只填分隔符，请至少填写一个有效关键词");
     }
     const criteria: DailySelectionCriteria = {
-      keywords: mode === "image" ? normalizedKeywords : normalizedKeywords,
+      keywords: normalizedKeywords,
       selection_scope: scope,
       category: selectedDirection.name,
       target_count: parsedTargetCount,
@@ -1355,28 +1388,43 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
             )}
           </section>
           <section className="daily-collection-surface" aria-label="每日选品采集面板">
-            <div className="collection-workspace-tabs" role="tablist" aria-label="采集入口">
+            <div
+              className="collection-workspace-tabs"
+              role="tablist"
+              aria-label="采集入口"
+              ref={collectionTabsRef}
+              data-ready={collectionTabThumbReady ? "true" : undefined}
+            >
+              <span
+                className="collection-tab-thumb"
+                aria-hidden="true"
+                style={{
+                  width: collectionTabThumb.width,
+                  height: collectionTabThumb.height,
+                  transform: `translate3d(${collectionTabThumb.x}px, ${collectionTabThumb.y}px, 0)`,
+                }}
+              />
               <button
                 type="button"
                 role="tab"
                 aria-selected={collectionWorkspaceMode === "daily"}
                 className={collectionWorkspaceMode === "daily" ? "is-active" : ""}
                 onClick={() => setCollectionWorkspaceMode("daily")}
-              ><span className="iconfont icon-search" aria-hidden="true"></span>每日选品</button>
+              ><span className="collection-tab-label"><span className="iconfont icon-search" aria-hidden="true"></span>定向采集</span></button>
               <button
                 type="button"
                 role="tab"
                 aria-selected={collectionWorkspaceMode === "shop"}
                 className={collectionWorkspaceMode === "shop" ? "is-active" : ""}
                 onClick={() => setCollectionWorkspaceMode("shop")}
-              ><span className="iconfont icon-shop" aria-hidden="true"></span>整店采集</button>
+              ><span className="collection-tab-label"><span className="iconfont icon-shop" aria-hidden="true"></span>整店采集</span></button>
               <button
                 type="button"
                 role="tab"
                 aria-selected={collectionWorkspaceMode === "plugin"}
                 className={collectionWorkspaceMode === "plugin" ? "is-active" : ""}
                 onClick={() => setCollectionWorkspaceMode("plugin")}
-              ><span className="iconfont icon-cloud" aria-hidden="true"></span>插件采集</button>
+              ><span className="collection-tab-label"><span className="iconfont icon-cloud" aria-hidden="true"></span>插件采集</span></button>
             </div>
             {collectionWorkspaceMode === "plugin" ? (
               <PluginOneboundCapturePanel ref={pluginCapturePanelRef} isActive={isActive} onOpenDraft={onOpenProductProcessingDraft} onBatchCountChange={setPluginBatchCount} />
@@ -1391,52 +1439,36 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
             <span>当前方向：{selectedDirection.name}</span>
           </div>
 
-          <div className="mode-tabs" role="tablist" aria-label="采集方式">
-            {([
-              ["keyword", "关键词采集", "输入 1–5 个关键词"],
-              ["image", "参考图采集", "使用公开图片 URL"],
-            ] as const).map(([value, label, hint]) => (
-              <button key={value} type="button" className={mode === value ? "is-active" : ""} onClick={() => setMode(value)}>
-                <strong>{label}</strong><span>{hint}</span>
-              </button>
-            ))}
-          </div>
-
-          <div className={`collection-primary-fields ${mode === "image" ? "is-image-mode" : ""}`}>
-            <label>
-              <span>采集平台</span>
-              <select value={platform} onChange={(event) => setPlatform(event.target.value as CollectionPlatform | "")}>
-                <option value="" disabled>请选择</option>
-                <option value="1688">1688</option>
-                <option value="taobao">淘宝</option>
-              </select>
-            </label>
-            <label><span>选品范围</span><select value={scope} onChange={(event) => setScope(event.target.value as SelectionScope | "")}><option value="" disabled>请选择</option><option value="divergent">发散相似款</option><option value="exact">精准匹配</option></select></label>
-            <label><span>采集数量</span><input type="number" min="1" max="200" value={targetCount} onChange={(event) => setTargetCount(event.target.value)} /></label>
-            <label className="collection-keyword-field">
-              <span>采集关键词 <em>{mode === "keyword" ? "必填" : "作为图片描述标签"}</em></span>
-              <input value={keywords} onChange={(event) => setKeywords(event.target.value)} placeholder="多个关键词用逗号分隔，最多 5 个" />
-            </label>
-            {mode === "image" && (
-              <label className="collection-reference-field">
-                <span>参考图 URL <em>必填</em></span>
-                <input type="url" value={referenceImageUrl} onChange={(event) => setReferenceImageUrl(event.target.value)} placeholder="https://example.com/product.jpg" />
+          <div className="collection-primary-fields">
+            <div className="collection-field-grid">
+              <label>
+                <span>采集平台</span>
+                <select value={platform} onChange={(event) => setPlatform(event.target.value as CollectionPlatform | "")}>
+                  <option value="" disabled>请选择</option>
+                  <option value="1688">1688</option>
+                  <option value="taobao">淘宝</option>
+                </select>
               </label>
-            )}
-          </div>
-
-          <div className="collection-advanced-header">
-            <div><strong>高级筛选</strong><span>价格、SKU、并发与风险规则</span></div>
-            <button type="button" ref={collectionSettingsTriggerRef} aria-expanded={advancedCollectionOpen} aria-controls="collection-settings-drawer" onClick={() => { setHistoryDrawerOpen(false); setAdvancedCollectionOpen(true); }}>
-              <span className="iconfont icon-setting" aria-hidden="true"></span>高级设置
-            </button>
-          </div>
-
-          <div className="collection-actions">
-            <span>{!platform || platform === "1688"
-              ? "1688 会尽量拉取全部候选的详情（SKU/发源地/属性），失败或下架商品除外。"
-              : "淘宝会尽量拉取全部候选的详情，失败或下架商品除外。"}</span>
-            <div className="collection-submit-area">
+              <label><span>选品范围</span><select value={scope} onChange={(event) => setScope(event.target.value as SelectionScope | "")}><option value="" disabled>请选择</option><option value="divergent">发散相似款</option><option value="exact">精准匹配</option></select></label>
+              <label><span>采集数量</span><input type="number" min="1" max="200" value={targetCount} onChange={(event) => setTargetCount(event.target.value)} /></label>
+              <label className="collection-keyword-field">
+                <span>采集关键词 <em>{mode === "keyword" ? "必填" : "作为图片描述标签"}</em></span>
+                <input value={keywords} onChange={(event) => setKeywords(event.target.value)} placeholder="多个关键词用逗号分隔，最多 5 个" />
+              </label>
+              {mode === "image" && (
+                <label className="collection-reference-field">
+                  <span>参考图 URL <em>必填</em></span>
+                  <input type="url" value={referenceImageUrl} onChange={(event) => setReferenceImageUrl(event.target.value)} placeholder="https://example.com/product.jpg" />
+                </label>
+              )}
+            </div>
+            <div className="collection-form-actions">
+              <button type="button" className="collection-mode-toggle" title={mode === "keyword" ? "切换为参考图采集：用公开图片 URL 搜索相似款" : "切换为关键词采集：用 1–5 个关键词搜索"} onClick={() => setMode(mode === "keyword" ? "image" : "keyword")}>
+                <span aria-hidden="true">⇄</span>{mode === "keyword" ? "切换到参考图采集" : "切换到关键词采集"}
+              </button>
+              <button type="button" className="collection-settings-entry" ref={collectionSettingsTriggerRef} aria-expanded={advancedCollectionOpen} aria-controls="collection-settings-drawer" title="价格、SKU、并发与风险规则" onClick={() => { setHistoryDrawerOpen(false); setAdvancedCollectionOpen(true); }}>
+                <span className="iconfont icon-setting" aria-hidden="true"></span>高级设置
+              </button>
               <button className="collect-button" type="submit" disabled={busy || collecting}>{collecting ? <><i className="app-spinner is-sm" aria-hidden="true" />采集中 {collectionProgress}%</> : "开始采集"}</button>
               {collecting && (
                 <button className="collect-cancel-button" type="button" disabled={cancelling} onClick={cancelCollection}>
@@ -1445,6 +1477,10 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
               )}
             </div>
           </div>
+
+          <p className="collection-hint">{!platform || platform === "1688"
+            ? "1688 会尽量拉取全部候选的详情（SKU/发源地/属性），失败或下架商品除外。"
+            : "淘宝会尽量拉取全部候选的详情，失败或下架商品除外。"}</p>
         </form>
 
       </div>

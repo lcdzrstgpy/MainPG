@@ -235,6 +235,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
   const precheckSequence = useRef(initialWorkspace.precheckSequence);
   const dimensionOpenRequests = useRef(new Map<string, Promise<DimensionCanvasItem>>());
   const contentRef = useRef<HTMLDivElement>(null);
+  const shellRef = useRef<HTMLElement>(null);
   const scrollPositions = useRef(new WorkspaceTabScrollStore());
   // 最新 tabs 的镜像：供异步回调（await 之后）与同步判断读取最新值，
   // 避免使用已过期的渲染闭包 tabs 导致激活/去重/上限判定失准。
@@ -303,6 +304,29 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
       window.removeEventListener("scroll", updateVisibility);
       content?.removeEventListener("scroll", updateVisibility);
       window.removeEventListener("resize", updateVisibility);
+    };
+  }, []);
+
+  // 桌面布局：顶栏是内容滚动区的视觉边界，内容遮罩与首屏留白都锚定在它身上。
+  // 这里必须同步「布局高度」而不是视觉矩形：
+  // - useLayoutEffect 在首帧绘制前写入，刷新后不会先用 120px 兜底、随后再跳一下；
+  // - offsetHeight 不含 transform，主题切换的入场动画即使缩放顶栏也量不歪；
+  // - 变量写在 workspace-shell 上，随组件卸载自然回收，不污染 documentElement。
+  useLayoutEffect(() => {
+    const shell = shellRef.current;
+    const topbar = shell?.querySelector<HTMLElement>(".topbar-card");
+    if (!shell || !topbar) return;
+    const apply = () => {
+      const height = Math.ceil(topbar.offsetHeight);
+      if (height > 0) shell.style.setProperty("--workspace-topbar-height", `${height}px`);
+    };
+    apply();
+    // ResizeObserver 回调在布局之后、绘制之前执行，尺寸变化不会先画出错位的边界。
+    const observer = new ResizeObserver(apply);
+    observer.observe(topbar);
+    return () => {
+      observer.disconnect();
+      shell.style.removeProperty("--workspace-topbar-height");
     };
   }, []);
 
@@ -854,7 +878,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         content = <PriceVerificationPage isActive={isActive} />;
         break;
       case "product_processing":
-        content = <ProductProcessingVerifyPage onStartProcessing={openProcessingTask} onOpenPrecheck={openProcessingPrecheck} onOpenCollection={() => openModule("daily_selection")} isActive={isActive} />;
+        content = <ProductProcessingVerifyPage onStartProcessing={openProcessingTask} onOpenCollection={() => openModule("daily_selection")} isActive={isActive} />;
         break;
       case "product_processing_history":
         content = <ProductProcessingHistoryPage onOpenTask={openProcessingTaskDetail} onOpenPrecheck={openProcessingPrecheck} />;
@@ -864,7 +888,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         break;
       case "product_processing_tasks":
         content = tab.taskId != null ? (
-          <ProductProcessingPrecheckPage taskId={tab.taskId} initialChangeSetId={tab.dimensionChangeSetId} onOpenDimensionItem={openDimensionItem} onOpenDraftPool={() => openModule("product_processing")} isActive={isActive} />
+          <ProductProcessingPrecheckPage taskId={tab.taskId} initialChangeSetId={tab.dimensionChangeSetId} onOpenDimensionItem={openDimensionItem} isActive={isActive} />
         ) : (
           <ProductProcessingTaskPage
             initialTaskId={tab.taskRunId}
@@ -922,7 +946,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
     sidebarIsCollapsed && sidebarHovered && sidebarHoverExpand && expandedGroupId === null;
 
   return (
-    <main className={`workspace-shell${playEntryAnimation ? " is-brand-entering" : ""}`}>
+    <main className={`workspace-shell${playEntryAnimation ? " is-brand-entering" : ""}`} ref={shellRef}>
       <PeachGarden theme={theme} uiMode={uiMode} tapEffects={tapEffects} ambientEffects={ambientEffects} />
       <AlpineMeadow theme={theme} uiMode={uiMode} tapEffects={tapEffects} ambientEffects={ambientEffects} />
       <InkTap theme={theme} uiMode={uiMode} enabled={tapEffects} />

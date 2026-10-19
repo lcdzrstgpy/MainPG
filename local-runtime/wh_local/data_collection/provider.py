@@ -48,6 +48,11 @@ _SEARCH_RETRIES = 1
 _SEARCH_RETRY_BACKOFF_SECONDS = 1.5
 # 搜索类操作触发自动重试的 outcome：上游超时、空结果、上游失败。
 _SEARCH_RETRY_OUTCOMES = frozenset({"timeout", "no_results", "upstream_failed"})
+# 单品详情偶发上游抖动：实测同一 offer_id 短时间内会时而返回完整数据、时而
+# HTTP 503 + error_code 4010/5000。item_get 原先一次失败即判死，会把瞬时抖动
+# 放大成整批失败；这里给两次指数退避重试，永久 404 仍不重试。
+_ITEM_GET_RETRIES = 2
+_ITEM_GET_RETRY_OUTCOMES = frozenset({"timeout", "upstream_failed"})
 # 单页请求条数上限：上游对 page_size 实际有截断（1688 约 100 条、淘宝接口
 # 忽略该参数固定返回一页），target_count 超过此值时由采集侧按 page 递增补齐。
 _SEARCH_PAGE_SIZE_MAX = 100
@@ -297,7 +302,9 @@ class OneBoundProvider:
             "base_url",
             sensitive_values=(self._api_key, self._api_secret),
         )
-        self._timeout_seconds = self._positive_number(config.get("timeout_seconds", 15), "timeout_seconds")
+        # 单品详情（item_get）在万邦侧偶发慢：实测 60 条插件采集有约 8% 卡在 15s 超时，
+        # 而 item_get 不在重试白名单里（一次超时即判失败），故默认放宽到 30s。
+        self._timeout_seconds = self._positive_number(config.get("timeout_seconds", 30), "timeout_seconds")
         enabled = config.get("enabled", True)
         if not isinstance(enabled, bool):
             raise ValueError("enabled must be a boolean")
@@ -437,6 +444,8 @@ class OneBoundProvider:
                 "item_get",
                 {"num_iid": offer_id.strip()},
                 request_metadata={"offer_id_present": True},
+                retry_outcomes=_ITEM_GET_RETRY_OUTCOMES,
+                retry_limit=_ITEM_GET_RETRIES,
             )
 
     def search_shop(self, identifier: str, page: int, *, seller_id: str | None = None) -> ProviderCallResult:
@@ -536,11 +545,12 @@ class OneBoundProvider:
         prior_audits: tuple[ApiEvidence, ...] = (),
         extra_response_summary: Mapping[str, Any] | None = None,
         retry_outcomes: frozenset[str] = frozenset(),
+        retry_limit: int = _SEARCH_RETRIES,
     ) -> ProviderCallResult:
         if not self._enabled:
             return self._result_with_error(prior_audits, operation, "provider_disabled", "provider is disabled")
         request_summary = {"http_method": http_method, "operation": operation, **request_metadata}
-        max_attempts = 1 + max(_RATE_LIMIT_RETRIES, _SEARCH_RETRIES)
+        max_attempts = 1 + max(_RATE_LIMIT_RETRIES, retry_limit)
         last_error: ProviderCallResult | None = None
         attempt_audits: list[ApiEvidence] = []
         for attempt in range(max_attempts):
@@ -635,10 +645,10 @@ class OneBoundProvider:
                 time.sleep(wait)
                 last_error = result
                 continue
-            if outcome in retry_outcomes and attempt < _SEARCH_RETRIES:
+            if outcome in retry_outcomes and attempt < retry_limit:
                 # 排除 404：商品下架/不存在时重试无意义（item_get 详情 404 是常态）。
                 if not (outcome == "upstream_failed" and http_status == 404):
-                    time.sleep(_SEARCH_RETRY_BACKOFF_SECONDS)
+                    time.sleep(_SEARCH_RETRY_BACKOFF_SECONDS * (attempt + 1))
                     last_error = result
                     continue
             return result

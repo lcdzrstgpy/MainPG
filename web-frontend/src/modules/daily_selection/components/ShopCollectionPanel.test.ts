@@ -71,7 +71,7 @@ test("shop collection keeps its form fallback rules scoped to mobile", () => {
   assert.match(shopMobileBlock.body, createMobileRule);
 
   const pluginMobileBlock = mobileBlocks.find((block) =>
-    /\.plugin-capture-stats\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*1fr\)/.test(block.body),
+    /\.plugin-candidate-list article\s*\{[^}]*align-items:\s*start;/.test(block.body),
   );
   assert.ok(pluginMobileBlock, "expected plugin capture mobile layout rules");
   assert.match(pluginMobileBlock.body, /\.plugin-capture-item-links\s*\{[^}]*align-items:\s*flex-end;[^}]*flex-direction:\s*column;/);
@@ -80,8 +80,8 @@ test("shop collection keeps its form fallback rules scoped to mobile", () => {
 test("shop collection uses a dashboard layout with a compact metric rail", () => {
   assert.match(styles, /\.shop-collection-panel\s*\{[^}]*max-width:\s*none;[^}]*margin:\s*0;[^}]*gap:\s*16px;/);
   assert.match(styles, /\.shop-collection-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/);
-  assert.match(styles, /\.shop-batch-stats\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*1fr\)\);/);
-  assert.match(styles, /\.shop-batch-stats\s+span\s*\{[^}]*display:\s*flex;[^}]*background:\s*transparent;/);
+  assert.match(styles, /\.shop-batch-stats\s*\{[^}]*display:\s*flex;[^}]*flex-wrap:\s*wrap;/);
+  assert.match(styles, /\.shop-batch-stats\s+span\s*\{[^}]*border-radius:\s*999px;[^}]*background:\s*var\(--theme-module-surface-soft/);
   assert.match(styles, /\.shop-collection-header\s*\{[^}]*border:\s*0;[^}]*background:\s*transparent;/);
   assert.match(styles, /\.shop-collection-create\s*\{[^}]*border:\s*0;[^}]*background:\s*transparent;/);
   assert.match(styles, /\.shop-batch-detail\s*\{[^}]*border:\s*0\s*!important;[^}]*background:\s*transparent\s*!important;/);

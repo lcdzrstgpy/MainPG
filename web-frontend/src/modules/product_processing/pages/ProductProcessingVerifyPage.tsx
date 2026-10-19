@@ -3,7 +3,6 @@ import { createPortal } from 'react-dom';
 import { useChangePoller } from '../../../shared/hooks/useChangePoller';
 import { getTopbarVisualBottom } from '../../../shared/lib/topbar';
 import { SkuBatchManager } from '../components/SkuBatchManager';
-import { ProductFlowCard } from '../components/ProductFlowSteps';
 import { ppRequest, type ApiContext } from '../api/client';
 import { productProcessingApiContext } from '../api/context';
 import { type DraftCollectionBatch } from '../api/productProcessingApi';
@@ -12,7 +11,6 @@ import type {
   DraftSummary,
   DraftVariant,
   ProductProcessingOptions,
-  TaskHistoryItem,
 } from '../types';
 import '../styles/ProductProcessingVerifyPage.css';
 
@@ -32,8 +30,6 @@ type DeletedDraftBatch = {
 
 type Props = {
   onStartProcessing?: (draftIds: number[], options: ProductProcessingOptions, premiumDraftIds: number[]) => boolean;
-  /** 打开「结果预检」页（工作流第 03 步） */
-  onOpenPrecheck?: (taskId: number) => void;
   /** 空态 CTA：跳到「采集」页把商品入池 */
   onOpenCollection?: () => void;
   isActive?: boolean;
@@ -75,7 +71,7 @@ function draftDirty(draft: DraftSummary, edits: Record<number, DraftEdit>): bool
   );
 }
 
-export function ProductProcessingVerifyPage({ onStartProcessing, onOpenPrecheck, onOpenCollection, isActive = true }: Props) {
+export function ProductProcessingVerifyPage({ onStartProcessing, onOpenCollection, isActive = true }: Props) {
   const ctx = api();
   const [options, setOptions] = useState<ProductProcessingOptions>({
     targetSite: 'US',
@@ -127,8 +123,6 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenPrecheck,
   const [batchBusy, setBatchBusy] = useState(false);
   // 批次列表是否还有更多（后端 limit 上限 200，超出时提示，避免以为“只有这么多”）
   const [batchesHasMore, setBatchesHasMore] = useState(false);
-  // 最近一次 AI 处理任务：工作流第 03 步「结果预检」的入口与可用性判断依据。
-  const [latestTask, setLatestTask] = useState<TaskHistoryItem | null>(null);
   const draftListRef = useRef<HTMLDivElement>(null);
   const stickyToolbarRef = useRef<HTMLDivElement>(null);
   const stickySpacerRef = useRef<HTMLDivElement>(null);
@@ -208,6 +202,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenPrecheck,
 
     apply();
     window.addEventListener('scroll', scheduleApply, { passive: true });
+    contentCard?.addEventListener('scroll', scheduleApply, { passive: true });
     window.addEventListener('resize', scheduleApply);
     const observer = topbar ? new ResizeObserver(scheduleApply) : null;
     if (topbar) observer?.observe(topbar);
@@ -222,6 +217,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenPrecheck,
     return () => {
       if (frame) window.cancelAnimationFrame(frame);
       window.removeEventListener('scroll', scheduleApply);
+      contentCard?.removeEventListener('scroll', scheduleApply);
       window.removeEventListener('resize', scheduleApply);
       observer?.disconnect();
       toolbarObserver.disconnect();
@@ -333,16 +329,6 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenPrecheck,
     }
   };
 
-  // 工作流第 03 步的可用性依赖最近一次处理任务；失败不影响草稿池主流程。
-  const refreshLatestTask = async () => {
-    try {
-      const data = await ppRequest<{ tasks: TaskHistoryItem[] }>(ctx, `${API_BASE}/tasks/history?limit=1&offset=0`);
-      setLatestTask(data.tasks?.[0] ?? null);
-    } catch (err) {
-      console.warn('latest task refresh failed', err);
-    }
-  };
-
   const toggleBatch = (batchId: string) => {
     setSelectedBatchIds((prev) => {
       const next = new Set(prev);
@@ -398,7 +384,6 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenPrecheck,
   useEffect(() => {
     refresh().catch(fail);
     refreshBatches();
-    refreshLatestTask();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -414,7 +399,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenPrecheck,
   useChangePoller({
     url: `${API_BASE}/drafts/revision`,
     headers: { "X-Workspace-ID": ctx.workspaceId },
-    onChange: () => { refresh(true).catch(() => undefined); refreshBatches(); refreshLatestTask(); },
+    onChange: () => { refresh(true).catch(() => undefined); refreshBatches(); },
     // 页签隐藏保活：不判 isActive 的话切走后仍每 8s 打 revision 并全量重拉 500 条草稿。
     enabled: isActive,
   });
@@ -655,29 +640,11 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenPrecheck,
     setEdits((prev) => { const next = { ...prev }; for (const id of ids) delete next[id]; return next; });
   };
 
-  // 工作流步骤可用性：草稿池常驻；处理设置需要勾选；结果预检需要已有处理任务。
-  const canOpenFlowStep = (id: string) => {
-    if (id === 'settings') return selectedIds.size > 0;
-    if (id === 'precheck') return Boolean(latestTask && onOpenPrecheck);
-    return true;
-  };
-
-  const openFlowStep = (id: string) => {
-    if (!canOpenFlowStep(id)) {
-      setError(id === 'settings' ? '请先勾选需要处理的草稿，再进入处理设置。' : '暂无处理任务，完成一次 AI 处理后即可查看结果预检。');
-      setMessage('');
-      return;
-    }
-    if (id === 'settings') { void handleProcess(false); return; }
-    if (id === 'precheck') { if (latestTask) onOpenPrecheck?.(latestTask.task_id); return; }
-    draftListRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  };
-
   // 草稿池为空时整页纵向撑满内容区，把下方留白收进空态块里居中展示。
   const isPoolEmpty = totalDrafts === 0;
 
   return (
-    <div className={`verify-page${isPoolEmpty ? ' is-pool-empty' : ''}`}>
+    <div className={`verify-page verify-pool-page${isPoolEmpty ? ' is-pool-empty' : ''}`}>
       <header className="verify-commandbar">
         <div className="verify-command-title">
           <h1>产品处理草稿池</h1>
@@ -689,12 +656,6 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenPrecheck,
           <span><i className="iconfont icon-save" aria-hidden="true" /><strong>{dirtyCount}</strong><em>未保存</em></span>
         </div>
       </header>
-
-      <ProductFlowCard
-        activeId="pool"
-        canOpen={canOpenFlowStep}
-        onOpen={openFlowStep}
-      />
 
       {(message || error) && (
         <div className={`verify-message ${error ? 'error' : ''}`}>{error || message}</div>

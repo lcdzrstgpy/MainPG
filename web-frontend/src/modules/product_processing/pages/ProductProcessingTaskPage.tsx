@@ -133,7 +133,9 @@ function ProgressRing({ progress, running }: { progress: number; running: boolea
           </linearGradient>
         </defs>
         <circle className="verify-progress-track" cx="60" cy="60" r="52" pathLength="100" />
-        {running && (
+        {/* 进度为 0 时用旋转弧表示「正在跑」；一旦有确定进度就只保留进度弧，
+            避免旋转弧与常亮进度弧在圆环上叠在一起。 */}
+        {running && smooth < 0.5 && (
           <circle className="verify-progress-sweep" cx="60" cy="60" r="52" pathLength="100" aria-hidden="true" />
         )}
         <circle className="verify-progress-value" cx="60" cy="60" r="52" pathLength="100" strokeDashoffset={100 - smooth} />
@@ -202,6 +204,13 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
   // 直接摊在结果页上（展开才可见并可手动重试）。
   const [showFailures, setShowFailures] = useState(false);
 
+  // 成功类提示统一走右上角 toast：3 秒后自动消失；新消息会清理旧定时器，卸载时也不留悬挂回调。
+  useEffect(() => {
+    if (!message) return;
+    const timer = window.setTimeout(() => setMessage(''), 3000);
+    return () => window.clearTimeout(timer);
+  }, [message]);
+
   // SKU 原图可用性检测（处理设置页）：进入即对本次所选链接自动检测，按结果预置每个
   // 链接导出时用「规格原图」还是「商品主图」。结果仅作预置，用户仍可在预检页修改。
   const [skuResults, setSkuResults] = useState<Record<number, DraftSkuAvailabilityItem>>({});
@@ -216,8 +225,6 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
   // 失败项自动补跑（后台自动重处理）状态
   const autoRepull = batch?.auto_repull ?? null;
   const autoRepullRunning = autoRepull?.status === 'running';
-  const autoRepullDone = autoRepull?.status === 'completed';
-  const autoRepullFailed = autoRepull?.status === 'failed';
 
   const failureItems = useMemo(
     () => batch?.items.filter(
@@ -639,7 +646,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
   };
 
   return (
-    <div className="verify-page">
+    <div className="verify-page verify-task-page">
       {batchProcessing && createPortal(
         <div className="daily-topbar-status is-progress" role="status" aria-label="处理进度">
           <span className="daily-topbar-status-icon" aria-hidden="true">↻</span>
@@ -660,15 +667,19 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
         </div>
       </header>
 
-      {(message || error) && (
-        <div className={`verify-message ${error ? 'error' : ''}`}>{error || message}</div>
+      {message && (
+        <div className="verify-toast" role="status">{message}</div>
+      )}
+
+      {error && (
+        <div className="verify-message error">{error}</div>
       )}
 
       <div className="task-layout">
         {/* 左侧：处理设置 + 处理结果 */}
         <div className="task-main">
 
-          {initialTaskId == null && <section className="verify-section">
+          {initialTaskId == null && <section className="verify-section verify-settings-section">
             <div className="verify-section-head">
               <h2>处理设置</h2>
               <span className="verify-sub">站点 / 语言 / 模板</span>
@@ -688,34 +699,36 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                   <option value="es">西班牙语 · Espanol</option>
                 </select>
               </label>
-            </div>
-            <TemplateGalleryDrawer
-              imageTemplate={options.imageTemplate || 'A'}
-              descriptionTemplate={options.descriptionTemplate || 'A'}
-              random={options.randomTemplate === true}
-              onSelectImage={(id) => setOptions((p) => ({ ...p, imageTemplate: id }))}
-              onSelectDescription={(id) => setOptions((p) => ({ ...p, descriptionTemplate: id }))}
-            />
-            <div className="verify-scope-row">
-              <label className="verify-scope-check" title="任务结束后自动重试失败/待确认的链接（每条最多自动重试 1 次，避免无限重试）。重试会再次调用 AI 生图、产生 AI 生图费用；默认开启，关闭后失败项需在结果页手动重新处理">
-                <input
-                  type="checkbox"
-                  checked={options.autoRepull !== false}
-                  onChange={(e) => setOptions((p) => ({ ...p, autoRepull: e.target.checked }))}
+              <div className="verify-form-field">
+                <span>生图 / 描述模板</span>
+                <TemplateGalleryDrawer
+                  compact
+                  imageTemplate={options.imageTemplate || 'A'}
+                  descriptionTemplate={options.descriptionTemplate || 'A'}
+                  random={options.randomTemplate === true}
+                  onSelectImage={(id) => setOptions((p) => ({ ...p, imageTemplate: id }))}
+                  onSelectDescription={(id) => setOptions((p) => ({ ...p, descriptionTemplate: id }))}
                 />
-                <span>自动重跑失败项</span>
-                <span className="verify-sub">（最多 1 次；重试会再次调用 AI 生图并产生费用，可关闭）</span>
-              </label>
-            </div>
-            <div className="verify-scope-row">
-              <label className="verify-scope-check" title="开启后忽略上面选定的模板：本批次每条链接随机分配生图模板（A/B/C/D）与描述模板（A/B），一个批次内混搭多套处理方式，便于批量测试不同风格。默认关闭；开启后同一条链接在重试/自动补跑时仍固定用同一套模板。">
-                <input
-                  type="checkbox"
-                  checked={options.randomTemplate === true}
-                  onChange={(e) => setOptions((p) => ({ ...p, randomTemplate: e.target.checked }))}
-                />
-                <span>一键随机模板</span>
-              </label>
+              </div>
+              <div className="verify-inline-checks">
+                <label className="verify-scope-check verify-inline-check" title="任务结束后自动重试失败/待确认的链接（每条最多自动重试 1 次，避免无限重试）。重试会再次调用 AI 生图、产生 AI 生图费用；默认开启，关闭后失败项需在结果页手动重新处理">
+                  <input
+                    type="checkbox"
+                    checked={options.autoRepull !== false}
+                    onChange={(e) => setOptions((p) => ({ ...p, autoRepull: e.target.checked }))}
+                  />
+                  <span>自动重跑失败项</span>
+                  <span className="verify-sub">最多 1 次 · 会再次调用 AI 并计费</span>
+                </label>
+                <label className="verify-scope-check verify-inline-check" title="开启后忽略上面选定的模板：本批次每条链接随机分配生图模板（A/B/C/D）与描述模板（A/B），一个批次内混搭多套处理方式，便于批量测试不同风格。默认关闭；开启后同一条链接在重试/自动补跑时仍固定用同一套模板。">
+                  <input
+                    type="checkbox"
+                    checked={options.randomTemplate === true}
+                    onChange={(e) => setOptions((p) => ({ ...p, randomTemplate: e.target.checked }))}
+                  />
+                  <span>一键随机模板</span>
+                </label>
+              </div>
             </div>
             <PromptCustomizePanel draftIds={initialDraftIds} />
             <div className="verify-sku-check">
@@ -747,6 +760,14 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                   onClick={() => void runSkuAvailabilityCheck()}
                   title="重新检测所选链接的 SKU 规格图是否含中文水印、以及是否为 1:1 方图"
                 >{skuCheckBusy ? <><i className="app-spinner is-sm" aria-hidden="true" />检测中…</> : '重新检测'}</button>
+                {/* 开始处理/清空任务跟检测操作放在同一行：检测完即可直接开跑。 */}
+                <div className="verify-actions verify-sku-actions">
+                  <button className="primary" onClick={() => startBatch()} disabled={loading || batchProcessing || !initialDraftIds?.length || skuCheckBusy}>{loading ? <><i className="app-spinner is-sm" aria-hidden="true" />处理中...</> : '开始处理'}</button>
+                  <button onClick={clearBatch} disabled={!batch || batchProcessing} title={batchProcessing ? '运行中任务不能清理' : undefined}>清空任务</button>
+                  {!!initialPremiumDraftIds?.length && (
+                    <span className="verify-premium-hint">精品模式 {initialPremiumDraftIds.length} 条</span>
+                  )}
+                </div>
               </div>
               {skuCheckBusy && (
                 <div className="verify-repull-banner" role="status">
@@ -793,13 +814,6 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                     分类已自动预置，可在预检页逐条修改。
                   </p>
                 </>
-              )}
-            </div>
-            <div className="verify-actions">
-              <button className="primary" onClick={() => startBatch()} disabled={loading || batchProcessing || !initialDraftIds?.length || skuCheckBusy}>{loading ? <><i className="app-spinner is-sm" aria-hidden="true" />处理中...</> : '开始处理'}</button>
-              <button onClick={clearBatch} disabled={!batch || batchProcessing} title={batchProcessing ? '运行中任务不能清理' : undefined}>清空任务</button>
-              {!!initialPremiumDraftIds?.length && (
-                <span className="verify-premium-hint">精品模式 {initialPremiumDraftIds.length} 条</span>
               )}
             </div>
           </section>}
@@ -862,13 +876,6 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                   <div className="verify-repull-banner paused" role="status">
                     <i className="iconfont icon-infomation" aria-hidden="true" />
                     <span>任务已取消：未处理的链接已标记失败并释放积分，不再产生 AI 费用；可重新提交草稿处理。</span>
-                  </div>
-                )}
-                {(taskPaused || autoRepullRunning || autoRepullDone || autoRepullFailed) && (taskPaused || autoRepull) && (
-                  <div className={`verify-repull-banner ${taskPaused ? 'paused' : (autoRepull?.status ?? '')}`} role="status">
-                    <i className={`iconfont ${taskPaused ? 'icon-infomation' : autoRepullRunning ? 'icon-loading' : autoRepullDone ? 'icon-check-circle' : 'icon-infomation'}`} aria-hidden="true" />
-                    <span>{taskPaused ? '任务已暂停：停止后续 AI 调用，可从断点继续（含自动重试轮）' : (autoRepull?.message ?? '')}</span>
-                    {!taskPaused && autoRepullRunning && <em>无需手动操作，完成后自动刷新</em>}
                   </div>
                 )}
                 <div className="verify-actions">

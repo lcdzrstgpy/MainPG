@@ -78,15 +78,27 @@ export function PodBriefInput({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // 输入框自适应高度：内容变多自动长高，清空或收起时收回；超过上限后内部滚动。
-  const growTextarea = () => {
+  // 用 ResizeObserver 监听宽度：tab 预挂载时元素是 hidden 的，scrollHeight 为 0，
+  // 只在 open/brief 变化时量高度会量成最小值。
+  useLayoutEffect(() => {
+    if (!open) return;
     const element = textareaRef.current;
     if (!element) return;
-    element.style.height = "auto";
-    element.style.height = `${Math.min(element.scrollHeight, BRIEF_TEXTAREA_MAX_HEIGHT)}px`;
-  };
-
-  useLayoutEffect(() => {
-    if (open) growTextarea();
+    const grow = () => {
+      element.style.height = "auto";
+      element.style.height = `${Math.min(element.scrollHeight, BRIEF_TEXTAREA_MAX_HEIGHT)}px`;
+    };
+    grow();
+    let lastWidth = 0;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width ?? 0;
+      if (!width || width === lastWidth) return;
+      lastWidth = width;
+      grow();
+    });
+    observer.observe(element);
+    void document.fonts?.ready.then(() => grow());
+    return () => observer.disconnect();
   }, [open, brief]);
 
   useEffect(() => {

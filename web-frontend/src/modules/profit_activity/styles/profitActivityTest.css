@@ -587,7 +587,7 @@
 
 .profit-threshold-fields {
   display: grid;
-  grid-template-columns: repeat(2, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 12px;
   align-items: end;
 }
@@ -987,3 +987,227 @@
 [data-theme] .profit-products-settings-tabs button.is-active { border-color: transparent; color: var(--theme-on-primary); background: var(--theme-primary-button-gradient); box-shadow: 0 8px 18px var(--theme-primary-button-shadow); }
 [data-theme] :is(.profit-products-new-site-form, .profit-products-settings-fields) { border-color: var(--theme-module-border); background: var(--theme-module-surface-soft); }
 [data-theme] .profit-products-settings-backdrop { background: var(--theme-module-overlay); }
+
+/* ================================================================
+   采集页同款纸面 + 胶囊（利润活动）
+   两张业务卡落在半透纸面上，单行控件统一胶囊；
+   同时补齐收缩链路，长内容不再把右列顶出视口。
+   ================================================================ */
+.profit-test-page {
+  --theme-control-radius: 999px;
+  --theme-card-radius: 18px;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+
+.profit-test-page :is(.profit-test-card, .profit-workflow-card) {
+  min-width: 0;
+  border-color: var(--theme-module-border, #d8e5ee);
+  border-radius: 18px;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--theme-module-surface-tint, #eaf8ff) 48%, transparent),
+    color-mix(in srgb, var(--theme-module-surface-soft, #f7fafc) 74%, transparent)
+  );
+  box-shadow: 0 12px 30px var(--theme-module-shadow, rgba(23, 67, 99, 0.08));
+}
+
+/* 状态条与卡内嵌块：不再用冷蓝实底，也不额外投一层浮影。 */
+.profit-test-page .profit-status {
+  border-color: var(--theme-module-border, #d8e5ee);
+  border-radius: 14px;
+  color: var(--theme-text-secondary, #2b536f);
+  background: color-mix(in srgb, var(--theme-module-surface-raised, #fff) 55%, transparent);
+  box-shadow: none;
+}
+
+.profit-test-page :is(.profit-threshold-box, .profit-filter-history) {
+  border-color: var(--theme-module-border, #d8e7f2);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--theme-module-surface-raised, #fff) 45%, transparent);
+  box-shadow: none;
+}
+
+/* 历史过滤只是列表分区，不要虚线描边和纸面底。 */
+.profit-test-page .profit-filter-history {
+  margin-top: 14px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.profit-test-page .profit-image-drop {
+  border-color: var(--theme-module-border-strong, #a9cbe0);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--theme-module-surface-raised, #fff) 42%, transparent);
+}
+
+.profit-test-page .profit-filter-history-item {
+  border-radius: 999px;
+  border-color: var(--theme-module-border, #e2edf5);
+  background: color-mix(in srgb, var(--theme-module-surface-raised, #fff) 55%, transparent);
+}
+
+/* 单品利润卡头：标题独占一行，站点在左、店铺在右并排。 */
+.profit-test-page .profit-card-title:has(.profit-card-heading) {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: end;
+  gap: 10px 12px;
+}
+
+.profit-test-page .profit-card-title .profit-card-heading {
+  grid-column: 1 / -1;
+}
+
+.profit-test-page .profit-single-store-field,
+.profit-test-page .profit-single-site-field {
+  min-width: 0;
+  width: 100%;
+  margin-left: 0;
+}
+
+/* 单行输入 / 下拉胶囊化；文件选择、复选框、滑块保持原生形态。 */
+.profit-test-page :is(
+  input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]),
+  select
+) {
+  border-radius: 999px;
+  padding-left: 14px;
+  padding-right: 14px;
+  border-color: var(--theme-module-border, #cfe0eb);
+  color: var(--theme-text-primary, #18334d);
+  background-color: var(--theme-module-surface-raised, #fff);
+}
+
+.profit-test-page select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 38px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5' fill='none' stroke='%236b8299' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 15px center;
+  background-size: 12px 8px;
+  cursor: pointer;
+}
+
+/* 店铺/站点是「输入框 + 内嵌箭头按钮」，右侧要给箭头留位。 */
+.profit-test-page .profit-single-select-control input {
+  padding-right: 38px;
+}
+
+/* 文件选择沿用胶囊语言：外层输入框与内部「选择文件」按钮都圆润化。 */
+.profit-test-page input[type="file"] {
+  border-radius: 999px;
+  padding: 6px 14px 6px 10px;
+  border-color: var(--theme-module-border, #cfe0eb);
+  color: var(--theme-text-secondary, #526a82);
+  background-color: var(--theme-module-surface-raised, #fff);
+  font-size: .82rem;
+  cursor: pointer;
+}
+
+.profit-test-page input[type="file"]::file-selector-button {
+  margin-right: 12px;
+  padding: 8px 18px;
+  border: 1px solid var(--theme-module-border-strong, #b9dce9);
+  border-radius: 999px;
+  background: var(--theme-module-surface-soft, #f7fafc);
+  color: var(--theme-primary, #0877d3);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color .18s ease, background .18s ease;
+}
+
+.profit-test-page input[type="file"]::file-selector-button:hover {
+  border-color: var(--theme-primary, #0877d3);
+  background: var(--theme-module-surface-tint, #eaf8ff);
+}
+
+/* 旧版 WebKit 使用独立伪元素，保持同样外观。 */
+.profit-test-page input[type="file"]::-webkit-file-upload-button {
+  margin-right: 12px;
+  padding: 8px 18px;
+  border: 1px solid var(--theme-module-border-strong, #b9dce9);
+  border-radius: 999px;
+  background: var(--theme-module-surface-soft, #f7fafc);
+  color: var(--theme-primary, #0877d3);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+/* 页面内所有按钮统一胶囊（含弹窗关闭、行内撤回、历史记录行）。 */
+.profit-test-page :is(button, .profit-file-button, .profit-image-remove, .profit-source-url-remove) {
+  border-radius: 999px;
+}
+
+/* 活动过滤的四个操作按钮：均分整行宽度，字号与留白回到可读尺寸。 */
+.profit-test-page .profit-filter-actions {
+  flex-wrap: nowrap;
+  gap: 8px;
+}
+
+.profit-test-page .profit-filter-actions > button {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 34px;
+  padding: 0 12px;
+  font-size: .78rem;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+@media (max-width: 520px) {
+  .profit-test-page .profit-filter-actions {
+    flex-wrap: wrap;
+  }
+
+  .profit-test-page .profit-filter-actions > button {
+    flex: 1 1 auto;
+  }
+}
+
+/* 货源块本身是单列网格：子项上的 `span 2` 会额外生成一列，
+   导致图片框只占第一列、比上面的输入框窄。这里收敛为单列并让子项回到整行。 */
+.profit-test-page .profit-source-link-block {
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+
+.profit-test-page .profit-source-link-block > :is(.profit-span-2, .profit-source-url-row) {
+  grid-column: auto;
+}
+
+/* 表单同一行里某一格变高时，其他格的输入框不要跟着拉高。 */
+.profit-test-page .profit-form-grid {
+  align-items: start;
+}
+
+/* 窄屏：两列业务卡改为单列，表单与跨列字段回落为单列。 */
+@media (max-width: 980px) {
+  .profit-test-page .profit-business-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 700px) {
+  .profit-test-page .profit-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .profit-test-page :is(.profit-span-2, .profit-source-link-block, .profit-source-url-row) {
+    grid-column: auto;
+  }
+
+  .profit-test-page .profit-single-store-field {
+    margin-left: 0;
+  }
+
+  /* 历史记录行可能换行，胶囊端部弧线会切到内容，回落连续圆角。 */
+  .profit-test-page .profit-filter-history-item {
+    border-radius: 14px;
+  }
+}

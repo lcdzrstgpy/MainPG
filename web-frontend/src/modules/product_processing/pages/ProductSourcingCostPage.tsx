@@ -624,7 +624,7 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
   };
 
   return (
-    <section className="verify-page">
+    <section className="verify-page psc-page">
       <header className="verify-commandbar">
         <div className="verify-command-title">
           <h1>商品货源及成本展示</h1>
@@ -636,9 +636,6 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
             <span><i className="iconfont icon-check-circle" aria-hidden="true" /><strong>{stats.withCost}</strong><em>含成本</em></span>
             <span className="is-warn"><i className="iconfont icon-warning-circle" aria-hidden="true" /><strong>{stats.missingCost}</strong><em>缺成本</em></span>
           </div>
-          <button type="button" className="psc-refresh" onClick={() => void load(status)} disabled={loading}>
-            {loading ? <><i className="app-spinner is-sm" aria-hidden="true" />读取中…</> : "刷新"}
-          </button>
         </div>
       </header>
 
@@ -670,6 +667,9 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
             {batchOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
           </select>
         </label>
+        <button type="button" className="psc-refresh" onClick={() => void load(status)} disabled={loading}>
+          {loading ? <><i className="app-spinner is-sm" aria-hidden="true" />读取中…</> : "刷新"}
+        </button>
         <label className="psc-filter-date">
           <span>采集时间</span>
           <div className="psc-date-range">

@@ -53,6 +53,7 @@ import {
 } from "../data/podCustomizationDraft";
 import { usePodAssetUrl } from "../data/usePodAssetUrl";
 import { getAuthAccount } from "../../../transport/http/client";
+import { slidingIndicatorStyle, useSlidingIndicator } from "../../../shared/hooks/useSlidingIndicator";
 import type {
   PodBatch,
   PodBatchCount,
@@ -233,6 +234,8 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   const lastDraftSaveErrorRef = useRef("");
   const activeBatchEpochRef = useRef(0);
   const businessTextareasRef = useRef<Array<HTMLTextAreaElement | null>>([]);
+  /** 生成数量是互斥单选：用共享滑块承载选中态，切换时平移而不是逐格换底色。 */
+  const countIndicator = useSlidingIndicator<HTMLDivElement>(":scope > button.is-active", [batchCount, customCountMode, isActive]);
 
   // 文本框高度始终跟随内容：取消填写、套用模板等「程序化改值」不会触发 onChange，
   // 不重算就会残留上一次输入撑高的内联高度，看起来像弹窗一出现画面就跳。
@@ -1016,7 +1019,14 @@ export function PodCustomizationPage({ isActive = true }: Props) {
               onOpenSpecCardDrawer={() => setSpecCardDrawerOpen(true)}
             />
             <div className="pod-volume-inline"><b>生成数量</b></div>
-            <div className="pod-count-options" role="radiogroup" aria-label="生成数量">
+            <div
+              className="pod-count-options"
+              role="radiogroup"
+              aria-label="生成数量"
+              ref={countIndicator.containerRef}
+              data-indicator-ready={countIndicator.ready ? "true" : "false"}
+            >
+              {countIndicator.rect && <span className="pod-selection-thumb" style={slidingIndicatorStyle(countIndicator.rect)} aria-hidden="true" />}
               {POD_BATCH_COUNTS.map((count) => <button key={count} type="button" role="radio" aria-checked={!customCountMode && batchCount === count} className={!customCountMode && batchCount === count ? "is-active" : ""} onClick={() => { setCustomCountMode(false); setBatchCount(count); }}><b>{count}</b><span>款</span></button>)}
               <button type="button" role="radio" aria-checked={customCountMode} className={customCountMode ? "is-active" : ""} onClick={() => { setCustomCountMode(true); setCustomCountInput(String(batchCount)); }}><b>自定义</b></button>
             </div>

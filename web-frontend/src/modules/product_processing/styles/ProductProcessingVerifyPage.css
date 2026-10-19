@@ -14,7 +14,8 @@
   flex-wrap: wrap;
   gap: 16px;
   padding: clamp(24px, 3vw, 34px);
-  border: 1px solid #1b91bd;
+  /* 彩色页头不描边：1px 边框会和渐变一起绘制，在边缘形成深色细线。 */
+  border: 0;
   border-radius: 18px;
   color: #fff;
   background: linear-gradient(118deg, #0a497f 0%, #0d7fba 56%, #20b9ac 100%);
@@ -94,50 +95,43 @@
   color: #db5960;
 }
 
-/* 产品处理工作流：hero 下方的三步导航卡，节奏与核价及货源页保持一致 */
-.verify-flow-card {
-  margin-bottom: 18px;
-  padding: 18px;
-  border: 1px solid #dce9f2;
-  border-radius: 14px;
-  background: #fbfdff;
+/* 成功类轻提示：右上角胶囊 toast，3 秒后由组件里的 message effect 清理。 */
+.verify-toast {
+  position: fixed;
+  z-index: 1200;
+  top: 84px;
+  right: 24px;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 10px 18px;
+  border: 1px solid #bce6d6;
+  border-radius: 999px;
+  color: #1c6b52;
+  background: rgba(242, 252, 247, 0.98);
+  box-shadow: 0 12px 30px rgba(15, 55, 84, 0.16);
+  font-size: 0.82rem;
+  font-weight: 700;
+  line-height: 1.5;
+  pointer-events: none;
+  animation: verify-toast-in 0.22s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.verify-flow-heading {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 2px 14px;
-  color: #23445e;
-}
-
-.verify-flow-heading > span {
-  display: grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 9px;
-  background: #e0f8ff;
-  color: #008bd6;
-}
-
-.verify-flow-heading strong {
-  font-size: 1rem;
-  color: #0a3a63;
-}
-
-.verify-flow-heading small {
-  margin-left: auto;
-  color: #7890a5;
-  font-size: 0.78rem;
+@keyframes verify-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .verify-section {
   margin-bottom: 18px;
   padding: 16px 18px;
-  border: 1px solid #dce9f2;
+  border: 1px solid var(--theme-module-border, #dce9f2);
   border-radius: 14px;
-  background: #fbfdff;
+  background: var(--theme-module-surface-soft, #fbfdff);
 }
 
 .verify-section-head {
@@ -152,7 +146,7 @@
 .verify-section-head h2 {
   margin: 0;
   font-size: 1.05rem;
-  color: #0a3a63;
+  color: var(--theme-text-primary, #0a3a63);
 }
 
 .verify-sub {
@@ -178,10 +172,10 @@
 .verify-history button,
 .verify-row-actions button {
   padding: 7px 12px;
-  border: 1px solid #cfe0eb;
+  border: 1px solid var(--theme-module-border, #cfe0eb);
   border-radius: 9px;
-  background: #fff;
-  color: #2f5878;
+  background: var(--theme-module-surface-raised, #fff);
+  color: var(--theme-text-secondary, #2f5878);
   font-weight: 700;
   font-size: 0.82rem;
   cursor: pointer;
@@ -198,13 +192,14 @@
 .verify-actions button:disabled {
   cursor: not-allowed;
   color: #9caaba;
-  background: #f5f8fb;
+  background: var(--theme-module-surface-soft, #f5f8fb);
 }
 
 .verify-actions button.primary {
-  background: #0a8fca;
-  border-color: #0a8fca;
-  color: #fff;
+  /* 渐变按钮同理：不要让 1px 边框透出渐变形成深色描边。 */
+  border: 0;
+  background: var(--theme-primary-button-gradient, #0a8fca);
+  color: var(--theme-on-primary, #fff);
 }
 
 .verify-actions button.danger {
@@ -328,10 +323,10 @@
   align-items: center;
   gap: 6px;
   padding: 10px 18px;
-  border: 1px solid #cfe0eb;
+  border: 1px solid var(--theme-module-border, #cfe0eb);
   border-radius: 10px;
-  background: #fff;
-  color: #2f5878;
+  background: var(--theme-module-surface-raised, #fff);
+  color: var(--theme-text-secondary, #2f5878);
   font-size: 0.88rem;
   font-weight: 700;
   cursor: pointer;
@@ -344,9 +339,9 @@
 }
 
 .verify-empty-actions button.primary {
-  border-color: #0a8fca;
-  background: #0a8fca;
-  color: #fff;
+  border: 0;
+  background: var(--theme-primary-button-gradient, #0a8fca);
+  color: var(--theme-on-primary, #fff);
 }
 
 .verify-empty-actions button:disabled {
@@ -414,9 +409,9 @@
 /* ── 卡片容器 ── */
 .pool-card {
   position: relative;
-  border: 1px solid #e0ecf4;
+  border: 1px solid var(--theme-module-border, #e0ecf4);
   border-radius: 12px;
-  background: #fff;
+  background: var(--theme-module-surface-raised, #fff);
   overflow: hidden;
   transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
   /* 长列表：屏幕外的卡片跳过渲染（每页最多 100 张）。
@@ -425,18 +420,6 @@
      只有从未渲染过的才用 180px 估算，避免滚动条跳动。 */
   content-visibility: auto;
   contain-intrinsic-size: auto 180px;
-}
-
-.pool-card::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  bottom: 0;
-  width: 3px;
-  background: linear-gradient(180deg, #0a8fca, #0ab3c0);
-  opacity: 0;
-  transition: opacity 0.18s ease;
 }
 
 .pool-card:hover {
@@ -448,10 +431,6 @@
 .pool-card.selected {
   border-color: #6fc0e8;
   box-shadow: 0 0 0 2px #dff3fd, 0 10px 24px rgba(10, 143, 202, 0.08);
-}
-
-.pool-card.selected::before {
-  opacity: 1;
 }
 
 .pool-card-body {
@@ -723,7 +702,7 @@
 .btn-mini {
   padding: 6px 13px;
   border: 1px solid #d9e8f2;
-  border-radius: 8px;
+  border-radius: var(--theme-control-radius, 8px);
   background: #fff;
   color: #5a7a94;
   font-size: 0.78rem;
@@ -791,7 +770,11 @@
   margin-bottom: 6px;
   padding: 6px 4px 8px;
   border-radius: 14px;
-  background: linear-gradient(180deg, #eef5fb 0%, rgba(238, 245, 251, 0.96) 55%, rgba(238, 245, 251, 0.88) 100%);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--theme-module-surface-soft, #eef5fb) 88%, transparent) 0%,
+    color-mix(in srgb, var(--theme-module-surface-soft, #eef5fb) 76%, transparent) 100%
+  );
   transition: box-shadow 0.2s ease;
 }
 
@@ -819,9 +802,13 @@
   gap: 10px;
   padding: 10px 12px;
   margin-bottom: 10px;
-  border: 1px solid #e0ecf4;
+  border: 1px solid var(--theme-module-border, #e0ecf4);
   border-radius: 12px;
-  background: linear-gradient(150deg, #ffffff 20%, #f3f9fd 100%);
+  background: linear-gradient(
+    150deg,
+    var(--theme-module-surface-raised, #ffffff) 20%,
+    var(--theme-module-surface-soft, #f3f9fd) 100%
+  );
   box-shadow: 0 4px 14px rgba(23, 63, 94, 0.05);
 }
 
@@ -869,12 +856,12 @@
 .verify-pool-search {
   width: 100%;
   padding: 7px 12px 7px 32px;
-  border: 1px solid #cfe0eb;
+  border: 1px solid var(--theme-module-border, #cfe0eb);
   border-radius: 999px;
-  background: #fff;
-  color: #18334d;
+  background: var(--theme-module-surface-raised, #fff);
+  color: var(--theme-text-primary, #18334d);
   font-size: 0.84rem;
-  outline-color: #13a9f2;
+  outline-color: var(--theme-primary, #13a9f2);
 }
 
 /* ── 分页 / SKU 数量筛选 ── */
@@ -883,13 +870,13 @@
   align-items: center;
   gap: 6px;
   padding: 2px 4px 2px 10px;
-  border: 1px solid #d6e6f1;
+  border: 1px solid var(--theme-module-border, #d6e6f1);
   border-radius: 999px;
-  background: #fff;
+  background: var(--theme-module-surface-raised, #fff);
 }
 
 .verify-page-size > .iconfont {
-  color: #0a8fca;
+  color: var(--theme-module-primary-strong, #0a8fca);
   font-size: 0.95rem;
 }
 
@@ -898,20 +885,20 @@
   align-items: center;
   gap: 6px;
   padding: 2px 4px 2px 10px;
-  border: 1px solid #d6e6f1;
+  border: 1px solid var(--theme-module-border, #d6e6f1);
   border-radius: 999px;
-  background: #fff;
+  background: var(--theme-module-surface-raised, #fff);
 }
 
 .verify-sku-filter > .iconfont {
-  color: #0a8fca;
+  color: var(--theme-module-primary-strong, #0a8fca);
   font-size: 0.95rem;
 }
 
 .verify-pool-select {
   border: 0;
   background: transparent;
-  color: #2d5878;
+  color: var(--theme-text-secondary, #2d5878);
   font-size: 0.78rem;
   font-weight: 800;
   outline: none;
@@ -1289,7 +1276,12 @@
   max-width: 320px;
 }
 
-/* 预检环节 */
+/* 预检环节：整体胶囊语言——主题统一圆角走变量，单行控件 999px。 */
+.verify-precheck-page {
+  --theme-control-radius: 999px;
+  --theme-card-radius: 18px;
+}
+
 .precheck-toolbar {
   display: flex;
   align-items: center;
@@ -1305,10 +1297,10 @@
 }
 
 .precheck-expand-actions button {
-  padding: 5px 10px;
-  border: 1px solid #d5e2ee;
-  border-radius: 6px;
-  background: #fff;
+  padding: 5px 12px;
+  border: 1px solid var(--theme-module-border, #d5e2ee);
+  border-radius: 999px;
+  background: var(--theme-module-surface-raised, #fff);
   font-size: 0.8rem;
   cursor: pointer;
 }
@@ -1332,10 +1324,6 @@
   cursor: pointer;
   font-family: inherit;
   overflow: hidden;
-}
-
-.precheck-card-toggle:hover {
-  background: rgba(45, 127, 249, 0.06);
 }
 
 .precheck-chevron {
@@ -1496,17 +1484,21 @@
 .precheck-search {
   flex: 1 1 220px;
   max-width: 320px;
-  padding: 7px 10px;
-  border: 1px solid #d5e2ee;
-  border-radius: 6px;
+  padding: 8px 14px;
+  border: 1px solid var(--theme-module-border, #d5e2ee);
+  border-radius: 999px;
   font-size: 0.85rem;
-  background: #fff;
+  background: var(--theme-module-surface-raised, #fff);
 }
 
 .precheck-only-success {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--theme-module-border, #d5e2ee);
+  border-radius: 999px;
+  background: var(--theme-module-surface-raised, #fff);
   font-size: 0.8rem;
   font-weight: 600;
   color: #526a82;
@@ -1524,11 +1516,18 @@
 }
 
 .precheck-page-size select {
-  padding: 6px 8px;
-  border: 1px solid #d5e2ee;
-  border-radius: 6px;
-  background: #fff;
+  appearance: none;
+  -webkit-appearance: none;
+  padding: 6px 30px 6px 14px;
+  border: 1px solid var(--theme-module-border, #d5e2ee);
+  border-radius: 999px;
+  background-color: var(--theme-module-surface-raised, #fff);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5' fill='none' stroke='%236b8299' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 11px center;
+  background-size: 11px 7px;
   font-size: 0.85rem;
+  cursor: pointer;
 }
 
 .precheck-count {
@@ -1547,9 +1546,9 @@
 }
 
 .precheck-pagination button {
-  padding: 6px 14px;
+  padding: 6px 16px;
   border: 1px solid #d5e2ee;
-  border-radius: 6px;
+  border-radius: 999px;
   background: #fff;
   font-size: 0.85rem;
   cursor: pointer;
@@ -1563,12 +1562,11 @@
 .precheck-card {
   display: grid;
   gap: 16px;
-  border: 1px solid #e2edf5;
-  border-left: 4px solid #cfdce8;
+  border: 1px solid var(--theme-module-border, #e2edf5);
 }
 
 .precheck-card.is-edited {
-  border-left-color: #2d7ff9;
+  border-color: var(--theme-module-border, #e2edf5);
 }
 
 .precheck-grid {
@@ -1597,9 +1595,20 @@
   color: #526a82;
 }
 
+/* 标题与产品描述两列的字段标题行同高（右侧带有「上架建议」按钮），
+   文本框再用固定高度，保证左右两个输入框上下边完全对齐。 */
+.precheck-fields > .precheck-label > span {
+  display: flex;
+  align-items: center;
+  /* 与右侧「上架建议」按钮（28px）同高，两个文本框的顶边才会对齐。 */
+  min-height: 28px;
+}
+
 .precheck-label textarea {
+  box-sizing: border-box;
   width: 100%;
-  min-height: 56px;
+  height: 132px;
+  min-height: 0;
   padding: 8px 10px;
   border: 1px solid #dbe7f1;
   border-radius: 8px;
@@ -1652,7 +1661,6 @@
   margin-top: 2px;
   padding: 10px 12px;
   border: 1px solid #d7e8f3;
-  border-left: 4px solid #6f8ba3;
   border-radius: 9px;
   background: #f8fbfd;
   color: #40566b;
@@ -1661,11 +1669,11 @@
   line-height: 1.45;
 }
 
-.listing-advice-card.tone-a { border-left-color: #20a36a; background: #f3fbf7; }
-.listing-advice-card.tone-b { border-left-color: #2d7ff9; background: #f4f8ff; }
-.listing-advice-card.tone-c { border-left-color: #e5a327; background: #fffaf0; }
+.listing-advice-card.tone-a { background: #f3fbf7; }
+.listing-advice-card.tone-b { background: #f4f8ff; }
+.listing-advice-card.tone-c { background: #fffaf0; }
 .listing-advice-card.tone-d,
-.listing-advice-card.tone-e { border-left-color: #dc5d66; background: #fff6f6; }
+.listing-advice-card.tone-e { background: #fff6f6; }
 
 .listing-advice-summary {
   display: flex;
@@ -1708,7 +1716,6 @@
   gap: 8px;
   padding: 10px 12px;
   border: 1px solid #f1b8bd;
-  border-left: 4px solid #d94855;
   border-radius: 9px;
   background: #fff5f6;
   color: #8f2630;
@@ -1784,10 +1791,10 @@
 .precheck-core-grid input {
   width: 100%;
   padding: 6px 8px;
-  border: 1px solid #dbe7f1;
+  border: 1px solid var(--theme-module-border, #dbe7f1);
   border-radius: 8px;
   font-size: 0.8rem;
-  background: #fff;
+  background: var(--theme-module-surface-raised, #fff);
 }
 
 .precheck-shipping-package {
@@ -1795,9 +1802,9 @@
   display: grid;
   gap: 10px;
   padding: 13px;
-  border: 1px solid #dbe7f1;
+  border: 1px solid var(--theme-module-border, #dbe7f1);
   border-radius: 10px;
-  background: #fbfdff;
+  background: var(--theme-module-surface-soft, #fbfdff);
 }
 
 .precheck-shipping-package-head {
@@ -2468,11 +2475,11 @@
 
 .precheck-card-actions button,
 .precheck-finalize button {
-  padding: 4px 7px;
-  border: 1px solid #cfe0eb;
-  border-radius: 6px;
-  background: #fff;
-  color: #41657f;
+  padding: 4px 10px;
+  border: 1px solid var(--theme-module-border, #cfe0eb);
+  border-radius: var(--theme-control-radius, 6px);
+  background: var(--theme-module-surface-raised, #fff);
+  color: var(--theme-text-secondary, #41657f);
   font-size: 0.65rem;
   font-weight: 750;
   cursor: pointer;
@@ -2603,24 +2610,20 @@
   margin-bottom: 16px;
   padding: 16px 18px;
   border: 1px solid #cfe2ee;
-  border-left: 4px solid #0a8fca;
   border-radius: 12px;
   background: linear-gradient(130deg, #fbfdff, #f0f9fd);
   box-shadow: 0 5px 18px rgba(22, 78, 111, 0.07);
 }
 
 .precheck-finalize.status-publish_failed {
-  border-left-color: #d34b40;
   background: #fffafa;
 }
 
 .precheck-finalize.status-stale {
-  border-left-color: #bd7a15;
   background: #fffbf2;
 }
 
 .precheck-finalize.status-completed {
-  border-left-color: #17865a;
   background: #f7fcf9;
 }
 
@@ -3235,20 +3238,34 @@
 .verify-table {
   width: 100%;
   border-collapse: collapse;
+  background: transparent;
   font-size: 0.8rem;
 }
 
 .verify-table th,
 .verify-table td {
-  padding: 9px 10px;
-  border-bottom: 1px solid #e6eff6;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(32, 45, 60, 0.42);
+  background: transparent;
   text-align: left;
 }
 
 .verify-table th {
-  background: #f0f6fa;
+  border-bottom-color: #202d3c;
   color: #3d526a;
   font-weight: 800;
+  white-space: nowrap;
+}
+
+/* 列之间也画竖线，和行分隔线同色，形成清晰网格。 */
+.verify-table th + th,
+.verify-table td + td {
+  border-left: 1px solid rgba(32, 45, 60, 0.42);
+}
+
+/* 行间只用横线分隔；最后一行不再画底边，避免与卡片边缘形成双层线。 */
+.verify-table tbody tr:last-child td {
+  border-bottom: 0;
 }
 
 /* ── 失败商品区：AI 配置/额度友好提示（key 未配置或余额不足时引导去系统配置） ── */
@@ -3371,6 +3388,12 @@
 }
 
 /* ── AI 处理历史记录：集中承接所有批次，避免草稿池和任务页各维护一份历史入口 ── */
+/* 历史页整体走胶囊语言：主题统一圆角改用变量，单行控件 999px、卡片 18px。 */
+.processing-history-page {
+  --theme-control-radius: 999px;
+  --theme-card-radius: 18px;
+}
+
 .processing-history-summary {
   display: flex;
   flex-wrap: wrap;
@@ -3378,9 +3401,9 @@
 }
 
 .processing-history-summary span {
-  padding: 8px 11px;
+  padding: 8px 14px;
   border: 1px solid rgba(255, 255, 255, .3);
-  border-radius: 9px;
+  border-radius: 999px;
   color: #e2f5ff;
   background: rgba(255, 255, 255, .12);
   font-size: .82rem;
@@ -3403,9 +3426,9 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 9px;
+  padding: 7px 12px;
   border: 1px solid #d8e7f2;
-  border-radius: 12px;
+  border-radius: 999px;
   background: #f7fbfe;
 }
 
@@ -3431,9 +3454,9 @@
   width: 142px;
   height: 34px;
   min-height: 34px;
-  padding: 5px 8px;
+  padding: 5px 12px;
   border: 1px solid #cbdde9;
-  border-radius: 8px;
+  border-radius: 999px;
   color: #274762;
   background: #fff;
   font-size: .82rem;
@@ -3452,8 +3475,8 @@
 
 .processing-history-toolbar .verify-actions button {
   min-height: 34px;
-  padding: 6px 12px;
-  border-radius: 8px;
+  padding: 6px 16px;
+  border-radius: 999px;
   font-size: .82rem;
 }
 
@@ -3502,9 +3525,9 @@
   grid-template-columns: minmax(260px, 1.1fr) minmax(340px, 1.5fr) auto;
   gap: 14px;
   align-items: center;
-  padding: 14px 16px;
+  padding: 14px 22px;
   border: 1px solid #e0ebf3;
-  border-radius: 13px;
+  border-radius: 999px;
   background: #fff;
 }
 
@@ -3545,9 +3568,9 @@
 
 .processing-history-actions button,
 .processing-history-pagination button {
-  padding: 7px 12px;
+  padding: 7px 16px;
   border: 1px solid #cfe0eb;
-  border-radius: 9px;
+  border-radius: 999px;
   color: #2f5878;
   background: #fff;
   font-weight: 700;
@@ -3603,6 +3626,9 @@
   }
   .processing-history-items li {
     grid-template-columns: 1fr;
+    /* 窄屏列表行会堆叠成多行，胶囊端部半径会切到内容，改用连续圆角。 */
+    border-radius: 18px;
+    padding: 14px 18px;
   }
   .processing-history-actions {
     justify-content: flex-start;
@@ -5179,7 +5205,6 @@
 
 .sku-mode-hint.is-warn {
   background: #fdf3e2;
-  border-left: 3px solid #e0a94a;
   color: #8a5d12;
 }
 
@@ -5582,7 +5607,7 @@
 .verify-batch-list { overflow-y: auto; }
 .verify-batch-row { display: flex; align-items: center; gap: 8px; padding: 9px 14px; border-bottom: 1px solid #f0f4f7; }
 .verify-batch-row:last-child { border-bottom: 0; }
-.verify-batch-row.is-active { background: #f0fbfe; box-shadow: inset 3px 0 #0aa6cc; }
+.verify-batch-row.is-active { background: #f0fbfe; }
 .verify-batch-check input { width: 15px; height: 15px; accent-color: #0aa6cc; }
 .verify-batch-main { flex: 1; display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; border: 0; background: none; padding: 2px 0; cursor: pointer; text-align: left; }
 .verify-batch-tags { display: inline-flex; align-items: center; gap: 6px; flex: none; }
@@ -5613,7 +5638,7 @@
 .verify-batch-list { flex: 1; min-height: 0; max-height: none; overflow-y: auto; }
 .verify-batch-row { display: flex; align-items: center; gap: 8px; padding: 9px 16px; border-bottom: 1px solid #f0f4f7; }
 .verify-batch-row:last-child { border-bottom: 0; }
-.verify-batch-row.is-active { background: #f0fbfe; box-shadow: inset 3px 0 #0aa6cc; }
+.verify-batch-row.is-active { background: #f0fbfe; }
 .verify-batch-check input { width: 15px; height: 15px; accent-color: #0aa6cc; }
 .verify-batch-main { flex: 1; display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; border: 0; background: none; padding: 2px 0; cursor: pointer; text-align: left; }
 .verify-batch-tags { display: inline-flex; align-items: center; gap: 6px; flex: none; }
@@ -5638,7 +5663,7 @@
 [data-theme] :is(.verify-batch-toggle strong, .verify-batch-popover-head strong, .verify-batch-name) { color: var(--theme-text-primary); }
 [data-theme] :is(.verify-batch-toggle span, .verify-batch-popover-head span, .verify-batch-meta, .verify-batch-empty) { color: var(--theme-text-secondary); }
 [data-theme] .verify-batch-row { border-color: var(--theme-module-border); }
-[data-theme] .verify-batch-row.is-active { background: var(--theme-module-surface-tint); box-shadow: inset 3px 0 var(--theme-module-primary-strong); }
+[data-theme] .verify-batch-row.is-active { background: var(--theme-module-surface-tint); }
 [data-theme] :is(.verify-batch-actions button, .verify-batch-actions button:not(.is-danger)) { border-color: var(--theme-module-border); color: var(--theme-module-primary-strong); background: var(--theme-module-surface-soft); }
 [data-theme] .verify-batch-check input { accent-color: var(--theme-module-primary-strong); }
 [data-theme] .verify-batch-mask { background: var(--theme-module-overlay); }
@@ -5653,8 +5678,7 @@
   margin-bottom: 16px;
   padding: 14px 18px;
   border: 1px solid #cfe2ee;
-  border-left: 4px solid #6b7f92;
-  border-radius: 12px;
+  border-radius: 18px;
   background: #fbfdff;
 }
 
@@ -5689,9 +5713,9 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 8px 10px;
+  padding: 8px 14px;
   border: 1px solid #e2edf5;
-  border-radius: 8px;
+  border-radius: 999px;
   background: #ffffff;
 }
 
@@ -5717,9 +5741,9 @@
 
 .precheck-finalize-history li button {
   flex: none;
-  padding: 6px 12px;
+  padding: 6px 14px;
   border: 1px solid #b4d7e9;
-  border-radius: 8px;
+  border-radius: 999px;
   background: #ffffff;
   color: #0a7fae;
   font-size: 0.78rem;
@@ -5731,3 +5755,217 @@
   color: #9aa9b5;
   cursor: not-allowed;
 }
+
+/* ── 处理设置区胶囊化（参考 SwiftUI：单行控件用 Capsule，多行内容块用连续圆角） ──
+   胶囊只用于单行控件与行块；SKU 检测块会随文案换行变高，
+   用大号连续圆角包住内部胶囊，避免弧形边缘切到文字。 */
+.verify-settings-section {
+  /* 主题里有 !important 的统一圆角规则，用变量把本区改成胶囊/大圆角。 */
+  --theme-control-radius: 999px;
+  --theme-card-radius: 24px;
+  border-radius: 24px;
+}
+
+.verify-settings-section .verify-form-row select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding: 9px 36px 9px 16px;
+  border-radius: 999px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5' fill='none' stroke='%236b8299' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 15px center;
+  background-size: 11px 7px;
+  cursor: pointer;
+}
+
+.verify-settings-section .template-gallery-panel,
+.verify-settings-section .prompt-panel {
+  border-radius: 999px;
+}
+
+.verify-settings-section .verify-scope-check {
+  padding: 8px 14px;
+  border-radius: 999px;
+}
+
+.verify-settings-section .verify-sku-check {
+  padding: 16px 20px;
+  border-radius: 18px;
+}
+
+/* 统计胶囊按行均分可用宽度（auto-fit 会折叠空列），
+   3 个统计时横向拉满，避免「规格图过多跳过」这类标签在窄胶囊里换行。 */
+.verify-settings-section .verify-summary {
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+}
+
+.verify-settings-section .verify-count {
+  padding: 10px 16px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.verify-settings-section .verify-actions button,
+.verify-settings-section .btn-mini {
+  padding: 8px 18px;
+  border-radius: 999px;
+}
+
+/* 模板选择与站点/语言同排：标签列沿用下拉字段的排版，控件本身压缩成同高胶囊。 */
+.verify-settings-section .verify-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  max-width: 280px;
+  font-size: 0.78rem;
+  font-weight: 800;
+  color: #526a82;
+}
+
+.verify-settings-section .template-gallery-panel.is-inline {
+  display: flex;
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 38px;
+  max-width: 100%;
+  margin: 0;
+}
+
+.verify-settings-section .template-gallery-panel.is-inline .template-gallery-toggle {
+  flex: 1;
+  min-height: 0;
+  padding: 0 16px;
+  gap: 10px;
+}
+
+.verify-settings-section .template-gallery-toggle-value {
+  min-width: 0;
+  overflow: hidden;
+  color: #36526c;
+  font-size: 0.82rem;
+  font-weight: 700;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.verify-settings-section .template-gallery-panel.is-inline .template-gallery-toggle-caret {
+  margin-left: 0;
+  color: #6b8299;
+  font-size: 0.72rem;
+}
+
+/* 自动重跑失败项 + 一键随机模板作为一组，换行时两个胶囊一起换，保持左右相邻。 */
+.verify-settings-section .verify-inline-checks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* 自动重跑失败项：与下拉同排的单行胶囊，高度对齐语言下拉。
+   .verify-form-row label 会把 label 变成纵向字段，这里显式恢复横向行布局。 */
+.verify-settings-section .verify-scope-check.verify-inline-check {
+  display: inline-flex;
+  flex: none;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  min-height: 38px;
+  max-width: 100%;
+  padding: 0 16px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.verify-settings-section .verify-inline-check .verify-sub {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: #7c91a6;
+}
+
+/* SKU 检测行：标题/状态/优化链接/重新检测靠左，开始处理与清空任务靠右；
+   窄屏放不下时整体换行，避免按钮被挤出面板。 */
+.verify-settings-section .verify-sku-check-head {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+
+.verify-settings-section .verify-sku-check-head .verify-sub {
+  margin-right: 0;
+}
+
+.verify-settings-section .verify-sku-actions {
+  margin-left: auto;
+}
+
+/* ── 草稿池胶囊化（参照 ui.md：单行控件 999px，容器用连续圆角）。
+      顶部操作按钮/分页/行内按钮由主题的圆角变量接管，这里只补局部元素。 ── */
+.verify-pool-page {
+  --theme-control-radius: 999px;
+  --theme-card-radius: 18px;
+}
+
+.verify-pool-page .verify-sticky-toolbar,
+.verify-pool-page .verify-pool-toolbar,
+.verify-pool-page .pool-card {
+  border-radius: 18px;
+}
+
+.verify-pool-page .pool-edit-panel {
+  border-bottom-right-radius: 17px;
+  border-bottom-left-radius: 17px;
+}
+
+/* 统计信息（待处理 / 已选 / 本页…）做成胶囊 chip。 */
+.verify-pool-page .verify-pool-stats {
+  gap: 8px;
+}
+
+.verify-pool-page .verify-pool-stats > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border: 1px solid var(--theme-module-border, #e0ecf4);
+  border-radius: 999px;
+  background: var(--theme-module-surface-raised, #fff);
+  line-height: 1.4;
+}
+
+/* 卡片内的小标签与展开编辑框。 */
+.verify-pool-page .pool-link-label,
+.verify-pool-page .sku-chip,
+.verify-pool-page .verify-editor-grid input {
+  border-radius: 999px;
+}
+
+.verify-pool-page .verify-pagination-jump input {
+  padding: 5px 10px;
+  border-radius: 999px;
+}
+
+/* 空态按钮与批次抽屉按钮不在主题统一列表里，单独胶囊化。 */
+.verify-pool-page .verify-empty-actions button,
+.verify-batch-actions button {
+  border-radius: 999px;
+}
+
+/* ── 处理设置与进度页：结果区操作按钮（暂停/取消/预检）同样走胶囊。 ── */
+.verify-task-page {
+  --theme-control-radius: 999px;
+  --theme-card-radius: 18px;
+}
+
+.verify-task-page .verify-count {
+  border-radius: 999px;
+}
+
+/* danger 按钮不在主题的圆角统一列表里，单独兜底。 */
+.verify-task-page .verify-actions button {
+  border-radius: 999px;
+}
+

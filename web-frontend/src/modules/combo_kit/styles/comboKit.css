@@ -7,6 +7,9 @@
    保证各板块页头容器尺寸与视觉层级一致。 */
 .combo-kit-header {
   display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px;
+  /* 页面是 flex 纵向容器；不锁住收缩会让页头被压到 min-height，
+     文字溢出到内容盒之外、整体贴向底边。 */
+  flex: 0 0 auto;
   min-height: 142px; margin-bottom: 18px; padding: clamp(24px, 3vw, 34px);
   border: 1px solid var(--theme-module-border-strong, #1b91bd); border-radius: 18px;
   color: #fff;
@@ -245,7 +248,7 @@
 .combo-item-thumb .btn-mini { position: absolute; top: 6px; right: 6px; }
 
 /* 通用 mini 按钮 */
-.btn-mini { padding: 5px 11px; border-radius: 8px; border: 1px solid var(--theme-module-border, #cfe0eb); background: var(--theme-module-surface, #fff); color: var(--theme-text-secondary, #2f5878); cursor: pointer; font-size: 12px; font-weight: 800; transition: border-color .16s ease, background .16s ease, box-shadow .16s ease; }
+.btn-mini { padding: 5px 11px; border-radius: var(--theme-control-radius, 8px); border: 1px solid var(--theme-module-border, #cfe0eb); background: var(--theme-module-surface, #fff); color: var(--theme-text-secondary, #2f5878); cursor: pointer; font-size: 12px; font-weight: 800; transition: border-color .16s ease, background .16s ease, box-shadow .16s ease; }
 .btn-mini:hover:not(:disabled) { border-color: #82c9ef; box-shadow: 0 6px 14px #188bd61a; }
 /* 进行中/不可用：降透明度并禁用指针，让「移除中…」「保存中…」有明确的可点击状态反馈。 */
 .btn-mini:disabled { cursor: not-allowed; opacity: .6; box-shadow: none; }
@@ -484,3 +487,125 @@
 [data-theme] .combo-text-skeleton { border-color: var(--theme-module-border); background: var(--theme-module-surface-raised); }
 [data-theme] .combo-skeleton-line { background: var(--theme-module-surface-soft); }
 [data-theme] .combo-skeleton-caption { color: var(--theme-text-secondary); }
+
+/* ================================================================
+   采集页同款纸面 + 胶囊控件（组合生图 / 提示词预设 / 历史套装共用）
+   面板改为半透主题渐变，让背景透出来；输入框、按钮、列表行统一胶囊。
+   ================================================================ */
+.combo-kit-page {
+  --theme-control-radius: 999px;
+  --theme-card-radius: 18px;
+}
+
+.combo-kit-page :is(
+  .combo-create-panel,
+  .combo-section,
+  .combo-flow-card,
+  .combo-kit-list,
+  .combo-preset-card,
+  .combo-history-table,
+  .combo-edit-stage,
+  .combo-text-result
+) {
+  border-color: var(--theme-module-border, #d8e5ee);
+  border-radius: 18px;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--theme-module-surface-tint, #eaf8ff) 48%, transparent),
+    color-mix(in srgb, var(--theme-module-surface-soft, #f7fafc) 74%, transparent)
+  );
+  box-shadow: 0 12px 30px var(--theme-module-shadow, rgba(23, 67, 99, 0.08));
+}
+
+/* 选型卡：多行内容用 18px 连续圆角，选中态保留主题淡彩底。 */
+.combo-kit-page .combo-mode-card {
+  border-radius: 18px;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--theme-module-surface-tint, #eaf8ff) 42%, transparent),
+    color-mix(in srgb, var(--theme-module-surface-soft, #f7fafc) 68%, transparent)
+  );
+}
+
+.combo-kit-page .combo-mode-card.is-active {
+  border-color: var(--theme-module-primary-strong, #087bf5);
+  background: color-mix(in srgb, var(--theme-module-surface-tint, #f2f9ff) 82%, transparent);
+}
+
+/* 页头统计：单行胶囊 chip。 */
+.combo-kit-page .combo-header-stats {
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.combo-kit-page .combo-header-stats span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 15px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.combo-kit-page .combo-header-stats i.iconfont {
+  grid-row: auto;
+  font-size: 1rem;
+}
+
+.combo-kit-page .combo-header-stats strong {
+  font-size: 1rem;
+}
+
+.combo-kit-page .combo-header-stats em {
+  font-size: 0.72rem;
+}
+
+/* 单行控件：输入框 / 下拉 / 按钮 / 标签页 / 列表行统一 999px。 */
+.combo-kit-page :is(
+  .combo-create-panel input,
+  .combo-grid input:not([type="range"]),
+  .combo-grid select,
+  .combo-item input,
+  .combo-edit-stage-info input:not([type="checkbox"]),
+  .combo-preset-custom input,
+  .combo-history-search input,
+  .combo-modal input,
+  .combo-header-actions button,
+  .combo-actions button,
+  .combo-actions .combo-upload,
+  .combo-kit-list button,
+  .combo-modal-actions button,
+  .combo-step-footer button,
+  .combo-history-pager button,
+  .combo-drawer-head button,
+  .combo-drawer-thumb-remove,
+  .combo-preset-tab,
+  .btn-mini
+) {
+  border-radius: 999px;
+}
+
+/* 多行输入保持连续圆角。 */
+.combo-kit-page :is(.combo-grid textarea, .combo-section textarea, .combo-preset-custom textarea) {
+  border-radius: 18px;
+}
+
+.combo-kit-page .combo-kit-list li {
+  border-radius: 999px;
+}
+
+.combo-kit-page .combo-upload {
+  border-radius: 999px;
+}
+
+/* 下拉箭头内收，避免被胶囊端部弧线压住。 */
+.combo-kit-page .combo-grid select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 40px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5' fill='none' stroke='%236b8299' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 16px center;
+  background-size: 12px 8px;
+  cursor: pointer;
+}

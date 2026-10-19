@@ -38,8 +38,11 @@ export function AppleAppGlyph({ name }: AppleAppGlyphProps) {
     case "combo_prompt_preset":
     case "combo_history":
       return <svg {...common}><rect x="4" y="4" width="10" height="10" rx="2" /><path d="M9 20h9a2 2 0 0 0 2-2V9" /><path d="m18.5 3 .7 2.1 2.1.7-2.1.7-.7 2.1-.7-2.1-2.1-.7 2.1-.7.7-2.1Z" /></svg>;
+    case "pod_workflow":
     case "pod_customization":
       return <svg {...common}><path d="M9.5 3.5 12 5l2.5-1.5 4 2-1.5 4-2-1v8.5h-6V8.5l-2 1-1.5-4 4-2Z" /></svg>;
+    case "ai_video":
+      return <svg {...common}><rect x="3.5" y="6.5" width="12" height="11" rx="2.5" /><path d="m15.5 10 4.5-2.2v8.4L15.5 14" /><circle cx="9.5" cy="12" r="1.4" /></svg>;
     case "ai_service":
       return <svg {...common}><path d="m12 3 1.2 4.1L17 8.5l-3.8 1.4L12 14l-1.2-4.1L7 8.5l3.8-1.4L12 3Z" /><path d="m18.5 13 .7 2.3 2.1.7-2.1.8-.7 2.2-.7-2.2-2.1-.8 2.1-.7.7-2.3Z" /><path d="m5.5 13 .6 1.8 1.7.7-1.7.6-.6 1.9-.6-1.9-1.7-.6 1.7-.7.6-1.8Z" /></svg>;
     case "personal_center":

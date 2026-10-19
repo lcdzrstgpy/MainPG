@@ -110,6 +110,8 @@
   box-shadow: 0 14px 38px rgba(49,62,87,.16), inset 0 1px rgba(255,255,255,.9) !important;
   backdrop-filter: blur(28px) saturate(165%);
 }
+/* 吸顶后贴住视口顶端，内容不会从顶栏上方露出。 */
+[data-ui-mode="apple"] .topbar-card.is-stuck { top: 0 !important; }
 
 [data-ui-mode="apple"] .topbar-card::before,
 [data-ui-mode="apple"] .topbar-card::after { display: none !important; }
@@ -150,13 +152,15 @@ html[data-topbar-collapse="on"][data-ui-mode="apple"] .topbar-card.is-stuck {
 html[data-topbar-collapse="on"][data-ui-mode="apple"] .topbar-card.is-stuck .topbar-main {
   visibility: hidden;
   opacity: 0;
+  transform: translateY(-6px);
   pointer-events: none;
+  transition: opacity .18s ease, transform .3s var(--topbar-spring), visibility 0s linear .3s;
 }
 
 html[data-topbar-collapse="on"][data-ui-mode="apple"] .topbar-card.is-stuck .topbar-lower-row {
   pointer-events: auto;
   border: 0;
-  border-radius: 0 0 17px 17px;
+  border-radius: 17px;
   background: rgba(250,252,255,.86);
   box-shadow: 0 12px 32px rgba(49,62,87,.2), inset 0 1px rgba(255,255,255,.9);
   transform: translateY(-58px);
@@ -334,7 +338,8 @@ html[data-topbar-collapse="on"][data-ui-mode="apple"] .topbar-card.is-stuck .top
   transform: translateY(0) scale(1);
   transition-delay: 0s;
 }
-[data-ui-mode="apple"] .dock-popover-inner { position: relative; z-index: 1; display: grid; gap: 3px; }
+[data-ui-mode="apple"] .dock-popover-inner { position: relative; z-index: 1; display: grid; gap: 3px; padding-left: 0; }
+[data-ui-mode="apple"] .sidebar-selection-thumb { display: none; }
 [data-ui-mode="apple"] .sidebar-subitem { justify-content: center; gap: 6px; padding: 9px 5px; border-radius: 9px; color: #414b5a; text-align: center; }
 [data-ui-mode="apple"] .sidebar-submenu.is-expanded .sidebar-subitem { animation: dock-child-reveal .3s both; }
 [data-ui-mode="apple"] .sidebar-submenu.is-expanded .sidebar-subitem:nth-child(2) { animation-delay: .045s; }

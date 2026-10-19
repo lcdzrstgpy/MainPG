@@ -1223,21 +1223,6 @@ export function ProfitActivityTestPage({ isActive = true, prefill }: { isActive?
               <span className="profit-title-icon iconfont icon-calculator-fill" aria-hidden="true" />
               <h2>单品利润<span className="profit-help-tooltip" tabIndex={0} aria-label="单品利润填写说明"><span className="profit-help-tooltip-mark" aria-hidden="true">!</span><span className="profit-help-tooltip-content" role="tooltip">输入商品ID（支持 SKU、SKC、SPU）、售价、成本、重量后会自动预览利润。</span></span></h2>
             </div>
-            <label className="profit-single-store-field">店铺（可选）
-              <span className="profit-single-select-control">
-                <input value={productForm.store_name} maxLength={120} onChange={(event) => { setProductForm({ ...productForm, store_name: event.target.value }); setStoreDropdownOpen(true); }} onFocus={() => setStoreDropdownOpen(true)} onClick={() => setStoreDropdownOpen(true)} onBlur={() => window.setTimeout(() => setStoreDropdownOpen(false), 120)} onKeyDown={(event) => { if (event.key === "Escape") setStoreDropdownOpen(false); }} placeholder="例如：美区一店" />
-                <button type="button" aria-label="展开店铺列表" onMouseDown={(event) => event.preventDefault()} onClick={() => setStoreDropdownOpen((value) => !value)}>⌄</button>
-                {storeDropdownOpen && singleStoreOptions.length > 0 && (
-                  <span className="profit-single-select-menu" role="listbox">
-                    {singleStoreOptions.map((store) => (
-                      <button key={store} type="button" role="option" aria-selected={productForm.store_name.trim() === store} className={productForm.store_name.trim() === store ? "is-active" : undefined} onMouseDown={(event) => event.preventDefault()} onClick={() => selectSingleStore(store)}>
-                        <span>{store}</span>
-                      </button>
-                    ))}
-                  </span>
-                )}
-              </span>
-            </label>
             <label className="profit-single-site-field">站点
               <span className="profit-single-select-control">
                 <input value={siteDraft} onChange={(event) => { setSiteDraft(event.target.value); setSiteDropdownOpen(true); }} onFocus={() => setSiteDropdownOpen(true)} onClick={() => setSiteDropdownOpen(true)} onBlur={() => window.setTimeout(() => commitSiteDraft(), 120)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); commitSiteDraft(event.currentTarget.value); } if (event.key === "Escape") setSiteDropdownOpen(false); }} placeholder="输入站点代码或名称" />
@@ -1254,11 +1239,26 @@ export function ProfitActivityTestPage({ isActive = true, prefill }: { isActive?
                 )}
               </span>
             </label>
+            <label className="profit-single-store-field">店铺（可选）
+              <span className="profit-single-select-control">
+                <input value={productForm.store_name} maxLength={120} onChange={(event) => { setProductForm({ ...productForm, store_name: event.target.value }); setStoreDropdownOpen(true); }} onFocus={() => setStoreDropdownOpen(true)} onClick={() => setStoreDropdownOpen(true)} onBlur={() => window.setTimeout(() => setStoreDropdownOpen(false), 120)} onKeyDown={(event) => { if (event.key === "Escape") setStoreDropdownOpen(false); }} placeholder="例如：美区一店" />
+                <button type="button" aria-label="展开店铺列表" onMouseDown={(event) => event.preventDefault()} onClick={() => setStoreDropdownOpen((value) => !value)}>⌄</button>
+                {storeDropdownOpen && singleStoreOptions.length > 0 && (
+                  <span className="profit-single-select-menu" role="listbox">
+                    {singleStoreOptions.map((store) => (
+                      <button key={store} type="button" role="option" aria-selected={productForm.store_name.trim() === store} className={productForm.store_name.trim() === store ? "is-active" : undefined} onMouseDown={(event) => event.preventDefault()} onClick={() => selectSingleStore(store)}>
+                        <span>{store}</span>
+                      </button>
+                    ))}
+                  </span>
+                )}
+              </span>
+            </label>
           </div>
           <div className="profit-form-grid">
             <label>商品ID<input value={productForm.skc} onChange={(event) => setProductForm({ ...productForm, skc: event.target.value })} placeholder="支持 SKU、SKC 或 SPU" /></label>
             <label>售价<input value={productForm.selling_price} onChange={(event) => setProductForm({ ...productForm, selling_price: event.target.value })} placeholder="必填" /></label>
-            <label>成本（商品采购成本，不包括国内外操作费/运费）<input value={productForm.cost_price} onChange={(event) => setProductForm({ ...productForm, cost_price: event.target.value })} placeholder="必填" /></label>
+            <label>成本（纯商品采购成本）<input value={productForm.cost_price} onChange={(event) => setProductForm({ ...productForm, cost_price: event.target.value })} placeholder="必填" /></label>
             <label>重量 KG
               <span className="shipping-weight-field">
                 <input value={productForm.weight_kg} onChange={(event) => setProductForm({ ...productForm, weight_kg: event.target.value })} placeholder="必填" />
@@ -1325,7 +1325,7 @@ export function ProfitActivityTestPage({ isActive = true, prefill }: { isActive?
               <button onClick={restoreActivityThreshold} disabled={!!busy}>恢复默认设置</button>
             </div>
           </div>
-          <div className="profit-actions">
+          <div className="profit-actions profit-filter-actions">
             <button className="primary-button" onClick={() => void runActivityFilter()} disabled={!!busy || filterBusy || !activityFile}>
               {filterBusy ? "产品过滤中…" : "产品过滤"}
             </button>
