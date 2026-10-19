@@ -77,6 +77,33 @@ if _frontend_dist.is_dir():
 else:
     print("[workbench.spec] WARNING: web-frontend/dist 不存在，请先执行 npm run build")
 
+# 启动卡片底图（launcher/splash_window.py 按 _MEIPASS 相对位置读取）。
+# 只用一张静态图：卡片用 PIL 逐帧绘制并整体浮动，不需要视频解码（PIL 也解不了 mp4）。
+_splash_assets = ROOT / "launcher" / "assets" / "splash"
+if _splash_assets.is_dir():
+    datas.append((str(_splash_assets), "launcher/assets/splash"))
+else:
+    print("[workbench.spec] WARNING: 启动卡片素材目录不存在（launcher/assets/splash）")
+
+# 启动卡片依赖 PySide6（launcher/splash_qt.py）。缺了不会让打包失败 ——
+# 运行时会静默回落成「等 2.5 秒开浏览器」，但用户看到的是白屏空窗，等于这个
+# 功能白做。PyInstaller 对缺失的 import 也不报错，所以这里必须自己把关。
+try:
+    import PySide6  # noqa: F401
+
+    print(f"[workbench.spec] PySide6 {PySide6.__version__} 可用，启动卡片随包分发")
+except Exception as _exc:  # noqa: BLE001 - 打包机环境缺失要显式告警
+    print("=" * 72)
+    print("[workbench.spec] !! 缺少 PySide6 —— 启动卡片将不会生效！")
+    print(f"[workbench.spec] !! 导入失败原因: {_exc}")
+    print("[workbench.spec] !! 请在构建机执行:  python -m pip install PySide6")
+    print("[workbench.spec] !! 否则打出的包双击后要白等 2.5 秒才开浏览器")
+    print("=" * 72)
+
+# 启动卡片模块是在 run_workbench._start_splash() 里延迟导入的，显式声明一次，
+# 免得静态分析漏掉 → 打包后卡片永远起不来（静默回落成「等 2.5 秒开浏览器」）。
+hiddenimports.append("launcher.splash_qt")
+
 # Optional low-resource distractor detector (person/cat/dog). Missing model is
 # safe at runtime, but official builds include it for reference-image cleanup.
 _distractor_models = ROOT / "wh_local" / "price_verification" / "sourcing" / "models"
@@ -91,6 +118,16 @@ if _enhance_models.is_dir():
 else:
     print("[workbench.spec] WARNING: wh_local/models 不存在，清晰化将只做 USM 锐化")
 
+# 启动卡片是在 launcher/splash_qt.py 里用 PySide6 画的（无边框透明窗口）。
+# 复用 launcher/MainPG-Launcher.spec 的裁剪思路，排除没用到的大模块，
+# 否则 PySide6 全家桶会让安装包白白多出几十 MB。
+_PYSIDE_EXCLUDES = [
+    "PySide6.QtQml", "PySide6.QtQuick", "PySide6.QtNetwork",
+    "PySide6.QtPdf", "PySide6.QtSvg", "PySide6.QtOpenGL",
+    "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets",
+    "PySide6.QtMultimedia", "PySide6.QtCharts", "PySide6.QtDataVisualization",
+]
+
 a = Analysis(
     [str(ROOT / "run_workbench.py")],
     pathex=[str(ROOT)],
@@ -99,7 +136,7 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
-    excludes=[],
+    excludes=_PYSIDE_EXCLUDES,
     noarchive=False,
 )
 

@@ -1,4 +1,8 @@
-import { toUserMessage } from "../../../transport/http/client";
+import {
+  noteBackendReachable,
+  noteBackendUnreachable,
+  toUserMessage,
+} from "../../../transport/http/client";
 
 type ApiContext = {
   baseUrl: string;
@@ -51,9 +55,19 @@ function fetchWithTimeout(input: string, init: RequestInit, timeoutMs: number = 
   }
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   return fetch(input, { ...init, signal: controller.signal })
+    .then((response) => {
+      // 拿到响应（含 4xx/5xx）就证明后端活着。产品处理是全应用最忙的轮询通道，
+      // 但它是独立实现、不走 httpJson —— 不复位的话，「6 秒内没有 httpJson 成功」
+      // 会被误判成持续失联，一次抖动就弹整屏遮罩（2026-10-19 修复）。
+      noteBackendReachable();
+      return response;
+    })
     .catch((error: unknown) => {
       const timedOut = controller.signal.aborted && !(externalSignal?.aborted ?? false);
       if (timedOut) throw new PpRequestError("请求超时，请稍后重试", 0);
+      // TypeError = 请求根本没发出去（连接被拒/后端进程没了）。超时不算失联：
+      // 后端可能只是忙，报「掉线」会把用户引到错误方向。
+      if (error instanceof TypeError) noteBackendUnreachable();
       throw error;
     })
     .finally(() => {

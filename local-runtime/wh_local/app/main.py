@@ -640,7 +640,10 @@ def create_app(database_path: Path | None = None) -> FastAPI:
 
     @app.get("/health")
     def health() -> dict[str, Any]:
-        return {"ok": True, "database_path": str(db_path)}
+        # app_version 是给启动器用的：端口上如果跑着「上个版本」的旧进程，
+        # 光看 database_path 完全一样，复用之后用户看到的就是旧界面
+        # （2026-10-19 排查「升级后还是老样子」时确认的缺口）。
+        return {"ok": True, "database_path": str(db_path), "app_version": APP_VERSION}
 
     if os.environ.get("WH_LOCAL_ENABLE_DEMO_PAGE", "").strip().lower() in {"1", "true", "yes"}:
 

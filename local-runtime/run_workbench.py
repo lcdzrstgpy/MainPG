@@ -148,11 +148,83 @@ def _release_default_port(host: str, port: int) -> bool:
     return False
 
 
-def _probe_running_workbench(host: str, port: int, timeout: float = 1.5) -> str | None:
+def _resolve_port_conflict(host: str, port: int, card) -> bool:
+    """8010 被占时决定怎么办 —— 不再弹 Windows 对话框。
+
+    分两种情况，都是「不问用户」的确定性规则：
+
+    * 占用者是**本程序自己的残留进程**（上次没退干净）→ 直接结束它、继续用 8010。
+      这种进程本来就该被清掉，问一次只会多一次打断。
+    * 占用者是**别的程序** → 一律不杀，顺延端口，并在卡片上写明「谁占了、换到了
+      哪个端口、插件可能连不上」。杀别人的进程不可逆，不能替用户决定。
+
+    返回 True 表示端口已经腾出来了。
+    """
+    log = logging.getLogger("run_workbench")
+    pids = _port_owners(port)
+    if not pids:
+        return False
+    pid = pids[0]
+    name = _process_name(pid)
+    # 只清「本程序自己」的残留。以前这里也算上 python —— 但用户机器上任何
+    # python 进程（开发者的脚本、别的本地服务）都可能占这个端口，杀掉是不可逆的，
+    # 不能因为它叫 python 就当是我们自己。宁可顺延端口，也不替用户决定杀进程。
+    if "mainpg" not in name.lower():
+        # 别的程序占着：把选择权交给用户（卡片上两个按钮），20 秒没人选就顺延。
+        if card is None:
+            # --no-browser（协议拉起）没有卡片可问，只能顺延。
+            return False
+        choice = card.ask_port_conflict(port=port, process_name=name, pid=pid)
+        if choice != "kill":
+            card.set_status(
+                "正在启动",
+                f"{port} 被「{name}」占用，已改用其它端口启动（浏览器插件可能连不上）",
+            )
+            log.warning("%s 被「%s」(%s) 占用，改用其它端口", port, name, pid)
+            return False
+        log.warning("用户选择关闭占用进程 %s(%s) 以使用 %s", name, pid, port)
+
+    log.warning("清理本程序残留进程 %s(%s)，继续使用 %s", name, pid, port)
+    _kill_pid(pid)
+    for _ in range(20):
+        time.sleep(0.25)
+        if not _port_in_use(host, port):
+            return True
+    log.warning("残留进程已结束但 %s 仍未释放，改为顺延端口", port)
+    return False
+
+
+def _is_backend_ready(host: str, port: int, timeout: float = 1.0) -> bool:
+    """``/health`` 回 ``{"ok": true}`` 就算本次后端已经能服务。
+
+    比 ``_probe_running_workbench`` 轻：不关心是谁的库、哪个版本，启动卡片
+    每 0.6 秒问一次，只回答「能不能开浏览器了」。
+    """
+    import http.client
+    import json
+
+    try:
+        conn = http.client.HTTPConnection(host, port, timeout=timeout)
+        try:
+            conn.request("GET", "/health")
+            response = conn.getresponse()
+            if response.status != 200:
+                return False
+            payload = json.loads(response.read().decode("utf-8", "replace"))
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        return False
+    return isinstance(payload, dict) and payload.get("ok") is True
+
+
+def _probe_running_workbench(
+    host: str, port: int, timeout: float = 1.5
+) -> tuple[str, str] | None:
     """探测端口上是否已有本程序后端在正常服务。
 
-    返回它自报的数据目录（/health 的 database_path，空串表示没上报）；不可达、或
-    回应得不像本程序时返回 None。
+    返回 ``(database_path, app_version)``（都可能是空串：旧版本不报 app_version）；
+    不可达、或回应得不像本程序时返回 None。
 
     为什么需要它：「端口被占」不等于「有残留」—— 真正的残留进程早已退出、端口会
     自动释放；反过来，能正常应答 /health 恰恰说明**有实例正在干活**（页面开着、
@@ -181,7 +253,11 @@ def _probe_running_workbench(host: str, port: int, timeout: float = 1.5) -> str 
     if not isinstance(payload, dict) or payload.get("ok") is not True:
         return None
     database_path = payload.get("database_path")
-    return database_path if isinstance(database_path, str) else ""
+    app_version = payload.get("app_version")
+    return (
+        database_path if isinstance(database_path, str) else "",
+        app_version if isinstance(app_version, str) else "",
+    )
 
 
 def _expected_database_path() -> str | None:
@@ -202,7 +278,19 @@ def _same_path(left: str, right: str) -> bool:
         return left == right
 
 
-def _reuse_running_workbench(args: argparse.Namespace, running_db: str) -> None:
+def _read_app_version() -> str:
+    """读取本程序的版本号；失败返回空串（不影响启动）。"""
+    try:
+        from wh_local.config import APP_VERSION
+
+        return str(APP_VERSION)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _reuse_running_workbench(
+    args: argparse.Namespace, running_db: str, running_version: str = ""
+) -> None:
     """复用已在运行的实例：把页面指向它，本实例不启动后端、不杀任何进程。
 
     --no-browser（协议拉起、页面点「重新连接」）时不另开页面 —— 旧页面自己会恢复，
@@ -223,6 +311,26 @@ def _reuse_running_workbench(args: argparse.Namespace, running_db: str) -> None:
             f"　　本次启动：{expected_db}\n\n"
             "为避免看到或改错数据，建议先完全退出那个程序，再启动本次的。\n"
             "本次不会重复启动后台服务。"
+        )
+    # 版本校验：端口上跑着「上个版本的旧进程」时，database_path 完全一样，
+    # 静默复用会让用户升级后看到的还是旧界面（2026-10-19 排查确认的缺口）。
+    # 这里只提示、不阻断——旧进程里可能正跑着任务，强杀代价更大。
+    expected_version = _read_app_version()
+    if (
+        running_version
+        and expected_version
+        and running_version != expected_version
+        and not args.no_browser
+    ):
+        _log.warning(
+            "port %s serves an older build: running=%s expected=%s",
+            args.port, running_version, expected_version,
+        )
+        _show_notice_box(
+            f"{args.port} 端口上正在运行的界野电商平台是 {running_version}，"
+            f"本次打开的是 {expected_version}。\n\n"
+            "本次不会重复启动后台服务，所以界面可能仍是旧版本。\n"
+            "如需使用新版本，请先**完全退出**正在运行的程序（含托盘图标）再启动。"
         )
     try:
         from wh_local.config import APP_VERSION as app_version
@@ -301,10 +409,51 @@ def _open_browser_later(url: str, delay: float = 2.5) -> None:
     threading.Thread(target=_open, daemon=True).start()
 
 
+def _start_splash(host: str, port: int, version: str):
+    """在桌面中间浮一张启动卡片；返回 SplashCard，任何异常都返回 None。
+
+    必须在 ``import wh_local.app.main`` **之前**调用：import 后端 + init_db +
+    结构迁移是冷启动耗时的大头（实测 1~18 秒），等它跑完再开浏览器，慢机器上
+    必然是「浏览器先到、后端还没 listen」—— 连接被拒，页面直接弹「本地服务掉线
+    了」。先给画面、再慢慢起后端，这个空窗就消失了。
+
+    卡片只是体验层：非 Windows、素材缺失、窗口创建失败，一律安静回落成
+    「等 2.5 秒再开浏览器」的老行为，绝不阻塞或中断启动。
+    """
+    log = logging.getLogger("run_workbench")
+    try:
+        from launcher.splash_qt import SplashCard, splash_asset_path, splash_available
+
+        if not splash_available():
+            return None
+        asset = splash_asset_path()
+        if asset is None:
+            log.warning("启动卡片素材缺失（launcher/assets/splash），回落为延迟开浏览器")
+            return None
+        card = SplashCard(background=asset, version=version, host=host, port=port)
+    except Exception:  # noqa: BLE001 - 启动画面失败不影响启动
+        log.warning("启动卡片初始化失败，回落为延迟开浏览器", exc_info=True)
+        return None
+    if not card.start():
+        return None
+    print("[run-workbench] splash card shown")
+    return card
+
+
 def _workbench_url(host: str, port: int, app_version: str) -> str:
-    """Use a versioned document URL so a desktop upgrade cannot reuse stale HTML."""
+    """Use a versioned document URL so a desktop upgrade cannot reuse stale HTML.
+
+    还要再追加一次性时间戳：``webbrowser.open`` 遇到「已经打开着同一个 URL 的标签」
+    时，多数浏览器只会把窗口切到前台、**不会重新加载**。用户「叉掉浏览器 → 点启动」
+    却依旧看到关闭前那一屏（包括停在「本地服务掉线了」遮罩上的冻结页面），就是因为
+    每次的 URL 一模一样（2026-10-19 用户反馈，复现路径完全对得上）。
+
+    带上 nonce 后每次启动都是**新导航**：必然重新拉 index.html 与最新 assets，
+    也不会被浏览器的会话恢复/bfcache 里的旧 DOM 顶替。
+    """
     version = quote(app_version.strip() or "unknown", safe="")
-    return f"http://{host}:{port}/?app_version={version}"
+    nonce = int(time.time() * 1000)
+    return f"http://{host}:{port}/?app_version={version}&t={nonce}"
 
 
 # --------------------------------------------------------------- 恢复协议
@@ -516,20 +665,30 @@ def main() -> int:
     # 真正的「历史残留」进程早已退出、端口自动释放，轮不到这里杀。
     # 端口独占仍由下方 _bind_server_socket 的原子 bind 保证，防并发拉起竞态。
     if _port_in_use(args.host, args.port):
-        running_db = _probe_running_workbench(args.host, args.port)
-        if running_db is not None:
+        probed = _probe_running_workbench(args.host, args.port)
+        if probed is not None:
             # 已经有可用实例 → 复用它：只把页面指向它，本实例不启后端、不杀任何进程。
-            _reuse_running_workbench(args, running_db)
+            running_db, running_version = probed
+            _reuse_running_workbench(args, running_db, running_version)
             return 0
-        if args.port == DEFAULT_PORT:
-            # 端口被别的程序（或卡死的后端）占着 → 才走原有的「征询后释放」流程。
-            _release_default_port(args.host, args.port)
+
+    # 卡片必须在「端口决策」之前起来：要在上面显示「被谁占了」，就得先有画面。
+    # --no-browser（协议拉起 / 页面点「重新连接」）时不起卡片 —— 旧页面自己会
+    # 恢复，再浮一张启动卡片只会让人以为又开了一个工作台。
+    card = None
+    if not args.no_browser:
+        card = _start_splash(args.host, args.port, _read_app_version())
+
+    if _port_in_use(args.host, args.port) and args.port == DEFAULT_PORT:
+        _resolve_port_conflict(args.host, args.port, card)
 
     try:
         sock, port = _bind_server_socket(args.host, args.port)
     except OSError:
         _log.critical(
             "FATAL: no free port available in range starting at %s.", args.port)
+        if card is not None:
+            card.close()
         _show_fatal_box(
             "后端服务启动失败（端口全部被占用）。\n"
             f"详细信息已写入日志：{log_path}\n请将此文件反馈给技术支持。"
@@ -537,6 +696,15 @@ def main() -> int:
         return 1
     if port != args.port:
         print(f"[run-workbench] port {args.port} in use, fallback to {port}")
+        # 顺延端口对用户是「隐形故障」：浏览器插件默认只连 8010，顺延后插件就
+        # 连不上了，而打包版没有任何地方能看到当前端口。现在挂在卡片上常驻显示。
+        if card is not None:
+            card.set_status(
+                "正在启动",
+                f"{args.port} 端口被占用，已改用 {port} 启动（浏览器插件可能连不上）",
+            )
+    if card is not None:
+        card.set_port(port)
 
     # 后端 app 在模块导入阶段即执行 create_app()/init_db()；此处捕获其异常并落盘，
     # 否则 uvicorn 永远不会启动，用户只看到“页面开了、端口没有”且无任何报错。
@@ -548,6 +716,8 @@ def main() -> int:
             "FATAL: failed to import backend / init db.\n%s",
             "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
         )
+        if card is not None:
+            card.close()
         _show_fatal_box(
             "后端启动失败（初始化后端服务/数据库时出错）。\n"
             f"详细信息已写入日志：{log_path}\n请将此文件反馈给技术支持。"
@@ -555,7 +725,13 @@ def main() -> int:
         return 1
 
     url = _workbench_url(args.host, port, APP_VERSION)
-    if not args.no_browser:
+    if card is not None:
+        # 卡片自己探 /health，就绪后淡出并打开浏览器；主线程不等它，直接起 uvicorn。
+        card.watch(
+            probe=lambda: _is_backend_ready(args.host, port),
+            on_ready=lambda: webbrowser.open(url),
+        )
+    elif not args.no_browser:
         _open_browser_later(url)
     print(f"[run-workbench] serving workbench at {url}")
 
