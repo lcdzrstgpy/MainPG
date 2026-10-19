@@ -133,14 +133,21 @@ def _apply_pending_migration(config: LocalRuntimeConfig, target_db: Path) -> Non
     ``workbench.sqlite3.pre-import-<时间戳>.bak``）。
 
     迁移是用户主动做的一次性动作，失败只记日志、绝不阻断启动——否则一个坏包
-    会让用户连工作台都打不开，反而更难救。
+    会让用户连工作台都打不开，反而更难救。但**失败原因必须落盘**：只写日志的话
+    用户界面会永远停在「请重启生效」，重启多少次都不知道为什么没生效。
     """
     try:
         from wh_local.migration import apply_pending
 
         result = apply_pending(config.data_dir, target_db)
-    except Exception:  # noqa: BLE001 - 迁移失败不能阻断启动
+    except Exception as exc:  # noqa: BLE001 - 迁移失败不能阻断启动
         logger.exception("应用待生效的数据迁移包失败")
+        try:
+            from wh_local.migration import record_apply_error
+
+            record_apply_error(config.data_dir, exc)
+        except Exception:  # noqa: BLE001 - 记录失败也不能影响启动
+            logger.exception("记录迁移替换失败原因时出错")
         return
     if result.get("applied"):
         logger.warning(

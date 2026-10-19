@@ -23,7 +23,19 @@ export type MigrationPlan = {
   /** 产品库用了自定义保存目录（换机时会按原路径还原）。 */
   custom_profit_root: boolean;
   /** 已导入、等下次启动生效的迁移包。 */
-  pending: { pending: true; staged_at?: string; asset_files?: number; asset_errors?: number } | null;
+  pending: {
+    pending: true;
+    staged_at?: string;
+    asset_files?: number;
+    asset_errors?: number;
+    asset_overwritten?: number;
+    /** 包的来源版本与本机不一致时的提示（不阻断导入）。 */
+    version_notice?: string;
+    /** 产品库保存目录被改指到本机默认目录的说明。 */
+    save_root_notice?: string;
+    /** 上次启动尝试替换数据库失败的原因；非空说明「重启也没生效」。 */
+    apply_error?: string;
+  } | null;
 };
 
 export type MigrationJob = {
@@ -38,7 +50,13 @@ export type MigrationJob = {
     path?: string;
     bytes?: number;
     asset_files?: number;
+    /** 打包时读不了、被跳过的素材文件数（>0 说明这一包不完整）。 */
+    skipped_assets?: number;
     asset_errors?: number;
+    asset_overwritten?: number;
+    version_notice?: string;
+    /** 旧机的产品库保存目录在新机不可用时，被改指到本机默认目录的说明。 */
+    save_root_notice?: string;
     restart_required?: boolean;
   } | null;
 };

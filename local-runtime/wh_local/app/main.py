@@ -690,7 +690,12 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     if remote_customer_auth.configured():
         app.include_router(create_admin_proxy_router(remote_customer_auth, customer_sessions))
     # 换机数据迁移：整库快照导出 / 导入（导入的库在下次启动、开库之前替换）。
-    app.include_router(create_migration_router(config.data_dir, db_path, customer_sessions))
+    # service=clipforge：导入会覆盖它正在用的库与素材目录，先停后启。
+    app.include_router(
+        create_migration_router(
+            config.data_dir, db_path, customer_sessions, service=clipforge
+        )
+    )
 
     app.include_router(create_basic_settings_router(db_path))
     # 登录页「账号管理」：本地记住登录过的账号与（可选保存的）密码，DPAPI 加密
