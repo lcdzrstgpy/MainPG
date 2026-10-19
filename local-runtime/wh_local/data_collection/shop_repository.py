@@ -375,15 +375,24 @@ class ShopCollectionRepository:
     ) -> None:
         if intake_action not in {"created", "refreshed", "skipped"}:
             raise ValueError("invalid intake action")
+        # 列表阶段通常只有 offer_id；真实商品名要等 item_get 详情回来。
+        # 这里把详情标题回写到 item 行，列表接口就不必再依赖前端猜字段。
+        source_title = str(
+            candidate.get("source_title")
+            or candidate.get("title")
+            or candidate.get("product_name")
+            or ""
+        ).strip()
         with connect(self.database_path) as conn:
             cursor = conn.execute(
                 """UPDATE shop_collection_items SET detail_status = 'succeeded', intake_action = ?, candidate_json = ?,
+                source_title = CASE WHEN ? <> '' THEN ? ELSE source_title END,
                 error_code = '', error_message = '', lease_owner = '', lease_token = '', lease_expires_at = NULL,
                 completed_at = datetime('now'), updated_at = datetime('now')
                 WHERE batch_id = ? AND item_id = ? AND detail_status = 'running'
                 AND lease_owner = ? AND lease_token = ? AND lease_expires_at > ?""",
-                (intake_action, json.dumps(candidate, ensure_ascii=False, default=str), batch_id, item_id,
-                 owner, lease_token, _now()),
+                (intake_action, json.dumps(candidate, ensure_ascii=False, default=str), source_title, source_title,
+                 batch_id, item_id, owner, lease_token, _now()),
             )
             if not cursor.rowcount:
                 raise ShopLeaseLost("item lease is no longer owned by this worker")

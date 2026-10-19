@@ -75,21 +75,58 @@
 }
 
 .price-verification-steps {
+  position: relative;
+  isolation: isolate;
   gap: 12px;
 }
 
+/* 三块工作流卡片共用的选中滑块：切换时由同一块滑块在卡片之间平移。 */
+.price-verification-step-thumb {
+  position: absolute;
+  z-index: 0;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 0;
+  border-radius: 999px;
+  background: var(--theme-hero-gradient, linear-gradient(135deg, #c952a8, #8f5ae0));
+  box-shadow: 0 8px 18px -6px color-mix(in srgb, var(--theme-primary, #12a9d8) 34%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(0);
+}
+
+.price-verification-steps[data-ready="true"] .price-verification-step-thumb {
+  opacity: 1;
+  transition: transform .42s cubic-bezier(.22, 1, .36, 1), width .42s cubic-bezier(.22, 1, .36, 1);
+}
+
 .price-verification-steps .price-verification-step {
+  position: relative;
+  z-index: 1;
   min-height: 74px;
-  padding: 13px 15px;
+  padding: 13px 26px;
   border: 1px solid var(--theme-module-border, #eee) !important;
-  border-radius: 14px;
-  background: var(--theme-module-surface, #fff) !important;
-  box-shadow: 0 8px 22px var(--theme-card-shadow, rgba(120, 90, 160, .06));
-  transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease;
+  border-radius: 999px;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--theme-module-surface-tint, #eaf8ff) 32%, transparent),
+    color-mix(in srgb, var(--theme-module-surface-soft, #f7fafc) 48%, transparent)
+  ) !important;
+  box-shadow: none;
+  transition: transform .18s ease, border-color .18s ease, background-color .18s ease;
+}
+
+.price-verification-steps .price-verification-step > span:nth-child(2) :is(strong, small) {
+  transition: color .42s cubic-bezier(.22, 1, .36, 1);
+}
+
+.price-verification-steps .price-verification-step-number {
+  transition: color .42s cubic-bezier(.22, 1, .36, 1), background-color .42s cubic-bezier(.22, 1, .36, 1);
 }
 
 .price-verification-steps .price-verification-step:first-child {
-  padding-left: 15px;
+  padding-left: 26px;
 }
 
 .price-verification-steps .price-verification-step-number {
@@ -114,17 +151,18 @@
   display: none;
 }
 
-.price-verification-steps .price-verification-step:hover:not([aria-disabled="true"]) {
+.price-verification-steps .price-verification-step:hover:not([aria-disabled="true"]):not(.is-current-flow) {
   border-color: color-mix(in srgb, var(--theme-primary, #12a9d8) 42%, transparent) !important;
-  transform: translateY(-1px);
+  background: color-mix(in srgb, var(--theme-module-surface-raised, #fff) 52%, transparent) !important;
+  transform: none;
 }
 
-.price-verification-steps .price-verification-step:hover:not([aria-disabled="true"]) .price-verification-step-number {
+.price-verification-steps .price-verification-step:hover:not([aria-disabled="true"]):not(.is-current-flow) .price-verification-step-number {
   color: var(--theme-on-primary, #fff);
   background: var(--theme-primary, #12a9d8);
 }
 
-.price-verification-steps .price-verification-step:hover:not([aria-disabled="true"]) strong {
+.price-verification-steps .price-verification-step:hover:not([aria-disabled="true"]):not(.is-current-flow) strong {
   color: var(--theme-module-primary-strong, #0d7fba);
 }
 
@@ -140,15 +178,12 @@
 }
 
 .price-verification-steps .price-verification-step.is-current-flow {
-  /* 彻底不留边框：原来是 `border-color: transparent`（仍占 1px），在圆角裁剪和主题
-     变量下会在卡片右缘压出一条暗线。去掉边框后用 padding 补回这 1px，保持与其他
-     步骤同宽同高，不引起布局跳变。 */
-  border: 0 !important;
-  padding: 14px 16px;
-  background: var(--theme-hero-gradient, linear-gradient(135deg, #c952a8, #8f5ae0)) !important;
-  /* 负 spread 让阴影贴合卡片本体、不外溢到右侧 gap，避免在窄 gap 里叠出一条暗带。 */
-  box-shadow: 0 8px 18px -6px color-mix(in srgb, var(--theme-primary, #12a9d8) 34%, transparent);
-  transform: translateY(-1px);
+  /* 选中态由下方的共享滑块绘制，卡片本身保持透明，滑块移动时才能被看见。 */
+  border-color: transparent !important;
+  padding: 13px 26px;
+  background: transparent !important;
+  box-shadow: none;
+  transform: none;
 }
 
 .price-verification-steps .price-verification-step.is-current-flow .price-verification-step-number {
@@ -169,8 +204,17 @@
 
   .price-verification-steps .price-verification-step {
     min-height: 54px;
-    padding-right: 0;
-    padding-left: 0;
+    padding-right: 20px;
+    padding-left: 20px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .price-verification-steps .price-verification-step,
+  .price-verification-step-thumb,
+  .price-verification-steps .price-verification-step-number,
+  .price-verification-steps .price-verification-step > span:nth-child(2) :is(strong, small) {
+    transition: none;
   }
 }
 

@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 
 import type { PodSystemTemplate } from "../data/podCustomizationDraft";
 import { PodAssetImage } from "../data/usePodAssetUrl";
+import { slidingIndicatorStyle, useSlidingIndicator } from "../../../shared/hooks/useSlidingIndicator";
 import type { PodTemplate } from "../types";
 
 type Props = {
@@ -42,6 +43,8 @@ export function TemplateLibraryDrawer({
   const [uploadName, setUploadName] = useState("");
   const [uploadFile, setUploadFile] = useState<File>();
   const fileRef = useRef<HTMLInputElement>(null);
+  /** 模板来源只有两段：用共享滑块承载选中态。 */
+  const scopeIndicator = useSlidingIndicator<HTMLDivElement>(":scope > button.is-active", [scope, open]);
 
   const personalTemplates = useMemo(
     () => templates.filter((template) => template.source === "personal"),
@@ -123,7 +126,14 @@ export function TemplateLibraryDrawer({
           <button type="button" onClick={onClose} aria-label="关闭">×</button>
         </header>
 
-        <div className="pod-template-scope-tabs" role="tablist" aria-label="模板来源">
+        <div
+          className="pod-template-scope-tabs"
+          role="tablist"
+          aria-label="模板来源"
+          ref={scopeIndicator.containerRef}
+          data-indicator-ready={scopeIndicator.ready ? "true" : "false"}
+        >
+          {scopeIndicator.rect && <span className="pod-selection-thumb" style={slidingIndicatorStyle(scopeIndicator.rect)} aria-hidden="true" />}
           <button type="button" role="tab" aria-selected={scope === "system"} className={scope === "system" ? "is-active" : ""} onClick={() => switchScope("system")}>系统模板</button>
           <button type="button" role="tab" aria-selected={scope === "personal"} className={scope === "personal" ? "is-active" : ""} onClick={() => switchScope("personal")}>个人模板</button>
         </div>

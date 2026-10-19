@@ -529,6 +529,7 @@
   .page-hero-card,
   .settings-hero,
   .daily-page-heading,
+  .pod-page-header,
   .daily-drawer-header,
   .price-verification-hero,
   .product-processing-hero,
@@ -546,7 +547,12 @@
   background-repeat: no-repeat, repeat, repeat, repeat, no-repeat !important;
   background-size: 260% 100%, 151px 127px, 211px 163px, 179px 139px, 100% 100% !important;
   animation: citrus-hero-splash 11s ease-in-out infinite;
-}[data-theme="sunset"] .topbar-card::before,
+}
+/* POD 页头复用 hero 渐变后，原本的深色标题需要切成浅色。 */
+[data-theme="sunset"] .pod-page-header :is(h1, p),
+[data-theme="sunset"] .pod-page-header .pod-live-badge { color: var(--theme-hero-text) !important; }
+[data-theme="sunset"] .pod-page-header .pod-page-title > div > span { color: var(--theme-hero-eyebrow) !important; }
+[data-theme="sunset"] .topbar-card::before,
 [data-theme="sunset"] .sidebar-card::before {
   background:
     radial-gradient(circle at 18% 38%, rgba(255, 237, 213, .8) 0 2px, transparent 3px),
@@ -614,6 +620,7 @@
     .page-hero-card,
     .settings-hero,
     .daily-page-heading,
+    .pod-page-header,
     .daily-drawer-header,
     .price-verification-hero,
     .product-processing-hero,
@@ -689,12 +696,12 @@
   border-color: transparent !important;
   background: var(--theme-primary-button-gradient) !important;
   box-shadow: 0 8px 18px var(--theme-primary-button-shadow) !important;
-  border-radius: 10px !important;
+  border-radius: var(--theme-control-radius, 10px) !important;
 }/* ---- 3. 次级按钮 / 小控件统一（排除 danger/激活/已关联等语义变体）---- */:is(
   .verify-page .verify-actions button:not(.primary):not(.danger),
   .verify-page .verify-history button:not(.primary):not(.danger),
   .verify-page .verify-row-actions button:not(.primary):not(.danger),
-  .verify-page .btn-mini:not(.danger):not(.force-import):not(.confirm-subject),
+  .verify-page .btn-mini:not(.primary):not(.danger):not(.force-import):not(.confirm-subject),
   .verify-page .verify-pagination button,
   .verify-page .verify-pagination-pages button,
   .precheck-expand-actions button,
@@ -709,7 +716,7 @@
   color: var(--theme-text-secondary) !important;
   border-color: var(--theme-module-border) !important;
   background: var(--theme-module-surface) !important;
-  border-radius: 9px !important;
+  border-radius: var(--theme-control-radius, 9px) !important;
 }/* ---- 4. 卡片 / 面板统一（不含怪趣/水墨主题单独装饰过的通用卡）---- */:is(
   .product-processing-surface,
   .verify-page .verify-section,
@@ -725,7 +732,7 @@
   color: var(--theme-text-primary) !important;
   border-color: var(--theme-module-border) !important;
   background: var(--theme-module-surface) !important;
-  border-radius: 14px !important;
+  border-radius: var(--theme-card-radius, 14px) !important;
   box-shadow: 0 10px 28px var(--theme-module-shadow) !important;
 }/* 被怪趣/水墨主题定制边框装饰的通用卡：只统一表面色，不强制圆角。 */:is(
   .product-processing-page .product-draft-card,
@@ -837,7 +844,7 @@
 :is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"], [data-theme="alpine"]) .page-tab.is-active > button { color: inherit !important; }
 :is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"], [data-theme="alpine"]) .avatar { color: var(--theme-avatar-color); background: var(--theme-avatar-bg); }
 :is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"], [data-theme="alpine"]) :is(
-  .page-hero-card, .settings-hero, .daily-page-heading, .daily-drawer-header,
+  .page-hero-card, .settings-hero, .daily-page-heading, .pod-page-header, .daily-drawer-header,
   .price-verification-hero, .product-processing-hero, .verify-commandbar,
   .profit-products-head, .profit-activity-hero, .profit-test-hero
 ) {
@@ -846,15 +853,15 @@
   box-shadow: 0 16px 38px var(--theme-card-shadow-lg) !important;
 }
 :is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"], [data-theme="alpine"]) :is(
-  .page-hero-card, .settings-hero, .daily-page-heading, .daily-drawer-header,
+  .page-hero-card, .settings-hero, .daily-page-heading, .pod-page-header, .daily-drawer-header,
   .price-verification-hero, .product-processing-hero, .verify-commandbar,
   .profit-products-head, .profit-activity-hero, .profit-test-hero
-) :is(h1, h2, h3, p) { color: var(--theme-hero-text) !important; }
+) :is(h1, h2, h3, p, .pod-live-badge) { color: var(--theme-hero-text) !important; }
 :is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"], [data-theme="alpine"]) :is(
-  .page-hero-card, .settings-hero, .daily-page-heading, .daily-drawer-header,
+  .page-hero-card, .settings-hero, .daily-page-heading, .pod-page-header, .daily-drawer-header,
   .price-verification-hero, .product-processing-hero, .verify-commandbar,
   .profit-products-head, .profit-activity-hero, .profit-test-hero
-) :is(.eyebrow, .daily-kicker, .verify-eyebrow) { color: var(--theme-hero-eyebrow) !important; }
+) :is(.eyebrow, .daily-kicker, .verify-eyebrow, .pod-page-title > div > span) { color: var(--theme-hero-eyebrow) !important; }
 :is([data-theme="violet"], [data-theme="dessert"], [data-theme="diamond"], [data-theme="quirky"], [data-theme="chinese"], [data-theme="alpine"]) .theme-quick-trigger {
   color: var(--theme-on-primary);
   border-color: var(--theme-module-primary-strong);
@@ -863,4 +870,22 @@
 }
 
 [data-theme="sunset"] .theme-quick-trigger::before,
-[data-theme="sunset"] .theme-quick-trigger::after { background: #7c3a1d; }[data-theme="sunset"] .theme-quick-trigger .face-mouth { border-bottom-color: #7c3a1d; }/* 樱雾粉紫：粉紫渐变 + 紫描边大圆角 *//* 焦糖：奶油底 + 焦糖描边，柔和圆润 *//* 黑白钻石：黑底银边，冷峻克制 *//* 怪趣贴纸：绿黄粉大渐变 + 粗深紫描边歪头 *//* 水墨青黛：米白纸底 + 青黛描边，偏方正印章感 */
+[data-theme="sunset"] .theme-quick-trigger::after { background: #7c3a1d; }[data-theme="sunset"] .theme-quick-trigger .face-mouth { border-bottom-color: #7c3a1d; }
+
+/* 侧栏选中态改由共享胶囊滑块承载：经典模式下逐项底色 / 描边清零，
+   只保留主题文字色；Apple/Dock 模式与窄屏横向导航不受影响。 */
+@media (min-width: 801px) {
+  html:not([data-ui-mode="apple"]) .sidebar-card :is(.sidebar-item.is-active, .sidebar-subitem.is-active),
+  html:not([data-ui-mode="apple"]) .sidebar-card :is(.sidebar-item.is-active:hover, .sidebar-subitem.is-active:hover) {
+    background: transparent !important;
+    box-shadow: none !important;
+  }
+}
+
+/* 顶部页面标签的选中底色同样交给共享滑块；经典模式下标签自身不再画底。 */
+html:not([data-ui-mode="apple"]) .topbar-card .tab-strip .page-tab.is-active,
+html:not([data-ui-mode="apple"]) .topbar-card .tab-strip .page-tab.is-active:hover {
+  border-color: transparent !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}/* 樱雾粉紫：粉紫渐变 + 紫描边大圆角 *//* 焦糖：奶油底 + 焦糖描边，柔和圆润 *//* 黑白钻石：黑底银边，冷峻克制 *//* 怪趣贴纸：绿黄粉大渐变 + 粗深紫描边歪头 *//* 水墨青黛：米白纸底 + 青黛描边，偏方正印章感 */

@@ -8,7 +8,9 @@ import {
   isTerminalShopBatchStatus,
   shopBatchProgress,
   shopBatchStatusLabel,
+  shopItemDisplayTitle,
   type ShopCollectionBatch,
+  type ShopCollectionItem,
 } from "./shopCollectionModel.ts";
 
 function batch(overrides: Partial<ShopCollectionBatch> = {}): ShopCollectionBatch {
@@ -47,6 +49,8 @@ test("maps every server batch status to a readable Chinese label", () => {
 test("calculates finite progress from the counters returned by the batch API", () => {
   assert.equal(shopBatchProgress(batch()), 40);
   assert.equal(shopBatchProgress(batch({ discovered_count: 0, status: "listing" })), 0);
+  assert.equal(shopBatchProgress(batch({ status: "completed", discovered_count: 0, succeeded_count: 0, failed_count: 0 })), 100);
+  assert.equal(shopBatchProgress(batch({ status: "failed", discovered_count: 0, succeeded_count: 0, failed_count: 0 })), 0);
   assert.equal(shopBatchProgress(batch({ status: "partial", discovered_count: 10, succeeded_count: 7, failed_count: 3 })), 100);
   assert.equal(shopBatchProgress(batch({ status: "cancelled", discovered_count: 10, succeeded_count: 3, failed_count: 1 })), 40);
   assert.equal(shopBatchProgress(batch({ discovered_count: Number.NaN, succeeded_count: Number.POSITIVE_INFINITY, failed_count: -3 })), 0);
@@ -82,4 +86,53 @@ test("formats API errors without exposing authorization or credential values", (
   }
   assert.match(formatted, /\[已隐藏\]/);
   assert.equal(formatShopCollectionError(null), "整店采集请求失败，请稍后重试");
+});
+
+function shopItem(overrides: Partial<ShopCollectionItem> = {}): ShopCollectionItem {
+  return {
+    item_id: "batch-1:1003429062189",
+    batch_id: "batch-1",
+    workspace_id: "workspace-1",
+    offer_id: "1003429062189",
+    source_url: "https://detail.1688.com/offer/1003429062189.html",
+    source_title: "",
+    detail_status: "succeeded",
+    intake_action: "created",
+    created_at: "2026-10-19T00:00:00Z",
+    updated_at: "2026-10-19T00:00:00Z",
+    ...overrides,
+  };
+}
+
+test("uses the real product title from the item row or the enriched candidate", () => {
+  assert.equal(shopItemDisplayTitle(shopItem({ source_title: "保温杯 500ml" })), "保温杯 500ml");
+  // 历史批次：item.source_title 为空，但 candidate_json 里已经有详情标题。
+  assert.equal(
+    shopItemDisplayTitle(shopItem({ candidate: { source_title: "收纳盒 大号" } })),
+    "收纳盒 大号",
+  );
+  assert.equal(
+    shopItemDisplayTitle(shopItem({ candidate: { title: "travel mug" } })),
+    "travel mug",
+  );
+  assert.equal(
+    shopItemDisplayTitle(shopItem({ candidate: { product_name: "折叠衣架" } })),
+    "折叠衣架",
+  );
+});
+
+test("never shows the offer id as the product name", () => {
+  assert.equal(
+    shopItemDisplayTitle(shopItem({ source_title: "1003429062189" })),
+    "未获取到商品名",
+  );
+  assert.equal(shopItemDisplayTitle(shopItem()), "未获取到商品名");
+  assert.equal(
+    shopItemDisplayTitle(shopItem({ detail_status: "pending" })),
+    "商品信息补全中…",
+  );
+  assert.equal(
+    shopItemDisplayTitle(shopItem({ detail_status: "running" })),
+    "商品信息补全中…",
+  );
 });

@@ -101,10 +101,12 @@
 .pod-field-info::after { content: attr(data-tip); position: absolute; z-index: 30; left: 0; bottom: calc(100% + 6px); width: 210px; padding: 7px 9px; border: 1px solid var(--pod-border-strong); border-radius: 8px; color: var(--pod-text); background: var(--pod-surface); box-shadow: 0 6px 18px rgba(15, 36, 53, .14); font-size: .6rem; font-weight: 500; line-height: 1.45; text-align: left; pointer-events: none; opacity: 0; transform: translateY(3px); transition: opacity .14s ease, transform .14s ease; }
 .pod-field-info:hover::after { opacity: 1; transform: translateY(0); }
 .pod-business-fields input,
+.pod-template-upload input { width: 100%; min-width: 0; padding: 7px 8px; border: 1px solid var(--pod-border); border-radius: 999px; outline: 0; color: var(--pod-text); background: var(--pod-surface); font-size: .69rem; }
 .pod-business-fields textarea,
 .pod-advanced-prompt-editor textarea,
-.pod-scene-optimizer textarea,
-.pod-template-upload input { width: 100%; min-width: 0; padding: 7px 8px; border: 1px solid var(--pod-border); border-radius: 8px; outline: 0; color: var(--pod-text); background: var(--pod-surface); font-size: .69rem; }
+.pod-scene-optimizer textarea { width: 100%; min-width: 0; padding: 7px 8px; border: 1px solid var(--pod-border); border-radius: 14px; outline: 0; color: var(--pod-text); background: var(--pod-surface); font-size: .69rem; }
+/* 共享上架编辑器的单行输入统一胶囊；带 !important 防止被各页面后加载的样式改回方角。 */
+.pod-capsule-control { border-radius: 999px !important; }
 .pod-business-fields textarea { min-height: 48px; resize: vertical; }
 .pod-business-fields :is(input, textarea):focus,
 .pod-advanced-prompt-editor textarea:focus,
@@ -134,7 +136,7 @@
 .pod-brief-input-toggle > i { font-size: .65rem; transition: transform .18s ease; }
 .pod-brief-input-toggle > i.is-open { transform: rotate(180deg); }
 .pod-brief-input-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; padding: 0 9px 9px; }
-.pod-brief-input textarea { width: 100%; min-width: 0; min-height: 66px; max-height: 240px; overflow-y: auto; padding: 7px 8px; border: 1px solid var(--pod-border); border-radius: 8px; outline: 0; color: var(--pod-text); background: var(--pod-surface); font-size: .69rem; line-height: 1.48; resize: none; }
+.pod-brief-input textarea { width: 100%; min-width: 0; min-height: 66px; max-height: 240px; overflow-y: auto; padding: 7px 8px; border: 1px solid var(--pod-border); border-radius: 14px; outline: 0; color: var(--pod-text); background: var(--pod-surface); font-size: .69rem; line-height: 1.48; resize: none; }
 .pod-brief-input textarea:focus { border-color: var(--pod-primary); box-shadow: 0 0 0 3px rgba(var(--pod-primary-rgb), .13); }
 .pod-brief-input textarea:disabled { opacity: .6; cursor: not-allowed; }
 .pod-brief-input-meta { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
@@ -163,7 +165,7 @@
 .pod-count-options button.is-active { border-color: var(--pod-border-strong); color: var(--pod-primary); background: var(--pod-surface-tint); box-shadow: inset 0 0 0 1px rgba(var(--pod-primary-rgb), .12); }
 .pod-custom-count { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px; margin-top: 8px; padding: 8px 10px; border: 1px solid var(--pod-border-strong); border-radius: 10px; background: var(--pod-surface-tint); }
 .pod-custom-count span { color: var(--pod-text); font-size: .64rem; font-weight: 800; }
-.pod-custom-count input { min-width: 0; height: 34px; border: 1px solid var(--pod-border); border-radius: 8px; color: var(--pod-text); background: var(--pod-surface); text-align: center; font-weight: 800; }
+.pod-custom-count input { min-width: 0; height: 34px; border: 1px solid var(--pod-border); border-radius: 999px; color: var(--pod-text); background: var(--pod-surface); text-align: center; font-weight: 800; }
 .pod-custom-count input:focus { border-color: var(--pod-primary); outline: 0; box-shadow: 0 0 0 3px rgba(var(--pod-primary-rgb), .13); }
 .pod-custom-count small { color: var(--pod-text-muted); font-size: .57rem; }
 .pod-save-system-template-button { display: flex; width: 100%; align-items: center; gap: 9px; margin-top: 12px; padding: 10px 12px; border: 1px solid var(--pod-border-strong); border-radius: 13px; color: var(--pod-text-secondary); background: linear-gradient(135deg, var(--pod-surface-tint), var(--pod-surface)); box-shadow: 0 5px 13px rgba(var(--pod-primary-rgb), .07); text-align: left; transition: border-color .16s ease, box-shadow .16s ease, transform .16s ease; }
@@ -193,14 +195,14 @@
 .pod-history > header .pod-history-delete-all { min-height: 28px; padding: 5px 9px; border: 1px solid #e3b8b3; border-radius: 8px; color: #c34942; background: #fff6f5; font-size: .58rem; font-weight: 800; white-space: nowrap; }
 .pod-history > header .pod-history-delete-all:not(:disabled):hover { color: #a8332c; border-color: #d75b52; background: #ffeceb; }
 .pod-history > header .pod-history-delete-all:disabled { opacity: .45; cursor: not-allowed; }
-.pod-history-list { display: grid; max-height: 270px; padding: 5px; overflow: auto; gap: 2px; }
-.pod-history-item { display: flex; align-items: center; gap: 4px; border-radius: 8px; }
+.pod-history-list { display: grid; max-height: 270px; padding: 5px; overflow: auto; gap: 6px; }
+.pod-history-item { display: flex; align-items: center; gap: 4px; padding: 0 10px 0 7px; border-radius: 999px; background: var(--pod-surface); box-shadow: 0 4px 12px var(--pod-shadow); }
 .pod-history-item:hover { background: var(--pod-surface-soft); }
 .pod-history-item.is-active { background: var(--pod-surface-tint); }
-.pod-history-item.is-selected { background: var(--pod-surface-tint); box-shadow: inset 0 0 0 1px var(--pod-primary); }
+.pod-history-item.is-selected { background: var(--pod-surface-tint); box-shadow: inset 0 0 0 1px var(--pod-primary), 0 4px 12px var(--pod-shadow); }
 .pod-history-check { flex: 0 0 auto; align-self: center; margin-left: 4px; width: 14px; height: 14px; accent-color: var(--pod-primary); cursor: pointer; }
 .pod-history-check:disabled { cursor: not-allowed; opacity: .4; }
-.pod-history-open { flex: 1; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 8px; padding: 8px; border: 0; border-radius: 8px; color: var(--pod-text-secondary); background: transparent; text-align: left; }
+.pod-history-open { flex: 1; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 8px; padding: 8px; border: 0; border-radius: 999px; color: var(--pod-text-secondary); background: transparent; text-align: left; }
 .pod-history-primary { display: grid; min-width: 0; gap: 2px; }
 .pod-history-primary b { overflow: hidden; color: var(--pod-text); font-size: .67rem; text-overflow: ellipsis; white-space: nowrap; }
 .pod-history-primary small,
@@ -327,7 +329,6 @@
 .pod-template-card { position: relative; display: grid; grid-template-columns: 48px minmax(0, 1fr); align-items: center; gap: 8px; min-width: 0; padding: 7px; border: 1px solid transparent; border-radius: 9px; color: var(--pod-text-secondary); background: transparent; text-align: left; }
 .pod-template-card:hover { background: var(--pod-surface-soft); }
 .pod-template-card.is-active { border-color: var(--pod-border-strong); background: var(--pod-surface-tint); }
-.pod-template-card.is-selected { box-shadow: inset 3px 0 var(--pod-primary); }
 .pod-template-card img { width: 48px; height: 48px; border-radius: 7px; object-fit: cover; background: var(--pod-surface-soft); }
 .pod-template-card > span { display: grid; min-width: 0; gap: 3px; }
 .pod-template-card b { overflow: hidden; color: var(--pod-text); font-size: .67rem; text-overflow: ellipsis; white-space: nowrap; }
@@ -461,7 +462,7 @@
 .pod-listing-detail-title p { margin: 8px 0 0; color: #b6504b; font-size: .62rem; }
 .pod-listing-title-source { display: inline-block; margin: 7px 0 0; padding: 2px 7px; border-radius: 5px; color: var(--pod-primary); background: var(--pod-surface); font-size: .58rem; font-style: normal; font-weight: 800; }
 .pod-listing-title-editor { display: grid; gap: 8px; margin-top: 10px; }
-.pod-listing-title-editor textarea { width: 100%; min-height: 76px; resize: vertical; padding: 9px 10px; border: 1px solid var(--pod-border); border-radius: 9px; color: var(--pod-text); background: var(--pod-surface); font: inherit; font-size: .78rem; line-height: 1.5; }
+.pod-listing-title-editor textarea { width: 100%; min-height: 76px; resize: vertical; padding: 9px 10px; border: 1px solid var(--pod-border); border-radius: 14px; color: var(--pod-text); background: var(--pod-surface); font: inherit; font-size: .78rem; line-height: 1.5; }
 .pod-listing-title-editor textarea:focus-visible { border-color: var(--pod-primary); outline: 2px solid var(--pod-primary); outline-offset: 1px; }
 .pod-listing-title-editor-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .pod-listing-title-editor-foot button { padding: 7px 14px; border: 0; border-radius: 8px; color: #fff; background: var(--pod-primary); font-size: .72rem; font-weight: 800; cursor: pointer; }
@@ -506,7 +507,7 @@
 .pod-result-lightbox-actions { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 10px; }
 .pod-result-lightbox-actions button, .pod-lightbox-optimizer button { padding: 8px; border: 1px solid var(--pod-border); border-radius: 8px; color: var(--pod-text-secondary); background: var(--pod-surface-soft); font-size: .65rem; font-weight: 800; }
 .pod-lightbox-optimizer { display: grid; gap: 6px; margin-top: 12px; color: var(--pod-text-secondary); font-size: .66rem; font-weight: 800; }
-.pod-lightbox-optimizer textarea { min-height: 60px; padding: 8px; border: 1px solid var(--pod-border); border-radius: 8px; color: var(--pod-text); background: var(--pod-surface); resize: vertical; }
+.pod-lightbox-optimizer textarea { min-height: 60px; padding: 8px; border: 1px solid var(--pod-border); border-radius: 14px; color: var(--pod-text); background: var(--pod-surface); resize: vertical; }
 
 .pod-listing-fields { display: grid; gap: 9px; margin-top: 14px; padding-top: 13px; border-top: 1px solid var(--pod-border); --pod-listing-label-width: 98px; --pod-listing-row-height: 36px; }
 .pod-listing-fields-heading { display: grid; gap: 2px; }
@@ -543,7 +544,7 @@
 .pod-sku-input-row { display: grid; grid-template-columns: minmax(62px, 1.4fr) repeat(2, minmax(38px, .7fr)) 20px; align-items: end; gap: 3px; }
 .pod-sku-input-row label { display: grid; min-width: 0; gap: 3px; }
 .pod-sku-input-row label > span { overflow: hidden; color: var(--pod-text-muted); font-size: .49rem; font-weight: 800; letter-spacing: -.015em; text-overflow: ellipsis; white-space: nowrap; }
-.pod-sku-inputs input { min-width: 0; min-height: 28px; padding: 4px; border: 1px solid var(--pod-border); border-radius: 7px; color: var(--pod-text); background: var(--pod-surface); font-size: .56rem; }
+.pod-sku-inputs input { min-width: 0; min-height: 28px; padding: 4px; border: 1px solid var(--pod-border); border-radius: 999px; color: var(--pod-text); background: var(--pod-surface); font-size: .56rem; }
 .pod-sku-inputs input[aria-invalid="true"] { border-color: #d75b52; box-shadow: 0 0 0 2px color-mix(in srgb, #d75b52 14%, transparent); }
 /* 错误槽位始终保留一行高度：提示出现/消失都不会顶动输入框。 */
 .pod-sku-field-error { display: block; min-height: 1.3em; color: #b9433c; font-size: .51rem; font-weight: 750; line-height: 1.25; }
@@ -756,7 +757,7 @@
 .pod-spec-card-table-toolbar > button:disabled { cursor: not-allowed; opacity: .5; }
 .pod-spec-card-table { width: 100%; border-collapse: separate; border-spacing: 6px 5px; table-layout: fixed; }
 .pod-spec-card-table td { position: relative; vertical-align: top; }
-.pod-spec-card-table td > input { width: 100%; padding: 7px 9px 15px; border: 1px solid var(--pod-border); border-radius: 9px; color: var(--pod-text); background: var(--pod-surface-soft); font-size: .74rem; }
+.pod-spec-card-table td > input { width: 100%; padding: 7px 9px 15px; border: 1px solid var(--pod-border); border-radius: 999px; color: var(--pod-text); background: var(--pod-surface-soft); font-size: .74rem; }
 .pod-spec-card-table td > input:focus { border-color: var(--pod-primary); outline: 2px solid rgba(var(--pod-primary-rgb), .18); outline-offset: 0; }
 .pod-spec-card-table td > input[aria-invalid="true"] { border-color: #edc4c1; }
 .pod-spec-card-table td > input:disabled { cursor: not-allowed; opacity: .7; }
@@ -837,7 +838,7 @@
 .pod-spec-card-table-editor .pod-spec-card-table thead th > button:not(:disabled):hover { border-color: var(--pod-border-strong); color: var(--pod-primary); }
 .pod-spec-card-table-editor .pod-spec-card-table thead th > button:disabled { cursor: not-allowed; opacity: .4; }
 .pod-spec-card-table-editor .pod-spec-card-table td, .pod-spec-card-table-editor .pod-spec-card-table th { padding: 0; }
-.pod-spec-card-table-editor .pod-spec-card-table td > input { display: block; width: 100%; padding: 8px 10px 16px; border: 1px solid var(--pod-border-strong); border-radius: 9px; color: var(--pod-text); background: var(--pod-surface); font-size: .76rem; }
+.pod-spec-card-table-editor .pod-spec-card-table td > input { display: block; width: 100%; padding: 8px 10px 16px; border: 1px solid var(--pod-border-strong); border-radius: 999px; color: var(--pod-text); background: var(--pod-surface); font-size: .76rem; }
 .pod-spec-card-table-editor .pod-spec-card-table td > input:hover { border-color: var(--pod-primary); }
 .pod-spec-card-table-editor .pod-spec-card-table td > input:focus { border-color: var(--pod-primary); outline: 2px solid rgba(var(--pod-primary-rgb), .18); }
 .pod-spec-card-table-editor .pod-spec-card-cell-count { position: absolute; right: 8px; bottom: 3px; color: var(--pod-text-muted); font-size: .54rem; }
@@ -873,7 +874,7 @@
 .pod-composition-drawer-header > button { width: 34px; height: 34px; flex: 0 0 auto; border: 1px solid var(--pod-border); border-radius: 9px; color: var(--pod-text-secondary); background: var(--pod-surface); font-size: 1.25rem; }
 .pod-composition-drawer-body { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 16px; padding: 16px 22px 20px; overflow: auto; }
 .pod-composition-editor, .pod-composition-result { display: flex; flex-direction: column; gap: 9px; padding: 12px 13px; border: 1px solid var(--pod-border); border-radius: 14px; background: var(--pod-surface); }
-.pod-composition-editor textarea { width: 100%; min-height: 104px; padding: 9px 10px; border: 1px solid var(--pod-border-strong); border-radius: 10px; outline: 0; color: var(--pod-text); background: var(--pod-surface-soft); font-size: .74rem; line-height: 1.55; box-sizing: border-box; overflow: hidden; resize: none; }
+.pod-composition-editor textarea { width: 100%; min-height: 104px; padding: 9px 10px; border: 1px solid var(--pod-border-strong); border-radius: 14px; outline: 0; color: var(--pod-text); background: var(--pod-surface-soft); font-size: .74rem; line-height: 1.55; box-sizing: border-box; overflow: hidden; resize: none; }
 .pod-composition-editor textarea:focus { border-color: var(--pod-primary); box-shadow: 0 0 0 3px rgba(var(--pod-primary-rgb), .13); }
 .pod-composition-editor textarea:disabled { opacity: .6; cursor: not-allowed; }
 .pod-composition-editor-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
@@ -898,7 +899,7 @@
 .pod-composition-name-dialog > header button { width: 30px; height: 30px; flex: 0 0 auto; padding: 0; border: 1px solid var(--pod-border); border-radius: 9px; color: var(--pod-text-muted); background: var(--pod-surface); font-size: 1rem; }
 .pod-composition-name-field { display: grid; gap: 6px; padding: 16px 20px; }
 .pod-composition-name-field > span { color: var(--pod-text-secondary); font-size: .66rem; font-weight: 800; }
-.pod-composition-name-field input { min-height: 38px; padding: 8px 11px; border: 1px solid var(--pod-border-strong); border-radius: 10px; outline: 0; color: var(--pod-text); background: var(--pod-surface-soft); font-size: .74rem; }
+.pod-composition-name-field input { min-height: 38px; padding: 8px 11px; border: 1px solid var(--pod-border-strong); border-radius: 999px; outline: 0; color: var(--pod-text); background: var(--pod-surface-soft); font-size: .74rem; }
 .pod-composition-name-field input:focus { border-color: var(--pod-primary); box-shadow: 0 0 0 3px rgba(var(--pod-primary-rgb), .13); }
 .pod-composition-name-dialog > footer { display: flex; justify-content: flex-end; gap: 8px; padding: 13px 20px; border-top: 1px solid var(--pod-border); background: var(--pod-surface-soft); }
 .pod-composition-name-dialog > footer button { min-height: 32px; padding: 7px 12px; border: 1px solid var(--pod-border); border-radius: 8px; color: var(--pod-text-secondary); background: var(--pod-surface); font-size: .62rem; font-weight: 850; }
@@ -911,7 +912,7 @@
 .pod-composition-panels > li { padding: 9px 11px; border: 1px solid var(--pod-border); border-radius: 10px; background: var(--pod-surface-soft); }
 .pod-composition-panels label { display: grid; gap: 5px; }
 .pod-composition-panels b { color: var(--pod-primary); font-size: .64rem; }
-.pod-composition-panels textarea { width: 100%; min-height: 56px; padding: 7px 9px; border: 1px solid var(--pod-border); border-radius: 8px; outline: 0; color: var(--pod-text); background: var(--pod-surface); font-size: .72rem; line-height: 1.5; box-sizing: border-box; overflow: hidden; resize: none; }
+.pod-composition-panels textarea { width: 100%; min-height: 56px; padding: 7px 9px; border: 1px solid var(--pod-border); border-radius: 14px; outline: 0; color: var(--pod-text); background: var(--pod-surface); font-size: .72rem; line-height: 1.5; box-sizing: border-box; overflow: hidden; resize: none; }
 .pod-composition-panels textarea:focus { border-color: var(--pod-primary); box-shadow: 0 0 0 3px rgba(var(--pod-primary-rgb), .13); }
 .pod-composition-panels textarea:disabled { opacity: .6; cursor: not-allowed; }
 .pod-composition-save { display: inline-flex; flex: 1; align-items: center; justify-content: center; gap: 6px; padding: 9px 14px; border: 0; border-radius: 9px; color: #fff; background: var(--pod-primary); font-size: .72rem; font-weight: 800; }
@@ -943,3 +944,199 @@
 .pod-composition-manager-actions > button:disabled { opacity: .5; cursor: not-allowed; }
 .pod-composition-manager-actions > button.is-danger { color: #b4473f; border-color: #efc9c5; }
 .pod-composition-manager-tag { flex: 0 0 auto; padding: 2px 7px; border: 1px solid var(--pod-border-strong); border-radius: 999px; color: var(--pod-text-secondary); background: var(--pod-surface); font-size: .56rem; font-weight: 800; }
+
+/* ============================================================
+   POD 全定制：胶囊化 + 共享滑块（2026-10-19）
+   单行控件统一 999px；多行 textarea / 内容块保持连续圆角；
+   生成数量、标题模式、模板来源共用同一块滑块承载选中态。
+   ============================================================ */
+
+/* ---- 单行按钮 ---- */
+.pod-page-header-actions > button,
+.pod-current-template-summary > header button,
+.pod-history > header .pod-history-delete-all,
+.pod-history-open,
+.pod-dianxiaomi-export button,
+.pod-batch-control button,
+.pod-export-menu-list button,
+.pod-style-row-actions > button,
+.pod-gallery-card-meta button,
+.pod-inspector-downloads button,
+.pod-inspector-wide-action,
+.pod-template-preview-actions button,
+.pod-result-lightbox-actions button,
+.pod-lightbox-optimizer button,
+.pod-template-scope-tabs button,
+.pod-template-upload > button,
+.pod-sku-editor-heading button,
+.pod-sku-inputs button,
+.pod-spec-card-entry-button,
+.pod-spec-card-table-toolbar > button,
+.pod-spec-card-style-options > button,
+.pod-spec-card-corner-grid > button,
+.pod-spec-card-footer-actions > button,
+.pod-spec-card-row-action > button,
+.pod-composition-entry-button,
+.pod-composition-generate,
+.pod-composition-clear,
+.pod-composition-save,
+.pod-composition-manager-actions > button,
+.pod-failed-retry-dialog > footer button,
+.pod-unsaved-confirm-dialog > footer button,
+.pod-composition-name-dialog > footer button,
+.pod-brief-input-generate,
+.pod-start-button,
+.pod-primary-button {
+  border-radius: 999px;
+}
+
+/* ---- 圆形关闭按钮 ---- */
+.pod-history-drawer-header > button,
+.pod-template-drawer-header > button,
+.pod-listing-detail-header > button,
+.pod-spec-card-drawer-header > button,
+.pod-composition-drawer-header > button,
+.pod-composition-manager-header > button,
+.pod-result-lightbox > header > button,
+.pod-failed-retry-dialog > header > button,
+.pod-unsaved-confirm-dialog > header > button,
+.pod-composition-name-dialog > header button {
+  border-radius: 999px;
+}
+
+/* ---- 单行输入 / 下拉 ---- */
+.pod-customization-page input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+.pod-customization-page select,
+.pod-template-drawer input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+.pod-spec-card-drawer input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+.pod-composition-drawer input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+.pod-composition-manager input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+.pod-composition-name-dialog input,
+.pod-listing-detail-drawer input,
+.pod-failed-retry-dialog input:not([type="checkbox"]):not([type="radio"]),
+.pod-unsaved-confirm-dialog input {
+  border-radius: 999px;
+}
+
+/* 同一个上架编辑器也会嵌进爆款复刻 / 爆款裂变的页面与抽屉：
+   这些容器没有 .pod-customization-page 祖先，按组件类再兜一层。 */
+.pod-business-fields input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+.pod-listing-field-input input,
+.pod-sku-inputs input,
+.pod-custom-count input,
+.pod-template-upload input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+.pod-composition-name-field input,
+.pod-spec-card-table td > input {
+  border-radius: 999px;
+}
+
+.pod-business-fields textarea,
+.pod-listing-title-editor textarea,
+.pod-spec-card-table td > textarea {
+  border-radius: 14px;
+}
+
+/* ---- 多行输入回落连续圆角（textarea 会随内容长高，不适合胶囊） ---- */
+.pod-customization-page textarea,
+.pod-template-drawer textarea,
+.pod-spec-card-drawer textarea,
+.pod-composition-drawer textarea,
+.pod-listing-detail-drawer textarea,
+.pod-result-lightbox textarea {
+  border-radius: 14px;
+}
+
+/* ---- 单行标签 chip ---- */
+.pod-business-fields label > span,
+/* 上架编辑器里的「店小秘类目」标签有更高特异性的 8px 圆角布局规则，需要同权重覆盖回胶囊。 */
+.pod-listing-fields .pod-business-fields label > span,
+.pod-title-mode > span,
+.pod-current-template-body dt,
+.pod-current-template-body dd {
+  border-radius: 999px;
+}
+
+/* ---- 多行内容块保持连续圆角 ---- */
+.pod-selected-template,
+.pod-advanced-prompt,
+.pod-brief-input,
+.pod-sku-editor,
+.pod-export-menu-list,
+.pod-template-card,
+.pod-composition-manager-list > li,
+.pod-save-system-template-button,
+.pod-gallery-card {
+  border-radius: 16px;
+}
+
+/* ---- 分段控件：容器定位 + 滑块 ---- */
+.pod-count-options,
+.pod-title-mode > div,
+.pod-template-scope-tabs {
+  position: relative;
+  isolation: isolate;
+}
+
+.pod-count-options > button,
+.pod-title-mode > div > button,
+.pod-template-scope-tabs > button {
+  position: relative;
+  z-index: 1;
+  border-radius: 999px;
+}
+
+/* 选中底色交给滑块，按钮自身不再画底。 */
+.pod-count-options > button.is-active,
+.pod-title-mode > div > button.is-active,
+.pod-template-scope-tabs > button.is-active {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+.pod-selection-thumb {
+  position: absolute;
+  z-index: 0;
+  top: 0;
+  left: 0;
+  border: 1px solid var(--pod-border-strong);
+  border-radius: 999px;
+  background: var(--pod-surface-tint);
+  box-shadow: inset 0 0 0 1px rgba(var(--pod-primary-rgb), .12);
+  opacity: 0;
+  pointer-events: none;
+  will-change: transform, width, height;
+}
+
+[data-indicator-ready="true"] > .pod-selection-thumb {
+  opacity: 1;
+  transition:
+    transform .42s cubic-bezier(.22, 1, .36, 1),
+    width .42s cubic-bezier(.22, 1, .36, 1),
+    height .42s cubic-bezier(.22, 1, .36, 1);
+}
+
+/* ---- 展开 / 下拉的平滑入场 ---- */
+@keyframes pod-reveal {
+  from { opacity: 0; transform: translateY(-4px); }
+}
+
+.pod-brief-input-body,
+.pod-advanced-prompt-editor,
+.pod-custom-count,
+.pod-export-menu-list {
+  animation: pod-reveal .2s cubic-bezier(.22, .8, .32, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pod-selection-thumb {
+    transition: none !important;
+  }
+
+  .pod-brief-input-body,
+  .pod-advanced-prompt-editor,
+  .pod-custom-count,
+  .pod-export-menu-list {
+    animation: none !important;
+  }
+}

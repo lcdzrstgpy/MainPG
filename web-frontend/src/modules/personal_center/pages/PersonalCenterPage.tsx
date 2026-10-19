@@ -1,4 +1,4 @@
-import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { clearAuthSession, getAuthAccount, getAuthToken, saveAuthSession } from "../../../transport/http/client";
@@ -403,6 +403,41 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
 
   const [summary, setSummary] = useState<BillingSummary | null>(cachedBalance?.summary ?? null);
   const [activePanel, setActivePanel] = useState<"wallet" | "usage" | "pricing" | "model" | "preferences" | "version" | "storage" | "migration" | "promo" | "feedback">("wallet");
+
+  // 二级导航的选中高亮是一块共享滑块在移动（SwiftUI matchedGeometryEffect 思路），
+  // 而不是每个按钮各自换底色。换行时退回按钮自身的胶囊底色。
+  const subnavRef = useRef<HTMLElement>(null);
+  const [subnavThumb, setSubnavThumb] = useState({ left: 0, top: 0, width: 0, height: 0 });
+  const [subnavReady, setSubnavReady] = useState(false);
+  const [subnavWrapped, setSubnavWrapped] = useState(false);
+
+  useLayoutEffect(() => {
+    const group = subnavRef.current;
+    if (!group) return;
+    const sync = () => {
+      const buttons = Array.from(group.querySelectorAll<HTMLButtonElement>("button"));
+      const active = group.querySelector<HTMLButtonElement>("button.is-active");
+      if (!active || buttons.length === 0) return;
+      setSubnavWrapped(new Set(buttons.map((button) => button.offsetTop)).size > 1);
+      const g = group.getBoundingClientRect();
+      const a = active.getBoundingClientRect();
+      setSubnavThumb({
+        left: a.left - g.left - group.clientLeft,
+        top: a.top - g.top - group.clientTop,
+        width: a.width,
+        height: a.height,
+      });
+    };
+    sync();
+    const frame = requestAnimationFrame(() => setSubnavReady(true));
+    const observer = new ResizeObserver(sync);
+    observer.observe(group);
+    group.querySelectorAll<HTMLButtonElement>("button").forEach((button) => observer.observe(button));
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [activePanel]);
 
   // 可用积分与积分构成的数字滚动动画（首次直接用缓存值，不闪）。
   const animatedAvailablePoints = useAnimatedNumber(summary?.wallet.available_points);
@@ -1536,32 +1571,47 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
       {error && <div className="personal-alert is-error">{error}</div>}
       {loading && <div className="personal-alert">正在读取服务器账户与积分数据...</div>}
 
-      <nav className="personal-subnav" aria-label="个人中心二级导航">
-        <button type="button" className={activePanel === "wallet" ? "is-active" : ""} onClick={() => setActivePanel("wallet")}>
+      <nav
+        ref={subnavRef}
+        className="personal-subnav"
+        data-ready={subnavReady ? "true" : "false"}
+        data-wrapped={subnavWrapped ? "true" : "false"}
+        aria-label="个人中心二级导航"
+      >
+        <span
+          className="personal-subnav-thumb"
+          style={{
+            transform: `translate3d(${subnavThumb.left}px, ${subnavThumb.top}px, 0)`,
+            width: subnavThumb.width,
+            height: subnavThumb.height,
+          }}
+          aria-hidden="true"
+        />
+        <button type="button" aria-pressed={activePanel === "wallet"} className={activePanel === "wallet" ? "is-active" : ""} onClick={() => setActivePanel("wallet")}>
           <span className="iconfont icon-wallet-fill" aria-hidden="true" />
           <span>积分钱包</span>
         </button>
-        <button type="button" className={activePanel === "usage" ? "is-active" : ""} onClick={() => setActivePanel("usage")}>
+        <button type="button" aria-pressed={activePanel === "usage"} className={activePanel === "usage" ? "is-active" : ""} onClick={() => setActivePanel("usage")}>
           <span className="iconfont icon-accountbook-fill" aria-hidden="true" />
           <span>消费流水</span>
         </button>
-        <button type="button" className={activePanel === "pricing" ? "is-active" : ""} onClick={() => setActivePanel("pricing")}>
+        <button type="button" aria-pressed={activePanel === "pricing"} className={activePanel === "pricing" ? "is-active" : ""} onClick={() => setActivePanel("pricing")}>
           <span className="iconfont icon-calculator" aria-hidden="true" />
           <span>计费规则</span>
         </button>
-        <button type="button" className={activePanel === "model" ? "is-active" : ""} onClick={() => setActivePanel("model")}>
+        <button type="button" aria-pressed={activePanel === "model"} className={activePanel === "model" ? "is-active" : ""} onClick={() => setActivePanel("model")}>
           <span className="iconfont icon-robot-fill" aria-hidden="true" />
           <span>模型选择</span>
         </button>
-        <button type="button" className={activePanel === "preferences" ? "is-active" : ""} onClick={() => setActivePanel("preferences")}>
+        <button type="button" aria-pressed={activePanel === "preferences"} className={activePanel === "preferences" ? "is-active" : ""} onClick={() => setActivePanel("preferences")}>
           <span className="iconfont icon-skin" aria-hidden="true" />
           <span>偏好设置</span>
         </button>
-        <button type="button" className={activePanel === "version" ? "is-active" : ""} onClick={() => setActivePanel("version")}>
+        <button type="button" aria-pressed={activePanel === "version"} className={activePanel === "version" ? "is-active" : ""} onClick={() => setActivePanel("version")}>
           <span className="iconfont icon-setting" aria-hidden="true" />
           <span>系统版本</span>
         </button>
-        <button type="button" className={activePanel === "storage" ? "is-active" : ""} onClick={() => setActivePanel("storage")}>
+        <button type="button" aria-pressed={activePanel === "storage"} className={activePanel === "storage" ? "is-active" : ""} onClick={() => setActivePanel("storage")}>
           <span className="iconfont icon-database" aria-hidden="true" />
           <span>存储空间</span>
         </button>
@@ -1569,11 +1619,11 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
           <span className="iconfont icon-upload" aria-hidden="true" />
           <span>数据迁移</span>
         </button>
-        <button type="button" className={activePanel === "promo" ? "is-active" : ""} onClick={() => setActivePanel("promo")}>
+        <button type="button" aria-pressed={activePanel === "promo"} className={activePanel === "promo" ? "is-active" : ""} onClick={() => setActivePanel("promo")}>
           <span className="iconfont icon-gift" aria-hidden="true" />
           <span>推广计划</span>
         </button>
-        <button type="button" className={activePanel === "feedback" ? "is-active" : ""} onClick={() => setActivePanel("feedback")}>
+        <button type="button" aria-pressed={activePanel === "feedback"} className={activePanel === "feedback" ? "is-active" : ""} onClick={() => setActivePanel("feedback")}>
           <span className="iconfont icon-message" aria-hidden="true" />
           <span>意见反馈</span>
         </button>

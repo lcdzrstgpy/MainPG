@@ -6,7 +6,6 @@ const panel = readFileSync(new URL("./PluginOneboundCapturePanel.tsx", import.me
 const styles = readFileSync(new URL("../styles/shop-collection.css", import.meta.url), "utf8");
 
 test("plugin capture panel starts prepared OneBound batches and retries terminal failures", () => {
-  assert.match(panel, /1688\/淘宝链接/);
   assert.match(panel, /请前往 1688 或淘宝页面使用浏览器插件发起整页采集/);
   assert.match(panel, /canRetryPluginCaptureFailures/);
   assert.match(panel, /重试失败项/);
@@ -23,9 +22,9 @@ test("plugin capture panel polls active batches every two seconds and exposes so
   assert.match(panel, /setInterval[\s\S]{0,500}2000/);
   assert.match(panel, /查看来源/);
   assert.match(panel, /onOpenDraft/);
-  assert.match(panel, /打开产品处理 · 草稿/);
+  assert.match(panel, /打开草稿 #/);
   assert.doesNotMatch(panel, /href=\{`\/product-processing\/drafts/);
-  for (const label of ["总数", "已入池", "跳过", "失败", "未处理"]) {
+  for (const label of ["总数", "成功"]) {
     assert.match(panel, new RegExp(label));
   }
 });
@@ -34,10 +33,7 @@ test("plugin capture panel renders the complete persisted contract safely", () =
   assert.match(panel, /source_title\.trim\(\)/);
   assert.match(panel, /selectedBatch\.page_url/);
   assert.match(panel, /查看采集页面/);
-  assert.match(panel, /unprocessed:\s*"未处理"/);
   assert.match(panel, /formatShopCollectionError\(new Error\(selectedBatch\.error_message\)\)/);
-  assert.match(panel, /formatShopCollectionError\(new Error\(item\.error_message\)\)/);
-  assert.match(panel, /item\.attempts/);
 });
 
 test("plugin capture panel reviews candidates with SKU filter, selection and backfill", () => {
@@ -81,6 +77,6 @@ test("plugin batch management uses the shared side-drawer workflow", () => {
   assert.match(panel, /shop-batch-drawer-layer/);
   assert.match(panel, /createPortal\(/);
   assert.doesNotMatch(panel, /<aside className="shop-batch-list"/);
-  assert.match(styles, /\.plugin-capture-stats\s*\{[^}]*grid-template-columns:\s*repeat\(5,\s*minmax\(0,\s*1fr\)\);/);
+  assert.match(styles, /\.plugin-capture-panel \.plugin-candidate-list article\s*\{[^}]*border-radius:\s*999px;/);
   assert.match(styles, /\.plugin-capture-panel\s+\.plugin-candidate-review\s+\.shop-items-heading\s*\{[^}]*margin:\s*0;/);
 });

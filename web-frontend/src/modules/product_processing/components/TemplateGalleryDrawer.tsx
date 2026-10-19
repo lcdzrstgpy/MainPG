@@ -101,6 +101,8 @@ type Props = {
   random?: boolean;
   onSelectImage: (id: ImageTemplateId) => void;
   onSelectDescription: (id: DescTemplateId) => void;
+  /** 行内紧凑模式：与站点/语言下拉同排，只保留单行当前值与箭头。 */
+  compact?: boolean;
 };
 
 /**
@@ -115,6 +117,7 @@ export function TemplateGalleryDrawer({
   random = false,
   onSelectImage,
   onSelectDescription,
+  compact = false,
 }: Props) {
   const [open, setOpen] = useState(false);
 
@@ -132,18 +135,29 @@ export function TemplateGalleryDrawer({
 
   return (
     <>
-      <section className={`template-gallery-panel ${open ? 'is-open' : ''}`}>
+      <section className={`template-gallery-panel${compact ? ' is-inline' : ''} ${open ? 'is-open' : ''}`}>
         <button
           type="button"
           className="template-gallery-toggle"
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
         >
-          <span className="template-gallery-toggle-title">
-            生图 / 描述模板
-            <small>{random ? '当前：随机分配（每条链接随机）' : `当前：${imageName} · ${descName}`}</small>
-          </span>
-          <span className="template-gallery-toggle-caret">{open ? '关闭 ✕' : '选择模板 ▸'}</span>
+          {compact ? (
+            <>
+              <span className="template-gallery-toggle-value">
+                {random ? '随机分配' : `${imageName} · ${descName}`}
+              </span>
+              <span className="template-gallery-toggle-caret" aria-hidden="true">▾</span>
+            </>
+          ) : (
+            <>
+              <span className="template-gallery-toggle-title">
+                生图 / 描述模板
+                <small>{random ? '当前：随机分配（每条链接随机）' : `当前：${imageName} · ${descName}`}</small>
+              </span>
+              <span className="template-gallery-toggle-caret">{open ? '关闭 ✕' : '选择模板 ▸'}</span>
+            </>
+          )}
         </button>
       </section>
       {/* portal 到 body：避免被工作区面板的层叠上下文/吸顶栏盖住头部。 */}

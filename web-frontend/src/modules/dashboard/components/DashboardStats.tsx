@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { WorkspaceModuleId } from "../../../app/navigation/modules";
 import { AppleAppGlyph } from "../../../shared/components/AppleAppGlyph";
@@ -120,8 +120,40 @@ export function DashboardStats({ onOpenModule, variant = "classic" }: DashboardS
   const [overview, setOverview] = useState<DashboardOverview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [range, setRange] = useState<TrendRange>(30);
+  const [rangeThumb, setRangeThumb] = useState({ left: 0, width: 0 });
+  const [rangeThumbReady, setRangeThumbReady] = useState(false);
 
   const loadSeqRef = useRef(0);
+  const rangeRef = useRef<HTMLDivElement>(null);
+  const hasOverview = overview !== null;
+
+  // 选中高亮用一块共享滑块（SwiftUI matchedGeometryEffect 的等价做法）：
+  // 切换时滑块从旧按钮的 frame 弹簧插值到新按钮的 frame，
+  // 而不是新按钮自己把背景突然点亮。
+  useLayoutEffect(() => {
+    const group = rangeRef.current;
+    if (!group) return;
+    const syncThumb = () => {
+      const active = group.querySelector<HTMLButtonElement>("button.is-active");
+      if (!active) return;
+      const groupRect = group.getBoundingClientRect();
+      const activeRect = active.getBoundingClientRect();
+      setRangeThumb({
+        // inset 的参照系是内边距盒，先扣掉外框宽度。
+        left: activeRect.left - groupRect.left - group.clientLeft,
+        width: activeRect.width,
+      });
+    };
+    syncThumb();
+    // 首帧不播放动画：先量好位置，下一帧再开启过渡。
+    const frame = window.requestAnimationFrame(() => setRangeThumbReady(true));
+    const observer = new ResizeObserver(syncThumb);
+    observer.observe(group);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [range, hasOverview]);
 
   const load = useCallback(async () => {
     const seq = ++loadSeqRef.current;
@@ -211,12 +243,24 @@ export function DashboardStats({ onOpenModule, variant = "classic" }: DashboardS
                 {overview.trend.start.slice(5)} ~ {overview.trend.end.slice(5)}）
               </p>
             </div>
-            <div className="dash-range" role="group" aria-label="趋势统计范围">
+            <div
+              className="dash-range"
+              role="group"
+              aria-label="趋势统计范围"
+              ref={rangeRef}
+              data-ready={rangeThumbReady ? "true" : undefined}
+            >
+              <span
+                className="dash-range-thumb"
+                aria-hidden="true"
+                style={{ width: rangeThumb.width, transform: `translateX(${rangeThumb.left}px)` }}
+              />
               {TREND_RANGES.map((days) => (
                 <button
                   key={days}
                   type="button"
                   className={days === range ? "is-active" : ""}
+                  aria-pressed={days === range}
                   onClick={() => setRange(days)}
                 >
                   {days} 天

@@ -58,7 +58,8 @@
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: clamp(22px, 3vw, 48px);
-  align-items: start;
+  /* 四块数据卡等高：同一行的网格项统一撑满行高。 */
+  align-items: stretch;
   margin-top: 30px;
   padding: 0;
 }
@@ -69,7 +70,8 @@
 
 .price-verification-prescreen-fields {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  /* 空间不足时自动降列，固定 3 列会在中等宽度把面板顶出横向滚动。 */
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px;
 }
 
@@ -152,8 +154,15 @@
   align-content: start;
 }
 
+/* 本页采集整块内容靠左，SKC 数值放大突出。 */
+.price-verification-current-batch {
+  justify-items: start;
+  align-content: center;
+  text-align: left;
+}
+
 .price-verification-current-batch span,
-.price-verification-prescreen-result > span,
+.price-verification-prescreen-summary > span,
 .price-verification-batch-switch > span {
   color: #8197a8;
   font-size: .67rem;
@@ -170,6 +179,12 @@
   white-space: nowrap;
 }
 
+/* 本页采集的 SKC 数放大，作为该卡的主数据。 */
+.price-verification-page .price-verification-batch-summary > .price-verification-current-batch strong {
+  font-size: 1.5rem;
+  line-height: 1.12;
+}
+
 .price-verification-current-batch small,
 .price-verification-prescreen-result small {
   color: #8197a8;
@@ -179,8 +194,10 @@
 
 .price-verification-batch-switch {
   display: grid;
-  gap: 3px;
-  justify-items: start;
+  gap: 6px;
+  justify-items: end;
+  align-content: center;
+  text-align: right;
 }
 
 .price-verification-batch-switch input {
@@ -200,16 +217,66 @@
   font: inherit;
 }
 
+/* 四块数据卡：文字与输入框统一靠左。 */
+.price-verification-page .price-verification-batch-switch {
+  gap: 6px;
+  justify-items: start;
+  align-content: center;
+  text-align: left;
+}
+
+.price-verification-page .price-verification-batch-switch :is(input, select) {
+  justify-self: start;
+  width: 100%;
+  max-width: none;
+  min-height: 46px;
+  padding-left: 18px;
+  padding-right: 18px;
+  text-align: left;
+  font-size: .95rem;
+}
+
+.price-verification-page .price-verification-batch-switch > small {
+  display: none;
+}
+
 .price-verification-prescreen-result .price-verification-action-bar {
   position: static;
-  justify-content: flex-start;
-  margin: 18px 0 0;
+  justify-content: flex-end;
+  margin: 0;
   padding: 0;
   border: 0 !important;
   border-radius: 0;
   background: transparent !important;
   box-shadow: none !important;
   backdrop-filter: none;
+}
+
+/* 初筛结果：左侧摘要、右侧操作，单行展示并降低块高。 */
+.price-verification-page .price-verification-batch-summary > .price-verification-prescreen-result {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 20px;
+  min-height: 72px;
+  padding: 10px 20px;
+}
+
+.price-verification-prescreen-summary {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.price-verification-prescreen-summary > span {
+  color: var(--theme-text-muted, #8197a8);
+  font-size: .67rem;
+  font-weight: 800;
+}
+
+.price-verification-prescreen-result .price-verification-action-buttons {
+  flex-wrap: nowrap;
 }
 
 .price-verification-batch-panel .price-verification-text-action {
@@ -260,7 +327,7 @@
 
   .price-verification-page:has(.price-verification-batch-panel) .price-verification-batch-summary {
     grid-template-columns: minmax(250px, .8fr) minmax(620px, 1.8fr);
-    grid-template-rows: minmax(92px, auto) minmax(104px, auto);
+    grid-template-rows: minmax(92px, auto) minmax(72px, auto);
     gap: 14px 18px;
     align-self: stretch;
   }
@@ -366,7 +433,7 @@
   }
 
   .price-verification-page:has(.price-verification-batch-panel) .price-verification-prescreen-fields {
-    grid-template-columns: repeat(3, minmax(170px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   }
 
   .price-verification-prescreen-fields {
@@ -435,5 +502,263 @@
     min-height: 30px;
     padding: 4px 9px;
     font-size: .8rem;
+  }
+}
+
+/* ================================================================
+   采集页同款纸面 + 胶囊（核价及货源全流程共用）
+   各步骤不再是无框散落的卡片：统一落在半透主题面板上；
+   输入框、下拉、按钮统一 999px 胶囊。
+   ================================================================ */
+.price-verification-page {
+  --theme-control-radius: 999px;
+  --theme-card-radius: 18px;
+  /* 允许内容列收缩，长标题只在内部省略，不把整页顶出视口。 */
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+
+/* 面板底：与采集页 .daily-collection-surface 相同的淡彩半透渐变。 */
+.price-verification-page :is(
+  .price-verification-workflow-card,
+  .price-verification-panel,
+  .price-verification-batch-review-panel,
+  .price-verification-linked-source-workspace,
+  .pv-source-workspace
+) {
+  min-width: 0;
+  border: 1px solid var(--theme-module-border, #d8e5ee);
+  border-radius: 18px;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--theme-module-surface-tint, #eaf8ff) 48%, transparent),
+    color-mix(in srgb, var(--theme-module-surface-soft, #f7fafc) 74%, transparent)
+  );
+  box-shadow: 0 12px 30px var(--theme-module-shadow, rgba(23, 67, 99, 0.08));
+}
+
+/* themes.css 里有针对工作流卡的实底 !important 覆盖（.price-verification-workflow-card），
+   这里用同权重 !important 把它改回采集页同款半透纸面。 */
+.price-verification-page .price-verification-workflow-card {
+  border-color: var(--theme-module-border, #d8e5ee) !important;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--theme-module-surface-tint, #eaf8ff) 48%, transparent),
+    color-mix(in srgb, var(--theme-module-surface-soft, #f7fafc) 74%, transparent)
+  ) !important;
+  box-shadow: 0 12px 30px var(--theme-module-shadow, rgba(23, 67, 99, 0.08)) !important;
+}
+
+/* 数据初筛原本被刻意做成无框摘要，这里恢复成一整块纸面，
+   标题、条件卡与操作都收进面板内。 */
+.price-verification-page .price-verification-batch-panel {
+  padding: 20px 22px !important;
+  border: 1px solid var(--theme-module-border, #d8e5ee) !important;
+  border-radius: 18px !important;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--theme-module-surface-tint, #eaf8ff) 48%, transparent),
+    color-mix(in srgb, var(--theme-module-surface-soft, #f7fafc) 74%, transparent)
+  ) !important;
+  box-shadow: 0 12px 30px var(--theme-module-shadow, rgba(23, 67, 99, 0.08)) !important;
+}
+
+.price-verification-page :is(
+  .price-verification-batch-review-panel,
+  .price-verification-linked-source-workspace,
+  .pv-source-workspace
+) {
+  padding: 20px 22px;
+}
+
+/* 主列必须允许收缩，否则长标题会把整个网格顶出视口。 */
+.price-verification-main-column {
+  min-width: 0;
+}
+
+/* 步骤工具条（返回上一步 + 批次摘要）收成一条胶囊，别再散落在背景上。 */
+.price-verification-stage-tools {
+  width: fit-content;
+  max-width: 100%;
+  padding: 6px 8px 6px 14px;
+  border: 1px solid var(--theme-module-border, #d8e5ee);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--theme-module-surface-raised, #fff) 55%, transparent);
+  box-shadow: 0 8px 20px var(--theme-module-shadow, rgba(23, 67, 99, 0.06));
+}
+
+.price-verification-stage-tools > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 面板内的数据展示块：胶囊化；左右多留白，文字不贴端部弧线。 */
+.price-verification-page :is(
+  .price-verification-batch-summary > .price-verification-current-batch,
+  .price-verification-batch-summary > .price-verification-batch-switch,
+  .price-verification-prescreen-fields .price-verification-batch-switch
+) {
+  padding-left: 24px;
+  padding-right: 24px;
+  border-radius: 999px;
+  border-color: var(--theme-module-border, #d6e1dd);
+  background: color-mix(in srgb, var(--theme-module-surface-raised, #fff) 55%, transparent);
+  box-shadow: none;
+}
+
+/* 初筛结果含操作按钮，保持连续圆角。 */
+.price-verification-page .price-verification-batch-summary > .price-verification-prescreen-result {
+  border-radius: 14px;
+  border-color: var(--theme-module-border, #d6e1dd);
+  background: color-mix(in srgb, var(--theme-module-surface-raised, #fff) 55%, transparent);
+  box-shadow: none;
+}
+
+/* 悬浮操作栏也落在纸面上，避免半透明内容透上来糊成一片。 */
+.price-verification-page .price-verification-action-bar {
+  border-color: var(--theme-module-border, #b7e5f4);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--theme-module-surface-raised, #fff) 90%, transparent);
+  box-shadow: 0 10px 26px var(--theme-module-shadow, rgba(20, 99, 140, 0.14));
+}
+
+/* 单行输入 / 下拉：胶囊 + 内收的自绘箭头。 */
+.price-verification-page :is(input:not([type="checkbox"]):not([type="radio"]), select) {
+  border-radius: 999px;
+  padding-left: 14px;
+  padding-right: 14px;
+  border-color: var(--theme-module-border, #cfe2ed);
+  color: var(--theme-text-primary, #31556e);
+  background-color: var(--theme-module-surface-raised, #fff);
+}
+
+.price-verification-page select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 38px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5' fill='none' stroke='%236b8299' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 15px center;
+  background-size: 12px 8px;
+  cursor: pointer;
+}
+
+/* 单行按钮统一胶囊。 */
+.price-verification-page :is(
+  .price-verification-primary-button,
+  .price-verification-secondary-button,
+  .price-verification-danger-button,
+  .price-verification-back-button,
+  .price-verification-text-action,
+  .price-verification-action-buttons button,
+  .price-verification-heading-actions button,
+  .batch-review-delete-button,
+  .pv-source-run-button,
+  .pv-source-refloat-button,
+  .pv-source-link-button,
+  .pv-source-manual-button,
+  .pv-source-temu-id-button,
+  .price-verification-keyword-toggle,
+  .source-link-button
+) {
+  border-radius: 999px;
+}
+
+/* 窄屏面板减少内边距，避免胶囊控件被挤到换行。 */
+@media (max-width: 700px) {
+  .price-verification-page .price-verification-batch-panel {
+    padding: 16px !important;
+  }
+
+  .price-verification-page :is(
+    .price-verification-batch-review-panel,
+    .price-verification-linked-source-workspace,
+    .pv-source-workspace
+  ) {
+    padding: 16px;
+  }
+
+  /* 工具条会换成多行，胶囊端部弧线会切到内容，回落连续圆角。 */
+  .price-verification-stage-tools {
+    border-radius: 18px;
+  }
+
+  /* 窄屏下初筛结果改为上下排列，操作按钮允许换行。 */
+  .price-verification-page .price-verification-batch-summary > .price-verification-prescreen-result {
+    align-items: flex-start;
+  }
+
+  .price-verification-prescreen-result .price-verification-action-buttons {
+    flex-wrap: wrap;
+  }
+}
+
+/* ---- 右上角状态提示：固定在视口右上，3 秒后由页面 effect 自动卸载 ---- */
+.price-verification-toast {
+  position: fixed;
+  z-index: 1200;
+  top: 18px;
+  right: 22px;
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  width: max-content;
+  max-width: min(430px, calc(100vw - 32px));
+  padding: 11px 16px 11px 14px;
+  border: 1px solid var(--theme-module-border, #d8e5ee);
+  border-radius: 14px;
+  color: var(--theme-text-primary, #24425e);
+  background: color-mix(in srgb, var(--theme-module-surface-raised, #fff) 92%, transparent);
+  box-shadow: 0 14px 34px var(--theme-module-shadow, rgba(26, 73, 108, .18));
+  font-size: .86rem;
+  line-height: 1.5;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  animation: price-verification-toast-in .3s cubic-bezier(.2, .85, .3, 1.08) both;
+}
+
+.price-verification-toast-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+  border-radius: 50%;
+  color: var(--theme-on-primary, #fff);
+  background: var(--theme-primary, #12a9d8);
+  font-size: .7rem;
+  font-weight: 900;
+}
+
+.price-verification-toast.is-error {
+  border-color: #f3c4c9;
+  color: #8f3a42;
+  background: color-mix(in srgb, #fff6f6 92%, transparent);
+}
+
+.price-verification-toast.is-error .price-verification-toast-icon {
+  background: #d75c67;
+}
+
+@keyframes price-verification-toast-in {
+  from { opacity: 0; transform: translate(12px, -8px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (max-width: 700px) {
+  .price-verification-toast {
+    top: 12px;
+    right: 12px;
+    left: 12px;
+    width: auto;
+    max-width: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .price-verification-toast {
+    animation: none;
   }
 }

@@ -50,6 +50,10 @@ export type ShopCollectionItemCandidate = {
   price_cny?: number | null;
   shop_name?: string;
   source_platform?: string;
+  /** 详情补全后的真实商品名（历史批次只有 candidate_json 里有，item.source_title 可能为空）。 */
+  source_title?: string;
+  title?: string;
+  product_name?: string;
 };
 
 export type ShopCollectionItem = {
@@ -76,6 +80,29 @@ export type ShopCollectionItemsPage = {
   offset: number;
   total: number;
 };
+
+/**
+ * 列表展示用的商品名：
+ * 店铺列表阶段通常只拿得到 offer_id，真实标题要等 item_get 详情补全；
+ * 历史批次的 item.source_title 可能还是空，但 candidate_json 里已有标题。
+ */
+export function shopItemDisplayTitle(item: ShopCollectionItem): string {
+  const candidates = [
+    item.source_title,
+    item.candidate?.source_title,
+    item.candidate?.title,
+    item.candidate?.product_name,
+  ];
+  for (const value of candidates) {
+    const title = typeof value === "string" ? value.trim() : "";
+    // 上游偶尔把 offer_id 当标题返回，不能把它当成商品名展示。
+    if (title && title !== item.offer_id) return title;
+  }
+  if (item.detail_status === "pending" || item.detail_status === "running") {
+    return "商品信息补全中…";
+  }
+  return "未获取到商品名";
+}
 
 export type ShopBatchActions = {
   pause: boolean;
@@ -114,7 +141,9 @@ export function isTerminalShopBatchStatus(status: ShopBatchStatus): boolean {
 
 export function shopBatchProgress(batch: ShopCollectionBatch): number {
   const discovered = finiteCount(batch.discovered_count);
-  if (discovered === 0) return 0;
+  // 未发现任何商品时无法用「成功+失败」占比衡量进度：采集已正常结束的批次应按
+  // 100% 收尾，否则空店铺批次完成后进度条永远停在 0%；其余状态仍显示 0%。
+  if (discovered === 0) return batch.status === "completed" ? 100 : 0;
   const settled = finiteCount(batch.succeeded_count) + finiteCount(batch.failed_count);
   return Math.max(0, Math.min(100, Math.round((settled / discovered) * 100)));
 }

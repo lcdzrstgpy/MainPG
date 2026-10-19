@@ -1,44 +1,41 @@
 .profit-products-page {
+  --theme-control-radius: 999px;
+  --theme-card-radius: 18px;
   display: grid;
   gap: 18px;
-  color: #20364d;
-}
-
-.profit-products-head,
-.profit-products-workspace {
-  border: 1px solid #d8e7f2;
-  border-radius: 18px;
-  background: #fbfdff;
-  box-shadow: 0 12px 30px #265d8a0d;
+  min-width: 0;
+  color: var(--theme-text-primary, #20364d);
 }
 
 .profit-products-head {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 18px;
   min-height: 142px;
   padding: clamp(24px, 3vw, 34px);
-  border-color: #1b91bd;
+  overflow: hidden;
+  border: 1px solid var(--theme-module-border-strong, #1b91bd);
+  border-radius: 18px;
   color: #fff;
-  background: linear-gradient(118deg, #0a497f 0%, #0d7fba 56%, #20b9ac 100%);
-  box-shadow: 0 14px 34px rgba(12, 91, 139, .18);
+  background: var(--theme-hero-gradient, linear-gradient(118deg, #0a497f 0%, #0d7fba 56%, #20b9ac 100%));
+  box-shadow: 0 14px 34px var(--theme-module-shadow, rgba(12, 91, 139, .18));
 }
 
 .profit-products-head .eyebrow {
-  color: #9de7f3;
+  color: var(--theme-hero-eyebrow, #9de7f3);
 }
 
 .profit-products-head h1 {
-  margin: 7px 0;
+  margin: 2px 0 4px;
   color: #fff;
   font-size: clamp(1.9rem, 3vw, 2.65rem);
-  letter-spacing: 0;
+  letter-spacing: -.045em;
 }
 
 .profit-products-head p:not(.eyebrow) {
   margin: 0;
-  color: #d9f1fb;
+  color: var(--theme-hero-text, #d9f1fb);
   line-height: 1.7;
 }
 
@@ -48,10 +45,73 @@
   gap: 10px;
 }
 
+/* 采集页同款纸面：外层半透面板落在主题背景上，查询与列表各自成为一张内层纸卡，
+   避免查询行、提示文字、表格、分页零散地“浮”在背景上。 */
 .profit-products-workspace {
   display: grid;
-  gap: 16px;
-  padding: 18px;
+  gap: 14px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--theme-module-border, #d8e5ee);
+  border-radius: 16px;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--theme-module-surface-tint, #eaf8ff) 48%, transparent),
+    color-mix(in srgb, var(--theme-module-surface-soft, #f7fafc) 74%, transparent)
+  );
+  box-shadow: 0 12px 30px var(--theme-module-shadow, rgba(23, 67, 99, .08));
+}
+
+.profit-products-card {
+  min-width: 0;
+  border: 1px solid var(--theme-module-border, #d8e5ee);
+  border-radius: 18px;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--theme-module-surface-tint, #eaf8ff) 58%, var(--theme-module-surface-soft, #f7fafc)),
+    color-mix(in srgb, var(--theme-module-surface-raised, #fff) 58%, var(--theme-module-surface-soft, #f7fafc))
+  );
+  box-shadow: 0 9px 24px var(--theme-module-shadow, rgba(26, 73, 108, .055));
+}
+
+.profit-products-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 52px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--theme-module-border, #e4edf3);
+}
+
+.profit-products-panel-head > div {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.profit-products-panel-head strong {
+  color: var(--theme-text-primary, #17283f);
+  white-space: nowrap;
+}
+
+.profit-products-panel-head > span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--theme-text-secondary, #6d8499);
+  font-size: .78rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profit-panel-icon {
+  color: var(--theme-accent, #00a9dc);
+  font-size: 1rem;
+}
+
+/* 黑白钻石是深色玻璃主题，实底卡片会盖住背景，保持透明。 */
+[data-theme="diamond"] .profit-products-workspace {
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -80,6 +140,7 @@
     minmax(200px, auto);
   align-items: end;
   gap: 14px;
+  padding: 14px 20px 16px;
 }
 
 .profit-products-search-field,
@@ -87,7 +148,7 @@
   min-width: 0;
 }
 
-.profit-products-search-bar textarea,
+.profit-products-search-bar input,
 .profit-products-search-bar select,
 .profit-products-search-bar .profit-products-search-actions,
 .profit-products-search-bar .profit-products-query-button,
@@ -100,54 +161,76 @@
 .profit-products-page label {
   display: grid;
   gap: 7px;
-  color: #526a82;
+  color: var(--theme-text-secondary, #526a82);
   font-size: .82rem;
   font-weight: 800;
 }
 
+/* 单行控件统一胶囊；多行 textarea（商品ID查询、备注编辑）保持 18px 连续圆角，
+   否则变高后弧形端部会切到文字。 */
 .profit-products-page input,
 .profit-products-page select,
 .profit-products-page textarea {
   width: 100%;
-  border: 1px solid #cfe0eb;
-  border-radius: 11px;
-  padding: 10px 12px;
-  color: #18334d;
-  background: #fff;
-  outline-color: #13a9f2;
+  border: 1px solid var(--theme-module-border, #cfe0eb);
+  padding: 10px 16px;
+  color: var(--theme-text-primary, #18334d);
+  background-color: var(--theme-module-surface-raised, #fff);
+  outline-color: var(--theme-primary, #13a9f2);
 }
 
-.profit-products-search-field textarea {
-  padding-top: 8px;
-  padding-bottom: 8px;
-  resize: none;
-  line-height: 1.25;
+.profit-products-page input:not([type="checkbox"]):not([type="radio"]),
+.profit-products-page select {
+  border-radius: var(--theme-control-radius, 999px);
+}
+
+.profit-products-page textarea {
+  border-radius: 18px;
+}
+
+/* 原生下拉箭头固定在控件最右侧，胶囊端部会把它顶到弧线上；
+   改为自绘箭头，右侧留出箭头位（见 ui.md）。 */
+.profit-products-page select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 36px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5' fill='none' stroke='%236b8299' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 16px center;
+  background-size: 11px 7px;
+  cursor: pointer;
+}
+
+/* 商品ID查询是单行检索框：用 input 而不是 textarea，
+   既天然单行不换行，文字也由浏览器垂直居中，胶囊圆角直接沿用 999px。 */
+.profit-products-search-field input {
+  line-height: 1.2;
 }
 
 .profit-products-page button {
-  border: 1px solid #cfe0eb;
-  border-radius: 11px;
-  padding: 10px 14px;
-  color: #2f5878;
-  background: #fff;
+  border: 1px solid var(--theme-module-border, #cfe0eb);
+  border-radius: var(--theme-control-radius, 999px);
+  padding: 10px 18px;
+  color: var(--theme-text-secondary, #2f5878);
+  background: var(--theme-module-surface-raised, #fff);
   font-weight: 850;
 }
 
 .profit-products-page button:hover:not(:disabled) {
-  border-color: #82c9ef;
-  box-shadow: 0 8px 18px #188bd61a;
+  border-color: var(--theme-module-border-strong, #82c9ef);
+  box-shadow: 0 8px 18px var(--theme-module-shadow, #188bd61a);
 }
 
 .profit-products-page button:disabled {
   cursor: not-allowed;
-  color: #9caaba;
-  background: #f5f8fb;
+  color: var(--theme-text-muted, #9caaba);
+  background: var(--theme-module-surface-soft, #f5f8fb);
 }
 
 .profit-products-page .primary-button {
   border: 0;
-  color: white;
-  background: linear-gradient(105deg, #087bf5, #14c8c0);
+  color: var(--theme-on-primary, #fff);
+  background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0));
 }
 
 /* 按钮组与左侧四个控件同高（44px）、底边对齐；右对齐保持和下方表格右边缘成一条线 */
@@ -178,97 +261,114 @@
   white-space: nowrap;
 }
 
-.profit-products-message {
-  margin: 0;
-  color: #657d94;
-  font-weight: 750;
+/* 查询结果提示跟在「商品查询」右侧，小字单行展示；完整内容放在 title 里。 */
+.profit-products-panel-status {
+  max-width: 60%;
+  text-align: right;
+  font-weight: 700;
 }
 
+/* 分页区：左右两组控件统一 32px 高度、同一字号与胶囊内边距，
+   压缩留白后在一行内排完，不再出现按钮一高一低或左侧折行。 */
 .profit-products-pagination {
+  --pagination-control-height: 32px;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  padding-top: 6px;
-  color: #667d93;
-  font-size: .86rem;
+  gap: 10px 14px;
+  margin: 12px 20px 0;
+  padding: 14px 0 18px;
+  border-top: 1px solid var(--theme-module-border, #d8e5ee);
+  color: var(--theme-text-secondary, #667d93);
+  font-size: .76rem;
 }
 
 .profit-products-pagination-summary,
 .profit-products-page-controls {
   display: flex;
-  gap: 8px;
+  gap: 4px;
   align-items: center;
   flex-wrap: wrap;
+  min-width: 0;
 }
 
 .profit-products-pagination-summary > span {
-  margin-right: 4px;
-  color: #526a82;
+  margin-right: 2px;
+  color: var(--theme-text-secondary, #526a82);
+  font-size: .76rem;
   font-weight: 800;
+  white-space: nowrap;
 }
 
-.profit-products-pagination-summary button {
-  padding: 7px 10px;
-  font-size: .8rem;
+.profit-products-pagination-summary button,
+.profit-products-page-controls button {
+  height: var(--pagination-control-height);
+  padding: 0 10px;
+  font-size: .76rem;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .profit-products-pagination .profit-products-page-size {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  margin-left: 3px;
-  color: #667d93;
+  gap: 4px;
+  margin-left: 0;
+  color: var(--theme-text-secondary, #667d93);
+  font-size: .76rem;
   white-space: nowrap;
 }
 
 .profit-products-pagination .profit-products-page-size select {
   width: auto;
   min-width: 76px;
-  padding: 7px 26px 7px 9px;
-  font-size: .8rem;
-}
-
-.profit-products-pagination input {
-  width: 64px;
-  text-align: center;
+  height: var(--pagination-control-height);
+  padding: 0 28px 0 12px;
+  background-position: right 11px center;
+  font-size: .76rem;
 }
 
 /* 页码跳转输入框：第 [页] 跳转 */
 .profit-products-pagination .profit-page-jump {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   margin: 0;
-  color: #667d93;
-  font-size: .86rem;
+  color: var(--theme-text-secondary, #667d93);
+  font-size: .76rem;
   font-weight: 750;
+  white-space: nowrap;
 }
 
 .profit-products-pagination .profit-page-jump input {
-  width: 56px;
+  width: 48px;
+  height: var(--pagination-control-height);
+  padding: 0 8px;
+  font-size: .76rem;
+  text-align: center;
 }
 
 .profit-source-badge {
   display: inline-block;
   margin-left: 6px;
-  padding: 1px 6px;
-  border-radius: 8px;
-  background: #e6f6ff;
-  color: #0e7bb8;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--theme-module-surface-tint, #e6f6ff) 80%, transparent);
+  color: var(--theme-accent, #0e7bb8);
   font-size: 11px;
   font-style: normal;
   font-weight: 600;
   vertical-align: 1px;
-  border: 1px solid #bfe6fb;
+  border: 1px solid var(--theme-module-border, #bfe6fb);
 }
 
 .profit-source-open {
   width: 48px;
   min-width: 48px;
-  border: 1px solid #cfe0eb !important;
-  border-radius: 9px;
+  border: 1px solid var(--theme-module-border, #cfe0eb) !important;
+  border-radius: 999px;
   padding: 3px 1px !important;
-  color: #0a8cf2 !important;
-  background: #f4fbff !important;
+  color: var(--theme-primary, #0a8cf2) !important;
+  background: color-mix(in srgb, var(--theme-module-surface-raised, #fff) 70%, transparent) !important;
   font-size: .56rem !important;
   font-weight: 700;
   line-height: 1.2;
@@ -497,8 +597,8 @@
   align-self: flex-start;
   flex: none;
   border: 1px solid #f3c4c9;
-  border-radius: 10px;
-  padding: 7px 10px;
+  border-radius: 999px;
+  padding: 7px 14px;
   color: #b42318;
   background: #fff6f6;
   font-size: 0.8rem;
@@ -524,8 +624,8 @@
 .profit-source-edit-button {
   flex: none;
   border: 1px solid #b8d9f2;
-  border-radius: 9px;
-  padding: 7px 12px;
+  border-radius: 999px;
+  padding: 7px 14px;
   color: #0a8cf2;
   background: #f2faff;
   font-size: 0.8rem;
@@ -570,8 +670,8 @@
 .profit-source-edit-image-button {
   display: inline-block;
   border: 1px solid #cfe0eb;
-  border-radius: 8px;
-  padding: 5px 9px;
+  border-radius: 999px;
+  padding: 5px 12px;
   color: #526a82;
   background: #fff;
   font-size: 0.74rem;
@@ -598,8 +698,8 @@
 .profit-source-edit-url input {
   width: 100%;
   border: 1px solid #cfe0eb;
-  border-radius: 10px;
-  padding: 8px 10px;
+  border-radius: 999px;
+  padding: 8px 14px;
   color: #18334d;
   background: #fff;
   outline-color: #13a9f2;
@@ -615,8 +715,8 @@
 
 .profit-source-edit-actions .profit-edit-save,
 .profit-source-edit-actions .profit-edit-cancel {
-  border-radius: 9px;
-  padding: 7px 12px;
+  border-radius: 999px;
+  padding: 7px 14px;
   font-size: 0.8rem;
 }
 
@@ -630,7 +730,7 @@
 
 .profit-source-edit-panel {
   border: 1px solid #dce9f2;
-  border-radius: 14px;
+  border-radius: 18px;
   padding: 12px;
   background: #f6fafd;
   display: grid;
@@ -647,7 +747,7 @@
   align-items: center;
   gap: 10px;
   border: 1px solid #e4eef5;
-  border-radius: 12px;
+  border-radius: 18px;
   padding: 10px;
   background: #fff;
 }
@@ -660,8 +760,8 @@
   flex: none;
   align-self: center;
   border: 1px solid #f2c9cd;
-  border-radius: 9px;
-  padding: 7px 12px;
+  border-radius: 999px;
+  padding: 7px 14px;
   color: #e24a57;
   background: #fff7f8;
   font-size: 0.8rem;
@@ -689,8 +789,8 @@
 
 .profit-source-add-row {
   border: 1px dashed #9fc8e8;
-  border-radius: 9px;
-  padding: 8px 14px;
+  border-radius: 999px;
+  padding: 8px 16px;
   color: #0a8cf2;
   background: #fff;
   font-size: 0.8rem;
@@ -710,8 +810,8 @@
 
 .profit-source-edit-toolbar-actions .profit-edit-save,
 .profit-source-edit-toolbar-actions .profit-edit-cancel {
-  border-radius: 9px;
-  padding: 7px 14px;
+  border-radius: 999px;
+  padding: 7px 16px;
   font-size: 0.8rem;
 }
 
@@ -793,8 +893,8 @@
 .profit-source-card-fields input {
   width: 100%;
   border: 1px solid #cfe0eb;
-  border-radius: 10px;
-  padding: 8px 10px;
+  border-radius: 999px;
+  padding: 8px 14px;
   color: #18334d;
   background: #fff;
   outline-color: #13a9f2;
@@ -805,7 +905,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  border-radius: 12px;
+  border-radius: 18px;
   padding: 10px 12px;
   background: #fff;
   border: 1px solid #e2eef6;
@@ -865,8 +965,12 @@
 /* 产品库表格编辑单元格与备注列 */
 /* 产品库表格：不做内部垂直滚动，表格随整页滚动；仅保留水平滚动处理超宽列 */
 .profit-table-wrap {
+  margin: 12px 20px 0;
   overflow-x: auto;
   scrollbar-gutter: stable;
+  border: 1px solid var(--theme-module-border, #d8e5ee);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--theme-module-surface-raised, #fff) 62%, transparent);
 }
 
 /* 拖拽平移中才显示抓取光标并禁止选中，平时保持默认光标与文本可复制 */
@@ -875,41 +979,7 @@
   user-select: none;
 }
 
-/* 跟随视口的横向滚动条：sticky 贴在顶部，随时可拖，track 宽度与表格一致 */
-.profit-table-scrollbar {
-  position: sticky;
-  top: 0;
-  z-index: 8;
-  overflow-x: auto;
-  overflow-y: hidden;
-  height: 12px;
-  margin-top: 10px;
-  background: #f0f5fa;
-  border: 1px solid #e2edf5;
-  border-radius: 6px;
-}
-
-.profit-table-scrollbar-track {
-  height: 1px;
-}
-
-.profit-table-scrollbar::-webkit-scrollbar {
-  height: 12px;
-}
-
-.profit-table-scrollbar::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.profit-table-scrollbar::-webkit-scrollbar-thumb {
-  background: #b9cbd9;
-  border-radius: 6px;
-  border: 2px solid #f0f5fa;
-}
-
-.profit-table-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: #8fa9bd;
-}
+/* 只保留表格自身的横向滚动条，避免顶部再出现一条独立滚动条。 */
 
 /* 水平滚动条：加宽、常显、hover 高亮 */
 .profit-table-wrap::-webkit-scrollbar {
@@ -946,9 +1016,9 @@
   display: none;
   padding-top: 6px;
   padding-bottom: 6px;
-  background: #f0f6fa;
-  border-bottom: 1px solid #d3e2ee;
-  box-shadow: 0 8px 22px rgba(23, 61, 92, 0.12);
+  background: color-mix(in srgb, var(--theme-module-surface-tint, #eaf8ff) 62%, var(--theme-module-surface-raised, #fff));
+  border-bottom: 1px solid var(--theme-module-border, #d3e2ee);
+  box-shadow: 0 8px 22px var(--theme-module-shadow, rgba(23, 61, 92, .12));
   /* 仅作视觉参考，不拦截下方表格内容的点击与选择 */
   pointer-events: none;
 }
@@ -975,9 +1045,9 @@
 }
 
 .profit-table-head-sticky .profit-table th {
-  border-right: 1px solid #d3e2ee;
+  border-right: 1px solid var(--theme-module-border, #d3e2ee);
   border-bottom: 0;
-  background: #f0f6fa;
+  background: color-mix(in srgb, var(--theme-module-surface-tint, #eaf8ff) 62%, var(--theme-module-surface-raised, #fff));
 }
 
 .profit-table-head-sticky .profit-table th:last-child {
@@ -994,6 +1064,22 @@
 
 .profit-table th {
   position: relative;
+}
+
+/* 表头是一块落在纸卡里的浅色条：与卡片同色系并收住两端圆角。 */
+.profit-table thead th {
+  color: var(--theme-text-secondary, #526a82);
+  background: color-mix(in srgb, var(--theme-module-surface-tint, #eaf8ff) 62%, var(--theme-module-surface-raised, #fff));
+}
+
+.profit-table thead th:first-child {
+  border-top-left-radius: 13px;
+  border-bottom-left-radius: 13px;
+}
+
+.profit-table thead th:last-child {
+  border-top-right-radius: 13px;
+  border-bottom-right-radius: 13px;
 }
 
 .profit-table-th-label {
@@ -1024,6 +1110,10 @@
 
 .profit-table tbody tr {
   height: 34px;
+}
+
+.profit-table tbody tr:hover {
+  background: color-mix(in srgb, var(--theme-module-surface-tint, #eaf8ff) 52%, transparent);
 }
 
 .profit-table th,
@@ -1093,10 +1183,10 @@
   min-height: 44px;
   padding: 5px 7px;
   transform: translateY(-50%);
-  border: 1px solid #9ad8fb;
-  border-radius: 11px;
-  background: #fff;
-  box-shadow: 0 10px 26px rgba(26, 78, 114, .18);
+  border: 1px solid var(--theme-module-border-strong, #9ad8fb);
+  border-radius: 18px;
+  background: var(--theme-module-surface-raised, #fff);
+  box-shadow: 0 10px 26px var(--theme-module-shadow, rgba(26, 78, 114, .18));
   white-space: normal;
 }
 
@@ -1106,18 +1196,30 @@
   box-sizing: border-box;
   min-width: 96px;
   max-width: 190px;
-  border: 1px solid #b9daf0;
-  border-radius: 9px;
-  padding: 6px 8px;
-  color: #18334d;
-  background: #fff;
-  outline-color: #13a9f2;
+  border: 1px solid var(--theme-module-border, #b9daf0);
+  border-radius: 999px;
+  padding: 6px 12px;
+  color: var(--theme-text-primary, #18334d);
+  background: var(--theme-module-surface-raised, #fff);
+  outline-color: var(--theme-primary, #13a9f2);
   font: inherit;
+}
+
+.profit-inline-editor select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 30px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5' fill='none' stroke='%236b8299' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 11px center;
+  background-size: 10px 7px;
+  cursor: pointer;
 }
 
 .profit-inline-editor textarea {
   width: 170px;
   min-height: 38px;
+  border-radius: 18px;
   resize: vertical;
 }
 
@@ -1148,12 +1250,12 @@
   min-width: 250px;
   max-width: 250px;
   min-height: 34px;
-  border: 1px dashed #8cccf7;
-  border-radius: 10px;
-  padding: 5px 8px;
-  color: #53708a;
-  background: #f6fbff;
-  outline-color: #13a9f2;
+  border: 1px dashed var(--theme-module-border-strong, #8cccf7);
+  border-radius: 18px;
+  padding: 5px 12px;
+  color: var(--theme-text-secondary, #53708a);
+  background: color-mix(in srgb, var(--theme-module-surface-tint, #f6fbff) 55%, transparent);
+  outline-color: var(--theme-primary, #13a9f2);
 }
 
 .profit-inline-image-drop span {
@@ -1179,7 +1281,7 @@
   width: 38px;
   min-width: 38px;
   padding: 4px 5px !important;
-  border-radius: 8px !important;
+  border-radius: 999px !important;
   font-size: .74rem !important;
   line-height: 1.25;
 }
@@ -1190,7 +1292,7 @@
   height: 26px;
   padding: 0 !important;
   border: 1px solid #ffd0d0 !important;
-  border-radius: 8px !important;
+  border-radius: 999px !important;
   color: #df4f58 !important;
   background: #fff7f7 !important;
   font-size: 1.1rem !important;
@@ -1351,7 +1453,7 @@
 }
 
 .profit-table th {
-  border-right: 1px solid #d3e2ee;
+  border-right: 1px solid var(--theme-module-border, #d3e2ee);
   overflow: visible;
   text-overflow: clip;
 }
@@ -1435,7 +1537,7 @@
   height: 34px;
   padding: 0;
   border: 1px solid var(--theme-icon-button-border, #d7e3ed);
-  border-radius: 11px;
+  border-radius: 999px;
   color: var(--theme-icon-button-color, #466079);
   background: var(--theme-icon-button-bg, #fff);
   font-size: 1.05rem;
@@ -1461,8 +1563,8 @@
   box-sizing: border-box;
   width: 100%;
   border: 1px solid var(--theme-module-border, #cfe0eb);
-  border-radius: 12px;
-  padding: 10px 13px;
+  border-radius: 999px;
+  padding: 10px 18px;
   color: var(--theme-text-primary, #18334d);
   background: var(--theme-module-surface, #fff);
   outline: none;
@@ -1488,8 +1590,8 @@
 .profit-batch-store-actions button {
   min-width: 92px;
   border: 1px solid var(--theme-module-border, #cfe0eb);
-  border-radius: 12px;
-  padding: 10px 16px;
+  border-radius: 999px;
+  padding: 10px 18px;
   color: var(--theme-text-secondary, #2f5878);
   background: var(--theme-module-surface, #fff);
   font-weight: 850;
@@ -1508,4 +1610,22 @@
     flex-direction: column;
   }
 
+  /* 窄屏优先保证标题与控件宽度，辅助说明不占行。 */
+  .profit-products-panel-head > span {
+    max-width: calc(100% - 140px);
+  }
+
+  .profit-products-search-bar {
+    padding: 12px 14px 14px;
+  }
+
+  .profit-table-wrap {
+    margin-right: 14px;
+    margin-left: 14px;
+  }
+
+  .profit-products-pagination {
+    margin-right: 14px;
+    margin-left: 14px;
+  }
 }

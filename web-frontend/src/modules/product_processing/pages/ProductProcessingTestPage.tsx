@@ -121,6 +121,10 @@ export function ProductProcessingTestPage() {
 
   const goToPage = useCallback((p: number) => {
     setPage(Math.max(1, Math.min(p, totalPages || 1)));
+    // 桌面端内容区是独立滚动容器（.content-card），翻页后把它和窗口一起带回顶部，
+    // 否则新一页会停在上一页的滚动位置。
+    document.querySelector<HTMLElement>(".content-card")?.scrollTo({ top: 0, behavior: "smooth" });
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }, [totalPages]);
 
   useEffect(() => { void fetchDrafts(); }, [page]);

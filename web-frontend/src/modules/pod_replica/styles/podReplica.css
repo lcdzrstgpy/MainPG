@@ -728,3 +728,34 @@
   opacity: .55;
   cursor: not-allowed;
 }
+
+/* ============================================================
+   爆款复刻：胶囊化（2026-10-19）
+   与全定制 / 半定制同一套形状语言：单行按钮、输入框统一 999px；
+   上传区、产品行卡片、分析区块等多行内容保持连续圆角。
+   ============================================================ */
+
+/* ---- 单行按钮 / 输入框 ---- */
+.pod-replica-source-actions button,
+.pod-replica-target-edit,
+.pod-replica-start,
+.pod-replica-clear,
+.pod-replica-name-field input,
+.pod-replica-source-confirm button,
+.pod-replica-composition-actions button,
+.pod-replica-analysis-actions button,
+.pod-replica-drawer-footer > button {
+  border-radius: 999px;
+}
+
+/* ---- 单行卡片 / 操作行 ---- */
+.pod-replica-target-card,
+.pod-replica-target-add-card,
+.pod-replica-composition-entry {
+  border-radius: 999px;
+}
+
+/* 胶囊端点是半圆，左侧缩略图要避开弧线，避免边框从缩略图外角穿过。 */
+.pod-replica-target-card {
+  padding-left: 14px;
+}

@@ -1,5 +1,6 @@
 import { BRAND_LOGO_URL, BRAND_MARK_URL, BRAND_NAME } from "../../shared/brand";
 import { AppleAppGlyph } from "../../shared/components/AppleAppGlyph";
+import { slidingIndicatorStyle, useSlidingIndicator } from "../../shared/hooks/useSlidingIndicator";
 import {
   isWorkspaceNavigationGroup,
   type WorkspaceModuleId,
@@ -19,7 +20,13 @@ type SidebarProps = {
   badges?: Partial<Record<WorkspaceModuleId, number>>;
 };
 
+const MENU_ACTIVE_SELECTOR = ":scope > .is-active, :scope > .sidebar-group > .sidebar-item.is-active";
+const SUBMENU_ACTIVE_SELECTOR = ":scope > .is-active";
+
 export function Sidebar({ collapsed, activeId, expandedGroupId, modules, onOpenModule, onToggleGroup, onHoverChange, badges = {} }: SidebarProps) {
+  const menuIndicator = useSlidingIndicator<HTMLElement>(MENU_ACTIVE_SELECTOR, [collapsed, activeId, expandedGroupId]);
+  const submenuIndicator = useSlidingIndicator<HTMLDivElement>(SUBMENU_ACTIVE_SELECTOR, [collapsed, activeId, expandedGroupId]);
+
   return (
     <aside
       className={`sidebar-card workspace-dock ${collapsed ? "is-collapsed" : ""}`}
@@ -36,7 +43,12 @@ export function Sidebar({ collapsed, activeId, expandedGroupId, modules, onOpenM
         />
       </div>
       <p className="sidebar-caption">本地运营中台</p>
-      <nav className="sidebar-menu dock-menu">
+      <nav
+        className="sidebar-menu dock-menu"
+        ref={menuIndicator.containerRef}
+        data-indicator-ready={menuIndicator.ready ? "true" : "false"}
+      >
+        {menuIndicator.rect && <span className="sidebar-selection-thumb" style={slidingIndicatorStyle(menuIndicator.rect)} aria-hidden="true" />}
         {modules.map((module) => {
           const isGroup = isWorkspaceNavigationGroup(module);
           const visibleChildren = isGroup ? module.children.filter((child) => !child.hiddenFromSidebar) : [];
@@ -59,14 +71,19 @@ export function Sidebar({ collapsed, activeId, expandedGroupId, modules, onOpenM
               </button>
               {isGroup ? (
                 <div className={`sidebar-submenu ${groupExpanded ? "is-expanded" : ""} dock-popover`} aria-label={`${module.label}子导航`} aria-hidden={!groupExpanded}>
-                  <div className="sidebar-submenu-inner dock-popover-inner">
-                  {visibleChildren.map((child) => (
-                    <button key={child.id} className={`sidebar-subitem ${activeId === child.id ? "is-active" : ""}`} onClick={() => onOpenModule(child.id)} title={child.label}>
-                      <span className={child.iconClass} aria-hidden="true">{child.icon}</span>
-                      <span>{child.label}</span>
-                      {Boolean(badges[child.id]) && <span className="sidebar-module-badge" aria-label={`${badges[child.id]} 条待处理通知`}>{badges[child.id]}</span>}
-                    </button>
-                  ))}
+                  <div
+                    className="sidebar-submenu-inner dock-popover-inner"
+                    ref={groupExpanded ? submenuIndicator.containerRef : undefined}
+                    data-indicator-ready={groupExpanded ? (submenuIndicator.ready ? "true" : "false") : undefined}
+                  >
+                    {groupExpanded && submenuIndicator.rect && <span className="sidebar-selection-thumb is-subitem" style={slidingIndicatorStyle(submenuIndicator.rect)} aria-hidden="true" />}
+                    {visibleChildren.map((child) => (
+                      <button key={child.id} className={`sidebar-subitem ${activeId === child.id ? "is-active" : ""}`} onClick={() => onOpenModule(child.id)} title={child.label}>
+                        <span className={child.iconClass} aria-hidden="true">{child.icon}</span>
+                        <span>{child.label}</span>
+                        {Boolean(badges[child.id]) && <span className="sidebar-module-badge" aria-label={`${badges[child.id]} 条待处理通知`}>{badges[child.id]}</span>}
+                      </button>
+                    ))}
                   </div>
                 </div>
               ) : null}

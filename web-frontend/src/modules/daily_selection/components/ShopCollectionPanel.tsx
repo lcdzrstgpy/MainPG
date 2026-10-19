@@ -9,6 +9,7 @@ import {
   isActiveShopBatchStatus,
   shopBatchProgress,
   shopBatchStatusLabel,
+  shopItemDisplayTitle,
   type ShopCollectionBatch,
   type ShopCollectionItem,
 } from "../data/shopCollectionModel";
@@ -141,14 +142,21 @@ export const ShopCollectionPanel = forwardRef<ShopCollectionPanelHandle, ShopCol
     void refreshItems(selectedBatchId, itemsOffset);
   }, [isActive, itemsOffset, refreshItems, selectedBatchId]);
 
+  // 依赖布尔量而不是 batches 数组本身：批次列表每轮刷新都会生成新数组，
+  // 若把它放进依赖，定时器会被每轮结果反复清理重建；这里只在“是否存在活跃批次”真正翻转时重启轮询。
+  const hasActiveBatch = useMemo(
+    () => batches.some((batch) => isActiveShopBatchStatus(batch.status)),
+    [batches],
+  );
+
   useEffect(() => {
-    if (!isActive || !batches.some((batch) => isActiveShopBatchStatus(batch.status))) return;
+    if (!isActive || !hasActiveBatch) return;
     const timer = window.setInterval(() => {
       void refreshBatches();
       if (selectedBatchId) void refreshItems(selectedBatchId, itemsOffset);
     }, 2000);
     return () => window.clearInterval(timer);
-  }, [batches, isActive, itemsOffset, refreshBatches, refreshItems, selectedBatchId]);
+  }, [hasActiveBatch, isActive, itemsOffset, refreshBatches, refreshItems, selectedBatchId]);
 
   function handleSourceInputChange(value: string) {
     setSourceInput(value);
@@ -203,34 +211,20 @@ export const ShopCollectionPanel = forwardRef<ShopCollectionPanelHandle, ShopCol
   }
 
   const actions = selectedBatch ? getShopBatchActions(selectedBatch) : null;
-  const pageStart = itemsTotal === 0 ? 0 : itemsOffset + 1;
-  const pageEnd = Math.min(itemsOffset + items.length, itemsTotal);
   const currentPage = itemsTotal === 0 ? 1 : Math.floor(itemsOffset / itemsPageSize) + 1;
   const totalPages = Math.max(1, Math.ceil(itemsTotal / itemsPageSize));
 
   return (
     <section className="shop-collection-panel" aria-label="整店采集">
-      <header className="shop-collection-header">
-        <div className="shop-collection-title"><span className="iconfont icon-shop" aria-hidden="true"></span><div><strong>整店采集</strong><p>从一个商品定位店铺，后台分页采集并将成功商品直接写入产品处理草稿池。</p></div></div>
-        <span className="shop-collection-persistent">后台持续执行</span>
-      </header>
-
       <form className="shop-collection-create" onSubmit={createBatch}>
-        <label className="shop-collection-platform">
-          <span>采集平台</span>
-          <select value={shopPlatform} onChange={(event) => setShopPlatform(event.target.value as "1688" | "taobao")}>
-            <option value="1688">1688</option>
-            <option value="taobao">淘宝 / 天猫</option>
-          </select>
-        </label>
         <label>
-          <span>{shopPlatform === "taobao" ? "淘宝/天猫商品链接、商品 ID 或店铺链接" : "1688 店铺主页、商品链接或商品 ID"}</span>
+          <span>商品链接</span>
           <input value={sourceInput} onChange={(event) => handleSourceInputChange(event.target.value)}
             placeholder={shopPlatform === "taobao"
-              ? "粘贴链接后自动识别平台；推荐用店内任一商品链接（如 item.taobao.com/item.htm?id=…）"
-              : "粘贴链接后自动识别平台；数字店铺 SID 请写成 sid:123456"} />
+              ? "粘贴淘宝/天猫商品链接或店铺主页，平台按链接自动识别（如 item.taobao.com/item.htm?id=…）"
+              : "粘贴 1688 店铺主页、商品链接或商品 ID；数字店铺 SID 请写成 sid:123456（平台按链接自动识别）"} />
         </label>
-        <button type="submit" disabled={submitting}>{submitting ? "正在创建…" : "开始整店采集"}</button>
+        <button type="submit" disabled={submitting}>{submitting ? "正在创建…" : "开始采集"}</button>
       </form>
       {(error || notice) && <p className={`shop-collection-message ${error ? "is-error" : "is-success"}`} role="status">{error || notice}</p>}
 
@@ -240,22 +234,39 @@ export const ShopCollectionPanel = forwardRef<ShopCollectionPanelHandle, ShopCol
           {selectedBatch && (
             <>
               <div className="shop-batch-summary">
-                <div><span>{shopBatchStatusLabel(selectedBatch.status)}</span><strong>{selectedBatch.shop_name || selectedBatch.shop_sid || "正在识别店铺"}</strong><small>创建于 {formatDate(selectedBatch.created_at)}</small></div>
-                <div className="shop-progress"><span><i style={{ width: `${shopBatchProgress(selectedBatch)}%` }} /></span><b>{shopBatchProgress(selectedBatch)}%</b></div>
+                <div className="shop-batch-info">
+                  <div className="shop-batch-idline">
+                    <span className="shop-batch-status">{shopBatchStatusLabel(selectedBatch.status)}</span>
+                    <span className="shop-batch-fact"><em>店铺名称</em><b title={selectedBatch.shop_name || selectedBatch.shop_sid}>{selectedBatch.shop_name || selectedBatch.shop_sid || "正在识别店铺"}</b></span>
+                    <span className="shop-batch-fact"><em>平台</em><b>{selectedBatch.platform === "taobao" ? "淘宝 / 天猫" : "1688"}</b></span>
+                    <small className="shop-batch-created">创建于 {formatDate(selectedBatch.created_at)}</small>
+                  </div>
+                  <div className="shop-progress"><span><i style={{ width: `${shopBatchProgress(selectedBatch)}%` }} /></span><b>{shopBatchProgress(selectedBatch)}%</b></div>
+                </div>
+                {actions && (
+                  <div className="shop-batch-actions">
+                    <button type="button" disabled={!actions.pause || Boolean(actionBusy)} onClick={() => void runAction("pause")}>暂停</button>
+                    <button type="button" disabled={!actions.resume || Boolean(actionBusy)} onClick={() => void runAction("resume")}>继续</button>
+                    <button type="button" disabled={!actions.retryFailed || Boolean(actionBusy)} onClick={() => void runAction("retryFailed")}>重试失败项</button>
+                    <button type="button" className="is-danger" disabled={!actions.cancel || Boolean(actionBusy)} onClick={() => void runAction("cancel")}>取消</button>
+                  </div>
+                )}
               </div>
               <div className="shop-batch-stats">
-                <span><b>{selectedBatch.discovered_count}</b>已发现</span><span><b>{selectedBatch.succeeded_count}</b>成功</span><span><b>{selectedBatch.failed_count}</b>失败</span><span><b>{selectedBatch.created_count}</b>新建草稿</span>
+                <span><b>{selectedBatch.discovered_count}</b>总商品</span><span><b>{selectedBatch.succeeded_count}</b>已采集</span><span><b>{selectedBatch.failed_count}</b>失败数</span><span><b>{selectedBatch.created_count}</b>新建草稿</span>
               </div>
-              {actions && <div className="shop-batch-actions">
-                <button type="button" disabled={!actions.pause || Boolean(actionBusy)} onClick={() => void runAction("pause")}>暂停</button>
-                <button type="button" disabled={!actions.resume || Boolean(actionBusy)} onClick={() => void runAction("resume")}>继续</button>
-                <button type="button" disabled={!actions.retryFailed || Boolean(actionBusy)} onClick={() => void runAction("retryFailed")}>重试失败项</button>
-                <button type="button" className="is-danger" disabled={!actions.cancel || Boolean(actionBusy)} onClick={() => void runAction("cancel")}>取消</button>
-              </div>}
               {selectedBatch.error_message && <p className="shop-batch-warning">{formatShopCollectionError(new Error(selectedBatch.error_message))}</p>}
-              <div className="shop-items-heading"><strong>批次商品</strong><span>{itemsTotal ? `${pageStart}–${pageEnd} / ${itemsTotal}` : "暂无商品"}</span></div>
               <div className="shop-items-list">
-                {items.map((item) => <article key={item.item_id}><div><strong>{item.source_title || `商品 ${item.offer_id}`}</strong><small>{[item.offer_id, formatPrice(item.candidate?.price_cny) && `售价 ${formatPrice(item.candidate?.price_cny)}`, itemStatusLabel(item), item.intake_action !== "none" ? item.intake_action : ""].filter(Boolean).join(" · ")}</small>{item.error_message && <em>{formatShopCollectionError(new Error(item.error_message))}</em>}</div><a href={item.source_url} target="_blank" rel="noreferrer">查看来源</a></article>)}
+                {items.map((item) => (
+                  <article key={item.item_id}>
+                    <span className="shop-item-name"><em>商品名</em>{shopItemDisplayTitle(item)}</span>
+                    <small className="shop-item-meta">
+                      {[item.offer_id, formatPrice(item.candidate?.price_cny) && `售价 ${formatPrice(item.candidate?.price_cny)}`, itemStatusLabel(item), item.intake_action !== "none" ? item.intake_action : ""].filter(Boolean).join(" · ")}
+                    </small>
+                    {item.error_message && <small className="shop-item-meta is-error">{formatShopCollectionError(new Error(item.error_message))}</small>}
+                    <a className="shop-item-link" href={item.source_url} target="_blank" rel="noreferrer" title={item.source_url}>{item.source_url}</a>
+                  </article>
+                ))}
                 {items.length === 0 && <p className="shop-empty">商品将在店铺列表发现完成后显示。</p>}
               </div>
               <div className="shop-pagination">

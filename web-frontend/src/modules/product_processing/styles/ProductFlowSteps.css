@@ -82,7 +82,9 @@
 }
 
 .product-flow-step.is-current-flow {
-  border-color: transparent;
+  /* 渐变底色不要描边：1px 边框会连同渐变一起绘制，
+     在圆角边缘形成一条深色细线。 */
+  border: 0;
   background: var(--theme-hero-gradient, linear-gradient(135deg, #12a9d8, #8f5ae0));
   box-shadow: 0 12px 28px color-mix(in srgb, var(--theme-primary, #12a9d8) 34%, transparent);
   transform: translateY(-1px);

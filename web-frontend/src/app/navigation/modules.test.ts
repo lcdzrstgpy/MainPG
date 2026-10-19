@@ -21,7 +21,7 @@ test("sidebar navigation groups the product workflow around its AI history entry
     "货源成本",
     "尺寸画布",
   ]);
-  assert.equal(productWorkflow?.children?.find((child) => child.id === "product_processing_history")?.iconClass, "iconfont icon-time-circle");
+  assert.equal(productWorkflow?.children?.find((child) => child.id === "product_processing_history")?.iconClass, "iconfont icon-reloadtime");
 });
 
 test("POD customization is a grouped section with full, semi and replica customization", () => {

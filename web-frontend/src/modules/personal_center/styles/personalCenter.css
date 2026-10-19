@@ -659,18 +659,42 @@
 }
 
 .personal-subnav {
+  position: relative;
+  isolation: isolate;
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   padding: 8px;
   border: 1px solid var(--theme-module-border, rgba(99, 179, 237, 0.25));
-  border-radius: 16px;
+  border-radius: 999px;
   background: var(--theme-module-surface-raised, rgba(255, 255, 255, 0.82));
   box-shadow: 0 12px 28px rgba(15, 23, 42, 0.07);
 }
 
+/* 选中态滑块：同一块胶囊在按钮之间做几何插值，首帧不播动画。 */
+.personal-subnav-thumb {
+  position: absolute;
+  z-index: 0;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  border-radius: 999px;
+  background: var(--theme-primary-button-gradient, linear-gradient(135deg, #0ea5ff, #20e0bd));
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--theme-primary, #0ea5ff) 32%, transparent);
+  pointer-events: none;
+  opacity: 0;
+}
+
+.personal-subnav[data-ready="true"] .personal-subnav-thumb {
+  opacity: 1;
+  transition: transform 0.42s cubic-bezier(0.22, 1, 0.36, 1), width 0.42s cubic-bezier(0.22, 1, 0.36, 1),
+    height 0.42s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
 .personal-subnav button {
   position: relative;
+  z-index: 1;
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
@@ -695,6 +719,20 @@
 
 .personal-subnav button.is-active {
   color: #fff;
+  background: transparent;
+  box-shadow: none;
+}
+
+/* 换行后共享滑块不再适用，回落成每项自带胶囊底色。 */
+.personal-subnav[data-wrapped="true"] {
+  border-radius: 22px;
+}
+
+.personal-subnav[data-wrapped="true"] .personal-subnav-thumb {
+  display: none;
+}
+
+.personal-subnav[data-wrapped="true"] button.is-active {
   background: var(--theme-primary-button-gradient, linear-gradient(135deg, #0ea5ff, #20e0bd));
   box-shadow: 0 6px 16px color-mix(in srgb, var(--theme-primary, #0ea5ff) 32%, transparent);
 }
@@ -741,6 +779,10 @@
 @media (prefers-reduced-motion: reduce) {
   .personal-panel-anim {
     animation: none;
+  }
+
+  .personal-subnav-thumb {
+    transition: none;
   }
 }
 
@@ -1689,7 +1731,7 @@
   .personal-subnav {
     gap: 6px;
     padding: 9px;
-    border-radius: 15px;
+    border-radius: 999px;
   }
 
   .personal-subnav button {
@@ -3736,4 +3778,91 @@
   color: #fff;
   background: linear-gradient(105deg, #e2564d, #c0392b);
   box-shadow: 0 9px 20px rgba(192, 57, 43, 0.24);
+}
+
+/* ================================================================
+   个人中心：胶囊化（2026-10-19）
+
+   按 ui.md：二级导航、按钮、输入框、下拉、筛选芯片、列表行与
+   复选行等单行控件统一 999px；卡片、多行内容块和带左侧竖线的
+   缩进子项保留连续圆角，避免胶囊弧边切到内容。
+   ================================================================ */
+
+/* ---- 二级导航 ---- */
+.personal-subnav button { border-radius: 999px; }
+.personal-subnav button .iconfont { border-radius: 50%; }
+
+/* ---- 侧栏账号操作 ---- */
+.personal-password-entry { border-radius: 999px; }
+
+/* ---- 密码 / 用户名 / 升级弹窗 ---- */
+.personal-password-dialog header > button,
+.personal-password-dialog input,
+.personal-password-dialog footer button,
+.personal-username-code-btn,
+.personal-upgrade-plan-buy {
+  border-radius: 999px;
+}
+
+/* ---- 充值钱包 ---- */
+.provider-switch button,
+.topup-station select,
+.topup-station input,
+.topup-station-bind,
+.custom-topup > div,
+.custom-topup label > div,
+.primary-topup {
+  border-radius: 999px;
+}
+
+/* ---- 积分明细 / 消费流水 / 计费规则 ---- */
+.personal-card-title button,
+.ledger-row,
+.usage-filters input[type="date"],
+.usage-filters select,
+.usage-filter-reset,
+.usage-pager button {
+  border-radius: 999px;
+}
+
+/* ---- 模型选择 ---- */
+.model-field select { border-radius: 999px; }
+
+/* ---- 系统版本 ---- */
+.version-actions button { border-radius: 999px; }
+
+/* ---- 意见反馈 ---- */
+.feedback-field.is-inline select,
+.feedback-field.is-inline input,
+.feedback-submit,
+.feedback-history-trigger {
+  border-radius: 999px;
+}
+
+/* ---- 偏好设置（is-sub 子项自带左侧竖线，保持原缩进样式） ---- */
+.preferences-row { border-radius: 999px; }
+.preferences-segment,
+.preferences-segment button { border-radius: 999px; }
+
+/* ---- 存储空间 ---- */
+.storage-category,
+.storage-actions button,
+.storage-sweep-confirm-dialog header > button,
+.storage-sweep-confirm-list li,
+.storage-sweep-confirm-dialog footer button {
+  border-radius: 999px;
+}
+
+/* 胶囊 select 的原生箭头会被圆角端点挤住：改成自绘 chevron。
+   background-color 仍由各控件原有规则提供，这里只补箭头图层。 */
+.usage-filters select,
+.model-field select,
+.feedback-field.is-inline select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 30px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%2394a3b8' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 10px 6px;
 }

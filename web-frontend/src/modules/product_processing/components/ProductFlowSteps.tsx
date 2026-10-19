@@ -1,18 +1,12 @@
 import '../styles/ProductFlowSteps.css';
 
+/** 工作流步骤数据：由各页按自己的流程传入（如组合套装工作流）。 */
 export type ProductFlowStep = {
   id: string;
   number: string;
   title: string;
   description: string;
 };
-
-/** 产品处理三步流水线：草稿池 → 处理设置 → 结果预检。草稿池 / 处理设置 / 结果预检三页共用同一份文案。 */
-export const PRODUCT_FLOW_STEPS: ProductFlowStep[] = [
-  { id: 'pool', number: '01', title: '采集草稿池', description: '从「采集」或「每日选品」入池，管理批次与草稿' },
-  { id: 'settings', number: '02', title: '处理设置', description: '勾选草稿后进入处理设置，配置 AI 处理范围' },
-  { id: 'precheck', number: '03', title: '结果预检', description: '任务完成后查看结果、预检并导出最终版' },
-];
 
 type Props = {
   steps: ProductFlowStep[];
@@ -51,31 +45,5 @@ export function ProductFlowSteps({ steps, activeId, canOpen, onOpen, label }: Pr
         );
       })}
     </div>
-  );
-}
-
-type CardProps = {
-  activeId: string;
-  canOpen: (id: string) => boolean;
-  onOpen: (id: string) => void;
-};
-
-/** 带标题的工作流卡片：让「草稿池」「处理设置」「结果预检」三页共用同一个外壳，避免页面之间视觉割裂。 */
-export function ProductFlowCard({ activeId, canOpen, onOpen }: CardProps) {
-  return (
-    <section className="verify-flow-card">
-      <div className="verify-flow-heading">
-        <span aria-hidden="true"><i className="iconfont icon-build" /></span>
-        <strong>产品处理工作流</strong>
-        <small>草稿池 → 处理设置 → 结果预检，按顺序流转</small>
-      </div>
-      <ProductFlowSteps
-        steps={PRODUCT_FLOW_STEPS}
-        activeId={activeId}
-        canOpen={canOpen}
-        onOpen={onOpen}
-        label="产品处理工作流"
-      />
-    </section>
   );
 }

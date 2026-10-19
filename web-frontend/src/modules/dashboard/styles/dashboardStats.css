@@ -20,8 +20,8 @@
   --dash-c-pink: #ec4899;
   --dash-c-indigo: #6366f1;
 
-  --dash-line-processed: var(--dash-c-violet);
-  --dash-line-inbound: var(--dash-c-cyan);
+  --dash-line-processed: var(--theme-primary, #0877d3);
+  --dash-line-inbound: var(--theme-accent, #0aa6cc);
 
   --dash-surface: color-mix(in srgb, var(--theme-module-surface, #ffffff) 94%, transparent);
   --dash-border: color-mix(in srgb, var(--theme-module-border, #d8e9f3) 78%, transparent);
@@ -223,8 +223,15 @@
   background: color-mix(in srgb, var(--theme-primary, #0877d3) 16%, transparent);
 }
 
-/* 趋势范围切换 */
+/* 趋势范围切换：共享滑块（SwiftUI matchedGeometryEffect 的等价实现）。
+   选中态不是由各按钮自己点亮，而是一块高亮在按钮 frame 之间做弹簧插值。
+   .42s + cubic-bezier(.22,1,.36,1) 近似 SwiftUI Animation.default
+   （spring(response: 0.55, dampingFraction: 1.0)，临界阻尼、不回弹）。 */
 .dash-range {
+  --dash-range-spring: cubic-bezier(.22, 1, .36, 1);
+  --dash-range-duration: .42s;
+  position: relative;
+  isolation: isolate;
   display: inline-flex;
   gap: 2px;
   flex: none;
@@ -234,7 +241,31 @@
   background: var(--theme-module-surface-soft, #f7fafc);
 }
 
+.dash-range-thumb {
+  position: absolute;
+  z-index: 0;
+  top: 3px;
+  bottom: 3px;
+  left: 0;
+  width: 0;
+  border-radius: calc(var(--radius-md, 10px) - 3px);
+  background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0));
+  box-shadow: var(--shadow-sm, 0 2px 8px rgba(16, 42, 67, .06));
+  pointer-events: none;
+  opacity: 0;
+  transform: translateX(0);
+}
+
+.dash-range[data-ready="true"] .dash-range-thumb {
+  opacity: 1;
+  transition:
+    transform var(--dash-range-duration) var(--dash-range-spring),
+    width var(--dash-range-duration) var(--dash-range-spring);
+}
+
 .dash-range button {
+  position: relative;
+  z-index: 1;
   padding: 5px 12px;
   border: 0;
   border-radius: calc(var(--radius-md, 10px) - 3px);
@@ -251,9 +282,9 @@
 }
 
 .dash-range button.is-active {
-  background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0));
+  background: transparent;
   color: var(--theme-on-primary, #ffffff);
-  box-shadow: var(--shadow-sm, 0 2px 8px rgba(16, 42, 67, .06));
+  box-shadow: none;
 }
 
 /* --------------------------------------------------------------- 趋势图 */
@@ -738,7 +769,8 @@
   .dash-dist-bar > i,
   .dash-task-row,
   .dash-panel-link,
-  .dash-range button {
+  .dash-range button,
+  .dash-range-thumb {
     transition: none;
   }
 }

@@ -6,6 +6,7 @@ import { useTheme, THEME_META, BUILTIN_THEME_IDS, type ThemeId, type ThemeListIt
 import { UI_MODE_META, useUiMode, type UiModeId } from "../../shared/hooks/useUiMode";
 import { InboxBell } from "../../shared/components/InboxBell";
 import { getAuthAccount } from "../../transport/http/client";
+import { slidingIndicatorStyle, useSlidingIndicator } from "../../shared/hooks/useSlidingIndicator";
 
 /** 与个人中心共享的头像存储键，右键头像与个人中心头像保持一致。 */
 export const AVATAR_STORAGE_KEY = "jye_workspace_avatar";
@@ -60,8 +61,11 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
   const [storeActionError, setStoreActionError] = useState<string | null>(null);
   const topbarRef = useRef<HTMLElement>(null);
   const themeMenuRef = useRef<HTMLDivElement>(null);
+  const userMenuRef = useRef<HTMLDetailsElement>(null);
   const { theme, setTheme, downloadedThemes, isDownloaded, downloadTheme } = useTheme();
   const { uiMode, setUiMode } = useUiMode();
+  const activeTabSignature = tabs.map((tab) => tab.key).join("|");
+  const tabIndicator = useSlidingIndicator<HTMLDivElement>(":scope > .page-tab.is-active", [activeKey, activeTabSignature]);
 
   // 桌面风格（apple）下仅支持经典配色；其它主题在 apple 模式会被映射回 classic，
   // 为避免「勾选使用中但实际不生效」的误导，apple 模式下禁用非 classic 主题切换。
@@ -133,6 +137,22 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
     return () => document.removeEventListener("mousedown", onDocMouseDown);
   }, [themePanelOpen, themeStoreOpen]);
 
+  // 原生 <details> 点击外部不会自动收起：打开消息中心 / 主题风格等其它顶栏面板时，
+  // 让个人中心同步收起，避免两个弹层叠在一起。
+  useEffect(() => {
+    const menu = userMenuRef.current;
+    if (!menu) return;
+    const onDocMouseDown = (event: MouseEvent) => {
+      if (!menu.contains(event.target as Node)) menu.open = false;
+    };
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, []);
+
+  const closeUserMenu = () => {
+    if (userMenuRef.current) userMenuRef.current.open = false;
+  };
+
   // 打开商店时从后端拉取可下载主题列表。
   useEffect(() => {
     if (!themeStoreOpen) return;
@@ -186,6 +206,7 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
 
   return (
     <header ref={topbarRef} className={`topbar-card is-pinned ${topbarStuck ? "is-stuck" : ""}`}>
+      <span className="topbar-glass" aria-hidden="true" />
       <div className="topbar-main">
         <button
           className={`icon-button sidebar-pin-button ${sidebarPinned ? "is-active" : ""}`}
@@ -357,7 +378,7 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
             )}
           </div>
           <InboxBell />
-          <details className="user-menu">
+          <details className="user-menu" ref={userMenuRef}>
             <summary className={avatarSrc ? "has-avatar" : ""}>
               {avatarSrc ? (
                 <img className="avatar-img" src={avatarSrc} alt="本地用户头像" title="查看大图" onClick={openAvatarPreview} />
@@ -375,7 +396,7 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
                   <span className="iconfont icon-camera" aria-hidden="true" />
                   <span>{avatarSrc ? "更换头像" : "上传头像"}</span>
                 </button>
-                <button className="user-menu-action" type="button" onClick={onOpenPersonalCenter}>
+                <button className="user-menu-action" type="button" onClick={() => { closeUserMenu(); onOpenPersonalCenter(); }}>
                   <span className="iconfont icon-edit" aria-hidden="true" />
                   <span>用户账号</span>
                 </button>
@@ -397,7 +418,7 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
                   ))}
                 </div>
               </div>
-              <button className="user-menu-signout" type="button" onClick={onSignOut}>退出登录</button>
+              <button className="user-menu-signout" type="button" onClick={() => { closeUserMenu(); onSignOut(); }}>退出登录</button>
             </div>
           </details>
           <input
@@ -412,7 +433,13 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
         </div>
       </div>
       <div className="topbar-lower-row">
-        <div className="tab-strip" aria-label="内容页标签导航">
+        <div
+          className="tab-strip"
+          aria-label="内容页标签导航"
+          ref={tabIndicator.containerRef}
+          data-indicator-ready={tabIndicator.ready ? "true" : "false"}
+        >
+          {tabIndicator.rect && <span className="page-tab-thumb" style={slidingIndicatorStyle(tabIndicator.rect)} aria-hidden="true" />}
           {tabs.map((tab) => (
             <div key={tab.key} className={`page-tab ${activeKey === tab.key ? "is-active" : ""} ${closingKeys.includes(tab.key) ? "is-closing" : ""}`}>
               <button onClick={() => onSelectTab(tab.key)}><span className={tab.iconClass} aria-hidden="true">{tab.icon}</span> {tab.label}</button>

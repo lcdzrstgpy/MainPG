@@ -1,4 +1,5 @@
 import { isSpecCardConfigured, specCardSummaryText } from "../data/podCustomizationModel";
+import { slidingIndicatorStyle, useSlidingIndicator } from "../../../shared/hooks/useSlidingIndicator";
 import type { PodListingFieldsDraft, SpecCardConfig } from "../types";
 
 export type SkuField = "name" | "declared_price" | "weight_g";
@@ -118,12 +119,15 @@ export function PodListingFieldsEditor({
   onRemoveSku,
   onOpenSpecCardDrawer,
 }: Props) {
+  // 长/短标题是互斥单选：选中态交给唯一的滑块，切换时平滑移动。
+  const titleModeIndicator = useSlidingIndicator<HTMLDivElement>(":scope > button.is-active", [listingFields.title_mode]);
   return (
     <section className="pod-listing-fields" aria-labelledby="pod-dianxiaomi-listing-title">
       <div className="pod-listing-fields-heading"><span>DIANXIAOMI LISTING</span><h3 id="pod-dianxiaomi-listing-title">店小秘上架信息</h3><small>创建批次时保存为不可缺失的上架快照</small></div>
       <div className="pod-title-mode" role="radiogroup" aria-label="标题模式">
         <span>标题模式<em>*</em></span>
-        <div>
+        <div ref={titleModeIndicator.containerRef} data-indicator-ready={titleModeIndicator.ready ? "true" : "false"}>
+          {titleModeIndicator.rect && <span className="pod-selection-thumb" style={slidingIndicatorStyle(titleModeIndicator.rect)} aria-hidden="true" />}
           <button type="button" role="radio" aria-checked={listingFields.title_mode === "long"} className={listingFields.title_mode === "long" ? "is-active" : ""} onClick={() => onListingFieldChange("title_mode", "long")}><b>长标题</b></button>
           <button type="button" role="radio" aria-checked={listingFields.title_mode === "short"} className={listingFields.title_mode === "short" ? "is-active" : ""} onClick={() => onListingFieldChange("title_mode", "short")}><b>短标题</b></button>
         </div>
@@ -135,7 +139,7 @@ export function PodListingFieldsEditor({
             <label key={field.key}>
               <span>{field.label}<em>*</em></span>
               <div className="pod-listing-field-input">
-                <input value={listingFields[field.key]} inputMode={field.inputMode} maxLength={field.maxLength} aria-invalid={Boolean(fieldError)} aria-describedby={fieldError ? `pod-listing-error-${field.key}` : undefined} onChange={(event) => onListingFieldChange(field.key, event.target.value)} />
+                <input className="pod-capsule-control" value={listingFields[field.key]} inputMode={field.inputMode} maxLength={field.maxLength} aria-invalid={Boolean(fieldError)} aria-describedby={fieldError ? `pod-listing-error-${field.key}` : undefined} onChange={(event) => onListingFieldChange(field.key, event.target.value)} />
                 <small id={`pod-listing-error-${field.key}`} className="pod-listing-field-error">{fieldError}</small>
               </div>
             </label>
@@ -154,17 +158,17 @@ export function PodListingFieldsEditor({
               <div key={index} className="pod-sku-input-row">
                 <label>
                   <span>SKU 名称 {index + 1}</span>
-                  <input value={sku.name} maxLength={SKU_NAME_MAX_LENGTH} onChange={(event) => onUpdateSku(index, "name", event.target.value)} aria-label="SKU 名称" aria-invalid={Boolean(nameError)} aria-describedby={nameError ? `pod-sku-error-${index}-name` : undefined} />
+                  <input className="pod-capsule-control" value={sku.name} maxLength={SKU_NAME_MAX_LENGTH} onChange={(event) => onUpdateSku(index, "name", event.target.value)} aria-label="SKU 名称" aria-invalid={Boolean(nameError)} aria-describedby={nameError ? `pod-sku-error-${index}-name` : undefined} />
                   <small id={`pod-sku-error-${index}-name`} className="pod-sku-field-error">{nameError}</small>
                 </label>
                 <label>
                   <span>申报价</span>
-                  <input value={sku.declared_price} inputMode="decimal" onChange={(event) => onUpdateSku(index, "declared_price", event.target.value)} aria-label="SKU 申报价" aria-invalid={Boolean(priceError)} aria-describedby={priceError ? `pod-sku-error-${index}-declared_price` : undefined} />
+                  <input className="pod-capsule-control" value={sku.declared_price} inputMode="decimal" onChange={(event) => onUpdateSku(index, "declared_price", event.target.value)} aria-label="SKU 申报价" aria-invalid={Boolean(priceError)} aria-describedby={priceError ? `pod-sku-error-${index}-declared_price` : undefined} />
                   <small id={`pod-sku-error-${index}-declared_price`} className="pod-sku-field-error">{priceError}</small>
                 </label>
                 <label>
                   <span>重量（g）</span>
-                  <input value={sku.weight_g} inputMode="decimal" onChange={(event) => onUpdateSku(index, "weight_g", event.target.value)} aria-label="SKU 重量（g）" aria-invalid={Boolean(weightError)} aria-describedby={weightError ? `pod-sku-error-${index}-weight_g` : undefined} />
+                  <input className="pod-capsule-control" value={sku.weight_g} inputMode="decimal" onChange={(event) => onUpdateSku(index, "weight_g", event.target.value)} aria-label="SKU 重量（g）" aria-invalid={Boolean(weightError)} aria-describedby={weightError ? `pod-sku-error-${index}-weight_g` : undefined} />
                   <small id={`pod-sku-error-${index}-weight_g`} className="pod-sku-field-error">{weightError}</small>
                 </label>
                 <button type="button" onClick={() => onRemoveSku(index)} aria-label="删除 SKU">×</button>
