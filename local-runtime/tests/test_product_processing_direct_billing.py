@@ -117,7 +117,144 @@ def test_provider_config_direct_placeholder_without_granted_keys(
         assert sys_image["base_url"] == "https://api.wuyinkeji.com"
         # 占位符仅为让启动自检报告图片能力就绪；无任务上下文时不会发起真实请求。
         assert sys_image["api_key"] == "direct-pending"
+        # 未下发链路策略时没有备用链路——客户端不自行切换。
         assert provider["_sys_backup_image_ai"] is None
+
+
+def test_provider_config_follows_server_image_plan_in_auto_mode() -> None:
+    """服务端下发 auto 策略：主链路无印 + 备用中转，客户端只按顺序对接。
+
+    这是「上游无印维护/拒单」时的预备措施：链路开关与切换权都在服务器，
+    客户端既不内置链路凭据，也不自行决定走哪条链路。
+    """
+    plan = {
+        "mode": "auto",
+        "providers": [
+            {
+                "role": "primary",
+                "base_url": "https://api.wuyinkeji.com",
+                "api_key": "WUYIN-K",
+                "model": "image_gpt",
+                "reference_model": "image_gpt",
+            },
+            {
+                "role": "backup",
+                "base_url": "https://relay.example/v1/",
+                "api_key": "RELAY-K",
+                "model": "gpt-image-2-2k",
+                "reference_model": "gpt-image-2-2k",
+            },
+        ],
+    }
+    with server_ai_proxy.server_ai_context(
+        "t", {}, granted_keys={"wuyin": "WUYIN-K"}, image_plan=plan
+    ):
+        provider = provider_config_module.resolve_ai_provider()
+
+    assert provider["_sys_image_ai"]["base_url"] == "https://api.wuyinkeji.com"
+    assert provider["_sys_image_ai"]["api_key"] == "WUYIN-K"
+    assert provider["_sys_image_ai"]["model"] == "image_gpt"
+    backup = provider["_sys_backup_image_ai"]
+    assert backup is not None
+    # 末尾斜杠归一化，避免拼出 //images/edits。
+    assert backup["base_url"] == "https://relay.example/v1"
+    assert backup["api_key"] == "RELAY-K"
+    assert backup["model"] == "gpt-image-2-2k"
+
+
+def test_provider_config_relay_only_mode_makes_relay_the_primary_chain() -> None:
+    """服务端切到「只用中转」：中转成为主链路，且不再要求 wuyin 短期密钥。"""
+    plan = {
+        "mode": "relay",
+        "providers": [
+            {
+                "role": "primary",
+                "base_url": "https://relay.example/v1",
+                "api_key": "RELAY-K",
+                "model": "gpt-image-2-2k",
+                "reference_model": "gpt-image-2-2k",
+            }
+        ],
+    }
+    with server_ai_proxy.server_ai_context("t", {}, granted_keys={"ark": "ARK-K"}, image_plan=plan):
+        provider = provider_config_module.resolve_ai_provider()
+
+    assert provider["_sys_image_ai"]["base_url"] == "https://relay.example/v1"
+    assert provider["_sys_image_ai"]["api_key"] == "RELAY-K"
+    assert provider["_sys_image_ai"]["model"] == "gpt-image-2-2k"
+    assert provider["_sys_backup_image_ai"] is None
+    # 策略已指定出图链路 → 服务端本就不下发 wuyin，不应把 wuyin 算作必需密钥而中止任务。
+    assert provider_config_module.image_chain_supplied(plan) is True
+
+
+def test_provider_config_ignores_malformed_image_plan() -> None:
+    """策略字段不全时视为「未下发」，客户端回落内置无印直连而非用空链路。"""
+    malformed = {
+        "mode": "auto",
+        "providers": [{"role": "primary", "base_url": "", "api_key": "", "model": ""}],
+    }
+    assert provider_config_module.parse_image_chain(malformed) == []
+    assert provider_config_module.image_chain_supplied(malformed) is False
+
+    with server_ai_proxy.server_ai_context("t", {}, image_plan=malformed):
+        provider = provider_config_module.resolve_ai_provider()
+    assert provider["_sys_image_ai"]["base_url"] == "https://api.wuyinkeji.com"
+    assert provider["_sys_backup_image_ai"] is None
+
+
+def test_media_config_exposes_both_chains_under_auto_plan() -> None:
+    """端到端：auto 策略下媒体配置同时带出主/备两段，provider 池变成 2 条。"""
+    from wh_local.modules.product_processing.infrastructure.media import ProductImageProcessor
+
+    plan = {
+        "mode": "auto",
+        "providers": [
+            {
+                "role": "primary",
+                "base_url": "https://api.wuyinkeji.com",
+                "api_key": "WUYIN-K",
+                "model": "image_gpt",
+                "reference_model": "image_gpt",
+            },
+            {
+                "role": "backup",
+                "base_url": "https://relay.example/v1",
+                "api_key": "RELAY-K",
+                "model": "gpt-image-2-2k",
+                "reference_model": "gpt-image-2-2k",
+            },
+        ],
+    }
+    with server_ai_proxy.server_ai_context(
+        "t", {}, granted_keys={"wuyin": "WUYIN-K"}, image_plan=plan
+    ):
+        media_config = ProductProcessingService._media_config_provider()
+
+    assert media_config["image"]["base_url"] == "https://api.wuyinkeji.com"
+    assert media_config["image"]["api_key"] == "WUYIN-K"
+    assert media_config["backup_image"]["base_url"] == "https://relay.example/v1"
+    assert media_config["backup_image"]["api_key"] == "RELAY-K"
+
+    pool = ProductImageProcessor._providers(media_config)
+    assert [item["name"] for item in pool] == ["primary:image_gpt", "backup:gpt-image-2-2k"]
+
+
+def test_server_single_image_mode_forces_four_standalone_images() -> None:
+    """服务端下发 image_mode=single 时，必须走「4 张独立方图」路径（count=1）。
+
+    nanoBanana / Gemini 系不遵守严格 2x2 运输四宫格契约（自由拼版 → 本地切分必失败），
+    这类链路改用单图模式；开关权在服务器，客户端只照做。
+    """
+    from wh_local.modules.product_processing import service as service_module
+
+    assert service_module._effective_image_generation_count(4) == 4
+    assert service_module._effective_image_generation_count(None) == 4
+
+    with server_ai_proxy.server_ai_context("t", {}, image_plan={"image_mode": "single"}):
+        assert service_module._effective_image_generation_count(4) == 1
+
+    with server_ai_proxy.server_ai_context("t", {}, image_plan={"image_mode": "grid"}):
+        assert service_module._effective_image_generation_count(4) == 4
 
 
 def test_derive_batch_item_results_maps_completed_and_failed() -> None:

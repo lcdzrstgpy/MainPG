@@ -855,6 +855,29 @@ def usage_history(
 LEDGER_TOPUP_SOURCE_TYPES = ("payment_alipay", "payment_wechat", "topup_promotion_bonus")
 
 
+#: 允许把「管理员备注」透给终端用户的来源类型。
+#: 其它来源的 metadata 里是内部字段（provider/rule_version 等），一律不透。
+_LEDGER_NOTE_SOURCES = frozenset({"admin_adjustment", "test_grant"})
+
+
+def _ledger_user_note(source_type: str, metadata_json: str) -> str:
+    """从台账 metadata 里挑出可展示给用户的备注（**只取 reason**）。
+
+    ``admin_adjustment`` 的 metadata 里还有 ``admin``（管理员用户名）和
+    ``client_ip``（管理员出口 IP）。整包透给客户端等于把后台信息泄露给终端用户，
+    所以这里只挑 reason 一个键，并截断长度。
+    """
+    if source_type not in _LEDGER_NOTE_SOURCES:
+        return ""
+    try:
+        payload = json.loads(metadata_json or "{}")
+    except (TypeError, ValueError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("reason") or "").strip()[:120]
+
+
 def point_ledger_history(
     database_path: Path,
     *,
@@ -890,7 +913,8 @@ def point_ledger_history(
         )
         rows = conn.execute(
             f"""
-            SELECT entry_id, points_delta, balance_after, source_type, source_id, created_at
+            SELECT entry_id, points_delta, balance_after, source_type, source_id,
+                   created_at, metadata_json
             FROM billing_point_ledger
             WHERE {where}
             ORDER BY created_at DESC, entry_id DESC
@@ -907,6 +931,9 @@ def point_ledger_history(
             "source_type": str(row["source_type"]),
             "source_id": str(row["source_id"]),
             "created_at": str(row["created_at"]),
+            # 管理员在后台填的「调账原因」：以前只写进 metadata 从不回传，
+            # 客户端只能显示写死的来源名（"管理员划拨"），用户看到的永远是类型名。
+            "note": _ledger_user_note(str(row["source_type"]), str(row["metadata_json"] or "")),
         }
         for row in rows
     ]

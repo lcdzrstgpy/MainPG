@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -148,7 +149,8 @@ def _prompt_for_attempt(base_prompt: str, *, attempt: int, retry_feedback: str) 
         "NON-OVERRIDABLE RETRY CORRECTION:\n"
         f"The previous response was rejected because: {retry_feedback}.\n"
         f"This is repair attempt {attempt}. Generate a fresh response and correct that problem. "
-        "Return only the exact JSON object required above; do not mention this retry."
+        "Return only the exact JSON object required above: no Markdown code fences, no "
+        "preamble or closing commentary, and do not mention this retry."
     )
 
 
@@ -157,15 +159,106 @@ def text_result_from_dict(payload: Mapping[str, Any]) -> DoubaoTextResult:
 
 
 def _parse_text_result(content: str) -> DoubaoTextResult:
-    try:
-        payload = json.loads(content)
-    except (TypeError, json.JSONDecodeError) as exc:
+    payload = _load_json_payload(content)
+    if payload is None:
         raise DoubaoTextError(
-            "Doubao text response did not contain strict JSON",
+            "Doubao text response did not contain strict JSON"
+            f" (response shape: {_response_shape(content)})",
             error_kind="invalid_response",
             retryable=True,
-        ) from exc
+        )
     return _result_from_payload(payload)
+
+
+_FENCE_PATTERN = re.compile(r"```[A-Za-z0-9_+-]*[ \t]*\r?\n?(.*?)```", re.DOTALL)
+
+
+def _load_json_payload(content: Any) -> Any | None:
+    """从模型返回中取出 JSON 负载；取不到返回 None。
+
+    这里只做「搬运」不做「放宽」：候选内容仍需通过 ``_result_from_payload`` 的严格结构
+    校验（键集合、类型、数值范围），所以少字段、多字段、类型错误的响应依旧会被拒绝。
+    """
+    if not isinstance(content, str):
+        return None
+    for candidate in _json_candidates(content):
+        try:
+            return json.loads(candidate)
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
+def _json_candidates(content: str) -> list[str]:
+    """按「最可能正确」的顺序给出候选：原文 → 去围栏 → 首个配平的花括号对象。
+
+    实测豆包会把契约要求的 JSON 包进 ```json 代码块，或在前后补一句说明文字；这两种
+    都只是包装问题，不应该让整条商品判失败。
+    """
+    candidates: list[str] = [content]
+    stripped = _strip_markdown_fences(content)
+    if stripped and stripped != content:
+        candidates.append(stripped)
+    for source in (stripped or content, content):
+        extracted = _first_balanced_object(source)
+        if extracted and extracted not in candidates:
+            candidates.append(extracted)
+    return candidates
+
+
+def _strip_markdown_fences(text: str) -> str:
+    match = _FENCE_PATTERN.search(text)
+    return match.group(1).strip() if match else ""
+
+
+def _first_balanced_object(text: str) -> str:
+    """返回文本中第一个花括号配平的 ``{...}`` 片段（跳过字符串字面量与转义）。
+
+    只处理对象，因为本模块契约始终是单个 JSON 对象；配平失败（典型是响应被截断）时返回
+    空串，由调用方按失败处理——绝不猜测或补全缺失内容。
+    """
+    start = text.find("{")
+    if start < 0:
+        return ""
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    return ""
+
+
+def _response_shape(content: Any) -> str:
+    """失败的「形状」指纹：只有长度与结构特征，不含任何模型正文。
+
+    写入任务诊断后即可区分「被 Markdown 围栏/夹带说明」与「响应被截断」这两类完全不同
+    的病因，且不会把商品数据带进日志。
+    """
+    if not isinstance(content, str):
+        return f"non-text ({type(content).__name__})"
+    text = content.strip()
+    fenced = bool(_FENCE_PATTERN.search(text))
+    body = _strip_markdown_fences(text) or text
+    return (
+        f"length={len(text)}, fenced={fenced},"
+        f" object_balanced={bool(_first_balanced_object(body))}"
+    )
 
 
 def _result_from_payload(payload: Any) -> DoubaoTextResult:

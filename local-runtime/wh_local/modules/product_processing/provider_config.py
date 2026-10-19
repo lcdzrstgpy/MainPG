@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
-from .server_ai_proxy import granted_keys_snapshot
+from .server_ai_proxy import granted_image_plan, granted_keys_snapshot
 
 AI_PROVIDER = "aicoming"
 # 默认中转站：用户通过 https://station-88.aicoming.top/ 购买 key（运营转售模式）。
@@ -93,6 +93,65 @@ def _try_system_runtime_config() -> Any | None:
         return None
 
 
+def parse_image_chain(plan: Mapping[str, Any] | None) -> list[dict[str, str]]:
+    """把服务端下发的出图链路策略解析为有序 provider 列表（最多两条）。
+
+    供任务上下文之外的调用方使用（如组合套装在子线程里自建图片处理器时，
+    读不到 ``server_ai_context`` 的 ContextVar，只能拿 freeze 响应里的原始策略解析）。
+    """
+    entries = plan.get("providers") if isinstance(plan, Mapping) else None
+    if not isinstance(entries, list):
+        return []
+    chain: list[dict[str, str]] = []
+    for item in entries:
+        if not isinstance(item, Mapping):
+            continue
+        base_url = str(item.get("base_url") or "").strip().rstrip("/")
+        api_key = str(item.get("api_key") or "").strip()
+        model = str(item.get("model") or "").strip()
+        if not (base_url and api_key and model):
+            continue
+        chain.append(
+            {
+                "role": str(item.get("role") or "").strip() or ("primary" if not chain else "backup"),
+                "base_url": base_url,
+                "api_key": api_key,
+                "model": model,
+                "reference_model": str(item.get("reference_model") or "").strip() or model,
+            }
+        )
+        if len(chain) == 2:
+            break
+    return chain
+
+
+def image_chain_supplied(plan: Mapping[str, Any] | None) -> bool:
+    """服务端策略里是否带出了可用出图链路。
+
+    供任务启动时判定「是否仍要求 wuyin 短期密钥」：策略已指定链路（例如故障期整体
+    切到中转）时，服务端本就不会再下发 wuyin，此时不应因缺少 wuyin 而中止任务。
+    """
+    return bool(parse_image_chain(plan))
+
+
+def _image_chain_from_plan() -> list[dict[str, str]]:
+    """当前任务上下文的出图链路（服务端下发）。
+
+    契约（服务端批次冻结响应 ``freeze.image_plan``）::
+
+        {"mode": "primary|relay|auto",
+         "providers": [{"role", "base_url", "api_key", "model", "reference_model"}, ...]}
+
+    **链路开关与切换权完全在服务器**：服务端已按当前生效模式把要用的链路按顺序排好
+    （只用无印 / 只用中转 / 无印优先+中转兜底），客户端只按顺序对接——第 1 条作主链路、
+    第 2 条作备用兜底（对应 media._providers 的 primary / backup 两段）。
+
+    未下发（旧服务端）或字段不全时返回空列表，客户端沿用内置默认链路（无印直连），
+    行为与切直连后完全一致。
+    """
+    return parse_image_chain(granted_image_plan())
+
+
 def resolve_ai_provider() -> dict[str, Any]:
     """返回不含上游凭据的服务端托管 AI 配置与固定计费模型。"""
     sys_cfg = _try_system_runtime_config()
@@ -126,6 +185,12 @@ def resolve_ai_provider() -> dict[str, Any]:
     direct_wuyin_key = str(granted.get("wuyin") or "").strip()
     direct_mode = True
 
+    # 出图链路：由服务端下发策略决定（只用无印 / 只用中转 / 无印优先+中转兜底）。
+    # 未下发时回落到内置默认——仅无印直连，与切直连后的既有行为一致。
+    image_chain = _image_chain_from_plan()
+    primary_chain = image_chain[0] if image_chain else None
+    backup_chain = image_chain[1] if len(image_chain) > 1 else None
+
     # 解密后的 COS 配置仅作为后端内部运行时数据传给图片发布器；安全摘要不会回显它。
     sys_cos: dict[str, str] = (
         {
@@ -149,7 +214,9 @@ def resolve_ai_provider() -> dict[str, Any]:
         "reference_image_model": reference_image_model,
         "reference_image_model_1k": REFERENCE_IMAGE_MODEL_1K,
         "reference_image_size_1k": REFERENCE_IMAGE_SIZE_1K,
-        "image_models": [image_model],
+        # 模型池必须跟着下发策略走：media._providers 优先读 image_models，若这里仍写死
+        # 内置模型名，服务端下发的 model（如切到无印 nanoBanana）会被静默忽略。
+        "image_models": [primary_chain["model"]] if primary_chain else [image_model],
         "image_size": os.environ.get("WH_AI_IMAGE_SIZE", IMAGE_SIZE).strip(),
         "image_quality": os.environ.get("WH_AI_IMAGE_QUALITY", IMAGE_QUALITY).strip(),
         # 精品模式 4K 四宫格配置（环境变量可覆盖，便于运营按中转实际能力调整）
@@ -161,20 +228,31 @@ def resolve_ai_provider() -> dict[str, Any]:
         "image_timeout_seconds": IMAGE_AI_TIMEOUT_SECONDS,
         # 系统配置附加信息（供 _media_config_provider 使用）
         "_sys_image_ai": {
-            "base_url": IMAGE_AI_BASE_URL,
+            # 主链路：服务端下发了策略就照它走（含故障期切到中转的情况）；
+            # 未下发时用无印直连默认值。
+            "base_url": (primary_chain or {}).get("base_url") or IMAGE_AI_BASE_URL,
             # 真实请求只发生在任务上下文（server_ai_context 内），使用冻结下发的
-            # 短期密钥，未下发时回落客户端内置兜底密钥；无任务上下文（如启动自检
-            # engine_status）时用占位符，仅为让图片能力报告为已配置，绝不会发起
-            # 真实请求。既未下发、也无内置兜底的任务会在
-            # service._execute_task_direct 中止，不回落到平台托管网关。
-            "api_key": direct_wuyin_key or "direct-pending",
-            "model": image_model,
-            "reference_model": reference_image_model,
+            # 短期密钥；无任务上下文（如启动自检 engine_status）时用占位符，仅为让
+            # 图片能力报告为已配置，绝不会发起真实请求。既未下发、也无链路策略的
+            # 任务会在 service._execute_task_direct 中止，不回落到平台托管网关。
+            "api_key": (primary_chain or {}).get("api_key") or direct_wuyin_key or "direct-pending",
+            "model": (primary_chain or {}).get("model") or image_model,
+            "reference_model": (primary_chain or {}).get("reference_model") or reference_image_model,
             "reference_model_1k": REFERENCE_IMAGE_MODEL_1K,
             "reference_size_1k": REFERENCE_IMAGE_SIZE_1K,
         },
-        # 产品处理只走客户端直连；不再暴露任何桌面侧备份图片提供方凭据。
-        "_sys_backup_image_ai": None,
+        # 备用链路：仅当服务端策略里带了第二条链路（无印优先 + 中转兜底）时才存在。
+        # 用户侧不携带任何链路凭据，也不自行切换。
+        "_sys_backup_image_ai": (
+            {
+                "base_url": backup_chain["base_url"],
+                "api_key": backup_chain["api_key"],
+                "model": backup_chain["model"],
+                "reference_model": backup_chain["reference_model"],
+            }
+            if backup_chain
+            else None
+        ),
         "_sys_limits": dict(sys_cfg.limits) if sys_cfg and sys_cfg.limits else {},
         "_sys_updates": dict(sys_cfg.updates) if sys_cfg and sys_cfg.updates else {},
         "_sys_cos": sys_cos,

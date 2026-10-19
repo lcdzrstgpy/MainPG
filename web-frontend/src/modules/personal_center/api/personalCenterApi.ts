@@ -225,11 +225,15 @@ export function loadBillingUsageHistory(query: BillingUsageQuery = {}) {
 /** 入账明细条目：只含 credit（积分入账）记录。 */
 export type BillingLedgerItem = {
   entry_id: string;
-  points_delta: number;
-  balance_after: number;
+  points_delta: number;  balance_after: number;
   source_type: string;
   source_id: string;
   created_at: string;
+  /**
+   * 后台管理员调账时填的「原因」。服务端只对管理员划拨/测试划拨透出，
+   * 其余来源为空串。有值时显示在来源名下面 —— 别把写死的类型名当全部信息。
+   */
+  note?: string;
 };
 
 /**

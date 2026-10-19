@@ -90,6 +90,12 @@ NON-OVERRIDABLE FOUR-GRID RUNTIME CONTRACT:
 - Show the complete sellable product or verified complete set in every quadrant; no pure macro crop and no hidden or invented parts.
 - Generate zero added letters, words, numbers, labels, slogans, badges, logos, watermarks, arrows, rulers, or measurement marks. No copy is added after splitting either.
 - Keep Panel 4 clean for later deterministic dimension annotation.
+- 硬约束：产品保真（PRODUCT FIDELITY）、几何完整（GEOMETRY INTEGRITY）、正常使用姿态（PRODUCT ORIENTATION）、手部解剖（HAND & HUMAN ANATOMY）。
+- 四格差异：变异矩阵（FRAME VARIATION MATRIX）+ 差异下限（DIFFERENTIATION FLOORS）+ 生成后自查（POST-GENERATION SELF-CHECK）。
+- 唯一允许共享的层：ART DIRECTION LOCK（调色 / 镜头家族 / 光质 / 配色家族 / 修图量）；QUALITY FLOOR vs STYLE UNITY 只统一品质。
+- 真实感与光影物理（REALISM & LIGHT PHYSICS）：接地阴影与环境光遮蔽、反射锚、玻璃折射与焦散、金属各向异性、色温高光逻辑；反 AI 痕迹（ANTI-AI-TELL）。
+- 填幅：白底主图 78%-85% + 7% 内边距；其余格约 52%-65% + 10% 内边距。
+- 面板角色补充：Panel 2 必带尺度锚（PANEL 2 SCALE ANCHOR），Panel 3 必须证明最强卖点（PANEL 3 BENEFIT PROOF）。
 ```
 
 **② SINGLE_IMAGE_RUNTIME_CONTRACT**（count=1 主生成 + 所有失败槽位 1K 重绘用；占位符 `{panel_role}`）

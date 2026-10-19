@@ -13,7 +13,11 @@ from fastapi import BackgroundTasks
 
 from ..config import APP_VERSION
 from ..runtime_logs import business_logger
-from .contracts import CustomerAuthRejected, CustomerAuthUnavailable
+from .contracts import (
+    CustomerAuthPermissionError,
+    CustomerAuthRejected,
+    CustomerAuthUnavailable,
+)
 from .local_session import LocalSessionService
 from .remote_client import CustomerAuthClient
 
@@ -113,6 +117,13 @@ def create_customer_router(
             raise HTTPException(status_code=503, detail=_safe_error_detail(exc))
         if isinstance(exc, CustomerAuthRejected):
             raise HTTPException(status_code=exc.status_code, detail=_safe_error_detail(exc.message))
+        if isinstance(exc, CustomerAuthPermissionError):
+            # 必须排在 `isinstance(exc, PermissionError)` 之前：本类继承
+            # PermissionError，否则永远落进兜底 403 分支，上游的 401 被丢掉。
+            # 会话失效（被顶替/过期）的契约是 401 + detail 含 "session revoked"，
+            # 前端 client.ts:90-99 硬性要求 status === 401 才判为会话失效并回
+            # 登录页；回成 403 只会让用户看到「操作失败」而卡在坏掉的登录态。
+            raise HTTPException(status_code=exc.status_code, detail=_safe_error_detail(exc))
         if isinstance(exc, PermissionError):
             raise HTTPException(status_code=403, detail=_safe_error_detail(exc))
         if isinstance(exc, ValueError):

@@ -91,6 +91,10 @@ from .domain.policy import PolicyIssue, is_safe_external_url, product_policy_iss
 from .domain.preview_images import task_item_result_version
 from .domain import sku_availability as sku_availability_domain
 from .domain.prompts import (
+    ARK_GRID_IMAGE_PROMPT,
+    ARK_GRID_IMAGE_PROMPT_B,
+    ARK_GRID_IMAGE_PROMPT_C,
+    ARK_GRID_IMAGE_PROMPT_D,
     GRID_RUNTIME_CONTRACT,
     SINGLE_IMAGE_RUNTIME_CONTRACT,
     TWO_IMAGE_RUNTIME_CONTRACT,
@@ -125,8 +129,18 @@ from .infrastructure.preview_image_repository import (
 from .preview_image_service import PreviewImageService
 from .infrastructure.media_asset_repository import MediaAssetRepository, MediaMaterializationConflict
 from .media_asset_service import MediaAssetService, canonical_source_url, is_awaiting_sync
-from .provider_config import PREMIUM_IMAGE_MODEL, PREMIUM_IMAGE_SIZE, resolve_ai_provider
-from .server_ai_proxy import merge_builtin_keys, server_ai_context
+from .provider_config import (
+    PREMIUM_IMAGE_MODEL,
+    PREMIUM_IMAGE_SIZE,
+    image_chain_supplied,
+    resolve_ai_provider,
+)
+from .server_ai_proxy import (
+    granted_image_plan,
+    merge_builtin_keys,
+    parse_image_plan,
+    server_ai_context,
+)
 
 _MEDIA_TYPES: tuple | None = None
 _LOGGER = logging.getLogger(__name__)
@@ -640,6 +654,49 @@ def _image_generation_count(value: Any, *, default: int = 4) -> int:
     except (TypeError, ValueError):
         return default
     return normalized if normalized in {1, 2, 4} else default
+
+
+def _effective_image_generation_count(value: Any) -> int:
+    """服务端下发 image_mode=single 时，强制走「4 张独立方图」路径。
+
+    nanoBanana / Gemini 系模型不遵守严格 2x2 运输四宫格契约（会出自由拼版），
+    本地切分必然失败；这类链路改用单图模式：4 张并行独立方图，无需切分。
+    开关与切换权都在服务器（后台「出图链路」的链路模式/模型），客户端只照做。
+    """
+    count = _image_generation_count(value, default=4)
+    plan = granted_image_plan()
+    if str(plan.get("image_mode") or "").strip().lower() == "single":
+        return 1
+    return count
+
+
+# 四张「生图模板卡」在方舟链路上的紧凑对应版（键为 image_template 的模板后缀）。
+# 方舟链路不能用 A/B/C/D 那份长模板（会被输入审核 400），但界面上的选择必须同样生效，
+# 所以这里做一对一映射：A=影棚无缝主图（默认）、B=人景叙事、C=静物平铺俯拍、D=环境远景。
+_ARK_GRID_TEMPLATES_BY_SUFFIX: dict[str, str] = {
+    "": ARK_GRID_IMAGE_PROMPT,
+    "_b": ARK_GRID_IMAGE_PROMPT_B,
+    "_c": ARK_GRID_IMAGE_PROMPT_C,
+    "_d": ARK_GRID_IMAGE_PROMPT_D,
+}
+
+
+def _image_prompt_profile() -> str:
+    """当前出图链路的提示词档位：'ark'（方舟 Seedream，用精简模板）或 'default'。
+
+    方舟会对**输入文本**做内容审核：为 gpt-image 调优的 3 万字符指令模板会被判
+    InputTextSensitiveContentDetected 直接 400（实测 1.4s 秒回）；而 Seedream 属自然语言
+    友好型模型，精简模板出图更稳。链路由服务端下发，客户端据此选模板。
+    """
+    plan = granted_image_plan()
+    providers = plan.get("providers") if isinstance(plan, dict) else None
+    if isinstance(providers, list) and providers:
+        first = providers[0]
+        if isinstance(first, dict):
+            host = str(first.get("base_url") or "").lower()
+            if "ark.cn-beijing.volces.com" in host:
+                return "ark"
+    return "default"
 
 
 def _max_concurrent_tasks() -> int:
@@ -1294,8 +1351,15 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         category: str = "",
     ) -> str:
         """本批次 AI 生图专项提示词：基于本批全部标题（+品类）生成一条面向该品类的
-        生图指南，用于定点爆破规避 AI 异形问题（肢体畸形、手指错乱、比例失调、文字
-        水印扭曲等）。
+        生图指南，包含三部分：(1) 日常场景 / 台面 / 配套道具方向——修正纯白无缝棚拍
+        过于空洞、呆板的问题；(2) 定点爆破规避 AI 异形问题（肢体畸形、手指错乱、
+        比例失调、文字水印扭曲等）；(3) 价值与用法展示建议——数量陈列、叠放显厚、
+        内容物、佩戴实拍、尺寸参照、套装清点、组装演示、微距嵌图、手作故事、承重演示、
+        性能证明、季节礼赠、悬挂陈列等**只写本批品类真正适用的那几条**（这部分原先被
+        四份生图模板各自罗列一遍、每次全量下发，现已归位到本批次提词，模板不再重复）。
+
+        三部分都必须带明确限制（道具从属、无品牌文字、无人物宠物、陈列物不得暗示随附）
+        与引导（具体道具名、台面材质、低饱和同色系、浅景深、每格只用一个展示手法）。
 
         由前端「提示词预设模板」板块的生成按钮显式触发一次（generate_batch_image_prompt），
         best-effort，任何失败或空结果都返回 ""，绝不阻塞。结果是不渲染的「生图指令」而非
@@ -1317,12 +1381,68 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             f"The target storefront is {target_site} and visible text inside images is in "
             f"{target_language}. Write a concise set of specialized IMAGE-GENERATION "
             "guidelines (in English) for producing carousel/detail images for THIS product "
-            "category, focused on pre-empting common AI malformation problems: anatomical "
-            "and limb anomalies, duplicated or misshapen fingers, broken hand-object "
-            "interactions, warped or garbled text/logo printing, wrong proportions, "
-            "extra limbs, and inconsistent product identity across panels. Be specific to "
-            "the category (e.g. realistic materials, correct number of fingers, crisp "
-            "printed labels, stable proportions) and actionable for a text-to-image model. "
+            "category. Cover ALL FOUR parts below, in this order.\n\n"
+            "PART 1 — SCENE, SURFACE AND REAL-LIFE COMPANION PROPS. The current renders are "
+            "too clinical: pure-white seamless studio frames with nothing else in shot. For "
+            "THIS category, describe a believable everyday setting and name the real-life "
+            "companion props that a buyer would actually use alongside the product. Give "
+            "2-4 concrete props per panel (name the objects, do not stay vague), an everyday "
+            "surface/backdrop (matte wood, stone, linen, felt, soft gradient), a muted colour "
+            "story that harmonises with the product, and a shallow depth of field so the props "
+            "sit slightly soft behind the hero.\n\n"
+            "PART 2 — QUALITY GUARDRAILS to pre-empt common AI malformation problems: "
+            "anatomical and limb anomalies, duplicated or misshapen fingers, broken "
+            "hand-object interactions, warped or garbled text/logo printing, wrong "
+            "proportions, extra limbs, and inconsistent product identity across panels. "
+            "Also name the structural features of THIS category that image models most often "
+            "get wrong - for example a handle's true curvature and attachment, a lid or spout "
+            "opening shape, a sole or base outline, a clasp, hinge or seam, the real facet "
+            "count of a polygon body - and require each of them to match the reference exactly "
+            "instead of being simplified, flattened or invented. Be "
+            "specific to the category and actionable for a text-to-image model.\n\n"
+            "PART 3 — VALUE AND USAGE DEMONSTRATION. The image templates no longer list every "
+            "possible demonstration device, so name the ones that GENUINELY apply to THIS "
+            "category and skip the rest - do not pad the list. Draw only from: quantity-forward "
+            "stacking for multipacks/sets (visible count must match the real sellable quantity); "
+            "layered overlapping stack with raking light to prove real thickness for flat or "
+            "cut-out goods; real unbranded contents staged inside containers, bags, holders or "
+            "organizers to show capacity; a partial person actually wearing the item for "
+            "wearables; a believable scale anchor (a real hand or a familiar everyday object) for "
+            "small items; laying out every real component of a bundle or kit together; the "
+            "flat/unassembled versus assembled state for goods that genuinely ship flat; one "
+            "small borderless macro inset proving real tactile detail; the real raw materials plus "
+            "the crafting tool for handmade goods; the product actually carrying the items it is "
+            "made for (hooks, racks, holders); a physically plausible real-world performance "
+            "moment for durability or water-resistance claims; seasonal or gift-cluster styling "
+            "for seasonal, holiday, gift or decorative goods; suspended/hanging staging for "
+            "ornaments and hanging decor. State explicitly that contents, companion objects, "
+            "packaging and raw materials are context only and must never look included in the "
+            "purchase, that no packaging or set content may be invented, and that each panel uses "
+            "at most ONE such demonstration device.\n\n"
+            "PART 4 — FOUR SCENE CARDS, ONE PER PANEL (they must not collide). Write a separate "
+            "scene card for each of the four panels and make the four cards clearly different from "
+            "each other. Each card must state: (a) the real space it is shot in (study desk corner, "
+            "kitchen counter, dining table, bedside table, balcony ledge, entryway console, outdoor "
+            "stone slab, or a pure studio sweep with no space at all); (b) the surface material; "
+            "(c) the light position and the time of day; (d) 2-4 named companion props; (e) the "
+            "colour tone; (f) the composition rule. Then give each card a short human-readable "
+            "one-line label in exactly this shape: `panel N | space · surface · props | light`. "
+            "HOW TO CHOOSE (state this reasoning briefly): map the category to where and when it is "
+            "really used; match the surface tone against the product colour so they contrast instead "
+            "of blending; and across the four cards cover at least three different spaces and at "
+            "least two different colour temperatures. Keep panel 1 (the marketplace hero) on a "
+            "clean pure-white seamless background with zero props.\n\n"
+            "State these HARD LIMITS explicitly in the guidelines you write:\n"
+            "- Props are strictly subordinate: visibly smaller than the product, low "
+            "saturation, same colour family, never covering, cropping, pressing on or "
+            "outshining the product, and never crossing the panel dividers.\n"
+            "- No other brands, trademarks, packaging text, price tags or slogans anywhere "
+            "in frame; no full people, no faces, no pets, no unrelated clutter; keep clean "
+            "breathing space and a visible contact shadow around the product.\n"
+            "- The product itself stays 100% identical to the reference image.\n"
+            "- The marketplace MAIN image panel (the front-view pure-white hero panel) is "
+            "EXEMPT: it must stay pure white seamless with no props, surface or scene. The "
+            "scene and prop direction applies ONLY to the remaining panels.\n\n"
             "Output ONLY plain English bullet points, no preamble, no headings, no markdown fences."
         )
         try:
@@ -1354,8 +1474,10 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
     def _apply_batch_image_guidelines(self, template: str, batch_prompt: str) -> str:
         """把「本批次 AI 专项提示词」包裹进固定约束声明后拼接到图片提示词末尾。
 
-        batch_prompt 仅为品类级内容/质量建议（定点爆破规避异形），与用户附加同理，
+        batch_prompt 为品类级内容/场景/质量建议（日常场景与配套道具方向 + 定点爆破规避
+        异形），与用户附加同理，可以改变非主图格子的背景、台面、场景、光影与道具，但
         绝不能覆盖四宫格结构、分界、面板角色、产品保真、文字与安全等固定运行时契约。
+        主图格（平台主图 / 正面白底英雄格）豁免：始终纯白无缝、不带道具与场景。
         """
         if not batch_prompt or not str(batch_prompt).strip():
             return template
@@ -1364,7 +1486,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
 
 BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MUST NOT override the fixed runtime contracts above):
 - The four-grid/single-image structure, exact dividers, split logic, panel roles, product fidelity, typography and safety rules defined above are FIXED and always take precedence.
-- Follow these guidelines ONLY for depiction quality inside the shown panels (anatomy, proportions, hands, printed text/logo legibility, material realism, product identity consistency); never for layout structure or generated text.
+- Follow these guidelines for depiction quality inside the shown panels (anatomy, proportions, hands, printed text/logo legibility, material realism, product identity consistency); never for layout structure or generated text.
+- You MAY change the background, surface, everyday scene, lighting and companion props of the NON-MAIN panels to follow these guidelines. The marketplace MAIN image panel (the front-view pure-white hero panel / first carousel image) is EXEMPT and stays pure white seamless with no props, surface or scene.
+- PROP AND SCENE SAFETY (always wins over the guidelines below): props stay strictly subordinate - visibly smaller than the product, low-saturation, same colour family, never covering, cropping, pressing on or outshining the product; no other brands, trademarks, packaging text, price tags or slogans; no full people, faces or pets, no unrelated clutter; keep clean breathing space and a visible contact shadow around the product; nothing may cross or touch the panel dividers; the product stays 100% identical to the reference image.
 - {prompt}"""
 
     def create_draft(
@@ -1790,14 +1914,19 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             for key in keys
             if isinstance(key, dict) and key.get("api_key")
         })
-        required = self._required_direct_providers({
-            "processing_scope": scope,
-            "title_optimize": False,
-            "description": False,
-            "size": False,
-            "grid_image": False,
-            "image_rewrite": False,
-        })
+        # 出图链路策略由服务端下发（开关与切换权都在服务器）；未下发时沿用内置无印直连。
+        image_plan = parse_image_plan(freeze_payload)
+        required = self._required_direct_providers(
+            {
+                "processing_scope": scope,
+                "title_optimize": False,
+                "description": False,
+                "size": False,
+                "grid_image": False,
+                "image_rewrite": False,
+            },
+            image_chain=image_chain_supplied(image_plan),
+        )
         _remember_batch_freeze(
             freeze_id,
             account_id=str(account_id or ""),
@@ -1818,7 +1947,9 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     + "、".join(missing)
                     + "），无法客户端直连，任务已中止"
                 )
-            with server_ai_context(remote_token, {}, granted_keys=granted, freeze_id=freeze_id):
+            with server_ai_context(
+                remote_token, {}, granted_keys=granted, freeze_id=freeze_id, image_plan=image_plan
+            ):
                 result = run()
         except Exception:
             self._settle_combo_freeze(remote_token, freeze_id, scope, success=False)
@@ -4711,6 +4842,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         workspace_id: str = "local",
         force: bool = False,
         persist: bool = True,
+        skip_text_check: bool = False,
     ) -> dict[str, Any]:
         """处理设置页级「SKU 规格图可用性判断」（严格口径 + 并行 OCR）。
 
@@ -4729,6 +4861,11 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
           即落 ``not_square_image`` 判不可用，导出回退商品主图（我们生成的方图），
           并跳过该链接的 OCR；
         - 所有图片一次性提交线程池并行 OCR，实际并发受 ocr_gate 推理上限约束；
+        - ``skip_text_check=True``（前端「跳过中文检测」）：只做零成本的 1:1 尺寸口径判断，
+          完全跳过中文 OCR（实测约 277ms/张，4 并发下 1400 张约 98 秒），据此落
+          ``clean`` + ``reason=text_check_skipped``（并在结论里留下 ``text_check_skipped``
+          标记），导出侧因此按「规格原图可用」处理；非 1:1 仍照常拦住，保住店小秘
+          「变种预览图必须方图，否则整单拒收」这条硬合规。
         - 返回 ``chinese_variant_keys``（检出中文的变种导出键）与 ``all_sku_chinese``
           （全部有图 SKU 都含中文），供前端「优化链接 SKU」决定剔除哪些变种；
         - 另返回 ``not_square_variant_keys``（规格原图非 1:1 的变种导出键），供前端提示
@@ -4801,6 +4938,10 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 continue
             plan["status"] = "pending"
             plan["_sku_keys"] = {key for _asset_id, key in sku_targets if key}
+            if skip_text_check:
+                # 只判尺寸、跳过中文 OCR：不再进 OCR 队列，收尾处按「尺寸口径可用」定论。
+                plan["text_check_skipped"] = True
+                continue
             tasks.extend(
                 (draft_id, asset_id, variant_key) for asset_id, variant_key in sku_targets
             )
@@ -4832,6 +4973,12 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             plan["all_sku_chinese"] = bool(sku_keys) and sku_keys <= chinese_keys
             plan["chinese_variant_keys"] = sorted(chinese_keys)
             if plan["status"] != "pending":
+                continue
+            if plan.get("text_check_skipped"):
+                # 用户选择「只判尺寸、跳过中文检测」：1:1 已在上面拦过，这里直接按
+                # 尺寸口径判可用，导出侧因此使用规格原图。结论里保留 text_check_skipped
+                # 标记与 reason，便于事后分辨「真的没检出中文」与「根本没检」。
+                plan.update(status="clean", clean=True, reason="text_check_skipped")
                 continue
             if plan["failed"]:
                 plan.update(status="unavailable", reason="text_check_failed")
@@ -5927,13 +6074,17 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             )
         return self._execute_task_direct(task_id, workspace_id, token)
 
-    def _required_direct_providers(self, settings: dict[str, Any]) -> set[str]:
-        """根据处理范围推导直连所需第三方密钥：文本/视觉走 ark，生图走 wuyin。"""
+    def _required_direct_providers(self, settings: dict[str, Any], *, image_chain: bool = False) -> set[str]:
+        """根据处理范围推导直连所需第三方密钥：文本/视觉走 ark，生图走 wuyin。
+
+        ``image_chain=True``：服务端已下发可用出图链路（例如故障期切到中转），生图不再
+        依赖 wuyin 短期密钥，因此不再把它算作必需。
+        """
         kinds = {kind for kind, _feature in self._billable_product_processing_features(settings)}
         providers: set[str] = set()
         if kinds & {"text", "vision"}:
             providers.add("ark")
-        if "image_grid" in kinds:
+        if "image_grid" in kinds and not image_chain:
             providers.add("wuyin")
         return providers
 
@@ -5970,6 +6121,8 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             for key in keys
             if isinstance(key, dict) and key.get("api_key")
         })
+        # 出图链路策略由服务端下发（开关与切换权都在服务器）；未下发时沿用内置无印直连。
+        image_plan = parse_image_plan(freeze_payload)
         _remember_batch_freeze(
             freeze_id,
             account_id=account_id,
@@ -5980,7 +6133,9 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             item_ids=[int(item["item_id"]) for item in pending],
         )
         try:
-            required = self._required_direct_providers(settings)
+            required = self._required_direct_providers(
+                settings, image_chain=image_chain_supplied(image_plan)
+            )
             missing = sorted(provider for provider in required if not granted.get(provider))
             if missing:
                 # 冻结成功但「既未下发、也无客户端内置兜底」所需直连密钥：说明服务端签发
@@ -5992,7 +6147,9 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     + "、".join(missing)
                     + "），无法客户端直连，任务已中止"
                 )
-            with server_ai_context(token, {}, granted_keys=granted, freeze_id=freeze_id):
+            with server_ai_context(
+                token, {}, granted_keys=granted, freeze_id=freeze_id, image_plan=image_plan
+            ):
                 with self._task_execution_gate:
                     result = self._execute_task_impl(task_id, workspace_id)
         finally:
@@ -7811,8 +7968,8 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     "need_detail": need_detail,
                     "premium_mode": premium_mode,
                     "image_template": effective_image_template,
-                    "image_generation_count": _image_generation_count(
-                        settings.get("image_generation_count"), default=4
+                    "image_generation_count": _effective_image_generation_count(
+                        settings.get("image_generation_count")
                     ),
                     "target_site": target_site,
                     "target_language": target_language,
@@ -7857,8 +8014,8 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
 
         # Once the authoritative subject is accepted, media starts immediately.
         # It deliberately uses the source title, never Doubao-generated listing copy.
-        image_generation_count = _image_generation_count(
-            settings.get("image_generation_count"), default=4
+        image_generation_count = _effective_image_generation_count(
+            settings.get("image_generation_count")
         )
         media_executor = None
         grid_future = None
@@ -9054,7 +9211,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         if not media_types:
             return GridImageOutput()
         processor_cls, media_config_error, media_error = media_types
-        image_generation_count = _image_generation_count(image_generation_count, default=4)
+        image_generation_count = _effective_image_generation_count(image_generation_count)
         note_key = "four_grid" if image_generation_count == 4 else "image_set"
         attempt_count = 0
         provider_status_class = "success"
@@ -9075,8 +9232,19 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 if image_generation_count == 4
                 else ("image_set" + _template_suffix)
             )
+            base_template = DEFAULT_PROMPTS.get(prompt_key, "")
+            if image_generation_count == 4 and _image_prompt_profile() == "ark":
+                # 方舟对输入文本做内容审核：为 gpt-image 调优的长指令模板会被判敏感直接 400
+                # （实测 1.4s 秒回 3 万字符那份）。因此这里换成与四张模板卡一一对应的
+                # 「方舟紧凑版」（各约 1.5 千字符）：结构/保真/几何/文字仍在
+                # GRID_RUNTIME_CONTRACT 里，紧凑版只承载画面方向 + 区域规划，
+                # 这样界面上选「影棚无缝主图 / 人景叙事 / 静物平铺俯拍 / 环境远景」在方舟
+                # 链路上同样生效（此前无论选哪张都会被同一份模板覆盖）。
+                base_template = _ARK_GRID_TEMPLATES_BY_SUFFIX.get(
+                    _template_suffix, ARK_GRID_IMAGE_PROMPT
+                )
             template = self._apply_batch_image_guidelines(
-                self._apply_user_image_additions(DEFAULT_PROMPTS.get(prompt_key, ""), prompt_key),
+                self._apply_user_image_additions(base_template, prompt_key),
                 batch_image_prompt,
             )
             contracted = apply_language_contract_to_prompt(template, "grid_image", target_language, target_site)

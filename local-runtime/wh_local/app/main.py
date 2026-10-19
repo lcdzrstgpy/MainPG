@@ -15,7 +15,7 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 logger = logging.getLogger("wh_local.app")
@@ -43,12 +43,14 @@ from ..config import (
 )
 from ..customer.auth_service import SQLiteCustomerAuthService
 from ..customer.collect_credentials import CollectCredentialsError, request_collect_credentials
+from ..customer.contracts import CustomerAuthPermissionError
 from ..customer.db_store import SQLiteCustomerSessionStore
 from ..customer.email_sender import TencentCloudSESEmailSender
 from ..customer.local_session import LocalSessionService
 from ..customer.remote_client import CustomerAuthClient
 from ..customer.routes import create_customer_router
 from ..customer.admin_proxy import create_admin_proxy_router
+from ..migration_routes import create_migration_router
 from ..pod_log_upload import PodLogUploadTask
 from ..runtime_logs import runtime_log_dir
 from ..data_collection import (
@@ -651,6 +653,13 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     )
     if remote_customer_auth.configured():
         app.include_router(create_admin_proxy_router(remote_customer_auth, customer_sessions))
+    # 换机数据迁移：整库快照导出 / 导入（导入的库在下次启动、开库之前替换）。
+    # service=clipforge：导入会覆盖它正在用的库与素材目录，先停后启。
+    app.include_router(
+        create_migration_router(
+            config.data_dir, db_path, customer_sessions, service=clipforge
+        )
+    )
 
     app.include_router(create_basic_settings_router(db_path))
     # 登录页「账号管理」：本地记住登录过的账号与（可选保存的）密码，DPAPI 加密
@@ -737,6 +746,25 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     )
     app.include_router(combo_kit_router)
     register_combo_kit_exception_handlers(app)
+
+    @app.exception_handler(CustomerAuthPermissionError)
+    async def _customer_auth_permission_handler(  # noqa: ARG001
+        request: Request, exc: CustomerAuthPermissionError
+    ) -> JSONResponse:
+        """会话失效类 401 的全局兜底。
+
+        POD / 商品处理 / combo_kit 的 ``_call`` 包装只捕
+        ``CustomerBillingPermissionError``，而 ``CustomerAuthPermissionError``
+        继承 ``PermissionError``、不在它们的兜底链里，会逃逸出路由变成 500。
+        这里统一映回上游状态码 + 原文，让前端 transport/http/client.ts 的
+        ``isSessionExpired()``（要求 ``status === 401`` 且 detail 命中会话关键词）
+        能把用户送回登录页，而不是显示 500。
+
+        不会泄露上游细节：能走到这里的基本是 ``_SESSION_FAILURE_DETAIL`` 白名单
+        内的 4 个会话短语（账号操作类由 customer/routes.py 自行映射，不经过此处）。
+        """
+        return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
+
     app.state.combo_kit_service = getattr(combo_kit_router, "combo_kit_service")
     app.state.combo_kit_task_worker = getattr(combo_kit_router, "combo_kit_worker")
 

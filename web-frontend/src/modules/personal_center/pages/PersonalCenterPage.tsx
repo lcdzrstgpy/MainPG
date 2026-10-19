@@ -39,6 +39,7 @@ import { PreferencesPanel } from "../components/PreferencesPanel";
 import { FeedbackPanel } from "../components/FeedbackPanel";
 import { PromotionPlanPanel } from "../components/PromotionPlanPanel";
 import { StorageSpacePanel } from "../components/StorageSpacePanel";
+import { DataMigrationPanel } from "../components/DataMigrationPanel";
 import "../styles/personalCenter.css";
 
 type AccountSnapshot = {
@@ -401,7 +402,7 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
   const defaultUsageFilterKey = buildUsageFilterKey("", "", "", "");
 
   const [summary, setSummary] = useState<BillingSummary | null>(cachedBalance?.summary ?? null);
-  const [activePanel, setActivePanel] = useState<"wallet" | "usage" | "pricing" | "model" | "preferences" | "version" | "storage" | "promo" | "feedback">("wallet");
+  const [activePanel, setActivePanel] = useState<"wallet" | "usage" | "pricing" | "model" | "preferences" | "version" | "storage" | "migration" | "promo" | "feedback">("wallet");
 
   // 二级导航的选中高亮是一块共享滑块在移动（SwiftUI matchedGeometryEffect 思路），
   // 而不是每个按钮各自换底色。换行时退回按钮自身的胶囊底色。
@@ -2084,6 +2085,11 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
                 </span>
                 <div className="ledger-row-main">
                   <strong>{ledgerSourceLabel(item.source_type)}</strong>
+                  {item.note ? (
+                    <span className="ledger-row-note" title={item.note}>
+                      {item.note}
+                    </span>
+                  ) : null}
                   <span>{formatUsageTime(item.created_at)}</span>
                 </div>
                 <div className="ledger-row-side">
@@ -2274,6 +2280,8 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
           <SystemVersionPanel />
         ) : activePanel === "storage" ? (
           <StorageSpacePanel />
+        ) : activePanel === "migration" ? (
+          <DataMigrationPanel />
         ) : activePanel === "promo" ? (
           <PromotionPlanPanel />
         ) : activePanel === "feedback" ? (
