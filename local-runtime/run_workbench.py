@@ -705,6 +705,7 @@ def main() -> int:
             )
     if card is not None:
         card.set_port(port)
+        card.set_progress(0.25)  # 端口已绑定
 
     # 后端 app 在模块导入阶段即执行 create_app()/init_db()；此处捕获其异常并落盘，
     # 否则 uvicorn 永远不会启动，用户只看到“页面开了、端口没有”且无任何报错。
@@ -724,8 +725,14 @@ def main() -> int:
         )
         return 1
 
+    if card is not None:
+        # import 后端（create_app + init_db + 结构迁移）是冷启动最耗时的一段，
+        # 也是唯一拿不到细粒度进度的一段 —— 这里只在它结束时打一个点。
+        card.set_progress(0.55)
+
     url = _workbench_url(args.host, port, APP_VERSION)
     if card is not None:
+        card.set_progress(0.65)  # 交给 uvicorn，剩下一段由探活慢慢爬到 95%
         # 卡片自己探 /health，就绪后淡出并打开浏览器；主线程不等它，直接起 uvicorn。
         card.watch(
             probe=lambda: _is_backend_ready(args.host, port),

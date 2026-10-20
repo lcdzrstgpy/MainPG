@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import sys
 import threading
 import time
@@ -45,6 +46,42 @@ PROBE_INTERVAL = 0.6
 FADE_MS = 320
 #: 端口冲突时等用户选择的上限；没人选就顺延（绝不擅自杀别人的进程）。
 CONFLICT_TIMEOUT_SECONDS = 20.0
+
+#: 启动阶段文案池。启动过程是确定性的（绑端口 → import 后端 → uvicorn），
+#: 但「正在干什么」对用户没有分辨价值，逐字播报反而像日志。每次启动随机挑
+#: 几条、按随机间隔轮播，纯粹让等待不那么死板 —— 别把它当真实进度。
+_PHRASE_POOL = (
+    "正在唤醒服务",
+    "正在加载配置",
+    "正在检查更新",
+    "正在连接云端",
+    "正在恢复工作区",
+    "正在同步公告",
+    "正在准备素材库",
+    "正在校准图像引擎",
+    "正在整理商品数据",
+    "正在唤醒视频服务",
+    "正在检查计费状态",
+    "正在加载主题",
+    "正在点亮界面",
+    "正在准备浏览器",
+    "正在整理缓存",
+    "正在播种田野",
+    "正在连接服务器",
+    "正在读取本地数据",
+    "正在重建索引",
+    "正在预热模型",
+    "正在加载字体",
+    "正在检查账号状态",
+    "正在同步消息",
+    "正在恢复上次进度",
+    "正在生成预览",
+    "正在校验文件",
+    "正在准备画布",
+    "正在调整色板",
+    "正在加载插件",
+    "正在收尾",
+)
 #: 背景动画帧率：与素材抽帧时的 fps 一致（5 秒视频 → 60 帧）。
 FRAME_FPS = 12
 #: LRU 缓存的解码帧数：12 帧 × 1.5MB ≈ 18MB，足够覆盖一秒画面（全量缓存要 93MB）。
@@ -137,6 +174,8 @@ if _QT_OK:
         sig_set_port = Signal(int)
         sig_set_status = Signal(str, str)
         sig_finished = Signal()
+        #: 进度（0.0~1.0）。关键节点由 run_workbench 打点，中间由卡片自己爬。
+        sig_set_progress = Signal(float)
         #: 端口冲突询问（端口 / 占用者 / PID）；点击后由 sig_decision 回传。
         sig_conflict = Signal(int, str, int)
         sig_clear_conflict = Signal()
@@ -159,6 +198,16 @@ if _QT_OK:
             self._status = "正在启动"
             self._note = ""
             self._finished = False
+            # 启动没有真实百分比可拿（import 后端是黑盒），所以这里只做
+            # 「关键节点打点 + 节点之间平滑插值」，见 set_progress()。
+            self._progress = 0.08
+            self._target_progress = 0.08
+            # 每次启动随机挑 5~8 条轮播（纯装饰，见 _PHRASE_POOL 注释）。
+            # 一旦有真实状态要显示（冲突/超时），_auto_phrase 关掉，文案不再被顶掉。
+            self._phrases = random.sample(_PHRASE_POOL, random.randint(5, 8))
+            self._phrase_index = 0
+            self._auto_phrase = True
+            self._status = self._phrases[0]
 
             self.setWindowFlags(
                 Qt.WindowType.FramelessWindowHint
@@ -189,6 +238,7 @@ if _QT_OK:
 
             self.sig_set_port.connect(self._apply_port)
             self.sig_set_status.connect(self._apply_status)
+            self.sig_set_progress.connect(self._apply_progress)
             self.sig_finished.connect(self._fade_and_close)
             self.sig_conflict.connect(self._apply_conflict)
             self.sig_clear_conflict.connect(self._clear_conflict)
@@ -213,12 +263,31 @@ if _QT_OK:
             self._frame_timer.setInterval(int(1000 / FRAME_FPS))
             self._frame_timer.timeout.connect(self._advance_frame)
             self._frame_timer.start()
+
+            # 文案按随机间隔轮播（1.2~2.8 秒），和进度条脱钩。挂在进度上就成了
+            # 「每 25% 换一句」，一眼看出是排好的。
+            self._phrase_timer = QTimer(self)
+            self._phrase_timer.setSingleShot(True)
+            self._phrase_timer.timeout.connect(self._rotate_phrase)
+            self._schedule_phrase()
             self.move(self._base_x, self._base_y)
+
+        def _schedule_phrase(self) -> None:
+            self._phrase_timer.start(random.randint(1200, 2800))
+
+        def _rotate_phrase(self) -> None:
+            if not self._auto_phrase or not self._phrases:
+                return
+            self._phrase_index = (self._phrase_index + 1) % len(self._phrases)
+            self._status = self._phrases[self._phrase_index]
+            self.update()
+            self._schedule_phrase()
 
         def _apply_conflict(self, port: int, process_name: str, pid: int) -> None:
             """把卡片切成「请选择」形态：显示两个按钮，并允许点击。"""
             self._conflict = {"port": port, "name": process_name, "pid": pid}
             self._status = "等你选一下"
+            self._auto_phrase = False
             self._note = f"{port} 被「{process_name}」占用，要关掉它还是换个端口？"
             self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
             self._btn_kill.setText(f"关掉它，继续用 {port}")
@@ -278,6 +347,13 @@ if _QT_OK:
             return image
 
         def _advance_frame(self) -> None:
+            # 顺便把进度往目标值推一格（指数逼近，约半秒到位，避免跳变）
+            if self._progress < self._target_progress:
+                self._progress = min(
+                    self._target_progress,
+                    self._progress + (self._target_progress - self._progress) * 0.15,
+                )
+                self.update()
             if len(self._frame_paths) < 2:
                 return
             self._frame_index = (self._frame_index + 1) % len(self._frame_paths)
@@ -350,12 +426,26 @@ if _QT_OK:
             painter.drawText(QRectF(px + 30, py, pill_w - 34, pill_h),
                              Qt.AlignmentFlag.AlignVCenter, pill_text)
 
+            # 进度条：进度本身是「关键节点 + 平滑插值」，不是真实百分比。
+            # 冲突态底部留给两个按钮，这里不画。
+            if not self._conflict:
+                bar_w, bar_h = 260, 3
+                bx = (w - bar_w) / 2
+                by = py + pill_h + 14
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor(255, 255, 255, 46))
+                painter.drawRoundedRect(QRectF(bx, by, bar_w, bar_h), bar_h / 2, bar_h / 2)
+                painter.setBrush(QColor(151, 196, 89, 235))
+                painter.drawRoundedRect(
+                    QRectF(bx, by, max(bar_h, bar_w * self._progress), bar_h), bar_h / 2, bar_h / 2
+                )
+
             if self._note:
                 painter.setFont(QFont("Microsoft YaHei", 11))
                 # 备注压在亮草地上，颜色要够亮（原来 215 透明度的暖黄在绿地上发暗）。
                 painter.setPen(QColor(255, 242, 208, 245))
                 painter.drawText(
-                    QRectF(0, py + pill_h + 10, w, 22),
+                    QRectF(0, py + pill_h + 26, w, 22),
                     Qt.AlignmentFlag.AlignCenter,
                     self._note,
                 )
@@ -379,13 +469,20 @@ if _QT_OK:
         def _apply_status(self, status: str, note: str) -> None:
             self._status = status or self._status
             self._note = note
+            # 有真实状态了（冲突 / 超时 / 顺延说明），别让随机文案再顶掉它。
+            self._auto_phrase = False
             self.update()
+
+        def _apply_progress(self, value: float) -> None:
+            # 只推进进度本身：文案由 _rotate_phrase 按随机间隔轮播，两者脱钩。
+            self._target_progress = max(0.0, min(1.0, float(value)))
 
         def _fade_and_close(self) -> None:
             if self._finished:
                 return
             self._finished = True
             self._frame_timer.stop()
+            self._phrase_timer.stop()
             self.setWindowOpacity(1.0)
             self._fade = QPropertyAnimation(self, b"windowOpacity", self)
             self._fade.setDuration(FADE_MS)
@@ -419,6 +516,7 @@ class SplashCard:
         self._watchdog: threading.Thread | None = None
         self._decision = ""
         self._decision_event = threading.Event()
+        self._progress = 0.08
 
     # ------------------------------------------------------------- 生命周期
 
@@ -480,6 +578,10 @@ class SplashCard:
                     if self._probe():
                         self._finish()
                         return
+                    # 还没就绪：缓慢爬向 95%（探活每 0.6 秒一次 → 每 3 秒 +10%），
+                    # 避免进度条长时间钉在一个数字上像卡死。
+                    if self._progress < 0.95:
+                        self.set_progress(min(0.95, self._progress + 0.02))
                 except Exception:  # noqa: BLE001
                     pass
             if not timed_out and now - started > timeout:
@@ -490,6 +592,7 @@ class SplashCard:
 
     def _finish(self) -> None:
         logger.info("后端已就绪，收起启动卡片并打开工作台")
+        self.set_progress(1.0)
         widget = self._widget
         if widget is not None:
             try:
@@ -566,6 +669,16 @@ class SplashCard:
         if widget is not None:
             try:
                 widget.sig_set_status.emit(status, note)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def set_progress(self, value: float) -> None:
+        """推进进度（0.0~1.0）。只在关键节点调用；中间的平滑由卡片自己做。"""
+        self._progress = max(0.0, min(1.0, float(value)))
+        widget = self._widget
+        if widget is not None:
+            try:
+                widget.sig_set_progress.emit(self._progress)
             except Exception:  # noqa: BLE001
                 pass
 
