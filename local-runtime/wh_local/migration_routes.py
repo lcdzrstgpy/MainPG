@@ -18,6 +18,10 @@ from fastapi.responses import FileResponse
 
 from . import migration
 
+#: 迁移包体积上限。挡的是「误选一个几十 GB 的镜像文件」把数据盘写满，
+#: 不是挡正常用户 —— 素材多的机器几 GB 很常见，给足余量。
+MAX_UPLOAD_BYTES = 64 * 1024 * 1024 * 1024
+
 
 def _public_job(job: dict[str, Any]) -> dict[str, Any]:
     return {
@@ -36,9 +40,13 @@ def create_migration_router(
     data_dir: Path,
     db_path: Path | None,
     sessions: Any,
+    *,
+    service: Any = None,
 ) -> APIRouter:
+    """``service`` 是内嵌的 ClipForge 服务：导入会覆盖它正在用的库与素材，
+    因此导入前要停、导入后要恢复（见 MigrationJobs._pause_embedded_service）。"""
     router = APIRouter(prefix="/api/migration", tags=["migration"])
-    jobs = migration.MigrationJobs(data_dir, db_path)
+    jobs = migration.MigrationJobs(data_dir, db_path, service)
 
     def require_session(authorization: str | None = Header(default=None)) -> Any:
         token = ""
@@ -60,7 +68,11 @@ def create_migration_router(
 
     @router.post("/export")
     def start_export(_session: Any = Depends(require_session)) -> dict[str, Any]:
-        job = jobs.start_export()
+        try:
+            job = jobs.start_export()
+        except RuntimeError as exc:
+            # 已有任务在跑：明确 409，别让用户看到 500 或重复点出两个导出。
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         return _public_job(job)
 
     @router.get("/export/{job_id}")
@@ -96,18 +108,39 @@ def create_migration_router(
             )
         upload_dir = data_dir / migration.UPLOAD_DIR_NAME
         upload_dir.mkdir(parents=True, exist_ok=True)
+        # 上一次上传如果中途失败/进程被杀，这里可能留着几个 GB 的死文件。
+        for stale in upload_dir.glob(f"*{migration.ARCHIVE_SUFFIX}"):
+            stale.unlink(missing_ok=True)
         target = upload_dir / f"{uuid.uuid4().hex}{migration.ARCHIVE_SUFFIX}"
+        written = 0
         try:
             with open(target, "wb") as dst:
                 while True:
                     chunk = await archive.read(1024 * 1024)
                     if not chunk:
                         break
+                    written += len(chunk)
+                    if written > MAX_UPLOAD_BYTES:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=(
+                                "迁移包超过 64 GB 上限，请确认选的是 .mainpgbak 备份包"
+                                "（不是素材盘里的其它大文件）"
+                            ),
+                        )
                     dst.write(chunk)
+        except HTTPException:
+            target.unlink(missing_ok=True)
+            raise
         except OSError as exc:
             target.unlink(missing_ok=True)
             raise HTTPException(status_code=500, detail=f"迁移包保存失败：{exc}") from exc
-        return _public_job(jobs.start_import(target))
+        try:
+            job = jobs.start_import(target)
+        except RuntimeError as exc:
+            target.unlink(missing_ok=True)
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return _public_job(job)
 
     @router.get("/import/{job_id}")
     def import_status(job_id: str, _session: Any = Depends(require_session)) -> dict[str, Any]:

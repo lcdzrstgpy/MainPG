@@ -1547,6 +1547,17 @@
   font-weight: 600;
 }
 
+/* 管理员调账原因：可能较长，单行截断，完整内容靠 title 提示。 */
+.ledger-row-main .ledger-row-note {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--theme-text-primary, #132238);
+  font-weight: 650;
+  opacity: 0.75;
+}
+
 .ledger-row-side {
   display: grid;
   gap: 3px;

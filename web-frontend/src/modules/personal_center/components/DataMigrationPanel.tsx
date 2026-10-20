@@ -126,7 +126,17 @@ export function DataMigrationPanel() {
       document.body.appendChild(link);
       link.click();
       link.remove();
-      showToast(`迁移包已开始下载（${formatBytes(finished.result?.bytes ?? 0)}）`, "success");
+      showToast(
+        `迁移包已开始下载（${formatBytes(finished.result?.bytes ?? 0)}，含全部业务数据，请妥善保管、不要外发）`,
+        "success",
+      );
+      const skipped = finished.result?.skipped_assets ?? 0;
+      if (skipped > 0) {
+        showToast(
+          `有 ${skipped} 个素材文件读取失败、没进包（可能被杀毒软件占用），到新机可能缺这些图`,
+          "error",
+        );
+      }
     } catch (error) {
       showToast(error instanceof Error ? error.message : "导出失败", "error");
     } finally {
@@ -155,12 +165,19 @@ export function DataMigrationPanel() {
         return;
       }
       const failed = finished.result?.asset_errors ?? 0;
-      showToast(
+      const notice = finished.result?.version_notice ?? "";
+      const saveRoot = finished.result?.save_root_notice ?? "";
+      const overwritten = finished.result?.asset_overwritten ?? 0;
+      const base =
         failed > 0
           ? `迁移包已导入（${failed} 个素材文件没还原成功），请重新打开工作台让它生效`
-          : "迁移包已导入，请关闭并重新打开工作台让它生效",
-        failed > 0 ? "info" : "success",
-      );
+          : "迁移包已导入，请关闭并重新打开工作台让它生效";
+      const extra = [
+        overwritten > 0 ? `覆盖了 ${overwritten} 个同名素材文件` : "",
+        notice,
+        saveRoot ? `产品库目录已改到本机默认位置（原路径在本机不可用）：${saveRoot}` : "",
+      ].filter(Boolean).join("；");
+      showToast(extra ? `${base}（${extra}）` : base, failed > 0 ? "info" : "success");
     } catch (error) {
       showToast(error instanceof Error ? error.message : "导入失败", "error");
     } finally {
@@ -200,10 +217,28 @@ export function DataMigrationPanel() {
       )}
 
       {hasPending && (
+        <p
+          className={`storage-hint${plan?.pending?.apply_error ? " storage-hint-error" : ""}`}
+          role={plan?.pending?.apply_error ? "alert" : "status"}
+        >
+          {plan?.pending?.apply_error ? (
+            <>
+              上次启动时没能替换数据库：<b>{plan.pending.apply_error}</b>
+              。请先关闭占用工作台数据目录的程序（包括同时打开的另一个工作台），再重新打开工作台。
+            </>
+          ) : (
+            <>
+              上次导入的数据已就绪：<b>请关闭并重新打开工作台</b>，它会自动替换数据库并生效
+            </>
+          )}
+          {plan?.pending?.staged_at ? `（导入时间 ${plan.pending.staged_at}）` : ""}
+          。生效前不能再次导入。
+        </p>
+      )}
+
+      {hasPending && plan?.pending?.version_notice && (
         <p className="storage-hint" role="status">
-          上次导入的数据已就绪：<b>请关闭并重新打开工作台</b>，它会自动替换数据库并生效
-          {plan?.pending?.staged_at ? `（导入时间 ${plan.pending.staged_at}）` : ""}。
-          生效前不能再次导入。
+          {plan.pending.version_notice}
         </p>
       )}
 

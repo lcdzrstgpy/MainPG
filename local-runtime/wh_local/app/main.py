@@ -637,7 +637,10 @@ def create_app(database_path: Path | None = None) -> FastAPI:
 
     @app.get("/health")
     def health() -> dict[str, Any]:
-        return {"ok": True, "database_path": str(db_path)}
+        # app_version 是给启动器用的：端口上如果跑着「上个版本」的旧进程，
+        # 光看 database_path 完全一样，复用之后用户看到的就是旧界面
+        # （2026-10-19 排查「升级后还是老样子」时确认的缺口）。
+        return {"ok": True, "database_path": str(db_path), "app_version": APP_VERSION}
 
     if os.environ.get("WH_LOCAL_ENABLE_DEMO_PAGE", "").strip().lower() in {"1", "true", "yes"}:
 
@@ -687,7 +690,12 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     if remote_customer_auth.configured():
         app.include_router(create_admin_proxy_router(remote_customer_auth, customer_sessions))
     # 换机数据迁移：整库快照导出 / 导入（导入的库在下次启动、开库之前替换）。
-    app.include_router(create_migration_router(config.data_dir, db_path, customer_sessions))
+    # service=clipforge：导入会覆盖它正在用的库与素材目录，先停后启。
+    app.include_router(
+        create_migration_router(
+            config.data_dir, db_path, customer_sessions, service=clipforge
+        )
+    )
 
     app.include_router(create_basic_settings_router(db_path))
     # 登录页「账号管理」：本地记住登录过的账号与（可选保存的）密码，DPAPI 加密

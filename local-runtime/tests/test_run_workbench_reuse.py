@@ -55,15 +55,19 @@ def _serve(payload: object, *, raw: str | None = None):
 
 
 def test_probe_returns_database_path_for_running_workbench() -> None:
-    with _serve({"ok": True, "database_path": "D:/data/workbench.sqlite3"}) as port:
+    """返回 (数据目录, 版本号)：版本号用来识别「端口上跑的是旧版本」。"""
+    with _serve(
+        {"ok": True, "database_path": "D:/data/workbench.sqlite3", "app_version": "1.5.7"}
+    ) as port:
         assert run_workbench._probe_running_workbench("127.0.0.1", port) == (
-            "D:/data/workbench.sqlite3"
+            "D:/data/workbench.sqlite3",
+            "1.5.7",
         )
 
 
 def test_probe_returns_empty_string_when_database_path_missing() -> None:
     with _serve({"ok": True}) as port:
-        assert run_workbench._probe_running_workbench("127.0.0.1", port) == ""
+        assert run_workbench._probe_running_workbench("127.0.0.1", port) == ("", "")
 
 
 def test_probe_returns_none_for_foreign_service() -> None:
@@ -158,7 +162,9 @@ def test_main_reuses_running_instance_without_releasing_port(monkeypatch, tmp_pa
     _patch_main_common(monkeypatch, tmp_path)
     monkeypatch.setattr(run_workbench, "_port_in_use", lambda host, port: True)
     monkeypatch.setattr(
-        run_workbench, "_probe_running_workbench", lambda host, port: "D:/data/workbench.sqlite3"
+        run_workbench,
+        "_probe_running_workbench",
+        lambda host, port: ("D:/data/workbench.sqlite3", "1.5.6"),
     )
     monkeypatch.setattr(
         run_workbench,
@@ -173,28 +179,31 @@ def test_main_reuses_running_instance_without_releasing_port(monkeypatch, tmp_pa
     monkeypatch.setattr(
         run_workbench,
         "_reuse_running_workbench",
-        lambda args, db: calls.__setitem__("reuse", calls["reuse"] + 1),
+        lambda args, db, version="": calls.__setitem__("reuse", calls["reuse"] + 1),
     )
 
     assert run_workbench.main() == 0
     assert calls == {"release": 0, "bind": 0, "reuse": 1}
 
 
-def test_main_releases_port_when_holder_is_not_the_workbench(monkeypatch, tmp_path) -> None:
-    """端口被别的程序（或卡死的后端）占着 → 仍走原有的「征询后释放」流程。"""
-    calls = {"release": 0, "reuse": 0}
+def test_main_never_kills_a_foreign_port_holder(monkeypatch, tmp_path) -> None:
+    """端口被别的程序占着 → 不杀它，也不弹窗，直接顺延端口。"""
+    calls = {"kill": 0, "reuse": 0}
     _patch_main_common(monkeypatch, tmp_path)
     monkeypatch.setattr(run_workbench, "_port_in_use", lambda host, port: True)
     monkeypatch.setattr(run_workbench, "_probe_running_workbench", lambda host, port: None)
+    monkeypatch.setattr(run_workbench, "_port_owners", lambda port: [4242])
+    monkeypatch.setattr(run_workbench, "_process_name", lambda pid: "chrome.exe")
     monkeypatch.setattr(
-        run_workbench,
-        "_release_default_port",
-        lambda host, port: calls.__setitem__("release", calls["release"] + 1),
+        run_workbench, "_kill_pid", lambda pid: calls.__setitem__("kill", calls["kill"] + 1)
+    )
+    monkeypatch.setattr(
+        run_workbench, "_resolve_port_conflict", lambda host, port, card: False
     )
     monkeypatch.setattr(
         run_workbench,
         "_reuse_running_workbench",
-        lambda args, db: calls.__setitem__("reuse", calls["reuse"] + 1),
+        lambda args, db, version="": calls.__setitem__("reuse", calls["reuse"] + 1),
     )
 
     def _no_port(host: str, port: int):
@@ -203,7 +212,7 @@ def test_main_releases_port_when_holder_is_not_the_workbench(monkeypatch, tmp_pa
     monkeypatch.setattr(run_workbench, "_bind_server_socket", _no_port)
 
     assert run_workbench.main() == 1
-    assert calls == {"release": 1, "reuse": 0}
+    assert calls == {"kill": 0, "reuse": 0}
 
 
 def test_reuse_notifies_when_browser_open_fails(monkeypatch) -> None:
@@ -223,3 +232,21 @@ def test_reuse_notifies_when_browser_open_fails(monkeypatch) -> None:
     assert len(notices) == 1
     assert "手动在浏览器打开" in notices[0]
     assert "http://127.0.0.1:8010/" in notices[0]
+
+
+def test_workbench_url_carries_a_fresh_nonce_each_launch() -> None:
+    """启动 URL 必须每次都不一样。
+
+    webbrowser.open 对「已打开的同 URL 标签」只会切到前台、不重新加载 —— 用户
+    「叉掉浏览器再点启动」看到关闭前那一屏（含停在掉线遮罩上的冻结页面）就是这个
+    原因（2026-10-19 用户反馈）。nonce 保证每次都是新导航。
+    """
+    import time as _time
+
+    first = run_workbench._workbench_url("127.0.0.1", 8010, "1.5.7")
+    _time.sleep(0.002)
+    second = run_workbench._workbench_url("127.0.0.1", 8010, "1.5.7")
+
+    assert first.startswith("http://127.0.0.1:8010/?app_version=1.5.7")
+    assert "&t=" in first, "缺少一次性 nonce 会导致浏览器复用旧标签"
+    assert first != second, "两次启动的 URL 必须不同"

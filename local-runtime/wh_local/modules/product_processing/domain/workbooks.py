@@ -10,8 +10,6 @@ from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any
 
-from openpyxl import Workbook, load_workbook
-
 from .image_slots import apply_slot_overrides
 from .policy import is_safe_external_url
 from ....shared.miaoshou_workbook import (
@@ -308,6 +306,9 @@ def read_product_workbook(filename: str, content: bytes) -> list[dict[str, Any]]
         return _read_csv(content)
     if suffix not in {".xlsx", ".xlsm"}:
         raise ValueError("only .xlsx, .xlsm or .csv product files are supported")
+    # openpyxl 的 import 成本约 1 秒，不该压在冷启动上（2026-10-20 实测 6.3s 启动里占 1s）
+    from openpyxl import load_workbook
+
     workbook = load_workbook(BytesIO(content), read_only=True, data_only=True)
     sheet = workbook.active
     iterator = sheet.iter_rows(values_only=True)
@@ -393,6 +394,8 @@ DXM_SENSITIVE_COLUMNS = [
 
 
 def create_result_workbook(rows: list[dict[str, Any]], destination: Path) -> None:
+    from openpyxl import Workbook
+
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "店小秘导入"

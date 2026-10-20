@@ -438,6 +438,25 @@ function notifyBackendOnline(): void {
   window.dispatchEvent(new CustomEvent(BACKEND_ONLINE_EVENT));
 }
 
+/**
+ * 供**其它传输层**复用：这次请求拿到了后端响应（无论 2xx/4xx/5xx）。
+ *
+ * 失联状态机原先只有一个复位入口（httpJson），而产品处理模块自带一份独立的
+ * fetch 封装、httpBlob 成功也不复位 —— 于是「6 秒内没有任何 httpJson 成功」
+ * 会被当成「持续失联」，一次瞬时抖动就能弹整屏遮罩（2026-10-19 排查结论）。
+ */
+export function noteBackendReachable(): void {
+  notifyBackendOnline();
+}
+
+/**
+ * 供其它传输层复用：这次请求在**网络层**失败（连接被拒 / 进程没了）。
+ * 只应在 `TypeError` 这类「连请求都没发出去」的情况下调用，超时不算。
+ */
+export function noteBackendUnreachable(): void {
+  notifyBackendOffline();
+}
+
 async function fetchWithTimeout(
   url: string,
   init: RequestInit,
@@ -482,12 +501,22 @@ async function fetchWithTimeout(
  *
  * 打包版页面与 API 同源（8010），后端挂掉表现为连接被拒（TypeError），本就走另一条
  * 分支；因此这里限定 DEV，生产行为保持不变。
+ *
+ * 2026-10-19 收紧：正文必须是 ECONNREFUSED / socket hang up 这类传输层文案（或为空）
+ * 才算不可达。原先「非 JSON 的 5xx 一律算」，把后端自己回的纯文本 500 也当成了掉线。
  */
+const PROXY_ERROR_HINT = /ECONN|ENOTFOUND|EAI_AGAIN|socket hang up|proxy error|fetch failed/i;
+
 function isBackendUnreachable(response: Response, bodyText = ""): boolean {
   if (!import.meta.env.DEV) return false;
-  if (response.status < 500) return false;
+  if (![500, 502, 503, 504].includes(response.status)) return false;
   if ((response.headers.get("content-type") ?? "").includes("application/json")) return false;
-  return bodyText.trim() !== "Internal Server Error";
+  const body = bodyText.trim();
+  // 空正文多半也是代理直接掐断（uvicorn 自己的未捕获 500 会回 "Internal Server Error"，
+  // 那个说明后端进程还活着，不算失联）。
+  if (!body) return true;
+  if (body === "Internal Server Error") return false;
+  return PROXY_ERROR_HINT.test(body);
 }
 
 export async function httpJson<T>(path: string, options: RequestOptions = {}): Promise<T> {
@@ -559,11 +588,15 @@ export async function httpBlob(path: string, options: RequestOptions = {}): Prom
     // 代理替后端回的 5xx（非 JSON）同样是「后端不可达」，不能只当普通失败；
     // 但后端自身未捕获的 500（纯文本 "Internal Server Error"）不算。
     if (isBackendUnreachable(response, detail)) notifyBackendOffline();
+    else noteBackendReachable();
     if (isSessionExpired(response, detail)) notifySessionExpired(detail);
     throw new Error(toUserMessage(detail || "请求失败"));
   }
 
-  return response.blob();
+  const blob = await response.blob();
+  // 二进制（图片 / 视频 / 导出包）下载成功同样是「后端活着」的铁证。
+  noteBackendReachable();
+  return blob;
 }
 
 /**

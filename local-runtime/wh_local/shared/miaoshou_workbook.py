@@ -18,8 +18,6 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from openpyxl import load_workbook
-
 # 无发货时效数据时的默认值（店小秘/妙手共用）。
 DEFAULT_SHIP_DAYS = 2
 
@@ -168,6 +166,9 @@ def ensure_miaoshou_reference_workbook(*, template_dir: Path | None = None) -> P
                 return reference
         except OSError:
             pass
+        # openpyxl 的 import 约 1 秒，不该压在冷启动上，按需加载。
+        from openpyxl import load_workbook
+
         workbook = load_workbook(full)
         try:
             for name in list(workbook.sheetnames):
@@ -214,6 +215,9 @@ def miaoshou_slim_template_path(kind: str, *, template_dir: Path | None = None) 
                 return slim
         except OSError:
             pass
+        # openpyxl 的 import 约 1 秒，不该压在冷启动上，按需加载。
+        from openpyxl import load_workbook
+
         workbook = load_workbook(full)
         try:
             for name in list(workbook.sheetnames):
@@ -352,6 +356,9 @@ def write_miaoshou_workbook(
     if kind not in MS_TEMPLATE_FILES:
         raise ValueError(f"unsupported miaoshou template kind: {kind}")
     slim_path = miaoshou_slim_template_path(kind, template_dir=template_dir)
+
+    # openpyxl 的 import 约 1 秒，不该压在冷启动上，按需加载。
+    from openpyxl import load_workbook
 
     workbook = load_workbook(slim_path)
     try:

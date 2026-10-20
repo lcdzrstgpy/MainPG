@@ -4,8 +4,6 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Sequence
 
-from openpyxl import Workbook
-
 
 DXM_COLUMNS = [
     "*产品标题",
@@ -69,6 +67,9 @@ DXM_COLUMN_WIDTHS = (
 
 def build_dianxiaomi_workbook(rows: Sequence[Sequence[Any]]) -> bytes:
     """Build a Dianxiaomi import workbook without adding sample data rows."""
+    # openpyxl 约 1 秒的 import 成本落在冷启动路径上，而它只在真正导表时才需要。
+    from openpyxl import Workbook
+
     workbook = Workbook()
     try:
         sheet = workbook.active

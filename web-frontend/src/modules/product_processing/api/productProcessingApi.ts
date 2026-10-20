@@ -307,6 +307,28 @@ export function exportMiaoshouPreview(
   );
 }
 
+/**
+ * 妙手模板文件的下载地址：文件此前已生成过时可直接重下，**不重新生成**。
+ *
+ * 与 exportMiaoshouPreview（现场生成）配对：历史导出里用「已生成 → 直接重下、
+ * 未生成 → 生成」两种动作，避免每次想看妙手都重跑一遍生成。
+ */
+export function miaoshouDownloadUrl(
+  taskId: number,
+  runId: string,
+  kind: MiaoshouTemplateKind,
+): string {
+  return (
+    `/api/product-processing/tasks/${taskId}/preview/finalize/${encodeURIComponent(runId)}` +
+    `/miaoshou-download?kind=${encodeURIComponent(kind)}`
+  );
+}
+
+/** 某次导出对应的店小秘（或妙手）工作簿文件名，供下载时落盘命名。 */
+export function miaoshouFileName(kind: MiaoshouTemplateKind, taskId: number): string {
+  return `miaoshou_${kind}_task_${taskId}.xlsx`;
+}
+
 export function getDraftMedia(
   ctx: ApiContext,
   draftId: number,
