@@ -10,7 +10,6 @@ import threading
 from ..db import transaction
 from .contracts import CustomerAuthResult, LocalSession
 from .local_session import CustomerSessionStore, SESSION_TTL
-from .token_vault import protect_remote_token, unprotect_remote_token
 
 
 DEFAULT_WORKSPACE_ID = "default"
@@ -136,7 +135,6 @@ class SQLiteCustomerSessionStore(CustomerSessionStore):
     def save_session(self, session: LocalSession, customer: CustomerAuthResult) -> None:
         session_id = f"sess_{secrets.token_urlsafe(24)}"
         now = _utc_now()
-        remote_token = session.remote_token or customer.remote_token or ""
         with transaction(self.database_path) as conn:
             conn.execute(
                 """
@@ -154,17 +152,16 @@ class SQLiteCustomerSessionStore(CustomerSessionStore):
                 """,
                 (session_id, session.user_id, _hash_token(session.token),
                  session.expires_at, now, now,
-                 # 远端令牌经 Windows DPAPI 加密后落盘（见 token_vault）：本地后端
-                 # 重启后仍能恢复会话，避免"登录态过一会儿就掉"。DPAPI 不可用时写
-                 # 空串，退化为原本"只存进程内存"的行为。
-                 protect_remote_token(remote_token)),
+                 # 安全规格：remote_token 只存进程内存（下方 _remote_tokens），
+                 # 盘上恒空串；get_session 读取时自动回退内存表，重启后自然失效。
+                 ""),
             )
         with self._remote_tokens_lock:
             self._remote_tokens[_hash_token(session.token)] = (
                 session.user_id,
                 session.workspace_id,
                 session.expires_at,
-                remote_token,
+                session.remote_token or customer.remote_token or "",
             )
 
     def get_session(self, token: str) -> LocalSession | None:
@@ -197,11 +194,6 @@ class SQLiteCustomerSessionStore(CustomerSessionStore):
             # 本地会话硬过期，严格鉴权的路由（如利润活动）会把正在用的用户
             # 误踢回登录页——大部分页面不校验令牌，只有这类路由会先暴露。
             renewed_expires_at = (datetime.now(timezone.utc) + SESSION_TTL).isoformat(timespec="seconds")
-            # 远端令牌优先取进程内存；后端重启后内存为空，则回退解密落库的密文
-            # （见 token_vault）。注意列里存的是密文，绝不能当令牌直接透传。
-            restored_remote_token = unprotect_remote_token(
-                row["remote_token"]
-            ) or self._remote_token_for_hash(token_hash)
             session = LocalSession(
                 user_id=row["user_id"],
                 token=token,
@@ -211,20 +203,8 @@ class SQLiteCustomerSessionStore(CustomerSessionStore):
                 workspace_id=row["workspace_id"] or DEFAULT_WORKSPACE_ID,
                 workspace_code=row["workspace_code"] or "",
                 workspace_name=row["workspace_name"] or "",
-                remote_token=restored_remote_token,
+                remote_token=row["remote_token"] or self._remote_token_for_hash(token_hash),
             )
-        # 从落库密文恢复出来的令牌回填进程内存：保活线程、登出流程、以及
-        # remote_token_for_actor 都只读内存表，不回填它们就拿不到令牌。
-        if restored_remote_token:
-            with self._remote_tokens_lock:
-                stored_token = self._remote_tokens.get(token_hash)
-                if stored_token is None or stored_token[2] <= renewed_expires_at:
-                    self._remote_tokens[token_hash] = (
-                        session.user_id,
-                        session.workspace_id,
-                        renewed_expires_at,
-                        restored_remote_token,
-                    )
         # last_used_at/滑动续期放在读事务之外单独短事务执行：同一事务里“先读后写”
         # 会把读快照升级为写锁，WAL 模式下若期间有并发提交会立即抛
         # SQLITE_BUSY_SNAPSHOT（OperationalError database is locked，busy_timeout
@@ -247,7 +227,7 @@ class SQLiteCustomerSessionStore(CustomerSessionStore):
             conn.execute(
                 """
                 UPDATE customer_sessions
-                SET revoked_at = ?, remote_token = ''
+                SET revoked_at = ?
                 WHERE token_hash = ? AND revoked_at = ''
                 """,
                 (_utc_now(), token_hash),
@@ -281,7 +261,7 @@ class SQLiteCustomerSessionStore(CustomerSessionStore):
     def revoke_all_sessions(self) -> None:
         with transaction(self.database_path) as conn:
             conn.execute(
-                "UPDATE customer_sessions SET revoked_at = ?, remote_token = '' WHERE revoked_at = ''",
+                "UPDATE customer_sessions SET revoked_at = ? WHERE revoked_at = ''",
                 (_utc_now(),),
             )
         with self._remote_tokens_lock:

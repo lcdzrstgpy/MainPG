@@ -119,21 +119,6 @@ class CustomerAuthClient:
             )
         )
 
-    def touch_session(self, remote_token: str) -> dict[str, Any]:
-        """远端会话保活：一次只读 ``/me``，用于刷新远端会话的 last_used_at。
-
-        远端只在"查库命中"的鉴权路径写 last_used_at（命中 Redis 会话缓存时跳过），
-        而本地绝大多数请求走本地会话、根本不触达远端；闲置几分钟后远端即判定该
-        会话"失联"，此后任何一次同类设备登录都会**静默撤销**它，用户表现为
-        "登录态莫名其妙掉了"。周期性调用本方法可让"客户端在线"对远端持续可见，
-        使重复登录被明确拒绝（该账号已在其他设备登录），而不是顶掉当前会话。
-
-        保活失败由调用方吞掉，不向上抛（见 session_keepalive）。
-        """
-        if not remote_token:
-            return {}
-        return self._get("/api/customer/me", headers={"Authorization": f"Bearer {remote_token}"})
-
     def billing_summary(self, remote_token: str) -> dict[str, Any]:
         if not remote_token:
             raise CustomerBillingPermissionError()

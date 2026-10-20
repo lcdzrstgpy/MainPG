@@ -49,7 +49,6 @@ from ..customer.email_sender import TencentCloudSESEmailSender
 from ..customer.local_session import LocalSessionService
 from ..customer.remote_client import CustomerAuthClient
 from ..customer.routes import create_customer_router
-from ..customer.session_keepalive import start_remote_session_keepalive
 from ..customer.admin_proxy import create_admin_proxy_router
 from ..migration_routes import create_migration_router
 from ..pod_log_upload import PodLogUploadTask
@@ -318,16 +317,6 @@ class _RuntimeExitController:
         """注入「释放会话」回调；在取消/结算回调之后执行一次。"""
         self._on_release_sessions = callback
 
-    def is_exiting(self) -> bool:
-        """是否已确认退出（已经收到最后一个页面的 bye，正在等退出宽限走完）。
-
-        任务级自动暂停要在这个窗口里让位：退出前会执行「取消任务 + 按冻结积分 50% 结算」，
-        那是 beforeunload 弹窗向用户承诺过的语义，不能被任务级的暂停抢先（否则同一个任务
-        会时而「暂停（可继续）」、时而「取消（按 50% 收费）」，计费口径就不一致了）。
-        """
-        with self._lock:
-            return self._bye_deadline is not None
-
     def start(self) -> None:
         if not self.enabled or self._watchdog is not None:
             return
@@ -416,20 +405,13 @@ class _RuntimeExitController:
                     self._exit("frontend heartbeat idle timeout")
 
     def _exit(self, reason: str) -> None:
-        # 退出原因必须走 logging 留痕：windowed 打包（PyInstaller console=False）下
-        # sys.stdout 被替换成 devnull，原来这里的 print 等于没写 —— 安装版运行日志里
-        # 只有一串「Application startup complete」，没有任何「为什么退出」的记录，
-        # 于是「页面还开着后端突然没了」无法区分是关页/空闲自退，还是被强杀（杀软、
-        # 任务管理器、清理软件），只能靠猜（2026-10-16 实测：3037 行日志 41 次启动
-        # / 0 次退出记录）。logger 的 handler 每次 emit 后 flush，os._exit 前已落盘。
-        logger.warning("本地后端即将退出：%s", reason)
+        print(f"[runtime] exiting because {reason}", flush=True)
         # 确认真退出前，先优雅取消仍 in-flight 的处理任务并按 50% 结算，
         # 使「关闭页面→任务取消/已取消+按冻结积分 50% 扣费」可达成。仅在真正
         # 决定退出（非刷新重载）时执行；回调带超时保护，绝不无限阻塞。
         self._run_before_exit()
-        # 会话释放钩子保留但默认**未接线**（见下方 set_on_release_sessions 处的说明）：
-        # 登录态现已完整落盘（本地会话 + DPAPI 加密的 remote_token），关程序后应当
-        # 保留，让用户下次打开直接回到工作台，而不是被迫重新登录。
+        # 结算完成后再释放会话：远端 token 只存活在本进程内存里，进程一退出就无法
+        # 再登出，远端会残留一个"活跃"平台会话，用户重开页面登录时会被单端登录拒绝。
         self._run_session_release()
         # 硬退出整个进程（含所有守护工作线程），释放被锁定的 MainPG.exe。
         os._exit(0)  # noqa: PLR1722 - deliberate hard exit on desktop page close
@@ -506,7 +488,6 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         # cannot delay or make the desktop runtime unhealthy.
         # 分步打点：让启动挂起时能从 runtime.log 精确定位卡在哪一步。
         logger.info("lifespan step: startup begin")
-        session_keepalive = None
         update_manager.start_check()
         logger.info("lifespan step: update_manager started")
         patch_manager.start_check()
@@ -550,21 +531,6 @@ def create_app(database_path: Path | None = None) -> FastAPI:
             # 启动时必然还没有远端 token（它只存在进程内存），这次绝大多数情况直接跳过，
             # 不建线程、不阻塞：真正生效的是「登录成功后」那次触发（见 customer/routes.py）。
             logger.info("lifespan step: pod log upload due check -> %s", pod_log_task.run_if_due())
-        # 远端会话保活：本地请求多走本地会话、不触达远端，闲置后远端会把会话判为
-        # "失联"，此后同类设备的重复登录会**静默撤销**当前会话（用户表现为"登录态
-        # 莫名其妙掉了"）。这里周期性地用活跃远端令牌做一次只读 /me，刷新远端
-        # last_used_at，使重复登录被明确拒绝而不是顶掉当前会话。
-        # 保活属可选增强，任何失败都不得阻断启动。
-        try:
-            session_keepalive = start_remote_session_keepalive(
-                remote_customer_auth, customer_sessions, logger=logger
-            )
-            logger.info(
-                "lifespan step: session keepalive -> %s",
-                f"on({session_keepalive.interval_seconds}s)" if session_keepalive else "off",
-            )
-        except Exception as exc:  # noqa: BLE001 - 保活故障不得阻断主程序
-            logger.warning("lifespan step: session keepalive start failed (ignored): %s", exc)
         logger.info("lifespan step: startup done, yielding")
         try:
             yield
@@ -590,8 +556,6 @@ def create_app(database_path: Path | None = None) -> FastAPI:
                 pod_ai_runtime.close(wait=False, cancel_futures=True)
             if clipforge_service is not None:
                 clipforge_service.stop()
-            if session_keepalive is not None:
-                session_keepalive.stop()
 
     app = FastAPI(
         title="H Smart Ecommerce Local Runtime",
@@ -822,12 +786,10 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     runtime_exit.set_on_before_exit(
         _compose_exit_cleanup(product_processing.cancel_all_active_for_shutdown, clipforge.stop)
     )
+    # 桌面端：结算完成后登出远端平台会话并撤销本机本地会话。远端 token 只存在后端
+    # 进程内存里，关页退出即丢失且用户再也无法主动登出；不在这里抢着登出，远端会残留
+    # 一个"活跃"平台会话，导致用户重新打开页面登录时被单端登录限制拒绝。
     def _release_customer_sessions() -> None:
-        """退出时释放全部会话：撤销本机本地会话 + 逐条远端登出。
-
-        ⚠️ 当前**未接线**（见下方 set_on_release_sessions 处的说明）：关程序应当
-        保留登录态，不释放会话。需要恢复旧行为时，把接线那行取消注释即可。
-        """
         remote_tokens = customer_sessions.release_all_sessions()
         if not remote_customer_auth.configured():
             return
@@ -838,27 +800,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
                 # 单个 token 登出失败不影响其余 token；服务端 TTL 兜底。
                 continue
 
-    # 退出时**不再释放客户会话**（2026-10-16 决策）。
-    #
-    # 原来的接线会在关程序时调 release_all_sessions()：撤销本机全部本地会话、把
-    # 落盘的 remote_token 密文清空、逐条登出远端。结果是「关掉程序再打开就要重新
-    # 登录」—— 与 db_store.save_session 注释里「避免登录态过一会儿就掉」的目标直接
-    # 冲突，也让 7 天 TTL 与滑动续期形同虚设（实测本地库 148 条会话中 146 条被撤销；
-    # 10-13 一早上连续 6 条会话全部被撤销，即每次开关程序掉一次登录）。
-    #
-    # 保留会话的代价可控：远端会话不再被主动注销，但程序退出后保活线程停止，
-    # last_used_at 超过 SESSION_STALE_SECONDS(3600) 后同类型设备即可正常登录
-    # （见 auth_service 的单端登录判定）；若在这 1 小时内于另一台同类设备登录，会
-    # 提示「该账号已在其他设备登录」，用户可用登录页的「强制登录」顶替
-    # （AuthPage 的 forceLogin）。
-    #
-    # 主动退出登录仍走 /api/customer/logout（只撤销当前一条会话），不受影响。
-    # 接口与回调保留但不接线，便于将来需要时恢复。
-    #
-    # runtime_exit.set_on_release_sessions(_release_customer_sessions)
-    # 任务级自动暂停让位给退出流程：工作台正在退出时，任务是「取消 + 按冻结积分 50% 结算」
-    # （见 is_exiting 的说明），不能再被任务级的「页面离开暂停」抢先。
-    product_processing.set_shutdown_probe(runtime_exit.is_exiting)
+    runtime_exit.set_on_release_sessions(_release_customer_sessions)
     app.include_router(
         create_product_processing_router(
             product_processing,
