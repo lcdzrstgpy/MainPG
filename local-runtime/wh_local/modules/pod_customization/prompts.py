@@ -17,7 +17,9 @@ from .contracts import COMPOSITION_PANEL_KEYS, BusinessFields
 # v2：四部分共组的整批统一提示词。
 # v3：新增批级全局字段（工艺 fabric_craft / 使用场景 scene_mood）、
 #     PART 3 元素三级 Tier 权重（hero/narrative/rhythm）、配色 60-30-10 契约，PART 4 光照降级（只留 GLOW）。
-PATTERN_PROMPT_VERSION = "v3"
+# v4：创意编辑内容提升为 PART 1 开头的 BATCH-SPECIFIC HARD RULES；
+#     新增 PRODUCT FORM & SIZE LOCK；面料块改为按真实材质分支（不再无条件假设绗缝布料）。
+PATTERN_PROMPT_VERSION = "v4"
 # 位置↔角色固定：左上=主图(lifestyle)、右上=细节A(detail_a)、左下=细节B(detail_b)、右下=素材(hero)。
 # 标识符沿用历史值（lifestyle=主图、hero=素材），避免历史批次错标；仅位置分配按本元组顺序正确落位。
 LISTING_IMAGE_ROLES = ("lifestyle", "detail_a", "detail_b", "hero")
@@ -305,21 +307,30 @@ _COLOR_IMPACT_BLOCK = (
     "readable; an even, untiered spread is a FAILURE."
 )
 
-# POD 绝大多数是布艺（帆布/棉/绗缝/PU）包袋。实测我们出的图"像把图案喷在光滑塑料壳上"——
-# 因为提示词从没要求过面料工艺与布面行为。这里补上真实的纺织品质感。
-_FABRIC_REALISM_BLOCK = (
-    "TEXTILE REALISM — this is a real sewn fabric product, never a flat spray-painted surface:\n"
-    "- Reproduce the template's TRUE construction. If its body is quilted/padded, keep the same quilt "
-    "relief: regular uniform cells at the template's own cell size and stitch pitch, fine dashed "
-    "topstitching along every grid line, each cell gently puffed with a soft crown highlight and a soft "
-    "valley shadow. Never smooth it into a featureless hard shell, and never invent coarser, larger or "
-    "irregular quilting, random bubbles or a puffy-duvet look.\n"
-    "- Show real woven fibre: visible canvas/cotton weave with a soft matte sheen, subtle edge fuzz, "
-    "natural folds, creases and tension lines. Never glossy plastic, vinyl or airbrushed paint.\n"
-    "- Show real sewing detail: topstitching along every edge, a fabric zipper with tape, subtle seam "
-    "shadowing.\n"
-    "- Printed/embroidered motifs must sit ON the weave and bend with the fabric's folds and curvature "
-    "— never look like flat stickers floating over a smooth shell, and stay sharply readable."
+# POD 绝大多数是布艺（帆布/棉/绗缝/PU）包袋，但也存在天然橡胶桌布、PVC 垫、皮革、
+# 亚克力、陶瓷等硬质/光滑材质。原实现无条件断言「this is a real sewn fabric product」，
+# 会把橡胶桌布硬掰成厚实绗缝方块（实测用户反馈：80×80 正方形桌布被生成成正方体）。
+# 这里改为按模板真实材质分支：只有确实是缝制布料时才要求绗缝/缝线/织物纹理。
+_MATERIAL_REALISM_BLOCK = (
+    "MATERIAL REALISM — reproduce the template's TRUE material and construction, never a flat "
+    "spray-painted surface or a generic invented shell:\n"
+    "- Do NOT assume this is a sewn fabric product. Read the real material from the template and the "
+    "batch facts, and match its true finish, thickness, edge profile and physical behaviour.\n"
+    "- TEXTILE REALISM (sewn fabric products only — canvas, cotton, quilted fabric, PU fabric): "
+    "if its body is quilted/padded, keep the same quilt relief: regular uniform cells at the template's "
+    "own cell size and stitch pitch, fine dashed topstitching along every grid line, each cell gently "
+    "puffed with a soft crown highlight and a soft valley shadow. Never smooth it into a featureless "
+    "hard shell, and never invent coarser, larger or irregular quilting, random bubbles or a "
+    "puffy-duvet look. Show real woven fibre with a soft matte sheen, subtle edge fuzz, natural folds "
+    "and tension lines, plus topstitching and a fabric zipper with tape. Printed/embroidered motifs "
+    "must sit ON the weave and bend with the fabric's folds and curvature.\n"
+    "- Smooth or rigid materials (natural rubber, silicone, PVC, leather, paper, wood, ceramic, glass, "
+    "metal): keep the true surface — a matte rubber sheet stays smooth, flat and matte, with the "
+    "template's own edge profile and thickness. Never add fabric weave, quilting, stitching, padding, "
+    "zipper tape, soft cloth folds or a puffy body that the template does not show.\n"
+    "- On every material, printed motifs must follow the real surface: they bend with fabric folds, or "
+    "sit flush on a smooth rubber/rigid face — never look like flat stickers floating over a generic "
+    "shell, and stay sharply readable."
 )
 
 
@@ -356,6 +367,22 @@ _PART3_HEADER = (
 _PART4_HEADER = (
     "=== PART 4 · ART DIRECTION — real textile craft + scene beauty. The scene's beauty MUST be derived "
     "from the PART 1 batch-wide theme together with THIS style's PART 3 elements ==="
+)
+# 运营在「高级：本批次创意编辑」里写的内容整段提升为批级硬条款：放在 PART 1 最前，
+# 而不是混进几十行通用条款末尾的 "Creative direction"（模型会把后者当建议而忽略）。
+_BATCH_HARD_RULES_HEADER = (
+    "=== BATCH-SPECIFIC HARD RULES (operator instructions — HIGHEST PRIORITY, hard requirements, not hints) ==="
+)
+# 形态/尺寸锁定：模板只提供结构参考，但运营明确写出的平面/尺寸事实必须优先。
+# 触发场景：80cm×80cm 全覆盖、无下挂的正方形天然橡胶桌布被生成成了正方体方块。
+_PRODUCT_FORM_LOCK = (
+    "PRODUCT FORM & SIZE LOCK — the product form and dimensions stated in the batch facts and batch "
+    "hard rules are geometric facts and outrank the template's apparent proportions: if the product is "
+    "flat (tablecloth, mat, towel, blanket, sticker, paper), it must read as a flat sheet — shown flat "
+    "or with natural soft drape — never as a box, cube, slab, stack, cushion or other 3D block. Keep "
+    "stated sizes and coverage literal (for example a square 80x80 tablecloth must stay square, cover "
+    "the tabletop and have no overhang). Never thicken, pad, inflate or extrude a flat product to give "
+    "it volume."
 )
 
 
@@ -399,21 +426,6 @@ def build_direct_listing_prompt(
     parts = [
         _PART1_HEADER,
         "Create one square 2x2 ecommerce contact sheet with exactly four equal panels.",
-        # 精简原则：一条约束只说一遍。原先同一件事（别复用模板 / 保留绗缝 / 同款同图）各写了 3-4 遍，
-        # 长提示词会把关键契约（色彩冲击、工艺）稀释掉；这里逐条去重，语义一条不减。
-        "Treat the supplied template only as a STRUCTURAL reference for this product: geometry, proportions, construction, material, printable surface location, and its sewn relief (quilting/padding grid, seams, topstitching, hardware).",
-        # 几何锁定：模板白底图是唯一的结构基准，显式禁止拉伸/压扁/熔形等畸变，避免四格之间结构漂移。
-        "GEOMETRY LOCK: the product's silhouette, seam lines, panel divisions, quilting grid, hardware positions and strap/handle drop must match the template exactly. Do not stretch, squash, melt, bend, reshape or re-proportion any part, and do not add, merge or delete structural parts.",
-        "Do not copy the template's existing artwork, decoration, colour scheme, background, lighting or scene.",
-        "CARVE-OUT: the template's quilting/padding relief, seams and stitching are STRUCTURE, not decoration — preserve them exactly as shown; do not flatten the quilted surface into a smooth shell. Only the artwork, the colour scheme and the scene are to be replaced.",
-        "That restriction only forbids REUSING the template's own scene. It does NOT mean the background may be plain: a freshly styled, richly lit scene is required (see PART 4 ART DIRECTION).",
-        "Never use the template as the base image: invent a completely new PRINTED pattern and a fresh commercially suitable colour scheme over its real fabric construction.",
-        "Keep the same exact product across all four panels: identical structure, material, proportions, base color, artwork, artwork scale and artwork placement.",
-        "Do not invent another product, extra accessories attached to the product, text, captions, logos, labels, watermarks, collages or borders; keep the four-panel divider clean and centered. (Standalone scene props beside the product ARE required — see PART 4 ART DIRECTION.)",
-        "If the product has an interior or lining, keep the interior surface unprinted (one plain solid color, black by default) and never extend the outer artwork inside.",
-        _COLOR_IMPACT_BLOCK,
-        _FABRIC_REALISM_BLOCK,
-        *_fabric_craft_lines(fields.fabric_craft),
         f"Product name: {fields.product_name or 'POD product'}.",
     ]
     for label, value in (
@@ -424,10 +436,32 @@ def build_direct_listing_prompt(
         ("Batch-wide theme & style", fields.design_theme),
         ("Color preferences", ", ".join(fields.color_preferences)),
         ("Excluded elements", ", ".join(fields.excluded_elements)),
-        ("Creative direction", creative_prompt.strip()),
     ):
         if value:
             parts.append(f"{label}: {value}.")
+    # 运营的创意编辑（含其手写「硬性规则」）整段作为批级硬条款，紧跟产品事实之后、
+    # 通用条款之前，避免被后面的长条款稀释成 "Creative direction" 建议。
+    operator_rules = creative_prompt.strip()
+    if operator_rules:
+        parts.extend(("", _BATCH_HARD_RULES_HEADER, operator_rules, ""))
+    parts.extend((
+        # 精简原则：一条约束只说一遍。原先同一件事（别复用模板 / 保留绗缝 / 同款同图）各写了 3-4 遍，
+        # 长提示词会把关键契约（色彩冲击、工艺）稀释掉；这里逐条去重，语义一条不减。
+        "Treat the supplied template only as a STRUCTURAL reference for this product: geometry, proportions, construction, material, printable surface location, and its true surface relief (quilting/padding grid if present, seams, topstitching, hardware).",
+        # 几何锁定：模板白底图是唯一的结构基准，显式禁止拉伸/压扁/熔形等畸变，避免四格之间结构漂移。
+        "GEOMETRY LOCK: the product's silhouette, seam lines, panel divisions, quilting grid (if present), hardware positions and strap/handle drop must match the template exactly. Do not stretch, squash, melt, bend, reshape or re-proportion any part, and do not add, merge or delete structural parts.",
+        "Do not copy the template's existing artwork, decoration, colour scheme, background, lighting or scene.",
+        "CARVE-OUT: the template's quilting/padding relief, seams and stitching are STRUCTURE, not decoration — preserve them exactly as shown; do not flatten the quilted surface into a smooth shell. Only the artwork, the colour scheme and the scene are to be replaced.",
+        "That restriction only forbids REUSING the template's own scene. It does NOT mean the background may be plain: a freshly styled, richly lit scene is required (see PART 4 ART DIRECTION).",
+        "Never use the template as the base image: invent a completely new PRINTED pattern and a fresh commercially suitable colour scheme over its real material construction.",
+        _PRODUCT_FORM_LOCK,
+        "Keep the same exact product across all four panels: identical structure, material, proportions, base color, artwork, artwork scale and artwork placement.",
+        "Do not invent another product, extra accessories attached to the product, text, captions, logos, labels, watermarks, collages or borders; keep the four-panel divider clean and centered. (Standalone scene props beside the product ARE required — see PART 4 ART DIRECTION.)",
+        "If the product has an interior or lining, keep the interior surface unprinted (one plain solid color, black by default) and never extend the outer artwork inside.",
+        _COLOR_IMPACT_BLOCK,
+        _MATERIAL_REALISM_BLOCK,
+        *_fabric_craft_lines(fields.fabric_craft),
+    ))
     # PART 2 只放四格角色与机位/构图，且用户构图在这里覆盖默认机位。
     parts.append(_PART2_HEADER)
     parts.extend(_listing_panel_lines(composition))

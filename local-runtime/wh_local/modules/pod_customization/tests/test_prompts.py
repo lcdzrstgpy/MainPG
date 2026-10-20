@@ -251,6 +251,42 @@ def test_prompt_is_organized_into_four_parts() -> None:
     )
 
 
+def test_operator_hard_rules_are_promoted_to_the_top_of_part_1() -> None:
+    """创意编辑（含手写硬性规则）必须是 PART 1 的批级硬条款，不能垫底成 Creative direction。"""
+
+    fields = BusinessFields(product_name="天然橡胶正方形防水桌布", product_category="家居餐垫布艺装饰")
+    creative = "硬性规则：\n9. 桌布尺寸为80cm×80cm全覆盖桌面，无下挂。"
+
+    prompt = build_direct_listing_prompt(fields, creative)
+
+    assert "BATCH-SPECIFIC HARD RULES" in prompt
+    assert prompt.index("BATCH-SPECIFIC HARD RULES") < prompt.index("Treat the supplied template")
+    assert "Creative direction:" not in prompt
+    assert "80cm×80cm" in prompt
+
+
+def test_material_realism_does_not_assume_sewn_fabric() -> None:
+    """橡胶/PVC 等光滑材质不能被内置条款强行套成绗缝布料。"""
+
+    prompt = build_direct_listing_prompt(BusinessFields(product_name="天然橡胶桌布"), "")
+
+    assert "MATERIAL REALISM" in prompt
+    assert "Do NOT assume this is a sewn fabric product" in prompt
+    assert "TEXTILE REALISM (sewn fabric products only" in prompt
+    assert "matte rubber sheet stays smooth, flat and matte" in prompt
+    assert "Never add fabric weave, quilting, stitching" in prompt
+
+
+def test_flat_product_form_and_size_are_locked() -> None:
+    """平面软品（桌布/垫子）不得被生成立体方块，写明的尺寸与覆盖方式必须照做。"""
+
+    prompt = build_direct_listing_prompt(BusinessFields(product_name="正方形桌布"), "")
+
+    assert "PRODUCT FORM & SIZE LOCK" in prompt
+    assert "never as a box, cube, slab, stack, cushion or other 3D block" in prompt
+    assert "a square 80x80 tablecloth must stay square" in prompt
+
+
 def test_set_design_scene_rotates_across_styles() -> None:
     """同批次各款必须换场景，否则整批背景雷同（实测踩过）。"""
 
