@@ -7,9 +7,6 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any, Iterable
 
-from openpyxl import Workbook
-from openpyxl.styles import Font
-
 from .contracts import redact_sensitive
 from .quote_normalizer import QuoteItem, QuotePreview
 from .repository import QuoteRunRecord
@@ -88,6 +85,12 @@ def _export_directory(output_root: Path, run_id: str) -> Path:
 
 
 def _write_workbook(path: Path, quotes: Iterable[QuoteItem]) -> None:
+    # openpyxl 是启动路径上的大头：import 一次约 1 秒，占整个冷启动的 16%，
+    # 而它只在「导出报价 Excel」时才真正需要。挪到这里按需加载
+    # （2026-10-20 用 -X importtime 量出来的）。
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+
     workbook = Workbook()
     worksheet = workbook.active
     worksheet.title = "Normalized Quotes"
