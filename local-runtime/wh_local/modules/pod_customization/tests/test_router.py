@@ -357,8 +357,8 @@ def test_batch_create_list_detail_and_scene_optimization_contract(tmp_path) -> N
     assert listed.json()["total"] == 1
     detail = client.get(f"/api/pod-customization/batches/{batch['id']}", headers=headers)
     assert detail.status_code == 200
-    # 请求体里传的是 v1，但提示词由服务端构造，入库值以服务端版本为准（v3）。
-    assert detail.json()["prompt_version"] == "v3"
+    # 请求体里传的是 v1，但提示词由服务端构造，入库值以服务端版本为准（v4）。
+    assert detail.json()["prompt_version"] == "v4"
 
     scene = client.post(
         f"/api/pod-customization/batches/{batch['id']}/items/{batch['items'][0]['id']}/optimize-scene",

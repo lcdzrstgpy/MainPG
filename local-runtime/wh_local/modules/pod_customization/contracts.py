@@ -22,7 +22,8 @@ SEMI_PATTERN_ROLES = ("pattern_1", "pattern_2", "pattern_3", "pattern_4")
 # 批次提示词版本。入库值**以服务端 prompts.PATTERN_PROMPT_VERSION 为准**（大提示词由服务端
 # 构造，客户端传值只作兼容保留）；这里放宽为多版本，避免旧客户端仍发送 v1 时被拒。
 # v3：新增批级全局字段（工艺 / 使用场景）与元素 Tier / 配色 60-30-10 权重。
-PromptVersion = Literal["v1", "v2", "v3"]
+# v4：创意编辑提升为批级硬条款、新增形态/尺寸锁定、材质块按真实材质分支。
+PromptVersion = Literal["v1", "v2", "v3", "v4"]
 
 # 批次模式：全定制 full / 半定制 semi / 爆款复刻 replica。历史批次 mode 默认 full。
 PodBatchMode = Literal["full", "semi", "replica", "fission"]
