@@ -14,7 +14,9 @@ from .database import default_storage_root
 
 @dataclass(frozen=True)
 class TaskOutputPaths:
-    workbook: Path
+    # 新流程把生成图先存为本地预审资产，公网发布延后到预检 finalize；
+    # 这类批次结束时没有可导出的自动工作簿，workbook 为 None。
+    workbook: Path | None
     errors: Path
     video_manifest: Path | None
 
@@ -382,12 +384,16 @@ class ProductProcessingAssets:
         failures: list[dict],
         *,
         include_video_manifest: bool,
+        defer_workbook: bool = False,
     ) -> TaskOutputPaths:
         task_root = self.output_root / f"task_{task_id}"
-        workbook = task_root / f"dxm_import_task_{task_id}.xlsx"
+        workbook: Path | None = task_root / f"dxm_import_task_{task_id}.xlsx"
         errors = task_root / f"error_report_task_{task_id}.csv"
         video = task_root / f"product_video_manifest_task_{task_id}.csv"
-        create_result_workbook(successes, workbook)
+        if defer_workbook:
+            workbook = None
+        else:
+            create_result_workbook(successes, workbook)
         create_error_report(failures, errors)
         if include_video_manifest:
             create_video_manifest(successes, video)

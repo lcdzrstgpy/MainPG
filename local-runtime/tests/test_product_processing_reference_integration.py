@@ -341,9 +341,8 @@ def test_grid_image_reference_does_not_add_provider_calls(monkeypatch) -> None:
     assert "NON-OVERRIDABLE FOUR-GRID RUNTIME CONTRACT" in processor.prompts[0]
     assert "AUTHORITATIVE SUBJECT ANALYSIS FROM THE ORIGINAL 1688 IMAGE:" in processor.prompts[0]
     assert '"sellable_subject": "insulated stainless steel travel mug"' in processor.prompts[0]
-    assert processor.prompts[0].rstrip().endswith(
-        "props, people, packaging, or background objects."
-    )
+    assert "props, people, packaging, or background objects." in processor.prompts[0]
+    assert "REAL USAGE SCENE" in processor.prompts[0]
     # A 模板与 B 模板一致使用固定 2x2 scaffold，保证四等分 + 直线分隔线的结构遵循度
     assert processor.layout_scaffold_values == [True]
     assert processor.image_sizes == ["2048x2048"]
@@ -597,9 +596,8 @@ def test_detail_image_receives_doubao_json_and_original_1688_reference(monkeypat
     assert result == ["https://example.com/detail.png"]
     assert processor.reference_values == ["https://example.com/original-1688.jpg"]
     assert "AUTHORITATIVE SUBJECT ANALYSIS FROM THE ORIGINAL 1688 IMAGE:" in processor.prompt
-    assert processor.prompt.rstrip().endswith(
-        "props, people, packaging, or background objects."
-    )
+    assert "props, people, packaging, or background objects." in processor.prompt
+    assert "REAL USAGE SCENE" in processor.prompt
 
 
 def test_premium_images_never_repeats_a_paid_whole_grid_call(monkeypatch) -> None:

@@ -1,3 +1,5 @@
+import type { ImageCategoryId, PanelSelection } from '../data/imageCardOptions';
+
 export type DraftStatus = "draft" | "processing" | "processed" | "deleted" | "attention_required";
 
 export type Draft = {
@@ -167,6 +169,23 @@ export interface ProductProcessingOptions {
   maxParallelDrafts: number;
   /** 生图提示词模板：A=影棚无缝主图，B=人景叙事（防比价），C=静物平铺俯拍，D=环境远景 */
   imageTemplate?: 'A' | 'B' | 'C' | 'D';
+  /** 批次级品类组合：auto=每个链接按标题自动分类；指定品类=整批统一用该品类组合。 */
+  imageCategoryOverride?: ImageCategoryId;
+  /** 生图组合面板模式：小白模式只选最终效果；导演模式逐层调参。 */
+  imageMode?: 'simple' | 'pro';
+  /** 五层卡片：auto=使用品类默认卡；指定卡 id=整批统一。 */
+  imageFrame?: string;
+  imageLight?: string;
+  imageTone?: string;
+  imageDetail?: string;
+  /** 全局风格卡：auto=按品类默认；指定 style id=整批统一。 */
+  imageStyle?: string;
+  /** 四格逐格卡片：数组顺序对应 panel 1-4。 */
+  imagePanels?: PanelSelection[];
+  /** 小白模板商业意图：hero_proof / lifestyle_use / macro_craft / knolling_set；auto=不附加。 */
+  imagePreset?: string;
+  /** 「随机模板」：开启后本批次每条链接随机分配一个效果模板（含对应四格卡片），不再统一用所选模板。 */
+  randomImagePreset?: boolean;
   /** 五点描述文案模板：A=卖点前置（结果导向），B=场景代入（痛点导向） */
   descriptionTemplate?: 'A' | 'B';
   /** 历史/API 兼容字段；新前端任务固定发送 4，不再向用户暴露。 */
@@ -431,6 +450,20 @@ export type PreviewOverrides = {
   variant_image_overrides?: Record<string, string>;
 };
 
+/** 预检页尺寸图状态：已确认 / 预估 / 缺失 / 失败 / 生成中。 */
+export type PreviewDimensionImage = {
+  task_item_id: number;
+  canvas_item_id: string;
+  state: "confirmed" | "estimated" | "missing" | "failed" | "pending";
+  canvas_state: string;
+  /** applied=原链接尺寸图已加工复用；generated=AI 生成图。 */
+  source: "applied" | "generated" | "";
+  length_cm: number | null;
+  width_cm: number | null;
+  height_cm: number | null;
+  estimated_fields: string[];
+};
+
 export type PreviewItem = {
   item_id: number;
   product_draft_id: number | null;
@@ -438,6 +471,8 @@ export type PreviewItem = {
   preview_revision: number;
   result_version: string;
   exportable: boolean;
+  /** 不可导出的具体原因（缺轮播/缺详情/来源图兜底等），用于预检页直接提示。 */
+  export_blockers?: string[];
   excluded: boolean;
   skc: string;
   status: string;
@@ -445,6 +480,12 @@ export type PreviewItem = {
   title: string;
   /** AI 生图失败回退来源图：未真正产出可用处理后主图/轮播图（导出回退来源图）。 */
   image_ai_failed?: boolean;
+  /** 链接级失败：失败/待确认、部分产出或媒体完整性未通过（不可导出、不计费）。 */
+  processing_failed?: boolean;
+  /** 链接级失败的统一提示话术（后端下发，供预检/结果页直接展示）。 */
+  failure_hint?: string;
+  /** 图片/素材是否已在本次响应中投影；false 表示翻页时按需拉取。 */
+  media_loaded?: boolean;
   description: string;
   source_url?: string;
   source_image_urls: string[];
@@ -457,6 +498,8 @@ export type PreviewItem = {
   image_manifest: PreviewImageManifest;
   /** 采集的 SKU 包装件重尺，未匹配行仅供预检核对，不参与导出。 */
   shipping_package_records?: ShippingPackageRecord[];
+  /** 第 4 格尺寸图状态：已确认/预估/缺失/失败，以及是否复用了加工后的原图。 */
+  dimension_image?: PreviewDimensionImage | null;
   /** 重量/尺寸字段来源：manual=手动 / source=采集值 / ai=AI 预估 */
   dimension_provenance?: Record<string, string>;
   /** 每个物流字段的置信度：high / medium / low。 */
@@ -498,8 +541,34 @@ export type PreviewResponse = {
     skipped_count: number;
   };
   item_count: number;
+  /** 元数据分页：当前页起始偏移与是否还有下一页。 */
+  item_offset?: number;
+  has_more?: boolean;
+  /** 全量统计（分页时由服务端计算，避免前端只统计已加载页）。 */
+  item_summary?: {
+    total: number;
+    exportable_count: number;
+    failed_count: number;
+  };
   items: PreviewItem[];
   excluded_draft_ids: number[];
+};
+
+/** 懒加载：按草稿批量返回的图片投影（仅覆盖预检渲染所需字段）。 */
+export type PreviewMediaPayload = Pick<
+  PreviewItem,
+  | 'assets'
+  | 'image_manifest'
+  | 'main_image'
+  | 'carousel_images'
+  | 'detail_images'
+  | 'exportable'
+  | 'export_blockers'
+  | 'sku_availability'
+>;
+
+export type PreviewMediaResponse = {
+  items: Record<string, PreviewMediaPayload>;
 };
 
 /** 货源页「查看处理后详情」：某草稿最近一次 AI 处理结果，结构与预检单条 item 一致。 */

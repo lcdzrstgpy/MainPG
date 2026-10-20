@@ -3,6 +3,7 @@ from __future__ import annotations
 from io import BytesIO
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 from wh_local.modules.product_processing.domain import sku_availability
@@ -233,7 +234,7 @@ def test_dimension_accept_rejects_newer_target_slot_edit(tmp_path: Path) -> None
         )
 
 
-def test_dimension_slot_patch_preserves_other_carousel_and_summary(tmp_path: Path) -> None:
+def test_dimension_slot_patch_preserves_other_carousel_without_summary(tmp_path: Path) -> None:
     service = _service(tmp_path)
     task = _create_task_with_result(service)
     draft_id = task["items"][0]["product_draft_id"]
@@ -264,7 +265,6 @@ def test_dimension_slot_patch_preserves_other_carousel_and_summary(tmp_path: Pat
         "https://cos.example.com/c2.jpg",
         "https://cos.example.com/c3.jpg",
         "https://user.example.com/dimension.jpg",
-        "https://cos.example.com/summary.jpg",
     ]
     assert item["image_slots"][3]["slot_id"] == "carousel.dimension_background"
 
@@ -274,7 +274,6 @@ def test_dimension_slot_patch_preserves_other_carousel_and_summary(tmp_path: Pat
         "https://cos.example.com/c2.jpg",
         "https://cos.example.com/c3.jpg",
         "https://user.example.com/dimension.jpg",
-        "https://cos.example.com/summary.jpg",
     ]
 
 
@@ -309,8 +308,39 @@ def test_dimension_slot_patch_uses_legacy_carousel_as_its_baseline() -> None:
         "https://user.example.com/legacy2.jpg",
         "https://user.example.com/legacy3.jpg",
         "https://user.example.com/dimension.jpg",
-        "https://cos.example.com/summary.jpg",
     ]
+
+
+def test_dxm_export_blocks_incomplete_carousel_or_detail() -> None:
+    row = _base_result()
+    row["processing_scope"] = ["title", "details", "four_grid", "detail_images"]
+    row["carousel_image_paths"] = ["https://cos.example.com/c1.jpg"]
+    row["detail_image_paths"] = []
+
+    with pytest.raises(ValueError, match="轮播图需 4 张"):
+        _dxm_single_export_row(row, None)
+
+    row["carousel_image_paths"] = [
+        f"https://cos.example.com/c{index}.jpg" for index in range(1, 5)
+    ]
+    with pytest.raises(ValueError, match="详情图未生成"):
+        _dxm_single_export_row(row, None)
+
+
+def test_dxm_export_never_falls_back_to_source_images_for_processing_scope() -> None:
+    """处理范围含图片但生成图为空时，必须报错而不是静默导出源图。"""
+    row = _base_result()
+    row["processing_scope"] = ["title", "details", "four_grid", "detail_images"]
+    row["carousel_image_paths"] = []
+    row["detail_image_paths"] = []
+    row["preview_overrides"] = {
+        "main_image": "",
+        "carousel_images": [],
+        "detail_images": [],
+    }
+
+    with pytest.raises(ValueError, match="不能回退来源原图"):
+        _dxm_single_export_row(row, None)
 
 
 def test_export_final_workbook_applies_overrides(tmp_path: Path) -> None:
@@ -373,7 +403,6 @@ def test_dxm_single_export_row_defaults_without_overrides() -> None:
             "https://cos.example.com/c2.jpg",
             "https://cos.example.com/c3.jpg",
             "https://cos.example.com/c4.jpg",
-            "https://cos.example.com/summary.jpg",
         ]
     )
     # 系统生成的当前重量为 300g；但店小秘要求材积重量（长×宽×高÷6 ≤ 重量），

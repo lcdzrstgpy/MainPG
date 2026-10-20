@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { ppDownload, ppRequest, type ApiContext } from '../api/client';
 import { productProcessingApiContext } from '../api/context';
 import {
   excludePreviewItems,
   exportMiaoshouPreview,
+  fetchProductPreview,
+  fetchProductPreviewMedia,
   finalizeProductPreview,
   getListingAdvice,
   getPreviewFinalizeRun,
@@ -19,8 +21,16 @@ import {
   type ListingAdvice,
 } from '../api/productProcessingApi';
 import { DimensionChangeSetReview } from '../components/DimensionChangeSetReview';
+import {
+  BatchCompositionDialog,
+  type BatchCompositionItem,
+} from '../components/BatchCompositionDialog';
 import { PrecheckFinalizeProgress } from '../components/PrecheckFinalizeProgress';
 import { PrecheckImageManager } from '../components/PrecheckImageManager';
+import {
+  compositionSlogan,
+  compositionSubtitle,
+} from '../data/compositionSlogans';
 import {
   PrecheckSkuManager,
   type VariantImageMode,
@@ -30,6 +40,7 @@ import {
 import { variantLabel } from '../utils/skuFilter';
 import {
   addAssets,
+  assetThumbUrl,
   restoreRemovedAsset,
   type PrecheckImageTarget,
   type RemovedAssetUndo,
@@ -47,6 +58,7 @@ import type {
   PreviewImageAsset,
   PreviewImageManifest,
   PreviewItem,
+  PreviewMediaPayload,
   PreviewResponse,
   PreviewTextReviewStatus,
   ShippingPackageRecord,
@@ -54,12 +66,33 @@ import type {
 } from '../types';
 import '../styles/ProductProcessingVerifyPage.css';
 
+const LocalCompositionDrawer = lazy(
+  () => import('../components/LocalCompositionDrawer'),
+);
+
 const API_BASE = '/api/product-processing';
 const MAX_UPLOAD_FILES = 20;
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 const ALLOWED_UPLOAD_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const PRECHECK_PAGE_SIZES = [10, 30, 50, 100] as const;
+
+// 第 4 格尺寸图状态文案：预估必须一眼可见，避免把估算尺寸当确认值导出。
+const DIMENSION_IMAGE_LABELS: Record<string, string> = {
+  confirmed: '尺寸：已确认',
+  estimated: '尺寸：预估',
+  missing: '尺寸：缺失',
+  failed: '尺寸图失败',
+  pending: '尺寸图生成中',
+};
+
+const formatCmValue = (value: number | null | undefined): string =>
+  value == null ? '' : String(Math.round(value * 10) / 10);
 const PRECHECK_DEFAULT_PAGE_SIZE = 30;
+// 首屏只投影当前页（30 条）的图片；其余链接翻页时按需拉取，避免 200+ 链接首屏卡住。
+const PRECHECK_MEDIA_PAGE_SIZE = 30;
+// 元数据分页：首屏只拿 30 条；剩余元数据在后台按 100 条/页渐进补齐。
+const PRECHECK_ITEM_PAGE_SIZE = 30;
+const PRECHECK_ITEM_PREFETCH_SIZE = 100;
 
 type Props = {
   taskId: number;
@@ -202,9 +235,23 @@ function formatFinalizeTime(value?: string): string {
   return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())} ${pad(parsed.getHours())}:${pad(parsed.getMinutes())}`;
 }
 
+function mergePreviewItems(base: PreviewItem[], extra: PreviewItem[]): PreviewItem[] {
+  if (!extra.length) return base;
+  const seen = new Set(base.map((item) => item.item_id));
+  return [...base, ...extra.filter((item) => !seen.has(item.item_id))];
+}
+
 export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOpenDimensionItem, isActive = true }: Props) {
   const ctx = useMemo(() => api(), []);
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
+  const previewRef = useRef<PreviewResponse | null>(null);
+  const itemsGenerationRef = useRef(0);
+  const itemsLoadPromiseRef = useRef<Promise<PreviewItem[]> | null>(null);
+  const itemsLoadedCountRef = useRef(0);
+  const [itemsLoading, setItemsLoading] = useState(false);
+  useEffect(() => {
+    previewRef.current = preview;
+  }, [preview]);
   const [edits, setEdits] = useState<Record<number, ItemEdits>>({});
   const [retryingMediaAssetIds, setRetryingMediaAssetIds] = useState<Set<string>>(new Set());
   const [regeneratingDetailDraftIds, setRegeneratingDetailDraftIds] = useState<Set<number>>(new Set());
@@ -222,6 +269,8 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [activeImage, setActiveImage] = useState<string | null>(null);
+  const [compositionDraftId, setCompositionDraftId] = useState<number | null>(null);
+  const [batchComposeOpen, setBatchComposeOpen] = useState(false);
   const [undoSnackbar, setUndoSnackbar] = useState<UndoSnackbar | null>(null);
   const refreshRef = useRef<PrecheckFinalizeRefresh | null>(null);
   // 已经同步进历史列表的 run id，避免完成态轮询时反复刷新历史。
@@ -229,8 +278,22 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
   const [pageSize, setPageSize] = useState<number>(PRECHECK_DEFAULT_PAGE_SIZE);
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
+  // 默认展示全部链接（方便运营核对失败项）；导出时只提交 exportable 的链接，
+  // 失败链接不会进入表格、也不参与计费。
   const [onlySuccess, setOnlySuccess] = useState(false);
   const [onlyFailed, setOnlyFailed] = useState(false);
+  // 只看尺寸图用了预估值、尚未人工确认的链接；导出前重点复核。
+  const [onlyEstimated, setOnlyEstimated] = useState(false);
+  // 只看尺寸图缺失/失败的链接；处理完先集中补这些。
+  const [onlyDimensionIssues, setOnlyDimensionIssues] = useState(false);
+  // 第 4 格尺寸图：本体长宽高（厘米）编辑态 + 单条重烧中的草稿 id。
+  const [dimensionEdits, setDimensionEdits] = useState<
+    Record<number, { length: string; width: string; height: string }>
+  >({});
+  const [reburningDraftId, setReburningDraftId] = useState<number | null>(null);
+  // 尺寸卡在处理中按条并发烧制：预检页短暂轮询，异步结果回来后自动补徽标。
+  const dimensionPollRef = useRef(0);
+  const [confirmingDimensions, setConfirmingDimensions] = useState(false);
   const [excludingDraftIds, setExcludingDraftIds] = useState<Set<number>>(new Set());
   const [selectedDraftIds, setSelectedDraftIds] = useState<Set<number>>(new Set());
   const [imageZoomed, setImageZoomed] = useState(false);
@@ -264,20 +327,212 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
   // 若返回时版本已变化（期间发生了删除等变更），丢弃过期结果，避免旧快照覆盖新状态导致删除项「回弹」。
   const previewVersionRef = useRef(0);
 
+  // 元数据分页：首屏只拿 30 条，剩余在后台按 100 条/页渐进补齐（图片仍按页懒加载）。
+  const prefetchItems = useCallback(
+    async (
+      initialItems: PreviewItem[],
+      total: number,
+      generation: number,
+    ): Promise<PreviewItem[]> => {
+      setItemsLoading(true);
+      let accumulated = initialItems;
+      try {
+        let offset = accumulated.length;
+        while (offset < total) {
+          if (itemsGenerationRef.current !== generation) return accumulated;
+          const data = await fetchProductPreview(ctx, taskId, {
+            itemOffset: offset,
+            itemLimit: PRECHECK_ITEM_PREFETCH_SIZE,
+            mediaLimit: 0,
+          });
+          if (itemsGenerationRef.current !== generation) return accumulated;
+          const page = data.items ?? [];
+          if (!page.length) break;
+          accumulated = mergePreviewItems(accumulated, page);
+          itemsLoadedCountRef.current = accumulated.length;
+          setPreview((prev) =>
+            prev ? { ...prev, items: mergePreviewItems(prev.items, page) } : prev,
+          );
+          offset = accumulated.length;
+          if (!data.has_more) break;
+        }
+      } catch {
+        // 后台补齐失败不阻断首屏；保存/导出前 ensureAllItemsLoaded 会重试。
+      } finally {
+        if (itemsGenerationRef.current === generation) setItemsLoading(false);
+      }
+      return accumulated;
+    },
+    [ctx, taskId],
+  );
+
+  const ensureAllItemsLoaded = useCallback(async (): Promise<PreviewItem[]> => {
+    const current = previewRef.current;
+    if (!current) return [];
+    let items = current.items;
+    if (itemsLoadPromiseRef.current) {
+      items = await itemsLoadPromiseRef.current;
+    }
+    let guard = 0;
+    // 后台补齐失败时，保存/导出前再重试；连续两次没有进展就返回已加载部分，
+    // 由后端 finalize 的完整性与权限校验兜底。
+    while (items.length < current.item_count && guard < 20) {
+      guard += 1;
+      const generation = itemsGenerationRef.current;
+      const next = await prefetchItems(items, current.item_count, generation);
+      if (next.length <= items.length) return next;
+      items = next;
+    }
+    return items;
+  }, [prefetchItems]);
+
   const load = useCallback(async (preserveLocalEdits = false, quiet = false) => {
     if (!quiet) setLoading(true);
     const versionAtDispatch = previewVersionRef.current;
+    const generation = ++itemsGenerationRef.current;
+    // 新一轮加载作废旧的分页补齐（旧 promise 会在 generation 校验处自行退出）。
+    itemsLoadPromiseRef.current = null;
     try {
-      const data = await ppRequest<PreviewResponse>(ctx, `${API_BASE}/tasks/${taskId}/preview`);
+      // 首屏只投影前 30 条元数据 + 图片；其余元数据后台分页补齐、图片翻页懒加载。
+      const data = await fetchProductPreview(ctx, taskId, {
+        itemLimit: PRECHECK_ITEM_PAGE_SIZE,
+        mediaLimit: PRECHECK_MEDIA_PAGE_SIZE,
+      });
       if (previewVersionRef.current !== versionAtDispatch) return;
-      setPreview(data);
+      if (!quiet) {
+        setPreview(data);
+        itemsLoadedCountRef.current = data.items.length;
+      } else {
+        setPreview((prev) => {
+          if (!prev) return data;
+          // 静默轮询只刷新首屏这一段；已渐进补齐的后续元数据继续保留。
+          const previousByDraft = new Map(
+            prev.items
+              .filter((item) => item.product_draft_id != null && item.media_loaded)
+              .map((item) => [item.product_draft_id as number, item]),
+          );
+          const freshByItemId = new Map(data.items.map((item) => [item.item_id, item]));
+          const merged = prev.items.map((item) => {
+            const fresh = freshByItemId.get(item.item_id);
+            if (!fresh) return item;
+            if (fresh.media_loaded !== false || fresh.product_draft_id == null) {
+              return fresh;
+            }
+            const loaded = previousByDraft.get(fresh.product_draft_id);
+            if (!loaded) return fresh;
+            return {
+              ...fresh,
+              assets: loaded.assets,
+              image_manifest: loaded.image_manifest,
+              main_image: loaded.main_image,
+              carousel_images: loaded.carousel_images,
+              detail_images: loaded.detail_images,
+              exportable: loaded.exportable,
+              export_blockers: loaded.export_blockers,
+              media_loaded: true,
+            };
+          });
+          const seen = new Set(prev.items.map((item) => item.item_id));
+          return {
+            ...data,
+            items: [
+              ...merged,
+              ...data.items.filter((item) => !seen.has(item.item_id)),
+            ],
+          };
+        });
+        itemsLoadedCountRef.current = Math.max(
+          itemsLoadedCountRef.current,
+          data.items.length,
+        );
+      }
       if (!preserveLocalEdits) setEdits({});
+      // 首屏之后后台补齐剩余元数据（图片仍为懒加载）；静默轮询不重复补齐。
+      if (
+        itemsLoadedCountRef.current < data.item_count &&
+        !itemsLoadPromiseRef.current
+      ) {
+        const startingItems = quiet
+          ? previewRef.current?.items ?? data.items
+          : data.items;
+        const promise = prefetchItems(startingItems, data.item_count, generation);
+        itemsLoadPromiseRef.current = promise;
+        void promise.finally(() => {
+          if (itemsLoadPromiseRef.current === promise) {
+            itemsLoadPromiseRef.current = null;
+          }
+        });
+      }
     } catch (err) {
       if (!quiet) fail(err);
     } finally {
       if (!quiet) setLoading(false);
     }
   }, [ctx, fail, taskId]);
+
+  // ---- 图片懒加载：首屏只拿当前页，翻页/保存/导出前再批量补齐 ----
+  const [mediaLoadingCount, setMediaLoadingCount] = useState(0);
+  const mediaRequestedRef = useRef<Set<number>>(new Set());
+
+  const mergePreviewMedia = useCallback(
+    (payloads: Record<string, PreviewMediaPayload>) => {
+      if (!Object.keys(payloads).length) return;
+      setPreview((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          items: prev.items.map((item) => {
+            const payload =
+              item.product_draft_id != null
+                ? payloads[String(item.product_draft_id)]
+                : undefined;
+            return payload ? { ...item, ...payload, media_loaded: true } : item;
+          }),
+        };
+      });
+    },
+    [],
+  );
+
+  const loadPreviewMedia = useCallback(
+    async (draftIds: number[]): Promise<Record<string, PreviewMediaPayload>> => {
+      const unique = [
+        ...new Set(draftIds.filter((value) => Number.isFinite(value) && value > 0)),
+      ];
+      if (!unique.length) return {};
+      setMediaLoadingCount((count) => count + 1);
+      try {
+        const data = await fetchProductPreviewMedia(ctx, taskId, unique);
+        mergePreviewMedia(data.items);
+        return data.items;
+      } catch {
+        // 单次懒加载失败不阻断页面；翻页或导出前会重试。
+        return {};
+      } finally {
+        setMediaLoadingCount((count) => Math.max(0, count - 1));
+      }
+    },
+    [ctx, mergePreviewMedia, taskId],
+  );
+
+  const hydrateAllMedia = useCallback(
+    async (items: PreviewItem[]): Promise<PreviewItem[]> => {
+      const missing = items
+        .filter((item) => item.media_loaded === false && item.product_draft_id != null)
+        .map((item) => item.product_draft_id as number);
+      if (!missing.length) return items;
+      const payloads = await loadPreviewMedia(missing);
+      if (!Object.keys(payloads).length) return items;
+      return items.map((item) => {
+        const payload =
+          item.product_draft_id != null
+            ? payloads[String(item.product_draft_id)]
+            : undefined;
+        return payload ? { ...item, ...payload, media_loaded: true } : item;
+      });
+    },
+    [loadPreviewMedia],
+  );
 
   // 存在仍在同步（pending/materializing）的原始源图时，持续静默轮询刷新，
   // 使后台物化完成后「等待同步」自动变为「可用」，无需手动重进页面。
@@ -296,6 +551,8 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
   useEffect(() => {
     if (hasPendingSourceSync && sourceSyncPollRef.current === null) {
       sourceSyncPollRef.current = window.setInterval(() => {
+        // 页签隐藏时不重拉整份预检（多链接/多 SKU 时响应很大）。
+        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
         void load(true, true);
       }, 3000);
     }
@@ -439,7 +696,25 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
   // 分页 + 序列号搜索（仅影响展示；保存/导出/计数仍作用于全部商品）。
   // 必须放在 `if (!preview)` 提前返回之前，保证各渲染轮次 Hook 数量一致。
   const allItems = (preview?.items ?? []).filter((item) => !item.excluded);
+  const dimensionSummary = useMemo(() => {
+    let estimated = 0;
+    let reused = 0;
+    let missing = 0;
+    let failed = 0;
+    for (const item of allItems) {
+      const info = item.dimension_image;
+      if (!info) continue;
+      if (info.state === 'estimated') estimated += 1;
+      if (info.source === 'applied') reused += 1;
+      if (info.state === 'missing') missing += 1;
+      if (info.state === 'failed') failed += 1;
+    }
+    return { estimated, reused, missing, failed };
+  }, [allItems]);
   const excludedItems = (preview?.items ?? []).filter((item) => item.excluded);
+  const totalItemCount = preview?.item_summary?.total ?? allItems.length;
+  // 元数据未补齐前，全局统计先用服务端 summary，避免显示成「只有当前页」。
+  const itemsFullyLoaded = !itemsLoading && allItems.length >= totalItemCount;
   // 从 finalize run 的失败明细中提取参与发布失败的草稿 ID，用于「只看失败链接」筛选与一键剔除。
   const failedDraftIds = useMemo(() => {
     const ids = new Set<number>();
@@ -454,15 +729,21 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
       item.assets.some((asset) => asset.publication_status === 'publish_failed') ||
       // AI 生图失败回退来源图：未真正产出可用处理后主图/轮播图（导出回退来源图），
       // 属于「不能直接拿来用」的链接，纳入「只看失败链接」筛选与一键剔除。
-      item.image_ai_failed === true,
+      item.image_ai_failed === true ||
+      // 链接级失败（失败/待确认、部分产出、媒体完整性未通过）统一按失败处理。
+      item.processing_failed === true ||
+      item.exportable === false,
     // image_ai_failed 是 item 自身属性，无需其它外部依赖。
     [failedDraftIds],
   );
   // 带失败标记的商品数：导出前提示先剔除，避免把回退来源图的商品一起导出去。
-  const failedItemCount = useMemo(
+  const localFailedItemCount = useMemo(
     () => allItems.filter(itemHasFailure).length,
     [allItems, itemHasFailure],
   );
+  const failedItemCount = itemsFullyLoaded
+    ? localFailedItemCount
+    : preview?.item_summary?.failed_count ?? localFailedItemCount;
   const filteredItems = useMemo(() => {
     const keyword = search.trim().toLowerCase();
     let scoped = allItems;
@@ -474,6 +755,16 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     } else if (onlyFailed) {
       scoped = scoped.filter(itemHasFailure);
     }
+    if (onlyEstimated) {
+      scoped = scoped.filter((item) => item.dimension_image?.state === 'estimated');
+    }
+    if (onlyDimensionIssues) {
+      scoped = scoped.filter(
+        (item) =>
+          item.dimension_image?.state === 'missing' ||
+          item.dimension_image?.state === 'failed',
+      );
+    }
     if (!keyword) return scoped;
     return scoped.filter((item) => {
       const candidates = [
@@ -484,7 +775,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
       ];
       return candidates.some((value) => value && value.toLowerCase().includes(keyword));
     });
-  }, [allItems, search, onlySuccess, onlyFailed, itemHasFailure]);
+  }, [allItems, search, onlySuccess, onlyFailed, onlyEstimated, onlyDimensionIssues, itemHasFailure]);
 
   useEffect(() => {
     setPage(1);
@@ -493,6 +784,43 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
   const totalPages = Math.max(1, Math.ceil(filteredItems.length / pageSize));
   const safePage = Math.min(page, totalPages);
   const pagedItems = filteredItems.slice((safePage - 1) * pageSize, safePage * pageSize);
+
+  // 当前页里还没投影图片的链接：进页即批量拉取（一次请求覆盖整页）。
+  useEffect(() => {
+    if (!preview) return;
+    const ids = pagedItems
+      .filter((item) => item.media_loaded === false && item.product_draft_id != null)
+      .map((item) => item.product_draft_id as number)
+      .filter((id) => !mediaRequestedRef.current.has(id));
+    if (!ids.length) return;
+    ids.forEach((id) => mediaRequestedRef.current.add(id));
+    void (async () => {
+      const payloads = await loadPreviewMedia(ids);
+      ids.forEach((id) => {
+        // 有返回（含空媒体）就允许下次重新拉；草稿已删/接口失败的保留标记，
+        // 避免每次渲染都重复请求（保存/导出前仍会强制补齐一次）。
+        if (payloads[String(id)]) mediaRequestedRef.current.delete(id);
+      });
+    })();
+  }, [pagedItems, preview, loadPreviewMedia]);
+
+  // 尺寸卡在批次处理中并发烧制：页面打开后短暂轮询（最多约 48 秒），
+  // 异步结果回来即自动补「预估/已确认/原图加工」徽标，不用手动刷新。
+  useEffect(() => {
+    if (!isActive) {
+      dimensionPollRef.current = 0;
+      return;
+    }
+    const pending = allItems.some(
+      (item) => item.status === 'completed' && item.dimension_image == null,
+    );
+    if (!pending || dimensionPollRef.current >= 12) return;
+    const timer = window.setTimeout(() => {
+      dimensionPollRef.current += 1;
+      void load(true, true);
+    }, 4000);
+    return () => window.clearTimeout(timer);
+  }, [isActive, allItems, load]);
 
   // 勾选作用于「当前筛选结果」（含分页之外的商品）：「全选」即选中筛选出的全部商品，
   // 「删除所选」只删除其中仍在当前筛选结果里的项，避免筛选切换后误删不可见商品。
@@ -781,7 +1109,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
         seen.add(asset.id);
         options.push({
           value: asset.id,
-          thumb: url,
+          thumb: assetThumbUrl(asset),
           cropSrc: url,
           group: label,
           label: `${label} · ${asset.id.slice(0, 8)}`,
@@ -848,7 +1176,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
       if (!url) throw new Error('裁剪图已上传，但暂无可用预览地址，请稍后重试');
       return {
         value: asset.id,
-        thumb: url,
+        thumb: assetThumbUrl(asset),
         cropSrc: url,
         group: '本地导入的图片',
         label: '刚裁剪的图片',
@@ -963,7 +1291,12 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     });
   };
 
-  const uploadAssets = async (draftId: number, target: PrecheckImageTarget, files: File[]) => {
+  const uploadAssets = async (
+    draftId: number,
+    target: PrecheckImageTarget,
+    files: File[],
+    options?: { throwOnError?: boolean },
+  ) => {
     if (files.length > MAX_UPLOAD_FILES) {
       fail(`单次最多选择 ${MAX_UPLOAD_FILES} 张图片`);
       return;
@@ -999,6 +1332,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
       notify(`已添加 ${data.assets.length} 张图片，尚未发布到 COS`);
     } catch (err) {
       fail(err);
+      if (options?.throwOnError) throw err;
     } finally {
       setPendingUploads((count) => Math.max(0, count - 1));
     }
@@ -1062,6 +1396,76 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     }
   };
 
+  // 第 4 格尺寸图重烧：只改本体长宽高，其他图片与文字保持不变。
+  const reburnDimensionImage = async (item: PreviewItem) => {
+    const info = item.dimension_image;
+    const draftId = item.product_draft_id;
+    if (!info || draftId == null) return;
+    const edit = dimensionEdits[draftId];
+    const pick = (key: 'length' | 'width' | 'height', fallback: number | null) => {
+      const raw = edit?.[key];
+      if (raw !== undefined && raw !== '') return Number(raw);
+      return fallback;
+    };
+    const length = pick('length', info.length_cm);
+    const width = pick('width', info.width_cm);
+    const height = pick('height', info.height_cm);
+    if (
+      length == null || width == null || height == null ||
+      ![length, width, height].every((value) => Number.isFinite(value) && value > 0)
+    ) {
+      fail('请填写完整的本体长/宽/高（厘米）');
+      return;
+    }
+    setReburningDraftId(draftId);
+    setError('');
+    try {
+      await ppRequest(
+        ctx,
+        `${API_BASE}/dimension-canvas/tasks/${taskId}/items/${item.item_id}/reburn`,
+        {
+          body: {
+            length_cm: length,
+            width_cm: width,
+            height_cm: height,
+            unit: 'in',
+            corner: 'bottom-right',
+          },
+        },
+      );
+      setDimensionEdits((previous) => {
+        const next = { ...previous };
+        delete next[draftId];
+        return next;
+      });
+      await load(true);
+      notify('尺寸图已按新尺寸重烧（英寸）');
+    } catch (err) {
+      fail(err);
+    } finally {
+      setReburningDraftId(null);
+    }
+  };
+
+  // 一键把本批预估尺寸标为已确认：只改来源标记，图上数字不变，不重烧。
+  const confirmAllEstimated = async () => {
+    if (dimensionSummary.estimated <= 0) return;
+    setConfirmingDimensions(true);
+    try {
+      const result = await ppRequest<{ confirmed: number }>(
+        ctx,
+        `${API_BASE}/dimension-canvas/tasks/${taskId}/confirm-estimated`,
+        { body: {} },
+      );
+      await load(true, true);
+      notify(`已确认 ${Number(result?.confirmed || 0)} 条预估尺寸`);
+    } catch (err) {
+      fail(err);
+    } finally {
+      setConfirmingDimensions(false);
+    }
+  };
+
   const saveAll = async () => {
     if (pendingUploads > 0) {
       fail('图片仍在导入，请等待完成后保存');
@@ -1071,8 +1475,17 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     setError('');
     setMessage('');
     try {
-      const items = allItems
-        .filter((item) => item.product_draft_id != null)
+      // 保存会提交完整图片清单：先补齐剩余元数据与未投影图片，避免空 manifest 覆盖已有图片。
+      const allLoadedItems = await ensureAllItemsLoaded();
+      const expectedTotal = previewRef.current?.item_count ?? allLoadedItems.length;
+      if (allLoadedItems.length < expectedTotal) {
+        throw new Error(`还有 ${expectedTotal - allLoadedItems.length} 条链接未加载完成，请稍后重试`);
+      }
+      const hydratedItems = await hydrateAllMedia(
+        allLoadedItems.filter((item) => !item.excluded),
+      );
+      const items = hydratedItems
+        .filter((item) => item.product_draft_id != null && !item.excluded)
         .map(collectDesiredState);
       const data = await saveProductPreview(ctx, taskId, items);
       // 后端保存时会把「不属于本任务/草稿」的图片引用剔除（dropped_asset_ids）。这种
@@ -1105,7 +1518,22 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     setError('');
     setMessage('');
     try {
-      const exportableItems = allItems.filter((item) => item.exportable && (!onlySuccess || item.status === 'completed'));
+      // 导出前补齐所有链接的元数据与图片投影：否则未翻到页的链接会用空 manifest 提交。
+      const allLoadedItems = await ensureAllItemsLoaded();
+      const expectedTotal = previewRef.current?.item_count ?? allLoadedItems.length;
+      if (allLoadedItems.length < expectedTotal) {
+        throw new Error(`还有 ${expectedTotal - allLoadedItems.length} 条链接未加载完成，请稍后重试`);
+      }
+      const hydratedItems = await hydrateAllMedia(
+        allLoadedItems.filter((item) => !item.excluded),
+      );
+      // 「只看成功链接」以统一失败标记为准：失败/待确认、部分产出、回退来源图都不算成功。
+      const exportableItems = hydratedItems.filter(
+        (item) =>
+          !item.excluded &&
+          item.exportable &&
+          (!onlySuccess || !itemHasFailure(item)),
+      );
       if (exportableItems.length === 0) throw new Error(onlySuccess ? '没有可导出的成功链接' : '任务没有可完成并导出的商品');
       const missingDraft = exportableItems.find((item) => item.product_draft_id == null);
       if (missingDraft) throw new Error(`可导出商品 #${missingDraft.item_id} 缺少草稿 ID，已阻止不完整提交`);
@@ -1316,8 +1744,96 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
   const finalizeNeedsResolution = finalizeRun?.status === 'publish_failed' || finalizeRun?.status === 'stale';
   const mutationsLocked = Boolean(finalizing || startingFinalize || retrying);
   const dirtyCount = allItems.filter(itemIsDirty).length;
-  const exportableCount = allItems.filter((item) => item.exportable).length;
+  const exportableCount = itemsFullyLoaded
+    ? allItems.filter((item) => item.exportable).length
+    : preview?.item_summary?.exportable_count ??
+      allItems.filter((item) => item.exportable).length;
   const allAssets = mergeAssets(...allItems.map(effectiveAssets));
+
+  const compositionItem =
+    compositionDraftId == null
+      ? null
+      : allItems.find(
+          (item) => (item.product_draft_id ?? item.item_id) === compositionDraftId,
+        ) ?? null;
+  const compositionAssets = compositionItem ? effectiveAssets(compositionItem) : [];
+  const compositionMainAsset = compositionItem
+    ? compositionAssets.find(
+        (asset) => asset.id === compositionItem.image_manifest.main_asset_id,
+      )
+    : undefined;
+  const compositionProductImage = compositionItem
+    ? compositionMainAsset?.preview_url ||
+      compositionAssets.find(
+        (asset) =>
+          asset.bucket === 'processed' &&
+          asset.preview_url &&
+          !asset.preview_url.includes('grid_image_summary'),
+      )?.preview_url ||
+      compositionItem.main_image ||
+      compositionItem.carousel_images[0] ||
+      ''
+    : '';
+  const compositionCore = compositionItem ? effectiveCoreFields(compositionItem) : {};
+  const compositionSize = [
+    compositionCore.length_cm,
+    compositionCore.width_cm,
+    compositionCore.height_cm,
+  ]
+    .filter((value) => value != null && String(value).trim() !== '')
+    .join(' × ');
+  const compositionSpecRows = compositionItem
+    ? [
+        { label: '尺寸', value: compositionSize ? `${compositionSize} cm` : '—' },
+        { label: '重量', value: compositionCore.weight_g ? `${compositionCore.weight_g} g` : '—' },
+        { label: 'SKU', value: compositionItem.skc || compositionCore.sku || '—' },
+      ]
+    : [];
+  const compositionCategory = compositionItem
+    ? String(compositionCore.category_path || compositionItem.title || '')
+    : '';
+
+  const batchComposeItems: BatchCompositionItem[] = (() => {
+    const source = selectedDraftIds.size
+      ? allItems.filter(
+          (item) =>
+            item.product_draft_id != null &&
+            selectedDraftIds.has(item.product_draft_id),
+        )
+      : allItems.filter((item) => item.product_draft_id != null && item.exportable);
+    return source.map((item) => {
+      const assets = effectiveAssets(item);
+      const mainAsset = assets.find(
+        (asset) => asset.id === item.image_manifest.main_asset_id,
+      );
+      const productImageUrl =
+        mainAsset?.preview_url ||
+        assets.find(
+          (asset) =>
+            asset.bucket === 'processed' &&
+            asset.preview_url &&
+            !asset.preview_url.includes('grid_image_summary'),
+        )?.preview_url ||
+        item.main_image ||
+        item.carousel_images[0] ||
+        '';
+      const core = effectiveCoreFields(item);
+      const size = [core.length_cm, core.width_cm, core.height_cm]
+        .filter((value) => value != null && String(value).trim() !== '')
+        .join(' × ');
+      return {
+        draftId: item.product_draft_id as number,
+        headline: compositionSlogan(item.title, core.category_path || ''),
+        subtitle: compositionSubtitle(core.category_path || ''),
+        productImageUrl,
+        specRows: [
+          { label: '尺寸', value: size ? `${size} cm` : '—' },
+          { label: '重量', value: core.weight_g ? `${core.weight_g} g` : '—' },
+          { label: 'SKU', value: item.skc || core.sku || '—' },
+        ],
+      };
+    });
+  })();
 
   const toggleExpanded = (draftId: number) => {
     setExpandedDraftIds((current) => {
@@ -1338,15 +1854,50 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
 
   return (
     <div className="verify-page verify-precheck-page">
+      {/* 已有数据时重新加载（保存后/轮询）也要有明确遮罩，避免整页看起来“点不动”。 */}
+      {loading && (
+        <div className="app-loading-mask verify-precheck-loading-mask" role="status" aria-live="polite">
+          <i className="app-spinner" aria-hidden="true" />
+          <span>正在刷新预检数据…</span>
+        </div>
+      )}
       <header className="verify-commandbar">
         <div className="verify-command-title">
           <h1>预检与最终发布</h1>
           <p>图片先以稳定素材 ID 在本地清单中增删排序；点击完成后，仅发布最终保留图片并生成店小秘表格。</p>
         </div>
         <div className="verify-command-stats">
-          <span><i className="iconfont icon-database" aria-hidden="true" /><strong>{allItems.length}</strong><em>项目</em></span>
+          <span><i className="iconfont icon-database" aria-hidden="true" /><strong>{totalItemCount}</strong><em>项目</em></span>
           <span><i className="iconfont icon-check-circle" aria-hidden="true" /><strong>{exportableCount}</strong><em>可导出</em></span>
           <span><i className="iconfont icon-save" aria-hidden="true" /><strong>{dirtyCount}</strong><em>未保存</em></span>
+          {mediaLoadingCount > 0 && (
+            <span title="正在补齐当前页图片清单">
+              <i className="app-spinner is-sm" aria-hidden="true" />
+              <em>图片加载中</em>
+            </span>
+          )}
+          {itemsLoading && (
+            <span title="首屏已可用，剩余链接正在后台补齐">
+              <i className="app-spinner is-sm" aria-hidden="true" />
+              <em>加载全部链接</em>
+            </span>
+          )}
+        </div>
+        <div className="verify-command-actions">
+          <button
+            type="button"
+            className="btn-mini primary"
+            onClick={() => {
+              void (async () => {
+                const allLoadedItems = await ensureAllItemsLoaded();
+                await hydrateAllMedia(allLoadedItems.filter((item) => !item.excluded));
+                setBatchComposeOpen(true);
+              })();
+            }}
+            disabled={mutationsLocked || batchComposeItems.length === 0}
+          >
+            批量拼装
+          </button>
         </div>
       </header>
 
@@ -1390,7 +1941,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
           </button>
           {failedItemCount > 0 && (
             <span className="verify-actions-hint">
-              有 {failedItemCount} 个失败链接：请先勾「只看失败链接」筛出并「删除所选」剔除，再完成预检并导出
+              有 {failedItemCount} 个失败链接：默认不参与导出与计费（随后会释放）；如需清理，可勾选「只看失败链接」后删除所选
             </span>
           )}
           <button type="button" onClick={reloadForRetry} disabled={loading || mutationsLocked}>
@@ -1398,12 +1949,76 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
           </button>
           <button
             type="button"
-            onClick={() => setSkuManagerOpen(true)}
+            onClick={() => {
+              void (async () => {
+                const allLoadedItems = await ensureAllItemsLoaded();
+                await hydrateAllMedia(allLoadedItems.filter((item) => !item.excluded));
+                setSkuManagerOpen(true);
+              })();
+            }}
             disabled={loading || mutationsLocked || allItems.length === 0}
           >
             管理 SKU 规格图
           </button>
         </div>
+        {(dimensionSummary.estimated > 0 ||
+          dimensionSummary.reused > 0 ||
+          dimensionSummary.missing > 0 ||
+          dimensionSummary.failed > 0) && (
+          <div className="precheck-dim-summary">
+            <span className="precheck-dim-summary-title">尺寸图</span>
+            {dimensionSummary.estimated > 0 && (
+              <span className="is-estimated">预估 {dimensionSummary.estimated}</span>
+            )}
+            {dimensionSummary.reused > 0 && (
+              <span>原图加工 {dimensionSummary.reused}</span>
+            )}
+            {dimensionSummary.missing > 0 && (
+              <span className="is-missing">缺失 {dimensionSummary.missing}</span>
+            )}
+            {dimensionSummary.failed > 0 && (
+              <span className="is-failed">失败 {dimensionSummary.failed}</span>
+            )}
+            {(dimensionSummary.estimated > 0 ||
+              dimensionSummary.missing + dimensionSummary.failed > 0) && (
+              <span className="precheck-dim-summary-actions">
+                {dimensionSummary.missing + dimensionSummary.failed > 0 && (
+                  <button
+                    type="button"
+                    className="btn-mini"
+                    onClick={() => setOnlyDimensionIssues((current) => !current)}
+                  >
+                    {onlyDimensionIssues
+                      ? '取消只看待处理'
+                      : `只看待处理（${dimensionSummary.missing + dimensionSummary.failed}）`}
+                  </button>
+                )}
+                {dimensionSummary.estimated > 0 && (
+                  <>
+                    <button
+                      type="button"
+                      className="btn-mini"
+                      onClick={() => setOnlyEstimated((current) => !current)}
+                    >
+                      {onlyEstimated ? '取消只看预估' : '只看预估'}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-mini primary"
+                      disabled={confirmingDimensions || mutationsLocked}
+                      onClick={() => void confirmAllEstimated()}
+                      title="只把来源标记改为已确认，图上数字不变，不重烧"
+                    >
+                      {confirmingDimensions
+                        ? '确认中…'
+                        : `全部按预估值确认（${dimensionSummary.estimated}）`}
+                    </button>
+                  </>
+                )}
+              </span>
+            )}
+          </div>
+        )}
         <div className="precheck-toolbar">
           <input
             type="search"
@@ -1433,6 +2048,14 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
               }}
             />
             只看失败链接
+          </label>
+          <label className="precheck-only-success">
+            <input
+              type="checkbox"
+              checked={onlyEstimated}
+              onChange={(event) => setOnlyEstimated(event.target.checked)}
+            />
+            只看预估尺寸链接
           </label>
           <label className="precheck-page-size">
             每页
@@ -1585,13 +2208,44 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
               >
                 <span className="precheck-chevron">{isExpanded ? '▾' : '▸'}</span>
                 <span className="precheck-card-toggle-title">{item.skc || `商品 #${draftId}`}</span>
-                {!isExpanded && item.title && <span className="precheck-card-toggle-summary">{item.title}</span>}
+                {!isExpanded && item.title && (
+                  <span
+                    className="precheck-card-toggle-summary"
+                    title={item.title}
+                  >
+                    {compositionSlogan(
+                      item.title,
+                      item.core_fields.category_path || '',
+                    )}
+                  </span>
+                )}
                 <span className="verify-sub">
                   {item.exportable ? '可导出' : '不可导出'} · {hasOverrides ? '已修改' : '未修改'} · 版本 {item.preview_revision} · 状态 {item.status}
-                  {(item.exportable && !manifest.main_asset_id) || item.image_ai_failed === true ? (
+                  {item.export_blockers?.length ? (
+                    <em className="precheck-no-main-hint"> · {item.export_blockers.join('；')}</em>
+                  ) : (item.exportable && !manifest.main_asset_id) || item.image_ai_failed === true ? (
                     <em className="precheck-no-main-hint"> · 未选主图（导出回退来源图）</em>
                   ) : null}
                 </span>
+                {item.dimension_image && (
+                  <span
+                    className={`precheck-dim-badge is-${item.dimension_image.state}`}
+                    title={
+                      item.dimension_image.source === 'applied'
+                        ? '第 4 格使用原链接尺寸图加工后的商品图'
+                        : item.dimension_image.source === 'generated'
+                          ? '第 4 格使用 AI 生成图'
+                          : undefined
+                    }
+                  >
+                    {DIMENSION_IMAGE_LABELS[item.dimension_image.state] || item.dimension_image.state}
+                    {item.dimension_image.source === 'applied'
+                      ? ' · 原图加工'
+                      : item.dimension_image.source === 'generated'
+                        ? ' · 生成图'
+                        : ''}
+                  </span>
+                )}
               </button>
               <button
                 type="button"
@@ -1778,6 +2432,66 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
               )}
 
               <div className="precheck-images">
+                {item.dimension_image && (
+                  <div className="precheck-dim-image-editor">
+                    <div className="precheck-dim-image-editor-head">
+                      <strong>第 4 格尺寸图（英寸）</strong>
+                      <span className={`precheck-dim-badge is-${item.dimension_image.state}`}>
+                        {DIMENSION_IMAGE_LABELS[item.dimension_image.state] || item.dimension_image.state}
+                        {item.dimension_image.source === 'applied'
+                          ? ' · 原图加工'
+                          : item.dimension_image.source === 'generated'
+                            ? ' · 生成图'
+                            : ''}
+                      </span>
+                    </div>
+                    <div className="precheck-dim-image-inputs">
+                      {(['length', 'width', 'height'] as const).map((axis) => (
+                        <label key={axis}>
+                          <span>{axis === 'length' ? '长' : axis === 'width' ? '宽' : '高'}(cm)</span>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.1"
+                            disabled={mutationsLocked || reburningDraftId === draftId}
+                            value={
+                              dimensionEdits[draftId]?.[axis] ??
+                              formatCmValue(
+                                axis === 'length'
+                                  ? item.dimension_image?.length_cm
+                                  : axis === 'width'
+                                    ? item.dimension_image?.width_cm
+                                    : item.dimension_image?.height_cm,
+                              )
+                            }
+                            onChange={(event) => {
+                              const value = event.target.value;
+                              setDimensionEdits((previous) => {
+                                const current = previous[draftId] ?? {
+                                  length: '',
+                                  width: '',
+                                  height: '',
+                                };
+                                return {
+                                  ...previous,
+                                  [draftId]: { ...current, [axis]: value },
+                                };
+                              });
+                            }}
+                          />
+                        </label>
+                      ))}
+                      <button
+                        type="button"
+                        className="btn-mini primary"
+                        disabled={mutationsLocked || reburningDraftId === draftId}
+                        onClick={() => void reburnDimensionImage(item)}
+                      >
+                        {reburningDraftId === draftId ? '重烧中…' : '重烧尺寸图'}
+                      </button>
+                    </div>
+                  </div>
+                )}
                 <div className="precheck-dimension-entry">
                   <div><strong>商品本体尺寸图</strong><span>画布交回后登记为本地尺寸素材，不提前发布 COS。</span></div>
                   <button
@@ -1813,6 +2527,11 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
                   })}
                   regeneratingDetail={regeneratingDetailDraftIds.has(draftId)}
                   onRegenerateDetail={() => void regenerateDetailForItem(item)}
+                  onCompose={
+                    item.product_draft_id != null
+                      ? () => setCompositionDraftId(draftId)
+                      : undefined
+                  }
                 />
               </div>
             </div>
@@ -1859,6 +2578,41 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
             })}
           </ul>
         </section>
+      )}
+
+      {batchComposeOpen && createPortal(
+        <BatchCompositionDialog
+          open={batchComposeOpen}
+          items={batchComposeItems}
+          onClose={() => setBatchComposeOpen(false)}
+          onUpload={async (draftId, file) => {
+            await uploadAssets(draftId, 'detail', [file], { throwOnError: true });
+          }}
+        />,
+        document.body,
+      )}
+
+      {compositionItem && createPortal(
+        <Suspense fallback={null}>
+          <LocalCompositionDrawer
+            open={compositionDraftId != null}
+            title={compositionSlogan(
+              compositionItem.title,
+              compositionCategory,
+            )}
+            subtitle={compositionSubtitle(compositionCategory)}
+            category={compositionCategory}
+            productImageUrl={compositionProductImage}
+            specRows={compositionSpecRows}
+            onClose={() => setCompositionDraftId(null)}
+            onSave={async (file) => {
+              const draftId = compositionItem.product_draft_id;
+              if (draftId == null) throw new Error('缺少草稿 ID，无法保存拼装图');
+              await uploadAssets(draftId, 'detail', [file]);
+            }}
+          />
+        </Suspense>,
+        document.body,
       )}
 
       {/* portal 到 body：tab 面板 fill-mode 动画的层叠上下文会锁住 fixed toast 的 z-index，被顶栏盖住 */}

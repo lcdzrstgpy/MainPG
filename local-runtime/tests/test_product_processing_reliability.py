@@ -255,6 +255,68 @@ def test_executor_failure_restores_unfinished_draft_for_retry(tmp_path: Path) ->
     assert service.get_draft(draft["id"])["status"] == "draft"
 
 
+def test_executor_failure_after_all_items_succeed_keeps_task_completed(tmp_path: Path) -> None:
+    """批次收尾异常（如自动导出）不能把已经全部成功的任务判成「部分失败」。"""
+    service = _service(tmp_path)
+    draft = _draft(service, "already done")
+    task = service.repository.create_task(
+        title="export failure",
+        preflight_only=False,
+        settings={},
+        drafts=[draft],
+        idempotency_key=None,
+        workspace_id="local",
+    )
+    item = task["items"][0]
+    assert service.repository.claim_task_execution(task["id"], "local") is True
+    service.repository.update_item_progress(
+        task["id"],
+        item["id"],
+        status="completed",
+        result={"status": "completed"},
+        workspace_id="local",
+    )
+
+    finished = service.repository.fail_task_execution(
+        task["id"], "没有可导出的 AI 处理图", "local"
+    )
+
+    assert finished["status"] == "completed"
+    assert finished["success_count"] == 1
+    assert finished["failed_count"] == 0
+    assert finished["items"][0]["status"] == "completed"
+
+
+def test_deferred_media_skips_legacy_workbook(tmp_path: Path) -> None:
+    """生成图仍是本地预审资产时，批次结束不生成旧版自动导出表。"""
+    service = _service(tmp_path)
+    local_media_row = {
+        "title": "local media",
+        "processing_scope": ["four_grid", "detail_images"],
+        "carousel_image_paths": [
+            "/api/product-processing/preview/assets/asset-a/content"
+        ],
+        "detail_image_paths": [
+            "/api/product-processing/preview/assets/asset-b/content"
+        ],
+    }
+    assert service_module._generated_media_deferred([local_media_row]) is True
+    assert service_module._generated_media_deferred(
+        [{**local_media_row, "carousel_image_paths": ["https://cdn.example.com/a.jpg"]}]
+    ) is False
+
+    paths = service.assets.write_task_outputs(
+        1,
+        [local_media_row],
+        [],
+        include_video_manifest=False,
+        defer_workbook=True,
+    )
+
+    assert paths.workbook is None
+    assert paths.errors.exists()
+
+
 def test_delete_undo_restores_only_latest_workspace_batch(tmp_path: Path) -> None:
     service = _service(tmp_path)
     first = _draft(service, "first")
@@ -619,9 +681,71 @@ def test_stage_receipt_invalid_and_downstream_deletes_are_item_scoped(tmp_path: 
     assert service.repository.load_stage_receipt(
         task["id"], first_item, "structured_text", workspace_id="local"
     ) is None
+
     assert service.repository.load_stage_receipt(
         task["id"], second_item, "images", workspace_id="local"
     )["output"] == {"stage": "images"}
+
+
+def test_light_task_outputs_skip_large_result_payload(tmp_path: Path) -> None:
+    """任务页每秒轮询：light 模式只带失败判定字段，不返回完整 result_json。"""
+    service = _service(tmp_path)
+    drafts = [_draft(service, "ok"), _draft(service, "bad")]
+    task = service.repository.create_task(
+        title="light outputs",
+        preflight_only=False,
+        settings={},
+        drafts=drafts,
+        idempotency_key=None,
+        workspace_id="local",
+    )
+    service.repository.finish_task(
+        task["id"],
+        [
+            {
+                "item_id": task["items"][0]["id"],
+                "status": "completed",
+                "reason": "",
+                "result": {"optimized_title": "ok", "description": "x" * 20000},
+            },
+            {
+                "item_id": task["items"][1]["id"],
+                "status": "failed",
+                "reason": "上游识别不到",
+                "result": {
+                    "failure_class": "technical_retryable",
+                    "retryable": True,
+                    "operator_hint": "请更换链接",
+                    "debug_hint": "provider exploded",
+                    "description": "y" * 20000,
+                },
+            },
+        ],
+        output_file="",
+        error_report_file="",
+        video_manifest_file="",
+        workspace_id="local",
+    )
+
+    full = service.task_outputs(task["id"], workspace_id="local")
+    light = service.task_outputs(task["id"], light=True, workspace_id="local")
+
+    assert full["items"][1]["result"]["description"] == "y" * 20000
+    assert "description" not in light["items"][1]["result"]
+    assert light["items"][1]["result"] == {
+        "failure_class": "technical_retryable",
+        "retryable": True,
+        "operator_hint": "请更换链接",
+        "debug_hint": "provider exploded",
+    }
+    # 计数与失败分类必须与完整视图一致，否则任务页会显示错的失败统计。
+    assert light["failed_count"] == full["failed_count"] == 1
+    assert light["success_count"] == full["success_count"] == 1
+    assert (
+        light["manifest"]["item_counts"]["technical_retryable"]
+        == full["manifest"]["item_counts"]["technical_retryable"]
+        == 1
+    )
 
 
 def test_retry_clears_terminal_result_but_keeps_stage_receipt(tmp_path: Path) -> None:

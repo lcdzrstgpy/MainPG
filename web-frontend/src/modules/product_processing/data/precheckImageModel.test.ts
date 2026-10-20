@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   addAssets,
+  assetFullUrl,
+  assetThumbUrl,
   moveAsset,
   promoteToLibrary,
   removeAsset,
@@ -82,6 +84,33 @@ test("setting main moves it to carousel position one", () => {
   const next = selectMainAsset(base, "b");
   assert.deepEqual(next.carousel_asset_ids, ["b", "a", "c"]);
   assert.equal(next.main_asset_id, "b");
+});
+
+test("preview cards ask the local media endpoint for a thumbnail", () => {
+  const asset = {
+    id: "a",
+    origin: "source" as const,
+    preview_url: "/api/product-processing/media-assets/abc/content?expires=1&signature=x",
+    public_url: "https://cdn.example.com/a.jpg",
+    publication_status: "local" as const,
+    width: 800,
+    height: 800,
+    bucket: "source" as const,
+    source_kind: "main" as const,
+    sku_id: "",
+    media_asset_id: "abc",
+    media_status: "ready" as const,
+    text_review_status: "" as const,
+    text_review_reason: "",
+  };
+  assert.equal(assetThumbUrl(asset), `${asset.preview_url}&w=320`);
+  // 放大预览必须回到原图，不能拿缩略图。
+  assert.equal(assetFullUrl(asset), asset.preview_url);
+  // COS / 静态图床没有缩略图能力，直接用原图。
+  assert.equal(
+    assetThumbUrl({ ...asset, preview_url: "https://cdn.example.com/a.jpg" }),
+    "https://cdn.example.com/a.jpg",
+  );
 });
 
 test("moving carousel changes main with the first card", () => {

@@ -1,3 +1,4 @@
+import { assetThumbUrl } from "../data/precheckImageModel";
 import type { MiaoshouTemplateKind, PreviewFinalizeRun, PreviewImageAsset } from "../types";
 
 type PrecheckFinalizeProgressProps = {
@@ -81,7 +82,7 @@ export function PrecheckFinalizeProgress({
             <ul>
               {run.errors.map((failure, index) => {
                 const asset = assetById.get(failure.asset_id);
-                const previewUrl = asset?.preview_url || asset?.public_url || "";
+                const previewUrl = assetThumbUrl(asset);
                 return (
                   <li key={`${failure.asset_id}-${failure.product_draft_id}-${index}`}>
                     {previewUrl ? <img src={previewUrl} alt="发布失败图片" loading="lazy" /> : <span className="precheck-failure-placeholder">无预览</span>}

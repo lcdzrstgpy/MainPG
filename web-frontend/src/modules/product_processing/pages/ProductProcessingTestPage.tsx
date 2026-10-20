@@ -6,7 +6,14 @@ import {
   type ApiContext,
 } from '../api/client';
 import { productProcessingApiContext } from '../api/context';
-import { PromptCustomizePanel } from '../components/PromptCustomizePanel';
+import { ImageComboPicker } from '../components/ImageComboPicker';
+import {
+  DEFAULT_PANEL_SELECTIONS,
+  type ImageCategoryId,
+  type PanelSelection,
+  type PhotoLayerKey,
+  type PhotoSelection,
+} from '../data/imageCardOptions';
 import {
   type DraftSummary,
   type DraftUpdateRequest,
@@ -19,6 +26,17 @@ import {
 import '../styles/ProductProcessingTestPage.css';
 
 const API_BASE = '/api/product-processing';
+
+const IMAGE_LAYER_OPTION_KEYS: Record<
+  PhotoLayerKey,
+  'imageFrame' | 'imageLight' | 'imageTone' | 'imageDetail' | 'imageStyle'
+> = {
+  frame: 'imageFrame',
+  light: 'imageLight',
+  tone: 'imageTone',
+  detail: 'imageDetail',
+  style: 'imageStyle',
+};
 
 const SITES: { code: 'US' | 'CO' | 'EC'; label: string }[] = [
   { code: 'US', label: '美国站' },
@@ -41,6 +59,15 @@ const DEFAULT_OPTIONS: ProductProcessingOptions = {
   skipDuplicates: false,
   ipCheck: true,
   maxParallelDrafts: 8,
+  imageCategoryOverride: 'auto',
+  imageMode: 'simple',
+  imageFrame: 'auto',
+  imageLight: 'auto',
+  imageTone: 'auto',
+  imageDetail: 'auto',
+  imageStyle: 'auto',
+  imagePanels: DEFAULT_PANEL_SELECTIONS,
+  imagePreset: 'auto',
   autoRepull: false,
 };
 
@@ -69,6 +96,38 @@ export function ProductProcessingTestPage() {
   const api = getApiContext();
 
   const [options, setOptions] = useState<ProductProcessingOptions>(DEFAULT_OPTIONS);
+  const imageSelection: PhotoSelection = {
+    frame: options.imageFrame || 'auto',
+    light: options.imageLight || 'auto',
+    tone: options.imageTone || 'auto',
+    detail: options.imageDetail || 'auto',
+    style: options.imageStyle || 'auto',
+  };
+
+  const applyImageSelection = (
+    selection: PhotoSelection,
+    panels?: PanelSelection[],
+    presetId = 'auto',
+  ) => {
+    setOptions((p) => ({
+      ...p,
+      imageFrame: selection.frame,
+      imageLight: selection.light,
+      imageTone: selection.tone,
+      imageDetail: selection.detail,
+      imageStyle: selection.style,
+      imagePanels: (panels ?? DEFAULT_PANEL_SELECTIONS).map((panel) => ({
+        ...panel,
+        props: panel.props ? [...panel.props] : null,
+      })),
+      imagePreset: presetId,
+    }));
+  };
+
+  const setImageLayer = (layer: PhotoLayerKey, value: string) => {
+    const key = IMAGE_LAYER_OPTION_KEYS[layer];
+    setOptions((p) => ({ ...p, [key]: value, imagePreset: 'auto' }));
+  };
   const [drafts, setDrafts] = useState<DraftSummary[]>([]);
   const [page, setPage] = useState(1);
   const [totalDrafts, setTotalDrafts] = useState(0);
@@ -368,6 +427,17 @@ export function ProductProcessingTestPage() {
         skip_duplicates: options.skipDuplicates,
         ip_check: options.ipCheck,
         image_generation_count: 4,
+        image_category_override: options.imageCategoryOverride || 'auto',
+        image_frame: options.imageFrame || 'auto',
+        image_light: options.imageLight || 'auto',
+        image_tone: options.imageTone || 'auto',
+        image_detail: options.imageDetail || 'auto',
+        image_style: options.imageStyle || 'auto',
+        image_panels: (options.imagePanels || DEFAULT_PANEL_SELECTIONS).map((panel) => ({
+          ...panel,
+          white_hero: panel.whiteHero,
+        })),
+        image_preset: options.imagePreset || 'auto',
       };
       const data = await ppRequest<TaskOutputsResponse>(api, `${API_BASE}/drafts/process`, {
         body,
@@ -533,7 +603,21 @@ export function ProductProcessingTestPage() {
             </select>
           </label>
         </div>
-        <PromptCustomizePanel />
+        <ImageComboPicker
+          mode={options.imageMode || 'simple'}
+          onModeChange={(mode) => setOptions((p) => ({ ...p, imageMode: mode }))}
+          category={options.imageCategoryOverride || 'auto'}
+          onCategoryChange={(id: ImageCategoryId) =>
+            setOptions((p) => ({ ...p, imageCategoryOverride: id }))
+          }
+          selection={imageSelection}
+          onSelectionChange={setImageLayer}
+          onApplyPreset={applyImageSelection}
+          panels={options.imagePanels || DEFAULT_PANEL_SELECTIONS}
+          onPanelsChange={(panels: PanelSelection[]) =>
+            setOptions((p) => ({ ...p, imagePanels: panels, imagePreset: 'auto' }))
+          }
+        />
       </section>
 
       <section className="section draft-section">

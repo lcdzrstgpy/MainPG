@@ -48,6 +48,11 @@ def loads(value: str | None, fallback: Any) -> Any:
         return fallback
 
 
+def _json_scalar(column, path: str):
+    """在库内取 JSON 标量；空字符串按空对象处理，避免历史脏数据让整个请求报错。"""
+    return func.json_extract(func.coalesce(func.nullif(column, ""), "{}"), path)
+
+
 def _iso_after(seconds: float) -> str:
     """Return an ISO-8601 UTC timestamp offset from now by ``seconds``.
 
@@ -64,45 +69,6 @@ _COLLECTION_BATCH_DISPLAY_NAME_SOURCES: tuple[tuple[str, str], ...] = (
     ("shop_collection_batches", "batch_id"),
     ("plugin_onebound_capture_batches", "batch_id"),
 )
-
-
-def _lookup_collection_batch_display_name(session: Any, batch_id: str) -> str:
-    """按 selection_run_id 解析批次展示名：优先落库值，老数据用源表字段现算。
-
-    老批次（展示名列落库前创建）的 ``display_name`` 为空，这里按渠道用采集
-    关键词 / 店铺名 / page_url 现场拼一个同格式名字，避免前端回落成随机 UUID。
-    """
-    if not batch_id or batch_id == "__unassigned__":
-        return ""
-    try:
-        available = {
-            str(row[0])
-            for row in session.execute(
-                text("SELECT name FROM sqlite_master WHERE type = 'table'")
-            ).all()
-        }
-    except Exception:
-        return ""
-    for table, key in _COLLECTION_BATCH_DISPLAY_NAME_SOURCES:
-        if table not in available:
-            continue
-        try:
-            row = (
-                session.execute(
-                    text(f"SELECT * FROM {table} WHERE {key} = :batch_id"),
-                    {"batch_id": batch_id},
-                )
-                .mappings()
-                .first()
-            )
-        except Exception:
-            continue
-        if row is None:
-            continue
-        display_name = _collection_batch_display_name(table, row)
-        if display_name:
-            return display_name
-    return ""
 
 
 def _collection_batch_display_name(table: str, row: Mapping[str, Any]) -> str:
@@ -816,6 +782,45 @@ class ProductProcessingRepository:
             indexed = {row.id: self._draft(row) for row in rows}
             return [indexed[item] for item in ids if item in indexed]
 
+    def drafts_preview_meta(
+        self,
+        draft_ids: Iterable[int],
+        *,
+        workspace_id: str = "local",
+    ) -> dict[int, dict[str, Any]]:
+        """轻量读取预检所需草稿字段，不解析 raw_payload（大字段）。
+
+        预检首屏/分页只需要 preview_overrides、revision 和 media contract 版本；
+        原先 ``get_drafts`` 会为每条草稿解析完整 raw_payload，500 条时是主要 CPU/内存开销。
+        """
+        ids = list(dict.fromkeys(int(item) for item in draft_ids))
+        if not ids:
+            return {}
+        with self.database.sessions() as session:
+            rows = session.execute(
+                select(
+                    ProductDraftRow.id,
+                    ProductDraftRow.preview_overrides_json,
+                    ProductDraftRow.preview_revision,
+                    ProductDraftRow.media_contract_version,
+                ).where(
+                    ProductDraftRow.id.in_(ids),
+                    ProductDraftRow.workspace_id == workspace_id,
+                    ProductDraftRow.status != "deleted",
+                )
+            ).all()
+        meta: dict[int, dict[str, Any]] = {}
+        for row in rows:
+            overrides = loads(row.preview_overrides_json, {})
+            if not isinstance(overrides, dict):
+                overrides = {}
+            meta[int(row.id)] = {
+                "preview_overrides": overrides,
+                "preview_revision": int(row.preview_revision or 0),
+                "media_contract_version": int(row.media_contract_version or 1),
+            }
+        return meta
+
     def list_drafts(
         self,
         status: str | None,
@@ -915,32 +920,42 @@ class ProductProcessingRepository:
                 .limit(limit + 1)
             )
             rows = session.execute(statement).all()
+            # 一次取回每个批次的样本草稿（窗口函数取每个 selection_run_id 最新一条），
+            # 避免 200 个批次逐个查样本造成的 N+1。
+            ranked = (
+                select(
+                    ProductDraftRow.selection_run_id.label("rid"),
+                    ProductDraftRow.raw_payload_json.label("raw_payload_json"),
+                    ProductDraftRow.source_type.label("source_type"),
+                    func.row_number()
+                    .over(
+                        partition_by=ProductDraftRow.selection_run_id,
+                        order_by=(
+                            ProductDraftRow.created_at.desc(),
+                            ProductDraftRow.id.desc(),
+                        ),
+                    )
+                    .label("rn"),
+                )
+                .where(
+                    ProductDraftRow.workspace_id == workspace_id,
+                    ProductDraftRow.status == "draft",
+                )
+                .subquery()
+            )
+            samples = {
+                (str(row.rid) if row.rid is not None else ""): row
+                for row in session.execute(select(ranked).where(ranked.c.rn == 1))
+            }
+            batch_ids = [
+                str(row.selection_run_id) if row.selection_run_id is not None else ""
+                for row in rows[:limit]
+            ]
+            # 批次展示名改为一次批量解析（三张源表各一条 IN 查询），不再每批次查一次。
+            display_names = self.collection_batch_display_names(batch_ids)
             batches: list[dict[str, Any]] = []
-            for row in rows[:limit]:
-                batch_id = str(row.selection_run_id) if row.selection_run_id is not None else ""
-                sample = None
-                if batch_id:
-                    sample = session.execute(
-                        select(ProductDraftRow.raw_payload_json, ProductDraftRow.source_type)
-                        .where(
-                            ProductDraftRow.workspace_id == workspace_id,
-                            ProductDraftRow.selection_run_id == batch_id,
-                            ProductDraftRow.status == "draft",
-                        )
-                        .order_by(ProductDraftRow.created_at.desc(), ProductDraftRow.id.desc())
-                        .limit(1)
-                    ).first()
-                else:
-                    sample = session.execute(
-                        select(ProductDraftRow.raw_payload_json, ProductDraftRow.source_type)
-                        .where(
-                            ProductDraftRow.workspace_id == workspace_id,
-                            ProductDraftRow.selection_run_id.is_(None),
-                            ProductDraftRow.status == "draft",
-                        )
-                        .order_by(ProductDraftRow.created_at.desc(), ProductDraftRow.id.desc())
-                        .limit(1)
-                    ).first()
+            for row, batch_id in zip(rows[:limit], batch_ids):
+                sample = samples.get(batch_id)
                 raw: dict[str, Any] = {}
                 source_type = str(sample.source_type) if sample is not None else ""
                 if sample is not None:
@@ -956,7 +971,7 @@ class ProductProcessingRepository:
                         "source_type": source_type,
                         "collection_channel": str(raw.get("collection_channel") or "") or "",
                         "platform": str(raw.get("source_platform") or "") or "",
-                        "channel_name": _lookup_collection_batch_display_name(session, batch_id)
+                        "channel_name": display_names.get(batch_id)
                         or str(raw.get("source_title") or raw.get("title") or "")[:60],
                         "count": int(row.draft_count),
                         "first_created_at": str(row.first_created_at or ""),
@@ -1378,6 +1393,165 @@ class ProductProcessingRepository:
                 return None
             return self._task(row) if row else None
 
+    def get_task_meta(self, task_id: int, workspace_id: str = "local") -> dict[str, Any] | None:
+        """只读任务主表，不加载 items（也不解析任何 result_json）。
+
+        预检首屏/轮询只看状态和计数；原先走 ``get_task`` 会把整任务所有 item 的
+        result_json 读出来解析，分页只缩小了响应体，没省下 DB 读取和 JSON 解析。
+        """
+        with self.database.sessions() as session:
+            row = session.get(ProcessingTaskRow, task_id)
+            if row is None or row.workspace_id != workspace_id:
+                return None
+            return self._task_meta(row)
+
+    def get_task_items_page(
+        self,
+        task_id: int,
+        *,
+        offset: int = 0,
+        limit: int | None = None,
+        completed_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        """按 id 顺序读取某页任务项（与 ``task.items`` 的顺序一致）。"""
+        with self.database.sessions() as session:
+            statement = select(ProcessingTaskItemRow).where(
+                ProcessingTaskItemRow.task_id == int(task_id)
+            )
+            if completed_only:
+                statement = statement.where(ProcessingTaskItemRow.status == "completed")
+            statement = statement.order_by(ProcessingTaskItemRow.id).offset(
+                max(0, int(offset))
+            )
+            if limit is not None:
+                statement = statement.limit(int(limit))
+            return [self._item(row) for row in session.scalars(statement).all()]
+
+    def get_task_items_by_draft_ids(
+        self,
+        task_id: int,
+        draft_ids: Iterable[int],
+        *,
+        completed_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        """只读取指定草稿的任务项（图片懒加载按草稿补齐用）。"""
+        ids = list(dict.fromkeys(int(item) for item in draft_ids))
+        if not ids:
+            return []
+        with self.database.sessions() as session:
+            statement = select(ProcessingTaskItemRow).where(
+                ProcessingTaskItemRow.task_id == int(task_id),
+                ProcessingTaskItemRow.product_draft_id.in_(ids),
+            )
+            if completed_only:
+                statement = statement.where(ProcessingTaskItemRow.status == "completed")
+            rows = session.scalars(statement.order_by(ProcessingTaskItemRow.id)).all()
+            return [self._item(row) for row in rows]
+
+    def task_item_preview_rows(
+        self,
+        task_id: int,
+        *,
+        completed_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        """预检汇总用的轻量行：摘要字段由 SQLite 的 JSON1 在库内取标量。
+
+        这样统计总数/可导出/失败数量时不需要把每条 ``result_json`` 读进 Python
+        再 ``json.loads``，几百条链接的轮询开销从「解析全部结果」降到「读几个标量」。
+        """
+        result_json = ProcessingTaskItemRow.result_json
+        with self.database.sessions() as session:
+            statement = select(
+                ProcessingTaskItemRow.id,
+                ProcessingTaskItemRow.product_draft_id,
+                ProcessingTaskItemRow.status,
+                _json_scalar(result_json, "$.optimized_title").label("optimized_title"),
+                _json_scalar(result_json, "$.status").label("result_status"),
+                _json_scalar(result_json, "$.partial_result").label("partial_result"),
+                _json_scalar(result_json, "$.media_integrity.ok").label("media_ok"),
+                _json_scalar(
+                    result_json, "$.provider_status_classes.four_grid"
+                ).label("four_grid"),
+            ).where(ProcessingTaskItemRow.task_id == int(task_id))
+            if completed_only:
+                statement = statement.where(ProcessingTaskItemRow.status == "completed")
+            rows = session.execute(
+                statement.order_by(ProcessingTaskItemRow.id)
+            ).all()
+        return [
+            {
+                "item_id": int(row.id),
+                "product_draft_id": row.product_draft_id,
+                "status": row.status,
+                "optimized_title": row.optimized_title or "",
+                "result_status": row.result_status or "",
+                "partial_result": bool(row.partial_result),
+                "media_ok": None if row.media_ok is None else bool(row.media_ok),
+                "four_grid": row.four_grid or "",
+            }
+            for row in rows
+        ]
+
+    def get_task_items_light(self, task_id: int) -> list[dict[str, Any]]:
+        """任务页轮询用的任务项：只取展示字段和失败判定的几个 JSON 标量。
+
+        完整 ``result_json`` 里有标题/描述/提示词等大字段；任务页每秒轮询时把它们
+        读出来再序列化回前端，是处理中页面卡顿的主要来源。
+        """
+        result_json = ProcessingTaskItemRow.result_json
+        with self.database.sessions() as session:
+            rows = session.execute(
+                select(
+                    ProcessingTaskItemRow.id,
+                    ProcessingTaskItemRow.task_id,
+                    ProcessingTaskItemRow.product_draft_id,
+                    ProcessingTaskItemRow.skc,
+                    ProcessingTaskItemRow.spu,
+                    ProcessingTaskItemRow.title,
+                    ProcessingTaskItemRow.image_url,
+                    ProcessingTaskItemRow.status,
+                    ProcessingTaskItemRow.reason,
+                    ProcessingTaskItemRow.created_at,
+                    ProcessingTaskItemRow.updated_at,
+                    _json_scalar(result_json, "$.failure_class").label("failure_class"),
+                    _json_scalar(result_json, "$.retryable").label("retryable"),
+                    _json_scalar(result_json, "$.operator_hint").label("operator_hint"),
+                    _json_scalar(result_json, "$.debug_hint").label("debug_hint"),
+                )
+                .where(ProcessingTaskItemRow.task_id == int(task_id))
+                .order_by(ProcessingTaskItemRow.id)
+            ).all()
+        return [
+            {
+                "id": row.id,
+                "item_id": row.id,
+                "task_id": row.task_id,
+                "product_draft_id": row.product_draft_id,
+                "skc": row.skc,
+                "spu": row.spu,
+                "title": row.title,
+                "image_url": row.image_url,
+                "status": row.status,
+                "reason": row.reason,
+                "result": {
+                    key: value
+                    for key, value in (
+                        ("failure_class", row.failure_class),
+                        (
+                            "retryable",
+                            None if row.retryable is None else bool(row.retryable),
+                        ),
+                        ("operator_hint", row.operator_hint),
+                        ("debug_hint", row.debug_hint),
+                    )
+                    if value not in (None, "")
+                },
+                "created_at": row.created_at,
+                "updated_at": row.updated_at,
+            }
+            for row in rows
+        ]
+
     def latest_task_item_for_draft(
         self, draft_id: int, workspace_id: str = "local"
     ) -> dict[str, Any] | None:
@@ -1648,7 +1822,13 @@ class ProductProcessingRepository:
                 task.success_count = sum(value == "completed" for value in statuses)
                 task.skipped_count = sum(value == "skipped" for value in statuses)
                 task.failed_count = sum(value not in {"pending", "running", "completed", "skipped"} for value in statuses)
-                task.status = "failed" if task.success_count == 0 else "partial_failure"
+                # 与 finish_task 同一套判定：全部条目已完成时只是收尾中断，不是部分失败。
+                if task.failed_count == 0:
+                    task.status = "completed"
+                elif task.success_count == 0:
+                    task.status = "failed"
+                else:
+                    task.status = "partial_failure"
                 task.updated_at = now
                 recovered.append((task.id, task.workspace_id))
         return [task for task_id, workspace in recovered if (task := self.get_task(task_id, workspace)) is not None]
@@ -1843,7 +2023,16 @@ class ProductProcessingRepository:
             task.success_count = sum(value == "completed" for value in statuses)
             task.skipped_count = sum(value == "skipped" for value in statuses)
             task.failed_count = sum(value not in {"pending", "running", "completed", "skipped"} for value in statuses)
-            task.status = "failed" if task.success_count == 0 else "partial_failure"
+            # 与 finish_task 同一套判定：只要没有失败条目，就不是「部分失败」。
+            # 异常可能发生在批次收尾（如自动导出/落盘），此时所有商品都已成功，
+            # 旧逻辑只看 success_count != 0 就写 partial_failure，导致
+            # 「成功 1 · 失败 0」却显示部分失败。
+            if task.failed_count == 0:
+                task.status = "completed"
+            elif task.success_count == 0:
+                task.status = "failed"
+            else:
+                task.status = "partial_failure"
             task.updated_at = now
         return self.get_task(task_id, workspace_id)
 
@@ -2962,6 +3151,13 @@ class ProductProcessingRepository:
     @classmethod
     def _task(cls, row: ProcessingTaskRow) -> dict[str, Any]:
         return {
+            **cls._task_meta(row),
+            "items": [cls._item(item) for item in row.items],
+        }
+
+    @staticmethod
+    def _task_meta(row: ProcessingTaskRow) -> dict[str, Any]:
+        return {
             "id": row.id,
             "task_id": row.id,
             "workspace_id": row.workspace_id,
@@ -2980,7 +3176,6 @@ class ProductProcessingRepository:
             "cleared_from_product_processing": row.cleared_from_product_processing,
             "created_at": row.created_at,
             "updated_at": row.updated_at,
-            "items": [cls._item(item) for item in row.items],
         }
 
     @staticmethod

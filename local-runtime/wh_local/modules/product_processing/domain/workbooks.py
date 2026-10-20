@@ -508,38 +508,66 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
         # 店小秘 *变种属性值一 必填；无规格值数据时对齐原型 _default_variant_export_value()
         variant_value_1 = "Estándar" if str(row.get("target_language") or "").strip().casefold() == "es" else "Standard"
 
-    # 四宫格落位（对齐交接文档 §11.3）：预览图/素材图=第1张分图；轮播图=4张分图+完整四宫格总览（总览放最后）。
+    # 四宫格落位（对齐交接文档 §11.3）：预览图/素材图=第1张分图；轮播图=4张分图。
+    # 四宫格总览图是运输/诊断产物，不是可上架轮播图，绝不能混入导出。
     # 生成图为本地路径（未上传 COS）时店小秘无法访问，仅 http(s) 生成图才可用，否则回退来源 http 图片。
     # 预检覆盖优先：用户改过标题/图片后以覆盖值为准，未改则走原生成/回退逻辑。
     generated_carousel = row.get("carousel_image_paths") or []
-    grid_summary_path = str(row.get("grid_image_summary_path") or "").strip()
     detail_image_paths = row.get("detail_image_paths") or []
-    generated_images = _http_urls(list(generated_carousel) + [grid_summary_path])
+    scope = set(row.get("processing_scope") or [])
+    generated_images = _http_urls(list(generated_carousel))
     if slot_overrides:
-        # 新版尺寸画布以旧版整组人工轮播为基线再覆盖单槽；总览仍保留在末尾。
-        slotted_images = _http_urls(
+        # 新版尺寸画布以旧版整组人工轮播为基线再覆盖单槽。
+        carousel_urls = _http_urls(
             [slot.get("value") for slot in apply_slot_overrides(row, preview_overrides)]
         )
-        export_images = slotted_images + _http_urls([grid_summary_path])
-        carousel = "\n".join(export_images)
-        main_image = override_main if _is_http_url(override_main) else next(iter(slotted_images), "")
+        main_image = override_main if _is_http_url(override_main) else next(iter(carousel_urls), "")
         material_images = main_image
     elif override_carousel:
-        # 纯旧版整组轮播图覆盖保持原语义，避免历史预检数据被悄悄追加图片。
-        carousel = "\n".join(override_carousel)
-        main_image = override_main if _is_http_url(override_main) else override_carousel[0]
+        # 纯旧版整组轮播图覆盖保持原语义，但只保留可上架的 http(s) 地址。
+        carousel_urls = _http_urls(override_carousel)
+        main_image = override_main if _is_http_url(override_main) else next(iter(carousel_urls), "")
         material_images = main_image
     elif generated_images:
-        carousel = "\n".join(generated_images)
+        carousel_urls = generated_images
         main_image = generated_images[0]
         material_images = generated_images[0]
     else:
-        carousel = "\n".join(_http_urls(source_image_urls))
-        main_image = main_image_url if _is_http_url(main_image_url) else next(iter(_http_urls(source_image_urls)), "")
+        if scope & {"four_grid", "detail_images"}:
+            # 处理范围包含图片却拿不到可导出的生成图：绝不回退来源原图。
+            # 否则失败/未处理链接会以「成功」形式进店小秘，且用户无法从表格分辨。
+            raise ValueError(
+                f"{str(row.get('optimized_title') or row.get('title') or '商品')}: "
+                "没有可导出的 AI 处理图（生成图为空或未发布为公网地址），不能回退来源原图；"
+                "请重新处理该链接或忽略它"
+            )
+        carousel_urls = _http_urls(source_image_urls)
+        main_image = main_image_url if _is_http_url(main_image_url) else next(iter(carousel_urls), "")
         # 店小秘 *产品素材图 为单值列（最大导入1条，对齐原型 DXM_COLUMNS[19]=main_image_url）
         material_images = next(iter(_http_urls(source_detail_image_urls)), "")
         if not material_images:
             material_images = main_image
+
+    export_title = str(row.get("optimized_title") or row.get("title") or "").strip()
+    grid_status = str((row.get("provider_status_classes") or {}).get("four_grid") or "")
+    if "four_grid" in scope:
+        if len(carousel_urls) != 4:
+            raise ValueError(
+                f"{export_title or '商品'}: 轮播图需 4 张，当前 {len(carousel_urls)} 张；"
+                "请先在预检页补齐或重试图片分支"
+            )
+        if grid_status == "source_fallback" and not (slot_overrides or override_carousel):
+            raise ValueError(
+                f"{export_title or '商品'}: AI 生图未成功，当前轮播为来源图兜底；"
+                "请重试图片分支后再导出"
+            )
+    if not main_image and (
+        bool(scope & {"four_grid", "detail_images"})
+        or bool(carousel_urls)
+        or bool(override_main)
+    ):
+        raise ValueError(f"{export_title or '商品'}: 缺少主图，无法导出")
+    carousel = "\n".join(carousel_urls)
 
     # SKU 规格图：店小秘「预览图」列对齐原型 _build_dxm_row（DXM_COLUMNS[8]）——
     # 取变种自己的规格图，缺失时回退商品主图。缺省策略为 "auto"：按可用性判断结论决定
@@ -570,6 +598,11 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
         if "detail_images" in preview_overrides
         else _http_urls(detail_image_paths)
     )
+    if "detail_images" in scope and not _http_urls(detail_sources):
+        raise ValueError(
+            f"{export_title or '商品'}: 详情图未生成或没有可访问地址；"
+            "请先在预检页补齐或重试详情图"
+        )
     detail_html = "".join(f'<img src="{value}" />' for value in detail_sources)
     if detail_html:
         description = f"{description}\n{detail_html}".strip()

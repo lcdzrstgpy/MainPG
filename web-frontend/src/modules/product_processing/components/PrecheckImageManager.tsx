@@ -1,6 +1,8 @@
 import { useRef, type KeyboardEvent } from "react";
 import {
   addAssets,
+  assetFullUrl,
+  assetThumbUrl,
   moveAsset,
   promoteToLibrary,
   removeAsset,
@@ -28,6 +30,7 @@ type PrecheckImageManagerProps = {
   onRetryMediaAsset?: (assetId: string) => void;
   regeneratingDetail?: boolean;
   onRegenerateDetail?: () => void;
+  onCompose?: () => void;
 };
 
 const ORIGIN_LABELS: Record<PreviewImageAsset["origin"], string> = {
@@ -47,10 +50,6 @@ const PUBLICATION_LABELS: Record<PreviewImageAsset["publication_status"], string
   published: "已发布",
   publish_failed: "发布失败",
 };
-
-function assetUrl(asset: PreviewImageAsset | undefined): string {
-  return asset?.preview_url || asset?.public_url || "";
-}
 
 function FilePicker({
   label,
@@ -102,19 +101,20 @@ function PreviewAsset({
   label: string;
   onPreview: (url: string) => void;
 }) {
-  const url = assetUrl(asset);
+  const fullUrl = assetFullUrl(asset);
+  const thumbUrl = assetThumbUrl(asset);
   return (
     <>
       <button
         type="button"
         className="precheck-asset-preview"
-        disabled={!url}
+        disabled={!fullUrl}
         aria-label={`预览${label}`}
-        onClick={() => url && onPreview(url)}
+        onClick={() => fullUrl && onPreview(fullUrl)}
       >
-        {url ? (
+        {thumbUrl ? (
           <img
-            src={url}
+            src={thumbUrl}
             alt={label}
             loading="lazy"
             onError={(event) => { event.currentTarget.style.visibility = "hidden"; }}
@@ -150,6 +150,7 @@ export function PrecheckImageManager({
   onRetryMediaAsset,
   regeneratingDetail = false,
   onRegenerateDetail,
+  onCompose,
 }: PrecheckImageManagerProps) {
   const assetById = new Map(assets.map((asset) => [asset.id, asset]));
 
@@ -201,6 +202,7 @@ export function PrecheckImageManager({
         onManifestChange={onManifestChange}
         onRemoveFromLibrary={(assetId) => onManifestChange(removeFromLibrary(manifest, assetId))}
         onPreview={onPreview}
+        onCompose={onCompose}
       />
 
       <section className="precheck-manager-section">

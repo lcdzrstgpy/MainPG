@@ -17,6 +17,14 @@ from typing import Any, Callable, Iterable
 from urllib.parse import urlsplit
 
 
+# 链接级失败统一话术：上游识别不到原 SKU/主图时，运营无法通过重试修复，
+# 只能换链接；失败链接会在结算时按 no_return 释放，不参与计费。
+FAILED_LINK_OPERATOR_HINT = (
+    "该链接原sku或主图上游厂家正常识别不到，请更换链接处理并忽略该链接，"
+    "失败链接不参与计费，随后会释放"
+)
+
+
 _IP_RISK_MARKERS = (
     "ip",
     "trademark",

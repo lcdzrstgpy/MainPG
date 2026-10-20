@@ -1,5 +1,6 @@
 import { useId, useState } from "react";
 
+import { assetFullUrl, assetThumbUrl } from "../data/precheckImageModel";
 import { mediaStatusLabel, supportsMediaRetry } from "../data/draftMediaModel";
 import type { PreviewImageAsset } from "../types";
 
@@ -29,7 +30,7 @@ type PrecheckSourcePoolProps = {
 };
 
 function assetUrl(asset: PreviewImageAsset): string {
-  return asset.preview_url || asset.public_url || "";
+  return assetThumbUrl(asset);
 }
 
 function SourceCard({
@@ -52,6 +53,7 @@ function SourceCard({
   onPreview: (url: string) => void;
 }) {
   const url = assetUrl(asset);
+  const fullUrl = assetFullUrl(asset);
   const retryable = asset.media_status ? supportsMediaRetry(asset.media_status) : false;
   const ready = asset.media_status === "ready";
   const statusLabel = asset.media_status ? mediaStatusLabel(asset.media_status) : "无状态";
@@ -60,9 +62,9 @@ function SourceCard({
       <button
         type="button"
         className="precheck-asset-preview"
-        disabled={!url}
+        disabled={!fullUrl}
         aria-label={`预览${SOURCE_KIND_LABELS[kind] ?? kind}`}
-        onClick={() => url && onPreview(url)}
+        onClick={() => fullUrl && onPreview(fullUrl)}
       >
         {url ? (
           <img
@@ -92,6 +94,7 @@ function SourceCard({
         {retryable && onRetry ? (
           <button
             type="button"
+            className="ghost"
             disabled={disabled || retrying}
             onClick={() => onRetry(asset.media_asset_id)}
           >
@@ -100,6 +103,7 @@ function SourceCard({
         ) : ready ? (
           <button
             type="button"
+            className={alreadyInLibrary ? "ghost" : "primary"}
             disabled={disabled || alreadyInLibrary}
             onClick={() => onPromote(asset.id)}
           >
