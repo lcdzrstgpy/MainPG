@@ -248,9 +248,12 @@ if _QT_OK:
             """只登记帧路径，解码交给按需进行。
 
             61 帧 ``QImage`` 全解码会常驻 **93MB**（800x500 未压缩位图），而启动
-            画面只活几秒 —— 为它占掉上百兆内存不划算。改成按需解码 + LRU 缓存
-            最近 ``FRAME_CACHE`` 帧：常驻约 18MB，代价是每帧首次显示解码一次
-            （约 15ms，肉眼无感）。第 1 帧立刻解码，保证一上来就是画面。
+            画面只活几秒 —— 为它占掉上百兆内存不划算。改成按需解码 + 小缓存：
+            常驻约 18MB，代价是每帧解码一次（约 15ms，12fps 下预算 83ms，够用）。
+
+            注意：61 帧循环远大于 ``FRAME_CACHE``，所以播放一圈几乎每帧都是
+            miss —— 缓存只在「同一帧被重复绘制」（窗口激活重绘等）时才省事，
+            不要指望它把整轮播放都缓存住。
             """
             self._frame_paths = sorted(directory.glob("*.jpg")) if directory.is_dir() else []
             if not self._frame_paths:
@@ -430,7 +433,7 @@ class SplashCard:
         # Qt 首次初始化（加载 Qt DLL、建事件循环）在慢机器上可能超过 3 秒；
         # 超时就静默回落成「等 2.5 秒开浏览器」，白屏空窗又回来了。给足 6 秒。
         if not self._started.wait(6.0):
-            logger.warning("启动卡片在 3 秒内没有起来，回落为延迟开浏览器")
+            logger.warning("启动卡片在 6 秒内没有起来，回落为延迟开浏览器")
             self._closed.set()
             return False
         return self._widget is not None
@@ -438,13 +441,20 @@ class SplashCard:
     def _run_qt(self, timeout: float) -> None:
         try:
             app = QApplication.instance() or QApplication([])
-            self._widget = SplashCardWidget(
+            widget = SplashCardWidget(
                 background=self._background,
                 version=self._version,
                 host=self._host,
                 port=self._port,
             )
-            self._widget.show()
+            # 主线程可能已经等超时、回落成「延迟开浏览器」了。此时若照样 show()，
+            # 窗口会在半分钟后才亮出来，而 _watch 早已因为 _closed 退出 ——
+            # 没人会关它，卡片就一直压在屏幕上（2026-10-20 复查发现）。
+            if self._closed.is_set():
+                widget.deleteLater()
+                return
+            self._widget = widget
+            widget.show()
             self._started.set()
             self._watchdog = threading.Thread(
                 target=self._watch, args=(timeout,), name="splash-watch", daemon=True
