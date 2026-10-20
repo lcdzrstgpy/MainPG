@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import { useChangePoller } from "../../../shared/hooks/useChangePoller";
 import { priceVerificationApi } from "../api/priceVerificationApi";
@@ -34,7 +35,14 @@ export function PriceVerificationPage({ isActive = true }: { isActive?: boolean 
   const [sourceLinks, setSourceLinks] = useState<SkcSourceLink[]>([]);
   const [loading, setLoading] = useState(false);
   const [busyKey, setBusyKey] = useState("");
-  const [notice, setNotice] = useState("正在读取核价批次…");
+  const [notice, setNoticeMessage] = useState("");
+  const [noticeSeq, setNoticeSeq] = useState(0);
+
+  // 统一提示入口：每次推送都生成新序号，同一条文案再次出现也会重新计时。
+  const setNotice = (message: string) => {
+    setNoticeMessage(message);
+    setNoticeSeq((seq) => seq + 1);
+  };
 
   const currentBatchId = useMemo(() => captureBatches.find((batch) => batch.is_current)?.batch_id ?? "", [captureBatches]);
   const scrollWorkflowTop = () => requestAnimationFrame(() => {
@@ -286,16 +294,38 @@ export function PriceVerificationPage({ isActive = true }: { isActive?: boolean 
   const batchSummary = currentBatch?.quote_count
     ? `当前批次已入库 ${currentBatch.quote_count} 条报价，初筛后 ${batchItems.length} 个 SKC 可直接选择并执行图搜。`
     : "";
-  const showNotice = Boolean(notice) && notice !== "正在读取核价批次…" && notice !== batchSummary;
+  const showNotice = Boolean(notice) && notice !== batchSummary;
+  const noticeIsError = /失败|错误|无法/.test(notice);
+
+  // Toast 生命周期：新消息重置计时，3 秒后自动消失；消息切换或组件卸载时清理旧定时器。
+  useEffect(() => {
+    if (!notice || notice === batchSummary) return;
+    const timer = window.setTimeout(() => {
+      setNoticeMessage((current) => (current === notice ? "" : current));
+    }, 3000);
+    return () => window.clearTimeout(timer);
+  }, [notice, noticeSeq, batchSummary]);
+
   return <div className="price-verification-page">
     <section className="price-verification-hero"><div><h1>核价及货源</h1><p>插件采集 Temu 本页报价，人工确认本轮 SKC；优先复用产品库已有货源，仅对未入库 SKC 执行 1688 图搜。</p></div><div className="price-verification-hero-status"><span className="status-dot" />{currentBatchId ? "当前批次已就绪" : "等待插件采集"}</div></section>
     <section className="price-verification-workflow-card"><div className="price-verification-workflow-heading"><span>◇</span><strong>核价及货源工作流</strong><small>本轮 SKC 独立流转，历史数据不参与图搜</small></div><WorkflowSteps activeStage={activeStage} canOpen={canOpenStage} onOpen={openStage} /></section>
-    {showNotice ? <p className="price-verification-notice price-verification-notice-compact" role="status" aria-live="polite">{notice}</p> : null}
     <div className="price-verification-content-grid"><div className="price-verification-main-column">
       {activeStage !== "prescreen" && <div className="price-verification-stage-tools"><button type="button" className="price-verification-back-button" onClick={() => openStage(activeStage === "batchReview" ? "prescreen" : "batchReview")}>← 返回上一步</button>{batchSummary ? <span>{batchSummary}</span> : null}</div>}
         {activeStage === "prescreen" && <PrescreenPanel isChecking={loading} totalItems={currentBatch?.quote_count ?? 0} totalSkc={currentBatch?.skc_count ?? 0} passedItems={batchItems.length} prescreen={prescreen} storeName={currentBatch?.store_name ?? ""} archiveProductIdType={currentBatch?.archive_product_id_type ?? "SKC"} onPrescreenChange={savePrescreen} onStoreNameChange={saveCaptureBatchStoreName} onArchiveProductIdTypeChange={saveCaptureBatchArchiveProductIdType} onRefresh={() => void refresh()} onContinue={() => openStage("batchReview")} />}
       {activeStage === "batchReview" && <BatchReviewPanel batchId={currentBatchId} items={batchItems} busy={Boolean(busyKey) || loading} onConfirm={(batchId, skcIds, maxCandidates) => stageBatchAndStartSourcing(batchId, skcIds, maxCandidates)} onDelete={(batchId, skcId) => deleteBatchItem(batchId, skcId)} onDeleteSelected={(batchId, skcIds) => deleteBatchItems(batchId, skcIds)} onCopySelectedSkcIds={copySelectedSkcIds} />}
       {activeStage === "sourcing" && <><SourcingPanel isActive={isActive} preview={sourcingState.preview} batchId={currentBatchId} busy={Boolean(busyKey) || loading} sourceCount={sourceCount} links={sourceLinks} selectedCandidates={sourcingState.selected_candidates} onLink={(skcId, _offerId, candidate, priceOverride, weightOverride) => selectSourceCandidate(skcId, candidate, priceOverride, weightOverride)} onManualLookup={addManualSourceCandidate} onUnlink={(linkId) => removeSourceLink(linkId)} onUnselectCandidate={(skcId, offerId) => unselectSourceCandidate(skcId, offerId)} onComplete={() => void completeSourcing()} onStart={() => void startBatchSourcing()} onError={setNotice} matchingCompleted={sourceCount === 0 && sourcingState.preview === null} /><LinkedSourcePanel products={sourcedProducts} /></>}
     </div></div>
+    {showNotice ? createPortal(
+      <div
+        key={noticeSeq}
+        className={`price-verification-toast${noticeIsError ? " is-error" : ""}`}
+        role="status"
+        aria-live="polite"
+      >
+        <span className="price-verification-toast-icon" aria-hidden="true">{noticeIsError ? "!" : "i"}</span>
+        <span>{notice}</span>
+      </div>,
+      document.body,
+    ) : null}
   </div>;
 }

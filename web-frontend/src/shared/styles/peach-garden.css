@@ -106,6 +106,7 @@
 
 /* 页头横幅：蓝色渐变 → 桃粉→青山半透明 */
 [data-theme="peach"] .daily-page-heading,
+[data-theme="peach"] .pod-page-header,
 [data-theme="peach"] .settings-hero,
 [data-theme="peach"] .price-verification-hero,
 [data-theme="peach"] .profit-activity-hero,
@@ -113,6 +114,12 @@
   border-color: rgba(217, 93, 120, 0.42);
   background: linear-gradient(118deg, rgba(128, 52, 78, 0.82) 0%, rgba(208, 107, 130, 0.68) 56%, rgba(90, 155, 124, 0.6) 100%);
   box-shadow: 0 14px 34px rgba(176, 58, 85, 0.2);
+}
+
+[data-theme="peach"] .pod-page-header .pod-page-title-icon {
+  border-color: rgba(255, 255, 255, 0.38);
+  color: #fff;
+  background: rgba(255, 255, 255, 0.16);
 }
 
 [data-theme="peach"] .settings-hero::after {
@@ -128,12 +135,15 @@
 
 /* 页头文字保持可读 */
 [data-theme="peach"] .daily-page-heading .daily-kicker,
+[data-theme="peach"] .pod-page-header .pod-page-title > div > span,
 [data-theme="peach"] .price-verification-hero .eyebrow,
 [data-theme="peach"] .profit-activity-hero .eyebrow,
 [data-theme="peach"] .verify-eyebrow {
   color: #ffd9e2;
 }
 [data-theme="peach"] .daily-page-heading p,
+[data-theme="peach"] .pod-page-header :is(h1, p),
+[data-theme="peach"] .pod-page-header .pod-live-badge,
 [data-theme="peach"] .price-verification-hero p:not(.eyebrow),
 [data-theme="peach"] .profit-activity-hero p:not(.eyebrow),
 [data-theme="peach"] .verify-command-title p,
@@ -164,7 +174,17 @@
 [data-theme="peach"] .ai-composer,
 [data-theme="peach"] .ai-empty-creation > span,
 [data-theme="peach"] .ai-search-toggle,
-[data-theme="peach"] .ai-document-preview > .iconfont {
+[data-theme="peach"] .ai-document-preview > .iconfont,
+[data-theme="peach"] .pod-setup-card,
+[data-theme="peach"] .pod-gallery,
+[data-theme="peach"] .pod-inspector,
+[data-theme="peach"] .pod-history,
+[data-theme="peach"] .pod-current-template-summary,
+[data-theme="peach"] .pod-semi-setup,
+[data-theme="peach"] .pod-semi-batch,
+[data-theme="peach"] .pod-replica-setup,
+[data-theme="peach"] .dash-kpi,
+[data-theme="peach"] .dash-panel {
   background: rgba(255, 251, 248, 0.48);
   border-color: rgba(217, 93, 120, 0.22);
 }
@@ -193,7 +213,6 @@
 [data-theme="peach"] .shop-items-list article,
 [data-theme="peach"] .plugin-candidate-list article,
 [data-theme="peach"] .shop-batch-stats span,
-[data-theme="peach"] .plugin-pagination,
 [data-theme="peach"] .shop-collection-message.is-success,
 [data-theme="peach"] .shop-collection-message.is-error {
   background: rgba(255, 251, 248, 0.42);
@@ -213,7 +232,6 @@
 
 /* 蓝色主按钮 → 桃粉渐变 */
 [data-theme="peach"] .shop-collection-create button,
-[data-theme="peach"] .collection-workspace-tabs button.is-active,
 [data-theme="peach"] .plugin-section-tabs button.is-active,
 [data-theme="peach"] .ai-new-creation,
 [data-theme="peach"] .ai-generate-button,
@@ -275,6 +293,84 @@
 [data-theme="peach"] .ai-composer textarea:focus {
   border-color: rgba(217, 93, 120, 0.55);
   box-shadow: 0 0 0 3px rgba(217, 93, 120, 0.12);
+}
+
+/* AI 处理（草稿池 / 处理设置 / 结果预检）：与采集页共用同一套半透面板。
+   直接在这个页面的根上重定义模块表面变量：themes.css 里针对
+   .verify-section / .pool-card / 次级按钮的 !important 统一规则
+   会解析成下面的半透色，而不是纯色 --theme-module-surface。 */
+[data-theme="peach"] .verify-page {
+  --theme-module-surface: rgba(255, 251, 248, 0.48);
+  --theme-module-surface-raised: rgba(255, 255, 255, 0.32);
+  --theme-module-surface-soft: rgba(255, 251, 248, 0.4);
+  --theme-module-surface-tint: rgba(249, 223, 227, 0.42);
+  --theme-module-border: rgba(217, 93, 120, 0.22);
+  --theme-module-border-strong: rgba(217, 93, 120, 0.4);
+}
+
+[data-theme="peach"] .product-flow-step.is-current-flow {
+  border: 0;
+  background: var(--theme-hero-gradient);
+}
+
+[data-theme="peach"] .verify-sticky-toolbar {
+  background: linear-gradient(180deg, rgba(255, 251, 248, 0.5), rgba(255, 251, 248, 0.34));
+}
+
+[data-theme="peach"] .verify-sticky-toolbar.is-stuck {
+  background: linear-gradient(180deg, rgba(255, 251, 248, 0.92), rgba(255, 251, 248, 0.82));
+  backdrop-filter: blur(14px) saturate(1.1);
+}
+
+[data-theme="peach"] .pool-card:hover {
+  border-color: rgba(217, 93, 120, 0.38);
+  box-shadow: 0 10px 24px rgba(140, 61, 82, 0.1);
+}
+
+[data-theme="peach"] .pool-card.selected {
+  border-color: rgba(217, 93, 120, 0.5);
+  box-shadow: 0 0 0 2px rgba(217, 93, 120, 0.16), 0 10px 24px rgba(140, 61, 82, 0.1);
+}
+
+/* 次级按钮：themes.css 的同组规则最高到 (0,5,0)，
+   这里带上 .verify-page 与元素选择器，保证同权重下由桃粉覆盖。 */
+[data-theme="peach"] .verify-page :is(
+  .verify-actions,
+  .verify-empty-actions,
+  .verify-row-actions,
+  .precheck-toolbar .precheck-expand-actions,
+  .precheck-card-actions,
+  .precheck-finalize
+) button:not(.primary):not(.danger) {
+  color: #b03a55 !important;
+  background: rgba(255, 238, 242, 0.72) !important;
+  border-color: rgba(217, 93, 120, 0.28) !important;
+}
+
+[data-theme="peach"] .verify-page .verify-section .verify-actions button.is-active {
+  border-color: rgba(217, 93, 120, 0.4) !important;
+  background: rgba(255, 238, 242, 0.85) !important;
+}
+
+[data-theme="peach"] :is(
+  .verify-actions button.primary,
+  .verify-empty-actions button.primary
+) {
+  background: linear-gradient(105deg, #d95d78, #5a9b7c) !important;
+  border-color: transparent !important;
+  color: #fff !important;
+  box-shadow: 0 9px 18px rgba(217, 93, 120, 0.25) !important;
+}
+
+[data-theme="peach"] .verify-empty-icon {
+  border-color: rgba(217, 93, 120, 0.24);
+  color: #b03a55;
+  background: linear-gradient(150deg, rgba(255, 244, 247, 0.85), rgba(255, 251, 248, 0.6));
+}
+
+[data-theme="peach"] .collection-workspace-tabs .collection-tab-thumb {
+  background: linear-gradient(105deg, #d95d78, #5a9b7c);
+  box-shadow: 0 9px 18px rgba(217, 93, 120, 0.25);
 }
 
 /* 业务工作区：同样保留宣纸半透层，避免切到桃花源后出现孤立的纯白或冷蓝面板。 */

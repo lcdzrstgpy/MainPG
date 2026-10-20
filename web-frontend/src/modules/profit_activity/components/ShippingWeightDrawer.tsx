@@ -4,8 +4,7 @@ import { createPortal } from "react-dom";
 
 import { extractShippingMetrics } from "../api/profitActivityApi";
 import type { ShippingMetrics } from "../api/profitActivityApi";
-// NOTE(v2 合并遗留): 原 import "../../../shared/styles/shippingWeightDrawer.css" 指向的文件
-// 从未随 v2 分支推送（对方自身也缺），为避免构建失败暂时移除；待补档后恢复该行。
+import "../../../shared/styles/shippingWeightDrawer.css";
 
 /** 抛重口径：长(cm)×宽(cm)×高(cm)÷7000。 */
 const VOLUMETRIC_DIVISOR = 7000;

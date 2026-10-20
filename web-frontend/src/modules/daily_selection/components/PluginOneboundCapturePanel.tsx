@@ -9,7 +9,6 @@ import {
   pluginCaptureProgress,
   pluginCaptureStatusLabel,
   type PluginOneboundCaptureBatch,
-  type PluginOneboundCaptureItem,
   type PluginOneboundCandidate,
   type PluginOneboundSkuRepullState,
 } from "../data/pluginOneboundCaptureModel";
@@ -38,30 +37,6 @@ function formatPrice(value: number | null | undefined): string {
   return `¥${value.toFixed(2)}`;
 }
 
-function itemStatusLabel(item: PluginOneboundCaptureItem): string {
-  const labels: Record<PluginOneboundCaptureItem["status"], string> = {
-    pending: "等待采集",
-    running: "正在采集",
-    succeeded: "已采集候选",
-    failed: "采集失败",
-    skipped: "已跳过",
-    unprocessed: "未处理",
-  };
-  return labels[item.status];
-}
-
-function itemOutcomeLabel(item: PluginOneboundCaptureItem): string {
-  const labels: Record<PluginOneboundCaptureItem["outcome"], string> = {
-    "": "",
-    created: "新建",
-    refreshed: "刷新",
-    skipped: "跳过",
-    failed: "失败",
-    unprocessed: "未处理",
-  };
-  return labels[item.outcome];
-}
-
 function candidateReviewLabel(status: PluginOneboundCandidate["review_status"]): string {
   if (status === "confirmed") return "已入池";
   if (status === "pending") return "待审核";
@@ -77,14 +52,9 @@ function numberOrNull(value: string): number | null {
 export const PluginOneboundCapturePanel = forwardRef<PluginOneboundCapturePanelHandle, PluginOneboundCapturePanelProps>(function PluginOneboundCapturePanel({ isActive = true, onOpenDraft, onBatchCountChange }, ref) {
   const [batches, setBatches] = useState<PluginOneboundCaptureBatch[]>([]);
   const [selectedBatchId, setSelectedBatchId] = useState("");
-  const [items, setItems] = useState<PluginOneboundCaptureItem[]>([]);
-  const [itemsTotal, setItemsTotal] = useState(0);
-  const [itemsOffset, setItemsOffset] = useState(0);
-  const [itemsPageSize, setItemsPageSize] = useState<(typeof PLUGIN_PAGE_SIZE_OPTIONS)[number]>(10);
   const [candidates, setCandidates] = useState<PluginOneboundCandidate[]>([]);
   const [candidateOffset, setCandidateOffset] = useState(0);
   const [candidatePageSize, setCandidatePageSize] = useState<(typeof PLUGIN_PAGE_SIZE_OPTIONS)[number]>(10);
-  const [detailSection, setDetailSection] = useState<"candidates" | "items">("candidates");
   const [skuRepull, setSkuRepull] = useState<PluginOneboundSkuRepullState | null>(null);
   const [selectedOfferIds, setSelectedOfferIds] = useState<string[]>([]);
   const [skuFilterMin, setSkuFilterMin] = useState("");
@@ -97,6 +67,7 @@ export const PluginOneboundCapturePanel = forwardRef<PluginOneboundCapturePanelH
   const [skuRepullBusy, setSkuRepullBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [toastLeaving, setToastLeaving] = useState(false);
   const [batchManagerOpen, setBatchManagerOpen] = useState(false);
 
   const selectedBatch = useMemo(
@@ -119,6 +90,25 @@ export const PluginOneboundCapturePanel = forwardRef<PluginOneboundCapturePanelH
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [batchManagerOpen]);
 
+  // 右上角浮动提示：15 秒后自动消失；新提示会替换旧提示并重新计时。
+  // 提前 300ms 进入淡出态，避免到点后生硬消失。
+  useEffect(() => {
+    if (!error && !notice) {
+      setToastLeaving(false);
+      return;
+    }
+    setToastLeaving(false);
+    const leaveTimer = window.setTimeout(() => setToastLeaving(true), 14700);
+    const timer = window.setTimeout(() => {
+      setError("");
+      setNotice("");
+    }, 15000);
+    return () => {
+      window.clearTimeout(leaveTimer);
+      window.clearTimeout(timer);
+    };
+  }, [error, notice]);
+
   const refreshBatches = useCallback(async (selectFirst = false) => {
     try {
       const page = await pluginOneboundCaptureApi.listBatches();
@@ -134,19 +124,14 @@ export const PluginOneboundCapturePanel = forwardRef<PluginOneboundCapturePanelH
     }
   }, []);
 
-  const refreshSelected = useCallback(async (batchId: string, offset = itemsOffset) => {
+  const refreshSelected = useCallback(async (batchId: string) => {
     try {
-      const [batch, page] = await Promise.all([
-        pluginOneboundCaptureApi.getBatch(batchId),
-        pluginOneboundCaptureApi.listItems(batchId, itemsPageSize, offset),
-      ]);
+      const batch = await pluginOneboundCaptureApi.getBatch(batchId);
       setBatches((current) => current.map((item) => item.batch_id === batch.batch_id ? batch : item));
-      setItems(page.items);
-      setItemsTotal(page.total);
     } catch (requestError) {
       setError(formatShopCollectionError(requestError));
     }
-  }, [itemsOffset, itemsPageSize]);
+  }, []);
 
   const refreshCandidates = useCallback(async (batchId: string) => {
     try {
@@ -168,9 +153,6 @@ export const PluginOneboundCapturePanel = forwardRef<PluginOneboundCapturePanelH
 
   useEffect(() => {
     if (!isActive || !selectedBatchId) {
-      setItems([]);
-      setItemsTotal(0);
-      setItemsOffset(0);
       setCandidates([]);
       setCandidateOffset(0);
       setSkuRepull(null);
@@ -180,18 +162,24 @@ export const PluginOneboundCapturePanel = forwardRef<PluginOneboundCapturePanelH
       setSkuFilterMax("");
       return;
     }
-    void refreshSelected(selectedBatchId, itemsOffset);
+    void refreshSelected(selectedBatchId);
     void refreshCandidates(selectedBatchId);
-  }, [isActive, itemsOffset, refreshSelected, refreshCandidates, selectedBatchId]);
+  }, [isActive, refreshSelected, refreshCandidates, selectedBatchId]);
+
+  // 同整店采集面板：依赖布尔量而非 batches 数组，避免每轮刷新结果把 2s 定时器反复清理重建。
+  const hasActiveBatch = useMemo(
+    () => batches.some((batch) => isActivePluginCaptureStatus(batch.status)),
+    [batches],
+  );
 
   useEffect(() => {
-    if (!isActive || !batches.some((batch) => isActivePluginCaptureStatus(batch.status))) return;
+    if (!isActive || !hasActiveBatch) return;
     const timer = window.setInterval(() => {
       void refreshBatches();
-      if (selectedBatchId) void refreshSelected(selectedBatchId, itemsOffset);
+      if (selectedBatchId) void refreshSelected(selectedBatchId);
     }, 2000);
     return () => window.clearInterval(timer);
-  }, [batches, isActive, itemsOffset, refreshBatches, refreshSelected, selectedBatchId]);
+  }, [hasActiveBatch, isActive, refreshBatches, refreshSelected, selectedBatchId]);
 
   // 批次从采集中转为终态后，上面的 active 轮询会停止，需主动刷新一次候选与 SKU 补齐状态，
   // 否则终态后候选区会保持空白，用户必须切换批次或刷新页面才能审核。
@@ -230,8 +218,6 @@ export const PluginOneboundCapturePanel = forwardRef<PluginOneboundCapturePanelH
   const pagedCandidates = filteredCandidates.slice(candidateOffset, candidateOffset + candidatePageSize);
   const candidateCurrentPage = filteredCandidates.length === 0 ? 1 : Math.floor(candidateOffset / candidatePageSize) + 1;
   const candidateTotalPages = Math.max(1, Math.ceil(filteredCandidates.length / candidatePageSize));
-  const itemsCurrentPage = itemsTotal === 0 ? 1 : Math.floor(itemsOffset / itemsPageSize) + 1;
-  const itemsTotalPages = Math.max(1, Math.ceil(itemsTotal / itemsPageSize));
   const backfillRunning = skuRepull?.status === "running";
   const allCandidatesSelected = selectableCandidates.length > 0
     && selectableCandidates.every((candidate) => selectedOfferIds.includes(candidate.offer_id));
@@ -261,7 +247,6 @@ export const PluginOneboundCapturePanel = forwardRef<PluginOneboundCapturePanelH
     try {
       await pluginOneboundCaptureApi.startBatch(selectedBatch.batch_id);
       await Promise.all([refreshBatches(), refreshSelected(selectedBatch.batch_id)]);
-      setNotice("采集已启动，进度会自动更新。");
     } catch (requestError) {
       setError(formatShopCollectionError(requestError));
       await refreshSelected(selectedBatch.batch_id);
@@ -335,50 +320,48 @@ export const PluginOneboundCapturePanel = forwardRef<PluginOneboundCapturePanelH
     ? formatShopCollectionError(new Error(selectedBatch.error_message))
     : "";
 
+  // 插件采集完成后商品会直接进入候选池，候选列表是唯一视图；
+  // 统计只保留「总数 / 成功」两项（成功 = 总数 - 失败 - 跳过 - 未处理）。
+  const succeededCount = selectedBatch && progress
+    ? Math.max(0, progress.total - selectedBatch.failed_count - selectedBatch.skipped_count - selectedBatch.unprocessed_count)
+    : 0;
+  const batchStats = selectedBatch && progress ? (
+    <div className="shop-batch-stats plugin-capture-stats">
+      <span><b>{progress.total}</b>总数</span>
+      <span><b>{succeededCount}</b>成功</span>
+    </div>
+  ) : null;
+
   return (
     <section className="shop-collection-panel plugin-capture-panel" aria-label="插件采集">
-      <header className="shop-collection-header">
-        <div className="shop-collection-title"><span className="iconfont icon-cloud" aria-hidden="true"></span><div><strong>插件采集批次</strong><p>插件登记 1688/淘宝链接后，在这里采集，采集完成后审核候选并确认入池。</p></div></div>
-        <span className="shop-collection-persistent">自动同步进度</span>
-      </header>
-
-      {(error || notice) && <p className={`shop-collection-message ${error ? "is-error" : "is-success"}`} role="status">{error || notice}</p>}
-
       <div className="shop-collection-grid">
         <div className="shop-batch-detail">
           {!selectedBatch && batches.length > 0 && <div className="shop-empty"><strong>请选择一个插件采集批次</strong><p>这里仅展示插件已经发起的采集任务。</p></div>}
           {selectedBatch && progress && (
             <>
               <div className="shop-batch-summary">
-                <div>
-                  <span>{pluginCaptureStatusLabel(selectedBatch.status)}</span>
-                  <strong>批次 {selectedBatch.batch_id.slice(0, 8)}</strong>
-                  <small>
-                    创建于 {formatDate(selectedBatch.created_at)}
-                    {selectedBatch.page_url && <> · <a className="plugin-link-pill" href={selectedBatch.page_url} target="_blank" rel="noreferrer">查看采集页面</a></>}
-                  </small>
+                <div className="shop-batch-info">
+                  <div className="shop-batch-idline">
+                    <span className="shop-batch-status">{pluginCaptureStatusLabel(selectedBatch.status)}</span>
+                    <span className="shop-batch-fact"><em>批次</em><b>{selectedBatch.batch_id.slice(0, 8)}</b></span>
+                    <small className="shop-batch-created">创建于 {formatDate(selectedBatch.created_at)}</small>
+                    {selectedBatch.page_url && <a className="plugin-link-pill" href={selectedBatch.page_url} target="_blank" rel="noreferrer">查看采集页面</a>}
+                  </div>
+                  <div className="shop-progress"><span><i style={{ width: `${progress.percent}%` }} /></span><b>{progress.percent}%</b></div>
                 </div>
-                <div className="shop-progress"><span><i style={{ width: `${progress.percent}%` }} /></span><b>{progress.percent}%</b></div>
+                {(selectedBatch.status === "prepared" || canRetryPluginCaptureFailures(selectedBatch)) && (
+                  <div className="shop-batch-actions">
+                    {selectedBatch.status === "prepared" && (
+                      <button type="button" disabled={starting} onClick={() => void startBatch()}>
+                        {starting ? "正在启动采集…" : "启动采集"}
+                      </button>
+                    )}
+                    {canRetryPluginCaptureFailures(selectedBatch) && (
+                      <button type="button" disabled={retrying} onClick={() => void retryFailed()}>{retrying ? "正在重试…" : "重试失败项"}</button>
+                    )}
+                  </div>
+                )}
               </div>
-              <div className="shop-batch-stats plugin-capture-stats">
-                <span><b>{progress.total}</b>总数</span>
-                <span><b>{selectedBatch.created_count}</b>已入池</span>
-                <span><b>{selectedBatch.skipped_count}</b>跳过</span>
-                <span><b>{selectedBatch.failed_count}</b>失败</span>
-                <span><b>{selectedBatch.unprocessed_count}</b>未处理</span>
-              </div>
-              {(selectedBatch.status === "prepared" || canRetryPluginCaptureFailures(selectedBatch)) && (
-                <div className="shop-batch-actions">
-                  {selectedBatch.status === "prepared" && (
-                    <button type="button" disabled={starting} onClick={() => void startBatch()}>
-                      {starting ? "正在启动采集…" : "启动采集"}
-                    </button>
-                  )}
-                  {canRetryPluginCaptureFailures(selectedBatch) && (
-                    <button type="button" disabled={retrying} onClick={() => void retryFailed()}>{retrying ? "正在重试…" : "重试失败项"}</button>
-                  )}
-                </div>
-              )}
               {(selectedBatch.error_code || batchErrorMessage) && (
                 <p className="shop-batch-warning">
                   {selectedBatch.error_code && <>错误代码：{selectedBatch.error_code}</>}
@@ -387,20 +370,8 @@ export const PluginOneboundCapturePanel = forwardRef<PluginOneboundCapturePanelH
                 </p>
               )}
 
-              <div className="plugin-section-tabs" role="tablist" aria-label="插件采集数据">
-                <button type="button" className={detailSection === "candidates" ? "is-active" : ""} onClick={() => setDetailSection("candidates")}>
-                  候选商品 <span>{filteredCandidates.length}</span>
-                </button>
-                <button type="button" className={detailSection === "items" ? "is-active" : ""} onClick={() => setDetailSection("items")}>
-                  采集明细 <span>{itemsTotal}</span>
-                </button>
-              </div>
-
-              {detailSection === "candidates" && (
-                <div className="plugin-candidate-review">
-                  <div className="shop-items-heading plugin-review-heading">
-                    <strong>候选商品</strong>
-                    <span>{filteredCandidates.length ? `${candidateOffset + 1}-${Math.min(candidateOffset + pagedCandidates.length, filteredCandidates.length)} / ${filteredCandidates.length}` : "暂无商品"}</span>
+              <div className="plugin-candidate-review">
+                  <div className="plugin-review-tools">
                     <div className="sku-filter">
                       <span className="sku-filter-label">SKU筛选</span>
                       <input type="number" min={0} placeholder="最小" value={skuFilterMin} onChange={(event) => setSkuFilterMin(event.target.value)} disabled={backfillRunning} />
@@ -432,20 +403,11 @@ export const PluginOneboundCapturePanel = forwardRef<PluginOneboundCapturePanelH
                         </span>
                       )}
                     </div>
-                    <label className="select-all-check" title={allCandidatesSelected ? "取消全选" : "全选"}>
-                      <input
-                        type="checkbox"
-                        checked={allCandidatesSelected}
-                        disabled={confirming || backfillRunning || selectableCandidates.length === 0}
-                        onChange={() => setSelectedOfferIds((current) => {
-                          const ids = selectableCandidates.map((candidate) => candidate.offer_id);
-                          const allSelected = ids.length > 0 && ids.every((id) => current.includes(id));
-                          return allSelected ? current.filter((id) => !ids.includes(id)) : [...new Set([...current, ...ids])];
-                        })}
-                      />
-                    </label>
-                    <button type="button" className="select-all-button" disabled={confirming || backfillRunning || selectableCandidates.length === 0} onClick={selectAllCandidates}>全选</button>
-                    <button type="button" className="confirm-button" disabled={confirming || backfillRunning || selectedOfferIds.length === 0} onClick={() => void confirmSelected()}>确认入池（{selectedOfferIds.length}）</button>
+                    <button type="button" className="select-all-button" disabled={confirming || backfillRunning || selectableCandidates.length === 0} onClick={selectAllCandidates}>{allCandidatesSelected ? "取消全选" : "全选"}</button>
+                    <div className="plugin-review-actions">
+                      {batchStats}
+                      <button type="button" className="confirm-button" disabled={confirming || backfillRunning || selectedOfferIds.length === 0} onClick={() => void confirmSelected()}>确认入池</button>
+                    </div>
                   </div>
 
                   {filteredCandidates.length === 0 && (
@@ -495,61 +457,6 @@ export const PluginOneboundCapturePanel = forwardRef<PluginOneboundCapturePanelH
                     <button type="button" disabled={candidateOffset + candidatePageSize >= filteredCandidates.length} onClick={() => setCandidateOffset(candidateOffset + candidatePageSize)}>下一页</button>
                   </div>
                 </div>
-              )}
-
-              {detailSection === "items" && (
-                <>
-                  <div className="shop-items-heading">
-                    <strong>采集明细</strong>
-                    <span>{itemsTotal ? `${itemsOffset + 1}-${Math.min(itemsOffset + items.length, itemsTotal)} / ${itemsTotal}` : "暂无商品"}</span>
-                  </div>
-                  <div className="shop-items-list">
-                    {items.map((item) => {
-                      const statusLabel = itemStatusLabel(item);
-                      const outcomeLabel = itemOutcomeLabel(item);
-                      const itemErrorMessage = item.error_message
-                        ? formatShopCollectionError(new Error(item.error_message))
-                        : "";
-                      return (
-                        <article key={item.offer_id}>
-                          <div>
-                            <strong>{item.source_title.trim() || `商品 ${item.offer_id}`}</strong>
-                            <small>
-                              {statusLabel}
-                              {item.price_cny != null ? ` · 售价 ${formatPrice(item.price_cny)}` : ""}
-                              {outcomeLabel && outcomeLabel !== statusLabel ? ` · ${outcomeLabel}` : ""}
-                              {item.attempts > 0 ? ` · 尝试 ${item.attempts} 次` : ""}
-                            </small>
-                            {(item.error_code || itemErrorMessage) && <em>{[item.error_code, itemErrorMessage].filter(Boolean).join(" · ")}</em>}
-                          </div>
-                          <div className="plugin-capture-item-links">
-                            <a className="plugin-link-pill" href={item.source_url} target="_blank" rel="noreferrer">查看来源</a>
-                            {item.draft_id != null && onOpenDraft && (
-                              <button type="button" onClick={() => onOpenDraft(item.draft_id!)}>
-                                打开产品处理 · 草稿 #{item.draft_id}
-                              </button>
-                            )}
-                          </div>
-                        </article>
-                      );
-                    })}
-                    {items.length === 0 && <p className="shop-empty">插件登记的商品链接会显示在这里。</p>}
-                  </div>
-                  <div className="shop-pagination plugin-pagination">
-                    <span className="shop-pagination-status">第 {itemsCurrentPage} 页 / 共 {itemsTotalPages} 页</span>
-                    <label className="shop-page-size">每页
-                      <select value={itemsPageSize} onChange={(event) => {
-                        setItemsPageSize(Number(event.target.value) as (typeof PLUGIN_PAGE_SIZE_OPTIONS)[number]);
-                        setItemsOffset(0);
-                      }}>
-                        {PLUGIN_PAGE_SIZE_OPTIONS.map((size) => <option key={size} value={size}>{size} 条</option>)}
-                      </select>
-                    </label>
-                    <button type="button" disabled={itemsOffset === 0} onClick={() => setItemsOffset(Math.max(0, itemsOffset - itemsPageSize))}>上一页</button>
-                    <button type="button" disabled={itemsOffset + itemsPageSize >= itemsTotal} onClick={() => setItemsOffset(itemsOffset + itemsPageSize)}>下一页</button>
-                  </div>
-                </>
-              )}
             </>
           )}
         </div>
@@ -575,7 +482,6 @@ export const PluginOneboundCapturePanel = forwardRef<PluginOneboundCapturePanelH
                     className={batch.batch_id === selectedBatchId ? "is-selected" : ""}
                     onClick={() => {
                       setSelectedBatchId(batch.batch_id);
-                      setItemsOffset(0);
                       setCandidateOffset(0);
                       setBatchManagerOpen(false);
                     }}
@@ -587,6 +493,14 @@ export const PluginOneboundCapturePanel = forwardRef<PluginOneboundCapturePanelH
               })}
             </div>
           </aside>
+        </div>,
+        document.body,
+      )}
+
+      {(error || notice) && createPortal(
+        <div className={`daily-message ${error ? "is-error" : "is-success"} ${toastLeaving ? "is-leaving" : ""}`} role="status">
+          <span aria-hidden="true">{error ? "!" : "✓"}</span>
+          <strong>{error || notice}</strong>
         </div>,
         document.body,
       )}

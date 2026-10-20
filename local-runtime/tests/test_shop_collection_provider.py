@@ -223,7 +223,7 @@ def test_search_shop_calls_documented_operation_with_pagination_and_redacts_cred
             "params": {"key": "test-key", "secret": "test-secret", "seller_nick": "shop-123", "page": 2},
             "body": None,
             "headers": None,
-            "timeout": 15.0,
+            "timeout": 30.0,
         }
     ]
     assert result.audit.operation == "item_search_shop"

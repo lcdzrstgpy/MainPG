@@ -258,6 +258,33 @@ def test_expired_item_is_reclaimed_and_stale_completion_is_rejected(tmp_path: Pa
     assert repository.get_batch(workspace_id="workspace-a", batch_id="batch-1").succeeded_count == 1
 
 
+def test_complete_item_persists_enriched_source_title(tmp_path: Path) -> None:
+    """详情补全后的真实商品名要回写到 item 行，列表接口才能直接展示。"""
+    repository = _repository(tmp_path)
+    repository.create_batch(
+        batch_id="batch-1", workspace_id="workspace-a", actor_id="actor-a", shop_sid="shop-sid"
+    )
+    repository.record_shop_page(
+        batch_id="batch-1", page=1, items=({"offer_id": "100"},), has_next=False
+    )
+    claimed = repository.claim_pending_items(
+        batch_id="batch-1", owner="worker-a", limit=1, lease_seconds=30
+    )[0]
+    assert claimed.source_title == ""
+
+    repository.complete_item(
+        batch_id="batch-1", item_id=claimed.item_id, owner=claimed.lease_owner,
+        lease_token=claimed.lease_token, intake_action="created",
+        candidate={"candidate_id": "1688:100", "source_title": "保温杯 500ml"},
+    )
+
+    item = repository.list_items(
+        workspace_id="workspace-a", batch_id="batch-1", limit=20, offset=0
+    )[0]
+    assert item.source_title == "保温杯 500ml"
+    assert item.candidate["source_title"] == "保温杯 500ml"
+
+
 def test_batch_transition_expected_state_is_atomic(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
     repository.create_batch(

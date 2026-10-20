@@ -49,7 +49,7 @@
   border-radius: 18px;
   border-color: rgba(251, 191, 36, 0.4);
   box-shadow: 0 10px 26px rgba(180, 83, 9, 0.08);
-}[data-theme="sunset"] .collection-workspace-tabs button.is-active {
+}[data-theme="sunset"] .collection-workspace-tabs .collection-tab-thumb {
   border-radius: 999px;
   box-shadow: 0 6px 16px rgba(217, 119, 6, 0.32);
 }/* hover：上浮 + 暖影扩散 */[data-theme="sunset"] :is(.dashboard-page, .mac-home) .mac-continue-grid > button,
@@ -137,6 +137,22 @@
   color: #ffeef0;
 }[data-theme="peach"] .daily-selection-page .daily-page-heading .daily-kicker {
   color: #ffd9e2;
+}
+/* 首页 hero 上的「使用手册」原用 --theme-accent，在桃粉渐变上几乎没有对比度；
+   改成与其他 hero 按钮一致的半透明白色玻璃态。 */
+[data-theme="peach"] .dashboard-page .dashboard-manual-link {
+  border-color: rgba(255, 255, 255, 0.45);
+  color: #fff;
+  background: rgba(255, 255, 255, 0.14);
+}
+[data-theme="peach"] .dashboard-page .dashboard-manual-link:hover {
+  border-color: rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.26);
+}
+/* 首页 KPI 与图表卡片沿用桃花源的面板造型（花瓣圆角 + 粉晕阴影）。 */
+[data-theme="peach"] .dashboard-page :is(.dash-kpi, .dash-panel) {
+  border-radius: 22px 10px 22px 10px;
+  box-shadow: 0 10px 26px rgba(176, 58, 85, 0.08);
 }[data-theme="peach"] :is(.dashboard-page, .mac-home) .mac-launchpad {
   border-radius: 30px 14px 30px 14px;
   border-color: rgba(217, 93, 120, 0.3);
@@ -153,7 +169,7 @@
   box-shadow: 0 10px 26px rgba(176, 58, 85, 0.08);
 }[data-theme="peach"] .dashboard-page .page-hero-card {
   background: rgba(255, 250, 247, 0.22);
-}[data-theme="peach"] .collection-workspace-tabs button.is-active {
+}[data-theme="peach"] .collection-workspace-tabs .collection-tab-thumb {
   border-radius: 999px;
   box-shadow: 0 6px 16px rgba(176, 58, 85, 0.28);
 }/* hover：花瓣轻摇上浮，粉影 + 青影双晕 */[data-theme="peach"] :is(.dashboard-page, .mac-home) .mac-continue-grid > button,
@@ -230,7 +246,8 @@
   [data-theme] .mac-home [class*="mac-"],
   [data-theme] .daily-selection-page [class*="daily-"],
   [data-theme] .mac-home .mac-launchpad button:hover .mac-app-icon,
-  [data-theme] .collection-workspace-tabs button {
+  [data-theme] .collection-workspace-tabs button,
+  [data-theme] .collection-workspace-tabs .collection-tab-thumb {
     transition: none !important;
     animation: none !important;
   }

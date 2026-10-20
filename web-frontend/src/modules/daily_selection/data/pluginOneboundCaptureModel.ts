@@ -142,8 +142,9 @@ export function pluginCaptureProgress(batch: PluginOneboundCaptureBatch): { comp
   const total = Number.isFinite(batch.total_count) && batch.total_count >= 0
     ? batch.total_count
     : settled + unprocessed;
-  // 成功候选不再计入 created_count，进度用“非未处理数”表示：
-  // succeeded / failed / skipped / confirmed 都算已处理，仅 pending/running/unprocessed 未完成。
+  // 进度 = 已处理 / 总数。已处理取「各落定计数之和」与「总数 - 未处理数」的较大值：
+  // created / refreshed / skipped / failed 视为已落定，只有 pending/running/unprocessed 未完成；
+  // 用「总数 - 未处理」兜底，避免计数未及时回填时进度停滞。
   const completed = Math.max(settled, total - unprocessed);
   const percent = total
     ? Math.max(0, Math.min(100, Math.round((completed / total) * 100)))

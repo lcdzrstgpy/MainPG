@@ -145,7 +145,6 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
   const [inlineEdit, setInlineEdit] = useState<InlineEditState | null>(null);
   const [previewImage, setPreviewImage] = useState<{ images: PreviewImage[]; index: number } | null>(null);
   const tableWrapRef = useRef<HTMLDivElement>(null);
-  const tableScrollbarRef = useRef<HTMLDivElement>(null);
   const theadRef = useRef<HTMLTableSectionElement>(null);
   const fixedHeaderRef = useRef<HTMLDivElement>(null);
   const fixedHeaderScrollRef = useRef<HTMLDivElement>(null);
@@ -157,8 +156,6 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
   // 鼠标拖拽横向平移表格：记录按下时的起点与初始横向偏移
   const tableDragRef = useRef<{ startX: number; startScrollLeft: number } | null>(null);
   const [tableDragging, setTableDragging] = useState(false);
-  // 跟随视口的横向滚动条：track 宽度等于表格实际宽度
-  const [tableScrollWidth, setTableScrollWidth] = useState(0);
   const [columnWidths, setColumnWidths] = useState<Record<ProductTableColumnKey, number>>(
     () => storedProductColumnWidths() ?? defaultColumnWidths,
   );
@@ -372,36 +369,12 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
       .catch(() => setMessage("产品已入库，但自动刷新失败；可重新打开产品库后重试。"));
   }, [isActive]);
 
-  // 跟随视口的横向滚动条：与表格容器的 scrollLeft 双向同步，track 宽度 = 表格实际宽度。
-  // 这样滚动条始终贴在视口顶部可见，不用滑到页面最底部去拖动。
-  useEffect(() => {
-    const wrap = tableWrapRef.current;
-    const bar = tableScrollbarRef.current;
-    if (!wrap || !bar) return;
-    const syncBar = () => {
-      if (bar.scrollLeft !== wrap.scrollLeft) bar.scrollLeft = wrap.scrollLeft;
-    };
-    const syncWrap = () => {
-      if (wrap.scrollLeft !== bar.scrollLeft) wrap.scrollLeft = bar.scrollLeft;
-    };
-    const updateWidth = () => setTableScrollWidth(wrap.scrollWidth);
-    const resizeObserver = new ResizeObserver(updateWidth);
-    wrap.addEventListener("scroll", syncBar, { passive: true });
-    bar.addEventListener("scroll", syncWrap, { passive: true });
-    resizeObserver.observe(wrap);
-    updateWidth();
-    return () => {
-      wrap.removeEventListener("scroll", syncBar);
-      bar.removeEventListener("scroll", syncWrap);
-      resizeObserver.disconnect();
-    };
-  }, []);
-
   // 独立固定表头：原表头滚出可视区时，显示一份固定在顶部的克隆表头，
   // 保证滚动到第 20 行等位置时仍能看到"选择/站点/SKC..."标题行。
   useEffect(() => {
     const wrap = tableWrapRef.current;
-    const contentCard = wrap?.closest(".profit-products-workspace") as HTMLElement | null;
+    // 固定表头克隆对齐到列表纸卡：纸卡已有内边距，克隆条与卡片同宽才不会左右留白错位。
+    const contentCard = wrap?.closest(".profit-products-table-card") as HTMLElement | null;
     const clone = fixedHeaderRef.current;
     const thead = theadRef.current;
     if (!contentCard || !wrap || !clone || !thead) return;
@@ -421,12 +394,6 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
       const topbarRect = topbar?.getBoundingClientRect();
       if (topbarRect && topbarRect.bottom > 0 && topbarRect.top < window.innerHeight) {
         top = Math.round(topbarRect.bottom) + 6;
-      } else {
-        const scrollbar = document.querySelector(".profit-table-scrollbar") as HTMLElement | null;
-        if (scrollbar) {
-          const scrollbarBottom = Math.round(scrollbar.getBoundingClientRect().bottom);
-          if (scrollbarBottom > 0) top = scrollbarBottom + 4;
-        }
       }
       clone.style.top = `${top}px`;
       // 表头一进入顶部工作区就由克隆表头接管，不等整行标题完全滚出后才显示。
@@ -477,10 +444,6 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
     resizeObserver.observe(thead);
     return () => resizeObserver.disconnect();
   }, [pageProducts, headerStuck, columnWidths]);
-
-  useEffect(() => {
-    if (tableWrapRef.current) setTableScrollWidth(tableWrapRef.current.scrollWidth);
-  }, [columnWidths, pageProducts.length]);
 
   useEffect(() => {
     const wrap = tableWrapRef.current;
@@ -733,52 +696,65 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
       <section className="profit-products-head">
         <div>
           <h1>产品库</h1>
-        <p>查询、管理产品库数据。</p>
+          <p>查询、管理产品库数据。</p>
         </div>
       </section>
 
       <section className="profit-products-workspace">
-        <div className="profit-products-search-bar">
-          <label className="profit-products-search-field">
-            <span>商品ID查询</span>
-            <textarea value={querySkcs} onChange={(event) => setQuerySkcs(event.target.value)} placeholder="输入 SKU、SKC、SPU；多条可用空格、逗号或换行分隔" />
-          </label>
-          <label className="profit-products-select-field">
-            <span>店铺</span>
-            <select value={storeFilter} onChange={(event) => setStoreFilter(event.target.value)}>
-              <option value="">全部店铺</option>
-              <option value="__empty__">未填写店铺</option>
-              {shopOptions.map((store) => <option key={store} value={store}>{store}</option>)}
-            </select>
-          </label>
-          <label className="profit-products-select-field">
-            <span>地区</span>
-            <select
-              value={sites.size === 1 ? [...sites][0] : "all"}
-              onChange={(event) => setSites(event.target.value === "all" ? new Set(availableSites) : new Set([event.target.value as ProfitActivitySite]))}
-            >
-              <option value="all">全部站点</option>
-              {siteOptions.map((item) => <option key={item.site_code} value={item.site_code}>{item.display_name}</option>)}
-            </select>
-          </label>
-          <label className="profit-products-select-field">
-            <span>查询范围</span>
-            <select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value as ProductSourceFilter)}>
-              <option value="manual">手动</option>
-              <option value="price_verification">核价</option>
-              <option value="all">核价 + 手动</option>
-            </select>
-          </label>
-          <div className="profit-products-search-actions">
-            <button className="primary-button profit-products-query-button" onClick={queryProducts} disabled={!!busy}>查询产品</button>
-            <button className="profit-products-refresh-button" onClick={refreshDatabaseProducts} disabled={!!busy}>刷新</button>
+        <section className="profit-products-card profit-products-query-card">
+          <div className="profit-products-panel-head">
+            <div><span className="iconfont icon-search profit-panel-icon" aria-hidden="true"></span><strong>商品查询</strong></div>
+            <span className="profit-products-panel-status" title={message}>{busy || message}</span>
           </div>
-        </div>
-        <p className="profit-products-message">{busy || message.split("\n").map((line, index) => (<span key={index}>{line}<br /></span>))}</p>
+          <div className="profit-products-search-bar">
+            <label className="profit-products-search-field">
+              <span>商品ID查询</span>
+              <input
+                type="text"
+                value={querySkcs}
+                onChange={(event) => setQuerySkcs(event.target.value)}
+                placeholder="SKU / SKC / SPU，空格或逗号分隔"
+                title="支持 SKU、SKC、SPU；多条可用空格、逗号或换行分隔"
+              />
+            </label>
+            <label className="profit-products-select-field">
+              <span>店铺</span>
+              <select value={storeFilter} onChange={(event) => setStoreFilter(event.target.value)}>
+                <option value="">全部店铺</option>
+                <option value="__empty__">未填写店铺</option>
+                {shopOptions.map((store) => <option key={store} value={store}>{store}</option>)}
+              </select>
+            </label>
+            <label className="profit-products-select-field">
+              <span>地区</span>
+              <select
+                value={sites.size === 1 ? [...sites][0] : "all"}
+                onChange={(event) => setSites(event.target.value === "all" ? new Set(availableSites) : new Set([event.target.value as ProfitActivitySite]))}
+              >
+                <option value="all">全部站点</option>
+                {siteOptions.map((item) => <option key={item.site_code} value={item.site_code}>{item.display_name}</option>)}
+              </select>
+            </label>
+            <label className="profit-products-select-field">
+              <span>查询范围</span>
+              <select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value as ProductSourceFilter)}>
+                <option value="manual">手动</option>
+                <option value="price_verification">核价</option>
+                <option value="all">核价 + 手动</option>
+              </select>
+            </label>
+            <div className="profit-products-search-actions">
+              <button className="primary-button profit-products-query-button" onClick={queryProducts} disabled={!!busy}>查询产品</button>
+              <button className="profit-products-refresh-button" onClick={refreshDatabaseProducts} disabled={!!busy}>刷新</button>
+            </div>
+          </div>
+        </section>
 
-        <div className="profit-table-scrollbar" ref={tableScrollbarRef} aria-label="横向滚动产品表格">
-          <div className="profit-table-scrollbar-track" style={{ width: tableScrollWidth || "100%" }} />
-        </div>
+        <section className="profit-products-card profit-products-table-card">
+          <div className="profit-products-panel-head">
+            <div><span className="iconfont icon-database profit-panel-icon" aria-hidden="true"></span><strong>产品列表</strong></div>
+            <span>点击单元格可直接修改</span>
+          </div>
         {createPortal(
           <div
             className={`profit-table-head-sticky ${headerStuck ? "is-visible" : ""}`}
@@ -858,7 +834,7 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
 
         <div className="profit-products-pagination">
           <div className="profit-products-pagination-summary">
-            <span>共 {products.length} 条，当前第 {safePage} / {totalPages} 页</span>
+            <span>共 {products.length} 条 · 第 {safePage} / {totalPages} 页</span>
             <button onClick={togglePageSelected} disabled={!pageProducts.length}>{pageSelected ? "取消本页" : "全选本页"}</button>
             <button onClick={copySelectedProductIds} disabled={!selectedCount || !!busy}>复制已选商品ID</button>
             <button onClick={openBatchStoreDialog} disabled={!selectedCount || !!busy}>批量修改店铺</button>
@@ -889,6 +865,7 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
             <button onClick={() => setPage(totalPages)} disabled={safePage >= totalPages}>末页</button>
           </div>
         </div>
+        </section>
       </section>
       <ProductSourceDrawer
         product={activeProduct}

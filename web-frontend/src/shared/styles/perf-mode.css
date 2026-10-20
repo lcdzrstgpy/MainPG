@@ -58,6 +58,8 @@ html[data-perf-mode="on"] .auth-brand-card > * {
       此前流畅模式只关了动画与毛玻璃，没管 transition，这几条仍在逐帧触发重排。 */
 html[data-perf-mode="on"] .workspace-shell,
 html[data-perf-mode="on"] .sidebar-card,
-html[data-perf-mode="on"] .sidebar-submenu {
+html[data-perf-mode="on"] .sidebar-submenu,
+html[data-perf-mode="on"] .sidebar-selection-thumb,
+html[data-perf-mode="on"] .page-tab-thumb {
   transition: none !important;
 }

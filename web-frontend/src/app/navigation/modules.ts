@@ -69,7 +69,7 @@ const productProcessing: WorkspaceModule = {
   id: "product_processing",
   label: "AI处理",
   icon: "",
-  iconClass: "iconfont icon-build",
+  iconClass: "iconfont icon-robot",
   description: "管理草稿池、处理设置与任务进度",
 };
 
@@ -93,7 +93,7 @@ const podSemiCustomization: WorkspaceModule = {
   id: "pod_semi_customization",
   label: "半定制",
   icon: "",
-  iconClass: "iconfont icon-image",
+  iconClass: "iconfont icon-formatpainter",
   description: "按提示词生成纯图案花色图，按批次打包下载",
 };
 
@@ -125,7 +125,7 @@ const productProcessingHistory: WorkspaceModule = {
   id: "product_processing_history",
   label: "历史记录",
   icon: "",
-  iconClass: "iconfont icon-time-circle",
+  iconClass: "iconfont icon-reloadtime",
   description: "查看并找回 AI 处理批次",
 };
 
@@ -141,7 +141,7 @@ const comboGenerate: WorkspaceModule = {
   id: "combo_generate",
   label: "组合生图",
   icon: "",
-  iconClass: "iconfont icon-skin",
+  iconClass: "iconfont icon-image",
   description: "独立组合套装：套装信息→上传原图→融合主图→文本→6张成品图→独立预检",
 };
 
@@ -149,7 +149,7 @@ const comboPromptPreset: WorkspaceModule = {
   id: "combo_prompt_preset",
   label: "提示词模板预设",
   icon: "",
-  iconClass: "iconfont icon-skin",
+  iconClass: "iconfont icon-snippets",
   description: "预设/自定义组合生图提示词模板，供组合生图板块自动填充使用",
 };
 
@@ -165,7 +165,7 @@ const priceVerification: WorkspaceModule = {
   id: "price_verification",
   label: "核价/货源匹配",
   icon: "",
-  iconClass: "iconfont icon-audit",
+  iconClass: "iconfont icon-reconciliation",
   description: "核验价格与维护货源信息",
 };
 
@@ -181,7 +181,7 @@ const productLibrary: WorkspaceModule = {
   id: "profit_activity_products",
   label: "货源关联产品库",
   icon: "",
-  iconClass: "iconfont icon-database",
+  iconClass: "iconfont icon-book",
   description: "查询、批量管理和下载利润活动产品档案",
 };
 
@@ -226,7 +226,7 @@ export const workspaceModules: WorkspaceNavigationItem[] = [
     id: "combo_workflow",
     label: "商品组合套装",
     icon: "",
-    iconClass: "iconfont icon-skin",
+    iconClass: "iconfont icon-layout",
     description: "组合生图、提示词模板预设与历史组合套装",
     defaultChildId: "combo_generate",
     children: [comboGenerate, comboPromptPreset, comboHistory],
