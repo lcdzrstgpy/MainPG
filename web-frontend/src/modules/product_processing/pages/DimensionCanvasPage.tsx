@@ -345,6 +345,18 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
     if (!root) return;
     const handleKey = (event: KeyboardEvent) => {
       if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement) return;
+      const isMod = event.ctrlKey || event.metaKey;
+      if (isMod && !event.altKey && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        if (event.shiftKey) redo();
+        else undo();
+        return;
+      }
+      if (isMod && !event.altKey && event.key.toLowerCase() === "y") {
+        event.preventDefault();
+        redo();
+        return;
+      }
       if (event.key === "ArrowLeft") switchItem(-1);
       if (event.key === "ArrowRight") switchItem(1);
       if ((event.key === "Delete" || event.key === "Backspace") && editor?.selectedAnnotationId) {
@@ -354,7 +366,9 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
     };
     root.addEventListener("keydown", handleKey);
     return () => root.removeEventListener("keydown", handleKey);
-  }, [batch, currentItem, editor, autosave.state]);
+    // undo/redo 每渲染重建，依赖它们保证快捷键读到最新 history
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [batch, currentItem, editor, autosave.state, history]);
 
   const commitAnnotation = (start: NormalizedPoint, end: NormalizedPoint) => {
     if (!editor || editor.activeTool === "select") return;

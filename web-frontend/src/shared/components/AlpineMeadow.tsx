@@ -14,7 +14,7 @@ import type { UiModeId } from "../hooks/useUiMode";
  *
  * 交互:
  *  - 种子随风飘落 + 正弦摇摆 + 绕竖轴翻面,光标靠近形成"气流"推开(160px 内);
- *  - 单击:草叶被惊起四处飞散(掺少量野花碎点) + 草绿涟漪;
+ *  - 单击:草叶被惊起四处飞散(掺少量野花碎点) —— 不画涟漪,避免水波感;
  *  - 双击:更大规模的草叶扬散(风掠草甸);
  *  - 尊重 prefers-reduced-motion(定格一帧静态种子)与页面可见性(隐藏时暂停)。
  *
@@ -56,8 +56,6 @@ type Burst = {
   color: string;
   alpha: number;
 };
-
-type Ripple = { x: number; y: number; r: number; alpha: number };
 
 const TAU = Math.PI * 2;
 /** 蒲公英白絮为主,掺入草绿与野花金,呼应主题配色。 */
@@ -260,7 +258,6 @@ export const AlpineMeadow = memo(function AlpineMeadow({ theme, uiMode, tapEffec
     let height = 0;
     let seeds: Seed[] = [];
     const bursts: Burst[] = [];
-    const ripples: Ripple[] = [];
     let rafId = 0;
     let last = performance.now();
     let running = true;
@@ -300,7 +297,7 @@ export const AlpineMeadow = memo(function AlpineMeadow({ theme, uiMode, tapEffec
       canvas.width = Math.round(width * dpr);
       canvas.height = Math.round(height * dpr);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      // 全屏特效关闭时不播种：画布只用来画点击反馈(碎片/涟漪)。
+      // 全屏特效关闭时不播种：画布只用来画点击反馈(草叶/野花碎点)。
       if (ambientEffects) seedSeeds();
       else seeds = [];
     };
@@ -311,9 +308,6 @@ export const AlpineMeadow = memo(function AlpineMeadow({ theme, uiMode, tapEffec
     };
 
     const burstAt = (x: number, y: number, power: number) => {
-      ripples.push({ x, y, r: 6, alpha: 0.46 });
-      ripples.push({ x, y, r: 2, alpha: 0.34 });
-
       // 近处种子被气流"震开"
       for (const seed of seeds) {
         const dx = seed.x - x;
@@ -369,7 +363,7 @@ export const AlpineMeadow = memo(function AlpineMeadow({ theme, uiMode, tapEffec
         });
       }
       if (bursts.length > 380) bursts.splice(0, bursts.length - 380);
-      // 全屏特效关闭时没有常驻动画,碎片/涟漪画完循环会停;点击时重新拉起。
+      // 全屏特效关闭时没有常驻动画,碎片画完循环会停;点击时重新拉起。
       if (!reduceMotion && !running) {
         running = true;
         last = performance.now();
@@ -446,24 +440,8 @@ export const AlpineMeadow = memo(function AlpineMeadow({ theme, uiMode, tapEffec
         }
       }
 
-      // 涟漪(压扁的椭圆,呼应草甸的圆形花丛)
-      for (let i = ripples.length - 1; i >= 0; i -= 1) {
-        const ripple = ripples[i];
-        ripple.r += 2.5 * k;
-        ripple.alpha -= 0.015 * k;
-        if (ripple.alpha <= 0) {
-          ripples.splice(i, 1);
-          continue;
-        }
-        ctx.strokeStyle = `rgba(47, 125, 82, ${ripple.alpha})`;
-        ctx.lineWidth = 1.4;
-        ctx.beginPath();
-        ctx.ellipse(ripple.x, ripple.y, ripple.r, ripple.r * 0.42, 0, 0, TAU);
-        ctx.stroke();
-      }
-
-      // 全屏特效关闭时没有常驻动画:碎片与涟漪都消散后停帧,避免画布空转耗电。
-      if (!ambientEffects && bursts.length === 0 && ripples.length === 0) {
+      // 全屏特效关闭时没有常驻动画:碎片画完循环会停;点击时重新拉起。
+      if (!ambientEffects && bursts.length === 0) {
         running = false;
         return;
       }

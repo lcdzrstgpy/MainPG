@@ -9,7 +9,8 @@ import { isPerformanceModeOn, subscribePerformanceMode } from "./usePerformanceM
  * 同时把**生效值**写到 <html> 的 data-fx-tap / data-fx-ambient 属性上，供样式层做动画降级
  * （见 shared/styles/fx-preference.css）。
  *
- *  - tap     点击特效：水墨青黛点击晕墨、桃花源单击花瓣爆裂 / 双击桃花雨
+ *  - tap     点击特效：水墨青黛点击晕墨、桃花源单击花瓣爆裂 / 双击桃花雨、
+ *            焦糖点击处变深后约 2 秒平滑回退
  *  - ambient 全屏特效：桃花源花瓣飘落 + 薄雾 + 光标风力、水墨青黛画卷漂移/墨韵呼吸、
  *                      暖阳橙背景漂移与流光扫过等主题常驻装饰动画
  *

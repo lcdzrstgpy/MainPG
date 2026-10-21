@@ -109,15 +109,30 @@ QPushButton#primary:hover { background: rgba(116, 172, 43, 235); }
 """
 
 
+_splash_probe_error: str | None = None
+
+
 def splash_available() -> bool:
-    """当前环境能否使用 Qt 启动卡片。"""
+    """当前环境能否使用 Qt 启动卡片。失败原因见 :func:`splash_unavailable_reason`。"""
+    global _splash_probe_error
     if not _IS_WINDOWS:
+        _splash_probe_error = "非 Windows 平台"
         return False
     try:  # noqa: SIM105 - 只是探测，装不上就退回老行为
         from PySide6 import QtWidgets  # noqa: F401
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        # 这里绝不能只 `return False`：打包版是 windowed 模式，静默降级等于
+        # 「卡片莫名不出现」，2026-10-21 排查 1.5.8 安装包时就卡在这上面。
+        _splash_probe_error = f"{type(exc).__name__}: {exc}"
+        logger.warning("PySide6 不可用：%s", _splash_probe_error, exc_info=True)
         return False
+    _splash_probe_error = None
     return True
+
+
+def splash_unavailable_reason() -> str | None:
+    """上一次 :func:`splash_available` 返回 False 的原因；可用时为 None。"""
+    return _splash_probe_error
 
 
 def splash_asset_path() -> Path | None:

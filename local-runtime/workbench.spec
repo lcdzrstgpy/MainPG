@@ -88,15 +88,24 @@ else:
 # 启动卡片依赖 PySide6（launcher/splash_qt.py）。缺了不会让打包失败 ——
 # 运行时会静默回落成「等 2.5 秒开浏览器」，但用户看到的是白屏空窗，等于这个
 # 功能白做。PyInstaller 对缺失的 import 也不报错，所以这里必须自己把关。
+import sys as _build_sys
+
 try:
     import PySide6  # noqa: F401
 
-    print(f"[workbench.spec] PySide6 {PySide6.__version__} 可用，启动卡片随包分发")
+    # 只 import PySide6 不够：1.5.8 就是这样过了检查、到用户机器上却不起卡片。
+    # 真正用到的是 QtWidgets，它要连 Qt6*.dll 与 shiboken6 一起装载成功才算数。
+    from PySide6 import QtWidgets  # noqa: F401
+
+    print(f"[workbench.spec] PySide6 {PySide6.__version__} 可用"
+          f"（python {_build_sys.version.split()[0]}，QtWidgets 装载成功），启动卡片随包分发")
 except Exception as _exc:  # noqa: BLE001 - 打包机环境缺失要显式告警
     print("=" * 72)
-    print("[workbench.spec] !! 缺少 PySide6 —— 启动卡片将不会生效！")
-    print(f"[workbench.spec] !! 导入失败原因: {_exc}")
-    print("[workbench.spec] !! 请在构建机执行:  python -m pip install PySide6")
+    print("[workbench.spec] !! PySide6 不可用 —— 启动卡片将不会生效！")
+    print(f"[workbench.spec] !! 失败原因: {type(_exc).__name__}: {_exc}")
+    print(f"[workbench.spec] !! 构建用的 Python: {_build_sys.version.split()[0]}")
+    print("[workbench.spec] !! 请在构建机、用同一个 Python 执行:  python -m pip install PySide6")
+    print("[workbench.spec] !! 然后确认 `python -c \"from PySide6 import QtWidgets\"` 不报错")
     print("[workbench.spec] !! 否则打出的包双击后要白等 2.5 秒才开浏览器")
     print("=" * 72)
 

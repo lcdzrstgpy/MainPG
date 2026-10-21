@@ -422,9 +422,20 @@ def _start_splash(host: str, port: int, version: str):
     """
     log = logging.getLogger("run_workbench")
     try:
-        from launcher.splash_qt import SplashCard, splash_asset_path, splash_available
+        from launcher.splash_qt import (
+            SplashCard,
+            splash_asset_path,
+            splash_available,
+            splash_unavailable_reason,
+        )
 
         if not splash_available():
+            # 必须把原因写进日志：打包版是 windowed 模式，静默降级无从排查
+            # （2026-10-21 就因为这行缺失，1.5.8 的卡片不出现查了很久）。
+            log.warning(
+                "启动卡片不可用，回落为延迟开浏览器（原因：%s）",
+                splash_unavailable_reason() or "未知",
+            )
             return None
         asset = splash_asset_path()
         if asset is None:
