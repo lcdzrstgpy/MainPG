@@ -24,6 +24,17 @@ FAILED_LINK_OPERATOR_HINT = (
     "失败链接不参与计费，随后会释放"
 )
 
+# 四格生图回退来源图时的专用话术。
+#
+# 以前这里和上面共用一句「上游识别不到，请更换链接」，但 source_fallback 是
+# **我们自己的 AI 生图环节没成功**（provider_attempts.four_grid 已重试仍回退），
+# 跟上游客商的数据无关 —— 让运营去换链接，换多少条都还是我们这边失败，
+# 纯属白费功夫（2026-10-21 由 dev 任务 24 的 result_json 定位）。
+AI_GENERATION_FAILED_HINT = (
+    "AI 生图未成功，当前用来源原图兜底，尚未经过 AI 处理；"
+    "可直接重新处理该链接，不需要更换链接"
+)
+
 
 _IP_RISK_MARKERS = (
     "ip",

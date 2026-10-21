@@ -25,7 +25,11 @@ except ImportError:  # pragma: no cover - posix
 
 from wh_local.data_collection.public_image_fetch import FetchedPublicImage
 
-from .domain.policy import FAILED_LINK_OPERATOR_HINT, is_safe_external_url
+from .domain.policy import (
+    AI_GENERATION_FAILED_HINT,
+    FAILED_LINK_OPERATOR_HINT,
+    is_safe_external_url,
+)
 from .domain import sku_availability
 from .domain.preview_images import (
     MANIFEST_KEY,
@@ -1037,12 +1041,17 @@ class PreviewImageService:
         blockers: list[str] = []
         if not title:
             blockers.append("标题未生成")
-        if processing_failed:
-            blockers.append(FAILED_LINK_OPERATOR_HINT)
+        # 先算生图环节：四格回退来源图说明**我们自己的 AI 生图没成功**，
+        # 这时挂「上游识别不到、请换链接」是误导 —— 换多少条链接都还是我们失败。
         grid_status = str(
             ((result.get("provider_status_classes") or {}).get("four_grid") or "")
         )
-        if grid_status == "source_fallback":
+        grid_fallback = grid_status == "source_fallback"
+        if processing_failed:
+            blockers.append(
+                AI_GENERATION_FAILED_HINT if grid_fallback else FAILED_LINK_OPERATOR_HINT
+            )
+        if grid_fallback:
             blockers.append("轮播图仍是来源原图，尚未经过 AI 处理")
         return {
             "exportable": bool(title) and not blockers,
@@ -1088,16 +1097,20 @@ class PreviewImageService:
                 and media_integrity.get("ok") is False
             )
         )
+        # 同上：四格回退来源图是我们自己的生图失败，不能归因成上游识别不到。
+        grid_status = str(
+            ((result.get("provider_status_classes") or {}).get("four_grid") or "")
+        )
+        grid_fallback = grid_status == "source_fallback"
         if processing_failed:
-            blockers.append(FAILED_LINK_OPERATOR_HINT)
+            blockers.append(
+                AI_GENERATION_FAILED_HINT if grid_fallback else FAILED_LINK_OPERATOR_HINT
+            )
         if "four_grid" in scope:
             if len(carousel_ids) != 4:
                 blockers.append(f"轮播图需 4 张，当前 {len(carousel_ids)} 张")
             if not manifest.main_asset_id:
                 blockers.append("缺少主图")
-            grid_status = str(
-                ((result.get("provider_status_classes") or {}).get("four_grid") or "")
-            )
             carousel_assets = [
                 assets_by_id[asset_id] for asset_id in carousel_ids
             ]
@@ -2422,9 +2435,16 @@ class PreviewImageService:
                 )
             ):
                 title = str(result.get("optimized_title") or "").strip()
-                raise ValueError(
-                    f"{title or '商品'}：{FAILED_LINK_OPERATOR_HINT}"
+                # 同样按失败归因选话术：生图回退来源图不该说成上游识别不到。
+                grid_status = str(
+                    ((result.get("provider_status_classes") or {}).get("four_grid") or "")
                 )
+                hint = (
+                    AI_GENERATION_FAILED_HINT
+                    if grid_status == "source_fallback"
+                    else FAILED_LINK_OPERATOR_HINT
+                )
+                raise ValueError(f"{title or '商品'}：{hint}")
             manifest = PreviewImageManifest.from_value(entry.get("manifest"))
             main = asset_urls.get(manifest.main_asset_id, "")
             if not main:
