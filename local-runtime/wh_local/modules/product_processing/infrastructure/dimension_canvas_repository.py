@@ -98,7 +98,15 @@ class DimensionCanvasRepository:
             )
             if task is None:
                 raise LookupError("product processing task not found")
-            if task.status not in {"completed", "failed", "partial_failure", "completed_with_attention"}:
+            # 处理中任务的单条链接也可能已经完成：允许 running，让尺寸卡与其余
+            # 链接的 AI 调用并行烧制，而不是等整批结束后再串行补。
+            if task.status not in {
+                "running",
+                "completed",
+                "failed",
+                "partial_failure",
+                "completed_with_attention",
+            }:
                 raise ValueError("product processing task is not finished")
             task_items = session.scalars(
                 select(ProcessingTaskItemRow).where(
@@ -243,6 +251,48 @@ class DimensionCanvasRepository:
     def get_item(self, item_id: str, workspace_id: str) -> dict[str, Any] | None:
         with self.database.sessions() as session:
             row = self._get_item_row(session, item_id, workspace_id)
+            if row is None:
+                return None
+            task_item = session.get(ProcessingTaskItemRow, row.task_item_id)
+            result = _loads(task_item.result_json, {}) if task_item is not None else {}
+            return self._item_with_result(row, result)
+
+    def list_items_light(
+        self, batch_id: str, workspace_id: str
+    ) -> list[dict[str, Any]]:
+        """只读画布项本身（不解析 result_json），供预检状态汇总/批量确认使用。"""
+
+        with self.database.sessions() as session:
+            rows = session.scalars(
+                select(DimensionCanvasItemRow)
+                .where(
+                    DimensionCanvasItemRow.batch_id == batch_id,
+                    DimensionCanvasItemRow.workspace_id == workspace_id,
+                )
+                .order_by(DimensionCanvasItemRow.created_at, DimensionCanvasItemRow.id)
+            ).all()
+            return [self._item(row) for row in rows]
+
+    def get_item_for_task_item(
+        self,
+        batch_id: str,
+        task_item_id: int,
+        workspace_id: str,
+    ) -> dict[str, Any] | None:
+        """按批次 + 任务项精确定位画布项，避免并发烧制时反复加载整批结果。
+
+        `get_batch` 会一次性读取批内所有 item 及其 result_json；大批量按条烧制
+        时若每条都调用，会把 O(n) 放大成 O(n²)。这里只取目标行。
+        """
+
+        with self.database.sessions() as session:
+            row = session.scalar(
+                select(DimensionCanvasItemRow).where(
+                    DimensionCanvasItemRow.batch_id == batch_id,
+                    DimensionCanvasItemRow.workspace_id == workspace_id,
+                    DimensionCanvasItemRow.task_item_id == int(task_item_id),
+                )
+            )
             if row is None:
                 return None
             task_item = session.get(ProcessingTaskItemRow, row.task_item_id)
@@ -553,6 +603,32 @@ class DimensionCanvasRepository:
                     updated_at=utc_now(),
                 )
             )
+
+    def confirm_estimated_dimensions(
+        self, item_id: str, workspace_id: str
+    ) -> dict[str, Any] | None:
+        """把预估尺寸批量确认为人工确认；图上的数字没变，不需要重烧。"""
+
+        with self.database.sessions.begin() as session:
+            row = self._get_item_row(session, item_id, workspace_id)
+            if row is None:
+                return None
+            values = _loads(row.physical_dimensions_json, {})
+            changed = False
+            if isinstance(values, dict):
+                for axis in ("length", "width", "height"):
+                    entry = values.get(axis)
+                    if not isinstance(entry, dict):
+                        continue
+                    if str(entry.get("provenance") or "") == "estimated":
+                        entry["provenance"] = "manual_confirmed"
+                        entry["evidence_ref"] = "bulk_confirm"
+                        changed = True
+            if changed:
+                row.physical_dimensions_json = _dumps(values)
+                row.updated_at = utc_now()
+            session.flush()
+            return self._item(row)
 
     def save_item(
         self,

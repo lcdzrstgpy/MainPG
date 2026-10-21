@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
@@ -121,6 +122,57 @@ class MediaAssetRepository:
                 )
             )
             return self._asset(row) if row else None
+
+    def get_assets(
+        self,
+        asset_ids: Iterable[str],
+        workspace_id: str,
+    ) -> dict[str, dict[str, Any]]:
+        """Bulk read media assets for preview projection (one query instead of N)."""
+        ids = [str(item).strip() for item in asset_ids]
+        ids = [item for item in dict.fromkeys(ids) if item]
+        if not ids:
+            return {}
+        resolved: dict[str, dict[str, Any]] = {}
+        with self.database.sessions() as session:
+            for start in range(0, len(ids), 500):
+                rows = session.scalars(
+                    select(MediaAssetRow).where(
+                        MediaAssetRow.workspace_id == workspace_id,
+                        MediaAssetRow.id.in_(ids[start : start + 500]),
+                    )
+                ).all()
+                resolved.update({str(row.id): self._asset(row) for row in rows})
+        return resolved
+
+    def list_bindings_for_drafts(
+        self,
+        workspace_id: str,
+        draft_ids: Iterable[int],
+        *,
+        active_only: bool = True,
+    ) -> dict[int, list[dict[str, Any]]]:
+        """按草稿批量读取绑定，供预检首屏一次取齐（避免逐链接查询）。"""
+        ids = list(dict.fromkeys(int(item) for item in draft_ids))
+        if not ids:
+            return {}
+        with self.database.sessions() as session:
+            stmt = select(MediaBindingRow).where(
+                MediaBindingRow.workspace_id == workspace_id,
+                MediaBindingRow.product_draft_id.in_(ids),
+            )
+            if active_only:
+                stmt = stmt.where(MediaBindingRow.active == 1)
+            stmt = stmt.order_by(
+                MediaBindingRow.product_draft_id,
+                MediaBindingRow.sort_order,
+                MediaBindingRow.created_at,
+                MediaBindingRow.id,
+            )
+            grouped: dict[int, list[dict[str, Any]]] = {item: [] for item in ids}
+            for row in session.scalars(stmt).all():
+                grouped.setdefault(int(row.product_draft_id), []).append(self._binding(row))
+            return grouped
 
     def create_binding(
         self,

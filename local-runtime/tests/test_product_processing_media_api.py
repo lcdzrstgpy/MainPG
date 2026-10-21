@@ -107,8 +107,42 @@ def test_media_content_signature_and_retry(tmp_path: Path) -> None:
     )
     service.materialize_pending(workspace_id="ws")
     assert service.get_asset(remote["id"], "ws")["status"] == "failed"
+
     retried = service.retry_asset(remote["id"], workspace_id="ws")
     assert retried["status"] == "pending"
+
+
+def test_media_content_thumbnail_is_generated_and_cached(tmp_path: Path) -> None:
+    """预检卡片用小图：同一签名 URL 带 w，本地缩放并缓存，不重复解码原图。"""
+    database = create_database(f"sqlite:///{(tmp_path / 'thumb.sqlite3').as_posix()}")
+    assets = ProductProcessingAssets(tmp_path / "assets")
+    service = MediaAssetService(MediaAssetRepository(database), assets)
+
+    buffer = BytesIO()
+    Image.new("RGB", (1600, 1200), "blue").save(buffer, format="JPEG", quality=94)
+    asset = service.register_local_asset("ws", "preview_upload", buffer.getvalue(), "image/jpeg")
+
+    query = parse_qs(urlsplit(asset["preview_url"]).query)
+    thumb_path, thumb_type = service.media_asset_content(
+        asset["id"],
+        workspace_id="ws",
+        expires=int(query["expires"][0]),
+        signature=query["signature"][0],
+        width=320,
+    )
+    assert thumb_type == "image/jpeg"
+    with Image.open(thumb_path) as thumb:
+        assert thumb.width == 320
+        assert thumb.height == 240
+    # 第二次请求直接命中缓存文件，不重新生成。
+    again, _ = service.media_asset_content(
+        asset["id"],
+        workspace_id="ws",
+        expires=int(query["expires"][0]),
+        signature=query["signature"][0],
+        width=300,
+    )
+    assert again == thumb_path
 
 
 def test_generated_preview_url_resolves_media_asset_id(tmp_path: Path) -> None:

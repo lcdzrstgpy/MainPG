@@ -12,6 +12,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlsplit
+from uuid import NAMESPACE_URL, uuid5
 
 try:
     import fcntl
@@ -24,7 +25,7 @@ except ImportError:  # pragma: no cover - posix
 
 from wh_local.data_collection.public_image_fetch import FetchedPublicImage
 
-from .domain.policy import is_safe_external_url
+from .domain.policy import FAILED_LINK_OPERATOR_HINT, is_safe_external_url
 from .domain import sku_availability
 from .domain.preview_images import (
     MANIFEST_KEY,
@@ -203,7 +204,12 @@ class PreviewImageService:
         if task is None or int(product_draft_id) not in owned:
             raise LookupError("preview image target does not belong to this task")
 
-    def public_asset(self, asset: Mapping[str, Any]) -> dict[str, Any]:
+    def public_asset(
+        self,
+        asset: Mapping[str, Any],
+        *,
+        media_asset: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
         media_asset_id = str(asset.get("media_asset_id") or "")
         is_proxy = bool(
             media_asset_id
@@ -211,7 +217,9 @@ class PreviewImageService:
             and not str(asset.get("source_url") or "")
         )
         if is_proxy and self.media_assets is not None:
-            return self._public_media_backed_asset(asset, media_asset_id)
+            return self._public_media_backed_asset(
+                asset, media_asset_id, media_asset=media_asset
+            )
         return {
             "id": str(asset.get("id") or ""),
             "origin": str(asset.get("origin") or "source"),
@@ -233,9 +241,12 @@ class PreviewImageService:
         self,
         asset: Mapping[str, Any],
         media_asset_id: str,
+        *,
+        media_asset: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         workspace_id = str(asset.get("workspace_id") or "")
-        media_asset = self.media_assets.get_asset(media_asset_id, workspace_id)
+        if media_asset is None:
+            media_asset = self.media_assets.get_asset(media_asset_id, workspace_id)
         if media_asset is None:
             return {
                 "id": str(asset.get("id") or ""),
@@ -292,6 +303,9 @@ class PreviewImageService:
         key = (str(workspace_id), int(task_id))
 
         def execute() -> None:
+            # 先让预检首屏完成响应与首屏图片加载，再开始 OCR，避免后台扫描与首屏抢
+            # CPU/文件 IO（多 SKU 时几十到上百张图）。
+            time.sleep(1.5)
             try:
                 self.run_sku_text_review(int(task_id), workspace_id=workspace_id)
             except Exception:  # noqa: BLE001 - 后台检测失败不得影响主流程
@@ -496,6 +510,183 @@ class PreviewImageService:
             sku_id=sku_id,
         )
 
+    def plan_media_proxy_items(
+        self,
+        *,
+        product_draft_id: int,
+        bindings: Sequence[Mapping[str, Any]],
+        existing_assets: Sequence[Mapping[str, Any]],
+        media_by_id: Mapping[str, Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """规划某草稿需要展示的代理（不做任何写库），供整任务一次批量注册。"""
+        planned: list[dict[str, Any]] = []
+        keys: set[tuple[str, str]] = set()
+
+        def plan(media_id: str, media_asset: Mapping[str, Any], source_kind: str, sku_id: str = "") -> None:
+            key = (media_id, source_kind)
+            if key in keys:
+                return
+            keys.add(key)
+            planned.append(
+                {
+                    "product_draft_id": int(product_draft_id),
+                    "media_asset_id": media_id,
+                    "source_kind": source_kind,
+                    "origin": self._preview_origin_for_media(
+                        str(media_asset.get("origin") or "")
+                    ),
+                    "sku_id": sku_id,
+                }
+            )
+
+        for binding in bindings:
+            media_id = str(binding.get("asset_id") or "")
+            media_asset = media_by_id.get(media_id)
+            if media_asset is None:
+                continue
+            role = str(binding.get("role") or "")
+            is_source = str(media_asset.get("origin") or "") == "remote_source"
+            plan(
+                media_id,
+                media_asset,
+                self._source_kind_for_role(role) if is_source else "",
+                sku_id=str(binding.get("sku_id") or ""),
+            )
+        for asset in existing_assets:
+            media_id = str(asset.get("media_asset_id") or "")
+            if not media_id:
+                continue
+            media_asset = media_by_id.get(media_id)
+            if media_asset is None or str(media_asset.get("origin") or "") == "remote_source":
+                continue
+            plan(media_id, media_asset, "")
+        return planned
+
+    @staticmethod
+    def _media_proxy_identity_hash(
+        *,
+        workspace_id: str,
+        task_id: int,
+        product_draft_id: int,
+        media_asset_id: str,
+        source_kind: str,
+    ) -> str:
+        identity = (
+            "media-proxy:"
+            f"{str(workspace_id or '')}:{int(task_id)}:{int(product_draft_id)}:"
+            f"{media_asset_id}:{source_kind}"
+        )
+        return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+    def media_proxy_asset_id(
+        self,
+        *,
+        workspace_id: str,
+        task_id: int,
+        product_draft_id: int,
+        media_asset_id: str,
+        source_kind: str,
+    ) -> str:
+        """代理行的确定性 id（与 ``register_assets`` 的生成规则一致）。
+
+        预检每次请求都会重放同一批代理；先用这个 id 在已读取的资产表里查一次，
+        命中就直接复用，不再重复走写事务。
+        """
+        return str(
+            uuid5(
+                NAMESPACE_URL,
+                "preview-asset:"
+                f"{str(workspace_id or '').strip()}:{int(task_id)}:{int(product_draft_id)}:"
+                + self._media_proxy_identity_hash(
+                    workspace_id=str(workspace_id or "").strip(),
+                    task_id=task_id,
+                    product_draft_id=product_draft_id,
+                    media_asset_id=media_asset_id,
+                    source_kind=source_kind,
+                ),
+            )
+        )
+
+    def _register_media_proxy_items(
+        self,
+        *,
+        task_id: int,
+        workspace_id: str,
+        items: Sequence[Mapping[str, Any]],
+    ) -> dict[int, dict[tuple[str, str], dict[str, Any]]]:
+        entries: list[dict[str, Any]] = []
+        keys: list[tuple[int, str, str]] = []
+        for item in items:
+            draft_id = int(item.get("product_draft_id") or 0)
+            media_asset_id = str(item.get("media_asset_id") or "").strip()
+            if draft_id <= 0 or not media_asset_id:
+                continue
+            source_kind = str(item.get("source_kind") or "").strip()
+            keys.append((draft_id, media_asset_id, source_kind))
+            entries.append(
+                {
+                    "workspace_id": workspace_id,
+                    "task_id": task_id,
+                    "product_draft_id": draft_id,
+                    "origin": str(item.get("origin") or "source"),
+                    "identity_hash": self._media_proxy_identity_hash(
+                        workspace_id=workspace_id,
+                        task_id=task_id,
+                        product_draft_id=draft_id,
+                        media_asset_id=media_asset_id,
+                        source_kind=source_kind,
+                    ),
+                    "managed_path": "",
+                    "source_url": "",
+                    "content_hash": "",
+                    "content_type": "",
+                    "byte_size": 0,
+                    "width": 0,
+                    "height": 0,
+                    "media_asset_id": media_asset_id,
+                    "source_kind": source_kind,
+                    "sku_id": str(item.get("sku_id") or ""),
+                }
+            )
+        rows = self.repository.register_assets(entries)
+        grouped: dict[int, dict[tuple[str, str], dict[str, Any]]] = {}
+        for (draft_id, media_asset_id, source_kind), row in zip(keys, rows, strict=True):
+            grouped.setdefault(draft_id, {})[(media_asset_id, source_kind)] = row
+        return grouped
+
+    def register_media_proxies(
+        self,
+        *,
+        task_id: int,
+        product_draft_id: int,
+        workspace_id: str,
+        items: Sequence[Mapping[str, Any]],
+    ) -> dict[tuple[str, str], dict[str, Any]]:
+        """批量注册单个草稿的 no-copy 代理：单事务完成，避免逐素材抢写锁。"""
+        grouped = self._register_media_proxy_items(
+            task_id=task_id,
+            workspace_id=workspace_id,
+            items=[
+                {**item, "product_draft_id": int(product_draft_id)}
+                for item in items
+            ],
+        )
+        return grouped.get(int(product_draft_id), {})
+
+    def register_media_proxies_for_task(
+        self,
+        *,
+        task_id: int,
+        workspace_id: str,
+        items: Sequence[Mapping[str, Any]],
+    ) -> dict[int, dict[tuple[str, str], dict[str, Any]]]:
+        """整任务一次注册所有草稿的代理（1 个写事务）。"""
+        return self._register_media_proxy_items(
+            task_id=task_id,
+            workspace_id=workspace_id,
+            items=items,
+        )
+
     def register_upload(
         self,
         *,
@@ -590,6 +781,10 @@ class PreviewImageService:
         workspace_id: str,
         media_contract_version: int = 1,
         task_owned_draft_ids: set[int] | None = None,
+        preloaded_bindings: Sequence[Mapping[str, Any]] | None = None,
+        preloaded_media: Mapping[str, Mapping[str, Any]] | None = None,
+        preloaded_assets: Sequence[Mapping[str, Any]] | None = None,
+        preloaded_proxies: Mapping[tuple[str, str], Mapping[str, Any]] | None = None,
     ) -> dict[str, Any]:
         # 性能：task_preview 批量构建单个商品时，调用方已保证其归属（整个 task 的
         # items 已在该次请求内加载完毕）。此时跳过 require_task_draft 的重复全任务查询，
@@ -605,11 +800,19 @@ class PreviewImageService:
                 result=result,
                 saved=saved,
                 workspace_id=workspace_id,
+                preloaded_bindings=preloaded_bindings,
+                preloaded_media=preloaded_media,
+                preloaded_assets=preloaded_assets,
+                preloaded_proxies=preloaded_proxies,
             )
-        existing = self.repository.list_assets(
-            product_draft_id,
-            workspace_id,
-            task_id=task_id,
+        existing = (
+            list(preloaded_assets)
+            if preloaded_assets is not None
+            else self.repository.list_assets(
+                product_draft_id,
+                workspace_id,
+                task_id=task_id,
+            )
         )
         result_storage_values = {
             str(value or "").strip()
@@ -740,9 +943,6 @@ class PreviewImageService:
                             if replacement and index < len(carousel_values):
                                 carousel_values[index] = replacement
                                 semantic_values[slot_id] = replacement
-                summary = str(result.get("grid_image_summary_path") or "").strip()
-                if summary:
-                    carousel_values.append(summary)
             carousel_values = list(dict.fromkeys(value for value in carousel_values if value))
             main_value = str(saved.get("main_image") or "").strip()
             if not main_value:
@@ -789,8 +989,10 @@ class PreviewImageService:
             )
         }
         preview_by_id = {asset_id: self._preview_url(asset) for asset_id, asset in owned.items()}
+        public_assets = [self.public_asset(asset) for asset in owned.values()]
+        readiness = self._preview_export_readiness(result, manifest, public_assets)
         return {
-            "assets": [self.public_asset(asset) for asset in owned.values()],
+            "assets": public_assets,
             "image_manifest": manifest.as_dict(),
             "main_image": preview_by_id.get(manifest.main_asset_id, ""),
             "carousel_images": [
@@ -803,7 +1005,121 @@ class PreviewImageService:
                 for asset_id in manifest.detail_asset_ids
                 if asset_id in preview_by_id
             ],
-            "exportable": bool(str(result.get("optimized_title") or "").strip()),
+            **readiness,
+        }
+
+    @staticmethod
+    def lazy_export_readiness(
+        result: Mapping[str, Any],
+        *,
+        title: str | None = None,
+    ) -> dict[str, Any]:
+        """懒加载媒体的链接：先用状态字段给出保守可导出结论。
+
+        首屏只为当前页投影图片；页面翻到该链接时再拉取完整媒体并用
+        ``_preview_export_readiness`` 覆盖。导出前前端会确保全部媒体已加载。
+        """
+        title = (
+            str(result.get("optimized_title") or "").strip()
+            if title is None
+            else str(title or "").strip()
+        )
+        status = str(result.get("status") or "")
+        media_integrity = result.get("media_integrity")
+        processing_failed = (
+            status in {"failed", "attention_required"}
+            or bool(result.get("partial_result"))
+            or (
+                isinstance(media_integrity, Mapping)
+                and media_integrity.get("ok") is False
+            )
+        )
+        blockers: list[str] = []
+        if not title:
+            blockers.append("标题未生成")
+        if processing_failed:
+            blockers.append(FAILED_LINK_OPERATOR_HINT)
+        grid_status = str(
+            ((result.get("provider_status_classes") or {}).get("four_grid") or "")
+        )
+        if grid_status == "source_fallback":
+            blockers.append("轮播图仍是来源原图，尚未经过 AI 处理")
+        return {
+            "exportable": bool(title) and not blockers,
+            "export_blockers": blockers,
+        }
+
+    @staticmethod
+    def _preview_export_readiness(
+        result: Mapping[str, Any],
+        manifest: PreviewImageManifest,
+        assets: Sequence[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        """Compute export readiness from the CURRENT manifest, not the old task status.
+
+        A user can fix an incomplete item in precheck by adding images; once the
+        manifest has the required slots, export becomes available again.
+        """
+        title = str(result.get("optimized_title") or "").strip()
+        scope = set(result.get("processing_scope") or [])
+        assets_by_id = {str(asset.get("id") or ""): asset for asset in assets}
+        carousel_ids = [
+            str(value or "")
+            for value in manifest.carousel_asset_ids
+            if str(value or "") in assets_by_id
+        ]
+        detail_ids = [
+            str(value or "")
+            for value in manifest.detail_asset_ids
+            if str(value or "") in assets_by_id
+        ]
+        blockers: list[str] = []
+        if not title:
+            blockers.append("标题未生成")
+        # 链接级失败：失败/待确认、部分产出或媒体完整性未通过时一律不可导出。
+        # 前端只提交 exportable 的链接，后端 finalize/export 还会再校验一次。
+        status = str(result.get("status") or "")
+        media_integrity = result.get("media_integrity")
+        processing_failed = (
+            status in {"failed", "attention_required"}
+            or bool(result.get("partial_result"))
+            or (
+                isinstance(media_integrity, Mapping)
+                and media_integrity.get("ok") is False
+            )
+        )
+        if processing_failed:
+            blockers.append(FAILED_LINK_OPERATOR_HINT)
+        if "four_grid" in scope:
+            if len(carousel_ids) != 4:
+                blockers.append(f"轮播图需 4 张，当前 {len(carousel_ids)} 张")
+            if not manifest.main_asset_id:
+                blockers.append("缺少主图")
+            grid_status = str(
+                ((result.get("provider_status_classes") or {}).get("four_grid") or "")
+            )
+            carousel_assets = [
+                assets_by_id[asset_id] for asset_id in carousel_ids
+            ]
+            if carousel_assets and all(
+                str(asset.get("bucket") or "") == "source"
+                for asset in carousel_assets
+            ):
+                # 不再只认 source_fallback：只要四张轮播都还是来源原图，
+                # 就说明这条链接没有真正经过 AI 处理，不能导出。
+                blockers.append("轮播图仍是来源原图，尚未经过 AI 处理")
+            elif grid_status == "source_fallback":
+                blockers.append("AI 生图未成功，当前轮播为来源图兜底")
+        if "detail_images" in scope and not detail_ids:
+            blockers.append("详情图未生成")
+        for asset_id in [*carousel_ids, *detail_ids]:
+            asset = assets_by_id.get(asset_id) or {}
+            if str(asset.get("publication_status") or "") == "publish_failed":
+                blockers.append("有图片发布失败，请重试发布")
+                break
+        return {
+            "exportable": bool(title) and not blockers,
+            "export_blockers": blockers,
         }
 
     def _project_item_images_v2(
@@ -814,6 +1130,10 @@ class PreviewImageService:
         result: Mapping[str, Any],
         saved: Mapping[str, Any],
         workspace_id: str,
+        preloaded_bindings: Sequence[Mapping[str, Any]] | None = None,
+        preloaded_media: Mapping[str, Mapping[str, Any]] | None = None,
+        preloaded_assets: Sequence[Mapping[str, Any]] | None = None,
+        preloaded_proxies: Mapping[tuple[str, str], Mapping[str, Any]] | None = None,
     ) -> dict[str, Any]:
         entries: list[dict[str, Any]] = []
         indexed: dict[tuple[str, str], dict[str, Any]] = {}
@@ -821,6 +1141,72 @@ class PreviewImageService:
         # 来源媒体「原始 source_url → 代理 id」：供四宫格生图失败回退来源图时，
         # 把清单里没登记成素材的回退图（原始来源 URL）映射回已登记的来源代理。
         source_proxy_by_url: dict[str, str] = {}
+        # 首屏批量预载：草稿的绑定/预览资产/统一媒体由 task_preview 一次取齐，
+        # 这里只做内存拼装；单条调用（其它入口）仍按需查询，语义不变。
+        existing_assets = list(
+            preloaded_assets
+            if preloaded_assets is not None
+            else self.repository.list_assets(
+                product_draft_id, workspace_id, task_id=task_id
+            )
+        )
+        existing_by_id = {
+            str(asset.get("id") or ""): asset for asset in existing_assets
+        }
+        bindings = list(
+            preloaded_bindings
+            if preloaded_bindings is not None
+            else self.media_assets.list_bindings(
+                workspace_id, product_draft_id=product_draft_id, active_only=True
+            )
+        )
+        media_by_id: dict[str, Mapping[str, Any]] = (
+            preloaded_media
+            if isinstance(preloaded_media, dict)
+            else dict(preloaded_media or {})
+        )
+        missing_media_ids = [
+            media_id
+            for media_id in dict.fromkeys(
+                [
+                    *(str(binding.get("asset_id") or "") for binding in bindings),
+                    *(str(asset.get("media_asset_id") or "") for asset in existing_assets),
+                ]
+            )
+            if media_id and media_id not in media_by_id
+        ]
+        if missing_media_ids:
+            media_by_id.update(
+                self.media_assets.get_assets(missing_media_ids, workspace_id)
+            )
+
+        def media_for(media_id: str) -> Mapping[str, Any] | None:
+            media = media_by_id.get(media_id)
+            if media is None:
+                media = self.media_assets.get_asset(media_id, workspace_id)
+                if media is not None:
+                    media_by_id[media_id] = media
+            return media
+
+        # 优先复用 task_preview 的整任务预注册结果（1 个写事务）；其它单条入口
+        # 没有预注册时，再按当前草稿批量注册一次，保持原有兼容性。
+        proxy_cache: dict[tuple[str, str], dict[str, Any]] = dict(preloaded_proxies or {})
+        if preloaded_proxies is None:
+            planned = self.plan_media_proxy_items(
+                product_draft_id=product_draft_id,
+                bindings=bindings,
+                existing_assets=existing_assets,
+                media_by_id=media_by_id,
+            )
+            if planned:
+                proxy_cache.update(
+                    self.register_media_proxies(
+                        task_id=task_id,
+                        product_draft_id=product_draft_id,
+                        workspace_id=workspace_id,
+                        items=planned,
+                    )
+                )
 
         def add_entry(
             media_id: str,
@@ -835,19 +1221,22 @@ class PreviewImageService:
             entry_key = (media_id, source_kind)
             if entry_key in indexed:
                 return
-            media_asset = self.media_assets.get_asset(media_id, workspace_id)
+            media_asset = media_for(media_id)
             if media_asset is None:
                 return
             bucket = self._bucket_for_media_origin(str(media_asset.get("origin") or ""))
-            proxy = self.register_media_proxy(
-                task_id=task_id,
-                product_draft_id=product_draft_id,
-                workspace_id=workspace_id,
-                media_asset_id=media_id,
-                source_kind=source_kind,
-                origin=self._preview_origin_for_media(str(media_asset.get("origin") or "")),
-                sku_id=sku_id,
-            )
+            proxy = proxy_cache.get(entry_key)
+            if proxy is None:
+                proxy = self.register_media_proxy(
+                    task_id=task_id,
+                    product_draft_id=product_draft_id,
+                    workspace_id=workspace_id,
+                    media_asset_id=media_id,
+                    source_kind=source_kind,
+                    origin=self._preview_origin_for_media(str(media_asset.get("origin") or "")),
+                    sku_id=sku_id,
+                )
+                proxy_cache[entry_key] = proxy
             entry = {
                 "proxy": proxy,
                 "media_id": media_id,
@@ -864,11 +1253,9 @@ class PreviewImageService:
                     source_proxy_by_url.setdefault(url, str(proxy["id"]))
             entries.append(entry)
 
-        for binding in self.media_assets.list_bindings(
-            workspace_id, product_draft_id=product_draft_id, active_only=True
-        ):
+        for binding in bindings:
             media_id = str(binding.get("asset_id") or "")
-            media_asset = self.media_assets.get_asset(media_id, workspace_id)
+            media_asset = media_for(media_id)
             if media_asset is None:
                 continue
             role = str(binding.get("role") or "")
@@ -884,13 +1271,11 @@ class PreviewImageService:
 
         # Processed media referenced by an existing preview asset (generated detail
         # images, uploads) but not yet bound still belong to the processed library.
-        for asset in self.repository.list_assets(
-            product_draft_id, workspace_id, task_id=task_id
-        ):
+        for asset in existing_assets:
             media_id = str(asset.get("media_asset_id") or "")
             if not media_id or (media_id, "") in indexed:
                 continue
-            media_asset = self.media_assets.get_asset(media_id, workspace_id)
+            media_asset = media_for(media_id)
             if media_asset is None or str(media_asset.get("origin") or "") == "remote_source":
                 continue
             add_entry(media_id, "", "", 0)
@@ -935,7 +1320,10 @@ class PreviewImageService:
             saved_id = str(saved_id or "").strip()
             if not saved_id or saved_id in proxy_by_id:
                 return saved_id
-            row = self.repository.get_asset(saved_id, workspace_id)
+            # 优先用首屏批量预载的资产表，避免清单里每个 id 都单独查一次库。
+            row = existing_by_id.get(saved_id)
+            if row is None:
+                row = self.repository.get_asset(saved_id, workspace_id)
             media_id = str((row or {}).get("media_asset_id") or "")
             if media_id:
                 return proxy_id_by_media.get(media_id, "")
@@ -1001,7 +1389,40 @@ class PreviewImageService:
                 carousel = list(dict.fromkeys(fallback_carousel))
                 if carousel:
                     fallback_carousel_source_ids = list(carousel)
+            # 绑定关系比清单更可靠：生成图已 bound 到 carousel.* / detail 时，
+            # 即使 image_manifest_v2 映射失败，也要把轮播/详情补回来，避免
+            # 「素材库有图、预检轮播/详情为 0」的残缺状态。
+            if not carousel:
+                carousel = list(
+                    dict.fromkeys(
+                        str(entry["proxy"]["id"])
+                        for entry in sorted(
+                            (
+                                item
+                                for item in entries
+                                if str(item.get("role") or "").startswith("carousel.")
+                            ),
+                            key=lambda item: int(item.get("sort_order") or 0),
+                        )
+                    )
+                )
+            if not detail:
+                detail = list(
+                    dict.fromkeys(
+                        str(entry["proxy"]["id"])
+                        for entry in sorted(
+                            (
+                                item
+                                for item in entries
+                                if str(item.get("role") or "") == "detail"
+                            ),
+                            key=lambda item: int(item.get("sort_order") or 0),
+                        )
+                    )
+                )
             main = ensure_proxy_for_media(str(v2.get("main_asset_id") or ""))
+            if not main and carousel:
+                main = carousel[0]
             manifest = PreviewImageManifest(
                 main_asset_id=main,
                 carousel_asset_ids=tuple(carousel),
@@ -1033,8 +1454,15 @@ class PreviewImageService:
             semantic_asset_ids=manifest.semantic_asset_ids,
         )
 
-        public_assets = [self.public_asset(entry["proxy"]) for entry in entries]
+        public_assets = [
+            self.public_asset(
+                entry["proxy"],
+                media_asset=media_by_id.get(str(entry["media_id"])),
+            )
+            for entry in entries
+        ]
         preview_by_id = {asset["id"]: asset["preview_url"] for asset in public_assets}
+        readiness = self._preview_export_readiness(result, manifest, public_assets)
         return {
             "assets": public_assets,
             "image_manifest": manifest.as_dict(),
@@ -1049,7 +1477,7 @@ class PreviewImageService:
                 for asset_id in manifest.detail_asset_ids
                 if asset_id in preview_by_id
             ],
-            "exportable": bool(str(result.get("optimized_title") or "").strip()),
+            **readiness,
         }
 
     def save_preview(
@@ -1980,7 +2408,23 @@ class PreviewImageService:
         rows: list[dict[str, Any]] = []
         for entry in snapshot:
             draft_id = int(entry["product_draft_id"])
-            result = dict((by_draft.get(draft_id) or {}).get("result") or {})
+            item = by_draft.get(draft_id) or {}
+            result = dict(item.get("result") or {})
+            # 服务端兜底：失败/待确认链接即使被客户端误提交，也绝不允许进入最终表格。
+            status = str(item.get("status") or result.get("status") or "")
+            media_integrity = result.get("media_integrity")
+            if (
+                status in {"failed", "attention_required"}
+                or bool(result.get("partial_result"))
+                or (
+                    isinstance(media_integrity, Mapping)
+                    and media_integrity.get("ok") is False
+                )
+            ):
+                title = str(result.get("optimized_title") or "").strip()
+                raise ValueError(
+                    f"{title or '商品'}：{FAILED_LINK_OPERATOR_HINT}"
+                )
             manifest = PreviewImageManifest.from_value(entry.get("manifest"))
             main = asset_urls.get(manifest.main_asset_id, "")
             if not main:
@@ -2031,7 +2475,11 @@ class PreviewImageService:
         return rows
 
     def sku_availability_state(
-        self, draft_id: int, workspace_id: str = "local"
+        self,
+        draft_id: int,
+        workspace_id: str = "local",
+        *,
+        draft: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """草稿规格图可用性结论（供预检页把 auto 档的「未判定」讲清楚）。
 
@@ -2043,10 +2491,13 @@ class PreviewImageService:
         - ``clean``：判定干净 → auto 用规格原图
         - ``fingerprint_stale`` / ``media_unavailable``：结论已失效
         """
-        try:
-            draft = self.product_repository.get_draft(draft_id, workspace_id=workspace_id) or {}
-        except Exception:  # noqa: BLE001 - 读不到草稿时按未判定
-            return {"judged": False, "clean": False, "usable_source": False, "reason": "never_judged"}
+        if draft is None:
+            try:
+                draft = self.product_repository.get_draft(
+                    draft_id, workspace_id=workspace_id
+                ) or {}
+            except Exception:  # noqa: BLE001 - 读不到草稿时按未判定
+                return {"judged": False, "clean": False, "usable_source": False, "reason": "never_judged"}
         stored = sku_availability.load(draft.get("sku_availability_raw"))
         if not stored:
             return {"judged": False, "clean": False, "usable_source": False, "reason": "never_judged"}

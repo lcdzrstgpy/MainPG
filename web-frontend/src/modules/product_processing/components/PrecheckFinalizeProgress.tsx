@@ -1,4 +1,10 @@
-import type { PreviewExportFormat, PreviewFinalizeRun, PreviewImageAsset } from "../types";
+import { assetThumbUrl } from "../data/precheckImageModel";
+import type {
+  MiaoshouTemplateKind,
+  PreviewExportFormat,
+  PreviewFinalizeRun,
+  PreviewImageAsset,
+} from "../types";
 
 /** 导出工作簿的格式文案：界面各处标清「下的是哪一种表」，避免下错。 */
 export const EXPORT_FORMAT_LABELS: Record<PreviewExportFormat, string> = {
@@ -85,7 +91,7 @@ export function PrecheckFinalizeProgress({
             <ul>
               {run.errors.map((failure, index) => {
                 const asset = assetById.get(failure.asset_id);
-                const previewUrl = asset?.preview_url || asset?.public_url || "";
+                const previewUrl = assetThumbUrl(asset);
                 return (
                   <li key={`${failure.asset_id}-${failure.product_draft_id}-${index}`}>
                     {previewUrl ? <img src={previewUrl} alt="发布失败图片" loading="lazy" /> : <span className="precheck-failure-placeholder">无预览</span>}

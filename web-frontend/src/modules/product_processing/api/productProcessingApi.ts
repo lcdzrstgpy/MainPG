@@ -12,6 +12,7 @@ import type {
   PreviewFinalizeRun,
   PreviewImageAsset,
   PreviewImageManifest,
+  PreviewMediaResponse,
   PreviewResponse,
   ShippingPackageRecordOverride,
 } from "../types";
@@ -159,6 +160,39 @@ export async function importPreviewAssetFromUrl(
  */
 export async function keepTaskWatchAlive(taskId: number): Promise<void> {
   await ppRequest(productProcessingApiContext(), `/api/product-processing/tasks/${taskId}/summary`);
+}
+
+export function fetchProductPreview(
+  ctx: ApiContext,
+  taskId: number,
+  options: { mediaLimit?: number; itemLimit?: number; itemOffset?: number } = {},
+): Promise<PreviewResponse> {
+  const params = new URLSearchParams();
+  // 0 是有效值：表示只取元数据、不投影图片（后台分页用）。
+  if (options.mediaLimit !== undefined && options.mediaLimit >= 0) {
+    params.set("media_limit", String(options.mediaLimit));
+  }
+  if (options.itemLimit && options.itemLimit > 0) {
+    params.set("item_limit", String(options.itemLimit));
+  }
+  if (options.itemOffset && options.itemOffset > 0) {
+    params.set("item_offset", String(options.itemOffset));
+  }
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  return ppRequest(ctx, `/api/product-processing/tasks/${taskId}/preview${suffix}`);
+}
+
+export function fetchProductPreviewMedia(
+  ctx: ApiContext,
+  taskId: number,
+  draftIds: number[],
+): Promise<PreviewMediaResponse> {
+  const unique = [...new Set(draftIds)].filter((value) => Number.isFinite(value) && value > 0);
+  if (!unique.length) return Promise.resolve({ items: {} });
+  return ppRequest(
+    ctx,
+    `/api/product-processing/tasks/${taskId}/preview/media?draft_ids=${encodeURIComponent(unique.join(","))}`,
+  );
 }
 
 export function saveProductPreview(

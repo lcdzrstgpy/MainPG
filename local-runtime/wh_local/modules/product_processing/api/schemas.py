@@ -158,6 +158,19 @@ class DraftProcessRequest(BaseModel):
     # 非空时作为附加要求注入本批每条的轮播/精品/详情生图提示词（由 _apply_batch_image_guidelines
     # 包裹固定约束声明，绝不覆盖结构/保真逻辑）；为空则不注入，保持系统默认行为。
     batch_image_prompt: str = ""
+    # 批次级品类组合覆盖：auto=每个链接按标题自动分类；指定品类 id=整批统一用该品类组合。
+    image_category_override: str = "auto"
+    # 五层卡片的批次级选择：auto=使用该品类的默认卡；指定卡 id=整批统一。
+    image_frame: str = "auto"
+    image_light: str = "auto"
+    image_tone: str = "auto"
+    image_detail: str = "auto"
+    # 全局生图风格：auto=按品类默认风格；指定 style id=整批统一风格。
+    image_style: str = "auto"
+    # 四格逐格卡片：数组顺序对应 panel 1-4；每项可覆盖五层、场景卡与辅助道具卡。
+    image_panels: list[dict[str, Any]] = Field(default_factory=list)
+    # 小白模板商业意图：hero_proof / lifestyle_use / macro_craft / knolling_set；auto=不附加。
+    image_preset: str = "auto"
     # 「一键随机模板」：默认关闭，打开后忽略选定的模板，本批次每条链接稳定随机分配到
     # A/B/C/D 生图模板与 A/B 描述模板（一个批次内混搭多套处理方式）。
     random_template: bool = False
@@ -364,6 +377,23 @@ class BatchImagePromptRequest(BaseModel):
     target_site: SiteCode = "US"
     target_language: TargetLanguage = "en"
     category: str = ""
+
+
+class ImagePromptPreviewRequest(BaseModel):
+    """五层卡片预览请求：返回组装后的单行提示词与词数。"""
+
+    model_config = ConfigDict(extra="allow")
+
+    category_id: str = "general"
+    frame: str = "auto"
+    light: str = "auto"
+    tone: str = "auto"
+    detail: str = "auto"
+    style: str = "auto"
+    # 四格逐格卡片：每格可覆盖五层、场景卡与辅助道具卡。
+    panels: list[dict[str, Any]] = Field(default_factory=list)
+    # 小白模板商业意图：hero_proof / lifestyle_use / macro_craft / knolling_set。
+    preset_id: str = "auto"
 
 
 class DailySelectionIntakeRequest(DailySelectionRun):

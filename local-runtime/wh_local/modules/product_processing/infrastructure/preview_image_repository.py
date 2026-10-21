@@ -163,6 +163,109 @@ class PreviewImageRepository:
                 session.flush()
             return self._asset(row)
 
+    def register_assets(
+        self,
+        entries: Sequence[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Bulk register preview proxies in ONE write transaction.
+
+        预检首屏每个素材都会注册 no-copy 代理；逐个 register_asset 会为每张图开一次
+        写事务并抢同一个 SQLite 写锁，多 SKU 批次因此越开越慢。这里用单事务批量
+        INSERT OR IGNORE，再一次性读回，语义与 register_asset 完全一致。
+        """
+        if not entries:
+            return []
+        normalized: list[dict[str, Any]] = []
+        for entry in entries:
+            workspace = str(entry.get("workspace_id") or "").strip()
+            identity = str(entry.get("identity_hash") or "").strip().casefold()
+            if not workspace or not identity:
+                raise ValueError("preview asset workspace and identity are required")
+            task_id = int(entry.get("task_id") or 0)
+            draft_id = int(entry.get("product_draft_id") or 0)
+            normalized.append(
+                {
+                    "id": str(
+                        uuid5(
+                            NAMESPACE_URL,
+                            f"preview-asset:{workspace}:{task_id}:{draft_id}:{identity}",
+                        )
+                    ),
+                    "workspace_id": workspace,
+                    "task_id": task_id,
+                    "product_draft_id": draft_id,
+                    "origin": str(entry.get("origin") or "source")[:32],
+                    "source_asset_id": str(entry.get("source_asset_id") or "")[:64],
+                    "media_asset_id": str(entry.get("media_asset_id") or "")[:36],
+                    "source_kind": str(entry.get("source_kind") or "")[:32],
+                    "sku_id": str(entry.get("sku_id") or "")[:64],
+                    "identity_hash": identity[:64],
+                    "access_token": uuid4().hex,
+                    "managed_path": str(entry.get("managed_path") or ""),
+                    "source_url": str(entry.get("source_url") or ""),
+                    "content_hash": str(entry.get("content_hash") or "").strip().casefold()[:64],
+                    "content_type": str(entry.get("content_type") or "")[:64],
+                    "byte_size": max(0, int(entry.get("byte_size") or 0)),
+                    "width": max(0, int(entry.get("width") or 0)),
+                    "height": max(0, int(entry.get("height") or 0)),
+                    "availability": "local" if entry.get("managed_path") else "materializing",
+                }
+            )
+        with self.database.sessions.begin() as session:
+            asset_ids = [value["id"] for value in normalized]
+            # 预检每次请求都会重放同一批代理（id 由 identity 确定性生成）。先按主键
+            # 找出已存在的行，只插入新增的：否则每次都要为几百条已经存在的代理重新
+            # 编译多值 INSERT，SQLAlchemy 编译开销比真正的写库还大。
+            existing_ids: set[str] = set()
+            for start in range(0, len(asset_ids), 500):
+                existing_ids.update(
+                    session.scalars(
+                        select(PreviewImageAssetRow.id).where(
+                            PreviewImageAssetRow.id.in_(asset_ids[start : start + 500])
+                        )
+                    ).all()
+                )
+            pending = [value for value in normalized if value["id"] not in existing_ids]
+            # SQLite 老版本单语句变量上限 999；按 40 行/批插入，避免多 SKU 批次超限。
+            for start in range(0, len(pending), 40):
+                session.execute(
+                    sqlite_insert(PreviewImageAssetRow)
+                    .values(pending[start : start + 40])
+                    .on_conflict_do_nothing(
+                        index_elements=[
+                            "workspace_id",
+                            "task_id",
+                            "product_draft_id",
+                            "identity_hash",
+                        ]
+                    )
+                )
+            indexed: dict[str, PreviewImageAssetRow] = {}
+            for start in range(0, len(asset_ids), 500):
+                for row in session.scalars(
+                    select(PreviewImageAssetRow).where(
+                        PreviewImageAssetRow.id.in_(asset_ids[start : start + 500])
+                    )
+                ).all():
+                    indexed[row.id] = row
+            changed = False
+            for value in normalized:
+                row = indexed.get(value["id"])
+                if row is None:
+                    raise PreviewPublicationConflict(
+                        "preview asset registration could not be loaded"
+                    )
+                if not row.access_token:
+                    row.access_token = uuid4().hex
+                    changed = True
+                target_sku_id = str(value.get("sku_id") or "")[:64]
+                if target_sku_id and not row.sku_id:
+                    row.sku_id = target_sku_id
+                    changed = True
+            if changed:
+                session.flush()
+            return [self._asset(indexed[value["id"]]) for value in normalized]
+
     def get_asset(self, asset_id: str, workspace_id: str) -> dict[str, Any] | None:
         with self.database.sessions() as session:
             row = session.scalar(
@@ -217,6 +320,31 @@ class PreviewImageRepository:
                 statement.order_by(PreviewImageAssetRow.created_at, PreviewImageAssetRow.id)
             ).all()
             return [self._asset(row) for row in rows]
+
+    def list_assets_for_drafts(
+        self,
+        task_id: int,
+        workspace_id: str,
+        draft_ids: Sequence[int],
+    ) -> dict[int, list[dict[str, Any]]]:
+        """按草稿批量读取预览资产，供预检首屏一次取齐（避免 O(N) 次查询）。"""
+        ids = list(dict.fromkeys(int(value) for value in draft_ids))
+        if not ids:
+            return {}
+        with self.database.sessions() as session:
+            rows = session.scalars(
+                select(PreviewImageAssetRow)
+                .where(
+                    PreviewImageAssetRow.workspace_id == str(workspace_id),
+                    PreviewImageAssetRow.task_id == int(task_id),
+                    PreviewImageAssetRow.product_draft_id.in_(ids),
+                )
+                .order_by(PreviewImageAssetRow.created_at, PreviewImageAssetRow.id)
+            ).all()
+            grouped: dict[int, list[dict[str, Any]]] = {value: [] for value in ids}
+            for row in rows:
+                grouped.setdefault(int(row.product_draft_id), []).append(self._asset(row))
+            return grouped
 
     def list_media_proxies(
         self,
@@ -1016,17 +1144,26 @@ class PreviewImageRepository:
                 )
                 if str(value).isdigit()
             }
+
+            def _item_exportable(row: Any) -> bool:
+                # 失败/待确认、部分产出或媒体完整性未通过的链接一律不可 finalize，
+                # 与预检页 exportable 判定和后端导出兜底保持同一口径。
+                if str(getattr(row, "status", "") or "") in {"failed", "attention_required"}:
+                    return False
+                result = _loads(row.result_json, {}) or {}
+                if result.get("partial_result"):
+                    return False
+                media_integrity = result.get("media_integrity")
+                if isinstance(media_integrity, Mapping) and media_integrity.get("ok") is False:
+                    return False
+                return bool(str(result.get("optimized_title") or "").strip())
+
             exportable_ids = {
                 int(row.product_draft_id)
                 for row in task_items
                 if row.product_draft_id is not None
                 and int(row.product_draft_id) not in excluded_ids
-                and bool(
-                    str(
-                        (_loads(row.result_json, {}) or {}).get("optimized_title")
-                        or ""
-                    ).strip()
-                )
+                and _item_exportable(row)
             }
             if not set(provided_ids).issubset(exportable_ids):
                 raise ValueError(

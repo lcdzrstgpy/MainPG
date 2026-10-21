@@ -18,7 +18,9 @@ from .doubao_ark import (
 )
 
 
-PROMPT_VERSION = "doubao-subject-v4"
+# v5：主体识别的同一次调用里顺带返回 usage_scene（真实使用位置/动作），
+# 不额外发请求、不额外计费；版本号用于失效旧回执——旧缓存里没有这个字段。
+PROMPT_VERSION = "doubao-subject-v5"
 MAX_ATTEMPTS = 3
 RETRY_BACKOFF_SECONDS = 0.5
 MAX_VISION_IMAGES = 6
@@ -47,11 +49,23 @@ Return exactly one JSON object with no Markdown and no additional text:
   "sellable_subject": "short English product identity",
   "subject_explanation": "1-2 English sentences explaining why this is the sellable product",
   "visible_attributes": ["only clearly visible attributes"],
+  "usage_scene": {
+    "place": "short English phrase: the concrete real-world place where THIS exact product is used or carried, never a generic room",
+    "action": "short English phrase: what a person physically does with it there",
+    "on_person": "short English phrase: how it attaches to or is worn on a person; empty string when it is never worn or carried"
+  },
   "explicit_measurements": {"length_cm": null, "width_cm": null, "height_cm": null, "weight_g": null},
   "excluded_elements": ["background, props, people, or packaging that are not the product"],
   "confidence": "high or medium or low",
   "uncertainty_reason": "empty when confident; otherwise explain the visual ambiguity"
 }
+
+usage_scene rules (this feeds the lifestyle/in-use image prompt, so it must be product-specific):
+- Name the one place a real owner would use or keep this item, at the scale of an object, not a room: "clipped to a jeans belt loop", "hanging from a tote bag strap", "hooked on a kitchen rail", "on a bathroom vanity next to a toothbrush cup".
+- The action must be something a hand or a partial person actually does: clipping it on, hooking it, wearing it, filling it, wiping it, pulling it.
+- Never output a generic answer such as "in a home", "on a table", "in daily life" - that is a failed answer.
+- If the product is a bag charm, keychain, or pendant, the place must be the thing it is attached to (belt loop, bag strap, zipper pull, backpack ring), not a flat surface.
+- If the product is not worn or carried at all, set on_person to an empty string.
 """
 
 DoubaoVisionError = DoubaoArkError
@@ -66,6 +80,9 @@ class SubjectAnalysis:
     confidence: str
     uncertainty_reason: str
     explicit_measurements: dict[str, float] = field(default_factory=dict)
+    # 这条链接自己的真实使用场景（位置/动作/与人的关系），用于「真实使用」模板，
+    # 避免所有链接都套同一句“放在生活场景里”。
+    usage_scene: dict[str, str] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -76,6 +93,7 @@ class SubjectAnalysis:
             "confidence": self.confidence,
             "uncertainty_reason": self.uncertainty_reason,
             "explicit_measurements": dict(self.explicit_measurements),
+            "usage_scene": dict(self.usage_scene),
         }
 
 
@@ -111,6 +129,13 @@ def append_subject_analysis(
         "Treat sellable_subject, subject_explanation, and visible_attributes as the "
         "authoritative product identity. Preserve the original sellable product; never "
         "replace it with excluded scene elements, props, people, packaging, or background objects."
+        "\n\nREAL USAGE SCENE (use it in any in-use / lifestyle / real-usage panel): "
+        "stage the product exactly at usage_scene.place doing usage_scene.action - for example "
+        "a keychain clipped onto a belt loop or bag strap, not lying on a table. Never fall back "
+        "to a generic room or a bare surface when usage_scene is present. When usage_scene.on_person "
+        "is non-empty, a partial adult hand or a partial person (hands, torso, back or head turned "
+        "away, never a visible face) may enter the frame to perform that action, while the product "
+        "stays complete, sharp and unobstructed."
     )
 
 
@@ -252,6 +277,7 @@ def _subject_analysis_from_payload(payload: dict[str, Any]) -> SubjectAnalysis:
     attributes = _text_list(payload.get("visible_attributes"), limit=12, item_limit=160)
     excluded = _text_list(payload.get("excluded_elements"), limit=12, item_limit=160)
     measurements = _measurement_map(payload.get("explicit_measurements"))
+    usage_scene = _usage_scene_map(payload.get("usage_scene"))
     if not subject or not explanation or confidence not in {"high", "medium", "low"}:
         raise DoubaoVisionError(
             "Doubao vision subject output failed validation",
@@ -260,7 +286,7 @@ def _subject_analysis_from_payload(payload: dict[str, Any]) -> SubjectAnalysis:
         )
     if any(
         _contains_instruction_like_text(value)
-        for value in (subject, explanation, uncertainty, *attributes, *excluded)
+        for value in (subject, explanation, uncertainty, *attributes, *excluded, *usage_scene.values())
     ):
         raise DoubaoVisionError(
             "Doubao vision subject output contained instruction-like text",
@@ -275,7 +301,24 @@ def _subject_analysis_from_payload(payload: dict[str, Any]) -> SubjectAnalysis:
         confidence=confidence,
         uncertainty_reason=uncertainty,
         explicit_measurements=measurements,
+        usage_scene=usage_scene,
     )
+
+
+def _usage_scene_map(value: Any) -> dict[str, str]:
+    """解析真实使用场景；缺失或类型不符时降级为空（不因此判整条视觉失败）。
+
+    老版本视觉回执里没有这个字段，保持向后兼容；模型偶尔只给 place 也能用。
+    """
+
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, str] = {}
+    for key in ("place", "action", "on_person"):
+        text = _bounded_text(value.get(key), limit=160, allow_empty=True)
+        if text:
+            result[key] = text
+    return result
 
 
 _MEASUREMENT_LIMITS = {

@@ -1,4 +1,21 @@
-import type { PreviewImageManifest } from "../types/index.ts";
+import type { PreviewImageAsset, PreviewImageManifest } from "../types/index.ts";
+
+/** 本机素材服务的内容地址；只有它能按 w 参数返回缩放后的缩略图。 */
+const MEDIA_CONTENT_PATH = "/api/product-processing/media-assets/";
+
+/** 卡片列表用小图：本机素材地址追加宽度参数，其它地址直接用原图。 */
+export function assetThumbUrl(asset: PreviewImageAsset | undefined | null): string {
+  if (!asset) return "";
+  const preview = asset.preview_url || asset.public_url || "";
+  if (!preview || !preview.includes(MEDIA_CONTENT_PATH)) return preview;
+  return `${preview}${preview.includes("?") ? "&" : "?"}w=320`;
+}
+
+/** 放大预览、裁剪、合成要用原图，不能拿缩略图。 */
+export function assetFullUrl(asset: PreviewImageAsset | undefined | null): string {
+  if (!asset) return "";
+  return asset.preview_url || asset.public_url || "";
+}
 
 export type PrecheckImageTarget = "main" | "carousel" | "detail";
 

@@ -163,7 +163,13 @@ export function ProductProcessingHistoryPage({ onOpenTask, onOpenPrecheck }: Pro
                       ? (task.created_at || "—")
                       : new Date(task.created_at).toLocaleString("zh-CN")}
                   </time>
-                  <span>{task.has_downloadable_output ? "输出已生成" : "暂未生成输出"}</span>
+                  <span>
+                    {task.downloadable.dxm
+                      ? "输出已生成"
+                      : canEnterPrecheck(task)
+                        ? "待预检导出"
+                        : "暂未生成输出"}
+                  </span>
                 </div>
                 <div className="processing-history-actions">
                   <button type="button" onClick={() => onOpenTask(task.task_id)}>继续查看</button>

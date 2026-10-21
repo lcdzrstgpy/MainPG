@@ -56,6 +56,7 @@ from .schemas import (
     DraftRestoreRequest,
     DraftSkuAvailabilityRequest,
     DraftUpdateRequest,
+    ImagePromptPreviewRequest,
     ListingAdviceRequest,
     MiaoshouExportRequest,
     PreviewAssetImportRequest,
@@ -205,6 +206,12 @@ def create_product_processing_router(
             workspace_id=_workspace(workspace_id),
             remote_token=_remote_token(request, customer_sessions),
         )
+
+    @router.post("/engine/image-prompt-preview")
+    def preview_image_prompt(body: ImagePromptPreviewRequest) -> dict[str, Any]:
+        """五层卡片实时预览：纯 CPU 组装，不走 AI、不计费。"""
+
+        return _call(service.preview_image_prompt, body.model_dump())
 
     @router.post("/demo-draft")
     async def create_demo_draft(
@@ -513,6 +520,7 @@ def create_product_processing_router(
         workspace_id: str = Query(...),
         expires: int = Query(..., gt=0),
         signature: str = Query(..., min_length=32, max_length=128),
+        w: int | None = Query(default=None, ge=64, le=1024),
         request_workspace: str | None = Header(default=None, alias="X-Workspace-ID"),
     ) -> FileResponse:
         workspace = _workspace(workspace_id)
@@ -524,6 +532,7 @@ def create_product_processing_router(
                 workspace_id=workspace,
                 expires=expires,
                 signature=signature,
+                width=w,
             )
         except (LookupError, OSError, ValueError):
             raise HTTPException(status.HTTP_404_NOT_FOUND, "media asset not found") from None
@@ -721,9 +730,15 @@ def create_product_processing_router(
     @router.get("/tasks/{task_id}/outputs")
     def task_outputs(
         task_id: int,
+        light: bool = Query(default=False),
         workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
     ) -> dict[str, Any]:
-        return _call(service.task_outputs, task_id, workspace_id=_workspace(workspace_id))
+        return _call(
+            service.task_outputs,
+            task_id,
+            light=light,
+            workspace_id=_workspace(workspace_id),
+        )
 
     @router.get("/tasks/{task_id}/summary")
     def task_summary(
@@ -734,6 +749,7 @@ def create_product_processing_router(
             service.task_outputs,
             task_id,
             summary_only=True,
+            light=True,
             workspace_id=_workspace(workspace_id),
         )
 
@@ -741,9 +757,37 @@ def create_product_processing_router(
     @router.get("/tasks/{task_id}/preview")
     def task_preview(
         task_id: int,
+        media_limit: int | None = Query(default=None, ge=0),
+        item_limit: int | None = Query(default=None, ge=0),
+        item_offset: int = Query(default=0, ge=0),
         workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
     ) -> dict[str, Any]:
-        return _call(service.task_preview, task_id, workspace_id=_workspace(workspace_id))
+        return _call(
+            service.task_preview,
+            task_id,
+            workspace_id=_workspace(workspace_id),
+            item_limit=item_limit,
+            item_offset=item_offset,
+            media_limit=media_limit,
+        )
+
+    @router.get("/tasks/{task_id}/preview/media")
+    def task_preview_media(
+        task_id: int,
+        draft_ids: str = Query(default=""),
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        ids = [
+            int(value)
+            for value in str(draft_ids or "").split(",")
+            if str(value).strip().isdigit()
+        ]
+        return _call(
+            service.task_preview_media,
+            task_id,
+            ids,
+            workspace_id=_workspace(workspace_id),
+        )
 
     @router.post("/tasks/{task_id}/preview/items/{draft_id}/listing-advice")
     def listing_advice(

@@ -98,6 +98,70 @@ def test_annotation_endpoint_style_is_normalized_and_validated() -> None:
         DimensionCanvasService._normalize_annotation(_annotation(endpoint_style="circle"))
 
 
+def test_card_render_mode_settings_are_validated() -> None:
+    cleaned = DimensionCanvasService._validate_save_patch(
+        {
+            "canvas_settings": {
+                "render_mode": "card",
+                "display_unit": "in",
+                "card_corner": "top-left",
+                "card_style": "dark",
+            }
+        }
+    )
+    assert cleaned["canvas_settings"]["render_mode"] == "card"
+    with pytest.raises(ValueError):
+        DimensionCanvasService._validate_save_patch({"canvas_settings": {"render_mode": "banner"}})
+    with pytest.raises(ValueError):
+        DimensionCanvasService._validate_save_patch({"canvas_settings": {"card_corner": "center"}})
+
+
+def test_card_mode_accepts_estimated_dimensions_without_annotations() -> None:
+    service = DimensionCanvasService.__new__(DimensionCanvasService)
+    item = {
+        "selected_source_asset_id": "asset-1",
+        "target_slot_id": "carousel.dimension_background",
+        "assets": [{"id": "asset-1"}],
+        "physical_dimensions": {
+            "length": {"value_cm": 20, "provenance": "estimated"},
+            "width": {"value_cm": 9.8, "provenance": "estimated"},
+            "height": {"value_cm": 4.5, "provenance": "estimated"},
+            "conflict": False,
+        },
+        "canvas_settings": {"render_mode": "card"},
+        "annotations": [],
+    }
+
+    service._validate_complete(item)
+
+
+def test_card_mode_rejects_missing_dimensions() -> None:
+    service = DimensionCanvasService.__new__(DimensionCanvasService)
+    item = {
+        "selected_source_asset_id": "asset-1",
+        "target_slot_id": "carousel.dimension_background",
+        "assets": [{"id": "asset-1"}],
+        "physical_dimensions": {},
+        "canvas_settings": {"render_mode": "card"},
+        "annotations": [],
+    }
+
+    with pytest.raises(ValueError, match="no drawable product dimensions"):
+        service._validate_complete(item)
+
+
+def test_auto_render_prefers_fourth_carousel_asset() -> None:
+    item = {
+        "assets": [
+            {"id": "a1", "role": "carousel_1", "availability": "local"},
+            {"id": "a4", "role": "carousel_4", "availability": "metadata"},
+            {"id": "d1", "role": "detail_1", "availability": "local"},
+        ]
+    }
+
+    assert DimensionCanvasService._pick_dimension_source_asset(item) == "a4"
+
+
 def test_canvas_endpoint_style_is_accepted_and_validated() -> None:
     cleaned = DimensionCanvasService._validate_save_patch(
         {"canvas_settings": {"endpoint_style": "none"}}
@@ -508,6 +572,73 @@ def test_submit_review_ignores_legacy_publisher_and_keeps_render_local(service_f
     asset = repository.get_asset(completed["render_asset_id"], completed["id"], "local")
     assert asset is not None
     assert asset["availability"] == "local"
+
+
+def test_v2_estimates_are_eligible_for_auto_card(tmp_path: Path) -> None:
+    database = create_database(f"sqlite:///{(tmp_path / 'v2-estimated.sqlite3').as_posix()}")
+    assets = ProductProcessingAssets(tmp_path / "assets")
+    product_repository = ProductProcessingRepository(database)
+    canvas_repository = DimensionCanvasRepository(database)
+    media_assets = MediaAssetService(MediaAssetRepository(database), assets)
+    ready = media_assets.register_local_asset("local", "ai_generated", _v2_jpeg("orange"), "image/jpeg")
+
+    with database.sessions.begin() as session:
+        draft = ProductDraftRow(
+            workspace_id="local", media_contract_version=2, skc="v2-est", status="draft"
+        )
+        session.add(draft)
+        session.flush()
+        draft_id = int(draft.id)
+        task = ProcessingTaskRow(
+            workspace_id="local", title="finished", status="completed", total_count=1, success_count=1
+        )
+        session.add(task)
+        session.flush()
+        item = ProcessingTaskItemRow(
+            task_id=task.id,
+            product_draft_id=draft_id,
+            skc="v2-est",
+            status="completed",
+            result_json=json.dumps(
+                {
+                    # 只有表格/AI 预估，没有 source_confirmed：仍应进入 ready，供自动出卡。
+                    "product_dimensions": {
+                        "length_cm": 20,
+                        "width_cm": 9.8,
+                        "height_cm": 4.5,
+                        "source": "ai_estimated",
+                    },
+                    "image_manifest_v2": {
+                        "carousel_asset_ids": [ready["id"]],
+                        "semantic_asset_ids": {"carousel.dimension_background": ready["id"]},
+                    },
+                }
+            ),
+        )
+        session.add(item)
+        session.flush()
+        task_id = int(task.id)
+        task_item_id = int(item.id)
+
+    media_assets.bind_asset(
+        workspace_id="local",
+        asset_id=ready["id"],
+        product_draft_id=draft_id,
+        role="carousel.dimension_background",
+    )
+    service = DimensionCanvasService(
+        canvas_repository,
+        product_repository,
+        assets,
+        _Renderer(),
+        media_assets=media_assets,
+    )
+    try:
+        groups = service.task_eligibility(task_id, workspace_id="local")
+        assert [entry["task_item_id"] for entry in groups["ready"]] == [task_item_id]
+    finally:
+        service.close()
+        database.dispose()
 
 
 def _v2_jpeg(color: str = "red") -> bytes:

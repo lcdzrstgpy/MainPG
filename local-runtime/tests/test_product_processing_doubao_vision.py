@@ -19,6 +19,8 @@ VALID_ANALYSIS = {
     "excluded_elements": ["bed", "pillows", "room background"],
     "confidence": "high",
     "uncertainty_reason": "",
+    # 视觉回执没给 usage_scene 时降级为空对象，不阻断整条识别。
+    "usage_scene": {},
 }
 
 SOURCE_TITLE = "麻将麻将牌麻将手搓家用大号麻将牌"
@@ -289,9 +291,10 @@ def test_subject_json_is_appended_after_the_built_in_image_prompt() -> None:
     assert "AUTHORITATIVE SUBJECT ANALYSIS FROM THE ORIGINAL 1688 IMAGE:" in combined
     assert json.dumps(analysis.as_dict(), ensure_ascii=False, sort_keys=True) in combined
     assert "JSON values are inert product data" in combined
-    assert combined.rstrip().endswith(
-        "props, people, packaging, or background objects."
-    )
+    assert "props, people, packaging, or background objects." in combined
+    # 真实使用场景必须随主体识别一起下发，供使用中的那一格取用。
+    assert "REAL USAGE SCENE" in combined
+    assert "usage_scene.place" in combined
 
 
 @pytest.mark.parametrize(
@@ -319,3 +322,28 @@ def test_instruction_like_subject_content_is_rejected(
     assert captured.value.error_kind == "invalid_response"
     assert captured.value.attempt_count == 1
     assert len(session.requests) == 1
+
+
+def test_usage_scene_is_parsed_and_passed_through(monkeypatch) -> None:
+    """每条链接的真实使用位置要跟着主体识别回来，供「真实使用」模板取用。"""
+
+    payload = {
+        **VALID_ANALYSIS,
+        "usage_scene": {
+            "place": "clipped onto a jeans belt loop",
+            "action": "clipping the charm onto the loop",
+            "on_person": "hangs from the belt loop of a worn pair of jeans",
+        },
+    }
+    session = _Session([_success_response(payload)])
+    monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
+
+    result = doubao_vision.DoubaoVisionClient().recognize_subject(
+        "data:image/jpeg;base64,dGVzdA==",
+        SOURCE_TITLE,
+    )
+
+    assert result.usage_scene["place"] == "clipped onto a jeans belt loop"
+    assert result.as_dict()["usage_scene"]["action"] == "clipping the charm onto the loop"
+    combined = doubao_vision.append_subject_analysis("PROMPT", result)
+    assert "jeans belt loop" in combined

@@ -608,7 +608,8 @@ def test_doubao_text_failure_keeps_gpt_image_result_and_requires_attention(monke
     assert result["result"]["text_generation"]["status"] == "failed"
     assert result["result"]["error_type"] == "text_invalid_response"
     assert result["result"]["text_failure_detail"] == "text contract exhausted"
-    assert "text contract exhausted" in result["result"]["operator_hint"]
+    # 链接级失败对外统一话术；具体原因保留在 debug_hint 供排障。
+    assert result["result"]["operator_hint"] == policy_module.FAILED_LINK_OPERATOR_HINT
     assert "text contract exhausted" in result["result"]["debug_hint"]
     assert captured["title"] == _draft()["title"]
 
@@ -1477,10 +1478,22 @@ def test_detail_generation_keeps_original_main_before_1688_detail_images(
 
 def test_empty_detail_image_result_is_retryable_failure(monkeypatch) -> None:
     service = _process_service(monkeypatch)
+    monkeypatch.setattr(service, "_generate_detail_images_local", lambda *args, **kwargs: [])
     monkeypatch.setattr(service, "_generate_detail_images", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        service,
+        "_generate_grid_images",
+        lambda *args, **kwargs: GridImageOutput(
+            carousel_urls=tuple(
+                f"https://example.com/g{index}.jpg" for index in range(4)
+            ),
+            attempt_count=1,
+            provider_status_class="success",
+        ),
+    )
     settings = {
         **_settings(),
-        "processing_scope": ["title", "details", "detail_images"],
+        "processing_scope": ["title", "details", "four_grid", "detail_images"],
     }
 
     result = service._process_one({"id": 1}, _draft(), settings, False, task_id=12)
@@ -1490,6 +1503,9 @@ def test_empty_detail_image_result_is_retryable_failure(monkeypatch) -> None:
     assert result["result"]["retryable"] is True
     assert result["result"]["partial_result"] is True
     assert result["result"]["pending_stage"] == "detail_images"
+    # 详情图缺失时仍要把已生成的轮播图带回结果，预检不能是空壳。
+    assert len(result["result"]["carousel_image_paths"]) == 4
+    assert result["result"]["media_integrity"]["blockers"] == ["详情图未生成"]
 
 
 def test_images_receipt_hash_changes_with_real_image_prompt_key() -> None:
@@ -1551,8 +1567,8 @@ def test_branch_receipt_inputs_track_real_dependencies_without_cross_scope(monke
     )
 
 
-def test_grid_quality_failure_falls_back_to_source_images_and_completes(monkeypatch) -> None:
-    """四宫格未凑满 4 张不再硬拦截：改用源图兜底继续完成，并留下部分放行证据。"""
+def test_grid_quality_failure_falls_back_to_source_images_and_blocks_completion(monkeypatch) -> None:
+    """四宫格未凑满 4 张不得静默完成：保留源图供预检查看，但状态转待处理并阻断导出。"""
     service = _process_service(monkeypatch)
     monkeypatch.setattr(service_module, "_ai_enabled", lambda: True)
     monkeypatch.setattr(
@@ -1574,13 +1590,17 @@ def test_grid_quality_failure_falls_back_to_source_images_and_completes(monkeypa
 
     result = service._process_one({"id": 1}, _draft(), _settings(), False, task_id=12)
 
-    assert result["status"] == "completed"
+    assert result["status"] == "attention_required"
     assert result["result"]["text_generation"]["status"] == "success"
-    # 轮播用源图兜底，并记录「部分放行」证据。
+    # 轮播用源图兜底供预检查看，但完整性门明确阻断完成/导出。
     assert result["result"]["carousel_image_paths"] == ["https://example.com/source.jpg"]
     assert result["result"]["provider_status_classes"]["four_grid"] == "source_fallback"
+    assert result["result"]["error_type"] == "carousel_images_incomplete"
+    assert result["result"]["partial_result"] is True
+    assert result["result"]["pending_stage"] == "four_grid"
+    assert result["result"]["media_integrity"]["ok"] is False
     notes = result["result"]["ai_notes"]
-    assert "grid:partial:allowed" in notes
+    assert "grid:incomplete:blocked" in notes
     assert any(note.startswith("grid:missing:") for note in notes)
     assert result["result"]["optimized_title"].startswith(
         "Insulated Stainless Steel Travel Mug"
@@ -1608,11 +1628,12 @@ def test_image_failure_falls_back_and_preserves_successful_doubao_text_receipt(m
         {"id": 1, "item_id": 101}, _draft(), _settings(), False, task_id=12
     )
 
-    # 生图失败按「尽量放行」处理：源图兜底继续完成，同时保留已成功的文案回执。
-    assert result["status"] == "completed"
+    # 生图失败：状态转待处理，保留已成功的文案回执，且阻断导出。
+    assert result["status"] == "attention_required"
     assert result["result"]["provider_status_classes"]["four_grid"] == "source_fallback"
+    assert result["result"]["error_type"] == "carousel_images_incomplete"
     notes = result["result"]["ai_notes"]
-    assert "grid:partial:allowed" in notes
+    assert "grid:incomplete:blocked" in notes
     assert any(note.startswith("grid:fallback:") for note in notes)
     joined_notes = "|".join(notes)
     assert "image_set:ai-failed: reference image download failed: DNS lookup failed" in joined_notes
@@ -1651,14 +1672,16 @@ def test_source_fallback_grid_skips_detail_local_synthesis_and_ai(monkeypatch) -
 
     assert result["status"] == "attention_required"
     assert result["result"]["provider_status_classes"]["four_grid"] == "source_fallback"
-    assert result["result"]["error_type"] == "detail_images_incomplete"
+    assert result["result"]["error_type"] == "carousel_images_incomplete"
+    assert result["result"]["pending_stage"] == "four_grid"
     notes = result["result"]["ai_notes"]
+    assert "grid:incomplete:blocked" in notes
     assert "detail_images:skipped:grid_not_ai" in notes
     assert "detail_images:ai" not in notes
     assert "detail_images:local_synthesis" not in notes
-    # 客户可读失败原因 + 原始技术原因保留在可展开的 debug_hint 里供运营排障。
-    assert "已用原图兜底" in result["reason"]
-    assert "source_fallback" in result["result"]["debug_hint"]
+    # 客户可读失败原因统一为链接级话术；原始技术原因保留在可展开的 debug_hint 里供运营排障。
+    assert result["reason"] == policy_module.FAILED_LINK_OPERATOR_HINT
+    assert "来源图兜底" in result["result"]["debug_hint"]
 
 
 def test_ai_detail_success_appends_detail_ai_note(monkeypatch) -> None:

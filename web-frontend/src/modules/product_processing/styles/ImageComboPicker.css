@@ -1,0 +1,647 @@
+.image-combo-panel {
+  margin: 0 0 14px;
+  padding: 14px;
+  border: 1px solid #dcebf5;
+  border-radius: 12px;
+  background: #fbfdff;
+}
+
+.image-combo-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.image-combo-head h3 {
+  margin: 0;
+  font-size: 0.95rem;
+  color: #18334d;
+}
+
+.image-combo-head p {
+  margin: 4px 0 0;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: #7d94aa;
+}
+
+.image-mode-switch {
+  display: inline-flex;
+  flex-shrink: 0;
+  padding: 3px;
+  border: 1px solid #dcebf5;
+  border-radius: 999px;
+  background: #f2f8fc;
+}
+
+.image-mode-switch button {
+  border: 0;
+  border-radius: 999px;
+  padding: 5px 12px;
+  background: transparent;
+  color: #5c7691;
+  font-size: 0.76rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.image-mode-switch button.is-active {
+  background: #fff;
+  color: #0a8fca;
+  box-shadow: 0 1px 4px rgba(24, 51, 77, 0.12);
+}
+
+.image-combo-hint {
+  margin-top: 12px;
+  padding: 9px 11px;
+  border-radius: 9px;
+  background: #f2f8fc;
+  color: #5c7691;
+  font-size: 0.76rem;
+  line-height: 1.5;
+}
+
+.image-combo-hint strong {
+  margin-right: 6px;
+  color: #18334d;
+}
+
+.image-preset-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+/* 最近使用：本地记忆的生图组合，一键回填。 */
+.image-preset-history {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.image-preset-history-label {
+  color: #6b8299;
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.image-preset-history-chip {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 10px;
+  border: 1px solid #dbe8f2;
+  border-radius: 8px;
+  background: #f7fbfe;
+  text-align: left;
+  cursor: pointer;
+}
+
+.image-preset-history-chip strong {
+  color: #18334d;
+  font-size: 0.74rem;
+}
+
+.image-preset-history-chip em {
+  color: #7d94aa;
+  font-size: 0.66rem;
+  font-style: normal;
+}
+
+.image-preset-history-chip:hover {
+  border-color: #7fbfe0;
+  background: #eef8fe;
+}
+
+.image-preset-toolbar small {
+  color: #6b8299;
+  font-size: 0.74rem;
+  line-height: 1.4;
+}
+
+.image-preset-random {
+  flex: 0 0 auto;
+  padding: 6px 14px;
+  border: 1px solid #cfe3f0;
+  border-radius: 999px;
+  background: #fff;
+  color: #2a5c80;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.image-preset-random:hover {
+  border-color: #7fbfe0;
+}
+
+.image-preset-random.is-active {
+  border-color: #0a8fca;
+  background: #e8f5fc;
+  color: #0a8fca;
+}
+
+.image-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.image-preset-card {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 10px;
+  padding: 8px;
+  border: 1px solid #e2edf5;
+  border-radius: 11px;
+  background: #fff;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.image-preset-card:hover {
+  border-color: #9dd3ea;
+  transform: translateY(-1px);
+}
+
+.image-preset-card.is-active {
+  border-color: #0a8fca;
+  box-shadow: 0 0 0 2px rgba(10, 143, 202, 0.12);
+}
+
+.image-preset-media {
+  position: relative;
+  display: block;
+  /* 效果图是四宫格成品图，必须按正方形完整展示，不能裁掉任何一格。 */
+  aspect-ratio: 1 / 1;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #eef2f7;
+}
+
+.image-preset-media img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.image-preset-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  min-height: 82px;
+  color: rgba(24, 51, 77, 0.62);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.image-preset-check {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid rgba(24, 51, 77, 0.22);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.9);
+  color: #0a8fca;
+  font-size: 0.68rem;
+  font-weight: 900;
+}
+
+.image-preset-card.is-active .image-preset-check {
+  border-color: #0a8fca;
+  background: #0a8fca;
+  color: #fff;
+}
+
+.image-preset-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 4px 4px 0;
+}
+
+.image-preset-copy strong {
+  color: #18334d;
+  font-size: 0.82rem;
+}
+
+.image-preset-copy em {
+  color: #0a7fb5;
+  font-size: 0.74rem;
+  font-style: normal;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.image-preset-signature {
+  width: fit-content;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: #f1f7fb;
+  color: #557791;
+  font-size: 0.64rem;
+  font-weight: 700;
+}
+
+.image-preset-copy small {
+  color: #7d94aa;
+  font-size: 0.7rem;
+  line-height: 1.45;
+}
+
+.image-combo-note {
+  margin: 10px 0 0;
+  color: #b45309;
+  font-size: 0.72rem;
+}
+
+.image-combo-pro-top {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.image-combo-field {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 5px;
+  color: #36526c;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.image-combo-field select,
+.image-layer-row select {
+  height: 34px;
+  padding: 0 9px;
+  border: 1px solid #cfe2ee;
+  border-radius: 8px;
+  background: #fff;
+  color: #18334d;
+  font-size: 0.78rem;
+}
+
+.image-combo-field small {
+  color: #7d94aa;
+  font-size: 0.7rem;
+  font-weight: 500;
+}
+
+.image-combo-reset {
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid #cfe2ee;
+  border-radius: 8px;
+  background: #fff;
+  color: #36526c;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.image-layer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 12px;
+}
+
+.image-layer-row {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid #e2edf5;
+  border-radius: 9px;
+  background: #fff;
+}
+
+.image-layer-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.image-layer-copy strong {
+  color: #18334d;
+  font-size: 0.76rem;
+}
+
+.image-layer-copy small {
+  color: #7d94aa;
+  font-size: 0.68rem;
+}
+
+.image-prompt-preview {
+  margin-top: 12px;
+  padding: 10px;
+  border: 1px solid #dcebf5;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.image-prompt-preview-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 7px;
+}
+
+.image-prompt-preview-head strong {
+  color: #18334d;
+  font-size: 0.78rem;
+}
+
+.image-prompt-preview-head span {
+  flex: 1;
+  color: #7d94aa;
+  font-size: 0.7rem;
+}
+
+.image-prompt-preview-head span.is-warning {
+  color: #b45309;
+  font-weight: 700;
+}
+
+.image-prompt-preview-head button {
+  padding: 3px 9px;
+  border: 1px solid #cfe2ee;
+  border-radius: 7px;
+  background: #f8fcff;
+  color: #0a8fca;
+  font-size: 0.7rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.image-prompt-preview-head button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.image-prompt-preview textarea {
+  width: 100%;
+  min-height: 96px;
+  padding: 9px;
+  border: 1px solid #e2edf5;
+  border-radius: 8px;
+  background: #fbfdff;
+  color: #36526c;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.72rem;
+  line-height: 1.55;
+  resize: vertical;
+}
+
+.image-prompt-error {
+  margin: 6px 0 0;
+  color: #b42318;
+  font-size: 0.7rem;
+}
+
+.image-prompt-note {
+  margin: 6px 0 0;
+  color: #7d94aa;
+  font-size: 0.68rem;
+}
+
+.image-combo-summary {
+  margin: 12px 0 0;
+  color: #36526c;
+  font-size: 0.75rem;
+}
+
+.image-combo-summary em {
+  margin-left: 8px;
+  color: #7d94aa;
+  font-style: normal;
+}
+
+@media (max-width: 900px) {
+  .image-combo-head {
+    flex-direction: column;
+  }
+
+  .image-preset-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .image-layer-row {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+}
+
+@media (max-width: 520px) {
+  .image-preset-card {
+    grid-template-columns: 96px minmax(0, 1fr);
+  }
+
+  .image-combo-summary em {
+    display: block;
+    margin: 4px 0 0;
+  }
+}
+
+/* ── 四格逐格卡片：把五层 + 场景 + 辅助道具打到每一格 ── */
+.image-panel-editor {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid #dcebf5;
+  border-radius: 12px;
+  background: #f8fcff;
+}
+
+.image-panel-editor-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.image-panel-editor-head strong {
+  color: #18334d;
+  font-size: 0.82rem;
+}
+
+.image-panel-editor-head p {
+  margin: 3px 0 0;
+  color: #7d94aa;
+  font-size: 0.7rem;
+  line-height: 1.45;
+}
+
+.image-panel-editor-head > button {
+  flex-shrink: 0;
+  padding: 5px 10px;
+  border: 1px solid #dcebf5;
+  border-radius: 999px;
+  background: #fff;
+  color: #5c7691;
+  font-size: 0.68rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.image-panel-editor-head > button:hover {
+  border-color: #c7dceb;
+  color: #18334d;
+}
+
+.image-panel-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.image-panel-tabs button {
+  display: grid;
+  gap: 2px;
+  padding: 7px 8px;
+  border: 1px solid #dcebf5;
+  border-radius: 9px;
+  background: #fff;
+  text-align: left;
+  cursor: pointer;
+}
+
+.image-panel-tabs button strong {
+  color: #36526c;
+  font-size: 0.7rem;
+}
+
+.image-panel-tabs button small {
+  color: #8aa0b4;
+  font-size: 0.6rem;
+}
+
+.image-panel-tabs button.is-active {
+  border-color: #8a6748;
+  background: #f2e6d6;
+}
+
+.image-panel-tabs button.is-active strong {
+  color: #6b4e33;
+}
+
+.image-panel-note {
+  margin: 8px 0 0;
+  color: #7d94aa;
+  font-size: 0.68rem;
+  line-height: 1.45;
+}
+
+.image-panel-white-hero {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 8px;
+  color: #5c7691;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.image-panel-white-hero input {
+  accent-color: #8a6748;
+}
+
+.image-panel-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 9px;
+}
+
+.image-panel-grid .image-combo-field {
+  min-width: 0;
+}
+
+.image-panel-grid .image-combo-field select {
+  width: 100%;
+}
+
+.image-panel-props {
+  margin-top: 10px;
+}
+
+.image-panel-props-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.image-panel-props-head strong {
+  color: #36526c;
+  font-size: 0.74rem;
+}
+
+.image-panel-props-head span {
+  color: #8aa0b4;
+  font-size: 0.64rem;
+}
+
+.image-panel-prop-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 6px;
+}
+
+.image-panel-prop-grid button {
+  padding: 4px 9px;
+  border: 1px solid #dcebf5;
+  border-radius: 999px;
+  background: #fff;
+  color: #5c7691;
+  font-size: 0.66rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.image-panel-prop-grid button:hover:not(:disabled) {
+  border-color: #c7dceb;
+  color: #18334d;
+}
+
+.image-panel-prop-grid button.is-active {
+  border-color: #8a6748;
+  background: #8a6748;
+  color: #fff;
+}
+
+.image-panel-prop-grid button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+@media (max-width: 700px) {
+  .image-panel-tabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .image-panel-grid {
+    grid-template-columns: 1fr;
+  }
+}

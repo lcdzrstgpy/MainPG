@@ -23,6 +23,9 @@ from wh_local.customer.contracts import (
     CustomerAuthUnavailable,
 )
 from wh_local.modules.product_processing import server_ai_proxy
+from wh_local.modules.product_processing.domain.photo_card_library import (
+    assemble_panel_image_prompt,
+)
 from wh_local.modules.product_processing.doubao_ark import DoubaoArkClient
 from wh_local.modules.product_processing.infrastructure.assets import ProductProcessingAssets
 from wh_local.modules.product_processing.infrastructure.database import create_database
@@ -36,6 +39,51 @@ from wh_local.modules.product_processing.service import (
 GUIDELINE = "GUARD: render exactly five fingers and crisp printed labels, stable proportions."
 MARKER = "BATCH-LEVEL CATEGORY EXPERT GUIDELINES"
 ARK_KEY = "ark-short-lived-test-key"
+
+
+def test_assemble_panel_prompt_assigns_scene_and_props_per_panel() -> None:
+    assembly = assemble_panel_image_prompt(
+        "office_stationery",
+        [
+            {"white_hero": True},
+            {
+                "scene": "scene_light_oak",
+                "props": ["prop_notebook"],
+            },
+            {"scene": "scene_felt", "props": ["prop_linen_towel"]},
+            {"scene": "scene_plaster", "props": []},
+        ],
+    )
+
+    assert len(assembly.panels) == 4
+    assert "PANEL 1" in assembly.prompt
+    assert "pure white seamless studio sweep" in assembly.prompt
+    assert "PANEL 2" in assembly.prompt
+    assert "light oak desk surface" in assembly.prompt
+    assert "one closed notebook" in assembly.prompt
+    assert "PANEL 3" in assembly.prompt
+    assert "deep felt surface" in assembly.prompt
+    assert "one folded linen towel" in assembly.prompt
+    assert "PANEL 4" in assembly.prompt
+    assert "display-only and never included" in assembly.prompt
+    assert assembly.selections["panel1"]["scene"] == "scene_white_sweep"
+    assert assembly.selections["panel2"]["props"] == [
+        "prop_notebook",
+    ]
+    assert assembly.selections["panel1"]["white_hero"] is True
+
+
+def test_assemble_panel_prompt_uses_category_defaults_when_auto() -> None:
+    assembly = assemble_panel_image_prompt("office_stationery")
+
+    assert assembly.selections["panel2"]["scene"] == "scene_light_oak"
+    assert assembly.selections["panel2"]["props"] == ["prop_notebook"]
+    assert assembly.selections["panel3"]["scene"] == "scene_felt"
+    assert assembly.selections["panel3"]["props"] == [
+        "prop_notebook",
+    ]
+    assert assembly.selections["panel4"]["scene"] == "scene_plaster"
+    assert assembly.selections["panel4"]["props"] == []
 
 
 class _FakeBatchClient:
@@ -439,6 +487,62 @@ def test_batch_image_prompt_wrapper_grants_scene_on_non_main_panels_only(monkeyp
         assert "EXEMPT" in call["prompt"]
 
 
+def test_grid_chain_applies_preset_plan_after_runtime_contract(monkeypatch) -> None:
+    """2K 四宫格链路：预设的逐格改写必须排在运行时契约之后，否则压不住写死的模板。"""
+
+    svc, processor = _grid_service(monkeypatch)
+    monkeypatch.setattr(service_module, "ocr_gate_enabled", lambda: False)
+    monkeypatch.setattr(service_module, "inspect_visible_text", lambda _content: None)
+    monkeypatch.setattr(svc, "_persist_provider_grid_originals", lambda *a, **k: ())
+
+    svc._generate_grid_images(
+        1,
+        2,
+        _raw(),
+        "Bow Keychain",
+        "Accessories",
+        ["https://example.com/source.jpg"],
+        "en",
+        "US",
+        image_generation_count=4,
+        image_preset="lifestyle_use",
+    )
+
+    assert processor.calls
+    prompt = processor.calls[0]["prompt"]
+    assert "USER PRESET OVERRIDE" in prompt
+    assert "THE IN-USE CLOSE-UP" in prompt
+    assert "usage_scene.place" in prompt
+    assert prompt.index("NON-OVERRIDABLE FOUR-GRID RUNTIME CONTRACT") < prompt.index(
+        "USER PRESET OVERRIDE"
+    )
+
+
+def test_grid_chain_keeps_template_when_no_preset(monkeypatch) -> None:
+    """没选模板（auto）时不得插入任何逐格改写，保持旧行为。"""
+
+    svc, processor = _grid_service(monkeypatch)
+    monkeypatch.setattr(service_module, "ocr_gate_enabled", lambda: False)
+    monkeypatch.setattr(service_module, "inspect_visible_text", lambda _content: None)
+    monkeypatch.setattr(svc, "_persist_provider_grid_originals", lambda *a, **k: ())
+
+    svc._generate_grid_images(
+        1,
+        2,
+        _raw(),
+        "Bow Keychain",
+        "Accessories",
+        ["https://example.com/source.jpg"],
+        "en",
+        "US",
+        image_generation_count=4,
+        image_preset="auto",
+    )
+
+    assert processor.calls
+    assert "USER PRESET OVERRIDE" not in processor.calls[0]["prompt"]
+
+
 def test_generate_batch_image_guidelines_asks_for_props_with_hard_limits(
     service, monkeypatch
 ) -> None:
@@ -593,3 +697,91 @@ def test_batch_image_prompt_injected_into_detail_chain(monkeypatch) -> None:
 
     assert GUIDELINE in processor.prompt
     assert MARKER in processor.prompt
+
+
+def test_premium_panel_roles_follow_selected_preset() -> None:
+    """四个小白模板必须各自改写四格角色，否则标签与实际出图对不上。"""
+
+    generic = service_module._premium_panel_roles("auto")
+    assert [role for role, _ in generic] == ["hero", "detail", "lifestyle", "orthographic"]
+
+    proof = service_module._premium_panel_roles("hero_proof")
+    assert "White-background hero" in proof[0][1]
+    assert "no hands" in proof[2][1]
+
+    lifestyle = service_module._premium_panel_roles("lifestyle_use")
+    assert "MANDATORY" in lifestyle[2][1]
+    assert "partial adult hand" in lifestyle[2][1]
+    assert "no visible face" in lifestyle[2][1]
+    assert "usage_scene.place" in lifestyle[2][1]
+
+    macro = service_module._premium_panel_roles("macro_craft")
+    assert "True macro craft shot" in macro[1][1]
+    assert "90-degree top-down" not in macro[1][1]
+
+    knolling = service_module._premium_panel_roles("knolling_set")
+    assert "90-degree top-down" in knolling[0][1]
+    assert "90-degree top-down" in knolling[2][1]
+
+    # 未知/空的预设回落到通用四格，不能报错。
+    assert service_module._premium_panel_roles("") == generic
+
+
+def test_random_preset_is_stable_per_draft_and_spreads_across_batch() -> None:
+    """随机模板：同一链接重跑不变，整批链接要真的分散到四个模板上。"""
+
+    pool = ["hero_proof", "lifestyle_use", "macro_craft", "knolling_set"]
+    first = ProductProcessingService._random_preset_for_draft(7, 101, pool)
+    assert first in pool
+    assert first == ProductProcessingService._random_preset_for_draft(7, 101, pool)
+    picks = {
+        ProductProcessingService._random_preset_for_draft(7, draft_id, pool)
+        for draft_id in range(1, 41)
+    }
+    assert picks == set(pool)
+    assert ProductProcessingService._random_preset_for_draft(7, 101, []) == "auto"
+
+
+def test_only_lifestyle_preset_opens_hands_and_partial_people(monkeypatch) -> None:
+    """「真实使用」才允许手部/局部人物；其它模板仍保持无人。"""
+
+    svc, _ = _grid_service(monkeypatch)
+    with_people = svc._apply_batch_image_guidelines("T", "G", allow_people=True)
+    without_people = svc._apply_batch_image_guidelines("T", "G")
+
+    assert "Hands or a partial person are allowed" in with_people
+    assert "no visible face" not in with_people
+    assert "Keep every panel hands-free" in without_people
+
+
+def test_runtime_contract_swaps_hands_rule_only_for_lifestyle_preset() -> None:
+    """手部规则必须改在“不可覆盖”的契约内部，否则末尾的预设改写压不住它。"""
+
+    default = service_module._grid_runtime_contract()
+    opened = service_module._grid_runtime_contract(True)
+
+    assert "HANDS-FREE (hard rule)" in default
+    assert "HANDS-FREE (hard rule)" not in opened
+    assert "HANDS & PARTIAL PEOPLE (hard rule)" in opened
+    # 其余硬契约原样保留。
+    assert "PRODUCT FIDELITY" in opened
+    assert "zero AI-added visible text" in opened
+
+
+def test_relax_hands_free_drops_only_the_forbidding_sentences() -> None:
+    """模板里“禁止人物/手部”的整句要删掉，但不能误删无关句子。"""
+
+    text = (
+        "- Human & prop integrity: keep every frame hands-free - no hands, fingers, arms or people, "
+        "never deformed fingers or waxy skin. Props must be few and neutral.\n"
+        "- Panel 3 - Macro Detail / In-Use Close-Up: a much closer macro viewpoint. "
+        "Keep it hands-free: no hands, fingers, arms or people may hold the product.\n"
+        "- Safe margin: keep 7% inner margin on the hero panel."
+    )
+    relaxed = service_module._relax_hands_free(text)
+
+    assert "hands-free" not in relaxed.lower()
+    assert "no hands" not in relaxed.lower()
+    assert "Props must be few and neutral." in relaxed
+    assert "Safe margin: keep 7% inner margin on the hero panel." in relaxed
+

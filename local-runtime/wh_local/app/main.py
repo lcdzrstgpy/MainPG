@@ -15,6 +15,7 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -592,6 +593,9 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         lifespan=app_lifespan,
     )
     app.add_middleware(PodRequestLimitMiddleware)
+    # 预检/任务接口会返回整批商品与图片清单（多 SKU 时可达数 MB）；本地回环也值得压缩，
+    # 显著降低 JSON 序列化后的传输与前端解析耗时。
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],

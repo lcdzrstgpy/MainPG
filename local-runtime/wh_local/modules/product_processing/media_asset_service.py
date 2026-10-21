@@ -4,7 +4,7 @@ import hashlib
 import hmac
 import logging
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -22,7 +22,11 @@ from .infrastructure.media_asset_repository import (
     MediaMaterializationConflict,
     media_binding_key,
 )
-from .infrastructure.preview_image_files import validate_preview_image
+from .infrastructure.preview_image_files import (
+    ensure_preview_thumbnail,
+    normalize_thumbnail_width,
+    validate_preview_image,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +173,11 @@ class MediaAssetService:
     def get_asset(self, asset_id: str, workspace_id: str) -> dict[str, Any] | None:
         return self.repository.get_asset(asset_id, workspace_id)
 
+    def get_assets(
+        self, asset_ids: Iterable[str], workspace_id: str
+    ) -> dict[str, dict[str, Any]]:
+        return self.repository.get_assets(asset_ids, workspace_id)
+
     def list_bindings(
         self,
         workspace_id: str,
@@ -179,6 +188,19 @@ class MediaAssetService:
         return self.repository.list_bindings(
             workspace_id,
             product_draft_id=product_draft_id,
+            active_only=active_only,
+        )
+
+    def list_bindings_for_drafts(
+        self,
+        workspace_id: str,
+        draft_ids: Iterable[int],
+        *,
+        active_only: bool = True,
+    ) -> dict[int, list[dict[str, Any]]]:
+        return self.repository.list_bindings_for_drafts(
+            workspace_id,
+            draft_ids,
             active_only=active_only,
         )
 
@@ -208,6 +230,7 @@ class MediaAssetService:
         workspace_id: str,
         expires: int,
         signature: str,
+        width: int | None = None,
     ) -> tuple[Path, str]:
         asset = self.repository.get_asset(asset_id, workspace_id)
         if asset is None or asset.get("status") != "ready" or not asset.get("managed_path"):
@@ -222,6 +245,11 @@ class MediaAssetService:
             str(asset["managed_path"]),
             workspace_id=workspace_id,
         )
+        thumbnail_width = normalize_thumbnail_width(width)
+        if thumbnail_width is not None:
+            thumb = ensure_preview_thumbnail(path, thumbnail_width)
+            if thumb != path:
+                return thumb, "image/jpeg"
         return path, str(asset.get("content_type") or "image/jpeg")
 
     def list_draft_media(self, workspace_id: str, product_draft_id: int) -> dict[str, list[dict[str, Any]]]:

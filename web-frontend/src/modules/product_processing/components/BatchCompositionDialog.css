@@ -1,0 +1,178 @@
+.batch-compose-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2600;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(38, 31, 24, 0.38);
+  backdrop-filter: blur(3px);
+}
+
+.batch-compose-modal {
+  width: min(760px, 96vw);
+  max-height: min(760px, 90vh);
+  overflow-y: auto;
+  padding: 20px;
+  border: 1px solid #e9dfd1;
+  border-radius: 22px;
+  background: #f7f3ec;
+  color: #2f2a24;
+  box-shadow: 0 24px 70px rgba(47, 42, 36, 0.24);
+}
+
+.batch-compose-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.batch-compose-head h2 {
+  margin: 0;
+  font-size: 1.1rem;
+  letter-spacing: -0.02em;
+}
+
+.batch-compose-head p {
+  margin: 4px 0 0;
+  color: #7c7164;
+  font-size: 0.74rem;
+}
+
+.batch-compose-close {
+  width: 32px;
+  height: 32px;
+  border: 1px solid #e9dfd1;
+  border-radius: 999px;
+  background: #fffdf9;
+  color: #7c7164;
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.batch-compose-templates {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.batch-compose-template {
+  display: grid;
+  gap: 4px;
+  padding: 11px;
+  border: 1px solid #e9dfd1;
+  border-radius: 14px;
+  background: #fffdf9;
+  text-align: left;
+  cursor: pointer;
+}
+
+.batch-compose-template:hover:not(:disabled),
+.batch-compose-template.is-active {
+  border-color: #8a6748;
+  box-shadow: 0 6px 18px rgba(138, 103, 72, 0.12);
+}
+
+.batch-compose-template strong {
+  color: #2f2a24;
+  font-size: 0.78rem;
+}
+
+.batch-compose-template small {
+  color: #7c7164;
+  font-size: 0.66rem;
+  line-height: 1.45;
+}
+
+.batch-compose-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid #e9dfd1;
+  border-radius: 14px;
+  background: #fffdf9;
+  color: #7c7164;
+  font-size: 0.72rem;
+}
+
+.batch-compose-summary strong {
+  color: #2f2a24;
+  font-size: 1rem;
+}
+
+.batch-compose-summary em {
+  flex-basis: 100%;
+  color: #a38d76;
+  font-size: 0.68rem;
+  font-style: normal;
+}
+
+.batch-compose-progress {
+  margin-top: 12px;
+}
+
+.batch-compose-progress > div {
+  display: flex;
+  justify-content: space-between;
+  color: #7c7164;
+  font-size: 0.7rem;
+}
+
+.batch-compose-progress progress {
+  width: 100%;
+  height: 8px;
+  margin-top: 6px;
+  accent-color: #8a6748;
+}
+
+.batch-compose-message {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px solid #e9dfd1;
+  border-radius: 12px;
+  background: #fffdf9;
+  color: #7c7164;
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+.batch-compose-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.batch-compose-actions button {
+  padding: 8px 16px;
+  border: 1px solid #e9dfd1;
+  border-radius: 999px;
+  background: #fffdf9;
+  color: #7c7164;
+  font-size: 0.76rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.batch-compose-actions button.primary {
+  border-color: #2f2a24;
+  background: #2f2a24;
+  color: #fff;
+}
+
+.batch-compose-actions button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+@media (max-width: 640px) {
+  .batch-compose-templates {
+    grid-template-columns: 1fr;
+  }
+}

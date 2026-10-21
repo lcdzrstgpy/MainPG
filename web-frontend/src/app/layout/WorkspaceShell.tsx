@@ -753,7 +753,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
     setWorkspaceNotice("");
   };
 
-  const openProcessingTask = (draftIds: number[], options: ProductProcessingOptions, premiumDraftIds: number[] = []) => {
+  const openProcessingTask = (draftIds: number[], options: ProductProcessingOptions, premiumDraftIds: number[] = [], skuCount = 0) => {
     const openPanelCount = tabsRef.current.filter((tab) => tab.moduleId === "product_processing_tasks").length;
     if (openPanelCount >= MAX_PROCESSING_PANELS) {
       setWorkspaceNotice(`最多同时打开 ${MAX_PROCESSING_PANELS} 个处理任务，请先关闭一个再继续。`);
@@ -770,6 +770,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
       icon: "⚙",
       draftIds,
       premiumDraftIds,
+      draftSkuCount: skuCount,
       processingOptions: options,
     }]);
     activateTab(key);
@@ -895,9 +896,15 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
             initialTaskId={tab.taskRunId}
             initialDraftIds={tab.draftIds}
             initialPremiumDraftIds={tab.premiumDraftIds}
+            initialSkuCount={tab.draftSkuCount}
             initialOptions={tab.processingOptions as ProductProcessingOptions | undefined}
             onOpenPrecheck={openProcessingPrecheck}
             onTaskStarted={(taskId) => markTabActiveTask(tab.key, taskId)}
+            onBackToDraftPool={() => {
+              // 返回草稿池删减 SKU：关掉本处理页签，再切回草稿池。
+              closeTab(tab.key);
+              openModule("product_processing");
+            }}
           />
         );
         break;

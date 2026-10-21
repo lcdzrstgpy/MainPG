@@ -380,6 +380,7 @@
 /* ===== 草稿池卡片布局 ===== */
 
 .verify-draft-list {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -1280,6 +1281,12 @@
 .verify-precheck-page {
   --theme-control-radius: 999px;
   --theme-card-radius: 18px;
+  position: relative;
+}
+
+/* 预检重新加载遮罩：覆盖已渲染内容，明确告诉用户正在刷新而不是卡死。 */
+.verify-precheck-loading-mask {
+  z-index: 30;
 }
 
 .precheck-toolbar {
@@ -1367,6 +1374,111 @@
   font-style: normal;
   font-weight: 700;
   color: #c07c0a;
+}
+
+/* 第 4 格尺寸图状态：预估必须一眼可见。 */
+.precheck-dim-badge {
+  grid-column: 2 / -1;
+  justify-self: start;
+  margin-top: 2px;
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: .68rem;
+  font-weight: 800;
+  line-height: 1.5;
+}
+
+.precheck-dim-badge.is-confirmed { color: #0f7a4f; background: #eafaf2; border-color: #bfe9d6; }
+.precheck-dim-badge.is-estimated { color: #a86500; background: #fff7e6; border-color: #f3d9a4; }
+.precheck-dim-badge.is-missing { color: #6b7280; background: #f3f4f6; border-color: #e5e7eb; }
+.precheck-dim-badge.is-failed { color: #b42318; background: #fff1f0; border-color: #f7c9c4; }
+.precheck-dim-badge.is-pending { color: #0a7fb5; background: #eef8ff; border-color: #c9e6f8; }
+
+/* 预检内联尺寸编辑器：只重烧第 4 格。 */
+.precheck-dim-image-editor {
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border: 1px solid #dcebf5;
+  border-radius: 10px;
+  background: #fbfdff;
+}
+
+.precheck-dim-image-editor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.precheck-dim-image-editor-head strong {
+  color: #18334d;
+  font-size: .8rem;
+}
+
+.precheck-dim-image-editor-head .precheck-dim-badge {
+  margin-top: 0;
+}
+
+.precheck-dim-image-inputs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.precheck-dim-image-inputs label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: #5c7691;
+  font-size: .7rem;
+}
+
+.precheck-dim-image-inputs input {
+  width: 88px;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid #cfe2ee;
+  border-radius: 7px;
+  background: #fff;
+  color: #18334d;
+  font-size: .78rem;
+}
+
+.precheck-dim-image-inputs button {
+  height: 30px;
+}
+
+/* 尺寸图状态汇总条：预估/原图加工/缺失/失败一眼可见，并提供批量确认。 */
+.precheck-dim-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 1px solid #dcebf5;
+  border-radius: 9px;
+  background: #fbfdff;
+  color: #36526c;
+  font-size: .72rem;
+}
+
+.precheck-dim-summary-title {
+  font-weight: 800;
+  color: #18334d;
+}
+
+.precheck-dim-summary .is-estimated { color: #a86500; font-weight: 800; }
+.precheck-dim-summary .is-missing { color: #6b7280; font-weight: 700; }
+.precheck-dim-summary .is-failed { color: #b42318; font-weight: 800; }
+
+.precheck-dim-summary-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
 }
 
 .precheck-card-head {
@@ -5670,6 +5782,90 @@
 
 @keyframes verify-batch-drawer-in { from { transform: translateX(24px); opacity: .4; } to { transform: translateX(0); opacity: 1; } }
 
+/* ── 开始处理前的批次规模确认（链接数 / SKU 数） ── */
+.pp-start-confirm-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 2100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(16, 42, 64, .38);
+}
+
+.pp-start-confirm {
+  width: min(440px, 100%);
+  padding: 22px 24px 18px;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 24px 60px rgba(12, 42, 66, .28);
+}
+
+.pp-start-confirm h3 {
+  margin: 0 0 10px;
+  color: #18334d;
+  font-size: 1.02rem;
+}
+
+.pp-start-confirm-line {
+  margin: 0;
+  color: #36526c;
+  font-size: .9rem;
+  line-height: 1.7;
+}
+
+.pp-start-confirm-line b {
+  color: #0a7fb5;
+  font-size: 1.06rem;
+}
+
+.pp-start-confirm-hint {
+  margin: 8px 0 0;
+  color: #b45309;
+  font-size: .76rem;
+  line-height: 1.5;
+}
+
+.pp-start-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.pp-start-confirm-actions button {
+  height: 34px;
+  padding: 0 16px;
+  border: 1px solid #cfe2ee;
+  border-radius: 9px;
+  background: #fff;
+  color: #36526c;
+  font-size: .8rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.pp-start-confirm-actions button:hover {
+  border-color: #9dd3ea;
+  color: #18334d;
+}
+
+.pp-start-confirm-actions button.primary {
+  border-color: #0a8fca;
+  background: #0a8fca;
+  color: #fff;
+}
+
+.pp-start-confirm-actions button.primary:hover {
+  background: #0879ac;
+}
+
+[data-theme] .pp-start-confirm-mask { background: var(--theme-module-overlay); }
+[data-theme] :is(.pp-start-confirm, .pp-start-confirm h3) { border-color: var(--theme-module-border); color: var(--theme-text-primary); background: var(--theme-module-surface); }
+[data-theme] .pp-start-confirm-line { color: var(--theme-text-secondary); }
+[data-theme] .pp-start-confirm-actions button:not(.primary) { border-color: var(--theme-module-border); color: var(--theme-text-secondary); background: var(--theme-module-surface-soft); }
+
 /* 历史导出：导出的表格一直保存在本机，但结果卡片只活在当前页面会话里，
    关掉页面用户就找不到文件了。这块常驻列表提供「重新下载」入口。 */
 .precheck-finalize-history {
@@ -5967,5 +6163,520 @@
 /* danger 按钮不在主题的圆角统一列表里，单独兜底。 */
 .verify-task-page .verify-actions button {
   border-radius: 999px;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   预检页 2026 暖白素材台
+   参考国内工具的“大图卡片 + 低饱和暖色 + 单一主操作”
+   仅作用于 .verify-precheck-page，不影响处理设置/进度页
+   ═══════════════════════════════════════════════════════════════ */
+.verify-precheck-page {
+  --pp-bg: #f5f1ea;
+  --pp-surface: #fffdf9;
+  --pp-surface-2: #fbf7f0;
+  --pp-line: #ece3d6;
+  --pp-line-strong: #ddcdb8;
+  --pp-ink: #2f2a24;
+  --pp-muted: #7c7164;
+  --pp-accent: #8a6748;
+  --pp-accent-soft: #f2e6d6;
+  --pp-success: #2f7d5b;
+  --pp-warning: #a9761f;
+  --pp-danger: #b34b42;
+  background: var(--pp-bg);
+  color: var(--pp-ink);
+  padding: 18px clamp(14px, 2vw, 30px) 112px;
+  border-radius: 24px;
+}
+
+.verify-precheck-page .verify-commandbar {
+  min-height: 0;
+  padding: 22px 26px;
+  border: 1px solid var(--pp-line);
+  border-radius: 22px;
+  background: linear-gradient(135deg, #fffaf2, #f3eadc);
+  box-shadow: 0 14px 34px rgba(86, 67, 44, 0.08);
+}
+
+.verify-precheck-page .verify-eyebrow {
+  color: var(--pp-accent);
+  letter-spacing: 0.12em;
+}
+
+.verify-precheck-page .verify-command-title h1 {
+  color: var(--pp-ink);
+  font-size: clamp(1.5rem, 2.4vw, 2.1rem);
+  letter-spacing: -0.03em;
+}
+
+.verify-precheck-page .verify-command-title p {
+  color: var(--pp-muted);
+  font-size: 0.8rem;
+}
+
+.verify-precheck-page .verify-command-stats span {
+  padding: 9px 14px;
+  border: 1px solid var(--pp-line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--pp-muted);
+}
+
+.verify-precheck-page .verify-command-stats i.iconfont {
+  color: var(--pp-accent);
+}
+
+.verify-precheck-page .verify-command-stats strong {
+  color: var(--pp-ink);
+}
+
+.verify-precheck-page .verify-command-stats em {
+  color: var(--pp-muted);
+}
+
+.verify-precheck-page .verify-command-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.verify-precheck-page .verify-command-actions .btn-mini {
+  min-height: 34px;
+  padding: 0 16px;
+  border: 1px solid var(--pp-ink);
+  border-radius: 999px;
+  background: var(--pp-ink);
+  color: #fff;
+  font-weight: 800;
+}
+
+.verify-precheck-page .verify-command-actions .btn-mini:disabled {
+  opacity: 0.55;
+}
+
+.verify-precheck-page .precheck-toolbar {
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--pp-line);
+  border-radius: 18px;
+  background: var(--pp-surface);
+  box-shadow: 0 6px 20px rgba(86, 67, 44, 0.05);
+}
+
+.verify-precheck-page .precheck-search input,
+.verify-precheck-page .precheck-page-size select {
+  border-color: var(--pp-line);
+  background: var(--pp-surface-2);
+  color: var(--pp-ink);
+}
+
+.verify-precheck-page .precheck-card {
+  padding: 16px;
+  border: 1px solid var(--pp-line);
+  border-radius: 20px;
+  background: var(--pp-surface);
+  box-shadow: 0 8px 26px rgba(86, 67, 44, 0.06);
+}
+
+.verify-precheck-page .precheck-card.is-edited {
+  border-color: var(--pp-line-strong);
+  box-shadow: 0 8px 26px rgba(138, 103, 72, 0.12);
+}
+
+.verify-precheck-page .precheck-card-toggle-title {
+  color: var(--pp-ink);
+  font-size: 0.92rem;
+}
+
+.verify-precheck-page .precheck-card-toggle-summary,
+.verify-precheck-page .verify-sub {
+  color: var(--pp-muted);
+  font-size: 0.7rem;
+}
+
+.verify-precheck-page .precheck-grid {
+  grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
+  gap: 18px;
+}
+
+.verify-precheck-page .precheck-fields {
+  padding: 14px;
+  border: 1px solid var(--pp-line);
+  border-radius: 16px;
+  background: var(--pp-surface-2);
+  /* 左侧字段区在预检页只有 320-380px：标题与产品描述改为上下堆叠，
+     避免描述列被挤成一条竖排文字。 */
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.verify-precheck-page .precheck-description-field {
+  min-width: 0;
+}
+
+.verify-precheck-page .precheck-description-field textarea {
+  width: 100%;
+}
+
+.verify-precheck-page .precheck-label > span,
+.verify-precheck-page .precheck-field-heading {
+  color: var(--pp-muted);
+}
+
+.verify-precheck-page .precheck-label textarea,
+.verify-precheck-page .precheck-core-grid input {
+  border-color: var(--pp-line);
+  background: #fff;
+  color: var(--pp-ink);
+}
+
+.verify-precheck-page .precheck-images {
+  min-width: 0;
+}
+
+.verify-precheck-page .precheck-image-manager {
+  gap: 16px;
+}
+
+.verify-precheck-page .precheck-manager-section {
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--pp-line);
+  border-radius: 18px;
+  background: var(--pp-surface);
+  box-shadow: 0 6px 20px rgba(86, 67, 44, 0.04);
+}
+
+.verify-precheck-page .precheck-source-pool,
+.verify-precheck-page .precheck-material-library,
+.verify-precheck-page .precheck-v2-media-registry {
+  border-color: var(--pp-line);
+  background: var(--pp-surface);
+}
+
+.verify-precheck-page .precheck-manager-section > header h3 {
+  color: var(--pp-ink);
+  font-size: 0.94rem;
+}
+
+.verify-precheck-page .precheck-manager-section > header h3 span {
+  background: var(--pp-accent-soft);
+  color: var(--pp-accent);
+}
+
+.verify-precheck-page .precheck-manager-section > header p {
+  color: var(--pp-muted);
+  font-size: 0.7rem;
+}
+
+.verify-precheck-page .precheck-source-group > header,
+.verify-precheck-page .precheck-material-group > header {
+  color: var(--pp-muted);
+  font-size: 0.72rem;
+}
+
+.verify-precheck-page .precheck-source-group > header strong,
+.verify-precheck-page .precheck-material-group > header strong {
+  color: var(--pp-ink);
+  font-size: 0.76rem;
+}
+
+.verify-precheck-page .precheck-source-toggle {
+  padding: 5px 12px;
+  border: 1px solid var(--pp-line);
+  border-radius: 999px;
+  background: var(--pp-surface-2);
+  color: var(--pp-accent);
+  font-size: 0.7rem;
+}
+
+.verify-precheck-page .precheck-source-toggle:hover {
+  border-color: var(--pp-line-strong);
+  background: #fff;
+  color: var(--pp-ink);
+}
+
+.verify-precheck-page .precheck-asset-grid,
+.verify-precheck-page .precheck-asset-grid.output-grid {
+  grid-template-columns: repeat(auto-fill, minmax(172px, 1fr));
+  gap: 14px;
+}
+
+.verify-precheck-page .precheck-asset-card {
+  padding: 9px;
+  border: 1px solid var(--pp-line);
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 4px 14px rgba(86, 67, 44, 0.04);
+  transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+}
+
+.verify-precheck-page .precheck-asset-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--pp-line-strong);
+  box-shadow: 0 10px 24px rgba(86, 67, 44, 0.1);
+}
+
+.verify-precheck-page .precheck-asset-preview {
+  border-radius: 12px;
+  background: #f4efe7;
+}
+
+.verify-precheck-page .precheck-asset-meta {
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.verify-precheck-page .precheck-origin-badge,
+.verify-precheck-page .precheck-publication {
+  min-height: 20px;
+  padding: 2px 8px;
+  border: 1px solid var(--pp-line);
+  border-radius: 999px;
+  background: var(--pp-surface-2);
+  color: var(--pp-muted);
+  font-size: 0.62rem;
+}
+
+.verify-precheck-page .precheck-origin-badge.origin-generated {
+  border-color: #e5d3bc;
+  background: var(--pp-accent-soft);
+  color: var(--pp-accent);
+}
+
+.verify-precheck-page .precheck-publication.status-published {
+  border-color: #cfe4d8;
+  background: #edf7f1;
+  color: var(--pp-success);
+}
+
+.verify-precheck-page .precheck-asset-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 7px;
+}
+
+.verify-precheck-page .precheck-asset-status span {
+  padding: 2px 7px;
+  border: 1px solid var(--pp-line);
+  border-radius: 999px;
+  background: var(--pp-surface-2);
+  color: var(--pp-muted);
+  font-size: 0.6rem;
+  font-weight: 800;
+  line-height: 1.5;
+}
+
+.verify-precheck-page .precheck-asset-status span.is-main {
+  border-color: var(--pp-ink);
+  background: var(--pp-ink);
+  color: #fff;
+}
+
+.verify-precheck-page .precheck-asset-status span.is-carousel {
+  border-color: #e5d3bc;
+  background: var(--pp-accent-soft);
+  color: var(--pp-accent);
+}
+
+.verify-precheck-page .precheck-asset-status span.is-detail {
+  border-color: #cfe4d8;
+  background: #edf7f1;
+  color: var(--pp-success);
+}
+
+.verify-precheck-page .precheck-asset-status span.is-source {
+  border-color: #e2ddd4;
+  background: #f2f0ec;
+  color: #6c6358;
+}
+
+.verify-precheck-page .precheck-card-actions {
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.verify-precheck-page .precheck-card-actions button {
+  min-height: 28px;
+  padding: 5px 10px;
+  border: 1px solid var(--pp-line);
+  border-radius: 999px;
+  background: var(--pp-surface-2);
+  color: var(--pp-muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.verify-precheck-page .precheck-card-actions button.primary {
+  border-color: var(--pp-ink);
+  background: var(--pp-ink);
+  color: #fff;
+}
+
+.verify-precheck-page .precheck-card-actions button.primary:hover:not(:disabled) {
+  border-color: #4b4035;
+  background: #4b4035;
+  color: #fff;
+}
+
+.verify-precheck-page .precheck-card-actions button.ghost:hover:not(:disabled) {
+  border-color: var(--pp-line-strong);
+  background: #fff;
+  color: var(--pp-ink);
+}
+
+.verify-precheck-page .precheck-card-actions button.danger {
+  border-color: #eed3cf;
+  background: #fff6f5;
+  color: var(--pp-danger);
+}
+
+.verify-precheck-page .precheck-card-actions button:disabled {
+  opacity: 0.52;
+}
+
+.verify-precheck-page .precheck-main-badge,
+.verify-precheck-page .precheck-order-number {
+  background: var(--pp-ink);
+  color: #fff;
+}
+
+.verify-precheck-page .precheck-manager-empty {
+  padding: 14px;
+  border: 1px dashed var(--pp-line-strong);
+  border-radius: 14px;
+  background: var(--pp-surface-2);
+  color: var(--pp-muted);
+}
+
+.verify-precheck-page .btn-mini,
+.verify-precheck-page .precheck-manager-actions button,
+.verify-precheck-page .precheck-manager-actions .btn-mini {
+  min-height: 30px;
+  padding: 5px 12px;
+  border: 1px solid var(--pp-line);
+  border-radius: 999px;
+  background: var(--pp-surface-2);
+  color: var(--pp-muted);
+  font-weight: 800;
+}
+
+.verify-precheck-page .btn-mini.primary,
+.verify-precheck-page .precheck-manager-actions .btn-mini.primary {
+  border-color: var(--pp-ink);
+  background: var(--pp-ink);
+  color: #fff;
+}
+
+.verify-precheck-page .precheck-pagination button {
+  border-color: var(--pp-line);
+  border-radius: 999px;
+  background: var(--pp-surface);
+  color: var(--pp-muted);
+}
+
+.verify-precheck-page .precheck-excluded-section {
+  border-color: var(--pp-line);
+  border-radius: 18px;
+  background: var(--pp-surface);
+}
+
+.verify-precheck-page .precheck-undo-snackbar {
+  border-radius: 16px;
+  background: #2f2a24;
+  color: #fff;
+}
+
+.verify-precheck-page .precheck-asset-card > small {
+  display: none;
+}
+
+.verify-precheck-page .precheck-asset-card.is-selected-main {
+  border-color: var(--pp-ink);
+  box-shadow: 0 0 0 2px rgba(47, 42, 36, 0.12);
+}
+
+.verify-precheck-page .precheck-asset-card:focus-visible,
+.verify-precheck-page .precheck-asset-preview:focus-visible,
+.verify-precheck-page .precheck-card-actions button:focus-visible {
+  outline-color: rgba(138, 103, 72, 0.34);
+}
+
+.verify-precheck-page .verify-message {
+  border-color: var(--pp-line);
+  background: var(--pp-surface);
+  color: var(--pp-muted);
+}
+
+.verify-precheck-page .verify-message.error {
+  border-color: #eed3cf;
+  background: #fff6f5;
+  color: var(--pp-danger);
+}
+
+.verify-precheck-page .precheck-finalize {
+  border-color: var(--pp-line);
+  border-radius: 18px;
+  background: var(--pp-surface);
+}
+
+.verify-precheck-page .precheck-finalize h2,
+.verify-precheck-page .precheck-finalize-history h2 {
+  color: var(--pp-ink);
+}
+
+.verify-precheck-page .precheck-finalize button {
+  border-color: var(--pp-line);
+  border-radius: 999px;
+  background: var(--pp-surface-2);
+  color: var(--pp-muted);
+}
+
+.verify-precheck-page .precheck-finalize button.primary {
+  border-color: var(--pp-ink);
+  background: var(--pp-ink);
+  color: #fff;
+}
+
+.verify-precheck-page .precheck-finalize-history {
+  border-color: var(--pp-line);
+  border-radius: 18px;
+  background: var(--pp-surface);
+}
+
+@media (max-width: 1100px) {
+  .verify-precheck-page .precheck-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .verify-precheck-page {
+    padding: 12px 10px 96px;
+    border-radius: 18px;
+  }
+
+  .verify-precheck-page .verify-commandbar {
+    padding: 16px;
+    border-radius: 18px;
+  }
+
+  .verify-precheck-page .precheck-asset-grid,
+  .verify-precheck-page .precheck-asset-grid.output-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .verify-precheck-page .precheck-asset-card {
+    padding: 7px;
+    border-radius: 14px;
+  }
+
+  .verify-precheck-page .precheck-card-actions button {
+    min-height: 26px;
+    padding: 4px 8px;
+    font-size: 0.64rem;
+  }
 }
 

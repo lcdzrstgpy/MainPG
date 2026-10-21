@@ -3,8 +3,24 @@ import { createPortal } from 'react-dom';
 import { ppDownload, ppRequest, type ApiContext } from '../api/client';
 import { productProcessingApiContext } from '../api/context';
 import { checkDraftSkuAvailability } from '../api/productProcessingApi';
-import { PromptCustomizePanel } from '../components/PromptCustomizePanel';
-import { TemplateGalleryDrawer } from '../components/TemplateGalleryDrawer';
+import { ImageComboPicker } from '../components/ImageComboPicker';
+import {
+  DEFAULT_PANEL_SELECTIONS,
+  SIMPLE_PRESETS,
+  type ImageCategoryId,
+  type PanelSelection,
+  type PhotoLayerKey,
+  type PhotoSelection,
+} from '../data/imageCardOptions';
+import {
+  buildComboSnapshot,
+  cloneComboPanels,
+  loadComboHistory,
+  loadLastCombo,
+  pushComboHistory,
+  saveLastCombo,
+  type ComboSnapshot,
+} from '../data/imageComboHistory';
 import type {
   DraftSkuAvailabilityItem,
   ProductProcessingOptions,
@@ -12,6 +28,17 @@ import type {
 } from '../types';
 import { registerRunningTask } from '../../../shared/runtime/taskActivity';
 import '../styles/ProductProcessingVerifyPage.css';
+
+const IMAGE_LAYER_OPTION_KEYS: Record<
+  PhotoLayerKey,
+  'imageFrame' | 'imageLight' | 'imageTone' | 'imageDetail' | 'imageStyle'
+> = {
+  frame: 'imageFrame',
+  light: 'imageLight',
+  tone: 'imageTone',
+  detail: 'imageDetail',
+  style: 'imageStyle',
+};
 
 const API_BASE = '/api/product-processing';
 
@@ -72,9 +99,13 @@ type Props = {
   initialDraftIds?: number[];
   /** 精品模式草稿：一次 4K 智能生图，本地拆成四张高清独立图 */
   initialPremiumDraftIds?: number[];
+  /** 本批次勾选草稿的 SKU 总数（草稿池提交时统计，用于开始前确认）。 */
+  initialSkuCount?: number;
   initialOptions?: ProductProcessingOptions;
   /** 任务完成后打开预检页（生成表格 → 预检修改 → 导出最终版） */
   onOpenPrecheck?: (taskId: number) => void;
+  /** 返回草稿池删减 SKU：关闭当前处理页签并切回草稿池。 */
+  onBackToDraftPool?: () => void;
   /**
    * 本页签接手了真实任务（首次「开始处理」或重试失败项）时回调，由工作台把 task_id 记到页签上。
    * 刷新恢复后该页签按「任务详情」恢复：继续轮询 /outputs（页面在看 = 不会被暂停），
@@ -171,10 +202,10 @@ function useSmoothProgress(target: number): number {
   return value;
 }
 
-export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, initialPremiumDraftIds, initialOptions, onOpenPrecheck, onTaskStarted }: Props) {
+export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, initialPremiumDraftIds, initialSkuCount, initialOptions, onOpenPrecheck, onTaskStarted, onBackToDraftPool }: Props) {
   const ctx = api();
   // 处理参数全部为系统默认（范围全开、全部数量、8 线程并行、自动补跑等），
-  // 精简设置界面后不再向用户暴露这些项；仅站点 / 语言 / 生图模板可选。
+  // 精简设置界面后不再向用户暴露这些项；仅站点 / 语言 / 构图模板 / 批次生图组合可选。
   const [options, setOptions] = useState<ProductProcessingOptions>(() =>
     initialOptions || {
       targetSite: 'US',
@@ -187,16 +218,133 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       ipCheck: true,
       maxParallelDrafts: 8,
       imageTemplate: 'A',
+      imageCategoryOverride: 'auto',
+      imageMode: 'simple',
+      imageFrame: 'auto',
+      imageLight: 'auto',
+      imageTone: 'auto',
+      imageDetail: 'auto',
+      imageStyle: 'auto',
+      imagePanels: DEFAULT_PANEL_SELECTIONS,
+      imagePreset: 'auto',
+      // 随机模板：默认关闭；开启后本批次每条链接随机分配一个效果模板。
+      randomImagePreset: false,
       descriptionTemplate: 'A',
-      // 默认开启失败项自动重跑（上限 1 轮）；用户可在此页勾选关闭以避免再次产生 AI 生图费用。
-      autoRepull: true,
+      // 失败项自动重跑默认关闭：重跑会再次调用 AI 生图并计费，交给用户显式开启。
+      autoRepull: false,
     }
   );
+  const imageSelection: PhotoSelection = {
+    frame: options.imageFrame || 'auto',
+    light: options.imageLight || 'auto',
+    tone: options.imageTone || 'auto',
+    detail: options.imageDetail || 'auto',
+    style: options.imageStyle || 'auto',
+  };
+
+  // 「历史预设」：本地保留最近几次生图组合，供一键回填。
+  const [comboHistory, setComboHistory] = useState<ComboSnapshot[]>(() => loadComboHistory());
+  const comboHydratedRef = useRef(false);
+  const comboPersistReadyRef = useRef(false);
+
+  // 首次进入恢复上一次的生图组合（initialOptions 显式传入时以它为准）。
+  useEffect(() => {
+    if (comboHydratedRef.current) return;
+    comboHydratedRef.current = true;
+    if (initialOptions) return;
+    const last = loadLastCombo();
+    if (!last) return;
+    setOptions((p) => ({
+      ...p,
+      imageMode: last.mode,
+      imageCategoryOverride: last.category as ImageCategoryId,
+      imageFrame: last.layers.frame,
+      imageLight: last.layers.light,
+      imageTone: last.layers.tone,
+      imageDetail: last.layers.detail,
+      imageStyle: last.layers.style,
+      imagePanels: cloneComboPanels(last.panels),
+      imagePreset: last.presetId,
+    }));
+  }, [initialOptions]);
+
+  // 每次调整后自动记住当前组合，下次打开直接恢复。
+  useEffect(() => {
+    if (!comboPersistReadyRef.current) {
+      comboPersistReadyRef.current = true;
+      return;
+    }
+    saveLastCombo(
+      buildComboSnapshot({
+        mode: options.imageMode || 'simple',
+        presetId: options.imagePreset || 'auto',
+        category: options.imageCategoryOverride || 'auto',
+        layers: imageSelection,
+        panels: options.imagePanels || DEFAULT_PANEL_SELECTIONS,
+      }),
+    );
+  }, [
+    options.imageMode,
+    options.imagePreset,
+    options.imageCategoryOverride,
+    options.imageFrame,
+    options.imageLight,
+    options.imageTone,
+    options.imageDetail,
+    options.imageStyle,
+    options.imagePanels,
+  ]);
+
+  const applyComboSnapshot = (snapshot: ComboSnapshot) => {
+    setOptions((p) => ({
+      ...p,
+      imageMode: snapshot.mode,
+      imageCategoryOverride: snapshot.category as ImageCategoryId,
+      imageFrame: snapshot.layers.frame,
+      imageLight: snapshot.layers.light,
+      imageTone: snapshot.layers.tone,
+      imageDetail: snapshot.layers.detail,
+      imageStyle: snapshot.layers.style,
+      imagePanels: cloneComboPanels(snapshot.panels),
+      imagePreset: snapshot.presetId,
+    }));
+    setComboHistory(pushComboHistory({ ...snapshot, savedAt: Date.now() }));
+  };
+
+  const applyImageSelection = (
+    selection: PhotoSelection,
+    panels?: PanelSelection[],
+    presetId = 'auto',
+  ) => {
+    setOptions((p) => ({
+      ...p,
+      imageFrame: selection.frame,
+      imageLight: selection.light,
+      imageTone: selection.tone,
+      imageDetail: selection.detail,
+      imageStyle: selection.style,
+      imagePanels: (panels ?? DEFAULT_PANEL_SELECTIONS).map((panel) => ({
+        ...panel,
+        props: panel.props ? [...panel.props] : null,
+      })),
+      imagePreset: presetId,
+    }));
+  };
+
+  const setImageLayer = (layer: PhotoLayerKey, value: string) => {
+    const key = IMAGE_LAYER_OPTION_KEYS[layer];
+    setOptions((p) => ({ ...p, [key]: value, imagePreset: 'auto' }));
+  };
+
   const [batch, setBatch] = useState<TaskOutputsResponse | null>(null);
+  // 打开历史任务详情时，数据回来前显示加载块，避免误显示「尚未提交处理批次」。
+  const [taskLoading, setTaskLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [controlBusy, setControlBusy] = useState(false);
+  // 开始处理前的批次规模确认：链接/SKU 过多时提醒低配置电脑可能卡顿。
+  const [startConfirmOpen, setStartConfirmOpen] = useState(false);
   const startInFlightRef = useRef(false);
   const startRequestRef = useRef<{ signature: string; key: string } | null>(null);
   const pollGenerationRef = useRef(0);
@@ -223,6 +371,14 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
   /** 只判尺寸、跳过中文 OCR：1:1 读元数据零成本，中文检测要逐张跑 OCR（很慢）。 */
   const [skipSkuTextCheck, setSkipSkuTextCheck] = useState(false);
   const skuCheckRunRef = useRef(0);
+
+  // 实际提交的链接数：与 startBatch 的 draft_ids 截断规则保持一致。
+  const pendingLinkCount = Math.min(initialDraftIds?.length ?? 0, options.maxProducts || 100);
+  // 草稿池提交时统计的 SKU 总数；缺失（如旧页签恢复）时退回已检测到的规格图数量。
+  const pendingSkuCount =
+    typeof initialSkuCount === 'number' && initialSkuCount > 0
+      ? initialSkuCount
+      : Object.values(skuResults).reduce((sum, item) => sum + (item.sku_image_count || 0), 0);
 
   // 失败项自动补跑（后台自动重处理）状态
   const autoRepull = batch?.auto_repull ?? null;
@@ -364,10 +520,11 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
   const fail = (err: unknown) => { setError(err instanceof Error ? err.message : String(err)); setMessage(''); };
 
   const loadTask = async (taskId: number) => {
+    setTaskLoading(true);
     try {
-      const data = await ppRequest<TaskOutputsResponse>(ctx, `${API_BASE}/tasks/${taskId}/outputs`);
+      const data = await ppRequest<TaskOutputsResponse>(ctx, `${API_BASE}/tasks/${taskId}/outputs?light=1`);
       setBatch(data);
-    } catch (err) { fail(err); }
+    } catch (err) { fail(err); } finally { setTaskLoading(false); }
   };
 
   useEffect(() => {
@@ -463,8 +620,13 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       }
     };
     const poll = async () => {
+      // 页签隐藏时降频，避免后台页签每秒拉一次全量结果拖慢前台操作。
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+        timer = setTimeout(poll, 4000);
+        return;
+      }
       try {
-        const data = await ppRequest<TaskOutputsResponse>(ctx, `${API_BASE}/tasks/${batch.task_id}/outputs`);
+        const data = await ppRequest<TaskOutputsResponse>(ctx, `${API_BASE}/tasks/${batch.task_id}/outputs?light=1`);
         if (stopped || pollGenerationRef.current !== generation) return;
         setBatch(data);
         const stillActive = isActive(data.task.status, data.auto_repull?.status);
@@ -496,6 +658,9 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [batch?.task_id, batch?.task.status, batch?.auto_repull?.status]);
 
+  // 尺寸卡/原图复用已改到后端按条并发执行：每条结果落库后立即烧第 4 格，
+  // 与其余链接的 AI 调用重叠，不再等整批结束后由前端补跑。
+
   const startBatch = async () => {
     if (!initialDraftIds?.length) { setError('没有可处理的草稿'); return; }
     if (startInFlightRef.current || batchProcessing) return;
@@ -503,19 +668,19 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
     setLoading(true);
     setMessage('');
     setError('');
+    // 真正发起处理时把当前组合记入「历史预设」，下次可直接一键回填。
+    setComboHistory(
+      pushComboHistory(
+        buildComboSnapshot({
+          mode: options.imageMode || 'simple',
+          presetId: options.imagePreset || 'auto',
+          category: options.imageCategoryOverride || 'auto',
+          layers: imageSelection,
+          panels: options.imagePanels || DEFAULT_PANEL_SELECTIONS,
+        }),
+      ),
+    );
     try {
-      // 「本批次辅助提词」：读取「提示词预设模板」当前使用模板里保存的文本；读取失败/为空则
-      // 不注入（后端保持系统默认行为）。功能已从任务页勾选框迁移到预设板块。
-      let batchImagePrompt = '';
-      try {
-        const tpl = await ppRequest<{ templates?: { is_active?: boolean; prompts?: Record<string, string> }[] }>(
-          ctx,
-          `${API_BASE}/engine/prompt-templates`,
-        );
-        batchImagePrompt = ((tpl.templates || []).find((t) => t.is_active)?.prompts?.batch_image_prompt || '').trim();
-      } catch {
-        batchImagePrompt = '';
-      }
       const body = {
         title: '产品处理任务',
         draft_ids: initialDraftIds.slice(0, options.maxProducts || 100),
@@ -531,8 +696,38 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
         max_parallel_drafts: options.maxParallelDrafts,
         image_template: options.imageTemplate || 'A',
         desc_template: options.descriptionTemplate || 'A',
-        // 本批次辅助提词（区域辅助出图）：来自预设模板板块，非空时注入本批各条生图提示词。
-        batch_image_prompt: batchImagePrompt,
+        // 批次级品类组合：auto=每个链接按标题自动分类；指定品类=整批统一用该组合。
+        image_category_override: options.imageCategoryOverride || 'auto',
+        // 五层卡片：auto=品类默认；指定卡 id=整批统一。
+        image_frame: options.imageFrame || 'auto',
+        image_light: options.imageLight || 'auto',
+        image_tone: options.imageTone || 'auto',
+        image_detail: options.imageDetail || 'auto',
+        image_style: options.imageStyle || 'auto',
+        // 四格逐格卡片：每一格单独指定场景、道具和五层。
+        image_panels: (options.imagePanels || DEFAULT_PANEL_SELECTIONS).map((panel) => ({
+          ...panel,
+          white_hero: panel.whiteHero,
+        })),
+        // 导演模式：逐格卡片是用户显式设置的，后端会按高优先级逐格改写下发，
+        // 不再被模板里写死的机位/道具数量盖掉。
+        image_panel_override: options.imageMode === 'pro',
+        // 小白模板商业意图：四套模板除了换卡片，还会附加“买家一眼要看什么”。
+        image_preset: options.imagePreset || 'auto',
+        // 「随机模板」：本批次每条链接随机分配一个效果模板；模板与四格卡片成对切换，
+        // 因此把四个模板的逐格卡片一起下发，由后端按 (task, draft) 稳定哈希分配。
+        random_image_preset: options.randomImagePreset === true,
+        image_preset_pool: options.randomImagePreset
+          ? SIMPLE_PRESETS.map((preset) => preset.id)
+          : [],
+        image_preset_panels: options.randomImagePreset
+          ? Object.fromEntries(
+              SIMPLE_PRESETS.map((preset) => [
+                preset.id,
+                preset.panels.map((panel) => ({ ...panel, white_hero: panel.whiteHero })),
+              ]),
+            )
+          : {},
         // 一键随机模板：默认关闭，打开后本批次每条链接随机分配生图/描述模板。
         random_template: options.randomTemplate === true,
         // 用户选择是否对技术可重试的失败项自动补跑（默认关闭）
@@ -662,6 +857,44 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
         // 会把 fixed 子元素锁在面板内、被 sticky 顶栏盖住（与每日选品页同款修法）。
         document.getElementById("workspace-topbar-status") || document.body,
       )}
+      {startConfirmOpen && createPortal(
+        <div
+          className="pp-start-confirm-mask"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setStartConfirmOpen(false);
+          }}
+        >
+          <div
+            className="pp-start-confirm"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="pp-start-confirm-title"
+          >
+            <h3 id="pp-start-confirm-title">确认开始处理</h3>
+            <p className="pp-start-confirm-line">
+              本批次共计 <b>{pendingLinkCount}</b> 条链接，共 <b>{pendingSkuCount}</b> 个 SKU，是否继续处理？
+            </p>
+            <p className="pp-start-confirm-hint">SKU 过多会导致后续低配置电脑处理卡顿。</p>
+            <div className="pp-start-confirm-actions">
+              <button
+                className="primary"
+                onClick={() => {
+                  setStartConfirmOpen(false);
+                  void startBatch();
+                }}
+              >是</button>
+              <button
+                onClick={() => {
+                  setStartConfirmOpen(false);
+                  onBackToDraftPool?.();
+                }}
+              >返回草稿池删减 SKU</button>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
       <header className="verify-commandbar">
         <div className="verify-command-title">
           <h1>{initialTaskId != null ? '历史任务详情' : '处理设置与进度'}</h1>
@@ -684,7 +917,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
           {initialTaskId == null && <section className="verify-section verify-settings-section">
             <div className="verify-section-head">
               <h2>处理设置</h2>
-              <span className="verify-sub">站点 / 语言 / 模板</span>
+              <span className="verify-sub">站点 / 语言 / 生图组合</span>
             </div>
             <div className="verify-form-row">
               <label>站点
@@ -701,17 +934,6 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                   <option value="es">西班牙语 · Espanol</option>
                 </select>
               </label>
-              <div className="verify-form-field">
-                <span>生图 / 描述模板</span>
-                <TemplateGalleryDrawer
-                  compact
-                  imageTemplate={options.imageTemplate || 'A'}
-                  descriptionTemplate={options.descriptionTemplate || 'A'}
-                  random={options.randomTemplate === true}
-                  onSelectImage={(id) => setOptions((p) => ({ ...p, imageTemplate: id }))}
-                  onSelectDescription={(id) => setOptions((p) => ({ ...p, descriptionTemplate: id }))}
-                />
-              </div>
               <div className="verify-inline-checks">
                 <label className="verify-scope-check verify-inline-check" title="任务结束后自动重试失败/待确认的链接（每条最多自动重试 1 次，避免无限重试）。重试会再次调用 AI 生图、产生 AI 生图费用；默认开启，关闭后失败项需在结果页手动重新处理">
                   <input
@@ -722,17 +944,29 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                   <span>自动重跑失败项</span>
                   <span className="verify-sub">最多 1 次 · 会再次调用 AI 并计费</span>
                 </label>
-                <label className="verify-scope-check verify-inline-check" title="开启后忽略上面选定的模板：本批次每条链接随机分配生图模板（A/B/C/D）与描述模板（A/B），一个批次内混搭多套处理方式，便于批量测试不同风格。默认关闭；开启后同一条链接在重试/自动补跑时仍固定用同一套模板。">
-                  <input
-                    type="checkbox"
-                    checked={options.randomTemplate === true}
-                    onChange={(e) => setOptions((p) => ({ ...p, randomTemplate: e.target.checked }))}
-                  />
-                  <span>一键随机模板</span>
-                </label>
               </div>
             </div>
-            <PromptCustomizePanel draftIds={initialDraftIds} />
+            <ImageComboPicker
+              mode={options.imageMode || 'simple'}
+              onModeChange={(mode) => setOptions((p) => ({ ...p, imageMode: mode }))}
+              category={options.imageCategoryOverride || 'auto'}
+              onCategoryChange={(id: ImageCategoryId) =>
+                setOptions((p) => ({ ...p, imageCategoryOverride: id }))
+              }
+              selection={imageSelection}
+              onSelectionChange={setImageLayer}
+              onApplyPreset={applyImageSelection}
+              panels={options.imagePanels || DEFAULT_PANEL_SELECTIONS}
+              onPanelsChange={(panels: PanelSelection[]) =>
+                setOptions((p) => ({ ...p, imagePanels: panels, imagePreset: 'auto' }))
+              }
+              randomPreset={options.randomImagePreset === true}
+              onRandomPresetChange={(random) =>
+                setOptions((p) => ({ ...p, randomImagePreset: random }))
+              }
+              history={comboHistory}
+              onApplyHistory={applyComboSnapshot}
+            />
             <div className="verify-sku-check">
               <div className="verify-sku-check-head">
                 <span className="verify-sku-check-title">SKU 原图可用性检测</span>
@@ -779,7 +1013,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                 >{skuCheckBusy ? <><i className="app-spinner is-sm" aria-hidden="true" />检测中…</> : '重新检测'}</button>
                 {/* 开始处理/清空任务跟检测操作放在同一行：检测完即可直接开跑。 */}
                 <div className="verify-actions verify-sku-actions">
-                  <button className="primary" onClick={() => startBatch()} disabled={loading || batchProcessing || !initialDraftIds?.length || skuCheckBusy}>{loading ? <><i className="app-spinner is-sm" aria-hidden="true" />处理中...</> : '开始处理'}</button>
+                  <button className="primary" onClick={() => setStartConfirmOpen(true)} disabled={loading || batchProcessing || !initialDraftIds?.length || skuCheckBusy}>{loading ? <><i className="app-spinner is-sm" aria-hidden="true" />处理中...</> : '开始处理'}</button>
                   <button onClick={clearBatch} disabled={!batch || batchProcessing} title={batchProcessing ? '运行中任务不能清理' : undefined}>清空任务</button>
                   {!!initialPremiumDraftIds?.length && (
                     <span className="verify-premium-hint">精品模式 {initialPremiumDraftIds.length} 条</span>
@@ -941,7 +1175,13 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                 </div>
               </>
             )}
-            {!batch && <p className="verify-empty">尚未提交处理批次。请配置参数后点击"开始处理"。</p>}
+            {!batch && taskLoading && (
+              <div className="app-loading-block" role="status" aria-live="polite">
+                <i className="app-spinner" aria-hidden="true" />
+                <span>正在读取任务结果…</span>
+              </div>
+            )}
+            {!batch && !taskLoading && <p className="verify-empty">尚未提交处理批次。请配置参数后点击"开始处理"。</p>}
           </section>
 
           {/* 失败明细只在全部处理（含最多 1 轮自动重试）跑完后展示最终失败链接及原因 */}

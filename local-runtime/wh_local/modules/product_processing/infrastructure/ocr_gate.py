@@ -199,6 +199,47 @@ def _inspect_content(content: bytes) -> tuple[list[str], list[str]] | None:
     return chinese, prominent
 
 
+def recognize_text(content: bytes) -> list[str] | None:
+    """返回 OCR 识别到的全部文本行（只读，不受 OCR 总开关约束）。
+
+    供「原链接尺寸图复用」判断候选图是否真的带尺寸标注；引擎不可用/推理失败返回 None。
+    """
+
+    engine = _get_engine()
+    if engine is None:
+        return None
+    try:
+        import numpy as np  # type: ignore
+        from PIL import Image  # type: ignore
+
+        with _OCR_INFERENCE_SEMAPHORE:
+            opened = Image.open(io.BytesIO(content)).convert("RGB")
+            width, height = opened.size
+            edge = max(width, height)
+            if edge > _OCR_MAX_EDGE:
+                scale = _OCR_MAX_EDGE / edge
+                opened = opened.resize(
+                    (max(1, int(width * scale)), max(1, int(height * scale))),
+                    Image.LANCZOS,
+                )
+            result, _elapse = engine(np.array(opened))
+    except Exception:
+        return None
+    lines: list[str] = []
+    if not result:
+        return lines
+    for line in result:
+        if not isinstance(line, (list, tuple)) or len(line) < 2:
+            continue
+        text = str(line[1] or "").strip()
+        if not text:
+            continue
+        score = float(line[2]) if len(line) > 2 and isinstance(line[2], (int, float)) else 1.0
+        if score >= 0.45:
+            lines.append(text)
+    return lines
+
+
 def detect_chinese_text(content: bytes) -> list[str] | None:
     """返回图片中识别出的中文文本列表；无中文返回空列表；OCR 不可用返回 None。"""
     inspection = inspect_visible_text(content)

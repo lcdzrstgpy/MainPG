@@ -1,5 +1,7 @@
 import {
   addAssets,
+  assetFullUrl,
+  assetThumbUrl,
   removeFromLibrary,
   selectMainAsset,
 } from "../data/precheckImageModel";
@@ -12,6 +14,7 @@ type PrecheckMaterialLibraryProps = {
   onManifestChange: (manifest: PreviewImageManifest) => void;
   onRemoveFromLibrary: (assetId: string) => void;
   onPreview: (url: string) => void;
+  onCompose?: () => void;
 };
 
 const CATEGORY_ORDER = ["generated", "dimension", "upload", "source"] as const;
@@ -24,7 +27,7 @@ const CATEGORY_LABELS: Record<string, string> = {
 };
 
 function assetUrl(asset: PreviewImageAsset): string {
-  return asset.preview_url || asset.public_url || "";
+  return assetThumbUrl(asset);
 }
 
 function categoryOf(asset: PreviewImageAsset): string {
@@ -53,19 +56,21 @@ function MaterialCard({
   onPreview: (url: string) => void;
 }) {
   const url = assetUrl(asset);
+  const fullUrl = assetFullUrl(asset);
   const isMain = manifest.main_asset_id === asset.id;
   const inCarousel = manifest.carousel_asset_ids.includes(asset.id);
   const inDetail = manifest.detail_asset_ids.includes(asset.id);
   const isSource = category === "source";
   const inExport = isMain || inCarousel || inDetail;
+  const primaryAction = !inCarousel ? "carousel" : !isMain ? "main" : !inDetail ? "detail" : "";
   return (
     <article className="precheck-asset-card material-library-card">
       <button
         type="button"
         className="precheck-asset-preview"
-        disabled={!url}
+        disabled={!fullUrl}
         aria-label={`预览${CATEGORY_LABELS[category] ?? category}`}
-        onClick={() => url && onPreview(url)}
+        onClick={() => fullUrl && onPreview(fullUrl)}
       >
         {url ? (
           <img
@@ -83,22 +88,31 @@ function MaterialCard({
           {CATEGORY_LABELS[category] ?? category}
         </span>
       </div>
+      <div className="precheck-asset-status">
+        {isMain && <span className="is-main">主图</span>}
+        {inCarousel && <span className="is-carousel">轮播</span>}
+        {inDetail && <span className="is-detail">详情</span>}
+        {isSource && <span className="is-source">原图</span>}
+      </div>
       <div className="precheck-card-actions">
         <button
           type="button"
-          disabled={disabled || isMain}
-          onClick={() => onManifestChange(selectMainAsset(manifest, asset.id))}
-        >设为主图</button>
-        <button
-          type="button"
+          className={primaryAction === "carousel" ? "primary" : "ghost"}
           disabled={disabled || inCarousel}
           onClick={() => onManifestChange(addAssets(manifest, "carousel", [asset.id]))}
-        >加入轮播</button>
+        >{inCarousel ? "已在轮播" : "加入轮播"}</button>
         <button
           type="button"
+          className={primaryAction === "main" ? "primary" : "ghost"}
+          disabled={disabled || isMain}
+          onClick={() => onManifestChange(selectMainAsset(manifest, asset.id))}
+        >{isMain ? "当前主图" : "设为主图"}</button>
+        <button
+          type="button"
+          className={primaryAction === "detail" ? "primary" : "ghost"}
           disabled={disabled || inDetail}
           onClick={() => onManifestChange(addAssets(manifest, "detail", [asset.id]))}
-        >加入详情</button>
+        >{inDetail ? "已在详情" : "加入详情"}</button>
         {isSource && (
           <button
             type="button"
@@ -120,6 +134,7 @@ export function PrecheckMaterialLibrary({
   onManifestChange,
   onRemoveFromLibrary,
   onPreview,
+  onCompose,
 }: PrecheckMaterialLibraryProps) {
   const byCategory = new Map<string, PreviewImageAsset[]>();
   for (const category of CATEGORY_ORDER) byCategory.set(category, []);
@@ -138,6 +153,16 @@ export function PrecheckMaterialLibrary({
           <h3>处理后素材库</h3>
           <p>AI 处理图、尺寸图与本地导入自动进入素材库；手动加入的原图也在此显示。</p>
         </div>
+        {onCompose && assets.length > 0 && (
+          <button
+            type="button"
+            className="btn-mini primary"
+            disabled={disabled}
+            onClick={onCompose}
+          >
+            本地拼装
+          </button>
+        )}
       </header>
       {assets.length === 0 ? (
         <div className="precheck-manager-empty">暂无处理后素材，可从处理前图片池加入原图。</div>

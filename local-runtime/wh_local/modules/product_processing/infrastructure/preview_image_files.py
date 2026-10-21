@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import warnings
+from contextlib import suppress
 from dataclasses import dataclass
 from io import BytesIO
+from pathlib import Path
+from uuid import uuid4
 
 from PIL import Image, UnidentifiedImageError
 
 
 MAX_PREVIEW_IMAGE_BYTES = 25 * 1024 * 1024
 MAX_PREVIEW_IMAGE_PIXELS = 40_000_000
+# 预检卡片只展示小图；固定几档宽度，避免同一张图生成无数尺寸的缓存。
+THUMBNAIL_WIDTHS = (160, 320, 640)
 _FORMAT_METADATA = {
     "JPEG": ("image/jpeg", ".jpg"),
     "PNG": ("image/png", ".png"),
@@ -107,3 +113,51 @@ def validate_preview_image(
         width=width,
         height=height,
     )
+
+
+def normalize_thumbnail_width(value: int | None) -> int | None:
+    """把请求宽度对齐到固定档位；不传则不生成缩略图。"""
+    if value is None:
+        return None
+    requested = int(value)
+    return min(THUMBNAIL_WIDTHS, key=lambda width: (abs(width - requested), width))
+
+
+def thumbnail_file_path(source: Path, width: int) -> Path:
+    """缩略图与原图同目录（该目录已由 assets 校验过归属），文件名带宽度。"""
+    return source.with_name(f"{source.stem}.thumb{int(width)}.jpg")
+
+
+def ensure_preview_thumbnail(source: Path, width: int) -> Path:
+    """把本地素材缩成固定宽度 JPEG 并落盘缓存。
+
+    预检卡片一次要渲染几十上百张图，原图动辄几 MB，浏览器解码会明显卡顿；
+    缩略图生成失败（损坏/超大图）时回退原图，不能因为一张坏图让整页报错。
+    """
+    target = thumbnail_file_path(source, width)
+    try:
+        if target.exists() and target.stat().st_mtime >= source.stat().st_mtime:
+            return target
+    except OSError:
+        return source
+    tmp = target.with_name(f"{target.name}.{uuid4().hex}.tmp")
+    try:
+        with Image.open(source) as image:
+            image.thumbnail((int(width), int(width) * 8))
+            has_alpha = image.mode in {"RGBA", "LA", "PA"} or (
+                image.mode == "P" and "transparency" in image.info
+            )
+            if has_alpha:
+                rgba = image.convert("RGBA")
+                frame = Image.new("RGB", rgba.size, (255, 255, 255))
+                frame.paste(rgba, mask=rgba.split()[-1])
+            else:
+                frame = image.convert("RGB")
+            frame.save(tmp, format="JPEG", quality=80, optimize=True)
+        os.replace(tmp, target)
+        return target
+    except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError):
+        with suppress(OSError):
+            tmp.unlink()
+        return source
+

@@ -6,11 +6,12 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Literal
 from urllib.parse import quote
-
-from pydantic import ValidationError
+from uuid import NAMESPACE_URL, uuid5
 
 from .domain.policy import is_safe_external_url
-from .domain.physical_dimensions import PhysicalDimensions
+from .domain.dimension_card import render_dimension_card
+from .domain.dimension_source_reuse import clean_product_canvas, find_dimension_source_index
+from .domain.physical_dimensions import DimensionValue, PhysicalDimensions, prefill_physical_dimensions
 from .infrastructure.assets import ProductProcessingAssets
 from .infrastructure.dimension_canvas_repository import (
     CanvasStateConflict,
@@ -95,6 +96,8 @@ class DimensionCanvasService:
         )
         self._futures: dict[str, Future[None]] = {}
         self._futures_lock = threading.Lock()
+        # 批次处理中会按条并发触发尺寸卡：导入与审核写回必须串行，渲染本身可并行。
+        self._auto_lock = threading.Lock()
         self.canvas_repository.recover_rendering_items()
 
     def import_preview_item(
@@ -103,13 +106,17 @@ class DimensionCanvasService:
         task_item_id: int,
         *,
         workspace_id: str,
+        snapshot: bool = True,
     ) -> dict[str, Any]:
         try:
             batch = self.canvas_repository.import_task_items(task_id, [task_item_id], workspace_id)
         except LookupError as exc:
             raise DimensionCanvasNotFound(str(exc)) from exc
         item = batch["items"][0]
-        self._snapshot_v2_media(item["id"], workspace_id)
+        # 自动烧制只需要最终选中的那张素材；按需快照，避免把整条链接的
+        # 主图/轮播/详情/SKU 全部复制进尺寸工作区（大批量时是明显的磁盘开销）。
+        if snapshot:
+            self._snapshot_v2_media(item["id"], workspace_id)
         return self._hydrate_item(item, workspace_id)
 
     def import_task(
@@ -119,6 +126,7 @@ class DimensionCanvasService:
         *,
         existing_dimension_actions: dict[str, Literal["keep", "remake", "skip"]] | None = None,
         workspace_id: str,
+        snapshot: bool = True,
     ) -> dict[str, Any]:
         actions = existing_dimension_actions or {}
         task_item_ids = [
@@ -132,8 +140,9 @@ class DimensionCanvasService:
             batch = self.canvas_repository.import_task_items(task_id, task_item_ids, workspace_id)
         except LookupError as exc:
             raise DimensionCanvasNotFound(str(exc)) from exc
-        for item in batch["items"]:
-            self._snapshot_v2_media(item["id"], workspace_id)
+        if snapshot:
+            for item in batch["items"]:
+                self._snapshot_v2_media(item["id"], workspace_id)
         batch["items"] = [self._hydrate_item(item, workspace_id) for item in batch["items"]]
         return batch
 
@@ -196,14 +205,10 @@ class DimensionCanvasService:
                 if media_groups.get("dimension"):
                     groups["existing_dimension"].append(eligibility_item)
                     continue
-                dimensions = result.get("physical_dimensions") or {}
-                try:
-                    parsed = PhysicalDimensions.model_validate(dimensions)
-                except ValidationError:
-                    parsed = PhysicalDimensions()
+                # 包含表格/AI 预估：预估值允许自动出卡，预检页会标“预估”。
+                parsed = prefill_physical_dimensions(result)
                 groups["ready" if parsed.drawable else "needs_dimensions"].append(eligibility_item)
                 continue
-            dimensions = result.get("physical_dimensions") or {}
             manifest = result.get("image_manifest") or []
             values = [entry.get("value") for entry in manifest if isinstance(entry, dict) and entry.get("value")]
             if not values:
@@ -220,8 +225,8 @@ class DimensionCanvasService:
                 groups["existing_dimension"].append(eligibility_item)
                 continue
             try:
-                parsed = PhysicalDimensions.model_validate(dimensions)
-            except ValidationError:
+                parsed = prefill_physical_dimensions(result)
+            except (TypeError, ValueError):
                 parsed = PhysicalDimensions()
             groups["ready" if parsed.drawable else "needs_dimensions"].append(eligibility_item)
         return groups
@@ -250,11 +255,18 @@ class DimensionCanvasService:
         ]
         return batch
 
-    def get_item(self, item_id: str, *, workspace_id: str) -> dict[str, Any]:
+    def get_item(
+        self,
+        item_id: str,
+        *,
+        workspace_id: str,
+        snapshot: bool = True,
+    ) -> dict[str, Any]:
         item = self.canvas_repository.get_item(item_id, workspace_id)
         if item is None:
             raise DimensionCanvasNotFound("dimension canvas item not found")
-        self._snapshot_v2_media(item_id, workspace_id)
+        if snapshot:
+            self._snapshot_v2_media(item_id, workspace_id)
         return self._hydrate_item(item, workspace_id)
 
     def save_item(
@@ -328,7 +340,8 @@ class DimensionCanvasService:
         if raw_item is None:
             raise DimensionCanvasNotFound("dimension canvas item not found")
         self._materialize_selected_asset(raw_item, workspace_id)
-        item = self.get_item(item_id, workspace_id=workspace_id)
+        # 本次渲染只依赖已选中的素材；不再为整条链接做全量快照。
+        item = self.get_item(item_id, workspace_id=workspace_id, snapshot=False)
         self._validate_complete(item)
         try:
             rendering = self.canvas_repository.mark_rendering(
@@ -365,11 +378,503 @@ class DimensionCanvasService:
         revision = int(item["item_revision"] if expected_revision is None else expected_revision)
         return self.complete_item(item_id, revision, workspace_id=workspace_id)
 
-    def submit_review(self, batch_id: str, *, workspace_id: str) -> dict[str, Any]:
+    def auto_render_task(
+        self,
+        task_id: int,
+        *,
+        workspace_id: str,
+        unit: str = "in",
+        corner: str = "bottom-right",
+        style: str = "light",
+    ) -> dict[str, Any]:
+        """把已完成任务里可画的商品批量烧成第 4 格尺寸角标卡。
+
+        幂等：已经生成过尺寸图的链接会被 eligibility 归到 existing_dimension，不再重烧。
+        并发沿用画布的 3 路渲染线程池；单条失败只计数，不影响其他商品。
+        """
+
+        if unit not in {"in", "cm"}:
+            raise ValueError("dimension card unit must be in or cm")
+        if corner not in {"bottom-right", "bottom-left", "top-right", "top-left"}:
+            raise ValueError("dimension card corner is invalid")
+        if style not in {"light", "dark"}:
+            raise ValueError("dimension card style is invalid")
+        groups = self.task_eligibility(task_id, workspace_id=workspace_id)
+        ready_ids = [
+            int(item["task_item_id"])
+            for item in groups.get("ready") or []
+            if item.get("task_item_id") is not None
+        ]
+        if not ready_ids:
+            return {
+                "task_id": task_id,
+                "imported": 0,
+                "rendered": 0,
+                "failed": 0,
+                "change_set_id": "",
+            }
+        with self._auto_lock:
+            batch = self.import_task(
+                task_id, ready_ids, workspace_id=workspace_id, snapshot=False
+            )
+        rendered = 0
+        failed = 0
+        pending: list[tuple[str, int]] = []
+        for summary in batch.get("items") or []:
+            item = self.get_item(str(summary["id"]), workspace_id=workspace_id, snapshot=False)
+            if item.get("state") == "completed":
+                rendered += 1
+                continue
+            asset_id = self._reuse_source_dimension(item, workspace_id)
+            source_reuse = "applied" if asset_id else "generated"
+            if not asset_id:
+                asset_id = self._pick_dimension_source_asset(item)
+            if not asset_id:
+                failed += 1
+                continue
+            try:
+                saved = self.save_item(
+                    item["id"],
+                    int(item.get("item_revision") or 0),
+                    {
+                        "selected_source_asset_id": asset_id,
+                        "target_slot_id": "carousel.dimension_background",
+                        "annotations": [],
+                        "canvas_settings": {
+                            "render_mode": "card",
+                            "display_unit": unit,
+                            "card_corner": corner,
+                            "card_style": style,
+                            "fit": "cover",
+                            "source_reuse": source_reuse,
+                        },
+                    },
+                    workspace_id=workspace_id,
+                )
+                pending.append((str(saved["id"]), int(saved.get("item_revision") or 0)))
+            except Exception:
+                failed += 1
+        # 先全部提交渲染，再逐一等待：否则会退化成单线程串行。
+        submitted: list[str] = []
+        for item_id, revision in pending:
+            try:
+                self.complete_item(item_id, revision, workspace_id=workspace_id)
+                submitted.append(item_id)
+            except Exception:
+                failed += 1
+        for item_id in submitted:
+            try:
+                finished = self.wait_for_test_render(
+                    item_id,
+                    workspace_id=workspace_id,
+                    timeout=60,
+                )
+                if finished.get("state") == "completed":
+                    rendered += 1
+                else:
+                    failed += 1
+            except Exception:
+                failed += 1
+        change_set_id = ""
+        if rendered:
+            try:
+                with self._auto_lock:
+                    change_set = self.submit_review(batch["id"], workspace_id=workspace_id)
+                    change_set_id = str(change_set.get("id") or "")
+                    if change_set_id:
+                        self.accept_change_set(change_set_id, workspace_id=workspace_id)
+            except Exception:
+                # 渲染结果已落库；审核失败不阻断主流程，重新打开画布仍可手动交回。
+                change_set_id = ""
+        return {
+            "task_id": task_id,
+            "imported": len(batch.get("items") or []),
+            "rendered": rendered,
+            "failed": failed,
+            "change_set_id": change_set_id,
+        }
+
+    def auto_render_item(
+        self,
+        task_id: int,
+        task_item_id: int,
+        *,
+        workspace_id: str,
+        unit: str = "in",
+        corner: str = "bottom-right",
+        style: str = "light",
+        prefetched_base: bytes | None = None,
+        prefetch_checked: bool = False,
+    ) -> dict[str, Any]:
+        """批次处理中就为单条链接烧尺寸卡，与其余链接的 AI 调用并行。
+
+        结果落库后调用；已烧过/已有尺寸图/没有可画尺寸时直接跳过。
+        """
+
+        if unit not in {"in", "cm"}:
+            raise ValueError("dimension card unit must be in or cm")
+        if corner not in {"bottom-right", "bottom-left", "top-right", "top-left"}:
+            raise ValueError("dimension card corner is invalid")
+        if style not in {"light", "dark"}:
+            raise ValueError("dimension card style is invalid")
+        batch_id = str(uuid5(NAMESPACE_URL, f"mainpg:{workspace_id}:dimension:{task_id}"))
+        item: dict[str, Any] | None = None
+        with self._auto_lock:
+            # 精确定位当前条目：不要为每条链接加载整批 item/result_json。
+            item = self.canvas_repository.get_item_for_task_item(
+                batch_id, task_item_id, workspace_id
+            )
+            if item is None:
+                item = self.import_preview_item(
+                    task_id, task_item_id, workspace_id=workspace_id, snapshot=False
+                )
+        if item.get("state") == "completed":
+            # 之前已渲染但还没写回预览（例如上次审核失败）：补一次审核接受。
+            try:
+                with self._auto_lock:
+                    change_set = self.submit_review(
+                        batch_id, workspace_id=workspace_id, item_ids=[item["id"]]
+                    )
+                    change_set_id = str(change_set.get("id") or "")
+                    if change_set_id:
+                        self.accept_change_set(change_set_id, workspace_id=workspace_id)
+                return {
+                    "task_item_id": task_item_id,
+                    "rendered": 1,
+                    "accepted": True,
+                    "change_set_id": change_set_id,
+                }
+            except Exception:
+                return {"task_item_id": task_item_id, "skipped": "already_rendered"}
+        draft_id = int(item.get("product_draft_id") or 0)
+        if draft_id and self.media_assets is not None:
+            groups = self.media_assets.list_draft_media(workspace_id, draft_id)
+            if groups.get("dimension"):
+                return {"task_item_id": task_item_id, "skipped": "existing_dimension"}
+        try:
+            dimensions = PhysicalDimensions.model_validate(
+                item.get("physical_dimensions") or {}
+            )
+        except Exception:
+            dimensions = PhysicalDimensions()
+        if not dimensions.drawable:
+            return {"task_item_id": task_item_id, "skipped": "no_dimensions"}
+        item = self.get_item(item["id"], workspace_id=workspace_id, snapshot=False)
+        asset_id = ""
+        source_reuse = "generated"
+        if prefetched_base:
+            # 生图阶段已经抠好的原图：这里只登记素材，不再 OCR/抠图。
+            try:
+                uploaded = self.upload_asset(
+                    item["id"],
+                    prefetched_base,
+                    "reused-dimension.jpg",
+                    "image/jpeg",
+                    workspace_id=workspace_id,
+                )
+                asset_id = str(uploaded.get("asset_id") or "")
+                source_reuse = "applied" if asset_id else "generated"
+            except Exception:
+                asset_id = ""
+        elif not prefetch_checked:
+            # 没预取或预取取图失败：退回到本地媒体再试一次。
+            asset_id = self._reuse_source_dimension(item, workspace_id)
+            source_reuse = "applied" if asset_id else "generated"
+        if not asset_id:
+            asset_id = self._pick_dimension_source_asset(item)
+            source_reuse = "generated"
+        if not asset_id:
+            return {"task_item_id": task_item_id, "skipped": "missing_image"}
+        saved = self.save_item(
+            item["id"],
+            int(item.get("item_revision") or 0),
+            {
+                "selected_source_asset_id": asset_id,
+                "target_slot_id": "carousel.dimension_background",
+                "annotations": [],
+                "canvas_settings": {
+                    "render_mode": "card",
+                    "display_unit": unit,
+                    "card_corner": corner,
+                    "card_style": style,
+                    "fit": "cover",
+                    "source_reuse": source_reuse,
+                },
+            },
+            workspace_id=workspace_id,
+        )
+        self.complete_item(
+            saved["id"],
+            int(saved.get("item_revision") or 0),
+            workspace_id=workspace_id,
+        )
+        finished = self.wait_for_test_render(
+            saved["id"], workspace_id=workspace_id, timeout=60
+        )
+        if finished.get("state") != "completed":
+            return {
+                "task_item_id": task_item_id,
+                "failed": str(finished.get("error_code") or ""),
+            }
+        with self._auto_lock:
+            change_set = self.submit_review(
+                saved["batch_id"],
+                workspace_id=workspace_id,
+                item_ids=[saved["id"]],
+            )
+            change_set_id = str(change_set.get("id") or "")
+            if change_set_id:
+                self.accept_change_set(change_set_id, workspace_id=workspace_id)
+        return {
+            "task_item_id": task_item_id,
+            "rendered": 1,
+            "source": source_reuse,
+            "change_set_id": change_set_id,
+        }
+
+    def confirm_estimated(self, task_id: int, *, workspace_id: str) -> dict[str, Any]:
+        """把本任务所有预估尺寸批量确认为人工确认（不重烧、不改图）。"""
+
+        batch_id = str(uuid5(NAMESPACE_URL, f"mainpg:{workspace_id}:dimension:{task_id}"))
+        confirmed = 0
+        with self._auto_lock:
+            canvas_items = self.canvas_repository.list_items_light(batch_id, workspace_id)
+            if not canvas_items:
+                return {"task_id": task_id, "confirmed": 0}
+            for item in canvas_items:
+                if str(item.get("state") or "") != "completed":
+                    continue
+                try:
+                    dimensions = PhysicalDimensions.model_validate(
+                        item.get("physical_dimensions") or {}
+                    )
+                except Exception:
+                    continue
+                if not dimensions.estimated:
+                    continue
+                if self.canvas_repository.confirm_estimated_dimensions(
+                    item["id"], workspace_id
+                ):
+                    confirmed += 1
+        return {"task_id": task_id, "confirmed": confirmed}
+
+    def reburn_task_item(
+        self,
+        task_id: int,
+        task_item_id: int,
+        *,
+        workspace_id: str,
+        length_cm: float | None = None,
+        width_cm: float | None = None,
+        height_cm: float | None = None,
+        unit: str = "in",
+        corner: str = "bottom-right",
+    ) -> dict[str, Any]:
+        """预检页改完本体尺寸后，只重烧这一条的第 4 格尺寸图。"""
+
+        if unit not in {"in", "cm"}:
+            raise ValueError("dimension card unit must be in or cm")
+        if corner not in {"bottom-right", "bottom-left", "top-right", "top-left"}:
+            raise ValueError("dimension card corner is invalid")
+        item = self.import_preview_item(
+            task_id, task_item_id, workspace_id=workspace_id
+        )
+        current = PhysicalDimensions.model_validate(item.get("physical_dimensions") or {})
+        values: dict[str, DimensionValue] = {}
+        for axis, raw in (
+            ("length", length_cm),
+            ("width", width_cm),
+            ("height", height_cm),
+        ):
+            existing = getattr(current, axis)
+            if raw is None:
+                values[axis] = existing
+                continue
+            number = float(raw)
+            if number <= 0:
+                raise ValueError("dimension values must be positive")
+            values[axis] = DimensionValue(
+                value_cm=number,
+                provenance="manual_confirmed",
+                evidence_ref="precheck.manual",
+            )
+        dimensions = PhysicalDimensions(
+            length=values["length"],
+            width=values["width"],
+            height=values["height"],
+            conflict=False,
+        )
+        if not dimensions.drawable:
+            raise ValueError("no drawable product dimensions")
+        selected = str(item.get("selected_source_asset_id") or "") or (
+            self._pick_dimension_source_asset(item)
+        )
+        if not selected:
+            raise ValueError("dimension source image is missing")
+        settings = dict(item.get("canvas_settings") or {})
+        settings.update(
+            {
+                "render_mode": "card",
+                "display_unit": unit,
+                "card_corner": corner,
+                "card_style": str(settings.get("card_style") or "light"),
+                "fit": "cover",
+            }
+        )
+        saved = self.save_item(
+            item["id"],
+            int(item.get("item_revision") or 0),
+            {
+                "selected_source_asset_id": selected,
+                "target_slot_id": "carousel.dimension_background",
+                "physical_dimensions": dimensions.model_dump(mode="json"),
+                "annotations": [],
+                "canvas_settings": settings,
+            },
+            workspace_id=workspace_id,
+        )
+        self.complete_item(
+            saved["id"],
+            int(saved.get("item_revision") or 0),
+            workspace_id=workspace_id,
+        )
+        finished = self.wait_for_test_render(
+            saved["id"], workspace_id=workspace_id, timeout=60
+        )
+        if finished.get("state") != "completed":
+            raise DimensionCanvasConflict(
+                "dimension card render failed: "
+                + str(finished.get("error_code") or finished.get("error_message") or "")
+            )
+        change_set = self.submit_review(saved["batch_id"], workspace_id=workspace_id)
+        change_set_id = str(change_set.get("id") or "")
+        if change_set_id:
+            self.accept_change_set(change_set_id, workspace_id=workspace_id)
+        return {
+            "task_item_id": task_item_id,
+            "item_id": saved["id"],
+            "change_set_id": change_set_id,
+            "state": "completed",
+        }
+
+    @staticmethod
+    def _pick_dimension_source_asset(item: dict[str, Any]) -> str:
+        """优先选第 4 格（尺寸背景），其次最后一张轮播图。"""
+
+        assets = [asset for asset in item.get("assets") or [] if asset.get("id")]
+        for role in ("carousel.dimension_background", "carousel_4", "dimension_background"):
+            for asset in assets:
+                if (
+                    str(asset.get("role") or "") == role
+                    and asset.get("availability") != "unavailable"
+                ):
+                    return str(asset["id"])
+        carousel = [
+            asset
+            for asset in assets
+            if str(asset.get("role") or "").startswith("carousel")
+            and asset.get("availability") != "unavailable"
+        ]
+        return str(carousel[-1]["id"]) if carousel else ""
+
+    def _reuse_source_dimension(self, item: dict[str, Any], workspace_id: str) -> str:
+        """原链接带尺寸图时，自动加工后优先作为第 4 格底图。
+
+        只 OCR 最多 2 张详情/图库原图；命中尺寸图后抠图 → 纯白底 → 1:1，
+        再登记成画布素材。找不到或加工不可信时返回空串，回退生成图。
+        """
+
+        assets = self.canvas_repository.list_assets(item["id"], workspace_id)
+        # 尺寸图通常排在详情图末尾：从后往前取，最多 OCR 两张，控制批量成本。
+        preferred: list[dict[str, Any]] = []
+        detail_assets = [
+            asset for asset in assets if str(asset.get("role") or "").startswith("detail_")
+        ]
+        gallery_assets = [
+            asset for asset in assets if str(asset.get("role") or "").startswith("gallery")
+        ]
+        preferred.extend(reversed(detail_assets))
+        preferred.extend(reversed(gallery_assets))
+        # 只看详情/图库原图：主图几乎不可能是尺寸图，OCR 主图纯属浪费。
+        if not preferred:
+            return ""
+        candidates: list[bytes] = []
+        for asset in preferred:
+            # 与预取保持同一覆盖范围：详情末尾 2 张 + 图库末尾 1 张。
+            if len(candidates) >= 3:
+                break
+            content = self._read_canvas_asset_bytes(asset, workspace_id)
+            if content:
+                candidates.append(content)
+        if not candidates:
+            return ""
+        index = find_dimension_source_index(candidates)
+        if index is None:
+            return ""
+        cleaned = clean_product_canvas(candidates[index])
+        if not cleaned:
+            return ""
+        # 抠图后仍有中文，说明文字印在商品本体上：不复用，避免把中文带上架。
+        try:
+            from ..infrastructure.ocr_gate import inspect_sku_text  # noqa: PLC0415
+
+            inspection = inspect_sku_text(cleaned)
+            if inspection is not None and inspection.get("has_chinese"):
+                return ""
+        except Exception:
+            pass
+        try:
+            uploaded = self.upload_asset(
+                item["id"],
+                cleaned,
+                "reused-dimension.jpg",
+                "image/jpeg",
+                workspace_id=workspace_id,
+            )
+        except Exception:
+            return ""
+        return str(uploaded.get("asset_id") or "")
+
+    def _read_canvas_asset_bytes(self, asset: dict[str, Any], workspace_id: str) -> bytes:
+        managed_path = str(asset.get("managed_path") or "")
+        if managed_path:
+            try:
+                return self.assets.require_workspace_dimension_asset(
+                    managed_path, workspace_id=workspace_id
+                ).read_bytes()
+            except Exception:
+                return b""
+        # 自动路径不再把整条链接的媒体都复制进尺寸工作区；V2 素材直接读源注册表。
+        source_media_id = str(asset.get("source_media_asset_id") or "")
+        if source_media_id and self.media_assets is not None:
+            try:
+                return self.media_assets.read_ready_asset(
+                    source_media_id, workspace_id=workspace_id
+                )
+            except Exception:
+                return b""
+        try:
+            return self.source_loader(asset)
+        except Exception:
+            return b""
+
+    def submit_review(
+        self,
+        batch_id: str,
+        *,
+        workspace_id: str,
+        item_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
         batch = self.canvas_repository.get_batch(batch_id, workspace_id)
         if batch is None:
             raise DimensionCanvasNotFound("dimension canvas batch not found")
-        completed = [item for item in batch["items"] if item["state"] == "completed"]
+        wanted = {str(value) for value in item_ids or [] if str(value)}
+        completed = [
+            item
+            for item in batch["items"]
+            if item["state"] == "completed"
+            and (not wanted or str(item["id"]) in wanted)
+        ]
         if not completed:
             raise ValueError("batch has no completed dimension items")
         identities: list[str] = []
@@ -532,6 +1037,47 @@ class DimensionCanvasService:
                 str(asset.get("managed_path") or ""),
                 workspace_id=workspace_id,
             ).read_bytes()
+            settings = item.get("canvas_settings") or {}
+            if str(settings.get("render_mode") or "arrows") == "card":
+                dimensions = PhysicalDimensions.model_validate(
+                    item.get("physical_dimensions") or {}
+                )
+                content = render_dimension_card(
+                    source_bytes,
+                    dimensions,
+                    unit=str(settings.get("display_unit") or "in"),
+                    corner=str(settings.get("card_corner") or "bottom-right"),
+                    style=str(settings.get("card_style") or "light"),
+                )
+                info = self.renderer.inspect_source(content)
+                master_path = self.assets.save_dimension_asset(
+                    content,
+                    kind="master",
+                    suffix=".jpg",
+                    workspace_id=workspace_id,
+                )
+                output_path = self.assets.save_dimension_asset(
+                    content,
+                    kind="published",
+                    suffix=".jpg",
+                    workspace_id=workspace_id,
+                )
+                self.canvas_repository.finish_render(
+                    item_id,
+                    render_revision,
+                    {
+                        "source_url": "",
+                        "managed_path": str(output_path),
+                        "content_hash": hashlib.sha256(content).hexdigest(),
+                        "width": int(info.width),
+                        "height": int(info.height),
+                        "content_type": "image/jpeg",
+                        "availability": "local",
+                        "master_path": str(master_path),
+                    },
+                    workspace_id,
+                )
+                return
             request = DimensionRenderRequest(
                 source_bytes=source_bytes,
                 annotations=[self._renderer_annotation(value) for value in item["annotations"]],
@@ -871,7 +1417,19 @@ class DimensionCanvasService:
             raise ValueError("canvas_settings must be an object")
         if "canvas_settings" in cleaned:
             settings = dict(cleaned["canvas_settings"] or {})
-            unknown_settings = set(settings) - {"fit", "style", "display_unit", "custom_value_cm", "endpoint_style"}
+            unknown_settings = set(settings) - {
+                "fit",
+                "style",
+                "display_unit",
+                "custom_value_cm",
+                "endpoint_style",
+                # 自动出图：card=角落尺寸卡（不需要商品轮廓），arrows=手工箭头。
+                "render_mode",
+                "card_corner",
+                "card_style",
+                # 第 4 格素材来源：applied=原链接尺寸图已加工复用，generated=AI 生成图。
+                "source_reuse",
+            }
             if unknown_settings:
                 raise ValueError(f"unsupported canvas settings: {sorted(unknown_settings)}")
             if str(settings.get("fit") or "contain") not in {"contain", "cover"}:
@@ -882,6 +1440,17 @@ class DimensionCanvasService:
                 raise ValueError("canvas display unit is invalid")
             if str(settings.get("endpoint_style") or "arrow") not in {"arrow", "bar", "none"}:
                 raise ValueError("canvas endpoint style is invalid")
+            if str(settings.get("render_mode") or "arrows") not in {"arrows", "card"}:
+                raise ValueError("canvas render mode is invalid")
+            if str(settings.get("card_corner") or "bottom-right") not in {
+                "bottom-right",
+                "bottom-left",
+                "top-right",
+                "top-left",
+            }:
+                raise ValueError("canvas card corner is invalid")
+            if str(settings.get("card_style") or "light") not in {"light", "dark"}:
+                raise ValueError("canvas card style is invalid")
             custom_value = settings.get("custom_value_cm")
             if custom_value is not None and float(custom_value) <= 0:
                 raise ValueError("custom dimension value must be positive")
@@ -953,10 +1522,16 @@ class DimensionCanvasService:
         dimensions = PhysicalDimensions.model_validate(item.get("physical_dimensions") or {})
         if dimensions.conflict:
             raise ValueError("physical dimensions are conflicting")
+        settings = item.get("canvas_settings") or {}
+        if str(settings.get("render_mode") or "arrows") == "card":
+            # 角标卡不依赖商品轮廓，只要有可画尺寸即可出图（预估也允许，预检页会标黄）。
+            if not dimensions.drawable:
+                raise ValueError("no drawable product dimensions")
+            return
         annotations = item.get("annotations") or []
         if not annotations:
             raise ValueError("at least one dimension annotation is required")
-        allowed = {"source_confirmed", "manual_confirmed"}
+        allowed = {"source_confirmed", "manual_confirmed", "estimated"}
         for annotation in annotations:
             normalized = self._normalize_annotation(annotation)
             if normalized["key"] == "custom":

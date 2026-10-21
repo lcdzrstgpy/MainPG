@@ -513,8 +513,8 @@ def test_four_grid_contract_owns_typography_dividers_and_fidelity_rules() -> Non
     assert "flat grey metal is forbidden" in GRID_RUNTIME_CONTRACT
     assert "caustic pool" in GRID_RUNTIME_CONTRACT
     assert "ANTI-AI-TELL" in GRID_RUNTIME_CONTRACT
-    assert "HAND & HUMAN ANATOMY" in GRID_RUNTIME_CONTRACT
-    assert "exactly five fingers" in GRID_RUNTIME_CONTRACT
+    # 默认无人；「真实使用」模板会由 service._grid_runtime_contract 换成受限允许手部。
+    assert "HANDS-FREE (hard rule)" in GRID_RUNTIME_CONTRACT
     # 艺术方向层：只允许统一这五类，且必须显式列清「不允许统一」的十项，否则模型会收敛。
     assert "ART DIRECTION LOCK" in GRID_RUNTIME_CONTRACT
     assert "colour grade" in GRID_RUNTIME_CONTRACT
@@ -523,9 +523,9 @@ def test_four_grid_contract_owns_typography_dividers_and_fidelity_rules() -> Non
     assert "NOT the scene's lighting colour" in GRID_RUNTIME_CONTRACT
     assert "PANEL 2 SCALE ANCHOR" in GRID_RUNTIME_CONTRACT
     assert "PANEL 3 BENEFIT PROOF" in GRID_RUNTIME_CONTRACT
-    # 尺度锚优先无文字参照物（手是 AI 第一穿帮点、硬币自带文字可能被误判为加字），
+    # 尺度锚必须是无文字参照物（手是 AI 第一穿帮点、硬币自带文字可能被误判为加字），
     # Panel 4 必须是真正交而非 45° 视角，Panel 3 还要能指出证据在画面里的位置。
-    assert "PREFER an inanimate, text-free reference" in GRID_RUNTIME_CONTRACT
+    assert "Never use a hand, palm, finger or person as the scale reference" in GRID_RUNTIME_CONTRACT
     assert "preferably an A4 sheet or a phone" in GRID_RUNTIME_CONTRACT
     assert "never a 45-degree three-quarter view" in GRID_RUNTIME_CONTRACT
     assert "AND point at exactly where in the frame it is visible" in GRID_RUNTIME_CONTRACT
