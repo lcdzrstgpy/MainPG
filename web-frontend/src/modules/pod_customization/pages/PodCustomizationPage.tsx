@@ -967,7 +967,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
       {!error && notice && <div className="pod-page-message" role="status"><span>✓</span><p>{notice}</p><button type="button" onClick={clearMessages} aria-label="关闭提示">×</button></div>}
 
       <div className="pod-workbench-grid">
-        <aside className="pod-setup-column pod-brief-sidebar">
+        <aside className="pod-setup-column pod-brief-sidebar pod-prefill-panel">
           <section className="pod-setup-card pod-business-editor">
             <div className="pod-section-title"><span>BRIEF EDITOR</span><h2>创意描述</h2></div>
             <PodBriefInput onGenerated={handleBriefGenerated} history={briefHistory} onSelectHistory={selectBriefHistory} />
@@ -1049,7 +1049,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
         </aside>
         <main className="pod-results-column">
           <section className="pod-current-template-summary">
-            <header><div><span>CURRENT TEMPLATE</span><h2>当前批次模板图</h2></div><button type="button" onClick={() => setTemplateDrawerOpen(true)}>更换模板</button></header>
+            <header><div><span>CURRENT TEMPLATE</span><h2>当前批次模板图</h2></div><p className="pod-current-template-review-note">AI产品有极小概率发生小部分畸变，请人工审核后再确认导出<br />积分返还仅支持失败款式，成功款式积分不予返还</p><button type="button" onClick={() => setTemplateDrawerOpen(true)}>更换模板</button></header>
             <div className="pod-current-template-body">
               <button type="button" className="pod-current-template-image" onClick={() => setTemplateDrawerOpen(true)}>
                 {summaryTemplatePreview ? <img src={summaryTemplatePreview} alt={summaryTemplate?.name || "当前模板"} /> : <span>选择模板</span>}

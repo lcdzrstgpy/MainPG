@@ -429,3 +429,32 @@ def test_style_prompt_renders_color_harmony_tiers_with_user_colors() -> None:
     )
     assert "color_harmony=" in prompt
     assert "base≈" in prompt and "(60%)" in prompt and "(30%)" in prompt and "(10%)" in prompt
+
+
+def test_prompt_locks_artwork_layout_across_the_four_panels() -> None:
+    """四格共用主图确定的图案布局：只换机位/景别，不得把主元素挪位或改相对尺度。"""
+
+    base = build_direct_listing_prompt(BusinessFields(product_name="托特包"), "")
+    prompt = build_style_listing_prompt(
+        base, style_index=1, attempt=1, style_elements={"hero": "树"}
+    )
+
+    assert "ARTWORK LAYOUT LOCK" in base
+    assert "Panel 1 (top-left) defines the printed layout ONCE" in base
+    assert "near a side edge, at the top, in a corner" in base
+    # 默认面板描述：细节格是同一布局的放大；换视角时图案随商品刚性旋转。
+    assert "literal zoom into Panel 1's layout" in base
+    assert "rotates rigidly with the product" in base
+    # PART 3 再钉一次，避免长提示词里被稀释。
+    assert "四格图案布局锁定" in prompt
+    assert "禁止把主元素挪到侧边、顶部" in prompt
+
+
+def test_flat_product_panels_keep_the_same_artwork_layout() -> None:
+    """平铺产品的四格也必须共用同一张图案布局，只允许俯拍裁切。"""
+
+    base = build_direct_listing_prompt(BusinessFields(product_name="正方形桌布"), "平铺，无下挂")
+
+    assert "same artwork layout shown in" in base
+    assert "never a re-arranged or re-scaled version of the artwork" in base
+    assert "using the same layout as Panel 1" in base

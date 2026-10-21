@@ -12,6 +12,7 @@ from PIL import Image, ImageDraw
 import pytest
 
 from wh_local.modules.pod_customization.router import create_router
+from wh_local.modules.pod_customization.prompts import PATTERN_PROMPT_VERSION
 from wh_local.modules.pod_customization.billing_contract import PodExecutionGrant
 from wh_local.modules.product_processing.infrastructure.media import GeneratedMedia
 from wh_local.customer.contracts import (
@@ -360,8 +361,8 @@ def test_batch_create_list_detail_and_scene_optimization_contract(tmp_path) -> N
     assert listed.json()["total"] == 1
     detail = client.get(f"/api/pod-customization/batches/{batch['id']}", headers=headers)
     assert detail.status_code == 200
-    # 请求体里传的是 v1，但提示词由服务端构造，入库值以服务端版本为准（v15）。
-    assert detail.json()["prompt_version"] == "v15"
+    # 请求体里传的是 v1，但提示词由服务端构造，入库值以服务端版本为准。
+    assert detail.json()["prompt_version"] == PATTERN_PROMPT_VERSION
 
     scene = client.post(
         f"/api/pod-customization/batches/{batch['id']}/items/{batch['items'][0]['id']}/optimize-scene",
