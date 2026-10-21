@@ -204,8 +204,9 @@ def test_full_chain_freeze_grants_direct_consume_and_settle(tmp_path: Path, monk
         provider = provider_config_module.resolve_ai_provider()
         assert provider["direct_mode"] is True
         sys_image = provider["_sys_image_ai"]
-        assert sys_image["base_url"] == "https://api.wuyinkeji.com"
-        assert sys_image["api_key"] == _WUYIN_SECRET
+        assert sys_image["base_url"] == "https://ark.cn-beijing.volces.com/api/v3"
+        assert sys_image["api_key"] == _ARK_SECRET
+        assert sys_image["model"] == "doubao-seedream-5-0-flash-260915"
 
     # ---- 结算：2 条全成功 → 扣 90 全价，无退款 ----
     settle = client.post(

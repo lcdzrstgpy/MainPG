@@ -150,6 +150,7 @@ from .provider_config import (
     PREMIUM_IMAGE_MODEL,
     PREMIUM_IMAGE_SIZE,
     image_chain_supplied,
+    local_image_chain,
     resolve_ai_provider,
 )
 from .server_ai_proxy import (
@@ -899,9 +900,10 @@ _PRESET_GRID_PANEL_PLAN: dict[str, str] = {
 - Panel 4 (bottom-right): unchanged orthographic dimension background.""",
     "knolling_set": """USER PRESET OVERRIDE - "FULL SET FLAT LAY" (the operator selected this preset for this batch):
 - Scope: this block redefines WHAT Panels 2 and 3 depict; it wins over the template pillar rules for their subject, scene, props, camera and fill only. Layout, dividers, fidelity, geometry, safe margins and the zero-added-text rule still bind absolutely.
-- Panel 1 (top-left): unchanged - pure white seamless, true 90-degree top-down of the complete product or complete set.
-- Panel 2 (top-right): a true 90-degree top-down on felt or light oak with every real component laid out in use order, evenly spaced, strict knolling grid, exact visible quantity. No hands.
-- Panel 3 (bottom-left): a true 90-degree top-down closer view showing how one part of the set is built, stacks or packs, evenly lit from above. No hands. Show only components that truly exist in the set.
+- Panel 1 (top-left): unchanged platform main image - FRONT VIEW (0 degrees, eye level) of the complete product or complete set on pure white seamless, no props, no scene. Do NOT turn Panel 1 into a top-down shot; the flat-lay treatment starts at Panel 2.
+- Panel 2 (top-right): a TRUE 90-degree top-down flat lay: the camera axis is exactly perpendicular to the surface (orthographic, no perspective, no visible side faces), the whole set is inside one frame, and every real component is separated - no stacking, no overlap - aligned to a strict invisible grid with equal gaps and identical rotation. Plain felt or light oak surface, even soft top light, exact visible quantity. No hands.
+- Panel 3 (bottom-left): a TRUE 90-degree top-down closer view of the same flat lay, showing how one part of the set is built, stacks or packs, evenly lit from above with the same orthographic camera. No hands. Show only components that truly exist in the set.
+- Panels 2 and 3 must read as flat lays from directly above, never as eye-level or 45-degree product shots; they differ only in shot scale and surface.
 - Panel 4 (bottom-right): unchanged orthographic dimension background.""",
 }
 
@@ -932,9 +934,9 @@ _PRESET_GRID_PANEL_ROLES: dict[str, tuple[str, str, str, str]] = {
         "Clean dimension annotation background",
     ),
     "knolling_set": (
-        "Hero product image: true 90-degree top-down knolling of the complete product or set on pure white",
-        "True 90-degree top-down set breakdown on felt or light oak, every real component evenly laid out, no hands",
-        "True 90-degree top-down closer view of how one part is built or packs, no hands",
+        "Hero product image: complete product or complete set on a pure white seamless background, front view (0 degrees), no props",
+        "True 90-degree top-down flat lay of the complete set on felt or light oak, every real component separated with equal gaps in a strict grid, no perspective, no hands",
+        "True 90-degree top-down closer view of how one part of the set is built or packs, same orthographic camera, no hands",
         "Clean dimension annotation background",
     ),
 }
@@ -944,6 +946,44 @@ def _grid_preset_panel_plan(preset_id: str = "") -> str:
     """2K 四宫格链路的逐格改写块；没选模板时返回空串（完全沿用原模板）。"""
 
     return _PRESET_GRID_PANEL_PLAN.get(str(preset_id or "").strip().lower(), "")
+
+
+# 小白模板对应的基础四宫格模板（A=影棚无缝 / B=人景叙事 / C=静物平铺俯拍 / D=环境远景）。
+# 不切换的话，平铺、人景这些预设仍然跑在「影棚无缝主图」上，模板里写死的逐格规划
+# （第②格 45° 三视角、第③格微距）会把预设的覆盖块顶掉，出图看起来一模一样。
+_PRESET_IMAGE_TEMPLATES: dict[str, str] = {
+    "hero_proof": "A",
+    "lifestyle_use": "B",
+    "macro_craft": "A",
+    "knolling_set": "C",
+}
+
+
+def _preset_image_template(preset_id: str = "") -> str:
+    """预设对应的基础模板；auto 或未知预设返回空串（沿用用户选择的模板）。"""
+
+    return _PRESET_IMAGE_TEMPLATES.get(str(preset_id or "").strip().lower(), "")
+
+
+# 上游生图服务不可用（维护/限流/超时/网关错误）与「链接原图不可用」是两类完全不同的
+# 失败：前者换链接也没用，提示必须让运营重试而不是换品。
+_PROVIDER_SIDE_IMAGE_FAILURE_MARKERS = (
+    "provider",
+    "submit failed",
+    "维护",
+    "timeout",
+    "timed out",
+    "rate limit",
+    "限流",
+    "502",
+    "503",
+    "504",
+)
+
+
+def _is_provider_side_image_failure(detail: str) -> bool:
+    text = str(detail or "").lower()
+    return any(marker in text for marker in _PROVIDER_SIDE_IMAGE_FAILURE_MARKERS)
 
 
 def _grid_panel_roles(preset_id: str = "") -> tuple[str, str, str, str]:
@@ -1055,17 +1095,10 @@ def _image_prompt_profile() -> str:
 
     方舟会对**输入文本**做内容审核：为 gpt-image 调优的 3 万字符指令模板会被判
     InputTextSensitiveContentDetected 直接 400（实测 1.4s 秒回）；而 Seedream 属自然语言
-    友好型模型，精简模板出图更稳。链路由服务端下发，客户端据此选模板。
+    友好型模型，精简模板出图更稳。链路默认是方舟 Seedream，也可由服务端
+    ``image_plan`` 或本地 WH_PP_IMAGE_* 覆盖。
     """
-    plan = granted_image_plan()
-    providers = plan.get("providers") if isinstance(plan, dict) else None
-    if isinstance(providers, list) and providers:
-        first = providers[0]
-        if isinstance(first, dict):
-            host = str(first.get("base_url") or "").lower()
-            if "ark.cn-beijing.volces.com" in host:
-                return "ark"
-    return "default"
+    return "ark" if str(resolve_ai_provider().get("provider") or "") == "ark" else "default"
 
 
 def _max_concurrent_tasks() -> int:
@@ -2361,7 +2394,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 "grid_image": False,
                 "image_rewrite": False,
             },
-            image_chain=image_chain_supplied(image_plan),
+            image_chain=image_chain_supplied(image_plan) or local_image_chain() is not None,
         )
         _remember_batch_freeze(
             freeze_id,
@@ -7063,7 +7096,8 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         )
         try:
             required = self._required_direct_providers(
-                settings, image_chain=image_chain_supplied(image_plan)
+                settings,
+                image_chain=image_chain_supplied(image_plan) or local_image_chain() is not None,
             )
             missing = sorted(provider for provider in required if not granted.get(provider))
             if missing:
@@ -7408,6 +7442,11 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 if candidate_panels:
                     item_panels = candidate_panels
             item_settings = settings if item_preset == preset_id else {**settings, "image_preset": item_preset}
+            # 小白模板与基础四宫格模板必须成对切换，否则「全套平铺 / 真实使用」仍然
+            # 跑在影棚模板上，模板写死的逐格规划会把预设改写块压回去。
+            preset_template = _preset_image_template(item_preset)
+            if preset_template:
+                item_settings = {**item_settings, "image_template": preset_template}
             item_panel_plan = ""
             if batch_image_prompt:
                 item_image_prompt = batch_image_prompt
@@ -9630,6 +9669,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         # 旧的 1 / 2 / 4 设置；精品任务由专用单次 4K 四宫格流水线处理。
         # 详情图优先由轮播图本地合成，只有本地合成不可用时才回退 AI 详情图生成。
         grid_incomplete = bool(need_grid and len(grid_image_paths) != 4)
+        image_failure_detail = ""
         if need_grid and not images_receipt_hit:
             if grid_future is not None:
                 # 图片生成在独立线程中推进；取结果前先看任务是否已被暂停/取消，
@@ -9924,8 +9964,20 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 else "detail_images_incomplete"
             )
             # 链接级失败统一话术：运营只需要换链接/剔除，具体技术原因留在 debug_hint。
-            media_operator_hint = FAILED_LINK_OPERATOR_HINT
+            # 但上游生图服务维护/限流时换链接毫无意义，必须明确提示「稍后重试」。
+            provider_side_outage = bool(
+                grid_source_fallback
+                and _is_provider_side_image_failure(image_failure_detail)
+            )
+            media_operator_hint = (
+                "AI 生图服务当前不可用（上游维护或限流），链接本身没有问题；"
+                "稍后点「重新处理」即可，失败链接不参与计费"
+                if provider_side_outage
+                else FAILED_LINK_OPERATOR_HINT
+            )
             media_debug_hint = "；".join(media_blockers)
+            if image_failure_detail:
+                media_debug_hint += f"；上游原因：{image_failure_detail}"
             if text_failure_detail:
                 media_debug_hint += f"；文案错误：{text_failure_detail}"
             media_retryable = True
@@ -12553,6 +12605,9 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 "reference_model": sys_image.get("reference_model") or provider.get("reference_image_model") or "",
                 "image_models": list(provider.get("image_models") or ()),
                 "image_size": provider.get("image_size") or "2048x2048",
+                # 精品模式：本地切到方舟时 premium 也用同一个 Seedream 模型（4K）。
+                "premium_image_model": provider.get("premium_image_model") or PREMIUM_IMAGE_MODEL,
+                "premium_image_size": provider.get("premium_image_size") or PREMIUM_IMAGE_SIZE,
             }
         elif provider.get("api_key"):
             image_section = {

@@ -20,6 +20,8 @@ AI_PROVIDER = "aicoming"
 # 若用户在"系统配置"里填了 base_url 或设置 WH_AI_BASE_URL，则以用户配置为准。
 AI_BASE_URL = "server-managed"
 IMAGE_AI_BASE_URL = "https://api.wuyinkeji.com"
+# 火山方舟官方生图（Seedream）直连地址：本地联调可用 WH_PP_IMAGE_PROVIDER=ark 强制切换。
+ARK_IMAGE_AI_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
 # 不再内置共享密钥：产品处理 AI 为转售模式，每个用户使用自己在系统配置中填写的 key；
 # 未配置时 engine/status 明确显示 ai_configured=false，任务对 AI 环节给出可读报错，不静默透传。
 AI_API_KEY = ""
@@ -29,19 +31,27 @@ TEXT_MODEL = "gpt-5.6-terra"
 # 禁止降级到高价模型（如 gpt-5.4、deepseek-v4-pro）。
 TEXT_MODEL_FALLBACK_ORDER = ("gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4-mini", "gemini-3.1-flash-lite-antigravity")
 
-IMAGE_MODEL = "image_gpt"
-REFERENCE_IMAGE_MODEL = "image_gpt"
+# AI 处理默认生图模型：火山方舟 Seedream 5.0 Flash（参考图直传、无水印）。
+DEFAULT_IMAGE_MODEL = "doubao-seedream-5-0-flash-260915"
+IMAGE_MODEL = DEFAULT_IMAGE_MODEL
+REFERENCE_IMAGE_MODEL = DEFAULT_IMAGE_MODEL
 REFERENCE_IMAGE_MODEL_1K = "gpt-image-2-1k"
-# 生图模型的客户端白名单：桌面端只允许在这两个名字之间切换，其它历史值一律回落。
+# 生图模型的客户端白名单：桌面端只允许在这些名字之间切换，其它历史值一律回落默认。
 # 上游端点与凭据仍由服务端持有，客户端只传模型名。
-IMAGE_MODEL_CHOICES = ("image_gpt", "image_gpt_2.5")
+IMAGE_MODEL_CHOICES = (
+    "doubao-seedream-5-0-flash-260915",
+    "image_gpt",
+    "image_gpt_2.5",
+)
 _IMAGE_MODEL_ALIASES = {
+    DEFAULT_IMAGE_MODEL: DEFAULT_IMAGE_MODEL,
     "image_gpt": "image_gpt",
     "image_gpt_2.5": "image_gpt_2.5",
-    # 旧接口只对应 GPT-Image-2，历史/误配的写法统一收敛到 image_gpt。
+    # 旧接口只对应 GPT-Image-2；其中 ``gpt-image-2-2k`` 是旧版默认配置值，
+    # 统一迁移到新的默认模型（Seedream 5.0 Flash）。
     "gpt-image-2": "image_gpt",
     "gpt-image-2-1k": "image_gpt",
-    "gpt-image-2-2k": "image_gpt",
+    "gpt-image-2-2k": DEFAULT_IMAGE_MODEL,
     "gpt-image-2-4k": "image_gpt",
 }
 IMAGE_SIZE = "2048x2048"
@@ -162,34 +172,49 @@ def resolve_ai_provider() -> dict[str, Any]:
     text_api_key = ""
     text_model = TEXT_MODEL
 
-    # 图片 AI（仅 api_key 可覆盖，模型写死）
-    image_model = normalize_image_model(
+    # 本地联调覆盖：显式指定链路时优先于服务端 image_plan（用于临时切链路）。
+    local_chain = local_image_chain()
+
+    # 当前选择的生图模型：本地覆盖 > 环境变量 > 系统配置 > 内置默认（Seedream）。
+    selected_model = normalize_image_model(
         _first_truthy(
             os.environ.get("WH_IMAGE_AI_MODEL"),
             (sys_cfg and sys_cfg.image_ai.model),
             IMAGE_MODEL,
         )
     )
+
+    # 客户端固定直连：批次冻结时服务端下发短期密钥（ark/wuyin）。
+    # granted_keys_snapshot 已把批次未下发的 provider 用客户端内置兜底密钥补齐。
+    granted = granted_keys_snapshot()
+    direct_wuyin_key = str(granted.get("wuyin") or "").strip()
+    direct_ark_key = str(granted.get("ark") or "").strip()
+    direct_mode = True
+
+    # 出图链路：本地覆盖 > 服务端下发策略 > 按当前模型推导的默认链路。
+    image_chain = _image_chain_from_plan()
+    primary_chain = (
+        local_chain
+        or (image_chain[0] if image_chain else None)
+        or _chain_for_model(selected_model)
+        or _chain_for_model(DEFAULT_IMAGE_MODEL)
+    )
+    backup_chain = None if local_chain else (image_chain[1] if len(image_chain) > 1 else None)
+    chain_provider = str((primary_chain or {}).get("provider") or "").strip()
+    if not chain_provider:
+        chain_base = str((primary_chain or {}).get("base_url") or "").lower()
+        chain_provider = "ark" if "ark.cn-beijing.volces.com" in chain_base else "wuyin"
+    chain_api_key = str((primary_chain or {}).get("api_key") or "").strip()
+    if not chain_api_key:
+        chain_api_key = direct_ark_key if chain_provider == "ark" else direct_wuyin_key
+
+    image_model = str((primary_chain or {}).get("model") or selected_model)
     # 参考图编辑与主生图必须用同一个模型，否则切换后两条链路走不同上游。
-    reference_image_model = image_model
-    premium_image_model = PREMIUM_IMAGE_MODEL
+    reference_image_model = str((primary_chain or {}).get("reference_model") or image_model)
+    premium_image_model = image_model if chain_provider == "ark" else PREMIUM_IMAGE_MODEL
     premium_image_size = PREMIUM_IMAGE_SIZE
 
     fallback = list(TEXT_MODEL_FALLBACK_ORDER)
-
-    # 客户端固定直连：批次冻结时服务端下发短期密钥（ark/wuyin）。这里恒用无印
-    # 生图直连地址，不再有托管回落；有下发密钥时用真实短期密钥。
-    # granted_keys_snapshot 已把批次未下发的 provider 用客户端内置兜底密钥补齐，
-    # 因此 direct_wuyin_key 可能来自内置兜底（见 direct_credentials）。
-    granted = granted_keys_snapshot()
-    direct_wuyin_key = str(granted.get("wuyin") or "").strip()
-    direct_mode = True
-
-    # 出图链路：由服务端下发策略决定（只用无印 / 只用中转 / 无印优先+中转兜底）。
-    # 未下发时回落到内置默认——仅无印直连，与切直连后的既有行为一致。
-    image_chain = _image_chain_from_plan()
-    primary_chain = image_chain[0] if image_chain else None
-    backup_chain = image_chain[1] if len(image_chain) > 1 else None
 
     # 解密后的 COS 配置仅作为后端内部运行时数据传给图片发布器；安全摘要不会回显它。
     sys_cos: dict[str, str] = (
@@ -204,7 +229,7 @@ def resolve_ai_provider() -> dict[str, Any]:
     )
 
     return {
-        "provider": AI_PROVIDER,
+        "provider": "ark" if chain_provider == "ark" else AI_PROVIDER,
         "base_url": text_base_url,
         "api_key": text_api_key,
         "direct_mode": direct_mode,
@@ -235,7 +260,7 @@ def resolve_ai_provider() -> dict[str, Any]:
             # 短期密钥；无任务上下文（如启动自检 engine_status）时用占位符，仅为让
             # 图片能力报告为已配置，绝不会发起真实请求。既未下发、也无链路策略的
             # 任务会在 service._execute_task_direct 中止，不回落到平台托管网关。
-            "api_key": (primary_chain or {}).get("api_key") or direct_wuyin_key or "direct-pending",
+            "api_key": chain_api_key or "direct-pending",
             "model": (primary_chain or {}).get("model") or image_model,
             "reference_model": (primary_chain or {}).get("reference_model") or reference_image_model,
             "reference_model_1k": REFERENCE_IMAGE_MODEL_1K,
@@ -279,6 +304,67 @@ def _try_system_cos_public() -> dict[str, str]:
 def normalize_image_model(value: Any) -> str:
     """把任意来源的图片模型名收敛到客户端白名单，未知值回到默认 image_gpt。"""
     return _IMAGE_MODEL_ALIASES.get(str(value or "").strip().lower(), IMAGE_MODEL)
+
+
+def local_image_chain() -> dict[str, str] | None:
+    """本地联调用的生图链路覆盖（不设置环境变量时返回 None）。
+
+    正常运行时出图链路由服务端 ``freeze.image_plan`` 下发；本地想单独验证某个模型
+    （例如切到火山方舟 Seedream 5.0 Flash）时，用环境变量强制指定：
+
+    - ``WH_PP_IMAGE_PROVIDER``：``ark`` / ``wuyin``（可选，按模型/地址自动推断）
+    - ``WH_PP_IMAGE_MODEL``：模型名，例如 ``doubao-seedream-5-0-flash-260915``
+    - ``WH_PP_IMAGE_BASE_URL``：上游地址（默认按 provider 取方舟/无印）
+    - ``WH_PP_IMAGE_API_KEY``：显式 key；不填时在任务内复用冻结下发的 provider key
+    """
+    provider = str(os.environ.get("WH_PP_IMAGE_PROVIDER", "")).strip().lower()
+    model = str(os.environ.get("WH_PP_IMAGE_MODEL", "")).strip()
+    base_url = str(os.environ.get("WH_PP_IMAGE_BASE_URL", "")).strip().rstrip("/")
+    api_key = str(os.environ.get("WH_PP_IMAGE_API_KEY", "")).strip()
+    if not provider and not model and not base_url:
+        return None
+    if provider not in {"ark", "wuyin"}:
+        provider = (
+            "ark"
+            if "seedream" in model.lower() or "ark" in base_url.lower()
+            else "wuyin"
+        )
+    if not model:
+        model = IMAGE_MODEL
+    if not base_url:
+        base_url = ARK_IMAGE_AI_BASE_URL if provider == "ark" else IMAGE_AI_BASE_URL
+    return {
+        "role": "primary",
+        "provider": provider,
+        "base_url": base_url,
+        "api_key": api_key,
+        "model": model,
+        "reference_model": model,
+    }
+
+
+def _chain_for_model(model: str) -> dict[str, str] | None:
+    """按模型名推导默认直连链路：Seedream → 方舟，GPT-Image → 无印。"""
+    selected = str(model or "").strip()
+    if selected == DEFAULT_IMAGE_MODEL:
+        return {
+            "role": "primary",
+            "provider": "ark",
+            "base_url": ARK_IMAGE_AI_BASE_URL,
+            "api_key": "",
+            "model": selected,
+            "reference_model": selected,
+        }
+    if selected in {"image_gpt", "image_gpt_2.5"}:
+        return {
+            "role": "primary",
+            "provider": "wuyin",
+            "base_url": IMAGE_AI_BASE_URL,
+            "api_key": "",
+            "model": selected,
+            "reference_model": selected,
+        }
+    return None
 
 
 def _first_truthy(*values: Any) -> str:

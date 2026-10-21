@@ -1643,6 +1643,36 @@ def test_image_failure_falls_back_and_preserves_successful_doubao_text_receipt(m
     )
 
 
+def test_provider_outage_media_failure_asks_to_retry_not_replace_link(monkeypatch) -> None:
+    """上游生图维护/限流时，提示必须是「稍后重试」而不是「换链接」。"""
+    service = _process_service(monkeypatch)
+
+    def fail_grid(*args, **_kwargs):
+        args[8].append(
+            "image_set:ai-failed: primary:image_gpt attempt 1: provider submit failed: "
+            "请求失败，该接口正在维护"
+        )
+        return GridImageOutput(
+            carousel_urls=(),
+            attempt_count=2,
+            provider_status_class="gateway_unavailable",
+        )
+
+    monkeypatch.setattr(service, "_generate_grid_images", fail_grid)
+
+    result = service._process_one(
+        {"id": 1, "item_id": 101}, _draft(), _settings(), False, task_id=12
+    )
+
+    payload = result["result"]
+    assert payload["error_type"] == "carousel_images_incomplete"
+    assert payload["provider_status_classes"]["four_grid"] == "source_fallback"
+    assert "AI 生图服务当前不可用" in payload["operator_hint"]
+    assert "请更换链接" not in payload["operator_hint"]
+    assert "上游原因" in payload["debug_hint"]
+    assert "该接口正在维护" in payload["debug_hint"]
+
+
 def test_source_fallback_grid_skips_detail_local_synthesis_and_ai(monkeypatch) -> None:
     """四宫格回退来源图时：详情图判为未产出，不得本地合成、不得记误导性 detail_images:ai。"""
     service = _process_service(monkeypatch)

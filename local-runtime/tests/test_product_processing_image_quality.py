@@ -1554,22 +1554,22 @@ def test_reference_loading_skips_unreadable_local_cache_and_uses_next_file(
     assert loaded[0][:3] == (b"valid-fallback", "fallback.jpg", "image/jpeg")
 
 
-def test_provider_config_uses_image_gpt_with_explicit_1k_reference_profile(monkeypatch) -> None:
+def test_provider_config_defaults_to_seedream_with_explicit_1k_reference_profile(monkeypatch) -> None:
     monkeypatch.setattr(provider_config_module, "_try_system_runtime_config", lambda: None)
     monkeypatch.setenv("WH_AI_API_KEY", "configured")
 
     provider = provider_config_module.resolve_ai_provider()
 
-    assert provider["image_model"] == "image_gpt"
-    assert provider["reference_image_model"] == "image_gpt"
+    assert provider["image_model"] == "doubao-seedream-5-0-flash-260915"
+    assert provider["reference_image_model"] == "doubao-seedream-5-0-flash-260915"
     assert provider["image_size"] == "2048x2048"
     assert provider["reference_image_model_1k"] == "gpt-image-2-1k"
     assert provider["reference_image_size_1k"] == "1024x1024"
-    assert provider["premium_image_model"] == "gpt-image-2-4k"
+    assert provider["premium_image_model"] == "doubao-seedream-5-0-flash-260915"
     assert provider["premium_image_size"] == "4096x4096"
 
 
-def test_provider_config_ignores_saved_image_key_and_targets_direct_wuyin(monkeypatch) -> None:
+def test_provider_config_ignores_saved_image_key_and_targets_direct_ark(monkeypatch) -> None:
     runtime_config = SimpleNamespace(
         text_ai=SimpleNamespace(base_url="https://text.example/v1", api_key="text-key"),
         image_ai=SimpleNamespace(
@@ -1588,9 +1588,10 @@ def test_provider_config_ignores_saved_image_key_and_targets_direct_wuyin(monkey
 
     provider = provider_config_module.resolve_ai_provider()
 
-    # 客户端固定直连无印生图：桌面侧保存的 image_ai 凭据一律忽略，恒用无印直连地址；
-    # 无任务上下文时 api_key 是占位符（真实短期密钥由批次冻结下发）。
-    assert provider["_sys_image_ai"]["base_url"] == "https://api.wuyinkeji.com"
+    # 客户端固定直连方舟生图：桌面侧保存的 image_ai 凭据一律忽略，恒用方舟直连地址；
+    # 旧默认值 gpt-image-2-2k 迁移到新的默认模型 Seedream；无任务上下文时 api_key 是占位符。
+    assert provider["_sys_image_ai"]["base_url"] == "https://ark.cn-beijing.volces.com/api/v3"
+    assert provider["_sys_image_ai"]["model"] == "doubao-seedream-5-0-flash-260915"
     assert provider["_sys_image_ai"]["api_key"] == "direct-pending"
     assert provider["_sys_backup_image_ai"] is None
     assert "image-key" not in json.dumps(provider)

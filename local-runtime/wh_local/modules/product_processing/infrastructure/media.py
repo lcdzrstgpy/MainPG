@@ -1563,6 +1563,12 @@ class ProductImageProcessor:
         }
         if images:
             payload["image"] = images
+        _LOGGER.info(
+            "Ark Seedream image request | model=%s | size=%s | refs=%d",
+            payload["model"],
+            payload["size"],
+            len(images),
+        )
         global_ai_request_limiter().acquire()
         response = _SESSION.post(
             f"{str(provider['base_url']).rstrip('/')}/images/generations",

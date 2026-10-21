@@ -436,7 +436,8 @@ export const SIMPLE_PRESETS: SimplePreset[] = [
       style: 'bright_minimal',
     },
     panels: [
-      whiteHeroPanel('frame_flatlay'),
+      // 平台主图必须是平视白底完整商品；俯拍平铺从第 2 格开始，否则首图会被做成俯视。
+      whiteHeroPanel(),
       panel({
         frame: 'frame_flatlay',
         light: 'light_clean_bright',

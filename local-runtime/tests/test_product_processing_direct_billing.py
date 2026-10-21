@@ -95,15 +95,17 @@ def test_doubao_ark_requires_granted_key_without_gateway_fallback(
     assert calls == []
 
 
-def test_provider_config_direct_image_section_with_granted_wuyin_key(
+def test_provider_config_direct_image_section_defaults_to_ark(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    with server_ai_proxy.server_ai_context("t", {}, granted_keys={"wuyin": "WUYIN-KEY"}):
+    with server_ai_proxy.server_ai_context("t", {}, granted_keys={"ark": "ARK-KEY"}):
         provider = provider_config_module.resolve_ai_provider()
         assert provider["direct_mode"] is True
+        assert provider["provider"] == "ark"
         sys_image = provider["_sys_image_ai"]
-        assert sys_image["base_url"] == "https://api.wuyinkeji.com"
-        assert sys_image["api_key"] == "WUYIN-KEY"
+        assert sys_image["base_url"] == "https://ark.cn-beijing.volces.com/api/v3"
+        assert sys_image["api_key"] == "ARK-KEY"
+        assert sys_image["model"] == "doubao-seedream-5-0-flash-260915"
 
 
 def test_provider_config_direct_placeholder_without_granted_keys(
@@ -113,8 +115,9 @@ def test_provider_config_direct_placeholder_without_granted_keys(
     with server_ai_proxy.server_ai_context("t", {}):
         provider = provider_config_module.resolve_ai_provider()
         assert provider["direct_mode"] is True
+        assert provider["provider"] == "ark"
         sys_image = provider["_sys_image_ai"]
-        assert sys_image["base_url"] == "https://api.wuyinkeji.com"
+        assert sys_image["base_url"] == "https://ark.cn-beijing.volces.com/api/v3"
         # 占位符仅为让启动自检报告图片能力就绪；无任务上下文时不会发起真实请求。
         assert sys_image["api_key"] == "direct-pending"
         # 未下发链路策略时没有备用链路——客户端不自行切换。
@@ -198,7 +201,7 @@ def test_provider_config_ignores_malformed_image_plan() -> None:
 
     with server_ai_proxy.server_ai_context("t", {}, image_plan=malformed):
         provider = provider_config_module.resolve_ai_provider()
-    assert provider["_sys_image_ai"]["base_url"] == "https://api.wuyinkeji.com"
+    assert provider["_sys_image_ai"]["base_url"] == "https://ark.cn-beijing.volces.com/api/v3"
     assert provider["_sys_backup_image_ai"] is None
 
 
