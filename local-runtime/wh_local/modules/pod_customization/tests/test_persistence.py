@@ -90,8 +90,8 @@ def test_batch_keeps_the_template_and_builtin_prompt_snapshot(tmp_path: Path) ->
     stored = service.get_batch(actor, batch["id"])
 
     assert stored["template_snapshot_id"] == batch["template_snapshot_id"]
-    # 提示词版本以服务端为准：请求里传的是 v1，入库必须被服务端改写成当前版本（v3）。
-    assert stored["prompt_version"] == "v3"
+    # 提示词版本以服务端为准：请求里传的是 v1，入库必须被服务端改写成当前版本（v15）。
+    assert stored["prompt_version"] == "v15"
     assert "Stoneware mug" in stored["prompt_snapshot"]
     assert "quiet coastal geometry" in stored["prompt_snapshot"]
     assert stored["style_grid"] is True

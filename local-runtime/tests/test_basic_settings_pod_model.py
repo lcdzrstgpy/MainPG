@@ -28,14 +28,14 @@ def _client(database_path: Path) -> TestClient:
     return TestClient(app)
 
 
-def test_pod_image_model_defaults_to_image_gpt_2_5(tmp_path: Path) -> None:
+def test_pod_image_model_defaults_to_doubao(tmp_path: Path) -> None:
     service = _service(tmp_path / "workbench.sqlite3")
 
     payload = service.get_pod_image_model()
 
     assert payload["ok"] is True
-    # 产品侧要求：POD 定制默认走 2.5（AI处理 的默认不受影响，仍是 image_gpt）。
-    assert payload["model"] == "image_gpt_2.5"
+    # 产品侧要求：POD 定制默认走豆包 Seedream（AI处理 的默认不受影响）。
+    assert payload["model"] == "doubao-seedream-5-0-flash-260915"
     # 对外只有一份模型清单：速创两个 + 豆包一个。
     assert {choice["value"] for choice in payload["choices"]} == {
         "image_gpt",
@@ -81,7 +81,7 @@ def test_unknown_pod_model_falls_back_to_default(tmp_path: Path) -> None:
 
     service.save_pod_image_model("gpt-image-2-4k", actor_id="tester")
 
-    assert service.get_pod_image_model()["model"] == "image_gpt_2.5"
+    assert service.get_pod_image_model()["model"] == "doubao-seedream-5-0-flash-260915"
 
 
 def test_legacy_database_without_pod_section_gains_default(tmp_path: Path) -> None:
@@ -105,8 +105,8 @@ def test_legacy_database_without_pod_section_gains_default(tmp_path: Path) -> No
             (CONFIG_KEY, json.dumps(legacy_config), "legacy", "2026-01-01T00:00:00Z"),
         )
 
-    # 旧库没有 pod_image 段：加载时补 POD 默认值，且不回退 AI处理 已选模型。
-    assert service.get_pod_image_model()["model"] == "image_gpt_2.5"
+    # 旧库没有 pod_image 段：加载时补 POD 默认值（豆包），且不回退 AI处理 已选模型。
+    assert service.get_pod_image_model()["model"] == "doubao-seedream-5-0-flash-260915"
     assert service.get_image_model()["model"] == "image_gpt_2.5"
 
 

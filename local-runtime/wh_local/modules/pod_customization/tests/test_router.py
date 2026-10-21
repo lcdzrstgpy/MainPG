@@ -88,7 +88,10 @@ class RouterRuntime:
 def _client(tmp_path) -> TestClient:
     class Billing:
         def freeze(self, actor, plan):
-            return PodExecutionGrant("freeze-1", 1, "2099-01-01T00:00:00Z", {"wuyin": "test-key"})
+            return PodExecutionGrant(
+                "freeze-1", 1, "2099-01-01T00:00:00Z",
+                {"wuyin": "test-key", "ark": "test-ark-key"},
+            )
 
         def settle(self, actor, grant, plan, outcomes):
             return None
@@ -357,8 +360,8 @@ def test_batch_create_list_detail_and_scene_optimization_contract(tmp_path) -> N
     assert listed.json()["total"] == 1
     detail = client.get(f"/api/pod-customization/batches/{batch['id']}", headers=headers)
     assert detail.status_code == 200
-    # 请求体里传的是 v1，但提示词由服务端构造，入库值以服务端版本为准（v3）。
-    assert detail.json()["prompt_version"] == "v3"
+    # 请求体里传的是 v1，但提示词由服务端构造，入库值以服务端版本为准（v15）。
+    assert detail.json()["prompt_version"] == "v15"
 
     scene = client.post(
         f"/api/pod-customization/batches/{batch['id']}/items/{batch['items'][0]['id']}/optimize-scene",

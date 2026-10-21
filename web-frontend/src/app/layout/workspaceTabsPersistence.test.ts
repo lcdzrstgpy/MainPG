@@ -116,6 +116,20 @@ test("字段类型与预期不符时按缺失处理，不让坏值流进页面",
   });
 });
 
+test("AI 视频页签保留当前路径，非字符串值按缺失处理", () => {
+  const allowed = new Set(["ai_video"]);
+
+  const [restored] = sanitizeWorkspaceTabs([
+    { key: "ai_video", moduleId: "ai_video", label: "AI 视频", icon: "✦", aiVideoPath: "/project/abc/script" },
+  ], allowed);
+  assert.equal(restored.aiVideoPath, "/project/abc/script");
+
+  const [dirty] = sanitizeWorkspaceTabs([
+    { key: "ai_video", moduleId: "ai_video", label: "", icon: "", aiVideoPath: 42 },
+  ], allowed);
+  assert.equal(dirty.aiVideoPath, undefined);
+});
+
 test("当前页签不在页签列表里时落到第一个页签", () => {
   const storage = new MemoryStorage();
   storage.setItem(WORKSPACE_TABS_STORAGE_KEY, JSON.stringify({

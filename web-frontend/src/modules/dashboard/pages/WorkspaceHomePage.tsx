@@ -57,6 +57,11 @@ const navGroups: Array<{ id: string; label: string; items: NavModule[] }> = (() 
   for (const item of workspaceModules) {
     if (item.id === "dashboard") continue;
     if (isWorkspaceNavigationGroup(item)) {
+      // 个人中心在侧栏是「页内面板」分组，首页仍按单张入口卡展示，避免分组标题与卡片重名。
+      if (item.panels?.length) {
+        standalone.push(...item.children.map(toNavModule));
+        continue;
+      }
       groups.push({ id: item.id, label: item.label, items: item.children.map(toNavModule) });
     } else {
       standalone.push(toNavModule(item));

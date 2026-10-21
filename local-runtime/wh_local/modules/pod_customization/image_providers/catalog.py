@@ -24,13 +24,13 @@ DOUBAO_PLATFORM = "doubao"
 
 # (模型值, 展示名, 平台实现)
 POD_IMAGE_MODELS: tuple[tuple[str, str, str], ...] = (
-    ("image_gpt", "GPT-Image-2（现行）", SUCHUANG_PLATFORM),
-    ("image_gpt_2.5", "GPT-Image-2.5（新版）", SUCHUANG_PLATFORM),
-    ("doubao-seedream-5-0-flash-260915", "Seedream 5.0 Flash（豆包）", DOUBAO_PLATFORM),
+    ("image_gpt", "GPT-Image-2（速创）", SUCHUANG_PLATFORM),
+    ("image_gpt_2.5", "GPT-Image-2.5（速创）", SUCHUANG_PLATFORM),
+    ("doubao-seedream-5-0-flash-260915", "Seedream 5.0 Flash（豆包 · 默认）", DOUBAO_PLATFORM),
 )
 
-# POD 默认走 2.5（产品侧要求；AI处理 的默认仍是 1.0，两者互不影响）。
-POD_IMAGE_MODEL_DEFAULT = "image_gpt_2.5"
+# POD 主力模型：默认走豆包 Seedream（速创两个模型保留为可选）。
+POD_IMAGE_MODEL_DEFAULT = "doubao-seedream-5-0-flash-260915"
 
 # 平台 → 生图时需要冻结下发的 provider key 名（速创=wuyin，豆包=ark）。
 # 冻结/重冻结由远端按画像下发密钥，客户端只能按当前模型声明用哪一个 key，

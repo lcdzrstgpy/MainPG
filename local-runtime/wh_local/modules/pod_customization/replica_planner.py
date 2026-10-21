@@ -29,7 +29,7 @@ HARD_CONSTRAINTS: tuple[str, ...] = (
     "图案只能出现在 B 声明的可印区域。",
     "图案自带文字可以保留，但不得新增任何文字。",
 )
-# 「生活场景」偏好强制的真实环境背景文案（模板背景缺失或无环境感时使用）。
+# 「生活场景」偏好的兜底文案：只在模板与豆包都没给出背景时使用。
 LIFESTYLE_SCENE_BACKGROUND = (
     "真实生活场景背景（窗边、居家木质环境），大光圈柔和虚化，保留环境层次感。"
 )
@@ -37,13 +37,6 @@ LIFESTYLE_SCENE_BACKGROUND = (
 LIFESTYLE_SCENE_CONSTRAINT = (
     "除白底素材格外，所有画面必须使用真实生活场景背景（可大幅虚化），"
     "不得使用纯白、纯灰或无环境的背景。"
-)
-# 判定「有环境感」的背景 token：命中其一即认为模板已写了场景，不覆盖。
-_ENVIRONMENT_TOKENS: tuple[str, ...] = (
-    "窗", "木", "室内", "居家", "桌面", "台面", "户外", "室外", "自然", "生活",
-    "场景", "环境", "家具", "草坪", "庭院", "街道", "建筑", "墙面", "地板", "布景",
-    "room", "indoor", "window", "wood", "home", "desk", "table", "garden",
-    "street", "scene", "lifestyle", "outdoor",
 )
 # 图案文字规则：允许保留、禁止新增（与 test_replica_prompts 的语义一致）。
 ALLOW_PATTERN_TEXT_CONSTRAINT = "Text that is already part of the pattern itself may stay; never add new text."
@@ -269,12 +262,6 @@ def derive_rules(
     )
 
 
-def _has_environment(background: str) -> bool:
-    """背景文案是否已含环境感（窗/木/室内/scene…）；命中即认为模板已写好场景。"""
-    lowered = background.lower()
-    return any(token in lowered for token in _ENVIRONMENT_TOKENS)
-
-
 def resolve_slot_background(
     slot: CompositionSlot,
     *,
@@ -283,18 +270,20 @@ def resolve_slot_background(
 ) -> CompositionSlot:
     """按用户展示偏好确定性修正槽位背景；用户偏好优先于模板措辞。
 
-    - 白底素材格（选中 ``white_background`` 时的 panel_4）固定纯白，不受生活场景影响；
-    - 开启「生活场景」时，非白底格背景若无环境感则强制为真实场景背景；
-    - 其余情况保留模板原文（含空值），由模板/模型决定。
+    - 素材格（panel_4）不参与生活场景覆盖：它自己的拍法就是干净中性背景，
+      套上生活场景会和 shot 直接冲突；仅当选中 ``white_background`` 时固定纯白；
+    - 开启「生活场景」时，只给**空背景**补兜底文案；豆包/模板已经写出的具体
+      场景与光影一概保留，否则四格会被同一句通用背景压平、场景变得单调；
+    - 其余情况保留原文，由模板/模型决定。
     """
     capability_ids = tuple(capabilities.capabilities)
-    if "white_background" in capability_ids and slot.slot_id == WHITE_BACKGROUND_SLOT_ID:
-        background = slot.background.strip() or "纯白色背景，无道具、无环境元素。"
-        return slot.model_copy(update={"background": background})
-    if preferences.use_lifestyle_scene:
-        background = slot.background.strip()
-        if not _has_environment(background):
-            return slot.model_copy(update={"background": LIFESTYLE_SCENE_BACKGROUND})
+    if slot.slot_id == WHITE_BACKGROUND_SLOT_ID:
+        if "white_background" in capability_ids:
+            background = slot.background.strip() or "纯白色背景，无道具、无环境元素。"
+            return slot.model_copy(update={"background": background})
+        return slot
+    if preferences.use_lifestyle_scene and not slot.background.strip():
+        return slot.model_copy(update={"background": LIFESTYLE_SCENE_BACKGROUND})
     return slot
 
 

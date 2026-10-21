@@ -31,7 +31,7 @@ export type WorkspaceTabsStorage = {
 };
 
 /** 逐字段清洗清单。key / moduleId / label / icon 单独处理。 */
-const STRING_FIELDS = ["directionId", "dimensionBatchId", "dimensionItemId", "dimensionChangeSetId", "initialSetId", "iconClass"] as const;
+const STRING_FIELDS = ["directionId", "dimensionBatchId", "dimensionItemId", "dimensionChangeSetId", "initialSetId", "iconClass", "aiVideoPath"] as const;
 const NUMBER_FIELDS = ["taskRunId", "taskId", "activeTaskId", "returnTaskId"] as const;
 const NUMBER_LIST_FIELDS = ["draftIds", "premiumDraftIds"] as const;
 const JSON_OBJECT_FIELDS = ["processingOptions", "profitPrefill"] as const;

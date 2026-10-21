@@ -4,8 +4,6 @@ import test from "node:test";
 import {
   POD_BATCH_COUNTS,
   EMPTY_SPEC_CARD,
-  EMPTY_POD_BUSINESS_FIELDS,
-  buildPromptV1,
   businessFieldsForApi,
   canCancelPodBatch,
   canPausePodBatch,
@@ -19,6 +17,8 @@ import {
   isActiveBatchStatus,
   isPodBatchCount,
   isPristineCreativeEdit,
+  resolveCreativePrompt,
+  stripExcludedElementsLine,
   listingFieldsForApi,
   cloneSpecCardConfig,
   isSpecCardConfig,
@@ -133,29 +133,39 @@ test("business list fields are normalized at the API boundary", () => {
   assert.equal(payload.scene_mood, "暖光木质厨房");
 });
 
-test("built-in v1 prompt carries the renamed batch-wide fields and never the element list", () => {
-  const prompt = buildPromptV1({
-    ...EMPTY_POD_BUSINESS_FIELDS,
-    product_name: "绗缝手提托特包",
-    design_theme: "美式西南复古牛仔荒野风",
-    style_keywords: "复古牛仔靴插画、沙漠仙人掌、绿松石配饰",
-    copy_restrictions: "标题不要出现刺绣",
-  });
-  assert.ok(prompt.includes("主题整批统一风格：美式西南复古牛仔荒野风"));
-  assert.ok(prompt.includes("内饰表面保持无花色的统一纯色（默认黑色）"));
-  assert.ok(!prompt.includes("风格关键词"));
-  assert.ok(!prompt.includes("复古牛仔靴插画"));
-  // 上架文案限制只作用于标题与描述，绝不进入图片提示词。
-  assert.ok(!prompt.includes("标题不要出现刺绣"));
+test("creative prompt is only the user's subject anchor", () => {
+  assert.equal(resolveCreativePrompt("  产品主体：绗缝化妆包，正面拉链，菱形格  "), "产品主体：绗缝化妆包，正面拉链，菱形格");
+  assert.equal(resolveCreativePrompt(""), "");
 });
 
-test("pristine v1 snapshot detection follows the renamed labels", () => {
-  const prompt = buildPromptV1({ ...EMPTY_POD_BUSINESS_FIELDS, product_name: "包" });
-  assert.equal(isPristineCreativeEdit(prompt), true);
-  assert.equal(isPristineCreativeEdit("手写的自定义方向：加一只小狗"), false);
-  // 旧版快照（含“设计主题”标签）不再视为 pristine，避免旧标签冻结。
-  const legacy = prompt.replace("主题整批统一风格：", "设计主题：");
-  assert.equal(isPristineCreativeEdit(legacy), false);
+test("legacy creative edit drops only the excluded-elements line", () => {
+  const saved = [
+    "产品名称：圣诞主题麻将推尺",
+    "目标市场：美国",
+    "禁用元素：品牌 logo、毒品或吸毒工具、纳粹标志",
+    "硬性规则：每款生成一次。",
+  ].join("\n");
+
+  assert.equal(
+    stripExcludedElementsLine(saved),
+    "产品名称：圣诞主题麻将推尺\n目标市场：美国\n硬性规则：每款生成一次。",
+  );
+});
+
+test("legacy v1 snapshot is detected so it can be discarded", () => {
+  const legacy = [
+    "[POD DIRECT LISTING PROMPT v1]",
+    "产品名称：包",
+    "产品品类：袋",
+    "目标市场：美国",
+    "主题整批统一风格：圣诞",
+    "硬性规则：每款生成一次。",
+  ].join("\n");
+  assert.equal(isPristineCreativeEdit(legacy), true);
+  assert.equal(isPristineCreativeEdit("产品主体：绗缝化妆包，正面拉链，菱形格"), false);
+  // 旧版快照（含“设计主题”标签）不再视为可丢弃的 v1 快照。
+  const older = legacy.replace("主题整批统一风格：", "设计主题：");
+  assert.equal(isPristineCreativeEdit(older), false);
 });
 
 test("listing fields normalize every SKU with its declared price and weight, and resolve dimensions from the spec card", () => {

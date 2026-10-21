@@ -6,6 +6,12 @@ const nextConfig: NextConfig = {
   output: "standalone",
   // better-sqlite3 is a native module; mark it external (loaded via require, so the bundler won't try to bundle its .node file)
   serverExternalPackages: ["better-sqlite3"],
+  experimental: {
+    // Long-video import posts the raw file body (see app/api/project/[id]/media/route.ts);
+    // Next 16's proxy body guard defaults to 10MB, which truncated anything larger and
+    // surfaced as "视频无法解码或文件已损坏". The import contract is 1GB.
+    proxyClientMaxBodySize: "1gb",
+  },
   // Keep the file trace honest: nft's conservative directory collection was dragging the local
   // data/ (user uploads/outputs — 96MB of it), the docs site and other repo-only folders into
   // .next/standalone, which then shipped inside every desktop installer (issue: 330MB dmg).

@@ -160,6 +160,33 @@ def test_white_background_slot_stays_white_even_with_lifestyle_scene() -> None:
     assert "纯白" in white_slot.background
 
 
+def test_lifestyle_scene_does_not_override_material_slot_background() -> None:
+    """素材格不参与生活场景覆盖：未选中白底时保留模板原文（空值保持为空）。"""
+    from wh_local.modules.pod_customization.replica_planner import (
+        WHITE_BACKGROUND_SLOT_ID,
+        resolve_slot_background,
+    )
+
+    target = _target()
+    preferences = PresentationPreferences(use_lifestyle_scene=True)
+    capabilities = match_capabilities(target, preferences)
+    assert "white_background" not in capabilities.capabilities
+
+    slot = CompositionSlot(slot_id=WHITE_BACKGROUND_SLOT_ID, role="material_image")
+    resolved = resolve_slot_background(slot, capabilities=capabilities, preferences=preferences)
+    assert resolved.background == ""
+
+    template_slot = CompositionSlot(
+        slot_id=WHITE_BACKGROUND_SLOT_ID, role="material_image", background="浅灰纯色背景"
+    )
+    assert (
+        resolve_slot_background(
+            template_slot, capabilities=capabilities, preferences=preferences
+        ).background
+        == "浅灰纯色背景"
+    )
+
+
 def test_hand_supported_but_disabled_produces_no_hand_slot() -> None:
     target = _target()
     capabilities = match_capabilities(target, PresentationPreferences(use_hand_model=False))

@@ -1,3 +1,5 @@
+import { AI_VIDEO_NAV } from "../../modules/ai_video/nav.ts";
+
 export type WorkspaceModuleId =
   | "dashboard"
   | "daily_selection"
@@ -20,7 +22,35 @@ export type WorkspaceModuleId =
   | "price_verification"
   | "personal_center";
 
-export type WorkspaceNavigationGroupId = "product_workflow" | "combo_workflow" | "sourcing_workflow" | "pod_workflow";
+export type WorkspaceNavigationGroupId =
+  | "product_workflow"
+  | "combo_workflow"
+  | "sourcing_workflow"
+  | "pod_workflow"
+  | "personal_center"
+  | "ai_video";
+
+/** 个人中心页面内的二级面板；点击只切换面板，不新开页签。 */
+export type PersonalCenterPanelId =
+  | "wallet"
+  | "usage"
+  | "pricing"
+  | "model"
+  | "preferences"
+  | "version"
+  | "storage"
+  | "migration"
+  | "promo"
+  | "feedback";
+
+export type WorkspaceNavigationPanel = {
+  /** 面板标识：个人中心用面板 key，AI 视频用 iframe 内路径。 */
+  id: string;
+  label: string;
+  iconClass?: string;
+  /** 字符图标：沿用内嵌页面原横条导航的符号。 */
+  icon?: string;
+};
 
 export type WorkspaceModule = {
   id: WorkspaceModuleId;
@@ -41,6 +71,8 @@ export type WorkspaceNavigationGroup = {
   description: string;
   defaultChildId: WorkspaceModuleId;
   children: WorkspaceModule[];
+  /** 页面内二级面板（个人中心）：子导航只切面板，不新开页签。 */
+  panels?: WorkspaceNavigationPanel[];
 };
 
 export type WorkspaceNavigationItem = WorkspaceModule | WorkspaceNavigationGroup;
@@ -193,6 +225,26 @@ const personalCenter: WorkspaceModule = {
   description: "账户资料、积分钱包、充值订单与服务器账本安全状态",
 };
 
+/** 个人中心侧栏子导航：顺序与原页内横条一致。 */
+export const personalCenterPanels: WorkspaceNavigationPanel[] = [
+  { id: "wallet", label: "积分钱包", iconClass: "iconfont icon-wallet-fill" },
+  { id: "usage", label: "消费流水", iconClass: "iconfont icon-accountbook-fill" },
+  { id: "pricing", label: "计费规则", iconClass: "iconfont icon-calculator" },
+  { id: "model", label: "模型选择", iconClass: "iconfont icon-robot-fill" },
+  { id: "preferences", label: "偏好设置", iconClass: "iconfont icon-skin" },
+  { id: "version", label: "系统版本", iconClass: "iconfont icon-setting" },
+  { id: "storage", label: "存储空间", iconClass: "iconfont icon-database" },
+  { id: "promo", label: "推广计划", iconClass: "iconfont icon-gift" },
+  { id: "feedback", label: "意见反馈", iconClass: "iconfont icon-message" },
+];
+
+/** AI 视频侧栏子导航：直接复用内嵌 ClipForge 的 7 个入口定义。 */
+export const aiVideoPanels: WorkspaceNavigationPanel[] = AI_VIDEO_NAV.map((item) => ({
+  id: item.href,
+  label: item.label,
+  icon: item.icon,
+}));
+
 const collectionPanel: WorkspaceModule = {
   id: "daily_selection_collection",
   label: "采集面板",
@@ -249,8 +301,28 @@ export const workspaceModules: WorkspaceNavigationItem[] = [
     defaultChildId: "price_verification",
     children: [priceVerification, profitActivity, productLibrary],
   },
-  aiVideo,
-  personalCenter,
+  {
+    // AI 视频仍是单个页签模块，侧栏按分组展开 iframe 内的 7 个入口。
+    id: "ai_video",
+    label: "AI 视频（实验）",
+    icon: "",
+    iconClass: "iconfont icon-video",
+    description: "通过 ClipForge 生成电商短视频",
+    defaultChildId: "ai_video",
+    children: [aiVideo],
+    panels: aiVideoPanels,
+  },
+  {
+    // 个人中心仍是单个页签模块，但侧栏里按分组展开二级面板。
+    id: "personal_center",
+    label: "个人中心",
+    icon: "",
+    iconClass: "iconfont icon-user",
+    description: "账户资料、积分钱包、充值订单与服务器账本安全状态",
+    defaultChildId: "personal_center",
+    children: [personalCenter],
+    panels: personalCenterPanels,
+  },
 ];
 
 export const workspacePageModules: WorkspaceModule[] = [

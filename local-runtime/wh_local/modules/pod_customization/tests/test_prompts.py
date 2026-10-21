@@ -121,12 +121,16 @@ def test_direct_listing_prompt_keeps_interior_unprinted_rule() -> None:
     assert "keep the interior surface unprinted" in prompt
 
 
-def test_style_prompt_declares_assigned_elements_as_subject() -> None:
+def test_style_prompt_declares_assigned_elements_as_printed_motifs() -> None:
     assignment = assign_style_elements(COWBOY_KEYWORDS, 1, "batch-a")
     prompt = _style_prompt({"design_theme": "牛仔荒野风"}, 1, style_elements=assignment)
-    assert f"本款素材主语：{assignment['hero']}（Tier 1 Hero 主锚，视觉主角，尺度 1.0）" in prompt
-    assert "叙事层 Narrative：" in prompt
-    assert "节奏层 Rhythm：" in prompt
+    assert (
+        f"本款印花主元素：{assignment['hero']}"
+        "（Tier 1 主锚，印在产品表面的平面图案，不是独立实物；尺度 1.0）"
+    ) in prompt
+    assert "印花叙事层 Narrative：" in prompt
+    assert "印花点缀层 Rhythm：" in prompt
+    assert "禁止生成独立实物、摆件、餐具、食品、家具或场景道具" in prompt
     assert "清单中未分配给本款的元素在本款中禁止出现。" in prompt
 
 
@@ -137,14 +141,14 @@ def test_style_prompt_accepts_legacy_element_assignment_shape() -> None:
         1,
         style_elements={"primary": "猫", "co": "咖啡", "accents": ["樱花"]},
     )
-    assert "本款素材主语：猫（Tier 1 Hero 主锚，视觉主角，尺度 1.0）" in prompt
-    assert "叙事层 Narrative：咖啡" in prompt
-    assert "节奏层 Rhythm：樱花" in prompt
+    assert "本款印花主元素：猫（Tier 1 主锚，印在产品表面的平面图案，不是独立实物；尺度 1.0）" in prompt
+    assert "印花叙事层 Narrative：咖啡" in prompt
+    assert "印花点缀层 Rhythm：樱花" in prompt
 
 
 def test_style_prompt_instructs_invention_without_assignment() -> None:
     prompt = _style_prompt({"design_theme": "牛仔荒野风"}, 2, style_elements={})
-    assert "本款未分配素材：必须在 Batch-wide theme & style 的主题内自创一个新元素" in prompt
+    assert "本款未分配印花元素：必须在 Batch-wide theme & style 的主题内自创一个新图案元素" in prompt
 
 
 def test_style_prompt_keeps_theme_and_rendering_contracts() -> None:
@@ -197,8 +201,8 @@ def test_style_prompt_includes_parameterized_set_design() -> None:
     )
 
     assert "SET DESIGN" in prompt
-    # 参数化：场景美感必须显式绑定「本款元素」，道具配色取本款色板。
-    assert "this style's PART 3 elements (猫, 咖啡)" in prompt
+    # PART 3 元素是印花，不是实物道具；道具配色仍取本款色板。
+    assert "The PART 3 elements are PRINTED motifs" in prompt
     assert "鎏金黄铜色" in prompt
     # 素材图必须保持纯净中性背景（不能因为加了道具而污染）。
     assert "material panel (bottom-right) must stay a clean neutral ecommerce background" in prompt
@@ -208,11 +212,11 @@ def test_set_design_applies_when_style_has_no_assigned_elements() -> None:
     prompt = _style_prompt({"color_preferences": "米白、墨绿"}, style_index=2)
 
     assert "SET DESIGN" in prompt
-    assert "this style's own subject" in prompt
+    assert "The PART 3 elements are PRINTED motifs" in prompt
 
 
 def test_style_prompt_asks_for_grouped_element_pairing() -> None:
-    """元素不能均匀散点平铺，必须成组、有主次（用户反馈"搭配不好看"）。"""
+    """POD 是满印：图案要无缝铺满可印表面，不能只在局部放一两个图案。"""
 
     prompt = _style_prompt(
         {},
@@ -220,8 +224,9 @@ def test_style_prompt_asks_for_grouped_element_pairing() -> None:
         style_elements={"primary": "猫", "co": "咖啡", "accents": ["樱花", "蝴蝶"]},
     )
 
-    assert "元素搭配要有主次与联系" in prompt
-    assert "不要均匀散点平铺" in prompt
+    assert "满印硬要求：这是 all-over print，不是局部印花" in prompt
+    assert "无缝、连续地铺满产品所有可印表面" in prompt
+    assert "不能只在局部放 1~2 个图案" in prompt
 
 
 def test_prompt_is_organized_into_four_parts() -> None:
@@ -249,6 +254,76 @@ def test_prompt_is_organized_into_four_parts() -> None:
         < prompt.index("PART 3 ·")
         < prompt.index("PART 4 ·")
     )
+
+
+def test_operator_hard_rules_are_promoted_to_the_top_of_part_1() -> None:
+    """创意编辑（含手写硬性规则）必须是 PART 1 的批级硬条款，不能垫底成 Creative direction。"""
+
+    fields = BusinessFields(product_name="天然橡胶正方形防水桌布", product_category="家居餐垫布艺装饰")
+    creative = "硬性规则：\n9. 桌布尺寸为80cm×80cm全覆盖桌面，无下挂。"
+
+    prompt = build_direct_listing_prompt(fields, creative)
+
+    assert "BATCH-SPECIFIC HARD RULES" in prompt
+    assert prompt.index("BATCH-SPECIFIC HARD RULES") < prompt.index("Treat the supplied template")
+    assert "Creative direction:" not in prompt
+    assert "80cm×80cm" in prompt
+
+
+def test_material_realism_does_not_assume_sewn_fabric() -> None:
+    """橡胶/PVC 等光滑材质不能被内置条款强行套成绗缝布料。"""
+
+    prompt = build_direct_listing_prompt(BusinessFields(product_name="天然橡胶桌布"), "")
+
+    assert "MATERIAL REALISM" in prompt
+    assert "Do NOT assume this is a sewn fabric product" in prompt
+    assert "TEXTILE REALISM (sewn fabric products only" in prompt
+    assert "matte rubber sheet stays smooth, flat and matte" in prompt
+    assert "Never add fabric weave, quilting, stitching" in prompt
+
+
+def test_flat_product_form_and_size_are_locked() -> None:
+    """平面软品（桌布/垫子）不得被生成立体方块，写明的尺寸与覆盖方式必须照做。"""
+
+    prompt = build_direct_listing_prompt(BusinessFields(product_name="正方形桌布"), "")
+
+    assert "PRODUCT FORM & SIZE LOCK" in prompt
+    assert "never as a box, cube, slab, stack, cushion, tray, molded shell or other 3D block" in prompt
+    assert "a square 80x80 tablecloth must stay square" in prompt
+    assert "no overhang" in prompt
+    assert "no rounded bulge" in prompt
+
+
+def test_flat_product_forces_top_down_panels() -> None:
+    fields = BusinessFields(product_name="天然橡胶正方形防水桌布", product_category="家用防水桌布")
+
+    prompt = build_direct_listing_prompt(
+        fields, "材质为天然橡胶，表面光滑。桌布尺寸为80cmx80cm全覆盖桌面，无下挂。"
+    )
+
+    assert "Panel 1 — PRIMARY IMAGE (top-left): straight top-down flat lay" in prompt
+    assert "FLAT PRODUCT COMPOSITION OVERRIDE" in prompt
+    assert "no table edge, no chairs, no drape" in prompt
+    # 禁止模型在四格角上写 A/B/C/D 或 1/2/3/4。
+    assert "NO QUADRANT LABELS" in prompt
+    # 平铺产品不再采用用户构图里的 eye-level 机位。
+    assert "user direction" not in prompt
+
+
+def test_flat_product_uses_flat_lay_set_design() -> None:
+    fields = BusinessFields(product_name="天然橡胶正方形防水桌布", product_category="家用防水桌布")
+    base = build_direct_listing_prompt(fields, "平铺，无下挂")
+
+    prompt = build_style_listing_prompt(
+        base,
+        style_index=1,
+        attempt=1,
+        style_elements={"hero": "雪花纹样"},
+    )
+
+    assert "FLAT-LAY SET DESIGN" in prompt
+    assert "No room, no table edge, no chairs, no furniture, no hanging cloth" in prompt
+    assert "supporting props from the same subject family as the artwork" not in prompt
 
 
 def test_set_design_scene_rotates_across_styles() -> None:
@@ -307,12 +382,43 @@ def test_style_prompt_omits_scene_mood_when_blank() -> None:
     assert "BATCH SCENE MOOD" not in prompt
 
 
-def test_style_prompt_downgrades_lighting_and_keeps_glow() -> None:
-    """光影归构图模版：大提示词不再写主导性光线，只保留 GLOW 作氛围。"""
+def test_style_prompt_keeps_art_direction_lighting_and_glow() -> None:
+    """美术指导必须带主导性光线，否则成图又平又素（构图模板链路不进生图提示词）。"""
     prompt = _style_prompt({"design_theme": "牛仔荒野风"}, style_index=1)
-    assert "warm directional light" not in prompt
-    assert "Lighting: warm" not in prompt
+    assert "LIGHTING — one clear warm directional key light" in prompt
+    assert "soft contact shadow" in prompt
     assert "GLOW" in prompt
+    # 细节格沿用同一场景与光向，不能掉回灰底棚拍。
+    assert "Panels 1-3 are ONE shoot" in prompt
+    # 场景要有 3-5 个同题材道具，但不能把印花纹样做成 3D 实物。
+    assert "3-5 supporting props" in prompt
+    assert "never a 3D copy of a printed motif" in prompt
+
+
+def test_style_prompt_makes_density_a_hard_rule() -> None:
+    """density 不能只写在 signature 里：必须成为覆盖率 + 重复次数的硬指令。"""
+    prompt = _style_prompt(
+        {"design_theme": "牛仔荒野风"},
+        1,
+        style_elements=assign_style_elements(COWBOY_KEYWORDS, 1, "batch-a"),
+    )
+    assert "图案密度（本款硬要求" in prompt
+    assert "可印表面覆盖率 100%" in prompt
+    assert "满印填充纹样" in prompt
+    # PART 1 的批级满印锁（在 base prompt 里），避免四格或不同款退回局部印花。
+    assert "ALL-OVER PRINT LOCK" in build_direct_listing_prompt(
+        BusinessFields(product_name="绗缝化妆包"), ""
+    )
+    # 密度池里不再出现 sparse / oversized 这类会把画面做空的档位。
+    for index in range(1, 11):
+        style_prompt = _style_prompt(
+            {"design_theme": "牛仔荒野风"},
+            index,
+            style_elements=assign_style_elements(COWBOY_KEYWORDS, index, "batch-a"),
+        )
+        assert "density=very sparse" not in style_prompt
+        assert "density=sparse" not in style_prompt
+        assert "one oversized motif" not in style_prompt
 
 
 def test_style_prompt_renders_color_harmony_tiers_with_user_colors() -> None:

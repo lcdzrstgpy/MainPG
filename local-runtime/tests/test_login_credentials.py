@@ -1,23 +1,20 @@
 # -*- coding: utf-8 -*-
-"""登录页「账号管理」本地凭据存储的单元测试。"""
+"""登录页「账号管理」本地凭据存储的单元测试。
+
+Windows 走 DPAPI，macOS / Linux 走 AES-256-GCM 兜底（密钥文件 0600），
+两条路径都要求「落盘内容不含账号与密码明文」。
+"""
 
 from __future__ import annotations
 
-import sys
+import os
 from pathlib import Path
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from wh_local import login_credentials
 from wh_local.login_credentials import LoginCredentialStore, create_router
-
-# DPAPI 加密仅在 Windows 可用；其它平台接口按设计降级为 503（见 test_router_save_...）。
-requires_dpapi = pytest.mark.skipif(
-    sys.platform != "win32",
-    reason="DPAPI 凭据存储仅在 Windows 可用",
-)
 
 
 def _store(tmp_path: Path, **kwargs) -> LoginCredentialStore:
@@ -30,7 +27,6 @@ def _client(store: LoginCredentialStore) -> TestClient:
     return TestClient(app)
 
 
-@requires_dpapi
 def test_save_and_reveal_round_trip(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.save("alex@example.com", password="secret-123", remember=True)
@@ -42,19 +38,17 @@ def test_save_and_reveal_round_trip(tmp_path: Path) -> None:
     assert store.reveal("alex@example.com") == "secret-123"
 
 
-@requires_dpapi
 def test_file_on_disk_is_encrypted(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.save("alex@example.com", password="topsecret-value", remember=True)
 
     raw = (tmp_path / "login-credentials.bin").read_bytes()
 
-    # DPAPI 密文里既不应出现密码，也不应出现账号明文。
+    # 密文里既不应出现密码，也不应出现账号明文。
     assert b"topsecret-value" not in raw
     assert b"alex@example.com" not in raw
 
 
-@requires_dpapi
 def test_remember_false_keeps_account_without_password(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.save("alex@example.com", password="secret-123", remember=False)
@@ -66,7 +60,6 @@ def test_remember_false_keeps_account_without_password(tmp_path: Path) -> None:
     assert store.reveal("alex@example.com") is None
 
 
-@requires_dpapi
 def test_unchecked_remember_clears_previously_saved_password(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.save("alex@example.com", password="old-secret", remember=True)
@@ -77,7 +70,6 @@ def test_unchecked_remember_clears_previously_saved_password(tmp_path: Path) -> 
     assert store.list_entries()[0]["has_password"] is False
 
 
-@requires_dpapi
 def test_save_updates_password_and_moves_account_to_front(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.save("first@example.com", password="one", remember=True)
@@ -93,7 +85,6 @@ def test_save_updates_password_and_moves_account_to_front(tmp_path: Path) -> Non
     assert store.reveal("first@example.com") == "one-updated"
 
 
-@requires_dpapi
 def test_remember_true_without_password_keeps_existing_password(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.save("alex@example.com", password="secret-123", remember=True)
@@ -103,7 +94,6 @@ def test_remember_true_without_password_keeps_existing_password(tmp_path: Path) 
     assert store.reveal("alex@example.com") == "secret-123"
 
 
-@requires_dpapi
 def test_delete_account(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.save("alex@example.com", password="secret", remember=True)
@@ -113,7 +103,6 @@ def test_delete_account(tmp_path: Path) -> None:
     assert store.delete("alex@example.com") is False
 
 
-@requires_dpapi
 def test_account_limit_evicts_oldest(tmp_path: Path) -> None:
     store = _store(tmp_path, max_accounts=3)
     for index in range(4):
@@ -127,7 +116,6 @@ def test_account_limit_evicts_oldest(tmp_path: Path) -> None:
     assert identifiers[0] == "user3@example.com"
 
 
-@requires_dpapi
 def test_clear_password_keeps_account(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.save("alex@example.com", password="secret", remember=True)
@@ -137,10 +125,9 @@ def test_clear_password_keeps_account(tmp_path: Path) -> None:
     assert store.clear_password("alex@example.com") is False
 
 
-@requires_dpapi
 def test_corrupt_file_is_quarantined_and_recovered(tmp_path: Path) -> None:
     path = tmp_path / "login-credentials.bin"
-    path.write_bytes(b"not-a-dpapi-blob")
+    path.write_bytes(b"not-a-valid-ciphertext")
 
     store = _store(tmp_path)
 
@@ -151,7 +138,6 @@ def test_corrupt_file_is_quarantined_and_recovered(tmp_path: Path) -> None:
     assert store.reveal("alex@example.com") == "secret"
 
 
-@requires_dpapi
 def test_identifier_is_trimmed_and_password_keeps_spaces(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.save("  alex@example.com  ", password="  pad  ", remember=True)
@@ -161,7 +147,6 @@ def test_identifier_is_trimmed_and_password_keeps_spaces(tmp_path: Path) -> None
     assert store.reveal("alex@example.com") == "  pad  "
 
 
-@requires_dpapi
 def test_router_round_trip(tmp_path: Path) -> None:
     client = _client(_store(tmp_path))
 
@@ -192,15 +177,19 @@ def test_router_round_trip(tmp_path: Path) -> None:
     assert client.get("/api/login-credentials").json()["accounts"] == []
 
 
-def test_router_save_returns_503_when_dpapi_unavailable(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_non_windows_fallback_round_trip(tmp_path: Path, monkeypatch) -> None:
+    """非 Windows（macOS / Linux）也要能存密码——此前这条路径直接 503。"""
     monkeypatch.setattr(login_credentials, "_IS_WINDOWS", False)
-    client = _client(_store(tmp_path))
+    store = _store(tmp_path)
 
-    response = client.post(
-        "/api/login-credentials",
-        json={"identifier": "alex@example.com", "password": "secret", "remember": True},
-    )
+    store.save("alex@example.com", password="secret-1", remember=True)
 
-    assert response.status_code == 503
+    assert store.reveal("alex@example.com") == "secret-1"
+    raw = (tmp_path / "login-credentials.bin").read_bytes()
+    assert raw.startswith(login_credentials._AES_MAGIC)
+    assert b"secret-1" not in raw
+    assert b"alex@example.com" not in raw
+    key_path = tmp_path / "login-credentials.key"
+    assert key_path.exists()
+    if os.name != "nt":
+        assert key_path.stat().st_mode & 0o777 == 0o600

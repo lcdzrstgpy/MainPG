@@ -221,78 +221,30 @@ const MANUAL_TITLE_EDITABLE_BATCH_STATUSES = new Set<PodBatchStatus>([
   "settlement_pending",
 ]);
 
-function valueOrFallback(value: string): string {
-  return value.trim() || "未填写";
+export function resolveCreativePrompt(currentBatchEdit: string): string {
+  // 现在只有用户手写的主体锚定；不再自动生成 v1 模板。
+  return currentBatchEdit.trim();
 }
 
-export function buildPromptV1(fields: PodBusinessFieldsDraft): string {
-  // 元素关键词按款式随机分配（后端 assign_style_elements），只进入被选中的款式，
-  // 绝不整表出现在本创意提示词中，否则全量清单会经 Creative direction 进每款。
-  return [
-    "[POD DIRECT LISTING PROMPT v1]",
-    "模板只用于识别产品结构、轮廓、材质和可印刷区域，不作为生成底图。",
-    `产品名称：${valueOrFallback(fields.product_name)}`,
-    `产品品类：${valueOrFallback(fields.product_category)}`,
-    `目标市场：${valueOrFallback(fields.target_market)}`,
-    `目标人群：${valueOrFallback(fields.target_audience)}`,
-    `核心卖点：${valueOrFallback(fields.core_selling_points)}`,
-    `主题整批统一风格：${valueOrFallback(fields.design_theme)}`,
-    `偏好配色：${valueOrFallback(fields.color_preferences)}`,
-    `禁用元素：${valueOrFallback(fields.excluded_elements)}`,
-    "硬性规则：",
-    "1. 每款正常只生成一次 2×2 成组图片；生成、拆分或去重失败时最多重试一次。",
-    "2. 四格顺序固定为主图、细节图 A、细节图 B、素材图。",
-    "3. 同一款四张图必须保持产品、结构、底色、图案内容、图案尺寸与位置完全一致。",
-    "4. 不同款式必须使用不同图案、构图和创意配方，禁止复用上一款图案。",
-    "5. 禁止复制模板原有图案、产品颜色、背景或场景；必须重新设计产品表面与展示环境。",
-    "6. 不得添加未授权品牌、商标、版权角色、文字、水印或与禁用元素冲突的内容。",
-    "7. 带内饰/内衬的产品（如收纳筐、脏衣篓、束口袋内里）：内饰表面保持无花色的统一纯色（默认黑色），图案只印在产品外表面，严禁把外表面的花色、底纹延伸到内饰上。",
-  ].join("\n");
+/**
+ * 旧模板 / 旧草稿里残留的「禁用元素：」行：加载时直接去掉。
+ * 危险违禁内容由生图模型自身审核，品牌/肖像/logo 由后端固定清单约束。
+ */
+export function stripExcludedElementsLine(text: string): string {
+  const lines = text
+    .split("\n")
+    .filter((line) => !/^\s*禁用元素\s*[：:]/.test(line));
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+  return lines.join("\n");
 }
 
-export function resolveCreativePrompt(fields: PodBusinessFieldsDraft, currentBatchEdit: string): string {
-  return currentBatchEdit.trim() || buildPromptV1(fields);
-}
-
+/** 旧版自动生成的 v1 快照检测：命中即视为「没有主体锚定」，加载时直接丢弃。 */
 export function isPristineCreativeEdit(text: string | null | undefined): boolean {
   const trimmed = (text ?? "").trim();
   if (!trimmed.startsWith("[POD DIRECT LISTING PROMPT v1]")) return false;
-  // Structurally still the auto-generated v1 snapshot (just copied/stored from
-  // the built-in prompt), not a hand-written creative direction. Such a snapshot
-  // must follow business-field edits instead of freezing stale field values.
   return ["产品名称：", "产品品类：", "目标市场：", "主题整批统一风格：", "硬性规则："].every(
     (label) => trimmed.includes(label),
   );
-}
-
-export function businessFieldsSignature(fields: PodBusinessFieldsDraft): string {
-  return JSON.stringify([
-    fields.product_name,
-    fields.product_category,
-    fields.target_market,
-    fields.target_audience,
-    fields.core_selling_points,
-    fields.design_theme,
-    fields.style_keywords,
-    fields.color_preferences,
-    fields.excluded_elements,
-  ].map((value) => value.trim()));
-}
-
-export type CreativePromptSyncStatus = "builtin" | "custom" | "custom-stale";
-
-// 判断「本批次创意编辑」与上方业务信息是否同步：
-// - builtin：未自定义，文本即为 buildPromptV1(businessFields) 的实时输出；
-// - custom：已自定义，且自定义时的业务信息快照与当前一致；
-// - custom-stale：已自定义，但业务信息在自定义之后发生变更，文本已不反映最新业务信息。
-export function creativePromptSyncStatus(
-  customEdit: string | null,
-  snapshot: string | null,
-  fields: PodBusinessFieldsDraft,
-): CreativePromptSyncStatus {
-  if (customEdit === null || !customEdit.trim()) return "builtin";
-  if (snapshot === null || snapshot === businessFieldsSignature(fields)) return "custom";
-  return "custom-stale";
 }
 
 export function splitBusinessField(value: string): string[] {

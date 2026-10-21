@@ -23,6 +23,7 @@ from .contracts import (
     BRIEF_COLOR_PREFERENCES_MIN_ITEMS,
     BRIEF_EXCLUDED_ELEMENTS_MIN_ITEMS,
     BRIEF_STYLE_KEYWORDS_MIN_ITEMS,
+    IP_EXCLUDED_ELEMENTS,
     BusinessFields,
 )
 from .runtime import AiRuntime, AiRuntimeConfig
@@ -35,11 +36,11 @@ from .title_runtime import (
 )
 
 
-PROMPT_VERSION = "pod-brief-v2"
+PROMPT_VERSION = "pod-brief-v3"
 MAX_ATTEMPTS = BRIEF_ATTEMPTS
 RETRY_BACKOFF_SECONDS = 0.5
-# 单次 provider 调用超时。前置层一次要产出 40+ 元素 / 10+ 配色 / 12+ 禁用项，
-# 输出量远大于标题链路，共用 60s 会贴着实际上限，导致本可成功的调用被判超时后重试。
+# 单次 provider 调用超时。前置层要产出 24+ 元素 / 6+ 配色 / 3+ 禁用项，
+# 输出量仍大于标题链路，共用 60s 会贴着实际上限，导致本可成功的调用被判超时后重试。
 BRIEF_REQUEST_TIMEOUT_SECONDS = 90.0
 
 # 防御性上限：AI 输出越界时判不合格并触发一次契约修复重试，而不是把超长文本写进表单。
@@ -84,40 +85,11 @@ def is_concrete_style_element(value: str) -> bool:
     return not text.endswith(_ABSTRACT_ELEMENT_SUFFIXES)
 
 
-# 侵权类与危险类的确定性安全清单：不依赖模型自觉，缺失即补齐。
-# 目的：避免商品图出现品牌/版权/违禁内容，导致商品下架或店铺被封。
-_SAFETY_EXCLUDED_BASELINE = (
-    "品牌 logo",
-    "商标标识",
-    "球队或联盟标识",
-    "影视动漫游戏角色",
-    "卡通 IP 形象",
-    "名人肖像或签名",
-    "奢侈品牌老花图案",
-    "平台水印或标识",
-    "受版权保护的海报封面",
-    "钞票或货币图样",
-    "身份证件样式",
-    "武器弹药",
-    "管制刀具",
-    "爆炸物",
-    "毒品或吸毒工具",
-    "赌博筹码或老虎机",
-    "烟草或电子烟",
-    "酒精饮品",
-    "药品或医疗功效宣称",
-    "暴力血腥画面",
-    "恐怖或仇恨符号",
-    "纳粹标志",
-    "宗教敏感符号",
-    "政治标志或政党标识",
-    "国旗或国徽",
-    "成人或色情内容",
-    "裸露人体",
-    "虐待动物画面",
-    "二维码或条形码",
-    "真人照片或可识别个人信息",
-)
+# 只保留「模型不会主动拒绝、但会带来真实下架风险」的侵权与身份类：品牌、商标、
+# 版权角色、名人肖像等。危险违禁内容（毒品、武器、赌博、成人、仇恨符号等）由生图
+# 模型自身的内容审核拦截，写进提示词反而会触发 Ark 的输入文本审核
+# （InputTextSensitiveContentDetected），因此不再枚举。
+_SAFETY_EXCLUDED_BASELINE = IP_EXCLUDED_ELEMENTS
 
 
 def _with_safety_baseline(values: list[str]) -> list[str]:
@@ -153,8 +125,6 @@ _REQUIRED_SCALARS = (
     "target_market",
     "design_theme",
 )
-_FIELD_KEYS = _SCALAR_FIELDS + _LIST_FIELDS
-
 _BRIEF_RESPONSE_FORMAT: dict[str, Any] = {
     "type": "json_schema",
     "json_schema": {
@@ -163,7 +133,11 @@ _BRIEF_RESPONSE_FORMAT: dict[str, Any] = {
         "schema": {
             "type": "object",
             "additionalProperties": False,
-            "required": sorted(_FIELD_KEYS),
+            # 只把生成所必需的核心字段设为 required；卖点/工艺/场景/人群等可选字段
+            # 允许缺省，解析时按空值处理，避免模型漏一个可选键就整次判失败并重试。
+            "required": sorted(
+                [*_REQUIRED_SCALARS, "style_keywords", "color_preferences", "excluded_elements"]
+            ),
             "properties": {
                 "product_name": {"type": "string", "minLength": 1},
                 "product_category": {"type": "string", "minLength": 1},
@@ -220,8 +194,12 @@ class PodBriefResult:
 
 
 def validate_brief_fields(payload: Mapping[str, Any]) -> BusinessFields:
-    """把 AI 输出规范化成 BusinessFields；不合规时抛 ValueError（用于契约修复重试）。"""
-    if not isinstance(payload, Mapping) or set(payload) != set(_FIELD_KEYS):
+    """把 AI 输出规范化成 BusinessFields；不合规时抛 ValueError（用于契约修复重试）。
+
+    只校验生成所必需的核心字段：可选字段缺省按空值处理，模型多返回的键直接忽略，
+    不再因为键集合不完全相等而整次判失败（Ark 的 strict schema 并不总是严格生效）。
+    """
+    if not isinstance(payload, Mapping):
         raise ValueError("POD brief output fields failed validation")
 
     scalars: dict[str, str] = {}
@@ -244,7 +222,7 @@ def validate_brief_fields(payload: Mapping[str, Any]) -> BusinessFields:
     ]
     if len(lists["style_keywords"]) < BRIEF_STYLE_KEYWORDS_MIN_ITEMS:
         feedback = (
-            "；以下不是具体事物已被剔除，请改写为具体可绘制的事物："
+            "；以下不是可印在平面上的图案元素已被剔除，请改写为平面纹样/图形："
             + "、".join(rejected[:10])
             if rejected
             else ""
@@ -259,11 +237,11 @@ def validate_brief_fields(payload: Mapping[str, Any]) -> BusinessFields:
             f"color_preferences 至少需要 {BRIEF_COLOR_PREFERENCES_MIN_ITEMS} 个具体颜色，"
             f"实际只有 {len(lists['color_preferences'])} 个"
         )
-    # 禁用元素先校验模型是否覆盖了侵权/危险类，再补齐确定性安全清单。
+    # 禁用元素只需少量与本主题相关的条目；侵权/身份类由确定性安全清单补齐。
     if len(lists["excluded_elements"]) < BRIEF_EXCLUDED_ELEMENTS_MIN_ITEMS:
         raise ValueError(
             f"excluded_elements 至少需要 {BRIEF_EXCLUDED_ELEMENTS_MIN_ITEMS} 项"
-            "（必须包含侵权类与危险违禁类），"
+            "（只写与本主题冲突的排除项即可，品牌/商标等由系统补齐），"
             f"实际只有 {len(lists['excluded_elements'])} 项"
         )
     lists["excluded_elements"] = _with_safety_baseline(lists["excluded_elements"])
@@ -286,6 +264,16 @@ def validate_brief_fields(payload: Mapping[str, Any]) -> BusinessFields:
         color_preferences=lists["color_preferences"],
         excluded_elements=lists["excluded_elements"],
     )
+
+
+def _restore_user_provided(fields: BusinessFields, request: PodBriefRequest) -> BusinessFields:
+    """模型漏填用户显式给出的工艺 / 场景时，用原文兜底，避免可选键缺省丢掉用户输入。"""
+    updates: dict[str, str] = {}
+    for key in ("fabric_craft", "scene_mood"):
+        raw = _normalized_text(getattr(request, key))
+        if raw and not getattr(fields, key):
+            updates[key] = raw
+    return fields.model_copy(update=updates) if updates else fields
 
 
 class PodBriefRuntime(AiRuntime):
@@ -351,7 +339,7 @@ class PodBriefRuntime(AiRuntime):
                 if on_outcome is not None:
                     on_outcome(attempt_call_id, "success")
                     outcome_recorded = True
-                fields = _parse_brief_result(content)
+                fields = _restore_user_provided(_parse_brief_result(content), request)
                 return PodBriefResult(
                     fields=fields,
                     attempt_count=attempt,
@@ -496,6 +484,19 @@ def _messages_for_brief(request: PodBriefRequest, *, rejection_feedback: str) ->
             "fabric_craft": _normalized_text(request.fabric_craft),
             "scene_mood": _normalized_text(request.scene_mood),
         },
+        "input_template_labels": {
+            "产品名称": "product_name",
+            "产品风格": "design_theme",
+            "产品工艺": "fabric_craft",
+            "使用场景": "scene_mood",
+            "目标市场": "target_market",
+            "目标人群": "target_audience",
+        },
+        "grounding_rule": (
+            "只填 user_brief 里给了线索、或能从产品名/品类合理推断的内容；"
+            "没有依据的字段留空或按核心字段的最小要求给一个中性值，"
+            "不要为了凑数量编造无关元素、颜色或禁用项。"
+        ),
         "rejection_feedback": rejection_feedback,
         "field_contract": {
             "product_name": "商品名称，具体到品类，例如：复古印花托特包",
@@ -517,50 +518,49 @@ def _messages_for_brief(request: PodBriefRequest, *, rejection_feedback: str) ->
                 "为空时再看 user_brief 里「使用场景：」那一行；两处都没有才返回空字符串。"
             ),
             "style_keywords": (
-                f"元素关键词，必须 {BRIEF_STYLE_KEYWORDS_MIN_ITEMS} 项以上（建议 40-60）；"
-                "每一项都是具体可绘制的事物，禁止形容词/风格词/配色词/手法词/场景类别词"
+                f"图案元素关键词，至少 {BRIEF_STYLE_KEYWORDS_MIN_ITEMS} 项（建议 24-40）；"
+                "每一项都是可印在产品表面的平面图案元素（具象纹样/图形），"
+                "禁止独立实物、摆件、餐具、食品、家具、场景道具，也禁止形容词/风格词/配色词/手法词"
             ),
             "color_preferences": (
-                f"偏好配色，至少 {BRIEF_COLOR_PREFERENCES_MIN_ITEMS} 个具体颜色名（建议 10-14）"
+                f"偏好配色，至少 {BRIEF_COLOR_PREFERENCES_MIN_ITEMS} 个具体颜色名（建议 6-10）"
             ),
             "excluded_elements": (
-                f"必须避免出现的元素，至少 {BRIEF_EXCLUDED_ELEMENTS_MIN_ITEMS} 项，"
-                "且必须显式覆盖侵权类与危险违禁类"
+                f"与本主题冲突、必须避免出现的元素，{BRIEF_EXCLUDED_ELEMENTS_MIN_ITEMS}-8 项即可；"
+                "品牌/商标/版权角色/名人肖像由系统自动补齐，不必重复列举；"
+                "不要枚举危险违禁内容（生图模型自身会拦截）"
             ),
         },
         "style_keywords_recipe": (
-            f"style_keywords 必须给出至少 {BRIEF_STYLE_KEYWORDS_MIN_ITEMS} 个互不重复的元素，"
-            "每一项都必须是**具体、可绘制的事物**（具象名词或带修饰的具象名词短语），"
+            f"style_keywords 至少给出 {BRIEF_STYLE_KEYWORDS_MIN_ITEMS} 个互不重复的图案元素"
+            "（建议 24-40，够跨款轮换即可，不要为凑数堆无关词），"
+            "每一项都必须是**可印在产品表面的平面纹样/图形**（如「冬青叶纹样」「雪花图形」「松枝印花」），"
             "与 design_theme 和 product_name 的主题强相关，"
-            "覆盖具象器物、食物饮品、动植物、建筑地标、招牌标识、服饰道具、几何纹样、材质纹理等不同层次。"
-            "正例：奶昔杯、点唱机、轮滑鞋、霓虹灯牌、停车标志牌、汽车影院幕布、热狗面包、餐厅桌布花纹。"
+            "覆盖动植物纹样、节日符号、几何纹样、材质纹理、器物轮廓等不同层次。"
+            "正例：冬青叶纹样、雪花图形、松枝印花、拐杖糖纹样、姜饼人图形、圣诞树轮廓、格纹纹样、星星图形。"
             "严禁出现以下任意一类："
-            "① 形容词或风格词（大胆、俏皮、复古、美式乡村风）；"
-            "② 色彩或配色属性（高饱和度配色、高对比色彩、撞色设计）——配色只能写入 color_preferences；"
-            "③ 表现手法或抽象概念（波普色块拼接、线条、质感、怀旧符号、复古元素）；"
-            "④ 场景或人群类别（海滩元素、健身场景元素、休闲度假元素、出游元素）。"
+            "① 独立实物、摆件、餐具、食品、家具或场景道具（烛杯、餐垫、餐叉、雪人摆件、小木屋、松果摆件）"
+            "——这些是场景，不是印花；"
+            "② 形容词或风格词（大胆、俏皮、复古、美式乡村风）；"
+            "③ 色彩或配色属性（高饱和度配色、高对比色彩、撞色设计）——配色只能写入 color_preferences；"
+            "④ 表现手法或抽象概念（波普色块拼接、线条、质感、怀旧符号、复古元素）；"
+            "⑤ 场景或人群类别（海滩元素、健身场景元素、休闲度假元素、出游元素）。"
             "严禁以「元素 / 符号 / 质感 / 配色 / 色彩 / 色调 / 设计 / 线条 / 拼接 / 图案 / 场景 / 氛围 / 风格 / 风 / 感」"
             "等抽象词或其组合收尾。"
             "禁止同义变体重复占位，禁止堆砌与主题无关的泛词，"
             "禁止用品类本体词（如「托特包」「手提包」）凑数。"
         ),
         "color_preferences_recipe": (
-            f"color_preferences 必须给出至少 {BRIEF_COLOR_PREFERENCES_MIN_ITEMS} 个具体颜色（建议 10-14），"
-            "覆盖主色、辅色、点缀色与背景色等不同层次；数量越多，各款式之间的强调色差异越明显。"
+            f"color_preferences 至少给出 {BRIEF_COLOR_PREFERENCES_MIN_ITEMS} 个具体颜色（建议 6-10），"
+            "覆盖主色、辅色、点缀色与背景色等不同层次；够 60-30-10 轮换即可，不要为凑数重复相近色。"
             "必须写具体颜色名（如「电光粉紫」「落日金橙」「霓虹青色」），"
             "禁止写「高饱和度」「撞色」「冷色调」「高级灰」这类抽象描述。"
         ),
         "excluded_elements_recipe": (
-            f"excluded_elements 必须给出至少 {BRIEF_EXCLUDED_ELEMENTS_MIN_ITEMS} 项（建议 12-20），"
-            "用简短名词短语描述，并且必须显式覆盖以下四类（用于规避侵权与违禁风险）："
-            "① 侵权类：品牌 logo、商标标识、球队或联盟标识、影视动漫游戏角色、卡通 IP 形象、"
-            "名人肖像或签名、奢侈品牌老花图案、平台水印或标识、受版权保护的海报封面；"
-            "② 危险违禁类：武器弹药、管制刀具、爆炸物、毒品或吸毒工具、赌博筹码或老虎机、"
-            "烟草或电子烟、酒精饮品；"
-            "③ 违法与敏感类：钞票或货币图样、身份证件样式、暴力血腥画面、恐怖或仇恨符号、纳粹标志、"
-            "宗教敏感符号、政治标志或政党标识、国旗或国徽、成人或色情内容、裸露人体、虐待动物画面；"
-            "④ 其他封号高危类：二维码或条形码、真人照片或可识别个人信息。"
-            "在此四类之外，再补充与本主题冲突、本主题不该出现的元素。"
+            f"excluded_elements 给出 {BRIEF_EXCLUDED_ELEMENTS_MIN_ITEMS}-8 项即可，"
+            "只写与本主题冲突、本主题不该出现的元素（例如主题是植物时排除「机械零件」）。"
+            "品牌 logo、商标标识、版权角色、名人肖像等侵权/身份类由系统自动补齐，"
+            "不要在这里重复列举；危险违禁内容由生图模型自身的内容审核拦截，也不要枚举。"
         ),
         "instructions": "只返回一个 JSON 对象，不要 Markdown、不要额外字段。",
     }

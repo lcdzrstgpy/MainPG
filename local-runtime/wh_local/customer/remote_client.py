@@ -371,6 +371,20 @@ class CustomerAuthClient:
         )
         return self._post(path, payload, headers={"Authorization": f"Bearer {remote_token}"})
 
+    def submit_pod_agreement(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """上报 POD 使用协议确认结果。
+
+        产品约定字段只有两个：``username``（登录用户名）与 ``agreed``（是否点击确认）。
+        路径可用 ``WH_LOCAL_POD_AGREEMENT_PATH`` 覆盖，服务端调整接口时无需重发桌面版本。
+        """
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        path = (
+            os.environ.get("WH_LOCAL_POD_AGREEMENT_PATH", "").strip()
+            or "/api/customer/pod-agreement"
+        )
+        return self._post(path, payload, headers={"Authorization": f"Bearer {remote_token}"})
+
     def list_my_feedback(self, remote_token: str, limit: int = 20, offset: int = 0) -> dict[str, Any]:
         """Fetch the current account's feedback history from the platform service."""
         if not remote_token:
@@ -785,8 +799,37 @@ def normalize_login_response(payload: dict[str, Any], *, fallback_username: str 
         role=_normalize_role(_first_text(account, "role", "local_role")),
         workspace_code=_first_text(account, "workspace_code", "company_code") or _first_text(workspace, "code"),
         workspace_name=_first_text(account, "workspace_name", "company_name") or _first_text(workspace, "name"),
+        pod_agreement_confirmed=_pod_agreement_confirmed(payload, account),
         raw=payload,
     )
+
+
+def _as_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on", "confirmed", "agreed"}
+    return False
+
+
+def _pod_agreement_confirmed(payload: dict[str, Any], account: Any) -> bool:
+    """平台侧是否已确认 POD 使用协议。
+
+    约定主字段 ``pod_agreement_confirmed``（布尔），放在登录响应顶层或 ``account``
+    内均可；同时兼容 ``pod_agreement_token``（非空字符串）这种“确认凭据”形式。
+    """
+    for source in (payload, account):
+        if not isinstance(source, dict):
+            continue
+        for key in ("pod_agreement_confirmed", "pod_agreement_agreed"):
+            if key in source:
+                return _as_bool(source.get(key))
+        token = source.get("pod_agreement_token")
+        if isinstance(token, str) and token.strip():
+            return True
+    return False
 
 
 def normalize_action_response(payload: dict[str, Any]) -> CustomerAuthActionResult:

@@ -36,6 +36,8 @@ export type WorkspaceTab = {
   dimensionChangeSetId?: string;
   initialSetId?: string;
   profitPrefill?: ProfitActivityPrefill;
+  /** AI 视频页签内的当前路径；刷新 / 切页签后据此回到同一页面。 */
+  aiVideoPath?: string;
 };
 
 type TopNavigationProps = {

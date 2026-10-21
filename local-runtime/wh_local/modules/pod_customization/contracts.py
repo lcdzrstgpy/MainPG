@@ -22,7 +22,8 @@ SEMI_PATTERN_ROLES = ("pattern_1", "pattern_2", "pattern_3", "pattern_4")
 # 批次提示词版本。入库值**以服务端 prompts.PATTERN_PROMPT_VERSION 为准**（大提示词由服务端
 # 构造，客户端传值只作兼容保留）；这里放宽为多版本，避免旧客户端仍发送 v1 时被拒。
 # v3：新增批级全局字段（工艺 / 使用场景）与元素 Tier / 配色 60-30-10 权重。
-PromptVersion = Literal["v1", "v2", "v3"]
+# v4：创意编辑提升为批级硬条款、新增形态/尺寸锁定、材质块按真实材质分支。
+PromptVersion = Literal["v1", "v2", "v3", "v4"]
 
 # 批次模式：全定制 full / 半定制 semi / 爆款复刻 replica。历史批次 mode 默认 full。
 PodBatchMode = Literal["full", "semi", "replica", "fission"]
@@ -111,12 +112,28 @@ class BusinessFields(BaseModel):
 # 方案见 docs/superpowers/specs/2026-09-12-pod-brief-preprocessing-design.md。
 BRIEF_INPUT_MIN_LENGTH = 1
 BRIEF_INPUT_MAX_LENGTH = 500
-# 元素关键词必须多写：元素池越大，跨款图案差异化越明显（后端按款式随机分配主打/辅主/点缀）。
-BRIEF_STYLE_KEYWORDS_MIN_ITEMS = 40
-# 偏好配色要尽量多：每款的强调色从配色表里轮换抽取，颜色越多跨款差异越大。
-BRIEF_COLOR_PREFERENCES_MIN_ITEMS = 10
-# 禁用元素要尽量多，且必须覆盖侵权类与危险类（防止商品/店铺被封）。
-BRIEF_EXCLUDED_ELEMENTS_MIN_ITEMS = 10
+# 元素关键词：够跨款差异化即可。40 项会逼模型为凑数堆无关词，降到 24 项
+#（每款实际只用 1 主锚 + 2 叙事 + 4 点缀，24 项足够轮换）。
+BRIEF_STYLE_KEYWORDS_MIN_ITEMS = 24
+# 偏好配色：60-30-10 只需要 3 色，6 色已足够跨款轮换；不再强制 10 色。
+BRIEF_COLOR_PREFERENCES_MIN_ITEMS = 6
+# 禁用元素：品牌/商标/版权角色/肖像由 IP_EXCLUDED_ELEMENTS 自动补齐，
+# 模型只需给少量与本主题相关的排除项，不再强制 10 项（否则会编无关内容）。
+BRIEF_EXCLUDED_ELEMENTS_MIN_ITEMS = 3
+
+# 生图提示词只固定约束侵权/身份类；危险违禁内容交给模型自身审核，不写进提示词。
+IP_EXCLUDED_ELEMENTS: tuple[str, ...] = (
+    "品牌 logo",
+    "商标标识",
+    "球队或联盟标识",
+    "影视动漫游戏角色",
+    "卡通 IP 形象",
+    "名人肖像或签名",
+    "奢侈品牌老花图案",
+    "平台水印或标识",
+    "受版权保护的海报封面",
+    "真人照片或可识别个人信息",
+)
 
 
 # 用户在「智能填写」区显式输入项（产品工艺 / 使用场景基调）的原文上限；
