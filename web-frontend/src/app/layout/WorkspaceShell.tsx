@@ -15,6 +15,7 @@ import { TopNavigation, type WorkspaceTab } from "./TopNavigation";
 import { PeachGarden } from "../../shared/components/PeachGarden";
 import { AlpineMeadow } from "../../shared/components/AlpineMeadow";
 import { InkTap } from "../../shared/components/InkTap";
+import { DessertTap } from "../../shared/components/DessertTap";
 import { useTheme } from "../../shared/hooks/useTheme";
 import { useUiMode } from "../../shared/hooks/useUiMode";
 import { useEffectPreferences } from "../../shared/hooks/useEffectPreferences";
@@ -950,6 +951,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
       <PeachGarden theme={theme} uiMode={uiMode} tapEffects={tapEffects} ambientEffects={ambientEffects} />
       <AlpineMeadow theme={theme} uiMode={uiMode} tapEffects={tapEffects} ambientEffects={ambientEffects} />
       <InkTap theme={theme} uiMode={uiMode} enabled={tapEffects} />
+      <DessertTap theme={theme} uiMode={uiMode} enabled={tapEffects} />
       <Sidebar
         collapsed={sidebarIsCollapsed && !sidebarTemporarilyExpanded}
         activeId={activeModuleId}

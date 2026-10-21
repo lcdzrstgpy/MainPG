@@ -15,6 +15,7 @@ import "./shared/styles/perf-mode.css";
 import "./shared/styles/peach-garden.css";
 import "./shared/styles/alpine-meadow.css";
 import "./shared/styles/ink-tap.css";
+import "./shared/styles/dessert-tap.css";
 import "./shared/styles/framework-flow.css";
 import "./modules/product_processing/styles/product-processing.css";
 import "./modules/ai_video/styles/aiVideoPage.css";

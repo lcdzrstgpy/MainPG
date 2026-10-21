@@ -9,6 +9,7 @@ import {
   formatDimension,
   invalidateRenderOnEdit,
   nextQueueItem,
+  snapToAxis,
   toggleDisplayUnit,
 } from "./dimensionCanvasModel.ts";
 import type {
@@ -128,4 +129,14 @@ test("cm and inch toggles can be active together and keep one unit selected", ()
 test("custom annotation requires a positive value before completion", () => {
   const state = fixtureState({ annotations: [annotation("a", "custom", 0)] });
   assert.deepEqual(canComplete(state), { ok: false, reason: "尺寸数值必须大于 0" });
+});
+
+test("snapToAxis is free-move by default and only locks axis with force", () => {
+  const anchor = { x: 0.2, y: 0.5 };
+  // 默认自由：即使接近水平也绝不能吸轴
+  assert.deepEqual(snapToAxis(anchor, { x: 0.8, y: 0.51 }), { x: 0.8, y: 0.51 });
+  assert.deepEqual(snapToAxis(anchor, { x: 0.21, y: 0.9 }), { x: 0.21, y: 0.9 });
+  // Shift 强制锁主轴
+  assert.deepEqual(snapToAxis(anchor, { x: 0.8, y: 0.51 }, true), { x: 0.8, y: 0.5 });
+  assert.deepEqual(snapToAxis(anchor, { x: 0.21, y: 0.9 }, true), { x: 0.2, y: 0.9 });
 });

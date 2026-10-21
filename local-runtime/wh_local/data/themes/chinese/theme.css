@@ -104,7 +104,7 @@
   z-index: 0;
   inset: -24px;
   pointer-events: none;
-  opacity: .3;
+  opacity: .38;
   background: url("/theme/chinese-ink-overlay.png") center / cover no-repeat;
   mix-blend-mode: multiply;
   will-change: transform, opacity;
@@ -117,11 +117,14 @@
   z-index: 0;
   inset: -8%;
   pointer-events: none;
-  opacity: .34;
+  opacity: .72;
   background:
-    radial-gradient(ellipse at 10% 72%, rgba(34, 61, 57, .16) 0 7%, rgba(68, 96, 87, .08) 16%, transparent 34%),
-    radial-gradient(ellipse at 86% 18%, rgba(67, 91, 83, .13) 0 9%, rgba(112, 132, 117, .06) 20%, transparent 38%),
-    radial-gradient(circle at 58% 88%, rgba(167, 71, 54, .08) 0 2%, transparent 12%);
+    /* 右上角远山：SVG 山脊轮廓（可辨峰形）+ 淡墨晕，盖在雾底上 */
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 520 200' preserveAspectRatio='xMaxYMin meet'%3E%3Cpath d='M40 200 L95 118 C130 98 155 128 188 112 C220 96 248 62 286 70 C318 77 338 108 372 96 C402 86 428 58 460 66 C488 73 505 88 520 82 L520 200 Z' fill='%23344c48' fill-opacity='0.22'/%3E%3Cpath d='M120 200 L175 142 C210 128 238 150 272 136 C308 121 336 92 376 102 C410 111 438 138 476 128 C496 123 510 130 520 126 L520 200 Z' fill='%232f4541' fill-opacity='0.16'/%3E%3Cpath d='M210 200 L255 158 C285 146 310 162 342 152 C378 140 404 118 442 128 C472 136 500 150 520 146 L520 200 Z' fill='%232a3f3b' fill-opacity='0.12'/%3E%3C/svg%3E") right -40px top -20px / 620px 240px no-repeat,
+    radial-gradient(ellipse 42% 28% at 88% 16%, rgba(47, 74, 70, .14) 0 38%, rgba(47, 74, 70, .06) 58%, transparent 78%),
+    radial-gradient(ellipse 30% 20% at 74% 22%, rgba(67, 91, 83, .1) 0 40%, transparent 72%),
+    radial-gradient(ellipse at 10% 72%, rgba(34, 61, 57, .14) 0 7%, rgba(68, 96, 87, .07) 16%, transparent 34%),
+    radial-gradient(circle at 58% 88%, rgba(167, 71, 54, .07) 0 2%, transparent 12%);
   mix-blend-mode: multiply;
   will-change: transform, opacity;
   animation: chinese-ink-bloom 15s ease-in-out infinite;
@@ -149,13 +152,14 @@
 }
 
 [data-theme="chinese"] .topbar-card {
-  background-color: rgba(246, 244, 236, .24);
+  background-color: rgba(246, 244, 236, .16);
   background-image:
-    linear-gradient(rgba(248, 247, 240, .2), rgba(248, 247, 240, .2)),
+    linear-gradient(rgba(248, 247, 240, .1), rgba(248, 247, 240, .1)),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 520 200' preserveAspectRatio='xMaxYMin meet'%3E%3Cpath d='M40 200 L95 118 C130 98 155 128 188 112 C220 96 248 62 286 70 C318 77 338 108 372 96 C402 86 428 58 460 66 C488 73 505 88 520 82 L520 200 Z' fill='%23344c48' fill-opacity='0.28'/%3E%3Cpath d='M120 200 L175 142 C210 128 238 150 272 136 C308 121 336 92 376 102 C410 111 438 138 476 128 C496 123 510 130 520 126 L520 200 Z' fill='%232f4541' fill-opacity='0.2'/%3E%3C/svg%3E") right -6px top -36px / 560px 200px no-repeat,
     url("/theme/chinese-ink-overlay.png");
-  background-repeat: no-repeat;
-  background-position: center, right -20px top -55px;
-  background-size: 100% 100%, 850px auto;
+  background-repeat: no-repeat, no-repeat, no-repeat;
+  background-position: center, right -6px top -36px, right -8px top -28px;
+  background-size: 100% 100%, 560px 200px, 920px auto;
 }
 
 [data-theme="chinese"] .content-card {

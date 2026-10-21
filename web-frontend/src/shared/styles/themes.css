@@ -427,12 +427,13 @@
   --theme-page-tab-active-bg: #e8f5ec;
   --theme-page-tab-active-color: #2f7d52;
 
-  --theme-flow-color-a: rgba(143, 191, 106, .1);
-  --theme-flow-color-b: rgba(47, 125, 82, .18);
-  --theme-flow-color-c: rgba(31, 95, 111, .2);
-  --theme-flow-color-d: rgba(212, 160, 60, .13);
-  --theme-flow-ripple: rgba(47, 125, 82, .25);
-  --theme-flow-ripple-secondary: rgba(212, 160, 60, .17);
+  /* 流水/流光改「晨雾暖光」：去掉突兀草绿，用雾白+浅金+淡青灰，更贴草甸清晨 */
+  --theme-flow-color-a: rgba(236, 242, 232, .12);
+  --theme-flow-color-b: rgba(212, 188, 132, .16);
+  --theme-flow-color-c: rgba(168, 188, 176, .14);
+  --theme-flow-color-d: rgba(255, 236, 196, .12);
+  --theme-flow-ripple: rgba(214, 196, 148, .18);
+  --theme-flow-ripple-secondary: rgba(180, 200, 188, .12);
 
   --theme-scroll-gradient: linear-gradient(145deg, #2f7d52, #8fbf6a);
   --theme-scroll-shadow: rgba(34, 107, 69, .3);
