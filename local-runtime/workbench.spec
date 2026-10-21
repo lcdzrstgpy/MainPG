@@ -88,13 +88,14 @@ else:
 # 启动卡片依赖 PySide6（launcher/splash_qt.py）。缺了不会让打包失败 ——
 # 运行时会静默回落成「等 2.5 秒开浏览器」，但用户看到的是白屏空窗，等于这个
 # 功能白做。PyInstaller 对缺失的 import 也不报错，所以这里必须自己把关。
+import sys as _build_sys
+
 try:
     import PySide6  # noqa: F401
 
     # 只 import PySide6 不够：1.5.8 就是这样过了检查、到用户机器上却不起卡片。
     # 真正用到的是 QtWidgets，它要连 Qt6*.dll 与 shiboken6 一起装载成功才算数。
     from PySide6 import QtWidgets  # noqa: F401
-
 
     print(f"[workbench.spec] PySide6 {PySide6.__version__} 可用"
           f"（python {_build_sys.version.split()[0]}，QtWidgets 装载成功），启动卡片随包分发")
