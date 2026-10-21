@@ -105,11 +105,11 @@ def test_brief_plan_freezes_title_only_scope_so_the_action_is_free() -> None:
     assert payload["billing_profile"] == "pod_random_v1"
 
 
-def test_validate_brief_fields_requires_at_least_forty_theme_keywords() -> None:
-    with pytest.raises(ValueError, match="至少需要 40"):
+def test_validate_brief_fields_requires_at_least_twenty_four_theme_keywords() -> None:
+    with pytest.raises(ValueError, match="至少需要 24"):
         validate_brief_fields({**_fields(), "style_keywords": ["仙人掌", "太阳纹"]})
 
-    assert len(validate_brief_fields(_fields(40)).style_keywords) == 40
+    assert len(validate_brief_fields(_fields(24)).style_keywords) == 24
 
 
 def test_is_concrete_style_element_separates_objects_from_abstract_words() -> None:
@@ -128,8 +128,8 @@ def test_validate_brief_fields_drops_abstract_style_elements() -> None:
 
 
 def test_validate_brief_fields_reports_rejected_abstract_elements_in_feedback() -> None:
-    """剔除后不足 40 个时，把被剔除的具体条目回传给模型，触发契约修复重试。"""
-    with pytest.raises(ValueError, match="不是具体事物已被剔除"):
+    """剔除后不足 24 个时，把被剔除的具体条目回传给模型，触发契约修复重试。"""
+    with pytest.raises(ValueError, match="不是可印在平面上的图案元素已被剔除"):
         validate_brief_fields(
             {
                 **_fields(),
@@ -139,10 +139,10 @@ def test_validate_brief_fields_reports_rejected_abstract_elements_in_feedback() 
 
 
 def test_validate_brief_fields_requires_minimum_colors_and_exclusions() -> None:
-    with pytest.raises(ValueError, match="color_preferences 至少需要 10"):
+    with pytest.raises(ValueError, match="color_preferences 至少需要 6"):
         validate_brief_fields({**_fields(), "color_preferences": ["土橘色", "牛仔蓝"]})
 
-    with pytest.raises(ValueError, match="excluded_elements 至少需要 10"):
+    with pytest.raises(ValueError, match="excluded_elements 至少需要 3"):
         validate_brief_fields({**_fields(), "excluded_elements": ["现代玻璃幕墙"]})
 
 
@@ -161,17 +161,32 @@ def test_validate_brief_fields_merges_safety_baseline_without_duplicates() -> No
 
 def test_validate_brief_fields_dedupes_and_requires_required_scalars() -> None:
     duplicated = {**_fields(), "style_keywords": ["仙人掌"] * 45}
-    with pytest.raises(ValueError, match="至少需要 40"):
+    with pytest.raises(ValueError, match="至少需要 24"):
         validate_brief_fields(duplicated)
 
     with pytest.raises(ValueError, match="不能为空"):
         validate_brief_fields({**_fields(), "product_category": "   "})
 
 
-def test_validate_brief_fields_rejects_style_planning_from_the_provider() -> None:
-    """样式规划字段已被彻底删除；provider 若擅自输出该多余字段，契约即判不合格。"""
-    with pytest.raises(ValueError, match="failed validation"):
-        validate_brief_fields({**_fields(), "style_planning": "全覆盖"})
+def test_validate_brief_fields_ignores_unknown_provider_keys() -> None:
+    """样式规划字段已被彻底删除；provider 多返回的键直接忽略，不再整次判失败。"""
+    fields = validate_brief_fields({**_fields(), "style_planning": "全覆盖"})
+
+    assert not hasattr(fields, "style_planning")
+    assert fields.product_name == "复古印花托特包"
+
+
+def test_validate_brief_fields_tolerates_missing_optional_fields() -> None:
+    payload = _fields()
+    for key in ("core_selling_points", "fabric_craft", "scene_mood", "target_audience"):
+        payload.pop(key)
+
+    fields = validate_brief_fields(payload)
+
+    assert fields.core_selling_points == []
+    assert fields.fabric_craft == ""
+    assert fields.scene_mood == ""
+    assert fields.target_audience == ""
 
 
 def test_generate_brief_fields_sends_theme_keyword_recipe_and_untrusted_notice() -> None:
@@ -196,12 +211,12 @@ def test_generate_brief_fields_sends_theme_keyword_recipe_and_untrusted_notice()
     request = session.requests[0]
     assert request["json"]["thinking"] == {"type": "disabled"}
     schema = request["json"]["response_format"]["json_schema"]["schema"]
-    assert schema["properties"]["style_keywords"]["minItems"] == 40
+    assert schema["properties"]["style_keywords"]["minItems"] == 24
     # 模糊输入必须被当作不可信数据包裹。
     assert "untrusted" in str(request["json"]["messages"][0]["content"]).lower()
     user_prompt = str(request["json"]["messages"][1]["content"])
     assert "style_keywords" in user_prompt
-    assert "40" in user_prompt
+    assert "24" in user_prompt
 
 
 def test_generate_brief_fields_repairs_an_invalid_contract_then_succeeds() -> None:
@@ -256,20 +271,22 @@ def test_validate_brief_fields_allows_empty_craft_and_scene() -> None:
     assert fields.scene_mood == ""
 
 
-def test_validate_brief_fields_requires_craft_and_scene_keys() -> None:
-    """strict schema 的 required 必须包含两键：缺任一键即判不合格（触发契约修复）。"""
+def test_validate_brief_fields_defaults_missing_craft_and_scene_keys() -> None:
+    """可选字段缺省按空值处理，不再因为缺键整次判失败。"""
     payload = _fields()
     payload.pop("fabric_craft")
-    with pytest.raises(ValueError, match="failed validation"):
-        validate_brief_fields(payload)
+
+    fields = validate_brief_fields(payload)
+
+    assert fields.fabric_craft == ""
 
 
 def test_brief_schema_declares_craft_and_scene_without_min_length() -> None:
     schema = _BRIEF_RESPONSE_FORMAT["json_schema"]["schema"]
-    assert {"fabric_craft", "scene_mood"} <= set(schema["required"])
-    # 不设 minLength 才能让"留空"合法。
+    # 两键仍保留为属性且不设 minLength（允许留空），但不再强制 required。
     assert "minLength" not in schema["properties"]["fabric_craft"]
     assert "minLength" not in schema["properties"]["scene_mood"]
+    assert {"fabric_craft", "scene_mood"}.isdisjoint(schema["required"])
 
 
 def test_generate_brief_fields_forwards_user_provided_craft_and_scene() -> None:
@@ -294,3 +311,27 @@ def test_generate_brief_fields_forwards_user_provided_craft_and_scene() -> None:
         "fabric_craft": "绗缝被子那种",
         "scene_mood": "暖光木质厨房",
     }
+
+
+def test_generate_brief_fields_falls_back_to_user_provided_when_model_omits_them() -> None:
+    """可选键缺省时用用户原文兜底，不能让「智能生成」把已填的工艺/场景清空。"""
+    payload = _fields()
+    payload.pop("fabric_craft")
+    payload.pop("scene_mood")
+    session = _Session([_Response(payload)])
+    runtime = PodBriefRuntime(session=session, sleeper=lambda _seconds: None)
+
+    result = runtime.generate_brief_fields(
+        PodBriefRequest(
+            brief_id="brf6",
+            brief="主题",
+            fabric_craft="绗缝被子那种",
+            scene_mood="暖光木质厨房",
+        ),
+        grant=_grant(),
+        call_id="brf6:brief:1",
+        call_ids=_call_ids("brf6"),
+    )
+
+    assert result.fields.fabric_craft == "绗缝被子那种"
+    assert result.fields.scene_mood == "暖光木质厨房"

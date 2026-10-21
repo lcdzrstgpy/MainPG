@@ -4,6 +4,7 @@ import {
   isWorkspaceNavigationGroup,
   workspaceModules,
   workspacePageModules,
+  type PersonalCenterPanelId,
   type WorkspaceModule,
   type WorkspaceModuleId,
   type WorkspaceNavigationGroup,
@@ -21,6 +22,8 @@ import { useUiMode } from "../../shared/hooks/useUiMode";
 import { useEffectPreferences } from "../../shared/hooks/useEffectPreferences";
 import { useSidebarPreferences } from "../../shared/hooks/useSidebarState";
 import { WorkspaceHomePage } from "../../modules/dashboard/pages/WorkspaceHomePage";
+import { aiVideoNavHrefForPath, type AiVideoNavHref } from "../../modules/ai_video/nav";
+import type { AiVideoNavRequest } from "../../modules/ai_video/pages/AiVideoPage";
 import {
   importPreviewItem,
   listDimensionNotifications,
@@ -82,6 +85,11 @@ import {
 } from "../../shared/components/AnnouncementModal";
 import { fetchMessages, markMessageRead, syncMessages, type InboxMessage } from "../../shared/api/messagesApi";
 import { showToast } from "../../shared/components/toastStore";
+import {
+  PodUsageAgreementModal,
+  clearPodAgreementPending,
+  isPodAgreementPending,
+} from "../../shared/components/PodUsageAgreementModal";
 import { HelpAgentWidget } from "../../modules/help_agent/components/HelpAgentWidget";
 import { WorkspaceTabScrollStore } from "./workspaceTabState";
 import {
@@ -136,6 +144,15 @@ function moduleTab(id: WorkspaceModuleId, flatModules: WorkspaceModule[]): Works
  * 因此不参与页签持久化（用户从侧栏或插件重新打开即可）。
  */
 const NON_RESTORABLE_MODULE_IDS: ReadonlySet<string> = new Set(["daily_selection_collection"]);
+
+/** 四个 POD 模块共用同一份使用协议：每次登录后首次进入任一个都会强制弹一次。 */
+const POD_MODULE_IDS: ReadonlySet<WorkspaceModuleId> = new Set<WorkspaceModuleId>([
+  "pod_customization",
+  "pod_semi_customization",
+  "pod_replica",
+  "pod_fission",
+]);
+
 
 type RestoredWorkspaceTabs = {
   tabs: WorkspaceTab[];
@@ -222,10 +239,21 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
   const [sidebarHovered, setSidebarHovered] = useState(false);
   const [isNarrowDesktop, setIsNarrowDesktop] = useState(() => window.matchMedia(NARROW_DESKTOP_QUERY).matches);
   const [expandedGroupId, setExpandedGroupId] = useState<WorkspaceNavigationGroupId | null>(null);
+  // 个人中心当前面板：由侧栏子导航驱动，状态放在这一层，切页签回来仍保持上次位置。
+  const [personalPanel, setPersonalPanel] = useState<PersonalCenterPanelId>("wallet");
   const isAdmin = isAdminRole(currentRole);
   // 页签布局持久化：刷新 / 前端自动重载后恢复上次打开的页签与当前页签，任务页因此能继续轮询
   // （页签丢失 = 没人再看 = 连续静默后任务被自动暂停）。清洗逻辑见 restoreWorkspaceTabs。
   const [initialWorkspace] = useState(() => restoreWorkspaceTabs(isAdmin));
+  // AI 视频当前页面路径：原生页面与 iframe 内换页都会上报；随页签一起持久化。
+  const [aiVideoPath, setAiVideoPath] = useState<string>(() => {
+    const restored = initialWorkspace.tabs.find((tab) => tab.moduleId === "ai_video")?.aiVideoPath;
+    return restored || "/start";
+  });
+  // AI 视频当前入口：刷新时按恢复路径直接高亮，之后由页面回报更新。
+  const [aiVideoHref, setAiVideoHref] = useState<AiVideoNavHref>(() => aiVideoNavHrefForPath(aiVideoPath) ?? "/start");
+  // 侧栏点击下发的跳转请求；nonce 让「同一入口重复点击」也能重新下发。
+  const [aiVideoRequest, setAiVideoRequest] = useState<AiVideoNavRequest | null>(null);
   const [activeTabKey, setActiveTabKey] = useState(initialWorkspace.activeTabKey);
   const [tabs, setTabs] = useState<WorkspaceTab[]>(initialWorkspace.tabs);
   const [workspaceNotice, setWorkspaceNotice] = useState("");
@@ -249,13 +277,16 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
   useEffect(() => {
     try {
       writeWorkspaceTabsSnapshot(window.localStorage, {
-        tabs: tabs.filter((tab) => !NON_RESTORABLE_MODULE_IDS.has(tab.moduleId)),
+        tabs: tabs
+          .filter((tab) => !NON_RESTORABLE_MODULE_IDS.has(tab.moduleId))
+          // AI 视频的当前页面属于会话状态，不是模块默认值：写盘时注入，刷新后回到同一路径。
+          .map((tab) => (tab.moduleId === "ai_video" ? { ...tab, aiVideoPath } : tab)),
         activeTabKey,
       });
     } catch {
       // localStorage 被禁用：忽略，不影响本次使用。
     }
-  }, [tabs, activeTabKey]);
+  }, [tabs, activeTabKey, aiVideoPath]);
   const visibleModules = useMemo(() => filterModulesForRole(workspaceModules, isAdmin), [isAdmin]);
   const flatModules = useMemo(() => filterModulesForRole(workspacePageModules, isAdmin) as WorkspaceModule[], [isAdmin]);
   const navigationGroups = useMemo(() => visibleModules.filter(isWorkspaceNavigationGroup), [visibleModules]);
@@ -267,6 +298,20 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
   );
   const activeTab = tabs.find((tab) => tab.key === activeTabKey) ?? tabs[0];
   const activeModuleId = activeTab?.moduleId ?? "dashboard";
+
+  // POD 使用协议：登录时置位「待阅读」，首次进入任一个 POD 模块时弹出；
+  // 用户点「已阅读」后清除，本次登录内不再打扰。未同意就刷新/重新进入会再次弹出。
+  // 弹窗只覆盖右侧工作区，左侧栏始终可点：切到非 POD 模块时先收起，回来再弹。
+  const [podAgreementOpen, setPodAgreementOpen] = useState(false);
+  useEffect(() => {
+    if (!POD_MODULE_IDS.has(activeModuleId)) {
+      setPodAgreementOpen(false);
+      return;
+    }
+    if (!isPodAgreementPending()) return;
+    setPodAgreementOpen(true);
+  }, [activeModuleId]);
+
 
   useEffect(() => {
     const mediaQuery = window.matchMedia(NARROW_DESKTOP_QUERY);
@@ -439,6 +484,29 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
     setWorkspaceNotice("");
   };
 
+  /** 侧栏「个人中心」子导航：只切面板，不新开页签；个人中心未打开时顺带打开。 */
+  const openPersonalPanel = (panel: PersonalCenterPanelId) => {
+    setPersonalPanel(panel);
+    openModule("personal_center");
+  };
+
+  /** 侧栏「AI 视频」子导航：写当前路径，必要时先打开页签；未原生化路径仍由 iframe 承接。 */
+  const openAiVideoPanel = (href: AiVideoNavHref) => {
+    setAiVideoPath(href);
+    setAiVideoHref(href);
+    setAiVideoRequest((current) => ({ href, nonce: (current?.nonce ?? 0) + 1 }));
+    openModule("ai_video");
+  };
+
+  /** 侧栏面板分组的统一入口：按分组把点击分派到各自的页内面板。 */
+  const openNavigationPanel = (group: WorkspaceNavigationGroup, panelId: string) => {
+    if (group.id === "personal_center") {
+      openPersonalPanel(panelId as PersonalCenterPanelId);
+      return;
+    }
+    if (group.id === "ai_video") openAiVideoPanel(panelId as AiVideoNavHref);
+  };
+
   // 操作答疑兜底按钮「去提交问题反馈」：先打开/切到「个人中心」页签，再把原问题交给它预填。
   //
   // 监听必须放在这一层，不能放在 PersonalCenterPage 里：个人中心是页签内容，没打开就不挂载，
@@ -459,6 +527,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
       const detail = (event as CustomEvent<{ question?: string }>).detail;
       const question = typeof detail?.question === "string" ? detail.question.trim() : "";
       setFeedbackPrefill((current) => ({ question, nonce: (current?.nonce ?? 0) + 1 }));
+      setPersonalPanel("feedback");
       openModuleRef.current("personal_center");
     };
     window.addEventListener("mainpg:open-feedback", onOpenFeedback);
@@ -933,10 +1002,17 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         content = <PodFissionPage />;
         break;
       case "ai_video":
-        content = <AiVideoPage />;
+        content = (
+          <AiVideoPage
+            path={aiVideoPath}
+            request={aiVideoRequest}
+            onPathChange={setAiVideoPath}
+            onActiveHrefChange={setAiVideoHref}
+          />
+        );
         break;
       case "personal_center":
-        content = <PersonalCenterPage feedbackPrefill={feedbackPrefill} />;
+        content = <PersonalCenterPage feedbackPrefill={feedbackPrefill} panel={personalPanel} onPanelChange={setPersonalPanel} />;
         break;
       default:
         content = <EmptyModulePage module={modulesById.get(tab.moduleId)!} />;
@@ -967,6 +1043,14 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         onOpenModule={openModule}
         onToggleGroup={openNavigationGroup}
         onHoverChange={setSidebarHovered}
+        activePanelId={
+          activeModuleId === "personal_center"
+            ? personalPanel
+            : activeModuleId === "ai_video"
+              ? aiVideoHref
+              : null
+        }
+        onOpenPanel={openNavigationPanel}
         badges={{ dimension_canvas: dimensionNotifications.length }}
       />
       <section className="workspace-main">
@@ -1035,6 +1119,13 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
           onClose={() => setAnnouncementQueue([])}
         />
       )}
+      <PodUsageAgreementModal
+        open={podAgreementOpen}
+        onAgree={() => {
+          clearPodAgreementPending();
+          setPodAgreementOpen(false);
+        }}
+      />
       <BrandEntryAnimation active={playEntryAnimation} onComplete={onEntryAnimationComplete} />
     </main>
   );

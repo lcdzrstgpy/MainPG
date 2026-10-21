@@ -51,7 +51,9 @@ test("POD customer-facing copy does not mention four-grid generation", () => {
 test("POD listing result labels identify the original scene as primary and the original hero as material", () => {
   assert.match(gallerySource, /const ROLE_LABELS = \["主图", "细节图 A", "细节图 B", "素材图"\]/);
   assert.match(listingDrawerSource, /const ROLE_LABELS = \["主图", "细节图 A", "细节图 B", "素材图"\]/);
-  assert.match(modelSource, /四格顺序固定为主图、细节图 A、细节图 B、素材图。/);
+  // 硬性规则已内置到后端；前端不再生成 v1 模板，只保留「主体人工锚定」输入。
+  assert.doesNotMatch(modelSource, /四格顺序固定为主图、细节图 A、细节图 B、素材图。/);
+  assert.match(source, /高级·主体人工锚定/);
 });
 
 test("POD four-grid tiles keep images flush inside the rounded frame", () => {

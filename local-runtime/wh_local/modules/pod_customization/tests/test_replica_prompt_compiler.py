@@ -137,7 +137,40 @@ def test_compiled_prompt_carries_roles_facts_and_panel_order() -> None:
     assert "cuticle_edge" in prompt
     assert "top-left = panel_1" in prompt
     assert "show_all_components=true" in prompt
-    assert "只能复制原素材图 A 的图案内容" in prompt
+    assert "只能复制原素材图 A 的图案主体与配色" in prompt
+    assert "ALL-OVER PRINT LOCK" in prompt
+    assert "PRINT HIERARCHY" in prompt
+    assert "GEOMETRY LOCK" in prompt
+    assert "Panels 2 and 3 are detail crops" in prompt
+
+
+def test_compiled_prompt_uses_element_tiers_from_analysis() -> None:
+    data = _plan().model_dump()
+    data["source_artwork_spec"]["primary_motifs"] = {
+        "value": ["玫瑰"], "confidence": 0.9, "source": "model"
+    }
+    data["source_artwork_spec"]["secondary_motifs"] = {
+        "value": ["藤蔓"], "confidence": 0.9, "source": "model"
+    }
+    data["source_artwork_spec"]["accent_motifs"] = {
+        "value": [], "confidence": 0.9, "source": "model"
+    }
+    prompt = compile_replica_prompt(ReplicaPlan.model_validate(data))
+
+    assert "Tier 1 hero motif" in prompt
+    assert "玫瑰" in prompt
+    assert "Tier 2 supporting motifs" in prompt
+    assert "藤蔓" in prompt
+
+
+def test_detail_panel_prompt_allows_crop_but_not_distortion() -> None:
+    plan = _plan()
+    detail = compile_replica_panel_prompt(plan, 2)
+    primary = compile_replica_panel_prompt(plan, 1)
+
+    assert "Cropping the product is allowed" in detail
+    assert "must keep the complete product" not in detail
+    assert "must keep the complete product" in primary
 
 
 def test_compiled_prompt_is_deterministic_and_attempt_two_only_adds_retry() -> None:

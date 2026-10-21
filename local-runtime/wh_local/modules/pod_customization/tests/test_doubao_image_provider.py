@@ -272,31 +272,48 @@ def test_replica_references_keep_their_order() -> None:
     assert [item.content for item in references] == [b"source", b"target"]
 
 
-def test_prompt_sanitizer_drops_the_banned_word_blacklist_but_keeps_other_exclusions() -> None:
+def test_prompt_sanitizer_only_touches_legacy_v1_prompts() -> None:
+    """只清理历史 v1 模板；新主体锚定里出现「产品名称：」也不能被误删。"""
+    legacy = (
+        "[POD DIRECT LISTING PROMPT v1]\n"
+        "Excluded elements: 品牌 logo, 商标标识, 深色高饱和色块.\n"
+        "产品名称：圣诞主题麻将推尺\n"
+        "硬性规则：每款生成一次。\n"
+    )
+    cleaned = sanitize_prompt_for_ark(legacy)
+    assert "Excluded elements: 品牌 logo, 商标标识, 深色高饱和色块." in cleaned
+    assert "产品名称：" not in cleaned
+    assert "硬性规则：每款生成一次。" in cleaned
+
+    modern = "=== SUBJECT ANCHOR ===\n产品名称：用户自己写的主体\n硬性规则：每款生成一次。"
+    assert sanitize_prompt_for_ark(modern) == modern
+
+
+def test_prompt_sanitizer_removes_duplicated_operator_fields() -> None:
     prompt = (
-        "PART 1 CORE CONTRACT\n"
-        "Color preferences: 奶杏白, 樱花柔粉.\n"
-        "Excluded elements: 品牌 logo, 商标标识, 影视动漫游戏角色, 钞票或货币图样, "
-        "身份证件样式, 武器弹药, 管制刀具, 爆炸物, 毒品或吸毒工具, 赌博筹码或老虎机, "
-        "烟草或电子烟, 酒精饮品, 真人可识别照片, 深色高饱和色块, 金属尖锐饰品.\n"
-        "Creative direction: 治愈系动漫清新自然露营风.\n"
+        "[POD DIRECT LISTING PROMPT v1]\n"
+        "=== PART 1 ===\n"
+        "Product name: 圣诞主题麻将推尺.\n"
+        "=== BATCH-SPECIFIC HARD RULES ===\n"
+        "产品名称：圣诞主题麻将推尺\n"
+        "产品品类：麻将桌游配件\n"
+        "目标市场：美国\n"
+        "目标人群：中年麻将爱好者\n"
+        "核心卖点：圣诞限定、塑料轻便\n"
+        "主题整批统一风格：圣诞节喜庆\n"
+        "偏好配色：圣诞正红、墨绿\n"
+        "禁用元素：品牌 logo、毒品或吸毒工具、纳粹标志。\n"
+        "硬性规则：每款生成一次。\n"
     )
 
     cleaned = sanitize_prompt_for_ark(prompt)
-    line = next(row for row in cleaned.split("\n") if row.startswith("Excluded elements:"))
 
-    # 违禁/侵权类的枚举必须消失（这正是 Ark 输入审核 400 的触发源）
-    for banned in ("品牌", "logo", "商标", "动漫", "钞票", "身份证", "武器", "刀具", "爆炸",
-                   "毒品", "赌博", "烟草", "酒精", "真人"):
-        assert banned not in line
-    # 非敏感的自定义排除项照常保留，中性兜底句补上
-    assert "深色高饱和色块" in line
-    assert "金属尖锐饰品" in line
-    assert "（其余项按平台合规清单排除）" in line
-    # 其余内容逐字不改、行数不变
-    assert "Color preferences: 奶杏白, 樱花柔粉." in cleaned
-    assert "Creative direction: 治愈系动漫清新自然露营风." in cleaned
-    assert cleaned.count("\n") == prompt.count("\n")
+    # 与 PART 1 重复的运营字段整行删除，只保留硬性规则。
+    for label in ("产品名称：", "产品品类：", "目标市场：", "目标人群：",
+                  "核心卖点：", "主题整批统一风格：", "偏好配色：", "禁用元素："):
+        assert label not in cleaned
+    assert "Product name: 圣诞主题麻将推尺." in cleaned
+    assert "硬性规则：每款生成一次。" in cleaned
 
 
 def test_prompt_sanitizer_leaves_clean_prompts_untouched() -> None:
@@ -305,11 +322,17 @@ def test_prompt_sanitizer_leaves_clean_prompts_untouched() -> None:
     assert sanitize_prompt_for_ark(prompt) == prompt
 
 
-def test_doubao_submits_the_sanitized_prompt() -> None:
+def test_doubao_submits_the_prompt_without_duplicated_operator_fields() -> None:
     session = _ArkSession()
     provider = DoubaoSeedreamImageProvider()
     host = _Host(session)
-    prompt = "Invent a new pattern.\nExcluded elements: 商标标识, 武器弹药, 深色高饱和色块."
+    prompt = (
+        "[POD DIRECT LISTING PROMPT v1]\n"
+        "Invent a new pattern.\n"
+        "Excluded elements: 商标标识, 深色高饱和色块.\n"
+        "产品名称：圣诞主题麻将推尺\n"
+        "硬性规则：每款生成一次。"
+    )
 
     provider.generate(
         host,
@@ -320,9 +343,9 @@ def test_doubao_submits_the_sanitized_prompt() -> None:
     )
 
     sent = session.posts[0][1]["json"]["prompt"]
-    assert "武器弹药" not in sent
-    assert "商标标识" not in sent
-    assert "深色高饱和色块" in sent
+    assert "产品名称：" not in sent
+    assert "Excluded elements: 商标标识, 深色高饱和色块." in sent
+    assert "硬性规则：每款生成一次。" in sent
     assert "Invent a new pattern." in sent
 
 
@@ -371,11 +394,11 @@ def test_worker_image_gate_follows_the_selected_platform(monkeypatch, tmp_path) 
         wuyin_only.start(plan.calls[0].call_id, "pod.image")
 
 
-def test_default_platform_still_requires_wuyin(monkeypatch) -> None:
-    # 没注册配置库（默认速创）：门禁仍旧要 wuyin，老链路行为不变。
+def test_default_platform_requires_ark(monkeypatch) -> None:
+    # 没注册配置库时回落到 POD 默认（豆包）：门禁要 ark。
     monkeypatch.setattr(
         "wh_local.modules.product_processing.provider_config.registered_system_config_db_path",
         lambda: None,
     )
 
-    assert pod_ai_runtime.pod_image_grant_provider() == "wuyin"
+    assert pod_ai_runtime.pod_image_grant_provider() == "ark"

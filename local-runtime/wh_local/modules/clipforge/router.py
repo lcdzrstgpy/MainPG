@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Request, Response
 
+from .proxy import PROXY_METHODS, forward_proxy, read_configured_defaults
 from .service import ClipForgeError, ClipForgeService, ClipForgeStatus
 
 logger = logging.getLogger("wh_local.modules.clipforge")
@@ -56,6 +57,14 @@ def create_router(service: ClipForgeService) -> APIRouter:
         else:
             response.status_code = 202
         return _payload(current)
+
+    @router.get("/defaults")
+    def defaults() -> dict[str, object]:
+        return read_configured_defaults(service)
+
+    @router.api_route("/proxy/{path:path}", methods=list(PROXY_METHODS), include_in_schema=False)
+    async def proxy(path: str, request: Request) -> Response:
+        return await forward_proxy(request, service, path)
 
     return router
 

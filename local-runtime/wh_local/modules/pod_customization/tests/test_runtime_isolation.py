@@ -470,7 +470,9 @@ def test_direct_listing_grid_rejects_grant_without_provider_key_even_if_remote_t
         runtime.close()
 
 
-def test_wuyin_result_url_receipt_survives_local_download_failure_and_redacts_detail() -> None:
+def test_wuyin_result_url_receipt_survives_local_download_failure_and_redacts_detail(monkeypatch) -> None:
+    # 本用例专门验速创链路：固定模型到速创，避免被 POD 默认（豆包）影响。
+    monkeypatch.setattr(pod_ai_runtime, "_resolve_pod_image_model", lambda: "image_gpt_2.5")
     runtime = PodCustomizationAiRuntime(image_workers=1, requests_per_minute=0, poll_interval_seconds=0)
     provider = runtime._grid_providers[SUCHUANG_PLATFORM]
     runtime.publish_reference = lambda *_args, **_kwargs: "https://cos.example.test/reference.png"  # type: ignore[method-assign]
@@ -510,7 +512,8 @@ def test_wuyin_result_url_receipt_survives_local_download_failure_and_redacts_de
         runtime.close()
 
 
-def test_wuyin_grant_is_rechecked_after_waiting_for_provider_slot() -> None:
+def test_wuyin_grant_is_rechecked_after_waiting_for_provider_slot(monkeypatch) -> None:
+    monkeypatch.setattr(pod_ai_runtime, "_resolve_pod_image_model", lambda: "image_gpt_2.5")
     class BlockingGate:
         def __init__(self) -> None:
             self.entered = Event()
@@ -773,12 +776,12 @@ def test_pod_model_resolver_falls_back_to_pod_default_when_unavailable(monkeypat
         "wh_local.modules.product_processing.provider_config.registered_system_config_db_path",
         lambda: None,
     )
-    # POD 默认模型（产品侧要求走 2.5）。
-    assert pod_ai_runtime._resolve_pod_image_model() == "image_gpt_2.5"
+    # POD 默认模型（产品侧要求走豆包）。
+    assert pod_ai_runtime._resolve_pod_image_model() == "doubao-seedream-5-0-flash-260915"
 
     # 注册了路径但库文件不存在时同样安全回退。
     monkeypatch.setattr(
         "wh_local.modules.product_processing.provider_config.registered_system_config_db_path",
         lambda: str(tmp_path / "missing.sqlite3"),
     )
-    assert pod_ai_runtime._resolve_pod_image_model() == "image_gpt_2.5"
+    assert pod_ai_runtime._resolve_pod_image_model() == "doubao-seedream-5-0-flash-260915"

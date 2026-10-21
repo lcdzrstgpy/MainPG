@@ -44,6 +44,10 @@ def _public_account(customer: Any) -> dict[str, Any]:
         "role": customer.role,
         "workspace_code": customer.workspace_code,
         "workspace_name": customer.workspace_name,
+        # 平台下发的 POD 协议确认状态：前端据此决定是否还需要强制弹窗。
+        "pod_agreement_confirmed": bool(
+            getattr(customer, "pod_agreement_confirmed", False)
+        ),
     }
 
 
@@ -239,6 +243,37 @@ def create_customer_router(
             # 按登录失效处理，引导用户重新登录。
             raise CustomerAuthRejected(401, "remote customer session is missing, please sign in again")
         return session.remote_token
+
+    @router.post("/pod-agreement")
+    def submit_pod_agreement(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """把「用户是否确认 POD 使用协议」直接转发平台服务器（本地不落库）。
+
+        前端只提交 ``agreed``；``username`` 从本地会话取，不信任前端上报。
+        远端未配置或上报失败时返回 ``reported=false``，不阻塞前端关闭弹窗。
+        """
+        try:
+            session = local_session_from_token(authorization)
+            agreed = payload.get("agreed")
+            if not isinstance(agreed, bool):
+                raise CustomerAuthRejected(400, "agreed must be a boolean")
+            if not session.remote_token or not hasattr(
+                remote_auth, "submit_pod_agreement"
+            ):
+                return {"ok": True, "reported": False}
+            try:
+                remote_auth.submit_pod_agreement(
+                    session.remote_token,
+                    {"username": session.username, "agreed": agreed},
+                )
+            except Exception:
+                # 协议确认是附加统计：远端失败不回错误码，避免把用户顶回登录页。
+                return {"ok": True, "reported": False}
+            return {"ok": True, "reported": True}
+        except Exception as exc:
+            handle_auth_error(exc)
 
     @router.get("/billing/summary")
     def billing_summary(authorization: str | None = Header(default=None)) -> dict[str, Any]:

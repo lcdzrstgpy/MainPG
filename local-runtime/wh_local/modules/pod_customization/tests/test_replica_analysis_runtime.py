@@ -19,6 +19,7 @@ from wh_local.modules.pod_customization.replica_analysis_runtime import (
     ReplicaCompositionRequest,
     _SOURCE_FIELDS,
     _TARGET_FIELDS,
+    _messages_for_composition,
 )
 from wh_local.modules.pod_customization.replica_capabilities import match_capabilities
 from wh_local.modules.pod_customization.replica_planner import derive_rules
@@ -32,6 +33,9 @@ from wh_local.modules.product_processing.doubao_ark import DoubaoArkError
 _SOURCE_VALUES: dict[str, object] = {
     "source_product_name": "原素材帆布袋",
     "artwork_motifs": ["玫瑰", "藤蔓"],
+    "primary_motifs": ["玫瑰"],
+    "secondary_motifs": ["藤蔓"],
+    "accent_motifs": [],
     "artwork_colors": ["酒红"],
     "artwork_layout": "all_over_repeat",
     "artwork_density": "medium",
@@ -126,6 +130,8 @@ def test_analyze_assets_sends_source_then_target_and_normalizes() -> None:
     )
 
     assert result.source_artwork_spec.source_asset_id == "asset-a"
+    assert result.source_artwork_spec.primary_motifs.value == ["玫瑰"]
+    assert result.source_artwork_spec.secondary_motifs.value == ["藤蔓"]
     assert result.target_product_spec.target_asset_id == "asset-b"
     assert result.prompt_version == ANALYSIS_PROMPT_VERSION
     assert result.attempt_count == 1
@@ -298,6 +304,26 @@ def test_generate_composition_plan_merges_template_params_into_slots() -> None:
     assert plan.slots[0].camera == "eye_level"
     assert plan.slots[0].shot == "notes"
     assert session.requests[0]["json"]["response_format"]["json_schema"]["name"] == "pod_replica_composition"
+
+
+def test_composition_prompt_carries_source_theme_and_lifestyle_rules() -> None:
+    """构图提示词必须带上 A 的题材/配色，并要求生活场景写出具体场景与光影。"""
+    request = _composition_request()
+    messages = _messages_for_composition(request)
+    text = str(messages[1]["content"])
+
+    assert "source_theme" in text
+    assert "酒红" in text
+    assert "玫瑰" in text
+    assert "真实生活场景" in text
+    assert "panel_4" in text
+
+
+def test_composition_prompt_has_no_lifestyle_scene_rules_when_preference_off() -> None:
+    request = _composition_request(PresentationPreferences(use_lifestyle_scene=False))
+    text = str(_messages_for_composition(request)[1]["content"])
+
+    assert "必须由 source_theme 推导出具体的真实生活场景" not in text
 
 
 def test_generate_composition_plan_has_no_hand_slot_when_preference_is_off() -> None:

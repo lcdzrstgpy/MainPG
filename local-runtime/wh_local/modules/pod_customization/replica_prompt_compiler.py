@@ -2,11 +2,13 @@
 
 最终提示词**只由本地代码编译**，豆包不参与改写。四段固定顺序：
 
-- PART 1 全局复刻契约：输出格式、参考图顺序与角色、只复制 A 的图案、禁止带入 A 的
-  背景/产品、禁止新增文字与贴纸、所有画面同一产品同一图案。
+- PART 1 全局复刻契约：输出格式、参考图顺序与角色、只复制 A 的图案与配色（满印铺满，
+  不复制 A 的空底/背景）、禁止新增文字与贴纸、所有画面同一产品同一图案。
 - PART 2 产品事实与确定性规则：由 ``TargetProductSpec`` / ``CapabilitySet`` /
-  ``ReplicaRuleSet`` 编译（结构、材质、部件、可印/不可印区域、必须展示与禁止项）。
-- PART 3 摄影构图方案：由冻结的 ``CompositionPlan`` 编译（每格角色与拍法）。
+  ``ReplicaRuleSet`` 编译（结构、材质、部件、可印/不可印区域、必须展示与禁止项），
+  并追加产品几何锁与主/次/点缀元素层级。
+- PART 3 摄影构图方案：由冻结的 ``CompositionPlan`` 编译（每格角色与拍法），
+  末尾补一段统一的生活场景/道具/光源要求，避免成图只有干净柔光、画面发素。
 - PART 4 输出格式与最终禁止项：四格顺序、边界、裁切、重复与本次重试约束。
 
 所有来自模型分析或用户输入的文本都经过压缩、截断与引号剥离后才进入提示词，
@@ -27,7 +29,10 @@ from .replica_specs import (
 )
 
 # 编译器版本：改动任一输出语句结构都必须递增（随款级计划冻结）。
-PROMPT_COMPILER_VERSION = "pod-replica-prompt-v1"
+# v2：PART 3 增加统一的场景道具密度与光源要求（panels 1-3），改善成图发素。
+# v3：满印锁（edge-to-edge、禁止成片空底）、主/次/点缀元素权重、产品几何锁，
+#     并把"禁止裁切"限定到主图/素材格（细节格允许裁切），解决主体畸变。
+PROMPT_COMPILER_VERSION = "pod-replica-prompt-v3"
 # 四格位置顺序（与全定制一致）。
 PANEL_ORDER: tuple[tuple[str, str], ...] = (
     ("panel_1", "top-left"),
@@ -95,13 +100,20 @@ def _part1(panel_index: int | None = None) -> list[str]:
     lines.extend([
         "You are given two reference images in this exact order: image 1 is the original "
         "artwork source; image 2 is the target product.",
-        "Reference image 1 provides ONLY the pattern to replicate: its motifs, colors, and "
-        "their arrangement, spacing and scale relationships.",
+        "Reference image 1 provides ONLY the motifs and colors to replicate; treat its layout "
+        "as a repeating all-over print rather than a set of fixed positions to copy.",
         "Reference image 2 provides ONLY the target product: its shape, structure, material, "
         "proportions and available printable surface.",
         "Every panel must contain ONLY the target product wearing the replicated pattern. "
         "Never draw the product, room, furniture, model, props or background that appear "
         "next to the pattern in reference image 1.",
+        "ALL-OVER PRINT LOCK (highest priority): the replicated pattern is a full-surface "
+        "all-over print. Repeat and scale the motifs so it runs edge to edge across every "
+        "declared printable region and wraps around the product's curvature. Natural thin "
+        "spacing between motifs is fine, but large empty base-fabric areas, a single floating "
+        "motif or an isolated centered emblem are failures.",
+        "The plain ground around the motifs in reference image 1 is NOT part of the design: "
+        "never reproduce it as empty fabric, a blank band or a plain shell.",
     ])
     if panel_index is None:
         lines.extend([
@@ -143,7 +155,17 @@ def _part2(target: TargetProductSpec, plan: ReplicaPlan) -> list[str]:
         lines.append("Hardware and openings to keep unprinted and intact: " + ", ".join(hardware) + ".")
 
     lines.append("HARD CONSTRAINTS (never violate):")
-    lines.extend(f"- {_safe(item, limit=_TEXT_LIMIT)}" for item in plan.rule_set.hard_constraints)
+    # 复刻只继承 A 的图案主体与配色：排布改由满印规则重新组织，
+    # 否则规则里"复刻排布关系"会把 A 的空底一起搬过来，和满印锁打架。
+    hard_constraints = [
+        _safe(item, limit=_TEXT_LIMIT)
+        for item in plan.rule_set.hard_constraints
+        if "排布关系" not in str(item)
+    ]
+    lines.extend(f"- {item}" for item in hard_constraints)
+    lines.append(
+        "- 只能复制原素材图 A 的图案主体与配色；排布按满印规则重新组织，不照抄 A 的空底。"
+    )
     if plan.rule_set.display_requirements:
         lines.append("REQUIRED DISPLAY:")
         lines.extend(f"- {_safe(item, limit=_TEXT_LIMIT)}" for item in plan.rule_set.display_requirements)
@@ -153,6 +175,13 @@ def _part2(target: TargetProductSpec, plan: ReplicaPlan) -> list[str]:
             f"- {_safe(item, limit=_TEXT_LIMIT)}" for item in plan.rule_set.generation_constraints
         )
     lines.append(
+        "GEOMETRY LOCK — image 2 is the only structural truth: reproduce its exact silhouette, "
+        "rim and opening shape, handle count and attachment points, height-to-width ratio and "
+        "surface curvature. Never lean, tilt, stretch, flatten, compress or warp the product to "
+        "fit the frame, the crop or the pose; it must read as the same physical object in every panel."
+    )
+    lines.extend(_print_hierarchy(plan))
+    lines.append(
         "Only capabilities listed here may shape the render: "
         + (", ".join(plan.capability_set.capabilities) or "none")
         + "."
@@ -160,10 +189,57 @@ def _part2(target: TargetProductSpec, plan: ReplicaPlan) -> list[str]:
     return lines
 
 
+def _element_tiers(source: SourceArtworkSpec) -> tuple[str, list[str], list[str]]:
+    """取主/次/点缀三层元素；旧分析没有权重时按 motifs 顺序确定性兜底。"""
+    motifs = _safe_list(source.artwork_motifs.value)
+    primary = (_safe_list(source.primary_motifs.value) or [""])[0]
+    if not primary:
+        primary = motifs[0] if motifs else ""
+    secondary = [item for item in _safe_list(source.secondary_motifs.value) if item != primary][:2]
+    if not secondary:
+        secondary = [item for item in motifs if item != primary][:2]
+    used = {primary, *secondary}
+    accent = [item for item in _safe_list(source.accent_motifs.value) if item not in used]
+    if not accent:
+        accent = [item for item in motifs if item not in used]
+    return primary, secondary, accent
+
+
+def _print_hierarchy(plan: ReplicaPlan) -> list[str]:
+    """把元素权重写成硬层级，避免所有纹样被画成同样大小的小图案。"""
+    primary, secondary, accent = _element_tiers(plan.source_artwork_spec)
+    if not (primary or secondary or accent):
+        return []
+    lines = ["PRINT HIERARCHY (fixed; never flatten every motif to the same size):"]
+    if primary:
+        lines.append(
+            f"- Tier 1 hero motif (largest scale, repeated most often, dominant in every panel): "
+            f"{primary}."
+        )
+    if secondary:
+        lines.append(
+            f"- Tier 2 supporting motifs (medium scale, repeated between the hero motifs): "
+            f"{', '.join(secondary)}."
+        )
+    if accent:
+        lines.append(
+            f"- Tier 3 accent motifs (small scale, sparing rhythm details): {', '.join(accent)}."
+        )
+    lines.append(
+        "- The hero must carry the strongest visual weight; supporting and accent motifs must "
+        "never be rendered at the same size as the hero."
+    )
+    return lines
+
+
 def _part3(plan: ReplicaPlan, panel_index: int | None = None) -> list[str]:
     composition = plan.composition_plan
     if composition is None:
-        return ["=== PART 3 · SHOT PLAN ===", "Follow the panel roles stated in PART 1."]
+        return [
+            "=== PART 3 · SHOT PLAN ===",
+            "Follow the panel roles stated in PART 1.",
+            *_scene_and_lighting(panel_index),
+        ]
     lines = [
         "=== PART 3 · SHOT PLAN (frozen) ===",
         f"Composition template: {_safe(composition.template_id, limit=100)} "
@@ -193,6 +269,47 @@ def _part3(plan: ReplicaPlan, panel_index: int | None = None) -> list[str]:
         if background:
             details.append(f"background={background}")
         lines.append(f"- {slot.slot_id}: " + "; ".join(details) + ".")
+    lines.extend(_scene_and_lighting(panel_index))
+    return lines
+
+
+def _scene_and_lighting(panel_index: int | None) -> list[str]:
+    """PART 3 末尾的场景/道具/光源补充。
+
+    构图模板只固化机位，若不再补这一层，模型只会给干净柔光的空背景，成图发素。
+    素材格（panel_4）按纯净中性背景执行，不叠加生活场景布景。
+    """
+    if panel_index is not None and panel_index >= len(PANEL_ORDER):
+        return []
+    if panel_index is None:
+        lines = [
+            "SCENE AND LIGHTING (panels 1-3 share one staged set; the material panel keeps a "
+            "clean neutral background):"
+        ]
+    else:
+        lines = ["SCENE AND LIGHTING (this panel):"]
+    lines.extend([
+        "- Build a lived-in lifestyle set instead of a plain studio wall: place 3-5 real props "
+        "from the pattern's own seasonal world around the product in clear near/mid/far layers. "
+        "Props are real objects, never a 3D copy of a printed motif, and must never cover the "
+        "product or its printable surface.",
+        "- Light the set with one clearly directional warm key light (low window light, golden "
+        "afternoon light or a warm lamp): defined highlights on the product, a soft contact "
+        "shadow beneath it, and natural falloff into the background. Flat, evenly lit studio "
+        "light is a failure.",
+        "- Keep at least one visible warm light source inside the frame (warmly lit window, lamp, "
+        "string lights or candle) reading as a bright warm highlight with a soft halo or bokeh.",
+    ])
+    if panel_index is None:
+        lines.append(
+            "- Panels 1-3 are one shoot: keep the same set surface, the same light direction and "
+            "the same shallow depth of field; only the crop changes."
+        )
+    else:
+        lines.append(
+            "- Keep the same set surface, light direction and shallow depth of field as the rest "
+            "of this style's shoot."
+        )
     return lines
 
 
@@ -206,8 +323,27 @@ def _part4(plan: ReplicaPlan, attempt: int, panel_index: int | None = None) -> l
         "Do not add any new text, letters, numbers, logos, labels, watermarks, signatures, "
         "captions, collage borders or stickers.",
         ALLOW_PATTERN_TEXT_CONSTRAINT,
-        "Keep the full product and its silhouette inside each panel: no cropped or partial "
-        "product, no duplicated product, and no missing component.",
+    ])
+    if panel_index is None:
+        lines.append(
+            "Panel_1 and panel_4 must keep the complete product inside the frame: no cropped or "
+            "partial product, no duplicated product, and no missing component."
+        )
+        lines.append(
+            "Panels 2 and 3 are detail crops: cropping the product is allowed there, but its "
+            "geometry must stay true and undistorted."
+        )
+    elif panel_index in (1, len(PANEL_ORDER)):
+        lines.append(
+            "This panel must keep the complete product inside the frame: no cropped or partial "
+            "product, no duplicated product, and no missing component."
+        )
+    else:
+        lines.append(
+            "Cropping the product is allowed for this detail panel; never distort, stretch or "
+            "warp it to fit the frame."
+        )
+    lines.extend([
         "All four panels must show the same target product wearing the same replicated pattern; "
         "they are NOT different products, different patterns or recolored variants.",
         "Do not reuse the reference image backgrounds, scenes or props.",
@@ -231,8 +367,6 @@ def _pattern_facts(source: SourceArtworkSpec) -> list[str]:
     pattern_fields = (
         ("motifs", _fact_text(source.artwork_motifs)),
         ("colors", _fact_text(source.artwork_colors)),
-        ("layout", _fact_text(source.artwork_layout, limit=200)),
-        ("coverage", _fact_text(source.artwork_density, limit=200)),
         ("repeat", _fact_text(source.artwork_repeat_pattern, limit=200)),
     )
     rendered = "; ".join(f"{label}: {value}" for label, value in pattern_fields if value)

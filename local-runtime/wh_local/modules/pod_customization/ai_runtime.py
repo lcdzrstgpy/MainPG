@@ -260,7 +260,9 @@ class PodCustomizationAiRuntime(AiRuntime):
 
         parts = self._media.split_four_grid(
             media,
-            enhance=options_from_env(),
+            # 豆包 2K 母图拆格后每格约 1024px，已高于 800 交付尺寸：
+            # 跳过 4× 超分，直接 LANCZOS 降采样 + USM，避免每格白跑 10s。
+            enhance=options_from_env(upscale_when_larger=False),
             on_enhance_metrics=self._log_enhance_metrics,
         )
         return [part for part in parts if part.stage.startswith("grid_image_") and part.stage != "grid_image_summary"]
