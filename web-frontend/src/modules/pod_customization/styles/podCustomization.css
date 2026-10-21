@@ -401,7 +401,11 @@
 .pod-current-template-summary > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
 .pod-current-template-summary > header span { color: var(--pod-primary); font-size: .58rem; font-weight: 900; letter-spacing: .1em; }
 .pod-current-template-summary > header h2 { margin: 2px 0 0; font-size: .9rem; }
-.pod-current-template-summary > header button { padding: 6px 9px; border: 1px solid var(--pod-border); border-radius: 8px; color: var(--pod-primary); background: var(--pod-surface-soft); font-size: .62rem; font-weight: 800; }
+.pod-current-template-summary > header button { flex: 0 0 auto; padding: 6px 9px; border: 1px solid var(--pod-border); border-radius: 8px; color: var(--pod-primary); background: var(--pod-surface-soft); font-size: .62rem; font-weight: 800; }
+/* AI 生成结果需人工复核的红字提示：放在标题与「更换模板」之间，空间不足时换行右对齐；
+   标题块与按钮不参与收缩，避免长提示把左右两侧组件挤变形。 */
+.pod-current-template-summary > header > div { flex: 0 0 auto; }
+.pod-current-template-review-note { flex: 1 1 auto; min-width: 0; margin: 0; color: #cf3f39; font-size: .6rem; font-weight: 700; line-height: 1.45; text-align: right; }
 .pod-current-template-body { display: grid; grid-template-columns: 138px minmax(0, 1fr); align-items: stretch; gap: 20px; }
 /* 模板图要贴边铺满整框：本元素是 <button>，浏览器 UA 默认内边距（Chromium/WebKit 为 1px 6px）
    会把 width/height:100% 的图片顶进内容盒，露出框底形成白边，因此显式 padding:0；

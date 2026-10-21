@@ -32,7 +32,9 @@ from .contracts import COMPOSITION_PANEL_KEYS, IP_EXCLUDED_ELEMENTS, BusinessFie
 # v14：图案密度真正生效——density 从「只写在 signature 里」升级为硬指令，密度池去掉 sparse/oversized 档。
 # v15：明确 POD 是满印（all-over print）——PART 1 加 ALL-OVER PRINT LOCK，PART 3 要求无缝铺满
 #      所有可印表面、覆盖率 100%，排布池与密度池全部改为满印接花描述（不再局部覆盖）。
-PATTERN_PROMPT_VERSION = "v15"
+# v16：新增图案布局锁（ARTWORK LAYOUT LOCK）——主图确定图案在商品表面的位置与相对尺度，
+#      其余三格只换机位/景别，禁止重排；面板描述同步改为「同一布局的裁切/换视角」。
+PATTERN_PROMPT_VERSION = "v16"
 # 位置↔角色固定：左上=主图(lifestyle)、右上=细节A(detail_a)、左下=细节B(detail_b)、右下=素材(hero)。
 # 标识符沿用历史值（lifestyle=主图、hero=素材），避免历史批次错标；仅位置分配按本元组顺序正确落位。
 LISTING_IMAGE_ROLES = ("lifestyle", "detail_a", "detail_b", "hero")
@@ -257,10 +259,10 @@ def _brief_color_preferences(business_fields: Mapping[str, object] | None) -> li
 # 四格固定角色/机位的默认描述（未配置用户构图时使用）。
 _DEFAULT_LISTING_PANEL_LINES = (
     "Panel 1 — PRIMARY IMAGE (top-left): the complete product in one newly generated, commercially useful lifestyle setting, shot wide at a normal eye-level product angle with the full silhouette in frame. It must never be a close-up, macro, cropped, partial or three-quarter detail shot — those belong to Panels 2-3 and must not be repeated here. This is the marketplace primary image and the title reference.",
-    "Panel 2 — DETAIL IMAGE A (top-right): a tight high-resolution close-up of the newly invented artwork on this same product, making colour, edges, print/material texture and manufacturing detail easy to inspect. Do not alter the artwork or its placement.",
-    "Panel 3 — DETAIL IMAGE B (bottom-left): a different close product detail or three-quarter view — a product-appropriate structural or material detail — with the artwork visibly identical to Panels 1-2.",
-    "Panel 4 — MATERIAL IMAGE (bottom-right): the complete product on a newly generated clean neutral ecommerce background, filling most of the panel with the full design sharply visible. Supporting material imagery, not the marketplace primary image.",
-    "Final check on the fixed order by position: top-left = complete product in a lifestyle scene, top-right = tight artwork close-up, bottom-left = a different close product detail, bottom-right = complete product on a neutral background. Do not swap, shift or duplicate panels.",
+    "Panel 2 — DETAIL IMAGE A (top-right): a tight high-resolution close-up of the newly invented artwork on this same product, making colour, edges, print/material texture and manufacturing detail easy to inspect. It is a literal zoom into Panel 1's layout: the same motif stays at the same spot on the product and at the same relative scale. Do not alter, move or re-arrange the artwork.",
+    "Panel 3 — DETAIL IMAGE B (bottom-left): a different close product detail or three-quarter view — a product-appropriate structural or material detail — with the artwork visibly identical to Panels 1-2. If the angle changes, the printed layout rotates rigidly with the product; the hero motif keeps its position on the same face and never drifts to a side edge, the top or a corner.",
+    "Panel 4 — MATERIAL IMAGE (bottom-right): the complete product on a newly generated clean neutral ecommerce background, filling most of the panel with the full design sharply visible. Use the same front-facing layout as Panel 1 — same motif in the same place at the same scale. Supporting material imagery, not the marketplace primary image.",
+    "Final check on the fixed order by position: top-left = complete product in a lifestyle scene, top-right = tight artwork close-up, bottom-left = a different close product detail, bottom-right = complete product on a neutral background. Do not swap, shift or duplicate panels, and do not re-lay-out the artwork in any panel.",
 )
 # 系统「默认模板」的四格描述（等价于未配置构图时的默认机位）；内置项，不需要用户新建。
 DEFAULT_COMPOSITION_ID = "__default__"
@@ -303,14 +305,17 @@ _USER_DIRECTION_HEADER = (
     "panel exactly as its own direction says. These OVERRIDE the default shot implied by the panel role "
     "name, and never reuse another panel's framing. Read each direction literally (e.g. 'vertically "
     "top-down' = shot straight down from overhead; 'macro close-up' = the surface fills the frame). "
-    "Never average the four directions into one compromise framing."
+    "Never average the four directions into one compromise framing. A shooting direction changes the "
+    "CAMERA ONLY — the printed artwork layout stays exactly as Panel 1 defines it (see ARTWORK LAYOUT "
+    "LOCK)."
 )
 # 四格趋同是这批图最致命的失败模式，单独再钉一句。
 _PANEL_DIFFERENTIATION_LINE = (
     "MANDATORY DIFFERENCE CHECK — the four quadrants must show clearly different elevations "
     "(high / eye-level / low) and distances (wide / close-up / macro), as each panel requests. If two "
     "quadrants share the same camera angle, re-shoot one of them: Four identical viewpoints is a "
-    "failed result."
+    "failed result. Framing alone may differ: the artwork layout (motif position and relative scale "
+    "on the product) must stay identical in all four."
 )
 
 
@@ -452,6 +457,27 @@ _NO_QUADRANT_LABELS = (
     "or near the four-panel divider. The four panels must be separated only by the clean divider; "
     "no text, captions, labels, stamps, signatures or watermarks anywhere in the image."
 )
+# 四格之间「图案在商品表面上的位置」必须是同一张布局图，只允许换机位/景别。
+# 实测失败模式：主图里主元素（例如一棵树）在商品正中，细节图换个视角后跑到侧边/上方——
+# 图还是那张图，但结构被重新排布，四张图拼不回同一件商品。
+_ARTWORK_LAYOUT_LOCK = (
+    "ARTWORK LAYOUT LOCK — Panel 1 (top-left) defines the printed layout ONCE, and the other three "
+    "panels must reproduce that exact same layout:\n"
+    "- The hero motif's position on the product surface (for example a tree centred on the front "
+    "face), its size relative to the product face, its orientation, and its spacing from seams, "
+    "edges and hardware form ONE fixed map. Every panel must show that same map: the same motif in "
+    "the same place at the same scale, with the same repeat spacing.\n"
+    "- Panels 2-4 may change camera angle, distance and crop, but must NEVER re-arrange, move, "
+    "rotate, re-centre or resize the artwork for a nicer composition. A motif that is centred in "
+    "Panel 1 and appears near a side edge, at the top, in a corner or at a different size in "
+    "another panel is a FAILED result.\n"
+    "- If a panel shows the product from another angle, the whole printed surface rotates with the "
+    "product as one rigid sheet: a motif keeps the same spot on the same face. A new camera angle "
+    "is never permission to lay the pattern out again.\n"
+    "- A detail panel is a literal zoom into the SAME layout (it may reveal another area of it), "
+    "not a new version of the artwork. Panels may show different areas, but the overall layout and "
+    "the hero motif's anchored position and relative scale must stay identical across all four."
+)
 
 
 _FLAT_PRODUCT_KEYWORDS = (
@@ -463,11 +489,14 @@ _FLAT_LISTING_PANEL_LINES = (
     "Panel 1 — PRIMARY IMAGE (top-left): straight top-down flat lay of the complete product lying "
     "flat on a styled tabletop; all four edges visible inside the frame, no table edge, no chairs, "
     "no drape, no hanging corner, no thickness.",
-    "Panel 2 — DETAIL IMAGE A (top-right): top-down macro of the printed artwork on the flat surface.",
-    "Panel 3 — DETAIL IMAGE B (bottom-left): top-down macro of a different area of the flat printed "
-    "surface plus edge stitching; never a corner, rim, side profile or three-quarter view.",
+    "Panel 2 — DETAIL IMAGE A (top-right): top-down macro of the same artwork layout shown in "
+    "Panel 1 — the same motif at the same spot on the sheet and at the same relative scale.",
+    "Panel 3 — DETAIL IMAGE B (bottom-left): top-down macro of a different area of the same printed "
+    "layout plus edge stitching; never a corner, rim, side profile or three-quarter view, and never "
+    "a re-arranged or re-scaled version of the artwork.",
     "Panel 4 — MATERIAL IMAGE (bottom-right): straight top-down of the complete flat product on a "
-    "clean neutral ecommerce background.",
+    "clean neutral ecommerce background, using the same layout as Panel 1 (same motif position and "
+    "scale).",
 )
 _FLAT_COMPOSITION_OVERRIDE = (
     "FLAT PRODUCT COMPOSITION OVERRIDE: this is a flat sheet product. Ignore any eye-level, "
@@ -562,6 +591,7 @@ def build_direct_listing_prompt(
         _FLAT_PRINT_LOCK,
         _NO_QUADRANT_LABELS,
         "Keep the same exact product across all four panels: identical structure, material, proportions, base color, artwork, artwork scale and artwork placement.",
+        _ARTWORK_LAYOUT_LOCK,
         "ALL-OVER PRINT LOCK: the artwork is a full-surface all-over print — it repeats seamlessly edge to edge across every printable surface (front, sides, base, handles and bindings), with no blank ground areas and never a single isolated motif floating on a plain shell.",
         "Do not invent another product, extra accessories attached to the product, text, captions, logos, labels, watermarks, collages or borders; keep the four-panel divider clean and centered. (Standalone scene props beside the product ARE required — see PART 4 ART DIRECTION.)",
         "If the product has an interior or lining, keep the interior surface unprinted (one plain solid color, black by default) and never extend the outer artwork inside.",
@@ -756,6 +786,9 @@ def build_style_listing_prompt(
         f"Style creative signature: {signature}",
         "pattern_layout 只描述印花图案在平面上的排布方式，不是相机角度、景别或 3D 场景构图；机位固定由 PART 2 决定。",
         subject_block,
+        "四格图案布局锁定：主图（左上）确定的图案在商品表面的位置、相对尺度与接花间距，"
+        "在另外三格必须完全一致；其余三格只允许换机位/景别或裁切，禁止把主元素挪到侧边、顶部、"
+        "角落或改变它相对商品的尺寸。换视角时整张图案随商品一起刚性旋转，不得重新排版。",
         f"图案密度（本款硬要求，density={density}）：整幅是满印，可印表面覆盖率 100%，"
         "不允许出现空白底色区；主元素、次级纹样、填充纹样必须同时、重复地出现在整个表面。"
         "只在局部放图案或出现大片留白，视为失败。",
