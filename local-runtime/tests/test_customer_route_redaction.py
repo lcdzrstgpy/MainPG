@@ -78,6 +78,8 @@ def test_login_returns_local_token_and_only_public_account_fields() -> None:
         "role": "operator",
         "workspace_code": "workspace-1",
         "workspace_name": "Workspace One",
+        # POD 使用协议状态随登录一并下发（合并 POD-change 后新增的公开字段）。
+        "pod_agreement_confirmed": False,
     }
     encoded_account = json.dumps(body["account"], sort_keys=True)
     for forbidden in (

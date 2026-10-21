@@ -7037,17 +7037,18 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         return self._execute_task_direct(task_id, workspace_id, token)
 
     def _required_direct_providers(self, settings: dict[str, Any], *, image_chain: bool = False) -> set[str]:
-        """根据处理范围推导直连所需第三方密钥：文本/视觉走 ark，生图走 wuyin。
+        """根据处理范围推导直连所需第三方密钥：文本/视觉/生图统一走 ark（豆包）。
 
-        ``image_chain=True``：服务端已下发可用出图链路（例如故障期切到中转），生图不再
-        依赖 wuyin 短期密钥，因此不再把它算作必需。
+        ``image_chain=True``：服务端下发的 image_plan 已带出方舟链路（含 api_key），
+        生图不再依赖批次下发的 ark 短期密钥，因此不再把它算作必需。
+        无印（wuyin）链路已停用，这里不再要求 wuyin 密钥。
         """
         kinds = {kind for kind, _feature in self._billable_product_processing_features(settings)}
         providers: set[str] = set()
         if kinds & {"text", "vision"}:
             providers.add("ark")
         if "image_grid" in kinds and not image_chain:
-            providers.add("wuyin")
+            providers.add("ark")
         return providers
 
     def _execute_task_direct(self, task_id: int, workspace_id: str, token: str) -> dict[str, Any]:

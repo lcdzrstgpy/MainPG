@@ -16,12 +16,10 @@ from .schemas import SystemConfigUpdate
 CONFIG_KEY = "system_config"
 PRIMARY_AI_BASE_URL = "https://station-88.aicoming.top/v1"
 
-# 个人中心「模型选择」开放的生图模型；默认 Seedream 5.0 Flash（火山方舟）。
-# 上游端点与凭据仍由服务端持有，客户端只保存一个模型名。
+# 个人中心「模型选择」开放的生图模型：只保留豆包 Seedream。
+# 无印（速创）链路已停用；历史保存值通过 _normalized_image_model 自动回落默认。
 IMAGE_MODEL_CHOICES: tuple[tuple[str, str], ...] = (
-    ("doubao-seedream-5-0-flash-260915", "Seedream 5.0 Flash（豆包，默认）"),
-    ("image_gpt", "GPT-Image-2（速创）"),
-    ("image_gpt_2.5", "GPT-Image-2.5（速创）"),
+    ("doubao-seedream-5-0-flash-260915", "Seedream 5.0 Flash（豆包）"),
 )
 IMAGE_MODEL_DEFAULT = IMAGE_MODEL_CHOICES[0][0]
 

@@ -124,11 +124,11 @@ def test_provider_config_direct_placeholder_without_granted_keys(
         assert provider["_sys_backup_image_ai"] is None
 
 
-def test_provider_config_follows_server_image_plan_in_auto_mode() -> None:
-    """服务端下发 auto 策略：主链路无印 + 备用中转，客户端只按顺序对接。
+def test_provider_config_ignores_wuyin_image_plan_and_uses_ark() -> None:
+    """服务端即使仍下发无印链路，客户端也只走豆包（方舟）。
 
-    这是「上游无印维护/拒单」时的预备措施：链路开关与切换权都在服务器，
-    客户端既不内置链路凭据，也不自行决定走哪条链路。
+    无印异步链路已停用（任务 stalled 会把整批拖满 660s 预算），出图统一收敛到
+    Seedream；缺失的方舟凭据用批次下发的 ark 短期密钥补齐。
     """
     plan = {
         "mode": "auto",
@@ -150,23 +150,43 @@ def test_provider_config_follows_server_image_plan_in_auto_mode() -> None:
         ],
     }
     with server_ai_proxy.server_ai_context(
-        "t", {}, granted_keys={"wuyin": "WUYIN-K"}, image_plan=plan
+        "t", {}, granted_keys={"ark": "ARK-K", "wuyin": "WUYIN-K"}, image_plan=plan
     ):
         provider = provider_config_module.resolve_ai_provider()
 
-    assert provider["_sys_image_ai"]["base_url"] == "https://api.wuyinkeji.com"
-    assert provider["_sys_image_ai"]["api_key"] == "WUYIN-K"
-    assert provider["_sys_image_ai"]["model"] == "image_gpt"
-    backup = provider["_sys_backup_image_ai"]
-    assert backup is not None
-    # 末尾斜杠归一化，避免拼出 //images/edits。
-    assert backup["base_url"] == "https://relay.example/v1"
-    assert backup["api_key"] == "RELAY-K"
-    assert backup["model"] == "gpt-image-2-2k"
+    assert provider["_sys_image_ai"]["base_url"] == "https://ark.cn-beijing.volces.com/api/v3"
+    assert provider["_sys_image_ai"]["api_key"] == "ARK-K"
+    assert provider["_sys_image_ai"]["model"] == "doubao-seedream-5-0-flash-260915"
+    assert provider["_sys_backup_image_ai"] is None
 
 
-def test_provider_config_relay_only_mode_makes_relay_the_primary_chain() -> None:
-    """服务端切到「只用中转」：中转成为主链路，且不再要求 wuyin 短期密钥。"""
+def test_provider_config_follows_ark_image_plan() -> None:
+    """服务端下发的方舟链路仍然生效（客户端只认豆包这一条链路）。"""
+    plan = {
+        "mode": "primary",
+        "providers": [
+            {
+                "role": "primary",
+                "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+                "api_key": "ARK-PLAN-K",
+                "model": "doubao-seedream-5-0-flash-260915",
+                "reference_model": "doubao-seedream-5-0-flash-260915",
+            }
+        ],
+    }
+    with server_ai_proxy.server_ai_context("t", {}, image_plan=plan):
+        provider = provider_config_module.resolve_ai_provider()
+
+    assert provider["_sys_image_ai"]["base_url"] == "https://ark.cn-beijing.volces.com/api/v3"
+    assert provider["_sys_image_ai"]["api_key"] == "ARK-PLAN-K"
+    assert provider["_sys_image_ai"]["model"] == "doubao-seedream-5-0-flash-260915"
+    assert provider["_sys_backup_image_ai"] is None
+    # 方舟链路自带 api_key，不再要求批次另发短期密钥。
+    assert provider_config_module.image_chain_supplied(plan) is True
+
+
+def test_provider_config_ignores_relay_only_image_plan() -> None:
+    """中转/无印都不算「已下发链路」，missing 时回落到方舟直连。"""
     plan = {
         "mode": "relay",
         "providers": [
@@ -182,16 +202,16 @@ def test_provider_config_relay_only_mode_makes_relay_the_primary_chain() -> None
     with server_ai_proxy.server_ai_context("t", {}, granted_keys={"ark": "ARK-K"}, image_plan=plan):
         provider = provider_config_module.resolve_ai_provider()
 
-    assert provider["_sys_image_ai"]["base_url"] == "https://relay.example/v1"
-    assert provider["_sys_image_ai"]["api_key"] == "RELAY-K"
-    assert provider["_sys_image_ai"]["model"] == "gpt-image-2-2k"
+    assert provider["_sys_image_ai"]["base_url"] == "https://ark.cn-beijing.volces.com/api/v3"
+    assert provider["_sys_image_ai"]["api_key"] == "ARK-K"
+    assert provider["_sys_image_ai"]["model"] == "doubao-seedream-5-0-flash-260915"
     assert provider["_sys_backup_image_ai"] is None
-    # 策略已指定出图链路 → 服务端本就不下发 wuyin，不应把 wuyin 算作必需密钥而中止任务。
-    assert provider_config_module.image_chain_supplied(plan) is True
+    # 中转不是豆包链路 → 视为未下发，仍需 ark 短期密钥。
+    assert provider_config_module.image_chain_supplied(plan) is False
 
 
 def test_provider_config_ignores_malformed_image_plan() -> None:
-    """策略字段不全时视为「未下发」，客户端回落内置无印直连而非用空链路。"""
+    """策略字段不全时视为「未下发」，客户端回落内置豆包（方舟）直连而非用空链路。"""
     malformed = {
         "mode": "auto",
         "providers": [{"role": "primary", "base_url": "", "api_key": "", "model": ""}],
@@ -205,8 +225,8 @@ def test_provider_config_ignores_malformed_image_plan() -> None:
     assert provider["_sys_backup_image_ai"] is None
 
 
-def test_media_config_exposes_both_chains_under_auto_plan() -> None:
-    """端到端：auto 策略下媒体配置同时带出主/备两段，provider 池变成 2 条。"""
+def test_media_config_exposes_only_ark_chain_under_wuyin_plan() -> None:
+    """端到端：服务端下发无印链路时，媒体配置也只带出方舟一条链路。"""
     from wh_local.modules.product_processing.infrastructure.media import ProductImageProcessor
 
     plan = {
@@ -229,17 +249,16 @@ def test_media_config_exposes_both_chains_under_auto_plan() -> None:
         ],
     }
     with server_ai_proxy.server_ai_context(
-        "t", {}, granted_keys={"wuyin": "WUYIN-K"}, image_plan=plan
+        "t", {}, granted_keys={"ark": "ARK-K", "wuyin": "WUYIN-K"}, image_plan=plan
     ):
         media_config = ProductProcessingService._media_config_provider()
 
-    assert media_config["image"]["base_url"] == "https://api.wuyinkeji.com"
-    assert media_config["image"]["api_key"] == "WUYIN-K"
-    assert media_config["backup_image"]["base_url"] == "https://relay.example/v1"
-    assert media_config["backup_image"]["api_key"] == "RELAY-K"
+    assert media_config["image"]["base_url"] == "https://ark.cn-beijing.volces.com/api/v3"
+    assert media_config["image"]["api_key"] == "ARK-K"
+    assert not media_config["backup_image"]
 
     pool = ProductImageProcessor._providers(media_config)
-    assert [item["name"] for item in pool] == ["primary:image_gpt", "backup:gpt-image-2-2k"]
+    assert [item["name"] for item in pool] == ["primary:doubao-seedream-5-0-flash-260915"]
 
 
 def test_server_single_image_mode_forces_four_standalone_images() -> None:

@@ -22,6 +22,8 @@ AI_BASE_URL = "server-managed"
 IMAGE_AI_BASE_URL = "https://api.wuyinkeji.com"
 # 火山方舟官方生图（Seedream）直连地址：本地联调可用 WH_PP_IMAGE_PROVIDER=ark 强制切换。
 ARK_IMAGE_AI_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
+# 方舟域名，用于识别服务端下发的链路是否属于豆包（其余链路一律忽略）。
+ARK_IMAGE_HOST = "ark.cn-beijing.volces.com"
 # 不再内置共享密钥：产品处理 AI 为转售模式，每个用户使用自己在系统配置中填写的 key；
 # 未配置时 engine/status 明确显示 ai_configured=false，任务对 AI 环节给出可读报错，不静默透传。
 AI_API_KEY = ""
@@ -36,29 +38,28 @@ DEFAULT_IMAGE_MODEL = "doubao-seedream-5-0-flash-260915"
 IMAGE_MODEL = DEFAULT_IMAGE_MODEL
 REFERENCE_IMAGE_MODEL = DEFAULT_IMAGE_MODEL
 REFERENCE_IMAGE_MODEL_1K = "gpt-image-2-1k"
-# 生图模型的客户端白名单：桌面端只允许在这些名字之间切换，其它历史值一律回落默认。
-# 上游端点与凭据仍由服务端持有，客户端只传模型名。
-IMAGE_MODEL_CHOICES = (
-    "doubao-seedream-5-0-flash-260915",
-    "image_gpt",
-    "image_gpt_2.5",
-)
+# 生图模型的客户端白名单：只保留豆包 Seedream。
+# 无印（wuyin）异步链路已停用——它「提交任务 + 轮询排队」的形态在 2026-10-21 大面积卡死
+# （两次提交都 stalled、烧满 660s 预算后回退来源图），且失败会连带拖慢整批。
+# 白名单收窄到单项后，个人中心保存过的 image_gpt / image_gpt_2.5 会被
+# ``_normalized_image_model`` 自动回落成 Seedream，不再需要单独迁移旧配置。
+IMAGE_MODEL_CHOICES = (DEFAULT_IMAGE_MODEL,)
 _IMAGE_MODEL_ALIASES = {
     DEFAULT_IMAGE_MODEL: DEFAULT_IMAGE_MODEL,
-    "image_gpt": "image_gpt",
-    "image_gpt_2.5": "image_gpt_2.5",
-    # 旧接口只对应 GPT-Image-2；其中 ``gpt-image-2-2k`` 是旧版默认配置值，
-    # 统一迁移到新的默认模型（Seedream 5.0 Flash）。
-    "gpt-image-2": "image_gpt",
-    "gpt-image-2-1k": "image_gpt",
+    # 无印链路的历史值/别名：一律收敛到豆包，避免老配置把出图拉回无印。
+    "image_gpt": DEFAULT_IMAGE_MODEL,
+    "image_gpt_2.5": DEFAULT_IMAGE_MODEL,
+    "gpt-image-2": DEFAULT_IMAGE_MODEL,
+    "gpt-image-2-1k": DEFAULT_IMAGE_MODEL,
     "gpt-image-2-2k": DEFAULT_IMAGE_MODEL,
-    "gpt-image-2-4k": "image_gpt",
+    "gpt-image-2-4k": DEFAULT_IMAGE_MODEL,
 }
 IMAGE_SIZE = "2048x2048"
 REFERENCE_IMAGE_SIZE_1K = "1024x1024"
 IMAGE_QUALITY = "medium"
 # 精品模式固定一次 4K 四宫格，再在本地无降采样拆为四张约 2048×2048 轮播图。
-PREMIUM_IMAGE_MODEL = "gpt-image-2-4k"
+# 精品档同样只走豆包：``gpt-image-2-4k`` 是无印的历史值，已停用。
+PREMIUM_IMAGE_MODEL = DEFAULT_IMAGE_MODEL
 PREMIUM_IMAGE_SIZE = "4096x4096"
 
 # 运行时模型通常先返回，再由调用方做结构化校验；慢模型不能被客户端过早取消。
@@ -136,30 +137,39 @@ def parse_image_chain(plan: Mapping[str, Any] | None) -> list[dict[str, str]]:
 
 
 def image_chain_supplied(plan: Mapping[str, Any] | None) -> bool:
-    """服务端策略里是否带出了可用出图链路。
+    """服务端策略里是否带出了可用的**豆包**出图链路。
 
-    供任务启动时判定「是否仍要求 wuyin 短期密钥」：策略已指定链路（例如故障期整体
-    切到中转）时，服务端本就不会再下发 wuyin，此时不应因缺少 wuyin 而中止任务。
+    只有方舟（ark）链路算数：无印链路已被停用，即使服务端下发也不会被采用，
+    此时仍需客户端拿到 ark 短期密钥才能出图。
     """
-    return bool(parse_image_chain(plan))
+    return bool(_ark_chain_entries(parse_image_chain(plan)))
+
+
+def _ark_chain_entries(chain: list[dict[str, str]]) -> list[dict[str, str]]:
+    """只保留方舟链路的条目（豆包 Seedream 唯一入口）。"""
+    return [
+        entry
+        for entry in chain
+        if ARK_IMAGE_HOST in str(entry.get("base_url") or "").lower()
+    ]
 
 
 def _image_chain_from_plan() -> list[dict[str, str]]:
-    """当前任务上下文的出图链路（服务端下发）。
+    """当前任务上下文的出图链路（服务端下发，仅接受豆包/方舟）。
 
     契约（服务端批次冻结响应 ``freeze.image_plan``）::
 
         {"mode": "primary|relay|auto",
          "providers": [{"role", "base_url", "api_key", "model", "reference_model"}, ...]}
 
-    **链路开关与切换权完全在服务器**：服务端已按当前生效模式把要用的链路按顺序排好
-    （只用无印 / 只用中转 / 无印优先+中转兜底），客户端只按顺序对接——第 1 条作主链路、
-    第 2 条作备用兜底（对应 media._providers 的 primary / backup 两段）。
+    历史上「链路开关与切换权完全在服务器」，客户端会照单执行；2026-10-21 起出图统一
+    收敛到豆包 Seedream，因此这里**只保留方舟链路**：服务端即使仍下发无印（wuyin），
+    也会被过滤掉，随后由 ``_chain_for_model`` 回落到方舟直连（用批次下发的 ark 短期密钥）。
 
-    未下发（旧服务端）或字段不全时返回空列表，客户端沿用内置默认链路（无印直连），
-    行为与切直连后完全一致。
+    未下发（旧服务端）、字段不全或只有无印链路时返回空列表。
     """
-    return parse_image_chain(granted_image_plan())
+    chain = parse_image_chain(granted_image_plan())
+    return _ark_chain_entries(chain)
 
 
 def resolve_ai_provider() -> dict[str, Any]:
@@ -302,8 +312,8 @@ def _try_system_cos_public() -> dict[str, str]:
 
 
 def normalize_image_model(value: Any) -> str:
-    """把任意来源的图片模型名收敛到客户端白名单，未知值回到默认 image_gpt。"""
-    return _IMAGE_MODEL_ALIASES.get(str(value or "").strip().lower(), IMAGE_MODEL)
+    """把任意来源的图片模型名收敛到客户端白名单（当前只有豆包 Seedream）。"""
+    return _IMAGE_MODEL_ALIASES.get(str(value or "").strip().lower(), DEFAULT_IMAGE_MODEL)
 
 
 def local_image_chain() -> dict[str, str] | None:
