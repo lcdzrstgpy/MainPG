@@ -132,3 +132,23 @@
   .pod-fission-page *::before,
   .pod-fission-page *::after { animation: none !important; transition: none !important; }
 }
+
+/* ============================================================
+   左侧数据预填栏字号：与全定制同一档
+   共享组件（步骤标题 / 数量档位 / 上架信息 / 主按钮）由
+   .pod-prefill-panel 统一上调；这里补裂变自己的上传、识别摘要与构图入口。
+   ============================================================ */
+.pod-fission-setup .pod-fission-card-badge { font-size: .74rem; }
+.pod-fission-setup .pod-fission-upload-heading b { font-size: .78rem; }
+.pod-fission-setup .pod-fission-upload-heading small { font-size: .66rem; }
+.pod-fission-setup .pod-fission-upload-empty b { font-size: .76rem; }
+.pod-fission-setup .pod-fission-upload-empty small { font-size: .65rem; }
+.pod-fission-setup .pod-fission-upload-preview > small { font-size: .63rem; }
+.pod-fission-setup .pod-fission-upload-actions button { font-size: .72rem; }
+.pod-fission-setup .pod-fission-summaries dt { font-size: .74rem; }
+.pod-fission-setup .pod-fission-summaries dd { font-size: .76rem; }
+.pod-fission-setup .pod-fission-secondary-button { font-size: .75rem; }
+.pod-fission-setup .pod-fission-hint { font-size: .68rem; }
+.pod-fission-setup .pod-fission-awaiting { font-size: .74rem; }
+.pod-fission-setup .pod-fission-composition-info small { font-size: .65rem; }
+.pod-fission-setup .pod-fission-composition-info b { font-size: .8rem; }

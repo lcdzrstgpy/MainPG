@@ -967,7 +967,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
       {!error && notice && <div className="pod-page-message" role="status"><span>✓</span><p>{notice}</p><button type="button" onClick={clearMessages} aria-label="关闭提示">×</button></div>}
 
       <div className="pod-workbench-grid">
-        <aside className="pod-setup-column pod-brief-sidebar">
+        <aside className="pod-setup-column pod-brief-sidebar pod-prefill-panel">
           <section className="pod-setup-card pod-business-editor">
             <div className="pod-section-title"><span>BRIEF EDITOR</span><h2>创意描述</h2></div>
             <PodBriefInput onGenerated={handleBriefGenerated} history={briefHistory} onSelectHistory={selectBriefHistory} />

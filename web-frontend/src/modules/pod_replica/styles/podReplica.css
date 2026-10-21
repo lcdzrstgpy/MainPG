@@ -759,3 +759,26 @@
 .pod-replica-target-card {
   padding-left: 14px;
 }
+
+/* ============================================================
+   左侧数据预填栏字号：与全定制同一档
+   复刻左侧的文案多为 11–13px 的辅助信息，长时间核对偏小；
+   这里只上调 .pod-replica-setup 内的文字，结果区与抽屉不受影响。
+   ============================================================ */
+.pod-replica-setup .pod-replica-section-title span { font-size: 12px; }
+.pod-replica-setup .pod-replica-section-title small { font-size: 14px; }
+.pod-replica-setup .pod-replica-source-actions button { font-size: 14px; }
+.pod-replica-setup .pod-replica-source-preview > small { font-size: 13px; }
+.pod-replica-setup .pod-replica-target-meta b { font-size: 16px; }
+.pod-replica-setup .pod-replica-target-meta small { font-size: 14px; }
+.pod-replica-setup .pod-replica-target-edit { font-size: 14px; }
+.pod-replica-setup .pod-replica-target-remove { font-size: 17px; }
+.pod-replica-setup .pod-replica-target-add-card { font-size: 15px; }
+.pod-replica-setup .pod-replica-source-confirm,
+.pod-replica-setup .pod-replica-source-confirm button,
+.pod-replica-setup .pod-replica-source-confirm b { font-size: 13px; }
+.pod-replica-setup .pod-replica-composition-info span { font-size: 12px; }
+.pod-replica-setup .pod-replica-composition-info b { font-size: 15px; }
+.pod-replica-setup .pod-replica-composition-actions button { font-size: 14px; }
+.pod-replica-setup .pod-replica-start { font-size: 16px; }
+.pod-replica-setup .pod-replica-clear { font-size: 14px; }
