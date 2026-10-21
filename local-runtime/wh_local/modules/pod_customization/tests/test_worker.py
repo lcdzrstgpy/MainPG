@@ -1964,7 +1964,7 @@ def test_four_grid_generation_and_postprocess_stay_within_image_workers(tmp_path
     runtime = ConcurrencyTrackingRuntime(
         [_grid(patterns[index:index + 4]) for index in range(0, 160, 4)],
         workers=8,
-        generation_pause=0.005,
+        generation_pause=0.12,
     )
     service = _service(tmp_path, runtime)
     actor = _actor()

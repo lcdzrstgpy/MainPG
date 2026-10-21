@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import hashlib
 import sqlite3
+import time
 import uuid
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
@@ -95,6 +97,24 @@ class RegistryVersionConflict(PodRepositoryError):
             f"actual {actual[0]}/{actual[1]}",
             409,
         )
+
+
+def _journal_mode() -> str:
+    """SQLite journal 模式，默认 WAL。
+
+    2026-10-21 实测：本机文件系统上两个线程并发写同一个 WAL 库，会间歇性抛
+    ``attempt to write a readonly database``（仓库外用十行脚本即可复现，约 1/8
+    概率）；换成 DELETE 或 TRUNCATE 则 8/8 全过。库文件与目录都可写、库大小正常，
+    所以既不是权限问题也不是业务逻辑错，是 WAL 的 -shm 竞争。
+
+    生产环境保持 WAL（读写并发更好），只允许用环境变量在测试里切到 DELETE：
+
+        POD_SQLITE_JOURNAL_MODE=DELETE
+
+    不要在打包版里设这个变量 —— 那是拿并发性能换兼容性，需要单独评估。
+    """
+    mode = (os.environ.get("POD_SQLITE_JOURNAL_MODE") or "WAL").strip().upper()
+    return mode if mode in {"WAL", "DELETE", "TRUNCATE", "PERSIST", "MEMORY"} else "WAL"
 
 
 class PodCustomizationRepository:
@@ -263,7 +283,7 @@ class PodCustomizationRepository:
     def _connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.database_path, timeout=30)
         connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute(f"PRAGMA journal_mode={_journal_mode()}")
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA synchronous=NORMAL")
         connection.execute("PRAGMA busy_timeout=30000")
