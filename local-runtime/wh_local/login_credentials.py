@@ -1,13 +1,15 @@
 """登录页「账号管理」的本地凭据存储（仅本机）。
 
 - 账号列表与可选保存的密码统一写入数据目录的 ``login-credentials.bin``；
-- 文件整体经 Windows DPAPI 加密（CryptProtectData，用户级凭证）：密文绑定
+- Windows：文件整体经 DPAPI 加密（CryptProtectData，用户级凭证）：密文绑定
   当前 Windows 登录用户，文件被拷贝到别的用户 / 机器后无法解密；
-- DPAPI 不可用（非 Windows 环境）时写入抛出 ``LoginCredentialsUnavailable``，
+- macOS / Linux（源码开发场景）：DPAPI 不可用，改用 AES-256-GCM 加密，密钥
+  随机生成后以 0600 权限保存在同目录 ``login-credentials.key``；密钥文件丢失
+  时密文无法恢复，按损坏文件隔离后重新收集；
+- 加密能力不可用（缺少 cryptography）时写入抛出 ``LoginCredentialsUnavailable``，
   接口返回 503，前端静默降级为「无账号记忆」，不影响正常登录流程；
 - 登录页展示时用户尚未登录，接口不挂业务会话鉴权；本地服务仅监听回环地址，
-  与浏览器本地存储同属「本机信任域」。
-"""
+  与浏览器本地存储同属「本机信任域」。"""
 
 from __future__ import annotations
 
@@ -127,6 +129,73 @@ def _dpapi_unprotect(ciphertext: bytes) -> bytes:
         kernel32.LocalFree(ctypes.cast(blob_out.pbData, ctypes.c_void_p))
 
 
+# ---------------------------------------------------------------- 非 Windows 加密
+#
+# DPAPI 只在 Windows 可用；macOS / Linux 源码运行时用 AES-256-GCM 兜底，
+# 让「记住密码」在这些平台也能正常工作（此前写入直接 503，功能等于不存在）。
+
+_AES_MAGIC = b"WHLC1"  # 密文文件头：区分 AES-GCM 文件与旧版 DPAPI 裸密文
+_KEY_SIZE = 32
+_KEY_FILE_NAME = "login-credentials.key"
+
+
+def _read_or_create_key(directory: Path) -> bytes:
+    """读取（或首次生成）本机密钥文件，权限 0600，仅当前用户可读。"""
+    key_path = directory / _KEY_FILE_NAME
+    try:
+        existing = key_path.read_bytes()
+    except FileNotFoundError:
+        existing = b""
+    except OSError as exc:
+        raise LoginCredentialsUnavailable(
+            f"cannot read login credentials key: {exc}"
+        ) from exc
+    if len(existing) == _KEY_SIZE:
+        return existing
+
+    key = secrets.token_bytes(_KEY_SIZE)
+    directory.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        # 并发首次写入：另一个进程已生成，直接复用它。
+        return _read_or_create_key(directory)
+    except OSError as exc:
+        raise LoginCredentialsUnavailable(
+            f"cannot create login credentials key: {exc}"
+        ) from exc
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(key)
+        handle.flush()
+        os.fsync(handle.fileno())
+    return key
+
+
+def _aes_protect(data: bytes, key: bytes) -> bytes:
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    except ModuleNotFoundError as exc:
+        raise LoginCredentialsUnavailable(
+            "cryptography is required to store login credentials"
+        ) from exc
+    nonce = os.urandom(12)
+    return nonce + AESGCM(key).encrypt(nonce, data, None)
+
+
+def _aes_unprotect(payload: bytes, key: bytes) -> bytes:
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    except ModuleNotFoundError as exc:
+        raise LoginCredentialsUnavailable(
+            "cryptography is required to read login credentials"
+        ) from exc
+    try:
+        nonce, ciphertext = payload[:12], payload[12:]
+        return AESGCM(key).decrypt(nonce, ciphertext, None)
+    except Exception as exc:  # InvalidTag / 截断：按损坏文件处理
+        raise _DpapiDecryptError(f"AES-GCM decrypt failed: {exc}") from exc
+
+
 # ---------------------------------------------------------------- 工具函数
 
 
@@ -178,6 +247,7 @@ class LoginCredentialStore:
         self._path = Path(path)
         self._max_accounts = max(1, int(max_accounts))
         self._lock = threading.RLock()
+        self._key: bytes | None = None
 
     @property
     def path(self) -> Path:
@@ -277,6 +347,23 @@ class LoginCredentialStore:
 
     # -- 内部 ----------------------------------------------------------
 
+    def _local_key(self) -> bytes:
+        if self._key is None:
+            self._key = _read_or_create_key(self._path.parent)
+        return self._key
+
+    def _encrypt(self, plaintext: bytes) -> bytes:
+        if _IS_WINDOWS:
+            return _dpapi_protect(plaintext)
+        return _AES_MAGIC + _aes_protect(plaintext, self._local_key())
+
+    def _decrypt(self, raw: bytes) -> bytes:
+        if raw.startswith(_AES_MAGIC):
+            return _aes_unprotect(raw[len(_AES_MAGIC):], self._local_key())
+        if _IS_WINDOWS:
+            return _dpapi_unprotect(raw)
+        raise _DpapiDecryptError("unsupported login credentials ciphertext")
+
     @staticmethod
     def _public(record: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -296,7 +383,7 @@ class LoginCredentialStore:
                 f"cannot read login credentials file: {exc}"
             ) from exc
         try:
-            plaintext = _dpapi_unprotect(raw)
+            plaintext = self._decrypt(raw)
             document = json.loads(plaintext.decode("utf-8"))
             if not isinstance(document, dict) or not isinstance(
                 document.get("accounts"), list
@@ -317,7 +404,7 @@ class LoginCredentialStore:
         plaintext = json.dumps(
             document, ensure_ascii=False, separators=(",", ":")
         ).encode("utf-8")
-        ciphertext = _dpapi_protect(plaintext)
+        ciphertext = self._encrypt(plaintext)
         _atomic_write(self._path, ciphertext)
 
     def _quarantine_broken_file(self) -> None:

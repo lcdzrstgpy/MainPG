@@ -81,6 +81,8 @@ class CustomerAuthResult:
     role: str = "admin"
     workspace_code: str = ""
     workspace_name: str = ""
+    # 平台侧是否已确认过 POD 使用协议：随登录响应下发，true 时客户端不再弹窗。
+    pod_agreement_confirmed: bool = False
     raw: dict[str, Any] = field(default_factory=dict)
 
 

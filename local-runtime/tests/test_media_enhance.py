@@ -439,6 +439,37 @@ def test_should_upscale_gates_only_on_safety_limit() -> None:
     ) is False
 
 
+def test_enhance_panel_skips_onnx_when_panel_is_already_larger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """豆包 2K 拆格后约 1024px，交付 800px：只降采样，不该再跑 4× 超分。"""
+
+    called = False
+
+    def _record(_panel: Image.Image) -> None:
+        nonlocal called
+        called = True
+        return None
+
+    monkeypatch.setattr(media_enhance, "_upscale", _record)
+    metrics: list[Any] = []
+
+    result = enhance_panel(
+        _soft_photo(942),
+        800,
+        EnhanceOptions(mode=MODE_ONNX, upscale_when_larger=False),
+        on_metrics=metrics.append,
+    )
+
+    assert called is False
+    assert metrics[0].mode == MODE_USM
+    assert result.size == (800, 800)
+
+
+def test_options_from_env_can_skip_large_panel_upscale() -> None:
+    assert options_from_env(upscale_when_larger=False).upscale_when_larger is False
+
+
 def test_enhance_panel_onnx_upscales_and_beats_plain_resize() -> None:
     panel = _soft_photo(200)
     target = 400

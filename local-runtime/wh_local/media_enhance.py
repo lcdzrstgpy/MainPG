@@ -84,6 +84,9 @@ class EnhanceOptions:
     threshold: int = DEFAULT_THRESHOLD
     post_radius: float = DEFAULT_POST_RADIUS
     post_percent: int = DEFAULT_POST_PERCENT
+    # False = 面板本身已不小于目标尺寸时跳过 ONNX，直接 LANCZOS 降采样 + USM。
+    # 豆包 2K 母图拆格后约 1024px，交付 800px，跑 4× 超分再降回来纯属浪费。
+    upscale_when_larger: bool = True
 
 
 @dataclass(frozen=True)
@@ -132,7 +135,10 @@ def enhance_panel(
     wall_started = time.perf_counter()
     cpu_started = time.process_time()
     mode = MODE_USM
-    if options.mode == MODE_ONNX and _should_upscale(panel):
+    should_upscale = _should_upscale(panel) and (
+        options.upscale_when_larger or max(panel.size) < target_size
+    )
+    if options.mode == MODE_ONNX and should_upscale:
         upscaled = _upscale(panel)
         if upscaled is not None:
             mode = MODE_ONNX
@@ -359,7 +365,7 @@ def _read_non_negative_int(name: str, default: int) -> int:
     return value
 
 
-def options_from_env() -> EnhanceOptions:
+def options_from_env(*, upscale_when_larger: bool = True) -> EnhanceOptions:
     """读取清晰化配置。任何非法输入都回退默认，绝不因配置问题阻断生图。"""
 
     raw_enabled = (os.environ.get(ENV_ENABLED) or "").strip().lower()
@@ -372,4 +378,5 @@ def options_from_env() -> EnhanceOptions:
         threshold=_read_positive_int(ENV_THRESHOLD, DEFAULT_THRESHOLD),
         post_radius=_read_positive_float(ENV_POST_RADIUS, DEFAULT_POST_RADIUS),
         post_percent=_read_non_negative_int(ENV_POST_PERCENT, DEFAULT_POST_PERCENT),
+        upscale_when_larger=upscale_when_larger,
     )

@@ -12,7 +12,10 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 
-FISSION_PROMPT_COMPILER_VERSION = "pod-fission-prompt-v2"
+# 编译器版本：改动任一输出语句结构都必须递增（随变体计划冻结）。
+# v3：A 的构图降级为参考；新增满印锁（edge-to-edge、正面+两侧连续、禁止成片空底），
+#     去掉"按 A 的覆盖密度"这句反向指令。
+FISSION_PROMPT_COMPILER_VERSION = "pod-fission-prompt-v3"
 FISSION_DEFAULT_TEMPLATE_ID = "fission_default_v1"
 FISSION_DEFAULT_TEMPLATE_VERSION = "1"
 
@@ -164,12 +167,14 @@ def compile_fission_prompt(
         "Preserve B's silhouette, proportions, component count, openings, hardware, orientation, and material. Do not substitute a different product.",
         *(["Deterministic product rules:", *[f"- {line}." for line in rule_lines]] if rule_lines else []),
         "=== PART 3 · FROZEN VARIANT AND FOUR-PANEL SHOT PLAN",
-        f"Pattern layout: reproduce A's overall coverage and density ({layout_phrase}), covering the printable area edge to edge with connected motifs, never a small centered emblem or a sparse scatter of icons surrounded by large empty background.",
+        f"Pattern layout: use A only as a reference for how these motifs are combined ({layout_phrase}); do not copy A's composition literally. Build a seamless all-over repeat of the selected motifs across the whole printable surface.",
+        "ALL-OVER PRINT LOCK: cover every printable region edge to edge, and continue the print across the front panel and both side panels up to the zipper and the bottom seam, leaving only a thin non-printed margin at those seams. Natural thin spacing between motifs is fine, but large blank base-fabric areas, a single floating motif or an isolated centered emblem are failures.",
+        "Any plain fabric or empty space surrounding the motifs in reference image 1 is NOT part of the design; never reproduce it as blank fabric, a blank band or a plain shell.",
         f"Primary motif (Tier 1 Hero, highest density): repeat {', '.join(primary) or 'the selected artwork anchor'} many times across the whole printable area as the dominant pattern, not a single one-off object.",
         f"Secondary elements (Tier 2 Narrative, medium density): repeat {', '.join(secondary) or 'none'} throughout the surface as supporting motifs.",
-        f"Accent elements (Tier 3 Rhythm, lowest density): scatter {', '.join(accent) or 'none'} sparingly as small rhythm details.",
+        f"Accent elements (Tier 3 Rhythm, lowest density): scatter {', '.join(accent) or 'none'} as small rhythm details between the hero motifs; never leave empty ground.",
         f"Color harmony is fixed at 60-30-10: primary 60%={palette_primary or 'primary palette role'}, secondary 30%={palette_secondary or 'secondary palette role'}, accent 10%={palette_accent or 'accent palette role'}.",
-        "Build the design from these motifs and this palette at A's coverage density; the result must be recognizably this variant, not a reprint of A's original artwork.",
+        "Build the design from these motifs and this palette as a seamless all-over repeat; the result must be recognizably this variant, not a reprint of A's original artwork.",
         "Keep the selected motifs and color roles unchanged in every panel; adapt only scale and perspective to B's geometry.",
         *_composition_lines(composition_map),
         "=== PART 4 · OUTPUT FORMAT AND FINAL PROHIBITIONS",

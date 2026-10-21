@@ -67,6 +67,7 @@ from .fission_registry import FissionRegistryService
 from .fission_planner import plan_fission_variants
 from .fission_prompts import FISSION_PROMPT_COMPILER_VERSION, default_fission_composition
 from .replica_analysis_runtime import (
+    COMPOSITION_PROMPT_VERSION,
     CompositionTemplateOptions,
     ReplicaAssetImage,
     ReplicaCompositionRequest,
@@ -917,6 +918,7 @@ class PodCustomizationService:
                 "template_id": template.template_id,
                 "template_version": template.template_version,
                 "analysis_schema_version": REPLICA_ANALYSIS_SCHEMA_VERSION,
+                "composition_prompt_version": COMPOSITION_PROMPT_VERSION,
                 "prompt_compiler_version": PROMPT_COMPILER_VERSION,
             },
             ensure_ascii=False,

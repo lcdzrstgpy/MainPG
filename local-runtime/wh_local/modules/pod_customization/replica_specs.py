@@ -15,7 +15,8 @@ from typing import Any, Literal, Mapping, Sequence
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # 分析 schema 版本：事实字段结构一变就递增，随分析结果一起冻结入库，用于事后归因。
-REPLICA_ANALYSIS_SCHEMA_VERSION = "replica-analysis-v1"
+# v2：新增主/次/点缀元素权重字段（豆包识图时给出，仅用于排版权重，不新增元素）。
+REPLICA_ANALYSIS_SCHEMA_VERSION = "replica-analysis-v2"
 # 低于该置信度的字段需要用户确认（needs_confirmation），不得直接进入硬约束。
 FACT_CONFIDENCE_THRESHOLD = 0.6
 
@@ -111,6 +112,17 @@ class SourceArtworkSpec(BaseModel):
     artwork_layout: FactValue
     artwork_density: FactValue
     artwork_repeat_pattern: FactValue
+    # 元素层级：豆包识图时从 artwork_motifs 里给出的主/次/点缀划分，只决定排版权重，
+    # 不新增元素、不改配色。旧分析缺少这三项时由编译器确定性兜底。
+    primary_motifs: FactValue = Field(
+        default_factory=lambda: FactValue(value=[], confidence=0.0, source="system")
+    )
+    secondary_motifs: FactValue = Field(
+        default_factory=lambda: FactValue(value=[], confidence=0.0, source="system")
+    )
+    accent_motifs: FactValue = Field(
+        default_factory=lambda: FactValue(value=[], confidence=0.0, source="system")
+    )
     # 图案自带的文字可保留；系统不得新增文字（硬约束在 rule_set 中给出）。
     artwork_text: FactValue
     artwork_print_region: FactValue
@@ -404,6 +416,9 @@ def normalize_source_analysis(raw: Mapping[str, Any] | None, source_asset_id: st
         artwork_layout=_read_fact(payload, "artwork_layout", kind="str", default=""),
         artwork_density=_read_fact(payload, "artwork_density", kind="str", default=""),
         artwork_repeat_pattern=_read_fact(payload, "artwork_repeat_pattern", kind="str", default=""),
+        primary_motifs=_read_fact(payload, "primary_motifs", kind="str_list", default=[]),
+        secondary_motifs=_read_fact(payload, "secondary_motifs", kind="str_list", default=[]),
+        accent_motifs=_read_fact(payload, "accent_motifs", kind="str_list", default=[]),
         artwork_text=_read_fact(payload, "artwork_text", kind="str", default=""),
         artwork_print_region=_read_fact(payload, "artwork_print_region", kind="str", default=""),
         source_product_structure=_read_fact(payload, "source_product_structure", kind="str", default=""),

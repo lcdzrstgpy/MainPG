@@ -22,7 +22,6 @@ import {
   POD_BUSINESS_TEXT_MAX_LENGTH,
   POD_COPY_RESTRICTIONS_MAX_LENGTH,
   EMPTY_SPEC_CARD,
-  buildPromptV1,
   buildSpecCardCells,
   businessFieldsForApi,
   canDeletePodBatch,
@@ -34,6 +33,7 @@ import {
   isSpecCardConfigured,
   groupPodStyleRows,
   resolveCreativePrompt,
+  stripExcludedElementsLine,
   listingFieldsForApi,
   shouldPollPodBatch,
   splitBusinessField,
@@ -205,7 +205,15 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   const [customCountMode, setCustomCountMode] = useState(initialDraft.state.custom_count_mode);
   const [customCountInput, setCustomCountInput] = useState(initialDraft.state.custom_count_input);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [currentBatchEdit, setCurrentBatchEdit] = useState<string | null>(initialDraft.state.current_batch_edit);
+  // 旧草稿里可能存着旧版自动生成的 v1 模板。这类内容不是主体锚定，
+  // 加载时直接丢弃；手写内容去掉残留的「禁用元素：」行后保留。
+  const [currentBatchEdit, setCurrentBatchEdit] = useState<string | null>(() => {
+    const saved = initialDraft.state.current_batch_edit;
+    if (!saved) return saved;
+    const cleaned = stripExcludedElementsLine(saved);
+    if (!cleaned) return null;
+    return isPristineCreativeEdit(cleaned) ? null : cleaned;
+  });
   const [systemTemplates, setSystemTemplates] = useState<PodSystemTemplate[]>(initialDraft.state.system_templates);
   const [templateDrawerOpen, setTemplateDrawerOpen] = useState(false);
   const [specCardDrawerOpen, setSpecCardDrawerOpen] = useState(false);
@@ -251,19 +259,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   const summaryFields = businessFieldsForApi(businessFields);
   const selectedItem = activeBatch?.items.find((item) => item.id === selectedItemId);
   const failedRetryCandidates = activeBatch ? batchRetryCandidates(groupPodStyleRows(activeBatch)) : { image: [], title: [] };
-  const builtInPrompt = useMemo(() => buildPromptV1(businessFields), [businessFields]);
-  const resolvedPrompt = resolveCreativePrompt(businessFields, currentBatchEdit ?? "");
-  // A frozen custom edit that is just a stored copy of the built-in v1 snapshot
-  // must follow business-field edits (sync), not stay stale. Hand-written
-  // creative directions (not v1-structured) are left untouched.
-  const previousBusinessFieldsRef = useRef(businessFields);
-  useEffect(() => {
-    const changed = previousBusinessFieldsRef.current !== businessFields;
-    previousBusinessFieldsRef.current = businessFields;
-    if (changed && currentBatchEdit !== null && isPristineCreativeEdit(currentBatchEdit)) {
-      setCurrentBatchEdit(null);
-    }
-  }, [businessFields, currentBatchEdit]);
+  const resolvedPrompt = resolveCreativePrompt(currentBatchEdit ?? "");
   const activeItemStatuses = activeBatch?.items.map((item) => item.status).join("|") ?? "";
   const activeTitleStatuses = activeBatch?.style_titles?.map((title) => title.status).join("|") ?? "";
   const batchRunning = activeBatch
@@ -992,8 +988,20 @@ export function PodCustomizationPage({ isActive = true }: Props) {
               })}
             </div>
             <div className="pod-advanced-prompt">
-              <button type="button" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((open) => !open)}><span><b>高级：本批次创意编辑</b><small>内置 POD Direct Listing Prompt v1</small></span><i className={`iconfont icon-down ${advancedOpen ? "is-open" : ""}`} /></button>
-              {advancedOpen && <div className="pod-advanced-prompt-editor"><textarea value={currentBatchEdit ?? builtInPrompt} onChange={(event) => setCurrentBatchEdit(event.target.value)} aria-label="本批次创意提示词" /><div><span>{currentBatchEdit === null ? "正在使用内置 v1" : "已为本批次自定义"}</span><button type="button" onClick={() => setCurrentBatchEdit(null)}>重置为 v1</button></div></div>}
+              <button type="button" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((open) => !open)}><span><b>高级·主体人工锚定</b><small>描述产品主体，供 AI 确认结构、材质与可印刷区域</small></span><i className={`iconfont icon-down ${advancedOpen ? "is-open" : ""}`} /></button>
+              {advancedOpen && <div className="pod-advanced-prompt-editor">
+                <textarea
+                  value={currentBatchEdit ?? ""}
+                  maxLength={4000}
+                  placeholder="描述产品主体：结构、材质、工艺、可印刷区域、必须保留或避免的细节…"
+                  onChange={(event) => setCurrentBatchEdit(event.target.value)}
+                  aria-label="主体人工锚定"
+                />
+                <div>
+                  <span>{currentBatchEdit?.trim() ? "已填写主体锚定" : "未填写，仅使用内置硬性规则"}</span>
+                  {currentBatchEdit !== null && <button type="button" onClick={() => setCurrentBatchEdit(null)}>清空</button>}
+                </div>
+              </div>}
             </div>
             <div className="pod-composition-entry">
               <button type="button" className="pod-composition-entry-button" onClick={() => setCompositionDrawerOpen(true)}>

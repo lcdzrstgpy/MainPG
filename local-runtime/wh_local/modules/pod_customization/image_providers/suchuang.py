@@ -26,8 +26,6 @@ from .base import (
     GridProviderHost,
     GridReference,
 )
-from .catalog import POD_IMAGE_MODEL_DEFAULT
-
 # 单次速创生图的分段超时：超过该时长仍未拿到图片地址就丢弃这次调用，交给已规划的重试
 # 立刻重投。依据本地真实时延（近千次调用均值 ~74s、p95 ~115s、上游健康日上限 136s），
 # 240s 约为 3 倍 p95。原先 600s 的上限会让一个长尾任务独占 1/8 的生图槽位长达 10 分钟，
@@ -40,6 +38,8 @@ SUCHUANG_IMAGE_SUBMIT_PATHS = {
     "image_gpt": "/api/async/image_gpt",
     "image_gpt_2.5": "/api/async/image_gpt_2.5",
 }
+# 速创内部的未知模型兜底：仍走 2.5，不受 POD 全局默认（豆包）影响。
+SUCHUANG_FALLBACK_MODEL = "image_gpt_2.5"
 SUCHUANG_IMAGE_ASPECT_RATIO_2_5 = {
     "1:1": "1024x1024",
     "16:9": "1280x720",
@@ -129,7 +129,7 @@ class SuChuangImageProvider:
             host.ensure_open()
             size_value = suchuang_size(request.size)
             submit_path = SUCHUANG_IMAGE_SUBMIT_PATHS.get(
-                model, SUCHUANG_IMAGE_SUBMIT_PATHS[POD_IMAGE_MODEL_DEFAULT]
+                model, SUCHUANG_IMAGE_SUBMIT_PATHS[SUCHUANG_FALLBACK_MODEL]
             )
             # 诊断留痕：明确记录本次解析到的模型与真实提交端点，避免"以为切了 2.5 其实没切"。
             business_logger("pod_processing").info(

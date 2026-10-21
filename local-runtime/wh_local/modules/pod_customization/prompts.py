@@ -5,7 +5,7 @@ import random
 import re
 from typing import Mapping, Sequence
 
-from .contracts import COMPOSITION_PANEL_KEYS, BusinessFields
+from .contracts import COMPOSITION_PANEL_KEYS, IP_EXCLUDED_ELEMENTS, BusinessFields
 
 
 # 整个「大提示词」的版本号：**只要改动任一处的提示词内容就必须递增**。
@@ -19,7 +19,20 @@ from .contracts import COMPOSITION_PANEL_KEYS, BusinessFields
 #     PART 3 元素三级 Tier 权重（hero/narrative/rhythm）、配色 60-30-10 契约，PART 4 光照降级（只留 GLOW）。
 # v4：创意编辑内容提升为 PART 1 开头的 BATCH-SPECIFIC HARD RULES；
 #     新增 PRODUCT FORM & SIZE LOCK；面料块改为按真实材质分支（不再无条件假设绗缝布料）。
-PATTERN_PROMPT_VERSION = "v4"
+# v5：Excluded elements 固定为侵权/身份类清单；豆包链路去掉运营块重复字段行。
+# v6：取消自动生成的 v1 模板；硬性规则内置，用户输入改为「主体人工锚定」接在规则下方。
+# v7：主体锚定提升为硬约束；PART 3 元素明确为印刷纹样，禁止做成 3D 实物/道具。
+# v8：新增平铺产品硬锁（无垂坠/无厚边/无鼓包）与平面印花锁（硬币/蜡烛等不得凸起）。
+# v9：平铺产品强制四格俯拍，忽略 eye-level / lifestyle 构图，避免把平垫子铺成垂坠桌布。
+# v10：把 composition 改为 pattern_layout，明确它只是印花排布，不是相机/3D 场景构图。
+# v11：平铺产品的 PART 4 改为纯平面摄影背景，移除 lifestyle/房间/家具/垂坠场景。
+# v12：显式禁止四格象限字母/数字（A/B/C/D、1/2/3/4），避免拆格后角上残留英文字母。
+# v13：PART 4 重建美术指导——补回主导性光线（暖向主光 + 投影 + 轮廓光）、场景道具密度、
+#      细节格沿用同一场景与光向，解决成图「又素又平、没光影」。
+# v14：图案密度真正生效——density 从「只写在 signature 里」升级为硬指令，密度池去掉 sparse/oversized 档。
+# v15：明确 POD 是满印（all-over print）——PART 1 加 ALL-OVER PRINT LOCK，PART 3 要求无缝铺满
+#      所有可印表面、覆盖率 100%，排布池与密度池全部改为满印接花描述（不再局部覆盖）。
+PATTERN_PROMPT_VERSION = "v15"
 # 位置↔角色固定：左上=主图(lifestyle)、右上=细节A(detail_a)、左下=细节B(detail_b)、右下=素材(hero)。
 # 标识符沿用历史值（lifestyle=主图、hero=素材），避免历史批次错标；仅位置分配按本元组顺序正确落位。
 LISTING_IMAGE_ROLES = ("lifestyle", "detail_a", "detail_b", "hero")
@@ -29,17 +42,32 @@ LISTING_IMAGE_ROLES = ("lifestyle", "detail_a", "detail_b", "hero")
 # 空格不做分隔，避免拆散 "Seamless Pattern" 这类英文复词。
 _ELEMENT_SPLIT_PATTERN = "[、，,;；\n]+"
 
-_STYLE_COMPOSITIONS = (
-    "one off-center focal composition",
-    "balanced all-over repeat",
-    "large cropped edge-to-edge motif",
-    "orderly modular grid",
-    "diagonal movement with open negative space",
-    "radial composition without a sunburst",
-    "vertical cascading arrangement",
-    "horizontal banded arrangement",
-    "sparse floating placement",
-    "layered foreground-and-background motif",
+# 注意：这是「印花在平面上的排布方式」，不是相机/场景构图。
+# 之前的 "one off-center focal composition" 被模型理解成 3D 场景机位，
+# 导致平垫子被生成成垂坠桌布，所以全部改写为图案排布措辞。
+# POD 是满印（all-over print）：排布只决定「满印接花怎么排」，不决定「只印哪一块」。
+_STYLE_PATTERN_LAYOUTS = (
+    "straight-grid all-over repeat",
+    "half-drop offset all-over repeat",
+    "brick all-over repeat",
+    "edge-to-edge all-over repeat",
+    "layered multi-scale all-over repeat",
+    "radial all-over repeat centered on the front panel",
+    "vertical banded all-over repeat",
+    "horizontal banded all-over repeat",
+    "scattered all-over repeat with full coverage",
+    "overlapping collage all-over repeat",
+)
+# 平铺产品的「场景」只能是平面摄影背景，不能是房间/桌子/家具。
+_FLAT_LAY_SURFACES = (
+    "warm natural linen flat-lay backdrop",
+    "pale oak tabletop surface, shot from directly above",
+    "soft ivory paper sweep",
+    "muted canvas flat-lay backdrop",
+    "brushed light wood board",
+    "pale marble slab",
+    "warm greige fabric backdrop",
+    "clean matte plaster surface",
 )
 _STYLE_PALETTES = (
     "two-color high contrast",
@@ -68,13 +96,13 @@ _STYLE_RENDERINGS = (
     "bold marker-like strokes",
 )
 _STYLE_DENSITIES = (
-    "very sparse with generous negative space",
-    "sparse",
-    "medium density",
-    "dense but readable",
-    "one oversized motif with minimal supporting marks",
-    "small-scale repeat with clear rhythm",
-    "mixed scale with one dominant and several supporting forms",
+    "full-coverage all-over print with no empty ground",
+    "dense all-over repeat with layered multi-scale motifs",
+    "dense all-over repeat with large-scale hero and small filler",
+    "tight small-scale all-over repeat",
+    "mixed-scale all-over repeat filling every gap",
+    "banded all-over repeat with every band filled",
+    "dense collage all-over repeat with overlapping motifs",
 )
 
 
@@ -373,17 +401,88 @@ _PART4_HEADER = (
 _BATCH_HARD_RULES_HEADER = (
     "=== BATCH-SPECIFIC HARD RULES (operator instructions — HIGHEST PRIORITY, hard requirements, not hints) ==="
 )
+# 硬性规则改为后端内置，不再由前端 v1 模板生成；用户只补充「主体人工锚定」。
+_BUILTIN_HARD_RULES = (
+    "硬性规则：\n"
+    "1. 每款正常只生成一次 2×2 成组图片；生成、拆分或去重失败时最多重试一次。\n"
+    "2. 四格顺序固定为主图、细节图 A、细节图 B、素材图。\n"
+    "3. 同一款四张图必须保持产品、结构、底色、图案内容、图案尺寸与位置完全一致。\n"
+    "4. 不得添加未授权品牌、商标、版权角色、文字或水印。\n"
+    "5. 带内饰/内衬的产品（如收纳筐、脏衣篓、束口袋内里）：内饰表面保持无花色的统一纯色"
+    "（默认黑色），图案只印在产品外表面，严禁把外表面的花色、底纹延伸到内饰上。"
+)
+# 用户手写的主体锚定：作为硬约束直接接在硬性规则下方，不单独开段。
+# 不这样写，模型会把「80cm×80cm 全覆盖、无下挂」当成建议，继续把桌布生成成厚方块。
+_SUBJECT_ANCHOR_HEADER = (
+    "主体硬约束（用户填写，必须逐条满足；主体结构、材质、尺寸出现任何偏离即视为失败）："
+)
+_SUBJECT_ANCHOR_PRIORITY = (
+    "以上主体硬约束与上述硬性规则同级，优先级高于模板的视觉比例。"
+)
 # 形态/尺寸锁定：模板只提供结构参考，但运营明确写出的平面/尺寸事实必须优先。
 # 触发场景：80cm×80cm 全覆盖、无下挂的正方形天然橡胶桌布被生成成了正方体方块。
 _PRODUCT_FORM_LOCK = (
     "PRODUCT FORM & SIZE LOCK — the product form and dimensions stated in the batch facts and batch "
     "hard rules are geometric facts and outrank the template's apparent proportions: if the product is "
-    "flat (tablecloth, mat, towel, blanket, sticker, paper), it must read as a flat sheet — shown flat "
-    "or with natural soft drape — never as a box, cube, slab, stack, cushion or other 3D block. Keep "
-    "stated sizes and coverage literal (for example a square 80x80 tablecloth must stay square, cover "
-    "the tabletop and have no overhang). Never thicken, pad, inflate or extrude a flat product to give "
-    "it volume."
+    "flat (tablecloth, mat, towel, blanket, sticker, paper), it must read as a FLAT SHEET lying on the "
+    "tabletop — never as a box, cube, slab, stack, cushion, tray, molded shell or other 3D block. "
+    "Keep stated sizes and coverage literal (for example a square 80x80 tablecloth must stay square, "
+    "cover the tabletop and have no overhang). Corners and edges must stay paper-thin and flat: no "
+    "rounded bulge, no raised rim, no thick bevel, no table skirt, no drape and no hanging corner. "
+    "Never thicken, pad, inflate or extrude a flat product to give it volume. Every panel must preserve "
+    "the exact flat square silhouette of the template."
 )
+# 平铺类产品（桌垫/桌布/餐垫）的细节格不能拍厚边/鼓包：只拍平面印花与包边。
+_FLAT_PANEL_DETAIL_LOCK = (
+    "FLAT SHEET PANEL LOCK: if the product is a flat mat / tablecloth / placemat, Panel 3 (detail B) "
+    "must be a top-down macro of the FLAT printed surface and edge stitching, not a corner, rim, "
+    "side profile or three-quarter view. All four panels must keep the product flat on the tabletop "
+    "with no overhang, drape, thickness or 3D structure."
+)
+# 硬币/蜡烛/星星等只能作为平面印花，不能被模型做成凸起实物。
+_FLAT_PRINT_LOCK = (
+    "FLAT PRINT LOCK: every motif is a 2D printed graphic on the product surface. Coins, candles, "
+    "stars, ornaments or any other motif must have no thickness, no emboss, no raised relief and no "
+    "cast object shadow; never place them as separate 3D objects on top of the product."
+)
+# 模型偶尔会在四格角上写 A/B 或 1/2 标记；拆格后这些字母会落进成品图。
+# 必须显式禁止任何象限编号/字母。
+_NO_QUADRANT_LABELS = (
+    "NO QUADRANT LABELS: never write A, B, C, D, 1, 2, 3, 4 or any letter/number in the corners "
+    "or near the four-panel divider. The four panels must be separated only by the clean divider; "
+    "no text, captions, labels, stamps, signatures or watermarks anywhere in the image."
+)
+
+
+_FLAT_PRODUCT_KEYWORDS = (
+    "桌布", "桌垫", "餐垫", "地垫", "瑜伽垫", "鼠标垫", "杯垫", "毛毯", "毯子",
+    "毛巾", "贴纸", "tablecloth", "placemat", "mat", "blanket", "towel", "sticker",
+)
+_FLAT_PRODUCT_SIGNALS = ("平铺", "无下挂", "无垂坠", "全覆盖桌面")
+_FLAT_LISTING_PANEL_LINES = (
+    "Panel 1 — PRIMARY IMAGE (top-left): straight top-down flat lay of the complete product lying "
+    "flat on a styled tabletop; all four edges visible inside the frame, no table edge, no chairs, "
+    "no drape, no hanging corner, no thickness.",
+    "Panel 2 — DETAIL IMAGE A (top-right): top-down macro of the printed artwork on the flat surface.",
+    "Panel 3 — DETAIL IMAGE B (bottom-left): top-down macro of a different area of the flat printed "
+    "surface plus edge stitching; never a corner, rim, side profile or three-quarter view.",
+    "Panel 4 — MATERIAL IMAGE (bottom-right): straight top-down of the complete flat product on a "
+    "clean neutral ecommerce background.",
+)
+_FLAT_COMPOSITION_OVERRIDE = (
+    "FLAT PRODUCT COMPOSITION OVERRIDE: this is a flat sheet product. Ignore any eye-level, "
+    "three-quarter or lifestyle camera direction; all four panels are TOP-DOWN flat lays. The product "
+    "must stay flat on the tabletop with no overhang, drape, table skirt, hanging corner or thickness."
+)
+
+
+def _is_flat_product(fields: BusinessFields, subject_anchor: str) -> bool:
+    text = " ".join(
+        (fields.product_name, fields.product_category, subject_anchor)
+    ).casefold()
+    return any(token.casefold() in text for token in _FLAT_PRODUCT_KEYWORDS) or any(
+        signal in text for signal in _FLAT_PRODUCT_SIGNALS
+    )
 
 
 def _listing_panel_lines(composition: Mapping[str, str] | None) -> list[str]:
@@ -410,7 +509,7 @@ def _listing_panel_lines(composition: Mapping[str, str] | None) -> list[str]:
 
 def build_direct_listing_prompt(
     fields: BusinessFields,
-    creative_prompt: str,
+    subject_anchor: str,
     *,
     composition: Mapping[str, str] | None = None,
 ) -> str:
@@ -419,6 +518,9 @@ def build_direct_listing_prompt(
     Batch-wide facts are rendered verbatim for every style. Element keywords are
     deliberately NOT rendered here: they are assigned per style and injected by
     ``build_style_listing_prompt``, so no style ever receives the full list.
+
+    硬性规则由后端内置；``subject_anchor`` 是用户在「高级·主体人工锚定」里手写的
+    主体描述，接在硬性规则下方。没有主体描述时只输出内置规则，不再拼接旧 v1 模板。
 
     ``composition`` 为用户最新创作的构图（panel_1..4 画面指令）。提供时用它替换写死的
     四格机位/构图描述，但保留全部硬约束（2×2、同产品同图案、禁文字/水印、内饰不印等）。
@@ -435,15 +537,17 @@ def build_direct_listing_prompt(
         ("Core selling points", ", ".join(fields.core_selling_points)),
         ("Batch-wide theme & style", fields.design_theme),
         ("Color preferences", ", ".join(fields.color_preferences)),
-        ("Excluded elements", ", ".join(fields.excluded_elements)),
+        # 只固定输出侵权/身份类；危险违禁内容交给模型自身审核。
+        ("Excluded elements", ", ".join(IP_EXCLUDED_ELEMENTS)),
     ):
         if value:
             parts.append(f"{label}: {value}.")
-    # 运营的创意编辑（含其手写「硬性规则」）整段作为批级硬条款，紧跟产品事实之后、
-    # 通用条款之前，避免被后面的长条款稀释成 "Creative direction" 建议。
-    operator_rules = creative_prompt.strip()
-    if operator_rules:
-        parts.extend(("", _BATCH_HARD_RULES_HEADER, operator_rules, ""))
+    # 硬性规则始终内置；用户手写的主体锚定直接接在规则下方，作为同级硬约束。
+    parts.extend(("", _BATCH_HARD_RULES_HEADER, _BUILTIN_HARD_RULES))
+    anchor = subject_anchor.strip()
+    if anchor:
+        parts.extend((_SUBJECT_ANCHOR_HEADER, anchor, _SUBJECT_ANCHOR_PRIORITY))
+    parts.append("")
     parts.extend((
         # 精简原则：一条约束只说一遍。原先同一件事（别复用模板 / 保留绗缝 / 同款同图）各写了 3-4 遍，
         # 长提示词会把关键契约（色彩冲击、工艺）稀释掉；这里逐条去重，语义一条不减。
@@ -453,9 +557,12 @@ def build_direct_listing_prompt(
         "Do not copy the template's existing artwork, decoration, colour scheme, background, lighting or scene.",
         "CARVE-OUT: the template's quilting/padding relief, seams and stitching are STRUCTURE, not decoration — preserve them exactly as shown; do not flatten the quilted surface into a smooth shell. Only the artwork, the colour scheme and the scene are to be replaced.",
         "That restriction only forbids REUSING the template's own scene. It does NOT mean the background may be plain: a freshly styled, richly lit scene is required (see PART 4 ART DIRECTION).",
-        "Never use the template as the base image: invent a completely new PRINTED pattern and a fresh commercially suitable colour scheme over its real material construction.",
+        "Use the template as the exact structural base: keep its silhouette, thickness, edge profile, proportions and flatness unchanged. Replace ONLY the printed artwork, the colour scheme and the scene; never redraw or reshape the product itself.",
         _PRODUCT_FORM_LOCK,
+        _FLAT_PRINT_LOCK,
+        _NO_QUADRANT_LABELS,
         "Keep the same exact product across all four panels: identical structure, material, proportions, base color, artwork, artwork scale and artwork placement.",
+        "ALL-OVER PRINT LOCK: the artwork is a full-surface all-over print — it repeats seamlessly edge to edge across every printable surface (front, sides, base, handles and bindings), with no blank ground areas and never a single isolated motif floating on a plain shell.",
         "Do not invent another product, extra accessories attached to the product, text, captions, logos, labels, watermarks, collages or borders; keep the four-panel divider clean and centered. (Standalone scene props beside the product ARE required — see PART 4 ART DIRECTION.)",
         "If the product has an interior or lining, keep the interior surface unprinted (one plain solid color, black by default) and never extend the outer artwork inside.",
         _COLOR_IMPACT_BLOCK,
@@ -463,8 +570,14 @@ def build_direct_listing_prompt(
         *_fabric_craft_lines(fields.fabric_craft),
     ))
     # PART 2 只放四格角色与机位/构图，且用户构图在这里覆盖默认机位。
+    # 平铺产品强制四格俯拍：否则「eye-level lifestyle scene」会把平垫子铺成垂坠桌布。
     parts.append(_PART2_HEADER)
-    parts.extend(_listing_panel_lines(composition))
+    if _is_flat_product(fields, subject_anchor):
+        parts.extend(_FLAT_LISTING_PANEL_LINES)
+        parts.append(_FLAT_COMPOSITION_OVERRIDE)
+    else:
+        parts.extend(_listing_panel_lines(composition))
+    parts.append(_FLAT_PANEL_DETAIL_LOCK)
     return "\n".join(parts)
 
 
@@ -483,14 +596,30 @@ _STYLE_SCENES = (
 )
 
 
+def _flat_set_design_block(palette: str, surface: str, *, scene_mood: str = "") -> str:
+    """平铺产品的场景块：只有平面摄影背景，不允许房间/桌子/家具/垂坠。"""
+    mood = str(scene_mood or "").strip()
+    mood_line = f" BATCH SCENE MOOD: {mood}." if mood else ""
+    return (
+        "FLAT-LAY SET DESIGN — the product lies flat on a flat photography surface, shot from "
+        "directly above. No room, no table edge, no chairs, no furniture, no hanging cloth, no "
+        "3D scene. The full square silhouette must stay visible. 1-3 flat props may sit beside "
+        f"the product, never on it, in colours from this style's palette ({palette})."
+        f"{mood_line} Surface: {surface}.\n"
+        "- LIGHTING — one clearly directional soft daylight from the upper side, with gentle cast "
+        "shadows beside the props and visible surface shading; flat, shadowless, evenly lit light is a "
+        "FAILURE.\n"
+        "- Panels 2-3 keep the SAME surface and the SAME light direction as Panel 1, only tighter crops."
+    )
+
+
 def _set_design_block(theme: str, palette: str, scene: str, *, scene_mood: str = "") -> str:
     """场景美术（set design）块。
 
     - ``scene_mood`` 非空时作为**整批场景基调 / 场景族**，逐款 ``scene`` 降级为「该基调内的具体起点场景」；
       留空则维持现状（逐款轮换 ``_STYLE_SCENES``）。
-    - 光影归属构图模版（见 composition_runtime），本块**不再写主导性光线**，只保留 GLOW 作为场景氛围。
+    - 光影由本块主导：构图模板链路并未进入生图提示词，删掉这里的光线会让成图变平、变素。
     """
-    subject = theme or "this style's own subject"
     mood = str(scene_mood or "").strip()
     mood_lines = (
         [
@@ -503,13 +632,20 @@ def _set_design_block(theme: str, palette: str, scene: str, *, scene_mood: str =
     return (
         "SET DESIGN — the lifestyle scene must look rich, warm and inviting; a plain studio wall or an "
         "empty outdoor field is a FAILURE (this is the main quality gap versus top-selling listings):\n"
-        f"- Derive the scene's beauty from the PART 1 batch-wide theme together with this style's PART 3 "
-        f"elements ({subject}) — the setting must clearly belong to this exact collection.\n"
+        "- Derive the scene's mood from the PART 1 batch-wide theme. The PART 3 elements are PRINTED "
+        "motifs on the product surface, NOT physical props — do not turn them into 3D objects.\n"
         f"- Stage this ONE lived-in scene, adapted to that theme (this style's own starting point: {scene}).\n"
         + ("\n".join(mood_lines) + "\n" if mood_lines else "")
-        + f"- Dress it with 3-5 supporting props from the same subject family as the artwork ({subject}) — "
-        f"never generic filler, never a duplicate of the product itself — in colours from this style's "
-        f"palette ({palette}) so they harmonize with the artwork.\n"
+        + "- FILL THE FRAME — dress the set with 3-5 supporting props taken from this theme's real usage "
+        "world (for a cosmetics bag: makeup brushes, bottles, a small mirror, folded linen), grouped "
+        "around the product in clear near/mid/far layers. Never generic filler, never a duplicate of the "
+        f"product, and never a 3D copy of a printed motif. Colours from this style's palette ({palette}) "
+        "so they harmonize with the artwork.\n"
+        "- LIGHTING — one clear warm directional key light (low warm window light, golden afternoon "
+        "light, or a warm lamp) that puts defined bright highlights on the product, a soft contact "
+        "shadow beneath it and natural falloff into the background; optionally add a warm rim/backlight "
+        "to separate the product from the set. Flat, grey, evenly lit studio light with no visible "
+        "light direction is a FAILURE.\n"
         "- GLOW — the scene must contain at least ONE visible warm light source in frame (fairy lights, "
         "candle, lantern, warmly lit window or glowing lamp) reading as a bright warm highlight with a "
         "soft halo or bokeh; an evenly lit scene with no visible light source is a FAILURE.\n"
@@ -518,9 +654,10 @@ def _set_design_block(theme: str, palette: str, scene: str, *, scene_mood: str =
         "product stays the hero — centered, fully visible, sharply in focus; props only support it.\n"
         "- The scene must change from style to style inside this batch — never reuse one background set "
         "across different styles.\n"
-        "- Applies to the lifestyle panel (top-left) and may softly continue into the detail panels' "
-        "backgrounds. The material panel (bottom-right) must stay a clean neutral ecommerce background "
-        "with no props."
+        "- Panels 1-3 are ONE shoot: the detail panels keep the SAME set surface, the SAME light "
+        "direction and the SAME shallow depth of field, only with tighter crops — they must never drop "
+        "to a plain grey studio backdrop. The material panel (bottom-right) must stay a clean neutral "
+        "ecommerce background with no props."
     )
 
 
@@ -536,7 +673,7 @@ def build_style_listing_prompt(
 ) -> str:
     """Append one deterministic, batch-diverse creative recipe to a listing prompt.
 
-    The recipe varies composition, palette, color tiers, rendering, and density.
+    The recipe varies the flat pattern layout, palette, color tiers, rendering, and density.
     The style's SUBJECT comes from the assigned element tiers (hero / narrative /
     rhythm); when no assignment exists (legacy data), the model is told to invent
     one new subject within the batch-wide theme. Element keywords are never
@@ -551,7 +688,7 @@ def build_style_listing_prompt(
     offset = style_index - 1
     hero, narrative, rhythm = _coerce_style_elements(style_elements)
 
-    composition = _STYLE_COMPOSITIONS[(offset * 3) % len(_STYLE_COMPOSITIONS)]
+    pattern_layout = _STYLE_PATTERN_LAYOUTS[(offset * 3) % len(_STYLE_PATTERN_LAYOUTS)]
     color_preferences = _brief_color_preferences(business_fields)
     # When the user named exact colors, defer to them instead of the recipe pool,
     # so a fixed palette cannot fight the brief.
@@ -572,32 +709,41 @@ def build_style_listing_prompt(
 
     if hero:
         subject_lines = [
-            f"本款素材主语：{hero}（Tier 1 Hero 主锚，视觉主角，尺度 1.0）"
+            f"本款印花主元素：{hero}（Tier 1 主锚，印在产品表面的平面图案，不是独立实物；尺度 1.0）"
         ]
         if narrative:
             subject_lines.append(
-                f"叙事层 Narrative：{', '.join(narrative)}（Tier 2，第二尺度 0.6，围绕 Hero 成组）"
+                f"印花叙事层 Narrative：{', '.join(narrative)}（Tier 2，第二尺度 0.6，满印中与主元素交替重复，"
+                "每种至少重复 4 次）"
             )
         if rhythm:
             subject_lines.append(
-                f"节奏层 Rhythm：{', '.join(rhythm)}（Tier 3，小尺度 0.25，归为一组点缀纹样）"
+                f"印花点缀层 Rhythm：{', '.join(rhythm)}（Tier 3，小尺度 0.25，作为满印填充纹样，"
+                "连续铺满主元素之间的所有空隙）"
             )
         subject_lines.append(
-            "元素搭配要有主次与联系：把本款元素组织成 2~3 处『成组的小景』（一处主元素 + 若干围绕它的陪衬），"
-            "不要均匀散点平铺；同一组内的元素在题材或形态上必须互相呼应，避免把不相干的元素硬凑在一起。"
+            "以上所有元素都是印在产品表面的平面图案/纹样：禁止生成独立实物、摆件、餐具、食品、家具或场景道具，"
+            "也不得把元素做成 3D 立体装饰。"
+        )
+        subject_lines.append(
+            "满印硬要求：这是 all-over print，不是局部印花。图案必须无缝、连续地铺满产品所有可印表面"
+            "（正面、侧面、底部、提手/包边等），边到边、四角到四角，任何位置都不留大片纯色空白；"
+            "主元素、次级纹样、填充纹样按层级交织重复，不能只在局部放 1~2 个图案；"
+            "同一组内的图案元素在题材或形态上必须互相呼应，避免把不相干的元素硬凑在一起。"
         )
         subject_lines.append(
             "清单中未分配给本款的元素在本款中禁止出现。"
         )
     else:
         subject_lines = [
-            "本款未分配素材：必须在 Batch-wide theme & style 的主题内自创一个新元素作为本款素材主语。",
+            "本款未分配印花元素：必须在 Batch-wide theme & style 的主题内自创一个新图案元素作为本款印花主元素，"
+            "并印在产品表面，不得做成独立实物。",
         ]
     subject_block = "\n".join(subject_lines)
 
     signature = (
         f"STYLE-{style_index:03d} | elements=hero:{hero or '-'} narrative:{','.join(narrative) or '-'} "
-        f"rhythm:{','.join(rhythm) or '-'} | composition={composition} | "
+        f"rhythm:{','.join(rhythm) or '-'} | pattern_layout={pattern_layout} | "
         f"palette={palette} | rendering={rendering} | density={density}"
         + (f" | color_harmony={color_harmony}" if color_harmony else "")
     )
@@ -608,7 +754,11 @@ def build_style_listing_prompt(
         _PART3_HEADER,
         "STYLE-SPECIFIC DIVERSITY CONTRACT:",
         f"Style creative signature: {signature}",
+        "pattern_layout 只描述印花图案在平面上的排布方式，不是相机角度、景别或 3D 场景构图；机位固定由 PART 2 决定。",
         subject_block,
+        f"图案密度（本款硬要求，density={density}）：整幅是满印，可印表面覆盖率 100%，"
+        "不允许出现空白底色区；主元素、次级纹样、填充纹样必须同时、重复地出现在整个表面。"
+        "只在局部放图案或出现大片留白，视为失败。",
         "主题整批统一风格必须保持，优先级高于本款配方建议；配方只提供可在该主题风格允许范围内实现的变化方式（尺度节奏、色块分割、带状/网格/散点律动等）。",
         f"Create this as style {style_index}. Its surface artwork must be visibly different from every other style in this batch.",
         "素材可以在批次内复用，但每款必须拥有不同的视觉主角与花样：主打元素身份、尺度关系、排布逻辑、色彩重心、渲染工艺至少两项不同。禁止输出“把所有元素等权复制粘贴”的通用大杂烩图案。",
@@ -619,6 +769,8 @@ def build_style_listing_prompt(
             f"本款配色 60-30-10（高定调色契约）：{color_harmony}。"
             "主基调色覆盖产品大面积底色，结构副色用于提手/包边/大面积拼接块，"
             "点缀色只用于金线刺绣/金属件/小坠饰；三档比例必须读得出来，避免均等无主次的配色。"
+            "若主基调色是白色/珠光白/浅色，它只能用于图案留白或场景背景，产品主体改用色板中最饱和的颜色，"
+            "避免白包白底、画面发灰。"
         )
     rules.append(
         "All four panels in this one contact sheet must nevertheless use exactly this one "
@@ -636,9 +788,16 @@ def build_style_listing_prompt(
     theme_desc = ", ".join(token for token in (hero, *narrative) if token)
     scene = _STYLE_SCENES[(offset * 5) % len(_STYLE_SCENES)]
     scene_mood = str((business_fields or {}).get("scene_mood") or "").strip()
+    # 平铺产品的 PART 4 也必须走平面摄影背景，否则会把俯拍指令拉回 3D 桌面场景。
+    flat_product = "FLAT PRODUCT COMPOSITION OVERRIDE" in base_prompt
+    surface = _FLAT_LAY_SURFACES[(offset * 5) % len(_FLAT_LAY_SURFACES)]
     rules.append("")
     rules.append(_PART4_HEADER)
-    rules.append(_set_design_block(theme_desc, palette, scene, scene_mood=scene_mood))
+    rules.append(
+        _flat_set_design_block(palette, surface, scene_mood=scene_mood)
+        if flat_product
+        else _set_design_block(theme_desc, palette, scene, scene_mood=scene_mood)
+    )
     rules.append(
         "Panel positions and roles stay fixed: top-left = PRIMARY image, top-right = detail A, "
         "bottom-left = detail B, bottom-right = material image. Do not swap, shift, or duplicate panels."
@@ -664,7 +823,7 @@ def build_semi_pattern_base(fields: BusinessFields, creative_prompt: str) -> str
     for label, value in (
         ("Batch-wide theme & style", fields.design_theme),
         ("Color preferences", ", ".join(fields.color_preferences)),
-        ("Excluded elements", ", ".join(fields.excluded_elements)),
+        ("Excluded elements", ", ".join(IP_EXCLUDED_ELEMENTS)),
         ("Creative direction", creative_prompt.strip()),
     ):
         if value:
@@ -709,7 +868,7 @@ def build_semi_pattern_prompt(
         )
         co = narrative[0] if narrative else ""
 
-        composition = _STYLE_COMPOSITIONS[(offset * 3) % len(_STYLE_COMPOSITIONS)]
+        pattern_layout = _STYLE_PATTERN_LAYOUTS[(offset * 3) % len(_STYLE_PATTERN_LAYOUTS)]
         palette = (
             f"only the brief's specified colors ({', '.join(color_preferences)})"
             if color_preferences
@@ -735,7 +894,7 @@ def build_semi_pattern_prompt(
             lines.append(motif + ". Use ONLY this panel's motif; every motif not listed for this panel is forbidden here.")
         else:
             lines.append("motif = invent one new motif for this panel inside the batch-wide theme.")
-        lines.append(f"composition = {composition}.")
+        lines.append(f"pattern_layout = {pattern_layout}.")
         lines.append(f"palette = {palette}." + (f" Color focus: {accent_colors}." if accent_colors else ""))
         lines.append(f"rendering = {rendering}.")
         lines.append(f"density = {density}.")

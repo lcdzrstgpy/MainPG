@@ -4,6 +4,7 @@ import { BRAND_LOGO_URL, BRAND_NAME } from "../../../shared/brand";
 import { clearPrivacyConsent, readPrivacyConsent, savePrivacyConsent } from "../../../shared/privacyConsent";
 import { resetMessagesSync, syncMessages } from "../../../shared/api/messagesApi";
 import { httpJson, saveAuthSession } from "../../../transport/http/client";
+import { markPodAgreementPending, clearPodAgreementPending } from "../../../shared/components/PodUsageAgreementModal";
 import {
   clearSavedPassword,
   deleteSavedLogin,
@@ -94,6 +95,9 @@ export function AuthPage({ onEnter }: AuthPageProps) {
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   // 「记住密码」默认不勾；勾选（或选中已保存密码的账号）时登录成功才保存密码。
   const [rememberPassword, setRememberPassword] = useState(false);
+  // 用户手动点过「记住密码」后，账号输入框的联动不再覆盖他的选择：
+  // 否则勾选后每输入一个字符都会被 matchSavedAccount 判为「未保存账号」而自动取消。
+  const rememberTouchedRef = useRef(false);
   const accountFieldRef = useRef<HTMLDivElement | null>(null);
   const identifierRef = useRef(identifier);
   const pickSequenceRef = useRef(0);
@@ -128,11 +132,13 @@ export function AuthPage({ onEnter }: AuthPageProps) {
       if (cancelled || accounts.length === 0) return;
       setSavedAccounts(accounts);
       const latest = accounts[0];
-      // 只有「用户还没动账号框」时才自动填充。用户一旦已经输入（含浏览器自动填充），
-      // 后续的密码回填与「记住密码」回显必须一并放弃 —— 否则会把 accounts[0] 的密码
-      // 填进用户自己敲的另一个账号里，变成「账号 A + 密码 B」。
-      const canAutofill = !identifierRef.current.trim();
-      setIdentifier((current) => current || latest.identifier);
+      // 只有「用户还没动账号框」或「账号框正好就是最近账号」时才自动填充。
+      // 后者常由浏览器密码管理器在页面加载时抢先回填，若按「非空就放弃」处理，
+      // 已保存的密码就永远不会被填充；而内容不同则必须放弃 —— 否则会把
+      // accounts[0] 的密码填进用户自己敲的另一个账号里，变成「账号 A + 密码 B」。
+      const current = identifierRef.current.trim();
+      const canAutofill = !current || current === latest.identifier;
+      setIdentifier((value) => value || latest.identifier);
       if (!canAutofill || !latest.has_password) return;
       // 与 pickSavedAccount 共用同一个序号：两者互相作废，谁后发起谁生效。
       const sequence = ++pickSequenceRef.current;
@@ -169,9 +175,17 @@ export function AuthPage({ onEnter }: AuthPageProps) {
 
   function handleIdentifierChange(value: string) {
     setIdentifier(value);
-    // 手输值与已保存账号精确一致时回显其「记住密码」状态；否则回到默认不勾。
+    // 用户手动改过勾选就不再联动，避免「勾了记住密码，一输入账号又变回未勾」。
+    if (rememberTouchedRef.current) return;
+    // 未手动操作时，仅当输入值与已保存账号精确一致才回显其「记住密码」状态。
     const match = matchSavedAccount(savedAccounts, value);
-    setRememberPassword(Boolean(match?.has_password));
+    if (match) setRememberPassword(match.has_password);
+  }
+
+  /** 用户主动勾选 / 取消「记住密码」：从此以用户的选择为准。 */
+  function handleRememberChange(next: boolean) {
+    rememberTouchedRef.current = true;
+    setRememberPassword(next);
   }
 
   /** 勾选即记录「已同意」；取消勾选同时撤回该记录（合规要求提供便捷的撤回方式）。 */
@@ -189,6 +203,7 @@ export function AuthPage({ onEnter }: AuthPageProps) {
     setPassword("");
     setConfirmPassword("");
     setRememberPassword(false);
+    rememberTouchedRef.current = false;
     setAccountMenuOpen(false);
     setError("");
     setNotice("");
@@ -197,6 +212,8 @@ export function AuthPage({ onEnter }: AuthPageProps) {
   async function pickSavedAccount(account: SavedLoginAccount) {
     setIdentifier(account.identifier);
     setAccountMenuOpen(false);
+    // 选中已保存账号属于显式的账号切换：恢复该账号自己的保存状态。
+    rememberTouchedRef.current = false;
     setRememberPassword(account.has_password);
     if (!account.has_password) {
       setPassword("");
@@ -335,6 +352,13 @@ export function AuthPage({ onEnter }: AuthPageProps) {
       });
       if (!data.token) throw new Error("登录失败：服务端未返回登录凭证");
       saveAuthSession(data.token, data.account ?? {});
+      // 平台把「是否已确认 POD 协议」随登录态一起下发：已确认则本次登录不再弹窗；
+      // 否则置位待阅读，用户首次点进 POD 模块时强制阅读 8 秒并勾选。
+      if (data.account?.pod_agreement_confirmed === true) {
+        clearPodAgreementPending();
+      } else {
+        markPodAgreementPending();
+      }
       // 登录成功：记住账号（勾了「记住密码」才连同密码保存）；失败静默，
       // 不阻塞进入工作台（本地请求毫秒级，页面切换不影响其完成）。
       void saveLogin(identifier.trim(), password, rememberPassword);
@@ -457,7 +481,7 @@ export function AuthPage({ onEnter }: AuthPageProps) {
               {/* 密码框统一 new-password：密码记忆由应用内「账号管理」接管（登录页下拉自动
                   填充），避免浏览器原生密码管理器重复弹窗、且其自动填充不会同步进受控组件。 */}
               <label>密码<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} onInvalid={(e) => e.currentTarget.setCustomValidity("请输入密码")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder={isLogin ? "输入密码" : "至少 8 位"} autoComplete="new-password" required /></label>
-              {isLogin && <label className="auth-agree auth-remember"><input type="checkbox" checked={rememberPassword} onChange={(e) => setRememberPassword(e.target.checked)} /><span>记住密码，下次自动填充</span></label>}
+              {isLogin && <label className="auth-agree auth-remember"><input type="checkbox" checked={rememberPassword} onChange={(e) => handleRememberChange(e.target.checked)} /><span>记住密码，下次自动填充</span></label>}
               {!isLogin && <label>确认密码<input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} onInvalid={(e) => e.currentTarget.setCustomValidity("请再次输入密码")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder="再次输入密码" autoComplete="new-password" required /></label>}
               {!isLogin && <label>邀请码<input type="text" value={invitationCode} onChange={(e) => setInvitationCode(e.target.value)} placeholder="选填" autoComplete="off" /></label>}
               <label className="auth-agree"><input type="checkbox" checked={agreed} onChange={(e) => handleAgreeChange(e.target.checked)} /><span>我已阅读并同意 <a className="link-button" href="/privacy" target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}>《界野隐私政策》</a></span></label>

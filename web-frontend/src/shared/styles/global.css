@@ -524,6 +524,11 @@ html[data-topbar-collapse="on"] .avatar-preview-layer {
     transition-delay: 0s;
   }
 
+  /* 个人中心有 9 个面板，收起态浮层给足高度，尽量一屏看全。 */
+  .sidebar-card.is-collapsed .sidebar-submenu.is-panel-group {
+    max-height: min(440px, calc(100vh - 120px));
+  }
+
   .sidebar-card.is-collapsed .sidebar-submenu-inner {
     overflow: visible;
   }
@@ -543,6 +548,50 @@ html[data-topbar-collapse="on"] .avatar-preview-layer {
 @media (prefers-reduced-motion: reduce) {
   .sidebar-group-caret,
   .sidebar-submenu {
+    transition: none;
+  }
+}
+
+/* ---- 个人中心页内面板：展开时逐项错峰淡入，选中胶囊交给共享滑块 ---- */
+.sidebar-submenu.is-panel-group .sidebar-subitem {
+  position: relative;
+  z-index: 1;
+}
+
+.sidebar-submenu.is-panel-group .sidebar-subitem > span:first-child {
+  transition: transform .18s ease;
+}
+
+.sidebar-submenu.is-panel-group .sidebar-subitem:hover > span:first-child {
+  transform: scale(1.08);
+}
+
+.sidebar-submenu.is-panel-group.is-expanded .sidebar-subitem {
+  /* 只动透明度：位移会影响共享滑块的测量，导致首帧高亮落点偏移。 */
+  animation: sidebar-panel-reveal .3s cubic-bezier(.22, .8, .32, 1) both;
+}
+
+.sidebar-submenu.is-panel-group.is-expanded .sidebar-subitem:nth-child(2) { animation-delay: .03s; }
+.sidebar-submenu.is-panel-group.is-expanded .sidebar-subitem:nth-child(3) { animation-delay: .06s; }
+.sidebar-submenu.is-panel-group.is-expanded .sidebar-subitem:nth-child(4) { animation-delay: .09s; }
+.sidebar-submenu.is-panel-group.is-expanded .sidebar-subitem:nth-child(5) { animation-delay: .12s; }
+.sidebar-submenu.is-panel-group.is-expanded .sidebar-subitem:nth-child(6) { animation-delay: .15s; }
+.sidebar-submenu.is-panel-group.is-expanded .sidebar-subitem:nth-child(7) { animation-delay: .18s; }
+.sidebar-submenu.is-panel-group.is-expanded .sidebar-subitem:nth-child(8) { animation-delay: .21s; }
+.sidebar-submenu.is-panel-group.is-expanded .sidebar-subitem:nth-child(9) { animation-delay: .24s; }
+.sidebar-submenu.is-panel-group.is-expanded .sidebar-subitem:nth-child(10) { animation-delay: .27s; }
+
+@keyframes sidebar-panel-reveal {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-submenu.is-panel-group.is-expanded .sidebar-subitem {
+    animation: none;
+  }
+
+  .sidebar-submenu.is-panel-group .sidebar-subitem > span:first-child {
     transition: none;
   }
 }
@@ -2719,4 +2768,195 @@ html:not([data-ui-mode="apple"]) .tab-strip[data-indicator-ready="true"] > .page
     height: calc(var(--workspace-topbar-height, 120px) + 18px);
     pointer-events: none;
   }
+}
+
+/* ---- POD 使用协议强制弹窗 ----
+   每次登录后首次进入 POD 模块时弹出；无 × / 无遮罩点击关闭，8 秒 + 勾选后才
+   允许点「已阅读」。遮罩只覆盖右侧工作区（left 由组件按 .workspace-main 的
+   实际左边界内联设置），左侧功能栏保持可点击，用户可以直接切换到其他模块。
+   z-index 取 2000：高于工作台内所有模块弹层（多为 1000）与帮助悬浮球，
+   低于引导教程（9500），避免和引导互相抢屏。 */
+.pod-agreement-mask {
+  position: fixed;
+  z-index: 2000;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: grid;
+  place-items: center;
+  padding: clamp(16px, 4vh, 48px) clamp(16px, 5vw, 80px);
+  background:
+    radial-gradient(118% 78% at 50% 42%, rgba(20, 62, 104, .30), rgba(6, 20, 36, .68) 70%),
+    rgba(6, 20, 36, .56);
+  backdrop-filter: blur(10px) saturate(125%);
+  animation: pod-agreement-fade .28s ease both;
+}
+
+@keyframes pod-agreement-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.pod-agreement-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: min(820px, 100%);
+  max-height: min(88vh, 940px);
+  overflow: hidden;
+  border: 1px solid rgba(198, 220, 238, .9);
+  border-radius: 24px;
+  background: #fff;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, .75),
+    0 0 0 1px rgba(9, 46, 84, .05),
+    0 48px 96px -28px rgba(7, 38, 69, .55),
+    0 12px 32px rgba(7, 38, 69, .16);
+  animation: pod-agreement-rise .46s cubic-bezier(.16, 1, .3, 1) both;
+}
+
+@keyframes pod-agreement-rise {
+  from { opacity: 0; transform: translateY(28px) scale(.97); }
+  to { opacity: 1; transform: none; }
+}
+
+.pod-agreement-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 26px 28px 18px;
+  border-bottom: 1px solid #e2eef8;
+  background: linear-gradient(120deg, #f2f9ff 0%, #effbf7 60%, #f6f4ff 100%);
+}
+
+.pod-agreement-mark {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  flex: 0 0 auto;
+  border-radius: 14px;
+  color: #fff;
+  background: linear-gradient(140deg, var(--theme-primary, #087bf5), #14c8c0);
+  box-shadow: 0 12px 24px -10px rgba(8, 123, 245, .55), inset 0 1px 0 rgba(255, 255, 255, .45);
+}
+
+.pod-agreement-mark svg {
+  width: 24px;
+  height: 24px;
+}
+
+.pod-agreement-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.pod-agreement-eyebrow {
+  color: var(--theme-primary, #0f6fbf);
+  font-size: .72rem;
+  font-weight: 800;
+  letter-spacing: .12em;
+}
+
+.pod-agreement-heading h2 {
+  margin: 0;
+  color: #10304e;
+  font-size: 1.4rem;
+  letter-spacing: -.01em;
+}
+
+.pod-agreement-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 22px 30px 8px;
+  color: #2c4257;
+  font-size: .98rem;
+  line-height: 1.95;
+}
+
+.pod-agreement-body p {
+  margin: 0 0 14px;
+}
+
+.pod-agreement-body p:first-child {
+  color: #10304e;
+  font-weight: 700;
+}
+
+.pod-agreement-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 28px 22px;
+  border-top: 1px solid #e8f1f8;
+  background: linear-gradient(180deg, rgba(242, 249, 255, .55), #fff);
+}
+
+.pod-agreement-check {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: #3c556b;
+  font-size: .92rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.pod-agreement-check input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--theme-primary, #0877d3);
+  cursor: pointer;
+}
+
+.pod-agreement-link {
+  color: var(--theme-primary, #0877d3);
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.pod-agreement-link:hover {
+  text-decoration-thickness: 2px;
+}
+
+.pod-agreement-action {
+  min-width: 150px;
+  flex: 0 0 auto;
+  padding: 12px 22px;
+  border: 0;
+  border-radius: 999px;
+  color: #fff;
+  background: linear-gradient(105deg, var(--theme-primary, #087bf5), #14c8c0);
+  font-size: .95rem;
+  font-weight: 800;
+  cursor: pointer;
+  box-shadow: 0 10px 22px -8px rgba(8, 123, 245, .5);
+  transition: transform .16s ease, box-shadow .16s ease, opacity .16s ease;
+}
+
+.pod-agreement-action:not(:disabled):hover {
+  transform: translateY(-1px);
+  box-shadow: 0 14px 26px -8px rgba(8, 123, 245, .55);
+}
+
+.pod-agreement-action:disabled {
+  cursor: not-allowed;
+  opacity: .48;
+  box-shadow: none;
+}
+
+@media (max-width: 640px) {
+  .pod-agreement-mask { padding: 12px; }
+  .pod-agreement-head { padding: 20px 18px 14px; }
+  .pod-agreement-body { padding: 18px 18px 6px; font-size: .92rem; line-height: 1.85; }
+  .pod-agreement-foot { flex-direction: column; align-items: stretch; gap: 12px; padding: 14px 18px 18px; }
+  .pod-agreement-action { width: 100%; }
 }

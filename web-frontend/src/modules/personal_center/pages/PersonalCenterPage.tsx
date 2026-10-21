@@ -1,9 +1,10 @@
-import { type FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { clearAuthSession, getAuthAccount, getAuthToken, saveAuthSession } from "../../../transport/http/client";
 import { notifyBalanceChanged } from "../../../shared/balanceEvents";
 import { AVATAR_CHANGED_EVENT, AVATAR_STORAGE_KEY } from "../../../app/layout/TopNavigation";
+import type { PersonalCenterPanelId } from "../../../app/navigation/modules";
 import {
   changeAccountPassword,
   changeUsername,
@@ -244,7 +245,7 @@ function usageServiceSubLabel(entry: BillingUsageEntry): string | null {
   return null;
 }
 
-// 用量明细的调用信息：内部模型名（doubao-* 等供应商标识）不对外展示。
+// 用量明细补充信息（服务列副标题）：内部模型名（doubao-* 等供应商标识）不对外展示。
 function usageDetailText(entry: BillingUsageEntry): string | null {
   const raw = entry.model || entry.provider || "";
   if (!raw) return "等待上游";
@@ -361,9 +362,12 @@ export type PersonalCenterFeedbackPrefill = { question: string; nonce: number };
 
 type PersonalCenterPageProps = {
   feedbackPrefill?: PersonalCenterFeedbackPrefill | null;
+  /** 当前面板由外层（侧栏子导航）持有，保证侧栏与页面内容始终同步。 */
+  panel: PersonalCenterPanelId;
+  onPanelChange: (panel: PersonalCenterPanelId) => void;
 };
 
-export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPageProps) {
+export function PersonalCenterPage({ feedbackPrefill = null, panel, onPanelChange }: PersonalCenterPageProps) {
   const account = getAuthAccount<AccountSnapshot>();
   // 头像与右上角共享：读取同一 localStorage 键，并监听 storage 事件以实时同步。
   const [avatarSrc, setAvatarSrc] = useState<string | null>(() => {
@@ -402,42 +406,8 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
   const defaultUsageFilterKey = buildUsageFilterKey("", "", "", "");
 
   const [summary, setSummary] = useState<BillingSummary | null>(cachedBalance?.summary ?? null);
-  const [activePanel, setActivePanel] = useState<"wallet" | "usage" | "pricing" | "model" | "preferences" | "version" | "storage" | "migration" | "promo" | "feedback">("wallet");
-
-  // 二级导航的选中高亮是一块共享滑块在移动（SwiftUI matchedGeometryEffect 思路），
-  // 而不是每个按钮各自换底色。换行时退回按钮自身的胶囊底色。
-  const subnavRef = useRef<HTMLElement>(null);
-  const [subnavThumb, setSubnavThumb] = useState({ left: 0, top: 0, width: 0, height: 0 });
-  const [subnavReady, setSubnavReady] = useState(false);
-  const [subnavWrapped, setSubnavWrapped] = useState(false);
-
-  useLayoutEffect(() => {
-    const group = subnavRef.current;
-    if (!group) return;
-    const sync = () => {
-      const buttons = Array.from(group.querySelectorAll<HTMLButtonElement>("button"));
-      const active = group.querySelector<HTMLButtonElement>("button.is-active");
-      if (!active || buttons.length === 0) return;
-      setSubnavWrapped(new Set(buttons.map((button) => button.offsetTop)).size > 1);
-      const g = group.getBoundingClientRect();
-      const a = active.getBoundingClientRect();
-      setSubnavThumb({
-        left: a.left - g.left - group.clientLeft,
-        top: a.top - g.top - group.clientTop,
-        width: a.width,
-        height: a.height,
-      });
-    };
-    sync();
-    const frame = requestAnimationFrame(() => setSubnavReady(true));
-    const observer = new ResizeObserver(sync);
-    observer.observe(group);
-    group.querySelectorAll<HTMLButtonElement>("button").forEach((button) => observer.observe(button));
-    return () => {
-      cancelAnimationFrame(frame);
-      observer.disconnect();
-    };
-  }, [activePanel]);
+  // 面板切换入口与高亮都在侧栏「个人中心」子导航，这里只消费外层传入的面板值。
+  const activePanel = panel;
 
   // 可用积分与积分构成的数字滚动动画（首次直接用缓存值，不闪）。
   const animatedAvailablePoints = useAnimatedNumber(summary?.wallet.available_points);
@@ -910,11 +880,11 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
   useEffect(() => {
     if (!feedbackPrefill) return;
     if (feedbackPrefill.question) setPrefillFeedback(feedbackPrefill.question);
-    setActivePanel("feedback");
+    onPanelChange("feedback");
     window.requestAnimationFrame(() => {
       feedbackRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
-  }, [feedbackPrefill]);
+  }, [feedbackPrefill, onPanelChange]);
 
   useEffect(() => {
     if (!pendingPaymentOrderId) return;
@@ -1570,64 +1540,6 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
 
       {error && <div className="personal-alert is-error">{error}</div>}
       {loading && <div className="personal-alert">正在读取服务器账户与积分数据...</div>}
-
-      <nav
-        ref={subnavRef}
-        className="personal-subnav"
-        data-ready={subnavReady ? "true" : "false"}
-        data-wrapped={subnavWrapped ? "true" : "false"}
-        aria-label="个人中心二级导航"
-      >
-        <span
-          className="personal-subnav-thumb"
-          style={{
-            transform: `translate3d(${subnavThumb.left}px, ${subnavThumb.top}px, 0)`,
-            width: subnavThumb.width,
-            height: subnavThumb.height,
-          }}
-          aria-hidden="true"
-        />
-        <button type="button" aria-pressed={activePanel === "wallet"} className={activePanel === "wallet" ? "is-active" : ""} onClick={() => setActivePanel("wallet")}>
-          <span className="iconfont icon-wallet-fill" aria-hidden="true" />
-          <span>积分钱包</span>
-        </button>
-        <button type="button" aria-pressed={activePanel === "usage"} className={activePanel === "usage" ? "is-active" : ""} onClick={() => setActivePanel("usage")}>
-          <span className="iconfont icon-accountbook-fill" aria-hidden="true" />
-          <span>消费流水</span>
-        </button>
-        <button type="button" aria-pressed={activePanel === "pricing"} className={activePanel === "pricing" ? "is-active" : ""} onClick={() => setActivePanel("pricing")}>
-          <span className="iconfont icon-calculator" aria-hidden="true" />
-          <span>计费规则</span>
-        </button>
-        <button type="button" aria-pressed={activePanel === "model"} className={activePanel === "model" ? "is-active" : ""} onClick={() => setActivePanel("model")}>
-          <span className="iconfont icon-robot-fill" aria-hidden="true" />
-          <span>模型选择</span>
-        </button>
-        <button type="button" aria-pressed={activePanel === "preferences"} className={activePanel === "preferences" ? "is-active" : ""} onClick={() => setActivePanel("preferences")}>
-          <span className="iconfont icon-skin" aria-hidden="true" />
-          <span>偏好设置</span>
-        </button>
-        <button type="button" aria-pressed={activePanel === "version"} className={activePanel === "version" ? "is-active" : ""} onClick={() => setActivePanel("version")}>
-          <span className="iconfont icon-setting" aria-hidden="true" />
-          <span>系统版本</span>
-        </button>
-        <button type="button" aria-pressed={activePanel === "storage"} className={activePanel === "storage" ? "is-active" : ""} onClick={() => setActivePanel("storage")}>
-          <span className="iconfont icon-database" aria-hidden="true" />
-          <span>存储空间</span>
-        </button>
-        <button type="button" className={activePanel === "migration" ? "is-active" : ""} onClick={() => setActivePanel("migration")}>
-          <span className="iconfont icon-upload" aria-hidden="true" />
-          <span>数据迁移</span>
-        </button>
-        <button type="button" aria-pressed={activePanel === "promo"} className={activePanel === "promo" ? "is-active" : ""} onClick={() => setActivePanel("promo")}>
-          <span className="iconfont icon-gift" aria-hidden="true" />
-          <span>推广计划</span>
-        </button>
-        <button type="button" aria-pressed={activePanel === "feedback"} className={activePanel === "feedback" ? "is-active" : ""} onClick={() => setActivePanel("feedback")}>
-          <span className="iconfont icon-message" aria-hidden="true" />
-          <span>意见反馈</span>
-        </button>
-      </nav>
 
       <div className="personal-content-layout">
         <aside className="personal-sidebar" aria-label="个人中心侧栏">
@@ -2377,16 +2289,16 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
             {!usageLoading && !usageError && (
               <div className="usage-table-wrap">
                 <table className="usage-table">
-                  <thead><tr><th>时间</th><th>服务</th><th>状态</th><th>冻结</th><th>实际扣费</th><th>释放</th><th>规则</th><th>调用信息</th></tr></thead>
+                  <thead><tr><th>时间</th><th>服务</th><th>状态</th><th>冻结</th><th>实际扣费</th><th>释放</th><th>规则</th></tr></thead>
                   <tbody>{pagedUsageEntries.length ? pagedUsageEntries.map((entry) => (
                     <tr key={entry.usage_id}>
-                      <td><b>{formatUsageTime(entry.created_at)}</b><small>{entry.source_ref || entry.usage_id}</small></td>
+                      <td><b>{formatUsageTime(entry.created_at)}</b></td>
                       <td>{usageServiceLabel(entry)}{usageServiceSubLabel(entry) && <small>{usageServiceSubLabel(entry)}</small>}{usageDetailText(entry) && <small>{usageDetailText(entry)}</small>}</td>
                       <td><span className={`usage-status is-${entry.status}`}>{entry.status === "succeeded" ? "已结算" : entry.status === "reserved" || entry.status === "frozen" ? "处理中" : "已释放"}</span>{entry.error_message && <small>{entry.error_message}</small>}</td>
                       <td>{entry.reserved_points}</td><td>{entry.charged_points}</td><td>{entry.refunded_points}</td>
-                      <td>{entry.rule_version ? `v${entry.rule_version}` : "—"}</td><td><small>{entry.task ? `任务 #${entry.task} · ` : ""}{entry.usage_id.slice(0, 14)}…</small></td>
+                      <td>{entry.rule_version ? `v${entry.rule_version}` : "—"}</td>
                     </tr>
-                  )) : <tr><td colSpan={8} className="usage-empty">{hasUsageFilter ? "没有匹配的消费流水，试试调整筛选条件" : "暂无消费流水"}</td></tr>}</tbody>
+                  )) : <tr><td colSpan={7} className="usage-empty">{hasUsageFilter ? "没有匹配的消费流水，试试调整筛选条件" : "暂无消费流水"}</td></tr>}</tbody>
                 </table>
               </div>
             )}

@@ -658,102 +658,6 @@
   white-space: nowrap;
 }
 
-.personal-subnav {
-  position: relative;
-  isolation: isolate;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 8px;
-  border: 1px solid var(--theme-module-border, rgba(99, 179, 237, 0.25));
-  border-radius: 999px;
-  background: var(--theme-module-surface-raised, rgba(255, 255, 255, 0.82));
-  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.07);
-}
-
-/* 选中态滑块：同一块胶囊在按钮之间做几何插值，首帧不播动画。 */
-.personal-subnav-thumb {
-  position: absolute;
-  z-index: 0;
-  top: 0;
-  left: 0;
-  width: 0;
-  height: 0;
-  border-radius: 999px;
-  background: var(--theme-primary-button-gradient, linear-gradient(135deg, #0ea5ff, #20e0bd));
-  box-shadow: 0 6px 16px color-mix(in srgb, var(--theme-primary, #0ea5ff) 32%, transparent);
-  pointer-events: none;
-  opacity: 0;
-}
-
-.personal-subnav[data-ready="true"] .personal-subnav-thumb {
-  opacity: 1;
-  transition: transform 0.42s cubic-bezier(0.22, 1, 0.36, 1), width 0.42s cubic-bezier(0.22, 1, 0.36, 1),
-    height 0.42s cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.personal-subnav button {
-  position: relative;
-  z-index: 1;
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 10px 14px;
-  border: 1px solid transparent;
-  border-radius: 10px;
-  color: var(--theme-text-secondary, #465a73);
-  background: transparent;
-  font-size: 13px;
-  font-weight: 700;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
-}
-
-.personal-subnav button:hover:not(.is-active) {
-  background: var(--theme-module-surface-soft, #f8fafc);
-}
-
-.personal-subnav button.is-active {
-  color: #fff;
-  background: transparent;
-  box-shadow: none;
-}
-
-/* 换行后共享滑块不再适用，回落成每项自带胶囊底色。 */
-.personal-subnav[data-wrapped="true"] {
-  border-radius: 22px;
-}
-
-.personal-subnav[data-wrapped="true"] .personal-subnav-thumb {
-  display: none;
-}
-
-.personal-subnav[data-wrapped="true"] button.is-active {
-  background: var(--theme-primary-button-gradient, linear-gradient(135deg, #0ea5ff, #20e0bd));
-  box-shadow: 0 6px 16px color-mix(in srgb, var(--theme-primary, #0ea5ff) 32%, transparent);
-}
-
-.personal-subnav button .iconfont {
-  display: grid;
-  place-items: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 7px;
-  background: var(--theme-module-surface-soft, #f1f5f9);
-  color: var(--theme-text-muted, #64748b);
-  font-size: 14px;
-  transition: background 0.16s ease, color 0.16s ease;
-}
-
-.personal-subnav button.is-active .iconfont {
-  background: rgba(255, 255, 255, 0.24);
-  color: #fff;
-}
-
 .personal-panel-content {
   grid-column: 1;
   grid-row: 1;
@@ -780,10 +684,6 @@
   .personal-panel-anim {
     animation: none;
   }
-
-  .personal-subnav-thumb {
-    transition: none;
-  }
 }
 
 .usage-card { min-height: 0; }
@@ -805,7 +705,7 @@
 .usage-table th { padding: 12px; color: var(--theme-text-muted, #64748b); background: var(--theme-module-surface-soft, #f7fbfe); text-align: left; font-weight: 800; white-space: nowrap; }
 .usage-table td { padding: 13px 12px; border-top: 1px solid var(--theme-module-border, #edf2f7); vertical-align: top; color: var(--theme-text-secondary, #334155); }
 .usage-table small { display: block; max-width: 180px; margin-top: 4px; overflow: hidden; color: var(--theme-text-muted, #8190a5); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.usage-status { display: inline-block; padding: 3px 7px; border-radius: 999px; font-size: 11px; font-weight: 800; }
+.usage-status { display: inline-block; padding: 3px 7px; border-radius: 999px; font-size: 11px; font-weight: 800; white-space: nowrap; }
 .usage-status.is-succeeded { color: #047857; background: #d1fae5; }
 .usage-status.is-reserved { color: #a16207; background: #fef3c7; }
 .usage-status.is-failed { color: #475569; background: #e2e8f0; }
@@ -1737,17 +1637,6 @@
     flex: 1 1 auto;
     gap: 16px;
     min-height: 0;
-  }
-
-  .personal-subnav {
-    gap: 6px;
-    padding: 9px;
-    border-radius: 999px;
-  }
-
-  .personal-subnav button {
-    gap: 8px;
-    padding: 9px 10px;
   }
 
   .personal-grid {
@@ -3794,14 +3683,11 @@
 /* ================================================================
    个人中心：胶囊化（2026-10-19）
 
-   按 ui.md：二级导航、按钮、输入框、下拉、筛选芯片、列表行与
-   复选行等单行控件统一 999px；卡片、多行内容块和带左侧竖线的
-   缩进子项保留连续圆角，避免胶囊弧边切到内容。
+   按 ui.md：按钮、输入框、下拉、筛选芯片、列表行与复选行等
+   单行控件统一 999px；卡片、多行内容块和带左侧竖线的缩进子项
+   保留连续圆角，避免胶囊弧边切到内容。
+   二级导航已迁到左侧栏「个人中心」分组，样式见 global.css。
    ================================================================ */
-
-/* ---- 二级导航 ---- */
-.personal-subnav button { border-radius: 999px; }
-.personal-subnav button .iconfont { border-radius: 50%; }
 
 /* ---- 侧栏账号操作 ---- */
 .personal-password-entry { border-radius: 999px; }
