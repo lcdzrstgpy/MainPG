@@ -232,6 +232,8 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       descriptionTemplate: 'A',
       // 失败项自动重跑默认关闭：重跑会再次调用 AI 生图并计费，交给用户显式开启。
       autoRepull: false,
+      // 尺寸图自动烧制默认开启；不需要尺寸图的品类可在处理设置里关闭。
+      dimensionCard: true,
     }
   );
   const imageSelection: PhotoSelection = {
@@ -732,6 +734,8 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
         random_template: options.randomTemplate === true,
         // 用户选择是否对技术可重试的失败项自动补跑（默认关闭）
         auto_repull: options.autoRepull !== false,
+        // 是否自动烧制第 4 格尺寸图（默认开启；不需要尺寸图的品类可关闭）
+        dimension_card: options.dimensionCard !== false,
         // 兼容旧 API 字段；新任务统一走智能生图策略，不再由用户选择。
         image_generation_count: 4,
         // SKU 原图可用性分类（处理设置页检测结果）：写入草稿预检覆盖，导出按此分流。
@@ -943,6 +947,15 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                   />
                   <span>自动重跑失败项</span>
                   <span className="verify-sub">最多 1 次 · 会再次调用 AI 并计费</span>
+                </label>
+                <label className="verify-scope-check verify-inline-check" title="开启后，AI 处理成功时自动把第 4 格烧成尺寸卡（复用原链接尺寸图或本地渲染）。部分品类不需要尺寸图，可在这里关闭；关闭后不导入尺寸画布、不烧卡，也不做原图尺寸图 OCR 预取">
+                  <input
+                    type="checkbox"
+                    checked={options.dimensionCard !== false}
+                    onChange={(e) => setOptions((p) => ({ ...p, dimensionCard: e.target.checked }))}
+                  />
+                  <span>自动烧制尺寸图</span>
+                  <span className="verify-sub">第 4 格尺寸卡 · 不需要的品类可关闭</span>
                 </label>
               </div>
             </div>
