@@ -92,6 +92,8 @@ export function CompositionPanelsEditor({ composition, disabled = false, onSaved
   };
 
   const updated = timeLabel(composition.updated_at);
+  // 全定制模板（含旧模板）一律按「四轮」语义生效：每一轮的机位由该轮四款共用。
+  const roleLayout = composition.layout === "role_v1" || composition.scope === "full";
 
   return (
     <section className="pod-composition-result" aria-label="画面指令">
@@ -99,6 +101,7 @@ export function CompositionPanelsEditor({ composition, disabled = false, onSaved
         <span>PANELS</span>
         <h3>{updated ? `画面指令（更新于 ${updated}）` : "画面指令"}</h3>
       </div>
+      {roleLayout && <p className="pod-composition-role-hint">构图模板已按四轮生效：每一轮的四款共用该轮机位；第 2/3/4 轮只改视角，场景与光线跟随主图锚点，可继续编辑。</p>}
       <ul className="pod-composition-panels">
         {COMPOSITION_PANEL_SLOTS.map((slot) => (
           <li key={slot.key}>
@@ -109,7 +112,7 @@ export function CompositionPanelsEditor({ composition, disabled = false, onSaved
                 maxLength={COMPOSITION_PANEL_MAX_LENGTH}
                 disabled={busy}
                 aria-label={`${slot.label}的画面指令`}
-                placeholder="填写这一格要怎么拍"
+                placeholder={roleLayout ? "填写这一轮四款共用的机位 / 景别 / 构图" : "填写这一格要怎么拍"}
                 onChange={(event) => {
                   const value = event.currentTarget.value;
                   setDrafts((current) => ({ ...current, [slot.key]: value }));

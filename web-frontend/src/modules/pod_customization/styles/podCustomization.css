@@ -149,6 +149,29 @@
 .pod-brief-input-error { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin: 0; padding: 6px 8px; border-radius: 8px; color: #a84c48; background: #fff4f3; font-size: .62rem; }
 .pod-brief-input-error button { border: 0; color: currentColor; background: transparent; font-size: .63rem; font-weight: 900; text-decoration: underline; }
 .pod-brief-input-notice { margin: 0; color: #246f61; font-size: .62rem; }
+.pod-brief-template-attached { padding: 1px 6px; border-radius: 999px; color: var(--pod-primary); background: var(--pod-surface-tint); font-size: .56rem; font-weight: 800; }
+.pod-art-direction { display: grid; gap: 6px; padding: 8px; border: 1px solid var(--pod-border); border-radius: 10px; background: var(--pod-surface); }
+.pod-art-direction > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.pod-art-direction > header b { display: block; color: var(--pod-text); font-size: .68rem; }
+.pod-art-direction > header small { color: var(--pod-text-muted); font-size: .56rem; }
+.pod-art-direction-toggle { display: flex; flex: 1 1 auto; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; padding: 0; border: 0; color: var(--pod-text-secondary); background: transparent; text-align: left; }
+.pod-art-direction-toggle > span { display: grid; gap: 2px; }
+.pod-art-direction-toggle > i { font-size: .62rem; transition: transform .18s ease; }
+.pod-art-direction-toggle > i.is-open { transform: rotate(180deg); }
+.pod-art-direction-actions { display: flex; flex: 0 0 auto; gap: 4px; }
+.pod-art-direction-actions button { padding: 2px 7px; border: 1px solid var(--pod-border); border-radius: 999px; color: var(--pod-text-secondary); background: var(--pod-surface-soft); font-size: .56rem; font-weight: 800; }
+.pod-art-direction-actions button:hover { border-color: var(--pod-primary); color: var(--pod-primary); }
+.pod-art-direction-summary { display: grid; gap: 4px; margin: 0; }
+.pod-art-direction-summary > div { display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 6px; }
+.pod-art-direction-summary dt { color: var(--pod-text-muted); font-size: .57rem; font-weight: 800; }
+.pod-art-direction-summary dd { margin: 0; color: var(--pod-text-secondary); font-size: .6rem; line-height: 1.5; }
+.pod-art-direction-fields { display: grid; gap: 6px; }
+.pod-art-direction-fields label { display: grid; gap: 3px; }
+.pod-art-direction-fields label > span { color: var(--pod-text-muted); font-size: .56rem; font-weight: 800; }
+.pod-art-direction-fields input,
+.pod-art-direction-fields textarea { width: 100%; padding: 5px 7px; border: 1px solid var(--pod-border); border-radius: 7px; color: var(--pod-text); background: var(--pod-surface-soft); font-size: .6rem; font-family: inherit; }
+.pod-art-direction-fields textarea { min-height: 44px; resize: vertical; }
+.pod-composition-role-hint { margin: 0; padding: 6px 8px; border-radius: 8px; color: var(--pod-text-secondary); background: var(--pod-surface-soft); font-size: .58rem; line-height: 1.5; }
 .pod-brief-history { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; gap: 5px; }
 .pod-brief-history > b { color: var(--pod-text-muted); font-size: .58rem; font-weight: 900; letter-spacing: .04em; }
 .pod-brief-history ul { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; gap: 4px; margin: 0; padding: 0; list-style: none; }
@@ -325,6 +348,39 @@
 .pod-template-file span:nth-child(2) { overflow: hidden; color: var(--pod-text-secondary); text-overflow: ellipsis; white-space: nowrap; }
 .pod-template-file input { position: absolute; width: 1px; height: 1px; opacity: 0; }
 .pod-template-upload > button { padding: 8px; border-radius: 8px; font-size: .63rem; }
+/* 结构视图锚定：与「构图定制」按钮同尺寸、同配色，勾选只加深描边。 */
+.pod-structure-toggle { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; padding: 8px 14px; white-space: nowrap; border: 1px solid var(--pod-border-strong); border-radius: 999px; color: var(--pod-primary); background: var(--pod-surface-tint); font-size: .78rem; font-weight: 700; cursor: pointer; user-select: none; }
+.pod-structure-toggle:hover { border-color: var(--pod-primary); box-shadow: 0 6px 16px var(--pod-shadow); }
+.pod-structure-toggle input { width: 15px; height: 15px; margin: 0; accent-color: var(--pod-primary); cursor: pointer; }
+.pod-structure-toggle:has(input:checked) { border-color: var(--pod-primary); box-shadow: inset 0 0 0 1px var(--pod-primary); }
+.pod-structure-anchor { display: grid; gap: 8px; margin-top: 8px; padding: 10px; border: 1px dashed var(--pod-border); border-radius: 10px; background: var(--pod-surface-soft); }
+.pod-structure-anchor > p { margin: 0; color: var(--pod-text-muted); font-size: .64rem; line-height: 1.5; }
+.pod-structure-view-files { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.pod-structure-view-card { position: relative; display: grid; gap: 6px; min-width: 0; }
+.pod-structure-view-picker { position: relative; display: grid; place-items: center; aspect-ratio: 4 / 3; overflow: hidden; border: 1px dashed var(--pod-border-strong); border-radius: 10px; background: var(--pod-surface); cursor: pointer; }
+.pod-structure-view-card.has-image .pod-structure-view-picker { border-style: solid; border-color: var(--pod-border); }
+.pod-structure-view-picker img { width: 100%; height: 100%; object-fit: cover; }
+.pod-structure-view-picker input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.pod-structure-view-empty { display: grid; justify-items: center; gap: 4px; color: var(--pod-primary); font-size: .66rem; }
+.pod-structure-view-empty small { color: var(--pod-text-muted); font-size: .6rem; }
+.pod-structure-view-meta { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; min-width: 0; }
+.pod-structure-view-meta b { color: var(--pod-text-secondary); font-size: .64rem; }
+.pod-structure-view-meta small { overflow: hidden; color: var(--pod-text-muted); font-size: .58rem; text-overflow: ellipsis; white-space: nowrap; }
+.pod-structure-view-remove { position: absolute; top: 4px; right: 4px; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 999px; color: #fff; background: rgba(20, 20, 24, .55); font-size: .7rem; line-height: 1; cursor: pointer; }
+.pod-structure-anchor-warning { color: #b6504b !important; }
+.pod-structure-anchor-existing { color: var(--pod-text-secondary) !important; }
+/* 结构事实表确认：识别置信度不足时出现（保存后成为后续批次的生图硬约束）。 */
+.pod-structure-confirm { display: grid; gap: 10px; margin-top: 10px; padding: 12px; border: 1px solid var(--pod-primary); border-radius: 10px; background: var(--pod-surface-soft); }
+.pod-structure-confirm > header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.pod-structure-confirm b { color: var(--pod-text); font-size: .82rem; }
+.pod-structure-confirm small { overflow: hidden; color: var(--pod-text-muted); font-size: .66rem; text-overflow: ellipsis; white-space: nowrap; }
+.pod-structure-confirm > p { margin: 0; color: var(--pod-text-muted); font-size: .7rem; line-height: 1.5; }
+.pod-structure-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.pod-structure-fields label { display: grid; gap: 4px; color: var(--pod-text-secondary); font-size: .68rem; font-weight: 800; }
+.pod-structure-fields input { width: 100%; min-width: 0; padding: 7px 10px; border: 1px solid var(--pod-border); border-radius: 999px; outline: 0; color: var(--pod-text); background: var(--pod-surface); font-size: .74rem; }
+.pod-structure-fields input:focus { border-color: var(--pod-primary); box-shadow: 0 0 0 3px rgba(var(--pod-primary-rgb), .13); }
+.pod-structure-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.pod-structure-actions > button { padding: 8px 12px; border-radius: 999px; font-size: .72rem; }
 .pod-template-cards { display: grid; gap: 6px; }
 .pod-template-card { position: relative; display: grid; grid-template-columns: 48px minmax(0, 1fr); align-items: center; gap: 8px; min-width: 0; padding: 7px; border: 1px solid transparent; border-radius: 9px; color: var(--pod-text-secondary); background: transparent; text-align: left; }
 .pod-template-card:hover { background: var(--pod-surface-soft); }
@@ -401,7 +457,11 @@
 .pod-current-template-summary > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
 .pod-current-template-summary > header span { color: var(--pod-primary); font-size: .58rem; font-weight: 900; letter-spacing: .1em; }
 .pod-current-template-summary > header h2 { margin: 2px 0 0; font-size: .9rem; }
-.pod-current-template-summary > header button { padding: 6px 9px; border: 1px solid var(--pod-border); border-radius: 8px; color: var(--pod-primary); background: var(--pod-surface-soft); font-size: .62rem; font-weight: 800; }
+.pod-current-template-summary > header button { flex: 0 0 auto; padding: 6px 9px; border: 1px solid var(--pod-border); border-radius: 8px; color: var(--pod-primary); background: var(--pod-surface-soft); font-size: .62rem; font-weight: 800; }
+/* AI 生成结果需人工复核的红字提示：放在标题与「更换模板」之间，空间不足时换行右对齐；
+   标题块与按钮不参与收缩，避免长提示把左右两侧组件挤变形。 */
+.pod-current-template-summary > header > div { flex: 0 0 auto; }
+.pod-current-template-review-note { flex: 1 1 auto; min-width: 0; margin: 0; color: #cf3f39; font-size: .6rem; font-weight: 700; line-height: 1.45; text-align: right; }
 .pod-current-template-body { display: grid; grid-template-columns: 138px minmax(0, 1fr); align-items: stretch; gap: 20px; }
 /* 模板图要贴边铺满整框：本元素是 <button>，浏览器 UA 默认内边距（Chromium/WebKit 为 1px 6px）
    会把 width/height:100% 的图片顶进内容盒，露出框底形成白边，因此显式 padding:0；
@@ -1142,76 +1202,78 @@
 }
 
 /* ============================================================
-   全定制左侧栏（创意描述 / 上架信息 / 生成数量）字号上调一档
-   原字号集中在 .55–.78rem，长时间填写时偏小；这里只作用于
-   .pod-brief-sidebar，右侧结果区、抽屉与其它复用组件不受影响。
+   左侧「数据预填栏」统一字号（全定制 / 半定制 / 爆款复刻 / 爆款裂变）
+   原字号集中在 .55–.78rem，长时间填写时偏小；这里统一上调一档。
+   作用域只到左侧设置栏（.pod-prefill-panel），右侧结果区、抽屉与
+   其它复用组件不受影响。各模块自己的独有类在各自 CSS 里单独上调。
    ============================================================ */
-.pod-brief-sidebar .pod-section-title > span { font-size: .68rem; }
-.pod-brief-sidebar .pod-section-title h2 { font-size: 1rem; }
+.pod-prefill-panel .pod-section-title > span { font-size: .68rem; }
+.pod-prefill-panel .pod-section-title h2 { font-size: 1rem; }
 
 /* 智能填写 */
-.pod-brief-sidebar .pod-brief-input-toggle b { font-size: .79rem; }
-.pod-brief-sidebar .pod-brief-input-toggle small { font-size: .68rem; }
-.pod-brief-sidebar .pod-brief-input-toggle > i { font-size: .74rem; }
-.pod-brief-sidebar .pod-brief-input textarea { font-size: .79rem; }
-.pod-brief-sidebar .pod-brief-input-meta > span,
-.pod-brief-sidebar .pod-brief-input-meta small { font-size: .67rem; }
-.pod-brief-sidebar .pod-brief-input-generate { font-size: .79rem; }
-.pod-brief-sidebar .pod-brief-input-error { font-size: .7rem; }
-.pod-brief-sidebar .pod-brief-input-error button { font-size: .71rem; }
-.pod-brief-sidebar .pod-brief-input-notice { font-size: .7rem; }
-.pod-brief-sidebar .pod-brief-history > b { font-size: .67rem; }
-.pod-brief-sidebar .pod-brief-history li span { font-size: .71rem; }
-.pod-brief-sidebar .pod-brief-history li small { font-size: .65rem; }
+.pod-prefill-panel .pod-brief-input-toggle b { font-size: .79rem; }
+.pod-prefill-panel .pod-brief-input-toggle small { font-size: .68rem; }
+.pod-prefill-panel .pod-brief-input-toggle > i { font-size: .74rem; }
+.pod-prefill-panel .pod-brief-input textarea { font-size: .79rem; }
+.pod-prefill-panel .pod-brief-input-meta > span,
+.pod-prefill-panel .pod-brief-input-meta small { font-size: .67rem; }
+.pod-prefill-panel .pod-brief-input-generate { font-size: .79rem; }
+.pod-prefill-panel .pod-brief-input-error { font-size: .7rem; }
+.pod-prefill-panel .pod-brief-input-error button { font-size: .71rem; }
+.pod-prefill-panel .pod-brief-input-notice { font-size: .7rem; }
+.pod-prefill-panel .pod-brief-history > b { font-size: .67rem; }
+.pod-prefill-panel .pod-brief-history li span { font-size: .71rem; }
+.pod-prefill-panel .pod-brief-history li small { font-size: .65rem; }
 
 /* 业务字段（创意描述表单） */
-.pod-brief-sidebar .pod-business-editor > .pod-business-fields > label > span { font-size: .78rem; }
-.pod-brief-sidebar .pod-business-editor > .pod-business-fields > label > :is(input, textarea) { font-size: .76rem; }
-.pod-brief-sidebar .pod-field-counter { font-size: .64rem; }
-.pod-brief-sidebar .pod-field-info { font-size: .75rem; }
-.pod-brief-sidebar .pod-field-info::after { font-size: .68rem; }
+.pod-prefill-panel .pod-business-editor > .pod-business-fields > label > span { font-size: .78rem; }
+.pod-prefill-panel .pod-business-editor > .pod-business-fields > label > :is(input, textarea) { font-size: .76rem; }
+.pod-prefill-panel .pod-field-counter { font-size: .64rem; }
+.pod-prefill-panel .pod-field-info { font-size: .75rem; }
+.pod-prefill-panel .pod-field-info::after { font-size: .68rem; }
 
 /* 高级：本批次创意编辑 */
-.pod-brief-sidebar .pod-advanced-prompt > button b { font-size: .79rem; }
-.pod-brief-sidebar .pod-advanced-prompt > button small { font-size: .68rem; }
-.pod-brief-sidebar .pod-advanced-prompt > button > i { font-size: .72rem; }
-.pod-brief-sidebar .pod-advanced-prompt-editor span { font-size: .67rem; }
-.pod-brief-sidebar .pod-advanced-prompt-editor button { font-size: .68rem; }
+.pod-prefill-panel .pod-advanced-prompt > button b { font-size: .79rem; }
+.pod-prefill-panel .pod-advanced-prompt > button small { font-size: .68rem; }
+.pod-prefill-panel .pod-advanced-prompt > button > i { font-size: .72rem; }
+.pod-prefill-panel .pod-advanced-prompt-editor span { font-size: .67rem; }
+.pod-prefill-panel .pod-advanced-prompt-editor button { font-size: .68rem; }
 
 /* 构图定制入口 */
-.pod-brief-sidebar .pod-composition-entry-button { font-size: .88rem; }
-.pod-brief-sidebar .pod-composition-entry-summary { font-size: .77rem; }
+.pod-prefill-panel .pod-composition-entry-button { font-size: .88rem; }
+.pod-prefill-panel .pod-composition-entry-summary { font-size: .77rem; }
+.pod-prefill-panel .pod-structure-toggle { font-size: .88rem; }
 
 /* 店小秘上架信息 */
-.pod-brief-sidebar .pod-listing-fields-heading > span { font-size: .65rem; }
-.pod-brief-sidebar .pod-listing-fields-heading h3 { font-size: .88rem; }
-.pod-brief-sidebar .pod-listing-fields-heading small { font-size: .66rem; }
-.pod-brief-sidebar .pod-title-mode > span { font-size: .76rem; }
-.pod-brief-sidebar .pod-title-mode button b { font-size: .72rem; }
-.pod-brief-sidebar .pod-title-mode button small { font-size: .6rem; }
-.pod-brief-sidebar .pod-listing-fields .pod-business-fields label > span { font-size: .76rem; }
-.pod-brief-sidebar .pod-listing-fields .pod-business-fields input,
-.pod-brief-sidebar .pod-listing-fields .pod-business-fields textarea { font-size: .76rem; }
+.pod-prefill-panel .pod-listing-fields-heading > span { font-size: .65rem; }
+.pod-prefill-panel .pod-listing-fields-heading h3 { font-size: .88rem; }
+.pod-prefill-panel .pod-listing-fields-heading small { font-size: .66rem; }
+.pod-prefill-panel .pod-title-mode > span { font-size: .76rem; }
+.pod-prefill-panel .pod-title-mode button b { font-size: .72rem; }
+.pod-prefill-panel .pod-title-mode button small { font-size: .6rem; }
+.pod-prefill-panel .pod-listing-fields .pod-business-fields label > span { font-size: .76rem; }
+.pod-prefill-panel .pod-listing-fields .pod-business-fields input,
+.pod-prefill-panel .pod-listing-fields .pod-business-fields textarea { font-size: .76rem; }
 
 /* SKU 预设 */
-.pod-brief-sidebar .pod-sku-editor-heading > span { font-size: .71rem; }
-.pod-brief-sidebar .pod-sku-editor-heading > span small { font-size: .6rem; }
-.pod-brief-sidebar .pod-sku-editor-heading button { font-size: .67rem; }
-.pod-brief-sidebar .pod-sku-input-row label > span { font-size: .57rem; }
-.pod-brief-sidebar .pod-sku-inputs input { font-size: .65rem; }
+.pod-prefill-panel .pod-sku-editor-heading > span { font-size: .71rem; }
+.pod-prefill-panel .pod-sku-editor-heading > span small { font-size: .6rem; }
+.pod-prefill-panel .pod-sku-editor-heading button { font-size: .67rem; }
+.pod-prefill-panel .pod-sku-input-row label > span { font-size: .57rem; }
+.pod-prefill-panel .pod-sku-inputs input { font-size: .65rem; }
 
 /* 批量添加尺寸 */
-.pod-brief-sidebar .pod-spec-card-entry-button { font-size: .88rem; }
-.pod-brief-sidebar .pod-spec-card-entry-summary { font-size: .77rem; }
+.pod-prefill-panel .pod-spec-card-entry-button { font-size: .88rem; }
+.pod-prefill-panel .pod-spec-card-entry-summary { font-size: .77rem; }
 
 /* 生成数量 / 底部操作 */
-.pod-brief-sidebar .pod-volume-inline b { font-size: .84rem; }
-.pod-brief-sidebar .pod-count-options button b { font-size: 1.12rem; }
-.pod-brief-sidebar .pod-count-options button span { font-size: .68rem; }
-.pod-brief-sidebar .pod-custom-count span { font-size: .72rem; }
-.pod-brief-sidebar .pod-custom-count small { font-size: .65rem; }
-.pod-brief-sidebar .pod-custom-count input { font-size: .76rem; }
-.pod-brief-sidebar .pod-save-system-template-copy b { font-size: .76rem; }
-.pod-brief-sidebar .pod-save-system-template-copy small { font-size: .63rem; }
-.pod-brief-sidebar .pod-start-button { font-size: .88rem; }
-.pod-brief-sidebar .pod-direct-note { font-size: .68rem; }
+.pod-prefill-panel .pod-volume-inline b { font-size: .84rem; }
+.pod-prefill-panel .pod-count-options button b { font-size: 1.12rem; }
+.pod-prefill-panel .pod-count-options button span { font-size: .68rem; }
+.pod-prefill-panel .pod-custom-count span { font-size: .72rem; }
+.pod-prefill-panel .pod-custom-count small { font-size: .65rem; }
+.pod-prefill-panel .pod-custom-count input { font-size: .76rem; }
+.pod-prefill-panel .pod-save-system-template-copy b { font-size: .76rem; }
+.pod-prefill-panel .pod-save-system-template-copy small { font-size: .63rem; }
+.pod-prefill-panel .pod-start-button { font-size: .88rem; }
+.pod-prefill-panel .pod-direct-note { font-size: .68rem; }

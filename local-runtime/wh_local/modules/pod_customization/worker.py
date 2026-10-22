@@ -7,6 +7,7 @@ import os
 import inspect
 import threading
 import time
+from collections import deque
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, as_completed, wait
 from dataclasses import dataclass, field
 from functools import wraps
@@ -17,7 +18,26 @@ from typing import Any, Callable
 from ...runtime_logs import business_logger
 from ...session import Actor
 from .assets import PodAssetStore
-from .ai_runtime import pod_image_grant_provider
+from .ai_runtime import pod_image_grant_provider, resolve_pod_image_model
+from .column_generation import (
+    COLUMN_ROLES,
+    DERIVED_ROLES,
+    GROUP_STATUS_COMPLETED,
+    GROUP_STATUS_FAILED,
+    GROUP_STATUS_GENERATING_DERIVED,
+    GROUP_STATUS_GENERATING_PRIMARY,
+    GROUP_STATUS_PARTIAL_FAILURE,
+    PRIMARY_ROLE,
+    ROLE_ATTEMPTS,
+    ROLE_LABELS,
+    SHEET_STATUS_COMPLETED,
+    SHEET_STATUS_FAILED,
+    SHEET_STATUS_QUEUED,
+    SHEET_ASSET_KIND,
+    column_image_call_id,
+    group_roles_to_generate,
+)
+from .column_prompts import build_column_round_prompt, build_column_style_recipes
 from .errors import PodExecutionExpired, image_provider_outcome_for_exception, safe_error_message
 from .billing_contract import (
     REPLICA_PANEL_ATTEMPTS,
@@ -28,9 +48,22 @@ from .billing_contract import (
     PodCallPlan,
     PodExecutionGrant,
 )
-from .images import split_grid_2x2
-from .prompts import LISTING_IMAGE_ROLES, build_semi_pattern_prompt, build_style_listing_prompt
-from .contracts import BusinessFields, SEMI_PATTERN_ROLES
+from .images import PatternQualityGate, split_grid_2x2
+from .image_providers.catalog import model_supports_multi_view
+from .prompts import (
+    LISTING_IMAGE_ROLES,
+    build_semi_pattern_prompt,
+    build_style_listing_prompt,
+    is_flat_product,
+)
+from .template_views import load_generation_references
+from .contracts import (
+    ArtDirection,
+    BusinessFields,
+    COMPOSITION_PANEL_KEYS,
+    GENERATION_LAYOUT_COLUMN,
+    SEMI_PATTERN_ROLES,
+)
 from .replica_context import (
     ReplicaPlanMissingError,
     ReplicaStyleSnapshotMissingError,
@@ -253,6 +286,19 @@ REGENERATE_STYLE_POLICY = _StyleAttemptPolicy(
 )
 
 
+@dataclass
+class _ColumnTask:
+    """一个「组 × 角色」的待执行/在飞任务（含当前尝试次数）。"""
+
+    group: dict[str, Any]
+    role: str
+    attempt: int
+    # 本次尝试对应的 generation_calls 行（pattern_candidates 有 FK，落库时必须带上）。
+    call: dict[str, Any] | None = None
+    # 提交到 provider 的时刻（monotonic），仅用于业务日志里的轮次耗时。
+    started_at: float | None = None
+
+
 class PodBatchWorker:
     """Coordinates POD jobs without borrowing product-processing workers or gates."""
 
@@ -471,6 +517,10 @@ class PodBatchWorker:
             self.repository.mark_batch_paused(batch_id, str(exc))
         except PodBatchCancelled as exc:
             cancelled = True
+            try:
+                self.repository.finalize_column_groups(batch_id, "POD 批次已取消")
+            except Exception:  # noqa: BLE001 - 列式收尾失败不阻断取消
+                pass
             self.repository.fail_remaining_items(batch_id, "POD 批次已取消")
             self.repository.fail_pending_titles(batch_id, "POD 批次已取消")
             self.repository.mark_batch_cancelled(batch_id, str(exc))
@@ -591,14 +641,35 @@ class PodBatchWorker:
                 template_content = self.assets.read(template_asset["relative_path"])
                 template_content_type = template_asset["content_type"]
             if batch.get("style_grid"):
-                self._process_style_grids_streaming(
-                    batch, template_content, template_content_type, billing_run,
-                    execution=execution,
+                column_layout = (
+                    str(batch.get("generation_layout") or "") == GENERATION_LAYOUT_COLUMN
                 )
+                if column_layout:
+                    self._process_style_column_streaming(
+                        batch,
+                        template_content,
+                        template_content_type,
+                        billing_run,
+                        execution=execution,
+                    )
+                else:
+                    self._process_style_grids_streaming(
+                        batch, template_content, template_content_type, billing_run,
+                        execution=execution,
+                    )
                 titles_enabled = self._title_enabled(batch)
-                if titles_enabled:
+                if titles_enabled and not column_layout:
+                    # 列式生成的标题在每张主图轮发布后随机提交，不走这条补漏通道：
+                    # 它的「该款是否还有图片调用」判断基于 legacy 的 :style: 调用形状。
                     self._process_pending_titles_from_existing_images(
                         batch, billing_run, execution_epoch=execution.epoch
+                    )
+                if column_layout:
+                    # 中断/取消失败的 sheet 与组必须收敛到失败态，否则 UI 一直显示生成中。
+                    self.repository.finalize_column_groups(
+                        batch_id,
+                        "本款图片生成未返回完整结果",
+                        execution_epoch=execution.epoch,
                     )
                 self.repository.fail_remaining_items(
                     batch_id, "本款图片生成未返回完整结果", execution_epoch=execution.epoch
@@ -637,6 +708,15 @@ class PodBatchWorker:
         except (PodBatchCancelled, PodBatchPaused):
             raise
         except Exception as exc:
+            if str(batch.get("generation_layout") or "") == GENERATION_LAYOUT_COLUMN:
+                try:
+                    self.repository.finalize_column_groups(
+                        batch_id, str(exc), execution_epoch=execution.epoch
+                    )
+                except PodExecutionExpired:
+                    raise
+                except Exception:  # noqa: BLE001 - 收尾失败不覆盖原始异常
+                    pass
             self.repository.fail_remaining_items(batch_id, str(exc), execution_epoch=execution.epoch)
             # 标题行必须无条件收敛（半定制没有标题行，此处为 no-op）。
             self.repository.fail_unready_titles(batch_id, str(exc), execution_epoch=execution.epoch)
@@ -1332,6 +1412,28 @@ class PodBatchWorker:
             # 配色 60-30-10 以 batch_id 为种子确定性洗牌（与元素分配同源，批内可复现）。
             seed=str(batch.get("batch_id") or ""),
         )
+        # 困难件结构锚定：只有豆包（第一版唯一验证过的多图端点）且模板确实带
+        # 结构视图时才下发多参考图；速创命中时退回单主图，行为与现状一致。
+        # 参考图按批次解析一次并缓存在 batch 上：逐款重复读库/读盘会拖慢生图窗口，
+        # 把并发压成串行（实测并发用例会因此退化）。
+        references = batch.get("_structure_references")
+        if references is None:
+            references = (
+                load_generation_references(
+                    repository=self.repository,
+                    assets=self.assets,
+                    template_id=batch["template_id"],
+                    workspace_id=batch["workspace_id"],
+                    owner_user_id=batch["owner_user_id"],
+                    primary_content=template_content,
+                    primary_content_type=template_content_type,
+                )
+                if model_supports_multi_view(resolve_pod_image_model())
+                else ()
+            )
+            batch["_structure_references"] = references
+        if len(references) > 1:
+            return prompt, {"reference_images": references}
         return prompt, {
             "template_id": batch["template_id"],
             "template_image": template_content,
@@ -1439,6 +1541,1003 @@ class PodBatchWorker:
                         reason,
                         execution_epoch=execution.epoch if execution is not None else None,
                     )
+
+    # ------------------------------------------------------------------
+    # 列式生成（两级批次）：4 款一组，组内 4 轮调用
+    # ------------------------------------------------------------------
+
+    def _process_style_column_streaming(
+        self,
+        batch: dict[str, Any],
+        template_content: bytes,
+        template_content_type: str,
+        billing_run: PodBillingRun,
+        *,
+        execution: BatchExecutionContext | None = None,
+    ) -> None:
+        """按「组 × 角色」调度列式生成。
+
+        调度规则（方案 §6.1 / §6.4）：
+        - 在飞 provider 调用上限仍是 ``image_workers``；
+        - 派生轮优先于尚未放行的新组主图轮；
+        - 组内派生轮按 ``detail_a → detail_b → hero`` 轮询；
+        - 主图轮必须 4 格全部有效且 4 个公网 URL 已发布，才放行派生轮（barrier）。
+        """
+        batch_id = batch["batch_id"]
+        batch_started = time.monotonic()
+        retry_count = 0
+
+        def log_column(message: str, *args: Any, warning: bool = False) -> None:
+            """列式链路的结构化业务日志；本地日志绝不影响业务。"""
+            try:
+                logger = business_logger("pod_processing")
+                (logger.warning if warning else logger.info)(message, *args)
+            except Exception:  # noqa: BLE001
+                pass
+
+        epoch = execution.epoch if execution is not None else (billing_run.execution_epoch or None)
+        groups = list(batch.get("style_groups") or [])
+        if not groups:
+            raise RuntimeError("列式批次缺少二级批次定义，无法执行")
+        # items 是按「款 × 变体」落行的（100 款 × 4 图 = 400 行），日志里要报款数。
+        style_count = len({
+            int(item["style_index"])
+            for item in batch.get("items") or []
+            if int(item.get("style_index") or 0) > 0
+        })
+        log_column(
+            "列式批次开始 | batch_id=%s | 款数=%d | 组数=%d | 生图并发=%d | 提示词版本=%s",
+            batch_id,
+            style_count,
+            len(groups),
+            self._image_worker_count(),
+            str(batch.get("prompt_version") or "-"),
+        )
+        fields = BusinessFields.model_validate(batch["business_fields"])
+        flat_product = is_flat_product(fields, batch["creative_prompt"])
+        composition = self._column_composition_panels(batch)
+        art_direction = self._column_art_direction(batch)
+        recipes_by_group = {
+            group["group_id"]: build_column_style_recipes(
+                fields,
+                [
+                    {
+                        "style_index": style_index,
+                        "elements": self._style_elements(batch, style_index),
+                    }
+                    for style_index in group["style_indices"]
+                ],
+                seed=batch_id,
+            )
+            for group in groups
+        }
+        sheet_state: dict[str, dict[str, str]] = {
+            group["group_id"]: {} for group in groups
+        }
+        # 标题链路要求 style_task_id 非空：用该组主图 sheet 的稳定 id 作图片任务身份，
+        # 续跑/重启后仍能对上，不需要再查 generation_calls。
+        sheet_ids: dict[str, dict[str, str]] = {}
+        for sheet in batch.get("group_sheets") or []:
+            sheet_state.setdefault(str(sheet["group_id"]), {})[
+                str(sheet["role"])
+            ] = str(sheet["status"])
+            sheet_ids.setdefault(str(sheet["group_id"]), {})[
+                str(sheet["role"])
+            ] = str(sheet["sheet_id"])
+        items_map = self._column_items_map(batch)
+        title_status = {
+            int(title["style_index"]): str(title.get("status") or "")
+            for title in batch.get("style_titles") or []
+        }
+        primary_panels: dict[str, dict[int, Any]] = {}
+        # 组首次提交任务的时刻，仅用于「组完成/组失败」日志里的耗时（续跑组可能没有）。
+        group_started: dict[str, float] = {}
+
+        pending_primary: deque[_ColumnTask] = deque()
+        ready_derived: deque[_ColumnTask] = deque()
+        for group in groups:
+            group_id = str(group["group_id"])
+            states = sheet_state[group_id]
+            roles = group_roles_to_generate(states)
+            if not roles:
+                self._refresh_column_group_status(group_id, states, epoch=epoch)
+                if states.get(PRIMARY_ROLE) == SHEET_STATUS_COMPLETED:
+                    primary_panels[group_id] = self._column_stored_lifestyle_panels(
+                        batch, group, items_map
+                    )
+                continue
+            if PRIMARY_ROLE in roles:
+                pending_primary.append(_ColumnTask(group, PRIMARY_ROLE, 1))
+                continue
+            self.repository.set_group_status(
+                group_id,
+                GROUP_STATUS_GENERATING_DERIVED,
+                current_round=PRIMARY_ROLE,
+                execution_epoch=epoch,
+            )
+            primary_panels[group_id] = self._column_stored_lifestyle_panels(
+                batch, group, items_map
+            )
+            ready_derived.extend(
+                _ColumnTask(group, role, 1) for role in roles if role in DERIVED_ROLES
+            )
+
+        inflight: dict[Future[Any], _ColumnTask] = {}
+        postprocess: dict[Future[Any], _ColumnTask] = {}
+        title_futures: list[Future[Any]] = []
+        max_in_flight = self._image_worker_count()
+        deadline = time.monotonic() + POD_PROGRESS_TIMEOUT_SECONDS
+        pause_requested = False
+
+        def record_primary_no_return(task: _ColumnTask) -> None:
+            call_id = column_image_call_id(
+                batch_id, int(task.group["group_index"]), task.role, task.attempt
+            )
+            try:
+                if not billing_run.has_outcome(call_id):
+                    billing_run.record(call_id, "pod.image", "no_return")
+            except Exception:  # noqa: BLE001 - 记账失败不覆盖真实失败原因
+                pass
+
+        def log_group_outcome(group: dict[str, Any], states: dict[str, str]) -> None:
+            """组进入终态时记一条；只在 4 个轮次全部收敛后触发，不会重复刷。"""
+            group_id = str(group["group_id"])
+            if all(states.get(role) == SHEET_STATUS_COMPLETED for role in COLUMN_ROLES):
+                started = group_started.get(group_id)
+                elapsed = time.monotonic() - started if started else 0.0
+                log_column(
+                    "列式组完成 | batch_id=%s | 组=%d | 4 轮全部完成 | 款式=%s | 耗时=%.1fs",
+                    batch_id, int(group["group_index"]),
+                    ",".join(str(index) for index in group["style_indices"]), elapsed,
+                )
+                return
+            failed_roles = [
+                ROLE_LABELS.get(role, role)
+                for role in COLUMN_ROLES
+                if states.get(role) == SHEET_STATUS_FAILED
+            ]
+            if not failed_roles:
+                return
+            if not all(
+                states.get(role) in {SHEET_STATUS_COMPLETED, SHEET_STATUS_FAILED}
+                for role in COLUMN_ROLES
+            ):
+                return
+            log_column(
+                "列式组结束 | batch_id=%s | 组=%d | 款式=%s | 失败轮=%s",
+                batch_id, int(group["group_index"]),
+                ",".join(str(index) for index in group["style_indices"]),
+                ",".join(failed_roles), warning=True,
+            )
+
+        def handle_failure(task: _ColumnTask, exc: BaseException) -> None:
+            nonlocal deadline, retry_count
+            message = str(exc).strip() or exc.__class__.__name__
+            group = task.group
+            group_id = str(group["group_id"])
+            elapsed = time.monotonic() - task.started_at if task.started_at else 0.0
+            role_label = ROLE_LABELS.get(task.role, task.role)
+            if task.role == PRIMARY_ROLE:
+                record_primary_no_return(task)
+            if task.attempt < ROLE_ATTEMPTS:
+                retry_count += 1
+                log_column(
+                    "列式轮次重试 | batch_id=%s | 组=%d | 轮=%s | 尝试=%d | 耗时=%.1fs | 原因=%s",
+                    batch_id, int(group["group_index"]), role_label, task.attempt,
+                    elapsed, message[:160], warning=True,
+                )
+                # 同轮第二次尝试：退回 queued 并优先重排。
+                self.repository.end_group_sheet(
+                    group_id,
+                    task.role,
+                    status=SHEET_STATUS_QUEUED,
+                    attempt=task.attempt,
+                    error_message=message,
+                    execution_epoch=epoch,
+                )
+                retry = _ColumnTask(group, task.role, task.attempt + 1)
+                if task.role == PRIMARY_ROLE:
+                    pending_primary.appendleft(retry)
+                else:
+                    ready_derived.appendleft(retry)
+                deadline = time.monotonic() + POD_PROGRESS_TIMEOUT_SECONDS
+                return
+            self.repository.end_group_sheet(
+                group_id,
+                task.role,
+                status=SHEET_STATUS_FAILED,
+                attempt=task.attempt,
+                error_message=message,
+                execution_epoch=epoch,
+            )
+            sheet_state[group_id][task.role] = SHEET_STATUS_FAILED
+            log_column(
+                "列式轮次失败 | batch_id=%s | 组=%d | 轮=%s | 尝试=%d | 耗时=%.1fs | 原因=%s",
+                batch_id, int(group["group_index"]), role_label, task.attempt,
+                elapsed, message[:160], warning=True,
+            )
+            if task.role == PRIMARY_ROLE:
+                # 第 1 轮全有或全无：4 款整组失败，派生轮不启动。
+                for style_index in group["style_indices"]:
+                    self.repository.fail_style_grid(
+                        batch,
+                        int(style_index),
+                        f"第 1 轮主图生成失败：{message}",
+                        execution_epoch=epoch,
+                    )
+                    if self._title_enabled(batch):
+                        try:
+                            self.repository.fail_style_title(
+                                batch_id,
+                                int(style_index),
+                                "主图未生成，暂不能生成标题",
+                                execution_epoch=epoch,
+                            )
+                        except PodExecutionExpired:
+                            raise
+                        except Exception:  # noqa: BLE001
+                            pass
+                for role in DERIVED_ROLES:
+                    sheet_state[group_id][role] = SHEET_STATUS_FAILED
+                    try:
+                        self.repository.end_group_sheet(
+                            group_id,
+                            role,
+                            status=SHEET_STATUS_FAILED,
+                            attempt=0,
+                            error_message="主图轮失败，派生轮未启动",
+                            execution_epoch=epoch,
+                        )
+                    except PodExecutionExpired:
+                        raise
+                    except Exception:  # noqa: BLE001
+                        pass
+            else:
+                variant_index = COLUMN_ROLES.index(task.role) + 1
+                self.repository.fail_style_variant(
+                    batch,
+                    group["style_indices"],
+                    variant_index,
+                    f"{ROLE_LABELS.get(task.role, task.role)}生成失败：{message}",
+                    execution_epoch=epoch,
+                )
+            self._refresh_column_group_status(group_id, sheet_state[group_id], epoch=epoch)
+            log_group_outcome(group, sheet_state[group_id])
+            deadline = time.monotonic() + POD_PROGRESS_TIMEOUT_SECONDS
+
+        def handle_success(task: _ColumnTask, payload: dict[str, Any]) -> None:
+            nonlocal deadline
+            group = task.group
+            group_id = str(group["group_id"])
+            sheet_state[group_id][task.role] = SHEET_STATUS_COMPLETED
+            self.repository.end_group_sheet(
+                group_id,
+                task.role,
+                status=SHEET_STATUS_COMPLETED,
+                attempt=task.attempt,
+                grid_asset_id=str(payload.get("grid_asset_id") or ""),
+                execution_epoch=epoch,
+            )
+            self.repository.touch_batch_progress(batch_id, execution_epoch=epoch)
+            elapsed = time.monotonic() - task.started_at if task.started_at else 0.0
+            log_column(
+                "列式轮次完成 | batch_id=%s | 组=%d | 轮=%s | 尝试=%d | 耗时=%.1fs | 发布=%d/4",
+                batch_id, int(group["group_index"]), ROLE_LABELS.get(task.role, task.role),
+                task.attempt, elapsed, len(payload.get("public_urls") or {}),
+            )
+            if task.role == PRIMARY_ROLE:
+                call_id = column_image_call_id(
+                    batch_id, int(group["group_index"]), PRIMARY_ROLE, task.attempt
+                )
+                if not billing_run.has_outcome(call_id):
+                    billing_run.record(call_id, "pod.image", "success")
+                primary_panels[group_id] = dict(payload.get("panels") or {})
+                # 派生轮的锚点直接读 batch["items"]：主图刚落库，必须把内存快照同步为
+                # completed + public_url，否则 barrier 会误判「锚点尚未发布」。
+                published = payload.get("public_urls") or {}
+                published_assets = payload.get("asset_ids") or {}
+                for item in batch.get("items") or []:
+                    style = int(item.get("style_index") or 0)
+                    if int(item.get("variant_index") or 0) == 1 and style in published:
+                        item["status"] = "completed"
+                        item["public_url"] = published[style]
+                        item["pattern_asset_id"] = published_assets.get(style, "")
+                self.repository.set_group_status(
+                    group_id,
+                    GROUP_STATUS_GENERATING_DERIVED,
+                    current_round=PRIMARY_ROLE,
+                    execution_epoch=epoch,
+                )
+                self._ensure_column_titles(
+                    batch,
+                    group,
+                    primary_panels[group_id],
+                    title_status,
+                    billing_run,
+                    epoch,
+                    title_futures,
+                    task_id=sheet_ids.get(group_id, {}).get(PRIMARY_ROLE, group_id),
+                )
+                for role in DERIVED_ROLES:
+                    if sheet_state[group_id].get(role, SHEET_STATUS_QUEUED) == SHEET_STATUS_QUEUED:
+                        ready_derived.append(_ColumnTask(group, role, 1))
+            else:
+                self._refresh_column_group_status(
+                    group_id, sheet_state[group_id], epoch=epoch
+                )
+                log_group_outcome(group, sheet_state[group_id])
+            deadline = time.monotonic() + POD_PROGRESS_TIMEOUT_SECONDS
+
+        # 续跑：主图已完成、只剩标题的组，先把标题补上。
+        for group in groups:
+            group_id = str(group["group_id"])
+            if (
+                sheet_state[group_id].get(PRIMARY_ROLE) == SHEET_STATUS_COMPLETED
+                and title_status
+            ):
+                panels = primary_panels.get(group_id) or self._column_stored_lifestyle_panels(
+                    batch, group, items_map
+                )
+                primary_panels[group_id] = panels
+                self._ensure_column_titles(
+                    batch,
+                    group,
+                    panels,
+                    title_status,
+                    billing_run,
+                    epoch,
+                    title_futures,
+                    task_id=sheet_ids.get(group_id, {}).get(PRIMARY_ROLE, group_id),
+                )
+
+        while True:
+            while (
+                not pause_requested
+                and len(inflight) < max_in_flight
+                and (ready_derived or pending_primary)
+            ):
+                if self._closing.is_set():
+                    raise PodBillingAuthorizationRequired(
+                        "POD worker stopped before the remaining provider calls started"
+                    )
+                status = self.repository.get_batch_status(batch_id)
+                if status == "cancelling":
+                    raise PodBatchCancelled("POD 批次已取消")
+                if status == "pausing":
+                    pause_requested = True
+                    break
+                task = ready_derived.popleft() if ready_derived else pending_primary.popleft()
+                try:
+                    future = self._submit_column_sheet(
+                        batch,
+                        task,
+                        fields=fields,
+                        composition=composition,
+                        art_direction=art_direction,
+                        recipes=recipes_by_group[str(task.group["group_id"])],
+                        flat_product=flat_product,
+                        template_content=template_content,
+                        template_content_type=template_content_type,
+                        billing_run=billing_run,
+                        epoch=epoch,
+                    )
+                except (
+                    PodBillingAuthorizationRequired,
+                    PodExecutionExpired,
+                    PodBatchPaused,
+                    PodBatchCancelled,
+                ):
+                    raise
+                except Exception as exc:  # noqa: BLE001 - 锚点缺失等本地失败按角色重试
+                    handle_failure(task, exc)
+                    continue
+                task.started_at = time.monotonic()
+                group_started.setdefault(str(task.group["group_id"]), task.started_at)
+                inflight[future] = task
+                log_column(
+                    "列式轮次提交 | batch_id=%s | 组=%d | 轮=%s | 尝试=%d | 在飞=%d/%d",
+                    batch_id, int(task.group["group_index"]),
+                    ROLE_LABELS.get(task.role, task.role), task.attempt,
+                    len(inflight), max_in_flight,
+                )
+
+            if not inflight and not postprocess:
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError(
+                    f"column coordinator timed out after {POD_PROGRESS_TIMEOUT_SECONDS}s of inactivity"
+                )
+            done, _ = wait(
+                tuple(inflight) + tuple(postprocess),
+                timeout=min(remaining, POD_WAIT_POLL_SECONDS),
+                return_when=FIRST_COMPLETED,
+            )
+            if not done:
+                continue
+            for future in done:
+                if future in inflight:
+                    task = inflight.pop(future)
+                    try:
+                        media, grid_asset_id = future.result()
+                    except (
+                        PodBillingAuthorizationRequired,
+                        PodExecutionExpired,
+                        PodBatchPaused,
+                        PodBatchCancelled,
+                    ):
+                        for pending in (*inflight, *postprocess):
+                            pending.cancel()
+                        raise
+                    except Exception as exc:  # noqa: BLE001 - 按角色失败隔离
+                        handle_failure(task, exc)
+                        continue
+                    postprocess[
+                        self._style_postprocess_pool.submit(
+                            self._column_persist_sheet,
+                            batch,
+                            task,
+                            media,
+                            grid_asset_id,
+                            epoch,
+                        )
+                    ] = task
+                else:
+                    task = postprocess.pop(future)
+                    try:
+                        payload = future.result()
+                    except (PodExecutionExpired,):
+                        raise
+                    except Exception as exc:  # noqa: BLE001 - 校验/发布失败按角色重试
+                        handle_failure(task, exc)
+                        continue
+                    handle_success(task, payload)
+            status = self.repository.get_batch_status(batch_id)
+            if status == "cancelling":
+                raise PodBatchCancelled("POD 批次已取消")
+            if status == "pausing":
+                pause_requested = True
+
+        completed_groups = sum(
+            1
+            for states in sheet_state.values()
+            if all(states.get(role) == SHEET_STATUS_COMPLETED for role in COLUMN_ROLES)
+        )
+        failed_groups = sum(
+            1
+            for states in sheet_state.values()
+            if states.get(PRIMARY_ROLE) == SHEET_STATUS_FAILED
+        )
+        log_column(
+            "列式批次图片轮次收尾 | batch_id=%s | 组完成=%d/%d | 组失败=%d | 组部分失败=%d"
+            " | 重试=%d | 总耗时=%.1fs",
+            batch_id, completed_groups, len(sheet_state), failed_groups,
+            max(0, len(sheet_state) - completed_groups - failed_groups),
+            retry_count, time.monotonic() - batch_started,
+        )
+
+        # 标题 lane 是独立池：批次结束前必须等它收敛，否则结算会看到 started 的标题调用
+        # 而无法结算（冻结积分卡在 settlement_pending）。
+        for future in as_completed(title_futures):
+            future.result()
+        if pause_requested:
+            raise PodBatchPaused("POD 批次已暂停")
+
+    def _submit_column_sheet(
+        self,
+        batch: dict[str, Any],
+        task: _ColumnTask,
+        *,
+        fields: BusinessFields,
+        composition: dict[str, dict[str, str]] | None,
+        art_direction: ArtDirection | None,
+        recipes: Any,
+        flat_product: bool,
+        template_content: bytes,
+        template_content_type: str,
+        billing_run: PodBillingRun,
+        epoch: int | None,
+    ) -> Future[Any]:
+        group = task.group
+        group_id = str(group["group_id"])
+        role = task.role
+        group_index = int(group["group_index"])
+        self.repository.set_group_status(
+            group_id,
+            GROUP_STATUS_GENERATING_PRIMARY
+            if role == PRIMARY_ROLE
+            else GROUP_STATUS_GENERATING_DERIVED,
+            current_round=role,
+            execution_epoch=epoch,
+        )
+        fresh_prompt = build_column_round_prompt(
+            batch["prompt_snapshot"],
+            role=role,
+            recipes=recipes,
+            composition=composition,
+            art_direction=art_direction,
+            scene_mood=fields.scene_mood,
+            group_index=group_index,
+            attempt=task.attempt,
+            flat_product=flat_product,
+        )
+        # 提示词首次执行即冻结；续跑/重启沿用同一份快照。
+        sheet = self.repository.claim_group_sheet(
+            group_id,
+            role,
+            attempt=task.attempt,
+            prompt_snapshot=fresh_prompt,
+            execution_epoch=epoch,
+        )
+        prompt = str(sheet.get("prompt_snapshot") or fresh_prompt)
+        call_index = (group_index - 1) * 4 + COLUMN_ROLES.index(role) + 1
+        call_kind = f"column_{role}" if task.attempt == 1 else f"column_{role}_retry"
+        call = self.repository.get_or_create_generation_call(
+            batch,
+            call_kind=call_kind,
+            call_index=call_index,
+            prompt_snapshot=prompt,
+        )
+        task.call = call
+        if role == PRIMARY_ROLE:
+            primary_kwargs = self._column_primary_reference_kwargs(
+                batch, template_content, template_content_type
+            )
+            request = DirectListingGridRequest(
+                trial_id=(
+                    f"{batch['batch_id']}-group-{group_index}-{role}-attempt-{task.attempt}"
+                ),
+                prompt=prompt,
+                attempt=task.attempt,
+                anchor_fallback=task.attempt >= ROLE_ATTEMPTS,
+                template_id=str(primary_kwargs.get("template_id") or ""),
+                template_image=primary_kwargs.get("template_image") or b"",
+                template_content_type=str(primary_kwargs.get("template_content_type") or ""),
+                reference_images=tuple(primary_kwargs.get("reference_images") or ()),
+            )
+        else:
+            request = DirectListingGridRequest(
+                trial_id=(
+                    f"{batch['batch_id']}-group-{group_index}-{role}-attempt-{task.attempt}"
+                ),
+                prompt=prompt,
+                attempt=task.attempt,
+                anchor_fallback=task.attempt >= ROLE_ATTEMPTS,
+                reference_images=self._column_anchor_references(
+                    batch,
+                    group["style_indices"],
+                    fallback=task.attempt >= ROLE_ATTEMPTS,
+                ),
+            )
+        provider_call_id = column_image_call_id(
+            batch["batch_id"], group_index, role, task.attempt
+        )
+        if not billing_run.grant.provider_key(pod_image_grant_provider()):
+            raise PodBillingAuthorizationRequired(
+                "POD provider grant expired before the next image call started"
+            )
+        return self.ai_runtime.submit(
+            self._generate_column_sheet,
+            batch,
+            call,
+            request,
+            billing_run,
+            provider_call_id,
+            role == PRIMARY_ROLE,
+            epoch,
+        )
+
+    def _column_primary_reference_kwargs(
+        self,
+        batch: dict[str, Any],
+        template_content: bytes,
+        template_content_type: str,
+    ) -> dict[str, Any]:
+        """主图轮的参考图与 legacy full 一致：模板多视图（豆包）或单主图。"""
+        references = batch.get("_structure_references")
+        if references is None:
+            image_model = str(
+                (batch.get("generation_meta") or {}).get("image_model")
+                or resolve_pod_image_model()
+            )
+            references = (
+                load_generation_references(
+                    repository=self.repository,
+                    assets=self.assets,
+                    template_id=batch["template_id"],
+                    workspace_id=batch["workspace_id"],
+                    owner_user_id=batch["owner_user_id"],
+                    primary_content=template_content,
+                    primary_content_type=template_content_type,
+                )
+                if model_supports_multi_view(image_model)
+                else ()
+            )
+            batch["_structure_references"] = references
+        if len(references) > 1:
+            return {"reference_images": references}
+        return {
+            "template_id": batch["template_id"],
+            "template_image": template_content,
+            "template_content_type": template_content_type,
+        }
+
+    def _column_anchor_references(
+        self,
+        batch: dict[str, Any],
+        style_indices: Any,
+        *,
+        fallback: bool,
+    ) -> tuple[Any, ...]:
+        """派生轮锚点：第 1 轮已发布的 4 张主图，顺序 = 组内象限顺序。
+
+        优先直接透传 COS 公网地址；``fallback=True``（第二次尝试）时改用本地字节，
+        避免上游访问不到图床时整轮失败。
+        """
+        items = self._column_items_map(batch)
+        references = []
+        for style_index in style_indices:
+            style = int(style_index)
+            item = items.get((style, 1))
+            if (
+                not item
+                or str(item.get("status") or "") != "completed"
+                or not str(item.get("public_url") or "")
+            ):
+                raise RuntimeError(
+                    f"第 1 轮主图锚点尚未全部发布（style {style}），派生轮暂不能启动"
+                )
+            asset = self.repository.get_asset(
+                str(item["pattern_asset_id"]),
+                batch["workspace_id"],
+                batch["owner_user_id"],
+            )
+            content = self.assets.read(asset["relative_path"])
+            references.append(
+                ListingReferenceImage(
+                    role=f"anchor_{style}",
+                    content=content,
+                    content_type=str(asset.get("content_type") or "image/png"),
+                    url="" if fallback else str(item.get("public_url") or ""),
+                )
+            )
+        return tuple(references)
+
+    def _column_items_map(self, batch: dict[str, Any]) -> dict[tuple[int, int], dict[str, Any]]:
+        current = batch.get("items")
+        if not isinstance(current, list):
+            current = []
+        return {
+            (int(item["style_index"]), int(item["variant_index"])): item
+            for item in current
+        }
+
+    @staticmethod
+    def _column_composition_panels(
+        batch: dict[str, Any],
+    ) -> dict[str, dict[str, str]] | None:
+        raw = str(batch.get("composition_json") or "")
+        if not raw:
+            return None
+        try:
+            record = json.loads(raw)
+        except (TypeError, ValueError):
+            return None
+        panels = record.get("panels") if isinstance(record, dict) else None
+        if not isinstance(panels, dict):
+            return None
+        normalized: dict[str, dict[str, str]] = {}
+        for key in COMPOSITION_PANEL_KEYS:
+            entry = panels.get(key)
+            if isinstance(entry, dict):
+                normalized[key] = {
+                    "zh": str(entry.get("zh") or ""),
+                    "en": str(entry.get("en") or ""),
+                }
+        return normalized or None
+
+    @staticmethod
+    def _column_art_direction(batch: dict[str, Any]) -> ArtDirection | None:
+        raw = batch.get("art_direction")
+        if not isinstance(raw, dict) or not raw:
+            return None
+        try:
+            return ArtDirection.model_validate(raw)
+        except ValueError:
+            return None
+
+    def _column_stored_lifestyle_panels(
+        self,
+        batch: dict[str, Any],
+        group: dict[str, Any],
+        items: dict[tuple[int, int], dict[str, Any]],
+    ) -> dict[int, Any]:
+        """续跑时从已入库的主图行还原标题所需的面板 media。"""
+        panels: dict[int, Any] = {}
+        for style_index in group["style_indices"]:
+            style = int(style_index)
+            item = items.get((style, 1))
+            if not item or not item.get("pattern_asset_id"):
+                continue
+            asset = self.repository.get_asset(
+                str(item["pattern_asset_id"]),
+                batch["workspace_id"],
+                batch["owner_user_id"],
+            )
+            try:
+                content = self.assets.read(asset["relative_path"])
+            except (FileNotFoundError, OSError, ValueError):
+                continue
+            panels[style] = SimpleNamespace(
+                content=content,
+                content_type=str(asset.get("content_type") or "image/png"),
+            )
+        return panels
+
+    def _refresh_column_group_status(
+        self,
+        group_id: str,
+        states: dict[str, str],
+        *,
+        epoch: int | None,
+    ) -> None:
+        if all(states.get(role) == SHEET_STATUS_COMPLETED for role in COLUMN_ROLES):
+            status = GROUP_STATUS_COMPLETED
+        elif states.get(PRIMARY_ROLE) == SHEET_STATUS_FAILED:
+            status = GROUP_STATUS_FAILED
+        elif all(
+            states.get(role) in {SHEET_STATUS_COMPLETED, SHEET_STATUS_FAILED}
+            for role in COLUMN_ROLES
+        ):
+            status = GROUP_STATUS_PARTIAL_FAILURE
+        else:
+            return
+        self.repository.set_group_status(group_id, status, execution_epoch=epoch)
+
+    def _ensure_column_titles(
+        self,
+        batch: dict[str, Any],
+        group: dict[str, Any],
+        panels: dict[int, Any],
+        title_status: dict[int, str],
+        billing_run: PodBillingRun,
+        epoch: int | None,
+        futures: list[Future[Any]],
+        *,
+        task_id: str,
+    ) -> None:
+        """主图发布后按款提交标题；已有标题或没有计划调用时跳过。"""
+        if self.title_runtime is None:
+            return
+        batch_id = batch["batch_id"]
+        for style_index in group["style_indices"]:
+            style = int(style_index)
+            if title_status.get(style) == "completed":
+                continue
+            # 已失败的标题不自动重跑（v1 不做用户重跑）。
+            if title_status.get(style) == "failed":
+                continue
+            panel = panels.get(style)
+            if panel is None:
+                continue
+            call_ids = self._title_call_ids(billing_run, batch_id, style)
+            if not call_ids:
+                continue
+            try:
+                self.repository.claim_style_title(
+                    batch_id,
+                    style,
+                    style_task_id=task_id,
+                    allow_billing_resume=billing_run.resumed,
+                    execution_epoch=epoch,
+                )
+            except PodExecutionExpired:
+                raise
+            except Exception:  # noqa: BLE001 - 单款标题失败不影响图片
+                continue
+            title_status[style] = "generating"
+            futures.append(
+                self.title_runtime.submit(
+                    self._generate_style_title,
+                    batch,
+                    style,
+                    task_id,
+                    panel,
+                    billing_run,
+                    call_ids,
+                    epoch,
+                )
+            )
+
+    def _column_persist_sheet(
+        self,
+        batch: dict[str, Any],
+        task: _ColumnTask,
+        media: Any,
+        grid_asset_id: str,
+        epoch: int | None,
+    ) -> dict[str, Any]:
+        """拆四格 → 落 4 个款 → 发布公网图 → 写 style_grid_results。"""
+        panels, fingerprints = self._validate_column_grid(media)
+        group = task.group
+        styles = [int(style) for style in group["style_indices"]]
+        variant_index = COLUMN_ROLES.index(task.role) + 1
+        call_id = str((task.call or {}).get("call_id") or "")
+        stored_panels: dict[int, Any] = {}
+        public_urls: dict[int, str] = {}
+        asset_ids: dict[int, str] = {}
+        for offset, style_index in enumerate(styles):
+            panel = panels[offset]
+            fingerprint = fingerprints[offset]
+            panel_asset = self._save_asset(
+                batch,
+                "direct_listing_panel",
+                f"style-{style_index}-{task.role}{panel.suffix}",
+                panel.content,
+            )
+            publish_media = (
+                self._spec_card_publish_media(batch, style_index, panel)
+                if task.role == "hero"
+                else panel
+            )
+            public_url = ""
+            publish_error = ""
+            for _attempt in (1, 2):
+                try:
+                    public_url = self.ai_runtime.publish_listing_image(
+                        publish_media, namespace=batch["workspace_id"], role=task.role
+                    )
+                    break
+                except Exception as exc:  # noqa: BLE001 - 发布失败按角色重试
+                    publish_error = str(exc).strip() or exc.__class__.__name__
+            if not public_url:
+                self.repository.finish_style_grid_result(
+                    batch,
+                    style_index=style_index,
+                    variant_index=variant_index,
+                    call_id=call_id,
+                    status="failed",
+                    pattern_asset_id=panel_asset["asset_id"],
+                    role=task.role,
+                    fingerprint=fingerprint,
+                    error_message=f"publish_error: {publish_error}",
+                    execution_epoch=epoch,
+                )
+                raise RuntimeError(
+                    f"第 {ROLE_LABELS.get(task.role, task.role)} 图床发布失败：{publish_error}"
+                )
+            self.repository.finish_style_grid_result(
+                batch,
+                style_index=style_index,
+                variant_index=variant_index,
+                call_id=call_id,
+                status="completed",
+                pattern_asset_id=panel_asset["asset_id"],
+                composite_asset_id=panel_asset["asset_id"],
+                fingerprint=fingerprint,
+                role=task.role,
+                public_url=public_url,
+                execution_epoch=epoch,
+            )
+            stored_panels[style_index] = SimpleNamespace(
+                content=panel.content,
+                content_type=panel.content_type,
+            )
+            public_urls[style_index] = public_url
+            asset_ids[style_index] = panel_asset["asset_id"]
+        return {
+            "grid_asset_id": grid_asset_id,
+            "panels": stored_panels,
+            "public_urls": public_urls,
+            "asset_ids": asset_ids,
+        }
+
+    def _validate_column_grid(self, grid: Any) -> tuple[list[Any], list[str]]:
+        """逐格验收：数量正确之外，每格还要非空、非纯色、尺寸合格。"""
+        panels = self.ai_runtime.split_listing_grid(grid)
+        if len(panels) != 4:
+            raise RuntimeError("generated column sheet did not yield exactly four panels")
+        gate = PatternQualityGate()
+        accepted: list[str] = []
+        fingerprints: list[str] = []
+        for index, panel in enumerate(panels, start=1):
+            assessment = gate.assess(panel.content, accepted_fingerprints=accepted)
+            if not assessment.accepted:
+                raise RuntimeError(
+                    f"column panel {index} failed the quality gate: {assessment.rejection_reason}"
+                )
+            accepted.append(assessment.fingerprint)
+            fingerprints.append(assessment.fingerprint)
+        return panels, fingerprints
+
+    def _generate_column_sheet(
+        self,
+        batch: dict[str, Any],
+        call: dict[str, Any],
+        request: DirectListingGridRequest,
+        billing_run: PodBillingRun,
+        provider_call_id: str,
+        defer_outcome: bool,
+        execution_epoch: int | None = None,
+    ) -> tuple[Any, str]:
+        """一次 sheet（组 × 角色）的 provider 调用。
+
+        ``defer_outcome=True`` 用于主图轮：provider 返回不代表这张 sheet 可用，
+        计费成功要等 4 格全部通过验收并发布后才记录（方案 D20）。
+        """
+        epoch = execution_epoch if execution_epoch is not None else billing_run.execution_epoch or None
+        self.repository.mark_generation_call_running(call["call_id"], epoch)
+        provider_returned = False
+        provider_started = False
+        try:
+            def start_provider_call() -> None:
+                nonlocal provider_started
+                self._check_control(batch["batch_id"])
+                billing_run.start(provider_call_id, "pod.image")
+                provider_started = True
+
+            runtime_kwargs = {
+                "grant": billing_run.grant,
+                "call_id": provider_call_id,
+            }
+            if _accepts_keyword(self.ai_runtime.generate_listing_grid, "on_start"):
+                runtime_kwargs["on_start"] = start_provider_call
+            else:
+                start_provider_call()
+            media = self.ai_runtime.generate_listing_grid(request, **runtime_kwargs)
+            provider_returned = True
+            if not defer_outcome:
+                billing_run.record(provider_call_id, "pod.image", "success")
+            stored = self._save_asset(
+                batch,
+                SHEET_ASSET_KIND,
+                f"column-{call['call_kind']}-{call['call_index']}{media.suffix}",
+                media.content,
+            )
+            self.repository.finish_generation_call(
+                call["call_id"],
+                status="succeeded",
+                grid_asset_id=stored["asset_id"],
+                execution_epoch=epoch,
+            )
+            return media, stored["asset_id"]
+        except PodBillingAuthorizationRequired as exc:
+            if not billing_run.has_outcome(provider_call_id):
+                billing_run.record(provider_call_id, "pod.image", "no_return")
+            self.repository.finish_generation_call(
+                call["call_id"],
+                status="failed",
+                error_message=safe_error_message(exc),
+                execution_epoch=epoch,
+            )
+            raise
+        except PodBatchPaused:
+            self.repository.requeue_generation_call(call["call_id"], epoch)
+            raise
+        except PodBatchCancelled:
+            self.repository.requeue_generation_call(call["call_id"], epoch)
+            raise
+        except RuntimeClosedError as exc:
+            if not provider_started:
+                raise PodBillingAuthorizationRequired(
+                    "POD worker stopped before the provider request started; resume after re-authorization"
+                ) from exc
+            raise RuntimeError("POD worker stopped while processing this provider call") from exc
+        except Exception as exc:
+            if not provider_returned and not defer_outcome:
+                if not billing_run.has_outcome(provider_call_id):
+                    billing_run.record(
+                        provider_call_id,
+                        "pod.image",
+                        image_provider_outcome_for_exception(exc),
+                    )
+            self.repository.finish_generation_call(
+                call["call_id"],
+                status="failed",
+                error_message=safe_error_message(exc),
+                execution_epoch=epoch,
+            )
+            raise
 
     def _record_fission_image_outcome(
         self, batch: dict[str, Any], style_index: int, outcome: str, failure_kind: str = ""

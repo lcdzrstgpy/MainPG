@@ -1,6 +1,8 @@
-import type { PodBriefHistoryItem, PodBusinessFieldsDraft, PodListingFieldsDraft, PodTemplate, PodTitleMode, SpecCardConfig } from "../types";
+import type { PodArtDirection, PodBriefHistoryItem, PodBusinessFieldsDraft, PodListingFieldsDraft, PodTemplate, PodTitleMode, SpecCardConfig } from "../types";
 
-export const POD_CUSTOMIZATION_DRAFT_VERSION = 4;
+// v5：列式生成上线——移除「自定义款数」，新增批级美术指导。
+export const POD_CUSTOMIZATION_DRAFT_VERSION = 5;
+const CUSTOM_COUNT_POD_CUSTOMIZATION_DRAFT_VERSION = 4;
 const PREVIOUS_POD_CUSTOMIZATION_DRAFT_VERSION = 3;
 const OLDER_POD_CUSTOMIZATION_DRAFT_VERSION = 2;
 const LEGACY_POD_CUSTOMIZATION_DRAFT_VERSION = 1;
@@ -23,13 +25,13 @@ export type PodCustomizationDraft = {
   // 规格卡配置随草稿按 account/workspace 维度保存在本地，随批次提交时冻结。
   spec_card: SpecCardConfig;
   batch_count: number;
-  custom_count_mode: boolean;
-  custom_count_input: string;
   selected_template_id: string;
   current_batch_edit: string | null;
   system_templates: PodSystemTemplate[];
   // 智能前置层「最近生成」历史：与业务字段同一草稿生命周期，缺失/损坏时归一化为 []。
   brief_history: PodBriefHistoryItem[];
+  // 批级美术指导：整批共用，建批时冻结；未生成/已清空时为 null。
+  art_direction: PodArtDirection | null;
 };
 
 export type PodDraftLoadResult = { state: PodCustomizationDraft; error?: string };
@@ -105,6 +107,7 @@ export function podCustomizationDraftStorageKey(accountId: string, workspaceId: 
 /** 历代草稿键（由新到旧）；命中任一即迁移为当前版本。 */
 function historicalDraftStorageKeys(accountId: string, workspaceId: string): string[] {
   return [
+    CUSTOM_COUNT_POD_CUSTOMIZATION_DRAFT_VERSION,
     PREVIOUS_POD_CUSTOMIZATION_DRAFT_VERSION,
     OLDER_POD_CUSTOMIZATION_DRAFT_VERSION,
     LEGACY_POD_CUSTOMIZATION_DRAFT_VERSION,
@@ -118,12 +121,11 @@ export function createEmptyPodCustomizationDraft(): PodCustomizationDraft {
     listing_fields: { ...EMPTY_LISTING_FIELDS },
     spec_card: createEmptySpecCard(),
     batch_count: 20,
-    custom_count_mode: false,
-    custom_count_input: "20",
     selected_template_id: "",
     current_batch_edit: null,
     system_templates: [],
     brief_history: [],
+    art_direction: null,
   };
 }
 
@@ -157,7 +159,12 @@ export function loadPodCustomizationDraft(
   try {
     const parsed: unknown = JSON.parse(raw);
     if (isPodCustomizationDraft(parsed)) return { state: cloneDraft(parsed) };
-    if (isPreviousPodCustomizationDraft(parsed) || isOlderPodCustomizationDraft(parsed) || isLegacyPodCustomizationDraft(parsed)) {
+    if (
+      isCustomCountPodCustomizationDraft(parsed)
+      || isPreviousPodCustomizationDraft(parsed)
+      || isOlderPodCustomizationDraft(parsed)
+      || isLegacyPodCustomizationDraft(parsed)
+    ) {
       const state = migrateDraft(parsed);
       try {
         storage.setItem(key, JSON.stringify(cloneDraft(state)));
@@ -247,14 +254,48 @@ function cloneDraft(state: PodCustomizationDraft): PodCustomizationDraft {
     // v3 之前的草稿没有 spec_card，缺失/损坏时退回空白表，而不是丢弃整份草稿。
     spec_card: specCardOrDefault(state.spec_card),
     batch_count: state.batch_count,
-    custom_count_mode: state.custom_count_mode,
-    custom_count_input: state.custom_count_input,
     selected_template_id: state.selected_template_id,
     current_batch_edit: state.current_batch_edit,
     system_templates: state.system_templates.map(cloneSystemTemplate),
     // 后加的键：已存在的旧草稿缺失/损坏时退化为 []，而不是丢弃整份草稿。
     brief_history: briefHistoryOrDefault(state.brief_history),
+    art_direction: artDirectionOrDefault(state.art_direction),
   };
+}
+
+function artDirectionOrDefault(value: unknown): PodArtDirection | null {
+  return isArtDirection(value) ? cloneArtDirection(value) : null;
+}
+
+function cloneArtDirection(value: PodArtDirection): PodArtDirection {
+  return {
+    scene: value.scene,
+    lighting: value.lighting,
+    color_temperature: value.color_temperature,
+    mood: value.mood,
+    palette: [...value.palette],
+    props: [...value.props],
+    background: value.background,
+    composition_hint: value.composition_hint,
+    avoid: [...value.avoid],
+  };
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isArtDirection(value: unknown): value is PodArtDirection {
+  return isRecord(value)
+    && typeof value.scene === "string"
+    && typeof value.lighting === "string"
+    && typeof value.color_temperature === "string"
+    && typeof value.mood === "string"
+    && isStringArray(value.palette)
+    && isStringArray(value.props)
+    && typeof value.background === "string"
+    && typeof value.composition_hint === "string"
+    && isStringArray(value.avoid);
 }
 
 function briefHistoryOrDefault(value: unknown): PodBriefHistoryItem[] {
@@ -296,13 +337,29 @@ function isPodCustomizationDraft(value: unknown): value is PodCustomizationDraft
     // spec_card 为后加的键：已存在的 v3 草稿缺失该键时视为空白表（cloneDraft 归一化），不丢弃草稿。
     && (value.spec_card === undefined || isSpecCardConfig(value.spec_card))
     && typeof value.batch_count === "number"
+    && typeof value.selected_template_id === "string"
+    && (typeof value.current_batch_edit === "string" || value.current_batch_edit === null)
+    && Array.isArray(value.system_templates)
+    && value.system_templates.every(isPodSystemTemplate)
+    // brief_history 为后加的键：缺失时视为 []（cloneDraft 归一化），不丢弃旧草稿。
+    && (value.brief_history === undefined || isBriefHistory(value.brief_history))
+    // art_direction 为后加的键：缺失/损坏时视为 null（cloneDraft 归一化）。
+    && (value.art_direction === undefined || value.art_direction === null || isArtDirection(value.art_direction));
+}
+
+/** v4 草稿（列式生成之前）：带「自定义款数」，没有批级美术指导。 */
+function isCustomCountPodCustomizationDraft(value: unknown): value is CustomCountPodCustomizationDraft {
+  if (!isRecord(value) || value.version !== CUSTOM_COUNT_POD_CUSTOMIZATION_DRAFT_VERSION) return false;
+  return isBusinessFields(value.business_fields)
+    && isListingFields(value.listing_fields)
+    && (value.spec_card === undefined || isSpecCardConfig(value.spec_card))
+    && typeof value.batch_count === "number"
     && typeof value.custom_count_mode === "boolean"
     && typeof value.custom_count_input === "string"
     && typeof value.selected_template_id === "string"
     && (typeof value.current_batch_edit === "string" || value.current_batch_edit === null)
     && Array.isArray(value.system_templates)
     && value.system_templates.every(isPodSystemTemplate)
-    // brief_history 为后加的键：缺失时视为 []（cloneDraft 归一化），不丢弃旧草稿。
     && (value.brief_history === undefined || isBriefHistory(value.brief_history));
 }
 
@@ -340,6 +397,27 @@ function isListingFields(value: unknown): value is PodListingFieldsDraft {
     && value.skus.every(isSkuDraft);
 }
 
+/** v4 草稿：列式生成之前，带有「自定义款数」。 */
+type CustomCountPodCustomizationDraft = Omit<
+  PodCustomizationDraft,
+  "version" | "art_direction"
+> & {
+  version: typeof CUSTOM_COUNT_POD_CUSTOMIZATION_DRAFT_VERSION;
+  custom_count_mode: boolean;
+  custom_count_input: string;
+};
+
+/** v1–v3 草稿共有的字段（那时还没有批量美术指导与「自定义款数」之外的差异）。 */
+type HistoricalDraftBase = {
+  business_fields: PodBusinessFieldsDraft;
+  batch_count: number;
+  custom_count_mode: boolean;
+  custom_count_input: string;
+  selected_template_id: string;
+  current_batch_edit: string | null;
+  system_templates: PodSystemTemplate[];
+};
+
 /** v3 草稿：SKU 自带长/宽/高与重量，申报价在顶层；尺寸详情还是自由表格。 */
 type PreviousSkuDraft = {
   name: string;
@@ -357,7 +435,7 @@ type PreviousPodListingFieldsDraft = {
   skus: PreviousSkuDraft[];
 };
 
-type PreviousPodCustomizationDraft = Omit<PodCustomizationDraft, "version" | "listing_fields" | "spec_card" | "brief_history"> & {
+type PreviousPodCustomizationDraft = HistoricalDraftBase & {
   version: typeof PREVIOUS_POD_CUSTOMIZATION_DRAFT_VERSION;
   listing_fields: PreviousPodListingFieldsDraft;
 };
@@ -379,7 +457,7 @@ type OlderPodListingFieldsDraft = {
   skus: OlderSkuDraft[];
 };
 
-type OlderPodCustomizationDraft = Omit<PodCustomizationDraft, "version" | "listing_fields" | "spec_card" | "brief_history"> & {
+type OlderPodCustomizationDraft = HistoricalDraftBase & {
   version: typeof OLDER_POD_CUSTOMIZATION_DRAFT_VERSION;
   listing_fields: OlderPodListingFieldsDraft;
 };
@@ -397,7 +475,7 @@ type LegacyPodListingFieldsDraft = {
   sku_names?: string[];
 };
 
-type LegacyPodCustomizationDraft = Omit<PodCustomizationDraft, "version" | "listing_fields" | "spec_card" | "brief_history"> & {
+type LegacyPodCustomizationDraft = HistoricalDraftBase & {
   version: typeof LEGACY_POD_CUSTOMIZATION_DRAFT_VERSION;
   listing_fields: LegacyPodListingFieldsDraft;
 };
@@ -582,16 +660,37 @@ function migratedCore(
 }
 
 function migrateDraft(
-  legacy: PreviousPodCustomizationDraft | OlderPodCustomizationDraft | LegacyPodCustomizationDraft,
+  legacy:
+    | CustomCountPodCustomizationDraft
+    | PreviousPodCustomizationDraft
+    | OlderPodCustomizationDraft
+    | LegacyPodCustomizationDraft,
 ): PodCustomizationDraft {
+  if (legacy.version === CUSTOM_COUNT_POD_CUSTOMIZATION_DRAFT_VERSION) {
+    // v4 → v5：删除「自定义款数」，补空的美术指导。
+    return {
+      version: POD_CUSTOMIZATION_DRAFT_VERSION,
+      business_fields: businessFieldsOrDefault(legacy.business_fields),
+      listing_fields: {
+        ...legacy.listing_fields,
+        skus: legacy.listing_fields.skus.map((sku) => ({ ...sku })),
+      },
+      spec_card: specCardOrDefault(legacy.spec_card),
+      batch_count: legacy.batch_count,
+      selected_template_id: legacy.selected_template_id,
+      current_batch_edit: legacy.current_batch_edit,
+      system_templates: legacy.system_templates.map(cloneSystemTemplate),
+      brief_history: briefHistoryOrDefault(legacy.brief_history),
+      art_direction: null,
+    };
+  }
   return {
     business_fields: businessFieldsOrDefault(legacy.business_fields),
     batch_count: legacy.batch_count,
-    custom_count_mode: legacy.custom_count_mode,
-    custom_count_input: legacy.custom_count_input,
     selected_template_id: legacy.selected_template_id,
     current_batch_edit: legacy.current_batch_edit,
     system_templates: legacy.system_templates,
+    art_direction: null,
     ...migratedCore(legacy),
   };
 }
@@ -611,6 +710,7 @@ function isPodTemplate(value: unknown): value is PodTemplate {
   return typeof value.id === "string"
     && typeof value.name === "string"
     && (value.source === "system" || value.source === "personal")
+    && (value.asset_id === undefined || typeof value.asset_id === "string")
     && typeof value.preview_url === "string"
     && typeof value.original_url === "string"
     && typeof value.width === "number"

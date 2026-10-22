@@ -244,7 +244,7 @@ export function PodFissionPage({ isActive = true }: Props) {
     </header>
     {(error || notice) && <div className={`pod-fission-message${error ? " is-error" : ""}`} role={error ? "alert" : "status"}><span className={`iconfont ${error ? "icon-info-circle" : "icon-check-circle"}`} aria-hidden="true" /><p>{error || notice}</p><button type="button" aria-label="关闭提示" onClick={() => { setError(""); setNotice(""); }}>×</button></div>}
     <div className="pod-fission-layout">
-      <aside className="pod-fission-setup" aria-label="裂变设置">
+      <aside className="pod-fission-setup pod-prefill-panel" aria-label="裂变设置">
         <section className="pod-setup-card pod-fission-inputs" aria-label="裂变素材">
           <header className="pod-fission-card-head"><span className="pod-fission-card-badge" aria-hidden="true">01</span><div className="pod-section-title"><span>SOURCE IMAGES</span><h2>上传裂变素材</h2></div></header>
           <div className="pod-fission-uploads">

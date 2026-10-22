@@ -14,6 +14,7 @@ from wh_local.modules.pod_customization.contracts import (
     SemiBatchCreate,
 )
 from wh_local.modules.pod_customization.service import PodCustomizationService
+from wh_local.modules.pod_customization.prompts import PATTERN_PROMPT_VERSION
 from wh_local.session import Actor
 
 
@@ -90,12 +91,126 @@ def test_batch_keeps_the_template_and_builtin_prompt_snapshot(tmp_path: Path) ->
     stored = service.get_batch(actor, batch["id"])
 
     assert stored["template_snapshot_id"] == batch["template_snapshot_id"]
-    # 提示词版本以服务端为准：请求里传的是 v1，入库必须被服务端改写成当前版本（v15）。
-    assert stored["prompt_version"] == "v15"
+    # 提示词版本以服务端为准：请求里传的是 v1，入库必须被服务端改写成当前版本。
+    assert stored["prompt_version"] == PATTERN_PROMPT_VERSION
     assert "Stoneware mug" in stored["prompt_snapshot"]
     assert "quiet coastal geometry" in stored["prompt_snapshot"]
     assert stored["style_grid"] is True
     assert len(stored["items"]) == 80
+
+
+def test_template_views_support_structure_facts_in_batch_prompt(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    actor = _actor()
+    template = service.upload_template(
+        actor,
+        name="Acrylic stand",
+        filename="front.png",
+        content=_png("#ffffff"),
+        views=[
+            {"role": "side", "filename": "side.png", "content": _png("#f0f0f0")},
+            {"role": "dimension", "filename": "size.png", "content": _png("#f5e6f0")},
+        ],
+    )
+
+    # 视图按角色落库；无识图/计费底座时状态保持 none（不阻塞上传）。
+    assert [view["role"] for view in template["views"]] == ["side", "dimension"]
+    assert template["structure_status"] == "none"
+    assert template["structure_facts"] == {}
+
+    updated = service.update_template_structure(
+        actor,
+        template["id"],
+        {
+            "tiers": 4,
+            "units_per_tier": 14,
+            "material": "clear acrylic",
+            "transparency": "high",
+            # 白名单之外的键必须被丢弃。
+            "invented_key": "ignored",
+        },
+    )
+    assert updated["structure_status"] == "ready"
+    assert "invented_key" not in updated["structure_facts"]
+
+    batch = service.create_batch(
+        actor,
+        BatchCreate(
+            template_id=template["id"],
+            count=20,
+            business_fields=BusinessFields(product_name="Acrylic stand", product_category="storage"),
+            listing_fields=_listing_fields(),
+        ),
+        enqueue=False,
+    )
+    stored = service.get_batch(actor, batch["id"])
+
+    # 事实表与视图角色冻结进 prompt_snapshot：只有主图 + side 参与生图契约，
+    # dimension 只用于识图，不得出现在参考图编号里。
+    assert "STRUCTURE FACTS" in stored["prompt_snapshot"]
+    assert "exactly 4 vertical tiers" in stored["prompt_snapshot"]
+    assert "TRANSPARENT MATERIAL LOCK" in stored["prompt_snapshot"]
+    assert "Image 2 = SIDE elevation" in stored["prompt_snapshot"]
+    assert "Image 3" not in stored["prompt_snapshot"]
+
+
+def test_template_views_reject_duplicate_or_primary_roles(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    actor = _actor()
+    with pytest.raises(ValueError):
+        service.upload_template(
+            actor,
+            name="Bad views",
+            filename="front.png",
+            content=_png(),
+            views=[{"role": "primary", "content": _png()}],
+        )
+    with pytest.raises(ValueError):
+        service.upload_template(
+            actor,
+            name="Duplicate views",
+            filename="front.png",
+            content=_png(),
+            views=[{"role": "side", "content": _png()}, {"role": "side", "content": _png()}],
+        )
+
+
+def test_attach_template_views_replaces_only_submitted_roles(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    actor = _actor()
+    template = service.upload_template(actor, name="Acrylic stand", filename="front.png", content=_png())
+
+    first = service.attach_template_views(
+        actor,
+        template["id"],
+        [
+            {"role": "side", "content": _png("#eeeeee")},
+            {"role": "top", "content": _png("#dddddd")},
+        ],
+    )
+    assert [view["role"] for view in first["views"]] == ["side", "top"]
+
+    # 只补 side：top 必须保留，side 被替换。
+    second = service.attach_template_views(
+        actor, template["id"], [{"role": "side", "content": _png("#cccccc")}]
+    )
+    assert [view["role"] for view in second["views"]] == ["side", "top"]
+
+
+def test_attach_template_views_rejects_system_template(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    actor = _actor()
+    template = service.upload_template(actor, name="Shared", filename="front.png", content=_png())
+    with service.repository._connect() as connection:
+        connection.execute(
+            "UPDATE pod_customization_templates SET source = 'system' WHERE template_id = ?",
+            (template["id"],),
+        )
+
+    with pytest.raises(ValueError):
+        service.attach_template_views(
+            actor, template["id"], [{"role": "side", "content": _png("#eeeeee")}]
+        )
 
 
 def test_templates_are_owner_private_like_batches(tmp_path: Path) -> None:

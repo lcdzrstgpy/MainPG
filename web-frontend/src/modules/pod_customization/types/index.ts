@@ -1,14 +1,49 @@
 export type PodTemplateSource = "system" | "personal";
 
+/** 结构视图角色：dimension（尺寸图）只用于识图，不参与生图。 */
+export type PodTemplateViewRole = "side" | "top" | "dimension";
+
+export type PodTemplateView = {
+  role: PodTemplateViewRole;
+  url: string;
+  width: number;
+  height: number;
+};
+
+/** none=无视图；ready=可直接用；needs_confirmation=低置信度待人工确认；failed=识图失败。 */
+export type PodStructureStatus = "none" | "ready" | "needs_confirmation" | "failed";
+
+export type PodStructureFacts = {
+  product_type?: string;
+  part_count?: number;
+  tiers?: number;
+  units_per_tier?: number;
+  height_mm?: number;
+  thickness_mm?: number;
+  material?: string;
+  transparency?: string;
+  surface_finish?: string;
+  symmetry?: string;
+  connections?: string;
+  printable_regions?: string[];
+  confidence?: Record<string, number>;
+};
+
 export type PodTemplate = {
   id: string;
   name: string;
   source: PodTemplateSource;
+  /** 主图资产 id：智能填写用它附带模板图生成批级美术指导。 */
+  asset_id?: string;
   preview_url: string;
   original_url: string;
   width: number;
   height: number;
   error_message?: string;
+  structure_status?: PodStructureStatus;
+  structure_facts?: PodStructureFacts;
+  structure_analysis_version?: string;
+  views?: PodTemplateView[];
   created_at: string;
   updated_at: string;
 };
@@ -46,6 +81,24 @@ export type PodBriefFieldsResponse = {
   prompt_version: string;
   model: string;
   fields: PodBusinessFields;
+  /** 批级美术指导：只有请求带模板图且视觉调用成功时才有值。 */
+  art_direction?: PodArtDirection | null;
+};
+
+/**
+ * 批级美术指导：随智能填写一次性生成，整批（所有二级批次、所有轮次）共用。
+ * 只注入第 1 轮的美术指导，派生轮由锚点继承场景与光线。
+ */
+export type PodArtDirection = {
+  scene: string;
+  lighting: string;
+  color_temperature: string;
+  mood: string;
+  palette: string[];
+  props: string[];
+  background: string;
+  composition_hint: string;
+  avoid: string[];
 };
 
 /** 智能前置层实际代填的字段：业务字段去掉「上架文案限制」（该类限制不由智能填写生成）。 */
@@ -224,6 +277,15 @@ export type PodBatchItem = {
   updated_at: string;
 };
 
+/** 二级批次（4 款一组）的执行状态；列式批次才有。 */
+export type PodBatchGroup = {
+  group_index: number;
+  style_indices: number[];
+  status: string;
+  current_round: string;
+  sheets: Record<string, string>;
+};
+
 export type PodBatch = PodBatchSummary & {
   template: PodTemplate;
   /** 该批次生成时所用「大提示词」的版本，由服务端 prompts.PATTERN_PROMPT_VERSION 决定（历史批次为 v1）。 */
@@ -232,6 +294,14 @@ export type PodBatch = PodBatchSummary & {
   listing_fields: PodListingFields | null;
   dianxiaomi_export: PodDianxiaomiExportStatus;
   creative_prompt: string;
+  /** 生成布局：legacy = 一款一次调用拆四格；column_v1 = 两级批次按角色列式生成。 */
+  generation_layout?: "legacy" | "column_v1";
+  /** 二级批次数（4 款一组）；legacy 批次为 0。 */
+  group_count?: number;
+  /** 批级美术指导（建批时冻结，整批共用）。 */
+  art_direction?: PodArtDirection | null;
+  /** 二级批次摘要；legacy 批次为空数组。 */
+  groups?: PodBatchGroup[];
   /** 该批次冻结的最新构图（无则为 null）；用于展示「本批次套用的构图」。 */
   composition?: PodComposition | null;
   items: PodBatchItem[];
@@ -282,6 +352,8 @@ export type PodComposition = {
   updated_at: string;
   /** 归属模块（full / replica）。 */
   scope?: PodCompositionScope;
+  /** 构图语义来源：panel_v1 = 旧「一张图的四格」；role_v1 = 「四次调用的四轮」。 */
+  layout?: "panel_v1" | "role_v1";
 };
 
 export type PodCompositionListResponse = {
@@ -323,4 +395,8 @@ export type CreatePodBatchRequest = {
   business_fields: PodBusinessFields;
   listing_fields: PodListingFields;
   creative_prompt: string;
+  /** 列式生成（两级批次）：款数必须是 4 的倍数，后端按 4 款一组执行 4 轮调用。 */
+  generation_layout?: "column_v1";
+  /** 批级美术指导：随建批冻结，整批共用，只注入第 1 轮。 */
+  art_direction?: PodArtDirection | null;
 };

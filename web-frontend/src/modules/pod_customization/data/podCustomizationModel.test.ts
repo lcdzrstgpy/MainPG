@@ -16,6 +16,9 @@ import {
   groupPodStyleRows,
   isActiveBatchStatus,
   isPodBatchCount,
+  isPodColumnBatch,
+  isPodColumnBatchCount,
+  podBatchRoundProgress,
   isPristineCreativeEdit,
   resolveCreativePrompt,
   stripExcludedElementsLine,
@@ -57,13 +60,40 @@ test("POD style results present the lifestyle panel as the primary image and her
   assert.deepEqual(rows[0].results.map((item) => item?.id), ["lifestyle", "detail-a", "detail-b", "hero"]);
 });
 
-test("POD count accepts custom integers from 1 through 200", () => {
-  assert.deepEqual(POD_BATCH_COUNTS, [2, 10, 20, 40, 60, 100]);
+test("POD counts are preset multiples of four", () => {
+  assert.deepEqual(POD_BATCH_COUNTS, [4, 8, 20, 40, 60, 100]);
   assert.equal(isPodBatchCount(1), true);
   assert.equal(isPodBatchCount(200), true);
   assert.equal(isPodBatchCount(0), false);
   assert.equal(isPodBatchCount(201), false);
   assert.equal(isPodBatchCount(1.5), false);
+  // 列式生成只接受 4 的倍数，且至少 4 款。
+  assert.equal(isPodColumnBatchCount(4), true);
+  assert.equal(isPodColumnBatchCount(8), true);
+  assert.equal(isPodColumnBatchCount(10), false);
+  assert.equal(isPodColumnBatchCount(2), false);
+  assert.equal(isPodColumnBatchCount(202), false);
+});
+
+test("column batches report progress per round instead of per style", () => {
+  const progress = podBatchRoundProgress({
+    count: 4,
+    generation_layout: "column_v1",
+    items: [
+      { id: "a", style_index: 1, variant_index: 1, role: "lifestyle", status: "completed", public_url: "https://x/1.png" },
+      { id: "b", style_index: 2, variant_index: 1, role: "lifestyle", status: "completed", public_url: "https://x/2.png" },
+      { id: "c", style_index: 1, variant_index: 2, role: "detail_a", status: "queued", public_url: "" },
+    ] as never,
+  });
+
+  assert.deepEqual(progress.map((round) => `${round.label} ${round.done}/${round.total}`), [
+    "主图 2/4",
+    "细节 A 0/4",
+    "细节 B 0/4",
+    "素材 0/4",
+  ]);
+  assert.equal(isPodColumnBatch({ generation_layout: "column_v1" }), true);
+  assert.equal(isPodColumnBatch({ generation_layout: "legacy" }), false);
 });
 
 test("settlement-pending status stays labeled separately from generation failure and is not an active generation state", () => {

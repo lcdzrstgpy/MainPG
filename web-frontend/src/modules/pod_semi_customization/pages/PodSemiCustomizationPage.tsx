@@ -452,7 +452,7 @@ export function PodSemiCustomizationPage({ isActive = true }: Props) {
       {notice && <p className="pod-semi-notice" role="status">{notice}</p>}
 
       <div className="pod-semi-grid">
-        <aside className="pod-semi-setup">
+        <aside className="pod-semi-setup pod-prefill-panel">
           <PodBriefInput
             value={brief}
             onValueChange={setBrief}

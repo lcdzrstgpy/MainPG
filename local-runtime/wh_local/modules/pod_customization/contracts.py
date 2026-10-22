@@ -15,6 +15,15 @@ from .replica_specs import (
 SUPPORTED_PATTERN_COUNTS = (20, 40, 100)
 MIN_STYLE_COUNT = 1
 MAX_STYLE_COUNT = 200
+# 列式生成（两级批次）：二级批次固定 4 款，L1 款数必须是 4 的正整数倍。
+COLUMN_STYLES_PER_GROUP = 4
+MIN_COLUMN_STYLE_COUNT = COLUMN_STYLES_PER_GROUP
+MAX_COLUMN_STYLE_COUNT = 200
+# 批次生成布局：legacy = 现有「一款一次调用拆四格」；column_v1 = 两级批次按角色列式生成。
+GENERATION_LAYOUT_LEGACY = "legacy"
+GENERATION_LAYOUT_COLUMN = "column_v1"
+GENERATION_LAYOUTS = (GENERATION_LAYOUT_LEGACY, GENERATION_LAYOUT_COLUMN)
+GenerationLayout = Literal["legacy", "column_v1"]
 # 半定制：4 格 = 4 款，发起数量必须是 4 的倍数；交付单元 = 单张图案。
 MIN_SEMI_ITEM_COUNT = 4
 MAX_SEMI_ITEM_COUNT = 200
@@ -64,6 +73,14 @@ class FissionImageUploadResponse(BaseModel):
     preview_url: str
 
 
+class TemplateStructureUpdate(BaseModel):
+    """人工确认/修订模板结构事实表（只允许事实键，见 service 的白名单）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    facts: dict[str, Any] = Field(default_factory=dict)
+
+
 def grid_call_count(pattern_count: int) -> int:
     if pattern_count not in SUPPORTED_PATTERN_COUNTS:
         raise ValueError("count must be one of 20, 40, or 100")
@@ -106,6 +123,55 @@ class BusinessFields(BaseModel):
     # 选填：用户手写的上架文案限制（例如「标题不要出现刺绣」「明确带上 2D Flat」）。
     # 只作用于标题/英文标题/描述，不进入图片提示词。
     copy_restrictions: Annotated[str, Field(max_length=2000)] = ""
+
+
+# --- 批级美术指导：随智能填写一次性生成，整批（所有 L2、所有轮次）共用 ---
+# 结构与「画面冲击力硬要求」见
+# docs/superpowers/specs/2026-10-22-pod-style-column-generation-design.md §5.7。
+ART_DIRECTION_TEXT_MAX_LENGTH = 800
+ART_DIRECTION_ITEM_MAX_LENGTH = 200
+ART_DIRECTION_MAX_ITEMS = 12
+
+
+class ArtDirection(BaseModel):
+    """批级美术指导：场景、光影、冷暖、道具。
+
+    只描述「为这个产品设计的布景与光线」，不是从模板图里抄的背景；留空字段
+    在渲染时跳过，全部为空则回退现有硬编码 SET DESIGN 块（向后兼容）。
+    """
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    scene: Annotated[str, Field(max_length=ART_DIRECTION_TEXT_MAX_LENGTH)] = ""
+    lighting: Annotated[str, Field(max_length=ART_DIRECTION_TEXT_MAX_LENGTH)] = ""
+    color_temperature: Annotated[str, Field(max_length=ART_DIRECTION_TEXT_MAX_LENGTH)] = ""
+    mood: Annotated[str, Field(max_length=ART_DIRECTION_TEXT_MAX_LENGTH)] = ""
+    palette: list[Annotated[str, Field(max_length=ART_DIRECTION_ITEM_MAX_LENGTH)]] = Field(
+        default_factory=list, max_length=ART_DIRECTION_MAX_ITEMS
+    )
+    props: list[Annotated[str, Field(max_length=ART_DIRECTION_ITEM_MAX_LENGTH)]] = Field(
+        default_factory=list, max_length=ART_DIRECTION_MAX_ITEMS
+    )
+    background: Annotated[str, Field(max_length=ART_DIRECTION_TEXT_MAX_LENGTH)] = ""
+    composition_hint: Annotated[str, Field(max_length=ART_DIRECTION_TEXT_MAX_LENGTH)] = ""
+    avoid: list[Annotated[str, Field(max_length=ART_DIRECTION_ITEM_MAX_LENGTH)]] = Field(
+        default_factory=list, max_length=ART_DIRECTION_MAX_ITEMS
+    )
+
+    def is_empty(self) -> bool:
+        return not any(
+            (
+                self.scene,
+                self.lighting,
+                self.color_temperature,
+                self.mood,
+                self.palette,
+                self.props,
+                self.background,
+                self.composition_hint,
+                self.avoid,
+            )
+        )
 
 
 # --- 智能前置层：模糊输入 → 结构化业务字段 ---
@@ -151,6 +217,9 @@ class BriefFieldRequest(BaseModel):
     # 可选入参：用户在「智能填写」区直接填写的产品工艺 / 使用场景基调（旧客户端不传即空）。
     fabric_craft: str = Field(default="", max_length=BRIEF_PROVIDED_FIELD_MAX_LENGTH)
     scene_mood: str = Field(default="", max_length=BRIEF_PROVIDED_FIELD_MAX_LENGTH)
+    # 可选入参：当前选中模板的主图资产。带上时同时产出批级美术指导（art_direction）；
+    # 缺省或视觉调用失败时只返回业务字段，不阻塞智能填写。
+    template_asset_id: str = Field(default="", max_length=64)
 
 
 class BriefFieldResponse(BaseModel):
@@ -162,6 +231,8 @@ class BriefFieldResponse(BaseModel):
     prompt_version: str
     model: str
     fields: BusinessFields
+    # 批级美术指导：只有请求带模板图且视觉调用成功时才有值。
+    art_direction: ArtDirection | None = None
 
 
 # --- 构图/视角定制：一段大白话 → 四格画面指令（每账号+工作区只保留最新一份）---
@@ -260,6 +331,8 @@ class CompositionResponse(BaseModel):
     # 系统内置「默认模板」标记：不可编辑/重命名/删除，只能设为生效。
     is_builtin: bool = False
     updated_at: str
+    # 构图语义来源：panel_v1 = 旧「一张图的四格」；role_v1 = 「四次调用的四轮」。
+    layout: str = "panel_v1"
 
 
 class CompositionListResponse(BaseModel):
@@ -316,11 +389,20 @@ class BatchCreate(BaseModel):
     listing_fields: ListingFields
     creative_prompt: str = Field(default="", max_length=4000)
     title: str = Field(default="", max_length=120)
+    # 生成布局：legacy（默认，旧行为）/ column_v1（两级批次 + 按角色列式生成）。
+    generation_layout: GenerationLayout = GENERATION_LAYOUT_LEGACY
+    # 批级美术指导：智能填写阶段生成，建批时冻结，整批共用（只注入第 1 轮 D1）。
+    art_direction: ArtDirection | None = None
 
     @model_validator(mode="after")
     def validate_product_category(self) -> "BatchCreate":
         if not self.business_fields.product_category.strip():
             raise ValueError("business_fields.product_category is required")
+        if self.generation_layout == GENERATION_LAYOUT_COLUMN:
+            if self.count % COLUMN_STYLES_PER_GROUP != 0:
+                raise ValueError("列式生成的款数必须是 4 的倍数")
+            if not MIN_COLUMN_STYLE_COUNT <= self.count <= MAX_COLUMN_STYLE_COUNT:
+                raise ValueError("列式生成的款数必须在 4 到 200 之间")
         return self
 
 

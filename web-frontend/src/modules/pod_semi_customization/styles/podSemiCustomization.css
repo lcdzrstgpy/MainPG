@@ -376,3 +376,12 @@
 .pod-semi-delete-confirm-dialog > header > button {
   border-radius: 999px;
 }
+
+/* ============================================================
+   左侧数据预填栏字号：与全定制同一档
+   共享组件（智能填写）已由 .pod-prefill-panel 统一上调；
+   这里只补半定制自己的数量与主按钮。
+   ============================================================ */
+.pod-semi-setup .pod-semi-count > span { font-size: .76rem; }
+.pod-semi-setup .pod-semi-count-options button { font-size: .84rem; }
+.pod-semi-setup .pod-semi-start { font-size: .88rem; }

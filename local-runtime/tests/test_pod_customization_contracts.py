@@ -59,3 +59,37 @@ def test_batch_contract_requires_listing_category_and_safe_listing_fields() -> N
     unsafe["sku_prefix"] = "../escape"
     with pytest.raises(ValidationError):
         ListingFields.model_validate(unsafe)
+
+
+def test_column_layout_requires_a_multiple_of_four_styles() -> None:
+    from pydantic import ValidationError
+
+    from wh_local.modules.pod_customization.contracts import (
+        ArtDirection,
+        BatchCreate,
+        BusinessFields,
+    )
+
+    def build(count: int):
+        return BatchCreate(
+            template_id="template-1",
+            count=count,
+            business_fields=BusinessFields(product_name="Canvas bag", product_category="bags"),
+            listing_fields=listing_fields(),
+            generation_layout="column_v1",
+            art_direction=ArtDirection(scene="木质岛台", lighting="右后方侧逆光"),
+        )
+
+    assert build(4).generation_layout == "column_v1"
+    assert build(200).art_direction.scene == "木质岛台"
+    for invalid in (1, 2, 6, 202):
+        with pytest.raises(ValidationError):
+            build(invalid)
+    # legacy 批次仍允许 1–200 的任意整数。
+    legacy = BatchCreate(
+        template_id="template-1",
+        count=6,
+        business_fields=BusinessFields(product_name="Canvas bag", product_category="bags"),
+        listing_fields=listing_fields(),
+    )
+    assert legacy.generation_layout == "legacy"

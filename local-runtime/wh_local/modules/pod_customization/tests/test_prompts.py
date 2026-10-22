@@ -370,6 +370,51 @@ def test_direct_listing_prompt_carries_the_static_60_30_10_rule() -> None:
     assert "DOMINANT BASE" in prompt and "STRUCTURAL ACCENT" in prompt and "POP HIGHLIGHT" in prompt
 
 
+def _structure_facts() -> dict:
+    return {
+        "part_count": 4,
+        "tiers": 4,
+        "units_per_tier": 14,
+        "height_mm": 31,
+        "thickness_mm": 10.2,
+        "material": "clear acrylic",
+        "transparency": "high",
+        "surface_finish": "glossy",
+        "confidence": {"tiers": 0.9, "units_per_tier": 0.9, "material": 0.9},
+    }
+
+
+def test_direct_listing_prompt_injects_structure_anchor_blocks() -> None:
+    prompt = build_direct_listing_prompt(
+        BusinessFields(product_name="Acrylic display stand"),
+        "",
+        structure_facts=_structure_facts(),
+        reference_view_roles=("primary", "side", "top"),
+    )
+    assert "STRUCTURE FACTS" in prompt
+    assert "exactly 4 vertical tiers" in prompt
+    assert "TRANSPARENT MATERIAL LOCK" in prompt
+    assert "REFERENCE VIEWS CONTRACT" in prompt
+    assert "Image 2 = SIDE elevation" in prompt
+
+
+def test_direct_listing_prompt_without_structure_anchor_stays_unchanged() -> None:
+    prompt = build_direct_listing_prompt(BusinessFields(product_name="托特包"), "")
+    assert "STRUCTURE FACTS" not in prompt
+    assert "PART COUNT & SIZE LOCK" not in prompt
+    assert "TRANSPARENT MATERIAL LOCK" not in prompt
+    assert "REFERENCE VIEWS CONTRACT" not in prompt
+
+
+def test_direct_listing_prompt_skips_transparent_lock_for_opaque_material() -> None:
+    facts = {**_structure_facts(), "material": "canvas", "transparency": "none"}
+    prompt = build_direct_listing_prompt(
+        BusinessFields(product_name="帆布托特包"), "", structure_facts=facts
+    )
+    assert "STRUCTURE FACTS" in prompt
+    assert "TRANSPARENT MATERIAL LOCK" not in prompt
+
+
 def test_style_prompt_renders_batch_scene_mood_when_provided() -> None:
     prompt = _style_prompt({"scene_mood": "暖光木质厨房"}, style_index=1)
     assert "BATCH SCENE MOOD (this batch): 暖光木质厨房." in prompt
@@ -429,3 +474,32 @@ def test_style_prompt_renders_color_harmony_tiers_with_user_colors() -> None:
     )
     assert "color_harmony=" in prompt
     assert "base≈" in prompt and "(60%)" in prompt and "(30%)" in prompt and "(10%)" in prompt
+
+
+def test_prompt_locks_artwork_layout_across_the_four_panels() -> None:
+    """四格共用主图确定的图案布局：只换机位/景别，不得把主元素挪位或改相对尺度。"""
+
+    base = build_direct_listing_prompt(BusinessFields(product_name="托特包"), "")
+    prompt = build_style_listing_prompt(
+        base, style_index=1, attempt=1, style_elements={"hero": "树"}
+    )
+
+    assert "ARTWORK LAYOUT LOCK" in base
+    assert "Panel 1 (top-left) defines the printed layout ONCE" in base
+    assert "near a side edge, at the top, in a corner" in base
+    # 默认面板描述：细节格是同一布局的放大；换视角时图案随商品刚性旋转。
+    assert "literal zoom into Panel 1's layout" in base
+    assert "rotates rigidly with the product" in base
+    # PART 3 再钉一次，避免长提示词里被稀释。
+    assert "四格图案布局锁定" in prompt
+    assert "禁止把主元素挪到侧边、顶部" in prompt
+
+
+def test_flat_product_panels_keep_the_same_artwork_layout() -> None:
+    """平铺产品的四格也必须共用同一张图案布局，只允许俯拍裁切。"""
+
+    base = build_direct_listing_prompt(BusinessFields(product_name="正方形桌布"), "平铺，无下挂")
+
+    assert "same artwork layout shown in" in base
+    assert "never a re-arranged or re-scaled version of the artwork" in base
+    assert "using the same layout as Panel 1" in base

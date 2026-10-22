@@ -303,3 +303,21 @@ def test_build_direct_listing_prompt_without_composition_uses_default_panel_role
     assert "Panel 1 — PRIMARY IMAGE (top-left)" in prompt
     assert "Panel 4 — MATERIAL IMAGE (bottom-right)" in prompt
     assert "Final check on the fixed order by position" in prompt
+
+
+def test_full_default_composition_is_the_differentiated_four_round_set(tmp_path: pathlib.Path) -> None:
+    """全定制的系统默认模板必须是「四轮差异化」；复刻/裂变仍是旧四格口径。"""
+    service = _service(tmp_path, _CompositionRuntime(), _Coordinator())
+    actor = _actor()
+
+    full = service.list_compositions(actor, scope="full")["templates"][0]
+    replica = service.list_compositions(actor, scope="replica")["templates"][0]
+
+    assert full["layout"] == "role_v1"
+    assert "45-degree" in full["panels"]["panel_1"]["en"]
+    assert "about 90%" in full["panels"]["panel_2"]["en"]
+    assert "one-tenth" in full["panels"]["panel_3"]["en"]
+    assert "about 60%" in full["panels"]["panel_4"]["en"]
+
+    assert replica["layout"] == "panel_v1"
+    assert "about 90%" not in replica["panels"]["panel_2"]["en"]
