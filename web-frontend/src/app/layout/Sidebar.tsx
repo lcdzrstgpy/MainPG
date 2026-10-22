@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { BRAND_LOGO_URL, BRAND_MARK_URL, BRAND_NAME } from "../../shared/brand";
 import { AppleAppGlyph } from "../../shared/components/AppleAppGlyph";
 import { slidingIndicatorStyle, useSlidingIndicator } from "../../shared/hooks/useSlidingIndicator";
@@ -29,6 +30,32 @@ const SUBMENU_ACTIVE_SELECTOR = ":scope > .is-active";
 export function Sidebar({ collapsed, activeId, expandedGroupId, modules, onOpenModule, onToggleGroup, onHoverChange, activePanelId = null, onOpenPanel, badges = {} }: SidebarProps) {
   const menuIndicator = useSlidingIndicator<HTMLElement>(MENU_ACTIVE_SELECTOR, [collapsed, activeId, expandedGroupId]);
   const submenuIndicator = useSlidingIndicator<HTMLDivElement>(SUBMENU_ACTIVE_SELECTOR, [collapsed, activeId, expandedGroupId, activePanelId]);
+
+  /**
+   * 子菜单浮层展开后夹回视口内。
+   *
+   * dock 在右侧，个人中心是最后一个（最低的）图标，浮层向下展开时经常没有空间——
+   * 1100×540 这类扁窗口下实测浮层从 y=391 开始、底部到 761，超出视口 313px，
+   * 后面几项被窗口下沿切掉（2026-10-22 用户反馈「下面的显示不全」）。
+   * 之前只调 max-height 不够，那治不了「起点太靠下」。这里展开后量一次，
+   * 整体上下平移到视口内，与触发项的相对位置保持不变。
+   */
+  useEffect(() => {
+    if (!expandedGroupId) return;
+    const frame = window.requestAnimationFrame(() => {
+      const pop = document.querySelector<HTMLElement>(".sidebar-submenu.is-expanded");
+      if (!pop) return;
+      pop.style.transform = "";
+      const rect = pop.getBoundingClientRect();
+      const overflowBottom = rect.bottom - window.innerHeight;
+      const overflowTop = -rect.top;
+      let shift = 0;
+      if (overflowBottom > 0) shift -= overflowBottom + 8;
+      if (overflowTop > 0) shift += overflowTop + 8;
+      if (shift !== 0) pop.style.transform = `translateY(${Math.round(shift)}px) scale(1)`;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [expandedGroupId, collapsed]);
 
   return (
     <aside

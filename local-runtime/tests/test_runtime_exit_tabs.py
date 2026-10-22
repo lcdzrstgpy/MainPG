@@ -197,3 +197,95 @@ def test_cleanup_step_failure_does_not_skip_the_sidecar_cleanup(monkeypatch) -> 
 
     assert calls == ["clipforge-sidecar"]
     assert exits == [0]
+
+
+class _StopWatchdog(Exception):
+    """只跑一轮看门狗循环用的哨兵。"""
+
+
+def _run_one_watchdog_round(
+    controller: _RuntimeExitController, monkeypatch, *, stale_request: bool = True
+) -> list[str]:
+    """跑一轮 _run_watchdog 的判定，返回被调用的退出原因。"""
+    import time
+
+    import wh_local.app.main as main_module
+
+    exits: list[str] = []
+    monkeypatch.setattr(controller, "_exit", exits.append)
+    with controller._lock:
+        controller._ever_connected = True   # 走「心跳断了」分支，而非「最后一个页面关闭」
+        controller._clients.clear()
+        controller._bye_deadline = None
+        # 默认把「最近请求」推到很久以前：否则它会和心跳一起挡住退出。
+        if stale_request:
+            controller._last_request_at = time.monotonic() - 10_000
+
+    calls = {"n": 0}
+
+    def _twice(_seconds: float) -> None:
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise _StopWatchdog
+
+    monkeypatch.setattr(main_module.time, "sleep", _twice)
+    try:
+        controller._run_watchdog()
+    except _StopWatchdog:
+        pass
+    return exits
+
+
+def test_watchdog_stays_alive_while_work_is_in_flight(monkeypatch) -> None:
+    """心跳中断 ≠ 用户走了：有任务在跑时看门狗不得自杀。
+
+    系统休眠 / 浏览器冻结标签页都会让 sendBeacon 停发，而任务还在后端跑着。原来
+    这里直接退出，把任务取消并按冻结积分 50% 结算，用户回来只看到「本地服务掉线
+    了」+ 任务没了 + 一笔扣费（2026-10-22 定位）。
+    """
+    controller = _controller(monkeypatch)
+    controller.set_busy_probe(lambda: True)
+    assert _run_one_watchdog_round(controller, monkeypatch) == [], "有任务在跑时不得退出"
+
+
+def test_watchdog_exits_when_idle_and_no_work(monkeypatch) -> None:
+    """没任务、也没心跳 → 照旧退出，保持「关页即停」原语义不变。"""
+    controller = _controller(monkeypatch)
+    controller.set_busy_probe(lambda: False)
+    assert _run_one_watchdog_round(controller, monkeypatch) == ["frontend heartbeat idle timeout"]
+
+
+def test_watchdog_exits_when_no_busy_checker_wired(monkeypatch) -> None:
+    """没接探测（服务器环境）→ 按「没活儿」处理，不能因为漏接就永不退出。"""
+    controller = _controller(monkeypatch)
+    assert _run_one_watchdog_round(controller, monkeypatch) == ["frontend heartbeat idle timeout"]
+
+
+def test_watchdog_stays_alive_when_a_recent_request_arrived(monkeypatch) -> None:
+    """最近还有 HTTP 请求 → 不退出。
+
+    POD / 组合套装 / AI 视频这些模块没有自己的任务计数接口，靠这条兜住：它们的
+    页面本来就在轮询，有请求就说明还有人在用。
+    """
+    controller = _controller(monkeypatch)
+    controller.set_busy_probe(lambda: False)
+    assert _run_one_watchdog_round(controller, monkeypatch, stale_request=False) == []
+
+
+def test_watchdog_ignores_sleep_gap(monkeypatch) -> None:
+    """系统休眠/睡眠的时间不计入「没人用」。
+
+    用户合盖半小时回来，后端不该已经把自己判成无人并退出（用户角度就是「一起来
+    就掉线」）。墙钟跳变量会把这段时间从所有 monotonic 锚点上扣掉。
+    """
+    import time
+
+    controller = _controller(monkeypatch)
+    controller.set_busy_probe(lambda: False)
+    with controller._lock:
+        # 最后一次活动发生在「刚睡着」那一刻：合盖前用户还在用。
+        controller._last_request_at = time.monotonic() - 3600
+        controller._last_tick_wall = time.time() - 3600   # 刚从 1 小时休眠中醒来
+    assert (
+        _run_one_watchdog_round(controller, monkeypatch, stale_request=False) == []
+    ), "睡眠时间不得计入 idle"

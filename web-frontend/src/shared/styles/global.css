@@ -524,9 +524,12 @@ html[data-topbar-collapse="on"] .avatar-preview-layer {
     transition-delay: 0s;
   }
 
-  /* 个人中心有 9 个面板，收起态浮层给足高度，尽量一屏看全。 */
+  /* 个人中心有 9 个面板，收起态浮层给足高度，尽量一屏看全。
+     2026-10-22：原来写 min(440px, 100vh-120px)，1100×540 的扁窗口下算出 328px，
+     装不下 9 项（约 350px），最后一项被切。贴边交给 Sidebar.tsx 展开后的视口夹取，
+     这里只留极端情况的兜底，所以放宽到几乎整个视口高。 */
   .sidebar-card.is-collapsed .sidebar-submenu.is-panel-group {
-    max-height: min(440px, calc(100vh - 120px));
+    max-height: min(560px, calc(100vh - 24px));
   }
 
   .sidebar-card.is-collapsed .sidebar-submenu-inner {
@@ -2460,6 +2463,10 @@ html:not([data-ui-mode="apple"]) .tab-strip[data-indicator-ready="true"] > .page
 }
 .backend-resume-toast-close:hover {
   background: var(--theme-primary-light, #fff7ed);
+}
+/* 「后端无响应，但有任务在跑」的降级提示：只换描边色提醒，不糊整屏。 */
+.backend-resume-toast--warn {
+  border-color: rgba(217, 119, 6, .55);
 }
 @keyframes backend-resume-toast-in {
   from { opacity: 0; transform: translateX(-50%) translateY(-8px); }

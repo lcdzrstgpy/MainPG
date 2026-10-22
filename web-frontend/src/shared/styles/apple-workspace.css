@@ -328,7 +328,12 @@ html[data-topbar-collapse="on"][data-ui-mode="apple"] .topbar-card.is-stuck .top
 
 [data-ui-mode="apple"] .sidebar-submenu.dock-popover::after { display: none; }
 [data-ui-mode="apple"] .sidebar-submenu.dock-popover.is-expanded {
-  max-height: 260px;
+  /* 不能写死 260px：个人中心有 9 个菜单项（约 350px），第 5 项开始就被切掉
+     （2026-10-22 用户反馈「下面的显示不全」）。
+     高度上限只用来兜底极端窗口；真正的贴边由 Sidebar.tsx 展开后的视口夹取负责，
+     所以这里可以放宽到几乎整个视口高，让 9 项一次排完、不必滚动。 */
+  max-height: min(560px, calc(100vh - 24px));
+  overflow-y: auto;
   margin-top: 6px;
   padding: 5px;
   visibility: visible;
