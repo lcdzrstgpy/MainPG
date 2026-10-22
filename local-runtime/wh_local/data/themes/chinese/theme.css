@@ -560,9 +560,16 @@
   border-color: rgba(63, 84, 78, 0.35);
 }
 
+/* 激活态不能画自己的边框/描边：这块的深绿药丸是滑块(.collection-tab-thumb)画的，
+   按钮本身是透明的、圆角 6px，而滑块圆角 999px —— 按钮那圈 inset 描边会露出一个
+   「方框」包在药丸外面（2026-10-22 用户反馈「这个主题有方框」）。其他主题没这条
+   规则，所以都没有这个现象。
+   下面刻意把边框与描边清掉，让视觉完全交给滑块。 */
 [data-theme="chinese"] .collection-workspace-tabs button.is-active {
   border-radius: 6px;
-  box-shadow: inset 0 0 0 1px rgba(63, 84, 78, 0.28);
+  border-color: transparent;
+  box-shadow: none;
+  background: transparent;
 }
 
 [data-theme="chinese"] :is(.dashboard-page, .mac-home) .mac-continue-grid > button,
