@@ -636,7 +636,12 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     app.include_router(create_changelog_router(changelog_manager))
 
     @app.get("/health")
-    def health() -> dict[str, Any]:
+    async def health() -> dict[str, Any]:
+        # 必须是 async：同步端点会被 FastAPI 丢进 anyio 线程池（默认 40 槽，与所有
+        # 重任务共用）。低配机器跑 AI 出图 / POD 渲染时线程池被占满，探活请求排队，
+        # 前端 4 秒超时即判「本地服务掉线」——2026-10-22 定位到的误报根因。
+        # 这里函数体只拼一个 dict，不碰 DB、不碰磁盘，async 后连线程都不占。
+        #
         # app_version 是给启动器用的：端口上如果跑着「上个版本」的旧进程，
         # 光看 database_path 完全一样，复用之后用户看到的就是旧界面
         # （2026-10-19 排查「升级后还是老样子」时确认的缺口）。

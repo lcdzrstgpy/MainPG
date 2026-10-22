@@ -11,6 +11,17 @@ import { hasRunningTask } from "../runtime/taskActivity";
 const AUTO_RECHECK_INTERVAL_MS = 5_000;
 /** 单次探活超时：防止后端半死（端口在但请求不响应）时探测一直悬着。 */
 const HEALTH_CHECK_TIMEOUT_MS = 4_000;
+/**
+ * 弹遮罩前的确认探活超时。
+ *
+ * 这里**故意比自动探活宽松**：低配机器跑重任务时 CPU/磁盘被占满，后端可能十几秒
+ * 才回得了一次请求，那是「忙」不是「死」。放宽到 6 秒，宁可晚一点弹，也别误弹。
+ */
+const CONFIRM_PROBE_TIMEOUT_MS = 6_000;
+/** 第一次确认失败后隔多久再试一次（两次都失败才认）。 */
+const CONFIRM_PROBE_RETRY_DELAY_MS = 2_000;
+/** 第二次确认的超时（已经给过 6 秒机会了，这轮不需要那么久）。 */
+const CONFIRM_PROBE_RETRY_TIMEOUT_MS = 3_000;
 /** 协议拉起本程序后，等待后端就绪的预算（双击启动一般 3~10 秒）。 */
 const RESTART_WAIT_BUDGET_MS = 30_000;
 /** 重启等待期间的探活节奏。 */
@@ -43,11 +54,11 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-/** 探测本地后端健康端点；恢复返回 true。 */
-async function probeHealth(): Promise<boolean> {
+/** 探测本地后端健康端点；恢复返回 true。超时按调用场景给，见上方常量。 */
+async function probeHealth(timeoutMs: number = HEALTH_CHECK_TIMEOUT_MS): Promise<boolean> {
   try {
     const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(), HEALTH_CHECK_TIMEOUT_MS);
+    const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
     try {
       // 探后端真实健康端点：打包版同源直连 8010；开发态由 vite 代理 /health 转发。
       const response = await fetch(backendHealthUrl(), { cache: "no-store", signal: controller.signal });
@@ -88,6 +99,8 @@ export function BackendOfflineNotice() {
   const [phase, setPhase] = useState<RetryPhase>("idle");
   /** 「已恢复、但为保任务未整页刷新」的提示条。 */
   const [resumeNotice, setResumeNotice] = useState(false);
+  /** 「后端无响应，但有任务在跑」——只出提示条，不糊整屏。 */
+  const [degraded, setDegraded] = useState(false);
   const timerRef = useRef<number | null>(null);
   const offlineRef = useRef(false);
   const recoveringRef = useRef(false);
@@ -103,6 +116,7 @@ export function BackendOfflineNotice() {
       setPhase("idle");
       // 重新掉线时收起上一次的「已恢复」提示条，避免两条浮层同时在场。
       setResumeNotice(false);
+      setDegraded(false);
       setOffline(true);
     };
     /**
@@ -114,9 +128,23 @@ export function BackendOfflineNotice() {
      */
     const confirmOffline = async () => {
       const epoch = onlineEpochRef.current;
-      if (await probeHealth()) return;
+      // 第一次确认：给足 6 秒。低配机器跑重任务时后端可能只是「忙」，不是死。
+      if (await probeHealth(CONFIRM_PROBE_TIMEOUT_MS)) return;
       // 探活期间页面恢复了在线（别的请求成功）→ 不再弹。
       if (onlineEpochRef.current !== epoch) return;
+      // 第二次确认：隔 2 秒再来，仍然没响应才认账。
+      await delay(CONFIRM_PROBE_RETRY_DELAY_MS);
+      if (onlineEpochRef.current !== epoch) return;
+      if (await probeHealth(CONFIRM_PROBE_RETRY_TIMEOUT_MS)) return;
+      if (onlineEpochRef.current !== epoch) return;
+      // 有任务在跑时绝不整屏糊住界面：用户正盯着进度，遮罩会让他看不到也动不了。
+      // 而且「忙到答不上话」和「真死了」此刻分不清——降级成非模态提示条，任务照跑、
+      // 进度照刷，恢复后自动收起。
+      const tasksBusy = hasRunningTask();
+      if (tasksBusy) {
+        setDegraded(true);
+        return;
+      }
       showOffline();
     };
     const goOffline = () => {
@@ -138,6 +166,7 @@ export function BackendOfflineNotice() {
       if (offlineRef.current && hasRunningTask()) setResumeNotice(true);
       setPhase("idle");
       setOffline(false);
+      setDegraded(false);
       setRetrying(false);
     };
     window.addEventListener(BACKEND_OFFLINE_EVENT, goOffline);
@@ -155,6 +184,7 @@ export function BackendOfflineNotice() {
     // 这里只收起提示，让页面自己继续轮询恢复。
     if (hasRunningTask()) {
       setOffline(false);
+      setDegraded(false);
       setResumeNotice(true);
       return;
     }
@@ -165,16 +195,16 @@ export function BackendOfflineNotice() {
     window.location.reload();
   }, []);
 
-  // 弹窗期间自动探活：后端恢复后用户不操作也能自动刷新回工作台。
+  // 弹窗/降级提示期间自动探活：后端恢复后用户不操作也能自动刷新回工作台。
   useEffect(() => {
-    if (!offline) return;
+    if (!offline && !degraded) return;
     const timer = window.setInterval(() => {
       void probeHealth().then((healthy) => {
         if (healthy) reloadWhenRecovered();
       });
     }, AUTO_RECHECK_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [offline, reloadWhenRecovered]);
+  }, [offline, degraded, reloadWhenRecovered]);
 
   // 页面被浏览器「捡回来」时自愈：
   // ① 从 bfcache 恢复（pageshow.persisted）→ 整页 DOM 与模块状态都是旧的，
@@ -215,7 +245,7 @@ export function BackendOfflineNotice() {
     return () => window.clearTimeout(timer);
   }, [resumeNotice]);
 
-  if (!offline && !resumeNotice) return null;
+  if (!offline && !resumeNotice && !degraded) return null;
 
   const retry = async () => {
     if (retrying) return;
@@ -258,6 +288,24 @@ export function BackendOfflineNotice() {
 
   return (
     <>
+      {degraded && !offline && (
+        <div className="backend-resume-toast backend-resume-toast--warn" role="status">
+          <span className="backend-resume-toast-text">
+            本地服务暂时没有响应，正在自动重连。任务还在跑，进度可能延迟更新。
+          </span>
+          <button
+            type="button"
+            className="backend-resume-toast-close"
+            onClick={() => {
+              void probeHealth(HEALTH_CHECK_TIMEOUT_MS).then((healthy) => {
+                if (healthy) reloadWhenRecovered();
+              });
+            }}
+          >
+            立即重试
+          </button>
+        </div>
+      )}
       {resumeNotice && (
         <div className="backend-resume-toast" role="status">
           <span className="backend-resume-toast-text">

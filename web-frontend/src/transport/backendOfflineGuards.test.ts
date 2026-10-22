@@ -17,7 +17,10 @@ test("失联判定必须经过确认窗口，不允许单次失败就直接弹�
   const src = readClient();
   const m = src.match(/BACKEND_OFFLINE_CONFIRM_MS = ([\d_]+)/);
   const confirmMs = m ? Number(m[1].replace(/_/g, "")) : 0;
-  assert.ok(confirmMs >= 3000, `失联确认窗口应 >= 3000ms（实际 ${confirmMs}）`);
+  // 2026-10-22：门槛从 3s 抬到 10s。用户的办公机配置普遍不高，跑 AI 出图 / POD
+  // 渲染时后端十几秒回不了一次请求是常态（是「忙」不是「死」），6s 窗口会被正常
+  // 负载凑满，表现为「一处理任务就弹掉线」。
+  assert.ok(confirmMs >= 10000, `失联确认窗口应 >= 10000ms（实际 ${confirmMs}）`);
 
   const start = src.indexOf("function notifyBackendOffline");
   assert.ok(start > -1, "client.ts 应有 notifyBackendOffline");
@@ -27,6 +30,21 @@ test("失联判定必须经过确认窗口，不允许单次失败就直接弹�
     body.includes("dispatchEvent") && body.includes("BACKEND_OFFLINE_EVENT"),
     "定时器回调仍需广播离线事件",
   );
+});
+
+test("有任务在跑时不得弹整屏遮罩，只能降级成提示条", () => {
+  const notice = readNotice();
+  const start = notice.indexOf("const confirmOffline = async");
+  const body = notice.slice(start, notice.indexOf("\n    };", start));
+  assert.ok(body.includes("hasRunningTask()"), "confirmOffline 要判断有没有任务在跑");
+  const degradedIdx = body.indexOf("setDegraded(true)");
+  const showIdx = body.indexOf("showOffline()");
+  assert.ok(degradedIdx > -1, "有任务时应走降级分支（setDegraded）");
+  assert.ok(
+    degradedIdx < showIdx,
+    "降级分支必须在 showOffline 之前 return，否则遮罩照样糊住用户",
+  );
+  assert.ok(notice.includes("backend-resume-toast--warn"), "应渲染降级提示条");
 });
 
 test("开发态「重新连接」不得拉起 mainpg:// 协议", () => {
@@ -83,12 +101,14 @@ test("探活成功必须复位失联状态机，否则后续掉线不再弹提�
 // --------------------------------------------------------------------------- //
 // 2026-10-19：「很容易就弹掉线」——判定过敏感的三处结构性原因
 // --------------------------------------------------------------------------- //
-test("弹整屏遮罩前必须主动探活，不能只凭「6 秒没成功」", () => {
+test("弹整屏遮罩前必须主动探活，不能只凭「窗口内没成功」", () => {
   const notice = readNotice();
   const start = notice.indexOf("const confirmOffline = async");
   assert.ok(start > -1, "BackendOfflineNotice 应有 confirmOffline（弹前探活）");
   const body = notice.slice(start, notice.indexOf("\n    };", start));
-  const probeIdx = body.indexOf("await probeHealth()");
+  // 2026-10-22：探活改带超时参数（确认场景 6s / 重试 3s，比自动探活宽松），
+  // 所以这里只匹配调用本身，不再锁死无参形式。
+  const probeIdx = body.search(/await probeHealth\(/);
   const showIdx = body.indexOf("showOffline()");
   assert.ok(probeIdx > -1, "confirmOffline 必须先探活");
   assert.ok(showIdx > probeIdx, "showOffline 只能在探活失败之后调用");

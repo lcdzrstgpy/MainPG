@@ -2461,6 +2461,10 @@ html:not([data-ui-mode="apple"]) .tab-strip[data-indicator-ready="true"] > .page
 .backend-resume-toast-close:hover {
   background: var(--theme-primary-light, #fff7ed);
 }
+/* 「后端无响应，但有任务在跑」的降级提示：只换描边色提醒，不糊整屏。 */
+.backend-resume-toast--warn {
+  border-color: rgba(217, 119, 6, .55);
+}
 @keyframes backend-resume-toast-in {
   from { opacity: 0; transform: translateX(-50%) translateY(-8px); }
   to { opacity: 1; transform: translateX(-50%) translateY(0); }
