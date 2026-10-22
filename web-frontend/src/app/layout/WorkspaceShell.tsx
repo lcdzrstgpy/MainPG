@@ -153,6 +153,19 @@ const POD_MODULE_IDS: ReadonlySet<WorkspaceModuleId> = new Set<WorkspaceModuleId
   "pod_fission",
 ]);
 
+/**
+ * 「尺寸画布返回 N 项」横幅只在相关模块显示。
+ *
+ * 它原来挂在 .content-card 顶部、不判模块，于是用户在个人中心、AI 处理、核价
+ * 等任何页面都会看到「尺寸画布要审核」。尺寸画布的产出最终到产品处理的预检页
+ * 审核，所以 product_processing 必留；dimension_canvas 也留 —— 用户刚发布完、
+ * 还停在画布页时这条提示才有意义。
+ */
+const DIMENSION_NOTICE_MODULE_IDS: ReadonlySet<string> = new Set([
+  "product_processing",
+  "dimension_canvas",
+]);
+
 
 type RestoredWorkspaceTabs = {
   tabs: WorkspaceTab[];
@@ -1063,7 +1076,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
               <button type="button" onClick={() => setWorkspaceNotice("")} aria-label="关闭提示">×</button>
             </div>
           )}
-          {dimensionNotifications[0] && (
+          {dimensionNotifications[0] && DIMENSION_NOTICE_MODULE_IDS.has(activeModuleId) && (
             <div className="workspace-notice" role="status">
               <span>↔</span>
               <strong>尺寸画布返回 {dimensionNotifications[0].completedCount} 项</strong>
