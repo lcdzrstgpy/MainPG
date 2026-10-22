@@ -13,6 +13,9 @@
 - 第三方包：uvicorn / qcloud_cos / rapidocr_onnxruntime / onnxruntime / openpyxl 收集完整
   （含数据文件与 DLL，避免动态加载缺失）。
 """
+import os
+import re
+
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all
@@ -154,6 +157,33 @@ a = Analysis(
     excludes=_PYSIDE_EXCLUDES,
     noarchive=False,
 )
+
+# ---------------------------------------------------------------------------
+# 剔除「毒」二进制：PyInstaller 会顺着 PATH / 第三方包把系统里的 ICU 与
+# PostgreSQL 版 OpenSSL 一起拖进 _internal 根目录。它们和随包的 Qt6Core.dll
+# 版本不匹配（Windows 报 ERROR_PROC_NOT_FOUND / 127），导致启动卡片加载
+# QtWidgets 失败、静默降级——1.5.8/1.5.9 用户端没有卡片就是这个原因。
+# 与 MainPG-Launcher.spec 保持同一套过滤规则，两边不能只修一个。
+_ICU_RE = re.compile(r"^icu[a-z]+\d*\.dll$", re.IGNORECASE)
+
+
+def _strip_poison_binaries(entry) -> bool:
+    dest = entry[0] if isinstance(entry[0], str) else ""
+    src = entry[1] if isinstance(entry[1], str) else ""
+    base = os.path.basename(dest)
+    if _ICU_RE.match(base):
+        return True
+    if "PostgreSQL" in src and base in ("libcrypto-3-x64.dll", "libssl-3-x64.dll"):
+        return True
+    return False
+
+
+_removed = [entry for entry in a.binaries if _strip_poison_binaries(entry)]
+a.binaries = [entry for entry in a.binaries if not _strip_poison_binaries(entry)]
+if _removed:
+    print("[workbench.spec] 已剔除不兼容的 ICU/OpenSSL（修复 Qt 卡片加载）：")
+    for entry in _removed:
+        print(f"[workbench.spec]   - {entry[0]}  <- {entry[1]}")
 
 pyz = PYZ(a.pure)
 

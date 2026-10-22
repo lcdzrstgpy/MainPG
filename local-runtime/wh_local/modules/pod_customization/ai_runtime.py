@@ -252,10 +252,9 @@ class PodCustomizationAiRuntime(AiRuntime):
         """Reuse the established local four-grid splitter; no AI call is made.
 
         在既有的"裁边 → 放大到 800×800"之前加一层**清晰化**：上游母图实测 1254×1254，
-        拆四格后每格原生仅约 627×627，插值放大会发软；这里默认走 ONNX 4× 超分重建纹理
-        边界再降到 800（失败自动回退轻度 USM 锐化，不产生新细节，参数见 media_enhance）。
-        默认开启，`WH_POD_IMAGE_ENHANCE=0` 可一键回退，`WH_POD_IMAGE_ENHANCE_MODE=usm`
-        可强制只做锐化。
+        拆四格后每格原生仅约 627×627，插值放大会发软；这里默认只做轻度 USM 锐化，
+        需要 ONNX 4× 超分时显式设 `WH_POD_IMAGE_ENHANCE_MODE=onnx`（超分峰值内存高，
+        批量烧图容易把用户电脑的 CPU/内存打满）。`WH_POD_IMAGE_ENHANCE=0` 可一键关闭。
         """
 
         parts = self._media.split_four_grid(
@@ -263,6 +262,8 @@ class PodCustomizationAiRuntime(AiRuntime):
             # 豆包 2K 母图拆格后每格约 1024px，已高于 800 交付尺寸：
             # 跳过 4× 超分，直接 LANCZOS 降采样 + USM，避免每格白跑 10s。
             enhance=options_from_env(upscale_when_larger=False),
+            # POD 只用四格面板：汇总图要多解码 4 张 JPEG 再建 1600² 画布，纯浪费。
+            include_summary=False,
             on_enhance_metrics=self._log_enhance_metrics,
         )
         return [part for part in parts if part.stage.startswith("grid_image_") and part.stage != "grid_image_summary"]

@@ -407,6 +407,11 @@ class ProductImageProcessor:
         self._provider_health_lock = threading.Lock()
         self._provider_transient_failures: dict[str, int] = {}
         self._provider_cooldown_until: dict[str, float] = {}
+        # COS 客户端复用：每次发布新建客户端等于每次新建 TLS 连接池，POD 每款 4 张
+        # 面板时会被放大成主要 I/O 开销；凭据变化（key 不同）时自动重建。
+        self._cos_client_lock = threading.Lock()
+        self._cos_client_key: tuple[str, str, str, str] | None = None
+        self._cos_client: Any = None
 
     def status(self) -> dict[str, Any]:
         config = self._config()
@@ -700,6 +705,7 @@ class ProductImageProcessor:
         *,
         enhance: EnhanceOptions | None = None,
         on_enhance_metrics: Callable[[EnhanceMetrics], None] | None = None,
+        include_summary: bool = True,
     ) -> list[GeneratedMedia]:
         """Split a generated 2x2 grid into four listing images plus its summary.
 
@@ -712,6 +718,9 @@ class ProductImageProcessor:
         ``enhance`` 为显式 opt-in：默认 ``None`` 时**输出与历史逐字节一致**（product_processing
         与 POD 共用本方法，绝不能默默改变既有两个模块的成品）。传入参数时在编码之前做清晰化
         （默认 ONNX 4× 超分后退回目标尺寸，失败自动回退 USM 锐化）——全流程只编一次码。
+
+        ``include_summary=False`` 时不生成汇总图：POD 只用四格面板，汇总图要额外解码 4 张
+        JPEG、建 1600×1600 画布再编码，纯属白烧 CPU。
         """
         try:
             from PIL import Image  # type: ignore
@@ -761,7 +770,8 @@ class ProductImageProcessor:
                     reference_count=media.reference_count,
                 )
             )
-        result.append(self.compose_grid_summary(result))
+        if include_summary:
+            result.append(self.compose_grid_summary(result))
         return result
 
     def split_premium_four_grid(self, media: GeneratedMedia) -> list[GeneratedMedia]:
@@ -1014,8 +1024,10 @@ class ProductImageProcessor:
         try:
             from PIL import Image  # type: ignore
 
-            source = Image.open(BytesIO(media.content)).convert("RGB")
-            width, height = source.size
+            # 只读文件头取尺寸，不 load() 像素：这里仅做尺寸软门槛，全尺寸解码一次
+            # （2K ≈ 12MB、4K ≈ 50MB）纯属浪费，后面 split 还会再打开一次。
+            with Image.open(BytesIO(media.content)) as probe:
+                width, height = probe.size
             if min(width, height) < 1024:
                 raise ValueError(
                     f"four-grid source is {width}x{height}; at least 1024px is required on each edge"
@@ -1029,6 +1041,39 @@ class ProductImageProcessor:
                 message = f"{message}: {detail}"
             raise MediaProcessingError(message) from exc
 
+    def _cos_client_for(self, cos: dict[str, Any]) -> Any:
+        """复用 COS 客户端（同一组凭据只建一个）。
+
+        ``CosS3Client`` 自带连接池；每发布一张图就新建一次等于每次重建 TLS 连接，
+        POD 每款 4 张面板、百款批量时会被放大成主要 I/O 开销。凭据/区域变化时
+        自动重建，避免用户改了配置还一直用旧客户端。
+        """
+
+        try:
+            from qcloud_cos import CosConfig, CosS3Client  # type: ignore
+        except ModuleNotFoundError as exc:
+            raise MediaConfigurationError("COS SDK is not installed") from exc
+        key = (
+            str(cos.get("bucket") or "").strip(),
+            str(cos.get("region") or "").strip(),
+            str(cos.get("secret_id") or "").strip(),
+            str(cos.get("secret_key") or "").strip(),
+        )
+        with self._cos_client_lock:
+            if self._cos_client is not None and self._cos_client_key == key:
+                return self._cos_client
+            client = CosS3Client(
+                CosConfig(
+                    Region=key[1],
+                    SecretId=key[2],
+                    SecretKey=key[3],
+                    Timeout=60,
+                )
+            )
+            self._cos_client = client
+            self._cos_client_key = key
+            return client
+
     def upload_to_cos(
         self,
         media: GeneratedMedia,
@@ -1041,10 +1086,6 @@ class ProductImageProcessor:
         required = ("bucket", "region", "secret_id", "secret_key")
         if not all(str(cos.get(key) or "").strip() for key in required):
             raise MediaConfigurationError("COS is not configured")
-        try:
-            from qcloud_cos import CosConfig, CosS3Client  # type: ignore
-        except ModuleNotFoundError as exc:
-            raise MediaConfigurationError("COS SDK is not installed") from exc
         bucket = str(cos["bucket"]).strip()
         region = str(cos["region"]).strip()
         prefix = str((config.get("updates") or {}).get("cos_prefix") or "product-processing").strip("/")
@@ -1059,15 +1100,11 @@ class ProductImageProcessor:
             ) if part
         )
         try:
-            client = CosS3Client(
-                CosConfig(
-                    Region=region,
-                    SecretId=str(cos["secret_id"]),
-                    SecretKey=str(cos["secret_key"]),
-                    Timeout=60,
-                )
+            self._cos_client_for(cos).put_object(
+                Bucket=bucket, Key=key, Body=media.content, ContentType=media.content_type
             )
-            client.put_object(Bucket=bucket, Key=key, Body=media.content, ContentType=media.content_type)
+        except MediaConfigurationError:
+            raise
         except Exception as exc:
             raise MediaProcessingError(f"COS upload failed: {_safe_error(exc)}") from exc
         return f"https://{bucket}.cos.{region}.myqcloud.com/{key}"
@@ -1123,14 +1160,7 @@ class ProductImageProcessor:
             )
             if part
         )
-        client = CosS3Client(
-            CosConfig(
-                Region=region,
-                SecretId=str(cos["secret_id"]),
-                SecretKey=str(cos["secret_key"]),
-                Timeout=60,
-            )
-        )
+        client = self._cos_client_for(cos)
 
         def exists() -> bool:
             try:
@@ -1206,18 +1236,7 @@ class ProductImageProcessor:
             or not all((bucket, region, secret_id, secret_key))
         ):
             return False
-        try:
-            from qcloud_cos import CosConfig, CosS3Client  # type: ignore
-        except ModuleNotFoundError as exc:
-            raise MediaConfigurationError("COS SDK is not installed") from exc
-        client = CosS3Client(
-            CosConfig(
-                Region=region,
-                SecretId=secret_id,
-                SecretKey=secret_key,
-                Timeout=60,
-            )
-        )
+        client = self._cos_client_for(cos)
         try:
             client.head_object(Bucket=bucket, Key=object_key)
         except Exception as exc:
@@ -1563,6 +1582,12 @@ class ProductImageProcessor:
         }
         if images:
             payload["image"] = images
+        _LOGGER.info(
+            "Ark Seedream image request | model=%s | size=%s | refs=%d",
+            payload["model"],
+            payload["size"],
+            len(images),
+        )
         global_ai_request_limiter().acquire()
         response = _SESSION.post(
             f"{str(provider['base_url']).rstrip('/')}/images/generations",

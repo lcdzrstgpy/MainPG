@@ -361,6 +361,22 @@ def test_normalize_settings_preserves_batch_image_prompt() -> None:
     assert normalized["batch_image_prompt"] == GUIDELINE
 
 
+def test_dimension_card_switch_defaults_on_and_can_be_disabled() -> None:
+    """尺寸图自动烧制默认开启；显式关闭后必须保留 False（供批次跳过烧卡）。"""
+    default = ProductProcessingService._normalize_settings({"draft_ids": [1]})
+    assert default["dimension_card"] is True
+
+    disabled = ProductProcessingService._normalize_settings(
+        {"draft_ids": [1], "dimension_card": False}
+    )
+    assert disabled["dimension_card"] is False
+
+    # API 层默认值同样是开启，避免旧客户端请求漏字段时行为倒退。
+    from wh_local.modules.product_processing.api.schemas import DraftProcessRequest
+
+    assert DraftProcessRequest(draft_ids=[1]).dimension_card is True
+
+
 # ---------------------------------------------------------------------------
 # 三条生图链路注入
 # ---------------------------------------------------------------------------
@@ -727,6 +743,32 @@ def test_premium_panel_roles_follow_selected_preset() -> None:
     assert service_module._premium_panel_roles("") == generic
 
 
+def test_preset_switches_base_grid_template() -> None:
+    """预设必须同时切换基础四宫格模板，否则平铺/人景仍然跑在影棚模板上。"""
+
+    assert service_module._preset_image_template("knolling_set") == "C"
+    assert service_module._preset_image_template("lifestyle_use") == "B"
+    assert service_module._preset_image_template("hero_proof") == "A"
+    assert service_module._preset_image_template("macro_craft") == "A"
+    assert service_module._preset_image_template("auto") == ""
+    assert service_module._preset_image_template("unknown") == ""
+
+
+def test_knolling_override_keeps_front_hero_and_forces_flat_lay() -> None:
+    """第 1 格必须保持平视白底主图，平铺只作用于第 2/3 格。"""
+
+    plan = service_module._grid_preset_panel_plan("knolling_set")
+    panel1 = next(line for line in plan.splitlines() if "Panel 1" in line)
+    assert "FRONT VIEW" in panel1
+    assert "Do NOT turn Panel 1 into a top-down shot" in panel1
+    assert "TRUE 90-degree top-down flat lay" in plan
+    assert "orthographic, no perspective" in plan
+
+    roles = service_module._grid_panel_roles("knolling_set")
+    assert "front view" in roles[0].lower()
+    assert "90-degree top-down flat lay" in roles[1]
+
+
 def test_random_preset_is_stable_per_draft_and_spreads_across_batch() -> None:
     """随机模板：同一链接重跑不变，整批链接要真的分散到四个模板上。"""
 
@@ -784,4 +826,33 @@ def test_relax_hands_free_drops_only_the_forbidding_sentences() -> None:
     assert "no hands" not in relaxed.lower()
     assert "Props must be few and neutral." in relaxed
     assert "Safe margin: keep 7% inner margin on the hero panel." in relaxed
+
+
+def test_local_ark_override_switches_provider_and_prompt_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WH_PP_IMAGE_* 本地覆盖：AI 处理出图切到方舟 Seedream，并用精简提示词档位。"""
+
+    monkeypatch.delenv("WH_IMAGE_AI_MODEL", raising=False)
+    monkeypatch.setenv("WH_PP_IMAGE_PROVIDER", "ark")
+    monkeypatch.setenv("WH_PP_IMAGE_MODEL", "doubao-seedream-5-0-flash-260915")
+
+    from wh_local.modules.product_processing.provider_config import (
+        local_image_chain,
+        resolve_ai_provider,
+    )
+
+    chain = local_image_chain()
+    assert chain is not None
+    assert chain["provider"] == "ark"
+    assert chain["base_url"] == "https://ark.cn-beijing.volces.com/api/v3"
+    assert chain["model"] == "doubao-seedream-5-0-flash-260915"
+
+    provider = resolve_ai_provider()
+    assert provider["provider"] == "ark"
+    assert provider["image_model"] == "doubao-seedream-5-0-flash-260915"
+    assert provider["image_models"] == ["doubao-seedream-5-0-flash-260915"]
+    assert provider["_sys_image_ai"]["base_url"] == "https://ark.cn-beijing.volces.com/api/v3"
+
+    assert service_module._image_prompt_profile() == "ark"
 

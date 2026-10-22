@@ -1,11 +1,12 @@
-"""电商/POD 图片“清晰化”：ONNX 超分重建细节，失败自动回落轻度锐化。
+"""电商/POD 图片“清晰化”：默认轻度锐化（USM），可选 ONNX 4× 超分重建细节。
 
-默认走 **ONNX Real-ESRGAN**（`models/realesr-general-x4v3.onnx`，4× 超分后降采样回
-目标尺寸）：上游母图 1254×1254 拆四格后每格原生约 627×627，插值放大到 800×800 会
-发软，超分能把插值丢掉的纹理边界重建回来，观感明显比单纯锐化干净。
+**默认只做 USM 锐化**：4× 超分（`models/realesr-general-x4v3.onnx`）虽然能把插值丢掉的
+纹理边界重建回来，但单次推理峰值内存数百 MB、CPU 占用高，批量烧图时容易把用户电脑的
+CPU/内存打满甚至被系统杀掉，因此默认关闭；需要更强清晰度时显式设置
+`WH_POD_IMAGE_ENHANCE_MODE=onnx`。
 
 **失败兜底**：缺模型 / onnxruntime 不可用 / 输入过大 / 推理异常时，自动回退经典 USM
-（`UnsharpMask`），保证生图永不中断。`WH_POD_IMAGE_ENHANCE_MODE=usm` 可强制只做锐化。
+（`UnsharpMask`），保证生图永不中断。
 
 能力边界：
 - ONNX 超分是**生成式重建**，会改变像素内容（对 POD 展示图实测忠实）；
@@ -13,7 +14,7 @@
 
 环境变量（非法值一律回退默认并告警，**绝不抛错阻断生图**）：
 - `WH_POD_IMAGE_ENHANCE`           1/0，默认 1（开）
-- `WH_POD_IMAGE_ENHANCE_MODE`      onnx/usm，默认 onnx
+- `WH_POD_IMAGE_ENHANCE_MODE`      onnx/usm，默认 usm（超分峰值内存高，默认关闭）
 - `WH_POD_IMAGE_ENHANCE_DEVICE`    auto/cpu，默认 auto（有可用 GPU 后端就用 GPU，CPU 兜底）
 - `WH_POD_IMAGE_ENHANCE_POST`      超分后的细结构补偿强度，默认 50，设 0 关闭
 - `WH_POD_IMAGE_ENHANCE_POST_RADIUS` 默认 0.8（半径越大越容易出白边）
@@ -27,6 +28,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -57,6 +59,14 @@ MODEL_FILENAME = "realesr-general-x4v3.onnx"
 # 超过该边长就不跑超分：4× 输出的显存/内存按平方增长，宁可回退 USM 也不能把生图拖垮。
 MODEL_MAX_INPUT_EDGE = 1024
 
+# 4× 超分单次推理峰值内存可达数百 MB（1024 输入 → 4096 输出，外加 float32 张量副本）。
+# 批量烧四格时若多路并发，峰值叠加会被系统直接杀掉，故进程内串行推理；同时把
+# onnxruntime 的 intra_op 线程压到 2，避免多个会话把 CPU 线程数堆到核数的十几倍。
+ENV_CONCURRENCY = "WH_POD_IMAGE_ENHANCE_CONCURRENCY"
+ENV_THREADS = "WH_POD_IMAGE_ENHANCE_THREADS"
+DEFAULT_CONCURRENCY = 1
+DEFAULT_THREADS = 2
+
 # USM 默认「轻度」：只补回插值放大造成的边缘发软。细线/雕刻类图案过锐会出白边光晕，
 # 因此强度刻意保守；需要更强时用环境变量单独调，不改代码。
 DEFAULT_RADIUS = 1.0
@@ -71,6 +81,38 @@ DEFAULT_POST_PERCENT = 50
 
 # 视为“关闭”的取值；空值按未设置处理（即保持默认开启）。
 _FALSY = {"0", "false", "no", "off"}
+
+
+def _env_int(name: str, default: int, *, low: int, high: int) -> int:
+    """读取整型环境变量；非法/越界时告警并回退默认，绝不抛错。"""
+
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("%s=%s 非法，回退默认 %s", name, raw, default)
+        return default
+    if not low <= value <= high:
+        logger.warning("%s=%s 超出 %s-%s，回退默认 %s", name, raw, low, high, default)
+        return default
+    return value
+
+
+def inference_concurrency() -> int:
+    """同时进行的超分推理路数（默认 1：内存峰值只留一份）。"""
+
+    return _env_int(ENV_CONCURRENCY, DEFAULT_CONCURRENCY, low=1, high=4)
+
+
+def inference_threads() -> int:
+    """单次超分推理使用的 CPU 线程数（默认 2，避免多路会话线程超额订阅）。"""
+
+    return _env_int(ENV_THREADS, DEFAULT_THREADS, low=1, high=8)
+
+
+_INFERENCE_SEMAPHORE = threading.BoundedSemaphore(inference_concurrency())
 
 
 @dataclass(frozen=True)
@@ -203,13 +245,16 @@ def _upscale(panel: Image.Image) -> Image.Image | None:
     if session is None:
         return None
     try:
-        tensor = np.asarray(panel.convert("RGB"), dtype=np.float32) / 255.0
-        tensor = np.transpose(tensor, (2, 0, 1))[None, ...]
-        input_name = session.get_inputs()[0].name
-        values = session.run(None, {input_name: tensor})
-        output = np.squeeze(values[0], axis=0)
-        output = np.clip(output * 255.0, 0.0, 255.0).astype(np.uint8)
-        return Image.fromarray(np.transpose(output, (1, 2, 0)), "RGB")
+        # 推理与张量构造都放进同一把闸门：并发时真正的内存峰值在 float32 张量与
+        # 4× 输出上，只锁 session.run 挡不住峰值叠加。
+        with _INFERENCE_SEMAPHORE:
+            tensor = np.asarray(panel.convert("RGB"), dtype=np.float32) / 255.0
+            tensor = np.transpose(tensor, (2, 0, 1))[None, ...]
+            input_name = session.get_inputs()[0].name
+            values = session.run(None, {input_name: tensor})
+            output = np.squeeze(values[0], axis=0)
+            output = np.clip(output * 255.0, 0.0, 255.0).astype(np.uint8)
+            return Image.fromarray(np.transpose(output, (1, 2, 0)), "RGB")
     except Exception as exc:  # noqa: BLE001 - 任何推理异常都要回退，不能中断生图
         logger.warning("ONNX 超分推理失败，回退 USM：%s", exc)
         return None
@@ -265,6 +310,8 @@ def _session() -> Any | None:
         session_options = ort.SessionOptions()
         session_options.log_severity_level = 3
         session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        session_options.intra_op_num_threads = inference_threads()
+        session_options.inter_op_num_threads = 1
         session = ort.InferenceSession(
             str(path), sess_options=session_options, providers=_select_providers(ort)
         )
@@ -372,7 +419,10 @@ def options_from_env(*, upscale_when_larger: bool = True) -> EnhanceOptions:
     raw_mode = (os.environ.get(ENV_MODE) or "").strip().lower()
     return EnhanceOptions(
         enabled=raw_enabled not in _FALSY,
-        mode=MODE_USM if raw_mode == MODE_USM else MODE_ONNX,
+        # 默认只做 USM 锐化：4× 超分单次峰值内存数百 MB、CPU 占用高，是用户端
+        # 「CPU/内存爆满、进程被系统杀掉」的主要来源。需要更强清晰度时显式设置
+        # WH_POD_IMAGE_ENHANCE_MODE=onnx 再开。
+        mode=MODE_ONNX if raw_mode == MODE_ONNX else MODE_USM,
         radius=_read_positive_float(ENV_RADIUS, DEFAULT_RADIUS),
         percent=_read_positive_int(ENV_PERCENT, DEFAULT_PERCENT),
         threshold=_read_positive_int(ENV_THRESHOLD, DEFAULT_THRESHOLD),

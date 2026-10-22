@@ -72,6 +72,10 @@ POD_WAIT_POLL_SECONDS: float = 5.0
 # 生图实际到达率（实测 ≈ 2.8 款/分），同时给生图留下足够核。
 POD_POSTPROCESS_WORKERS: int = 3
 
+# 本地拆图/清晰化（PIL 解码 + 编码）进程内串行：3 个后处理线程同时解码 2K 网格会
+# 抢 GIL 与内存，也会拖慢同时进行的生图线程；发布/落库仍按 3 路并行。
+_LOCAL_IMAGE_SEMAPHORE = threading.BoundedSemaphore(1)
+
 # ---- 临时诊断开关（定位「生图窗口填不满」用，定位后连同打点代码一并删除）----
 # 仅当 WH_POD_FILL_TRACE=1 时才输出回填打点日志：默认关闭，避免同步日志 I/O 影响
 # 对时序敏感的用例（如 test_four_grid_generation_and_postprocess_stay_within_image_workers）
@@ -98,6 +102,10 @@ class PodBatchCancelled(RuntimeClosedError):
 
 class PodBatchPaused(RuntimeClosedError):
     """Raised from a batch control checkpoint when the batch was paused."""
+
+
+class _StyleGridValidationError(RuntimeError):
+    """四宫格校验/拆图失败（在后处理池内抛出，由协调线程映射为 artifact_validation）。"""
 
 
 @dataclass
@@ -1545,6 +1553,9 @@ class PodBatchWorker:
         """
         image_futures: dict[Future[Any], tuple[dict[str, Any], int, str]] = {}
         postprocess_futures: dict[Future[Any], int] = {}
+        # 后处理池只负责落盘/发布并把标题 future 交回来，统一在这里回收：
+        # 池线程不再阻塞等标题，标题并发不再被后处理池大小压住。
+        title_futures: dict[Future[Any], int] = {}
         processed: set[int] = set()
         errors: dict[int, str] = {}
         pending = iter(style_indices)
@@ -1576,19 +1587,13 @@ class PodBatchWorker:
         # --------------------------------------------------------------------
 
         def cancel_inflight() -> None:
-            for future in (*image_futures, *postprocess_futures):
+            for future in (*image_futures, *postprocess_futures, *title_futures):
                 future.cancel()
 
         def submit_postprocess(style_index: int, call: dict[str, Any], grid: Any) -> None:
-            try:
-                panels, fingerprints = self._validate_style_grid(grid)
-            except PodBillingAuthorizationRequired:
-                raise
-            except Exception as exc:
-                errors[style_index] = str(exc).strip() or exc.__class__.__name__
-                batch.setdefault("_fission_failure_kinds", {})[style_index] = "artifact_validation"
-                return
-            enqueue_postprocess(style_index, call, panels, fingerprints)
+            # 拆图 + 清晰化约 0.3~30s（ONNX 超分时更久），必须放到后处理池里做：
+            # 协调线程只负责回填生图窗口，被本地图像处理占住会直接拖慢整批吞吐。
+            enqueue_postprocess(style_index, call, None, [], grid=grid)
 
         def submit_postprocess_panels(
             style_index: int, call: dict[str, Any], panels: list[Any]
@@ -1601,13 +1606,19 @@ class PodBatchWorker:
             enqueue_postprocess(style_index, call, panels, fingerprints)
 
         def enqueue_postprocess(
-            style_index: int, call: dict[str, Any], panels: list[Any], fingerprints: list[str]
+            style_index: int,
+            call: dict[str, Any],
+            panels: list[Any] | None,
+            fingerprints: list[str],
+            *,
+            grid: Any = None,
         ) -> None:
             future = self._style_postprocess_pool.submit(
                 self._process_style_grids,
                 batch,
-                [(call, None, panels, fingerprints)],
+                [(call, grid, panels, fingerprints)],
                 billing_run,
+                wait_titles=False,
             )
             postprocess_futures[future] = style_index
 
@@ -1851,7 +1862,9 @@ class PodBatchWorker:
                     style_index = postprocess_futures.pop(future)
                     _trace("收到后处理完成 款=%s | %s", style_index, _window())
                     try:
-                        future.result()
+                        pending_titles = future.result()
+                        if pending_titles:
+                            title_futures.update(pending_titles)
                         self.repository.touch_batch_progress(
                             batch["batch_id"], execution_epoch=execution_epoch
                         )
@@ -1869,6 +1882,10 @@ class PodBatchWorker:
                         pause_requested = True
                     except PodBatchCancelled:
                         raise
+                    except _StyleGridValidationError as exc:
+                        # 拆图失败仍按「素材不合格」归类，保留原来的失败原因语义。
+                        errors[style_index] = str(exc).strip() or exc.__class__.__name__
+                        batch.setdefault("_fission_failure_kinds", {})[style_index] = "artifact_validation"
                     except Exception as exc:
                         errors[style_index] = str(exc).strip() or exc.__class__.__name__
                         batch.setdefault("_fission_failure_kinds", {})[style_index] = "infrastructure"
@@ -1880,13 +1897,37 @@ class PodBatchWorker:
             if status == "pausing":
                 pause_requested = True
 
+        # 图片全部处理完后统一回收标题：失败语义与原「后处理 future 抛错」一致——
+        # 该款从 processed 移除，交给外层统一标记图片/标题失败。
+        for future in as_completed(title_futures):
+            style_index = title_futures[future]
+            try:
+                future.result()
+            except PodBillingAuthorizationRequired:
+                for pending_title in title_futures:
+                    if pending_title is not future:
+                        pending_title.cancel()
+                raise
+            except PodExecutionExpired:
+                cancel_inflight()
+                raise
+            except PodBatchCancelled:
+                raise
+            except PodBatchPaused:
+                pause_requested = True
+            except Exception as exc:
+                processed.discard(style_index)
+                errors[style_index] = str(exc).strip() or exc.__class__.__name__
+                batch.setdefault("_fission_failure_kinds", {})[style_index] = "infrastructure"
+
         return processed, errors, pause_requested, retried
 
     def _validate_style_grid(
         self,
         grid: Any,
     ) -> tuple[list[Any], list[str]]:
-        panels = self.ai_runtime.split_listing_grid(grid)
+        with _LOCAL_IMAGE_SEMAPHORE:
+            panels = self.ai_runtime.split_listing_grid(grid)
         if len(panels) != 4:
             raise RuntimeError("generated four-grid image did not yield exactly four panels")
         return panels, [hashlib.sha256(panel.content).hexdigest() for panel in panels]
@@ -2015,17 +2056,35 @@ class PodBatchWorker:
     def _process_style_grids(
         self,
         batch: dict[str, Any],
-        grids: list[tuple[dict[str, Any], Any, list[Any], list[str]]],
+        grids: list[tuple[dict[str, Any], Any, list[Any] | None, list[str]]],
         billing_run: PodBillingRun,
         execution_epoch: int | None = None,
-    ) -> None:
+        *,
+        wait_titles: bool = True,
+    ) -> dict[Future[Any], int]:
+        """落盘/发布一组四格并（可选）提交标题。
+
+        ``wait_titles=False`` 时不在这里阻塞等标题：后处理池只有 3 个线程，池内等
+        标题会把标题并发死死压到 3（标题池本身有 8 路）。批量场景由协调线程统一
+        回收返回的 future；重跑/单款路径保持 ``True``，行为与以前一致。
+        """
         execution_epoch = execution_epoch if execution_epoch is not None else billing_run.execution_epoch or None
         self._set_batch_stage(batch["batch_id"], "compositing", execution_epoch)
         semi = batch.get("mode") == "semi"
         roles = SEMI_PATTERN_ROLES if semi else LISTING_IMAGE_ROLES
         title_futures: dict[Future[Any], int] = {}
-        for call, _grid, panels, fingerprints in grids:
+        for call, grid, panels, fingerprints in grids:
             style_index = call["style_index"]
+            if panels is None:
+                # 四宫格校验/拆图/清晰化：在池线程里做，不占协调线程。
+                try:
+                    panels, fingerprints = self._validate_style_grid(grid)
+                except PodBillingAuthorizationRequired:
+                    raise
+                except Exception as exc:
+                    raise _StyleGridValidationError(
+                        str(exc).strip() or exc.__class__.__name__
+                    ) from exc
             lifestyle_public_ready = False
             for variant_index, (role, panel, fingerprint) in enumerate(
                 zip(roles, panels, fingerprints, strict=True), start=1
@@ -2138,6 +2197,15 @@ class PodBatchWorker:
                     execution_epoch=execution_epoch,
                 )
                 continue
+        if wait_titles:
+            self._await_title_futures(title_futures)
+            return {}
+        return title_futures
+
+    @staticmethod
+    def _await_title_futures(title_futures: dict[Future[Any], int]) -> None:
+        """等待标题完成；授权失效/执行过期时取消其余标题并向上抛（原语义）。"""
+
         for future in as_completed(title_futures):
             try:
                 future.result()

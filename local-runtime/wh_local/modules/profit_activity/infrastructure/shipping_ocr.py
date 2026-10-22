@@ -160,9 +160,29 @@ def _get_engine() -> Any:
             if _ENGINE is None and _ENGINE_ERROR is None:
                 try:
                     _ensure_onnx_dll_searchable()
+                    try:
+                        import cv2  # type: ignore
+
+                        cv2.setNumThreads(1)
+                    except Exception:
+                        pass
                     from rapidocr_onnxruntime import RapidOCR  # type: ignore
 
-                    _ENGINE = RapidOCR()
+                    kwargs: dict[str, int] = {}
+                    try:
+                        from ...product_processing.infrastructure.ocr_gate import (  # noqa: PLC0415
+                            engine_kwargs,
+                        )
+
+                        kwargs = engine_kwargs()
+                    except Exception:
+                        kwargs = {}
+
+                    try:
+                        _ENGINE = RapidOCR(**kwargs)
+                    except Exception:
+                        # 旧版本 RapidOCR 不认这些参数：退回默认构造（行为与之前一致）。
+                        _ENGINE = RapidOCR()
                 except Exception as exc:  # 未安装/模型下载失败/依赖缺失
                     _ENGINE_ERROR = f"{exc.__class__.__name__}: {str(exc)[:160]}"
     return _ENGINE

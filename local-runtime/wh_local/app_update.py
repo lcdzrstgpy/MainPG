@@ -17,7 +17,7 @@ from datetime import datetime
 from functools import total_ordering
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 from urllib.request import urlopen
 
 from cryptography.exceptions import InvalidSignature
@@ -739,7 +739,9 @@ class PatchManager:
                     continue
                 target = staging / entry.path
                 target.parent.mkdir(parents=True, exist_ok=True)
-                source = self._downloader(f"{release.file_base_url}/{entry.path}")
+                # urlopen 不会自动转义非 ASCII 字符（1.5.8 起补丁含中文文件名，
+                # 直接拼接会抛 UnicodeEncodeError: 'ascii' codec can't encode）。
+                source = self._downloader(f"{release.file_base_url}/{quote(entry.path, safe='/')}")
                 self._validate_response_url(source)
                 digest = hashlib.sha256()
                 file_bytes = 0

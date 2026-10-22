@@ -887,12 +887,16 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
 
   // 任务完成后的预检入口：打开「预检与导出最终版」页（生成表格 → 预检修改 → 导出最终版 → 导入店小秘）
   const openProcessingPrecheck = (taskId: number, changeSetId?: string) => {
-    if (changeSetId) {
-      const existing = tabsRef.current.find((tab) => tab.taskId === taskId && tab.dimensionChangeSetId === changeSetId);
-      if (existing) {
-        activateTab(existing.key);
-        return;
-      }
+    // 同一任务只保留一个预检页签：重复点「打开预检」会叠出多个页签，每个都在轮询
+    // 整份预检，是 WebView2 内存/CPU 被放大的常见来源。
+    const existing = tabsRef.current.find(
+      (tab) =>
+        tab.taskId === taskId &&
+        (changeSetId === undefined || tab.dimensionChangeSetId === changeSetId),
+    );
+    if (existing) {
+      activateTab(existing.key);
+      return;
     }
     precheckSequence.current += 1;
     const key = `product-processing-precheck-${precheckSequence.current}`;
@@ -975,6 +979,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
           <ProductProcessingPrecheckPage taskId={tab.taskId} initialChangeSetId={tab.dimensionChangeSetId} onOpenDimensionItem={openDimensionItem} isActive={isActive} />
         ) : (
           <ProductProcessingTaskPage
+            isActive={isActive}
             initialTaskId={tab.taskRunId}
             initialDraftIds={tab.draftIds}
             initialPremiumDraftIds={tab.premiumDraftIds}
@@ -1012,7 +1017,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         content = <PodReplicaPage isActive={isActive} />;
         break;
       case "pod_fission":
-        content = <PodFissionPage />;
+        content = <PodFissionPage isActive={isActive} />;
         break;
       case "ai_video":
         content = (

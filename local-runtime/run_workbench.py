@@ -39,6 +39,14 @@ if sys.stderr is None:
 # 浏览器插件默认只连 8010；关页即停可避免后端残留进程锁定 MainPG.exe 导致安装失败。
 os.environ.setdefault("WH_LOCAL_RUNTIME_EXIT_ON_CLOSE", "1")
 
+# 计算库线程闸门：OCR（RapidOCR 三段 onnx）与 4× 超分若按默认逻辑核数开 intra_op，
+# 多路并发时线程数会堆到核数的十几倍，CPU 直接被抢满、请求排队到前端 failed to fetch。
+# 必须在 numpy/onnxruntime 加载前设置；单会话线程数另有 WH_PRODUCT_OCR_THREADS /
+# WH_POD_IMAGE_ENHANCE_THREADS 控制。
+os.environ.setdefault("OMP_NUM_THREADS", "2")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "2")
+os.environ.setdefault("MKL_NUM_THREADS", "2")
+
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8010
 

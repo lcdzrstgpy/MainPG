@@ -130,6 +130,39 @@ def test_old_heartbeat_cannot_restore_timed_out_tab(monkeypatch) -> None:
     assert controller._clients == {}
 
 
+def test_busy_task_defers_last_tab_exit(monkeypatch) -> None:
+    """有处理任务在跑时，关页不再 60 秒后硬退（浏览器回收后台标签会误发 bye）。"""
+    controller = _controller(monkeypatch)
+    controller.set_busy_probe(lambda: True)
+    controller.touch("tab-a")
+    controller.bye("tab-a")
+    deadline = controller._bye_deadline
+    assert deadline is not None
+
+    reason = controller._exit_due(deadline + 1)
+
+    assert reason is None
+    assert controller._bye_deadline == deadline + 1 + controller._busy_grace_s
+
+
+def test_idle_timeout_waits_for_running_task(monkeypatch) -> None:
+    controller = _controller(monkeypatch)
+    controller.touch("tab-a")
+    controller._clients.clear()
+    controller.set_busy_probe(lambda: True)
+
+    assert controller._exit_due(1e9) is None
+
+
+def test_idle_timeout_exits_when_no_task_is_running(monkeypatch) -> None:
+    controller = _controller(monkeypatch)
+    controller.touch("tab-a")
+    controller._clients.clear()
+    controller.set_busy_probe(lambda: False)
+
+    assert controller._exit_due(1e9) == "frontend heartbeat idle timeout"
+
+
 def test_hard_exit_runs_every_cleanup_step_before_exiting(monkeypatch) -> None:
     controller = _controller(monkeypatch)
     calls: list[str] = []
@@ -211,14 +244,14 @@ def test_watchdog_stays_alive_while_work_is_in_flight(monkeypatch) -> None:
     了」+ 任务没了 + 一笔扣费（2026-10-22 定位）。
     """
     controller = _controller(monkeypatch)
-    controller.set_busy_checker(lambda: True)
+    controller.set_busy_probe(lambda: True)
     assert _run_one_watchdog_round(controller, monkeypatch) == [], "有任务在跑时不得退出"
 
 
 def test_watchdog_exits_when_idle_and_no_work(monkeypatch) -> None:
     """没任务、也没心跳 → 照旧退出，保持「关页即停」原语义不变。"""
     controller = _controller(monkeypatch)
-    controller.set_busy_checker(lambda: False)
+    controller.set_busy_probe(lambda: False)
     assert _run_one_watchdog_round(controller, monkeypatch) == ["frontend heartbeat idle timeout"]
 
 
@@ -235,7 +268,7 @@ def test_watchdog_stays_alive_when_a_recent_request_arrived(monkeypatch) -> None
     页面本来就在轮询，有请求就说明还有人在用。
     """
     controller = _controller(monkeypatch)
-    controller.set_busy_checker(lambda: False)
+    controller.set_busy_probe(lambda: False)
     assert _run_one_watchdog_round(controller, monkeypatch, stale_request=False) == []
 
 
@@ -248,7 +281,7 @@ def test_watchdog_ignores_sleep_gap(monkeypatch) -> None:
     import time
 
     controller = _controller(monkeypatch)
-    controller.set_busy_checker(lambda: False)
+    controller.set_busy_probe(lambda: False)
     with controller._lock:
         # 最后一次活动发生在「刚睡着」那一刻：合盖前用户还在用。
         controller._last_request_at = time.monotonic() - 3600

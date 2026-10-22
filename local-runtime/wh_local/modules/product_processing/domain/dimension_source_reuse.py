@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import re
+import threading
 from typing import Any
 
 from PIL import Image, ImageOps
@@ -18,6 +19,15 @@ _SUBJECT_FRAME_RATIO = 0.7
 _MIN_FOREGROUND_RATIO = 0.02
 _MAX_FOREGROUND_RATIO = 0.98
 _MIN_FOREGROUND_EXTENT = 0.2
+
+# rembg 每次 remove() 不传 session 时会内部新建 onnx 会话并重新加载分割权重（数百 MB、
+# 数秒），尺寸卡批量烧图等于每张都重建一次：CPU 打满、内存翻倍、进程被系统杀掉。
+# 这里与 combo_kit.autosegment 一致，进程内只建一次会话，并用信号量把推理串行化，
+# 避免「预取线程 2 路 + 渲染线程 3 路」同时各跑一份抠图。
+_SESSION: Any = None
+_SESSION_ERROR: str | None = None
+_SESSION_LOCK = threading.Lock()
+_MASK_SEMAPHORE = threading.BoundedSemaphore(1)
 
 _TOKEN_RE = re.compile(
     r"尺寸|长|宽|高|大小|规格|厘米|毫米|"
@@ -73,7 +83,14 @@ def clean_product_canvas(content: bytes, *, side: int = 800) -> bytes | None:
     """抠出商品主体并归一化到纯白 1:1 画布；不可信时返回 None。"""
 
     try:
-        image = Image.open(io.BytesIO(content)).convert("RGB")
+        opened = Image.open(io.BytesIO(content))
+        # 详情图多为 4096² JPEG：先让 libjpeg 按 1/2~1/8 抽样解码，再转 RGB，
+        # 避免为了 1280 的缩略图先把整张大图（约 50MB/张）读进内存。
+        try:
+            opened.draft("RGB", (1280, 1280))
+        except Exception:
+            pass
+        image = opened.convert("RGB")
     except Exception:
         return None
     # 抠图前先限制长边：输出只有 800px，2000px 详情图直接跑 rembg 纯属浪费。
@@ -132,8 +149,12 @@ def _subject_mask(image: Image.Image) -> Any:
         from rembg import remove  # type: ignore
     except Exception:
         return None
+    session = _mask_session()
+    if session is None:
+        return None
     try:
-        result = remove(image, only_mask=True)
+        with _MASK_SEMAPHORE:
+            result = remove(image, session=session, only_mask=True)
     except Exception:
         return None
     if isinstance(result, Image.Image):
@@ -142,3 +163,21 @@ def _subject_mask(image: Image.Image) -> Any:
         return Image.open(io.BytesIO(result))
     except Exception:
         return None
+
+
+def _mask_session() -> Any | None:
+    """懒加载并复用 rembg 会话：权重只加载一次，失败结果也缓存，避免每张图重试。"""
+
+    global _SESSION, _SESSION_ERROR
+    if _SESSION is not None or _SESSION_ERROR is not None:
+        return _SESSION
+    with _SESSION_LOCK:
+        if _SESSION is None and _SESSION_ERROR is None:
+            try:
+                from rembg import new_session  # type: ignore
+
+                _SESSION = new_session()
+            except Exception as exc:  # 权重缺失/依赖不全：后续直接走回退，不再重试
+                _SESSION_ERROR = f"{exc.__class__.__name__}: {str(exc)[:160]}"
+    return _SESSION
+

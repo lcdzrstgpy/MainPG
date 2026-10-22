@@ -306,6 +306,11 @@ class _RuntimeExitController:
         # 确认真退出前执行的「取消运行中任务并结算」回调（仅桌面端注入）。
         self._on_before_exit: Any | None = None
         self._exit_cancel_s = float(os.environ.get("WH_LOCAL_RUNTIME_EXIT_CANCEL_S", "6"))
+        # 有活跃处理任务时的退出宽限：关页/切标签被浏览器回收时不要把正在跑的任务杀掉。
+        # 与产品处理侧的「关页面最多再跑 30 分钟」安全网对齐（默认 1800 秒）。
+        self._busy_grace_s = float(os.environ.get("WH_LOCAL_RUNTIME_BUSY_EXIT_GRACE_S", "1800"))
+        # 「是否有活跃任务」探针（桌面端注入 active_task_count）；未注入时按空闲处理。
+        self._busy_probe: Any | None = None
         # 结算之后执行的「登出远端会话并撤销本地会话」回调（仅桌面端注入）。
         # 单独限时，避免被任务结算的耗时挤掉。
         self._on_release_sessions: Any | None = None
@@ -339,22 +344,18 @@ class _RuntimeExitController:
         """注入「释放会话」回调；在取消/结算回调之后执行一次。"""
         self._on_release_sessions = callback
 
-    def set_busy_checker(self, callback: Any | None) -> None:
-        """注入「现在是不是有活儿在干」的探测（仅桌面端注入）。
+    def set_busy_probe(self, callback: Any | None) -> None:
+        """注入「是否有活跃处理任务」探针（桌面端接 product_processing.active_task_count）。"""
+        self._busy_probe = callback
 
-        2026-10-22：心跳中断**不等于**用户走了。系统休眠、浏览器把标签页冻结、
-        内存压力下的节流，都会让 sendBeacon 停发，而任务还在后端跑着。原来这里
-        会直接自杀，把正在跑的任务取消并按冻结积分 50% 结算，用户回来只看到
-        「本地服务掉线了」+ 任务没了 + 被扣费。改成有活儿就继续等。
-        """
-        self._busy_checker = callback
-
-    def _has_active_work(self) -> bool:
-        if self._busy_checker is None:
+    def _busy(self) -> bool:
+        probe = self._busy_probe
+        if probe is None:
             return False
         try:
-            return bool(self._busy_checker())
-        except Exception:  # noqa: BLE001 - 探测失败一律当作「没活儿」，维持原退出行为
+            return bool(probe())
+        except Exception:
+            # 探针失败按空闲处理：不能因为查不到状态就赖着不退。
             return False
 
     def is_exiting(self) -> bool:
@@ -438,46 +439,68 @@ class _RuntimeExitController:
     def _run_watchdog(self) -> None:
         while True:
             time.sleep(self._interval_s)
-            with self._lock:
-                now = time.monotonic()
-                # 系统睡眠/休眠会让墙钟跳一大段，而这段时间里前端不可能发心跳，
-                # 更不可能发请求。把这段「没在跑」的时间从所有 monotonic 锚点上扣掉，
-                # 否则用户合盖半小时回来，后端已经把自己判成「没人用」并退出了。
-                wall = time.time()
-                gap = wall - self._last_tick_wall
-                self._last_tick_wall = wall
-                if gap > self._interval_s * 5:
-                    self._started_at += gap
-                    self._last_request_at += gap
-                    for client_id, (heartbeat, event_seq) in list(self._clients.items()):
-                        self._clients[client_id] = (heartbeat + gap, event_seq)
-                self._prune_stale_clients(now)
-                deadline = self._bye_deadline
-                has_clients = bool(self._clients)
-                ever_connected = self._ever_connected
-                started_at = self._started_at
-                last_request_at = self._last_request_at
-            if deadline is not None and now >= deadline:
-                self._exit("last frontend page closed")
-            if not has_clients and deadline is None:
-                if not ever_connected and now - started_at <= self._startup_grace_s:
-                    # 启动保护期内且从未连接过前端：不退出，给前端加载时间。
-                    continue
-                if ever_connected or now - started_at > self._idle_s:
-                    # 心跳断了不等于用户走了：系统休眠 / 浏览器冻结标签页都会让
-                    # sendBeacon 停发，而任务还在后端跑着。这时候自杀等于把任务
-                    # 取消并按 50% 结算，用户回来只剩「掉线」和一笔扣费。
-                    # 有活儿就继续等；等心跳回来（页面唤醒后会补发）。
-                    if self._has_active_work():
-                        continue
-                    # 同理：最近还有 HTTP 请求到访，就说明还有人在用（POD / 组合
-                    # 套装 / AI 视频这些模块没接任务计数，靠这条兜住）。
-                    if now - last_request_at <= self._idle_s:
-                        continue
-                    self._exit("frontend heartbeat idle timeout")
+            reason = self._exit_due(time.monotonic())
+            if reason:
+                self._exit(reason)
+
+    def _exit_due(self, now: float) -> str | None:
+        """根据当前状态判断是否应当退出；返回退出原因（None = 继续运行）。
+
+        关页退出前先看有没有活跃任务：浏览器把后台标签回收/冻结、用户切走后
+        pagehide 也会发 bye，若此时正在跑批量处理，直接退出会「取消任务 + 按 50%
+        结算」，用户看到的就是处理中途突然掉线（2026-10-21 反馈）。
+        有任务时把退出推迟到忙碌宽限之后；任务结束后下一轮自然退出。
+
+        2026-10-22 合并时把开发线的两条补回：
+        - 系统休眠/睡眠的墙钟跳变要从所有 monotonic 锚点上扣掉，否则合盖半小时
+          回来，后端已经把自己判成「没人用」并退出了；
+        - 「最近还有 HTTP 请求到访」也算有人用，兜住 POD / 组合套装 / AI 视频这些
+          没有任务计数接口的模块。
+        """
+        with self._lock:
+            wall = time.time()
+            gap = wall - self._last_tick_wall
+            self._last_tick_wall = wall
+            if gap > self._interval_s * 5:
+                self._started_at += gap
+                self._last_request_at += gap
+                for client_id, (heartbeat, event_seq) in list(self._clients.items()):
+                    self._clients[client_id] = (heartbeat + gap, event_seq)
+            self._prune_stale_clients(now)
+            deadline = self._bye_deadline
+            has_clients = bool(self._clients)
+            ever_connected = self._ever_connected
+            started_at = self._started_at
+            last_request_at = self._last_request_at
+        if deadline is not None and now >= deadline:
+            if self._busy():
+                with self._lock:
+                    self._bye_deadline = now + self._busy_grace_s
+                logger.info(
+                    "runtime exit deferred: %ss grace because a processing task is still running",
+                    int(self._busy_grace_s),
+                )
+                return None
+            return "last frontend page closed"
+        if not has_clients and deadline is None:
+            if not ever_connected and now - started_at <= self._startup_grace_s:
+                # 启动保护期内且从未连接过前端：不退出，给前端加载时间。
+                return None
+            if ever_connected or now - started_at > self._idle_s:
+                if self._busy():
+                    return None
+                # 兜住没有任务计数接口的模块（POD / 组合套装 / AI 视频）：
+                # 最近还有 HTTP 请求到访，就说明还有人在用。
+                if now - last_request_at <= self._idle_s:
+                    return None
+                return "frontend heartbeat idle timeout"
+        return None
 
     def _exit(self, reason: str) -> None:
         print(f"[runtime] exiting because {reason}", flush=True)
+        # 窗口版没有控制台，print 看不到；退出原因必须落进 runtime.log，
+        # 否则用户反馈「莫名掉线」时只能看到下一次启动、看不到上一次为什么退。
+        logger.warning("runtime exiting because %s", reason)
         # 确认真退出前，先优雅取消仍 in-flight 的处理任务并按 50% 结算，
         # 使「关闭页面→任务取消/已取消+按冻结积分 50% 扣费」可达成。仅在真正
         # 决定退出（非刷新重载）时执行；回调带超时保护，绝不无限阻塞。
@@ -705,6 +728,8 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         # app_version 是给启动器用的：端口上如果跑着「上个版本」的旧进程，
         # 光看 database_path 完全一样，复用之后用户看到的就是旧界面
         # （2026-10-19 排查「升级后还是老样子」时确认的缺口）。
+        # 必须是 async：同步 def 会占用 AnyIO 线程池（默认 40 个），批量处理时
+        # 预览图/导出等同步请求把池子占满，探活排队超过前端 4 秒超时 → 误判掉线。
         return {"ok": True, "database_path": str(db_path), "app_version": APP_VERSION}
 
     if os.environ.get("WH_LOCAL_ENABLE_DEMO_PAGE", "").strip().lower() in {"1", "true", "yes"}:
@@ -885,7 +910,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         _compose_exit_cleanup(product_processing.cancel_all_active_for_shutdown, clipforge.stop)
     )
     # 心跳中断≠用户走了：有任务在跑就别自杀，否则会把任务取消并按 50% 结算。
-    runtime_exit.set_busy_checker(
+    runtime_exit.set_busy_probe(
         lambda: product_processing.active_task_count() > 0
     )
     # 桌面端：结算完成后登出远端平台会话并撤销本机本地会话。远端 token 只存在后端
@@ -906,6 +931,9 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     # 任务级自动暂停让位给退出流程：工作台正在退出时，任务是「取消 + 按冻结积分 50% 结算」
     # （见 is_exiting 的说明），不能再被任务级的「页面离开暂停」抢先。
     product_processing.set_shutdown_probe(runtime_exit.is_exiting)
+    # 有活跃处理任务时，关页退出要推迟（见 _RuntimeExitController._run_watchdog）：
+    # 浏览器后台标签被回收/切走也会发 pagehide，不能让正在跑的批量任务被杀掉。
+    runtime_exit.set_busy_probe(product_processing.active_task_count)
     app.include_router(
         create_product_processing_router(
             product_processing,

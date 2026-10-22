@@ -47,6 +47,21 @@ test("有任务在跑时不得弹整屏遮罩，只能降级成提示条", () =>
   assert.ok(notice.includes("backend-resume-toast--warn"), "应渲染降级提示条");
 });
 
+test("有处理任务在跑时失联窗口必须再放宽，避免把满载误判成掉线", () => {
+  const src = readClient();
+  const idle = src.match(/BACKEND_OFFLINE_CONFIRM_MS = ([\d_]+)/);
+  const busy = src.match(/BACKEND_OFFLINE_CONFIRM_BUSY_MS = ([\d_]+)/);
+  assert.ok(idle && busy, "client.ts 应同时定义空闲/忙碌两档失联确认窗口");
+  const idleMs = Number(idle![1].replace(/_/g, ""));
+  const busyMs = Number(busy![1].replace(/_/g, ""));
+  assert.ok(idleMs >= 10_000, `空闲窗口应 >= 10000ms（实际 ${idleMs}）`);
+  assert.ok(busyMs > idleMs, "忙碌窗口必须大于空闲窗口");
+  assert.ok(
+    src.includes("offlineConfirmWindowMs()"),
+    "定时器必须按运行中任务动态取窗口",
+  );
+});
+
 test("开发态「重新连接」不得拉起 mainpg:// 协议", () => {
   const src = readNotice();
   const start = src.indexOf("const retry = async");
