@@ -26,6 +26,15 @@ test("已安装主题必须在启动时做版本保鲜，不能只靠用户主�
     refreshIdx > bootIdx,
     "启动后必须后台刷新一次，否则主题改版老用户永远看不到",
   );
+
+  // 必须延后到模块初始化完成之后。本模块里 THEME_STORE_BASE_URL 等 const 声明在
+  // 更靠后的位置，顶层同步调用会踩暂时性死区（ReferenceError），而 async 函数把
+  // 它吞成未处理的 Promise 拒绝——页面看着正常、就是不更新（2026-10-22 实测踩到）。
+  const callBlock = src.slice(src.lastIndexOf("if (typeof window", refreshIdx), refreshIdx + 40);
+  assert.ok(
+    callBlock.includes("setTimeout"),
+    "启动刷新必须延后执行，否则会踩 const 的暂时性死区",
+  );
 });
 
 test("downloadTheme 复用保鲜函数，不重复实现版本比对", () => {

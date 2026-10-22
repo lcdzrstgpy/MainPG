@@ -194,8 +194,15 @@ async function refreshInstalledTheme(id: ThemeId): Promise<boolean> {
 applyTheme(currentTheme, false);
 
 // 后台保鲜：远端主题改版时自动换新（不阻塞首屏，失败静默）。
+//
+// 必须延后到模块初始化完成之后：本模块里 `THEME_STORE_BASE_URL` 这类 const 声明在
+// 文件更靠后的位置，直接在模块顶层同步调用会踩「暂时性死区」——
+// ReferenceError: Cannot access 'THEME_STORE_BASE_URL' before initialization，
+// 而 async 函数会把它吞成未处理的 Promise 拒绝，页面看着正常、就是不更新。
 if (typeof window !== "undefined") {
-  void refreshInstalledTheme(currentTheme);
+  window.setTimeout(() => {
+    void refreshInstalledTheme(currentTheme);
+  }, 0);
 }
 
 // Listen for storage changes from other tabs
