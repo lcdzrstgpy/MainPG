@@ -833,7 +833,11 @@ class ProductProcessingRepository:
     ) -> tuple[list[dict[str, Any]], bool]:
         with self.database.sessions() as session:
             statement = select(ProductDraftRow).where(ProductDraftRow.workspace_id == workspace_id)
-            if status:
+            if status == "all":
+                # 货源成本等资产总览要跨状态看成本：all = 除已删除外的全部草稿。
+                # 「处理完成」只是 status=processed，数据仍在，不能从总览里消失。
+                statement = statement.where(ProductDraftRow.status != "deleted")
+            elif status:
                 statement = statement.where(ProductDraftRow.status == status)
             else:
                 statement = statement.where(ProductDraftRow.status == "draft")

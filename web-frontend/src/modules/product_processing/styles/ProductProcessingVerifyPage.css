@@ -2827,6 +2827,28 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* 保存/导出前「补齐图片清单」的真实进度条：done/total 由前端按批请求实时更新。 */
+.precheck-media-progress {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 12px;
+  align-items: center;
+  margin: 10px 0 2px;
+  padding: 10px 14px;
+  border: 1px solid #cfe6f3;
+  border-radius: 12px;
+  background: #f2fafd;
+}
+
+.precheck-media-progress progress {
+  width: 100%;
+  height: 9px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  accent-color: #0a94c8;
+}
+
 .precheck-finalize-failures > p,
 .precheck-finalize-stale > p {
   margin: 0 0 10px;
