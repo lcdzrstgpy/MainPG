@@ -117,6 +117,30 @@ def _journal_mode() -> str:
     return mode if mode in {"WAL", "DELETE", "TRUNCATE", "PERSIST", "MEMORY"} else "WAL"
 
 
+def _apply_journal_mode(connection: sqlite3.Connection) -> None:
+    """把连接切到目标 journal 模式，切换失败时只告警不中断。
+
+    ``PRAGMA journal_mode=<mode>`` 只有在需要**切换**模式时才要拿排他锁；若别的
+    进程/线程还连着同一个库（例如打包版和本地 dev 同时跑，或测试里残留的连接），
+    直接抛 ``database is locked``。以前这里是裸执行，一旦撞锁整个 repository 构造
+    就崩（2026-10-22 全量跑测试时 ``test_app_update`` import 期 `create_app()` 撞上
+    就是这个）。
+
+    journal 模式是并发优化，不是正确性前提，所以按「先读当前值 → 相同就跳过 →
+    不同才切 → 切不动就放过」处理：库已经是 WAL 时这条路径零锁开销。
+    """
+    desired = _journal_mode()
+    try:
+        row = connection.execute("PRAGMA journal_mode").fetchone()
+        if row is not None and str(row[0]).strip().lower() == desired.lower():
+            return
+        connection.execute(f"PRAGMA journal_mode={desired}")
+    except sqlite3.OperationalError as exc:  # 锁竞争 / 只读介质：保持原模式即可
+        business_logger("pod_processing").warning(
+            "pod sqlite journal_mode=%s 切换失败，沿用当前模式: %s", desired, exc
+        )
+
+
 class PodCustomizationRepository:
     def __init__(self, database_path: Path) -> None:
         self.database_path = Path(database_path)
@@ -283,7 +307,7 @@ class PodCustomizationRepository:
     def _connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.database_path, timeout=30)
         connection.row_factory = sqlite3.Row
-        connection.execute(f"PRAGMA journal_mode={_journal_mode()}")
+        _apply_journal_mode(connection)
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA synchronous=NORMAL")
         connection.execute("PRAGMA busy_timeout=30000")

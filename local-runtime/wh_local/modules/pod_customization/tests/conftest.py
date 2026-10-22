@@ -15,10 +15,24 @@
 
     POD_SQLITE_JOURNAL_MODE=DELETE
 
+为什么用 fixture 而不是模块级 setenv
+------------------------------------
+模块级 ``os.environ.setdefault`` 会在**收集阶段**就把变量写进整个进程，泄漏给
+同一进程里其他目录的测试。2026-10-22 全量跑时它就踩了坑：``test_app_update``
+首次 import ``wh_local.app.main`` 触发模块级 ``app = create_app()``，拿着 DELETE
+去切**用户真实库**的模式，撞上残留连接直接 ``database is locked``，连带 3 个用例
+报红（单跑不会）。
+
+改成 autouse fixture + monkeypatch：每个用例开始前设、结束后自动还原，既不泄漏，
+也保住了并发用例需要的 DELETE。
+
 代价：DELETE 模式下这些用例会略慢（读者与写者互斥），但换来了稳定性 ——
 之前这批用例在本机 21 个红，切到 DELETE 后只剩 1 个时序敏感的并发断言。
 """
 
-import os
+import pytest
 
-os.environ.setdefault("POD_SQLITE_JOURNAL_MODE", "DELETE")
+
+@pytest.fixture(autouse=True)
+def _delete_journal_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("POD_SQLITE_JOURNAL_MODE", "DELETE")
