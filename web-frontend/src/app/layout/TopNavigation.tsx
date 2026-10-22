@@ -176,17 +176,31 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
   }, [themeStoreOpen]);
 
   useEffect(() => {
-    const updateStuckState = () => {
-      const scrollTop = window.scrollY;
-      setTopbarStuck((stuck) => stuck ? scrollTop > 8 : scrollTop > 36);
+    // 桌面工作区（≥801px）窗口本身不滚动：顶栏改成绝对定位钉在工作区原位，所有页签
+    // 共用 .content-card 这一个滚动容器（见 global.css 桌面媒体查询 + WorkspaceShell
+    // 的 scrollPositions）。只读 window.scrollY 会让「顶栏滚动收起」永远等不到触发
+    // 条件（2026-10-22 实测：滚 .content-card 400px，window.scrollY 仍是 0），所以
+    // 两种滚动源都接上，谁在用谁生效。窄窗口仍是 document 滚动。
+    const updateStuckState = (event?: Event) => {
+      const target = event?.target;
+      const contentScrollTop =
+        target instanceof HTMLElement && target.classList.contains("content-card")
+          ? target.scrollTop
+          : 0;
+      const scrollTop = Math.max(window.scrollY, contentScrollTop);
+      setTopbarStuck((stuck) => (stuck ? scrollTop > 8 : scrollTop > 36));
     };
 
+    const content = document.querySelector<HTMLElement>(".content-card");
+
     window.addEventListener("scroll", updateStuckState, { passive: true });
+    content?.addEventListener("scroll", updateStuckState, { passive: true });
     window.addEventListener("resize", updateStuckState);
     updateStuckState();
 
     return () => {
       window.removeEventListener("scroll", updateStuckState);
+      content?.removeEventListener("scroll", updateStuckState);
       window.removeEventListener("resize", updateStuckState);
     };
   }, []);
