@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import unquote_plus, urlsplit
 
 # 渠道展示段。
 CHANNEL_DAILY_SELECTION = "选品"
@@ -143,15 +143,29 @@ def _plugin_content(url: str) -> str:
     if not url:
         return _PLUGIN_FALLBACK
     try:
-        query = parse_qs(urlsplit(url).query, keep_blank_values=False)
+        query = urlsplit(url).query
     except ValueError:
         return _PLUGIN_FALLBACK
-    values = query.get("keywords") or []
-    for value in values:
-        text = str(value or "").strip()
+    for pair in query.split("&"):
+        name, _, raw_value = pair.partition("=")
+        if name != "keywords" or not raw_value:
+            continue
+        # 1688 搜索页是老站编码：keywords 的百分号编码是 GBK（如 %B3%E8%CE%EF…）。
+        # 按 UTF-8 硬解会把中文全部变成 U+FFFD（界面上的「�����」），必须按 GB18030 兜底。
+        text = _decode_query_value(raw_value).strip()
         if text:
             return text
     return _PLUGIN_FALLBACK
+
+
+def _decode_query_value(value: str) -> str:
+    """百分号解码：先严格 UTF-8，失败再按 GB18030（1688/淘宝老页面的 GBK 编码）。"""
+    for encoding in ("utf-8", "gb18030"):
+        try:
+            return unquote_plus(value, encoding=encoding, errors="strict")
+        except (UnicodeDecodeError, ValueError):
+            continue
+    return unquote_plus(value, encoding="utf-8", errors="replace")
 
 
 def _platform_label(platform: str) -> str:
