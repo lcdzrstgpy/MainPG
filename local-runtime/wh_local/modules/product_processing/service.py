@@ -3668,6 +3668,8 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             s["product_video_template"] = True
         s["skip_duplicates"] = _as_bool(s.get("skip_duplicates"), default=False)
         s["ip_check"] = _as_bool(s.get("ip_check"), default=True)
+        # 是否自动烧制第 4 格尺寸图：默认开启；关闭后整批跳过尺寸画布导入/烧卡与 OCR 预取。
+        s["dimension_card"] = _as_bool(s.get("dimension_card"), default=True)
         # 生图提示词模板：A=影棚无缝主图，B=人景叙事（防比价），C=静物平铺俯拍，D=环境远景。
         _image_template = str(s.get("image_template") or "A").strip().upper()
         s["image_template"] = _image_template if _image_template in {"A", "B", "C", "D"} else "A"
@@ -7550,6 +7552,8 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 # 任务已被清理时忽略进度写入，不阻塞整体流程
                 pass
 
+        # 本批次是否自动烧制第 4 格尺寸图（用户在「处理设置」里可关闭；某些品类不需要尺寸图）。
+        dimension_card_enabled = _as_bool(settings.get("dimension_card"), default=True)
         if max_workers <= 1:
             # 串行模式：保持原有行为，便于调试和问题排查
             for item in items_to_process:
@@ -7562,9 +7566,13 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 item_results.append(processed)
                 _persist_progress(processed)
                 if processed["status"] == "completed":
-                    if not preflight_only and str(
-                        (processed["result"].get("provider_status_classes") or {}).get("four_grid") or ""
-                    ) != "source_fallback":
+                    if (
+                        not preflight_only
+                        and dimension_card_enabled
+                        and str(
+                            (processed["result"].get("provider_status_classes") or {}).get("four_grid") or ""
+                        ) != "source_fallback"
+                    ):
                         self._schedule_dimension_pass(
                             task_id,
                             int(item["item_id"]),
@@ -7615,9 +7623,13 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                         item_results.append(processed)
                         _persist_progress(processed)
                         if processed["status"] == "completed":
-                            if not preflight_only and str(
-                                (processed["result"].get("provider_status_classes") or {}).get("four_grid") or ""
-                            ) != "source_fallback":
+                            if (
+                                not preflight_only
+                                and dimension_card_enabled
+                                and str(
+                                    (processed["result"].get("provider_status_classes") or {}).get("four_grid") or ""
+                                ) != "source_fallback"
+                            ):
                                 self._schedule_dimension_pass(
                                     task_id,
                                     int(item["item_id"]),
@@ -8872,7 +8884,12 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 ]
             )
         )
-        if not preflight_only and "four_grid" in scope and prefetch_urls:
+        if (
+            not preflight_only
+            and "four_grid" in scope
+            and prefetch_urls
+            and _as_bool(settings.get("dimension_card"), default=True)
+        ):
             self._start_dimension_prefetch(
                 task_id,
                 int(draft["id"]),

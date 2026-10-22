@@ -9,8 +9,10 @@ OCR 是后置验证器，不是第一变换器（§15 确定性验证 → AI 修
   质检/重绘，避免因检出中文或 AI 排版文字而失败整条链接。设为 ``1`` 可重新开启；
 - ``WH_PRODUCT_OCR_MAX_REPAIRS`` 控制最大重绘轮数（默认 1：首轮失败后允许再重绘一次，
   覆盖「产品本体印刷中文/字符」等难以一次修净的场景）；
-- ``WH_PRODUCT_OCR_WORKERS`` 控制 OCR 推理并发上限（默认 4，范围 1-8）。草稿池的
-  「SKU 规格图可用性判断」是批量只读场景，靠该并发值并行提速。
+- ``WH_PRODUCT_OCR_WORKERS`` 控制 OCR 推理并发上限（默认 2，范围 1-8）。草稿池的
+  「SKU 规格图可用性判断」是批量只读场景，靠该并发值并行提速；
+- ``WH_PRODUCT_OCR_THREADS`` 控制单个 OCR 会话的 CPU 线程数（默认 2，范围 1-8）。
+  RapidOCR 的三段 onnx（det/cls/rec）默认按逻辑核数开线程，多路并发会把 CPU 打满。
 
 OCR 关闭或库未安装/推理失败时返回 ``None``，表示"无法判断"，调用方跳过质检、不阻断流水线。
 """
@@ -39,15 +41,37 @@ _ENGINE_ERROR: str | None = None
 
 def _ocr_worker_limit() -> int:
     try:
-        value = int(os.environ.get("WH_PRODUCT_OCR_WORKERS", "4").strip())
+        value = int(os.environ.get("WH_PRODUCT_OCR_WORKERS", "2").strip())
     except (TypeError, ValueError):
-        return 4
+        return 2
     return max(1, min(value, 8))
 
 
 def ocr_worker_limit() -> int:
     """OCR 推理并发上限（供草稿池 SKU 可用性判断等批量只读场景复用）。"""
     return _ocr_worker_limit()
+
+
+def _ocr_thread_limit() -> int:
+    try:
+        value = int(os.environ.get("WH_PRODUCT_OCR_THREADS", "2").strip())
+    except (TypeError, ValueError):
+        return 2
+    return max(1, min(value, 8))
+
+
+def engine_kwargs() -> dict[str, int]:
+    """RapidOCR 三段会话的线程参数：单会话限制 CPU 线程，避免多路并发超额订阅。"""
+
+    threads = _ocr_thread_limit()
+    return {
+        "det_intra_op_num_threads": threads,
+        "det_inter_op_num_threads": 1,
+        "cls_intra_op_num_threads": threads,
+        "cls_inter_op_num_threads": 1,
+        "rec_intra_op_num_threads": threads,
+        "rec_inter_op_num_threads": 1,
+    }
 
 
 _OCR_INFERENCE_SEMAPHORE = threading.BoundedSemaphore(_ocr_worker_limit())
@@ -75,9 +99,19 @@ def _get_engine() -> Any:
             if _ENGINE is None and _ENGINE_ERROR is None:
                 try:
                     _ensure_onnx_dll_searchable()
+                    try:
+                        import cv2  # type: ignore
+
+                        cv2.setNumThreads(1)
+                    except Exception:
+                        pass
                     from rapidocr_onnxruntime import RapidOCR  # type: ignore
 
-                    _ENGINE = RapidOCR()
+                    try:
+                        _ENGINE = RapidOCR(**engine_kwargs())
+                    except Exception:
+                        # 旧版本 RapidOCR 不认这些参数：退回默认构造（行为与之前一致）。
+                        _ENGINE = RapidOCR()
                 except Exception as exc:  # 未安装/模型下载失败/依赖缺失
                     _ENGINE_ERROR = f"{exc.__class__.__name__}: {str(exc)[:160]}"
     return _ENGINE
@@ -145,7 +179,14 @@ def _inspect_content(content: bytes) -> tuple[list[str], list[str]] | None:
         from PIL import Image  # type: ignore
 
         with _OCR_INFERENCE_SEMAPHORE:
-            opened = Image.open(io.BytesIO(content)).convert("RGB")
+            opened = Image.open(io.BytesIO(content))
+            # JPEG 先用 draft 让 libjpeg 按 1/2~1/8 抽样解码到接近 512：4096² 详情图
+            # 全尺寸解码约 50MB，批量 OCR 时几路同时解码会把内存顶到高位。
+            try:
+                opened.draft("RGB", (_OCR_MAX_EDGE, _OCR_MAX_EDGE))
+            except Exception:
+                pass
+            opened = opened.convert("RGB")
             width, height = opened.size
             edge = max(width, height)
             if edge > _OCR_MAX_EDGE:
@@ -213,7 +254,14 @@ def recognize_text(content: bytes) -> list[str] | None:
         from PIL import Image  # type: ignore
 
         with _OCR_INFERENCE_SEMAPHORE:
-            opened = Image.open(io.BytesIO(content)).convert("RGB")
+            opened = Image.open(io.BytesIO(content))
+            # JPEG 先用 draft 让 libjpeg 按 1/2~1/8 抽样解码到接近 512：4096² 详情图
+            # 全尺寸解码约 50MB，批量 OCR 时几路同时解码会把内存顶到高位。
+            try:
+                opened.draft("RGB", (_OCR_MAX_EDGE, _OCR_MAX_EDGE))
+            except Exception:
+                pass
+            opened = opened.convert("RGB")
             width, height = opened.size
             edge = max(width, height)
             if edge > _OCR_MAX_EDGE:

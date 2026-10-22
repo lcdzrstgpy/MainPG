@@ -1,3 +1,5 @@
+import { hasRunningTask } from "../../shared/runtime/taskActivity";
+
 type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 type RequestOptions = {
@@ -391,10 +393,24 @@ export const BACKEND_ONLINE_EVENT = "mainpg:backend-online";
  * 单次网络层失败不足以判死。开发态 vite 代理在依赖预构建/重编译瞬间会拒连；
  * 页面切换、组件卸载主动 abort 后紧邻的重发也会命中；后端重启的第一秒同样是拒连。
  * 这类瞬时抖动以前会立刻弹整屏「本地服务掉线了」——用户观感就是「界面还开着却
- * 突然掉线」（2026-10-16 实测排查）。真实后端挂掉时窗口内不会有任何请求成功，
- * 6 秒后照常弹出，不影响判定时效。
+ * 突然掉线」（2026-10-16 实测排查）。
+ *
+ * 2026-10-21 由 6 秒放宽到 20 秒：批量处理时后端 CPU 打满（实测 MainPG 单进程
+ * 47%+），浏览器侧请求可能连续超时/被拒好几秒；6 秒窗口会把「忙」误判成「死」。
+ * 真实后端挂掉时窗口内不会有任何请求成功，窗口到期后照常弹出，仍能及时自救。
  */
-const BACKEND_OFFLINE_CONFIRM_MS = 6_000;
+const BACKEND_OFFLINE_CONFIRM_MS = 20_000;
+/** 有处理任务在跑时的失联确认窗口：再放宽一倍，避免把「满载」误判成「掉线」。 */
+const BACKEND_OFFLINE_CONFIRM_BUSY_MS = 45_000;
+
+/** 当前该用多长的确认窗口（读取运行中任务登记表，纯内存、无副作用）。 */
+function offlineConfirmWindowMs(): number {
+  try {
+    return hasRunningTask() ? BACKEND_OFFLINE_CONFIRM_BUSY_MS : BACKEND_OFFLINE_CONFIRM_MS;
+  } catch {
+    return BACKEND_OFFLINE_CONFIRM_MS;
+  }
+}
 
 /** 首次失败时刻；期间任意一次成功响应即清零（见 notifyBackendOnline）。 */
 let offlineSince: number | null = null;
@@ -410,7 +426,7 @@ function notifyBackendOffline(): void {
     if (offlineSince === null || offlineNotified) return;
     offlineNotified = true;
     window.dispatchEvent(new CustomEvent(BACKEND_OFFLINE_EVENT));
-  }, BACKEND_OFFLINE_CONFIRM_MS);
+  }, offlineConfirmWindowMs());
 }
 
 /** 复位失联确认状态，但不广播恢复事件。

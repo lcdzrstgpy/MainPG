@@ -306,6 +306,11 @@ class _RuntimeExitController:
         # 确认真退出前执行的「取消运行中任务并结算」回调（仅桌面端注入）。
         self._on_before_exit: Any | None = None
         self._exit_cancel_s = float(os.environ.get("WH_LOCAL_RUNTIME_EXIT_CANCEL_S", "6"))
+        # 有活跃处理任务时的退出宽限：关页/切标签被浏览器回收时不要把正在跑的任务杀掉。
+        # 与产品处理侧的「关页面最多再跑 30 分钟」安全网对齐（默认 1800 秒）。
+        self._busy_grace_s = float(os.environ.get("WH_LOCAL_RUNTIME_BUSY_EXIT_GRACE_S", "1800"))
+        # 「是否有活跃任务」探针（桌面端注入 active_task_count）；未注入时按空闲处理。
+        self._busy_probe: Any | None = None
         # 结算之后执行的「登出远端会话并撤销本地会话」回调（仅桌面端注入）。
         # 单独限时，避免被任务结算的耗时挤掉。
         self._on_release_sessions: Any | None = None
@@ -318,6 +323,20 @@ class _RuntimeExitController:
     def set_on_release_sessions(self, callback: Any | None) -> None:
         """注入「释放会话」回调；在取消/结算回调之后执行一次。"""
         self._on_release_sessions = callback
+
+    def set_busy_probe(self, callback: Any | None) -> None:
+        """注入「是否有活跃处理任务」探针（桌面端接 product_processing.active_task_count）。"""
+        self._busy_probe = callback
+
+    def _busy(self) -> bool:
+        probe = self._busy_probe
+        if probe is None:
+            return False
+        try:
+            return bool(probe())
+        except Exception:
+            # 探针失败按空闲处理：不能因为查不到状态就赖着不退。
+            return False
 
     def is_exiting(self) -> bool:
         """是否已确认退出（已经收到最后一个页面的 bye，正在等退出宽限走完）。
@@ -400,24 +419,49 @@ class _RuntimeExitController:
     def _run_watchdog(self) -> None:
         while True:
             time.sleep(self._interval_s)
-            with self._lock:
-                now = time.monotonic()
-                self._prune_stale_clients(now)
-                deadline = self._bye_deadline
-                has_clients = bool(self._clients)
-                ever_connected = self._ever_connected
-                started_at = self._started_at
-            if deadline is not None and now >= deadline:
-                self._exit("last frontend page closed")
-            if not has_clients and deadline is None:
-                if not ever_connected and now - started_at <= self._startup_grace_s:
-                    # 启动保护期内且从未连接过前端：不退出，给前端加载时间。
-                    continue
-                if ever_connected or now - started_at > self._idle_s:
-                    self._exit("frontend heartbeat idle timeout")
+            reason = self._exit_due(time.monotonic())
+            if reason:
+                self._exit(reason)
+
+    def _exit_due(self, now: float) -> str | None:
+        """根据当前状态判断是否应当退出；返回退出原因（None = 继续运行）。
+
+        关页退出前先看有没有活跃任务：浏览器把后台标签回收/冻结、用户切走后
+        pagehide 也会发 bye，若此时正在跑批量处理，直接退出会「取消任务 + 按 50%
+        结算」，用户看到的就是处理中途突然掉线（2026-10-21 反馈）。
+        有任务时把退出推迟到忙碌宽限之后；任务结束后下一轮自然退出。
+        """
+        with self._lock:
+            self._prune_stale_clients(now)
+            deadline = self._bye_deadline
+            has_clients = bool(self._clients)
+            ever_connected = self._ever_connected
+            started_at = self._started_at
+        if deadline is not None and now >= deadline:
+            if self._busy():
+                with self._lock:
+                    self._bye_deadline = now + self._busy_grace_s
+                logger.info(
+                    "runtime exit deferred: %ss grace because a processing task is still running",
+                    int(self._busy_grace_s),
+                )
+                return None
+            return "last frontend page closed"
+        if not has_clients and deadline is None:
+            if not ever_connected and now - started_at <= self._startup_grace_s:
+                # 启动保护期内且从未连接过前端：不退出，给前端加载时间。
+                return None
+            if ever_connected or now - started_at > self._idle_s:
+                if self._busy():
+                    return None
+                return "frontend heartbeat idle timeout"
+        return None
 
     def _exit(self, reason: str) -> None:
         print(f"[runtime] exiting because {reason}", flush=True)
+        # 窗口版没有控制台，print 看不到；退出原因必须落进 runtime.log，
+        # 否则用户反馈「莫名掉线」时只能看到下一次启动、看不到上一次为什么退。
+        logger.warning("runtime exiting because %s", reason)
         # 确认真退出前，先优雅取消仍 in-flight 的处理任务并按 50% 结算，
         # 使「关闭页面→任务取消/已取消+按冻结积分 50% 扣费」可达成。仅在真正
         # 决定退出（非刷新重载）时执行；回调带超时保护，绝不无限阻塞。
@@ -636,10 +680,12 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     app.include_router(create_changelog_router(changelog_manager))
 
     @app.get("/health")
-    def health() -> dict[str, Any]:
+    async def health() -> dict[str, Any]:
         # app_version 是给启动器用的：端口上如果跑着「上个版本」的旧进程，
         # 光看 database_path 完全一样，复用之后用户看到的就是旧界面
         # （2026-10-19 排查「升级后还是老样子」时确认的缺口）。
+        # 必须是 async：同步 def 会占用 AnyIO 线程池（默认 40 个），批量处理时
+        # 预览图/导出等同步请求把池子占满，探活排队超过前端 4 秒超时 → 误判掉线。
         return {"ok": True, "database_path": str(db_path), "app_version": APP_VERSION}
 
     if os.environ.get("WH_LOCAL_ENABLE_DEMO_PAGE", "").strip().lower() in {"1", "true", "yes"}:
@@ -837,6 +883,9 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     # 任务级自动暂停让位给退出流程：工作台正在退出时，任务是「取消 + 按冻结积分 50% 结算」
     # （见 is_exiting 的说明），不能再被任务级的「页面离开暂停」抢先。
     product_processing.set_shutdown_probe(runtime_exit.is_exiting)
+    # 有活跃处理任务时，关页退出要推迟（见 _RuntimeExitController._run_watchdog）：
+    # 浏览器后台标签被回收/切走也会发 pagehide，不能让正在跑的批量任务被杀掉。
+    runtime_exit.set_busy_probe(product_processing.active_task_count)
     app.include_router(
         create_product_processing_router(
             product_processing,

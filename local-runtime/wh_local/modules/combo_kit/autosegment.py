@@ -35,6 +35,12 @@ MIN_FOREGROUND_EXTENT = 0.2
 
 _session_lock = threading.Lock()
 _session: Any = None
+_session_error: str | None = None
+# 自动框选是同步端点，用户连点或多用户并发时会同时跑多份分割：同一会话并发推理
+# 加上各自持有全尺寸图/蒙版，CPU 与内存都会被放大。这里串行化推理。
+_mask_semaphore = threading.BoundedSemaphore(1)
+# 推理前限制长边：输出只是归一化多边形，4K 原图直接喂给 rembg 纯属浪费。
+_MAX_INFERENCE_EDGE = 1280
 
 
 def segment_subject_polygon(image_path: str) -> list[list[float]] | None:
@@ -48,11 +54,23 @@ def segment_subject_polygon(image_path: str) -> list[list[float]] | None:
         return None
     try:
         with Image.open(image_path) as source:
+            # JPEG 先按 1/2~1/8 抽样解码，再做缩略：4K 原图全尺寸解码约 50MB，
+            # 而这里只需要一张 1280 长边的图来出多边形。
+            try:
+                source.draft("RGB", (_MAX_INFERENCE_EDGE, _MAX_INFERENCE_EDGE))
+            except Exception:
+                pass
             image = source.convert("RGB")
+            if max(image.size) > _MAX_INFERENCE_EDGE:
+                image.thumbnail((_MAX_INFERENCE_EDGE, _MAX_INFERENCE_EDGE))
     except Exception:
         return None
+    session = _get_session()
+    if session is None:
+        return None
     try:
-        mask = _mask_array(remove(image, session=_get_session(), only_mask=True))
+        with _mask_semaphore:
+            mask = _mask_array(remove(image, session=session, only_mask=True))
     except Exception:
         return None
     if mask is None:
@@ -61,13 +79,18 @@ def segment_subject_polygon(image_path: str) -> list[list[float]] | None:
 
 
 def _get_session() -> Any:
-    """懒加载并复用 rembg 会话：模型只加载一次，首次会下载权重。"""
-    global _session
+    """懒加载并复用 rembg 会话：模型只加载一次，加载失败也缓存，避免每张图重试。"""
+    global _session, _session_error
+    if _session is not None or _session_error is not None:
+        return _session
     with _session_lock:
-        if _session is None:
-            from rembg import new_session
+        if _session is None and _session_error is None:
+            try:
+                from rembg import new_session
 
-            _session = new_session(MODEL_NAME)
+                _session = new_session(MODEL_NAME)
+            except Exception as exc:  # 权重下载失败/依赖缺失：后续直接回退
+                _session_error = f"{exc.__class__.__name__}: {str(exc)[:160]}"
         return _session
 
 

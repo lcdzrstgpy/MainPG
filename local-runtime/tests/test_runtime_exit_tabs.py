@@ -130,6 +130,39 @@ def test_old_heartbeat_cannot_restore_timed_out_tab(monkeypatch) -> None:
     assert controller._clients == {}
 
 
+def test_busy_task_defers_last_tab_exit(monkeypatch) -> None:
+    """有处理任务在跑时，关页不再 60 秒后硬退（浏览器回收后台标签会误发 bye）。"""
+    controller = _controller(monkeypatch)
+    controller.set_busy_probe(lambda: True)
+    controller.touch("tab-a")
+    controller.bye("tab-a")
+    deadline = controller._bye_deadline
+    assert deadline is not None
+
+    reason = controller._exit_due(deadline + 1)
+
+    assert reason is None
+    assert controller._bye_deadline == deadline + 1 + controller._busy_grace_s
+
+
+def test_idle_timeout_waits_for_running_task(monkeypatch) -> None:
+    controller = _controller(monkeypatch)
+    controller.touch("tab-a")
+    controller._clients.clear()
+    controller.set_busy_probe(lambda: True)
+
+    assert controller._exit_due(1e9) is None
+
+
+def test_idle_timeout_exits_when_no_task_is_running(monkeypatch) -> None:
+    controller = _controller(monkeypatch)
+    controller.touch("tab-a")
+    controller._clients.clear()
+    controller.set_busy_probe(lambda: False)
+
+    assert controller._exit_due(1e9) == "frontend heartbeat idle timeout"
+
+
 def test_hard_exit_runs_every_cleanup_step_before_exiting(monkeypatch) -> None:
     controller = _controller(monkeypatch)
     calls: list[str] = []

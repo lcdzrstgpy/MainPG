@@ -361,6 +361,22 @@ def test_normalize_settings_preserves_batch_image_prompt() -> None:
     assert normalized["batch_image_prompt"] == GUIDELINE
 
 
+def test_dimension_card_switch_defaults_on_and_can_be_disabled() -> None:
+    """尺寸图自动烧制默认开启；显式关闭后必须保留 False（供批次跳过烧卡）。"""
+    default = ProductProcessingService._normalize_settings({"draft_ids": [1]})
+    assert default["dimension_card"] is True
+
+    disabled = ProductProcessingService._normalize_settings(
+        {"draft_ids": [1], "dimension_card": False}
+    )
+    assert disabled["dimension_card"] is False
+
+    # API 层默认值同样是开启，避免旧客户端请求漏字段时行为倒退。
+    from wh_local.modules.product_processing.api.schemas import DraftProcessRequest
+
+    assert DraftProcessRequest(draft_ids=[1]).dimension_card is True
+
+
 # ---------------------------------------------------------------------------
 # 三条生图链路注入
 # ---------------------------------------------------------------------------

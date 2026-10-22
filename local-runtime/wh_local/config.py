@@ -16,7 +16,7 @@ logger = logging.getLogger("wh_local.config")
 
 
 # Release automation updates this single value when producing a desktop build.
-APP_VERSION = "1.5.9"
+APP_VERSION = "1.5.10"
 # Replace this host only when the official MainPG release origin moves. Keep the
 # manifest and installer allowlist bound to the same release-owned host.
 UPDATE_RELEASE_HOST = "workbench.haocoming.top"

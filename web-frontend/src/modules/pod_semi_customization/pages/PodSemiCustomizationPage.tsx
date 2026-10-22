@@ -184,7 +184,10 @@ export function PodSemiCustomizationPage({ isActive = true }: Props) {
     try {
       const batch = await podSemiCustomizationApi.getBatch(batchId);
       if (batchRequestRef.current !== batchId) return;
-      setActiveBatch(batch);
+      // 内容没变就保留旧引用，避免每 2 秒一次整页无意义重渲染。
+      setActiveBatch((prev) =>
+        prev && JSON.stringify(prev) === JSON.stringify(batch) ? prev : batch,
+      );
     } catch (cause) {
       if (batchRequestRef.current !== batchId) return;
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -198,12 +201,16 @@ export function PodSemiCustomizationPage({ isActive = true }: Props) {
     });
   }, []);
 
-  // 运行中批次轮询。
+  // 运行中批次轮询：只在页签激活且整页可见时跑（工作台隐藏页签不卸载，
+  // 不判断 isActive 的话每 2 秒仍会请求 + 整页重渲染）。
   useEffect(() => {
-    if (!activeBatch || !isSemiBatchRunning(activeBatch.status)) return;
-    const timer = window.setInterval(() => void refreshActiveBatch(), POLL_INTERVAL_MS);
+    if (!isActive || !activeBatch || !isSemiBatchRunning(activeBatch.status)) return;
+    const timer = window.setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      void refreshActiveBatch();
+    }, POLL_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [activeBatch?.status, activeBatch?.id]);
+  }, [isActive, activeBatch?.status, activeBatch?.id]);
 
   const onSelectHistory = (item: PodBriefHistoryItem) => {
     // 历史项就是历史「一句话需求」：回填输入框，点开始生成会按它重新编辑并生图。

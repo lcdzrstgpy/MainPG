@@ -550,21 +550,35 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
   }, [preview]);
 
   const sourceSyncPollRef = useRef<number | null>(null);
+  const sourceSyncInFlightRef = useRef(false);
   useEffect(() => {
-    if (hasPendingSourceSync && sourceSyncPollRef.current === null) {
-      sourceSyncPollRef.current = window.setInterval(() => {
-        // 页签隐藏时不重拉整份预检（多链接/多 SKU 时响应很大）。
-        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-        void load(true, true);
-      }, 3000);
-    }
+    // 非激活页签不轮询：工作台页签是常驻挂载，隐藏页仍每 3 秒拉整份预检会叠加
+    // 请求与重渲染（多链接/多 SKU 时响应很大）。
+    if (!hasPendingSourceSync || !isActive) return;
+    let stopped = false;
+    const tick = async () => {
+      const hidden =
+        typeof document !== 'undefined' && document.visibilityState === 'hidden';
+      // 串行 + 在飞跳过：后端忙时上一轮还没回来就不再发下一轮，避免请求堆积。
+      if (!hidden && !sourceSyncInFlightRef.current) {
+        sourceSyncInFlightRef.current = true;
+        try {
+          await load(true, true);
+        } finally {
+          sourceSyncInFlightRef.current = false;
+        }
+      }
+      if (!stopped) sourceSyncPollRef.current = window.setTimeout(tick, 3000);
+    };
+    sourceSyncPollRef.current = window.setTimeout(tick, 3000);
     return () => {
+      stopped = true;
       if (sourceSyncPollRef.current !== null) {
-        window.clearInterval(sourceSyncPollRef.current);
+        window.clearTimeout(sourceSyncPollRef.current);
         sourceSyncPollRef.current = null;
       }
     };
-  }, [hasPendingSourceSync, load]);
+  }, [hasPendingSourceSync, isActive, load]);
 
   const downloadRun = useCallback(async (run: PreviewFinalizeRun, automatic: boolean) => {
     if (!run.workbook_ready || !run.download || !run.file) return;
