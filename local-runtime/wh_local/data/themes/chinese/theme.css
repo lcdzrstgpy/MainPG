@@ -151,8 +151,12 @@
   background-size: 100% 100%, 720px auto, auto;
 }
 
+/* 顶栏不能做「风景玻璃」：它上面没有别的东西遮盖，底色一透就把下层内容露出来了
+   （2026-10-22 用户反馈「透明就这个主题的这块」）。原值 .16 只有 16% 不透明度。
+   这里提到接近不透明，山峦纹理仍保留，但只作为表面质感、不再透底。
+   sidebar-card / content-card 有内容覆盖，保持原来的半透明没问题。 */
 [data-theme="chinese"] .topbar-card {
-  background-color: rgba(246, 244, 236, .16);
+  background-color: rgba(246, 244, 236, .92);
   background-image:
     linear-gradient(rgba(248, 247, 240, .1), rgba(248, 247, 240, .1)),
     url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 520 200' preserveAspectRatio='xMaxYMin meet'%3E%3Cpath d='M40 200 L95 118 C130 98 155 128 188 112 C220 96 248 62 286 70 C318 77 338 108 372 96 C402 86 428 58 460 66 C488 73 505 88 520 82 L520 200 Z' fill='%23344c48' fill-opacity='0.28'/%3E%3Cpath d='M120 200 L175 142 C210 128 238 150 272 136 C308 121 336 92 376 102 C410 111 438 138 476 128 C496 123 510 130 520 126 L520 200 Z' fill='%232f4541' fill-opacity='0.2'/%3E%3C/svg%3E") right -6px top -36px / 560px 200px no-repeat,
@@ -173,7 +177,7 @@
 }
 
 [data-theme="chinese"] .topbar-card.is-pinned.is-stuck {
-  background-color: rgba(248, 247, 240, .34);
+  background-color: rgba(248, 247, 240, .97);
   border-radius: 0 0 12px 12px;
 }
 
