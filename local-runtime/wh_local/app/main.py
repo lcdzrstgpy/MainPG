@@ -312,6 +312,24 @@ class _RuntimeExitController:
         self._release_sessions_s = float(os.environ.get("WH_LOCAL_RUNTIME_EXIT_RELEASE_S", "5"))
         # 「是不是有任务在跑」的探测；没接就按「没活儿」处理（保持原退出语义）。
         self._busy_checker: Any | None = None
+        # 最近一次 HTTP 请求的时刻（monotonic）。任何请求都是「还有人在用」的证据，
+        # 不必逐个模块去接任务计数：POD / 组合套装 / AI 视频的页面本来就在轮询。
+        self._last_request_at: float = time.monotonic()
+        # 墙钟锚点与休眠债：系统睡眠时 monotonic 可能停走也可能跳过，两种情况都不能
+        # 把睡眠时间算成「没人用」。用墙钟跳变补偿。
+        self._last_tick_wall: float = time.time()
+        self._sleep_debt: float = 0.0
+
+    def note_request(self) -> None:
+        """记录一次 HTTP 请求到访（供中间件调用）。
+
+        心跳信标只是「还在用」的证据之一，任何业务请求同样是证据。把这条接上，
+        就不用为每个模块单独接任务计数了。
+        """
+        now = time.monotonic()
+        with self._lock:
+            if now > self._last_request_at:
+                self._last_request_at = now
 
     def set_on_before_exit(self, callback: Any | None) -> None:
         """注入退出前回调；仅在真正决定退出（而非刷新重载）时执行一次。"""
@@ -422,11 +440,23 @@ class _RuntimeExitController:
             time.sleep(self._interval_s)
             with self._lock:
                 now = time.monotonic()
+                # 系统睡眠/休眠会让墙钟跳一大段，而这段时间里前端不可能发心跳，
+                # 更不可能发请求。把这段「没在跑」的时间从所有 monotonic 锚点上扣掉，
+                # 否则用户合盖半小时回来，后端已经把自己判成「没人用」并退出了。
+                wall = time.time()
+                gap = wall - self._last_tick_wall
+                self._last_tick_wall = wall
+                if gap > self._interval_s * 5:
+                    self._started_at += gap
+                    self._last_request_at += gap
+                    for client_id, (heartbeat, event_seq) in list(self._clients.items()):
+                        self._clients[client_id] = (heartbeat + gap, event_seq)
                 self._prune_stale_clients(now)
                 deadline = self._bye_deadline
                 has_clients = bool(self._clients)
                 ever_connected = self._ever_connected
                 started_at = self._started_at
+                last_request_at = self._last_request_at
             if deadline is not None and now >= deadline:
                 self._exit("last frontend page closed")
             if not has_clients and deadline is None:
@@ -439,6 +469,10 @@ class _RuntimeExitController:
                     # 取消并按 50% 结算，用户回来只剩「掉线」和一笔扣费。
                     # 有活儿就继续等；等心跳回来（页面唤醒后会补发）。
                     if self._has_active_work():
+                        continue
+                    # 同理：最近还有 HTTP 请求到访，就说明还有人在用（POD / 组合
+                    # 套装 / AI 视频这些模块没接任务计数，靠这条兜住）。
+                    if now - last_request_at <= self._idle_s:
                         continue
                     self._exit("frontend heartbeat idle timeout")
 
@@ -1027,6 +1061,12 @@ def _register_frontend_shell(app: FastAPI) -> None:
     # （no-cache，借助 ETag/Last-Modified 命中 304），避免更新后浏览器仍展示旧界面。
     @app.middleware("http")
     async def frontend_cache_control(request: Request, call_next):
+        # 任何请求到访都是「还有人在用」的证据：看门狗据此不自杀（心跳信标只是
+        # 证据之一，POD / 组合套装 / AI 视频的页面没接任务计数，靠这条兜住）。
+        # 这里走 app.state：本函数不是 create_app，闭包里拿不到 runtime_exit。
+        exit_controller = getattr(app.state, "runtime_exit", None)
+        if exit_controller is not None:
+            exit_controller.note_request()
         response = await call_next(request)
         if request.method in ("GET", "HEAD"):
             path = request.url.path

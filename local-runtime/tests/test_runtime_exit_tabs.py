@@ -170,8 +170,12 @@ class _StopWatchdog(Exception):
     """只跑一轮看门狗循环用的哨兵。"""
 
 
-def _run_one_watchdog_round(controller: _RuntimeExitController, monkeypatch) -> list[str]:
+def _run_one_watchdog_round(
+    controller: _RuntimeExitController, monkeypatch, *, stale_request: bool = True
+) -> list[str]:
     """跑一轮 _run_watchdog 的判定，返回被调用的退出原因。"""
+    import time
+
     import wh_local.app.main as main_module
 
     exits: list[str] = []
@@ -180,6 +184,9 @@ def _run_one_watchdog_round(controller: _RuntimeExitController, monkeypatch) -> 
         controller._ever_connected = True   # 走「心跳断了」分支，而非「最后一个页面关闭」
         controller._clients.clear()
         controller._bye_deadline = None
+        # 默认把「最近请求」推到很久以前：否则它会和心跳一起挡住退出。
+        if stale_request:
+            controller._last_request_at = time.monotonic() - 10_000
 
     calls = {"n": 0}
 
@@ -219,3 +226,33 @@ def test_watchdog_exits_when_no_busy_checker_wired(monkeypatch) -> None:
     """没接探测（服务器环境）→ 按「没活儿」处理，不能因为漏接就永不退出。"""
     controller = _controller(monkeypatch)
     assert _run_one_watchdog_round(controller, monkeypatch) == ["frontend heartbeat idle timeout"]
+
+
+def test_watchdog_stays_alive_when_a_recent_request_arrived(monkeypatch) -> None:
+    """最近还有 HTTP 请求 → 不退出。
+
+    POD / 组合套装 / AI 视频这些模块没有自己的任务计数接口，靠这条兜住：它们的
+    页面本来就在轮询，有请求就说明还有人在用。
+    """
+    controller = _controller(monkeypatch)
+    controller.set_busy_checker(lambda: False)
+    assert _run_one_watchdog_round(controller, monkeypatch, stale_request=False) == []
+
+
+def test_watchdog_ignores_sleep_gap(monkeypatch) -> None:
+    """系统休眠/睡眠的时间不计入「没人用」。
+
+    用户合盖半小时回来，后端不该已经把自己判成无人并退出（用户角度就是「一起来
+    就掉线」）。墙钟跳变量会把这段时间从所有 monotonic 锚点上扣掉。
+    """
+    import time
+
+    controller = _controller(monkeypatch)
+    controller.set_busy_checker(lambda: False)
+    with controller._lock:
+        # 最后一次活动发生在「刚睡着」那一刻：合盖前用户还在用。
+        controller._last_request_at = time.monotonic() - 3600
+        controller._last_tick_wall = time.time() - 3600   # 刚从 1 小时休眠中醒来
+    assert (
+        _run_one_watchdog_round(controller, monkeypatch, stale_request=False) == []
+    ), "睡眠时间不得计入 idle"
