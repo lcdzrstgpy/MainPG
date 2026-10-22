@@ -8,9 +8,13 @@ import {
 import { hasRunningTask } from "../runtime/taskActivity";
 
 /** 弹窗期间自动探活间隔：后端恢复后不用等用户操作，自动刷新回工作台。 */
-const AUTO_RECHECK_INTERVAL_MS = 5_000;
-/** 单次探活超时：防止后端半死（端口在但请求不响应）时探测一直悬着。 */
-const HEALTH_CHECK_TIMEOUT_MS = 4_000;
+const AUTO_RECHECK_INTERVAL_MS = 8_000;
+/** 单次探活超时：批量处理时后端 CPU 打满，探活可能排到几秒后才回，给足余量。 */
+const HEALTH_CHECK_TIMEOUT_MS = 10_000;
+/** 弹遮罩前需要连续失败的探活次数：一次探活失败可能只是「忙」，不代表进程没了。 */
+const HEALTH_CHECK_ATTEMPTS = 2;
+/** 两次探活之间的间隔。 */
+const HEALTH_CHECK_GAP_MS = 1_200;
 /** 协议拉起本程序后，等待后端就绪的预算（双击启动一般 3~10 秒）。 */
 const RESTART_WAIT_BUDGET_MS = 30_000;
 /** 重启等待期间的探活节奏。 */
@@ -108,15 +112,20 @@ export function BackendOfflineNotice() {
     /**
      * 弹遮罩前的最后一道闸：主动探活。
      *
-     * 状态机的「6 秒内没有成功」只等于「没有反证」，不等于「后端真的死了」——
+     * 状态机的「窗口内没有成功」只等于「没有反证」，不等于「后端真的死了」——
      * 产品处理等通道此前不复位状态机，一次瞬时抖动就能凑满窗口（2026-10-19）。
-     * 这里实测一次 /health，失败才弹；成功则顺手把状态机复位（probeHealth 内部做）。
+     * 这里连续探活 {@link HEALTH_CHECK_ATTEMPTS} 次，全部失败才弹；任何一次成功都会
+     * 复位状态机并放弃弹窗（probeHealth 内部复位）。批量处理 CPU 打满时单次探活
+     * 超时属于「忙」，不该被当成掉线（2026-10-21 反馈）。
      */
     const confirmOffline = async () => {
       const epoch = onlineEpochRef.current;
-      if (await probeHealth()) return;
-      // 探活期间页面恢复了在线（别的请求成功）→ 不再弹。
-      if (onlineEpochRef.current !== epoch) return;
+      for (let attempt = 0; attempt < HEALTH_CHECK_ATTEMPTS; attempt += 1) {
+        if (attempt > 0) await delay(HEALTH_CHECK_GAP_MS);
+        if (await probeHealth()) return;
+        // 探活期间页面恢复了在线（别的请求成功）→ 不再弹。
+        if (onlineEpochRef.current !== epoch) return;
+      }
       showOffline();
     };
     const goOffline = () => {
