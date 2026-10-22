@@ -310,6 +310,8 @@ class _RuntimeExitController:
         # 单独限时，避免被任务结算的耗时挤掉。
         self._on_release_sessions: Any | None = None
         self._release_sessions_s = float(os.environ.get("WH_LOCAL_RUNTIME_EXIT_RELEASE_S", "5"))
+        # 「是不是有任务在跑」的探测；没接就按「没活儿」处理（保持原退出语义）。
+        self._busy_checker: Any | None = None
 
     def set_on_before_exit(self, callback: Any | None) -> None:
         """注入退出前回调；仅在真正决定退出（而非刷新重载）时执行一次。"""
@@ -318,6 +320,24 @@ class _RuntimeExitController:
     def set_on_release_sessions(self, callback: Any | None) -> None:
         """注入「释放会话」回调；在取消/结算回调之后执行一次。"""
         self._on_release_sessions = callback
+
+    def set_busy_checker(self, callback: Any | None) -> None:
+        """注入「现在是不是有活儿在干」的探测（仅桌面端注入）。
+
+        2026-10-22：心跳中断**不等于**用户走了。系统休眠、浏览器把标签页冻结、
+        内存压力下的节流，都会让 sendBeacon 停发，而任务还在后端跑着。原来这里
+        会直接自杀，把正在跑的任务取消并按冻结积分 50% 结算，用户回来只看到
+        「本地服务掉线了」+ 任务没了 + 被扣费。改成有活儿就继续等。
+        """
+        self._busy_checker = callback
+
+    def _has_active_work(self) -> bool:
+        if self._busy_checker is None:
+            return False
+        try:
+            return bool(self._busy_checker())
+        except Exception:  # noqa: BLE001 - 探测失败一律当作「没活儿」，维持原退出行为
+            return False
 
     def is_exiting(self) -> bool:
         """是否已确认退出（已经收到最后一个页面的 bye，正在等退出宽限走完）。
@@ -414,6 +434,12 @@ class _RuntimeExitController:
                     # 启动保护期内且从未连接过前端：不退出，给前端加载时间。
                     continue
                 if ever_connected or now - started_at > self._idle_s:
+                    # 心跳断了不等于用户走了：系统休眠 / 浏览器冻结标签页都会让
+                    # sendBeacon 停发，而任务还在后端跑着。这时候自杀等于把任务
+                    # 取消并按 50% 结算，用户回来只剩「掉线」和一笔扣费。
+                    # 有活儿就继续等；等心跳回来（页面唤醒后会补发）。
+                    if self._has_active_work():
+                        continue
                     self._exit("frontend heartbeat idle timeout")
 
     def _exit(self, reason: str) -> None:
@@ -823,6 +849,10 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     # 启用，该回调不被触发。
     runtime_exit.set_on_before_exit(
         _compose_exit_cleanup(product_processing.cancel_all_active_for_shutdown, clipforge.stop)
+    )
+    # 心跳中断≠用户走了：有任务在跑就别自杀，否则会把任务取消并按 50% 结算。
+    runtime_exit.set_busy_checker(
+        lambda: product_processing.active_task_count() > 0
     )
     # 桌面端：结算完成后登出远端平台会话并撤销本机本地会话。远端 token 只存在后端
     # 进程内存里，关页退出即丢失且用户再也无法主动登出；不在这里抢着登出，远端会残留

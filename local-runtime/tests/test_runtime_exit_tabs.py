@@ -164,3 +164,58 @@ def test_cleanup_step_failure_does_not_skip_the_sidecar_cleanup(monkeypatch) -> 
 
     assert calls == ["clipforge-sidecar"]
     assert exits == [0]
+
+
+class _StopWatchdog(Exception):
+    """只跑一轮看门狗循环用的哨兵。"""
+
+
+def _run_one_watchdog_round(controller: _RuntimeExitController, monkeypatch) -> list[str]:
+    """跑一轮 _run_watchdog 的判定，返回被调用的退出原因。"""
+    import wh_local.app.main as main_module
+
+    exits: list[str] = []
+    monkeypatch.setattr(controller, "_exit", exits.append)
+    with controller._lock:
+        controller._ever_connected = True   # 走「心跳断了」分支，而非「最后一个页面关闭」
+        controller._clients.clear()
+        controller._bye_deadline = None
+
+    calls = {"n": 0}
+
+    def _twice(_seconds: float) -> None:
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise _StopWatchdog
+
+    monkeypatch.setattr(main_module.time, "sleep", _twice)
+    try:
+        controller._run_watchdog()
+    except _StopWatchdog:
+        pass
+    return exits
+
+
+def test_watchdog_stays_alive_while_work_is_in_flight(monkeypatch) -> None:
+    """心跳中断 ≠ 用户走了：有任务在跑时看门狗不得自杀。
+
+    系统休眠 / 浏览器冻结标签页都会让 sendBeacon 停发，而任务还在后端跑着。原来
+    这里直接退出，把任务取消并按冻结积分 50% 结算，用户回来只看到「本地服务掉线
+    了」+ 任务没了 + 一笔扣费（2026-10-22 定位）。
+    """
+    controller = _controller(monkeypatch)
+    controller.set_busy_checker(lambda: True)
+    assert _run_one_watchdog_round(controller, monkeypatch) == [], "有任务在跑时不得退出"
+
+
+def test_watchdog_exits_when_idle_and_no_work(monkeypatch) -> None:
+    """没任务、也没心跳 → 照旧退出，保持「关页即停」原语义不变。"""
+    controller = _controller(monkeypatch)
+    controller.set_busy_checker(lambda: False)
+    assert _run_one_watchdog_round(controller, monkeypatch) == ["frontend heartbeat idle timeout"]
+
+
+def test_watchdog_exits_when_no_busy_checker_wired(monkeypatch) -> None:
+    """没接探测（服务器环境）→ 按「没活儿」处理，不能因为漏接就永不退出。"""
+    controller = _controller(monkeypatch)
+    assert _run_one_watchdog_round(controller, monkeypatch) == ["frontend heartbeat idle timeout"]

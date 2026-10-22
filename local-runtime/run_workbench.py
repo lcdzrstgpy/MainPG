@@ -166,31 +166,36 @@ def _resolve_port_conflict(host: str, port: int, card) -> bool:
         return False
     pid = pids[0]
     name = _process_name(pid)
-    # 只清「本程序自己」的残留。以前这里也算上 python —— 但用户机器上任何
-    # python 进程（开发者的脚本、别的本地服务）都可能占这个端口，杀掉是不可逆的，
-    # 不能因为它叫 python 就当是我们自己。宁可顺延端口，也不替用户决定杀进程。
-    if "mainpg" not in name.lower():
-        # 别的程序占着：把选择权交给用户（卡片上两个按钮），20 秒没人选就顺延。
-        if card is None:
-            # --no-browser（协议拉起）没有卡片可问，只能顺延。
-            return False
-        choice = card.ask_port_conflict(port=port, process_name=name, pid=pid)
-        if choice != "kill":
-            card.set_status(
-                "正在启动",
-                f"{port} 被「{name}」占用，已改用其它端口启动（浏览器插件可能连不上）",
-            )
-            log.warning("%s 被「%s」(%s) 占用，改用其它端口", port, name, pid)
-            return False
-        log.warning("用户选择关闭占用进程 %s(%s) 以使用 %s", name, pid, port)
-
-    log.warning("清理本程序残留进程 %s(%s)，继续使用 %s", name, pid, port)
+    # 2026-10-22：连「自己人」也不再静默杀掉。
+    #
+    # 旧规则是「占用者叫 mainpg 就当成上次没退干净的残留，直接 kill」。这个前提站
+    # 不住：进程真退出了端口会自动释放，根本轮不到这里；端口还被占着，恰恰说明那个
+    # 进程**还活着**，只是没在探测窗口里答上 /health（低配机器跑 AI 出图 / POD 渲染
+    # 时是常态）。杀掉它 = 正在跑的任务一起没，前一个页面立刻连接被拒 → 弹「本地服务
+    # 掉线了」。这也是用户点「重新连接」越点越糟的那条路。
+    #
+    # 所以：两类占用者一律交给用户决定；没有卡片可问（协议拉起）就顺延端口，不杀。
+    if card is None:
+        log.warning(
+            "%s 被「%s」(%s) 占用且无法确认其可用，改用其它端口（不杀进程）",
+            port, name, pid,
+        )
+        return False
+    choice = card.ask_port_conflict(port=port, process_name=name, pid=pid)
+    if choice != "kill":
+        card.set_status(
+            "正在启动",
+            f"{port} 被「{name}」占用，已改用其它端口启动（浏览器插件可能连不上）",
+        )
+        log.warning("%s 被「%s」(%s) 占用，改用其它端口", port, name, pid)
+        return False
+    log.warning("用户选择关闭占用进程 %s(%s) 以使用 %s", name, pid, port)
     _kill_pid(pid)
     for _ in range(20):
         time.sleep(0.25)
         if not _port_in_use(host, port):
             return True
-    log.warning("残留进程已结束但 %s 仍未释放，改为顺延端口", port)
+    log.warning("占用进程已结束但 %s 仍未释放，改为顺延端口", port)
     return False
 
 
@@ -218,10 +223,10 @@ def _is_backend_ready(host: str, port: int, timeout: float = 1.0) -> bool:
     return isinstance(payload, dict) and payload.get("ok") is True
 
 
-def _probe_running_workbench(
-    host: str, port: int, timeout: float = 1.5
+def _probe_running_workbench_once(
+    host: str, port: int, timeout: float
 ) -> tuple[str, str] | None:
-    """探测端口上是否已有本程序后端在正常服务。
+    """探测端口上是否已有本程序后端在正常服务（单次，不重试）。
 
     返回 ``(database_path, app_version)``（都可能是空串：旧版本不报 app_version）；
     不可达、或回应得不像本程序时返回 None。
@@ -258,6 +263,30 @@ def _probe_running_workbench(
         database_path if isinstance(database_path, str) else "",
         app_version if isinstance(app_version, str) else "",
     )
+
+
+def _probe_running_workbench(
+    host: str, port: int, timeout: float = 1.5, attempts: int = 3
+) -> tuple[str, str] | None:
+    """带重试的「端口上是不是有兄弟实例」探测。
+
+    为什么必须重试：2026-10-16 修过一次「再启动一次 = 把正在用的那个杀掉」，但当时
+    只探一次、超时 1.5 秒。用户的办公机配置低，后端正跑 AI 出图 / POD 渲染时 1.5 秒
+    答不上 /health 是常态 —— 于是老实例被判成「历史残留」，直接 _kill_pid 掉：前一个
+    页面的请求全部连接被拒，立刻弹「本地服务掉线了」，正在跑的任务一起没。
+
+    更糟的是「点『重新连接』→ 走 mainpg://recover → 无卡片实例再探一次」也会走这条
+    路，越点越死。所以这里放宽成 3 次、每次 1.5 秒（首次之外隔 0.8 秒），只有连续
+    探测都拿不到回应才认为是真的不可用。启动卡片本来就在转圈，多等两秒无感。
+    """
+    tries = max(1, int(attempts))
+    for index in range(tries):
+        result = _probe_running_workbench_once(host, port, timeout)
+        if result is not None:
+            return result
+        if index < tries - 1:
+            time.sleep(0.8)
+    return None
 
 
 def _expected_database_path() -> str | None:
