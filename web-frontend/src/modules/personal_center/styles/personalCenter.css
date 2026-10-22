@@ -2384,76 +2384,6 @@
   }
 }
 
-/* 生图模型选择面板 */
-.model-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.model-field > span {
-  color: var(--theme-text-muted, #64748b);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.model-field select {
-  min-height: 38px;
-  padding: 0 10px;
-  border: 1px solid var(--theme-module-border, #d8e3ee);
-  border-radius: 10px;
-  background: var(--theme-module-surface, #fff);
-  color: var(--theme-text-secondary, #334155);
-  font-size: 13px;
-  font-weight: 700;
-  outline: none;
-}
-
-.model-field select:focus {
-  border-color: #3b82f6;
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12);
-}
-
-.model-field select:disabled {
-  cursor: not-allowed;
-  opacity: 0.6;
-}
-
-.model-field-hint {
-  display: block;
-  margin-top: 6px;
-  color: var(--theme-text-muted, #64748b);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-/* 生图模型选择面板：两个模型并排，避免单列过宽留白 */
-.model-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
-}
-
-.model-block {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 14px;
-  border: 1px solid var(--theme-module-border, #d8e3ee);
-  border-radius: 12px;
-  background: var(--theme-module-surface, #fff);
-}
-
-.model-block .version-actions {
-  margin-top: auto;
-}
-
-@media (max-width: 640px) {
-  .model-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
 /* ---- 意见反馈 ---- */
 .feedback-card { margin-top: 16px; }
 
@@ -3722,9 +3652,6 @@
   border-radius: 999px;
 }
 
-/* ---- 模型选择 ---- */
-.model-field select { border-radius: 999px; }
-
 /* ---- 系统版本 ---- */
 .version-actions button { border-radius: 999px; }
 
@@ -3753,7 +3680,6 @@
 /* 胶囊 select 的原生箭头会被圆角端点挤住：改成自绘 chevron。
    background-color 仍由各控件原有规则提供，这里只补箭头图层。 */
 .usage-filters select,
-.model-field select,
 .feedback-field.is-inline select {
   appearance: none;
   -webkit-appearance: none;

@@ -17,6 +17,7 @@ from wh_local.modules.pod_customization.billing_contract import (
 )
 from wh_local.modules.pod_customization.composition_runtime import (
     PROMPT_VERSION,
+    PROMPT_VERSION_ROLE,
     PodCompositionLocalizeRequest,
     PodCompositionRequest,
     PodCompositionRuntime,
@@ -165,7 +166,8 @@ def test_generate_composition_disables_thinking_and_returns_zh_and_en() -> None:
         on_outcome=lambda call_id, status: outcomes.append((call_id, status)),
     )
 
-    assert result.prompt_version == PROMPT_VERSION
+    # 默认 scope=full：构图语义为「四轮」，走 v5；复刻/裂变仍是 v4。
+    assert result.prompt_version == PROMPT_VERSION_ROLE
     assert result.panels.panel_4.zh.startswith("素材图")
     assert result.panels.panel_4.en.startswith("front view")
     assert outcomes == [("cmp1:composition:1", "success")]
@@ -188,10 +190,20 @@ def test_generate_composition_disables_thinking_and_returns_zh_and_en() -> None:
     assert "只允许描述拍摄手法" in hard_rules
     assert "主体与其部件一律用抽象、通用的说法" in hard_rules
     assert "自检" in hard_rules
-    # 抽象说法（场景氛围 / 边角 / 提手结构）是允许的，别被误删成只剩机位景别。
+    # full（默认）走「四轮」语义：第 1 轮四款主图共用机位，派生轮只写视角。
     panel_contract = " ".join(user_prompt["panel_contract"].values())
-    assert "场景氛围" in panel_contract
-    assert "提手结构" in panel_contract
+    assert "第 1 轮（四款主图共用）" in panel_contract
+    assert "只写更近的机位" in panel_contract
+
+    # 复刻/裂变仍是「四格」语义，旧文案必须原样保留。
+    legacy_prompt = json.loads(
+        _messages_for_generation(
+            PodCompositionRequest(composition_id="cmp1", brief="四张图想这样拍", scope="replica")
+        )[1]["content"]
+    )
+    legacy_contract = " ".join(legacy_prompt["panel_contract"].values())
+    assert "场景氛围" in legacy_contract
+    assert "提手结构" in legacy_contract
 
 
 def test_localize_composition_translates_edited_zh_and_echoes_zh() -> None:

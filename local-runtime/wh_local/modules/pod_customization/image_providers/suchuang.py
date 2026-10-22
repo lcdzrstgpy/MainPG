@@ -81,9 +81,12 @@ class SuChuangImageProvider:
         *,
         namespace: str,
     ) -> list[str]:
-        """速创只吃公网地址，所以先把每张本地参考图发布到 COS。"""
+        """速创只吃公网地址；已发布好的锚点 URL 直接复用，其余本地图才发布到 COS。"""
         return [
-            host.publish_reference(reference.content, reference.content_type, namespace=namespace)
+            reference.url
+            or host.publish_reference(
+                reference.content, reference.content_type, namespace=namespace
+            )
             for reference in references
         ]
 

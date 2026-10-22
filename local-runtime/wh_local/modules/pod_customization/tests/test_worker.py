@@ -867,6 +867,74 @@ def _batch_request_for_test(template_id: str, *, count: int = 1) -> BatchCreate:
     )
 
 
+def test_full_batch_sends_ordered_structure_views_to_doubao(tmp_path: Path, monkeypatch) -> None:
+    import wh_local.modules.pod_customization.worker as worker_module
+
+    monkeypatch.setattr(
+        worker_module,
+        "resolve_pod_image_model",
+        lambda: "doubao-seedream-5-0-flash-260915",
+    )
+    runtime = ListingOnlyRuntime([_grid([_pattern(index) for index in range(4)])])
+    service = _service(tmp_path, runtime)
+    actor = _actor()
+    scene = Image.new("RGB", (240, 200), "#e9ecef")
+    side = Image.new("RGB", (240, 200), "#dfe3e8")
+    dimension = Image.new("RGB", (240, 200), "#f0e6f2")
+    template = service.upload_template(
+        actor,
+        name="Acrylic stand",
+        filename="front.png",
+        content=_encode(scene),
+        views=[
+            {"role": "side", "filename": "side.png", "content": _encode(side)},
+            {"role": "dimension", "filename": "size.png", "content": _encode(dimension)},
+        ],
+    )
+    batch = service.create_batch(actor, _batch_request_for_test(template["id"]), enqueue=False)
+
+    service.worker.process_batch(batch["id"])
+
+    request = runtime.requests[0]
+    # 主图永远第一；dimension 只用于识图，绝不进生图参考图。
+    assert [image.role for image in request.reference_images] == ["product_primary", "product_side"]
+    assert request.reference_images[0].content == _encode(scene)
+    assert request.template_image == b""
+    service.close()
+    runtime.close()
+
+
+def test_full_batch_falls_back_to_single_image_on_suchuang(tmp_path: Path, monkeypatch) -> None:
+    import wh_local.modules.pod_customization.worker as worker_module
+
+    monkeypatch.setattr(
+        worker_module,
+        "resolve_pod_image_model",
+        lambda: "image_gpt_2.5",
+    )
+    runtime = ListingOnlyRuntime([_grid([_pattern(index) for index in range(4)])])
+    service = _service(tmp_path, runtime)
+    actor = _actor()
+    scene = Image.new("RGB", (240, 200), "#e9ecef")
+    side = Image.new("RGB", (240, 200), "#dfe3e8")
+    template = service.upload_template(
+        actor,
+        name="Acrylic stand",
+        filename="front.png",
+        content=_encode(scene),
+        views=[{"role": "side", "filename": "side.png", "content": _encode(side)}],
+    )
+    batch = service.create_batch(actor, _batch_request_for_test(template["id"]), enqueue=False)
+
+    service.worker.process_batch(batch["id"])
+
+    request = runtime.requests[0]
+    # 速创边缘化：第一版只保证豆包多图，命中速创时行为等同现状（单主图）。
+    assert request.reference_images == ()
+    assert request.template_image == _encode(scene)
+    service.close()
+    runtime.close()
+
 def _ready_template(service: PodCustomizationService, actor: Actor) -> dict:
     scene = Image.new("RGB", (240, 200), "#e9ecef")
     return service.upload_template(actor, name="Fixed tote scene", filename="scene.png", content=_encode(scene))
@@ -2403,3 +2471,216 @@ def test_progress_resets_deadline_when_styles_complete(tmp_path: Path) -> None:
         worker_module.POD_PROGRESS_TIMEOUT_SECONDS = original_timeout
         worker_module.POD_WAIT_POLL_SECONDS = original_poll
         service.close()
+
+
+# ---------------------------------------------------------------------------
+# 列式生成（两级批次）：4 款一组，组内 4 轮调用
+# ---------------------------------------------------------------------------
+
+
+def _column_batch_request(template_id: str) -> BatchCreate:
+    return BatchCreate(
+        template_id=template_id,
+        count=4,
+        prompt_version="v1",
+        business_fields=BusinessFields(
+            product_name="Botanical tote bag",
+            product_category="女士手提包",
+            design_theme="modern botanical",
+            color_preferences=["鼠尾草绿", "奶油白", "黄铜金"],
+        ),
+        listing_fields=_listing_fields(),
+        generation_layout="column_v1",
+    )
+
+
+def test_column_batch_generates_four_rounds_with_anchor_references(tmp_path: Path) -> None:
+    round_grids = [
+        _grid([_pattern(index + round_index * 10) for index in range(4)])
+        for round_index in range(4)
+    ]
+    runtime = ListingOnlyRuntime(round_grids)
+    billing = BillingCoordinator()
+    service = _service(tmp_path, runtime, billing)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _column_batch_request(template["id"]), enqueue=False)
+
+    assert batch["generation_layout"] == "column_v1"
+    assert batch["group_count"] == 1
+    assert len(batch["groups"]) == 1
+    assert {role: state for role, state in batch["groups"][0]["sheets"].items()} == {
+        "lifestyle": "queued",
+        "detail_a": "queued",
+        "detail_b": "queued",
+        "hero": "queued",
+    }
+
+    service.worker.process_batch(batch["id"])
+
+    stored = service.get_batch(actor, batch["id"])
+    assert stored["status"] == "completed"
+    assert all(item["status"] == "completed" for item in stored["items"])
+    assert len(stored["items"]) == 16
+    assert {item["variant_index"] for item in stored["items"]} == {1, 2, 3, 4}
+    assert stored["groups"][0]["status"] == "completed"
+
+    assert len(runtime.requests) == 4
+    primary = runtime.requests[0]
+    assert primary.template_image
+    assert len(primary.reference_images) == 0
+    derived = runtime.requests[1:]
+    for request in derived:
+        assert len(request.reference_images) == 4
+        assert [image.role for image in request.reference_images] == [
+            "anchor_1",
+            "anchor_2",
+            "anchor_3",
+            "anchor_4",
+        ]
+        # 第一次尝试直接复用 COS 公网地址，不重复上传、不走 base64。
+        assert all(image.url.startswith("https://cos.example.com/") for image in request.reference_images)
+        assert request.anchor_fallback is False
+
+    assert billing.freezes[0].column_style_count == 4
+    assert billing.freezes[0].product_batch_freeze_payload()["link_count"] == 1
+    assert billing.freezes[0].product_batch_freeze_payload()["item_count"] == 4
+    service.close()
+    runtime.close()
+
+
+def test_column_primary_failure_fails_the_whole_group_without_derived_calls(tmp_path: Path) -> None:
+    runtime = ListingOnlyRuntime([RuntimeError("primary attempt 1"), RuntimeError("primary attempt 2")])
+    service = _service(tmp_path, runtime)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _column_batch_request(template["id"]), enqueue=False)
+
+    service.worker.process_batch(batch["id"])
+
+    stored = service.get_batch(actor, batch["id"])
+    assert stored["status"] == "failed"
+    assert all(item["status"] == "failed" for item in stored["items"])
+    # 第 1 轮两次尝试都失败 → 派生轮不启动。
+    assert len(runtime.requests) == 2
+    assert stored["groups"][0]["status"] == "failed"
+    assert stored["groups"][0]["sheets"] == {
+        "lifestyle": "failed",
+        "detail_a": "failed",
+        "detail_b": "failed",
+        "hero": "failed",
+    }
+    service.close()
+    runtime.close()
+
+
+def test_column_resume_freezes_only_missing_roles(tmp_path: Path) -> None:
+    """断点续跑只冻结缺失的「组 × 角色」，已完成轮次不再产生调用。"""
+    runtime = ListingOnlyRuntime([])
+    service = _service(tmp_path, runtime)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _column_batch_request(template["id"]), enqueue=False)
+    with service.repository._connect() as connection:
+        group_id = connection.execute(
+            "SELECT group_id FROM pod_customization_style_groups WHERE batch_id = ?",
+            (batch["id"],),
+        ).fetchone()["group_id"]
+    service.repository.end_group_sheet(
+        group_id, "lifestyle", status="completed", attempt=1
+    )
+    service.repository.end_group_sheet(
+        group_id, "detail_a", status="completed", attempt=1
+    )
+    service.repository.set_group_status(
+        group_id, "generating_derived", current_round="detail_a"
+    )
+    with service.repository._connect() as connection:
+        connection.execute(
+            "UPDATE pod_customization_batches SET status = 'paused' WHERE batch_id = ?",
+            (batch["id"],),
+        )
+
+    stored = service.repository.get_batch_internal(batch["id"])
+    run = service._freeze_paused_batch_remainder(actor, stored)
+
+    call_ids = {call.call_id for call in run.plan.calls}
+    assert f"{batch['id']}:group:1:role:detail_b:image:1" in call_ids
+    assert f"{batch['id']}:group:1:role:detail_b:image:2" in call_ids
+    assert f"{batch['id']}:group:1:role:hero:image:1" in call_ids
+    assert f"{batch['id']}:group:1:role:lifestyle:image:1" not in call_ids
+    assert f"{batch['id']}:group:1:role:detail_a:image:1" not in call_ids
+    payload = run.plan.product_batch_freeze_payload()
+    assert payload["link_count"] == 1
+    assert payload["item_count"] == 4
+    service.close()
+    runtime.close()
+
+
+def test_column_batch_rejects_user_side_rerun(tmp_path: Path) -> None:
+    """列式批次 v1 不做用户重跑：两个旧入口都返回 409，避免冲掉已完成图。"""
+    runtime = ListingOnlyRuntime([])
+    service = _service(tmp_path, runtime)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _column_batch_request(template["id"]), enqueue=False)
+    service.repository.set_batch_status(batch["id"], "completed")
+
+    with pytest.raises(PodRepositoryError) as single:
+        service.regenerate_style(actor, batch["id"], 1, enqueue=False)
+    assert single.value.status_code == 409
+
+    with pytest.raises(PodRepositoryError) as batch_retry:
+        service.retry_failed(
+            actor,
+            batch["id"],
+            image_style_indices=[1],
+            title_style_indices=[],
+            enqueue=False,
+        )
+    assert batch_retry.value.status_code == 409
+    service.close()
+    runtime.close()
+
+
+class _RecordingTitleRuntime:
+    """只记录提交、不真正跑标题：用于校验 claim 时写进了非空 task id。"""
+
+    def __init__(self) -> None:
+        self.submitted: list[tuple[Any, ...]] = []
+
+    def submit(self, function, *args, **kwargs) -> Future:
+        self.submitted.append(args)
+        future: Future = Future()
+        future.set_result(None)
+        return future
+
+
+def test_column_titles_use_the_primary_sheet_as_style_task_id(tmp_path: Path) -> None:
+    runtime = ListingOnlyRuntime([
+        _grid([_pattern(index + round_index * 10) for index in range(4)])
+        for round_index in range(4)
+    ])
+    titles = _RecordingTitleRuntime()
+    service = _service(tmp_path, runtime, title_runtime=titles)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _column_batch_request(template["id"]), enqueue=False)
+
+    service.worker.process_batch(batch["id"])
+
+    with service.repository._connect() as connection:
+        lifestyle_sheet_id = connection.execute(
+            "SELECT sheet_id FROM pod_customization_group_sheets WHERE batch_id = ? AND role = 'lifestyle'",
+            (batch["id"],),
+        ).fetchone()["sheet_id"]
+        rows = connection.execute(
+            "SELECT style_index, status, style_task_id FROM pod_customization_style_titles WHERE batch_id = ? ORDER BY style_index",
+            (batch["id"],),
+        ).fetchall()
+
+    assert len(titles.submitted) == 4
+    assert [row["style_task_id"] for row in rows] == [lifestyle_sheet_id] * 4
+    assert all(row["status"] == "generating" for row in rows)
+    service.close()
+    runtime.close()

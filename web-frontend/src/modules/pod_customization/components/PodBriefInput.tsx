@@ -9,11 +9,11 @@ import {
   isBriefRequestValid,
   normalizeBriefInput,
 } from "../data/podBrief";
-import type { PodBriefFieldsDraft, PodBriefHistoryItem } from "../types";
+import type { PodArtDirection, PodBriefFieldsDraft, PodBriefHistoryItem } from "../types";
 
 type Props = {
   /** 内置「智能生成」完成后的回调；由父级统一驱动生成（hideGenerate）时可省略。 */
-  onGenerated?: (fields: PodBriefFieldsDraft, input: string) => void;
+  onGenerated?: (fields: PodBriefFieldsDraft, input: string, artDirection?: PodArtDirection | null) => void;
   history: PodBriefHistoryItem[];
   onSelectHistory: (item: PodBriefHistoryItem) => void;
   /** 折叠标题下的副标题；默认是全定制（带产品名）口径。 */
@@ -25,6 +25,11 @@ type Props = {
   onValueChange?: (value: string) => void;
   /** 隐藏内置「智能生成」按钮，由父级用一个按钮统一驱动「编辑提示词 + 开始生成」。 */
   hideGenerate?: boolean;
+  /** 当前模板主图资产 id：带上时顺手生成批级美术指导（整批共用）。 */
+  templateAssetId?: string;
+  /** 已生成的批级美术指导；可编辑、可清空。 */
+  artDirection?: PodArtDirection | null;
+  onArtDirectionChange?: (value: PodArtDirection | null) => void;
 };
 
 // 阶段化文案：调用期间按固定节奏轮换，避免只显示一个静态的“生成中”。
@@ -55,6 +60,11 @@ function briefSummary(input: string): string {
   return normalized.length > BRIEF_SUMMARY_MAX_LENGTH ? `${normalized.slice(0, BRIEF_SUMMARY_MAX_LENGTH)}…` : normalized;
 }
 
+/** 美术指导里的数组字段用顿号/逗号编辑，提交前按同一套分隔符拆回数组。 */
+function splitArtList(value: string): string[] {
+  return value.split(/[、，,;；\n]+/).map((part) => part.trim()).filter(Boolean);
+}
+
 export function PodBriefInput({
   onGenerated,
   history,
@@ -64,6 +74,9 @@ export function PodBriefInput({
   value,
   onValueChange,
   hideGenerate = false,
+  templateAssetId = "",
+  artDirection = null,
+  onArtDirectionChange,
 }: Props) {
   const [open, setOpen] = useState(true);
   // 受控优先：父级传了 value 就用父级的状态，便于它在自己的按钮里触发生成。
@@ -75,7 +88,15 @@ export function PodBriefInput({
   const [stageIndex, setStageIndex] = useState(0);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [artDirectionEditing, setArtDirectionEditing] = useState(false);
+  // 美术指导内容长，默认收起，只在头部露出标题和操作按钮。
+  const [artDirectionOpen, setArtDirectionOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const updateArtDirection = (patch: Partial<PodArtDirection>) => {
+    if (!artDirection || !onArtDirectionChange) return;
+    onArtDirectionChange({ ...artDirection, ...patch });
+  };
 
   // 输入框自适应高度：内容变多自动长高，清空或收起时收回；超过上限后内部滚动。
   // 用 ResizeObserver 监听宽度：tab 预挂载时元素是 hidden 的，scrollHeight 为 0，
@@ -126,9 +147,15 @@ export function PodBriefInput({
         // 模板里「产品工艺 / 使用场景」两行显式抽出来一起发，避免豆包漏抽（历史 bug：填了却不回填）。
         fabric_craft: extractBriefFieldValue(input, BRIEF_PROVIDED_FIELD_LABELS.fabric_craft),
         scene_mood: extractBriefFieldValue(input, BRIEF_PROVIDED_FIELD_LABELS.scene_mood),
+        // 带上模板主图：顺手产出批级美术指导（场景 / 光影 / 冷暖 / 道具），整批共用。
+        ...(templateAssetId ? { template_asset_id: templateAssetId } : {}),
       });
-      onGenerated(briefFieldsToDraft(response.fields), input);
-      setNotice("已按描述自动填写业务字段，可继续在下方人工修改。");
+      onGenerated(briefFieldsToDraft(response.fields), input, response.art_direction ?? null);
+      setNotice(
+        response.art_direction
+          ? "已按描述自动填写业务字段，并生成整批共用的美术指导（可在下方编辑）。"
+          : "已按描述自动填写业务字段，可继续在下方人工修改。",
+      );
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause) || "智能生成失败，请稍后重试。");
     } finally {
@@ -157,6 +184,7 @@ export function PodBriefInput({
         />
         <div className="pod-brief-input-meta">
           <span className={loading ? "pod-brief-input-stage" : ""}>{loading ? BRIEF_STAGES[stageIndex] : hint}</span>
+          {templateAssetId && <span className="pod-brief-template-attached">已附带模板主图</span>}
           <small>{brief.length}/{POD_BRIEF_MAX_LENGTH}</small>
         </div>
         {!hideGenerate && <button type="button" className="pod-brief-input-generate" disabled={loading || !isBriefRequestValid(brief)} onClick={() => void generate()}>
@@ -164,6 +192,46 @@ export function PodBriefInput({
         </button>}
         {error && <p className="pod-brief-input-error" role="alert"><span>{error}</span><button type="button" onClick={() => void generate()}>重试</button></p>}
         {!error && notice && <p className="pod-brief-input-notice" role="status">{notice}</p>}
+        {artDirection && <section className="pod-art-direction" aria-label="批级美术指导">
+          <header>
+            <button
+              type="button"
+              className="pod-art-direction-toggle"
+              aria-expanded={artDirectionOpen}
+              onClick={() => setArtDirectionOpen((current) => !current)}
+            >
+              <span><b>美术指导</b><small>整批共用 · 只作用于主图轮</small></span>
+              <i className={`iconfont icon-down ${artDirectionOpen ? "is-open" : ""}`} aria-hidden="true" />
+            </button>
+            <div className="pod-art-direction-actions">
+              <button type="button" onClick={() => {
+                if (artDirectionEditing) {
+                  setArtDirectionEditing(false);
+                } else {
+                  setArtDirectionOpen(true);
+                  setArtDirectionEditing(true);
+                }
+              }}>{artDirectionEditing ? "收起" : "编辑"}</button>
+              <button type="button" onClick={() => { setArtDirectionEditing(false); setArtDirectionOpen(false); onArtDirectionChange?.(null); }}>清空</button>
+            </div>
+          </header>
+          {artDirectionOpen && (artDirectionEditing ? <div className="pod-art-direction-fields">
+            <label><span>场景</span><textarea aria-label="美术指导-场景" value={artDirection.scene} onChange={(event) => updateArtDirection({ scene: event.target.value })} /></label>
+            <label><span>光影</span><textarea aria-label="美术指导-光影" value={artDirection.lighting} onChange={(event) => updateArtDirection({ lighting: event.target.value })} /></label>
+            <label><span>冷暖</span><textarea aria-label="美术指导-冷暖" value={artDirection.color_temperature} onChange={(event) => updateArtDirection({ color_temperature: event.target.value })} /></label>
+            <label><span>情绪</span><input aria-label="美术指导-情绪" value={artDirection.mood} onChange={(event) => updateArtDirection({ mood: event.target.value })} /></label>
+            <label><span>背景</span><textarea aria-label="美术指导-背景" value={artDirection.background} onChange={(event) => updateArtDirection({ background: event.target.value })} /></label>
+            <label><span>构图</span><textarea aria-label="美术指导-构图" value={artDirection.composition_hint} onChange={(event) => updateArtDirection({ composition_hint: event.target.value })} /></label>
+            <label><span>配色（顿号分隔）</span><input aria-label="美术指导-配色" value={artDirection.palette.join("、")} onChange={(event) => updateArtDirection({ palette: splitArtList(event.target.value) })} /></label>
+            <label><span>道具（顿号分隔）</span><textarea aria-label="美术指导-道具" value={artDirection.props.join("\n")} onChange={(event) => updateArtDirection({ props: splitArtList(event.target.value) })} /></label>
+            <label><span>避免（顿号分隔）</span><input aria-label="美术指导-避免" value={artDirection.avoid.join("、")} onChange={(event) => updateArtDirection({ avoid: splitArtList(event.target.value) })} /></label>
+          </div> : <dl className="pod-art-direction-summary">
+            <div><dt>场景</dt><dd>{artDirection.scene}</dd></div>
+            <div><dt>光影</dt><dd>{artDirection.lighting}</dd></div>
+            <div><dt>冷暖</dt><dd>{artDirection.color_temperature}</dd></div>
+            <div><dt>道具</dt><dd>{artDirection.props.join(" · ")}</dd></div>
+          </dl>)}
+        </section>}
         {history.length > 0 && <div className="pod-brief-history" aria-label="最近生成">
           <b>最近生成</b>
           <ul>

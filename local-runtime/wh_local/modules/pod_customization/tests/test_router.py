@@ -314,6 +314,47 @@ def test_template_upload_list_and_asset_download_contract(tmp_path) -> None:
     assert downloaded.content == _png()
 
 
+def test_template_upload_accepts_structure_views_and_structure_patch(tmp_path) -> None:
+    client = _client(tmp_path)
+    headers = {"Authorization": "Bearer dev-admin-token"}
+
+    uploaded = client.post(
+        "/api/pod-customization/templates",
+        headers=headers,
+        data={"name": "Acrylic stand"},
+        files={
+            "file": ("front.png", _png(), "image/png"),
+            "side": ("side.png", _png(), "image/png"),
+            "dimension": ("size.png", _png(), "image/png"),
+        },
+    )
+    assert uploaded.status_code == 200
+    template = uploaded.json()
+    # dimension 只用于识图，仍会落库；生图只用 primary + side/top。
+    assert [view["role"] for view in template["views"]] == ["side", "dimension"]
+    assert template["structure_status"] == "none"
+
+    patched = client.patch(
+        f"/api/pod-customization/templates/{template['id']}/structure",
+        headers=headers,
+        json={"facts": {"tiers": 4, "transparency": "high", "invented_key": "ignored"}},
+    )
+    assert patched.status_code == 200
+    body = patched.json()
+    assert body["structure_status"] == "ready"
+    assert body["structure_facts"]["tiers"] == 4
+    assert "invented_key" not in body["structure_facts"]
+
+    # 批次表单里的「结构视图锚定」走这个接口：只替换提交的角色，其余保留。
+    attached = client.post(
+        f"/api/pod-customization/templates/{template['id']}/views",
+        headers=headers,
+        files={"top": ("top.png", _png(), "image/png")},
+    )
+    assert attached.status_code == 200
+    assert [view["role"] for view in attached.json()["views"]] == ["side", "top", "dimension"]
+
+
 def test_batch_create_list_detail_and_scene_optimization_contract(tmp_path) -> None:
     client = _client(tmp_path)
     headers = {"Authorization": "Bearer dev-admin-token"}

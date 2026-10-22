@@ -370,6 +370,51 @@ def test_direct_listing_prompt_carries_the_static_60_30_10_rule() -> None:
     assert "DOMINANT BASE" in prompt and "STRUCTURAL ACCENT" in prompt and "POP HIGHLIGHT" in prompt
 
 
+def _structure_facts() -> dict:
+    return {
+        "part_count": 4,
+        "tiers": 4,
+        "units_per_tier": 14,
+        "height_mm": 31,
+        "thickness_mm": 10.2,
+        "material": "clear acrylic",
+        "transparency": "high",
+        "surface_finish": "glossy",
+        "confidence": {"tiers": 0.9, "units_per_tier": 0.9, "material": 0.9},
+    }
+
+
+def test_direct_listing_prompt_injects_structure_anchor_blocks() -> None:
+    prompt = build_direct_listing_prompt(
+        BusinessFields(product_name="Acrylic display stand"),
+        "",
+        structure_facts=_structure_facts(),
+        reference_view_roles=("primary", "side", "top"),
+    )
+    assert "STRUCTURE FACTS" in prompt
+    assert "exactly 4 vertical tiers" in prompt
+    assert "TRANSPARENT MATERIAL LOCK" in prompt
+    assert "REFERENCE VIEWS CONTRACT" in prompt
+    assert "Image 2 = SIDE elevation" in prompt
+
+
+def test_direct_listing_prompt_without_structure_anchor_stays_unchanged() -> None:
+    prompt = build_direct_listing_prompt(BusinessFields(product_name="托特包"), "")
+    assert "STRUCTURE FACTS" not in prompt
+    assert "PART COUNT & SIZE LOCK" not in prompt
+    assert "TRANSPARENT MATERIAL LOCK" not in prompt
+    assert "REFERENCE VIEWS CONTRACT" not in prompt
+
+
+def test_direct_listing_prompt_skips_transparent_lock_for_opaque_material() -> None:
+    facts = {**_structure_facts(), "material": "canvas", "transparency": "none"}
+    prompt = build_direct_listing_prompt(
+        BusinessFields(product_name="帆布托特包"), "", structure_facts=facts
+    )
+    assert "STRUCTURE FACTS" in prompt
+    assert "TRANSPARENT MATERIAL LOCK" not in prompt
+
+
 def test_style_prompt_renders_batch_scene_mood_when_provided() -> None:
     prompt = _style_prompt({"scene_mood": "暖光木质厨房"}, style_index=1)
     assert "BATCH SCENE MOOD (this batch): 暖光木质厨房." in prompt

@@ -335,3 +335,117 @@ def test_generate_brief_fields_falls_back_to_user_provided_when_model_omits_them
 
     assert result.fields.fabric_craft == "绗缝被子那种"
     assert result.fields.scene_mood == "暖光木质厨房"
+
+
+def _art_direction() -> dict[str, object]:
+    return {
+        "scene": "清晨的木质厨房岛台，右侧半开的百叶窗把光切成条状",
+        "lighting": "低角度暖金色侧逆光从右后方打来，3400K，投影朝左前方",
+        "color_temperature": "主体偏暖约 3400K，窗外冷蓝约 5600K",
+        "mood": "刚起床的安静厨房，有生活痕迹但不凌乱",
+        "palette": ["暖胡桃木棕", "奶油白", "鼠尾草绿"],
+        "props": [
+            "近景：釉面陶瓷杯，杯口淡金描边",
+            "中景：厚切木质砧板，边缘有刀痕",
+            "远景：黄铜壶里一束尤加利叶",
+            "点缀：散落的咖啡豆",
+            "中景：折叠亚麻餐巾",
+        ],
+        "background": "背景压暗、f/2.0 浅景深",
+        "composition_hint": "产品放在右下三分点，左上留出窗光",
+        "avoid": ["冷白棚拍", "纯灰背景"],
+    }
+
+
+def test_brief_with_template_image_also_returns_art_direction() -> None:
+    session = _Session([_Response(_fields(45)), _Response(_art_direction())])
+    runtime = PodBriefRuntime(session=session, sleeper=lambda _seconds: None)
+    outcomes: list[tuple[str, str]] = []
+
+    result = runtime.generate_brief_fields(
+        PodBriefRequest(
+            brief_id="brf-art",
+            brief="美式西南复古牛仔荒野风托特包",
+            template_image=b"png-bytes",
+            template_content_type="image/png",
+        ),
+        grant=_grant(),
+        call_id="brf-art:brief:1",
+        call_ids=_call_ids("brf-art"),
+        on_outcome=lambda call_id, status: outcomes.append((call_id, status)),
+    )
+
+    assert result.art_direction is not None
+    assert "木质厨房岛台" in result.art_direction.scene
+    # 视觉调用单独占最后一条冻结调用，业务字段仍有 3 次契约修复机会。
+    assert outcomes == [("brf-art:brief:1", "success"), ("brf-art:brief:4", "success")]
+    assert len(session.requests) == 2
+    vision_content = session.requests[1]["json"]["messages"][1]["content"]
+    assert vision_content[0]["type"] == "image_url"
+    assert vision_content[0]["image_url"]["url"].startswith("data:image/png;base64,")
+    schema = session.requests[1]["json"]["response_format"]["json_schema"]["schema"]
+    assert schema["properties"]["props"]["minItems"] == 5
+    assert schema["properties"]["props"]["maxItems"] == 8
+    runtime.close()
+
+
+def test_art_direction_failure_never_blocks_the_brief() -> None:
+    session = _Session([_Response(_fields(45)), _Response({}, status_code=500)])
+    runtime = PodBriefRuntime(session=session, sleeper=lambda _seconds: None)
+    outcomes: list[tuple[str, str]] = []
+
+    result = runtime.generate_brief_fields(
+        PodBriefRequest(
+            brief_id="brf-art2",
+            brief="主题",
+            template_image=b"png-bytes",
+            template_content_type="image/png",
+        ),
+        grant=_grant(),
+        call_id="brf-art2:brief:1",
+        call_ids=_call_ids("brf-art2"),
+        on_outcome=lambda call_id, status: outcomes.append((call_id, status)),
+    )
+
+    assert result.art_direction is None
+    assert len(result.fields.style_keywords) == 45
+    assert outcomes == [("brf-art2:brief:1", "success"), ("brf-art2:brief:4", "no_return")]
+    runtime.close()
+
+
+def test_concrete_motifs_with_a_pattern_suffix_are_not_treated_as_abstract() -> None:
+    # 模型习惯写「XX图案」：具体花纹名 + 后缀要放行，纯风格词 + 后缀仍要拦。
+    for value in ("山茶花图案", "铃兰图案", "折扇图案", "四叶草纹样", "莲花印花", "梧桐叶图形"):
+        assert is_concrete_style_element(value), value
+    for value in ("俏皮图案", "复古纹样", "高饱和度配色", "波普色块拼接", "海滩元素", "图案", "印花图案"):
+        assert not is_concrete_style_element(value), value
+
+
+def test_brief_with_template_image_keeps_three_field_repair_attempts() -> None:
+    session = _Session([_Response(_fields(2)), _Response(_fields(3)), _Response(_fields(45)), _Response(_art_direction())])
+    runtime = PodBriefRuntime(session=session, sleeper=lambda _seconds: None)
+    outcomes: list[tuple[str, str]] = []
+
+    result = runtime.generate_brief_fields(
+        PodBriefRequest(
+            brief_id="brf-art3",
+            brief="主题",
+            template_image=b"png-bytes",
+            template_content_type="image/png",
+        ),
+        grant=_grant(),
+        call_id="brf-art3:brief:1",
+        call_ids=_call_ids("brf-art3"),
+        on_outcome=lambda call_id, status: outcomes.append((call_id, status)),
+    )
+
+    assert result.attempt_count == 3
+    assert len(result.fields.style_keywords) == 45
+    assert result.art_direction is not None
+    assert [call_id for call_id, _ in outcomes] == [
+        "brf-art3:brief:1",
+        "brf-art3:brief:2",
+        "brf-art3:brief:3",
+        "brf-art3:brief:4",
+    ]
+    runtime.close()

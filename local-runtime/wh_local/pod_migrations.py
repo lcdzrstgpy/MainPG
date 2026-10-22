@@ -530,6 +530,55 @@ POD_MIGRATION_CONTRACTS: dict[str, MigrationEffect] = {
             ),
         },
     ),
+    "025_template_views": MigrationEffect(
+        tables={
+            "pod_customization_template_views": _table(
+                "view_id template_id workspace_id owner_user_id role asset_id width height created_at",
+                checks=("UNIQUE (template_id, role)",),
+            )
+        },
+        column_additions={
+            "pod_customization_templates": (
+                "structure_facts_json",
+                "structure_status",
+                "structure_analysis_version",
+            )
+        },
+        indexes={
+            "idx_pod_template_views_owner": _index(
+                "pod_customization_template_views",
+                "workspace_id owner_user_id template_id",
+            )
+        },
+    ),
+    "026_style_column_layout": MigrationEffect(
+        tables={
+            "pod_customization_style_groups": _table(
+                "group_id batch_id workspace_id owner_user_id group_index style_indices_json "
+                "status current_round execution_epoch created_at updated_at",
+                checks=("UNIQUE (batch_id, group_index)",),
+            ),
+            "pod_customization_group_sheets": _table(
+                "sheet_id group_id batch_id role status grid_asset_id attempt error_message "
+                "prompt_snapshot created_at updated_at",
+                checks=("UNIQUE (group_id, role)",),
+            ),
+        },
+        column_additions={
+            "pod_customization_batches": (
+                "generation_layout",
+                "group_count",
+                "generation_meta_json",
+                "art_direction_json",
+            ),
+            "pod_customization_compositions": ("layout",),
+        },
+        indexes={
+            "idx_pod_group_sheets_batch": _index(
+                "pod_customization_group_sheets", "batch_id role"
+            ),
+        },
+    ),
 }
 
 

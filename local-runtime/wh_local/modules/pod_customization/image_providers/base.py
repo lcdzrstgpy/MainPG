@@ -22,10 +22,13 @@ class GridReference:
 
     怎么用由平台决定：速创要求公网 URL（host 负责发布到 COS），
     豆包支持 base64 data URL（直接内嵌，不经过 COS）。
+    ``url`` 非空时优先使用已经发布好的公网地址（列式生成派生轮的锚点），
+    不再重复上传、也不产生 base64 体积。
     """
 
     content: bytes
     content_type: str
+    url: str = ""
 
 
 @dataclass(frozen=True)

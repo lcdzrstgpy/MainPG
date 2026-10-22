@@ -188,10 +188,17 @@ class PodCustomizationAiRuntime(AiRuntime):
 
     @staticmethod
     def _grid_references(request: DirectListingGridRequest) -> tuple[GridReference, ...]:
-        """复刻按传入顺序保留多张参考图；全定制沿用模板单图；半定制零参考图。"""
+        """复刻按传入顺序保留多张参考图；全定制沿用模板单图；半定制零参考图。
+
+        ``anchor_fallback`` 为 True 时丢弃公网 URL、改走本地字节（派生轮回退路径）。
+        """
         if request.reference_images:
             return tuple(
-                GridReference(content=image.content, content_type=image.content_type)
+                GridReference(
+                    content=image.content,
+                    content_type=image.content_type,
+                    url="" if request.anchor_fallback else image.url,
+                )
                 for image in request.reference_images
             )
         if request.template_image:

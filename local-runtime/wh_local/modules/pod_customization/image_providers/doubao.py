@@ -76,16 +76,25 @@ class DoubaoSeedreamImageProvider:
         *,
         namespace: str,
     ) -> list[str]:
-        """豆包支持 base64 内嵌，直接把本地字节转成 data URL，不经过 COS。"""
-        try:
-            return [
-                image_data_url(reference.content, reference.content_type)
-                for reference in references
-            ]
-        except ValueError as exc:
-            raise MediaProcessingError(
-                "POD 参考图必须是 JPEG/PNG/WEBP", status_class="non_retryable_local"
-            ) from exc
+        """豆包支持 base64 内嵌；已发布公网地址的锚点直接透传，省掉重复上传与体积。
+
+        列式生成的派生轮把第 1 轮 4 张主图的 COS 公网地址放在 ``url`` 上；
+        只有 URL 缺失（回退路径）时才把本地字节转成 data URL。
+        """
+        prepared: list[str] = []
+        for reference in references:
+            if reference.url:
+                prepared.append(reference.url)
+                continue
+            try:
+                prepared.append(
+                    image_data_url(reference.content, reference.content_type)
+                )
+            except ValueError as exc:
+                raise MediaProcessingError(
+                    "POD 参考图必须是 JPEG/PNG/WEBP", status_class="non_retryable_local"
+                ) from exc
+        return prepared
 
     def generate(
         self,

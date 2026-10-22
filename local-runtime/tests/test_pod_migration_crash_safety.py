@@ -44,6 +44,8 @@ MIGRATION_NAMES = (
     "022_replica_plan_fingerprint",
     "023_fission_registry",
     "024_fission_domain",
+    "025_template_views",
+    "026_style_column_layout",
 )
 
 

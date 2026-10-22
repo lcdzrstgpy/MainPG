@@ -402,3 +402,40 @@ def test_default_platform_requires_ark(monkeypatch) -> None:
     )
 
     assert pod_ai_runtime.pod_image_grant_provider() == "ark"
+
+
+def test_prepare_passes_published_urls_through_and_falls_back_to_data_urls() -> None:
+    provider = DoubaoSeedreamImageProvider()
+    png = _png()
+    references = (
+        GridReference(content=png, content_type="image/png", url="https://cos.example.com/a.png"),
+        GridReference(content=png, content_type="image/png"),
+    )
+
+    prepared = provider.prepare(None, references, namespace="workspace")  # type: ignore[arg-type]
+
+    assert prepared[0] == "https://cos.example.com/a.png"
+    assert prepared[1].startswith("data:image/png;base64,")
+
+
+def test_anchor_fallback_drops_urls_so_references_go_inline() -> None:
+    png = _png()
+    request = DirectListingGridRequest(
+        trial_id="trial",
+        prompt="prompt",
+        attempt=2,
+        anchor_fallback=True,
+        reference_images=(
+            ListingReferenceImage(
+                role="anchor_1",
+                content=png,
+                content_type="image/png",
+                url="https://cos.example.com/a.png",
+            ),
+        ),
+    )
+
+    references = PodCustomizationAiRuntime._grid_references(request)
+
+    assert references[0].url == ""
+    assert references[0].content == png

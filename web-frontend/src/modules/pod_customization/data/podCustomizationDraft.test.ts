@@ -53,7 +53,7 @@ test("POD drafts are isolated by account and workspace", () => {
   ];
   assert.deepEqual(savePodCustomizationDraft("account-a", "workspace-a", first, storage), { ok: true });
 
-  assert.equal(podCustomizationDraftStorageKey("account-a", "workspace-a"), "mainpg:pod-customization:v4:account-a:workspace-a");
+  assert.equal(podCustomizationDraftStorageKey("account-a", "workspace-a"), "mainpg:pod-customization:v5:account-a:workspace-a");
   assert.equal(loadPodCustomizationDraft("account-a", "workspace-a", storage).state.business_fields.product_name, "旅行杯");
   assert.deepEqual(loadPodCustomizationDraft("account-a", "workspace-a", storage).state.listing_fields.skus, first.listing_fields.skus);
   assert.equal(loadPodCustomizationDraft("account-b", "workspace-a", storage).state.business_fields.product_name, "");
@@ -112,11 +112,21 @@ test("old current-version drafts missing the batch-wide craft and scene keys nor
   assert.equal(loaded.state.business_fields.scene_mood, "");
 });
 
+/** v1–v4 草稿都带「自定义款数」，构造历史夹具时补上这两个键。 */
+function legacyDraft(version: number) {
+  return {
+    ...createEmptyPodCustomizationDraft(),
+    version,
+    custom_count_mode: false,
+    custom_count_input: "20",
+  };
+}
+
 test("v2 POD drafts move their global weight and declared price into each SKU and dimensions into the spec card", () => {
   const storage = new MemoryStorage();
   const legacyKey = "mainpg:pod-customization:v2:account-a:workspace-a";
   storage.setItem(legacyKey, JSON.stringify({
-    ...createEmptyPodCustomizationDraft(),
+    ...legacyDraft(2),
     version: 2,
     listing_fields: {
       title_mode: "long",
@@ -143,7 +153,7 @@ test("v1 POD drafts migrate SKU names and product dimensions into per-SKU listin
   const storage = new MemoryStorage();
   const legacyKey = "mainpg:pod-customization:v1:account-a:workspace-a";
   const legacy = {
-    ...createEmptyPodCustomizationDraft(),
+    ...legacyDraft(1),
     version: 1,
     listing_fields: {
       title_mode: "long",
@@ -177,7 +187,7 @@ test("v1 POD drafts without SKU names migrate to the default SKU", () => {
   const storage = new MemoryStorage();
   const legacyKey = "mainpg:pod-customization:v1:account-a:workspace-a";
   storage.setItem(legacyKey, JSON.stringify({
-    ...createEmptyPodCustomizationDraft(),
+    ...legacyDraft(1),
     version: 1,
     listing_fields: {
       title_mode: "long",
@@ -315,4 +325,44 @@ test("brief history written into a draft is read back unchanged", () => {
 
   assert.deepEqual(savePodCustomizationDraft("account-a", "workspace-a", state, storage), { ok: true });
   assert.deepEqual(loadPodCustomizationDraft("account-a", "workspace-a", storage).state.brief_history, state.brief_history);
+});
+
+test("v4 POD drafts drop the custom count and start with no art direction", () => {
+  const storage = new MemoryStorage();
+  const legacyKey = "mainpg:pod-customization:v4:account-a:workspace-a";
+  storage.setItem(legacyKey, JSON.stringify({
+    ...legacyDraft(4),
+    batch_count: 10,
+    custom_count_mode: true,
+    custom_count_input: "10",
+  }));
+
+  const result = loadPodCustomizationDraft("account-a", "workspace-a", storage);
+
+  assert.equal(result.error, undefined);
+  assert.equal(result.state.version, 5);
+  assert.equal(result.state.batch_count, 10);
+  assert.equal(result.state.art_direction, null);
+  assert.equal("custom_count_mode" in result.state, false);
+  assert.equal("custom_count_input" in result.state, false);
+});
+
+test("batch-wide art direction round-trips through save and load", () => {
+  const storage = new MemoryStorage();
+  const draft = createEmptyPodCustomizationDraft();
+  draft.art_direction = {
+    scene: "清晨的木质厨房岛台",
+    lighting: "右后方暖金色侧逆光，3400K",
+    color_temperature: "主体 3400K / 窗外 5600K",
+    mood: "刚起床的安静厨房",
+    palette: ["暖胡桃木棕", "奶油白"],
+    props: ["近景：釉面陶瓷杯"],
+    background: "背景压暗，f/2.0 浅景深",
+    composition_hint: "产品放在右下三分点",
+    avoid: ["冷白棚拍"],
+  };
+  assert.deepEqual(savePodCustomizationDraft("account-a", "workspace-a", draft, storage), { ok: true });
+
+  const loaded = loadPodCustomizationDraft("account-a", "workspace-a", storage);
+  assert.deepEqual(loaded.state.art_direction, draft.art_direction);
 });
