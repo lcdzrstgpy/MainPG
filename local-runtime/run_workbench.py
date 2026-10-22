@@ -785,26 +785,40 @@ def main() -> int:
     # uvicorn 运行期发生致命异常时同样落盘后退出，避免进程静默消失。
     # 用已绑定好的 sock 通过 sockets=[sock] 交给 uvicorn，避免其再次 bind 触发
     # 端口竞态；port/host 仅用于日志与 URL 显示。
-    try:
-        config = uvicorn.Config(
-            app,
-            host=args.host,
-            port=port,
-            log_level="info",
-            access_log=False,
-            log_config=_UVICORN_LOG_CONFIG,
-        )
-        uvicorn.Server(config).run(sockets=[sock])
-    except BaseException as exc:  # noqa: BLE001 运行期致命异常需全部捕获
-        _log.critical(
-            "FATAL: uvicorn exited.\n%s",
-            "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
-        )
-        _show_fatal_box(
-            "后端服务运行时发生错误并退出。\n"
-            f"详细信息已写入日志：{log_path}\n请将此文件反馈给技术支持。"
-        )
-        return 1
+    # 自动拉起一次：uvicorn 意外退出后再跑一轮，仍然崩就交还给用户。
+    # 只拉这一次——无限重启会在「安全软件反复终止主程序」时变成重启循环，比不重启
+    # 更糟（2026-10-16 在前端侧记下的同一条顾虑）。进程被外部直接杀掉的情况这里
+    # 覆盖不到（进程都没了），由前端自动拉起 mainpg://recover 兜住，同样限一次。
+    for attempt in (1, 2):
+        try:
+            config = uvicorn.Config(
+                app,
+                host=args.host,
+                port=port,
+                log_level="info",
+                access_log=False,
+                log_config=_UVICORN_LOG_CONFIG,
+            )
+            uvicorn.Server(config).run(sockets=[sock])
+            return 0
+        except KeyboardInterrupt:
+            _log.info("interrupted by user, exiting")
+            return 0
+        except BaseException as exc:  # noqa: BLE001 运行期致命异常需全部捕获
+            _log.critical(
+                "FATAL: uvicorn exited (attempt %s/2).\n%s",
+                attempt,
+                "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+            )
+            if attempt == 1:
+                _log.warning("自动重启一次（仅此一次，避免崩溃循环）")
+                time.sleep(2.0)
+                continue
+            _show_fatal_box(
+                "后端服务运行时发生错误并退出。\n"
+                f"详细信息已写入日志：{log_path}\n请将此文件反馈给技术支持。"
+            )
+            return 1
     return 0
 
 

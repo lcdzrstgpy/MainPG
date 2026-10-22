@@ -172,3 +172,19 @@ test("被浏览器捡回来的旧页面必须能自愈（bfcache / 后台节流�
   assert.ok(notice.includes("event.persisted"), "只对 bfcache 恢复的旧页面特殊处理");
   assert.ok(notice.includes('"visibilitychange"'), "切回前台必须立刻探活一次");
 });
+
+test("掉线时自动拉起一次，且绝不无限重试", () => {
+  const notice = readNotice();
+  const fnStart = notice.indexOf("const tryAutoRecover = useCallback");
+  assert.ok(fnStart > -1, "应有自动恢复入口（后端崩掉时只有浏览器能把它拉回来）");
+  const body = notice.slice(fnStart, notice.indexOf("}, []);", fnStart));
+  assert.ok(body.includes("import.meta.env.DEV"), "开发态不得拉起 mainpg://（会拉起安装版换掉数据源）");
+  assert.ok(
+    body.includes("autoRecoverTriedRef.current) return"),
+    "自动恢复必须只做一次，否则杀软反复终止主程序时会形成重启循环",
+  );
+  assert.ok(
+    notice.includes("if (!offline) return;"),
+    "只在确认掉线（无任务在跑）时自动拉起，有任务时后端多半是忙不是死",
+  );
+});
