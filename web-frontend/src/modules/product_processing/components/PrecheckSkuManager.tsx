@@ -198,6 +198,8 @@ export function PrecheckSkuManager({
         mainImageUrl,
         /** 草稿池可用性判定结论（后端 task_preview 已带出），用于解释 auto 的实际取值。 */
         availability: item.sku_availability ?? null,
+        /** 变种网格缺口（后端导出前会自动补齐），用于提前告知补齐组数。 */
+        variantGrid: item.variant_grid ?? null,
         /** 本商品已换图的 SKU 数，用于对照「单条链接最多修改 6 个」的限制。 */
         replacedCount: variants.filter((entry) => entry.overrideValue).length,
       };
@@ -718,6 +720,18 @@ export function PrecheckSkuManager({
                       )}
                     >批量换图</button>
                   </div>
+                  {row.variantGrid && (
+                    <p className="sku-mode-hint is-warn">
+                      {`本商品变种网格不完整：${row.variantGrid.axis1 || '规格一'} × ${row.variantGrid.axis2 || '规格二'} 应有 ${row.variantGrid.expected ?? 0} 组，当前只有 ${row.variantGrid.present ?? 0} 组。导出时会自动补齐 ${row.variantGrid.missing_count ?? 0} 组（价格/尺寸/重量沿用同色 SKU，SKU 货号自动生成）。`}
+                      {(row.variantGrid.excluded_count ?? 0) > 0
+                        ? `其中 ${row.variantGrid.excluded_count} 组是本页已删除的规格，补齐后库存为 0，不会重新上架。`
+                        : ''}
+                      {(row.variantGrid.sample?.length ?? 0) > 0
+                        ? `缺口示例：${(row.variantGrid.sample || []).join('；')}。`
+                        : ''}
+                      {'不补齐的话店小秘会以「SKU quantity and specification product do not match」整单拒收。'}
+                    </p>
+                  )}
                   {mode === 'auto' && !row.availability?.usable_source && (
                     <p className="sku-mode-hint is-warn">
                       {row.availability?.reason === 'pending_sync'

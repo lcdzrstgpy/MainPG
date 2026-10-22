@@ -256,6 +256,176 @@ def _excluded_variant_keys(row: Mapping[str, Any]) -> set[str]:
     return {str(value or "").strip() for value in raw if str(value or "").strip()}
 
 
+# 变种网格补齐上限：真实规格网格是「颜色 × 尺码」这类小矩阵，超过这个量级说明
+# 采集到的属性并非真实规格轴（或数据异常），宁可原样导出，也不生成几百行垃圾 SKU。
+MAX_GRID_FILL_COMBOS = 200
+
+
+def _grid_value_key(value: Any) -> str:
+    """网格比较键：忽略空白与尾部括号说明（尺码常带「（建议体重8-11斤）」备注）。"""
+    text = str(value or "").strip()
+    text = re.sub(r"[（(][^（()）]*[)）]\s*$", "", text).strip()
+    return re.sub(r"\s+", "", text).casefold()
+
+
+def _grid_export_axis_values(
+    row: Mapping[str, Any],
+    record: Mapping[str, Any],
+    translations: Mapping[str, Any],
+) -> list[tuple[str, str]]:
+    """变种记录 → 导出用的（规格轴名, 导出值）列表，口径与 _dxm_single_export_row 一致。"""
+    values = [
+        (name_text, translations.get(value_text, value_text))
+        for name_text, value_text in clean_variant_attributes(record.get("attributes"))
+    ]
+    if not values:
+        for name_text, value_text in clean_variant_attributes(row.get("source_attributes")):
+            if not _is_known_spec_axis(name_text):
+                continue
+            values.append((name_text, translations.get(value_text, value_text)))
+            if len(values) >= 2:
+                break
+    return values[:2]
+
+
+def _variant_grid_analysis(row: Mapping[str, Any]) -> dict[str, Any]:
+    """分析「变种属性值一 × 变种属性值二」网格是否完整。
+
+    店小秘按两个规格轴的全部取值做笛卡尔积来识别规格商品：导出行组合数少于这个
+    笛卡尔积时会报 ``SKU quantity and specification product do not match``。
+    采集丢数据、或预检侧删掉某些 SKU，都会在网格里留下缺口。
+
+    返回空 dict 表示不适用（无变种 / 只有一个规格轴 / 各记录规格轴不一致 /
+    有人改过规格显示名 / 网格规模异常），此时不做补齐也不做标注。
+    """
+    records = [
+        item for item in (row.get("source_variant_records") or []) if isinstance(item, Mapping)
+    ]
+    if len(records) < 2:
+        return {}
+    translations = row.get("variant_value_translations")
+    if not isinstance(translations, Mapping):
+        translations = {}
+    excluded = _excluded_variant_keys(row)
+    axis_names: tuple[str, str] | None = None
+    order1: list[tuple[str, str]] = []
+    order2: list[tuple[str, str]] = []
+    seen1: set[str] = set()
+    seen2: set[str] = set()
+    all_combos: set[tuple[str, str]] = set()
+    exported_combos: set[tuple[str, str]] = set()
+    for record in records:
+        # 人工改过规格显示名的记录，导出时两个值都会写成该显示名，网格口径已失真。
+        if str(record.get("display_name") or "").strip():
+            return {}
+        values = _grid_export_axis_values(row, record, translations)
+        if len(values) < 2:
+            return {}
+        names = (values[0][0], values[1][0])
+        if axis_names is None:
+            axis_names = names
+        elif names != axis_names:
+            return {}
+        key1 = _grid_value_key(values[0][1])
+        key2 = _grid_value_key(values[1][1])
+        if not key1 or not key2:
+            return {}
+        if key1 not in seen1:
+            seen1.add(key1)
+            order1.append((key1, values[0][1]))
+        if key2 not in seen2:
+            seen2.add(key2)
+            order2.append((key2, values[1][1]))
+        all_combos.add((key1, key2))
+        if not (excluded and variant_export_key(record) in excluded):
+            exported_combos.add((key1, key2))
+    expected = len(order1) * len(order2)
+    if expected <= 1 or expected > MAX_GRID_FILL_COMBOS:
+        return {}
+    missing: list[tuple[str, str, bool]] = []
+    for key1, value1 in order1:
+        for key2, value2 in order2:
+            if (key1, key2) in exported_combos:
+                continue
+            missing.append((value1, value2, (key1, key2) in all_combos))
+    if not missing:
+        return {}
+    return {
+        "axis1": axis_names[0] if axis_names else "",
+        "axis2": axis_names[1] if axis_names else "",
+        "expected": expected,
+        "present": len(exported_combos),
+        "missing": missing,
+    }
+
+
+def variant_grid_gaps(row: Mapping[str, Any]) -> dict[str, Any]:
+    """预检页标注用摘要：变种网格缺多少组、缺哪些（无缺口返回空 dict）。
+
+    与导出补齐共用 ``_variant_grid_analysis``，保证「界面提示的组数」与
+    「表格实际补齐的组数」永远一致。
+    """
+    analysis = _variant_grid_analysis(row)
+    if not analysis:
+        return {}
+    missing = analysis["missing"]
+    return {
+        "axis1": analysis["axis1"],
+        "axis2": analysis["axis2"],
+        "expected": int(analysis["expected"]),
+        "present": int(analysis["present"]),
+        "missing_count": len(missing),
+        "excluded_count": sum(1 for item in missing if item[2]),
+        "sample": [f"{value1} / {value2}" for value1, value2, _ in missing[:3]],
+    }
+
+
+def _grid_variant_sku(base: str, value1: str, value2: str, used: set[str]) -> str:
+    """给补齐行生成唯一 SKU 货号：货号-值一-值二；纯中文规格值用序号保证唯一。"""
+    parts = [base] if base else []
+    for value in (value1, value2):
+        slug = re.sub(r"[^0-9A-Za-z]+", "", str(value or ""))[:16]
+        if slug:
+            parts.append(slug)
+    if len(parts) == (1 if base else 0):
+        parts.append(f"V{len(used) + 1}")
+    candidate = "-".join(parts) or "SKU"
+    suffix = 2
+    while candidate in used:
+        candidate = "-".join([*parts, str(suffix)])
+        suffix += 1
+    used.add(candidate)
+    return candidate
+
+
+def _fill_variant_grid(row: dict[str, Any], exported: list[list[Any]]) -> list[list[Any]]:
+    """按「属性值一 × 属性值二」补齐缺口组合（店小秘要求规格网格完整）。
+
+    补齐行克隆同一「属性值一」（同色）的已有行：价格、尺寸、重量、图片全部沿用，
+    只替换属性值二与 SKU 货号。预检侧删掉的变种也会补回（否则网格仍不完整、
+    店小秘照样拒收），但库存置 0，避免把已删除的规格重新上架。
+    """
+    analysis = _variant_grid_analysis(row)
+    if not analysis or not exported:
+        return exported
+    used_skus = {str(item[10] or "").strip() for item in exported}
+    base = str(row.get("skc") or row.get("sku") or "").strip()
+    filled = list(exported)
+    for value1, value2, was_excluded in analysis["missing"]:
+        template = next(
+            (item for item in exported if _grid_value_key(item[5]) == _grid_value_key(value1)),
+            exported[0],
+        )
+        new_row = list(template)
+        new_row[5] = value1
+        new_row[7] = value2
+        if was_excluded:
+            new_row[24] = 0
+        new_row[10] = _grid_variant_sku(base, value1, value2, used_skus)
+        filled.append(new_row)
+    return filled
+
+
 def _variant_source_image_usable(row: Mapping[str, Any]) -> bool:
     """auto 策略下是否可用该 SKU 的规格原图（由服务层解析后随行下发）。
 
@@ -441,7 +611,9 @@ def _dxm_export_rows(row: dict[str, Any]) -> list[list[Any]]:
         seen.add(variant_key)
         exported.append(values)
     # 有变种记录时不再回退单行：全部被剔除意味着该商品不出现任何行。
-    return exported
+    # 导出前按「属性值一 × 属性值二」补齐缺口组合，否则店小秘会以
+    # 「SKU quantity and specification product do not match」整单拒收。
+    return _fill_variant_grid(row, exported)
 
 
 def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) -> list[Any]:

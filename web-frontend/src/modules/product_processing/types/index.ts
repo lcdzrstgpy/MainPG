@@ -529,6 +529,26 @@ export type PreviewItem = {
     /** 规格原图非 1:1 的 SKU 变种导出键；非空即说明这批链接为何不能直接用规格原图。 */
     not_square_variant_keys?: string[];
   } | null;
+  /** 变种网格缺口。店小秘按「属性值一 × 属性值二」的笛卡尔积识别规格商品，
+   * 导出行组合数不足会以「SKU quantity and specification product do not match」整单拒收；
+   * 后端导出前会自动补齐缺口组合，这里只用于预检页提前提示。 */
+  variant_grid?: VariantGridGaps | null;
+};
+
+export type VariantGridGaps = {
+  /** 属性一/属性二的名称（导出后为 Color / Size 等英文轴名）。 */
+  axis1: string;
+  axis2: string;
+  /** 两轴全组合数（该商品应有的 SKU 行数）。 */
+  expected: number;
+  /** 当前实际会导出的组合数。 */
+  present: number;
+  /** 导出时需要自动补齐的组合数。 */
+  missing_count: number;
+  /** 其中在预检侧被删除的组合数（补齐后库存置 0，避免重新上架）。 */
+  excluded_count: number;
+  /** 前 3 个缺口示例，形如「蓝色 / XL」。 */
+  sample: string[];
 };
 
 export type PreviewResponse = {

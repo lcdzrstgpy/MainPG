@@ -122,6 +122,7 @@ from .domain.workbooks import (
     is_variant_value_noise,
     read_product_workbook,
     variant_export_key,
+    variant_grid_gaps,
 )
 from .infrastructure.assets import ProductProcessingAssets
 from .infrastructure.ocr_gate import (
@@ -6891,6 +6892,10 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 for record in (result.get("source_variant_records") or [])
                 if isinstance(record, dict)
             ],
+            # 变种网格缺口：店小秘要求「属性值一 × 属性值二」组合齐全，缺口会导致
+            # 整单拒收。预检页据此提示「导出时会自动补齐 N 组」，与导出补齐同口径。
+            # 不适用时必须是 None：空对象是 truthy，前端会当有缺口去读 missing 字段。
+            "variant_grid": variant_grid_gaps({**result, "preview_overrides": saved}) or None,
             "preview_revision": preview_revision,
             "result_version": task_item_result_version(result),
             # Kept separate from product_dimensions: these are shipping package
