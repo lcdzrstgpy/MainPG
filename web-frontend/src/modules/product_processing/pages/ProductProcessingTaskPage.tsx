@@ -112,6 +112,12 @@ type Props = {
    * 也不会因为不知道任务已存在而再点一次「开始处理」建出重复任务。
    */
   onTaskStarted?: (taskId: number) => void;
+  /**
+   * 当前页签是否为激活页签。工作台的页签是常驻挂载（切走只是 hidden），若这里不判断，
+   * 隐藏页签仍会每秒拉一次全量结果并整页重渲染：多开 2-3 个处理页签就会把 WebView2
+   * 的 CPU/内存吃到卡死，随后本地后端探活超时表现成 failed to fetch。
+   */
+  isActive?: boolean;
 };
 
 function api(): ApiContext {
@@ -202,7 +208,7 @@ function useSmoothProgress(target: number): number {
   return value;
 }
 
-export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, initialPremiumDraftIds, initialSkuCount, initialOptions, onOpenPrecheck, onTaskStarted, onBackToDraftPool }: Props) {
+export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, initialPremiumDraftIds, initialSkuCount, initialOptions, onOpenPrecheck, onTaskStarted, onBackToDraftPool, isActive = true }: Props) {
   const ctx = api();
   // 处理参数全部为系统默认（范围全开、全部数量、8 线程并行、自动补跑等），
   // 精简设置界面后不再向用户暴露这些项；仅站点 / 语言 / 构图模板 / 批次生图组合可选。
@@ -602,14 +608,23 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
 
   useEffect(() => {
     if (!batch) return;
+    // 非激活页签（工作台里被 hidden 的页签）只做低频「租约」轮询：后端靠 /outputs 的
+    // 访问时刻撤销离开信标，完全停掉会让运行中任务在 30 分钟后被判定为「没人看」而暂停。
+    // 因此改为每 30 秒打一次轻量 /summary（最多 20 条、不读取大字段），切回页签时本
+    // effect 因 isActive 变化重跑，立刻恢复 1 秒全量轮询。
+    const leaseOnly = !isActive;
     const activeStatuses = ['queued', 'running', 'paused'];
-    const isActive = (status: string, repullStatus?: string) =>
+    const isTaskActive = (status: string, repullStatus?: string) =>
       activeStatuses.includes(status) || repullStatus === 'running';
     const generation = ++pollGenerationRef.current;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let stopped = false;
+    // 失败退避：后端被图像计算占满时，1 秒一次的必然失败请求只会加剧拥塞。
+    let retryDelay = 1000;
+    // 内容指纹：数据没变就不 setBatch，避免每秒整页重渲染（进度环/失败表/统计）。
+    let lastPayload = '';
     // 只在"确实盯过运行中任务"之后才做终态追跟，避免打开历史终态任务时空转轮询。
-    let sawActive = isActive(batch.task.status, batch.auto_repull?.status);
+    let sawActive = isTaskActive(batch.task.status, batch.auto_repull?.status);
     let terminalSince: number | null = null;
     // 运行中登记（供应用壳续心跳 / 失联恢复时避免整页刷新把本页清掉）。
     let unregisterRunning: (() => void) | null = null;
@@ -622,6 +637,20 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       }
     };
     const poll = async () => {
+      // 隐藏页签只发轻量租约请求，绝不 setBatch（/summary 会截断 items）。
+      if (leaseOnly) {
+        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+          timer = setTimeout(poll, 60_000);
+          return;
+        }
+        try {
+          await ppRequest<TaskOutputsResponse>(ctx, `${API_BASE}/tasks/${batch.task_id}/summary`);
+        } catch {
+          // 租约失败不提示用户：切回页签时会立刻全量刷新。
+        }
+        if (!stopped) timer = setTimeout(poll, 30_000);
+        return;
+      }
       // 页签隐藏时降频，避免后台页签每秒拉一次全量结果拖慢前台操作。
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
         timer = setTimeout(poll, 4000);
@@ -630,8 +659,13 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       try {
         const data = await ppRequest<TaskOutputsResponse>(ctx, `${API_BASE}/tasks/${batch.task_id}/outputs?light=1`);
         if (stopped || pollGenerationRef.current !== generation) return;
-        setBatch(data);
-        const stillActive = isActive(data.task.status, data.auto_repull?.status);
+        retryDelay = 1000;
+        const payload = JSON.stringify(data);
+        if (payload !== lastPayload) {
+          lastPayload = payload;
+          setBatch(data);
+        }
+        const stillActive = isTaskActive(data.task.status, data.auto_repull?.status);
         syncWatch(stillActive);
         if (stillActive) {
           sawActive = true;
@@ -646,6 +680,9 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       } catch (err) {
         if (stopped || pollGenerationRef.current !== generation) return;
         fail(err);
+        timer = setTimeout(poll, retryDelay);
+        retryDelay = Math.min(retryDelay * 2, 10_000);
+        return;
       }
       timer = setTimeout(poll, 1000);
     };
@@ -658,7 +695,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       if (unregisterRunning) unregisterRunning();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [batch?.task_id, batch?.task.status, batch?.auto_repull?.status]);
+  }, [batch?.task_id, batch?.task.status, batch?.auto_repull?.status, isActive]);
 
   // 尺寸卡/原图复用已改到后端按条并发执行：每条结果落库后立即烧第 4 格，
   // 与其余链接的 AI 调用重叠，不再等整批结束后由前端补跑。

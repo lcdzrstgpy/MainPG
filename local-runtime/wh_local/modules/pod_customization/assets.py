@@ -45,6 +45,7 @@ class PodAssetStore:
         target = (parent / f"{digest}{suffix}").resolve()
         self._require_managed(target)
         temporary_path: Path | None = None
+        written_now = False
         if not target.exists():
             try:
                 with tempfile.NamedTemporaryFile(dir=parent, prefix=f".{digest}.", suffix=".tmp", delete=False) as handle:
@@ -56,11 +57,14 @@ class PodAssetStore:
                     temporary_path.unlink(missing_ok=True)
                 else:
                     os.replace(temporary_path, target)
+                    written_now = True
                 temporary_path = None
             finally:
                 if temporary_path is not None:
                     temporary_path.unlink(missing_ok=True)
-        if hashlib.sha256(target.read_bytes()).hexdigest() != digest:
+        # 刚写完的文件不必整文件回读校验（2K 网格 3-8MB/次，批量落盘时是纯 I/O 浪费）；
+        # 只在内容寻址命中「磁盘上已有同名文件」时校验一次，防止旧文件被当成新资产。
+        if not written_now and hashlib.sha256(target.read_bytes()).hexdigest() != digest:
             raise ValueError("stored POD image does not match its content hash")
         return StoredImage(
             relative_path=target.relative_to(self.root).as_posix(),
