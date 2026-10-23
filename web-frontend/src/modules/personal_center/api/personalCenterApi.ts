@@ -41,6 +41,22 @@ export type BillingLedgerEntry = {
   created_at: string;
 };
 
+/** POD 按模块下发的计费单价（服务端权威值，已含倍率，客户端只展示）。 */
+export type BillingPricingModule = {
+  /** 计费画像 / 通道标识，如 pod_random_v1、pod_semi_v1、pod_fission_v1。 */
+  key: string;
+  /** 服务端给的展示名；缺失时前端按 key 兜底。 */
+  label?: string;
+  /** 计价单位展示名：款 / 组。 */
+  unit_label?: string;
+  charge_min_points: number;
+  charge_max_points: number;
+  /** 未乘倍率的基准价区间（可选，用于展示「基准价 × 倍率」）。 */
+  base_charge_min_points?: number;
+  base_charge_max_points?: number;
+  multiplier_percent?: number;
+};
+
 export type BillingSummary = {
   ok: boolean;
   account: {
@@ -116,6 +132,8 @@ export type BillingSummary = {
       reserve_max_points: number;
     };
     features: Record<string, { reserve_points: number; charge_points: number }>;
+    /** POD 按模块计价（服务端可缺省；缺失时前端隐藏该区块）。 */
+    pod_modules?: BillingPricingModule[];
     min_client_version: string;
     effective_at: string;
   };

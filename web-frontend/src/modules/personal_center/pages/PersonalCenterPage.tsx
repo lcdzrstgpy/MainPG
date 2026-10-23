@@ -24,6 +24,7 @@ import {
   type BillingLedgerCategory,
   type BillingLedgerItem,
   type BillingPackage,
+  type BillingPricingModule,
   type BillingSummary,
   type BillingUsageEntry,
   type StationBinding,
@@ -190,6 +191,35 @@ const pricingFeatures: Array<{ key: string; label: string; note: string }> = [
   { key: "product_processing.text", label: "商品文本", note: "标题 / 卖点 / 详情文案" },
   { key: "product_processing.batch", label: "批量链接处理", note: "整批商品处理任务" },
 ];
+
+/** POD 模块展示名兜底：服务端未给 label 时按计费画像 key 展示。 */
+const POD_PRICING_LABELS: Record<string, string> = {
+  pod_random_v1: "POD 全定制",
+  pod_semi_v1: "POD 半定制",
+  pod_fission_v1: "POD 爆款裂变",
+  pod_replica_v1_a: "POD 爆款复刻",
+  pod_replica_v1_b: "POD 爆款复刻 · 高清直出",
+};
+
+/** POD 计价单位兜底：半定制按「组」（4 款 = 1 组），其余按「款」。 */
+const POD_PRICING_UNITS: Record<string, string> = { pod_semi_v1: "组" };
+
+function pricingPodModules(pricing: BillingSummary["pricing"] | undefined): BillingPricingModule[] {
+  const modules = pricing?.pod_modules;
+  if (!Array.isArray(modules)) return [];
+  return modules.filter(
+    (item) =>
+      Boolean(item?.key)
+      && Number.isFinite(item.charge_min_points)
+      && Number.isFinite(item.charge_max_points),
+  );
+}
+
+/** 单价区间格式化：固定价只显示一个数，区间价显示「min ~ max」。 */
+function formatPointsRange(min: number, max: number) {
+  const format = (value: number) => (Number.isInteger(value) ? value.toLocaleString() : String(value));
+  return min === max ? format(min) : `${format(min)} ~ ${format(max)}`;
+}
 
 /** 消费流水的「服务板块」归类：优先用 feature_key，其次回退解析 usage_id/source_ref。
  *  组合套装的扣费通过 free_batch_points(idempotency_key=combo-kit:xxx) 写入，
@@ -709,6 +739,9 @@ export function PersonalCenterPage({ feedbackPrefill = null, panel, onPanelChang
     if (selectedPackage === "custom") return customQuote;
     return topupProducts.find((item) => item.package_id === selectedPackage) ?? topupProducts[0];
   }, [customQuote, selectedPackage, topupProducts]);
+
+  // 服务端未下发 pod_modules（旧版）时返回空数组，区块整体隐藏，不影响现有面板。
+  const podPricingModules = useMemo(() => pricingPodModules(summary?.pricing), [summary]);
 
   useEffect(() => {
     setCustomQuote(null);
@@ -2028,6 +2061,45 @@ export function PersonalCenterPage({ feedbackPrefill = null, panel, onPanelChang
                 );
               })}
             </div>
+
+            {podPricingModules.length > 0 && (
+              <div className="pricing-pod">
+                <div className="pricing-pod-head">
+                  <b>POD 按模块计价</b>
+                  <small>各模块单价独立，均由服务端下发；调价后点「刷新」即可看到最新价格。</small>
+                </div>
+                <div className="pricing-pod-grid">
+                  {podPricingModules.map((item) => {
+                    const label = item.label?.trim() || POD_PRICING_LABELS[item.key] || item.key;
+                    const unit = item.unit_label?.trim() || POD_PRICING_UNITS[item.key] || "款";
+                    const baseMin = item.base_charge_min_points;
+                    const baseMax = item.base_charge_max_points;
+                    const baseText =
+                      typeof baseMin === "number" && typeof baseMax === "number"
+                        ? `基准 ${formatPointsRange(baseMin, baseMax)}`
+                        : "";
+                    const multiplierText =
+                      typeof item.multiplier_percent === "number"
+                        ? `当前倍率 ${item.multiplier_percent}%`
+                        : "";
+                    const note = [baseText, multiplierText].filter(Boolean).join(" · ");
+                    return (
+                      <div key={item.key} className="pricing-pod-card">
+                        <span className="pricing-pod-name">
+                          <b>{label}</b>
+                          <small>{item.key}</small>
+                        </span>
+                        <span className="pricing-pod-points">
+                          <b>{formatPointsRange(item.charge_min_points, item.charge_max_points)}</b>
+                          <i>积分 / {unit}</i>
+                          {note ? <small>{note}</small> : null}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             <div className="pricing-foot">
               <span>充值换算：{summary?.pricing.ratio_label ?? "1 元 = 100 积分"}</span>

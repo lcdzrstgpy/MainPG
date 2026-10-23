@@ -1963,6 +1963,86 @@
   font-size: 11px;
 }
 
+/* POD 按模块计价：服务端下发 pod_modules 时显示，缺省整块隐藏 */
+.pricing-pod {
+  display: grid;
+  gap: 10px;
+}
+
+.pricing-pod-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}
+
+.pricing-pod-head b {
+  color: var(--theme-text-primary, #132238);
+  font-size: 14px;
+}
+
+.pricing-pod-head small {
+  color: var(--theme-text-muted, #64748b);
+  font-size: 12px;
+}
+
+.pricing-pod-grid {
+  display: grid;
+  /* 模块数量由服务端决定（当前 3 个，拆出复刻后 4 个），列数自适应不写死。 */
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.pricing-pod-card {
+  display: grid;
+  gap: 10px;
+  padding: 16px 18px;
+  border: 1px solid var(--theme-module-border, #d8e9f3);
+  border-radius: 16px;
+  background: var(--theme-module-surface, #fff);
+}
+
+.pricing-pod-name {
+  display: grid;
+  gap: 3px;
+}
+
+.pricing-pod-name b {
+  color: var(--theme-text-primary, #132238);
+  font-size: 14px;
+}
+
+.pricing-pod-name small {
+  color: var(--theme-text-muted, #64748b);
+  font-size: 11px;
+}
+
+.pricing-pod-points {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 6px;
+}
+
+.pricing-pod-points b {
+  color: var(--theme-module-primary-strong, #0877d3);
+  font-size: 24px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.pricing-pod-points i {
+  font-style: normal;
+  font-size: 11px;
+  color: var(--theme-text-secondary, #475569);
+}
+
+.pricing-pod-points small {
+  flex-basis: 100%;
+  color: var(--theme-text-muted, #64748b);
+  font-size: 11px;
+}
+
 .pricing-foot {
   display: flex;
   flex-wrap: wrap;
@@ -1985,6 +2065,10 @@
   }
 
   .pricing-feature-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .pricing-pod-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -2856,6 +2940,7 @@
 .personal-plan-stat b,
 .pricing-hero-range b,
 .pricing-feature-points b,
+.pricing-pod-points b,
 .topup-hero-copy b,
 .topup-product-points,
 .topup-product-price,
