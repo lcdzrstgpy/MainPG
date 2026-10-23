@@ -252,9 +252,16 @@ POD_MIGRATION_CONTRACTS: dict[str, MigrationEffect] = {
                     "action_key TEXT NOT NULL UNIQUE",
                     "CHECK (action_type IN ('batch_initial', 'direct_trial', 'scene_optimization', "
                     "'item_retry', 'style_retry', 'title_retry'))",
+                ),
+                # 027 把 status 扩成超集（多出 intent / 终态枚举）。两种形状都算「008 已生效」，
+                # 否则标记丢失后重放 008 会把已经升级过的账本判成非法旧结构。
+                any_checks=((
                     "CHECK (status IN ('authorized', 'resume_claimed', 'settling', "
                     "'settlement_pending', 'auth_required', 'settled'))",
-                ),
+                    "CHECK (status IN ('intent', 'authorized', 'resume_claimed', 'settling', "
+                    "'settlement_pending', 'auth_required', 'settled', 'abandoned', "
+                    "'expired_released', 'orphaned', 'anomaly'))",
+                ),),
                 absent_checks=("freeze_id TEXT NOT NULL UNIQUE",),
             ),
             "pod_customization_billing_outcomes": _table(
@@ -579,6 +586,70 @@ POD_MIGRATION_CONTRACTS: dict[str, MigrationEffect] = {
             ),
         },
     ),
+    "027_billing_ledger_v2": MigrationEffect(
+        tables={
+            "pod_customization_billing_runs": _table(
+                "run_id action_key action_type target_id batch_id workspace_id owner_user_id "
+                "freeze_id rule_version grant_expires_at plan_json action_payload_json status "
+                "result_status error_message created_at updated_at settled_at module unit_kind "
+                "billing_profile link_count item_count frozen_points link_prices_json unit_ids_json "
+                "multiplier_percent settle_deadline device_id freeze_raw_json release_reason "
+                "zero_billed batch_deleted_at",
+                checks=(
+                    "action_key TEXT NOT NULL UNIQUE",
+                    "freeze_id TEXT UNIQUE",
+                    "CHECK (status IN ('intent', 'authorized', 'resume_claimed', 'settling', "
+                    "'settlement_pending', 'auth_required', 'settled', 'abandoned', "
+                    "'expired_released', 'orphaned', 'anomaly'))",
+                ),
+                absent_checks=("freeze_id TEXT NOT NULL",),
+            ),
+            "pod_customization_billing_settlements": _table(
+                "settlement_id freeze_id source expected_points charged_points refunded_points "
+                "released_points retained_points release_reason rule_version raw_response_json "
+                "created_at settled_at",
+                checks=(
+                    "freeze_id TEXT NOT NULL UNIQUE",
+                    "CHECK (source IN ('settle', 'close', 'ttl'))",
+                ),
+            ),
+            "pod_customization_billing_settlement_items": _table(
+                "settlement_id link_idx unit_id feature_status_json charged_points refunded_points",
+                checks=(
+                    "PRIMARY KEY (settlement_id, link_idx)",
+                    "CHECK (link_idx >= 0)",
+                ),
+            ),
+            "pod_customization_billing_recon_runs": _table(
+                "run_id workspace_id owner_user_id scope checked_count repaired_count "
+                "loss_count loss_points daily_difference note started_at finished_at",
+                checks=("CHECK (scope IN ('startup', 'scheduled', 'daily'))",),
+            ),
+        },
+        indexes={
+            "idx_pod_billing_runs_owner_status": _index(
+                "pod_customization_billing_runs",
+                "workspace_id owner_user_id status updated_at",
+                descending=(False, False, False, True),
+            ),
+            "idx_pod_billing_runs_batch": _index(
+                "pod_customization_billing_runs",
+                "batch_id workspace_id owner_user_id status",
+            ),
+            "idx_pod_billing_runs_status": _index(
+                "pod_customization_billing_runs", "status updated_at"
+            ),
+            "idx_pod_billing_settlements_created": _index(
+                "pod_customization_billing_settlements", "created_at"
+            ),
+            "idx_pod_billing_recon_runs_owner": _index(
+                "pod_customization_billing_recon_runs",
+                "workspace_id owner_user_id started_at",
+                descending=(False, False, True),
+            ),
+        },
+        absent_tables=("pod_customization_billing_runs_v3",),
+    ),
 }
 
 
@@ -647,6 +718,8 @@ def ensure_pod_migration(
         _apply_019(connection, sql)
     elif migration_name == "023_fission_registry":
         _apply_023(connection, sql)
+    elif migration_name == "027_billing_ledger_v2":
+        _apply_or_recover_027(connection, sql)
     else:
         connection.executescript(sql)
 
@@ -844,6 +917,41 @@ def _apply_or_recover_008(
     )
     _executescript_restoring_foreign_keys(connection, rebuild_sql)
     connection.executescript(sql)
+
+
+def _apply_or_recover_027(connection: sqlite3.Connection, sql: str) -> None:
+    """Rebuild the billing-runs ledger, recovering an interrupted rename.
+
+    027 与 007 / 008 同为「建新表 → 搬迁 → 删旧表 → 改名」。若进程在删表之后、
+    改名之前中断，库里只剩 ``..._v3``；这里先把它改名接管，再补跑重建事务之后的
+    附加 DDL（三张新表与索引），避免重放 INSERT 时旧表已不存在。
+    """
+    target = "pod_customization_billing_runs"
+    temporary = "pod_customization_billing_runs_v3"
+    current_effect = POD_MIGRATION_CONTRACTS["027_billing_ledger_v2"].tables[target]
+    if _table_effect_is_present(connection, target, current_effect):
+        _executescript_restoring_foreign_keys(connection, sql)
+        return
+    if _table_exists(connection, target):
+        _executescript_restoring_foreign_keys(connection, sql)
+        return
+    if not _table_effect_is_present(connection, temporary, current_effect):
+        raise PodMigrationContractError(
+            "POD migration 027_billing_ledger_v2 found no recoverable billing-runs table"
+        )
+    rename_token = f"ALTER TABLE {temporary}"
+    if rename_token not in sql or "COMMIT;" not in sql.split(rename_token, 1)[1]:
+        raise PodMigrationContractError(
+            "POD migration 027_billing_ledger_v2 has an unsupported SQL shape"
+        )
+    rebuild_body, additive = sql.split(rename_token, 1)[1].split("COMMIT;", 1)
+    recovery_sql = (
+        "PRAGMA foreign_keys = OFF;\nBEGIN IMMEDIATE;\n"
+        f"{rename_token}{rebuild_body}"
+        "COMMIT;\nPRAGMA foreign_keys = ON;\n"
+    )
+    _executescript_restoring_foreign_keys(connection, recovery_sql)
+    _executescript_restoring_foreign_keys(connection, additive)
 
 
 def _finalize_008_rebuild(

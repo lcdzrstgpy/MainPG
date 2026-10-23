@@ -2539,19 +2539,7 @@ class PodCustomizationRepository:
     ) -> dict[str, Any]:
         run_id = uuid.uuid4().hex
         now = _now()
-        plan_json = json.dumps(
-            {
-                "idempotency_key": plan.idempotency_key,
-                "calls": [call.payload() for call in plan.calls],
-                "semi_item_count": plan.semi_item_count,
-                # 列式生成按组上报：缺了这个字段，重启后重建的计划会退回「按款」展开，
-                # 冻结 link_count 与结算 item 数不一致 → 远端 400，冻结积分无法释放。
-                "column_style_count": plan.column_style_count,
-                "billing_profile": plan.billing_profile,
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
+        plan_json = self._billing_plan_json(plan)
         with self._connect() as connection:
             connection.execute(
                 """INSERT INTO pod_customization_billing_runs
@@ -2584,6 +2572,165 @@ class PodCustomizationRepository:
             )
         return self.get_billing_run(run_id, workspace_id, actor_id)
 
+    @staticmethod
+    def _billing_plan_json(plan: PodCallPlan) -> str:
+        return json.dumps(
+            {
+                "idempotency_key": plan.idempotency_key,
+                "calls": [call.payload() for call in plan.calls],
+                "semi_item_count": plan.semi_item_count,
+                # 列式生成按组上报：缺了这个字段，重启后重建的计划会退回「按款」展开，
+                # 冻结 link_count 与结算 item 数不一致 → 远端 400，冻结积分无法释放。
+                "column_style_count": plan.column_style_count,
+                "billing_profile": plan.billing_profile,
+                # v2 账本字段：重启后重建计划必须还原同样的 module / 单元 ID，
+                # 否则续跑与结算会重新推导出不一致的结算单元。
+                "module": plan.module,
+                "unit_kind": plan.unit_kind,
+                "unit_ids": list(plan.unit_ids),
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+
+    def create_billing_intent(
+        self,
+        *,
+        action_key: str,
+        action_type: str,
+        target_id: str,
+        batch_id: str,
+        actor_id: str,
+        workspace_id: str,
+        plan: PodCallPlan,
+        action_payload: dict[str, Any] | None = None,
+        module: str = "",
+        unit_kind: str = "",
+        link_count: int = 0,
+        item_count: int = 0,
+        device_id: str = "",
+    ) -> dict[str, Any]:
+        """先落意图账：只有计划与状态，没有 ``freeze_id``。
+
+        冻结成功后用 ``attach_billing_freeze`` 把快照一次性回填；进程若在
+        「冻结成功 → 回填」之间崩溃，这一行仍为 ``intent``，启动对账可用同一
+        ``action_key`` 重放冻结接管。
+        """
+        run_id = uuid.uuid4().hex
+        now = _now()
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT INTO pod_customization_billing_runs
+                   (run_id, action_key, action_type, target_id, batch_id, workspace_id,
+                    owner_user_id, freeze_id, rule_version, grant_expires_at, plan_json,
+                    action_payload_json, status, module, unit_kind, billing_profile,
+                    link_count, item_count, device_id, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 0, '', ?, ?, 'intent', ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    run_id,
+                    action_key,
+                    action_type,
+                    target_id,
+                    batch_id,
+                    workspace_id,
+                    actor_id,
+                    self._billing_plan_json(plan),
+                    json.dumps(action_payload or {}, ensure_ascii=False, separators=(",", ":")),
+                    module,
+                    unit_kind,
+                    plan.billing_profile,
+                    link_count,
+                    item_count,
+                    device_id,
+                    now,
+                    now,
+                ),
+            )
+            connection.executemany(
+                """INSERT INTO pod_customization_billing_outcomes
+                   (run_id, call_id, feature, status, updated_at)
+                   VALUES (?, ?, ?, 'planned', ?)""",
+                [(run_id, call.call_id, call.feature, now) for call in plan.calls],
+            )
+        return self.get_billing_run(run_id, workspace_id, actor_id)
+
+    def attach_billing_freeze(
+        self,
+        action_key: str,
+        *,
+        freeze_id: str,
+        rule_version: int = 0,
+        grant_expires_at: str = "",
+        frozen_points: float | None = None,
+        link_prices: Sequence[float] = (),
+        unit_ids: Sequence[str] = (),
+        multiplier_percent: int = 100,
+        settle_deadline: str = "",
+        freeze_raw: Mapping[str, Any] | None = None,
+        module: str = "",
+        unit_kind: str = "",
+        billing_profile: str = "",
+        link_count: int = 0,
+        item_count: int = 0,
+        device_id: str = "",
+    ) -> bool:
+        """CAS：``intent`` → ``authorized``，一次性写入全部冻结快照。
+
+        返回 False 表示该行已不是 intent（重复回填 / 已被对账接管），调用方不应
+        再当作首次成功处理。金额原样存 API 回执值，不换算、不取整。
+        """
+        now = _now()
+        # None = 回执里没有金额快照（v1 兼容期）：不能据此把动作判成零计费。
+        zero_billed = (
+            0
+            if frozen_points is None
+            else (1 if float(frozen_points or 0) == 0 else 0)
+        )
+        stored_points = 0.0 if frozen_points is None else float(frozen_points)
+        with self._connect() as connection:
+            result = connection.execute(
+                """UPDATE pod_customization_billing_runs
+                   SET status = 'authorized', freeze_id = ?, rule_version = ?,
+                       grant_expires_at = ?, frozen_points = ?, link_prices_json = ?,
+                       unit_ids_json = ?, multiplier_percent = ?, settle_deadline = ?,
+                       freeze_raw_json = ?, zero_billed = ?,
+                       module = CASE WHEN ? <> '' THEN ? ELSE module END,
+                       unit_kind = CASE WHEN ? <> '' THEN ? ELSE unit_kind END,
+                       billing_profile = CASE WHEN ? <> '' THEN ? ELSE billing_profile END,
+                       link_count = CASE WHEN ? > 0 THEN ? ELSE link_count END,
+                       item_count = CASE WHEN ? > 0 THEN ? ELSE item_count END,
+                       device_id = CASE WHEN ? <> '' THEN ? ELSE device_id END,
+                       error_message = '', updated_at = ?
+                   WHERE action_key = ? AND status = 'intent'""",
+                (
+                    str(freeze_id),
+                    int(rule_version or 0),
+                    str(grant_expires_at or ""),
+                    stored_points,
+                    json.dumps([float(value) for value in link_prices], separators=(",", ":")),
+                    json.dumps([str(value) for value in unit_ids], ensure_ascii=False, separators=(",", ":")),
+                    int(multiplier_percent or 100),
+                    str(settle_deadline or ""),
+                    json.dumps(dict(freeze_raw or {}), ensure_ascii=False, separators=(",", ":")),
+                    zero_billed,
+                    module,
+                    module,
+                    unit_kind,
+                    unit_kind,
+                    billing_profile,
+                    billing_profile,
+                    int(link_count or 0),
+                    int(link_count or 0),
+                    int(item_count or 0),
+                    int(item_count or 0),
+                    device_id,
+                    device_id,
+                    now,
+                    action_key,
+                ),
+            )
+        return result.rowcount == 1
+
     def get_billing_run(
         self, run_id: str, workspace_id: str, owner_user_id: str
     ) -> dict[str, Any]:
@@ -2611,6 +2758,173 @@ class PodCustomizationRepository:
         result["outcomes"] = [dict(outcome) for outcome in outcomes]
         return result
 
+    def find_billing_run_by_action_key(self, action_key: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT run_id, workspace_id, owner_user_id
+                   FROM pod_customization_billing_runs WHERE action_key = ?""",
+                (str(action_key),),
+            ).fetchone()
+        if row is None:
+            return None
+        return self.get_billing_run(row["run_id"], row["workspace_id"], row["owner_user_id"])
+
+    def mark_billing_intent_failed(self, action_key: str, error_message: str) -> None:
+        """保留意图行，只记错误：用户重发或启动对账会用同一 key 重放。"""
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE pod_customization_billing_runs
+                   SET error_message = ?, updated_at = ?
+                   WHERE action_key = ? AND status = 'intent'""",
+                (_safe_error(error_message), _now(), action_key),
+            )
+
+    def list_non_terminal_billing_runs(
+        self,
+        workspace_id: str | None = None,
+        owner_user_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """启动 / 定时对账只捞非终态行。"""
+        active = self.BILLING_ACTIVE_STATUSES
+        placeholders = ",".join("?" for _ in active)
+        clauses = [f"status IN ({placeholders})"]
+        params: list[Any] = list(active)
+        if workspace_id is not None:
+            clauses.append("workspace_id = ?")
+            params.append(workspace_id)
+        if owner_user_id is not None:
+            clauses.append("owner_user_id = ?")
+            params.append(owner_user_id)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""SELECT run_id, workspace_id, owner_user_id
+                    FROM pod_customization_billing_runs
+                    WHERE {' AND '.join(clauses)}
+                    ORDER BY created_at, run_id""",
+                tuple(params),
+            ).fetchall()
+        return [
+            self.get_billing_run(row["run_id"], row["workspace_id"], row["owner_user_id"])
+            for row in rows
+        ]
+
+    def list_billing_run_owners(self) -> list[tuple[str, str]]:
+        active = self.BILLING_ACTIVE_STATUSES
+        placeholders = ",".join("?" for _ in active)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""SELECT DISTINCT workspace_id, owner_user_id
+                    FROM pod_customization_billing_runs
+                    WHERE status IN ({placeholders})""",
+                active,
+            ).fetchall()
+        return [(str(row["workspace_id"]), str(row["owner_user_id"])) for row in rows]
+
+    def find_billing_run_by_freeze_id(self, freeze_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT run_id, workspace_id, owner_user_id
+                   FROM pod_customization_billing_runs WHERE freeze_id = ?""",
+                (str(freeze_id),),
+            ).fetchone()
+        if row is None:
+            return None
+        return self.get_billing_run(row["run_id"], row["workspace_id"], row["owner_user_id"])
+
+    def finish_billing_from_probe(
+        self, action_key: str, to_status: str, reason: str = ""
+    ) -> bool:
+        """对账探活后的关单（不经过结算接口，金额已在回执里）。"""
+        if to_status not in {"settled", "expired_released", "orphaned"}:
+            raise ValueError(f"unsupported probe terminal status: {to_status}")
+        now = _now()
+        with self._connect() as connection:
+            result = connection.execute(
+                """UPDATE pod_customization_billing_runs
+                   SET status = ?, error_message = ?, updated_at = ?,
+                       settled_at = CASE WHEN ? = 'settled' THEN ? ELSE settled_at END
+                   WHERE action_key = ?
+                     AND status NOT IN ('settled', 'abandoned', 'expired_released',
+                                        'orphaned', 'anomaly')""",
+                (to_status, _safe_error(reason), now, to_status, now, action_key),
+            )
+        return result.rowcount == 1
+
+    def insert_recon_run(
+        self,
+        *,
+        scope: str,
+        workspace_id: str,
+        owner_user_id: str,
+        checked_count: int,
+        repaired_count: int = 0,
+        loss_count: int = 0,
+        loss_points: float = 0.0,
+        daily_difference: float = 0.0,
+        note: str = "",
+        started_at: str = "",
+    ) -> dict[str, Any]:
+        run_id = uuid.uuid4().hex
+        now = _now()
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT INTO pod_customization_billing_recon_runs
+                   (run_id, workspace_id, owner_user_id, scope, checked_count,
+                    repaired_count, loss_count, loss_points, daily_difference, note,
+                    started_at, finished_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    run_id,
+                    workspace_id,
+                    owner_user_id,
+                    scope,
+                    int(checked_count),
+                    int(repaired_count),
+                    int(loss_count),
+                    float(loss_points),
+                    float(daily_difference),
+                    str(note or ""),
+                    str(started_at or now),
+                    now,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM pod_customization_billing_recon_runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+        return dict(row) if row is not None else {}
+
+    def list_recon_runs(
+        self, workspace_id: str, owner_user_id: str, *, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM pod_customization_billing_recon_runs
+                   WHERE workspace_id = ? AND owner_user_id = ?
+                   ORDER BY started_at DESC LIMIT ?""",
+                (workspace_id, owner_user_id, max(1, int(limit))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_daily_billing_rows(
+        self, workspace_id: str, owner_user_id: str
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """日报用的原始行：该用户全部账本行与结算行（按时间在调用方过滤）。"""
+        with self._connect() as connection:
+            runs = connection.execute(
+                """SELECT * FROM pod_customization_billing_runs
+                   WHERE workspace_id = ? AND owner_user_id = ?""",
+                (workspace_id, owner_user_id),
+            ).fetchall()
+            settlements = connection.execute(
+                """SELECT settlements.* FROM pod_customization_billing_settlements AS settlements
+                   INNER JOIN pod_customization_billing_runs AS runs
+                     ON runs.freeze_id = settlements.freeze_id
+                   WHERE runs.workspace_id = ? AND runs.owner_user_id = ?""",
+                (workspace_id, owner_user_id),
+            ).fetchall()
+        return [dict(row) for row in runs], [dict(row) for row in settlements]
+
     def list_pending_billing_runs(
         self, workspace_id: str, owner_user_id: str
     ) -> list[dict[str, Any]]:
@@ -2618,7 +2932,8 @@ class PodCustomizationRepository:
             rows = connection.execute(
                 """SELECT run_id FROM pod_customization_billing_runs
                    WHERE workspace_id = ? AND owner_user_id = ?
-                     AND status IN ('authorized', 'settling', 'settlement_pending')
+                     AND status IN ('intent', 'authorized', 'resume_claimed', 'settling',
+                                    'settlement_pending', 'auth_required')
                    ORDER BY created_at, run_id""",
                 (workspace_id, owner_user_id),
             ).fetchall()
@@ -2712,11 +3027,18 @@ class PodCustomizationRepository:
             raise PodRepositoryError(message, 409)
         with self._connect() as connection:
             run = connection.execute(
-                "SELECT run_id, batch_id FROM pod_customization_billing_runs WHERE action_key = ?",
+                """SELECT run_id, batch_id, freeze_id, status
+                   FROM pod_customization_billing_runs WHERE action_key = ?""",
                 (action_key,),
             ).fetchone()
             if run is None:
                 raise PodRepositoryError("POD billing run not found", 404)
+            if not run["freeze_id"]:
+                raise PodRepositoryError(
+                    "POD billing intent has no freeze; replay it before settling", 409
+                )
+            if run["status"] in self.BILLING_TERMINAL_STATUSES:
+                raise PodRepositoryError("POD billing run is already closed", 409)
             if run["batch_id"]:
                 batch = connection.execute(
                     "SELECT status FROM pod_customization_batches WHERE batch_id = ?",
@@ -2737,7 +3059,9 @@ class PodCustomizationRepository:
             connection.execute(
                 """UPDATE pod_customization_billing_runs
                    SET status = 'settling', error_message = '', updated_at = ?
-                   WHERE run_id = ? AND status <> 'settled'""",
+                   WHERE run_id = ?
+                     AND status IN ('authorized', 'resume_claimed', 'settling',
+                                    'settlement_pending', 'auth_required')""",
                 (now, run["run_id"]),
             )
             rows = connection.execute(
@@ -2747,68 +3071,65 @@ class PodCustomizationRepository:
             ).fetchall()
         return tuple(PodCallOutcome(row["call_id"], row["feature"], row["status"]) for row in rows)
 
-    def project_fission_settlement(
-        self, action_key: str, outcomes: tuple[PodCallOutcome, ...]
-    ) -> tuple[PodCallOutcome, ...]:
-        """Apply fission's immutable deliverable billing policy to frozen outcomes."""
+    def release_started_outcomes(self, action_key: str) -> int:
+        """探活确认冻结仍有效后，把「已发起但结果未知」的调用判为 no_return。"""
+        now = _now()
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            result = connection.execute(
+                """UPDATE pod_customization_billing_outcomes
+                   SET status = 'no_return', updated_at = ?
+                   WHERE run_id = (SELECT run_id FROM pod_customization_billing_runs WHERE action_key = ?)
+                     AND status = 'started'""",
+                (now, action_key),
+            )
+        return result.rowcount
+
+    def prepare_billing_close(self, action_key: str) -> tuple[PodCallOutcome, ...]:
+        """用户主动放弃：已成功的调用照常计费，未完成（planned / started）按失败收口。"""
+        now = _now()
+        with self._connect() as connection:
             run = connection.execute(
-                "SELECT run_id, batch_id, action_type, target_id, plan_json, action_payload_json FROM pod_customization_billing_runs WHERE action_key = ?",
+                """SELECT run_id, freeze_id, status FROM pod_customization_billing_runs
+                   WHERE action_key = ?""",
                 (action_key,),
             ).fetchone()
             if run is None:
                 raise PodRepositoryError("POD billing run not found", 404)
-            payload = json.loads(run["action_payload_json"] or "{}")
-            plan = json.loads(run["plan_json"] or "{}")
-            if plan.get("billing_profile") != "pod_fission_v1":
-                return outcomes
-            # The first settlement attempt fixes the commercial outcome forever.
-            # A later style retry belongs to a fresh billing action and must not
-            # change a pending original refund.
-            if "fission_billable_styles" in payload:
-                billable_styles = payload["fission_billable_styles"]
-            else:
-                batch_id = str(run["batch_id"] or "")
-                rows = connection.execute(
-                    """SELECT titles.style_index FROM pod_customization_style_titles titles
-                       JOIN pod_customization_style_copy copies
-                         ON copies.batch_id=titles.batch_id AND copies.style_index=titles.style_index
-                       WHERE titles.batch_id=? AND titles.status='completed'
-                         AND TRIM(copies.title)<>'' AND TRIM(copies.english_title)<>'' AND TRIM(copies.description)<>''
-                         AND (SELECT COUNT(*) FROM pod_customization_style_grid_results results
-                              JOIN pod_customization_style_grid_publications publications
-                                ON publications.result_id=results.result_id
-                              WHERE results.batch_id=titles.batch_id AND results.style_index=titles.style_index
-                                AND results.status='completed' AND TRIM(publications.public_url)<>'')=4""",
-                    (batch_id,),
-                ).fetchall()
-                billable_styles = sorted(int(row[0]) for row in rows)
-                payload["fission_billable_styles"] = billable_styles
-                connection.execute("UPDATE pod_customization_billing_runs SET action_payload_json=?, updated_at=? WHERE run_id=?",
-                                   (json.dumps(payload, ensure_ascii=False, separators=(",", ":")), _now(), run["run_id"]))
-        projected = []
-        for outcome in outcomes:
-            if outcome.feature == "pod.image":
-                if ":style:" in outcome.call_id:
-                    marker = outcome.call_id.split(":style:")[-1].split(":", 1)[0]
-                else:
-                    # Shared direct style retries identify their style on the run,
-                    # while their call IDs contain only the retry action ID.
-                    marker = str(run["target_id"]) if run["action_type"] == "style_retry" else "0"
-                style_index = int(marker) if marker.isdecimal() else 0
-                status = "success" if style_index in billable_styles and outcome.status == "success" else "no_return"
-                projected.append(PodCallOutcome(outcome.call_id, outcome.feature, status))
-            else:
-                projected.append(outcome)
-        return tuple(projected)
+            if not run["freeze_id"]:
+                raise PodRepositoryError(
+                    "POD billing intent has no freeze; replay it before closing", 409
+                )
+            if run["status"] in self.BILLING_TERMINAL_STATUSES:
+                raise PodRepositoryError("POD billing run is already closed", 409)
+            connection.execute(
+                """UPDATE pod_customization_billing_outcomes
+                   SET status = 'no_return', updated_at = ?
+                   WHERE run_id = ? AND status IN ('planned', 'started')""",
+                (now, run["run_id"]),
+            )
+            connection.execute(
+                """UPDATE pod_customization_billing_runs
+                   SET status = 'settling', error_message = '', updated_at = ?
+                   WHERE run_id = ?
+                     AND status IN ('authorized', 'resume_claimed', 'settling',
+                                    'settlement_pending', 'auth_required')""",
+                (now, run["run_id"]),
+            )
+            rows = connection.execute(
+                """SELECT call_id, feature, status FROM pod_customization_billing_outcomes
+                   WHERE run_id = ? ORDER BY rowid""",
+                (run["run_id"],),
+            ).fetchall()
+        return tuple(PodCallOutcome(row["call_id"], row["feature"], row["status"]) for row in rows)
 
     def mark_billing_pending(self, action_key: str, error_message: str) -> None:
         with self._connect() as connection:
             connection.execute(
                 """UPDATE pod_customization_billing_runs
                    SET status = 'settlement_pending', error_message = ?, updated_at = ?
-                   WHERE action_key = ? AND status <> 'settled'""",
+                   WHERE action_key = ?
+                     AND status IN ('authorized', 'resume_claimed', 'settling',
+                                    'settlement_pending', 'auth_required')""",
                 (_safe_error(error_message), _now(), action_key),
             )
 
@@ -2829,7 +3150,9 @@ class PodCustomizationRepository:
                 """UPDATE pod_customization_billing_runs
                    SET status = 'authorized', rule_version = ?, grant_expires_at = ?,
                        error_message = '', updated_at = ?
-                   WHERE action_key = ? AND status <> 'settled'""",
+                   WHERE action_key = ?
+                     AND status IN ('authorized', 'resume_claimed', 'settlement_pending',
+                                    'auth_required')""",
                 (rule_version, expires_at, _now(), action_key),
             )
 
@@ -2846,15 +3169,146 @@ class PodCustomizationRepository:
             )
         return result.rowcount == 1
 
-    def mark_billing_settled(self, action_key: str) -> None:
+    def mark_billing_settled(
+        self, action_key: str, *, release_reason: str = "normal"
+    ) -> bool:
+        """CAS：``settling`` / ``settlement_pending`` → ``settled``。
+
+        结算入口至少三条（用户重试、启动扫描、关机前收尾），无条件 UPDATE 会让
+        后写覆盖先写。返回 False 表示该行已不在可结算状态（重复结算 / 已被收口）。
+        """
         now = _now()
         with self._connect() as connection:
-            connection.execute(
+            result = connection.execute(
                 """UPDATE pod_customization_billing_runs
-                   SET status = 'settled', error_message = '', updated_at = ?, settled_at = ?
-                   WHERE action_key = ?""",
-                (now, now, action_key),
+                   SET status = 'settled', release_reason = ?, error_message = '',
+                       updated_at = ?, settled_at = ?
+                   WHERE action_key = ?
+                     AND status IN ('settling', 'settlement_pending')""",
+                (str(release_reason or ""), now, now, action_key),
             )
+        return result.rowcount == 1
+
+    def terminate_billing_run(
+        self, action_key: str, to_status: str, reason: str = ""
+    ) -> bool:
+        """把非终态行推进到确定终态；只接受四个终态目标。"""
+        if to_status not in {"orphaned", "expired_released", "anomaly", "abandoned"}:
+            raise ValueError(f"unsupported billing terminal status: {to_status}")
+        now = _now()
+        with self._connect() as connection:
+            result = connection.execute(
+                f"""UPDATE pod_customization_billing_runs
+                    SET status = ?, error_message = ?, updated_at = ?
+                    WHERE action_key = ?
+                      AND status NOT IN ({','.join('?' for _ in self.BILLING_TERMINAL_STATUSES)})""",
+                (
+                    to_status,
+                    _safe_error(reason),
+                    now,
+                    action_key,
+                    *self.BILLING_TERMINAL_STATUSES,
+                ),
+            )
+        return result.rowcount == 1
+
+    def insert_settlement(
+        self,
+        *,
+        freeze_id: str,
+        source: str,
+        expected_points: float = 0.0,
+        charged_points: float = 0.0,
+        refunded_points: float = 0.0,
+        released_points: float | None = None,
+        retained_points: float | None = None,
+        release_reason: str = "",
+        rule_version: str = "",
+        raw_response: Mapping[str, Any] | None = None,
+        settlement_id: str = "",
+        items: Sequence[Mapping[str, Any]] = (),
+    ) -> dict[str, Any]:
+        """一次结算 / 收口一行，明细同事务写入。
+
+        ``freeze_id`` 唯一：重复结算（重试、启动扫描）命中唯一冲突时返回既有行，
+        不产生第二条账。金额全部来自服务端回执，客户端不做加减。
+        """
+        if source not in {"settle", "close", "ttl"}:
+            raise ValueError(f"unsupported settlement source: {source}")
+        settlement_key = str(settlement_id or uuid.uuid4().hex)
+        now = _now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT * FROM pod_customization_billing_settlements WHERE freeze_id = ?",
+                (str(freeze_id),),
+            ).fetchone()
+            if existing is not None:
+                return dict(existing)
+            connection.execute(
+                """INSERT INTO pod_customization_billing_settlements
+                   (settlement_id, freeze_id, source, expected_points, charged_points,
+                    refunded_points, released_points, retained_points, release_reason,
+                    rule_version, raw_response_json, created_at, settled_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    settlement_key,
+                    str(freeze_id),
+                    source,
+                    float(expected_points or 0),
+                    float(charged_points or 0),
+                    float(refunded_points or 0),
+                    None if released_points is None else float(released_points),
+                    None if retained_points is None else float(retained_points),
+                    str(release_reason or ""),
+                    str(rule_version or ""),
+                    json.dumps(dict(raw_response or {}), ensure_ascii=False, separators=(",", ":")),
+                    now,
+                    now,
+                ),
+            )
+            connection.executemany(
+                """INSERT INTO pod_customization_billing_settlement_items
+                   (settlement_id, link_idx, unit_id, feature_status_json,
+                    charged_points, refunded_points)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                [
+                    (
+                        settlement_key,
+                        int(item.get("link_idx") or 0),
+                        str(item.get("unit_id") or ""),
+                        json.dumps(
+                            item.get("feature_status") or {},
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ),
+                        float(item.get("charged_points") or 0),
+                        float(item.get("refunded_points") or 0),
+                    )
+                    for item in items
+                ],
+            )
+            row = connection.execute(
+                "SELECT * FROM pod_customization_billing_settlements WHERE settlement_id = ?",
+                (settlement_key,),
+            ).fetchone()
+        return dict(row) if row is not None else {}
+
+    def expire_stale_intents(self, *, older_than_hours: int = 24) -> int:
+        """超过窗口仍没拿到 ``freeze_id``、且从未冻结成功的意图行转 ``abandoned``。"""
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(hours=max(1, int(older_than_hours)))
+        ).isoformat()
+        now = _now()
+        with self._connect() as connection:
+            result = connection.execute(
+                """UPDATE pod_customization_billing_runs
+                   SET status = 'abandoned', error_message = ?, updated_at = ?
+                   WHERE status = 'intent' AND freeze_id IS NULL AND created_at < ?""",
+                ("意图超过 24 小时未取得冻结单号，自动作废", now, cutoff),
+            )
+        return result.rowcount
+
 
     def recover_billing_runs(self) -> int:
         now = _now()
@@ -3287,6 +3741,23 @@ class PodCustomizationRepository:
 
     TERMINAL_BATCH_STATUSES = {"completed", "partial_failure", "failed", "cancelled"}
 
+    # 账本状态（027）：非终态行不允许随批次删除；终态行只写 batch_deleted_at。
+    BILLING_ACTIVE_STATUSES = (
+        "intent",
+        "authorized",
+        "resume_claimed",
+        "settling",
+        "settlement_pending",
+        "auth_required",
+    )
+    BILLING_TERMINAL_STATUSES = (
+        "settled",
+        "abandoned",
+        "expired_released",
+        "orphaned",
+        "anomaly",
+    )
+
     # asset 是内容寻址存储：同一 asset_id 可能被多个批次 / 模板 / 快照共用
     # （典型例子：复刻批次的「内部锚点模板」与目标白底图指向同一个 asset）。
     # 删资产前必须确认没有任何表再引用它，否则会撞
@@ -3411,9 +3882,22 @@ class PodCustomizationRepository:
                         asset_ids.add(row["asset_id"])
                 replica_template_id = batch["template_id"]
 
-            # The billing ledger references batch_id without a cascade FK.
+            # 账本比批次活得久：只在批次行上记删除时间，绝不删 billing_runs。
+            # 存在非终态（还在冻结/结算中）的 run 时拒绝删除，避免把未结清的钱丢掉。
+            active_placeholders = ",".join("?" for _ in self.BILLING_ACTIVE_STATUSES)
+            active = connection.execute(
+                f"""SELECT 1 FROM pod_customization_billing_runs
+                    WHERE batch_id = ? AND status IN ({active_placeholders}) LIMIT 1""",
+                (batch_id, *self.BILLING_ACTIVE_STATUSES),
+            ).fetchone()
+            if active is not None:
+                raise PodRepositoryError("批次仍在结算中", 409)
+            now = _now()
             connection.execute(
-                "DELETE FROM pod_customization_billing_runs WHERE batch_id = ?", (batch_id,)
+                """UPDATE pod_customization_billing_runs
+                   SET batch_deleted_at = ?, updated_at = ?
+                   WHERE batch_id = ? AND batch_deleted_at = ''""",
+                (now, now, batch_id),
             )
             connection.execute(
                 "DELETE FROM pod_customization_batches WHERE batch_id = ?", (batch_id,)

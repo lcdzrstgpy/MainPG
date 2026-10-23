@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from wh_local.modules.pod_customization.billing_contract import (
-    POD_BILLING_PROFILE_RANDOM,
+    POD_BILLING_PROFILE_RANDOM_GRID,
     PodCallOutcome,
     PodCallPlan,
 )
@@ -20,7 +20,7 @@ def test_column_plan_has_four_roles_per_group_and_titles_per_style() -> None:
     assert len(title_calls) == 8 * 5
     assert plan.column_style_count == 8
     assert plan.column_group_count == 2
-    assert plan.billing_profile == POD_BILLING_PROFILE_RANDOM
+    assert plan.billing_profile == POD_BILLING_PROFILE_RANDOM_GRID
     assert "batch:group:2:role:hero:image:2" in {call.call_id for call in image_calls}
     assert "batch:group:2:style:8:title:5" in {call.call_id for call in title_calls}
 
@@ -31,7 +31,7 @@ def test_column_freeze_payload_reports_groups_as_links_and_styles_as_items() -> 
     assert payload["link_count"] == 5
     assert payload["item_count"] == 20
     assert payload["scope"] == ["title", "four_grid"]
-    assert payload["billing_profile"] == POD_BILLING_PROFILE_RANDOM
+    assert payload["billing_profile"] == POD_BILLING_PROFILE_RANDOM_GRID
 
 
 def test_column_settlement_only_requires_primary_images_for_four_grid() -> None:

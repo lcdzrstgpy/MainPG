@@ -203,14 +203,17 @@ class BillingCoordinator:
     def freeze(self, actor, plan):
         self.freezes.append(plan)
         return PodExecutionGrant(
-            "freeze-1", 1, "2099-01-01T00:00:00Z", {"wuyin": "test-wuyin", "ark": "test-ark"}
+            plan.idempotency_key, 1, "2099-01-01T00:00:00Z", {"wuyin": "test-wuyin", "ark": "test-ark"}
         )
 
     def settle(self, actor, grant, plan, outcomes):
         self.settlements.append((plan, tuple(outcomes)))
 
     def regrant(self, actor, freeze_id):
-        return self.freeze(actor, None)
+        del actor
+        return PodExecutionGrant(
+            freeze_id, 1, "2099-01-01T00:00:00Z", {"wuyin": "test-wuyin", "ark": "test-ark"}
+        )
 
 
 def _service(
