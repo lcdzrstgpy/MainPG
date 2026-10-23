@@ -16,21 +16,17 @@ import {
   loadBillingLedgerHistory,
   loadBillingSummary,
   loadBillingUsageHistory,
-  loadImageModel,
-  loadPodImageModel,
   loadStationBinding,
   loadStationPartnerDetail,
   quoteCustomTopup,
   redeemInvitationCode,
-  saveImageModel,
-  savePodImageModel,
   sendUsernameChangeCode,
   type BillingLedgerCategory,
   type BillingLedgerItem,
   type BillingPackage,
+  type BillingPricingModule,
   type BillingSummary,
   type BillingUsageEntry,
-  type ImageModelChoice,
   type StationBinding,
   type StationPartnerDetail,
   type TopupOrderResponse,
@@ -195,6 +191,35 @@ const pricingFeatures: Array<{ key: string; label: string; note: string }> = [
   { key: "product_processing.text", label: "商品文本", note: "标题 / 卖点 / 详情文案" },
   { key: "product_processing.batch", label: "批量链接处理", note: "整批商品处理任务" },
 ];
+
+/** POD 模块展示名兜底：服务端未给 label 时按计费画像 key 展示。 */
+const POD_PRICING_LABELS: Record<string, string> = {
+  pod_random_v1: "POD 全定制",
+  pod_semi_v1: "POD 半定制",
+  pod_fission_v1: "POD 爆款裂变",
+  pod_replica_v1_a: "POD 爆款复刻",
+  pod_replica_v1_b: "POD 爆款复刻 · 高清直出",
+};
+
+/** POD 计价单位兜底：半定制按「组」（4 款 = 1 组），其余按「款」。 */
+const POD_PRICING_UNITS: Record<string, string> = { pod_semi_v1: "组" };
+
+function pricingPodModules(pricing: BillingSummary["pricing"] | undefined): BillingPricingModule[] {
+  const modules = pricing?.pod_modules;
+  if (!Array.isArray(modules)) return [];
+  return modules.filter(
+    (item) =>
+      Boolean(item?.key)
+      && Number.isFinite(item.charge_min_points)
+      && Number.isFinite(item.charge_max_points),
+  );
+}
+
+/** 单价区间格式化：固定价只显示一个数，区间价显示「min ~ max」。 */
+function formatPointsRange(min: number, max: number) {
+  const format = (value: number) => (Number.isInteger(value) ? value.toLocaleString() : String(value));
+  return min === max ? format(min) : `${format(min)} ~ ${format(max)}`;
+}
 
 /** 消费流水的「服务板块」归类：优先用 feature_key，其次回退解析 usage_id/source_ref。
  *  组合套装的扣费通过 free_batch_points(idempotency_key=combo-kit:xxx) 写入，
@@ -419,18 +444,6 @@ export function PersonalCenterPage({ feedbackPrefill = null, panel, onPanelChang
   const limitedPoints = summary ? summary.wallet.plan.plan_balance ?? 0 : null;
   const animatedPermanentPoints = useAnimatedNumber(permanentPoints);
   const animatedLimitedPoints = useAnimatedNumber(limitedPoints);
-  // 生图模型切换：下拉选项由服务端白名单给出，切换后所有生图任务立即跟随。
-  const [imageModel, setImageModel] = useState("");
-  const [imageModelChoices, setImageModelChoices] = useState<ImageModelChoice[]>([]);
-  const [imageModelBusy, setImageModelBusy] = useState(false);
-  const [imageModelMessage, setImageModelMessage] = useState("");
-  const [imageModelError, setImageModelError] = useState("");
-  const [podImageModel, setPodImageModel] = useState("");
-  const [podImageModelChoices, setPodImageModelChoices] = useState<ImageModelChoice[]>([]);
-  const [podImageModelBusy, setPodImageModelBusy] = useState(false);
-  const [podImageLoading, setPodImageLoading] = useState(false);
-  const [podImageModelMessage, setPodImageModelMessage] = useState("");
-  const [podImageModelError, setPodImageModelError] = useState("");
   const [usageEntries, setUsageEntries] = useState<BillingUsageEntry[]>(
     cachedUsage && cachedUsage.filterKey === defaultUsageFilterKey ? cachedUsage.items : [],
   );
@@ -487,70 +500,6 @@ export function PersonalCenterPage({ feedbackPrefill = null, panel, onPanelChang
   const USAGE_PAGE_SIZE = 10;
   const USAGE_LOAD_LIMIT = 100;
   const [usagePage, setUsagePage] = useState(1);
-
-  // 生图模型：进入「模型选择」面板时拉取当前值与可选白名单。
-  useEffect(() => {
-    if (activePanel !== "model") return;
-    let disposed = false;
-    setImageModelError("");
-    loadImageModel()
-      .then((payload) => {
-        if (disposed) return;
-        setImageModelChoices(payload.choices ?? []);
-        setImageModel(payload.model ?? "");
-      })
-      .catch((exc) => {
-        if (!disposed) setImageModelError(exc instanceof Error ? exc.message : "读取生图模型失败");
-      });
-    setPodImageModelError("");
-    setPodImageLoading(true);
-    loadPodImageModel()
-      .then((payload) => {
-        if (disposed) return;
-        setPodImageModelChoices(payload.choices ?? []);
-        setPodImageModel(payload.model ?? "");
-        if ((payload.choices ?? []).length === 0) {
-          setPodImageModelError("服务端未返回 POD 生图模型清单，请重启本地服务后重试");
-        }
-      })
-      .catch((exc) => {
-        if (!disposed) setPodImageModelError(exc instanceof Error ? exc.message : "读取 POD 生图模型失败");
-      })
-      .finally(() => {
-        if (!disposed) setPodImageLoading(false);
-      });
-    return () => {
-      disposed = true;
-    };
-  }, [activePanel]);
-
-  const saveImageModelSelection = useCallback(() => {
-    if (!imageModel) return;
-    setImageModelBusy(true);
-    setImageModelMessage("");
-    setImageModelError("");
-    saveImageModel(imageModel)
-      .then((payload) => {
-        setImageModel(payload.model ?? imageModel);
-        setImageModelMessage(payload.message || "生图模型已切换");
-      })
-      .catch((exc) => setImageModelError(exc instanceof Error ? exc.message : "切换生图模型失败"))
-      .finally(() => setImageModelBusy(false));
-  }, [imageModel]);
-
-  const savePodImageModelSelection = useCallback(() => {
-    if (!podImageModel) return;
-    setPodImageModelBusy(true);
-    setPodImageModelMessage("");
-    setPodImageModelError("");
-    savePodImageModel(podImageModel)
-      .then((payload) => {
-        setPodImageModel(payload.model ?? podImageModel);
-        setPodImageModelMessage(payload.message || "POD 生图模型已切换");
-      })
-      .catch((exc) => setPodImageModelError(exc instanceof Error ? exc.message : "切换 POD 生图模型失败"))
-      .finally(() => setPodImageModelBusy(false));
-  }, [podImageModel]);
 
   const loadUsage = useCallback((force = false) => {
     const filterKey = buildUsageFilterKey(filterService, filterStatus, filterDateFrom, filterDateTo);
@@ -790,6 +739,9 @@ export function PersonalCenterPage({ feedbackPrefill = null, panel, onPanelChang
     if (selectedPackage === "custom") return customQuote;
     return topupProducts.find((item) => item.package_id === selectedPackage) ?? topupProducts[0];
   }, [customQuote, selectedPackage, topupProducts]);
+
+  // 服务端未下发 pod_modules（旧版）时返回空数组，区块整体隐藏，不影响现有面板。
+  const podPricingModules = useMemo(() => pricingPodModules(summary?.pricing), [summary]);
 
   useEffect(() => {
     setCustomQuote(null);
@@ -2110,84 +2062,48 @@ export function PersonalCenterPage({ feedbackPrefill = null, panel, onPanelChang
               })}
             </div>
 
+            {podPricingModules.length > 0 && (
+              <div className="pricing-pod">
+                <div className="pricing-pod-head">
+                  <b>POD 按模块计价</b>
+                  <small>各模块单价独立，均由服务端下发；调价后点「刷新」即可看到最新价格。</small>
+                </div>
+                <div className="pricing-pod-grid">
+                  {podPricingModules.map((item) => {
+                    const label = item.label?.trim() || POD_PRICING_LABELS[item.key] || item.key;
+                    const unit = item.unit_label?.trim() || POD_PRICING_UNITS[item.key] || "款";
+                    const baseMin = item.base_charge_min_points;
+                    const baseMax = item.base_charge_max_points;
+                    const baseText =
+                      typeof baseMin === "number" && typeof baseMax === "number"
+                        ? `基准 ${formatPointsRange(baseMin, baseMax)}`
+                        : "";
+                    const multiplierText =
+                      typeof item.multiplier_percent === "number"
+                        ? `当前倍率 ${item.multiplier_percent}%`
+                        : "";
+                    const note = [baseText, multiplierText].filter(Boolean).join(" · ");
+                    return (
+                      <div key={item.key} className="pricing-pod-card">
+                        <span className="pricing-pod-name">
+                          <b>{label}</b>
+                          <small>{item.key}</small>
+                        </span>
+                        <span className="pricing-pod-points">
+                          <b>{formatPointsRange(item.charge_min_points, item.charge_max_points)}</b>
+                          <i>积分 / {unit}</i>
+                          {note ? <small>{note}</small> : null}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             <div className="pricing-foot">
               <span>充值换算：{summary?.pricing.ratio_label ?? "1 元 = 100 积分"}</span>
               <span>规则版本 v{summary?.pricing.rule_version ?? "--"}{summary?.pricing.effective_at ? ` · 生效于 ${formatUsageTime(summary.pricing.effective_at).slice(0, 16)}` : ""}</span>
-            </div>
-          </article>
-        ) : activePanel === "model" ? (
-          <article className="personal-card version-card">
-            <div className="personal-card-title">
-              <span className="iconfont icon-robot-fill" aria-hidden="true" />
-              <div>
-                <h2>模型选择</h2>
-                <small>AI处理 与 POD 定制可分别选择生图模型，切换后立即生效，可随时改回。</small>
-              </div>
-            </div>
-            <div className="model-grid">
-              <section className="model-block">
-                <label className="model-field">
-                  <span>生图模型</span>
-                  <select
-                    value={imageModel}
-                    onChange={(event) => {
-                      setImageModel(event.target.value);
-                      setImageModelMessage("");
-                      setImageModelError("");
-                    }}
-                    disabled={imageModelBusy}
-                  >
-                    {imageModel === "" && <option value="">读取中…</option>}
-                    {imageModelChoices.map((choice) => (
-                      <option key={choice.value} value={choice.value}>{choice.label}</option>
-                    ))}
-                  </select>
-                </label>
-                <small className="model-field-hint">作用于 AI处理（商品图/详情图）链路。</small>
-                {imageModelMessage && <p className="version-message is-success">{imageModelMessage}</p>}
-                {imageModelError && <p className="version-message is-error" role="alert">{imageModelError}</p>}
-                <div className="version-actions">
-                  <button type="button" onClick={() => saveImageModelSelection()} disabled={imageModelBusy || !imageModel}>
-                    {imageModelBusy ? "保存中…" : "保存"}
-                  </button>
-                </div>
-              </section>
-
-              <section className="model-block">
-                <label className="model-field">
-                  <span>POD 生图模型</span>
-                  <select
-                    value={podImageModel}
-                    onChange={(event) => {
-                      setPodImageModel(event.target.value);
-                      setPodImageModelMessage("");
-                      setPodImageModelError("");
-                    }}
-                    disabled={podImageModelBusy || podImageLoading}
-                  >
-                    {podImageModel === "" && (
-                      <option value="">{podImageLoading ? "读取中…" : "未读取到模型"}</option>
-                    )}
-                    {podImageModelChoices.map((choice) => (
-                      <option key={choice.value} value={choice.value}>{choice.label}</option>
-                    ))}
-                  </select>
-                </label>
-                <small className="model-field-hint">
-                  仅作用于 POD 定制（全定制 / 半定制 / 爆款复刻 / 爆款裂变）链路，与 AI处理 模型互不影响。
-                </small>
-                {podImageModelMessage && <p className="version-message is-success">{podImageModelMessage}</p>}
-                {podImageModelError && <p className="version-message is-error" role="alert">{podImageModelError}</p>}
-                <div className="version-actions">
-                  <button
-                    type="button"
-                    onClick={() => savePodImageModelSelection()}
-                    disabled={podImageModelBusy || !podImageModel}
-                  >
-                    {podImageModelBusy ? "保存中…" : "保存"}
-                  </button>
-                </div>
-              </section>
             </div>
           </article>
         ) : activePanel === "preferences" ? (

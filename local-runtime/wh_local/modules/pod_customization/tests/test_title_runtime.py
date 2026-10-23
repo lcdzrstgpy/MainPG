@@ -402,12 +402,10 @@ def test_title_contract_normalizes_typographic_punctuation_into_ascii() -> None:
     "field,value,expected_reason",
     [
         ("english_title", "Temu exclusive canvas tote", "english_title contains prohibited term"),
-        ("english_title", "海岸植物帆布包", "english_title must use ASCII"),
         ("description", "Official Disney artwork for everyday carry.", "description contains prohibited term"),
-        ("description", "适合日常携带的海岸植物图案。", "description must use ASCII"),
     ],
 )
-def test_title_validator_rejects_non_ascii_or_prohibited_short_copy(
+def test_title_validator_rejects_prohibited_copy(
     field: str, value: str, expected_reason: str
 ) -> None:
     from wh_local.modules.pod_customization.title_runtime import validate_title_result, title_result_from_dict
@@ -417,6 +415,28 @@ def test_title_validator_rejects_non_ascii_or_prohibited_short_copy(
 
     with pytest.raises(ValueError, match=expected_reason):
         validate_title_result(title_result_from_dict(payload))
+
+
+def test_title_contract_rejects_chinese_only_english_title() -> None:
+    """纯中文英文标题清理后为空：不是装饰符，仍要拒绝而不是硬凑。"""
+    from wh_local.modules.pod_customization.title_runtime import title_result_from_dict
+
+    payload = _payload()
+    payload["english_title"] = "海岸植物帆布包"
+
+    with pytest.raises(DoubaoArkError, match="empty required fields"):
+        title_result_from_dict(payload)
+
+
+def test_title_contract_rejects_chinese_only_description() -> None:
+    from wh_local.modules.pod_customization.title_runtime import validate_title_result, title_result_from_dict
+
+    payload = _payload()
+    payload["description"] = "适合日常携带的海岸植物图案。"
+    result = title_result_from_dict(payload)
+
+    with pytest.raises(ValueError, match="description must contain English alphabetic tokens"):
+        validate_title_result(result)
 
 
 def test_title_validator_requires_english_alphabetic_tokens() -> None:
@@ -743,8 +763,91 @@ def test_display_title_fallback_rejects_when_no_complete_boundary_can_reach_mini
         {
             **_payload(title="中文标题"),
             "english_title": "Coastal tote",
-            "description": "A continuous fragment without a sentence boundary and without enough complete content",
+            "description": "Short fragment without a boundary",
         }
     )
     with pytest.raises(ValueError, match="80-200 ASCII characters"):
         validate_title_result(result)
+
+
+def test_display_title_fallback_truncates_at_word_when_first_sentence_exceeds_limit() -> None:
+    """描述第一句本身超过 200 时，按词边界截断救回，而不是白跑一次重试。"""
+    from wh_local.modules.pod_customization.title_runtime import title_result_from_dict, validate_title_result
+
+    long_sentence = (
+        "This quilted cosmetic pouch features a dense purple galaxy print with tiny cats "
+        "and arched night windows, plus feather quills, crystal orbs and winding vines "
+        "spread across the whole front panel for a dreamy fantasy look. "
+    ) * 2
+    result = title_result_from_dict(
+        {
+            **_payload(title="中文标题"),
+            "english_title": "Purple Quilted Galaxy Cosmetic Pouch with Cat and Arch Motifs",
+            "description": long_sentence,
+        }
+    )
+
+    assert 80 <= len(result.normalized_title) <= 200
+    assert not result.normalized_title.endswith(" ")  # 截断只落在整词边界
+    validate_title_result(result)
+
+
+def test_display_title_fallback_strips_emoji_from_english_copy() -> None:
+    """英文标题/描述里夹的装饰符号先清掉，不再因此判整条文案非 ASCII。"""
+    from wh_local.modules.pod_customization.title_runtime import title_result_from_dict, validate_title_result
+
+    result = title_result_from_dict(
+        {
+            **_payload(title="✨ 中文标题 ✨"),
+            "english_title": "✨ Purple Quilted Galaxy Cosmetic Pouch with Cat and Arch Motifs ✨",
+            "description": (
+                "A purple quilted pouch printed with galaxy swirls, tiny cats and arched windows ✨ "
+                "for everyday makeup storage."
+            ),
+        }
+    )
+
+    assert result.english_title.isascii() and "✨" not in result.english_title
+    assert result.description.isascii() and "✨" not in result.description
+    assert result.normalized_title.isascii()
+    validate_title_result(result)
+
+
+def test_rejected_title_logs_its_actual_length_and_ascii_flag(monkeypatch) -> None:
+    """拒绝日志要带上被拒标题的真实长度与 ASCII 标记，便于定位是哪一类不合格。"""
+    import logging
+
+    from wh_local.modules.pod_customization import title_runtime
+
+    probe = logging.getLogger("test.pod_title.rejected")
+    probe.handlers = []
+    probe.propagate = True
+    monkeypatch.setattr(title_runtime, "business_logger", lambda _name: probe)
+
+    oversized = {
+        **_payload(title="Quilted Pouch " + "with starry galaxy detail " * 12),
+        "english_title": "Quilted Pouch",
+        "description": "Short copy without boundary",
+    }
+    session = _Session([_Response(oversized) for _ in range(5)])
+    runtime = title_runtime.PodTitleRuntime(
+        session=session, requests_per_minute=0, sleeper=lambda _seconds: None
+    )
+    records: list[str] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record.getMessage())
+
+    probe.addHandler(_Capture())
+    try:
+        with pytest.raises(DoubaoArkError):
+            runtime.generate_title(_request(), grant=_grant(ark="ark-secret"), call_id="style-task-72:title:1")
+    finally:
+        runtime.close()
+        probe.handlers = []
+
+    rejected = [line for line in records if "输出不合格" in line]
+    assert len(rejected) == 5
+    assert "标题长度=" in rejected[-1]
+    assert "纯ASCII=true" in rejected[-1]

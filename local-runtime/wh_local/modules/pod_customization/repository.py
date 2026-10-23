@@ -19,6 +19,17 @@ from ...pod_migrations import (
     recover_interrupted_pod_migrations,
 )
 from .billing_contract import PodCallOutcome, PodCallPlan, PodExecutionGrant
+from .column_generation import (
+    COLUMN_ROLES,
+    GROUP_STATUS_FAILED,
+    GROUP_STATUS_QUEUED,
+    SHEET_STATUS_FAILED,
+    SHEET_STATUS_GENERATING,
+    SHEET_STATUS_QUEUED,
+    group_style_indices,
+    plan_style_groups,
+    style_group_index,
+)
 from .contracts import (
     BatchCreate,
     BusinessFields,
@@ -26,6 +37,8 @@ from .contracts import (
     COMPOSITION_SCOPE_FULL,
     COMPOSITION_SCOPE_FISSION,
     COMPOSITION_SCOPES,
+    GENERATION_LAYOUT_COLUMN,
+    GENERATION_LAYOUT_LEGACY,
     MAX_FISSION_STYLES,
     MIN_FISSION_STYLES,
     ReplicaBatchCreate,
@@ -40,6 +53,7 @@ from .prompts import (
     build_direct_listing_prompt,
     build_semi_pattern_base,
 )
+from .structure_analysis import load_structure_facts
 
 
 SEMI_PLACEHOLDER_TEMPLATE_ID = "semi-pattern-placeholder"
@@ -442,6 +456,10 @@ class PodCustomizationRepository:
         name: str,
         asset: dict[str, Any],
         source: str = "personal",
+        views: Sequence[Mapping[str, Any]] = (),
+        structure_facts_json: str = "",
+        structure_status: str = "none",
+        structure_analysis_version: str = "",
     ) -> dict[str, Any]:
         template_id = uuid.uuid4().hex
         snapshot_id = uuid.uuid4().hex
@@ -450,10 +468,12 @@ class PodCustomizationRepository:
             connection.execute(
                 """INSERT INTO pod_customization_templates
                    (template_id, workspace_id, owner_user_id, name, source, asset_id, width, height,
+                    structure_facts_json, structure_status, structure_analysis_version,
                     version, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)""",
                 (template_id, workspace_id, owner_user_id, name[:120], source, asset["asset_id"],
-                 asset["width"], asset["height"], now, now),
+                 asset["width"], asset["height"], structure_facts_json, structure_status,
+                 structure_analysis_version, now, now),
             )
             connection.execute(
                 """INSERT INTO pod_customization_template_snapshots
@@ -462,6 +482,111 @@ class PodCustomizationRepository:
                    VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)""",
                 (snapshot_id, template_id, workspace_id, owner_user_id, name[:120], source,
                  asset["asset_id"], asset["width"], asset["height"], now),
+            )
+            self._insert_template_views(
+                connection,
+                template_id=template_id,
+                workspace_id=workspace_id,
+                owner_user_id=owner_user_id,
+                views=views,
+                now=now,
+            )
+        return self.get_template(template_id, workspace_id, owner_user_id)
+
+    @staticmethod
+    def _insert_template_views(
+        connection: sqlite3.Connection,
+        *,
+        template_id: str,
+        workspace_id: str,
+        owner_user_id: str,
+        views: Sequence[Mapping[str, Any]],
+        now: str,
+    ) -> None:
+        for view in views:
+            connection.execute(
+                """INSERT INTO pod_customization_template_views
+                   (view_id, template_id, workspace_id, owner_user_id, role, asset_id,
+                    width, height, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    uuid.uuid4().hex,
+                    template_id,
+                    workspace_id,
+                    owner_user_id,
+                    str(view["role"])[:32],
+                    str(view["asset_id"]),
+                    int(view.get("width") or 0),
+                    int(view.get("height") or 0),
+                    now,
+                ),
+            )
+
+    def list_template_views(
+        self, template_id: str, workspace_id: str, owner_user_id: str
+    ) -> list[dict[str, Any]]:
+        """按生图顺序返回模板的结构视图（primary → side → top → dimension）。"""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT v.*, a.relative_path, a.content_type
+                   FROM pod_customization_template_views AS v
+                   JOIN pod_customization_assets AS a ON a.asset_id = v.asset_id
+                   WHERE v.template_id = ? AND v.workspace_id = ? AND v.owner_user_id = ?
+                   ORDER BY CASE v.role
+                       WHEN 'primary' THEN 0 WHEN 'side' THEN 1
+                       WHEN 'top' THEN 2 WHEN 'dimension' THEN 3 ELSE 4 END,
+                       v.created_at""",
+                (template_id, workspace_id, owner_user_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def replace_template_views(
+        self,
+        template_id: str,
+        workspace_id: str,
+        owner_user_id: str,
+        *,
+        views: Sequence[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """按角色替换结构视图：提交了哪个角色就覆盖哪个，未提交的角色保留。"""
+        if not views:
+            return self.list_template_views(template_id, workspace_id, owner_user_id)
+        now = _now()
+        with self._connect() as connection:
+            for view in views:
+                connection.execute(
+                    """DELETE FROM pod_customization_template_views
+                       WHERE template_id = ? AND workspace_id = ? AND owner_user_id = ? AND role = ?""",
+                    (template_id, workspace_id, owner_user_id, str(view["role"])),
+                )
+            self._insert_template_views(
+                connection,
+                template_id=template_id,
+                workspace_id=workspace_id,
+                owner_user_id=owner_user_id,
+                views=views,
+                now=now,
+            )
+        return self.list_template_views(template_id, workspace_id, owner_user_id)
+
+    def update_template_structure(
+        self,
+        template_id: str,
+        workspace_id: str,
+        owner_user_id: str,
+        *,
+        facts_json: str,
+        status: str,
+        analysis_version: str,
+    ) -> dict[str, Any]:
+        """写入/修订结构事实表（人工确认与重跑分析都走这里）。"""
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE pod_customization_templates
+                   SET structure_facts_json = ?, structure_status = ?, structure_analysis_version = ?,
+                       updated_at = ?
+                   WHERE template_id = ? AND workspace_id = ? AND owner_user_id = ? AND deleted_at = ''""",
+                (facts_json, status, analysis_version, _now(), template_id, workspace_id, owner_user_id),
             )
         return self.get_template(template_id, workspace_id, owner_user_id)
 
@@ -607,6 +732,7 @@ class PodCustomizationRepository:
         *,
         batch_id: str | None = None,
         composition: Mapping[str, Any] | None = None,
+        generation_meta: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         batch_id = str(batch_id or uuid.uuid4().hex)
         now = _now()
@@ -615,14 +741,24 @@ class PodCustomizationRepository:
         en_panels = {
             key: entry["en"] for key, entry in _normalized_composition_panels(raw_panels).items()
         }
-        prompt_snapshot = build_direct_listing_prompt(
-            request.business_fields, request.creative_prompt, composition=en_panels
-        )
         composition_json = json.dumps(composition, ensure_ascii=False) if composition else ""
         # New batches are isolated from legacy batches by a companion row.  Do
         # not reinterpret an existing batch while another runtime is working it.
-        initial_calls = style_grid_call_count(request.count)
+        column_layout = request.generation_layout == GENERATION_LAYOUT_COLUMN
+        group_count = request.count // 4 if column_layout else 0
+        # 列式生成：每组 4 角色 × 2 次图片调用 + 每款 5 次标题调用（方案 §8）。
+        initial_calls = (
+            group_count * 8 + request.count * 5
+            if column_layout
+            else style_grid_call_count(request.count)
+        )
         max_refills = 0
+        art_direction = request.art_direction
+        art_direction_json = (
+            json.dumps(art_direction.model_dump(), ensure_ascii=False)
+            if art_direction is not None
+            else ""
+        )
         with self._connect() as connection:
             template = connection.execute(
                 """SELECT * FROM pod_customization_templates
@@ -638,18 +774,61 @@ class PodCustomizationRepository:
             ).fetchone()
             if snapshot is None:
                 raise PodRepositoryError("POD template snapshot is unavailable", 409)
+            # 结构事实表与视图角色一并冻结进 prompt_snapshot：批次重放/续跑时
+            # 不再依赖模板的当前状态（模板可被人工修正，但历史批次不漂移）。
+            extra_roles = tuple(
+                str(row["role"])
+                for row in connection.execute(
+                    """SELECT role FROM pod_customization_template_views
+                       WHERE template_id = ? AND workspace_id = ? AND role IN ('side', 'top')
+                       ORDER BY CASE role WHEN 'side' THEN 0 WHEN 'top' THEN 1 ELSE 2 END""",
+                    (request.template_id, workspace_id),
+                )
+            )
+            structure_facts = load_structure_facts(template["structure_facts_json"])
+            reference_view_roles = ("primary", *extra_roles)
+            if column_layout:
+                # 列式生成的 L1 快照只保留共享底座；每轮真实提示词冻结在 group_sheets。
+                from .column_prompts import build_column_base_prompt
+
+                prompt_snapshot = build_column_base_prompt(
+                    request.business_fields,
+                    request.creative_prompt,
+                    structure_facts=structure_facts,
+                    reference_view_roles=reference_view_roles,
+                )
+            else:
+                prompt_snapshot = build_direct_listing_prompt(
+                    request.business_fields,
+                    request.creative_prompt,
+                    composition=en_panels,
+                    structure_facts=structure_facts,
+                    reference_view_roles=reference_view_roles,
+                )
+            meta = dict(generation_meta or {})
+            if column_layout:
+                meta.setdefault("prompt_version", PATTERN_PROMPT_VERSION)
+                meta.setdefault(
+                    "style_groups",
+                    [list(group.style_indices) for group in plan_style_groups(request.count)],
+                )
+                meta.setdefault("reference_view_roles", list(reference_view_roles))
+            generation_meta_json = json.dumps(meta, ensure_ascii=False) if meta else ""
             title = request.title.strip() or request.business_fields.product_name.strip() or template["name"]
             connection.execute(
                 """INSERT INTO pod_customization_batches
                    (batch_id, workspace_id, owner_user_id, title, status, template_id, template_snapshot_id,
                     template_name, requested_count, initial_call_count, max_refill_calls, prompt_version,
                     prompt_snapshot, business_fields_json, listing_fields_json, creative_prompt,
-                    composition_json, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    composition_json, generation_layout, group_count, generation_meta_json,
+                    art_direction_json, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (batch_id, workspace_id, owner_user_id, title[:120], request.template_id, snapshot["snapshot_id"],
                  snapshot["name"], request.count, initial_calls, max_refills, request.prompt_version,
                  prompt_snapshot, request.business_fields.model_dump_json(), request.listing_fields.model_dump_json(),
-                 request.creative_prompt, composition_json, now, now),
+                 request.creative_prompt, composition_json,
+                 request.generation_layout if column_layout else GENERATION_LAYOUT_LEGACY,
+                 group_count, generation_meta_json, art_direction_json, now, now),
             )
             connection.executemany(
                 """INSERT INTO pod_customization_style_grid_results
@@ -693,7 +872,77 @@ class PodCustomizationRepository:
                    VALUES (?, ?, 'queued', ?, ?)""",
                 [(batch_id, style_index, now, now) for style_index in range(1, request.count + 1)],
             )
+            if column_layout:
+                self._insert_column_groups(
+                    connection,
+                    batch_id=batch_id,
+                    workspace_id=workspace_id,
+                    owner_user_id=owner_user_id,
+                    style_count=request.count,
+                    now=now,
+                )
         return self.get_batch(batch_id, workspace_id, owner_user_id)
+
+    @staticmethod
+    def _insert_column_groups(
+        connection: sqlite3.Connection,
+        *,
+        batch_id: str,
+        workspace_id: str,
+        owner_user_id: str,
+        style_count: int,
+        now: str,
+    ) -> None:
+        """为列式批次建 L2 组与「组 × 角色」的 sheet 行（初始全部 queued）。"""
+        group_rows: list[tuple[Any, ...]] = []
+        sheet_rows: list[tuple[Any, ...]] = []
+        for group in plan_style_groups(style_count):
+            group_id = uuid.uuid4().hex
+            group_rows.append(
+                (
+                    group_id,
+                    batch_id,
+                    workspace_id,
+                    owner_user_id,
+                    group.group_index,
+                    json.dumps(list(group.style_indices)),
+                    GROUP_STATUS_QUEUED,
+                    "",
+                    0,
+                    now,
+                    now,
+                )
+            )
+            for role in COLUMN_ROLES:
+                sheet_rows.append(
+                    (
+                        uuid.uuid4().hex,
+                        group_id,
+                        batch_id,
+                        role,
+                        SHEET_STATUS_QUEUED,
+                        "",
+                        0,
+                        "",
+                        "",
+                        now,
+                        now,
+                    )
+                )
+        connection.executemany(
+            """INSERT INTO pod_customization_style_groups
+               (group_id, batch_id, workspace_id, owner_user_id, group_index, style_indices_json,
+                status, current_round, execution_epoch, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            group_rows,
+        )
+        connection.executemany(
+            """INSERT INTO pod_customization_group_sheets
+               (sheet_id, group_id, batch_id, role, status, grid_asset_id, attempt,
+                error_message, prompt_snapshot, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            sheet_rows,
+        )
 
     def list_compositions(
         self, workspace_id: str, owner_user_id: str, *, scope: str = "full"
@@ -746,6 +995,7 @@ class PodCustomizationRepository:
         model: str,
         prompt_version: str,
         scope: str = "full",
+        layout: str = "panel_v1",
     ) -> dict[str, Any]:
         """新增一份构图模板并设为生效（同一账号同一模块同时只有一份生效）。"""
 
@@ -761,11 +1011,11 @@ class PodCustomizationRepository:
             connection.execute(
                 """INSERT INTO pod_customization_compositions
                    (composition_id, workspace_id, owner_user_id, name, raw_input, panels_json,
-                    model, prompt_version, is_active, scope, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)""",
+                    model, prompt_version, is_active, scope, layout, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)""",
                 (
                     composition_id, workspace_id, owner_user_id, name, raw_input, payload,
-                    model, prompt_version, scope_value, now, now,
+                    model, prompt_version, scope_value, str(layout or "panel_v1"), now, now,
                 ),
             )
         return self.get_composition(workspace_id, owner_user_id, composition_id)  # type: ignore[return-value]
@@ -1724,6 +1974,19 @@ class PodCustomizationRepository:
                    WHERE batch_id = ?""",
                 (batch_id,),
             ).fetchall()
+            group_rows: list[sqlite3.Row] = []
+            sheet_rows: list[sqlite3.Row] = []
+            if str(batch["generation_layout"] or "") == GENERATION_LAYOUT_COLUMN:
+                group_rows = connection.execute(
+                    """SELECT * FROM pod_customization_style_groups
+                       WHERE batch_id = ? ORDER BY group_index""",
+                    (batch_id,),
+                ).fetchall()
+                sheet_rows = connection.execute(
+                    """SELECT * FROM pod_customization_group_sheets
+                       WHERE batch_id = ? ORDER BY rowid""",
+                    (batch_id,),
+                ).fetchall()
             replica_source: dict[str, Any] | None = None
             replica_targets: list[dict[str, Any]] = []
             if batch["mode"] == "replica":
@@ -1781,6 +2044,39 @@ class PodCustomizationRepository:
             int(row["style_index"]): json.loads(row["elements_json"])
             for row in element_rows
         }
+        # 列式生成（两级批次）：L2 组与「组 × 角色」执行状态。legacy 批次为空列表。
+        result["generation_layout"] = str(
+            result.get("generation_layout") or GENERATION_LAYOUT_LEGACY
+        )
+        result["art_direction"] = json.loads(result.get("art_direction_json") or "{}")
+        result["generation_meta"] = json.loads(result.get("generation_meta_json") or "{}")
+        result["style_groups"] = [
+            {
+                "group_id": row["group_id"],
+                "group_index": int(row["group_index"]),
+                "style_indices": json.loads(row["style_indices_json"] or "[]"),
+                "status": row["status"],
+                "current_round": row["current_round"],
+                "execution_epoch": int(row["execution_epoch"]),
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+            for row in group_rows
+        ]
+        result["group_sheets"] = [
+            {
+                "sheet_id": row["sheet_id"],
+                "group_id": row["group_id"],
+                "role": row["role"],
+                "status": row["status"],
+                "grid_asset_id": row["grid_asset_id"],
+                "attempt": int(row["attempt"]),
+                "error_message": row["error_message"],
+                "prompt_snapshot": row["prompt_snapshot"],
+                "updated_at": row["updated_at"],
+            }
+            for row in sheet_rows
+        ]
         if replica_source is not None or replica_targets:
             result["replica_source"] = replica_source
             result["replica_targets"] = replica_targets
@@ -2248,6 +2544,9 @@ class PodCustomizationRepository:
                 "idempotency_key": plan.idempotency_key,
                 "calls": [call.payload() for call in plan.calls],
                 "semi_item_count": plan.semi_item_count,
+                # 列式生成按组上报：缺了这个字段，重启后重建的计划会退回「按款」展开，
+                # 冻结 link_count 与结算 item 数不一致 → 远端 400，冻结积分无法释放。
+                "column_style_count": plan.column_style_count,
                 "billing_profile": plan.billing_profile,
             },
             ensure_ascii=False,
@@ -2996,14 +3295,22 @@ class PodCustomizationRepository:
     _ASSET_IN_USE_PREDICATES = (
         "asset_id NOT IN (SELECT asset_id FROM pod_customization_templates)",
         "asset_id NOT IN (SELECT asset_id FROM pod_customization_template_snapshots)",
+        "asset_id NOT IN (SELECT asset_id FROM pod_customization_template_views)",
         "asset_id NOT IN (SELECT pattern_asset_id FROM pod_customization_batch_items WHERE pattern_asset_id <> '')",
         "asset_id NOT IN (SELECT composite_asset_id FROM pod_customization_batch_items WHERE composite_asset_id <> '')",
         "asset_id NOT IN (SELECT pattern_asset_id FROM pod_customization_style_grid_results WHERE pattern_asset_id <> '')",
         "asset_id NOT IN (SELECT composite_asset_id FROM pod_customization_style_grid_results WHERE composite_asset_id <> '')",
         "asset_id NOT IN (SELECT grid_asset_id FROM pod_customization_generation_calls WHERE grid_asset_id <> '')",
+        "asset_id NOT IN (SELECT grid_asset_id FROM pod_customization_group_sheets WHERE grid_asset_id <> '')",
         "asset_id NOT IN (SELECT pattern_asset_id FROM pod_customization_pattern_candidates WHERE pattern_asset_id <> '')",
         "asset_id NOT IN (SELECT source_asset_id FROM pod_customization_replica_batches WHERE source_asset_id <> '')",
         "asset_id NOT IN (SELECT asset_id FROM pod_customization_replica_targets)",
+        # 识图快照长期保留（复刻/裂变的 A 图与 B 图），也直接引用资产表；
+        # 少了这些谓词，孤儿清扫删到它们引用的图就会撞 FOREIGN KEY constraint failed。
+        "asset_id NOT IN (SELECT source_asset_id FROM pod_customization_replica_analyses WHERE source_asset_id <> '')",
+        "asset_id NOT IN (SELECT target_asset_id FROM pod_customization_replica_analyses WHERE target_asset_id <> '')",
+        "asset_id NOT IN (SELECT source_asset_id FROM pod_customization_fission_analyses WHERE source_asset_id <> '')",
+        "asset_id NOT IN (SELECT target_asset_id FROM pod_customization_fission_analyses WHERE target_asset_id <> '')",
     )
 
     # 「存储空间」手动清扫的可勾选分类（docs/POD-本地图片缓存与清理说明.md §8）。
@@ -3066,6 +3373,13 @@ class PodCustomizationRepository:
                             asset_ids.add(row[column])
             rows = connection.execute(
                 "SELECT grid_asset_id FROM pod_customization_generation_calls WHERE batch_id = ?",
+                (batch_id,),
+            ).fetchall()
+            for row in rows:
+                if row["grid_asset_id"]:
+                    asset_ids.add(row["grid_asset_id"])
+            rows = connection.execute(
+                "SELECT grid_asset_id FROM pod_customization_group_sheets WHERE batch_id = ?",
                 (batch_id,),
             ).fetchall()
             for row in rows:
@@ -4339,6 +4653,182 @@ class PodCustomizationRepository:
                 (_safe_error(error_message), now, batch["batch_id"], style_index),
             )
             self._refresh_counts(connection, batch["batch_id"], now, execution_epoch)
+
+    def claim_group_sheet(
+        self,
+        group_id: str,
+        role: str,
+        *,
+        attempt: int,
+        prompt_snapshot: str,
+        execution_epoch: int | None = None,
+    ) -> dict[str, Any]:
+        """把一张 sheet 置为 generating，并返回该轮实际使用的提示词。
+
+        提示词在**首次执行时冻结**：已有快照（重启/续跑）原样复用，避免代码升级后
+        用新提示词重画同一组，破坏与锚点的一致性。
+        """
+        now = _now()
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT sheets.*, groups.batch_id AS batch_id
+                   FROM pod_customization_group_sheets AS sheets
+                   INNER JOIN pod_customization_style_groups AS groups
+                     ON groups.group_id = sheets.group_id
+                   WHERE sheets.group_id = ? AND sheets.role = ?""",
+                (group_id, role),
+            ).fetchone()
+            if row is None:
+                raise PodRepositoryError("POD column group sheet not found", 404)
+            batch_id = str(row["batch_id"])
+            if execution_epoch is not None:
+                self._raise_if_execution_expired(connection, batch_id, execution_epoch)
+            frozen_prompt = str(row["prompt_snapshot"] or "")
+            effective_prompt = frozen_prompt or str(prompt_snapshot or "")
+            connection.execute(
+                """UPDATE pod_customization_group_sheets
+                   SET status = ?, attempt = ?, error_message = '',
+                       prompt_snapshot = CASE WHEN prompt_snapshot = '' THEN ? ELSE prompt_snapshot END,
+                       updated_at = ?
+                   WHERE group_id = ? AND role = ?""",
+                (SHEET_STATUS_GENERATING, int(attempt), effective_prompt, now, group_id, role),
+            )
+        return {
+            "sheet_id": str(row["sheet_id"]),
+            "group_id": group_id,
+            "batch_id": batch_id,
+            "role": role,
+            "attempt": int(attempt),
+            "prompt_snapshot": effective_prompt,
+            "status": SHEET_STATUS_GENERATING,
+        }
+
+    def end_group_sheet(
+        self,
+        group_id: str,
+        role: str,
+        *,
+        status: str,
+        attempt: int,
+        grid_asset_id: str = "",
+        error_message: str = "",
+        execution_epoch: int | None = None,
+    ) -> None:
+        """收尾一张 sheet：completed / failed，或退回 queued 等待同轮第二次尝试。"""
+        now = _now()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT batch_id FROM pod_customization_style_groups WHERE group_id = ?",
+                (group_id,),
+            ).fetchone()
+            if row is None:
+                raise PodRepositoryError("POD column group not found", 404)
+            batch_id = str(row["batch_id"])
+            if execution_epoch is not None:
+                self._raise_if_execution_expired(connection, batch_id, execution_epoch)
+            connection.execute(
+                """UPDATE pod_customization_group_sheets
+                   SET status = ?, attempt = ?, error_message = ?,
+                       grid_asset_id = CASE WHEN ? <> '' THEN ? ELSE grid_asset_id END,
+                       updated_at = ?
+                   WHERE group_id = ? AND role = ?""",
+                (status, int(attempt), _safe_error(error_message),
+                 grid_asset_id, grid_asset_id, now, group_id, role),
+            )
+
+    def set_group_status(
+        self,
+        group_id: str,
+        status: str,
+        *,
+        current_round: str = "",
+        execution_epoch: int | None = None,
+    ) -> None:
+        now = _now()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT batch_id FROM pod_customization_style_groups WHERE group_id = ?",
+                (group_id,),
+            ).fetchone()
+            if row is None:
+                raise PodRepositoryError("POD column group not found", 404)
+            batch_id = str(row["batch_id"])
+            if execution_epoch is not None:
+                self._raise_if_execution_expired(connection, batch_id, execution_epoch)
+            connection.execute(
+                """UPDATE pod_customization_style_groups
+                   SET status = ?, current_round = ?, updated_at = ?, execution_epoch = ?
+                   WHERE group_id = ?""",
+                (
+                    status,
+                    str(current_round or ""),
+                    now,
+                    int(execution_epoch or 0),
+                    group_id,
+                ),
+            )
+
+    def fail_style_variant(
+        self,
+        batch: dict[str, Any],
+        style_indices: Sequence[int],
+        variant_index: int,
+        error_message: str,
+        *,
+        execution_epoch: int | None = None,
+    ) -> None:
+        """只把指定变体（角色）在给定款上标记失败；其他角色继续交付。"""
+        indices = tuple(int(index) for index in style_indices)
+        if not indices:
+            return
+        now = _now()
+        placeholders = ", ".join("?" for _ in indices)
+        with self._connect() as connection:
+            if execution_epoch is not None:
+                self._raise_if_execution_expired(connection, batch["batch_id"], execution_epoch)
+            connection.execute(
+                f"""UPDATE pod_customization_style_grid_results
+                    SET status = 'failed', error_message = ?, updated_at = ?
+                    WHERE batch_id = ? AND variant_index = ?
+                      AND style_index IN ({placeholders})
+                      AND status IN ('queued', 'generating_pattern', 'compositing')""",
+                (_safe_error(error_message), now, batch["batch_id"], int(variant_index), *indices),
+            )
+            self._refresh_counts(connection, batch["batch_id"], now, execution_epoch)
+
+    def finalize_column_groups(
+        self,
+        batch_id: str,
+        error_message: str,
+        *,
+        execution_epoch: int | None = None,
+    ) -> None:
+        """批次收尾：把未收敛的 sheet / 组置为失败态，避免 UI 一直显示「生成中」。"""
+        now = _now()
+        with self._connect() as connection:
+            if execution_epoch is not None:
+                self._raise_if_execution_expired(connection, batch_id, execution_epoch)
+            connection.execute(
+                """UPDATE pod_customization_group_sheets
+                   SET status = 'failed', error_message = ?, updated_at = ?
+                   WHERE batch_id = ? AND status IN ('queued', 'generating')""",
+                (_safe_error(error_message), now, batch_id),
+            )
+            connection.execute(
+                """UPDATE pod_customization_style_groups
+                   SET status = CASE
+                         WHEN EXISTS (
+                           SELECT 1 FROM pod_customization_group_sheets AS sheets
+                           WHERE sheets.group_id = pod_customization_style_groups.group_id
+                             AND sheets.status = 'completed'
+                         ) THEN 'partial_failure'
+                         ELSE 'failed'
+                       END,
+                       current_round = '', updated_at = ?
+                   WHERE batch_id = ?
+                     AND status NOT IN ('completed', 'failed', 'partial_failure', 'cancelled')""",
+                (now, batch_id),
+            )
 
     def list_candidates(self, batch_id: str, workspace_id: str, owner_user_id: str) -> list[dict[str, Any]]:
         with self._connect() as connection:

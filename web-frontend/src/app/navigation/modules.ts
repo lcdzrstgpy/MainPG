@@ -35,7 +35,6 @@ export type PersonalCenterPanelId =
   | "wallet"
   | "usage"
   | "pricing"
-  | "model"
   | "preferences"
   | "version"
   | "storage"
@@ -230,7 +229,6 @@ export const personalCenterPanels: WorkspaceNavigationPanel[] = [
   { id: "wallet", label: "积分钱包", iconClass: "iconfont icon-wallet-fill" },
   { id: "usage", label: "消费流水", iconClass: "iconfont icon-accountbook-fill" },
   { id: "pricing", label: "计费规则", iconClass: "iconfont icon-calculator" },
-  { id: "model", label: "模型选择", iconClass: "iconfont icon-robot-fill" },
   { id: "preferences", label: "偏好设置", iconClass: "iconfont icon-skin" },
   { id: "version", label: "系统版本", iconClass: "iconfont icon-setting" },
   { id: "storage", label: "存储空间", iconClass: "iconfont icon-database" },

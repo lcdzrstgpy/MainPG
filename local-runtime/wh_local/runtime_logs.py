@@ -17,11 +17,16 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import threading
 from pathlib import Path
 
 _LOGDIR_ENV = "WH_LOCAL_RUNTIME_LOGDIR"
 
 _LOG_FORMAT = "%(asctime)s %(levelname)-8s [%(name)s] %(message)s"
+
+# 首次初始化可能来自多个线程（POD worker、请求线程）：不加锁会各挂一个
+# FileHandler，同一行日志写两遍。锁内再检查一次 READY 标记。
+_INIT_LOCK = threading.Lock()
 
 # 领域日志文件名（均写入 runtime.log 同目录）
 _BUSINESS_LOG_FILES = {
@@ -56,12 +61,26 @@ def _is_testing() -> bool:
     return "pytest" in str(sys.argv[0] or "").lower()
 
 
+def _is_handler_for(handler: logging.Handler, target: Path) -> bool:
+    """该 handler 是否就是写 ``target`` 的那个文件 handler。"""
+    if not isinstance(handler, logging.FileHandler):
+        return False
+    try:
+        return Path(handler.baseFilename).resolve() == target.resolve()
+    except (AttributeError, OSError):
+        return False
+
+
 def business_logger(name: str) -> logging.Logger:
     """获取业务域日志记录器（login / ai_processing / pod_processing）。
 
     惰性初始化：首次调用时创建独立 FileHandler（追加写、UTF-8、与
     runtime.log 同目录）。如果目录或文件创建失败，则 fallback 到 root
     handler（propagate=True，信息仍进 runtime.log），保证不丢、不报错。
+
+    初始化必须在锁内完成：首次调用可能同时来自多个线程，竞态会让同一个
+    logger 挂上两个 FileHandler，同一行日志落盘两次。锁内还按目标文件做了
+    一次去重，兜住「模块被两个路径 import、各自持有一把锁」的情况。
     """
     if name not in _BUSINESS_LOG_FILES:
         raise ValueError(f"unknown business log domain: {name}")
@@ -69,33 +88,45 @@ def business_logger(name: str) -> logging.Logger:
     if getattr(logger, _READY_ATTR, False):
         return logger
 
-    if _is_testing():
-        logger.setLevel(logging.INFO)
-        logger.addHandler(logging.NullHandler())
-        logger.propagate = False
+    with _INIT_LOCK:
+        if getattr(logger, _READY_ATTR, False):
+            return logger
+
+        if _is_testing():
+            logger.setLevel(logging.INFO)
+            logger.addHandler(logging.NullHandler())
+            logger.propagate = False
+            setattr(logger, _READY_ATTR, True)
+            return logger
+
+        directory = runtime_log_dir()
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            directory = Path.cwd()
+        target = directory / _BUSINESS_LOG_FILES[name]
+
+        if any(_is_handler_for(existing, target) for existing in logger.handlers):
+            # 已有同文件 handler（另一份模块实例初始化过）：只补标记，不重复挂。
+            logger.setLevel(logging.INFO)
+            logger.propagate = False
+            setattr(logger, _READY_ATTR, True)
+            return logger
+
+        handler: logging.Handler | None = None
+        try:
+            handler = logging.FileHandler(target, encoding="utf-8")
+        except OSError:
+            handler = None
+        if handler is None:
+            # 打开失败：信息回退到 root（runtime.log），不阻断业务。
+            logger.setLevel(logging.INFO)
+            logger.propagate = True
+        else:
+            handler.setFormatter(logging.Formatter(_LOG_FORMAT))
+            handler.setLevel(logging.INFO)
+            logger.addHandler(handler)
+            logger.setLevel(logging.INFO)
+            logger.propagate = False  # 独立文件，不再重复写入 runtime.log
         setattr(logger, _READY_ATTR, True)
         return logger
-
-    directory = runtime_log_dir()
-    try:
-        directory.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        directory = Path.cwd()
-
-    handler: logging.Handler | None = None
-    try:
-        handler = logging.FileHandler(directory / _BUSINESS_LOG_FILES[name], encoding="utf-8")
-    except OSError:
-        handler = None
-    if handler is None:
-        # 打开失败：信息回退到 root（runtime.log），不阻断业务。
-        logger.setLevel(logging.INFO)
-        logger.propagate = True
-    else:
-        handler.setFormatter(logging.Formatter(_LOG_FORMAT))
-        handler.setLevel(logging.INFO)
-        logger.addHandler(handler)
-        logger.setLevel(logging.INFO)
-        logger.propagate = False  # 独立文件，不再重复写入 runtime.log
-    setattr(logger, _READY_ATTR, True)
-    return logger

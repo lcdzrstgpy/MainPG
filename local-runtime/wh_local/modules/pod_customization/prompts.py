@@ -6,6 +6,12 @@ import re
 from typing import Mapping, Sequence
 
 from .contracts import COMPOSITION_PANEL_KEYS, IP_EXCLUDED_ELEMENTS, BusinessFields
+from .structure_analysis import (
+    render_part_count_lock,
+    render_reference_views_block,
+    render_structure_facts_block,
+    render_transparent_material_lock,
+)
 
 
 # 整个「大提示词」的版本号：**只要改动任一处的提示词内容就必须递增**。
@@ -34,7 +40,15 @@ from .contracts import COMPOSITION_PANEL_KEYS, IP_EXCLUDED_ELEMENTS, BusinessFie
 #      所有可印表面、覆盖率 100%，排布池与密度池全部改为满印接花描述（不再局部覆盖）。
 # v16：新增图案布局锁（ARTWORK LAYOUT LOCK）——主图确定图案在商品表面的位置与相对尺度，
 #      其余三格只换机位/景别，禁止重排；面板描述同步改为「同一布局的裁切/换视角」。
-PATTERN_PROMPT_VERSION = "v16"
+# v17：新增困难件结构锚定——结构事实表（部件数/层数/尺寸/材质）以字面事实注入，
+#      配套 PART COUNT & SIZE LOCK、TRANSPARENT MATERIAL LOCK 与 REFERENCE VIEWS CONTRACT；
+#      无结构视图/事实表的普通批次不渲染这三块，提示词与 v16 等价。
+# v18：新增列式生成（两级批次）的四轮口径——第 1 轮 A1+B1+C1+D1，第 2/3/4 轮只有 A2+B2；
+#      构图模板语义从「一张图的四格」改为「四次调用的四轮」。legacy 批次的提示词文本不变，
+#      版本号只用于区分「改前/改后」的产出归因。
+# v19：派生轮区分「必须连续」与「必须变化」——景深/机位距离/裁切必须按本轮方向变化，
+#      新增 detail_a / detail_b 景别契约与「禁止复刻锚点机位」硬条款。
+PATTERN_PROMPT_VERSION = "v19"
 # 位置↔角色固定：左上=主图(lifestyle)、右上=细节A(detail_a)、左下=细节B(detail_b)、右下=素材(hero)。
 # 标识符沿用历史值（lifestyle=主图、hero=素材），避免历史批次错标；仅位置分配按本元组顺序正确落位。
 LISTING_IMAGE_ROLES = ("lifestyle", "detail_a", "detail_b", "hero")
@@ -286,6 +300,53 @@ DEFAULT_COMPOSITION_PANELS: Mapping[str, Mapping[str, str]] = {
         "en": "The complete product centered on a clean neutral pure-white background, neat straight-on framing with no supporting props.",
     },
 }
+# 全定制（列式生成）的系统默认模板：四轮机位必须能被肉眼区分。
+# 与旧「四格」默认模板分开存放——复刻/裂变仍用 DEFAULT_COMPOSITION_PANELS，
+# 不能把「四轮」文案注入到它们的四格生成里。
+DEFAULT_COLUMN_COMPOSITION_RAW_INPUT = (
+    "系统默认：四轮差异化机位（主图 45° 三分点 / 细节 A 90° 俯拍占九成 / "
+    "细节 B 极端微距出画 / 素材居中六成）"
+)
+DEFAULT_COLUMN_COMPOSITION_PANELS: Mapping[str, Mapping[str, str]] = {
+    "panel_1": {
+        "zh": "略低机位、斜侧 45° 的中全景，主体完整入画、约占画面七成，落在画面三分点位置，"
+        "另一侧留出大面积留白，采用低角度掠射侧光搭配漫射环境补光打出立体感与柔和投影，"
+        "背景大幅虚化、仅保留柔和中性的模糊层次。",
+        "en": "Slightly low camera position, 45-degree oblique angle medium-full shot, the complete "
+        "subject occupies about 70% of the frame, placed at the rule-of-thirds intersection, with "
+        "large blank space on the other side; low-angle raking side light combined with diffused "
+        "ambient fill creates dimensionality and soft shadows, the background is heavily blurred, "
+        "retaining only soft neutral hazy layers.",
+    },
+    "panel_2": {
+        "zh": "正上方 90° 垂直俯拍，机位抬升至主体正上方，主体完整入画、四边几乎贴住画面边缘、"
+        "占满约九成画面，画面内不出现任何边缘与衬托物，采用与主图同源的均匀柔和漫射顶光，"
+        "背景处理保持同主图的虚化质感。",
+        "en": "Direct 90° top-down overhead shot, the camera is raised directly above the subject, "
+        "the complete subject occupies about 90% of the frame with its edges nearly touching the "
+        "frame borders, no edges or supporting objects appear in the frame; use even, soft diffused "
+        "top light consistent with the main image, the background maintains the same blurred "
+        "texture as the main image.",
+    },
+    "panel_3": {
+        "zh": "机位贴近主体表面做极端微距拍摄，画面仅保留约十分之一面积的局部纹理，"
+        "主体完整轮廓与背景全部出画，浅景深效果使焦点精准落在纹理结构上，"
+        "采用与主图同源的侧向柔光，无多余衬托元素入镜。",
+        "en": "Extreme macro shot with the camera positioned close to the subject surface, the frame "
+        "only retains a local textured area occupying about one-tenth of the total image area, the "
+        "full outline of the subject and the entire background are cropped out of frame; shallow "
+        "depth of field places sharp focus on the textured structure, use side soft light consistent "
+        "with the main image, no extra supporting elements enter the frame.",
+    },
+    "panel_4": {
+        "zh": "正上方垂直俯拍，主体居中放置、约占画面六成，四边等距留出均匀空白，"
+        "采用均匀无阴影的平光照明，背景为纯净中性的干净处理，无任何多余环境元素。",
+        "en": "Direct top-down overhead shot, the subject is centered in the frame, occupying about "
+        "60% of the image area, with even equal margins of blank space on all four sides; use "
+        "shadowless even flat lighting, the background is a clean, pure neutral surface with no "
+        "extra environmental elements.",
+    },
+}
 # 位置/角色由我们固定；用户构图只决定每一格「怎么拍」，不得改变四格角色。
 _FIXED_PANEL_ROLE_LINE = (
     "Panel positions and roles stay fixed: top-left = PRIMARY image, top-right = detail A, "
@@ -514,6 +575,10 @@ def _is_flat_product(fields: BusinessFields, subject_anchor: str) -> bool:
     )
 
 
+# 公开别名：列式生成（column_prompts / worker）需要复用同一套平铺判定。
+is_flat_product = _is_flat_product
+
+
 def _listing_panel_lines(composition: Mapping[str, str] | None) -> list[str]:
     """返回四格描述：有用户构图时用其画面指令替换默认机位，硬约束由调用方保留。"""
     panels = {
@@ -536,11 +601,27 @@ def _listing_panel_lines(composition: Mapping[str, str] | None) -> list[str]:
     ]
 
 
+def _structure_anchor_blocks(
+    structure_facts: Mapping[str, object] | None,
+    reference_view_roles: Sequence[str] | None,
+) -> tuple[str, ...]:
+    """困难件结构锚定块：无事实表/无多视图时返回空元组（提示词与旧版等价）。"""
+    blocks = [
+        render_structure_facts_block(structure_facts),
+        render_part_count_lock(structure_facts),
+        render_transparent_material_lock(structure_facts),
+        render_reference_views_block(reference_view_roles or ()),
+    ]
+    return tuple(block for block in blocks if block)
+
+
 def build_direct_listing_prompt(
     fields: BusinessFields,
     subject_anchor: str,
     *,
     composition: Mapping[str, str] | None = None,
+    structure_facts: Mapping[str, object] | None = None,
+    reference_view_roles: Sequence[str] | None = None,
 ) -> str:
     """Prompt for one product-locked four-panel listing contact sheet.
 
@@ -553,6 +634,10 @@ def build_direct_listing_prompt(
 
     ``composition`` 为用户最新创作的构图（panel_1..4 画面指令）。提供时用它替换写死的
     四格机位/构图描述，但保留全部硬约束（2×2、同产品同图案、禁文字/水印、内饰不印等）。
+
+    ``structure_facts`` 为上传多视图后识图得到的结构事实表；``reference_view_roles``
+    为本次实际下发给生图模型的参考图角色（主图在前）。两者只在困难件批次存在，
+    普通批次不渲染任何新增块。
     """
     parts = [
         _PART1_HEADER,
@@ -583,6 +668,8 @@ def build_direct_listing_prompt(
         "Treat the supplied template only as a STRUCTURAL reference for this product: geometry, proportions, construction, material, printable surface location, and its true surface relief (quilting/padding grid if present, seams, topstitching, hardware).",
         # 几何锁定：模板白底图是唯一的结构基准，显式禁止拉伸/压扁/熔形等畸变，避免四格之间结构漂移。
         "GEOMETRY LOCK: the product's silhouette, seam lines, panel divisions, quilting grid (if present), hardware positions and strap/handle drop must match the template exactly. Do not stretch, squash, melt, bend, reshape or re-proportion any part, and do not add, merge or delete structural parts.",
+        # 困难件结构锚定（v17）：只在有结构事实表 / 多视图时出现，普通批次不渲染。
+        *_structure_anchor_blocks(structure_facts, reference_view_roles),
         "Do not copy the template's existing artwork, decoration, colour scheme, background, lighting or scene.",
         "CARVE-OUT: the template's quilting/padding relief, seams and stitching are STRUCTURE, not decoration — preserve them exactly as shown; do not flatten the quilted surface into a smooth shell. Only the artwork, the colour scheme and the scene are to be replaced.",
         "That restriction only forbids REUSING the template's own scene. It does NOT mean the background may be plain: a freshly styled, richly lit scene is required (see PART 4 ART DIRECTION).",

@@ -65,3 +65,12 @@ def grant_provider_for_model(model: Any) -> str:
     """当前模型所属平台在冻结里需要的 provider key 名（速创=wuyin，豆包=ark）。"""
     platform = provider_for_model(model)
     return PLATFORM_GRANT_PROVIDERS.get(platform, PLATFORM_GRANT_PROVIDERS[SUCHUANG_PLATFORM])
+
+
+def model_supports_multi_view(model: Any) -> bool:
+    """该模型是否稳定支持「多张结构视图」作为参考图。
+
+    第一版只对豆包 Seedream 负责：速创的多图行为未验证，命中速创时调用方必须
+    退回单主图（行为与现状一致），不阻塞、不改变质量基线。
+    """
+    return provider_for_model(model) == DOUBAO_PLATFORM

@@ -91,19 +91,23 @@ export function TemplateLibraryDrawer({
     setActivePersonalTemplateId((current) => personalTemplates.some((template) => template.id === current) ? current : personalTemplates[0]?.id ?? "");
   };
 
+  const applyCreatedTemplate = (created: PodTemplate) => {
+    setScope("personal");
+    setActivePersonalTemplateId(created.id);
+    onSelect(created.id);
+    // 上传即应用：模板已选中，直接收起抽屉回到批次表单。
+    onClose();
+  };
+
   const submitUpload = async (event: FormEvent) => {
     event.preventDefault();
     if (!uploadFile || busyAction) return;
     try {
       const created = await onUpload(uploadFile, uploadName);
-      setScope("personal");
-      setActivePersonalTemplateId(created.id);
-      onSelect(created.id);
       setUploadFile(undefined);
       setUploadName("");
       if (fileRef.current) fileRef.current.value = "";
-      // 上传即应用：模板已选中，直接收起抽屉回到批次表单。
-      onClose();
+      applyCreatedTemplate(created);
     } catch {
       // The page-level handlers surface the actionable API error.
     }

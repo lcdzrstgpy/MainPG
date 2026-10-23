@@ -60,6 +60,8 @@ def test_pod_customization_migrations_are_registered_in_forward_order() -> None:
         "pod_customization:022_replica_plan_fingerprint",
         "pod_customization:023_fission_registry",
         "pod_customization:024_fission_domain",
+        "pod_customization:025_template_views",
+        "pod_customization:026_style_column_layout",
     ]
 
 

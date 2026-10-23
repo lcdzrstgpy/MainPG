@@ -63,7 +63,11 @@ def test_007_preserves_existing_batch_and_foreign_keys(tmp_path: Path) -> None:
             ("asset", "workspace-a", "owner", "template", "a.png", "a.png", "image/png", 1, "sha", 1, 1, "now"),
         )
         connection.execute(
-            "INSERT INTO pod_customization_templates VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            """INSERT INTO pod_customization_templates (
+                   template_id, workspace_id, owner_user_id, name, source, asset_id,
+                   width, height, calibration_status, calibration_json, error_message,
+                   version, deleted_at, created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             ("template", "workspace-a", "owner", "Template", "personal", "asset", 1, 1, "ready", "{}", "", 1, "", "now", "now"),
         )
         connection.execute(

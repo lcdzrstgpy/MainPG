@@ -12,6 +12,7 @@ import { PodFailedRetryDialog } from "../components/PodFailedRetryDialog";
 import { PodResultLightbox } from "../components/PodResultLightbox";
 import { SpecCardDrawer } from "../components/SpecCardDrawer";
 import { TemplateLibraryDrawer } from "../components/TemplateLibraryDrawer";
+import { PodStructureFactsPanel } from "../components/PodStructureFactsPanel";
 import { PodCopyRestrictionsConfirmDialog } from "../components/PodCopyRestrictionsConfirmDialog";
 import { PodUnsavedTemplateConfirmDialog } from "../components/PodUnsavedTemplateConfirmDialog";
 import { PodListingFieldsEditor, validateListingFields, type SkuField } from "../components/PodListingFieldsEditor";
@@ -26,7 +27,7 @@ import {
   businessFieldsForApi,
   canDeletePodBatch,
   isPristineCreativeEdit,
-  isPodBatchCount,
+  isPodColumnBatchCount,
   isActiveBatchStatus,
   isActivePodItemStatus,
   isActivePodStyleTitleStatus,
@@ -51,10 +52,11 @@ import {
   POD_CUSTOMIZATION_DRAFT_VERSION,
   type PodSystemTemplate,
 } from "../data/podCustomizationDraft";
-import { usePodAssetUrl } from "../data/usePodAssetUrl";
+import { usePodAssetUrl, PodAssetImage } from "../data/usePodAssetUrl";
 import { getAuthAccount } from "../../../transport/http/client";
 import { slidingIndicatorStyle, useSlidingIndicator } from "../../../shared/hooks/useSlidingIndicator";
 import type {
+  PodArtDirection,
   PodBatch,
   PodBatchCount,
   PodBatchSummary,
@@ -64,6 +66,7 @@ import type {
   PodComposition,
   PodListingFieldsDraft,
   PodMiaoshouTemplateKind,
+  PodStructureFacts,
   PodTemplate,
   SpecCardConfig,
 } from "../types";
@@ -82,6 +85,13 @@ type PodDraftAccount = {
 
 // 成功提示（右上角 toast）只在出现后短暂停留，到点自动收起，不做常驻；错误提示仍保留到用户处理。
 const NOTICE_AUTO_DISMISS_MS = 6_000;
+
+/** 结构视图锚定：三个可选角色，dimension 只用于识图，不作为生图参考。 */
+const STRUCTURE_VIEW_ROLES = [
+  { role: "side", label: "侧视图" },
+  { role: "top", label: "俯视图" },
+  { role: "dimension", label: "尺寸图" },
+] as const;
 
 const BUSINESS_FIELDS: Array<{
   key: keyof PodBusinessFieldsDraft;
@@ -201,9 +211,12 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   const [briefHistory, setBriefHistory] = useState<PodBriefHistoryItem[]>(initialDraft.state.brief_history ?? []);
   const [listingFields, setListingFields] = useState<PodListingFieldsDraft>(initialDraft.state.listing_fields);
   const [specCard, setSpecCard] = useState<SpecCardConfig>(initialDraft.state.spec_card ?? EMPTY_SPEC_CARD);
-  const [batchCount, setBatchCount] = useState<PodBatchCount>(initialDraft.state.batch_count);
-  const [customCountMode, setCustomCountMode] = useState(initialDraft.state.custom_count_mode);
-  const [customCountInput, setCustomCountInput] = useState(initialDraft.state.custom_count_input);
+  // 旧草稿可能存着 2/10 这类非 4 的倍数：恢复时归一化到默认档位，避免一提交就被拒绝。
+  const [batchCount, setBatchCount] = useState<PodBatchCount>(() =>
+    isPodColumnBatchCount(initialDraft.state.batch_count) ? initialDraft.state.batch_count : 20,
+  );
+  // 批级美术指导：随智能填写生成，整批共用；建批时冻结。
+  const [artDirection, setArtDirection] = useState<PodArtDirection | null>(initialDraft.state.art_direction ?? null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   // 旧草稿里可能存着旧版自动生成的 v1 模板。这类内容不是主体锚定，
   // 加载时直接丢弃；手写内容去掉残留的「禁用元素：」行后保留。
@@ -223,6 +236,14 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   const [compositionEditOpen, setCompositionEditOpen] = useState(false);
   const [compositionEditTarget, setCompositionEditTarget] = useState<PodComposition | null>(null);
   const [composition, setComposition] = useState<PodComposition | null>(null);
+  // 结构视图锚定：勾选后才展开三视图上传；上传结果挂到当前选中的个人模板。
+  const [structureAnchorEnabled, setStructureAnchorEnabled] = useState(false);
+  const [structureViewFiles, setStructureViewFiles] = useState<{
+    side?: File;
+    top?: File;
+    dimension?: File;
+  }>({});
+  const [pendingStructure, setPendingStructure] = useState<PodTemplate | null>(null);
   const [failedRetryOpen, setFailedRetryOpen] = useState(false);
   // 「标题/描述限制」的强提示：用户真的输入内容时弹一次，取消则回退本次输入。
   const [copyRestrictionsOpen, setCopyRestrictionsOpen] = useState(false);
@@ -243,7 +264,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   const activeBatchEpochRef = useRef(0);
   const businessTextareasRef = useRef<Array<HTMLTextAreaElement | null>>([]);
   /** 生成数量是互斥单选：用共享滑块承载选中态，切换时平移而不是逐格换底色。 */
-  const countIndicator = useSlidingIndicator<HTMLDivElement>(":scope > button.is-active", [batchCount, customCountMode, isActive]);
+  const countIndicator = useSlidingIndicator<HTMLDivElement>(":scope > button.is-active", [batchCount, isActive]);
 
   // 文本框高度始终跟随内容：取消填写、套用模板等「程序化改值」不会触发 onChange，
   // 不重算就会残留上一次输入撑高的内联高度，看起来像弹窗一出现画面就跳。
@@ -256,6 +277,27 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   const selectedTemplate = templates.find((template) => template.id === selectedTemplateId);
   const summaryTemplate = selectedTemplateSnapshot ?? selectedTemplate;
   const summaryTemplatePreview = usePodAssetUrl(summaryTemplate?.preview_url || summaryTemplate?.original_url);
+  // 结构视图缩略图：本地刚选的文件立即预览；已挂到模板上的视图用资产地址兜底。
+  const structureViewPreviews = useMemo(() => {
+    const previews: Partial<Record<"side" | "top" | "dimension", string>> = {};
+    STRUCTURE_VIEW_ROLES.forEach(({ role }) => {
+      const file = structureViewFiles[role];
+      if (file) previews[role] = URL.createObjectURL(file);
+    });
+    return previews;
+  }, [structureViewFiles]);
+  useEffect(() => () => {
+    Object.values(structureViewPreviews).forEach((url) => URL.revokeObjectURL(url));
+  }, [structureViewPreviews]);
+  const savedStructureViews = useMemo(() => {
+    const map: Partial<Record<"side" | "top" | "dimension", { role: string; url: string }>> = {};
+    selectedTemplate?.views?.forEach((view) => {
+      if (view.role === "side" || view.role === "top" || view.role === "dimension") {
+        map[view.role] = view;
+      }
+    });
+    return map;
+  }, [selectedTemplate]);
   const summaryFields = businessFieldsForApi(businessFields);
   const selectedItem = activeBatch?.items.find((item) => item.id === selectedItemId);
   const failedRetryCandidates = activeBatch ? batchRetryCandidates(groupPodStyleRows(activeBatch)) : { image: [], title: [] };
@@ -392,12 +434,11 @@ export function PodCustomizationPage({ isActive = true }: Props) {
       listing_fields: listingFields,
       spec_card: specCard,
       batch_count: batchCount,
-      custom_count_mode: customCountMode,
-      custom_count_input: customCountInput,
       selected_template_id: selectedTemplateId,
       current_batch_edit: currentBatchEdit,
       system_templates: systemTemplates,
       brief_history: briefHistory,
+      art_direction: artDirection,
     });
     if (!result.ok && lastDraftSaveErrorRef.current !== result.error) {
       lastDraftSaveErrorRef.current = result.error;
@@ -405,7 +446,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     } else if (result.ok) {
       lastDraftSaveErrorRef.current = "";
     }
-  }, [batchCount, briefHistory, businessFields, currentBatchEdit, customCountInput, customCountMode, draftScope?.accountId, draftScope?.workspaceId, listingFields, selectedTemplateId, specCard, systemTemplates]);
+  }, [artDirection, batchCount, briefHistory, businessFields, currentBatchEdit, draftScope?.accountId, draftScope?.workspaceId, listingFields, selectedTemplateId, specCard, systemTemplates]);
 
   // 尺寸详情表格与 SKU 预设联动：SKU 增减或改名时按顺序重建表头与 SKU 行；
   // 已填的长/宽/高按 SKU 名（退化时按位置）保留，避免重建时清掉用户输入。
@@ -469,9 +510,15 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   };
 
   // 智能填写：生成结果直接覆盖同名字段，并把本次输入记入「最近生成」历史。
-  const handleBriefGenerated = (fields: PodBriefFieldsDraft, input: string) => {
+  // 带模板图时会同时返回批级美术指导（失败时为 null，不覆盖用户已编辑的内容）。
+  const handleBriefGenerated = (
+    fields: PodBriefFieldsDraft,
+    input: string,
+    generatedArtDirection?: PodArtDirection | null,
+  ) => {
     setBusinessFields((current) => mergeBusinessFields(current, fields));
     setBriefHistory((current) => recordBriefHistory(current, createBriefHistoryItem(input, fields)));
+    if (generatedArtDirection) setArtDirection(generatedArtDirection);
   };
 
   const selectBriefHistory = (item: PodBriefHistoryItem) => {
@@ -608,9 +655,10 @@ export function PodCustomizationPage({ isActive = true }: Props) {
 
   const startBatch = async () => {
     clearMessages();
-    const requestedCount = customCountMode ? Number(customCountInput) : batchCount;
-    if (!isPodBatchCount(requestedCount)) {
-      setError("生成数量必须是 1–200 的整数。");
+    const requestedCount = batchCount;
+    // 列式生成按 4 款一组：款数必须是 4 的倍数，否则后端会拒绝建批。
+    if (!isPodColumnBatchCount(requestedCount)) {
+      setError("生成数量必须是 4 的倍数（4–200 款）。");
       return;
     }
     if (!selectedTemplate) {
@@ -644,6 +692,38 @@ export function PodCustomizationPage({ isActive = true }: Props) {
       return;
     }
     const normalizedListingFields = listingFieldsResult.value;
+    // 结构视图锚定：先把三视图挂到当前个人模板（后端会重跑一次结构识图），再建批次。
+    // 低置信度时先弹确认面板，确认/跳过后由回调重新调用本函数继续创建。
+    if (structureAnchorEnabled) {
+      const hasViewFile = Boolean(
+        structureViewFiles.side || structureViewFiles.top || structureViewFiles.dimension
+      );
+      if (hasViewFile) {
+        if (selectedTemplate.source !== "personal") {
+          setError("系统模板不支持结构视图，请先在模板库保存为个人模板。");
+          return;
+        }
+        setBusyAction("structure");
+        try {
+          const updated = await podCustomizationApi.attachTemplateViews(
+            selectedTemplate.id,
+            structureViewFiles,
+          );
+          setTemplates((current) => replaceTemplate(current, updated));
+          setSelectedTemplateSnapshot(updated);
+          setStructureViewFiles({});
+          if (updated.structure_status === "needs_confirmation") {
+            setPendingStructure(updated);
+            setBusyAction("");
+            return;
+          }
+        } catch (cause) {
+          setError(cause instanceof Error ? cause.message : String(cause));
+          setBusyAction("");
+          return;
+        }
+      }
+    }
     setBusyAction("create-batch");
     try {
       const created = await podCustomizationApi.createBatch({
@@ -653,6 +733,10 @@ export function PodCustomizationPage({ isActive = true }: Props) {
         business_fields: businessFieldsForApi(businessFields),
         listing_fields: normalizedListingFields,
         creative_prompt: resolvedPrompt,
+        // 列式生成：4 款一组、组内 4 轮调用（主图 → 细节 A / 细节 B / 素材）。
+        generation_layout: "column_v1",
+        // 批级美术指导随批次冻结，整批共用；未生成时不传。
+        art_direction: artDirection,
       });
       activeBatchEpochRef.current += 1;
       setActiveBatch(created);
@@ -666,13 +750,33 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     }
   };
 
+  const saveStructureAndStart = async (facts: PodStructureFacts) => {
+    if (!pendingStructure) return;
+    setBusyAction("structure");
+    try {
+      const updated = await podCustomizationApi.updateTemplateStructure(pendingStructure.id, facts);
+      setTemplates((current) => replaceTemplate(current, updated));
+      setSelectedTemplateSnapshot(updated);
+      setPendingStructure(null);
+      await startBatch();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusyAction("");
+    }
+  };
+
+  const skipStructureAndStart = async () => {
+    setPendingStructure(null);
+    await startBatch();
+  };
+
   const uploadTemplate = async (file: File, name: string) => {
     setBusyAction("upload");
     clearMessages();
     try {
       const created = await podCustomizationApi.uploadTemplate(file, name);
       setTemplates((current) => replaceTemplate(current, created));
-      selectTemplate(created.id);
       setNotice("模板上传成功。");
       return created;
     } catch (cause) {
@@ -970,7 +1074,14 @@ export function PodCustomizationPage({ isActive = true }: Props) {
         <aside className="pod-setup-column pod-brief-sidebar pod-prefill-panel">
           <section className="pod-setup-card pod-business-editor">
             <div className="pod-section-title"><span>BRIEF EDITOR</span><h2>创意描述</h2></div>
-            <PodBriefInput onGenerated={handleBriefGenerated} history={briefHistory} onSelectHistory={selectBriefHistory} />
+            <PodBriefInput
+              onGenerated={handleBriefGenerated}
+              history={briefHistory}
+              onSelectHistory={selectBriefHistory}
+              templateAssetId={selectedTemplate?.asset_id ?? ""}
+              artDirection={artDirection}
+              onArtDirectionChange={setArtDirection}
+            />
             <div className="pod-business-fields">
               {BUSINESS_FIELDS.map((field, fieldIndex) => {
                 const value = businessFields[field.key];
@@ -1013,7 +1124,86 @@ export function PodCustomizationPage({ isActive = true }: Props) {
                   ? `当前生效模板：${composition.is_builtin ? "系统默认模板（默认机位）" : (composition.name.trim() || "未命名构图")}`
                   : "未配置：使用系统默认模板"}
               </span>
+              <label className="pod-structure-toggle">
+                <input
+                  type="checkbox"
+                  checked={structureAnchorEnabled}
+                  onChange={(event) => setStructureAnchorEnabled(event.target.checked)}
+                />
+                <span>结构视图锚定</span>
+              </label>
             </div>
+            {structureAnchorEnabled && (
+              <div className="pod-structure-anchor">
+                <p>透明、亮面、细结构产品建议补侧视图 / 俯视图，帮助模型锚定主体；尺寸图只用于读取尺寸，不会作为生图参考。上传后挂到当前选中的个人模板。</p>
+                <div className="pod-structure-view-files">
+                  {STRUCTURE_VIEW_ROLES.map(({ role, label }) => {
+                    const previewUrl = structureViewPreviews[role];
+                    const savedView = savedStructureViews[role];
+                    const localFile = structureViewFiles[role];
+                    return (
+                      <div key={role} className={`pod-structure-view-card ${previewUrl || savedView ? "has-image" : ""}`}>
+                        <label className="pod-structure-view-picker" title={`选择${label}`}>
+                          {previewUrl ? (
+                            <img src={previewUrl} alt={`${label}预览`} />
+                          ) : savedView ? (
+                            <PodAssetImage path={savedView.url} alt={`${label}（已保存）`} loading="lazy" />
+                          ) : (
+                            <span className="pod-structure-view-empty">
+                              <span className="iconfont icon-upload" aria-hidden="true" />
+                              <small>上传{label}</small>
+                            </span>
+                          )}
+                          <input
+                            type="file"
+                            accept="image/png,image/jpeg,image/webp"
+                            onChange={(event) => setStructureViewFiles((current) => ({
+                              ...current,
+                              [role]: event.target.files?.[0],
+                            }))}
+                          />
+                        </label>
+                        <div className="pod-structure-view-meta">
+                          <b>{label}</b>
+                          <small>{localFile?.name || (savedView ? "已保存" : "未上传")}</small>
+                        </div>
+                        {localFile && (
+                          <button
+                            type="button"
+                            className="pod-structure-view-remove"
+                            aria-label={`移除${label}`}
+                            onClick={() => setStructureViewFiles((current) => {
+                              const next = { ...current };
+                              delete next[role];
+                              return next;
+                            })}
+                          >×</button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+                {selectedTemplate && selectedTemplate.source !== "personal" && (
+                  <p className="pod-structure-anchor-warning">当前选中的是系统模板，结构视图需要先保存为个人模板。</p>
+                )}
+                {selectedTemplate?.views?.length ? (
+                  <p className="pod-structure-anchor-existing">
+                    该模板已有结构视图：{selectedTemplate.views.map((view) => STRUCTURE_VIEW_ROLES.find((entry) => entry.role === view.role)?.label ?? view.role).join("、")}
+                  </p>
+                ) : null}
+              </div>
+            )}
+            {pendingStructure && (
+              <PodStructureFactsPanel
+                templateName={pendingStructure.name}
+                facts={pendingStructure.structure_facts}
+                busy={busyAction === "structure"}
+                saveLabel="保存并生成"
+                skipLabel="跳过并生成"
+                onSave={saveStructureAndStart}
+                onSkip={skipStructureAndStart}
+              />
+            )}
             <PodListingFieldsEditor
               listingFields={listingFields}
               specCard={specCard}
@@ -1035,16 +1225,14 @@ export function PodCustomizationPage({ isActive = true }: Props) {
               data-indicator-ready={countIndicator.ready ? "true" : "false"}
             >
               {countIndicator.rect && <span className="pod-selection-thumb" style={slidingIndicatorStyle(countIndicator.rect)} aria-hidden="true" />}
-              {POD_BATCH_COUNTS.map((count) => <button key={count} type="button" role="radio" aria-checked={!customCountMode && batchCount === count} className={!customCountMode && batchCount === count ? "is-active" : ""} onClick={() => { setCustomCountMode(false); setBatchCount(count); }}><b>{count}</b><span>款</span></button>)}
-              <button type="button" role="radio" aria-checked={customCountMode} className={customCountMode ? "is-active" : ""} onClick={() => { setCustomCountMode(true); setCustomCountInput(String(batchCount)); }}><b>自定义</b></button>
+              {POD_BATCH_COUNTS.map((count) => <button key={count} type="button" role="radio" aria-checked={batchCount === count} className={batchCount === count ? "is-active" : ""} onClick={() => setBatchCount(count)}><b>{count}</b><span>款</span></button>)}
             </div>
-            {customCountMode && <label className="pod-custom-count"><span>自定义数量</span><input type="number" min={1} max={200} step={1} value={customCountInput} aria-label="自定义生成数量" onChange={(event) => setCustomCountInput(event.target.value)} /><small>1–200 款</small></label>}
             <button type="button" className="pod-save-system-template-button" disabled={!selectedTemplate} onClick={saveCurrentAsSystemTemplate}>
               <span className="iconfont icon-save" aria-hidden="true" />
               <span className="pod-save-system-template-copy"><b>保存为系统模板</b><small>保存当前提示词与模板图</small></span>
               <span className="iconfont icon-arrowright" aria-hidden="true" />
             </button>
-            <button type="button" className="pod-start-button" disabled={busyAction === "create-batch" || !selectedTemplate} onClick={() => void startBatch()}>{busyAction === "create-batch" ? <><span className="iconfont icon-loading" />正在提交</> : <><span className="iconfont icon-rocket" />开始生成 {customCountMode ? customCountInput || "自定义" : batchCount} 款</>}</button>
+            <button type="button" className="pod-start-button" disabled={busyAction === "create-batch" || !selectedTemplate} onClick={() => void startBatch()}>{busyAction === "create-batch" ? <><span className="iconfont icon-loading" />正在提交</> : <><span className="iconfont icon-rocket" />开始生成 {batchCount} 款</>}</button>
           </section>
         </aside>
         <main className="pod-results-column">
