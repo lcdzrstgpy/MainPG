@@ -1025,6 +1025,11 @@ def _scene_family_plan(scene_style: str, seed: int, *, allow_people: bool = Fals
     # Panel 1 固定纯白（平台主图合规），只给 2-4 格分配三个不同背景族。
     chosen = [families[(offset + index) % len(families)] for index in range(3)]
     people_rule = "" if allow_people else " No people, hands or fingers in any panel."
+    real_set_rule = (
+        ""
+        if style == "minimal"
+        else " This batch is a real-set shoot: ignore any 'seamless studio / no room / no horizon / paper sweep' wording in the style section above - the backgrounds are exactly the four places listed here."
+    )
     lines = [
         "SCENE PLAN (this batch, non-overridable):",
         "- Panel 1 background: pure white seamless studio sweep (fixed, no props).",
@@ -1032,7 +1037,8 @@ def _scene_family_plan(scene_style: str, seed: int, *, allow_people: bool = Fals
         "- Three different places: never reuse one backdrop for two of Panels 2-4, and never just swap props on the same set.",
         *(f"- {placement}" for placement in _SCENE_PLACEMENTS),
         "- Keep every background quieter than the product: lower saturation, no text, no logos, no brand marks; props never cover or crop the product."
-        + people_rule,
+        + people_rule
+        + real_set_rule,
     ]
     return "\n".join(lines)
 
