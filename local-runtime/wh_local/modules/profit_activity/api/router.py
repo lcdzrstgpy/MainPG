@@ -232,6 +232,7 @@ def create_profit_activity_router(
             "product_title": (product or {}).get("note") or "",
             "selling_price": (product or {}).get("selling_price"),
             "links": [],
+            "skus": _product_skus(db_path, actor.workspace_id, skc),
         }
         if product is None:
             return result
@@ -662,13 +663,55 @@ def _enrich_product_source_images(products: list[dict[str, Any]], database_path:
         # source_groups[].main_image_url instead.
 
 
+def _product_skus(db_path: str, workspace_id: str, skc: str) -> list[dict[str, Any]]:
+    """商品下的 SKU 货号与属性（来自核价采集的申报价明细）。
+
+    产品库记录可能用平台 SKC（纯数字）或 PP 货号主键，先通过绑定表换成
+    采集时使用的 PP 货号，再取申报价里的 SKU 明细。
+    """
+    code = str(skc or "").strip()
+    if not code or not db_path:
+        return []
+    try:
+        conn = connect(db_path)
+        try:
+            if not code.upper().startswith("PP-"):
+                row = conn.execute(
+                    "SELECT skc FROM product_market_links WHERE workspace_id = ? AND market_skc_id = ? LIMIT 1",
+                    (workspace_id, code),
+                ).fetchone()
+                if row is not None and str(row["skc"] or "").strip():
+                    code = str(row["skc"]).strip()
+            rows = conn.execute(
+                """SELECT sku_id, sku_merchant_code, sku_attribute_text, site
+                   FROM product_declared_prices
+                   WHERE workspace_id = ? AND skc = ?
+                   ORDER BY id""",
+                (workspace_id, code),
+            ).fetchall()
+        finally:
+            conn.close()
+    except Exception:
+        return []
+    return [
+        {
+            "sku_id": str(row["sku_id"] or ""),
+            "sku_merchant_code": str(row["sku_merchant_code"] or ""),
+            "sku_attribute_text": str(row["sku_attribute_text"] or ""),
+            "site": str(row["site"] or ""),
+        }
+        for row in rows
+    ]
+
+
 def _enrich_source_links(
     links: list[dict[str, Any]], product: dict[str, Any], db_path: str
 ) -> list[dict[str, Any]]:
-    """用货源台账补齐产品库侧边栏缺失的单价/运费/主图。
+    """用货源台账补齐产品库侧边栏缺失的单价/运费/图片。
 
     历史数据里，核价关联表可能没有价格（候选无报价），而同一链接在
-    ``product_sourcing_sources`` 里有采集到的单价/运费。图片没有截图时
+    ``product_sourcing_sources`` 里有采集到的单价/运费，以及用户补充的图片。
+    有台账图片时优先展示它们（与「货源与利润」看到的完全一致），没有时
     回退到产品自身的货源主图，避免卡片显示「无图」。
     """
     if not links:
@@ -682,16 +725,31 @@ def _enrich_source_links(
             try:
                 placeholders = ",".join("?" for _ in urls)
                 rows = conn.execute(
-                    f"""SELECT source_url, price_cny, domestic_freight_cny, main_image_url
+                    f"""SELECT id, source_url, source_title, price_cny, domestic_freight_cny, main_image_url
                         FROM product_sourcing_sources
                         WHERE status = 'active' AND source_url IN ({placeholders})
                         ORDER BY id DESC""",
                     tuple(urls),
                 ).fetchall()
+                images: dict[str, list[dict[str, Any]]] = {}
+                source_ids = [str(row["id"]) for row in rows]
+                if source_ids:
+                    image_placeholders = ",".join("?" for _ in source_ids)
+                    for image in conn.execute(
+                        f"""SELECT id, source_id, image_url
+                            FROM product_sourcing_source_images
+                            WHERE source_id IN ({image_placeholders})
+                            ORDER BY position, created_at""",
+                        tuple(source_ids),
+                    ).fetchall():
+                        images.setdefault(str(image["source_id"]), []).append(
+                            {"id": str(image["id"]), "image_url": str(image["image_url"])}
+                        )
             finally:
                 conn.close()
             for row in rows:
                 item = dict(row)
+                item["images"] = images.get(str(item.get("id")), [])
                 by_url.setdefault(str(item.get("source_url") or "").strip(), item)
         except Exception:
             by_url = {}
@@ -703,9 +761,21 @@ def _enrich_source_links(
                 link["price_cny"] = extra.get("price_cny")
             if not str(link.get("domestic_freight_cny") or "").strip():
                 link["domestic_freight_cny"] = extra.get("domestic_freight_cny")
-            if not str(link.get("main_image_url") or "").strip():
-                link["main_image_url"] = extra.get("main_image_url")
-        if not str(link.get("main_image_url") or "").strip() and fallback_image:
+            # 台账里的主图 + 用户补充的图片，与「货源与利润」展示保持同一组。
+            gallery: list[dict[str, Any]] = []
+            ledger_main = str(extra.get("main_image_url") or "").strip()
+            if ledger_main:
+                gallery.append({"id": "main", "image_url": ledger_main})
+            gallery.extend(extra.get("images") or [])
+            if gallery:
+                link["images"] = gallery
+                link["main_image_url"] = gallery[0]["image_url"]
+            elif not str(link.get("main_image_url") or "").strip():
+                link["main_image_url"] = ledger_main
+            title = str(link.get("source_title") or "").strip()
+            if title in {"", "货源链接", "导入货源链接"} and extra.get("source_title"):
+                link["source_title"] = extra["source_title"]
+        if not (link.get("images") or []) and not str(link.get("main_image_url") or "").strip() and fallback_image:
             link["main_image_url"] = fallback_image
     return links
 

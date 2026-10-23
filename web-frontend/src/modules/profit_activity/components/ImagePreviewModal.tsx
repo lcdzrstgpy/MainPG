@@ -16,11 +16,12 @@ export function ImagePreviewModal({ images, index, onIndexChange, onClose }: { i
   const current = images[index] ?? images[0];
   if (!current) return null;
 
-  // 使用实际可视区域限制预览尺寸，让整张图始终能在当前屏幕内看全。
+  // 与「货源与利润」的大图预览保持一致：尽量铺满可视区域（92vw × 88vh），
+  // 小图也放大显示，便于核对货源细节。
   const viewportWidth = document.documentElement.clientWidth;
   const viewportHeight = document.documentElement.clientHeight;
-  const previewWidth = Math.min(460, Math.max(240, viewportWidth - 32));
-  const previewHeight = Math.min(460, Math.max(240, viewportHeight - 32));
+  const previewWidth = Math.max(320, Math.round(viewportWidth * 0.92));
+  const previewHeight = Math.max(320, Math.round(viewportHeight * 0.88));
 
   return createPortal(
     <div className="profit-image-preview-mask" onClick={onClose}>

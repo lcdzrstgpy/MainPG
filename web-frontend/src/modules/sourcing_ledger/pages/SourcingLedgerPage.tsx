@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { SiteRateSettingsDialog } from "../components/SiteRateSettingsDialog";
 import {
   sourcingLedgerApi,
+  type LedgerBatchOption,
   type LedgerItem,
   type LedgerItemDetail,
   type LedgerSource,
@@ -132,6 +133,8 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
   const [status, setStatus] = useState("");
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [site, setSite] = useState("");
+  const [batchId, setBatchId] = useState("");
+  const [batches, setBatches] = useState<LedgerBatchOption[]>([]);
   const [keyword, setKeyword] = useState("");
   const [sites, setSites] = useState<Array<{ site_code: string; display_name: string }>>([]);
   const [detail, setDetail] = useState<LedgerItemDetail | null>(null);
@@ -160,6 +163,7 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
         status: statusParam,
         site,
         keyword: keyword.trim(),
+        batch: batchId,
         limit: pageSize,
         offset: (page - 1) * pageSize,
       })
@@ -168,6 +172,7 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
         const nextTotal = payload.total || 0;
         setItems(payload.items || []);
         setCounts(payload.counts || {});
+        setBatches(payload.batches || []);
         setTotal(nextTotal);
         const lastPage = Math.max(1, Math.ceil(nextTotal / pageSize));
         if (page > lastPage) setPage(lastPage);
@@ -181,7 +186,7 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
     return () => {
       cancelled = true;
     };
-  }, [isActive, keyword, page, pageSize, reloadToken, site, statusParam]);
+  }, [batchId, isActive, keyword, page, pageSize, reloadToken, site, statusParam]);
 
   const reload = useCallback(() => {
     setReloadToken((value) => value + 1);
@@ -554,6 +559,23 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
             <option value="">全部站点</option>
             {sites.map((option) => (
               <option key={option.site_code} value={option.site_code}>{option.display_name}</option>
+            ))}
+          </select>
+        </label>
+        <label className="ledger-batch-filter">
+          <span>采集批次</span>
+          <select
+            value={batchId}
+            onChange={(event) => {
+              setBatchId(event.target.value);
+              setPage(1);
+            }}
+          >
+            <option value="">全部批次</option>
+            {batches.map((option) => (
+              <option key={option.batch_id} value={option.batch_id}>
+                {option.label}（{option.count}）
+              </option>
             ))}
           </select>
         </label>

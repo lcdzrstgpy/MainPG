@@ -20,6 +20,10 @@ type EditSourceRow = {
   /** 原始货源组号，保存时据此判断链接/图片是否变化 */
   originalGroup: number;
   url: string;
+  title: string;
+  price: string;
+  freight: string;
+  mainImageUrl: string;
   image: File | null;
   imagePreview: string;
 };
@@ -179,18 +183,30 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
     }
   };
 
-  // 进入“修改货源链接”编辑态，载入全部货源组
+  // 进入“修改货源链接”编辑态，载入全部货源组；同时带上现有单价/运费/图片，
+  // 编辑时不至于丢掉已经展示的信息（价格在核价链接里、图片可能来自产品主图）。
   const startEditSources = () => {
     const groups = (productData ?? product).source_groups ?? [];
+    const links = sources?.links ?? [];
+    const buildRow = (key: number, url: string, originalGroup: number): EditSourceRow => {
+      const link = links.find((item) => (item.source_url || "").trim() === url.trim());
+      return {
+        key,
+        originalGroup,
+        url,
+        title: link?.source_title || "",
+        price: link?.price_cny == null ? "" : String(link.price_cny),
+        freight: link?.domestic_freight_cny == null ? "" : String(link.domestic_freight_cny),
+        mainImageUrl: link?.main_image_url || "",
+        image: null,
+        imagePreview: "",
+      };
+    };
     const rows: EditSourceRow[] = groups.length
-      ? groups.map((group, index) => ({
-          key: index,
-          originalGroup: index,
-          url: group?.source_url ?? "",
-          image: null,
-          imagePreview: "",
-        }))
-      : [{ key: 0, originalGroup: 0, url: "", image: null, imagePreview: "" }];
+      ? groups.map((group, index) => buildRow(index, group?.source_url ?? "", index))
+      : links.length
+        ? links.map((link, index) => buildRow(index, link.source_url ?? "", index))
+        : [buildRow(0, "", 0)];
     nextEditRowKeyRef.current = rows.length;
     setEditRows(rows);
     setEditingSources(true);
@@ -208,7 +224,17 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
   const addEditRow = () => {
     setEditRows((current) => [
       ...current,
-      { key: nextEditRowKeyRef.current++, originalGroup: current.length, url: "", image: null, imagePreview: "" },
+      {
+        key: nextEditRowKeyRef.current++,
+        originalGroup: current.length,
+        url: "",
+        title: "",
+        price: "",
+        freight: "",
+        mainImageUrl: "",
+        image: null,
+        imagePreview: "",
+      },
     ]);
   };
 
@@ -335,14 +361,35 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
               <div className={`profit-source-card ${isPriceVerification ? "" : "profit-source-card-simple"}`} key={link.id}>
                 <div className="profit-source-card-row">
                   <a className="profit-source-card-main" href={link.source_url} target="_blank" rel="noreferrer">
-                    <SourceCardImage
-                      skc={current.skc}
-                      site={sources?.site || current.site || current.site_code || "US"}
-                      group={link.group}
-                      imagePaths={link.image_paths ?? []}
-                      fallbackUrl={link.main_image_url}
-                      onPreview={setPreviewImage}
-                    />
+                    {(link.images?.length ?? 0) > 0 ? (
+                      <span className="profit-source-thumbs">
+                        {(link.images || []).map((image, imageIndex) => (
+                          <img
+                            key={`${link.id}-${image.id}-${imageIndex}`}
+                            className="profit-source-thumb"
+                            src={image.image_url}
+                            alt="货源图"
+                            loading="lazy"
+                            referrerPolicy="no-referrer"
+                            title="点击查看大图"
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              setPreviewImage({ url: image.image_url, label: "货源图" });
+                            }}
+                          />
+                        ))}
+                      </span>
+                    ) : (
+                      <SourceCardImage
+                        skc={current.skc}
+                        site={sources?.site || current.site || current.site_code || "US"}
+                        group={link.group}
+                        imagePaths={link.image_paths ?? []}
+                        fallbackUrl={link.main_image_url}
+                        onPreview={setPreviewImage}
+                      />
+                    )}
                     <span className="profit-source-card-body">
                       <span className="profit-source-card-title">
                         {link.source_title || (isPriceVerification ? "候选商品" : "货源链接")}
@@ -370,6 +417,29 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
               </div>
             );
           })}
+          {sources?.skus?.length ? (
+            <section className="profit-source-skus">
+              <h3>SKU 货号 / 属性（{sources.skus.length}）</h3>
+              <div className="profit-source-sku-scroll">
+                <table className="profit-source-sku-table">
+                  <thead>
+                    <tr>
+                      <th>SKU 货号</th>
+                      <th>SKU 属性</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sources.skus.map((sku, index) => (
+                      <tr key={`${sku.sku_merchant_code || sku.sku_id}-${index}`}>
+                        <td>{sku.sku_merchant_code || sku.sku_id || "—"}</td>
+                        <td title={sku.sku_attribute_text}>{sku.sku_attribute_text || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          ) : null}
           {editingSources ? (
             <div className="profit-source-edit-panel">
               <div className="profit-source-edit-rows">
@@ -399,7 +469,7 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
                               site={sources?.site || current.site || current.site_code || "US"}
                               group={row.originalGroup}
                               imagePaths={original?.image_paths ?? []}
-                              fallbackUrl=""
+                              fallbackUrl={row.mainImageUrl}
                               onPreview={setPreviewImage}
                             />
                           )}
@@ -424,6 +494,16 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
                             value={row.url}
                             onChange={(event) => changeEditRowUrl(row.key, event.target.value)}
                           />
+                          <small className="profit-source-edit-meta" title={row.title}>
+                            单价 {moneyText(row.price)} · 运费 {moneyText(row.freight)} · 到手{" "}
+                            {moneyText(
+                              toNumber(row.price)
+                                + (Number.isFinite(toNumber(row.freight)) ? toNumber(row.freight) : 0),
+                            )}
+                            {Number.isFinite(toNumber(current.weight_kg))
+                              ? ` · 重量 ${toNumber(current.weight_kg)} kg`
+                              : ""}
+                          </small>
                         </label>
                       </div>
                       <button

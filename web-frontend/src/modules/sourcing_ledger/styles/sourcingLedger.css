@@ -119,6 +119,12 @@
   min-width: 220px;
 }
 
+.ledger-batch-filter select {
+  min-width: 200px;
+  max-width: 280px;
+  text-overflow: ellipsis;
+}
+
 .ledger-btn {
   height: 34px;
   padding: 0 16px;

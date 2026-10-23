@@ -32,7 +32,7 @@ const sortProductsByCreatedDesc = (items: ProfitActivityProduct[]) => [...items]
 type ProductTableColumnKey =
   | "select" | "site" | "storeName" | "productId" | "createdAt" | "productImage"
   | "sellingPrice" | "costPrice" | "weightKg" | "netProfit" | "profitRate"
-  | "note" | "source" | "attachmentImage";
+  | "note" | "source";
 type ProductTableColumn = { key: ProductTableColumnKey; label: string; width: number; minWidth: number };
 type InlineEditField = "site" | "store_name" | "product_id" | "selling_price" | "cost_price" | "weight_kg" | "note" | "product_image" | "attachment_image";
 type InlineEditState =
@@ -51,9 +51,8 @@ const productTableColumns: ProductTableColumn[] = [
   { key: "weightKg", label: "重量", width: 112, minWidth: 90 },
   { key: "netProfit", label: "利润", width: 120, minWidth: 96 },
   { key: "profitRate", label: "利润率", width: 126, minWidth: 102 },
-  { key: "note", label: "备注", width: 260, minWidth: 150 },
   { key: "source", label: "货源", width: 130, minWidth: 104 },
-  { key: "attachmentImage", label: "图片", width: 100, minWidth: 82 },
+  { key: "note", label: "备注", width: 260, minWidth: 150 },
 ];
 const defaultColumnWidths = productTableColumns.reduce<Record<ProductTableColumnKey, number>>((acc, column) => {
   acc[column.key] = column.width;
@@ -816,15 +815,8 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
                     <td><EditableCell field="weight_kg" item={item} inlineEdit={inlineEdit} onEdit={beginInlineEdit} onSave={saveInlineEdit} onCancel={() => setInlineEdit(null)} onValueChange={setInlineValue} disabled={item.can_edit === false}>{money(item.weight_kg)}</EditableCell></td>
                     <td className={(item.net_profit ?? 0) >= 0 ? "profit-good" : "profit-bad"}>{money(item.net_profit)}</td>
                     <td>{percent(item.profit_rate)}</td>
-                    <td className="profit-note-cell" title={item.note || ""}><EditableCell field="note" item={item} inlineEdit={inlineEdit} onEdit={beginInlineEdit} onSave={saveInlineEdit} onCancel={() => setInlineEdit(null)} onValueChange={setInlineValue} disabled={item.can_edit === false}>{shortNote(item.note) || "-"}</EditableCell></td>
                     <td className="profit-source-cell"><button className="profit-source-open" onClick={() => setActiveProduct(item)} title="查看/编辑该 SKC 的货源链接">打开（{(item.source_groups ?? []).filter((group) => group?.source_url).length}）</button></td>
-                    <td><EditableCell field="attachment_image" item={item} inlineEdit={inlineEdit} onEdit={beginInlineEdit} onSave={saveInlineEdit} onCancel={() => setInlineEdit(null)} onFileChange={setInlineFile} onClearImage={clearInlineImage} disabled={item.can_edit === false}>
-                      <AttachmentImageCell
-                        item={item}
-                        onPreview={(image) => setPreviewImage({ images: [image], index: 0 })}
-                        onEdit={() => beginInlineEdit(item, "attachment_image")}
-                      />
-                    </EditableCell></td>
+                    <td className="profit-note-cell" title={item.note || ""}><EditableCell field="note" item={item} inlineEdit={inlineEdit} onEdit={beginInlineEdit} onSave={saveInlineEdit} onCancel={() => setInlineEdit(null)} onValueChange={setInlineValue} disabled={item.can_edit === false}>{shortNote(item.note) || "-"}</EditableCell></td>
                   </tr>
                 );
               }) : (
@@ -1016,12 +1008,6 @@ function EditableCell({
   );
 }
 
-function firstSourceMainImageUrl(item: ProfitActivityProduct) {
-  return String((item.source_groups ?? [])
-    .map((group) => group?.main_image_url)
-    .find((value) => String(value || "").trim()) || "").trim();
-}
-
 function toggleSet(source: Set<string>, value: string, checked: boolean) {
   const next = new Set(source);
   if (checked) next.add(value);
@@ -1095,73 +1081,6 @@ function ProductImageCell({ item, onPreview, onEdit }: { item: ProfitActivityPro
   }
   return (
     <button type="button" className="profit-product-image-cell" onClick={(event) => { event.stopPropagation(); openPreview({ url, label: `${productIdText(item)} 商品图` }); }} onDoubleClick={(event) => { event.preventDefault(); event.stopPropagation(); startEdit(); }} title="点击查看商品图，双击更换">
-      {content}
-    </button>
-  );
-}
-
-function AttachmentImageCell({ item, onPreview, onEdit }: { item: ProfitActivityProduct; onPreview?: (image: PreviewImage) => void; onEdit?: () => void }) {
-  const site = (item.site || item.site_code || "US") as ProfitActivitySite;
-  const [url, setUrl] = useState("");
-  const previewTimerRef = useRef<number | null>(null);
-  const sourceMainImageUrl = firstSourceMainImageUrl(item);
-
-  useEffect(() => {
-    let cancelled = false;
-    let objectUrl = "";
-    setUrl(sourceMainImageUrl);
-    if (!item.attachment_image_path) return undefined;
-    loadProductImage({ skc: item.skc, site, kind: "attachment", version: item.attachment_image_path })
-      .then((loaded) => {
-        if (cancelled) {
-          URL.revokeObjectURL(loaded);
-          return;
-        }
-        objectUrl = loaded;
-        setUrl(loaded);
-      })
-      .catch(() => setUrl(sourceMainImageUrl));
-    return () => {
-      cancelled = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [item.skc, site, item.attachment_image_path, sourceMainImageUrl]);
-
-  useEffect(() => () => {
-    if (previewTimerRef.current !== null) window.clearTimeout(previewTimerRef.current);
-  }, []);
-
-  const openPreview = (image: PreviewImage) => {
-    if (!onPreview) return;
-    if (previewTimerRef.current !== null) window.clearTimeout(previewTimerRef.current);
-    previewTimerRef.current = window.setTimeout(() => {
-      previewTimerRef.current = null;
-      onPreview(image);
-    }, 180);
-  };
-
-  const startEdit = () => {
-    if (previewTimerRef.current !== null) {
-      window.clearTimeout(previewTimerRef.current);
-      previewTimerRef.current = null;
-    }
-    onEdit?.();
-  };
-
-  const content = url ? (
-    <img className="profit-product-image" src={url} alt={`${item.skc} 图片`} />
-  ) : <span className="profit-product-image-empty">无图</span>;
-
-  if (!url || !onPreview) {
-    if (!onEdit) return <span className="profit-product-image-cell">{content}</span>;
-    return (
-      <button type="button" className="profit-product-image-cell" onClick={(event) => { event.stopPropagation(); startEdit(); }} title="点击上传或粘贴图片">
-        {content}
-      </button>
-    );
-  }
-  return (
-    <button type="button" className="profit-product-image-cell" onClick={(event) => { event.stopPropagation(); openPreview({ url, label: `${productIdText(item)} 图片` }); }} onDoubleClick={(event) => { event.preventDefault(); event.stopPropagation(); startEdit(); }} title="点击查看图片，双击更换">
       {content}
     </button>
   );

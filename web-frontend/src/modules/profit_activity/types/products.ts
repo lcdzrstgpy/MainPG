@@ -78,6 +78,15 @@ export type ProductSourceLink = {
   source_decision: string;
   note?: string;
   status?: string;
+  /** 货源台账里的图片（主图 + 用户补充），与「货源与利润」展示一致。 */
+  images?: Array<{ id: string; image_url: string }>;
+};
+
+export type ProductSkuRow = {
+  sku_id: string;
+  sku_merchant_code: string;
+  sku_attribute_text: string;
+  site?: string;
 };
 
 export type ProductSources = {
@@ -86,4 +95,5 @@ export type ProductSources = {
   product_title?: string;
   selling_price?: number | null;
   links: ProductSourceLink[];
+  skus?: ProductSkuRow[];
 };

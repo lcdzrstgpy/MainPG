@@ -77,6 +77,45 @@ def _preview_url(connection: sqlite3.Connection, raw: Any) -> str:
     return f"/api/product-processing/preview/assets/{asset_id}/content?{query}"
 
 
+_COLLECTION_BATCH_SOURCES: tuple[tuple[str, str], ...] = (
+    ("daily_selection_runs", "run_id"),
+    ("shop_collection_batches", "batch_id"),
+    ("plugin_onebound_capture_batches", "batch_id"),
+)
+
+
+def _batch_display_name(table: str, row: Mapping[str, Any]) -> str:
+    """采集批次展示名：已落库的优先，为空时按渠道字段现算（老批次也能显示）。"""
+    stored = _text(row.get("display_name"))
+    if stored and "\ufffd" not in stored:
+        return stored
+    from wh_local.data_collection.batch_naming import (
+        daily_selection_display_name,
+        plugin_display_name,
+        shop_display_name,
+    )
+
+    def _loads(value: Any) -> Any:
+        try:
+            return json.loads(value) if isinstance(value, str) and value else {}
+        except ValueError:
+            return {}
+
+    if table == "daily_selection_runs":
+        return daily_selection_display_name(
+            _loads(row.get("criteria_json")),
+            _loads(row.get("metadata_json")),
+            created_at=row.get("created_at"),
+        )
+    if table == "shop_collection_batches":
+        return shop_display_name(
+            shop_name=_text(row.get("shop_name")),
+            platform=_text(row.get("platform")),
+            created_at=row.get("created_at"),
+        )
+    return plugin_display_name(_text(row.get("page_url")), created_at=row.get("created_at"))
+
+
 class SourcingLedgerRepository:
     """Own the sourcing-ledger tables; never touches other modules' write paths."""
 
@@ -479,6 +518,62 @@ class SourcingLedgerRepository:
                 return ""
         return _text(row["raw"]) if row is not None else ""
 
+    def task_batch_map(self, workspace_id: str) -> dict[str, str]:
+        """货号 → 采集批次（处理任务子项所属草稿的 selection_run_id）。
+
+        台账里的 PP-xxxxxx 来自处理任务子项，草稿本身存的是平台 SKC，
+        因此要经 task_items.product_draft_id 关联到草稿批次。
+        """
+        with self._session() as connection:
+            try:
+                rows = connection.execute(
+                    "SELECT i.skc AS skc, d.selection_run_id AS batch_id "
+                    "FROM product_processing_task_items i "
+                    "JOIN product_processing_tasks t ON t.id = i.task_id "
+                    "LEFT JOIN product_processing_drafts d ON d.id = i.product_draft_id "
+                    "WHERE t.workspace_id = ? AND i.skc <> '' "
+                    "ORDER BY i.id DESC",
+                    (_text(workspace_id),),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return {}
+        mapping: dict[str, str] = {}
+        for row in rows:
+            skc = _text(row["skc"])
+            if skc and skc not in mapping:
+                mapping[skc] = _text(row["batch_id"])
+        return mapping
+
+    def batch_display_names(
+        self, workspace_id: str, batch_ids: Iterable[str]
+    ) -> dict[str, str]:
+        """采集批次展示名：依次查每日选品 / 整店采集 / 插件采集三张源表。"""
+        ids = [value for value in dict.fromkeys(_text(item) for item in batch_ids) if value]
+        if not ids:
+            return {}
+        resolved: dict[str, str] = {}
+        with self._session() as connection:
+            for table, key in _COLLECTION_BATCH_SOURCES:
+                pending = [item for item in ids if item not in resolved]
+                if not pending:
+                    break
+                placeholders = ",".join("?" for _ in pending)
+                try:
+                    rows = connection.execute(
+                        f"SELECT * FROM {table} WHERE {key} IN ({placeholders})",
+                        pending,
+                    ).fetchall()
+                except sqlite3.OperationalError:
+                    continue
+                for row in rows:
+                    batch_id = _text(row[key])
+                    if not batch_id or batch_id in resolved:
+                        continue
+                    label = _batch_display_name(table, dict(row))
+                    if label:
+                        resolved[batch_id] = label
+        return resolved
+
     def active_product_keys(self, workspace_id: str) -> set[str]:
         with self._session() as connection:
             rows = connection.execute(
@@ -733,12 +828,20 @@ class SourcingLedgerRepository:
         """把商品从货源与利润台账里移除（货源、图片、申报价）。
 
         只删台账自己的数据：采集到的原始商品、上架记录、平台绑定都保留。
+        删除同时写墓碑：启动补货兜底不能把用户删掉的采集货源重新生成。
         """
         keys = [_text(value) for value in product_keys if _text(value)]
         if not keys:
             return {"sources": 0, "declared": 0, "images": 0}
         placeholders = ",".join("?" for _ in keys)
+        now = _now()
         with self._session() as connection:
+            connection.executemany(
+                "INSERT INTO product_sourcing_deleted (workspace_id, skc, deleted_at) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(workspace_id, skc) DO UPDATE SET deleted_at = excluded.deleted_at",
+                [(_text(workspace_id), key, now) for key in keys],
+            )
             images = connection.execute(
                 f"DELETE FROM product_sourcing_source_images "
                 f"WHERE workspace_id = ? AND product_key IN ({placeholders})",
@@ -759,6 +862,29 @@ class SourcingLedgerRepository:
             "declared": int(declared or 0),
             "images": int(images or 0),
         }
+
+    def deleted_product_keys(self, workspace_id: str) -> set[str]:
+        """用户主动删除过的商品货号。"""
+        with self._session() as connection:
+            rows = connection.execute(
+                "SELECT skc FROM product_sourcing_deleted WHERE workspace_id = ?",
+                (_text(workspace_id),),
+            ).fetchall()
+        return {_text(row["skc"]) for row in rows if _text(row["skc"])}
+
+    def clear_deleted_items(self, workspace_id: str, product_keys: Iterable[str]) -> int:
+        """重新采集到这些商品时解除删除标记（新采集视为用户要重新纳管）。"""
+        keys = [_text(value) for value in product_keys if _text(value)]
+        if not keys:
+            return 0
+        placeholders = ",".join("?" for _ in keys)
+        with self._session() as connection:
+            cursor = connection.execute(
+                f"DELETE FROM product_sourcing_deleted "
+                f"WHERE workspace_id = ? AND skc IN ({placeholders})",
+                (_text(workspace_id), *keys),
+            )
+            return int(cursor.rowcount or 0)
 
     # ---- 批量重量 ----
 

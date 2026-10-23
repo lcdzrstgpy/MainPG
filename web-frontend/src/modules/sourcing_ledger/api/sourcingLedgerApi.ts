@@ -64,6 +64,14 @@ export type LedgerItem = {
   status: LedgerStatus;
   in_library: boolean;
   weight_estimated?: boolean;
+  batch_id?: string;
+  batch_label?: string;
+};
+
+export type LedgerBatchOption = {
+  batch_id: string;
+  label: string;
+  count: number;
 };
 
 export type LedgerDeclaredPrice = {
@@ -108,17 +116,20 @@ export type LedgerSourcePayload = {
 const context = () => productProcessingApiContext();
 
 export const sourcingLedgerApi = {
-  listItems: (params: { status?: string; site?: string; keyword?: string; limit?: number; offset?: number }) => {
+  listItems: (params: { status?: string; site?: string; keyword?: string; batch?: string; limit?: number; offset?: number }) => {
     const query = new URLSearchParams();
     if (params.status) query.set("status", params.status);
     if (params.site) query.set("site", params.site);
     if (params.keyword) query.set("keyword", params.keyword);
+    if (params.batch) query.set("batch", params.batch);
     query.set("limit", String(params.limit ?? 200));
     query.set("offset", String(params.offset ?? 0));
-    return ppRequest<{ items: LedgerItem[]; total: number; counts: Record<string, number> }>(
-      context(),
-      `${base}/items?${query.toString()}`,
-    );
+    return ppRequest<{
+      items: LedgerItem[];
+      total: number;
+      counts: Record<string, number>;
+      batches: LedgerBatchOption[];
+    }>(context(), `${base}/items?${query.toString()}`);
   },
   getItem: (skc: string, site = "") =>
     ppRequest<LedgerItemDetail>(

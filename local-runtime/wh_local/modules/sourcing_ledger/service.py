@@ -34,6 +34,10 @@ _BUILTIN_SITES = (
     {"site_code": "PE", "display_name": "秘鲁"},
 )
 
+# 采集批次筛选的哨兵值：单品采集没有 selection_run_id。
+UNASSIGNED_BATCH_ID = "__unassigned__"
+UNASSIGNED_BATCH_LABEL = "未分组（单品采集）"
+
 # 列表排序与状态计数顺序（也是前端胶囊的展示顺序）。
 _STATUS_ORDER = (
     "ready",
@@ -166,6 +170,8 @@ class SourcingLedgerService:
                     workspace, f"{MARKET}:{market_skc_id}", decision.skc
                 )
                 # 采集本身就带 1688 链接与成本：命中商品后立刻生成一条采集货源。
+                # 之前被用户删掉的商品重新采集到，说明要重新纳管，先解除删除标记。
+                self._repository.clear_deleted_items(workspace, [decision.skc])
                 self.ensure_collected_sources(workspace, [decision.skc])
             else:
                 summary["pending"] += 1
@@ -393,10 +399,12 @@ class SourcingLedgerService:
 
         采集完成后商品本来就有货源链接和价格，台账不应该再显示「待补货源」。
         只在该商品还没有任何 active 货源时创建，用户手工补过货源就不重复添加。
+        用户明确删除过的商品写有墓碑，启动兜底不再重新生成。
         """
         workspace = _text(workspace_id)
         wanted = sorted({_text(code) for code in (skcs or []) if _text(code)})
         existing = self._repository.active_product_keys(workspace)
+        deleted = self._repository.deleted_product_keys(workspace)
         if wanted:
             pairs = [
                 (skc, self._repository.draft_payload_for(workspace, skc))
@@ -406,7 +414,7 @@ class SourcingLedgerService:
             pairs = list(self._repository.collected_draft_payloads(workspace).items())
         created = 0
         for skc, raw in pairs:
-            if not raw or skc in existing:
+            if not raw or skc in existing or skc in deleted:
                 continue
             row = _source_from_draft_payload(workspace, skc, raw)
             if row and self._repository.insert_source(row):
@@ -511,6 +519,7 @@ class SourcingLedgerService:
         status: str = "",
         site: str = "",
         keyword: str = "",
+        batch: str = "",
         limit: int = 200,
         offset: int = 0,
     ) -> dict[str, Any]:
@@ -573,11 +582,42 @@ class SourcingLedgerService:
                 item["status"] = "unmatched_source"
             items.append(item)
 
+        # 采集批次：货号 → 处理草稿所属批次；单品采集没有批次，归入「未分组」。
+        batch_map = self._repository.task_batch_map(workspace)
+        for item in items:
+            item["batch_id"] = _text(batch_map.get(item["skc"]))
+        batch_labels = self._repository.batch_display_names(
+            workspace, {item["batch_id"] for item in items if item["batch_id"]}
+        )
+        batch_counts: dict[str, int] = {}
+        for item in items:
+            batch_id = item["batch_id"]
+            item["batch_label"] = batch_labels.get(batch_id, batch_id)
+            batch_counts[batch_id] = batch_counts.get(batch_id, 0) + 1
+        batch_options = [
+            {
+                "batch_id": batch_id or UNASSIGNED_BATCH_ID,
+                "label": (
+                    batch_labels.get(batch_id)
+                    or (UNASSIGNED_BATCH_LABEL if not batch_id else batch_id)
+                ),
+                "count": count,
+            }
+            for batch_id, count in sorted(
+                batch_counts.items(), key=lambda pair: (bool(pair[0]), -pair[1])
+            )
+        ]
+
         wanted_site = _text(site)
+        wanted_batch = _text(batch)
         wanted_status = [_text(value) for value in _text(status).split(",") if _text(value)]
         keyword_key = _text(keyword).casefold()
         if wanted_site:
             items = [item for item in items if item["site_code"] == wanted_site]
+        if wanted_batch == UNASSIGNED_BATCH_ID:
+            items = [item for item in items if not item["batch_id"]]
+        elif wanted_batch:
+            items = [item for item in items if item["batch_id"] == wanted_batch]
         if keyword_key:
             items = [
                 item
@@ -596,7 +636,14 @@ class SourcingLedgerService:
         items.sort(key=lambda item: (_timestamp(item.get("updated_at")), item["skc"]), reverse=True)
         total = len(items)
         page = items[max(0, offset): max(0, offset) + max(1, limit)]
-        return {"items": page, "total": total, "counts": counts, "offset": offset, "limit": limit}
+        return {
+            "items": page,
+            "total": total,
+            "counts": counts,
+            "batches": batch_options,
+            "offset": offset,
+            "limit": limit,
+        }
 
     def _item_payload(
         self,

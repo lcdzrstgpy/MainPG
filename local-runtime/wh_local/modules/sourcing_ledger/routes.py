@@ -71,6 +71,7 @@ def create_sourcing_ledger_router(service: SourcingLedgerService) -> APIRouter:
         status_filter: str = Query(default="", alias="status"),
         site: str = Query(default=""),
         keyword: str = Query(default=""),
+        batch: str = Query(default=""),
         limit: int = Query(default=200, ge=1, le=500),
         offset: int = Query(default=0, ge=0),
         workspace: str = Header(default="local", alias="X-Workspace-ID"),
@@ -80,6 +81,7 @@ def create_sourcing_ledger_router(service: SourcingLedgerService) -> APIRouter:
             status=status_filter,
             site=site,
             keyword=keyword,
+            batch=batch,
             limit=limit,
             offset=offset,
         )
