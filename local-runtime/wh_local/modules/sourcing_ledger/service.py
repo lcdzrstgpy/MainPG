@@ -102,6 +102,8 @@ class SourcingLedgerService:
         # 利润活动服务（提供 calculate / upsert_product / delete_product）。
         # 允许为空：没有它时仍可做采集匹配与货源管理，只是不展示利润。
         self._profit_service = profit_service
+        # 各 workspace 上次补采集货源时的处理子项数量（避免每次列表都全量扫描 payload）。
+        self._source_sync: dict[str, int] = {}
 
     # ---- 采集入库 ----
 
@@ -170,8 +172,7 @@ class SourcingLedgerService:
                     workspace, f"{MARKET}:{market_skc_id}", decision.skc
                 )
                 # 采集本身就带 1688 链接与成本：命中商品后立刻生成一条采集货源。
-                # 之前被用户删掉的商品重新采集到，说明要重新纳管，先解除删除标记。
-                self._repository.clear_deleted_items(workspace, [decision.skc])
+                # 注意：不解除删除墓碑，用户删掉的商品不能因为核价同步又回来。
                 self.ensure_collected_sources(workspace, [decision.skc])
             else:
                 summary["pending"] += 1
@@ -403,7 +404,7 @@ class SourcingLedgerService:
         """
         workspace = _text(workspace_id)
         wanted = sorted({_text(code) for code in (skcs or []) if _text(code)})
-        existing = self._repository.active_product_keys(workspace)
+        existing = self._repository.known_product_keys(workspace)
         deleted = self._repository.deleted_product_keys(workspace)
         if wanted:
             pairs = [
@@ -419,6 +420,23 @@ class SourcingLedgerService:
             row = _source_from_draft_payload(workspace, skc, raw)
             if row and self._repository.insert_source(row):
                 created += 1
+        return created
+
+    def sync_collected_sources(self, workspace_id: str) -> int:
+        """列表加载前增量补货源：定向采集/整店采集处理完即时进入台账。
+
+        三种采集渠道（定向、整店、插件）的草稿都带 1688 链接与成本，
+        但只有插件会走核价同步；这里按处理子项数量变化触发一次补货，
+        没有新增商品时只做一次 COUNT，不重复扫描大 payload。
+        """
+        workspace = _text(workspace_id)
+        if not workspace:
+            return 0
+        signature = self._repository.processed_item_count(workspace)
+        if self._source_sync.get(workspace) == signature:
+            return 0
+        created = self.ensure_collected_sources(workspace)
+        self._source_sync[workspace] = signature
         return created
 
     # ---- 历史采集补录 ----
@@ -525,6 +543,8 @@ class SourcingLedgerService:
     ) -> dict[str, Any]:
         """商品行：商品 + 货源数/最低到手价 + 最新申报价 + 利润 + 入库状态。"""
         workspace = _text(workspace_id)
+        # 定向/整店采集不经过核价同步，处理完成后靠这里补上采集货源。
+        self.sync_collected_sources(workspace)
         titles = self._repository.product_titles(workspace)
         library = self._repository.library_records(workspace)
         sources_by_key: dict[str, list[dict[str, Any]]] = {}

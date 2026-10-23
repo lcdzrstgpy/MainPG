@@ -574,14 +574,29 @@ class SourcingLedgerRepository:
                         resolved[batch_id] = label
         return resolved
 
-    def active_product_keys(self, workspace_id: str) -> set[str]:
+    def known_product_keys(self, workspace_id: str) -> set[str]:
+        """出现过的货源商品键（含已删除货源）：自动补货只补从没补过的商品。"""
         with self._session() as connection:
             rows = connection.execute(
                 "SELECT DISTINCT product_key FROM product_sourcing_sources "
-                "WHERE workspace_id = ? AND status = 'active'",
+                "WHERE workspace_id = ?",
                 (_text(workspace_id),),
             ).fetchall()
         return {_text(row["product_key"]) for row in rows}
+
+    def processed_item_count(self, workspace_id: str) -> int:
+        """已生成 PP 货号的处理子项数量，用来判断有没有新商品需要补货源。"""
+        with self._session() as connection:
+            try:
+                row = connection.execute(
+                    "SELECT COUNT(*) AS total FROM product_processing_task_items i "
+                    "JOIN product_processing_tasks t ON t.id = i.task_id "
+                    "WHERE t.workspace_id = ? AND i.skc LIKE 'PP-%'",
+                    (_text(workspace_id),),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return 0
+        return int(row["total"] or 0) if row is not None else 0
 
     def insert_source(self, row: Mapping[str, Any]) -> bool:
         """按 (workspace, product_key, source_url) 幂等写入；已存在返回 False。"""
@@ -871,20 +886,6 @@ class SourcingLedgerRepository:
                 (_text(workspace_id),),
             ).fetchall()
         return {_text(row["skc"]) for row in rows if _text(row["skc"])}
-
-    def clear_deleted_items(self, workspace_id: str, product_keys: Iterable[str]) -> int:
-        """重新采集到这些商品时解除删除标记（新采集视为用户要重新纳管）。"""
-        keys = [_text(value) for value in product_keys if _text(value)]
-        if not keys:
-            return 0
-        placeholders = ",".join("?" for _ in keys)
-        with self._session() as connection:
-            cursor = connection.execute(
-                f"DELETE FROM product_sourcing_deleted "
-                f"WHERE workspace_id = ? AND skc IN ({placeholders})",
-                (_text(workspace_id), *keys),
-            )
-            return int(cursor.rowcount or 0)
 
     # ---- 批量重量 ----
 
