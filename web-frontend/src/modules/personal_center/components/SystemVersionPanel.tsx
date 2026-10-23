@@ -124,6 +124,8 @@ export function SystemVersionPanel() {
   const [changelogExpanded, setChangelogExpanded] = useState(false);
   const [changelogOpen, setChangelogOpen] = useState(false);
   const busyRef = useRef(false);
+  const rootRef = useRef<HTMLElement | null>(null);
+  const changelogFetchedAtRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -164,6 +166,7 @@ export function SystemVersionPanel() {
 
   useEffect(() => {
     let cancelled = false;
+    changelogFetchedAtRef.current = Date.now();
     void appUpdateApi
       .changelog()
       .then((next) => {
@@ -176,6 +179,27 @@ export function SystemVersionPanel() {
       cancelled = true;
     };
   }, [pollGeneration]);
+
+  // 面板重新可见时补拉一次更新日志。
+  // 页签在 WorkspaceShell 里是「全部渲染 + hidden」，切模块不会重新挂载本组件，
+  // 而上面那个拉取 effect 只依赖 pollGeneration —— 结果后台改完更新说明，用户
+  // 只要不点「检查更新」就永远看到首次挂载时的旧数据（2026-10-23 实测踩到）。
+  // 用 IntersectionObserver 盯住本卡片：从不可见变为可见、且距上次拉取超过 5 秒
+  // （避开快速来回切页签的抖动）就补一次；服务端本身还有 10 分钟缓存兜底。
+  useEffect(() => {
+    const element = rootRef.current;
+    if (!element || typeof IntersectionObserver === "undefined") return;
+    let visible = true; // 挂载瞬间通常可见，初始为 true 避免与首次拉取重复
+    const observer = new IntersectionObserver((entries) => {
+      const nextVisible = entries.some((entry) => entry.isIntersecting);
+      if (nextVisible && !visible && Date.now() - changelogFetchedAtRef.current > 5000) {
+        setPollGeneration((generation) => generation + 1);
+      }
+      visible = nextVisible;
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
 
   const view = toView(status, patch);
   const inProgress = view.phase === "checking" || view.phase === "downloading" || view.phase === "verifying" || view.phase === "installing";
@@ -235,7 +259,7 @@ export function SystemVersionPanel() {
   };
 
   return (
-    <article className="personal-card version-card">
+    <article className="personal-card version-card" ref={rootRef}>
       <div className="personal-card-title">
         <span className="iconfont icon-setting" aria-hidden="true" />
         <div>

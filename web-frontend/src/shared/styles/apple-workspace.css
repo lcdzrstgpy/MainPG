@@ -149,6 +149,12 @@ html[data-topbar-collapse="on"][data-ui-mode="apple"] .topbar-card.is-stuck {
   backdrop-filter: none;
 }
 
+/* 桌面布局下顶栏自带一层铺满整卡的毛玻璃（.topbar-glass）。收起后只留标签行，
+   这层玻璃还铺在原位会在内容上方留一条模糊带，所以整层关掉——标签行自己有底。 */
+html[data-topbar-collapse="on"][data-ui-mode="apple"] .topbar-card.is-stuck > .topbar-glass {
+  display: none;
+}
+
 html[data-topbar-collapse="on"][data-ui-mode="apple"] .topbar-card.is-stuck .topbar-main {
   visibility: hidden;
   opacity: 0;
