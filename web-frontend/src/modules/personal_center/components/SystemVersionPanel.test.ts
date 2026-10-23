@@ -61,3 +61,18 @@ test("更新日志：样式使用主题变量且类名齐备", () => {
   assert.match(styles, /\.version-changelog-toggle \{/);
   assert.match(styles, /var\(--theme-primary/);
 });
+
+test("更新日志：面板重新可见时必须补拉一次（页签 hidden 不卸载，切回来要刷新）", () => {
+  // 2026-10-23 实测：页签是「全部渲染 + hidden」，切模块不重新挂载本组件，
+  // 拉取 effect 只依赖 pollGeneration → 后台改完说明，用户不点检查更新就永远看旧数据。
+  assert.match(panel, /const rootRef = useRef<HTMLElement \| null>\(null\)/);
+  assert.match(panel, /ref=\{rootRef\}/);
+  assert.match(panel, /new IntersectionObserver\(/);
+  assert.match(panel, /observer\.observe\(element\)/);
+  assert.match(panel, /observer\.disconnect\(\)/);
+  // 从不可见变可见 -> 递增 pollGeneration 触发重拉
+  assert.match(panel, /nextVisible && !visible/);
+  assert.match(panel, /setPollGeneration\(\(generation\) => generation \+ 1\)/);
+  // 别把首次挂载算成「重新可见」，否则会重复拉一次
+  assert.match(panel, /let visible = true;/);
+});
