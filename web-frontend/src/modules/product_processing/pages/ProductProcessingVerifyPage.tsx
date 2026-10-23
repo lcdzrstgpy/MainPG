@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useChangePoller } from '../../../shared/hooks/useChangePoller';
-import { getTopbarVisualBottom } from '../../../shared/lib/topbar';
 import { SkuBatchManager } from '../components/SkuBatchManager';
 import { ppRequest, type ApiContext } from '../api/client';
 import { productProcessingApiContext } from '../api/context';
@@ -113,7 +112,6 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenCollectio
   const [searchTerm, setSearchTerm] = useState('');
   // SKU 数量筛选：0 = 全部，否则为最大变种数（少于 N）
   const [skuCountFilter, setSkuCountFilter] = useState(0);
-  const [isStickyToolbar, setIsStickyToolbar] = useState(false);
   const [deletedBatch, setDeletedBatch] = useState<DeletedDraftBatch | null>(null);
   // 采集批次管理：批次列表（按来源分组）、选中删除、当前筛选批次
   const [draftBatches, setDraftBatches] = useState<DraftCollectionBatch[]>([]);
@@ -124,105 +122,11 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenCollectio
   // 批次列表是否还有更多（后端 limit 上限 200，超出时提示，避免以为“只有这么多”）
   const [batchesHasMore, setBatchesHasMore] = useState(false);
   const draftListRef = useRef<HTMLDivElement>(null);
-  const stickyToolbarRef = useRef<HTMLDivElement>(null);
-  const stickySpacerRef = useRef<HTMLDivElement>(null);
-  const stickyToolbarStateRef = useRef(false);
 
   useEffect(() => {
     if (isActive) return;
     setSkuDrawerDraftId(null);
     setSkuBatchOpen(false);
-  }, [isActive]);
-
-  // 草稿池工具栏按窗口滚动条件吸顶。只在吸顶状态变化时切换布局，避免工具栏尺寸变化
-  // 再触发自身的 ResizeObserver，造成 fixed 与普通流之间反复跳变。
-  useEffect(() => {
-    const toolbar = stickyToolbarRef.current;
-    const spacer = stickySpacerRef.current;
-    if (!toolbar || !spacer) return;
-    const contentCard = document.querySelector('.content-card') as HTMLElement | null;
-    const topbar = document.querySelector('.topbar-card') as HTMLElement | null;
-    let frame = 0;
-
-    const clearStickyLayout = () => {
-      toolbar.style.position = '';
-      toolbar.style.top = '';
-      toolbar.style.left = '';
-      toolbar.style.width = '';
-      spacer.style.height = '';
-      stickyToolbarStateRef.current = false;
-      setIsStickyToolbar(false);
-    };
-
-    if (!isActive) {
-      clearStickyLayout();
-      return;
-    }
-
-    const applyStickyLayout = (topbarBottom: number) => {
-      const contentRect = contentCard?.getBoundingClientRect();
-      const nextTop = `${topbarBottom + 6}px`;
-      const nextLeft = contentRect ? `${Math.round(contentRect.left)}px` : '0px';
-      const nextWidth = contentRect ? `${Math.round(contentRect.width)}px` : '100%';
-      if (toolbar.style.position !== 'fixed') {
-        // 先按普通流下的真实高度给 spacer 占位，再切 fixed：
-        // 若先改 fixed 再读 offsetHeight，宽度变化会触发 flex-wrap 重排，读到错误高度，
-        // spacer 占位跳变导致页面整体高度抖动、滚动上下抽搐。
-        spacer.style.height = `${toolbar.offsetHeight}px`;
-        toolbar.style.position = 'fixed';
-      }
-      if (toolbar.style.top !== nextTop) toolbar.style.top = nextTop;
-      if (toolbar.style.left !== nextLeft) toolbar.style.left = nextLeft;
-      if (toolbar.style.width !== nextWidth) toolbar.style.width = nextWidth;
-    };
-
-    const apply = () => {
-      // 取顶栏的**视觉**底部：收起态下 .topbar-card 的 bottom 不变（主行 visibility:hidden
-      // 仍占位），真正上移的是标签行的 translateY —— 详见 shared/lib/topbar.ts。
-      const topbarBottom = getTopbarVisualBottom(topbar);
-      const needStick = spacer.getBoundingClientRect().top <= topbarBottom + 6;
-      if (needStick) {
-        applyStickyLayout(topbarBottom);
-        if (!stickyToolbarStateRef.current) {
-          stickyToolbarStateRef.current = true;
-          setIsStickyToolbar(true);
-        }
-      } else if (stickyToolbarStateRef.current) {
-        clearStickyLayout();
-      }
-    };
-
-    const scheduleApply = () => {
-      if (frame) return;
-      frame = window.requestAnimationFrame(() => {
-        frame = 0;
-        apply();
-      });
-    };
-
-    apply();
-    window.addEventListener('scroll', scheduleApply, { passive: true });
-    contentCard?.addEventListener('scroll', scheduleApply, { passive: true });
-    window.addEventListener('resize', scheduleApply);
-    const observer = topbar ? new ResizeObserver(scheduleApply) : null;
-    if (topbar) observer?.observe(topbar);
-    // 吸顶期间工具栏自身高度变化时同步 spacer 占位高度，避免占位与 fixed 高度不一致造成跳动。
-    const toolbarObserver = new ResizeObserver(() => {
-      if (!stickyToolbarStateRef.current) return;
-      const rect = toolbar.getBoundingClientRect();
-      const nextHeight = `${Math.round(rect.height)}px`;
-      if (spacer.style.height !== nextHeight) spacer.style.height = nextHeight;
-    });
-    toolbarObserver.observe(toolbar);
-    return () => {
-      if (frame) window.cancelAnimationFrame(frame);
-      window.removeEventListener('scroll', scheduleApply);
-      contentCard?.removeEventListener('scroll', scheduleApply);
-      window.removeEventListener('resize', scheduleApply);
-      observer?.disconnect();
-      toolbarObserver.disconnect();
-      clearStickyLayout();
-    };
   }, [isActive]);
 
   const dirtyCount = useMemo(
@@ -662,8 +566,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenCollectio
       )}
 
       <section className={`verify-section${isPoolEmpty ? ' is-empty' : ''}`} ref={draftListRef}>
-        <div className="verify-sticky-toolbar-spacer" ref={stickySpacerRef}>
-        <div className={`verify-sticky-toolbar ${isStickyToolbar ? 'is-stuck' : ''}`} ref={stickyToolbarRef}>
+        <div className="verify-sticky-toolbar">
         <div className="verify-section-head">
           <h2><i className="iconfont icon-database" aria-hidden="true" />草稿池</h2>
           <div className="verify-actions">
@@ -790,7 +693,6 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenCollectio
             </>,
             document.body,
           )}
-        </div>
 
         {listLoading && isPoolEmpty && !listError && (
           <div className="verify-draft-list is-skeleton" aria-busy="true" aria-label="正在加载草稿">

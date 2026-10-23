@@ -314,12 +314,8 @@
 }
 
 [data-theme="peach"] .verify-sticky-toolbar {
-  background: linear-gradient(180deg, rgba(255, 251, 248, 0.5), rgba(255, 251, 248, 0.34));
-}
-
-[data-theme="peach"] .verify-sticky-toolbar.is-stuck {
-  background: linear-gradient(180deg, rgba(255, 251, 248, 0.92), rgba(255, 251, 248, 0.82));
-  backdrop-filter: blur(14px) saturate(1.1);
+  /* 吸顶后列表会从下面滚过，这里不能用半透色（其余模块表面仍是半透） */
+  background: #fffbf8;
 }
 
 [data-theme="peach"] .pool-card:hover {
