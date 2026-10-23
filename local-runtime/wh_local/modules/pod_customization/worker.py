@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from functools import wraps
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Callable
+from typing import Any, Callable, Mapping, cast
 
 from ...runtime_logs import business_logger
 from ...session import Actor
@@ -49,6 +49,7 @@ from .billing_contract import (
     PodExecutionGrant,
 )
 from .images import PatternQualityGate, split_grid_2x2
+from .remote_billing import classify_billing_exception, expected_points_for
 from .image_providers.catalog import model_supports_multi_view
 from .prompts import (
     LISTING_IMAGE_ROLES,
@@ -123,6 +124,13 @@ _RETRYABLE_PROVIDER_STATUS_CLASSES = frozenset({
 
 def _is_retryable_generation_error(exc: BaseException) -> bool:
     return str(getattr(exc, "status_class", "") or "") in _RETRYABLE_PROVIDER_STATUS_CLASSES
+
+
+def _number(value: object) -> float:
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
 
 
 class PodBatchCancelled(RuntimeClosedError):
@@ -205,7 +213,6 @@ class PodBillingRun:
                         f"billing settle rejected: batch epoch has advanced (expected {self.execution_epoch}, got {current})"
                     )
             outcomes = self.repository.prepare_billing_settlement(self.action_key)
-            outcomes = self.repository.project_fission_settlement(self.action_key, outcomes)
         else:
             with self._lock:
                 outcomes = tuple(
@@ -214,13 +221,121 @@ class PodBillingRun:
                     for call in self.plan.calls
                 )
         try:
-            self.coordinator.settle(self.actor, self.grant, self.plan, outcomes)
+            receipt = self.coordinator.settle(self.actor, self.grant, self.plan, outcomes)
         except Exception as exc:
             if self.repository is not None:
-                self.repository.mark_billing_pending(self.action_key, safe_error_message(exc))
+                self._handle_settlement_failure(exc)
             raise
         if self.repository is not None:
+            self._persist_settlement_receipt(receipt, outcomes)
             self.repository.mark_billing_settled(self.action_key)
+
+    def _handle_settlement_failure(self, exc: BaseException) -> None:
+        """按错误码分流：可重试留 pending，其余落到确定终态。"""
+        assert self.repository is not None
+        code, retryable, status_code = classify_billing_exception(exc)
+        message = safe_error_message(exc)
+        if retryable:
+            self.repository.mark_billing_pending(self.action_key, message)
+            return
+        if code == "freeze_not_active":
+            self._resolve_inactive_freeze(message)
+            return
+        if status_code == 404 or code in {"not_found", "freeze_not_found"}:
+            self.repository.terminate_billing_run(self.action_key, "orphaned", message)
+            return
+        # 400 系列与幂等键冲突都不可重试：转 anomaly，保留原记录等人工处理。
+        self.repository.terminate_billing_run(self.action_key, "anomaly", message)
+
+    def _resolve_inactive_freeze(self, message: str) -> None:
+        """409 freeze_not_active：先探活，再按服务端真实状态收口。"""
+        assert self.repository is not None
+        prober = getattr(self.coordinator, "freeze_status", None)
+        if not callable(prober):
+            self.repository.terminate_billing_run(self.action_key, "anomaly", message)
+            return
+        try:
+            probe: Mapping[str, Any] = cast(
+                Mapping[str, Any], prober(self.actor, self.grant.freeze_id)
+            )
+        except Exception:
+            self.repository.mark_billing_pending(self.action_key, message)
+            return
+        remote_status = str(probe.get("status") or "")
+        if remote_status == "released":
+            self.repository.insert_settlement(
+                freeze_id=self.grant.freeze_id,
+                source="ttl",
+                released_points=probe.get("released_points"),
+                retained_points=probe.get("retained_points"),
+                release_reason=str(probe.get("release_reason") or "ttl"),
+                raw_response=probe.get("raw") or probe,
+            )
+            self.repository.terminate_billing_run(
+                self.action_key, "expired_released", message
+            )
+            return
+        if remote_status == "settled":
+            # 服务端已结算：本地补记关单（无逐 link 回执时不臆造金额）。
+            if not self.repository.mark_billing_settled(self.action_key):
+                self.repository.terminate_billing_run(self.action_key, "anomaly", message)
+            return
+        self.repository.mark_billing_pending(self.action_key, message)
+
+    def _persist_settlement_receipt(
+        self,
+        receipt: dict[str, Any] | None,
+        outcomes: tuple[PodCallOutcome, ...],
+    ) -> None:
+        """把结算回执落成 settlements + settlement_items（金额只取服务端值）。"""
+        assert self.repository is not None
+        if not isinstance(receipt, dict):
+            return
+        snapshot = getattr(self.grant, "snapshot", None) or {}
+        prices = [
+            float(value)
+            for value in (snapshot.get("link_prices") or ())
+            if isinstance(value, (int, float))
+        ]
+        expected = expected_points_for(self.plan, outcomes, prices)
+        items = [
+            {
+                "link_idx": int(link.get("link_idx") or 0),
+                "unit_id": str(link.get("unit_id") or ""),
+                "feature_status": link.get("feature_status") or {},
+                "charged_points": link.get("charged_points") or 0,
+                "refunded_points": link.get("refunded_points") or 0,
+            }
+            for link in receipt.get("links") or ()
+            if isinstance(link, dict)
+        ]
+        charged = _number(receipt.get("charged_points"))
+        refunded = _number(receipt.get("refunded_points"))
+        if items and (
+            abs(sum(float(item["charged_points"]) for item in items) - charged) > 0.1
+            or abs(sum(float(item["refunded_points"]) for item in items) - refunded) > 0.1
+        ):
+            # 聚合值必须等于明细之和；不相等是契约违约，记异常而不是修正任何一边。
+            business_logger.warning(
+                "POD settlement aggregate mismatch freeze=%s charged=%s refunded=%s",
+                self.grant.freeze_id,
+                charged,
+                refunded,
+            )
+        self.repository.insert_settlement(
+            freeze_id=self.grant.freeze_id,
+            source=str(receipt.get("source") or "settle"),
+            expected_points=expected,
+            charged_points=charged,
+            refunded_points=refunded,
+            released_points=receipt.get("released_points"),
+            retained_points=receipt.get("retained_points"),
+            release_reason=str(receipt.get("release_reason") or ""),
+            rule_version=str(receipt.get("rule_version") or ""),
+            raw_response=receipt.get("raw") or receipt,
+            settlement_id=str(receipt.get("settlement_id") or ""),
+            items=items,
+        )
 
     def has_outcome(self, call_id: str) -> bool:
         if self.repository is not None:

@@ -72,7 +72,7 @@ class BillingCoordinator:
     def freeze(self, _actor, plan):
         self.freezes.append(plan)
         return PodExecutionGrant(
-            "freeze-1", 1, "2099-01-01T00:00:00Z",
+            plan.idempotency_key, 1, "2099-01-01T00:00:00Z",
             {"wuyin": "test-wuyin-key", "ark": "test-ark-key"},
         )
 
@@ -317,9 +317,11 @@ def test_replica_insufficient_balance_fails_before_persisting_any_batch(tmp_path
         assert connection.execute(
             "SELECT COUNT(*) FROM pod_customization_replica_batches"
         ).fetchone()[0] == 0
-        assert connection.execute(
-            "SELECT COUNT(*) FROM pod_customization_billing_runs"
-        ).fetchone()[0] == 0
+        # 先写意图再冻结：冻结被拒时保留一行 intent 供用户重发，但不产生冻结单号。
+        rows = connection.execute(
+            "SELECT status, freeze_id FROM pod_customization_billing_runs"
+        ).fetchall()
+        assert [(row[0], row[1]) for row in rows] == [("intent", None)]
     service.close()
     runtime.close()
 

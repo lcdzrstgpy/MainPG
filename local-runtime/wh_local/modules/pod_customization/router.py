@@ -586,6 +586,30 @@ def create_router(
         permitted(actor, "pod_customization.create")
         return _call(service.cancel_billing_run, actor, run_id)
 
+    @router.post("/billing-runs/{run_id}/close")
+    def close_billing_run(run_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
+        """「放弃并结算」入口：删除仍在结算中的批次前，先关掉它的冻结账。"""
+        permitted(actor, "pod_customization.create")
+        return _call(service.close_billing_run, actor, run_id)
+
+    @router.get("/billing-recon/runs")
+    def list_billing_recon_runs(
+        limit: int = 20,
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        """对账流水（只读，供排查使用；不新增页面）。"""
+        permitted(actor, "pod_customization.create")
+        return _call(service.list_billing_recon_runs, actor, limit)
+
+    @router.get("/billing-recon/daily")
+    def billing_recon_daily(
+        date: str = "",
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        """本地出账 + 与服务端日报逐项比对（只读视图，差额只记录不修数）。"""
+        permitted(actor, "pod_customization.create")
+        return _call(service.reconcile_billing_daily, actor, date=date)
+
     @router.post("/batches/{batch_id}/resume")
     def resume_batch(batch_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
         permitted(actor, "pod_customization.create")

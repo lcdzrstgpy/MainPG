@@ -5,6 +5,7 @@ import hashlib
 import inspect
 import io
 import json
+import sqlite3
 import threading
 import time
 import uuid
@@ -96,6 +97,8 @@ from .export import (
 )
 from .export_records import PodExportRecordStore
 from .errors import image_provider_outcome_for_exception, safe_error_message
+from .reconciliation import PodBillingReconciler, deadline_passed
+from .remote_billing import attach_freeze_snapshot
 from .repository import PodCustomizationRepository, PodRepositoryError, ReplicaBatchIdempotentReturn, RegistryVersionConflict
 from .spec_card_units import display_spec_card_cells
 from .prompts import (
@@ -262,9 +265,13 @@ class PodCustomizationService:
         self._reaper_thread: threading.Thread | None = None
         self._cache_sweep_stop: threading.Event = threading.Event()
         self._cache_sweep_thread: threading.Thread | None = None
+        self._recon_stop: threading.Event = threading.Event()
+        self._recon_thread: threading.Thread | None = None
+        self._billing_reconciler_instance: PodBillingReconciler | None = None
         if start_workers:
             self._start_reaper()
             self._start_cache_sweeper()
+            self._start_billing_reconciler()
 
     def upload_template(
         self,
@@ -2588,6 +2595,10 @@ class PodCustomizationService:
             pass
 
     def close(self) -> None:
+        if self._recon_thread is not None:
+            self._recon_stop.set()
+            self._recon_thread.join(timeout=5.0)
+            self._recon_thread = None
         if self._reaper_thread is not None:
             self._reaper_stop.set()
             self._reaper_thread.join(timeout=5.0)
@@ -2645,6 +2656,82 @@ class PodCustomizationService:
                 logger.warning("POD stale-cache sweeper encountered an error: %s", exc)
             if self._cache_sweep_stop.wait(timeout=48 * 3600):
                 break
+
+    # ------------------------------------------------------------------ #
+    # 启动对账与日报对平（设计第 7 节）
+    # ------------------------------------------------------------------ #
+
+    def _billing_reconciler(self) -> PodBillingReconciler:
+        if self.billing_coordinator is None:
+            raise RuntimeError("POD billing coordinator is not configured")
+        if self._billing_reconciler_instance is None:
+            self._billing_reconciler_instance = PodBillingReconciler(
+                self.repository,
+                self.billing_coordinator,
+                settle_run=self._settle_stored_billing_run,
+                plan_builder=self._billing_plan,
+                device_id=self._device_id,
+            )
+        return self._billing_reconciler_instance
+
+    def _start_billing_reconciler(self) -> None:
+        """每 10 分钟对一次未关单的账；登录成功时另有一次性触发。"""
+        self._recon_stop.clear()
+        self._recon_thread = threading.Thread(
+            target=self._run_billing_reconciler,
+            name="pod-billing-reconciler",
+            daemon=True,
+        )
+        self._recon_thread.start()
+
+    def _run_billing_reconciler(self) -> None:
+        import logging
+
+        while not self._recon_stop.wait(timeout=600.0):
+            try:
+                self.reconcile_billing_runs_once()
+            except Exception as exc:  # noqa: BLE001 - 后台线程不能因单轮失败退出
+                logging.getLogger(__name__).warning(
+                    "POD billing recon encountered an error: %s", exc
+                )
+
+    def reconcile_billing_runs(
+        self, actor: Actor, *, scope: str = "startup"
+    ) -> dict[str, Any]:
+        """逐笔收敛该用户的非终态账（启动、定时、登录后共用）。"""
+        return self._billing_reconciler().reconcile_actor(actor, scope=scope)
+
+    def reconcile_billing_runs_once(self) -> dict[str, Any]:
+        """对本地所有有未关单账的用户各跑一轮（取不到远端凭证的用户自动跳过）。"""
+        if self.billing_coordinator is None:
+            return {"owners": 0, "reconciled": 0}
+        owners = self.repository.list_billing_run_owners()
+        reconciled = 0
+        for workspace_id, owner_id in owners:
+            actor = Actor(id=owner_id, username="", role="", workspace_id=workspace_id)
+            try:
+                self.reconcile_billing_runs(actor, scope="scheduled")
+                reconciled += 1
+            except CustomerBillingPermissionError:
+                # 该用户没有活跃远端会话：留到下次（登录后）再跑。
+                continue
+            except Exception:
+                continue
+        return {"owners": len(owners), "reconciled": reconciled}
+
+    def reconcile_billing_daily(
+        self, actor: Actor, *, date: str = ""
+    ) -> dict[str, Any]:
+        """本地出账 + 与服务端日报逐项比对；差额下钻后写入对账流水。"""
+        return self._billing_reconciler().reconcile_daily(actor, day=date)
+
+    def list_billing_recon_runs(
+        self, actor: Actor, limit: int = 20
+    ) -> dict[str, Any]:
+        rows = self.repository.list_recon_runs(
+            actor.workspace_id, actor.id, limit=limit
+        )
+        return {"runs": rows, "total": len(rows)}
 
     def _remove_asset_files(self, relative_paths: list[str]) -> tuple[int, int]:
         """Best-effort removal of stored asset files; returns (removed_count, freed_bytes).
@@ -3095,6 +3182,22 @@ class PodCustomizationService:
             workspace_id=str(stored["workspace_id"]),
         )
         plan = self._billing_plan(stored["plan"])
+        grant = self._settlement_grant(actor, stored)
+        run = PodBillingRun(
+            actor,
+            self.billing_coordinator,
+            plan,
+            grant,
+            repository=self.repository,
+            action_key=stored["action_key"],
+            resumed=True,
+        )
+        run.settle()
+
+    def _settlement_grant(self, actor: Actor, stored: dict[str, Any]) -> PodExecutionGrant:
+        """取回可结算的 grant（v2 探活 / v1 重冻结），并把本地状态推进到 authorized。"""
+        if self.billing_coordinator is None:
+            raise RuntimeError("POD billing coordinator is not configured")
         settlement_grant = getattr(self.billing_coordinator, "settlement_grant", None)
         try:
             if callable(settlement_grant):
@@ -3119,22 +3222,116 @@ class PodCustomizationService:
         self.repository.mark_billing_authorized(
             stored["action_key"], rule_version=grant.rule_version, expires_at=grant.expires_at
         )
-        run = PodBillingRun(
-            actor,
-            self.billing_coordinator,
-            plan,
-            grant,
-            repository=self.repository,
-            action_key=stored["action_key"],
-            resumed=True,
+        return grant
+
+    def close_billing_run(self, actor: Actor, run_id: str) -> dict[str, Any]:
+        """用户主动放弃：v2 走 ``POST /close``；v1 降级为「全 no_return 结算」。
+
+        已成功的调用照常计费，未完成（planned / started）的按 ``no_return`` 上报；
+        服务端回执里的金额原样落库，关单原因记 ``no_return_close``。
+        """
+        if self.billing_coordinator is None:
+            raise RuntimeError("POD billing coordinator is not configured")
+        stored = self.repository.get_billing_run(run_id, actor.workspace_id, actor.id)
+        if stored["status"] in self.repository.BILLING_TERMINAL_STATUSES:
+            return self._billing_run_payload(stored)
+        plan = self._billing_plan(stored["plan"])
+        outcomes = self.repository.prepare_billing_close(stored["action_key"])
+        grant = self._settlement_grant(actor, stored)
+        closer = getattr(self.billing_coordinator, "close", None)
+        try:
+            if callable(closer):
+                receipt = closer(actor, grant, plan, outcomes)
+            else:
+                # v1 兼容：没有 close 入口时按既有语义全额退还（全 no_return 结算）。
+                no_return = tuple(
+                    PodCallOutcome(call.call_id, call.feature, "no_return")
+                    for call in plan.calls
+                )
+                receipt = self.billing_coordinator.settle(actor, grant, plan, no_return)
+        except Exception as exc:
+            from .remote_billing import classify_billing_exception
+
+            code, retryable, status_code = classify_billing_exception(exc)
+            if retryable:
+                self.repository.mark_billing_pending(stored["action_key"], str(exc))
+            elif code == "freeze_not_active":
+                self.repository.terminate_billing_run(
+                    stored["action_key"], "expired_released", str(exc)
+                )
+            elif status_code == 404:
+                self.repository.terminate_billing_run(
+                    stored["action_key"], "orphaned", str(exc)
+                )
+            else:
+                self.repository.terminate_billing_run(
+                    stored["action_key"], "anomaly", str(exc)
+                )
+            raise
+        if isinstance(receipt, dict):
+            self.repository.insert_settlement(
+                freeze_id=grant.freeze_id,
+                source="close",
+                charged_points=receipt.get("charged_points") or 0,
+                refunded_points=receipt.get("refunded_points") or 0,
+                release_reason="no_return_close",
+                rule_version=str(receipt.get("rule_version") or ""),
+                raw_response=receipt.get("raw") or receipt,
+                settlement_id=str(receipt.get("settlement_id") or ""),
+                items=[
+                    {
+                        "link_idx": int(link.get("link_idx") or 0),
+                        "unit_id": str(link.get("unit_id") or ""),
+                        "feature_status": link.get("feature_status") or {},
+                        "charged_points": link.get("charged_points") or 0,
+                        "refunded_points": link.get("refunded_points") or 0,
+                    }
+                    for link in receipt.get("links") or ()
+                    if isinstance(link, dict)
+                ],
+            )
+        self.repository.mark_billing_settled(
+            stored["action_key"], release_reason="no_return_close"
         )
-        run.settle()
+        return self._billing_run_payload(
+            self.repository.get_billing_run(run_id, actor.workspace_id, actor.id)
+        )
+
+    @staticmethod
+    def _deadline_passed(value: str) -> bool:
+        return deadline_passed(value)
+
+    def _billing_deadline_passed(self, stored: dict[str, Any]) -> bool:
+        """「还能不能结算」只认 settle_deadline；v1 没有该字段时回退 expires_at，不加宽限。"""
+        deadline = str(stored.get("settle_deadline") or "")
+        if deadline:
+            return self._deadline_passed(deadline)
+        return self._deadline_passed(str(stored.get("grant_expires_at") or ""))
+
+    def _freeze_is_still_frozen(self, stored: dict[str, Any]) -> bool:
+        """到期后先探活：只有服务端确实还是 frozen 才收口 ``started``。"""
+        if self.billing_coordinator is None or not stored.get("freeze_id"):
+            return False
+        prober = getattr(self.billing_coordinator, "freeze_status", None)
+        if not callable(prober):
+            return False
+        actor = Actor(
+            id=str(stored["owner_user_id"]),
+            username="",
+            role="",
+            workspace_id=str(stored["workspace_id"]),
+        )
+        try:
+            probe = prober(actor, str(stored["freeze_id"]))
+        except Exception:
+            return False
+        return str(probe.get("status") or "") == "frozen"
 
     def settle_stuck_billing_runs(self) -> int:
-        """Settle abandoned ``settlement_pending`` runs so frozen points are released.
+        """按 ``settle_deadline`` 收口 abandoned ``settlement_pending`` runs。
 
-        Runs with genuinely uncertain (``started``) provider outcomes are skipped
-        and remain ``settlement_pending`` for a human to reconcile.
+        未到期不动；到期后若仍有 ``started``（结果未知）的调用，先探活，只有服务端
+        确实还是 ``frozen`` 才把它们改写为 ``no_return`` 并结算。
         """
         if self.billing_coordinator is None:
             return 0
@@ -3142,10 +3339,17 @@ class PodCustomizationService:
         for run_id, workspace_id, owner_user_id in self.repository.list_settlement_pending_runs():
             try:
                 stored = self.repository.get_billing_run(run_id, workspace_id, owner_user_id)
+                if not self._billing_deadline_passed(stored):
+                    continue
+                if any(outcome["status"] == "started" for outcome in stored["outcomes"]):
+                    if not self._freeze_is_still_frozen(stored):
+                        continue
+                    self.repository.release_started_outcomes(stored["action_key"])
+                    stored = self.repository.get_billing_run(run_id, workspace_id, owner_user_id)
                 self._settle_stored_billing_run(stored)
                 settled += 1
             except Exception:
-                # Transient or uncertain (started) — leave pending for a later sweep.
+                # 可重试错误或探活失败：留给下一轮 sweep / 启动对账。
                 continue
         return settled
 
@@ -3603,40 +3807,101 @@ class PodCustomizationService:
         batch_id: str,
         action_payload: dict[str, Any] | None = None,
     ) -> PodBillingRun:
+        """先写意图账，再冻结；冻结或回填失败时意图行保留给重放接管。
+
+        旧实现是「先冻结、后记账」：回包丢失或落库失败时，服务端已有冻结、本地
+        却没有单号，只能等过期。现在顺序倒过来，``action_key`` 在调服务端之前
+        就已经落库，崩溃后用同一个键重放即可接管同一笔冻结。
+        """
         if self.billing_coordinator is None:
             raise RuntimeError("POD billing coordinator is not configured")
-        grant = self.billing_coordinator.freeze(actor, plan)
-        try:
-            stored = self.repository.create_billing_run(
-                action_key=plan.idempotency_key,
-                action_type=action_type,
-                target_id=target_id,
-                batch_id=batch_id,
-                actor_id=actor.id,
-                workspace_id=actor.workspace_id,
-                plan=plan,
-                grant=grant,
-                action_payload=action_payload,
-            )
-        except Exception as ledger_error:
-            outcomes = tuple(
-                PodCallOutcome(call.call_id, call.feature, "no_return") for call in plan.calls
-            )
+        stored = self.repository.find_billing_run_by_action_key(plan.idempotency_key)
+        if stored is None:
             try:
-                self.billing_coordinator.settle(actor, grant, plan, outcomes)
-            except Exception as settlement_error:
-                raise RuntimeError(
-                    "POD freeze succeeded but both the local ledger and compensation settlement failed"
-                ) from settlement_error
-            raise ledger_error
+                stored = self.repository.create_billing_intent(
+                    action_key=plan.idempotency_key,
+                    action_type=action_type,
+                    target_id=target_id,
+                    batch_id=batch_id,
+                    actor_id=actor.id,
+                    workspace_id=actor.workspace_id,
+                    plan=plan,
+                    action_payload=action_payload,
+                    module=plan.module,
+                    unit_kind=plan.unit_kind,
+                    link_count=len(plan.unit_ids),
+                    item_count=self._plan_item_count(plan),
+                    device_id=self._device_id(),
+                )
+            except sqlite3.IntegrityError:
+                # 并发重放：另一条路径已经写了同一个 action_key，复用那一行。
+                stored = self.repository.find_billing_run_by_action_key(plan.idempotency_key)
+                if stored is None:
+                    raise
+        if stored["status"] != "intent":
+            raise PodRepositoryError("POD billing action is already frozen", 409)
+        try:
+            grant = self.billing_coordinator.freeze(actor, plan)
+        except Exception as exc:
+            # 4xx / 5xx / 网络 / 契约破坏都保留 intent：用户重发或启动对账会用同一键重放。
+            self.repository.mark_billing_intent_failed(
+                plan.idempotency_key, safe_error_message(exc)
+            )
+            raise
+        self._attach_freeze(plan, grant)
         return PodBillingRun(
             actor,
             self.billing_coordinator,
             plan,
             grant,
             repository=self.repository,
-            action_key=stored["action_key"],
+            action_key=plan.idempotency_key,
         )
+
+    def _attach_freeze(self, plan: PodCallPlan, grant: PodExecutionGrant) -> None:
+        """把冻结回执一次性回填到意图行（CAS intent → authorized）。"""
+        try:
+            attached = attach_freeze_snapshot(
+                self.repository,
+                plan.idempotency_key,
+                plan,
+                grant,
+                device_id=self._device_id(),
+            )
+        except Exception as exc:
+            # 回填失败：保留 intent，由对账重放接管；不再执行「全部 no_return 结算」
+            # 补偿（那条快路径会在服务端已冻结但本地无快照时把钱直接退掉）。
+            self.repository.mark_billing_intent_failed(
+                plan.idempotency_key, safe_error_message(exc)
+            )
+            raise
+        if not attached:
+            # 已被并发路径或对账回填：不覆盖既有快照。
+            return
+
+    @staticmethod
+    def _plan_item_count(plan: PodCallPlan) -> int:
+        return int(plan.semi_item_count or plan.column_style_count or 0)
+
+    def _device_id(self) -> str:
+        """本机标识：随数据目录持久化，重装后可复用（多设备对账用）。
+
+        device_id 的来源仍属产品待定口径（见设计 §9.4）；这里先用数据目录内的
+        稳定文件，避免每次启动换一个新设备号。
+        """
+        path = self.repository.database_path.parent / "pod-device-id"
+        try:
+            value = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            value = ""
+        if value:
+            return value
+        value = uuid.uuid4().hex
+        try:
+            path.write_text(value, encoding="utf-8")
+        except OSError:
+            pass
+        return value
 
     @staticmethod
     def _billing_plan(payload: dict[str, Any]) -> PodCallPlan:
@@ -3649,6 +3914,9 @@ class PodCustomizationService:
             semi_item_count=int(payload.get("semi_item_count") or 0),
             column_style_count=int(payload.get("column_style_count") or 0),
             billing_profile=str(payload.get("billing_profile") or POD_BILLING_PROFILE_RANDOM),
+            module=str(payload.get("module") or ""),
+            unit_kind=str(payload.get("unit_kind") or ""),
+            unit_ids=tuple(str(value) for value in payload.get("unit_ids") or ()),
         )
 
     @staticmethod

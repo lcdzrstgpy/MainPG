@@ -52,7 +52,7 @@ def test_fission_delivers_frozen_styles_titles_spec_cards_and_export(tmp_path):
         titles.close()
 
 
-def test_fission_invalid_grid_refunds_only_failed_style_and_retry_preserves_plan(tmp_path):
+def test_fission_invalid_grid_uses_unified_billing_and_retry_preserves_plan(tmp_path):
     from wh_local.modules.pod_customization.tests.test_fission_api import seed_analysis, request
     from wh_local.modules.pod_customization.tests.test_replica_worker import (
         BillingCoordinator, CapturingReplicaRuntime, CapturingTitleRuntime, _service, _actor, _parse_trial,
@@ -78,7 +78,9 @@ def test_fission_invalid_grid_refunds_only_failed_style_and_retry_preserves_plan
         assert batch['dianxiaomi_export']['exportable_style_count'] == 1
         assert service.export_dianxiaomi(_actor(), created['id']).content
         _, outcomes = billing.settlements[-1]
-        assert all(row.status == 'no_return' for row in outcomes if row.feature == 'pod.image' and ':style:1:' in row.call_id)
+        # 统一计费口径（Task 6）：provider 已返回即 image = success，
+        # 客户端不再按「交付完整性」做二次退款；坏图在生成阶段判失败、不导出。
+        assert all(row.status == 'success' for row in outcomes if row.feature == 'pod.image' and ':style:1:' in row.call_id)
         assert any(row.status == 'success' for row in outcomes if row.feature == 'pod.image' and ':style:2:' in row.call_id)
         before = service.repository.get_batch_internal(created['id'])['fission_variants'][0]
         successful_urls = [item['public_url'] for item in batch['items'] if item['style_index'] == 2]

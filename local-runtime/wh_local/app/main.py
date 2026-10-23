@@ -624,14 +624,21 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     )
 
     def _trigger_pod_log_upload() -> None:
-        """POD 日志每日静默上传：启动时与每次登录成功后各做一次 due check。
+        """POD 日志每日静默上传 + 计费账本对账：启动与每次登录成功后各做一次。
 
-        零常驻：只在这一刻跑一次（登录时由 BackgroundTasks 在响应之后调），内部自带
-        当天去重；取不到远端 token（还没登录）或还没到上传时刻就直接跳过。
+        日志上传零常驻：只在这一刻跑一次（登录时由 BackgroundTasks 在响应之后调），
+        内部自带当天去重；取不到远端 token（还没登录）或还没到上传时刻就直接跳过。
+        计费对账只处理「拿到远端凭证的那个用户」的未关单账，其余用户自动跳过。
         """
         task = getattr(app.state, "pod_log_upload_task", None)
         if task is not None:
             task.run_if_due()
+        pod_service = getattr(app.state, "pod_customization_service", None)
+        if pod_service is not None:
+            try:
+                pod_service.reconcile_billing_runs_once()
+            except Exception:
+                logger.warning("POD billing reconciliation failed after login", exc_info=True)
 
 
     customer_auth = (

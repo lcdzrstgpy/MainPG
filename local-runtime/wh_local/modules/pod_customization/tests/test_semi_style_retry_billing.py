@@ -25,7 +25,8 @@ class RecordingBilling:
 
     def freeze(self, actor: Actor, plan):  # noqa: ARG002 - 只记录计划
         self.plans.append(plan)
-        return PodExecutionGrant("freeze-1", 1, "2099-01-01T00:00:00Z", {"wuyin": "k"})
+        # 服务端约定 freeze_id = idempotency_key 且全局唯一。
+        return PodExecutionGrant(plan.idempotency_key, 1, "2099-01-01T00:00:00Z", {"wuyin": "k"})
 
     def settle(self, actor: Actor, grant, plan, outcomes) -> None:  # pragma: no cover - 未使用
         return None

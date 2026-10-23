@@ -8,6 +8,7 @@ import threading
 import time
 from typing import Any
 from urllib.error import HTTPError
+from urllib.parse import urlencode
 
 import requests
 
@@ -21,6 +22,7 @@ from .contracts import (
     CustomerAuthUnavailable,
     CustomerBillingPermissionError,
     CustomerBillingProtocolError,
+    CustomerBillingRemoteError,
 )
 
 
@@ -332,6 +334,154 @@ class CustomerAuthClient:
             {**payload, "freeze_id": freeze_id},
         )
 
+    # ---- v2 POD 计费契约（`/v2/pod/freezes` 一套入口；开关默认 v1） ----
+    #
+    # 统一写入口：冻结 / 结算 / close / 补领密钥；统一读入口：探活、未结清列表、日报。
+    # 所有写请求都带 `Idempotency-Key` 头，body 里的幂等键必须与头一致（服务端校验）。
+
+    _POD_V2_BASE = "/api/customer/billing/v2/pod"
+
+    def pod_v2_freeze(
+        self, remote_token: str, payload: dict[str, Any], *, idempotency_key: str
+    ) -> dict[str, Any]:
+        return self._pod_v2_post(
+            f"{self._POD_V2_BASE}/freezes",
+            remote_token,
+            payload,
+            idempotency_key=idempotency_key,
+        )
+
+    def pod_v2_settle(
+        self,
+        remote_token: str,
+        freeze_id: str,
+        payload: dict[str, Any],
+        *,
+        idempotency_key: str = "",
+    ) -> dict[str, Any]:
+        return self._pod_v2_post(
+            f"{self._POD_V2_BASE}/freezes/{freeze_id}/settle",
+            remote_token,
+            payload,
+            idempotency_key=idempotency_key or f"{freeze_id}:settle",
+        )
+
+    def pod_v2_close(
+        self,
+        remote_token: str,
+        freeze_id: str,
+        payload: dict[str, Any],
+        *,
+        idempotency_key: str = "",
+    ) -> dict[str, Any]:
+        return self._pod_v2_post(
+            f"{self._POD_V2_BASE}/freezes/{freeze_id}/close",
+            remote_token,
+            payload,
+            idempotency_key=idempotency_key or f"{freeze_id}:close",
+        )
+
+    def pod_v2_keys(
+        self,
+        remote_token: str,
+        freeze_id: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        idempotency_key: str = "",
+    ) -> dict[str, Any]:
+        return self._pod_v2_post(
+            f"{self._POD_V2_BASE}/freezes/{freeze_id}/keys",
+            remote_token,
+            payload or {},
+            idempotency_key=idempotency_key or f"{freeze_id}:keys",
+        )
+
+    def pod_v2_freeze_status(self, remote_token: str, freeze_id: str) -> dict[str, Any]:
+        return self._pod_v2_get(f"{self._POD_V2_BASE}/freezes/{freeze_id}", remote_token)
+
+    def pod_v2_open_freezes(
+        self,
+        remote_token: str,
+        *,
+        module: str = "",
+        cursor: str = "",
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        query = urlencode(
+            {
+                key: value
+                for key, value in {
+                    "status": "open",
+                    "module": module,
+                    "cursor": cursor,
+                    "limit": int(limit),
+                }.items()
+                if value not in ("", None)
+            }
+        )
+        return self._pod_v2_get(f"{self._POD_V2_BASE}/freezes?{query}", remote_token)
+
+    def pod_v2_daily_report(
+        self,
+        remote_token: str,
+        *,
+        date: str,
+        tz: str = "Asia/Shanghai",
+    ) -> dict[str, Any]:
+        query = urlencode({"date": date, "tz": tz})
+        return self._pod_v2_get(f"{self._POD_V2_BASE}/reports/daily?{query}", remote_token)
+
+    def pod_v2_daily_report_detail(
+        self,
+        remote_token: str,
+        *,
+        date: str,
+        tz: str = "Asia/Shanghai",
+        freeze_id: str = "",
+    ) -> dict[str, Any]:
+        query = urlencode(
+            {
+                key: value
+                for key, value in {"date": date, "tz": tz, "freeze_id": freeze_id}.items()
+                if value
+            }
+        )
+        return self._pod_v2_get(
+            f"{self._POD_V2_BASE}/reports/daily/detail?{query}", remote_token
+        )
+
+    def _pod_v2_post(
+        self,
+        path: str,
+        remote_token: str,
+        payload: dict[str, Any],
+        *,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        if not str(idempotency_key or "").strip():
+            raise ValueError("POD v2 billing writes require an Idempotency-Key")
+        headers = {
+            "Authorization": f"Bearer {remote_token}",
+            "Idempotency-Key": str(idempotency_key),
+        }
+        return self._billing_result(
+            self._post,
+            path,
+            {**payload, "app_version": str(default_config().app_version or "")},
+            headers=headers,
+        )
+
+    def _pod_v2_get(self, path: str, remote_token: str) -> dict[str, Any]:
+        if not remote_token:
+            raise CustomerBillingPermissionError()
+        return self._billing_result(
+            self._get,
+            path,
+            headers={"Authorization": f"Bearer {remote_token}"},
+        )
+
     def submit_pp_failure_log(self, remote_token: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Upload product-processing failure diagnostics for server-side storage.
 
@@ -587,6 +737,9 @@ class CustomerAuthClient:
                     ) from exc
                 time.sleep(_BILLING_RETRY_DELAYS[attempt])
                 continue
+            except CustomerBillingRemoteError:
+                # v2 结构化错误已带 code / retryable，不能被重新折叠成普通 4xx。
+                raise
             except CustomerAuthRejected as exc:
                 status_code = getattr(exc, "status_code", None)
                 if type(status_code) is not int or not 400 <= status_code < 500:
@@ -669,6 +822,9 @@ class CustomerAuthClient:
                     raise CustomerAuthPermissionError(status, detail) from None
                 raise CustomerBillingPermissionError(status) from None
             if 400 <= status < 500:
+                structured = _structured_billing_error(status, response.text)
+                if structured is not None:
+                    raise structured
                 raise CustomerAuthRejected(
                     status,
                     detail or f"customer auth service rejected the request (HTTP {status})",
@@ -713,6 +869,9 @@ class CustomerAuthClient:
                     raise CustomerAuthPermissionError(status, detail) from None
                 raise CustomerBillingPermissionError(status) from None
             if 400 <= status < 500:
+                structured = _structured_billing_error(status, response.text)
+                if structured is not None:
+                    raise structured
                 raise CustomerAuthRejected(
                     status,
                     detail or f"customer auth service rejected the request (HTTP {status})",
@@ -728,6 +887,26 @@ class CustomerAuthClient:
             raise CustomerAuthProtocolError("customer auth service returned an invalid response") from exc
         except (ValueError, TypeError) as exc:
             raise CustomerAuthUnavailable("customer auth service returned an invalid response") from exc
+
+
+def _structured_billing_error(status: int, text: str) -> CustomerBillingRemoteError | None:
+    """把 v2 的 ``{"error": {"code", "retryable"}}`` 解析成结构化异常。"""
+    try:
+        body = json.loads(str(text or "") or "{}")
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(body, dict):
+        return None
+    error = body.get("error")
+    if not isinstance(error, dict):
+        return None
+    code = str(error.get("code") or "")
+    if not code:
+        return None
+    message = str(error.get("message") or error.get("detail") or code)
+    return CustomerBillingRemoteError(
+        status, message, code=code, retryable=bool(error.get("retryable"))
+    )
 
 
 def _detail_from_text(text: str) -> str:
