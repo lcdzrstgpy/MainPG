@@ -36,6 +36,7 @@ const DailySelectionPage = lazy(() => import("../../modules/daily_selection/page
 const ProfitActivityProductsPage = lazy(() => import("../../modules/profit_activity/pages/ProfitActivityProductsPage").then((m) => ({ default: m.ProfitActivityProductsPage })));
 const ProfitActivityTestPage = lazy(() => import("../../modules/profit_activity/pages/ProfitActivityTestPage").then((m) => ({ default: m.ProfitActivityTestPage })));
 const PriceVerificationPage = lazy(() => import("../../modules/price_verification/pages/PriceVerificationPage").then((m) => ({ default: m.PriceVerificationPage })));
+const SourcingLedgerPage = lazy(() => import("../../modules/sourcing_ledger/pages/SourcingLedgerPage").then((m) => ({ default: m.SourcingLedgerPage })));
 const ProductProcessingVerifyPage = lazy(() => import("../../modules/product_processing/pages/ProductProcessingVerifyPage").then((m) => ({ default: m.ProductProcessingVerifyPage })));
 const ProductProcessingTaskPage = lazy(() => import("../../modules/product_processing/pages/ProductProcessingTaskPage").then((m) => ({ default: m.ProductProcessingTaskPage })));
 const ProductProcessingHistoryPage = lazy(() => import("../../modules/product_processing/pages/ProductProcessingHistoryPage").then((m) => ({ default: m.ProductProcessingHistoryPage })));
@@ -964,6 +965,9 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         break;
       case "price_verification":
         content = <PriceVerificationPage isActive={isActive} />;
+        break;
+      case "sourcing_ledger":
+        content = <SourcingLedgerPage isActive={isActive} />;
         break;
       case "product_processing":
         content = <ProductProcessingVerifyPage onStartProcessing={openProcessingTask} onOpenCollection={() => openModule("daily_selection")} isActive={isActive} />;

@@ -20,6 +20,7 @@ export type WorkspaceModuleId =
   | "profit_activity"
   | "profit_activity_products"
   | "price_verification"
+  | "sourcing_ledger"
   | "personal_center";
 
 export type WorkspaceNavigationGroupId =
@@ -166,6 +167,8 @@ const productProcessingSourcing: WorkspaceModule = {
   icon: "",
   iconClass: "iconfont icon-database",
   description: "汇总各渠道采集商品的货源链接、店铺与成本价格",
+  // 已合并进「核价及货源 → 货源与利润」，保留页面与路由避免旧页签失效。
+  hiddenFromSidebar: true,
 };
 
 const comboGenerate: WorkspaceModule = {
@@ -198,6 +201,16 @@ const priceVerification: WorkspaceModule = {
   icon: "",
   iconClass: "iconfont icon-reconciliation",
   description: "核验价格与维护货源信息",
+  // 图搜链路已下线（代码保留），入口合并进「货源与利润」。
+  hiddenFromSidebar: true,
+};
+
+const sourcingLedger: WorkspaceModule = {
+  id: "sourcing_ledger",
+  label: "货源与利润",
+  icon: "",
+  iconClass: "iconfont icon-calculator",
+  description: "采集货源、Temu 申报价、利润核算与入产品库",
 };
 
 const profitActivity: WorkspaceModule = {
@@ -296,8 +309,8 @@ export const workspaceModules: WorkspaceNavigationItem[] = [
     icon: "",
     iconClass: "iconfont icon-audit",
     description: "核价、利润与货源产品管理",
-    defaultChildId: "price_verification",
-    children: [priceVerification, profitActivity, productLibrary],
+    defaultChildId: "sourcing_ledger",
+    children: [sourcingLedger, priceVerification, profitActivity, productLibrary],
   },
   {
     // AI 视频仍是单个页签模块，侧栏按分组展开 iframe 内的 7 个入口。
@@ -341,6 +354,7 @@ export const workspacePageModules: WorkspaceModule[] = [
   podReplica,
   podFission,
   priceVerification,
+  sourcingLedger,
   profitActivity,
   productLibrary,
   personalCenter,

@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import type { ClipboardEvent as ReactClipboardEvent } from "react";
+import type { ClipboardEvent as ReactClipboardEvent, MouseEvent as ReactMouseEvent } from "react";
 
 import { listProductSources, loadProductImage, updateProductSourceGroup } from "../api/profitActivityApi";
 import type { ProfitActivityProduct, ProductSourceLink, ProductSources } from "../types/products";
 import { priceVerificationApi } from "../../price_verification/api/priceVerificationApi";
-import type { SourceTopProfit } from "../../price_verification/types";
+import { ImagePreviewModal } from "./ImagePreviewModal";
+import type { PreviewImage } from "./ImagePreviewModal";
 
 type Props = {
   product: ProfitActivityProduct | null;
@@ -19,6 +20,10 @@ type EditSourceRow = {
   /** 原始货源组号，保存时据此判断链接/图片是否变化 */
   originalGroup: number;
   url: string;
+  title: string;
+  price: string;
+  freight: string;
+  mainImageUrl: string;
   image: File | null;
   imagePreview: string;
 };
@@ -43,14 +48,8 @@ function moneyText(value: unknown, symbol = "¥") {
   return `${symbol}${number.toFixed(2)}`;
 }
 
-function percentText(value: unknown) {
-  const number = toNumber(value);
-  if (!Number.isFinite(number)) return "";
-  return `${Math.round(number * 100)}%`;
-}
-
 /** 货源单图：一条链接对应一张图。优先标准审核表截图，回退 1688 主图。 */
-function SourceCardImage({ skc, site, group, imagePaths, fallbackUrl }: { skc: string; site: string; group?: number; imagePaths: string[]; fallbackUrl?: string }) {
+function SourceCardImage({ skc, site, group, imagePaths, fallbackUrl, onPreview }: { skc: string; site: string; group?: number; imagePaths: string[]; fallbackUrl?: string; onPreview?: (image: PreviewImage) => void }) {
   const [url, setUrl] = useState("");
   const first = imagePaths[0] ?? "";
 
@@ -85,69 +84,42 @@ function SourceCardImage({ skc, site, group, imagePaths, fallbackUrl }: { skc: s
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [skc, site, group, first]);
 
-  if (url) return <img className="profit-source-card-shot" src={url} alt="货源截图" loading="lazy" />;
-  if (fallbackUrl) return <img className="profit-source-card-shot" src={fallbackUrl} alt="1688 商品图" loading="lazy" />;
-  return <span className="profit-source-card-img-fallback">无图</span>;
-}
-
-function qualificationText(value?: string) {
-  if (value === "net_profit_and_profit_rate_passed") return "净利润与利润率双达标";
-  if (value === "net_profit_passed") return "净利润达标";
-  if (value === "profit_rate_passed") return "利润率达标";
-  if (value === "net_profit_and_profit_rate_below_threshold") return "净利润与利润率未达标";
-  return "";
-}
-
-function reasonText(reason?: string) {
-  if (!reason) return "无法核算";
-  if (reason === "missing_source_price") return "候选无有效价格";
-  if (reason === "missing_selling_price") return "缺少调整后申报价";
-  if (reason === "missing_site") return "站点未识别";
-  if (reason === "profit_calculation_failed") return "利润计算失败";
-  return reason;
-}
-
-async function computeProfit(
-  link: ProductSourceLink,
-  price: string | undefined,
-  weight: string,
-  site: string | undefined,
-  selling: number | null | undefined,
-): Promise<SourceTopProfit | null> {
-  if (!selling || !link.batch_id) return null;
-  if (price === undefined || price === null || price === "") return null;
-  try {
-    return await priceVerificationApi.previewSourceProfit(link.batch_id, {
-      site: site || "US",
-      selling_price: String(selling),
-      price: String(price),
-      moq: link.moq ?? null,
-      domestic_freight: link.domestic_freight_cny ?? null,
-      weight_kg: weight,
-    });
-  } catch {
-    return null;
-  }
+  const src = url || fallbackUrl || "";
+  if (!src) return <span className="profit-source-card-img-fallback">无图</span>;
+  const label = url ? "货源截图" : "1688 商品图";
+  // 卡片外层可能是跳转链接，这里拦掉默认行为，只打开大图预览
+  const openPreview = onPreview
+    ? (event: ReactMouseEvent<HTMLImageElement>) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onPreview({ url: src, label });
+      }
+    : undefined;
+  return (
+    <img
+      className={`profit-source-card-shot${onPreview ? " is-zoomable" : ""}`}
+      src={src}
+      alt={label}
+      loading="lazy"
+      title={onPreview ? "点击查看大图" : undefined}
+      onClick={openPreview}
+    />
+  );
 }
 
 export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
   const [sources, setSources] = useState<ProductSources | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [prices, setPrices] = useState<Record<number, string>>({});
-  const [weights, setWeights] = useState<Record<number, string>>({});
-  const [profits, setProfits] = useState<Record<number, SourceTopProfit | null>>({});
-  const [profitBusy, setProfitBusy] = useState<number | null>(null);
   const [unlinkBusy, setUnlinkBusy] = useState<number | null>(null);
   const [unlinkError, setUnlinkError] = useState("");
   // 非核价产品货源卡片的编辑态：可新增/删除多条货源链接与截图
   const [editingSources, setEditingSources] = useState(false);
   const [editRows, setEditRows] = useState<EditSourceRow[]>([]);
   const [savingSource, setSavingSource] = useState(false);
+  // 货源截图大图预览
+  const [previewImage, setPreviewImage] = useState<PreviewImage | null>(null);
   const nextEditRowKeyRef = useRef(0);
-  // 每个货源链接最近一次核价请求的序号：并发时丢弃过期响应，
-  // 否则快速连改价格/重量时，慢的旧结果会覆盖新结果，显示与输入框不一致。
-  const profitRequestSeqRef = useRef<Record<number, number>>({});
   // 抽屉内维护最新产品数据：保存/解除关联后更新，避免编辑态复用旧的 source_groups
   const [productData, setProductData] = useState<ProfitActivityProduct | null>(product);
 
@@ -166,22 +138,6 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
       const site = (target.site || target.site_code || "US") as "US" | "CO" | "EC";
       const data = await listProductSources({ skc: target.skc, site });
       setSources(data);
-      const nextPrices: Record<number, string> = {};
-      const nextWeights: Record<number, string> = {};
-      data.links.forEach((link) => {
-        const price = toNumber(link.price_cny);
-        nextPrices[link.id] = Number.isFinite(price) ? String(price) : "";
-        nextWeights[link.id] = "0.5";
-      });
-      setPrices(nextPrices);
-      setWeights(nextWeights);
-      const selling = data.selling_price ?? target.selling_price;
-      const nextProfits: Record<number, SourceTopProfit | null> = {};
-      await Promise.all(data.links.map(async (link) => {
-        const profit = await computeProfit(link, nextPrices[link.id], nextWeights[link.id], data.site, selling);
-        if (profit) nextProfits[link.id] = profit;
-      }));
-      setProfits(nextProfits);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -193,13 +149,11 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
     if (open) void refresh();
     else {
       setSources(null);
-      setProfits({});
-      setPrices({});
-      setWeights({});
       setUnlinkError("");
       setEditingSources(false);
       setEditRows([]);
       setSavingSource(false);
+      setPreviewImage(null);
     }
   }, [open, refresh]);
 
@@ -208,42 +162,8 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
   // 使用抽屉内最新产品数据（保存后刷新），避免编辑态复用旧的 source_groups
   const current = productData ?? product;
 
-  // 核价入库产品保留候选源价/重量/利润核算与解除关联；其他产品仅展示并允许修改图片与链接
+  // 核价入库产品额外展示「解除关联」；货源卡片统一展示单价/运费/到手/重量与图片（不做利润细则）。
   const isPriceVerification = current.source_type === "price_verification";
-
-  // 带序号守卫的核价：同一 link 的旧响应晚到即丢弃，避免覆盖最新一次的输入结果。
-  const runProfitRequest = (link: ProductSourceLink, run: () => Promise<SourceTopProfit | null>) => {
-    const seq = (profitRequestSeqRef.current[link.id] ?? 0) + 1;
-    profitRequestSeqRef.current[link.id] = seq;
-    setProfitBusy(link.id);
-    void run()
-      .then((profit) => {
-        if (profitRequestSeqRef.current[link.id] !== seq) return;
-        setProfits((current) => ({ ...current, [link.id]: profit }));
-      })
-      .finally(() => {
-        if (profitRequestSeqRef.current[link.id] !== seq) return;
-        setProfitBusy((current) => (current === link.id ? null : current));
-      });
-  };
-
-  const changePrice = (link: ProductSourceLink, rawValue: string) => {
-    if (!/^\d*\.?\d*$/.test(rawValue)) return;
-    setPrices((current) => ({ ...current, [link.id]: rawValue }));
-    const parsed = Number(rawValue);
-    if (!Number.isFinite(parsed) || parsed <= 0) return;
-    runProfitRequest(link, () =>
-      computeProfit(link, rawValue, weights[link.id], sources?.site, sources?.selling_price ?? current.selling_price));
-  };
-
-  const changeWeight = (link: ProductSourceLink, rawValue: string) => {
-    if (!/^\d*\.?\d*$/.test(rawValue)) return;
-    setWeights((current) => ({ ...current, [link.id]: rawValue }));
-    const parsed = Number(rawValue);
-    if (!Number.isFinite(parsed) || parsed <= 0) return;
-    runProfitRequest(link, () =>
-      computeProfit(link, prices[link.id], rawValue, sources?.site, sources?.selling_price ?? current.selling_price));
-  };
 
   const unlink = async (link: ProductSourceLink) => {
     if (!link.batch_id) return;
@@ -251,11 +171,6 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
     setUnlinkError("");
     try {
       await priceVerificationApi.removeSkcSourceLink(link.batch_id, link.id);
-      setProfits((current) => {
-        const next = { ...current };
-        delete next[link.id];
-        return next;
-      });
       await refresh();
       onChanged?.();
     } catch (err) {
@@ -268,18 +183,30 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
     }
   };
 
-  // 进入“修改货源链接”编辑态，载入全部货源组
+  // 进入“修改货源链接”编辑态，载入全部货源组；同时带上现有单价/运费/图片，
+  // 编辑时不至于丢掉已经展示的信息（价格在核价链接里、图片可能来自产品主图）。
   const startEditSources = () => {
     const groups = (productData ?? product).source_groups ?? [];
+    const links = sources?.links ?? [];
+    const buildRow = (key: number, url: string, originalGroup: number): EditSourceRow => {
+      const link = links.find((item) => (item.source_url || "").trim() === url.trim());
+      return {
+        key,
+        originalGroup,
+        url,
+        title: link?.source_title || "",
+        price: link?.price_cny == null ? "" : String(link.price_cny),
+        freight: link?.domestic_freight_cny == null ? "" : String(link.domestic_freight_cny),
+        mainImageUrl: link?.main_image_url || "",
+        image: null,
+        imagePreview: "",
+      };
+    };
     const rows: EditSourceRow[] = groups.length
-      ? groups.map((group, index) => ({
-          key: index,
-          originalGroup: index,
-          url: group?.source_url ?? "",
-          image: null,
-          imagePreview: "",
-        }))
-      : [{ key: 0, originalGroup: 0, url: "", image: null, imagePreview: "" }];
+      ? groups.map((group, index) => buildRow(index, group?.source_url ?? "", index))
+      : links.length
+        ? links.map((link, index) => buildRow(index, link.source_url ?? "", index))
+        : [buildRow(0, "", 0)];
     nextEditRowKeyRef.current = rows.length;
     setEditRows(rows);
     setEditingSources(true);
@@ -297,7 +224,17 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
   const addEditRow = () => {
     setEditRows((current) => [
       ...current,
-      { key: nextEditRowKeyRef.current++, originalGroup: current.length, url: "", image: null, imagePreview: "" },
+      {
+        key: nextEditRowKeyRef.current++,
+        originalGroup: current.length,
+        url: "",
+        title: "",
+        price: "",
+        freight: "",
+        mainImageUrl: "",
+        image: null,
+        imagePreview: "",
+      },
     ]);
   };
 
@@ -416,91 +353,93 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
           ) : null}
 
           {editingSources ? null : (sources?.links ?? []).map((link) => {
-            const profit = profits[link.id] ?? null;
-            const priceText = prices[link.id] !== undefined ? prices[link.id] : String(link.price_cny ?? "");
-            const weightText = weights[link.id] ?? "0.5";
+            const price = toNumber(link.price_cny);
+            const freight = toNumber(link.domestic_freight_cny);
+            const landed = price + (Number.isFinite(freight) ? freight : 0);
+            const weight = toNumber(current.weight_kg);
             return (
               <div className={`profit-source-card ${isPriceVerification ? "" : "profit-source-card-simple"}`} key={link.id}>
                 <div className="profit-source-card-row">
-                  {isPriceVerification ? (
-                    <>
-                      <a className="profit-source-card-main" href={link.source_url} target="_blank" rel="noreferrer">
-                        <SourceCardImage
-                          skc={current.skc}
-                          site={sources?.site || current.site || current.site_code || "US"}
-                          group={link.group}
-                          imagePaths={link.image_paths ?? []}
-                          fallbackUrl={link.main_image_url}
-                        />
-                        <span className="profit-source-card-body">
-                          <span className="profit-source-card-title">{link.source_title || "候选商品"}</span>
-                          <small className="profit-source-card-meta">
-                            offer {link.offer_id} · 起订量 {link.moq ? `${link.moq} 件` : "—"} · 国内运费 {link.domestic_freight_cny ? `¥${link.domestic_freight_cny}` : "—"}
-                          </small>
-                        </span>
-                        <b>{moneyText(link.price_cny)}</b>
-                      </a>
-                      <button
-                        className="profit-source-unlink"
-                        onClick={() => void unlink(link)}
-                        disabled={unlinkBusy === link.id}
-                      >
-                        {unlinkBusy === link.id ? "解除中…" : "解除关联"}
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <a className="profit-source-card-main" href={link.source_url} target="_blank" rel="noreferrer">
-                        <SourceCardImage
-                          skc={current.skc}
-                          site={sources?.site || current.site || current.site_code || "US"}
-                          group={link.group}
-                          imagePaths={link.image_paths ?? []}
-                          fallbackUrl={link.main_image_url}
-                        />
-                        <span className="profit-source-card-body">
-                          <span className="profit-source-card-title">{link.source_title || "货源链接"}</span>
-                          <small className="profit-source-card-meta profit-source-card-url" title={link.source_url}>{link.source_url || "—"}</small>
-                        </span>
-                      </a>
-                    </>
-                  )}
-                </div>
-
-                {isPriceVerification ? (
-                  <div className="profit-source-card-profit">
-                    <dl className="profit-source-card-fields">
-                      <div className="is-editable">
-                        <dt>候选源价（可调）</dt>
-                        <dd><input type="number" min="0.01" step="0.01" value={priceText} onChange={(event) => changePrice(link, event.target.value)} disabled={profitBusy === link.id} /> 元</dd>
-                      </div>
-                      <div className="is-editable is-weight">
-                        <dt>重量（可调）</dt>
-                        <dd><input type="number" min="0.1" max="10" step="0.1" value={weightText} onChange={(event) => changeWeight(link, event.target.value)} disabled={profitBusy === link.id} /> kg</dd>
-                      </div>
-                    </dl>
-                    {profit?.available ? (
-                      <div className={`profit-source-card-result ${profit.qualified ? "is-qualified" : ""}`}>
-                        <dl className="profit-source-card-result-fields">
-                          <div><dt>总成本</dt><dd>{moneyText(profit.total_cost)}</dd></div>
-                          <div><dt>净利润</dt><dd>{moneyText(profit.net_profit)}</dd></div>
-                          <div><dt>利润率</dt><dd>{percentText(profit.profit_rate)}</dd></div>
-                        </dl>
-                        <em className={profit.qualified ? "is-qualified" : ""} title={qualificationText(profit.qualification)}>
-                          {profit.qualified ? "达标 ✓" : "未达标"}
-                        </em>
-                      </div>
+                  <a className="profit-source-card-main" href={link.source_url} target="_blank" rel="noreferrer">
+                    {(link.images?.length ?? 0) > 0 ? (
+                      <span className="profit-source-thumbs">
+                        {(link.images || []).map((image, imageIndex) => (
+                          <img
+                            key={`${link.id}-${image.id}-${imageIndex}`}
+                            className="profit-source-thumb"
+                            src={image.image_url}
+                            alt="货源图"
+                            loading="lazy"
+                            referrerPolicy="no-referrer"
+                            title="点击查看大图"
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              setPreviewImage({ url: image.image_url, label: "货源图" });
+                            }}
+                          />
+                        ))}
+                      </span>
                     ) : (
-                      <div className="profit-source-card-result is-empty">
-                        <span>利润核算不可用：{reasonText(profit?.reason)}</span>
-                        {profitBusy === link.id ? <small>核算中…</small> : null}
-                      </div>
+                      <SourceCardImage
+                        skc={current.skc}
+                        site={sources?.site || current.site || current.site_code || "US"}
+                        group={link.group}
+                        imagePaths={link.image_paths ?? []}
+                        fallbackUrl={link.main_image_url}
+                        onPreview={setPreviewImage}
+                      />
                     )}
-                  </div>
-                ) : null}
+                    <span className="profit-source-card-body">
+                      <span className="profit-source-card-title">
+                        {link.source_title || (isPriceVerification ? "候选商品" : "货源链接")}
+                      </span>
+                      <small className="profit-source-card-meta">
+                        单价 {moneyText(link.price_cny)} · 运费 {moneyText(link.domestic_freight_cny)} · 到手{" "}
+                        {moneyText(landed)}
+                        {Number.isFinite(weight) ? ` · 重量 ${weight} kg` : ""}
+                      </small>
+                      <small className="profit-source-card-meta profit-source-card-url" title={link.source_url}>
+                        {link.source_url || "—"}
+                      </small>
+                    </span>
+                  </a>
+                  {isPriceVerification ? (
+                    <button
+                      className="profit-source-unlink"
+                      onClick={() => void unlink(link)}
+                      disabled={unlinkBusy === link.id}
+                    >
+                      {unlinkBusy === link.id ? "解除中…" : "解除关联"}
+                    </button>
+                  ) : null}
+                </div>
               </div>
             );
           })}
+          {sources?.skus?.length ? (
+            <section className="profit-source-skus">
+              <h3>SKU 货号 / 属性（{sources.skus.length}）</h3>
+              <div className="profit-source-sku-scroll">
+                <table className="profit-source-sku-table">
+                  <thead>
+                    <tr>
+                      <th>SKU 货号</th>
+                      <th>SKU 属性</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sources.skus.map((sku, index) => (
+                      <tr key={`${sku.sku_merchant_code || sku.sku_id}-${index}`}>
+                        <td>{sku.sku_merchant_code || sku.sku_id || "—"}</td>
+                        <td title={sku.sku_attribute_text}>{sku.sku_attribute_text || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          ) : null}
           {editingSources ? (
             <div className="profit-source-edit-panel">
               <div className="profit-source-edit-rows">
@@ -516,14 +455,22 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
                           onPaste={(event) => onEditRowImagePaste(row.key, event)}
                         >
                           {row.imagePreview ? (
-                            <img className="profit-source-card-shot" src={row.imagePreview} alt="新货源截图" loading="lazy" />
+                            <img
+                              className="profit-source-card-shot is-zoomable"
+                              src={row.imagePreview}
+                              alt="新货源截图"
+                              loading="lazy"
+                              title="点击查看大图"
+                              onClick={() => setPreviewImage({ url: row.imagePreview, label: "新货源截图" })}
+                            />
                           ) : (
                             <SourceCardImage
                               skc={current.skc}
                               site={sources?.site || current.site || current.site_code || "US"}
                               group={row.originalGroup}
                               imagePaths={original?.image_paths ?? []}
-                              fallbackUrl=""
+                              fallbackUrl={row.mainImageUrl}
+                              onPreview={setPreviewImage}
                             />
                           )}
                           <label className="profit-source-edit-image-button">
@@ -547,6 +494,16 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
                             value={row.url}
                             onChange={(event) => changeEditRowUrl(row.key, event.target.value)}
                           />
+                          <small className="profit-source-edit-meta" title={row.title}>
+                            单价 {moneyText(row.price)} · 运费 {moneyText(row.freight)} · 到手{" "}
+                            {moneyText(
+                              toNumber(row.price)
+                                + (Number.isFinite(toNumber(row.freight)) ? toNumber(row.freight) : 0),
+                            )}
+                            {Number.isFinite(toNumber(current.weight_kg))
+                              ? ` · 重量 ${toNumber(current.weight_kg)} kg`
+                              : ""}
+                          </small>
                         </label>
                       </div>
                       <button
@@ -577,6 +534,14 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
           {unlinkError ? <p className="profit-source-drawer-status is-error">{unlinkError}</p> : null}
         </div>
       </aside>
+      {previewImage ? (
+        <ImagePreviewModal
+          images={[previewImage]}
+          index={0}
+          onIndexChange={() => undefined}
+          onClose={() => setPreviewImage(null)}
+        />
+      ) : null}
     </div>,
     document.body,
   );
