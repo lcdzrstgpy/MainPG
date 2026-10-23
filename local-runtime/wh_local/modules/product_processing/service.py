@@ -5899,13 +5899,18 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         if tasks:
             from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
 
+            # 同一张规格图可能被多个变种/多条链接共用：按 asset_id 去重后再 OCR，
+            # 再把结论映射回每个变种键。OCR 结果本身还有内容哈希缓存兜底。
+            unique_assets = list(dict.fromkeys(asset_id for _draft, asset_id, _key in tasks))
             workers = max(1, ocr_worker_limit())
             with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="sku-availability") as pool:
-                outcomes = list(
-                    pool.map(lambda task: self._inspect_sku_asset(task[1], workspace_id), tasks)
+                asset_outcomes = list(
+                    pool.map(lambda asset_id: self._inspect_sku_asset(asset_id, workspace_id), unique_assets)
                 )
-            for (draft_id, _asset_id, variant_key), outcome in zip(tasks, outcomes):
+            outcome_by_asset = dict(zip(unique_assets, asset_outcomes))
+            for (draft_id, asset_id, variant_key) in tasks:
                 plan = plan_by_draft[draft_id]
+                outcome = outcome_by_asset.get(asset_id)
                 if outcome is None:
                     plan["failed"] += 1
                     continue

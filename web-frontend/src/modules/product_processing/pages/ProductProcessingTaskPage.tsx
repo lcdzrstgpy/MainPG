@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+﻿import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ppDownload, ppRequest, type ApiContext } from '../api/client';
 import { productProcessingApiContext } from '../api/context';
@@ -49,7 +49,9 @@ const TERMINAL_POLL_GRACE_MS = 120_000;
 const TERMINAL_POLL_INTERVAL_MS = 3_000;
 
 // SKU 原图可用性检测按批提交：逐批更新进度，避免一次性几百条把单个请求拖成分钟级。
-const SKU_CHECK_BATCH_SIZE = 20;
+// 10 条一批（原 20）：每批返回更快，进度条能持续前进；后端仍按 OCR 并发上限并行，
+// 批间空档由后端内容哈希缓存 + 同一批内的 asset 去重抵消。
+const SKU_CHECK_BATCH_SIZE = 10;
 
 const SITES = [
   { code: 'US', label: '美国站' },
@@ -238,8 +240,8 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       descriptionTemplate: 'A',
       // 失败项自动重跑默认关闭：重跑会再次调用 AI 生图并计费，交给用户显式开启。
       autoRepull: false,
-      // 尺寸图自动烧制默认开启；不需要尺寸图的品类可在处理设置里关闭。
-      dimensionCard: true,
+      // 尺寸图自动烧制默认关闭：烧制会额外占用 AI/本地渲染时间，交给用户按品类显式开启。
+      dimensionCard: false,
     }
   );
   const imageSelection: PhotoSelection = {
@@ -378,6 +380,10 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
   const [skuCheckProgress, setSkuCheckProgress] = useState({ done: 0, total: 0 });
   /** 只判尺寸、跳过中文 OCR：1:1 读元数据零成本，中文检测要逐张跑 OCR（很慢）。 */
   const [skipSkuTextCheck, setSkipSkuTextCheck] = useState(false);
+  /** 用户确认跳过检测：本批 SKU 图统一用生成后的主图，不再复用规格原图。 */
+  const [skuCheckSkipped, setSkuCheckSkipped] = useState(false);
+  /** 跳过前的二次确认弹窗。 */
+  const [skipConfirmOpen, setSkipConfirmOpen] = useState(false);
   const skuCheckRunRef = useRef(0);
 
   // 实际提交的链接数：与 startBatch 的 draft_ids 截断规则保持一致。
@@ -487,6 +493,12 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
     return initialDraftIds.filter((id) => skuResults[id]?.reason === 'not_square_image').length;
   }, [initialDraftIds, skuResults]);
   const skuFallbackCount = Math.max(0, skuTotalChecked - skuCleanCount - skuPendingSyncCount);
+  // 检测进度百分比：进度条与右侧计数共用；total 为 0 时保持 0。
+  const skuCheckPercent = skuCheckProgress.total > 0
+    ? Math.min(100, Math.round((skuCheckProgress.done / skuCheckProgress.total) * 100))
+    : 0;
+  // 「已确认可复用原图」= 检测跑完且用户没有跳过；其余情况一律按生成主图处理。
+  const skuCheckDecided = skuCheckDone && !skuCheckSkipped;
 
   // 检测结果 → 处理参数：variant_image_mode 分流 + 「优化链接 SKU」命中的变种剔除键。
   // - clean：规格图无中文，逐 SKU 用规格原图（source）；
@@ -498,7 +510,13 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
   const skuPlan = useMemo(() => {
     const classification: Record<number, 'source' | 'main' | 'auto'> = {};
     const exclusions: Record<number, string[]> = {};
-    if (!skuCheckDone) return { classification, exclusions };
+    // 没检测（用户尚未确认开始）或明确跳过：统一用生成后的主图。
+    // 这是「不检测也必须可用」的兜底——规格原图是否含中文水印/是否 1:1 未知，
+    // 直接复用有被店小秘整单拒收的风险。
+    if (!skuCheckDecided) {
+      for (const id of initialDraftIds || []) classification[id] = 'main';
+      return { classification, exclusions };
+    }
     for (const id of initialDraftIds || []) {
       const item = skuResults[id];
       if (!item) continue;
@@ -521,7 +539,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       classification[id] = item.status === 'clean' ? 'source' : 'main';
     }
     return { classification, exclusions };
-  }, [initialDraftIds, skuResults, skuCheckDone, optimizeSku]);
+  }, [initialDraftIds, skuResults, skuCheckDecided, optimizeSku]);
   const skuOptimizedCount = Object.keys(skuPlan.exclusions).length;
 
   const notify = (ok: string) => { setMessage(ok); setError(''); };
@@ -549,6 +567,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
     const runId = ++skuCheckRunRef.current;
     setSkuCheckBusy(true);
     setSkuCheckDone(false);
+    setSkuCheckSkipped(false);
     setSkuCheckError('');
     setSkuResults({});
     setSkuCheckProgress({ done: 0, total: draftIds.length });
@@ -574,13 +593,9 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
     }
   };
 
-  useEffect(() => {
-    // 历史任务详情页不做检测；只在「处理设置」页（点开始处理后的页面）对本次所选链接检测。
-    if (initialTaskId != null || !initialDraftIds?.length) return;
-    void runSkuAvailabilityCheck();
-    return () => { skuCheckRunRef.current += 1; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialTaskId, initialDraftIds]);
+  // 不再自动检测：这一步要读每张规格图跑 OCR，在低配电脑上会明显拖慢进页面；
+  // 改为用户点「开始检测」才跑。不检测/跳过时 SKU 图统一用生成后的主图（见 skuPlan）。
+  useEffect(() => () => { skuCheckRunRef.current += 1; }, []);
 
   const downloadOutput = async (kind: 'dxm' | 'errors' | 'video_manifest', filename: string) => {
     if (!batch) return;
@@ -769,10 +784,10 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
           : {},
         // 一键随机模板：默认关闭，打开后本批次每条链接随机分配生图/描述模板。
         random_template: options.randomTemplate === true,
-        // 用户选择是否对技术可重试的失败项自动补跑（默认关闭）
-        auto_repull: options.autoRepull !== false,
-        // 是否自动烧制第 4 格尺寸图（默认开启；不需要尺寸图的品类可关闭）
-        dimension_card: options.dimensionCard !== false,
+        // 用户选择是否对技术可重试的失败项自动补跑（默认关闭，需显式勾选）
+        auto_repull: options.autoRepull === true,
+        // 是否自动烧制第 4 格尺寸图（默认关闭，需用户在处理设置里显式勾选）
+        dimension_card: options.dimensionCard === true,
         // 兼容旧 API 字段；新任务统一走智能生图策略，不再由用户选择。
         image_generation_count: 4,
         // SKU 原图可用性分类（处理设置页检测结果）：写入草稿预检覆盖，导出按此分流。
@@ -875,7 +890,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
     setError('');
     try {
       const data = await ppRequest<TaskOutputsResponse>(ctx, `${API_BASE}/tasks/${batch.task_id}/retry-attention`, {
-        body: { draft_ids: draftIds, auto_repull: options.autoRepull !== false },
+        body: { draft_ids: draftIds, auto_repull: options.autoRepull === true },
       });
       setBatch(data);
       onTaskStarted?.(data.task_id);
@@ -936,6 +951,44 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
         </div>,
         document.body,
       )}
+      {skipConfirmOpen && createPortal(
+        <div
+          className="pp-start-confirm-mask"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setSkipConfirmOpen(false);
+          }}
+        >
+          <div
+            className="pp-start-confirm pp-sku-skip-confirm"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="pp-sku-skip-title"
+          >
+            <h3 id="pp-sku-skip-title">跳过 SKU 原图检测？</h3>
+            <p className="pp-start-confirm-line">
+              跳过检测后，本批 <b>{pendingLinkCount}</b> 条链接的 SKU 图将统一使用
+              <b>AI 生成后的商品主图</b>，不再复用规格原图。
+            </p>
+            <ul className="pp-sku-skip-points">
+              <li>好处：不必等待逐张 OCR，开始处理更快；主图天然是 1:1 方图，不会被店小秘拒收。</li>
+              <li>代价：规格原图不再被复用，SKU 图会与原始规格图不同（但仍与本批主图风格一致）。</li>
+              <li>随时可点「重新检测」恢复原图复用，检测结果会自动更新导出策略。</li>
+            </ul>
+            <div className="pp-start-confirm-actions">
+              <button className="primary" onClick={() => setSkipConfirmOpen(false)}>返回检测</button>
+              <button
+                onClick={() => {
+                  setSkipConfirmOpen(false);
+                  setSkuCheckSkipped(true);
+                  setSkuCheckError('');
+                }}
+              >仍然跳过，用生成主图</button>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
       <header className="verify-commandbar">
         <div className="verify-command-title">
           <h1>{initialTaskId != null ? '历史任务详情' : '处理设置与进度'}</h1>
@@ -976,23 +1029,23 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                 </select>
               </label>
               <div className="verify-inline-checks">
-                <label className="verify-scope-check verify-inline-check" title="任务结束后自动重试失败/待确认的链接（每条最多自动重试 1 次，避免无限重试）。重试会再次调用 AI 生图、产生 AI 生图费用；默认开启，关闭后失败项需在结果页手动重新处理">
+                <label className="verify-scope-check verify-inline-check" title="任务结束后自动重试失败/待确认的链接（每条最多自动重试 1 次，避免无限重试）。重试会再次调用 AI 生图、产生 AI 生图费用；默认关闭，需要时勾选，关闭后失败项可在结果页手动重新处理">
                   <input
                     type="checkbox"
-                    checked={options.autoRepull !== false}
+                    checked={options.autoRepull === true}
                     onChange={(e) => setOptions((p) => ({ ...p, autoRepull: e.target.checked }))}
                   />
                   <span>自动重跑失败项</span>
                   <span className="verify-sub">最多 1 次 · 会再次调用 AI 并计费</span>
                 </label>
-                <label className="verify-scope-check verify-inline-check" title="开启后，AI 处理成功时自动把第 4 格烧成尺寸卡（复用原链接尺寸图或本地渲染）。部分品类不需要尺寸图，可在这里关闭；关闭后不导入尺寸画布、不烧卡，也不做原图尺寸图 OCR 预取">
+                <label className="verify-scope-check verify-inline-check" title="勾选后，AI 处理成功时自动把第 4 格烧成尺寸卡（复用原链接尺寸图或本地渲染）。默认关闭；开启后不导入尺寸画布之外的额外处理，不需要尺寸图的品类保持关闭即可">
                   <input
                     type="checkbox"
-                    checked={options.dimensionCard !== false}
+                    checked={options.dimensionCard === true}
                     onChange={(e) => setOptions((p) => ({ ...p, dimensionCard: e.target.checked }))}
                   />
                   <span>自动烧制尺寸图</span>
-                  <span className="verify-sub">第 4 格尺寸卡 · 不需要的品类可关闭</span>
+                  <span className="verify-sub">第 4 格尺寸卡 · 默认关闭，按品类开启</span>
                 </label>
               </div>
             </div>
@@ -1025,9 +1078,11 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                     ? `检测中 ${skuCheckProgress.done}/${skuCheckProgress.total}`
                     : skuCheckDone
                       ? '检测完成'
-                      : skuCheckError
-                        ? '检测失败'
-                        : '等待检测'}
+                      : skuCheckSkipped
+                        ? '已跳过 · 用生成主图'
+                        : skuCheckError
+                          ? '检测失败'
+                          : '等待确认'}
                 </span>
                 <label
                   className="verify-scope-check"
@@ -1042,7 +1097,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                 </label>
                 <label
                   className="verify-scope-check"
-                  title="勾选后：只判规格图是否为 1:1 方图（读元数据，零成本），跳过逐张中文 OCR（实测约 277ms/张，4 并发下 1400 张约 98 秒）。非 1:1 仍会被拦住；代价是规格原图上的中文水印不会被发现，导出风险自负。"
+                  title="勾选后：只判规格图是否为 1:1 方图（读元数据，零成本），跳过逐张中文 OCR。非 1:1 仍会被拦住；代价是规格原图上的中文水印不会被发现，导出风险自负。"
                 >
                   <input
                     type="checkbox"
@@ -1051,16 +1106,34 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                   />
                   <span>跳过中文检测（只判 1:1，快）</span>
                 </label>
-                <button
-                  className="btn-mini"
-                  disabled={skuCheckBusy || !initialDraftIds?.length}
-                  onClick={() => void runSkuAvailabilityCheck()}
-                  title={
-                    skipSkuTextCheck
+                {!skuCheckBusy && !skuCheckDone && !skuCheckSkipped && (
+                  <>
+                    <button
+                      className="primary verify-sku-start"
+                      disabled={!initialDraftIds?.length}
+                      onClick={() => void runSkuAvailabilityCheck()}
+                      title={skipSkuTextCheck
+                        ? '只判规格图是否为 1:1 方图（快）'
+                        : '逐张检测规格图是否含中文水印、是否为 1:1 方图'}
+                    >开始检测</button>
+                    <button
+                      className="btn-mini"
+                      disabled={!initialDraftIds?.length}
+                      onClick={() => setSkipConfirmOpen(true)}
+                      title="不检测：本批 SKU 图统一使用生成后的主图"
+                    >跳过，用生成主图</button>
+                  </>
+                )}
+                {!skuCheckBusy && (skuCheckDone || skuCheckSkipped || !!skuCheckError) && (
+                  <button
+                    className="btn-mini"
+                    disabled={!initialDraftIds?.length}
+                    onClick={() => void runSkuAvailabilityCheck()}
+                    title={skipSkuTextCheck
                       ? '重新检测：只判规格图是否为 1:1 方图，跳过中文 OCR（快）'
-                      : '重新检测所选链接的 SKU 规格图是否含中文水印、以及是否为 1:1 方图'
-                  }
-                >{skuCheckBusy ? <><i className="app-spinner is-sm" aria-hidden="true" />检测中…</> : '重新检测'}</button>
+                      : '重新检测所选链接的 SKU 规格图是否含中文水印、以及是否为 1:1 方图'}
+                  >重新检测</button>
+                )}
                 {/* 开始处理/清空任务跟检测操作放在同一行：检测完即可直接开跑。 */}
                 <div className="verify-actions verify-sku-actions">
                   <button className="primary" onClick={() => setStartConfirmOpen(true)} disabled={loading || batchProcessing || !initialDraftIds?.length || skuCheckBusy}>{loading ? <><i className="app-spinner is-sm" aria-hidden="true" />处理中...</> : '开始处理'}</button>
@@ -1070,21 +1143,52 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                   )}
                 </div>
               </div>
+              {/* 用途说明：这一步决定 SKU 图能否直接复用原图链接（与主图保持同一套视觉）。 */}
+              <p className="verify-sku-check-purpose">
+                这一步决定本批 <b>SKU 图能否直接复用原图链接</b>：逐张检查规格图是否含中文水印、是否为 1:1 方图。
+                可复用时沿用规格原图（与主图同一套视觉、导出更一致）；不可用、未检测或跳过时，SKU 图统一改用<b>生成后的主图</b>。
+              </p>
               {skuCheckBusy && (
-                <div className="verify-repull-banner" role="status">
-                  <i className="iconfont icon-loading" aria-hidden="true" />
+                <div
+                  className="verify-sku-progress"
+                  role="progressbar"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={skuCheckPercent}
+                  aria-label="SKU 原图可用性检测进度"
+                >
+                  <div className="verify-sku-progress-track is-running">
+                    <div className="verify-sku-progress-bar" style={{ width: `${skuCheckPercent}%` }} />
+                  </div>
+                  <div className="verify-sku-progress-meta">
+                    <span>
+                      {skipSkuTextCheck
+                        ? '正在检测所选链接的 SKU 规格图是否为 1:1 方图（已跳过中文 OCR）…'
+                        : '正在检测所选链接的 SKU 规格图是否含中文水印、是否为 1:1 方图…'}
+                    </span>
+                    <em>{skuCheckProgress.done} / {skuCheckProgress.total} 条 · {skuCheckPercent}%</em>
+                  </div>
+                </div>
+              )}
+              {!skuCheckBusy && skuCheckSkipped && (
+                <div className="verify-repull-banner is-skipped" role="status">
+                  <i className="iconfont icon-infomation" aria-hidden="true" />
                   <span>
-                    {skipSkuTextCheck
-                      ? '正在检测所选链接的 SKU 规格图是否为 1:1 方图（已跳过中文 OCR）…'
-                      : '正在检测所选链接的 SKU 规格图是否含中文水印、是否为 1:1 方图…'}
+                    已跳过检测：本批 SKU 图将统一使用<b>生成后的主图</b>，不再复用规格原图。
+                    需要复用原图时点「重新检测」即可。
                   </span>
-                  <em>已完成 {skuCheckProgress.done} / {skuCheckProgress.total} 条</em>
+                </div>
+              )}
+              {!skuCheckBusy && !skuCheckSkipped && !skuCheckDone && !skuCheckError && (
+                <div className="verify-repull-banner is-idle" role="status">
+                  <i className="iconfont icon-infomation" aria-hidden="true" />
+                  <span>尚未检测：直接开始处理将默认用<b>生成后的主图</b>代替 SKU 图。</span>
                 </div>
               )}
               {!skuCheckBusy && !!skuCheckError && (
                 <div className="verify-repull-banner failed" role="status">
                   <i className="iconfont icon-infomation" aria-hidden="true" />
-                  <span>检测失败：{skuCheckError}；可点「重新检测」。直接开始处理将按默认策略（有规格原图用原图，否则用主图）。</span>
+                  <span>检测失败：{skuCheckError}；可点「重新检测」。直接开始处理将按默认策略用生成后的主图代替 SKU 图。</span>
                 </div>
               )}
               {!skuCheckBusy && !skuCheckError && skuCheckDone && (

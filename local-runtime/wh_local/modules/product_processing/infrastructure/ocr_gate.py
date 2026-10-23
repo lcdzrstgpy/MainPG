@@ -19,11 +19,13 @@ OCR 关闭或库未安装/推理失败时返回 ``None``，表示"无法判断"�
 
 from __future__ import annotations
 
+import hashlib
 import io
 import os
 import re
 import sys
 import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -161,12 +163,45 @@ def inspect_sku_text(content: bytes) -> dict[str, Any] | None:
     与 ``inspect_visible_text`` 的唯一差异是不受 ``ocr_gate_enabled()`` 总开关约束：
     该开关只用于关闭生成链路的文字质检/重绘，SKU 原图复核是纯只读判定，必须照常执行。
     OCR 不可用或推理失败返回 ``None``，调用方据此标记 ``text_check_failed``。
+
+    结果按图片内容哈希做进程内 LRU 缓存：同一张规格图被多个变种共用、或用户点
+    「重新检测」时不会重复跑推理——OCR 是这条链路唯一的重活，缓存直接决定耗时。
     """
+    digest = hashlib.sha256(content).hexdigest()
+    cached = _sku_text_cache_get(digest)
+    if cached is not None:
+        return dict(cached)
     inspection = _inspect_content(content)
     if inspection is None:
         return None
     chinese, _prominent = inspection
-    return {"chinese": chinese, "has_chinese": bool(chinese)}
+    result = {"chinese": chinese, "has_chinese": bool(chinese)}
+    _sku_text_cache_put(digest, result)
+    return dict(result)
+
+
+# SKU 规格图中文检测的内容哈希缓存。上限按「一次批量 50 条链接 × 常见 5-10 张规格图」
+# 估算，2048 条足够覆盖单次检测且不会长期吃内存；LRU 淘汰。
+_SKU_TEXT_CACHE_LIMIT = 2048
+_SKU_TEXT_CACHE: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
+_SKU_TEXT_CACHE_LOCK = threading.Lock()
+
+
+def _sku_text_cache_get(digest: str) -> dict[str, Any] | None:
+    with _SKU_TEXT_CACHE_LOCK:
+        cached = _SKU_TEXT_CACHE.get(digest)
+        if cached is None:
+            return None
+        _SKU_TEXT_CACHE.move_to_end(digest)
+        return cached
+
+
+def _sku_text_cache_put(digest: str, result: dict[str, Any]) -> None:
+    with _SKU_TEXT_CACHE_LOCK:
+        _SKU_TEXT_CACHE[digest] = result
+        _SKU_TEXT_CACHE.move_to_end(digest)
+        while len(_SKU_TEXT_CACHE) > _SKU_TEXT_CACHE_LIMIT:
+            _SKU_TEXT_CACHE.popitem(last=False)
 
 
 def _inspect_content(content: bytes) -> tuple[list[str], list[str]] | None:

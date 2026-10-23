@@ -5710,6 +5710,103 @@
   color: #0a8fca;
 }
 
+/* 用途说明：这一步决定 SKU 图能否复用原图链接 */
+.verify-sku-check-purpose {
+  margin: 8px 0 0;
+  color: #5a7a94;
+  font-size: .78rem;
+  line-height: 1.6;
+}
+.verify-sku-check-purpose b {
+  color: #18334d;
+}
+
+/* 检测进度条：进度推进 + 扫光，长耗时阶段给用户持续反馈 */
+.verify-sku-progress {
+  margin-top: 10px;
+}
+.verify-sku-progress-track {
+  position: relative;
+  height: 8px;
+  border-radius: 999px;
+  background: #e8f1f7;
+  overflow: hidden;
+}
+.verify-sku-progress-bar {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #62c9ec, #0a8fca);
+  transition: width .35s ease;
+}
+/* 扫光：一层高光从左向右刷过整条轨道（只覆盖进度区域内） */
+.verify-sku-progress-track.is-running::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    100deg,
+    rgba(255, 255, 255, 0) 20%,
+    rgba(255, 255, 255, .75) 50%,
+    rgba(255, 255, 255, 0) 80%
+  );
+  transform: translateX(-100%);
+  animation: verify-sku-shimmer 1.3s linear infinite;
+  pointer-events: none;
+}
+@keyframes verify-sku-shimmer {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(100%); }
+}
+.verify-sku-progress-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 6px;
+  color: #5a7a94;
+  font-size: .76rem;
+}
+.verify-sku-progress-meta em {
+  font-style: normal;
+  font-weight: 800;
+  color: #0a8fca;
+}
+@media (prefers-reduced-motion: reduce) {
+  .verify-sku-progress-track.is-running::after { animation: none; opacity: .35; }
+  .verify-sku-progress-bar { transition: none; }
+}
+
+/* 「开始检测」按钮收成与勾选项同高，避免撑高标题行 */
+.verify-sku-check-head .primary.verify-sku-start {
+  padding: 7px 12px;
+  font-size: .74rem;
+  white-space: nowrap;
+}
+
+/* 已跳过 / 尚未检测 提示条 */
+.verify-repull-banner.is-skipped {
+  border-color: #f3d6a6;
+  background: #fffaf0;
+  color: #8a6316;
+}
+.verify-repull-banner.is-idle {
+  border-color: #dbe8f1;
+  background: #f7fbfe;
+  color: #4b6c85;
+}
+
+/* 跳过检测确认弹窗的要点列表 */
+.pp-sku-skip-confirm .pp-sku-skip-points {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  color: #4b6c85;
+  font-size: .82rem;
+  line-height: 1.7;
+}
+.pp-sku-skip-confirm .pp-sku-skip-points li + li {
+  margin-top: 4px;
+}
+
 @keyframes verify-repull-spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
