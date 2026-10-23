@@ -547,10 +547,23 @@
   border: 1px solid #e2eef6;
 }
 
-/* 货源单图：一条链接一张图，放大便于查看商品规格 */
+/* 货源单图：一条链接一张图，放大便于查看商品规格。
+   用 contain 等比缩放（不裁切也不拉伸），截图再宽也不会被压变形。 */
 .profit-source-card-shot {
   width: 92px !important;
   height: 92px !important;
+  object-fit: contain !important;
+  background: #f4f8fb;
+  border: 1px solid #e2eef6;
+}
+
+.profit-source-card-shot.is-zoomable {
+  cursor: zoom-in;
+}
+
+.profit-source-card-shot.is-zoomable:hover {
+  border-color: #0a8cf2;
+  box-shadow: 0 0 0 2px #0a8cf21f;
 }
 
 .profit-source-card-img-fallback {
@@ -808,11 +821,45 @@
   gap: 8px;
 }
 
+/* 抽屉内的保存/撤销按钮样式只作用于 .profit-source-drawer，而抽屉是 portal 到 body 的，
+   拿不到页面级 .profit-products-page button 的基础样式，于是渲染成浏览器原生按钮，
+   与工作台其它按钮不一致。这里补齐主按钮（渐变）与次按钮（描边）两套样式。 */
 .profit-source-edit-toolbar-actions .profit-edit-save,
 .profit-source-edit-toolbar-actions .profit-edit-cancel {
   border-radius: 999px;
   padding: 7px 16px;
   font-size: 0.8rem;
+  font-weight: 800;
+  transition: transform .17s ease, color .17s ease, border-color .17s ease, background-color .17s ease, box-shadow .17s ease;
+}
+
+.profit-source-edit-toolbar-actions .profit-edit-save {
+  border: 0;
+  color: var(--theme-on-primary, #fff);
+  background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0));
+  box-shadow: 0 10px 20px var(--theme-primary-button-shadow, #0b93dc35);
+}
+
+.profit-source-edit-toolbar-actions .profit-edit-save:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 13px 24px var(--theme-primary-button-shadow, #0b93dc35);
+}
+
+.profit-source-edit-toolbar-actions .profit-edit-cancel {
+  border: 1px solid var(--theme-module-border, #cfe0eb);
+  color: var(--theme-text-secondary, #2f5878);
+  background: var(--theme-module-surface, #fff);
+}
+
+.profit-source-edit-toolbar-actions .profit-edit-cancel:hover:not(:disabled) {
+  border-color: var(--theme-module-border-strong, #82c9ef);
+  color: var(--theme-primary, #0a8cf2);
+}
+
+.profit-source-edit-toolbar-actions .profit-edit-save:disabled,
+.profit-source-edit-toolbar-actions .profit-edit-cancel:disabled {
+  cursor: not-allowed;
+  opacity: .6;
 }
 
 /* 导入货源链接的货源组截图（截图1/2/3）与成本 */

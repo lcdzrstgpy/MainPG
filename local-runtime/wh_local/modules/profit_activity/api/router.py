@@ -279,6 +279,9 @@ def create_profit_activity_router(
         # 核价链接本身不保存截图；按 source_url 从产品货源组匹配截图与组号，
         # 保证货源侧边栏每条链接都能显示对应的货源图。
         result["links"] = _attach_source_group_images(result["links"], product)
+        # 产品库记录与货源台账可能各存一半信息：缺的价格/运费/主图从台账补，
+        # 图片再回退到产品货源主图，避免侧边栏出现「单价 — · 运费 — · 无图」。
+        result["links"] = _enrich_source_links(result["links"], product, db_path)
         return result
 
     @router.post("/products")
@@ -657,6 +660,54 @@ def _enrich_product_source_images(products: list[dict[str, Any]], database_path:
         # Keep source_main_image_url as the original SKC/Temu main image for
         # price-verification products. 1688 thumbnails are exposed through
         # source_groups[].main_image_url instead.
+
+
+def _enrich_source_links(
+    links: list[dict[str, Any]], product: dict[str, Any], db_path: str
+) -> list[dict[str, Any]]:
+    """用货源台账补齐产品库侧边栏缺失的单价/运费/主图。
+
+    历史数据里，核价关联表可能没有价格（候选无报价），而同一链接在
+    ``product_sourcing_sources`` 里有采集到的单价/运费。图片没有截图时
+    回退到产品自身的货源主图，避免卡片显示「无图」。
+    """
+    if not links:
+        return links
+    urls = [str(link.get("source_url") or "").strip() for link in links]
+    urls = [url for url in urls if url]
+    by_url: dict[str, dict[str, Any]] = {}
+    if urls and db_path:
+        try:
+            conn = connect(db_path)
+            try:
+                placeholders = ",".join("?" for _ in urls)
+                rows = conn.execute(
+                    f"""SELECT source_url, price_cny, domestic_freight_cny, main_image_url
+                        FROM product_sourcing_sources
+                        WHERE status = 'active' AND source_url IN ({placeholders})
+                        ORDER BY id DESC""",
+                    tuple(urls),
+                ).fetchall()
+            finally:
+                conn.close()
+            for row in rows:
+                item = dict(row)
+                by_url.setdefault(str(item.get("source_url") or "").strip(), item)
+        except Exception:
+            by_url = {}
+    fallback_image = str(product.get("source_main_image_url") or "").strip()
+    for link in links:
+        extra = by_url.get(str(link.get("source_url") or "").strip())
+        if extra:
+            if not str(link.get("price_cny") or "").strip():
+                link["price_cny"] = extra.get("price_cny")
+            if not str(link.get("domestic_freight_cny") or "").strip():
+                link["domestic_freight_cny"] = extra.get("domestic_freight_cny")
+            if not str(link.get("main_image_url") or "").strip():
+                link["main_image_url"] = extra.get("main_image_url")
+        if not str(link.get("main_image_url") or "").strip() and fallback_image:
+            link["main_image_url"] = fallback_image
+    return links
 
 
 def _product_source_group_links(product: dict[str, Any]) -> list[dict[str, Any]]:

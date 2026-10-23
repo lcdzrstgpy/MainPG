@@ -918,6 +918,21 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         product_library_service=profit_activity_service,
     )
 
+    # 货源与利润台账：核价采集 → 多货源 → 利润 → 入产品库（合并「货源成本/核价匹配」）
+    from ..modules.sourcing_ledger.repository import SourcingLedgerRepository
+    from ..modules.sourcing_ledger.routes import create_sourcing_ledger_router
+    from ..modules.sourcing_ledger.service import SourcingLedgerService
+
+    app.include_router(
+        create_sourcing_ledger_router(
+            SourcingLedgerService(
+                SourcingLedgerRepository(db_path),
+                profit_service=profit_activity_service,
+            )
+        ),
+        prefix="/api",
+    )
+
     # 公告消息：从公告发布后台定时同步，前端右上角站内信读取。
     # 身份：同步时带上「远端会话令牌」作为真正身份，后台按令牌解析账号再做定向过滤。
     # account_id 由邮箱哈希推导、可被伪造，只能当兼容参数（新后台已忽略它）。
@@ -1173,7 +1188,45 @@ def _register_price_verification(
         product_library_service=product_library_service,
     )
     register_price_verification_routes(app.router, dependencies)
+    _migrate_sourcing_ledger(db_path)
     _backfill_price_verification_to_product_library(db_path, plugin_queue, product_library_service)
+
+
+def _migrate_sourcing_ledger(db_path: Path) -> None:
+    """启动时准备货源台账：建表 + 把旧 skc_source_links 一次性迁入多货源表。
+
+    幂等：迁移标记写在 sourcing_ledger_state，重复启动只做一次。
+    """
+    try:
+        from ..modules.sourcing_ledger.repository import SourcingLedgerRepository
+        from ..modules.sourcing_ledger.service import SourcingLedgerService
+
+        repository = SourcingLedgerRepository(db_path)
+        service = SourcingLedgerService(repository)
+        for workspace_id in repository.distinct_workspaces() or ["default"]:
+            result = service.migrate_legacy_sources(workspace_id)
+            if result["migrated"]:
+                logger.info(
+                    "sourcing ledger: %s legacy source link(s) migrated (workspace=%s)",
+                    result["migrated"],
+                    workspace_id,
+                )
+            ingested = service.backfill_existing_captures(workspace_id)
+            if ingested["chunks"]:
+                logger.info(
+                    "sourcing ledger: %s existing capture chunk(s) backfilled (workspace=%s)",
+                    ingested["chunks"],
+                    workspace_id,
+                )
+            seeded = service.ensure_collected_sources(workspace_id)
+            if seeded:
+                logger.info(
+                    "sourcing ledger: %s collected source(s) seeded (workspace=%s)",
+                    seeded,
+                    workspace_id,
+                )
+    except Exception:  # noqa: BLE001 - 台账迁移失败不能阻断启动
+        logger.warning("sourcing ledger migration failed", exc_info=True)
 
 
 def _backfill_price_verification_to_product_library(
