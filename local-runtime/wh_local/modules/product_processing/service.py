@@ -966,6 +966,77 @@ def _preset_image_template(preset_id: str = "") -> str:
     return _PRESET_IMAGE_TEMPLATES.get(str(preset_id or "").strip().lower(), "")
 
 
+# ── 场景 / 背景族（批次级）─────────────────────────────────────────────────
+# 「四格只像换了背景」的根因：模板只约束机位，不约束「这是哪个地方」。
+# 这里给每格指派一个不同的背景族，并规定主体的画面位置，让四格是「四个地点」
+# 而不是「同一套景换个角度」。档位由处理设置的「场景风格」决定：
+#   minimal 极简 / lifestyle 生活 / ornate 花哨 / smart 按批次稳定轮换。
+_SCENE_FAMILIES: dict[str, tuple[str, ...]] = {
+    "minimal": (
+        "warm neutral gradient backdrop with a soft vignette",
+        "pale oak tabletop with one soft grounded shadow",
+        "light grey stone plinth in a pale studio",
+        "soft beige paper sweep with a long clean shadow",
+    ),
+    "lifestyle": (
+        "warm wooden table with wrinkled linen and a half-finished coffee",
+        "sunlit wall with a hard window-frame shadow across the frame",
+        "marble bathroom counter with a folded towel and water droplets",
+        "entryway console with keys, a small plant and a paper bag",
+    ),
+    "ornate": (
+        "dried flowers and scattered petals around a linen runner",
+        "festive gift setting with ribbon, boxes and warm bokeh lights",
+        "dark velvet drapery with deep folds and a dramatic side light",
+        "chrome pedestal with mirrored acrylic blocks and coloured reflections",
+    ),
+}
+_SCENE_STYLE_ALIASES = {
+    "smart": "smart",
+    "auto": "smart",
+    "minimal": "minimal",
+    "clean": "minimal",
+    "lifestyle": "lifestyle",
+    "life": "lifestyle",
+    "ornate": "ornate",
+    "fancy": "ornate",
+    "festive": "ornate",
+}
+_SCENE_PLACEMENTS = (
+    "Panel 1: centred hero, product upright and fully readable.",
+    "Panel 2: product on the LEFT third, its shadow falling into the empty right side.",
+    "Panel 3: product in the LOWER-RIGHT third, tight crop with a softly blurred foreground edge.",
+    "Panel 4: centred orthographic view with generous clear space around the product.",
+)
+
+
+def _scene_family_plan(scene_style: str, seed: int, *, allow_people: bool = False) -> str:
+    """按批次生成四格背景族与主体位置，返回一段短提示块。
+
+    只描述「主体之外」的画面：背景是什么地方、主体落在画面哪个位置、背景要更安静。
+    刻意保持短：长背景清单会和运行时契约抢注意力，模型反而只记住最后一两句。
+    """
+
+    style = _SCENE_STYLE_ALIASES.get(str(scene_style or "").strip().lower(), "smart")
+    if style == "smart":
+        style = ("minimal", "lifestyle", "ornate")[seed % 3]
+    families = _SCENE_FAMILIES[style]
+    offset = seed % len(families)
+    # Panel 1 固定纯白（平台主图合规），只给 2-4 格分配三个不同背景族。
+    chosen = [families[(offset + index) % len(families)] for index in range(3)]
+    people_rule = "" if allow_people else " No people, hands or fingers in any panel."
+    lines = [
+        "SCENE PLAN (this batch, non-overridable):",
+        "- Panel 1 background: pure white seamless studio sweep (fixed, no props).",
+        *(f"- Panel {index + 2} background: {family}." for index, family in enumerate(chosen)),
+        "- Three different places: never reuse one backdrop for two of Panels 2-4, and never just swap props on the same set.",
+        *(f"- {placement}" for placement in _SCENE_PLACEMENTS),
+        "- Keep every background quieter than the product: lower saturation, no text, no logos, no brand marks; props never cover or crop the product."
+        + people_rule,
+    ]
+    return "\n".join(lines)
+
+
 # 上游生图服务不可用（维护/限流/超时/网关错误）与「链接原图不可用」是两类完全不同的
 # 失败：前者换链接也没用，提示必须让运营重试而不是换品。
 _PROVIDER_SIDE_IMAGE_FAILURE_MARKERS = (
@@ -3670,6 +3741,11 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         s["ip_check"] = _as_bool(s.get("ip_check"), default=True)
         # 是否自动烧制第 4 格尺寸图：默认开启；关闭后整批跳过尺寸画布导入/烧卡与 OCR 预取。
         s["dimension_card"] = _as_bool(s.get("dimension_card"), default=True)
+        # 场景风格：决定四格背景族；未知值回落 smart（按批次稳定轮换三档）。
+        _scene_style = str(s.get("scene_style") or "smart").strip().lower()
+        s["scene_style"] = (
+            _scene_style if _scene_style in {"smart", "minimal", "lifestyle", "ornate"} else "smart"
+        )
         # 生图提示词模板：A=影棚无缝主图，B=人景叙事（防比价），C=静物平铺俯拍，D=环境远景。
         _image_template = str(s.get("image_template") or "A").strip().upper()
         s["image_template"] = _image_template if _image_template in {"A", "B", "C", "D"} else "A"
@@ -9606,6 +9682,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                         batch_image_prompt=batch_image_prompt,
                         image_preset=str(settings.get("image_preset") or "auto"),
                         panel_plan_override=panel_plan_override,
+                        scene_style=str(settings.get("scene_style") or "smart"),
                     )
                 else:
                     grid_future = _submit_with_context(
@@ -9627,6 +9704,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                         workspace_id=workspace_id,
                         batch_image_prompt=batch_image_prompt,
                         panel_plan_override=panel_plan_override,
+                        scene_style=str(settings.get("scene_style") or "smart"),
                     )
             elif need_detail:
                 direct_detail_future = _submit_with_context(
@@ -9739,6 +9817,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     batch_image_prompt=batch_image_prompt,
                     image_preset=str(settings.get("image_preset") or "auto"),
                     panel_plan_override=panel_plan_override,
+                    scene_style=str(settings.get("scene_style") or "smart"),
                 )
                 record_stage("grid_pipeline", stage_started)
             grid_image_paths, grid_summary_path = grid_output
@@ -10440,6 +10519,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         batch_image_prompt: str = "",
         image_preset: str = "",
         panel_plan_override: str = "",
+        scene_style: str = "smart",
     ) -> GridImageOutput:
         """Generate four carousel images with a selectable 1/2/4-image transport layout."""
         if not _ai_enabled() or not reference_urls:
@@ -10578,8 +10658,16 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 # Generate the economical 2K transport grid once.  Validation happens
                 # after the deterministic split so one bad quadrant never redraws the
                 # three usable quadrants.
+                # 场景计划按 (task, draft) 稳定取样：同一链接重跑得到同一套背景族，
+                # 避免「重试后四格全换一遍」；不同链接之间保持档位/背景轮换。
+                scene_seed = int(
+                    hashlib.sha256(f"{task_id}:{draft_id}:scene".encode("utf-8")).hexdigest()[:8], 16
+                )
+                scene_block = _scene_family_plan(
+                    scene_style, scene_seed, allow_people=allows_people
+                )
                 grid_prompt = append_subject_analysis(
-                    f"{prompt.rstrip()}\n\n{_grid_runtime_contract(allows_people)}{preset_plan_block}{custom_plan_block}",
+                    f"{prompt.rstrip()}\n\n{_grid_runtime_contract(allows_people)}\n\n{scene_block}{preset_plan_block}{custom_plan_block}",
                     vision_identity,
                 )
                 # Do not rely on the provider default here. Some OpenAI-compatible

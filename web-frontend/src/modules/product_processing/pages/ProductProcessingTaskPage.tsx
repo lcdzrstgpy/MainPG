@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ppDownload, ppRequest, type ApiContext } from '../api/client';
 import { productProcessingApiContext } from '../api/context';
@@ -242,6 +242,8 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       autoRepull: false,
       // 尺寸图自动烧制默认关闭：烧制会额外占用 AI/本地渲染时间，交给用户按品类显式开启。
       dimensionCard: false,
+      // 场景风格：默认智能混合（按批次在极简/生活/花哨之间轮换），保证四格背景不趋同。
+      sceneStyle: 'smart',
     }
   );
   const imageSelection: PhotoSelection = {
@@ -788,6 +790,8 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
         auto_repull: options.autoRepull === true,
         // 是否自动烧制第 4 格尺寸图（默认关闭，需用户在处理设置里显式勾选）
         dimension_card: options.dimensionCard === true,
+        // 场景风格：smart / minimal / lifestyle / ornate（后端按档位给四格分配不同背景族）
+        scene_style: options.sceneStyle || 'smart',
         // 兼容旧 API 字段；新任务统一走智能生图策略，不再由用户选择。
         image_generation_count: 4,
         // SKU 原图可用性分类（处理设置页检测结果）：写入草稿预检覆盖，导出按此分流。
@@ -1026,6 +1030,18 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                 <select value={options.targetLanguage} onChange={(e) => setOptions((p) => ({ ...p, targetLanguage: e.target.value as any }))}>
                   <option value="en">英语 · English</option>
                   <option value="es">西班牙语 · Espanol</option>
+                </select>
+              </label>
+              <label title="决定四格的背景风格：智能混合按批次在极简/生活/花哨之间轮换；花哨档适合节庆、潮玩、礼品类，会使用花艺、礼赠、丝绒、金属镜面等背景">
+                场景风格
+                <select
+                  value={options.sceneStyle || 'smart'}
+                  onChange={(e) => setOptions((p) => ({ ...p, sceneStyle: e.target.value as ProductProcessingOptions['sceneStyle'] }))}
+                >
+                  <option value="smart">智能混合（默认）</option>
+                  <option value="minimal">极简 · 纯色/渐变/木石台</option>
+                  <option value="lifestyle">生活 · 桌面/窗影/梳妆台</option>
+                  <option value="ornate">花哨 · 花艺/礼赠/丝绒/镜面</option>
                 </select>
               </label>
               <div className="verify-inline-checks">
