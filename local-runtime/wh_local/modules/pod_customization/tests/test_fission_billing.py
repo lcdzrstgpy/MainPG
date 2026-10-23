@@ -1,24 +1,40 @@
+import sqlite3
+from pathlib import Path
+
 import pytest
 
-from wh_local.modules.pod_customization.billing_contract import PodCallPlan
+from wh_local.modules.pod_customization.billing_contract import (
+    POD_BILLING_PROFILE_FISSION,
+    PodCallOutcome,
+    PodCallPlan,
+    PodExecutionGrant,
+)
+from wh_local.modules.pod_customization.repository import PodCustomizationRepository
 from wh_local.modules.pod_customization.service import PodCustomizationService
 
 
 @pytest.mark.parametrize("count", [1, 10])
-def test_fission_billing_uses_independent_profile_and_shared_style_price(count):
-    plan = PodCallPlan.for_fission_batch("fission-batch", style_count=count)
+def test_fission_billing_uses_unified_profile_and_style_units(count):
+    plan = PodCallPlan.for_batch(
+        "fission-batch", style_count=count, billing_profile=POD_BILLING_PROFILE_FISSION
+    )
     payload = plan.product_batch_freeze_payload()
     assert payload["billing_profile"] == "pod_fission_v1"
     assert payload["link_count"] == count
     assert payload["scope"] == ["title", "four_grid"]
     assert len(plan.calls) == count * 7
+    assert plan.module == "pod_fission"
+    assert plan.unit_kind == "style"
+    assert list(plan.unit_ids) == [f"style-{index}" for index in range(count)]
     assert PodCustomizationService._pod_billing_profile({"mode": "fission"}) == "pod_fission_v1"
 
 
 def test_fission_billing_rejects_invalid_count():
-    for count in (0, 11, True):
+    for count in (0, True):
         with pytest.raises(ValueError):
-            PodCallPlan.for_fission_batch("fission", style_count=count)
+            PodCallPlan.for_batch(
+                "fission", style_count=count, billing_profile=POD_BILLING_PROFILE_FISSION
+            )
 
 
 def test_local_fission_price_matches_full_customization(tmp_path, monkeypatch):
@@ -41,110 +57,136 @@ def test_local_fission_price_matches_full_customization(tmp_path, monkeypatch):
     assert fission["frozen_points"] == full["frozen_points"]
 
 
-def _mark_deliverable(repository, batch_id):
-    """Supply persisted commercialization results without calling any provider."""
-    with repository._connect() as connection:
-        rows = connection.execute(
-            "SELECT result_id, style_index, variant_index FROM pod_customization_style_grid_results "
-            "WHERE batch_id=? ORDER BY style_index, variant_index", (batch_id,)
-        ).fetchall()
-        assert len(rows) == 8
-        for row in rows:
-            connection.execute(
-                "UPDATE pod_customization_style_grid_results SET status='completed' WHERE result_id=?",
-                (row["result_id"],),
-            )
-            connection.execute(
-                "INSERT INTO pod_customization_style_grid_publications (result_id, role, public_url, updated_at) "
-                "VALUES (?, ?, ?, 'now') ON CONFLICT(result_id) DO UPDATE SET public_url=excluded.public_url",
-                (row["result_id"], f"panel_{row['variant_index']}", f"https://cdn/{row['result_id']}"),
-            )
-        connection.execute(
-            "UPDATE pod_customization_style_titles SET status='completed' WHERE batch_id=?", (batch_id,)
+def test_fission_settlement_bills_image_success_even_when_title_failed():
+    """统一口径：image = success 即扣该款，标题失败不影响扣费。"""
+    plan = PodCallPlan.for_batch(
+        "fission-batch", style_count=2, billing_profile=POD_BILLING_PROFILE_FISSION
+    )
+    outcomes = tuple(
+        PodCallOutcome(
+            call.call_id,
+            call.feature,
+            "success" if call.feature == "pod.image" else "no_return",
         )
-        for style_index in (1, 2):
-            connection.execute(
-                "INSERT INTO pod_customization_style_copy "
-                "(batch_id, style_index, title, english_title, description, created_at, updated_at) "
-                "VALUES (?, ?, '商品标题', 'Bag listing', 'Cotton bag description', 'now', 'now') "
-                "ON CONFLICT(batch_id, style_index) DO UPDATE SET title=excluded.title, "
-                "english_title=excluded.english_title, description=excluded.description",
-                (batch_id, style_index),
-            )
-
-
-def _provider_successes(repository, action_key):
-    # Provider audit data must survive the separate commercial-delivery policy.
-    with repository._connect() as connection:
-        connection.execute(
-            "UPDATE pod_customization_billing_outcomes SET status='success' WHERE run_id=("
-            "SELECT run_id FROM pod_customization_billing_runs WHERE action_key=?)", (action_key,)
-        )
-    return repository.prepare_billing_settlement(action_key)
-
-
-@pytest.mark.parametrize("missing", ["grid", "publication", "title", "copy", "description"])
-def test_fission_settlement_requires_complete_delivery_and_freezes_refund(tmp_path, missing):
-    from wh_local.modules.pod_customization.billing_contract import PodExecutionGrant
-    from wh_local.modules.pod_customization.tests.test_fission_api import request, seed_analysis
-    from wh_local.modules.pod_customization.tests.test_replica_worker import (
-        BillingCoordinator, CapturingReplicaRuntime, _actor, _service,
+        for call in plan.calls
     )
 
-    runtime, billing = CapturingReplicaRuntime(), BillingCoordinator()
-    service = _service(tmp_path, runtime, billing=billing)
-    try:
-        seed_analysis(service)
-        batch = service.create_fission_batch(_actor(), request(), enqueue=False)
-        repository, batch_id = service.repository, batch["id"]
-        plan = billing.freezes[0]
-        _mark_deliverable(repository, batch_id)
-        with repository._connect() as connection:
-            if missing == "grid":
-                connection.execute("UPDATE pod_customization_style_grid_results SET status='failed' "
-                                   "WHERE batch_id=? AND style_index=2 AND variant_index=4", (batch_id,))
-            elif missing == "publication":
-                connection.execute("DELETE FROM pod_customization_style_grid_publications WHERE result_id IN "
-                                   "(SELECT result_id FROM pod_customization_style_grid_results "
-                                   "WHERE batch_id=? AND style_index=2 AND variant_index=4)", (batch_id,))
-            elif missing == "title":
-                connection.execute("UPDATE pod_customization_style_titles SET status='failed' "
-                                   "WHERE batch_id=? AND style_index=2", (batch_id,))
-            elif missing == "copy":
-                connection.execute("DELETE FROM pod_customization_style_copy WHERE batch_id=? AND style_index=2",
-                                   (batch_id,))
-            else:
-                connection.execute("UPDATE pod_customization_style_copy SET description='  ' "
-                                   "WHERE batch_id=? AND style_index=2", (batch_id,))
-        outcomes = _provider_successes(repository, plan.idempotency_key)
-        projected = repository.project_fission_settlement(plan.idempotency_key, outcomes)
-        billable = [row for row in projected if row.feature == "pod.image" and row.status == "success"]
-        assert len(billable) == 2
-        assert all(":style:1:" in row.call_id for row in billable)
-        assert all(row.status == "success" for row in projected if row.feature == "pod.title")
+    payload = plan.product_batch_settlement_payload(outcomes)
 
-        # A later successful retry cannot increase the original action's charge.
-        _mark_deliverable(repository, batch_id)
-        assert repository.project_fission_settlement(plan.idempotency_key, outcomes) == projected
-        with repository._connect() as connection:
-            run_id = connection.execute(
-                "SELECT run_id FROM pod_customization_billing_runs WHERE action_key=?", (plan.idempotency_key,)
-            ).fetchone()[0]
-        stored = repository.get_billing_run(run_id, _actor().workspace_id, _actor().id)
-        assert stored["action_payload"]["fission_billable_styles"] == [1]
-        assert all(row["status"] == "success" for row in stored["outcomes"])
+    assert payload["items"] == [
+        {
+            "link_idx": 1,
+            "subitems": [
+                {"feature": "title", "status": "no_return"},
+                {"feature": "four_grid", "status": "success"},
+            ],
+        },
+        {
+            "link_idx": 2,
+            "subitems": [
+                {"feature": "title", "status": "no_return"},
+                {"feature": "four_grid", "status": "success"},
+            ],
+        },
+    ]
 
-        # Direct style retry IDs omit ':style:N:'; the durable run target identifies the style.
-        retry = PodCallPlan.for_style_retry("retry-delivered-style", include_title=True,
-                                            billing_profile="pod_fission_v1")
-        repository.create_billing_run(
-            action_key=retry.idempotency_key, action_type="style_retry", target_id="2", batch_id=batch_id,
-            actor_id=_actor().id, workspace_id=_actor().workspace_id, plan=retry,
-            grant=PodExecutionGrant("retry-freeze", 1, "", {}),
+
+def test_fission_settlement_refunds_style_when_image_failed():
+    plan = PodCallPlan.for_batch(
+        "fission-batch", style_count=2, billing_profile=POD_BILLING_PROFILE_FISSION
+    )
+    outcomes = tuple(
+        PodCallOutcome(
+            call.call_id,
+            call.feature,
+            "success" if call.call_id.startswith("fission-batch:style:1:title:") else "no_return",
         )
-        retry_outcomes = _provider_successes(repository, retry.idempotency_key)
-        retry_projected = repository.project_fission_settlement(retry.idempotency_key, retry_outcomes)
-        assert sum(row.status == "success" for row in retry_projected if row.feature == "pod.image") == 2
-    finally:
-        service.close()
-        runtime.close()
+        for call in plan.calls
+    )
+
+    payload = plan.product_batch_settlement_payload(outcomes)
+
+    assert [item["link_idx"] for item in payload["items"]] == [1, 2]
+    assert payload["items"][0]["subitems"][1] == {"feature": "four_grid", "status": "no_return"}
+    assert payload["items"][1]["subitems"][1] == {"feature": "four_grid", "status": "no_return"}
+
+
+def test_fission_title_completion_never_creates_a_second_freeze(tmp_path: Path):
+    """补标题免费：标题结果只是 outcome 变化，不产生新的冻结与新的账本行。"""
+    repository = PodCustomizationRepository(tmp_path / "ledger.sqlite3")
+    plan = PodCallPlan.for_batch(
+        "fission-batch", style_count=2, billing_profile=POD_BILLING_PROFILE_FISSION
+    )
+    repository.create_billing_run(
+        action_key=plan.idempotency_key,
+        action_type="batch_initial",
+        target_id="fission-batch",
+        batch_id="fission-batch",
+        actor_id="owner",
+        workspace_id="workspace-a",
+        plan=plan,
+        grant=PodExecutionGrant(plan.idempotency_key, 1, "2099-01-01T00:00:00Z", {"ark": "k"}),
+    )
+    title_calls = [call for call in plan.calls if call.feature == "pod.title"][:2]
+    for call in title_calls:
+        repository.record_billing_outcome(
+            plan.idempotency_key, PodCallOutcome(call.call_id, call.feature, "success")
+        )
+
+    with repository._connect() as connection:
+        count = connection.execute(
+            "SELECT COUNT(*) FROM pod_customization_billing_runs WHERE batch_id = 'fission-batch'"
+        ).fetchone()[0]
+    stored = repository.find_billing_run_by_action_key(plan.idempotency_key)
+    assert count == 1
+    # 不再固化「可计费款」，也不再反查 public_url / 标题完整性。
+    assert "fission_billable_styles" not in stored["action_payload"]
+
+
+def _insert_terminal_batch(database: Path, batch_id: str) -> None:
+    connection = sqlite3.connect(database)
+    connection.execute("PRAGMA foreign_keys=OFF")
+    connection.execute(
+        """INSERT INTO pod_customization_batches (
+               batch_id, workspace_id, owner_user_id, title, status, template_id,
+               template_snapshot_id, template_name, requested_count, initial_call_count,
+               max_refill_calls, prompt_version, prompt_snapshot, business_fields_json,
+               created_at, updated_at
+           ) VALUES (?, 'workspace-a', 'owner', 't', 'completed', 'template',
+                     'snapshot', 't', 2, 1, 1, 'v1', '{}', '{}', 'now', 'now')""",
+        (batch_id,),
+    )
+    connection.commit()
+    connection.close()
+
+
+def test_delete_batch_keeps_the_fission_ledger(tmp_path: Path) -> None:
+    database = tmp_path / "ledger.sqlite3"
+    repository = PodCustomizationRepository(database)
+    _insert_terminal_batch(database, "fission-del")
+    plan = PodCallPlan.for_batch(
+        "fission-del", style_count=2, billing_profile=POD_BILLING_PROFILE_FISSION
+    )
+    repository.create_billing_run(
+        action_key=plan.idempotency_key,
+        action_type="batch_initial",
+        target_id="fission-del",
+        batch_id="fission-del",
+        actor_id="owner",
+        workspace_id="workspace-a",
+        plan=plan,
+        grant=PodExecutionGrant(plan.idempotency_key, 1, "2099-01-01T00:00:00Z", {"ark": "k"}),
+    )
+    repository.terminate_billing_run(plan.idempotency_key, "abandoned", "test")
+
+    assert repository.delete_batch("fission-del", "workspace-a", "owner") == []
+
+    with sqlite3.connect(database) as connection:
+        row = connection.execute(
+            """SELECT status, batch_deleted_at FROM pod_customization_billing_runs
+               WHERE action_key = ?""",
+            (plan.idempotency_key,),
+        ).fetchone()
+    assert row is not None
+    assert row[0] == "abandoned"
+    assert row[1]

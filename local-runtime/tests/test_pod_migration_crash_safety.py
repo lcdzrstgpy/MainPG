@@ -46,6 +46,7 @@ MIGRATION_NAMES = (
     "024_fission_domain",
     "025_template_views",
     "026_style_column_layout",
+    "027_billing_ledger_v2",
 )
 
 
@@ -483,7 +484,7 @@ def test_legacy_008_marker_is_safely_upgraded_with_data_and_repeated_startup(
                 owner_user_id, freeze_id, rule_version, grant_expires_at,
                 plan_json, status, created_at, updated_at)
                VALUES ('run-new', 'action-new', 'item_retry', 'item-new',
-                       'workspace-a', 'owner', 'freeze-shared', 7,
+                       'workspace-a', 'owner', 'freeze-new', 7,
                        '2099-01-01T00:00:00Z', '[]', 'authorized',
                        'created', 'updated')"""
         )

@@ -90,7 +90,7 @@ def _client(tmp_path) -> TestClient:
     class Billing:
         def freeze(self, actor, plan):
             return PodExecutionGrant(
-                "freeze-1", 1, "2099-01-01T00:00:00Z",
+            plan.idempotency_key, 1, "2099-01-01T00:00:00Z",
                 {"wuyin": "test-key", "ark": "test-ark-key"},
             )
 
@@ -152,7 +152,8 @@ class _CompositionRuntime:
 def _composition_client(tmp_path) -> TestClient:
     class Billing:
         def freeze(self, actor, plan):
-            return PodExecutionGrant("freeze-1", 1, "2099-01-01T00:00:00Z", {"ark": "test-ark-key"})
+            return PodExecutionGrant(
+            plan.idempotency_key, 1, "2099-01-01T00:00:00Z", {"ark": "test-ark-key"})
 
         def settle(self, actor, grant, plan, outcomes):
             return None

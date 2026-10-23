@@ -39,6 +39,27 @@ class CustomerBillingProtocolError(CustomerAuthError):
         super().__init__("remote billing service returned an invalid response")
 
 
+class CustomerBillingRemoteError(CustomerAuthRejected):
+    """Structured 4xx from the v2 billing contract.
+
+    服务端约定错误体为 ``{"error": {"code": "...", "retryable": true|false}}``；
+    客户端按 ``code`` 分流终态（400 → anomaly、409 分三种、404 → orphaned），
+    只有 ``retryable`` 为真（429 / 5xx / 网络）才重试。
+    """
+
+    def __init__(
+        self,
+        status_code: int,
+        message: str,
+        *,
+        code: str = "",
+        retryable: bool = False,
+    ) -> None:
+        super().__init__(status_code, message)
+        self.code = str(code or "")
+        self.retryable = bool(retryable)
+
+
 class CustomerBillingPermissionError(PermissionError):
     """Raised when the remote billing service rejects the current session."""
 

@@ -126,7 +126,7 @@ class TitleRuntime:
 class BillingCoordinator:
     def freeze(self, actor, plan):
         return PodExecutionGrant(
-            "freeze-1", 1, "2099-01-01T00:00:00Z", {"wuyin": "test-wuyin", "ark": "test-ark"}
+            plan.idempotency_key, 1, "2099-01-01T00:00:00Z", {"wuyin": "test-wuyin", "ark": "test-ark"}
         )
 
     def settle(self, actor, grant, plan, outcomes):
