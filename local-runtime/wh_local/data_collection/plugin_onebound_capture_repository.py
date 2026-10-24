@@ -44,6 +44,47 @@ class PluginOneBoundCaptureRepository:
                 )
             self._backfill_legacy_plugin_onebound(conn)
             self._reconcile_stale_active_batches(conn)
+            self._recover_interrupted_batches(conn)
+
+    def _recover_interrupted_batches(self, conn: Any) -> None:
+        """应用启动时收尾上次进程遗留的批次，避免界面永远停在「采集中」。
+
+        采集批次由进程内后台任务执行，服务重启后不会自动续跑；把仍在
+        running 的批次落定为「部分完成/失败」，未完成子项标记失败，
+        前端就能出现「重试失败项」把剩余链接重新跑一遍。
+        prepared/queued 批次不在这里处理：前者仍可手动「启动采集」，
+        后者交给 30 分钟的过期回收逻辑。只收尾 5 分钟没有任何进展的批次，
+        避免影响仍在正常推进的采集。
+        """
+        rows = conn.execute(
+            "SELECT batch_id FROM plugin_onebound_capture_batches "
+            "WHERE status IN ('running', 'started') "
+            "  AND datetime(COALESCE(NULLIF(updated_at, ''), created_at)) < datetime('now', '-5 minutes')"
+        ).fetchall()
+        for row in rows:
+            batch_id = str(row["batch_id"])
+            conn.execute(
+                """UPDATE plugin_onebound_capture_items
+                   SET status='failed', outcome='failed', error_code='interrupted',
+                       error_message=CASE WHEN error_message='' THEN '服务重启，采集中断' ELSE error_message END,
+                       updated_at=datetime('now')
+                   WHERE batch_id=? AND status IN ('pending', 'running')""",
+                (batch_id,),
+            )
+            self._refresh_batch_counts(conn, batch_id)
+            succeeded = conn.execute(
+                "SELECT COUNT(*) FROM plugin_onebound_capture_items "
+                "WHERE batch_id=? AND status='succeeded'",
+                (batch_id,),
+            ).fetchone()[0]
+            conn.execute(
+                """UPDATE plugin_onebound_capture_batches
+                   SET status=?, cancelled=0, error_code='interrupted',
+                       error_message='服务重启导致采集中断，可点「重试失败项」继续',
+                       completed_at=COALESCE(completed_at, datetime('now')), updated_at=datetime('now')
+                   WHERE batch_id=?""",
+                ("partial" if int(succeeded or 0) else "failed", batch_id),
+            )
 
     @staticmethod
     def _backfill_legacy_plugin_onebound(conn: Any) -> None:

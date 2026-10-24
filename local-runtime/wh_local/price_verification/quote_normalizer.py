@@ -27,6 +27,9 @@ class ForbiddenPlatformWriteError(PriceVerificationContractError):
 class QuoteItem:
     quote_key: str = ""
     skc_id: str = ""
+    # 平台侧商品货号（Temu 的 productSkcExtCode），即我们生成的 PP-xxxxxx。
+    # 它是核价采集与商品主档之间唯一可靠的对应键，标题只作兜底。
+    market_skc_code: str = ""
     sku_id: str = ""
     sku_true_id: str = ""
     sku_identifier_kind: str = ""
@@ -150,11 +153,13 @@ def normalize_price_quote_discovery(payload: Mapping[str, Any]) -> QuotePreview:
         if not has_quote_signal(item):
             continue
         inherited_parent_skc = stringify_id(row.get("parent_skc_id"))
-        if inherited_parent_skc and item.sku_id and parent_dom_item is not None:
+        # 弹窗里 SKU 行只显示「SKU货号」而不显示 SKU ID，所以货号也算变种身份。
+        has_sku = bool(item.sku_id or item.sku_merchant_code)
+        if inherited_parent_skc and has_sku and parent_dom_item is not None:
             inherit_parent_dom_item(item, parent_dom_item)
         elif item.skc_id:
             parent_dom_item = item
-        elif item.sku_id and parent_dom_item is not None:
+        elif has_sku and parent_dom_item is not None:
             inherit_parent_dom_item(item, parent_dom_item)
         dom_items.append(item)
     network_items = attach_sku_only_network_items(network_items, dom_items)
@@ -279,6 +284,7 @@ def attach_sku_only_network_items(
         )
         if parent is not None:
             item.skc_id = parent.skc_id
+            item.market_skc_code = item.market_skc_code or parent.market_skc_code
             item.product_title = item.product_title or parent.product_title
             item.main_image_url = item.main_image_url or parent.main_image_url
             item.official_link_url = item.official_link_url or parent.official_link_url
@@ -290,6 +296,7 @@ def attach_sku_only_network_items(
 def inherit_parent_dom_item(item: QuoteItem, parent: QuoteItem) -> QuoteItem:
     """Attach a visual child SKU row to the nearest parent SKC DOM row."""
     item.skc_id = parent.skc_id
+    item.market_skc_code = item.market_skc_code or parent.market_skc_code
     item.product_title = item.product_title or parent.product_title
     item.main_image_url = item.main_image_url or parent.main_image_url
     item.official_link_url = item.official_link_url or parent.official_link_url
@@ -326,6 +333,25 @@ def quote_items_from_network_record(record: Mapping[str, Any]) -> list[QuoteItem
     return items
 
 
+# Temu 价格弹窗的 SKU 单元格形如「L-Royal Gown Dress - Blue SKU货号：6297074883160」：
+# 货号是商家 SKU 货号（productSkuExtCode），不是 SKU ID；SKU ID 列在弹窗里并不展示。
+_SKU_CODE_RE = re.compile(r"\bSKU\s*货号\s*[:：]\s*([A-Za-z0-9_-]{3,})")
+_SKU_ID_RE = re.compile(r"\bSKU\s*(?:ID|编号)\s*[:：]\s*([A-Za-z0-9_-]{3,})")
+_SKC_ID_RE = re.compile(r"\bSKC\s*[:：]\s*([A-Za-z0-9_-]{3,})")
+_SKC_CODE_RE = re.compile(r"\bSKC\s*货号\s*[:：]\s*([A-Za-z0-9_-]{3,})")
+
+
+def _dom_sku_block(row: Mapping[str, Any]) -> str:
+    """价格弹窗里 SKU 单元格的可见文本（含规格描述与「SKU货号：xxx」）。"""
+    for cell in row.get("cells") or []:
+        if not isinstance(cell, Mapping):
+            continue
+        cell_text = clean_text(cell.get("text"))
+        if _SKU_CODE_RE.search(cell_text) or _SKU_ID_RE.search(cell_text):
+            return cell_text
+    return ""
+
+
 def quote_item_from_dom_row(row: Mapping[str, Any], *, popup_confirmed: bool = False) -> QuoteItem:
     cells = dom_cell_map(row)
     text = " ".join(filter(None, [clean_text(row.get("text")), *map(clean_text, cells.values())]))
@@ -343,7 +369,22 @@ def quote_item_from_dom_row(row: Mapping[str, Any], *, popup_confirmed: bool = F
         # page, so capture it even when the popup confirmation was not used.
         adjusted = text_prices[1]
     new = money_for(cells, ("新申报价格(CNY)", "新申报价格")) if popup_confirmed else None
-    sku_id = id_from(cells, ("SKU ID", "sku_id", "SKU编号", "SKU货号"), text, r"\bSKU(?:\s*(?:ID|编号|货号))?[:：\s]*([A-Za-z0-9_-]{4,})\b")
+    sku_block = _dom_sku_block(row)
+    merchant_match = _SKU_CODE_RE.search(sku_block)
+    sku_id_match = _SKU_ID_RE.search(sku_block)
+    merchant_code = stringify_id(merchant_match.group(1)) if merchant_match else ""
+    sku_id = stringify_id(sku_id_match.group(1)) if sku_id_match else ""
+    # SKU 单元格里「SKU货号：xxx」前面的部分就是规格描述（弹窗没有独立的属性列）。
+    sku_attribute = clean_text(_SKU_CODE_RE.sub("", sku_block)) if sku_block else ""
+    if sku_attribute in {"-", "—", "无"}:
+        sku_attribute = ""
+    if not sku_id and not merchant_code:
+        # 老式无结构行：沿用原来的兜底正则，且只认 SKU ID/编号，绝不把货号当 SKU ID。
+        sku_id = id_from(cells, ("SKU ID", "sku_id", "SKU编号"), text, r"\bSKU\s*(?:ID|编号)[:：\s]*([A-Za-z0-9_-]{4,})\b")
+    if not sku_attribute:
+        sku_attribute = text_for(cells, ("SKU属性集", "SKU属性", "属性集", "SKU规格", "规格", "属性"))
+    skc_code_match = _SKC_CODE_RE.search(text)
+    market_skc_code = clean_text(skc_code_match.group(1)) if skc_code_match else ""
     goods_id = id_from(cells, ("SPU", "SPU ID", "商品ID", "goods_id"), text, r"\b(?:SPU|Goods)[:：\s]*([A-Za-z0-9_-]{4,})\b")
     sku_quantity = text_for(cells, ("库存", "库存数量", "可售库存", "数量", "quantity", "stock"))
     row_links = dom_row_links(row)
@@ -354,9 +395,12 @@ def quote_item_from_dom_row(row: Mapping[str, Any], *, popup_confirmed: bool = F
     product_title = text_for(cells, ("商品标题", "商品名称", "title")) or title_before_skc(text)
     return QuoteItem(
         skc_id=skc_id_from_dom_row(row, cells, text),
+        market_skc_code=market_skc_code,
         sku_id=sku_id,
         sku_true_id=sku_id,
-        sku_identifier_kind="sku_id" if sku_id else "",
+        sku_identifier_kind="sku_id" if sku_id else ("merchant_sku_code" if merchant_code else ""),
+        sku_merchant_code=merchant_code,
+        sku_attribute_text=sku_attribute,
         sku_quantity=sku_quantity,
         spu_or_goods_id=goods_id,
         site=text_for(cells, ("站点", "site")) or site_text(text), status=text_for(cells, ("状态", "status")),
@@ -416,6 +460,19 @@ def compatible_dedupe_key(
     twice with inconsistent columns.  Merge when the SKC matches and one
     capture is network JSON while the other is a DOM row.
     """
+    # SKU 货号 + 兼容站点是同一变体的强标识：弹窗行经常解析不到 SKC（首列只有货号），
+    # 先按货号合并，避免网络行与 DOM 行各留一条、DOM 里的 SKU 属性集丢失。
+    for key, existing in merged.items():
+        if (
+            existing.sku_merchant_code
+            and existing.sku_merchant_code == item.sku_merchant_code
+            and (
+                not existing.site
+                or not item.site
+                or existing.site == item.site
+            )
+        ):
+            return key
     if not item.skc_id:
         return None
     for key, existing in merged.items():
@@ -425,6 +482,19 @@ def compatible_dedupe_key(
             existing.sku_id
             and existing.sku_id == item.sku_id
             and (not existing.site or not item.site)
+        ):
+            return key
+        # 同一个 SKU 可能一边用官方 SKU ID、另一边只有商家 SKU 货号（Temu 价格弹窗只展示
+        # 货号）。按货号相等也要合并，否则同一变体会被算成两行（468618588060 的 10 个
+        # SKU 曾因此显示成 20 行）。
+        if (
+            existing.sku_merchant_code
+            and existing.sku_merchant_code == item.sku_merchant_code
+            and (
+                not existing.site
+                or not item.site
+                or existing.site == item.site
+            )
         ):
             return key
         # Network/DOM evidence may be paired at SKC level only when at least
@@ -464,17 +534,61 @@ def annotate_quote_integrity(item: QuoteItem) -> QuoteItem:
     return item
 
 
+def _sku_attribute_from_spec(*texts: str, code: str) -> str:
+    """从 Temu 的 ``productSkuExtCode`` / ``spec`` 里剥出规格描述。
+
+    Temu 的价格审核接口**没有独立的 SKU 属性字段**：``productSkuExtCode`` 与 ``spec``
+    都是「货号 + 规格」拼成的一串（如 ``XL-486B Light Yellow Small Floral Ruffled``、
+    ``Sky Blue-L``）。不拆开的话，货号只能截到 ``XL-486B``，规格被整段丢掉，
+    页面「SKU 属性」就永远是「—」。这里把开头的货号剥掉，剩下的即规格。
+    """
+    for raw in texts:
+        text = clean_text(raw)
+        if not text:
+            continue
+        if code and text.casefold().startswith(code.casefold()):
+            rest = text[len(code):].lstrip(" \t-_/|,，:：")
+            if rest:
+                return rest
+            continue
+        if code and text.casefold() == code.casefold():
+            continue
+        return text
+    return ""
+
+
 def quote_from_mapping(mapping: Mapping[str, Any], endpoint: str, captured_at: str, http_status: str) -> QuoteItem:
     sku_true_id = stringify_id(first_value(mapping, ("productSkuId", "skuId", "sku_id", "SKU ID")))
-    merchant_code = stringify_id(first_value(mapping, ("productSkuExtCode", "skuExtCode", "productSkuCode", "skuCode", "sellerSku", "merchantSku")))
+    raw_code_text = clean_text(first_value(mapping, ("productSkuExtCode", "skuExtCode", "productSkuCode", "skuCode", "sellerSku", "merchantSku")))
+    spec_text = clean_text(first_value(mapping, ("spec", "skuSpec", "skuSpecText", "specDesc")))
+    merchant_code = stringify_id(raw_code_text) or stringify_id(spec_text)
     images = image_urls(mapping)
     goods_id = stringify_id(first_value(mapping, ("productId", "goodsId", "spuId", "goods_id")))
     return QuoteItem(
         skc_id=stringify_id(first_value(mapping, ("skcId", "productSkcId", "skc_id", "SKC ID"))),
+        market_skc_code=clean_text(
+            first_value(mapping, ("productSkcExtCode", "skcExtCode", "productSkcCode"))
+        ),
         sku_id=sku_true_id, sku_true_id=sku_true_id,
         sku_identifier_kind="sku_id" if sku_true_id else ("merchant_sku_code" if merchant_code else ""), sku_merchant_code=merchant_code,
         sku_attribute_set=clean_text(first_value(mapping, ("skuAttributeSet", "skuAttributeGroup", "skuName", "skuSpec"))),
-        sku_attribute_text=clean_text(first_value(mapping, ("skuAttributeText", "skuAttributes", "skuPropsText"))),
+        # 独立属性字段优先；Temu 价格审核接口只给拼串，退回到从 spec 里拆。
+        sku_attribute_text=(
+            clean_text(
+                first_value(
+                    mapping,
+                    (
+                        "skuAttributeText",
+                        "skuAttributes",
+                        "skuPropsText",
+                        "skuAttributeSet",
+                        "skuAttributeGroup",
+                        "skuName",
+                    ),
+                )
+            )
+            or _sku_attribute_from_spec(raw_code_text, spec_text, code=merchant_code)
+        ),
         sku_quantity=clean_text(first_value(mapping, ("skuQuantity", "stockQuantity", "availableQuantity", "inventory", "stock", "quantity", "库存", "数量"))),
         skc_attribute_text=clean_text(first_value(mapping, ("skcAttributeText", "skcAttributes", "productAttributesText"))),
         product_attribute_summary=attribute_summary(first_value(mapping, ("productPropertyList", "productAttributeList", "attributes"))),
@@ -563,6 +677,10 @@ def quote_product_count(items: Iterable[QuoteItem]) -> int:
 def dedupe_key(item: QuoteItem) -> tuple[str, str, str, str]:
     if item.skc_id and item.sku_id:
         return ("skc_sku", item.skc_id, item.sku_id, item.site)
+    # 弹窗的 SKU 行只显示商家货号：缺 SKU ID 时也必须按货号区分变种，
+    # 否则同一 SKC 下的多个 SKU 会被折叠成一行。
+    if item.skc_id and item.sku_merchant_code:
+        return ("skc_sku_code", item.skc_id, item.sku_merchant_code, item.site)
     if item.skc_id:
         return ("skc", item.skc_id, item.spu_or_goods_id, item.site)
     if item.sku_id:
@@ -573,7 +691,7 @@ def dedupe_key(item: QuoteItem) -> tuple[str, str, str, str]:
 def merge_quote_evidence(target: QuoteItem, source: QuoteItem) -> None:
     fields = tuple(field_name for field_name, _ in _COMPLETE_FIELDS) + (
         "spu_or_goods_id", "status", "new_declared_price_cny", "sku_merchant_code", "sku_quantity",
-        "official_link_url",
+        "sku_attribute_text", "sku_attribute_set", "official_link_url",
     )
     for field_name in fields:
         old, new = getattr(target, field_name), getattr(source, field_name)
@@ -596,7 +714,7 @@ def quote_score(item: QuoteItem) -> int:
 
 
 def has_quote_signal(item: QuoteItem) -> bool:
-    return bool(item.skc_id or item.sku_id or item.spu_or_goods_id) and any(value is not None for value in (item.original_declared_price_cny, item.adjusted_declared_price_cny, item.new_declared_price_cny))
+    return bool(item.skc_id or item.sku_id or item.sku_merchant_code or item.spu_or_goods_id) and any(value is not None for value in (item.original_declared_price_cny, item.adjusted_declared_price_cny, item.new_declared_price_cny))
 
 
 def is_complete_quote(item: QuoteItem) -> bool:
@@ -688,8 +806,12 @@ def stringify_id(value: Any) -> str:
 
 def site_text(value: Any) -> str:
     text = clean_text(value)
-    match = re.search(r"[\u4e00-\u9fffA-Za-z]+站", text)
-    return match.group(0) if match else text
+    match = re.search(r"[\u4e00-\u9fffA-Za-z]{1,12}站", text)
+    if match:
+        return match.group(0)
+    # 弹窗的 SKU 子行没有站点列：整行文本不能当成站点，否则每个 SKU 都会
+    # 因为「站点不同」被拆成独立分组（同一 SKC 会碎成几十组）。
+    return text if len(text) <= 12 else ""
 
 
 def site_from_mapping(mapping: Mapping[str, Any]) -> str:

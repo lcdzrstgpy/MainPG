@@ -12,7 +12,6 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
-from .batch_naming import daily_selection_display_name
 from .contracts import (
     DailySelectionCandidate,
     is_sensitive_field,
@@ -49,7 +48,6 @@ class DailySelectionRunSummary(BaseModel):
     candidate_count: int
     created_at: str
     updated_at: str
-    display_name: str = ""
 
 
 class DailySelectionRun(DailySelectionRunSummary):
@@ -103,7 +101,6 @@ class DailySelectionRepository:
         criteria: Mapping[str, Any] | BaseModel | None = None,
         metadata: Mapping[str, Any] | BaseModel | None = None,
         created_at: str | None = None,
-        display_name: str | None = None,
     ) -> DailySelectionRun:
         workspace_id = _required_text(workspace_id, "workspace_id")
         run_id = _required_text(run_id, "run_id")
@@ -117,11 +114,6 @@ class DailySelectionRepository:
             raise ValueError("candidate_id values must be unique within a run")
         criteria_json = _dump_json(criteria or {})
         metadata_json = _dump_json(metadata or {})
-        resolved_display_name = display_name
-        if resolved_display_name is None:
-            resolved_display_name = daily_selection_display_name(
-                criteria, metadata, created_at=created
-            )
 
         connection = self._connect()
         try:
@@ -159,15 +151,14 @@ class DailySelectionRepository:
                 """
                 INSERT INTO daily_selection_runs
                     (workspace_id, run_id, status, criteria_json, metadata_json,
-                     candidate_count, created_at, updated_at, display_name)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     candidate_count, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (workspace_id, run_id) DO UPDATE SET
                     status = excluded.status,
                     criteria_json = excluded.criteria_json,
                     metadata_json = excluded.metadata_json,
                     candidate_count = excluded.candidate_count,
-                    updated_at = excluded.updated_at,
-                    display_name = excluded.display_name
+                    updated_at = excluded.updated_at
                 """,
                 (
                     workspace_id,
@@ -178,7 +169,6 @@ class DailySelectionRepository:
                     len(candidate_values),
                     created,
                     created,
-                    resolved_display_name,
                 ),
             )
             for item in candidate_values:
@@ -210,8 +200,7 @@ class DailySelectionRepository:
             connection.execute("BEGIN")
             rows = connection.execute(
                 """
-                SELECT run_id, workspace_id, status, candidate_count, created_at,
-                       updated_at, criteria_json, metadata_json, display_name
+                SELECT run_id, workspace_id, status, candidate_count, created_at, updated_at
                 FROM daily_selection_runs
                 WHERE workspace_id = ?
                 ORDER BY created_at DESC, run_id DESC
@@ -225,7 +214,7 @@ class DailySelectionRepository:
             raise
         finally:
             connection.close()
-        return tuple(_run_summary(row) for row in rows)
+        return tuple(DailySelectionRunSummary(**dict(row)) for row in rows)
 
     def get_run(self, *, workspace_id: str, run_id: str) -> DailySelectionRun:
         workspace_id = _required_text(workspace_id, "workspace_id")
@@ -262,7 +251,6 @@ class DailySelectionRepository:
             ),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
-            display_name=_resolved_display_name(row),
         )
 
     def confirmed_offer_ids(self, *, workspace_id: str) -> frozenset[str]:
@@ -687,16 +675,6 @@ class DailySelectionRepository:
             connection.executescript(migration)
             outbox = Path(__file__).with_name("migrations") / "007_sku_repull_outbox.sql"
             connection.executescript(outbox.read_text(encoding="utf-8"))
-            # 展示名列：与迁移 012 效果一致。独立构造本仓储（未经 init_db）时也要可用，
-            # 因此这里按列存在性幂等补齐。
-            columns = {
-                str(row["name"])
-                for row in connection.execute("PRAGMA table_info(daily_selection_runs)")
-            }
-            if "display_name" not in columns:
-                connection.execute(
-                    "ALTER TABLE daily_selection_runs ADD COLUMN display_name TEXT NOT NULL DEFAULT ''"
-                )
         finally:
             connection.close()
 
@@ -796,7 +774,7 @@ class DailySelectionRepository:
         row = connection.execute(
             """
             SELECT run_id, workspace_id, status, criteria_json, metadata_json,
-                   candidate_count, created_at, updated_at, display_name
+                   candidate_count, created_at, updated_at
             FROM daily_selection_runs
             WHERE workspace_id = ? AND run_id = ?
             """,
@@ -896,28 +874,6 @@ def _required_text(value: object, name: str) -> str:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _resolved_display_name(row: sqlite3.Row) -> str:
-    """Return the stored display name, deriving one for legacy rows when empty."""
-    stored = str(row["display_name"] or "").strip()
-    if stored:
-        return stored
-    criteria = _load_json(row["criteria_json"]) if row["criteria_json"] else {}
-    metadata = _load_json(row["metadata_json"]) if row["metadata_json"] else {}
-    return daily_selection_display_name(criteria, metadata, created_at=row["created_at"])
-
-
-def _run_summary(row: sqlite3.Row) -> DailySelectionRunSummary:
-    return DailySelectionRunSummary(
-        run_id=row["run_id"],
-        workspace_id=row["workspace_id"],
-        status=row["status"],
-        candidate_count=row["candidate_count"],
-        created_at=row["created_at"],
-        updated_at=row["updated_at"],
-        display_name=_resolved_display_name(row),
-    )
 
 
 def _dump_json(value: Any) -> str:

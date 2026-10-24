@@ -125,6 +125,12 @@
   text-overflow: ellipsis;
 }
 
+.ledger-store-filter select {
+  min-width: 160px;
+  max-width: 220px;
+  text-overflow: ellipsis;
+}
+
 .ledger-btn {
   height: 34px;
   padding: 0 16px;
@@ -196,7 +202,8 @@
   border: 1px solid var(--theme-module-border, #d8e5ee);
   border-radius: var(--theme-card-radius, 14px);
   background: var(--theme-module-surface, #fff);
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .ledger-table {
@@ -207,7 +214,7 @@
 
 .ledger-table th {
   text-align: left;
-  padding: 12px 14px;
+  padding: 12px 10px;
   font-weight: 500;
   font-size: 12px;
   color: var(--theme-text-secondary, #526a82);
@@ -216,9 +223,42 @@
 }
 
 .ledger-table td {
-  padding: 12px 14px;
+  padding: 12px 10px;
   border-bottom: 1px solid var(--theme-module-border, #f0f5f9);
   vertical-align: middle;
+}
+
+.ledger-site-cell,
+.ledger-action-cell {
+  white-space: nowrap;
+}
+
+.ledger-site-cell {
+  text-align: center;
+}
+
+/* 横向空间不足时只滚动中间列，操作列固定在右侧始终可点。 */
+.ledger-table th:last-child,
+.ledger-table td.ledger-action-cell {
+  position: sticky;
+  right: 0;
+  background: var(--theme-module-surface, #fff);
+  box-shadow: -10px 0 12px -12px rgba(24, 51, 77, 0.45);
+}
+
+.ledger-table tbody tr:hover td.ledger-action-cell {
+  background: var(--theme-module-surface-soft, #f7fafc);
+}
+
+.ledger-table tbody tr.is-selected td.ledger-action-cell {
+  background: var(--theme-module-surface-soft, #f2f9fd);
+}
+
+.ledger-store-cell {
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ledger-table tbody tr:hover {
@@ -229,7 +269,7 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  min-width: 260px;
+  min-width: 230px;
 }
 
 .ledger-cell-product img,
@@ -459,6 +499,94 @@
   font-size: 12px;
 }
 
+/* 店铺：工作台风格的输入 + 自定义下拉（不用原生 datalist） */
+.ledger-store-picker {
+  position: relative;
+}
+
+.ledger-store-control {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.ledger-store-control input {
+  box-sizing: border-box;
+  width: 170px;
+  height: 28px;
+  padding: 0 28px 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--theme-module-border, #d8e5ee);
+  background: var(--theme-module-surface-raised, #fff);
+  color: var(--theme-text-primary, #18334d);
+  font-size: 12px;
+  transition: border-color .16s ease, box-shadow .16s ease;
+}
+
+.ledger-store-control input:focus {
+  outline: none;
+  border-color: var(--theme-primary, #0a8fca);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-primary, #0a8fca) 16%, transparent);
+}
+
+.ledger-store-control > button {
+  position: absolute;
+  top: 50%;
+  right: 2px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  transform: translateY(-50%);
+  border: 0;
+  border-radius: 6px;
+  color: var(--theme-text-secondary, #526a82);
+  background: transparent;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.ledger-store-control > button:hover {
+  color: var(--theme-primary, #0a8fca);
+  background: var(--theme-module-surface-soft, #f2f9fd);
+}
+
+.ledger-store-menu {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 6px);
+  left: 0;
+  display: grid;
+  gap: 2px;
+  min-width: 100%;
+  max-height: 220px;
+  overflow: auto;
+  padding: 6px;
+  border: 1px solid var(--theme-module-border, #d8e5ee);
+  border-radius: 12px;
+  background: var(--theme-module-surface-raised, #fff);
+  box-shadow: 0 14px 30px var(--theme-module-shadow, rgba(24, 72, 108, .16));
+}
+
+.ledger-store-menu button {
+  min-height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--theme-text-primary, #18334d);
+  background: transparent;
+  font-size: 12px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ledger-store-menu button:hover,
+.ledger-store-menu button.is-active {
+  color: var(--theme-primary, #0a8fca);
+  background: var(--theme-module-surface-soft, #f2f9fd);
+}
+
 .ledger-site-picker small {
   margin: 0;
   font-size: 11px;
@@ -615,6 +743,48 @@
   white-space: nowrap;
 }
 
+/* 多 SKU 申报价：可指定使用哪个 SKU，未指定默认取最低价 */
+.ledger-price-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.ledger-price-head h3 {
+  margin: 0;
+}
+
+.ledger-price-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ledger-price-head-actions small {
+  font-size: 11px;
+  color: var(--theme-text-muted, #7b8fa4);
+}
+
+.ledger-price-actions {
+  white-space: nowrap;
+}
+
+.ledger-price-actions .ledger-link + .ledger-link {
+  margin-left: 10px;
+}
+
+.ledger-price-chosen {
+  color: var(--theme-primary, #0a8fca);
+  font-weight: 600;
+}
+
+.ledger-price-table tr.is-selected {
+  background: var(--theme-module-surface-soft, #f2f9fd);
+}
+
 .ledger-drawer-foot {
   margin-top: auto;
   display: flex;
@@ -627,20 +797,34 @@
 
 .ledger-drawer-foot strong {
   display: block;
-  font-size: 15px;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: .2px;
+  color: var(--theme-primary, #0a8fca);
 }
 
 .ledger-drawer-foot small {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--theme-text-muted, #7b8fa4);
 }
 
-/* 批量填重量：放在页头空白处 */
+/* 批量填重量 / 店铺：单独占一行，商品数靠左，批量控件靠右 */
+.ledger-batch-bar {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+  flex: 1 1 100%;
+}
+
+.ledger-batch-bar .ledger-total {
+  margin-right: auto;
+}
+
 .ledger-batch {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-left: auto;
 }
 
 .ledger-batch-title {
@@ -648,7 +832,8 @@
   color: var(--theme-text-secondary, #526a82);
 }
 
-.ledger-batch input {
+.ledger-batch input,
+.ledger-batch select {
   width: 130px;
   height: 32px;
   padding: 0 12px;
@@ -657,6 +842,13 @@
   background: var(--theme-module-surface-raised, #fff);
   color: var(--theme-text-primary, #18334d);
   font-size: 13px;
+}
+
+.ledger-batch .ledger-batch-store-select {
+  width: 160px;
+  max-width: 200px;
+  padding-right: 8px;
+  text-overflow: ellipsis;
 }
 
 /* 列表勾选与估算标记 */
@@ -792,6 +984,96 @@
 .ledger-form-label {
   font-size: 12px;
   color: var(--theme-text-secondary, #526a82);
+}
+
+/* 货源图片：与单品利润一致的上传/替换交互 */
+.ledger-image-drop {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 86px;
+  padding: 12px 14px;
+  border: 1.5px dashed var(--theme-module-border-strong, #a9cbe0);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--theme-module-surface-raised, #fff) 46%, transparent);
+  outline-color: var(--theme-primary, #0a8fca);
+}
+
+.ledger-image-drop:focus-visible {
+  outline: 2px dashed var(--theme-primary, #0a8fca);
+  outline-offset: 2px;
+}
+
+.ledger-image-icon,
+.ledger-image-preview {
+  flex: none;
+  width: 64px;
+  height: 64px;
+  border: 1px solid var(--theme-module-border, #e6edf3);
+  border-radius: 14px;
+  background: var(--theme-module-surface-raised, #fff);
+}
+
+.ledger-image-icon {
+  display: grid;
+  place-items: center;
+  color: var(--theme-text-muted, #62778d);
+  font-size: 1.4rem;
+}
+
+.ledger-image-preview {
+  object-fit: cover;
+}
+
+.ledger-image-copy {
+  display: grid;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.ledger-image-copy strong {
+  color: var(--theme-text-primary, #172b44);
+  font-size: 13px;
+}
+
+.ledger-image-copy span {
+  color: var(--theme-text-muted, #72869a);
+  font-size: 12px;
+}
+
+.ledger-image-remove {
+  flex: none;
+  padding: 6px 12px;
+  border: 1px solid #f3c4c9;
+  border-radius: 999px;
+  color: #b42318;
+  background: #fff6f6;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ledger-image-remove:hover {
+  border-color: #f28b93;
+  background: #ffecee;
+}
+
+.ledger-file-button {
+  flex: none;
+  display: inline-grid;
+  padding: 7px 14px;
+  border: 1px solid var(--theme-module-border-strong, #b9dce9);
+  border-radius: 999px;
+  color: var(--theme-primary, #0877d3);
+  background: var(--theme-module-surface-soft, #f7fafc);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ledger-file-button input {
+  display: none;
 }
 
 /* 利润构成 */

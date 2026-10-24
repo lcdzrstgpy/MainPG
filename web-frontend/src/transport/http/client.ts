@@ -266,7 +266,13 @@ export function toUserMessage(raw: string): string {
   if (/SHA-256 (does not match|mismatch)|size mismatch/i.test(message)) {
     return "更新包校验没通过，通常是下载不完整，请点「重新更新」再试一次";
   }
-  if (/manifest/i.test(message)) return "更新信息校验失败，请稍后重试；一直失败请把提示发给我们";
+  // 只匹配自动更新/补丁清单的 manifest 文案（"Update manifest …"/"Patch manifest …"/
+  // "… signed manifest"）。不能用裸 /manifest/i：预检保存抛出的
+  // "preview manifest references an asset outside its task or draft" 会先命中这里，
+  // 被误判成更新问题，并挡住下面预检专有的提示。
+  if (/\b(update|patch) manifest\b|signed manifest/i.test(message)) {
+    return "更新信息校验失败，请稍后重试；一直失败请把提示发给我们";
+  }
   if (/No verified (update|patch) is available to install/i.test(message)) return "没有可安装的更新包，请重新检查更新";
   if (/MainPG-Updater\.exe is missing/i.test(message)) return "更新程序缺失，请重新安装完整版";
   if (/Automatic updates are only available on Windows/i.test(message)) return "当前系统不支持自动更新，请手动下载安装包";

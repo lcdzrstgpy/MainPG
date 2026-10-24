@@ -7,18 +7,16 @@
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 import sqlite3
-import time
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
+
+from ..product_processing.preview_urls import preview_content_url as _preview_url
 
 from .matching import title_key
 
@@ -33,48 +31,6 @@ def _new_id() -> str:
 
 def _text(value: Any) -> str:
     return str(value if value is not None else "").strip()
-
-
-def _preview_url(connection: sqlite3.Connection, raw: Any) -> str:
-    """处理后的预览图地址带 2 小时签名，重新签名后再返回。
-
-    result_json 里存的是当时的临时签名 URL，直接展示几小时后就会 403；
-    这里按预览资产表里的 access_token 重新签一次，拿不到资产就原样返回。
-    """
-    text = _text(raw)
-    if not text.startswith("/api/product-processing/preview/assets/"):
-        return text
-    parts = text.split("?", 1)[0].rstrip("/").split("/")
-    if len(parts) < 3 or parts[-1] != "content":
-        return text
-    asset_id = parts[-2]
-    try:
-        row = connection.execute(
-            "SELECT id, workspace_id, access_token, public_url, managed_path "
-            "FROM product_processing_preview_image_assets WHERE id = ? LIMIT 1",
-            (asset_id,),
-        ).fetchone()
-    except sqlite3.OperationalError:
-        return text
-    if row is None:
-        return text
-    secret = _text(row["access_token"])
-    # 本地有文件时优先走本机签名地址；COS 公网地址只在没有本地文件时兜底。
-    if not _text(row["managed_path"]):
-        return _text(row["public_url"]) or text
-    if not secret:
-        return text
-    expires = ((int(time.time()) // 3600) + 2) * 3600
-    message = "\n".join((_text(row["id"]), _text(row["workspace_id"]), str(expires))).encode("utf-8")
-    signature = hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
-    query = urlencode(
-        {
-            "workspace_id": _text(row["workspace_id"]),
-            "expires": expires,
-            "signature": signature,
-        }
-    )
-    return f"/api/product-processing/preview/assets/{asset_id}/content?{query}"
 
 
 _COLLECTION_BATCH_SOURCES: tuple[tuple[str, str], ...] = (
@@ -444,6 +400,75 @@ class SourcingLedgerRepository:
                 (_text(workspace_id),),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def price_exclusions(self, workspace_id: str) -> set[tuple[str, str]]:
+        """用户删除的 (skc, sku_ref)：不参与最低价与利润计算。"""
+        with self._session() as connection:
+            rows = connection.execute(
+                "SELECT skc, sku_ref FROM product_declared_price_exclusions WHERE workspace_id = ?",
+                (_text(workspace_id),),
+            ).fetchall()
+        return {(_text(row["skc"]), _text(row["sku_ref"])) for row in rows}
+
+    def price_selections(self, workspace_id: str) -> dict[str, str]:
+        """skc → 选中的 sku_ref（未选择为空，表示默认取最低价）。"""
+        with self._session() as connection:
+            rows = connection.execute(
+                "SELECT skc, sku_ref FROM product_declared_price_selections WHERE workspace_id = ?",
+                (_text(workspace_id),),
+            ).fetchall()
+        return {_text(row["skc"]): _text(row["sku_ref"]) for row in rows if _text(row["skc"])}
+
+    def set_price_selection(self, workspace_id: str, skc: str, sku_ref: str) -> None:
+        """指定用哪个 SKU 的成交申报价；sku_ref 传空表示恢复默认（取最低价）。"""
+        workspace, code, ref = _text(workspace_id), _text(skc), _text(sku_ref)
+        if not code:
+            return
+        with self._session() as connection:
+            if not ref:
+                connection.execute(
+                    "DELETE FROM product_declared_price_selections "
+                    "WHERE workspace_id = ? AND skc = ?",
+                    (workspace, code),
+                )
+                return
+            connection.execute(
+                "INSERT INTO product_declared_price_selections (workspace_id, skc, sku_ref, updated_at) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(workspace_id, skc) DO UPDATE SET "
+                "sku_ref = excluded.sku_ref, updated_at = excluded.updated_at",
+                (workspace, code, ref, _now()),
+            )
+
+    def exclude_declared_price(self, workspace_id: str, skc: str, row_id: str) -> str:
+        """删除一条申报价（按 sku_ref 登记排除），返回被删除的 sku_ref。"""
+        workspace, code, target = _text(workspace_id), _text(skc), _text(row_id)
+        if not code or not target:
+            raise LookupError("申报价不存在")
+        with self._session() as connection:
+            row = connection.execute(
+                "SELECT sku_ref FROM product_declared_prices "
+                "WHERE workspace_id = ? AND skc = ? AND id = ? LIMIT 1",
+                (workspace, code, target),
+            ).fetchone()
+            if row is None:
+                raise LookupError("申报价不存在")
+            sku_ref = _text(row["sku_ref"])
+            if not sku_ref:
+                raise LookupError("申报价缺少 SKU 标识，无法删除")
+            connection.execute(
+                "INSERT INTO product_declared_price_exclusions (workspace_id, skc, sku_ref, updated_at) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(workspace_id, skc, sku_ref) DO UPDATE SET updated_at = excluded.updated_at",
+                (workspace, code, sku_ref, _now()),
+            )
+            # 删掉的正好是当前选中的 SKU 时，自动回到默认最低价。
+            connection.execute(
+                "DELETE FROM product_declared_price_selections "
+                "WHERE workspace_id = ? AND skc = ? AND sku_ref = ?",
+                (workspace, code, sku_ref),
+            )
+        return sku_ref
 
     def library_records(self, workspace_id: str) -> set[tuple[str, str]]:
         """已入产品库的 (skc, site_code)。"""
@@ -837,6 +862,62 @@ class SourcingLedgerRepository:
                 (_text(workspace_id), _text(skc)),
             )
 
+    # ---- 店铺覆盖（选填） ----
+
+    def store_overrides(self, workspace_id: str) -> dict[str, str]:
+        """货号 → 店铺名：抽屉里手动填写/选择的店铺。"""
+        with self._session() as connection:
+            try:
+                rows = connection.execute(
+                    "SELECT skc, store_name FROM product_item_store_overrides "
+                    "WHERE workspace_id = ?",
+                    (_text(workspace_id),),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return {}
+        return {
+            _text(row["skc"]): _text(row["store_name"])
+            for row in rows
+            if _text(row["skc"])
+        }
+
+    def set_store_override(self, workspace_id: str, skc: str, store_name: str) -> None:
+        workspace, code, name = _text(workspace_id), _text(skc), _text(store_name)
+        if not code:
+            return
+        with self._session() as connection:
+            if not name:
+                connection.execute(
+                    "DELETE FROM product_item_store_overrides WHERE workspace_id = ? AND skc = ?",
+                    (workspace, code),
+                )
+                return
+            connection.execute(
+                "INSERT INTO product_item_store_overrides (workspace_id, skc, store_name, updated_at) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(workspace_id, skc) DO UPDATE SET "
+                "store_name = excluded.store_name, updated_at = excluded.updated_at",
+                (workspace, code, name, _now()),
+            )
+
+    def store_names(self, workspace_id: str) -> list[str]:
+        """已有店铺名（产品库 + 台账手动填写），供输入框下拉候选。"""
+        names: set[str] = set()
+        workspace = _text(workspace_id)
+        with self._session() as connection:
+            for sql in (
+                "SELECT DISTINCT store_name FROM profit_activity_records "
+                "WHERE workspace_id = ? AND store_name <> ''",
+                "SELECT DISTINCT store_name FROM product_item_store_overrides "
+                "WHERE workspace_id = ? AND store_name <> ''",
+            ):
+                try:
+                    rows = connection.execute(sql, (workspace,)).fetchall()
+                except sqlite3.OperationalError:
+                    continue
+                names.update(_text(row["store_name"]) for row in rows if _text(row["store_name"]))
+        return sorted(names)
+
     # ---- 删除台账条目 ----
 
     def delete_items(self, workspace_id: str, product_keys: Iterable[str]) -> dict[str, int]:
@@ -954,6 +1035,53 @@ class SourcingLedgerRepository:
                     if value and value not in workspaces:
                         workspaces.append(value)
         return workspaces
+
+    def fill_declared_sku_attributes(
+        self, workspace_id: str, rows: Iterable[Mapping[str, Any]]
+    ) -> int:
+        """只补空白的 SKU 属性：按平台 SKC + SKU ID/货号匹配历史申报价。
+
+        老版本解析不到「SKU属性集」，重跑历史采集后用它回填，不覆盖已有值。
+        """
+        workspace = _text(workspace_id)
+        now = _now()
+        updated = 0
+        with self._session() as connection:
+            for row in rows:
+                market_skc_id = _text(row.get("market_skc_id"))
+                sku_id = _text(row.get("sku_id"))
+                merchant_code = _text(row.get("sku_merchant_code"))
+                site = _text(row.get("site"))
+                attribute = _text(row.get("sku_attribute_text"))
+                if not market_skc_id or not attribute:
+                    continue
+                match: list[str] = []
+                params: list[Any] = []
+                if sku_id:
+                    match.append("sku_id = ?")
+                    params.append(sku_id)
+                if merchant_code:
+                    match.append("sku_merchant_code = ?")
+                    params.append(merchant_code)
+                if not match:
+                    continue
+                clauses = [
+                    "workspace_id = ?",
+                    "market_skc_id = ?",
+                    "sku_attribute_text = ''",
+                    f"({' OR '.join(match)})",
+                ]
+                params = [workspace, market_skc_id, *params]
+                if site:
+                    clauses.append("site = ?")
+                    params.append(site)
+                cursor = connection.execute(
+                    f"UPDATE product_declared_prices SET sku_attribute_text = ?, updated_at = ? "
+                    f"WHERE {' AND '.join(clauses)}",
+                    (attribute, now, *params),
+                )
+                updated += int(cursor.rowcount or 0)
+        return updated
 
     def capture_chunks(self, workspace_id: str) -> list[dict[str, Any]]:
         """已落库的采集分片（启动时把历史采集补进台账）。"""

@@ -101,6 +101,7 @@ function SourceCardImage({ skc, site, group, imagePaths, fallbackUrl, onPreview 
       src={src}
       alt={label}
       loading="lazy"
+      referrerPolicy="no-referrer"
       title={onPreview ? "点击查看大图" : undefined}
       onClick={openPreview}
     />

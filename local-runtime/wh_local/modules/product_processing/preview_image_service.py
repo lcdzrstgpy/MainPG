@@ -1915,6 +1915,8 @@ class PreviewImageService:
                     self.repository.mark_finalize_stale(run_id, workspace_id, token)
                 )
             os.replace(temporary, final)
+            # 导出成功后登记「上架标题」：核价采集按标题兜底匹配时要用（PP 货号优先）。
+            self._record_listed_titles(workspace_id, rows)
             candidate_workbook = final
             completed = self.repository.mark_finalize_completed(
                 run_id,
@@ -2513,6 +2515,45 @@ class PreviewImageService:
             result["sku_source_usable"] = bool(sku_state.get("usable_source"))
             rows.append(result)
         return rows
+
+    def _record_listed_titles(
+        self, workspace_id: str, rows: Sequence[Mapping[str, Any]]
+    ) -> None:
+        """导出成功后登记商品的上架标题（货源台账做标题兜底匹配用）。
+
+        旁路写入，失败只记日志：台账问题不能影响用户已经完成的导出。
+        """
+        entries: list[tuple[str, str]] = []
+        for row in rows:
+            skc = str(row.get("skc") or "").strip()
+            overrides = row.get("preview_overrides")
+            override_title = (
+                overrides.get("title") if isinstance(overrides, Mapping) else ""
+            )
+            title = str(
+                override_title
+                or row.get("optimized_title")
+                or row.get("title")
+                or ""
+            ).strip()
+            if skc and title:
+                entries.append((skc, title))
+        if not entries:
+            return
+        database_path = str(getattr(self.repository.database.engine.url, "database", "") or "")
+        if not database_path or database_path == ":memory:":
+            return
+        try:
+            from wh_local.modules.sourcing_ledger.repository import (
+                SourcingLedgerRepository,
+            )
+            from wh_local.modules.sourcing_ledger.service import SourcingLedgerService
+
+            SourcingLedgerService(
+                SourcingLedgerRepository(database_path)
+            ).record_listed_titles(workspace_id, entries)
+        except Exception:  # noqa: BLE001 - 旁路登记，失败不影响导出
+            logger.warning("record listed titles failed for workspace %s", workspace_id)
 
     def sku_availability_state(
         self,

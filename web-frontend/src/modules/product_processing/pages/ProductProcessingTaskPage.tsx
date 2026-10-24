@@ -631,8 +631,13 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
     // effect 因 isActive 变化重跑，立刻恢复 1 秒全量轮询。
     const leaseOnly = !isActive;
     const activeStatuses = ['queued', 'running', 'paused'];
+    // 任务已到终态时，绝不因补跑标记仍是 running 就当作「正在处理」：取消/暂停若撞在补跑轮
+    // 中段，标记可能滞后（worker 卡在在途 AI 调用或进程被重启），否则结果页会一直显示
+    // 「正在重试波动链接」并空转轮询（2026-10-16 task 65 线上实例）。
+    const terminalStatuses = ['completed', 'failed', 'partial_failure', 'cancelled'];
     const isTaskActive = (status: string, repullStatus?: string) =>
-      activeStatuses.includes(status) || repullStatus === 'running';
+      !terminalStatuses.includes(status) &&
+      (activeStatuses.includes(status) || repullStatus === 'running');
     const generation = ++pollGenerationRef.current;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let stopped = false;

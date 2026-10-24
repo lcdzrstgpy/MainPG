@@ -4477,6 +4477,12 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         with self._task_last_seen_lock:
             self._task_last_seen.pop((workspace_id, int(task_id)), None)
         task = self.repository.mark_task_cancelled(task_id, workspace_id) or task
+        # 取消通常撞在自动补跑轮中段（用户先看到「正在重试波动链接」才点取消）：此刻 worker
+        # 可能仍卡在一条在途 AI 调用里，走不到收尾的补写逻辑；进程重启更会让该线程直接消失，
+        # _auto_repull 便永远停在 running，前端一直显示「处理中」。当场落终态，不依赖 worker。
+        self._close_auto_repull_marker(
+            task_id, workspace_id, task.get("settings"), "cancelled"
+        )
         # 取消后立即按「已完成全价 / 未完成 50%」结算该任务仍 open 的冻结批次，
         # 使积分扣费符合「取消按实际冻结积分 50% 扣除」的预期。token 失效或结算
         # 失败时不阻断：保留 open 记录，由对账 / 服务端 TTL 兜底。
@@ -12913,17 +12919,28 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         return max(0, int((end - started).total_seconds()))
 
     def _normalize_stale_auto_repull(self, task: dict[str, Any]) -> None:
-        """崩溃兜底：进程重启后 settings._auto_repull 可能永久停在 running。
+        """崩溃兜底：任务已离开处理态后，settings._auto_repull 可能永久停在 running。
 
         前端把 running 视为「正在重试波动链接」，任务已终态却仍显示处理中。
-        仅当任务到终态、补跑线程已不在运行、且状态超过 60 秒未刷新时才归一化，
+        仅当任务已到终态/暂停、补跑线程已不在运行、且状态超过 60 秒未刷新时才归一化，
         避开补跑线程启动窗口（线程先睡 1 秒再注册，注册期 1~16 秒）。
         """
         settings = task.get("settings")
         state = settings.get("_auto_repull") if isinstance(settings, dict) else None
         if not isinstance(state, dict) or str(state.get("status") or "") != "running":
             return
-        if str(task.get("status") or "") not in {"completed", "failed", "partial_failure"}:
+        task_status = str(task.get("status") or "")
+        # cancelled / paused 同样要归一化：取消或暂停常发生在补跑轮中段，worker 可能仍卡在
+        # 在途 AI 调用里走不到收尾，进程重启更会让该线程直接消失——此前只认
+        # completed/failed/partial_failure，导致已取消的任务永远显示「处理中」
+        # （2026-10-16 task 65 线上实例）。
+        if task_status not in {
+            "completed",
+            "failed",
+            "partial_failure",
+            "cancelled",
+            "paused",
+        }:
             return
         workspace_id = str(task.get("workspace_id") or "local")
         task_id = int(task.get("id") or 0)
@@ -12943,12 +12960,44 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             age_seconds = float("inf")
         if age_seconds < 60:
             return
-        done_state = dict(state)
-        done_state["status"] = "completed"
-        done_state["message"] = "自动重试已结束（进程重启后恢复）"
-        done_state["updated_at"] = _iso_utc_now()
+        self._close_auto_repull_marker(task_id, workspace_id, settings, task_status)
+
+    @staticmethod
+    def _auto_repull_final_marker(status: str) -> tuple[str, str]:
+        """给 _auto_repull 标记挑收尾状态与文案（按任务真实状态，不再一律 completed）。"""
+        if status == "cancelled":
+            return "cancelled", "自动重试已取消"
+        if status == "paused":
+            return "paused", "自动重试已暂停，恢复任务后可继续补跑"
+        return "completed", "自动重试已结束（进程重启后恢复）"
+
+    def _close_auto_repull_marker(
+        self,
+        task_id: int,
+        workspace_id: str,
+        settings: dict[str, Any] | None,
+        task_status: str,
+    ) -> None:
+        """把仍停在 running 的 _auto_repull 标记落终态（幂等；写失败不抛）。
+
+        取消/暂停常发生在自动补跑轮中段：worker 可能仍卡在一条在途 AI 调用里，走不到
+        收尾的补写逻辑，进程重启更会让该线程直接消失。标记不落终态时，前端会把已终态的
+        任务一直当作「正在重试波动链接」（2026-10-16 task 65 线上实例）。
+
+        就地改传入 settings 里的那个标记：调用方随后正是用它构建响应，必须让**同一次**
+        响应就带上收尾状态——否则前端要多读一次才看到正确文案，而终态后轮询很快就停了。
+        """
+        state = settings.get("_auto_repull") if isinstance(settings, dict) else None
+        if not isinstance(state, dict) or str(state.get("status") or "") != "running":
+            return
+        final_status, message = self._auto_repull_final_marker(task_status)
+        state["status"] = final_status
+        state["message"] = message
+        state["updated_at"] = _iso_utc_now()
         try:
-            self.repository.merge_task_settings(task_id, workspace_id, _auto_repull=done_state)
+            self.repository.merge_task_settings(
+                task_id, workspace_id, _auto_repull=dict(state)
+            )
         except Exception:
             pass
 

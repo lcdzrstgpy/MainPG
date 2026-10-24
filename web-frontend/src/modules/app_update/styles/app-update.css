@@ -1,5 +1,5 @@
 .app-update-backdrop { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; padding: 24px; background: rgb(15 23 42 / 52%); }
-.app-update-dialog { width: min(100%, 480px); border: 1px solid #d8e0ec; border-radius: 14px; padding: 28px; color: #172033; background: #fff; box-shadow: 0 24px 70px rgb(15 23 42 / 28%); }
+.app-update-dialog { width: min(100%, 480px); max-height: calc(100vh - 48px); max-height: calc(100dvh - 48px); display: flex; flex-direction: column; border: 1px solid #d8e0ec; border-radius: 14px; padding: 28px; color: #172033; background: #fff; box-shadow: 0 24px 70px rgb(15 23 42 / 28%); }
 .app-update-heading { display: flex; align-items: center; gap: 10px; }
 .app-update-heading h2 { margin: 0; font-size: 20px; }
 .app-update-badge { border-radius: 999px; padding: 4px 8px; color: #075985; background: #e0f2fe; font-size: 12px; font-weight: 700; }
@@ -9,9 +9,13 @@
 .app-update-versions dt, .app-update-notes h3 { color: #64748b; font-size: 12px; font-weight: 600; }
 .app-update-versions dd { margin: 4px 0 0; font-weight: 700; }
 .app-update-notes { margin-top: 14px; }.app-update-notes h3 { margin: 0; }.app-update-notes ul { margin: 8px 0 0; padding-left: 18px; line-height: 1.6; }
+/* 更新说明可能是一整篇公告：只让这一段滚动，标题/版本号/底部按钮始终可见，
+   否则弹窗会顶出视口，用户得缩放页面才能点到「立即更新/稍后处理」。 */
+.app-update-dialog > :not(.app-update-notes) { flex: none; }
+.app-update-notes { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .app-update-progress { margin-top: 18px; color: #334155; }.app-update-progress-track { overflow: hidden; height: 8px; border-radius: 999px; background: #e2e8f0; }.app-update-progress-track span { display: block; height: 100%; border-radius: inherit; background: #2563eb; transition: width .2s ease; }.app-update-progress strong { display: inline-block; margin-top: 7px; font-size: 13px; }.app-update-progress small { display: block; margin-top: 8px; line-height: 1.5; }
 .app-update-error { margin: 18px 0 0; color: #b42318; line-height: 1.5; }.app-update-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }.app-update-actions button { border-radius: 7px; padding: 9px 15px; cursor: pointer; font: inherit; font-weight: 600; }.app-update-actions button:focus-visible { outline: 3px solid rgb(37 99 235 / 35%); outline-offset: 2px; }.app-update-actions button:disabled { cursor: not-allowed; opacity: .65; }.app-update-primary { border: 1px solid #2563eb; color: #fff; background: #2563eb; }.app-update-secondary { border: 1px solid #cbd5e1; color: #334155; background: #fff; }
-@media (max-width: 480px) { .app-update-backdrop { padding: 14px; }.app-update-dialog { padding: 22px; }.app-update-versions { grid-template-columns: 1fr; } }
+@media (max-width: 480px) { .app-update-backdrop { padding: 14px; }.app-update-dialog { max-height: calc(100vh - 28px); max-height: calc(100dvh - 28px); padding: 22px; }.app-update-versions { grid-template-columns: 1fr; } }
 
 /* 更新弹窗也要和当前工作区主题一致，而不是在暖阳下退回蓝白。 */
 [data-theme] .app-update-backdrop { background: var(--theme-module-overlay); }
