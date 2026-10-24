@@ -18,6 +18,25 @@ import { getApiToken } from "../../../shared/api/apiClient";
 import { toUserMessage } from "../../../transport/http/client";
 import { ShopCollectionPanel, type ShopCollectionPanelHandle } from "../components/ShopCollectionPanel";
 import { PluginOneboundCapturePanel, type PluginOneboundCapturePanelHandle } from "../components/PluginOneboundCapturePanel";
+import { CollectionModeCard, type CollectionModeSlide } from "../components/CollectionModeCard";
+
+/** 三个采集入口的背景轮播素材。定向=合规商品图；整店/插件=脱敏后的平台页截图（店名与供应商已模糊）。 */
+const COLLECTION_MODE_SLIDES: Record<"daily" | "shop" | "plugin", CollectionModeSlide[]> = {
+  daily: [
+    { src: "/assets/daily-selection/desk.jpg" },
+    { src: "/assets/daily-selection/pet.jpg" },
+    { src: "/assets/daily-selection/case.jpg" },
+    { src: "/assets/daily-selection/garden.jpg" },
+  ],
+  shop: [
+    { src: "/assets/daily-selection/store-1.jpg" },
+    { src: "/assets/daily-selection/store-2.jpg" },
+  ],
+  plugin: [
+    { src: "/assets/daily-selection/search-1.jpg" },
+    { src: "/assets/daily-selection/search-2.jpg" },
+  ],
+};
 import type {
   CollectionMode,
   CollectionPlatform,
@@ -321,39 +340,6 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   const [internalView, setInternalView] = useState<"directions" | "collection">(view);
   const collectionView = internalView === "collection";
   const [collectionWorkspaceMode, setCollectionWorkspaceMode] = useState<"daily" | "shop" | "plugin">("daily");
-  const [collectionTabThumb, setCollectionTabThumb] = useState({ x: 0, y: 0, width: 0, height: 0 });
-  const [collectionTabThumbReady, setCollectionTabThumbReady] = useState(false);
-  const collectionTabsRef = useRef<HTMLDivElement>(null);
-
-  // 采集入口胶囊 Tab：和首页时间范围同一套共享滑块（SwiftUI matchedGeometryEffect）。
-  // 高亮不是每个按钮各自换背景，而是同一块滑块在选中项之间做弹簧插值；
-  // 移动端三栏会堆叠成竖排，所以 x/y/宽/高都要量。
-  useLayoutEffect(() => {
-    if (!collectionView) return;
-    const group = collectionTabsRef.current;
-    if (!group) return;
-    const syncThumb = () => {
-      const active = group.querySelector<HTMLButtonElement>("button.is-active");
-      if (!active) return;
-      const groupRect = group.getBoundingClientRect();
-      const activeRect = active.getBoundingClientRect();
-      setCollectionTabThumb({
-        x: activeRect.left - groupRect.left - group.clientLeft,
-        y: activeRect.top - groupRect.top - group.clientTop,
-        width: activeRect.width,
-        height: activeRect.height,
-      });
-    };
-    syncThumb();
-    // 首帧只定位不播放动画，下一帧再开启过渡，避免页面加载时滑块从原点滑入。
-    const frame = window.requestAnimationFrame(() => setCollectionTabThumbReady(true));
-    const observer = new ResizeObserver(syncThumb);
-    observer.observe(group);
-    return () => {
-      window.cancelAnimationFrame(frame);
-      observer.disconnect();
-    };
-  }, [collectionView, collectionWorkspaceMode]);
   const [customDirections, setCustomDirections] = useState<Direction[]>(loadCustomDirections);
   const [updatedDefaultDirections, setUpdatedDefaultDirections] = useState<Direction[]>(loadUpdatedDefaultDirections);
   const [removedDefaultDirectionIds, setRemovedDefaultDirectionIds] = useState<string[]>(loadRemovedDefaultDirectionIds);
@@ -1392,39 +1378,28 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
               className="collection-workspace-tabs"
               role="tablist"
               aria-label="采集入口"
-              ref={collectionTabsRef}
-              data-ready={collectionTabThumbReady ? "true" : undefined}
             >
-              <span
-                className="collection-tab-thumb"
-                aria-hidden="true"
-                style={{
-                  width: collectionTabThumb.width,
-                  height: collectionTabThumb.height,
-                  transform: `translate3d(${collectionTabThumb.x}px, ${collectionTabThumb.y}px, 0)`,
-                }}
+              <CollectionModeCard
+                label="定向采集"
+                iconClass="icon-search"
+                slides={COLLECTION_MODE_SLIDES.daily}
+                isActive={collectionWorkspaceMode === "daily"}
+                onSelect={() => setCollectionWorkspaceMode("daily")}
               />
-              <button
-                type="button"
-                role="tab"
-                aria-selected={collectionWorkspaceMode === "daily"}
-                className={collectionWorkspaceMode === "daily" ? "is-active" : ""}
-                onClick={() => setCollectionWorkspaceMode("daily")}
-              ><span className="collection-tab-label"><span className="iconfont icon-search" aria-hidden="true"></span>定向采集</span></button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={collectionWorkspaceMode === "shop"}
-                className={collectionWorkspaceMode === "shop" ? "is-active" : ""}
-                onClick={() => setCollectionWorkspaceMode("shop")}
-              ><span className="collection-tab-label"><span className="iconfont icon-shop" aria-hidden="true"></span>整店采集</span></button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={collectionWorkspaceMode === "plugin"}
-                className={collectionWorkspaceMode === "plugin" ? "is-active" : ""}
-                onClick={() => setCollectionWorkspaceMode("plugin")}
-              ><span className="collection-tab-label"><span className="iconfont icon-cloud" aria-hidden="true"></span>插件采集</span></button>
+              <CollectionModeCard
+                label="整店采集"
+                iconClass="icon-shop"
+                slides={COLLECTION_MODE_SLIDES.shop}
+                isActive={collectionWorkspaceMode === "shop"}
+                onSelect={() => setCollectionWorkspaceMode("shop")}
+              />
+              <CollectionModeCard
+                label="插件采集"
+                iconClass="icon-cloud"
+                slides={COLLECTION_MODE_SLIDES.plugin}
+                isActive={collectionWorkspaceMode === "plugin"}
+                onSelect={() => setCollectionWorkspaceMode("plugin")}
+              />
             </div>
             {collectionWorkspaceMode === "plugin" ? (
               <PluginOneboundCapturePanel ref={pluginCapturePanelRef} isActive={isActive} onOpenDraft={onOpenProductProcessingDraft} onBatchCountChange={setPluginBatchCount} />
