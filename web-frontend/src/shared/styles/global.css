@@ -145,6 +145,15 @@ button { cursor: pointer; }
 .workspace-tab-panel.is-active > * > *:nth-child(7) { animation-delay: .86s; }
 .workspace-tab-panel.is-active > * > *:nth-child(n+8) { animation-delay: .98s; }
 
+/* 草稿池的吸顶工具栏（CSS sticky）贴顶栏下沿；这层 section 的浮现动画带 translateY，
+   播放期间会把整块连同吸附栏一起上下推动。这里改用无位移的淡入，保留入场观感，
+   吸附栏也能稳定停在顶栏下方。 */
+.workspace-tab-panel.is-active > .verify-pool-page > .verify-section,
+html.theme-cascade .workspace-tab-panel.is-active > .verify-pool-page > .verify-section {
+  animation-name: workbench-block-fade;
+}
+@keyframes workbench-block-fade { from { opacity: 0; } to { opacity: 1; } }
+
 /* POD 三个模块（全定制 / 半定制 / 爆款复刻）的页面根直接子块是 header 与网格容器，
    落不进上面只认 section / *-card / *-panel 的选择器，这里按同一套动画补齐。
    必须写成 animation-* 长写属性：简写会把上面 nth-child 规则给的 animation-delay 重置为 0，

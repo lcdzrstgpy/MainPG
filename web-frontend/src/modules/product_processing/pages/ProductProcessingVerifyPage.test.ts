@@ -3,15 +3,16 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const page = readFileSync(new URL("./ProductProcessingVerifyPage.tsx", import.meta.url), "utf8");
+const pageCss = readFileSync(new URL("../styles/ProductProcessingVerifyPage.css", import.meta.url), "utf8");
 
-test("draft toolbar sticky behavior does not observe its own layout writes", () => {
-  assert.match(page, /const \[isStickyToolbar, setIsStickyToolbar\] = useState\(false\)/);
-  assert.match(page, /const stickyToolbarStateRef = useRef\(false\)/);
-  assert.match(page, /if \(!isActive\) \{[\s\S]*?clearStickyLayout\(\);[\s\S]*?return;/);
-  assert.match(page, /if \(!stickyToolbarStateRef\.current\) \{[\s\S]*?setIsStickyToolbar\(true\)/);
-  assert.match(page, /\}, \[isActive\]\);/);
-  assert.doesNotMatch(page, /observer\.observe\(toolbar\)/);
-  assert.doesNotMatch(page, /observer\.observe\(document\.body\)/);
+test("draft toolbar sticks via CSS sticky instead of a JS fixed layer", () => {
+  // 曾经由 JS 量视口坐标切成 position:fixed，并用 spacer 占位；这种独立浮层会横向撑开、
+  // 还会被 section 的入场 transform 当成包含块。现在只靠 CSS sticky，不应再出现这些写法。
+  assert.doesNotMatch(page, /verify-sticky-toolbar-spacer/);
+  assert.doesNotMatch(page, /stickyToolbarRef|stickySpacerRef|isStickyToolbar/);
+  assert.doesNotMatch(page, /position = 'fixed'/);
+  assert.match(pageCss, /\.verify-sticky-toolbar\s*\{[^}]*position:\s*sticky/);
+  assert.match(pageCss, /\.verify-sticky-toolbar\s*\{[^}]*top:\s*calc\(var\(--workspace-topbar-height/);
 });
 
 test("SKU editor renders captured SKU images and keeps each variant attribute visible", () => {
