@@ -247,3 +247,99 @@
   .results-actions { gap: 8px; }
   .sku-filter input[type=number] { min-width: 0; flex: 1 1 52px; }
 }
+
+/* ---- 采集入口卡片（2026-10-24）----
+   「标签 + 下面一块区域」的大卡片，背景是截图/商品图轮播。
+   规则：只有选中的卡片轮播（组件里控制）；选中背景清晰，未选中模糊压白纱；
+   文字放独立胶囊，保证任何背景图上都读得清。 */
+.collection-workspace-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+}
+.collection-mode-card {
+  position: relative;
+  overflow: hidden;
+  height: 122px;
+  padding: 0;
+  border: 1px solid var(--theme-module-border);
+  /* 形状保持原样：胶囊（用户 2026-10-24 明确「不要改形状」） */
+  border-radius: 999px;
+  background: var(--theme-module-surface);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color .25s ease, box-shadow .25s ease, transform .25s ease;
+}
+.collection-mode-card:hover { transform: translateY(-2px); box-shadow: 0 14px 30px rgba(12, 48, 40, .16); }
+.collection-mode-card.is-active {
+  border-color: var(--theme-module-border-strong);
+  box-shadow: 0 16px 34px rgba(12, 48, 40, .22);
+}
+.collection-mode-media { position: absolute; inset: 0; }
+.collection-mode-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  /* 未选中：模糊 + 略放大，避免露出边缘 */
+  filter: blur(5px) saturate(.92) brightness(1.02);
+  transform: scale(1.08);
+  transition: opacity .6s ease, filter .35s ease, transform .45s ease;
+}
+.collection-mode-img.is-active { opacity: 1; }
+.collection-mode-card.is-active .collection-mode-img { filter: none; transform: scale(1); }
+/* 未选中：白纱压淡（底图偏亮）配黑字；选中：深色暗角压住（底图清晰）配白字。 */
+.collection-mode-veil {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(120deg, rgba(255, 255, 255, .62), rgba(255, 255, 255, .44));
+  transition: background .3s ease;
+}
+.collection-mode-card.is-active .collection-mode-veil {
+  background:
+    radial-gradient(ellipse 66% 82% at 50% 50%, rgba(6, 30, 23, .46), rgba(6, 30, 23, 0) 74%),
+    linear-gradient(180deg, rgba(8, 34, 27, .12) 0%, rgba(8, 34, 27, .36) 100%);
+}
+/* 下方面板切换时淡入上移，和卡片的衔接对上 */
+@keyframes collection-mode-panel-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+/* 切换入口时面板会整体重新挂载，挂上动画即可自动播放 */
+.shop-collection-panel, .daily-drawer-body {
+  animation: collection-mode-panel-in .3s ease both;
+}
+
+/* 文字：居中 + 无底色，靠颜色切换与阴影保证可读（用户指定：模糊态黑字、轮播态白字） */
+.collection-mode-label {
+  position: absolute;
+  z-index: 2;
+  left: 8px;
+  right: 8px;
+  top: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transform: translateY(-50%);
+  color: #14251f;
+  font-size: 1.24rem;
+  font-weight: 850;
+  letter-spacing: .06em;
+  text-shadow:
+    0 1px 10px rgba(255, 255, 255, .85),
+    0 0 2px rgba(255, 255, 255, .7);
+  transition: color .32s ease, text-shadow .32s ease;
+}
+.collection-mode-card.is-active .collection-mode-label {
+  color: #ffffff;
+  text-shadow:
+    0 2px 14px rgba(5, 28, 22, .82),
+    0 0 3px rgba(5, 28, 22, .6);
+}
+@media (max-width: 1020px) {
+  .collection-workspace-tabs { grid-template-columns: 1fr; }
+  .collection-mode-card { height: 104px; }
+}

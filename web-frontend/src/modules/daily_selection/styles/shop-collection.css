@@ -34,82 +34,10 @@
   .plugin-candidate-links { align-items: flex-end; flex-direction: column; gap: 4px; }
 }
 
-/* ── 采集入口大号胶囊 Tab：三栏等宽，选中态是一块共享滑块 ──
-   对应 SwiftUI matchedGeometryEffect：滑块在选中项之间做弹簧插值，
-   按钮只负责描边/文字，不再各自切换渐变背景。 */
-.collection-workspace-tabs {
-  position: relative;
-  isolation: isolate;
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-  padding: 14px 18px;
-  border-top: 0;
-  border-bottom: 1px solid var(--theme-module-border, #e5e7eb);
-  background: linear-gradient(180deg, var(--theme-module-surface-raised, #fff), var(--theme-module-surface-soft, #f7fafc));
-}
-
-.collection-tab-thumb {
-  position: absolute;
-  z-index: 1;
-  top: 0;
-  left: 0;
-  width: 0;
-  height: 0;
-  border-radius: 999px;
-  background: var(--theme-primary-button-gradient, #2563eb);
-  box-shadow: 0 10px 24px var(--theme-module-shadow, rgba(26, 105, 149, .08));
-  pointer-events: none;
-  transform: translate3d(0, 0, 0);
-}
-
-.collection-workspace-tabs[data-ready="true"] .collection-tab-thumb {
-  transition:
-    transform .42s cubic-bezier(.22, 1, .36, 1),
-    width .42s cubic-bezier(.22, 1, .36, 1),
-    height .42s cubic-bezier(.22, 1, .36, 1);
-}
-
-.collection-tab-label {
-  position: relative;
-  z-index: 2;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.collection-workspace-tabs button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  min-height: 54px;
-  padding: 12px 20px;
-  border: 1px solid var(--theme-module-border, #d1d5db);
-  border-radius: 999px;
-  background: var(--theme-module-surface, #fff);
-  color: var(--theme-text-secondary, #527089);
-  font-size: 1.02rem;
-  font-weight: 850;
-  cursor: pointer;
-  /* 不使用 transform：它会创建层叠上下文，把按钮文字压到滑块下面。 */
-  transition: color, background-color, border-color, box-shadow, opacity .18s ease;
-}
-
-.collection-workspace-tabs button .iconfont { font-size: 1.15rem; line-height: 1; }
-
-.collection-workspace-tabs button:hover {
-  border-color: var(--theme-module-border-strong, #a7dafa);
-  color: var(--theme-accent, #0aa6cc);
-  background: var(--theme-module-surface-soft, #f7fafc);
-}
-
-.collection-workspace-tabs button.is-active {
-  border-color: transparent;
-  background: transparent;
-  color: var(--theme-on-primary, #fff);
-  box-shadow: none;
-}
+/* 采集入口已改成「背景轮播大卡片」，旧胶囊 Tab / 滑块样式已移除；
+   新样式见 daily-selection.css 的 .collection-mode-*。
+   这里不再定义 .collection-workspace-tabs —— 高特异性规则（.collection-workspace-tabs button）
+   会压掉卡片的圆角与内边距，把卡片挤成胶囊、图片露出白边。 */
 
 .shop-collection-panel {
   display: grid;
@@ -533,8 +461,6 @@
 
 @media (max-width: 760px) {
   .shop-collection-panel { padding-bottom: 18px; }
-  .collection-workspace-tabs { grid-template-columns: 1fr; gap: 9px; }
-  .collection-workspace-tabs button { min-height: 46px; font-size: .95rem; }
   .shop-batch-summary { grid-template-columns: minmax(0, 1fr); }
   .shop-items-list article { grid-template-columns: minmax(0, 1fr); }
   .shop-item-name, .shop-item-meta { white-space: normal; }
