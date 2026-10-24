@@ -5,12 +5,13 @@ import hashlib
 import inspect
 import io
 import json
+import sqlite3
 import threading
 import time
 import uuid
 import zipfile
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from PIL import Image, ImageDraw
 from pydantic import ValidationError
@@ -49,6 +50,7 @@ from .contracts import (
     FissionBatchCreate,
     FissionImageRole,
     FissionImageUploadResponse,
+    GENERATION_LAYOUT_COLUMN,
     ReplicaAnalyzeRequest,
     ReplicaBatchCreate,
     ReplicaImageUploadResponse,
@@ -58,6 +60,7 @@ from .contracts import (
 )
 from .ai_runtime import resolve_pod_image_model
 from .brief_runtime import PodBriefRequest
+from .column_generation import group_roles_to_freeze
 from .composition_runtime import PodCompositionLocalizeRequest, PodCompositionRequest
 from .fission_runtime import (
     FissionAnalysisRequest as RuntimeFissionAnalysisRequest,
@@ -94,9 +97,13 @@ from .export import (
 )
 from .export_records import PodExportRecordStore
 from .errors import image_provider_outcome_for_exception, safe_error_message
+from .reconciliation import PodBillingReconciler, deadline_passed
+from .remote_billing import attach_freeze_snapshot
 from .repository import PodCustomizationRepository, PodRepositoryError, ReplicaBatchIdempotentReturn, RegistryVersionConflict
 from .spec_card_units import display_spec_card_cells
 from .prompts import (
+    DEFAULT_COLUMN_COMPOSITION_PANELS,
+    DEFAULT_COLUMN_COMPOSITION_RAW_INPUT,
     DEFAULT_COMPOSITION_ID,
     DEFAULT_COMPOSITION_NAME,
     DEFAULT_COMPOSITION_PANELS,
@@ -112,6 +119,16 @@ from .runtime_contracts import (
     DirectListingGridRequest,
     PodAiRuntime,
 )
+from .structure_analysis import (
+    STRUCTURE_ANALYSIS_VERSION,
+    STRUCTURE_STATUS_FAILED,
+    STRUCTURE_STATUS_NEEDS_CONFIRMATION,
+    STRUCTURE_STATUS_READY,
+    load_structure_facts,
+    needs_confirmation,
+)
+from .template_views import load_generation_references
+from .image_providers.catalog import model_supports_multi_view
 from .title_runtime import PodTitleRequest, visual_signature
 from .worker import (
     POD_PROGRESS_TIMEOUT_SECONDS,
@@ -154,6 +171,26 @@ def _shrink_for_vision(content: bytes) -> tuple[bytes, str] | None:
         return buffer.getvalue(), "image/jpeg"
     except Exception:
         return None
+
+
+# 结构事实表允许人工修订的键（与 structure_analysis 的输出契约保持一致）。
+_STRUCTURE_FACT_KEYS = frozenset(
+    {
+        "product_type",
+        "part_count",
+        "tiers",
+        "units_per_tier",
+        "height_mm",
+        "thickness_mm",
+        "material",
+        "transparency",
+        "surface_finish",
+        "symmetry",
+        "connections",
+        "printable_regions",
+        "confidence",
+    }
+)
 
 
 def _composition_default_name(brief: str) -> str:
@@ -253,9 +290,13 @@ class PodCustomizationService:
         self._reaper_thread: threading.Thread | None = None
         self._cache_sweep_stop: threading.Event = threading.Event()
         self._cache_sweep_thread: threading.Thread | None = None
+        self._recon_stop: threading.Event = threading.Event()
+        self._recon_thread: threading.Thread | None = None
+        self._billing_reconciler_instance: PodBillingReconciler | None = None
         if start_workers:
             self._start_reaper()
             self._start_cache_sweeper()
+            self._start_billing_reconciler()
 
     def upload_template(
         self,
@@ -264,10 +305,19 @@ class PodCustomizationService:
         name: str,
         filename: str,
         content: bytes,
+        views: Sequence[Mapping[str, Any]] = (),
     ) -> dict[str, Any]:
+        """保存模板主图与可选结构视图，并尽力生成结构事实表。
+
+        ``views`` 每项 ``{"role": "side"|"top"|"dimension", "filename": str, "content": bytes}``；
+        角色不可重复、不含 ``primary``（主图就是 ``content``）。识图失败不阻塞上传：
+        模板照常可用，结构状态落为 ``failed``，批次退化为单图锚定。
+        """
         clean_name = name.strip()
         if not clean_name:
             raise ValueError("template name is required")
+        # 先校验角色再落盘：非法视图不应该留下孤儿资产。
+        self._validate_template_views(views)
         stored = self.assets.save_image(actor.workspace_id, actor.id, content)
         asset = self.repository.create_asset(
             workspace_id=actor.workspace_id,
@@ -281,13 +331,203 @@ class PodCustomizationService:
             width=stored.width,
             height=stored.height,
         )
+        view_rows = self._store_template_views(actor, views)
         template = self.repository.create_template(
             workspace_id=actor.workspace_id,
             owner_user_id=actor.id,
             name=clean_name,
             asset=asset,
+            views=view_rows,
         )
-        return self._template_payload(template)
+        self._analyze_template_structure(actor, template, view_rows)
+        return self._template_payload(
+            self.repository.get_template(template["template_id"], actor.workspace_id, actor.id)
+        )
+
+    def attach_template_views(
+        self,
+        actor: Actor,
+        template_id: str,
+        views: Sequence[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        """给已存在的个人模板补充/替换结构视图，并重跑一次结构识图。
+
+        批次表单里的「结构视图锚定」走这里：视图最终挂在产品模板上，后续用同一
+        模板的批次自动复用；系统模板是共享只读的，先要求保存成个人模板。
+        """
+        template = self.repository.get_template(template_id, actor.workspace_id, actor.id)
+        if template["source"] != "personal":
+            raise ValueError("系统模板不支持结构视图，请先保存为个人模板")
+        self._validate_template_views(views)
+        rows = self._store_template_views(actor, views)
+        if not rows:
+            return self._template_payload(template)
+        all_views = self.repository.replace_template_views(
+            template_id, actor.workspace_id, actor.id, views=rows
+        )
+        self._analyze_template_structure(actor, template, all_views)
+        return self._template_payload(
+            self.repository.get_template(template_id, actor.workspace_id, actor.id)
+        )
+
+    @staticmethod
+    def _validate_template_views(views: Sequence[Mapping[str, Any]]) -> None:
+        seen: set[str] = set()
+        for raw in views:
+            role = str(raw.get("role") or "").strip().lower()
+            if role not in {"side", "top", "dimension"}:
+                raise ValueError("结构视图角色必须是 side / top / dimension")
+            if role in seen:
+                raise ValueError("同一结构视图角色不能重复上传")
+            seen.add(role)
+
+    def _store_template_views(
+        self, actor: Actor, views: Sequence[Mapping[str, Any]]
+    ) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for raw in views:
+            role = str(raw.get("role") or "").strip().lower()
+            if role not in {"side", "top", "dimension"}:
+                raise ValueError("结构视图角色必须是 side / top / dimension")
+            if role in seen:
+                raise ValueError("同一结构视图角色不能重复上传")
+            payload = bytes(raw.get("content") or b"")
+            if not payload:
+                continue
+            seen.add(role)
+            stored = self.assets.save_image(actor.workspace_id, actor.id, payload)
+            asset = self.repository.create_asset(
+                workspace_id=actor.workspace_id,
+                owner_user_id=actor.id,
+                kind="template_view",
+                filename=str(raw.get("filename") or f"template-{role}.png"),
+                relative_path=stored.relative_path,
+                content_type=stored.content_type,
+                byte_size=stored.byte_size,
+                sha256=stored.sha256,
+                width=stored.width,
+                height=stored.height,
+            )
+            rows.append(
+                {
+                    "role": role,
+                    "asset_id": asset["asset_id"],
+                    "width": stored.width,
+                    "height": stored.height,
+                }
+            )
+        return rows
+
+    def _analyze_template_structure(
+        self,
+        actor: Actor,
+        template: Mapping[str, Any],
+        view_rows: Sequence[Mapping[str, Any]],
+    ) -> None:
+        """上传时把视图集转成结构事实表（模板级一次，纯 title 零计费）。
+
+        任何失败都只把状态落为 ``failed``：模板仍然可用，批次退回单图锚定。
+        """
+        if not view_rows or self.analysis_runtime is None or self.billing_coordinator is None:
+            return
+        template_id = str(template["template_id"])
+        images: list[dict[str, str]] = []
+        try:
+            primary = self.repository.get_asset(template["asset_id"], actor.workspace_id, actor.id)
+            images.append({"role": "primary", "data_url": self._asset_data_url(primary)})
+            for row in view_rows:
+                asset = self.repository.get_asset(str(row["asset_id"]), actor.workspace_id, actor.id)
+                images.append({"role": str(row["role"]), "data_url": self._asset_data_url(asset)})
+        except Exception as exc:  # noqa: BLE001 - 读图失败不阻塞上传
+            self.repository.update_template_structure(
+                template_id,
+                actor.workspace_id,
+                actor.id,
+                facts_json="",
+                status=STRUCTURE_STATUS_FAILED,
+                analysis_version=STRUCTURE_ANALYSIS_VERSION,
+            )
+            business_logger("pod_processing").warning(
+                "POD 模板结构识图准备失败 | template=%s | %s", template_id, safe_error_message(exc)
+            )
+            return
+
+        analysis_id = uuid.uuid4().hex
+        try:
+            run = self._freeze_structure_analysis(actor, analysis_id)
+        except RuntimeError as exc:
+            business_logger("pod_processing").warning(
+                "POD 模板结构识图跳过（计费底座不可用） | template=%s | %s", template_id, exc
+            )
+            return
+
+        call_ids = tuple(call.call_id for call in run.plan.calls if call.feature == "pod.title")
+        facts: dict[str, Any] | None = None
+        try:
+            facts = self.analysis_runtime.analyze_structure_views(
+                images,
+                grant=run.grant,
+                call_id=call_ids[0],
+                call_ids=call_ids,
+                on_start=lambda call_id: run.start(call_id, "pod.title"),
+                on_outcome=lambda call_id, status: run.record(call_id, "pod.title", status),
+            )
+        except Exception as exc:  # noqa: BLE001 - 识图失败只降级，不影响模板可用
+            self.repository.update_template_structure(
+                template_id,
+                actor.workspace_id,
+                actor.id,
+                facts_json="",
+                status=STRUCTURE_STATUS_FAILED,
+                analysis_version=STRUCTURE_ANALYSIS_VERSION,
+            )
+            business_logger("pod_processing").warning(
+                "POD 模板结构识图失败 | template=%s | %s", template_id, safe_error_message(exc)
+            )
+        finally:
+            try:
+                run.settle()
+            except Exception as exc:  # noqa: BLE001
+                self.repository.mark_billing_pending(run.action_key, safe_error_message(exc))
+
+        if facts is None:
+            return
+        status = (
+            STRUCTURE_STATUS_NEEDS_CONFIRMATION
+            if needs_confirmation(facts)
+            else STRUCTURE_STATUS_READY
+        )
+        self.repository.update_template_structure(
+            template_id,
+            actor.workspace_id,
+            actor.id,
+            facts_json=json.dumps(facts, ensure_ascii=False),
+            status=status,
+            analysis_version=STRUCTURE_ANALYSIS_VERSION,
+        )
+
+    def update_template_structure(
+        self, actor: Actor, template_id: str, facts: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """人工确认/修订结构事实表；状态按剩余低置信度字段重算。"""
+        template = self.repository.get_template(template_id, actor.workspace_id, actor.id)
+        if template["source"] != "personal":
+            raise ValueError("只有个人模板可以修订结构事实表")
+        cleaned = {key: value for key, value in dict(facts).items() if key in _STRUCTURE_FACT_KEYS}
+        confidence = cleaned.get("confidence")
+        if not isinstance(confidence, Mapping):
+            cleaned.pop("confidence", None)
+        status = STRUCTURE_STATUS_NEEDS_CONFIRMATION if needs_confirmation(cleaned) else STRUCTURE_STATUS_READY
+        updated = self.repository.update_template_structure(
+            template_id,
+            actor.workspace_id,
+            actor.id,
+            facts_json=json.dumps(cleaned, ensure_ascii=False),
+            status=status,
+            analysis_version=STRUCTURE_ANALYSIS_VERSION,
+        )
+        return self._template_payload(updated)
 
     def list_templates(self, actor: Actor) -> dict[str, Any]:
         return {
@@ -305,10 +545,30 @@ class PodCustomizationService:
         self.repository.preflight_batch(actor.workspace_id, actor.id, request)
         # 全定制新建批次自动套用该账号「生效中」的构图模板（若有）；仓库层把它冻结进 prompt_snapshot。
         composition = self.repository.get_active_composition(actor.workspace_id, actor.id)
-        billing_run = self._freeze_batch(actor, batch_id, request.count) if (enqueue or self.billing_coordinator) else None
+        column_layout = request.generation_layout == GENERATION_LAYOUT_COLUMN
+        if column_layout:
+            billing_run = (
+                self._freeze_column_batch(actor, batch_id, request.count)
+                if (enqueue or self.billing_coordinator)
+                else None
+            )
+        else:
+            billing_run = (
+                self._freeze_batch(actor, batch_id, request.count)
+                if (enqueue or self.billing_coordinator)
+                else None
+            )
         try:
             batch = self.repository.create_batch(
-                actor.workspace_id, actor.id, request, batch_id=batch_id, composition=composition
+                actor.workspace_id,
+                actor.id,
+                request,
+                batch_id=batch_id,
+                composition=composition,
+                # 生图模型在建批时冻结：运行中切到速创会让派生轮失去多参考图能力。
+                generation_meta=(
+                    {"image_model": resolve_pod_image_model()} if column_layout else None
+                ),
             )
         except Exception:
             if billing_run is not None:
@@ -1187,7 +1447,30 @@ class PodCustomizationService:
             raise ValueError("direct POD listing template must be a JPEG, PNG, or WEBP image")
         trial_id = uuid.uuid4().hex
         billing_run = self._freeze_trial(actor, trial_id, request)
-        base_prompt = build_direct_listing_prompt(request.business_fields, request.creative_prompt)
+        # 与批次链路一致：结构事实表与视图角色冻结进基础提示词，多图只在豆包下发。
+        views = self.repository.list_template_views(request.template_id, actor.workspace_id, actor.id)
+        extra_roles = tuple(
+            str(row["role"]) for row in views if str(row["role"]) in {"side", "top"}
+        )
+        base_prompt = build_direct_listing_prompt(
+            request.business_fields,
+            request.creative_prompt,
+            structure_facts=load_structure_facts(template.get("structure_facts_json")),
+            reference_view_roles=("primary", *extra_roles),
+        )
+        references = (
+            load_generation_references(
+                repository=self.repository,
+                assets=self.assets,
+                template_id=request.template_id,
+                workspace_id=actor.workspace_id,
+                owner_user_id=actor.id,
+                primary_content=template_image,
+                primary_content_type=template_content_type,
+            )
+            if model_supports_multi_view(resolve_pod_image_model())
+            else ()
+        )
         trial_elements = assign_style_elements(
             request.business_fields.style_keywords, 1, trial_id
         )
@@ -1201,6 +1484,7 @@ class PodCustomizationService:
                 request,
                 template_image=template_image,
                 template_content_type=template_content_type,
+                reference_images=references,
                 trial_id=trial_id,
                 base_prompt=base_prompt,
                 trial_elements=trial_elements,
@@ -1218,6 +1502,7 @@ class PodCustomizationService:
         *,
         template_image: bytes,
         template_content_type: str,
+        reference_images: tuple[Any, ...] = (),
         trial_id: str,
         base_prompt: str,
         trial_elements: dict[str, object],
@@ -1236,13 +1521,20 @@ class PodCustomizationService:
                 style_elements=trial_elements,
             )
             provider_call_id = f"{trial_id}:image:{attempt}"
+            request_kwargs: dict[str, Any] = (
+                {"reference_images": tuple(reference_images)}
+                if len(reference_images) > 1
+                else {
+                    "template_image": template_image,
+                    "template_content_type": template_content_type,
+                }
+            )
             grid_request = DirectListingGridRequest(
                 trial_id=trial_id,
                 template_id=request.template_id,
-                template_image=template_image,
-                template_content_type=template_content_type,
                 prompt=attempt_prompt,
                 attempt=attempt,
+                **request_kwargs,
             )
             try:
                 billing_run.start(provider_call_id, "pod.image")
@@ -1364,9 +1656,28 @@ class PodCustomizationService:
         if self.brief_runtime is None:
             raise RuntimeError("POD 智能填写服务未启用")
         brief_id = uuid.uuid4().hex
+        template_image = b""
+        template_content_type = ""
+        if request.template_asset_id:
+            # 模板图只用于读材质/形态并顺手产出批级美术指导；读不到就跳过，不阻塞智能填写。
+            try:
+                asset = self.repository.get_asset(
+                    request.template_asset_id, actor.workspace_id, actor.id
+                )
+                template_image = self.assets.read(asset["relative_path"])
+                template_content_type = str(asset.get("content_type") or "")
+            except Exception:  # noqa: BLE001 - 缺图/无权限一律降级为纯文本智能填写
+                template_image = b""
+                template_content_type = ""
         billing_run = self._freeze_brief(actor, brief_id)
         try:
-            return self._run_brief_fields_authorized(request, brief_id, billing_run)
+            return self._run_brief_fields_authorized(
+                request,
+                brief_id,
+                billing_run,
+                template_image=template_image,
+                template_content_type=template_content_type,
+            )
         except PodBillingAuthorizationRequired as exc:
             raise RuntimeError(str(exc)) from exc
         finally:
@@ -1377,6 +1688,9 @@ class PodCustomizationService:
         request: BriefFieldRequest,
         brief_id: str,
         billing_run: PodBillingRun,
+        *,
+        template_image: bytes = b"",
+        template_content_type: str = "",
     ) -> dict[str, Any]:
         call_ids = tuple(
             call.call_id for call in billing_run.plan.calls if call.feature == "pod.title"
@@ -1388,6 +1702,8 @@ class PodCustomizationService:
                 locale=request.locale,
                 fabric_craft=request.fabric_craft,
                 scene_mood=request.scene_mood,
+                template_image=template_image,
+                template_content_type=template_content_type,
             ),
             grant=billing_run.grant,
             call_id=call_ids[0],
@@ -1400,6 +1716,9 @@ class PodCustomizationService:
             "prompt_version": result.prompt_version,
             "model": result.model,
             "fields": result.fields.model_dump(),
+            "art_direction": (
+                result.art_direction.model_dump() if result.art_direction is not None else None
+            ),
         }
 
     def generate_composition(
@@ -1435,7 +1754,10 @@ class PodCustomizationService:
         )
         result = self.composition_runtime.generate_composition(
             PodCompositionRequest(
-                composition_id=composition_id, brief=request.brief, locale=request.locale
+                composition_id=composition_id,
+                brief=request.brief,
+                locale=request.locale,
+                scope=scope,
             ),
             grant=billing_run.grant,
             call_id=call_ids[0],
@@ -1453,6 +1775,8 @@ class PodCustomizationService:
             model=result.model,
             prompt_version=result.prompt_version,
             scope=scope,
+            # 全定制新模板按「四轮」语义保存；复刻/裂变仍是「四格」语义。
+            layout="role_v1" if scope == COMPOSITION_SCOPE_FULL else "panel_v1",
         )
         return self._composition_payload(stored)
 
@@ -1520,19 +1844,29 @@ class PodCustomizationService:
 
     @staticmethod
     def _default_composition_payload(scope: str = COMPOSITION_SCOPE_FULL) -> dict[str, Any]:
+        # 全定制用「四轮差异化机位」默认模板；复刻/裂变仍是旧四格语义。
+        column_scope = scope == COMPOSITION_SCOPE_FULL
+        panels = (
+            DEFAULT_COLUMN_COMPOSITION_PANELS if column_scope else DEFAULT_COMPOSITION_PANELS
+        )
         return {
             "composition_id": DEFAULT_COMPOSITION_ID,
             "name": DEFAULT_COMPOSITION_NAME,
-            "raw_input": DEFAULT_COMPOSITION_RAW_INPUT,
+            "raw_input": (
+                DEFAULT_COLUMN_COMPOSITION_RAW_INPUT
+                if column_scope
+                else DEFAULT_COMPOSITION_RAW_INPUT
+            ),
             "panels": {
                 key: {"zh": str(value["zh"]), "en": str(value["en"])}
-                for key, value in DEFAULT_COMPOSITION_PANELS.items()
+                for key, value in panels.items()
             },
             "model": "",
             "prompt_version": "pod-composition-default",
             "is_active": False,
             "is_builtin": True,
             "updated_at": "",
+            "layout": "role_v1" if column_scope else "panel_v1",
             "scope": scope if scope in (COMPOSITION_SCOPE_FULL, COMPOSITION_SCOPE_REPLICA, COMPOSITION_SCOPE_FISSION) else COMPOSITION_SCOPE_FULL,
         }
 
@@ -1598,6 +1932,8 @@ class PodCustomizationService:
             "is_builtin": bool(is_builtin or stored.get("is_builtin")),
             "updated_at": str(stored.get("updated_at") or ""),
             "scope": str(stored.get("scope") or COMPOSITION_SCOPE_FULL),
+            # 构图语义来源：panel_v1（旧四格）/ role_v1（四轮）。
+            "layout": str(stored.get("layout") or "panel_v1"),
         }
 
     def list_batches(self, actor: Actor, *, limit: int = 20, offset: int = 0) -> dict[str, Any]:
@@ -2202,8 +2538,17 @@ class PodCustomizationService:
             "submitted_title_style_count": len(title_indices),
         }
 
+    @staticmethod
+    def _reject_column_rerun(batch: dict[str, Any]) -> None:
+        """列式批次 v1 不提供用户侧重跑：已有入口要求 4 行一起重置，会冲掉已完成图。"""
+        if str(batch.get("generation_layout") or "") == GENERATION_LAYOUT_COLUMN:
+            raise PodRepositoryError(
+                "列式生成批次暂不支持单款重生成或批量重试，请重新建批", 409
+            )
+
     def _preflight_style_retry(self, actor: Actor, batch_id: str, style_index: int) -> None:
         batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
+        self._reject_column_rerun(batch)
         if batch["status"] not in {"completed", "partial_failure", "failed", "cancelled", "settlement_pending"}:
             raise PodRepositoryError("POD batch must settle before regenerating one style", 409)
         results = [
@@ -2248,6 +2593,7 @@ class PodCustomizationService:
         title_style_indices: tuple[int, ...],
     ) -> None:
         batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
+        self._reject_column_rerun(batch)
         if batch["status"] not in {"completed", "partial_failure", "failed", "cancelled", "settlement_pending"}:
             raise PodRepositoryError("POD batch must settle before retrying failed styles", 409)
         if any(index > int(batch["requested_count"]) for index in (*image_style_indices, *title_style_indices)):
@@ -2283,6 +2629,10 @@ class PodCustomizationService:
             pass
 
     def close(self) -> None:
+        if self._recon_thread is not None:
+            self._recon_stop.set()
+            self._recon_thread.join(timeout=5.0)
+            self._recon_thread = None
         if self._reaper_thread is not None:
             self._reaper_stop.set()
             self._reaper_thread.join(timeout=5.0)
@@ -2340,6 +2690,82 @@ class PodCustomizationService:
                 logger.warning("POD stale-cache sweeper encountered an error: %s", exc)
             if self._cache_sweep_stop.wait(timeout=48 * 3600):
                 break
+
+    # ------------------------------------------------------------------ #
+    # 启动对账与日报对平（设计第 7 节）
+    # ------------------------------------------------------------------ #
+
+    def _billing_reconciler(self) -> PodBillingReconciler:
+        if self.billing_coordinator is None:
+            raise RuntimeError("POD billing coordinator is not configured")
+        if self._billing_reconciler_instance is None:
+            self._billing_reconciler_instance = PodBillingReconciler(
+                self.repository,
+                self.billing_coordinator,
+                settle_run=self._settle_stored_billing_run,
+                plan_builder=self._billing_plan,
+                device_id=self._device_id,
+            )
+        return self._billing_reconciler_instance
+
+    def _start_billing_reconciler(self) -> None:
+        """每 10 分钟对一次未关单的账；登录成功时另有一次性触发。"""
+        self._recon_stop.clear()
+        self._recon_thread = threading.Thread(
+            target=self._run_billing_reconciler,
+            name="pod-billing-reconciler",
+            daemon=True,
+        )
+        self._recon_thread.start()
+
+    def _run_billing_reconciler(self) -> None:
+        import logging
+
+        while not self._recon_stop.wait(timeout=600.0):
+            try:
+                self.reconcile_billing_runs_once()
+            except Exception as exc:  # noqa: BLE001 - 后台线程不能因单轮失败退出
+                logging.getLogger(__name__).warning(
+                    "POD billing recon encountered an error: %s", exc
+                )
+
+    def reconcile_billing_runs(
+        self, actor: Actor, *, scope: str = "startup"
+    ) -> dict[str, Any]:
+        """逐笔收敛该用户的非终态账（启动、定时、登录后共用）。"""
+        return self._billing_reconciler().reconcile_actor(actor, scope=scope)
+
+    def reconcile_billing_runs_once(self) -> dict[str, Any]:
+        """对本地所有有未关单账的用户各跑一轮（取不到远端凭证的用户自动跳过）。"""
+        if self.billing_coordinator is None:
+            return {"owners": 0, "reconciled": 0}
+        owners = self.repository.list_billing_run_owners()
+        reconciled = 0
+        for workspace_id, owner_id in owners:
+            actor = Actor(id=owner_id, username="", role="", workspace_id=workspace_id)
+            try:
+                self.reconcile_billing_runs(actor, scope="scheduled")
+                reconciled += 1
+            except CustomerBillingPermissionError:
+                # 该用户没有活跃远端会话：留到下次（登录后）再跑。
+                continue
+            except Exception:
+                continue
+        return {"owners": len(owners), "reconciled": reconciled}
+
+    def reconcile_billing_daily(
+        self, actor: Actor, *, date: str = ""
+    ) -> dict[str, Any]:
+        """本地出账 + 与服务端日报逐项比对；差额下钻后写入对账流水。"""
+        return self._billing_reconciler().reconcile_daily(actor, day=date)
+
+    def list_billing_recon_runs(
+        self, actor: Actor, limit: int = 20
+    ) -> dict[str, Any]:
+        rows = self.repository.list_recon_runs(
+            actor.workspace_id, actor.id, limit=limit
+        )
+        return {"runs": rows, "total": len(rows)}
 
     def _remove_asset_files(self, relative_paths: list[str]) -> tuple[int, int]:
         """Best-effort removal of stored asset files; returns (removed_count, freed_bytes).
@@ -2790,6 +3216,22 @@ class PodCustomizationService:
             workspace_id=str(stored["workspace_id"]),
         )
         plan = self._billing_plan(stored["plan"])
+        grant = self._settlement_grant(actor, stored)
+        run = PodBillingRun(
+            actor,
+            self.billing_coordinator,
+            plan,
+            grant,
+            repository=self.repository,
+            action_key=stored["action_key"],
+            resumed=True,
+        )
+        run.settle()
+
+    def _settlement_grant(self, actor: Actor, stored: dict[str, Any]) -> PodExecutionGrant:
+        """取回可结算的 grant（v2 探活 / v1 重冻结），并把本地状态推进到 authorized。"""
+        if self.billing_coordinator is None:
+            raise RuntimeError("POD billing coordinator is not configured")
         settlement_grant = getattr(self.billing_coordinator, "settlement_grant", None)
         try:
             if callable(settlement_grant):
@@ -2814,22 +3256,116 @@ class PodCustomizationService:
         self.repository.mark_billing_authorized(
             stored["action_key"], rule_version=grant.rule_version, expires_at=grant.expires_at
         )
-        run = PodBillingRun(
-            actor,
-            self.billing_coordinator,
-            plan,
-            grant,
-            repository=self.repository,
-            action_key=stored["action_key"],
-            resumed=True,
+        return grant
+
+    def close_billing_run(self, actor: Actor, run_id: str) -> dict[str, Any]:
+        """用户主动放弃：v2 走 ``POST /close``；v1 降级为「全 no_return 结算」。
+
+        已成功的调用照常计费，未完成（planned / started）的按 ``no_return`` 上报；
+        服务端回执里的金额原样落库，关单原因记 ``no_return_close``。
+        """
+        if self.billing_coordinator is None:
+            raise RuntimeError("POD billing coordinator is not configured")
+        stored = self.repository.get_billing_run(run_id, actor.workspace_id, actor.id)
+        if stored["status"] in self.repository.BILLING_TERMINAL_STATUSES:
+            return self._billing_run_payload(stored)
+        plan = self._billing_plan(stored["plan"])
+        outcomes = self.repository.prepare_billing_close(stored["action_key"])
+        grant = self._settlement_grant(actor, stored)
+        closer = getattr(self.billing_coordinator, "close", None)
+        try:
+            if callable(closer):
+                receipt = closer(actor, grant, plan, outcomes)
+            else:
+                # v1 兼容：没有 close 入口时按既有语义全额退还（全 no_return 结算）。
+                no_return = tuple(
+                    PodCallOutcome(call.call_id, call.feature, "no_return")
+                    for call in plan.calls
+                )
+                receipt = self.billing_coordinator.settle(actor, grant, plan, no_return)
+        except Exception as exc:
+            from .remote_billing import classify_billing_exception
+
+            code, retryable, status_code = classify_billing_exception(exc)
+            if retryable:
+                self.repository.mark_billing_pending(stored["action_key"], str(exc))
+            elif code == "freeze_not_active":
+                self.repository.terminate_billing_run(
+                    stored["action_key"], "expired_released", str(exc)
+                )
+            elif status_code == 404:
+                self.repository.terminate_billing_run(
+                    stored["action_key"], "orphaned", str(exc)
+                )
+            else:
+                self.repository.terminate_billing_run(
+                    stored["action_key"], "anomaly", str(exc)
+                )
+            raise
+        if isinstance(receipt, dict):
+            self.repository.insert_settlement(
+                freeze_id=grant.freeze_id,
+                source="close",
+                charged_points=receipt.get("charged_points") or 0,
+                refunded_points=receipt.get("refunded_points") or 0,
+                release_reason="no_return_close",
+                rule_version=str(receipt.get("rule_version") or ""),
+                raw_response=receipt.get("raw") or receipt,
+                settlement_id=str(receipt.get("settlement_id") or ""),
+                items=[
+                    {
+                        "link_idx": int(link.get("link_idx") or 0),
+                        "unit_id": str(link.get("unit_id") or ""),
+                        "feature_status": link.get("feature_status") or {},
+                        "charged_points": link.get("charged_points") or 0,
+                        "refunded_points": link.get("refunded_points") or 0,
+                    }
+                    for link in receipt.get("links") or ()
+                    if isinstance(link, dict)
+                ],
+            )
+        self.repository.mark_billing_settled(
+            stored["action_key"], release_reason="no_return_close"
         )
-        run.settle()
+        return self._billing_run_payload(
+            self.repository.get_billing_run(run_id, actor.workspace_id, actor.id)
+        )
+
+    @staticmethod
+    def _deadline_passed(value: str) -> bool:
+        return deadline_passed(value)
+
+    def _billing_deadline_passed(self, stored: dict[str, Any]) -> bool:
+        """「还能不能结算」只认 settle_deadline；v1 没有该字段时回退 expires_at，不加宽限。"""
+        deadline = str(stored.get("settle_deadline") or "")
+        if deadline:
+            return self._deadline_passed(deadline)
+        return self._deadline_passed(str(stored.get("grant_expires_at") or ""))
+
+    def _freeze_is_still_frozen(self, stored: dict[str, Any]) -> bool:
+        """到期后先探活：只有服务端确实还是 frozen 才收口 ``started``。"""
+        if self.billing_coordinator is None or not stored.get("freeze_id"):
+            return False
+        prober = getattr(self.billing_coordinator, "freeze_status", None)
+        if not callable(prober):
+            return False
+        actor = Actor(
+            id=str(stored["owner_user_id"]),
+            username="",
+            role="",
+            workspace_id=str(stored["workspace_id"]),
+        )
+        try:
+            probe = prober(actor, str(stored["freeze_id"]))
+        except Exception:
+            return False
+        return str(probe.get("status") or "") == "frozen"
 
     def settle_stuck_billing_runs(self) -> int:
-        """Settle abandoned ``settlement_pending`` runs so frozen points are released.
+        """按 ``settle_deadline`` 收口 abandoned ``settlement_pending`` runs。
 
-        Runs with genuinely uncertain (``started``) provider outcomes are skipped
-        and remain ``settlement_pending`` for a human to reconcile.
+        未到期不动；到期后若仍有 ``started``（结果未知）的调用，先探活，只有服务端
+        确实还是 ``frozen`` 才把它们改写为 ``no_return`` 并结算。
         """
         if self.billing_coordinator is None:
             return 0
@@ -2837,10 +3373,17 @@ class PodCustomizationService:
         for run_id, workspace_id, owner_user_id in self.repository.list_settlement_pending_runs():
             try:
                 stored = self.repository.get_billing_run(run_id, workspace_id, owner_user_id)
+                if not self._billing_deadline_passed(stored):
+                    continue
+                if any(outcome["status"] == "started" for outcome in stored["outcomes"]):
+                    if not self._freeze_is_still_frozen(stored):
+                        continue
+                    self.repository.release_started_outcomes(stored["action_key"])
+                    stored = self.repository.get_billing_run(run_id, workspace_id, owner_user_id)
                 self._settle_stored_billing_run(stored)
                 settled += 1
             except Exception:
-                # Transient or uncertain (started) — leave pending for a later sweep.
+                # 可重试错误或探活失败：留给下一轮 sweep / 启动对账。
                 continue
         return settled
 
@@ -2901,6 +3444,15 @@ class PodCustomizationService:
             actor, plan, action_type="batch_initial", target_id=batch_id, batch_id=batch_id
         )
 
+    def _freeze_column_batch(self, actor: Actor, batch_id: str, style_count: int) -> PodBillingRun:
+        """列式生成初始批次：按「二级批次（4 款）」冻结，1 组 = 1 link。"""
+        if self.billing_coordinator is None:
+            raise RuntimeError("POD billing coordinator is not configured")
+        plan = PodCallPlan.for_column_batch(batch_id, style_count=style_count)
+        return self._freeze_action(
+            actor, plan, action_type="batch_initial", target_id=batch_id, batch_id=batch_id
+        )
+
     def _freeze_replica_batch(
         self, actor: Actor, batch_id: str, style_count: int, generation_strategy: str
     ) -> PodBillingRun:
@@ -2950,6 +3502,8 @@ class PodCustomizationService:
     def _freeze_paused_batch_remainder(
         self, actor: Actor, batch: dict[str, Any]
     ) -> PodBillingRun:
+        if str(batch.get("generation_layout") or "") == GENERATION_LAYOUT_COLUMN:
+            return self._freeze_column_batch_remainder(actor, batch)
         batch_id = str(batch["batch_id"])
         completed_images: dict[int, int] = {}
         for item in batch.get("items", []):
@@ -3008,6 +3562,68 @@ class PodCustomizationService:
             batch_id=batch_id,
             action_payload={
                 "resume_image_style_indices": list(image_indices),
+                "resume_title_style_indices": list(title_indices),
+            },
+        )
+
+    def _freeze_column_batch_remainder(
+        self, actor: Actor, batch: dict[str, Any]
+    ) -> PodBillingRun:
+        """列式批次的暂停续跑：按「组 × 缺失角色」冻结，已完成组不再产生调用。
+
+        主图未完成的组必须把 3 个派生轮一并冻结：主图跑完后派生轮会在同一次续跑里
+        立即发起（见 ``group_roles_to_freeze``）。
+        """
+        batch_id = str(batch["batch_id"])
+        sheets_by_group: dict[str, dict[str, str]] = {}
+        for sheet in batch.get("group_sheets") or []:
+            sheets_by_group.setdefault(str(sheet["group_id"]), {})[
+                str(sheet["role"])
+            ] = str(sheet["status"])
+        group_roles: dict[int, list[str]] = {}
+        for group in batch.get("style_groups") or []:
+            roles = group_roles_to_freeze(
+                sheets_by_group.get(str(group["group_id"]), {})
+            )
+            if roles:
+                group_roles[int(group["group_index"])] = list(roles)
+        primary_done = {
+            int(item["style_index"])
+            for item in batch.get("items") or []
+            if int(item.get("variant_index") or 0) == 1
+            and str(item.get("status") or "") == "completed"
+        }
+        title_status = {
+            int(title["style_index"]): str(title.get("status") or "")
+            for title in batch.get("style_titles") or []
+        }
+        title_indices = tuple(
+            style_index
+            for style_index in range(1, int(batch["requested_count"]) + 1)
+            if style_index in primary_done
+            and self.title_runtime is not None
+            and batch.get("mode") != "semi"
+            # 只补「排队/中断」的标题；已失败的标题不自动重跑（v1 不做用户重跑）。
+            and title_status.get(style_index, "queued") in {"queued", "generating", ""}
+        )
+        if not group_roles and not title_indices:
+            raise PodRepositoryError("POD 批次没有待继续的款式", 409)
+        plan = PodCallPlan.for_column_batch_resume(
+            batch_id,
+            uuid.uuid4().hex,
+            group_roles=group_roles,
+            title_style_indices=title_indices,
+        )
+        return self._freeze_action(
+            actor,
+            plan,
+            action_type="batch_initial",
+            target_id=batch_id,
+            batch_id=batch_id,
+            action_payload={
+                "resume_column_group_roles": {
+                    str(group): list(roles) for group, roles in group_roles.items()
+                },
                 "resume_title_style_indices": list(title_indices),
             },
         )
@@ -3083,6 +3699,20 @@ class PodCustomizationService:
             target_id=analysis_id,
             batch_id="",
             action_payload={"mode": "replica_analysis"},
+        )
+
+    def _freeze_structure_analysis(self, actor: Actor, analysis_id: str) -> PodBillingRun:
+        """模板结构识图：与复刻识图同口径（纯 pod.title 零计费）。"""
+        if self.billing_coordinator is None:
+            raise RuntimeError("POD billing coordinator is not configured")
+        plan = PodCallPlan.for_structure_analysis(analysis_id)
+        return self._freeze_action(
+            actor,
+            plan,
+            action_type="title_retry",
+            target_id=analysis_id,
+            batch_id="",
+            action_payload={"mode": "structure_analysis"},
         )
 
     def _freeze_fission_analysis(self, actor: Actor, analysis_id: str) -> PodBillingRun:
@@ -3211,40 +3841,101 @@ class PodCustomizationService:
         batch_id: str,
         action_payload: dict[str, Any] | None = None,
     ) -> PodBillingRun:
+        """先写意图账，再冻结；冻结或回填失败时意图行保留给重放接管。
+
+        旧实现是「先冻结、后记账」：回包丢失或落库失败时，服务端已有冻结、本地
+        却没有单号，只能等过期。现在顺序倒过来，``action_key`` 在调服务端之前
+        就已经落库，崩溃后用同一个键重放即可接管同一笔冻结。
+        """
         if self.billing_coordinator is None:
             raise RuntimeError("POD billing coordinator is not configured")
-        grant = self.billing_coordinator.freeze(actor, plan)
-        try:
-            stored = self.repository.create_billing_run(
-                action_key=plan.idempotency_key,
-                action_type=action_type,
-                target_id=target_id,
-                batch_id=batch_id,
-                actor_id=actor.id,
-                workspace_id=actor.workspace_id,
-                plan=plan,
-                grant=grant,
-                action_payload=action_payload,
-            )
-        except Exception as ledger_error:
-            outcomes = tuple(
-                PodCallOutcome(call.call_id, call.feature, "no_return") for call in plan.calls
-            )
+        stored = self.repository.find_billing_run_by_action_key(plan.idempotency_key)
+        if stored is None:
             try:
-                self.billing_coordinator.settle(actor, grant, plan, outcomes)
-            except Exception as settlement_error:
-                raise RuntimeError(
-                    "POD freeze succeeded but both the local ledger and compensation settlement failed"
-                ) from settlement_error
-            raise ledger_error
+                stored = self.repository.create_billing_intent(
+                    action_key=plan.idempotency_key,
+                    action_type=action_type,
+                    target_id=target_id,
+                    batch_id=batch_id,
+                    actor_id=actor.id,
+                    workspace_id=actor.workspace_id,
+                    plan=plan,
+                    action_payload=action_payload,
+                    module=plan.module,
+                    unit_kind=plan.unit_kind,
+                    link_count=len(plan.unit_ids),
+                    item_count=self._plan_item_count(plan),
+                    device_id=self._device_id(),
+                )
+            except sqlite3.IntegrityError:
+                # 并发重放：另一条路径已经写了同一个 action_key，复用那一行。
+                stored = self.repository.find_billing_run_by_action_key(plan.idempotency_key)
+                if stored is None:
+                    raise
+        if stored["status"] != "intent":
+            raise PodRepositoryError("POD billing action is already frozen", 409)
+        try:
+            grant = self.billing_coordinator.freeze(actor, plan)
+        except Exception as exc:
+            # 4xx / 5xx / 网络 / 契约破坏都保留 intent：用户重发或启动对账会用同一键重放。
+            self.repository.mark_billing_intent_failed(
+                plan.idempotency_key, safe_error_message(exc)
+            )
+            raise
+        self._attach_freeze(plan, grant)
         return PodBillingRun(
             actor,
             self.billing_coordinator,
             plan,
             grant,
             repository=self.repository,
-            action_key=stored["action_key"],
+            action_key=plan.idempotency_key,
         )
+
+    def _attach_freeze(self, plan: PodCallPlan, grant: PodExecutionGrant) -> None:
+        """把冻结回执一次性回填到意图行（CAS intent → authorized）。"""
+        try:
+            attached = attach_freeze_snapshot(
+                self.repository,
+                plan.idempotency_key,
+                plan,
+                grant,
+                device_id=self._device_id(),
+            )
+        except Exception as exc:
+            # 回填失败：保留 intent，由对账重放接管；不再执行「全部 no_return 结算」
+            # 补偿（那条快路径会在服务端已冻结但本地无快照时把钱直接退掉）。
+            self.repository.mark_billing_intent_failed(
+                plan.idempotency_key, safe_error_message(exc)
+            )
+            raise
+        if not attached:
+            # 已被并发路径或对账回填：不覆盖既有快照。
+            return
+
+    @staticmethod
+    def _plan_item_count(plan: PodCallPlan) -> int:
+        return int(plan.semi_item_count or plan.column_style_count or 0)
+
+    def _device_id(self) -> str:
+        """本机标识：随数据目录持久化，重装后可复用（多设备对账用）。
+
+        device_id 的来源仍属产品待定口径（见设计 §9.4）；这里先用数据目录内的
+        稳定文件，避免每次启动换一个新设备号。
+        """
+        path = self.repository.database_path.parent / "pod-device-id"
+        try:
+            value = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            value = ""
+        if value:
+            return value
+        value = uuid.uuid4().hex
+        try:
+            path.write_text(value, encoding="utf-8")
+        except OSError:
+            pass
+        return value
 
     @staticmethod
     def _billing_plan(payload: dict[str, Any]) -> PodCallPlan:
@@ -3255,7 +3946,11 @@ class PodCustomizationService:
                 for call in payload["calls"]
             ),
             semi_item_count=int(payload.get("semi_item_count") or 0),
+            column_style_count=int(payload.get("column_style_count") or 0),
             billing_profile=str(payload.get("billing_profile") or POD_BILLING_PROFILE_RANDOM),
+            module=str(payload.get("module") or ""),
+            unit_kind=str(payload.get("unit_kind") or ""),
+            unit_ids=tuple(str(value) for value in payload.get("unit_ids") or ()),
         )
 
     @staticmethod
@@ -3347,19 +4042,37 @@ class PodCustomizationService:
             f"POD 图片生成失败：{safe_error_message(exc, fallback=exc.__class__.__name__)}"
         ) from exc
 
-    @staticmethod
-    def _template_payload(template: dict[str, Any]) -> dict[str, Any]:
+    def _template_payload(self, template: dict[str, Any]) -> dict[str, Any]:
         template_id = template["template_id"]
+        views = self.repository.list_template_views(
+            template_id, template["workspace_id"], template["owner_user_id"]
+        )
+        facts = load_structure_facts(template.get("structure_facts_json"))
         return {
             "id": template_id,
             "name": template["name"],
             "source": template["source"],
+            # 主图资产 id：智能填写要用它附带模板图生成批级美术指导。
+            "asset_id": str(template["asset_id"]),
             "preview_url": f"/api/pod-customization/assets/{template['asset_id']}",
             "original_url": f"/api/pod-customization/assets/{template['asset_id']}",
             "width": template["width"],
             "height": template["height"],
             "error_message": template["error_message"],
             "version": template["version"],
+            # 结构视图集与事实表：普通模板为空 / none，前端据此决定是否提示补视图。
+            "structure_status": str(template.get("structure_status") or "none"),
+            "structure_facts": facts or {},
+            "structure_analysis_version": str(template.get("structure_analysis_version") or ""),
+            "views": [
+                {
+                    "role": str(row["role"]),
+                    "url": f"/api/pod-customization/assets/{row['asset_id']}",
+                    "width": int(row["width"] or 0),
+                    "height": int(row["height"] or 0),
+                }
+                for row in views
+            ],
             "created_at": template["created_at"],
             "updated_at": template["updated_at"],
         }
@@ -3410,6 +4123,12 @@ class PodCustomizationService:
                 "block_reason": export_analysis.block_reason,
             }
         style_count = int(batch["requested_count"])
+        # 列式批次的分组摘要：先按 group_id 归并 sheet，避免 groups × sheets 的二次遍历。
+        sheets_by_group: dict[str, dict[str, str]] = {}
+        for sheet in batch.get("group_sheets") or []:
+            sheets_by_group.setdefault(str(sheet.get("group_id")), {})[
+                str(sheet.get("role") or "")
+            ] = str(sheet.get("status") or "")
         payload: dict[str, Any] = {
             "id": batch["batch_id"],
             "batch_id": batch["batch_id"],
@@ -3436,6 +4155,19 @@ class PodCustomizationService:
             "prompt_version": batch["prompt_version"],
             "prompt_snapshot": batch["prompt_snapshot"],
             "business_fields": batch["business_fields"],
+            "generation_layout": batch.get("generation_layout") or "legacy",
+            "group_count": int(batch.get("group_count") or 0),
+            "art_direction": batch.get("art_direction") or None,
+            "groups": [
+                {
+                    "group_index": int(group["group_index"]),
+                    "style_indices": list(group.get("style_indices") or []),
+                    "status": str(group.get("status") or ""),
+                    "current_round": str(group.get("current_round") or ""),
+                    "sheets": sheets_by_group.get(str(group.get("group_id")), {}),
+                }
+                for group in batch.get("style_groups") or []
+            ],
             "listing_fields": None if semi else batch["listing_fields"],
             "dianxiaomi_export": export_payload,
             "creative_prompt": batch["creative_prompt"],

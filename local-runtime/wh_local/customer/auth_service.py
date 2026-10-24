@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import json
+import os
 import re
 from pathlib import Path
 import secrets
@@ -39,6 +40,20 @@ DEFAULT_WORKSPACE_NAME = "本地演示工作区"
 # 当前会话，表现为"登录态过一会儿就掉"。放宽到 60 分钟后，正常使用期间不会被误判；
 # 客户端确实关闭超过 60 分钟，仍可自然重新登录，不必走「强制登录」。
 SESSION_STALE_SECONDS = 3600
+
+# 是否限制「同一 client_type 只允许一个活跃会话」。
+#
+# 2026-10-22 起默认关闭。原来开着时，第二个端登录会把第一个端的会话撤销掉，两端
+# 互相顶：线上统计 10-21 单账号一天 26 次强制登录、18 组「同一秒两条登录记录」，
+# 用户看到的就是「登录态老是掉」。上面的 300s→3600s 只是把误判窗口拉长，没解决
+# 互踢本身。
+#
+# 关闭后每个端各拿各的 token，互不影响；计费按 account 走，不按 session 计数。
+# 要退回旧行为：环境变量 WH_SINGLE_SESSION_PER_CLIENT_TYPE=1 并重启服务。
+ALLOW_MULTI_SESSION = (
+    (os.environ.get("WH_SINGLE_SESSION_PER_CLIENT_TYPE") or "0").strip().lower()
+    not in {"1", "true", "yes", "on"}
+)
 
 # 客户端类型：单端登录互踢按该维度分组，手机端与 PC 端互不顶替。
 CLIENT_TYPE_PC = "pc"
@@ -173,7 +188,18 @@ class SQLiteCustomerAuthService:
                 (row["account_id"], client_type, now),
             ).fetchone()
             revoked_token_hashes: list[str] = []
-            if active_session is not None:
+            # 多端并存开关（2026-10-22 起默认开启）。
+            #
+            # 原行为是「同一 client_type 只允许一个活跃会话」：第二个端登录要么被
+            # 403 拒绝（得干等 SESSION_STALE_SECONDS=3600），要么带 force 把对方
+            # 撤销。线上实测同一账号一台机器上两个端互相踢了一整天（10-21 单账号
+            # 26 次强制登录、18 组同一秒双登录），用户看到的就是「老是掉线」。
+            #
+            # 关掉互斥后每个端各拿各的 token，互不影响。计费按 account 走，不按
+            # session 计数，所以多开会话不影响扣费；会话仍有 expires_at 与清理。
+            #
+            # 需要退回旧行为：设 WH_SINGLE_SESSION_PER_CLIENT_TYPE=1 并重启。
+            if active_session is not None and not ALLOW_MULTI_SESSION:
                 last_used = str(active_session["last_used_at"] or "")
                 still_active = bool(last_used and last_used >= stale_before)
                 if still_active and not force:

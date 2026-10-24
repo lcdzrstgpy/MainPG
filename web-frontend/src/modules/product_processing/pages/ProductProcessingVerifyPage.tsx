@@ -91,8 +91,10 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenCollectio
     maxParallelDrafts: 8,
     // 失败项自动重跑默认关闭：重跑会再次调用 AI 生图并计费，交给用户显式开启。
     autoRepull: false,
-    // 尺寸图自动烧制默认开启；不需要尺寸图的品类可在处理设置里关闭。
-    dimensionCard: true,
+    // 尺寸图自动烧制默认关闭：烧制会额外占用 AI/本地渲染时间，交给用户按品类显式开启。
+    dimensionCard: false,
+    // 场景风格默认智能混合：按批次在极简/生活/花哨之间轮换，避免四格背景趋同。
+    sceneStyle: 'smart',
   });
   const [drafts, setDrafts] = useState<DraftSummary[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());

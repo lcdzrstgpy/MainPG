@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import sqlite3
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -19,6 +20,7 @@ from wh_local.modules.pod_customization.contracts import (
 )
 from wh_local.modules.pod_customization.billing_contract import (
     PodBillingAuthorizationRequired,
+    PodCallOutcome,
     PodCallPlan,
     PodExecutionGrant,
 )
@@ -204,17 +206,27 @@ class BillingCoordinator:
         self.settlements = []
         self.freezes = []
 
-    def freeze(self, _actor, _plan):
-        self.freezes.append(_plan)
+    def freeze(self, _actor, plan):
+        self.freezes.append(plan)
+        # 服务端约定 freeze_id = idempotency_key，且全局唯一；用常量会让多次冻结撞唯一约束。
         return PodExecutionGrant(
-            "freeze-1", 1, "2099-01-01T00:00:00Z", {"wuyin": "test-wuyin-key", "ark": "test-ark-key"}
+            plan.idempotency_key,
+            1,
+            "2099-01-01T00:00:00Z",
+            {"wuyin": "test-wuyin-key", "ark": "test-ark-key"},
         )
 
     def settle(self, _actor, _grant, plan, outcomes):
         self.settlements.append((plan, tuple(outcomes)))
 
     def regrant(self, actor, freeze_id):
-        return self.freeze(actor, None)
+        del actor
+        return PodExecutionGrant(
+            freeze_id,
+            1,
+            "2099-01-01T00:00:00Z",
+            {"wuyin": "test-wuyin-key", "ark": "test-ark-key"},
+        )
 
 
 class FailingSettlementCoordinator(BillingCoordinator):
@@ -332,6 +344,13 @@ def test_settle_stuck_billing_runs_releases_abandoned_pending_run(tmp_path: Path
     pending = service.repository.list_pending_billing_runs(actor.workspace_id, actor.id)
     assert pending and pending[0]["status"] == "settlement_pending"
 
+    # v1 兼容期没有 settle_deadline，按冻结回执的 expires_at 判断是否到期，
+    # 不自行加宽限：这里把冻结置为已过期，sweep 才会收口。
+    with service.repository._connect() as connection:
+        connection.execute(
+            "UPDATE pod_customization_billing_runs SET grant_expires_at = '2000-01-01T00:00:00Z'"
+        )
+
     # Swap in a working coordinator so the automatic sweep can settle and release.
     working = BillingCoordinator()
     service.billing_coordinator = working
@@ -355,6 +374,7 @@ def test_pending_billing_run_survives_restart_and_resume_never_replays_provider(
     assert pending["total"] == 1
     assert pending["runs"][0]["batch_id"] == batch["id"]
     run_id = pending["runs"][0]["id"]
+    expected_freeze = pending["runs"][0]["freeze_id"]
     service.close()
 
     replacement_runtime = ListingOnlyRuntime([])
@@ -369,7 +389,7 @@ def test_pending_billing_run_survives_restart_and_resume_never_replays_provider(
     result = recovered.resume_billing_run(actor, run_id)
 
     assert result["status"] == "settled"
-    assert coordinator.regrants == [(actor.workspace_id, actor.id, "freeze-1")]
+    assert coordinator.regrants == [(actor.workspace_id, actor.id, expected_freeze)]
     assert len(coordinator.settlements) == 1
     assert replacement_runtime.requests == []
     statuses = {outcome.call_id: outcome.status for outcome in coordinator.settlements[0][1]}
@@ -512,24 +532,34 @@ def test_local_batch_insert_failure_compensates_frozen_plan_with_no_return(
     runtime.close()
 
 
-def test_ledger_insert_failure_uses_immediate_compensation_settlement(
+def test_ledger_attach_failure_keeps_intent_without_compensation_settlement(
     tmp_path: Path, monkeypatch
 ) -> None:
+    """回填失败只保留意图行，不再走「全 no_return 结算」补偿（Task 4）。
+
+    补偿快路径会在服务端已冻结、本地无快照时直接把钱退掉，既丢账又丢冻结；
+    现在改由启动对账用同一个 action_key 重放接管。
+    """
     runtime = ListingOnlyRuntime([])
     coordinator = BillingCoordinator()
     service = _service(tmp_path, runtime, coordinator)
     actor = _actor()
     monkeypatch.setattr(
         service.repository,
-        "create_billing_run",
-        lambda **_kwargs: (_ for _ in ()).throw(OSError("ledger unavailable")),
+        "attach_billing_freeze",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("ledger unavailable")),
     )
 
     with pytest.raises(OSError, match="ledger unavailable"):
         service._freeze_batch(actor, "batch-ledger-failure", 1)
 
-    assert len(coordinator.settlements) == 1
-    assert {outcome.status for outcome in coordinator.settlements[0][1]} == {"no_return"}
+    assert coordinator.settlements == []
+    stored = service.repository.find_billing_run_by_action_key(
+        "pod:batch:batch-ledger-failure:initial"
+    )
+    assert stored is not None
+    assert stored["status"] == "intent"
+    assert stored["freeze_id"] is None
     service.close()
     runtime.close()
 
@@ -866,6 +896,74 @@ def _batch_request_for_test(template_id: str, *, count: int = 1) -> BatchCreate:
         listing_fields=_listing_fields(),
     )
 
+
+def test_full_batch_sends_ordered_structure_views_to_doubao(tmp_path: Path, monkeypatch) -> None:
+    import wh_local.modules.pod_customization.worker as worker_module
+
+    monkeypatch.setattr(
+        worker_module,
+        "resolve_pod_image_model",
+        lambda: "doubao-seedream-5-0-flash-260915",
+    )
+    runtime = ListingOnlyRuntime([_grid([_pattern(index) for index in range(4)])])
+    service = _service(tmp_path, runtime)
+    actor = _actor()
+    scene = Image.new("RGB", (240, 200), "#e9ecef")
+    side = Image.new("RGB", (240, 200), "#dfe3e8")
+    dimension = Image.new("RGB", (240, 200), "#f0e6f2")
+    template = service.upload_template(
+        actor,
+        name="Acrylic stand",
+        filename="front.png",
+        content=_encode(scene),
+        views=[
+            {"role": "side", "filename": "side.png", "content": _encode(side)},
+            {"role": "dimension", "filename": "size.png", "content": _encode(dimension)},
+        ],
+    )
+    batch = service.create_batch(actor, _batch_request_for_test(template["id"]), enqueue=False)
+
+    service.worker.process_batch(batch["id"])
+
+    request = runtime.requests[0]
+    # 主图永远第一；dimension 只用于识图，绝不进生图参考图。
+    assert [image.role for image in request.reference_images] == ["product_primary", "product_side"]
+    assert request.reference_images[0].content == _encode(scene)
+    assert request.template_image == b""
+    service.close()
+    runtime.close()
+
+
+def test_full_batch_falls_back_to_single_image_on_suchuang(tmp_path: Path, monkeypatch) -> None:
+    import wh_local.modules.pod_customization.worker as worker_module
+
+    monkeypatch.setattr(
+        worker_module,
+        "resolve_pod_image_model",
+        lambda: "image_gpt_2.5",
+    )
+    runtime = ListingOnlyRuntime([_grid([_pattern(index) for index in range(4)])])
+    service = _service(tmp_path, runtime)
+    actor = _actor()
+    scene = Image.new("RGB", (240, 200), "#e9ecef")
+    side = Image.new("RGB", (240, 200), "#dfe3e8")
+    template = service.upload_template(
+        actor,
+        name="Acrylic stand",
+        filename="front.png",
+        content=_encode(scene),
+        views=[{"role": "side", "filename": "side.png", "content": _encode(side)}],
+    )
+    batch = service.create_batch(actor, _batch_request_for_test(template["id"]), enqueue=False)
+
+    service.worker.process_batch(batch["id"])
+
+    request = runtime.requests[0]
+    # 速创边缘化：第一版只保证豆包多图，命中速创时行为等同现状（单主图）。
+    assert request.reference_images == ()
+    assert request.template_image == _encode(scene)
+    service.close()
+    runtime.close()
 
 def _ready_template(service: PodCustomizationService, actor: Actor) -> dict:
     scene = Image.new("RGB", (240, 200), "#e9ecef")
@@ -1964,7 +2062,7 @@ def test_four_grid_generation_and_postprocess_stay_within_image_workers(tmp_path
     runtime = ConcurrencyTrackingRuntime(
         [_grid(patterns[index:index + 4]) for index in range(0, 160, 4)],
         workers=8,
-        generation_pause=0.005,
+        generation_pause=0.12,
     )
     service = _service(tmp_path, runtime)
     actor = _actor()
@@ -2403,3 +2501,687 @@ def test_progress_resets_deadline_when_styles_complete(tmp_path: Path) -> None:
         worker_module.POD_PROGRESS_TIMEOUT_SECONDS = original_timeout
         worker_module.POD_WAIT_POLL_SECONDS = original_poll
         service.close()
+
+
+# ---------------------------------------------------------------------------
+# 列式生成（两级批次）：4 款一组，组内 4 轮调用
+# ---------------------------------------------------------------------------
+
+
+def _column_batch_request(template_id: str) -> BatchCreate:
+    return BatchCreate(
+        template_id=template_id,
+        count=4,
+        prompt_version="v1",
+        business_fields=BusinessFields(
+            product_name="Botanical tote bag",
+            product_category="女士手提包",
+            design_theme="modern botanical",
+            color_preferences=["鼠尾草绿", "奶油白", "黄铜金"],
+        ),
+        listing_fields=_listing_fields(),
+        generation_layout="column_v1",
+    )
+
+
+def test_column_batch_generates_four_rounds_with_anchor_references(tmp_path: Path) -> None:
+    round_grids = [
+        _grid([_pattern(index + round_index * 10) for index in range(4)])
+        for round_index in range(4)
+    ]
+    runtime = ListingOnlyRuntime(round_grids)
+    billing = BillingCoordinator()
+    service = _service(tmp_path, runtime, billing)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _column_batch_request(template["id"]), enqueue=False)
+
+    assert batch["generation_layout"] == "column_v1"
+    assert batch["group_count"] == 1
+    assert len(batch["groups"]) == 1
+    assert {role: state for role, state in batch["groups"][0]["sheets"].items()} == {
+        "lifestyle": "queued",
+        "detail_a": "queued",
+        "detail_b": "queued",
+        "hero": "queued",
+    }
+
+    service.worker.process_batch(batch["id"])
+
+    stored = service.get_batch(actor, batch["id"])
+    assert stored["status"] == "completed"
+    assert all(item["status"] == "completed" for item in stored["items"])
+    assert len(stored["items"]) == 16
+    assert {item["variant_index"] for item in stored["items"]} == {1, 2, 3, 4}
+    assert stored["groups"][0]["status"] == "completed"
+
+    assert len(runtime.requests) == 4
+    primary = runtime.requests[0]
+    assert primary.template_image
+    assert len(primary.reference_images) == 0
+    derived = runtime.requests[1:]
+    for request in derived:
+        assert len(request.reference_images) == 4
+        assert [image.role for image in request.reference_images] == [
+            "anchor_1",
+            "anchor_2",
+            "anchor_3",
+            "anchor_4",
+        ]
+        # 第一次尝试直接复用 COS 公网地址，不重复上传、不走 base64。
+        assert all(image.url.startswith("https://cos.example.com/") for image in request.reference_images)
+        assert request.anchor_fallback is False
+
+    assert billing.freezes[0].column_style_count == 4
+    assert billing.freezes[0].product_batch_freeze_payload()["link_count"] == 1
+    assert billing.freezes[0].product_batch_freeze_payload()["item_count"] == 4
+    service.close()
+    runtime.close()
+
+
+def test_column_primary_failure_fails_the_whole_group_without_derived_calls(tmp_path: Path) -> None:
+    runtime = ListingOnlyRuntime([RuntimeError("primary attempt 1"), RuntimeError("primary attempt 2")])
+    service = _service(tmp_path, runtime)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _column_batch_request(template["id"]), enqueue=False)
+
+    service.worker.process_batch(batch["id"])
+
+    stored = service.get_batch(actor, batch["id"])
+    assert stored["status"] == "failed"
+    assert all(item["status"] == "failed" for item in stored["items"])
+    # 第 1 轮两次尝试都失败 → 派生轮不启动。
+    assert len(runtime.requests) == 2
+    assert stored["groups"][0]["status"] == "failed"
+    assert stored["groups"][0]["sheets"] == {
+        "lifestyle": "failed",
+        "detail_a": "failed",
+        "detail_b": "failed",
+        "hero": "failed",
+    }
+    service.close()
+    runtime.close()
+
+
+def test_column_resume_freezes_only_missing_roles(tmp_path: Path) -> None:
+    """断点续跑只冻结缺失的「组 × 角色」，已完成轮次不再产生调用。"""
+    runtime = ListingOnlyRuntime([])
+    service = _service(tmp_path, runtime)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _column_batch_request(template["id"]), enqueue=False)
+    with service.repository._connect() as connection:
+        group_id = connection.execute(
+            "SELECT group_id FROM pod_customization_style_groups WHERE batch_id = ?",
+            (batch["id"],),
+        ).fetchone()["group_id"]
+    service.repository.end_group_sheet(
+        group_id, "lifestyle", status="completed", attempt=1
+    )
+    service.repository.end_group_sheet(
+        group_id, "detail_a", status="completed", attempt=1
+    )
+    service.repository.set_group_status(
+        group_id, "generating_derived", current_round="detail_a"
+    )
+    with service.repository._connect() as connection:
+        connection.execute(
+            "UPDATE pod_customization_batches SET status = 'paused' WHERE batch_id = ?",
+            (batch["id"],),
+        )
+
+    stored = service.repository.get_batch_internal(batch["id"])
+    run = service._freeze_paused_batch_remainder(actor, stored)
+
+    call_ids = {call.call_id for call in run.plan.calls}
+    assert f"{batch['id']}:group:1:role:detail_b:image:1" in call_ids
+    assert f"{batch['id']}:group:1:role:detail_b:image:2" in call_ids
+    assert f"{batch['id']}:group:1:role:hero:image:1" in call_ids
+    assert f"{batch['id']}:group:1:role:lifestyle:image:1" not in call_ids
+    assert f"{batch['id']}:group:1:role:detail_a:image:1" not in call_ids
+    payload = run.plan.product_batch_freeze_payload()
+    assert payload["link_count"] == 1
+    assert payload["item_count"] == 4
+    service.close()
+    runtime.close()
+
+
+def test_column_batch_rejects_user_side_rerun(tmp_path: Path) -> None:
+    """列式批次 v1 不做用户重跑：两个旧入口都返回 409，避免冲掉已完成图。"""
+    runtime = ListingOnlyRuntime([])
+    service = _service(tmp_path, runtime)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _column_batch_request(template["id"]), enqueue=False)
+    service.repository.set_batch_status(batch["id"], "completed")
+
+    with pytest.raises(PodRepositoryError) as single:
+        service.regenerate_style(actor, batch["id"], 1, enqueue=False)
+    assert single.value.status_code == 409
+
+    with pytest.raises(PodRepositoryError) as batch_retry:
+        service.retry_failed(
+            actor,
+            batch["id"],
+            image_style_indices=[1],
+            title_style_indices=[],
+            enqueue=False,
+        )
+    assert batch_retry.value.status_code == 409
+    service.close()
+    runtime.close()
+
+
+class _RecordingTitleRuntime:
+    """只记录提交、不真正跑标题：用于校验 claim 时写进了非空 task id。"""
+
+    def __init__(self) -> None:
+        self.submitted: list[tuple[Any, ...]] = []
+
+    def submit(self, function, *args, **kwargs) -> Future:
+        self.submitted.append(args)
+        future: Future = Future()
+        future.set_result(None)
+        return future
+
+
+def test_column_titles_use_the_primary_sheet_as_style_task_id(tmp_path: Path) -> None:
+    runtime = ListingOnlyRuntime([
+        _grid([_pattern(index + round_index * 10) for index in range(4)])
+        for round_index in range(4)
+    ])
+    titles = _RecordingTitleRuntime()
+    service = _service(tmp_path, runtime, title_runtime=titles)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _column_batch_request(template["id"]), enqueue=False)
+
+    service.worker.process_batch(batch["id"])
+
+    with service.repository._connect() as connection:
+        lifestyle_sheet_id = connection.execute(
+            "SELECT sheet_id FROM pod_customization_group_sheets WHERE batch_id = ? AND role = 'lifestyle'",
+            (batch["id"],),
+        ).fetchone()["sheet_id"]
+        rows = connection.execute(
+            "SELECT style_index, status, style_task_id FROM pod_customization_style_titles WHERE batch_id = ? ORDER BY style_index",
+            (batch["id"],),
+        ).fetchall()
+
+    assert len(titles.submitted) == 4
+    assert [row["style_task_id"] for row in rows] == [lifestyle_sheet_id] * 4
+    assert all(row["status"] == "generating" for row in rows)
+    service.close()
+    runtime.close()
+
+
+# --------------------------------------------------------------------------- #
+# 先写意图再冻结（Task 4）
+# --------------------------------------------------------------------------- #
+
+
+class _FreezeRejected(Exception):
+    status_code = 400
+
+    def __init__(self) -> None:
+        super().__init__("units_mismatch")
+
+
+class FlakyFreezeCoordinator(BillingCoordinator):
+    """第一次冻结按给定异常失败，之后正常返回；用于验证意图行的重放。"""
+
+    def __init__(self, error: Exception | None) -> None:
+        super().__init__()
+        self.error = error
+        self.attempts = 0
+
+    def freeze(self, _actor, plan):
+        self.attempts += 1
+        if self.error is not None:
+            raise self.error
+        self.freezes.append(plan)
+        return PodExecutionGrant(
+            plan.idempotency_key,
+            1,
+            "2099-01-01T00:00:00Z",
+            {"wuyin": "test-wuyin-key", "ark": "test-ark-key"},
+        )
+
+
+def _intent_plan(action_id: str) -> PodCallPlan:
+    return PodCallPlan.for_batch(action_id, style_count=1)
+
+
+def test_freeze_rejection_keeps_intent_for_user_resend(tmp_path: Path) -> None:
+    coordinator = FlakyFreezeCoordinator(_FreezeRejected())
+    service = _service(tmp_path, ListingOnlyRuntime([]), coordinator)
+    actor = _actor()
+    plan = _intent_plan("intent-reject")
+
+    with pytest.raises(_FreezeRejected):
+        service._freeze_action(
+            actor,
+            plan,
+            action_type="batch_initial",
+            target_id="intent-reject",
+            batch_id="intent-reject",
+        )
+
+    stored = service.repository.find_billing_run_by_action_key(plan.idempotency_key)
+    assert stored is not None
+    assert stored["status"] == "intent"
+    assert stored["freeze_id"] is None
+    assert stored["error_message"]
+    # 冻结失败不再走「全 no_return 结算」补偿。
+    assert coordinator.settlements == []
+
+    # 用户重发：复用同一行同一键，冻结成功后转 authorized。
+    coordinator.error = None
+    service._freeze_action(
+        actor,
+        plan,
+        action_type="batch_initial",
+        target_id="intent-reject",
+        batch_id="intent-reject",
+    )
+
+    refreshed = service.repository.find_billing_run_by_action_key(plan.idempotency_key)
+    assert refreshed is not None
+    assert refreshed["status"] == "authorized"
+    assert refreshed["freeze_id"] == plan.idempotency_key
+    assert coordinator.attempts == 2
+    with service.repository._connect() as connection:
+        count = connection.execute(
+            "SELECT COUNT(*) FROM pod_customization_billing_runs WHERE action_key = ?",
+            (plan.idempotency_key,),
+        ).fetchone()[0]
+    assert count == 1
+    service.close()
+
+
+def test_freeze_success_but_attach_failure_leaves_intent_and_replays(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    coordinator = BillingCoordinator()
+    service = _service(tmp_path, ListingOnlyRuntime([]), coordinator)
+    actor = _actor()
+    plan = _intent_plan("intent-attach")
+    original = service.repository.attach_billing_freeze
+    state = {"fail": True}
+
+    def flaky_attach(*args, **kwargs):
+        if state["fail"]:
+            state["fail"] = False
+            raise sqlite3.OperationalError("disk I/O error")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(service.repository, "attach_billing_freeze", flaky_attach)
+
+    with pytest.raises(sqlite3.OperationalError):
+        service._freeze_action(
+            actor,
+            plan,
+            action_type="batch_initial",
+            target_id="intent-attach",
+            batch_id="intent-attach",
+        )
+
+    stored = service.repository.find_billing_run_by_action_key(plan.idempotency_key)
+    assert stored is not None
+    assert stored["status"] == "intent"
+    assert stored["freeze_id"] is None
+    assert coordinator.settlements == []
+
+    # 用同一 key 重放：变 authorized，且只产生一条账本行。
+    service._freeze_action(
+        actor,
+        plan,
+        action_type="batch_initial",
+        target_id="intent-attach",
+        batch_id="intent-attach",
+    )
+    refreshed = service.repository.find_billing_run_by_action_key(plan.idempotency_key)
+    assert refreshed is not None
+    assert refreshed["status"] == "authorized"
+    assert refreshed["freeze_id"] == plan.idempotency_key
+    assert len(coordinator.freezes) == 2
+    with service.repository._connect() as connection:
+        count = connection.execute(
+            "SELECT COUNT(*) FROM pod_customization_billing_runs WHERE action_key = ?",
+            (plan.idempotency_key,),
+        ).fetchone()[0]
+    assert count == 1
+    service.close()
+
+
+# --------------------------------------------------------------------------- #
+# 错误码分流、close 与时间口径（Task 5）
+# --------------------------------------------------------------------------- #
+
+
+class ReceiptCoordinator(BillingCoordinator):
+    """可注入结算异常 / 探活结果 / 结算回执的协调器。"""
+
+    def __init__(self, error=None, probe=None, receipt=None) -> None:
+        super().__init__()
+        self.error = error
+        self.probe = probe or {}
+        self.receipt = receipt
+
+    def freeze(self, _actor, plan):
+        self.freezes.append(plan)
+        return PodExecutionGrant(
+            plan.idempotency_key,
+            1,
+            "2099-01-01T00:00:00Z",
+            {"wuyin": "test-wuyin-key", "ark": "test-ark-key"},
+            snapshot={"link_prices": [45.0, 45.0]},
+        )
+
+    def settle(self, _actor, _grant, plan, outcomes):
+        self.settlements.append((plan, tuple(outcomes)))
+        if self.error is not None:
+            raise self.error
+        return self.receipt
+
+    def close(self, _actor, _grant, plan, outcomes):
+        self.settlements.append((plan, tuple(outcomes)))
+        if self.error is not None:
+            raise self.error
+        return self.receipt
+
+    def freeze_status(self, _actor, freeze_id):  # noqa: ARG002
+        return self.probe
+
+
+def _billing_error(message, *, status_code, code, retryable=False):
+    from wh_local.modules.pod_customization.remote_billing import PodBillingRemoteError
+
+    return PodBillingRemoteError(
+        message, status_code=status_code, code=code, retryable=retryable
+    )
+
+
+def _run_by_key(service: PodCustomizationService, action_key: str):
+    return service.repository.find_billing_run_by_action_key(action_key)
+
+
+def test_settlement_400_becomes_anomaly_without_retry(tmp_path: Path) -> None:
+    error = _billing_error("units_mismatch", status_code=400, code="units_mismatch")
+    coordinator = ReceiptCoordinator(error=error)
+    service = _service(tmp_path, ListingOnlyRuntime([]), coordinator)
+    actor = _actor()
+    run = service._freeze_batch(actor, "b-400", 1)
+
+    with pytest.raises(Exception):
+        run.settle()
+
+    stored = _run_by_key(service, run.action_key)
+    assert stored["status"] == "anomaly"
+    service.close()
+
+
+def test_settlement_404_becomes_orphaned(tmp_path: Path) -> None:
+    error = _billing_error("freeze not found", status_code=404, code="freeze_not_found")
+    coordinator = ReceiptCoordinator(error=error)
+    service = _service(tmp_path, ListingOnlyRuntime([]), coordinator)
+    actor = _actor()
+    run = service._freeze_batch(actor, "b-404", 1)
+
+    with pytest.raises(Exception):
+        run.settle()
+
+    assert _run_by_key(service, run.action_key)["status"] == "orphaned"
+    service.close()
+
+
+def test_settlement_429_stays_pending_for_retry(tmp_path: Path) -> None:
+    error = _billing_error("rate limited", status_code=429, code="rate_limited", retryable=True)
+    coordinator = ReceiptCoordinator(error=error)
+    service = _service(tmp_path, ListingOnlyRuntime([]), coordinator)
+    actor = _actor()
+    run = service._freeze_batch(actor, "b-429", 1)
+
+    with pytest.raises(Exception):
+        run.settle()
+
+    stored = _run_by_key(service, run.action_key)
+    assert stored["status"] == "settlement_pending"
+    assert stored["error_message"]
+    service.close()
+
+
+def test_freeze_not_active_probe_released_marks_expired(tmp_path: Path) -> None:
+    error = _billing_error(
+        "freeze not active", status_code=409, code="freeze_not_active"
+    )
+    coordinator = ReceiptCoordinator(
+        error=error,
+        probe={
+            "status": "released",
+            "released_points": 45,
+            "retained_points": 0,
+            "release_reason": "ttl",
+        },
+    )
+    service = _service(tmp_path, ListingOnlyRuntime([]), coordinator)
+    actor = _actor()
+    run = service._freeze_batch(actor, "b-inactive-released", 1)
+
+    with pytest.raises(Exception):
+        run.settle()
+
+    assert _run_by_key(service, run.action_key)["status"] == "expired_released"
+    with service.repository._connect() as connection:
+        row = connection.execute(
+            "SELECT source, released_points, retained_points FROM "
+            "pod_customization_billing_settlements WHERE freeze_id = ?",
+            (run.grant.freeze_id,),
+        ).fetchone()
+    assert row is not None
+    assert row["source"] == "ttl"
+    assert row["released_points"] == 45
+    service.close()
+
+
+def test_freeze_not_active_probe_settled_closes_locally(tmp_path: Path) -> None:
+    error = _billing_error(
+        "freeze not active", status_code=409, code="freeze_not_active"
+    )
+    coordinator = ReceiptCoordinator(error=error, probe={"status": "settled"})
+    service = _service(tmp_path, ListingOnlyRuntime([]), coordinator)
+    actor = _actor()
+    run = service._freeze_batch(actor, "b-inactive-settled", 1)
+
+    with pytest.raises(Exception):
+        run.settle()
+
+    assert _run_by_key(service, run.action_key)["status"] == "settled"
+    service.close()
+
+
+def test_idempotency_key_conflict_becomes_anomaly(tmp_path: Path) -> None:
+    error = _billing_error(
+        "key conflict", status_code=409, code="idempotency_key_conflict"
+    )
+    coordinator = ReceiptCoordinator(error=error)
+    service = _service(tmp_path, ListingOnlyRuntime([]), coordinator)
+    actor = _actor()
+    run = service._freeze_batch(actor, "b-key-conflict", 1)
+
+    with pytest.raises(Exception):
+        run.settle()
+
+    assert _run_by_key(service, run.action_key)["status"] == "anomaly"
+    service.close()
+
+
+def _set_settle_deadline(service: PodCustomizationService, action_key: str, value: str) -> None:
+    with service.repository._connect() as connection:
+        connection.execute(
+            "UPDATE pod_customization_billing_runs SET settle_deadline = ? WHERE action_key = ?",
+            (value, action_key),
+        )
+
+
+def test_settle_sweep_waits_for_settle_deadline(tmp_path: Path) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    coordinator = ReceiptCoordinator(receipt={"charged_points": 0, "refunded_points": 45})
+    service = _service(tmp_path, ListingOnlyRuntime([]), coordinator)
+    actor = _actor()
+    run = service._freeze_batch(actor, "b-deadline", 1)
+    service.repository.mark_billing_pending(run.action_key, "")
+
+    _set_settle_deadline(
+        service,
+        run.action_key,
+        (datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat(),
+    )
+    assert service.settle_stuck_billing_runs() == 0
+    assert _run_by_key(service, run.action_key)["status"] == "settlement_pending"
+
+    _set_settle_deadline(
+        service,
+        run.action_key,
+        (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(),
+    )
+    assert service.settle_stuck_billing_runs() == 1
+    assert _run_by_key(service, run.action_key)["status"] == "settled"
+    service.close()
+
+
+def test_started_outcome_is_closed_only_after_a_frozen_probe(tmp_path: Path) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    coordinator = ReceiptCoordinator(probe={"status": "released"})
+    service = _service(tmp_path, ListingOnlyRuntime([]), coordinator)
+    actor = _actor()
+    run = service._freeze_batch(actor, "b-started", 1)
+    first_call = run.plan.calls[0].call_id
+    service.repository.start_billing_call(run.action_key, first_call, "pod.image")
+    service.repository.mark_billing_pending(run.action_key, "")
+    _set_settle_deadline(
+        service,
+        run.action_key,
+        (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(),
+    )
+
+    # 探活发现服务端已释放：不动 started，也不结算。
+    assert service.settle_stuck_billing_runs() == 0
+    assert _run_by_key(service, run.action_key)["status"] == "settlement_pending"
+
+    # 只有服务端确实还是 frozen 才把 started 改写 no_return 并结算。
+    coordinator.probe = {"status": "frozen"}
+    assert service.settle_stuck_billing_runs() == 1
+    stored = _run_by_key(service, run.action_key)
+    assert stored["status"] == "settled"
+    assert {outcome["status"] for outcome in stored["outcomes"]} == {"no_return"}
+    service.close()
+
+
+def test_close_billing_run_settles_and_blocks_later_settlement(tmp_path: Path) -> None:
+    coordinator = ReceiptCoordinator(
+        receipt={
+            "settlement_id": "settle-close-1",
+            "source": "close",
+            "charged_points": 45,
+            "refunded_points": 0,
+            "rule_version": "v7",
+            "links": [
+                {
+                    "link_idx": 0,
+                    "unit_id": "style-0",
+                    "status": "success",
+                    "feature_status": {"image": "success", "title": "no_return"},
+                    "charged_points": 45,
+                    "refunded_points": 0,
+                }
+            ],
+        }
+    )
+    service = _service(tmp_path, ListingOnlyRuntime([]), coordinator)
+    actor = _actor()
+    run = service._freeze_batch(actor, "b-close", 1)
+
+    payload = service.close_billing_run(actor, _run_by_key(service, run.action_key)["run_id"])
+
+    assert payload["status"] == "settled"
+    stored = _run_by_key(service, run.action_key)
+    assert stored["status"] == "settled"
+    assert stored["release_reason"] == "no_return_close"
+    with service.repository._connect() as connection:
+        settlement = connection.execute(
+            "SELECT source, release_reason, charged_points FROM "
+            "pod_customization_billing_settlements WHERE freeze_id = ?",
+            (run.grant.freeze_id,),
+        ).fetchone()
+    assert settlement["source"] == "close"
+    assert settlement["release_reason"] == "no_return_close"
+    assert settlement["charged_points"] == 45
+
+    # close 之后不可再结算。
+    with pytest.raises(PodRepositoryError):
+        run.settle()
+    service.close()
+
+
+def test_settlement_receipt_records_expected_and_items(tmp_path: Path) -> None:
+    coordinator = ReceiptCoordinator(
+        receipt={
+            "settlement_id": "settle-1",
+            "charged_points": 45,
+            "refunded_points": 45,
+            "rule_version": "v7",
+            "links": [
+                {
+                    "link_idx": 0,
+                    "unit_id": "style-0",
+                    "status": "success",
+                    "feature_status": {"image": "success", "title": "no_return"},
+                    "charged_points": 45,
+                    "refunded_points": 0,
+                },
+                {
+                    "link_idx": 1,
+                    "unit_id": "style-1",
+                    "status": "no_return",
+                    "charged_points": 0,
+                    "refunded_points": 45,
+                },
+            ],
+        }
+    )
+    service = _service(tmp_path, ListingOnlyRuntime([]), coordinator)
+    actor = _actor()
+    run = service._freeze_batch(actor, "b-receipt", 2)
+    for call in run.plan.calls:
+        run.record(
+            call.call_id,
+            call.feature,
+            "success" if call.call_id.startswith("b-receipt:style:1:image:") else "no_return",
+        )
+
+    run.settle()
+
+    with service.repository._connect() as connection:
+        settlement = connection.execute(
+            "SELECT expected_points, charged_points, refunded_points, rule_version "
+            "FROM pod_customization_billing_settlements WHERE freeze_id = ?",
+            (run.grant.freeze_id,),
+        ).fetchone()
+        items = connection.execute(
+            "SELECT link_idx, unit_id, charged_points, refunded_points FROM "
+            "pod_customization_billing_settlement_items ORDER BY link_idx"
+        ).fetchall()
+    # expected 只由冻结快照的 link_prices × 适配层判定得出。
+    assert settlement["expected_points"] == 45.0
+    assert settlement["charged_points"] == 45
+    assert settlement["refunded_points"] == 45
+    assert settlement["rule_version"] == "v7"
+    assert [(row["link_idx"], row["unit_id"]) for row in items] == [
+        (0, "style-0"),
+        (1, "style-1"),
+    ]
+    service.close()

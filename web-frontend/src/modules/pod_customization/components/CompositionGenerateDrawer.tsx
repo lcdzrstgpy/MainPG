@@ -118,7 +118,7 @@ export function CompositionGenerateDrawer({ open, onClose, onChanged, scope = "f
           <div>
             <span>COMPOSITION · 视角与构图</span>
             <h2>构图定制</h2>
-            <p>{scope === "replica" ? "爆款复刻专用" : "全定制专用"}：写一句大白话生成一份新模板并自动生效；生成后可在下方手动微调每一格。</p>
+            <p>{scope === "replica" ? "爆款复刻专用" : "全定制专用"}：写一句大白话生成一份新模板并自动生效；生成后可在下方手动微调每一轮。</p>
           </div>
           <button type="button" onClick={onClose} aria-label="关闭">×</button>
         </header>
@@ -131,8 +131,9 @@ export function CompositionGenerateDrawer({ open, onClose, onChanged, scope = "f
               disabled={loading}
               aria-label="用大白话描述四张图的视角与构图"
               placeholder={
-                "描述四张图分别怎么拍：每张都要写到且互不相同；只写机位与角度、景别、构图留白、光线、背景处理，不要写具体物品或道具。\n" +
-                "例：主图略低机位斜侧 45 度中全景、主体居三分点留白；细节图 A 微距俯拍；细节图 B 四分之三近景；素材图正面平视居中、纯净背景。"
+                scope === "replica"
+                  ? "描述四张图分别怎么拍：每张都要写到且互不相同；只写机位与角度、景别、构图留白、光线、背景处理，不要写具体物品或道具。\n例：主图略低机位斜侧 45 度中全景、主体居三分点留白；细节图 A 微距俯拍；细节图 B 四分之三近景；素材图正面平视居中、纯净背景。"
+                  : "描述四轮分别怎么拍：每轮四款共用该轮机位；第 2/3/4 轮只写视角与景别，不写换场景或换光线。\n例：主图略低机位斜侧 45 度中全景、主体居三分点留白；细节图 A 更近的微距裁切；细节图 B 另一侧四分之三近景；素材图正面平视居中、干净背景。"
               }
               onChange={(event) => {
                 setBrief(event.currentTarget.value);

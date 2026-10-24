@@ -499,3 +499,73 @@ def test_cross_category_shared_asset_preview_underreports_but_never_overdeletes(
     assert then_terminal["categories"]["terminal_intermediates"]["files"] == 2
     assert not (service.assets.root / shared["relative_path"]).exists()
     assert not (service.assets.root / terminal_only["relative_path"]).exists()
+
+
+def _insert_replica_analysis(
+    service: PodCustomizationService, *, analysis_id: str, source_asset_id: str, target_asset_id: str
+) -> None:
+    _exec_fixture_sql(
+        service,
+        """INSERT INTO pod_customization_replica_analyses
+           (analysis_id, workspace_id, owner_user_id, source_asset_id, target_asset_id,
+            analysis_version, status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, 'replica-v1', 'succeeded', ?, ?)""",
+        (analysis_id, WORKSPACE, OWNER, source_asset_id, target_asset_id, OLD_STAMP, OLD_STAMP),
+    )
+
+
+def _insert_fission_analysis(
+    service: PodCustomizationService, *, analysis_id: str, source_asset_id: str, target_asset_id: str
+) -> None:
+    _exec_fixture_sql(
+        service,
+        """INSERT INTO pod_customization_fission_analyses
+           (analysis_id, workspace_id, owner_user_id, source_asset_id, target_asset_id,
+            status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, 'succeeded', ?, ?)""",
+        (analysis_id, WORKSPACE, OWNER, source_asset_id, target_asset_id, OLD_STAMP, OLD_STAMP),
+    )
+
+
+def test_residue_sweep_keeps_assets_referenced_by_analysis_snapshots(tmp_path: Path) -> None:
+    """复刻/裂变识图快照（A 图 / B 图）引用的资产不能被孤儿清扫删除。
+
+    回归：``_ASSET_IN_USE_PREDICATES`` 早先只覆盖 replica_batches / replica_targets，
+    漏了 replica_analyses 与 fission_analyses 的四列外键，清扫器一启动就撞
+    ``FOREIGN KEY constraint failed``。
+    """
+    service = _service(tmp_path)
+    replica_source = _store_asset(service, _png("#111111"))
+    replica_target = _store_asset(service, _png("#222222"))
+    fission_source = _store_asset(service, _png("#333333"))
+    fission_target = _store_asset(service, _png("#444444"))
+    unreferenced = _store_asset(service, _png("#555555"))
+    assets = (replica_source, replica_target, fission_source, fission_target, unreferenced)
+    for asset in assets:
+        _backdate_asset(service, asset["asset_id"])
+    _insert_replica_analysis(
+        service,
+        analysis_id="replica-analysis-1",
+        source_asset_id=replica_source["asset_id"],
+        target_asset_id=replica_target["asset_id"],
+    )
+    _insert_fission_analysis(
+        service,
+        analysis_id="fission-analysis-1",
+        source_asset_id=fission_source["asset_id"],
+        target_asset_id=fission_target["asset_id"],
+    )
+
+    result = service.sweep_local_cache(older_than_hours=48, categories=["unreferenced_residue"])
+
+    # 只有真正无引用的那条被回收；被分析快照引用的四条全部保留。
+    assert result["categories"]["unreferenced_residue"]["files"] == 1
+    assert not (service.assets.root / unreferenced["relative_path"]).exists()
+    for asset in assets[:4]:
+        assert (service.assets.root / asset["relative_path"]).exists()
+    with service.repository._connect() as connection:
+        remaining = {
+            row["asset_id"]
+            for row in connection.execute("SELECT asset_id FROM pod_customization_assets")
+        }
+    assert remaining == {asset["asset_id"] for asset in assets[:4]}

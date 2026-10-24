@@ -152,8 +152,58 @@ function getSnapshot() {
   return currentTheme;
 }
 
+/**
+ * 已安装主题的「后台保鲜」：远端版本变了就自动换成新的 CSS。
+ *
+ * 2026-10-22 的教训：主题包改版后老用户永远拿旧样式。原来的版本比对只写在
+ * `downloadTheme` 里，也就是**只有用户主动点主题**才会触发；启动时直接
+ * `applyTheme(缓存)` 就完事了。于是「水墨青黛采集页签有方框」修完发出去，
+ * 用户刷新页面还是看到方框，回了一句「没呀」。
+ *
+ * 这里把比对逻辑抽出来，启动时也跑一次：不阻塞首屏，拉不到列表就保持现状。
+ */
+async function refreshInstalledTheme(id: ThemeId): Promise<boolean> {
+  if (BUILTIN_THEME_IDS.includes(id)) return false;
+  const installed = downloadedThemes.get(id);
+  if (!installed) return false;
+  try {
+    const list = await fetchThemeList();
+    const remote = list.find((item) => item.id === id);
+    if (!remote?.version || remote.version === installed.version) return false;
+  } catch {
+    return false; // 列表拉不到时保持现状，不打断使用
+  }
+  const pkg = await fetchThemePackage(id);
+  injectThemeCss(id, pkg.css);
+  const meta: DownloadedTheme = {
+    id,
+    css: pkg.css,
+    label: pkg.manifest.label,
+    swatch: pkg.manifest.swatch,
+    description: pkg.manifest.description,
+    version: pkg.manifest.version,
+  };
+  downloadedThemes = new Map(downloadedThemes);
+  downloadedThemes.set(id, meta);
+  saveDownloadedThemes(downloadedThemes);
+  downloadedListeners.forEach((fn) => fn());
+  return true;
+}
+
 // Apply the stored theme on first import (before React mounts)
 applyTheme(currentTheme, false);
+
+// 后台保鲜：远端主题改版时自动换新（不阻塞首屏，失败静默）。
+//
+// 必须延后到模块初始化完成之后：本模块里 `THEME_STORE_BASE_URL` 这类 const 声明在
+// 文件更靠后的位置，直接在模块顶层同步调用会踩「暂时性死区」——
+// ReferenceError: Cannot access 'THEME_STORE_BASE_URL' before initialization，
+// 而 async 函数会把它吞成未处理的 Promise 拒绝，页面看着正常、就是不更新。
+if (typeof window !== "undefined") {
+  window.setTimeout(() => {
+    void refreshInstalledTheme(currentTheme);
+  }, 0);
+}
 
 // Listen for storage changes from other tabs
 if (typeof window !== "undefined") {
@@ -245,14 +295,9 @@ export function useTheme() {
     if (BUILTIN_THEME_IDS.includes(id)) return;
     const installed = downloadedThemes.get(id);
     if (installed && !options?.force) {
-      // 已安装：比对远端版本，不同则自动更新（否则主题包改版后老用户永远拿旧 CSS）。
-      try {
-        const list = await fetchThemeList();
-        const remote = list.find((item) => item.id === id);
-        if (!remote?.version || remote.version === installed.version) return;
-      } catch {
-        return; // 列表拉不到时保持现状，不打断使用
-      }
+      // 已安装：交给「后台保鲜」比对远端版本，变了才换新；没变直接返回。
+      await refreshInstalledTheme(id);
+      return;
     }
     const pkg = await fetchThemePackage(id);
     injectThemeCss(id, pkg.css);

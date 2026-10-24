@@ -187,6 +187,24 @@ CREATE TABLE IF NOT EXISTS auth_login_logs (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- 登录 IP 记录表：记录每次登录尝试的真实客户端 IP，用于账号安全与地域分布统计。
+CREATE TABLE IF NOT EXISTS auth_login_ips (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id TEXT NOT NULL DEFAULT '',
+    username TEXT NOT NULL DEFAULT '',
+    email TEXT NOT NULL DEFAULT '',
+    success INTEGER NOT NULL DEFAULT 0,
+    client_ip TEXT NOT NULL DEFAULT '',
+    user_agent TEXT NOT NULL DEFAULT '',
+    client_type TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_login_ips_created
+    ON auth_login_ips (created_at);
+CREATE INDEX IF NOT EXISTS idx_auth_login_ips_ip
+    ON auth_login_ips (client_ip, created_at);
+
 -- 远端平台账号服务会话表：由独立 customer auth 服务签发，和本地工作台 customer_sessions 分开。
 CREATE TABLE IF NOT EXISTS auth_platform_sessions (
     session_id TEXT PRIMARY KEY,

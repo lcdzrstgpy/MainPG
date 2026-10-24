@@ -36,6 +36,7 @@ from .contracts import (
     SemiBatchCreate,
     SpecCardPreviewRequest,
     SpecCardReprintRequest,
+    TemplateStructureUpdate,
 )
 from .billing_contract import PodBillingCoordinator
 from .errors import safe_error_message
@@ -46,7 +47,8 @@ from .service import PodCustomizationService
 
 MAX_TEMPLATE_UPLOAD_BYTES = 20 * 1024 * 1024
 POD_JSON_REQUEST_MAX_BYTES = 1 * 1024 * 1024
-POD_TEMPLATE_MULTIPART_MAX_BYTES = MAX_TEMPLATE_UPLOAD_BYTES + 1024 * 1024
+# 一次上传最多 4 张图：主图 + side/top/dimension 三张结构视图。
+POD_TEMPLATE_MULTIPART_MAX_BYTES = MAX_TEMPLATE_UPLOAD_BYTES * 4 + 1024 * 1024
 _POD_API_PREFIX = "/api/pod-customization"
 
 
@@ -128,6 +130,29 @@ async def _send_request_too_large(send: Send) -> None:
     await send({"type": "http.response.body", "body": body})
 
 
+async def _read_view_uploads(form: Any) -> list[dict[str, Any]]:
+    """读取 multipart 里的可选结构视图（字段名即角色），读完即关闭。"""
+    views: list[dict[str, Any]] = []
+    for role in ("side", "top", "dimension"):
+        candidate = form.get(role)
+        if candidate is None or not hasattr(candidate, "read"):
+            continue
+        try:
+            content = await candidate.read(MAX_TEMPLATE_UPLOAD_BYTES + 1)
+            if len(content) > MAX_TEMPLATE_UPLOAD_BYTES:
+                raise HTTPException(status_code=413, detail="POD template view upload is too large")
+            views.append(
+                {
+                    "role": role,
+                    "filename": str(getattr(candidate, "filename", f"template-{role}.png")),
+                    "content": content,
+                }
+            )
+        finally:
+            await candidate.close()
+    return views
+
+
 def create_router(
     database_path: Path,
     asset_root: Path,
@@ -175,6 +200,8 @@ def create_router(
         name = str(form.get("name") or "").strip()
         if upload is None or not hasattr(upload, "read"):
             raise HTTPException(status_code=400, detail="file is required")
+        # 可选结构视图：字段名即角色（side / top / dimension）。
+        views = await _read_view_uploads(form)
         try:
             content = await upload.read(MAX_TEMPLATE_UPLOAD_BYTES + 1)
             if len(content) > MAX_TEMPLATE_UPLOAD_BYTES:
@@ -185,9 +212,36 @@ def create_router(
                 name=name,
                 filename=str(getattr(upload, "filename", "template-image")),
                 content=content,
+                views=views,
             )
         finally:
             await upload.close()
+
+    @router.post("/templates/{template_id}/views")
+    async def attach_template_views(
+        template_id: str,
+        request: Request,
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        """给已有个人模板补充/替换结构视图（批次表单的「结构视图锚定」）。"""
+        permitted(actor, "pod_customization.template_manage")
+        length = request.headers.get("content-length", "")
+        if length.isdigit() and int(length) > POD_TEMPLATE_MULTIPART_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="POD template view upload is too large")
+        form = await request.form()
+        views = await _read_view_uploads(form)
+        if not views:
+            raise HTTPException(status_code=400, detail="at least one structure view is required")
+        return _call(service.attach_template_views, actor, template_id, views)
+
+    @router.patch("/templates/{template_id}/structure")
+    def update_template_structure(
+        template_id: str,
+        body: TemplateStructureUpdate,
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        permitted(actor, "pod_customization.template_manage")
+        return _call(service.update_template_structure, actor, template_id, body.facts)
 
     @router.get("/batches")
     def list_batches(
@@ -531,6 +585,30 @@ def create_router(
     def cancel_billing_run(run_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
         permitted(actor, "pod_customization.create")
         return _call(service.cancel_billing_run, actor, run_id)
+
+    @router.post("/billing-runs/{run_id}/close")
+    def close_billing_run(run_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
+        """「放弃并结算」入口：删除仍在结算中的批次前，先关掉它的冻结账。"""
+        permitted(actor, "pod_customization.create")
+        return _call(service.close_billing_run, actor, run_id)
+
+    @router.get("/billing-recon/runs")
+    def list_billing_recon_runs(
+        limit: int = 20,
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        """对账流水（只读，供排查使用；不新增页面）。"""
+        permitted(actor, "pod_customization.create")
+        return _call(service.list_billing_recon_runs, actor, limit)
+
+    @router.get("/billing-recon/daily")
+    def billing_recon_daily(
+        date: str = "",
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        """本地出账 + 与服务端日报逐项比对（只读视图，差额只记录不修数）。"""
+        permitted(actor, "pod_customization.create")
+        return _call(service.reconcile_billing_daily, actor, date=date)
 
     @router.post("/batches/{batch_id}/resume")
     def resume_batch(batch_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:

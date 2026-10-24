@@ -1,33 +1,56 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from types import MappingProxyType
-from typing import Literal, Mapping, Protocol, Sequence
+from typing import Any, Literal, Mapping, Protocol, Sequence
 
 from ...session import Actor
-from .contracts import MAX_FISSION_STYLES, MIN_FISSION_STYLES
+from .column_generation import (
+    COLUMN_ROLES,
+    ROLE_ATTEMPTS,
+    column_group_from_call_id,
+    column_image_call_id,
+    column_role_from_call_id,
+    column_style_from_call_id,
+    column_title_call_id,
+    group_style_indices,
+    plan_style_groups,
+    style_group_index,
+    validate_style_count,
+)
 
 
 PodFeature = Literal["pod.title", "pod.image"]
 PodCallStatus = Literal["success", "no_return"]
 
-# 计费画像：字符串由远端计费服务解释，并据此决定每 link 的随机单价区间。
+# 计费画像：字符串由远端计费服务解释，并据此决定每 link 的单价。
 POD_BILLING_PROFILE_RANDOM = "pod_random_v1"
+# 列式生成（4 款一组）使用服务端专属画像：unit_kind = group，item_count = link_count × 4。
+POD_BILLING_PROFILE_RANDOM_GRID = "pod_random_grid_v1"
 POD_BILLING_PROFILE_FISSION = "pod_fission_v1"
 POD_BILLING_PROFILE_SEMI = "pod_semi_v1"
 # 爆款复刻画像（A/B 两档，远端按档位决定「一次上报」的计价倍率）：
 #   A = pod_replica_v1_a：普通生成（grid，本地拆图）——一次上报扣 1 次全定制积分；
 #   B = pod_replica_v1_b：高清直出（independent_panels，直出 4 张）——一次上报扣 4 倍积分。
-# 两者都与全定制按「款」计价同区间（单价 40–50 随机，与 pod_random_v1 同区间），但用
-# 独立画像值上报：远端据此把「复刻」与「全定制」分到不同分类统计，并按 A/B 区分倍率。
+# 两者都与全定制按「款」计价同价（固定 45/款），但用独立画像值上报：
+# 远端据此把「复刻」与「全定制」分到不同分类统计，并按 A/B 区分倍率。
 POD_BILLING_PROFILE_REPLICA = "pod_replica_v1_a"
 POD_BILLING_PROFILE_REPLICA_HD = "pod_replica_v1_b"
+
+# v2 请求里的 module 字段（与账本 module 列同值）。
+POD_MODULE_CUSTOM = "pod_custom"
+POD_MODULE_SEMI = "pod_semi"
+POD_MODULE_REPLICA = "pod_replica"
+POD_MODULE_FISSION = "pod_fission"
+# 零计费动作（纯 title scope：brief / composition / 识图 / 结构分析 …）单独归类。
+POD_MODULE_ZERO = "pod_zero"
 
 # 半定制使用的计费画像。
 # 半定制按「组」上报：4 款 = 1 个 link，默认 32 积分/组（即 8 积分/款），实际单价由
 # 服务端倍率配置决定，以 freeze 响应的 link_prices 为准。这与全定制按「款」计价
-# （pod_random_v1，40–50/款）是两套口径，必须走独立画像，否则远端会按 POD 通用单价
+# （pod_random_v1，固定 45/款）是两套口径，必须走独立画像，否则远端会按 POD 通用单价
 # 对「组」计价，单价直接翻 4 倍。
 SEMI_BILLING_PROFILE = POD_BILLING_PROFILE_SEMI
 
@@ -36,6 +59,9 @@ SEMI_BILLING_PROFILE = POD_BILLING_PROFILE_SEMI
 # ``item_count == link_count * SEMI_STYLES_PER_GROUP``，兜底「漏除 4、把款数当组数上报」
 # 的接线错误（那会把冻结积分放大 4 倍）。
 SEMI_STYLES_PER_GROUP = 4
+
+# 结算单元 ID 从调用 id 里解析 ``:style:{n}:``；n 是历史 1 基序号，unit_id 统一 0 基。
+_STYLE_MARKER = re.compile(r":style:(\d+):")
 
 _PRODUCT_BATCH_FEATURES: tuple[tuple[PodFeature, str], ...] = (
     ("pod.title", "title"),
@@ -47,7 +73,8 @@ TITLE_ATTEMPTS = 5
 
 # 智能前置层一次生成预留的文本调用次数：与契约修复重试上限一致。
 # 这些调用全部记为 pod.title —— 服务端对 POD 画像的纯 title scope 显式零计费。
-BRIEF_ATTEMPTS = 3
+# v2：带模板图时预留 1 条给批级美术指导，因此字段修复仍有 3 次（共 4 条）。
+BRIEF_ATTEMPTS = 4
 
 # 构图定制一次生成预留的文本调用次数：与 brief 同口径（纯 pod.title，零计费）。
 COMPOSITION_ATTEMPTS = 3
@@ -56,6 +83,8 @@ COMPOSITION_ATTEMPTS = 3
 # （纯 pod.title，零计费）。分析是视觉调用，但走同一条冻结 → 短期密钥 → 结算底座。
 REPLICA_ANALYSIS_ATTEMPTS = 3
 REPLICA_COMPOSITION_ATTEMPTS = 3
+# 模板结构识图：一次视觉调用 + 一次契约修复调用（与复刻识图同口径，纯 title 零计费）。
+STRUCTURE_ANALYSIS_ATTEMPTS = 2
 # Fission A/B analysis is one provider call plus one contract repair call.
 FISSION_ANALYSIS_ATTEMPTS = 2
 
@@ -101,6 +130,69 @@ class PodCallPlan:
     # 半定制的交付款数（>0 即为半定制）。冻结与结算的「按组展开」口径只看它，
     # 与 billing_profile 解耦：这样才能在不改远端的前提下临时换用别的画像。
     semi_item_count: int = 0
+    # 列式生成的交付款数（>0 即为两级批次）。按「组」上报：1 组 = 1 link，
+    # item_count 仍是款数（= 组数 × 4），使用 pod_random_grid_v1 画像。
+    column_style_count: int = 0
+    # v2 账本字段：module 归类、结算单元类型与单元 ID（0 基，与 link_idx 一一对应）。
+    # 单元 ID 在生成本次计划时确定并持久化；冻结、续跑、重试、结算全程复用。
+    module: str = ""
+    unit_kind: str = ""
+    unit_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.unit_kind:
+            object.__setattr__(
+                self,
+                "unit_kind",
+                "group" if (self.semi_item_count or self.column_style_count) else "style",
+            )
+        if not self.module:
+            object.__setattr__(self, "module", self._derive_module())
+        if not self.unit_ids:
+            object.__setattr__(self, "unit_ids", self._derive_unit_ids())
+
+    def _derive_module(self) -> str:
+        if self.semi_item_count or self.billing_profile == POD_BILLING_PROFILE_SEMI:
+            return POD_MODULE_SEMI
+        if self.billing_profile == POD_BILLING_PROFILE_FISSION:
+            return POD_MODULE_FISSION
+        if self.billing_profile.startswith("pod_replica"):
+            return POD_MODULE_REPLICA
+        # 纯文本调用（brief / composition / 识图 / 结构分析）服务端零计费。
+        if self.calls and all(call.feature == "pod.title" for call in self.calls):
+            return POD_MODULE_ZERO
+        return POD_MODULE_CUSTOM
+
+    def _derive_unit_ids(self) -> tuple[str, ...]:
+        if not self.calls:
+            return ()
+        if self.column_style_count:
+            groups = sorted(
+                {
+                    group_index
+                    for call in self.calls
+                    if (group_index := column_group_from_call_id(call.call_id)) is not None
+                }
+            )
+            return tuple(f"group-{group_index - 1}" for group_index in groups)
+        markers = sorted(
+            {
+                int(match.group(1))
+                for call in self.calls
+                if (match := _STYLE_MARKER.search(call.call_id)) is not None
+            }
+        )
+        if not markers:
+            # 无款级标记的计划（试用 / 单动作重试 / 纯文本）只有 1 个 link。
+            return ("style-0",)
+        prefix = "group" if self.semi_item_count else "style"
+        return tuple(f"{prefix}-{marker - 1}" for marker in markers)
+
+    @property
+    def column_group_count(self) -> int:
+        if not self.column_style_count:
+            return 0
+        return self.column_style_count // 4
 
     @property
     def semi_group_count(self) -> int:
@@ -216,16 +308,91 @@ class PodCallPlan:
         return cls(idempotency_key=f"pod:batch:{batch_id}:initial", calls=calls, billing_profile=billing_profile)
 
     @classmethod
-    def for_fission_batch(cls, batch_id: str, *, style_count: int) -> "PodCallPlan":
-        if (
-            isinstance(style_count, bool)
-            or not isinstance(style_count, int)
-            or not MIN_FISSION_STYLES <= style_count <= MAX_FISSION_STYLES
-        ):
-            raise ValueError(
-                f"fission style count must be between {MIN_FISSION_STYLES} and {MAX_FISSION_STYLES}"
-            )
-        return cls.for_batch(batch_id, style_count=style_count, billing_profile=POD_BILLING_PROFILE_FISSION)
+    def for_column_batch(cls, batch_id: str, *, style_count: int) -> "PodCallPlan":
+        """列式生成初始批次：4 款一组、每组 4 轮。
+
+        调用形状（内部逐调用记账，远端按组汇总）：
+        - 图片：``{batch}:group:{g}:role:{role}:image:{attempt}``（4 角色 × 2 次）；
+        - 标题：``{batch}:group:{g}:style:{i}:title:{attempt}``（每款 5 次）。
+        """
+        validate_style_count(style_count)
+        calls: list[PodPlannedCall] = []
+        for group in plan_style_groups(style_count):
+            for role in COLUMN_ROLES:
+                calls.extend(
+                    PodPlannedCall(
+                        column_image_call_id(batch_id, group.group_index, role, attempt),
+                        "pod.image",
+                    )
+                    for attempt in range(1, ROLE_ATTEMPTS + 1)
+                )
+            for style_index in group.style_indices:
+                calls.extend(
+                    PodPlannedCall(
+                        column_title_call_id(
+                            batch_id, group.group_index, style_index, attempt
+                        ),
+                        "pod.title",
+                    )
+                    for attempt in range(1, TITLE_ATTEMPTS + 1)
+                )
+        return cls(
+            idempotency_key=f"pod:batch:{batch_id}:initial",
+            calls=tuple(calls),
+            billing_profile=POD_BILLING_PROFILE_RANDOM_GRID,
+            column_style_count=style_count,
+        )
+
+    @classmethod
+    def for_column_batch_resume(
+        cls,
+        batch_id: str,
+        resume_id: str,
+        *,
+        group_roles: Mapping[int, Sequence[str]],
+        title_style_indices: Sequence[int] = (),
+    ) -> "PodCallPlan":
+        """暂停续跑：只冻结尚未完成的「组 × 角色」与未完成的标题。
+
+        调用 id 沿用原批次的列式形状，worker 才能接回 group_sheets 的持久化状态。
+        """
+        roles_by_group = {
+            int(group_index): tuple(role for role in roles if role in COLUMN_ROLES)
+            for group_index, roles in group_roles.items()
+            if roles
+        }
+        title_indices = tuple(int(index) for index in title_style_indices)
+        resume_groups = set(roles_by_group) | {style_group_index(index) for index in title_indices}
+        if not resume_groups:
+            raise ValueError("at least one remaining POD column group is required")
+        calls: list[PodPlannedCall] = []
+        for group_index in sorted(resume_groups):
+            for role in roles_by_group.get(group_index, ()):
+                calls.extend(
+                    PodPlannedCall(
+                        column_image_call_id(batch_id, group_index, role, attempt),
+                        "pod.image",
+                    )
+                    for attempt in range(1, ROLE_ATTEMPTS + 1)
+                )
+            styles = group_style_indices(group_index)
+            for style_index in styles:
+                if style_index not in title_indices:
+                    continue
+                calls.extend(
+                    PodPlannedCall(
+                        column_title_call_id(batch_id, group_index, style_index, attempt),
+                        "pod.title",
+                    )
+                    for attempt in range(1, TITLE_ATTEMPTS + 1)
+                )
+        return cls(
+            idempotency_key=f"pod:batch:{batch_id}:resume:{resume_id}",
+            calls=tuple(calls),
+            billing_profile=POD_BILLING_PROFILE_RANDOM_GRID,
+            # link_count = 本次续跑的组数；item_count 仍按 4 款/组上报。
+            column_style_count=len(resume_groups) * 4,
+        )
 
     @classmethod
     def for_replica_batch(
@@ -443,6 +610,23 @@ class PodCallPlan:
         )
 
     @classmethod
+    def for_structure_analysis(cls, analysis_id: str) -> "PodCallPlan":
+        """模板结构识图：一次视觉调用（含一次契约修复）。
+
+        与 ``for_replica_analysis`` 同构：只冻结 ``pod.title``，服务端对纯 title
+        scope 零计费，但仍复用冻结 → 短期密钥 → 结算底座与幂等键。
+        """
+        if not str(analysis_id).strip():
+            raise ValueError("analysis_id is required")
+        return cls(
+            idempotency_key=f"pod:structure-analysis:{analysis_id}",
+            calls=tuple(
+                PodPlannedCall(f"{analysis_id}:structure:{attempt}", "pod.title")
+                for attempt in range(1, STRUCTURE_ANALYSIS_ATTEMPTS + 1)
+            ),
+        )
+
+    @classmethod
     def for_fission_analysis(cls, analysis_id: str) -> "PodCallPlan":
         """联合 A/B 分析：预留首次分析与一次契约修复调用。"""
         if not str(analysis_id).strip():
@@ -594,6 +778,17 @@ class PodCallPlan:
         One POD style is one billed product link. Provider retries remain local
         attempts and do not create additional billable subitems.
         """
+        if self.column_style_count:
+            # 列式生成按「二级批次（4 款）」上报：1 组 = 1 link，item_count 报款数，
+            # 沿用 pod_random_v1 的单价配置（不新增画像、不改远端倍率）。
+            present = {call.feature for call in self.calls}
+            return {
+                "idempotency_key": self.idempotency_key,
+                "link_count": self.column_group_count,
+                "item_count": self.column_style_count,
+                "scope": [remote for pod, remote in _PRODUCT_BATCH_FEATURES if pod in present],
+                "billing_profile": self.billing_profile,
+            }
         if self.semi_item_count:
             # 半定制按「组」冻结：一组 4 款 = 1 个 link（默认 32 积分/组，即 8 积分/款，
             # 实际单价由服务端倍率配置决定，以 freeze 响应的 link_prices 为准）。
@@ -623,6 +818,8 @@ class PodCallPlan:
         # 半定制按「款」展开（口径看 semi_item_count，不看 profile 字符串）。
         if self.semi_item_count:
             return self._semi_batch_settlement_payload(outcomes)
+        if self.column_style_count:
+            return self._column_batch_settlement_payload(outcomes)
         outcome_by_call = self._validated_outcomes(outcomes)
         groups = self._product_batch_groups()
         # 每条 link 的子项必须恰好覆盖冻结 scope（billing.py 逐 link 校验）。
@@ -654,6 +851,81 @@ class PodCallPlan:
                 )
             items.append({"link_idx": link_idx, "subitems": subitems})
         return {"items": items}
+
+    def _column_batch_settlement_payload(
+        self,
+        outcomes: Sequence[PodCallOutcome],
+    ) -> dict[str, object]:
+        """列式生成结算：按「组」折叠成一条 link，两个 subitem。
+
+        - ``four_grid``：该组第 1 轮（lifestyle 角色）任意一次尝试成功即 success；
+          细节 A / 细节 B / 素材失败不影响计费（方案 D20）。
+        - ``title``：该组 4 个款都有至少一次标题成功才 success。
+        - 续跑只冻结部分角色时，未出现在本计划里的子项按 no_return 上报，
+          与冻结 scope 保持一致（远端逐 link 校验子项覆盖）。
+        """
+        if not self.column_group_count:
+            raise ValueError("column settlement requires a valid column_style_count")
+        outcome_by_call = self._validated_outcomes(outcomes)
+        groups: dict[int, list[PodPlannedCall]] = {}
+        for call in self.calls:
+            group_index = column_group_from_call_id(call.call_id)
+            if group_index is None:
+                raise ValueError(f"column plan contains a non-column call id: {call.call_id}")
+            groups.setdefault(group_index, []).append(call)
+        present = {call.feature for group in groups.values() for call in group}
+        scope_products = {
+            product for pod, product in _PRODUCT_BATCH_FEATURES if pod in present
+        }
+        items: list[dict[str, object]] = []
+        for group_index in sorted(groups):
+            group = groups[group_index]
+            subitems: list[dict[str, str]] = []
+            for pod_feature, product_feature in _PRODUCT_BATCH_FEATURES:
+                if product_feature not in scope_products:
+                    continue
+                if pod_feature == "pod.image":
+                    succeeded = any(
+                        call.feature == pod_feature
+                        and column_role_from_call_id(call.call_id) == "lifestyle"
+                        and outcome_by_call[(call.call_id, call.feature)] == "success"
+                        for call in group
+                    )
+                else:
+                    succeeded = self._column_group_titles_succeeded(group, outcome_by_call)
+                subitems.append(
+                    {
+                        "feature": product_feature,
+                        "status": "success" if succeeded else "no_return",
+                    }
+                )
+            items.append({"link_idx": len(items) + 1, "subitems": subitems})
+        if len(items) != self.column_group_count:
+            raise ValueError(
+                "column settlement link count does not match the frozen group count"
+            )
+        return {"items": items}
+
+    @staticmethod
+    def _column_group_titles_succeeded(
+        group: Sequence[PodPlannedCall],
+        outcome_by_call: dict[tuple[str, PodFeature], PodCallStatus],
+    ) -> bool:
+        title_calls = [call for call in group if call.feature == "pod.title"]
+        if not title_calls:
+            return False
+        by_style: dict[int, list[PodPlannedCall]] = {}
+        for call in title_calls:
+            style_index = column_style_from_call_id(call.call_id)
+            if style_index is None:
+                return False
+            by_style.setdefault(style_index, []).append(call)
+        if len(by_style) != 4:
+            return False
+        return all(
+            any(outcome_by_call[(call.call_id, call.feature)] == "success" for call in calls)
+            for calls in by_style.values()
+        )
 
     def _semi_batch_settlement_payload(
         self,
@@ -735,6 +1007,10 @@ class PodExecutionGrant:
     expires_at: str
     provider_keys: Mapping[str, str] = field(repr=False)
     remote_token: str = field(default="", repr=False)
+    # 冻结回执里没有任何可用密钥：冻结本身仍成立，缺密钥交给执行阶段。
+    keys_missing: bool = False
+    # v2 冻结快照（金额 / 单价 / 单元 ID / settle_deadline …），v1 路径为空。
+    snapshot: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -776,6 +1052,6 @@ class PodBillingCoordinator(Protocol):
         grant: PodExecutionGrant,
         plan: PodCallPlan,
         outcomes: Sequence[PodCallOutcome],
-    ) -> None: ...
+    ) -> dict[str, Any] | None: ...
 
     def regrant(self, actor: Actor, freeze_id: str) -> PodExecutionGrant: ...

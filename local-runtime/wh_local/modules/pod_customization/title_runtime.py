@@ -213,8 +213,10 @@ def title_result_from_dict(payload: Mapping[str, Any]) -> PodTitleResult:
     if not isinstance(payload, Mapping) or set(payload) != _RESULT_KEYS:
         raise _invalid_response("POD title output fields failed validation")
     raw_title = _listing_copy_text(payload.get("title"))
-    english_title = _listing_copy_text(payload.get("english_title"))
-    description = _listing_copy_text(payload.get("description"))
+    # 上架文案只接受 ASCII：英文标题与描述先清掉 emoji/全角装饰符，
+    # 否则模型在梦幻题材里随手加的 ✨ 会让整条标题或描述被平台判成非英文。
+    english_title = _ascii_text(_listing_copy_text(payload.get("english_title")))
+    description = _ascii_text(_listing_copy_text(payload.get("description")))
     visual_theme = _normalized_text(payload.get("visual_theme"))
     motifs = _string_tuple(payload.get("motif_keywords"), field="motif keywords")
     colors = _string_tuple(payload.get("color_keywords"), field="color keywords")
@@ -344,6 +346,8 @@ class PodTitleRuntime(AiRuntime):
             attempt_call_id = planned_call_ids[attempt - 1]
             outcome_recorded = False
             attempt_started = time.monotonic()
+            # 校验失败时用来把「被拒标题的实际形态」写进日志（纯函数校验不碰日志）。
+            result: PodTitleResult | None = None
             remaining_budget = budget_deadline - attempt_started
             if remaining_budget <= 0:
                 # 总预算耗尽：不再重试，直接以可诊断的失败收敛。
@@ -422,12 +426,21 @@ class PodTitleRuntime(AiRuntime):
                 # A contract-invalid title still came back from the provider,
                 # so its attempt was already reported as success above.
                 reason = _normalized_text(str(exc)) or "title output violated the listing contract"
+                detail = ""
+                if result is not None:
+                    rejected = _normalized_text(result.normalized_title)
+                    detail = (
+                        f" | 标题长度={len(rejected)}"
+                        f" 纯ASCII={str(rejected.isascii()).lower()}"
+                        f" | 预览={rejected[:80]!r}"
+                    )
                 pod_log.warning(
-                    "POD 标题调用输出不合格 | 第%d/%d次 | 耗时=%.1fs | %s",
+                    "POD 标题调用输出不合格 | 第%d/%d次 | 耗时=%.1fs | %s%s",
                     attempt,
                     max_attempts,
                     time.monotonic() - attempt_started,
                     reason[:200],
+                    detail,
                 )
                 error = _invalid_response(
                     f"POD title output failed the listing contract: {reason}", attempt_count=attempt
@@ -705,25 +718,59 @@ def _self_referential_clause(title: str) -> str:
     return ""
 
 
+def _ascii_text(value: str) -> str:
+    """去掉 emoji / 全角符号等非 ASCII 字符，只留可上架的英文文案。
+
+    标题模型常在梦幻题材里输出 ✨ ★ 之类的装饰符；这类字符会让整条标题被
+    平台判为非英文。兜底拼装时先清理，避免因为一个符号白白失败。
+    """
+    normalized = _normalize_listing_punctuation(value)
+    return "".join(char for char in normalized if ord(char) < 128).strip()
+
+
+def _truncate_title_at_word(value: str, limit: int) -> str:
+    """把超长标题按词边界截到 ``limit`` 内，并丢掉结尾的悬空连接词/标点。"""
+    text = value.strip()
+    if len(text) <= limit:
+        return text
+    words = text.split()
+    while words and len(" ".join(words)) > limit:
+        words.pop()
+    while words and (
+        words[-1].casefold() in _TITLE_TRAILING_CONNECTORS or words[-1][-1] in ",:-;"
+    ):
+        words.pop()
+    return " ".join(words)
+
+
 def _display_listing_title(title: str, english_title: str, description: str) -> str:
     """Prefer the provider title, but recover a safe-length English display title from its copy."""
     if title.isascii() and TITLE_MIN_LENGTH <= len(title) <= TITLE_MAX_LENGTH:
         return title
 
-    if not english_title.isascii() or not description.isascii():
+    english = _ascii_text(english_title)
+    body = _ascii_text(description)
+    if not english or not body:
         return title
-    prefix = _assembled_title_prefix(english_title)
+    prefix = _assembled_title_prefix(english)
     # 只在真正的句末切分：把 ":" / ";" 当边界会拼出以冒号结尾的断句标题。
     candidates = (
-        f"{prefix}{description[:match.end()]}"
-        for match in re.finditer(r"[.!?]", description)
+        f"{prefix}{body[:match.end()]}"
+        for match in re.finditer(r"[.!?]", body)
     )
-    valid_candidates = (
+    valid_candidates = [
         candidate
         for candidate in candidates
         if TITLE_MIN_LENGTH <= len(candidate) <= TITLE_MAX_LENGTH
-    )
-    return max(valid_candidates, key=len, default=title)
+    ]
+    if valid_candidates:
+        return max(valid_candidates, key=len)
+    # 整个句末候选都超上限（描述第一句本身就 >200）时，按词边界截断救回；
+    # 这是标题普遍贴近 200 上限时最容易踩到的一条失败路径。
+    truncated = _truncate_title_at_word(f"{prefix}{body}", TITLE_MAX_LENGTH)
+    if TITLE_MIN_LENGTH <= len(truncated) <= TITLE_MAX_LENGTH:
+        return truncated
+    return title
 
 
 def _prohibited_term(title: str) -> str:

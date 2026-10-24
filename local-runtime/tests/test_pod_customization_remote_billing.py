@@ -1,3 +1,6 @@
+import pytest
+
+from wh_local.customer.contracts import CustomerBillingPermissionError
 from wh_local.modules.pod_customization.billing_contract import (
     PodCallOutcome,
     PodCallPlan,
@@ -213,32 +216,8 @@ def test_settlement_auth_checks_status_without_requesting_provider_keys() -> Non
 
     assert grant.provider_keys == {}
     assert remote.calls == [("status", "remote-session", "product-freeze-1")]
-import pytest
-
-from wh_local.customer.contracts import CustomerBillingPermissionError
-
-
-class FakeFissionRemoteBilling(FakeRemoteBilling):
-    """Status reports a fission profile so regrant re-freezes through the pod-fission route."""
-
-    def freeze_pod_fission_points(self, token: str, payload: dict[str, object]) -> dict[str, object]:
-        self.calls.append(("freeze-fission", token, payload))
-        return {
-            "freeze": {
-                "freeze_id": str(payload.get("idempotency_key") or "fission-freeze-1"),
-                "rule_version": 11,
-                "expires_at": "2099-01-08T00:00:00Z",
-                "keys": [
-                    {"provider": "ark", "api_key": "short-ark", "expires_at": "2099-01-01T00:00:00Z"},
-                ],
-            }
-        }
-
-    def settle_pod_fission_points(
-        self, token: str, freeze_id: str, payload: dict[str, object]
-    ) -> dict[str, object]:
-        self.calls.append(("settle-fission", token, {**payload, "freeze_id": freeze_id}))
-        return {"status": "settled"}
+class FissionProfileRemoteBilling(FakeRemoteBilling):
+    """回显裂变画像；裂变已与全定制共用同一个 batch 入口，不再有独立通道。"""
 
     def batch_freeze_status(self, token: str, freeze_id: str) -> dict[str, object]:
         self.calls.append(("status", token, freeze_id))
@@ -254,12 +233,14 @@ class FakeFissionRemoteBilling(FakeRemoteBilling):
         }
 
 
-def test_fission_batch_uses_its_own_billing_channel_end_to_end() -> None:
-    """裂变批次必须全程走 pod-fission 独立通道，不得落回通用 batch 通道。"""
-    remote = FakeFissionRemoteBilling()
+def test_fission_batch_uses_the_unified_batch_channel_end_to_end() -> None:
+    """裂变与全定制共用同一个入口与画像：不得再落回任何独立通道。"""
+    remote = FissionProfileRemoteBilling()
     coordinator = RemotePodBillingCoordinator(remote, lambda _actor: "remote-session")
     actor = Actor(id="user-1", username="user", role="operator", workspace_id="workspace-1")
-    plan = PodCallPlan.for_fission_batch("fission-1", style_count=2)
+    plan = PodCallPlan.for_batch(
+        "fission-1", style_count=2, billing_profile="pod_fission_v1"
+    )
 
     grant = coordinator.freeze(actor, plan)
     outcomes = tuple(
@@ -270,7 +251,7 @@ def test_fission_batch_uses_its_own_billing_channel_end_to_end() -> None:
 
     # 冻结：一款一条 link，scope 为 title + four_grid。
     assert remote.calls[0] == (
-        "freeze-fission",
+        "freeze",
         "remote-session",
         {
             "idempotency_key": "pod:batch:fission-1:initial",
@@ -281,7 +262,7 @@ def test_fission_batch_uses_its_own_billing_channel_end_to_end() -> None:
     )
     # 结算：每条 link 覆盖冻结 scope 的两个子项。
     assert remote.calls[1] == (
-        "settle-fission",
+        "settle",
         "remote-session",
         {
             "freeze_id": "pod:batch:fission-1:initial",
@@ -303,10 +284,10 @@ def test_fission_batch_uses_its_own_billing_channel_end_to_end() -> None:
             ],
         },
     )
-    # 状态查询沿用通用接口；重冻结按回显的画像回到裂变通道（不带半定制的 item_count）。
+    # 重冻结按回显画像走同一个 batch 接口（不带半定制的 item_count）。
     assert remote.calls[2] == ("status", "remote-session", "pod:batch:fission-1:initial")
     assert remote.calls[3] == (
-        "freeze-fission",
+        "freeze",
         "remote-session",
         {
             "idempotency_key": "pod:batch:fission-1:initial",
@@ -317,6 +298,6 @@ def test_fission_batch_uses_its_own_billing_channel_end_to_end() -> None:
     )
     assert renewed.provider_key("ark") == "short-ark"
     assert {route for route, _token, _payload in remote.calls if route.startswith(("freeze", "settle"))} == {
-        "freeze-fission",
-        "settle-fission",
+        "freeze",
+        "settle",
     }

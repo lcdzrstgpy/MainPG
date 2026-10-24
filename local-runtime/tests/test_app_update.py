@@ -483,3 +483,22 @@ def test_offline_startup_keeps_health_available(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert response.json()["ok"] is True
+
+
+def test_health_route_stays_async_so_it_never_queues_behind_workload(tmp_path: Path) -> None:
+    """``/health`` 必须是 async 端点。
+
+    同步端点会被 FastAPI 丢进 anyio 线程池（默认 40 槽，和所有重任务共用）。低配
+    机器跑 AI 出图 / POD 渲染时线程池被占满，探活请求排队 → 前端超时 → 误判「本地
+    服务掉线」并弹整屏遮罩（2026-10-22 定位）。函数体只拼一个 dict，不该占线程。
+    """
+    import inspect
+
+    from wh_local.app.main import create_app
+
+    app = create_app(tmp_path / "workbench.sqlite3")
+    health_routes = [route for route in app.routes if getattr(route, "path", "") == "/health"]
+    assert health_routes, "应注册 /health 路由"
+    assert any(
+        inspect.iscoroutinefunction(route.endpoint) for route in health_routes
+    ), "/health 必须是 async def，否则会与工作负载抢线程池"

@@ -633,7 +633,7 @@ export function PodReplicaPage({ isActive = true }: Props) {
       {error && <div className="pod-replica-message is-error" role="alert"><span>!</span><p>{error}</p><button type="button" onClick={clearMessages} aria-label="关闭提示">×</button></div>}
 
       <div className="pod-replica-layout">
-        <div className="pod-replica-setup">
+        <div className="pod-replica-setup pod-prefill-panel">
           <ReplicaSourceUploader source={source} busy={busyAction === "upload-source"} onFiles={(files) => void uploadSource(files)} onClear={() => setSource(null)} />
           {source && sourceNeedsConfirmation && (
             <div className={`pod-replica-source-confirm${sourceConfirmed ? " is-done" : ""}`}>

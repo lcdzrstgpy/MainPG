@@ -315,6 +315,26 @@ class _RuntimeExitController:
         # 单独限时，避免被任务结算的耗时挤掉。
         self._on_release_sessions: Any | None = None
         self._release_sessions_s = float(os.environ.get("WH_LOCAL_RUNTIME_EXIT_RELEASE_S", "5"))
+        # 「是不是有任务在跑」的探测；没接就按「没活儿」处理（保持原退出语义）。
+        self._busy_checker: Any | None = None
+        # 最近一次 HTTP 请求的时刻（monotonic）。任何请求都是「还有人在用」的证据，
+        # 不必逐个模块去接任务计数：POD / 组合套装 / AI 视频的页面本来就在轮询。
+        self._last_request_at: float = time.monotonic()
+        # 墙钟锚点与休眠债：系统睡眠时 monotonic 可能停走也可能跳过，两种情况都不能
+        # 把睡眠时间算成「没人用」。用墙钟跳变补偿。
+        self._last_tick_wall: float = time.time()
+        self._sleep_debt: float = 0.0
+
+    def note_request(self) -> None:
+        """记录一次 HTTP 请求到访（供中间件调用）。
+
+        心跳信标只是「还在用」的证据之一，任何业务请求同样是证据。把这条接上，
+        就不用为每个模块单独接任务计数了。
+        """
+        now = time.monotonic()
+        with self._lock:
+            if now > self._last_request_at:
+                self._last_request_at = now
 
     def set_on_before_exit(self, callback: Any | None) -> None:
         """注入退出前回调；仅在真正决定退出（而非刷新重载）时执行一次。"""
@@ -430,13 +450,28 @@ class _RuntimeExitController:
         pagehide 也会发 bye，若此时正在跑批量处理，直接退出会「取消任务 + 按 50%
         结算」，用户看到的就是处理中途突然掉线（2026-10-21 反馈）。
         有任务时把退出推迟到忙碌宽限之后；任务结束后下一轮自然退出。
+
+        2026-10-22 合并时把开发线的两条补回：
+        - 系统休眠/睡眠的墙钟跳变要从所有 monotonic 锚点上扣掉，否则合盖半小时
+          回来，后端已经把自己判成「没人用」并退出了；
+        - 「最近还有 HTTP 请求到访」也算有人用，兜住 POD / 组合套装 / AI 视频这些
+          没有任务计数接口的模块。
         """
         with self._lock:
+            wall = time.time()
+            gap = wall - self._last_tick_wall
+            self._last_tick_wall = wall
+            if gap > self._interval_s * 5:
+                self._started_at += gap
+                self._last_request_at += gap
+                for client_id, (heartbeat, event_seq) in list(self._clients.items()):
+                    self._clients[client_id] = (heartbeat + gap, event_seq)
             self._prune_stale_clients(now)
             deadline = self._bye_deadline
             has_clients = bool(self._clients)
             ever_connected = self._ever_connected
             started_at = self._started_at
+            last_request_at = self._last_request_at
         if deadline is not None and now >= deadline:
             if self._busy():
                 with self._lock:
@@ -453,6 +488,10 @@ class _RuntimeExitController:
                 return None
             if ever_connected or now - started_at > self._idle_s:
                 if self._busy():
+                    return None
+                # 兜住没有任务计数接口的模块（POD / 组合套装 / AI 视频）：
+                # 最近还有 HTTP 请求到访，就说明还有人在用。
+                if now - last_request_at <= self._idle_s:
                     return None
                 return "frontend heartbeat idle timeout"
         return None
@@ -681,6 +720,11 @@ def create_app(database_path: Path | None = None) -> FastAPI:
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
+        # 必须是 async：同步端点会被 FastAPI 丢进 anyio 线程池（默认 40 槽，与所有
+        # 重任务共用）。低配机器跑 AI 出图 / POD 渲染时线程池被占满，探活请求排队，
+        # 前端 4 秒超时即判「本地服务掉线」——2026-10-22 定位到的误报根因。
+        # 这里函数体只拼一个 dict，不碰 DB、不碰磁盘，async 后连线程都不占。
+        #
         # app_version 是给启动器用的：端口上如果跑着「上个版本」的旧进程，
         # 光看 database_path 完全一样，复用之后用户看到的就是旧界面
         # （2026-10-19 排查「升级后还是老样子」时确认的缺口）。
@@ -706,14 +750,21 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     )
 
     def _trigger_pod_log_upload() -> None:
-        """POD 日志每日静默上传：启动时与每次登录成功后各做一次 due check。
+        """POD 日志每日静默上传 + 计费账本对账：启动与每次登录成功后各做一次。
 
-        零常驻：只在这一刻跑一次（登录时由 BackgroundTasks 在响应之后调），内部自带
-        当天去重；取不到远端 token（还没登录）或还没到上传时刻就直接跳过。
+        日志上传零常驻：只在这一刻跑一次（登录时由 BackgroundTasks 在响应之后调），
+        内部自带当天去重；取不到远端 token（还没登录）或还没到上传时刻就直接跳过。
+        计费对账只处理「拿到远端凭证的那个用户」的未关单账，其余用户自动跳过。
         """
         task = getattr(app.state, "pod_log_upload_task", None)
         if task is not None:
             task.run_if_due()
+        pod_service = getattr(app.state, "pod_customization_service", None)
+        if pod_service is not None:
+            try:
+                pod_service.reconcile_billing_runs_once()
+            except Exception:
+                logger.warning("POD billing reconciliation failed after login", exc_info=True)
 
 
     customer_auth = (
@@ -864,6 +915,10 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     # 启用，该回调不被触发。
     runtime_exit.set_on_before_exit(
         _compose_exit_cleanup(product_processing.cancel_all_active_for_shutdown, clipforge.stop)
+    )
+    # 心跳中断≠用户走了：有任务在跑就别自杀，否则会把任务取消并按 50% 结算。
+    runtime_exit.set_busy_probe(
+        lambda: product_processing.active_task_count() > 0
     )
     # 桌面端：结算完成后登出远端平台会话并撤销本机本地会话。远端 token 只存在后端
     # 进程内存里，关页退出即丢失且用户再也无法主动登出；不在这里抢着登出，远端会残留
@@ -1056,6 +1111,12 @@ def _register_frontend_shell(app: FastAPI) -> None:
     # （no-cache，借助 ETag/Last-Modified 命中 304），避免更新后浏览器仍展示旧界面。
     @app.middleware("http")
     async def frontend_cache_control(request: Request, call_next):
+        # 任何请求到访都是「还有人在用」的证据：看门狗据此不自杀（心跳信标只是
+        # 证据之一，POD / 组合套装 / AI 视频的页面没接任务计数，靠这条兜住）。
+        # 这里走 app.state：本函数不是 create_app，闭包里拿不到 runtime_exit。
+        exit_controller = getattr(app.state, "runtime_exit", None)
+        if exit_controller is not None:
+            exit_controller.note_request()
         response = await call_next(request)
         if request.method in ("GET", "HEAD"):
             path = request.url.path

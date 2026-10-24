@@ -27,7 +27,9 @@ export type PodStyleRow = {
   status: "queued" | "generating" | "completed" | "partial_failure" | "failed";
 };
 
-export const POD_BATCH_COUNTS = [2, 10, 20, 40, 60, 100] as const satisfies readonly PodBatchCount[];
+// 列式生成按 4 款一组执行：款数必须是 4 的倍数，所以预设档位也只给 4 的倍数。
+export const POD_BATCH_COUNTS = [4, 8, 20, 40, 60, 100] as const satisfies readonly PodBatchCount[];
+export const POD_COLUMN_STYLES_PER_GROUP = 4;
 export const MAX_POD_SKU_COUNT = 100;
 export const MAX_POD_SKU_NAME_LENGTH = 120;
 
@@ -326,6 +328,48 @@ export function listingFieldsForApi(
 
 export function isPodBatchCount(value: number): value is PodBatchCount {
   return Number.isInteger(value) && value >= 1 && value <= 200;
+}
+
+/** 列式生成只接受 4 的倍数（4–200）：后端按 4 款一组拆二级批次。 */
+export function isPodColumnBatchCount(value: number): boolean {
+  return (
+    isPodBatchCount(value)
+    && value >= POD_COLUMN_STYLES_PER_GROUP
+    && value % POD_COLUMN_STYLES_PER_GROUP === 0
+  );
+}
+
+export function isPodColumnBatch(batch: { generation_layout?: string } | null | undefined): boolean {
+  return batch?.generation_layout === "column_v1";
+}
+
+/**
+ * 列式批次的轮次进度：按角色统计「已完成 / 总款数」。
+ *
+ * 款级结算要等 4 格齐，进度条会长时间停在 0%；这里改成「主图 4/4 · 细节 A 3/4」
+ * 的轮次口径，让用户在第一批图到达时就能看到推进。
+ */
+export function podBatchRoundProgress(batch: {
+  count: number;
+  items: PodBatchItem[];
+  generation_layout?: string;
+}): Array<{ role: string; label: string; done: number; total: number }> {
+  const total = Math.max(0, batch.count);
+  const labels: Record<string, string> = {
+    lifestyle: "主图",
+    detail_a: "细节 A",
+    detail_b: "细节 B",
+    hero: "素材",
+  };
+  const roles = ["lifestyle", "detail_a", "detail_b", "hero"];
+  return roles.map((role) => ({
+    role,
+    label: labels[role],
+    total,
+    done: batch.items.filter(
+      (item) => item.role === role && item.status === "completed",
+    ).length,
+  }));
 }
 
 export function groupPodStyleRows(

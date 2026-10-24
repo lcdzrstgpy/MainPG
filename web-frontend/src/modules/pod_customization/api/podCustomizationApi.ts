@@ -13,8 +13,10 @@ import type {
   PodCompositionPanelsZh,
   PodCompositionScope,
   PodMiaoshouTemplateKind,
+  PodStructureFacts,
   PodStyleTitle,
   PodTemplate,
+  PodTemplateViewRole,
   SpecCardPreviewRequest,
   SpecCardPreviewResponse,
   SpecCardReprintRequest,
@@ -39,18 +41,62 @@ function apiUrl(path: string): string {
   return `${(import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "")}${path}`;
 }
 
-async function uploadTemplate(file: File, name: string): Promise<PodTemplate> {
+export type PodTemplateViewUploads = Partial<Record<PodTemplateViewRole, File>>;
+
+async function uploadTemplate(
+  file: File,
+  name: string,
+  views: PodTemplateViewUploads = {},
+): Promise<PodTemplate> {
   const headers: Record<string, string> = {};
   const token = getAuthToken();
   if (token) headers.authorization = `Bearer ${token}`;
   const form = new FormData();
   form.append("file", file);
   form.append("name", name.trim() || file.name.replace(/\.[^.]+$/, ""));
+  // 结构视图是可选增强：字段名即角色，后端据此写入视图集并做一次结构识图。
+  (["side", "top", "dimension"] as const).forEach((role) => {
+    const view = views[role];
+    if (view) form.append(role, view);
+  });
   const response = await fetch(apiUrl(`${API_BASE}/templates`), { method: "POST", headers, body: form });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     // 后端 detail 可能是英文（如 POD billing request was rejected），交给统一翻译层转中文
     const detail = typeof payload?.detail === "string" ? payload.detail : `模板上传失败 (HTTP ${response.status})`;
+    throw new Error(toUserMessage(detail));
+  }
+  return payload as PodTemplate;
+}
+
+function updateTemplateStructure(templateId: string, facts: PodStructureFacts): Promise<PodTemplate> {
+  return httpJson<PodTemplate>(`${API_BASE}/templates/${encodeURIComponent(templateId)}/structure`, {
+    method: "PATCH",
+    body: { facts },
+  });
+}
+
+/** 给已有个人模板补充/替换结构视图；后端会重跑一次结构识图。 */
+async function attachTemplateViews(
+  templateId: string,
+  views: PodTemplateViewUploads,
+): Promise<PodTemplate> {
+  const headers: Record<string, string> = {};
+  const token = getAuthToken();
+  if (token) headers.authorization = `Bearer ${token}`;
+  const form = new FormData();
+  (["side", "top", "dimension"] as const).forEach((role) => {
+    const view = views[role];
+    if (view) form.append(role, view);
+  });
+  const response = await fetch(apiUrl(`${API_BASE}/templates/${encodeURIComponent(templateId)}/views`), {
+    method: "POST",
+    headers,
+    body: form,
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = typeof payload?.detail === "string" ? payload.detail : `结构视图上传失败 (HTTP ${response.status})`;
     throw new Error(toUserMessage(detail));
   }
   return payload as PodTemplate;
@@ -139,6 +185,8 @@ function exportMiaoshou(
 export const podCustomizationApi = {
   listTemplates: () => httpJson<{ templates: PodTemplate[] }>(`${API_BASE}/templates`),
   uploadTemplate,
+  updateTemplateStructure,
+  attachTemplateViews,
   listBatches: (limit = 20, offset = 0) => httpJson<PodBatchListResponse>(
     `${API_BASE}/batches?${new URLSearchParams({ limit: String(limit), offset: String(offset) })}`,
   ),
@@ -148,7 +196,14 @@ export const podCustomizationApi = {
   }),
   getBatch: (batchId: string) => httpJson<PodBatch>(`${API_BASE}/batches/${encodeURIComponent(batchId)}`),
   // 智能前置层：把一句模糊输入转成结构化业务字段（权限与创建批次一致）。
-  generateBriefFields: (body: { brief: string; locale?: string; fabric_craft?: string; scene_mood?: string }) => httpJson<PodBriefFieldsResponse>(
+  // 带 template_asset_id 时同时附带模板主图，额外产出批级美术指导（art_direction）。
+  generateBriefFields: (body: {
+    brief: string;
+    locale?: string;
+    fabric_craft?: string;
+    scene_mood?: string;
+    template_asset_id?: string;
+  }) => httpJson<PodBriefFieldsResponse>(
     `${API_BASE}/brief/fields`,
     { method: "POST", body, timeoutMs: BRIEF_GENERATE_TIMEOUT_MS },
   ),

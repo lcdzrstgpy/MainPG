@@ -268,6 +268,12 @@ html[data-topbar-collapse="on"][data-ui-mode="classic"] .topbar-card.is-pinned.i
   pointer-events: none;
 }
 
+/* 桌面布局下顶栏自带一层铺满整卡的毛玻璃（.topbar-glass）。收起后只留标签行，
+   这层玻璃还铺在原位会在内容上方留一条模糊带，所以整层关掉——标签行自己有底。 */
+html[data-topbar-collapse="on"][data-ui-mode="classic"] .topbar-card.is-pinned.is-stuck > .topbar-glass {
+  display: none;
+}
+
 html[data-topbar-collapse="on"][data-ui-mode="classic"] .topbar-card.is-pinned.is-stuck .topbar-main {
   visibility: hidden;
   opacity: 0;
@@ -283,6 +289,18 @@ html[data-topbar-collapse="on"][data-ui-mode="classic"] .topbar-card.is-pinned.i
   background: var(--theme-card-bg-solid, #fff);
   box-shadow: 0 10px 28px rgba(26, 65, 101, .1);
   transform: translateY(-66px);
+  /* 标签行原本是顶栏的下半截，靠 .tab-strip 的 padding-bottom: 12px 把标签顶在上沿、
+     下方留白（原版顶栏那 12px 是给卡片下沿留的呼吸位）。收起后它自己就是整条顶栏，
+     这份留白就变成「上 0 / 下 12」的偏心，所以这里把纵向内边距均分，
+     并让出标签条自带的 12px（行高仍是 38 + 12 = 50，-66px 的位移量不变）。 */
+  align-items: center;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+html[data-topbar-collapse="on"][data-ui-mode="classic"] .topbar-card.is-pinned.is-stuck .tab-strip {
+  padding-top: 0;
+  padding-bottom: 0;
 }
 
 /* 头像预览是挂在顶栏内部的全屏模态：收起态整卡不再接收指针时它必须例外，
@@ -524,9 +542,12 @@ html[data-topbar-collapse="on"] .avatar-preview-layer {
     transition-delay: 0s;
   }
 
-  /* 个人中心有 9 个面板，收起态浮层给足高度，尽量一屏看全。 */
+  /* 个人中心有 9 个面板，收起态浮层给足高度，尽量一屏看全。
+     2026-10-22：原来写 min(440px, 100vh-120px)，1100×540 的扁窗口下算出 328px，
+     装不下 9 项（约 350px），最后一项被切。贴边交给 Sidebar.tsx 展开后的视口夹取，
+     这里只留极端情况的兜底，所以放宽到几乎整个视口高。 */
   .sidebar-card.is-collapsed .sidebar-submenu.is-panel-group {
-    max-height: min(440px, calc(100vh - 120px));
+    max-height: min(560px, calc(100vh - 24px));
   }
 
   .sidebar-card.is-collapsed .sidebar-submenu-inner {
@@ -2460,6 +2481,10 @@ html:not([data-ui-mode="apple"]) .tab-strip[data-indicator-ready="true"] > .page
 }
 .backend-resume-toast-close:hover {
   background: var(--theme-primary-light, #fff7ed);
+}
+/* 「后端无响应，但有任务在跑」的降级提示：只换描边色提醒，不糊整屏。 */
+.backend-resume-toast--warn {
+  border-color: rgba(217, 119, 6, .55);
 }
 @keyframes backend-resume-toast-in {
   from { opacity: 0; transform: translateX(-50%) translateY(-8px); }

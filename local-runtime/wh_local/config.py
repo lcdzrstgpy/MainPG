@@ -16,7 +16,7 @@ logger = logging.getLogger("wh_local.config")
 
 
 # Release automation updates this single value when producing a desktop build.
-APP_VERSION = "1.5.10"
+APP_VERSION = "1.6.1"
 # Replace this host only when the official MainPG release origin moves. Keep the
 # manifest and installer allowlist bound to the same release-owned host.
 UPDATE_RELEASE_HOST = "workbench.haocoming.top"
@@ -55,6 +55,17 @@ class LocalRuntimeConfig:
     onebound_1688_api_secret: str
     onebound_1688_base_url: str
     onebound_1688_enabled: bool
+    billing_contract_version: str = "v1"
+
+
+def billing_contract_version() -> str:
+    """POD 计费契约版本开关（``v1`` / ``v2``），默认 ``v1``。
+
+    服务端 S1/S2 未上线前不得默认切 v2；只有显式把
+    ``WH_LOCAL_BILLING_CONTRACT_VERSION=v2`` 才会走 v2 载荷与接口。
+    """
+    value = os.environ.get("WH_LOCAL_BILLING_CONTRACT_VERSION", "").strip().lower()
+    return "v2" if value == "v2" else "v1"
 
 
 def _default_dev_admin_token() -> str:
@@ -214,6 +225,7 @@ def default_config(workspace: Path | None = None) -> LocalRuntimeConfig:
         onebound_1688_enabled=os.environ.get(
             "DAILY_SELECTION_ONEBOUND_ENABLED", str(local_secrets.get("enabled", True))
         ).strip().lower() in {"1", "true", "yes"},
+        billing_contract_version=billing_contract_version(),
     )
 
 

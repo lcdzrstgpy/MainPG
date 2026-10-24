@@ -49,6 +49,11 @@ from .replica_specs import (
     normalize_target_analysis,
 )
 from .runtime import AiRuntime, AiRuntimeConfig
+from .structure_analysis import (
+    STRUCTURE_RESPONSE_FORMAT,
+    build_structure_messages,
+    parse_structure_response,
+)
 from .title_runtime import (
     _SYSTEM_SAFETY_CONTRACT,
     _invalid_response,
@@ -696,6 +701,49 @@ class PodReplicaAnalysisRuntime(AiRuntime):
             prompt_version=result.prompt_version,
             attempt_count=attempt_count,
         )
+
+    def analyze_structure_views(
+        self,
+        views: Sequence[Mapping[str, str]],
+        *,
+        grant: PodExecutionGrant,
+        call_id: str,
+        call_ids: tuple[str, ...] | None = None,
+        on_start: Callable[[str], None] | None = None,
+        on_outcome: Callable[[str, str], None] | None = None,
+    ) -> dict[str, Any]:
+        """把结构视图集（主图在前）转成结构事实表 JSON。
+
+        复用复刻识图的 Ark 视觉 lane 与契约修复重试：同一把 ``ark`` 短期密钥、
+        同一个 ``_run`` 重试/结算回调，避免再起一套 HTTP 与并发控制。
+        """
+        if not views:
+            raise DoubaoArkError(
+                "structure analysis requires at least one view",
+                error_kind="invalid_input",
+                retryable=False,
+            )
+        for view in views:
+            if not str(view.get("data_url") or "").startswith("data:image/"):
+                raise DoubaoArkError(
+                    "structure analysis requires image data URLs",
+                    error_kind="invalid_input",
+                    retryable=False,
+                )
+        messages = build_structure_messages(views)
+        self._guard_payload(messages)
+        facts, _attempt = self._run(
+            messages,
+            STRUCTURE_RESPONSE_FORMAT,
+            parse_structure_response,
+            grant=grant,
+            call_id=call_id,
+            call_ids=call_ids,
+            max_attempts=2,
+            on_start=on_start,
+            on_outcome=on_outcome,
+        )
+        return dict(facts)
 
     def generate_composition_plan(
         self,

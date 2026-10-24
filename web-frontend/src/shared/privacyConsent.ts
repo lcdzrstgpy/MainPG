@@ -15,7 +15,7 @@
  * ⚠️ 必须与 `web-frontend/public/privacy.html` 里「版本：vX.Y」保持一致 ——
  * 由 `privacyConsent.test.ts` 读取文档比对，改了文档忘改这里会测试失败。
  */
-export const PRIVACY_POLICY_VERSION = "v1.1";
+export const PRIVACY_POLICY_VERSION = "v1.2";
 
 const STORAGE_KEY = "mainpg.privacyAgreed";
 

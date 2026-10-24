@@ -41,6 +41,22 @@ export type BillingLedgerEntry = {
   created_at: string;
 };
 
+/** POD 按模块下发的计费单价（服务端权威值，已含倍率，客户端只展示）。 */
+export type BillingPricingModule = {
+  /** 计费画像 / 通道标识，如 pod_random_v1、pod_semi_v1、pod_fission_v1。 */
+  key: string;
+  /** 服务端给的展示名；缺失时前端按 key 兜底。 */
+  label?: string;
+  /** 计价单位展示名：款 / 组。 */
+  unit_label?: string;
+  charge_min_points: number;
+  charge_max_points: number;
+  /** 未乘倍率的基准价区间（可选，用于展示「基准价 × 倍率」）。 */
+  base_charge_min_points?: number;
+  base_charge_max_points?: number;
+  multiplier_percent?: number;
+};
+
 export type BillingSummary = {
   ok: boolean;
   account: {
@@ -116,6 +132,8 @@ export type BillingSummary = {
       reserve_max_points: number;
     };
     features: Record<string, { reserve_points: number; charge_points: number }>;
+    /** POD 按模块计价（服务端可缺省；缺失时前端隐藏该区块）。 */
+    pod_modules?: BillingPricingModule[];
     min_client_version: string;
     effective_at: string;
   };
@@ -365,45 +383,6 @@ export function changeUsername(input: { new_username: string; code: string }) {
     method: "POST",
     body: input,
   });
-}
-
-export type ImageModelChoice = {
-  value: string;
-  label: string;
-};
-
-export type ImageModelSetting = {
-  ok: boolean;
-  model: string;
-  choices: ImageModelChoice[];
-};
-
-/** 个人中心「模型选择」：读取当前生图模型与可选项（只含模型名，不含上游凭据）。 */
-export function loadImageModel() {
-  return httpJson<ImageModelSetting>("/desktop/basic-settings/image-model");
-}
-
-/** 切换生图模型；只改模型字段，不影响系统配置的其他内容。 */
-export function saveImageModel(model: string) {
-  return httpJson<{ ok: boolean; model: string; message: string }>(
-    "/desktop/basic-settings/image-model",
-    { method: "PUT", body: { model } },
-  );
-}
-
-export type PodImageModelSetting = ImageModelSetting;
-
-/** 读取 POD 生图模型（速创两个 + 豆包一个，同一份清单），不跟随 AI处理 的模型配置。 */
-export function loadPodImageModel() {
-  return httpJson<PodImageModelSetting>("/desktop/basic-settings/pod-image-model");
-}
-
-/** 切换 POD 生图模型；走哪个上游由模型名决定，前端不需要选平台。 */
-export function savePodImageModel(model: string) {
-  return httpJson<{ ok: boolean; model: string; message: string }>(
-    "/desktop/basic-settings/pod-image-model",
-    { method: "PUT", body: { model } },
-  );
 }
 
 // ---- 意见反馈 ----

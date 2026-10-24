@@ -37,15 +37,18 @@ class SceneOptimizationRequest:
 
 @dataclass(frozen=True)
 class ListingReferenceImage:
-    """多参考图请求中的一张：角色 + 图片字节 + 内容类型。
+    """多参考图请求中的一张：角色 + 图片字节 + 内容类型（+ 可选公网地址）。
 
     复刻固定传两张，顺序 ``[pattern_source, target_product]``；全定制沿用旧的
     ``template_image/template_content_type`` 单图路径；半定制零参考图。
+    列式生成的派生轮把已发布的 COS ``url`` 直接透传给 provider，避免重复上传与
+    base64 体积；``content`` 同时保留，作为 URL 不可访问时的回退。
     """
 
     role: str
     content: bytes
     content_type: str
+    url: str = ""
 
 
 @dataclass(frozen=True)
@@ -57,6 +60,8 @@ class DirectListingGridRequest:
     template_image: bytes = b""
     template_content_type: str = ""
     reference_images: tuple[ListingReferenceImage, ...] = ()
+    # True 时忽略参考图里的公网 URL，改用本地字节（派生轮 URL 失败后的回退）。
+    anchor_fallback: bool = False
     model_id: str = "gpt-image-2-2k"
     size: str = "1024x1024"
 

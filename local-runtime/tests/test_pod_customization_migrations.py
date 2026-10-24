@@ -63,7 +63,11 @@ def test_007_preserves_existing_batch_and_foreign_keys(tmp_path: Path) -> None:
             ("asset", "workspace-a", "owner", "template", "a.png", "a.png", "image/png", 1, "sha", 1, 1, "now"),
         )
         connection.execute(
-            "INSERT INTO pod_customization_templates VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            """INSERT INTO pod_customization_templates (
+                   template_id, workspace_id, owner_user_id, name, source, asset_id,
+                   width, height, calibration_status, calibration_json, error_message,
+                   version, deleted_at, created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             ("template", "workspace-a", "owner", "Template", "personal", "asset", 1, 1, "ready", "{}", "", 1, "", "now", "now"),
         )
         connection.execute(
@@ -194,10 +198,12 @@ def test_repository_recovers_when_ddl_exists_but_pod_markers_are_missing(tmp_pat
 
 def test_repository_completes_a_partially_applied_008_before_marking_it(tmp_path: Path) -> None:
     database = tmp_path / "partial-008.sqlite3"
+    # 027 重建 billing_runs，依赖 008 先建表；这里模拟「008 只建了一部分」的库，
+    # 因此 027 也留到仓储初始化时再跑。
     names = sorted(
         path.name
         for path in MIGRATIONS.glob("[0-9][0-9][0-9]_*.sql")
-        if not path.name.startswith("008_")
+        if not path.name.startswith(("008_", "027_"))
     )
     apply_migrations(database, names)
     migration_008 = (MIGRATIONS / "008_persistent_billing_runs.sql").read_text(encoding="utf-8")
@@ -227,6 +233,10 @@ def test_repository_completes_a_partially_applied_008_before_marking_it(tmp_path
         "idx_pod_billing_runs_owner_status",
         "idx_pod_billing_runs_batch",
         "idx_pod_billing_outcomes_run_status",
+        # 027 重建账本时补建的状态索引，以及结算/对账新表索引。
+        "idx_pod_billing_runs_status",
+        "idx_pod_billing_settlements_created",
+        "idx_pod_billing_recon_runs_owner",
     }
     assert marker is not None
 

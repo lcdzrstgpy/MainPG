@@ -78,7 +78,8 @@ def test_login_returns_local_token_and_only_public_account_fields() -> None:
         "role": "operator",
         "workspace_code": "workspace-1",
         "workspace_name": "Workspace One",
-        # POD 使用协议状态随登录一并下发（合并 POD-change 后新增的公开字段）。
+        # POD 使用协议：登录时带出「是否已确认」的布尔标记（2026-10-21 并入
+        # deepseek/POD-change 后新增）。只是个开关，不含任何敏感信息。
         "pod_agreement_confirmed": False,
     }
     encoded_account = json.dumps(body["account"], sort_keys=True)

@@ -93,7 +93,7 @@ class BillingCoordinator:
 
     def freeze(self, _actor, _plan):
         return PodExecutionGrant(
-            "freeze-1", 1, "2099-01-01T00:00:00Z",
+            _plan.idempotency_key, 1, "2099-01-01T00:00:00Z",
             {"wuyin": "test-wuyin-key", "ark": "test-ark-key"},
         )
 
