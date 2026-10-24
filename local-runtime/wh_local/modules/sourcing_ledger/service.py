@@ -54,6 +54,18 @@ def _text(value: Any) -> str:
     return str(value if value is not None else "").strip()
 
 
+def _clean_source_title(value: Any) -> str:
+    """采集插件偶发把整块价格审核弹窗文字塞进标题；剔除明显脏值并限长。"""
+    text = _text(value)
+    if not text:
+        return ""
+    if "采集来源" in text or "申请调整更新申报价格" in text:
+        return ""
+    if "移除" in text and "SKU" in text:
+        return ""
+    return text[:120]
+
+
 def _timestamp(value: Any) -> datetime:
     """ISO 时间字符串 → 可比较时间；空值/脏值排在最旧。"""
     text = _text(value)
@@ -368,7 +380,7 @@ class SourcingLedgerService:
                     "key_kind": "product_code" if target else "market_skc",
                     "offer_id": _text(row.get("offer_id")),
                     "source_url": _text(row.get("source_url")),
-                    "source_title": _text(row.get("source_title")),
+                    "source_title": _clean_source_title(row.get("source_title")),
                     "main_image_url": _text(row.get("main_image_url")),
                     "price_cny": _text(row.get("price_cny")),
                     "moq": row.get("moq") or 1,
@@ -474,6 +486,47 @@ class SourcingLedgerService:
             ingested += 1
         return {"chunks": ingested}
 
+    def backfill_sku_attributes(self, workspace_id: str) -> int:
+        """升级后一次性把历史采集里的「SKU属性集」回填到申报价（只补空值）。"""
+        workspace = _text(workspace_id)
+        if not workspace:
+            return 0
+        marker = f"sku_attr_backfill:{workspace}"
+        if self._repository.state_get(marker):
+            return 0
+        from wh_local.price_verification.quote_normalizer import (
+            normalize_price_quote_discovery,
+        )
+
+        updates: list[dict[str, str]] = []
+        for chunk in self._repository.capture_chunks(workspace):
+            try:
+                preview = normalize_price_quote_discovery(
+                    json.loads(chunk.get("capture_json") or "{}")
+                )
+            except Exception:  # noqa: BLE001 - 旧格式解析失败就跳过
+                continue
+            for quote in preview.quotes:
+                attribute = _text(getattr(quote, "sku_attribute_text", ""))
+                if not attribute:
+                    continue
+                updates.append(
+                    {
+                        "market_skc_id": _text(getattr(quote, "skc_id", "")),
+                        "sku_id": _text(getattr(quote, "sku_id", "")),
+                        "sku_merchant_code": _text(getattr(quote, "sku_merchant_code", "")),
+                        "site": _text(getattr(quote, "site", "")),
+                        "sku_attribute_text": attribute,
+                    }
+                )
+        updated = (
+            self._repository.fill_declared_sku_attributes(workspace, updates)
+            if updates
+            else 0
+        )
+        self._repository.state_set(marker, "1")
+        return updated
+
     # ---- 页面聚合 ----
 
     def sites(self, workspace_id: str) -> list[dict[str, str]]:
@@ -538,6 +591,7 @@ class SourcingLedgerService:
         site: str = "",
         keyword: str = "",
         batch: str = "",
+        store: str = "",
         limit: int = 200,
         offset: int = 0,
     ) -> dict[str, Any]:
@@ -552,9 +606,16 @@ class SourcingLedgerService:
             sources_by_key.setdefault(_text(source["product_key"]), []).append(source)
 
         groups: dict[tuple[str, str], dict[str, Any]] = {}
+        # 同一 SKC 多个 SKU 价格不一致时，用户可指定用哪个；未指定默认取最低价。
+        exclusions = self._repository.price_exclusions(workspace)
+        selections = self._repository.price_selections(workspace)
+        selected_prices: dict[tuple[str, str], Decimal] = {}
         for row in self._repository.declared_rows(workspace):
             skc = _text(row.get("skc"))
             if not skc:
+                continue
+            sku_ref = _text(row.get("sku_ref"))
+            if (skc, sku_ref) in exclusions:
                 continue
             site_label = _text(row.get("site"))
             key = (skc, site_label)
@@ -578,6 +639,16 @@ class SourcingLedgerService:
             agg["adjusted_min"] = _min_decimal(
                 agg["adjusted_min"], _num(row.get("adjusted_price_cny"))
             )
+            picked = selections.get(skc, "")
+            if picked and picked == sku_ref:
+                price = _num(row.get("adjusted_price_cny"))
+                if price is not None:
+                    selected_prices[key] = price
+        for key, agg in groups.items():
+            chosen = selected_prices.get(key)
+            if chosen is not None:
+                agg["adjusted_min"] = chosen
+                agg["selected_sku_ref"] = selections.get(_text(agg["skc"]), "")
 
         items: list[dict[str, Any]] = []
         covered: set[str] = set()
@@ -610,9 +681,11 @@ class SourcingLedgerService:
             workspace, {item["batch_id"] for item in items if item["batch_id"]}
         )
         batch_counts: dict[str, int] = {}
+        store_map = self._repository.store_overrides(workspace)
         for item in items:
             batch_id = item["batch_id"]
             item["batch_label"] = batch_labels.get(batch_id, batch_id)
+            item["store_name"] = store_map.get(item["skc"], "")
             batch_counts[batch_id] = batch_counts.get(batch_id, 0) + 1
         batch_options = [
             {
@@ -630,6 +703,11 @@ class SourcingLedgerService:
 
         wanted_site = _text(site)
         wanted_batch = _text(batch)
+        wanted_store = _text(store)
+        # 店铺候选来自全部台账商品，筛选后仍可继续切换。
+        store_options = sorted(
+            {_text(item.get("store_name")) for item in items if _text(item.get("store_name"))}
+        )
         wanted_status = [_text(value) for value in _text(status).split(",") if _text(value)]
         keyword_key = _text(keyword).casefold()
         if wanted_site:
@@ -638,6 +716,8 @@ class SourcingLedgerService:
             items = [item for item in items if not item["batch_id"]]
         elif wanted_batch:
             items = [item for item in items if item["batch_id"] == wanted_batch]
+        if wanted_store:
+            items = [item for item in items if item["store_name"] == wanted_store]
         if keyword_key:
             items = [
                 item
@@ -661,6 +741,8 @@ class SourcingLedgerService:
             "total": total,
             "counts": counts,
             "batches": batch_options,
+            "stores": store_options,
+            "store_names": self._repository.store_names(workspace),
             "offset": offset,
             "limit": limit,
         }
@@ -718,6 +800,7 @@ class SourcingLedgerService:
             "sku_count": int((aggregate or {}).get("sku_count") or 0),
             "original_min": _money(aggregate.get("original_min") if aggregate else None),
             "adjusted_min": _money(adjusted),
+            "price_sku_ref": _text((aggregate or {}).get("selected_sku_ref")),
             "captured_at": _text((aggregate or {}).get("captured_at")),
             "updated_at": max(
                 (
@@ -760,14 +843,56 @@ class SourcingLedgerService:
         site_labels = list(declared_sites)
         if override_label and override_label not in site_labels:
             site_labels.append(override_label)
+        exclusions = self._repository.price_exclusions(workspace)
+        selection = self._repository.price_selections(workspace).get(code, "")
         latest = [
-            row for row in declared if not declared_site or _text(row.get("site")) == declared_site
+            row
+            for row in declared
+            if (not declared_site or _text(row.get("site")) == declared_site)
+            and (code, _text(row.get("sku_ref"))) not in exclusions
         ][:200]
         adjusted = None
         original = None
         for row in latest:
             adjusted = _min_decimal(adjusted, _num(row.get("adjusted_price_cny")))
             original = _min_decimal(original, _num(row.get("original_price_cny")))
+        # 用户选定的 SKU 优先；未选择时保持最低价（默认）。
+        chosen_price = next(
+            (
+                _num(row.get("adjusted_price_cny"))
+                for row in latest
+                if selection and _text(row.get("sku_ref")) == selection
+            ),
+            None,
+        )
+        if chosen_price is not None:
+            adjusted = chosen_price
+        default_row_id = next(
+            (
+                _text(row.get("id"))
+                for row in latest
+                if adjusted is not None and _num(row.get("adjusted_price_cny")) == adjusted
+            ),
+            "",
+        )
+        declared_prices = [
+            {
+                "id": _text(row.get("id")),
+                "sku_ref": _text(row.get("sku_ref")),
+                "sku_id": _text(row.get("sku_id")),
+                "sku_merchant_code": _text(row.get("sku_merchant_code")),
+                "sku_attribute_text": _text(row.get("sku_attribute_text")),
+                "original_price_cny": _money(row.get("original_price_cny")),
+                "adjusted_price_cny": _money(row.get("adjusted_price_cny")),
+                "site": _text(row.get("site")),
+                "captured_at": _text(row.get("captured_at")),
+                "selected": bool(
+                    (selection and _text(row.get("sku_ref")) == selection)
+                    or (not selection and _text(row.get("id")) == default_row_id)
+                ),
+            }
+            for row in latest
+        ]
         library = self._repository.library_records(workspace)
         images_by_source = self._repository.images_for(workspace, [s["id"] for s in sources])
         enriched = []
@@ -797,8 +922,11 @@ class SourcingLedgerService:
             "site_code": site_code,
             "site_labels": site_labels,
             "sites": self.sites(workspace),
+            "store_name": self._repository.store_overrides(workspace).get(code, ""),
+            "stores": self._repository.store_names(workspace),
             "sources": enriched,
-            "declared_prices": latest,
+            "declared_prices": declared_prices,
+            "price_selection": selection,
             "original_min": _money(original),
             "adjusted_min": _money(adjusted),
             "in_library": bool(site_code) and any(
@@ -834,7 +962,7 @@ class SourcingLedgerService:
                 source_id,
                 {
                     "source_url": _text(payload.get("source_url")) or existing["source_url"],
-                    "source_title": _text(payload.get("source_title")),
+                    "source_title": _clean_source_title(payload.get("source_title")),
                     "shop_name": _text(payload.get("shop_name")),
                     "main_image_url": _text(payload.get("main_image_url")),
                     "price_cny": price,
@@ -856,7 +984,7 @@ class SourcingLedgerService:
                     "key_kind": "product_code",
                     "offer_id": _text(payload.get("offer_id")) or _offer_id(source_url),
                     "source_url": source_url,
-                    "source_title": _text(payload.get("source_title")),
+                    "source_title": _clean_source_title(payload.get("source_title")),
                     "shop_name": _text(payload.get("shop_name")),
                     "main_image_url": _text(payload.get("main_image_url")),
                     "price_cny": price,
@@ -881,6 +1009,24 @@ class SourcingLedgerService:
         self._repository.set_primary(workspace, code, source_id)
         return self.item_detail(workspace, code)
 
+    # ---- 申报价 SKU 选择 ----
+
+    def set_price_selection(self, workspace_id: str, skc: str, sku_ref: str) -> dict[str, Any]:
+        """指定用哪个 SKU 的申报价核算利润；传空恢复默认（取最低价）。"""
+        workspace, code = _text(workspace_id), _text(skc)
+        if not code:
+            raise ValueError("缺少商品货号")
+        self._repository.set_price_selection(workspace, code, _text(sku_ref))
+        return self.item_detail(workspace, code)
+
+    def delete_declared_price(self, workspace_id: str, skc: str, row_id: str) -> dict[str, Any]:
+        """删除一个 SKU 的申报价：不再参与最低价/利润，后续采集也不会带回。"""
+        workspace, code = _text(workspace_id), _text(skc)
+        if not code:
+            raise ValueError("缺少商品货号")
+        self._repository.exclude_declared_price(workspace, code, row_id)
+        return self.item_detail(workspace, code)
+
     # ---- 站点手动指定 ----
 
     def set_item_site(
@@ -900,6 +1046,25 @@ class SourcingLedgerService:
             workspace, code, _text(site["display_name"]), _text(site["site_code"]).upper()
         )
         return self.item_detail(workspace, code)
+
+    def set_item_store(self, workspace_id: str, skc: str, store_name: str) -> dict[str, Any]:
+        """店铺为选填：传空清空，只影响展示与入产品库。"""
+        workspace, code = _text(workspace_id), _text(skc)
+        self._repository.set_store_override(workspace, code, _text(store_name)[:120])
+        return self.item_detail(workspace, code)
+
+    def set_items_store(self, workspace_id: str, skcs: Iterable[str], store_name: str) -> dict[str, Any]:
+        """批量设置店铺：只影响展示与入产品库，不触发利润重算。"""
+        workspace = _text(workspace_id)
+        codes = sorted({_text(code) for code in skcs if _text(code)})
+        if not codes:
+            raise ValueError("请先选择商品")
+        name = _text(store_name)[:120]
+        if not name:
+            raise ValueError("请填写店铺")
+        for code in codes:
+            self._repository.set_store_override(workspace, code, name)
+        return {"updated": len(codes), "store_name": name}
 
     # ---- 货源图片 ----
 
@@ -921,6 +1086,22 @@ class SourcingLedgerService:
         self._repository.add_image(
             workspace_id=workspace, product_key=code, source_id=_text(source_id), image_url=url
         )
+        return self.item_detail(workspace, code)
+
+    def set_source_main_image(
+        self, workspace_id: str, skc: str, source_id: str, image_url: str
+    ) -> dict[str, Any]:
+        """替换货源主图（粘贴/上传即可覆盖，不需要先删再传）。"""
+        workspace, code = _text(workspace_id), _text(skc)
+        source = self._repository.source_by_id(workspace, source_id)
+        if source is None or _text(source.get("status")) != "active":
+            raise LookupError("货源不存在")
+        if _text(source.get("product_key")) != code:
+            raise LookupError("货源不属于该商品")
+        url = _text(image_url)
+        if not url:
+            raise ValueError("图片地址不能为空")
+        self._repository.update_source(workspace, _text(source_id), {"main_image_url": url})
         return self.item_detail(workspace, code)
 
     def remove_source_image(
@@ -1041,7 +1222,7 @@ class SourcingLedgerService:
                 "source_type": "price_verification",
                 "source_main_image_url": detail.get("source_image_url") or detail["image_url"],
                 "visibility": "shared",
-                "store_name": "",
+                "store_name": self._repository.store_overrides(workspace).get(code, ""),
             },
             actor=_LedgerActor(workspace_id=workspace),
             allow_company_write=True,
@@ -1172,7 +1353,7 @@ def _source_from_draft_payload(
         "key_kind": "product_code",
         "offer_id": _text(payload.get("offer_id")) or _offer_id(source_url),
         "source_url": source_url,
-        "source_title": _text(payload.get("source_title") or payload.get("title")),
+        "source_title": _clean_source_title(payload.get("source_title") or payload.get("title")),
         "shop_name": _text(payload.get("shop_name")),
         "main_image_url": _text(payload.get("main_image_url") or payload.get("image_url")),
         "price_cny": price,

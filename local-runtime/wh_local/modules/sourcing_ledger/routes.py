@@ -53,6 +53,19 @@ class SitePayload(BaseModel):
     site_code: str = ""
 
 
+class PriceSelectionPayload(BaseModel):
+    sku_ref: str = ""
+
+
+class StorePayload(BaseModel):
+    store_name: str = ""
+
+
+class BatchStorePayload(BaseModel):
+    skcs: list[str] = Field(default_factory=list)
+    store_name: str = ""
+
+
 def create_sourcing_ledger_router(service: SourcingLedgerService) -> APIRouter:
     router = APIRouter(prefix="/sourcing-ledger", tags=["sourcing_ledger"])
 
@@ -72,6 +85,7 @@ def create_sourcing_ledger_router(service: SourcingLedgerService) -> APIRouter:
         site: str = Query(default=""),
         keyword: str = Query(default=""),
         batch: str = Query(default=""),
+        store: str = Query(default=""),
         limit: int = Query(default=200, ge=1, le=500),
         offset: int = Query(default=0, ge=0),
         workspace: str = Header(default="local", alias="X-Workspace-ID"),
@@ -82,6 +96,7 @@ def create_sourcing_ledger_router(service: SourcingLedgerService) -> APIRouter:
             site=site,
             keyword=keyword,
             batch=batch,
+            store=store,
             limit=limit,
             offset=offset,
         )
@@ -115,6 +130,45 @@ def create_sourcing_ledger_router(service: SourcingLedgerService) -> APIRouter:
     ) -> dict[str, Any]:
         try:
             return service.set_item_site(workspace_id(workspace), skc, payload.site_code)
+        except LookupError as error:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(error)) from error
+
+    @router.post("/items/{skc}/store")
+    def set_item_store(
+        skc: str,
+        payload: StorePayload,
+        workspace: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        try:
+            return service.set_item_store(workspace_id(workspace), skc, payload.store_name)
+        except LookupError as error:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(error)) from error
+
+    @router.post("/items/{skc}/price-selection")
+    def set_price_selection(
+        skc: str,
+        payload: PriceSelectionPayload,
+        workspace: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        try:
+            return service.set_price_selection(workspace_id(workspace), skc, payload.sku_ref)
+        except LookupError as error:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(error)) from error
+
+    @router.delete("/items/{skc}/declared/{row_id}")
+    def delete_declared_price(
+        skc: str,
+        row_id: str,
+        workspace: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        try:
+            return service.delete_declared_price(workspace_id(workspace), skc, row_id)
         except LookupError as error:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(error)) from error
         except ValueError as error:
@@ -192,6 +246,22 @@ def create_sourcing_ledger_router(service: SourcingLedgerService) -> APIRouter:
     ) -> dict[str, Any]:
         return service.remove_source_image(workspace_id(workspace), skc, source_id, image_id)
 
+    @router.post("/items/{skc}/sources/{source_id}/main-image")
+    def set_source_main_image(
+        skc: str,
+        source_id: str,
+        payload: ImagePayload,
+        workspace: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        try:
+            return service.set_source_main_image(
+                workspace_id(workspace), skc, source_id, payload.image_url
+            )
+        except LookupError as error:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(error)) from error
+
     @router.delete("/items/{skc}/sources/{source_id}/main-image")
     def remove_source_main_image(
         skc: str,
@@ -211,6 +281,18 @@ def create_sourcing_ledger_router(service: SourcingLedgerService) -> APIRouter:
         try:
             return service.set_source_weights(
                 workspace_id(workspace), payload.skcs, payload.weight_kg
+            )
+        except ValueError as error:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(error)) from error
+
+    @router.post("/stores")
+    def set_stores(
+        payload: BatchStorePayload,
+        workspace: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        try:
+            return service.set_items_store(
+                workspace_id(workspace), payload.skcs, payload.store_name
             )
         except ValueError as error:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(error)) from error

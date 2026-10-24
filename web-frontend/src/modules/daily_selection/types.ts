@@ -76,7 +76,6 @@ export type DailySelectionRunSummary = {
   candidate_count: number;
   created_at: string;
   updated_at: string;
-  display_name?: string;
 };
 
 export type DailySelectionRunMetadata = Record<string, unknown>;

@@ -57,6 +57,7 @@ export type LedgerItem = {
   sku_count: number;
   original_min: string;
   adjusted_min: string;
+  price_sku_ref?: string;
   captured_at: string;
   source_count: number;
   best_source: Partial<LedgerSource>;
@@ -66,6 +67,7 @@ export type LedgerItem = {
   weight_estimated?: boolean;
   batch_id?: string;
   batch_label?: string;
+  store_name?: string;
 };
 
 export type LedgerBatchOption = {
@@ -75,6 +77,8 @@ export type LedgerBatchOption = {
 };
 
 export type LedgerDeclaredPrice = {
+  id?: string;
+  sku_ref?: string;
   sku_id: string;
   sku_merchant_code: string;
   sku_attribute_text: string;
@@ -82,6 +86,7 @@ export type LedgerDeclaredPrice = {
   adjusted_price_cny: string;
   site: string;
   captured_at: string;
+  selected?: boolean;
 };
 
 export type LedgerItemDetail = {
@@ -93,10 +98,13 @@ export type LedgerItemDetail = {
   site_code: string;
   site_labels: string[];
   sites: Array<{ site_code: string; display_name: string }>;
+  store_name?: string;
+  stores?: string[];
   sources: LedgerSource[];
   declared_prices: LedgerDeclaredPrice[];
   original_min: string;
   adjusted_min: string;
+  price_selection?: string;
   in_library: boolean;
 };
 
@@ -116,12 +124,13 @@ export type LedgerSourcePayload = {
 const context = () => productProcessingApiContext();
 
 export const sourcingLedgerApi = {
-  listItems: (params: { status?: string; site?: string; keyword?: string; batch?: string; limit?: number; offset?: number }) => {
+  listItems: (params: { status?: string; site?: string; keyword?: string; batch?: string; store?: string; limit?: number; offset?: number }) => {
     const query = new URLSearchParams();
     if (params.status) query.set("status", params.status);
     if (params.site) query.set("site", params.site);
     if (params.keyword) query.set("keyword", params.keyword);
     if (params.batch) query.set("batch", params.batch);
+    if (params.store) query.set("store", params.store);
     query.set("limit", String(params.limit ?? 200));
     query.set("offset", String(params.offset ?? 0));
     return ppRequest<{
@@ -129,6 +138,8 @@ export const sourcingLedgerApi = {
       total: number;
       counts: Record<string, number>;
       batches: LedgerBatchOption[];
+      stores: string[];
+      store_names: string[];
     }>(context(), `${base}/items?${query.toString()}`);
   },
   getItem: (skc: string, site = "") =>
@@ -141,6 +152,22 @@ export const sourcingLedgerApi = {
       method: "POST",
       body: { site_code: siteCode },
     }),
+  setItemStore: (skc: string, storeName: string) =>
+    ppRequest<LedgerItemDetail>(context(), `${base}/items/${encodeURIComponent(skc)}/store`, {
+      method: "POST",
+      body: { store_name: storeName },
+    }),
+  setPriceSelection: (skc: string, skuRef: string) =>
+    ppRequest<LedgerItemDetail>(context(), `${base}/items/${encodeURIComponent(skc)}/price-selection`, {
+      method: "POST",
+      body: { sku_ref: skuRef },
+    }),
+  deleteDeclaredPrice: (skc: string, rowId: string) =>
+    ppRequest<LedgerItemDetail>(
+      context(),
+      `${base}/items/${encodeURIComponent(skc)}/declared/${encodeURIComponent(rowId)}`,
+      { method: "DELETE" },
+    ),
   createSource: (skc: string, payload: LedgerSourcePayload) =>
     ppRequest<LedgerItemDetail>(context(), `${base}/items/${encodeURIComponent(skc)}/sources`, {
       method: "POST",
@@ -170,6 +197,12 @@ export const sourcingLedgerApi = {
       `${base}/items/${encodeURIComponent(skc)}/sources/${encodeURIComponent(sourceId)}/images`,
       { method: "POST", body: { image_url: imageUrl } },
     ),
+  setSourceMainImage: (skc: string, sourceId: string, imageUrl: string) =>
+    ppRequest<LedgerItemDetail>(
+      context(),
+      `${base}/items/${encodeURIComponent(skc)}/sources/${encodeURIComponent(sourceId)}/main-image`,
+      { method: "POST", body: { image_url: imageUrl } },
+    ),
   removeSourceImage: (skc: string, sourceId: string, imageId: string) =>
     ppRequest<LedgerItemDetail>(
       context(),
@@ -186,6 +219,11 @@ export const sourcingLedgerApi = {
     ppRequest<{ updated: number; skcs: string[]; weight_kg: string }>(context(), `${base}/weights`, {
       method: "POST",
       body: { skcs, weight_kg: weightKg },
+    }),
+  setStores: (skcs: string[], storeName: string) =>
+    ppRequest<{ updated: number; store_name: string }>(context(), `${base}/stores`, {
+      method: "POST",
+      body: { skcs, store_name: storeName },
     }),
   deleteItems: (skcs: string[]) =>
     ppRequest<{ deleted: string[]; sources: number; declared: number; images: number }>(

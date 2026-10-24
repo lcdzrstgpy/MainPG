@@ -27,7 +27,7 @@ export function ImagePreviewModal({ images, index, onIndexChange, onClose }: { i
     <div className="profit-image-preview-mask" onClick={onClose}>
       <div className="profit-image-preview-modal" style={{ left: "50%", top: "50%", width: previewWidth, height: previewHeight, transform: "translate(-50%, -50%)" }} onClick={(event) => event.stopPropagation()}>
         <button type="button" className="profit-image-preview-close" onClick={onClose} title="关闭">×</button>
-        <img className="profit-image-preview-img" src={current.url} alt={current.label} />
+        <img className="profit-image-preview-img" src={current.url} alt={current.label} referrerPolicy="no-referrer" />
         {images.length > 1 ? (
           <div className="profit-image-preview-pager">
             <button type="button" onClick={() => onIndexChange((index - 1 + images.length) % images.length)}>上一张</button>

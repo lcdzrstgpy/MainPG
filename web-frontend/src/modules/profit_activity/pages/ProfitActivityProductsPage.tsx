@@ -1068,7 +1068,7 @@ function ProductImageCell({ item, onPreview, onEdit }: { item: ProfitActivityPro
   };
 
   const content = url ? (
-    <img className="profit-product-image" src={url} alt={`${item.skc} 商品图`} />
+    <img className="profit-product-image" src={url} alt={`${item.skc} 商品图`} loading="lazy" referrerPolicy="no-referrer" />
   ) : <span className="profit-product-image-empty">无图</span>;
 
   if (!url || !onPreview) {

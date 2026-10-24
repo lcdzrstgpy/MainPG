@@ -23,6 +23,7 @@ from ....config import default_config
 from ....db import connect
 from ....price_verification.repository import PriceVerificationRepository
 from ....data_collection.plugin_queue import DataCollectionPluginQueue, TEMU_FLUX_ACCEL
+from ...product_processing.preview_urls import preview_content_url
 
 
 logger = logging.getLogger("wh_local.profit_activity")
@@ -196,6 +197,11 @@ def create_profit_activity_router(
             include_workspace_shared=include_company,
         )
         _enrich_product_source_images(products, database_path, actor.workspace_id)
+        _resign_product_images(
+            products,
+            str(database_path or default_config().database_path),
+            actor.workspace_id,
+        )
         return {"products": products, "scope": scope, "owner_user_id": owner_user_id}
 
     @router.post("/products/recalculate")
@@ -225,6 +231,7 @@ def create_profit_activity_router(
             products = service.list_products(site=site, skcs=[skc], actor=actor)
         except Exception:
             products = []
+        _resign_product_images(products, str(db_path), actor.workspace_id)
         product = products[0] if products else None
         result: dict[str, Any] = {
             "skc": skc,
@@ -661,6 +668,69 @@ def _enrich_product_source_images(products: list[dict[str, Any]], database_path:
         # Keep source_main_image_url as the original SKC/Temu main image for
         # price-verification products. 1688 thumbnails are exposed through
         # source_groups[].main_image_url instead.
+
+
+def _processed_product_image(
+    connection: Any, workspace_id: str, skc: str
+) -> str:
+    """按产品主键找处理后的主图（预览资产地址会重新签名）。"""
+    code = str(skc or "").strip()
+    if not code:
+        return ""
+    try:
+        if not code.upper().startswith("PP-"):
+            row = connection.execute(
+                "SELECT skc FROM product_market_links "
+                "WHERE workspace_id = ? AND market_skc_id = ? AND skc <> '' LIMIT 1",
+                (workspace_id, code),
+            ).fetchone()
+            code = str(row["skc"] or "").strip() if row is not None else ""
+        if not code:
+            return ""
+        row = connection.execute(
+            "SELECT json_extract(i.result_json, '$.carousel_image_paths[0]') AS processed, "
+            "COALESCE(NULLIF(i.image_url, ''), json_extract(i.result_json, '$.image_url')) AS source "
+            "FROM product_processing_task_items i "
+            "JOIN product_processing_tasks t ON t.id = i.task_id "
+            "WHERE t.workspace_id = ? AND i.skc = ? ORDER BY i.id DESC LIMIT 1",
+            (workspace_id, code),
+        ).fetchone()
+    except Exception:  # noqa: BLE001 - 老库缺表/缺列时按无图处理
+        return ""
+    if row is None:
+        return ""
+    return preview_content_url(connection, row["processed"]) or str(row["source"] or "").strip()
+
+
+def _resign_product_images(
+    products: list[dict[str, Any]], db_path: str, workspace_id: str
+) -> None:
+    """产品库商品主图：预览地址按需重签，历史缺图用处理后的主图补上。
+
+    入产品库时存的是处理后的预览资产地址（2 小时签名），直接展示会 403；
+    早期记录可能完全没写主图，这里按平台 SKC → PP 货号回填。
+    """
+    if not db_path or not products:
+        return
+    try:
+        connection = connect(db_path)
+        try:
+            for product in products:
+                stored = str(product.get("source_main_image_url") or "").strip()
+                if stored.startswith("/api/product-processing/preview/assets/"):
+                    product["source_main_image_url"] = preview_content_url(connection, stored)
+                    continue
+                if stored or str(product.get("source_type") or "") != "price_verification":
+                    continue
+                image = _processed_product_image(
+                    connection, workspace_id, str(product.get("skc") or "")
+                )
+                if image:
+                    product["source_main_image_url"] = image
+        finally:
+            connection.close()
+    except Exception:  # noqa: BLE001 - 图片是展示增强，失败不影响产品列表
+        return
 
 
 def _product_skus(db_path: str, workspace_id: str, skc: str) -> list[dict[str, Any]]:

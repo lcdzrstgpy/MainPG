@@ -1279,6 +1279,13 @@ def _migrate_sourcing_ledger(db_path: Path) -> None:
                     ingested["chunks"],
                     workspace_id,
                 )
+            attributes = service.backfill_sku_attributes(workspace_id)
+            if attributes:
+                logger.info(
+                    "sourcing ledger: %s declared SKU attribute(s) backfilled (workspace=%s)",
+                    attributes,
+                    workspace_id,
+                )
             seeded = service.ensure_collected_sources(workspace_id)
             if seeded:
                 logger.info(
