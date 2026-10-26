@@ -89,6 +89,12 @@ export type PodBriefFieldsResponse = {
  * 批级美术指导：随智能填写一次性生成，整批（所有二级批次、所有轮次）共用。
  * 只注入第 1 轮的美术指导，派生轮由锚点继承场景与光线。
  */
+export type PodSceneOption = {
+  scene: string;
+  surface: string;
+  props: string[];
+};
+
 export type PodArtDirection = {
   scene: string;
   lighting: string;
@@ -99,6 +105,8 @@ export type PodArtDirection = {
   background: string;
   composition_hint: string;
   avoid: string[];
+  /** 豆包返回的 2-3 个候选场景；生图按款轮换，旧数据可能没有。 */
+  scene_options?: PodSceneOption[];
 };
 
 /** 智能前置层实际代填的字段：业务字段去掉「上架文案限制」（该类限制不由智能填写生成）。 */

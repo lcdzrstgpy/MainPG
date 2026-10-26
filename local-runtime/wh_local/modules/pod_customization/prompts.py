@@ -5,7 +5,13 @@ import random
 import re
 from typing import Mapping, Sequence
 
-from .contracts import COMPOSITION_PANEL_KEYS, IP_EXCLUDED_ELEMENTS, BusinessFields
+from .contracts import (
+    COMPOSITION_PANEL_KEYS,
+    IP_EXCLUDED_ELEMENTS,
+    ArtDirection,
+    BusinessFields,
+    SceneOption,
+)
 from .structure_analysis import (
     render_part_count_lock,
     render_reference_views_block,
@@ -48,7 +54,17 @@ from .structure_analysis import (
 #      版本号只用于区分「改前/改后」的产出归因。
 # v19：派生轮区分「必须连续」与「必须变化」——景深/机位距离/裁切必须按本轮方向变化，
 #      新增 detail_a / detail_b 景别契约与「禁止复刻锚点机位」硬条款。
-PATTERN_PROMPT_VERSION = "v19"
+# v20：全定制删除布局/密度/渲染/配色池——款间差异只由元素轮转、尺度层级与 60-30-10 配色承担，
+#      印花排布交给模型自由发挥（此前 10 条 all-over 布局池 + 100% 覆盖锁导致批次普遍出竖条）。
+# v21：scene_mood 不再注入生图提示词；场景基调统一由美术指导（art_direction）承担。
+# v22：恢复满印密度契约（主锚≥8 次、narrative≥6 次、rhythm 填空隙、覆盖率≥90%），
+#      修复 v20/v21 删除密度池后成图过于稀疏的问题。
+# v23：把权重从「1.0/0.6/0.25 尺度标签」升级为「面积份额 + 相对尺寸」——
+#      典型 1 主锚 + 2 叙事 + 4 点缀时约 53/31/16，主元素线性尺寸 ≥1.8×/3.6×。
+# v24：元素池只保留能放大成主图的具象主体；Rhythm 不再从池里分配，由生图模型自选点缀。
+# v25：去掉「主元素至少重复 3 次」，改为「图案可以重复，但主元素必须是本款最大图案」，
+#      避免模型把主元素拆成一堆小图密铺。
+PATTERN_PROMPT_VERSION = "v25"
 # 位置↔角色固定：左上=主图(lifestyle)、右上=细节A(detail_a)、左下=细节B(detail_b)、右下=素材(hero)。
 # 标识符沿用历史值（lifestyle=主图、hero=素材），避免历史批次错标；仅位置分配按本元组顺序正确落位。
 LISTING_IMAGE_ROLES = ("lifestyle", "detail_a", "detail_b", "hero")
@@ -58,68 +74,9 @@ LISTING_IMAGE_ROLES = ("lifestyle", "detail_a", "detail_b", "hero")
 # 空格不做分隔，避免拆散 "Seamless Pattern" 这类英文复词。
 _ELEMENT_SPLIT_PATTERN = "[、，,;；\n]+"
 
-# 注意：这是「印花在平面上的排布方式」，不是相机/场景构图。
-# 之前的 "one off-center focal composition" 被模型理解成 3D 场景机位，
-# 导致平垫子被生成成垂坠桌布，所以全部改写为图案排布措辞。
-# POD 是满印（all-over print）：排布只决定「满印接花怎么排」，不决定「只印哪一块」。
-_STYLE_PATTERN_LAYOUTS = (
-    "straight-grid all-over repeat",
-    "half-drop offset all-over repeat",
-    "brick all-over repeat",
-    "edge-to-edge all-over repeat",
-    "layered multi-scale all-over repeat",
-    "radial all-over repeat centered on the front panel",
-    "vertical banded all-over repeat",
-    "horizontal banded all-over repeat",
-    "scattered all-over repeat with full coverage",
-    "overlapping collage all-over repeat",
-)
-# 平铺产品的「场景」只能是平面摄影背景，不能是房间/桌子/家具。
-_FLAT_LAY_SURFACES = (
-    "warm natural linen flat-lay backdrop",
-    "pale oak tabletop surface, shot from directly above",
-    "soft ivory paper sweep",
-    "muted canvas flat-lay backdrop",
-    "brushed light wood board",
-    "pale marble slab",
-    "warm greige fabric backdrop",
-    "clean matte plaster surface",
-)
-_STYLE_PALETTES = (
-    "two-color high contrast",
-    "muted earth tones with one dark accent",
-    "cool analogous colors",
-    "warm analogous colors",
-    "deep jewel tones",
-    "soft mineral pastels",
-    "black plus one saturated accent",
-    "desaturated heritage palette",
-    "bright complementary colors",
-    "monochrome tonal variation",
-    "natural greens and clay neutrals",
-    "navy, cream, and restrained warm accents",
-)
-_STYLE_RENDERINGS = (
-    "clean vector-like flat shapes",
-    "rough screen-print edges",
-    "fine ink linework",
-    "block-print texture",
-    "cut-paper texture",
-    "dry-brush marks",
-    "stitched applique appearance",
-    "subtle grain with crisp silhouettes",
-    "watercolor-like edges without gradients",
-    "bold marker-like strokes",
-)
-_STYLE_DENSITIES = (
-    "full-coverage all-over print with no empty ground",
-    "dense all-over repeat with layered multi-scale motifs",
-    "dense all-over repeat with large-scale hero and small filler",
-    "tight small-scale all-over repeat",
-    "mixed-scale all-over repeat filling every gap",
-    "banded all-over repeat with every band filled",
-    "dense collage all-over repeat with overlapping motifs",
-)
+# v21 起代码不再维护任何场景/布局/配色/渲染/密度池：
+# 场景由豆包在美术指导里返回 2-3 个候选（scene_options），按款轮换；
+# 印花排布与工艺交给生图模型自由发挥。
 
 
 def split_element_keywords(value: str | Sequence[str]) -> list[str]:
@@ -144,14 +101,14 @@ def assign_style_elements(
     style_index: int,
     seed: str,
 ) -> dict[str, str | list[str]]:
-    """按款式确定性分配元素（种子随机 + 批内不重复），并映射为三级视觉权重（Tier）。
+    """按款式确定性分配主体元素（种子随机 + 批内不重复）。
 
     - 以 ``seed``（batch_id）洗牌元素数组；同一批次重放得到同一分配（重试可复现），
       不同批次种子不同 → 分配不同（跨批变化）。
-    - Tier 映射（位置序 = 权重序）：
-      - ``hero``：Tier 1 Hero 主锚，按款序在洗牌序列上轮换取 1 个（相邻款必不同），尺度 1.0；
-      - ``narrative``：Tier 2，紧随 hero 的后续 2 个（第二尺度 0.6）；
-      - ``rhythm``：Tier 3，其余归为「1 组点缀纹样」（小尺度 0.25，≤4 个）。
+    - 元素池只包含“能放大成主图”的具象主体：
+      - ``hero``：Tier 1 主锚，按款序在洗牌序列上轮换取 1 个（相邻款必不同）；
+      - ``narrative``：Tier 2，紧随 hero 的后续 2 个；
+      - ``rhythm``：v24 起不再从元素池分配，由生图模型按主题自选 2-3 个小纹样/纹理填充。
     - 款内不重复。
     """
     if style_index < 1:
@@ -171,14 +128,55 @@ def assign_style_elements(
         candidate = shuffled[(offset + step) % count]
         if candidate != hero and candidate not in narrative:
             narrative.append(candidate)
-    rhythm: list[str] = []
-    for step in range(1, count):
-        candidate = shuffled[(offset + step) % count]
-        if candidate != hero and candidate not in narrative and candidate not in rhythm:
-            rhythm.append(candidate)
-        if len(rhythm) == 4:
-            break
-    return {"hero": hero, "narrative": narrative, "rhythm": rhythm}
+    return {"hero": hero, "narrative": narrative, "rhythm": []}
+
+
+# 三层元素的线性尺度（相对主元素）；面积按线性尺度的平方计算。
+# v23：Narrative 0.6→0.55、Rhythm 0.25→0.28，让主元素的线性放大更明显。
+TIER_LINEAR_SCALE = {"hero": 1.0, "narrative": 0.55, "rhythm": 0.28}
+# 模型对「倍数」比「1.0 / 0.6 / 0.25」更敏感，直接给出主元素的线性放大倍数。
+HERO_LINEAR_RATIO = {
+    "narrative": round(TIER_LINEAR_SCALE["hero"] / TIER_LINEAR_SCALE["narrative"], 1),
+    "rhythm": round(TIER_LINEAR_SCALE["hero"] / TIER_LINEAR_SCALE["rhythm"], 1),
+}
+
+
+def element_area_shares(
+    hero: str,
+    narrative: Sequence[str],
+    rhythm: Sequence[str],
+) -> dict[str, int]:
+    """按「数量 × 线性尺度²」计算三层元素应占的可印面积百分比，合计 100。"""
+    weights = {
+        # 未分配主元素时模型会在主题内自创一个，权重仍按 1 个主锚计算。
+        "hero": TIER_LINEAR_SCALE["hero"] ** 2,
+        "narrative": len(narrative) * TIER_LINEAR_SCALE["narrative"] ** 2,
+        # rhythm 为空表示“点缀由模型自选”，按 3 个小纹样预留面积。
+        "rhythm": (len(rhythm) or 3) * TIER_LINEAR_SCALE["rhythm"] ** 2,
+    }
+    total = sum(weights.values())
+    if total <= 0:
+        return {"hero": 0, "narrative": 0, "rhythm": 0}
+    raw = {key: value / total * 100 for key, value in weights.items()}
+    shares = {key: int(value) for key, value in raw.items()}
+    remainder = 100 - sum(shares.values())
+    if remainder:
+        largest = max(raw, key=raw.get)
+        shares[largest] += remainder
+    return shares
+
+
+def render_element_weight_contract(shares: Mapping[str, int]) -> str:
+    """把权重换算成面积/尺寸关系（只讲相对关系，不指定印在哪）。"""
+    return (
+        f"视觉权重（本款硬要求）：主元素约占可印表面 {shares['hero']}%，"
+        f"Narrative 合计约 {shares['narrative']}%，Rhythm 合计约 {shares['rhythm']}%。"
+        f"主元素的线性尺寸至少是 Narrative 的 {HERO_LINEAR_RATIO['narrative']} 倍、"
+        f"Rhythm 的 {HERO_LINEAR_RATIO['rhythm']} 倍；除主元素外，任何图案不得接近它的尺寸。"
+        "图案可以重复，也可被接缝/褶皱自然裁切；但主元素必须始终是本款最大的图案，"
+        "一眼可辨，不得被叙事层或背景纹样淹没。"
+        "空白只能作为图案之间的细缝，不能出现比一个主元素还大的连续底色。"
+    )
 
 
 def _coerce_style_elements(
@@ -701,28 +699,40 @@ def build_direct_listing_prompt(
 # 从热卖 POD listing 反推出来的「场景美术（set design）」公式：背景若只是空白棚拍或空旷外景，
 # 观感就"死气沉沉"。这里给正向约束——具体生活场景 + 同题材道具 + 同色系 + 暖向光 + 浅景深。
 # 只作用于生活化主图（左上）与细节图背景；素材图（右下）必须保持纯净中性背景，不要道具。
-# 场景池：**逐款轮换**。原来给的是固定列表（模型每次都挑同一条）→ 同批次各款背景雷同。
-_STYLE_SCENES = (
-    "a sunlit windowsill with soft morning light",
-    "a warm wooden kitchen counter",
-    "a cozy festive tabletop corner",
-    "a styled living-room side table under warm lamplight",
-    "a rustic garden table in golden afternoon light",
-    "a linen-draped console table beside a bright window",
-    "a pale marble countertop with soft daylight",
+# v21：不再有本地场景池。场景来自豆包在美术指导里返回的 scene_options（2-3 个候选），
+# 按款序确定性轮换；旧数据没有候选时用下面两句中性兜底（单值，不是池）。
+_FALLBACK_SCENE = (
+    "a lived-in scene that matches this product's real usage and the batch-wide theme"
 )
+_FALLBACK_SURFACE = "a flat photography surface that matches the scene's materials"
 
 
-def _flat_set_design_block(palette: str, surface: str, *, scene_mood: str = "") -> str:
+def pick_scene_option(art_direction: ArtDirection | None, index: int) -> SceneOption | None:
+    """从豆包返回的场景候选里按款/组轮换；没有候选时返回 None。"""
+    options = tuple(getattr(art_direction, "scene_options", ()) or ())
+    if not options:
+        return None
+    return options[(max(1, int(index)) - 1) % len(options)]
+
+
+def _flat_set_design_block(
+    palette: str,
+    surface: str,
+    *,
+    props: Sequence[str] = (),
+    lighting: str = "",
+) -> str:
     """平铺产品的场景块：只有平面摄影背景，不允许房间/桌子/家具/垂坠。"""
-    mood = str(scene_mood or "").strip()
-    mood_line = f" BATCH SCENE MOOD: {mood}." if mood else ""
+    prop_line = (
+        f" Supporting props (real objects only): {', '.join(props)}." if props else ""
+    )
+    light_line = f" Lighting (art direction): {lighting}." if lighting else ""
     return (
         "FLAT-LAY SET DESIGN — the product lies flat on a flat photography surface, shot from "
         "directly above. No room, no table edge, no chairs, no furniture, no hanging cloth, no "
         "3D scene. The full square silhouette must stay visible. 1-3 flat props may sit beside "
         f"the product, never on it, in colours from this style's palette ({palette})."
-        f"{mood_line} Surface: {surface}.\n"
+        f"{prop_line}{light_line} Surface: {surface}.\n"
         "- LIGHTING — one clearly directional soft daylight from the upper side, with gentle cast "
         "shadows beside the props and visible surface shading; flat, shadowless, evenly lit light is a "
         "FAILURE.\n"
@@ -730,30 +740,33 @@ def _flat_set_design_block(palette: str, surface: str, *, scene_mood: str = "") 
     )
 
 
-def _set_design_block(theme: str, palette: str, scene: str, *, scene_mood: str = "") -> str:
+def _set_design_block(
+    theme: str,
+    palette: str,
+    scene: str,
+    *,
+    props: Sequence[str] = (),
+    lighting: str = "",
+) -> str:
     """场景美术（set design）块。
 
-    - ``scene_mood`` 非空时作为**整批场景基调 / 场景族**，逐款 ``scene`` 降级为「该基调内的具体起点场景」；
-      留空则维持现状（逐款轮换 ``_STYLE_SCENES``）。
-    - 光影由本块主导：构图模板链路并未进入生图提示词，删掉这里的光线会让成图变平、变素。
+    场景基调与道具由豆包的美术指导（ArtDirection.scene_options）提供；
+    这里只负责把它们落成一段可执行的光影/场景指令。
     """
-    mood = str(scene_mood or "").strip()
-    mood_lines = (
-        [
-            f"- BATCH SCENE MOOD (this batch): {mood}. Every style in this batch shares this same mood / "
-            "scene family; the concrete setting below is this style's own starting point within that mood."
-        ]
-        if mood
-        else []
+    prop_line = (
+        f"- SUPPORTING PROPS (from the art direction, real objects only): {', '.join(props)}.\n"
+        if props
+        else ""
     )
+    light_line = f"- LIGHTING (from the art direction): {lighting}.\n" if lighting else ""
     return (
         "SET DESIGN — the lifestyle scene must look rich, warm and inviting; a plain studio wall or an "
         "empty outdoor field is a FAILURE (this is the main quality gap versus top-selling listings):\n"
         "- Derive the scene's mood from the PART 1 batch-wide theme. The PART 3 elements are PRINTED "
         "motifs on the product surface, NOT physical props — do not turn them into 3D objects.\n"
         f"- Stage this ONE lived-in scene, adapted to that theme (this style's own starting point: {scene}).\n"
-        + ("\n".join(mood_lines) + "\n" if mood_lines else "")
-        + "- FILL THE FRAME — dress the set with 3-5 supporting props taken from this theme's real usage "
+        f"{prop_line}{light_line}"
+        "- FILL THE FRAME — dress the set with 3-5 supporting props taken from this theme's real usage "
         "world (for a cosmetics bag: makeup brushes, bottles, a small mirror, folded linen), grouped "
         "around the product in clear near/mid/far layers. Never generic filler, never a duplicate of the "
         f"product, and never a 3D copy of a printed motif. Colours from this style's palette ({palette}) "
@@ -787,14 +800,15 @@ def build_style_listing_prompt(
     creative_prompt: str = "",
     style_elements: Mapping[str, object] | None = None,
     seed: str = "",
+    art_direction: ArtDirection | None = None,
 ) -> str:
-    """Append one deterministic, batch-diverse creative recipe to a listing prompt.
+    """Append this style's elements and color roles to a listing prompt.
 
-    The recipe varies the flat pattern layout, palette, color tiers, rendering, and density.
     The style's SUBJECT comes from the assigned element tiers (hero / narrative /
     rhythm); when no assignment exists (legacy data), the model is told to invent
     one new subject within the batch-wide theme. Element keywords are never
-    rendered wholesale.
+    rendered wholesale. Pattern arrangement and print rendering are left to the
+    model — there is no layout / density / rendering pool driving styles apart.
 
     ``seed``（batch_id）用于配色 60-30-10 的确定性洗牌；留空时退化为仅按款序取值。
     """
@@ -802,17 +816,14 @@ def build_style_listing_prompt(
         raise ValueError("style_index must be positive")
     if attempt not in {1, 2}:
         raise ValueError("attempt must be 1 or 2")
-    offset = style_index - 1
     hero, narrative, rhythm = _coerce_style_elements(style_elements)
 
-    pattern_layout = _STYLE_PATTERN_LAYOUTS[(offset * 3) % len(_STYLE_PATTERN_LAYOUTS)]
     color_preferences = _brief_color_preferences(business_fields)
-    # When the user named exact colors, defer to them instead of the recipe pool,
-    # so a fixed palette cannot fight the brief.
+    # 配色只来自用户/智能填写给出的色板；没给就让模型在主题内自己选，不再有代码色板兜底。
     palette = (
         f"the brief's specified colors ({', '.join(color_preferences)})"
         if color_preferences
-        else _STYLE_PALETTES[(offset * 7) % len(_STYLE_PALETTES)]
+        else ""
     )
     colors = assign_style_colors(color_preferences, style_index, seed)
     color_harmony = ""
@@ -821,30 +832,34 @@ def build_style_listing_prompt(
             f"base≈{colors['base']}(60%) / structural≈{colors['structural']}(30%) / "
             f"highlight≈{colors['highlight']}(10%)"
         )
-    rendering = _STYLE_RENDERINGS[(offset * 7) % len(_STYLE_RENDERINGS)]
-    density = _STYLE_DENSITIES[(offset * 3) % len(_STYLE_DENSITIES)]
 
+    shares = element_area_shares(hero, narrative, rhythm)
     if hero:
         subject_lines = [
             f"本款印花主元素：{hero}（Tier 1 主锚，印在产品表面的平面图案，不是独立实物；尺度 1.0）"
         ]
         if narrative:
             subject_lines.append(
-                f"印花叙事层 Narrative：{', '.join(narrative)}（Tier 2，第二尺度 0.6，满印中与主元素交替重复，"
-                "每种至少重复 4 次）"
+                f"印花叙事层 Narrative：{', '.join(narrative)}（Tier 2，尺度 0.55，与主元素交替出现）"
             )
         if rhythm:
             subject_lines.append(
-                f"印花点缀层 Rhythm：{', '.join(rhythm)}（Tier 3，小尺度 0.25，作为满印填充纹样，"
-                "连续铺满主元素之间的所有空隙）"
+                f"印花点缀层 Rhythm：{', '.join(rhythm)}（Tier 3，尺度 0.28，连续铺满主元素之间的空隙）"
+            )
+        else:
+            subject_lines.append(
+                "印花点缀层 Rhythm（自选）：请从同主题中自选 2-3 个小纹样/纹理"
+                "（如雪花、星星、铃铛、格纹）作为点缀填充，合计约占可印表面 16%，不得抢主元素尺寸。"
             )
         subject_lines.append(
             "以上所有元素都是印在产品表面的平面图案/纹样：禁止生成独立实物、摆件、餐具、食品、家具或场景道具，"
             "也不得把元素做成 3D 立体装饰。"
         )
+        subject_lines.append(render_element_weight_contract(shares))
         subject_lines.append(
             "满印硬要求：这是 all-over print，不是局部印花。图案必须无缝、连续地铺满产品所有可印表面"
-            "（正面、侧面、底部、提手/包边等），边到边、四角到四角，任何位置都不留大片纯色空白；"
+            "（正面、侧面、底部、提手/包边等），边到边、四角到四角，任何位置都不留大片纯色空白"
+            "（任意大于手掌的连续空白底色即视为失败）；"
             "主元素、次级纹样、填充纹样按层级交织重复，不能只在局部放 1~2 个图案；"
             "同一组内的图案元素在题材或形态上必须互相呼应，避免把不相干的元素硬凑在一起。"
         )
@@ -855,13 +870,14 @@ def build_style_listing_prompt(
         subject_lines = [
             "本款未分配印花元素：必须在 Batch-wide theme & style 的主题内自创一个新图案元素作为本款印花主元素，"
             "并印在产品表面，不得做成独立实物。",
+            render_element_weight_contract(shares),
         ]
     subject_block = "\n".join(subject_lines)
 
     signature = (
         f"STYLE-{style_index:03d} | elements=hero:{hero or '-'} narrative:{','.join(narrative) or '-'} "
-        f"rhythm:{','.join(rhythm) or '-'} | pattern_layout={pattern_layout} | "
-        f"palette={palette} | rendering={rendering} | density={density}"
+        f"rhythm:{','.join(rhythm) or '-'}"
+        + (f" | palette={palette}" if palette else "")
         + (f" | color_harmony={color_harmony}" if color_harmony else "")
     )
 
@@ -871,18 +887,14 @@ def build_style_listing_prompt(
         _PART3_HEADER,
         "STYLE-SPECIFIC DIVERSITY CONTRACT:",
         f"Style creative signature: {signature}",
-        "pattern_layout 只描述印花图案在平面上的排布方式，不是相机角度、景别或 3D 场景构图；机位固定由 PART 2 决定。",
+        "图案排布方式（重复/错位/条带/拼贴/定位场景）由模型根据本款主题自由决定；不得因此改变相机、景别或四格角色。",
         subject_block,
         "四格图案布局锁定：主图（左上）确定的图案在商品表面的位置、相对尺度与接花间距，"
         "在另外三格必须完全一致；其余三格只允许换机位/景别或裁切，禁止把主元素挪到侧边、顶部、"
         "角落或改变它相对商品的尺寸。换视角时整张图案随商品一起刚性旋转，不得重新排版。",
-        f"图案密度（本款硬要求，density={density}）：整幅是满印，可印表面覆盖率 100%，"
-        "不允许出现空白底色区；主元素、次级纹样、填充纹样必须同时、重复地出现在整个表面。"
-        "只在局部放图案或出现大片留白，视为失败。",
-        "主题整批统一风格必须保持，优先级高于本款配方建议；配方只提供可在该主题风格允许范围内实现的变化方式（尺度节奏、色块分割、带状/网格/散点律动等）。",
+        "主题整批统一风格必须保持；具体排布与工艺由模型自行发挥，但四款成品必须一眼可辨。",
         f"Create this as style {style_index}. Its surface artwork must be visibly different from every other style in this batch.",
-        "素材可以在批次内复用，但每款必须拥有不同的视觉主角与花样：主打元素身份、尺度关系、排布逻辑、色彩重心、渲染工艺至少两项不同。禁止输出“把所有元素等权复制粘贴”的通用大杂烩图案。",
-        f"整幅图案（含所有元素与底色）必须采用本款渲染工艺（{rendering}）表现，不得与其他款式共用同一视觉语言。",
+        "素材可以在批次内复用，但每款必须拥有不同的视觉主角与花样：主打元素身份、尺度关系、色彩重心至少两项不同。禁止输出“把所有元素等权复制粘贴”的通用大杂烩图案。",
     ]
     if color_harmony:
         rules.append(
@@ -900,23 +912,33 @@ def build_style_listing_prompt(
         rules.extend((
             "",
             "RETRY ATTEMPT 2 OF 2:",
-            "The first result was invalid, failed, or too similar to another style; reinvent the surface artwork from scratch while keeping this style's assigned elements and recipe, and the same product structure.",
+            "The first result was invalid, failed, or too similar to another style; reinvent the surface artwork from scratch while keeping this style's assigned elements and the same product structure.",
             "Do not reuse the first attempt's focal shape, motif arrangement, or color blocking.",
         ))
-    # 场景美术：用本款元素与配色去布置一个具体生活场景，避免背景空洞灰冷（竞品观感差距的主因）。
-    # 场景逐款轮换，避免同批次所有款共用同一个背景。
+    # 场景美术：场景来自豆包返回的 2-3 个候选（scene_options），按款轮换；
+    # 没有美术指导（旧批次/未带模板图）时用中性兜底，不再有本地场景池。
     theme_desc = ", ".join(token for token in (hero, *narrative) if token)
-    scene = _STYLE_SCENES[(offset * 5) % len(_STYLE_SCENES)]
-    scene_mood = str((business_fields or {}).get("scene_mood") or "").strip()
+    scene_option = pick_scene_option(art_direction, style_index)
+    scene = scene_option.scene if scene_option is not None else _FALLBACK_SCENE
+    surface = (
+        scene_option.surface
+        if scene_option is not None and scene_option.surface
+        else _FALLBACK_SURFACE
+    )
+    props = tuple(scene_option.props) if scene_option is not None else ()
+    lighting = str(getattr(art_direction, "lighting", "") or "") if art_direction else ""
     # 平铺产品的 PART 4 也必须走平面摄影背景，否则会把俯拍指令拉回 3D 桌面场景。
     flat_product = "FLAT PRODUCT COMPOSITION OVERRIDE" in base_prompt
-    surface = _FLAT_LAY_SURFACES[(offset * 5) % len(_FLAT_LAY_SURFACES)]
+    # 没给色板时，道具配色跟随本款图案自身，不再从代码色板池取。
+    palette_hint = palette or "the artwork's own palette"
     rules.append("")
     rules.append(_PART4_HEADER)
     rules.append(
-        _flat_set_design_block(palette, surface, scene_mood=scene_mood)
+        _flat_set_design_block(palette_hint, surface, props=props, lighting=lighting)
         if flat_product
-        else _set_design_block(theme_desc, palette, scene, scene_mood=scene_mood)
+        else _set_design_block(
+            theme_desc, palette_hint, scene, props=props, lighting=lighting
+        )
     )
     rules.append(
         "Panel positions and roles stay fixed: top-left = PRIMARY image, top-right = detail A, "
@@ -978,7 +1000,7 @@ def build_semi_pattern_prompt(
 
     panel_blocks: list[str] = []
     for panel in range(1, 5):
-        # 每格独立取配方：同组四格的 offset 连续，必然落在不同的构图/配色/渲染组合上。
+        # offset 仍用于从用户色板里轮换取色，避免四格配色完全相同。
         offset = (group_index - 1) * 4 + (panel - 1)
         raw_elements = supplied[panel - 1] if panel - 1 < len(supplied) else None
         # 半定制沿用「主打 / 辅主 / 点缀」措辞：这里把三级 Tier 归一化回收（hero→主打、
@@ -988,14 +1010,12 @@ def build_semi_pattern_prompt(
         )
         co = narrative[0] if narrative else ""
 
-        pattern_layout = _STYLE_PATTERN_LAYOUTS[(offset * 3) % len(_STYLE_PATTERN_LAYOUTS)]
+        # 配色只来自用户 / 智能填写；没给就交给模型按主题自行选择。
         palette = (
             f"only the brief's specified colors ({', '.join(color_preferences)})"
             if color_preferences
-            else _STYLE_PALETTES[(offset * 7) % len(_STYLE_PALETTES)]
+            else ""
         )
-        rendering = _STYLE_RENDERINGS[(offset * 7) % len(_STYLE_RENDERINGS)]
-        density = _STYLE_DENSITIES[(offset * 3) % len(_STYLE_DENSITIES)]
         accent_colors = ""
         if len(color_preferences) >= 2:
             first = color_preferences[(offset * 7) % len(color_preferences)]
@@ -1014,10 +1034,12 @@ def build_semi_pattern_prompt(
             lines.append(motif + ". Use ONLY this panel's motif; every motif not listed for this panel is forbidden here.")
         else:
             lines.append("motif = invent one new motif for this panel inside the batch-wide theme.")
-        lines.append(f"pattern_layout = {pattern_layout}.")
-        lines.append(f"palette = {palette}." + (f" Color focus: {accent_colors}." if accent_colors else ""))
-        lines.append(f"rendering = {rendering}.")
-        lines.append(f"density = {density}.")
+        if palette:
+            lines.append(f"palette = {palette}." + (f" Color focus: {accent_colors}." if accent_colors else ""))
+        lines.append(
+            "layout, density and print technique are yours to choose; the four panels must still "
+            "read as four clearly different designs."
+        )
         panel_blocks.append("\n".join(lines))
 
     rules = [

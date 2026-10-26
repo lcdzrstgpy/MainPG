@@ -1248,7 +1248,6 @@ export function PodCustomizationPage({ isActive = true }: Props) {
                 <div><dt>目标人群</dt><dd>{summaryFields.target_audience || "未填写"}</dd></div>
                 <div><dt>统一风格</dt><dd>{summaryFields.design_theme || "未填写"}</dd></div>
                 <div><dt>产品工艺</dt><dd>{summaryFields.fabric_craft || "未填写"}</dd></div>
-                <div><dt>场景基调</dt><dd>{summaryFields.scene_mood || "未填写"}</dd></div>
               </dl>
             </div>
           </section>

@@ -108,8 +108,9 @@ class BusinessFields(BaseModel):
     )
     design_theme: Annotated[str, Field(max_length=500)] = ""
     # 批级全局字段：由用户在「智能填写」区告知，brief 豆包只做规范化（不发明），渲染进 PART 1/PART 4。
-    # 用户未告知即留空 → 回退现有静态块行为（工艺 → _FABRIC_REALISM_BLOCK，场景 → _STYLE_SCENES 轮换）。
+    # 用户未告知即留空；场景不再来自这里，而由美术指导的 scene_options 提供。
     fabric_craft: Annotated[str, Field(max_length=500)] = ""
+    # 兼容旧批次/旧草稿保留；v21 起不再写入、不再注入生图提示词（场景统一由美术指导承担）。
     scene_mood: Annotated[str, Field(max_length=500)] = ""
     style_keywords: list[Annotated[str, Field(max_length=200)]] = Field(
         default_factory=list, max_length=100
@@ -131,6 +132,27 @@ class BusinessFields(BaseModel):
 ART_DIRECTION_TEXT_MAX_LENGTH = 800
 ART_DIRECTION_ITEM_MAX_LENGTH = 200
 ART_DIRECTION_MAX_ITEMS = 12
+SCENE_OPTIONS_MIN_ITEMS = 2
+SCENE_OPTIONS_MAX_ITEMS = 3
+SCENE_OPTION_PROPS_MIN_ITEMS = 3
+SCENE_OPTION_PROPS_MAX_ITEMS = 5
+
+
+class SceneOption(BaseModel):
+    """豆包给出的一个候选场景：环境 + 台面 + 衬托道具。
+
+    整批 2-3 个，按款确定性轮换；代码不再维护本地场景池。
+    """
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    scene: Annotated[str, Field(min_length=1, max_length=ART_DIRECTION_TEXT_MAX_LENGTH)]
+    # 平铺类产品需要具体台面材质；普通产品可留空。
+    surface: Annotated[str, Field(max_length=ART_DIRECTION_ITEM_MAX_LENGTH)] = ""
+    props: list[Annotated[str, Field(max_length=ART_DIRECTION_ITEM_MAX_LENGTH)]] = Field(
+        min_length=SCENE_OPTION_PROPS_MIN_ITEMS,
+        max_length=SCENE_OPTION_PROPS_MAX_ITEMS,
+    )
 
 
 class ArtDirection(BaseModel):
@@ -157,6 +179,10 @@ class ArtDirection(BaseModel):
     avoid: list[Annotated[str, Field(max_length=ART_DIRECTION_ITEM_MAX_LENGTH)]] = Field(
         default_factory=list, max_length=ART_DIRECTION_MAX_ITEMS
     )
+    # 场景池：2-3 个候选，按款确定性轮换；旧数据没有时回退主 scene。
+    scene_options: list[SceneOption] = Field(
+        default_factory=list, max_length=SCENE_OPTIONS_MAX_ITEMS
+    )
 
     def is_empty(self) -> bool:
         return not any(
@@ -170,6 +196,7 @@ class ArtDirection(BaseModel):
                 self.background,
                 self.composition_hint,
                 self.avoid,
+                self.scene_options,
             )
         )
 
@@ -178,9 +205,9 @@ class ArtDirection(BaseModel):
 # 方案见 docs/superpowers/specs/2026-09-12-pod-brief-preprocessing-design.md。
 BRIEF_INPUT_MIN_LENGTH = 1
 BRIEF_INPUT_MAX_LENGTH = 500
-# 元素关键词：够跨款差异化即可。40 项会逼模型为凑数堆无关词，降到 24 项
-#（每款实际只用 1 主锚 + 2 叙事 + 4 点缀，24 项足够轮换）。
-BRIEF_STYLE_KEYWORDS_MIN_ITEMS = 24
+# 元素关键词：只保留“能放大成主图”的具象主体。纹理/细碎点缀由生图模型自选，不进元素池。
+# v25：16 → 12。不再要求凑到 16，但仍保留 12 的下限，保证多款批次（4 款一组）有足够轮换空间。
+BRIEF_STYLE_KEYWORDS_MIN_ITEMS = 12
 # 偏好配色：60-30-10 只需要 3 色，6 色已足够跨款轮换；不再强制 10 色。
 BRIEF_COLOR_PREFERENCES_MIN_ITEMS = 6
 # 禁用元素：品牌/商标/版权角色/肖像由 IP_EXCLUDED_ELEMENTS 自动补齐，

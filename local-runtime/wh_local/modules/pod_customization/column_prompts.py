@@ -24,31 +24,36 @@ from .column_generation import (
     ROLE_LABELS,
     ROLE_PANEL_KEY,
 )
-from .contracts import ArtDirection, BusinessFields, IP_EXCLUDED_ELEMENTS
+from .contracts import ArtDirection, BusinessFields, IP_EXCLUDED_ELEMENTS, SceneOption
 from .prompts import (
     _COLOR_IMPACT_BLOCK,
+    _FALLBACK_SCENE,
+    _FALLBACK_SURFACE,
     _FLAT_LISTING_PANEL_LINES,
-    _FLAT_LAY_SURFACES,
     _FLAT_PRINT_LOCK,
     _MATERIAL_REALISM_BLOCK,
     _NO_QUADRANT_LABELS,
     _PRODUCT_FORM_LOCK,
-    _STYLE_DENSITIES,
-    _STYLE_PALETTES,
-    _STYLE_PATTERN_LAYOUTS,
-    _STYLE_RENDERINGS,
-    _STYLE_SCENES,
     _brief_color_preferences,
     _coerce_style_elements,
     _fabric_craft_lines,
     _flat_set_design_block,
     _structure_anchor_blocks,
     assign_style_colors,
+    element_area_shares,
+    pick_scene_option,
+    render_element_weight_contract,
 )
 
 # 提示词版本随 prompts.PATTERN_PROMPT_VERSION 一起看：v18 起新增列式生成的四轮口径；
 # v19：派生轮拆分「必须连续 / 必须变化」，新增景别契约与禁止复刻锚点机位。
-COLUMN_PROMPT_VERSION = "v19"
+# v20：删除布局/密度/渲染池——每款只保留元素层级与 60-30-10 配色，排布交给模型自由发挥。
+# v21：scene_mood 不再注入轮次提示词；场景基调统一由美术指导（art_direction）承担。
+# v22：恢复满印密度契约（主锚≥8 次、narrative≥6 次、rhythm 填空隙、覆盖率≥90%）。
+# v23：权重升级为「面积份额 + 相对尺寸」——典型 1/2/4 配比时约 53/31/16%。
+# v24：Rhythm 不再从元素池分配，由生图模型按主题自选 2-3 个小纹样/纹理。
+# v25：去掉「主元素至少重复 3 次」，改为「图案可以重复，但主元素必须是本款最大图案」。
+COLUMN_PROMPT_VERSION = "v25"
 
 _QUADRANT_POSITIONS = ("TOP-LEFT", "TOP-RIGHT", "BOTTOM-LEFT", "BOTTOM-RIGHT")
 
@@ -130,17 +135,14 @@ _ART_DIRECTION_LOCK = (
 
 @dataclass(frozen=True)
 class ColumnStyleRecipe:
-    """组内某一款的确定性配方（元素 / 排布 / 配色 / 渲染 / 密度）。"""
+    """组内某一款的确定性配方（元素层级 / 配色角色）。"""
 
     style_index: int
     hero: str
     narrative: tuple[str, ...]
     rhythm: tuple[str, ...]
-    pattern_layout: str
     palette: str
     color_harmony: str
-    rendering: str
-    density: str
 
     @property
     def quadrant(self) -> str:
@@ -149,9 +151,8 @@ class ColumnStyleRecipe:
     def signature(self) -> str:
         return (
             f"STYLE-{self.style_index:03d} | elements=hero:{self.hero or '-'} "
-            f"narrative:{','.join(self.narrative) or '-'} rhythm:{','.join(self.rhythm) or '-'} | "
-            f"pattern_layout={self.pattern_layout} | palette={self.palette} | "
-            f"rendering={self.rendering} | density={self.density}"
+            f"narrative:{','.join(self.narrative) or '-'} rhythm:{','.join(self.rhythm) or '-'}"
+            + (f" | palette={self.palette}" if self.palette else "")
             + (f" | color_harmony={self.color_harmony}" if self.color_harmony else "")
         )
 
@@ -170,15 +171,15 @@ def build_column_style_recipes(
         style_index = int(raw_style_index) if isinstance(raw_style_index, (int, str)) else 0
         if style_index < 1:
             raise ValueError("column style recipe requires a positive style_index")
-        offset = style_index - 1
         raw_elements = entry.get("elements")
         hero, narrative, rhythm = _coerce_style_elements(
             raw_elements if isinstance(raw_elements, Mapping) else None
         )
+        # 配色只来自用户/智能填写给出的色板；没给就交给模型按主题自行选择。
         palette = (
             f"the brief's specified colors ({', '.join(color_preferences)})"
             if color_preferences
-            else _STYLE_PALETTES[(offset * 7) % len(_STYLE_PALETTES)]
+            else ""
         )
         colors = assign_style_colors(color_preferences, style_index, seed)
         color_harmony = ""
@@ -193,11 +194,8 @@ def build_column_style_recipes(
                 hero=hero,
                 narrative=tuple(narrative),
                 rhythm=tuple(rhythm),
-                pattern_layout=_STYLE_PATTERN_LAYOUTS[(offset * 3) % len(_STYLE_PATTERN_LAYOUTS)],
                 palette=palette,
                 color_harmony=color_harmony,
-                rendering=_STYLE_RENDERINGS[(offset * 7) % len(_STYLE_RENDERINGS)],
-                density=_STYLE_DENSITIES[(offset * 3) % len(_STYLE_DENSITIES)],
             )
         )
     return tuple(recipes)
@@ -281,28 +279,39 @@ def build_column_base_prompt(
 
 def _style_block(recipe: ColumnStyleRecipe) -> str:
     lines = [f"QUADRANT {recipe.quadrant} — style {recipe.style_index} (this quadrant only):"]
+    shares = element_area_shares(recipe.hero, recipe.narrative, recipe.rhythm)
     if recipe.hero:
         lines.append(
             f"- 本款印花主元素：{recipe.hero}（Tier 1 主锚，印在产品表面的平面图案，不是独立实物；尺度 1.0）"
         )
         if recipe.narrative:
             lines.append(
-                f"- 印花叙事层 Narrative：{', '.join(recipe.narrative)}（Tier 2，尺度 0.6，满印中与主元素交替重复）"
+                f"- 印花叙事层 Narrative：{', '.join(recipe.narrative)}（Tier 2，尺度 0.55，与主元素交替出现）"
             )
         if recipe.rhythm:
             lines.append(
-                f"- 印花点缀层 Rhythm：{', '.join(recipe.rhythm)}（Tier 3，尺度 0.25，铺满主元素之间的空隙）"
+                f"- 印花点缀层 Rhythm：{', '.join(recipe.rhythm)}（Tier 3，尺度 0.28，连续铺满主元素之间的空隙）"
+            )
+        else:
+            lines.append(
+                "- 印花点缀层 Rhythm（自选）：请从同主题中自选 2-3 个小纹样/纹理"
+                "（如雪花、星星、铃铛、格纹）作为点缀填充，合计约占可印表面 16%，不得抢主元素尺寸。"
             )
     else:
         lines.append(
             "- 本款未分配印花元素：必须在 Batch-wide theme & style 主题内自创一个新图案元素作为本款印花主元素。"
         )
+    if recipe.palette:
+        lines.append(f"- palette = {recipe.palette}。")
+    lines.append(f"- {render_element_weight_contract(shares)}")
     lines.extend((
-        f"- pattern_layout = {recipe.pattern_layout}（只描述印花在平面上的排布，不是相机角度）。",
-        f"- palette = {recipe.palette}。",
-        f"- rendering = {recipe.rendering}；density = {recipe.density}（可印表面覆盖率 100%，不留空白底色）。",
-        "- 本款配方只作用于本象限：其他象限的元素、配色、尺度与渲染在本象限禁止出现。",
-        f"Recipe signature: {recipe.signature()}",
+        "- 满印密度（本款硬要求）：可印表面覆盖率 ≥ 90%，不允许出现比一个主元素还大的连续空白底色；"
+        "三层必须按上述面积份额同时铺满整个可印表面，只在局部放几个图案视为失败。",
+        "- 排布方式（重复/错位/拼贴/条纹等）可自由选择，但不得降低上一条的密度；"
+        "不得因此改变相机、景别或四格角色。",
+        "- 本款配方只作用于本象限：其他象限的元素、配色与尺度在本象限禁止出现。",
+        f"Recipe signature: {recipe.signature()} | "
+        f"weight={shares['hero']}/{shares['narrative']}/{shares['rhythm']}",
     ))
     if recipe.color_harmony:
         lines.append(
@@ -323,14 +332,13 @@ def _composition_slot(
     return ""
 
 
-def _default_round_direction(role: str, *, flat_product: bool, scene_mood: str) -> str:
+def _default_round_direction(role: str, *, flat_product: bool) -> str:
     if flat_product:
         return _FLAT_LISTING_PANEL_LINES[0] if role == PRIMARY_ROLE else _FLAT_LISTING_PANEL_LINES[3]
-    mood = f" Scene mood for this batch: {scene_mood}." if scene_mood.strip() else ""
     if role == PRIMARY_ROLE:
         return (
             "Natural eye-level 3/4 hero angle: the complete product with its full silhouette in frame, "
-            "centred with generous negative space, shot wide rather than cropped." + mood
+            "centred with generous negative space, shot wide rather than cropped."
         )
     if role == "hero":
         return (
@@ -352,10 +360,9 @@ def _b1_block(
     *,
     composition: Mapping[str, Mapping[str, str]] | None,
     flat_product: bool,
-    scene_mood: str,
 ) -> list[str]:
     direction = _composition_slot(composition, PRIMARY_ROLE) or _default_round_direction(
-        PRIMARY_ROLE, flat_product=flat_product, scene_mood=scene_mood
+        PRIMARY_ROLE, flat_product=flat_product
     )
     lines = [
         "=== PART 2 · SCENE & COMPOSITION — this round's single shared camera ===",
@@ -376,46 +383,57 @@ def _b1_block(
 
 def _column_set_design_block(
     *,
-    scene_mood: str,
     palette: str,
     scene: str,
+    props: Sequence[str] = (),
+    lighting: str = "",
 ) -> str:
     """第 1 轮的 D1（无批级美术指导时的回退）：一轮四格共用一套布景与光位。"""
-    mood_lines = (
-        [
-            f"- BATCH SCENE MOOD (this batch): {scene_mood}. Every round shares this same mood / scene "
-            "family; the concrete setting below is this group's starting point within that mood."
-        ]
-        if scene_mood.strip()
-        else []
+    prop_line = (
+        f"- SUPPORTING PROPS (real objects only): {', '.join(props)}."
+        if props
+        else ""
     )
-    return "\n".join((
-        "SET DESIGN — the lifestyle scene must look rich, warm and inviting; a plain studio wall or an "
-        "empty outdoor field is a FAILURE:",
-        "- Derive the scene's mood from the batch-wide theme. The printed motifs are ARTWORK on the "
-        "product surface, NOT physical props — never turn them into 3D objects.",
-        f"- Stage this ONE lived-in scene, shared by all four quadrants of this round: {scene}.",
-        *mood_lines,
-        "- FILL THE FRAME — dress the set with 5-8 supporting props from this theme's real usage world, "
-        "in clear near/mid/far layers, each with its own material and colour; at least two different "
-        "materials; never generic filler, never a duplicate of the product, never a 3D copy of a "
-        f"printed motif. Colours from the batch palette ({palette}) so they harmonize with all four "
-        "designs.",
-        "- LIGHTING — one clear warm directional key light that puts defined bright highlights on the "
-        "product, a soft contact shadow beneath it and natural falloff into the background; optionally "
-        "add a warm rim/backlight. Add at least one visible warm light source in frame (warmly lit "
-        "window, lamp, candle or fairy lights). Flat, grey, evenly lit studio light is a FAILURE.",
-        "- Shallow depth of field, soft background bokeh, one optional blurred foreground prop; tactile "
-        "materials (wood, linen, lace, marble, woven mat, checkered cloth). The product stays the hero.",
-        "- All four quadrants share ONE set and ONE lighting setup. Never build four different sets in "
-        "one sheet, and never drop the detail quadrants to a plain grey studio backdrop.",
-    ))
+    light_line = f"- LIGHTING (art direction): {lighting}." if lighting else ""
+    return "\n".join(
+        line
+        for line in (
+            "SET DESIGN — the lifestyle scene must look rich, warm and inviting; a plain studio wall or an "
+            "empty outdoor field is a FAILURE:",
+            "- Derive the scene's mood from the batch-wide theme. The printed motifs are ARTWORK on the "
+            "product surface, NOT physical props — never turn them into 3D objects.",
+            f"- Stage this ONE lived-in scene, shared by all four quadrants of this round: {scene}.",
+            prop_line,
+            light_line,
+            "- FILL THE FRAME — dress the set with 5-8 supporting props from this theme's real usage world, "
+            "in clear near/mid/far layers, each with its own material and colour; at least two different "
+            "materials; never generic filler, never a duplicate of the product, never a 3D copy of a "
+            f"printed motif. Colours from the batch palette ({palette}) so they harmonize with all four "
+            "designs.",
+            "- LIGHTING — one clear warm directional key light that puts defined bright highlights on the "
+            "product, a soft contact shadow beneath it and natural falloff into the background; optionally "
+            "add a warm rim/backlight. Add at least one visible warm light source in frame (warmly lit "
+            "window, lamp, candle or fairy lights). Flat, grey, evenly lit studio light is a FAILURE.",
+            "- Shallow depth of field, soft background bokeh, one optional blurred foreground prop; tactile "
+            "materials (wood, linen, lace, marble, woven mat, checkered cloth). The product stays the hero.",
+            "- All four quadrants share ONE set and ONE lighting setup. Never build four different sets in "
+            "one sheet, and never drop the detail quadrants to a plain grey studio backdrop.",
+        )
+        if line
+    )
 
 
-def _art_direction_block(art_direction: ArtDirection, *, palette: str) -> str:
+def _art_direction_block(
+    art_direction: ArtDirection,
+    *,
+    palette: str,
+    scene_option: SceneOption | None = None,
+) -> str:
     lines = ["ART DIRECTION — batch-wide set design, shared by every quadrant of this round:"]
+    scene = scene_option.scene if scene_option is not None else art_direction.scene
+    props = tuple(scene_option.props) if scene_option is not None else tuple(art_direction.props)
     for label, value in (
-        ("SCENE", art_direction.scene),
+        ("SCENE", scene),
         ("LIGHTING", art_direction.lighting),
         ("COLOR TEMPERATURE", art_direction.color_temperature),
         ("MOOD", art_direction.mood),
@@ -425,9 +443,9 @@ def _art_direction_block(art_direction: ArtDirection, *, palette: str) -> str:
     ):
         if value:
             lines.append(f"- {label}: {value}")
-    if art_direction.props:
+    if props:
         lines.append("- PROPS (near / mid / far layers, at least two materials, never occlude the product):")
-        lines.extend(f"  · {prop}" for prop in art_direction.props)
+        lines.extend(f"  · {prop}" for prop in props)
     if art_direction.avoid:
         lines.append(f"- AVOID: {', '.join(art_direction.avoid)}")
     lines.append(
@@ -440,14 +458,16 @@ def _art_direction_block(art_direction: ArtDirection, *, palette: str) -> str:
 def _d1_block(
     *,
     art_direction: ArtDirection | None,
-    scene_mood: str,
     palette: str,
     scene: str,
     flat_product: bool,
     surface: str,
+    scene_option: SceneOption | None = None,
 ) -> str:
     if art_direction is not None and not art_direction.is_empty():
-        body = _art_direction_block(art_direction, palette=palette)
+        body = _art_direction_block(
+            art_direction, palette=palette, scene_option=scene_option
+        )
         if flat_product:
             body += (
                 "\nFLAT-LAY OVERRIDE: the product lies flat on a flat photography surface, shot from "
@@ -455,13 +475,14 @@ def _d1_block(
                 f"full square silhouette visible. Surface: {surface}."
             )
         return "\n".join((body, _ART_DIRECTION_LOCK))
+    props = tuple(scene_option.props) if scene_option is not None else ()
     if flat_product:
         return "\n".join((
-            _flat_set_design_block(palette, surface, scene_mood=scene_mood),
+            _flat_set_design_block(palette, surface, props=props),
             _ART_DIRECTION_LOCK,
         ))
     return "\n".join((
-        _column_set_design_block(scene_mood=scene_mood, palette=palette, scene=scene),
+        _column_set_design_block(palette=palette, scene=scene, props=props),
         _ART_DIRECTION_LOCK,
     ))
 
@@ -480,10 +501,9 @@ def _round_direction(
     *,
     composition: Mapping[str, Mapping[str, str]] | None,
     flat_product: bool,
-    scene_mood: str = "",
 ) -> str:
     return _composition_slot(composition, role) or _default_round_direction(
-        role, flat_product=flat_product, scene_mood=scene_mood
+        role, flat_product=flat_product
     )
 
 
@@ -524,7 +544,6 @@ def build_column_round_prompt(
     recipes: Sequence[ColumnStyleRecipe],
     composition: Mapping[str, Mapping[str, str]] | None = None,
     art_direction: ArtDirection | None = None,
-    scene_mood: str = "",
     group_index: int = 1,
     attempt: int = 1,
     flat_product: bool = False,
@@ -547,7 +566,6 @@ def build_column_round_prompt(
             _b1_block(
                 composition=composition,
                 flat_product=flat_product,
-                scene_mood=scene_mood,
             )
         )
         parts.extend(("", "=== PART 3 · ELEMENT ROTATION — one exclusive recipe per quadrant ==="))
@@ -555,17 +573,23 @@ def build_column_round_prompt(
             parts.append(_style_block(recipe))
             parts.append("")
         anchor_recipe = recipes[0]
-        surface = _FLAT_LAY_SURFACES[((group_index - 1) * 5) % len(_FLAT_LAY_SURFACES)]
-        scene = _STYLE_SCENES[((group_index - 1) * 5) % len(_STYLE_SCENES)]
+        # 场景来自豆包返回的 2-3 个候选，按组轮换；没有时用中性兜底（不是池）。
+        scene_option = pick_scene_option(art_direction, group_index)
+        surface = (
+            scene_option.surface
+            if scene_option is not None and scene_option.surface
+            else _FALLBACK_SURFACE
+        )
+        scene = scene_option.scene if scene_option is not None else _FALLBACK_SCENE
         parts.extend((
             "=== PART 4 · ART DIRECTION — one shared set for all four quadrants ===",
             _d1_block(
                 art_direction=art_direction,
-                scene_mood=scene_mood,
-                palette=anchor_recipe.palette,
+                palette=anchor_recipe.palette or "the artwork's own palette",
                 scene=scene,
                 flat_product=flat_product,
                 surface=surface,
+                scene_option=scene_option,
             ),
         ))
         parts.append(

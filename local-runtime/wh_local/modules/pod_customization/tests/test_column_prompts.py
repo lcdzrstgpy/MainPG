@@ -78,6 +78,24 @@ def test_round_one_renders_a1_b1_c1_d1() -> None:
     assert "本款配方只作用于本象限" in prompt
 
 
+def test_style_blocks_carry_area_and_relative_size_contract() -> None:
+    """v23：每款配方必须带面积份额与相对尺寸，否则四格只剩零散图案。"""
+    prompt = build_column_round_prompt(
+        build_column_base_prompt(_fields(), ""),
+        role="lifestyle",
+        recipes=_recipes(elements={1: {"hero": "尤加利叶纹样", "narrative": ["蕨类叶脉"], "rhythm": ["橡果图形"]}}),
+        composition=_composition(),
+        group_index=1,
+    )
+    assert "视觉权重（本款硬要求）" in prompt
+    assert "主元素约占可印表面" in prompt
+    assert "线性尺寸至少是 Narrative 的 1.8 倍" in prompt
+    assert "Rhythm 的 3.6 倍" in prompt
+    assert "满印密度（本款硬要求）" in prompt
+    assert "可印表面覆盖率 ≥ 90%" in prompt
+    assert "weight=" in prompt
+
+
 def test_derived_rounds_only_render_a2_b2() -> None:
     for role in ("detail_a", "detail_b", "hero"):
         prompt = build_column_round_prompt(
