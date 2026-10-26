@@ -176,6 +176,7 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
   const [expandedTitle, setExpandedTitle] = useState("");
   const [rateOpen, setRateOpen] = useState(false);
   const [imageDraft, setImageDraft] = useState<Record<string, string>>({});
+  const [manualPriceDraft, setManualPriceDraft] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [reloadToken, setReloadToken] = useState(0);
@@ -268,6 +269,20 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
     }, "SKU 已删除");
   };
 
+  const saveManualPrice = async () => {
+    if (!detail) return;
+    const price = manualPriceDraft.trim();
+    if (!price) {
+      setError("请填写申报价");
+      return;
+    }
+    await run("manual-price", async () => {
+      const payload = await sourcingLedgerApi.setManualPrice(detail.skc, price);
+      setDetail(payload);
+      reload();
+    }, "申报价已保存，利润已按新价格重算");
+  };
+
   const openDetail = useCallback(async (item: LedgerItem) => {
     setDetailBusy(true);
     setNotice("");
@@ -295,6 +310,11 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
   useEffect(() => {
     setStoreDraft(detail?.store_name || "");
   }, [detail?.skc, detail?.store_name]);
+
+  useEffect(() => {
+    const manual = (detail?.declared_prices || []).find((row) => row.manual);
+    setManualPriceDraft(manual ? manual.adjusted_price_cny : "");
+  }, [detail]);
 
   const saveStore = async (value: string) => {
     if (!detail) return;
@@ -1216,6 +1236,27 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
                   <small>多个 SKU 价格不同时可指定一个；未指定默认取最低价</small>
                 </div>
               </div>
+              <div className="ledger-manual-price">
+                <span>手动填写申报价（元）</span>
+                <input
+                  value={manualPriceDraft}
+                  inputMode="decimal"
+                  placeholder="如 150"
+                  onChange={(event) => setManualPriceDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") void saveManualPrice();
+                  }}
+                />
+                <button
+                  type="button"
+                  className="ledger-btn is-primary"
+                  onClick={() => void saveManualPrice()}
+                  disabled={Boolean(busy) || !manualPriceDraft.trim()}
+                >
+                  {busy === "manual-price" ? "保存中…" : "保存"}
+                </button>
+                <small>采集不到时可直接填 Temu 上可上架的申报价，同样参与利润核算</small>
+              </div>
               <div className="ledger-price-table">
                 <table>
                   <thead>
@@ -1278,6 +1319,11 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
                     ? `按货源 ${money(bestSource.landed_cost_cny)} 计算`
                     : "先添加货源并采集申报价"}
                 </small>
+                {bestSource && detail.adjusted_min && !detail.site_code ? (
+                  <small className="ledger-foot-tip">
+                    还没有站点，无法计算利润：请在上方「站点」里选择站点
+                  </small>
+                ) : null}
               </div>
               {detail.in_library ? (
                 <button

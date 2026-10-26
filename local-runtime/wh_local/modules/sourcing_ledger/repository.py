@@ -470,6 +470,15 @@ class SourcingLedgerRepository:
             )
         return sku_ref
 
+    def clear_price_exclusion(self, workspace_id: str, skc: str, sku_ref: str) -> None:
+        """手动重新填写申报价时，解除之前的删除标记。"""
+        with self._session() as connection:
+            connection.execute(
+                "DELETE FROM product_declared_price_exclusions "
+                "WHERE workspace_id = ? AND skc = ? AND sku_ref = ?",
+                (_text(workspace_id), _text(skc), _text(sku_ref)),
+            )
+
     def library_records(self, workspace_id: str) -> set[tuple[str, str]]:
         """已入产品库的 (skc, site_code)。"""
         with self._session() as connection:

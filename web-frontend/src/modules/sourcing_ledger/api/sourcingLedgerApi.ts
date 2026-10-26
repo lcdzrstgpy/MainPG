@@ -87,6 +87,7 @@ export type LedgerDeclaredPrice = {
   site: string;
   captured_at: string;
   selected?: boolean;
+  manual?: boolean;
 };
 
 export type LedgerItemDetail = {
@@ -168,6 +169,11 @@ export const sourcingLedgerApi = {
       `${base}/items/${encodeURIComponent(skc)}/declared/${encodeURIComponent(rowId)}`,
       { method: "DELETE" },
     ),
+  setManualPrice: (skc: string, priceCny: string) =>
+    ppRequest<LedgerItemDetail>(context(), `${base}/items/${encodeURIComponent(skc)}/declared`, {
+      method: "POST",
+      body: { price_cny: priceCny },
+    }),
   createSource: (skc: string, payload: LedgerSourcePayload) =>
     ppRequest<LedgerItemDetail>(context(), `${base}/items/${encodeURIComponent(skc)}/sources`, {
       method: "POST",

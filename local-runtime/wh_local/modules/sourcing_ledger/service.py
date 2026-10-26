@@ -18,6 +18,9 @@ _MIGRATION_KEY = "links_migrated"
 DEFAULT_WEIGHT_KG = Decimal("0.5")
 # 可入库门槛：净利润 ≥ 10 元（用户口径）。
 READY_MIN_NET_PROFIT = Decimal("10")
+# 手动填写申报价：固定批次与 SKU 标识，重复保存只覆盖这一行，不影响采集行。
+MANUAL_DECLARED_BATCH = "__manual__"
+MANUAL_DECLARED_SKU_REF = "__manual__"
 
 # Temu 站点名 → 利润引擎站点代码（内置站点）。
 _SITE_ALIASES = {
@@ -848,7 +851,12 @@ class SourcingLedgerService:
         latest = [
             row
             for row in declared
-            if (not declared_site or _text(row.get("site")) == declared_site)
+            # 手动填写的申报价没有采集站点（site 为空），任何站点筛选下都应保留。
+            if (
+                not declared_site
+                or not _text(row.get("site"))
+                or _text(row.get("site")) == declared_site
+            )
             and (code, _text(row.get("sku_ref"))) not in exclusions
         ][:200]
         adjusted = None
@@ -886,6 +894,7 @@ class SourcingLedgerService:
                 "adjusted_price_cny": _money(row.get("adjusted_price_cny")),
                 "site": _text(row.get("site")),
                 "captured_at": _text(row.get("captured_at")),
+                "manual": _text(row.get("batch_id")) == MANUAL_DECLARED_BATCH,
                 "selected": bool(
                     (selection and _text(row.get("sku_ref")) == selection)
                     or (not selection and _text(row.get("id")) == default_row_id)
@@ -957,22 +966,44 @@ class SourcingLedgerService:
             existing = self._repository.source_by_id(workspace, source_id)
             if existing is None:
                 raise LookupError("货源不存在")
-            self._repository.update_source(
-                workspace,
-                source_id,
-                {
-                    "source_url": _text(payload.get("source_url")) or existing["source_url"],
-                    "source_title": _clean_source_title(payload.get("source_title")),
-                    "shop_name": _text(payload.get("shop_name")),
-                    "main_image_url": _text(payload.get("main_image_url")),
-                    "price_cny": price,
-                    "moq": moq,
-                    "domestic_freight_cny": freight,
-                    "weight_kg": _decimal_text(payload.get("weight_kg")),
-                    "landed_cost_cny": landed_cost(price, freight, moq),
-                    "note": _text(payload.get("note")),
-                },
+            # 只改请求里带的字段：前端保存成本时不会带图片/店铺，不能把它们清空。
+            price_text = (
+                _decimal_text(payload.get("price_cny"))
+                if "price_cny" in payload
+                else _text(existing.get("price_cny"))
             )
+            freight_text = (
+                _decimal_text(payload.get("domestic_freight_cny"))
+                if "domestic_freight_cny" in payload
+                else _text(existing.get("domestic_freight_cny"))
+            )
+            fields = {
+                "source_url": _text(payload.get("source_url")) or _text(existing.get("source_url")),
+                "source_title": (
+                    _clean_source_title(payload.get("source_title"))
+                    if "source_title" in payload
+                    else _text(existing.get("source_title"))
+                ),
+                "price_cny": price_text,
+                "moq": moq,
+                "domestic_freight_cny": freight_text,
+                "weight_kg": (
+                    _decimal_text(payload.get("weight_kg"))
+                    if "weight_kg" in payload
+                    else _text(existing.get("weight_kg"))
+                ),
+                "landed_cost_cny": landed_cost(price_text, freight_text, moq),
+                "note": (
+                    _text(payload.get("note"))
+                    if "note" in payload
+                    else _text(existing.get("note"))
+                ),
+            }
+            if "shop_name" in payload:
+                fields["shop_name"] = _text(payload.get("shop_name"))
+            if "main_image_url" in payload:
+                fields["main_image_url"] = _text(payload.get("main_image_url"))
+            self._repository.update_source(workspace, source_id, fields)
         else:
             source_url = _text(payload.get("source_url"))
             if not source_url:
@@ -1025,6 +1056,49 @@ class SourcingLedgerService:
         if not code:
             raise ValueError("缺少商品货号")
         self._repository.exclude_declared_price(workspace, code, row_id)
+        return self.item_detail(workspace, code)
+
+    def set_manual_declared_price(
+        self, workspace_id: str, skc: str, price_cny: str, *, sku_attribute_text: str = ""
+    ) -> dict[str, Any]:
+        """手动填写申报价：采集不到时，直接用 Temu 上可上架的价格核算利润。"""
+        workspace, code = _text(workspace_id), _text(skc)
+        if not code:
+            raise ValueError("缺少商品货号")
+        price = _num(price_cny)
+        if price is None or price <= 0:
+            raise ValueError("请填写大于 0 的申报价")
+        detail = self.item_detail(workspace, code)
+        site_labels = [_text(value) for value in detail.get("site_labels") or [] if _text(value)]
+        # 用当前展示站点（含手选站点），保证再次打开详情时能按同一个站点匹配到这条手动价。
+        site_label = _text(detail.get("site")) or (site_labels[0] if site_labels else "")
+        now = datetime.now(timezone.utc).isoformat()
+        price_text = _money(price)
+        self._repository.upsert_declared_prices(
+            [
+                {
+                    "workspace_id": workspace,
+                    "batch_id": MANUAL_DECLARED_BATCH,
+                    "market": MARKET,
+                    "market_skc_id": _text(detail.get("market_skc_id")) or code,
+                    "market_skc_code": _text(detail.get("market_skc_code")) or code,
+                    "skc": code,
+                    "site": site_label,
+                    "sku_id": "",
+                    "sku_merchant_code": "",
+                    "sku_attribute_text": _text(sku_attribute_text) or "手动填写",
+                    "sku_ref": MANUAL_DECLARED_SKU_REF,
+                    "original_price_cny": price_text,
+                    "adjusted_price_cny": price_text,
+                    "product_title": _text(detail.get("title")),
+                    "match_status": "matched",
+                    "match_method": "manual",
+                    "captured_at": now,
+                }
+            ]
+        )
+        # 之前删过手动价时解除排除，否则重新保存后仍不可见。
+        self._repository.clear_price_exclusion(workspace, code, MANUAL_DECLARED_SKU_REF)
         return self.item_detail(workspace, code)
 
     # ---- 站点手动指定 ----
@@ -1220,7 +1294,8 @@ class SourcingLedgerService:
                 "source_url": _text(chosen.get("source_url")),
                 "source_groups_json": json.dumps(groups, ensure_ascii=False),
                 "source_type": "price_verification",
-                "source_main_image_url": detail.get("source_image_url") or detail["image_url"],
+                # 产品库主图用处理后的主图（预览地址在读取时重签）；没有处理结果才退回采集原图。
+                "source_main_image_url": detail.get("image_url") or detail.get("source_image_url") or "",
                 "visibility": "shared",
                 "store_name": self._repository.store_overrides(workspace).get(code, ""),
             },

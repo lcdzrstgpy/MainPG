@@ -57,6 +57,11 @@ class PriceSelectionPayload(BaseModel):
     sku_ref: str = ""
 
 
+class ManualPricePayload(BaseModel):
+    price_cny: str = ""
+    sku_attribute_text: str = ""
+
+
 class StorePayload(BaseModel):
     store_name: str = ""
 
@@ -161,6 +166,21 @@ def create_sourcing_ledger_router(service: SourcingLedgerService) -> APIRouter:
         except ValueError as error:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(error)) from error
 
+    @router.post("/items/{skc}/declared")
+    def set_manual_declared_price(
+        skc: str,
+        payload: ManualPricePayload,
+        workspace: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        try:
+            return service.set_manual_declared_price(
+                workspace_id(workspace), skc, payload.price_cny, sku_attribute_text=payload.sku_attribute_text
+            )
+        except LookupError as error:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(error)) from error
+
     @router.delete("/items/{skc}/declared/{row_id}")
     def delete_declared_price(
         skc: str,
@@ -198,7 +218,7 @@ def create_sourcing_ledger_router(service: SourcingLedgerService) -> APIRouter:
     ) -> dict[str, Any]:
         try:
             return service.save_source(
-                workspace_id(workspace), skc, payload.model_dump(), source_id=source_id
+                workspace_id(workspace), skc, payload.model_dump(exclude_unset=True), source_id=source_id
             )
         except LookupError as error:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(error)) from error

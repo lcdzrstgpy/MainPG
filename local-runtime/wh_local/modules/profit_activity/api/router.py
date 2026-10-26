@@ -671,7 +671,7 @@ def _enrich_product_source_images(products: list[dict[str, Any]], database_path:
 
 
 def _processed_product_image(
-    connection: Any, workspace_id: str, skc: str
+    connection: Any, workspace_id: str, skc: str, source_url: str = ""
 ) -> str:
     """按产品主键找处理后的主图（预览资产地址会重新签名）。"""
     code = str(skc or "").strip()
@@ -685,6 +685,15 @@ def _processed_product_image(
                 (workspace_id, code),
             ).fetchone()
             code = str(row["skc"] or "").strip() if row is not None else ""
+            if not code and source_url:
+                # 平台 SKC 没有绑定记录时，用 1688 货源反查台账里的 PP 货号。
+                row = connection.execute(
+                    "SELECT product_key FROM product_sourcing_sources "
+                    "WHERE workspace_id = ? AND source_url = ? AND key_kind = 'product_code' "
+                    "ORDER BY id DESC LIMIT 1",
+                    (workspace_id, source_url),
+                ).fetchone()
+                code = str(row["product_key"] or "").strip() if row is not None else ""
         if not code:
             return ""
         row = connection.execute(
@@ -713,17 +722,21 @@ def _resign_product_images(
     if not db_path or not products:
         return
     try:
-        connection = connect(db_path)
+        connection = connect(Path(db_path))
         try:
             for product in products:
                 stored = str(product.get("source_main_image_url") or "").strip()
                 if stored.startswith("/api/product-processing/preview/assets/"):
                     product["source_main_image_url"] = preview_content_url(connection, stored)
                     continue
-                if stored or str(product.get("source_type") or "") != "price_verification":
+                if str(product.get("source_type") or "") != "price_verification":
                     continue
+                # 核价入库产品优先展示产品处理后的主图；历史记录存的是采集原图，这里一并纠正。
                 image = _processed_product_image(
-                    connection, workspace_id, str(product.get("skc") or "")
+                    connection,
+                    workspace_id,
+                    str(product.get("skc") or ""),
+                    str(product.get("source_url") or ""),
                 )
                 if image:
                     product["source_main_image_url"] = image
