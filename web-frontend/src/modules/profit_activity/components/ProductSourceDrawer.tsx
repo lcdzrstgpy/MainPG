@@ -3,8 +3,7 @@ import { createPortal } from "react-dom";
 import type { ClipboardEvent as ReactClipboardEvent, MouseEvent as ReactMouseEvent } from "react";
 
 import { listProductSources, loadProductImage, updateProductSourceGroup } from "../api/profitActivityApi";
-import type { ProfitActivityProduct, ProductSourceLink, ProductSources } from "../types/products";
-import { priceVerificationApi } from "../../price_verification/api/priceVerificationApi";
+import type { ProfitActivityProduct, ProductSources } from "../types/products";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 import type { PreviewImage } from "./ImagePreviewModal";
 
@@ -112,16 +111,17 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
   const [sources, setSources] = useState<ProductSources | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [unlinkBusy, setUnlinkBusy] = useState<number | null>(null);
-  const [unlinkError, setUnlinkError] = useState("");
+  const [actionError, setActionError] = useState("");
   // 非核价产品货源卡片的编辑态：可新增/删除多条货源链接与截图
   const [editingSources, setEditingSources] = useState(false);
   const [editRows, setEditRows] = useState<EditSourceRow[]>([]);
+  // 只有点「编辑」的那一行才显示输入框，其余行保持可点击跳转。
+  const [editingRowKeys, setEditingRowKeys] = useState<number[]>([]);
   const [savingSource, setSavingSource] = useState(false);
   // 货源截图大图预览
   const [previewImage, setPreviewImage] = useState<PreviewImage | null>(null);
   const nextEditRowKeyRef = useRef(0);
-  // 抽屉内维护最新产品数据：保存/解除关联后更新，避免编辑态复用旧的 source_groups
+  // 抽屉内维护最新产品数据：保存后更新，避免编辑态复用旧的 source_groups
   const [productData, setProductData] = useState<ProfitActivityProduct | null>(product);
 
   const open = product !== null;
@@ -150,45 +150,19 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
     if (open) void refresh();
     else {
       setSources(null);
-      setUnlinkError("");
+      setActionError("");
       setEditingSources(false);
       setEditRows([]);
+      setEditingRowKeys([]);
       setSavingSource(false);
       setPreviewImage(null);
     }
   }, [open, refresh]);
 
-  if (!open || !product) return null;
-
-  // 使用抽屉内最新产品数据（保存后刷新），避免编辑态复用旧的 source_groups
-  const current = productData ?? product;
-
-  // 核价入库产品额外展示「解除关联」；货源卡片统一展示单价/运费/到手/重量与图片（不做利润细则）。
-  const isPriceVerification = current.source_type === "price_verification";
-
-  const unlink = async (link: ProductSourceLink) => {
-    if (!link.batch_id) return;
-    setUnlinkBusy(link.id);
-    setUnlinkError("");
-    try {
-      await priceVerificationApi.removeSkcSourceLink(link.batch_id, link.id);
-      await refresh();
-      onChanged?.();
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setUnlinkError(/401|token|登录|过期|会话/.test(message)
-        ? "登录会话已失效或无权解除该关联：请登录数据所属工作区后重试。"
-        : `解除关联失败：${message}`);
-    } finally {
-      setUnlinkBusy(null);
-    }
-  };
-
-  // 进入“修改货源链接”编辑态，载入全部货源组；同时带上现有单价/运费/图片，
-  // 编辑时不至于丢掉已经展示的信息（价格在核价链接里、图片可能来自产品主图）。
-  const startEditSources = () => {
-    const groups = (productData ?? product).source_groups ?? [];
-    const links = sources?.links ?? [];
+  // 抽屉默认就是编辑态：直接改链接/补图片/新增后保存，不再需要先点「修改货源」。
+  const startEditSources = (data: ProductSources | null = sources) => {
+    const groups = (productData ?? product)?.source_groups ?? [];
+    const links = data?.links ?? [];
     const buildRow = (key: number, url: string, originalGroup: number): EditSourceRow => {
       const link = links.find((item) => (item.source_url || "").trim() === url.trim());
       return {
@@ -210,9 +184,23 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
         : [buildRow(0, "", 0)];
     nextEditRowKeyRef.current = rows.length;
     setEditRows(rows);
+    // 已有链接默认展示成可点击的链接；空链接（新增行）直接进入填写态。
+    setEditingRowKeys(rows.filter((row) => !row.url.trim()).map((row) => row.key));
     setEditingSources(true);
-    setUnlinkError("");
+    setActionError("");
   };
+
+  useEffect(() => {
+    if (!open || loading || !sources || editingSources) return;
+    startEditSources(sources);
+    // startEditSources 每次渲染都会重建，只跟随数据加载完成进入编辑态。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, loading, sources, editingSources]);
+
+  if (!open || !product) return null;
+
+  // 使用抽屉内最新产品数据（保存后刷新），避免编辑态复用旧的 source_groups
+  const current = productData ?? product;
 
   const cancelEditSources = () => {
     for (const row of editRows) {
@@ -220,13 +208,23 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
     }
     setEditingSources(false);
     setEditRows([]);
+    setEditingRowKeys([]);
+  };
+
+  // 抽屉常驻编辑态：「撤销」只还原到最近一次保存的数据，不退出编辑。
+  const resetEditSources = () => {
+    for (const row of editRows) {
+      if (row.imagePreview) URL.revokeObjectURL(row.imagePreview);
+    }
+    startEditSources(sources);
   };
 
   const addEditRow = () => {
+    const key = nextEditRowKeyRef.current++;
     setEditRows((current) => [
       ...current,
       {
-        key: nextEditRowKeyRef.current++,
+        key,
         originalGroup: current.length,
         url: "",
         title: "",
@@ -237,6 +235,13 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
         imagePreview: "",
       },
     ]);
+    setEditingRowKeys((current) => [...current, key]);
+  };
+
+  const toggleEditRow = (key: number) => {
+    setEditingRowKeys((current) =>
+      current.includes(key) ? current.filter((value) => value !== key) : [...current, key],
+    );
   };
 
   const removeEditRow = (key: number) => {
@@ -246,6 +251,7 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
       if (target?.imagePreview) URL.revokeObjectURL(target.imagePreview);
       return current.filter((row) => row.key !== key);
     });
+    setEditingRowKeys((current) => current.filter((value) => value !== key));
   };
 
   const changeEditRowUrl = (key: number, url: string) => {
@@ -272,11 +278,11 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
     if (savingSource || !editingSources) return;
     const filled = editRows.filter((row) => row.url.trim().length > 0);
     if (!filled.length) {
-      setUnlinkError("请至少保留一个货源链接再保存。");
+      setActionError("请至少保留一个货源链接再保存。");
       return;
     }
     setSavingSource(true);
-    setUnlinkError("");
+    setActionError("");
     try {
       // 重建货源组：仅保留有链接的组，组号紧凑重排；链接未变且未换图时保留原截图
       const originals = (productData ?? product).source_groups ?? [];
@@ -311,7 +317,7 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error("[货源保存-错误] 保存失败:", err);
-      setUnlinkError(`保存失败：${message}`);
+      setActionError(`保存失败：${message}`);
     } finally {
       setSavingSource(false);
     }
@@ -334,11 +340,6 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
             </p>
           </div>
           <div className="profit-source-drawer-head-actions">
-            {!editingSources ? (
-              <button className="profit-source-edit-button" onClick={startEditSources}>
-                修改货源
-              </button>
-            ) : null}
             <button className="profit-source-drawer-close" onClick={onClose} aria-label="关闭">×</button>
           </div>
         </header>
@@ -346,103 +347,15 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
         <div className="profit-source-drawer-body">
           {loading ? <p className="profit-source-drawer-status">加载货源明细中…</p> : null}
           {!loading && error ? <p className="profit-source-drawer-status is-error">{error}</p> : null}
-          {!loading && !error && !editingSources && (sources?.links.length ?? 0) === 0 ? (
-            <div className="profit-source-drawer-empty">
-              <p className="profit-source-drawer-status">该 SKC 暂无货源链接，点击下方按钮新增。</p>
-              <button className="profit-source-add-row" onClick={startEditSources}>新增货源链接</button>
-            </div>
-          ) : null}
 
-          {editingSources ? null : (sources?.links ?? []).map((link) => {
-            const price = toNumber(link.price_cny);
-            const freight = toNumber(link.domestic_freight_cny);
-            const landed = price + (Number.isFinite(freight) ? freight : 0);
-            const weight = toNumber(current.weight_kg);
-            return (
-              <div className={`profit-source-card ${isPriceVerification ? "" : "profit-source-card-simple"}`} key={link.id}>
-                <div className="profit-source-card-row">
-                  <a className="profit-source-card-main" href={link.source_url} target="_blank" rel="noreferrer">
-                    {(link.images?.length ?? 0) > 0 ? (
-                      <span className="profit-source-thumbs">
-                        {(link.images || []).map((image, imageIndex) => (
-                          <img
-                            key={`${link.id}-${image.id}-${imageIndex}`}
-                            className="profit-source-thumb"
-                            src={image.image_url}
-                            alt="货源图"
-                            loading="lazy"
-                            referrerPolicy="no-referrer"
-                            title="点击查看大图"
-                            onClick={(event) => {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              setPreviewImage({ url: image.image_url, label: "货源图" });
-                            }}
-                          />
-                        ))}
-                      </span>
-                    ) : (
-                      <SourceCardImage
-                        skc={current.skc}
-                        site={sources?.site || current.site || current.site_code || "US"}
-                        group={link.group}
-                        imagePaths={link.image_paths ?? []}
-                        fallbackUrl={link.main_image_url}
-                        onPreview={setPreviewImage}
-                      />
-                    )}
-                    <span className="profit-source-card-body">
-                      <span className="profit-source-card-title">
-                        {link.source_title || (isPriceVerification ? "候选商品" : "货源链接")}
-                      </span>
-                      <small className="profit-source-card-meta">
-                        单价 {moneyText(link.price_cny)} · 运费 {moneyText(link.domestic_freight_cny)} · 到手{" "}
-                        {moneyText(landed)}
-                        {Number.isFinite(weight) ? ` · 重量 ${weight} kg` : ""}
-                      </small>
-                      <small className="profit-source-card-meta profit-source-card-url" title={link.source_url}>
-                        {link.source_url || "—"}
-                      </small>
-                    </span>
-                  </a>
-                  {isPriceVerification ? (
-                    <button
-                      className="profit-source-unlink"
-                      onClick={() => void unlink(link)}
-                      disabled={unlinkBusy === link.id}
-                    >
-                      {unlinkBusy === link.id ? "解除中…" : "解除关联"}
-                    </button>
-                  ) : null}
-                </div>
-              </div>
-            );
-          })}
-          {sources?.skus?.length ? (
-            <section className="profit-source-skus">
-              <h3>SKU 货号 / 属性（{sources.skus.length}）</h3>
-              <div className="profit-source-sku-scroll">
-                <table className="profit-source-sku-table">
-                  <thead>
-                    <tr>
-                      <th>SKU 货号</th>
-                      <th>SKU 属性</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {sources.skus.map((sku, index) => (
-                      <tr key={`${sku.sku_merchant_code || sku.sku_id}-${index}`}>
-                        <td>{sku.sku_merchant_code || sku.sku_id || "—"}</td>
-                        <td title={sku.sku_attribute_text}>{sku.sku_attribute_text || "—"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-          ) : null}
-          {editingSources ? (
-            <div className="profit-source-edit-panel">
+          <section className="profit-source-section">
+            <div className="profit-source-section-head">
+              <h3>货源（{editRows.length}）</h3>
+              <button className="profit-source-add-row" onClick={addEditRow} disabled={savingSource}>
+                新增链接
+              </button>
+            </div>
+            {editingSources ? (
               <div className="profit-source-edit-rows">
                 {editRows.map((row, index) => {
                   const original = (current.source_groups ?? [])[row.originalGroup];
@@ -487,53 +400,101 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
                             />
                           </label>
                         </div>
-                        <label className="profit-source-edit-url">
+                        <div className="profit-source-edit-url">
                           <span>货源链接 {index + 1}</span>
-                          <input
-                            type="url"
-                            placeholder="https://…"
-                            value={row.url}
-                            onChange={(event) => changeEditRowUrl(row.key, event.target.value)}
-                          />
-                          <small className="profit-source-edit-meta" title={row.title}>
-                            单价 {moneyText(row.price)} · 运费 {moneyText(row.freight)} · 到手{" "}
-                            {moneyText(
-                              toNumber(row.price)
-                                + (Number.isFinite(toNumber(row.freight)) ? toNumber(row.freight) : 0),
+                          <div className="profit-source-edit-url-line">
+                            {editingRowKeys.includes(row.key) ? (
+                              <input
+                                type="url"
+                                placeholder="https://…"
+                                value={row.url}
+                                autoFocus
+                                onChange={(event) => changeEditRowUrl(row.key, event.target.value)}
+                              />
+                            ) : row.url.trim() ? (
+                              <a
+                                className="profit-source-edit-url-link"
+                                href={row.url.trim()}
+                                target="_blank"
+                                rel="noreferrer"
+                                title={row.url}
+                              >
+                                {row.url}
+                              </a>
+                            ) : (
+                              <span className="profit-source-edit-url-empty">还没有填写链接</span>
                             )}
-                            {Number.isFinite(toNumber(current.weight_kg))
-                              ? ` · 重量 ${toNumber(current.weight_kg)} kg`
-                              : ""}
-                          </small>
-                        </label>
+                            <button
+                              type="button"
+                              className="profit-source-edit-url-toggle"
+                              onClick={() => toggleEditRow(row.key)}
+                            >
+                              {editingRowKeys.includes(row.key) ? "完成" : "编辑"}
+                            </button>
+                          </div>
+                        </div>
                       </div>
-                      <button
-                        className="profit-source-remove-row"
-                        onClick={() => removeEditRow(row.key)}
-                        disabled={editRows.length <= 1}
-                        title={editRows.length <= 1 ? "至少保留一个货源链接" : "删除该货源链接"}
-                      >
-                        删除
-                      </button>
+                      <div className="profit-source-edit-row-actions">
+                        <button
+                          className="profit-source-remove-row"
+                          onClick={() => removeEditRow(row.key)}
+                          disabled={editRows.length <= 1}
+                          title={editRows.length <= 1 ? "至少保留一个货源链接" : "删除该货源链接"}
+                        >
+                          删除
+                        </button>
+                      </div>
                     </div>
                   );
                 })}
               </div>
-              <div className="profit-source-edit-toolbar">
-                <button className="profit-source-add-row" onClick={addEditRow}>新增链接</button>
-                <span className="profit-source-edit-toolbar-actions">
-                  <button className="profit-edit-save" onClick={() => void saveEditSources()} disabled={savingSource}>
-                    {savingSource ? "保存中…" : "保存"}
-                  </button>
-                  <button className="profit-edit-cancel" onClick={cancelEditSources} disabled={savingSource}>
-                    撤销
-                  </button>
-                </span>
+            ) : null}
+          </section>
+
+          {sources?.skus?.length ? (
+            <section className="profit-source-section">
+              <div className="profit-source-section-head">
+                <h3>SKU 货号 / 属性（{sources.skus.length}）</h3>
               </div>
-            </div>
+              <div className="profit-source-sku-scroll">
+                <table className="profit-source-sku-table">
+                  <thead>
+                    <tr>
+                      <th>SKU 货号</th>
+                      <th>SKU 属性</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sources.skus.map((sku, index) => (
+                      <tr key={`${sku.sku_merchant_code || sku.sku_id}-${index}`}>
+                        <td>{sku.sku_merchant_code || sku.sku_id || "—"}</td>
+                        <td title={sku.sku_attribute_text}>{sku.sku_attribute_text || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
           ) : null}
-          {unlinkError ? <p className="profit-source-drawer-status is-error">{unlinkError}</p> : null}
+
+          {actionError ? <p className="profit-source-drawer-status is-error">{actionError}</p> : null}
         </div>
+
+        <footer className="profit-source-drawer-foot">
+          <span className="profit-source-foot-note">共 {editRows.length} 条货源链接</span>
+          <div className="profit-source-drawer-foot-actions">
+            <button className="profit-edit-cancel" onClick={resetEditSources} disabled={savingSource}>
+              撤销
+            </button>
+            <button
+              className="profit-edit-save"
+              onClick={() => void saveEditSources()}
+              disabled={savingSource || loading || !editRows.length}
+            >
+              {savingSource ? "保存中…" : "保存"}
+            </button>
+          </div>
+        </footer>
       </aside>
       {previewImage ? (
         <ImagePreviewModal

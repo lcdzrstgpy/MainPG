@@ -813,7 +813,7 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
                     <td><EditableCell field="selling_price" item={item} inlineEdit={inlineEdit} onEdit={beginInlineEdit} onSave={saveInlineEdit} onCancel={() => setInlineEdit(null)} onValueChange={setInlineValue} disabled={item.can_edit === false}>{money(item.selling_price)}</EditableCell></td>
                     <td><EditableCell field="cost_price" item={item} inlineEdit={inlineEdit} onEdit={beginInlineEdit} onSave={saveInlineEdit} onCancel={() => setInlineEdit(null)} onValueChange={setInlineValue} disabled={item.can_edit === false}>{money(item.cost_price)}</EditableCell></td>
                     <td><EditableCell field="weight_kg" item={item} inlineEdit={inlineEdit} onEdit={beginInlineEdit} onSave={saveInlineEdit} onCancel={() => setInlineEdit(null)} onValueChange={setInlineValue} disabled={item.can_edit === false}>{money(item.weight_kg)}</EditableCell></td>
-                    <td className={(item.net_profit ?? 0) >= 0 ? "profit-good" : "profit-bad"}>{money(item.net_profit)}</td>
+                    <td className={profitTone(item.net_profit)}>{money(item.net_profit)}</td>
                     <td>{percent(item.profit_rate)}</td>
                     <td className="profit-source-cell"><button className="profit-source-open" onClick={() => setActiveProduct(item)} title="查看/编辑该 SKC 的货源链接">打开（{(item.source_groups ?? []).filter((group) => group?.source_url).length}）</button></td>
                     <td className="profit-note-cell" title={item.note || ""}><EditableCell field="note" item={item} inlineEdit={inlineEdit} onEdit={beginInlineEdit} onSave={saveInlineEdit} onCancel={() => setInlineEdit(null)} onValueChange={setInlineValue} disabled={item.can_edit === false}>{shortNote(item.note) || "-"}</EditableCell></td>
@@ -1105,4 +1105,13 @@ function money(value: unknown) {
 
 function percent(value: unknown) {
   return typeof value === "number" ? `${(value * 100).toFixed(2)}%` : "-";
+}
+
+/** 净利润三档：> 10 绿、0~10 橙、< 0 红；没有利润不着色。 */
+function profitTone(value?: number | null) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return "";
+  const amount = Number(value);
+  if (amount < 0) return "profit-bad";
+  if (amount > 10) return "profit-good";
+  return "profit-caution";
 }

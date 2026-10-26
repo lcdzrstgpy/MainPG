@@ -762,3 +762,82 @@
     animation: none;
   }
 }
+
+/* 核价右侧边栏（Temu SKU 抽屉）跟随工作台主题；用 [data-theme] 压过模块内的硬编码配色 */
+[data-theme] .pv-temu-sku-drawer-layer {
+  background: var(--theme-module-overlay, rgba(26, 51, 70, 0.38));
+}
+
+[data-theme] .pv-temu-sku-drawer {
+  width: min(560px, 92vw);
+  padding: 0 22px;
+  background: var(--theme-module-surface, #fff);
+  box-shadow: -18px 0 40px rgba(12, 28, 42, 0.18);
+}
+
+[data-theme] .pv-temu-sku-drawer-head {
+  padding: 18px 0 12px;
+  background: var(--theme-module-surface, #fff);
+  border-bottom: 1px solid var(--theme-module-border, #e6eef4);
+}
+
+[data-theme] .pv-temu-sku-drawer-head span {
+  color: var(--theme-primary, #0b95be);
+}
+
+[data-theme] .pv-temu-sku-drawer-head strong {
+  color: var(--theme-text-primary, #17334d);
+}
+
+[data-theme] .pv-temu-sku-drawer-head small {
+  color: var(--theme-text-muted, #70889d);
+}
+
+[data-theme] .pv-temu-sku-drawer-head > button {
+  border-color: var(--theme-module-border, #d4e3ec);
+  color: var(--theme-text-muted, #607a90);
+  background: var(--theme-module-surface, #fff);
+}
+
+[data-theme] .pv-temu-sku-product {
+  padding: 16px 0;
+  border-bottom: 1px solid var(--theme-module-border, #e7eff4);
+}
+
+[data-theme] .pv-temu-sku-product img {
+  border-color: var(--theme-module-border, #dce8ef);
+  background: var(--theme-module-surface-soft, #f1f7fa);
+}
+
+[data-theme] .pv-temu-sku-product strong {
+  color: var(--theme-text-primary, #29445c);
+}
+
+[data-theme] .pv-temu-sku-drawer-body {
+  padding: 20px 0;
+}
+
+[data-theme] .pv-temu-sku-status {
+  color: var(--theme-text-muted, #71899e);
+}
+
+[data-theme] .pv-temu-sku-table-wrap {
+  border-color: var(--theme-module-border, #dce8f0);
+  border-radius: 12px;
+}
+
+[data-theme] .pv-temu-sku-table th {
+  color: var(--theme-text-secondary, #6d8498);
+  background: var(--theme-module-surface-soft, #f4f9fc);
+}
+
+[data-theme] .pv-temu-sku-table td {
+  border-top-color: var(--theme-module-border, #eaf0f4);
+  color: var(--theme-text-secondary, #355269);
+}
+
+@media (max-width: 560px) {
+  [data-theme] .pv-temu-sku-drawer {
+    padding: 0 16px;
+  }
+}

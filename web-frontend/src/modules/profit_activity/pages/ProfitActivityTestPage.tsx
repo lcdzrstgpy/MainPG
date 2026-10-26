@@ -1451,13 +1451,33 @@ async function fetchImageFile(url: string): Promise<File | null> {
 }
 
 function PreviewStrip({ calculation }: { calculation?: Record<string, unknown> }) {
-  const items: Array<[string, unknown]> = [
-    ["总成本", calculation?.total_cost],
-    ["毛利润", calculation?.gross_profit],
-    ["净利润", calculation?.net_profit],
-    ["利润率", typeof calculation?.profit_rate === "number" ? `${(calculation.profit_rate * 100).toFixed(2)}%` : calculation?.profit_rate],
+  const netProfit = calculation?.net_profit;
+  const items: Array<{ label: string; value: string; tone?: string }> = [
+    { label: "总成本", value: money(calculation?.total_cost) },
+    { label: "毛利润", value: money(calculation?.gross_profit) },
+    { label: "净利润", value: money(netProfit), tone: profitTone(netProfit) },
+    { label: "利润率", value: calculation?.profit_rate == null ? "-" : percent(calculation.profit_rate) },
   ];
-  return <div className="profit-preview-strip">{items.map(([label, value]) => <div key={label}><span>{label}</span><strong>{formatValue(value)}</strong></div>)}</div>;
+  return (
+    <div className="profit-preview-strip">
+      {items.map((item) => (
+        <div key={item.label}>
+          <span>{item.label}</span>
+          <strong className={item.tone}>{item.value}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** 净利润三档：> 10 绿、0~10 橙、< 0 红；没有利润不着色。 */
+function profitTone(value: unknown) {
+  if (value === null || value === undefined || value === "") return "";
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return "";
+  if (amount < 0) return "profit-bad";
+  if (amount > 10) return "profit-good";
+  return "profit-caution";
 }
 
 function ImportPreviewSummary({ previews }: { previews: ImportPreview[] }) {
@@ -1656,17 +1676,15 @@ function positive(value: string) {
 }
 
 function money(value: unknown) {
+  if (value === null || value === undefined || value === "") return "-";
   const numberValue = typeof value === "number" ? value : Number(value);
   return Number.isFinite(numberValue) ? numberValue.toFixed(2) : "-";
 }
 
 function percent(value: unknown) {
+  if (value === null || value === undefined || value === "") return "-";
   const numberValue = typeof value === "number" ? value : Number(value);
   return Number.isFinite(numberValue) ? `${(numberValue * 100).toFixed(2)}%` : "-";
-}
-
-function formatValue(value: unknown) {
-  return typeof value === "number" ? value.toFixed(2) : value === undefined || value === null ? "-" : String(value);
 }
 
 function formatImportTime(value?: string) {
