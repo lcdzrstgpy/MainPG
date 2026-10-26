@@ -1526,6 +1526,8 @@ class PodBatchWorker:
             style_elements=self._style_elements(batch, style_index),
             # 配色 60-30-10 以 batch_id 为种子确定性洗牌（与元素分配同源，批内可复现）。
             seed=str(batch.get("batch_id") or ""),
+            # 场景来自批级美术指导里豆包返回的 2-3 个候选，按款轮换。
+            art_direction=self._column_art_direction(batch),
         )
         # 困难件结构锚定：只有豆包（第一版唯一验证过的多图端点）且模板确实带
         # 结构视图时才下发多参考图；速创命中时退回单主图，行为与现状一致。
@@ -2171,7 +2173,6 @@ class PodBatchWorker:
             recipes=recipes,
             composition=composition,
             art_direction=art_direction,
-            scene_mood=fields.scene_mood,
             group_index=group_index,
             attempt=task.attempt,
             flat_product=flat_product,

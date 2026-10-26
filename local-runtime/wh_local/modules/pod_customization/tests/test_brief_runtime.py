@@ -36,11 +36,11 @@ ABSTRACT_STYLE_KEYWORDS = (
 
 # 正例：具体、可绘制的事物。
 CONCRETE_STYLE_KEYWORDS = (
-    "红白波普条纹", "奶昔杯", "汉堡", "薯条", "甜甜圈", "冰淇淋", "爆米花", "热狗",
+    "奶昔杯", "汉堡", "薯条", "甜甜圈", "冰淇淋", "爆米花", "热狗",
     "汽水罐", "弹珠机", "点唱机", "轮滑鞋", "老式轿车", "汽车影院幕布", "停车标志牌",
     "霓虹灯牌", "复古收音机", "卡通美式人物", "餐厅桌布花纹", "吧台高脚椅", "留声机",
     "投币电话", "汽车牌照", "汽水吸管", "奶昔搅拌器", "爆米花桶", "热狗面包",
-    "冰淇淋甜筒", "甜甜圈糖霜", "复古海报字体", "汽车影院指示牌", "露天影院座椅",
+    "冰淇淋甜筒", "复古海报字体", "汽车影院指示牌", "露天影院座椅",
     "复古餐具", "卡通动物形象", "复古轿车", "风车", "老式冰箱", "餐盘",
     "老式加油机", "点唱机唱片", "复古餐具托盘", "苏打水杯",
 )
@@ -105,11 +105,26 @@ def test_brief_plan_freezes_title_only_scope_so_the_action_is_free() -> None:
     assert payload["billing_profile"] == "pod_random_v1"
 
 
-def test_validate_brief_fields_requires_at_least_twenty_four_theme_keywords() -> None:
-    with pytest.raises(ValueError, match="至少需要 24"):
+def test_validate_brief_fields_requires_at_least_twelve_theme_keywords() -> None:
+    with pytest.raises(ValueError, match="至少需要 12"):
         validate_brief_fields({**_fields(), "style_keywords": ["仙人掌", "太阳纹"]})
 
-    assert len(validate_brief_fields(_fields(24)).style_keywords) == 24
+    assert len(validate_brief_fields(_fields(12)).style_keywords) == 12
+
+
+def test_validate_brief_fields_merges_suffix_variants() -> None:
+    """「圣诞企鹅」这类带前缀的变体只保留基础名词，避免同义占位。"""
+    fields = validate_brief_fields(
+        {
+            **_fields(12),
+            "style_keywords": [*_fields(12)["style_keywords"], "圣诞企鹅", "企鹅", "圣诞姜饼屋", "姜饼屋"],
+        }
+    )
+
+    assert "企鹅" in fields.style_keywords
+    assert "圣诞企鹅" not in fields.style_keywords
+    assert "姜饼屋" in fields.style_keywords
+    assert "圣诞姜饼屋" not in fields.style_keywords
 
 
 def test_is_concrete_style_element_separates_objects_from_abstract_words() -> None:
@@ -128,12 +143,12 @@ def test_validate_brief_fields_drops_abstract_style_elements() -> None:
 
 
 def test_validate_brief_fields_reports_rejected_abstract_elements_in_feedback() -> None:
-    """剔除后不足 24 个时，把被剔除的具体条目回传给模型，触发契约修复重试。"""
+    """剔除后不足 12 个时，把被剔除的具体条目回传给模型，触发契约修复重试。"""
     with pytest.raises(ValueError, match="不是可印在平面上的图案元素已被剔除"):
         validate_brief_fields(
             {
                 **_fields(),
-                "style_keywords": [*CONCRETE_STYLE_KEYWORDS[:20], *ABSTRACT_STYLE_KEYWORDS],
+                "style_keywords": [*CONCRETE_STYLE_KEYWORDS[:10], *ABSTRACT_STYLE_KEYWORDS],
             }
         )
 
@@ -161,7 +176,7 @@ def test_validate_brief_fields_merges_safety_baseline_without_duplicates() -> No
 
 def test_validate_brief_fields_dedupes_and_requires_required_scalars() -> None:
     duplicated = {**_fields(), "style_keywords": ["仙人掌"] * 45}
-    with pytest.raises(ValueError, match="至少需要 24"):
+    with pytest.raises(ValueError, match="至少需要 12"):
         validate_brief_fields(duplicated)
 
     with pytest.raises(ValueError, match="不能为空"):
@@ -211,12 +226,12 @@ def test_generate_brief_fields_sends_theme_keyword_recipe_and_untrusted_notice()
     request = session.requests[0]
     assert request["json"]["thinking"] == {"type": "disabled"}
     schema = request["json"]["response_format"]["json_schema"]["schema"]
-    assert schema["properties"]["style_keywords"]["minItems"] == 24
+    assert schema["properties"]["style_keywords"]["minItems"] == 12
     # 模糊输入必须被当作不可信数据包裹。
     assert "untrusted" in str(request["json"]["messages"][0]["content"]).lower()
     user_prompt = str(request["json"]["messages"][1]["content"])
     assert "style_keywords" in user_prompt
-    assert "24" in user_prompt
+    assert "12" in user_prompt
 
 
 def test_generate_brief_fields_repairs_an_invalid_contract_then_succeeds() -> None:
@@ -264,14 +279,14 @@ def test_generate_brief_fields_requires_an_ark_grant() -> None:
         )
 
 
-def test_validate_brief_fields_allows_empty_craft_and_scene() -> None:
-    """工艺 / 场景是"必填但可为空"：键必须在，内容可以留空。"""
+def test_validate_brief_fields_allows_empty_craft() -> None:
+    """工艺是"必填但可为空"：键必须在，内容可以留空；场景字段已停用。"""
     fields = validate_brief_fields(_fields())
     assert fields.fabric_craft == ""
     assert fields.scene_mood == ""
 
 
-def test_validate_brief_fields_defaults_missing_craft_and_scene_keys() -> None:
+def test_validate_brief_fields_defaults_missing_craft_key() -> None:
     """可选字段缺省按空值处理，不再因为缺键整次判失败。"""
     payload = _fields()
     payload.pop("fabric_craft")
@@ -281,16 +296,17 @@ def test_validate_brief_fields_defaults_missing_craft_and_scene_keys() -> None:
     assert fields.fabric_craft == ""
 
 
-def test_brief_schema_declares_craft_and_scene_without_min_length() -> None:
+def test_brief_schema_declares_craft_without_min_length_and_drops_scene() -> None:
     schema = _BRIEF_RESPONSE_FORMAT["json_schema"]["schema"]
-    # 两键仍保留为属性且不设 minLength（允许留空），但不再强制 required。
+    # 工艺键保留为属性且不设 minLength（允许留空），但不再强制 required。
     assert "minLength" not in schema["properties"]["fabric_craft"]
-    assert "minLength" not in schema["properties"]["scene_mood"]
-    assert {"fabric_craft", "scene_mood"}.isdisjoint(schema["required"])
+    # v21：使用场景不再由智能填写产出。
+    assert "scene_mood" not in schema["properties"]
+    assert "fabric_craft" not in schema["required"]
 
 
-def test_generate_brief_fields_forwards_user_provided_craft_and_scene() -> None:
-    """用户在「智能填写」区显式填写的两段原文必须原样交给豆包（只做规范化）。"""
+def test_generate_brief_fields_forwards_user_provided_craft_only() -> None:
+    """用户显式填写的工艺原文必须原样交给豆包（只做规范化）；场景不再转发。"""
     session = _Session([_Response(_fields())])
     runtime = PodBriefRuntime(session=session, sleeper=lambda _seconds: None)
 
@@ -307,14 +323,11 @@ def test_generate_brief_fields_forwards_user_provided_craft_and_scene() -> None:
     )
 
     user_prompt = json.loads(str(session.requests[0]["json"]["messages"][1]["content"]))
-    assert user_prompt["user_provided"] == {
-        "fabric_craft": "绗缝被子那种",
-        "scene_mood": "暖光木质厨房",
-    }
+    assert user_prompt["user_provided"] == {"fabric_craft": "绗缝被子那种"}
 
 
-def test_generate_brief_fields_falls_back_to_user_provided_when_model_omits_them() -> None:
-    """可选键缺省时用用户原文兜底，不能让「智能生成」把已填的工艺/场景清空。"""
+def test_generate_brief_fields_falls_back_to_user_provided_craft() -> None:
+    """可选键缺省时用用户原文兜底，不能让「智能生成」把已填的工艺清空；场景固定留空。"""
     payload = _fields()
     payload.pop("fabric_craft")
     payload.pop("scene_mood")
@@ -334,7 +347,7 @@ def test_generate_brief_fields_falls_back_to_user_provided_when_model_omits_them
     )
 
     assert result.fields.fabric_craft == "绗缝被子那种"
-    assert result.fields.scene_mood == "暖光木质厨房"
+    assert result.fields.scene_mood == ""
 
 
 def _art_direction() -> dict[str, object]:
@@ -354,6 +367,18 @@ def _art_direction() -> dict[str, object]:
         "background": "背景压暗、f/2.0 浅景深",
         "composition_hint": "产品放在右下三分点，左上留出窗光",
         "avoid": ["冷白棚拍", "纯灰背景"],
+        "scene_options": [
+            {
+                "scene": "清晨的木质厨房岛台，右侧百叶窗透进条状光",
+                "surface": "暖胡桃木岛台",
+                "props": ["釉面陶瓷杯", "厚切木砧板", "黄铜壶尤加利叶"],
+            },
+            {
+                "scene": "午后阳光下的亚麻布餐桌，旁边是半开的窗",
+                "surface": "浅色亚麻桌布",
+                "props": ["折叠餐巾", "陶土花瓶", "干橙片"],
+            },
+        ],
     }
 
 
@@ -377,6 +402,10 @@ def test_brief_with_template_image_also_returns_art_direction() -> None:
 
     assert result.art_direction is not None
     assert "木质厨房岛台" in result.art_direction.scene
+    # 场景池：豆包返回 2-3 个候选，供生图按款轮换。
+    assert len(result.art_direction.scene_options) == 2
+    assert "亚麻布餐桌" in result.art_direction.scene_options[1].scene
+    assert result.art_direction.scene_options[1].props == ["折叠餐巾", "陶土花瓶", "干橙片"]
     # 视觉调用单独占最后一条冻结调用，业务字段仍有 3 次契约修复机会。
     assert outcomes == [("brf-art:brief:1", "success"), ("brf-art:brief:4", "success")]
     assert len(session.requests) == 2
@@ -386,6 +415,9 @@ def test_brief_with_template_image_also_returns_art_direction() -> None:
     schema = session.requests[1]["json"]["response_format"]["json_schema"]["schema"]
     assert schema["properties"]["props"]["minItems"] == 5
     assert schema["properties"]["props"]["maxItems"] == 8
+    assert "scene_options" in schema["required"]
+    assert schema["properties"]["scene_options"]["minItems"] == 2
+    assert schema["properties"]["scene_options"]["maxItems"] == 3
     runtime.close()
 
 
