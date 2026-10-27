@@ -885,19 +885,8 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
 
   return (
     <div className="verify-page verify-task-page">
-      {batchProcessing && createPortal(
-        <div className="daily-topbar-status is-progress" role="status" aria-label="处理进度">
-          <span className="daily-topbar-status-icon" aria-hidden="true">↻</span>
-          <strong>正在处理</strong>
-          <div className="topbar-collection-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
-            <span style={{ width: `${progress}%` }} />
-          </div>
-          <b>{progress}%</b>
-        </div>,
-        // portal 到工作台顶栏的专用插槽：面板 fill-mode 动画的层叠上下文
-        // 会把 fixed 子元素锁在面板内、被 sticky 顶栏盖住（与每日选品页同款修法）。
-        document.getElementById("workspace-topbar-status") || document.body,
-      )}
+      {/* 顶部「正在处理 x%」横条已移除：进度统一由标签栏右侧的全局进度按钮呈现，
+          避免同一个任务在两处各画一遍。页面内的大进度环（ProgressRing）保留。 */}
       {startConfirmOpen && createPortal(
         <div
           className="pp-start-confirm-mask"
