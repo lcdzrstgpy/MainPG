@@ -1404,3 +1404,74 @@ def test_zero_stock_is_allowed_but_warned(tmp_path: Path) -> None:
     sku = built["payload"]["productSkcReqs"][0]["productSkuReqs"][0]
     assert sku["productSkuStockQuantityReq"]["warehouseStockQuantityReqs"][0]["targetStockAvailable"] == 0
     assert any("库存为 0" in item for item in built["warnings"])
+
+
+class LinkedCatalogClient:
+    """attributes() 返回带父子联动的目录（供联动测试用）。"""
+
+    def attributes(self, cat_id: int, supported_type: int = 1) -> dict[str, Any]:
+        return _linked_catalog()
+
+
+def _linked_catalog() -> dict[str, Any]:
+    """父子联动样例：电池属性(2001) → 可充电电池(2002) / 不可充电电池(2003)。"""
+    return {
+        "properties": [
+            {"pid": 2001, "name": "电池属性", "templatePid": 5001, "required": False,
+             "values": [{"vid": 1, "value": "可充电电池"}, {"vid": 2, "value": "不可充电电池"}]},
+            {"pid": 2002, "name": "可充电电池", "templatePid": 5002, "parentTemplatePid": 5001,
+             "required": True, "values": [{"vid": 10, "value": "锂电池"}, {"vid": 11, "value": "镍系电池"}],
+             "templatePropertyValueParentList": [{"parentVidList": [1], "vidList": [10, 11]}]},
+            {"pid": 2003, "name": "不可充电电池", "templatePid": 5003, "parentTemplatePid": 5001,
+             "required": True, "values": [{"vid": 20, "value": "AA电池"}],
+             "templatePropertyValueParentList": [{"parentVidList": [2], "vidList": [20]}]},
+            {"pid": 2004, "name": "材料", "templatePid": 5004, "required": False,
+             "values": [{"vid": 30, "value": "塑料"}]},
+        ]
+    }
+
+
+def test_linked_properties_follow_parent_selection() -> None:
+    """Temu 属性联动：父级没选/取值不匹配时，子属性不该出现也不必填。"""
+    from wh_local.modules.temu_publish.schemas import GoodsPropertyInput
+    from wh_local.modules.temu_publish.service import _resolve_applicable_properties
+
+    catalog = _linked_catalog()
+    applicable, dropped = _resolve_applicable_properties(
+        catalog, [GoodsPropertyInput(pid=2001, vid=1)]
+    )
+    assert 2002 in applicable and 2003 not in applicable
+    assert dropped == ["不可充电电池"]
+
+    # 父级没选 → 两个子属性都不出现
+    applicable, dropped = _resolve_applicable_properties(catalog, [])
+    assert 2002 not in applicable and 2003 not in applicable
+    assert set(dropped) == {"可充电电池", "不可充电电池"}
+    # 无联动规则的属性永远在
+    assert 2001 in applicable and 2004 in applicable
+
+
+def test_inapplicable_property_is_dropped_from_payload(tmp_path: Path) -> None:
+    """填了不适用属性的值也不能进 payload，并给出 warning（Temu 会判属性不合法）。"""
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=LinkedCatalogClient())
+
+    # 父级选「可充电」：2002 必填且适用，2003 不适用（即使填了也不能进 payload）
+    built = service.build_goods_payload(
+        _draft(
+            properties=[
+                GoodsPropertyInput(pid=2001, vid=1),
+                GoodsPropertyInput(pid=2002, vid=10),
+                GoodsPropertyInput(pid=2003, vid=20),
+            ]
+        )
+    )
+    pids = [item["pid"] for item in built["payload"]["productPropertyReqs"]]
+    assert 2002 in pids and 2003 not in pids
+    assert any("不适用" in item for item in built["warnings"])
+
+    # 反向：父级选「不可充电」时，只填 2003 就行，不该再要求 2002
+    ok = service.build_goods_payload(
+        _draft(properties=[GoodsPropertyInput(pid=2001, vid=2), GoodsPropertyInput(pid=2003, vid=20)])
+    )
+    pids = [item["pid"] for item in ok["payload"]["productPropertyReqs"]]
+    assert 2003 in pids and 2002 not in pids

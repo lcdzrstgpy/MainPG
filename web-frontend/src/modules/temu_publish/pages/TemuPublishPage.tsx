@@ -26,6 +26,7 @@ import type {
   TemuFreightTemplate,
   TemuImageUploadResult,
   TemuParentSpec,
+  TemuProperty,
   TemuPublishPrefill,
   TemuSettingsStatus,
   TemuSkuDraft,
@@ -1133,7 +1134,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     const material = form.material.trim() ? await resolveImage(form.material, leaf.catId) : carousel[0];
 
     if (attributes) {
-      const missing = attributes.properties
+      const missing = visibleProperties
         .filter((item) => item.required)
         .filter((item) => {
           const pick = attrPicks[item.pid];
@@ -1144,7 +1145,10 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     }
 
     const attrByPid = new Map((attributes?.properties ?? []).map((item) => [item.pid, item]));
+    // 联动隐藏的属性不能带进 payload（留着上次填的值会被判「属性不合法」）
+    const visiblePids = new Set(visibleProperties.map((item) => item.pid));
     const properties = Object.entries(attrPicks)
+      .filter(([pid]) => visiblePids.has(Number(pid)))
       .filter(([, pick]) => pick && (pick.vid > 0 || pick.text.trim()))
       .map(([pid, pick]) => {
         const attr = attrByPid.get(Number(pid));
@@ -1384,8 +1388,50 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     setRows((current) => (current.length > 1 ? current.filter((row) => row.key !== key) : current));
 
   const leaf = categoryPath[categoryPath.length - 1];
-  const requiredProps = attributes?.properties.filter((item) => item.required) ?? [];
-  const optionalProps = attributes?.properties.filter((item) => !item.required) ?? [];
+  /**
+   * 当前选择下「适用」的属性（Temu 属性联动）。
+   *
+   * 子属性带 templatePropertyValueParentList，parentTemplatePid 指向父属性的 templatePid：
+   * 父属性没选、或选的 vid 不在 parentVidList 里 → 子属性压根不该出现
+   * （实测「电池属性=不带电池」时，「可充电电池/太阳能电池/不可充电电池」都是 required，
+   *  但填了反而被判不合法）。选中的父值时，子属性只保留 vidList 里的值。
+   */
+  const visibleProperties = useMemo<TemuProperty[]>(() => {
+    const props = attributes?.properties ?? [];
+    const byTemplatePid = new Map<number, TemuProperty>();
+    props.forEach((item) => {
+      const key = Number(item.templatePid ?? 0);
+      if (key) byTemplatePid.set(key, item);
+    });
+    const pickedVid = (pid: number) => Number(attrPicks[pid]?.vid ?? 0);
+    const list: TemuProperty[] = [];
+    for (const prop of props) {
+      const rules = prop.templatePropertyValueParentList ?? [];
+      if (!rules.length) {
+        list.push(prop);
+        continue;
+      }
+      const parent = byTemplatePid.get(Number(prop.parentTemplatePid ?? 0));
+      if (!parent) {
+        // 拿不到父属性：宁可显示也不误杀
+        list.push(prop);
+        continue;
+      }
+      const parentVid = pickedVid(parent.pid);
+      if (!parentVid) continue;
+      const matched = rules.filter((rule) => (rule.parentVidList ?? []).includes(parentVid));
+      if (!matched.length) continue;
+      const allowed = new Set(matched.flatMap((rule) => rule.vidList ?? []));
+      list.push({
+        ...prop,
+        values: (prop.values ?? []).filter((value) => !allowed.size || allowed.has(value.vid)),
+      });
+    }
+    return list;
+  }, [attributes, attrPicks]);
+
+  const requiredProps = visibleProperties.filter((item) => item.required);
+  const optionalProps = visibleProperties.filter((item) => !item.required);
   const filledRequired = requiredProps.filter((item) => {
     const pick = attrPicks[item.pid];
     return !!pick && (pick.vid > 0 || !!pick.text.trim());
@@ -1857,7 +1903,12 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
             <div className="temu-field">
               <span>
                 产品属性<em className="temu-required">*</em>
-                <em className="temu-muted">带 * 必填；不带的收在下面，不填也能发布</em>
+                <em className="temu-muted">
+                  带 * 必填；不带的收在下面，不填也能发布
+                  {attributes && attributes.properties.length > visibleProperties.length
+                    ? `（已按上一级选择隐藏 ${attributes.properties.length - visibleProperties.length} 项不适用属性）`
+                    : ""}
+                </em>
               </span>
               {!attributes ? (
                 <p className="temu-empty">选到叶子分类后自动加载属性。</p>

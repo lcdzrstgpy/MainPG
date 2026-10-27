@@ -456,3 +456,20 @@ test("库存可以是 0：不拦不标红，但草稿带入要保留 0", () => {
   // 草稿带入：0 不再被当空丢掉
   assert.match(library, /stock: numericText\(entry\.stock\),/);
 });
+
+test("属性联动：父级取值不满足的子属性不显示、也不提交", () => {
+  const types = readFileSync(new URL("../types.ts", import.meta.url), "utf8");
+  assert.match(types, /templatePropertyValueParentList\?:/);
+  assert.match(types, /parentTemplatePid\?: number \| null;/);
+
+  // 用 attrs.get 返回的联动规则算「当前适用属性」：父级没选/取值不匹配 → 整项隐藏
+  assert.match(page, /const visibleProperties = useMemo<TemuProperty\[\]>\(\(\) => \{/);
+  assert.match(page, /const rules = prop\.templatePropertyValueParentList \?\? \[\];/);
+  assert.match(page, /const matched = rules\.filter\(\(rule\) => \(rule\.parentVidList \?\? \[\]\)\.includes\(parentVid\)\);/);
+  assert.match(page, /values: \(prop\.values \?\? \[\]\)\.filter\(\(value\) => !allowed\.size \|\| allowed\.has\(value\.vid\)\)/);
+
+  // 必填/渲染都用可见属性；提交时过滤掉隐藏项（留着旧值会被判属性不合法）
+  assert.match(page, /const requiredProps = visibleProperties\.filter\(\(item\) => item\.required\);/);
+  assert.match(page, /const visiblePids = new Set\(visibleProperties\.map\(\(item\) => item\.pid\)\);/);
+  assert.match(page, /filter\(\(\[pid\]\) => visiblePids\.has\(Number\(pid\)\)\)/);
+});

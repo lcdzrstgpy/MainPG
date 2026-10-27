@@ -68,6 +68,13 @@ export type TemuProperty = {
   parentSpecId?: number;
   /** Temu 标记的「主销售属性」（决定 SKC） */
   mainSale?: boolean;
+  /** 父属性的 templatePid：本属性是「联动子属性」时才有 */
+  parentTemplatePid?: number | null;
+  /** 联动规则：父属性取到 parentVidList 里任一值才显示本属性，且只允许 vidList 里的值 */
+  templatePropertyValueParentList?: Array<{
+    parentVidList: number[];
+    vidList: number[];
+  }> | null;
 };
 
 export type TemuAttributes = {

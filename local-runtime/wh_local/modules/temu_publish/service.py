@@ -686,6 +686,19 @@ def _assemble_payload(
         skc_req["colorImageUrl"] = first_skc.color_image_url
     skc_reqs.append(skc_req)
 
+    # 属性联动：父级取值不满足的子属性不要发（Temu 会判「属性不合法」）
+    applicable_pids, dropped_names = _resolve_applicable_properties(catalog, draft.properties)
+    kept_properties = [
+        item
+        for item in draft.properties
+        if int(item.pid) not in sale_pids and int(item.pid) in applicable_pids
+    ]
+    if dropped_names:
+        extra = "…" if len(dropped_names) > 6 else ""
+        warnings.append(
+            "已忽略不适用的属性（上一级取值不满足）：" + "、".join(dropped_names[:6]) + extra
+        )
+
     payload: dict[str, Any] = {
         "productSemiManagedReq": {
             "bindSiteIds": site_ids,
@@ -710,8 +723,7 @@ def _assemble_payload(
         "productSpecPropertyReqs": product_spec_reqs,
         "productPropertyReqs": [
             _property_payload(item, _catalog_property_map(catalog).get(int(item.pid)))
-            for item in draft.properties
-            if int(item.pid) not in sale_pids
+            for item in kept_properties
         ],
         "productSkcReqs": skc_reqs,
         "productWarehouseRouteReq": {
@@ -801,9 +813,13 @@ def _validate_against_catalog(
         return
     by_pid = {int(item.get("pid") or 0): item for item in properties if isinstance(item, dict)}
     provided = {int(item.pid): item for item in draft.properties}
+    # 联动属性只有在父级取值满足时才算必填（否则「电池属性=不带电池」还会被要求填三种电池）
+    applicable, _ = _resolve_applicable_properties(catalog, draft.properties)
 
     missing = []
     for pid, item in by_pid.items():
+        if pid not in applicable:
+            continue
         # 销售属性（isSale）会被组装阶段从商品属性里剔除，改由「销售规格」承载，
         # 所以这里不能再按商品属性校验，否则会误报「缺少必填属性：颜色」。
         if item.get("required") and not item.get("isSale") and pid not in provided:
@@ -1122,14 +1138,68 @@ def _i18n_title(title: str, title_en: str, warnings: list[str]) -> dict[str, Any
     return {"productI18nReqs": [{"language": "en", "productName": text}]}
 
 
+def _resolve_applicable_properties(
+    catalog: dict[str, Any] | None, properties: list[Any]
+) -> tuple[set[int], list[str]]:
+    """按 Temu 的属性联动规则，算出当前选择下哪些属性是「适用」的。
+
+    Temu 的联动字段（实测 attrs.get 会返回）：
+    - 子属性带 `templatePropertyValueParentList = [{parentVidList: [...], vidList: [...]}]`
+    - `parentTemplatePid` 指向**父属性的 templatePid**
+    规则：父属性没选、或选的 vid 不在任何一组的 parentVidList 里 → 子属性不出现
+    （即使子属性 required=true 也不该填，填了会被判「属性不合法」）。
+
+    返回 (适用的 pid 集合, 被剔除的属性名)。
+    """
+    items = [item for item in (catalog or {}).get("properties") or [] if isinstance(item, dict)]
+    if not items:
+        return {int(getattr(item, "pid", 0) or 0) for item in properties}, []
+
+    by_template = {
+        int(item.get("templatePid") or 0): item for item in items if item.get("templatePid")
+    }
+    selected = {
+        int(getattr(item, "pid", 0) or 0): int(getattr(item, "vid", 0) or 0) for item in properties
+    }
+
+    applicable: set[int] = set()
+    dropped: list[str] = []
+    for item in items:
+        pid = int(item.get("pid") or 0)
+        rules = item.get("templatePropertyValueParentList") or []
+        if not rules:
+            applicable.add(pid)
+            continue
+        parent = by_template.get(int(item.get("parentTemplatePid") or 0))
+        if parent is None:
+            # 结构拿不到父属性：宁可显示也不误杀
+            applicable.add(pid)
+            continue
+        parent_vid = selected.get(int(parent.get("pid") or 0), 0)
+        matched = bool(parent_vid) and any(
+            parent_vid in (rule.get("parentVidList") or []) for rule in rules
+        )
+        if matched:
+            applicable.add(pid)
+        else:
+            dropped.append(
+                str(item.get("name") or item.get("propertyName") or f"pid={pid}")
+            )
+    return applicable, dropped
+
+
 def _missing_required_properties(draft: GoodsDraftInput, catalog: dict[str, Any]) -> list[dict[str, Any]]:
     """本地兜底：用 attrs.get 的 required 标记列出还没填的必填属性。"""
     filled = {int(item.pid) for item in draft.properties if int(item.vid) > 0 or item.prop_value.strip()}
+    applicable, _ = _resolve_applicable_properties(catalog, draft.properties)
     missing: list[dict[str, Any]] = []
     for item in (catalog or {}).get("properties") or []:
         if not isinstance(item, dict) or not item.get("required"):
             continue
         pid = int(item.get("pid") or 0)
+        # 联动属性在当前父级取值下不适用 → 不必填
+        if pid and pid not in applicable:
+            continue
         if pid and pid in filled:
             continue
         missing.append(
