@@ -32,7 +32,12 @@ const MAX_FISSION_COUNT = 10;
 
 function draftStorage() { try { return window.localStorage; } catch { return null; } }
 
-export function PodFissionPage() {
+type Props = {
+  /** 是否为工作台当前激活页签；隐藏页签不轮询，切回时 effect 重跑并立即补拉一次。 */
+  isActive?: boolean;
+};
+
+export function PodFissionPage({ isActive = true }: Props) {
   const scope = useMemo(() => {
     const account = getAuthAccount<Account>();
     const accountId = (account?.account_id || account?.customer_id)?.trim() ?? "";
@@ -90,10 +95,13 @@ export function PodFissionPage() {
   };
 
   useEffect(() => {
+    if (!isActive) return;
     let stopped = false;
     let refreshing = false;
     const refresh = async () => {
       if (refreshing) return;
+      // 整页被切到后台时不再发请求，回前台由定时器自然恢复。
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
       refreshing = true;
       try {
         const result = await podFissionApi.listBatches();
@@ -112,7 +120,7 @@ export function PodFissionPage() {
     void podCustomizationApi.getLatestComposition("fission").then((value) => { if (!stopped) setComposition(value); }).catch(() => {});
     const timer = window.setInterval(() => void refresh(), 5000);
     return () => { stopped = true; window.clearInterval(timer); };
-  }, []);
+  }, [isActive]);
 
   useEffect(() => {
     let stopped = false;

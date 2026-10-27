@@ -149,7 +149,8 @@ def test_options_from_env_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     options = options_from_env()
 
     assert options.enabled is True
-    assert options.mode == MODE_ONNX
+    # 默认只做 USM：ONNX 超分峰值内存高，默认关闭（需显式 MODE=onnx 才开）。
+    assert options.mode == MODE_USM
     assert options.radius == DEFAULT_RADIUS
     assert options.percent == DEFAULT_PERCENT
     assert options.threshold == DEFAULT_THRESHOLD
@@ -173,12 +174,13 @@ def test_options_from_env_post_compensation_is_tunable(monkeypatch: pytest.Monke
     assert options_from_env().post_percent == DEFAULT_POST_PERCENT
 
 
-def test_options_from_env_mode_can_force_usm(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("WH_POD_IMAGE_ENHANCE_MODE", "usm")
+def test_options_from_env_mode_can_opt_in_onnx(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 默认（含非法/未知取值）一律是 USM，不阻断生图。
+    monkeypatch.setenv("WH_POD_IMAGE_ENHANCE_MODE", "magic")
     assert options_from_env().mode == MODE_USM
 
-    # 非法/未知取值一律回退默认（onnx），不阻断生图。
-    monkeypatch.setenv("WH_POD_IMAGE_ENHANCE_MODE", "magic")
+    # 需要超分时必须显式开启。
+    monkeypatch.setenv("WH_POD_IMAGE_ENHANCE_MODE", "onnx")
     assert options_from_env().mode == MODE_ONNX
 
 

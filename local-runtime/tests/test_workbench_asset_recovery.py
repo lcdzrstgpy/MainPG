@@ -6,9 +6,10 @@ from run_workbench import _workbench_url
 
 
 def test_workbench_url_is_versioned_and_encodes_version() -> None:
-    assert _workbench_url("127.0.0.1", 8010, "1.3.5-beta 1") == (
-        "http://127.0.0.1:8010/?app_version=1.3.5-beta%201"
-    )
+    url = _workbench_url("127.0.0.1", 8010, "1.3.5-beta 1")
+    # 版本号必须 URL 编码；后面再跟一次性 nonce —— 否则浏览器遇到同 URL 的旧标签
+    # 只切前台不重载，「叉掉浏览器再点启动」会看到冻结的旧页面（2026-10-19）。
+    assert url.startswith("http://127.0.0.1:8010/?app_version=1.3.5-beta%201&t=")
 
 
 def test_frontend_bootstrap_recovers_one_time_from_missing_hashed_assets() -> None:

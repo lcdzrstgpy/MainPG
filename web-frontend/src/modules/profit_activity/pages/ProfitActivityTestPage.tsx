@@ -531,7 +531,9 @@ export function ProfitActivityTestPage({ isActive = true, prefill }: { isActive?
 
   async function loadSites() {
     const data = await request<{ sites: Array<Record<string, unknown>> }>("/api/profit-activity/sites");
-    setSiteProfiles(data.sites.map(toSiteSettingProfile));
+    const profiles = data.sites.map(toSiteSettingProfile);
+    setSiteProfiles(profiles);
+    return profiles;
   }
 
   // 保存设置；遇到版本冲突（settings_revision_conflict）时自动重取最新设置并以最新 revision 重试一次，避免被乐观锁卡住
@@ -553,11 +555,19 @@ export function ProfitActivityTestPage({ isActive = true, prefill }: { isActive?
     }
   };
 
-  const openSettingsDialog = () => {
-    const firstSite = siteProfiles[0]?.id || site || "US";
-    const profile = siteProfiles.find((item) => item.id === firstSite);
+  const openSettingsDialog = async () => {
+    // 费率与「货源与利润」共用：打开时先拉最新值，避免两处各自缓存导致显示不一致。
+    let profiles = siteProfiles;
+    let settingsData = settings || {};
+    try {
+      [settingsData, profiles] = await Promise.all([loadSettings(), loadSites()]);
+    } catch {
+      // 拉取失败时仍用本地缓存打开，保存时再处理冲突
+    }
+    const firstSite = profiles[0]?.id || site || "US";
+    const profile = profiles.find((item) => item.id === firstSite);
     setSettingsSite(firstSite);
-    setSettingsDraft(extractSiteSettings(profile?.builtin ? settings || {} : profile?.data || {}, firstSite));
+    setSettingsDraft(extractSiteSettings(profile?.builtin ? settingsData : profile?.data || {}, firstSite));
     setNewSiteOpen(false);
     setNewSiteCodeInvalid(false);
     setSettingsDialogOpen(true);

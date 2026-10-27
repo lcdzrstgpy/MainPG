@@ -8,9 +8,13 @@ import {
 import { hasRunningTask } from "../runtime/taskActivity";
 
 /** 弹窗期间自动探活间隔：后端恢复后不用等用户操作，自动刷新回工作台。 */
-const AUTO_RECHECK_INTERVAL_MS = 5_000;
-/** 单次探活超时：防止后端半死（端口在但请求不响应）时探测一直悬着。 */
-const HEALTH_CHECK_TIMEOUT_MS = 4_000;
+const AUTO_RECHECK_INTERVAL_MS = 8_000;
+/** 单次探活超时：批量处理时后端 CPU 打满，探活可能排到几秒后才回，给足余量。 */
+const HEALTH_CHECK_TIMEOUT_MS = 10_000;
+/** 弹遮罩前需要连续失败的探活次数：一次探活失败可能只是「忙」，不代表进程没了。 */
+const HEALTH_CHECK_ATTEMPTS = 2;
+/** 两次探活之间的间隔。 */
+const HEALTH_CHECK_GAP_MS = 1_200;
 /** 协议拉起本程序后，等待后端就绪的预算（双击启动一般 3~10 秒）。 */
 const RESTART_WAIT_BUDGET_MS = 30_000;
 /** 重启等待期间的探活节奏。 */
@@ -36,6 +40,8 @@ const STATUS_TEXT: Record<RetryPhase, string> = {
 
 /** 恢复提示条的自动消失时间（有任务在跑时不会整页刷新，用提示条代替）。 */
 const RESUME_NOTICE_MS = 8_000;
+/** 批量请求连环失败时的合并窗口：同一波失败只处理一次。 */
+const OFFLINE_DEBOUNCE_MS = 1_000;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -89,24 +95,49 @@ export function BackendOfflineNotice() {
   const timerRef = useRef<number | null>(null);
   const offlineRef = useRef(false);
   const recoveringRef = useRef(false);
+  /** 每次「恢复在线」都自增：探活是异步的，回来时要确认期间没被别人翻盘。 */
+  const onlineEpochRef = useRef(0);
 
   useEffect(() => {
     offlineRef.current = offline;
   }, [offline]);
 
   useEffect(() => {
+    const showOffline = () => {
+      setPhase("idle");
+      // 重新掉线时收起上一次的「已恢复」提示条，避免两条浮层同时在场。
+      setResumeNotice(false);
+      setOffline(true);
+    };
+    /**
+     * 弹遮罩前的最后一道闸：主动探活。
+     *
+     * 状态机的「窗口内没有成功」只等于「没有反证」，不等于「后端真的死了」——
+     * 产品处理等通道此前不复位状态机，一次瞬时抖动就能凑满窗口（2026-10-19）。
+     * 这里连续探活 {@link HEALTH_CHECK_ATTEMPTS} 次，全部失败才弹；任何一次成功都会
+     * 复位状态机并放弃弹窗（probeHealth 内部复位）。批量处理 CPU 打满时单次探活
+     * 超时属于「忙」，不该被当成掉线（2026-10-21 反馈）。
+     */
+    const confirmOffline = async () => {
+      const epoch = onlineEpochRef.current;
+      for (let attempt = 0; attempt < HEALTH_CHECK_ATTEMPTS; attempt += 1) {
+        if (attempt > 0) await delay(HEALTH_CHECK_GAP_MS);
+        if (await probeHealth()) return;
+        // 探活期间页面恢复了在线（别的请求成功）→ 不再弹。
+        if (onlineEpochRef.current !== epoch) return;
+      }
+      showOffline();
+    };
     const goOffline = () => {
-      // 防抖 1s：批量请求连环失败只弹一次。
+      // 防抖：批量请求连环失败只处理一次。
       if (timerRef.current !== null) return;
       timerRef.current = window.setTimeout(() => {
         timerRef.current = null;
-        setPhase("idle");
-        // 重新掉线时收起上一次的「已恢复」提示条，避免两条浮层同时在场。
-        setResumeNotice(false);
-        setOffline(true);
-      }, 1000);
+        void confirmOffline();
+      }, OFFLINE_DEBOUNCE_MS);
     };
     const goOnline = () => {
+      onlineEpochRef.current += 1;
       if (timerRef.current !== null) {
         window.clearTimeout(timerRef.current);
         timerRef.current = null;
@@ -153,6 +184,38 @@ export function BackendOfflineNotice() {
     }, AUTO_RECHECK_INTERVAL_MS);
     return () => window.clearInterval(timer);
   }, [offline, reloadWhenRecovered]);
+
+  // 页面被浏览器「捡回来」时自愈：
+  // ① 从 bfcache 恢复（pageshow.persisted）→ 整页 DOM 与模块状态都是旧的，
+  //    遮罩会永远停在那儿，自动探活的定时器也可能根本没在跑；
+  // ② 标签页在后台被节流时定时器会被拉长到分钟级，切回前台要立刻探一次，
+  //    否则用户看到的还是「掉线」。
+  // 这两条正是「叉掉浏览器再点启动，还是那个掉线弹窗」的现场（2026-10-19 反馈）。
+  useEffect(() => {
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (!event.persisted) return;
+      if (!offlineRef.current) {
+        // 没弹遮罩：先把状态机复位，让后续请求重新判定即可。
+        resetBackendOfflineState();
+        return;
+      }
+      void probeHealth().then((healthy) => {
+        if (healthy) reloadWhenRecovered();
+      });
+    };
+    const onVisible = () => {
+      if (document.visibilityState !== "visible" || !offlineRef.current) return;
+      void probeHealth().then((healthy) => {
+        if (healthy) reloadWhenRecovered();
+      });
+    };
+    window.addEventListener("pageshow", onPageShow);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("pageshow", onPageShow);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [reloadWhenRecovered]);
 
   // 恢复提示条自动消失，不长期占位。
   useEffect(() => {

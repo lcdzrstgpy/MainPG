@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import asdict, fields
@@ -52,6 +53,8 @@ _MONEY_FIELDS = frozenset(
 _QUOTE_FIELDS = frozenset(field.name for field in fields(QuoteItem))
 _MAX_CAPTURE_SKC_GROUPS = 500
 _MAX_CAPTURE_QUOTE_ROWS = 5_000
+
+logger = logging.getLogger(__name__)
 
 
 class CaptureBatchRequiredError(ValueError):
@@ -231,7 +234,7 @@ class QuoteService:
             raise CaptureBatchRequiredError("create or activate a capture batch before collecting") from error
         snapshots = tuple(_quote_snapshot(item, index=index) for index, item in enumerate(quotes))
         content_sha256 = sha256(safe_json_dumps({"page_url": page_url, "capture": safe_capture}).encode("utf-8")).hexdigest()
-        return self._repository.append_quote_capture_chunk(
+        record = self._repository.append_quote_capture_chunk(
             workspace_id=actor.workspace_id,
             batch_id=batch.batch_id,
             content_sha256=content_sha256,
@@ -240,6 +243,33 @@ class QuoteService:
             items=snapshots,
             captured_at=_captured_at(normalized, fallback=""),
         )
+        # 货源与利润台账：把本次采集的申报价挂到商品主档上（按 PP 货号 / 标题匹配）。
+        # 台账失败绝不能影响采集本身，否则一次写库异常会让插件整页采集失败。
+        self._ingest_sourcing_ledger(actor.workspace_id, record, quotes)
+        return record
+
+    def _ingest_sourcing_ledger(
+        self,
+        workspace_id: str,
+        record: QuoteCaptureChunkRecord,
+        quotes: Sequence[QuoteItem],
+    ) -> None:
+        try:
+            from wh_local.modules.sourcing_ledger.repository import (
+                SourcingLedgerRepository,
+            )
+            from wh_local.modules.sourcing_ledger.service import SourcingLedgerService
+
+            SourcingLedgerService(
+                SourcingLedgerRepository(self._repository.database_path)
+            ).ingest_capture(
+                workspace_id=workspace_id,
+                batch_id=record.batch_id,
+                items=quotes,
+                captured_at=record.captured_at,
+            )
+        except Exception:  # noqa: BLE001 - 台账是旁路，失败只记日志
+            logger.warning("sourcing ledger ingest failed for batch %s", record.batch_id)
 
     def save_capture_batch_snapshot(
         self, actor: PriceVerificationActor, batch_id: str

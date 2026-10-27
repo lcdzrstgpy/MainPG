@@ -7,6 +7,8 @@ import {
   rejectDimensionChangeItem,
 } from "../api/dimensionCanvasApi";
 import type { DimensionChangeSet, PhysicalDimensions } from "../types/dimensionCanvas";
+// 该面板在预检页直接渲染，必须自己带上画布样式；否则只有打开过尺寸画布页时才会加载 CSS。
+import "../styles/dimension-canvas.css";
 
 type Props = {
   changeSetId: string;

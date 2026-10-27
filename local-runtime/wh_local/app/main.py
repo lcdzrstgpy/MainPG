@@ -15,6 +15,7 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -49,6 +50,7 @@ from ..customer.email_sender import TencentCloudSESEmailSender
 from ..customer.local_session import LocalSessionService
 from ..customer.remote_client import CustomerAuthClient
 from ..customer.routes import create_customer_router
+from ..customer.session_keepalive import start_remote_session_keepalive
 from ..customer.admin_proxy import create_admin_proxy_router
 from ..migration_routes import create_migration_router
 from ..pod_log_upload import PodLogUploadTask
@@ -304,6 +306,11 @@ class _RuntimeExitController:
         # 确认真退出前执行的「取消运行中任务并结算」回调（仅桌面端注入）。
         self._on_before_exit: Any | None = None
         self._exit_cancel_s = float(os.environ.get("WH_LOCAL_RUNTIME_EXIT_CANCEL_S", "6"))
+        # 有活跃处理任务时的退出宽限：关页/切标签被浏览器回收时不要把正在跑的任务杀掉。
+        # 与产品处理侧的「关页面最多再跑 30 分钟」安全网对齐（默认 1800 秒）。
+        self._busy_grace_s = float(os.environ.get("WH_LOCAL_RUNTIME_BUSY_EXIT_GRACE_S", "1800"))
+        # 「是否有活跃任务」探针（桌面端注入 active_task_count）；未注入时按空闲处理。
+        self._busy_probe: Any | None = None
         # 结算之后执行的「登出远端会话并撤销本地会话」回调（仅桌面端注入）。
         # 单独限时，避免被任务结算的耗时挤掉。
         self._on_release_sessions: Any | None = None
@@ -316,6 +323,30 @@ class _RuntimeExitController:
     def set_on_release_sessions(self, callback: Any | None) -> None:
         """注入「释放会话」回调；在取消/结算回调之后执行一次。"""
         self._on_release_sessions = callback
+
+    def set_busy_probe(self, callback: Any | None) -> None:
+        """注入「是否有活跃处理任务」探针（桌面端接 product_processing.active_task_count）。"""
+        self._busy_probe = callback
+
+    def _busy(self) -> bool:
+        probe = self._busy_probe
+        if probe is None:
+            return False
+        try:
+            return bool(probe())
+        except Exception:
+            # 探针失败按空闲处理：不能因为查不到状态就赖着不退。
+            return False
+
+    def is_exiting(self) -> bool:
+        """是否已确认退出（已经收到最后一个页面的 bye，正在等退出宽限走完）。
+
+        任务级自动暂停要在这个窗口里让位：退出前会执行「取消任务 + 按冻结积分 50% 结算」，
+        那是 beforeunload 弹窗向用户承诺过的语义，不能被任务级的暂停抢先（否则同一个任务
+        会时而「暂停（可继续）」、时而「取消（按 50% 收费）」，计费口径就不一致了）。
+        """
+        with self._lock:
+            return self._bye_deadline is not None
 
     def start(self) -> None:
         if not self.enabled or self._watchdog is not None:
@@ -388,24 +419,49 @@ class _RuntimeExitController:
     def _run_watchdog(self) -> None:
         while True:
             time.sleep(self._interval_s)
-            with self._lock:
-                now = time.monotonic()
-                self._prune_stale_clients(now)
-                deadline = self._bye_deadline
-                has_clients = bool(self._clients)
-                ever_connected = self._ever_connected
-                started_at = self._started_at
-            if deadline is not None and now >= deadline:
-                self._exit("last frontend page closed")
-            if not has_clients and deadline is None:
-                if not ever_connected and now - started_at <= self._startup_grace_s:
-                    # 启动保护期内且从未连接过前端：不退出，给前端加载时间。
-                    continue
-                if ever_connected or now - started_at > self._idle_s:
-                    self._exit("frontend heartbeat idle timeout")
+            reason = self._exit_due(time.monotonic())
+            if reason:
+                self._exit(reason)
+
+    def _exit_due(self, now: float) -> str | None:
+        """根据当前状态判断是否应当退出；返回退出原因（None = 继续运行）。
+
+        关页退出前先看有没有活跃任务：浏览器把后台标签回收/冻结、用户切走后
+        pagehide 也会发 bye，若此时正在跑批量处理，直接退出会「取消任务 + 按 50%
+        结算」，用户看到的就是处理中途突然掉线（2026-10-21 反馈）。
+        有任务时把退出推迟到忙碌宽限之后；任务结束后下一轮自然退出。
+        """
+        with self._lock:
+            self._prune_stale_clients(now)
+            deadline = self._bye_deadline
+            has_clients = bool(self._clients)
+            ever_connected = self._ever_connected
+            started_at = self._started_at
+        if deadline is not None and now >= deadline:
+            if self._busy():
+                with self._lock:
+                    self._bye_deadline = now + self._busy_grace_s
+                logger.info(
+                    "runtime exit deferred: %ss grace because a processing task is still running",
+                    int(self._busy_grace_s),
+                )
+                return None
+            return "last frontend page closed"
+        if not has_clients and deadline is None:
+            if not ever_connected and now - started_at <= self._startup_grace_s:
+                # 启动保护期内且从未连接过前端：不退出，给前端加载时间。
+                return None
+            if ever_connected or now - started_at > self._idle_s:
+                if self._busy():
+                    return None
+                return "frontend heartbeat idle timeout"
+        return None
 
     def _exit(self, reason: str) -> None:
         print(f"[runtime] exiting because {reason}", flush=True)
+        # 窗口版没有控制台，print 看不到；退出原因必须落进 runtime.log，
+        # 否则用户反馈「莫名掉线」时只能看到下一次启动、看不到上一次为什么退。
+        logger.warning("runtime exiting because %s", reason)
         # 确认真退出前，先优雅取消仍 in-flight 的处理任务并按 50% 结算，
         # 使「关闭页面→任务取消/已取消+按冻结积分 50% 扣费」可达成。仅在真正
         # 决定退出（非刷新重载）时执行；回调带超时保护，绝不无限阻塞。
@@ -488,6 +544,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         # cannot delay or make the desktop runtime unhealthy.
         # 分步打点：让启动挂起时能从 runtime.log 精确定位卡在哪一步。
         logger.info("lifespan step: startup begin")
+        session_keepalive = None
         update_manager.start_check()
         logger.info("lifespan step: update_manager started")
         patch_manager.start_check()
@@ -531,6 +588,21 @@ def create_app(database_path: Path | None = None) -> FastAPI:
             # 启动时必然还没有远端 token（它只存在进程内存），这次绝大多数情况直接跳过，
             # 不建线程、不阻塞：真正生效的是「登录成功后」那次触发（见 customer/routes.py）。
             logger.info("lifespan step: pod log upload due check -> %s", pod_log_task.run_if_due())
+        # 远端会话保活：本地请求多走本地会话、不触达远端，闲置后远端会把会话判为
+        # "失联"，此后同类设备的重复登录会**静默撤销**当前会话（用户表现为"登录态
+        # 莫名其妙掉了"）。这里周期性地用活跃远端令牌做一次只读 /me，刷新远端
+        # last_used_at，使重复登录被明确拒绝而不是顶掉当前会话。
+        # 保活属可选增强，任何失败都不得阻断启动。
+        try:
+            session_keepalive = start_remote_session_keepalive(
+                remote_customer_auth, customer_sessions, logger=logger
+            )
+            logger.info(
+                "lifespan step: session keepalive -> %s",
+                f"on({session_keepalive.interval_seconds}s)" if session_keepalive else "off",
+            )
+        except Exception as exc:  # noqa: BLE001 - 保活故障不得阻断主程序
+            logger.warning("lifespan step: session keepalive start failed (ignored): %s", exc)
         logger.info("lifespan step: startup done, yielding")
         try:
             yield
@@ -556,6 +628,8 @@ def create_app(database_path: Path | None = None) -> FastAPI:
                 pod_ai_runtime.close(wait=False, cancel_futures=True)
             if clipforge_service is not None:
                 clipforge_service.stop()
+            if session_keepalive is not None:
+                session_keepalive.stop()
 
     app = FastAPI(
         title="H Smart Ecommerce Local Runtime",
@@ -563,6 +637,9 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         lifespan=app_lifespan,
     )
     app.add_middleware(PodRequestLimitMiddleware)
+    # 预检/任务接口会返回整批商品与图片清单（多 SKU 时可达数 MB）；本地回环也值得压缩，
+    # 显著降低 JSON 序列化后的传输与前端解析耗时。
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -603,8 +680,13 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     app.include_router(create_changelog_router(changelog_manager))
 
     @app.get("/health")
-    def health() -> dict[str, Any]:
-        return {"ok": True, "database_path": str(db_path)}
+    async def health() -> dict[str, Any]:
+        # app_version 是给启动器用的：端口上如果跑着「上个版本」的旧进程，
+        # 光看 database_path 完全一样，复用之后用户看到的就是旧界面
+        # （2026-10-19 排查「升级后还是老样子」时确认的缺口）。
+        # 必须是 async：同步 def 会占用 AnyIO 线程池（默认 40 个），批量处理时
+        # 预览图/导出等同步请求把池子占满，探活排队超过前端 4 秒超时 → 误判掉线。
+        return {"ok": True, "database_path": str(db_path), "app_version": APP_VERSION}
 
     if os.environ.get("WH_LOCAL_ENABLE_DEMO_PAGE", "").strip().lower() in {"1", "true", "yes"}:
 
@@ -805,6 +887,12 @@ def create_app(database_path: Path | None = None) -> FastAPI:
                 continue
 
     runtime_exit.set_on_release_sessions(_release_customer_sessions)
+    # 任务级自动暂停让位给退出流程：工作台正在退出时，任务是「取消 + 按冻结积分 50% 结算」
+    # （见 is_exiting 的说明），不能再被任务级的「页面离开暂停」抢先。
+    product_processing.set_shutdown_probe(runtime_exit.is_exiting)
+    # 有活跃处理任务时，关页退出要推迟（见 _RuntimeExitController._run_watchdog）：
+    # 浏览器后台标签被回收/切走也会发 pagehide，不能让正在跑的批量任务被杀掉。
+    runtime_exit.set_busy_probe(product_processing.active_task_count)
     app.include_router(
         create_product_processing_router(
             product_processing,
@@ -835,6 +923,21 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     _register_price_verification(
         app, db_path, config.data_dir, plugin_queue, product_processing,
         product_library_service=profit_activity_service,
+    )
+
+    # 货源与利润台账：核价采集 → 多货源 → 利润 → 入产品库（合并「货源成本/核价匹配」）
+    from ..modules.sourcing_ledger.repository import SourcingLedgerRepository
+    from ..modules.sourcing_ledger.routes import create_sourcing_ledger_router
+    from ..modules.sourcing_ledger.service import SourcingLedgerService
+
+    app.include_router(
+        create_sourcing_ledger_router(
+            SourcingLedgerService(
+                SourcingLedgerRepository(db_path),
+                profit_service=profit_activity_service,
+            )
+        ),
+        prefix="/api",
     )
 
     # 公告消息：从公告发布后台定时同步，前端右上角站内信读取。
@@ -1092,7 +1195,45 @@ def _register_price_verification(
         product_library_service=product_library_service,
     )
     register_price_verification_routes(app.router, dependencies)
+    _migrate_sourcing_ledger(db_path)
     _backfill_price_verification_to_product_library(db_path, plugin_queue, product_library_service)
+
+
+def _migrate_sourcing_ledger(db_path: Path) -> None:
+    """启动时准备货源台账：建表 + 把旧 skc_source_links 一次性迁入多货源表。
+
+    幂等：迁移标记写在 sourcing_ledger_state，重复启动只做一次。
+    """
+    try:
+        from ..modules.sourcing_ledger.repository import SourcingLedgerRepository
+        from ..modules.sourcing_ledger.service import SourcingLedgerService
+
+        repository = SourcingLedgerRepository(db_path)
+        service = SourcingLedgerService(repository)
+        for workspace_id in repository.distinct_workspaces() or ["default"]:
+            result = service.migrate_legacy_sources(workspace_id)
+            if result["migrated"]:
+                logger.info(
+                    "sourcing ledger: %s legacy source link(s) migrated (workspace=%s)",
+                    result["migrated"],
+                    workspace_id,
+                )
+            ingested = service.backfill_existing_captures(workspace_id)
+            if ingested["chunks"]:
+                logger.info(
+                    "sourcing ledger: %s existing capture chunk(s) backfilled (workspace=%s)",
+                    ingested["chunks"],
+                    workspace_id,
+                )
+            seeded = service.ensure_collected_sources(workspace_id)
+            if seeded:
+                logger.info(
+                    "sourcing ledger: %s collected source(s) seeded (workspace=%s)",
+                    seeded,
+                    workspace_id,
+                )
+    except Exception:  # noqa: BLE001 - 台账迁移失败不能阻断启动
+        logger.warning("sourcing ledger migration failed", exc_info=True)
 
 
 def _backfill_price_verification_to_product_library(

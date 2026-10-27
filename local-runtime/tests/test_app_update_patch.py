@@ -356,3 +356,61 @@ def test_patch_path_safe_rejects_traversal_and_unsafe_chars(value: str) -> None:
     from wh_local.app_update import _patch_path_safe
 
     assert _patch_path_safe(value) is False
+
+
+def test_patch_manager_percent_encodes_non_ascii_paths(tmp_path: Path, updater_present) -> None:
+    """含中文文件名的补丁必须先转义再请求，否则 urlopen 抛 ASCII 编码错误。"""
+    from urllib.parse import unquote
+
+    key, key_path, public_b64 = _make_key(tmp_path)
+    chinese = "_internal/templates/妙手参考表-类目ID与包装清单.xlsx"
+    old = _dist(tmp_path, "1.5.7", {"keep.txt": "keep"})
+    new = _dist(tmp_path, "1.5.8", {"keep.txt": "keep", chinese: "表格内容"})
+    out = tmp_path / "patch"
+    manifest = build_patch(
+        from_dir=old,
+        to_dir=new,
+        from_version="1.5.7",
+        to_version="1.5.8",
+        file_base_url="https://workbench.haocoming.top/mainpg/windows/patch/1.5.8",
+        private_key=load_private_key(key_path),
+        output_dir=out,
+    )
+    assert any(f["path"] == chinese for f in manifest["files"])
+
+    requested: list[str] = []
+
+    def downloader(url: str):
+        requested.append(url)
+        rel = unquote(url.rsplit("/patch/1.5.8/", 1)[1])
+        return _BytesSource((out / rel).read_bytes(), url)
+
+    install_root = tmp_path / "install"
+    install_root.mkdir(parents=True)
+    (install_root / "MainPG-Updater.exe").write_bytes(updater_present.read_bytes())
+    runtime_root = tmp_path / "data"
+
+    manager = PatchManager(
+        PatchSettings(
+            current_version="1.5.7",
+            patch_manifest_url="https://workbench.haocoming.top/mainpg/windows/patch-manifest.json",
+            allowed_hosts=frozenset({"workbench.haocoming.top"}),
+            public_key_b64=public_b64,
+            runtime_root=runtime_root,
+            install_root=install_root,
+        ),
+        manifest_fetcher=lambda _url: manifest,
+        downloader=downloader,
+        launcher=lambda _path, _args: None,
+    )
+    assert manager._begin("checking")
+    manager._check_after_begin()
+    assert manager._state == "available", manager._error
+    assert manager._begin("downloading")
+    manager._install_after_begin()
+    assert manager._state == "installing", manager._error
+
+    assert requested and all(url.isascii() for url in requested)
+    assert "%E5%A6%99%E6%89%8B%E5%8F%82%E8%80%83%E8%A1%A8" in requested[0]
+    staged = runtime_root / "updates" / "patch" / "1.5.8" / chinese
+    assert staged.read_bytes() == "表格内容".encode("utf-8")

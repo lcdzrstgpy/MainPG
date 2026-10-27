@@ -1,0 +1,10 @@
+/* ---- 焦糖主题：点击焦糖印（Canvas 层容器，绘制在 DessertTap.tsx） ---- */
+
+.dessert-tap-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 30; /* 顶栏(18)之上、弹窗(60+)之下 */
+  pointer-events: none;
+  width: 100%;
+  height: 100%;
+}

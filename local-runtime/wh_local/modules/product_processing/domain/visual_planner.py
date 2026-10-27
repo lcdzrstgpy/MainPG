@@ -247,9 +247,9 @@ VISUAL_CATEGORY_ROLE_LIBRARY: dict[str, dict[str, Any]] = {
         "style": "clean small-accessory studio style, refined but not luxury-claiming",
         "lighting": "soft studio lighting with crisp edge highlights",
         "material": "clasp, edge, texture, pendant, chain, charm, or visible decorative detail",
-        "background": "neutral tabletop, jewelry tray, hand-scale scene, or gift-box surface",
-        "composition": "full accessory view, clasp/detail close-up, wearing or gift scene, scale or set layout",
-        "roles": ("full jewelry or small accessory hero", "close-up of clasp, texture, pendant, chain, edge, or decorative detail", "wearing, tabletop, gift, or tray scene without luxury/brand claims", "scale, set, color variant, or gift-layout relationship"),
+        "background": "neutral tabletop, jewelry tray, A4 scale scene, or gift-box surface",
+        "composition": "full accessory view, clasp/detail close-up, worn-shape or gift scene, scale or set layout",
+        "roles": ("full jewelry or small accessory hero", "close-up of clasp, texture, pendant, chain, edge, or decorative detail", "worn-shape display, tabletop, gift, or tray scene without luxury/brand claims or people", "scale, set, color variant, or gift-layout relationship"),
         "detail": "one large small-accessory hero poster + one circular magnifier inset for clasp/detail + exactly 3 light labels: Detail View, Gift Ready, Easy Match.",
     },
     "office_school_supplies": {
@@ -657,10 +657,10 @@ def background_plan_for_family(family: str, traits: dict[str, bool]) -> str:
     else:
         base = str(visual_role_plan(family).get("background") or VISUAL_CATEGORY_ROLE_LIBRARY["general_small_goods"]["background"])
     return (
-        f"{base}; build a three-layer scene (a foreground prop near the camera, a midground surface the product sits on, "
+        f"{base}; build a three-layer scene (one large simple foreground prop near the camera, or none, a midground surface the product sits on, "
         "and a legible backdrop in the same light) and use premium category-matched surfaces such as walnut wood, "
         "micro-cement, linen, stone, ceramic, glass reflection, gradient sweep, or editorial home props; "
-        "never a plain white/gray background and never a background crushed to nothing behind the product"
+        "never a plain white/gray background, never a background crushed to nothing behind the product, and never thin detailed items such as rulers, pens or cutlery"
     )
 
 
@@ -673,8 +673,9 @@ def scene_plan_for_family(family: str, traits: dict[str, bool]) -> str:
     role_text = "; ".join(f"{index} {role}" for index, role in enumerate(roles[:4], start=1)) + "."
     return (
         f"{role_text} Ground every scene in the product's real use: the real occasion, a real location where it is "
-        "used or displayed, the surface it rests on, and 2-4 companion objects that reveal its purpose and scale "
-        "(context only, never implied as included in the purchase)."
+        "used or displayed, the surface it rests on, and 0-2 large simple companion objects that reveal its purpose and scale "
+        "(context only, never implied as included in the purchase). Keep every panel hands-free: no hands, fingers or people; "
+        "never rulers, pens, cutlery or brushes."
     )
 
 

@@ -2042,13 +2042,13 @@ def _track_postprocess_concurrency(service: PodCustomizationService):
     lock = threading.Lock()
     original = service.worker._process_style_grids
 
-    def tracked(batch_arg, grids, billing_run):
+    def tracked(batch_arg, grids, billing_run, **kwargs):
         with lock:
             state["active"] += 1
             state["max"] = max(state["max"], state["active"])
         try:
             time.sleep(0.004)
-            return original(batch_arg, grids, billing_run)
+            return original(batch_arg, grids, billing_run, **kwargs)
         finally:
             with lock:
                 state["active"] -= 1
@@ -2119,10 +2119,10 @@ def test_parallel_postprocess_failure_isolates_single_style(tmp_path: Path) -> N
 
     original = service.worker._process_style_grids
 
-    def tracked(batch_arg, grids, billing_run):
+    def tracked(batch_arg, grids, billing_run, **kwargs):
         if grids[0][0]["style_index"] == 3:
             raise RuntimeError("COS publish failed")
-        return original(batch_arg, grids, billing_run)
+        return original(batch_arg, grids, billing_run, **kwargs)
 
     service.worker._process_style_grids = tracked
 

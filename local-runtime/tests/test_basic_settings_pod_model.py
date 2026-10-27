@@ -46,22 +46,23 @@ def test_pod_image_model_defaults_to_doubao(tmp_path: Path) -> None:
 
 def test_saving_pod_model_does_not_touch_ai_processing_model(tmp_path: Path) -> None:
     service = _service(tmp_path / "workbench.sqlite3")
+    # AI 处理侧只保留豆包；写入历史无印值会被收敛成默认模型。
     service.save_image_model("image_gpt", actor_id="tester")
 
     service.save_pod_image_model("image_gpt_2.5", actor_id="tester")
 
     assert service.get_pod_image_model()["model"] == "image_gpt_2.5"
     # POD 切换不得影响 AI处理 的生图模型。
-    assert service.get_image_model()["model"] == "image_gpt"
+    assert service.get_image_model()["model"] == "doubao-seedream-5-0-flash-260915"
 
 
 def test_saving_ai_processing_model_does_not_touch_pod_model(tmp_path: Path) -> None:
     service = _service(tmp_path / "workbench.sqlite3")
     service.save_pod_image_model("image_gpt_2.5", actor_id="tester")
 
-    service.save_image_model("image_gpt", actor_id="tester")
+    service.save_image_model("doubao-seedream-5-0-flash-260915", actor_id="tester")
 
-    assert service.get_image_model()["model"] == "image_gpt"
+    assert service.get_image_model()["model"] == "doubao-seedream-5-0-flash-260915"
     # AI处理 切换不得影响 POD 的生图模型。
     assert service.get_pod_image_model()["model"] == "image_gpt_2.5"
 
@@ -105,9 +106,10 @@ def test_legacy_database_without_pod_section_gains_default(tmp_path: Path) -> No
             (CONFIG_KEY, json.dumps(legacy_config), "legacy", "2026-01-01T00:00:00Z"),
         )
 
-    # 旧库没有 pod_image 段：加载时补 POD 默认值（豆包），且不回退 AI处理 已选模型。
+    # 旧库没有 pod_image 段：加载时补 POD 默认值（豆包）；
+    # AI处理 侧的历史无印值（image_gpt_2.5）也会被收敛到豆包。
     assert service.get_pod_image_model()["model"] == "doubao-seedream-5-0-flash-260915"
-    assert service.get_image_model()["model"] == "image_gpt_2.5"
+    assert service.get_image_model()["model"] == "doubao-seedream-5-0-flash-260915"
 
 
 def test_pod_image_choices_cover_both_suchuang_models_and_doubao(tmp_path: Path) -> None:
@@ -132,7 +134,7 @@ def test_saving_the_doubao_model_is_kept_and_does_not_touch_ai_processing(tmp_pa
     service.save_pod_image_model("doubao-seedream-5-0-flash-260915", actor_id="tester")
 
     assert service.get_pod_image_model()["model"] == "doubao-seedream-5-0-flash-260915"
-    assert service.get_image_model()["model"] == "image_gpt"
+    assert service.get_image_model()["model"] == "doubao-seedream-5-0-flash-260915"
 
 
 def test_legacy_provider_field_is_dropped_on_load(tmp_path: Path) -> None:

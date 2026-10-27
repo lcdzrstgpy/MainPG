@@ -15,6 +15,7 @@ from .dimension_canvas_schemas import (
     CompleteDimensionItemRequest,
     ImportPreviewItemRequest,
     ImportTaskRequest,
+    ReburnDimensionCardRequest,
     SaveDimensionItemRequest,
 )
 
@@ -118,6 +119,59 @@ def create_dimension_canvas_router(service: DimensionCanvasService) -> APIRouter
             item_id,
             body.expected_revision,
             workspace_id=_workspace(workspace_id),
+        )
+
+    @router.post("/tasks/{task_id}/confirm-estimated")
+    def confirm_estimated(
+        task_id: int,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        """批量确认预估尺寸：只改来源标记，图上数字不变，不重烧。"""
+
+        return _call(
+            service.confirm_estimated,
+            task_id,
+            workspace_id=_workspace(workspace_id),
+        )
+
+    @router.post("/tasks/{task_id}/items/{task_item_id}/reburn")
+    def reburn_task_item(
+        task_id: int,
+        task_item_id: int,
+        body: ReburnDimensionCardRequest,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        """改完本体尺寸后只重烧该链接的第 4 格尺寸图（本地渲染，不走 AI）。"""
+
+        return _call(
+            service.reburn_task_item,
+            task_id,
+            task_item_id,
+            workspace_id=_workspace(workspace_id),
+            length_cm=body.length_cm,
+            width_cm=body.width_cm,
+            height_cm=body.height_cm,
+            unit=body.unit,
+            corner=body.corner,
+        )
+
+    @router.post("/tasks/{task_id}/auto-render")
+    def auto_render_task(
+        task_id: int,
+        unit: str = Query(default="in"),
+        corner: str = Query(default="bottom-right"),
+        style: str = Query(default="light"),
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        """任务完成后批量烧尺寸角标卡到第 4 格（幂等，可重复调用）。"""
+
+        return _call(
+            service.auto_render_task,
+            task_id,
+            workspace_id=_workspace(workspace_id),
+            unit=unit,
+            corner=corner,
+            style=style,
         )
 
     @router.get("/batches")

@@ -165,6 +165,26 @@ export function changeDisplayUnit(state: EditorState, unit: DimensionUnit): Edit
   };
 }
 
+/** 画布坐标下的轴向吸附阈值（约 2% 边长），用于尺寸线拉成水平/竖直。 */
+export const AXIS_SNAP_THRESHOLD = 0.02;
+
+/**
+ * 轴向约束：默认完全自由（不吸附）；仅在 `force`（Shift）时锁水平/竖直。
+ */
+export function snapToAxis(
+  anchor: NormalizedPoint,
+  point: NormalizedPoint,
+  force = false,
+  threshold = AXIS_SNAP_THRESHOLD,
+): NormalizedPoint {
+  if (!force) return point;
+  const dx = point.x - anchor.x;
+  const dy = point.y - anchor.y;
+  return Math.abs(dx) >= Math.abs(dy)
+    ? { x: point.x, y: anchor.y }
+    : { x: anchor.x, y: point.y };
+}
+
 /** Any semantic edit invalidates the previous deterministic render locally. */
 export function invalidateRenderOnEdit(
   item: DimensionCanvasItem,

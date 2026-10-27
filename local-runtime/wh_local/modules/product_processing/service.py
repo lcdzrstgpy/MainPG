@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
 from wh_local.data_collection.contracts import (
     DailySelectionError,
@@ -67,6 +68,16 @@ from .doubao_text import (
     DoubaoTextError,
     DoubaoTextResult,
 )
+from .domain.category_classifier import classify_titles
+from .domain.category_image_presets import CATEGORY_IMAGE_PROMPTS
+from .domain.photo_card_library import (
+    CARD_LIBRARIES,
+    LAYER_KEYS,
+    PRESET_INTENTS,
+    assemble_image_prompt,
+    assemble_panel_image_prompt,
+    render_panel_plan_override,
+)
 from .domain.content_reference_library import (
     append_content_reference,
     select_image_reference,
@@ -86,8 +97,14 @@ from .domain.dimension_templates import (
 )
 from .domain.image_slots import DEFAULT_SLOT_IDS, apply_slot_overrides
 from .domain.models import DEFAULT_PROMPTS, DailySelectionHandoffEnvelope, DailySelectionRun
-from .domain.physical_dimensions import extract_physical_dimensions
-from .domain.policy import PolicyIssue, is_safe_external_url, product_policy_issue, strict_external_url_issue
+from .domain.physical_dimensions import PhysicalDimensions, extract_physical_dimensions
+from .domain.policy import (
+    FAILED_LINK_OPERATOR_HINT,
+    PolicyIssue,
+    is_safe_external_url,
+    product_policy_issue,
+    strict_external_url_issue,
+)
 from .domain.preview_images import task_item_result_version
 from .domain import sku_availability as sku_availability_domain
 from .domain.prompts import (
@@ -105,6 +122,7 @@ from .domain.workbooks import (
     is_variant_value_noise,
     read_product_workbook,
     variant_export_key,
+    variant_grid_gaps,
 )
 from .infrastructure.assets import ProductProcessingAssets
 from .infrastructure.ocr_gate import (
@@ -133,6 +151,7 @@ from .provider_config import (
     PREMIUM_IMAGE_MODEL,
     PREMIUM_IMAGE_SIZE,
     image_chain_supplied,
+    local_image_chain,
     resolve_ai_provider,
 )
 from .server_ai_proxy import (
@@ -383,6 +402,77 @@ def _ai_enabled() -> bool:
     return str(os.environ.get("WH_PRODUCT_AI_ENABLED", "1")).strip().lower() not in {"0", "false", "no", "off"}
 
 
+# 尺寸卡/原图复用的并发预算：3 路与画布渲染线程数一致，跟批次 AI 调用重叠，
+# 又不会把 CPU 占满（生图/OCR/超分还要用）。
+_DIMENSION_PASS_EXECUTOR = None
+_DIMENSION_PASS_EXECUTOR_LOCK = threading.Lock()
+
+
+def _dimension_pass_executor():
+    global _DIMENSION_PASS_EXECUTOR
+    if _DIMENSION_PASS_EXECUTOR is None:
+        with _DIMENSION_PASS_EXECUTOR_LOCK:
+            if _DIMENSION_PASS_EXECUTOR is None:
+                from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+
+                _DIMENSION_PASS_EXECUTOR = ThreadPoolExecutor(
+                    max_workers=3,
+                    thread_name_prefix="pp-dimension",
+                )
+    return _DIMENSION_PASS_EXECUTOR
+
+
+def _run_dimension_pass(
+    canvas: Any,
+    task_id: int,
+    item_id: int,
+    workspace_id: str,
+    prefetch: Any = None,
+) -> None:
+    prefetched_base: bytes | None = None
+    prefetch_checked = False
+    if prefetch is not None:
+        try:
+            result = prefetch.result(timeout=20)
+        except Exception:
+            result = None
+        if isinstance(result, dict):
+            prefetched_base = result.get("base")
+            prefetch_checked = bool(result.get("checked"))
+    try:
+        canvas.auto_render_item(
+            task_id,
+            item_id,
+            workspace_id=workspace_id,
+            prefetched_base=prefetched_base,
+            prefetch_checked=prefetch_checked,
+        )
+    except Exception:  # noqa: BLE001 - 尺寸图失败不能影响主批次
+        return
+
+
+# 原图复用的取图 + OCR + 抠图提前到 AI 生图并行阶段做：2 路预取，结果按
+# (workspace, task, draft) 暂存，烧卡时直接复用，省掉批次尾部的 1-2 秒。
+_DIMENSION_PREFETCH_EXECUTOR = None
+_DIMENSION_PREFETCH_EXECUTOR_LOCK = threading.Lock()
+_DIMENSION_PREFETCHES: dict[tuple[str, int, int], Any] = {}
+_DIMENSION_PREFETCHES_LOCK = threading.Lock()
+
+
+def _dimension_prefetch_executor():
+    global _DIMENSION_PREFETCH_EXECUTOR
+    if _DIMENSION_PREFETCH_EXECUTOR is None:
+        with _DIMENSION_PREFETCH_EXECUTOR_LOCK:
+            if _DIMENSION_PREFETCH_EXECUTOR is None:
+                from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+
+                _DIMENSION_PREFETCH_EXECUTOR = ThreadPoolExecutor(
+                    max_workers=2,
+                    thread_name_prefix="pp-dim-prefetch",
+                )
+    return _DIMENSION_PREFETCH_EXECUTOR
+
+
 def _media_public_base_url() -> str:
     """Return the configured public base for the existing ``/pp-media`` host.
 
@@ -395,6 +485,37 @@ def _media_public_base_url() -> str:
         return configured
     updates = resolve_ai_provider().get("_sys_updates") or {}
     return str(updates.get("public_base_url") or "").strip().rstrip("/")
+
+
+def _generated_media_deferred(successes: list[dict[str, Any]]) -> bool:
+    """判断批次结束时能否生成旧版自动导出表。
+
+    AI 生成图现在先登记为本地预审资产，公网发布延后到「预检 → 导出最终版」
+    （见 README「预审图片与最终导出」）。这类批次没有公网图片 URL，旧版自动
+    工作簿会因「没有可导出的 AI 处理图」抛错，把已成功的整批误判为部分失败；
+    此时应跳过自动工作簿，交由预检 finalize 生成最终导出表。
+    """
+    for row in successes:
+        scope = set(row.get("processing_scope") or [])
+        if not scope & {"four_grid", "detail_images"}:
+            continue
+        carousel = [
+            str(value or "").strip()
+            for value in (row.get("carousel_image_paths") or [])
+            if str(value or "").strip()
+        ]
+        detail = [
+            str(value or "").strip()
+            for value in (row.get("detail_image_paths") or [])
+            if str(value or "").strip()
+        ]
+        # 有生成图、但轮播图没有任何公网 http(s) 地址：旧版自动工作簿必然抛错，
+        # 延后到预检导出（detail 也检查，避免只有详情图的链接漏判）。
+        if (carousel or detail) and not any(
+            is_safe_external_url(value) for value in carousel
+        ):
+            return True
+    return False
 
 
 def _cos_local_config_paths() -> list[Path]:
@@ -623,10 +744,11 @@ _PREMIUM_PANEL_ROLES = [
     (
         "lifestyle",
         "Composition - Lifestyle scene: place the product in a real American home scene matching the SKU category "
-        "(living room, sunroom, Game Night, Brunch, etc.). You may add realistic adult hands (natural, no deformities), "
-        "cups, snacks, tablecloth, or plants; the product must stay sharp and exactly the original SKU. Lighting: "
-        "natural window light, afternoon side light, or warm home lighting that wraps the product in soft highlights. "
-        "Keep the complete product unobstructed and prominent.",
+        "(living room, sunroom, Game Night, Brunch, etc.). Keep it hands-free: no hands, fingers, arms or people; "
+        "suggest use through placement, a believable surface and at most two large simple companion objects. The "
+        "product must stay sharp and exactly the original SKU. Lighting: natural window light, afternoon side "
+        "light, or warm home lighting that wraps the product in soft highlights. Keep the complete product "
+        "unobstructed and prominent.",
     ),
     (
         "orthographic",
@@ -636,6 +758,294 @@ _PREMIUM_PANEL_ROLES = [
         "If no useful orthographic view is possible, create a clean alternate product angle with the same empty safe area.",
     ),
 ]
+
+# 四格位置固定：1 主图（纯白）/ 2 完整角度 / 3 生活或结构 / 4 干净角度（后面烧尺寸卡）。
+# 四个小白预设各自改写这四格的角色文案：否则不管用户选哪个模板，模型都只会按
+# 通用的 hero/detail/lifestyle/orthographic 出图，模板标签就名不副实。
+# 文案只改“每格拍什么”，不改分界、产品保真、禁文字等固定契约。
+_ORTHO_PANEL_ROLE = _PREMIUM_PANEL_ROLES[3]
+
+_PRESET_PANEL_ROLES: dict[str, tuple[tuple[str, str], ...]] = {
+    "hero_proof": (
+        (
+            "hero",
+            "Composition - White-background hero (this preset proves the selling point at a glance): the complete "
+            "sellable product on a pure white seamless sweep, no props, no hands, large and prominent with a crisp "
+            "clean silhouette. Light it bright, even and high-key so thickness, edges, piece count and structure "
+            "read instantly with no extra explanation.",
+        ),
+        (
+            "detail",
+            "Composition - 45-degree second full angle: the complete product at a 45-degree side view on a plain "
+            "pale stone surface, no props and no hands. This panel must reveal what the hero panel cannot - real "
+            "thickness, layer count, joints and how the parts connect - so quantity and build are unambiguous.",
+        ),
+        (
+            "lifestyle",
+            "Composition - Low-angle scale proof: the complete product from a 35mm low angle on a plain plaster "
+            "surface, no props and no hands. Use the low angle and the clean background to show real proportions "
+            "and depth so the shopper judges true size without any printed measurement.",
+        ),
+        _ORTHO_PANEL_ROLE,
+    ),
+    "lifestyle_use": (
+        (
+            "hero",
+            "Composition - White-background hero: the complete sellable product on a pure white seamless sweep, no "
+            "props, no hands, large and prominent, bright even light and a crisp clean silhouette.",
+        ),
+        (
+            "detail",
+            "Composition - Real-place shot: show the product already installed, carried or stored at its real "
+            "place of use from usage_scene.place - a keychain clipped onto a belt loop or bag strap, a hook holding "
+            "a towel on a rail, a bottle in a car cup holder - with 1-2 large simple companion objects, natural "
+            "window light and real three-layer depth. No hand in this panel, no inset close-up, no bare studio "
+            "surface; product complete and unobstructed.",
+        ),
+        (
+            "lifestyle",
+            "Composition - In-use close-up (MANDATORY for this preset): a real partial adult hand - or a partial "
+            "person (hands, forearms, torso, or a head turned away) - must be actively performing usage_scene.action "
+            "on the exact product at usage_scene.place: clipping it on, hooking it, wearing it, filling it, pulling "
+            "it or wiping it. Exactly five anatomically correct fingers, a continuous wrist, no visible face and no "
+            "full body. Frame close enough that the hand-to-product interaction is the subject; the hand must "
+            "visibly touch and move the product, and must never hide its shape or key features. A product alone on "
+            "a cloth or table in this panel is a FAILED panel. Keep the complete product sharp, unobstructed and in "
+            "believable scale. Lighting: natural window light, afternoon side light, or warm home lighting that "
+            "wraps the product in soft highlights.",
+        ),
+        _ORTHO_PANEL_ROLE,
+    ),
+    "macro_craft": (
+        (
+            "hero",
+            "Composition - White-background hero with raking light: the complete sellable product on a pure white "
+            "seamless sweep, no props, no hands, lit by one hard raking light from the side so surface grain, seams "
+            "and edge polish already read while the whole product stays visible.",
+        ),
+        (
+            "detail",
+            "Composition - True macro craft shot (the one crop exception for this preset): a tight crop that fills "
+            "this panel with a single real construction detail - grain, weave, stitch line, seam, joint, hardware, "
+            "glaze or cut edge - shot at 90mm under hard raking light with deep controlled shadows. It must be the "
+            "same real product and the same real material, never an invented texture, and never cropped so far that "
+            "the product stops being recognisable.",
+        ),
+        (
+            "lifestyle",
+            "Composition - Craft context angle: the complete product on a dark marble or workshop surface, hard "
+            "directional light and a short grounded shadow, at most one large simple raw-material prop as context "
+            "and no hands; never rulers, pens or fine tools. The material story stays the hero; props never look "
+            "included with the product.",
+        ),
+        _ORTHO_PANEL_ROLE,
+    ),
+    "knolling_set": (
+        (
+            "hero",
+            "Composition - White-background knolling hero: a true 90-degree top-down of the complete product or "
+            "complete set on a pure white seamless surface, strict knolling grid, even spacing, no hands, no props, "
+            "uniform soft top light with short soft shadows. The exact visible quantity of every real component must "
+            "read at a glance.",
+        ),
+        (
+            "detail",
+            "Composition - Overhead set breakdown: a true 90-degree top-down on a felt or light-oak surface with every "
+            "real component laid out in use order, evenly spaced and never overlapping in a way that hides quantity "
+            "or structure. No hands. This panel proves the set is complete and shows what each part is for.",
+        ),
+        (
+            "lifestyle",
+            "Composition - Overhead structure detail: a true 90-degree top-down closer view of one part of the set to "
+            "show how it is built, stacks or packs, evenly lit from above with no hands and no props. Show only real "
+            "components that are truly in the set, never an invented part.",
+        ),
+        _ORTHO_PANEL_ROLE,
+    ),
+}
+
+
+def _premium_panel_roles(preset_id: str = "") -> list[tuple[str, str]]:
+    """按用户选的小白模板返回四格角色指令；没选/自动时用通用四格文案。"""
+
+    roles = _PRESET_PANEL_ROLES.get(str(preset_id or "").strip().lower())
+    return list(roles) if roles else _PREMIUM_PANEL_ROLES
+
+
+# 2K 四宫格链路（方舟紧凑模板 / A-D 模板）里，逐格区域规划是写死在模板里的，
+# 不知道用户选了哪个小白模板；运行时契约又是“不可覆盖”的，所以只在末尾追加的
+# 批次建议根本压不住模板。这里在运行时契约之后追加一段更高优先级的逐格改写：
+# 只重定义第 2/3 格拍什么，分界、保真、几何、禁字等硬契约原样保留。
+_PRESET_GRID_PANEL_PLAN: dict[str, str] = {
+    "lifestyle_use": """USER PRESET OVERRIDE - "REAL USE: REAL PLACE + HANDS / PARTIAL PERSON" (the operator selected this preset for this batch):
+- Scope: this block redefines WHAT Panels 2 and 3 depict. Where it conflicts with the template pillar rules, the [Scene Scenario] line, or the per-panel plan above, THIS BLOCK WINS for the subject, scene, props, camera, fill and human presence of Panels 2 and 3 only.
+- Every other hard rule still binds absolutely: the 2x2 layout, both center dividers, panel coordinates, product fidelity, geometry integrity, completeness, safe margins, realistic light physics and the zero-added-text rule.
+- SOURCE OF TRUTH FOR THE SCENE: the "usage_scene" object inside the AUTHORITATIVE SUBJECT ANALYSIS JSON above belongs to THIS exact product. Stage Panel 2 and Panel 3 at usage_scene.place doing usage_scene.action. If usage_scene is missing, derive the place from what this exact product physically is - never fall back to a generic tabletop or an empty room. Two decorative standing still lifes are a FAILED batch.
+- Panel 1 (top-left): unchanged - pure white seamless marketplace hero, product only, no hand, no props, no scene.
+- Panel 2 (top-right): THE REAL PLACE. Show the product already installed, carried or stored at usage_scene.place the way an owner really keeps it - a keychain clipped onto a belt loop or a bag strap, a hook holding a towel on a rail, a bottle standing in a car cup holder, a spatula resting in its crock. Real everyday surroundings at true object scale with 1-2 large simple companion objects, natural window light, real three-layer depth. No hand in this panel, no macro crop, no bare studio surface.
+- Panel 3 (bottom-left): THE IN-USE CLOSE-UP. A real partial adult hand - or a partial person (hands, forearms, torso, or a head turned away) - must be actively performing usage_scene.action on the exact product at usage_scene.place: clipping it on, hooking it, wearing it, filling it, pulling it, wiping it. Exactly five anatomically correct fingers, a continuous wrist, no visible face, no full body. Frame it close enough that the hand-to-product interaction is the subject of the shot. The hand must visibly touch and move the product; the product alone on a cloth or table in this panel is a FAILED panel. The hand must never hide the product's shape or key features - the complete product stays sharp and readable.
+- Panels 2 and 3 must show the SAME real place so the set reads as one product story, but with clearly different camera angle, shot scale and light direction.
+- Panel 4 (bottom-right): unchanged orthographic dimension background.
+- Self-check before finishing: (1) does Panel 2 show this product at its real place of use instead of a studio surface? (2) does Panel 3 contain a hand or partial person actually operating it? If either fails, re-render that panel.""",
+    "hero_proof": """USER PRESET OVERRIDE - "SELLING POINT AT A GLANCE" (the operator selected this preset for this batch):
+- Scope: this block redefines WHAT Panels 2 and 3 depict; it wins over the template pillar rules for their subject, scene, props, camera and fill only. Layout, dividers, fidelity, geometry, safe margins and the zero-added-text rule still bind absolutely.
+- Panel 1 (top-left): unchanged - pure white seamless marketplace hero, product only, large and complete.
+- Panel 2 (top-right): a 45-degree full product angle on a plain pale stone surface that reveals thickness, layer count, joints and how the parts connect. No props, no hands, no macro crop.
+- Panel 3 (bottom-left): a 35mm low-angle scale proof of the complete product on a plain plaster surface; use the low angle to make real proportions and depth obvious. No props, no hands, no macro crop.
+- Panel 4 (bottom-right): unchanged orthographic dimension background.""",
+    "macro_craft": """USER PRESET OVERRIDE - "MATERIAL & CRAFT" (the operator selected this preset for this batch):
+- Scope: this block redefines WHAT Panels 2 and 3 depict; it wins over the template pillar rules for their subject, scene, props, camera and fill only. Layout, dividers, fidelity, geometry, safe margins and the zero-added-text rule still bind absolutely.
+- Panel 1 (top-left): unchanged - complete product on pure white seamless, now lit by one hard raking side light so grain, seams and edge polish already read.
+- Panel 2 (top-right): a TRUE macro craft shot is allowed here - crop tight into one real construction detail (grain, weave, stitch line, seam, joint, hardware, glaze, cut edge) at 90mm under hard raking light with deep controlled shadows. Same real product and material, never an invented texture.
+- Panel 3 (bottom-left): the complete product on a dark marble or workshop surface with hard directional light and a short grounded shadow, at most one large simple raw-material prop as context. No hands, no rulers, pens or fine tools.
+- Panel 4 (bottom-right): unchanged orthographic dimension background.""",
+    "knolling_set": """USER PRESET OVERRIDE - "FULL SET FLAT LAY" (the operator selected this preset for this batch):
+- Scope: this block redefines WHAT Panels 2 and 3 depict; it wins over the template pillar rules for their subject, scene, props, camera and fill only. Layout, dividers, fidelity, geometry, safe margins and the zero-added-text rule still bind absolutely.
+- Panel 1 (top-left): unchanged platform main image - FRONT VIEW (0 degrees, eye level) of the complete product or complete set on pure white seamless, no props, no scene. Do NOT turn Panel 1 into a top-down shot; the flat-lay treatment starts at Panel 2.
+- Panel 2 (top-right): a TRUE 90-degree top-down flat lay: the camera axis is exactly perpendicular to the surface (orthographic, no perspective, no visible side faces), the whole set is inside one frame, and every real component is separated - no stacking, no overlap - aligned to a strict invisible grid with equal gaps and identical rotation. Plain felt or light oak surface, even soft top light, exact visible quantity. No hands.
+- Panel 3 (bottom-left): a TRUE 90-degree top-down closer view of the same flat lay, showing how one part of the set is built, stacks or packs, evenly lit from above with the same orthographic camera. No hands. Show only components that truly exist in the set.
+- Panels 2 and 3 must read as flat lays from directly above, never as eye-level or 45-degree product shots; they differ only in shot scale and surface.
+- Panel 4 (bottom-right): unchanged orthographic dimension background.""",
+}
+
+_DEFAULT_GRID_PANEL_ROLES = (
+    "Hero product image",
+    "Alternate complete product angle with one real visible detail",
+    "Credible lifestyle product image",
+    "Clean dimension annotation background",
+)
+
+_PRESET_GRID_PANEL_ROLES: dict[str, tuple[str, str, str, str]] = {
+    "lifestyle_use": (
+        "Hero product image: complete product on a pure white seamless background, no hand, no props",
+        "Real-place image: the product already installed, carried or stored at its real place of use (belt loop, bag strap, hook, cup holder) with 1-2 large simple companion objects, natural window light, no hand",
+        "In-use close-up: a real partial adult hand or partial person (hands, forearms, torso, head turned away, no visible face) actively operating the exact product at its real place of use, five correct fingers, product complete and unobstructed",
+        "Clean dimension annotation background",
+    ),
+    "hero_proof": (
+        "Hero product image: complete product on a pure white seamless background, large and clean",
+        "45-degree full product angle proving thickness, layer count and structure, no props, no hands",
+        "35mm low-angle scale proof of the complete product on a plain plaster surface, no props, no hands",
+        "Clean dimension annotation background",
+    ),
+    "macro_craft": (
+        "Hero product image: complete product on a pure white seamless background under hard raking light",
+        "True macro craft shot: tight crop into one real construction detail under hard raking light",
+        "Complete product on a dark marble or workshop surface with hard directional light, at most one large simple raw-material prop, no hands, no rulers or fine tools",
+        "Clean dimension annotation background",
+    ),
+    "knolling_set": (
+        "Hero product image: complete product or complete set on a pure white seamless background, front view (0 degrees), no props",
+        "True 90-degree top-down flat lay of the complete set on felt or light oak, every real component separated with equal gaps in a strict grid, no perspective, no hands",
+        "True 90-degree top-down closer view of how one part of the set is built or packs, same orthographic camera, no hands",
+        "Clean dimension annotation background",
+    ),
+}
+
+
+def _grid_preset_panel_plan(preset_id: str = "") -> str:
+    """2K 四宫格链路的逐格改写块；没选模板时返回空串（完全沿用原模板）。"""
+
+    return _PRESET_GRID_PANEL_PLAN.get(str(preset_id or "").strip().lower(), "")
+
+
+# 小白模板对应的基础四宫格模板（A=影棚无缝 / B=人景叙事 / C=静物平铺俯拍 / D=环境远景）。
+# 不切换的话，平铺、人景这些预设仍然跑在「影棚无缝主图」上，模板里写死的逐格规划
+# （第②格 45° 三视角、第③格微距）会把预设的覆盖块顶掉，出图看起来一模一样。
+_PRESET_IMAGE_TEMPLATES: dict[str, str] = {
+    "hero_proof": "A",
+    "lifestyle_use": "B",
+    "macro_craft": "A",
+    "knolling_set": "C",
+}
+
+
+def _preset_image_template(preset_id: str = "") -> str:
+    """预设对应的基础模板；auto 或未知预设返回空串（沿用用户选择的模板）。"""
+
+    return _PRESET_IMAGE_TEMPLATES.get(str(preset_id or "").strip().lower(), "")
+
+
+# 上游生图服务不可用（维护/限流/超时/网关错误）与「链接原图不可用」是两类完全不同的
+# 失败：前者换链接也没用，提示必须让运营重试而不是换品。
+_PROVIDER_SIDE_IMAGE_FAILURE_MARKERS = (
+    "provider",
+    "submit failed",
+    "维护",
+    "timeout",
+    "timed out",
+    "rate limit",
+    "限流",
+    "502",
+    "503",
+    "504",
+)
+
+
+def _is_provider_side_image_failure(detail: str) -> bool:
+    text = str(detail or "").lower()
+    return any(marker in text for marker in _PROVIDER_SIDE_IMAGE_FAILURE_MARKERS)
+
+
+def _grid_panel_roles(preset_id: str = "") -> tuple[str, str, str, str]:
+    """单格重绘/两格重绘时使用的角色文案，必须与四宫格规划保持一致。"""
+
+    return _PRESET_GRID_PANEL_ROLES.get(
+        str(preset_id or "").strip().lower(), _DEFAULT_GRID_PANEL_ROLES
+    )
+
+
+_HANDS_FREE_RULE_PREFIX = "- HANDS-FREE (hard rule):"
+_HANDS_ALLOWED_RULE = (
+    "- HANDS & PARTIAL PEOPLE (hard rule): a hand, wrist or partial figure may appear ONLY in the "
+    "panel the user preset designates as the in-use moment (Panel 3 for the REAL USE preset). It "
+    "must be anatomically correct - exactly five fingers, three visible joints per visible finger, "
+    "nails on the correct side, a continuous wrist and forearm, skin that reads as skin - and it must "
+    "actually touch and operate the product while never covering or re-shaping it. No visible face, "
+    "no full body, no extra or fused digits. Every other panel stays hands-free. If a correct hand "
+    "cannot be rendered, keep the product alone instead of shipping a wrong hand."
+)
+
+
+def _grid_runtime_contract(allow_people: bool = False) -> str:
+    """四宫格运行时契约：只有「真实使用」模板才把手部规则从 HANDS-FREE 换成受限允许。
+
+    契约是“不可覆盖”的硬规则，所以必须在契约内部改这一条，而不是在末尾的批次建议里
+    跟它对着说。
+    """
+
+    if not allow_people:
+        return GRID_RUNTIME_CONTRACT
+    return "\n".join(
+        _HANDS_ALLOWED_RULE if line.startswith(_HANDS_FREE_RULE_PREFIX) else line
+        for line in GRID_RUNTIME_CONTRACT.splitlines()
+    )
+
+
+# 模板里还散落着若干“整句禁用人物”的表述（Human & prop integrity / Panel 3 hands-free 等）。
+# 选「真实使用」时必须把这些整句删掉：否则模型会同时看到“必须有人手”和“禁止任何手”，
+# 实测会直接忽略后者之外的指令，继续出静物平铺。
+_NO_HANDS_MARKER = re.compile(
+    r"hands?[- ]free|no hands|no people|no person|no figures?|no skin|不要用手|不出现手部|禁止出现人",
+    re.IGNORECASE,
+)
+
+
+def _relax_hands_free(text: str) -> str:
+    """删掉模板中“禁止人物/手部”的整句，只保留「真实使用」自己写的受限允许规则。"""
+
+    cleaned: list[str] = []
+    for line in str(text or "").splitlines():
+        if not _NO_HANDS_MARKER.search(line):
+            cleaned.append(line)
+            continue
+        # 句子级删除：按中英文句号切分，保留不含禁用词的句子。
+        sentences = re.split(r"(?<=[.。])\s*", line)
+        kept = [s for s in sentences if s and not _NO_HANDS_MARKER.search(s)]
+        joined = " ".join(part.strip() for part in kept if part.strip())
+        if joined:
+            cleaned.append(joined)
+    return "\n".join(cleaned)
 
 
 def _as_bool(value: Any, *, default: bool = False) -> bool:
@@ -686,17 +1096,10 @@ def _image_prompt_profile() -> str:
 
     方舟会对**输入文本**做内容审核：为 gpt-image 调优的 3 万字符指令模板会被判
     InputTextSensitiveContentDetected 直接 400（实测 1.4s 秒回）；而 Seedream 属自然语言
-    友好型模型，精简模板出图更稳。链路由服务端下发，客户端据此选模板。
+    友好型模型，精简模板出图更稳。链路默认是方舟 Seedream，也可由服务端
+    ``image_plan`` 或本地 WH_PP_IMAGE_* 覆盖。
     """
-    plan = granted_image_plan()
-    providers = plan.get("providers") if isinstance(plan, dict) else None
-    if isinstance(providers, list) and providers:
-        first = providers[0]
-        if isinstance(first, dict):
-            host = str(first.get("base_url") or "").lower()
-            if "ark.cn-beijing.volces.com" in host:
-                return "ark"
-    return "default"
+    return "ark" if str(resolve_ai_provider().get("provider") or "") == "ark" else "default"
 
 
 def _max_concurrent_tasks() -> int:
@@ -1125,6 +1528,51 @@ class ProductProcessingService:
             "message": f"已根据 {len(titles)} 条商品标题生成本批次辅助提词",
         }
 
+    def preview_image_prompt(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """五层卡片预览：纯 CPU 组装，不调用 AI、不计费、不阻塞。"""
+
+        category_id = self._text(payload.get("category_id") or "general")
+        global_selection = {
+            "frame": payload.get("frame"),
+            "light": payload.get("light"),
+            "tone": payload.get("tone"),
+            "detail": payload.get("detail"),
+            "style": payload.get("style"),
+        }
+        panels = payload.get("panels")
+        preset_id = self._text(payload.get("preset_id") or "auto").strip().lower()
+        if preset_id not in PRESET_INTENTS:
+            preset_id = "auto"
+        if isinstance(panels, list) and panels:
+            assembly = assemble_panel_image_prompt(
+                category_id,
+                panels,
+                global_selection,
+                preset_id=preset_id,
+            )
+            return {
+                "prompt": assembly.prompt,
+                "word_count": assembly.word_count,
+                "over_budget": assembly.over_budget,
+                "category_id": assembly.category_id,
+                "selections": assembly.selections,
+                "used_defaults": list(assembly.used_defaults),
+                "panels": list(assembly.panels),
+                "preset_id": assembly.preset_id,
+            }
+        assembly = assemble_image_prompt(
+            category_id, global_selection, preset_id=preset_id
+        )
+        return {
+            "prompt": assembly.prompt,
+            "word_count": assembly.word_count,
+            "over_budget": assembly.over_budget,
+            "category_id": assembly.category_id,
+            "selections": assembly.selections,
+            "used_defaults": list(assembly.used_defaults),
+            "preset_id": assembly.preset_id,
+        }
+
     def _grant_short_lived_ark_key(self, remote_token: str) -> dict[str, Any]:
         """为「批次开始前的一次性 AI 调用」申请一份批次级短期 Ark 密钥。
 
@@ -1385,14 +1833,17 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "PART 1 — SCENE, SURFACE AND REAL-LIFE COMPANION PROPS. The current renders are "
             "too clinical: pure-white seamless studio frames with nothing else in shot. For "
             "THIS category, describe a believable everyday setting and name the real-life "
-            "companion props that a buyer would actually use alongside the product. Give "
-            "2-4 concrete props per panel (name the objects, do not stay vague), an everyday "
+            "companion props that a buyer would actually use alongside the product. Prefer "
+            "ZERO or at most 1-2 LARGE, SIMPLE props per panel (name the objects, do not stay "
+            "vague); never name thin or detailed items such as rulers, pens, pencils, cutlery, "
+            "brushes, combs or jewelry - image models distort them. Add an everyday "
             "surface/backdrop (matte wood, stone, linen, felt, soft gradient), a muted colour "
             "story that harmonises with the product, and a shallow depth of field so the props "
             "sit slightly soft behind the hero.\n\n"
             "PART 2 — QUALITY GUARDRAILS to pre-empt common AI malformation problems: "
-            "anatomical and limb anomalies, duplicated or misshapen fingers, broken "
-            "hand-object interactions, warped or garbled text/logo printing, wrong "
+            "keep every frame hands-free - no hands, fingers, arms, people or faces; no "
+            "duplicated or misshapen fingers; no broken hand-object interactions. Also guard "
+            "warped or garbled text/logo printing, wrong "
             "proportions, extra limbs, and inconsistent product identity across panels. "
             "Also name the structural features of THIS category that image models most often "
             "get wrong - for example a handle's true curvature and attachment, a lid or spout "
@@ -1406,12 +1857,13 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "stacking for multipacks/sets (visible count must match the real sellable quantity); "
             "layered overlapping stack with raking light to prove real thickness for flat or "
             "cut-out goods; real unbranded contents staged inside containers, bags, holders or "
-            "organizers to show capacity; a partial person actually wearing the item for "
-            "wearables; a believable scale anchor (a real hand or a familiar everyday object) for "
-            "small items; laying out every real component of a bundle or kit together; the "
+            "organizers to show capacity; the product already placed in its real use position "
+            "for wearables and everyday goods, with no human body in frame; a believable scale "
+            "anchor using a large familiar object (A4 sheet, dinner plate, closed notebook) - "
+            "never a hand or person; laying out every real component of a bundle or kit together; the "
             "flat/unassembled versus assembled state for goods that genuinely ship flat; one "
-            "small borderless macro inset proving real tactile detail; the real raw materials plus "
-            "the crafting tool for handmade goods; the product actually carrying the items it is "
+            "small borderless macro inset proving real tactile detail; the real raw materials for "
+            "handmade goods (no thin crafting tools or rulers); the product actually carrying the items it is "
             "made for (hooks, racks, holders); a physically plausible real-world performance "
             "moment for durability or water-resistance claims; seasonal or gift-cluster styling "
             "for seasonal, holiday, gift or decorative goods; suspended/hanging staging for "
@@ -1424,7 +1876,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "each other. Each card must state: (a) the real space it is shot in (study desk corner, "
             "kitchen counter, dining table, bedside table, balcony ledge, entryway console, outdoor "
             "stone slab, or a pure studio sweep with no space at all); (b) the surface material; "
-            "(c) the light position and the time of day; (d) 2-4 named companion props; (e) the "
+            "(c) the light position and the time of day; (d) zero or 1-2 named large simple companion "
+            "props, never thin detailed items; (e) the "
             "colour tone; (f) the composition rule. Then give each card a short human-readable "
             "one-line label in exactly this shape: `panel N | space · surface · props | light`. "
             "HOW TO CHOOSE (state this reasoning briefly): map the category to where and when it is "
@@ -1437,7 +1890,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "saturation, same colour family, never covering, cropping, pressing on or "
             "outshining the product, and never crossing the panel dividers.\n"
             "- No other brands, trademarks, packaging text, price tags or slogans anywhere "
-            "in frame; no full people, no faces, no pets, no unrelated clutter; keep clean "
+            "in frame; no hands, fingers, arms or people, no pets, no unrelated clutter; keep clean "
             "breathing space and a visible contact shadow around the product.\n"
             "- The product itself stays 100% identical to the reference image.\n"
             "- The marketplace MAIN image panel (the front-view pure-white hero panel) is "
@@ -1471,24 +1924,41 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             return ""
         return result
 
-    def _apply_batch_image_guidelines(self, template: str, batch_prompt: str) -> str:
+    def _apply_batch_image_guidelines(
+        self, template: str, batch_prompt: str, *, allow_people: bool = False
+    ) -> str:
         """把「本批次 AI 专项提示词」包裹进固定约束声明后拼接到图片提示词末尾。
 
         batch_prompt 为品类级内容/场景/质量建议（日常场景与配套道具方向 + 定点爆破规避
         异形），与用户附加同理，可以改变非主图格子的背景、台面、场景、光影与道具，但
         绝不能覆盖四宫格结构、分界、面板角色、产品保真、文字与安全等固定运行时契约。
         主图格（平台主图 / 正面白底英雄格）豁免：始终纯白无缝、不带道具与场景。
+        ``allow_people``：用户选了「真实使用」模板时才放开手部/局部人物（不露正脸），
+        其余模板一律保持无人。
         """
         if not batch_prompt or not str(batch_prompt).strip():
             return template
         prompt = str(batch_prompt).strip()
+        people_rule = (
+            "Hands or a partial person are allowed ONLY where the panel plan below explicitly asks "
+            "for an in-use moment: anatomically correct fingers, a continuous wrist, no face, no full "
+            "body, never covering the product. Every other panel stays hands-free."
+            if allow_people
+            else "Keep every panel hands-free: no hands, fingers, arms, people or faces."
+        )
+        prop_people_rule = (
+            "no full faces or full bodies, and partial hands only where the panel plan asks for an "
+            "in-use moment"
+            if allow_people
+            else "no hands, fingers, arms or people, no faces"
+        )
         return f"""{template}
 
 BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MUST NOT override the fixed runtime contracts above):
 - The four-grid/single-image structure, exact dividers, split logic, panel roles, product fidelity, typography and safety rules defined above are FIXED and always take precedence.
-- Follow these guidelines for depiction quality inside the shown panels (anatomy, proportions, hands, printed text/logo legibility, material realism, product identity consistency); never for layout structure or generated text.
+- Follow these guidelines for depiction quality inside the shown panels (proportions, printed text/logo legibility, material realism, product identity consistency); never for layout structure or generated text. {people_rule}
 - You MAY change the background, surface, everyday scene, lighting and companion props of the NON-MAIN panels to follow these guidelines. The marketplace MAIN image panel (the front-view pure-white hero panel / first carousel image) is EXEMPT and stays pure white seamless with no props, surface or scene.
-- PROP AND SCENE SAFETY (always wins over the guidelines below): props stay strictly subordinate - visibly smaller than the product, low-saturation, same colour family, never covering, cropping, pressing on or outshining the product; no other brands, trademarks, packaging text, price tags or slogans; no full people, faces or pets, no unrelated clutter; keep clean breathing space and a visible contact shadow around the product; nothing may cross or touch the panel dividers; the product stays 100% identical to the reference image.
+- PROP AND SCENE SAFETY (always wins over the guidelines below): props stay strictly subordinate - visibly smaller than the product, low-saturation, same colour family, never covering, cropping, pressing on or outshining the product; no other brands, trademarks, packaging text, price tags or slogans; {prop_people_rule}, no pets, no unrelated clutter; never rulers, pens, cutlery, brushes or other thin detailed props; keep clean breathing space and a visible contact shadow around the product; nothing may cross or touch the panel dividers; the product stays 100% identical to the reference image.
 - {prompt}"""
 
     def create_draft(
@@ -1925,7 +2395,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 "grid_image": False,
                 "image_rewrite": False,
             },
-            image_chain=image_chain_supplied(image_plan),
+            image_chain=image_chain_supplied(image_plan) or local_image_chain() is not None,
         )
         _remember_batch_freeze(
             freeze_id,
@@ -2675,6 +3145,13 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         managed_path = self._text(asset.get("managed_path"))
         if managed_path:
             return self.assets.require_managed_file(managed_path).read_bytes()
+        # 自动烧制不再预复制整条链接的 V2 媒体；选中素材按 id 从源注册表读取。
+        source_media_id = self._text(asset.get("source_media_asset_id"))
+        if source_media_id and getattr(self, "media_assets", None) is not None:
+            workspace_id = self._text(asset.get("workspace_id")) or "local"
+            return self.media_assets.read_ready_asset(
+                source_media_id, workspace_id=workspace_id
+            )
         source_url = self._text(asset.get("source_url"))
         if not source_url:
             raise ValueError("dimension source asset is unavailable")
@@ -3191,11 +3668,23 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             s["product_video_template"] = True
         s["skip_duplicates"] = _as_bool(s.get("skip_duplicates"), default=False)
         s["ip_check"] = _as_bool(s.get("ip_check"), default=True)
+        # 是否自动烧制第 4 格尺寸图：默认开启；关闭后整批跳过尺寸画布导入/烧卡与 OCR 预取。
+        s["dimension_card"] = _as_bool(s.get("dimension_card"), default=True)
         # 生图提示词模板：A=影棚无缝主图，B=人景叙事（防比价），C=静物平铺俯拍，D=环境远景。
         _image_template = str(s.get("image_template") or "A").strip().upper()
         s["image_template"] = _image_template if _image_template in {"A", "B", "C", "D"} else "A"
         # 五点描述模板：A=卖点前置（结果导向），B=场景代入（痛点导向）。
         s["desc_template"] = "B" if str(s.get("desc_template") or "A").strip().upper() == "B" else "A"
+        # 用户可选的五层卡片：auto=使用品类默认卡；指定卡 id=整批统一。
+        for _layer in LAYER_KEYS:
+            _key = f"image_{_layer}"
+            _value = str(s.get(_key) or "auto").strip().lower()
+            s[_key] = _value if _value in CARD_LIBRARIES[_layer] else "auto"
+        # 批次级品类覆盖：auto=按标题逐条分类；指定品类=整批统一用该品类组合。
+        _category_override = str(s.get("image_category_override") or "auto").strip().lower()
+        s["image_category_override"] = (
+            _category_override if _category_override in CATEGORY_IMAGE_PROMPTS else "auto"
+        )
         # 一键随机模板：开启后忽略上面选定的模板，本批次每条链接稳定随机分配生图/描述模板。
         s["random_template"] = _as_bool(s.get("random_template"), default=False)
         # 兼容未传该字段的历史 API 调用：继续走原有四宫格一次调用。
@@ -3530,14 +4019,25 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         }
 
     def task_outputs(
-        self, task_id: int, *, summary_only: bool = False, workspace_id: str = "local"
+        self,
+        task_id: int,
+        *,
+        summary_only: bool = False,
+        light: bool = False,
+        workspace_id: str = "local",
     ) -> dict[str, Any]:
         # 前端任务页轮询该接口，就代表「页面还在看这个任务」：轮询时刻会被记录，用来撤销
         # 页面关闭时发出的离开信标（刷新/重开/多页签都算没离开）。暂停只由**真实事件**触发
         # ——页面关闭信标、手动暂停、应用退出时的取消结算，不再用「多久没心跳」猜：页面被
         # 浏览器冻结/整机休眠时定时器根本不跑，猜测式判定会把正在跑的任务误停。
         self._touch_task_heartbeat(task_id, workspace_id)
-        task = self._require_task(task_id, workspace_id)
+        if light:
+            # 每秒轮询只渲染进度与失败原因：不读完整 result_json（大字段），
+            # 否则几百条链接的任务会在处理中持续抢占 DB 与主线程。
+            task = self._require_task_meta(task_id, workspace_id)
+            task["items"] = self.repository.get_task_items_light(task_id)
+        else:
+            task = self._require_task(task_id, workspace_id)
         response = self._task_response(task)
         if summary_only and len(response["items"]) > 20:
             response["items"] = response["items"][:20]
@@ -4187,14 +4687,288 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         except FileNotFoundError as exc:
             raise ProductProcessingNotFound(str(exc)) from exc
 
+    def _load_preview_media_bundle(
+        self,
+        task_id: int,
+        workspace_id: str,
+        draft_ids: list[int],
+    ) -> tuple[
+        dict[int, list[dict[str, Any]]],
+        dict[int, list[dict[str, Any]]],
+        dict[str, dict[str, Any]],
+        dict[int, dict[tuple[str, str], dict[str, Any]]],
+    ]:
+        """一次取齐预检图片所需的资产/绑定/媒体，并整批注册代理。"""
+        preview_assets_by_draft = self.preview_images.repository.list_assets_for_drafts(
+            task_id, workspace_id, draft_ids
+        )
+        bindings_by_draft: dict[int, list[dict[str, Any]]] = {}
+        media_by_id: dict[str, dict[str, Any]] = {}
+        if self.preview_images.media_assets is not None:
+            bindings_by_draft = self.preview_images.media_assets.list_bindings_for_drafts(
+                workspace_id, draft_ids
+            )
+            media_ids = [
+                *(
+                    str(binding.get("asset_id") or "")
+                    for rows in bindings_by_draft.values()
+                    for binding in rows
+                ),
+                *(
+                    str(asset.get("media_asset_id") or "")
+                    for rows in preview_assets_by_draft.values()
+                    for asset in rows
+                ),
+            ]
+            media_by_id = self.preview_images.media_assets.get_assets(
+                media_ids, workspace_id
+            )
+        planned_proxies: list[dict[str, Any]] = []
+        proxies_by_draft: dict[int, dict[tuple[str, str], dict[str, Any]]] = {}
+        for draft_id in draft_ids:
+            draft_key = int(draft_id)
+            existing_assets = preview_assets_by_draft.get(draft_key, [])
+            existing_by_id = {
+                str(asset.get("id") or ""): asset
+                for asset in existing_assets
+                if asset.get("id")
+            }
+            cache = proxies_by_draft.setdefault(draft_key, {})
+            for planned in self.preview_images.plan_media_proxy_items(
+                product_draft_id=draft_key,
+                bindings=bindings_by_draft.get(draft_key, []),
+                existing_assets=existing_assets,
+                media_by_id=media_by_id,
+            ):
+                key = (
+                    str(planned.get("media_asset_id") or ""),
+                    str(planned.get("source_kind") or ""),
+                )
+                # 上一次预检已注册过的代理直接复用：预检会反复轮询同一个任务，
+                # 每次都为几百条已有代理重开写事务会让页面越用越卡。
+                row = existing_by_id.get(
+                    self.preview_images.media_proxy_asset_id(
+                        workspace_id=workspace_id,
+                        task_id=task_id,
+                        product_draft_id=draft_key,
+                        media_asset_id=key[0],
+                        source_kind=key[1],
+                    )
+                )
+                if row is not None:
+                    cache[key] = row
+                else:
+                    planned_proxies.append(planned)
+        if planned_proxies:
+            registered = self.preview_images.register_media_proxies_for_task(
+                task_id=task_id,
+                workspace_id=workspace_id,
+                items=planned_proxies,
+            )
+            for draft_key, entries in registered.items():
+                proxies_by_draft.setdefault(int(draft_key), {}).update(entries)
+        return preview_assets_by_draft, bindings_by_draft, media_by_id, proxies_by_draft
+
+    def _preview_item_summary(
+        self,
+        item_rows: list[dict[str, Any]],
+        draft_meta: Mapping[int, Mapping[str, Any]],
+        excluded_ids: set[int],
+    ) -> dict[str, int]:
+        """全量统计（用库内取得的结果标量，不读取完整 result_json/raw_payload）。"""
+        total = exportable = failed = 0
+        for row in item_rows:
+            draft_id = row.get("product_draft_id")
+            if draft_id and int(draft_id) in excluded_ids:
+                continue
+            total += 1
+            meta = draft_meta.get(int(draft_id)) if draft_id else {}
+            saved = (meta or {}).get("preview_overrides") or {}
+            title = str(
+                (saved.get("title") if isinstance(saved, Mapping) else "")
+                or row.get("optimized_title")
+                or ""
+            ).strip()
+            media_ok = row.get("media_ok")
+            processing_failed = (
+                str(row.get("result_status") or "") in {"failed", "attention_required"}
+                or bool(row.get("partial_result"))
+                or media_ok is False
+            )
+            if processing_failed:
+                failed += 1
+            if (
+                title
+                and not processing_failed
+                and str(row.get("four_grid") or "") != "source_fallback"
+            ):
+                exportable += 1
+        return {
+            "total": total,
+            "exportable_count": exportable,
+            "failed_count": failed,
+        }
+
+    def _start_dimension_prefetch(
+        self,
+        task_id: int,
+        draft_id: int,
+        urls: list[str],
+        workspace_id: str,
+    ) -> None:
+        """AI 生图还在跑时，先把原链接尺寸图取回并抠好，烧卡时直接用。"""
+
+        canvas = getattr(self, "_dimension_canvas_service", None)
+        if canvas is None or draft_id <= 0:
+            return
+        key = (str(workspace_id), int(task_id), int(draft_id))
+        with _DIMENSION_PREFETCHES_LOCK:
+            if key in _DIMENSION_PREFETCHES:
+                return
+            if len(_DIMENSION_PREFETCHES) >= 400:
+                _DIMENSION_PREFETCHES.clear()
+            try:
+                future = _dimension_prefetch_executor().submit(
+                    self._prefetch_dimension_base, list(urls)
+                )
+            except Exception:
+                return
+            _DIMENSION_PREFETCHES[key] = future
+
+    def _prefetch_dimension_base(self, urls: list[str]) -> dict[str, Any]:
+        from .domain.dimension_source_reuse import (  # noqa: PLC0415
+            clean_product_canvas,
+            find_dimension_source_index,
+        )
+
+        candidates: list[bytes] = []
+        # 调用方已按优先级排好（详情末尾 → 图库），保持顺序，先命中先返回。
+        for url in urls:
+            try:
+                candidates.append(bytes(self._public_image_fetcher(url).content))
+            except Exception:
+                continue
+        if not candidates:
+            # 取图失败：不阻断后续用本地媒体再试一次。
+            return {"checked": False, "base": None}
+        try:
+            index = find_dimension_source_index(candidates)
+            if index is None:
+                return {"checked": True, "base": None}
+            return {"checked": True, "base": clean_product_canvas(candidates[index])}
+        except Exception:
+            return {"checked": False, "base": None}
+
+    def _take_dimension_prefetch(
+        self, task_id: int, draft_id: int, workspace_id: str
+    ) -> Any:
+        if draft_id <= 0:
+            return None
+        key = (str(workspace_id), int(task_id), int(draft_id))
+        with _DIMENSION_PREFETCHES_LOCK:
+            return _DIMENSION_PREFETCHES.pop(key, None)
+
+    def _drop_dimension_prefetch(
+        self, task_id: int, draft_id: int, workspace_id: str
+    ) -> None:
+        if draft_id <= 0:
+            return
+        key = (str(workspace_id), int(task_id), int(draft_id))
+        with _DIMENSION_PREFETCHES_LOCK:
+            _DIMENSION_PREFETCHES.pop(key, None)
+
+    def _schedule_dimension_pass(
+        self, task_id: int, item_id: int, draft_id: int, workspace_id: str
+    ) -> None:
+        """单条结果落库后，立刻把尺寸卡/原图复用丢进后台并发队列。
+
+        预取结果随任务一起交给尺寸线程，主循环只做入队，不等待任何 I/O。
+        """
+
+        canvas = getattr(self, "_dimension_canvas_service", None)
+        if canvas is None:
+            return
+        prefetch = self._take_dimension_prefetch(task_id, draft_id, workspace_id)
+        try:
+            _dimension_pass_executor().submit(
+                _run_dimension_pass, canvas, task_id, item_id, workspace_id, prefetch
+            )
+        except Exception:
+            return
+
+    def _dimension_image_states(
+        self, task_id: int, workspace_id: str
+    ) -> dict[int, dict[str, Any]]:
+        """预检页尺寸图状态：已确认 / 预估 / 缺失 / 失败，以及是否复用了原图。
+
+        画布项是幂等导入的，这里只读不写；没有画布批次时返回空（前端不展示徽标）。
+        """
+
+        canvas_service = getattr(self, "_dimension_canvas_service", None)
+        if canvas_service is None:
+            return {}
+        batch_id = str(uuid5(NAMESPACE_URL, f"mainpg:{workspace_id}:dimension:{task_id}"))
+        try:
+            canvas_items = canvas_service.canvas_repository.list_items_light(
+                batch_id, workspace_id
+            )
+        except Exception:
+            return {}
+        if not canvas_items:
+            return {}
+        states: dict[int, dict[str, Any]] = {}
+        for item in canvas_items:
+            task_item_id = item.get("task_item_id")
+            if task_item_id is None:
+                continue
+            try:
+                dimensions = PhysicalDimensions.model_validate(
+                    item.get("physical_dimensions") or {}
+                )
+            except Exception:
+                dimensions = PhysicalDimensions()
+            state = str(item.get("state") or "")
+            settings = item.get("canvas_settings") or {}
+            if not dimensions.drawable:
+                label = "missing"
+            elif state == "completed":
+                label = "estimated" if dimensions.estimated else "confirmed"
+            elif state in {"render_failed", "render_retryable", "conflict", "failed"}:
+                label = "failed"
+            else:
+                label = "pending"
+            states[int(task_item_id)] = {
+                "task_item_id": int(task_item_id),
+                "canvas_item_id": str(item.get("id") or ""),
+                "state": label,
+                "canvas_state": state,
+                "source": str(settings.get("source_reuse") or ""),
+                "length_cm": dimensions.length.value_cm,
+                "width_cm": dimensions.width.value_cm,
+                "height_cm": dimensions.height.value_cm,
+                "estimated_fields": [
+                    axis
+                    for axis in ("length", "width", "height")
+                    if getattr(dimensions, axis).estimated
+                ],
+            }
+        return states
+
     def task_preview(
-        self, task_id: int, *, workspace_id: str = "local"
+        self,
+        task_id: int,
+        *,
+        workspace_id: str = "local",
+        item_limit: int | None = None,
+        item_offset: int = 0,
+        media_limit: int | None = None,
     ) -> dict[str, Any]:
         """预检数据：任务完成后逐商品展示标题/原图/生成图轮播/详情图/核心字段。
 
         用户已保存的预览覆盖优先展示；未覆盖时展示生成结果原值。
+        ``item_limit``/``item_offset`` 为元数据分页；``media_limit`` 为图片分页。
         """
-        task = self._require_task(task_id, workspace_id)
+        task = self._require_task_meta(task_id, workspace_id)
         if task["status"] not in {"completed", "failed", "partial_failure", "cancelled"}:
             raise ProductProcessingConflict(f"任务尚未完成（当前状态：{task['status']}）")
         excluded_ids = {
@@ -4202,40 +4976,135 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             for value in task["settings"].get("excluded_preview_draft_ids", [])
             if str(value).isdigit()
         }
+        # “暂停后导出成功商品”会永久取消余项；预检只显示当时已成功的
+        # 商品，取消/失败项既不进入预检，也不会进入最终表格。
+        completed_only = task["status"] == "cancelled"
+        item_rows = self.repository.task_item_preview_rows(
+            task_id, completed_only=completed_only
+        )
+        total_items = len(item_rows)
+        start = max(0, int(item_offset or 0))
+        limit = int(item_limit) if item_limit is not None else 0
+        # 只有当前页的任务项需要完整 result_json；其余链接只参与汇总统计。
+        page_items = self.repository.get_task_items_page(
+            task_id,
+            offset=start,
+            limit=limit if limit > 0 else None,
+            completed_only=completed_only,
+        )
+        all_draft_ids = [
+            int(row["product_draft_id"])
+            for row in item_rows
+            if row.get("product_draft_id")
+        ]
+        page_draft_ids = [
+            int(item.get("product_draft_id"))
+            for item in page_items
+            if item.get("product_draft_id")
+        ]
+        # 汇总统计用轻量元数据（不解析 raw_payload）；只有需要投影图片的链接才取完整草稿
+        # （SKU 可用性判定需要 raw_payload），后台纯元数据分页因此不再解析大字段。
+        draft_meta = self.repository.drafts_preview_meta(
+            all_draft_ids, workspace_id=workspace_id
+        )
+        # media_limit=None 投影全部；0 只返回元数据（后台分页用）；N 只投影前 N 条。
+        media_draft_ids = (
+            page_draft_ids
+            if media_limit is None
+            else page_draft_ids[: max(0, int(media_limit))]
+        )
+        page_drafts_by_id = {
+            int(draft["id"]): draft
+            for draft in self.repository.get_drafts(
+                media_draft_ids, workspace_id=workspace_id
+            )
+        } if media_draft_ids else {}
+        media_draft_id_set = {int(value) for value in media_draft_ids}
+        task_owned_draft_ids = set(all_draft_ids)
+        (
+            preview_assets_by_draft,
+            preview_bindings_by_draft,
+            preloaded_media,
+            proxies_by_draft,
+        ) = self._load_preview_media_bundle(task_id, workspace_id, media_draft_ids)
+        from .domain.preview_images import PreviewImageManifest  # noqa: PLC0415
+
+        empty_manifest = PreviewImageManifest().as_dict()
+        dimension_states = self._dimension_image_states(task_id, workspace_id)
         items = []
-        preview_items = task["items"]
-        if task["status"] == "cancelled":
-            # “暂停后导出成功商品”会永久取消余项；预检只显示当时已成功的
-            # 商品，取消/失败项既不进入预检，也不会进入最终表格。
-            preview_items = [item for item in preview_items if item["status"] == "completed"]
-        for item in preview_items:
+        for item in page_items:
             result = item.get("result") or {}
             draft_id = item.get("product_draft_id")
-            draft = self.repository.get_draft(draft_id, workspace_id=workspace_id) if draft_id else None
+            draft = page_drafts_by_id.get(int(draft_id)) if draft_id else None
+            meta = draft_meta.get(int(draft_id)) if draft_id else {}
             saved = (draft or {}).get("preview_overrides") or {}
+            if not isinstance(saved, dict) or not saved:
+                saved = (meta or {}).get("preview_overrides") or {}
             if not isinstance(saved, dict):
                 saved = {}
-            projected = self.preview_images.project_item_images(
-                task_id=task_id,
-                product_draft_id=int(draft_id or 0),
-                result=result,
-                saved=saved,
-                workspace_id=workspace_id,
-                media_contract_version=int((draft or {}).get("media_contract_version") or 1),
-            )
+            media_loaded = bool(draft_id) and int(draft_id) in media_draft_id_set
+            if media_loaded:
+                projected = self.preview_images.project_item_images(
+                    task_id=task_id,
+                    product_draft_id=int(draft_id or 0),
+                    result=result,
+                    saved=saved,
+                    workspace_id=workspace_id,
+                    media_contract_version=int(
+                        (draft or {}).get("media_contract_version")
+                        or (meta or {}).get("media_contract_version")
+                        or 1
+                    ),
+                    task_owned_draft_ids=task_owned_draft_ids,
+                    preloaded_bindings=preview_bindings_by_draft.get(int(draft_id or 0), []),
+                    preloaded_media=preloaded_media,
+                    preloaded_assets=preview_assets_by_draft.get(int(draft_id or 0), []),
+                    preloaded_proxies=proxies_by_draft.get(int(draft_id or 0), {}),
+                )
+            else:
+                projected = {
+                    "assets": [],
+                    "image_manifest": empty_manifest,
+                    "main_image": "",
+                    "carousel_images": [],
+                    "detail_images": [],
+                    **self.preview_images.lazy_export_readiness(
+                        result,
+                        title=str(
+                            (saved.get("title") if isinstance(saved, Mapping) else "")
+                            or result.get("optimized_title")
+                            or ""
+                        ).strip(),
+                    ),
+                }
             items.append({
                 **self._preview_item(
                     item,
                     result,
                     saved,
-                    preview_revision=int((draft or {}).get("preview_revision") or 0),
+                    preview_revision=int(
+                        (draft or {}).get("preview_revision")
+                        or (meta or {}).get("preview_revision")
+                        or 0
+                    ),
                 ),
-                "media_contract_version": int((draft or {}).get("media_contract_version") or 1),
+                "media_contract_version": int(
+                    (draft or {}).get("media_contract_version")
+                    or (meta or {}).get("media_contract_version")
+                    or 1
+                ),
                 "excluded": bool(draft_id) and int(draft_id) in excluded_ids,
                 # auto 档在预检侧要讲清「未判定 ⇒ 会全部回退主图」，需要结论随行下发。
+                # 纯元数据分页不取完整草稿，等图片懒加载时随 media 端点补回。
                 "sku_availability": (
-                    self.preview_images.sku_availability_state(int(draft_id), workspace_id)
-                    if draft_id else None
+                    self.preview_images.sku_availability_state(
+                        int(draft_id), workspace_id, draft=draft
+                    )
+                    if draft_id and draft is not None else None
+                ),
+                "media_loaded": media_loaded,
+                "dimension_image": dimension_states.get(
+                    int(item.get("id") or item.get("item_id") or 0)
                 ),
                 **projected,
             })
@@ -4259,10 +5128,91 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 "failed_count": task["failed_count"],
                 "skipped_count": task["skipped_count"],
             },
-            "item_count": len(items),
+            "item_count": total_items,
+            "item_offset": start,
+            "has_more": start + len(items) < total_items,
+            "item_summary": self._preview_item_summary(
+                item_rows, draft_meta, excluded_ids
+            ),
             "items": items,
             "excluded_draft_ids": sorted(excluded_ids),
         }
+
+    def task_preview_media(
+        self,
+        task_id: int,
+        draft_ids: list[int],
+        *,
+        workspace_id: str = "local",
+    ) -> dict[str, Any]:
+        """按草稿批量返回预检图片投影（懒加载翻页用）。"""
+        task = self._require_task_meta(task_id, workspace_id)
+        if task["status"] not in {"completed", "failed", "partial_failure", "cancelled"}:
+            raise ProductProcessingConflict(f"任务尚未完成（当前状态：{task['status']}）")
+        requested: list[int] = []
+        for value in draft_ids:
+            try:
+                draft_id = int(value)
+            except (TypeError, ValueError):
+                continue
+            if draft_id > 0 and draft_id not in requested:
+                requested.append(draft_id)
+        if not requested:
+            return {"items": {}}
+        # 只读本页请求的草稿对应的任务项，避免为一次懒加载解析整任务的结果。
+        task_items = self.repository.get_task_items_by_draft_ids(
+            task_id,
+            requested,
+            completed_only=task["status"] == "cancelled",
+        )
+        by_draft = {
+            int(item["product_draft_id"]): item
+            for item in task_items
+            if item.get("product_draft_id")
+        }
+        wanted = [draft_id for draft_id in requested if draft_id in by_draft]
+        if not wanted:
+            return {"items": {}}
+        drafts_by_id = {
+            int(draft["id"]): draft
+            for draft in self.repository.get_drafts(wanted, workspace_id=workspace_id)
+        }
+        (
+            preview_assets_by_draft,
+            preview_bindings_by_draft,
+            preloaded_media,
+            proxies_by_draft,
+        ) = self._load_preview_media_bundle(task_id, workspace_id, wanted)
+        items: dict[str, Any] = {}
+        for draft_id in wanted:
+            item = by_draft[draft_id]
+            result = item.get("result") or {}
+            draft = drafts_by_id.get(draft_id)
+            saved = (draft or {}).get("preview_overrides") or {}
+            if not isinstance(saved, dict):
+                saved = {}
+            projected = self.preview_images.project_item_images(
+                task_id=task_id,
+                product_draft_id=draft_id,
+                result=result,
+                saved=saved,
+                workspace_id=workspace_id,
+                media_contract_version=int((draft or {}).get("media_contract_version") or 1),
+                task_owned_draft_ids=set(by_draft.keys()),
+                preloaded_bindings=preview_bindings_by_draft.get(draft_id, []),
+                preloaded_media=preloaded_media,
+                preloaded_assets=preview_assets_by_draft.get(draft_id, []),
+                preloaded_proxies=proxies_by_draft.get(draft_id, {}),
+            )
+            # 纯元数据分页没有计算 SKU 可用性；图片懒加载时一并补回。
+            projected["sku_availability"] = (
+                self.preview_images.sku_availability_state(
+                    draft_id, workspace_id, draft=draft
+                )
+                if draft is not None else None
+            )
+            items[str(draft_id)] = projected
+        return {"items": items}
 
     def draft_processed_preview(
         self, draft_id: int, *, workspace_id: str = "local"
@@ -5187,6 +6137,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         workspace_id: str,
         expires: int,
         signature: str,
+        width: int | None = None,
     ) -> tuple[Path, str]:
         try:
             return self.media_assets.media_asset_content(
@@ -5194,6 +6145,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 workspace_id=workspace_id,
                 expires=expires,
                 signature=signature,
+                width=width,
             )
         except LookupError as exc:
             raise ProductProcessingNotFound(str(exc)) from exc
@@ -5892,6 +6844,19 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             "image_ai_failed": (
                 str((result.get("provider_status_classes") or {}).get("four_grid") or "") == "source_fallback"
             ),
+            # 链接级失败统一标记：失败/待确认、部分产出或媒体完整性未通过都算失败链接。
+            # 前端据此纳入「只看失败链接」并默认不导出；后端导出会再次 fail-closed。
+            "processing_failed": (
+                str(item.get("status") or "") in {"failed", "attention_required"}
+                or bool(result.get("partial_result"))
+                or (
+                    isinstance(result.get("media_integrity"), Mapping)
+                    and result["media_integrity"].get("ok") is False
+                )
+            ),
+            "failure_hint": str(
+                result.get("operator_hint") or item.get("reason") or ""
+            ).strip(),
             "title": title,
             "description": description,
             "source_url": str(result.get("source_url") or result.get("product_link") or "").strip(),
@@ -5929,6 +6894,10 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 for record in (result.get("source_variant_records") or [])
                 if isinstance(record, dict)
             ],
+            # 变种网格缺口：店小秘要求「属性值一 × 属性值二」组合齐全，缺口会导致
+            # 整单拒收。预检页据此提示「导出时会自动补齐 N 组」，与导出补齐同口径。
+            # 不适用时必须是 None：空对象是 truthy，前端会当有缺口去读 missing 字段。
+            "variant_grid": variant_grid_gaps({**result, "preview_overrides": saved}) or None,
             "preview_revision": preview_revision,
             "result_version": task_item_result_version(result),
             # Kept separate from product_dimensions: these are shipping package
@@ -6075,17 +7044,18 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         return self._execute_task_direct(task_id, workspace_id, token)
 
     def _required_direct_providers(self, settings: dict[str, Any], *, image_chain: bool = False) -> set[str]:
-        """根据处理范围推导直连所需第三方密钥：文本/视觉走 ark，生图走 wuyin。
+        """根据处理范围推导直连所需第三方密钥：文本/视觉/生图统一走 ark（豆包）。
 
-        ``image_chain=True``：服务端已下发可用出图链路（例如故障期切到中转），生图不再
-        依赖 wuyin 短期密钥，因此不再把它算作必需。
+        ``image_chain=True``：服务端下发的 image_plan 已带出方舟链路（含 api_key），
+        生图不再依赖批次下发的 ark 短期密钥，因此不再把它算作必需。
+        无印（wuyin）链路已停用，这里不再要求 wuyin 密钥。
         """
         kinds = {kind for kind, _feature in self._billable_product_processing_features(settings)}
         providers: set[str] = set()
         if kinds & {"text", "vision"}:
             providers.add("ark")
         if "image_grid" in kinds and not image_chain:
-            providers.add("wuyin")
+            providers.add("ark")
         return providers
 
     def _execute_task_direct(self, task_id: int, workspace_id: str, token: str) -> dict[str, Any]:
@@ -6134,7 +7104,8 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         )
         try:
             required = self._required_direct_providers(
-                settings, image_chain=image_chain_supplied(image_plan)
+                settings,
+                image_chain=image_chain_supplied(image_plan) or local_image_chain() is not None,
             )
             missing = sorted(provider for provider in required if not granted.get(provider))
             if missing:
@@ -6352,6 +7323,103 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         if not preflight_only and items_to_process:
             batch_image_prompt = self._text(settings.get("batch_image_prompt"))
 
+        # 用户可选的批次级覆盖：
+        # - image_category_override=auto：每条按标题分类；
+        # - image_category_override=<category_id>：整批统一用该品类组合；
+        # - image_frame/light/tone/detail/style=auto：用该品类默认卡；指定卡则整批统一。
+        image_category_override = self._text(
+            settings.get("image_category_override") or "auto"
+        ).strip().lower()
+        if image_category_override not in CATEGORY_IMAGE_PROMPTS:
+            image_category_override = "auto"
+        layer_selections: dict[str, str] = {}
+        for layer in LAYER_KEYS:
+            value = self._text(settings.get(f"image_{layer}") or "auto").strip().lower()
+            layer_selections[layer] = value if value in CARD_LIBRARIES[layer] else "auto"
+        panel_selections = settings.get("image_panels") or []
+        if not isinstance(panel_selections, list):
+            panel_selections = []
+        preset_id = self._text(settings.get("image_preset") or "auto").strip().lower()
+        if preset_id not in PRESET_INTENTS:
+            preset_id = "auto"
+        # 一键随机模板：整批按链接分散到不同小白模板（模板与四格卡片必须成对切换，
+        # 否则预设说的场景和逐格卡片会互相打架）。前端把每个模板的 panels 一起下发。
+        random_image_preset = _as_bool(
+            settings.get("random_image_preset"), default=False
+        )
+        preset_pool: list[str] = []
+        if random_image_preset:
+            raw_pool = settings.get("image_preset_pool")
+            if isinstance(raw_pool, list):
+                for value in raw_pool:
+                    candidate = str(value or "").strip().lower()
+                    if candidate in PRESET_INTENTS and candidate != "auto":
+                        if candidate not in preset_pool:
+                            preset_pool.append(candidate)
+        preset_panels_by_id: dict[str, list[Any]] = {}
+        raw_preset_panels = settings.get("image_preset_panels")
+        if isinstance(raw_preset_panels, dict):
+            for key, value in raw_preset_panels.items():
+                name = str(key or "").strip().lower()
+                if name in PRESET_INTENTS and isinstance(value, list) and value:
+                    preset_panels_by_id[name] = value
+        # 导演模式：逐格卡片是用户显式设置的，必须作为高优先级逐格改写下发，
+        # 否则只会落在末尾的“建议”里，模板自带的道具数量/台面会把它盖掉。
+        panel_plan_override_enabled = _as_bool(
+            settings.get("image_panel_override"), default=False
+        )
+
+        category_by_draft: dict[int, str] = {}
+        excluded_draft_ids: set[int] = set()
+        if not preflight_only and items_to_process:
+            target_draft_ids = {item["product_draft_id"] for item in items_to_process}
+            titles_by_draft: dict[int, str] = {}
+            for draft_id, draft in drafts.items():
+                if draft_id not in target_draft_ids:
+                    continue
+                title = self._text(
+                    draft.get("title")
+                    or draft.get("product_name")
+                    or (draft.get("raw_payload") or {}).get("source_title")
+                )
+                if title:
+                    titles_by_draft[draft_id] = title
+            decisions = classify_titles(titles_by_draft.values())
+            for draft_id, title in titles_by_draft.items():
+                decision = decisions.get(title)
+                if decision is None:
+                    continue
+                if decision.excluded:
+                    excluded_draft_ids.add(draft_id)
+                    _LOGGER.info(
+                        "品类分类排除 | task_id=%s | draft_id=%s | reason=%s | title=%s",
+                        task_id, draft_id, decision.exclusion_reason, title[:120],
+                    )
+                    continue
+                category_id = (
+                    image_category_override
+                    if image_category_override != "auto"
+                    else decision.category_id
+                )
+                category_by_draft[draft_id] = category_id
+                if decision.category_id == "general" and image_category_override == "auto":
+                    _LOGGER.info(
+                        "品类分类未命中 | task_id=%s | draft_id=%s | confidence=%.2f | score=%d | title=%s",
+                        task_id, draft_id, decision.confidence, decision.score, title[:120],
+                    )
+                else:
+                    _LOGGER.debug(
+                        "品类分类 | task_id=%s | draft_id=%s | category=%s | override=%s | "
+                        "confidence=%.2f | score=%d | title=%s",
+                        task_id, draft_id, category_id, image_category_override,
+                        decision.confidence, decision.score, title[:120],
+                    )
+            if batch_image_prompt:
+                _LOGGER.info(
+                    "批次使用手动辅助提词，覆盖五层卡片组装 | task_id=%s | items=%d",
+                    task_id, len(category_by_draft),
+                )
+
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         # 本地 AI 处理日志：批次执行参数（并发、断点续跑数量等）。
@@ -6369,6 +7437,45 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 return None
             draft = drafts.get(item["product_draft_id"])
             item_id = int(item["item_id"])
+            # 手动整批辅助提词优先（旧 API 兼容）；否则按该条分类 + 五层卡片组装。
+            draft_id = item["product_draft_id"]
+            # 一键随机模板：本条链接固定分配到某个小白模板，并同步换成该模板的四格卡片。
+            item_preset = preset_id
+            item_panels = panel_selections
+            if random_image_preset and preset_pool:
+                item_preset = self._random_preset_for_draft(
+                    task_id, int(draft_id), preset_pool
+                )
+                candidate_panels = preset_panels_by_id.get(item_preset)
+                if candidate_panels:
+                    item_panels = candidate_panels
+            item_settings = settings if item_preset == preset_id else {**settings, "image_preset": item_preset}
+            # 小白模板与基础四宫格模板必须成对切换，否则「全套平铺 / 真实使用」仍然
+            # 跑在影棚模板上，模板写死的逐格规划会把预设改写块压回去。
+            preset_template = _preset_image_template(item_preset)
+            if preset_template:
+                item_settings = {**item_settings, "image_template": preset_template}
+            item_panel_plan = ""
+            if batch_image_prompt:
+                item_image_prompt = batch_image_prompt
+            elif draft_id in excluded_draft_ids:
+                item_image_prompt = ""
+            else:
+                category_id = category_by_draft.get(draft_id, "general")
+                if item_panels:
+                    assembly = assemble_panel_image_prompt(
+                        category_id,
+                        item_panels,
+                        layer_selections,
+                        preset_id=item_preset,
+                    )
+                    item_image_prompt = assembly.prompt
+                    if panel_plan_override_enabled:
+                        item_panel_plan = render_panel_plan_override(assembly)
+                else:
+                    item_image_prompt = assemble_image_prompt(
+                        category_id, layer_selections, preset_id=item_preset
+                    ).prompt
             try:
                 # 客户端直连：批次已冻结并下发密钥，外层 server_ai_context 已生效，
                 # 不逐项预留/结算 usage（整批按子项统一结算，避免双重扣费）。
@@ -6379,11 +7486,12 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     lambda: self._process_one(
                         item,
                         draft,
-                        settings,
+                        item_settings,
                         preflight_only,
                         task_id=task_id,
                         workspace_id=workspace_id,
-                        batch_image_prompt=batch_image_prompt,
+                        batch_image_prompt=item_image_prompt,
+                        panel_plan_override=item_panel_plan,
                     ),
                 )
             except _TaskControlStopped:
@@ -6444,21 +7552,42 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 # 任务已被清理时忽略进度写入，不阻塞整体流程
                 pass
 
+        # 本批次是否自动烧制第 4 格尺寸图（用户在「处理设置」里可关闭；某些品类不需要尺寸图）。
+        dimension_card_enabled = _as_bool(settings.get("dimension_card"), default=True)
         if max_workers <= 1:
             # 串行模式：保持原有行为，便于调试和问题排查
             for item in items_to_process:
                 processed = _process(item)
                 if processed is None:
+                    self._drop_dimension_prefetch(
+                        task_id, int(item["product_draft_id"]), workspace_id
+                    )
                     continue
                 item_results.append(processed)
                 _persist_progress(processed)
                 if processed["status"] == "completed":
+                    if (
+                        not preflight_only
+                        and dimension_card_enabled
+                        and str(
+                            (processed["result"].get("provider_status_classes") or {}).get("four_grid") or ""
+                        ) != "source_fallback"
+                    ):
+                        self._schedule_dimension_pass(
+                            task_id,
+                            int(item["item_id"]),
+                            int(item["product_draft_id"]),
+                            workspace_id,
+                        )
                     result = processed["result"]
                     successes.append(result)
                     source_images.extend(result.get("source_image_urls") or [])
                     if (draft := drafts.get(item["product_draft_id"])) and not preflight_only:
                         self._mark_draft_processed(draft, task_id, settings, workspace_id)
                 else:
+                    self._drop_dimension_prefetch(
+                        task_id, int(item["product_draft_id"]), workspace_id
+                    )
                     failures.append(processed)
                     if (draft := drafts.get(item["product_draft_id"])) and not preflight_only:
                         self._mark_draft_failed(draft, workspace_id)
@@ -6486,17 +7615,36 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                             },
                         }
                     if processed is None:
+                        self._drop_dimension_prefetch(
+                            task_id, int(item["product_draft_id"]), workspace_id
+                        )
                         continue
                     with lock:
                         item_results.append(processed)
                         _persist_progress(processed)
                         if processed["status"] == "completed":
+                            if (
+                                not preflight_only
+                                and dimension_card_enabled
+                                and str(
+                                    (processed["result"].get("provider_status_classes") or {}).get("four_grid") or ""
+                                ) != "source_fallback"
+                            ):
+                                self._schedule_dimension_pass(
+                                    task_id,
+                                    int(item["item_id"]),
+                                    int(item["product_draft_id"]),
+                                    workspace_id,
+                                )
                             result = processed["result"]
                             successes.append(result)
                             source_images.extend(result.get("source_image_urls") or [])
                             if (draft := drafts.get(item["product_draft_id"])) and not preflight_only:
                                 self._mark_draft_processed(draft, task_id, settings, workspace_id)
                         else:
+                            self._drop_dimension_prefetch(
+                                task_id, int(item["product_draft_id"]), workspace_id
+                            )
                             failures.append(processed)
                             if (draft := drafts.get(item["product_draft_id"])) and not preflight_only:
                                 self._mark_draft_failed(draft, workspace_id)
@@ -6553,16 +7701,24 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     source_urls=list(row.get("source_image_urls") or []),
                     detail_urls=list(row.get("source_detail_image_urls") or []),
                 )
+        # 新流程的生成图仍是本地预审资产（公网发布延后到预检 finalize）时，
+        # 批次结束不生成旧版自动导出表，避免「没有公网图」把整批误判为部分失败。
+        defer_workbook = _generated_media_deferred(successes)
+        if defer_workbook:
+            business_logger("ai_processing").info(
+                "批次导出延后 | task_id=%s | 生成图保存在本地预审资产，需在预检页确认后导出最终版",
+                task_id)
         paths = self.assets.write_task_outputs(
             task_id,
             successes,
             failures,
             include_video_manifest=bool(settings.get("product_video_template")) and not preflight_only,
+            defer_workbook=defer_workbook,
         )
         completed_task = self.repository.finish_task(
             task_id,
             item_results,
-            output_file=str(paths.workbook),
+            output_file=str(paths.workbook) if paths.workbook else "",
             error_report_file=str(paths.errors),
             video_manifest_file=str(paths.video_manifest) if paths.video_manifest else "",
             workspace_id=workspace_id,
@@ -6589,7 +7745,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 completed_task.get("failed_count"), completed_task.get("skipped_count"),
                 completed_task.get("attention_required_count"),
                 str(_state.get("round") or "-"), str(_state.get("message") or "-"),
-                paths.workbook, paths.errors)
+                paths.workbook or "-", paths.errors)
         except Exception:  # noqa: BLE001
             pass
         return completed_task
@@ -7576,6 +8732,23 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         desc_template = "B" if digest[1] % 2 else "A"
         return image_template, desc_template
 
+    @staticmethod
+    def _random_preset_for_draft(
+        task_id: int, draft_id: int, pool: list[str]
+    ) -> str:
+        """一键随机模板：把本批次的链接随机分配到不同的小白模板（稳定哈希）。
+
+        稳定哈希保证同一条链接在重试 / 补跑时仍拿到同一个模板，不会因为重跑而换风格；
+        不同链接之间仍然分散到四个模板上。
+        """
+
+        if not pool:
+            return "auto"
+        digest = hashlib.sha256(
+            f"random-preset:{int(task_id)}:{int(draft_id)}".encode("utf-8")
+        ).digest()
+        return pool[digest[0] % len(pool)]
+
     def _process_one(
         self,
         item: dict[str, Any],
@@ -7586,6 +8759,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         task_id: int,
         workspace_id: str = "local",
         batch_image_prompt: str = "",
+        panel_plan_override: str = "",
     ) -> dict[str, Any]:
         processing_started = time.perf_counter()
         stage_timings_ms: dict[str, int] = {}
@@ -7700,6 +8874,28 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             )
         )
         source_detail_image_urls = self._url_list(raw.get("source_detail_image_urls"))
+        # 尺寸图复用与 AI 生图并行预取：详情图末尾两张优先，再补一张图库图，
+        # 避免尺寸图只挂在轮播/图库、详情为空时整条链接漏掉复用。
+        prefetch_urls = list(
+            dict.fromkeys(
+                [
+                    *source_detail_image_urls[-2:],
+                    *(source_image_urls[1:][-1:] if len(source_image_urls) > 1 else []),
+                ]
+            )
+        )
+        if (
+            not preflight_only
+            and "four_grid" in scope
+            and prefetch_urls
+            and _as_bool(settings.get("dimension_card"), default=True)
+        ):
+            self._start_dimension_prefetch(
+                task_id,
+                int(draft["id"]),
+                prefetch_urls,
+                workspace_id,
+            )
         detail_reference_urls = list(
             dict.fromkeys(
                 [
@@ -8041,12 +9237,22 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     # 「本批次辅助提词」必须随主生成链路一并下发，否则会在真正生图前被静默丢弃
                     # （本条是实际被调用的媒体提前启动分支；_generate_*_images 内部再注入提示词）。
                     "batch_image_prompt": batch_image_prompt,
+                    # 导演模式逐格卡片的高优先级改写（放在运行时契约之后生效）。
+                    "panel_plan_override": panel_plan_override,
                 }
+                if premium_mode:
+                    # 预设决定四格角色（例如「真实使用」的生活格必须有人手），
+                    # 因此必须一起下发到精品四宫格提示词。
+                    media_kwargs["image_preset"] = str(
+                        settings.get("image_preset") or "auto"
+                    )
                 if not premium_mode:
                     media_kwargs.update(
                         {
                             "image_template": effective_image_template,
                             "image_generation_count": image_generation_count,
+                            # 2K 四宫格链路同样要按预设改写第 2/3 格。
+                            "image_preset": str(settings.get("image_preset") or "auto"),
                             "allow_quality_override": int(draft["id"])
                             in {
                                 int(value)
@@ -8393,6 +9599,8 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                         vision_identity=vision_identity,
                         workspace_id=workspace_id,
                         batch_image_prompt=batch_image_prompt,
+                        image_preset=str(settings.get("image_preset") or "auto"),
+                        panel_plan_override=panel_plan_override,
                     )
                 else:
                     grid_future = _submit_with_context(
@@ -8413,6 +9621,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                         vision_identity=vision_identity,
                         workspace_id=workspace_id,
                         batch_image_prompt=batch_image_prompt,
+                        panel_plan_override=panel_plan_override,
                     )
             elif need_detail:
                 direct_detail_future = _submit_with_context(
@@ -8482,6 +9691,8 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         # 图片编排与尺寸/规格补全并行。普通新任务固定一张四宫格，历史任务仍兼容
         # 旧的 1 / 2 / 4 设置；精品任务由专用单次 4K 四宫格流水线处理。
         # 详情图优先由轮播图本地合成，只有本地合成不可用时才回退 AI 详情图生成。
+        grid_incomplete = bool(need_grid and len(grid_image_paths) != 4)
+        image_failure_detail = ""
         if need_grid and not images_receipt_hit:
             if grid_future is not None:
                 # 图片生成在独立线程中推进；取结果前先看任务是否已被暂停/取消，
@@ -8521,6 +9732,8 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                         if str(value).isdigit()
                     },
                     batch_image_prompt=batch_image_prompt,
+                    image_preset=str(settings.get("image_preset") or "auto"),
+                    panel_plan_override=panel_plan_override,
                 )
                 record_stage("grid_pipeline", stage_started)
             grid_image_paths, grid_summary_path = grid_output
@@ -8529,10 +9742,11 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             provider_attempts["four_grid"] = grid_output.attempt_count
             provider_status_classes["four_grid"] = grid_output.provider_status_class
             stage_timings_ms.update(grid_output.stage_timings_ms)
-            if len(grid_image_paths) != 4:
-                # 尽量放行：轮播图未凑满 4 张（含生成超时 / 本地质量门未过 / 槽位重绘失败）
-                # 不再硬拦截整条商品。用已有轮播图 / 提供方原图 / 源图兜底，保留可用结果
-                # 继续合成详情图并入库，避免用户侧因生图副作用被反复「待确认」而误判故障。
+            grid_incomplete = bool(need_grid and len(grid_image_paths) != 4)
+            if grid_incomplete:
+                # 轮播图未凑满 4 张（含生成超时 / 本地质量门未过 / 槽位重绘失败）：
+                # 不再静默放行成 completed。保留可用图供预检查看，但任务转
+                # attention_required，详情图不再继续生成，导出侧也会被完整性门拦住。
                 image_failure_detail = self._latest_ai_failure_detail(ai_notes)
                 if not grid_image_paths:
                     fallback_carousel = list(
@@ -8554,7 +9768,9 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                         if grid_image_paths
                         else str(provider_status_classes.get("four_grid") or "empty")
                     )
-                ai_notes.append("grid:partial:allowed")
+                ai_notes.append("grid:incomplete:blocked")
+                if need_detail:
+                    ai_notes.append("detail_images:skipped:grid_not_ai")
                 ai_notes.append(
                     f"grid:missing:{max(0, 4 - len(grid_image_paths))}"
                 )
@@ -8569,13 +9785,13 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         # 只有真正调用了 AI 详情图并成功才为 True；本地合成/未产出均保持 False，
         # 避免无条件追加误导性的 detail_images:ai。
         detail_images_via_ai = False
-        if need_detail and not images_receipt_hit:
+        if need_detail and not images_receipt_hit and not grid_incomplete:
             # 检查点：任务被暂停/取消时不再合成或发起详情图生成。
             self._raise_if_task_stopped(task_id, workspace_id)
             if grid_source_fallback:
                 ai_notes.append("detail_images:skipped:grid_not_ai")
                 detail_image_paths = []
-            if grid_image_paths and not grid_source_fallback:
+            if grid_image_paths and not grid_source_fallback and not grid_incomplete:
                 stage_started = time.perf_counter()
                 detail_image_paths = self._generate_detail_images_local(
                     task_id,
@@ -8588,7 +9804,9 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     workspace_id=workspace_id,
                 )
                 record_stage("local_detail", stage_started)
-            if not detail_image_paths and not grid_source_fallback:
+            if not detail_image_paths and not grid_source_fallback and not grid_incomplete:
+                # 本地合成未产出才调用 AI；留下明确标记，便于按 ai_notes 排查降本。
+                ai_notes.append("detail_images:ai_fallback")
                 if direct_detail_future is not None:
                     # 详情图生成在独立线程中推进；被中止的 future 抛出的
                     # _TaskControlStopped 在此自然冒泡。
@@ -8630,52 +9848,13 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             )
         if detail_images_via_ai:
             ai_notes.append("detail_images:ai")
-        if need_detail and not detail_image_paths:
-            detail_failure_detail = self._latest_ai_failure_detail(ai_notes)
-            if grid_source_fallback:
-                # 客户可读文案：说明是生图回退导致详情图缺失、已用原图兜底、系统会自动重试一次；
-                # 内部术语与技术原因留在 debug_hint（前端可展开）供运营排障。
-                item_reason = "生图服务未返回可用图片，已用原图兜底；详情图未生成（系统会自动重试一次）"
-                debug_hint = (
-                    "生图回退（four_grid=source_fallback）：该链接的四宫格来自来源图，"
-                    "已跳过本地合成与 AI 详情图，详情图判为未产出；可重试图片分支重新生成四宫格"
-                    + (
-                        f"；底层原因：{detail_failure_detail}" if detail_failure_detail else ""
-                    )
-                )
-            else:
-                item_reason = "详情图待补充"
-                debug_hint = "详情图未生成可用结果；文本结果已保留；请重试图片分支或检查图片服务配置"
-                if detail_failure_detail:
-                    debug_hint += f"；底层原因：{detail_failure_detail}"
-            return {
-                **item,
-                "title": optimized_title,
-                "image_url": image_url,
-                "status": "attention_required",
-                "reason": item_reason,
-                "result": {
-                    "error_type": "detail_images_incomplete",
-                    "failure_class": "technical_retryable",
-                    "partial_result": True,
-                    "pending_stage": "detail_images",
-                    "operator_hint": "可重试生成详情图",
-                    "debug_hint": debug_hint,
-                    "retryable": True,
-                    "optimized_title": optimized_title,
-                    "description": description,
-                    "variant_value_translations": variant_value_translations,
-                    "variant_translation_review_values": variant_translation_review_values,
-                    "variant_translation_sources": variant_translation_sources,
-                    "product_dimensions": product_dimensions,
-                    "vision_identity": vision_identity,
-                    "text_generation": text_generation,
-                    "ai_notes": ai_notes,
-                    "provider_attempts": provider_attempts,
-                    "provider_status_classes": provider_status_classes,
-                    "stage_timings_ms": timing_snapshot(),
-                },
-            }
+        detail_incomplete = bool(need_detail and not detail_image_paths)
+        detail_failure_detail = self._latest_ai_failure_detail(ai_notes) if detail_incomplete else ""
+        grid_incomplete = bool(need_grid and len(grid_image_paths) != 4)
+        if detail_incomplete:
+            ai_notes.append("detail_images:incomplete")
+            if detail_failure_detail:
+                ai_notes.append(f"detail_images:last-error:{detail_failure_detail}")
 
         if (
             not images_receipt_hit
@@ -8776,6 +9955,89 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             for value in list(grid_image_paths) + [grid_summary_path]
         ):
             self._note_media_unconfigured(ai_notes, "four_grid")
+
+        media_blockers: list[str] = []
+        if grid_incomplete:
+            media_blockers.append(f"轮播图不足 4 张（当前 {len(grid_image_paths)} 张）")
+        if grid_source_fallback:
+            media_blockers.append("AI 生图未成功，当前轮播为来源图兜底")
+        if detail_incomplete:
+            media_blockers.append("详情图未生成")
+        media_incomplete = bool(media_blockers)
+        media_integrity = {
+            "ok": not media_incomplete,
+            "carousel_count": len(grid_image_paths),
+            "detail_count": len(detail_image_paths),
+            "required_carousel": 4 if need_grid else 0,
+            "required_detail": 1 if need_detail else 0,
+            "blockers": media_blockers,
+            "grid_status": str(provider_status_classes.get("four_grid") or ""),
+        }
+        if preflight_only:
+            final_status = "preflight_passed"
+        elif media_incomplete or text_failure is not None:
+            final_status = "attention_required"
+        else:
+            final_status = "completed"
+        if media_incomplete:
+            media_failure_class = "technical_retryable"
+            media_error_type = (
+                "carousel_images_incomplete"
+                if (grid_incomplete or grid_source_fallback)
+                else "detail_images_incomplete"
+            )
+            # 链接级失败统一话术：运营只需要换链接/剔除，具体技术原因留在 debug_hint。
+            # 但上游生图服务维护/限流时换链接毫无意义，必须明确提示「稍后重试」。
+            provider_side_outage = bool(
+                grid_source_fallback
+                and _is_provider_side_image_failure(image_failure_detail)
+            )
+            media_operator_hint = (
+                "AI 生图服务当前不可用（上游维护或限流），链接本身没有问题；"
+                "稍后点「重新处理」即可，失败链接不参与计费"
+                if provider_side_outage
+                else FAILED_LINK_OPERATOR_HINT
+            )
+            media_debug_hint = "；".join(media_blockers)
+            if image_failure_detail:
+                media_debug_hint += f"；上游原因：{image_failure_detail}"
+            if text_failure_detail:
+                media_debug_hint += f"；文案错误：{text_failure_detail}"
+            media_retryable = True
+        elif text_failure is not None:
+            media_failure_class = (
+                "configuration_blocked" if text_failure_is_config else "technical_retryable"
+            )
+            media_error_type = (
+                "text_service_configuration"
+                if text_failure_is_config
+                else (
+                    "text_invalid_response"
+                    if text_failure_is_invalid
+                    else "text_service_unavailable"
+                )
+            )
+            # 配置类故障是全局问题，保留可执行的配置提示；其余链接级失败统一话术。
+            media_operator_hint = (
+                "AI 文案服务配置异常，请联系管理员检查服务配置或余额后重试"
+                if text_failure_is_config
+                else FAILED_LINK_OPERATOR_HINT
+            )
+            media_debug_hint = (
+                "服务端文本服务配置异常；请检查 AI 服务配置或余额后重试"
+                if text_failure_is_config
+                else (
+                    f"文本生成已耗尽内部重试；具体原因：{text_failure_detail}；"
+                    "图片结果已保留，可直接重试补文本"
+                )
+            )
+            media_retryable = bool(text_failure.retryable)
+        else:
+            media_failure_class = None
+            media_error_type = None
+            media_operator_hint = ""
+            media_debug_hint = ""
+            media_retryable = False
         result = {
             "product_draft_id": draft["id"],
             "candidate_id": raw.get("candidate_id") or draft.get("candidate_id"),
@@ -8834,58 +10096,22 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             "selection_score": raw.get("selection_score"),
             "risk_tags": raw.get("risk_tags") or [],
             "preflight_only": preflight_only,
-            "status": (
-                "preflight_passed"
-                if preflight_only
-                else ("attention_required" if text_failure is not None else "completed")
-            ),
+            "status": final_status,
             "processing_scope": sorted(scope),
             "qualification_mode": settings.get("qualification_mode", "standard"),
-            "failure_class": (
-                None
-                if text_failure is None
-                else (
-                    "configuration_blocked"
-                    if text_failure_is_config
-                    else "technical_retryable"
-                )
-            ),
-            "error_type": (
-                None
-                if text_failure is None
-                else (
-                    "text_service_configuration"
-                    if text_failure_is_config
-                    else (
-                        "text_invalid_response"
-                        if text_failure_is_invalid
-                        else "text_service_unavailable"
-                    )
-                )
-            ),
-            "operator_hint": (
-                ""
-                if text_failure is None
-                else (
-                    f"AI 文案返回内容未通过校验：{text_failure_detail}"
-                    if text_failure_is_invalid
-                    else "AI 文案服务暂不可用，请稍后重试"
-                )
-            ),
-            "debug_hint": (
-                ""
-                if text_failure is None
-                else (
-                    "服务端文本服务配置异常；请检查 AI 服务配置或余额后重试"
-                    if text_failure_is_config
-                    else (
-                        f"文本生成已耗尽内部重试；具体原因：{text_failure_detail}；"
-                        "图片结果已保留，可直接重试补文本"
-                    )
-                )
-            ),
+            "failure_class": media_failure_class,
+            "error_type": media_error_type,
+            "operator_hint": media_operator_hint,
+            "debug_hint": media_debug_hint,
             "text_failure_detail": text_failure_detail,
-            "retryable": bool(text_failure is not None and text_failure.retryable),
+            "retryable": media_retryable,
+            "partial_result": bool(media_incomplete),
+            "pending_stage": (
+                "four_grid"
+                if (grid_incomplete or grid_source_fallback)
+                else ("detail_images" if detail_incomplete else None)
+            ),
+            "media_integrity": media_integrity,
             "exchange_contract": "daily-selection-product-processing-v1" if draft.get("selection_run_id") else None,
         }
         self._record_source_shipping_observations(
@@ -8899,12 +10125,16 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             "skc": skc,
             "title": optimized_title,
             "image_url": image_url,
-            "status": "attention_required" if text_failure is not None else "completed",
+            "status": final_status,
             # Provider diagnostics stay in the server-side task trace.  The
             # desktop result exposes the sanitized failure detail (e.g. the
             # language-contract violation text) so operators understand why a
             # task failed instead of seeing only a neutral placeholder.
-            "reason": "商品文案生成失败" if text_failure is not None else "",
+            "reason": (
+                FAILED_LINK_OPERATOR_HINT
+                if (media_incomplete or text_failure is not None)
+                else ""
+            ),
             "result": result,
         }
 
@@ -9203,6 +10433,8 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         workspace_id: str = "local",
         allow_quality_override: bool = False,
         batch_image_prompt: str = "",
+        image_preset: str = "",
+        panel_plan_override: str = "",
     ) -> GridImageOutput:
         """Generate four carousel images with a selectable 1/2/4-image transport layout."""
         if not _ai_enabled() or not reference_urls:
@@ -9243,24 +10475,34 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 base_template = _ARK_GRID_TEMPLATES_BY_SUFFIX.get(
                     _template_suffix, ARK_GRID_IMAGE_PROMPT
                 )
+            allows_people = str(image_preset or "").strip().lower() == "lifestyle_use"
             template = self._apply_batch_image_guidelines(
                 self._apply_user_image_additions(base_template, prompt_key),
                 batch_image_prompt,
+                allow_people=allows_people,
             )
             contracted = apply_language_contract_to_prompt(template, "grid_image", target_language, target_site)
             context = listing_prompt_context(raw, title=optimized_title, category=category)
             if vision_subject:
                 context["product_visual_identity"] = vision_subject
             prompt = format_prompt(contracted, title=optimized_title, **context)
+            if allows_people:
+                # 模板自带“禁止人物”的整句必须删掉，否则会和「真实使用」的要求互相抵消。
+                prompt = _relax_hands_free(prompt)
             reference = select_image_reference(raw, title=optimized_title, category=category)
             prompt = append_content_reference(prompt, reference, kind="image")
             self._note_content_reference(ai_notes, "image_reference", reference.reference_id)
 
-            panel_roles = (
-                "Hero product image",
-                "Alternate complete product angle with one real visible detail",
-                "Credible lifestyle product image",
-                "Clean dimension annotation background",
+            panel_roles = _grid_panel_roles(image_preset)
+            # 小白模板的逐格改写必须排在运行时契约之后：契约是“不可覆盖”的硬规则，
+            # 只有放在它后面并显式声明优先级，才能压住模板里写死的第 2/3 格规划。
+            preset_panel_plan = _grid_preset_panel_plan(image_preset)
+            preset_plan_block = (
+                f"\n\n{preset_panel_plan}" if preset_panel_plan else ""
+            )
+            # 导演模式：逐格卡片改写必须排在预设块之后，作为最后一层“拍什么”的指令。
+            custom_plan_block = (
+                f"\n\n{panel_plan_override}" if panel_plan_override else ""
             )
 
             standalone_prompt = prompt
@@ -9269,6 +10511,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 standalone_template = self._apply_batch_image_guidelines(
                     self._apply_user_image_additions(DEFAULT_PROMPTS.get(standalone_key, ""), standalone_key),
                     batch_image_prompt,
+                    allow_people=allows_people,
                 )
                 standalone_contracted = apply_language_contract_to_prompt(
                     standalone_template,
@@ -9281,6 +10524,8 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     title=optimized_title,
                     **context,
                 )
+                if allows_people:
+                    standalone_prompt = _relax_hands_free(standalone_prompt)
 
             def single_prompt(role: str) -> str:
                 return append_subject_analysis(
@@ -9329,7 +10574,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 # after the deterministic split so one bad quadrant never redraws the
                 # three usable quadrants.
                 grid_prompt = append_subject_analysis(
-                    f"{prompt.rstrip()}\n\n{GRID_RUNTIME_CONTRACT}",
+                    f"{prompt.rstrip()}\n\n{_grid_runtime_contract(allows_people)}{preset_plan_block}{custom_plan_block}",
                     vision_identity,
                 )
                 # Do not rely on the provider default here. Some OpenAI-compatible
@@ -9696,6 +10941,8 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         vision_identity: dict[str, Any] | None = None,
         workspace_id: str = "local",
         batch_image_prompt: str = "",
+        image_preset: str = "",
+        panel_plan_override: str = "",
     ) -> GridImageOutput:
         """精品模式：一次 4K 四宫格，本地拆成四张不降采样的高清轮播图。"""
         if not _ai_enabled() or not reference_urls:
@@ -9713,15 +10960,21 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             premium_image_size = str(_image_cfg.get("premium_image_size") or "").strip() or PREMIUM_IMAGE_SIZE
         except Exception:
             pass
-        template = self._apply_batch_image_guidelines(self._effective_prompt("premium_image"), batch_image_prompt)
+        allows_people = str(image_preset or "").strip().lower() == "lifestyle_use"
+        template = self._apply_batch_image_guidelines(
+            self._effective_prompt("premium_image"),
+            batch_image_prompt,
+            allow_people=allows_people,
+        )
         contracted = apply_language_contract_to_prompt(template, "premium_image", target_language, target_site)
         context = listing_prompt_context(raw, title=optimized_title, category=category)
         if vision_subject:
             context["product_visual_identity"] = vision_subject
         reference = select_image_reference(raw, title=optimized_title, category=category)
+        panel_role_defs = _premium_panel_roles(image_preset)
         panel_roles = "\n".join(
             f"  {index}. {instruction}"
-            for index, (_role, instruction) in enumerate(_PREMIUM_PANEL_ROLES, start=1)
+            for index, (_role, instruction) in enumerate(panel_role_defs, start=1)
         )
         base_prompt = format_prompt(
             contracted,
@@ -9729,6 +10982,11 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             panel_roles=panel_roles,
             **context,
         )
+        if allows_people:
+            base_prompt = _relax_hands_free(base_prompt)
+        if panel_plan_override:
+            # 导演模式逐格卡片：作为最后一层“拍什么”的高优先级指令。
+            base_prompt = f"{base_prompt.rstrip()}\n\n{panel_plan_override}"
         base_prompt = append_content_reference(base_prompt, reference, kind="image")
         base_prompt = append_subject_analysis(base_prompt, vision_identity)
         self._note_content_reference(ai_notes, "image_reference", reference.reference_id)
@@ -9806,7 +11064,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                             )
 
                         def repair_premium_slot(slot: int) -> tuple[int, Any, Any]:
-                            role = _PREMIUM_PANEL_ROLES[slot - 1][1]
+                            role = panel_role_defs[slot - 1][1]
                             repair_prompt = append_subject_analysis(
                                 (
                                     "Create ONE square premium ecommerce product image. "
@@ -9985,15 +11243,43 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         AI 详情图生成（含 OCR 修复循环）。
         """
         if not source_values:
+            if ai_notes is not None:
+                ai_notes.append("detail_images:local_skipped:no_sources")
             return []
         media_types = _media_types()
         if not media_types:
+            if ai_notes is not None:
+                ai_notes.append("detail_images:local_skipped:media_unavailable")
             return []
         processor_cls, media_config_error, media_error = media_types
         try:
             processor = self._media_processor()
-            content = self._compose_local_detail_image(source_values, optimized_title, category, target_language)
+            # 兜底解析：正常情况下传来的是 GeneratedMedia（内存字节）；若上游只给了
+            # 预览 URL / 资产字典，先从媒体资产库读回字节，避免本地合成误判失败而走 AI。
+            resolved_sources: list[Any] = []
+            for value in source_values:
+                data = self._local_source_bytes(value)
+                if data is None and self.preview_images is not None and self.media_assets is not None:
+                    try:
+                        asset_id = self.preview_images.media_asset_id_for_preview_url(
+                            str(value), workspace_id
+                        )
+                    except Exception:
+                        asset_id = ""
+                    if asset_id:
+                        try:
+                            data = self.media_assets.read_ready_asset(
+                                asset_id, workspace_id=workspace_id
+                            )
+                        except Exception:
+                            data = None
+                resolved_sources.append(data if data is not None else value)
+            content = self._compose_local_detail_image(
+                resolved_sources, optimized_title, category, target_language
+            )
             if not content:
+                if ai_notes is not None:
+                    ai_notes.append("detail_images:local_failed:no_readable_sources")
                 return []
             chinese = detect_chinese_text(content)
             if chinese:
@@ -10021,6 +11307,10 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             )
             return self._persist_media_for_preview([media], task_id, draft_id, workspace_id)
         except (media_config_error, media_error, ValueError, OSError) as exc:
+            if ai_notes is not None:
+                ai_notes.append(
+                    f"detail_images:local_failed:{_ai_error_reason(exc)}"
+                )
             self._note_ai_failure(ai_notes, "detail_images", _ai_error_reason(exc))
             return []
 
@@ -10031,6 +11321,14 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             return None
         if isinstance(value, bytes):
             return value
+        if isinstance(value, Mapping):
+            for key in ("content", "data", "bytes", "path", "local_path", "url"):
+                candidate = value.get(key)
+                if candidate:
+                    resolved = ProductProcessingService._local_source_bytes(candidate)
+                    if resolved:
+                        return resolved
+            return None
         content = getattr(value, "content", None)
         if isinstance(content, bytes):
             return content
@@ -11330,6 +12628,9 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 "reference_model": sys_image.get("reference_model") or provider.get("reference_image_model") or "",
                 "image_models": list(provider.get("image_models") or ()),
                 "image_size": provider.get("image_size") or "2048x2048",
+                # 精品模式：本地切到方舟时 premium 也用同一个 Seedream 模型（4K）。
+                "premium_image_model": provider.get("premium_image_model") or PREMIUM_IMAGE_MODEL,
+                "premium_image_size": provider.get("premium_image_size") or PREMIUM_IMAGE_SIZE,
             }
         elif provider.get("api_key"):
             image_section = {
@@ -11429,6 +12730,9 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             "grid_image_3": ("carousel.lifestyle", 2),
             "grid_image_4": ("carousel.dimension_background", 3),
         }
+        detail_slots = {
+            "detail_image": ("detail", 0),
+        }
         for part in parts:
             asset = self.preview_images.register_generated(
                 task_id=task_id,
@@ -11438,10 +12742,10 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             )
             preview_url = str(asset.get("preview_url") or "")
             values.append(preview_url)
-            slot = carousel_slots.get(str(getattr(part, "stage", "") or ""))
             unified_asset_id = self.preview_images.media_asset_id_for_preview_url(
                 preview_url, workspace_id
             )
+            slot = carousel_slots.get(str(getattr(part, "stage", "") or ""))
             if slot and unified_asset_id:
                 slot_id, sort_order = slot
                 self.media_assets.bind_asset(
@@ -11451,6 +12755,18 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     task_id=task_id,
                     role="carousel",
                     slot_id=slot_id,
+                    sort_order=sort_order,
+                )
+            detail_slot = detail_slots.get(str(getattr(part, "stage", "") or ""))
+            if detail_slot and unified_asset_id:
+                _slot_id, sort_order = detail_slot
+                self.media_assets.bind_asset(
+                    workspace_id=workspace_id,
+                    asset_id=unified_asset_id,
+                    product_draft_id=draft_id,
+                    task_id=task_id,
+                    role="detail",
+                    slot_id="",
                     sort_order=sort_order,
                 )
         return values
@@ -11669,6 +12985,13 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
 
     def _require_task(self, task_id: int, workspace_id: str = "local") -> dict[str, Any]:
         task = self.repository.get_task(task_id, workspace_id)
+        if task is None:
+            raise ProductProcessingNotFound("product processing task not found")
+        return task
+
+    def _require_task_meta(self, task_id: int, workspace_id: str = "local") -> dict[str, Any]:
+        """只取任务主表（不加载 items），供预检分页/懒加载这类读多写少的接口使用。"""
+        task = self.repository.get_task_meta(task_id, workspace_id)
         if task is None:
             raise ProductProcessingNotFound("product processing task not found")
         return task

@@ -28,7 +28,13 @@ type DeletedDraftBatch = {
 };
 
 type Props = {
-  onStartProcessing?: (draftIds: number[], options: ProductProcessingOptions, premiumDraftIds: number[]) => boolean;
+  onStartProcessing?: (
+    draftIds: number[],
+    options: ProductProcessingOptions,
+    premiumDraftIds: number[],
+    /** 本批次 SKU 总数：处理设置页开工前弹窗确认用。 */
+    skuCount: number,
+  ) => boolean;
   /** 空态 CTA：跳到「采集」页把商品入池 */
   onOpenCollection?: () => void;
   isActive?: boolean;
@@ -82,9 +88,10 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenCollectio
     skipDuplicates: false,
     ipCheck: true,
     maxParallelDrafts: 8,
-    // 默认开启失败项自动重跑：生图回退导致的详情图缺失等可重试失败会自动重试一次
-    // （上限 1 轮，系统轮不向用户计费）；用户可在「处理设置」页勾选关闭以避免再次调用 AI 生图。
-    autoRepull: true,
+    // 失败项自动重跑默认关闭：重跑会再次调用 AI 生图并计费，交给用户显式开启。
+    autoRepull: false,
+    // 尺寸图自动烧制默认开启；不需要尺寸图的品类可在处理设置里关闭。
+    dimensionCard: true,
   });
   const [drafts, setDrafts] = useState<DraftSummary[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
@@ -119,9 +126,13 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenCollectio
   const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
   const [batchesOpen, setBatchesOpen] = useState(false);
   const [batchBusy, setBatchBusy] = useState(false);
+  // 批次面板自身的加载态：打开/刷新批次不再“静默等待”，避免看起来像卡死。
+  const [batchesLoading, setBatchesLoading] = useState(false);
   // 批次列表是否还有更多（后端 limit 上限 200，超出时提示，避免以为“只有这么多”）
   const [batchesHasMore, setBatchesHasMore] = useState(false);
   const draftListRef = useRef<HTMLDivElement>(null);
+  // 首次挂载已由下面的初始化 effect 拉过列表，避免 activeBatchId 的 effect 再拉一次 500 条。
+  const batchFilterMountedRef = useRef(false);
 
   useEffect(() => {
     if (isActive) return;
@@ -219,6 +230,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenCollectio
   };
 
   const refreshBatches = async () => {
+    setBatchesLoading(true);
     try {
       const data = await ppRequest<{ batches: DraftCollectionBatch[]; pagination?: { has_more?: boolean } }>(ctx, `${API_BASE}/draft-batches?limit=200`);
       const batches = data.batches || [];
@@ -230,6 +242,8 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenCollectio
     } catch (err) {
       // 批次面板失败不影响草稿池主流程
       console.warn('draft batches refresh failed', err);
+    } finally {
+      setBatchesLoading(false);
     }
   };
 
@@ -291,8 +305,12 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenCollectio
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 切换批次筛选后重拉草稿列表（批次面板点击行）
+  // 切换批次筛选后重拉草稿列表（批次面板点击行）。首次挂载跳过，避免与初始化重复请求。
   useEffect(() => {
+    if (!batchFilterMountedRef.current) {
+      batchFilterMountedRef.current = true;
+      return;
+    }
     refresh().catch(fail);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeBatchId]);
@@ -534,8 +552,23 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenCollectio
       ...options,
       ...(preflightOnly ? { preflightOnly: true } as Partial<ProductProcessingOptions> : {}),
     };
+    // 本批次 SKU 总数：扣除已删除（已保存 + 未保存）的变种，单规格商品按 1 个 SKU 计。
+    const skuCount = ids.reduce((sum, id) => {
+      const draft = drafts.find((item) => item.id === id);
+      const raw = draft?.raw_payload || {};
+      const list: DraftVariant[] = Array.isArray(raw.source_variant_records)
+        ? raw.source_variant_records
+        : [];
+      const deleted = new Set(baseDeletes(id));
+      const remaining = list.filter((variant) => {
+        const label = Object.values(variant.attributes || {}).join('/');
+        const vid = String(variant.sku_id || variant.source_sku_id || label);
+        return !deleted.has(label) && !deleted.has(vid);
+      });
+      return sum + Math.max(1, remaining.length);
+    }, 0);
     // 精品标记已从草稿池移除，不再向后端提交 premium_draft_ids。
-    const opened = onStartProcessing?.(ids, processOptions, []);
+    const opened = onStartProcessing?.(ids, processOptions, [], skuCount);
     if (opened === false) return; // 任务面板未打开（如已达上限），草稿保持原样
     // 提交处理即让勾选草稿从池中消失：本地同步置 processing（后端同样置位），
     // 处理完成置 processed 保持隐藏，失败回退 draft 后会自动重新出现。
@@ -643,7 +676,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenCollectio
               <div className="verify-batch-mask" onClick={() => setBatchesOpen(false)} />
               <div className="verify-batch-popover" role="dialog" aria-label="采集批次">
                 <div className="verify-batch-popover-head">
-                  <div><strong>采集批次</strong><span>{draftBatches.length} 个 · 按来源标注，超过 24 小时的批次自动清理</span></div>
+                  <div><strong>采集批次</strong><span>{draftBatches.length} 个 · 按来源标注，超过 24 小时的批次自动清理</span>{batchesLoading && <i className="app-spinner is-sm" aria-label="正在加载批次" />}</div>
                   <div className="verify-batch-actions">
                     <button type="button" onClick={selectAllBatches} disabled={batchBusy || !draftBatches.length}>全选批次</button>
                     <button type="button" className="is-danger" onClick={() => void deleteSelectedBatches()} disabled={batchBusy || selectedBatchIds.size === 0}>
@@ -769,6 +802,13 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenCollectio
           </div>
         )}
         <div className="verify-draft-list">
+          {/* 切换批次/刷新时列表非空，也要给出明确的加载遮罩；否则看起来像点不动。 */}
+          {listLoading && !isPoolEmpty && !listError && (
+            <div className="app-loading-mask" role="status" aria-live="polite">
+              <i className="app-spinner" aria-hidden="true" />
+              <span>正在加载草稿…</span>
+            </div>
+          )}
           {pageDrafts.map((draft) => {
             const raw = draft.raw_payload || {};
             const variants: DraftVariant[] = raw.source_variant_records || [];

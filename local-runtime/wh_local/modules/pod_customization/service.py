@@ -161,6 +161,29 @@ _STRUCTURE_FACT_KEYS = frozenset(
         "confidence",
     }
 )
+# 复刻/裂变识图入参的视觉长边上限：20MB 原图 base64 后约 27MB，后面还要被 JSON
+# 序列化两次，峰值可到上百 MB。识图只需要看清版式与配色，1536 足够。
+_VISION_MAX_EDGE = 1536
+
+
+def _shrink_for_vision(content: bytes) -> tuple[bytes, str] | None:
+    """超大图先缩成 JPEG 再 base64；不需要缩或缩图失败时返回 None（保持原图）。"""
+
+    try:
+        with Image.open(io.BytesIO(content)) as opened:
+            try:
+                opened.draft("RGB", (_VISION_MAX_EDGE, _VISION_MAX_EDGE))
+            except Exception:
+                pass
+            image = opened.convert("RGB")
+        if max(image.size) <= _VISION_MAX_EDGE:
+            return None
+        image.thumbnail((_VISION_MAX_EDGE, _VISION_MAX_EDGE), Image.Resampling.LANCZOS)
+        buffer = io.BytesIO()
+        image.save(buffer, format="JPEG", quality=88, optimize=True)
+        return buffer.getvalue(), "image/jpeg"
+    except Exception:
+        return None
 
 
 def _composition_default_name(brief: str) -> str:
@@ -1037,9 +1060,16 @@ class PodCustomizationService:
         return self._transfer_plan_payload(stored, cached=False)
 
     def _asset_data_url(self, asset: dict[str, Any]) -> str:
-        """资产字节 → data URL（与豆包视觉入参一致的形状）。"""
+        """资产字节 → data URL（与豆包视觉入参一致的形状）。
+
+        大图先缩到长边 1536 再编码：直接对 20MB 原图 base64 会额外产生约 27MB 字符串，
+        叠加后续 JSON 序列化后峰值上百 MB，是复刻/裂变识图的内存热点。
+        """
         content = self.assets.read(str(asset["relative_path"]))
         content_type = str(asset.get("content_type") or "image/png")
+        shrunk = _shrink_for_vision(content)
+        if shrunk is not None:
+            content, content_type = shrunk
         encoded = base64.b64encode(content).decode("ascii")
         return f"data:{content_type};base64,{encoded}"
 
@@ -1205,7 +1235,9 @@ class PodCustomizationService:
         if not completed_items:
             raise PodRepositoryError("当前批次没有可下载的图案", 409)
         buffer = io.BytesIO()
-        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        # 图案本身已是 PNG/JPEG 压缩格式，再 DEFLATE 基本不减体积、纯耗 CPU；
+        # 直接 STORED 打包（ZIP 仍是合法压缩包，解压行为一致）。
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
             for item in completed_items:
                 index = int(item.get("item_index") or item.get("index") or 0)
                 asset = self.repository.get_asset(

@@ -41,3 +41,13 @@ class SaveDimensionItemRequest(_StrictRequest):
 
 class CompleteDimensionItemRequest(_StrictRequest):
     expected_revision: int | None = Field(default=None, ge=0)
+
+
+class ReburnDimensionCardRequest(_StrictRequest):
+    """预检页修正本体尺寸后重烧第 4 格；单位内部统一厘米。"""
+
+    length_cm: float | None = Field(default=None, gt=0)
+    width_cm: float | None = Field(default=None, gt=0)
+    height_cm: float | None = Field(default=None, gt=0)
+    unit: Literal["in", "cm"] = "in"
+    corner: Literal["bottom-right", "bottom-left", "top-right", "top-left"] = "bottom-right"

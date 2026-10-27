@@ -11,6 +11,8 @@ from pydantic import BaseModel, Field
 DimensionProvenance = Literal[
     "source_confirmed",
     "manual_confirmed",
+    # AI/品类模板推断出的本体尺寸：允许出图，但必须在预检页标“预估”并要求人工确认。
+    "estimated",
     "unconfirmed",
     "package_estimate",
 ]
@@ -45,8 +47,15 @@ class DimensionValue(BaseModel):
         return (
             self.value_cm is not None
             and self.value_cm > 0
-            and self.provenance in {"source_confirmed", "manual_confirmed"}
+            and self.provenance
+            in {"source_confirmed", "manual_confirmed", "estimated"}
         )
+
+    @property
+    def estimated(self) -> bool:
+        """预估值：可出图，但预检页必须显式标注，不能与已确认值混为一谈。"""
+
+        return self.value_cm is not None and self.value_cm > 0 and self.provenance == "estimated"
 
 
 class PhysicalDimensions(BaseModel):
@@ -60,6 +69,12 @@ class PhysicalDimensions(BaseModel):
         """Whether at least one independently trusted dimension can be annotated."""
 
         return any(item.drawable for item in self.values())
+
+    @property
+    def estimated(self) -> bool:
+        """是否含预估值：允许出图，但预检页必须标黄提示人工确认。"""
+
+        return any(item.estimated for item in self.values())
 
     @property
     def drawable_fields(self) -> tuple[DimensionAxis, ...]:
@@ -188,7 +203,8 @@ def prefill_physical_dimensions(result: dict[str, Any]) -> PhysicalDimensions:
             continue
         values[axis] = DimensionValue(
             value_cm=candidate,
-            provenance="package_estimate",
+            # 表格/AI 推断值：可以出图，但只能算“预估”，预检页必须标出来。
+            provenance="estimated",
             evidence_ref=f"product_dimensions.{axis}_cm:{source}",
         )
     return PhysicalDimensions(

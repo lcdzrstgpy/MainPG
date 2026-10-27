@@ -16,6 +16,7 @@ import { TopNavigation, type WorkspaceTab } from "./TopNavigation";
 import { PeachGarden } from "../../shared/components/PeachGarden";
 import { AlpineMeadow } from "../../shared/components/AlpineMeadow";
 import { InkTap } from "../../shared/components/InkTap";
+import { DessertTap } from "../../shared/components/DessertTap";
 import { useTheme } from "../../shared/hooks/useTheme";
 import { useUiMode } from "../../shared/hooks/useUiMode";
 import { useEffectPreferences } from "../../shared/hooks/useEffectPreferences";
@@ -35,6 +36,7 @@ const DailySelectionPage = lazy(() => import("../../modules/daily_selection/page
 const ProfitActivityProductsPage = lazy(() => import("../../modules/profit_activity/pages/ProfitActivityProductsPage").then((m) => ({ default: m.ProfitActivityProductsPage })));
 const ProfitActivityTestPage = lazy(() => import("../../modules/profit_activity/pages/ProfitActivityTestPage").then((m) => ({ default: m.ProfitActivityTestPage })));
 const PriceVerificationPage = lazy(() => import("../../modules/price_verification/pages/PriceVerificationPage").then((m) => ({ default: m.PriceVerificationPage })));
+const SourcingLedgerPage = lazy(() => import("../../modules/sourcing_ledger/pages/SourcingLedgerPage").then((m) => ({ default: m.SourcingLedgerPage })));
 const ProductProcessingVerifyPage = lazy(() => import("../../modules/product_processing/pages/ProductProcessingVerifyPage").then((m) => ({ default: m.ProductProcessingVerifyPage })));
 const ProductProcessingTaskPage = lazy(() => import("../../modules/product_processing/pages/ProductProcessingTaskPage").then((m) => ({ default: m.ProductProcessingTaskPage })));
 const ProductProcessingHistoryPage = lazy(() => import("../../modules/product_processing/pages/ProductProcessingHistoryPage").then((m) => ({ default: m.ProductProcessingHistoryPage })));
@@ -821,7 +823,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
     setWorkspaceNotice("");
   };
 
-  const openProcessingTask = (draftIds: number[], options: ProductProcessingOptions, premiumDraftIds: number[] = []) => {
+  const openProcessingTask = (draftIds: number[], options: ProductProcessingOptions, premiumDraftIds: number[] = [], skuCount = 0) => {
     const openPanelCount = tabsRef.current.filter((tab) => tab.moduleId === "product_processing_tasks").length;
     if (openPanelCount >= MAX_PROCESSING_PANELS) {
       setWorkspaceNotice(`最多同时打开 ${MAX_PROCESSING_PANELS} 个处理任务，请先关闭一个再继续。`);
@@ -838,6 +840,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
       icon: "⚙",
       draftIds,
       premiumDraftIds,
+      draftSkuCount: skuCount,
       processingOptions: options,
     }]);
     activateTab(key);
@@ -872,12 +875,16 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
 
   // 任务完成后的预检入口：打开「预检与导出最终版」页（生成表格 → 预检修改 → 导出最终版 → 导入店小秘）
   const openProcessingPrecheck = (taskId: number, changeSetId?: string) => {
-    if (changeSetId) {
-      const existing = tabsRef.current.find((tab) => tab.taskId === taskId && tab.dimensionChangeSetId === changeSetId);
-      if (existing) {
-        activateTab(existing.key);
-        return;
-      }
+    // 同一任务只保留一个预检页签：重复点「打开预检」会叠出多个页签，每个都在轮询
+    // 整份预检，是 WebView2 内存/CPU 被放大的常见来源。
+    const existing = tabsRef.current.find(
+      (tab) =>
+        tab.taskId === taskId &&
+        (changeSetId === undefined || tab.dimensionChangeSetId === changeSetId),
+    );
+    if (existing) {
+      activateTab(existing.key);
+      return;
     }
     precheckSequence.current += 1;
     const key = `product-processing-precheck-${precheckSequence.current}`;
@@ -946,6 +953,9 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
       case "price_verification":
         content = <PriceVerificationPage isActive={isActive} />;
         break;
+      case "sourcing_ledger":
+        content = <SourcingLedgerPage isActive={isActive} />;
+        break;
       case "product_processing":
         content = <ProductProcessingVerifyPage onStartProcessing={openProcessingTask} onOpenCollection={() => openModule("daily_selection")} isActive={isActive} />;
         break;
@@ -960,12 +970,19 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
           <ProductProcessingPrecheckPage taskId={tab.taskId} initialChangeSetId={tab.dimensionChangeSetId} onOpenDimensionItem={openDimensionItem} isActive={isActive} />
         ) : (
           <ProductProcessingTaskPage
+            isActive={isActive}
             initialTaskId={tab.taskRunId}
             initialDraftIds={tab.draftIds}
             initialPremiumDraftIds={tab.premiumDraftIds}
+            initialSkuCount={tab.draftSkuCount}
             initialOptions={tab.processingOptions as ProductProcessingOptions | undefined}
             onOpenPrecheck={openProcessingPrecheck}
             onTaskStarted={(taskId) => markTabActiveTask(tab.key, taskId)}
+            onBackToDraftPool={() => {
+              // 返回草稿池删减 SKU：关掉本处理页签，再切回草稿池。
+              closeTab(tab.key);
+              openModule("product_processing");
+            }}
           />
         );
         break;
@@ -991,7 +1008,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         content = <PodReplicaPage isActive={isActive} />;
         break;
       case "pod_fission":
-        content = <PodFissionPage />;
+        content = <PodFissionPage isActive={isActive} />;
         break;
       case "ai_video":
         content = (
@@ -1026,6 +1043,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
       <PeachGarden theme={theme} uiMode={uiMode} tapEffects={tapEffects} ambientEffects={ambientEffects} />
       <AlpineMeadow theme={theme} uiMode={uiMode} tapEffects={tapEffects} ambientEffects={ambientEffects} />
       <InkTap theme={theme} uiMode={uiMode} enabled={tapEffects} />
+      <DessertTap theme={theme} uiMode={uiMode} enabled={tapEffects} />
       <Sidebar
         collapsed={sidebarIsCollapsed && !sidebarTemporarilyExpanded}
         activeId={activeModuleId}

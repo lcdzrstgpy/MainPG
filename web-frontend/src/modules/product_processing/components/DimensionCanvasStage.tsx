@@ -14,7 +14,7 @@ import {
 } from "react";
 import { Arrow, Circle, Group, Label, Layer, Line, Rect, Stage, Tag, Text } from "react-konva/lib/ReactKonvaCore";
 
-import { clampPoint, formatDimension, updateAnnotation } from "../data/dimensionCanvasModel";
+import { clampPoint, formatDimension, snapToAxis, updateAnnotation } from "../data/dimensionCanvasModel";
 import type {
   DimensionAnnotation,
   DimensionAsset,
@@ -140,11 +140,22 @@ function translateAnnotation(
   });
 }
 
-function moveEditor(drag: Extract<DragState, { kind: "move" }>, point: NormalizedPoint): EditorState {
+function moveEditor(
+  drag: Extract<DragState, { kind: "move" }>,
+  point: NormalizedPoint,
+  axisForce = false,
+): EditorState {
   if (drag.part === "line") {
     return translateAnnotation(drag.baseEditor, drag.annotationId, drag.origin, point);
   }
-  return updateAnnotation(drag.baseEditor, drag.annotationId, { [drag.part]: point });
+  if (drag.part === "label") {
+    return updateAnnotation(drag.baseEditor, drag.annotationId, { label: point });
+  }
+  const annotation = drag.baseEditor.annotations.find((item) => item.id === drag.annotationId);
+  if (!annotation) return drag.baseEditor;
+  const anchor = drag.part === "start" ? annotation.end : annotation.start;
+  const snapped = clampPoint(snapToAxis(anchor, point, axisForce));
+  return updateAnnotation(drag.baseEditor, drag.annotationId, { [drag.part]: snapped });
 }
 
 function verticalScrollTarget(from: HTMLElement, deltaY: number): HTMLElement | null {
@@ -180,12 +191,14 @@ export function DimensionCanvasStage({
   const [imageState, setImageState] = useState<"loading" | "loaded" | "error" | "empty">("empty");
   const [retryNonce, setRetryNonce] = useState(0);
   const [baseSize, setBaseSize] = useState(560);
+  const baseSizeRef = useRef(baseSize);
   const [spacePressed, setSpacePressed] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
   const dragRef = useRef<DragState | null>(null);
   const panRef = useRef<PanState | null>(null);
   const frameRef = useRef<number | null>(null);
   const pendingPointRef = useRef<NormalizedPoint | null>(null);
+  const pendingAxisForceRef = useRef(false);
   const viewportRef = useRef<HTMLDivElement>(null);
   const zoomRef = useRef(zoom);
   const onZoomChangeRef = useRef(onZoomChange);
@@ -204,11 +217,16 @@ export function DimensionCanvasStage({
     if (frameRef.current != null) cancelAnimationFrame(frameRef.current);
     frameRef.current = null;
     pendingPointRef.current = null;
+    pendingAxisForceRef.current = false;
   };
 
   useEffect(() => {
     zoomRef.current = zoom;
   }, [zoom]);
+
+  useEffect(() => {
+    baseSizeRef.current = baseSize;
+  }, [baseSize]);
 
   useEffect(() => {
     onZoomChangeRef.current = onZoomChange;
@@ -239,10 +257,27 @@ export function DimensionCanvasStage({
     const handleWheel = (event: WheelEvent) => {
       if (event.ctrlKey || event.metaKey) {
         event.preventDefault();
+        const oldZoom = zoomRef.current;
+        // 连续缩放：跟滚轮幅度走，比固定档更跟手。
         const direction = event.deltaY > 0 ? -1 : 1;
-        const nextZoom = clampZoom(zoomRef.current + direction * ZOOM_STEP);
+        const magnitude = Math.min(0.12, Math.abs(event.deltaY) * 0.0015 + 0.04);
+        const nextZoom = clampZoom(oldZoom * (1 + direction * magnitude));
+        if (nextZoom === oldZoom) return;
+        const viewport = viewportRef.current;
+        const previousSize = baseSizeRef.current * oldZoom;
+        const nextSize = baseSizeRef.current * nextZoom;
         zoomRef.current = nextZoom;
         onZoomChangeRef.current(nextZoom);
+        // 尽量以指针为锚点缩放（surface 居中，补偿尺寸增量的半边）。
+        if (viewport) {
+          const rect = viewport.getBoundingClientRect();
+          const pointerX = event.clientX - rect.left;
+          const pointerY = event.clientY - rect.top;
+          const halfGrowX = (nextSize - previousSize) / 2;
+          const halfGrowY = (nextSize - previousSize) / 2;
+          viewport.scrollLeft += halfGrowX * (1 - pointerX / Math.max(1, rect.width)) * 2;
+          viewport.scrollTop += halfGrowY * (1 - pointerY / Math.max(1, rect.height)) * 2;
+        }
         return;
       }
       if (Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
@@ -299,19 +334,22 @@ export function DimensionCanvasStage({
     setImageState(asset?.previewUrl ? "loading" : "empty");
   }, [asset?.previewUrl, retryNonce]);
 
-  const schedulePreview = (point: NormalizedPoint) => {
+  const schedulePreview = (point: NormalizedPoint, axisForce = false) => {
     pendingPointRef.current = point;
+    pendingAxisForceRef.current = axisForce;
     if (frameRef.current != null) return;
     frameRef.current = requestAnimationFrame(() => {
       frameRef.current = null;
       const active = dragRef.current;
       const pending = pendingPointRef.current;
+      const force = pendingAxisForceRef.current;
       pendingPointRef.current = null;
+      pendingAxisForceRef.current = false;
       if (!active || !pending) return;
       if (active.kind === "create") {
-        setDrag({ ...active, current: pending });
+        setDrag({ ...active, current: clampPoint(snapToAxis(active.start, pending, force)) });
       } else {
-        setPreviewEditor(moveEditor(active, pending));
+        setPreviewEditor(moveEditor(active, pending, force));
       }
     });
   };
@@ -356,7 +394,7 @@ export function DimensionCanvasStage({
     if (!active || active.pointerId !== event.evt.pointerId) return;
     event.evt.preventDefault();
     const stage = event.target.getStage();
-    if (stage) schedulePreview(eventPoint(stage, canvasSize));
+    if (stage) schedulePreview(eventPoint(stage, canvasSize), event.evt.shiftKey);
   };
 
   const finish = (event: KonvaEventObject<PointerEvent>) => {
@@ -365,18 +403,31 @@ export function DimensionCanvasStage({
     event.evt.preventDefault();
     const stage = event.target.getStage();
     if (!stage) return;
-    const point = eventPoint(stage, canvasSize);
+    const axisForce = event.evt.shiftKey;
+    const rawPoint = eventPoint(stage, canvasSize);
     cancelFrame();
     const eventTarget = event.evt.currentTarget as Element | null;
     if (eventTarget?.hasPointerCapture?.(event.evt.pointerId)) {
       eventTarget.releasePointerCapture(event.evt.pointerId);
     }
     if (active.kind === "create") {
+      const point = clampPoint(snapToAxis(active.start, rawPoint, axisForce));
       if (Math.hypot(point.x - active.start.x, point.y - active.start.y) >= 0.01) {
         onCommitAnnotation(active.start, point);
       }
-    } else if (Math.hypot(point.x - active.origin.x, point.y - active.origin.y) >= 0.001) {
-      onCommitEditor(moveEditor(active, point));
+    } else {
+      const moved = moveEditor(active, rawPoint, axisForce);
+      const next = moved.annotations.find((item) => item.id === active.annotationId);
+      const originAnn = active.baseEditor.annotations.find((item) => item.id === active.annotationId);
+      const changed = Boolean(next && originAnn && (
+        next.start.x !== originAnn.start.x
+        || next.start.y !== originAnn.start.y
+        || next.end.x !== originAnn.end.x
+        || next.end.y !== originAnn.end.y
+        || next.label.x !== originAnn.label.x
+        || next.label.y !== originAnn.label.y
+      ));
+      if (changed) onCommitEditor(moved);
     }
     setPreviewEditor(null);
     setDrag(null);
@@ -656,7 +707,7 @@ export function DimensionCanvasStage({
         </Stage>
       </div>
       <div className="dimension-stage-hint" aria-hidden="true">
-        普通滚轮滚动页面 · Ctrl + 滚轮缩放 · 空格/中键拖动画布
+        滚轮滚动页面 · Ctrl + 滚轮缩放 · 空格/中键拖动画布 · Shift 可选锁水平/竖直
       </div>
     </div>
   );

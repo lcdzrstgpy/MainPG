@@ -22,6 +22,8 @@ export type WorkspaceTab = {
   directionId?: string;
   draftIds?: number[];
   premiumDraftIds?: number[];
+  /** 本批次 SKU 总数：处理设置页「开始处理」前的规模确认用。 */
+  draftSkuCount?: number;
   processingOptions?: unknown;
   taskRunId?: number;
   taskId?: number;

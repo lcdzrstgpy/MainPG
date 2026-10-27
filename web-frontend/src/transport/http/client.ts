@@ -1,3 +1,5 @@
+import { hasRunningTask } from "../../shared/runtime/taskActivity";
+
 type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 type RequestOptions = {
@@ -391,10 +393,24 @@ export const BACKEND_ONLINE_EVENT = "mainpg:backend-online";
  * 单次网络层失败不足以判死。开发态 vite 代理在依赖预构建/重编译瞬间会拒连；
  * 页面切换、组件卸载主动 abort 后紧邻的重发也会命中；后端重启的第一秒同样是拒连。
  * 这类瞬时抖动以前会立刻弹整屏「本地服务掉线了」——用户观感就是「界面还开着却
- * 突然掉线」（2026-10-16 实测排查）。真实后端挂掉时窗口内不会有任何请求成功，
- * 6 秒后照常弹出，不影响判定时效。
+ * 突然掉线」（2026-10-16 实测排查）。
+ *
+ * 2026-10-21 由 6 秒放宽到 20 秒：批量处理时后端 CPU 打满（实测 MainPG 单进程
+ * 47%+），浏览器侧请求可能连续超时/被拒好几秒；6 秒窗口会把「忙」误判成「死」。
+ * 真实后端挂掉时窗口内不会有任何请求成功，窗口到期后照常弹出，仍能及时自救。
  */
-const BACKEND_OFFLINE_CONFIRM_MS = 6_000;
+const BACKEND_OFFLINE_CONFIRM_MS = 20_000;
+/** 有处理任务在跑时的失联确认窗口：再放宽一倍，避免把「满载」误判成「掉线」。 */
+const BACKEND_OFFLINE_CONFIRM_BUSY_MS = 45_000;
+
+/** 当前该用多长的确认窗口（读取运行中任务登记表，纯内存、无副作用）。 */
+function offlineConfirmWindowMs(): number {
+  try {
+    return hasRunningTask() ? BACKEND_OFFLINE_CONFIRM_BUSY_MS : BACKEND_OFFLINE_CONFIRM_MS;
+  } catch {
+    return BACKEND_OFFLINE_CONFIRM_MS;
+  }
+}
 
 /** 首次失败时刻；期间任意一次成功响应即清零（见 notifyBackendOnline）。 */
 let offlineSince: number | null = null;
@@ -410,7 +426,7 @@ function notifyBackendOffline(): void {
     if (offlineSince === null || offlineNotified) return;
     offlineNotified = true;
     window.dispatchEvent(new CustomEvent(BACKEND_OFFLINE_EVENT));
-  }, BACKEND_OFFLINE_CONFIRM_MS);
+  }, offlineConfirmWindowMs());
 }
 
 /** 复位失联确认状态，但不广播恢复事件。
@@ -436,6 +452,25 @@ function notifyBackendOnline(): void {
   // 从未广播过离线 → 无需广播恢复（避免每个成功请求都空跑一次事件分发）。
   if (!wasNotified) return;
   window.dispatchEvent(new CustomEvent(BACKEND_ONLINE_EVENT));
+}
+
+/**
+ * 供**其它传输层**复用：这次请求拿到了后端响应（无论 2xx/4xx/5xx）。
+ *
+ * 失联状态机原先只有一个复位入口（httpJson），而产品处理模块自带一份独立的
+ * fetch 封装、httpBlob 成功也不复位 —— 于是「6 秒内没有任何 httpJson 成功」
+ * 会被当成「持续失联」，一次瞬时抖动就能弹整屏遮罩（2026-10-19 排查结论）。
+ */
+export function noteBackendReachable(): void {
+  notifyBackendOnline();
+}
+
+/**
+ * 供其它传输层复用：这次请求在**网络层**失败（连接被拒 / 进程没了）。
+ * 只应在 `TypeError` 这类「连请求都没发出去」的情况下调用，超时不算。
+ */
+export function noteBackendUnreachable(): void {
+  notifyBackendOffline();
 }
 
 async function fetchWithTimeout(
@@ -482,12 +517,22 @@ async function fetchWithTimeout(
  *
  * 打包版页面与 API 同源（8010），后端挂掉表现为连接被拒（TypeError），本就走另一条
  * 分支；因此这里限定 DEV，生产行为保持不变。
+ *
+ * 2026-10-19 收紧：正文必须是 ECONNREFUSED / socket hang up 这类传输层文案（或为空）
+ * 才算不可达。原先「非 JSON 的 5xx 一律算」，把后端自己回的纯文本 500 也当成了掉线。
  */
+const PROXY_ERROR_HINT = /ECONN|ENOTFOUND|EAI_AGAIN|socket hang up|proxy error|fetch failed/i;
+
 function isBackendUnreachable(response: Response, bodyText = ""): boolean {
   if (!import.meta.env.DEV) return false;
-  if (response.status < 500) return false;
+  if (![500, 502, 503, 504].includes(response.status)) return false;
   if ((response.headers.get("content-type") ?? "").includes("application/json")) return false;
-  return bodyText.trim() !== "Internal Server Error";
+  const body = bodyText.trim();
+  // 空正文多半也是代理直接掐断（uvicorn 自己的未捕获 500 会回 "Internal Server Error"，
+  // 那个说明后端进程还活着，不算失联）。
+  if (!body) return true;
+  if (body === "Internal Server Error") return false;
+  return PROXY_ERROR_HINT.test(body);
 }
 
 export async function httpJson<T>(path: string, options: RequestOptions = {}): Promise<T> {
@@ -559,11 +604,15 @@ export async function httpBlob(path: string, options: RequestOptions = {}): Prom
     // 代理替后端回的 5xx（非 JSON）同样是「后端不可达」，不能只当普通失败；
     // 但后端自身未捕获的 500（纯文本 "Internal Server Error"）不算。
     if (isBackendUnreachable(response, detail)) notifyBackendOffline();
+    else noteBackendReachable();
     if (isSessionExpired(response, detail)) notifySessionExpired(detail);
     throw new Error(toUserMessage(detail || "请求失败"));
   }
 
-  return response.blob();
+  const blob = await response.blob();
+  // 二进制（图片 / 视频 / 导出包）下载成功同样是「后端活着」的铁证。
+  noteBackendReachable();
+  return blob;
 }
 
 /**

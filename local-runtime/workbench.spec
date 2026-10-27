@@ -13,6 +13,9 @@
 - 第三方包：uvicorn / qcloud_cos / rapidocr_onnxruntime / onnxruntime / openpyxl 收集完整
   （含数据文件与 DLL，避免动态加载缺失）。
 """
+import os
+import re
+
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all
@@ -77,6 +80,42 @@ if _frontend_dist.is_dir():
 else:
     print("[workbench.spec] WARNING: web-frontend/dist 不存在，请先执行 npm run build")
 
+# 启动卡片底图（launcher/splash_window.py 按 _MEIPASS 相对位置读取）。
+# 只用一张静态图：卡片用 PIL 逐帧绘制并整体浮动，不需要视频解码（PIL 也解不了 mp4）。
+_splash_assets = ROOT / "launcher" / "assets" / "splash"
+if _splash_assets.is_dir():
+    datas.append((str(_splash_assets), "launcher/assets/splash"))
+else:
+    print("[workbench.spec] WARNING: 启动卡片素材目录不存在（launcher/assets/splash）")
+
+# 启动卡片依赖 PySide6（launcher/splash_qt.py）。缺了不会让打包失败 ——
+# 运行时会静默回落成「等 2.5 秒开浏览器」，但用户看到的是白屏空窗，等于这个
+# 功能白做。PyInstaller 对缺失的 import 也不报错，所以这里必须自己把关。
+import sys as _build_sys
+
+try:
+    import PySide6  # noqa: F401
+
+    # 只 import PySide6 不够：1.5.8 就是这样过了检查、到用户机器上却不起卡片。
+    # 真正用到的是 QtWidgets，它要连 Qt6*.dll 与 shiboken6 一起装载成功才算数。
+    from PySide6 import QtWidgets  # noqa: F401
+
+    print(f"[workbench.spec] PySide6 {PySide6.__version__} 可用"
+          f"（python {_build_sys.version.split()[0]}，QtWidgets 装载成功），启动卡片随包分发")
+except Exception as _exc:  # noqa: BLE001 - 打包机环境缺失要显式告警
+    print("=" * 72)
+    print("[workbench.spec] !! PySide6 不可用 —— 启动卡片将不会生效！")
+    print(f"[workbench.spec] !! 失败原因: {type(_exc).__name__}: {_exc}")
+    print(f"[workbench.spec] !! 构建用的 Python: {_build_sys.version.split()[0]}")
+    print("[workbench.spec] !! 请在构建机、用同一个 Python 执行:  python -m pip install PySide6")
+    print("[workbench.spec] !! 然后确认 `python -c \"from PySide6 import QtWidgets\"` 不报错")
+    print("[workbench.spec] !! 否则打出的包双击后要白等 2.5 秒才开浏览器")
+    print("=" * 72)
+
+# 启动卡片模块是在 run_workbench._start_splash() 里延迟导入的，显式声明一次，
+# 免得静态分析漏掉 → 打包后卡片永远起不来（静默回落成「等 2.5 秒开浏览器」）。
+hiddenimports.append("launcher.splash_qt")
+
 # Optional low-resource distractor detector (person/cat/dog). Missing model is
 # safe at runtime, but official builds include it for reference-image cleanup.
 _distractor_models = ROOT / "wh_local" / "price_verification" / "sourcing" / "models"
@@ -91,6 +130,16 @@ if _enhance_models.is_dir():
 else:
     print("[workbench.spec] WARNING: wh_local/models 不存在，清晰化将只做 USM 锐化")
 
+# 启动卡片是在 launcher/splash_qt.py 里用 PySide6 画的（无边框透明窗口）。
+# 复用 launcher/MainPG-Launcher.spec 的裁剪思路，排除没用到的大模块，
+# 否则 PySide6 全家桶会让安装包白白多出几十 MB。
+_PYSIDE_EXCLUDES = [
+    "PySide6.QtQml", "PySide6.QtQuick", "PySide6.QtNetwork",
+    "PySide6.QtPdf", "PySide6.QtSvg", "PySide6.QtOpenGL",
+    "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets",
+    "PySide6.QtMultimedia", "PySide6.QtCharts", "PySide6.QtDataVisualization",
+]
+
 a = Analysis(
     [str(ROOT / "run_workbench.py")],
     pathex=[str(ROOT)],
@@ -99,9 +148,36 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
-    excludes=[],
+    excludes=_PYSIDE_EXCLUDES,
     noarchive=False,
 )
+
+# ---------------------------------------------------------------------------
+# 剔除「毒」二进制：PyInstaller 会顺着 PATH / 第三方包把系统里的 ICU 与
+# PostgreSQL 版 OpenSSL 一起拖进 _internal 根目录。它们和随包的 Qt6Core.dll
+# 版本不匹配（Windows 报 ERROR_PROC_NOT_FOUND / 127），导致启动卡片加载
+# QtWidgets 失败、静默降级——1.5.8/1.5.9 用户端没有卡片就是这个原因。
+# 与 MainPG-Launcher.spec 保持同一套过滤规则，两边不能只修一个。
+_ICU_RE = re.compile(r"^icu[a-z]+\d*\.dll$", re.IGNORECASE)
+
+
+def _strip_poison_binaries(entry) -> bool:
+    dest = entry[0] if isinstance(entry[0], str) else ""
+    src = entry[1] if isinstance(entry[1], str) else ""
+    base = os.path.basename(dest)
+    if _ICU_RE.match(base):
+        return True
+    if "PostgreSQL" in src and base in ("libcrypto-3-x64.dll", "libssl-3-x64.dll"):
+        return True
+    return False
+
+
+_removed = [entry for entry in a.binaries if _strip_poison_binaries(entry)]
+a.binaries = [entry for entry in a.binaries if not _strip_poison_binaries(entry)]
+if _removed:
+    print("[workbench.spec] 已剔除不兼容的 ICU/OpenSSL（修复 Qt 卡片加载）：")
+    for entry in _removed:
+        print(f"[workbench.spec]   - {entry[0]}  <- {entry[1]}")
 
 pyz = PYZ(a.pure)
 

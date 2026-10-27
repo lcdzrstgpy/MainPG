@@ -12,6 +12,7 @@ import type {
   PreviewFinalizeRun,
   PreviewImageAsset,
   PreviewImageManifest,
+  PreviewMediaResponse,
   PreviewResponse,
   ShippingPackageRecordOverride,
 } from "../types";
@@ -161,6 +162,39 @@ export async function keepTaskWatchAlive(taskId: number): Promise<void> {
   await ppRequest(productProcessingApiContext(), `/api/product-processing/tasks/${taskId}/summary`);
 }
 
+export function fetchProductPreview(
+  ctx: ApiContext,
+  taskId: number,
+  options: { mediaLimit?: number; itemLimit?: number; itemOffset?: number } = {},
+): Promise<PreviewResponse> {
+  const params = new URLSearchParams();
+  // 0 是有效值：表示只取元数据、不投影图片（后台分页用）。
+  if (options.mediaLimit !== undefined && options.mediaLimit >= 0) {
+    params.set("media_limit", String(options.mediaLimit));
+  }
+  if (options.itemLimit && options.itemLimit > 0) {
+    params.set("item_limit", String(options.itemLimit));
+  }
+  if (options.itemOffset && options.itemOffset > 0) {
+    params.set("item_offset", String(options.itemOffset));
+  }
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  return ppRequest(ctx, `/api/product-processing/tasks/${taskId}/preview${suffix}`);
+}
+
+export function fetchProductPreviewMedia(
+  ctx: ApiContext,
+  taskId: number,
+  draftIds: number[],
+): Promise<PreviewMediaResponse> {
+  const unique = [...new Set(draftIds)].filter((value) => Number.isFinite(value) && value > 0);
+  if (!unique.length) return Promise.resolve({ items: {} });
+  return ppRequest(
+    ctx,
+    `/api/product-processing/tasks/${taskId}/preview/media?draft_ids=${encodeURIComponent(unique.join(","))}`,
+  );
+}
+
 export function saveProductPreview(
   ctx: ApiContext,
   taskId: number,
@@ -271,6 +305,28 @@ export function exportMiaoshouPreview(
     `/api/product-processing/tasks/${taskId}/preview/finalize/${encodeURIComponent(runId)}/export-miaoshou`,
     { method: "POST", body: { kind } },
   );
+}
+
+/**
+ * 妙手模板文件的下载地址：文件此前已生成过时可直接重下，**不重新生成**。
+ *
+ * 与 exportMiaoshouPreview（现场生成）配对：历史导出里用「已生成 → 直接重下、
+ * 未生成 → 生成」两种动作，避免每次想看妙手都重跑一遍生成。
+ */
+export function miaoshouDownloadUrl(
+  taskId: number,
+  runId: string,
+  kind: MiaoshouTemplateKind,
+): string {
+  return (
+    `/api/product-processing/tasks/${taskId}/preview/finalize/${encodeURIComponent(runId)}` +
+    `/miaoshou-download?kind=${encodeURIComponent(kind)}`
+  );
+}
+
+/** 某次导出对应的店小秘（或妙手）工作簿文件名，供下载时落盘命名。 */
+export function miaoshouFileName(kind: MiaoshouTemplateKind, taskId: number): string {
+  return `miaoshou_${kind}_task_${taskId}.xlsx`;
 }
 
 export function getDraftMedia(

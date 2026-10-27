@@ -29,6 +29,21 @@ test("失联判定必须经过确认窗口，不允许单次失败就直接弹�
   );
 });
 
+test("有处理任务在跑时失联窗口必须再放宽，避免把满载误判成掉线", () => {
+  const src = readClient();
+  const idle = src.match(/BACKEND_OFFLINE_CONFIRM_MS = ([\d_]+)/);
+  const busy = src.match(/BACKEND_OFFLINE_CONFIRM_BUSY_MS = ([\d_]+)/);
+  assert.ok(idle && busy, "client.ts 应同时定义空闲/忙碌两档失联确认窗口");
+  const idleMs = Number(idle![1].replace(/_/g, ""));
+  const busyMs = Number(busy![1].replace(/_/g, ""));
+  assert.ok(idleMs >= 10_000, `空闲窗口应 >= 10000ms（实际 ${idleMs}）`);
+  assert.ok(busyMs > idleMs, "忙碌窗口必须大于空闲窗口");
+  assert.ok(
+    src.includes("offlineConfirmWindowMs()"),
+    "定时器必须按运行中任务动态取窗口",
+  );
+});
+
 test("开发态「重新连接」不得拉起 mainpg:// 协议", () => {
   const src = readNotice();
   const start = src.indexOf("const retry = async");
@@ -78,4 +93,77 @@ test("探活成功必须复位失联状态机，否则后续掉线不再弹提�
     /if \(healthy\) resetBackendOfflineState\(\)/.test(probe),
     "probeHealth 探测成功时必须复位失联状态机",
   );
+});
+
+// --------------------------------------------------------------------------- //
+// 2026-10-19：「很容易就弹掉线」——判定过敏感的三处结构性原因
+// --------------------------------------------------------------------------- //
+test("弹整屏遮罩前必须主动探活，不能只凭「6 秒没成功」", () => {
+  const notice = readNotice();
+  const start = notice.indexOf("const confirmOffline = async");
+  assert.ok(start > -1, "BackendOfflineNotice 应有 confirmOffline（弹前探活）");
+  const body = notice.slice(start, notice.indexOf("\n    };", start));
+  const probeIdx = body.indexOf("await probeHealth()");
+  const showIdx = body.indexOf("showOffline()");
+  assert.ok(probeIdx > -1, "confirmOffline 必须先探活");
+  assert.ok(showIdx > probeIdx, "showOffline 只能在探活失败之后调用");
+  assert.ok(
+    body.includes("onlineEpochRef.current !== epoch"),
+    "探活是异步的，回来时要确认期间没有被恢复事件翻盘",
+  );
+});
+
+test("所有传输层都必须能复位状态机（产品处理与二进制下载不能例外）", () => {
+  const src = readClient();
+  assert.ok(
+    /export function noteBackendReachable\(\)/.test(src),
+    "client.ts 应导出 noteBackendReachable 供其它传输层复位",
+  );
+  assert.ok(
+    /export function noteBackendUnreachable\(\)/.test(src),
+    "client.ts 应导出 noteBackendUnreachable 供其它传输层上报失联",
+  );
+
+  // httpBlob 成功路径必须复位
+  const blobStart = src.indexOf("export async function httpBlob");
+  assert.ok(blobStart > -1, "应能找到 httpBlob");
+  const blobBody = src.slice(blobStart, src.indexOf("\n}", blobStart));
+  assert.ok(
+    blobBody.includes("noteBackendReachable()"),
+    "httpBlob 下载成功也必须复位失联状态机",
+  );
+
+  // 产品处理自带的 fetch 封装同样要接进来
+  const pp = readFileSync(
+    new URL("../modules/product_processing/api/client.ts", import.meta.url),
+    "utf8",
+  );
+  assert.ok(pp.includes("noteBackendReachable"), "产品处理通道成功时要复位状态机");
+  assert.ok(pp.includes("noteBackendUnreachable"), "产品处理通道网络层失败时要上报失联");
+  const catchIdx = pp.indexOf("if (error instanceof TypeError) noteBackendUnreachable()");
+  assert.ok(catchIdx > -1, "只在 TypeError（连接被拒）时上报，超时不算掉线");
+});
+
+test("开发态只把「代理替答」当成失联，纯文本 500 不再误判", () => {
+  const src = readClient();
+  const start = src.indexOf("function isBackendUnreachable");
+  assert.ok(start > -1, "应能找到 isBackendUnreachable");
+  const body = src.slice(start, src.indexOf("\n}", start));
+  assert.ok(
+    body.includes("PROXY_ERROR_HINT"),
+    "应只认 ECONNREFUSED / socket hang up 这类传输层文案",
+  );
+  assert.ok(
+    /\[500, 502, 503, 504\]/.test(body),
+    "状态码应收紧到网关类错误",
+  );
+});
+
+test("被浏览器捡回来的旧页面必须能自愈（bfcache / 后台节流）", () => {
+  const notice = readNotice();
+  // 用户「叉掉浏览器再点启动，还是那个掉线弹窗」= 浏览器把冻结的旧 DOM 捡了回来，
+  // 自动探活的定时器在 bfcache / 后台节流下可能根本没跑。
+  assert.ok(notice.includes('"pageshow"'), "必须监听 pageshow（bfcache 恢复）");
+  assert.ok(notice.includes("event.persisted"), "只对 bfcache 恢复的旧页面特殊处理");
+  assert.ok(notice.includes('"visibilitychange"'), "切回前台必须立刻探活一次");
 });

@@ -10,8 +10,6 @@ from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any
 
-from openpyxl import Workbook, load_workbook
-
 from .image_slots import apply_slot_overrides
 from .policy import is_safe_external_url
 from ....shared.miaoshou_workbook import (
@@ -258,6 +256,176 @@ def _excluded_variant_keys(row: Mapping[str, Any]) -> set[str]:
     return {str(value or "").strip() for value in raw if str(value or "").strip()}
 
 
+# 变种网格补齐上限：真实规格网格是「颜色 × 尺码」这类小矩阵，超过这个量级说明
+# 采集到的属性并非真实规格轴（或数据异常），宁可原样导出，也不生成几百行垃圾 SKU。
+MAX_GRID_FILL_COMBOS = 200
+
+
+def _grid_value_key(value: Any) -> str:
+    """网格比较键：忽略空白与尾部括号说明（尺码常带「（建议体重8-11斤）」备注）。"""
+    text = str(value or "").strip()
+    text = re.sub(r"[（(][^（()）]*[)）]\s*$", "", text).strip()
+    return re.sub(r"\s+", "", text).casefold()
+
+
+def _grid_export_axis_values(
+    row: Mapping[str, Any],
+    record: Mapping[str, Any],
+    translations: Mapping[str, Any],
+) -> list[tuple[str, str]]:
+    """变种记录 → 导出用的（规格轴名, 导出值）列表，口径与 _dxm_single_export_row 一致。"""
+    values = [
+        (name_text, translations.get(value_text, value_text))
+        for name_text, value_text in clean_variant_attributes(record.get("attributes"))
+    ]
+    if not values:
+        for name_text, value_text in clean_variant_attributes(row.get("source_attributes")):
+            if not _is_known_spec_axis(name_text):
+                continue
+            values.append((name_text, translations.get(value_text, value_text)))
+            if len(values) >= 2:
+                break
+    return values[:2]
+
+
+def _variant_grid_analysis(row: Mapping[str, Any]) -> dict[str, Any]:
+    """分析「变种属性值一 × 变种属性值二」网格是否完整。
+
+    店小秘按两个规格轴的全部取值做笛卡尔积来识别规格商品：导出行组合数少于这个
+    笛卡尔积时会报 ``SKU quantity and specification product do not match``。
+    采集丢数据、或预检侧删掉某些 SKU，都会在网格里留下缺口。
+
+    返回空 dict 表示不适用（无变种 / 只有一个规格轴 / 各记录规格轴不一致 /
+    有人改过规格显示名 / 网格规模异常），此时不做补齐也不做标注。
+    """
+    records = [
+        item for item in (row.get("source_variant_records") or []) if isinstance(item, Mapping)
+    ]
+    if len(records) < 2:
+        return {}
+    translations = row.get("variant_value_translations")
+    if not isinstance(translations, Mapping):
+        translations = {}
+    excluded = _excluded_variant_keys(row)
+    axis_names: tuple[str, str] | None = None
+    order1: list[tuple[str, str]] = []
+    order2: list[tuple[str, str]] = []
+    seen1: set[str] = set()
+    seen2: set[str] = set()
+    all_combos: set[tuple[str, str]] = set()
+    exported_combos: set[tuple[str, str]] = set()
+    for record in records:
+        # 人工改过规格显示名的记录，导出时两个值都会写成该显示名，网格口径已失真。
+        if str(record.get("display_name") or "").strip():
+            return {}
+        values = _grid_export_axis_values(row, record, translations)
+        if len(values) < 2:
+            return {}
+        names = (values[0][0], values[1][0])
+        if axis_names is None:
+            axis_names = names
+        elif names != axis_names:
+            return {}
+        key1 = _grid_value_key(values[0][1])
+        key2 = _grid_value_key(values[1][1])
+        if not key1 or not key2:
+            return {}
+        if key1 not in seen1:
+            seen1.add(key1)
+            order1.append((key1, values[0][1]))
+        if key2 not in seen2:
+            seen2.add(key2)
+            order2.append((key2, values[1][1]))
+        all_combos.add((key1, key2))
+        if not (excluded and variant_export_key(record) in excluded):
+            exported_combos.add((key1, key2))
+    expected = len(order1) * len(order2)
+    if expected <= 1 or expected > MAX_GRID_FILL_COMBOS:
+        return {}
+    missing: list[tuple[str, str, bool]] = []
+    for key1, value1 in order1:
+        for key2, value2 in order2:
+            if (key1, key2) in exported_combos:
+                continue
+            missing.append((value1, value2, (key1, key2) in all_combos))
+    if not missing:
+        return {}
+    return {
+        "axis1": axis_names[0] if axis_names else "",
+        "axis2": axis_names[1] if axis_names else "",
+        "expected": expected,
+        "present": len(exported_combos),
+        "missing": missing,
+    }
+
+
+def variant_grid_gaps(row: Mapping[str, Any]) -> dict[str, Any]:
+    """预检页标注用摘要：变种网格缺多少组、缺哪些（无缺口返回空 dict）。
+
+    与导出补齐共用 ``_variant_grid_analysis``，保证「界面提示的组数」与
+    「表格实际补齐的组数」永远一致。
+    """
+    analysis = _variant_grid_analysis(row)
+    if not analysis:
+        return {}
+    missing = analysis["missing"]
+    return {
+        "axis1": analysis["axis1"],
+        "axis2": analysis["axis2"],
+        "expected": int(analysis["expected"]),
+        "present": int(analysis["present"]),
+        "missing_count": len(missing),
+        "excluded_count": sum(1 for item in missing if item[2]),
+        "sample": [f"{value1} / {value2}" for value1, value2, _ in missing[:3]],
+    }
+
+
+def _grid_variant_sku(base: str, value1: str, value2: str, used: set[str]) -> str:
+    """给补齐行生成唯一 SKU 货号：货号-值一-值二；纯中文规格值用序号保证唯一。"""
+    parts = [base] if base else []
+    for value in (value1, value2):
+        slug = re.sub(r"[^0-9A-Za-z]+", "", str(value or ""))[:16]
+        if slug:
+            parts.append(slug)
+    if len(parts) == (1 if base else 0):
+        parts.append(f"V{len(used) + 1}")
+    candidate = "-".join(parts) or "SKU"
+    suffix = 2
+    while candidate in used:
+        candidate = "-".join([*parts, str(suffix)])
+        suffix += 1
+    used.add(candidate)
+    return candidate
+
+
+def _fill_variant_grid(row: dict[str, Any], exported: list[list[Any]]) -> list[list[Any]]:
+    """按「属性值一 × 属性值二」补齐缺口组合（店小秘要求规格网格完整）。
+
+    补齐行克隆同一「属性值一」（同色）的已有行：价格、尺寸、重量、图片全部沿用，
+    只替换属性值二与 SKU 货号。预检侧删掉的变种也会补回（否则网格仍不完整、
+    店小秘照样拒收），但库存置 0，避免把已删除的规格重新上架。
+    """
+    analysis = _variant_grid_analysis(row)
+    if not analysis or not exported:
+        return exported
+    used_skus = {str(item[10] or "").strip() for item in exported}
+    base = str(row.get("skc") or row.get("sku") or "").strip()
+    filled = list(exported)
+    for value1, value2, was_excluded in analysis["missing"]:
+        template = next(
+            (item for item in exported if _grid_value_key(item[5]) == _grid_value_key(value1)),
+            exported[0],
+        )
+        new_row = list(template)
+        new_row[5] = value1
+        new_row[7] = value2
+        if was_excluded:
+            new_row[24] = 0
+        new_row[10] = _grid_variant_sku(base, value1, value2, used_skus)
+        filled.append(new_row)
+    return filled
+
+
 def _variant_source_image_usable(row: Mapping[str, Any]) -> bool:
     """auto 策略下是否可用该 SKU 的规格原图（由服务层解析后随行下发）。
 
@@ -308,6 +476,9 @@ def read_product_workbook(filename: str, content: bytes) -> list[dict[str, Any]]
         return _read_csv(content)
     if suffix not in {".xlsx", ".xlsm"}:
         raise ValueError("only .xlsx, .xlsm or .csv product files are supported")
+    # openpyxl 的 import 成本约 1 秒，不该压在冷启动上（2026-10-20 实测 6.3s 启动里占 1s）
+    from openpyxl import load_workbook
+
     workbook = load_workbook(BytesIO(content), read_only=True, data_only=True)
     sheet = workbook.active
     iterator = sheet.iter_rows(values_only=True)
@@ -393,6 +564,8 @@ DXM_SENSITIVE_COLUMNS = [
 
 
 def create_result_workbook(rows: list[dict[str, Any]], destination: Path) -> None:
+    from openpyxl import Workbook
+
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "店小秘导入"
@@ -438,7 +611,9 @@ def _dxm_export_rows(row: dict[str, Any]) -> list[list[Any]]:
         seen.add(variant_key)
         exported.append(values)
     # 有变种记录时不再回退单行：全部被剔除意味着该商品不出现任何行。
-    return exported
+    # 导出前按「属性值一 × 属性值二」补齐缺口组合，否则店小秘会以
+    # 「SKU quantity and specification product do not match」整单拒收。
+    return _fill_variant_grid(row, exported)
 
 
 def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) -> list[Any]:
@@ -508,38 +683,66 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
         # 店小秘 *变种属性值一 必填；无规格值数据时对齐原型 _default_variant_export_value()
         variant_value_1 = "Estándar" if str(row.get("target_language") or "").strip().casefold() == "es" else "Standard"
 
-    # 四宫格落位（对齐交接文档 §11.3）：预览图/素材图=第1张分图；轮播图=4张分图+完整四宫格总览（总览放最后）。
+    # 四宫格落位（对齐交接文档 §11.3）：预览图/素材图=第1张分图；轮播图=4张分图。
+    # 四宫格总览图是运输/诊断产物，不是可上架轮播图，绝不能混入导出。
     # 生成图为本地路径（未上传 COS）时店小秘无法访问，仅 http(s) 生成图才可用，否则回退来源 http 图片。
     # 预检覆盖优先：用户改过标题/图片后以覆盖值为准，未改则走原生成/回退逻辑。
     generated_carousel = row.get("carousel_image_paths") or []
-    grid_summary_path = str(row.get("grid_image_summary_path") or "").strip()
     detail_image_paths = row.get("detail_image_paths") or []
-    generated_images = _http_urls(list(generated_carousel) + [grid_summary_path])
+    scope = set(row.get("processing_scope") or [])
+    generated_images = _http_urls(list(generated_carousel))
     if slot_overrides:
-        # 新版尺寸画布以旧版整组人工轮播为基线再覆盖单槽；总览仍保留在末尾。
-        slotted_images = _http_urls(
+        # 新版尺寸画布以旧版整组人工轮播为基线再覆盖单槽。
+        carousel_urls = _http_urls(
             [slot.get("value") for slot in apply_slot_overrides(row, preview_overrides)]
         )
-        export_images = slotted_images + _http_urls([grid_summary_path])
-        carousel = "\n".join(export_images)
-        main_image = override_main if _is_http_url(override_main) else next(iter(slotted_images), "")
+        main_image = override_main if _is_http_url(override_main) else next(iter(carousel_urls), "")
         material_images = main_image
     elif override_carousel:
-        # 纯旧版整组轮播图覆盖保持原语义，避免历史预检数据被悄悄追加图片。
-        carousel = "\n".join(override_carousel)
-        main_image = override_main if _is_http_url(override_main) else override_carousel[0]
+        # 纯旧版整组轮播图覆盖保持原语义，但只保留可上架的 http(s) 地址。
+        carousel_urls = _http_urls(override_carousel)
+        main_image = override_main if _is_http_url(override_main) else next(iter(carousel_urls), "")
         material_images = main_image
     elif generated_images:
-        carousel = "\n".join(generated_images)
+        carousel_urls = generated_images
         main_image = generated_images[0]
         material_images = generated_images[0]
     else:
-        carousel = "\n".join(_http_urls(source_image_urls))
-        main_image = main_image_url if _is_http_url(main_image_url) else next(iter(_http_urls(source_image_urls)), "")
+        if scope & {"four_grid", "detail_images"}:
+            # 处理范围包含图片却拿不到可导出的生成图：绝不回退来源原图。
+            # 否则失败/未处理链接会以「成功」形式进店小秘，且用户无法从表格分辨。
+            raise ValueError(
+                f"{str(row.get('optimized_title') or row.get('title') or '商品')}: "
+                "没有可导出的 AI 处理图（生成图为空或未发布为公网地址），不能回退来源原图；"
+                "请重新处理该链接或忽略它"
+            )
+        carousel_urls = _http_urls(source_image_urls)
+        main_image = main_image_url if _is_http_url(main_image_url) else next(iter(carousel_urls), "")
         # 店小秘 *产品素材图 为单值列（最大导入1条，对齐原型 DXM_COLUMNS[19]=main_image_url）
         material_images = next(iter(_http_urls(source_detail_image_urls)), "")
         if not material_images:
             material_images = main_image
+
+    export_title = str(row.get("optimized_title") or row.get("title") or "").strip()
+    grid_status = str((row.get("provider_status_classes") or {}).get("four_grid") or "")
+    if "four_grid" in scope:
+        if len(carousel_urls) != 4:
+            raise ValueError(
+                f"{export_title or '商品'}: 轮播图需 4 张，当前 {len(carousel_urls)} 张；"
+                "请先在预检页补齐或重试图片分支"
+            )
+        if grid_status == "source_fallback" and not (slot_overrides or override_carousel):
+            raise ValueError(
+                f"{export_title or '商品'}: AI 生图未成功，当前轮播为来源图兜底；"
+                "请重试图片分支后再导出"
+            )
+    if not main_image and (
+        bool(scope & {"four_grid", "detail_images"})
+        or bool(carousel_urls)
+        or bool(override_main)
+    ):
+        raise ValueError(f"{export_title or '商品'}: 缺少主图，无法导出")
+    carousel = "\n".join(carousel_urls)
 
     # SKU 规格图：店小秘「预览图」列对齐原型 _build_dxm_row（DXM_COLUMNS[8]）——
     # 取变种自己的规格图，缺失时回退商品主图。缺省策略为 "auto"：按可用性判断结论决定
@@ -570,6 +773,11 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
         if "detail_images" in preview_overrides
         else _http_urls(detail_image_paths)
     )
+    if "detail_images" in scope and not _http_urls(detail_sources):
+        raise ValueError(
+            f"{export_title or '商品'}: 详情图未生成或没有可访问地址；"
+            "请先在预检页补齐或重试详情图"
+        )
     detail_html = "".join(f'<img src="{value}" />' for value in detail_sources)
     if detail_html:
         description = f"{description}\n{detail_html}".strip()
