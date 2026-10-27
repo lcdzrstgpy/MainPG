@@ -1,6 +1,9 @@
+/* 2026-10-24：卡片/模块表面原先只有 .2 左右，压在墨色山脉上文字完全看不清，
+   统一提到 .54~.66；背景墨层 opacity 从 .72/.38 压到 .52/.30。
+   ⚠️ 顶栏 .topbar-card 的 .16 是用户明确要求的「风景玻璃」，不要动。 */
 [data-theme="chinese"] {
   --theme-page-bg: #ebe8de;
-  --theme-card-bg: rgba(249, 247, 239, .22);
+  --theme-card-bg: rgba(249, 247, 239, .62);
   --theme-card-border: rgba(91, 105, 98, .34);
   --theme-card-shadow: rgba(38, 52, 48, .09);
   --theme-card-shadow-lg: rgba(38, 52, 48, .14);
@@ -74,15 +77,15 @@
   --theme-hero-fluid-bg: radial-gradient(circle at 35% 38%, rgba(207, 220, 207, .24), rgba(133, 157, 144, .12) 48%, transparent 70%);
   --theme-hero-sheen-color: rgba(255, 255, 255, .08);
 
-  --theme-module-surface: rgba(250, 248, 241, .22);
-  --theme-module-surface-raised: rgba(250, 248, 241, .26);
-  --theme-module-surface-soft: rgba(240, 238, 230, .22);
-  --theme-module-surface-tint: rgba(228, 236, 231, .26);
+  --theme-module-surface: rgba(250, 248, 241, .60);
+  --theme-module-surface-raised: rgba(250, 248, 241, .66);
+  --theme-module-surface-soft: rgba(240, 238, 230, .54);
+  --theme-module-surface-tint: rgba(228, 236, 231, .56);
   --theme-module-border: #d0d7d1;
   --theme-module-border-strong: #829d95;
   --theme-module-primary-strong: #315c57;
   --theme-module-primary-rgb: 49, 92, 87;
-  --theme-module-panel-gradient: linear-gradient(120deg, rgba(241, 239, 231, .26) 0%, rgba(250, 248, 241, .22) 62%, rgba(228, 235, 229, .26) 100%);
+  --theme-module-panel-gradient: linear-gradient(120deg, rgba(241, 239, 231, .60) 0%, rgba(250, 248, 241, .56) 62%, rgba(228, 235, 229, .58) 100%);
   --theme-module-shadow: rgba(43, 67, 62, .1);
   --theme-module-overlay: rgba(21, 37, 35, .3);
 }
@@ -104,7 +107,7 @@
   z-index: 0;
   inset: -24px;
   pointer-events: none;
-  opacity: .38;
+  opacity: .30;
   background: url("/theme/chinese-ink-overlay.png") center / cover no-repeat;
   mix-blend-mode: multiply;
   will-change: transform, opacity;
@@ -117,7 +120,7 @@
   z-index: 0;
   inset: -8%;
   pointer-events: none;
-  opacity: .72;
+  opacity: .52;
   background:
     /* 右下斜向远山：AI 生成的水墨山（webp，墨色转 alpha，白底已透明化） */
     url("/theme/chinese-mountain.webp") right bottom / 46% auto no-repeat,
@@ -141,9 +144,9 @@
 }
 
 [data-theme="chinese"] .sidebar-card {
-  background-color: rgba(245, 243, 234, .22);
+  background-color: rgba(245, 243, 234, .5);
   background-image:
-    linear-gradient(180deg, rgba(255, 254, 248, .2), rgba(242, 240, 231, .18)),
+    linear-gradient(180deg, rgba(255, 254, 248, .38), rgba(242, 240, 231, .34)),
     url("/theme/chinese-ink-overlay.png"),
     repeating-linear-gradient(92deg, rgba(76, 70, 57, .025) 0 1px, transparent 1px 8px);
   background-repeat: no-repeat, no-repeat, repeat;
@@ -165,10 +168,10 @@
 }
 
 [data-theme="chinese"] .content-card {
-  background-color: rgba(248, 246, 238, .2);
+  background-color: rgba(248, 246, 238, .62);
   background-image:
     repeating-linear-gradient(96deg, rgba(76, 70, 57, .018) 0 1px, transparent 1px 8px),
-    linear-gradient(rgba(249, 247, 239, .2), rgba(249, 247, 239, .2));
+    linear-gradient(rgba(249, 247, 239, .5), rgba(249, 247, 239, .5));
   background-repeat: repeat, no-repeat;
   background-position: center;
   background-size: auto, 100% 100%;
