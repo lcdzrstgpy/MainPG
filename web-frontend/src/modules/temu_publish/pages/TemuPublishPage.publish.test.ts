@@ -205,7 +205,7 @@ test("本机留档：表单/预设/最近分类按登录账号分开存，换账
   assert.match(page, /return account\?\.user_id \|\| "local";/);
   assert.match(page, /const formKey = `\$\{FORM_KEY\}:\$\{storageSuffix\}`;/);
   assert.match(page, /const presetsKey = `\$\{PRESETS_KEY\}:\$\{storageSuffix\}`;/);
-  assert.match(page, /saveJsonLocal\(formKey, form\);/);
+  assert.match(page, /setTimeout\(\(\) => saveJsonLocal\(formKey, form\), 300\)/);
   assert.match(page, /saveJsonLocal\(presetsKey, next\);/);
   // 表单里只保留会提交的字段；唯一留档的备注也是收起的、写清楚不提交
   assert.match(page, /备注（不提交，只留档）/);
@@ -492,4 +492,29 @@ test("发布后核对：按 SKC 货号查店铺里的商品", () => {
   assert.match(page, /核对店铺里的商品/);
   assert.match(page, /productSkcReqs\?\.\[0\]\?\.extCode/);
   assert.match(page, /className="temu-goods-list"/);
+});
+
+test("健壮性：类目匹配重试、传图并发、初始化各自降级、落盘防抖、失败记录带类目名", () => {
+  // 1) 类目匹配：3 次重试 + 退避，自动匹配和手动搜索都走它
+  assert.match(page, /async function matchCategoryWithRetry\(\s*text: string,\s*attempts = 3,\s*\)/);
+  assert.match(page, /await new Promise\(\(resolve\) => setTimeout\(resolve, 800 \* \(attempt \+ 1\)\)\)/);
+  assert.match(page, /queries\.map\(\(text\) => matchCategoryWithRetry\(text\)\)/);
+  assert.match(page, /const response = await matchCategoryWithRetry\(categoryQuery\.trim\(\)\);/);
+  assert.match(page, /类目匹配服务暂时不可用（已重试 3 次）/);
+
+  // 2) 传图并发 3 且结果保序（进度不变，只是不再排队）
+  assert.match(page, /async function mapWithConcurrency<T, R>\(/);
+  assert.match(page, /await mapWithConcurrency\(files, 3, async \(file\) => \{/);
+
+  // 3) 初始化：五个接口各自降级，只有 settings 决定店铺状态
+  assert.match(page, /const settle = <T,>\(promise: Promise<T>\) =>/);
+  assert.match(page, /这些没取到（不影响已填内容，可点「刷新」重试）/);
+  assert.doesNotMatch(page, /const \[settings, cats, specs, freights, whGroups\] = await Promise\.all/);
+
+  // 4) 表单落盘防抖 300ms，且卸载时补写最后一次（防抖窗口内切页签不丢输入）
+  assert.match(page, /setTimeout\(\(\) => saveJsonLocal\(formKey, form\), 300\)/);
+  assert.match(page, /const latestSaveRef = useRef\(\{ formKey, rowsKey, form, rows \}\);/);
+
+  // 5) 单条发布失败记类目名路径，不再是裸 catId
+  assert.match(page, /categoryPath\.map\(\(step\) => step\.catName\)\.filter\(Boolean\)\.join\(" > "\)/);
 });

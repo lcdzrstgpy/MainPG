@@ -42,6 +42,50 @@ import "../styles/temuPublish.css";
 const SITE_ID = 100;
 const EMPTY_ATTR = { vid: 0, text: "" };
 
+/**
+ * 类目匹配带重试。
+ *
+ * 网关的 category.match 偶发 SYSTEM_EXCEPTION（实测过好几次），一次失败就让推荐列表空着，
+ * 界面上看起来就像「这条草稿不识别类目」。这里最多试 3 次、退避 800/1600ms，
+ * 只有真的连续失败才返回 null（标题匹配那边本来就是「失败不打扰」的语义）。
+ */
+async function matchCategoryWithRetry(
+  text: string,
+  attempts = 3,
+): Promise<{ categoryPathDTOS: TemuCategoryPath[] } | null> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await temuPublishApi.matchCategory(text, SITE_ID);
+    } catch {
+      if (attempt === attempts - 1) return null;
+      await new Promise((resolve) => setTimeout(resolve, 800 * (attempt + 1)));
+    }
+  }
+  return null;
+}
+
+/**
+ * 限并发地按 INPUT 顺序处理（传图用：并发 3 张，串行 6 张要等 6~18 秒）。
+ * 结果顺序与入参一致，调用方照旧拼到 URL 行里。
+ */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const runners = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await worker(items[index], index);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
+
 type AttrPick = { vid: number; text: string };
 type ImageSlot = "carousel" | "outer" | "detail";
 
@@ -456,10 +500,24 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
   const patch = (partial: Partial<PublishForm>) => setForm((current) => ({ ...current, ...partial }));
 
-  // 表单内容全量落本机：切页签/刷新不丢，等同「保存到待发布」
+  // 表单内容落本机：切页签/刷新不丢，等同「保存到待发布」。
+  // 防抖 300ms —— 标题每敲一个字都全量写一次（含长图片 URL 数组）会卡。
   useEffect(() => {
-    saveJsonLocal(formKey, form);
+    const timer = setTimeout(() => saveJsonLocal(formKey, form), 300);
+    return () => clearTimeout(timer);
   }, [form, formKey]);
+
+  // 防抖窗口内切页签/卸载时，把最后一次内容补写一次（否则最后 300ms 的输入会丢）
+  const latestSaveRef = useRef({ formKey, rowsKey, form, rows });
+  latestSaveRef.current = { formKey, rowsKey, form, rows };
+  useEffect(
+    () => () => {
+      const snapshot = latestSaveRef.current;
+      saveJsonLocal(snapshot.formKey, snapshot.form);
+      saveJsonLocal(snapshot.rowsKey, snapshot.rows);
+    },
+    [],
+  );
 
   // 变种行同理落盘（防抖 300ms：价格是逐字符输入的）
   useEffect(() => {
@@ -488,24 +546,56 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       try {
         // token 校验和类目/规格/运费/仓库并行发起：总耗时 = 最慢的那个，而不是相加
         const tokenPromise = temuPublishApi.verifyToken().catch(() => null);
-        const [settings, cats, specs, freights, whGroups] = await Promise.all([
-          temuPublishApi.settings(),
-          temuPublishApi.categories(0),
-          temuPublishApi.parentSpecs(),
-          temuPublishApi.freightTemplates([SITE_ID]),
-          temuPublishApi.warehouses([SITE_ID]),
+        // 五个接口各自降级：只有 settings 决定「绑没绑店铺」，其余失败只影响自己那块。
+        // （原来一个 Promise.all，类目树抖一下整页就静默，界面看着像「还没绑定店铺」。）
+        const settle = <T,>(promise: Promise<T>) =>
+          promise.then(
+            (value) => ({ ok: true as const, value }),
+            () => ({ ok: false as const }),
+          );
+        const [settingsR, catsR, specsR, freightsR, whR] = await Promise.all([
+          settle(temuPublishApi.settings()),
+          settle(temuPublishApi.categories(0)),
+          settle(temuPublishApi.parentSpecs()),
+          settle(temuPublishApi.freightTemplates([SITE_ID])),
+          settle(temuPublishApi.warehouses([SITE_ID])),
         ]);
         if (!alive) return;
-        setStatus(settings);
-        setCategoryOptions(cats.categoryDTOList ?? []);
-        const specItems = specs.parentSpecDTOS ?? [];
-        setParentSpecs(specItems);
-        setColorParentId(findParentSpec(specItems, "颜色", 0)?.parentSpecId ?? 0);
-        setSizeParentId(findParentSpec(specItems, "尺码", 1)?.parentSpecId ?? 0);
-        const templates = freights.freightTemplates ?? [];
-        setFreightTemplates(templates);
-        setWarehouseGroups(whGroups.warehouseDTOList ?? []);
-        const defaultWarehouse = firstWarehouse(whGroups.warehouseDTOList ?? []);
+        const missed: string[] = [];
+        if (settingsR.ok) {
+          setStatus(settingsR.value);
+        } else {
+          missed.push("店铺凭证");
+        }
+        if (catsR.ok) {
+          setCategoryOptions(catsR.value.categoryDTOList ?? []);
+        } else {
+          missed.push("类目树");
+        }
+        const specItems = specsR.ok ? specsR.value.parentSpecDTOS ?? [] : [];
+        if (specsR.ok) {
+          setParentSpecs(specItems);
+          setColorParentId(findParentSpec(specItems, "颜色", 0)?.parentSpecId ?? 0);
+          setSizeParentId(findParentSpec(specItems, "尺码", 1)?.parentSpecId ?? 0);
+        } else {
+          missed.push("颜色/尺码规格");
+        }
+        const templates = freightsR.ok ? freightsR.value.freightTemplates ?? [] : [];
+        if (freightsR.ok) {
+          setFreightTemplates(templates);
+        } else {
+          missed.push("运费模板");
+        }
+        const whList = whR.ok ? whR.value.warehouseDTOList ?? [] : [];
+        if (whR.ok) {
+          setWarehouseGroups(whList);
+        } else {
+          missed.push("发货仓库");
+        }
+        if (missed.length) {
+          setError(`这些没取到（不影响已填内容，可点「刷新」重试）：${missed.join("、")}`);
+        }
+        const defaultWarehouse = firstWarehouse(whList);
         const whId = defaultWarehouse?.warehouseId ?? "";
         // 表单里已经有值就用表单的，否则用接口默认值
         setForm((current) => ({
@@ -744,7 +834,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       setTitleMatching(true);
       setTitleMatches([]);
       void Promise.all(
-        queries.map((text) => temuPublishApi.matchCategory(text, SITE_ID).catch(() => null)),
+        queries.map((text) => matchCategoryWithRetry(text)),
       )
         .then((responses) => {
           if (seq !== matchSeqRef.current) return;
@@ -896,7 +986,10 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const searchCategory = () =>
     run("match", async () => {
       if (!categoryQuery.trim()) throw new Error("请输入类目关键词");
-      const response = await temuPublishApi.matchCategory(categoryQuery.trim(), SITE_ID);
+      const response = await matchCategoryWithRetry(categoryQuery.trim());
+      if (!response) {
+        throw new Error("类目匹配服务暂时不可用（已重试 3 次），稍后再试，或直接用「分类浏览」逐级选");
+      }
       setMatchPaths(response.categoryPathDTOS ?? []);
     });
 
@@ -972,16 +1065,16 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       event.target.value = "";
       if (!files.length) return;
       const leaf = categoryPath[categoryPath.length - 1];
-      const urls: string[] = [];
-      for (const file of files) {
+      // 并发 3 张：串行传 6 张要等 6~18 秒，并发后基本等于最慢那张
+      const uploadedUrls = await mapWithConcurrency(files, 3, async (file) => {
         const raw = await blobToDataUrl(file);
         const uploaded =
           slot === "detail"
             ? await temuPublishApi.uploadDetailImage(raw, 0, leaf?.catId)
             : await temuPublishApi.uploadImage(await toSquareDataUrl(raw), leaf?.catId);
-        const url = pickUploadedUrl(uploaded);
-        if (url) urls.push(url);
-      }
+        return pickUploadedUrl(uploaded);
+      });
+      const urls = uploadedUrls.filter(Boolean);
       if (!urls.length) throw new Error("图片上传成功但没有返回图片地址");
       setSlotText(slot, [...splitLines(slotText(slot)), ...urls].join("\n"));
     });
@@ -1346,7 +1439,10 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           draftTitle: draft.title,
           image: draft.carousel_image_urls[0] || "",
           siteLabel: "美国站",
-          categoryLabel: String(draft.category_ids[draft.category_ids.length - 1] ?? ""),
+          // 记类目名路径（之前记的是 catId 数字，列表里只看到一串数字，不知道是哪个类目）
+          categoryLabel:
+            categoryPath.map((step) => step.catName).filter(Boolean).join(" > ") ||
+            String(draft.category_ids[draft.category_ids.length - 1] ?? ""),
           skuLabel: draft.skcs[0]?.skus[0]?.ext_code || "",
           priceLabel: `CNY ${draft.skcs[0]?.skus[0]?.supplier_price ?? ""}`,
           at: new Date().toLocaleString("zh-CN"),
