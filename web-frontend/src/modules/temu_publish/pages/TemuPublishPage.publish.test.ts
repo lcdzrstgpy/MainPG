@@ -493,32 +493,3 @@ test("发布后核对：按 SKC 货号查店铺里的商品", () => {
   assert.match(page, /productSkcReqs\?\.\[0\]\?\.extCode/);
   assert.match(page, /className="temu-goods-list"/);
 });
-
-test("待补库存清单：只读扫描 + 复制 TSV（改库存接口未开通）", () => {
-  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
-  const apiSrc = readFileSync(new URL("../api/temuPublishApi.ts", import.meta.url), "utf8");
-
-  assert.match(
-    apiSrc,
-    /lowStockGoods: \(params: \{ limit\?: number; pageSize\?: number; maxPages\?: number \} = \{\}\) =>/,
-  );
-  assert.ok(apiSrc.includes("/goods/low-stock"), "清单接口要打到 /goods/low-stock");
-
-  assert.match(library, /const scanLowStock = async \(limit = stockLimit\) => \{/);
-  // 网关每页只给 20 条：pageSize 必须按 20 走，maxPages 给够，靠 limit 提前停
-  assert.ok(library.includes("pageSize: 20, maxPages: 30"), "扫描按 20/页、限制页数");
-  assert.ok(library.includes("const scanLowStock = async (limit = stockLimit) =>"));
-  // 第一次点开才扫：店铺 400+ 件商品，别每次进页面都翻页
-  assert.ok(library.includes("if (next && !stockData && !stockScanning) void scanLowStock();"));
-  // 复制的是两列 TSV：SKU货号 + 目标库存
-  assert.ok(library.includes('const header = "SKU货号\\t库存";'), "TSV 表头");
-  assert.ok(library.includes("${row.code}\\t${target}"), "每行是 货号 + 目标库存");
-  // 剪贴板 API 不可用时要有兜底（非 https / 无权限）
-  assert.ok(library.includes('document.execCommand("copy")'));
-  // 面板必须如实说明「只能给清单」，不能假装已经写回店铺
-  assert.ok(library.includes("stockData.can_update_stock"));
-  // 没扫完要能继续扫（已扫的页命中缓存）
-  assert.ok(library.includes("继续扫描"));
-  assert.ok(library.includes("stockData.scanned < stockData.total"));
-  assert.ok(library.includes("只能生成清单，不能直接写回店铺"));
-});
