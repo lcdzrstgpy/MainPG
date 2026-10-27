@@ -237,8 +237,8 @@ function entryPrefill(
     // 草稿是「元」，发布页是「分」
     supplierPrice: yuanToCents(entry.declared_price),
     suggestedPrice: yuanToCents(entry.suggested_price),
-    // 库存 0 / 空：不带进去（半托管必须 ≥1，带 0 只会让人以为可以直接提交）
-    stock: Number(entry.stock) > 0 ? numericText(entry.stock) : "",
+    // 库存原样带入（0 也是有效值：先建品后补库存）；只有真的没值才留空
+    stock: numericText(entry.stock),
     specName1: entry.spec_name_1 || "",
     specValue1: entry.spec_value_1 || "",
     specName2: entry.spec_name_2 || "",
@@ -530,8 +530,8 @@ export function TemuDraftLibraryPage({
       sku: entry.sku || "",
       declared_price: numericText(entry.declared_price),
       suggested_price: numericText(entry.suggested_price),
-      // 库存 0 / 空：不带进去（半托管必须 ≥1，带 0 只会让人以为可以直接提交）
-    stock: Number(entry.stock) > 0 ? numericText(entry.stock) : "",
+      // 库存原样带入（0 也是有效值：先建品后补库存）；只有真的没值才留空
+    stock: numericText(entry.stock),
       length_cm: numericText(entry.length_cm),
       width_cm: numericText(entry.width_cm),
       height_cm: numericText(entry.height_cm),

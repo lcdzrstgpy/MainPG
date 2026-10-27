@@ -417,12 +417,14 @@ export function PublishSkuPanel({
                 placeholder="可选"
               />
               <input
-                className={`temu-input${Number(row.stock) < 1 ? " is-bad" : ""}`}
+                className={`temu-input${
+                  String(row.stock).trim() === "" || Number(row.stock) < 0 ? " is-bad" : ""
+                }`}
                 inputMode="numeric"
                 value={row.stock}
                 onChange={(event) => onUpdateRow(row.key, { stock: event.target.value })}
-                placeholder="≥1"
-                title="半托管必须有可售库存，0 或留空不能提交"
+                placeholder="0 也可"
+                title="可以填 0：Temu 会建品但前台不可售（售罄），卖之前补库存即可"
               />
               <button
                 type="button"

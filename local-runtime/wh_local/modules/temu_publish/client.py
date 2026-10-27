@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass
 from threading import Lock
@@ -55,6 +56,21 @@ class TemuCredentials:
         return bool(self.client and self.token and self.access_token)
 
 
+# 盈銮网关是境内直连的域名。系统代理（Clash/V2Ray 之类）经常把它也劫持走，
+# 结果是 TLS 握手被掐断：SSLEOFError / EOF occurred in violation of protocol。
+# 所以默认**不读系统代理**；确实需要代理的环境用 WH_TEMU_PROXY 显式指定。
+PROXY_ENV = "WH_TEMU_PROXY"
+
+
+def _build_session() -> requests.Session:
+    session = requests.Session()
+    session.trust_env = False
+    proxy = os.environ.get(PROXY_ENV, "").strip()
+    if proxy:
+        session.proxies.update({"http": proxy, "https": proxy})
+    return session
+
+
 class TemuProductClient:
     """Temu 商品 OpenAPI 客户端（线程安全、带缓存）。"""
 
@@ -70,7 +86,7 @@ class TemuProductClient:
         self.credentials = credentials
         self._timeout = timeout
         self._max_attempts = max(1, int(max_attempts))
-        self._session = session or requests.Session()
+        self._session = session or _build_session()
         self._sleep = sleep
         self._cache: dict[str, tuple[float, Any]] = {}
         self._cache_lock = Lock()

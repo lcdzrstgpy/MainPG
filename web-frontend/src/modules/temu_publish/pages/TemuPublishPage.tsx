@@ -203,6 +203,17 @@ function parsePositive(value: string, label: string): number {
   return number;
 }
 
+/**
+ * 库存：允许 0（Temu 接受，建出来的商品是「售罄/不可售」状态，卖之前补库存即可）。
+ * 空值或负数才算错 —— 不能像价格那样要求 > 0。
+ */
+function parseStock(value: string, label: string): number {
+  const text = String(value ?? "").trim();
+  const number = Number(text);
+  if (!text || !Number.isFinite(number) || number < 0) throw new Error(`${label}必须填 0 或正整数`);
+  return Math.round(number);
+}
+
 /** 取出现次数最多的宽度（详情图统一到这个宽度）；没有就 800。 */
 function mostCommonWidth(widths: number[]): number {
   const valid = widths.filter((value) => Number.isFinite(value) && value > 0);
@@ -1192,7 +1203,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           suggested_price: row.suggestedPrice.trim()
             ? Math.round(parsePositive(row.suggestedPrice, `${at}建议售价`))
             : null,
-          stock: Math.round(parsePositive(row.stock, `${at}库存（半托管要可售，必须 ≥1）`)),
+          // 库存 0 是合法的（Temu 会建品但不可售），别拿价格的规则卡它
+          stock: parseStock(row.stock, `${at}库存`),
           warehouse_id: row.warehouseId,
           // 页面填 g，接口要毫克；尺寸填 cm，接口要毫米
           weight_mg: Math.round(parsePositive(row.weightG, `${at}重量`) * 1000),
