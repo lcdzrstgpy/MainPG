@@ -1333,3 +1333,40 @@ def test_duplicate_detection_is_per_account_and_fingerprint(tmp_path: Path) -> N
     cheaper = _draft().model_copy(deep=True)
     cheaper.skcs[0].skus[0].supplier_price = 999
     assert draft_fingerprint(cheaper) != draft_fingerprint(_draft())
+
+
+def test_gateway_auth_errors_carry_actionable_hint() -> None:
+    """CLIENT_TOKEN_INVALID 要说清是「盈銮网关凭据」而不是店铺 token，并给排查方向。"""
+    from wh_local.modules.temu_publish.router import _gateway_message
+
+    text = _gateway_message("CLIENT_TOKEN_INVALID", "client_id or token is invalid")
+    assert text.startswith("Temu 拒绝了这次提交：client_id or token is invalid")
+    assert "CLIENT_TOKEN_INVALID" in text
+    assert "盈銮网关" in text and "access_token" in text
+
+    # 没登记的错误码不加多余的话，保持上游原话
+    plain = _gateway_message("SOME_NEW_CODE", "boom")
+    assert plain == "Temu 拒绝了这次提交：boom（错误码 SOME_NEW_CODE）"
+
+
+def test_unbinding_keeps_gateway_credentials(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """解绑只清店铺授权：盈銮 client_id / token 是服务商那层的，换店还要用，必须留着。"""
+    _clear_temu_env(monkeypatch)
+    init_db(tmp_path / "runtime.sqlite3")
+    service = TemuPublishService(
+        tmp_path / "runtime.sqlite3", client=StubCatalogClient(), owner_id="cust_alice"
+    )
+    service.save_settings(
+        TemuSettingsUpdate(yl_client="yl-client", yl_token="yl-token", access_token="shop-a"),
+        "cust_alice",
+    )
+    assert service.settings_status()["configured"]["ready"] is True
+
+    status = service.clear_settings("cust_alice")["configured"]
+    assert status["access_token"] is False
+    assert status["yl_client"] is True and status["yl_token"] is True
+    assert status["ready"] is False
+
+    # 重新授权只补店铺 token 就够了，不用再让服务商发一遍 client/token
+    service.save_settings(TemuSettingsUpdate(access_token="shop-b"), "cust_alice")
+    assert service.settings_status()["configured"]["ready"] is True
