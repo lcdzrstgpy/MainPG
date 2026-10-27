@@ -233,9 +233,9 @@ test("草稿库：批量发布要套模板、逐条提交、失败进记录", ()
   assert.match(bar, /onBatchPublish: \(\) => void;/);
   assert.match(bar, /onPickTemplate: \(kind: "product" \| "variant"\) => void;/);
 
-  // 批量发布：必须先确认（非幂等），逐条 try/catch，失败只跳过不中断
-  assert.match(library, /即将把这 \$\{targets\.length\} 件商品真正提交到店铺/);
-  assert.match(library, /接口非幂等：重复提交会重复上架/);
+  // 批量发布：弹窗里确认（非幂等），逐条 try/catch，失败只跳过不中断
+  assert.match(library, /setBatchOpen\(false\);\n\n    const variant/);
+  assert.match(library, /接口非幂等：重复提交会在店铺里多出商品/);
   assert.match(library, /for \(const \[index, entry\] of targets\.entries\(\)\)/);
   assert.match(library, /await temuPublishApi\.publish\(draft\);/);
   assert.match(library, /localStore\.addFailure\(\{/);
@@ -395,4 +395,31 @@ test("发布：同一条草稿 24 小时内重复提交要先二次确认", () =
   assert.match(page, /if \(\/重复提交\/\.test\(text\)\)/);
   assert.match(page, /await temuPublishApi\.publish\(draft, true\)/);
   assert.ok(page.includes("店铺里会多出一件相同商品"));
+});
+
+
+test("批量发布：勾完直接发，模板在弹窗里选（不用先去菜单引用模板）", () => {
+  const library = readFileSync(
+    new URL("./TemuDraftLibraryPage.tsx", import.meta.url),
+    "utf8",
+  );
+  const bar = readFileSync(new URL("../components/TemuDraftBulkBar.tsx", import.meta.url), "utf8");
+
+  // 菜单项不再因为「没选模板」被禁用，只是勾选/运行中会禁用
+  assert.ok(
+    !/item\.action === "publish" && \(batchRunning \|\| !selectedCount \|\| !canBatchPublish\)/.test(bar),
+  );
+  assert.match(bar, /onBatchPublish/);
+
+  // 点「批量发布」开弹窗，弹窗里选产品模板/变种模板再开始
+  assert.match(library, /onBatchPublish={openBatchDialog}/);
+  assert.match(library, /const \[batchOpen, setBatchOpen\] = useState\(false\);/);
+  assert.match(library, /aria-label="批量发布"/);
+  assert.match(library, /<span>\s*产品模板<em className="temu-required">\*<\/em>/);
+  assert.match(library, /不套用变种模板/);
+  assert.match(library, /开始发布（\$\{batchTargets\.length\} 条）/);
+  // 勾选的条数按「当前可见 + 已勾选」算，和表格看到的行一致
+  assert.match(library, /const batchTargets = useMemo\(/);
+  // 弹窗确认后不再二次 window.confirm
+  assert.ok(!/const confirmed = window\.confirm\(\s*\[\s*`即将把这/.test(library));
 });
