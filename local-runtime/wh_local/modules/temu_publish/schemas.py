@@ -173,3 +173,15 @@ class GoodsDraftInput(BaseModel):
     semi_managed_site_mode: int = 1
     semi_language_strategy: int = 1
     validate_catalog: bool = True
+
+class DimensionCheckRequest(BaseModel):
+    """尺寸图检测（bg.algo.dimension.image.check，CN 网关，异步）。
+
+    mallId 是 Temu 店铺 id（卖家后台可见），接口必填，这里不做默认值猜测。
+    """
+
+    image_url: str = Field(min_length=8)
+    mall_id: str = Field(default="", description="Temu 店铺 id；留空会报错")
+    cat_id: int | None = Field(default=None, ge=1)
+    class_id: int | None = Field(default=None, ge=1)
+

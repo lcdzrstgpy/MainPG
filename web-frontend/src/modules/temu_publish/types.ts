@@ -324,3 +324,16 @@ export type TemuDraftEdit = {
   height_cm?: string;
   weight_g?: string;
 };
+
+/** 店铺里的商品（bg.glo.goods.list.get 的列表项，压成前端要的样子）。 */
+export type TemuGoodsItem = {
+  product_id: string;
+  title: string;
+  skc_ext_code: string;
+  image: string;
+  created_at?: number;
+  site_status?: number;
+  category?: string;
+  sku_codes?: string[];
+};
+

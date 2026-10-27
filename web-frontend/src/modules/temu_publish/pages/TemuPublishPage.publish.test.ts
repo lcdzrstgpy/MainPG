@@ -481,3 +481,15 @@ test("发布超时后反查店铺：确认建成了就显示「已在店铺里�
   assert.match(page, /publishResult\.confirmed_by_lookup\s*\n?\s*\? "已在店铺里查到（提交时网络中断）"/);
   assert.match(page, /publishResult\.matched_goods\?\.product_id/);
 });
+
+test("发布后核对：按 SKC 货号查店铺里的商品", () => {
+  assert.match(api, /searchGoods: \(params: \{ extCode\?: string; title\?: string; page\?: number; pageSize\?: number \}\) =>/);
+  assert.match(api, /\$\{BASE\}\/goods\$\{query\(\{/);
+  assert.match(api, /goodsDetail: \(productId: string \| number\) =>/);
+
+  assert.match(page, /const checkShopGoods = async \(extCode: string\) => \{/);
+  assert.match(page, /temuPublishApi\.searchGoods\(\{ extCode: extCode \|\| undefined, pageSize: 5 \}\)/);
+  assert.match(page, /核对店铺里的商品/);
+  assert.match(page, /productSkcReqs\?\.\[0\]\?\.extCode/);
+  assert.match(page, /className="temu-goods-list"/);
+});

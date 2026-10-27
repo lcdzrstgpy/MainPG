@@ -24,6 +24,7 @@ import type {
   TemuCategory,
   TemuCategoryPath,
   TemuFreightTemplate,
+  TemuGoodsItem,
   TemuImageUploadResult,
   TemuParentSpec,
   TemuProperty,
@@ -414,6 +415,12 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const [result, setResult] = useState<TemuBuildPayloadResult | null>(null);
   const [copied, setCopied] = useState(false);
   const [publishResult, setPublishResult] = useState<TemuPublishResult | null>(null);
+  // 发布后在店铺里核对（按 SKC 货号查商品列表）
+  const [shopCheck, setShopCheck] = useState<{ loading: boolean; error: string; items: TemuGoodsItem[] }>({
+    loading: false,
+    error: "",
+    items: [],
+  });
   const [mandatory, setMandatory] = useState<{
     source: string;
     result: Record<string, unknown>;
@@ -1377,6 +1384,17 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       setCopied(true);
     } catch {
       setError("复制失败，请手动选中 JSON 复制");
+    }
+  };
+
+  /** 发布后去店铺里核对：按 SKC 货号查商品列表，确认真的建成了。 */
+  const checkShopGoods = async (extCode: string) => {
+    setShopCheck({ loading: true, error: "", items: [] });
+    try {
+      const result = await temuPublishApi.searchGoods({ extCode: extCode || undefined, pageSize: 5 });
+      setShopCheck({ loading: false, error: "", items: result.items });
+    } catch (cause) {
+      setShopCheck({ loading: false, error: errorMessage(cause), items: [] });
     }
   };
 
@@ -2351,6 +2369,39 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                     2,
                   )}
                 </pre>
+                <div className="temu-inline-actions">
+                  <button
+                    type="button"
+                    className="temu-btn temu-btn-sm"
+                    disabled={shopCheck.loading}
+                    onClick={() => {
+                      const payload = publishResult.request_payload as {
+                        productSkcReqs?: Array<{ extCode?: string }>;
+                      };
+                      void checkShopGoods(payload?.productSkcReqs?.[0]?.extCode || "");
+                    }}
+                  >
+                    {shopCheck.loading ? "查询中…" : "核对店铺里的商品"}
+                  </button>
+                </div>
+                {shopCheck.error && <p className="temu-confirm-warn">查询失败：{shopCheck.error}</p>}
+                {shopCheck.items.length > 0 && (
+                  <ul className="temu-goods-list">
+                    {shopCheck.items.map((item) => (
+                      <li key={item.product_id}>
+                        <span className="temu-goods-id">{item.product_id}</span>
+                        <span className="temu-goods-title">{item.title}</span>
+                        <span className="temu-muted">
+                          {item.category || "—"} · {item.skc_ext_code || "—"}
+                          {item.created_at
+                            ? ` · ${new Date(item.created_at).toLocaleString("zh-CN")}`
+                            : ""}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
               </div>
             )}
 

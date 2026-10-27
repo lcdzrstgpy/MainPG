@@ -2672,3 +2672,35 @@ textarea.temu-input {
   font-style: normal;
   font-weight: 400;
 }
+
+/* ---------- 发布后核对：店铺里的商品 ---------- */
+
+.temu-goods-list {
+  margin: 10px 0 0;
+  padding: 8px 12px;
+  list-style: none;
+  border-radius: var(--radius-sm, 6px);
+  background: var(--theme-module-soft, rgba(0, 0, 0, 0.03));
+  font-size: 12px;
+  line-height: 1.8;
+}
+
+.temu-goods-list li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.temu-goods-id {
+  font-variant-numeric: tabular-nums;
+  color: var(--theme-text-muted, #7b93a8);
+}
+
+.temu-goods-title {
+  flex: 1 1 220px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

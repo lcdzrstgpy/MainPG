@@ -511,6 +511,41 @@ class TemuPublishService:
                 "warnings": built["warnings"],
             }
 
+    def search_goods(
+        self, *, ext_code: str = "", title: str = "", page: int = 1, page_size: int = 20
+    ) -> dict[str, Any]:
+        """按 SKC 货号 / 标题查店铺里的商品（列表接口，比详情接口稳）。"""
+        filters: dict[str, Any] = {"page": int(page), "pageSize": int(page_size)}
+        if str(ext_code or "").strip():
+            filters["skcExtCode"] = str(ext_code).strip()
+        if str(title or "").strip():
+            filters["productName"] = str(title).strip()[:120]
+        cache_key = "goods:" + "|".join(f"{k}={v}" for k, v in sorted(filters.items()))
+        result = self._read_cached(cache_key, lambda: self.client().goods_list(**filters))
+        items = [_compact_goods_item(item) for item in result.get("data") or [] if isinstance(item, dict)]
+        return {"total": int(result.get("totalCount") or 0), "items": items}
+
+    def goods_detail(self, product_id: int) -> dict[str, Any]:
+        """商品详情。个别商品会返回「无权访问」（991000001），由调用方提示用户。"""
+        return self._read_cached(
+            f"goods-detail:{int(product_id)}", lambda: self.client().goods_detail(int(product_id))
+        )
+
+    def dimension_check(
+        self, image_url: str, *, mall_id: str, cat_id: int | None = None, class_id: int | None = None
+    ) -> dict[str, Any]:
+        """提交尺寸图检测（异步）：返回 uniqueId，再用 dimension_check_result 查结果。"""
+        if not str(mall_id or "").strip():
+            raise ValueError("尺寸图检测需要 mallId（Temu 店铺 id），请在卖家后台查到后填入")
+        return self.client().dimension_image_check(
+            image_url, mall_id=mall_id, cat_id=cat_id, class_id=class_id
+        )
+
+    def dimension_check_result(self, task_id: str, *, mall_id: str) -> dict[str, Any]:
+        if not str(mall_id or "").strip():
+            raise ValueError("查询尺寸图检测结果需要 mallId")
+        return self.client().dimension_image_check_result(task_id, mall_id=mall_id)
+
     def find_published_goods(self, draft: GoodsDraftInput, *, within_seconds: int = 1800) -> dict[str, Any] | None:
         """在店铺里按 SKC 货号反查这件商品（发布后核对用）。
 
@@ -1254,6 +1289,22 @@ def _resolve_applicable_properties(
                 str(item.get("name") or item.get("propertyName") or f"pid={pid}")
             )
     return applicable, dropped
+
+
+def _compact_goods_item(item: dict[str, Any]) -> dict[str, Any]:
+    """列表项压成前端好展示的样子。"""
+    leaf = item.get("leafCat") if isinstance(item.get("leafCat"), dict) else {}
+    skus = item.get("productSkuSummaries") if isinstance(item.get("productSkuSummaries"), list) else []
+    return {
+        "product_id": str(item.get("productId") or ""),
+        "title": str(item.get("productName") or ""),
+        "skc_ext_code": str(item.get("extCode") or ""),
+        "image": str(item.get("mainImageUrl") or ""),
+        "created_at": item.get("createdAt"),
+        "site_status": item.get("skcSiteStatus"),
+        "category": str(leaf.get("catName") or ""),
+        "sku_codes": [str(sku.get("extCode") or "") for sku in skus][:20],
+    }
 
 
 def _missing_required_properties(draft: GoodsDraftInput, catalog: dict[str, Any]) -> list[dict[str, Any]]:

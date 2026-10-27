@@ -270,6 +270,33 @@ class TemuProductClient:
             payload[key] = value
         return self.call("bg.glo.goods.list.get", payload)
 
+    def goods_detail(self, product_id: int) -> dict[str, Any]:
+        """商品详情（bg.glo.goods.detail.get）。注意：个别商品会返回「无权访问」。"""
+        return self.call("bg.glo.goods.detail.get", {"productId": int(product_id)})
+
+    def dimension_image_check(
+        self,
+        image_url: str,
+        *,
+        mall_id: str,
+        cat_id: int | None = None,
+        class_id: int | None = None,
+    ) -> dict[str, Any]:
+        """尺寸图检测提交（CN 网关方法，异步，返回 uniqueId 后轮询 result）。"""
+        request: dict[str, Any] = {"imageUrl": str(image_url).strip(), "mallId": str(mall_id).strip()}
+        if cat_id:
+            request["catId"] = int(cat_id)
+        if class_id:
+            request["classId"] = int(class_id)
+        return self.call("bg.algo.dimension.image.check", request, gateway="CN")
+
+    def dimension_image_check_result(self, task_id: str, *, mall_id: str) -> dict[str, Any]:
+        return self.call(
+            "bg.algo.dimension.image.check.result",
+            {"taskId": str(task_id).strip(), "mallId": str(mall_id).strip()},
+            gateway="CN",
+        )
+
     def accessories(self, page: int = 1, page_size: int = 20, fuzzy_value: str = "") -> dict[str, Any]:
         payload: dict[str, Any] = {"page": int(page), "pageSize": int(page_size)}
         if fuzzy_value:

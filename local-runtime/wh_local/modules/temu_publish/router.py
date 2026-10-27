@@ -16,6 +16,7 @@ from .submissions import DuplicateSubmission
 from .library import collect_draft_library
 from .schemas import (
     DetailImageUploadRequest,
+    DimensionCheckRequest,
     CategoryMatchRequest,
     GoodsDraftInput,
     ImageUploadRequest,
@@ -350,6 +351,56 @@ def create_temu_publish_router(
         """按类目必填配置校验当前表单（bg.glo.goods.catsmandatory.get）；不会提交商品。"""
         try:
             return _service(actor).check_mandatory(payload)
+        except Exception as exc:  # noqa: BLE001
+            raise _handle(exc) from exc
+
+    @router.get("/goods")
+    def search_goods(
+        ext_code: str = Query(default="", description="SKC 货号"),
+        title: str = Query(default="", description="商品标题（模糊）"),
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=20, ge=1, le=100),
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        """查店铺里的商品（按 SKC 货号 / 标题）。发布后核对、查重都用它。"""
+        try:
+            return _service(actor).search_goods(
+                ext_code=ext_code, title=title, page=page, page_size=page_size
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise _handle(exc) from exc
+
+    @router.get("/goods/{product_id}")
+    def goods_detail(
+        product_id: int, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        """商品详情（个别商品会返回「无权访问」，前端要能兜住）。"""
+        try:
+            return _service(actor).goods_detail(product_id)
+        except Exception as exc:  # noqa: BLE001
+            raise _handle(exc) from exc
+
+    @router.post("/dimension-check")
+    def dimension_check(
+        payload: DimensionCheckRequest,
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        """尺寸图检测提交（异步，返回 uniqueId）。"""
+        try:
+            return _service(actor).dimension_check(
+                payload.image_url, mall_id=payload.mall_id, cat_id=payload.cat_id, class_id=payload.class_id
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise _handle(exc) from exc
+
+    @router.get("/dimension-check/{task_id}")
+    def dimension_check_result(
+        task_id: str,
+        mall_id: str = Query(default=""),
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        try:
+            return _service(actor).dimension_check_result(task_id, mall_id=mall_id)
         except Exception as exc:  # noqa: BLE001
             raise _handle(exc) from exc
 

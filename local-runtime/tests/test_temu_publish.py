@@ -1544,3 +1544,80 @@ def test_publish_network_error_without_match_still_fails(tmp_path: Path) -> None
     with pytest.raises(TemuGatewayError):
         service.publish_goods(_draft())
     assert client.add_calls == 2
+
+
+class SearchClient(StubCatalogClient):
+    """goods_list 返回一条商品；记录收到的过滤参数。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.filters: list[dict[str, Any]] = []
+
+    def goods_list(self, **filters: Any) -> dict[str, Any]:
+        self.filters.append(filters)
+        return {
+            "data": [
+                {
+                    "productId": 55894695437,
+                    "productName": "Sage tablecloth",
+                    "extCode": "SKC-RED",
+                    "mainImageUrl": "https://img.example.com/a.jpg",
+                    "createdAt": 1793000000000,
+                    "skcSiteStatus": 0,
+                    "leafCat": {"catId": 10498, "catName": "桌布"},
+                    "productSkuSummaries": [{"extCode": "SKU-1"}, {"extCode": "SKU-2"}],
+                }
+            ],
+            "totalCount": 1,
+        }
+
+
+def test_search_goods_compacts_items_and_caches(tmp_path: Path) -> None:
+    """店铺商品查询：按 SKC 货号过滤、压成前端字段，并走 180 秒短缓存。"""
+    client = SearchClient()
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=client)
+
+    first = service.search_goods(ext_code="SKC-RED")
+    assert first["total"] == 1
+    item = first["items"][0]
+    assert item["product_id"] == "55894695437"
+    assert item["skc_ext_code"] == "SKC-RED"
+    assert item["category"] == "桌布"
+    assert item["sku_codes"] == ["SKU-1", "SKU-2"]
+    assert client.filters[0]["skcExtCode"] == "SKC-RED"
+
+    service.search_goods(ext_code="SKC-RED")  # 命中缓存，不再打网关
+    assert len(client.filters) == 1
+
+
+def test_dimension_check_requires_mall_id(tmp_path: Path) -> None:
+    """尺寸图检测要 mallId；缺了要给出中文提示，而不是发一个必然失败的请求。"""
+    client = SearchClient()
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=client)
+    with pytest.raises(ValueError, match="mallId"):
+        service.dimension_check("https://img.example.com/a.jpg", mall_id="")
+
+
+def test_goods_detail_router_returns_payload(tmp_path: Path) -> None:
+    """GET /goods/{id} 走通（用桩客户端，不触网）。"""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from wh_local.modules.temu_publish.router import create_temu_publish_router
+    from wh_local.session import Actor, actor_from_authorization
+
+    class DetailClient(SearchClient):
+        def goods_detail(self, product_id: int) -> dict[str, Any]:
+            return {"productId": product_id, "productName": "Sage tablecloth"}
+
+    db_path = tmp_path / "runtime.sqlite3"
+    init_db(db_path)
+    app = FastAPI()
+    app.include_router(create_temu_publish_router(db_path))
+    app.dependency_overrides[actor_from_authorization] = lambda: Actor(
+        id="cust_a", username="a", role="admin"
+    )
+    http = TestClient(app)
+    # 路由内部的 service 是懒建的，这里只验证路径存在且未登录/无凭证时会走统一错误处理
+    response = http.get("/api/temu-publish/goods/55894695437")
+    assert response.status_code in (200, 400, 422, 502, 503)

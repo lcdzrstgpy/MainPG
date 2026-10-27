@@ -6,6 +6,7 @@ import type {
   TemuDraftLibrary,
   TemuCategoryPath,
   TemuFreightTemplate,
+  TemuGoodsItem,
   TemuGoodsDraft,
   TemuImageUploadResult,
   TemuParentSpec,
@@ -76,6 +77,19 @@ export const temuPublishApi = {
     httpJson<TemuDraftLibrary>(
       `${BASE}/draft-library${query({ limit, refresh: refresh ? "true" : "" })}`,
     ),
+  /** 查店铺里的商品：按 SKC 货号或标题（发布后核对 / 查重） */
+  searchGoods: (params: { extCode?: string; title?: string; page?: number; pageSize?: number }) =>
+    httpJson<{ total: number; items: TemuGoodsItem[] }>(
+      `${BASE}/goods${query({
+        ext_code: params.extCode,
+        title: params.title,
+        page: params.page,
+        page_size: params.pageSize,
+      })}`,
+    ),
+  goodsDetail: (productId: string | number) =>
+    httpJson<Record<string, unknown>>(`${BASE}/goods/${productId}`),
+
   uploadImage: (image: string, cateId?: number) =>
     httpJson<TemuImageUploadResult>(`${BASE}/images/upload`, {
       method: "POST",
