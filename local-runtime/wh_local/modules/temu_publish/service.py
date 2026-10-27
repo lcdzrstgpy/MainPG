@@ -525,6 +525,64 @@ class TemuPublishService:
         items = [_compact_goods_item(item) for item in result.get("data") or [] if isinstance(item, dict)]
         return {"total": int(result.get("totalCount") or 0), "items": items}
 
+    def low_stock_goods(
+        self,
+        *,
+        limit: int = 60,
+        page_size: int = 20,
+        max_pages: int = 30,
+        only_zero: bool = True,
+    ) -> dict[str, Any]:
+        """扫店铺商品，挑出「有 SKU 库存为 0」的商品（待补库存清单）。
+
+        只走 `bg.glo.goods.list.get`（这个接口有权限），逐页翻到 limit 或翻完为止；
+        每页结果复用 180 秒读缓存，重复点开不会重复打网关。
+
+        实测网关**每页最多返回 20 条**（pageSize 传 50/100 也还是 20），一页约 1.5 秒，
+        所以默认只扫到「命中 limit 个商品」就停（本店 95% 商品都是 0 库存，约 4 页）。
+
+        ⚠️ 改库存的 `bg.btg.goods.stock.quantity.update` 目前**未开通**，
+        所以这里只产出清单（导出去后台改），不写任何数据。
+        """
+        want = max(1, int(limit))
+        # 20 是网关的硬上限，传更大只会让我们误以为翻了 100 条
+        size = max(1, min(20, int(page_size)))
+        items: list[dict[str, Any]] = []
+        scanned = 0
+        total = 0
+        page = 1
+        while page <= max(1, int(max_pages)) and len(items) < want:
+            cache_key = f"goods:page={page}|pageSize={size}"
+            result = self._read_cached(
+                cache_key, lambda p=page: self.client().goods_list(page=p, page_size=size)
+            )
+            rows = [row for row in result.get("data") or [] if isinstance(row, dict)]
+            if not rows:
+                break
+            total = int(result.get("totalCount") or total or 0)
+            for row in rows:
+                compact = _compact_goods_item(row)
+                zero_count = int(compact["zero_stock_sku_count"])
+                if only_zero and zero_count <= 0:
+                    continue
+                items.append(compact)
+                if len(items) >= want:
+                    break
+            scanned += len(rows)
+            if total and scanned >= total:
+                break
+            page += 1
+        zero_skus = sum(int(item["zero_stock_sku_count"]) for item in items)
+        return {
+            "scanned": scanned,
+            "total": total,
+            "items": items,
+            "zero_sku_count": zero_skus,
+            "only_zero": bool(only_zero),
+            # 改库存接口没权限，界面要如实说明「这是清单，不是已经改好了」
+            "can_update_stock": False,
+        }
+
     def goods_detail(self, product_id: int) -> dict[str, Any]:
         """商品详情。个别商品会返回「无权访问」（991000001），由调用方提示用户。"""
         return self._read_cached(
@@ -1291,10 +1349,37 @@ def _resolve_applicable_properties(
     return applicable, dropped
 
 
+def _sku_stock(sku: dict[str, Any]) -> int:
+    """SKU 的可售库存。列表接口给的字段是 virtualStock（没有就退回 stock）。"""
+    for key in ("virtualStock", "stock", "stockAvailable", "targetStockAvailable"):
+        value = sku.get(key)
+        if value is None:
+            continue
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
 def _compact_goods_item(item: dict[str, Any]) -> dict[str, Any]:
-    """列表项压成前端好展示的样子。"""
+    """列表项压成前端好展示的样子（含每个 SKU 的库存，补库存清单要用）。"""
     leaf = item.get("leafCat") if isinstance(item.get("leafCat"), dict) else {}
     skus = item.get("productSkuSummaries") if isinstance(item.get("productSkuSummaries"), list) else []
+    sku_rows = [
+        {
+            "sku_id": str(sku.get("productSkuId") or ""),
+            "ext_code": str(sku.get("extCode") or ""),
+            "stock": _sku_stock(sku),
+            "specs": " / ".join(
+                str(spec.get("specName") or "")
+                for spec in (sku.get("productSkuSpecList") or [])
+                if isinstance(spec, dict) and spec.get("specName")
+            ),
+        }
+        for sku in skus
+        if isinstance(sku, dict)
+    ]
     return {
         "product_id": str(item.get("productId") or ""),
         "title": str(item.get("productName") or ""),
@@ -1303,7 +1388,10 @@ def _compact_goods_item(item: dict[str, Any]) -> dict[str, Any]:
         "created_at": item.get("createdAt"),
         "site_status": item.get("skcSiteStatus"),
         "category": str(leaf.get("catName") or ""),
-        "sku_codes": [str(sku.get("extCode") or "") for sku in skus][:20],
+        "sku_codes": [row["ext_code"] for row in sku_rows][:20],
+        "skus": sku_rows[:50],
+        "stock_total": sum(row["stock"] for row in sku_rows),
+        "zero_stock_sku_count": sum(1 for row in sku_rows if row["stock"] <= 0),
     }
 
 

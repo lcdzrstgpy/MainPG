@@ -9,6 +9,7 @@ import type {
   TemuGoodsItem,
   TemuGoodsDraft,
   TemuImageUploadResult,
+  TemuLowStockResult,
   TemuParentSpec,
   TemuPublishResult,
   TemuSettingsStatus,
@@ -89,6 +90,15 @@ export const temuPublishApi = {
     ),
   goodsDetail: (productId: string | number) =>
     httpJson<Record<string, unknown>>(`${BASE}/goods/${productId}`),
+  /** 待补库存清单：扫店铺商品，列出库存为 0 的 SKU（只读） */
+  lowStockGoods: (params: { limit?: number; pageSize?: number; maxPages?: number } = {}) =>
+    httpJson<TemuLowStockResult>(
+      `${BASE}/goods/low-stock${query({
+        limit: params.limit,
+        page_size: params.pageSize,
+        max_pages: params.maxPages,
+      })}`,
+    ),
 
   uploadImage: (image: string, cateId?: number) =>
     httpJson<TemuImageUploadResult>(`${BASE}/images/upload`, {

@@ -370,6 +370,27 @@ def create_temu_publish_router(
         except Exception as exc:  # noqa: BLE001
             raise _handle(exc) from exc
 
+    # ⚠️ 必须放在 /goods/{product_id} 之前，否则 "low-stock" 会被当成 product_id
+    @router.get("/goods/low-stock")
+    def low_stock_goods(
+        limit: int = Query(default=60, ge=1, le=300, description="最多返回多少个商品"),
+        page_size: int = Query(default=20, ge=1, le=20, description="每页条数（网关上限 20）"),
+        max_pages: int = Query(default=30, ge=1, le=50, description="最多翻几页"),
+        only_zero: bool = Query(default=True, description="true=只列有 0 库存 SKU 的商品"),
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        """待补库存清单：扫店铺商品，挑出库存为 0 的 SKU。
+
+        只读：改库存接口（bg.btg.goods.stock.quantity.update）当前未开通，
+        这里产出的是「去后台批量改」用的清单。
+        """
+        try:
+            return _service(actor).low_stock_goods(
+                limit=limit, page_size=page_size, max_pages=max_pages, only_zero=only_zero
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise _handle(exc) from exc
+
     @router.get("/goods/{product_id}")
     def goods_detail(
         product_id: int, actor: Actor = Depends(actor_from_authorization)

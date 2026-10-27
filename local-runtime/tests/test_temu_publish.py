@@ -1621,3 +1621,128 @@ def test_goods_detail_router_returns_payload(tmp_path: Path) -> None:
     # 路由内部的 service 是懒建的，这里只验证路径存在且未登录/无凭证时会走统一错误处理
     response = http.get("/api/temu-publish/goods/55894695437")
     assert response.status_code in (200, 400, 422, 502, 503)
+
+
+class LowStockClient(StubCatalogClient):
+    """商品列表桩：两条 0 库存、一条有货；记录翻页参数。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.pages: list[int] = []
+
+    def goods_list(self, **filters: Any) -> dict[str, Any]:
+        page = int(filters.get("page") or 1)
+        self.pages.append(page)
+        if page > 1:
+            return {"totalCount": 3, "data": []}
+        return {
+            "totalCount": 3,
+            "data": [
+                {
+                    "productId": 111,
+                    "productName": "Zero stock A",
+                    "extCode": "SKC-A",
+                    "leafCat": {"catName": "桌布"},
+                    "productSkuSummaries": [
+                        {"productSkuId": 1, "extCode": "SKU-A1", "virtualStock": 0,
+                         "productSkuSpecList": [{"specName": "Red"}]},
+                        {"productSkuId": 2, "extCode": "SKU-A2", "virtualStock": 0},
+                    ],
+                },
+                {
+                    "productId": 222,
+                    "productName": "Mixed stock B",
+                    "extCode": "SKC-B",
+                    "productSkuSummaries": [
+                        {"productSkuId": 3, "extCode": "SKU-B1", "virtualStock": 0},
+                        {"productSkuId": 4, "extCode": "SKU-B2", "virtualStock": 7},
+                    ],
+                },
+                {
+                    "productId": 333,
+                    "productName": "In stock C",
+                    "extCode": "SKC-C",
+                    "productSkuSummaries": [
+                        {"productSkuId": 5, "extCode": "SKU-C1", "virtualStock": 12},
+                    ],
+                },
+            ],
+        }
+
+
+def test_low_stock_goods_lists_zero_stock_skus(tmp_path: Path) -> None:
+    """待补库存清单：只列有 0 库存 SKU 的商品，带上每个 SKU 的库存与规格。"""
+    client = LowStockClient()
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=client)
+
+    result = service.low_stock_goods()
+
+    assert result["total"] == 3
+    assert [item["product_id"] for item in result["items"]] == ["111", "222"]
+    assert result["zero_sku_count"] == 3  # A1 A2 B1
+    # 改库存接口没开通，必须如实告诉前端「只能给清单」
+    assert result["can_update_stock"] is False
+
+    first = result["items"][0]
+    assert first["category"] == "桌布"
+    assert first["stock_total"] == 0
+    assert first["skus"][0] == {
+        "sku_id": "1",
+        "ext_code": "SKU-A1",
+        "stock": 0,
+        "specs": "Red",
+    }
+    # 混合库存的商品：总库存照实统计，0 库存 SKU 只算那一个
+    mixed = result["items"][1]
+    assert mixed["stock_total"] == 7
+    assert mixed["zero_stock_sku_count"] == 1
+
+
+def test_low_stock_goods_stops_at_limit(tmp_path: Path) -> None:
+    """limit=1 只取第一个就停，不要为了凑数把整店翻完。"""
+    client = LowStockClient()
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=client)
+
+    result = service.low_stock_goods(limit=1)
+
+    assert len(result["items"]) == 1
+    assert client.pages == [1]
+
+
+def test_sku_stock_falls_back_when_virtual_stock_missing() -> None:
+    """列表里没有 virtualStock 时退回 stock 字段；都没有按 0 算（不能当未知）。"""
+    from wh_local.modules.temu_publish.service import _compact_goods_item
+
+    item = _compact_goods_item(
+        {
+            "productId": 1,
+            "productSkuSummaries": [
+                {"productSkuId": 1, "extCode": "A", "stock": 9},
+                {"productSkuId": 2, "extCode": "B"},
+                {"productSkuId": 3, "extCode": "C", "virtualStock": None, "targetStockAvailable": 4},
+            ],
+        }
+    )
+    assert [sku["stock"] for sku in item["skus"]] == [9, 0, 4]
+    assert item["stock_total"] == 13
+
+
+def test_low_stock_route_is_not_shadowed_by_product_id(tmp_path: Path) -> None:
+    """`/goods/low-stock` 必须排在 `/goods/{product_id}` 之前，否则会被当成 product_id → 422。"""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from wh_local.modules.temu_publish.router import create_temu_publish_router
+    from wh_local.session import Actor, actor_from_authorization
+
+    db_path = tmp_path / "runtime.sqlite3"
+    init_db(db_path)
+    app = FastAPI()
+    app.include_router(create_temu_publish_router(db_path))
+    app.dependency_overrides[actor_from_authorization] = lambda: Actor(
+        id="cust_a", username="a", role="admin"
+    )
+
+    response = TestClient(app).get("/api/temu-publish/goods/low-stock")
+    assert response.status_code != 422, response.text
+    assert response.status_code in (200, 400, 502, 503)

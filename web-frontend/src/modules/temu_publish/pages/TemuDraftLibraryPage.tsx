@@ -7,7 +7,14 @@ import { TemuDraftBulkBar, type BulkField } from "../components/TemuDraftBulkBar
 import { localStore, parsePublishError } from "../data/localStore";
 import type { DraftCategoryMemo, ProductTemplate, VariantTemplate } from "../data/localStore";
 import { buildDraftForPublish } from "../data/batchPublish";
-import type { TemuDraftEdit, TemuDraftEntry, TemuDraftLibrary, TemuPublishPrefill } from "../types";
+import type {
+  TemuDraftEdit,
+  TemuDraftEntry,
+  TemuDraftLibrary,
+  TemuGoodsItem,
+  TemuLowStockResult,
+  TemuPublishPrefill,
+} from "../types";
 import "../styles/temuPublish.css";
 
 type Filter = "all" | "ai" | "pod";
@@ -305,8 +312,78 @@ export function TemuDraftLibraryPage({
   const [batchOpen, setBatchOpen] = useState(false);
   // 批量发布里被「24 小时内重复提交」挡下的条目：不算失败，单独列出来
   const [batchSkipped, setBatchSkipped] = useState<string[]>([]);
+  // 待补库存：扫店铺商品列表，挑出库存为 0 的 SKU（只读，改库存接口未开通）
+  const [stockOpen, setStockOpen] = useState(false);
+  const [stockScanning, setStockScanning] = useState(false);
+  const [stockData, setStockData] = useState<TemuLowStockResult | null>(null);
+  const [stockError, setStockError] = useState("");
+  const [targetStock, setTargetStock] = useState("100");
+  // 网关每页只给 20 条、一页约 1.5 秒：先扫够 60 件命中商品，不够再点「继续扫描」
+  const [stockLimit, setStockLimit] = useState(60);
+  const [stockCopied, setStockCopied] = useState("");
   const [editing, setEditing] = useState<TemuDraftEntry | null>(null);
   const [editForm, setEditForm] = useState<TemuDraftEdit>({});
+
+  /** 扫店铺商品，列出库存为 0 的 SKU。只读：改库存接口没开通，只产出清单。 */
+  const scanLowStock = async (limit = stockLimit) => {
+    setStockScanning(true);
+    setStockError("");
+    try {
+      setStockData(await temuPublishApi.lowStockGoods({ limit, pageSize: 20, maxPages: 30 }));
+    } catch (cause) {
+      setStockError(errorMessage(cause));
+      setStockData(null);
+    } finally {
+      setStockScanning(false);
+    }
+  };
+
+  /** 待补库存清单里，库存为 0 的那些 SKU（复制/统计都用它）。 */
+  const zeroSkus = useMemo(() => {
+    const rows: Array<{ code: string; productId: string; title: string }> = [];
+    for (const item of stockData?.items ?? []) {
+      for (const sku of item.skus ?? []) {
+        if (sku.stock > 0) continue;
+        rows.push({
+          code: sku.ext_code || sku.sku_id,
+          productId: item.product_id,
+          title: item.title,
+        });
+      }
+    }
+    return rows;
+  }, [stockData]);
+
+  /**
+   * 复制补货清单（TSV：SKU货号 + 目标库存），直接粘到 Temu 后台的批量改库存表格里。
+   * 优先剪贴板 API；不可用（非 https / 无权限）时退回 textarea + execCommand。
+   */
+  const copyStockList = async () => {
+    const target = String(targetStock || "").trim() || "0";
+    const header = "SKU货号\t库存";
+    const body = zeroSkus.map((row) => `${row.code}\t${target}`).join("\n");
+    const text = [header, body].filter(Boolean).join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      setStockCopied(`已复制 ${zeroSkus.length} 个 SKU`);
+    } catch {
+      try {
+        const area = document.createElement("textarea");
+        area.value = text;
+        area.style.position = "fixed";
+        area.style.opacity = "0";
+        document.body.appendChild(area);
+        area.select();
+        document.execCommand("copy");
+        document.body.removeChild(area);
+        setStockCopied(`已复制 ${zeroSkus.length} 个 SKU`);
+      } catch {
+        setStockCopied("");
+        setStockError("复制失败，请手动选中清单复制");
+      }
+    }
+    window.setTimeout(() => setStockCopied(""), 3000);
+  };
 
   const load = async (refresh = false) => {
     setLoading(true);
@@ -644,6 +721,19 @@ export function TemuDraftLibraryPage({
             发布失败历史{failures.length ? ` (${failures.length})` : ""}
             {failures.length > 0 && <em className="temu-fail-dot" aria-hidden="true" />}
           </button>
+          <button
+            type="button"
+            className="temu-fail-entry"
+            onClick={() => {
+              const next = !stockOpen;
+              setStockOpen(next);
+              // 第一次点开才扫描：店铺 400+ 件商品要翻几页，别每次进页面都扫
+              if (next && !stockData && !stockScanning) void scanLowStock();
+            }}
+            title="扫店铺里库存为 0 的 SKU，生成补货清单（改库存接口未开通，复制后去后台改）"
+          >
+            待补库存{stockData ? ` (${stockData.zero_sku_count})` : ""}
+          </button>
         </div>
 
           <TemuDraftBulkBar
@@ -732,6 +822,99 @@ export function TemuDraftLibraryPage({
                     </div>
                   </div>
                 ))
+              )}
+            </div>
+          )}
+
+          {stockOpen && (
+            <div className="temu-fail-panel temu-stock-panel">
+              <div className="temu-fail-panel-head">
+                <strong>
+                  待补库存
+                  {stockData
+                    ? `（${stockData.items.length} 件商品 / ${stockData.zero_sku_count} 个 SKU）`
+                    : ""}
+                </strong>
+                <div className="temu-stock-ops">
+                  <label className="temu-stock-target">
+                    目标库存
+                    <input
+                      className="temu-input"
+                      inputMode="numeric"
+                      value={targetStock}
+                      onChange={(event) => setTargetStock(event.target.value)}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="temu-btn temu-btn-sm"
+                    disabled={!zeroSkus.length}
+                    onClick={() => void copyStockList()}
+                  >
+                    {stockCopied || "复制清单"}
+                  </button>
+                  <button
+                    type="button"
+                    className="temu-btn temu-btn-sm"
+                    disabled={stockScanning}
+                    onClick={() => void scanLowStock()}
+                  >
+                    {stockScanning ? "扫描中…" : "重新扫描"}
+                  </button>
+                  {stockData && stockData.scanned < stockData.total && (
+                    <button
+                      type="button"
+                      className="temu-btn temu-btn-sm"
+                      disabled={stockScanning}
+                      onClick={() => {
+                        // 已扫过的页命中缓存，继续扫只多花后面几页的时间
+                        const next = stockLimit + 60;
+                        setStockLimit(next);
+                        void scanLowStock(next);
+                      }}
+                    >
+                      继续扫描
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {stockError && <p className="temu-confirm-warn">{stockError}</p>}
+              {stockScanning && !stockData && <p className="temu-muted">正在扫店铺商品…</p>}
+
+              {stockData && (
+                <>
+                  <p className="temu-muted">
+                    已扫 {stockData.scanned} / {stockData.total} 件商品
+                    {stockData.scanned < stockData.total ? "（还没扫完，点「继续扫描」）" : ""} ·
+                    清单格式「SKU货号 + 目标库存」，
+                    粘到 Temu 后台的商品管理批量改库存表格即可
+                    {stockData.can_update_stock
+                      ? ""
+                      : "（改库存接口还没开通，所以这里只能生成清单，不能直接写回店铺）"}
+                  </p>
+                  {stockData.items.length === 0 ? (
+                    <p className="temu-muted">店铺里没有库存为 0 的 SKU。</p>
+                  ) : (
+                    stockData.items.map((item: TemuGoodsItem) => (
+                      <div className="temu-fail-row" key={item.product_id}>
+                        <div className="temu-fail-main">
+                          <strong>{item.title || "（没有标题）"}</strong>
+                          <span className="temu-muted">
+                            商品 {item.product_id} · {item.category || "—"} · SKU{" "}
+                            {item.skus?.length ?? 0} 个，0 库存 {item.zero_stock_sku_count ?? 0} 个
+                          </span>
+                          <em className="is-hint">
+                            {(item.skus ?? [])
+                              .filter((sku) => sku.stock <= 0)
+                              .map((sku) => sku.ext_code || sku.sku_id)
+                              .join("、") || "—"}
+                          </em>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </>
               )}
             </div>
           )}

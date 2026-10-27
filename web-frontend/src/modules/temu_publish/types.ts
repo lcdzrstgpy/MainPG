@@ -335,5 +335,22 @@ export type TemuGoodsItem = {
   site_status?: number;
   category?: string;
   sku_codes?: string[];
+  /** 每个 SKU 的当前库存（列表接口的 virtualStock） */
+  skus?: Array<{ sku_id: string; ext_code: string; stock: number; specs?: string }>;
+  /** 全部 SKU 库存之和 */
+  stock_total?: number;
+  /** 库存为 0 的 SKU 个数 */
+  zero_stock_sku_count?: number;
+};
+
+/** 待补库存清单（后端扫店铺商品得出，只读）。 */
+export type TemuLowStockResult = {
+  scanned: number;
+  total: number;
+  items: TemuGoodsItem[];
+  zero_sku_count: number;
+  only_zero: boolean;
+  /** false = 改库存接口未开通，只能导出清单去后台改 */
+  can_update_stock: boolean;
 };
 
