@@ -123,6 +123,7 @@ from ..modules.product_processing.infrastructure.repository import ProductProces
 from ..modules.product_processing.provider_config import register_system_config_db_path
 from ..modules.product_processing.service import ProductProcessingService
 from ..modules.product_processing.source_image_sync import SourceImageSyncWorker
+from ..modules.temu_publish.router import create_temu_publish_router
 from ..modules.clipforge import (
     ClipForgeService,
     create_router as create_clipforge_router,
@@ -907,6 +908,15 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     TemporaryCosStore(runtime.cos).cleanup_stale()
     plugin_queue = DataCollectionPluginQueue(db_path)
     product_processing = _product_processing_service(db_path)
+    app.state.product_processing_service = product_processing
+    # Temu 商品发布配套 + 草稿库：依赖产品处理与 POD 服务，故在两者均就绪后注册。
+    app.include_router(
+        create_temu_publish_router(
+            db_path,
+            product_processing=product_processing,
+            pod_service_getter=lambda: getattr(app.state, "pod_customization_service", None),
+        )
+    )
     # 源图同步只在建草稿时挂一次 BackgroundTask，进程重启后排队中的任务会永久丢失，
     # 行停在 pending、预检页图片出不来还会一直轮询。用常驻线程把漏掉的补跑完。
     app.state.source_image_sync_worker = SourceImageSyncWorker(product_processing)

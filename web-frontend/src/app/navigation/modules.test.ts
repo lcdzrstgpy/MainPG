@@ -32,7 +32,20 @@ test("POD customization is a grouped section with full, semi and replica customi
     "pod_workflow",
     "sourcing_workflow",
     "ai_video",
+    "temu_publish_workflow",
     "personal_center",
+  ]);
+  // 发布商品分组：发布页与草稿库为同级子项，固定在个人中心上方。
+  const temuWorkflow = workspaceModules.find((module) => module.id === "temu_publish_workflow");
+  assert.equal(temuWorkflow?.label, "发布商品");
+  assert.equal(temuWorkflow?.defaultChildId, "temu_publish");
+  assert.deepEqual(temuWorkflow?.children?.map((child) => child.id), [
+    "temu_publish",
+    "temu_draft_library",
+  ]);
+  assert.deepEqual(temuWorkflow?.children?.map((child) => child.label), [
+    "发布商品（实验）",
+    "草稿库",
   ]);
   assert.equal(workspaceModules.find((module) => module.id === "ai_video")?.label, "AI 视频（实验）");
   assert.equal(workspacePageModules.find((module) => module.id === "ai_video")?.label, "AI 视频（实验）");
