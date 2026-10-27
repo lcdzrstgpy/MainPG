@@ -1370,3 +1370,34 @@ def test_unbinding_keeps_gateway_credentials(tmp_path: Path, monkeypatch: pytest
     # 重新授权只补店铺 token 就够了，不用再让服务商发一遍 client/token
     service.save_settings(TemuSettingsUpdate(access_token="shop-b"), "cust_alice")
     assert service.settings_status()["configured"]["ready"] is True
+
+
+def test_zero_stock_is_allowed_but_warned(tmp_path: Path) -> None:
+    """库存 0 是合法输入（先建品后补库存），不能拦；但要在 warnings 里提醒不可售。"""
+    from wh_local.modules.temu_publish.schemas import SkcInput, SkuInput, SkuSpecInput
+
+    spec = SkuSpecInput(parent_spec_id=1001, parent_spec_name="颜色", spec_id=2001, spec_name="Red")
+
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=StubCatalogClient())
+    built = service.build_goods_payload(_draft().model_copy(deep=True, update={"skcs": [
+        SkcInput(
+            ext_code="SKC-1",
+            preview_image_urls=["https://img.example.com/skc.jpg"],
+            main_specs=[spec],
+            skus=[SkuInput(
+                ext_code="SKU-1",
+                supplier_price=1299,
+                stock=0,
+                warehouse_id="WH-07346074419333874",
+                weight_mg=200000,
+                length_mm=200,
+                width_mm=150,
+                height_mm=30,
+                specs=[spec],
+            )],
+        )
+    ]}))
+
+    sku = built["payload"]["productSkcReqs"][0]["productSkuReqs"][0]
+    assert sku["productSkuStockQuantityReq"]["warehouseStockQuantityReqs"][0]["targetStockAvailable"] == 0
+    assert any("库存为 0" in item for item in built["warnings"])

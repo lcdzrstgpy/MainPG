@@ -441,3 +441,18 @@ test("批量发布：勾完直接发，模板在弹窗里选（不用先去菜�
   assert.match(library, /跳过 \$\{skipped\} 条（24 小时内提交过）/);
   assert.match(library, /setBatchSkipped\(\(current\) => \[\.\.\.current,/);
 });
+
+test("库存可以是 0：不拦不标红，但草稿带入要保留 0", () => {
+  const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+
+  // 价格/重量还是 >0；库存单独一个允许 0 的解析器
+  assert.match(page, /function parseStock\(value: string, label: string\): number \{/);
+  assert.match(page, /if \(!text \|\| !Number\.isFinite\(number\) \|\| number < 0\)/);
+  assert.match(page, /stock: parseStock\(row\.stock, `\$\{at\}库存`\)/);
+  // 变种表：只有空/负数标红，0 正常
+  assert.match(panel, /String\(row\.stock\)\.trim\(\) === "" \|\| Number\(row\.stock\) < 0/);
+  assert.match(panel, /placeholder="0 也可"/);
+  // 草稿带入：0 不再被当空丢掉
+  assert.match(library, /stock: numericText\(entry\.stock\),/);
+});

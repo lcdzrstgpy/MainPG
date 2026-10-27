@@ -587,6 +587,12 @@ def _assemble_payload(
             if sku.thumb_url:
                 _validate_https_urls(f"thumbUrl({sku.ext_code})", [sku.thumb_url])
 
+    # 库存 0 是允许的（Temu 会建品但前台不可售），但要让人知道自己发的是什么状态
+    if any(int(sku.stock) == 0 for skc in draft.skcs for sku in skc.skus):
+        warnings.append(
+            "有 SKU 库存为 0：Temu 允许提交，商品会处于「售罄/不可售」状态，开卖前记得补库存。"
+        )
+
     _ensure_unique([skc.ext_code for skc in draft.skcs], "SKC ext_code")
     _ensure_unique(
         [sku.ext_code for skc in draft.skcs for sku in skc.skus], "SKU ext_code"
