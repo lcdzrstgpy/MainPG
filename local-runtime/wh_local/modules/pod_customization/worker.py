@@ -1572,8 +1572,6 @@ class PodBatchWorker:
             business_fields=batch["business_fields"],
             creative_prompt=batch["creative_prompt"],
             style_elements=self._style_elements(batch, style_index),
-            # 配色 60-30-10 以 batch_id 为种子确定性洗牌（与元素分配同源，批内可复现）。
-            seed=str(batch.get("batch_id") or ""),
             # 场景来自批级美术指导里豆包返回的 2-3 个候选，按款轮换。
             art_direction=self._column_art_direction(batch),
         )
@@ -1772,7 +1770,6 @@ class PodBatchWorker:
                     }
                     for style_index in group["style_indices"]
                 ],
-                seed=batch_id,
             )
             for group in groups
         }

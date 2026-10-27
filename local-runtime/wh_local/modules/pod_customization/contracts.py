@@ -112,6 +112,11 @@ class BusinessFields(BaseModel):
     color_preferences: list[Annotated[str, Field(max_length=200)]] = Field(
         default_factory=list, max_length=100
     )
+    # 主题强关联色之外的建议点缀色：由智能填写在同一次调用里一并产出，只作辅色/点缀，
+    # 不得替代主题强关联色当主色。旧批次没有该键时为空。
+    accent_colors: list[Annotated[str, Field(max_length=200)]] = Field(
+        default_factory=list, max_length=100
+    )
     excluded_elements: list[Annotated[str, Field(max_length=200)]] = Field(
         default_factory=list, max_length=100
     )
@@ -202,8 +207,7 @@ BRIEF_INPUT_MAX_LENGTH = 500
 # 元素关键词：只保留“能放大成主图”的具象主体。纹理/细碎点缀由生图模型自选，不进元素池。
 # v25：16 → 12。不再要求凑到 16，但仍保留 12 的下限，保证多款批次（4 款一组）有足够轮换空间。
 BRIEF_STYLE_KEYWORDS_MIN_ITEMS = 12
-# 偏好配色：60-30-10 只需要 3 色，6 色已足够跨款轮换；不再强制 10 色。
-BRIEF_COLOR_PREFERENCES_MIN_ITEMS = 6
+# 偏好配色不再设数量门槛：主题强关联色建议 5-6、点缀色建议 6-10，只由提示词约束。
 # 禁用元素：品牌/商标/版权角色/肖像由 IP_EXCLUDED_ELEMENTS 自动补齐，
 # 模型只需给少量与本主题相关的排除项，不再强制 10 项（否则会编无关内容）。
 BRIEF_EXCLUDED_ELEMENTS_MIN_ITEMS = 3

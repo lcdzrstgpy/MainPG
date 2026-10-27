@@ -153,9 +153,22 @@ def test_validate_brief_fields_reports_rejected_abstract_elements_in_feedback() 
         )
 
 
-def test_validate_brief_fields_requires_minimum_colors_and_exclusions() -> None:
-    with pytest.raises(ValueError, match="color_preferences 至少需要 6"):
-        validate_brief_fields({**_fields(), "color_preferences": ["土橘色", "牛仔蓝"]})
+def test_validate_brief_fields_accepts_any_colour_count_and_splits_groups() -> None:
+    """v7：两组颜色都不设数量门槛；点缀色与主题色分别落到各自的数组。"""
+    result = validate_brief_fields(
+        {
+            **_fields(),
+            "color_preferences": ["圣诞红", "圣诞墨绿"],
+            "accent_colors": ["香槟金", "雾白", "炭灰"],
+        }
+    )
+
+    assert result.color_preferences == ["圣诞红", "圣诞墨绿"]
+    assert result.accent_colors == ["香槟金", "雾白", "炭灰"]
+
+    empty = validate_brief_fields({**_fields(), "color_preferences": [], "accent_colors": []})
+    assert empty.color_preferences == []
+    assert empty.accent_colors == []
 
     with pytest.raises(ValueError, match="excluded_elements 至少需要 3"):
         validate_brief_fields({**_fields(), "excluded_elements": ["现代玻璃幕墙"]})

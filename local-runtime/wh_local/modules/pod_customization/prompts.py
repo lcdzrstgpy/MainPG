@@ -64,7 +64,9 @@ from .structure_analysis import (
 # v24：元素池只保留能放大成主图的具象主体；Rhythm 不再从池里分配，由生图模型自选点缀。
 # v25：去掉「主元素至少重复 3 次」，改为「图案可以重复，但主元素必须是本款最大图案」，
 #      避免模型把主元素拆成一堆小图密铺。
-PATTERN_PROMPT_VERSION = "v25"
+# v26：删除 60-30-10 面积化配色引擎——配色改为「主题强关联色 + 建议点缀色」两组，
+#      不绑比例；只保留元素 Tier 一套面积预算，主色归属交给生图模型。
+PATTERN_PROMPT_VERSION = "v26"
 # 位置↔角色固定：左上=主图(lifestyle)、右上=细节A(detail_a)、左下=细节B(detail_b)、右下=素材(hero)。
 # 标识符沿用历史值（lifestyle=主图、hero=素材），避免历史批次错标；仅位置分配按本元组顺序正确落位。
 LISTING_IMAGE_ROLES = ("lifestyle", "detail_a", "detail_b", "hero")
@@ -268,6 +270,16 @@ def _brief_color_preferences(business_fields: Mapping[str, object] | None) -> li
     return [str(item).strip() for item in raw if str(item).strip()]
 
 
+def _brief_accent_colors(business_fields: Mapping[str, object] | None) -> list[str]:
+    """建议点缀色的读取：只做归一化，不判断哪一色该当主色（交给生图模型）。"""
+    if not business_fields:
+        return []
+    raw = business_fields.get("accent_colors") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    return [str(item).strip() for item in raw if str(item).strip()]
+
+
 # 四格固定角色/机位的默认描述（未配置用户构图时使用）。
 _DEFAULT_LISTING_PANEL_LINES = (
     "Panel 1 — PRIMARY IMAGE (top-left): the complete product in one newly generated, commercially useful lifestyle setting, shot wide at a normal eye-level product angle with the full silhouette in frame. It must never be a close-up, macro, cropped, partial or three-quarter detail shot — those belong to Panels 2-3 and must not be repeated here. This is the marketplace primary image and the title reference.",
@@ -386,17 +398,15 @@ _COLOR_IMPACT_BLOCK = (
     "- Max out saturation and luminosity inside the palette: bright clean highlights, clear mid-tones, "
     "deep rich shadows; dark colors must read jewel-like (lacquer, enamel, velvet), never muddy or faded. "
     "Warm the white balance toward sunlight — no cold blue-grey cast.\n"
-    "- Build the PRODUCT BODY itself on the palette's strongest, most saturated signature colour (the "
-    "batch theme's hero colour) as its dominant base: the product must be the boldest colour statement "
-    "in frame. A pale, white or neutral product shell with only faint motifs is a FAILURE; lighter "
-    "palette colours may only fill pattern negative space, the interior/lining, or the background.\n"
     "- TONAL SEPARATION — the product must separate clearly from its background through a strong "
     "difference in value and/or saturation. Never place a pale product on a pale background, and keep "
     "props and the scene colourful too: a muted beige/grey set or a washed-out frame is a FAILURE.\n"
-    "- 60-30-10 COLOR HARMONY (fixed ratio contract): about 60% DOMINANT BASE (the product's large-area "
-    "body colour), about 30% STRUCTURAL ACCENT (handles, bindings, large patch blocks), about 10% POP "
-    "HIGHLIGHT (gold thread, metal hardware, small charms). The three proportions must be clearly "
-    "readable; an even, untiered spread is a FAILURE."
+    "- COLOR HIERARCHY (no fixed ratio): pick one dominant colour statement per panel, one or two "
+    "supporting colours and one accent. The hierarchy must read at a glance, but no percentage split is "
+    "prescribed; spreading every palette colour evenly, with no clear lead, is a FAILURE.\n"
+    "- COLOUR AUTHORITY: the product and its print must be the boldest colour statement in frame; a "
+    "washed-out or grey-beige result is a FAILURE. Keep pale or neutral tones for negative space, the "
+    "interior/lining or the scene."
 )
 
 # POD 绝大多数是布艺（帆布/棉/绗缝/PU）包袋，但也存在天然橡胶桌布、PVC 垫、皮革、
@@ -648,7 +658,8 @@ def build_direct_listing_prompt(
         ("Target audience", fields.target_audience),
         ("Core selling points", ", ".join(fields.core_selling_points)),
         ("Batch-wide theme & style", fields.design_theme),
-        ("Color preferences", ", ".join(fields.color_preferences)),
+        ("Theme colours (strong theme tie; must use at least one)", ", ".join(fields.color_preferences)),
+        ("Accent colours (supporting only; never the dominant)", ", ".join(fields.accent_colors)),
         # 只固定输出侵权/身份类；危险违禁内容交给模型自身审核。
         ("Excluded elements", ", ".join(IP_EXCLUDED_ELEMENTS)),
     ):
@@ -799,7 +810,6 @@ def build_style_listing_prompt(
     business_fields: Mapping[str, object] | None = None,
     creative_prompt: str = "",
     style_elements: Mapping[str, object] | None = None,
-    seed: str = "",
     art_direction: ArtDirection | None = None,
 ) -> str:
     """Append this style's elements and color roles to a listing prompt.
@@ -809,8 +819,6 @@ def build_style_listing_prompt(
     one new subject within the batch-wide theme. Element keywords are never
     rendered wholesale. Pattern arrangement and print rendering are left to the
     model — there is no layout / density / rendering pool driving styles apart.
-
-    ``seed``（batch_id）用于配色 60-30-10 的确定性洗牌；留空时退化为仅按款序取值。
     """
     if style_index < 1:
         raise ValueError("style_index must be positive")
@@ -818,20 +826,10 @@ def build_style_listing_prompt(
         raise ValueError("attempt must be 1 or 2")
     hero, narrative, rhythm = _coerce_style_elements(style_elements)
 
-    color_preferences = _brief_color_preferences(business_fields)
-    # 配色只来自用户/智能填写给出的色板；没给就让模型在主题内自己选，不再有代码色板兜底。
-    palette = (
-        f"the brief's specified colors ({', '.join(color_preferences)})"
-        if color_preferences
-        else ""
-    )
-    colors = assign_style_colors(color_preferences, style_index, seed)
-    color_harmony = ""
-    if colors["base"]:
-        color_harmony = (
-            f"base≈{colors['base']}(60%) / structural≈{colors['structural']}(30%) / "
-            f"highlight≈{colors['highlight']}(10%)"
-        )
+    # 配色只来自用户/智能填写给出的两组色板：主题强关联色 + 建议点缀色。
+    # 本地不再抽样、不再分配比例，全部交给生图模型判断主次。
+    theme_colors = _brief_color_preferences(business_fields)
+    accent_colors = _brief_accent_colors(business_fields)
 
     shares = element_area_shares(hero, narrative, rhythm)
     if hero:
@@ -877,8 +875,8 @@ def build_style_listing_prompt(
     signature = (
         f"STYLE-{style_index:03d} | elements=hero:{hero or '-'} narrative:{','.join(narrative) or '-'} "
         f"rhythm:{','.join(rhythm) or '-'}"
-        + (f" | palette={palette}" if palette else "")
-        + (f" | color_harmony={color_harmony}" if color_harmony else "")
+        + (f" | theme_colors={','.join(theme_colors)}" if theme_colors else "")
+        + (f" | accent_colors={','.join(accent_colors)}" if accent_colors else "")
     )
 
     rules = [
@@ -896,13 +894,12 @@ def build_style_listing_prompt(
         f"Create this as style {style_index}. Its surface artwork must be visibly different from every other style in this batch.",
         "素材可以在批次内复用，但每款必须拥有不同的视觉主角与花样：主打元素身份、尺度关系、色彩重心至少两项不同。禁止输出“把所有元素等权复制粘贴”的通用大杂烩图案。",
     ]
-    if color_harmony:
+    if theme_colors or accent_colors:
         rules.append(
-            f"本款配色 60-30-10（高定调色契约）：{color_harmony}。"
-            "主基调色覆盖产品大面积底色，结构副色用于提手/包边/大面积拼接块，"
-            "点缀色只用于金线刺绣/金属件/小坠饰；三档比例必须读得出来，避免均等无主次的配色。"
-            "若主基调色是白色/珠光白/浅色，它只能用于图案留白或场景背景，产品主体改用色板中最饱和的颜色，"
-            "避免白包白底、画面发灰。"
+            f"本款配色（主题强关联色，至少使用 1 款，且本款主色必须来自这一组）："
+            f"{', '.join(theme_colors) or '按主题自选'}。"
+            f"建议点缀色（只作辅色/点缀，不得当主色）：{', '.join(accent_colors) or '按主题自选'}。"
+            "主色 / 辅色 / 点缀色不要求固定比例，但主次必须一眼读得出来，不得把所有颜色平均铺开。"
         )
     rules.append(
         "All four panels in this one contact sheet must nevertheless use exactly this one "
@@ -930,7 +927,7 @@ def build_style_listing_prompt(
     # 平铺产品的 PART 4 也必须走平面摄影背景，否则会把俯拍指令拉回 3D 桌面场景。
     flat_product = "FLAT PRODUCT COMPOSITION OVERRIDE" in base_prompt
     # 没给色板时，道具配色跟随本款图案自身，不再从代码色板池取。
-    palette_hint = palette or "the artwork's own palette"
+    palette_hint = ", ".join(theme_colors) or "the artwork's own palette"
     rules.append("")
     rules.append(_PART4_HEADER)
     rules.append(

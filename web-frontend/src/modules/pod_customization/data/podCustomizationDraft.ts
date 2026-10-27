@@ -54,6 +54,7 @@ const EMPTY_BUSINESS_FIELDS: PodBusinessFieldsDraft = {
   scene_mood: "",
   style_keywords: "",
   color_preferences: "",
+  accent_colors: "",
   excluded_elements: "",
   copy_restrictions: "",
 };
@@ -374,9 +375,11 @@ function isBusinessFields(value: unknown): value is PodBusinessFieldsDraft {
     && typeof value.style_keywords === "string"
     && typeof value.color_preferences === "string"
     && typeof value.excluded_elements === "string"
-    // fabric_craft / scene_mood / copy_restrictions 均为后加的键：旧草稿缺失时视为空串，不丢弃整份草稿。
+    // fabric_craft / scene_mood / accent_colors / copy_restrictions 均为后加的键：
+    // 旧草稿缺失时视为空串，不丢弃整份草稿。
     && (value.fabric_craft === undefined || typeof value.fabric_craft === "string")
     && (value.scene_mood === undefined || typeof value.scene_mood === "string")
+    && (value.accent_colors === undefined || typeof value.accent_colors === "string")
     && (value.copy_restrictions === undefined || typeof value.copy_restrictions === "string");
 }
 
@@ -385,6 +388,7 @@ function businessFieldsOrDefault(fields: PodBusinessFieldsDraft): PodBusinessFie
     ...fields,
     fabric_craft: fields.fabric_craft ?? "",
     scene_mood: fields.scene_mood ?? "",
+    accent_colors: fields.accent_colors ?? "",
     copy_restrictions: fields.copy_restrictions ?? "",
   };
 }

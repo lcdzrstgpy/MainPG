@@ -159,7 +159,11 @@ def test_style_prompt_instructs_invention_without_assignment() -> None:
 
 def test_style_prompt_keeps_theme_and_color_contracts() -> None:
     prompt = _style_prompt(
-        {"design_theme": "牛仔荒野风", "color_preferences": ["暖陶土红", "绿松石蓝", "暖金"]},
+        {
+            "design_theme": "牛仔荒野风",
+            "color_preferences": ["暖陶土红", "绿松石蓝", "暖金"],
+            "accent_colors": ["香槟金", "雾灰"],
+        },
         3,
         style_elements=assign_style_elements(COWBOY_KEYWORDS, 3, "batch-a"),
     )
@@ -168,19 +172,23 @@ def test_style_prompt_keeps_theme_and_color_contracts() -> None:
     assert "必须采用本款渲染工艺" not in prompt
     assert "rendering=" not in prompt
     assert "pattern_layout=" not in prompt
-    assert "color_harmony=" in prompt
-    assert "本款配色 60-30-10" in prompt
+    # v26：配色改为主题强关联色 + 建议点缀色两组，不再有 60-30-10。
+    assert "主题强关联色，至少使用 1 款" in prompt
+    assert "暖陶土红, 绿松石蓝, 暖金" in prompt
+    assert "建议点缀色（只作辅色/点缀，不得当主色）：香槟金, 雾灰" in prompt
+    assert "60-30-10" not in prompt
     assert "禁止输出“把所有元素等权复制粘贴”" in prompt
 
 
-def test_style_prompt_has_no_color_tiers_without_user_colors() -> None:
+def test_style_prompt_has_no_color_lines_without_user_colors() -> None:
     prompt = _style_prompt(
         {"design_theme": "牛仔荒野风"},
         3,
         style_elements=assign_style_elements(COWBOY_KEYWORDS, 3, "batch-a"),
     )
-    assert "color_harmony=" not in prompt
-    assert "本款配色 60-30-10" not in prompt
+    assert "主题强关联色" not in prompt
+    assert "建议点缀色" not in prompt
+    assert "60-30-10" not in prompt
 
 
 def test_style_prompt_attempt_two_adds_retry_direction() -> None:
@@ -399,10 +407,12 @@ def test_direct_listing_prompt_omits_fabric_craft_when_blank() -> None:
     assert "FABRIC CRAFT (this batch)" not in prompt
 
 
-def test_direct_listing_prompt_carries_the_static_60_30_10_rule() -> None:
+def test_direct_listing_prompt_uses_color_hierarchy_without_ratio() -> None:
     prompt = build_direct_listing_prompt(BusinessFields(product_name="托特包"), "")
-    assert "60-30-10 COLOR HARMONY" in prompt
-    assert "DOMINANT BASE" in prompt and "STRUCTURAL ACCENT" in prompt and "POP HIGHLIGHT" in prompt
+    assert "COLOR HIERARCHY (no fixed ratio)" in prompt
+    assert "COLOUR AUTHORITY" in prompt
+    assert "60-30-10" not in prompt
+    assert "DOMINANT BASE" not in prompt
 
 
 def _structure_facts() -> dict:
@@ -518,14 +528,19 @@ def test_style_prompt_drops_density_pool_but_keeps_all_over_lock() -> None:
         assert "pattern_layout=" not in style_prompt
 
 
-def test_style_prompt_renders_color_harmony_tiers_with_user_colors() -> None:
+def test_style_prompt_renders_theme_and_accent_colour_groups() -> None:
     prompt = _style_prompt(
-        {"color_preferences": ["暖陶土红", "绿松石蓝", "暖金", "雾灰"]},
+        {
+            "color_preferences": ["圣诞红", "圣诞墨绿", "圣诞暖金"],
+            "accent_colors": ["雾白", "炭灰"],
+        },
         style_index=1,
         style_elements=assign_style_elements(COWBOY_KEYWORDS, 1, "batch-a"),
     )
-    assert "color_harmony=" in prompt
-    assert "base≈" in prompt and "(60%)" in prompt and "(30%)" in prompt and "(10%)" in prompt
+    assert "主题强关联色，至少使用 1 款" in prompt
+    assert "圣诞红, 圣诞墨绿, 圣诞暖金" in prompt
+    assert "建议点缀色（只作辅色/点缀，不得当主色）：雾白, 炭灰" in prompt
+    assert "(60%)" not in prompt and "(30%)" not in prompt and "(10%)" not in prompt
 
 
 def test_prompt_locks_artwork_layout_across_the_four_panels() -> None:

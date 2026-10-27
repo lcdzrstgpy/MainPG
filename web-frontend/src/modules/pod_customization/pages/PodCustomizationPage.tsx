@@ -172,6 +172,7 @@ const EMPTY_BUSINESS_FIELDS_FOR_SWITCH: Record<keyof PodBusinessFieldsDraft, str
   scene_mood: "",
   style_keywords: "",
   color_preferences: "",
+  accent_colors: "",
   excluded_elements: "",
   copy_restrictions: "",
 };

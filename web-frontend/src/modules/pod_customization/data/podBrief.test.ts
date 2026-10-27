@@ -30,6 +30,7 @@ const EMPTY_DRAFT: PodBusinessFieldsDraft = {
   scene_mood: "",
   style_keywords: "",
   color_preferences: "",
+  accent_colors: "",
   excluded_elements: "",
   copy_restrictions: "",
 };
@@ -46,6 +47,7 @@ const EMPTY_BRIEF_DRAFT: PodBriefFieldsDraft = {
   scene_mood: "",
   style_keywords: "",
   color_preferences: "",
+  accent_colors: "",
   excluded_elements: "",
 };
 
@@ -61,6 +63,7 @@ function briefFields(overrides: Partial<PodBusinessFields> = {}): PodBusinessFie
     scene_mood: "暖光木质厨房",
     style_keywords: ["仙人掌", "纳瓦霍几何"],
     color_preferences: ["棕", "米白"],
+    accent_colors: ["香槟金", "雾白"],
     excluded_elements: ["品牌 logo"],
     copy_restrictions: "标题不要出现刺绣",
     ...overrides,
@@ -73,6 +76,7 @@ test("brief fields convert array columns into 、-joined draft strings", () => {
   assert.equal(draft.core_selling_points, "耐用、大容量");
   assert.equal(draft.style_keywords, "仙人掌、纳瓦霍几何");
   assert.equal(draft.color_preferences, "棕、米白");
+  assert.equal(draft.accent_colors, "香槟金、雾白");
   assert.equal(draft.excluded_elements, "品牌 logo");
   assert.equal(draft.product_name, "托特包");
   // 批级全局字段原样回填（仍是字符串口径）。

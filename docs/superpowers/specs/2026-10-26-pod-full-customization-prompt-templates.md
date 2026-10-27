@@ -1,6 +1,9 @@
 # POD 全定制：当前提示词模板（现状快照）
 
-状态：**现状快照**（2026-10-26），由当前代码实际渲染生成，未改动任何行为
+状态：**历史快照**（2026-10-26，对应提示词 v25），由当时代码实际渲染生成。
+> 2026-10-27 起配色口径已改：删除 60-30-10 / `assign_style_colors`，改为「主题强关联色 + 建议点缀色」两组，
+> 见 [2026-10-27-pod-color-palette-authority-design.md](./2026-10-27-pod-color-palette-authority-design.md)。
+> 本文中的配色段落与 v25 版本号不再代表现状。
 目标读者：POD 后端 / 提示词维护者
 目标基线：`local-runtime/wh_local/modules/pod_customization/`
 
