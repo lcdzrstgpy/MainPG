@@ -39,12 +39,12 @@ const BRIEF_SUMMARY_MAX_LENGTH = 40;
 // 输入框随内容自适应高度；超过该高度后改为内部滚动，避免撑破侧栏。
 const BRIEF_TEXTAREA_MAX_HEIGHT = 240;
 // 全定制「智能填写」的字段模板：直接预置在文本框里，用户在每个标签后补内容即可。
-// 其中「产品工艺」「使用场景」是批级全局字段（豆包只做规范化，不发明）。
+// 其中「产品工艺」是批级全局字段（豆包只做规范化，不发明）。
+// v21：去掉「使用场景」——场景基调统一由美术指导产出，避免与指导冲突。
 const DEFAULT_BRIEF_TEMPLATE = [
   "产品名称：",
   "产品风格：",
   "产品工艺：",
-  "使用场景：",
   "目标市场：",
   "目标人群：",
 ].join("\n");
@@ -80,7 +80,7 @@ export function PodBriefInput({
 }: Props) {
   const [open, setOpen] = useState(true);
   // 受控优先：父级传了 value 就用父级的状态，便于它在自己的按钮里触发生成。
-  // 非受控（全定制页）时预置字段模板，用户直接在标签后补内容即可（含产品工艺 / 使用场景两个批级字段）。
+  // 非受控（全定制页）时预置字段模板，用户直接在标签后补内容即可（含产品工艺批级字段）。
   const [internalBrief, setInternalBrief] = useState(DEFAULT_BRIEF_TEMPLATE);
   const brief = value ?? internalBrief;
   const setBrief = onValueChange ?? setInternalBrief;
@@ -144,9 +144,8 @@ export function PodBriefInput({
       const response = await podCustomizationApi.generateBriefFields({
         brief: input,
         locale: "zh-CN",
-        // 模板里「产品工艺 / 使用场景」两行显式抽出来一起发，避免豆包漏抽（历史 bug：填了却不回填）。
+        // 模板里「产品工艺」显式抽出来一起发，避免豆包漏抽（历史 bug：填了却不回填）。
         fabric_craft: extractBriefFieldValue(input, BRIEF_PROVIDED_FIELD_LABELS.fabric_craft),
-        scene_mood: extractBriefFieldValue(input, BRIEF_PROVIDED_FIELD_LABELS.scene_mood),
         // 带上模板主图：顺手产出批级美术指导（场景 / 光影 / 冷暖 / 道具），整批共用。
         ...(templateAssetId ? { template_asset_id: templateAssetId } : {}),
       });

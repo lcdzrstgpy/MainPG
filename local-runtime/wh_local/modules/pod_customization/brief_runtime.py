@@ -24,6 +24,10 @@ from .contracts import (
     BRIEF_EXCLUDED_ELEMENTS_MIN_ITEMS,
     BRIEF_STYLE_KEYWORDS_MIN_ITEMS,
     IP_EXCLUDED_ELEMENTS,
+    SCENE_OPTIONS_MAX_ITEMS,
+    SCENE_OPTIONS_MIN_ITEMS,
+    SCENE_OPTION_PROPS_MAX_ITEMS,
+    SCENE_OPTION_PROPS_MIN_ITEMS,
     ArtDirection,
     BusinessFields,
 )
@@ -38,7 +42,7 @@ from .title_runtime import (
 )
 
 
-PROMPT_VERSION = "pod-brief-v3"
+PROMPT_VERSION = "pod-brief-v6"
 # 批级美术指导的独立提示词版本（与业务字段分开归因）。
 ART_DIRECTION_PROMPT_VERSION = "pod-art-direction-v1"
 MAX_ATTEMPTS = BRIEF_ATTEMPTS
@@ -73,6 +77,28 @@ _ABSTRACT_ELEMENT_SUBSTRINGS = (
     "高对比",
 )
 _ABSTRACT_ELEMENT_SUFFIXES = ("风", "感")
+# v24：元素池只收“能放大成主图”的主体。纹理/底纹与细碎点缀不得进入元素列表——
+# 它们由生图模型在 Rhythm 层自选，不能当 Hero。
+_FILLER_ELEMENT_MARKERS = (
+    "格纹",
+    "条纹",
+    "斜纹",
+    "菱格",
+    "针织",
+    "编织",
+    "裂纹",
+    "底纹",
+    "网纹",
+    "波点",
+    "雪花",
+    "星星",
+    "铃铛",
+    "浆果",
+    "糖霜",
+    "邮戳",
+    "彩球",
+    "羽毛",
+)
 # 模型习惯给具体花纹加「图案 / 纹样」后缀。先剥掉这层后缀再看词头，
 # 否则「山茶花图案」会被下面的抽象词判断误伤；「俏皮图案」剥完是「俏皮」，
 # 由 _STYLE_HEAD_WORDS 拦截。
@@ -128,7 +154,29 @@ def is_concrete_style_element(value: str) -> bool:
         return False
     if any(marker in head for marker in _ABSTRACT_ELEMENT_SUBSTRINGS):
         return False
+    if any(marker in head for marker in _FILLER_ELEMENT_MARKERS):
+        return False
     return not head.endswith(_ABSTRACT_ELEMENT_SUFFIXES)
+
+
+def dedupe_style_elements(words: list[str]) -> list[str]:
+    """合并后缀包含关系里的近义变体，保留较短的基础名词。
+
+    例：「企鹅」与「圣诞企鹅」→ 只留「企鹅」；「姜饼屋」与「圣诞姜饼屋」→ 只留「姜饼屋」。
+    只按「长词是否以短词结尾」判断（短词至少 2 字），避免把共享前缀的不同主体误合并。
+    纯字符串判断，不做语义同义（「圣诞小屋」与「姜饼屋」仍需提示词约束）。
+    """
+    kept: list[str] = []
+    for word in sorted(words, key=len):
+        if any(
+            word == other
+            or (len(other) >= 2 and word.endswith(other))
+            or (len(word) >= 2 and other.endswith(word))
+            for other in kept
+        ):
+            continue
+        kept.append(word)
+    return [word for word in words if word in kept]
 
 
 # 只保留「模型不会主动拒绝、但会带来真实下架风险」的侵权与身份类：品牌、商标、
@@ -155,8 +203,8 @@ _SCALAR_FIELDS = (
     "target_audience",
     "design_theme",
     # 批级全局字段：由用户在「智能填写」区告知，豆包只规范化（不发明）；允许返回空串。
+    # v21：scene_mood 已从智能填写中移除——场景基调统一由美术指导（art_direction）产出。
     "fabric_craft",
-    "scene_mood",
 )
 _LIST_FIELDS = (
     "core_selling_points",
@@ -192,7 +240,6 @@ _BRIEF_RESPONSE_FORMAT: dict[str, Any] = {
                 "design_theme": {"type": "string", "minLength": 1},
                 # 允许空串（"必填但可为空"）：键必须在 required 里，但内容可以留空 → 不设 minLength。
                 "fabric_craft": {"type": "string"},
-                "scene_mood": {"type": "string"},
                 "core_selling_points": {
                     "type": "array",
                     "minItems": 0,
@@ -239,6 +286,7 @@ _ART_DIRECTION_RESPONSE_FORMAT: dict[str, Any] = {
                 "background",
                 "composition_hint",
                 "avoid",
+                "scene_options",
             ],
             "properties": {
                 "scene": {"type": "string", "minLength": 1},
@@ -263,6 +311,27 @@ _ART_DIRECTION_RESPONSE_FORMAT: dict[str, Any] = {
                     "minItems": 2,
                     "items": {"type": "string", "minLength": 1},
                 },
+                # 场景池：整批 2-3 个候选，按款轮换；每个写清环境 + 台面 + 3-5 件道具。
+                "scene_options": {
+                    "type": "array",
+                    "minItems": SCENE_OPTIONS_MIN_ITEMS,
+                    "maxItems": SCENE_OPTIONS_MAX_ITEMS,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["scene", "surface", "props"],
+                        "properties": {
+                            "scene": {"type": "string", "minLength": 1},
+                            "surface": {"type": "string"},
+                            "props": {
+                                "type": "array",
+                                "minItems": SCENE_OPTION_PROPS_MIN_ITEMS,
+                                "maxItems": SCENE_OPTION_PROPS_MAX_ITEMS,
+                                "items": {"type": "string", "minLength": 1},
+                            },
+                        },
+                    },
+                },
             },
         },
     },
@@ -274,8 +343,9 @@ class PodBriefRequest:
     brief_id: str
     brief: str
     locale: str = "zh-CN"
-    # 用户在「智能填写」区显式填写的两个批级字段原文（可空）；豆包只做规范化、不发明。
+    # 用户显式填写的批级工艺原文（可空）；豆包只做规范化、不发明。
     fabric_craft: str = ""
+    # 旧客户端兼容：v21 起不再读取、不再放进豆包请求（场景统一由美术指导产出）。
     scene_mood: str = ""
     # 可选：当前模板主图字节。带上时同时产出批级美术指导（art_direction）；
     # 未带或视觉调用失败时只返回业务字段，不阻塞智能填写。
@@ -321,6 +391,9 @@ def validate_brief_fields(payload: Mapping[str, Any]) -> BusinessFields:
     lists["style_keywords"] = [
         word for word in lists["style_keywords"] if is_concrete_style_element(word)
     ]
+    before_dedupe = list(lists["style_keywords"])
+    lists["style_keywords"] = dedupe_style_elements(before_dedupe)
+    merged = [word for word in before_dedupe if word not in lists["style_keywords"]]
     if len(lists["style_keywords"]) < BRIEF_STYLE_KEYWORDS_MIN_ITEMS:
         feedback = (
             "；以下不是可印在平面上的图案元素已被剔除，请改写为平面纹样/图形："
@@ -328,6 +401,8 @@ def validate_brief_fields(payload: Mapping[str, Any]) -> BusinessFields:
             if rejected
             else ""
         )
+        if merged:
+            feedback += "；以下与已给元素近义重复，只保留基础名词：" + "、".join(merged[:10])
         raise ValueError(
             f"style_keywords 至少需要 {BRIEF_STYLE_KEYWORDS_MIN_ITEMS} 个具体元素，"
             f"实际只有 {len(lists['style_keywords'])} 个{feedback}"
@@ -360,7 +435,8 @@ def validate_brief_fields(payload: Mapping[str, Any]) -> BusinessFields:
         core_selling_points=lists["core_selling_points"],
         design_theme=scalars["design_theme"],
         fabric_craft=scalars["fabric_craft"],
-        scene_mood=scalars["scene_mood"],
+        # v21：智能填写不再产出使用场景，统一留空；场景由美术指导负责。
+        scene_mood="",
         style_keywords=lists["style_keywords"],
         color_preferences=lists["color_preferences"],
         excluded_elements=lists["excluded_elements"],
@@ -368,9 +444,9 @@ def validate_brief_fields(payload: Mapping[str, Any]) -> BusinessFields:
 
 
 def _restore_user_provided(fields: BusinessFields, request: PodBriefRequest) -> BusinessFields:
-    """模型漏填用户显式给出的工艺 / 场景时，用原文兜底，避免可选键缺省丢掉用户输入。"""
+    """模型漏填用户显式给出的工艺时，用原文兜底，避免可选键缺省丢掉用户输入。"""
     updates: dict[str, str] = {}
-    for key in ("fabric_craft", "scene_mood"):
+    for key in ("fabric_craft",):
         raw = _normalized_text(getattr(request, key))
         if raw and not getattr(fields, key):
             updates[key] = raw
@@ -558,6 +634,7 @@ class PodBriefRuntime(AiRuntime):
         messages: list[dict[str, Any]],
         *,
         response_format: dict[str, Any] | None = None,
+        thinking: str = "disabled",
     ) -> str:
         response: Any | None = None
         try:
@@ -572,7 +649,7 @@ class PodBriefRuntime(AiRuntime):
                 json={
                     "model": MODEL_ID,
                     "messages": messages,
-                    "thinking": {"type": "disabled"},
+                    "thinking": {"type": thinking},
                     "response_format": response_format or _BRIEF_RESPONSE_FORMAT,
                 },
                 timeout=BRIEF_REQUEST_TIMEOUT_SECONDS,
@@ -657,17 +734,15 @@ def _messages_for_brief(request: PodBriefRequest, *, rejection_feedback: str) ->
         "output_language": "中文（所有字段内容均使用中文，除非专有名词本身是英文）",
         "user_brief": _normalized_text(request.brief),
         "locale": _normalized_text(request.locale),
-        # 用户在「智能填写」区显式填写的两个批级字段原文（可能为空）：
+        # 用户在「智能填写」区显式填写的批级字段原文（可能为空）：
         # 豆包只能对此做规范化，绝不能自行推断或编造。
         "user_provided": {
             "fabric_craft": _normalized_text(request.fabric_craft),
-            "scene_mood": _normalized_text(request.scene_mood),
         },
         "input_template_labels": {
             "产品名称": "product_name",
             "产品风格": "design_theme",
             "产品工艺": "fabric_craft",
-            "使用场景": "scene_mood",
             "目标市场": "target_market",
             "目标人群": "target_audience",
         },
@@ -690,16 +765,20 @@ def _messages_for_brief(request: PodBriefRequest, *, rejection_feedback: str) ->
                 "为空时再看 user_brief 里「产品工艺：」那一行的内容；两处都没有才返回空字符串。"
                 "严禁自行推断或编造工艺。"
             ),
-            "scene_mood": (
-                "批级使用场景基调。若 user_provided.scene_mood 非空，必须把它规范化后填入——"
-                "即使用户填的是「桌面化妆产品收纳」这类使用场景措辞、而非「暖光木质厨房」式基调词，"
-                "也要保留，**不得因为『不是基调』而丢弃**；"
-                "为空时再看 user_brief 里「使用场景：」那一行；两处都没有才返回空字符串。"
-            ),
             "style_keywords": (
-                f"图案元素关键词，至少 {BRIEF_STYLE_KEYWORDS_MIN_ITEMS} 项（建议 24-40）；"
-                "每一项都是可印在产品表面的平面图案元素（具象纹样/图形），"
-                "禁止独立实物、摆件、餐具、食品、家具、场景道具，也禁止形容词/风格词/配色词/手法词"
+                f"图案元素关键词，至少 {BRIEF_STYLE_KEYWORDS_MIN_ITEMS} 项（建议 12-24，宁少勿滥）；"
+                "每一项必须是一个有明确轮廓、能独立成图的具象主体：人物、动物、建筑、"
+                "器皿/大物件、节日形象。"
+                "必须能直接从 design_theme 推出，属于同一个节日/文化体系；"
+                "只属于季节或泛冬季的动物（北极熊、企鹅、海豹、雪鸮）不算节日元素，不要返回。"
+                "元素名统一以主题词开头：先取 design_theme 的核心主题词（节日优先，如「圣诞」），"
+                "每个元素名都以该词开头（圣诞树、圣诞袜、圣诞驯鹿头）；"
+                "已有前缀不重复加，前缀后仍须是自然通顺的叫法。"
+                "同义、包含或近义变体只保留一个（如「企鹅」与「圣诞企鹅」二选一），"
+                "禁止为凑数堆无关词。"
+                "禁止材质纹理（格纹/针织/裂纹/斜纹/底纹）、几何网纹、"
+                "细碎点缀（雪花/星星/铃铛/糖霜/浆果/羽毛），"
+                "也禁止形容词/风格词/配色词/手法词/场景类别"
             ),
             "color_preferences": (
                 f"偏好配色，至少 {BRIEF_COLOR_PREFERENCES_MIN_ITEMS} 个具体颜色名（建议 6-10）"
@@ -711,25 +790,28 @@ def _messages_for_brief(request: PodBriefRequest, *, rejection_feedback: str) ->
             ),
         },
         "style_keywords_recipe": (
-            f"style_keywords 至少给出 {BRIEF_STYLE_KEYWORDS_MIN_ITEMS} 个互不重复的图案元素"
-            "（建议 24-40，够跨款轮换即可，不要为凑数堆无关词），"
-            "每一项都必须是**可印在产品表面的平面纹样/图形**（如「冬青叶纹样」「雪花图形」「松枝印花」），"
-            "与 design_theme 和 product_name 的主题强相关，"
-            "覆盖动植物纹样、节日符号、几何纹样、材质纹理、器物轮廓等不同层次。"
-            "正例：冬青叶纹样、雪花图形、松枝印花、拐杖糖纹样、姜饼人图形、圣诞树轮廓、格纹纹样、星星图形。"
+            f"style_keywords 至少给出 {BRIEF_STYLE_KEYWORDS_MIN_ITEMS} 个互不重复的具象主体"
+            "（建议 12-24，够跨款轮换即可；宁少勿滥，不要为凑数堆无关词）。"
+            "每一项都必须是「单独放大到产品正面约 1/3 大小时仍然自然」的主体："
+            "人物、动物、建筑、器皿/大物件、节日形象。"
+            "正例：圣诞姜饼人、圣诞驯鹿头、圣诞雪人、圣诞老人、圣诞树、圣诞姜饼屋、"
+            "圣诞礼物盒、圣诞袜、圣诞花环、圣诞松果、圣诞拐杖糖、圣诞帽。"
+            "主题一致性：每个词都必须能直接从 design_theme 推出，属于同一个节日/文化体系；"
+            "只属于季节或泛冬季的动物（北极熊、企鹅、海豹、雪鸮）不算节日元素，不要返回。"
+            "元素名统一以主题词开头：先取 design_theme 的核心主题词（节日优先，如「圣诞」），"
+            "每个元素名都以该词开头；已有前缀不重复加，前缀后仍须是自然通顺的叫法。"
+            "去重：同义、包含或近义变体只保留一个（如「企鹅」与「圣诞企鹅」、"
+            "「姜饼屋」与「圣诞姜饼屋」都只留一个）。"
             "严禁出现以下任意一类："
-            "① 独立实物、摆件、餐具、食品、家具或场景道具（烛杯、餐垫、餐叉、雪人摆件、小木屋、松果摆件）"
-            "——这些是场景，不是印花；"
-            "② 形容词或风格词（大胆、俏皮、复古、美式乡村风）；"
-            "③ 色彩或配色属性（高饱和度配色、高对比色彩、撞色设计）——配色只能写入 color_preferences；"
-            "④ 表现手法或抽象概念（波普色块拼接、线条、质感、怀旧符号、复古元素）；"
-            "⑤ 场景或人群类别（海滩元素、健身场景元素、休闲度假元素、出游元素）。"
-            "允许「具体花纹名 + 图案 / 纹样 / 印花 / 花纹 / 图形」的写法（如「山茶花图案」「折扇图案」），"
-            "但后缀前面必须是具体事物；"
-            "严禁以「元素 / 符号 / 质感 / 配色 / 色彩 / 色调 / 设计 / 线条 / 拼接 / 场景 / 氛围 / 风格 / 风 / 感」"
-            "等抽象词或其组合收尾（如「俏皮图案」「高饱和度配色」）。"
-            "禁止同义变体重复占位，禁止堆砌与主题无关的泛词，"
-            "禁止用品类本体词（如「托特包」「手提包」）凑数。"
+            "① 材质纹理或底纹（格纹、条纹、斜纹、菱格、针织、编织、裂纹、底纹、波点）；"
+            "② 细碎点缀（雪花、星星、铃铛、浆果、糖霜、邮戳、彩球、羽毛）"
+            "——这些由生图模型在点缀层自选，不能进元素池；"
+            "③ 形容词或风格词（大胆、俏皮、复古、美式乡村风）；"
+            "④ 色彩或配色属性（高饱和度配色、高对比色彩、撞色设计）——配色只能写入 color_preferences；"
+            "⑤ 表现手法或抽象概念（波普色块拼接、线条、质感、怀旧符号、复古元素）；"
+            "⑥ 场景或人群类别（海滩元素、健身场景元素、休闲度假元素、出游元素）。"
+            "允许「具体主体名 + 图案 / 纹样 / 印花 / 图形」的写法，但后缀前面必须是具体主体；"
+            "禁止同义变体重复占位，禁止用品类本体词（如「托特包」「手提包」）凑数。"
         ),
         "color_preferences_recipe": (
             f"color_preferences 至少给出 {BRIEF_COLOR_PREFERENCES_MIN_ITEMS} 个具体颜色（建议 6-10），"
@@ -773,7 +855,6 @@ def _messages_for_art_direction(
             "target_market": fields.target_market,
             "target_audience": fields.target_audience,
             "fabric_craft": fields.fabric_craft,
-            "scene_mood": fields.scene_mood,
         },
         "template_image_usage": (
             "附图是产品模板图，只用于读产品材质、形态、结构、可印区域与真实表面质感。"
@@ -788,6 +869,8 @@ def _messages_for_art_direction(
             "至少一个前景虚化元素。",
             "props 必须 5-8 件，按近/中/远分层，逐件写材质与颜色，至少两种材质；"
             "不得遮挡产品，不得把印花元素做成 3D 道具。",
+            "scene_options 必须给 2-3 个真正不同的场景（环境、台面、道具族、色温至少两项不同），"
+            "不能是同一场景的三种说法；每个场景都要能直接落地拍摄。",
             "写明产品在画面中的位置（三分点或居中）与留白方向。",
             "禁止空词：「干净」「简约」「高级感」「氛围感」这类没有画面信息的词一律不写。",
         ],
@@ -801,6 +884,13 @@ def _messages_for_art_direction(
             "background": "背景处理：压暗程度、景深、远处物体保留到什么程度",
             "composition_hint": "产品位置与留白方向，以及前景虚化元素",
             "avoid": "2-4 项必须避免的画面问题（例如纯灰背景、道具遮挡产品）",
+            "scene_options": (
+                f"{SCENE_OPTIONS_MIN_ITEMS}-{SCENE_OPTIONS_MAX_ITEMS} 个可选场景，供整批不同款式轮换。"
+                "每个选项必须写清：scene（环境 / 地点 / 时间感）、surface（台面材质，平铺类必填）、"
+                f"props（{SCENE_OPTION_PROPS_MIN_ITEMS}-{SCENE_OPTION_PROPS_MAX_ITEMS} 件真实衬托道具）。"
+                "选项之间必须有明显差异（室内/室外、材质、色温、道具族），但都要适合该产品的真实使用；"
+                "禁止纯灰影棚、纯白背景、空场、与产品无关的场景。"
+            ),
         },
         "instructions": "只返回一个 JSON 对象，不要 Markdown、不要额外字段。",
     }
@@ -829,6 +919,7 @@ _ART_DIRECTION_KEYS = (
     "background",
     "composition_hint",
     "avoid",
+    "scene_options",
 )
 
 
@@ -839,7 +930,12 @@ def _parse_art_direction(content: str) -> ArtDirection:
         raise ValueError("POD art direction response did not contain strict JSON") from exc
     if not isinstance(payload, Mapping):
         raise ValueError("POD art direction output must be a JSON object")
-    normalized = {key: payload.get(key) for key in _ART_DIRECTION_KEYS}
+    # 缺省/None 的键不参与校验，交给模型默认值（旧数据没有 scene_options 时也能解析）。
+    normalized = {
+        key: payload[key]
+        for key in _ART_DIRECTION_KEYS
+        if payload.get(key) is not None
+    }
     try:
         return ArtDirection.model_validate(normalized)
     except Exception as exc:  # noqa: BLE001 - pydantic 校验错误统一转成契约错误

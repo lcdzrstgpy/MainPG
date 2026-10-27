@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from wh_local.modules.pod_customization.contracts import BusinessFields
+from wh_local.modules.pod_customization.contracts import (
+    ArtDirection,
+    BusinessFields,
+    SceneOption,
+)
 from wh_local.modules.pod_customization.prompts import (
     assign_style_elements,
     build_direct_listing_prompt,
@@ -19,6 +23,7 @@ def _style_prompt(
     *,
     attempt: int = 1,
     style_elements: dict | None = None,
+    art_direction: ArtDirection | None = None,
 ) -> str:
     return build_style_listing_prompt(
         BASE,
@@ -26,6 +31,7 @@ def _style_prompt(
         attempt=attempt,
         business_fields=brief,
         style_elements=style_elements,
+        art_direction=art_direction,
     )
 
 
@@ -71,9 +77,9 @@ def test_style_assignment_is_tiered_without_internal_duplicates() -> None:
     for style_index in range(1, 40):
         assignment = assign_style_elements(COWBOY_KEYWORDS, style_index, "batch-a")
         tokens = [assignment["hero"], *assignment["narrative"], *assignment["rhythm"]]
-        # Tier：1 Hero + ≤2 Narrative + ≤4 Rhythm（受池子大小限制）。
+        # Tier：1 Hero + ≤2 Narrative；Rhythm 由生图模型自选，不再从池里分配。
         assert len(assignment["narrative"]) <= 2
-        assert len(assignment["rhythm"]) <= 4
+        assert assignment["rhythm"] == []
         assert len(tokens) == len(set(tokens))
 
 
@@ -129,7 +135,7 @@ def test_style_prompt_declares_assigned_elements_as_printed_motifs() -> None:
         "（Tier 1 主锚，印在产品表面的平面图案，不是独立实物；尺度 1.0）"
     ) in prompt
     assert "印花叙事层 Narrative：" in prompt
-    assert "印花点缀层 Rhythm：" in prompt
+    assert "印花点缀层 Rhythm" in prompt
     assert "禁止生成独立实物、摆件、餐具、食品、家具或场景道具" in prompt
     assert "清单中未分配给本款的元素在本款中禁止出现。" in prompt
 
@@ -151,14 +157,17 @@ def test_style_prompt_instructs_invention_without_assignment() -> None:
     assert "本款未分配印花元素：必须在 Batch-wide theme & style 的主题内自创一个新图案元素" in prompt
 
 
-def test_style_prompt_keeps_theme_and_rendering_contracts() -> None:
+def test_style_prompt_keeps_theme_and_color_contracts() -> None:
     prompt = _style_prompt(
         {"design_theme": "牛仔荒野风", "color_preferences": ["暖陶土红", "绿松石蓝", "暖金"]},
         3,
         style_elements=assign_style_elements(COWBOY_KEYWORDS, 3, "batch-a"),
     )
-    assert "主题整批统一风格必须保持，优先级高于本款配方建议" in prompt
-    assert "整幅图案（含所有元素与底色）必须采用本款渲染工艺" in prompt
+    assert "主题整批统一风格必须保持" in prompt
+    # v20：排布/渲染/密度池已从全定制移除，改由模型自由发挥。
+    assert "必须采用本款渲染工艺" not in prompt
+    assert "rendering=" not in prompt
+    assert "pattern_layout=" not in prompt
     assert "color_harmony=" in prompt
     assert "本款配色 60-30-10" in prompt
     assert "禁止输出“把所有元素等权复制粘贴”" in prompt
@@ -326,27 +335,53 @@ def test_flat_product_uses_flat_lay_set_design() -> None:
     assert "supporting props from the same subject family as the artwork" not in prompt
 
 
-def test_set_design_scene_rotates_across_styles() -> None:
-    """同批次各款必须换场景，否则整批背景雷同（实测踩过）。"""
+def test_set_design_scene_rotates_from_art_direction_options() -> None:
+    """场景来自豆包返回的 scene_options；同批各款按款轮换，不能再雷同。"""
+    art_direction = ArtDirection(
+        scene_options=[
+            SceneOption(
+                scene="sunlit kitchen counter with morning light",
+                surface="pale oak tabletop",
+                props=["linen towel", "ceramic mug", "pine sprig"],
+            ),
+            SceneOption(
+                scene="cozy living-room side table under warm lamplight",
+                surface="walnut side table",
+                props=["wool throw", "brass lamp", "hardcover book"],
+            ),
+        ]
+    )
 
-    p1 = _style_prompt({"color_preferences": "圣诞正红、米白暖调"}, style_index=1)
-    p2 = _style_prompt({"color_preferences": "圣诞正红、米白暖调"}, style_index=2)
+    p1 = _style_prompt(
+        {"color_preferences": "圣诞正红、米白暖调"},
+        style_index=1,
+        art_direction=art_direction,
+    )
+    p2 = _style_prompt(
+        {"color_preferences": "圣诞正红、米白暖调"},
+        style_index=2,
+        art_direction=art_direction,
+    )
 
     def scene(prompt: str) -> str:
-        return next(line for line in prompt.splitlines() if line.startswith("- Stage this ONE lived-in scene"))
+        return next(
+            line
+            for line in prompt.splitlines()
+            if line.startswith("- Stage this ONE lived-in scene")
+        )
 
     assert scene(p1) != scene(p2)
+    assert "sunlit kitchen counter with morning light" in p1
+    assert "cozy living-room side table under warm lamplight" in p2
+    assert "linen towel" in p1
+    assert "brass lamp" in p2
 
 
-def test_style_assignment_can_use_up_to_four_rhythm() -> None:
-    """池子足够大时，Rhythm 组最多 4 个（1 Hero + 2 Narrative + 4 Rhythm = 7 个元素/款）。"""
-
+def test_style_assignment_leaves_rhythm_to_the_model() -> None:
+    """v24：Rhythm 不再从元素池分配；点缀由生图模型按主题自选。"""
     pool = [f"e{i}" for i in range(10)]
-    sizes = {
-        len(assign_style_elements(pool, index, "batch-a")["rhythm"])
-        for index in range(1, 9)
-    }
-    assert max(sizes) == 4
+    for index in range(1, 9):
+        assert assign_style_elements(pool, index, "batch-a")["rhythm"] == []
 
 
 def test_direct_listing_prompt_renders_fabric_craft_when_provided() -> None:
@@ -415,16 +450,13 @@ def test_direct_listing_prompt_skips_transparent_lock_for_opaque_material() -> N
     assert "TRANSPARENT MATERIAL LOCK" not in prompt
 
 
-def test_style_prompt_renders_batch_scene_mood_when_provided() -> None:
+def test_style_prompt_ignores_scene_mood_even_when_provided() -> None:
+    """v21：scene_mood 不再进入生图提示词，场景基调统一由美术指导承担。"""
     prompt = _style_prompt({"scene_mood": "暖光木质厨房"}, style_index=1)
-    assert "BATCH SCENE MOOD (this batch): 暖光木质厨房." in prompt
-    # 款间背景不同是硬约束，不能被基调破坏。
-    assert "The scene must change from style to style inside this batch" in prompt
-
-
-def test_style_prompt_omits_scene_mood_when_blank() -> None:
-    prompt = _style_prompt({"design_theme": "牛仔荒野风"}, style_index=1)
     assert "BATCH SCENE MOOD" not in prompt
+    assert "场景基调" not in prompt
+    # 款间背景不同仍是硬约束。
+    assert "The scene must change from style to style inside this batch" in prompt
 
 
 def test_style_prompt_keeps_art_direction_lighting_and_glow() -> None:
@@ -440,30 +472,50 @@ def test_style_prompt_keeps_art_direction_lighting_and_glow() -> None:
     assert "never a 3D copy of a printed motif" in prompt
 
 
-def test_style_prompt_makes_density_a_hard_rule() -> None:
-    """density 不能只写在 signature 里：必须成为覆盖率 + 重复次数的硬指令。"""
+def test_style_prompt_renders_weight_as_area_and_relative_size() -> None:
+    """v23：权重必须落成面积份额与相对尺寸，而不是无参照的 1.0/0.6/0.25。"""
     prompt = _style_prompt(
         {"design_theme": "牛仔荒野风"},
         1,
         style_elements=assign_style_elements(COWBOY_KEYWORDS, 1, "batch-a"),
     )
-    assert "图案密度（本款硬要求" in prompt
-    assert "可印表面覆盖率 100%" in prompt
-    assert "满印填充纹样" in prompt
-    # PART 1 的批级满印锁（在 base prompt 里），避免四格或不同款退回局部印花。
+    assert "视觉权重（本款硬要求）" in prompt
+    assert "主元素约占可印表面" in prompt
+    assert "Narrative 合计约" in prompt
+    assert "主元素的线性尺寸至少是 Narrative 的 1.8 倍" in prompt
+    assert "Rhythm 的 3.6 倍" in prompt
+    assert "不能出现比一个主元素还大的连续底色" in prompt
+    assert "任意大于手掌的连续空白底色即视为失败" in prompt
+
+
+def test_element_area_shares_sum_to_100_and_hero_leads() -> None:
+    from wh_local.modules.pod_customization.prompts import element_area_shares
+
+    shares = element_area_shares("冬青", ["雪花", "松枝"], ["星星", "浆果", "格纹", "丝带"])
+    assert sum(shares.values()) == 100
+    assert shares["hero"] > shares["narrative"] > shares["rhythm"]
+
+
+def test_style_prompt_drops_density_pool_but_keeps_all_over_lock() -> None:
+    """v20：密度池已删除；批级满印锁仍在（覆盖口径不随池一起消失）。"""
+    prompt = _style_prompt(
+        {"design_theme": "牛仔荒野风"},
+        1,
+        style_elements=assign_style_elements(COWBOY_KEYWORDS, 1, "batch-a"),
+    )
+    assert "图案密度（本款硬要求" not in prompt
+    assert "density=" not in prompt
     assert "ALL-OVER PRINT LOCK" in build_direct_listing_prompt(
         BusinessFields(product_name="绗缝化妆包"), ""
     )
-    # 密度池里不再出现 sparse / oversized 这类会把画面做空的档位。
     for index in range(1, 11):
         style_prompt = _style_prompt(
             {"design_theme": "牛仔荒野风"},
             index,
             style_elements=assign_style_elements(COWBOY_KEYWORDS, index, "batch-a"),
         )
-        assert "density=very sparse" not in style_prompt
-        assert "density=sparse" not in style_prompt
-        assert "one oversized motif" not in style_prompt
+        assert "density=" not in style_prompt
+        assert "pattern_layout=" not in style_prompt
 
 
 def test_style_prompt_renders_color_harmony_tiers_with_user_colors() -> None:

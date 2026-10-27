@@ -1701,7 +1701,6 @@ class PodCustomizationService:
                 brief=request.brief,
                 locale=request.locale,
                 fabric_craft=request.fabric_craft,
-                scene_mood=request.scene_mood,
                 template_image=template_image,
                 template_content_type=template_content_type,
             ),
