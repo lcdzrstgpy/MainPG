@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from wh_local.modules.pod_customization.billing_contract import (
-    POD_BILLING_PROFILE_REPLICA_HD,
+    POD_BILLING_PROFILE_REPLICA,
     PodExecutionGrant,
 )
 from wh_local.modules.pod_customization.contracts import COMPOSITION_PANEL_KEYS
@@ -340,9 +340,9 @@ def test_create_batch_freezes_v4_plan_and_billing_shape(tmp_path: Path) -> None:
     # 建批次不再产出任何豆包调用。
     assert runtime.calls == 1
 
-    # 计费：一款 = 1 link，预留 4 面板 × 2 次尝试，画像为复刻高清档。
+    # 计费：一款 = 1 link，预留 4 面板 × 2 次尝试，画像为复刻统一档。
     frozen = billing.freezes[-1]
-    assert frozen.billing_profile == POD_BILLING_PROFILE_REPLICA_HD
+    assert frozen.billing_profile == POD_BILLING_PROFILE_REPLICA
     assert frozen.product_batch_freeze_payload()["link_count"] == 1
     assert sum(call.feature == "pod.image" for call in frozen.calls) == 8
     # 只有「方案分析」与「建批次」两次冻结，不再冻结任何复刻构图调用。

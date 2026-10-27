@@ -15,7 +15,7 @@ from pathlib import Path
 from PIL import Image
 
 from wh_local.modules.pod_customization.billing_contract import (
-    POD_BILLING_PROFILE_REPLICA_HD,
+    POD_BILLING_PROFILE_REPLICA,
     PodExecutionGrant,
 )
 from wh_local.modules.pod_customization.contracts import (
@@ -251,7 +251,7 @@ def test_main_image_then_three_derived_panels(tmp_path: Path) -> None:
         assert internal["prompt_snapshot"] == _MAIN_PROMPT
 
         frozen = billing.freezes[-1]
-        assert frozen.billing_profile == POD_BILLING_PROFILE_REPLICA_HD
+        assert frozen.billing_profile == POD_BILLING_PROFILE_REPLICA
         assert frozen.product_batch_freeze_payload()["link_count"] == 1
         assert sum(call.feature == "pod.image" for call in frozen.calls) == 8
 

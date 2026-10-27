@@ -232,8 +232,8 @@ test("submit gate requires every target to have a ready main-image plan", () => 
   assert.equal(validateReplicaTargetDraft(pending).ok, false);
 });
 
-test("fee estimate follows the full-custom per-product billing range", () => {
+test("fee estimate follows the unified 100-points-per-style replica price", () => {
   assert.deepEqual(replicaFeeEstimate(0), { min: 0, max: 0 });
-  assert.deepEqual(replicaFeeEstimate(2), { min: 80, max: 100 });
-  assert.equal(replicaFeeEstimateText(3), "约 120–150 积分");
+  assert.deepEqual(replicaFeeEstimate(2), { min: 200, max: 200 });
+  assert.equal(replicaFeeEstimateText(3), "约 300 积分");
 });

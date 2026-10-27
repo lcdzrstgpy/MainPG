@@ -31,13 +31,11 @@ POD_BILLING_PROFILE_RANDOM = "pod_random_v1"
 POD_BILLING_PROFILE_RANDOM_GRID = "pod_random_grid_v1"
 POD_BILLING_PROFILE_FISSION = "pod_fission_v1"
 POD_BILLING_PROFILE_SEMI = "pod_semi_v1"
-# 爆款复刻画像（A/B 两档，远端按档位决定「一次上报」的计价倍率）：
-#   A = pod_replica_v1_a：普通生成（grid，本地拆图）——一次上报扣 1 次全定制积分；
-#   B = pod_replica_v1_b：高清直出（independent_panels，直出 4 张）——一次上报扣 4 倍积分。
-# 两者都与全定制按「款」计价同价（固定 45/款），但用独立画像值上报：
-# 远端据此把「复刻」与「全定制」分到不同分类统计，并按 A/B 区分倍率。
-POD_BILLING_PROFILE_REPLICA = "pod_replica_v1_a"
-POD_BILLING_PROFILE_REPLICA_HD = "pod_replica_v1_b"
+# 爆款复刻统一画像：不再区分「普通生成 / 高清直出」，也不区分四宫格与四图；
+# 复刻固定每款直出四张单图，客户端只上报款数（link_count），由远端按「款」统一定价。
+# 历史批次冻结/结算里仍可能留有 pod_replica_v1_a / pod_replica_v1_b（旧 A/B 两档），
+# 仅作历史流水展示，不再由客户端上报。
+POD_BILLING_PROFILE_REPLICA = "pod_replica_v1"
 
 # v2 请求里的 module 字段（与账本 module 列同值）。
 POD_MODULE_CUSTOM = "pod_custom"
@@ -397,11 +395,10 @@ class PodCallPlan:
     def for_replica_batch(
         cls, batch_id: str, *, style_count: int, generation_strategy: str = "grid"
     ) -> "PodCallPlan":
-        """复刻批次冻结：按生成策略决定每款预留的图片调用形状。
+        """复刻批次冻结：确定每款预留的图片调用形状。
 
-        - ``grid``：与 ``for_batch`` 同形（每款 1 次四宫格 × 2 次尝试）；
-        - ``independent_panels``：每款 4 个面板 × 2 次尝试（共 8 次图片调用）。
-
+        复刻已统一为每款直出四张单图（``independent_panels``），不再有 grid 形态；
+        ``grid`` 分支只为兼容历史批次读取，新批次不会走到。
         产品批次计费以 link 为单位（1 款 = 1 link），单款内部多出来的图片调用不会
         增加 link_count，只用于结算时逐调用对齐 outcomes；未使用的调用补 no_return。
         """
@@ -434,7 +431,7 @@ class PodCallPlan:
         return cls(
             idempotency_key=f"pod:batch:{batch_id}:initial",
             calls=calls,
-            billing_profile=POD_BILLING_PROFILE_REPLICA_HD,
+            billing_profile=POD_BILLING_PROFILE_REPLICA,
         )
 
     @staticmethod
@@ -460,7 +457,7 @@ class PodCallPlan:
         return cls(
             idempotency_key=f"pod:retry:{action_id}",
             calls=tuple(calls),
-            billing_profile=POD_BILLING_PROFILE_REPLICA_HD,
+            billing_profile=POD_BILLING_PROFILE_REPLICA,
         )
 
     @classmethod
@@ -495,7 +492,7 @@ class PodCallPlan:
         return cls(
             idempotency_key=f"pod:retry:{action_id}",
             calls=tuple(calls),
-            billing_profile=POD_BILLING_PROFILE_REPLICA_HD,
+            billing_profile=POD_BILLING_PROFILE_REPLICA,
         )
 
     @classmethod
@@ -533,7 +530,7 @@ class PodCallPlan:
         return cls(
             idempotency_key=f"pod:batch:{batch_id}:resume:{resume_id}",
             calls=tuple(calls),
-            billing_profile=POD_BILLING_PROFILE_REPLICA_HD,
+            billing_profile=POD_BILLING_PROFILE_REPLICA,
         )
 
     @classmethod

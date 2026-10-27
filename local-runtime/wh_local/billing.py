@@ -28,9 +28,14 @@ BATCH_BILLING_PROFILE_POD_FISSION = "pod_fission_v1"
 # 半定制（纯图案）独立计费画像：按「组」上报，一组 4 款固定 32 积分（即 8 积分/款）。
 # 客户端半定制把 4 款折叠成 1 个 link 上报（link_count = 组数），故这里按 link 固定 32。
 BATCH_BILLING_PROFILE_POD_SEMI = "pod_semi_v1"
-# POD 每条款式定价：服务器随机取 40..50 整数积分。
+# POD 通用每条款式定价（本地镜像口径）：保留历史随机区间，全定制仍按此参考。
+# 远端服务端才是权威定价，本地仅用于离线回退、参考实现与测试。
 POD_LINK_PRICE_MIN_POINTS = 40
 POD_LINK_PRICE_VARIANTS = 11
+# 爆款复刻统一价：100 积分/款（每款四图直出，不再分四宫格/四图，也不分 A/B 档）。
+BATCH_BILLING_PROFILE_POD_REPLICA = "pod_replica_v1"
+POD_REPLICA_LINK_PRICE_MIN_POINTS = 100
+POD_REPLICA_LINK_PRICE_VARIANTS = 1
 # POD 半定制每组（4 款）定价：固定 32 整数积分（variants=1 → randbelow(1) 恒为 0）。
 POD_SEMI_LINK_PRICE_MIN_POINTS = 32
 POD_SEMI_LINK_PRICE_VARIANTS = 1
@@ -3149,7 +3154,13 @@ def freeze_batch_points(
     """
     link_count = max(1, int(link_count))
     profile = str(billing_profile or BATCH_BILLING_PROFILE_PRODUCT).strip()
-    if profile not in {BATCH_BILLING_PROFILE_PRODUCT, BATCH_BILLING_PROFILE_POD, BATCH_BILLING_PROFILE_POD_SEMI, BATCH_BILLING_PROFILE_POD_FISSION}:
+    if profile not in {
+        BATCH_BILLING_PROFILE_PRODUCT,
+        BATCH_BILLING_PROFILE_POD,
+        BATCH_BILLING_PROFILE_POD_SEMI,
+        BATCH_BILLING_PROFILE_POD_FISSION,
+        BATCH_BILLING_PROFILE_POD_REPLICA,
+    }:
         raise HTTPException(status_code=400, detail="invalid batch billing profile")
     # 冻结时读取当前生效单条价值/倍率；固定价值模式按 points_per_unit 精确扣费。
     multipliers = active_multipliers(database_path)
@@ -3202,7 +3213,12 @@ def freeze_batch_points(
                 return _batch_freeze_response(
                     existing, pricing=display_pricing, already_frozen=True
                 )
-        if profile in {BATCH_BILLING_PROFILE_POD, BATCH_BILLING_PROFILE_POD_SEMI, BATCH_BILLING_PROFILE_POD_FISSION}:
+        if profile in {
+            BATCH_BILLING_PROFILE_POD,
+            BATCH_BILLING_PROFILE_POD_SEMI,
+            BATCH_BILLING_PROFILE_POD_FISSION,
+            BATCH_BILLING_PROFILE_POD_REPLICA,
+        }:
             allowed_scope = {"title", "four_grid"}
             if (
                 not normalized_scope
@@ -3218,9 +3234,13 @@ def freeze_batch_points(
                 # 固定单条价值模式：每款式都按管理员设置的价值收取。
                 link_price_units = [target_units_per_link for _ in range(link_count)]
             else:
-                semi = profile == BATCH_BILLING_PROFILE_POD_SEMI
-                min_points = POD_SEMI_LINK_PRICE_MIN_POINTS if semi else POD_LINK_PRICE_MIN_POINTS
-                variants = POD_SEMI_LINK_PRICE_VARIANTS if semi else POD_LINK_PRICE_VARIANTS
+                if profile == BATCH_BILLING_PROFILE_POD_REPLICA:
+                    min_points = POD_REPLICA_LINK_PRICE_MIN_POINTS
+                    variants = POD_REPLICA_LINK_PRICE_VARIANTS
+                else:
+                    semi = profile == BATCH_BILLING_PROFILE_POD_SEMI
+                    min_points = POD_SEMI_LINK_PRICE_MIN_POINTS if semi else POD_LINK_PRICE_MIN_POINTS
+                    variants = POD_SEMI_LINK_PRICE_VARIANTS if semi else POD_LINK_PRICE_VARIANTS
                 link_price_units = [
                     _scaled_units(
                         (min_points + secrets.randbelow(variants)) * PIC_UNIT_SCALE,

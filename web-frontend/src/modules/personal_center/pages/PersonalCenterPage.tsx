@@ -197,8 +197,10 @@ const POD_PRICING_LABELS: Record<string, string> = {
   pod_random_v1: "POD 全定制",
   pod_semi_v1: "POD 半定制",
   pod_fission_v1: "POD 爆款裂变",
+  // 复刻已统一：新流水用 pod_replica_v1；历史 A/B 两档流水仍展示同一个名字。
+  pod_replica_v1: "POD 爆款复刻",
   pod_replica_v1_a: "POD 爆款复刻",
-  pod_replica_v1_b: "POD 爆款复刻 · 高清直出",
+  pod_replica_v1_b: "POD 爆款复刻",
 };
 
 /** POD 计价单位兜底：半定制按「组」（4 款 = 1 组），其余按「款」。 */
@@ -251,10 +253,10 @@ const POD_SERVICE_LABEL: Record<string, string> = {
   pod_fission_v1: "POD 爆款裂变",
   pod_random_v1: "POD 全定制",
   pod_semi_v1: "POD 半定制",
-  // 复刻按 A/B 分档：A=普通生成（1 次全定制积分）、B=高清直出（4 倍）。历史流水沿用无后缀值。
+  // 复刻不再分档：new 流水统一 pod_replica_v1；A/B 仅为历史流水兼容，展示名一致。
   pod_replica_v1: "POD 爆款复刻",
-  pod_replica_v1_a: "POD 爆款复刻 · 普通生成",
-  pod_replica_v1_b: "POD 爆款复刻 · 高清直出",
+  pod_replica_v1_a: "POD 爆款复刻",
+  pod_replica_v1_b: "POD 爆款复刻",
 };
 
 export function usageServiceLabel(entry: BillingUsageEntry): string {
@@ -2021,7 +2023,7 @@ export function PersonalCenterPage({ feedbackPrefill = null, panel, onPanelChang
           <article className="personal-card pricing-card">
             <div className="personal-card-title">
               <span className="iconfont icon-calculator" aria-hidden="true" />
-              <div><h2>计费规则</h2><small>服务端权威定价，按规则版本生效，客户端不参与报价。</small></div>
+              <div><h2>计费规则</h2></div>
               <button type="button" onClick={() => refreshBalance()} disabled={balanceCooldownActive || loading}>
                 {balanceCooldownActive ? `${balanceCooldownSeconds} 秒后` : "刷新"}
               </button>

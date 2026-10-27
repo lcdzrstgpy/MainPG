@@ -58,9 +58,9 @@ export function replicaAssetPath(assetId: string): string {
   return assetId ? `/api/pod-customization/assets/${encodeURIComponent(assetId)}` : "";
 }
 
-/** 全定制 `pod_random_v1` 画像口径：每个目标产品计为一款，40–50 积分/款的估算区间。 */
-export const REPLICA_FEE_PER_PRODUCT_MIN = 40;
-export const REPLICA_FEE_PER_PRODUCT_MAX = 50;
+/** 复刻计费口径：每款固定 100 积分（四图直出，不分四宫格/四图，单价由服务端权威定价）。 */
+export const REPLICA_FEE_PER_PRODUCT_MIN = 100;
+export const REPLICA_FEE_PER_PRODUCT_MAX = 100;
 
 function newRandomId(prefix: string): string {
   const random = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
@@ -311,5 +311,5 @@ export function replicaFeeEstimate(count: number): { min: number; max: number } 
 
 export function replicaFeeEstimateText(count: number): string {
   const { min, max } = replicaFeeEstimate(count);
-  return `约 ${min}–${max} 积分`;
+  return min === max ? `约 ${min} 积分` : `约 ${min}–${max} 积分`;
 }
