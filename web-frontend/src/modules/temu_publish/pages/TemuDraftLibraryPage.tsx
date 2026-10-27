@@ -303,6 +303,8 @@ export function TemuDraftLibraryPage({
   });
   // 批量发布弹窗：勾完直接发，模板在弹窗里选（不再要求先去菜单里「引用产品模板」）
   const [batchOpen, setBatchOpen] = useState(false);
+  // 批量发布里被「24 小时内重复提交」挡下的条目：不算失败，单独列出来
+  const [batchSkipped, setBatchSkipped] = useState<string[]>([]);
   const [editing, setEditing] = useState<TemuDraftEntry | null>(null);
   const [editForm, setEditForm] = useState<TemuDraftEdit>({});
 
@@ -406,8 +408,10 @@ export function TemuDraftLibraryPage({
 
     const variant = variantTemplates.find((item) => item.name === variantTpl) ?? null;
     setBatchState({ running: true, text: `0/${targets.length}` });
+    setBatchSkipped([]);
     let ok = 0;
     let fail = 0;
+    let skipped = 0;
     for (const [index, entry] of targets.entries()) {
       setBatchState({
         running: true,
@@ -420,6 +424,13 @@ export function TemuDraftLibraryPage({
         localStore.rememberDraftCategory(entry.id, template.categoryPath);
         ok += 1;
       } catch (cause) {
+        const reasonText = errorMessage(cause);
+        // 台账挡下的重复提交：这条大概率已经在店铺里了，不算失败、也不进失败历史
+        if (/重复提交/.test(reasonText)) {
+          skipped += 1;
+          setBatchSkipped((current) => [...current, entry.title || entry.sku || "（无标题）"]);
+          continue;
+        }
         fail += 1;
         const parsed = parsePublishError(cause);
         const price = entry.declared_price == null ? "" : String(entry.declared_price);
@@ -443,7 +454,11 @@ export function TemuDraftLibraryPage({
         });
       }
     }
-    setBatchState({ running: false, text: `完成：成功 ${ok} 条，失败 ${fail} 条（失败原因见发布页列表）` });
+    const skippedText = skipped ? `，跳过 ${skipped} 条（24 小时内提交过）` : "";
+    setBatchState({
+      running: false,
+      text: `完成：成功 ${ok} 条${skippedText}，失败 ${fail} 条（失败原因见发布页列表）`,
+    });
     // 成功的已经从草稿库发出去了：清空勾选，避免下一次误点又提交一遍
     if (ok > 0) setSelected(new Set());
     setProductTemplates(localStore.productTemplates());
@@ -654,6 +669,14 @@ export function TemuDraftLibraryPage({
             <p className="temu-batch-progress">
               {batchState.running ? "批量发布中：" : ""}
               {batchState.text}
+            </p>
+          )}
+
+          {batchSkipped.length > 0 && (
+            <p className="temu-muted">
+              已跳过（24 小时内提交过，确认要重复上架请回发布页单条发）：
+              {batchSkipped.slice(0, 3).map((title) => title.slice(0, 20)).join("、")}
+              {batchSkipped.length > 3 ? ` 等 ${batchSkipped.length} 条` : ""}
             </p>
           )}
 

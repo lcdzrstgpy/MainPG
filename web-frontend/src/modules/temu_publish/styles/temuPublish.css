@@ -2666,3 +2666,9 @@ textarea.temu-input {
   justify-content: flex-start;
   color: var(--theme-text-muted, #7b93a8);
 }
+
+/* 弹窗里的字段提示不要跟着标签变粗 */
+.temu-batch-dialog .temu-field > span > em {
+  font-style: normal;
+  font-weight: 400;
+}

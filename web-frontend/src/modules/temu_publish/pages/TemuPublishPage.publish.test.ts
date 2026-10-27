@@ -422,4 +422,9 @@ test("批量发布：勾完直接发，模板在弹窗里选（不用先去菜�
   assert.match(library, /const batchTargets = useMemo\(/);
   // 弹窗确认后不再二次 window.confirm
   assert.ok(!/const confirmed = window\.confirm\(\s*\[\s*`即将把这/.test(library));
+
+  // 台账挡下的重复提交：不算失败，单独计数并回显，避免用户以为「发失败了」去重试
+  assert.match(library, /if \(\/重复提交\/\.test\(reasonText\)\) \{/);
+  assert.match(library, /跳过 \$\{skipped\} 条（24 小时内提交过）/);
+  assert.match(library, /setBatchSkipped\(\(current\) => \[\.\.\.current,/);
 });
