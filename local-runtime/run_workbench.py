@@ -174,31 +174,36 @@ def _resolve_port_conflict(host: str, port: int, card) -> bool:
         return False
     pid = pids[0]
     name = _process_name(pid)
-    # 只清「本程序自己」的残留。以前这里也算上 python —— 但用户机器上任何
-    # python 进程（开发者的脚本、别的本地服务）都可能占这个端口，杀掉是不可逆的，
-    # 不能因为它叫 python 就当是我们自己。宁可顺延端口，也不替用户决定杀进程。
-    if "mainpg" not in name.lower():
-        # 别的程序占着：把选择权交给用户（卡片上两个按钮），20 秒没人选就顺延。
-        if card is None:
-            # --no-browser（协议拉起）没有卡片可问，只能顺延。
-            return False
-        choice = card.ask_port_conflict(port=port, process_name=name, pid=pid)
-        if choice != "kill":
-            card.set_status(
-                "正在启动",
-                f"{port} 被「{name}」占用，已改用其它端口启动（浏览器插件可能连不上）",
-            )
-            log.warning("%s 被「%s」(%s) 占用，改用其它端口", port, name, pid)
-            return False
-        log.warning("用户选择关闭占用进程 %s(%s) 以使用 %s", name, pid, port)
-
-    log.warning("清理本程序残留进程 %s(%s)，继续使用 %s", name, pid, port)
+    # 2026-10-22：连「自己人」也不再静默杀掉。
+    #
+    # 旧规则是「占用者叫 mainpg 就当成上次没退干净的残留，直接 kill」。这个前提站
+    # 不住：进程真退出了端口会自动释放，根本轮不到这里；端口还被占着，恰恰说明那个
+    # 进程**还活着**，只是没在探测窗口里答上 /health（低配机器跑 AI 出图 / POD 渲染
+    # 时是常态）。杀掉它 = 正在跑的任务一起没，前一个页面立刻连接被拒 → 弹「本地服务
+    # 掉线了」。这也是用户点「重新连接」越点越糟的那条路。
+    #
+    # 所以：两类占用者一律交给用户决定；没有卡片可问（协议拉起）就顺延端口，不杀。
+    if card is None:
+        log.warning(
+            "%s 被「%s」(%s) 占用且无法确认其可用，改用其它端口（不杀进程）",
+            port, name, pid,
+        )
+        return False
+    choice = card.ask_port_conflict(port=port, process_name=name, pid=pid)
+    if choice != "kill":
+        card.set_status(
+            "正在启动",
+            f"{port} 被「{name}」占用，已改用其它端口启动（浏览器插件可能连不上）",
+        )
+        log.warning("%s 被「%s」(%s) 占用，改用其它端口", port, name, pid)
+        return False
+    log.warning("用户选择关闭占用进程 %s(%s) 以使用 %s", name, pid, port)
     _kill_pid(pid)
     for _ in range(20):
         time.sleep(0.25)
         if not _port_in_use(host, port):
             return True
-    log.warning("残留进程已结束但 %s 仍未释放，改为顺延端口", port)
+    log.warning("占用进程已结束但 %s 仍未释放，改为顺延端口", port)
     return False
 
 
@@ -226,10 +231,10 @@ def _is_backend_ready(host: str, port: int, timeout: float = 1.0) -> bool:
     return isinstance(payload, dict) and payload.get("ok") is True
 
 
-def _probe_running_workbench(
-    host: str, port: int, timeout: float = 1.5
+def _probe_running_workbench_once(
+    host: str, port: int, timeout: float
 ) -> tuple[str, str] | None:
-    """探测端口上是否已有本程序后端在正常服务。
+    """探测端口上是否已有本程序后端在正常服务（单次，不重试）。
 
     返回 ``(database_path, app_version)``（都可能是空串：旧版本不报 app_version）；
     不可达、或回应得不像本程序时返回 None。
@@ -266,6 +271,30 @@ def _probe_running_workbench(
         database_path if isinstance(database_path, str) else "",
         app_version if isinstance(app_version, str) else "",
     )
+
+
+def _probe_running_workbench(
+    host: str, port: int, timeout: float = 1.5, attempts: int = 3
+) -> tuple[str, str] | None:
+    """带重试的「端口上是不是有兄弟实例」探测。
+
+    为什么必须重试：2026-10-16 修过一次「再启动一次 = 把正在用的那个杀掉」，但当时
+    只探一次、超时 1.5 秒。用户的办公机配置低，后端正跑 AI 出图 / POD 渲染时 1.5 秒
+    答不上 /health 是常态 —— 于是老实例被判成「历史残留」，直接 _kill_pid 掉：前一个
+    页面的请求全部连接被拒，立刻弹「本地服务掉线了」，正在跑的任务一起没。
+
+    更糟的是「点『重新连接』→ 走 mainpg://recover → 无卡片实例再探一次」也会走这条
+    路，越点越死。所以这里放宽成 3 次、每次 1.5 秒（首次之外隔 0.8 秒），只有连续
+    探测都拿不到回应才认为是真的不可用。启动卡片本来就在转圈，多等两秒无感。
+    """
+    tries = max(1, int(attempts))
+    for index in range(tries):
+        result = _probe_running_workbench_once(host, port, timeout)
+        if result is not None:
+            return result
+        if index < tries - 1:
+            time.sleep(0.8)
+    return None
 
 
 def _expected_database_path() -> str | None:
@@ -764,26 +793,40 @@ def main() -> int:
     # uvicorn 运行期发生致命异常时同样落盘后退出，避免进程静默消失。
     # 用已绑定好的 sock 通过 sockets=[sock] 交给 uvicorn，避免其再次 bind 触发
     # 端口竞态；port/host 仅用于日志与 URL 显示。
-    try:
-        config = uvicorn.Config(
-            app,
-            host=args.host,
-            port=port,
-            log_level="info",
-            access_log=False,
-            log_config=_UVICORN_LOG_CONFIG,
-        )
-        uvicorn.Server(config).run(sockets=[sock])
-    except BaseException as exc:  # noqa: BLE001 运行期致命异常需全部捕获
-        _log.critical(
-            "FATAL: uvicorn exited.\n%s",
-            "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
-        )
-        _show_fatal_box(
-            "后端服务运行时发生错误并退出。\n"
-            f"详细信息已写入日志：{log_path}\n请将此文件反馈给技术支持。"
-        )
-        return 1
+    # 自动拉起一次：uvicorn 意外退出后再跑一轮，仍然崩就交还给用户。
+    # 只拉这一次——无限重启会在「安全软件反复终止主程序」时变成重启循环，比不重启
+    # 更糟（2026-10-16 在前端侧记下的同一条顾虑）。进程被外部直接杀掉的情况这里
+    # 覆盖不到（进程都没了），由前端自动拉起 mainpg://recover 兜住，同样限一次。
+    for attempt in (1, 2):
+        try:
+            config = uvicorn.Config(
+                app,
+                host=args.host,
+                port=port,
+                log_level="info",
+                access_log=False,
+                log_config=_UVICORN_LOG_CONFIG,
+            )
+            uvicorn.Server(config).run(sockets=[sock])
+            return 0
+        except KeyboardInterrupt:
+            _log.info("interrupted by user, exiting")
+            return 0
+        except BaseException as exc:  # noqa: BLE001 运行期致命异常需全部捕获
+            _log.critical(
+                "FATAL: uvicorn exited (attempt %s/2).\n%s",
+                attempt,
+                "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+            )
+            if attempt == 1:
+                _log.warning("自动重启一次（仅此一次，避免崩溃循环）")
+                time.sleep(2.0)
+                continue
+            _show_fatal_box(
+                "后端服务运行时发生错误并退出。\n"
+                f"详细信息已写入日志：{log_path}\n请将此文件反馈给技术支持。"
+            )
+            return 1
     return 0
 
 

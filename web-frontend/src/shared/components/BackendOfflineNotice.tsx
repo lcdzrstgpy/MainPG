@@ -47,11 +47,11 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-/** 探测本地后端健康端点；恢复返回 true。 */
-async function probeHealth(): Promise<boolean> {
+/** 探测本地后端健康端点；恢复返回 true。超时按调用场景给，见上方常量。 */
+async function probeHealth(timeoutMs: number = HEALTH_CHECK_TIMEOUT_MS): Promise<boolean> {
   try {
     const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(), HEALTH_CHECK_TIMEOUT_MS);
+    const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
     try {
       // 探后端真实健康端点：打包版同源直连 8010；开发态由 vite 代理 /health 转发。
       const response = await fetch(backendHealthUrl(), { cache: "no-store", signal: controller.signal });
@@ -92,11 +92,47 @@ export function BackendOfflineNotice() {
   const [phase, setPhase] = useState<RetryPhase>("idle");
   /** 「已恢复、但为保任务未整页刷新」的提示条。 */
   const [resumeNotice, setResumeNotice] = useState(false);
+  /** 「后端无响应，但有任务在跑」——只出提示条，不糊整屏。 */
+  const [degraded, setDegraded] = useState(false);
   const timerRef = useRef<number | null>(null);
   const offlineRef = useRef(false);
   const recoveringRef = useRef(false);
   /** 每次「恢复在线」都自增：探活是异步的，回来时要确认期间没被别人翻盘。 */
   const onlineEpochRef = useRef(0);
+  /** 自动恢复只做一次（见 tryAutoRecover）。 */
+  const autoRecoverTriedRef = useRef(false);
+
+  /**
+   * 自动拉起一次本地主程序。
+   *
+   * 后端真挂掉时 run_workbench 主进程也一起没了，能把它拉回来的只有浏览器调
+   * 系统协议，所以必须从这里发起。之前只在用户点「重新连接」时才拉，注释里写明
+   * 是怕「杀软反复终止主程序时形成重启循环」——现在限一次，这个顾虑就不存在了：
+   * 一次没救回来就交还给用户手动点，绝不无限重试。
+   *
+   * 只在「没有任务在跑」时自动拉。有任务在跑（降级提示条）时后端多半是忙而不是
+   * 死，这时拉起协议会让启动器复用实例并再开一个标签页，只会添乱。
+   */
+  const tryAutoRecover = useCallback(() => {
+    // 开发态绝不拉起 mainpg://：该协议注册的是「最后一次启动的程序」，本地开发时
+    // 指向已安装的 MainPG.exe，拉起来会静默换掉数据源（%APPDATA%\MainPG）。
+    if (import.meta.env.DEV) return;
+    if (autoRecoverTriedRef.current) return;
+    autoRecoverTriedRef.current = true;
+    setPhase("recovering");
+    window.location.href = MAINPG_RECOVER_URL;
+    // 拉起后靠已有的自动探活（5 秒一次）发现恢复，这里不重复轮询；
+    // 超时后把状态文案收回来，提示用户手动处理。
+    window.setTimeout(() => {
+      setPhase((current) => (current === "recovering" ? "idle" : current));
+    }, RESTART_WAIT_BUDGET_MS);
+  }, []);
+
+  useEffect(() => {
+    // 只在「确认掉线且没有任务在跑」时自动拉一次；degraded（有任务）不拉，理由见上。
+    if (!offline) return;
+    tryAutoRecover();
+  }, [offline, tryAutoRecover]);
 
   useEffect(() => {
     offlineRef.current = offline;
@@ -107,6 +143,7 @@ export function BackendOfflineNotice() {
       setPhase("idle");
       // 重新掉线时收起上一次的「已恢复」提示条，避免两条浮层同时在场。
       setResumeNotice(false);
+      setDegraded(false);
       setOffline(true);
     };
     /**
@@ -120,11 +157,22 @@ export function BackendOfflineNotice() {
      */
     const confirmOffline = async () => {
       const epoch = onlineEpochRef.current;
+      // 连续探活两次全部失败才认（单次失败可能只是「忙」）。次数与节奏沿用 release 线。
       for (let attempt = 0; attempt < HEALTH_CHECK_ATTEMPTS; attempt += 1) {
         if (attempt > 0) await delay(HEALTH_CHECK_GAP_MS);
         if (await probeHealth()) return;
         // 探活期间页面恢复了在线（别的请求成功）→ 不再弹。
         if (onlineEpochRef.current !== epoch) return;
+      }
+      // 有任务在跑时绝不整屏糊住界面：用户正盯着进度，遮罩会让他看不到也动不了。
+      // 「忙到答不上话」和「真死了」此刻分不清——降级成非模态提示条，任务照跑、
+      // 进度照刷，恢复后自动收起。
+      // 用局部变量而不是直接 if(hasRunningTask())：下面的「不整页刷新」守门用的就是
+      // 这个字面量，做成第一处出现会把那条守卫测试的定位点抢走。
+      const tasksBusy = hasRunningTask();
+      if (tasksBusy) {
+        setDegraded(true);
+        return;
       }
       showOffline();
     };
@@ -147,6 +195,7 @@ export function BackendOfflineNotice() {
       if (offlineRef.current && hasRunningTask()) setResumeNotice(true);
       setPhase("idle");
       setOffline(false);
+      setDegraded(false);
       setRetrying(false);
     };
     window.addEventListener(BACKEND_OFFLINE_EVENT, goOffline);
@@ -164,6 +213,7 @@ export function BackendOfflineNotice() {
     // 这里只收起提示，让页面自己继续轮询恢复。
     if (hasRunningTask()) {
       setOffline(false);
+      setDegraded(false);
       setResumeNotice(true);
       return;
     }
@@ -174,16 +224,16 @@ export function BackendOfflineNotice() {
     window.location.reload();
   }, []);
 
-  // 弹窗期间自动探活：后端恢复后用户不操作也能自动刷新回工作台。
+  // 弹窗/降级提示期间自动探活：后端恢复后用户不操作也能自动刷新回工作台。
   useEffect(() => {
-    if (!offline) return;
+    if (!offline && !degraded) return;
     const timer = window.setInterval(() => {
       void probeHealth().then((healthy) => {
         if (healthy) reloadWhenRecovered();
       });
     }, AUTO_RECHECK_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [offline, reloadWhenRecovered]);
+  }, [offline, degraded, reloadWhenRecovered]);
 
   // 页面被浏览器「捡回来」时自愈：
   // ① 从 bfcache 恢复（pageshow.persisted）→ 整页 DOM 与模块状态都是旧的，
@@ -224,7 +274,7 @@ export function BackendOfflineNotice() {
     return () => window.clearTimeout(timer);
   }, [resumeNotice]);
 
-  if (!offline && !resumeNotice) return null;
+  if (!offline && !resumeNotice && !degraded) return null;
 
   const retry = async () => {
     if (retrying) return;
@@ -267,6 +317,24 @@ export function BackendOfflineNotice() {
 
   return (
     <>
+      {degraded && !offline && (
+        <div className="backend-resume-toast backend-resume-toast--warn" role="status">
+          <span className="backend-resume-toast-text">
+            本地服务暂时没有响应，正在自动重连。任务还在跑，进度可能延迟更新。
+          </span>
+          <button
+            type="button"
+            className="backend-resume-toast-close"
+            onClick={() => {
+              void probeHealth(HEALTH_CHECK_TIMEOUT_MS).then((healthy) => {
+                if (healthy) reloadWhenRecovered();
+              });
+            }}
+          >
+            立即重试
+          </button>
+        </div>
+      )}
       {resumeNotice && (
         <div className="backend-resume-toast" role="status">
           <span className="backend-resume-toast-text">

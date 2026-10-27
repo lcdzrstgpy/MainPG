@@ -951,3 +951,25 @@ def test_dimension_router_is_mounted_under_product_processing(tmp_path: Path) ->
     finally:
         getattr(service, "_dimension_canvas_service").close()
         database.dispose()
+
+
+def test_resolving_change_set_marks_notification_read(service_fixture) -> None:
+    """审核处理完（没有 pending 项）时，通知必须自动标已读。
+
+    否则「尺寸画布返回 N 项」这条通知会永远未读，工作台那条全局横幅就一直挂在
+    所有模块上 —— 用户描述为「在别的地方提示尺寸画布要审核」。
+    """
+    database, _product, repository, service, _calls, _publisher = service_fixture
+    seeded = _seed(database)
+    completed = _complete(service, seeded)
+    change_set = service.submit_review(completed["batch_id"], workspace_id="local")
+
+    before = repository.list_notifications("local")
+    assert before, "提交审核后应当产生通知"
+    assert all(not item["read_at"] for item in before), "刚产生时必须是未读"
+
+    for item in change_set["items"]:
+        repository.reject_change_item(item["id"], "local")
+
+    after = repository.list_notifications("local")
+    assert all(item["read_at"] for item in after), "全部处理完后通知应自动已读"

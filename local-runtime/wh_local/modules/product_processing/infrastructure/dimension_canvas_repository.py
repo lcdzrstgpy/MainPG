@@ -1818,6 +1818,20 @@ class DimensionCanvasRepository:
         if counts["pending_count"] == 0:
             change_set.status = "resolved"
             change_set.accepted_at = utc_now()
+            # 审核处理完毕 → 顺手把「尺寸画布返回 N 项」的通知标为已读。
+            #
+            # 不这样做的话，通知只有点工作台那条横幅才会被标已读；用户如果直接从
+            # 尺寸画布页把每一项都接受/拒绝了，通知永远留着未读，于是工作台的全局
+            # 横幅会一直挂在**所有模块**上（用户描述：「在别的地方提示尺寸画布要
+            # 审核」）。read_at 可能是空串也可能是 NULL，这里按假值判断。
+            for notification in session.scalars(
+                select(DimensionCanvasNotificationRow).where(
+                    DimensionCanvasNotificationRow.workspace_id == workspace_id,
+                    DimensionCanvasNotificationRow.change_set_id == change_set_id,
+                )
+            ):
+                if not notification.read_at:
+                    notification.read_at = utc_now()
 
     @staticmethod
     def _batch(row: DimensionCanvasBatchRow) -> dict[str, Any]:

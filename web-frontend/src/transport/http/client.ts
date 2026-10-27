@@ -159,6 +159,9 @@ export function toUserMessage(raw: string): string {
   if (!message) return "操作失败，请稍后重试";
   // 内部判断用标记（乐观锁重试等），不直接展示给用户，保留原文
   if (message.includes("settings_revision_conflict")) return message;
+  // Temu 网关拒绝：后端已用中文包好并附上上游原话，必须原样展示。
+  // 否则下面的英文规则（is required / not found …）会把它改掉，用户永远看不到真正原因。
+  if (message.startsWith("Temu 拒绝了这次提交")) return message;
   // 登录会话失效
   if (
     /remote customer session is missing/i.test(message) ||

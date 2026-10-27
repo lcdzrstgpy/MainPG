@@ -50,6 +50,12 @@ for _rel in (
     "wh_local/modules/profit_activity/migrations",
     "wh_local/modules/combo_kit/migrations",
     "wh_local/price_verification/migrations",
+    # 主题商店的可下载主题包（chinese / violet / dessert / diamond / quirky）。
+    # 2026-10-22：以前漏了这一项，安装版 /themes 恒返回空数组，用户在主题商店里
+    # 永远看不到这些主题（BUILTIN 只有 classic/sunset/peach/alpine）。
+    # 后端按 wh_local/data/themes 相对位置找目录，打包后落在 _internal 下，
+    # 正好命中 main.py 里 sys._MEIPASS 那个候选路径。
+    "wh_local/data/themes",
 ):
     _src = ROOT / _rel
     if _src.is_dir():

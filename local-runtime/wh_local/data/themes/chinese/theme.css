@@ -119,8 +119,8 @@
   pointer-events: none;
   opacity: .72;
   background:
-    /* 右上角远山：SVG 山脊轮廓（可辨峰形）+ 淡墨晕，盖在雾底上 */
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 520 200' preserveAspectRatio='xMaxYMin meet'%3E%3Cpath d='M40 200 L95 118 C130 98 155 128 188 112 C220 96 248 62 286 70 C318 77 338 108 372 96 C402 86 428 58 460 66 C488 73 505 88 520 82 L520 200 Z' fill='%23344c48' fill-opacity='0.22'/%3E%3Cpath d='M120 200 L175 142 C210 128 238 150 272 136 C308 121 336 92 376 102 C410 111 438 138 476 128 C496 123 510 130 520 126 L520 200 Z' fill='%232f4541' fill-opacity='0.16'/%3E%3Cpath d='M210 200 L255 158 C285 146 310 162 342 152 C378 140 404 118 442 128 C472 136 500 150 520 146 L520 200 Z' fill='%232a3f3b' fill-opacity='0.12'/%3E%3C/svg%3E") right -40px top -20px / 620px 240px no-repeat,
+    /* 右下斜向远山：AI 生成的水墨山（webp，墨色转 alpha，白底已透明化） */
+    url("/theme/chinese-mountain.webp") right bottom / 46% auto no-repeat,
     radial-gradient(ellipse 42% 28% at 88% 16%, rgba(47, 74, 70, .14) 0 38%, rgba(47, 74, 70, .06) 58%, transparent 78%),
     radial-gradient(ellipse 30% 20% at 74% 22%, rgba(67, 91, 83, .1) 0 40%, transparent 72%),
     radial-gradient(ellipse at 10% 72%, rgba(34, 61, 57, .14) 0 7%, rgba(68, 96, 87, .07) 16%, transparent 34%),
@@ -151,6 +151,8 @@
   background-size: 100% 100%, 720px auto, auto;
 }
 
+/* 顶栏维持「风景玻璃」的半透明（.16）——这是本主题的设计意图，用户明确要透明。
+   2026-10-22 曾误改成 .92，被指出后改回。别再动它。 */
 [data-theme="chinese"] .topbar-card {
   background-color: rgba(246, 244, 236, .16);
   background-image:
@@ -560,9 +562,16 @@
   border-color: rgba(63, 84, 78, 0.35);
 }
 
+/* 激活态不能画自己的边框/描边：这块的深绿药丸是滑块(.collection-tab-thumb)画的，
+   按钮本身是透明的、圆角 6px，而滑块圆角 999px —— 按钮那圈 inset 描边会露出一个
+   「方框」包在药丸外面（2026-10-22 用户反馈「这个主题有方框」）。其他主题没这条
+   规则，所以都没有这个现象。
+   下面刻意把边框与描边清掉，让视觉完全交给滑块。 */
 [data-theme="chinese"] .collection-workspace-tabs button.is-active {
   border-radius: 6px;
-  box-shadow: inset 0 0 0 1px rgba(63, 84, 78, 0.28);
+  border-color: transparent;
+  box-shadow: none;
+  background: transparent;
 }
 
 [data-theme="chinese"] :is(.dashboard-page, .mac-home) .mac-continue-grid > button,
