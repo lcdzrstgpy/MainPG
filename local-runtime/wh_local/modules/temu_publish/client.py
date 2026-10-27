@@ -256,6 +256,20 @@ class TemuProductClient:
         """新建规格后清掉父规格缓存，否则最长要等一个 TTL 才看得到新规格。"""
         self._cache_drop("parent-specs")
 
+    def goods_list(self, **filters: Any) -> dict[str, Any]:
+        """商品列表查询（bg.glo.goods.list.get）。
+
+        用途：发布请求超时/网络中断时反查「到底建没建」，以及按 SKC 货号查重。
+        常用过滤：skcExtCode / productName / productSkcIds / bindSiteIds / createdAtStart(秒)。
+        """
+        payload: dict[str, Any] = {"page": int(filters.pop("page", 1) or 1)}
+        payload["pageSize"] = int(filters.pop("pageSize", 20) or 20)
+        for key, value in filters.items():
+            if value in (None, "", [], {}):
+                continue
+            payload[key] = value
+        return self.call("bg.glo.goods.list.get", payload)
+
     def accessories(self, page: int = 1, page_size: int = 20, fuzzy_value: str = "") -> dict[str, Any]:
         payload: dict[str, Any] = {"page": int(page), "pageSize": int(page_size)}
         if fuzzy_value:

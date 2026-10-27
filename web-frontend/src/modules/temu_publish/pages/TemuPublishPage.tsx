@@ -2329,13 +2329,28 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
             {publishResult && (
               <div className="temu-publish-done">
                 <div>
-                  <strong>已提交到 Temu</strong>
+                  <strong>
+                    {publishResult.confirmed_by_lookup
+                      ? "已在店铺里查到（提交时网络中断）"
+                      : "已提交到 Temu"}
+                  </strong>
                   <span>
                     {publishResult.api_type} · {publishResult.summary.skc_count} 个 SKC /{" "}
                     {publishResult.summary.sku_count} 个变种
+                    {publishResult.confirmed_by_lookup && publishResult.matched_goods?.product_id
+                      ? ` · 商品 id ${String(publishResult.matched_goods.product_id)}`
+                      : ""}
                   </span>
                 </div>
-                <pre className="temu-json">{JSON.stringify(publishResult.result, null, 2)}</pre>
+                <pre className="temu-json">
+                  {JSON.stringify(
+                    publishResult.confirmed_by_lookup
+                      ? publishResult.matched_goods
+                      : publishResult.result,
+                    null,
+                    2,
+                  )}
+                </pre>
               </div>
             )}
 

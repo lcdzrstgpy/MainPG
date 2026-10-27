@@ -1475,3 +1475,72 @@ def test_inapplicable_property_is_dropped_from_payload(tmp_path: Path) -> None:
     )
     pids = [item["pid"] for item in ok["payload"]["productPropertyReqs"]]
     assert 2003 in pids and 2002 not in pids
+
+
+class LookupClient(StubCatalogClient):
+    """goods.add 抛网络错误；goods_list 按开关返回「店里已经有这件商品」。"""
+
+    def __init__(self, *, found: bool) -> None:
+        super().__init__()
+        self.found = found
+        self.add_calls = 0
+        self.list_calls = 0
+
+    def add_goods(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self.add_calls += 1
+        raise TemuGatewayError("bg.glo.goods.add", "网关超时", error_code="NETWORK_ERROR")
+
+    def goods_list(self, **filters: Any) -> dict[str, Any]:
+        self.list_calls += 1
+        if not self.found:
+            return {"data": [], "totalCount": 0}
+        import time as _time
+
+        return {
+            "data": [
+                {
+                    "productId": 987654321,
+                    "productName": "Cartoon cosmetic bag",
+                    "extCode": filters.get("skcExtCode"),
+                    "createdAt": int(_time.time() * 1000),
+                    "skcSiteStatus": 0,
+                }
+            ],
+            "totalCount": 1,
+        }
+
+
+def test_publish_timeout_is_confirmed_by_goods_lookup(tmp_path: Path) -> None:
+    """网络中断但店铺里已经能查到这件商品 → 按「已创建」处理，别让用户重试。"""
+    init_db(tmp_path / "runtime.sqlite3")
+    client = LookupClient(found=True)
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=client, owner_id="cust_a")
+
+    result = service.publish_goods(_draft())
+
+    assert result["submitted"] is True
+    assert result["confirmed_by_lookup"] is True
+    assert result["matched_goods"]["product_id"] == "987654321"
+    assert any("已经查到这件商品" in item for item in result["warnings"])
+    assert client.list_calls >= 1
+
+    # 台账记成成功 → 再发会被拦（避免重复上架）
+    from wh_local.modules.temu_publish.submissions import DuplicateSubmission
+
+    with pytest.raises(DuplicateSubmission):
+        service.publish_goods(_draft())
+
+
+def test_publish_network_error_without_match_still_fails(tmp_path: Path) -> None:
+    """反查不到就不能当成功：照常抛错、台账记 failed，允许用户重试。"""
+    init_db(tmp_path / "runtime.sqlite3")
+    client = LookupClient(found=False)
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=client, owner_id="cust_a")
+
+    with pytest.raises(TemuGatewayError):
+        service.publish_goods(_draft())
+    assert client.list_calls >= 1
+    # 失败不挡重试（这次会再打一次，仍然抛网络错误）
+    with pytest.raises(TemuGatewayError):
+        service.publish_goods(_draft())
+    assert client.add_calls == 2

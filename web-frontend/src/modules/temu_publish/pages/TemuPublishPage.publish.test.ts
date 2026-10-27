@@ -473,3 +473,11 @@ test("属性联动：父级取值不满足的子属性不显示、也不提交",
   assert.match(page, /const visiblePids = new Set\(visibleProperties\.map\(\(item\) => item\.pid\)\);/);
   assert.match(page, /filter\(\(\[pid\]\) => visiblePids\.has\(Number\(pid\)\)\)/);
 });
+
+test("发布超时后反查店铺：确认建成了就显示「已在店铺里查到」", () => {
+  const types = readFileSync(new URL("../types.ts", import.meta.url), "utf8");
+  assert.match(types, /confirmed_by_lookup\?: boolean;/);
+  assert.match(types, /matched_goods\?: Record<string, unknown>;/);
+  assert.match(page, /publishResult\.confirmed_by_lookup\s*\n?\s*\? "已在店铺里查到（提交时网络中断）"/);
+  assert.match(page, /publishResult\.matched_goods\?\.product_id/);
+});

@@ -187,6 +187,10 @@ export type TemuGoodsDraft = {
 
 export type TemuPublishResult = {
   submitted: boolean;
+  /** true = 提交时网络中断，靠「商品列表反查」确认已在店铺里创建（不是网关直接返回的成功） */
+  confirmed_by_lookup?: boolean;
+  /** 反查命中的商品信息（product_id / product_name / ext_code …） */
+  matched_goods?: Record<string, unknown>;
   api_type: string;
   /** 网关返回的原始结果（含 Temu 侧商品标识，字段随网关版本可能不同） */
   result: Record<string, unknown>;

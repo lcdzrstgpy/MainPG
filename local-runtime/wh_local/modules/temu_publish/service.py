@@ -12,6 +12,7 @@ import base64
 import ipaddress
 import os
 import socket
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -510,6 +511,43 @@ class TemuPublishService:
                 "warnings": built["warnings"],
             }
 
+    def find_published_goods(self, draft: GoodsDraftInput, *, within_seconds: int = 1800) -> dict[str, Any] | None:
+        """在店铺里按 SKC 货号反查这件商品（发布后核对用）。
+
+        只认「带同样 skc extCode + 最近半小时内创建」的那条，避免同名老商品误判。
+        查不到（或接口不可用）返回 None —— 调用方自己决定怎么处理。
+        """
+        codes = [str(skc.ext_code).strip() for skc in draft.skcs if str(skc.ext_code).strip()][:5]
+        sites = sorted({int(sku.site_id) for skc in draft.skcs for sku in skc.skus if int(sku.site_id) > 0})
+        started = int(time.time()) - max(60, int(within_seconds))
+        for code in codes:
+            try:
+                result = self.client().goods_list(
+                    skcExtCode=code,
+                    bindSiteIds=sites or None,
+                    createdAtStart=started,
+                    page=1,
+                    pageSize=10,
+                )
+            except Exception:  # noqa: BLE001 - 反查失败不能影响主流程
+                continue
+            for item in result.get("data") or []:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("extCode") or "").strip() != code:
+                    continue
+                created_ms = int(item.get("createdAt") or 0)
+                if created_ms and created_ms / 1000 < started - 120:
+                    continue
+                return {
+                    "product_id": str(item.get("productId") or ""),
+                    "product_name": str(item.get("productName") or ""),
+                    "ext_code": code,
+                    "created_at": created_ms,
+                    "site_status": item.get("skcSiteStatus"),
+                }
+        return None
+
     # ---------- 真正提交发布（bg.glo.goods.add，非幂等） ----------
 
     def publish_goods(self, draft: GoodsDraftInput, *, force: bool = False) -> dict[str, Any]:
@@ -548,6 +586,36 @@ class TemuPublishService:
         try:
             result = self.client().add_goods(payload)
         except Exception as exc:  # noqa: BLE001 - 失败也要回写台账再原样抛出
+            # 网络类失败（超时/连接被掐）很可能其实已经建成功了：去店铺里反查一次，
+            # 查到就按「已创建」处理，避免用户重试导致重复上架。
+            if isinstance(exc, TemuGatewayError) and exc.error_code in {
+                "NETWORK_ERROR",
+                "UPSTREAM_ERROR",
+            }:
+                found = self.find_published_goods(draft)
+                if found:
+                    submission_ledger.finish(
+                        self.database_path,
+                        submission_id,
+                        "success",
+                        gid=str(found.get("product_id") or ""),
+                    )
+                    warnings = list(built["warnings"]) + [
+                        "提交时网络中断，但在店铺里已经查到这件商品"
+                        f"（id {found.get('product_id') or '未知'}），按已创建处理：先不要再提交，"
+                        "去后台确认内容和库存即可。"
+                    ]
+                    return {
+                        "submitted": True,
+                        "confirmed_by_lookup": True,
+                        "matched_goods": found,
+                        "api_type": "bg.glo.goods.add",
+                        "result": {},
+                        "summary": built["summary"],
+                        "warnings": warnings,
+                        "request_payload": payload,
+                        "submission_id": submission_id,
+                    }
             submission_ledger.finish(self.database_path, submission_id, "failed", error=str(exc))
             raise
         submission_ledger.finish(
