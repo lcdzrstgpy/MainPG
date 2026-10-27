@@ -174,8 +174,8 @@ test("我的店铺：凭证按登录账号隔离，可解绑且未绑定时给�
   assert.match(api, /clearSettings: \(\) => httpJson<TemuSettingsStatus>\(`\$\{BASE\}\/settings`, \{ method: "DELETE" \}\)/);
   // 页面：解绑前要确认，成功后清掉店铺信息
   assert.match(page, /const clearShop = \(\) =>/);
-  // 解绑只清店铺授权：服务商 client_id / token 是预置的，换店还要用，不能一起删
-  assert.match(page, /window\.confirm\(\s*"解绑只清掉这个账号的店铺授权/);
+  // 停用当前店铺：条目留在列表里，切回来不用重新贴 token
+  assert.match(page, /window\.confirm\(\s*"停用当前店铺/);
   assert.match(page, /const next = await temuPublishApi\.clearSettings\(\);/);
   // 未绑定时顶部横幅 + 顶部 chip 都是「绑定我的店铺」，不能只是报“凭证未配置”
   assert.match(page, /还没绑定你的 Temu 店铺/);
@@ -195,7 +195,7 @@ test("我的店铺：凭证按登录账号隔离，可解绑且未绑定时给�
   assert.match(page, /if \(!fresh\.configured\.ready\) return undefined;/);
   // 面板要说明账号归属，并展示当前店铺/token 有效期
   assert.match(page, /凭证按登录账号各存一份/);
-  assert.match(page, /每个账号填自己的 token，互不影响/);
+  assert.match(page, /每个账号存自己的店铺，互不影响/);
   assert.match(page, /status\?\.owner\?\.personal/);
 });
 
@@ -517,4 +517,33 @@ test("健壮性：类目匹配重试、传图并发、初始化各自降级、�
 
   // 5) 单条发布失败记类目名路径，不再是裸 catId
   assert.match(page, /categoryPath\.map\(\(step\) => step\.catName\)\.filter\(Boolean\)\.join\(" > "\)/);
+});
+
+test("多店铺：一家一家存下来，切换不用重新贴 token", () => {
+  const apiSrc = readFileSync(new URL("../api/temuPublishApi.ts", import.meta.url), "utf8");
+  const types = readFileSync(new URL("../types.ts", import.meta.url), "utf8");
+
+  // 类型：settings 里带店铺列表与当前启用 id
+  assert.match(types, /shops\?: TemuShop\[\];/);
+  assert.match(types, /active_shop_id\?: string;/);
+  assert.match(types, /export type TemuShop = \{/);
+
+  // 接口：新增（后端先校验）/ 切换 / 删除
+  assert.ok(apiSrc.includes("${BASE}/settings/shops`"));
+  assert.ok(apiSrc.includes("/settings/shops/${shopId}/activate"));
+  assert.ok(apiSrc.includes("`${BASE}/settings/shops/${shopId}`, { method: \"DELETE\" }"));
+
+  // 保存 = 走 addShop（后端验证通过才落库），不再用 saveSettings 直接写
+  assert.match(page, /const saved = await temuPublishApi\.addShop\(token\);/);
+  assert.ok(!page.includes("access_token: accessToken.trim() || undefined"));
+
+  // 切换 / 删除店铺
+  assert.match(page, /const switchShop = \(shopId: string\) =>/);
+  assert.match(page, /await temuPublishApi\.activateShop\(shopId\)/);
+  assert.match(page, /const deleteShop = \(shop: TemuShop\) =>/);
+
+  // 列表 UI：当前使用标记 + 切换到这家
+  assert.ok(page.includes("已保存的店铺（"));
+  assert.ok(page.includes("切换到这家"));
+  assert.ok(page.includes("temu-shop-badge"));
 });

@@ -16,6 +16,13 @@ class TemuSettingsUpdate(BaseModel):
     clear_access_token: bool = False
 
 
+class TemuShopCreate(BaseModel):
+    """新增一家店铺：只填 access_token，店铺名由网关返回。"""
+
+    access_token: str = Field(min_length=8, max_length=4096)
+    mall_name: str = Field(default="", max_length=120)
+
+
 class CategoryMatchRequest(BaseModel):
     search_text: str = Field(min_length=1, max_length=200)
     site_id: int = Field(default=100, ge=1)

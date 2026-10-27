@@ -1749,3 +1749,105 @@ def test_low_stock_route_is_not_shadowed_by_product_id(tmp_path: Path) -> None:
     response = TestClient(app).get("/api/temu-publish/goods/low-stock")
     assert response.status_code != 422, response.text
     assert response.status_code in (200, 400, 502, 503)
+
+
+class FakeShopProbe:
+    """代替 TemuProductClient：只实现 token_info，token 以 bad 开头则报无效。"""
+
+    def __init__(self, credentials: Any, timeout: int = 30, max_attempts: int = 1) -> None:
+        self.credentials = credentials
+        self.timeout = timeout
+        self.max_attempts = max_attempts
+
+    def token_info(self) -> dict[str, Any]:
+        token = str(getattr(self.credentials, "access_token", ""))
+        if token.startswith("bad"):
+            raise TemuGatewayError(
+                "bg.open.accesstoken.info.get.global",
+                "client_id or token is invalid",
+                error_code="CLIENT_TOKEN_INVALID",
+            )
+        return {"mallName": f"Shop-{token[-4:]}", "apiScopeList": []}
+
+
+def _shop_service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+    from wh_local.modules.temu_publish import service as temu_service
+
+    monkeypatch.setattr(temu_service, "TemuProductClient", FakeShopProbe)
+    init_db(tmp_path / "runtime.sqlite3")
+    service = temu_service.TemuPublishService(
+        tmp_path / "runtime.sqlite3", client=StubCatalogClient(), owner_id="cust_a"
+    )
+    service.save_settings(TemuSettingsUpdate(yl_client="yl-c", yl_token="yl-t"), "cust_a")
+    return service
+
+
+def test_add_shop_verifies_then_saves_and_can_switch_without_retyping(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """多店铺：验证通过才保存；换店只要点一下，不用再贴 token。"""
+    service = _shop_service(tmp_path, monkeypatch)
+
+    first = service.add_shop("aaa-token-1111", "", "cust_a")
+    assert first["verified"] is True
+    assert first["mall_name"] == "Shop-1111"
+    assert first["configured"]["access_token"] is True
+    assert len(first["shops"]) == 1
+    assert first["shops"][0]["active"] is True
+    assert first["shops"][0]["masked_token"].endswith("1111")
+
+    second = service.add_shop("bbb-token-2222", "", "cust_a")
+    assert len(second["shops"]) == 2
+    active = [shop for shop in second["shops"] if shop["active"]]
+    assert len(active) == 1 and active[0]["mall_name"] == "Shop-2222"
+    assert service.store.load().access_token == "bbb-token-2222"
+
+    # 切回第一家：库里存的 token 直接拿来用，不再要求输入
+    other = [shop for shop in second["shops"] if not shop["active"]][0]
+    back = service.activate_shop(other["id"], "cust_a")
+    assert [shop for shop in back["shops"] if shop["active"]][0]["mall_name"] == "Shop-1111"
+    assert service.store.load().access_token == "aaa-token-1111"
+
+
+def test_add_shop_rejects_invalid_token_without_saving(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """token 验证不过就不落库：否则店铺列表里会留一条永远发不出去的坏记录。"""
+    service = _shop_service(tmp_path, monkeypatch)
+
+    with pytest.raises(TemuGatewayError):
+        service.add_shop("bad-token-9999", "", "cust_a")
+
+    status = service.settings_status()
+    assert status["shops"] == []
+    assert status["configured"]["access_token"] is False
+
+
+def test_add_same_shop_twice_does_not_duplicate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同一个 token 保存两次只留一条（店铺 id 由 token 哈希得出）。"""
+    service = _shop_service(tmp_path, monkeypatch)
+
+    service.add_shop("ccc-token-3333", "", "cust_a")
+    again = service.add_shop("ccc-token-3333", "", "cust_a")
+
+    assert len(again["shops"]) == 1
+    assert again["shops"][0]["active"] is True
+
+
+def test_remove_active_shop_stops_using_it_but_keeps_others(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """删掉当前店铺：立即停用（access_token 清空），其它店铺仍在列表里等切换。"""
+    service = _shop_service(tmp_path, monkeypatch)
+    service.add_shop("ddd-token-4444", "", "cust_a")
+    second = service.add_shop("eee-token-5555", "", "cust_a")
+    active = [shop for shop in second["shops"] if shop["active"]][0]
+
+    after = service.remove_shop(active["id"], "cust_a")
+
+    assert len(after["shops"]) == 1
+    assert after["shops"][0]["mall_name"] == "Shop-4444"
+    assert after["shops"][0]["active"] is False
+    assert after["configured"]["access_token"] is False

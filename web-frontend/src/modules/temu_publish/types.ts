@@ -9,6 +9,20 @@ export type TemuSettingsStatus = {
   hints: Record<string, string>;
   /** 凭证归属：按登录账号隔离，personal=true 表示用的是自己保存的那份 */
   owner?: { account_id?: string; scope?: string; personal?: boolean };
+  /** 已保存的店铺（可以多个）：换店点一下就切，不用重新贴 token */
+  shops?: TemuShop[];
+  /** 当前启用的店铺 id */
+  active_shop_id?: string;
+};
+
+/** 一个已保存的店铺。token 只回掩码，原文不出后端。 */
+export type TemuShop = {
+  id: string;
+  mall_name: string;
+  masked_token: string;
+  added_at: string;
+  last_used_at: string;
+  active: boolean;
 };
 
 export type TemuTokenInfo = {

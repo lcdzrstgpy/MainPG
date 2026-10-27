@@ -23,6 +23,7 @@ from .schemas import (
     ImageUploadUrlRequest,
     SpecCreateRequest,
     TemuSettingsUpdate,
+    TemuShopCreate,
 )
 from .service import TemuPublishService
 
@@ -160,6 +161,40 @@ def create_temu_publish_router(
     def clear_settings(actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
         """解绑：删掉当前账号名下保存的店铺凭证（不影响其他账号）。"""
         return _service(actor).clear_settings(actor.id)
+
+    @router.get("/settings/shops")
+    def list_shops(actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
+        """已保存的店铺列表（含当前启用标记）。"""
+        return _service(actor).list_shops()
+
+    @router.post("/settings/shops")
+    def add_shop(
+        payload: TemuShopCreate, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        """新增店铺：先拿这条 token 打一次网关，**验证通过才保存**并设为当前。"""
+        try:
+            return _service(actor).add_shop(payload.access_token, payload.mall_name, actor.id)
+        except Exception as exc:  # noqa: BLE001
+            raise _handle(exc) from exc
+
+    @router.post("/settings/shops/{shop_id}/activate")
+    def activate_shop(
+        shop_id: str, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        """切换店铺：直接换成已保存的那条 token，不用重新输入。"""
+        try:
+            return _service(actor).activate_shop(shop_id, actor.id)
+        except Exception as exc:  # noqa: BLE001
+            raise _handle(exc) from exc
+
+    @router.delete("/settings/shops/{shop_id}")
+    def remove_shop(
+        shop_id: str, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        try:
+            return _service(actor).remove_shop(shop_id, actor.id)
+        except Exception as exc:  # noqa: BLE001
+            raise _handle(exc) from exc
 
     @router.post("/token/verify")
     def verify_token(

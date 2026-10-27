@@ -9,7 +9,9 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import ipaddress
+import json
 import os
 import socket
 import time
@@ -40,6 +42,11 @@ LEGACY_SCOPE = SECRET_SCOPE
 # 这种凭证允许被第一个登录的账号认领一次（认领后改成该账号），之后别人不会自动继承。
 BOOTSTRAP_ACTORS = {"", "system-bootstrap", "local-demo-admin", "system"}
 SECRET_NAMES = ("yl_client", "yl_token", "access_token")
+# 多店铺：每个店铺存成一条 name = "shop:<id>" 的加密 JSON（含店铺名与 token），
+# 当前启用的店铺 id 存在 "active_shop"；`access_token` 始终是「当前店铺」的镜像，
+# 这样 client()/发布等所有既有链路都不用改。
+SHOP_PREFIX = "shop:"
+ACTIVE_SHOP_NAME = "active_shop"
 ENV_FALLBACKS = {
     "yl_client": "WH_TEMU_YL_CLIENT",
     "yl_token": "WH_TEMU_YL_TOKEN",
@@ -113,6 +120,10 @@ class TemuCredentialStore:
             ).fetchall()
             if not rows:
                 return
+            # 只看凭证字段：shop:/active_shop 是派生数据，混进来会让判定失真
+            rows = [row for row in rows if str(row["name"]) in SECRET_NAMES]
+            if not rows:
+                return
             owners = {str(row["updated_by"] or "") for row in rows}
             mine = owners == {self.owner_id}
             claimable = owners <= BOOTSTRAP_ACTORS
@@ -149,7 +160,8 @@ class TemuCredentialStore:
         """
         with transaction(self.database_path) as conn:
             conn.execute(
-                "DELETE FROM secret_values WHERE scope = ? AND name = ?", (self.scope(), "access_token")
+                "DELETE FROM secret_values WHERE scope = ? AND name IN (?, ?)",
+                (self.scope(), "access_token", ACTIVE_SHOP_NAME),
             )
             if self.owner_id:
                 conn.execute(
@@ -186,6 +198,176 @@ class TemuCredentialStore:
                     (self.scope(), name, encrypt_secret(str(value).strip()), actor_id, now),
                 )
 
+    # ---------- 多店铺 ----------
+
+    @staticmethod
+    def shop_id_of(access_token: str) -> str:
+        """店铺 id 由 token 推出：同一个 token 重复保存不会出现两条。"""
+        digest = hashlib.sha256(str(access_token or "").strip().encode("utf-8")).hexdigest()
+        return f"shop_{digest[:12]}"
+
+    def _shop_rows(self) -> dict[str, dict[str, str]]:
+        shops = self._read_shop_rows()
+        if not shops:
+            # 老账号只存过单个 access_token：补一条店铺记录，否则列表是空的、
+            # 用户会以为要重新贴一遍（其实 token 还在）。
+            self._adopt_current_token_as_shop()
+            shops = self._read_shop_rows()
+        return shops
+
+    def _adopt_current_token_as_shop(self) -> None:
+        # 只有「某个账号」才补店铺记录：全局作用域（脚本/无 owner）不该产生这类行，
+        # 否则会在 legacy 归属判定里混进 updated_by="" 的行，把「只迁给本人」判坏。
+        if not self.owner_id:
+            return
+        token = self._load_stored().get("access_token", "")
+        if not token:
+            return
+        try:
+            self.save_shop(token, "", "")
+        except Exception:  # noqa: BLE001 - 迁移失败不能影响读状态
+            return
+
+    def _read_shop_rows(self) -> dict[str, dict[str, str]]:
+        with transaction(self.database_path) as conn:
+            rows = conn.execute(
+                "SELECT name, ciphertext FROM secret_values WHERE scope = ? AND name LIKE ?",
+                (self.scope(), f"{SHOP_PREFIX}%"),
+            ).fetchall()
+        shops: dict[str, dict[str, str]] = {}
+        for row in rows:
+            try:
+                payload = json.loads(decrypt_secret(str(row["ciphertext"])))
+            except Exception:  # noqa: BLE001 - 单条损坏不能让整个设置页崩
+                continue
+            if not isinstance(payload, dict):
+                continue
+            shop_id = str(row["name"])[len(SHOP_PREFIX) :]
+            shops[shop_id] = {
+                "id": shop_id,
+                "mall_name": str(payload.get("mall_name") or ""),
+                "access_token": str(payload.get("access_token") or ""),
+                "added_at": str(payload.get("added_at") or ""),
+                "last_used_at": str(payload.get("last_used_at") or ""),
+            }
+        return shops
+
+    def _active_shop_id(self) -> str:
+        with transaction(self.database_path) as conn:
+            row = conn.execute(
+                "SELECT ciphertext FROM secret_values WHERE scope = ? AND name = ?",
+                (self.scope(), ACTIVE_SHOP_NAME),
+            ).fetchone()
+        if not row:
+            return ""
+        try:
+            return str(decrypt_secret(str(row["ciphertext"]))).strip()
+        except RuntimeError:
+            return ""
+
+    def list_shops(self) -> list[dict[str, Any]]:
+        """已保存的店铺（按最近使用排在前面），当前启用那条标 active。"""
+        shops = self._shop_rows()
+        active = self._active_shop_id()
+        rows = list(shops.values())
+        rows.sort(key=lambda item: item.get("last_used_at") or item.get("added_at") or "", reverse=True)
+        return [
+            {
+                "id": item["id"],
+                "mall_name": item["mall_name"],
+                "masked_token": _hint(item["access_token"]),
+                "added_at": item["added_at"],
+                "last_used_at": item["last_used_at"],
+                "active": item["id"] == active,
+            }
+            for item in rows
+        ]
+
+    def save_shop(self, access_token: str, mall_name: str, actor_id: str) -> str:
+        """保存（或更新）一个店铺并设为当前。返回店铺 id。"""
+        token = str(access_token or "").strip()
+        if not token:
+            raise ValueError("店铺 access_token 不能为空")
+        shop_id = self.shop_id_of(token)
+        now = datetime.now().astimezone().isoformat(timespec="seconds")
+        existing = self._read_shop_rows().get(shop_id) or {}
+        payload = {
+            "mall_name": str(mall_name or existing.get("mall_name") or ""),
+            "access_token": token,
+            "added_at": existing.get("added_at") or now,
+            "last_used_at": now,
+        }
+        with transaction(self.database_path) as conn:
+            self._write_secret(conn, f"{SHOP_PREFIX}{shop_id}", json.dumps(payload, ensure_ascii=False), actor_id, now)
+            self._write_secret(conn, ACTIVE_SHOP_NAME, shop_id, actor_id, now)
+            # access_token 镜像 = 当前店铺，保持既有链路（client()/发布）不变
+            self._write_secret(conn, "access_token", token, actor_id, now)
+        return shop_id
+
+    def rename_active_shop(self, mall_name: str) -> None:
+        """校验拿到店铺名后，把名字补回当前店铺记录（列表里就不用显示「未命名」）。"""
+        name = str(mall_name or "").strip()
+        shop_id = self._active_shop_id()
+        if not name or not shop_id:
+            return
+        target = self._read_shop_rows().get(shop_id)
+        if target is None or target.get("mall_name") == name:
+            return
+        now = datetime.now().astimezone().isoformat(timespec="seconds")
+        payload = {
+            "mall_name": name,
+            "access_token": target["access_token"],
+            "added_at": target.get("added_at") or now,
+            "last_used_at": target.get("last_used_at") or now,
+        }
+        with transaction(self.database_path) as conn:
+            self._write_secret(conn, f"{SHOP_PREFIX}{shop_id}", json.dumps(payload, ensure_ascii=False), "", now)
+
+    def activate_shop(self, shop_id: str, actor_id: str) -> str:
+        shops = self._shop_rows()
+        target = shops.get(str(shop_id))
+        if target is None:
+            raise ValueError("没有这个店铺，可能已被删除")
+        now = datetime.now().astimezone().isoformat(timespec="seconds")
+        payload = {
+            "mall_name": target["mall_name"],
+            "access_token": target["access_token"],
+            "added_at": target["added_at"] or now,
+            "last_used_at": now,
+        }
+        with transaction(self.database_path) as conn:
+            self._write_secret(conn, f"{SHOP_PREFIX}{shop_id}", json.dumps(payload, ensure_ascii=False), actor_id, now)
+            self._write_secret(conn, ACTIVE_SHOP_NAME, str(shop_id), actor_id, now)
+            self._write_secret(conn, "access_token", target["access_token"], actor_id, now)
+        return str(shop_id)
+
+    def remove_shop(self, shop_id: str, actor_id: str) -> None:
+        """删掉一个店铺；删的是当前店铺时，顺手停用（不再自动启用别的店）。"""
+        with transaction(self.database_path) as conn:
+            conn.execute(
+                "DELETE FROM secret_values WHERE scope = ? AND name = ?",
+                (self.scope(), f"{SHOP_PREFIX}{shop_id}"),
+            )
+        if self._active_shop_id() == str(shop_id):
+            with transaction(self.database_path) as conn:
+                conn.execute(
+                    "DELETE FROM secret_values WHERE scope = ? AND name IN (?, ?)",
+                    (self.scope(), ACTIVE_SHOP_NAME, "access_token"),
+                )
+
+    def _write_secret(self, conn: Any, name: str, value: str, actor_id: str, now: str) -> None:
+        conn.execute(
+            """
+            INSERT INTO secret_values(scope, name, ciphertext, updated_by, updated_at)
+            VALUES(?, ?, ?, ?, ?)
+            ON CONFLICT(scope, name) DO UPDATE SET
+                ciphertext = excluded.ciphertext,
+                updated_by = excluded.updated_by,
+                updated_at = excluded.updated_at
+            """,
+            (self.scope(), name, encrypt_secret(value), actor_id, now),
+        )
+
     def status(self) -> dict[str, Any]:
         values = self._load_values()
         stored = set(self._load_stored())
@@ -204,6 +386,9 @@ class TemuCredentialStore:
             },
             "hints": {name: _hint(values.get(name, "")) for name in SECRET_NAMES},
             "owner": {"account_id": self.owner_id, "scope": scope, "personal": scope != LEGACY_SCOPE},
+            # 已保存的店铺（可以多个）：换店点一下就切，不用重新贴 token
+            "shops": self.list_shops(),
+            "active_shop_id": self._active_shop_id(),
         }
 
 
@@ -283,6 +468,51 @@ class TemuPublishService:
         self._token_cache = None
         return self.settings_status()
 
+    def _reset_client(self) -> None:
+        """凭证变了：丢掉旧客户端与所有缓存（否则还在用上一家店的 token）。"""
+        self._client = self._client_override
+        self._client_key = None
+        self._token_cache = None
+        self._read_cache.clear()
+
+    def list_shops(self) -> dict[str, Any]:
+        return self.settings_status()
+
+    def add_shop(self, access_token: str, mall_name: str, actor_id: str) -> dict[str, Any]:
+        """保存一家店并启用：**先用这条 token 打一次网关，成功才落库**。
+
+        失败（token 无效/没绑应用/网络）原样抛出去，前端会显示具体原因，
+        库里不会留下一条坏店铺 —— 这就是「成功就可以保存」的含义。
+        """
+        token = str(access_token or "").strip()
+        if not token:
+            raise ValueError("店铺 access_token 不能为空")
+        creds = self.store.load()
+        if not (creds.client and creds.token):
+            raise TemuCredentialMissing("服务商 client/token 还没配置，无法校验店铺 token")
+        probe = TemuProductClient(
+            TemuCredentials(client=creds.client, token=creds.token, access_token=token),
+            timeout=30,
+            max_attempts=1,
+        )
+        info = probe.token_info()
+        resolved_name = str(mall_name or info.get("mallName") or "").strip()
+        if not resolved_name and not info:
+            raise ValueError("这条 token 没有返回店铺信息，请确认是店铺的 access_token")
+        self.store.save_shop(token, resolved_name, actor_id)
+        self._reset_client()
+        return {**self.settings_status(), "verified": True, "mall_name": resolved_name}
+
+    def activate_shop(self, shop_id: str, actor_id: str) -> dict[str, Any]:
+        self.store.activate_shop(shop_id, actor_id)
+        self._reset_client()
+        return self.settings_status()
+
+    def remove_shop(self, shop_id: str, actor_id: str) -> dict[str, Any]:
+        self.store.remove_shop(shop_id, actor_id)
+        self._reset_client()
+        return self.settings_status()
+
     TOKEN_CACHE_TTL = 600.0
 
     def verify_token(self, *, refresh: bool = False) -> dict[str, Any]:
@@ -312,6 +542,8 @@ class TemuPublishService:
         import time as _time  # noqa: PLC0415
 
         self._token_cache = (_time.time(), info)
+        # 校验顺手拿到店铺名：补进列表，用户不用再猜哪条是哪家店
+        self.store.rename_active_shop(info["mall_name"])
         return info
 
     # ---------- 发布配套查询 ----------

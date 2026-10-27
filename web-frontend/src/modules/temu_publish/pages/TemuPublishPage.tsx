@@ -30,6 +30,7 @@ import type {
   TemuProperty,
   TemuPublishPrefill,
   TemuSettingsStatus,
+  TemuShop,
   TemuSkuDraft,
   TemuSkuSpec,
   TemuSpecCreated,
@@ -1011,17 +1012,44 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       }
     });
 
+  /** 新增店铺：后端先拿这条 token 打一次网关，成功才保存并设为当前。 */
   const saveCredentials = () =>
     run("settings", async () => {
-      const saved = await temuPublishApi.saveSettings({
-        access_token: accessToken.trim() || undefined,
-      });
+      const token = accessToken.trim();
+      if (!token) {
+        throw new Error("请先粘贴店铺 access_token（Temu 后台：系统管理 → 授权管理 → 获取授权）");
+      }
+      const saved = await temuPublishApi.addShop(token);
       setStatus(saved);
       setAccessToken("");
-      if (saved.configured.ready) {
-        const info = await temuPublishApi.verifyToken(true);
+      const info = await temuPublishApi.verifyToken(true).catch(() => null);
+      if (info) {
         setTokenInfo(info);
         saveJsonLocal(`${SHOP_INFO_KEY}:${storageScope()}`, info);
+      }
+    });
+
+  /** 换店：用已保存的那条 token，不用重新输入。 */
+  const switchShop = (shopId: string) =>
+    run("shop", async () => {
+      const next = await temuPublishApi.activateShop(shopId);
+      setStatus(next);
+      const info = await temuPublishApi.verifyToken(true).catch(() => null);
+      if (info) {
+        setTokenInfo(info);
+        saveJsonLocal(`${SHOP_INFO_KEY}:${storageScope()}`, info);
+      }
+    });
+
+  const deleteShop = (shop: TemuShop) =>
+    run("shop", async () => {
+      const label = shop.mall_name || shop.id;
+      if (!window.confirm(`删除店铺「${label}」？\n删掉之后要重新贴 token 才能再用这一家。`)) return;
+      const next = await temuPublishApi.removeShop(shop.id);
+      setStatus(next);
+      if (!next.configured.ready) {
+        setTokenInfo(null);
+        saveJsonLocal(`${SHOP_INFO_KEY}:${storageScope()}`, null);
       }
     });
 
@@ -1029,7 +1057,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const clearShop = () =>
     run("clear-shop", async () => {
       const confirmed = window.confirm(
-        "解绑只清掉这个账号的店铺授权（access_token），服务商 client_id / token 会保留。\n之后重新授权拿新 token 填进来即可。确认解绑？",
+        "停用当前店铺：发布时会提示还没绑定。\n这家店会留在「已保存的店铺」列表里，想再用点一下「切换到这家」即可，不用重新贴 token。确认停用？",
       );
       if (!confirmed) return;
       const next = await temuPublishApi.clearSettings();
@@ -1694,14 +1722,60 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               <strong>{status?.configured.access_token ? "已配置" : "未绑定"}</strong>
             </div>
           </div>
+          {(status?.shops?.length ?? 0) > 0 && (
+            <div className="temu-shop-list">
+              <div className="temu-shop-list-head">
+                <strong>已保存的店铺（{status?.shops?.length ?? 0}）</strong>
+                <span className="temu-muted">换店点「切换到这家」，不用重新贴 token</span>
+              </div>
+              {(status?.shops ?? []).map((shop) => (
+                <div className={`temu-shop-row${shop.active ? " is-active" : ""}`} key={shop.id}>
+                  <div className="temu-shop-name">
+                    <strong>{shop.mall_name || "（未命名店铺）"}</strong>
+                    <span className="temu-muted">
+                      {shop.masked_token}
+                      {shop.added_at ? ` · 添加 ${shop.added_at.slice(0, 10)}` : ""}
+                      {shop.last_used_at ? ` · 最近用 ${shop.last_used_at.slice(0, 10)}` : ""}
+                    </span>
+                  </div>
+                  <div className="temu-shop-ops">
+                    {shop.active ? (
+                      <em className="temu-shop-badge">当前使用</em>
+                    ) : (
+                      <button
+                        type="button"
+                        className="temu-btn temu-btn-sm"
+                        disabled={busy !== ""}
+                        onClick={() => void switchShop(shop.id)}
+                      >
+                        切换到这家
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="temu-link"
+                      disabled={busy !== ""}
+                      onClick={() => void deleteShop(shop)}
+                    >
+                      删除
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* 服务商 client_id / token 是预置的，不让用户填也不展示 */}
           <p className="temu-muted">
             服务商凭据（client_id / token）：{gatewayReady ? "已预置，不用管" : "还没预置，请联系服务商开通；这里不用填"}
           </p>
           <label className="temu-field">
             <span>
-              店铺 access_token
-              <em className="temu-muted">Temu 后台：系统管理 → 授权管理 → 获取授权，复制 access_token 后面的整串</em>
+              新增店铺：粘贴 access_token
+              <em className="temu-muted">
+                Temu 后台：系统管理 → 授权管理 → 获取授权，复制 access_token 后面的整串。
+                保存前会先打一次网关校验，通过才存进列表
+              </em>
             </span>
             <textarea
               className="temu-input"
@@ -1713,7 +1787,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           </label>
           <div className="temu-inline-actions">
             <button type="button" className="temu-btn temu-btn-primary" onClick={saveCredentials} disabled={busy !== ""}>
-              {busy === "settings" ? "保存中…" : "保存并校验"}
+              {busy === "settings" ? "校验中…" : "校验并保存为店铺"}
             </button>
             <button type="button" className="temu-btn" onClick={verify} disabled={busy !== "" || !ready}>
               重新校验
@@ -1723,14 +1797,14 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               className="temu-link danger"
               onClick={clearShop}
               disabled={busy !== "" || !status?.owner?.personal}
-              title="只清掉当前账号的店铺授权，服务商 client_id/token 会保留"
+              title="停用后这家店还在列表里，想再用点「切换到这家」即可"
             >
-              解绑我的店铺
+              停用当前店铺
             </button>
           </div>
           <p className="temu-muted">
-            每个账号填自己的 token，互不影响；发布商品只会用你自己的店铺。
-            服务商那层的 client_id / token 是预置的，换店、解绑都不会清掉；店铺 token 过期后重新授权再填一次即可。
+            每个账号存自己的店铺，互不影响；发布只会进当前选中的那家店。
+            可以存多家、随时切换，切回来不用重新贴 token；token 过期后在这里粘贴新的授权即可（同名店铺会被更新）。
           </p>
         </section>
       )}
