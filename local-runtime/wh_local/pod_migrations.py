@@ -650,6 +650,25 @@ POD_MIGRATION_CONTRACTS: dict[str, MigrationEffect] = {
         },
         absent_tables=("pod_customization_billing_runs_v3",),
     ),
+    "028_replica_transfer_plans": MigrationEffect(
+        tables={
+            "pod_customization_replica_transfer_plans": _table(
+                "plan_id workspace_id owner_user_id source_asset_id target_asset_id prompt_version "
+                "model reference_order main_prompt created_at",
+                checks=(
+                    "UNIQUE (workspace_id, owner_user_id, source_asset_id, target_asset_id, "
+                    "prompt_version, model, reference_order)",
+                ),
+            ),
+        },
+        indexes={
+            "idx_pod_replica_transfer_pair": _index(
+                "pod_customization_replica_transfer_plans",
+                "workspace_id owner_user_id source_asset_id target_asset_id created_at",
+                descending=(False, False, False, False, True),
+            ),
+        },
+    ),
 }
 
 

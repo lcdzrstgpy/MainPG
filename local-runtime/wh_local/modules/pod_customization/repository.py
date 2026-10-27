@@ -1407,56 +1407,6 @@ class PodCustomizationRepository:
             raise PodRepositoryError("client_request_id 已用于不同的复刻请求", 409) from None
         return self.get_batch(batch_id, workspace_id, owner_user_id)
 
-    def save_replica_analysis(
-        self,
-        *,
-        analysis_id: str,
-        workspace_id: str,
-        owner_user_id: str,
-        source_asset_id: str,
-        target_asset_id: str,
-        analysis_version: str,
-        status: str,
-        source_spec_json: str = "{}",
-        target_spec_json: str = "{}",
-        raw_source_json: str = "{}",
-        raw_target_json: str = "{}",
-        model_version: str = "",
-        schema_version: str = "",
-        error_code: str = "",
-    ) -> None:
-        """写入或更新一条复刻分析快照（成功与失败都落库，供审计与复用）。
-
-        同一 (资产对, 版本) 允许存在多条记录：失败记录保留，重新分析新增一条成功记录。
-        """
-        now = _now()
-        with self._connect() as connection:
-            existing = connection.execute(
-                "SELECT analysis_id FROM pod_customization_replica_analyses WHERE analysis_id = ?",
-                (analysis_id,),
-            ).fetchone()
-            if existing is None:
-                connection.execute(
-                    """INSERT INTO pod_customization_replica_analyses
-                       (analysis_id, workspace_id, owner_user_id, source_asset_id, target_asset_id,
-                        analysis_version, status, source_spec_json, target_spec_json, raw_source_json,
-                        raw_target_json, model_version, schema_version, error_code, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (analysis_id, workspace_id, owner_user_id, source_asset_id, target_asset_id,
-                     analysis_version, status, source_spec_json, target_spec_json, raw_source_json,
-                     raw_target_json, model_version, schema_version, error_code, now, now),
-                )
-                return
-            connection.execute(
-                """UPDATE pod_customization_replica_analyses
-                   SET status = ?, source_spec_json = ?, target_spec_json = ?, raw_source_json = ?,
-                       raw_target_json = ?, model_version = ?, schema_version = ?, error_code = ?,
-                       updated_at = ?
-                   WHERE analysis_id = ?""",
-                (status, source_spec_json, target_spec_json, raw_source_json, raw_target_json,
-                 model_version, schema_version, error_code, now, existing["analysis_id"]),
-            )
-
     def create_fission_analysis(
         self,
         *,
@@ -1787,67 +1737,76 @@ class PodCustomizationRepository:
         result["public_urls"] = json.loads(result.pop("public_urls_json", "{}") or "{}")
         return result
 
-    def find_replica_analysis(
+    def create_replica_transfer_plan(
+        self,
+        *,
+        plan_id: str,
+        workspace_id: str,
+        owner_user_id: str,
+        source_asset_id: str,
+        target_asset_id: str,
+        prompt_version: str,
+        model: str,
+        reference_order: str,
+        main_prompt: str,
+    ) -> None:
+        """写入一个 A/B 对的图案迁移方案（主图提示词）。
+
+        唯一键命中时只刷新提示词正文，保留最早的 ``plan_id``；调用方写入后按唯一键读回，
+        拿到权威记录（并发提交不会产生两条同键方案）。
+        """
+        prompt = str(main_prompt or "").strip()
+        if not prompt:
+            raise PodRepositoryError("复刻主图提示词不能为空", 400)
+        now = _now()
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT INTO pod_customization_replica_transfer_plans
+                   (plan_id, workspace_id, owner_user_id, source_asset_id, target_asset_id,
+                    prompt_version, model, reference_order, main_prompt, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT (workspace_id, owner_user_id, source_asset_id, target_asset_id,
+                                prompt_version, model, reference_order)
+                   DO UPDATE SET main_prompt = excluded.main_prompt""",
+                (plan_id, workspace_id, owner_user_id, source_asset_id, target_asset_id,
+                 prompt_version, model, reference_order, prompt, now),
+            )
+
+    def find_replica_transfer_plan(
         self,
         workspace_id: str,
         owner_user_id: str,
         source_asset_id: str,
         target_asset_id: str,
-        analysis_version: str,
+        prompt_version: str,
+        model: str,
+        reference_order: str,
     ) -> dict[str, Any] | None:
-        """取该资产对 + 版本下最近的一条分析：优先最近的成功记录，其次最近的失败记录。"""
-        base = """SELECT * FROM pod_customization_replica_analyses
-                  WHERE workspace_id = ? AND owner_user_id = ? AND source_asset_id = ?
-                    AND target_asset_id = ? AND analysis_version = ?"""
-        params = (workspace_id, owner_user_id, source_asset_id, target_asset_id, analysis_version)
+        """按唯一键读取图案迁移方案；只在本用户自己的记录里找，跨用户绝不复用。"""
         with self._connect() as connection:
             row = connection.execute(
-                base + " AND status = 'succeeded' ORDER BY created_at DESC, analysis_id DESC LIMIT 1",
-                params,
-            ).fetchone()
-            if row is None:
-                row = connection.execute(
-                    base + " ORDER BY created_at DESC, analysis_id DESC LIMIT 1", params
-                ).fetchone()
-        return dict(row) if row else None
-
-    def get_replica_analysis(
-        self, analysis_id: str, workspace_id: str, owner_user_id: str
-    ) -> dict[str, Any]:
-        """按归属读取分析快照；不存在或不属于该用户一律 404（不泄露他人资产）。"""
-        with self._connect() as connection:
-            row = connection.execute(
-                """SELECT * FROM pod_customization_replica_analyses
-                   WHERE analysis_id = ? AND workspace_id = ? AND owner_user_id = ?""",
-                (analysis_id, workspace_id, owner_user_id),
-            ).fetchone()
-        if row is None:
-            raise PodRepositoryError("POD 复刻分析记录不存在", 404)
-        return dict(row)
-
-    def find_frozen_replica_plan(
-        self, workspace_id: str, owner_user_id: str, plan_fingerprint: str
-    ) -> dict[str, Any] | None:
-        """按计划输入指纹查该用户已冻结的同款计划；无命中返回 None。
-
-        命中即复用，不再调用豆包重推构图参数——同一份分析/事实覆盖/展示偏好/
-        构图模板/版本必须得到同一份 ``ReplicaPlan``。只在本用户自己的批次里找，
-        跨用户绝不复用。
-        """
-        if not plan_fingerprint:
-            return None
-        with self._connect() as connection:
-            row = connection.execute(
-                """SELECT t.replica_plan_json
-                   FROM pod_customization_replica_targets AS t
-                   JOIN pod_customization_batches AS b ON b.batch_id = t.batch_id
-                   WHERE b.workspace_id = ? AND b.owner_user_id = ?
-                     AND t.plan_fingerprint = ?
-                     AND t.replica_plan_json IS NOT NULL AND t.replica_plan_json != ''
-                   ORDER BY t.rowid DESC LIMIT 1""",
-                (workspace_id, owner_user_id, plan_fingerprint),
+                """SELECT * FROM pod_customization_replica_transfer_plans
+                   WHERE workspace_id = ? AND owner_user_id = ? AND source_asset_id = ?
+                     AND target_asset_id = ? AND prompt_version = ? AND model = ?
+                     AND reference_order = ?""",
+                (workspace_id, owner_user_id, source_asset_id, target_asset_id,
+                 prompt_version, model, reference_order),
             ).fetchone()
         return dict(row) if row is not None else None
+
+    def get_replica_transfer_plan(
+        self, plan_id: str, workspace_id: str, owner_user_id: str
+    ) -> dict[str, Any]:
+        """按归属读取图案迁移方案；不存在或不属于该用户一律 404。"""
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM pod_customization_replica_transfer_plans
+                   WHERE plan_id = ? AND workspace_id = ? AND owner_user_id = ?""",
+                (plan_id, workspace_id, owner_user_id),
+            ).fetchone()
+        if row is None:
+            raise PodRepositoryError("POD 复刻方案不存在", 404)
+        return dict(row)
 
     def preflight_batch(self, workspace_id: str, owner_user_id: str, request: BatchCreate) -> None:
         """Validate all stable local prerequisites before remote points are frozen."""
@@ -3782,6 +3741,9 @@ class PodCustomizationRepository:
         "asset_id NOT IN (SELECT target_asset_id FROM pod_customization_replica_analyses WHERE target_asset_id <> '')",
         "asset_id NOT IN (SELECT source_asset_id FROM pod_customization_fission_analyses WHERE source_asset_id <> '')",
         "asset_id NOT IN (SELECT target_asset_id FROM pod_customization_fission_analyses WHERE target_asset_id <> '')",
+        # 图案迁移方案按 A/B 缓存，也直接引用资产表。
+        "asset_id NOT IN (SELECT source_asset_id FROM pod_customization_replica_transfer_plans WHERE source_asset_id <> '')",
+        "asset_id NOT IN (SELECT target_asset_id FROM pod_customization_replica_transfer_plans WHERE target_asset_id <> '')",
     )
 
     # 「存储空间」手动清扫的可勾选分类（docs/POD-本地图片缓存与清理说明.md §8）。
@@ -3880,6 +3842,22 @@ class PodCustomizationRepository:
                 for row in target_rows:
                     if row["asset_id"]:
                         asset_ids.add(row["asset_id"])
+                # 图案迁移方案按 A/B 缓存、不受批次外键约束：随该批次的资产对一起清掉，
+                # 否则资产行永远被方案行引用，删除批次后文件也回收不了。
+                # 方案可能被其他批次共用（同一 A/B 多次提交），只删不再被别的批次引用的行。
+                if replica_row["source_asset_id"]:
+                    connection.execute(
+                        """DELETE FROM pod_customization_replica_transfer_plans
+                           WHERE plan_id IN (
+                               SELECT analysis_id FROM pod_customization_replica_targets
+                               WHERE batch_id = ? AND analysis_id <> ''
+                           )
+                           AND plan_id NOT IN (
+                               SELECT analysis_id FROM pod_customization_replica_targets
+                               WHERE batch_id <> ? AND analysis_id <> ''
+                           )""",
+                        (batch_id, batch_id),
+                    )
                 replica_template_id = batch["template_id"]
 
             # 账本比批次活得久：只在批次行上记删除时间，绝不删 billing_runs。

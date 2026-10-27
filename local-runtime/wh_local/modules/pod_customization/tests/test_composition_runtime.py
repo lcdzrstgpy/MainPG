@@ -18,6 +18,8 @@ from wh_local.modules.pod_customization.billing_contract import (
 from wh_local.modules.pod_customization.composition_runtime import (
     PROMPT_VERSION,
     PROMPT_VERSION_ROLE,
+    REPLICA_MAIN_PANEL_PLACEHOLDER_EN,
+    REPLICA_MAIN_PANEL_PLACEHOLDER_ZH,
     PodCompositionLocalizeRequest,
     PodCompositionRequest,
     PodCompositionRuntime,
@@ -195,15 +197,21 @@ def test_generate_composition_disables_thinking_and_returns_zh_and_en() -> None:
     assert "第 1 轮（四款主图共用）" in panel_contract
     assert "只写更近的机位" in panel_contract
 
-    # 复刻/裂变仍是「四格」语义，旧文案必须原样保留。
-    legacy_prompt = json.loads(
+    # 复刻只作用于派生三格：panel_1 固定占位，2/3/4 仍是四格语义文案。
+    replica_prompt = json.loads(
         _messages_for_generation(
             PodCompositionRequest(composition_id="cmp1", brief="四张图想这样拍", scope="replica")
         )[1]["content"]
     )
-    legacy_contract = " ".join(legacy_prompt["panel_contract"].values())
-    assert "场景氛围" in legacy_contract
-    assert "提手结构" in legacy_contract
+    replica_contract = " ".join(replica_prompt["panel_contract"].values())
+    assert REPLICA_MAIN_PANEL_PLACEHOLDER_ZH in replica_contract
+    assert "提手结构" in replica_contract
+    assert "第 2/3/4 轮" in replica_prompt["task"]
+    assert "第 1 轮主图不参与构图" in replica_prompt["task"]
+    replica_rules = " ".join(replica_prompt["hard_rules"])
+    assert "禁止描述或指定主图机位" in replica_rules
+    assert REPLICA_MAIN_PANEL_PLACEHOLDER_EN in replica_rules
+    assert "panel_1_zh 与 panel_1_en 必须原样输出" in replica_prompt["instructions"]
 
 
 def test_localize_composition_translates_edited_zh_and_echoes_zh() -> None:
