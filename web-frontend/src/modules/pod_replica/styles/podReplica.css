@@ -173,9 +173,10 @@
   gap: 10px;
 }
 
-/* 还没有白底图时只有一个上传入口，让它与上方「POD 样图」区同宽同高。 */
+/* 还没有白底图时只有一个上传入口：保持与「POD 样图」区同宽，但高度收紧成一条
+   紧凑的胶囊按钮（此前沿用 200px 最小高度，胶囊化后变成了巨大的空胶囊）。 */
 .pod-replica-target-grid.is-empty .pod-replica-target-add-card {
-  min-height: var(--pod-replica-upload-min-height);
+  min-height: 96px;
 }
 
 .pod-replica-target-card {
