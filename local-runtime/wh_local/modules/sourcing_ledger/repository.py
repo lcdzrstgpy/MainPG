@@ -35,6 +35,14 @@ def _text(value: Any) -> str:
     return str(value if value is not None else "").strip()
 
 
+def _moq(value: Any) -> int:
+    """旧表把 moq 存成 TEXT（'1' / '1.0'），统一收敛为正整数。"""
+    try:
+        return max(1, int(float(value or 1)))
+    except (TypeError, ValueError):
+        return 1
+
+
 def _preview_url(connection: sqlite3.Connection, raw: Any) -> str:
     """处理后的预览图地址带 2 小时签名，重新签名后再返回。
 
@@ -605,7 +613,7 @@ class SourcingLedgerRepository:
                     _text(row.get("shop_name")),
                     _text(row.get("main_image_url")),
                     _text(row.get("price_cny")),
-                    int(row.get("moq") or 1),
+                    _moq(row.get("moq")),
                     _text(row.get("domestic_freight_cny")),
                     _text(row.get("weight_kg")),
                     _text(row.get("landed_cost_cny")),

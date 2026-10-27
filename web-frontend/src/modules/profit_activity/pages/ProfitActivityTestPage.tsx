@@ -1168,16 +1168,12 @@ export function ProfitActivityTestPage({ isActive = true, prefill }: { isActive?
               <button className="profit-settings-dialog-close" type="button" aria-label="关闭产品资料导入" onClick={() => setImportDialogOpen(false)} disabled={!!busy}><span aria-hidden="true">×</span></button>
             </div>
             <div className="profit-upload-row">
-              <div className="profit-import-input-stack">
-                <label>产品资料 Excel（可多选）<input type="file" accept=".xlsx,.xlsm" multiple onChange={(event) => { const files = Array.from(event.target.files || []); setImportFiles(files); persistImportFileNames(files); }} /></label>
-                <label className="profit-import-store-field">店铺（可选）<input value={importStoreName} maxLength={120} onChange={(event) => setImportStoreName(event.target.value)} placeholder="例如：美区一店" /></label>
-              </div>
+              <label className="profit-import-file-field">产品资料 Excel（可多选）<input type="file" accept=".xlsx,.xlsm" multiple onChange={(event) => { const files = Array.from(event.target.files || []); setImportFiles(files); persistImportFileNames(files); }} /></label>
+              <label className="profit-import-store-field">店铺（可选）<input value={importStoreName} maxLength={120} onChange={(event) => setImportStoreName(event.target.value)} placeholder="例如：美区一店" /></label>
               <div className="profit-import-actions">
                 <button className="profit-import-guidelines-trigger" type="button" aria-haspopup="dialog" onClick={() => setImportGuidelinesOpen(true)}>导入规范</button>
-                <div className="profit-import-actions-bottom">
-                  <button onClick={previewImport} disabled={!!busy}>预览入档</button>
-                  <button onClick={confirmImport} disabled={!!busy || !importPreviews.length}>确认导入</button>
-                </div>
+                <button onClick={previewImport} disabled={!!busy}>预览入档</button>
+                <button className="primary-button" onClick={confirmImport} disabled={!!busy || !importPreviews.length}>确认导入</button>
               </div>
             </div>
             {importFiles.length ? <p className="profit-warn">已选择 {importFiles.length} 个文件：{importFiles.map((item) => item.name).join("、")}</p> : lastImportFiles.length ? <p className="muted">上次选择的文件：{lastImportFiles.join("、")}（浏览器出于安全原因不保留本地完整路径，切换页面后需重新选择文件）</p> : null}

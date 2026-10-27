@@ -469,32 +469,74 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
 
   return (
     <div className="ledger-page">
-      <header className="ledger-head">
-        <div>
+      <section className="ledger-hero">
+        <div className="ledger-hero-main">
           <h1>货源与利润</h1>
           <p>采集货源 → 上架 → Temu 申报价 → 利润核算 → 入产品库</p>
         </div>
-        <div className="ledger-batch">
-          <span className="ledger-batch-title">批量重量（kg）</span>
-          <input
-            value={weightDraft}
-            placeholder="如 0.8"
-            onChange={(event) => setWeightDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") void applyWeights();
-            }}
-          />
-          <button
-            type="button"
-            className="ledger-btn is-primary"
-            onClick={() => void applyWeights()}
-            disabled={Boolean(busy) || !selected.length}
-          >
-            {busy === "weights" ? "应用中…" : `应用到已选 ${selected.length} 个`}
+        <div className="ledger-hero-actions">
+          <button type="button" className="ledger-hero-btn" onClick={() => setRateOpen(true)}>
+            站点费率设置
+          </button>
+          <button type="button" className="ledger-hero-btn" onClick={reload} disabled={loading}>
+            {loading ? "刷新中…" : "刷新"}
           </button>
         </div>
-        <div className="ledger-head-actions">
-          <span className="ledger-total">共 {total} 个商品 · 最近更新优先</span>
+      </section>
+
+      <div className="ledger-toolbar">
+        <nav className="ledger-status-tabs">
+          {STATUS_TABS.map((tab) => {
+            const count = tab.statuses.length
+              ? tab.statuses.reduce((sum, value) => sum + (counts[value] || 0), 0)
+              : Object.values(counts).reduce((sum, value) => sum + value, 0);
+            const active = tab.key === status;
+            const hint =
+              tab.key === "pending"
+                ? PENDING_STATUSES.map((value) => `${STATUS_LABELS[value]} ${counts[value] || 0}`).join(" · ")
+                : tab.key === "ready"
+                  ? "净利润 ≥ ¥10 即可入库"
+                  : tab.key === "low_profit"
+                    ? "已采核价，但净利润 < ¥10"
+                    : undefined;
+            return (
+              <button
+                key={tab.key || "all"}
+                type="button"
+                className={`ledger-tab${active ? " is-active" : ""}`}
+                title={hint}
+                onClick={() => {
+                  setStatus(tab.key);
+                  setPage(1);
+                }}
+              >
+                {tab.label}
+                <em>{count}</em>
+              </button>
+            );
+          })}
+        </nav>
+
+        <div className="ledger-toolbar-actions">
+          <div className="ledger-batch">
+            <span className="ledger-batch-title">批量重量（kg）</span>
+            <input
+              value={weightDraft}
+              placeholder="如 0.8"
+              onChange={(event) => setWeightDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void applyWeights();
+              }}
+            />
+            <button
+              type="button"
+              className="ledger-btn is-primary"
+              onClick={() => void applyWeights()}
+              disabled={Boolean(busy) || !selected.length}
+            >
+              {busy === "weights" ? "应用中…" : `应用到已选 ${selected.length} 个`}
+            </button>
+          </div>
           {selected.length > 0 && (
             <button
               type="button"
@@ -505,46 +547,8 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
               {busy === "delete" ? "删除中…" : `删除已选 ${selected.length}`}
             </button>
           )}
-          <button type="button" className="ledger-btn" onClick={() => setRateOpen(true)}>
-            站点费率设置
-          </button>
-          <button type="button" className="ledger-btn" onClick={reload} disabled={loading}>
-            {loading ? "刷新中…" : "刷新"}
-          </button>
         </div>
-      </header>
-
-      <nav className="ledger-status-tabs">
-        {STATUS_TABS.map((tab) => {
-          const count = tab.statuses.length
-            ? tab.statuses.reduce((sum, value) => sum + (counts[value] || 0), 0)
-            : Object.values(counts).reduce((sum, value) => sum + value, 0);
-          const active = tab.key === status;
-          const hint =
-            tab.key === "pending"
-              ? PENDING_STATUSES.map((value) => `${STATUS_LABELS[value]} ${counts[value] || 0}`).join(" · ")
-              : tab.key === "ready"
-                ? "净利润 ≥ ¥10 即可入库"
-                : tab.key === "low_profit"
-                  ? "已采核价，但净利润 < ¥10"
-                  : undefined;
-          return (
-            <button
-              key={tab.key || "all"}
-              type="button"
-              className={`ledger-tab${active ? " is-active" : ""}`}
-              title={hint}
-              onClick={() => {
-                setStatus(tab.key);
-                setPage(1);
-              }}
-            >
-              {tab.label}
-              <em>{count}</em>
-            </button>
-          );
-        })}
-      </nav>
+      </div>
 
       <section className="ledger-filters">
         <label>
@@ -610,14 +614,19 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
                   aria-label="全选当前页"
                 />
               </th>
-              <th>商品</th>
-              <th>站点</th>
-              <th>货源</th>
-              <th>到手成本</th>
-              <th>申报价（调整后）</th>
-              <th>利润</th>
-              <th>状态</th>
-              <th>操作</th>
+              <th className="ledger-col-product">商品</th>
+              <th className="ledger-col-site">站点</th>
+              <th className="ledger-col-source">货源</th>
+              <th className="ledger-col-num">到手成本</th>
+              <th className="ledger-col-num">申报价（调整后）</th>
+              <th className="ledger-col-num">
+                利润
+                <small className="ledger-th-hint" title="货源未填重量时，利润按默认 0.5kg 计算">
+                  按 0.5kg 估算
+                </small>
+              </th>
+              <th className="ledger-col-status">状态</th>
+              <th className="ledger-col-actions">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -631,67 +640,62 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
                     aria-label={`选择 ${item.skc}`}
                   />
                 </td>
-                <td className="ledger-cell-product">
-                  {item.image_url ? (
-                    <button
-                      type="button"
-                      className="ledger-product-thumb"
-                      title="点击查看大图"
-                      onClick={() => setPreviewImage(item.image_url)}
-                    >
-                      <img src={item.image_url} alt="" referrerPolicy="no-referrer" />
-                    </button>
-                  ) : (
-                    <i />
-                  )}
-                  <div className="ledger-product-text">
-                    <button
-                      type="button"
-                      className={`ledger-title${
-                        expandedTitle === `${item.skc}-${item.site}` ? " is-expanded" : ""
-                      }`}
-                      title={expandedTitle === `${item.skc}-${item.site}` ? "点击收起" : "点击展开完整标题"}
-                      onClick={() =>
-                        setExpandedTitle((current) =>
-                          current === `${item.skc}-${item.site}` ? "" : `${item.skc}-${item.site}`,
-                        )
-                      }
-                    >
-                      {item.title || item.skc}
-                    </button>
-                    <small>
-                      {item.skc}
-                      {item.market_skc_id ? ` · SKC ${item.market_skc_id}` : ""}
-                      {item.market_skc_code && item.market_skc_code !== item.skc
-                        ? ` · 平台 ${item.market_skc_code}`
-                        : ""}
-                      {item.sku_count ? ` · ${item.sku_count} 个 SKU` : ""}
-                    </small>
+                <td className="ledger-cell-product ledger-col-product">
+                  <div className="ledger-product-inner">
+                    {item.image_url ? (
+                      <button
+                        type="button"
+                        className="ledger-product-thumb"
+                        title="点击查看大图"
+                        onClick={() => setPreviewImage(item.image_url)}
+                      >
+                        <img src={item.image_url} alt="" referrerPolicy="no-referrer" />
+                      </button>
+                    ) : (
+                      <i />
+                    )}
+                    <div className="ledger-product-text">
+                      <button
+                        type="button"
+                        className={`ledger-title${
+                          expandedTitle === `${item.skc}-${item.site}` ? " is-expanded" : ""
+                        }`}
+                        title={expandedTitle === `${item.skc}-${item.site}` ? "点击收起" : "点击展开完整标题"}
+                        onClick={() =>
+                          setExpandedTitle((current) =>
+                            current === `${item.skc}-${item.site}` ? "" : `${item.skc}-${item.site}`,
+                          )
+                        }
+                      >
+                        {item.title || item.skc}
+                      </button>
+                      <small>
+                        {item.skc}
+                        {item.market_skc_id ? ` · SKC ${item.market_skc_id}` : ""}
+                        {item.market_skc_code && item.market_skc_code !== item.skc
+                          ? ` · 平台 ${item.market_skc_code}`
+                          : ""}
+                        {item.sku_count ? ` · ${item.sku_count} 个 SKU` : ""}
+                      </small>
+                    </div>
                   </div>
                 </td>
-                <td>{item.site ? item.site.replace(/站$/, "") : "—"}</td>
-                <td>{item.source_count ? `${item.source_count} 条` : "—"}</td>
-                <td>{money(item.best_source?.landed_cost_cny)}</td>
-                <td>
+                <td className="ledger-col-site">{item.site ? item.site.replace(/站$/, "") : "—"}</td>
+                <td className="ledger-col-source">{item.source_count ? `${item.source_count} 条` : "—"}</td>
+                <td className="ledger-col-num">{money(item.best_source?.landed_cost_cny)}</td>
+                <td className="ledger-col-num">
                   {money(item.adjusted_min)}
                   {item.original_min && item.original_min !== item.adjusted_min ? (
                     <small className="ledger-muted"> 原 {money(item.original_min)}</small>
                   ) : null}
                 </td>
-                <td>
-                  {profitText(item.profit)}
-                  {item.weight_estimated ? (
-                    <small className="ledger-estimate" title="货源未填重量，利润按默认 0.5kg 计算">
-                      按 0.5kg 估算
-                    </small>
-                  ) : null}
-                </td>
-                <td>
+                <td className="ledger-col-num">{profitText(item.profit)}</td>
+                <td className="ledger-col-status">
                   <span className={`ledger-status ${statusTone(item.status)}`}>
                     {STATUS_LABELS[item.status] || item.status}
                   </span>
                 </td>
-                <td>
+                <td className="ledger-col-actions">
                   <button type="button" className="ledger-link" onClick={() => void openDetail(item)}>
                     货源 / 利润
                   </button>
@@ -720,7 +724,7 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
       {total > 0 && (
         <div className="ledger-pager">
           <span className="ledger-pager-info">
-            第 {page} / {totalPages} 页 · 共 {total} 个商品
+            第 {page} / {totalPages} 页 · 共 {total} 个商品 · 最近更新优先
           </span>
           <div className="ledger-pager-actions">
             <select

@@ -110,6 +110,7 @@
 [data-theme="peach"] .settings-hero,
 [data-theme="peach"] .price-verification-hero,
 [data-theme="peach"] .profit-activity-hero,
+[data-theme="peach"] .ledger-hero,
 [data-theme="peach"] .verify-commandbar {
   border-color: rgba(217, 93, 120, 0.42);
   background: linear-gradient(118deg, rgba(128, 52, 78, 0.82) 0%, rgba(208, 107, 130, 0.68) 56%, rgba(90, 155, 124, 0.6) 100%);
@@ -146,6 +147,7 @@
 [data-theme="peach"] .pod-page-header .pod-live-badge,
 [data-theme="peach"] .price-verification-hero p:not(.eyebrow),
 [data-theme="peach"] .profit-activity-hero p:not(.eyebrow),
+[data-theme="peach"] .ledger-hero p,
 [data-theme="peach"] .verify-command-title p,
 [data-theme="peach"] .price-verification-hero-status,
 [data-theme="peach"] .back-to-collection-button,
