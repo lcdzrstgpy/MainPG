@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { podCustomizationApi } from "../api/podCustomizationApi";
 import { AutoGrowTextarea } from "./AutoGrowTextarea";
-import type { PodComposition, PodCompositionPanelsZh } from "../types";
+import type { PodComposition, PodCompositionPanelsZh, PodCompositionScope } from "../types";
 
 /** 一格中文指令的字符上限（与后端契约一致）。 */
 export const COMPOSITION_PANEL_MAX_LENGTH = 500;
@@ -38,6 +38,8 @@ function timeLabel(updatedAt: string): string {
 type Props = {
   /** 要编辑的模板。 */
   composition: PodComposition;
+  /** 模板池归属：replica 锁定 panel_1（主图视角由 AI 方案决定）。 */
+  scope?: PodCompositionScope;
   /** 外部忙状态（如生成中）时禁用编辑。 */
   disabled?: boolean;
   /** 保存成功回调（返回后端最新记录）。 */
@@ -47,8 +49,11 @@ type Props = {
 /**
  * 各角色画面指令编辑器（只做手动编辑）：改的是这一份原记录，保存时后台按中文重新转写英文。
  * 「构图定制」（AI 生成）与「编辑构图模板」（管理入口）共用本组件。
+ *
+ * 复刻模板（scope=replica）只作用于派生三格：主图（panel_1）由豆包方案决定，
+ * 这里固定为后端占位句并禁止编辑。
  */
-export function CompositionPanelsEditor({ composition, disabled = false, onSaved }: Props) {
+export function CompositionPanelsEditor({ composition, scope = "full", disabled = false, onSaved }: Props) {
   const [drafts, setDrafts] = useState<PodCompositionPanelsZh>(() => draftsFrom(composition));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -92,8 +97,11 @@ export function CompositionPanelsEditor({ composition, disabled = false, onSaved
   };
 
   const updated = timeLabel(composition.updated_at);
+  // 复刻模板只作用于派生三格：主图视角由豆包方案决定，panel_1 固定占位且不可编辑。
+  const replicaScope = scope === "replica";
   // 全定制模板（含旧模板）一律按「四轮」语义生效：每一轮的机位由该轮四款共用。
-  const roleLayout = composition.layout === "role_v1" || composition.scope === "full";
+  const roleLayout = !replicaScope && (composition.layout === "role_v1" || composition.scope === "full");
+  const isLocked = (key: keyof PodCompositionPanelsZh) => replicaScope && key === "panel_1";
 
   return (
     <section className="pod-composition-result" aria-label="画面指令">
@@ -102,27 +110,35 @@ export function CompositionPanelsEditor({ composition, disabled = false, onSaved
         <h3>{updated ? `画面指令（更新于 ${updated}）` : "画面指令"}</h3>
       </div>
       {roleLayout && <p className="pod-composition-role-hint">构图模板已按四轮生效：每一轮的四款共用该轮机位；第 2/3/4 轮只改视角，场景与光线跟随主图锚点，可继续编辑。</p>}
+      {replicaScope && <p className="pod-composition-role-hint">爆款复刻模板只作用于派生三格：主图视角由 AI 方案决定，这里不可指定；细节图 A / 细节图 B / 素材图只写怎么换机位，场景与光线跟随主图。</p>}
       <ul className="pod-composition-panels">
-        {COMPOSITION_PANEL_SLOTS.map((slot) => (
-          <li key={slot.key}>
-            <label>
-              <b>{slot.label}</b>
-              <AutoGrowTextarea
-                value={drafts[slot.key]}
-                maxLength={COMPOSITION_PANEL_MAX_LENGTH}
-                disabled={busy}
-                aria-label={`${slot.label}的画面指令`}
-                placeholder={roleLayout ? "填写这一轮四款共用的机位 / 景别 / 构图" : "填写这一格要怎么拍"}
-                onChange={(event) => {
-                  const value = event.currentTarget.value;
-                  setDrafts((current) => ({ ...current, [slot.key]: value }));
-                  setError("");
-                  setNotice("");
-                }}
-              />
-            </label>
-          </li>
-        ))}
+        {COMPOSITION_PANEL_SLOTS.map((slot) => {
+          const locked = isLocked(slot.key);
+          return (
+            <li key={slot.key}>
+              <label>
+                <b>{locked ? `${slot.label}（AI 方案决定，不可编辑）` : slot.label}</b>
+                <AutoGrowTextarea
+                  value={drafts[slot.key]}
+                  maxLength={COMPOSITION_PANEL_MAX_LENGTH}
+                  disabled={busy || locked}
+                  aria-label={`${slot.label}的画面指令`}
+                  placeholder={locked
+                    ? "主图视角由 AI 方案决定，不参与构图"
+                    : roleLayout
+                      ? "填写这一轮四款共用的机位 / 景别 / 构图"
+                      : "填写这一格要怎么拍"}
+                  onChange={(event) => {
+                    const value = event.currentTarget.value;
+                    setDrafts((current) => ({ ...current, [slot.key]: value }));
+                    setError("");
+                    setNotice("");
+                  }}
+                />
+              </label>
+            </li>
+          );
+        })}
       </ul>
       <div className="pod-composition-actions">
         <button type="button" className="pod-composition-save" disabled={busy || !allFilled || !dirty} onClick={() => void save()}>

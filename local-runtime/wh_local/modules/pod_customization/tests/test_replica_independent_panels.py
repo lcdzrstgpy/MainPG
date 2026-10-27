@@ -1,6 +1,6 @@
-"""independent_panels 生成策略：每款 4 次单面板 provider 调用、4 张面板、计费 link 不变。
+"""复刻独立面板生成：主图锚定 + 三张换机位派生，每款 4 次单面板调用。
 
-全程使用假豆包分析与假图片 provider，不触发任何真实付费调用。
+全程使用假豆包方案与假图片 provider，不触发任何真实付费调用。
 """
 
 from __future__ import annotations
@@ -12,10 +12,10 @@ import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
-import pytest
 from PIL import Image
 
 from wh_local.modules.pod_customization.billing_contract import (
+    POD_BILLING_PROFILE_REPLICA_HD,
     PodExecutionGrant,
 )
 from wh_local.modules.pod_customization.contracts import (
@@ -25,64 +25,21 @@ from wh_local.modules.pod_customization.contracts import (
     ReplicaTargetCreate,
 )
 from wh_local.modules.pod_customization.replica_analysis_runtime import (
-    ReplicaAnalysisResult,
-    build_composition_plan,
+    MAIN_PROMPT_MODEL,
+    MAIN_PROMPT_VERSION,
+    ReplicaMainPromptResult,
 )
 from wh_local.modules.pod_customization.replica_context import load_frozen_plan
-from wh_local.modules.pod_customization.replica_specs import (
-    REPLICA_ANALYSIS_SCHEMA_VERSION,
-    SOURCE_FACT_FIELDS,
-    TARGET_FACT_FIELDS,
-    PresentationPreferences,
-    normalize_source_analysis,
-    normalize_target_analysis,
-)
-from wh_local.modules.product_processing.infrastructure.media import GeneratedMedia, MediaProcessingError
+from wh_local.modules.pod_customization.replica_panel_template import DERIVED_PANEL_KEYS
 from wh_local.modules.pod_customization.service import PodCustomizationService
 from wh_local.modules.pod_customization.title_runtime import PodTitleResult
+from wh_local.modules.product_processing.infrastructure.media import GeneratedMedia, MediaProcessingError
 from wh_local.session import Actor
-from wh_local.modules.pod_customization import service as pod_service_module
 
-
-@pytest.fixture(autouse=True)
-def _enable_panel_strategy(monkeypatch: pytest.MonkeyPatch) -> None:
-    """高清直出暂时下线（``REPLICA_PANEL_STRATEGY_ENABLED=False``）。
-
-    本组用例显式打开开关，保住 independent_panels 面板路径的回归覆盖，等分镜提示词
-    定稿、重新放开入口时直接可用。
-    """
-    monkeypatch.setattr(pod_service_module, "REPLICA_PANEL_STRATEGY_ENABLED", True)
-
-_SOURCE_VALUES: dict[str, object] = {
-    "source_product_name": "原素材帆布袋",
-    "artwork_motifs": ["玫瑰", "藤蔓"],
-    "artwork_colors": ["酒红"],
-    "artwork_layout": "all_over_repeat",
-    "artwork_density": "medium",
-    "artwork_repeat_pattern": "seamless",
-    "artwork_text": "BLOOM",
-    "artwork_print_region": "front_panel",
-    "source_product_structure": "tote_bag",
-    "source_background_elements": ["木桌"],
-    "source_people_and_props": ["模特"],
-    "source_watermarks_and_labels": ["水印"],
-}
-# 五片凝胶美甲：命中 multi_piece；生成策略由用户在请求里显式选择 independent_panels。
-_TARGET_VALUES: dict[str, object] = {
-    "product_name": "美甲套装",
-    "product_type": "nail_tip_set",
-    "component_count": 5,
-    "component_structure": "five_separate_nail_tips",
-    "material": "gel",
-    "surface_texture": "glossy_gel",
-    "printable_regions": ["front_surface"],
-    "non_printable_regions": ["cuticle_edge"],
-    "inner_outer_structure": "none",
-    "openings_and_hardware": [],
-    "product_orientation": "upright",
-    "supported_usage_modes": ["hand_worn"],
-    "occlusion_risk": "low",
-}
+_MAIN_PROMPT = (
+    "Main image: reference image 1 is the exact product, reference image 2 supplies the pattern. "
+    "Place the complete product on a warm wooden desk with directional afternoon window light."
+)
 
 
 def _png(color: str) -> bytes:
@@ -91,59 +48,24 @@ def _png(color: str) -> bytes:
     return output.getvalue()
 
 
-def _raw(values: dict[str, object], fields: tuple[str, ...]) -> dict[str, object]:
-    return {
-        name: {"value": values[name], "confidence": 0.95, "source": "model"} for name in fields
-    }
-
-
 class FakeAnalysisRuntime:
-    def __init__(self, target_values: dict[str, object] | None = None) -> None:
-        self.target_values = target_values or _TARGET_VALUES
+    """假豆包方案：一次调用返回固定主图提示词。"""
 
-    def analyze_assets(
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def generate_main_prompt(
         self, source_asset, target_asset, *, grant, call_id, call_ids=None, on_start=None, on_outcome=None
-    ) -> ReplicaAnalysisResult:
+    ) -> ReplicaMainPromptResult:
+        self.calls += 1
         if on_outcome is not None:
             on_outcome(call_id, "success")
-        raw_source = _raw(_SOURCE_VALUES, SOURCE_FACT_FIELDS)
-        raw_target = _raw(self.target_values, TARGET_FACT_FIELDS)
-        return ReplicaAnalysisResult(
-            source_artwork_spec=normalize_source_analysis(raw_source, source_asset.asset_id),
-            target_product_spec=normalize_target_analysis(raw_target, target_asset.asset_id),
-            raw_source=raw_source,
-            raw_target=raw_target,
-            model="doubao-fake",
-            schema_version=REPLICA_ANALYSIS_SCHEMA_VERSION,
-            prompt_version="pod-replica-analysis-v1",
+        return ReplicaMainPromptResult(
+            main_prompt=_MAIN_PROMPT,
+            model=MAIN_PROMPT_MODEL,
+            prompt_version=MAIN_PROMPT_VERSION,
             attempt_count=1,
         )
-
-    def generate_composition_plan(
-        self, request, *, grant, call_id, call_ids=None, on_start=None, on_outcome=None
-    ):
-        if on_outcome is not None:
-            on_outcome(call_id, "success")
-        payload = {
-            "template_id": request.template.template_id,
-            "template_version": request.template.template_version,
-            "panels": [
-                {
-                    "slot_id": slot_id,
-                    "role": f"role_{slot_id}",
-                    "camera": "",
-                    "lighting": "",
-                    "background": "",
-                    "composition_notes": "",
-                }
-                for slot_id in request.template.panel_slots
-            ],
-            "camera": "",
-            "lighting": "",
-            "background": "",
-            "composition_notes": "",
-        }
-        return build_composition_plan(payload, request)
 
 
 def _parse_panel_trial(trial_id: str) -> tuple[int, int, int]:
@@ -156,19 +78,21 @@ def _parse_panel_trial(trial_id: str) -> tuple[int, int, int]:
 
 
 class CapturingPanelRuntime:
-    """捕获每款每面板的单面板请求；每个面板返回一张独立图片。
+    """捕获每款每面板的单面板请求；每个面板返回一张独立图片。"""
 
-    ``fail_attempt1_panels`` 中的 (款, 面板) 在第一次尝试时抛瞬时错误，用于验证
-    面板级重试会落到第二个尝试。
-    """
-
-    def __init__(self, fail_attempt1_panels: set[tuple[int, int]] | None = None) -> None:
+    def __init__(
+        self,
+        fail_attempt1_panels: set[tuple[int, int]] | None = None,
+        fail_panels: set[tuple[int, int]] | None = None,
+    ) -> None:
         self.requests: list = []
         self.publications: list[tuple[str, str]] = []
+        self.outputs: dict[str, bytes] = {}
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="panel-ai")
         self._lock = threading.Lock()
         self._counter = 0
         self.fail_attempt1_panels = set(fail_attempt1_panels or ())
+        self.fail_panels = set(fail_panels or ())
 
     def submit(self, function, *args, **kwargs) -> Future:
         return self._executor.submit(function, *args, **kwargs)
@@ -180,11 +104,16 @@ class CapturingPanelRuntime:
             self.requests.append(request)
             self._counter += 1
             index = self._counter
-        if attempt == 1 and (style, panel) in self.fail_attempt1_panels:
+        if (style, panel) in self.fail_panels or (
+            attempt == 1 and (style, panel) in self.fail_attempt1_panels
+        ):
             raise MediaProcessingError("transient panel failure", status_class="transient")
+        content = _png(f"#{index:02x}{index:02x}{index:02x}")
+        with self._lock:
+            self.outputs[request.trial_id] = content
         return GeneratedMedia(
             stage="grid_image",
-            content=_png(f"#{index:02x}{index:02x}{index:02x}"),
+            content=content,
             content_type="image/png",
             suffix=".png",
             provider="fake-panel",
@@ -261,169 +190,24 @@ def _listing_fields() -> ListingFields:
         suggested_price_usd=19.99,
         category_name="美妆 > 美甲",
         skus=[{"name": "5片", "declared_price": 6.0, "weight_g": 300.0}],
-        spec_card={
-            "enabled": True,
-            "style": "light",
-            "corner": "bottom-right",
-            "display_unit": "cm",
-            "cells": [["SKU", "Length"], ["5片", "2"]],
-        },
     )
-
-
-def test_independent_panels_generates_four_single_panel_requests(tmp_path: Path) -> None:
-    panel_runtime = CapturingPanelRuntime()
-    titles = FakeTitleRuntime()
-    billing = Billing()
-    service = PodCustomizationService(
-        tmp_path / "workbench.sqlite3",
-        tmp_path / "pod-assets",
-        panel_runtime,
-        title_runtime=titles,
-        analysis_runtime=FakeAnalysisRuntime(),
-        billing_coordinator=billing,
-        start_workers=True,
-    )
-    actor = _actor()
-    try:
-        source_id = service.upload_replica_image(
-            actor, role="source", filename="source.png", content=_png("#cc1111")
-        )["asset_id"]
-        target_id = service.upload_replica_image(
-            actor, role="target", filename="nail.png", content=_png("#11aa33")
-        )["asset_id"]
-        analysis = service.analyze_replica_assets(
-            actor,
-            ReplicaAnalyzeRequest(source_asset_id=source_id, target_asset_id=target_id),
-        )
-        assert "multi_piece" in analysis["candidate_capabilities"]
-
-        batch = service.create_replica_batch(
-            actor,
-            ReplicaBatchCreate(
-                client_request_id="req-panel-1",
-                source_asset_id=source_id,
-                generation_strategy="independent_panels",
-                targets=[
-                    ReplicaTargetCreate(
-                        target_asset_id=target_id,
-                        product_name="美甲套装",
-                        listing_fields=_listing_fields(),
-                        analysis_id=analysis["analysis_id"],
-                    )
-                ],
-            ),
-            enqueue=False,
-        )
-        # 冻结计划已按独立面板策略落库。
-        internal = service.repository.get_batch_internal(batch["id"])
-        plan = load_frozen_plan(internal, 1)
-        assert plan.generation_strategy == "independent_panels"
-        # 冻结的是真实编译提示词，不再是占位空对象。
-        assert internal["prompt_snapshot"] not in ("", "{}")
-        assert "=== PART 1" in internal["prompt_snapshot"]
-
-        # 计费：一款仍是一个 link，但预留 4 面板 × 2 次尝试。
-        frozen = billing.freezes[-1]
-        assert frozen.product_batch_freeze_payload()["link_count"] == 1
-        assert sum(call.feature == "pod.image" for call in frozen.calls) == 8
-
-        service.worker.process_batch(batch["id"])
-
-        # 每款 4 个单面板请求，attempt=1，prompt 为单张全幅格式。
-        assert len(panel_runtime.requests) == 4
-        panels = sorted(
-            request.trial_id.rsplit("-panel-", 1)[1] for request in panel_runtime.requests
-        )
-        assert panels == ["1-attempt-1", "2-attempt-1", "3-attempt-1", "4-attempt-1"]
-        for request in panel_runtime.requests:
-            assert request.attempt == 1
-            assert "Create ONE single full-frame square ecommerce image" in request.prompt
-            assert "2x2" not in request.prompt
-            assert [image.role for image in request.reference_images] == [
-                "pattern_source",
-                "target_product",
-            ]
-
-        # 四张面板各自发布一次。
-        published_roles = sorted(role for _ns, role in panel_runtime.publications)
-        assert published_roles == ["detail_a", "detail_b", "hero", "lifestyle"]
-
-        stored = service.get_batch(actor, batch["id"])
-        assert stored["status"] == "completed"
-        assert len([item for item in stored["items"] if item["style_index"] == 1]) == 4
-
-        # 调用级快照 = 本次真实提交的 4 个单面板提示词（不是款级四宫格文本）。
-        with service.repository._connect() as connection:
-            row = connection.execute(
-                """SELECT prompt_snapshot FROM pod_customization_generation_calls
-                   WHERE batch_id = ? ORDER BY rowid DESC LIMIT 1""",
-                (batch["id"],),
-            ).fetchone()
-        manifest = json.loads(row["prompt_snapshot"])
-        assert manifest["strategy"] == "independent_panels"
-        assert len(manifest["panels"]) == 4
-        assert [entry["panel_index"] for entry in manifest["panels"]] == [1, 2, 3, 4]
-        assert all(
-            "Create ONE single full-frame square ecommerce image" in entry["prompt"]
-            for entry in manifest["panels"]
-        )
-
-        # 整款重试：同样走 4 次单面板调用（重试动作自带新的面板调用计划）。
-        panel_runtime.requests.clear()
-        service.regenerate_style(actor, batch["id"], 1, enqueue=True)
-        with service.worker._futures_lock:
-            future = service.worker._futures[("regenerate-style", f"{batch['id']}:1")]
-        future.result(timeout=10)
-        assert len(panel_runtime.requests) == 4
-        assert all(request.attempt == 1 for request in panel_runtime.requests)
-        assert all(
-            "Create ONE single full-frame square ecommerce image" in request.prompt
-            for request in panel_runtime.requests
-        )
-    finally:
-        service.close()
-        panel_runtime.close()
-        titles.close()
-
-
-# --------------------------------------------------------------------------- #
-# 展示偏好语义：能力支持 ≠ 本次必拍；面板级失败落到第二个尝试
-# --------------------------------------------------------------------------- #
-
-_APPAREL_VALUES: dict[str, object] = {
-    "product_name": "短袖T恤",
-    "product_type": "t_shirt",
-    "component_count": 1,
-    "component_structure": "single_piece_garment",
-    "material": "cotton",
-    "surface_texture": "matte_fabric",
-    "printable_regions": ["front_torso"],
-    "non_printable_regions": ["collar"],
-    "inner_outer_structure": "none",
-    "openings_and_hardware": [],
-    "product_orientation": "upright",
-    "supported_usage_modes": ["body_worn"],
-    "occlusion_risk": "medium",
-}
 
 
 def _prepare(
     tmp_path: Path,
     runtime: CapturingPanelRuntime,
     *,
-    target_values: dict[str, object],
-    preferences: PresentationPreferences | None = None,
-    request_id: str = "req",
+    request_id: str = "req-panels",
+    billing: Billing | None = None,
 ):
     titles = FakeTitleRuntime()
-    billing = Billing()
+    billing = billing or Billing()
     service = PodCustomizationService(
         tmp_path / "workbench.sqlite3",
         tmp_path / "pod-assets",
         runtime,
         title_runtime=titles,
-        analysis_runtime=FakeAnalysisRuntime(target_values),
+        analysis_runtime=FakeAnalysisRuntime(),
         billing_coordinator=billing,
         start_workers=True,
     )
@@ -434,93 +218,172 @@ def _prepare(
     target_id = service.upload_replica_image(
         actor, role="target", filename="target.png", content=_png("#11aa33")
     )["asset_id"]
-    prefs = preferences or PresentationPreferences()
     analysis = service.analyze_replica_assets(
-        actor,
-        ReplicaAnalyzeRequest(
-            source_asset_id=source_id,
-            target_asset_id=target_id,
-            presentation_preferences=prefs,
-        ),
+        actor, ReplicaAnalyzeRequest(source_asset_id=source_id, target_asset_id=target_id)
     )
     batch = service.create_replica_batch(
         actor,
         ReplicaBatchCreate(
             client_request_id=request_id,
             source_asset_id=source_id,
-            generation_strategy="independent_panels",
             targets=[
                 ReplicaTargetCreate(
                     target_asset_id=target_id,
-                    product_name=str(target_values["product_name"]),
+                    product_name="美甲套装",
                     listing_fields=_listing_fields(),
                     analysis_id=analysis["analysis_id"],
-                    presentation_preferences=prefs,
                 )
             ],
         ),
         enqueue=False,
     )
-    return service, titles, actor, batch
+    return service, titles, billing, actor, batch, source_id, target_id
 
 
-def test_nail_target_has_no_hand_panel_by_default(tmp_path: Path) -> None:
+def test_main_image_then_three_derived_panels(tmp_path: Path) -> None:
     runtime = CapturingPanelRuntime()
-    service, titles, actor, batch = _prepare(tmp_path, runtime, target_values=_TARGET_VALUES)
+    service, titles, billing, actor, batch, source_id, target_id = _prepare(tmp_path, runtime)
     try:
         internal = service.repository.get_batch_internal(batch["id"])
         plan = load_frozen_plan(internal, 1)
-        assert plan.composition_plan is not None
-        # 支持 hand_worn 使用方式，但用户没选，本次计划不得出现手部画面。
-        assert all(not slot.hand_worn for slot in plan.composition_plan.slots)
+        assert plan.generation_strategy == "independent_panels"
+        assert plan.main_prompt == _MAIN_PROMPT
+        assert internal["prompt_snapshot"] == _MAIN_PROMPT
+
+        frozen = billing.freezes[-1]
+        assert frozen.billing_profile == POD_BILLING_PROFILE_REPLICA_HD
+        assert frozen.product_batch_freeze_payload()["link_count"] == 1
+        assert sum(call.feature == "pod.image" for call in frozen.calls) == 8
+
         service.worker.process_batch(batch["id"])
-        assert not any("; hand_worn" in request.prompt for request in runtime.requests)
-        assert service.get_batch(actor, batch["id"])["status"] == "completed"
+
+        by_panel = {
+            panel: request
+            for request in runtime.requests
+            for _style, panel, attempt in [_parse_panel_trial(request.trial_id)]
+            if attempt == 1
+        }
+        assert sorted(by_panel) == [1, 2, 3, 4]
+
+        main = by_panel[1]
+        assert main.prompt == _MAIN_PROMPT
+        # 主图参考图固定 [B, A]：第 1 张目标白底图，第 2 张样图。
+        assert [image.role for image in main.reference_images] == ["target_product", "pattern_source"]
+        assert main.reference_images[0].content == _asset_bytes(service, actor, target_id)
+        assert main.reference_images[1].content == _asset_bytes(service, actor, source_id)
+
+        main_bytes = runtime.outputs[main.trial_id]
+        assert main_bytes
+        for panel in (2, 3, 4):
+            request = by_panel[panel]
+            assert [image.role for image in request.reference_images] == ["main_view"]
+            # 派生三格的唯一参考图就是刚才那次主图调用的输出。
+            assert request.reference_images[0].content == main_bytes
+            assert plan.derived_panels[f"panel_{panel}"] in request.prompt
+            assert "SINGLE FRAME OUTPUT" in request.prompt
+            assert "Create one square 2x2" not in request.prompt
+            assert request.attempt == 1
+
+        published_roles = sorted(role for _ns, role in runtime.publications)
+        assert published_roles == ["detail_a", "detail_b", "hero", "lifestyle"]
+
+        stored = service.get_batch(actor, batch["id"])
+        assert stored["status"] == "completed"
+        assert len([item for item in stored["items"] if item["style_index"] == 1]) == 4
+
+        # 调用级快照 = 本次真实提交的 4 个单面板提示词。
+        with service.repository._connect() as connection:
+            row = connection.execute(
+                """SELECT prompt_snapshot FROM pod_customization_generation_calls
+                   WHERE batch_id = ? ORDER BY rowid DESC LIMIT 1""",
+                (batch["id"],),
+            ).fetchone()
+        manifest = json.loads(row["prompt_snapshot"])
+        assert manifest["strategy"] == "independent_panels"
+        assert [entry["panel_index"] for entry in manifest["panels"]] == [1, 2, 3, 4]
+        assert manifest["panels"][0]["prompt"] == _MAIN_PROMPT
+
+        # 整款重试：主图重新生成，三张派生再以新主图为锚点。
+        runtime.requests.clear()
+        service.regenerate_style(actor, batch["id"], 1, enqueue=True)
+        with service.worker._futures_lock:
+            future = service.worker._futures[("regenerate-style", f"{batch['id']}:1")]
+        future.result(timeout=10)
+        assert len(runtime.requests) == 4
+        retried = {_parse_panel_trial(request.trial_id)[1] for request in runtime.requests}
+        assert retried == {1, 2, 3, 4}
     finally:
         service.close()
         runtime.close()
         titles.close()
 
 
-def test_apparel_target_with_body_preference_renders_a_body_worn_panel(tmp_path: Path) -> None:
-    runtime = CapturingPanelRuntime()
-    service, titles, actor, batch = _prepare(
-        tmp_path,
-        runtime,
-        target_values=_APPAREL_VALUES,
-        preferences=PresentationPreferences(use_body_model=True),
-        request_id="req-apparel",
+def _asset_bytes(service: PodCustomizationService, actor: Actor, asset_id: str) -> bytes:
+    asset = service.repository.get_asset(asset_id, actor.workspace_id, actor.id)
+    return service.assets.read(asset["relative_path"])
+
+
+def test_main_image_failure_stops_derived_panels(tmp_path: Path) -> None:
+    runtime = CapturingPanelRuntime(fail_panels={(1, 1)})
+    service, titles, _billing, actor, batch, _source, _target = _prepare(
+        tmp_path, runtime, request_id="req-main-fail"
     )
     try:
-        internal = service.repository.get_batch_internal(batch["id"])
-        plan = load_frozen_plan(internal, 1)
-        assert plan.composition_plan is not None
-        assert any(slot.body_worn for slot in plan.composition_plan.slots)
         service.worker.process_batch(batch["id"])
-        assert any("; body_worn" in request.prompt for request in runtime.requests)
-        assert service.get_batch(actor, batch["id"])["status"] == "completed"
+
+        panels = {_parse_panel_trial(request.trial_id)[1] for request in runtime.requests}
+        # 主图两次尝试都失败后整款失败，派生三格一次都不发起。
+        assert panels == {1}
+        assert service.get_batch(actor, batch["id"])["status"] in {"failed", "partial_failure"}
+        assert runtime.publications == []
     finally:
         service.close()
         runtime.close()
         titles.close()
 
 
-def test_panel_failure_retries_on_the_second_attempt(tmp_path: Path) -> None:
+def test_derived_panel_failure_retries_on_the_second_attempt(tmp_path: Path) -> None:
     runtime = CapturingPanelRuntime(fail_attempt1_panels={(1, 2)})
-    service, titles, actor, batch = _prepare(
-        tmp_path, runtime, target_values=_TARGET_VALUES, request_id="req-panel-retry"
+    service, titles, _billing, actor, batch, _source, _target = _prepare(
+        tmp_path, runtime, request_id="req-panel-retry"
     )
     try:
         service.worker.process_batch(batch["id"])
+
         seen: dict[tuple[int, int], set[int]] = {}
         for request in runtime.requests:
             style, panel, attempt = _parse_panel_trial(request.trial_id)
             seen.setdefault((style, panel), set()).add(attempt)
-        # 面板 2 第一次失败后落到第二个尝试；其余面板仍只用第一次尝试。
+        assert seen[(1, 1)] == {1}
         assert seen[(1, 2)] == {1, 2}
-        assert all(attempts == {1} for key, attempts in seen.items() if key != (1, 2))
+        assert seen[(1, 3)] == {1}
+        assert seen[(1, 4)] == {1}
         assert len(runtime.publications) == 4
         assert service.get_batch(actor, batch["id"])["status"] == "completed"
+    finally:
+        service.close()
+        runtime.close()
+        titles.close()
+
+
+def test_derived_panels_use_the_frozen_plan_directions(tmp_path: Path) -> None:
+    runtime = CapturingPanelRuntime()
+    service, titles, _billing, actor, batch, _source, _target = _prepare(
+        tmp_path, runtime, request_id="req-plan-directions"
+    )
+    try:
+        internal = service.repository.get_batch_internal(batch["id"])
+        plan = load_frozen_plan(internal, 1)
+        assert set(plan.derived_panels) == set(DERIVED_PANEL_KEYS)
+
+        service.worker.process_batch(batch["id"])
+        by_panel = {
+            panel: request
+            for request in runtime.requests
+            for _style, panel, _attempt in [_parse_panel_trial(request.trial_id)]
+        }
+        for panel in (2, 3, 4):
+            assert plan.derived_panels[f"panel_{panel}"] in by_panel[panel].prompt
     finally:
         service.close()
         runtime.close()

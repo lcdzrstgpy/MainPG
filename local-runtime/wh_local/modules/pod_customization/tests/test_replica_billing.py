@@ -19,6 +19,8 @@ from PIL import Image
 from wh_local.modules.pod_customization.billing_contract import (
     POD_BILLING_PROFILE_RANDOM,
     POD_BILLING_PROFILE_REPLICA,
+    POD_BILLING_PROFILE_REPLICA_HD,
+    TITLE_ATTEMPTS,
     PodCallPlan,
     PodExecutionGrant,
 )
@@ -28,6 +30,10 @@ from wh_local.modules.pod_customization.contracts import (
     ReplicaTargetCreate,
 )
 from wh_local.modules.pod_customization.images import split_grid_2x2
+from wh_local.modules.pod_customization.replica_analysis_runtime import (
+    MAIN_PROMPT_MODEL,
+    MAIN_PROMPT_VERSION,
+)
 from wh_local.modules.pod_customization.repository import PodRepositoryError
 from wh_local.modules.pod_customization.service import PodCustomizationService
 from wh_local.modules.product_processing.infrastructure.media import (
@@ -228,11 +234,24 @@ def _batch_request(service: PodCustomizationService, actor: Actor, *, count: int
         target_id = service.upload_replica_image(
             actor, role="target", filename=f"t{index}.png", content=_solid(f"#0{index}aa33")
         )["asset_id"]
+        plan_id = f"{request_id}:plan:{index}"
+        service.repository.create_replica_transfer_plan(
+            plan_id=plan_id,
+            workspace_id=actor.workspace_id,
+            owner_user_id=actor.id,
+            source_asset_id=source_id,
+            target_asset_id=target_id,
+            prompt_version=MAIN_PROMPT_VERSION,
+            model=MAIN_PROMPT_MODEL,
+            reference_order="B,A",
+            main_prompt=f"main prompt {index}",
+        )
         targets.append(
             ReplicaTargetCreate(
                 target_asset_id=target_id,
                 product_name=f"产品{index}",
                 listing_fields=_listing_fields(f"SKU{index}", f"类目{index}"),
+                analysis_id=plan_id,
             )
         )
     return ReplicaBatchCreate(
@@ -257,32 +276,37 @@ def test_replica_batch_freezes_one_replica_link_per_style_and_settles(tmp_path: 
         actor, _batch_request(service, actor, count=3, request_id="req-billing-3"), enqueue=False
     )
 
-    # 冻结一次，画像为 pod_replica_v1_a（复刻专用分类），调用 ID 沿用 :style:{款}:image:{尝试}。
+    # 冻结一次，画像为 pod_replica_v1_b（每款 4 张单图），调用 ID 为 :style:{款}:image:p{面板}:{尝试}。
     assert len(billing.freezes) == 1
     plan = billing.freezes[0]
-    assert plan.billing_profile == POD_BILLING_PROFILE_REPLICA
+    assert plan.billing_profile == POD_BILLING_PROFILE_REPLICA_HD
     image_calls = [call.call_id for call in plan.calls if call.feature == "pod.image"]
     assert sorted(image_calls) == sorted(
-        f"{batch['id']}:style:{style}:image:{attempt}"
+        f"{batch['id']}:style:{style}:image:p{panel}:{attempt}"
         for style in (1, 2, 3)
+        for panel in (1, 2, 3, 4)
         for attempt in (1, 2)
     )
     payload = plan.product_batch_freeze_payload()
     assert payload["link_count"] == 3
-    assert payload["billing_profile"] == POD_BILLING_PROFILE_REPLICA
+    assert payload["billing_profile"] == POD_BILLING_PROFILE_REPLICA_HD
+    # 标题调用形状不变：每款仍预留 TITLE_ATTEMPTS 次 pod.title。
+    assert sum(call.feature == "pod.title" for call in plan.calls) == 3 * TITLE_ATTEMPTS
 
     service.worker.process_batch(batch["id"])
 
-    # 三款各一次成功生图 → 恰好三次 provider 请求，每款只成功一次图像调用。
-    assert len(runtime.requests) == 3
+    # 三款各四张单图 → 十二次 provider 请求，每格只用第一次尝试。
+    assert len(runtime.requests) == 12
     assert len(billing.settlements) == 1
     _plan, outcomes = billing.settlements[0]
     successes = [
         outcome for outcome in _image_outcomes(outcomes) if outcome.status == "success"
     ]
-    assert len(successes) == 3
-    assert {outcome.call_id.rsplit(":", 1)[0] for outcome in successes} == {
-        f"{batch['id']}:style:{style}:image" for style in (1, 2, 3)
+    assert len(successes) == 12
+    assert {outcome.call_id for outcome in successes} == {
+        f"{batch['id']}:style:{style}:image:p{panel}:1"
+        for style in (1, 2, 3)
+        for panel in (1, 2, 3, 4)
     }
     assert service.repository.list_pending_billing_runs(actor.workspace_id, actor.id) == []
     service.close()
@@ -428,9 +452,9 @@ def test_replica_partial_failure_bills_only_successful_style(tmp_path: Path) -> 
     assert len(billing.settlements) == 1
     _plan, outcomes = billing.settlements[0]
     by_call = {outcome.call_id: outcome.status for outcome in _image_outcomes(outcomes)}
-    assert by_call[f"{batch['id']}:style:1:image:1"] == "success"
-    assert by_call[f"{batch['id']}:style:2:image:1"] == "no_return"
-    assert by_call[f"{batch['id']}:style:2:image:2"] == "no_return"
+    assert by_call[f"{batch['id']}:style:1:image:p1:1"] == "success"
+    assert by_call[f"{batch['id']}:style:2:image:p1:1"] == "no_return"
+    assert by_call[f"{batch['id']}:style:2:image:p1:2"] == "no_return"
     assert service.repository.list_pending_billing_runs(actor.workspace_id, actor.id) == []
     service.close()
     runtime.close()

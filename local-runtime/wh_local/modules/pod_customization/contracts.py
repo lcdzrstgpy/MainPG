@@ -5,12 +5,6 @@ from typing import Annotated, Any, Literal, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
 
-from .replica_specs import (
-    FactOverrides,
-    GenerationStrategy,
-    PresentationPreferences,
-)
-
 
 SUPPORTED_PATTERN_COUNTS = (20, 40, 100)
 MIN_STYLE_COUNT = 1
@@ -472,10 +466,10 @@ class ReplicaImageUploadResponse(BaseModel):
 
 
 class ReplicaTargetCreate(BaseModel):
-    """复刻创建时的单项目标产品：一张白底图 + 商品名 + 复用现有上架字段。
+    """复刻创建时的单项目标产品：一张白底图 + 商品名 + 方案 id + 复用现有上架字段。
 
-    ``analysis_id`` / ``fact_overrides`` / ``presentation_preferences`` 为识图主流程
-    引入的选填字段：老客户端（无分析）不传时保持既有行为。
+    ``analysis_id`` 是 ``/replica/analyze`` 产出的图案迁移方案 id，建批次时按它取
+    已冻结的主图提示词；缺少方案的目标款不允许提交。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -484,19 +478,18 @@ class ReplicaTargetCreate(BaseModel):
     product_name: str = Field(min_length=1, max_length=500)
     listing_fields: ListingFields
     analysis_id: str = Field(default="", max_length=200)
-    fact_overrides: FactOverrides | None = None
-    presentation_preferences: PresentationPreferences = Field(default_factory=PresentationPreferences)
 
 
 class ReplicaAnalyzeRequest(BaseModel):
-    """识图分析请求：A 原素材图 + B 目标产品图，外加可选的用户覆盖与展示偏好。"""
+    """图案迁移方案请求：A 原素材图 + B 目标产品图。
+
+    参考图顺序由后端固定为 ``[B, A]``（image 1 = B、image 2 = A），不接受客户端指定。
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     source_asset_id: str = Field(min_length=1, max_length=64)
     target_asset_id: str = Field(min_length=1, max_length=64)
-    fact_overrides: FactOverrides | None = None
-    presentation_preferences: PresentationPreferences = Field(default_factory=PresentationPreferences)
 
 
 class ReplicaBatchCreate(BaseModel):
@@ -512,11 +505,10 @@ class ReplicaBatchCreate(BaseModel):
     source_asset_id: str = Field(min_length=1, max_length=64)
     title: str = Field(default="", max_length=120)
     creative_prompt: str = Field(default="", max_length=4000)
-    # 构图模板由服务端按当前生效模板冻结；生成策略必须由前端用户显式下发，缺失按 grid 处理。
+    # 构图模板只作用于派生三格（panel_2~4）；主图视角不可指定。
     composition_id: str = Field(default="", max_length=100)
-    generation_strategy: GenerationStrategy | None = None
-    # 原素材（A）识别结果确认：A 有低置信度字段时必须由用户确认后才允许提交。
-    source_confirmed: bool = False
+    # 复刻固定「每款四张单图」（主图 + 三张派生），不再有 grid；保留字段只为显式化契约。
+    generation_strategy: Literal["independent_panels"] | None = "independent_panels"
     targets: list[ReplicaTargetCreate] = Field(
         min_length=MIN_REPLICA_TARGETS, max_length=MAX_REPLICA_TARGETS
     )

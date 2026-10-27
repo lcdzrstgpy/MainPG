@@ -159,6 +159,7 @@ export function CompositionGenerateDrawer({ open, onClose, onChanged, scope = "f
           {composition ? (
             <CompositionPanelsEditor
               composition={composition}
+              scope={scope}
               disabled={loading}
               onSaved={(saved) => {
                 setComposition(saved);

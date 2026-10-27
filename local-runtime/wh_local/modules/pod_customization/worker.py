@@ -66,14 +66,12 @@ from .contracts import (
     SEMI_PATTERN_ROLES,
 )
 from .replica_context import (
-    ReplicaPlanMissingError,
     ReplicaStyleSnapshotMissingError,
     load_frozen_plan,
     style_product_context,
-    target_requires_frozen_plan,
 )
-from .replica_prompt_compiler import compile_replica_panel_prompt, compile_replica_prompt
-from .replica_prompts import build_replica_listing_prompt
+from .replica_panel_template import build_replica_panel_prompt
+from .replica_specs import REPLICA_PLAN_VERSION
 from .repository import PodCustomizationRepository, PodRepositoryError
 from .runtime import RuntimeClosedError
 from .fission_registry import FissionRegistryService
@@ -730,6 +728,7 @@ class PodBatchWorker:
         billing_run.execution_epoch = epoch
         self._check_control(batch_id)
         batch = self.repository.get_batch_internal(batch_id)
+        self._require_supported_replica_plan(batch)
         try:
             if batch.get("mode") == "semi":
                 # 半定制不用模板、不用参考图：跳过模板图读取，交给纯文生图分支。
@@ -1014,7 +1013,9 @@ class PodBatchWorker:
                 )
                 try:
                     if panel_strategy:
-                        def build_request(panel_attempt: int, panel_index: int) -> DirectListingGridRequest:
+                        def build_request(
+                            panel_attempt: int, panel_index: int, anchor: Any | None = None
+                        ) -> DirectListingGridRequest:
                             return self._panel_generation_request(
                                 batch,
                                 style_index,
@@ -1023,6 +1024,7 @@ class PodBatchWorker:
                                 template_content=template_content,
                                 template_content_type=template_content_type,
                                 base_prompt=base_prompt,
+                                anchor=anchor,
                             )
 
                         panels = self.ai_runtime.submit(
@@ -1171,6 +1173,7 @@ class PodBatchWorker:
         try:
             if image_style_indices:
                 batch = self.repository.get_batch_internal(batch_id)
+                self._require_supported_replica_plan(batch)
                 if batch.get("mode") in {"semi", "replica", "fission"}:
                     # 半定制零参考图；复刻按款解析目标白底图，都不用批次级锚点模板。
                     template_content, template_content_type = b"", ""
@@ -1257,39 +1260,46 @@ class PodBatchWorker:
         fields: BusinessFields,
         panel_index: int | None = None,
     ) -> str:
-        """复刻提示词：优先使用款级冻结计划编译的四段式文本。
+        """复刻提示词：panel_1 用方案里的主图提示词，panel_2~4 用派生模板。
 
-        识图主流程的批次在冻结时就写入了 ``compiled_prompt``，生成/重试/暂停恢复与进程
-        重启都复用同一份文本。**带 analysis_id 的主流程款缺计划属于批次写入不完整，
-        直接失败等待修复**（回退旧 Prompt 会产出错误结果）；只有明确的历史批次（无
-        analysis_id）才允许回退固定单函数提示词。
-        ``panel_index`` 非空时编译单面板提示词（independent_panels 策略）。
+        主图提示词由豆包方案一次性产出并随款级计划冻结；派生三格只改机位，
+        由 ``build_replica_panel_prompt`` 本地拼装。旧批次没有 v4 计划，
+        会在这里明确失败（旧批次只读，见 ``_require_supported_replica_plan``）。
         """
-        try:
-            plan = load_frozen_plan(batch, style_index)
-        except (ReplicaPlanMissingError, ReplicaStyleSnapshotMissingError):
-            if target_requires_frozen_plan(batch, style_index):
-                raise
-            return build_replica_listing_prompt(fields, attempt=attempt)
-        if panel_index is None:
-            return compile_replica_prompt(plan, attempt=attempt)
-        return compile_replica_panel_prompt(plan, panel_index, attempt=attempt)
+        del fields  # 复刻提示词不再由业务字段拼装
+        plan = load_frozen_plan(batch, style_index)
+        if panel_index is None or int(panel_index) == 1:
+            prompt = plan.main_prompt
+            if attempt > 1:
+                prompt += (
+                    "\n\nRETRY ATTEMPT 2 OF 2: keep the exact same target product and the exact same "
+                    "replicated pattern; correct only the deviation from this main-image direction."
+                )
+            return prompt
+        return build_replica_panel_prompt(plan, int(panel_index), attempt=attempt)
 
     def _style_generation_strategy(self, batch: dict[str, Any], style_index: int) -> str:
-        """按款读取冻结生成策略。
-
-        非复刻批次一律 grid；复刻主流程款缺计划必须硬失败（不得静默降级为 grid），
-        只有无 analysis_id 的历史批次才回退 grid。
-        """
+        """按款读取冻结生成策略：复刻只认独立面板，其余模式沿用 grid。"""
         if batch.get("mode") != "replica":
             return "grid"
-        try:
-            strategy = load_frozen_plan(batch, style_index).generation_strategy
-        except (ReplicaPlanMissingError, ReplicaStyleSnapshotMissingError):
-            if target_requires_frozen_plan(batch, style_index):
-                raise
-            return "grid"
+        strategy = load_frozen_plan(batch, style_index).generation_strategy
         return "independent_panels" if strategy == "independent_panels" else "grid"
+
+    @staticmethod
+    def _require_supported_replica_plan(batch: dict[str, Any]) -> None:
+        """旧版复刻计划（非 v4）只读：拒绝进入生图，直接让整批失败。"""
+        if str(batch.get("mode") or "") != "replica":
+            return
+        for target in batch.get("replica_targets") or []:
+            raw = str(target.get("replica_plan_json") or "").strip()
+            version = ""
+            if raw and raw != "{}":
+                try:
+                    version = str((json.loads(raw) or {}).get("plan_version") or "")
+                except (TypeError, ValueError):
+                    version = ""
+            if version != REPLICA_PLAN_VERSION:
+                raise RuntimeError("历史复刻批次不支持重跑：缺少 v4 主图方案")
 
     @staticmethod
     def _panel_image_call_id(
@@ -1313,18 +1323,35 @@ class PodBatchWorker:
         batch: dict[str, Any],
         call: dict[str, Any],
         style_index: int,
-        build_request: Callable[[int, int], DirectListingGridRequest],
+        build_request: Callable[[int, int, Any | None], DirectListingGridRequest],
         billing_run: PodBillingRun,
         execution_epoch: int | None = None,
     ) -> list[Any]:
-        """independent_panels：逐面板生成，单个面板失败只重试该面板的备用调用。"""
+        """independent_panels：先生成主图，再以主图为锚点派生 panel_2~4。
+
+        主图两次尝试都失败时整款失败，绝不带着空锚点继续派生（缺失锚点会产出
+        与主图不一致的三张图，等于浪费计费）。
+        """
         panels: list[Any] = []
+        anchor: Any | None = None
         for panel_index in range(1, REPLICA_PANEL_COUNT + 1):
-            panels.append(
-                self._generate_one_panel(
-                    batch, call, style_index, panel_index, build_request, billing_run, execution_epoch
+            if panel_index > 1 and anchor is None:
+                raise RuntimeError(
+                    f"POD replica panel {panel_index} of style {style_index} requires the main-image anchor"
                 )
+            panel = self._generate_one_panel(
+                batch,
+                call,
+                style_index,
+                panel_index,
+                build_request,
+                billing_run,
+                execution_epoch,
+                anchor,
             )
+            panels.append(panel)
+            if panel_index == 1:
+                anchor = panel
         return panels
 
     def _generate_one_panel(
@@ -1333,9 +1360,10 @@ class PodBatchWorker:
         call: dict[str, Any],
         style_index: int,
         panel_index: int,
-        build_request: Callable[[int, int], DirectListingGridRequest],
+        build_request: Callable[[int, int, Any | None], DirectListingGridRequest],
         billing_run: PodBillingRun,
         execution_epoch: int | None,
+        anchor: Any | None = None,
     ) -> Any:
         """一个面板最多两次尝试：只用「尚未产生结果」的调用，失败后落到备用调用。"""
         last_error: Exception | None = None
@@ -1349,7 +1377,7 @@ class PodBatchWorker:
                 return self._generate_listing_grid(
                     batch,
                     call,
-                    build_request(attempt, panel_index),
+                    build_request(attempt, panel_index, anchor),
                     billing_run,
                     provider_call_id,
                     execution_epoch,
@@ -1407,6 +1435,7 @@ class PodBatchWorker:
         template_content: bytes,
         template_content_type: str,
         base_prompt: str | None = None,
+        anchor: Any | None = None,
     ) -> DirectListingGridRequest:
         """构造单个面板的生成请求（同一款、同一冻结计划，仅面板视图不同）。"""
         prompt, request_kwargs = self._style_generation_inputs(
@@ -1417,6 +1446,7 @@ class PodBatchWorker:
             template_content_type=template_content_type,
             base_prompt=base_prompt,
             panel_index=panel_index,
+            anchor=anchor,
         )
         return DirectListingGridRequest(
             trial_id=(
@@ -1448,12 +1478,13 @@ class PodBatchWorker:
         template_content_type: str,
         base_prompt: str | None = None,
         panel_index: int | None = None,
+        anchor: Any | None = None,
     ) -> tuple[str, dict[str, Any]]:
         """按款解析该款生图所需的 prompt 与请求参数。
 
-        - replica：样图来自批次来源资产快照，每款解析自己的目标白底图字节与
-          content_type，构造有序参考图 ``[pattern_source, target_product]``，prompt
-          使用该款业务字段的复刻提示词（不注入创作指示词、风格元素或原创多样性规则）；
+        - replica：panel_1 用方案里的主图提示词，参考图按计划冻结的顺序（默认
+          ``[B(target_product), A(pattern_source)]``）；panel_2~4 用派生提示词，
+          只以 panel_1 的输出为参考图（换机位重拍）；
         - semi：纯文生图，零参考图，沿用 ``build_semi_pattern_prompt``；
         - full：沿用批次模板单图与 ``build_style_listing_prompt``。
 
@@ -1486,6 +1517,20 @@ class PodBatchWorker:
         if mode == "replica":
             fields = BusinessFields.model_validate(context["business_fields"])
             prompt = self._replica_style_prompt(batch, style_index, attempt, fields, panel_index)
+            if panel_index is not None and int(panel_index) > 1:
+                # 派生三格只锚定主图：参考图是刚才那次调用的输出，不再回看 A/B。
+                if anchor is None:
+                    raise RuntimeError("POD 复刻派生面板缺少主图锚点")
+                return prompt, {
+                    "reference_images": (
+                        ListingReferenceImage(
+                            role="main_view",
+                            content=bytes(anchor.content),
+                            content_type=str(anchor.content_type or "image/png"),
+                        ),
+                    )
+                }
+            plan = load_frozen_plan(batch, style_index)
             source = batch.get("replica_source")
             if not isinstance(source, dict) or not source.get("relative_path"):
                 raise ReplicaStyleSnapshotMissingError(
@@ -1496,19 +1541,22 @@ class PodBatchWorker:
                 batch["workspace_id"],
                 batch["owner_user_id"],
             )
-            reference_images = (
-                ListingReferenceImage(
-                    role="pattern_source",
-                    content=self.assets.read(source["relative_path"]),
-                    content_type=str(source.get("content_type") or ""),
-                ),
-                ListingReferenceImage(
+            by_code = {
+                "B": ListingReferenceImage(
                     role="target_product",
                     content=self.assets.read(target_asset["relative_path"]),
                     content_type=str(target_asset.get("content_type") or ""),
                 ),
-            )
-            return prompt, {"reference_images": reference_images}
+                "A": ListingReferenceImage(
+                    role="pattern_source",
+                    content=self.assets.read(source["relative_path"]),
+                    content_type=str(source.get("content_type") or ""),
+                ),
+            }
+            order = tuple(
+                code for code in str(plan.reference_order or "B,A").split(",") if code.strip() in by_code
+            ) or ("B", "A")
+            return prompt, {"reference_images": tuple(by_code[code] for code in order)}
         prompt = build_style_listing_prompt(
             base_prompt if base_prompt is not None else batch["prompt_snapshot"],
             style_index=style_index,
@@ -2850,7 +2898,9 @@ class PodBatchWorker:
                     "POD provider grant expired before the next image call started"
                 )
 
-            def build_request(attempt: int, panel_index: int) -> DirectListingGridRequest:
+            def build_request(
+                attempt: int, panel_index: int, anchor: Any | None = None
+            ) -> DirectListingGridRequest:
                 return self._panel_generation_request(
                     batch,
                     style_index,
@@ -2858,6 +2908,7 @@ class PodBatchWorker:
                     panel_index,
                     template_content=template_content,
                     template_content_type=template_content_type,
+                    anchor=anchor,
                 )
 
             future = self.ai_runtime.submit(

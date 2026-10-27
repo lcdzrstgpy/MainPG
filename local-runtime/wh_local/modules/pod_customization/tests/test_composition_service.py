@@ -10,7 +10,11 @@ import pathlib
 import pytest
 
 from wh_local.modules.pod_customization.billing_contract import PodExecutionGrant
-from wh_local.modules.pod_customization.composition_runtime import PodCompositionResult
+from wh_local.modules.pod_customization.composition_runtime import (
+    REPLICA_MAIN_PANEL_PLACEHOLDER_EN,
+    REPLICA_MAIN_PANEL_PLACEHOLDER_ZH,
+    PodCompositionResult,
+)
 from wh_local.modules.pod_customization.contracts import (
     BusinessFields,
     CompositionPanels,
@@ -124,6 +128,33 @@ def test_generate_creates_active_template_and_stays_free(tmp_path: pathlib.Path)
     assert len(coordinator.freezes) == 1
     assert {call.feature for call in coordinator.freezes[0].calls} == {"pod.title"}
     assert len(coordinator.settlements) == 1
+
+
+def test_replica_scope_forces_the_main_panel_placeholder(tmp_path: pathlib.Path) -> None:
+    """复刻模板只作用于派生三格：panel_1 落库时被固定占位覆盖。"""
+
+    service = _service(tmp_path, _CompositionRuntime(), _Coordinator())
+    actor = _actor()
+
+    saved = service.generate_composition(
+        actor, CompositionRequest(brief="细节多一些"), scope="replica"
+    )
+
+    assert saved["panels"]["panel_1"]["zh"] == REPLICA_MAIN_PANEL_PLACEHOLDER_ZH
+    assert saved["panels"]["panel_1"]["en"] == REPLICA_MAIN_PANEL_PLACEHOLDER_EN
+    # 派生三格保持模型输出，不被覆盖。
+    assert saved["panels"]["panel_2"] == _PANELS["panel_2"]
+    assert saved["panels"]["panel_3"] == _PANELS["panel_3"]
+    assert saved["panels"]["panel_4"] == _PANELS["panel_4"]
+
+
+def test_full_scope_keeps_the_model_main_panel(tmp_path: pathlib.Path) -> None:
+    service = _service(tmp_path, _CompositionRuntime(), _Coordinator())
+    actor = _actor()
+
+    saved = service.generate_composition(actor, CompositionRequest(brief="四张图想这样拍"))
+
+    assert saved["panels"]["panel_1"] == _PANELS["panel_1"]
 
 
 def test_generate_uses_the_user_supplied_template_name(tmp_path: pathlib.Path) -> None:

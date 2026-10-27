@@ -79,10 +79,9 @@ BRIEF_ATTEMPTS = 4
 # 构图定制一次生成预留的文本调用次数：与 brief 同口径（纯 pod.title，零计费）。
 COMPOSITION_ATTEMPTS = 3
 
-# 复刻识图分析与「按模板选构图参数」各预留的调用次数：与 brief/composition 同口径
-# （纯 pod.title，零计费）。分析是视觉调用，但走同一条冻结 → 短期密钥 → 结算底座。
+# 复刻主图方案：一次视觉调用（含契约修复重试），与 brief/composition 同口径
+# （纯 pod.title，零计费），但走同一条冻结 → 短期密钥 → 结算底座。
 REPLICA_ANALYSIS_ATTEMPTS = 3
-REPLICA_COMPOSITION_ATTEMPTS = 3
 # 模板结构识图：一次视觉调用 + 一次契约修复调用（与复刻识图同口径，纯 title 零计费）。
 STRUCTURE_ANALYSIS_ATTEMPTS = 2
 # Fission A/B analysis is one provider call plus one contract repair call.
@@ -597,7 +596,7 @@ class PodCallPlan:
 
     @classmethod
     def for_replica_analysis(cls, analysis_id: str) -> "PodCallPlan":
-        """复刻识图分析：一次视觉调用（含契约修复重试）。
+        """复刻主图方案：一次视觉调用（含契约修复重试）。
 
         与 ``for_brief`` 同构：只冻结 ``pod.title``，服务端对纯 title scope 零计费。
         """
@@ -638,21 +637,6 @@ class PodCallPlan:
                 for attempt in range(1, FISSION_ANALYSIS_ATTEMPTS + 1)
             ),
         )
-
-    @classmethod
-    def for_replica_composition(cls, batch_id: str, *, style_count: int) -> "PodCallPlan":
-        """复刻「按模板选构图参数」：逐款各一次文本调用（含契约修复重试），同为零计费口径。
-
-        ``style_index`` 从 1 开始，与款级冻结计划一一对应。
-        """
-        if isinstance(style_count, bool) or not isinstance(style_count, int) or style_count < 1:
-            raise ValueError("style_count must be a positive integer")
-        calls = tuple(
-            PodPlannedCall(f"{batch_id}:composition:{style_index}:{attempt}", "pod.title")
-            for style_index in range(1, style_count + 1)
-            for attempt in range(1, REPLICA_COMPOSITION_ATTEMPTS + 1)
-        )
-        return cls(idempotency_key=f"pod:replica-composition:{batch_id}", calls=calls)
 
     @classmethod
     def for_style_retry(

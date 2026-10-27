@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
-from .replica_specs import ReplicaPlan
+from .replica_specs import REPLICA_PLAN_VERSION, ReplicaPlan
 
 
 class ReplicaStyleSnapshotMissingError(RuntimeError):
@@ -10,14 +11,18 @@ class ReplicaStyleSnapshotMissingError(RuntimeError):
 
 
 class ReplicaPlanMissingError(RuntimeError):
-    """款级冻结计划缺失：说明该款未走识图主流程，不能重新推导。"""
+    """款级冻结计划缺失：说明该款未走方案主流程，不能重新推导。"""
+
+
+class LegacyReplicaPlanError(RuntimeError):
+    """旧版冻结计划（非 v4）：历史批次只读，不支持重试或续跑。"""
 
 
 def load_frozen_plan(batch: dict[str, Any], style_index: int) -> ReplicaPlan:
-    """读取某款已冻结的 ``ReplicaPlan``。
+    """读取某款已冻结的 ``ReplicaPlan``（v4）。
 
     生成、重试、暂停恢复与进程重启都只读这份快照，绝不重新推导；缺计划即明确失败，
-    避免把「未冻结」误当成「按新规则重算」。
+    避免把「未冻结」误当成「按新规则重算」。旧版本计划抛 :class:`LegacyReplicaPlanError`。
     """
     if batch.get("mode") != "replica":
         raise ReplicaPlanMissingError("该批次不是复刻批次，没有款级冻结计划")
@@ -30,19 +35,15 @@ def load_frozen_plan(batch: dict[str, Any], style_index: int) -> ReplicaPlan:
         raise ReplicaPlanMissingError(
             f"POD 复刻款冻结计划缺失：style_index={style_index}"
         )
+    try:
+        version = str((json.loads(raw) or {}).get("plan_version") or "")
+    except (TypeError, ValueError):
+        version = ""
+    if version != REPLICA_PLAN_VERSION:
+        raise LegacyReplicaPlanError(
+            f"POD 复刻款计划版本过旧，不支持重跑：style_index={style_index}"
+        )
     return ReplicaPlan.model_validate_json(raw)
-
-
-def target_requires_frozen_plan(batch: dict[str, Any], style_index: int) -> bool:
-    """该款是否属于识图主流程（带 analysis_id）。
-
-    属于主流程的款必须有款级冻结计划；缺计划说明批次写入不完整，调用方应硬失败
-    等待修复，绝不能回退旧 Prompt / grid 策略继续生成（那会产出错误结果）。
-    """
-    target = (batch.get("replica_targets_by_index") or {}).get(int(style_index))
-    if not isinstance(target, dict):
-        return False
-    return bool(str(target.get("analysis_id") or "").strip())
 
 
 def style_product_context(batch: dict[str, Any], style_index: int) -> dict[str, Any]:
