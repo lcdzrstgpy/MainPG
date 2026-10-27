@@ -547,3 +547,15 @@ test("多店铺：一家一家存下来，切换不用重新贴 token", () => {
   assert.ok(page.includes("切换到这家"));
   assert.ok(page.includes("temu-shop-badge"));
 });
+
+test("首屏不闪「还没绑定店铺」：状态没回来之前不渲染横幅", () => {
+  // status 初值是 null，接口回来前 ready 也是 false —— 直接按 !ready 渲染就会闪一下红条
+  assert.match(page, /const \[statusLoaded, setStatusLoaded\] = useState\(false\);/);
+  assert.match(page, /setStatusLoaded\(true\);/);
+  assert.match(page, /const ready = !!status\?\.configured\.ready;/);
+  // 横幅必须同时满足「已加载」和「未绑定」
+  assert.match(page, /\{statusLoaded && !ready && \(/);
+  assert.ok(!/\{!ready && \(\s*<div className="temu-bind-banner">/.test(page));
+  // 加载期间给一行轻提示，而不是留空
+  assert.match(page, /\{!statusLoaded && <p className="temu-muted temu-console-loading">正在读取店铺配置…<\/p>\}/);
+});

@@ -392,6 +392,9 @@ function SectionHead({
 
 export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: () => void } = {}) {
   const [status, setStatus] = useState<TemuSettingsStatus | null>(null);
+  // 进页面时 status 还是 null：这时候不知道绑没绑，不能先按「未绑定」渲染，
+  // 否则店铺信息一回来就闪一下红色横幅（首屏看着像出错了）。
+  const [statusLoaded, setStatusLoaded] = useState(false);
   // 店铺名/有效期先读本机缓存：进页面立刻有内容，随后再用接口结果覆盖
   const [tokenInfo, setTokenInfo] = useState<TemuTokenInfo | null>(() =>
     loadJsonLocal<TemuTokenInfo | null>(`${SHOP_INFO_KEY}:${storageScope()}`, null),
@@ -562,6 +565,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           settle(temuPublishApi.warehouses([SITE_ID])),
         ]);
         if (!alive) return;
+        setStatusLoaded(true);
         const missed: string[] = [];
         if (settingsR.ok) {
           setStatus(settingsR.value);
@@ -1818,7 +1822,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
       <div className="temu-console-body">
         <div className="temu-console-main">
-          {!ready && (
+          {/* 状态还没回来：给一行轻提示，别让人以为页面坏了 */}
+          {!statusLoaded && <p className="temu-muted temu-console-loading">正在读取店铺配置…</p>}
+          {statusLoaded && !ready && (
             <div className="temu-bind-banner">
               <div>
                 <strong>还没绑定你的 Temu 店铺</strong>
