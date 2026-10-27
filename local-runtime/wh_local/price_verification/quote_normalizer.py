@@ -335,10 +335,57 @@ def quote_items_from_network_record(record: Mapping[str, Any]) -> list[QuoteItem
 
 # Temu 价格弹窗的 SKU 单元格形如「L-Royal Gown Dress - Blue SKU货号：6297074883160」：
 # 货号是商家 SKU 货号（productSkuExtCode），不是 SKU ID；SKU ID 列在弹窗里并不展示。
-_SKU_CODE_RE = re.compile(r"\bSKU\s*货号\s*[:：]\s*([A-Za-z0-9_-]{3,})")
+# 有的商家把变体号也编进货号（866344969878 variant-4），弹窗会折行显示成
+# 「866344969878v / ariant-4」，整串才是完整货号，不能截断。
+_SKU_CODE_RE = re.compile(
+    r"\bSKU\s*货号\s*[:：]\s*([A-Za-z0-9_-]{3,}(?:\s*variant[-_]?\d+)?)",
+    re.IGNORECASE,
+)
 _SKU_ID_RE = re.compile(r"\bSKU\s*(?:ID|编号)\s*[:：]\s*([A-Za-z0-9_-]{3,})")
 _SKC_ID_RE = re.compile(r"\bSKC\s*[:：]\s*([A-Za-z0-9_-]{3,})")
 _SKC_CODE_RE = re.compile(r"\bSKC\s*货号\s*[:：]\s*([A-Za-z0-9_-]{3,})")
+
+# 有些商家的 SKU 货号/规格里带内部变体码（如 866344969878variant-4、variant-3）。
+# 它只是系统序号，不是可读属性；当成「SKU 属性」展示会变成 variant-4。
+_VARIANT_TOKEN_RE = re.compile(r"variant[-_\s]?\d+", re.IGNORECASE)
+
+
+def _is_variant_token(value: str) -> bool:
+    return bool(re.fullmatch(r"variant[-_\s]?\d+", clean_text(value), flags=re.IGNORECASE))
+
+
+def _merchant_code(value: Any) -> str:
+    """商家 SKU 货号：带内部变体码时要保留整串（866344969878 variant-4）。"""
+    text = clean_text(value)
+    if not text:
+        return ""
+    if _VARIANT_TOKEN_RE.search(text):
+        text = re.sub(r"\s+", "", text)
+    return stringify_id(text)
+
+
+def _clean_attribute_text(value: Any, *, code: str = "") -> str:
+    """把「货号 + 规格」串清洗成可读的 SKU 属性。
+
+    弹窗的 SKU 单元格可能同时包含属性文案、``SKU货号：xxx`` 和内部变体码，
+    甚至把三者拆到不同单元格；货号和变体码都不能当成属性。
+    """
+    text = clean_text(value)
+    if not text:
+        return ""
+    text = clean_text(_SKU_CODE_RE.sub(" ", text))
+    text = clean_text(_SKU_ID_RE.sub(" ", text))
+    if code:
+        if text.casefold().startswith(code.casefold()):
+            text = text[len(code):]
+        else:
+            text = re.sub(
+                rf"(?<![A-Za-z0-9]){re.escape(code)}(?![A-Za-z0-9])", " ", text
+            )
+    text = clean_text(_VARIANT_TOKEN_RE.sub(" ", text))
+    if not text or _is_variant_token(text):
+        return ""
+    return "" if text in {"-", "—", "无"} else text
 
 
 def _dom_sku_block(row: Mapping[str, Any]) -> str:
@@ -372,17 +419,17 @@ def quote_item_from_dom_row(row: Mapping[str, Any], *, popup_confirmed: bool = F
     sku_block = _dom_sku_block(row)
     merchant_match = _SKU_CODE_RE.search(sku_block)
     sku_id_match = _SKU_ID_RE.search(sku_block)
-    merchant_code = stringify_id(merchant_match.group(1)) if merchant_match else ""
+    merchant_code = _merchant_code(merchant_match.group(1)) if merchant_match else ""
     sku_id = stringify_id(sku_id_match.group(1)) if sku_id_match else ""
-    # SKU 单元格里「SKU货号：xxx」前面的部分就是规格描述（弹窗没有独立的属性列）。
-    sku_attribute = clean_text(_SKU_CODE_RE.sub("", sku_block)) if sku_block else ""
-    if sku_attribute in {"-", "—", "无"}:
-        sku_attribute = ""
+    # 属性优先取独立的属性列：部分商品把「SKU货号：xxx variant-N」单独放在一列，
+    # 直接从该列切出来的剩余部分只是内部变体码，会把真正的属性覆盖掉。
+    sku_attribute = _clean_attribute_text(
+        text_for(cells, ("SKU属性值", "SKU属性集", "SKU属性", "属性集", "SKU规格", "规格", "属性")),
+        code=merchant_code,
+    ) or _clean_attribute_text(sku_block, code=merchant_code)
     if not sku_id and not merchant_code:
         # 老式无结构行：沿用原来的兜底正则，且只认 SKU ID/编号，绝不把货号当 SKU ID。
         sku_id = id_from(cells, ("SKU ID", "sku_id", "SKU编号"), text, r"\bSKU\s*(?:ID|编号)[:：\s]*([A-Za-z0-9_-]{4,})\b")
-    if not sku_attribute:
-        sku_attribute = text_for(cells, ("SKU属性集", "SKU属性", "属性集", "SKU规格", "规格", "属性"))
     skc_code_match = _SKC_CODE_RE.search(text)
     market_skc_code = clean_text(skc_code_match.group(1)) if skc_code_match else ""
     goods_id = id_from(cells, ("SPU", "SPU ID", "商品ID", "goods_id"), text, r"\b(?:SPU|Goods)[:：\s]*([A-Za-z0-9_-]{4,})\b")
@@ -466,6 +513,7 @@ def compatible_dedupe_key(
         if (
             existing.sku_merchant_code
             and existing.sku_merchant_code == item.sku_merchant_code
+            and _attribute_compatible(existing, item)
             and (
                 not existing.site
                 or not item.site
@@ -490,6 +538,7 @@ def compatible_dedupe_key(
         if (
             existing.sku_merchant_code
             and existing.sku_merchant_code == item.sku_merchant_code
+            and _attribute_compatible(existing, item)
             and (
                 not existing.site
                 or not item.site
@@ -546,12 +595,20 @@ def _sku_attribute_from_spec(*texts: str, code: str) -> str:
         text = clean_text(raw)
         if not text:
             continue
-        if code and text.casefold().startswith(code.casefold()):
-            rest = text[len(code):].lstrip(" \t-_/|,，:：")
-            if rest:
+        # 带内部变体码的货号可能是空格分隔的（866344969878 variant-4），比较前先压掉空白。
+        compare_text, compare_code = text, clean_text(code)
+        if _VARIANT_TOKEN_RE.search(text) or _VARIANT_TOKEN_RE.search(compare_code):
+            compare_text = re.sub(r"\s+", "", compare_text)
+            compare_code = re.sub(r"\s+", "", compare_code)
+        if compare_code and compare_text.casefold().startswith(compare_code.casefold()):
+            rest = compare_text[len(compare_code):].lstrip(" \t-_/|,，:：")
+            if rest and not _is_variant_token(rest):
                 return rest
             continue
-        if code and text.casefold() == code.casefold():
+        if compare_code and compare_text.casefold() == compare_code.casefold():
+            continue
+        if _is_variant_token(text):
+            # 内部变体码（variant-4）不是可读规格，宁可留空交给页面 DOM 补。
             continue
         return text
     return ""
@@ -561,7 +618,33 @@ def quote_from_mapping(mapping: Mapping[str, Any], endpoint: str, captured_at: s
     sku_true_id = stringify_id(first_value(mapping, ("productSkuId", "skuId", "sku_id", "SKU ID")))
     raw_code_text = clean_text(first_value(mapping, ("productSkuExtCode", "skuExtCode", "productSkuCode", "skuCode", "sellerSku", "merchantSku")))
     spec_text = clean_text(first_value(mapping, ("spec", "skuSpec", "skuSpecText", "specDesc")))
-    merchant_code = stringify_id(raw_code_text) or stringify_id(spec_text)
+    merchant_code = _merchant_code(raw_code_text) or stringify_id(spec_text)
+    # 独立属性字段优先；Temu 价格审核接口只给拼串，退回到从 spec 里拆。
+    sku_attribute = (
+        clean_text(
+            first_value(
+                mapping,
+                (
+                    "skuAttributeText",
+                    "skuAttributes",
+                    "skuPropsText",
+                    "skuAttributeSet",
+                    "skuAttributeGroup",
+                    "skuName",
+                ),
+            )
+        )
+        or _sku_attribute_from_spec(raw_code_text, spec_text, code=merchant_code)
+    )
+    # spec 只是变体序号时不是属性，而是页面「SKU货号」的一部分（866344969878variant-4）；
+    # 并回货号才能让同一货号前缀下的多个变体保持独立，而不是被折叠成一行。
+    if (
+        spec_text
+        and _is_variant_token(spec_text)
+        and merchant_code
+        and spec_text.casefold() not in merchant_code.casefold()
+    ):
+        merchant_code = f"{merchant_code}{spec_text}"
     images = image_urls(mapping)
     goods_id = stringify_id(first_value(mapping, ("productId", "goodsId", "spuId", "goods_id")))
     return QuoteItem(
@@ -572,23 +655,7 @@ def quote_from_mapping(mapping: Mapping[str, Any], endpoint: str, captured_at: s
         sku_id=sku_true_id, sku_true_id=sku_true_id,
         sku_identifier_kind="sku_id" if sku_true_id else ("merchant_sku_code" if merchant_code else ""), sku_merchant_code=merchant_code,
         sku_attribute_set=clean_text(first_value(mapping, ("skuAttributeSet", "skuAttributeGroup", "skuName", "skuSpec"))),
-        # 独立属性字段优先；Temu 价格审核接口只给拼串，退回到从 spec 里拆。
-        sku_attribute_text=(
-            clean_text(
-                first_value(
-                    mapping,
-                    (
-                        "skuAttributeText",
-                        "skuAttributes",
-                        "skuPropsText",
-                        "skuAttributeSet",
-                        "skuAttributeGroup",
-                        "skuName",
-                    ),
-                )
-            )
-            or _sku_attribute_from_spec(raw_code_text, spec_text, code=merchant_code)
-        ),
+        sku_attribute_text=sku_attribute,
         sku_quantity=clean_text(first_value(mapping, ("skuQuantity", "stockQuantity", "availableQuantity", "inventory", "stock", "quantity", "库存", "数量"))),
         skc_attribute_text=clean_text(first_value(mapping, ("skcAttributeText", "skcAttributes", "productAttributesText"))),
         product_attribute_summary=attribute_summary(first_value(mapping, ("productPropertyList", "productAttributeList", "attributes"))),
@@ -678,14 +745,25 @@ def dedupe_key(item: QuoteItem) -> tuple[str, str, str, str]:
     if item.skc_id and item.sku_id:
         return ("skc_sku", item.skc_id, item.sku_id, item.site)
     # 弹窗的 SKU 行只显示商家货号：缺 SKU ID 时也必须按货号区分变种，
-    # 否则同一 SKC 下的多个 SKU 会被折叠成一行。
+    # 否则同一 SKC 下的多个 SKU 会被折叠成一行。同一货号挂多个属性时，
+    # 属性同样参与身份，否则只会剩下第一个变体。
     if item.skc_id and item.sku_merchant_code:
-        return ("skc_sku_code", item.skc_id, item.sku_merchant_code, item.site)
+        identity = item.sku_merchant_code
+        if item.sku_attribute_text:
+            identity = f"{identity}\u0000{normalize_key(item.sku_attribute_text)}"
+        return ("skc_sku_code", item.skc_id, identity, item.site)
     if item.skc_id:
         return ("skc", item.skc_id, item.spu_or_goods_id, item.site)
     if item.sku_id:
         return ("sku", item.sku_id, item.spu_or_goods_id, item.site)
     return ("fallback", item.spu_or_goods_id, item.product_title, str(item.original_declared_price_cny or item.adjusted_declared_price_cny or ""))
+
+
+def _attribute_compatible(left: QuoteItem, right: QuoteItem) -> bool:
+    """同一货号下可能挂多个 SKU 属性；属性能区分变体时不能合并成一行。"""
+    if not left.sku_attribute_text or not right.sku_attribute_text:
+        return True
+    return normalize_key(left.sku_attribute_text) == normalize_key(right.sku_attribute_text)
 
 
 def merge_quote_evidence(target: QuoteItem, source: QuoteItem) -> None:
@@ -696,6 +774,16 @@ def merge_quote_evidence(target: QuoteItem, source: QuoteItem) -> None:
     for field_name in fields:
         old, new = getattr(target, field_name), getattr(source, field_name)
         if new in (None, ""):
+            continue
+        if (
+            field_name == "sku_attribute_text"
+            and old not in (None, "")
+            and old != new
+            and _is_variant_token(old)
+            and not _is_variant_token(new)
+        ):
+            # 网络行把内部变体码当成了属性；页面 DOM 的可读属性到位后应覆盖它。
+            target.sku_attribute_text = new
             continue
         if old in (None, ""):
             setattr(target, field_name, new)
