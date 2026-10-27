@@ -8,6 +8,8 @@ export type WorkspaceModuleId =
   | "product_processing_history"
   | "product_processing_sourcing"
   | "product_processing_tasks"
+  | "temu_publish"
+  | "temu_draft_library"
   | "combo_generate"
   | "combo_prompt_preset"
   | "combo_history"
@@ -28,6 +30,7 @@ export type WorkspaceNavigationGroupId =
   | "combo_workflow"
   | "sourcing_workflow"
   | "pod_workflow"
+  | "temu_publish_workflow"
   | "personal_center"
   | "ai_video";
 
@@ -159,6 +162,22 @@ const productProcessingHistory: WorkspaceModule = {
   icon: "",
   iconClass: "iconfont icon-reloadtime",
   description: "查看并找回 AI 处理批次",
+};
+
+const temuPublish: WorkspaceModule = {
+  id: "temu_publish",
+  label: "发布商品（实验）",
+  icon: "",
+  iconClass: "iconfont icon-upload",
+  description: "选择类目与属性，组装 Temu 商品发布请求体",
+};
+
+const temuDraftLibrary: WorkspaceModule = {
+  id: "temu_draft_library",
+  label: "草稿库",
+  icon: "",
+  iconClass: "iconfont icon-database",
+  description: "汇总 AI 处理与 POD 成品，一键带入发布商品",
 };
 
 const productProcessingSourcing: WorkspaceModule = {
@@ -324,6 +343,16 @@ export const workspaceModules: WorkspaceNavigationItem[] = [
     panels: aiVideoPanels,
   },
   {
+    // 发布商品分组：发布页与草稿库是同级子项，固定在个人中心上方。
+    id: "temu_publish_workflow",
+    label: "发布商品",
+    icon: "",
+    iconClass: "iconfont icon-upload",
+    description: "Temu 商品发布与草稿库",
+    defaultChildId: "temu_publish",
+    children: [temuPublish, temuDraftLibrary],
+  },
+  {
     // 个人中心仍是单个页签模块，但侧栏里按分组展开二级面板。
     id: "personal_center",
     label: "个人中心",
@@ -344,6 +373,8 @@ export const workspacePageModules: WorkspaceModule[] = [
   productProcessing,
   productProcessingHistory,
   productProcessingSourcing,
+  temuPublish,
+  temuDraftLibrary,
   comboGenerate,
   comboPromptPreset,
   comboHistory,

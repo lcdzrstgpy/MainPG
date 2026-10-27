@@ -1,0 +1,265 @@
+{
+  "_说明": "2026-10-26 22:xx 真实发布成功（productId 45629654961）。这是可用的参考 payload，改值即可复用。",
+  "productSemiManagedReq": {
+    "bindSiteIds": [
+      100
+    ],
+    "semiManagedSiteMode": 1,
+    "semiLanguageStrategy": 1
+  },
+  "productName": "Long Straight Wig with Bangs, Heat Resistant Synthetic Hair, Cosplay Costume Wig",
+  "productI18nReqs": [
+    {
+      "language": "en",
+      "productName": "Long Straight Wig with Bangs, Heat Resistant Synthetic Hair, Cosplay Costume Wig"
+    }
+  ],
+  "carouselImageUrls": [
+    "https://img.kwcdn.com/product/open/94410bbd126e45a2ae94d8ed678c80d1-goods.jpeg",
+    "https://img.kwcdn.com/product/open/cfadc4e02db14dbdb9039a9648257ef8-goods.jpeg",
+    "https://img.kwcdn.com/product/open/8aa849dc6ee94057aa16384b7536c3ed-goods.jpeg",
+    "https://img.kwcdn.com/product/open/cf35b13dd26d449dae7c714a5dd3e1f4-goods.jpeg"
+  ],
+  "materialImgUrl": "https://img.kwcdn.com/product/open/94410bbd126e45a2ae94d8ed678c80d1-goods.jpeg",
+  "productShipmentReq": {
+    "freightTemplateId": "HFT-19421251915858203874",
+    "shipmentLimitSecond": 86400
+  },
+  "cat1Id": 27011,
+  "cat2Id": 31029,
+  "cat3Id": 31034,
+  "cat4Id": 31035,
+  "cat5Id": 0,
+  "cat6Id": 0,
+  "cat7Id": 0,
+  "cat8Id": 0,
+  "cat9Id": 0,
+  "cat10Id": 0,
+  "productPropertyReqs": [
+    {
+      "pid": 2047,
+      "vid": 160713,
+      "refPid": 6923,
+      "templatePid": 1783987,
+      "propName": "发丝材质",
+      "propValue": "真人发丝",
+      "valueUnit": ""
+    },
+    {
+      "pid": 126,
+      "vid": 2735,
+      "refPid": 130,
+      "templatePid": 1783988,
+      "propName": "主题",
+      "propValue": "动漫",
+      "valueUnit": ""
+    },
+    {
+      "pid": 508,
+      "vid": 36617,
+      "refPid": 799,
+      "templatePid": 1783990,
+      "propName": "帽型",
+      "propValue": "扣子网",
+      "valueUnit": ""
+    },
+    {
+      "pid": 1401,
+      "vid": 36226,
+      "refPid": 1483,
+      "templatePid": 1783992,
+      "propName": "卷度",
+      "propValue": "Afro Curly/Kinky",
+      "valueUnit": ""
+    },
+    {
+      "pid": 3,
+      "vid": 140,
+      "refPid": 19,
+      "templatePid": 1783993,
+      "propName": "风格",
+      "propValue": "优雅",
+      "valueUnit": ""
+    },
+    {
+      "pid": 1752,
+      "vid": 63437,
+      "refPid": 3700,
+      "templatePid": 1783994,
+      "propName": "适用人种",
+      "propValue": "适用黑人",
+      "valueUnit": ""
+    },
+    {
+      "pid": 2465,
+      "vid": 429301,
+      "refPid": 7805,
+      "templatePid": 1783996,
+      "propName": "是否整顶真人发",
+      "propValue": "是",
+      "valueUnit": ""
+    },
+    {
+      "pid": 1213,
+      "vid": 29480,
+      "refPid": 1312,
+      "templatePid": 1783997,
+      "propName": "密度",
+      "propValue": "100%",
+      "valueUnit": ""
+    },
+    {
+      "pid": 2753,
+      "vid": 542595,
+      "refPid": 8540,
+      "templatePid": 1784536,
+      "propName": "使用群体是否为成人",
+      "propValue": "是",
+      "valueUnit": ""
+    },
+    {
+      "pid": 1141,
+      "vid": 87187,
+      "refPid": 1117,
+      "templatePid": 1784618,
+      "propName": "适用年龄段",
+      "propValue": "18+",
+      "valueUnit": ""
+    },
+    {
+      "pid": 1215,
+      "vid": 36605,
+      "refPid": 1513,
+      "templatePid": 1829673,
+      "propName": "蕾丝面积",
+      "propValue": "4*1",
+      "valueUnit": ""
+    }
+  ],
+  "productSpecPropertyReqs": [
+    {
+      "pid": 13,
+      "vid": 0,
+      "refPid": 63,
+      "templatePid": 1783986,
+      "specId": 2001,
+      "propName": "颜色",
+      "specName": "白色",
+      "propValue": "白色",
+      "valueUnit": "",
+      "parentSpecId": 1001,
+      "parentSpecName": "颜色",
+      "valueGroupId": 0,
+      "valueGroupName": ""
+    },
+    {
+      "pid": 1347,
+      "vid": 0,
+      "refPid": 1311,
+      "templatePid": 1783985,
+      "specId": 44215590,
+      "propName": "头发长度",
+      "specName": "6inch",
+      "propValue": "6inch",
+      "valueUnit": "",
+      "parentSpecId": 44214483,
+      "parentSpecName": "头发长度",
+      "valueGroupId": 0,
+      "valueGroupName": ""
+    }
+  ],
+  "productWhExtAttrReq": {
+    "outerGoodsUrl": "",
+    "productOrigin": {
+      "region1ShortName": "CN",
+      "region2Id": 43000000000006
+    }
+  },
+  "productSecondHandReq": {
+    "isSecondHand": false
+  },
+  "personalizationSwitch": 0,
+  "productSkcReqs": [
+    {
+      "extCode": "SKC-SAMPLE",
+      "previewImgUrls": [
+        "https://img.kwcdn.com/product/open/94410bbd126e45a2ae94d8ed678c80d1-goods.jpeg",
+        "https://img.kwcdn.com/product/open/cfadc4e02db14dbdb9039a9648257ef8-goods.jpeg"
+      ],
+      "colorImageUrl": "https://img.kwcdn.com/product/open/94410bbd126e45a2ae94d8ed678c80d1-goods.jpeg",
+      "mainProductSkuSpecReqs": [
+        {
+          "specId": 0,
+          "specName": "",
+          "parentSpecId": 0,
+          "parentSpecName": ""
+        }
+      ],
+      "productSkuReqs": [
+        {
+          "extCode": "SKU-SAMPLE",
+          "thumbUrl": "https://img.kwcdn.com/product/open/94410bbd126e45a2ae94d8ed678c80d1-goods.jpeg",
+          "currencyType": "CNY",
+          "productSkuSpecReqs": [
+            {
+              "specId": 2001,
+              "specName": "白色",
+              "parentSpecId": 1001,
+              "parentSpecName": "颜色"
+            },
+            {
+              "specId": 44215590,
+              "specName": "6inch",
+              "parentSpecId": 44214483,
+              "parentSpecName": "头发长度"
+            }
+          ],
+          "siteSupplierPrices": [
+            {
+              "siteId": 100,
+              "supplierPrice": 999900
+            }
+          ],
+          "productSkuSuggestedPriceReq": {
+            "suggestedPriceCurrencyType": "CNY",
+            "suggestedPrice": 999900
+          },
+          "productSkuStockQuantityReq": {
+            "warehouseStockQuantityReqs": [
+              {
+                "warehouseId": "WH-05456308183173874",
+                "targetStockAvailable": 1
+              }
+            ]
+          },
+          "productSkuWhExtAttrReq": {
+            "productSkuVolumeReq": {
+              "len": 300,
+              "width": 220,
+              "height": 100
+            },
+            "productSkuWeightReq": {
+              "value": 300000
+            },
+            "productSkuSensitiveAttrReq": {
+              "isSensitive": 0,
+              "sensitiveList": [],
+              "sensitiveTypes": []
+            },
+            "productSkuSensitiveLimitReq": {}
+          }
+        }
+      ]
+    }
+  ],
+  "productWarehouseRouteReq": {
+    "targetRouteList": [
+      {
+        "siteIdList": [
+          100
+        ],
+        "warehouseId": "WH-05456308183173874"
+      }
+    ]
+  }
+}

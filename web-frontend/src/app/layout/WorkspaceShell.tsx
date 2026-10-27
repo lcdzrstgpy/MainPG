@@ -46,12 +46,15 @@ const ComboKitPage = lazy(() => import("../../modules/combo_kit/pages/ComboKitPa
 const ComboKitPromptPresetPage = lazy(() => import("../../modules/combo_kit/pages/ComboKitPromptPresetPage").then((m) => ({ default: m.ComboKitPromptPresetPage })));
 const ComboKitHistoryPage = lazy(() => import("../../modules/combo_kit/pages/ComboKitHistoryPage").then((m) => ({ default: m.ComboKitHistoryPage })));
 const DimensionCanvasPage = lazy(() => import("../../modules/product_processing/pages/DimensionCanvasPage").then((m) => ({ default: m.DimensionCanvasPage })));
+const TemuPublishPage = lazy(() => import("../../modules/temu_publish/pages/TemuPublishPage").then((m) => ({ default: m.TemuPublishPage })));
+const TemuDraftLibraryPage = lazy(() => import("../../modules/temu_publish/pages/TemuDraftLibraryPage").then((m) => ({ default: m.TemuDraftLibraryPage })));
 const PodCustomizationPage = lazy(() => import("../../modules/pod_customization/pages/PodCustomizationPage").then((m) => ({ default: m.PodCustomizationPage })));
 const PodSemiCustomizationPage = lazy(() => import("../../modules/pod_semi_customization/pages/PodSemiCustomizationPage").then((m) => ({ default: m.PodSemiCustomizationPage })));
 const PodReplicaPage = lazy(() => import("../../modules/pod_replica/pages/PodReplicaPage").then((m) => ({ default: m.PodReplicaPage })));
 const PodFissionPage = lazy(() => import("../../modules/pod_fission/pages/PodFissionPage").then((m) => ({ default: m.PodFissionPage })));
 const AiVideoPage = lazy(() => import("../../modules/ai_video/pages/AiVideoPage").then((m) => ({ default: m.AiVideoPage })));
 const PersonalCenterPage = lazy(() => import("../../modules/personal_center/pages/PersonalCenterPage").then((m) => ({ default: m.PersonalCenterPage })));
+import { TEMU_PUBLISH_PREFILL_EVENT, TEMU_PUBLISH_PREFILL_KEY } from "../../modules/temu_publish/types";
 import type { ProductProcessingOptions } from "../../modules/product_processing/types";
 import type { ProfitActivityPrefill } from "../../modules/profit_activity/types/products";
 import type { DimensionCanvasItem, DimensionNotification } from "../../modules/product_processing/types/dimensionCanvas";
@@ -1010,6 +1013,24 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         break;
       case "dimension_canvas":
         content = <DimensionCanvasPage initialBatchId={tab.dimensionBatchId} initialItemId={tab.dimensionItemId} onOpenPrecheck={openProcessingPrecheck} isActive={isActive} />;
+        break;
+      case "temu_publish":
+        // 发布页空态需要一键跳到草稿库挑成品，否则用户面对一张空表单无从下手
+        content = <TemuPublishPage onOpenDraftLibrary={() => openModule("temu_draft_library")} />;
+        break;
+      case "temu_draft_library":
+        content = (
+          <TemuDraftLibraryPage
+            onCreateProduct={() => openModule("temu_publish")}
+            onUseDraft={(prefill) => {
+              // 草稿库 → 发布商品：挂载态走事件（页签已开时 openModule 只切不重建），
+              // 首次挂载走 sessionStorage 兜底。
+              window.sessionStorage.setItem(TEMU_PUBLISH_PREFILL_KEY, JSON.stringify(prefill));
+              window.dispatchEvent(new CustomEvent(TEMU_PUBLISH_PREFILL_EVENT, { detail: prefill }));
+              openModule("temu_publish");
+            }}
+          />
+        );
         break;
       case "pod_customization":
         content = <PodCustomizationPage isActive={isActive} />;
