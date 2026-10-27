@@ -1344,6 +1344,9 @@ def test_gateway_auth_errors_carry_actionable_hint() -> None:
     assert "CLIENT_TOKEN_INVALID" in text
     assert "盈銮网关" in text and "access_token" in text
 
+    net = _gateway_message("NETWORK_ERROR", "网关网络请求失败：SSLEOFError")
+    assert "系统代理" in net and "WH_TEMU_PROXY" in net
+
     # 没登记的错误码不加多余的话，保持上游原话
     plain = _gateway_message("SOME_NEW_CODE", "boom")
     assert plain == "Temu 拒绝了这次提交：boom（错误码 SOME_NEW_CODE）"
