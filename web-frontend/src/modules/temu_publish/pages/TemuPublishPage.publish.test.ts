@@ -174,21 +174,21 @@ test("我的店铺：凭证按登录账号隔离，可解绑且未绑定时给�
   assert.match(api, /clearSettings: \(\) => httpJson<TemuSettingsStatus>\(`\$\{BASE\}\/settings`, \{ method: "DELETE" \}\)/);
   // 页面：解绑前要确认，成功后清掉店铺信息
   assert.match(page, /const clearShop = \(\) =>/);
-  // 解绑只清店铺授权：盈銮 client_id / token 是服务商那层的，换店还要用，不能一起删
+  // 解绑只清店铺授权：服务商 client_id / token 是预置的，换店还要用，不能一起删
   assert.match(page, /window\.confirm\(\s*"解绑只清掉这个账号的店铺授权/);
   assert.match(page, /const next = await temuPublishApi\.clearSettings\(\);/);
   // 未绑定时顶部横幅 + 顶部 chip 都是「绑定我的店铺」，不能只是报“凭证未配置”
   assert.match(page, /还没绑定你的 Temu 店铺/);
   assert.match(page, /去绑定我的店铺/);
   assert.match(page, /"绑定我的店铺"/);
-  // 盈銮凭据只显示「已配置/未配置」，不把 client/token 掩码摆出来
+  // 服务商凭据只显示「已配置/未配置」，不把 client/token 掩码摆出来
   assert.match(page, /const gatewayReady = !!\(status\?\.configured\.yl_client/);
   assert.ok(!/status\?\.hints\.yl_client/.test(page), "不要再把 client/token 掩码展示出来");
-  assert.match(page, /盈銮凭据<\/span>/);
-  // 盈銮 client_id / token 是服务商预置的：界面上不给输入框，只给状态说明
+  assert.match(page, /服务商凭据<\/span>/);
+  // 服务商 client_id / token 是预置的：界面上不给输入框，只给状态说明
   assert.ok(!page.includes("setYlClient"), "不要再用输入框收 client_id");
-  assert.ok(!page.includes("setYlToken"), "不要再用输入框收 盈銮 token");
-  assert.match(page, /服务商凭据（盈銮 client_id \/ token）/);
+  assert.ok(!page.includes("setYlToken"), "不要再用输入框收服务商 token");
+  assert.match(page, /服务商凭据（client_id \/ token）/);
   assert.match(page, /已预置，不用管/);
   // 打开面板时重读一次状态，避免显示成旧值
   assert.match(page, /void temuPublishApi\s*\.settings\(\)/);

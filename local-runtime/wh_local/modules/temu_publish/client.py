@@ -1,4 +1,4 @@
-"""盈銮 Temu 商品 OpenAPI 网关客户端。
+"""Temu 商品 OpenAPI 网关客户端。
 
 设计要点：
 - 只保存调用方凭证（x-yl-client / x-yl-token）与店铺 access_token，不处理 Temu 签名。
@@ -25,7 +25,7 @@ CACHE_TTL_LOGISTICS = 30 * 60
 
 
 class TemuGatewayError(RuntimeError):
-    """盈銮/ Temu 返回的业务错误（已归一化）。"""
+    """上游网关 / Temu 返回的业务错误（已归一化）。"""
 
     def __init__(
         self,
@@ -56,7 +56,7 @@ class TemuCredentials:
         return bool(self.client and self.token and self.access_token)
 
 
-# 盈銮网关是境内直连的域名。系统代理（Clash/V2Ray 之类）经常把它也劫持走，
+# 服务商网关是境内直连的域名。系统代理（Clash/V2Ray 之类）经常把它也劫持走，
 # 结果是 TLS 握手被掐断：SSLEOFError / EOF occurred in violation of protocol。
 # 所以默认**不读系统代理**；确实需要代理的环境用 WH_TEMU_PROXY 显式指定。
 PROXY_ENV = "WH_TEMU_PROXY"
@@ -150,7 +150,7 @@ class TemuProductClient:
             # 限流：优先遵循 Retry-After，最多等 5 秒，避免长时间阻塞发布页。
             if status == 429:
                 last_error = TemuGatewayError(
-                    api_type, "盈銮调用频率超限（429）", error_code="RATE_LIMIT_EXCEEDED", http_status=429
+                    api_type, "网关调用频率超限（429）", error_code="RATE_LIMIT_EXCEEDED", http_status=429
                 )
                 if attempt + 1 >= attempts:
                     raise last_error
@@ -160,7 +160,7 @@ class TemuProductClient:
 
             if status >= 500:
                 last_error = TemuGatewayError(
-                    api_type, f"盈銮上游异常（HTTP {status}）", error_code="UPSTREAM_ERROR", http_status=status
+                    api_type, f"上游服务异常（HTTP {status}）", error_code="UPSTREAM_ERROR", http_status=status
                 )
                 if attempt + 1 >= attempts:
                     raise last_error
@@ -180,11 +180,11 @@ class TemuProductClient:
                 data.get("errorMsg")
                 or data.get("message")
                 or data.get("detail")
-                or f"盈銮接口调用失败（HTTP {status}）"
+                or f"网关接口调用失败（HTTP {status}）"
             )
             raise TemuGatewayError(api_type, message, error_code=error_code, http_status=status)
 
-        raise TemuGatewayError(api_type, str(last_error or "盈銮接口调用失败"))
+        raise TemuGatewayError(api_type, str(last_error or "网关接口调用失败"))
 
     # ---------- 商品发布配套查询 ----------
 
@@ -384,10 +384,10 @@ def _response_json(response: Any, api_type: str) -> dict[str, Any]:
         data = response.json()
     except (ValueError, UnicodeError) as exc:
         raise TemuGatewayError(
-            api_type, "盈銮返回内容不是合法 JSON", error_code="INVALID_RESPONSE"
+            api_type, "网关返回内容不是合法 JSON", error_code="INVALID_RESPONSE"
         ) from exc
     if not isinstance(data, dict):
-        raise TemuGatewayError(api_type, "盈銮返回结构异常", error_code="INVALID_RESPONSE")
+        raise TemuGatewayError(api_type, "网关返回结构异常", error_code="INVALID_RESPONSE")
     return data
 
 

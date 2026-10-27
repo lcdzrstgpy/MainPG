@@ -1,7 +1,7 @@
 """Temu 商品发布配套服务。
 
 职责：
-- 凭证存取：盈銮 client/token 与店铺 access_token 加密存入 secret_values，环境变量兜底。
+- 凭证存取：服务商 client/token 与店铺 access_token 加密存入 secret_values，环境变量兜底。
 - 发布配套查询：类目、属性、父规格、包装清单、运费模板、仓库、图片上传。
 - 发布请求体组装与校验：只生成 goods.add 的 payload，不提交。
 """
@@ -141,7 +141,7 @@ class TemuCredentialStore:
     def clear(self, actor_id: str) -> None:
         """解绑本人的店铺：**只删店铺授权（access_token）**。
 
-        `yl_client` / `yl_token` 是服务商（盈銮）级别的凭据，跟具体哪家店铺无关：
+        `yl_client` / `yl_token` 是服务商级别的凭据，跟具体哪家店铺无关：
         换一家店、重新授权都还要用同一对，所以解绑时保留，否则每次换店都得让对方再发一遍。
 
         历史全局作用域（LEGACY_SCOPE）里 `updated_by == 本人` 的 access_token 也要删：
@@ -255,7 +255,7 @@ class TemuPublishService:
         credentials = self.store.load()
         if not credentials.complete():
             raise TemuCredentialMissing(
-                "Temu 发布凭证未配置完整：需要盈銮 client/token 与店铺 access_token"
+                "Temu 发布凭证未配置完整：需要服务商 client/token 与店铺 access_token"
             )
         key = (credentials.client, credentials.token, credentials.access_token)
         if self._client is None or self._client_key != key:
@@ -476,7 +476,7 @@ class TemuPublishService:
     def check_mandatory(self, draft: GoodsDraftInput) -> dict[str, Any]:
         """发布前校验这个叶子类目还缺什么。
 
-        优先走文档里的 `bg.glo.goods.catsmandatory.get`；但**盈銮网关实测不支持它**
+        优先走文档里的 `bg.glo.goods.catsmandatory.get`；但**网关实测不支持它**
         （2026-10-26 真调，PARTNER / CN 两个网关都返回 `sign is invalid`），
         所以失败时退回本地 `attrs.get` 的必填标记做校验 —— 结论一样能用，只是少了
         网关侧的额外规则。
@@ -903,7 +903,7 @@ def _assemble_payload(
         },
     }
 
-    # 这两个字段盈銮成功样例里有，缺了不影响但不传容易触发额外校验
+    # 这两个字段官方成功样例里有，缺了不影响但不传容易触发额外校验
     payload.setdefault("productSecondHandReq", {"isSecondHand": False})
     # 定制/POD 商品要显式打开，否则前台看不到定制入口
     payload["personalizationSwitch"] = 1 if draft.personalization else 0

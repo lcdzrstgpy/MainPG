@@ -618,7 +618,7 @@ def test_check_mandatory_passes_leaf_category_and_properties(tmp_path: Path) -> 
 
 
 def test_check_mandatory_falls_back_when_gateway_rejects_catsmandatory(tmp_path: Path) -> None:
-    """盈銮网关不支持 catsmandatory.get（实测 sign is invalid）→ 必须退回 attrs 必填校验。"""
+    """网关不支持 catsmandatory.get（实测 sign is invalid）→ 必须退回 attrs 必填校验。"""
 
     class StubClient(StubCatalogClient):
         def mandatory_config(self, leaf_cat_id, bind_site_ids, product_property_reqs=None):
@@ -1336,16 +1336,19 @@ def test_duplicate_detection_is_per_account_and_fingerprint(tmp_path: Path) -> N
 
 
 def test_gateway_auth_errors_carry_actionable_hint() -> None:
-    """CLIENT_TOKEN_INVALID 要说清是「盈銮网关凭据」而不是店铺 token，并给排查方向。"""
+    """CLIENT_TOKEN_INVALID 要说清是「服务商网关凭据」而不是店铺 token，并给排查方向。"""
     from wh_local.modules.temu_publish.router import _gateway_message
 
     text = _gateway_message("CLIENT_TOKEN_INVALID", "client_id or token is invalid")
     assert text.startswith("Temu 拒绝了这次提交：client_id or token is invalid")
     assert "CLIENT_TOKEN_INVALID" in text
-    assert "盈銮网关" in text and "access_token" in text
+    # 文案里不能出现供应商名字（用户要求界面上不显示）
+    assert "服务商网关" in text and "access_token" in text
+    assert "盈銮" not in text
 
     net = _gateway_message("NETWORK_ERROR", "网关网络请求失败：SSLEOFError")
     assert "系统代理" in net and "WH_TEMU_PROXY" in net
+    assert "盈銮" not in net
 
     # 没登记的错误码不加多余的话，保持上游原话
     plain = _gateway_message("SOME_NEW_CODE", "boom")
@@ -1353,7 +1356,7 @@ def test_gateway_auth_errors_carry_actionable_hint() -> None:
 
 
 def test_unbinding_keeps_gateway_credentials(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """解绑只清店铺授权：盈銮 client_id / token 是服务商那层的，换店还要用，必须留着。"""
+    """解绑只清店铺授权：服务商 client_id / token 是预置的，换店还要用，必须留着。"""
     _clear_temu_env(monkeypatch)
     init_db(tmp_path / "runtime.sqlite3")
     service = TemuPublishService(

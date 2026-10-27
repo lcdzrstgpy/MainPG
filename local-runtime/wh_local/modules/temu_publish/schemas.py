@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class TemuSettingsUpdate(BaseModel):
-    """盈銮调用凭证与店铺 token；空字符串表示“不修改”。"""
+    """服务商调用凭证与店铺 token；空字符串表示“不修改”。"""
 
     yl_client: str | None = None
     yl_token: str | None = None
@@ -166,7 +166,7 @@ class GoodsDraftInput(BaseModel):
     # 站外产品链接，落到 productWhExtAttrReq.outerGoodsUrl
     outer_goods_url: str = ""
     origin_region_short_name: str = "CN"
-    # 二级产地 id：实测传 0 会被拒「不合法的二级区域id」。默认值取自盈銮成功样例。
+    # 二级产地 id：实测传 0 会被拒「不合法的二级区域id」。默认值取自官方成功样例。
     origin_region2_id: int = 43000000000006
     # 定制/POD 商品：落到顶层 personalizationSwitch（开启前需在卖家中心配好定制模板）
     personalization: bool = False

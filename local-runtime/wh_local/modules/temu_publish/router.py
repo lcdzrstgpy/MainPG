@@ -31,19 +31,19 @@ logger = logging.getLogger("wh_local.temu_publish")
 # 网关鉴权类错误：告诉用户到底该改哪一处，而不是只丢一句「client_id or token is invalid」。
 _GATEWAY_HINTS = {
     "CLIENT_TOKEN_REQUIRED": (
-        "盈銮网关凭据没填全：这里要填的是盈銮后台的 client_id / token，"
+        "服务商网关凭据没填全：这里要填的是服务商后台的 client_id / token，"
         "不是 Temu 店铺的 access_token"
     ),
     "CLIENT_TOKEN_INVALID": (
-        "这是盈銮网关的 client_id / token 无效，跟店铺 access_token 无关（请求还没到 Temu）。"
+        "这是服务商网关的 client_id / token 无效，跟店铺 access_token 无关（请求还没到 Temu）。"
         "让给凭据的人确认：client 和 token 是不是同一对、有没有被重置、本机公网 IP 在不在白名单"
     ),
     "CLIENT_PERMISSION_DENIED": (
-        "盈銮网关拒绝了这个 client：多半是应用没开该接口权限，或本机 IP 不在白名单"
+        "服务商网关拒绝了这个 client：多半是应用没开该接口权限，或本机 IP 不在白名单"
     ),
     "7000006": "这个 access_token 没和商务应用绑定：回店铺后台重新授权，再把新 token 填进来",
     "NETWORK_ERROR": (
-        "连不上盈銮网关（TLS 握手被中断）。常见原因是系统代理把这条国内网关请求也劫走了；"
+        "连不上服务商网关（TLS 握手被中断）。常见原因是系统代理把这条国内网关请求也劫走了；"
         "程序默认不走系统代理，确实需要走代理时用环境变量 WH_TEMU_PROXY 指定"
     ),
 }
@@ -57,7 +57,7 @@ def _gateway_message(error_code: str, message: str) -> str:
     return f"Temu 拒绝了这次提交：{reason}{suffix}" + (f"。{hint}" if hint else "")
 
 
-# 需要到盈銮/上游修配置的错误码，按网关错误（502）返回，便于前端区分“参数问题”。
+# 需要到服务商/上游修配置的错误码，按网关错误（502）返回，便于前端区分“参数问题”。
 _UPSTREAM_ERROR_CODES = {
     "CLIENT_TOKEN_REQUIRED",
     "CLIENT_TOKEN_INVALID",
