@@ -345,8 +345,6 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const publishingRef = useRef(false);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [ylClient, setYlClient] = useState("");
-  const [ylToken, setYlToken] = useState("");
   const [accessToken, setAccessToken] = useState("");
 
   const storageSuffix = useMemo(() => storageScope(), []);
@@ -904,13 +902,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const saveCredentials = () =>
     run("settings", async () => {
       const saved = await temuPublishApi.saveSettings({
-        yl_client: ylClient.trim() || undefined,
-        yl_token: ylToken.trim() || undefined,
         access_token: accessToken.trim() || undefined,
       });
       setStatus(saved);
-      setYlClient("");
-      setYlToken("");
       setAccessToken("");
       if (saved.configured.ready) {
         const info = await temuPublishApi.verifyToken(true);
@@ -1456,7 +1450,25 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           <button
             type="button"
             className={`temu-pill temu-store-chip ${ready ? "ok" : "warn"}`}
-            onClick={() => setSettingsOpen((value) => !value)}
+            onClick={() => {
+              const next = !settingsOpen;
+              setSettingsOpen(next);
+              // 面板可能是在别处改过凭证后打开的：重读一次，避免显示成「未配置」
+              if (next) {
+                void temuPublishApi
+                  .settings()
+                  .then((fresh) => {
+                    setStatus(fresh);
+                    // 凭证齐全就顺手校验一次，面板里才能显示店铺名/有效期（服务端有 10 分钟缓存）
+                    if (!fresh.configured.ready) return undefined;
+                    return temuPublishApi
+                      .verifyToken()
+                      .then(setTokenInfo)
+                      .catch(() => undefined);
+                  })
+                  .catch(() => undefined);
+              }
+            }}
             title="点击查看/修改凭证"
           >
             {ready ? tokenInfo?.mall_name || "我的店铺已连接" : "绑定我的店铺"}
@@ -1510,22 +1522,10 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               <strong>{status?.configured.access_token ? "已配置" : "未绑定"}</strong>
             </div>
           </div>
-          <div className="temu-two-col">
-            <label className="temu-field">
-              <span>
-                盈銮 client_id
-                <em className="temu-muted">服务商给的那串 client（请求头 x-yl-client）</em>
-              </span>
-              <input className="temu-input" value={ylClient} onChange={(event) => setYlClient(event.target.value)} placeholder="留空表示不修改" />
-            </label>
-            <label className="temu-field">
-              <span>
-                盈銮 token
-                <em className="temu-muted">和上面 client_id 配对的 token（请求头 x-yl-token），不是店铺的 access_token</em>
-              </span>
-              <input className="temu-input" type="password" value={ylToken} onChange={(event) => setYlToken(event.target.value)} placeholder="留空表示不修改" />
-            </label>
-          </div>
+          {/* 盈銮 client_id / token 是服务商预置的，不让用户填也不展示 */}
+          <p className="temu-muted">
+            服务商凭据（盈銮 client_id / token）：{gatewayReady ? "已预置，不用管" : "还没预置，请联系服务商开通；这里不用填"}
+          </p>
           <label className="temu-field">
             <span>
               店铺 access_token

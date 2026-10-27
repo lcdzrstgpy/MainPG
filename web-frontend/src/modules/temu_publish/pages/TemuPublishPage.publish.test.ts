@@ -185,6 +185,14 @@ test("我的店铺：凭证按登录账号隔离，可解绑且未绑定时给�
   assert.match(page, /const gatewayReady = !!\(status\?\.configured\.yl_client/);
   assert.ok(!/status\?\.hints\.yl_client/.test(page), "不要再把 client/token 掩码展示出来");
   assert.match(page, /盈銮凭据<\/span>/);
+  // 盈銮 client_id / token 是服务商预置的：界面上不给输入框，只给状态说明
+  assert.ok(!page.includes("setYlClient"), "不要再用输入框收 client_id");
+  assert.ok(!page.includes("setYlToken"), "不要再用输入框收 盈銮 token");
+  assert.match(page, /服务商凭据（盈銮 client_id \/ token）/);
+  assert.match(page, /已预置，不用管/);
+  // 打开面板时重读一次状态，避免显示成旧值
+  assert.match(page, /void temuPublishApi\s*\.settings\(\)/);
+  assert.match(page, /if \(!fresh\.configured\.ready\) return undefined;/);
   // 面板要说明账号归属，并展示当前店铺/token 有效期
   assert.match(page, /凭证按登录账号各存一份/);
   assert.match(page, /每个账号填自己的 token，互不影响/);
