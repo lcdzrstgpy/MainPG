@@ -465,8 +465,7 @@
 }
 
 .pod-replica-target-analysis.is-analyzing { color: var(--pod-primary); }
-.pod-replica-target-analysis.is-needs_confirmation { color: #b7791f; }
-.pod-replica-target-analysis.is-confirmed { color: #2f7d54; }
+.pod-replica-target-analysis.is-ready { color: #2f7d54; }
 .pod-replica-target-analysis.is-failed { color: #a84c48; }
 
 .pod-replica-source-confirm {
@@ -600,8 +599,7 @@
 }
 
 .pod-replica-analysis-badge.is-analyzing { background: var(--pod-surface-tint); color: var(--pod-primary); }
-.pod-replica-analysis-badge.is-needs_confirmation { background: #fdf3e2; color: #b7791f; }
-.pod-replica-analysis-badge.is-confirmed { background: #e8f5ee; color: #2f7d54; }
+.pod-replica-analysis-badge.is-ready { background: #e8f5ee; color: #2f7d54; }
 .pod-replica-analysis-badge.is-failed { background: #fdf0ef; color: #a84c48; }
 
 .pod-replica-analysis-hint {

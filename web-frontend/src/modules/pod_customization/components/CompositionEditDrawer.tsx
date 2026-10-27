@@ -1,13 +1,15 @@
 import { createPortal } from "react-dom";
 
 import { CompositionPanelsEditor } from "./CompositionPanelsEditor";
-import type { PodComposition } from "../types";
+import type { PodComposition, PodCompositionScope } from "../types";
 
 type Props = {
   open: boolean;
   onClose: () => void;
   /** 要编辑的模板；为空则不渲染。 */
   target: PodComposition | null;
+  /** 模板池归属：replica 时锁定主图（panel_1）。 */
+  scope?: PodCompositionScope;
   /** 保存成功后回调，供页面同步提示与生效状态。 */
   onChanged?: (composition: PodComposition) => void;
 };
@@ -22,7 +24,7 @@ function displayName(template: PodComposition): string {
 /**
  * 「编辑构图模板」：从「构图模板管理」进入，**只做手动编辑**（不含 AI 生成）。
  */
-export function CompositionEditDrawer({ open, onClose, target, onChanged }: Props) {
+export function CompositionEditDrawer({ open, onClose, target, scope = "full", onChanged }: Props) {
   if (!open || !target) return null;
 
   return createPortal(
@@ -44,7 +46,7 @@ export function CompositionEditDrawer({ open, onClose, target, onChanged }: Prop
               <p className="pod-composition-empty">系统内置「默认模板」不可编辑；如需自定义，请在左侧「构图定制」里生成一份。</p>
             </section>
           ) : (
-            <CompositionPanelsEditor composition={target} onSaved={(saved) => onChanged?.(saved)} />
+            <CompositionPanelsEditor composition={target} scope={scope} onSaved={(saved) => onChanged?.(saved)} />
           )}
         </div>
       </aside>
