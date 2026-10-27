@@ -184,7 +184,7 @@ export function TemuDraftBulkBar({
                         type="button"
                         disabled={
                           !item.enabled ||
-                          (item.action === "publish" && (batchRunning || !selectedCount || !canBatchPublish)) ||
+                          (item.action === "publish" && (batchRunning || !selectedCount)) ||
                           (item.action !== "publish" && selectedCount === 0)
                         }
                         title={
@@ -195,7 +195,7 @@ export function TemuDraftBulkBar({
                               : selectedCount === 0
                               ? "先勾选左侧复选框"
                               : item.action === "publish" && !canBatchPublish
-                                ? "先去发布页「存为产品模板」，批量发布要用模板里的类目和属性"
+                                ? "点击后在弹窗里选产品模板（批量发布用模板里的类目和属性）"
                                 : item.action !== "publish" && templateCount === 0
                                   ? "还没有模板：去发布页「存为产品模板 / 变种模板」"
                                   : undefined
