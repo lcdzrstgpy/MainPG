@@ -89,7 +89,7 @@ function draftMissingFields(
   if (!category) missing.push("类目");
   const price = Number(entry.declared_price);
   if (!Number.isFinite(price) || price <= 0) missing.push("申报价");
-  // 推算价只是参考，发布时不会带出去 → 仍然算「没填」
+  // 参考价发布时不会带出去 → 仍然算「没填」，别让人以为可以点发布
   else if (entry.declared_price_estimated) missing.push("申报价待确认");
   if (!entry.sku) missing.push("货号");
   const weight = Number(entry.weight_g);
@@ -267,7 +267,7 @@ function siteCategoryLabel(
  * 这份草稿进发布页时要人工核对哪些字段。
  *
  * - POD 导出：申报价 / 重量 / 长宽高 都是模板占位值
- * - 推算价：价格是按「成本 × 4、下限 ¥150」算的，不是人填的 —— 发布时不会带出去
+ * - 参考价：价格是按「成本 × 4、下限 ¥150」算的，不是人填的 —— 发布时不会带出去
  */
 function buildNeedsReview(entry: TemuDraftEntry): string[] | undefined {
   const items = new Set<string>();
@@ -276,7 +276,7 @@ function buildNeedsReview(entry: TemuDraftEntry): string[] | undefined {
     items.add("长宽高");
   }
   if (entry.declared_price_estimated) {
-    items.add("申报价（当前是推算值，发布不会带出去，请自己填）");
+    items.add("申报价（当前是参考价，发布不会带出去，请自己填）");
   } else if (entry.source === "pod") {
     items.add("申报价");
   }
@@ -303,7 +303,7 @@ function entryPrefill(
     sourceLabel: entry.source === "ai" ? "AI 处理" : "POD",
     sourceKind: entry.source,
     // 草稿是「元」，发布页是「分」。
-    // 推算价（成本 × 4、下限 ¥150）**不往发布页带**：那是给眼睛看的参考值，
+    // 参考价（成本 × 4、下限 ¥150）**不往发布页带**：那是给眼睛看的参考值，
     // 直接变成申报价提交出去就是真金白银的定价错误，必须让人自己确认一遍。
     supplierPrice: entry.declared_price_estimated ? "" : yuanToCents(entry.declared_price),
     suggestedPrice: yuanToCents(entry.suggested_price),
@@ -318,7 +318,7 @@ function entryPrefill(
     // 带上 id 和上次选过的类目：发布页选完会回写，下次带入直接选中
     draftId: entry.id,
     categoryPath: memo?.[entry.id]?.path,
-    // 进发布页要人工核对的字段：POD 导出里是模板占位值，推算价则是「算出来的」不是填的
+    // 进发布页要人工核对的字段：POD 导出里是模板占位值，参考价则是「算出来的」不是填的
     needsReview: buildNeedsReview(entry),
   };
 }
@@ -957,7 +957,7 @@ export function TemuDraftLibraryPage({
                   <th className="col-sku">货号</th>
                   <th
                     className="col-price"
-                    title="发布时按「分」提交（¥150.00 = 15000 分）。标「推算·未确认」的是按导出表规则算的参考价（成本 × 4，下限 ¥150），不会带进发布页，需要自己确认后填。"
+                    title="发布时按「分」提交（¥150.00 = 15000 分）。标「参考价·未确认」的是按成本 × 4、下限 ¥150 算出来的，不会带进发布页，需要自己确认后填。"
                   >
                     申报价
                   </th>
@@ -1049,9 +1049,9 @@ export function TemuDraftLibraryPage({
                             {entry.declared_price_estimated ? (
                               <em
                                 className="is-estimated"
-                                title="参考值：按导出表规则推算（成本 × 4，下限 ¥150）。发布时不会带出去，需要你确认后自己填。"
+                                title="按成本 × 4、下限 ¥150 算出来的参考价：发布时不会带出去，需要你确认后自己填。"
                               >
-                                推算·未确认
+                                参考价·未确认
                               </em>
                             ) : null}
                           </>

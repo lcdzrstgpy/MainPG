@@ -265,9 +265,9 @@ export type TemuDraftEntry = {
   spec_value_1?: string;
   spec_name_2?: string;
   spec_value_2?: string;
-  /** 申报价（单位：元）。没有显式填过时按导出规则推算，见 declared_price_estimated */
+  /** 申报价（单位：元）。没有显式填过时按导出规则测算，见 declared_price_estimated */
   declared_price: number | string | null;
-  /** true = 该价格是推算出来的（成本 × 4，下限 ¥150），不是人工填的 */
+  /** true = 该价格是按成本算出来的（成本 × 4，下限 ¥150），不是人工填的 */
   declared_price_estimated?: boolean;
   suggested_price: number | string | null;
   stock: number | string | null;
