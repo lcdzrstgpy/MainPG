@@ -2978,3 +2978,16 @@ textarea.temu-input {
   width: 100%;
   justify-content: center;
 }
+/* 发布成功后侧栏直接给结论（商品 id 就在这儿，不用往下翻结果面板） */
+.is-console .temu-rail-ok {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 9px;
+  color: #177245;
+  background: #e9f8ef;
+  border: 1px solid #b6e3c8;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.45;
+  word-break: break-word;
+}

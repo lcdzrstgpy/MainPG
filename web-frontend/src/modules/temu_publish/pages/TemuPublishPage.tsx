@@ -1654,13 +1654,18 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   /** 发布前校验：问网关这个叶子类目还缺哪些必填属性，不会提交商品。 */
   const checkMandatory = () =>
     run("mandatory", async () => {
-      const draft = await composeDraft();
+      const draft = await composeDraft().catch((cause: unknown) => {
+        noteValidationBlocked();
+        throw cause;
+      });
       setMandatory(null);
       const checked = await temuPublishApi.checkMandatory(draft);
       const missing = Array.isArray(checked.result?.requiredMissing)
         ? (checked.result.requiredMissing as Array<{ pid?: number; name?: string }>)
         : [];
       setMandatory({ source: checked.source, result: checked.result, warnings: checked.warnings, missing });
+      // 结果面板在页面最下面：点完直接带过去，别让侧栏那个按钮看着像没反应
+      jumpTo("sec-publish");
     });
 
   /** 真正提交到店铺。非幂等 + 有外部副作用，必须先让用户确认。 */
@@ -1673,9 +1678,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       // 校验没过：把必填项标红，并滚到第一个还没填完的区块 ——
       // 否则长表单里只看到顶部一句「缺少必填属性」，还得自己往下找在哪
       const draft = await composeDraft().catch((cause: unknown) => {
-        setShowFieldErrors(true);
-        const firstGap = flowSteps.find((step) => step.id !== "sec-publish" && !step.done);
-        if (firstGap) jumpTo(firstGap.id);
+        noteValidationBlocked();
         throw cause;
       });
       const skuCount = draft.skcs.reduce((total, skc) => total + skc.skus.length, 0);
@@ -1992,6 +1995,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const remainingContentSteps = flowSteps.filter((step) => step.id !== "sec-publish" && !step.done);
   const doneCount = flowSteps.filter((step) => step.done).length;
   const jumpTo = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+
+  /** 校验没通过时的统一反馈：标红必填项 + 滚到第一个缺口。 */
+  const noteValidationBlocked = () => {
+    setShowFieldErrors(true);
+    const firstGap = flowSteps.find((step) => step.id !== "sec-publish" && !step.done);
+    if (firstGap) jumpTo(firstGap.id);
+  };
   const stepOf = (id: string) => flowSteps.find((item) => item.id === id) ?? flowSteps[0];
   const ready = !!status?.configured.ready;
   // 服务商凭据：跟具体店铺无关，解绑店铺也保留
@@ -3007,6 +3017,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 {publishing ? "提交中…" : "提交发布"}
               </button>
             </div>
+            {publishResult ? (
+              <p className="temu-rail-ok" role="status">
+                ✓ 已提交到店铺
+                {publishedGoodsId ? ` · 商品 id ${publishedGoodsId}` : ""}
+                {publishResult.confirmed_by_lookup ? "（网络中断后反查到的）" : ""}
+              </p>
+            ) : null}
             {error ? (
               <p className="temu-rail-error" role="alert">
                 {error}
