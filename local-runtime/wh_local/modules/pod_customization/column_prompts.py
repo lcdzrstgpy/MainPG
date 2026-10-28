@@ -42,12 +42,12 @@ from .prompts import (
     _MATERIAL_REALISM_BLOCK,
     _NO_QUADRANT_LABELS,
     _PRODUCT_FORM_LOCK,
+    _brief_accent_colors,
     _brief_color_preferences,
     _coerce_style_elements,
     _fabric_craft_lines,
     _flat_set_design_block,
     _structure_anchor_blocks,
-    assign_style_colors,
     element_area_shares,
     pick_scene_option,
     render_element_weight_contract,
@@ -61,7 +61,9 @@ from .prompts import (
 # v23：权重升级为「面积份额 + 相对尺寸」——典型 1/2/4 配比时约 53/31/16%。
 # v24：Rhythm 不再从元素池分配，由生图模型按主题自选 2-3 个小纹样/纹理。
 # v25：去掉「主元素至少重复 3 次」，改为「图案可以重复，但主元素必须是本款最大图案」。
-COLUMN_PROMPT_VERSION = "v25"
+# v26：删除 60-30-10 配色权重——每款只注入「主题强关联色 + 建议点缀色」两组、不绑比例，
+#      主色归属交给生图模型。
+COLUMN_PROMPT_VERSION = "v26"
 
 _QUADRANT_POSITIONS = ("TOP-LEFT", "TOP-RIGHT", "BOTTOM-LEFT", "BOTTOM-RIGHT")
 
@@ -104,14 +106,14 @@ _ART_DIRECTION_LOCK = (
 
 @dataclass(frozen=True)
 class ColumnStyleRecipe:
-    """组内某一款的确定性配方（元素层级 / 配色角色）。"""
+    """组内某一款的确定性配方（元素层级 + 两组色板）。"""
 
     style_index: int
     hero: str
     narrative: tuple[str, ...]
     rhythm: tuple[str, ...]
-    palette: str
-    color_harmony: str
+    theme_colors: tuple[str, ...]
+    accent_colors: tuple[str, ...]
 
     @property
     def quadrant(self) -> str:
@@ -121,19 +123,21 @@ class ColumnStyleRecipe:
         return (
             f"STYLE-{self.style_index:03d} | elements=hero:{self.hero or '-'} "
             f"narrative:{','.join(self.narrative) or '-'} rhythm:{','.join(self.rhythm) or '-'}"
-            + (f" | palette={self.palette}" if self.palette else "")
-            + (f" | color_harmony={self.color_harmony}" if self.color_harmony else "")
+            + (f" | theme_colors={','.join(self.theme_colors)}" if self.theme_colors else "")
+            + (f" | accent_colors={','.join(self.accent_colors)}" if self.accent_colors else "")
         )
 
 
 def build_column_style_recipes(
     fields: BusinessFields,
     styles: Sequence[Mapping[str, object]],
-    *,
-    seed: str,
 ) -> tuple[ColumnStyleRecipe, ...]:
     """按款序生成 4 个配方；``styles`` 每项形如 ``{"style_index": n, "elements": {...}}``。"""
     color_preferences = _brief_color_preferences(fields.model_dump())
+    # 两组色板整批共用：主题强关联色必须至少用 1 款，点缀色只作辅色/点缀。
+    # 本地不抽样、不分配比例，主色归属交给生图模型。
+    theme_colors = tuple(color_preferences)
+    accent_colors = tuple(_brief_accent_colors(fields.model_dump()))
     recipes: list[ColumnStyleRecipe] = []
     for entry in styles:
         raw_style_index = entry.get("style_index")
@@ -144,27 +148,14 @@ def build_column_style_recipes(
         hero, narrative, rhythm = _coerce_style_elements(
             raw_elements if isinstance(raw_elements, Mapping) else None
         )
-        # 配色只来自用户/智能填写给出的色板；没给就交给模型按主题自行选择。
-        palette = (
-            f"the brief's specified colors ({', '.join(color_preferences)})"
-            if color_preferences
-            else ""
-        )
-        colors = assign_style_colors(color_preferences, style_index, seed)
-        color_harmony = ""
-        if colors["base"]:
-            color_harmony = (
-                f"base≈{colors['base']}(60%) / structural≈{colors['structural']}(30%) / "
-                f"highlight≈{colors['highlight']}(10%)"
-            )
         recipes.append(
             ColumnStyleRecipe(
                 style_index=style_index,
                 hero=hero,
                 narrative=tuple(narrative),
                 rhythm=tuple(rhythm),
-                palette=palette,
-                color_harmony=color_harmony,
+                theme_colors=theme_colors,
+                accent_colors=accent_colors,
             )
         )
     return tuple(recipes)
@@ -196,7 +187,8 @@ def build_column_base_prompt(
         ("Target audience", fields.target_audience),
         ("Core selling points", ", ".join(fields.core_selling_points)),
         ("Batch-wide theme & style", fields.design_theme),
-        ("Color preferences", ", ".join(fields.color_preferences)),
+        ("Theme colours (strong theme tie; must use at least one)", ", ".join(fields.color_preferences)),
+        ("Accent colours (supporting only; never the dominant)", ", ".join(fields.accent_colors)),
         ("Excluded elements", ", ".join(IP_EXCLUDED_ELEMENTS)),
     ):
         if value:
@@ -225,7 +217,7 @@ def build_column_base_prompt(
         "decoration — preserve them exactly as shown; do not flatten the quilted surface into a smooth "
         "shell. Only the artwork, the colour scheme and the scene are to be replaced.",
         "Keep the same exact product in every panel and every round: identical structure, material, "
-        "proportions, base color and print surfaces.",
+        "proportions and blank substrate colour. The printed colour scheme may differ per quadrant.",
         "ALL-OVER PRINT LOCK: each style's artwork is a full-surface all-over print — it repeats "
         "seamlessly edge to edge across every printable surface (front, sides, base, handles and "
         "bindings), with no blank ground areas and never a single isolated motif floating on a plain "
@@ -270,23 +262,24 @@ def _style_block(recipe: ColumnStyleRecipe) -> str:
         lines.append(
             "- 本款未分配印花元素：必须在 Batch-wide theme & style 主题内自创一个新图案元素作为本款印花主元素。"
         )
-    if recipe.palette:
-        lines.append(f"- palette = {recipe.palette}。")
+    if recipe.theme_colors or recipe.accent_colors:
+        # 两组色板整批共用，只在 PART 1 渲染一次；这里只给本象限的用色约定，避免四份重复。
+        lines.append(
+            "- 用色层级（本象限）：主色必须取自 PART 1 的主题强关联色（至少用 1 款），"
+            "辅色 / 点缀色可取自点缀组；不要求固定比例，但主次必须一眼读得出来；"
+            "不得把所有颜色平均铺开；相邻象限的主色必须取自不同的主题强关联色。"
+        )
     lines.append(f"- {render_element_weight_contract(shares)}")
     lines.extend((
         "- 满印密度（本款硬要求）：可印表面覆盖率 ≥ 90%，不允许出现比一个主元素还大的连续空白底色；"
         "三层必须按上述面积份额同时铺满整个可印表面，只在局部放几个图案视为失败。",
         "- 排布方式（重复/错位/拼贴/条纹等）可自由选择，但不得降低上一条的密度；"
         "不得因此改变相机、景别或四格角色。",
-        "- 本款配方只作用于本象限：其他象限的元素、配色与尺度在本象限禁止出现。",
+        "- 本款配方只作用于本象限：其他象限的元素与图案组合在本象限禁止出现；"
+        "配色只能从本批次的主题色 / 点缀色两组里选取。",
         f"Recipe signature: {recipe.signature()} | "
         f"weight={shares['hero']}/{shares['narrative']}/{shares['rhythm']}",
     ))
-    if recipe.color_harmony:
-        lines.append(
-            f"- 60-30-10 配色：{recipe.color_harmony}；主基调覆盖大面积底色，结构副色用于提手/包边，"
-            "点缀色只用于金线/金属件/小坠饰。"
-        )
     return "\n".join(lines)
 
 
@@ -550,7 +543,7 @@ def build_column_round_prompt(
             "=== PART 4 · ART DIRECTION — one shared set for all four quadrants ===",
             _d1_block(
                 art_direction=art_direction,
-                palette=anchor_recipe.palette or "the artwork's own palette",
+                palette=", ".join(anchor_recipe.theme_colors) or "the artwork's own palette",
                 scene=scene,
                 flat_product=flat_product,
                 surface=surface,

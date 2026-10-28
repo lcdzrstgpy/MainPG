@@ -32,7 +32,20 @@ test("POD customization is a grouped section with full, semi and replica customi
     "pod_workflow",
     "sourcing_workflow",
     "ai_video",
+    "temu_publish_workflow",
     "personal_center",
+  ]);
+  // 发布商品分组：发布页与草稿库为同级子项，固定在个人中心上方。
+  const temuWorkflow = workspaceModules.find((module) => module.id === "temu_publish_workflow");
+  assert.equal(temuWorkflow?.label, "发布商品");
+  assert.equal(temuWorkflow?.defaultChildId, "temu_publish");
+  assert.deepEqual(temuWorkflow?.children?.map((child) => child.id), [
+    "temu_publish",
+    "temu_draft_library",
+  ]);
+  assert.deepEqual(temuWorkflow?.children?.map((child) => child.label), [
+    "发布商品（实验）",
+    "草稿库",
   ]);
   assert.equal(workspaceModules.find((module) => module.id === "ai_video")?.label, "AI 视频（实验）");
   assert.equal(workspacePageModules.find((module) => module.id === "ai_video")?.label, "AI 视频（实验）");
@@ -55,16 +68,19 @@ test("POD customization is a grouped section with full, semi and replica customi
   assert.ok(workspacePageModules.some((module) => module.id === "pod_replica"));
 });
 
-test("sidebar navigation prioritizes price and source matching in its default sourcing workflow", () => {
+test("sidebar navigation prioritizes sourcing & profit in its default sourcing workflow", () => {
   const sourcingWorkflow = workspaceModules.find((module) => module.id === "sourcing_workflow");
 
-  assert.equal(sourcingWorkflow?.defaultChildId, "price_verification");
+  // 「货源成本 / 核价匹配」已合并进「货源与利润」，旧入口只保留路由（hiddenFromSidebar）。
+  assert.equal(sourcingWorkflow?.defaultChildId, "sourcing_ledger");
   assert.deepEqual(sourcingWorkflow?.children?.map((child) => child.id), [
+    "sourcing_ledger",
     "price_verification",
     "profit_activity",
     "profit_activity_products",
   ]);
   assert.deepEqual(sourcingWorkflow?.children?.map((child) => child.label), [
+    "货源与利润",
     "核价/货源匹配",
     "利润活动",
     "货源关联产品库",

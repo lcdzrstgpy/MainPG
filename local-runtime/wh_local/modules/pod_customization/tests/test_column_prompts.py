@@ -14,6 +14,7 @@ def _fields(**overrides: object) -> BusinessFields:
         "product_category": "女士手提包",
         "design_theme": "modern botanical",
         "color_preferences": ["鼠尾草绿", "奶油白", "黄铜金", "暖胡桃木棕"],
+        "accent_colors": ["香槟金", "雾灰"],
         "style_keywords": [
             "尤加利叶纹样",
             "蕨类叶脉",
@@ -39,7 +40,6 @@ def _recipes(*, elements: dict[int, dict[str, object]] | None = None):
             {"style_index": index, "elements": payload.get(index, {})}
             for index in range(1, 5)
         ],
-        seed="batch-seed",
     )
 
 
@@ -76,6 +76,28 @@ def test_round_one_renders_a1_b1_c1_d1() -> None:
         assert f"QUADRANT {position}" in prompt
     assert "尤加利叶纹样" in prompt
     assert "本款配方只作用于本象限" in prompt
+
+
+def test_style_blocks_carry_theme_and_accent_colour_groups() -> None:
+    """v26：配色只剩主题强关联色 + 建议点缀色两组，不再有 60-30-10 面积契约。"""
+    prompt = build_column_round_prompt(
+        build_column_base_prompt(_fields(), ""),
+        role="lifestyle",
+        recipes=_recipes(),
+        composition=_composition(),
+        group_index=1,
+    )
+    assert "Theme colours (strong theme tie; must use at least one): 鼠尾草绿, 奶油白, 黄铜金, 暖胡桃木棕" in prompt
+    assert "Accent colours (supporting only; never the dominant): 香槟金, 雾灰" in prompt
+    # 两组色板整批共用：只在 PART 1 渲染一次，四个象限不重复。
+    assert prompt.count("Theme colours") == 1
+    assert "用色层级（本象限）：主色必须取自 PART 1 的主题强关联色" in prompt
+    assert "相邻象限的主色必须取自不同的主题强关联色" in prompt
+    assert "60-30-10" not in prompt
+    assert "(60%)" not in prompt
+    # 空白本体色与印花配色分开：四格可以换印花配色，但空白基底一致。
+    assert "blank substrate colour" in prompt
+    assert "printed colour scheme may differ per quadrant" in prompt
 
 
 def test_style_blocks_carry_area_and_relative_size_contract() -> None:
@@ -210,7 +232,6 @@ def test_flat_products_force_top_down_rounds() -> None:
     recipes = build_column_style_recipes(
         fields,
         [{"style_index": index, "elements": {}} for index in range(1, 5)],
-        seed="seed",
     )
     round_one = build_column_round_prompt(
         build_column_base_prompt(fields, "80cm×80cm 无下挂"),

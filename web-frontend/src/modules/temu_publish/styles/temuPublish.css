@@ -1,0 +1,2620 @@
+.temu-publish-page {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  color: var(--theme-text-primary, #20364d);
+}
+
+.temu-publish-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 24px 28px;
+  border: 1px solid var(--theme-module-border-strong, #1b91bd);
+  border-radius: var(--radius-lg, 16px);
+  color: #fff;
+  background: var(--theme-hero-gradient, linear-gradient(118deg, #0a497f 0%, #0d7fba 56%, #20b9ac 100%));
+  box-shadow: 0 14px 34px var(--theme-module-shadow, rgba(12, 91, 139, 0.18));
+}
+
+.temu-publish-head .eyebrow {
+  margin: 0 0 4px;
+  color: var(--theme-hero-eyebrow, #9de7f3);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+
+.temu-publish-head h1 {
+  margin: 0 0 6px;
+  font-size: clamp(1.7rem, 2.6vw, 2.3rem);
+  letter-spacing: -0.03em;
+}
+
+.temu-publish-head p:not(.eyebrow) {
+  margin: 0;
+  color: var(--theme-hero-text, #d9f1fb);
+  line-height: 1.65;
+}
+
+.temu-publish-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.temu-card {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  padding: 18px 20px;
+  border: 1px solid var(--theme-module-border, #d8e5ee);
+  border-radius: var(--radius-lg, 16px);
+  background: var(--theme-module-surface, #ffffff);
+  box-shadow: var(--shadow-sm, 0 1px 2px rgba(16, 42, 74, 0.05));
+}
+
+.temu-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.temu-card-head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.temu-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.9fr) minmax(360px, 1.4fr);
+  gap: 16px;
+  min-width: 0;
+}
+
+@media (max-width: 1000px) {
+  .temu-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.temu-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 7px 14px;
+  border: 1px solid var(--theme-module-border, #cfe0eb);
+  border-radius: var(--radius-md, 10px);
+  color: var(--theme-text-secondary, #2f5878);
+  background: var(--theme-module-surface-raised, #ffffff);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+}
+
+.temu-btn:hover:not(:disabled) {
+  border-color: var(--theme-module-primary-strong, #087bf5);
+  box-shadow: 0 6px 16px -10px var(--theme-module-shadow, rgba(8, 123, 245, 0.4));
+}
+
+.temu-btn:disabled {
+  cursor: not-allowed;
+  color: var(--theme-text-muted, #9caaba);
+  background: var(--theme-module-surface-soft, #f5f8fb);
+}
+
+.temu-btn-primary {
+  border-color: var(--theme-module-primary-strong, #087bf5);
+  color: #fff;
+  background: var(--theme-module-primary-strong, #087bf5);
+}
+
+.temu-btn-primary:hover:not(:disabled) {
+  filter: brightness(1.05);
+}
+
+.temu-btn-upload {
+  position: relative;
+  cursor: pointer;
+}
+
+.temu-link {
+  padding: 0;
+  border: 0;
+  color: var(--theme-module-primary-strong, #087bf5);
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.temu-link:disabled {
+  color: var(--theme-text-muted, #9caaba);
+  cursor: not-allowed;
+}
+
+.temu-link.danger {
+  color: #d64545;
+}
+
+.temu-alert {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border: 1px solid #f0b8b8;
+  border-radius: var(--radius-md, 10px);
+  color: #8d2a2a;
+  background: #fff5f5;
+  font-size: 13px;
+}
+
+.temu-alert button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.temu-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--theme-text-secondary, #3b5f7d);
+}
+
+.temu-field > span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+}
+
+.temu-required {
+  color: #d64545;
+  font-style: normal;
+}
+
+.temu-input {
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--theme-module-border, #cfe0eb);
+  border-radius: var(--radius-sm, 6px);
+  color: var(--theme-text-primary, #20364d);
+  background: var(--theme-module-surface-raised, #ffffff);
+  font: inherit;
+  font-size: 13px;
+}
+
+.temu-input:focus {
+  outline: none;
+  border-color: var(--theme-module-primary-strong, #087bf5);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 16%, transparent);
+}
+
+textarea.temu-input {
+  resize: vertical;
+  line-height: 1.6;
+}
+
+.temu-status-row,
+.temu-inline-actions,
+.temu-settings-actions,
+.temu-search-row,
+.temu-spec-row,
+.temu-dims {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.temu-settings {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(200px, 1fr));
+  gap: 12px;
+  padding-top: 4px;
+}
+
+@media (max-width: 900px) {
+  .temu-settings {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.temu-settings-actions {
+  grid-column: 1 / -1;
+  justify-content: space-between;
+}
+
+.temu-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  color: var(--theme-text-secondary, #3b5f7d);
+  background: var(--theme-module-surface-soft, #f2f7fb);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.temu-pill.ok {
+  color: #146c43;
+  background: #e8f8ef;
+}
+
+.temu-pill.warn {
+  color: #8a5a00;
+  background: #fff4db;
+}
+
+.temu-muted {
+  color: var(--theme-text-muted, #7b93a8);
+  font-size: 12px;
+}
+
+.temu-empty {
+  margin: 0;
+  padding: 18px 0;
+  text-align: center;
+  color: var(--theme-text-muted, #7b93a8);
+  font-size: 13px;
+}
+
+.temu-two-col {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.temu-three-col {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+@media (max-width: 900px) {
+  .temu-two-col,
+  .temu-three-col {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.temu-spec-row {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+}
+
+.temu-breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.temu-breadcrumb button {
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--theme-module-primary-strong, #087bf5);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.temu-breadcrumb span {
+  color: var(--theme-text-muted, #7b93a8);
+}
+
+.temu-match-list {
+  display: grid;
+  gap: 6px;
+  max-height: 190px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px dashed var(--theme-module-border-strong, #bcd6ec);
+  border-radius: var(--radius-md, 10px);
+  background: var(--theme-module-surface-soft, #f6fbff);
+}
+
+.temu-match-list button {
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--radius-sm, 6px);
+  color: var(--theme-text-primary, #20364d);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.temu-match-list button:hover {
+  background: var(--theme-module-surface-tint, #e8f5ff);
+}
+
+.temu-category-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+  max-height: 300px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.temu-category-list button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 9px 10px;
+  border: 1px solid var(--theme-module-border, #d8e5ee);
+  border-radius: var(--radius-sm, 6px);
+  color: var(--theme-text-primary, #20364d);
+  background: var(--theme-module-surface-raised, #ffffff);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.temu-category-list button:hover:not(:disabled) {
+  border-color: var(--theme-module-primary-strong, #087bf5);
+}
+
+.temu-category-list button span {
+  flex: 0 0 auto;
+  color: var(--theme-text-muted, #7b93a8);
+  font-size: 11px;
+}
+
+.temu-attr-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.temu-sku-table {
+  display: grid;
+  gap: 8px;
+  overflow-x: auto;
+}
+
+.temu-sku-row {
+  display: grid;
+  grid-template-columns: 90px 130px 110px 110px 80px 90px 200px 190px 60px;
+  gap: 8px;
+  align-items: center;
+  min-width: 1080px;
+}
+
+.temu-sku-head {
+  color: var(--theme-text-muted, #7b93a8);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.temu-dims {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.temu-warnings {
+  margin: 0;
+  padding: 10px 14px 10px 30px;
+  border-radius: var(--radius-sm, 6px);
+  color: #8a5a00;
+  background: #fff8e8;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.temu-cat-hint {
+  margin: 4px 0 0;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm, 6px);
+  color: #8a5a00;
+  background: #fff8e8;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* ---------- 草稿库 ---------- */
+
+.temu-draft-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.temu-draft-tab {
+  padding: 6px 12px;
+  border: 1px solid var(--theme-module-border, #d8e5ee);
+  border-radius: 999px;
+  color: var(--theme-text-secondary, #3b5f7d);
+  background: var(--theme-module-surface-raised, #ffffff);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.temu-draft-tab.is-active {
+  border-color: var(--theme-module-primary-strong, #087bf5);
+  color: #fff;
+  background: var(--theme-module-primary-strong, #087bf5);
+}
+
+.temu-draft-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+.temu-draft-card {
+  display: grid;
+  grid-template-rows: 180px auto;
+  overflow: hidden;
+  border: 1px solid var(--theme-module-border, #d8e5ee);
+  border-radius: var(--radius-lg, 16px);
+  background: var(--theme-module-surface-raised, #ffffff);
+}
+
+.temu-draft-media {
+  position: relative;
+  background: var(--theme-module-surface-soft, #f2f7fb);
+}
+
+.temu-draft-media > img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.temu-draft-source {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  background: #4c6f91;
+}
+
+.temu-draft-source.ai {
+  background: #0d7fba;
+}
+
+.temu-draft-source.pod {
+  background: #8a5cd6;
+}
+
+.temu-draft-body {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px 14px;
+}
+
+.temu-draft-body h3 {
+  margin: 0;
+  overflow: hidden;
+  color: var(--theme-text-primary, #20364d);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.temu-draft-sub {
+  margin: 0;
+  overflow: hidden;
+  color: var(--theme-text-muted, #7b93a8);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.temu-draft-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: var(--theme-text-secondary, #3b5f7d);
+  font-size: 11px;
+}
+
+.temu-draft-meta span {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--theme-module-surface-soft, #f2f7fb);
+}
+
+.temu-draft-thumbs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.temu-draft-thumbs .temu-draft-thumb {
+  width: 54px;
+  height: 54px;
+  border: 1px solid var(--theme-module-border, #d8e5ee);
+  border-radius: var(--radius-sm, 6px);
+  object-fit: cover;
+  background: var(--theme-module-surface-soft, #f2f7fb);
+}
+
+.temu-draft-thumb.is-empty {
+  display: grid;
+  place-items: center;
+  width: 54px;
+  height: 54px;
+  color: var(--theme-text-muted, #7b93a8);
+  font-size: 10px;
+}
+
+.temu-draft-body > .temu-btn {
+  justify-self: start;
+}
+
+.temu-json {
+  max-height: 520px;
+  margin: 0;
+  overflow: auto;
+  padding: 14px;
+  border: 1px solid var(--theme-module-border, #d8e5ee);
+  border-radius: var(--radius-md, 10px);
+  color: var(--theme-text-primary, #20364d);
+  background: var(--theme-module-surface-soft, #f7fafc);
+  font-family: var(--font-number, ui-monospace, Menlo, Consolas, monospace);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* 提交发布：有外部副作用（真在店铺里建商品），用警示色和普通按钮区分开 */
+.temu-btn.is-danger {
+  border-color: #e6a9a9;
+  color: #a5342f;
+  background: #fff5f4;
+}
+.temu-btn.is-danger:hover:not(:disabled) {
+  border-color: #d98b8b;
+  background: #ffeceb;
+  box-shadow: 0 6px 16px -10px rgba(165, 52, 47, 0.45);
+}
+.temu-btn.is-danger:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+.temu-publish-done {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border: 1px solid #b9e0c9;
+  border-radius: 10px;
+  background: #f3fbf6;
+}
+.temu-publish-done > div {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.temu-publish-done strong {
+  color: #1c6b45;
+  font-size: 0.86rem;
+}
+.temu-publish-done span {
+  color: #4e7a64;
+  font-size: 0.72rem;
+}
+
+/* 草稿库带入后的来源提示：AI 处理 / POD 两种，POD 的价格重量是占位值要人工核对 */
+.temu-prefill-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  padding: 10px 14px;
+  border: 1px solid #bcd9ea;
+  border-radius: 10px;
+  background: #f2f9fe;
+}
+.temu-prefill-banner.is-warn {
+  border-color: #ecd6a6;
+  background: #fffaf0;
+}
+.temu-prefill-source {
+  padding: 3px 10px;
+  border-radius: 999px;
+  color: #0d6b93;
+  background: #dff1fb;
+  font-size: 0.7rem;
+  font-weight: 850;
+}
+.temu-prefill-banner.is-warn .temu-prefill-source {
+  color: #8a6418;
+  background: #fbeccd;
+}
+.temu-prefill-banner strong {
+  color: #24445c;
+  font-size: 0.82rem;
+}
+.temu-prefill-banner em {
+  color: #8a6418;
+  font-size: 0.74rem;
+  font-style: normal;
+}
+
+/* 同一款的多个变体已合并成一张卡，这里标出变体数 */
+.temu-draft-variants {
+  color: #4f7a91;
+  font-weight: 800;
+}
+
+/* 草稿库表格视图（对齐ERP列表的样子） */
+.temu-draft-table-wrap {
+  /* 悬停放大会溢出单元格，必须可见，否则被裁成半个图 */
+  overflow: visible;
+  padding: 4px 2px 8px;
+}
+.temu-draft-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+  table-layout: fixed;
+}
+.temu-draft-table th {
+  padding: 10px;
+  border-bottom: 1px solid #dfe9f0;
+  color: #6b8296;
+  font-size: 0.72rem;
+  font-weight: 850;
+  letter-spacing: 0.02em;
+  text-align: left;
+  white-space: nowrap;
+}
+.temu-draft-table td {
+  padding: 12px 10px;
+  border-bottom: 1px solid #eef3f7;
+  color: #2c4759;
+  vertical-align: middle;
+}
+.temu-draft-table tbody tr:hover {
+  background: #f7fbfd;
+}
+.temu-draft-table tbody tr.is-selected {
+  background: #eef8fd;
+}
+.temu-draft-table .col-check {
+  width: 40px;
+}
+.temu-draft-table .col-title {
+  width: 36%;
+}
+.temu-draft-table .col-image {
+  width: 88px;
+}
+.temu-draft-table .col-site {
+  width: 220px;
+}
+.temu-draft-table .col-sku {
+  width: 132px;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 0.74rem;
+  word-break: break-all;
+}
+.temu-draft-table .col-price {
+  width: 80px;
+  font-weight: 800;
+}
+.temu-draft-table .col-time {
+  width: 124px;
+  color: #6b8296;
+  font-size: 0.74rem;
+  white-space: nowrap;
+}
+.temu-draft-table .col-actions {
+  width: 92px;
+  text-align: right;
+}
+.temu-draft-thumb-wrap {
+  position: relative;
+  display: inline-block;
+}
+.temu-draft-thumb-wrap img,
+.temu-draft-thumb-wrap .temu-draft-thumb {
+  width: 60px;
+  height: 60px;
+  border: 1px solid #e3edf3;
+  border-radius: 8px;
+  object-fit: cover;
+  background: #fff;
+}
+.temu-draft-more {
+  position: absolute;
+  right: -6px;
+  bottom: -4px;
+  padding: 0 5px;
+  border-radius: 999px;
+  color: #fff;
+  background: rgba(28, 62, 84, 0.78);
+  font-size: 0.6rem;
+  font-weight: 800;
+  line-height: 1.5;
+}
+.temu-draft-table .temu-draft-title {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 0 0 5px;
+  color: #1f3b50;
+  font-size: 0.82rem;
+  font-weight: 700;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+/* 卡片视图里来源标签是绝对定位在缩略图上的；表格里要回到行内 */
+.temu-draft-table .temu-draft-source {
+  position: static;
+  display: inline-block;
+  margin-right: 6px;
+  padding: 2px 8px;
+  font-size: 0.66rem;
+  vertical-align: middle;
+}
+.temu-draft-table .temu-draft-variants {
+  font-size: 0.7rem;
+  font-weight: 800;
+}
+.temu-draft-table .col-site small {
+  display: block;
+  margin-top: 3px;
+  color: #8ba0b0;
+  font-size: 0.66rem;
+}
+
+
+/* 缩略图：悬停放大一圈看清，点击开大图 */
+.temu-draft-thumb-button {
+  display: inline-block;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: zoom-in;
+}
+.temu-draft-thumb {
+  transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+  /* 从缩略图左上角往外长：锚在图片位置，不会往左顶出卡片 */
+  transform-origin: top left;
+}
+.temu-draft-thumb-button:hover .temu-draft-thumb,
+.temu-draft-thumb-wrap:hover .temu-draft-thumb {
+  position: relative;
+  z-index: 60;
+  border-color: #ffffff;
+  transform: scale(4);
+  box-shadow: 0 16px 36px rgba(8, 32, 48, 0.32);
+}
+/* 放大时把「+N」角标让开，别糊在图上 */
+.temu-draft-thumb-wrap:hover .temu-draft-more {
+  opacity: 0;
+}
+
+/* 大图预览层 */
+.temu-image-preview {
+  position: fixed;
+  z-index: 9999;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 42px;
+  background: rgba(7, 22, 34, 0.74);
+  cursor: zoom-out;
+}
+.temu-image-preview img {
+  max-width: min(1180px, 92vw);
+  max-height: 86vh;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.48);
+  cursor: default;
+}
+.temu-image-preview-close {
+  position: absolute;
+  top: 18px;
+  right: 22px;
+  width: 40px;
+  height: 40px;
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  border-radius: 50%;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.35);
+  font-size: 1.45rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.temu-image-preview-close:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+/* 草稿库编辑弹窗（挂 body，避免被内容容器裁切） */
+.temu-edit-backdrop {
+  position: fixed;
+  z-index: 9998;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(7, 22, 34, 0.55);
+}
+.temu-edit-dialog {
+  width: min(640px, 94vw);
+  max-height: 88vh;
+  display: grid;
+  gap: 14px;
+  padding: 18px 20px;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 28px 70px rgba(4, 18, 30, 0.42);
+  overflow: auto;
+}
+.temu-edit-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.temu-edit-head > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.temu-edit-head strong {
+  color: #1d3a50;
+  font-size: 1rem;
+}
+.temu-edit-head span {
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: #0d6b93;
+  background: #dff1fb;
+  font-size: 0.68rem;
+  font-weight: 850;
+}
+.temu-edit-head > button {
+  width: 30px;
+  height: 30px;
+  border: 1px solid #e0e9f0;
+  border-radius: 8px;
+  color: #6b8296;
+  background: #fff;
+  font-size: 1.1rem;
+  cursor: pointer;
+}
+.temu-edit-body {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+}
+.temu-edit-body label {
+  display: grid;
+  gap: 5px;
+}
+.temu-edit-body label.is-wide {
+  grid-column: 1 / -1;
+}
+.temu-edit-body label > span {
+  color: #5b7387;
+  font-size: 0.74rem;
+  font-weight: 800;
+}
+.temu-edit-body input {
+  min-height: 36px;
+  padding: 7px 10px;
+  border: 1px solid #d9e6ee;
+  border-radius: 8px;
+  color: #24445c;
+  font-size: 0.82rem;
+  outline: 0;
+}
+.temu-edit-body input:focus {
+  border-color: #3db7da;
+  box-shadow: 0 0 0 3px rgba(61, 183, 218, 0.14);
+}
+.temu-edit-note {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  color: #8a6418;
+  background: #fff8ea;
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+.temu-edit-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.temu-edit-foot > div {
+  display: flex;
+  gap: 8px;
+}
+.temu-draft-table .col-actions {
+  width: 140px;
+}
+.temu-draft-table .col-actions .temu-btn + .temu-btn {
+  margin-left: 4px;
+}
+
+/* 草稿库批量工具栏（对标ERP的 批量操作 / 全属性修改 / 移动分类） */
+.temu-bulk-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 4px 0 10px;
+  border-bottom: 1px solid #e6eef3;
+  margin-bottom: 10px;
+}
+.temu-bulk-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.temu-bulk-right {
+  display: flex;
+  gap: 8px;
+}
+.temu-bulk-menu-wrap {
+  position: relative;
+}
+.temu-bulk-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  border: 1px solid #cfe1eb;
+  border-radius: 8px;
+  color: #1f6f92;
+  background: #f4fbfe;
+  font-size: 0.78rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+.temu-bulk-trigger:hover,
+.temu-bulk-trigger.is-open {
+  border-color: #8ecfe6;
+  background: #e9f8fe;
+}
+.temu-bulk-panel {
+  position: absolute;
+  z-index: 80;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 320px;
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #d9e6ee;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 18px 44px rgba(10, 36, 54, 0.2);
+}
+.temu-bulk-panel.is-ops {
+  min-width: 360px;
+}
+.temu-bulk-panel.is-attrs {
+  min-width: 460px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.temu-bulk-panel.is-category {
+  min-width: 280px;
+}
+.temu-bulk-section p {
+  margin: 0 0 6px;
+  color: #7b93a8;
+  font-size: 0.7rem;
+  font-weight: 850;
+  letter-spacing: 0.02em;
+}
+.temu-bulk-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.temu-bulk-items button {
+  padding: 5px 10px;
+  border: 1px solid #e2ecf3;
+  border-radius: 7px;
+  color: #2c4759;
+  background: #fbfdfe;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+.temu-bulk-items button:hover:not(:disabled) {
+  border-color: #8ecfe6;
+  background: #eefaff;
+}
+.temu-bulk-items button.is-picked {
+  border-color: #0aa6cc;
+  color: #075f7d;
+  background: #e6f7fd;
+}
+.temu-bulk-items button:disabled {
+  color: #b3c1cc;
+  background: #f7f9fb;
+  cursor: not-allowed;
+}
+.temu-bulk-tip {
+  margin: 0;
+  color: #7b93a8;
+  font-size: 0.72rem;
+}
+.temu-bulk-apply {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid #eef3f7;
+  font-size: 0.75rem;
+  color: #47657b;
+}
+.temu-bulk-apply input {
+  flex: 1;
+  min-height: 32px;
+  padding: 6px 9px;
+  border: 1px solid #d9e6ee;
+  border-radius: 7px;
+  outline: 0;
+}
+.temu-bulk-apply button {
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 7px;
+  color: #fff;
+  background: #0d7fba;
+  font-weight: 800;
+  cursor: pointer;
+}
+.temu-bulk-apply button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.temu-bulk-search,
+.temu-bulk-addcat input {
+  min-height: 32px;
+  padding: 6px 9px;
+  border: 1px solid #d9e6ee;
+  border-radius: 7px;
+  font-size: 0.78rem;
+  outline: 0;
+}
+.temu-bulk-cats {
+  display: grid;
+  gap: 2px;
+  max-height: 220px;
+  overflow: auto;
+}
+.temu-bulk-cats button {
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 6px;
+  color: #2c4759;
+  background: transparent;
+  font-size: 0.78rem;
+  text-align: left;
+  cursor: pointer;
+}
+.temu-bulk-cats button:hover:not(:disabled) {
+  background: #f2fafe;
+}
+.temu-bulk-cats button:disabled {
+  color: #b3c1cc;
+  cursor: not-allowed;
+}
+.temu-bulk-addcat {
+  display: flex;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid #eef3f7;
+}
+.temu-bulk-addcat input {
+  flex: 1;
+}
+.temu-bulk-addcat button {
+  padding: 6px 10px;
+  border: 1px solid #cfe1eb;
+  border-radius: 7px;
+  background: #f4fbfe;
+  font-size: 0.75rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+.temu-bulk-link {
+  padding: 0;
+  border: 0;
+  color: #0d7fba;
+  background: none;
+  font-size: 0.74rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+.temu-draft-cat {
+  margin-right: 6px;
+  color: #8a5cd6;
+  font-size: 0.7rem;
+  font-weight: 800;
+}
+.temu-draft-remark {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 999px;
+  color: #8a6418;
+  background: #fdf3d9;
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+/* 分页条 */
+.temu-draft-pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 4px 2px;
+  color: #6b8296;
+  font-size: 0.75rem;
+}
+.temu-draft-pager-ctrl {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.temu-draft-pager-ctrl button {
+  width: 28px;
+  height: 28px;
+  border: 1px solid #d9e6ee;
+  border-radius: 7px;
+  color: #2c4759;
+  background: #fff;
+  cursor: pointer;
+}
+.temu-draft-pager-ctrl button:disabled {
+  color: #c2cfd9;
+  cursor: not-allowed;
+}
+.temu-draft-pager-ctrl input {
+  width: 52px;
+  min-height: 28px;
+  padding: 3px 6px;
+  border: 1px solid #d9e6ee;
+  border-radius: 7px;
+  text-align: center;
+  outline: 0;
+}
+
+/* 类目必填校验结果 */
+.temu-mandatory-result {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border: 1px solid #bcd9ea;
+  border-radius: 10px;
+  background: #f4fbff;
+}
+.temu-mandatory-result > div {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.temu-mandatory-result strong {
+  color: #14506e;
+  font-size: 0.86rem;
+}
+.temu-mandatory-result span {
+  color: #5b7387;
+  font-size: 0.72rem;
+}
+
+/* 校验结论说人话，原始 JSON 收进折叠里 */
+.temu-mandatory-line {
+  margin: 0;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+.temu-mandatory-line.is-ok {
+  color: #1c6b45;
+}
+.temu-mandatory-line.is-bad {
+  color: #a5342f;
+}
+.temu-mandatory-src {
+  margin: 0;
+  color: #5b7387;
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+.temu-mandatory-raw summary {
+  color: #5b7387;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+.temu-mandatory-raw pre {
+  margin-top: 6px;
+  max-height: 220px;
+}
+
+/* ---- 发布流程步骤条（2026-10-26）----
+   目的：一眼看出「现在走到哪一步、还差什么」，点一下跳到对应区块。 */
+.temu-flow {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  border: 1px solid #dfeaf2;
+  border-radius: 12px;
+  background: #f7fbfe;
+}
+.temu-flow-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 14px 7px 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: #4a6b80;
+  background: #ffffff;
+  font-size: 0.8rem;
+  font-weight: 800;
+  cursor: pointer;
+  transition: border-color 0.18s ease, background 0.18s ease, color 0.18s ease;
+}
+.temu-flow-step:hover {
+  border-color: #8ecfe6;
+  background: #eefaff;
+}
+.temu-flow-step.is-done {
+  color: #1c6b45;
+  background: #eefaf1;
+  border-color: #b9e0c9;
+}
+.temu-flow-index {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  color: #6b8296;
+  background: #eef3f7;
+  font-size: 0.7rem;
+  font-weight: 900;
+}
+.temu-flow-step.is-done .temu-flow-index {
+  color: #ffffff;
+  background: #3aa66b;
+}
+
+/* ---- 发布预设条：把类目+运费模板+仓库存起来复用 ---- */
+.temu-preset-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0 0 14px;
+  padding: 10px 14px;
+  border: 1px dashed #cfe1eb;
+  border-radius: 12px;
+  background: #fbfdff;
+}
+.temu-preset-title {
+  color: #3d6076;
+  font-size: 0.76rem;
+  font-weight: 850;
+  letter-spacing: 0.02em;
+}
+.temu-preset-chip {
+  display: inline-flex;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid #bcdceb;
+  border-radius: 999px;
+  background: #eaf7fe;
+}
+.temu-preset-chip > button {
+  padding: 5px 6px 5px 12px;
+  border: 0;
+  color: #0d6b93;
+  background: none;
+  font-size: 0.76rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+.temu-preset-chip > button:hover {
+  background: #dcf1fb;
+}
+.temu-preset-chip .temu-preset-del {
+  padding: 5px 9px 5px 2px;
+  color: #7fa4b8;
+  font-size: 0.86rem;
+  line-height: 1;
+}
+.temu-preset-chip .temu-preset-del:hover {
+  color: #a5342f;
+  background: none;
+}
+.temu-preset-save {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.temu-preset-save .temu-input {
+  width: 160px;
+  min-height: 30px;
+  padding: 4px 9px;
+  font-size: 0.76rem;
+}
+
+/* ---- 类目区：最近使用 + 折叠一级类目墙 ---- */
+.temu-recent-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.temu-recent-row > span {
+  color: #7b93a8;
+  font-size: 0.72rem;
+  font-weight: 850;
+}
+.temu-recent-row button {
+  padding: 5px 11px;
+  border: 1px solid #d7e8f1;
+  border-radius: 999px;
+  color: #2c4759;
+  background: #f7fbfd;
+  font-size: 0.74rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.temu-recent-row button:hover {
+  border-color: #8ecfe6;
+  background: #eefaff;
+}
+.temu-browser-toggle {
+  width: 100%;
+  margin-bottom: 10px;
+  padding: 9px 12px;
+  border: 1px dashed #cfe1eb;
+  border-radius: 9px;
+  color: #4a6b80;
+  background: #fbfdff;
+  font-size: 0.76rem;
+  font-weight: 800;
+  text-align: left;
+  cursor: pointer;
+}
+.temu-browser-toggle:hover {
+  border-color: #8ecfe6;
+  color: #0d6b93;
+  background: #eefaff;
+}
+
+/* 类目搜索行：输入框吃掉剩余宽度，别把「搜索」按钮挤到下一行 */
+.temu-search-row .temu-input {
+  flex: 1 1 320px;
+  width: auto;
+}
+
+/* ---- 图片清单预览条（2026-10-26）----
+   草稿库「用于发布」带过来的是本地媒体地址，只显示 URL 看不出图；
+   这里渲染缩略图，第一张标「主图」（Temu 的轮播首图 = 素材图）。 */
+.temu-img-strip {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 2px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid #e4eef5;
+  border-radius: 10px;
+  background: #fbfdfe;
+}
+.temu-img-item {
+  position: relative;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+.temu-img-thumb {
+  display: block;
+  width: 72px;
+  height: 72px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid #dde9f1;
+  border-radius: 9px;
+  background: #fff;
+  cursor: zoom-in;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+}
+.temu-img-thumb:hover {
+  border-color: #7cc7e3;
+  box-shadow: 0 6px 16px -8px rgba(10, 62, 88, 0.45);
+}
+.temu-img-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.temu-img-main {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  color: #ffffff;
+  background: rgba(11, 92, 122, 0.86);
+  font-size: 0.6rem;
+  font-style: normal;
+  font-weight: 850;
+  letter-spacing: 0.02em;
+}
+.temu-img-ops {
+  display: inline-flex;
+  gap: 2px;
+}
+.temu-img-ops button {
+  min-width: 20px;
+  height: 18px;
+  padding: 0 3px;
+  border: 1px solid #e0ebf2;
+  border-radius: 5px;
+  color: #6b8296;
+  background: #fff;
+  font-size: 0.66rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.temu-img-ops button:hover:not(:disabled) {
+  border-color: #8ecfe6;
+  color: #0d6b93;
+  background: #eefaff;
+}
+.temu-img-ops button:disabled {
+  color: #cfdae3;
+  cursor: not-allowed;
+}
+.temu-img-ops button:last-child:hover {
+  border-color: #e6a9a9;
+  color: #a5342f;
+  background: #fff5f4;
+}
+.temu-img-count {
+  align-self: center;
+  color: #8ba0b0;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+.temu-img-strip-hint {
+  margin: 0 0 12px;
+  color: #8ba0b0;
+  font-size: 0.74rem;
+}
+.temu-img-strip-loading {
+  display: grid;
+  place-items: center;
+  width: 72px;
+  height: 72px;
+  border: 1px dashed #dde9f1;
+  border-radius: 9px;
+  color: #b3c1cc;
+  font-size: 0.8rem;
+}
+
+/* ---------- 发布页：控制台布局（v2） ---------- */
+
+.temu-publish-page.is-console {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.is-console .temu-console-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px 20px;
+  border: 1px solid var(--theme-module-border, #d8e5ee);
+  border-radius: var(--radius-lg, 16px);
+  background: var(--theme-module-surface, #ffffff);
+  box-shadow: 0 8px 22px -18px var(--theme-module-shadow, rgba(12, 91, 139, 0.45));
+}
+
+.is-console .temu-console-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.is-console .temu-console-title .eyebrow {
+  margin: 0;
+  color: var(--theme-module-primary-strong, #087bf5);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.is-console .temu-console-title h1 {
+  margin: 0;
+  font-size: 20px;
+  letter-spacing: -0.02em;
+}
+
+.is-console .temu-console-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.is-console .temu-store-chip {
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.is-console .temu-store-chip:hover {
+  filter: brightness(0.97);
+}
+
+.is-console .temu-settings-card {
+  border-color: var(--theme-module-primary-strong, #087bf5);
+}
+
+.is-console .temu-console-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 272px;
+  align-items: start;
+  gap: 14px;
+}
+
+.is-console .temu-console-main {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+@media (max-width: 1180px) {
+  .is-console .temu-console-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* 每个步骤一张卡 */
+.is-console .temu-sec {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 16px 18px;
+  border: 1px solid var(--theme-module-border, #d8e5ee);
+  border-radius: var(--radius-lg, 16px);
+  background: var(--theme-module-surface, #ffffff);
+  box-shadow: var(--shadow-sm, 0 1px 2px rgba(16, 42, 74, 0.05));
+  scroll-margin-top: 12px;
+}
+
+.is-console .temu-sec-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.is-console .temu-sec-num {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  color: var(--theme-text-muted, #7b93a8);
+  background: var(--theme-module-surface-soft, #f2f7fb);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.is-console .temu-sec-num.is-done {
+  color: #146c43;
+  background: #e8f8ef;
+}
+
+.is-console .temu-sec-title {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.is-console .temu-sec-title h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.is-console .temu-sec-title p {
+  margin: 0;
+  color: var(--theme-text-muted, #7b93a8);
+  font-size: 12px;
+}
+
+.is-console .temu-sec-extra {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* 来源条 */
+.is-console .temu-source-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border: 1px solid var(--theme-module-border, #d8e5ee);
+  border-left: 3px solid var(--theme-module-primary-strong, #087bf5);
+  border-radius: var(--radius-md, 12px);
+  background: var(--theme-module-surface, #ffffff);
+}
+
+.is-console .temu-source-bar.is-empty {
+  border-style: dashed;
+  border-left-style: solid;
+  border-left-color: var(--theme-module-border-strong, #bcd6ec);
+  background: var(--theme-module-surface-soft, #f6fbff);
+}
+
+.is-console .temu-source-bar.is-warn {
+  border-left-color: #e0a800;
+  background: #fffdf5;
+}
+
+.is-console .temu-source-main {
+  display: grid;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.is-console .temu-source-main strong {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.is-console .temu-source-main em {
+  color: #8a5a00;
+  font-size: 12px;
+  font-style: normal;
+}
+
+/* 图片组 */
+.is-console .temu-img-group {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md, 10px);
+  background: var(--theme-module-surface-soft, #f6f9fc);
+}
+
+.is-console .temu-img-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.is-console .temu-img-group-head strong {
+  font-size: 12.5px;
+}
+
+.is-console .temu-img-group-head .temu-btn {
+  margin-left: auto;
+}
+
+.is-console .temu-required {
+  margin-left: 3px;
+  color: #d93025;
+  font-style: normal;
+}
+
+.is-console .temu-btn.is-small {
+  min-height: 26px;
+  padding: 3px 10px;
+  font-size: 12px;
+}
+
+.is-console .temu-preset-save {
+  width: 100%;
+  margin-left: 0;
+  display: flex;
+}
+
+.is-console .temu-preset-save .temu-input {
+  flex: 1 1 auto;
+  width: auto;
+}
+
+/* SKU 面板 */
+.is-console .temu-sku-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.is-console .temu-sku-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.9fr) minmax(0, 1.1fr) auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.is-console .temu-sku-generate {
+  min-height: 34px;
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .is-console .temu-sku-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.is-console .temu-batch {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px dashed var(--theme-module-border-strong, #bcd6ec);
+  border-radius: var(--radius-md, 10px);
+  background: var(--theme-module-surface-soft, #f8fbfe);
+}
+
+.is-console .temu-batch-title {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.is-console .temu-batch-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: 8px;
+}
+
+.is-console .temu-batch-grid label {
+  display: grid;
+  gap: 3px;
+  color: var(--theme-text-muted, #7b93a8);
+  font-size: 11px;
+}
+
+.is-console .temu-batch-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.is-console .temu-sku-head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--theme-text-secondary, #3b5f7d);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.is-console .temu-sku-panel .temu-sku-row {
+  grid-template-columns: 84px 118px 90px 68px 168px 32px;
+  min-width: 720px;
+}
+
+.is-console .temu-sku-panel .temu-sku-row.is-wide {
+  grid-template-columns: 84px 118px 84px 84px 68px 78px 188px 168px 32px;
+  min-width: 1060px;
+}
+
+.is-console .temu-sku-panel .temu-sku-row .temu-link.danger {
+  padding: 0;
+  font-size: 16px;
+  line-height: 1;
+}
+
+/* 属性：选填折叠 */
+.is-console .temu-optional-attrs,
+.is-console .temu-advanced {
+  padding: 10px 12px;
+  border: 1px dashed var(--theme-module-border-strong, #bcd6ec);
+  border-radius: var(--radius-md, 10px);
+  background: var(--theme-module-surface-soft, #f8fbfe);
+}
+
+.is-console .temu-optional-attrs > summary,
+.is-console .temu-advanced > summary {
+  color: var(--theme-text-secondary, #3b5f7d);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.is-console .temu-optional-attrs[open] > summary,
+.is-console .temu-advanced[open] > summary {
+  margin-bottom: 10px;
+}
+
+.is-console .temu-advanced {
+  display: grid;
+  gap: 0;
+}
+
+.is-console .temu-publish-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+/* 右侧检查清单（跟着主列排，不做 sticky：外壳顶栏是浮层，sticky 会被压住） */
+.is-console .temu-rail-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--theme-module-border, #d8e5ee);
+  border-radius: var(--radius-lg, 16px);
+  background: var(--theme-module-surface, #ffffff);
+  box-shadow: 0 12px 30px -26px var(--theme-module-shadow, rgba(12, 91, 139, 0.55));
+}
+
+.is-console .temu-rail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+}
+
+.is-console .temu-rail-list {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.is-console .temu-rail-list button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 6px;
+  border: 0;
+  border-radius: var(--radius-sm, 8px);
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.is-console .temu-rail-list button:hover {
+  background: var(--theme-module-surface-soft, #f2f7fb);
+}
+
+.is-console .temu-rail-dot {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  color: var(--theme-text-muted, #7b93a8);
+  background: var(--theme-module-surface-soft, #f2f7fb);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.is-console .temu-rail-list li.is-done .temu-rail-dot {
+  color: #146c43;
+  background: #e8f8ef;
+}
+
+.is-console .temu-rail-label {
+  display: grid;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.is-console .temu-rail-label em {
+  color: var(--theme-text-muted, #7b93a8);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 400;
+}
+
+.is-console .temu-rail-stats {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0;
+  padding-top: 10px;
+  border-top: 1px dashed var(--theme-module-border, #d8e5ee);
+}
+
+.is-console .temu-rail-stats div {
+  display: grid;
+  gap: 2px;
+}
+
+.is-console .temu-rail-stats dt {
+  color: var(--theme-text-muted, #7b93a8);
+  font-size: 11px;
+}
+
+.is-console .temu-rail-stats dd {
+  margin: 0;
+  color: var(--theme-text-primary, #20364d);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.is-console .temu-rail-tip {
+  margin: 0;
+  color: var(--theme-text-muted, #7b93a8);
+  font-size: 11px;
+  text-align: center;
+}
+
+/* ---------- 发布页：ERP同款字段（变种表 / 本机标记 / 素材图） ---------- */
+
+.is-console .temu-local-tag {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  color: #8a5a00;
+  background: #fff4db;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 700;
+  vertical-align: middle;
+}
+
+.is-console .temu-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px dashed var(--theme-module-border-strong, #bcd6ec);
+  border-radius: var(--radius-md, 10px);
+  background: var(--theme-module-surface-soft, #f8fbfe);
+  font-size: 12px;
+  color: var(--theme-text-secondary, #3b5f7d);
+}
+
+.is-console .temu-check input {
+  width: 15px;
+  height: 15px;
+}
+
+.is-console .temu-material-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+}
+
+.is-console .temu-material-row .temu-input {
+  flex: 1 1 auto;
+}
+
+.is-console .temu-file-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* 变种面板 */
+.is-console .temu-variant-panel {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.is-console .temu-variant-spec {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 0.8fr) minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+}
+
+@media (max-width: 900px) {
+  .is-console .temu-variant-spec {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.is-console .temu-variant-generate {
+  min-height: 34px;
+  white-space: nowrap;
+}
+
+.is-console .temu-batch-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.is-console .temu-batch-head strong {
+  font-size: 12px;
+}
+
+.is-console .temu-batch-head .temu-btn {
+  margin-left: auto;
+}
+
+.is-console .temu-btn-sm {
+  min-height: 26px;
+  padding: 3px 10px;
+  font-size: 12px;
+}
+
+.is-console .temu-variant-scroll {
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.is-console .temu-variant-table {
+  display: grid;
+  gap: 6px;
+  min-width: 720px;
+}
+
+.is-console .temu-variant-row {
+  display: grid;
+  grid-template-columns: 46px 96px 62px 104px 66px 44px 44px 44px 58px 70px 52px 24px;
+  align-items: center;
+  gap: 6px;
+}
+
+.is-console .temu-variant-row.is-head {
+  color: var(--theme-text-muted, #7b93a8);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.is-console .temu-variant-row .temu-input {
+  min-height: 28px;
+  padding: 3px 6px;
+  font-size: 12px;
+}
+
+.is-console .temu-variant-thumb {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+}
+
+.temu-img-empty {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 1px dashed var(--theme-module-border-strong, #cfdae4);
+  border-radius: 6px;
+}
+
+.is-console .temu-variant-thumb .temu-img-thumb {
+  width: 34px;
+  height: 34px;
+  border-radius: 6px;
+}
+
+.is-console .temu-variant-thumb-url {
+  width: 100%;
+  font-size: 9px !important;
+}
+
+.is-console .temu-variant-fixed {
+  overflow: hidden;
+  color: var(--theme-text-secondary, #3b5f7d);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.is-console .temu-variant-del {
+  border: 0;
+  border-radius: 6px;
+  color: #d75b65;
+  background: transparent;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.is-console .temu-variant-del:disabled {
+  color: #c8d4de;
+  cursor: not-allowed;
+}
+
+/* ---------- 我的店铺（按账号绑定的凭证） ---------- */
+
+.is-console .temu-bind-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px;
+  border: 1px solid #f0c98a;
+  border-left: 3px solid #e0a800;
+  border-radius: var(--radius-md, 12px);
+  background: #fffdf5;
+}
+
+.is-console .temu-bind-banner strong {
+  display: block;
+  margin-bottom: 3px;
+  color: #8a5a00;
+  font-size: 13px;
+}
+
+.is-console .temu-bind-banner p {
+  margin: 0;
+  color: #8a6b2f;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.is-console .temu-shop-status {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md, 10px);
+  background: var(--theme-module-surface-soft, #f6f9fc);
+}
+
+.is-console .temu-shop-status div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.is-console .temu-shop-status span {
+  color: var(--theme-text-muted, #7b93a8);
+  font-size: 11px;
+}
+
+.is-console .temu-shop-status strong {
+  overflow: hidden;
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.is-console .temu-link.danger {
+  color: #d75b65;
+}
+
+.is-console .temu-link.danger:disabled {
+  color: #c8d4de;
+  cursor: not-allowed;
+}
+
+/* ---------- 模板与发布失败 ---------- */
+
+.is-console .temu-template-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.is-console .temu-template-row .temu-input {
+  flex: 1 1 200px;
+  min-width: 160px;
+}
+
+.is-console .temu-failures {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid #f0c9c9;
+  border-radius: var(--radius-md, 10px);
+  background: #fffafa;
+}
+
+.is-console .temu-failures-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #b3453f;
+  font-size: 13px;
+}
+
+.is-console .temu-failure-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed #f0d5d5;
+}
+
+.is-console .temu-failure-main {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.is-console .temu-failure-main strong {
+  font-size: 12.5px;
+}
+
+.is-console .temu-failure-main em {
+  color: #b3453f;
+  font-style: normal;
+}
+
+.is-console .temu-failure-main em.is-hint {
+  color: #8a5a00;
+}
+
+/* ---------- 草稿库：模板选择与批量发布 ---------- */
+
+.temu-batch-progress {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm, 8px);
+  color: #0d6b93;
+  background: #eefaff;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.temu-template-picker {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  border: 1px solid #cfe1eb;
+  border-radius: var(--radius-md, 10px);
+  background: #fbfdff;
+}
+
+.temu-template-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+  font-size: 12.5px;
+}
+
+.temu-template-picker > button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 10px;
+  border: 1px solid #e0ecf3;
+  border-radius: 8px;
+  color: #2f5878;
+  background: #fff;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.temu-template-picker > button:hover,
+.temu-template-picker > button.is-picked {
+  border-color: #087bf5;
+  background: #f2f9ff;
+}
+
+.temu-template-picker > button em {
+  color: #7b93a8;
+  font-style: normal;
+  font-size: 11px;
+}
+
+/* ---------- 草稿库：发布失败入口（红点） ---------- */
+
+.temu-fail-entry {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+  padding: 5px 12px;
+  border: 1px solid var(--theme-module-border, #d8e5ee);
+  border-radius: 999px;
+  color: var(--theme-text-secondary, #2f5878);
+  background: var(--theme-module-surface-raised, #fff);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.temu-fail-entry.has-dot {
+  border-color: #f0b6bc;
+  color: #b3453f;
+  background: #fff5f5;
+}
+
+.temu-fail-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #e2384a;
+  box-shadow: 0 0 0 2px #ffe3e6;
+}
+
+.temu-fail-panel {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  border: 1px solid #f0c9c9;
+  border-radius: var(--radius-md, 10px);
+  background: #fffafa;
+}
+
+.temu-fail-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #b3453f;
+  font-size: 12.5px;
+}
+
+.temu-fail-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed #f0d5d5;
+}
+
+.temu-fail-main {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.temu-fail-main em {
+  color: #b3453f;
+  font-style: normal;
+}
+
+.temu-fail-main em.is-hint {
+  color: #8a5a00;
+}
+
+.temu-fail-ops {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+/* 库存 0 / 留空：标红提示（半托管必须 ≥1） */
+.is-console .temu-variant-row .temu-input.is-bad {
+  border-color: #e2384a;
+  background: #fff5f5;
+}
+
+/* 申报价格（分）换算成元的即时提示 */
+.is-console .temu-price-preview {
+  min-height: 14px;
+  color: var(--theme-text-muted, #7b93a8);
+  font-size: 11px;
+  font-style: normal;
+}
+
+/* 草稿库：站点列第二行显示类目路径（选过的用深色，未选是提示灰） */
+.temu-draft-table .col-site small {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  width: 100%;
+  overflow: hidden;
+  color: var(--theme-text-muted, #7b93a8);
+  font-size: 11px;
+  line-height: 1.4;
+  /* 类目路径最多两行，再长就省略（完整路径在 title 里，悬停可看） */
+  word-break: break-word;
+}
+
+.temu-draft-table .col-site small.is-picked {
+  color: #146c43;
+}
+
+/* ---------- 草稿库：用于发布的确认弹窗 ---------- */
+
+.temu-confirm-dialog {
+  width: min(560px, 94vw);
+  gap: 12px;
+}
+
+.temu-confirm-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.temu-confirm-thumb {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 78px;
+  height: 78px;
+  overflow: hidden;
+  border-radius: 10px;
+  background: #f2f7fb;
+}
+
+.temu-confirm-thumb .temu-draft-thumb,
+.temu-confirm-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.temu-confirm-title {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.temu-confirm-title strong {
+  color: #1d3a50;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.temu-confirm-title span {
+  color: #7b93a8;
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+.temu-confirm-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px 14px;
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: #f6f9fc;
+}
+
+.temu-confirm-grid > div {
+  display: grid;
+  align-content: start;
+  gap: 2px;
+  min-width: 0;
+  min-height: 38px;
+}
+
+.temu-confirm-grid dt {
+  color: #7b93a8;
+  font-size: 0.68rem;
+}
+
+.temu-confirm-grid dd {
+  margin: 0;
+  overflow: hidden;
+  color: #2c4759;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.temu-confirm-grid dd.is-strong {
+  color: #0d6b93;
+  font-size: 0.88rem;
+}
+
+.temu-confirm-grid dd.is-bad {
+  color: #d93025;
+}
+
+.temu-confirm-warn {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  color: #8a5a00;
+  background: #fff8e6;
+  font-size: 0.74rem;
+  line-height: 1.55;
+}
+
+/* 按标题自动推荐的类目 */
+.is-console .temu-title-match {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px dashed var(--theme-module-border-strong, #bcd6ec);
+  border-radius: var(--radius-md, 10px);
+  background: var(--theme-module-surface-soft, #f8fbfe);
+}
+
+.is-console .temu-title-match > span {
+  color: var(--theme-text-muted, #7b93a8);
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
+.is-console .temu-title-match button {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--theme-module-border, #d8e5ee);
+  border-radius: 8px;
+  color: var(--theme-text-secondary, #2f5878);
+  background: var(--theme-module-surface-raised, #fff);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.is-console .temu-title-match button:hover:not(:disabled) {
+  border-color: var(--theme-module-primary-strong, #087bf5);
+  background: #f2f9ff;
+}

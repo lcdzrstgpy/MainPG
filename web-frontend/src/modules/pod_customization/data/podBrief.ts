@@ -51,6 +51,7 @@ export function briefFieldsToDraft(fields: PodBusinessFields): PodBriefFieldsDra
     scene_mood: fields.scene_mood,
     style_keywords: joinBriefList(fields.style_keywords),
     color_preferences: joinBriefList(fields.color_preferences),
+    accent_colors: joinBriefList(fields.accent_colors),
     excluded_elements: joinBriefList(fields.excluded_elements),
   };
 }

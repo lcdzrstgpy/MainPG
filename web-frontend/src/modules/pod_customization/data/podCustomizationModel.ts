@@ -53,6 +53,7 @@ export const EMPTY_POD_BUSINESS_FIELDS: PodBusinessFieldsDraft = {
   scene_mood: "",
   style_keywords: "",
   color_preferences: "",
+  accent_colors: "",
   excluded_elements: "",
   copy_restrictions: "",
 };
@@ -266,6 +267,7 @@ export function businessFieldsForApi(fields: PodBusinessFieldsDraft): PodBusines
     scene_mood: fields.scene_mood.trim(),
     style_keywords: splitBusinessField(fields.style_keywords),
     color_preferences: splitBusinessField(fields.color_preferences),
+    accent_colors: splitBusinessField(fields.accent_colors),
     excluded_elements: splitBusinessField(fields.excluded_elements),
     // 上架文案限制是整段自然语言，原样透传（不切分、不进 buildPromptV1）。
     copy_restrictions: fields.copy_restrictions.trim(),

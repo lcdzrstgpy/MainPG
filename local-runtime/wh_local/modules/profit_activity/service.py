@@ -81,10 +81,26 @@ class ProfitActivityService:
     def legacy_settings(self, actor: Any | None = None) -> dict[str, Any]:
         snapshot = self.get_settings(actor)
         settings = asdict(snapshot.settings)
-        settings["save_root"] = str(self._asset_root(snapshot.settings))
+        save_root_warning = ""
+        try:
+            settings["save_root"] = str(self._asset_root(snapshot.settings))
+        except OSError:
+            # 自定义输出目录失效（仓库搬家、外接盘拔出、无写权限）时不能拖垮整个
+            # 设置接口：回退到默认输出目录，并在响应里带上警告。
+            try:
+                fallback = self._output_root()
+            except OSError:
+                fallback = None
+            settings["save_root"] = str(fallback or snapshot.settings.save_root or "")
+            save_root_warning = (
+                f"自定义输出目录不可写（{snapshot.settings.save_root or '未知'}），"
+                f"已临时改用默认目录 {settings['save_root'] or '不可用'}"
+            )
         settings["activity_filter_rule_version"] = settings["rule_version"]
         settings["revision"] = snapshot.revision
         settings["workspace"] = asdict(_actor_context(actor))
+        if save_root_warning:
+            settings["save_root_warning"] = save_root_warning
         return settings
 
     def list_sites(self, actor: Any | None = None) -> list[dict[str, Any]]:

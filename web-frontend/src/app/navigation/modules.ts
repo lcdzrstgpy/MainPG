@@ -8,6 +8,8 @@ export type WorkspaceModuleId =
   | "product_processing_history"
   | "product_processing_sourcing"
   | "product_processing_tasks"
+  | "temu_publish"
+  | "temu_draft_library"
   | "combo_generate"
   | "combo_prompt_preset"
   | "combo_history"
@@ -21,13 +23,25 @@ export type WorkspaceModuleId =
   | "profit_activity_products"
   | "price_verification"
   | "sourcing_ledger"
+  | "order_profit_overview"
+  | "order_profit_orders"
+  | "order_profit_funds"
+  | "order_profit_accounts"
+  | "order_profit_capture"
+  | "order_profit_home"
+  | "order_profit_traffic"
+  | "order_profit_sales"
+  | "order_profit_recon"
+  | "order_profit_settlement"
   | "personal_center";
 
 export type WorkspaceNavigationGroupId =
   | "product_workflow"
   | "combo_workflow"
   | "sourcing_workflow"
+  | "order_profit"
   | "pod_workflow"
+  | "temu_publish_workflow"
   | "personal_center"
   | "ai_video";
 
@@ -161,6 +175,22 @@ const productProcessingHistory: WorkspaceModule = {
   description: "查看并找回 AI 处理批次",
 };
 
+const temuPublish: WorkspaceModule = {
+  id: "temu_publish",
+  label: "发布商品（实验）",
+  icon: "",
+  iconClass: "iconfont icon-upload",
+  description: "选择类目与属性，组装 Temu 商品发布请求体",
+};
+
+const temuDraftLibrary: WorkspaceModule = {
+  id: "temu_draft_library",
+  label: "草稿库",
+  icon: "",
+  iconClass: "iconfont icon-database",
+  description: "汇总 AI 处理与 POD 成品，一键带入发布商品",
+};
+
 const productProcessingSourcing: WorkspaceModule = {
   id: "product_processing_sourcing",
   label: "货源成本",
@@ -212,6 +242,92 @@ const sourcingLedger: WorkspaceModule = {
   iconClass: "iconfont icon-calculator",
   description: "采集货源、Temu 申报价、利润核算与入产品库",
 };
+
+/**
+ * 店铺数据侧栏：数据量偏少的页面合并展示。
+ * 经营概览 = 首页指标 + 流量 + 销量；账户资金 = 对账流水 + 结算回款。
+ */
+const orderProfitModules: WorkspaceModule[] = [
+  {
+    id: "order_profit_overview",
+    label: "经营概览",
+    icon: "",
+    iconClass: "iconfont icon-dashboard",
+    description: "店铺首页指标、流量分析与销量库存",
+  },
+  {
+    id: "order_profit_orders",
+    label: "订单列表",
+    icon: "",
+    iconClass: "iconfont icon-orderedlist",
+    description: "全部/待发货/已发货/已签收/已取消订单",
+  },
+  {
+    id: "order_profit_funds",
+    label: "账户资金",
+    icon: "",
+    iconClass: "iconfont icon-accountbook-fill",
+    description: "对账中心流水与结算回款",
+  },
+  {
+    id: "order_profit_accounts",
+    label: "店铺账号",
+    icon: "",
+    iconClass: "iconfont icon-user",
+    description: "多账号独立浏览器、自动登录与验证码在线等待",
+  },
+  {
+    id: "order_profit_capture",
+    label: "数据采集",
+    icon: "",
+    iconClass: "iconfont icon-cloud-download",
+    description: "插件会话、一键采集与实时进度",
+  },
+];
+
+/** 合并前的单页入口：只保留路由，避免浏览器里已保存的旧页签失效。 */
+const orderProfitLegacyModules: WorkspaceModule[] = [
+  {
+    id: "order_profit_home",
+    label: "经营概览",
+    icon: "",
+    iconClass: "iconfont icon-home",
+    description: "Seller Central 首页指标",
+    hiddenFromSidebar: true,
+  },
+  {
+    id: "order_profit_traffic",
+    label: "经营概览",
+    icon: "",
+    iconClass: "iconfont icon-radarchart",
+    description: "商品/店铺流量与转化",
+    hiddenFromSidebar: true,
+  },
+  {
+    id: "order_profit_sales",
+    label: "经营概览",
+    icon: "",
+    iconClass: "iconfont icon-linechart",
+    description: "销量、售罄与库存水位",
+    hiddenFromSidebar: true,
+  },
+  {
+    id: "order_profit_recon",
+    label: "账户资金",
+    icon: "",
+    iconClass: "iconfont icon-accountbook",
+    description: "对账中心财务流水",
+    hiddenFromSidebar: true,
+  },
+  {
+    id: "order_profit_settlement",
+    label: "账户资金",
+    icon: "",
+    iconClass: "iconfont icon-accountbook-fill",
+    description: "按 PO 单的结算回款",
+    hiddenFromSidebar: true,
+  },
+];
 
 const profitActivity: WorkspaceModule = {
   id: "profit_activity",
@@ -313,6 +429,16 @@ export const workspaceModules: WorkspaceNavigationItem[] = [
     children: [sourcingLedger, priceVerification, profitActivity, productLibrary],
   },
   {
+    // 店铺数据是一级入口，二级菜单平铺（订单状态在页面内横向切换）。
+    id: "order_profit",
+    label: "店铺数据",
+    icon: "",
+    iconClass: "iconfont icon-accountbook-fill",
+    description: "Temu 店铺指标、订单与账户资金",
+    defaultChildId: "order_profit_overview",
+    children: orderProfitModules,
+  },
+  {
     // AI 视频仍是单个页签模块，侧栏按分组展开 iframe 内的 7 个入口。
     id: "ai_video",
     label: "AI 视频（实验）",
@@ -322,6 +448,16 @@ export const workspaceModules: WorkspaceNavigationItem[] = [
     defaultChildId: "ai_video",
     children: [aiVideo],
     panels: aiVideoPanels,
+  },
+  {
+    // 发布商品分组：发布页与草稿库是同级子项，固定在个人中心上方。
+    id: "temu_publish_workflow",
+    label: "发布商品",
+    icon: "",
+    iconClass: "iconfont icon-upload",
+    description: "Temu 商品发布与草稿库",
+    defaultChildId: "temu_publish",
+    children: [temuPublish, temuDraftLibrary],
   },
   {
     // 个人中心仍是单个页签模块，但侧栏里按分组展开二级面板。
@@ -344,6 +480,8 @@ export const workspacePageModules: WorkspaceModule[] = [
   productProcessing,
   productProcessingHistory,
   productProcessingSourcing,
+  temuPublish,
+  temuDraftLibrary,
   comboGenerate,
   comboPromptPreset,
   comboHistory,
@@ -357,5 +495,7 @@ export const workspacePageModules: WorkspaceModule[] = [
   sourcingLedger,
   profitActivity,
   productLibrary,
+  ...orderProfitModules,
+  ...orderProfitLegacyModules,
   personalCenter,
 ];

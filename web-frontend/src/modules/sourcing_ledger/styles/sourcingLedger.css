@@ -4,40 +4,115 @@
   display: flex;
   flex-direction: column;
   gap: 16px;
-  padding: 24px;
+  /* 底部留白避开右下角积分悬浮球，让最后一行和分页可以滚出来 */
+  padding: 24px 24px 88px;
   min-height: 100%;
   color: var(--theme-text-primary, #18334d);
 }
 
-.ledger-head {
+/* 聚焦环跟随主题色，替代默认的系统蓝 */
+.ledger-page :where(a, button, input, select, [tabindex]):focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--theme-primary, #d95d78) 55%, transparent);
+  outline-offset: 2px;
+}
+
+/* 二级大标题：与利润活动等模块保持同一套 hero 语言 */
+.ledger-hero {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
+  min-height: 95px;
+  padding: clamp(16px, 2vw, 24px);
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--theme-hero-text, #fff) 26%, transparent);
+  border-radius: 18px;
+  background: var(--theme-hero-gradient, linear-gradient(118deg, #0a497f 0%, #0d7fba 56%, #20b9ac 100%));
+  box-shadow: 0 14px 34px var(--theme-card-shadow-lg, rgba(12, 91, 139, 0.18));
+  color: var(--theme-hero-text, #eaf6ff);
+}
+
+.ledger-hero-main {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ledger-hero h1 {
+  margin: 0;
+  color: #fff;
+  font-size: clamp(1.7rem, 2.7vw, 2.4rem);
+  font-weight: 600;
+  letter-spacing: -0.045em;
+}
+
+.ledger-hero p {
+  margin: 0;
+  color: var(--theme-hero-text, #eaf6ff);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.ledger-hero-actions {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 10px;
+}
+
+.ledger-hero-btn {
+  width: 100%;
+  height: 36px;
+  padding: 0 18px;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.ledger-hero-btn:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.23);
+}
+
+.ledger-hero-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.ledger-hero :where(button):focus-visible {
+  outline-color: rgba(255, 255, 255, 0.75);
+}
+
+@media (max-width: 700px) {
+  .ledger-hero {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .ledger-hero-actions {
+    width: 100%;
+  }
+}
+
+/* 状态 tabs 与批量操作同处一行：左侧筛选，右侧批量动作 */
+.ledger-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 16px;
   flex-wrap: wrap;
 }
 
-.ledger-head h1 {
-  margin: 0 0 4px;
-  font-size: 22px;
-  font-weight: 600;
-}
-
-.ledger-head p {
-  margin: 0;
-  font-size: 13px;
-  color: var(--theme-text-secondary, #526a82);
-}
-
-.ledger-head-actions {
+.ledger-toolbar-actions {
   display: flex;
   align-items: center;
-  gap: 12px;
-}
-
-.ledger-total {
-  font-size: 13px;
-  color: var(--theme-text-muted, #7b8fa4);
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-left: auto;
 }
 
 .ledger-status-tabs {
@@ -49,10 +124,10 @@
 
 .ledger-tab {
   display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
-  height: 32px;
-  padding: 0 14px;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 8px 0 14px;
   border-radius: 999px;
   border: 1px solid var(--theme-module-border, #d8e5ee);
   background: var(--theme-module-surface, #fff);
@@ -63,8 +138,13 @@
 }
 
 .ledger-tab em {
+  min-width: 20px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--theme-module-surface-soft, #f0f5f9);
   font-style: normal;
-  font-size: 12px;
+  font-size: 11px;
+  text-align: center;
   color: var(--theme-text-muted, #7b8fa4);
 }
 
@@ -75,12 +155,14 @@
 
 .ledger-tab.is-active {
   border-color: var(--theme-primary, #0a8fca);
-  background: var(--theme-primary, #0a8fca);
-  color: #fff;
+  background: var(--theme-primary-light, #eaf8ff);
+  color: var(--theme-module-primary-strong, #0a6ba8);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--theme-primary, #0a8fca) 14%, transparent);
 }
 
 .ledger-tab.is-active em {
-  color: rgba(255, 255, 255, 0.82);
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--theme-module-primary-strong, #0a6ba8);
 }
 
 .ledger-filters {
@@ -91,7 +173,13 @@
   padding: 14px 16px;
   border: 1px solid var(--theme-module-border, #d8e5ee);
   border-radius: var(--theme-card-radius, 14px);
-  background-color: var(--theme-module-surface, #fff);
+  /* 与利润活动同款的半透明纸面，让页面山水底透出来，两个页面底色一致 */
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--theme-module-surface-tint, #eaf8ff) 48%, transparent),
+    color-mix(in srgb, var(--theme-module-surface-soft, #f7fafc) 74%, transparent)
+  );
+  box-shadow: 0 12px 30px var(--theme-module-shadow, rgba(23, 67, 99, 0.08));
 }
 
 .ledger-filters label {
@@ -125,12 +213,6 @@
   text-overflow: ellipsis;
 }
 
-.ledger-store-filter select {
-  min-width: 160px;
-  max-width: 220px;
-  text-overflow: ellipsis;
-}
-
 .ledger-btn {
   height: 34px;
   padding: 0 16px;
@@ -140,6 +222,7 @@
   color: var(--theme-text-primary, #18334d);
   font-size: 13px;
   cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 
 .ledger-btn.is-primary {
@@ -148,9 +231,27 @@
   color: #fff;
 }
 
+.ledger-btn:not(:disabled):hover {
+  border-color: var(--theme-primary, #0a8fca);
+  color: var(--theme-module-primary-strong, #0a6ba8);
+}
+
+.ledger-btn.is-primary:not(:disabled):hover {
+  color: #fff;
+  filter: brightness(0.97);
+}
+
 .ledger-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* 禁用态的主按钮退成中性色，避免整页最亮的是不可点的粉色块 */
+.ledger-btn.is-primary:disabled {
+  opacity: 1;
+  border-color: var(--theme-module-border, #d8e5ee);
+  background: var(--theme-module-surface-soft, #f0f5f9);
+  color: var(--theme-text-muted, #7b8fa4);
 }
 
 .ledger-btn.is-danger {
@@ -159,12 +260,17 @@
 }
 
 .ledger-btn.is-danger:hover:not(:disabled) {
+  border-color: #e0726b;
   background: #e0726b;
   color: #fff;
 }
 
 .ledger-table td .ledger-link + .ledger-link {
-  margin-left: 10px;
+  margin-left: 12px;
+}
+
+.ledger-col-actions .ledger-link {
+  white-space: nowrap;
 }
 
 .ledger-link {
@@ -201,81 +307,120 @@
 .ledger-table-wrap {
   border: 1px solid var(--theme-module-border, #d8e5ee);
   border-radius: var(--theme-card-radius, 14px);
-  background: var(--theme-module-surface, #fff);
+  /* 与筛选卡、利润活动保持一致：半透明纸面而不是一整块实底 */
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--theme-module-surface-tint, #eaf8ff) 48%, transparent),
+    color-mix(in srgb, var(--theme-module-surface-soft, #f7fafc) 74%, transparent)
+  );
+  box-shadow: 0 12px 30px var(--theme-module-shadow, rgba(23, 67, 99, 0.08));
+  /* 列宽有下限，窗口变窄时横向滚动，而不是把状态/操作列裁掉 */
   overflow-x: auto;
   overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--theme-module-border-strong, #82c9ef) 60%, transparent) transparent;
+}
+
+.ledger-table-wrap::-webkit-scrollbar {
+  height: 10px;
+}
+
+.ledger-table-wrap::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--theme-module-border-strong, #82c9ef) 55%, transparent);
+  background-clip: padding-box;
 }
 
 .ledger-table {
   width: 100%;
+  min-width: 900px;
   border-collapse: collapse;
   font-size: 13px;
 }
 
 .ledger-table th {
   text-align: left;
-  padding: 12px 10px;
+  padding: 12px 12px;
   font-weight: 500;
   font-size: 12px;
   color: var(--theme-text-secondary, #526a82);
+  background: color-mix(in srgb, var(--theme-module-surface-soft, #f7fafc) 62%, transparent);
   border-bottom: 1px solid var(--theme-module-border, #e6eef4);
   white-space: nowrap;
 }
 
 .ledger-table td {
-  padding: 12px 10px;
+  height: 72px;
+  padding: 10px 12px;
   border-bottom: 1px solid var(--theme-module-border, #f0f5f9);
   vertical-align: middle;
 }
 
-.ledger-site-cell,
-.ledger-action-cell {
-  white-space: nowrap;
-}
-
-.ledger-site-cell {
-  text-align: center;
-}
-
-/* 横向空间不足时只滚动中间列，操作列固定在右侧始终可点。 */
-.ledger-table th:last-child,
-.ledger-table td.ledger-action-cell {
-  position: sticky;
-  right: 0;
-  background: var(--theme-module-surface, #fff);
-  box-shadow: -10px 0 12px -12px rgba(24, 51, 77, 0.45);
-}
-
-.ledger-table tbody tr:hover td.ledger-action-cell {
-  background: var(--theme-module-surface-soft, #f7fafc);
-}
-
-.ledger-table tbody tr.is-selected td.ledger-action-cell {
-  background: var(--theme-module-surface-soft, #f2f9fd);
-}
-
-.ledger-store-cell {
-  max-width: 130px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.ledger-table tbody tr:last-child td {
+  border-bottom: none;
 }
 
 .ledger-table tbody tr:hover {
-  background: var(--theme-module-surface-soft, #f7fafc);
+  background: color-mix(in srgb, var(--theme-module-surface-soft, #f7fafc) 52%, transparent);
+}
+
+/* 列宽：商品列吃掉剩余空间，其余列按内容收紧，金额列右对齐等宽数字 */
+.ledger-col-product {
+  width: auto;
+  min-width: 240px;
+}
+
+.ledger-col-site,
+.ledger-col-source {
+  white-space: nowrap;
+}
+
+.ledger-col-num {
+  text-align: center;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 「原 ¥xx」单独成行，窄列里不把单元格顶高或溢出 */
+.ledger-table td.ledger-col-num small {
+  display: block;
+  margin-top: 2px;
+}
+
+.ledger-table th.ledger-col-num {
+  text-align: center;
+}
+
+/* 列头补充说明：利润按 0.5kg 估算，只出现一次 */
+.ledger-th-hint {
+  margin-left: 6px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--theme-text-muted, #7b8fa4);
+  white-space: nowrap;
+}
+
+.ledger-col-status,
+.ledger-col-actions {
+  white-space: nowrap;
 }
 
 .ledger-cell-product {
+  min-width: 240px;
+}
+
+.ledger-product-inner {
   display: flex;
   align-items: center;
   gap: 12px;
-  min-width: 230px;
+  min-width: 0;
 }
 
 .ledger-cell-product img,
 .ledger-cell-product i {
-  width: 44px;
-  height: 44px;
+  width: 48px;
+  height: 48px;
   border-radius: 10px;
   object-fit: cover;
   background: var(--theme-module-surface-soft, #f0f5f9);
@@ -283,8 +428,8 @@
 }
 
 .ledger-product-thumb {
-  width: 44px;
-  height: 44px;
+  width: 48px;
+  height: 48px;
   padding: 0;
   border: none;
   border-radius: 10px;
@@ -300,11 +445,14 @@
 
 .ledger-product-text {
   min-width: 0;
-  max-width: 340px;
+  flex: 1;
 }
 
+/* 标题固定两行，长英文标题不用点开也能看个大概，行高保持一致 */
 .ledger-title {
-  display: block;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   width: 100%;
   padding: 0;
   border: none;
@@ -312,11 +460,12 @@
   text-align: left;
   font-size: 13px;
   font-weight: 500;
+  line-height: 1.4;
   color: inherit;
   cursor: pointer;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  word-break: break-word;
 }
 
 .ledger-title:hover {
@@ -324,8 +473,8 @@
 }
 
 .ledger-title.is-expanded {
-  white-space: normal;
-  word-break: break-word;
+  -webkit-line-clamp: unset;
+  overflow: visible;
 }
 
 .ledger-cell-product small {
@@ -378,6 +527,12 @@
   text-align: center;
   color: var(--theme-text-muted, #7b8fa4);
   font-size: 13px;
+}
+
+/* td 的基础样式比 .ledger-empty 特异性高，这里补回空态应有的留白 */
+.ledger-table td.ledger-empty {
+  height: auto;
+  padding: 34px 12px;
 }
 
 .ledger-pager {
@@ -497,94 +652,6 @@
   background: var(--theme-module-surface-raised, #fff);
   color: var(--theme-text-primary, #18334d);
   font-size: 12px;
-}
-
-/* 店铺：工作台风格的输入 + 自定义下拉（不用原生 datalist） */
-.ledger-store-picker {
-  position: relative;
-}
-
-.ledger-store-control {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-}
-
-.ledger-store-control input {
-  box-sizing: border-box;
-  width: 170px;
-  height: 28px;
-  padding: 0 28px 0 10px;
-  border-radius: 8px;
-  border: 1px solid var(--theme-module-border, #d8e5ee);
-  background: var(--theme-module-surface-raised, #fff);
-  color: var(--theme-text-primary, #18334d);
-  font-size: 12px;
-  transition: border-color .16s ease, box-shadow .16s ease;
-}
-
-.ledger-store-control input:focus {
-  outline: none;
-  border-color: var(--theme-primary, #0a8fca);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-primary, #0a8fca) 16%, transparent);
-}
-
-.ledger-store-control > button {
-  position: absolute;
-  top: 50%;
-  right: 2px;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  transform: translateY(-50%);
-  border: 0;
-  border-radius: 6px;
-  color: var(--theme-text-secondary, #526a82);
-  background: transparent;
-  font-size: 12px;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.ledger-store-control > button:hover {
-  color: var(--theme-primary, #0a8fca);
-  background: var(--theme-module-surface-soft, #f2f9fd);
-}
-
-.ledger-store-menu {
-  position: absolute;
-  z-index: 30;
-  top: calc(100% + 6px);
-  left: 0;
-  display: grid;
-  gap: 2px;
-  min-width: 100%;
-  max-height: 220px;
-  overflow: auto;
-  padding: 6px;
-  border: 1px solid var(--theme-module-border, #d8e5ee);
-  border-radius: 12px;
-  background: var(--theme-module-surface-raised, #fff);
-  box-shadow: 0 14px 30px var(--theme-module-shadow, rgba(24, 72, 108, .16));
-}
-
-.ledger-store-menu button {
-  min-height: 32px;
-  padding: 0 10px;
-  border: 0;
-  border-radius: 8px;
-  color: var(--theme-text-primary, #18334d);
-  background: transparent;
-  font-size: 12px;
-  text-align: left;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.ledger-store-menu button:hover,
-.ledger-store-menu button.is-active {
-  color: var(--theme-primary, #0a8fca);
-  background: var(--theme-module-surface-soft, #f2f9fd);
 }
 
 .ledger-site-picker small {
@@ -743,81 +810,6 @@
   white-space: nowrap;
 }
 
-/* 多 SKU 申报价：可指定使用哪个 SKU，未指定默认取最低价 */
-.ledger-price-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin-bottom: 8px;
-}
-
-.ledger-price-head h3 {
-  margin: 0;
-}
-
-.ledger-price-head-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.ledger-price-head-actions small {
-  font-size: 11px;
-  color: var(--theme-text-muted, #7b8fa4);
-}
-
-.ledger-price-actions {
-  white-space: nowrap;
-}
-
-/* 手动填写申报价：采集不到时直接按 Temu 可上架价格核算 */
-.ledger-manual-price {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-bottom: 10px;
-  font-size: 12px;
-  color: var(--theme-text-secondary, #526a82);
-}
-
-.ledger-manual-price input {
-  width: 110px;
-  height: 30px;
-  padding: 0 12px;
-  border-radius: 999px;
-  border: 1px solid var(--theme-module-border, #d8e5ee);
-  background: var(--theme-module-surface-raised, #fff);
-  color: var(--theme-text-primary, #18334d);
-  font-size: 12px;
-}
-
-.ledger-manual-price .ledger-btn {
-  height: 30px;
-  padding: 0 14px;
-  font-size: 12px;
-}
-
-.ledger-manual-price small {
-  font-size: 11px;
-  color: var(--theme-text-muted, #7b8fa4);
-}
-
-.ledger-price-actions .ledger-link + .ledger-link {
-  margin-left: 10px;
-}
-
-.ledger-price-chosen {
-  color: var(--theme-primary, #0a8fca);
-  font-weight: 600;
-}
-
-.ledger-price-table tr.is-selected {
-  background: var(--theme-module-surface-soft, #f2f9fd);
-}
-
 .ledger-drawer-foot {
   margin-top: auto;
   display: flex;
@@ -830,52 +822,36 @@
 
 .ledger-drawer-foot strong {
   display: block;
-  font-size: 20px;
-  font-weight: 700;
-  letter-spacing: .2px;
-  color: var(--theme-primary, #0a8fca);
+  font-size: 15px;
 }
 
 .ledger-drawer-foot small {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--theme-text-muted, #7b8fa4);
 }
 
-.ledger-drawer-foot .ledger-foot-tip {
-  display: block;
-  margin-top: 4px;
-  color: #b26a00;
-}
-
-/* 批量填重量 / 店铺：单独占一行，商品数靠左，批量控件靠右 */
-.ledger-batch-bar {
-  display: flex;
-  align-items: center;
-  gap: 18px;
-  flex-wrap: wrap;
-  flex: 1 1 100%;
-}
-
-.ledger-batch-bar .ledger-total {
-  margin-right: auto;
-}
-
+/* 批量填重量：与状态 tabs 同行，收成一组紧凑控件 */
 .ledger-batch {
   display: flex;
   align-items: center;
   gap: 8px;
+  height: 42px;
+  padding: 0 4px 0 14px;
+  border: 1px solid var(--theme-module-border, #d8e5ee);
+  border-radius: 999px;
+  background: var(--theme-module-surface-raised, #fff);
 }
 
 .ledger-batch-title {
   font-size: 12px;
   color: var(--theme-text-secondary, #526a82);
+  white-space: nowrap;
 }
 
-.ledger-batch input,
-.ledger-batch select {
-  width: 130px;
-  height: 32px;
-  padding: 0 12px;
+.ledger-batch input {
+  width: 96px;
+  height: 30px;
+  padding: 0 10px;
   border-radius: 999px;
   border: 1px solid var(--theme-module-border, #d8e5ee);
   background: var(--theme-module-surface-raised, #fff);
@@ -883,11 +859,8 @@
   font-size: 13px;
 }
 
-.ledger-batch .ledger-batch-store-select {
-  width: 160px;
-  max-width: 200px;
-  padding-right: 8px;
-  text-overflow: ellipsis;
+.ledger-batch .ledger-btn {
+  height: 32px;
 }
 
 /* 列表勾选与估算标记 */
@@ -903,17 +876,22 @@
 }
 
 .ledger-table tbody tr.is-selected {
-  background: var(--theme-module-surface-soft, #f2f9fd);
+  background: color-mix(in srgb, var(--theme-module-surface-tint, #f2f9fd) 70%, transparent);
 }
 
+/* 估算标记跟在利润数值右侧，同排展示 */
 .ledger-estimate {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
   margin-left: 6px;
   padding: 1px 6px;
-  border-radius: 999px;
-  border: 1px dashed var(--theme-module-border-strong, #82c9ef);
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: var(--theme-module-surface-soft, #f0f5f9);
   color: var(--theme-text-muted, #7b8fa4);
-  font-size: 10px;
+  font-size: 11px;
+  white-space: nowrap;
+  vertical-align: 1px;
 }
 
 /* 货源图片 */
@@ -1023,96 +1001,6 @@
 .ledger-form-label {
   font-size: 12px;
   color: var(--theme-text-secondary, #526a82);
-}
-
-/* 货源图片：与单品利润一致的上传/替换交互 */
-.ledger-image-drop {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  min-height: 86px;
-  padding: 12px 14px;
-  border: 1.5px dashed var(--theme-module-border-strong, #a9cbe0);
-  border-radius: 16px;
-  background: color-mix(in srgb, var(--theme-module-surface-raised, #fff) 46%, transparent);
-  outline-color: var(--theme-primary, #0a8fca);
-}
-
-.ledger-image-drop:focus-visible {
-  outline: 2px dashed var(--theme-primary, #0a8fca);
-  outline-offset: 2px;
-}
-
-.ledger-image-icon,
-.ledger-image-preview {
-  flex: none;
-  width: 64px;
-  height: 64px;
-  border: 1px solid var(--theme-module-border, #e6edf3);
-  border-radius: 14px;
-  background: var(--theme-module-surface-raised, #fff);
-}
-
-.ledger-image-icon {
-  display: grid;
-  place-items: center;
-  color: var(--theme-text-muted, #62778d);
-  font-size: 1.4rem;
-}
-
-.ledger-image-preview {
-  object-fit: cover;
-}
-
-.ledger-image-copy {
-  display: grid;
-  gap: 4px;
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.ledger-image-copy strong {
-  color: var(--theme-text-primary, #172b44);
-  font-size: 13px;
-}
-
-.ledger-image-copy span {
-  color: var(--theme-text-muted, #72869a);
-  font-size: 12px;
-}
-
-.ledger-image-remove {
-  flex: none;
-  padding: 6px 12px;
-  border: 1px solid #f3c4c9;
-  border-radius: 999px;
-  color: #b42318;
-  background: #fff6f6;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.ledger-image-remove:hover {
-  border-color: #f28b93;
-  background: #ffecee;
-}
-
-.ledger-file-button {
-  flex: none;
-  display: inline-grid;
-  padding: 7px 14px;
-  border: 1px solid var(--theme-module-border-strong, #b9dce9);
-  border-radius: 999px;
-  color: var(--theme-primary, #0877d3);
-  background: var(--theme-module-surface-soft, #f7fafc);
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.ledger-file-button input {
-  display: none;
 }
 
 /* 利润构成 */
@@ -1271,4 +1159,27 @@
   display: flex;
   justify-content: flex-end;
   gap: 10px;
+}
+
+/* 店铺筛选与批量改店铺 */
+.ledger-store-filter select {
+  min-width: 160px;
+  max-width: 220px;
+  text-overflow: ellipsis;
+}
+
+.ledger-batch .ledger-batch-store-select {
+  width: 160px;
+  max-width: 200px;
+  padding-right: 8px;
+  text-overflow: ellipsis;
+}
+
+.ledger-col-store,
+.ledger-store-cell {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--theme-text-secondary, #526a82);
 }

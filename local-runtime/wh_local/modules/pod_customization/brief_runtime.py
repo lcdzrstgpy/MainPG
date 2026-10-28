@@ -20,7 +20,6 @@ from wh_local.modules.product_processing.doubao_ark import MODEL_ID, DoubaoArkEr
 
 from .billing_contract import BRIEF_ATTEMPTS, PodExecutionGrant
 from .contracts import (
-    BRIEF_COLOR_PREFERENCES_MIN_ITEMS,
     BRIEF_EXCLUDED_ELEMENTS_MIN_ITEMS,
     BRIEF_STYLE_KEYWORDS_MIN_ITEMS,
     IP_EXCLUDED_ELEMENTS,
@@ -42,7 +41,7 @@ from .title_runtime import (
 )
 
 
-PROMPT_VERSION = "pod-brief-v6"
+PROMPT_VERSION = "pod-brief-v7"
 # 批级美术指导的独立提示词版本（与业务字段分开归因）。
 ART_DIRECTION_PROMPT_VERSION = "pod-art-direction-v1"
 MAX_ATTEMPTS = BRIEF_ATTEMPTS
@@ -210,6 +209,7 @@ _LIST_FIELDS = (
     "core_selling_points",
     "style_keywords",
     "color_preferences",
+    "accent_colors",
     "excluded_elements",
 )
 # 与 BatchCreate 的门槛保持一致：品类与主题等必填字段不能留空。
@@ -230,7 +230,13 @@ _BRIEF_RESPONSE_FORMAT: dict[str, Any] = {
             # 只把生成所必需的核心字段设为 required；卖点/工艺/场景/人群等可选字段
             # 允许缺省，解析时按空值处理，避免模型漏一个可选键就整次判失败并重试。
             "required": sorted(
-                [*_REQUIRED_SCALARS, "style_keywords", "color_preferences", "excluded_elements"]
+                [
+                    *_REQUIRED_SCALARS,
+                    "style_keywords",
+                    "color_preferences",
+                    "accent_colors",
+                    "excluded_elements",
+                ]
             ),
             "properties": {
                 "product_name": {"type": "string", "minLength": 1},
@@ -251,10 +257,13 @@ _BRIEF_RESPONSE_FORMAT: dict[str, Any] = {
                     "minItems": BRIEF_STYLE_KEYWORDS_MIN_ITEMS,
                     "items": {"type": "string", "minLength": 1},
                 },
-                # 配色与禁用元素都要尽量多：schema 层就给出下限。
+                # 配色分两组、都不设数量门槛：主题强关联色与建议点缀色的数量只由提示词建议。
                 "color_preferences": {
                     "type": "array",
-                    "minItems": BRIEF_COLOR_PREFERENCES_MIN_ITEMS,
+                    "items": {"type": "string", "minLength": 1},
+                },
+                "accent_colors": {
+                    "type": "array",
                     "items": {"type": "string", "minLength": 1},
                 },
                 "excluded_elements": {
@@ -408,11 +417,6 @@ def validate_brief_fields(payload: Mapping[str, Any]) -> BusinessFields:
             f"实际只有 {len(lists['style_keywords'])} 个{feedback}"
         )
 
-    if len(lists["color_preferences"]) < BRIEF_COLOR_PREFERENCES_MIN_ITEMS:
-        raise ValueError(
-            f"color_preferences 至少需要 {BRIEF_COLOR_PREFERENCES_MIN_ITEMS} 个具体颜色，"
-            f"实际只有 {len(lists['color_preferences'])} 个"
-        )
     # 禁用元素只需少量与本主题相关的条目；侵权/身份类由确定性安全清单补齐。
     if len(lists["excluded_elements"]) < BRIEF_EXCLUDED_ELEMENTS_MIN_ITEMS:
         raise ValueError(
@@ -439,6 +443,7 @@ def validate_brief_fields(payload: Mapping[str, Any]) -> BusinessFields:
         scene_mood="",
         style_keywords=lists["style_keywords"],
         color_preferences=lists["color_preferences"],
+        accent_colors=lists["accent_colors"],
         excluded_elements=lists["excluded_elements"],
     )
 
@@ -781,7 +786,12 @@ def _messages_for_brief(request: PodBriefRequest, *, rejection_feedback: str) ->
                 "也禁止形容词/风格词/配色词/手法词/场景类别"
             ),
             "color_preferences": (
-                f"偏好配色，至少 {BRIEF_COLOR_PREFERENCES_MIN_ITEMS} 个具体颜色名（建议 6-10）"
+                "主题强关联色：5-6 个「主题词 + 颜色」的具体颜色名（可略少）。"
+                "必须有直接的主题依据，不得拿与主题无关的颜色充数"
+            ),
+            "accent_colors": (
+                "建议点缀色：6-10 个具体颜色名（可多可少），可以是金属色、中性色或与主题形成对比的跳色；"
+                "不要求主题前缀，只用于点缀与辅助，不得替代主题强关联色当主色"
             ),
             "excluded_elements": (
                 f"与本主题冲突、必须避免出现的元素，{BRIEF_EXCLUDED_ELEMENTS_MIN_ITEMS}-8 项即可；"
@@ -814,10 +824,19 @@ def _messages_for_brief(request: PodBriefRequest, *, rejection_feedback: str) ->
             "禁止同义变体重复占位，禁止用品类本体词（如「托特包」「手提包」）凑数。"
         ),
         "color_preferences_recipe": (
-            f"color_preferences 至少给出 {BRIEF_COLOR_PREFERENCES_MIN_ITEMS} 个具体颜色（建议 6-10），"
-            "覆盖主色、辅色、点缀色与背景色等不同层次；够 60-30-10 轮换即可，不要为凑数重复相近色。"
-            "必须写具体颜色名（如「电光粉紫」「落日金橙」「霓虹青色」），"
-            "禁止写「高饱和度」「撞色」「冷色调」「高级灰」这类抽象描述。"
+            "color_preferences 给出 5-6 个主题强关联色（可略少，宁缺毋滥）。"
+            "每个颜色名必须与 design_theme 绑定：以 design_theme 的核心主题词起头，前缀后接具体颜色名，"
+            "例如主题为「圣诞」时写「圣诞红」「圣诞墨绿」「圣诞暖金」「圣诞雪白」；"
+            "同一主题下多个颜色共享同一前缀是预期行为，不要为此改写主题词。"
+            "已有前缀不重复加，前缀后仍须是自然通顺的颜色名，不得为了凑前缀把颜色写坏。"
+            "每个颜色都必须能直接从 design_theme 推出，不得拿与主题无关的颜色充数。"
+            "禁止抽象描述：高饱和度、撞色、冷色调、高级灰、莫兰迪色、复古色系。"
+        ),
+        "accent_colors_recipe": (
+            "accent_colors 给出 6-10 个建议点缀色（可多可少），写具体颜色名即可，"
+            "可以是金属色（香槟金、古铜）、中性色（雾白、炭灰）或与主题形成对比的跳色。"
+            "它们不要求主题前缀，只用于辅色、点缀与画面提亮；"
+            "不得替代主题强关联色当主色，也不要为了凑数重复相近色。"
         ),
         "excluded_elements_recipe": (
             f"excluded_elements 给出 {BRIEF_EXCLUDED_ELEMENTS_MIN_ITEMS}-8 项即可，"

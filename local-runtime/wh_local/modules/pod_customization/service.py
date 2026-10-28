@@ -143,6 +143,24 @@ class BatchNotTerminalForSpecCard(PodRepositoryError):
 
 _PYDANTIC_VALUE_ERROR_PREFIX = "Value error, "
 
+# 结构事实表允许人工修订的键（与 structure_analysis 的输出契约保持一致）。
+_STRUCTURE_FACT_KEYS = frozenset(
+    {
+        "product_type",
+        "part_count",
+        "tiers",
+        "units_per_tier",
+        "height_mm",
+        "thickness_mm",
+        "material",
+        "transparency",
+        "surface_finish",
+        "symmetry",
+        "connections",
+        "printable_regions",
+        "confidence",
+    }
+)
 # 复刻/裂变识图入参的视觉长边上限：20MB 原图 base64 后约 27MB，后面还要被 JSON
 # 序列化两次，峰值可到上百 MB。识图只需要看清版式与配色，1536 足够。
 _VISION_MAX_EDGE = 1536
@@ -166,26 +184,6 @@ def _shrink_for_vision(content: bytes) -> tuple[bytes, str] | None:
         return buffer.getvalue(), "image/jpeg"
     except Exception:
         return None
-
-
-# 结构事实表允许人工修订的键（与 structure_analysis 的输出契约保持一致）。
-_STRUCTURE_FACT_KEYS = frozenset(
-    {
-        "product_type",
-        "part_count",
-        "tiers",
-        "units_per_tier",
-        "height_mm",
-        "thickness_mm",
-        "material",
-        "transparency",
-        "surface_finish",
-        "symmetry",
-        "connections",
-        "printable_regions",
-        "confidence",
-    }
-)
 
 
 def _composition_default_name(brief: str) -> str:
@@ -3329,9 +3327,9 @@ class PodCustomizationService:
 
     @staticmethod
     def _pod_billing_profile(batch: dict[str, Any]) -> str:
-        """按批次模式取计费画像（普通形态）：复刻单独上报 pod_replica_v1_a（供远端分类），
-        全定制沿用 pod_random_v1。半定制走独立的 ``for_semi_*`` 计划、复刻「高清直出」
-        走独立的 ``for_replica_panel*`` 计划（画像 pod_replica_v1_b），都不使用本函数。
+        """按批次模式取计费画像（普通形态）：复刻统一上报 pod_replica_v1（供远端分类），
+        全定制沿用 pod_random_v1。半定制走独立的 ``for_semi_*`` 计划、复刻四图直出
+        走独立的 ``for_replica_panel*`` 计划，都不使用本函数。
         """
         if str(batch.get("mode") or "") == "fission":
             return POD_BILLING_PROFILE_FISSION

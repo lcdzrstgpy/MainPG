@@ -1,6 +1,6 @@
 """爆款复刻计费：N 款冻结/结算、余额不足、幂等、暂停取消与部分失败。
 
-复刻单独上报 ``pod_replica_v1_a`` 画像（与全定制同 40–50/款区间，仅分类不同），
+复刻统一上报 ``pod_replica_v1`` 画像（每款固定 100 积分，仅与全定制分类不同），
 沿用 ``:style:{款}:image:{尝试}`` 调用 ID；断言一款一次成功生图只对应一次图像调用，
 绝不因两张参考图重复计费。
 """
@@ -19,7 +19,6 @@ from PIL import Image
 from wh_local.modules.pod_customization.billing_contract import (
     POD_BILLING_PROFILE_RANDOM,
     POD_BILLING_PROFILE_REPLICA,
-    POD_BILLING_PROFILE_REPLICA_HD,
     TITLE_ATTEMPTS,
     PodCallPlan,
     PodExecutionGrant,
@@ -276,10 +275,10 @@ def test_replica_batch_freezes_one_replica_link_per_style_and_settles(tmp_path: 
         actor, _batch_request(service, actor, count=3, request_id="req-billing-3"), enqueue=False
     )
 
-    # 冻结一次，画像为 pod_replica_v1_b（每款 4 张单图），调用 ID 为 :style:{款}:image:p{面板}:{尝试}。
+    # 冻结一次，画像为 pod_replica_v1（每款 4 张单图），调用 ID 为 :style:{款}:image:p{面板}:{尝试}。
     assert len(billing.freezes) == 1
     plan = billing.freezes[0]
-    assert plan.billing_profile == POD_BILLING_PROFILE_REPLICA_HD
+    assert plan.billing_profile == POD_BILLING_PROFILE_REPLICA
     image_calls = [call.call_id for call in plan.calls if call.feature == "pod.image"]
     assert sorted(image_calls) == sorted(
         f"{batch['id']}:style:{style}:image:p{panel}:{attempt}"
@@ -289,7 +288,7 @@ def test_replica_batch_freezes_one_replica_link_per_style_and_settles(tmp_path: 
     )
     payload = plan.product_batch_freeze_payload()
     assert payload["link_count"] == 3
-    assert payload["billing_profile"] == POD_BILLING_PROFILE_REPLICA_HD
+    assert payload["billing_profile"] == POD_BILLING_PROFILE_REPLICA
     # 标题调用形状不变：每款仍预留 TITLE_ATTEMPTS 次 pod.title。
     assert sum(call.feature == "pod.title" for call in plan.calls) == 3 * TITLE_ATTEMPTS
 
@@ -318,7 +317,7 @@ def test_replica_batch_freezes_one_replica_link_per_style_and_settles(tmp_path: 
 # --------------------------------------------------------------------------- #
 
 def test_pod_billing_profile_distinguishes_replica_from_full() -> None:
-    """复刻单独上报 pod_replica_v1_a（供远端分类）；全定制与历史批次沿用 pod_random_v1。"""
+    """复刻统一上报 pod_replica_v1（供远端分类）；全定制与历史批次沿用 pod_random_v1。"""
     assert PodCustomizationService._pod_billing_profile({"mode": "replica"}) == POD_BILLING_PROFILE_REPLICA
     assert PodCustomizationService._pod_billing_profile({"mode": "full"}) == POD_BILLING_PROFILE_RANDOM
     assert PodCustomizationService._pod_billing_profile({}) == POD_BILLING_PROFILE_RANDOM

@@ -1988,8 +1988,8 @@
 
 .pricing-pod-grid {
   display: grid;
-  /* 模块数量由服务端决定（当前 3 个，拆出复刻后 4 个），列数自适应不写死。 */
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  /* 服务端当前下发 4 个模块（全定制/半定制/裂变/复刻），固定两列排成 2×2，避免落单。 */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
 }
 

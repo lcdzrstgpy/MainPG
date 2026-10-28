@@ -23,17 +23,27 @@ TEMU_LINK_CAPTURE = "temu_link_capture"
 TEMU_PRICE_QUOTE_DISCOVERY = "temu_price_quote_discovery"
 SOURCE_BROWSER_IMAGE_SEARCH = "source_browser_image_search"
 TEMU_FLUX_ACCEL = "temu_flux_accel"
+TEMU_ORDER_PROFIT_CAPTURE = "temu_order_profit_capture"
+TEMU_CAPTURE_ALL = "temu_capture_all"
+TEMU_CAPTURE_INCREMENTAL = "temu_capture_incremental"
+TEMU_CAPTURE_RESOURCE = "temu_capture_resource"
+TEMU_ACCOUNT_LOGIN = "temu_account_login"
 ALLOWED_PLUGIN_COMMAND_TYPES = frozenset(
     {
         TEMU_LINK_CAPTURE,
         TEMU_PRICE_QUOTE_DISCOVERY,
         SOURCE_BROWSER_IMAGE_SEARCH,
         TEMU_FLUX_ACCEL,
+        TEMU_ORDER_PROFIT_CAPTURE,
+        TEMU_CAPTURE_ALL,
+        TEMU_CAPTURE_INCREMENTAL,
+        TEMU_CAPTURE_RESOURCE,
+        TEMU_ACCOUNT_LOGIN,
     }
 )
-_TERMINAL = frozenset({"succeeded", "failed"})
+_TERMINAL = frozenset({"succeeded", "failed", "cancelled"})
 _ACTIVE_WINDOW = timedelta(minutes=10)
-_COMMAND_LEASE_WINDOW = timedelta(minutes=5)
+_COMMAND_LEASE_WINDOW = timedelta(minutes=15)
 _LEGACY_LOCAL_ACTOR_ID = "local-demo-admin"
 _LEGACY_LOCAL_WORKSPACE_ID = "default"
 
@@ -162,7 +172,13 @@ class DataCollectionPluginQueue:
             conn.commit()
             return command
 
-    def poll(self, session_token: str, *, limit: int = 10) -> tuple[PluginCommand, ...]:
+    def poll(
+        self,
+        session_token: str,
+        *,
+        limit: int = 10,
+        capabilities: Mapping[str, Any] | None = None,
+    ) -> tuple[PluginCommand, ...]:
         now = _now()
         reclaim_before = (datetime.now(timezone.utc) - _COMMAND_LEASE_WINDOW).isoformat()
         with self._connect() as conn:
@@ -188,7 +204,14 @@ class DataCollectionPluginQueue:
                 if ids:
                     marks = ",".join("?" for _ in ids)
                     conn.execute(f"UPDATE data_collection_plugin_commands SET status = 'sent', updated_at = ? WHERE id IN ({marks})", (now, *ids))
-                conn.execute("UPDATE data_collection_plugin_sessions SET last_seen_at = ?, status = 'connected' WHERE id = ?", (now, session["id"]))
+                if capabilities:
+                    conn.execute(
+                        "UPDATE data_collection_plugin_sessions SET last_seen_at = ?, "
+                        "status = 'connected', capabilities_json = ? WHERE id = ?",
+                        (now, json.dumps(dict(capabilities), ensure_ascii=False), session["id"]),
+                    )
+                else:
+                    conn.execute("UPDATE data_collection_plugin_sessions SET last_seen_at = ?, status = 'connected' WHERE id = ?", (now, session["id"]))
                 conn.commit()
             except BaseException:
                 conn.rollback()
@@ -226,6 +249,71 @@ class DataCollectionPluginQueue:
             )
             conn.execute("UPDATE data_collection_plugin_sessions SET last_seen_at = ?, status = 'connected' WHERE id = ?", (now, session["id"]))
             return self._command(conn, command_id)
+
+    def list_sessions_for_workspace(
+        self,
+        *,
+        workspace_id: str,
+        command_type: str = "",
+        active_only: bool = True,
+    ) -> tuple[Mapping[str, Any], ...]:
+        """工作台侧查询：某工作区下所有插件会话（可按能力过滤）。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, actor_id, workspace_id, capabilities_json, status, created_at, last_seen_at "
+                "FROM data_collection_plugin_sessions WHERE workspace_id = ? "
+                "ORDER BY last_seen_at DESC, id DESC",
+                (workspace_id,),
+            ).fetchall()
+        sessions: list[Mapping[str, Any]] = []
+        for row in rows:
+            capabilities = _load(row["capabilities_json"])
+            online = _active(str(row["last_seen_at"]))
+            if active_only and not online:
+                continue
+            if command_type and capabilities.get(command_type) is not True:
+                continue
+            sessions.append({
+                "session_id": int(row["id"]),
+                "actor_id": str(row["actor_id"]),
+                "workspace_id": str(row["workspace_id"]),
+                "capabilities": capabilities,
+                "status": str(row["status"]),
+                "online": online,
+                "last_seen_at": str(row["last_seen_at"]),
+            })
+        return tuple(sessions)
+
+    def get_command_for_workspace(self, *, workspace_id: str, command_id: int) -> PluginCommand:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT c.id FROM data_collection_plugin_commands c "
+                "JOIN data_collection_plugin_sessions s ON s.id = c.session_id "
+                "WHERE c.id = ? AND s.workspace_id = ?",
+                (int(command_id), workspace_id),
+            ).fetchone()
+            if row is None:
+                raise PermissionError("plugin command not found")
+            return self._command(conn, int(row["id"]))
+
+    def cancel_command(self, *, workspace_id: str, command_id: int) -> PluginCommand:
+        now = _now()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT c.id, c.status FROM data_collection_plugin_commands c "
+                "JOIN data_collection_plugin_sessions s ON s.id = c.session_id "
+                "WHERE c.id = ? AND s.workspace_id = ?",
+                (int(command_id), workspace_id),
+            ).fetchone()
+            if row is None:
+                raise PermissionError("plugin command not found")
+            if str(row["status"]) not in _TERMINAL:
+                conn.execute(
+                    "UPDATE data_collection_plugin_commands SET status = 'cancelled', updated_at = ? "
+                    "WHERE id = ?",
+                    (now, int(command_id)),
+                )
+            return self._command(conn, int(command_id))
 
     def get_command(self, *, actor_id: str, workspace_id: str, command_id: int) -> PluginCommand:
         with self._connect() as conn:
