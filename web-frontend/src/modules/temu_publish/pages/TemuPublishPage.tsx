@@ -463,6 +463,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   // 提交发布进行中：别的任务跑完不能把它「解除」，否则连点就是重复上架
   const [publishing, setPublishing] = useState(false);
   const publishingRef = useRef(false);
+  // 只有「点过发布被拦下来」之后才把必填项标红：一进页面满屏红框反而让人焦虑
+  const [showFieldErrors, setShowFieldErrors] = useState(false);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [accessToken, setAccessToken] = useState("");
@@ -1668,7 +1670,14 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     publishingRef.current = true;
     setPublishing(true);
     return run("publish", async () => {
-      const draft = await composeDraft();
+      // 校验没过：把必填项标红，并滚到第一个还没填完的区块 ——
+      // 否则长表单里只看到顶部一句「缺少必填属性」，还得自己往下找在哪
+      const draft = await composeDraft().catch((cause: unknown) => {
+        setShowFieldErrors(true);
+        const firstGap = flowSteps.find((step) => step.id !== "sec-publish" && !step.done);
+        if (firstGap) jumpTo(firstGap.id);
+        throw cause;
+      });
       const skuCount = draft.skcs.reduce((total, skc) => total + skc.skus.length, 0);
       const confirmed = window.confirm(
         [
@@ -1840,8 +1849,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     const unitHint = unit
       ? `${item.numberInputTitle || "请输入数值"}（${unit}）`
       : item.numberInputTitle || "请输入";
+    // 必填没填：只在「点过发布被拦」之后标红，不然一进页面满屏红框
+    const emptyRequired = required && !pick.vid && !pick.text.trim();
     return (
-      <label className="temu-field" key={item.pid}>
+      <label
+        className={`temu-field${showFieldErrors && emptyRequired ? " is-required-empty" : ""}`}
+        key={item.pid}
+      >
         <span>
           {label}
           {required && <em className="temu-required">*</em>}
@@ -1904,50 +1918,78 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const carouselCount = splitLines(form.carousel).length;
 
   // 分区顺序按 Temu 刊登习惯，且只保留「真会提交」的字段：基本信息 → 产品信息 → 变种信息 → 包装信息 → 发布
-  const flowSteps: Array<{ id: string; label: string; done: boolean; hint: string }> = [
+  /** 一行变种是否填全（价格/尺寸/重量/货号/仓库都要有） */
+  const rowIncomplete = (row: VariantRow) =>
+    !(
+      row.sizeName.trim() &&
+      row.extCode.trim() &&
+      row.warehouseId &&
+      row.supplierPrice.trim() &&
+      row.weightG.trim() &&
+      row.lengthCm.trim() &&
+      row.widthCm.trim() &&
+      row.heightCm.trim()
+    );
+  const incompleteRows = rows.filter(rowIncomplete).length;
+  const missingAttrs = requiredProps.length - filledRequired;
+
+  /**
+   * 检查清单：每一格都算出「还差什么」，而不是只写一句静态说明。
+   * 这样填长表单时不用往下翻就知道卡在哪。
+   */
+  const flowBase: Array<{ id: string; label: string; hint: string; missing: string[] }> = [
     {
       id: "sec-base",
       label: "基本信息",
       hint: "店铺、站点、产品分类、产品属性",
-      done: !!leaf?.isLeaf && !!attributes && filledRequired === requiredProps.length,
+      missing: [
+        ...(statusLoaded && !status?.configured.ready ? ["绑定店铺"] : []),
+        ...(!leaf?.isLeaf ? ["选到叶子类目"] : []),
+        ...(leaf?.isLeaf && !attributes ? ["属性还在加载"] : []),
+        ...(missingAttrs > 0 ? [`${missingAttrs} 个必填属性`] : []),
+      ],
     },
     {
       id: "sec-info",
       label: "产品信息",
       hint: "标题、货号、轮播图、素材图",
-      done: form.title.trim().length > 0 && carouselCount > 0,
+      missing: [
+        ...(!form.title.trim() ? ["产品标题"] : []),
+        ...(!carouselCount ? ["轮播图"] : []),
+      ],
     },
     {
       id: "sec-variant",
       label: "变种信息",
       hint: "颜色尺码、申报价格、尺寸重量",
-      done:
-        rows.length > 0 &&
-        rows.every(
-          (row) =>
-            row.sizeName.trim() &&
-            row.extCode.trim() &&
-            row.warehouseId &&
-            row.supplierPrice.trim() &&
-            row.weightG.trim() &&
-            row.lengthCm.trim() &&
-            row.widthCm.trim() &&
-            row.heightCm.trim(),
-        ),
+      missing: [
+        ...(!rows.length ? ["至少一个变种"] : []),
+        ...(rows.length && incompleteRows ? [`${incompleteRows} 行没填全`] : []),
+      ],
     },
     {
       id: "sec-pack",
       label: "包装信息",
       hint: "外包装图、运费模板、发货仓库",
-      done: form.freightId.length > 0 && form.warehouseId.length > 0,
+      missing: [
+        ...(!form.freightId ? ["运费模板"] : []),
+        ...(!form.warehouseId ? ["发货仓库"] : []),
+      ],
     },
     {
       id: "sec-publish",
       label: "校验发布",
       hint: "检查必填 → 提交",
-      done: !!publishResult,
+      missing: [],
     },
   ];
+  const flowSteps = flowBase.map((step) =>
+    step.id === "sec-publish"
+      ? { ...step, done: !!publishResult }
+      : { ...step, done: step.missing.length === 0 },
+  );
+  // 「校验发布」是动作不是内容，统计剩余项时不算它
+  const remainingContentSteps = flowSteps.filter((step) => step.id !== "sec-publish" && !step.done);
   const doneCount = flowSteps.filter((step) => step.done).length;
   const jumpTo = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
   const stepOf = (id: string) => flowSteps.find((item) => item.id === id) ?? flowSteps[0];
@@ -2470,9 +2512,12 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               <span>
                 产品标题<em className="temu-required">*</em>
                 <em className="temu-muted">{form.title.length}/250，建议英文</em>
+                {showFieldErrors && !form.title.trim() ? (
+                  <em className="temu-required-empty-hint">必填</em>
+                ) : null}
               </span>
               <textarea
-                className="temu-input"
+                className={`temu-input${showFieldErrors && !form.title.trim() ? " is-bad" : ""}`}
                 value={form.title}
                 onChange={(event) => patch({ title: event.target.value })}
                 placeholder="英文标题，突出核心卖点"
@@ -2912,8 +2957,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           <div className="temu-rail-card">
             <div className="temu-rail-head">
               <strong>发布检查</strong>
-              <span className={`temu-pill ${doneCount === flowSteps.length ? "ok" : "warn"}`}>
-                {doneCount}/{flowSteps.length}
+              <span className={`temu-pill ${remainingContentSteps.length ? "warn" : "ok"}`}>
+                {remainingContentSteps.length ? `还差 ${remainingContentSteps.length} 项` : "可提交"}
               </span>
             </div>
             <ol className="temu-rail-list">
@@ -2923,7 +2968,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                     <span className="temu-rail-dot">{step.done ? "✓" : index + 1}</span>
                     <span className="temu-rail-label">
                       {step.label}
-                      <em>{step.hint}</em>
+                      {/* 没填完就直说差什么；填完了才显示这块包含哪些内容 */}
+                      <em>{step.done || step.id === "sec-publish" ? step.hint : `还差：${step.missing.join("、")}`}</em>
                     </span>
                   </button>
                 </li>
@@ -2943,6 +2989,29 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 <dd>{firstPrice ? formatCents(firstPrice) : "—"}</dd>
               </div>
             </dl>
+            <div className="temu-rail-actions">
+              <button
+                type="button"
+                className="temu-btn temu-btn-sm"
+                disabled={busy !== "" || !ready}
+                onClick={() => void checkMandatory()}
+              >
+                {busy === "mandatory" ? "校验中…" : "检查必填"}
+              </button>
+              <button
+                type="button"
+                className="temu-btn temu-btn-primary temu-btn-sm"
+                disabled={submitDisabled}
+                onClick={() => void publishGoods()}
+              >
+                {publishing ? "提交中…" : "提交发布"}
+              </button>
+            </div>
+            {error ? (
+              <p className="temu-rail-error" role="alert">
+                {error}
+              </p>
+            ) : null}
             <p className="temu-rail-tip">提交会真的在店铺创建商品，不可撤销。填完到最下面「校验发布」提交。</p>
           </div>
         </aside>

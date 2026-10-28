@@ -738,7 +738,7 @@ test("货号只发字母数字（中文/符号会让 Temu 直接拒）", () => {
 });
 
 test("标题用多行文本域（150+ 字符单行看不见）", () => {
-  assert.match(page, /<textarea\n\s*className="temu-input"\n\s*value=\{form\.title\}/);
+  assert.match(page, /<textarea\n\s*className=\{`temu-input\$\{[^}]*\}`\}\n\s*value=\{form\.title\}/);
   assert.match(page, /rows=\{3\}/);
   // 标题本身已是英文时，英文标题字段提示可留空
   assert.match(page, /标题已是英文，这里可留空/);
@@ -852,4 +852,28 @@ test("右侧「发布检查」下滑时固定在视口", () => {
   assert.match(page, /classList\.contains\("is-pinned"\)/);
   assert.match(page, /setProperty\(\s*"--temu-rail-sticky-top",/);
   assert.match(page, /new MutationObserver\(syncRailTop\)/);
+});
+
+test("发布检查：每一项都说清「还差什么」，被拦时自动定位", () => {
+  // 检查清单不再是静态说明：没填完就列缺项
+  assert.match(page, /const flowBase: Array<\{ id: string; label: string; hint: string; missing: string\[\] \}> = \[/);
+  assert.match(page, /missingAttrs > 0 \? \[`\$\{missingAttrs\} 个必填属性`\] : \[\]/);
+  assert.match(page, /incompleteRows \? \[`\$\{incompleteRows\} 行没填全`\] : \[\]/);
+  assert.match(page, /还差：\$\{step\.missing\.join\("、"\)\}/);
+  assert.match(page, /remainingContentSteps\.length \? `还差 \$\{remainingContentSteps\.length\} 项` : "可提交"/);
+
+  // 点发布被拦：标红必填项 + 滚到第一个没填完的区块
+  assert.match(page, /const draft = await composeDraft\(\)\.catch\(\(cause: unknown\) => \{/);
+  assert.match(page, /setShowFieldErrors\(true\);/);
+  assert.match(page, /const firstGap = flowSteps\.find\(\(step\) => step\.id !== "sec-publish" && !step\.done\);/);
+
+  // 必填项只在「被拦过之后」标红，且属性/标题都覆盖
+  assert.match(page, /const \[showFieldErrors, setShowFieldErrors\] = useState\(false\);/);
+  assert.match(page, /showFieldErrors && emptyRequired \? " is-required-empty"/);
+  assert.match(page, /showFieldErrors && !form\.title\.trim\(\) \? " is-bad"/);
+
+  // 错误摘要放固定侧栏（滚下去也看得到），并带操作按钮
+  assert.match(page, /className="temu-rail-error"/);
+  assert.match(page, /className="temu-rail-actions"/);
+  assert.match(page, /onClick=\{\(\) => void publishGoods\(\)\}/);
 });

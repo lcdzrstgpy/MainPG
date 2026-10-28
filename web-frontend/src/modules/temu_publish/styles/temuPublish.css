@@ -2934,3 +2934,47 @@ textarea.temu-input {
 .temu-draft-table .col-cat small.is-draft {
   color: #6b8296;
 }
+
+/* ---------- 发布检查：缺项标红（只在点过发布被拦之后生效） ---------- */
+
+.is-console .temu-field.is-required-empty > span {
+  color: #d8333f;
+}
+.is-console .temu-field.is-required-empty .temu-input {
+  border-color: #e2384a;
+  background: #fff6f6;
+}
+.is-console .temu-required-empty-hint {
+  margin-left: 6px;
+  color: #d8333f;
+  font-size: 0.68rem;
+  font-style: normal;
+  font-weight: 800;
+}
+
+/* 侧栏没完成的那一项：把「还差 xxx」说得跟别的不一样 */
+.is-console .temu-rail-list li:not(.is-done) .temu-rail-label em {
+  color: #b4690e;
+}
+/* 侧栏固定可见：错误摘要放这里，比只放在页面顶部更容易被看到 */
+.is-console .temu-rail-error {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 9px;
+  color: #a11b26;
+  background: #fff1f2;
+  border: 1px solid #f5c2c7;
+  font-size: 0.72rem;
+  line-height: 1.45;
+  word-break: break-word;
+}
+/* 侧栏操作区：滚动时也点得到「检查必填 / 提交发布」 */
+.is-console .temu-rail-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.is-console .temu-rail-actions .temu-btn {
+  width: 100%;
+  justify-content: center;
+}
