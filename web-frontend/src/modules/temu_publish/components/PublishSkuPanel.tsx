@@ -68,6 +68,19 @@ export function withFreshRowKeys(rows: VariantRow[]): VariantRow[] {
   return rows;
 }
 
+/**
+ * 货号片段清洗。
+ *
+ * 颜色/尺码是中文人写的（「透明+磁吸」「苹果18duo(左右折叠)」），直接拼进 SKU 货号会带上
+ * `+`、括号、空格、斜杠这些字符 —— Temu 货号只保证字母/数字/`-`/`_` 安全，
+ * 这些符号要么被拒，要么在后台搜索/对账时匹配不上。这里只删符号、保留中文与字母数字。
+ */
+function safeCodePart(value: string): string {
+  return String(value || "")
+    .replace(/[+()（）[\]{}<>《》「」,，.。;；:：/\\|*?"'`~!@#$%^&=\s]+/g, "")
+    .trim();
+}
+
 /** 造一行变种；有产品货号就拼成「货号-尺码」，否则用 SKU-001。 */
 export function createVariantRow(
   warehouseId: string,
@@ -77,7 +90,9 @@ export function createVariantRow(
   index = 0,
   extCodePrefix = "",
 ): VariantRow {
-  const parts = [extCodePrefix || "SKU", colorName, sizeName].filter(Boolean);
+  const parts = [extCodePrefix || "SKU", safeCodePart(colorName), safeCodePart(sizeName)].filter(
+    Boolean,
+  );
   const code = parts.length > 1 ? parts.join("-") : `SKU-${String(index + 1).padStart(3, "0")}`;
   return {
     key: nextKey(),
@@ -219,6 +234,20 @@ export function PublishSkuPanel({
     onRowsChange(next);
   };
 
+  /**
+   * 批量编辑里填了值、但还没点「应用到全部」的字段。
+   * 这些值不会进提交（表格里那格还是空的），界面上必须点出来，否则用户以为已经填好了。
+   */
+  const pendingBatchFields = !batchTouched
+    ? []
+    : (Object.keys(batch) as Array<keyof VariantBatch>).filter((key) => {
+        // 只统计「用户真的在批量框里改过」的字段；没动过时 batch 是镜像第一行，
+        // 拿它跟别的行比会把正常差异报成「未应用」。
+        const typed = batch[key].trim();
+        if (!typed) return false;
+        return rows.some((row) => String(row[key] ?? "").trim() !== typed);
+      });
+
   /** 批量编辑 → 覆盖所有行（只覆盖填了值的字段）。 */
   const applyAll = () => {
     if (!rows.length) return;
@@ -297,7 +326,15 @@ export function PublishSkuPanel({
         <div className="temu-batch-head">
           <strong>批量编辑</strong>
           <span className="temu-muted">填了才覆盖；价格单位分（¥12.99 填 1299），尺寸 cm，重量 g</span>
-          <button type="button" className="temu-btn temu-btn-sm" onClick={applyAll} disabled={!rows.length}>
+          {pendingBatchFields.length > 0 && (
+            <em className="temu-batch-pending">有 {pendingBatchFields.length} 项还没应用</em>
+          )}
+          <button
+            type="button"
+            className={`temu-btn temu-btn-sm${pendingBatchFields.length ? " is-urgent" : ""}`}
+            onClick={applyAll}
+            disabled={!rows.length}
+          >
             应用到全部
           </button>
         </div>

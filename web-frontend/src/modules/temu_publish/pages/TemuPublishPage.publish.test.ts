@@ -576,3 +576,16 @@ test("多件装：每件装数量填 4/12 才发 productSkuMultiPackReq", () => 
   assert.match(page, /if \(saved\.shipmentDays === "1"\) saved\.shipmentDays = DEFAULT_SHIPMENT_DAYS;/);
   assert.ok(page.includes("填太短会被判延迟发货"));
 });
+
+test("变种面板：货号清洗特殊字符 + 批量值没应用要提示", () => {
+  const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
+
+  // 颜色/尺码里的 + ( ) 空格 等不进 SKU 货号（Temu 只保证字母数字 -_ 安全）
+  assert.match(panel, /function safeCodePart\(value: string\): string \{/);
+  assert.match(panel, /const parts = \[extCodePrefix \|\| "SKU", safeCodePart\(colorName\), safeCodePart\(sizeName\)\]/);
+
+  // 批量框填了但没点「应用到全部」时，值不会进提交，必须显式提示
+  assert.match(panel, /const pendingBatchFields = !batchTouched/);
+  assert.match(panel, /有 \{pendingBatchFields\.length\} 项还没应用/);
+  assert.match(panel, /is-urgent/);
+});

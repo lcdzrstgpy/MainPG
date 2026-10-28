@@ -2775,3 +2775,17 @@ textarea.temu-input {
   margin: 0 0 10px;
   font-size: 12.5px;
 }
+
+/* 批量编辑填了但没点「应用到全部」：这些值不会进提交，必须显眼 */
+.temu-batch-pending {
+  font-style: normal;
+  font-weight: 600;
+  font-size: 12px;
+  color: #b45309;
+}
+
+.temu-btn.is-urgent {
+  border-color: #f0a020;
+  color: #8a5a00;
+  background: #fff8e8;
+}
