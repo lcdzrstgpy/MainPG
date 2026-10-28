@@ -149,6 +149,8 @@ export type TemuSkuDraft = {
   width_mm: number;
   height_mm: number;
   thumb_url?: string | null;
+  /** 多件装数量（4 Pack / 12Pcs）：>1 才发 productSkuMultiPackReq */
+  pieces_per_pack?: number;
   /** 敏感货（带电/液体等）→ productSkuSensitiveAttrReq.isSensitive */
   is_sensitive?: boolean;
   specs: TemuSkuSpec[];

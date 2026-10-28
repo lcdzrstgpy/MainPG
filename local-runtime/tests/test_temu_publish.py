@@ -1851,3 +1851,25 @@ def test_remove_active_shop_stops_using_it_but_keeps_others(
     assert after["shops"][0]["mall_name"] == "Shop-4444"
     assert after["shops"][0]["active"] is False
     assert after["configured"]["access_token"] is False
+
+
+def test_multi_pack_only_sent_when_more_than_one(tmp_path: Path) -> None:
+    """多件装：>1 才发 productSkuMultiPackReq（结构与官方成功案例一致），1 不发。"""
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=StubCatalogClient())
+
+    single = service.build_goods_payload(_draft())
+    sku = single["payload"]["productSkcReqs"][0]["productSkuReqs"][0]
+    assert "productSkuMultiPackReq" not in sku
+
+    packed = _draft().model_copy(deep=True)
+    packed.skcs[0].skus[0].pieces_per_pack = 12
+    built = service.build_goods_payload(packed)
+    sku = built["payload"]["productSkcReqs"][0]["productSkuReqs"][0]
+    assert sku["productSkuMultiPackReq"] == {
+        "pieceUnitCode": 1,
+        "numberOfPieces": 1,
+        "pieceNewUnitCode": 1,
+        "numberOfPiecesNew": 12,
+        "skuClassification": 1,
+        "productSkuNetContentReq": {},
+    }

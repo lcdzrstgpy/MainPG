@@ -1052,6 +1052,16 @@ def _assemble_payload(
             }
             if sku.thumb_url:
                 sku_req["thumbUrl"] = sku.thumb_url
+            if int(sku.pieces_per_pack) > 1:
+                # 结构与真实成功案例一致（bg.glo.goods.add，productId 9282408501）
+                sku_req["productSkuMultiPackReq"] = {
+                    "pieceUnitCode": 1,
+                    "numberOfPieces": 1,
+                    "pieceNewUnitCode": 1,
+                    "numberOfPiecesNew": int(sku.pieces_per_pack),
+                    "skuClassification": 1,
+                    "productSkuNetContentReq": {},
+                }
             if sku.suggested_price:
                 sku_req["productSkuSuggestedPriceReq"] = {
                     "suggestedPriceCurrencyType": sku.currency_type,

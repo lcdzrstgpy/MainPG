@@ -91,6 +91,9 @@ class SkuInput(BaseModel):
     width_mm: int = Field(ge=1, description="宽度，毫米")
     height_mm: int = Field(ge=1, description="高度，毫米")
     thumb_url: str | None = None
+    # 多件装：一个 SKU 里装几件（标题里的 "4 Pack" / "12Pcs"）。>1 才会发
+    # productSkuMultiPackReq，Temu 前台会显示「N 件装」。
+    pieces_per_pack: int = Field(default=1, ge=1, le=1000)
     # 敏感货（带电/液体等）：落到 productSkuSensitiveAttrReq.isSensitive
     is_sensitive: bool = False
     specs: list[SkuSpecInput] = Field(min_length=1)

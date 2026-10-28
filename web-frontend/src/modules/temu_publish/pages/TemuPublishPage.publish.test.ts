@@ -559,3 +559,15 @@ test("首屏不闪「还没绑定店铺」：状态没回来之前不渲染横�
   // 加载期间给一行轻提示，而不是留空
   assert.match(page, /\{!statusLoaded && <p className="temu-muted temu-console-loading">正在读取店铺配置…<\/p>\}/);
 });
+
+test("多件装：每件装数量填 4/12 才发 productSkuMultiPackReq", () => {
+  // 表单字段 + 落进每个 SKU
+  assert.match(page, /piecesPerPack: string;/);
+  assert.match(page, /piecesPerPack: "1",/);
+  assert.match(page, /pieces_per_pack: Math\.max\(1, Math\.round\(Number\(form\.piecesPerPack \|\| "1"\) \|\| 1\)\)/);
+  // 界面上有输入 + 说明（标题里的 4 Pack / 12Pcs）
+  assert.ok(page.includes("每件装数量"));
+  assert.ok(page.includes("4 Pack / 12Pcs"));
+  // 发货时效补了说明（官方成功案例 90 天），避免默认 1 天被误当承诺
+  assert.ok(page.includes("填太短会被判延迟发货"));
+});

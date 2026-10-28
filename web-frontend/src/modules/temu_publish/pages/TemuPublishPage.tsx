@@ -119,6 +119,8 @@ type PublishForm = {
   freightId: string;
   warehouseId: string;
   shipmentDays: string;
+  /** 每件装数量：标题里的 4 Pack / 12Pcs，>1 才会发 productSkuMultiPackReq */
+  piecesPerPack: string;
   description: string;
 };
 
@@ -158,6 +160,7 @@ const EMPTY_FORM: PublishForm = {
   freightId: "",
   warehouseId: "",
   shipmentDays: "1",
+  piecesPerPack: "1",
   description: "",
 };
 
@@ -1348,6 +1351,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           width_mm: Math.round(parsePositive(row.widthCm, `${at}宽`) * 10),
           height_mm: Math.round(parsePositive(row.heightCm, `${at}高`) * 10),
           thumb_url: row.thumbUrl.trim() || skcImage,
+          // 多件装（4 Pack / 12Pcs）：1 就是单件装，接口里不发这个字段
+          pieces_per_pack: Math.max(1, Math.round(Number(form.piecesPerPack || "1") || 1)),
           is_sensitive: form.isSensitive,
           specs: [colorSpec, sizeSpec],
         });
@@ -2467,18 +2472,38 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 </select>
               </label>
             </div>
-            <label className="temu-field">
-              <span>
-                发货时效（天）<em className="temu-required">*</em>
-              </span>
-              <input
-                className="temu-input"
-                inputMode="numeric"
-                value={form.shipmentDays}
-                onChange={(event) => patch({ shipmentDays: event.target.value })}
-                placeholder="1"
-              />
-            </label>
+            <div className="temu-two-col">
+              <label className="temu-field">
+                <span>
+                  发货时效（天）<em className="temu-required">*</em>
+                  <em className="temu-muted">
+                    承诺给 Temu 的备货发货时限，填太短会被判延迟发货（官方成功案例用的是 90 天）
+                  </em>
+                </span>
+                <input
+                  className="temu-input"
+                  inputMode="numeric"
+                  value={form.shipmentDays}
+                  onChange={(event) => patch({ shipmentDays: event.target.value })}
+                  placeholder="1"
+                />
+              </label>
+              <label className="temu-field">
+                <span>
+                  每件装数量
+                  <em className="temu-muted">
+                    标题里的 4 Pack / 12Pcs 就填 4 / 12；填 1 表示单件装（单件装不发这个字段）
+                  </em>
+                </span>
+                <input
+                  className="temu-input"
+                  inputMode="numeric"
+                  value={form.piecesPerPack}
+                  onChange={(event) => patch({ piecesPerPack: event.target.value })}
+                  placeholder="1"
+                />
+              </label>
+            </div>
           </section>
 
           {/* 5 校验发布 */}
