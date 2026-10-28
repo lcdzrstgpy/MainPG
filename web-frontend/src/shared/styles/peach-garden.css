@@ -136,7 +136,7 @@
 
 /* 页头文字保持可读 */
 [data-theme="peach"] .daily-page-heading .daily-kicker,
-[data-theme="peach"] .pod-page-header .pod-page-title > div > span,
+[data-theme="peach"] .pod-page-header .pod-page-title > div > span:not(.pod-page-price),
 [data-theme="peach"] .price-verification-hero .eyebrow,
 [data-theme="peach"] .profit-activity-hero .eyebrow,
 [data-theme="peach"] .verify-eyebrow {

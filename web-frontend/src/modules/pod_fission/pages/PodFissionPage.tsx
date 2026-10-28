@@ -23,6 +23,7 @@ import { FissionSourceUploader } from "../components/FissionSourceUploader";
 import { FissionProductUploader } from "../components/FissionProductUploader";
 import { createEmptyPodFissionDraft, loadPodFissionDraft, savePodFissionDraft } from "../data/podFissionDraft";
 import { normalizeFissionBatch, type FissionBatchView } from "../data/podFissionModel";
+import { formatPodModulePrice, usePodModulePricing } from "../../pod_customization/data/usePodModulePricing";
 import type { FissionImageRole, FissionListingFieldsDraft, FissionSkuDraft } from "../types";
 
 type Account = { account_id?: string; customer_id?: string; workspace_id?: string; workspace_code?: string };
@@ -40,6 +41,7 @@ type Props = {
 };
 
 export function PodFissionPage({ isActive = true }: Props) {
+  const modulePrice = formatPodModulePrice(usePodModulePricing("pod_fission_v1"));
   const scope = useMemo(() => {
     const account = getAuthAccount<Account>();
     const accountId = (account?.account_id || account?.customer_id)?.trim() ?? "";
@@ -224,7 +226,7 @@ export function PodFissionPage({ isActive = true }: Props) {
     <header className="pod-page-header pod-fission-hero">
       <div className="pod-page-title">
         <span className="pod-page-title-icon iconfont icon-branches" aria-hidden="true" />
-        <div><span>POD FISSION</span><h1>爆款裂变</h1><p>从一款爆款出发，批量创作同系列商品。</p></div>
+        <div><span>POD FISSION</span><h1>爆款裂变</h1>{modulePrice && <span className="pod-page-price">{modulePrice}</span>}<p>从一款爆款出发，批量创作同系列商品。</p></div>
       </div>
       <div className="pod-fission-flow" aria-hidden="true">
         <span><i className="iconfont icon-image" />爆款样图</span>
