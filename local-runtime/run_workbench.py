@@ -648,6 +648,33 @@ def _configure_runtime_logging() -> Path:
     return log_path
 
 
+def _fatal_reason(exc: BaseException) -> str:
+    """把导入期的异常翻成「原因 + 怎么处理」。
+
+    以前只弹「初始化失败，请把日志发给我们」，用户和客服都只能干瞪眼。
+    最常见的两类其实有明确特征，直接说清楚能省一轮来回。
+    """
+    text = f"{type(exc).__name__}: {exc}".strip()
+    low = text.lower()
+    if isinstance(exc, PermissionError) or "locked" in low or "winerror 32" in low:
+        return (
+            f"{text[:200]}\n"
+            "看起来是本地数据库正被另一个进程占用：请确认没有第二个「界野电商平台」在运行"
+            "（任务管理器里结束残留进程），然后重新打开。"
+        )
+    if isinstance(exc, (ModuleNotFoundError, ImportError)):
+        return (
+            f"{text[:200]}\n"
+            "看起来安装文件不完整（更新中断或被杀毒软件隔离）：重新运行安装包覆盖安装即可。"
+        )
+    if "no such column" in low or "no such table" in low or "duplicate column" in low:
+        return (
+            f"{text[:200]}\n"
+            "本地数据库结构和程序对不上：请把日志发给我们，先不要手工改数据库。"
+        )
+    return text[:300]
+
+
 def _show_fatal_box(message: str) -> None:
     """弹窗提示严重错误（windowed 模式下用户看不到控制台输出）。"""
     try:
@@ -768,7 +795,8 @@ def main() -> int:
         if card is not None:
             card.close()
         _show_fatal_box(
-            "后端启动失败（初始化后端服务/数据库时出错）。\n"
+            "后端启动失败（初始化后端服务/数据库时出错）。\n\n"
+            f"原因：{_fatal_reason(exc)}\n\n"
             f"详细信息已写入日志：{log_path}\n请将此文件反馈给技术支持。"
         )
         return 1

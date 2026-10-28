@@ -41,3 +41,24 @@ def test_protocol_open_command_source_pins_workdir(monkeypatch) -> None:
     assert '--chdir "' in command
     assert command.endswith('"%1"')
     assert "local-runtime" in command
+
+
+def test_fatal_reason_translates_common_startup_failures() -> None:
+    """启动失败弹窗要说清「原因 + 怎么办」，而不是只让用户去看日志。"""
+    import sqlite3
+
+    locked = run_workbench._fatal_reason(
+        sqlite3.OperationalError("database is locked")
+    )
+    assert "database is locked" in locked
+    assert "另一个" in locked or "第二个" in locked
+
+    missing = run_workbench._fatal_reason(ModuleNotFoundError("No module named 'foo'"))
+    assert "覆盖安装" in missing
+
+    mismatch = run_workbench._fatal_reason(sqlite3.OperationalError("no such column: x"))
+    assert "数据库结构" in mismatch
+
+    # 认不出的异常至少要把类型和消息带出来，别只剩一句「初始化失败」
+    other = run_workbench._fatal_reason(RuntimeError("boom"))
+    assert "RuntimeError" in other and "boom" in other
