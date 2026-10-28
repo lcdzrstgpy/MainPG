@@ -888,6 +888,32 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   applyCategoryRef.current = applyCategory;
 
   /**
+   * 右侧「发布检查」要贴着视口固定，但它上面压着可 pinned 的顶栏 ——
+   * 顶栏高度随 pin 状态变化，所以实测一次写进 CSS 变量，别在样式里写死数值。
+   */
+  useEffect(() => {
+    const syncRailTop = () => {
+      const bar = document.querySelector<HTMLElement>(".topbar-card");
+      const pinned = Boolean(bar?.classList.contains("is-pinned"));
+      const height = pinned && bar ? bar.getBoundingClientRect().height : 0;
+      document.documentElement.style.setProperty(
+        "--temu-rail-sticky-top",
+        `${Math.round(height + 18)}px`,
+      );
+    };
+    syncRailTop();
+    window.addEventListener("resize", syncRailTop);
+    const bar = document.querySelector(".topbar-card");
+    const observer = new MutationObserver(syncRailTop);
+    if (bar) observer.observe(bar, { attributes: true, attributeFilter: ["class"] });
+    return () => {
+      window.removeEventListener("resize", syncRailTop);
+      observer.disconnect();
+      document.documentElement.style.removeProperty("--temu-rail-sticky-top");
+    };
+  }, []);
+
+  /**
    * 类目是否有尺码表：服装/鞋类才有，宠物/家居这类没有。
    * 没有就把「尺码表模板 ID」藏掉，避免让人以为必填。接口失败按「有」处理（fail-open）。
    */

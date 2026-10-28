@@ -1652,6 +1652,29 @@ textarea.temu-input {
   }
 }
 
+/* 右侧「发布检查」跟着页面下滑固定在视口里：填长表单时不用一直往上翻。
+   --temu-rail-sticky-top 由页面实测（顶栏 pinned 时的高度 + 间距）写进来；
+   拿不到时用 132px 兜底，别在 CSS 里猜死。 */
+.is-console .temu-console-rail {
+  position: sticky;
+  top: var(--temu-rail-sticky-top, 132px);
+  align-self: start;
+  /* 内容比视口高时自己滚，不要把整页顶长 */
+  max-height: calc(100vh - var(--temu-rail-sticky-top, 132px) - 16px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+/* 窄屏是单列，侧栏跑到表单下面了，吸顶反而挡内容 */
+@media (max-width: 1180px) {
+  .is-console .temu-console-rail {
+    position: static;
+    max-height: none;
+    overflow: visible;
+  }
+}
+
 /* 每个步骤一张卡 */
 .is-console .temu-sec {
   display: grid;

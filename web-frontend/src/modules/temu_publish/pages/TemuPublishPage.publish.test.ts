@@ -834,3 +834,22 @@ test("草稿库区分「草稿自带分类」和「已选 Temu 类目」", () =>
   // 完整度只认发布页真选过的类目：自由文本不是类目 id，发布时照样得选
   assert.match(library, /if \(!categoryMemo\[entry\.id\]\?\.label\) missing\.push\("类目"\);/);
 });
+
+test("右侧「发布检查」下滑时固定在视口", () => {
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+
+  // 吸顶：top 用变量（顶栏 pin 状态不同高度不同），内容超高时自己滚
+  assert.match(css, /\.is-console \.temu-console-rail \{\n\s*position: sticky;/);
+  assert.match(css, /top: var\(--temu-rail-sticky-top, 132px\);/);
+  assert.match(css, /max-height: calc\(100vh - var\(--temu-rail-sticky-top, 132px\) - 16px\);/);
+  assert.match(css, /overscroll-behavior: contain;/);
+
+  // 窄屏变单列，侧栏跑到表单下面，不能再吸顶
+  assert.match(css, /@media \(max-width: 1180px\) \{\n\s*\.is-console \.temu-console-rail \{\n\s*position: static;/);
+
+  // 顶栏高度实测写入变量（顶栏 pinned 时才计算高度）
+  assert.match(page, /const syncRailTop = \(\) => \{/);
+  assert.match(page, /classList\.contains\("is-pinned"\)/);
+  assert.match(page, /setProperty\(\s*"--temu-rail-sticky-top",/);
+  assert.match(page, /new MutationObserver\(syncRailTop\)/);
+});
