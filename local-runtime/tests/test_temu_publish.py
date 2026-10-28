@@ -2116,3 +2116,76 @@ def test_unit_property_with_value_passes(tmp_path: Path) -> None:
     assert item["propValue"] == "2.5"
     assert item["numberInputValue"] == "2.5"
     assert item["valueUnit"] == "mm"
+
+
+def _library_payload(count: int = 75) -> dict[str, Any]:
+    entries = []
+    for index in range(count):
+        entries.append(
+            {
+                "source": "ai" if index % 2 == 0 else "pod",
+                "id": f"x:{index}",
+                "title": f"Table cloth {index}" if index % 3 else f"Phone case {index}",
+                "sku": f"SKU-{index:03d}",
+                "category_name": "家居 > 桌布" if index % 3 == 0 else "",
+                "updated_at": f"2026-10-2{index % 9} 10:00",
+            }
+        )
+    return {
+        "entries": entries,
+        "warnings": ["示例告警"],
+        "counts": {"ai": sum(1 for e in entries if e["source"] == "ai"), "pod": count // 2, "total": count},
+    }
+
+
+def test_draft_library_paginates_30_per_page() -> None:
+    """默认 30 条/页，页码越界要收敛到最后一页，而不是返回空。"""
+    from wh_local.modules.temu_publish.library import paginate_draft_library
+
+    payload = _library_payload(75)
+
+    first = paginate_draft_library(payload, page=1, page_size=30)
+    assert len(first["entries"]) == 30
+    assert first["total"] == 75
+    assert first["pages"] == 3
+    assert first["page"] == 1
+
+    last = paginate_draft_library(payload, page=3, page_size=30)
+    assert len(last["entries"]) == 15
+
+    beyond = paginate_draft_library(payload, page=99, page_size=30)
+    assert beyond["page"] == 3, "越界要夹到最后一页"
+    assert len(beyond["entries"]) == 15
+
+
+def test_draft_library_filters_by_source_and_query() -> None:
+    from wh_local.modules.temu_publish.library import paginate_draft_library
+
+    payload = _library_payload(75)
+
+    ai_only = paginate_draft_library(payload, source="ai", page=1, page_size=30)
+    assert all(item["source"] == "ai" for item in ai_only["entries"])
+    assert ai_only["total"] == 38
+    # counts 是全量的，筛选按钮上的数字不能跟着变
+    assert ai_only["counts"]["total"] == 75
+
+    searched = paginate_draft_library(payload, query="table cloth", page=1, page_size=30)
+    assert searched["total"] > 0
+    assert all("table cloth" in item["title"].lower() for item in searched["entries"])
+
+    by_sku = paginate_draft_library(payload, query="sku-00", page=1, page_size=30)
+    assert all(item["sku"].lower().startswith("sku-00") for item in by_sku["entries"])
+
+    by_category = paginate_draft_library(payload, query="桌布", page=1, page_size=30)
+    assert all("桌布" in item["category_name"] for item in by_category["entries"])
+
+
+def test_draft_library_keeps_warnings_and_reports_page_meta() -> None:
+    from wh_local.modules.temu_publish.library import paginate_draft_library
+
+    result = paginate_draft_library(_library_payload(10), source="", query="", page=1, page_size=30)
+
+    assert result["warnings"] == ["示例告警"]
+    assert result["page_size"] == 30
+    assert result["source"] == "all"
+    assert result["query"] == ""

@@ -751,3 +751,53 @@ test("产地/站外链接按 Temu 的格式约束", () => {
   // outerGoodsUrl 只收 https
   assert.ok(page.includes("站外产品链接必须是 https:// 开头的地址"), "站外链接要校验 https");
 });
+
+test("草稿库改成服务端分页，30 条/页（不再一次拉 80 条）", () => {
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+  const apiSrc = readFileSync(new URL("../api/temuPublishApi.ts", import.meta.url), "utf8");
+
+  assert.match(library, /const PAGE_SIZE = 30;/);
+  // 请求带 page/page_size/source/q，而不是只给一个 limit
+  assert.match(apiSrc, /draftLibrary: \(params: \{/);
+  assert.match(apiSrc, /page_size: params\.pageSize \?\? 30,/);
+  assert.match(library, /pageSize: PAGE_SIZE,/);
+  assert.match(library, /source: nextFilter === "all" \? "" : nextFilter,/);
+  assert.match(library, /q: override\?\.query \?\? query,/);
+  // 页码/页签/关键字变化才请求；不再前端 slice
+  assert.match(library, /\}, \[page, filter, query\]\);/);
+  assert.doesNotMatch(library, /visibleEntries\.slice\(/);
+  assert.doesNotMatch(library, /const pageSize = 50;/);
+});
+
+test("草稿库搜索防抖 + 页签切换回到第一页", () => {
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+
+  assert.match(library, /const SEARCH_DEBOUNCE_MS = 300;/);
+  assert.match(library, /const timer = window\.setTimeout\(\(\) => \{/);
+  assert.match(library, /if \(next !== query\) \{\n\s*setQuery\(next\);\n\s*setPage\(1\);/);
+  // 切页签清空勾选（勾选数与可见条数必须一致）
+  assert.match(library, /setFilter\(key\);/);
+});
+
+test("草稿库按发布 payload 把信息摆出来（类目/价格分/库存/尺寸/完整度）", () => {
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+
+  // 完整度：缺类目/申报价/货号/重量/尺寸 会被点名
+  assert.match(library, /function draftMissingFields\(/);
+  assert.match(library, /missing\.push\("类目"\)/);
+  assert.match(library, /missing\.push\("申报价"\)/);
+  assert.match(library, /missing\.push\("货号"\)/);
+  assert.match(library, /missing\.push\("重量"\)/);
+  assert.match(library, /missing\.push\("尺寸"\)/);
+  assert.match(library, /temu-ready is-ok/);
+  assert.match(library, /缺 \{missing\.join\(" \/ "\)\}/);
+
+  // 申报价同时给「元」和「分」：发布页填的是分，免得再乘 100
+  assert.match(library, /\{Math\.round\(price \* 100\)\} 分/);
+  // 未填与 0 的语义分开
+  assert.match(library, /temu-draft-missing/);
+  assert.match(library, /title="0 库存仍可建品，但在店里是不可售状态"/);
+  // 尺寸重量摘要
+  assert.match(library, /function specSummary\(/);
+  assert.match(library, /return `\$\{dim\} cm · \$\{weightText\}`;/);
+});

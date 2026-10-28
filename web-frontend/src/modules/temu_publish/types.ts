@@ -280,7 +280,15 @@ export type TemuDraftEntry = {
 export type TemuDraftLibrary = {
   entries: TemuDraftEntry[];
   warnings: string[];
+  /** 全量计数（不随筛选变化）：筛选按钮上的数字要稳定 */
   counts: { ai: number; pod: number; total: number };
+  /** 过滤后的总条数（= 总页数 × 每页条数的来源） */
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
+  source: "all" | "ai" | "pod";
+  query: string;
 };
 
 export const TEMU_PUBLISH_PREFILL_KEY = "temu_publish_prefill_v1";

@@ -682,6 +682,15 @@ textarea.temu-input {
   overflow: visible;
   padding: 4px 2px 8px;
 }
+/* 11 列在窄屏会顶出去：给表格一个下限，外层允许横向滚动 */
+@media (max-width: 1180px) {
+  .temu-draft-table-wrap {
+    overflow-x: auto;
+  }
+  .temu-draft-table {
+    min-width: 980px;
+  }
+}
 .temu-draft-table {
   width: 100%;
   border-collapse: collapse;
@@ -714,32 +723,43 @@ textarea.temu-input {
   width: 40px;
 }
 .temu-draft-table .col-title {
-  width: 36%;
+  width: 19%;
 }
 .temu-draft-table .col-image {
-  width: 88px;
+  width: 62px;
 }
-.temu-draft-table .col-site {
-  width: 220px;
+/* 类目：发布前必须选到叶子类目，独立成列，不再挤在「站点」里 */
+.temu-draft-table .col-cat {
+  width: 14%;
 }
 .temu-draft-table .col-sku {
-  width: 132px;
+  width: 94px;
   font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 0.74rem;
   word-break: break-all;
 }
 .temu-draft-table .col-price {
-  width: 80px;
+  width: 84px;
   font-weight: 800;
 }
+.temu-draft-table .col-stock {
+  width: 44px;
+  text-align: center;
+}
+.temu-draft-table .col-spec {
+  width: 108px;
+}
+.temu-draft-table .col-ready {
+  width: 92px;
+}
 .temu-draft-table .col-time {
-  width: 124px;
+  width: 80px;
   color: #6b8296;
   font-size: 0.74rem;
   white-space: nowrap;
 }
 .temu-draft-table .col-actions {
-  width: 92px;
+  width: 88px;
   text-align: right;
 }
 .temu-draft-thumb-wrap {
@@ -2802,4 +2822,88 @@ textarea.temu-input {
   border-color: #f0a020;
   color: #8a5a00;
   background: #fff8e8;
+}
+
+
+/* ---------- 草稿库：完整度 / 缺项 / 搜索（结构重排后新增） ---------- */
+
+.temu-draft-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+/* 说明文字靠右，让 [页签][搜索] … [批次说明][失败历史] 排成一行 */
+.temu-draft-meta {
+  margin-left: auto;
+}
+.temu-draft-search .temu-input {
+  width: 220px;
+  min-height: 30px;
+  font-size: 0.78rem;
+}
+
+/* 「未填」用红字，跟「0」区分开：0 是合法值，未填是发不出去 */
+.temu-draft-table .temu-draft-missing {
+  color: #e2384a;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+.temu-draft-table .col-cat small.is-missing {
+  color: #e2384a;
+}
+.temu-draft-table .col-cat .temu-draft-site {
+  display: block;
+  margin-top: 2px;
+  color: #8aa0b2;
+  font-size: 0.68rem;
+  font-style: normal;
+}
+.temu-draft-table .col-price em {
+  display: block;
+  color: #8aa0b2;
+  font-size: 0.66rem;
+  font-style: normal;
+  font-weight: 700;
+  line-height: 1.3;
+}
+.temu-draft-table .col-price em.is-estimated {
+  color: #c98a00;
+}
+.temu-draft-table .col-stock .is-zero {
+  color: #c98a00;
+  font-weight: 800;
+}
+.temu-draft-table .col-spec em {
+  color: #5b7386;
+  font-size: 0.7rem;
+  font-style: normal;
+  line-height: 1.35;
+}
+
+/* 完整度徽章：绿=可发，橙=缺项（把缺什么直接写在格子里） */
+.temu-ready {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.temu-ready.is-ok {
+  color: #177245;
+  background: #e6f6ec;
+}
+.temu-ready.is-warn {
+  color: #a35a00;
+  background: #fff3e0;
+  white-space: normal;
+  line-height: 1.35;
+  text-align: left;
+}
+
+/* 翻页请求进行中：保留上一页内容并压暗，比闪成空白稳 */
+.temu-draft-table-wrap.is-loading {
+  opacity: 0.45;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
 }

@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from ...session import Actor, actor_from_authorization
 from .client import TemuCredentialMissing, TemuGatewayError
 from .submissions import DuplicateSubmission
-from .library import collect_draft_library
+from .library import collect_all_draft_entries, paginate_draft_library
 from .schemas import (
     DetailImageUploadRequest,
     DimensionCheckRequest,
@@ -210,32 +210,40 @@ def create_temu_publish_router(
 
     @router.get("/draft-library")
     def draft_library(
-        limit: int = Query(default=60, ge=1, le=200),
+        limit: int = Query(default=200, ge=1, le=500, description="聚合上限（全量），不是每页条数"),
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=30, ge=1, le=100),
+        source: str = Query(default="", description="ai / pod，留空=全部"),
+        q: str = Query(default="", max_length=120, description="标题/货号/类目关键字"),
         refresh: bool = Query(default=False, description="true=跳过 60 秒缓存，强制重扫"),
         actor: Actor = Depends(actor_from_authorization),
     ) -> dict[str, Any]:
-        """聚合 AI 处理结果与 POD 成品，供发布页一键带入。
+        """聚合 AI 处理结果与 POD 成品，供发布页一键带入（服务端分页）。
 
-        结果缓存 60 秒（按账号 + limit）：草稿库切进切出不用重扫任务和批次。
+        扫描任务/批次很贵，所以**全量聚合结果**按账号缓存 60 秒；
+        来源筛选、关键字搜索、翻页都只在缓存上切片，翻页不会触发重扫。
         """
         key = (actor.id, limit)
         now = time.time()
+        cached: dict[str, Any] | None = None
         if not refresh:
             with _LIBRARY_CACHE_LOCK:
                 hit = _LIBRARY_CACHE.get(key)
             if hit and now - hit[0] < _LIBRARY_CACHE_TTL:
-                return hit[1]
+                cached = hit[1]
 
-        pod_service = pod_service_getter() if callable(pod_service_getter) else None
-        result = collect_draft_library(
-            product_processing=product_processing,
-            pod_service=pod_service,
-            actor=actor,
-            limit=limit,
-        )
-        with _LIBRARY_CACHE_LOCK:
-            _LIBRARY_CACHE[key] = (now, result)
-        return result
+        if cached is None:
+            pod_service = pod_service_getter() if callable(pod_service_getter) else None
+            cached = collect_all_draft_entries(
+                product_processing=product_processing,
+                pod_service=pod_service,
+                actor=actor,
+                limit=limit,
+            )
+            with _LIBRARY_CACHE_LOCK:
+                _LIBRARY_CACHE[key] = (now, cached)
+
+        return paginate_draft_library(cached, source=source, query=q, page=page, page_size=page_size)
 
     # ---------- 发布配套查询 ----------
 

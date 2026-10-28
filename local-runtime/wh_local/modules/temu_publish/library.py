@@ -20,8 +20,40 @@ from ..product_processing.domain.workbooks import (
 AI_FINISHED_STATUSES = {"completed", "partial_failure", "cancelled"}
 POD_FINISHED_STATUSES = {"completed", "partial_failure"}
 
+DEFAULT_PAGE_SIZE = 30
+MAX_PAGE_SIZE = 100
+
 
 def collect_draft_library(
+    *,
+    product_processing: Any,
+    pod_service: Any,
+    actor: Actor,
+    limit: int = 60,
+    task_limit: int = 8,
+    batch_limit: int = 6,
+    source: str = "",
+    query: str = "",
+    page: int = 1,
+    page_size: int = DEFAULT_PAGE_SIZE,
+) -> dict[str, Any]:
+    """聚合 + 过滤 + 分页。
+
+    聚合本身要扫任务和批次（贵），所以 router 会把**全量结果**缓存起来，
+    分页只在缓存上切片 —— 翻页不该让后端重扫一遍。
+    """
+    payload = collect_all_draft_entries(
+        product_processing=product_processing,
+        pod_service=pod_service,
+        actor=actor,
+        limit=limit,
+        task_limit=task_limit,
+        batch_limit=batch_limit,
+    )
+    return paginate_draft_library(payload, source=source, query=query, page=page, page_size=page_size)
+
+
+def collect_all_draft_entries(
     *,
     product_processing: Any,
     pod_service: Any,
@@ -65,6 +97,54 @@ def collect_draft_library(
             "pod": sum(1 for item in entries if item["source"] == "pod"),
             "total": len(entries),
         },
+    }
+
+
+def _matches_query(item: dict[str, Any], needle: str) -> bool:
+    """关键字匹配标题 / 货号 / 类目 / 批次名（都转小写，中文原样子串匹配）。"""
+    haystack = " ".join(
+        str(item.get(key) or "")
+        for key in ("title", "sku", "category_name", "subtitle")
+    ).lower()
+    return needle in haystack
+
+
+def paginate_draft_library(
+    payload: dict[str, Any],
+    *,
+    source: str = "",
+    query: str = "",
+    page: int = 1,
+    page_size: int = DEFAULT_PAGE_SIZE,
+) -> dict[str, Any]:
+    """在已聚合的全量结果上做来源过滤 + 关键字搜索 + 分页切片。"""
+    all_entries = [item for item in payload.get("entries") or [] if isinstance(item, dict)]
+    wanted = str(source or "").strip().lower()
+    needle = str(query or "").strip().lower()
+
+    filtered = all_entries
+    if wanted in {"ai", "pod"}:
+        filtered = [item for item in filtered if item.get("source") == wanted]
+    if needle:
+        filtered = [item for item in filtered if _matches_query(item, needle)]
+
+    size = max(1, min(MAX_PAGE_SIZE, int(page_size or DEFAULT_PAGE_SIZE)))
+    total = len(filtered)
+    pages = max(1, (total + size - 1) // size)
+    current = max(1, min(pages, int(page or 1)))
+    start = (current - 1) * size
+
+    return {
+        "entries": filtered[start : start + size],
+        "warnings": list(payload.get("warnings") or []),
+        # counts 是全量的（筛选按钮上的数字要稳定，不能跟着筛选一起变）
+        "counts": dict(payload.get("counts") or {}),
+        "total": total,
+        "page": current,
+        "page_size": size,
+        "pages": pages,
+        "source": wanted if wanted in {"ai", "pod"} else "all",
+        "query": str(query or "").strip(),
     }
 
 
