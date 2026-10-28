@@ -1,7 +1,7 @@
 """Temu 商品发布配套服务。
 
 职责：
-- 凭证存取：盈銮 client/token 与店铺 access_token 加密存入 secret_values，环境变量兜底。
+- 凭证存取：服务商 client/token 与店铺 access_token 加密存入 secret_values，环境变量兜底。
 - 发布配套查询：类目、属性、父规格、包装清单、运费模板、仓库、图片上传。
 - 发布请求体组装与校验：只生成 goods.add 的 payload，不提交。
 """
@@ -9,9 +9,12 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import ipaddress
+import json
 import os
 import socket
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -39,6 +42,11 @@ LEGACY_SCOPE = SECRET_SCOPE
 # 这种凭证允许被第一个登录的账号认领一次（认领后改成该账号），之后别人不会自动继承。
 BOOTSTRAP_ACTORS = {"", "system-bootstrap", "local-demo-admin", "system"}
 SECRET_NAMES = ("yl_client", "yl_token", "access_token")
+# 多店铺：每个店铺存成一条 name = "shop:<id>" 的加密 JSON（含店铺名与 token），
+# 当前启用的店铺 id 存在 "active_shop"；`access_token` 始终是「当前店铺」的镜像，
+# 这样 client()/发布等所有既有链路都不用改。
+SHOP_PREFIX = "shop:"
+ACTIVE_SHOP_NAME = "active_shop"
 ENV_FALLBACKS = {
     "yl_client": "WH_TEMU_YL_CLIENT",
     "yl_token": "WH_TEMU_YL_TOKEN",
@@ -112,6 +120,10 @@ class TemuCredentialStore:
             ).fetchall()
             if not rows:
                 return
+            # 只看凭证字段：shop:/active_shop 是派生数据，混进来会让判定失真
+            rows = [row for row in rows if str(row["name"]) in SECRET_NAMES]
+            if not rows:
+                return
             owners = {str(row["updated_by"] or "") for row in rows}
             mine = owners == {self.owner_id}
             claimable = owners <= BOOTSTRAP_ACTORS
@@ -138,18 +150,23 @@ class TemuCredentialStore:
                     )
 
     def clear(self, actor_id: str) -> None:
-        """解绑本人的店铺：删掉这个账号作用域下的全部凭证。
+        """解绑本人的店铺：**只删店铺授权（access_token）**。
 
-        历史全局作用域（LEGACY_SCOPE）里 `updated_by == 本人` 的行也要一起删：
-        那是本人当初认领过来的，只删自己 scope 的话，下次读凭证 `_adopt_legacy`
-        会把它们原样迁回来 —— 界面上就是「解绑了但 token 还在」。
+        `yl_client` / `yl_token` 是服务商级别的凭据，跟具体哪家店铺无关：
+        换一家店、重新授权都还要用同一对，所以解绑时保留，否则每次换店都得让对方再发一遍。
+
+        历史全局作用域（LEGACY_SCOPE）里 `updated_by == 本人` 的 access_token 也要删：
+        只删自己 scope 的话，下次读凭证 `_adopt_legacy` 会把它原样迁回来（解绑了又复活）。
         """
         with transaction(self.database_path) as conn:
-            conn.execute("DELETE FROM secret_values WHERE scope = ?", (self.scope(),))
+            conn.execute(
+                "DELETE FROM secret_values WHERE scope = ? AND name IN (?, ?)",
+                (self.scope(), "access_token", ACTIVE_SHOP_NAME),
+            )
             if self.owner_id:
                 conn.execute(
-                    "DELETE FROM secret_values WHERE scope = ? AND updated_by = ?",
-                    (LEGACY_SCOPE, self.owner_id),
+                    "DELETE FROM secret_values WHERE scope = ? AND name = ? AND updated_by = ?",
+                    (LEGACY_SCOPE, "access_token", self.owner_id),
                 )
 
     def save(self, payload: Any, actor_id: str) -> None:
@@ -181,6 +198,176 @@ class TemuCredentialStore:
                     (self.scope(), name, encrypt_secret(str(value).strip()), actor_id, now),
                 )
 
+    # ---------- 多店铺 ----------
+
+    @staticmethod
+    def shop_id_of(access_token: str) -> str:
+        """店铺 id 由 token 推出：同一个 token 重复保存不会出现两条。"""
+        digest = hashlib.sha256(str(access_token or "").strip().encode("utf-8")).hexdigest()
+        return f"shop_{digest[:12]}"
+
+    def _shop_rows(self) -> dict[str, dict[str, str]]:
+        shops = self._read_shop_rows()
+        if not shops:
+            # 老账号只存过单个 access_token：补一条店铺记录，否则列表是空的、
+            # 用户会以为要重新贴一遍（其实 token 还在）。
+            self._adopt_current_token_as_shop()
+            shops = self._read_shop_rows()
+        return shops
+
+    def _adopt_current_token_as_shop(self) -> None:
+        # 只有「某个账号」才补店铺记录：全局作用域（脚本/无 owner）不该产生这类行，
+        # 否则会在 legacy 归属判定里混进 updated_by="" 的行，把「只迁给本人」判坏。
+        if not self.owner_id:
+            return
+        token = self._load_stored().get("access_token", "")
+        if not token:
+            return
+        try:
+            self.save_shop(token, "", "")
+        except Exception:  # noqa: BLE001 - 迁移失败不能影响读状态
+            return
+
+    def _read_shop_rows(self) -> dict[str, dict[str, str]]:
+        with transaction(self.database_path) as conn:
+            rows = conn.execute(
+                "SELECT name, ciphertext FROM secret_values WHERE scope = ? AND name LIKE ?",
+                (self.scope(), f"{SHOP_PREFIX}%"),
+            ).fetchall()
+        shops: dict[str, dict[str, str]] = {}
+        for row in rows:
+            try:
+                payload = json.loads(decrypt_secret(str(row["ciphertext"])))
+            except Exception:  # noqa: BLE001 - 单条损坏不能让整个设置页崩
+                continue
+            if not isinstance(payload, dict):
+                continue
+            shop_id = str(row["name"])[len(SHOP_PREFIX) :]
+            shops[shop_id] = {
+                "id": shop_id,
+                "mall_name": str(payload.get("mall_name") or ""),
+                "access_token": str(payload.get("access_token") or ""),
+                "added_at": str(payload.get("added_at") or ""),
+                "last_used_at": str(payload.get("last_used_at") or ""),
+            }
+        return shops
+
+    def _active_shop_id(self) -> str:
+        with transaction(self.database_path) as conn:
+            row = conn.execute(
+                "SELECT ciphertext FROM secret_values WHERE scope = ? AND name = ?",
+                (self.scope(), ACTIVE_SHOP_NAME),
+            ).fetchone()
+        if not row:
+            return ""
+        try:
+            return str(decrypt_secret(str(row["ciphertext"]))).strip()
+        except RuntimeError:
+            return ""
+
+    def list_shops(self) -> list[dict[str, Any]]:
+        """已保存的店铺（按最近使用排在前面），当前启用那条标 active。"""
+        shops = self._shop_rows()
+        active = self._active_shop_id()
+        rows = list(shops.values())
+        rows.sort(key=lambda item: item.get("last_used_at") or item.get("added_at") or "", reverse=True)
+        return [
+            {
+                "id": item["id"],
+                "mall_name": item["mall_name"],
+                "masked_token": _hint(item["access_token"]),
+                "added_at": item["added_at"],
+                "last_used_at": item["last_used_at"],
+                "active": item["id"] == active,
+            }
+            for item in rows
+        ]
+
+    def save_shop(self, access_token: str, mall_name: str, actor_id: str) -> str:
+        """保存（或更新）一个店铺并设为当前。返回店铺 id。"""
+        token = str(access_token or "").strip()
+        if not token:
+            raise ValueError("店铺 access_token 不能为空")
+        shop_id = self.shop_id_of(token)
+        now = datetime.now().astimezone().isoformat(timespec="seconds")
+        existing = self._read_shop_rows().get(shop_id) or {}
+        payload = {
+            "mall_name": str(mall_name or existing.get("mall_name") or ""),
+            "access_token": token,
+            "added_at": existing.get("added_at") or now,
+            "last_used_at": now,
+        }
+        with transaction(self.database_path) as conn:
+            self._write_secret(conn, f"{SHOP_PREFIX}{shop_id}", json.dumps(payload, ensure_ascii=False), actor_id, now)
+            self._write_secret(conn, ACTIVE_SHOP_NAME, shop_id, actor_id, now)
+            # access_token 镜像 = 当前店铺，保持既有链路（client()/发布）不变
+            self._write_secret(conn, "access_token", token, actor_id, now)
+        return shop_id
+
+    def rename_active_shop(self, mall_name: str) -> None:
+        """校验拿到店铺名后，把名字补回当前店铺记录（列表里就不用显示「未命名」）。"""
+        name = str(mall_name or "").strip()
+        shop_id = self._active_shop_id()
+        if not name or not shop_id:
+            return
+        target = self._read_shop_rows().get(shop_id)
+        if target is None or target.get("mall_name") == name:
+            return
+        now = datetime.now().astimezone().isoformat(timespec="seconds")
+        payload = {
+            "mall_name": name,
+            "access_token": target["access_token"],
+            "added_at": target.get("added_at") or now,
+            "last_used_at": target.get("last_used_at") or now,
+        }
+        with transaction(self.database_path) as conn:
+            self._write_secret(conn, f"{SHOP_PREFIX}{shop_id}", json.dumps(payload, ensure_ascii=False), "", now)
+
+    def activate_shop(self, shop_id: str, actor_id: str) -> str:
+        shops = self._shop_rows()
+        target = shops.get(str(shop_id))
+        if target is None:
+            raise ValueError("没有这个店铺，可能已被删除")
+        now = datetime.now().astimezone().isoformat(timespec="seconds")
+        payload = {
+            "mall_name": target["mall_name"],
+            "access_token": target["access_token"],
+            "added_at": target["added_at"] or now,
+            "last_used_at": now,
+        }
+        with transaction(self.database_path) as conn:
+            self._write_secret(conn, f"{SHOP_PREFIX}{shop_id}", json.dumps(payload, ensure_ascii=False), actor_id, now)
+            self._write_secret(conn, ACTIVE_SHOP_NAME, str(shop_id), actor_id, now)
+            self._write_secret(conn, "access_token", target["access_token"], actor_id, now)
+        return str(shop_id)
+
+    def remove_shop(self, shop_id: str, actor_id: str) -> None:
+        """删掉一个店铺；删的是当前店铺时，顺手停用（不再自动启用别的店）。"""
+        with transaction(self.database_path) as conn:
+            conn.execute(
+                "DELETE FROM secret_values WHERE scope = ? AND name = ?",
+                (self.scope(), f"{SHOP_PREFIX}{shop_id}"),
+            )
+        if self._active_shop_id() == str(shop_id):
+            with transaction(self.database_path) as conn:
+                conn.execute(
+                    "DELETE FROM secret_values WHERE scope = ? AND name IN (?, ?)",
+                    (self.scope(), ACTIVE_SHOP_NAME, "access_token"),
+                )
+
+    def _write_secret(self, conn: Any, name: str, value: str, actor_id: str, now: str) -> None:
+        conn.execute(
+            """
+            INSERT INTO secret_values(scope, name, ciphertext, updated_by, updated_at)
+            VALUES(?, ?, ?, ?, ?)
+            ON CONFLICT(scope, name) DO UPDATE SET
+                ciphertext = excluded.ciphertext,
+                updated_by = excluded.updated_by,
+                updated_at = excluded.updated_at
+            """,
+            (self.scope(), name, encrypt_secret(value), actor_id, now),
+        )
+
     def status(self) -> dict[str, Any]:
         values = self._load_values()
         stored = set(self._load_stored())
@@ -199,6 +386,9 @@ class TemuCredentialStore:
             },
             "hints": {name: _hint(values.get(name, "")) for name in SECRET_NAMES},
             "owner": {"account_id": self.owner_id, "scope": scope, "personal": scope != LEGACY_SCOPE},
+            # 已保存的店铺（可以多个）：换店点一下就切，不用重新贴 token
+            "shops": self.list_shops(),
+            "active_shop_id": self._active_shop_id(),
         }
 
 
@@ -250,7 +440,7 @@ class TemuPublishService:
         credentials = self.store.load()
         if not credentials.complete():
             raise TemuCredentialMissing(
-                "Temu 发布凭证未配置完整：需要盈銮 client/token 与店铺 access_token"
+                "Temu 发布凭证未配置完整：需要服务商 client/token 与店铺 access_token"
             )
         key = (credentials.client, credentials.token, credentials.access_token)
         if self._client is None or self._client_key != key:
@@ -276,6 +466,51 @@ class TemuPublishService:
         self._client = self._client_override
         self._client_key = None
         self._token_cache = None
+        return self.settings_status()
+
+    def _reset_client(self) -> None:
+        """凭证变了：丢掉旧客户端与所有缓存（否则还在用上一家店的 token）。"""
+        self._client = self._client_override
+        self._client_key = None
+        self._token_cache = None
+        self._read_cache.clear()
+
+    def list_shops(self) -> dict[str, Any]:
+        return self.settings_status()
+
+    def add_shop(self, access_token: str, mall_name: str, actor_id: str) -> dict[str, Any]:
+        """保存一家店并启用：**先用这条 token 打一次网关，成功才落库**。
+
+        失败（token 无效/没绑应用/网络）原样抛出去，前端会显示具体原因，
+        库里不会留下一条坏店铺 —— 这就是「成功就可以保存」的含义。
+        """
+        token = str(access_token or "").strip()
+        if not token:
+            raise ValueError("店铺 access_token 不能为空")
+        creds = self.store.load()
+        if not (creds.client and creds.token):
+            raise TemuCredentialMissing("服务商 client/token 还没配置，无法校验店铺 token")
+        probe = TemuProductClient(
+            TemuCredentials(client=creds.client, token=creds.token, access_token=token),
+            timeout=30,
+            max_attempts=1,
+        )
+        info = probe.token_info()
+        resolved_name = str(mall_name or info.get("mallName") or "").strip()
+        if not resolved_name and not info:
+            raise ValueError("这条 token 没有返回店铺信息，请确认是店铺的 access_token")
+        self.store.save_shop(token, resolved_name, actor_id)
+        self._reset_client()
+        return {**self.settings_status(), "verified": True, "mall_name": resolved_name}
+
+    def activate_shop(self, shop_id: str, actor_id: str) -> dict[str, Any]:
+        self.store.activate_shop(shop_id, actor_id)
+        self._reset_client()
+        return self.settings_status()
+
+    def remove_shop(self, shop_id: str, actor_id: str) -> dict[str, Any]:
+        self.store.remove_shop(shop_id, actor_id)
+        self._reset_client()
         return self.settings_status()
 
     TOKEN_CACHE_TTL = 600.0
@@ -307,6 +542,8 @@ class TemuPublishService:
         import time as _time  # noqa: PLC0415
 
         self._token_cache = (_time.time(), info)
+        # 校验顺手拿到店铺名：补进列表，用户不用再猜哪条是哪家店
+        self.store.rename_active_shop(info["mall_name"])
         return info
 
     # ---------- 发布配套查询 ----------
@@ -471,7 +708,7 @@ class TemuPublishService:
     def check_mandatory(self, draft: GoodsDraftInput) -> dict[str, Any]:
         """发布前校验这个叶子类目还缺什么。
 
-        优先走文档里的 `bg.glo.goods.catsmandatory.get`；但**盈銮网关实测不支持它**
+        优先走文档里的 `bg.glo.goods.catsmandatory.get`；但**网关实测不支持它**
         （2026-10-26 真调，PARTNER / CN 两个网关都返回 `sign is invalid`），
         所以失败时退回本地 `attrs.get` 的必填标记做校验 —— 结论一样能用，只是少了
         网关侧的额外规则。
@@ -505,6 +742,157 @@ class TemuPublishService:
                 "summary": built["summary"],
                 "warnings": built["warnings"],
             }
+
+    def search_goods(
+        self, *, ext_code: str = "", title: str = "", page: int = 1, page_size: int = 20
+    ) -> dict[str, Any]:
+        """按 SKC 货号 / 标题查店铺里的商品（列表接口，比详情接口稳）。"""
+        filters: dict[str, Any] = {"page": int(page), "pageSize": int(page_size)}
+        if str(ext_code or "").strip():
+            filters["skcExtCode"] = str(ext_code).strip()
+        if str(title or "").strip():
+            filters["productName"] = str(title).strip()[:120]
+        cache_key = "goods:" + "|".join(f"{k}={v}" for k, v in sorted(filters.items()))
+        result = self._read_cached(cache_key, lambda: self.client().goods_list(**filters))
+        items = [_compact_goods_item(item) for item in result.get("data") or [] if isinstance(item, dict)]
+        return {"total": int(result.get("totalCount") or 0), "items": items}
+
+    def low_stock_goods(
+        self,
+        *,
+        limit: int = 60,
+        page_size: int = 20,
+        max_pages: int = 30,
+        only_zero: bool = True,
+    ) -> dict[str, Any]:
+        """扫店铺商品，挑出「有 SKU 库存为 0」的商品（待补库存清单）。
+
+        只走 `bg.glo.goods.list.get`（这个接口有权限），逐页翻到 limit 或翻完为止；
+        每页结果复用 180 秒读缓存，重复点开不会重复打网关。
+
+        实测网关**每页最多返回 20 条**（pageSize 传 50/100 也还是 20），一页约 1.5 秒，
+        所以默认只扫到「命中 limit 个商品」就停（本店 95% 商品都是 0 库存，约 4 页）。
+
+        ⚠️ 改库存的 `bg.btg.goods.stock.quantity.update` 目前**未开通**，
+        所以这里只产出清单（导出去后台改），不写任何数据。
+        """
+        want = max(1, int(limit))
+        # 20 是网关的硬上限，传更大只会让我们误以为翻了 100 条
+        size = max(1, min(20, int(page_size)))
+        items: list[dict[str, Any]] = []
+        scanned = 0
+        total = 0
+        page = 1
+        while page <= max(1, int(max_pages)) and len(items) < want:
+            cache_key = f"goods:page={page}|pageSize={size}"
+            result = self._read_cached(
+                cache_key, lambda p=page: self.client().goods_list(page=p, page_size=size)
+            )
+            rows = [row for row in result.get("data") or [] if isinstance(row, dict)]
+            if not rows:
+                break
+            total = int(result.get("totalCount") or total or 0)
+            for row in rows:
+                compact = _compact_goods_item(row)
+                zero_count = int(compact["zero_stock_sku_count"])
+                if only_zero and zero_count <= 0:
+                    continue
+                items.append(compact)
+                if len(items) >= want:
+                    break
+            scanned += len(rows)
+            if total and scanned >= total:
+                break
+            page += 1
+        zero_skus = sum(int(item["zero_stock_sku_count"]) for item in items)
+        return {
+            "scanned": scanned,
+            "total": total,
+            "items": items,
+            "zero_sku_count": zero_skus,
+            "only_zero": bool(only_zero),
+            # 改库存接口没权限，界面要如实说明「这是清单，不是已经改好了」
+            "can_update_stock": False,
+        }
+
+    def size_charts(self, cat_id: int) -> dict[str, Any]:
+        """这个类目是否需要/有哪些尺码表。
+
+        只回答「有没有」—— 非空时的返回结构本店拿不到样例（宠物用品类目全是 null），
+        所以不猜字段名，原样把 raw 带回去给以后用。
+        """
+        if int(cat_id) <= 0:
+            return {"cat_id": 0, "has_size_chart": False, "count": 0, "raw": None}
+        result = self._read_cached(
+            f"size-charts:{int(cat_id)}", lambda: self.client().size_charts(int(cat_id))
+        )
+        items = result.get("sizeSpecDataList")
+        rows = items if isinstance(items, list) else []
+        return {
+            "cat_id": int(cat_id),
+            "has_size_chart": bool(rows),
+            "count": len(rows),
+            # 结构未知，原样返回（真要用时先看这条）
+            "raw": rows[:3],
+        }
+
+    def goods_detail(self, product_id: int) -> dict[str, Any]:
+        """商品详情。个别商品会返回「无权访问」（991000001），由调用方提示用户。"""
+        return self._read_cached(
+            f"goods-detail:{int(product_id)}", lambda: self.client().goods_detail(int(product_id))
+        )
+
+    def dimension_check(
+        self, image_url: str, *, mall_id: str, cat_id: int | None = None, class_id: int | None = None
+    ) -> dict[str, Any]:
+        """提交尺寸图检测（异步）：返回 uniqueId，再用 dimension_check_result 查结果。"""
+        if not str(mall_id or "").strip():
+            raise ValueError("尺寸图检测需要 mallId（Temu 店铺 id），请在卖家后台查到后填入")
+        return self.client().dimension_image_check(
+            image_url, mall_id=mall_id, cat_id=cat_id, class_id=class_id
+        )
+
+    def dimension_check_result(self, task_id: str, *, mall_id: str) -> dict[str, Any]:
+        if not str(mall_id or "").strip():
+            raise ValueError("查询尺寸图检测结果需要 mallId")
+        return self.client().dimension_image_check_result(task_id, mall_id=mall_id)
+
+    def find_published_goods(self, draft: GoodsDraftInput, *, within_seconds: int = 1800) -> dict[str, Any] | None:
+        """在店铺里按 SKC 货号反查这件商品（发布后核对用）。
+
+        只认「带同样 skc extCode + 最近半小时内创建」的那条，避免同名老商品误判。
+        查不到（或接口不可用）返回 None —— 调用方自己决定怎么处理。
+        """
+        codes = [str(skc.ext_code).strip() for skc in draft.skcs if str(skc.ext_code).strip()][:5]
+        sites = sorted({int(sku.site_id) for skc in draft.skcs for sku in skc.skus if int(sku.site_id) > 0})
+        started = int(time.time()) - max(60, int(within_seconds))
+        for code in codes:
+            try:
+                result = self.client().goods_list(
+                    skcExtCode=code,
+                    bindSiteIds=sites or None,
+                    createdAtStart=started,
+                    page=1,
+                    pageSize=10,
+                )
+            except Exception:  # noqa: BLE001 - 反查失败不能影响主流程
+                continue
+            for item in result.get("data") or []:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("extCode") or "").strip() != code:
+                    continue
+                created_ms = int(item.get("createdAt") or 0)
+                if created_ms and created_ms / 1000 < started - 120:
+                    continue
+                return {
+                    "product_id": str(item.get("productId") or ""),
+                    "product_name": str(item.get("productName") or ""),
+                    "ext_code": code,
+                    "created_at": created_ms,
+                    "site_status": item.get("skcSiteStatus"),
+                }
+        return None
 
     # ---------- 真正提交发布（bg.glo.goods.add，非幂等） ----------
 
@@ -544,6 +932,36 @@ class TemuPublishService:
         try:
             result = self.client().add_goods(payload)
         except Exception as exc:  # noqa: BLE001 - 失败也要回写台账再原样抛出
+            # 网络类失败（超时/连接被掐）很可能其实已经建成功了：去店铺里反查一次，
+            # 查到就按「已创建」处理，避免用户重试导致重复上架。
+            if isinstance(exc, TemuGatewayError) and exc.error_code in {
+                "NETWORK_ERROR",
+                "UPSTREAM_ERROR",
+            }:
+                found = self.find_published_goods(draft)
+                if found:
+                    submission_ledger.finish(
+                        self.database_path,
+                        submission_id,
+                        "success",
+                        gid=str(found.get("product_id") or ""),
+                    )
+                    warnings = list(built["warnings"]) + [
+                        "提交时网络中断，但在店铺里已经查到这件商品"
+                        f"（id {found.get('product_id') or '未知'}），按已创建处理：先不要再提交，"
+                        "去后台确认内容和库存即可。"
+                    ]
+                    return {
+                        "submitted": True,
+                        "confirmed_by_lookup": True,
+                        "matched_goods": found,
+                        "api_type": "bg.glo.goods.add",
+                        "result": {},
+                        "summary": built["summary"],
+                        "warnings": warnings,
+                        "request_payload": payload,
+                        "submission_id": submission_id,
+                    }
             submission_ledger.finish(self.database_path, submission_id, "failed", error=str(exc))
             raise
         submission_ledger.finish(
@@ -582,6 +1000,12 @@ def _assemble_payload(
         for sku in skc.skus:
             if sku.thumb_url:
                 _validate_https_urls(f"thumbUrl({sku.ext_code})", [sku.thumb_url])
+
+    # 库存 0 是允许的（Temu 会建品但前台不可售），但要让人知道自己发的是什么状态
+    if any(int(sku.stock) == 0 for skc in draft.skcs for sku in skc.skus):
+        warnings.append(
+            "有 SKU 库存为 0：Temu 允许提交，商品会处于「售罄/不可售」状态，开卖前记得补库存。"
+        )
 
     _ensure_unique([skc.ext_code for skc in draft.skcs], "SKC ext_code")
     _ensure_unique(
@@ -649,6 +1073,16 @@ def _assemble_payload(
             }
             if sku.thumb_url:
                 sku_req["thumbUrl"] = sku.thumb_url
+            if int(sku.pieces_per_pack) > 1:
+                # 结构与真实成功案例一致（bg.glo.goods.add，productId 9282408501）
+                sku_req["productSkuMultiPackReq"] = {
+                    "pieceUnitCode": 1,
+                    "numberOfPieces": 1,
+                    "pieceNewUnitCode": 1,
+                    "numberOfPiecesNew": int(sku.pieces_per_pack),
+                    "skuClassification": 1,
+                    "productSkuNetContentReq": {},
+                }
             if sku.suggested_price:
                 sku_req["productSkuSuggestedPriceReq"] = {
                     "suggestedPriceCurrencyType": sku.currency_type,
@@ -657,6 +1091,16 @@ def _assemble_payload(
             sku_reqs.append(sku_req)
 
         all_skus.extend(sku_reqs)
+
+    # 类目属性表里明确有销售属性（isSale / 与父规格 id 对得上）时，规格不能空着 ——
+    # 那说明这个类目就是靠颜色/尺码区分变种的，空规格提交会被判「销售属性不能为空」。
+    # 反过来，属性表里一个销售属性都没有（「桌布/亚麻布」这类）就合法地走单 SKU：
+    # productSpecPropertyReqs 与 productSkuSpecReqs 都发空数组。
+    if sale_pids and not product_spec_reqs:
+        raise ValueError(
+            "该类目有销售属性（颜色/尺码），至少要给每个 SKU 填一个规格值；"
+            "只有属性表里没有销售属性的类目才能按单 SKU 发布。"
+        )
 
     # Temu 半托管：多颜色不是「多个 SKC」，而是 **一个 SKC + 多个 SKU**（颜色写在 SKU 规格里）。
     # 实测（2026-10-27 真机）：
@@ -675,6 +1119,19 @@ def _assemble_payload(
     if first_skc.color_image_url:
         skc_req["colorImageUrl"] = first_skc.color_image_url
     skc_reqs.append(skc_req)
+
+    # 属性联动：父级取值不满足的子属性不要发（Temu 会判「属性不合法」）
+    applicable_pids, dropped_names = _resolve_applicable_properties(catalog, draft.properties)
+    kept_properties = [
+        item
+        for item in draft.properties
+        if int(item.pid) not in sale_pids and int(item.pid) in applicable_pids
+    ]
+    if dropped_names:
+        extra = "…" if len(dropped_names) > 6 else ""
+        warnings.append(
+            "已忽略不适用的属性（上一级取值不满足）：" + "、".join(dropped_names[:6]) + extra
+        )
 
     payload: dict[str, Any] = {
         "productSemiManagedReq": {
@@ -700,8 +1157,7 @@ def _assemble_payload(
         "productSpecPropertyReqs": product_spec_reqs,
         "productPropertyReqs": [
             _property_payload(item, _catalog_property_map(catalog).get(int(item.pid)))
-            for item in draft.properties
-            if int(item.pid) not in sale_pids
+            for item in kept_properties
         ],
         "productSkcReqs": skc_reqs,
         "productWarehouseRouteReq": {
@@ -720,7 +1176,7 @@ def _assemble_payload(
         },
     }
 
-    # 这两个字段盈銮成功样例里有，缺了不影响但不传容易触发额外校验
+    # 这两个字段官方成功样例里有，缺了不影响但不传容易触发额外校验
     payload.setdefault("productSecondHandReq", {"isSecondHand": False})
     # 定制/POD 商品要显式打开，否则前台看不到定制入口
     payload["personalizationSwitch"] = 1 if draft.personalization else 0
@@ -791,9 +1247,13 @@ def _validate_against_catalog(
         return
     by_pid = {int(item.get("pid") or 0): item for item in properties if isinstance(item, dict)}
     provided = {int(item.pid): item for item in draft.properties}
+    # 联动属性只有在父级取值满足时才算必填（否则「电池属性=不带电池」还会被要求填三种电池）
+    applicable, _ = _resolve_applicable_properties(catalog, draft.properties)
 
     missing = []
     for pid, item in by_pid.items():
+        if pid not in applicable:
+            continue
         # 销售属性（isSale）会被组装阶段从商品属性里剔除，改由「销售规格」承载，
         # 所以这里不能再按商品属性校验，否则会误报「缺少必填属性：颜色」。
         if item.get("required") and not item.get("isSale") and pid not in provided:
@@ -812,6 +1272,22 @@ def _validate_against_catalog(
             for value in values
             if isinstance(value, dict) and value.get("vid") is not None
         }
+        # 带单位的属性（成分比例 %、厚度 mm）Temu 要的是数值：只给了 vid 不给数值会被拒
+        units = catalog_item.get("valueUnit")
+        if isinstance(units, list) and units and str(units[0] or "").strip():
+            if not str(item.prop_value or item.number_input_value or "").strip():
+                raise ValueError(
+                    f"属性「{_property_label(catalog_item)}」要填数值（单位 {units[0]}）"
+                )
+        # 数值型属性（如「长度 20」+ 单位 cm）本来就没有 vid，是靠 propValue /
+        # numberInputValue 传文本的，vid=0 不能按「不在可选值内」拒掉，
+        # 否则用户一填数值属性就永远发不出去。
+        if int(item.vid) <= 0:
+            if not str(item.prop_value or item.number_input_value or "").strip():
+                raise ValueError(
+                    f"属性「{_property_label(catalog_item)}」既没有选值也没有填数值"
+                )
+            continue
         if allowed and int(item.vid) not in allowed:
             raise ValueError(
                 f"属性「{_property_label(catalog_item)}」的 vid={item.vid} 不在可选值内"
@@ -852,7 +1328,7 @@ def _property_payload(item: Any, catalog_item: dict[str, Any] | None = None) -> 
         units = catalog_item.get("valueUnit")
         if isinstance(units, list) and units:
             value_unit = str(units[0] or "")
-    return {
+    payload = {
         "pid": pid,
         "refPid": ref_pid,
         "templatePid": template_pid,
@@ -860,10 +1336,17 @@ def _property_payload(item: Any, catalog_item: dict[str, Any] | None = None) -> 
         "propName": prop_name,
         "propValue": prop_value,
         "valueUnit": value_unit,
-        "numberInputValue": item.number_input_value,
-        "valueGroupId": int(item.value_group_id),
-        "valueGroupName": item.value_group_name,
     }
+    # 这 3 个字段真实成功案例（productId 9282408501 / 45629654961）里都没有，
+    # 只有「数值型属性」和「分组属性」才需要。空值一律不发：少发一个字段顶多是
+    # 走默认值，多发一个空字段却可能被 Temu 判「属性不合法」。
+    if str(item.number_input_value or "").strip():
+        payload["numberInputValue"] = str(item.number_input_value).strip()
+    if int(item.value_group_id):
+        payload["valueGroupId"] = int(item.value_group_id)
+    if str(item.value_group_name or "").strip():
+        payload["valueGroupName"] = str(item.value_group_name).strip()
+    return payload
 
 
 def _catalog_value_text(catalog_item: dict[str, Any], vid: int) -> str:
@@ -1112,14 +1595,114 @@ def _i18n_title(title: str, title_en: str, warnings: list[str]) -> dict[str, Any
     return {"productI18nReqs": [{"language": "en", "productName": text}]}
 
 
+def _resolve_applicable_properties(
+    catalog: dict[str, Any] | None, properties: list[Any]
+) -> tuple[set[int], list[str]]:
+    """按 Temu 的属性联动规则，算出当前选择下哪些属性是「适用」的。
+
+    Temu 的联动字段（实测 attrs.get 会返回）：
+    - 子属性带 `templatePropertyValueParentList = [{parentVidList: [...], vidList: [...]}]`
+    - `parentTemplatePid` 指向**父属性的 templatePid**
+    规则：父属性没选、或选的 vid 不在任何一组的 parentVidList 里 → 子属性不出现
+    （即使子属性 required=true 也不该填，填了会被判「属性不合法」）。
+
+    返回 (适用的 pid 集合, 被剔除的属性名)。
+    """
+    items = [item for item in (catalog or {}).get("properties") or [] if isinstance(item, dict)]
+    if not items:
+        return {int(getattr(item, "pid", 0) or 0) for item in properties}, []
+
+    by_template = {
+        int(item.get("templatePid") or 0): item for item in items if item.get("templatePid")
+    }
+    selected = {
+        int(getattr(item, "pid", 0) or 0): int(getattr(item, "vid", 0) or 0) for item in properties
+    }
+
+    applicable: set[int] = set()
+    dropped: list[str] = []
+    for item in items:
+        pid = int(item.get("pid") or 0)
+        rules = item.get("templatePropertyValueParentList") or []
+        if not rules:
+            applicable.add(pid)
+            continue
+        parent = by_template.get(int(item.get("parentTemplatePid") or 0))
+        if parent is None:
+            # 结构拿不到父属性：宁可显示也不误杀
+            applicable.add(pid)
+            continue
+        parent_vid = selected.get(int(parent.get("pid") or 0), 0)
+        matched = bool(parent_vid) and any(
+            parent_vid in (rule.get("parentVidList") or []) for rule in rules
+        )
+        if matched:
+            applicable.add(pid)
+        else:
+            dropped.append(
+                str(item.get("name") or item.get("propertyName") or f"pid={pid}")
+            )
+    return applicable, dropped
+
+
+def _sku_stock(sku: dict[str, Any]) -> int:
+    """SKU 的可售库存。列表接口给的字段是 virtualStock（没有就退回 stock）。"""
+    for key in ("virtualStock", "stock", "stockAvailable", "targetStockAvailable"):
+        value = sku.get(key)
+        if value is None:
+            continue
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def _compact_goods_item(item: dict[str, Any]) -> dict[str, Any]:
+    """列表项压成前端好展示的样子（含每个 SKU 的库存，补库存清单要用）。"""
+    leaf = item.get("leafCat") if isinstance(item.get("leafCat"), dict) else {}
+    skus = item.get("productSkuSummaries") if isinstance(item.get("productSkuSummaries"), list) else []
+    sku_rows = [
+        {
+            "sku_id": str(sku.get("productSkuId") or ""),
+            "ext_code": str(sku.get("extCode") or ""),
+            "stock": _sku_stock(sku),
+            "specs": " / ".join(
+                str(spec.get("specName") or "")
+                for spec in (sku.get("productSkuSpecList") or [])
+                if isinstance(spec, dict) and spec.get("specName")
+            ),
+        }
+        for sku in skus
+        if isinstance(sku, dict)
+    ]
+    return {
+        "product_id": str(item.get("productId") or ""),
+        "title": str(item.get("productName") or ""),
+        "skc_ext_code": str(item.get("extCode") or ""),
+        "image": str(item.get("mainImageUrl") or ""),
+        "created_at": item.get("createdAt"),
+        "site_status": item.get("skcSiteStatus"),
+        "category": str(leaf.get("catName") or ""),
+        "sku_codes": [row["ext_code"] for row in sku_rows][:20],
+        "skus": sku_rows[:50],
+        "stock_total": sum(row["stock"] for row in sku_rows),
+        "zero_stock_sku_count": sum(1 for row in sku_rows if row["stock"] <= 0),
+    }
+
+
 def _missing_required_properties(draft: GoodsDraftInput, catalog: dict[str, Any]) -> list[dict[str, Any]]:
     """本地兜底：用 attrs.get 的 required 标记列出还没填的必填属性。"""
     filled = {int(item.pid) for item in draft.properties if int(item.vid) > 0 or item.prop_value.strip()}
+    applicable, _ = _resolve_applicable_properties(catalog, draft.properties)
     missing: list[dict[str, Any]] = []
     for item in (catalog or {}).get("properties") or []:
         if not isinstance(item, dict) or not item.get("required"):
             continue
         pid = int(item.get("pid") or 0)
+        # 联动属性在当前父级取值下不适用 → 不必填
+        if pid and pid not in applicable:
+            continue
         if pid and pid in filled:
             continue
         missing.append(

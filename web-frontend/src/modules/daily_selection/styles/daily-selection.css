@@ -79,7 +79,12 @@
 .direction-panel-actions > button.add-preset-button { border: 1px solid #e8dcb0; color: #8a7a2a; background: #fffbe6; box-shadow: none; }
 .direction-panel-actions > button.add-preset-button:hover { border-color: #d8cc98; background: #fff8d8; }
 .daily-collection-workspace { min-height: 0; display: grid; gap: 18px; }
-.daily-collection-surface { display: grid; overflow: hidden; border: 1px solid var(--theme-module-border, #d8e5ee); border-radius: 16px; background: linear-gradient(135deg, color-mix(in srgb, var(--theme-module-surface-tint, #eaf8ff) 48%, transparent), color-mix(in srgb, var(--theme-module-surface-soft, #f7fafc) 74%, transparent)); box-shadow: 0 12px 30px var(--theme-module-shadow, rgba(23, 67, 99, .08)); }
+.daily-collection-surface {
+  /* 用户 2026-10-24：工作区要占满横幅下方到页面底部的高度（截图绿框），别再随内容塌缩 */
+  min-height: clamp(320px, calc(100vh - 232px), 900px);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden; border: 1px solid var(--theme-module-border, #d8e5ee); border-radius: 16px; background: linear-gradient(135deg, color-mix(in srgb, var(--theme-module-surface-tint, #eaf8ff) 48%, transparent), color-mix(in srgb, var(--theme-module-surface-soft, #f7fafc) 74%, transparent)); box-shadow: 0 12px 30px var(--theme-module-shadow, rgba(23, 67, 99, .08)); }
 .daily-drawer-header { min-height: 68px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 13px 18px; border-bottom: 1px solid #1b91bd; color: #fff; background: linear-gradient(118deg, #0a497f 0%, #0d7fba 56%, #20b9ac 100%); }
 .daily-drawer-header > div { display: grid; gap: 3px; }.daily-drawer-header span { color: #9de7f3; font-size: .63rem; font-weight: 850; letter-spacing: .13em; }.daily-drawer-header strong { color: #fff; font-size: 1.05rem; }
 .daily-drawer-header .collection-workspace-context { color: #d9f1fb; font-size: .72rem; font-weight: 650; letter-spacing: 0; }
@@ -246,6 +251,14 @@
   .candidate-body { padding: 10px; }
   .results-actions { gap: 8px; }
   .sku-filter input[type=number] { min-width: 0; flex: 1 1 52px; }
+}
+
+
+/* 面板在被拉高的工作区里不得把行撑高：表单行 align-items:end，撑高后内容会沉底露白 */
+.daily-collection-surface > .shop-collection-panel,
+.daily-collection-surface > .plugin-capture-panel,
+.daily-collection-surface > .daily-drawer-body {
+  align-content: start;
 }
 
 /* ---- 采集入口卡片（2026-10-24）----

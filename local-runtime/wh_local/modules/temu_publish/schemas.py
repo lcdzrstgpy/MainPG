@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class TemuSettingsUpdate(BaseModel):
-    """盈銮调用凭证与店铺 token；空字符串表示“不修改”。"""
+    """服务商调用凭证与店铺 token；空字符串表示“不修改”。"""
 
     yl_client: str | None = None
     yl_token: str | None = None
@@ -14,6 +14,13 @@ class TemuSettingsUpdate(BaseModel):
     clear_yl_client: bool = False
     clear_yl_token: bool = False
     clear_access_token: bool = False
+
+
+class TemuShopCreate(BaseModel):
+    """新增一家店铺：只填 access_token，店铺名由网关返回。"""
+
+    access_token: str = Field(min_length=8, max_length=4096)
+    mall_name: str = Field(default="", max_length=120)
 
 
 class CategoryMatchRequest(BaseModel):
@@ -84,9 +91,14 @@ class SkuInput(BaseModel):
     width_mm: int = Field(ge=1, description="宽度，毫米")
     height_mm: int = Field(ge=1, description="高度，毫米")
     thumb_url: str | None = None
+    # 多件装：一个 SKU 里装几件（标题里的 "4 Pack" / "12Pcs"）。>1 才会发
+    # productSkuMultiPackReq，Temu 前台会显示「N 件装」。
+    pieces_per_pack: int = Field(default=1, ge=1, le=1000)
     # 敏感货（带电/液体等）：落到 productSkuSensitiveAttrReq.isSensitive
     is_sensitive: bool = False
-    specs: list[SkuSpecInput] = Field(min_length=1)
+    # 空数组是合法的：类目没有销售属性时（如「桌布/亚麻布」）只能建单 SKU，
+    # SKU 级规格就是空的。是否「必须有规格」由 service 按类目属性表判断。
+    specs: list[SkuSpecInput] = Field(default_factory=list)
 
     @field_validator("warehouse_id", "ext_code")
     @classmethod
@@ -103,7 +115,8 @@ class SkcInput(BaseModel):
     ext_code: str = Field(min_length=1, max_length=120)
     preview_image_urls: list[str] = Field(min_length=1)
     color_image_url: str | None = None
-    main_specs: list[SkuSpecInput] = Field(min_length=1)
+    # 同 SkuInput.specs：没有销售属性的类目允许为空（单 SKU 商品）
+    main_specs: list[SkuSpecInput] = Field(default_factory=list)
     skus: list[SkuInput] = Field(min_length=1)
 
     @field_validator("ext_code")
@@ -156,7 +169,8 @@ class GoodsDraftInput(BaseModel):
     # 实测字段名是顶层 materialImgUrl（2026-10-26 真调确认），文档里没写。
     material_image_url: str = ""
     freight_template_id: str = Field(min_length=1)
-    shipment_limit_seconds: int = Field(default=86400, ge=1)
+    # 默认 7 天：1 天等于承诺 24 小时发货，POD/定制做不到（会被判延迟发货）
+    shipment_limit_seconds: int = Field(default=7 * 86400, ge=1)
     properties: list[GoodsPropertyInput] = Field(default_factory=list)
     skcs: list[SkcInput] = Field(min_length=1)
     size_template_ids: list[int] = Field(default_factory=list)
@@ -166,10 +180,22 @@ class GoodsDraftInput(BaseModel):
     # 站外产品链接，落到 productWhExtAttrReq.outerGoodsUrl
     outer_goods_url: str = ""
     origin_region_short_name: str = "CN"
-    # 二级产地 id：实测传 0 会被拒「不合法的二级区域id」。默认值取自盈銮成功样例。
+    # 二级产地 id：实测传 0 会被拒「不合法的二级区域id」。默认值取自官方成功样例。
     origin_region2_id: int = 43000000000006
     # 定制/POD 商品：落到顶层 personalizationSwitch（开启前需在卖家中心配好定制模板）
     personalization: bool = False
     semi_managed_site_mode: int = 1
     semi_language_strategy: int = 1
     validate_catalog: bool = True
+
+class DimensionCheckRequest(BaseModel):
+    """尺寸图检测（bg.algo.dimension.image.check，CN 网关，异步）。
+
+    mallId 是 Temu 店铺 id（卖家后台可见），接口必填，这里不做默认值猜测。
+    """
+
+    image_url: str = Field(min_length=8)
+    mall_id: str = Field(default="", description="Temu 店铺 id；留空会报错")
+    cat_id: int | None = Field(default=None, ge=1)
+    class_id: int | None = Field(default=None, ge=1)
+

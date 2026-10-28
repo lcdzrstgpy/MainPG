@@ -6,11 +6,14 @@ import type {
   TemuDraftLibrary,
   TemuCategoryPath,
   TemuFreightTemplate,
+  TemuGoodsItem,
   TemuGoodsDraft,
   TemuImageUploadResult,
+  TemuLowStockResult,
   TemuParentSpec,
   TemuPublishResult,
   TemuSettingsStatus,
+  TemuSizeChartInfo,
   TemuSpecCreated,
   TemuTokenInfo,
   TemuWarehouseGroup,
@@ -76,6 +79,43 @@ export const temuPublishApi = {
     httpJson<TemuDraftLibrary>(
       `${BASE}/draft-library${query({ limit, refresh: refresh ? "true" : "" })}`,
     ),
+  /** 查店铺里的商品：按 SKC 货号或标题（发布后核对 / 查重） */
+  searchGoods: (params: { extCode?: string; title?: string; page?: number; pageSize?: number }) =>
+    httpJson<{ total: number; items: TemuGoodsItem[] }>(
+      `${BASE}/goods${query({
+        ext_code: params.extCode,
+        title: params.title,
+        page: params.page,
+        page_size: params.pageSize,
+      })}`,
+    ),
+  /** 新增店铺：后端先用这条 token 打一次网关，验证通过才保存（失败会抛错，库里不留坏数据） */
+  addShop: (accessToken: string, mallName = "") =>
+    httpJson<TemuSettingsStatus & { verified?: boolean; mall_name?: string }>(
+      `${BASE}/settings/shops`,
+      { method: "POST", body: { access_token: accessToken.trim(), mall_name: mallName } },
+    ),
+  /** 切换店铺：用已保存的那条 token，不要求重新输入 */
+  activateShop: (shopId: string) =>
+    httpJson<TemuSettingsStatus>(`${BASE}/settings/shops/${shopId}/activate`, { method: "POST" }),
+  removeShop: (shopId: string) =>
+    httpJson<TemuSettingsStatus>(`${BASE}/settings/shops/${shopId}`, { method: "DELETE" }),
+
+  goodsDetail: (productId: string | number) =>
+    httpJson<Record<string, unknown>>(`${BASE}/goods/${productId}`),
+  /** 这个类目是否需要尺码表（false → 前端隐藏「尺码表模板 ID」） */
+  sizeCharts: (catId: number) => httpJson<TemuSizeChartInfo>(`${BASE}/categories/${catId}/size-charts`),
+
+  /** 待补库存清单：扫店铺商品，列出库存为 0 的 SKU（只读） */
+  lowStockGoods: (params: { limit?: number; pageSize?: number; maxPages?: number } = {}) =>
+    httpJson<TemuLowStockResult>(
+      `${BASE}/goods/low-stock${query({
+        limit: params.limit,
+        page_size: params.pageSize,
+        max_pages: params.maxPages,
+      })}`,
+    ),
+
   uploadImage: (image: string, cateId?: number) =>
     httpJson<TemuImageUploadResult>(`${BASE}/images/upload`, {
       method: "POST",

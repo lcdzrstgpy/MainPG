@@ -100,6 +100,254 @@ button { cursor: pointer; }
   overflow-y: visible;
 }
 
+/* ── 全局处理中进度（顶部标签栏右侧）────────────────────────────────
+   只在有任务在跑时渲染；环 + 数字本身就是「有东西在进行」的信号，
+   点开列出所有模块的进度，不用切回对应页签。 */
+.task-progress {
+  position: relative;
+  align-self: flex-start;
+  flex: 0 0 auto;
+  margin: 0 0 12px 8px;
+}
+
+.task-progress-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--theme-icon-button-border, #d7e3ed);
+  border-radius: 10px;
+  background: var(--theme-icon-button-bg, #fff);
+  color: var(--theme-primary, #0877d3);
+  font-size: .82rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease, background .18s ease;
+}
+
+.task-progress-trigger:hover { transform: translateY(-1px); box-shadow: 0 7px 16px rgba(32, 91, 132, .13); }
+.task-progress-trigger.is-open { border-color: var(--theme-primary, #0877d3); }
+
+.task-progress-ring {
+  flex: 0 0 14px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--theme-page-tab-border, #dbe7f1);
+  border-top-color: var(--theme-primary, #0877d3);
+  animation: task-progress-spin 900ms linear infinite;
+}
+
+@keyframes task-progress-spin { to { transform: rotate(360deg); } }
+
+.task-progress-num { font-variant-numeric: tabular-nums; }
+.task-progress-text { color: var(--theme-text-muted, #688198); font-weight: 600; }
+
+/* 跑完之后的成功态：不转圈，换成对勾 + 绿字，按钮多留 20 秒再自然消失。 */
+.task-progress-trigger.is-done {
+  border-color: rgba(22, 163, 74, .38);
+  background: rgba(22, 163, 74, .08);
+  color: #15803d;
+}
+.task-progress-trigger.is-done .task-progress-text { color: #15803d; }
+
+.task-progress-check {
+  flex: 0 0 14px;
+  width: 14px;
+  height: 14px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: #16a34a;
+  color: #fff;
+  font-size: .6rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.task-progress-extra { color: #15803d; font-weight: 600; }
+.task-progress-extra.is-fail { color: #b45309; }
+
+/* 失败态：全部结束但有失败时用琥珀色，别拿绿色糊弄。 */
+.task-progress-trigger.is-warn {
+  border-color: rgba(217, 119, 6, .42);
+  background: rgba(217, 119, 6, .1);
+  color: #b45309;
+}
+.task-progress-trigger.is-warn .task-progress-text { color: #b45309; }
+.task-progress-check.is-fail { background: #f59e0b; }
+
+.task-progress-panel {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 366px;
+  max-width: min(366px, 86vw);
+  max-height: 62vh;
+  overflow: auto;
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  /* 浮在内容层之上的实底：主题的 card-bg 在风景类主题里是半透明的，会被背景洗掉。 */
+  background: var(--theme-card-bg-solid, var(--theme-card-bg, #fff));
+  border: 1px solid var(--theme-card-border, #d6e4ee);
+  border-radius: 14px;
+  box-shadow: 0 18px 44px rgba(9, 26, 46, .18);
+  color: var(--theme-text-primary, #1a3551);
+}
+
+.task-progress-panel-head { display: grid; gap: 3px; }
+.task-progress-panel-head strong { font-size: .9rem; }
+.task-progress-panel-head span { color: var(--theme-text-muted, #71879d); font-size: .76rem; }
+
+.task-progress-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+
+.task-progress-item {
+  display: grid;
+  gap: 7px;
+  width: 100%;
+  padding: 10px;
+  border: 1px solid var(--theme-page-tab-border, #e4edf5);
+  border-radius: 10px;
+  background: var(--theme-module-surface-soft, #f6fafd);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .16s ease, background .16s ease;
+}
+
+.task-progress-item:hover { border-color: var(--theme-primary, #0877d3); }
+
+.task-progress-item-top { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.task-progress-module {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--theme-page-tab-bg, #eaf4fb);
+  color: var(--theme-text-secondary, #466079);
+  font-size: .68rem;
+  font-weight: 700;
+}
+.task-progress-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--theme-text-primary, #1a3551);
+  font-size: .82rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-progress-value {
+  flex: 0 0 auto;
+  color: var(--theme-text-muted, #71879d);
+  font-size: .74rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.task-progress-bar {
+  display: block;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--theme-page-tab-border, #e4edf5);
+}
+.task-progress-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--theme-primary, #0877d3);
+  transition: width .3s ease;
+}
+.task-progress-bar.is-indeterminate > span {
+  width: 40%;
+  animation: task-progress-slide 1.4s ease-in-out infinite;
+}
+
+@keyframes task-progress-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+
+/* 刚结束的任务：成功绿、有失败琥珀，和「处理中」的蓝色区分开。 */
+.task-progress-list.is-finished {
+  padding-top: 8px;
+  border-top: 1px dashed var(--theme-page-tab-border, #e4edf5);
+}
+
+.task-progress-done {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 9px;
+  background: var(--theme-module-surface-soft, #f6fafd);
+  font-size: .8rem;
+}
+
+.task-progress-done.is-ok { color: #15803d; }
+.task-progress-done.is-fail { color: #b45309; }
+
+.task-progress-done-mark {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #fff;
+  font-size: .6rem;
+  font-weight: 700;
+  line-height: 1;
+}
+.task-progress-done.is-ok .task-progress-done-mark { background: #16a34a; }
+.task-progress-done.is-fail .task-progress-done-mark { background: #f59e0b; }
+
+.task-progress-done-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-progress-done-text { flex: 0 0 auto; font-size: .74rem; opacity: .85; }
+
+/* 每条已结束记录：前面一个 × 供手动清掉，右边才是记录本体。 */
+.task-progress-done-row { display: flex; align-items: stretch; gap: 6px; }
+
+.task-progress-dismiss {
+  flex: 0 0 22px;
+  width: 22px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--theme-page-tab-border, #e4edf5);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--theme-text-muted, #94a3b8);
+  font-size: .86rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: color .16s ease, border-color .16s ease, background .16s ease;
+}
+
+.task-progress-dismiss:hover {
+  color: #d75b65;
+  border-color: rgba(215, 91, 101, .45);
+  background: rgba(215, 91, 101, .08);
+}
+
+.task-progress-dismiss:focus-visible {
+  outline: 2px solid var(--theme-primary, #0877d3);
+  outline-offset: 1px;
+}
+
+.task-progress-done-row > .task-progress-done { flex: 1; min-width: 0; }
+
 .page-tab {
   flex: 0 0 auto;
   max-width: 100%;

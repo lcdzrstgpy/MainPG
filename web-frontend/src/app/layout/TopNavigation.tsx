@@ -6,6 +6,7 @@ import { useTheme, THEME_META, BUILTIN_THEME_IDS, type ThemeId, type ThemeListIt
 import { UI_MODE_META, useUiMode, type UiModeId } from "../../shared/hooks/useUiMode";
 import { InboxBell } from "../../shared/components/InboxBell";
 import { getAuthAccount } from "../../transport/http/client";
+import { useActiveTasks } from "../../shared/hooks/useActiveTasks";
 import { slidingIndicatorStyle, useSlidingIndicator } from "../../shared/hooks/useSlidingIndicator";
 
 /** 与个人中心共享的头像存储键，右键头像与个人中心头像保持一致。 */
@@ -70,6 +71,53 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
   const { uiMode, setUiMode } = useUiMode();
   const activeTabSignature = tabs.map((tab) => tab.key).join("|");
   const tabIndicator = useSlidingIndicator<HTMLDivElement>(":scope > .page-tab.is-active", [activeKey, activeTabSignature]);
+  // 全局处理中任务 + 刚完成的任务：都没了就不渲染「进度」按钮。
+  const { items: activeTasks, justFinished, dismissFinished } = useActiveTasks();
+  // 「成功」只算真成功的；partial_failure / failed / cancelled 归到失败数，
+  // 顶部显示「失败 N」用琥珀色，绝不把部分失败说成成功。
+  const successCount = justFinished.filter((task) => task.ok).length;
+  const failedCount = justFinished.length - successCount;
+  const hasRunning = activeTasks.length > 0;
+  const [progressPanelOpen, setProgressPanelOpen] = useState(false);
+  const progressPanelRef = useRef<HTMLDivElement>(null);
+
+  // 点面板外部 / 按 Esc 关闭：和用户菜单一致的心智，别让浮层粘住。
+  useEffect(() => {
+    if (!progressPanelOpen) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (!progressPanelRef.current?.contains(event.target as Node)) setProgressPanelOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setProgressPanelOpen(false);
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [progressPanelOpen]);
+
+  // 任务面板里点某项 → 跳到对应页签。
+  // 注意：产品处理的任务详情页签 moduleId 是 `product_processing_tasks`（草稿池才是
+  // `product_processing`），只按 module 找会跳到草稿池而不是「处理设置与进度」，
+  // 所以先用 key 里的任务号按 taskRunId 精确匹配。
+  const jumpToTaskModule = (module: string, key: string) => {
+    const taskId = module === "product_processing" ? Number(key.split(":")[1]) : Number.NaN;
+    const exact = Number.isFinite(taskId)
+      ? tabs.find((tab) => tab.taskRunId === taskId || tab.activeTaskId === taskId)
+      : undefined;
+    // 后端的 module 名跟前端页签 moduleId 不是一套；combo/pod 各自有多个子页签。
+    const candidates: Record<string, string[]> = {
+      product_processing: ["product_processing"],
+      pod_customization: ["pod_customization", "pod_semi_customization", "pod_replica", "pod_fission"],
+      combo_kit: ["combo_generate", "combo_history"],
+    };
+    const fallback = tabs.find((tab) => (candidates[module] ?? [module]).includes(tab.moduleId));
+    const target = exact ?? fallback;
+    setProgressPanelOpen(false);
+    if (target) onSelectTab(target.key);
+  };
 
   // 桌面风格（apple）下仅支持经典配色；其它主题在 apple 模式会被映射回 classic，
   // 为避免「勾选使用中但实际不生效」的误导，apple 模式下禁用非 classic 主题切换。
@@ -465,6 +513,108 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
             </div>
           ))}
         </div>
+        {(hasRunning || justFinished.length > 0) && (
+          <div className="task-progress" ref={progressPanelRef}>
+            <button
+              className={`task-progress-trigger ${progressPanelOpen ? "is-open" : ""} ${
+                hasRunning ? "" : successCount > 0 ? "is-done" : "is-warn"
+              }`}
+              type="button"
+              onClick={() => setProgressPanelOpen((open) => !open)}
+              aria-expanded={progressPanelOpen}
+              aria-label={
+                hasRunning
+                  ? `处理中任务 ${activeTasks.length} 项${successCount > 0 ? `，已成功 ${successCount} 项` : ""}${failedCount > 0 ? `，失败 ${failedCount} 项` : ""}，点击查看进度`
+                  : `最近结束 ${justFinished.length} 项（成功 ${successCount}，失败 ${failedCount}），点击查看`
+              }
+            >
+              {hasRunning ? (
+                <>
+                  <span className="task-progress-ring" aria-hidden="true" />
+                  <span className="task-progress-num">{activeTasks.length}</span>
+                  <span className="task-progress-text">处理中</span>
+                  {successCount > 0 && <span className="task-progress-extra">· 成功 {successCount}</span>}
+                  {failedCount > 0 && <span className="task-progress-extra is-fail">· 失败 {failedCount}</span>}
+                </>
+              ) : successCount > 0 ? (
+                <>
+                  <span className="task-progress-check" aria-hidden="true">✓</span>
+                  <span className="task-progress-num">{successCount}</span>
+                  <span className="task-progress-text">成功</span>
+                  {failedCount > 0 && <span className="task-progress-extra is-fail">· 失败 {failedCount}</span>}
+                </>
+              ) : (
+                <>
+                  <span className="task-progress-check is-fail" aria-hidden="true">!</span>
+                  <span className="task-progress-num">{failedCount}</span>
+                  <span className="task-progress-text">失败</span>
+                </>
+              )}
+            </button>
+            {progressPanelOpen && (
+              <div className="task-progress-panel" role="dialog" aria-label="处理任务进度">
+                <div className="task-progress-panel-head">
+                  <strong>
+                    {hasRunning ? `处理中 ${activeTasks.length} 项` : `最近结束 ${justFinished.length} 项`}
+                    {successCount > 0 ? ` · 成功 ${successCount}` : ""}
+                    {failedCount > 0 ? ` · 失败 ${failedCount}` : ""}
+                  </strong>
+                  <span>{hasRunning ? "点击可跳到对应页签" : "点 × 可清掉这条记录"}</span>
+                </div>
+                {activeTasks.length > 0 && (
+                  <ul className="task-progress-list">
+                    {activeTasks.map((task) => {
+                      const hasTotal = typeof task.total === "number" && task.total > 0;
+                      const done = hasTotal ? Math.min(task.done ?? 0, task.total as number) : 0;
+                      const percent = hasTotal ? Math.round((done / (task.total as number)) * 100) : null;
+                      return (
+                        <li key={task.key}>
+                          <button type="button" className="task-progress-item" onClick={() => jumpToTaskModule(task.module, task.key)}>
+                            <span className="task-progress-item-top">
+                              <span className="task-progress-module">{task.moduleLabel}</span>
+                              <span className="task-progress-title">{task.title}</span>
+                              <span className="task-progress-value">
+                                {percent === null ? "进行中" : `${done}/${task.total}`}
+                              </span>
+                            </span>
+                            <span className={`task-progress-bar ${percent === null ? "is-indeterminate" : ""}`} aria-hidden="true">
+                              <span style={percent === null ? undefined : { width: `${percent}%` }} />
+                            </span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+                {justFinished.length > 0 && (
+                  <ul className="task-progress-list is-finished">
+                    {justFinished.map((task) => (
+                      <li key={task.key}>
+                        <div className="task-progress-done-row">
+                          {/* × 只在已结束的条目上出现：正在跑的任务不允许手动抹掉。 */}
+                          <button
+                            className={`task-progress-dismiss ${task.ok ? "is-ok" : "is-fail"}`}
+                            type="button"
+                            onClick={() => dismissFinished(task.key)}
+                            aria-label={`移除「${task.title}」这条记录`}
+                            title="移除这条记录"
+                          >
+                            ×
+                          </button>
+                          <span className={`task-progress-done ${task.ok ? "is-ok" : "is-fail"}`}>
+                            <span className="task-progress-done-mark" aria-hidden="true">{task.ok ? "✓" : "!"}</span>
+                            <span className="task-progress-done-title">{task.title}</span>
+                            <span className="task-progress-done-text">{task.ok ? "已完成" : "已结束（有失败）"}</span>
+                          </span>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </div>
       {avatarPreviewOpen && avatarSrc && (
         <div className="avatar-preview-layer" onMouseDown={() => setAvatarPreviewOpen(false)} role="dialog" aria-modal="true" aria-label="头像预览">

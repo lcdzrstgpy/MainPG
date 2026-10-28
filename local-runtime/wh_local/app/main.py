@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 
 logger = logging.getLogger("wh_local.app")
 
+from .activity import create_activity_router
 from ..app_update import (
     ChangelogManager,
     ChangelogSettings,
@@ -1070,6 +1071,16 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     )
     app.state.messages_sync = messages_sync
     app.state.reply_sync = reply_sync
+
+    # 全局任务进度总览：顶部标签栏的「进度」按钮用。各模块的实例都挂在 app.state
+    # 上，这里用 lambda 延迟取，避免注册顺序和实例创建顺序耦合。
+    app.include_router(
+        create_activity_router(
+            product_processing_service=lambda: app.state.product_processing_service,
+            pod_service=lambda: getattr(app.state, "pod_customization_service", None),
+            combo_kit_service=lambda: getattr(app.state, "combo_kit_service", None),
+        )
+    )
 
     return app
 

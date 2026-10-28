@@ -16,18 +16,49 @@ from .submissions import DuplicateSubmission
 from .library import collect_draft_library
 from .schemas import (
     DetailImageUploadRequest,
+    DimensionCheckRequest,
     CategoryMatchRequest,
     GoodsDraftInput,
     ImageUploadRequest,
     ImageUploadUrlRequest,
     SpecCreateRequest,
     TemuSettingsUpdate,
+    TemuShopCreate,
 )
 from .service import TemuPublishService
 
 logger = logging.getLogger("wh_local.temu_publish")
 
-# 需要到盈銮/上游修配置的错误码，按网关错误（502）返回，便于前端区分“参数问题”。
+# 网关鉴权类错误：告诉用户到底该改哪一处，而不是只丢一句「client_id or token is invalid」。
+_GATEWAY_HINTS = {
+    "CLIENT_TOKEN_REQUIRED": (
+        "服务商网关凭据没填全：这里要填的是服务商后台的 client_id / token，"
+        "不是 Temu 店铺的 access_token"
+    ),
+    "CLIENT_TOKEN_INVALID": (
+        "这是服务商网关的 client_id / token 无效，跟店铺 access_token 无关（请求还没到 Temu）。"
+        "让给凭据的人确认：client 和 token 是不是同一对、有没有被重置、本机公网 IP 在不在白名单"
+    ),
+    "CLIENT_PERMISSION_DENIED": (
+        "服务商网关拒绝了这个 client：多半是应用没开该接口权限，或本机 IP 不在白名单"
+    ),
+    "7000006": "这个 access_token 没和商务应用绑定：回店铺后台重新授权，再把新 token 填进来",
+    "NETWORK_ERROR": (
+        "连不上服务商网关（TLS 握手被中断）。常见原因是系统代理把这条国内网关请求也劫走了；"
+        "程序默认不走系统代理，确实需要走代理时用环境变量 WH_TEMU_PROXY 指定"
+    ),
+}
+
+
+def _gateway_message(error_code: str, message: str) -> str:
+    """把网关错误拼成「原因（错误码）+ 该怎么改」。"""
+    reason = (message or "").strip() or "未返回原因"
+    suffix = f"（错误码 {error_code}）" if error_code else ""
+    hint = _GATEWAY_HINTS.get(str(error_code or "").upper())
+    return f"Temu 拒绝了这次提交：{reason}{suffix}" + (f"。{hint}" if hint else "")
+
+
+# 需要到服务商/上游修配置的错误码，按网关错误（502）返回，便于前端区分“参数问题”。
 _UPSTREAM_ERROR_CODES = {
     "CLIENT_TOKEN_REQUIRED",
     "CLIENT_TOKEN_INVALID",
@@ -98,13 +129,11 @@ def create_temu_publish_router(
             )
             # 前端只对「看起来像英文」的未知错误兜底成「操作失败」，所以这里包成中文，
             # 让 Temu 的原话能直接显示给用户（否则永远只有一个状态码可看）。
-            reason = exc.message.strip() or "未返回原因"
-            suffix = f"（错误码 {exc.error_code}）" if exc.error_code else ""
             return HTTPException(
                 status_code=status,
                 detail={
                     "error_code": exc.error_code or "TEMU_GATEWAY_ERROR",
-                    "message": f"Temu 拒绝了这次提交：{reason}{suffix}",
+                    "message": _gateway_message(exc.error_code, exc.message),
                     "api_type": exc.api_type,
                 },
             )
@@ -132,6 +161,40 @@ def create_temu_publish_router(
     def clear_settings(actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
         """解绑：删掉当前账号名下保存的店铺凭证（不影响其他账号）。"""
         return _service(actor).clear_settings(actor.id)
+
+    @router.get("/settings/shops")
+    def list_shops(actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
+        """已保存的店铺列表（含当前启用标记）。"""
+        return _service(actor).list_shops()
+
+    @router.post("/settings/shops")
+    def add_shop(
+        payload: TemuShopCreate, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        """新增店铺：先拿这条 token 打一次网关，**验证通过才保存**并设为当前。"""
+        try:
+            return _service(actor).add_shop(payload.access_token, payload.mall_name, actor.id)
+        except Exception as exc:  # noqa: BLE001
+            raise _handle(exc) from exc
+
+    @router.post("/settings/shops/{shop_id}/activate")
+    def activate_shop(
+        shop_id: str, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        """切换店铺：直接换成已保存的那条 token，不用重新输入。"""
+        try:
+            return _service(actor).activate_shop(shop_id, actor.id)
+        except Exception as exc:  # noqa: BLE001
+            raise _handle(exc) from exc
+
+    @router.delete("/settings/shops/{shop_id}")
+    def remove_shop(
+        shop_id: str, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        try:
+            return _service(actor).remove_shop(shop_id, actor.id)
+        except Exception as exc:  # noqa: BLE001
+            raise _handle(exc) from exc
 
     @router.post("/token/verify")
     def verify_token(
@@ -323,6 +386,87 @@ def create_temu_publish_router(
         """按类目必填配置校验当前表单（bg.glo.goods.catsmandatory.get）；不会提交商品。"""
         try:
             return _service(actor).check_mandatory(payload)
+        except Exception as exc:  # noqa: BLE001
+            raise _handle(exc) from exc
+
+    @router.get("/goods")
+    def search_goods(
+        ext_code: str = Query(default="", description="SKC 货号"),
+        title: str = Query(default="", description="商品标题（模糊）"),
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=20, ge=1, le=100),
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        """查店铺里的商品（按 SKC 货号 / 标题）。发布后核对、查重都用它。"""
+        try:
+            return _service(actor).search_goods(
+                ext_code=ext_code, title=title, page=page, page_size=page_size
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise _handle(exc) from exc
+
+    # ⚠️ 必须放在 /goods/{product_id} 之前，否则 "low-stock" 会被当成 product_id
+    @router.get("/goods/low-stock")
+    def low_stock_goods(
+        limit: int = Query(default=60, ge=1, le=300, description="最多返回多少个商品"),
+        page_size: int = Query(default=20, ge=1, le=20, description="每页条数（网关上限 20）"),
+        max_pages: int = Query(default=30, ge=1, le=50, description="最多翻几页"),
+        only_zero: bool = Query(default=True, description="true=只列有 0 库存 SKU 的商品"),
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        """待补库存清单：扫店铺商品，挑出库存为 0 的 SKU。
+
+        只读：改库存接口（bg.btg.goods.stock.quantity.update）当前未开通，
+        这里产出的是「去后台批量改」用的清单。
+        """
+        try:
+            return _service(actor).low_stock_goods(
+                limit=limit, page_size=page_size, max_pages=max_pages, only_zero=only_zero
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise _handle(exc) from exc
+
+    @router.get("/goods/{product_id}")
+    def goods_detail(
+        product_id: int, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        """商品详情（个别商品会返回「无权访问」，前端要能兜住）。"""
+        try:
+            return _service(actor).goods_detail(product_id)
+        except Exception as exc:  # noqa: BLE001
+            raise _handle(exc) from exc
+
+    @router.get("/categories/{cat_id}/size-charts")
+    def size_charts(
+        cat_id: int, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        """该类目是否需要尺码表（服装/鞋类需要，宠物用品等不需要 → 前端据此隐藏字段）。"""
+        try:
+            return _service(actor).size_charts(cat_id)
+        except Exception as exc:  # noqa: BLE001
+            raise _handle(exc) from exc
+
+    @router.post("/dimension-check")
+    def dimension_check(
+        payload: DimensionCheckRequest,
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        """尺寸图检测提交（异步，返回 uniqueId）。"""
+        try:
+            return _service(actor).dimension_check(
+                payload.image_url, mall_id=payload.mall_id, cat_id=payload.cat_id, class_id=payload.class_id
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise _handle(exc) from exc
+
+    @router.get("/dimension-check/{task_id}")
+    def dimension_check_result(
+        task_id: str,
+        mall_id: str = Query(default=""),
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        try:
+            return _service(actor).dimension_check_result(task_id, mall_id=mall_id)
         except Exception as exc:  # noqa: BLE001
             raise _handle(exc) from exc
 

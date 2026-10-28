@@ -2124,10 +2124,24 @@ textarea.temu-input {
   gap: 6px;
 }
 
+/* 无销售属性的类目（如桌布/亚麻布）：没有颜色/尺码变种，这两列不渲染 */
+.is-console .temu-variant-row.is-single {
+  grid-template-columns: 46px 104px 66px 44px 44px 44px 58px 70px 52px 24px;
+}
+
 .is-console .temu-variant-row.is-head {
   color: var(--theme-text-muted, #7b93a8);
   font-size: 11px;
   font-weight: 700;
+}
+
+/* 只读/禁用字段（店铺账号、经营站点）要一眼看出不是给人改的，
+   否则看着像能编辑的输入框，改完没反应 */
+.is-console .temu-input:disabled,
+.is-console .temu-input[readonly] {
+  background: var(--theme-module-soft, #f2f5f8);
+  color: var(--theme-text-muted, #7b93a8);
+  cursor: not-allowed;
 }
 
 .is-console .temu-variant-row .temu-input {
@@ -2617,4 +2631,175 @@ textarea.temu-input {
 .is-console .temu-title-match button:hover:not(:disabled) {
   border-color: var(--theme-module-primary-strong, #087bf5);
   background: #f2f9ff;
+}
+
+/* ---------- 批量发布弹窗 ---------- */
+
+.temu-batch-dialog {
+  width: min(560px, 94vw);
+}
+
+.temu-batch-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 2px 0;
+}
+
+.temu-batch-list {
+  margin: 0;
+  padding: 8px 10px;
+  list-style: none;
+  border-radius: var(--radius-sm, 6px);
+  background: var(--theme-module-soft, rgba(0, 0, 0, 0.03));
+  max-height: 168px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.8;
+}
+
+.temu-batch-list li {
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.temu-batch-list li span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.temu-batch-list li em {
+  flex: none;
+  color: var(--theme-text-muted, #7b93a8);
+  font-style: normal;
+}
+
+.temu-batch-list li.is-more {
+  justify-content: flex-start;
+  color: var(--theme-text-muted, #7b93a8);
+}
+
+/* 弹窗里的字段提示不要跟着标签变粗 */
+.temu-batch-dialog .temu-field > span > em {
+  font-style: normal;
+  font-weight: 400;
+}
+
+/* ---------- 发布后核对：店铺里的商品 ---------- */
+
+.temu-goods-list {
+  margin: 10px 0 0;
+  padding: 8px 12px;
+  list-style: none;
+  border-radius: var(--radius-sm, 6px);
+  background: var(--theme-module-soft, rgba(0, 0, 0, 0.03));
+  font-size: 12px;
+  line-height: 1.8;
+}
+
+.temu-goods-list li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.temu-goods-id {
+  font-variant-numeric: tabular-nums;
+  color: var(--theme-text-muted, #7b93a8);
+}
+
+.temu-goods-title {
+  flex: 1 1 220px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- 已保存的店铺（多店铺切换） ---------- */
+
+.temu-shop-list {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--theme-module-border, #e2e8f0);
+  border-radius: var(--radius-md, 10px);
+  background: var(--theme-module-soft, rgba(0, 0, 0, 0.02));
+}
+
+.temu-shop-list-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+}
+
+.temu-shop-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm, 6px);
+  background: var(--theme-card-bg-solid, #fff);
+  border: 1px solid transparent;
+}
+
+.temu-shop-row.is-active {
+  border-color: var(--theme-primary, #4f7cff);
+  background: var(--theme-primary-soft, rgba(79, 124, 255, 0.08));
+}
+
+.temu-shop-name {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  font-size: 12.5px;
+}
+
+.temu-shop-name strong,
+.temu-shop-name span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.temu-shop-ops {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.temu-shop-badge {
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 600;
+  color: var(--theme-primary, #4f7cff);
+}
+
+/* 首屏加载提示：占位一行，避免表单上方突然空一块或闪红条 */
+.temu-console-loading {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+}
+
+/* 批量编辑填了但没点「应用到全部」：这些值不会进提交，必须显眼 */
+.temu-batch-pending {
+  font-style: normal;
+  font-weight: 600;
+  font-size: 12px;
+  color: #b45309;
+}
+
+.temu-btn.is-urgent {
+  border-color: #f0a020;
+  color: #8a5a00;
+  background: #fff8e8;
 }
