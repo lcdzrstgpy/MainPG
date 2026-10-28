@@ -310,11 +310,13 @@ def _collect_pod_entries(service: Any, actor: Actor, batch_limit: int) -> list[d
                 continue
             item = primary
             listing = item.get("listing_fields") if isinstance(item.get("listing_fields"), dict) else {}
-            first_sku = (item.get("skus") or [{}])[0] if isinstance(item.get("skus"), list) else {}
-            # 申报价在 listing_fields.skus（导出模板第 9 列就取这里），item.skus 是原始变体没有价格。
-            # 老快照把价格挂在 listing_fields 顶层，所以两级都试。
+            # 申报价 / 重量 / 尺寸都在 listing_fields.skus（导出模板第 9、11-15 列取的就是这里）。
+            # ⚠️ pod_customization 的生成结果（batch_items / style_grid_results）**没有 skus 字段**，
+            # 以前只读 item["skus"]，于是草稿库里的货号/重量/尺寸永远是空的。
             listing_skus = listing.get("skus") if isinstance(listing.get("skus"), list) else []
             listing_sku = listing_skus[0] if listing_skus else {}
+            item_skus = item.get("skus") if isinstance(item.get("skus"), list) else []
+            first_sku = item_skus[0] if item_skus else (listing_sku or {})
             # 类目：导出模板「产品分类」列就是 listing_fields.category_name
             category_name = _text(listing.get("category_name"))
             declared_price, declared_estimated = _declared_price_cny(
@@ -327,6 +329,11 @@ def _collect_pod_entries(service: Any, actor: Actor, batch_limit: int) -> list[d
             if listing_sku.get("weight_g") not in (None, ""):
                 first_sku = {**first_sku, "weight_g": listing_sku.get("weight_g")}
             spec_pairs = _spec_pairs(first_sku, listing)
+            # 长宽高：规格卡表格里存的就是厘米（display_unit 只影响展示），
+            # 不能走 export 的 _sku_dimensions —— 它会把值换算成 display_unit（英寸）再写进标着 cm 的列。
+            dim_length, dim_width, dim_height = _spec_card_dimensions(
+                listing, str(first_sku.get("name") or "")
+            )
             entries.append(
                 {
                     "source": "pod",
@@ -342,7 +349,8 @@ def _collect_pod_entries(service: Any, actor: Actor, batch_limit: int) -> list[d
                     "updated_at": str(batch.get("updated_at") or item.get("updated_at") or ""),
                     "batch_id": batch_id,
                     "style_index": style_index,
-                    "sku": _text(first_sku.get("sku_code") or listing.get("sku_code")),
+                    # 产品货号：POD-001 这种（导出表第 4 列同一规则），不是第 10 列的 "1"
+                    "sku": _pod_product_code(listing, first_sku, style_index),
                     "declared_price": declared_price,
                     "declared_price_estimated": declared_estimated,
                     "category_name": category_name,
@@ -350,9 +358,13 @@ def _collect_pod_entries(service: Any, actor: Actor, batch_limit: int) -> list[d
                     "suggested_price": None,
                     "stock": first_sku.get("stock") or listing.get("stock"),
                     "weight_g": first_sku.get("weight_g") or listing.get("weight_g"),
-                    "length_cm": first_sku.get("length_cm") or listing.get("length_cm"),
-                    "width_cm": first_sku.get("width_cm") or listing.get("width_cm"),
-                    "height_cm": first_sku.get("height_cm") or listing.get("height_cm"),
+                    "length_cm": dim_length
+                    or first_sku.get("length_cm")
+                    or listing.get("length_cm"),
+                    "width_cm": dim_width or first_sku.get("width_cm") or listing.get("width_cm"),
+                    "height_cm": dim_height
+                    or first_sku.get("height_cm")
+                    or listing.get("height_cm"),
                     "description": _text(listing.get("description")),
                     "source_url": _text(listing.get("source_url")),
                     "spec_name_1": spec_pairs[0][0] if len(spec_pairs) > 0 else "",
@@ -362,6 +374,52 @@ def _collect_pod_entries(service: Any, actor: Actor, batch_limit: int) -> list[d
                 }
             )
     return entries
+
+
+def _spec_card_dimensions(
+    listing: dict[str, Any], sku_name: str
+) -> tuple[Any, Any, Any]:
+    """规格卡表格里这个 SKU 的长宽高。
+
+    表格第一行是表头 `["SKU", "Length", "Width", "Height"]`，之后每行一张图/一个 SKU。
+    **单元格里的数字始终是厘米**（display_unit 只决定界面显示成 cm 还是 in），
+    所以这里原样取，不要做单位换算。
+    """
+    spec_card = listing.get("spec_card")
+    cells = spec_card.get("cells") if isinstance(spec_card, dict) else None
+    if not isinstance(cells, list) or not sku_name:
+        return (None, None, None)
+    for row in cells:
+        if not isinstance(row, list) or len(row) < 4:
+            continue
+        if str(row[0]).strip() == sku_name:
+            return (row[1], row[2], row[3])
+    return (None, None, None)
+
+
+def _pod_product_code(listing: dict[str, Any], sku: dict[str, Any], style_index: int) -> str:
+    """产品货号（导出表第 4 列 / 发布页的 ParentSKU）。
+
+    取 `POD-001` 这种，而不是第 10 列那个「SKU 货号」——后者往往就是 "1"、"s"，
+    跨批次会撞号，发布时 Temu 会判「货号已存在」。两者都按导出表同一套规则算，
+    风格与导出表保持一致。
+    """
+    # 快照里显式存了货号（老批次）就直接用，别覆盖
+    explicit = _text(sku.get("sku_code") or listing.get("sku_code"))
+    if explicit:
+        return explicit
+    try:
+        from ..pod_customization.export import (  # noqa: PLC0415 - 避免连带导入整个 POD 包
+            _product_code,
+            _sku_code,
+        )
+
+        code = _product_code(listing, int(style_index or 1))
+        if code:
+            return code
+        return _sku_code(sku, int(style_index or 1), 1)
+    except Exception:  # noqa: BLE001 - 取不到就让界面显示「未填」，不要拖垮草稿库
+        return ""
 
 
 def _dedupe(values: list[Any]) -> list[str]:

@@ -2189,3 +2189,90 @@ def test_draft_library_keeps_warnings_and_reports_page_meta() -> None:
     assert result["page_size"] == 30
     assert result["source"] == "all"
     assert result["query"] == ""
+
+
+class _PodLibraryStub:
+    """POD 批次桩：只实现草稿库用到的两个方法。"""
+
+    def __init__(self, batch: dict[str, Any]) -> None:
+        self._batch = batch
+        self.detail_calls = 0
+
+    def list_batches(self, actor: Any, limit: int = 6) -> dict[str, Any]:
+        return {"batches": [{"id": self._batch["id"], "status": "completed", "title": self._batch["title"]}]}
+
+    def get_batch(self, actor: Any, batch_id: str) -> dict[str, Any]:
+        self.detail_calls += 1
+        return self._batch
+
+
+def _pod_batch(listing: dict[str, Any] | None = None) -> dict[str, Any]:
+    return {
+        "id": "b1",
+        "title": "天然橡胶正方形防水桌布",
+        "status": "completed",
+        "updated_at": "2026-10-20T06:56:20",
+        "style_titles": [{"style_index": 1, "title": "Waterproof tablecloth"}],
+        "items": [
+            {
+                "status": "completed",
+                "style_index": 1,
+                "variant_index": 1,
+                "public_url": "https://img.example.com/a.png",
+                "listing_fields": listing
+                if listing is not None
+                else {
+                    "category_name": "家居 > 桌布",
+                    "skus": [{"name": "1", "declared_price": 150, "weight_g": 350}],
+                    "spec_card": {
+                        "display_unit": "in",
+                        "cells": [
+                            ["SKU", "Length", "Width", "Height"],
+                            ["1", "18", "10", "8"],
+                        ],
+                    },
+                },
+            }
+        ],
+    }
+
+
+def test_pod_entry_reads_sku_weight_dimensions_from_listing_fields() -> None:
+    """POD 生成结果没有 skus 字段：货号/重量/尺寸必须从 listing_fields 里取。
+
+    这里踩过的坑：只读 item["skus"]，于是草稿库永远显示「缺 货号/重量/尺寸」。
+    """
+    from wh_local.modules.temu_publish.library import _collect_pod_entries
+    from wh_local.session import Actor
+
+    actor = Actor(id="cust_a", username="a", role="admin")
+    entries = _collect_pod_entries(_PodLibraryStub(_pod_batch()), actor, 6)
+
+    assert len(entries) == 1
+    entry = entries[0]
+    # 产品货号走导出表第 4 列那套规则，不用第 10 列的 "1"（跨批次会撞号）
+    assert entry["sku"] == "POD-001"
+    assert entry["weight_g"] == 350
+    # 规格卡里的数字本来就是厘米，display_unit=in 只影响展示，不能换算
+    assert (entry["length_cm"], entry["width_cm"], entry["height_cm"]) == ("18", "10", "8")
+    assert entry["category_name"] == "家居 > 桌布"
+    assert entry["declared_price"] == 150
+
+
+def test_pod_entry_tolerates_missing_spec_card() -> None:
+    """没有规格卡时不要抛异常，尺寸留空即可（界面会显示 — 并标缺项）。"""
+    from wh_local.modules.temu_publish.library import _collect_pod_entries
+    from wh_local.session import Actor
+
+    actor = Actor(id="cust_a", username="a", role="admin")
+    batch = _pod_batch(
+        {
+            "category_name": "家居 > 桌布",
+            "skus": [{"name": "1", "declared_price": 150, "weight_g": 350}],
+        }
+    )
+    entry = _collect_pod_entries(_PodLibraryStub(batch), actor, 6)[0]
+
+    assert entry["sku"] == "POD-001"
+    assert entry["weight_g"] == 350
+    assert entry["length_cm"] is None
