@@ -54,27 +54,31 @@
 .pod-fission-confirm,
 .pod-fission-output { display: grid; gap: 12px; padding: 16px; }
 
-/* --- A/B 上传区：窄设置列内上下堆叠，虚线拖拽卡（对齐爆款复刻的上传区皮肤） --- */
-.pod-fission-uploads { display: grid; gap: 14px; }
-.pod-fission-upload { display: grid; min-width: 0; gap: 8px; }
+/* --- A/B 上传区：并排两张小卡，虚线拖拽卡（对齐爆款复刻的上传区皮肤） --- */
+.pod-fission-uploads { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-items: start; }
+.pod-fission-upload { display: grid; min-width: 0; gap: 6px; }
 .pod-fission-upload-heading { display: grid; gap: 2px; }
 .pod-fission-upload-heading b { color: var(--pod-text); font-size: .7rem; }
 .pod-fission-upload-heading small { color: var(--pod-text-muted); font-size: .58rem; overflow-wrap: anywhere; }
-.pod-fission-upload-zone { display: grid; place-items: center; min-height: 140px; padding: 12px; border: 1.5px dashed var(--pod-border-strong); border-radius: 14px; background: var(--pod-surface-muted); transition: border-color .16s ease, background .16s ease; }
+.pod-fission-upload-zone { display: grid; place-items: center; min-height: 104px; padding: 8px; border: 1.5px dashed var(--pod-border-strong); border-radius: 14px; background: var(--pod-surface-muted); transition: border-color .16s ease, background .16s ease; }
 .pod-fission-upload-zone.has-image { border-style: solid; background: var(--pod-surface); }
 .pod-fission-upload-zone:focus-visible { outline: 2px solid var(--pod-primary); outline-offset: 2px; }
 .pod-fission-upload-empty { display: grid; justify-items: center; gap: 6px; border: 0; color: var(--pod-text-muted); background: transparent; text-align: center; }
 .pod-fission-upload-empty .iconfont { color: var(--pod-primary); font-size: 1.5rem; }
 .pod-fission-upload-empty b { color: var(--pod-text-secondary); font-size: .68rem; }
 .pod-fission-upload-empty small { font-size: .57rem; }
-.pod-fission-upload-preview { display: grid; justify-items: center; min-width: 0; gap: 9px; }
-.pod-fission-upload-preview img { max-width: 100%; max-height: 190px; border: 1px solid var(--pod-border); border-radius: 12px; background: #fff; object-fit: contain; }
+.pod-fission-upload-preview { display: grid; justify-items: center; min-width: 0; gap: 7px; }
+.pod-fission-upload-preview img { max-width: 100%; max-height: 108px; border: 1px solid var(--pod-border); border-radius: 12px; background: #fff; object-fit: contain; }
 .pod-fission-upload-preview > small { max-width: 100%; overflow: hidden; color: var(--pod-text-muted); font-size: .55rem; text-overflow: ellipsis; white-space: nowrap; }
-.pod-fission-upload-actions { display: flex; gap: 8px; }
-.pod-fission-upload-actions button { padding: 6px 13px; border: 1px solid var(--pod-border-strong); border-radius: 9px; color: var(--pod-primary); background: var(--pod-surface); font-size: .63rem; font-weight: 800; }
+.pod-fission-upload-actions { display: flex; gap: 6px; }
+.pod-fission-upload-actions button { padding: 4px 10px; border: 1px solid var(--pod-border-strong); border-radius: 9px; color: var(--pod-primary); background: var(--pod-surface); font-size: .6rem; font-weight: 800; }
 .pod-fission-upload-actions button:disabled { cursor: not-allowed; opacity: .55; }
+@media (max-width: 720px) { .pod-fission-uploads { grid-template-columns: minmax(0, 1fr); } }
 
 /* --- 识别摘要 / 等待态 / 次级按钮 / 提示 --- */
+/* 数量档位：选中底色由共享滑块的胶囊承担，这里只保留主题色焦点环。 */
+.pod-fission-page .pod-count-options button:focus { outline: 0; }
+.pod-fission-page .pod-count-options button:focus-visible { outline: 2px solid var(--pod-primary); outline-offset: 2px; }
 .pod-fission-summaries { display: grid; gap: 8px; margin: 0; }
 .pod-fission-summaries > div { display: grid; grid-template-columns: 72px minmax(0, 1fr); align-items: start; gap: 8px; }
 .pod-fission-summaries dt { padding: 7px 9px; border-radius: 8px; color: var(--pod-text); background: var(--pod-surface-tint); font-size: .64rem; font-weight: 850; text-align: center; }
@@ -86,13 +90,7 @@
 .pod-fission-awaiting { display: grid; justify-items: center; gap: 10px; margin: 0; padding: 30px 16px; border: 1px dashed var(--pod-border); border-radius: 14px; color: var(--pod-text-muted); background: linear-gradient(160deg, var(--pod-surface-soft), var(--pod-surface-tint)); font-size: .66rem; line-height: 1.6; text-align: center; }
 .pod-fission-awaiting::before { content: ""; width: 46px; height: 46px; border: 1px solid var(--pod-border-strong); border-radius: 15px; background: radial-gradient(circle at 50% 45%, rgba(var(--pod-primary-rgb), .22), transparent 70%); box-shadow: inset 0 0 0 8px rgba(var(--pod-primary-rgb), .06); }
 
-/* --- 提示条（对齐爆款复刻的 .pod-replica-message） --- */
-.pod-fission-message { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; padding: 10px 14px; border: 1px solid #b9e5d7; border-radius: 10px; color: #246f61; background: #effbf7; font-size: .7rem; }
-.pod-fission-message.is-error { border-color: #f0cdca; color: #a84c48; background: #fdf0ef; }
-.pod-fission-message > span { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; color: #fff; background: #2ab398; }
-.pod-fission-message.is-error > span { background: #d76862; }
-.pod-fission-message p { flex: 1; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-.pod-fission-message button { border: 0; color: currentColor; background: transparent; font-size: 1rem; }
+/* 页面内不再保留常驻消息条：操作反馈统一走右上角全局 toast。 */
 
 /* --- 构图模板入口（对齐爆款复刻的 .pod-replica-composition-entry） --- */
 .pod-fission-output .pod-composition-entry { flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 14px; border: 1px solid var(--pod-border-strong); border-radius: 13px; background: var(--pod-surface-tint); }
@@ -139,12 +137,12 @@
    .pod-prefill-panel 统一上调；这里补裂变自己的上传、识别摘要与构图入口。
    ============================================================ */
 .pod-fission-setup .pod-fission-card-badge { font-size: .74rem; }
-.pod-fission-setup .pod-fission-upload-heading b { font-size: .78rem; }
-.pod-fission-setup .pod-fission-upload-heading small { font-size: .66rem; }
-.pod-fission-setup .pod-fission-upload-empty b { font-size: .76rem; }
-.pod-fission-setup .pod-fission-upload-empty small { font-size: .65rem; }
-.pod-fission-setup .pod-fission-upload-preview > small { font-size: .63rem; }
-.pod-fission-setup .pod-fission-upload-actions button { font-size: .72rem; }
+.pod-fission-setup .pod-fission-upload-heading b { font-size: .72rem; }
+.pod-fission-setup .pod-fission-upload-heading small { font-size: .6rem; }
+.pod-fission-setup .pod-fission-upload-empty b { font-size: .72rem; }
+.pod-fission-setup .pod-fission-upload-empty small { font-size: .62rem; }
+.pod-fission-setup .pod-fission-upload-preview > small { font-size: .6rem; }
+.pod-fission-setup .pod-fission-upload-actions button { font-size: .66rem; }
 .pod-fission-setup .pod-fission-summaries dt { font-size: .74rem; }
 .pod-fission-setup .pod-fission-summaries dd { font-size: .76rem; }
 .pod-fission-setup .pod-fission-secondary-button { font-size: .75rem; }

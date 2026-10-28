@@ -618,7 +618,7 @@ def test_check_mandatory_passes_leaf_category_and_properties(tmp_path: Path) -> 
 
 
 def test_check_mandatory_falls_back_when_gateway_rejects_catsmandatory(tmp_path: Path) -> None:
-    """盈銮网关不支持 catsmandatory.get（实测 sign is invalid）→ 必须退回 attrs 必填校验。"""
+    """网关不支持 catsmandatory.get（实测 sign is invalid）→ 必须退回 attrs 必填校验。"""
 
     class StubClient(StubCatalogClient):
         def mandatory_config(self, leaf_cat_id, bind_site_ids, product_property_reqs=None):
@@ -1336,16 +1336,19 @@ def test_duplicate_detection_is_per_account_and_fingerprint(tmp_path: Path) -> N
 
 
 def test_gateway_auth_errors_carry_actionable_hint() -> None:
-    """CLIENT_TOKEN_INVALID 要说清是「盈銮网关凭据」而不是店铺 token，并给排查方向。"""
+    """CLIENT_TOKEN_INVALID 要说清是「服务商网关凭据」而不是店铺 token，并给排查方向。"""
     from wh_local.modules.temu_publish.router import _gateway_message
 
     text = _gateway_message("CLIENT_TOKEN_INVALID", "client_id or token is invalid")
     assert text.startswith("Temu 拒绝了这次提交：client_id or token is invalid")
     assert "CLIENT_TOKEN_INVALID" in text
-    assert "盈銮网关" in text and "access_token" in text
+    # 文案里不能出现供应商名字（用户要求界面上不显示）
+    assert "服务商网关" in text and "access_token" in text
+    assert "盈銮" not in text
 
     net = _gateway_message("NETWORK_ERROR", "网关网络请求失败：SSLEOFError")
     assert "系统代理" in net and "WH_TEMU_PROXY" in net
+    assert "盈銮" not in net
 
     # 没登记的错误码不加多余的话，保持上游原话
     plain = _gateway_message("SOME_NEW_CODE", "boom")
@@ -1353,7 +1356,7 @@ def test_gateway_auth_errors_carry_actionable_hint() -> None:
 
 
 def test_unbinding_keeps_gateway_credentials(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """解绑只清店铺授权：盈銮 client_id / token 是服务商那层的，换店还要用，必须留着。"""
+    """解绑只清店铺授权：服务商 client_id / token 是预置的，换店还要用，必须留着。"""
     _clear_temu_env(monkeypatch)
     init_db(tmp_path / "runtime.sqlite3")
     service = TemuPublishService(
@@ -1404,3 +1407,873 @@ def test_zero_stock_is_allowed_but_warned(tmp_path: Path) -> None:
     sku = built["payload"]["productSkcReqs"][0]["productSkuReqs"][0]
     assert sku["productSkuStockQuantityReq"]["warehouseStockQuantityReqs"][0]["targetStockAvailable"] == 0
     assert any("库存为 0" in item for item in built["warnings"])
+
+
+class LinkedCatalogClient:
+    """attributes() 返回带父子联动的目录（供联动测试用）。"""
+
+    def attributes(self, cat_id: int, supported_type: int = 1) -> dict[str, Any]:
+        return _linked_catalog()
+
+
+def _linked_catalog() -> dict[str, Any]:
+    """父子联动样例：电池属性(2001) → 可充电电池(2002) / 不可充电电池(2003)。"""
+    return {
+        "properties": [
+            {"pid": 2001, "name": "电池属性", "templatePid": 5001, "required": False,
+             "values": [{"vid": 1, "value": "可充电电池"}, {"vid": 2, "value": "不可充电电池"}]},
+            {"pid": 2002, "name": "可充电电池", "templatePid": 5002, "parentTemplatePid": 5001,
+             "required": True, "values": [{"vid": 10, "value": "锂电池"}, {"vid": 11, "value": "镍系电池"}],
+             "templatePropertyValueParentList": [{"parentVidList": [1], "vidList": [10, 11]}]},
+            {"pid": 2003, "name": "不可充电电池", "templatePid": 5003, "parentTemplatePid": 5001,
+             "required": True, "values": [{"vid": 20, "value": "AA电池"}],
+             "templatePropertyValueParentList": [{"parentVidList": [2], "vidList": [20]}]},
+            {"pid": 2004, "name": "材料", "templatePid": 5004, "required": False,
+             "values": [{"vid": 30, "value": "塑料"}]},
+        ]
+    }
+
+
+def test_linked_properties_follow_parent_selection() -> None:
+    """Temu 属性联动：父级没选/取值不匹配时，子属性不该出现也不必填。"""
+    from wh_local.modules.temu_publish.schemas import GoodsPropertyInput
+    from wh_local.modules.temu_publish.service import _resolve_applicable_properties
+
+    catalog = _linked_catalog()
+    applicable, dropped = _resolve_applicable_properties(
+        catalog, [GoodsPropertyInput(pid=2001, vid=1)]
+    )
+    assert 2002 in applicable and 2003 not in applicable
+    assert dropped == ["不可充电电池"]
+
+    # 父级没选 → 两个子属性都不出现
+    applicable, dropped = _resolve_applicable_properties(catalog, [])
+    assert 2002 not in applicable and 2003 not in applicable
+    assert set(dropped) == {"可充电电池", "不可充电电池"}
+    # 无联动规则的属性永远在
+    assert 2001 in applicable and 2004 in applicable
+
+
+def test_inapplicable_property_is_dropped_from_payload(tmp_path: Path) -> None:
+    """填了不适用属性的值也不能进 payload，并给出 warning（Temu 会判属性不合法）。"""
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=LinkedCatalogClient())
+
+    # 父级选「可充电」：2002 必填且适用，2003 不适用（即使填了也不能进 payload）
+    built = service.build_goods_payload(
+        _draft(
+            properties=[
+                GoodsPropertyInput(pid=2001, vid=1),
+                GoodsPropertyInput(pid=2002, vid=10),
+                GoodsPropertyInput(pid=2003, vid=20),
+            ]
+        )
+    )
+    pids = [item["pid"] for item in built["payload"]["productPropertyReqs"]]
+    assert 2002 in pids and 2003 not in pids
+    assert any("不适用" in item for item in built["warnings"])
+
+    # 反向：父级选「不可充电」时，只填 2003 就行，不该再要求 2002
+    ok = service.build_goods_payload(
+        _draft(properties=[GoodsPropertyInput(pid=2001, vid=2), GoodsPropertyInput(pid=2003, vid=20)])
+    )
+    pids = [item["pid"] for item in ok["payload"]["productPropertyReqs"]]
+    assert 2003 in pids and 2002 not in pids
+
+
+class LookupClient(StubCatalogClient):
+    """goods.add 抛网络错误；goods_list 按开关返回「店里已经有这件商品」。"""
+
+    def __init__(self, *, found: bool) -> None:
+        super().__init__()
+        self.found = found
+        self.add_calls = 0
+        self.list_calls = 0
+
+    def add_goods(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self.add_calls += 1
+        raise TemuGatewayError("bg.glo.goods.add", "网关超时", error_code="NETWORK_ERROR")
+
+    def goods_list(self, **filters: Any) -> dict[str, Any]:
+        self.list_calls += 1
+        if not self.found:
+            return {"data": [], "totalCount": 0}
+        import time as _time
+
+        return {
+            "data": [
+                {
+                    "productId": 987654321,
+                    "productName": "Cartoon cosmetic bag",
+                    "extCode": filters.get("skcExtCode"),
+                    "createdAt": int(_time.time() * 1000),
+                    "skcSiteStatus": 0,
+                }
+            ],
+            "totalCount": 1,
+        }
+
+
+def test_publish_timeout_is_confirmed_by_goods_lookup(tmp_path: Path) -> None:
+    """网络中断但店铺里已经能查到这件商品 → 按「已创建」处理，别让用户重试。"""
+    init_db(tmp_path / "runtime.sqlite3")
+    client = LookupClient(found=True)
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=client, owner_id="cust_a")
+
+    result = service.publish_goods(_draft())
+
+    assert result["submitted"] is True
+    assert result["confirmed_by_lookup"] is True
+    assert result["matched_goods"]["product_id"] == "987654321"
+    assert any("已经查到这件商品" in item for item in result["warnings"])
+    assert client.list_calls >= 1
+
+    # 台账记成成功 → 再发会被拦（避免重复上架）
+    from wh_local.modules.temu_publish.submissions import DuplicateSubmission
+
+    with pytest.raises(DuplicateSubmission):
+        service.publish_goods(_draft())
+
+
+def test_publish_network_error_without_match_still_fails(tmp_path: Path) -> None:
+    """反查不到就不能当成功：照常抛错、台账记 failed，允许用户重试。"""
+    init_db(tmp_path / "runtime.sqlite3")
+    client = LookupClient(found=False)
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=client, owner_id="cust_a")
+
+    with pytest.raises(TemuGatewayError):
+        service.publish_goods(_draft())
+    assert client.list_calls >= 1
+    # 失败不挡重试（这次会再打一次，仍然抛网络错误）
+    with pytest.raises(TemuGatewayError):
+        service.publish_goods(_draft())
+    assert client.add_calls == 2
+
+
+class SearchClient(StubCatalogClient):
+    """goods_list 返回一条商品；记录收到的过滤参数。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.filters: list[dict[str, Any]] = []
+
+    def goods_list(self, **filters: Any) -> dict[str, Any]:
+        self.filters.append(filters)
+        return {
+            "data": [
+                {
+                    "productId": 55894695437,
+                    "productName": "Sage tablecloth",
+                    "extCode": "SKC-RED",
+                    "mainImageUrl": "https://img.example.com/a.jpg",
+                    "createdAt": 1793000000000,
+                    "skcSiteStatus": 0,
+                    "leafCat": {"catId": 10498, "catName": "桌布"},
+                    "productSkuSummaries": [{"extCode": "SKU-1"}, {"extCode": "SKU-2"}],
+                }
+            ],
+            "totalCount": 1,
+        }
+
+
+def test_search_goods_compacts_items_and_caches(tmp_path: Path) -> None:
+    """店铺商品查询：按 SKC 货号过滤、压成前端字段，并走 180 秒短缓存。"""
+    client = SearchClient()
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=client)
+
+    first = service.search_goods(ext_code="SKC-RED")
+    assert first["total"] == 1
+    item = first["items"][0]
+    assert item["product_id"] == "55894695437"
+    assert item["skc_ext_code"] == "SKC-RED"
+    assert item["category"] == "桌布"
+    assert item["sku_codes"] == ["SKU-1", "SKU-2"]
+    assert client.filters[0]["skcExtCode"] == "SKC-RED"
+
+    service.search_goods(ext_code="SKC-RED")  # 命中缓存，不再打网关
+    assert len(client.filters) == 1
+
+
+def test_dimension_check_requires_mall_id(tmp_path: Path) -> None:
+    """尺寸图检测要 mallId；缺了要给出中文提示，而不是发一个必然失败的请求。"""
+    client = SearchClient()
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=client)
+    with pytest.raises(ValueError, match="mallId"):
+        service.dimension_check("https://img.example.com/a.jpg", mall_id="")
+
+
+def test_goods_detail_router_returns_payload(tmp_path: Path) -> None:
+    """GET /goods/{id} 走通（用桩客户端，不触网）。"""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from wh_local.modules.temu_publish.router import create_temu_publish_router
+    from wh_local.session import Actor, actor_from_authorization
+
+    class DetailClient(SearchClient):
+        def goods_detail(self, product_id: int) -> dict[str, Any]:
+            return {"productId": product_id, "productName": "Sage tablecloth"}
+
+    db_path = tmp_path / "runtime.sqlite3"
+    init_db(db_path)
+    app = FastAPI()
+    app.include_router(create_temu_publish_router(db_path))
+    app.dependency_overrides[actor_from_authorization] = lambda: Actor(
+        id="cust_a", username="a", role="admin"
+    )
+    http = TestClient(app)
+    # 路由内部的 service 是懒建的，这里只验证路径存在且未登录/无凭证时会走统一错误处理
+    response = http.get("/api/temu-publish/goods/55894695437")
+    assert response.status_code in (200, 400, 422, 502, 503)
+
+
+class LowStockClient(StubCatalogClient):
+    """商品列表桩：两条 0 库存、一条有货；记录翻页参数。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.pages: list[int] = []
+
+    def goods_list(self, **filters: Any) -> dict[str, Any]:
+        page = int(filters.get("page") or 1)
+        self.pages.append(page)
+        if page > 1:
+            return {"totalCount": 3, "data": []}
+        return {
+            "totalCount": 3,
+            "data": [
+                {
+                    "productId": 111,
+                    "productName": "Zero stock A",
+                    "extCode": "SKC-A",
+                    "leafCat": {"catName": "桌布"},
+                    "productSkuSummaries": [
+                        {"productSkuId": 1, "extCode": "SKU-A1", "virtualStock": 0,
+                         "productSkuSpecList": [{"specName": "Red"}]},
+                        {"productSkuId": 2, "extCode": "SKU-A2", "virtualStock": 0},
+                    ],
+                },
+                {
+                    "productId": 222,
+                    "productName": "Mixed stock B",
+                    "extCode": "SKC-B",
+                    "productSkuSummaries": [
+                        {"productSkuId": 3, "extCode": "SKU-B1", "virtualStock": 0},
+                        {"productSkuId": 4, "extCode": "SKU-B2", "virtualStock": 7},
+                    ],
+                },
+                {
+                    "productId": 333,
+                    "productName": "In stock C",
+                    "extCode": "SKC-C",
+                    "productSkuSummaries": [
+                        {"productSkuId": 5, "extCode": "SKU-C1", "virtualStock": 12},
+                    ],
+                },
+            ],
+        }
+
+
+def test_low_stock_goods_lists_zero_stock_skus(tmp_path: Path) -> None:
+    """待补库存清单：只列有 0 库存 SKU 的商品，带上每个 SKU 的库存与规格。"""
+    client = LowStockClient()
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=client)
+
+    result = service.low_stock_goods()
+
+    assert result["total"] == 3
+    assert [item["product_id"] for item in result["items"]] == ["111", "222"]
+    assert result["zero_sku_count"] == 3  # A1 A2 B1
+    # 改库存接口没开通，必须如实告诉前端「只能给清单」
+    assert result["can_update_stock"] is False
+
+    first = result["items"][0]
+    assert first["category"] == "桌布"
+    assert first["stock_total"] == 0
+    assert first["skus"][0] == {
+        "sku_id": "1",
+        "ext_code": "SKU-A1",
+        "stock": 0,
+        "specs": "Red",
+    }
+    # 混合库存的商品：总库存照实统计，0 库存 SKU 只算那一个
+    mixed = result["items"][1]
+    assert mixed["stock_total"] == 7
+    assert mixed["zero_stock_sku_count"] == 1
+
+
+def test_low_stock_goods_stops_at_limit(tmp_path: Path) -> None:
+    """limit=1 只取第一个就停，不要为了凑数把整店翻完。"""
+    client = LowStockClient()
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=client)
+
+    result = service.low_stock_goods(limit=1)
+
+    assert len(result["items"]) == 1
+    assert client.pages == [1]
+
+
+def test_sku_stock_falls_back_when_virtual_stock_missing() -> None:
+    """列表里没有 virtualStock 时退回 stock 字段；都没有按 0 算（不能当未知）。"""
+    from wh_local.modules.temu_publish.service import _compact_goods_item
+
+    item = _compact_goods_item(
+        {
+            "productId": 1,
+            "productSkuSummaries": [
+                {"productSkuId": 1, "extCode": "A", "stock": 9},
+                {"productSkuId": 2, "extCode": "B"},
+                {"productSkuId": 3, "extCode": "C", "virtualStock": None, "targetStockAvailable": 4},
+            ],
+        }
+    )
+    assert [sku["stock"] for sku in item["skus"]] == [9, 0, 4]
+    assert item["stock_total"] == 13
+
+
+def test_low_stock_route_is_not_shadowed_by_product_id(tmp_path: Path) -> None:
+    """`/goods/low-stock` 必须排在 `/goods/{product_id}` 之前，否则会被当成 product_id → 422。"""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from wh_local.modules.temu_publish.router import create_temu_publish_router
+    from wh_local.session import Actor, actor_from_authorization
+
+    db_path = tmp_path / "runtime.sqlite3"
+    init_db(db_path)
+    app = FastAPI()
+    app.include_router(create_temu_publish_router(db_path))
+    app.dependency_overrides[actor_from_authorization] = lambda: Actor(
+        id="cust_a", username="a", role="admin"
+    )
+
+    response = TestClient(app).get("/api/temu-publish/goods/low-stock")
+    assert response.status_code != 422, response.text
+    assert response.status_code in (200, 400, 502, 503)
+
+
+class FakeShopProbe:
+    """代替 TemuProductClient：只实现 token_info，token 以 bad 开头则报无效。"""
+
+    def __init__(self, credentials: Any, timeout: int = 30, max_attempts: int = 1) -> None:
+        self.credentials = credentials
+        self.timeout = timeout
+        self.max_attempts = max_attempts
+
+    def token_info(self) -> dict[str, Any]:
+        token = str(getattr(self.credentials, "access_token", ""))
+        if token.startswith("bad"):
+            raise TemuGatewayError(
+                "bg.open.accesstoken.info.get.global",
+                "client_id or token is invalid",
+                error_code="CLIENT_TOKEN_INVALID",
+            )
+        return {"mallName": f"Shop-{token[-4:]}", "apiScopeList": []}
+
+
+def _shop_service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+    from wh_local.modules.temu_publish import service as temu_service
+
+    monkeypatch.setattr(temu_service, "TemuProductClient", FakeShopProbe)
+    init_db(tmp_path / "runtime.sqlite3")
+    service = temu_service.TemuPublishService(
+        tmp_path / "runtime.sqlite3", client=StubCatalogClient(), owner_id="cust_a"
+    )
+    service.save_settings(TemuSettingsUpdate(yl_client="yl-c", yl_token="yl-t"), "cust_a")
+    return service
+
+
+def test_add_shop_verifies_then_saves_and_can_switch_without_retyping(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """多店铺：验证通过才保存；换店只要点一下，不用再贴 token。"""
+    service = _shop_service(tmp_path, monkeypatch)
+
+    first = service.add_shop("aaa-token-1111", "", "cust_a")
+    assert first["verified"] is True
+    assert first["mall_name"] == "Shop-1111"
+    assert first["configured"]["access_token"] is True
+    assert len(first["shops"]) == 1
+    assert first["shops"][0]["active"] is True
+    assert first["shops"][0]["masked_token"].endswith("1111")
+
+    second = service.add_shop("bbb-token-2222", "", "cust_a")
+    assert len(second["shops"]) == 2
+    active = [shop for shop in second["shops"] if shop["active"]]
+    assert len(active) == 1 and active[0]["mall_name"] == "Shop-2222"
+    assert service.store.load().access_token == "bbb-token-2222"
+
+    # 切回第一家：库里存的 token 直接拿来用，不再要求输入
+    other = [shop for shop in second["shops"] if not shop["active"]][0]
+    back = service.activate_shop(other["id"], "cust_a")
+    assert [shop for shop in back["shops"] if shop["active"]][0]["mall_name"] == "Shop-1111"
+    assert service.store.load().access_token == "aaa-token-1111"
+
+
+def test_add_shop_rejects_invalid_token_without_saving(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """token 验证不过就不落库：否则店铺列表里会留一条永远发不出去的坏记录。"""
+    service = _shop_service(tmp_path, monkeypatch)
+
+    with pytest.raises(TemuGatewayError):
+        service.add_shop("bad-token-9999", "", "cust_a")
+
+    status = service.settings_status()
+    assert status["shops"] == []
+    assert status["configured"]["access_token"] is False
+
+
+def test_add_same_shop_twice_does_not_duplicate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同一个 token 保存两次只留一条（店铺 id 由 token 哈希得出）。"""
+    service = _shop_service(tmp_path, monkeypatch)
+
+    service.add_shop("ccc-token-3333", "", "cust_a")
+    again = service.add_shop("ccc-token-3333", "", "cust_a")
+
+    assert len(again["shops"]) == 1
+    assert again["shops"][0]["active"] is True
+
+
+def test_remove_active_shop_stops_using_it_but_keeps_others(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """删掉当前店铺：立即停用（access_token 清空），其它店铺仍在列表里等切换。"""
+    service = _shop_service(tmp_path, monkeypatch)
+    service.add_shop("ddd-token-4444", "", "cust_a")
+    second = service.add_shop("eee-token-5555", "", "cust_a")
+    active = [shop for shop in second["shops"] if shop["active"]][0]
+
+    after = service.remove_shop(active["id"], "cust_a")
+
+    assert len(after["shops"]) == 1
+    assert after["shops"][0]["mall_name"] == "Shop-4444"
+    assert after["shops"][0]["active"] is False
+    assert after["configured"]["access_token"] is False
+
+
+def test_multi_pack_only_sent_when_more_than_one(tmp_path: Path) -> None:
+    """多件装：>1 才发 productSkuMultiPackReq（结构与官方成功案例一致），1 不发。"""
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=StubCatalogClient())
+
+    single = service.build_goods_payload(_draft())
+    sku = single["payload"]["productSkcReqs"][0]["productSkuReqs"][0]
+    assert "productSkuMultiPackReq" not in sku
+
+    packed = _draft().model_copy(deep=True)
+    packed.skcs[0].skus[0].pieces_per_pack = 12
+    built = service.build_goods_payload(packed)
+    sku = built["payload"]["productSkcReqs"][0]["productSkuReqs"][0]
+    assert sku["productSkuMultiPackReq"] == {
+        "pieceUnitCode": 1,
+        "numberOfPieces": 1,
+        "pieceNewUnitCode": 1,
+        "numberOfPiecesNew": 12,
+        "skuClassification": 1,
+        "productSkuNetContentReq": {},
+    }
+
+
+class SizeChartClient(StubCatalogClient):
+    """size_charts 按开关返回空/非空，记录调用次数（验证缓存）。"""
+
+    def __init__(self, rows: list[dict[str, Any]] | None = None) -> None:
+        super().__init__()
+        self.rows = rows or []
+        self.calls = 0
+
+    def size_charts(self, cat_id: int, offset: int = 0, page_size: int = 20) -> dict[str, Any]:
+        self.calls += 1
+        return {
+            "offset": offset,
+            "pageSize": page_size,
+            "totalCount": len(self.rows),
+            "sizeSpecDataList": self.rows or None,
+        }
+
+
+def test_size_charts_reports_whether_category_needs_one(tmp_path: Path) -> None:
+    """类目没有尺码表（宠物用品这类）→ has_size_chart=False，前端据此隐藏字段。"""
+    empty = SizeChartClient()
+    service = TemuPublishService(tmp_path / "a.sqlite3", client=empty)
+    info = service.size_charts(1634)
+    assert info["cat_id"] == 1634
+    assert info["has_size_chart"] is False
+    assert info["count"] == 0
+
+    # 同一类目第二次走缓存，不再打网关
+    service.size_charts(1634)
+    assert empty.calls == 1
+
+    with_rows = SizeChartClient([{"businessId": 1}, {"businessId": 2}])
+    service2 = TemuPublishService(tmp_path / "b.sqlite3", client=with_rows)
+    info2 = service2.size_charts(24376)
+    assert info2["has_size_chart"] is True
+    assert info2["count"] == 2
+    # 结构未知：原样带回去，不猜字段名
+    assert info2["raw"][0] == {"businessId": 1}
+
+
+def test_size_charts_without_category_short_circuits(tmp_path: Path) -> None:
+    """没选类目（cat_id=0）不该打网关。"""
+    client = SizeChartClient([{"businessId": 1}])
+    service = TemuPublishService(tmp_path / "c.sqlite3", client=client)
+    assert service.size_charts(0)["has_size_chart"] is False
+    assert client.calls == 0
+
+
+def test_size_charts_route_exists(tmp_path: Path) -> None:
+    """/categories/{id}/size-charts 路由存在（不是 404/422；无凭证时走统一错误处理）。"""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from wh_local.modules.temu_publish.router import create_temu_publish_router
+    from wh_local.session import Actor, actor_from_authorization
+
+    db_path = tmp_path / "runtime.sqlite3"
+    init_db(db_path)
+    app = FastAPI()
+    app.include_router(create_temu_publish_router(db_path))
+    app.dependency_overrides[actor_from_authorization] = lambda: Actor(
+        id="cust_a", username="a", role="admin"
+    )
+    response = TestClient(app).get("/api/temu-publish/categories/1634/size-charts")
+    assert response.status_code != 404, response.text
+    assert response.status_code in (200, 400, 503)
+
+
+def test_property_payload_omits_empty_optional_fields(tmp_path: Path) -> None:
+    """商品属性只发真实成功案例里有的 7 个字段。
+
+    numberInputValue / valueGroupId / valueGroupName 在 2026-09-27 与 2026-10-26
+    两次真实上架的 payload 里都不存在，空值一起发有可能被判「属性不合法」，
+    所以只在真有值时带上。
+    """
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=StubCatalogClient())
+
+    payload = service.build_goods_payload(_draft())["payload"]
+    item = payload["productPropertyReqs"][0]
+
+    assert item == {
+        "pid": 1,
+        "refPid": 12,
+        "templatePid": 569789,
+        "vid": 10,
+        "propName": "材质",
+        "propValue": "PU",
+        "valueUnit": "",
+    }
+
+
+def test_property_payload_keeps_number_value_when_present(tmp_path: Path) -> None:
+    """数值型属性（单位 cm 等）必须带上 numberInputValue，否则 Temu 让「请输入数值」。"""
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=StubCatalogClient())
+    draft = _draft(
+        properties=[
+            GoodsPropertyInput(
+                pid=1, vid=0, prop_name="长度", prop_value="20", number_input_value="20", value_unit="cm"
+            )
+        ]
+    )
+
+    item = service.build_goods_payload(draft)["payload"]["productPropertyReqs"][0]
+
+    assert item["numberInputValue"] == "20"
+    assert item["valueUnit"] == "cm"
+    assert "valueGroupId" not in item
+
+
+def test_number_property_without_vid_is_not_rejected(tmp_path: Path) -> None:
+    """数值型属性没有 vid（靠文本传值），不能按「vid 不在可选值内」拒掉。"""
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=StubCatalogClient())
+    draft = _draft(
+        properties=[GoodsPropertyInput(pid=1, vid=0, prop_name="材质", prop_value="20cm")]
+    )
+
+    payload = service.build_goods_payload(draft)["payload"]
+
+    assert payload["productPropertyReqs"][0]["propValue"] == "20cm"
+
+
+def test_property_without_vid_and_text_is_rejected(tmp_path: Path) -> None:
+    """既没选值也没填文本：提前拦下来，别让 Temu 回一句看不懂的话。"""
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=StubCatalogClient())
+
+    with pytest.raises(ValueError, match="既没有选值也没有填数值"):
+        service.build_goods_payload(_draft(properties=[GoodsPropertyInput(pid=1, vid=0)]))
+
+
+class NoSaleCatalogClient:
+    """类目属性表里一个销售属性都没有的类目（如「桌布/亚麻布」）。"""
+
+    def attributes(self, cat_id: int, supported_type: int = 1) -> dict[str, Any]:
+        return {
+            "properties": [
+                {
+                    "pid": 112,
+                    "name": "形状",
+                    "refPid": 1,
+                    "templatePid": 569789,
+                    "required": True,
+                    "isSale": False,
+                    "values": [{"vid": 2463, "value": "矩形"}],
+                }
+            ]
+        }
+
+
+class SaleCatalogClient(StubCatalogClient):
+    """类目靠颜色/尺码区分变种（isSale=True）。"""
+
+    def attributes(self, cat_id: int, supported_type: int = 1) -> dict[str, Any]:
+        data = super().attributes(cat_id, supported_type)
+        data["properties"][0]["isSale"] = True
+        return data
+
+
+def _single_sku_draft() -> GoodsDraftInput:
+    """没有任何规格的单 SKU 草稿（类目只剩一个必填商品属性「形状」）。"""
+    draft = _draft(properties=[GoodsPropertyInput(pid=112, vid=2463, prop_name="形状", prop_value="矩形")])
+    skc = draft.skcs[0]
+    return draft.model_copy(
+        update={
+            "skcs": [
+                skc.model_copy(
+                    update={
+                        "main_specs": [],
+                        "skus": [skc.skus[0].model_copy(update={"specs": []})],
+                    }
+                )
+            ]
+        }
+    )
+
+
+def test_single_sku_payload_for_category_without_sale_properties(tmp_path: Path) -> None:
+    """没有销售属性的类目：规格声明与 SKU 规格都发空数组，仍保留全零主规格占位。"""
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=NoSaleCatalogClient())
+
+    payload = service.build_goods_payload(_single_sku_draft())["payload"]
+
+    assert payload["productSpecPropertyReqs"] == []
+    skc = payload["productSkcReqs"][0]
+    assert skc["mainProductSkuSpecReqs"] == [
+        {"specId": 0, "specName": "", "parentSpecId": 0, "parentSpecName": ""}
+    ]
+    assert skc["productSkuReqs"][0]["productSkuSpecReqs"] == []
+    # 单 SKU 也要把价格/库存/物流发全
+    sku = skc["productSkuReqs"][0]
+    assert sku["siteSupplierPrices"] == [{"siteId": 100, "supplierPrice": 1299}]
+    assert sku["productSkuStockQuantityReq"]["warehouseStockQuantityReqs"][0]["targetStockAvailable"] == 20
+
+
+def test_category_with_sale_properties_rejects_empty_specs(tmp_path: Path) -> None:
+    """有销售属性的类目不能按单 SKU 发：提前报错，别让 Temu 回一句难懂的。"""
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=SaleCatalogClient())
+
+    with pytest.raises(ValueError, match="至少要给每个 SKU 填一个规格值"):
+        service.build_goods_payload(_single_sku_draft())
+
+
+def test_multi_variant_still_requires_specs(tmp_path: Path) -> None:
+    """有销售属性的类目照旧要规格（不能因为放宽 schema 就漏掉）。"""
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=SaleCatalogClient())
+
+    payload = service.build_goods_payload(_draft())["payload"]
+
+    assert payload["productSpecPropertyReqs"]
+    assert payload["productSkcReqs"][0]["productSkuReqs"][0]["productSkuSpecReqs"]
+
+
+class UnitCatalogClient(StubCatalogClient):
+    """带单位的必填属性（厚度 mm / 成分比例 %）。"""
+
+    def attributes(self, cat_id: int, supported_type: int = 1) -> dict[str, Any]:
+        data = super().attributes(cat_id, supported_type)
+        data["properties"][0]["valueUnit"] = ["mm"]
+        data["properties"][0]["numberInputTitle"] = "厚度"
+        return data
+
+
+def test_unit_property_requires_numeric_value(tmp_path: Path) -> None:
+    """带单位的属性光选下拉不够，Temu 要的是数值：提前拦下并说清要填什么。"""
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=UnitCatalogClient())
+
+    with pytest.raises(ValueError, match="要填数值（单位 mm）"):
+        service.build_goods_payload(_draft(properties=[GoodsPropertyInput(pid=1, vid=10)]))
+
+
+def test_unit_property_with_value_passes(tmp_path: Path) -> None:
+    """填了数值就正常发，并把单位写进 valueUnit。"""
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=UnitCatalogClient())
+    draft = _draft(
+        properties=[GoodsPropertyInput(pid=1, vid=10, prop_value="2.5", number_input_value="2.5")]
+    )
+
+    item = service.build_goods_payload(draft)["payload"]["productPropertyReqs"][0]
+
+    assert item["propValue"] == "2.5"
+    assert item["numberInputValue"] == "2.5"
+    assert item["valueUnit"] == "mm"
+
+
+def _library_payload(count: int = 75) -> dict[str, Any]:
+    entries = []
+    for index in range(count):
+        entries.append(
+            {
+                "source": "ai" if index % 2 == 0 else "pod",
+                "id": f"x:{index}",
+                "title": f"Table cloth {index}" if index % 3 else f"Phone case {index}",
+                "sku": f"SKU-{index:03d}",
+                "category_name": "家居 > 桌布" if index % 3 == 0 else "",
+                "updated_at": f"2026-10-2{index % 9} 10:00",
+            }
+        )
+    return {
+        "entries": entries,
+        "warnings": ["示例告警"],
+        "counts": {"ai": sum(1 for e in entries if e["source"] == "ai"), "pod": count // 2, "total": count},
+    }
+
+
+def test_draft_library_paginates_30_per_page() -> None:
+    """默认 30 条/页，页码越界要收敛到最后一页，而不是返回空。"""
+    from wh_local.modules.temu_publish.library import paginate_draft_library
+
+    payload = _library_payload(75)
+
+    first = paginate_draft_library(payload, page=1, page_size=30)
+    assert len(first["entries"]) == 30
+    assert first["total"] == 75
+    assert first["pages"] == 3
+    assert first["page"] == 1
+
+    last = paginate_draft_library(payload, page=3, page_size=30)
+    assert len(last["entries"]) == 15
+
+    beyond = paginate_draft_library(payload, page=99, page_size=30)
+    assert beyond["page"] == 3, "越界要夹到最后一页"
+    assert len(beyond["entries"]) == 15
+
+
+def test_draft_library_filters_by_source_and_query() -> None:
+    from wh_local.modules.temu_publish.library import paginate_draft_library
+
+    payload = _library_payload(75)
+
+    ai_only = paginate_draft_library(payload, source="ai", page=1, page_size=30)
+    assert all(item["source"] == "ai" for item in ai_only["entries"])
+    assert ai_only["total"] == 38
+    # counts 是全量的，筛选按钮上的数字不能跟着变
+    assert ai_only["counts"]["total"] == 75
+
+    searched = paginate_draft_library(payload, query="table cloth", page=1, page_size=30)
+    assert searched["total"] > 0
+    assert all("table cloth" in item["title"].lower() for item in searched["entries"])
+
+    by_sku = paginate_draft_library(payload, query="sku-00", page=1, page_size=30)
+    assert all(item["sku"].lower().startswith("sku-00") for item in by_sku["entries"])
+
+    by_category = paginate_draft_library(payload, query="桌布", page=1, page_size=30)
+    assert all("桌布" in item["category_name"] for item in by_category["entries"])
+
+
+def test_draft_library_keeps_warnings_and_reports_page_meta() -> None:
+    from wh_local.modules.temu_publish.library import paginate_draft_library
+
+    result = paginate_draft_library(_library_payload(10), source="", query="", page=1, page_size=30)
+
+    assert result["warnings"] == ["示例告警"]
+    assert result["page_size"] == 30
+    assert result["source"] == "all"
+    assert result["query"] == ""
+
+
+class _PodLibraryStub:
+    """POD 批次桩：只实现草稿库用到的两个方法。"""
+
+    def __init__(self, batch: dict[str, Any]) -> None:
+        self._batch = batch
+        self.detail_calls = 0
+
+    def list_batches(self, actor: Any, limit: int = 6) -> dict[str, Any]:
+        return {"batches": [{"id": self._batch["id"], "status": "completed", "title": self._batch["title"]}]}
+
+    def get_batch(self, actor: Any, batch_id: str) -> dict[str, Any]:
+        self.detail_calls += 1
+        return self._batch
+
+
+def _pod_batch(listing: dict[str, Any] | None = None) -> dict[str, Any]:
+    """真实口径：listing_fields 在**批次顶层**，items 里没有这个键。"""
+    return {
+        "id": "b1",
+        "title": "天然橡胶正方形防水桌布",
+        "status": "completed",
+        "updated_at": "2026-10-20T06:56:20",
+        "listing_fields": listing
+        if listing is not None
+        else {
+            "category_name": "家居 > 桌布",
+            "skus": [{"name": "1", "declared_price": 150, "weight_g": 350}],
+            "spec_card": {
+                "display_unit": "in",
+                "cells": [
+                    ["SKU", "Length", "Width", "Height"],
+                    ["1", "18", "10", "8"],
+                ],
+            },
+        },
+        "style_titles": [{"style_index": 1, "title": "Waterproof tablecloth"}],
+        "items": [
+            {
+                "status": "completed",
+                "style_index": 1,
+                "variant_index": 1,
+                "public_url": "https://img.example.com/a.png",
+            }
+        ],
+    }
+
+
+def test_pod_entry_reads_sku_weight_dimensions_from_listing_fields() -> None:
+    """POD 生成结果没有 skus 字段：货号/重量/尺寸必须从 listing_fields 里取。
+
+    这里踩过的坑：只读 item["skus"]，于是草稿库永远显示「缺 货号/重量/尺寸」。
+    """
+    from wh_local.modules.temu_publish.library import _collect_pod_entries
+    from wh_local.session import Actor
+
+    actor = Actor(id="cust_a", username="a", role="admin")
+    entries = _collect_pod_entries(_PodLibraryStub(_pod_batch()), actor, 6)
+
+    assert len(entries) == 1
+    entry = entries[0]
+    # 产品货号走导出表第 4 列那套规则，不用第 10 列的 "1"（跨批次会撞号）
+    assert entry["sku"] == "POD-001"
+    assert entry["weight_g"] == 350
+    # 规格卡里的数字本来就是厘米，display_unit=in 只影响展示，不能换算
+    assert (entry["length_cm"], entry["width_cm"], entry["height_cm"]) == ("18", "10", "8")
+    assert entry["category_name"] == "家居 > 桌布"
+    assert entry["declared_price"] == 150
+
+
+def test_pod_entry_tolerates_missing_spec_card() -> None:
+    """没有规格卡时不要抛异常，尺寸留空即可（界面会显示 — 并标缺项）。"""
+    from wh_local.modules.temu_publish.library import _collect_pod_entries
+    from wh_local.session import Actor
+
+    actor = Actor(id="cust_a", username="a", role="admin")
+    batch = _pod_batch(
+        {
+            "category_name": "家居 > 桌布",
+            "skus": [{"name": "1", "declared_price": 150, "weight_g": 350}],
+        }
+    )
+    entry = _collect_pod_entries(_PodLibraryStub(batch), actor, 6)[0]
+
+    assert entry["sku"] == "POD-001"
+    assert entry["weight_g"] == 350
+    assert entry["length_cm"] is None

@@ -70,6 +70,11 @@ from .replica_context import (
     load_frozen_plan,
     style_product_context,
 )
+from .fission_panel_template import (
+    DEFAULT_DERIVED_PANEL_DIRECTIONS,
+    build_fission_main_prompt,
+    build_fission_panel_prompt,
+)
 from .replica_panel_template import build_replica_panel_prompt
 from .replica_specs import REPLICA_PLAN_VERSION
 from .repository import PodCustomizationRepository, PodRepositoryError
@@ -737,6 +742,7 @@ class PodBatchWorker:
         self._check_control(batch_id)
         batch = self.repository.get_batch_internal(batch_id)
         self._require_supported_replica_plan(batch)
+        self._require_supported_fission_strategy(batch)
         try:
             if batch.get("mode") == "semi":
                 # 半定制不用模板、不用参考图：跳过模板图读取，交给纯文生图分支。
@@ -963,6 +969,7 @@ class PodBatchWorker:
         if run is None:
             raise RuntimeError("POD style retry requires a fresh short-lived billing grant")
         batch = self.repository.get_batch_internal(batch_id)
+        self._require_supported_fission_strategy(batch)
         semi = batch.get("mode") == "semi"
         replica = batch.get("mode") == "replica"
         fission = batch.get("mode") == "fission"
@@ -994,7 +1001,7 @@ class PodBatchWorker:
                 request_kwargs: dict[str, Any] = {}
                 if panel_strategy:
                     # independent_panels：调用级快照存本次真实提交的 4 个单面板提示词。
-                    prompt = self._replica_panel_prompt_manifest(batch, style_index, attempt)
+                    prompt = self._panel_prompt_manifest(batch, style_index, attempt)
                 else:
                     prompt, request_kwargs = self._style_generation_inputs(
                         batch,
@@ -1287,11 +1294,14 @@ class PodBatchWorker:
         return build_replica_panel_prompt(plan, int(panel_index), attempt=attempt)
 
     def _style_generation_strategy(self, batch: dict[str, Any], style_index: int) -> str:
-        """按款读取冻结生成策略：复刻只认独立面板，其余模式沿用 grid。"""
-        if batch.get("mode") != "replica":
+        """按款读取冻结生成策略：裂变与复刻都只认独立面板。"""
+        mode = batch.get("mode")
+        if mode == "fission":
+            strategy = str(batch.get("fission_generation_strategy") or "grid")
+            return "independent_panels" if strategy == "independent_panels" else "grid"
+        if mode != "replica":
             return "grid"
-        strategy = load_frozen_plan(batch, style_index).generation_strategy
-        return "independent_panels" if strategy == "independent_panels" else "grid"
+        return "independent_panels" if load_frozen_plan(batch, style_index).generation_strategy == "independent_panels" else "grid"
 
     @staticmethod
     def _require_supported_replica_plan(batch: dict[str, Any]) -> None:
@@ -1308,6 +1318,14 @@ class PodBatchWorker:
                     version = ""
             if version != REPLICA_PLAN_VERSION:
                 raise RuntimeError("历史复刻批次不支持重跑：缺少 v4 主图方案")
+
+    @staticmethod
+    def _require_supported_fission_strategy(batch: dict[str, Any]) -> None:
+        """历史 grid 裂变批次只读：拒绝进入生图。"""
+        if str(batch.get("mode") or "") != "fission":
+            return
+        if str(batch.get("fission_generation_strategy") or "grid") != "independent_panels":
+            raise RuntimeError("历史裂变批次只读：缺少 AI 方案与独立面板策略")
 
     @staticmethod
     def _panel_image_call_id(
@@ -1345,7 +1363,7 @@ class PodBatchWorker:
         for panel_index in range(1, REPLICA_PANEL_COUNT + 1):
             if panel_index > 1 and anchor is None:
                 raise RuntimeError(
-                    f"POD replica panel {panel_index} of style {style_index} requires the main-image anchor"
+                    f"POD panel {panel_index} of style {style_index} requires the main-image anchor"
                 )
             panel = self._generate_one_panel(
                 batch,
@@ -1433,6 +1451,30 @@ class PodBatchWorker:
             ensure_ascii=False,
         )
 
+    def _panel_prompt_manifest(
+        self, batch: dict[str, Any], style_index: int, attempt: int
+    ) -> str:
+        """独立面板策略的调用级审计快照：存本次真实提交的 4 条单面板提示词。"""
+        if str(batch.get("mode") or "") != "fission":
+            return self._replica_panel_prompt_manifest(batch, style_index, attempt)
+        return json.dumps(
+            {
+                "strategy": "independent_panels",
+                "panels": [
+                    {
+                        "panel_index": panel_index,
+                        "prompt": (
+                            self._fission_style_prompt(batch, style_index, attempt)
+                            if panel_index == 1
+                            else self._fission_panel_prompt(batch, style_index, panel_index, attempt)
+                        ),
+                    }
+                    for panel_index in range(1, REPLICA_PANEL_COUNT + 1)
+                ],
+            },
+            ensure_ascii=False,
+        )
+
     def _panel_generation_request(
         self,
         batch: dict[str, Any],
@@ -1466,15 +1508,74 @@ class PodBatchWorker:
             **request_kwargs,
         )
 
-    def _fission_style_prompt(self, batch: dict[str, Any], style_index: int, attempt: int) -> str:
+    def _fission_variant(self, batch: dict[str, Any], style_index: int) -> dict[str, Any]:
         variant = next((row for row in batch.get("fission_variants", [])
                         if int(row["style_index"]) == style_index), None)
         if not variant or not variant.get("prompt_snapshot"):
             raise RuntimeError(f"POD 裂变款冻结方案缺失：style_index={style_index}")
-        prompt = str(variant["prompt_snapshot"])
-        if attempt > 1:
-            prompt += "\nRetry: preserve product B structure and the exact frozen style/element/palette combination. Return all four complete panels."
-        return prompt
+        return variant
+
+    def _fission_style_prompt(self, batch: dict[str, Any], style_index: int, attempt: int) -> str:
+        """panel_1 主图：AI 方案提供风格/元素/构图蓝图/场景，本地模板负责「A 只作参考库」。
+
+        旧方案（v1/v2）没有 ``composition_blueprint`` 与 ``scene``，直接沿用冻结的主图
+        提示词，避免历史批次重跑时行为被悄悄改掉。
+        """
+        variant = self._fission_variant(batch, style_index)
+        plan = variant.get("variant_plan")
+        plan = plan if isinstance(plan, dict) else {}
+        blueprint = str(plan.get("composition_blueprint") or "").strip()
+        scene = str(plan.get("scene") or "").strip()
+        snapshot = str(variant["prompt_snapshot"])
+        if not blueprint or not scene:
+            prompt = snapshot
+            if attempt > 1:
+                prompt += (
+                    "\nRetry: keep the same design, the same product structure and the same all-over print "
+                    "coverage; return ONE complete single-frame image."
+                )
+            return prompt
+        palette = plan.get("palette")
+        return build_fission_main_prompt(
+            style_family=str(plan.get("style_family") or ""),
+            motifs=tuple(str(item) for item in (plan.get("motifs") or ()) if str(item).strip()),
+            palette=palette if isinstance(palette, dict) else {},
+            composition_blueprint=blueprint,
+            scene=scene,
+            detail_prompt=snapshot,
+            attempt=attempt,
+        )
+
+    @staticmethod
+    def _fission_panel_direction(batch: dict[str, Any], panel_index: int) -> str:
+        """从冻结的裂变构图模板取该格 shot；缺失时退回系统默认拍法。"""
+        key = f"panel_{int(panel_index)}"
+        panels: Any = []
+        raw = str(batch.get("composition_json") or "")
+        if raw:
+            try:
+                payload = json.loads(raw)
+                panels = payload.get("panels") if isinstance(payload, dict) else []
+            except (TypeError, ValueError):
+                panels = []
+        for panel in panels or []:
+            if isinstance(panel, dict) and str(panel.get("slot_id") or "") == key:
+                text = str(panel.get("shot") or "").strip()
+                if text:
+                    return text
+        return DEFAULT_DERIVED_PANEL_DIRECTIONS.get(key, "")
+
+    def _fission_panel_prompt(
+        self, batch: dict[str, Any], style_index: int, panel_index: int, attempt: int
+    ) -> str:
+        plan = self._fission_variant(batch, style_index).get("variant_plan") or {}
+        family = str(plan.get("style_family") or "") if isinstance(plan, dict) else ""
+        return build_fission_panel_prompt(
+            style_family=family,
+            direction=self._fission_panel_direction(batch, panel_index),
+            panel_index=panel_index,
+            attempt=attempt,
+        )
 
     def _style_generation_inputs(
         self,
@@ -1501,17 +1602,31 @@ class PodBatchWorker:
         """
         mode = batch.get("mode")
         if mode == "fission":
-            prompt = self._fission_style_prompt(batch, style_index, attempt)
-            references = []
-            for key, role in (("fission_source", "style_reference"), ("fission_target", "target_product")):
-                asset = batch.get(key) or {}
-                if not asset.get("relative_path"):
-                    raise RuntimeError("POD 裂变参考图快照缺失")
-                references.append(ListingReferenceImage(
-                    role=role, content=self.assets.read(asset["relative_path"]),
-                    content_type=str(asset.get("content_type") or ""),
-                ))
-            return prompt, {"reference_images": tuple(references)}
+            panel = 1 if panel_index is None else int(panel_index)
+            if panel == 1:
+                prompt = self._fission_style_prompt(batch, style_index, attempt)
+                references = []
+                for key, role in (("fission_source", "style_reference"), ("fission_target", "target_product")):
+                    asset = batch.get(key) or {}
+                    if not asset.get("relative_path"):
+                        raise RuntimeError("POD 裂变参考图快照缺失")
+                    references.append(ListingReferenceImage(
+                        role=role, content=self.assets.read(asset["relative_path"]),
+                        content_type=str(asset.get("content_type") or ""),
+                    ))
+                return prompt, {"reference_images": tuple(references)}
+            if anchor is None:
+                raise RuntimeError("POD 裂变派生面板缺少主图锚点")
+            prompt = self._fission_panel_prompt(batch, style_index, panel, attempt)
+            return prompt, {
+                "reference_images": (
+                    ListingReferenceImage(
+                        role="main_view",
+                        content=bytes(anchor.content),
+                        content_type=str(anchor.content_type or "image/png"),
+                    ),
+                )
+            }
         if mode == "semi":
             prompt = build_semi_pattern_prompt(
                 base_prompt if base_prompt is not None else batch["prompt_snapshot"],
@@ -2703,12 +2818,11 @@ class PodBatchWorker:
     def _record_fission_image_outcome(
         self, batch: dict[str, Any], style_index: int, outcome: str, failure_kind: str = ""
     ) -> None:
+        """只做失败归因：不再发布能力/规则版本，也不触发回滚。"""
         if batch.get("mode") != "fission":
             return
-        FissionRegistryService(self.repository).record_variant_outcome(
+        FissionRegistryService(self.repository).record_variant_event(
             batch_id=batch["batch_id"], style_index=style_index,
-            capability_version=int(batch.get("capability_registry_version") or 0),
-            rule_version=int(batch.get("rule_registry_version") or 0),
             outcome=outcome, failure_kind=failure_kind,
         )
 
@@ -2898,7 +3012,7 @@ class PodBatchWorker:
                 attempt_kind=policy.call_kinds[attempt_value - 1],
                 style_index=style_index,
                 # 调用级快照 = 本次真实提交的 4 个单面板提示词（款级快照是四宫格规范文本）。
-                prompt=self._replica_panel_prompt_manifest(batch, style_index, attempt_value),
+                prompt=self._panel_prompt_manifest(batch, style_index, attempt_value),
             )
             call["style_index"] = style_index
             if not billing_run.grant.provider_key(pod_image_grant_provider()):

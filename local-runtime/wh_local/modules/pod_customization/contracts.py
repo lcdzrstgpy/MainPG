@@ -37,24 +37,11 @@ MAX_REPLICA_TARGETS = 200
 REPLICA_IMAGE_ROLES = ("source", "target")
 ReplicaImageRole = Literal["source", "target"]
 
-# 爆款裂变：A 样图与 B 白底产品图共同分析，单批最多生成 10 款。
+# 爆款裂变：A 样图与 B 白底产品图一次调用直接产出方案，单批最多生成 5 款。
 MIN_FISSION_STYLES = 1
-MAX_FISSION_STYLES = 10
+MAX_FISSION_STYLES = 5
 FISSION_IMAGE_ROLES = ("source_artwork", "target_product")
 FissionImageRole = Literal["source_artwork", "target_product"]
-
-
-class FissionAnalyzeRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-
-    source_asset_id: str = Field(min_length=1, max_length=64)
-    target_asset_id: str = Field(min_length=1, max_length=64)
-
-    @model_validator(mode="after")
-    def distinct_assets(self) -> "FissionAnalyzeRequest":
-        if self.source_asset_id == self.target_asset_id:
-            raise ValueError("样图与白底产品图必须是不同资产")
-        return self
 
 
 class FissionImageUploadResponse(BaseModel):
@@ -395,13 +382,22 @@ class ListingFields(BaseModel):
 
 
 class FissionBatchCreate(BaseModel):
+    """一键开始裂变：一次请求内完成出方案、冻结与生图入队。"""
+
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     client_request_id: str = Field(min_length=1, max_length=128)
-    analysis_id: str = Field(min_length=1, max_length=64)
+    source_asset_id: str = Field(min_length=1, max_length=64)
+    target_asset_id: str = Field(min_length=1, max_length=64)
     requested_count: StrictInt = Field(ge=MIN_FISSION_STYLES, le=MAX_FISSION_STYLES)
     listing_fields: ListingFields
     title: str = Field(default="", max_length=120)
+
+    @model_validator(mode="after")
+    def distinct_assets(self) -> "FissionBatchCreate":
+        if self.source_asset_id == self.target_asset_id:
+            raise ValueError("样图与白底产品图必须是不同资产")
+        return self
 
 
 class BatchCreate(BaseModel):

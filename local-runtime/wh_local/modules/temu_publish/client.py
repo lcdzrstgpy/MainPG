@@ -1,4 +1,4 @@
-"""盈銮 Temu 商品 OpenAPI 网关客户端。
+"""Temu 商品 OpenAPI 网关客户端。
 
 设计要点：
 - 只保存调用方凭证（x-yl-client / x-yl-token）与店铺 access_token，不处理 Temu 签名。
@@ -25,7 +25,7 @@ CACHE_TTL_LOGISTICS = 30 * 60
 
 
 class TemuGatewayError(RuntimeError):
-    """盈銮/ Temu 返回的业务错误（已归一化）。"""
+    """上游网关 / Temu 返回的业务错误（已归一化）。"""
 
     def __init__(
         self,
@@ -56,7 +56,7 @@ class TemuCredentials:
         return bool(self.client and self.token and self.access_token)
 
 
-# 盈銮网关是境内直连的域名。系统代理（Clash/V2Ray 之类）经常把它也劫持走，
+# 服务商网关是境内直连的域名。系统代理（Clash/V2Ray 之类）经常把它也劫持走，
 # 结果是 TLS 握手被掐断：SSLEOFError / EOF occurred in violation of protocol。
 # 所以默认**不读系统代理**；确实需要代理的环境用 WH_TEMU_PROXY 显式指定。
 PROXY_ENV = "WH_TEMU_PROXY"
@@ -150,7 +150,7 @@ class TemuProductClient:
             # 限流：优先遵循 Retry-After，最多等 5 秒，避免长时间阻塞发布页。
             if status == 429:
                 last_error = TemuGatewayError(
-                    api_type, "盈銮调用频率超限（429）", error_code="RATE_LIMIT_EXCEEDED", http_status=429
+                    api_type, "网关调用频率超限（429）", error_code="RATE_LIMIT_EXCEEDED", http_status=429
                 )
                 if attempt + 1 >= attempts:
                     raise last_error
@@ -160,7 +160,7 @@ class TemuProductClient:
 
             if status >= 500:
                 last_error = TemuGatewayError(
-                    api_type, f"盈銮上游异常（HTTP {status}）", error_code="UPSTREAM_ERROR", http_status=status
+                    api_type, f"上游服务异常（HTTP {status}）", error_code="UPSTREAM_ERROR", http_status=status
                 )
                 if attempt + 1 >= attempts:
                     raise last_error
@@ -180,11 +180,11 @@ class TemuProductClient:
                 data.get("errorMsg")
                 or data.get("message")
                 or data.get("detail")
-                or f"盈銮接口调用失败（HTTP {status}）"
+                or f"网关接口调用失败（HTTP {status}）"
             )
             raise TemuGatewayError(api_type, message, error_code=error_code, http_status=status)
 
-        raise TemuGatewayError(api_type, str(last_error or "盈銮接口调用失败"))
+        raise TemuGatewayError(api_type, str(last_error or "网关接口调用失败"))
 
     # ---------- 商品发布配套查询 ----------
 
@@ -255,6 +255,58 @@ class TemuProductClient:
     def invalidate_parent_specs(self) -> None:
         """新建规格后清掉父规格缓存，否则最长要等一个 TTL 才看得到新规格。"""
         self._cache_drop("parent-specs")
+
+    def goods_list(self, **filters: Any) -> dict[str, Any]:
+        """商品列表查询（bg.glo.goods.list.get）。
+
+        用途：发布请求超时/网络中断时反查「到底建没建」，以及按 SKC 货号查重。
+        常用过滤：skcExtCode / productName / productSkcIds / bindSiteIds / createdAtStart(秒)。
+        """
+        payload: dict[str, Any] = {"page": int(filters.pop("page", 1) or 1)}
+        payload["pageSize"] = int(filters.pop("pageSize", 20) or 20)
+        for key, value in filters.items():
+            if value in (None, "", [], {}):
+                continue
+            payload[key] = value
+        return self.call("bg.glo.goods.list.get", payload)
+
+    def size_charts(self, cat_id: int, offset: int = 0, page_size: int = 20) -> dict[str, Any]:
+        """类目尺码表查询（bg.glo.goods.sizecharts.get）。
+
+        大多数非服装类目返回 `sizeSpecDataList: null` —— 也就是「这个类目不需要尺码表」。
+        """
+        return self.call(
+            "bg.glo.goods.sizecharts.get",
+            {"catId": int(cat_id), "offset": int(offset), "pageSize": int(page_size)},
+            max_attempts=1,
+        )
+
+    def goods_detail(self, product_id: int) -> dict[str, Any]:
+        """商品详情（bg.glo.goods.detail.get）。注意：个别商品会返回「无权访问」。"""
+        return self.call("bg.glo.goods.detail.get", {"productId": int(product_id)})
+
+    def dimension_image_check(
+        self,
+        image_url: str,
+        *,
+        mall_id: str,
+        cat_id: int | None = None,
+        class_id: int | None = None,
+    ) -> dict[str, Any]:
+        """尺寸图检测提交（CN 网关方法，异步，返回 uniqueId 后轮询 result）。"""
+        request: dict[str, Any] = {"imageUrl": str(image_url).strip(), "mallId": str(mall_id).strip()}
+        if cat_id:
+            request["catId"] = int(cat_id)
+        if class_id:
+            request["classId"] = int(class_id)
+        return self.call("bg.algo.dimension.image.check", request, gateway="CN")
+
+    def dimension_image_check_result(self, task_id: str, *, mall_id: str) -> dict[str, Any]:
+        return self.call(
+            "bg.algo.dimension.image.check.result",
+            {"taskId": str(task_id).strip(), "mallId": str(mall_id).strip()},
+            gateway="CN",
+        )
 
     def accessories(self, page: int = 1, page_size: int = 20, fuzzy_value: str = "") -> dict[str, Any]:
         payload: dict[str, Any] = {"page": int(page), "pageSize": int(page_size)}
@@ -343,10 +395,10 @@ def _response_json(response: Any, api_type: str) -> dict[str, Any]:
         data = response.json()
     except (ValueError, UnicodeError) as exc:
         raise TemuGatewayError(
-            api_type, "盈銮返回内容不是合法 JSON", error_code="INVALID_RESPONSE"
+            api_type, "网关返回内容不是合法 JSON", error_code="INVALID_RESPONSE"
         ) from exc
     if not isinstance(data, dict):
-        raise TemuGatewayError(api_type, "盈銮返回结构异常", error_code="INVALID_RESPONSE")
+        raise TemuGatewayError(api_type, "网关返回结构异常", error_code="INVALID_RESPONSE")
     return data
 
 

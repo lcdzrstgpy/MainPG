@@ -18,6 +18,16 @@ const DRAFT_CATS_KEY = "temu_draft_categories_v1";
 const DRAFT_HIDDEN_KEY = "temu_draft_hidden_v1";
 const DRAFT_REMARKS_KEY = "temu_draft_remarks_v1";
 
+/**
+ * 每页条数：30。
+ *
+ * 之前一次拉 80 条、前端切 50/页 —— 首屏要同时下载 50 张缩略图（每张都走鉴权 blob），
+ * 滚动和翻页都在等图。改成服务端分页 30/页：只拉当前页、只解码当前页的图。
+ */
+const PAGE_SIZE = 30;
+/** 搜索输入的防抖：边打边发请求会打断列表 */
+const SEARCH_DEBOUNCE_MS = 300;
+
 /** 本机存储按登录账号分 key：换账号不能看到上一个人的编辑/备注/隐藏/分类。 */
 function scoped(key: string): string {
   return `${key}:${localStore.storageScope()}`;
@@ -63,6 +73,43 @@ const EDIT_FIELDS: Array<{ key: keyof TemuDraftEdit; label: string; placeholder?
   { key: "height_cm", label: "高 (cm)" },
   { key: "weight_g", label: "重量 (g)" },
 ];
+
+/**
+ * 这条草稿还缺什么才能直接发（发布 payload 里缺了会被 Temu 拒的字段）。
+ *
+ * 依据 docs/temu-goods-add-成功样例.json 的必填结构 + 实测清单：
+ * 类目 / 申报价 / 货号 / 重量 / 三边尺寸 是硬性前置，库存 0 允许（商品建出来是不可售）。
+ */
+function draftMissingFields(
+  entry: TemuDraftEntry,
+  categoryMemo: Record<string, DraftCategoryMemo>,
+): string[] {
+  const missing: string[] = [];
+  // 只认「发布页真选过」的 Temu 类目：草稿自带的 category_name 是自由文本，
+  // 不是类目 id，发布时照样得选，所以不能算齐
+  if (!categoryMemo[entry.id]?.label) missing.push("类目");
+  const price = Number(entry.declared_price);
+  if (!Number.isFinite(price) || price <= 0) missing.push("申报价");
+  if (!entry.sku) missing.push("货号");
+  const weight = Number(entry.weight_g);
+  if (!Number.isFinite(weight) || weight <= 0) missing.push("重量");
+  const dims = [entry.length_cm, entry.width_cm, entry.height_cm].map(Number);
+  if (dims.some((value) => !Number.isFinite(value) || value <= 0)) missing.push("尺寸");
+  return missing;
+}
+
+/** 尺寸/重量摘要：30×22×4 cm · 350 g，缺的用 — 占位 */
+function specSummary(entry: TemuDraftEntry): string {
+  const dim = [entry.length_cm, entry.width_cm, entry.height_cm]
+    .map((value) => {
+      const number = Number(value);
+      return Number.isFinite(number) && number > 0 ? String(number) : "—";
+    })
+    .join("×");
+  const weight = Number(entry.weight_g);
+  const weightText = Number.isFinite(weight) && weight > 0 ? `${weight} g` : "— g";
+  return `${dim} cm · ${weightText}`;
+}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -215,6 +262,27 @@ function siteCategoryLabel(
   return memo[entry.id]?.label || entry.category_name || "发布页选类目";
 }
 
+/**
+ * 类目这一格的三态：
+ * - picked：发布页真选过 Temu 叶子类目，能直接发
+ * - draft：只有草稿自带的分类（POD 模板里手填的文字、AI 采集的路径），
+ *   它**不是** Temu 类目 ID，发布前还得去发布页选一次
+ * - none：两样都没有，必须选
+ */
+function categoryState(
+  entry: TemuDraftEntry,
+  memo: Record<string, DraftCategoryMemo>,
+): "picked" | "draft" | "none" {
+  if (memo[entry.id]?.label) return "picked";
+  if (entry.category_name) return "draft";
+  return "none";
+}
+
+/** POD 导出里申报价 / 重量 / 尺寸是模板占位值，界面上要提醒人工核对。 */
+function buildNeedsReview(entry: TemuDraftEntry): string[] | undefined {
+  return entry.source === "pod" ? ["申报价", "重量", "长宽高"] : undefined;
+}
+
 function entryPrefill(
   entry: TemuDraftEntry,
   memo?: Record<string, DraftCategoryMemo>,
@@ -248,9 +316,8 @@ function entryPrefill(
     // 带上 id 和上次选过的类目：发布页选完会回写，下次带入直接选中
     draftId: entry.id,
     categoryPath: memo?.[entry.id]?.path,
-    // POD 导出里申报价 / 重量 / 尺寸是模板占位值，界面上要提醒人工核对
-    needsReview:
-      entry.source === "pod" ? ["申报价", "重量", "长宽高"] : undefined,
+    // 进发布页要人工核对的字段：POD 导出里是模板占位值，参考价则是「算出来的」不是填的
+    needsReview: buildNeedsReview(entry),
   };
 }
 
@@ -279,7 +346,9 @@ export function TemuDraftLibraryPage({
   );
   const [hidden, setHidden] = useState<string[]>(() => loadMap<string[]>(scoped(DRAFT_HIDDEN_KEY), []));
   const [page, setPage] = useState(1);
-  const pageSize = 50;
+  /** 输入框里的即时值；防抖 300ms 后才写进 query 触发请求 */
+  const [queryInput, setQueryInput] = useState("");
+  const [query, setQuery] = useState("");
   const [productTemplates, setProductTemplates] = useState<ProductTemplate[]>(() =>
     localStore.productTemplates(),
   );
@@ -305,14 +374,28 @@ export function TemuDraftLibraryPage({
   const [batchOpen, setBatchOpen] = useState(false);
   // 批量发布里被「24 小时内重复提交」挡下的条目：不算失败，单独列出来
   const [batchSkipped, setBatchSkipped] = useState<string[]>([]);
+
   const [editing, setEditing] = useState<TemuDraftEntry | null>(null);
   const [editForm, setEditForm] = useState<TemuDraftEdit>({});
 
-  const load = async (refresh = false) => {
+  const load = async (
+    refresh = false,
+    override?: { page?: number; filter?: Filter; query?: string },
+  ) => {
     setLoading(true);
     setError("");
     try {
-      setData(await temuPublishApi.draftLibrary(80, refresh));
+      const nextFilter = override?.filter ?? filter;
+      const result = await temuPublishApi.draftLibrary({
+        page: override?.page ?? page,
+        pageSize: PAGE_SIZE,
+        source: nextFilter === "all" ? "" : nextFilter,
+        q: override?.query ?? query,
+        refresh,
+      });
+      setData(result);
+      // 后端会把越界页码夹回最后一页，以前端返回值为准
+      setPage(result.page);
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {
@@ -320,9 +403,29 @@ export function TemuDraftLibraryPage({
     }
   };
 
+  // 页码 / 页签 / 关键字任一变化都走一次请求：翻页只拉这一页，不再一次拉 80 条
   useEffect(() => {
     void load();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, filter, query]);
+
+  // 翻页、换页签、改关键字都清空勾选：批量操作必须只作用于「你现在看得见的这些」，
+  // 否则跨页残留的勾选会让人以为在发 30 条、实际发了 60 条。
+  useEffect(() => {
+    setSelected(new Set());
+  }, [page, filter, query]);
+
+  // 搜索防抖：停止输入 300ms 后才发请求
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const next = queryInput.trim();
+      if (next !== query) {
+        setQuery(next);
+        setPage(1);
+      }
+    }, SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [queryInput, query]);
 
   useEffect(() => {
     const sync = () => setCategoryMemo(localStore.draftCategories());
@@ -334,23 +437,16 @@ export function TemuDraftLibraryPage({
     };
   }, []);
 
-  const visibleEntries = useMemo(() => {
-    const all = (data?.entries ?? [])
-      .filter((entry) => !hidden.includes(entry.id))
-      .map((entry) => (edits[entry.id] ? { ...entry, ...edits[entry.id] } : entry));
-    return filter === "all" ? all : all.filter((entry) => entry.source === filter);
-  }, [data, filter, edits, hidden]);
-
-  const totalPages = Math.max(1, Math.ceil(visibleEntries.length / pageSize));
-  const currentPage = Math.min(page, totalPages);
+  // 本页数据：来源筛选与分页都已在后端完成，这里只合并「本机编辑」并剔除本机隐藏
   const entries = useMemo(
-    () => visibleEntries.slice((currentPage - 1) * pageSize, currentPage * pageSize),
-    [visibleEntries, currentPage],
+    () => (data?.entries ?? [])
+      .filter((entry) => !hidden.includes(entry.id))
+      .map((entry) => (edits[entry.id] ? { ...entry, ...edits[entry.id] } : entry)),
+    [data, edits, hidden],
   );
-
-  useEffect(() => {
-    setPage(1);
-  }, [filter]);
+  const totalCount = data?.total ?? 0;
+  const totalPages = Math.max(1, data?.pages ?? 1);
+  const currentPage = Math.min(page, totalPages);
 
   useEffect(() => {
     if (!preview && !confirmEntry) return;
@@ -374,8 +470,8 @@ export function TemuDraftLibraryPage({
 
   /** 勾选的草稿（批量发布/批量编辑都按这个口径，和表格里看到的行一致）。 */
   const batchTargets = useMemo(
-    () => visibleEntries.filter((entry) => selected.has(entry.id)),
-    [visibleEntries, selected],
+    () => entries.filter((entry) => selected.has(entry.id)),
+    [entries, selected],
   );
 
   /** 打开「批量发布」弹窗：勾选的草稿按所选模板逐条提交。 */
@@ -399,7 +495,7 @@ export function TemuDraftLibraryPage({
       setError("先选一个产品模板（没有就去「发布商品」页存一个）");
       return;
     }
-    const targets = visibleEntries.filter((entry) => selected.has(entry.id));
+    const targets = entries.filter((entry) => selected.has(entry.id));
     if (!targets.length) {
       setError("先勾选要发布的产品");
       return;
@@ -412,6 +508,11 @@ export function TemuDraftLibraryPage({
     let ok = 0;
     let fail = 0;
     let skipped = 0;
+    // 批量提交的 warnings（库存 0、标题含中文、详情图尺寸兜底…）不能静默丢掉：
+    // 一条一条弹窗太吵，这里汇总条数 + 头两条，完整内容让用户去发布页看。
+    let warned = 0;
+    const warnSamples: string[] = [];
+    const publishedIds: string[] = [];
     for (const [index, entry] of targets.entries()) {
       setBatchState({
         running: true,
@@ -419,7 +520,19 @@ export function TemuDraftLibraryPage({
       });
       try {
         const draft = await buildDraftForPublish(entryPrefill(entry, categoryMemo), template, variant);
-        await temuPublishApi.publish(draft);
+        const result = await temuPublishApi.publish(draft);
+        const goodsId = String(
+          (result.result as Record<string, unknown> | undefined)?.goodsId ??
+            (result.result as Record<string, unknown> | undefined)?.productId ??
+            "",
+        );
+        if (goodsId) publishedIds.push(goodsId);
+        if (result.warnings?.length) {
+          warned += 1;
+          for (const text of result.warnings) {
+            if (warnSamples.length < 2 && !warnSamples.includes(text)) warnSamples.push(text);
+          }
+        }
         // 批量发布用的是产品模板的类目：记到这条草稿上，列表里就能看到类目路径
         localStore.rememberDraftCategory(entry.id, template.categoryPath);
         ok += 1;
@@ -455,9 +568,15 @@ export function TemuDraftLibraryPage({
       }
     }
     const skippedText = skipped ? `，跳过 ${skipped} 条（24 小时内提交过）` : "";
+    const warnText = warned
+      ? `，${warned} 条有提示（${warnSamples.join("；")}${warned > 1 ? "…" : ""}）`
+      : "";
+    const idText = publishedIds.length
+      ? `，商品 id ${publishedIds.slice(0, 3).join("、")}${publishedIds.length > 3 ? "…" : ""}`
+      : "";
     setBatchState({
       running: false,
-      text: `完成：成功 ${ok} 条${skippedText}，失败 ${fail} 条（失败原因见发布页列表）`,
+      text: `完成：成功 ${ok} 条${idText}${skippedText}，失败 ${fail} 条${warnText}（失败原因见发布页列表）`,
     });
     // 成功的已经从草稿库发出去了：清空勾选，避免下一次误点又提交一遍
     if (ok > 0) setSelected(new Set());
@@ -630,7 +749,30 @@ export function TemuDraftLibraryPage({
               </button>
             ))}
           </div>
-          <span className="temu-muted">
+          <label className="temu-draft-search">
+            <input
+              className="temu-input"
+              value={queryInput}
+              onChange={(event) => setQueryInput(event.target.value)}
+              placeholder="搜标题 / 货号 / 类目"
+              aria-label="搜索草稿"
+            />
+            {queryInput ? (
+              <button
+                type="button"
+                className="temu-link"
+                onClick={() => {
+                  setQueryInput("");
+                  setQuery("");
+                  setPage(1);
+                }}
+              >
+                清空
+              </button>
+            ) : null}
+          </label>
+          <span className="temu-muted temu-draft-meta">
+            {query ? `匹配 ${totalCount} 条 · ` : ""}
             最近 8 个 AI 批次 / 6 个 POD 批次
             {productTpl ? ` · 产品模板：${productTpl}` : ""}
             {variantTpl ? ` · 变种模板：${variantTpl}` : ""}
@@ -648,7 +790,7 @@ export function TemuDraftLibraryPage({
 
           <TemuDraftBulkBar
             selectedCount={selected.size}
-            totalCount={visibleEntries.length}
+            totalCount={totalCount}
             hiddenCount={hidden.length}
             categories={categories}
             onApplyField={applyBulkField}
@@ -788,10 +930,17 @@ export function TemuDraftLibraryPage({
 
         {entries.length === 0 ? (
           <p className="temu-empty">
-            {loading ? "正在读取草稿…" : "暂无可用草稿：先完成一批 AI 处理或 POD 生成。"}
+            {!data
+              ? "正在读取草稿…"
+              : query
+                ? `没有匹配「${query}」的草稿：换个关键字，或清空搜索看全部。`
+                : hidden.length > 0
+                  ? `当前页的 ${hidden.length} 条都被本机隐藏了，翻页或点「恢复隐藏」查看。`
+                  : "暂无可用草稿：先完成一批 AI 处理或 POD 生成。"}
           </p>
         ) : (
-          <div className="temu-draft-table-wrap">
+          // 翻页时保留上一页内容并压暗，避免整块塌成「加载中」闪一下
+          <div className={`temu-draft-table-wrap${loading ? " is-loading" : ""}`}>
             <table className="temu-draft-table">
               <thead>
                 <tr>
@@ -799,16 +948,27 @@ export function TemuDraftLibraryPage({
                     <input type="checkbox" checked={allSelected} onChange={toggleSelectAll} aria-label="全选草稿" />
                   </th>
                   <th className="col-image">图片</th>
-                  <th className="col-title">产品标题</th>
-                  <th className="col-site">站点</th>
-                  <th className="col-sku">SKU 货号</th>
+                  <th className="col-title">产品</th>
+                  <th className="col-cat" title="Temu 类目：发布前必须选到叶子类目，否则发不出去">
+                    Temu 类目
+                  </th>
+                  <th className="col-sku">货号</th>
                   <th
                     className="col-price"
-                    title="没在预览里改过申报价的，按导出表同一规则计算：成本 × 4，下限 ¥150"
+                    title="发布时按「分」提交（¥150.00 = 15000 分）。没在预览里改过的价按导出表同一规则给出：成本 × 4，下限 ¥150"
                   >
-                    申报价格
+                    申报价
                   </th>
-                  <th className="col-time">时间</th>
+                  <th className="col-stock" title="库存 0 也能建品，只是不可售">
+                    库存
+                  </th>
+                  <th className="col-spec" title="发布 payload 里的长/宽/高（cm）与重量（g），缺了会被拒">
+                    尺寸 · 重量
+                  </th>
+                  <th className="col-ready" title="缺什么会在这里列出来，补齐就能直接发">
+                    完整度
+                  </th>
+                  <th className="col-time">更新</th>
                   <th className="col-actions">操作</th>
                 </tr>
               </thead>
@@ -852,20 +1012,78 @@ export function TemuDraftLibraryPage({
                         <span className="temu-draft-remark">备注：{remarks[entry.id]}</span>
                       ) : null}
                     </td>
-                    <td className="col-site">
-                      美国
-                      <small
-                        className={categoryMemo[entry.id]?.label ? "is-picked" : undefined}
-                        title={siteCategoryLabel(entry, categoryMemo)}
-                      >
-                        {siteCategoryLabel(entry, categoryMemo)}
-                      </small>
+                    <td className="col-cat">
+                      {(() => {
+                        const state = categoryState(entry, categoryMemo);
+                        const label = siteCategoryLabel(entry, categoryMemo);
+                        return (
+                          <>
+                            <small
+                              className={
+                                state === "picked" ? "is-picked" : state === "draft" ? "is-draft" : "is-missing"
+                              }
+                              title={
+                                state === "picked"
+                                  ? label
+                                  : state === "draft"
+                                    ? `草稿自带的分类：${label}（不是 Temu 类目，发布时还要选一次）`
+                                    : "还没选 Temu 类目，发布前必须选到叶子类目"
+                              }
+                            >
+                              {state === "picked" ? label : state === "draft" ? `草稿分类：${label}` : label}
+                            </small>
+                            <em className="temu-draft-site">美国站</em>
+                          </>
+                        );
+                      })()}
                     </td>
-                    <td className="col-sku">{entry.sku || "—"}</td>
+                    <td className="col-sku">
+                      {entry.sku ? (
+                        <code>{entry.sku}</code>
+                      ) : (
+                        <span className="temu-draft-missing">未填</span>
+                      )}
+                    </td>
                     <td className="col-price">
-                      {entry.declared_price == null || entry.declared_price === ""
-                        ? "—"
-                        : `¥${Number(entry.declared_price).toFixed(2)}`}
+                      {(() => {
+                        const price = Number(entry.declared_price);
+                        if (!Number.isFinite(price) || price <= 0) {
+                          return <span className="temu-draft-missing">未填</span>;
+                        }
+                        return (
+                          <>
+                            <strong>¥{price.toFixed(2)}</strong>
+                            {/* 发布页填的是「分」，这里直接给出来，省得自己乘 100 */}
+                            <em>{Math.round(price * 100)} 分</em>
+                          </>
+                        );
+                      })()}
+                    </td>
+                    <td className="col-stock">
+                      {(() => {
+                        const stock = Number(entry.stock);
+                        if (!Number.isFinite(stock)) return <span className="temu-draft-missing">—</span>;
+                        if (stock <= 0) {
+                          return <span className="is-zero" title="0 库存仍可建品，但在店里是不可售状态">0</span>;
+                        }
+                        return <strong>{stock}</strong>;
+                      })()}
+                    </td>
+                    <td className="col-spec">
+                      <em>{specSummary(entry)}</em>
+                    </td>
+                    <td className="col-ready">
+                      {(() => {
+                        const missing = draftMissingFields(entry, categoryMemo);
+                        if (!missing.length) {
+                          return <span className="temu-ready is-ok">可发</span>;
+                        }
+                        return (
+                          <span className="temu-ready is-warn" title={`缺：${missing.join("、")}`}>
+                            缺 {missing.join(" / ")}
+                          </span>
+                        );
+                      })()}
                     </td>
                     <td className="col-time">
                       {(entry.updated_at || "").slice(0, 16).replace("T", " ") || "—"}
@@ -894,11 +1112,12 @@ export function TemuDraftLibraryPage({
           </div>
         )}
 
-        {visibleEntries.length > 0 && (
+        {totalCount > 0 && (
           <div className="temu-draft-pager">
             <span>
-              第 {visibleEntries.length === 0 ? 0 : (currentPage - 1) * pageSize + 1}-
-              {Math.min(currentPage * pageSize, visibleEntries.length)} 条，共 {visibleEntries.length} 条
+              第 {(currentPage - 1) * PAGE_SIZE + 1}-{Math.min(currentPage * PAGE_SIZE, totalCount)} 条，
+              共 {totalCount} 条
+              {hidden.length > 0 ? `（另有 ${hidden.length} 条本机隐藏）` : ""}
             </span>
             <div className="temu-draft-pager-ctrl">
               <button type="button" disabled={currentPage <= 1} onClick={() => setPage(currentPage - 1)}>
@@ -922,7 +1141,7 @@ export function TemuDraftLibraryPage({
                   if (Number.isFinite(next)) setPage(Math.min(Math.max(1, next), totalPages));
                 }}
               />
-              <span>/ {totalPages} 页 · {pageSize} 条/页</span>
+              <span>/ {totalPages} 页 · {PAGE_SIZE} 条/页</span>
             </div>
           </div>
         )}

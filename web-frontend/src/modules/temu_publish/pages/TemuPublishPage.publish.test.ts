@@ -133,8 +133,11 @@ test("发布页：轮播/外包装/详情都能看到缩略图（草稿库带来
   assert.match(strip, /if \(isPublicHttp\(path\)\) \{/);
   assert.match(strip, /void httpBlob\(path\)/);
   assert.match(strip, /URL\.createObjectURL\(blob\)/);
-  // 第一张是 Temu 轮播主图（同时当素材图），要标出来且不能前移
-  assert.match(strip, /index === 0 && <em className="temu-img-main">主图<\/em>/);
+  // 第一张是 Temu 轮播主图（同时当素材图），要标出来且不能前移。
+  // 角标由调用方给：详情图/外包装图的第一张不是「主图」，不能一起标。
+  assert.match(strip, /index === 0 && firstBadge \? <em className="temu-img-main">\{firstBadge\}<\/em> : null/);
+  assert.match(strip, /firstBadge\?: string;/);
+  assert.match(page, /firstBadge=\{slot\.key === "carousel" \? "主图" : undefined\}/);
   assert.match(strip, /disabled=\{index === 0\}/);
   // 支持调序 / 删除
   assert.match(strip, /const swap = \(from: number, to: number\) =>/);
@@ -174,28 +177,28 @@ test("我的店铺：凭证按登录账号隔离，可解绑且未绑定时给�
   assert.match(api, /clearSettings: \(\) => httpJson<TemuSettingsStatus>\(`\$\{BASE\}\/settings`, \{ method: "DELETE" \}\)/);
   // 页面：解绑前要确认，成功后清掉店铺信息
   assert.match(page, /const clearShop = \(\) =>/);
-  // 解绑只清店铺授权：盈銮 client_id / token 是服务商那层的，换店还要用，不能一起删
-  assert.match(page, /window\.confirm\(\s*"解绑只清掉这个账号的店铺授权/);
+  // 停用当前店铺：条目留在列表里，切回来不用重新贴 token
+  assert.match(page, /window\.confirm\(\s*"停用当前店铺/);
   assert.match(page, /const next = await temuPublishApi\.clearSettings\(\);/);
   // 未绑定时顶部横幅 + 顶部 chip 都是「绑定我的店铺」，不能只是报“凭证未配置”
   assert.match(page, /还没绑定你的 Temu 店铺/);
   assert.match(page, /去绑定我的店铺/);
   assert.match(page, /"绑定我的店铺"/);
-  // 盈銮凭据只显示「已配置/未配置」，不把 client/token 掩码摆出来
+  // 服务商凭据只显示「已配置/未配置」，不把 client/token 掩码摆出来
   assert.match(page, /const gatewayReady = !!\(status\?\.configured\.yl_client/);
   assert.ok(!/status\?\.hints\.yl_client/.test(page), "不要再把 client/token 掩码展示出来");
-  assert.match(page, /盈銮凭据<\/span>/);
-  // 盈銮 client_id / token 是服务商预置的：界面上不给输入框，只给状态说明
+  assert.match(page, /服务商凭据<\/span>/);
+  // 服务商 client_id / token 是预置的：界面上不给输入框，只给状态说明
   assert.ok(!page.includes("setYlClient"), "不要再用输入框收 client_id");
-  assert.ok(!page.includes("setYlToken"), "不要再用输入框收 盈銮 token");
-  assert.match(page, /服务商凭据（盈銮 client_id \/ token）/);
+  assert.ok(!page.includes("setYlToken"), "不要再用输入框收服务商 token");
+  assert.match(page, /服务商凭据（client_id \/ token）/);
   assert.match(page, /已预置，不用管/);
   // 打开面板时重读一次状态，避免显示成旧值
   assert.match(page, /void temuPublishApi\s*\.settings\(\)/);
   assert.match(page, /if \(!fresh\.configured\.ready\) return undefined;/);
   // 面板要说明账号归属，并展示当前店铺/token 有效期
   assert.match(page, /凭证按登录账号各存一份/);
-  assert.match(page, /每个账号填自己的 token，互不影响/);
+  assert.match(page, /每个账号存自己的店铺，互不影响/);
   assert.match(page, /status\?\.owner\?\.personal/);
 });
 
@@ -205,7 +208,7 @@ test("本机留档：表单/预设/最近分类按登录账号分开存，换账
   assert.match(page, /return account\?\.user_id \|\| "local";/);
   assert.match(page, /const formKey = `\$\{FORM_KEY\}:\$\{storageSuffix\}`;/);
   assert.match(page, /const presetsKey = `\$\{PRESETS_KEY\}:\$\{storageSuffix\}`;/);
-  assert.match(page, /saveJsonLocal\(formKey, form\);/);
+  assert.match(page, /setTimeout\(\(\) => saveJsonLocal\(formKey, form\), 300\)/);
   assert.match(page, /saveJsonLocal\(presetsKey, next\);/);
   // 表单里只保留会提交的字段；唯一留档的备注也是收起的、写清楚不提交
   assert.match(page, /备注（不提交，只留档）/);
@@ -455,4 +458,379 @@ test("库存可以是 0：不拦不标红，但草稿带入要保留 0", () => {
   assert.match(panel, /placeholder="0 也可"/);
   // 草稿带入：0 不再被当空丢掉
   assert.match(library, /stock: numericText\(entry\.stock\),/);
+});
+
+test("属性联动：父级取值不满足的子属性不显示、也不提交", () => {
+  const types = readFileSync(new URL("../types.ts", import.meta.url), "utf8");
+  assert.match(types, /templatePropertyValueParentList\?:/);
+  assert.match(types, /parentTemplatePid\?: number \| null;/);
+
+  // 用 attrs.get 返回的联动规则算「当前适用属性」：父级没选/取值不匹配 → 整项隐藏
+  assert.match(page, /const visibleProperties = useMemo<TemuProperty\[\]>\(\(\) => \{/);
+  assert.match(page, /const rules = prop\.templatePropertyValueParentList \?\? \[\];/);
+  assert.match(page, /const matched = rules\.filter\(\(rule\) => \(rule\.parentVidList \?\? \[\]\)\.includes\(parentVid\)\);/);
+  assert.match(page, /values: \(prop\.values \?\? \[\]\)\.filter\(\(value\) => !allowed\.size \|\| allowed\.has\(value\.vid\)\)/);
+
+  // 必填/渲染都用可见属性；提交时过滤掉隐藏项（留着旧值会被判属性不合法）
+  assert.match(page, /const requiredProps = visibleProperties\.filter\(\(item\) => item\.required\);/);
+  assert.match(page, /const visiblePids = new Set\(visibleProperties\.map\(\(item\) => item\.pid\)\);/);
+  assert.match(page, /filter\(\(\[pid\]\) => visiblePids\.has\(Number\(pid\)\)\)/);
+});
+
+test("发布超时后反查店铺：确认建成了就显示「已在店铺里查到」", () => {
+  const types = readFileSync(new URL("../types.ts", import.meta.url), "utf8");
+  assert.match(types, /confirmed_by_lookup\?: boolean;/);
+  assert.match(types, /matched_goods\?: Record<string, unknown>;/);
+  assert.match(page, /publishResult\.confirmed_by_lookup\s*\n?\s*\? "已在店铺里查到（提交时网络中断）"/);
+  assert.match(page, /publishResult\.matched_goods\?\.product_id/);
+});
+
+test("发布后核对：按 SKC 货号查店铺里的商品", () => {
+  assert.match(api, /searchGoods: \(params: \{ extCode\?: string; title\?: string; page\?: number; pageSize\?: number \}\) =>/);
+  assert.match(api, /\$\{BASE\}\/goods\$\{query\(\{/);
+  assert.match(api, /goodsDetail: \(productId: string \| number\) =>/);
+
+  assert.match(page, /const checkShopGoods = async \(extCode: string\) => \{/);
+  assert.match(page, /temuPublishApi\.searchGoods\(\{ extCode: extCode \|\| undefined, pageSize: 5 \}\)/);
+  assert.match(page, /核对店铺里的商品/);
+  assert.match(page, /productSkcReqs\?\.\[0\]\?\.extCode/);
+  assert.match(page, /className="temu-goods-list"/);
+});
+
+test("健壮性：类目匹配重试、传图并发、初始化各自降级、落盘防抖、失败记录带类目名", () => {
+  // 1) 类目匹配：3 次重试 + 退避，自动匹配和手动搜索都走它
+  assert.match(page, /async function matchCategoryWithRetry\(\s*text: string,\s*attempts = 3,\s*\)/);
+  assert.match(page, /await new Promise\(\(resolve\) => setTimeout\(resolve, 800 \* \(attempt \+ 1\)\)\)/);
+  assert.match(page, /queries\.map\(\(text\) => matchCategoryWithRetry\(text\)\)/);
+  assert.match(page, /const response = await matchCategoryWithRetry\(categoryQuery\.trim\(\)\);/);
+  assert.match(page, /类目匹配服务暂时不可用（已重试 3 次）/);
+
+  // 2) 传图并发 3 且结果保序（进度不变，只是不再排队）
+  assert.match(page, /async function mapWithConcurrency<T, R>\(/);
+  assert.match(page, /await mapWithConcurrency\(files, 3, async \(file\) => \{/);
+
+  // 3) 初始化：五个接口各自降级，只有 settings 决定店铺状态
+  assert.match(page, /const settle = <T,>\(promise: Promise<T>\) =>/);
+  assert.match(page, /这些没取到（不影响已填内容，可点「刷新」重试）/);
+  assert.doesNotMatch(page, /const \[settings, cats, specs, freights, whGroups\] = await Promise\.all/);
+
+  // 4) 表单落盘防抖 300ms，且卸载时补写最后一次（防抖窗口内切页签不丢输入）
+  assert.match(page, /setTimeout\(\(\) => saveJsonLocal\(formKey, form\), 300\)/);
+  assert.match(page, /const latestSaveRef = useRef\(\{ formKey, rowsKey, form, rows \}\);/);
+
+  // 5) 单条发布失败记类目名路径，不再是裸 catId
+  assert.match(page, /categoryPath\.map\(\(step\) => step\.catName\)\.filter\(Boolean\)\.join\(" > "\)/);
+});
+
+test("多店铺：一家一家存下来，切换不用重新贴 token", () => {
+  const apiSrc = readFileSync(new URL("../api/temuPublishApi.ts", import.meta.url), "utf8");
+  const types = readFileSync(new URL("../types.ts", import.meta.url), "utf8");
+
+  // 类型：settings 里带店铺列表与当前启用 id
+  assert.match(types, /shops\?: TemuShop\[\];/);
+  assert.match(types, /active_shop_id\?: string;/);
+  assert.match(types, /export type TemuShop = \{/);
+
+  // 接口：新增（后端先校验）/ 切换 / 删除
+  assert.ok(apiSrc.includes("${BASE}/settings/shops`"));
+  assert.ok(apiSrc.includes("/settings/shops/${shopId}/activate"));
+  assert.ok(apiSrc.includes("`${BASE}/settings/shops/${shopId}`, { method: \"DELETE\" }"));
+
+  // 保存 = 走 addShop（后端验证通过才落库），不再用 saveSettings 直接写
+  assert.match(page, /const saved = await temuPublishApi\.addShop\(token\);/);
+  assert.ok(!page.includes("access_token: accessToken.trim() || undefined"));
+
+  // 切换 / 删除店铺
+  assert.match(page, /const switchShop = \(shopId: string\) =>/);
+  assert.match(page, /await temuPublishApi\.activateShop\(shopId\)/);
+  assert.match(page, /const deleteShop = \(shop: TemuShop\) =>/);
+
+  // 列表 UI：当前使用标记 + 切换到这家
+  assert.ok(page.includes("已保存的店铺（"));
+  assert.ok(page.includes("切换到这家"));
+  assert.ok(page.includes("temu-shop-badge"));
+});
+
+test("首屏不闪「还没绑定店铺」：状态没回来之前不渲染横幅", () => {
+  // status 初值是 null，接口回来前 ready 也是 false —— 直接按 !ready 渲染就会闪一下红条
+  assert.match(page, /const \[statusLoaded, setStatusLoaded\] = useState\(false\);/);
+  assert.match(page, /setStatusLoaded\(true\);/);
+  assert.match(page, /const ready = !!status\?\.configured\.ready;/);
+  // 横幅必须同时满足「已加载」和「未绑定」
+  assert.match(page, /\{statusLoaded && !ready && \(/);
+  assert.ok(!/\{!ready && \(\s*<div className="temu-bind-banner">/.test(page));
+  // 加载期间给一行轻提示，而不是留空
+  assert.match(page, /\{!statusLoaded && <p className="temu-muted temu-console-loading">正在读取店铺配置…<\/p>\}/);
+});
+
+test("多件装：每件装数量填 4/12 才发 productSkuMultiPackReq", () => {
+  // 表单字段 + 落进每个 SKU
+  assert.match(page, /piecesPerPack: string;/);
+  assert.match(page, /piecesPerPack: "1",/);
+  assert.match(page, /pieces_per_pack: Math\.max\(1, Math\.round\(Number\(form\.piecesPerPack \|\| "1"\) \|\| 1\)\)/);
+  // 界面上有输入 + 说明（标题里的 4 Pack / 12Pcs）
+  assert.ok(page.includes("每件装数量"));
+  assert.ok(page.includes("4 Pack / 12Pcs"));
+  // 发货时效默认 7 天（1 天等于承诺 24 小时发货，做不到）
+  assert.match(page, /const DEFAULT_SHIPMENT_DAYS = "7";/);
+  assert.match(page, /shipmentDays: DEFAULT_SHIPMENT_DAYS,/);
+  assert.match(page, /placeholder=\{DEFAULT_SHIPMENT_DAYS\}/);
+  // 本机存档里旧的 1 天要纠正，模板里的 1 天也不能沿用
+  assert.match(page, /if \(saved\.shipmentDays === "1"\) saved\.shipmentDays = DEFAULT_SHIPMENT_DAYS;/);
+  assert.ok(page.includes("填太短会被判延迟发货"));
+});
+
+test("变种面板：货号清洗特殊字符 + 批量值没应用要提示", () => {
+  const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
+
+  // 颜色/尺码里的 + ( ) 空格 等不进 SKU 货号（Temu 只保证字母数字 -_ 安全）
+  assert.match(panel, /function safeCodePart\(value: string\): string \{/);
+  assert.match(panel, /const parts = \[extCodePrefix \|\| "SKU", safeCodePart\(colorName\), safeCodePart\(sizeName\)\]/);
+
+  // 批量框填了但没点「应用到全部」时，值不会进提交，必须显式提示
+  assert.match(panel, /const pendingBatchFields = !batchTouched/);
+  assert.match(panel, /有 \{pendingBatchFields\.length\} 项还没应用/);
+  assert.match(panel, /is-urgent/);
+});
+
+test("尺码表模板字段按类目隐藏（宠物用品类目不需要）", () => {
+  const apiSrc = readFileSync(new URL("../api/temuPublishApi.ts", import.meta.url), "utf8");
+  const types = readFileSync(new URL("../types.ts", import.meta.url), "utf8");
+
+  assert.match(types, /export type TemuSizeChartInfo = \{/);
+  assert.ok(apiSrc.includes("/categories/${catId}/size-charts"));
+
+  // 叶子类目变了就查一次；失败按「需要」处理（fail-open，别把必填项藏掉）
+  assert.match(page, /const \[sizeChart, setSizeChart\] = useState<\{ loading: boolean; has: boolean \| null \}>/);
+  assert.match(page, /\.sizeCharts\(leafId\)/);
+  assert.match(page, /setSizeChart\(\{ loading: false, has: !!info\.has_size_chart \}\)/);
+  assert.match(page, /\.catch\(\(\) => \{\s*if \(alive\) setSizeChart\(\{ loading: false, has: null \}\);/);
+
+  // 只有 has === false（明确不需要）才不渲染
+  assert.match(page, /\{sizeChart\.has !== false && \(/);
+  assert.ok(page.includes("无关类目会自动隐藏"));
+});
+
+test("切店后必须重取店铺级数据（运费模板/仓库/尺码表）", () => {
+  // 这两样每家店各一套：带着上一家店的 id 去发新店，Temu 只会回「仓库不存在」
+  assert.match(page, /const reloadShopScopedData = async \(\) => \{/);
+  assert.match(page, /temuPublishApi\.freightTemplates\(\[SITE_ID\]\)/);
+  assert.match(page, /temuPublishApi\.warehouses\(\[SITE_ID\]\)/);
+  assert.match(page, /setRows\(\(current\) => current\.map\(\(row\) => \(\{ \.\.\.row, warehouseId: nextWarehouse \}\)\)\)/);
+
+  // 三个入口都必须调：新增店铺 = 直接启用，换店，删除店铺
+  const callSites = page.split("await reloadShopScopedData();").length - 1;
+  assert.equal(callSites, 3, "新增/切换/删除店铺都要重取店铺级数据");
+
+  // 尺码表按类目 + 店铺版本号重取
+  assert.match(page, /\}, \[categoryPath, shopEpoch\]\)/);
+
+  // 停用店铺要把旧 id 清掉，别留给下一家店
+  assert.match(page, /setFreightTemplates\(\[\]\)/);
+  assert.match(page, /freightId: "", warehouseId: ""/);
+});
+
+test("发布成功要直接显示商品 id（不用去翻原始 JSON）", () => {
+  assert.match(page, /function goodsIdOf\(result: unknown\): string \{/);
+  assert.match(page, /const publishedGoodsId = publishResult/);
+  assert.match(page, /\{publishedGoodsId \? ` · 商品 id \$\{publishedGoodsId\}` : ""\}/);
+});
+
+test("批量发布与单条发布同一套规矩（货号清洗/详情图尺寸/预设规格值）", () => {
+  const batch = readFileSync(new URL("../data/batchPublish.ts", import.meta.url), "utf8");
+
+  // 货号里的括号、加号、斜杠会让 Temu 直接拒，批量路径也要清洗
+  assert.match(batch, /function safeCode\(value: string \| undefined \| null\): string \{/);
+  assert.match(batch, /\[safeCode\(prefill\.sku\) \|\| "SKU", safeCode\(color\), safeCode\(size\)\]/);
+
+  // 详情图必须统一宽度并带真实尺寸，否则 2000306「详情图宽度不正确」
+  assert.match(batch, /const DETAIL_WIDTH = 800;/);
+  assert.match(batch, /temuPublishApi\.uploadDetailImage\(image, DETAIL_WIDTH, leaf\)/);
+  assert.match(batch, /detail_images: detailImages/);
+
+  // 颜色/尺码优先用类目预设值；只有类目压根没有预设值时才 createSpec
+  assert.match(batch, /const saleIndex = new Map<number, Array<\{ name: string; specId: number \}>>\(\)/);
+  assert.match(batch, /const matched = matchPresetValue\(name, options\.map\(\(item\) => item\.name\)\)/);
+  assert.ok(
+    batch.indexOf("if (preset) {") < batch.indexOf("temuPublishApi.createSpec(parentId, name)"),
+    "必须先试预设值，匹不到才自建规格",
+  );
+});
+
+test("批量发布的提示与商品 id 不能静默丢掉", () => {
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+
+  assert.match(library, /const result = await temuPublishApi\.publish\(draft\);/);
+  assert.match(library, /if \(result\.warnings\?\.length\) \{/);
+  assert.match(library, /const warnText = warned/);
+  assert.match(library, /const idText = publishedIds\.length/);
+  assert.match(library, /\$\{idText\}\$\{skippedText\}/);
+});
+
+test("类目不需要尺码表时不带旧的尺码模板 id", () => {
+  assert.match(page, /size_template_ids: sizeChart\.has === false \? \[\] : sizeTemplates,/);
+});
+
+test("没有销售属性的类目按单 SKU 发（桌布这类永远发不出去的老问题）", () => {
+  // saleValueIndex 为空 = 该类目没有 isSale 属性 → 不调 ensureSpec，规格发空数组
+  assert.match(page, /const singleSku = saleValueIndex\.size === 0;/);
+  assert.match(page, /main_specs: \[\],\n\s*skus: \[buildSku\(row, "变种第 1 行", \[\], skcImage\)\],/);
+  assert.match(page, /该类目没有销售属性（不能建颜色\/尺码变种）：只提交第 1 行/);
+
+  // 价格/库存/物流字段只能有一份映射（抽成 buildSku，两条路径共用）
+  assert.match(page, /const buildSku = \(\n\s*row: VariantRow,/);
+
+  // 变种面板要按这个开关收起变种生成区与颜色/尺码两列
+  assert.match(page, /singleSku=\{saleValueIndex\.size === 0\}/);
+  const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
+  assert.match(panel, /singleSku\?: boolean;/);
+  assert.match(panel, /\{!singleSku && \(/);
+  assert.match(panel, /temu-variant-row\$\{singleSku \? " is-single" : ""\}/);
+});
+
+test("批量发布同样支持单 SKU 类目（不再无脑 createSpec）", () => {
+  const batch = readFileSync(new URL("../data/batchPublish.ts", import.meta.url), "utf8");
+
+  assert.match(batch, /if \(saleIndex\.size === 0\) \{/);
+  assert.match(batch, /main_specs: \[\],\n\s*skus: \[skuFields\(singleCode, \[\]\)\],/);
+  assert.ok(
+    batch.indexOf("if (saleIndex.size === 0) {") < batch.indexOf("const colorSpec = await ensure("),
+    "单 SKU 分支必须排在规格解析之前",
+  );
+});
+
+test("属性输入支持「下拉 + 数值」并存（成分比例这类）", () => {
+  // 封面材质这类属性既有预设值又有单位 %：只渲染下拉就永远填不进比例
+  assert.match(page, /const attrField = \(item: TemuProperty, required: boolean\) => \{/);
+  assert.match(page, /\{item\.values\?\.length \? \(/);
+  assert.match(page, /\{unit \? \(\n\s*<input/);
+  assert.match(page, /item\.numberInputTitle \|\| "请输入数值"/);
+  assert.match(page, /\{requiredProps\.map\(\(item\) => attrField\(item, true\)\)\}/);
+  assert.match(page, /\{optionalProps\.map\(\(item\) => attrField\(item, false\)\)\}/);
+
+  // 带单位的必填属性光选下拉不算填好
+  assert.match(page, /if \(item\.valueUnit\?\.length && !pick\.text\.trim\(\)\) return true;/);
+});
+
+test("图片张数上限在上传时就挡（外包装 6 张、轮播 10 张）", () => {
+  assert.match(page, /const IMAGE_LIMITS: Record<ImageSlot, number> = \{ carousel: 10, outer: 6, detail: 30 \};/);
+  assert.match(page, /const exist = splitLines\(slotText\(slot\)\)\.length;/);
+  assert.match(page, /if \(exist \+ files\.length > limit\) \{/);
+  // 提交前再兜一次（草稿带入 / 手填 URL 也要守上限）
+  assert.match(page, /if \(outerSource\.length > 6\) throw new Error\("外包装图片最多 6 张"\);/);
+  assert.match(page, /if \(detailSource\.length > IMAGE_LIMITS\.detail\) \{/);
+});
+
+test("货号只发字母数字（中文/符号会让 Temu 直接拒）", () => {
+  assert.match(page, /function cleanExtCode\(value: string\): string \{/);
+  assert.match(page, /\.replace\(\/\[\^A-Za-z0-9_-\]\+\/g, ""\)/);
+
+  // 产品货号含中文：清洗后为空就报错，否则提示被改成了什么
+  assert.match(page, /产品货号只能包含字母、数字、- 和 _（不能含中文或其它符号）/);
+  assert.match(page, /产品货号里的中文\/符号已自动去掉/);
+  assert.match(page, /含中文\/符号，提交时会去掉/);
+
+  // 每个出口都用清洗后的值：SKC 货号、变种前缀、SKU 货号
+  assert.match(page, /ext_code: \(productCode \|\| "SKC"\)\.slice\(0, 120\),/);
+  assert.match(page, /ext_code: \[productCode \|\| "SKC", cleanExtCode\(color\)\]/);
+  assert.match(page, /const skuCode = cleanExtCode\(row\.extCode\);/);
+  assert.match(page, /extCodePrefix=\{productCode\}/);
+});
+
+test("标题用多行文本域（150+ 字符单行看不见）", () => {
+  assert.match(page, /<textarea\n\s*className="temu-input"\n\s*value=\{form\.title\}/);
+  assert.match(page, /rows=\{3\}/);
+  // 标题本身已是英文时，英文标题字段提示可留空
+  assert.match(page, /标题已是英文，这里可留空/);
+});
+
+test("产地/站外链接按 Temu 的格式约束", () => {
+  // productOrigin.region1ShortName 要两位国家代码，填「中国」会被拒
+  assert.match(page, /maxLength=\{2\}/);
+  assert.match(page, /patch\(\{ origin: event\.target\.value\.toUpperCase\(\) \}\)/);
+  // outerGoodsUrl 只收 https
+  assert.ok(page.includes("站外产品链接必须是 https:// 开头的地址"), "站外链接要校验 https");
+});
+
+test("草稿库改成服务端分页，30 条/页（不再一次拉 80 条）", () => {
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+  const apiSrc = readFileSync(new URL("../api/temuPublishApi.ts", import.meta.url), "utf8");
+
+  assert.match(library, /const PAGE_SIZE = 30;/);
+  // 请求带 page/page_size/source/q，而不是只给一个 limit
+  assert.match(apiSrc, /draftLibrary: \(params: \{/);
+  assert.match(apiSrc, /page_size: params\.pageSize \?\? 30,/);
+  assert.match(library, /pageSize: PAGE_SIZE,/);
+  assert.match(library, /source: nextFilter === "all" \? "" : nextFilter,/);
+  assert.match(library, /q: override\?\.query \?\? query,/);
+  // 页码/页签/关键字变化才请求；不再前端 slice
+  assert.match(library, /\}, \[page, filter, query\]\);/);
+  assert.doesNotMatch(library, /visibleEntries\.slice\(/);
+  assert.doesNotMatch(library, /const pageSize = 50;/);
+});
+
+test("草稿库搜索防抖 + 页签切换回到第一页", () => {
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+
+  assert.match(library, /const SEARCH_DEBOUNCE_MS = 300;/);
+  assert.match(library, /const timer = window\.setTimeout\(\(\) => \{/);
+  assert.match(library, /if \(next !== query\) \{\n\s*setQuery\(next\);\n\s*setPage\(1\);/);
+  // 切页签清空勾选（勾选数与可见条数必须一致）
+  assert.match(library, /setFilter\(key\);/);
+});
+
+test("草稿库按发布 payload 把信息摆出来（类目/价格分/库存/尺寸/完整度）", () => {
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+
+  // 完整度：缺类目/申报价/货号/重量/尺寸 会被点名
+  assert.match(library, /function draftMissingFields\(/);
+  assert.match(library, /missing\.push\("类目"\)/);
+  assert.match(library, /missing\.push\("申报价"\)/);
+  assert.match(library, /missing\.push\("货号"\)/);
+  assert.match(library, /missing\.push\("重量"\)/);
+  assert.match(library, /missing\.push\("尺寸"\)/);
+  assert.match(library, /temu-ready is-ok/);
+  assert.match(library, /缺 \{missing\.join\(" \/ "\)\}/);
+
+  // 申报价同时给「元」和「分」：发布页填的是分，免得再乘 100
+  assert.match(library, /\{Math\.round\(price \* 100\)\} 分/);
+  // 未填与 0 的语义分开
+  assert.match(library, /temu-draft-missing/);
+  assert.match(library, /title="0 库存仍可建品，但在店里是不可售状态"/);
+  // 尺寸重量摘要
+  assert.match(library, /function specSummary\(/);
+  assert.match(library, /return `\$\{dim\} cm · \$\{weightText\}`;/);
+});
+
+test("价格照常带入，但界面文案里不出现「推算」二字", () => {
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+  const page = readFileSync(new URL("./TemuPublishPage.tsx", import.meta.url), "utf8");
+  const batch = readFileSync(new URL("../data/batchPublish.ts", import.meta.url), "utf8");
+  const types = readFileSync(new URL("../types.ts", import.meta.url), "utf8");
+
+  // 功能：成本算出来的价照旧当申报价带进发布页（不拦、不置空）
+  assert.match(library, /supplierPrice: yuanToCents\(entry\.declared_price\),/);
+  assert.doesNotMatch(library, /declared_price_estimated \? ""/);
+  // 有价就算齐，不会因为「是算出来的」被判缺项
+  assert.doesNotMatch(library, /declared_price_estimated\) missing\.push/);
+
+  // 措辞：四个文件（草稿库、发布页、批量发布、类型注释）都不许出现这两个字
+  for (const source of [library, page, batch, types]) {
+    assert.doesNotMatch(source, /推算/, "界面文案里不应出现「推算」");
+  }
+});
+
+test("草稿库区分「草稿自带分类」和「已选 Temu 类目」", () => {
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+
+  // 三态：发布页选过的 / 草稿自带（只是自由文本）/ 都没有
+  assert.match(library, /function categoryState\(/);
+  assert.match(library, /if \(memo\[entry\.id\]\?\.label\) return "picked";/);
+  assert.match(library, /if \(entry\.category_name\) return "draft";/);
+  assert.match(library, /草稿分类：\$\{label\}/);
+  // 草稿自带分类用中性色，不当成错误
+  assert.match(library, /state === "draft" \? "is-draft"/);
+
+  // 完整度只认发布页真选过的类目：自由文本不是类目 id，发布时照样得选
+  assert.match(library, /if \(!categoryMemo\[entry\.id\]\?\.label\) missing\.push\("类目"\);/);
 });

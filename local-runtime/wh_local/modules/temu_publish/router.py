@@ -13,15 +13,17 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from ...session import Actor, actor_from_authorization
 from .client import TemuCredentialMissing, TemuGatewayError
 from .submissions import DuplicateSubmission
-from .library import collect_draft_library
+from .library import collect_all_draft_entries, paginate_draft_library
 from .schemas import (
     DetailImageUploadRequest,
+    DimensionCheckRequest,
     CategoryMatchRequest,
     GoodsDraftInput,
     ImageUploadRequest,
     ImageUploadUrlRequest,
     SpecCreateRequest,
     TemuSettingsUpdate,
+    TemuShopCreate,
 )
 from .service import TemuPublishService
 
@@ -30,19 +32,19 @@ logger = logging.getLogger("wh_local.temu_publish")
 # 网关鉴权类错误：告诉用户到底该改哪一处，而不是只丢一句「client_id or token is invalid」。
 _GATEWAY_HINTS = {
     "CLIENT_TOKEN_REQUIRED": (
-        "盈銮网关凭据没填全：这里要填的是盈銮后台的 client_id / token，"
+        "服务商网关凭据没填全：这里要填的是服务商后台的 client_id / token，"
         "不是 Temu 店铺的 access_token"
     ),
     "CLIENT_TOKEN_INVALID": (
-        "这是盈銮网关的 client_id / token 无效，跟店铺 access_token 无关（请求还没到 Temu）。"
+        "这是服务商网关的 client_id / token 无效，跟店铺 access_token 无关（请求还没到 Temu）。"
         "让给凭据的人确认：client 和 token 是不是同一对、有没有被重置、本机公网 IP 在不在白名单"
     ),
     "CLIENT_PERMISSION_DENIED": (
-        "盈銮网关拒绝了这个 client：多半是应用没开该接口权限，或本机 IP 不在白名单"
+        "服务商网关拒绝了这个 client：多半是应用没开该接口权限，或本机 IP 不在白名单"
     ),
     "7000006": "这个 access_token 没和商务应用绑定：回店铺后台重新授权，再把新 token 填进来",
     "NETWORK_ERROR": (
-        "连不上盈銮网关（TLS 握手被中断）。常见原因是系统代理把这条国内网关请求也劫走了；"
+        "连不上服务商网关（TLS 握手被中断）。常见原因是系统代理把这条国内网关请求也劫走了；"
         "程序默认不走系统代理，确实需要走代理时用环境变量 WH_TEMU_PROXY 指定"
     ),
 }
@@ -56,7 +58,7 @@ def _gateway_message(error_code: str, message: str) -> str:
     return f"Temu 拒绝了这次提交：{reason}{suffix}" + (f"。{hint}" if hint else "")
 
 
-# 需要到盈銮/上游修配置的错误码，按网关错误（502）返回，便于前端区分“参数问题”。
+# 需要到服务商/上游修配置的错误码，按网关错误（502）返回，便于前端区分“参数问题”。
 _UPSTREAM_ERROR_CODES = {
     "CLIENT_TOKEN_REQUIRED",
     "CLIENT_TOKEN_INVALID",
@@ -160,6 +162,40 @@ def create_temu_publish_router(
         """解绑：删掉当前账号名下保存的店铺凭证（不影响其他账号）。"""
         return _service(actor).clear_settings(actor.id)
 
+    @router.get("/settings/shops")
+    def list_shops(actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
+        """已保存的店铺列表（含当前启用标记）。"""
+        return _service(actor).list_shops()
+
+    @router.post("/settings/shops")
+    def add_shop(
+        payload: TemuShopCreate, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        """新增店铺：先拿这条 token 打一次网关，**验证通过才保存**并设为当前。"""
+        try:
+            return _service(actor).add_shop(payload.access_token, payload.mall_name, actor.id)
+        except Exception as exc:  # noqa: BLE001
+            raise _handle(exc) from exc
+
+    @router.post("/settings/shops/{shop_id}/activate")
+    def activate_shop(
+        shop_id: str, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        """切换店铺：直接换成已保存的那条 token，不用重新输入。"""
+        try:
+            return _service(actor).activate_shop(shop_id, actor.id)
+        except Exception as exc:  # noqa: BLE001
+            raise _handle(exc) from exc
+
+    @router.delete("/settings/shops/{shop_id}")
+    def remove_shop(
+        shop_id: str, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        try:
+            return _service(actor).remove_shop(shop_id, actor.id)
+        except Exception as exc:  # noqa: BLE001
+            raise _handle(exc) from exc
+
     @router.post("/token/verify")
     def verify_token(
         refresh: bool = Query(default=False, description="true=跳过缓存，真去打接口"),
@@ -174,32 +210,40 @@ def create_temu_publish_router(
 
     @router.get("/draft-library")
     def draft_library(
-        limit: int = Query(default=60, ge=1, le=200),
+        limit: int = Query(default=200, ge=1, le=500, description="聚合上限（全量），不是每页条数"),
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=30, ge=1, le=100),
+        source: str = Query(default="", description="ai / pod，留空=全部"),
+        q: str = Query(default="", max_length=120, description="标题/货号/类目关键字"),
         refresh: bool = Query(default=False, description="true=跳过 60 秒缓存，强制重扫"),
         actor: Actor = Depends(actor_from_authorization),
     ) -> dict[str, Any]:
-        """聚合 AI 处理结果与 POD 成品，供发布页一键带入。
+        """聚合 AI 处理结果与 POD 成品，供发布页一键带入（服务端分页）。
 
-        结果缓存 60 秒（按账号 + limit）：草稿库切进切出不用重扫任务和批次。
+        扫描任务/批次很贵，所以**全量聚合结果**按账号缓存 60 秒；
+        来源筛选、关键字搜索、翻页都只在缓存上切片，翻页不会触发重扫。
         """
         key = (actor.id, limit)
         now = time.time()
+        cached: dict[str, Any] | None = None
         if not refresh:
             with _LIBRARY_CACHE_LOCK:
                 hit = _LIBRARY_CACHE.get(key)
             if hit and now - hit[0] < _LIBRARY_CACHE_TTL:
-                return hit[1]
+                cached = hit[1]
 
-        pod_service = pod_service_getter() if callable(pod_service_getter) else None
-        result = collect_draft_library(
-            product_processing=product_processing,
-            pod_service=pod_service,
-            actor=actor,
-            limit=limit,
-        )
-        with _LIBRARY_CACHE_LOCK:
-            _LIBRARY_CACHE[key] = (now, result)
-        return result
+        if cached is None:
+            pod_service = pod_service_getter() if callable(pod_service_getter) else None
+            cached = collect_all_draft_entries(
+                product_processing=product_processing,
+                pod_service=pod_service,
+                actor=actor,
+                limit=limit,
+            )
+            with _LIBRARY_CACHE_LOCK:
+                _LIBRARY_CACHE[key] = (now, cached)
+
+        return paginate_draft_library(cached, source=source, query=q, page=page, page_size=page_size)
 
     # ---------- 发布配套查询 ----------
 
@@ -350,6 +394,87 @@ def create_temu_publish_router(
         """按类目必填配置校验当前表单（bg.glo.goods.catsmandatory.get）；不会提交商品。"""
         try:
             return _service(actor).check_mandatory(payload)
+        except Exception as exc:  # noqa: BLE001
+            raise _handle(exc) from exc
+
+    @router.get("/goods")
+    def search_goods(
+        ext_code: str = Query(default="", description="SKC 货号"),
+        title: str = Query(default="", description="商品标题（模糊）"),
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=20, ge=1, le=100),
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        """查店铺里的商品（按 SKC 货号 / 标题）。发布后核对、查重都用它。"""
+        try:
+            return _service(actor).search_goods(
+                ext_code=ext_code, title=title, page=page, page_size=page_size
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise _handle(exc) from exc
+
+    # ⚠️ 必须放在 /goods/{product_id} 之前，否则 "low-stock" 会被当成 product_id
+    @router.get("/goods/low-stock")
+    def low_stock_goods(
+        limit: int = Query(default=60, ge=1, le=300, description="最多返回多少个商品"),
+        page_size: int = Query(default=20, ge=1, le=20, description="每页条数（网关上限 20）"),
+        max_pages: int = Query(default=30, ge=1, le=50, description="最多翻几页"),
+        only_zero: bool = Query(default=True, description="true=只列有 0 库存 SKU 的商品"),
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        """待补库存清单：扫店铺商品，挑出库存为 0 的 SKU。
+
+        只读：改库存接口（bg.btg.goods.stock.quantity.update）当前未开通，
+        这里产出的是「去后台批量改」用的清单。
+        """
+        try:
+            return _service(actor).low_stock_goods(
+                limit=limit, page_size=page_size, max_pages=max_pages, only_zero=only_zero
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise _handle(exc) from exc
+
+    @router.get("/goods/{product_id}")
+    def goods_detail(
+        product_id: int, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        """商品详情（个别商品会返回「无权访问」，前端要能兜住）。"""
+        try:
+            return _service(actor).goods_detail(product_id)
+        except Exception as exc:  # noqa: BLE001
+            raise _handle(exc) from exc
+
+    @router.get("/categories/{cat_id}/size-charts")
+    def size_charts(
+        cat_id: int, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        """该类目是否需要尺码表（服装/鞋类需要，宠物用品等不需要 → 前端据此隐藏字段）。"""
+        try:
+            return _service(actor).size_charts(cat_id)
+        except Exception as exc:  # noqa: BLE001
+            raise _handle(exc) from exc
+
+    @router.post("/dimension-check")
+    def dimension_check(
+        payload: DimensionCheckRequest,
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        """尺寸图检测提交（异步，返回 uniqueId）。"""
+        try:
+            return _service(actor).dimension_check(
+                payload.image_url, mall_id=payload.mall_id, cat_id=payload.cat_id, class_id=payload.class_id
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise _handle(exc) from exc
+
+    @router.get("/dimension-check/{task_id}")
+    def dimension_check_result(
+        task_id: str,
+        mall_id: str = Query(default=""),
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        try:
+            return _service(actor).dimension_check_result(task_id, mall_id=mall_id)
         except Exception as exc:  # noqa: BLE001
             raise _handle(exc) from exc
 

@@ -24,10 +24,13 @@ import type {
   TemuCategory,
   TemuCategoryPath,
   TemuFreightTemplate,
+  TemuGoodsItem,
   TemuImageUploadResult,
   TemuParentSpec,
+  TemuProperty,
   TemuPublishPrefill,
   TemuSettingsStatus,
+  TemuShop,
   TemuSkuDraft,
   TemuSkuSpec,
   TemuSpecCreated,
@@ -38,16 +41,82 @@ import type {
 import "../styles/temuPublish.css";
 
 const SITE_ID = 100;
+/**
+ * 默认发货时效（天）。
+ *
+ * 原来默认 1 天：填了就等于向 Temu 承诺 24 小时发货，POD/定制根本做不到，会被判延迟发货。
+ * 7 天是 POD 印制的合理生产周期；Temu 允许更长（官方成功案例用的是 90 天），
+ * 需要的可以自己改大。
+ */
+const DEFAULT_SHIPMENT_DAYS = "7";
 const EMPTY_ATTR = { vid: 0, text: "" };
+
+/**
+ * 类目匹配带重试。
+ *
+ * 网关的 category.match 偶发 SYSTEM_EXCEPTION（实测过好几次），一次失败就让推荐列表空着，
+ * 界面上看起来就像「这条草稿不识别类目」。这里最多试 3 次、退避 800/1600ms，
+ * 只有真的连续失败才返回 null（标题匹配那边本来就是「失败不打扰」的语义）。
+ */
+async function matchCategoryWithRetry(
+  text: string,
+  attempts = 3,
+): Promise<{ categoryPathDTOS: TemuCategoryPath[] } | null> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await temuPublishApi.matchCategory(text, SITE_ID);
+    } catch {
+      if (attempt === attempts - 1) return null;
+      await new Promise((resolve) => setTimeout(resolve, 800 * (attempt + 1)));
+    }
+  }
+  return null;
+}
+
+/**
+ * 限并发地按 INPUT 顺序处理（传图用：并发 3 张，串行 6 张要等 6~18 秒）。
+ * 结果顺序与入参一致，调用方照旧拼到 URL 行里。
+ */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const runners = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await worker(items[index], index);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
 
 type AttrPick = { vid: number; text: string };
 type ImageSlot = "carousel" | "outer" | "detail";
 
 const IMAGE_SLOTS: Array<{ key: ImageSlot; label: string; required: boolean; hint: string }> = [
-  { key: "carousel", label: "产品轮播图", required: true, hint: "相当于主图，最多 10 张，1:1、≥800×800、≤2M" },
-  { key: "outer", label: "外包装图片", required: false, hint: "1-6 张，建议含正拍/侧拍/俯拍" },
-  { key: "detail", label: "详情图", required: false, hint: "一个详情模块一张图" },
+  {
+    key: "carousel",
+    label: "产品轮播图",
+    required: true,
+    // 尺寸不用用户自己裁：上传时会居中裁成 1:1 再压成 800×800 JPEG
+    hint: "相当于主图，最多 10 张；上传自动裁成 1:1 / 800×800",
+  },
+  { key: "outer", label: "外包装图片", required: false, hint: "最多 6 张，建议含正拍/侧拍/俯拍" },
+  {
+    key: "detail",
+    label: "详情图",
+    required: false,
+    hint: "最多 30 张，一个详情模块一张图（宽度提交时统一）",
+  },
 ];
+
+/** 各槽位最多几张：上传时就挡，别等提交才被 Temu 拒。 */
+const IMAGE_LIMITS: Record<ImageSlot, number> = { carousel: 10, outer: 6, detail: 30 };
 
 
 /**
@@ -72,6 +141,8 @@ type PublishForm = {
   freightId: string;
   warehouseId: string;
   shipmentDays: string;
+  /** 每件装数量：标题里的 4 Pack / 12Pcs，>1 才会发 productSkuMultiPackReq */
+  piecesPerPack: string;
   description: string;
 };
 
@@ -110,7 +181,8 @@ const EMPTY_FORM: PublishForm = {
   detailImages: "",
   freightId: "",
   warehouseId: "",
-  shipmentDays: "1",
+  shipmentDays: DEFAULT_SHIPMENT_DAYS,
+  piecesPerPack: "1",
   description: "",
 };
 
@@ -212,6 +284,16 @@ function parseStock(value: string, label: string): number {
   const number = Number(text);
   if (!text || !Number.isFinite(number) || number < 0) throw new Error(`${label}必须填 0 或正整数`);
   return Math.round(number);
+}
+
+/**
+ * Temu 的 extCode（货号）只接受字母、数字、下划线和连字符。
+ *
+ * 中文、括号、加号、空格一律会被拒（实测「货号不合法」），而界面提示写着
+ * 「不能含中文」却没拦 —— 这里统一清洗，清洗后为空再报错。
+ */
+function cleanExtCode(value: string): string {
+  return String(value || "").replace(/[^A-Za-z0-9_-]+/g, "").trim();
 }
 
 /** 取出现次数最多的宽度（详情图统一到这个宽度）；没有就 800。 */
@@ -321,6 +403,30 @@ function pickUploadedUrl(uploaded: TemuImageUploadResult): string {
   return (uploaded.imageUrl as string) || (uploaded.image_url as string) || (uploaded.url as string) || "";
 }
 
+/**
+ * 从 goods.add 的返回里挑出商品 id。
+ *
+ * 网关不同版本的字段名不一样（goodsId / productId / gid…），这里和后端台账
+ * `goods_id_from_result` 用同一套顺序 —— 发布成功后必须让人一眼看到 id，
+ * 否则只能去翻原始 JSON。
+ */
+function goodsIdOf(result: unknown): string {
+  if (!result || typeof result !== "object") return "";
+  const record = result as Record<string, unknown>;
+  for (const key of ["goodsId", "goods_id", "productId", "product_id", "gid", "id"]) {
+    const value = record[key];
+    if (value !== undefined && value !== null && value !== "") return String(value);
+  }
+  for (const key of ["result", "data"]) {
+    const nested = record[key];
+    if (nested && typeof nested === "object") {
+      const found = goodsIdOf(nested);
+      if (found) return found;
+    }
+  }
+  return "";
+}
+
 /** 分区标题：编号 + 名称（如「1 基本信息」）+ 右侧状态。 */
 function SectionHead({
   step,
@@ -345,6 +451,9 @@ function SectionHead({
 
 export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: () => void } = {}) {
   const [status, setStatus] = useState<TemuSettingsStatus | null>(null);
+  // 进页面时 status 还是 null：这时候不知道绑没绑，不能先按「未绑定」渲染，
+  // 否则店铺信息一回来就闪一下红色横幅（首屏看着像出错了）。
+  const [statusLoaded, setStatusLoaded] = useState(false);
   // 店铺名/有效期先读本机缓存：进页面立刻有内容，随后再用接口结果覆盖
   const [tokenInfo, setTokenInfo] = useState<TemuTokenInfo | null>(() =>
     loadJsonLocal<TemuTokenInfo | null>(`${SHOP_INFO_KEY}:${storageScope()}`, null),
@@ -364,10 +473,12 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const recentCategoryKey = `${RECENT_CATEGORY_KEY}:${storageSuffix}`;
   const rowsKey = `${ROWS_KEY}:${storageSuffix}`;
 
-  const [form, setForm] = useState<PublishForm>(() => ({
-    ...EMPTY_FORM,
-    ...loadJsonLocal<Partial<PublishForm>>(`${FORM_KEY}:${storageScope()}`, {}),
-  }));
+  const [form, setForm] = useState<PublishForm>(() => {
+    const saved = loadJsonLocal<Partial<PublishForm>>(`${FORM_KEY}:${storageScope()}`, {});
+    // 老版本默认值是 1 天，已存在本机的也纠正过来，否则一进来还是承诺 24 小时发货
+    if (saved.shipmentDays === "1") saved.shipmentDays = DEFAULT_SHIPMENT_DAYS;
+    return { ...EMPTY_FORM, ...saved };
+  });
 
   const [categoryOptions, setCategoryOptions] = useState<TemuCategory[]>([]);
   const [categoryPath, setCategoryPath] = useState<TemuCategory[]>(initialCategoryPath);
@@ -396,6 +507,15 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const [parentSpecs, setParentSpecs] = useState<TemuParentSpec[]>([]);
   const [colorParentId, setColorParentId] = useState(0);
   const [sizeParentId, setSizeParentId] = useState(0);
+  // 当前类目要不要尺码表：false 就把「尺码表模板 ID」整块藏掉（宠物用品类目全是 false）
+  const [sizeChart, setSizeChart] = useState<{ loading: boolean; has: boolean | null }>({
+    loading: false,
+    has: null,
+  });
+  // 店铺切换版本号：运费模板/发货仓库/尺码表都是「每家店各自一套」，
+  // 换店后必须重新取一遍，否则会拿着上一家店的 id 去发新店的商品。
+  const [shopEpoch, setShopEpoch] = useState(0);
+
   const [rows, setRows] = useState<VariantRow[]>(() => {
     const saved = loadJsonLocal<VariantRow[]>(`${ROWS_KEY}:${storageScope()}`, []);
     return Array.isArray(saved) ? withFreshRowKeys(saved.filter((row) => row && row.key)) : [];
@@ -413,6 +533,12 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const [result, setResult] = useState<TemuBuildPayloadResult | null>(null);
   const [copied, setCopied] = useState(false);
   const [publishResult, setPublishResult] = useState<TemuPublishResult | null>(null);
+  // 发布后在店铺里核对（按 SKC 货号查商品列表）
+  const [shopCheck, setShopCheck] = useState<{ loading: boolean; error: string; items: TemuGoodsItem[] }>({
+    loading: false,
+    error: "",
+    items: [],
+  });
   const [mandatory, setMandatory] = useState<{
     source: string;
     result: Record<string, unknown>;
@@ -448,10 +574,24 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
   const patch = (partial: Partial<PublishForm>) => setForm((current) => ({ ...current, ...partial }));
 
-  // 表单内容全量落本机：切页签/刷新不丢，等同「保存到待发布」
+  // 表单内容落本机：切页签/刷新不丢，等同「保存到待发布」。
+  // 防抖 300ms —— 标题每敲一个字都全量写一次（含长图片 URL 数组）会卡。
   useEffect(() => {
-    saveJsonLocal(formKey, form);
+    const timer = setTimeout(() => saveJsonLocal(formKey, form), 300);
+    return () => clearTimeout(timer);
   }, [form, formKey]);
+
+  // 防抖窗口内切页签/卸载时，把最后一次内容补写一次（否则最后 300ms 的输入会丢）
+  const latestSaveRef = useRef({ formKey, rowsKey, form, rows });
+  latestSaveRef.current = { formKey, rowsKey, form, rows };
+  useEffect(
+    () => () => {
+      const snapshot = latestSaveRef.current;
+      saveJsonLocal(snapshot.formKey, snapshot.form);
+      saveJsonLocal(snapshot.rowsKey, snapshot.rows);
+    },
+    [],
+  );
 
   // 变种行同理落盘（防抖 300ms：价格是逐字符输入的）
   useEffect(() => {
@@ -480,24 +620,57 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       try {
         // token 校验和类目/规格/运费/仓库并行发起：总耗时 = 最慢的那个，而不是相加
         const tokenPromise = temuPublishApi.verifyToken().catch(() => null);
-        const [settings, cats, specs, freights, whGroups] = await Promise.all([
-          temuPublishApi.settings(),
-          temuPublishApi.categories(0),
-          temuPublishApi.parentSpecs(),
-          temuPublishApi.freightTemplates([SITE_ID]),
-          temuPublishApi.warehouses([SITE_ID]),
+        // 五个接口各自降级：只有 settings 决定「绑没绑店铺」，其余失败只影响自己那块。
+        // （原来一个 Promise.all，类目树抖一下整页就静默，界面看着像「还没绑定店铺」。）
+        const settle = <T,>(promise: Promise<T>) =>
+          promise.then(
+            (value) => ({ ok: true as const, value }),
+            () => ({ ok: false as const }),
+          );
+        const [settingsR, catsR, specsR, freightsR, whR] = await Promise.all([
+          settle(temuPublishApi.settings()),
+          settle(temuPublishApi.categories(0)),
+          settle(temuPublishApi.parentSpecs()),
+          settle(temuPublishApi.freightTemplates([SITE_ID])),
+          settle(temuPublishApi.warehouses([SITE_ID])),
         ]);
         if (!alive) return;
-        setStatus(settings);
-        setCategoryOptions(cats.categoryDTOList ?? []);
-        const specItems = specs.parentSpecDTOS ?? [];
-        setParentSpecs(specItems);
-        setColorParentId(findParentSpec(specItems, "颜色", 0)?.parentSpecId ?? 0);
-        setSizeParentId(findParentSpec(specItems, "尺码", 1)?.parentSpecId ?? 0);
-        const templates = freights.freightTemplates ?? [];
-        setFreightTemplates(templates);
-        setWarehouseGroups(whGroups.warehouseDTOList ?? []);
-        const defaultWarehouse = firstWarehouse(whGroups.warehouseDTOList ?? []);
+        setStatusLoaded(true);
+        const missed: string[] = [];
+        if (settingsR.ok) {
+          setStatus(settingsR.value);
+        } else {
+          missed.push("店铺凭证");
+        }
+        if (catsR.ok) {
+          setCategoryOptions(catsR.value.categoryDTOList ?? []);
+        } else {
+          missed.push("类目树");
+        }
+        const specItems = specsR.ok ? specsR.value.parentSpecDTOS ?? [] : [];
+        if (specsR.ok) {
+          setParentSpecs(specItems);
+          setColorParentId(findParentSpec(specItems, "颜色", 0)?.parentSpecId ?? 0);
+          setSizeParentId(findParentSpec(specItems, "尺码", 1)?.parentSpecId ?? 0);
+        } else {
+          missed.push("颜色/尺码规格");
+        }
+        const templates = freightsR.ok ? freightsR.value.freightTemplates ?? [] : [];
+        if (freightsR.ok) {
+          setFreightTemplates(templates);
+        } else {
+          missed.push("运费模板");
+        }
+        const whList = whR.ok ? whR.value.warehouseDTOList ?? [] : [];
+        if (whR.ok) {
+          setWarehouseGroups(whList);
+        } else {
+          missed.push("发货仓库");
+        }
+        if (missed.length) {
+          setError(`这些没取到（不影响已填内容，可点「刷新」重试）：${missed.join("、")}`);
+        }
+        const defaultWarehouse = firstWarehouse(whList);
         const whId = defaultWarehouse?.warehouseId ?? "";
         // 表单里已经有值就用表单的，否则用接口默认值
         setForm((current) => ({
@@ -715,6 +888,31 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   applyCategoryRef.current = applyCategory;
 
   /**
+   * 类目是否有尺码表：服装/鞋类才有，宠物/家居这类没有。
+   * 没有就把「尺码表模板 ID」藏掉，避免让人以为必填。接口失败按「有」处理（fail-open）。
+   */
+  useEffect(() => {
+    const leafId = categoryPath.length ? Number(categoryPath[categoryPath.length - 1].catId) : 0;
+    if (!leafId) {
+      setSizeChart({ loading: false, has: null });
+      return;
+    }
+    let alive = true;
+    setSizeChart((current) => ({ loading: true, has: current.has }));
+    void temuPublishApi
+      .sizeCharts(leafId)
+      .then((info) => {
+        if (alive) setSizeChart({ loading: false, has: !!info.has_size_chart });
+      })
+      .catch(() => {
+        if (alive) setSizeChart({ loading: false, has: null });
+      });
+    return () => {
+      alive = false;
+    };
+  }, [categoryPath, shopEpoch]);
+
+  /**
    * 标题 → 自动匹配类目。
    *
    * 标题停下 1.2 秒后，用 categorySearchTexts 给出的查询词（逗号前 + 去掉 `for …` 的
@@ -736,7 +934,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       setTitleMatching(true);
       setTitleMatches([]);
       void Promise.all(
-        queries.map((text) => temuPublishApi.matchCategory(text, SITE_ID).catch(() => null)),
+        queries.map((text) => matchCategoryWithRetry(text)),
       )
         .then((responses) => {
           if (seq !== matchSeqRef.current) return;
@@ -830,7 +1028,12 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     patch({
       freightId: form.freightId || template.freightId,
       warehouseId: form.warehouseId || template.warehouseId,
-      shipmentDays: form.shipmentDays || template.shipmentDays,
+      shipmentDays:
+        form.shipmentDays && form.shipmentDays !== "1"
+          ? form.shipmentDays
+          : template.shipmentDays && template.shipmentDays !== "1"
+            ? template.shipmentDays
+            : DEFAULT_SHIPMENT_DAYS,
       origin: form.origin || template.origin,
       sizeTemplates: form.sizeTemplates || template.sizeTemplates,
       isCustom: template.isCustom,
@@ -888,7 +1091,10 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const searchCategory = () =>
     run("match", async () => {
       if (!categoryQuery.trim()) throw new Error("请输入类目关键词");
-      const response = await temuPublishApi.matchCategory(categoryQuery.trim(), SITE_ID);
+      const response = await matchCategoryWithRetry(categoryQuery.trim());
+      if (!response) {
+        throw new Error("类目匹配服务暂时不可用（已重试 3 次），稍后再试，或直接用「分类浏览」逐级选");
+      }
       setMatchPaths(response.categoryPathDTOS ?? []);
     });
 
@@ -910,31 +1116,101 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       }
     });
 
+  /**
+   * 换店 / 新增店 / 停用店之后必须做的事：把「店铺级」数据全部重取一遍。
+   *
+   * 运费模板 ID、发货仓库 ID、尺码表、父规格（含本店自建的规格值）都是每家店
+   * 各一套。切店后如果还留着上一家店的 freightTemplateId / warehouseId，
+   * 提交时 Temu 只会回一句「仓库不存在」或者干脆建到别的仓去。
+   */
+  const reloadShopScopedData = async () => {
+    setShopEpoch((value) => value + 1);
+    const [freightsR, whR, specsR] = await Promise.all([
+      temuPublishApi.freightTemplates([SITE_ID]).catch(() => null),
+      temuPublishApi.warehouses([SITE_ID]).catch(() => null),
+      temuPublishApi.parentSpecs().catch(() => null),
+    ]);
+    const templates = freightsR?.freightTemplates ?? [];
+    const whList = whR?.warehouseDTOList ?? [];
+    setFreightTemplates(templates);
+    setWarehouseGroups(whList);
+    if (specsR) {
+      const specItems = specsR.parentSpecDTOS ?? [];
+      setParentSpecs(specItems);
+      setColorParentId(findParentSpec(specItems, "颜色", 0)?.parentSpecId ?? 0);
+      setSizeParentId(findParentSpec(specItems, "尺码", 1)?.parentSpecId ?? 0);
+    }
+    // 旧店的值一律丢掉，换成新店的默认值（没有就让用户自己选，别带着旧 id 发出去）
+    const nextFreight = templates[0]?.freightTemplateId ?? "";
+    const nextWarehouse = firstWarehouse(whList)?.warehouseId ?? "";
+    setForm((current) => ({ ...current, freightId: nextFreight, warehouseId: nextWarehouse }));
+    setRows((current) => current.map((row) => ({ ...row, warehouseId: nextWarehouse })));
+    if (!freightsR || !whR) {
+      setError("店铺已切换，但运费模板/发货仓库没取到：点「刷新」重试后再发布。");
+    }
+  };
+
+  /** 新增店铺：后端先拿这条 token 打一次网关，成功才保存并设为当前。 */
   const saveCredentials = () =>
     run("settings", async () => {
-      const saved = await temuPublishApi.saveSettings({
-        access_token: accessToken.trim() || undefined,
-      });
+      const token = accessToken.trim();
+      if (!token) {
+        throw new Error("请先粘贴店铺 access_token（Temu 后台：系统管理 → 授权管理 → 获取授权）");
+      }
+      const saved = await temuPublishApi.addShop(token);
       setStatus(saved);
       setAccessToken("");
-      if (saved.configured.ready) {
-        const info = await temuPublishApi.verifyToken(true);
+      const info = await temuPublishApi.verifyToken(true).catch(() => null);
+      if (info) {
         setTokenInfo(info);
         saveJsonLocal(`${SHOP_INFO_KEY}:${storageScope()}`, info);
       }
+      await reloadShopScopedData();
+    });
+
+  /** 换店：用已保存的那条 token，不用重新输入。 */
+  const switchShop = (shopId: string) =>
+    run("shop", async () => {
+      const next = await temuPublishApi.activateShop(shopId);
+      setStatus(next);
+      const info = await temuPublishApi.verifyToken(true).catch(() => null);
+      if (info) {
+        setTokenInfo(info);
+        saveJsonLocal(`${SHOP_INFO_KEY}:${storageScope()}`, info);
+      }
+      await reloadShopScopedData();
+    });
+
+  const deleteShop = (shop: TemuShop) =>
+    run("shop", async () => {
+      const label = shop.mall_name || shop.id;
+      if (!window.confirm(`删除店铺「${label}」？\n删掉之后要重新贴 token 才能再用这一家。`)) return;
+      const next = await temuPublishApi.removeShop(shop.id);
+      setStatus(next);
+      if (!next.configured.ready) {
+        setTokenInfo(null);
+        saveJsonLocal(`${SHOP_INFO_KEY}:${storageScope()}`, null);
+      }
+      await reloadShopScopedData();
     });
 
   /** 解绑当前账号的店铺：只删自己那份凭证。 */
   const clearShop = () =>
     run("clear-shop", async () => {
       const confirmed = window.confirm(
-        "解绑只清掉这个账号的店铺授权（access_token），盈銮 client_id / token 会保留。\n之后重新授权拿新 token 填进来即可。确认解绑？",
+        "停用当前店铺：发布时会提示还没绑定。\n这家店会留在「已保存的店铺」列表里，想再用点一下「切换到这家」即可，不用重新贴 token。确认停用？",
       );
       if (!confirmed) return;
       const next = await temuPublishApi.clearSettings();
       setStatus(next);
       setTokenInfo(null);
       saveJsonLocal(`${SHOP_INFO_KEY}:${storageScope()}`, null);
+      // 店铺级数据一起清掉：下次绑别家店时不能还带着这家的运费模板/仓库 id
+      setFreightTemplates([]);
+      setWarehouseGroups([]);
+      setShopEpoch((value) => value + 1);
+      setForm((current) => ({ ...current, freightId: "", warehouseId: "" }));
+      setRows((current) => current.map((row) => ({ ...row, warehouseId: "" })));
     });
 
   const verify = () =>
@@ -963,17 +1239,26 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       const files = Array.from(event.target.files ?? []);
       event.target.value = "";
       if (!files.length) return;
+      // 数量先挡：外包装图 Temu 只收 6 张，轮播 10 张。传上去再被拒会白等半天上传
+      const exist = splitLines(slotText(slot)).length;
+      const limit = IMAGE_LIMITS[slot];
+      if (exist + files.length > limit) {
+        throw new Error(
+          `${IMAGE_SLOTS.find((item) => item.key === slot)?.label ?? "图片"}最多 ${limit} 张：` +
+            `已有 ${exist} 张，这次选了 ${files.length} 张。`,
+        );
+      }
       const leaf = categoryPath[categoryPath.length - 1];
-      const urls: string[] = [];
-      for (const file of files) {
+      // 并发 3 张：串行传 6 张要等 6~18 秒，并发后基本等于最慢那张
+      const uploadedUrls = await mapWithConcurrency(files, 3, async (file) => {
         const raw = await blobToDataUrl(file);
         const uploaded =
           slot === "detail"
             ? await temuPublishApi.uploadDetailImage(raw, 0, leaf?.catId)
             : await temuPublishApi.uploadImage(await toSquareDataUrl(raw), leaf?.catId);
-        const url = pickUploadedUrl(uploaded);
-        if (url) urls.push(url);
-      }
+        return pickUploadedUrl(uploaded);
+      });
+      const urls = uploadedUrls.filter(Boolean);
       if (!urls.length) throw new Error("图片上传成功但没有返回图片地址");
       setSlotText(slot, [...splitLines(slotText(slot)), ...urls].join("\n"));
     });
@@ -1123,8 +1408,27 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     const carouselSource = splitLines(form.carousel);
     if (!carouselSource.length) throw new Error("至少需要一张产品轮播图");
     if (carouselSource.length > 10) throw new Error("轮播图最多 10 张");
+    // 草稿带入 / 手填 URL 也要守上限（上传路径已经挡过，这里兜底）
+    const outerSource = splitLines(form.outerImages);
+    if (outerSource.length > 6) throw new Error("外包装图片最多 6 张");
+    const detailSource = splitLines(form.detailImages);
+    if (detailSource.length > IMAGE_LIMITS.detail) {
+      throw new Error(`详情图最多 ${IMAGE_LIMITS.detail} 张`);
+    }
     if (!form.freightId) throw new Error("请选择运费模板");
     if (!form.warehouseId) throw new Error("请选择默认发货仓库");
+    // 产品货号会拼进 SKC / SKU 货号，含中文或符号 Temu 直接拒
+    const productCode = cleanExtCode(form.productCode);
+    if (form.productCode.trim() && !productCode) {
+      throw new Error("产品货号只能包含字母、数字、- 和 _（不能含中文或其它符号）");
+    }
+    if (form.productCode.trim() && productCode !== form.productCode.trim()) {
+      warnings.push(`产品货号里的中文/符号已自动去掉：${form.productCode.trim()} → ${productCode}`);
+    }
+    // 站外链接直接进 productWhExtAttrReq.outerGoodsUrl，http 会被 Temu 判不合法
+    if (form.externalUrl.trim() && !/^https:\/\//i.test(form.externalUrl.trim())) {
+      throw new Error("站外产品链接必须是 https:// 开头的地址");
+    }
 
     // 本地草稿图/外链图在生成前统一上传到 Temu 图床；已上传过的复用缓存。
     const carousel = await resolveImages(carouselSource, leaf.catId);
@@ -1133,18 +1437,24 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     const material = form.material.trim() ? await resolveImage(form.material, leaf.catId) : carousel[0];
 
     if (attributes) {
-      const missing = attributes.properties
+      const missing = visibleProperties
         .filter((item) => item.required)
         .filter((item) => {
           const pick = attrPicks[item.pid];
-          return !pick || (pick.vid <= 0 && !pick.text.trim());
+          if (!pick || (pick.vid <= 0 && !pick.text.trim())) return true;
+          // 带单位的属性（成分比例 %、厚度 mm）Temu 要的是数值：只选下拉不够
+          if (item.valueUnit?.length && !pick.text.trim()) return true;
+          return false;
         })
         .map((item) => item.name || item.propertyName || `pid=${item.pid}`);
       if (missing.length) throw new Error(`缺少必填属性：${missing.join("、")}`);
     }
 
     const attrByPid = new Map((attributes?.properties ?? []).map((item) => [item.pid, item]));
+    // 联动隐藏的属性不能带进 payload（留着上次填的值会被判「属性不合法」）
+    const visiblePids = new Set(visibleProperties.map((item) => item.pid));
     const properties = Object.entries(attrPicks)
+      .filter(([pid]) => visiblePids.has(Number(pid)))
       .filter(([, pick]) => pick && (pick.vid > 0 || pick.text.trim()))
       .map(([pid, pick]) => {
         const attr = attrByPid.get(Number(pid));
@@ -1167,74 +1477,111 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     if (rows.length > 20) throw new Error("Temu 多变种上限 20 个");
     const colorParent = parentSpecs.find((item) => item.parentSpecId === colorParentId) ?? null;
     const sizeParent = parentSpecs.find((item) => item.parentSpecId === sizeParentId) ?? null;
-    // 按颜色分组：每个颜色一个 SKC（Temu 的 SKC = 颜色/款式，SKU = 颜色×尺码）
-    const grouped = new Map<string, VariantRow[]>();
-    rows.forEach((row, index) => {
-      const color = row.colorName.trim();
-      if (!color) throw new Error(`第 ${index + 1} 行变种缺少颜色`);
-      const list = grouped.get(color) ?? [];
-      list.push(row);
-      grouped.set(color, list);
-    });
+
+    /** 一行变种 → 一个 SKU 草稿。带不带规格由调用方给，字段映射只写这一份。 */
+    const buildSku = (
+      row: VariantRow,
+      at: string,
+      specs: TemuSkuDraft["specs"],
+      skcImage: string,
+    ): TemuSkuDraft => {
+      const price = Number(row.supplierPrice || 0);
+      const suggested = Number(row.suggestedPrice || 0);
+      if (suggested > 0 && price > 0 && suggested * 20 < price) {
+        warnings.push(
+          `${at}建议售价 ${row.suggestedPrice} 明显小于申报价 ${row.supplierPrice}：` +
+            "建议售价单位也是「分」，草稿带入的是店铺币种金额时请改成 ×100。",
+        );
+      }
+      const skuCode = cleanExtCode(row.extCode);
+      if (!skuCode) throw new Error(`${at}缺少 SKU 货号（只能用字母/数字/-/_）`);
+      if (skuCode !== row.extCode.trim()) {
+        warnings.push(`${at}SKU 货号里的中文/符号已自动去掉：${row.extCode.trim()} → ${skuCode}`);
+      }
+      if (!row.warehouseId) throw new Error(`${at}缺少发货仓库`);
+      return {
+        ext_code: skuCode,
+        // 半托管供货价按人民币结算：传其它币种会被拒「请选择正确的币种：CNY」
+        currency_type: "CNY",
+        site_id: SITE_ID,
+        supplier_price: Math.round(parsePositive(row.supplierPrice, `${at}申报价格`)),
+        suggested_price: row.suggestedPrice.trim()
+          ? Math.round(parsePositive(row.suggestedPrice, `${at}建议售价`))
+          : null,
+        // 库存 0 是合法的（Temu 会建品但不可售），别拿价格的规则卡它
+        stock: parseStock(row.stock, `${at}库存`),
+        warehouse_id: row.warehouseId,
+        // 页面填 g，接口要毫克；尺寸填 cm，接口要毫米
+        weight_mg: Math.round(parsePositive(row.weightG, `${at}重量`) * 1000),
+        length_mm: Math.round(parsePositive(row.lengthCm, `${at}长`) * 10),
+        width_mm: Math.round(parsePositive(row.widthCm, `${at}宽`) * 10),
+        height_mm: Math.round(parsePositive(row.heightCm, `${at}高`) * 10),
+        thumb_url: row.thumbUrl.trim() || skcImage,
+        // 多件装（4 Pack / 12Pcs）：1 就是单件装，接口里不发这个字段
+        pieces_per_pack: Math.max(1, Math.round(Number(form.piecesPerPack || "1") || 1)),
+        is_sensitive: form.isSensitive,
+        specs,
+      };
+    };
 
     const skcs: TemuGoodsDraft["skcs"] = [];
-    let colorIndex = 0;
-    for (const [color, colorRows] of grouped) {
-      colorIndex += 1;
-      const colorSpec = await ensureSpec(colorParent, color);
-      // SKC 图：优先用该色第一行单独设的变种图，否则取轮播首图
-      const skcImage = colorRows.find((row) => row.thumbUrl.trim())?.thumbUrl.trim() || carousel[0];
-      const seenSizes = new Set<string>();
-      const skus: TemuSkuDraft[] = [];
-      for (const [index, row] of colorRows.entries()) {
-        const at = `颜色「${color}」第 ${index + 1} 行`;
-        if (!row.sizeName.trim()) throw new Error(`${at}缺少尺码`);
-        if (seenSizes.has(row.sizeName.trim())) throw new Error(`${at}尺码「${row.sizeName}」重复`);
-        seenSizes.add(row.sizeName.trim());
-        if (!row.extCode.trim()) throw new Error(`${at}缺少 SKU 货号`);
-        if (!row.warehouseId) throw new Error(`${at}缺少发货仓库`);
-        const sizeSpec = await ensureSpec(sizeParent, row.sizeName);
-        skus.push({
-          ext_code: row.extCode.trim(),
-          // 半托管供货价按人民币结算：传其它币种会被拒「请选择正确的币种：CNY」
-          currency_type: "CNY",
-          site_id: SITE_ID,
-          supplier_price: Math.round(parsePositive(row.supplierPrice, `${at}申报价格`)),
-          suggested_price: row.suggestedPrice.trim()
-            ? Math.round(parsePositive(row.suggestedPrice, `${at}建议售价`))
-            : null,
-          // 库存 0 是合法的（Temu 会建品但不可售），别拿价格的规则卡它
-          stock: parseStock(row.stock, `${at}库存`),
-          warehouse_id: row.warehouseId,
-          // 页面填 g，接口要毫克；尺寸填 cm，接口要毫米
-          weight_mg: Math.round(parsePositive(row.weightG, `${at}重量`) * 1000),
-          length_mm: Math.round(parsePositive(row.lengthCm, `${at}长`) * 10),
-          width_mm: Math.round(parsePositive(row.widthCm, `${at}宽`) * 10),
-          height_mm: Math.round(parsePositive(row.heightCm, `${at}高`) * 10),
-          thumb_url: row.thumbUrl.trim() || skcImage,
-          is_sensitive: form.isSensitive,
-          specs: [colorSpec, sizeSpec],
-        });
+    /**
+     * 类目没有销售属性（如「桌布/亚麻布」这类只有商品属性的类目）：
+     * Temu 不给颜色/尺码变种，只能建单 SKU 商品 —— 规格声明与 SKU 规格都发空数组。
+     * 以前这里一律走 ensureSpec，这类类目直接抛「不是合法的规格值」，等于永远发不出去。
+     */
+    const singleSku = saleValueIndex.size === 0;
+    if (singleSku) {
+      if (rows.length > 1) {
+        warnings.push(
+          `该类目没有销售属性（不能建颜色/尺码变种）：只提交第 1 行，后面 ${rows.length - 1} 行已忽略。`,
+        );
       }
+      const row = rows[0];
+      const skcImage = row.thumbUrl.trim() || carousel[0];
       skcs.push({
-        // SKC 货号：产品货号 + 颜色，避免多色撞号
-        ext_code: [form.productCode.trim() || "SKC", color].filter(Boolean).join("-").slice(0, 120),
+        ext_code: (productCode || "SKC").slice(0, 120),
         preview_image_urls: [skcImage],
         color_image_url: skcImage,
-        main_specs: [colorSpec],
-        skus,
+        main_specs: [],
+        skus: [buildSku(row, "变种第 1 行", [], skcImage)],
       });
-      if (colorIndex > 20) throw new Error("Temu 一次最多 20 个颜色（SKC）");
-      for (const row of colorRows) {
-        const price = Number(row.supplierPrice || 0);
-        const suggested = Number(row.suggestedPrice || 0);
-        if (suggested > 0 && price > 0 && suggested * 20 < price) {
-          warnings.push(
-            `建议售价 ${row.suggestedPrice} 明显小于申报价 ${row.supplierPrice}：建议售价单位也是「分」，` +
-              "草稿带入的是店铺币种金额时请改成 ×100。",
-          );
-          break;
+    } else {
+      // 按颜色分组：每个颜色一个 SKC（Temu 的 SKC = 颜色/款式，SKU = 颜色×尺码）
+      const grouped = new Map<string, VariantRow[]>();
+      rows.forEach((row, index) => {
+        const color = row.colorName.trim();
+        if (!color) throw new Error(`第 ${index + 1} 行变种缺少颜色`);
+        const list = grouped.get(color) ?? [];
+        list.push(row);
+        grouped.set(color, list);
+      });
+
+      let colorIndex = 0;
+      for (const [color, colorRows] of grouped) {
+        colorIndex += 1;
+        const colorSpec = await ensureSpec(colorParent, color);
+        // SKC 图：优先用该色第一行单独设的变种图，否则取轮播首图
+        const skcImage = colorRows.find((row) => row.thumbUrl.trim())?.thumbUrl.trim() || carousel[0];
+        const seenSizes = new Set<string>();
+        const skus: TemuSkuDraft[] = [];
+        for (const [index, row] of colorRows.entries()) {
+          const at = `颜色「${color}」第 ${index + 1} 行`;
+          if (!row.sizeName.trim()) throw new Error(`${at}缺少尺码`);
+          if (seenSizes.has(row.sizeName.trim())) throw new Error(`${at}尺码「${row.sizeName}」重复`);
+          seenSizes.add(row.sizeName.trim());
+          const sizeSpec = await ensureSpec(sizeParent, row.sizeName);
+          skus.push(buildSku(row, at, [colorSpec, sizeSpec], skcImage));
         }
+        skcs.push({
+          // SKC 货号：产品货号 + 颜色，避免多色撞号
+          ext_code: [productCode || "SKC", cleanExtCode(color)].filter(Boolean).join("-").slice(0, 120),
+          preview_image_urls: [skcImage],
+          color_image_url: skcImage,
+          main_specs: [colorSpec],
+          skus,
+        });
+        if (colorIndex > 20) throw new Error("Temu 一次最多 20 个颜色（SKC）");
       }
     }
 
@@ -1258,7 +1605,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       properties,
       skcs,
       site_ids: [SITE_ID],
-      size_template_ids: sizeTemplates,
+      // 类目明确不需要尺码表（sizeChart.has === false）时不要带旧的模板 id：
+      // 字段被藏起来了，用户看不到也改不掉，带上去只会让 Temu 回一句莫名其妙的话
+      size_template_ids: sizeChart.has === false ? [] : sizeTemplates,
       // 定制/POD 商品要显式打开，否则前台看不到定制入口
       personalization: form.isCustom,
       validate_catalog: true,
@@ -1335,7 +1684,10 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           draftTitle: draft.title,
           image: draft.carousel_image_urls[0] || "",
           siteLabel: "美国站",
-          categoryLabel: String(draft.category_ids[draft.category_ids.length - 1] ?? ""),
+          // 记类目名路径（之前记的是 catId 数字，列表里只看到一串数字，不知道是哪个类目）
+          categoryLabel:
+            categoryPath.map((step) => step.catName).filter(Boolean).join(" > ") ||
+            String(draft.category_ids[draft.category_ids.length - 1] ?? ""),
           skuLabel: draft.skcs[0]?.skus[0]?.ext_code || "",
           priceLabel: `CNY ${draft.skcs[0]?.skus[0]?.supplier_price ?? ""}`,
           at: new Date().toLocaleString("zh-CN"),
@@ -1376,6 +1728,17 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     }
   };
 
+  /** 发布后去店铺里核对：按 SKC 货号查商品列表，确认真的建成了。 */
+  const checkShopGoods = async (extCode: string) => {
+    setShopCheck({ loading: true, error: "", items: [] });
+    try {
+      const result = await temuPublishApi.searchGoods({ extCode: extCode || undefined, pageSize: 5 });
+      setShopCheck({ loading: false, error: "", items: result.items });
+    } catch (cause) {
+      setShopCheck({ loading: false, error: errorMessage(cause), items: [] });
+    }
+  };
+
   const updateRow = (key: string, rowPatch: Partial<VariantRow>) => {
     setRows((current) => current.map((row) => (row.key === key ? { ...row, ...rowPatch } : row)));
   };
@@ -1384,8 +1747,130 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     setRows((current) => (current.length > 1 ? current.filter((row) => row.key !== key) : current));
 
   const leaf = categoryPath[categoryPath.length - 1];
-  const requiredProps = attributes?.properties.filter((item) => item.required) ?? [];
-  const optionalProps = attributes?.properties.filter((item) => !item.required) ?? [];
+  // 产品货号（ParentSKU）：Temu 只认字母/数字/-/_，渲染层也用它拼变种货号前缀
+  const productCode = cleanExtCode(form.productCode);
+  // 发布成功后要显示的「商品 id」：网络中断反查到的用 matched_goods，正常提交用返回值
+  const publishedGoodsId = publishResult
+    ? publishResult.confirmed_by_lookup
+      ? String(publishResult.matched_goods?.product_id ?? "")
+      : goodsIdOf(publishResult.result)
+    : "";
+  /**
+   * 当前选择下「适用」的属性（Temu 属性联动）。
+   *
+   * 子属性带 templatePropertyValueParentList，parentTemplatePid 指向父属性的 templatePid：
+   * 父属性没选、或选的 vid 不在 parentVidList 里 → 子属性压根不该出现
+   * （实测「电池属性=不带电池」时，「可充电电池/太阳能电池/不可充电电池」都是 required，
+   *  但填了反而被判不合法）。选中的父值时，子属性只保留 vidList 里的值。
+   */
+  const visibleProperties = useMemo<TemuProperty[]>(() => {
+    const props = attributes?.properties ?? [];
+    const byTemplatePid = new Map<number, TemuProperty>();
+    props.forEach((item) => {
+      const key = Number(item.templatePid ?? 0);
+      if (key) byTemplatePid.set(key, item);
+    });
+    const pickedVid = (pid: number) => Number(attrPicks[pid]?.vid ?? 0);
+    const list: TemuProperty[] = [];
+    for (const prop of props) {
+      const rules = prop.templatePropertyValueParentList ?? [];
+      if (!rules.length) {
+        list.push(prop);
+        continue;
+      }
+      const parent = byTemplatePid.get(Number(prop.parentTemplatePid ?? 0));
+      if (!parent) {
+        // 拿不到父属性：宁可显示也不误杀
+        list.push(prop);
+        continue;
+      }
+      const parentVid = pickedVid(parent.pid);
+      if (!parentVid) continue;
+      const matched = rules.filter((rule) => (rule.parentVidList ?? []).includes(parentVid));
+      if (!matched.length) continue;
+      const allowed = new Set(matched.flatMap((rule) => rule.vidList ?? []));
+      list.push({
+        ...prop,
+        values: (prop.values ?? []).filter((value) => !allowed.size || allowed.has(value.vid)),
+      });
+    }
+    return list;
+  }, [attributes, attrPicks]);
+
+  const requiredProps = visibleProperties.filter((item) => item.required);
+  const optionalProps = visibleProperties.filter((item) => !item.required);
+
+  /**
+   * 一个类目属性的输入控件。三种形态：
+   *  - 只有预设值 → 下拉
+   *  - 只有单位 → 数值输入框（厚度 mm 这类）
+   *  - 两者都有 → 下拉 + 数值输入框（「封面材质」选成分 + 填成分比例 %）
+   * 之前只渲染下拉，导致「下拉+比例」的属性永远填不进数值，Temu 回「请输入数值」。
+   */
+  const attrField = (item: TemuProperty, required: boolean) => {
+    const label = item.name || item.propertyName || `属性 ${item.pid}`;
+    const pick = attrPicks[item.pid] ?? EMPTY_ATTR;
+    const unit = item.valueUnit?.[0] ?? "";
+    const unitHint = unit
+      ? `${item.numberInputTitle || "请输入数值"}（${unit}）`
+      : item.numberInputTitle || "请输入";
+    return (
+      <label className="temu-field" key={item.pid}>
+        <span>
+          {label}
+          {required && <em className="temu-required">*</em>}
+        </span>
+        {item.values?.length ? (
+          <div className={unit ? "temu-spec-row" : undefined}>
+            <select
+              className="temu-input"
+              value={pick.vid || ""}
+              onChange={(event) =>
+                setAttrPicks((current) => ({
+                  ...current,
+                  [item.pid]: { ...pick, vid: Number(event.target.value) || 0 },
+                }))
+              }
+            >
+              <option value="">请选择</option>
+              {item.values.map((value) => (
+                <option key={value.vid} value={value.vid}>
+                  {value.value}
+                </option>
+              ))}
+            </select>
+            {unit ? (
+              <input
+                className="temu-input"
+                value={pick.text}
+                title={unitHint}
+                placeholder={unitHint}
+                onChange={(event) =>
+                  setAttrPicks((current) => ({
+                    ...current,
+                    [item.pid]: { ...pick, text: event.target.value },
+                  }))
+                }
+              />
+            ) : null}
+          </div>
+        ) : (
+          <input
+            className="temu-input"
+            value={pick.text}
+            title={unitHint}
+            placeholder={unitHint}
+            onChange={(event) =>
+              setAttrPicks((current) => ({
+                ...current,
+                [item.pid]: { ...pick, text: event.target.value },
+              }))
+            }
+          />
+        )}
+      </label>
+    );
+  };
   const filledRequired = requiredProps.filter((item) => {
     const pick = attrPicks[item.pid];
     return !!pick && (pick.vid > 0 || !!pick.text.trim());
@@ -1441,7 +1926,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const jumpTo = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
   const stepOf = (id: string) => flowSteps.find((item) => item.id === id) ?? flowSteps[0];
   const ready = !!status?.configured.ready;
-  // 盈銮（服务商）凭据：跟具体店铺无关，解绑店铺也保留
+  // 服务商凭据：跟具体店铺无关，解绑店铺也保留
   const gatewayReady = !!(status?.configured.yl_client && status?.configured.yl_token);
   // 发布中一律禁用：接口非幂等，重复点就重复上架
   const submitDisabled = busy !== "" || !ready || publishing;
@@ -1526,7 +2011,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               </strong>
             </div>
             <div>
-              <span>盈銮凭据</span>
+              <span>服务商凭据</span>
               <strong>{gatewayReady ? "已配置（解绑店铺不影响）" : "未配置"}</strong>
             </div>
             <div>
@@ -1534,14 +2019,60 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               <strong>{status?.configured.access_token ? "已配置" : "未绑定"}</strong>
             </div>
           </div>
-          {/* 盈銮 client_id / token 是服务商预置的，不让用户填也不展示 */}
+          {(status?.shops?.length ?? 0) > 0 && (
+            <div className="temu-shop-list">
+              <div className="temu-shop-list-head">
+                <strong>已保存的店铺（{status?.shops?.length ?? 0}）</strong>
+                <span className="temu-muted">换店点「切换到这家」，不用重新贴 token</span>
+              </div>
+              {(status?.shops ?? []).map((shop) => (
+                <div className={`temu-shop-row${shop.active ? " is-active" : ""}`} key={shop.id}>
+                  <div className="temu-shop-name">
+                    <strong>{shop.mall_name || "（未命名店铺）"}</strong>
+                    <span className="temu-muted">
+                      {shop.masked_token}
+                      {shop.added_at ? ` · 添加 ${shop.added_at.slice(0, 10)}` : ""}
+                      {shop.last_used_at ? ` · 最近用 ${shop.last_used_at.slice(0, 10)}` : ""}
+                    </span>
+                  </div>
+                  <div className="temu-shop-ops">
+                    {shop.active ? (
+                      <em className="temu-shop-badge">当前使用</em>
+                    ) : (
+                      <button
+                        type="button"
+                        className="temu-btn temu-btn-sm"
+                        disabled={busy !== ""}
+                        onClick={() => void switchShop(shop.id)}
+                      >
+                        切换到这家
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="temu-link"
+                      disabled={busy !== ""}
+                      onClick={() => void deleteShop(shop)}
+                    >
+                      删除
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* 服务商 client_id / token 是预置的，不让用户填也不展示 */}
           <p className="temu-muted">
-            服务商凭据（盈銮 client_id / token）：{gatewayReady ? "已预置，不用管" : "还没预置，请联系服务商开通；这里不用填"}
+            服务商凭据（client_id / token）：{gatewayReady ? "已预置，不用管" : "还没预置，请联系服务商开通；这里不用填"}
           </p>
           <label className="temu-field">
             <span>
-              店铺 access_token
-              <em className="temu-muted">Temu 后台：系统管理 → 授权管理 → 获取授权，复制 access_token 后面的整串</em>
+              新增店铺：粘贴 access_token
+              <em className="temu-muted">
+                Temu 后台：系统管理 → 授权管理 → 获取授权，复制 access_token 后面的整串。
+                保存前会先打一次网关校验，通过才存进列表
+              </em>
             </span>
             <textarea
               className="temu-input"
@@ -1553,7 +2084,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           </label>
           <div className="temu-inline-actions">
             <button type="button" className="temu-btn temu-btn-primary" onClick={saveCredentials} disabled={busy !== ""}>
-              {busy === "settings" ? "保存中…" : "保存并校验"}
+              {busy === "settings" ? "校验中…" : "校验并保存为店铺"}
             </button>
             <button type="button" className="temu-btn" onClick={verify} disabled={busy !== "" || !ready}>
               重新校验
@@ -1563,14 +2094,14 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               className="temu-link danger"
               onClick={clearShop}
               disabled={busy !== "" || !status?.owner?.personal}
-              title="只清掉当前账号的店铺授权，盈銮 client_id/token 会保留"
+              title="停用后这家店还在列表里，想再用点「切换到这家」即可"
             >
-              解绑我的店铺
+              停用当前店铺
             </button>
           </div>
           <p className="temu-muted">
-            每个账号填自己的 token，互不影响；发布商品只会用你自己的店铺。
-            盈銮 client_id / token 是服务商那层的凭据，换店、解绑都不会清掉；店铺 token 过期后重新授权再填一次即可。
+            每个账号存自己的店铺，互不影响；发布只会进当前选中的那家店。
+            可以存多家、随时切换，切回来不用重新贴 token；token 过期后在这里粘贴新的授权即可（同名店铺会被更新）。
           </p>
         </section>
       )}
@@ -1584,7 +2115,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
       <div className="temu-console-body">
         <div className="temu-console-main">
-          {!ready && (
+          {/* 状态还没回来：给一行轻提示，别让人以为页面坏了 */}
+          {!statusLoaded && <p className="temu-muted temu-console-loading">正在读取店铺配置…</p>}
+          {statusLoaded && !ready && (
             <div className="temu-bind-banner">
               <div>
                 <strong>还没绑定你的 Temu 店铺</strong>
@@ -1617,7 +2150,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                     .join(" · ") || "标题/图片已填好，核对后补类目即可"}
                 </span>
                 {prefillInfo.needsReview?.length ? (
-                  <em>需人工核对：{prefillInfo.needsReview.join("、")}（POD 导出里是模板占位值）</em>
+                  <em>需人工核对：{prefillInfo.needsReview.join("、")}（草稿带来的占位值/参考价，提交前请自己确认）</em>
                 ) : null}
               </div>
               {onOpenDraftLibrary && (
@@ -1658,7 +2191,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               <p className="temu-mandatory-src">
                 来源：{mandatory.source}
                 {String(mandatory.result?.unsupported || "")
-                  ? "（盈銮网关暂不支持按类目查必填配置，已改为本地属性校验）"
+                  ? "（网关暂不支持按类目查必填配置，已改为本地属性校验）"
                   : ""}
               </p>
               <details className="temu-mandatory-raw">
@@ -1818,7 +2351,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   className="temu-input"
                   value={presetName}
                   onChange={(event) => setPresetName(event.target.value)}
-                  placeholder="把这套设置（分类+运费+仓库）存成预设"
+                  placeholder="预设名（只记分类+运费+仓库，随手切换用）"
+                  title="预设 = 分类 + 运费模板 + 发货仓库，最多存 6 个，用来快速换品"
                   onKeyDown={(event) => {
                     if (event.key === "Enter") savePreset();
                   }}
@@ -1834,9 +2368,15 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 className="temu-input"
                 value={templateName}
                 onChange={(event) => setTemplateName(event.target.value)}
-                placeholder="模板名（留空自动取名）"
+                placeholder="模板名（记分类+属性+物流+开关，批量发布用）"
+                title="产品模板比预设多记了已填属性、尺码表、定制/敏感开关，草稿库批量发布时要套它"
               />
-              <button type="button" className="temu-btn" onClick={saveProductTemplate}>
+              <button
+                type="button"
+                className="temu-btn"
+                onClick={saveProductTemplate}
+                disabled={!categoryPath.length}
+              >
                 存为产品模板
               </button>
               <select
@@ -1857,7 +2397,12 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
             <div className="temu-field">
               <span>
                 产品属性<em className="temu-required">*</em>
-                <em className="temu-muted">带 * 必填；不带的收在下面，不填也能发布</em>
+                <em className="temu-muted">
+                  带 * 必填；不带的收在下面，不填也能发布
+                  {attributes && attributes.properties.length > visibleProperties.length
+                    ? `（已按上一级选择隐藏 ${attributes.properties.length - visibleProperties.length} 项不适用属性）`
+                    : ""}
+                </em>
               </span>
               {!attributes ? (
                 <p className="temu-empty">选到叶子分类后自动加载属性。</p>
@@ -1865,95 +2410,14 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 <>
                   {requiredProps.length > 0 && (
                     <div className="temu-attr-grid">
-                      {requiredProps.map((item) => {
-                        const label = item.name || item.propertyName || `属性 ${item.pid}`;
-                        const pick = attrPicks[item.pid] ?? EMPTY_ATTR;
-                        return (
-                          <label className="temu-field" key={item.pid}>
-                            <span>
-                              {label}
-                              <em className="temu-required">*</em>
-                            </span>
-                            {item.values?.length ? (
-                              <select
-                                className="temu-input"
-                                value={pick.vid || ""}
-                                onChange={(event) =>
-                                  setAttrPicks((current) => ({
-                                    ...current,
-                                    [item.pid]: { ...pick, vid: Number(event.target.value) || 0 },
-                                  }))
-                                }
-                              >
-                                <option value="">请选择</option>
-                                {item.values.map((value) => (
-                                  <option key={value.vid} value={value.vid}>
-                                    {value.value}
-                                  </option>
-                                ))}
-                              </select>
-                            ) : (
-                              <input
-                                className="temu-input"
-                                value={pick.text}
-                                onChange={(event) =>
-                                  setAttrPicks((current) => ({
-                                    ...current,
-                                    [item.pid]: { ...pick, text: event.target.value },
-                                  }))
-                                }
-                                placeholder={item.valueUnit?.length ? `请输入数值（${item.valueUnit[0]}）` : "请输入"}
-                              />
-                            )}
-                          </label>
-                        );
-                      })}
+                      {requiredProps.map((item) => attrField(item, true))}
                     </div>
                   )}
                   {optionalProps.length > 0 && (
                     <details className="temu-optional-attrs">
                       <summary>选填属性 {optionalProps.length} 项（不填也能发布）</summary>
                       <div className="temu-attr-grid">
-                        {optionalProps.map((item) => {
-                          const label = item.name || item.propertyName || `属性 ${item.pid}`;
-                          const pick = attrPicks[item.pid] ?? EMPTY_ATTR;
-                          return (
-                            <label className="temu-field" key={item.pid}>
-                              <span>{label}</span>
-                              {item.values?.length ? (
-                                <select
-                                  className="temu-input"
-                                  value={pick.vid || ""}
-                                  onChange={(event) =>
-                                    setAttrPicks((current) => ({
-                                      ...current,
-                                      [item.pid]: { ...pick, vid: Number(event.target.value) || 0 },
-                                    }))
-                                  }
-                                >
-                                  <option value="">请选择</option>
-                                  {item.values.map((value) => (
-                                    <option key={value.vid} value={value.vid}>
-                                      {value.value}
-                                    </option>
-                                  ))}
-                                </select>
-                              ) : (
-                                <input
-                                  className="temu-input"
-                                  value={pick.text}
-                                  onChange={(event) =>
-                                    setAttrPicks((current) => ({
-                                      ...current,
-                                      [item.pid]: { ...pick, text: event.target.value },
-                                    }))
-                                  }
-                                  placeholder="请输入"
-                                />
-                              )}
-                            </label>
-                          );
-                        })}
+                        {optionalProps.map((item) => attrField(item, false))}
                       </div>
                     </details>
                   )}
@@ -1981,12 +2445,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 产品标题<em className="temu-required">*</em>
                 <em className="temu-muted">{form.title.length}/250，建议英文</em>
               </span>
-              <input
+              <textarea
                 className="temu-input"
                 value={form.title}
                 onChange={(event) => patch({ title: event.target.value })}
                 placeholder="英文标题，突出核心卖点"
                 maxLength={250}
+                rows={3}
               />
             </label>
             <div className="temu-two-col">
@@ -1999,17 +2464,27 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   className="temu-input"
                   value={form.titleEn}
                   onChange={(event) => patch({ titleEn: event.target.value })}
-                  placeholder="英文标题（≤250）"
+                  placeholder={
+                    /[\u4e00-\u9fff]/.test(form.title)
+                      ? "英文标题（≤250）"
+                      : "标题已是英文，这里可留空"
+                  }
                   maxLength={250}
                 />
               </label>
               <label className="temu-field">
                 <span>
                   产品货号
-                  <em className="temu-muted">ParentSKU，变种货号会用它拼前缀</em>
+                  <em className="temu-muted">
+                    {form.productCode.trim() && form.productCode.trim() !== productCode
+                      ? `含中文/符号，提交时会去掉 → ${productCode || "（空，请重填）"}`
+                      : "ParentSKU，变种货号会用它拼前缀"}
+                  </em>
                 </span>
                 <input
-                  className="temu-input"
+                  className={`temu-input${
+                    form.productCode.trim() && form.productCode.trim() !== productCode ? " is-bad" : ""
+                  }`}
                   value={form.productCode}
                   onChange={(event) => patch({ productCode: event.target.value })}
                   placeholder="如 WIG-BOB，不能含中文"
@@ -2020,9 +2495,15 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               <label className="temu-field">
                 <span>
                   产地
-                  <em className="temu-muted">国家代码，提交为 productOrigin</em>
+                  <em className="temu-muted">两位国家代码，提交为 productOrigin</em>
                 </span>
-                <input className="temu-input" value={form.origin} onChange={(event) => patch({ origin: event.target.value })} placeholder="CN" />
+                <input
+                  className="temu-input"
+                  value={form.origin}
+                  maxLength={2}
+                  placeholder="CN"
+                  onChange={(event) => patch({ origin: event.target.value.toUpperCase() })}
+                />
               </label>
               <label className="temu-field">
                 <span>站外产品链接</span>
@@ -2030,7 +2511,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   className="temu-input"
                   value={form.externalUrl}
                   onChange={(event) => patch({ externalUrl: event.target.value })}
-                  placeholder="可选，会提交为 outerGoodsUrl"
+                  placeholder="可选，https:// 开头的商品页地址，提交为 outerGoodsUrl"
                 />
               </label>
             </div>
@@ -2084,6 +2565,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 <TemuImageStrip
                   urls={splitLines(slotText(slot.key))}
                   onChange={(next) => setSlotText(slot.key, next.join("\n"))}
+                  firstBadge={slot.key === "carousel" ? "主图" : undefined}
                   emptyHint={
                     slot.key === "carousel"
                       ? "草稿带入的图会显示在这里；上传会自动裁成 1:1"
@@ -2162,13 +2644,19 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               defaultWarehouseId={form.warehouseId}
               sizesText={form.sizesText}
               onSizesTextChange={(value) => patch({ sizesText: value })}
-              extCodePrefix={form.productCode}
+              extCodePrefix={productCode}
               fallbackThumb={effectiveMaterial}
+              singleSku={saleValueIndex.size === 0}
             />
-            <div className="temu-field">
+            {sizeChart.has !== false && (
+              <div className="temu-field">
                 <span>
                   尺码表模板 ID
-                  <em className="temu-muted">服装/鞋类必填，多个用逗号；需先在 Temu 后台建好</em>
+                  <em className="temu-muted">
+                    {sizeChart.has
+                      ? "这个类目需要尺码表：填 Temu 后台建好的模板 ID，多个用逗号"
+                      : "服装/鞋类必填，多个用逗号；需先在 Temu 后台建好（无关类目会自动隐藏）"}
+                  </em>
                 </span>
                 <input
                   className="temu-input"
@@ -2176,7 +2664,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   onChange={(event) => patch({ sizeTemplates: event.target.value })}
                   placeholder="可选，如 12345,67890"
                 />
-            </div>
+              </div>
+            )}
           </section>
 
           {/* 4 包装信息 */}
@@ -2222,18 +2711,39 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 </select>
               </label>
             </div>
-            <label className="temu-field">
-              <span>
-                发货时效（天）<em className="temu-required">*</em>
-              </span>
-              <input
-                className="temu-input"
-                inputMode="numeric"
-                value={form.shipmentDays}
-                onChange={(event) => patch({ shipmentDays: event.target.value })}
-                placeholder="1"
-              />
-            </label>
+            <div className="temu-two-col">
+              <label className="temu-field">
+                <span>
+                  发货时效（天）<em className="temu-required">*</em>
+                  <em className="temu-muted">
+                    承诺给 Temu 的备货发货时限。默认 7 天（POD 生产周期），填太短会被判延迟发货，
+                    可改大（官方成功案例用的是 90 天）
+                  </em>
+                </span>
+                <input
+                  className="temu-input"
+                  inputMode="numeric"
+                  value={form.shipmentDays}
+                  onChange={(event) => patch({ shipmentDays: event.target.value })}
+                  placeholder={DEFAULT_SHIPMENT_DAYS}
+                />
+              </label>
+              <label className="temu-field">
+                <span>
+                  每件装数量
+                  <em className="temu-muted">
+                    标题里的 4 Pack / 12Pcs 就填 4 / 12；填 1 表示单件装（单件装不发这个字段）
+                  </em>
+                </span>
+                <input
+                  className="temu-input"
+                  inputMode="numeric"
+                  value={form.piecesPerPack}
+                  onChange={(event) => patch({ piecesPerPack: event.target.value })}
+                  placeholder="1"
+                />
+              </label>
+            </div>
           </section>
 
           {/* 5 校验发布 */}
@@ -2278,13 +2788,59 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
             {publishResult && (
               <div className="temu-publish-done">
                 <div>
-                  <strong>已提交到 Temu</strong>
+                  <strong>
+                    {publishResult.confirmed_by_lookup
+                      ? "已在店铺里查到（提交时网络中断）"
+                      : "已提交到 Temu"}
+                  </strong>
                   <span>
                     {publishResult.api_type} · {publishResult.summary.skc_count} 个 SKC /{" "}
                     {publishResult.summary.sku_count} 个变种
+                    {publishedGoodsId ? ` · 商品 id ${publishedGoodsId}` : ""}
                   </span>
                 </div>
-                <pre className="temu-json">{JSON.stringify(publishResult.result, null, 2)}</pre>
+                <pre className="temu-json">
+                  {JSON.stringify(
+                    publishResult.confirmed_by_lookup
+                      ? publishResult.matched_goods
+                      : publishResult.result,
+                    null,
+                    2,
+                  )}
+                </pre>
+                <div className="temu-inline-actions">
+                  <button
+                    type="button"
+                    className="temu-btn temu-btn-sm"
+                    disabled={shopCheck.loading}
+                    onClick={() => {
+                      const payload = publishResult.request_payload as {
+                        productSkcReqs?: Array<{ extCode?: string }>;
+                      };
+                      void checkShopGoods(payload?.productSkcReqs?.[0]?.extCode || "");
+                    }}
+                  >
+                    {shopCheck.loading ? "查询中…" : "核对店铺里的商品"}
+                  </button>
+                </div>
+                {shopCheck.error && <p className="temu-confirm-warn">查询失败：{shopCheck.error}</p>}
+                {shopCheck.items.length > 0 && (
+                  <ul className="temu-goods-list">
+                    {shopCheck.items.map((item) => (
+                      <li key={item.product_id}>
+                        <span className="temu-goods-id">{item.product_id}</span>
+                        <span className="temu-goods-title">{item.title}</span>
+                        <span className="temu-muted">
+                          {item.category || "—"} · {item.skc_ext_code || "—"}
+                          {item.created_at
+                            ? ` · ${new Date(item.created_at).toLocaleString("zh-CN")}`
+                            : ""}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
               </div>
             )}
 

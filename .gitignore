@@ -119,3 +119,6 @@ web-frontend/*.timestamp-*.mjs
 # AI 生成的视频/图片原片（十几 MB 的生成物，不进仓库；已抽帧的成品在 launcher/assets/splash/）
 generated-videos/
 generated-images/
+
+# 运行期下载的安装包（客户端自动更新用，几百 MB，不入库）
+local-runtime/updates/

@@ -64,6 +64,7 @@ def test_pod_customization_migrations_are_registered_in_forward_order() -> None:
         "pod_customization:026_style_column_layout",
         "pod_customization:027_billing_ledger_v2",
         "pod_customization:028_replica_transfer_plans",
+        "pod_customization:029_fission_ai_plans",
     ]
 
 

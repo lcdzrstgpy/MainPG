@@ -68,6 +68,19 @@ export function withFreshRowKeys(rows: VariantRow[]): VariantRow[] {
   return rows;
 }
 
+/**
+ * 货号片段清洗。
+ *
+ * 颜色/尺码是中文人写的（「透明+磁吸」「苹果18duo(左右折叠)」），直接拼进 SKU 货号会带上
+ * `+`、括号、空格、斜杠这些字符 —— Temu 货号只保证字母/数字/`-`/`_` 安全，
+ * 这些符号要么被拒，要么在后台搜索/对账时匹配不上。这里只删符号、保留中文与字母数字。
+ */
+function safeCodePart(value: string): string {
+  return String(value || "")
+    .replace(/[+()（）[\]{}<>《》「」,，.。;；:：/\\|*?"'`~!@#$%^&=\s]+/g, "")
+    .trim();
+}
+
 /** 造一行变种；有产品货号就拼成「货号-尺码」，否则用 SKU-001。 */
 export function createVariantRow(
   warehouseId: string,
@@ -77,7 +90,9 @@ export function createVariantRow(
   index = 0,
   extCodePrefix = "",
 ): VariantRow {
-  const parts = [extCodePrefix || "SKU", colorName, sizeName].filter(Boolean);
+  const parts = [extCodePrefix || "SKU", safeCodePart(colorName), safeCodePart(sizeName)].filter(
+    Boolean,
+  );
   const code = parts.length > 1 ? parts.join("-") : `SKU-${String(index + 1).padStart(3, "0")}`;
   return {
     key: nextKey(),
@@ -134,6 +149,7 @@ export function PublishSkuPanel({
   onColorsTextChange,
   extCodePrefix,
   fallbackThumb,
+  singleSku = false,
 }: {
   rows: VariantRow[];
   onRowsChange: (rows: VariantRow[]) => void;
@@ -158,6 +174,11 @@ export function PublishSkuPanel({
   extCodePrefix: string;
   /** 变种图留空时显示的图（轮播第一张） */
   fallbackThumb: string;
+  /**
+   * 类目没有销售属性（如「桌布/亚麻布」）：Temu 不给颜色/尺码变种，
+   * 只能建单 SKU 商品。此时隐藏变种生成区与颜色/尺码两列，只保留第 1 行的价格尺寸。
+   */
+  singleSku?: boolean;
 }) {
   const [batch, setBatch] = useState<VariantBatch>(EMPTY_BATCH);
   const [batchTouched, setBatchTouched] = useState(false);
@@ -219,6 +240,20 @@ export function PublishSkuPanel({
     onRowsChange(next);
   };
 
+  /**
+   * 批量编辑里填了值、但还没点「应用到全部」的字段。
+   * 这些值不会进提交（表格里那格还是空的），界面上必须点出来，否则用户以为已经填好了。
+   */
+  const pendingBatchFields = !batchTouched
+    ? []
+    : (Object.keys(batch) as Array<keyof VariantBatch>).filter((key) => {
+        // 只统计「用户真的在批量框里改过」的字段；没动过时 batch 是镜像第一行，
+        // 拿它跟别的行比会把正常差异报成「未应用」。
+        const typed = batch[key].trim();
+        if (!typed) return false;
+        return rows.some((row) => String(row[key] ?? "").trim() !== typed);
+      });
+
   /** 批量编辑 → 覆盖所有行（只覆盖填了值的字段）。 */
   const applyAll = () => {
     if (!rows.length) return;
@@ -237,7 +272,13 @@ export function PublishSkuPanel({
 
   return (
     <div className="temu-variant-panel">
-      <div className="temu-variant-spec">
+      {singleSku ? (
+        <p className="temu-cat-hint">
+          这个类目在 Temu 没有销售属性，不能建颜色/尺码变种：按<strong>单 SKU</strong> 提交，
+          只用下表第 1 行的价格、库存、尺寸与重量。
+        </p>
+      ) : (
+        <div className="temu-variant-spec">
         <label className="temu-field">
           <span>
             变种属性名称一 / 值一<em className="temu-required">*</em>
@@ -291,13 +332,22 @@ export function PublishSkuPanel({
         <button type="button" className="temu-btn temu-btn-primary temu-variant-generate" onClick={generate}>
           生成 {(colorNames.length || 1) * (sizeNames.length || 1)} 个变种
         </button>
-      </div>
+        </div>
+      )}
 
       <div className="temu-batch">
         <div className="temu-batch-head">
           <strong>批量编辑</strong>
           <span className="temu-muted">填了才覆盖；价格单位分（¥12.99 填 1299），尺寸 cm，重量 g</span>
-          <button type="button" className="temu-btn temu-btn-sm" onClick={applyAll} disabled={!rows.length}>
+          {pendingBatchFields.length > 0 && (
+            <em className="temu-batch-pending">有 {pendingBatchFields.length} 项还没应用</em>
+          )}
+          <button
+            type="button"
+            className={`temu-btn temu-btn-sm${pendingBatchFields.length ? " is-urgent" : ""}`}
+            onClick={applyAll}
+            disabled={!rows.length}
+          >
             应用到全部
           </button>
         </div>
@@ -338,10 +388,14 @@ export function PublishSkuPanel({
         <div className="temu-variant-table">
           {/* 列对齐 Temu 的变种信息：预览图 / 尺码 / SKU 货号 / 申报价格 / 长宽高 / 重量 / 建议售价 / 库存。
               颜色由上面的「变种属性值一」统一指定，发货仓库由「默认发货仓库」统一指定，不再逐行重复。 */}
-          <div className="temu-variant-row is-head">
+          <div className={`temu-variant-row is-head${singleSku ? " is-single" : ""}`}>
             <span>预览图</span>
-            <span>颜色</span>
-            <span>尺码</span>
+            {!singleSku && (
+              <>
+                <span>颜色</span>
+                <span>尺码</span>
+              </>
+            )}
             <span>SKU 货号</span>
             <span>申报价格(分)</span>
             <span>长</span>
@@ -352,27 +406,35 @@ export function PublishSkuPanel({
             <span>库存</span>
             <span />
           </div>
-          {rows.length === 0 && <p className="temu-empty">还没有变种：填好上面的尺码，点「生成变种」。</p>}
+          {rows.length === 0 && (
+            <p className="temu-empty">
+              {singleSku ? "还没有 SKU：点上面的「生成变种」补一行。" : "还没有变种：填好上面的尺码，点「生成变种」。"}
+            </p>
+          )}
           {rows.map((row) => (
-            <div className="temu-variant-row" key={row.key}>
+            <div className={`temu-variant-row${singleSku ? " is-single" : ""}`} key={row.key}>
               <span className="temu-variant-thumb" title={row.thumbUrl || "未单独设置，取轮播第一张"}>
                 <TemuThumb path={row.thumbUrl || fallbackThumb} onOpen={() => undefined} />
               </span>
-              <input
-                className="temu-input"
-                list="temu-color-options"
-                value={row.colorName}
-                onChange={(event) => onUpdateRow(row.key, { colorName: event.target.value })}
-                placeholder="选类目预设颜色"
-                title="Temu 只认类目预设颜色，自己输入会被拒"
-              />
-              <input
-                className="temu-input"
-                list="temu-size-options"
-                value={row.sizeName}
-                onChange={(event) => onUpdateRow(row.key, { sizeName: event.target.value })}
-                placeholder="选预设值"
-              />
+              {!singleSku && (
+                <>
+                  <input
+                    className="temu-input"
+                    list="temu-color-options"
+                    value={row.colorName}
+                    onChange={(event) => onUpdateRow(row.key, { colorName: event.target.value })}
+                    placeholder="选类目预设颜色"
+                    title="Temu 只认类目预设颜色，自己输入会被拒"
+                  />
+                  <input
+                    className="temu-input"
+                    list="temu-size-options"
+                    value={row.sizeName}
+                    onChange={(event) => onUpdateRow(row.key, { sizeName: event.target.value })}
+                    placeholder="选预设值"
+                  />
+                </>
+              )}
               <input
                 className="temu-input"
                 value={row.extCode}

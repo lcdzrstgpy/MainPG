@@ -9,6 +9,29 @@ export type TemuSettingsStatus = {
   hints: Record<string, string>;
   /** 凭证归属：按登录账号隔离，personal=true 表示用的是自己保存的那份 */
   owner?: { account_id?: string; scope?: string; personal?: boolean };
+  /** 已保存的店铺（可以多个）：换店点一下就切，不用重新贴 token */
+  shops?: TemuShop[];
+  /** 当前启用的店铺 id */
+  active_shop_id?: string;
+};
+
+/** 类目是否需要尺码表（服装/鞋类需要；宠物用品等返回 false）。 */
+export type TemuSizeChartInfo = {
+  cat_id: number;
+  has_size_chart: boolean;
+  count: number;
+  /** 非空时的原始返回（结构未确认，仅备查） */
+  raw?: unknown;
+};
+
+/** 一个已保存的店铺。token 只回掩码，原文不出后端。 */
+export type TemuShop = {
+  id: string;
+  mall_name: string;
+  masked_token: string;
+  added_at: string;
+  last_used_at: string;
+  active: boolean;
 };
 
 export type TemuTokenInfo = {
@@ -68,6 +91,13 @@ export type TemuProperty = {
   parentSpecId?: number;
   /** Temu 标记的「主销售属性」（决定 SKC） */
   mainSale?: boolean;
+  /** 父属性的 templatePid：本属性是「联动子属性」时才有 */
+  parentTemplatePid?: number | null;
+  /** 联动规则：父属性取到 parentVidList 里任一值才显示本属性，且只允许 vidList 里的值 */
+  templatePropertyValueParentList?: Array<{
+    parentVidList: number[];
+    vidList: number[];
+  }> | null;
 };
 
 export type TemuAttributes = {
@@ -128,6 +158,8 @@ export type TemuSkuDraft = {
   width_mm: number;
   height_mm: number;
   thumb_url?: string | null;
+  /** 多件装数量（4 Pack / 12Pcs）：>1 才发 productSkuMultiPackReq */
+  pieces_per_pack?: number;
   /** 敏感货（带电/液体等）→ productSkuSensitiveAttrReq.isSensitive */
   is_sensitive?: boolean;
   specs: TemuSkuSpec[];
@@ -180,6 +212,10 @@ export type TemuGoodsDraft = {
 
 export type TemuPublishResult = {
   submitted: boolean;
+  /** true = 提交时网络中断，靠「商品列表反查」确认已在店铺里创建（不是网关直接返回的成功） */
+  confirmed_by_lookup?: boolean;
+  /** 反查命中的商品信息（product_id / product_name / ext_code …） */
+  matched_goods?: Record<string, unknown>;
   api_type: string;
   /** 网关返回的原始结果（含 Temu 侧商品标识，字段随网关版本可能不同） */
   result: Record<string, unknown>;
@@ -229,9 +265,9 @@ export type TemuDraftEntry = {
   spec_value_1?: string;
   spec_name_2?: string;
   spec_value_2?: string;
-  /** 申报价（单位：元）。没有显式填过时按导出规则推算，见 declared_price_estimated */
+  /** 申报价（单位：元）。没有显式填过时按导出规则测算，见 declared_price_estimated */
   declared_price: number | string | null;
-  /** true = 该价格是推算出来的（成本 × 4，下限 ¥150），不是人工填的 */
+  /** true = 该价格是按成本算出来的（成本 × 4，下限 ¥150），不是人工填的 */
   declared_price_estimated?: boolean;
   suggested_price: number | string | null;
   stock: number | string | null;
@@ -244,7 +280,15 @@ export type TemuDraftEntry = {
 export type TemuDraftLibrary = {
   entries: TemuDraftEntry[];
   warnings: string[];
+  /** 全量计数（不随筛选变化）：筛选按钮上的数字要稳定 */
   counts: { ai: number; pod: number; total: number };
+  /** 过滤后的总条数（= 总页数 × 每页条数的来源） */
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
+  source: "all" | "ai" | "pod";
+  query: string;
 };
 
 export const TEMU_PUBLISH_PREFILL_KEY = "temu_publish_prefill_v1";
@@ -313,3 +357,33 @@ export type TemuDraftEdit = {
   height_cm?: string;
   weight_g?: string;
 };
+
+/** 店铺里的商品（bg.glo.goods.list.get 的列表项，压成前端要的样子）。 */
+export type TemuGoodsItem = {
+  product_id: string;
+  title: string;
+  skc_ext_code: string;
+  image: string;
+  created_at?: number;
+  site_status?: number;
+  category?: string;
+  sku_codes?: string[];
+  /** 每个 SKU 的当前库存（列表接口的 virtualStock） */
+  skus?: Array<{ sku_id: string; ext_code: string; stock: number; specs?: string }>;
+  /** 全部 SKU 库存之和 */
+  stock_total?: number;
+  /** 库存为 0 的 SKU 个数 */
+  zero_stock_sku_count?: number;
+};
+
+/** 待补库存清单（后端扫店铺商品得出，只读）。 */
+export type TemuLowStockResult = {
+  scanned: number;
+  total: number;
+  items: TemuGoodsItem[];
+  zero_sku_count: number;
+  only_zero: boolean;
+  /** false = 改库存接口未开通，只能导出清单去后台改 */
+  can_update_stock: boolean;
+};
+

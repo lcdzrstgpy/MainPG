@@ -1421,6 +1421,8 @@ class PodCustomizationRepository:
         user_summary: Mapping[str, Any] | None = None,
         raw_response: Mapping[str, Any] | None = None,
         candidate_payload: Mapping[str, Any] | None = None,
+        plans: Sequence[Mapping[str, Any]] = (),
+        plan_prompt_version: str = "",
         model_version: str = "",
         schema_version: str = "",
         capability_version: int = 0,
@@ -1433,9 +1435,9 @@ class PodCustomizationRepository:
                 """INSERT INTO pod_customization_fission_analyses
                    (analysis_id, workspace_id, owner_user_id, source_asset_id, target_asset_id, status,
                     source_spec_json, target_spec_json, user_summary_json, raw_response_json,
-                    candidate_payload_json, model_version, schema_version,
+                    candidate_payload_json, plans_json, plan_prompt_version, model_version, schema_version,
                     capability_registry_version, rule_registry_version, error_code, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     analysis_id, workspace_id, owner_user_id, source_asset_id, target_asset_id, status,
                     json.dumps(source_spec or {}, ensure_ascii=False),
@@ -1443,6 +1445,8 @@ class PodCustomizationRepository:
                     json.dumps(user_summary or {}, ensure_ascii=False),
                     json.dumps(raw_response or {}, ensure_ascii=False),
                     json.dumps(candidate_payload or {}, ensure_ascii=False),
+                    json.dumps(list(plans), ensure_ascii=False),
+                    plan_prompt_version,
                     model_version, schema_version, int(capability_version), int(rule_version),
                     _safe_error(error_code)[:100], now, now,
                 ),
@@ -1462,9 +1466,10 @@ class PodCustomizationRepository:
         result = dict(row)
         for key in ("source_spec", "target_spec", "user_summary", "raw_response", "candidate_payload"):
             result[key] = json.loads(result.pop(f"{key}_json", "{}") or "{}")
+        result["plans"] = json.loads(result.pop("plans_json", "[]") or "[]")
         return result
 
-    def create_fission_batch_with_registry(
+    def create_fission_batch(
         self,
         *,
         workspace_id: str,
@@ -1474,32 +1479,18 @@ class PodCustomizationRepository:
         request_hash: str,
         requested_count: int,
         listing_fields: Mapping[str, Any],
-        candidates: Any,
-        plans: Mapping[int, Mapping[str, Any]],
-        expected_capability_version: int,
-        expected_rule_version: int,
+        plans: Sequence[Mapping[str, Any]],
         composition: Mapping[str, Any] | None = None,
         prompt_version: str = "",
-        compiler_version: str = "",
+        panel_prompt_version: str = "",
         title: str = "",
         batch_id: str | None = None,
     ) -> dict[str, Any]:
-        """Atomically publish registry candidates and freeze a fission batch/variants."""
-        from .fission_registry import FissionRegistryService
-        from .fission_specs import ValidatedRegistryCandidates
-
-        if isinstance(candidates, Mapping):
-            validated = FissionRegistryService.validate_candidates(candidates)
-        else:
-            validated = candidates
-        if not isinstance(validated, ValidatedRegistryCandidates):
-            raise TypeError("candidates must be validated registry candidates")
+        """Freeze a fission batch from the N AI plans (no registry publication)."""
         if isinstance(requested_count, bool) or not MIN_FISSION_STYLES <= int(requested_count) <= MAX_FISSION_STYLES:
             raise ValueError(f"requested_count must be between {MIN_FISSION_STYLES} and {MAX_FISSION_STYLES}")
-        expected_styles = set(range(1, int(requested_count) + 1))
-        if set(int(index) for index in plans) != expected_styles:
+        if len(plans) != int(requested_count):
             raise ValueError("plans must contain exactly one frozen plan for every requested style")
-        payload = validated.to_payload()
         batch_id = str(batch_id or uuid.uuid4().hex)
         now = _now()
         with self._connect() as connection:
@@ -1523,60 +1514,6 @@ class PodCustomizationRepository:
                 raise PodRepositoryError("POD fission analysis not found", 404)
             if str(analysis["status"]) != "succeeded":
                 raise PodRepositoryError("failed fission analysis cannot create a batch", 409)
-            current = self.get_fission_registry_snapshot(connection)
-            actual = (int(current["capability_version"]), int(current["rule_version"]))
-            expected = (int(expected_capability_version), int(expected_rule_version))
-            if actual != expected:
-                raise RegistryVersionConflict(expected, actual)
-
-            capability_payload = FissionRegistryService._merge_capability_payload(
-                {"capabilities": list(current["capabilities"]), "product_mappings": list(current["product_mappings"])},
-                {"capabilities": list(validated.capabilities), "product_mappings": list(validated.product_mappings)},
-            )
-            rule_payload = FissionRegistryService._merge_rule_payload(
-                {"rules": list(current["rules"])}, {"rules": list(validated.rules)}
-            )
-            cap_hash = hashlib.sha256(_canonical_json(capability_payload).encode("utf-8")).hexdigest()
-            rule_hash = hashlib.sha256(_canonical_json(rule_payload).encode("utf-8")).hexdigest()
-            cap_existing = connection.execute(
-                "SELECT version FROM pod_customization_capability_registry_versions WHERE content_hash = ?",
-                (cap_hash,),
-            ).fetchone()
-            rule_existing = connection.execute(
-                "SELECT version FROM pod_customization_rule_registry_versions WHERE content_hash = ?",
-                (rule_hash,),
-            ).fetchone()
-            projected_versions = (
-                int(cap_existing[0]) if cap_existing else int(connection.execute(
-                    "SELECT COALESCE(MAX(version), 0) + 1 FROM pod_customization_capability_registry_versions"
-                ).fetchone()[0]),
-                int(rule_existing[0]) if rule_existing else int(connection.execute(
-                    "SELECT COALESCE(MAX(version), 0) + 1 FROM pod_customization_rule_registry_versions"
-                ).fetchone()[0]),
-            )
-            for plan in plans.values():
-                if (int(plan.get("capability_registry_version", -1)),
-                        int(plan.get("rule_registry_version", -1))) != projected_versions:
-                    raise RegistryVersionConflict(
-                        (int(plan.get("capability_registry_version", -1)),
-                         int(plan.get("rule_registry_version", -1))), projected_versions
-                    )
-            capability_version = self.append_fission_registry_version(
-                connection, registry_kind="capability", content_hash=cap_hash,
-                content_json=_canonical_json(capability_payload), analysis_id=analysis_id,
-            )
-            rule_version = self.append_fission_registry_version(
-                connection, registry_kind="rule", content_hash=rule_hash,
-                content_json=_canonical_json(rule_payload), analysis_id=analysis_id,
-            )
-            self.ensure_fission_registry_pair_allowed(connection, capability_version, rule_version)
-            if (capability_version, rule_version) != projected_versions:
-                raise RegistryVersionConflict(projected_versions, (capability_version, rule_version))
-            connection.execute(
-                "INSERT INTO pod_customization_learning_events "
-                "(analysis_id, candidate_json, capability_version, rule_version, status, reason) VALUES (?, ?, ?, ?, 'published', '')",
-                (analysis_id, _canonical_json(payload), capability_version, rule_version),
-            )
 
             target_asset_id = str(analysis["target_asset_id"])
             asset = connection.execute(
@@ -1627,19 +1564,20 @@ class PodCustomizationRepository:
                 """INSERT INTO pod_customization_fission_batches
                    (batch_id, workspace_id, owner_user_id, analysis_id, client_request_id, request_hash,
                     requested_count, listing_fields_json, composition_json, capability_registry_version,
-                    rule_registry_version, prompt_version, compiler_version, status, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)""",
+                    rule_registry_version, prompt_version, compiler_version, generation_strategy,
+                    panel_prompt_version, status, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, '', 'independent_panels', ?, 'queued', ?, ?)""",
                 (batch_id, workspace_id, owner_user_id, analysis_id, client_request_id, request_hash,
                  int(requested_count), listing_json, json.dumps(dict(composition or {}), ensure_ascii=False),
-                 capability_version, rule_version, prompt_version, compiler_version, now, now),
+                 prompt_version, panel_prompt_version, now, now),
             )
             variant_rows: list[tuple[Any, ...]] = []
-            for style_index in range(1, int(requested_count) + 1):
-                plan = dict(plans.get(style_index, {}))
-                fingerprint = str(plan.get("combination_fingerprint") or f"{batch_id}:{style_index}")
+            for style_index, plan in enumerate(plans, start=1):
+                item = dict(plan)
+                fingerprint = str(item.get("combination_fingerprint") or f"{batch_id}:{style_index}")
                 variant_rows.append(
                     (uuid.uuid4().hex, batch_id, workspace_id, owner_user_id, style_index,
-                     json.dumps(plan, ensure_ascii=False), fingerprint, str(plan.get("prompt_snapshot") or ""),
+                     json.dumps(item, ensure_ascii=False), fingerprint, str(item.get("main_prompt") or ""),
                      now, now)
                 )
             connection.executemany(
@@ -2050,6 +1988,12 @@ class PodCustomizationRepository:
             result["capability_registry_version"] = int(fission_meta["capability_registry_version"] if fission_meta else 0)
             result["rule_registry_version"] = int(fission_meta["rule_registry_version"] if fission_meta else 0)
             result["fission_analysis_id"] = str(fission_meta["analysis_id"] if fission_meta else "")
+            result["fission_generation_strategy"] = str(
+                (fission_meta["generation_strategy"] if fission_meta else "") or "grid"
+            )
+            result["fission_panel_prompt_version"] = str(
+                (fission_meta["panel_prompt_version"] if fission_meta else "") or ""
+            )
             # Execution remains owned by the shared POD worker. Project its live
             # state here instead of exposing the immutable variant row defaults.
             titles_by_index = {int(row["style_index"]): row for row in result["style_titles"]}

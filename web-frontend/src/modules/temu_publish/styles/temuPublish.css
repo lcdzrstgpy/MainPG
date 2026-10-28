@@ -682,6 +682,15 @@ textarea.temu-input {
   overflow: visible;
   padding: 4px 2px 8px;
 }
+/* 11 列在窄屏会顶出去：给表格一个下限，外层允许横向滚动 */
+@media (max-width: 1180px) {
+  .temu-draft-table-wrap {
+    overflow-x: auto;
+  }
+  .temu-draft-table {
+    min-width: 980px;
+  }
+}
 .temu-draft-table {
   width: 100%;
   border-collapse: collapse;
@@ -714,32 +723,43 @@ textarea.temu-input {
   width: 40px;
 }
 .temu-draft-table .col-title {
-  width: 36%;
+  width: 19%;
 }
 .temu-draft-table .col-image {
-  width: 88px;
+  width: 62px;
 }
-.temu-draft-table .col-site {
-  width: 220px;
+/* 类目：发布前必须选到叶子类目，独立成列，不再挤在「站点」里 */
+.temu-draft-table .col-cat {
+  width: 14%;
 }
 .temu-draft-table .col-sku {
-  width: 132px;
+  width: 94px;
   font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 0.74rem;
   word-break: break-all;
 }
 .temu-draft-table .col-price {
-  width: 80px;
+  width: 84px;
   font-weight: 800;
 }
+.temu-draft-table .col-stock {
+  width: 44px;
+  text-align: center;
+}
+.temu-draft-table .col-spec {
+  width: 108px;
+}
+.temu-draft-table .col-ready {
+  width: 92px;
+}
 .temu-draft-table .col-time {
-  width: 124px;
+  width: 80px;
   color: #6b8296;
   font-size: 0.74rem;
   white-space: nowrap;
 }
 .temu-draft-table .col-actions {
-  width: 92px;
+  width: 88px;
   text-align: right;
 }
 .temu-draft-thumb-wrap {
@@ -2124,10 +2144,24 @@ textarea.temu-input {
   gap: 6px;
 }
 
+/* 无销售属性的类目（如桌布/亚麻布）：没有颜色/尺码变种，这两列不渲染 */
+.is-console .temu-variant-row.is-single {
+  grid-template-columns: 46px 104px 66px 44px 44px 44px 58px 70px 52px 24px;
+}
+
 .is-console .temu-variant-row.is-head {
   color: var(--theme-text-muted, #7b93a8);
   font-size: 11px;
   font-weight: 700;
+}
+
+/* 只读/禁用字段（店铺账号、经营站点）要一眼看出不是给人改的，
+   否则看着像能编辑的输入框，改完没反应 */
+.is-console .temu-input:disabled,
+.is-console .temu-input[readonly] {
+  background: var(--theme-module-soft, #f2f5f8);
+  color: var(--theme-text-muted, #7b93a8);
+  cursor: not-allowed;
 }
 
 .is-console .temu-variant-row .temu-input {
@@ -2671,4 +2705,209 @@ textarea.temu-input {
 .temu-batch-dialog .temu-field > span > em {
   font-style: normal;
   font-weight: 400;
+}
+
+/* ---------- 发布后核对：店铺里的商品 ---------- */
+
+.temu-goods-list {
+  margin: 10px 0 0;
+  padding: 8px 12px;
+  list-style: none;
+  border-radius: var(--radius-sm, 6px);
+  background: var(--theme-module-soft, rgba(0, 0, 0, 0.03));
+  font-size: 12px;
+  line-height: 1.8;
+}
+
+.temu-goods-list li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.temu-goods-id {
+  font-variant-numeric: tabular-nums;
+  color: var(--theme-text-muted, #7b93a8);
+}
+
+.temu-goods-title {
+  flex: 1 1 220px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- 已保存的店铺（多店铺切换） ---------- */
+
+.temu-shop-list {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--theme-module-border, #e2e8f0);
+  border-radius: var(--radius-md, 10px);
+  background: var(--theme-module-soft, rgba(0, 0, 0, 0.02));
+}
+
+.temu-shop-list-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+}
+
+.temu-shop-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm, 6px);
+  background: var(--theme-card-bg-solid, #fff);
+  border: 1px solid transparent;
+}
+
+.temu-shop-row.is-active {
+  border-color: var(--theme-primary, #4f7cff);
+  background: var(--theme-primary-soft, rgba(79, 124, 255, 0.08));
+}
+
+.temu-shop-name {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  font-size: 12.5px;
+}
+
+.temu-shop-name strong,
+.temu-shop-name span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.temu-shop-ops {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.temu-shop-badge {
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 600;
+  color: var(--theme-primary, #4f7cff);
+}
+
+/* 首屏加载提示：占位一行，避免表单上方突然空一块或闪红条 */
+.temu-console-loading {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+}
+
+/* 批量编辑填了但没点「应用到全部」：这些值不会进提交，必须显眼 */
+.temu-batch-pending {
+  font-style: normal;
+  font-weight: 600;
+  font-size: 12px;
+  color: #b45309;
+}
+
+.temu-btn.is-urgent {
+  border-color: #f0a020;
+  color: #8a5a00;
+  background: #fff8e8;
+}
+
+
+/* ---------- 草稿库：完整度 / 缺项 / 搜索（结构重排后新增） ---------- */
+
+.temu-draft-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+/* 说明文字靠右，让 [页签][搜索] … [批次说明][失败历史] 排成一行 */
+.temu-draft-meta {
+  margin-left: auto;
+}
+.temu-draft-search .temu-input {
+  width: 220px;
+  min-height: 30px;
+  font-size: 0.78rem;
+}
+
+/* 「未填」用红字，跟「0」区分开：0 是合法值，未填是发不出去 */
+.temu-draft-table .temu-draft-missing {
+  color: #e2384a;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+.temu-draft-table .col-cat small.is-missing {
+  color: #e2384a;
+}
+.temu-draft-table .col-cat .temu-draft-site {
+  display: block;
+  margin-top: 2px;
+  color: #8aa0b2;
+  font-size: 0.68rem;
+  font-style: normal;
+}
+.temu-draft-table .col-price em {
+  display: block;
+  color: #8aa0b2;
+  font-size: 0.66rem;
+  font-style: normal;
+  font-weight: 700;
+  line-height: 1.3;
+}
+.temu-draft-table .col-price em.is-estimated {
+  color: #c98a00;
+}
+.temu-draft-table .col-stock .is-zero {
+  color: #c98a00;
+  font-weight: 800;
+}
+.temu-draft-table .col-spec em {
+  color: #5b7386;
+  font-size: 0.7rem;
+  font-style: normal;
+  line-height: 1.35;
+}
+
+/* 完整度徽章：绿=可发，橙=缺项（把缺什么直接写在格子里） */
+.temu-ready {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.temu-ready.is-ok {
+  color: #177245;
+  background: #e6f6ec;
+}
+.temu-ready.is-warn {
+  color: #a35a00;
+  background: #fff3e0;
+  white-space: normal;
+  line-height: 1.35;
+  text-align: left;
+}
+
+/* 翻页请求进行中：保留上一页内容并压暗，比闪成空白稳 */
+.temu-draft-table-wrap.is-loading {
+  opacity: 0.45;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+/* 草稿自带的分类（POD 模板自由文本 / AI 采集路径）：中性色，别当错误 */
+.temu-draft-table .col-cat small.is-draft {
+  color: #6b8296;
 }

@@ -13,6 +13,7 @@ import { SpecCardDrawer, type SpecCardBatchContext } from "../../pod_customizati
 import { validateListingFields, type SkuField } from "../../pod_customization/components/PodListingFieldsEditor";
 import { buildSpecCardCells, groupPodStyleRows, isActiveBatchStatus, isActivePodItemStatus, isActivePodStyleTitleStatus, shouldPollPodBatch } from "../../pod_customization/data/podCustomizationModel";
 import { batchRetryCandidates, type PodBatchRetryRequest } from "../../pod_customization/data/podBatchRetry";
+import { formatPodModulePrice, usePodModulePricing } from "../../pod_customization/data/usePodModulePricing";
 import type { PodBatchItem, PodComposition, PodMiaoshouTemplateKind } from "../../pod_customization/types";
 
 import { podReplicaApi } from "../api/podReplicaApi";
@@ -50,6 +51,7 @@ type ReplicaDraftAccount = { account_id?: string; customer_id?: string; workspac
 const MAX_SKU = 100;
 
 export function PodReplicaPage({ isActive = true }: Props) {
+  const modulePrice = formatPodModulePrice(usePodModulePricing("pod_replica_v1"));
   const draftScope = useMemo(() => {
     const account = getAuthAccount<ReplicaDraftAccount>();
     const accountId = (account?.account_id || account?.customer_id)?.trim() ?? "";
@@ -591,6 +593,7 @@ export function PodReplicaPage({ isActive = true }: Props) {
           <div>
             <span>POD BESTSELLER REPLICA</span>
             <h1>爆款复刻</h1>
+            {modulePrice && <span className="pod-page-price">{modulePrice}</span>}
           </div>
         </div>
         <div className="pod-page-header-actions">

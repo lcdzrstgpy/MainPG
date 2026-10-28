@@ -1832,27 +1832,52 @@
   }
 }
 
-/* 计费规则面板 */
+/* 计费规则面板：内容少，压缩内边距与间距，尽量一屏放下 */
 .pricing-card {
   display: grid;
-  gap: 16px;
+  padding: 18px;
+  gap: 12px;
 }
 
 .pricing-card .personal-card-title button {
   margin-left: auto;
 }
 
+/* 计费规则内容比右栏矮：拉伸到与右栏同高，避免左右底边出现高低差；
+   多出的高度均摊到各区块间距，不在卡片底部留一条空白带。 */
+.personal-panel-content:has(.pricing-card) {
+  align-self: stretch;
+}
+
+.personal-panel-content:has(.pricing-card) .personal-panel-anim {
+  flex: 1 1 auto;
+}
+
+.personal-panel-content:has(.pricing-card) .pricing-card {
+  flex: 1 1 auto;
+  align-content: space-between;
+}
+
 .pricing-hero {
   position: relative;
   overflow: hidden;
-  display: grid;
-  gap: 10px;
-  padding: 22px 26px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 24px;
+  padding: 14px 20px;
   border: 1px solid rgba(var(--theme-module-primary-rgb, 8, 119, 211), 0.16);
   border-radius: 20px;
   background:
     radial-gradient(120% 150% at 100% 0%, rgba(var(--theme-module-primary-rgb, 8, 119, 211), 0.16), transparent 46%),
     linear-gradient(135deg, #eefaff, var(--theme-module-surface, #fff));
+}
+
+/* 左半区：标签 + 价格区间竖排，右半区放说明文案，整块压成一条横幅 */
+.pricing-hero-main {
+  display: grid;
+  gap: 6px;
 }
 
 .pricing-hero-kicker {
@@ -1877,7 +1902,7 @@
 }
 
 .pricing-hero-range b {
-  font-size: 44px;
+  font-size: 38px;
   font-weight: 850;
   line-height: 1;
   letter-spacing: -0.02em;
@@ -1902,21 +1927,24 @@
 
 .pricing-hero-note {
   margin: 0;
+  max-width: 42ch;
   color: var(--theme-text-secondary, #475569);
-  font-size: 13px;
-  line-height: 1.6;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .pricing-feature-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
+  gap: 10px;
 }
 
 .pricing-feature {
-  display: grid;
-  gap: 10px;
-  padding: 16px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
   border: 1px solid var(--theme-module-border, #d8e9f3);
   border-radius: 16px;
   background: var(--theme-module-surface, #fff);
@@ -1924,7 +1952,8 @@
 
 .pricing-feature-name {
   display: grid;
-  gap: 3px;
+  gap: 2px;
+  min-width: 0;
 }
 
 .pricing-feature-name b {
@@ -1933,20 +1962,26 @@
 }
 
 .pricing-feature-name small {
+  overflow: hidden;
   color: var(--theme-text-muted, #64748b);
   font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
+/* 价格靠右：数字与单位同行，预冻结金额折到第二行右对齐 */
 .pricing-feature-points {
   display: flex;
-  align-items: baseline;
+  flex: none;
   flex-wrap: wrap;
-  gap: 2px 6px;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 0 6px;
 }
 
 .pricing-feature-points b {
   color: var(--theme-module-primary-strong, #0877d3);
-  font-size: 24px;
+  font-size: 20px;
   font-weight: 800;
   line-height: 1;
 }
@@ -1961,12 +1996,13 @@
   flex-basis: 100%;
   color: var(--theme-text-muted, #64748b);
   font-size: 11px;
+  text-align: right;
 }
 
 /* POD 按模块计价：服务端下发 pod_modules 时显示，缺省整块隐藏 */
 .pricing-pod {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .pricing-pod-head {
@@ -1990,21 +2026,23 @@
   display: grid;
   /* 服务端当前下发 4 个模块（全定制/半定制/裂变/复刻），固定两列排成 2×2，避免落单。 */
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 10px;
 }
 
+/* POD 卡片：模块名在左、单价在右，单行展示 */
 .pricing-pod-card {
-  display: grid;
-  gap: 10px;
-  padding: 16px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
   border: 1px solid var(--theme-module-border, #d8e9f3);
   border-radius: 16px;
   background: var(--theme-module-surface, #fff);
 }
 
 .pricing-pod-name {
-  display: grid;
-  gap: 3px;
+  min-width: 0;
 }
 
 .pricing-pod-name b {
@@ -2012,21 +2050,16 @@
   font-size: 14px;
 }
 
-.pricing-pod-name small {
-  color: var(--theme-text-muted, #64748b);
-  font-size: 11px;
-}
-
 .pricing-pod-points {
   display: flex;
+  flex: none;
   align-items: baseline;
-  flex-wrap: wrap;
-  gap: 2px 6px;
+  gap: 0 6px;
 }
 
 .pricing-pod-points b {
   color: var(--theme-module-primary-strong, #0877d3);
-  font-size: 24px;
+  font-size: 20px;
   font-weight: 800;
   line-height: 1;
 }
@@ -2037,19 +2070,13 @@
   color: var(--theme-text-secondary, #475569);
 }
 
-.pricing-pod-points small {
-  flex-basis: 100%;
-  color: var(--theme-text-muted, #64748b);
-  font-size: 11px;
-}
-
 .pricing-foot {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 8px 20px;
-  padding-top: 14px;
+  padding-top: 10px;
   border-top: 1px dashed var(--theme-module-border, #d8e9f3);
   color: var(--theme-text-muted, #64748b);
   font-size: 12px;
@@ -2057,7 +2084,11 @@
 
 @media (max-width: 720px) {
   .pricing-hero {
-    padding: 18px 18px;
+    padding: 12px 14px;
+  }
+
+  .pricing-hero-note {
+    max-width: none;
   }
 
   .pricing-hero-range b {

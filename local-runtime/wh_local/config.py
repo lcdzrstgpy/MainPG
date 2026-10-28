@@ -7,6 +7,7 @@ import os
 import secrets
 import shutil
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -181,12 +182,20 @@ def ensure_data_dir_ready(config: LocalRuntimeConfig, database_path: Path | None
     target_db = database_path or config.database_path
     _migrate_legacy_database(config, target_db)
     _apply_pending_migration(config, target_db)
-    probe = config.data_dir / ".write-test"
+    # 探针文件名带 pid + 时间戳：两个实例同时启动时不会抢同一个文件
+    # （固定名 .write-test 曾经出现过 A 写、B 删、然后 B 报拒绝访问的死法）。
+    probe = config.data_dir / f".write-test-{os.getpid()}-{int(time.time() * 1000)}"
     try:
         probe.write_text("ok", encoding="utf-8")
-        probe.unlink(missing_ok=True)
     except OSError as exc:
         raise RuntimeError(f"E002 数据目录不可写 {config.data_dir}: {exc}") from exc
+    # 删不掉不算失败：探针只为证明「目录能写」，删除失败多半是杀软/索引器
+    # 瞬时持有句柄（2026-10-23 实测：写成功、unlink 报 WinError 5，整个服务
+    # 因此起不来）。清理失败最多留个小文件，留给下次启动顺手清。
+    try:
+        probe.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def default_config(workspace: Path | None = None) -> LocalRuntimeConfig:

@@ -20,9 +20,11 @@ def test_app_registers_new_pod_router_and_service(tmp_path: Path) -> None:
     assert app.state.pod_customization_fission_analysis_runtime is not None
     for path in ("fission/batches", "fission/batches/unknown"):
         assert client.get(f"/api/pod-customization/{path}").status_code in (401, 403)
-    for path in ("fission/images", "fission/analyze", "fission/batches",
+    for path in ("fission/images", "fission/batches",
                  "fission/batches/unknown/styles/1/retry"):
         assert client.post(f"/api/pod-customization/{path}", json={}).status_code in (401, 403)
+    # 一键开始裂变后不再有独立的分析入口。
+    assert client.post("/api/pod-customization/fission/analyze", json={}).status_code == 404
 
 
 def test_replica_openapi_contract_drops_legacy_fields(tmp_path: Path) -> None:

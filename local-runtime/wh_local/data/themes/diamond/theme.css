@@ -2305,6 +2305,89 @@
   transform: scale(1.02);
 }
 
+/* ──────────────────────────────────────────────────────────────────
+   硬编码白底容器收口（2026-10-23）
+   下面这些组件在各自的模块样式里写死了 #fff 背景，却没有定义文字色，
+   深色主题下会继承 --theme-text-primary(#f8fafc) → 白底白字，看不见。
+   统一改回主题表面色，并把内部写死的深色文字一起拉到主题色，
+   避免反过来变成深底深字。
+   ────────────────────────────────────────────────────────────────── */
+[data-theme="diamond"] :is(
+  .ai-service-sessions,
+  .ai-mode-tabs,
+  .ai-message-body,
+  .ai-upload-preview,
+  .ai-composer,
+  .ai-creation-settings,
+  .ai-conversation-menu,
+  .settings-edit-dialog,
+  .combo-modal,
+  .combo-history-drawer-item,
+  .collection-settings-section,
+  .collection-settings-drawer-footer,
+  .shop-collection-create,
+  .shop-batch-list,
+  .shop-batch-detail,
+  .plugin-candidate-list article,
+  .composition-template-card,
+  .composition-prop-card,
+  .image-preset-card,
+  .image-layer-row,
+  .image-prompt-preview,
+  .precheck-crop-panel,
+  .verify-batch-panel,
+  .verify-batch-popover-head,
+  .psc-detail-panel,
+  .profit-single-select-menu,
+  .announcement-modal-panel,
+  .pod-agreement-panel,
+  .theme-store-card
+) {
+  background: var(--theme-module-surface);
+  border-color: var(--theme-module-border);
+  color: var(--theme-text-primary);
+}
+
+/* 收口容器内的输入类控件：白底 + 浅字同样不可读 */
+[data-theme="diamond"] :is(
+  .ai-composer,
+  .ai-creation-settings,
+  .settings-edit-dialog,
+  .combo-modal,
+  .collection-settings-section,
+  .shop-collection-create,
+  .image-layer-row,
+  .image-prompt-preview,
+  .precheck-crop-panel,
+  .psc-detail-panel,
+  .profit-single-select-menu
+) :is(input, textarea, select) {
+  background: var(--theme-module-surface-soft);
+  border-color: var(--theme-module-border);
+  color: var(--theme-text-primary);
+}
+
+/* 上面这些容器内部写死的深色文字，随底色一起转成主题文字色。
+   刻意不含 .is-warning 之类的语义色（警告橙 / 链接蓝在深底上仍可读）。 */
+[data-theme="diamond"] .ai-composer textarea,
+[data-theme="diamond"] .ai-conversation-menu button,
+[data-theme="diamond"] .settings-edit-dialog h2,
+[data-theme="diamond"] .combo-modal h3,
+[data-theme="diamond"] .combo-modal input,
+[data-theme="diamond"] .collection-settings-section-title strong,
+[data-theme="diamond"] .shop-collection-create label span,
+[data-theme="diamond"] .shop-collection-create input,
+[data-theme="diamond"] .shop-batch-list > button,
+[data-theme="diamond"] .plugin-candidate-list article > button,
+[data-theme="diamond"] .image-layer-row select,
+[data-theme="diamond"] .image-prompt-preview-head strong,
+[data-theme="diamond"] .image-prompt-preview-head button,
+[data-theme="diamond"] .image-prompt-preview textarea,
+[data-theme="diamond"] .verify-batch-popover-head strong,
+[data-theme="diamond"] .profit-single-select-menu button {
+  color: var(--theme-text-primary);
+}
+
 @keyframes diamond-star-field {
   from { background-position: 18px 12px, 86px 64px, 0 0, 18px 18px; }
   to { background-position: 155px 149px, -125px 275px, 36px 36px, 54px 54px; }

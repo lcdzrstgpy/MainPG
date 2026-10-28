@@ -258,6 +258,8 @@ export function toUserMessage(raw: string): string {
 
   // ---- POD 定制 ----
   if (/POD billing request was rejected/i.test(message)) return "计费服务拒绝了这次请求，请稍后重试；一直失败就把提示发给我们";
+  if (/POD billing service is unavailable/i.test(message)) return "计费服务暂时不可用，请稍后重试；一直失败就把提示发给我们";
+  if (/fission plan response failed its contract/i.test(message)) return "识图方案没有通过规则校验，已自动重试一次；再点一次开始裂变，若仍失败请把这条提示发给我们";
   if (/POD billing (permission|authentication) is required/i.test(message)) return "当前账号的 POD 计费权限有问题，请联系对接人";
   if (/POD billing service returned an invalid response/i.test(message)) return "计费服务返回异常，请稍后重试";
   if (/POD template upload is too large/i.test(message)) return "模板图片太大了，请换一张小一点的再传";
