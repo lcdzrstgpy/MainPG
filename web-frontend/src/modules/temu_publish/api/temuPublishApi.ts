@@ -75,9 +75,25 @@ export const temuPublishApi = {
       `${BASE}/warehouses${query({ site_ids: siteIds.join(",") || "100" })}`,
     ),
   /** refresh=true 跳过服务端 60 秒缓存（点「刷新」时用） */
-  draftLibrary: (limit = 60, refresh = false) =>
+  /**
+   * 草稿库（服务端分页）：聚合扫描很贵，后端把全量结果缓存 60 秒，
+   * 来源筛选 / 关键字 / 翻页都只是在缓存上切片，不会重扫任务和批次。
+   */
+  draftLibrary: (params: {
+    page?: number;
+    pageSize?: number;
+    source?: "" | "ai" | "pod";
+    q?: string;
+    refresh?: boolean;
+  } = {}) =>
     httpJson<TemuDraftLibrary>(
-      `${BASE}/draft-library${query({ limit, refresh: refresh ? "true" : "" })}`,
+      `${BASE}/draft-library${query({
+        page: params.page ?? 1,
+        page_size: params.pageSize ?? 30,
+        source: params.source ?? "",
+        q: params.q ?? "",
+        refresh: params.refresh ? "true" : "",
+      })}`,
     ),
   /** 查店铺里的商品：按 SKC 货号或标题（发布后核对 / 查重） */
   searchGoods: (params: { extCode?: string; title?: string; page?: number; pageSize?: number }) =>

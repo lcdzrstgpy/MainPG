@@ -2116,3 +2116,164 @@ def test_unit_property_with_value_passes(tmp_path: Path) -> None:
     assert item["propValue"] == "2.5"
     assert item["numberInputValue"] == "2.5"
     assert item["valueUnit"] == "mm"
+
+
+def _library_payload(count: int = 75) -> dict[str, Any]:
+    entries = []
+    for index in range(count):
+        entries.append(
+            {
+                "source": "ai" if index % 2 == 0 else "pod",
+                "id": f"x:{index}",
+                "title": f"Table cloth {index}" if index % 3 else f"Phone case {index}",
+                "sku": f"SKU-{index:03d}",
+                "category_name": "家居 > 桌布" if index % 3 == 0 else "",
+                "updated_at": f"2026-10-2{index % 9} 10:00",
+            }
+        )
+    return {
+        "entries": entries,
+        "warnings": ["示例告警"],
+        "counts": {"ai": sum(1 for e in entries if e["source"] == "ai"), "pod": count // 2, "total": count},
+    }
+
+
+def test_draft_library_paginates_30_per_page() -> None:
+    """默认 30 条/页，页码越界要收敛到最后一页，而不是返回空。"""
+    from wh_local.modules.temu_publish.library import paginate_draft_library
+
+    payload = _library_payload(75)
+
+    first = paginate_draft_library(payload, page=1, page_size=30)
+    assert len(first["entries"]) == 30
+    assert first["total"] == 75
+    assert first["pages"] == 3
+    assert first["page"] == 1
+
+    last = paginate_draft_library(payload, page=3, page_size=30)
+    assert len(last["entries"]) == 15
+
+    beyond = paginate_draft_library(payload, page=99, page_size=30)
+    assert beyond["page"] == 3, "越界要夹到最后一页"
+    assert len(beyond["entries"]) == 15
+
+
+def test_draft_library_filters_by_source_and_query() -> None:
+    from wh_local.modules.temu_publish.library import paginate_draft_library
+
+    payload = _library_payload(75)
+
+    ai_only = paginate_draft_library(payload, source="ai", page=1, page_size=30)
+    assert all(item["source"] == "ai" for item in ai_only["entries"])
+    assert ai_only["total"] == 38
+    # counts 是全量的，筛选按钮上的数字不能跟着变
+    assert ai_only["counts"]["total"] == 75
+
+    searched = paginate_draft_library(payload, query="table cloth", page=1, page_size=30)
+    assert searched["total"] > 0
+    assert all("table cloth" in item["title"].lower() for item in searched["entries"])
+
+    by_sku = paginate_draft_library(payload, query="sku-00", page=1, page_size=30)
+    assert all(item["sku"].lower().startswith("sku-00") for item in by_sku["entries"])
+
+    by_category = paginate_draft_library(payload, query="桌布", page=1, page_size=30)
+    assert all("桌布" in item["category_name"] for item in by_category["entries"])
+
+
+def test_draft_library_keeps_warnings_and_reports_page_meta() -> None:
+    from wh_local.modules.temu_publish.library import paginate_draft_library
+
+    result = paginate_draft_library(_library_payload(10), source="", query="", page=1, page_size=30)
+
+    assert result["warnings"] == ["示例告警"]
+    assert result["page_size"] == 30
+    assert result["source"] == "all"
+    assert result["query"] == ""
+
+
+class _PodLibraryStub:
+    """POD 批次桩：只实现草稿库用到的两个方法。"""
+
+    def __init__(self, batch: dict[str, Any]) -> None:
+        self._batch = batch
+        self.detail_calls = 0
+
+    def list_batches(self, actor: Any, limit: int = 6) -> dict[str, Any]:
+        return {"batches": [{"id": self._batch["id"], "status": "completed", "title": self._batch["title"]}]}
+
+    def get_batch(self, actor: Any, batch_id: str) -> dict[str, Any]:
+        self.detail_calls += 1
+        return self._batch
+
+
+def _pod_batch(listing: dict[str, Any] | None = None) -> dict[str, Any]:
+    """真实口径：listing_fields 在**批次顶层**，items 里没有这个键。"""
+    return {
+        "id": "b1",
+        "title": "天然橡胶正方形防水桌布",
+        "status": "completed",
+        "updated_at": "2026-10-20T06:56:20",
+        "listing_fields": listing
+        if listing is not None
+        else {
+            "category_name": "家居 > 桌布",
+            "skus": [{"name": "1", "declared_price": 150, "weight_g": 350}],
+            "spec_card": {
+                "display_unit": "in",
+                "cells": [
+                    ["SKU", "Length", "Width", "Height"],
+                    ["1", "18", "10", "8"],
+                ],
+            },
+        },
+        "style_titles": [{"style_index": 1, "title": "Waterproof tablecloth"}],
+        "items": [
+            {
+                "status": "completed",
+                "style_index": 1,
+                "variant_index": 1,
+                "public_url": "https://img.example.com/a.png",
+            }
+        ],
+    }
+
+
+def test_pod_entry_reads_sku_weight_dimensions_from_listing_fields() -> None:
+    """POD 生成结果没有 skus 字段：货号/重量/尺寸必须从 listing_fields 里取。
+
+    这里踩过的坑：只读 item["skus"]，于是草稿库永远显示「缺 货号/重量/尺寸」。
+    """
+    from wh_local.modules.temu_publish.library import _collect_pod_entries
+    from wh_local.session import Actor
+
+    actor = Actor(id="cust_a", username="a", role="admin")
+    entries = _collect_pod_entries(_PodLibraryStub(_pod_batch()), actor, 6)
+
+    assert len(entries) == 1
+    entry = entries[0]
+    # 产品货号走导出表第 4 列那套规则，不用第 10 列的 "1"（跨批次会撞号）
+    assert entry["sku"] == "POD-001"
+    assert entry["weight_g"] == 350
+    # 规格卡里的数字本来就是厘米，display_unit=in 只影响展示，不能换算
+    assert (entry["length_cm"], entry["width_cm"], entry["height_cm"]) == ("18", "10", "8")
+    assert entry["category_name"] == "家居 > 桌布"
+    assert entry["declared_price"] == 150
+
+
+def test_pod_entry_tolerates_missing_spec_card() -> None:
+    """没有规格卡时不要抛异常，尺寸留空即可（界面会显示 — 并标缺项）。"""
+    from wh_local.modules.temu_publish.library import _collect_pod_entries
+    from wh_local.session import Actor
+
+    actor = Actor(id="cust_a", username="a", role="admin")
+    batch = _pod_batch(
+        {
+            "category_name": "家居 > 桌布",
+            "skus": [{"name": "1", "declared_price": 150, "weight_g": 350}],
+        }
+    )
+    entry = _collect_pod_entries(_PodLibraryStub(batch), actor, 6)[0]
+
+    assert entry["sku"] == "POD-001"
+    assert entry["weight_g"] == 350
+    assert entry["length_cm"] is None

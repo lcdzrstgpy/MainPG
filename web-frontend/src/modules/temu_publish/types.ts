@@ -265,9 +265,9 @@ export type TemuDraftEntry = {
   spec_value_1?: string;
   spec_name_2?: string;
   spec_value_2?: string;
-  /** 申报价（单位：元）。没有显式填过时按导出规则推算，见 declared_price_estimated */
+  /** 申报价（单位：元）。没有显式填过时按导出规则测算，见 declared_price_estimated */
   declared_price: number | string | null;
-  /** true = 该价格是推算出来的（成本 × 4，下限 ¥150），不是人工填的 */
+  /** true = 该价格是按成本算出来的（成本 × 4，下限 ¥150），不是人工填的 */
   declared_price_estimated?: boolean;
   suggested_price: number | string | null;
   stock: number | string | null;
@@ -280,7 +280,15 @@ export type TemuDraftEntry = {
 export type TemuDraftLibrary = {
   entries: TemuDraftEntry[];
   warnings: string[];
+  /** 全量计数（不随筛选变化）：筛选按钮上的数字要稳定 */
   counts: { ai: number; pod: number; total: number };
+  /** 过滤后的总条数（= 总页数 × 每页条数的来源） */
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
+  source: "all" | "ai" | "pod";
+  query: string;
 };
 
 export const TEMU_PUBLISH_PREFILL_KEY = "temu_publish_prefill_v1";
