@@ -2207,11 +2207,25 @@ class _PodLibraryStub:
 
 
 def _pod_batch(listing: dict[str, Any] | None = None) -> dict[str, Any]:
+    """真实口径：listing_fields 在**批次顶层**，items 里没有这个键。"""
     return {
         "id": "b1",
         "title": "天然橡胶正方形防水桌布",
         "status": "completed",
         "updated_at": "2026-10-20T06:56:20",
+        "listing_fields": listing
+        if listing is not None
+        else {
+            "category_name": "家居 > 桌布",
+            "skus": [{"name": "1", "declared_price": 150, "weight_g": 350}],
+            "spec_card": {
+                "display_unit": "in",
+                "cells": [
+                    ["SKU", "Length", "Width", "Height"],
+                    ["1", "18", "10", "8"],
+                ],
+            },
+        },
         "style_titles": [{"style_index": 1, "title": "Waterproof tablecloth"}],
         "items": [
             {
@@ -2219,19 +2233,6 @@ def _pod_batch(listing: dict[str, Any] | None = None) -> dict[str, Any]:
                 "style_index": 1,
                 "variant_index": 1,
                 "public_url": "https://img.example.com/a.png",
-                "listing_fields": listing
-                if listing is not None
-                else {
-                    "category_name": "家居 > 桌布",
-                    "skus": [{"name": "1", "declared_price": 150, "weight_g": 350}],
-                    "spec_card": {
-                        "display_unit": "in",
-                        "cells": [
-                            ["SKU", "Length", "Width", "Height"],
-                            ["1", "18", "10", "8"],
-                        ],
-                    },
-                },
             }
         ],
     }

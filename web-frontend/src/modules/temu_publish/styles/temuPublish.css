@@ -2907,3 +2907,7 @@ textarea.temu-input {
   pointer-events: none;
   transition: opacity 0.12s ease;
 }
+/* 草稿自带的分类（POD 模板自由文本 / AI 采集路径）：中性色，别当错误 */
+.temu-draft-table .col-cat small.is-draft {
+  color: #6b8296;
+}

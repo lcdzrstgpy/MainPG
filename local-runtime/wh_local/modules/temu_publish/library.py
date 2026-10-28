@@ -309,7 +309,21 @@ def _collect_pod_entries(service: Any, actor: Actor, batch_limit: int) -> list[d
             if not images:
                 continue
             item = primary
-            listing = item.get("listing_fields") if isinstance(item.get("listing_fields"), dict) else {}
+            # ⚠️ listing_fields 挂在**批次**上（get_batch 顶层），items 里没有这个键。
+            # 以前读 item["listing_fields"]，所以 category_name / skus / spec_card 全是空 ——
+            # 草稿库的价格只能退到下限 ¥150，货号/重量/尺寸一律显示「未填」。
+            listing = batch.get("listing_fields") if isinstance(batch.get("listing_fields"), dict) else {}
+            if not listing and isinstance(item.get("listing_fields"), dict):
+                listing = item["listing_fields"]
+            # replica（爆款复刻）模式每个款有自己的一份 listing_fields，优先用款级的
+            for target in batch.get("replica_targets") or []:
+                if not isinstance(target, dict):
+                    continue
+                if int(target.get("style_index") or 0) != int(style_index):
+                    continue
+                if isinstance(target.get("listing_fields"), dict):
+                    listing = target["listing_fields"]
+                break
             # 申报价 / 重量 / 尺寸都在 listing_fields.skus（导出模板第 9、11-15 列取的就是这里）。
             # ⚠️ pod_customization 的生成结果（batch_items / style_grid_results）**没有 skus 字段**，
             # 以前只读 item["skus"]，于是草稿库里的货号/重量/尺寸永远是空的。

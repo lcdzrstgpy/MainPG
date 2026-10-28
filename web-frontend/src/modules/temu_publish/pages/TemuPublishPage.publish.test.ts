@@ -819,3 +819,18 @@ test("价格照常带入，但界面文案里不出现「推算」二字", () =>
     assert.doesNotMatch(source, /推算/, "界面文案里不应出现「推算」");
   }
 });
+
+test("草稿库区分「草稿自带分类」和「已选 Temu 类目」", () => {
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+
+  // 三态：发布页选过的 / 草稿自带（只是自由文本）/ 都没有
+  assert.match(library, /function categoryState\(/);
+  assert.match(library, /if \(memo\[entry\.id\]\?\.label\) return "picked";/);
+  assert.match(library, /if \(entry\.category_name\) return "draft";/);
+  assert.match(library, /草稿分类：\$\{label\}/);
+  // 草稿自带分类用中性色，不当成错误
+  assert.match(library, /state === "draft" \? "is-draft"/);
+
+  // 完整度只认发布页真选过的类目：自由文本不是类目 id，发布时照样得选
+  assert.match(library, /if \(!categoryMemo\[entry\.id\]\?\.label\) missing\.push\("类目"\);/);
+});

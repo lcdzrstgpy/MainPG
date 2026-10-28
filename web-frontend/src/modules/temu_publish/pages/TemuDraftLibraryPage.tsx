@@ -85,8 +85,9 @@ function draftMissingFields(
   categoryMemo: Record<string, DraftCategoryMemo>,
 ): string[] {
   const missing: string[] = [];
-  const category = categoryMemo[entry.id]?.label || entry.category_name || "";
-  if (!category) missing.push("类目");
+  // 只认「发布页真选过」的 Temu 类目：草稿自带的 category_name 是自由文本，
+  // 不是类目 id，发布时照样得选，所以不能算齐
+  if (!categoryMemo[entry.id]?.label) missing.push("类目");
   const price = Number(entry.declared_price);
   if (!Number.isFinite(price) || price <= 0) missing.push("申报价");
   if (!entry.sku) missing.push("货号");
@@ -259,6 +260,22 @@ function siteCategoryLabel(
   memo: Record<string, DraftCategoryMemo>,
 ): string {
   return memo[entry.id]?.label || entry.category_name || "发布页选类目";
+}
+
+/**
+ * 类目这一格的三态：
+ * - picked：发布页真选过 Temu 叶子类目，能直接发
+ * - draft：只有草稿自带的分类（POD 模板里手填的文字、AI 采集的路径），
+ *   它**不是** Temu 类目 ID，发布前还得去发布页选一次
+ * - none：两样都没有，必须选
+ */
+function categoryState(
+  entry: TemuDraftEntry,
+  memo: Record<string, DraftCategoryMemo>,
+): "picked" | "draft" | "none" {
+  if (memo[entry.id]?.label) return "picked";
+  if (entry.category_name) return "draft";
+  return "none";
 }
 
 /** POD 导出里申报价 / 重量 / 尺寸是模板占位值，界面上要提醒人工核对。 */
@@ -997,12 +1014,23 @@ export function TemuDraftLibraryPage({
                     </td>
                     <td className="col-cat">
                       {(() => {
+                        const state = categoryState(entry, categoryMemo);
                         const label = siteCategoryLabel(entry, categoryMemo);
-                        const chosen = Boolean(categoryMemo[entry.id]?.label);
                         return (
                           <>
-                            <small className={chosen ? "is-picked" : "is-missing"} title={label}>
-                              {label}
+                            <small
+                              className={
+                                state === "picked" ? "is-picked" : state === "draft" ? "is-draft" : "is-missing"
+                              }
+                              title={
+                                state === "picked"
+                                  ? label
+                                  : state === "draft"
+                                    ? `草稿自带的分类：${label}（不是 Temu 类目，发布时还要选一次）`
+                                    : "还没选 Temu 类目，发布前必须选到叶子类目"
+                              }
+                            >
+                              {state === "picked" ? label : state === "draft" ? `草稿分类：${label}` : label}
                             </small>
                             <em className="temu-draft-site">美国站</em>
                           </>
