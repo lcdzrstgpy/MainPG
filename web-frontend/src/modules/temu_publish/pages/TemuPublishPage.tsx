@@ -2150,7 +2150,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                     .join(" · ") || "标题/图片已填好，核对后补类目即可"}
                 </span>
                 {prefillInfo.needsReview?.length ? (
-                  <em>需人工核对：{prefillInfo.needsReview.join("、")}（POD 导出里是模板占位值）</em>
+                  <em>需人工核对：{prefillInfo.needsReview.join("、")}（草稿里的占位/推算值，提交前请自己确认）</em>
                 ) : null}
               </div>
               {onOpenDraftLibrary && (

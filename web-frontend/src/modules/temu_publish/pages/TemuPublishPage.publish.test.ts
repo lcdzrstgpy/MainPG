@@ -269,7 +269,8 @@ test("草稿金额是「元」，带入发布页要换成「分」", () => {
   // 草稿(POD 导出/AI 结果)用元，发布页用分：必须 ×100，否则 ¥150 会变成 1.5 元
   assert.match(library, /function yuanToCents\(value: number \| string \| null \| undefined\): string \{/);
   assert.match(library, /return String\(Math\.round\(number \* 100\)\);/);
-  assert.match(library, /supplierPrice: yuanToCents\(entry\.declared_price\)/);
+  // 手填的价才换算带入；推算价（declared_price_estimated）不带出去 —— 见下一条用例
+  assert.match(library, /supplierPrice: entry\.declared_price_estimated \? "" : yuanToCents\(entry\.declared_price\)/);
   assert.match(library, /suggestedPrice: yuanToCents\(entry\.suggested_price\)/);
   // 起价/库存等其它数值不参与换算
   assert.match(library, /weightKg: weightG \? \(Number\(weightG\) \/ 1000\)\.toFixed\(3\) : ""/);
@@ -800,4 +801,22 @@ test("草稿库按发布 payload 把信息摆出来（类目/价格分/库存/�
   // 尺寸重量摘要
   assert.match(library, /function specSummary\(/);
   assert.match(library, /return `\$\{dim\} cm · \$\{weightText\}`;/);
+});
+
+test("推算价不往发布页带（避免算出来的价被当成申报价提交）", () => {
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+  const batch = readFileSync(new URL("../data/batchPublish.ts", import.meta.url), "utf8");
+
+  // 带入发布页：推算价 → 空，让用户自己填
+  assert.match(library, /supplierPrice: entry\.declared_price_estimated \? "" : yuanToCents\(entry\.declared_price\),/);
+  assert.match(library, /if \(entry\.declared_price_estimated\) \{\n\s*items\.add\("申报价（当前是推算值，发布不会带出去，请自己填）"\);/);
+
+  // 完整度里也算「没填」，别让人以为可发
+  assert.match(library, /else if \(entry\.declared_price_estimated\) missing\.push\("申报价待确认"\);/);
+
+  // 界面标清楚是参考值
+  assert.match(library, /推算·未确认/);
+
+  // 批量发布：没有确认过的价直接报错，不要拿空价去算
+  assert.match(batch, /这条草稿还没有确认过的申报价（成本推算价不会自动带出去）/);
 });
