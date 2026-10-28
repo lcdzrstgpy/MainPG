@@ -667,3 +667,44 @@ test("批量发布的提示与商品 id 不能静默丢掉", () => {
 test("类目不需要尺码表时不带旧的尺码模板 id", () => {
   assert.match(page, /size_template_ids: sizeChart\.has === false \? \[\] : sizeTemplates,/);
 });
+
+test("没有销售属性的类目按单 SKU 发（桌布这类永远发不出去的老问题）", () => {
+  // saleValueIndex 为空 = 该类目没有 isSale 属性 → 不调 ensureSpec，规格发空数组
+  assert.match(page, /const singleSku = saleValueIndex\.size === 0;/);
+  assert.match(page, /main_specs: \[\],\n\s*skus: \[buildSku\(row, "变种第 1 行", \[\], skcImage\)\],/);
+  assert.match(page, /该类目没有销售属性（不能建颜色\/尺码变种）：只提交第 1 行/);
+
+  // 价格/库存/物流字段只能有一份映射（抽成 buildSku，两条路径共用）
+  assert.match(page, /const buildSku = \(\n\s*row: VariantRow,/);
+
+  // 变种面板要按这个开关收起变种生成区与颜色/尺码两列
+  assert.match(page, /singleSku=\{saleValueIndex\.size === 0\}/);
+  const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
+  assert.match(panel, /singleSku\?: boolean;/);
+  assert.match(panel, /\{!singleSku && \(/);
+  assert.match(panel, /temu-variant-row\$\{singleSku \? " is-single" : ""\}/);
+});
+
+test("批量发布同样支持单 SKU 类目（不再无脑 createSpec）", () => {
+  const batch = readFileSync(new URL("../data/batchPublish.ts", import.meta.url), "utf8");
+
+  assert.match(batch, /if \(saleIndex\.size === 0\) \{/);
+  assert.match(batch, /main_specs: \[\],\n\s*skus: \[skuFields\(singleCode, \[\]\)\],/);
+  assert.ok(
+    batch.indexOf("if (saleIndex.size === 0) {") < batch.indexOf("const colorSpec = await ensure("),
+    "单 SKU 分支必须排在规格解析之前",
+  );
+});
+
+test("属性输入支持「下拉 + 数值」并存（成分比例这类）", () => {
+  // 封面材质这类属性既有预设值又有单位 %：只渲染下拉就永远填不进比例
+  assert.match(page, /const attrField = \(item: TemuProperty, required: boolean\) => \{/);
+  assert.match(page, /\{item\.values\?\.length \? \(/);
+  assert.match(page, /\{unit \? \(\n\s*<input/);
+  assert.match(page, /item\.numberInputTitle \|\| "请输入数值"/);
+  assert.match(page, /\{requiredProps\.map\(\(item\) => attrField\(item, true\)\)\}/);
+  assert.match(page, /\{optionalProps\.map\(\(item\) => attrField\(item, false\)\)\}/);
+
+  // 带单位的必填属性光选下拉不算填好
+  assert.match(page, /if \(item\.valueUnit\?\.length && !pick\.text\.trim\(\)\) return true;/);
+});

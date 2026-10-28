@@ -2124,10 +2124,24 @@ textarea.temu-input {
   gap: 6px;
 }
 
+/* 无销售属性的类目（如桌布/亚麻布）：没有颜色/尺码变种，这两列不渲染 */
+.is-console .temu-variant-row.is-single {
+  grid-template-columns: 46px 104px 66px 44px 44px 44px 58px 70px 52px 24px;
+}
+
 .is-console .temu-variant-row.is-head {
   color: var(--theme-text-muted, #7b93a8);
   font-size: 11px;
   font-weight: 700;
+}
+
+/* 只读/禁用字段（店铺账号、经营站点）要一眼看出不是给人改的，
+   否则看着像能编辑的输入框，改完没反应 */
+.is-console .temu-input:disabled,
+.is-console .temu-input[readonly] {
+  background: var(--theme-module-soft, #f2f5f8);
+  color: var(--theme-text-muted, #7b93a8);
+  cursor: not-allowed;
 }
 
 .is-console .temu-variant-row .temu-input {

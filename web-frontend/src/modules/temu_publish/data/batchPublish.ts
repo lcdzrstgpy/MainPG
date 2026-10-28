@@ -168,51 +168,13 @@ export async function buildDraftForPublish(
     return resolved;
   };
 
-  const skcs: TemuGoodsDraft["skcs"] = [];
-  for (const color of colors) {
-    const colorSpec = await ensure(colorParent, productTemplate.colorParentName || "颜色", color);
-    const skus: TemuSkuDraft[] = [];
-    for (const size of sizes) {
-      const sizeSpec = await ensure(sizeParent, productTemplate.sizeParentName || "尺码", size);
-      skus.push({
-        ext_code:
-          [safeCode(prefill.sku) || "SKU", safeCode(color), safeCode(size)]
-            .filter(Boolean)
-            .join("-")
-            .slice(0, 120) || `SKU-${skus.length + 1}`,
-        currency_type: "CNY",
-        site_id: SITE_ID,
-        supplier_price: Math.round(price),
-        suggested_price: null,
-        stock: Number.isFinite(stock) ? Math.max(0, Math.round(stock)) : 0,
-        warehouse_id: warehouseId,
-        weight_mg: Math.round(weightG * 1000) < 1 ? 1 : Math.round(weightG * 1000),
-        length_mm: Math.max(1, Math.round(lengthCm * 10)),
-        width_mm: Math.max(1, Math.round(widthCm * 10)),
-        height_mm: Math.max(1, Math.round(heightCm * 10)),
-        thumb_url: carousel[0] ?? null,
-        is_sensitive: productTemplate.isSensitive,
-        specs: [colorSpec, sizeSpec],
-      });
-    }
-    skcs.push({
-      ext_code:
-        [safeCode(prefill.sku) || "SKC", safeCode(color)].filter(Boolean).join("-").slice(0, 120) ||
-        `SKC-${skcs.length + 1}`,
-      preview_image_urls: [carousel[0]],
-      color_image_url: carousel[0],
-      main_specs: [colorSpec],
-      skus,
-    });
-  }
-
   const properties = Object.entries(productTemplate.attrs).map(([pid, pick]) => ({
     pid: Number(pid),
     vid: pick.vid,
     prop_value: pick.text,
   }));
 
-  return {
+  const finishDraft = (): TemuGoodsDraft => ({
     category_ids: categoryIds,
     title: prefill.title,
     title_en: "",
@@ -234,5 +196,70 @@ export async function buildDraftForPublish(
     size_template_ids: splitList(productTemplate.sizeTemplates.replace(/[\s,，]+/g, ",")).map(Number).filter((n) => n > 0),
     personalization: productTemplate.isCustom,
     validate_catalog: true,
-  };
+  });
+
+  const skcs: TemuGoodsDraft["skcs"] = [];
+  /** 一个 SKU 的价格/库存/物流字段：单 SKU 与多规格两条路径共用一份。 */
+  const skuFields = (extCode: string, specs: TemuSkuDraft["specs"]): TemuSkuDraft => ({
+    ext_code: extCode,
+    currency_type: "CNY",
+    site_id: SITE_ID,
+    supplier_price: Math.round(price),
+    suggested_price: null,
+    stock: Number.isFinite(stock) ? Math.max(0, Math.round(stock)) : 0,
+    warehouse_id: warehouseId,
+    weight_mg: Math.round(weightG * 1000) < 1 ? 1 : Math.round(weightG * 1000),
+    length_mm: Math.max(1, Math.round(lengthCm * 10)),
+    width_mm: Math.max(1, Math.round(widthCm * 10)),
+    height_mm: Math.max(1, Math.round(heightCm * 10)),
+    thumb_url: carousel[0] ?? null,
+    is_sensitive: productTemplate.isSensitive,
+    specs,
+  });
+
+  // 类目没有销售属性（桌布/亚麻布这类）：Temu 不给颜色/尺码变种，只能建单 SKU 商品。
+  // 之前这里一律 createSpec 自建规格，这类类目批量发布必然全失败。
+  if (saleIndex.size === 0) {
+    const singleCode =
+      [safeCode(prefill.sku) || "SKU", safeCode(colors[0]), safeCode(sizes[0])]
+        .filter(Boolean)
+        .join("-")
+        .slice(0, 120) || "SKU-1";
+    skcs.push({
+      ext_code: (safeCode(prefill.sku) || "SKC").slice(0, 120),
+      preview_image_urls: [carousel[0]],
+      color_image_url: carousel[0],
+      main_specs: [],
+      skus: [skuFields(singleCode, [])],
+    });
+    return finishDraft();
+  }
+
+  for (const color of colors) {
+    const colorSpec = await ensure(colorParent, productTemplate.colorParentName || "颜色", color);
+    const skus: TemuSkuDraft[] = [];
+    for (const size of sizes) {
+      const sizeSpec = await ensure(sizeParent, productTemplate.sizeParentName || "尺码", size);
+      skus.push(
+        skuFields(
+          [safeCode(prefill.sku) || "SKU", safeCode(color), safeCode(size)]
+            .filter(Boolean)
+            .join("-")
+            .slice(0, 120) || `SKU-${skus.length + 1}`,
+          [colorSpec, sizeSpec],
+        ),
+      );
+    }
+    skcs.push({
+      ext_code:
+        [safeCode(prefill.sku) || "SKC", safeCode(color)].filter(Boolean).join("-").slice(0, 120) ||
+        `SKC-${skcs.length + 1}`,
+      preview_image_urls: [carousel[0]],
+      color_image_url: carousel[0],
+      main_specs: [colorSpec],
+      skus,
+    });
+  }
+
+  return finishDraft();
 }

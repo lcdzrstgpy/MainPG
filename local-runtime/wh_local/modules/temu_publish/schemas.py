@@ -96,7 +96,9 @@ class SkuInput(BaseModel):
     pieces_per_pack: int = Field(default=1, ge=1, le=1000)
     # 敏感货（带电/液体等）：落到 productSkuSensitiveAttrReq.isSensitive
     is_sensitive: bool = False
-    specs: list[SkuSpecInput] = Field(min_length=1)
+    # 空数组是合法的：类目没有销售属性时（如「桌布/亚麻布」）只能建单 SKU，
+    # SKU 级规格就是空的。是否「必须有规格」由 service 按类目属性表判断。
+    specs: list[SkuSpecInput] = Field(default_factory=list)
 
     @field_validator("warehouse_id", "ext_code")
     @classmethod
@@ -113,7 +115,8 @@ class SkcInput(BaseModel):
     ext_code: str = Field(min_length=1, max_length=120)
     preview_image_urls: list[str] = Field(min_length=1)
     color_image_url: str | None = None
-    main_specs: list[SkuSpecInput] = Field(min_length=1)
+    # 同 SkuInput.specs：没有销售属性的类目允许为空（单 SKU 商品）
+    main_specs: list[SkuSpecInput] = Field(default_factory=list)
     skus: list[SkuInput] = Field(min_length=1)
 
     @field_validator("ext_code")

@@ -2002,3 +2002,117 @@ def test_property_without_vid_and_text_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="既没有选值也没有填数值"):
         service.build_goods_payload(_draft(properties=[GoodsPropertyInput(pid=1, vid=0)]))
+
+
+class NoSaleCatalogClient:
+    """类目属性表里一个销售属性都没有的类目（如「桌布/亚麻布」）。"""
+
+    def attributes(self, cat_id: int, supported_type: int = 1) -> dict[str, Any]:
+        return {
+            "properties": [
+                {
+                    "pid": 112,
+                    "name": "形状",
+                    "refPid": 1,
+                    "templatePid": 569789,
+                    "required": True,
+                    "isSale": False,
+                    "values": [{"vid": 2463, "value": "矩形"}],
+                }
+            ]
+        }
+
+
+class SaleCatalogClient(StubCatalogClient):
+    """类目靠颜色/尺码区分变种（isSale=True）。"""
+
+    def attributes(self, cat_id: int, supported_type: int = 1) -> dict[str, Any]:
+        data = super().attributes(cat_id, supported_type)
+        data["properties"][0]["isSale"] = True
+        return data
+
+
+def _single_sku_draft() -> GoodsDraftInput:
+    """没有任何规格的单 SKU 草稿（类目只剩一个必填商品属性「形状」）。"""
+    draft = _draft(properties=[GoodsPropertyInput(pid=112, vid=2463, prop_name="形状", prop_value="矩形")])
+    skc = draft.skcs[0]
+    return draft.model_copy(
+        update={
+            "skcs": [
+                skc.model_copy(
+                    update={
+                        "main_specs": [],
+                        "skus": [skc.skus[0].model_copy(update={"specs": []})],
+                    }
+                )
+            ]
+        }
+    )
+
+
+def test_single_sku_payload_for_category_without_sale_properties(tmp_path: Path) -> None:
+    """没有销售属性的类目：规格声明与 SKU 规格都发空数组，仍保留全零主规格占位。"""
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=NoSaleCatalogClient())
+
+    payload = service.build_goods_payload(_single_sku_draft())["payload"]
+
+    assert payload["productSpecPropertyReqs"] == []
+    skc = payload["productSkcReqs"][0]
+    assert skc["mainProductSkuSpecReqs"] == [
+        {"specId": 0, "specName": "", "parentSpecId": 0, "parentSpecName": ""}
+    ]
+    assert skc["productSkuReqs"][0]["productSkuSpecReqs"] == []
+    # 单 SKU 也要把价格/库存/物流发全
+    sku = skc["productSkuReqs"][0]
+    assert sku["siteSupplierPrices"] == [{"siteId": 100, "supplierPrice": 1299}]
+    assert sku["productSkuStockQuantityReq"]["warehouseStockQuantityReqs"][0]["targetStockAvailable"] == 20
+
+
+def test_category_with_sale_properties_rejects_empty_specs(tmp_path: Path) -> None:
+    """有销售属性的类目不能按单 SKU 发：提前报错，别让 Temu 回一句难懂的。"""
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=SaleCatalogClient())
+
+    with pytest.raises(ValueError, match="至少要给每个 SKU 填一个规格值"):
+        service.build_goods_payload(_single_sku_draft())
+
+
+def test_multi_variant_still_requires_specs(tmp_path: Path) -> None:
+    """有销售属性的类目照旧要规格（不能因为放宽 schema 就漏掉）。"""
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=SaleCatalogClient())
+
+    payload = service.build_goods_payload(_draft())["payload"]
+
+    assert payload["productSpecPropertyReqs"]
+    assert payload["productSkcReqs"][0]["productSkuReqs"][0]["productSkuSpecReqs"]
+
+
+class UnitCatalogClient(StubCatalogClient):
+    """带单位的必填属性（厚度 mm / 成分比例 %）。"""
+
+    def attributes(self, cat_id: int, supported_type: int = 1) -> dict[str, Any]:
+        data = super().attributes(cat_id, supported_type)
+        data["properties"][0]["valueUnit"] = ["mm"]
+        data["properties"][0]["numberInputTitle"] = "厚度"
+        return data
+
+
+def test_unit_property_requires_numeric_value(tmp_path: Path) -> None:
+    """带单位的属性光选下拉不够，Temu 要的是数值：提前拦下并说清要填什么。"""
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=UnitCatalogClient())
+
+    with pytest.raises(ValueError, match="要填数值（单位 mm）"):
+        service.build_goods_payload(_draft(properties=[GoodsPropertyInput(pid=1, vid=10)]))
+
+
+def test_unit_property_with_value_passes(tmp_path: Path) -> None:
+    """填了数值就正常发，并把单位写进 valueUnit。"""
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=UnitCatalogClient())
+    draft = _draft(
+        properties=[GoodsPropertyInput(pid=1, vid=10, prop_value="2.5", number_input_value="2.5")]
+    )
+
+    item = service.build_goods_payload(draft)["payload"]["productPropertyReqs"][0]
+
+    assert item["propValue"] == "2.5"
+    assert item["numberInputValue"] == "2.5"
+    assert item["valueUnit"] == "mm"

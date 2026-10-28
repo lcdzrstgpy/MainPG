@@ -1092,6 +1092,16 @@ def _assemble_payload(
 
         all_skus.extend(sku_reqs)
 
+    # 类目属性表里明确有销售属性（isSale / 与父规格 id 对得上）时，规格不能空着 ——
+    # 那说明这个类目就是靠颜色/尺码区分变种的，空规格提交会被判「销售属性不能为空」。
+    # 反过来，属性表里一个销售属性都没有（「桌布/亚麻布」这类）就合法地走单 SKU：
+    # productSpecPropertyReqs 与 productSkuSpecReqs 都发空数组。
+    if sale_pids and not product_spec_reqs:
+        raise ValueError(
+            "该类目有销售属性（颜色/尺码），至少要给每个 SKU 填一个规格值；"
+            "只有属性表里没有销售属性的类目才能按单 SKU 发布。"
+        )
+
     # Temu 半托管：多颜色不是「多个 SKC」，而是 **一个 SKC + 多个 SKU**（颜色写在 SKU 规格里）。
     # 实测（2026-10-27 真机）：
     #   - 多个 SKC 各自填主规格 → 「主销售属性不合法」
@@ -1262,6 +1272,13 @@ def _validate_against_catalog(
             for value in values
             if isinstance(value, dict) and value.get("vid") is not None
         }
+        # 带单位的属性（成分比例 %、厚度 mm）Temu 要的是数值：只给了 vid 不给数值会被拒
+        units = catalog_item.get("valueUnit")
+        if isinstance(units, list) and units and str(units[0] or "").strip():
+            if not str(item.prop_value or item.number_input_value or "").strip():
+                raise ValueError(
+                    f"属性「{_property_label(catalog_item)}」要填数值（单位 {units[0]}）"
+                )
         # 数值型属性（如「长度 20」+ 单位 cm）本来就没有 vid，是靠 propValue /
         # numberInputValue 传文本的，vid=0 不能按「不在可选值内」拒掉，
         # 否则用户一填数值属性就永远发不出去。

@@ -1389,7 +1389,10 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         .filter((item) => item.required)
         .filter((item) => {
           const pick = attrPicks[item.pid];
-          return !pick || (pick.vid <= 0 && !pick.text.trim());
+          if (!pick || (pick.vid <= 0 && !pick.text.trim())) return true;
+          // 带单位的属性（成分比例 %、厚度 mm）Temu 要的是数值：只选下拉不够
+          if (item.valueUnit?.length && !pick.text.trim()) return true;
+          return false;
         })
         .map((item) => item.name || item.propertyName || `pid=${item.pid}`);
       if (missing.length) throw new Error(`缺少必填属性：${missing.join("、")}`);
@@ -1422,76 +1425,107 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     if (rows.length > 20) throw new Error("Temu 多变种上限 20 个");
     const colorParent = parentSpecs.find((item) => item.parentSpecId === colorParentId) ?? null;
     const sizeParent = parentSpecs.find((item) => item.parentSpecId === sizeParentId) ?? null;
-    // 按颜色分组：每个颜色一个 SKC（Temu 的 SKC = 颜色/款式，SKU = 颜色×尺码）
-    const grouped = new Map<string, VariantRow[]>();
-    rows.forEach((row, index) => {
-      const color = row.colorName.trim();
-      if (!color) throw new Error(`第 ${index + 1} 行变种缺少颜色`);
-      const list = grouped.get(color) ?? [];
-      list.push(row);
-      grouped.set(color, list);
-    });
+
+    /** 一行变种 → 一个 SKU 草稿。带不带规格由调用方给，字段映射只写这一份。 */
+    const buildSku = (
+      row: VariantRow,
+      at: string,
+      specs: TemuSkuDraft["specs"],
+      skcImage: string,
+    ): TemuSkuDraft => {
+      const price = Number(row.supplierPrice || 0);
+      const suggested = Number(row.suggestedPrice || 0);
+      if (suggested > 0 && price > 0 && suggested * 20 < price) {
+        warnings.push(
+          `${at}建议售价 ${row.suggestedPrice} 明显小于申报价 ${row.supplierPrice}：` +
+            "建议售价单位也是「分」，草稿带入的是店铺币种金额时请改成 ×100。",
+        );
+      }
+      if (!row.extCode.trim()) throw new Error(`${at}缺少 SKU 货号`);
+      if (!row.warehouseId) throw new Error(`${at}缺少发货仓库`);
+      return {
+        ext_code: row.extCode.trim(),
+        // 半托管供货价按人民币结算：传其它币种会被拒「请选择正确的币种：CNY」
+        currency_type: "CNY",
+        site_id: SITE_ID,
+        supplier_price: Math.round(parsePositive(row.supplierPrice, `${at}申报价格`)),
+        suggested_price: row.suggestedPrice.trim()
+          ? Math.round(parsePositive(row.suggestedPrice, `${at}建议售价`))
+          : null,
+        // 库存 0 是合法的（Temu 会建品但不可售），别拿价格的规则卡它
+        stock: parseStock(row.stock, `${at}库存`),
+        warehouse_id: row.warehouseId,
+        // 页面填 g，接口要毫克；尺寸填 cm，接口要毫米
+        weight_mg: Math.round(parsePositive(row.weightG, `${at}重量`) * 1000),
+        length_mm: Math.round(parsePositive(row.lengthCm, `${at}长`) * 10),
+        width_mm: Math.round(parsePositive(row.widthCm, `${at}宽`) * 10),
+        height_mm: Math.round(parsePositive(row.heightCm, `${at}高`) * 10),
+        thumb_url: row.thumbUrl.trim() || skcImage,
+        // 多件装（4 Pack / 12Pcs）：1 就是单件装，接口里不发这个字段
+        pieces_per_pack: Math.max(1, Math.round(Number(form.piecesPerPack || "1") || 1)),
+        is_sensitive: form.isSensitive,
+        specs,
+      };
+    };
 
     const skcs: TemuGoodsDraft["skcs"] = [];
-    let colorIndex = 0;
-    for (const [color, colorRows] of grouped) {
-      colorIndex += 1;
-      const colorSpec = await ensureSpec(colorParent, color);
-      // SKC 图：优先用该色第一行单独设的变种图，否则取轮播首图
-      const skcImage = colorRows.find((row) => row.thumbUrl.trim())?.thumbUrl.trim() || carousel[0];
-      const seenSizes = new Set<string>();
-      const skus: TemuSkuDraft[] = [];
-      for (const [index, row] of colorRows.entries()) {
-        const at = `颜色「${color}」第 ${index + 1} 行`;
-        if (!row.sizeName.trim()) throw new Error(`${at}缺少尺码`);
-        if (seenSizes.has(row.sizeName.trim())) throw new Error(`${at}尺码「${row.sizeName}」重复`);
-        seenSizes.add(row.sizeName.trim());
-        if (!row.extCode.trim()) throw new Error(`${at}缺少 SKU 货号`);
-        if (!row.warehouseId) throw new Error(`${at}缺少发货仓库`);
-        const sizeSpec = await ensureSpec(sizeParent, row.sizeName);
-        skus.push({
-          ext_code: row.extCode.trim(),
-          // 半托管供货价按人民币结算：传其它币种会被拒「请选择正确的币种：CNY」
-          currency_type: "CNY",
-          site_id: SITE_ID,
-          supplier_price: Math.round(parsePositive(row.supplierPrice, `${at}申报价格`)),
-          suggested_price: row.suggestedPrice.trim()
-            ? Math.round(parsePositive(row.suggestedPrice, `${at}建议售价`))
-            : null,
-          // 库存 0 是合法的（Temu 会建品但不可售），别拿价格的规则卡它
-          stock: parseStock(row.stock, `${at}库存`),
-          warehouse_id: row.warehouseId,
-          // 页面填 g，接口要毫克；尺寸填 cm，接口要毫米
-          weight_mg: Math.round(parsePositive(row.weightG, `${at}重量`) * 1000),
-          length_mm: Math.round(parsePositive(row.lengthCm, `${at}长`) * 10),
-          width_mm: Math.round(parsePositive(row.widthCm, `${at}宽`) * 10),
-          height_mm: Math.round(parsePositive(row.heightCm, `${at}高`) * 10),
-          thumb_url: row.thumbUrl.trim() || skcImage,
-          // 多件装（4 Pack / 12Pcs）：1 就是单件装，接口里不发这个字段
-          pieces_per_pack: Math.max(1, Math.round(Number(form.piecesPerPack || "1") || 1)),
-          is_sensitive: form.isSensitive,
-          specs: [colorSpec, sizeSpec],
-        });
+    /**
+     * 类目没有销售属性（如「桌布/亚麻布」这类只有商品属性的类目）：
+     * Temu 不给颜色/尺码变种，只能建单 SKU 商品 —— 规格声明与 SKU 规格都发空数组。
+     * 以前这里一律走 ensureSpec，这类类目直接抛「不是合法的规格值」，等于永远发不出去。
+     */
+    const singleSku = saleValueIndex.size === 0;
+    if (singleSku) {
+      if (rows.length > 1) {
+        warnings.push(
+          `该类目没有销售属性（不能建颜色/尺码变种）：只提交第 1 行，后面 ${rows.length - 1} 行已忽略。`,
+        );
       }
+      const row = rows[0];
+      const skcImage = row.thumbUrl.trim() || carousel[0];
       skcs.push({
-        // SKC 货号：产品货号 + 颜色，避免多色撞号
-        ext_code: [form.productCode.trim() || "SKC", color].filter(Boolean).join("-").slice(0, 120),
+        ext_code: (form.productCode.trim() || "SKC").slice(0, 120),
         preview_image_urls: [skcImage],
         color_image_url: skcImage,
-        main_specs: [colorSpec],
-        skus,
+        main_specs: [],
+        skus: [buildSku(row, "变种第 1 行", [], skcImage)],
       });
-      if (colorIndex > 20) throw new Error("Temu 一次最多 20 个颜色（SKC）");
-      for (const row of colorRows) {
-        const price = Number(row.supplierPrice || 0);
-        const suggested = Number(row.suggestedPrice || 0);
-        if (suggested > 0 && price > 0 && suggested * 20 < price) {
-          warnings.push(
-            `建议售价 ${row.suggestedPrice} 明显小于申报价 ${row.supplierPrice}：建议售价单位也是「分」，` +
-              "草稿带入的是店铺币种金额时请改成 ×100。",
-          );
-          break;
+    } else {
+      // 按颜色分组：每个颜色一个 SKC（Temu 的 SKC = 颜色/款式，SKU = 颜色×尺码）
+      const grouped = new Map<string, VariantRow[]>();
+      rows.forEach((row, index) => {
+        const color = row.colorName.trim();
+        if (!color) throw new Error(`第 ${index + 1} 行变种缺少颜色`);
+        const list = grouped.get(color) ?? [];
+        list.push(row);
+        grouped.set(color, list);
+      });
+
+      let colorIndex = 0;
+      for (const [color, colorRows] of grouped) {
+        colorIndex += 1;
+        const colorSpec = await ensureSpec(colorParent, color);
+        // SKC 图：优先用该色第一行单独设的变种图，否则取轮播首图
+        const skcImage = colorRows.find((row) => row.thumbUrl.trim())?.thumbUrl.trim() || carousel[0];
+        const seenSizes = new Set<string>();
+        const skus: TemuSkuDraft[] = [];
+        for (const [index, row] of colorRows.entries()) {
+          const at = `颜色「${color}」第 ${index + 1} 行`;
+          if (!row.sizeName.trim()) throw new Error(`${at}缺少尺码`);
+          if (seenSizes.has(row.sizeName.trim())) throw new Error(`${at}尺码「${row.sizeName}」重复`);
+          seenSizes.add(row.sizeName.trim());
+          const sizeSpec = await ensureSpec(sizeParent, row.sizeName);
+          skus.push(buildSku(row, at, [colorSpec, sizeSpec], skcImage));
         }
+        skcs.push({
+          // SKC 货号：产品货号 + 颜色，避免多色撞号
+          ext_code: [form.productCode.trim() || "SKC", color].filter(Boolean).join("-").slice(0, 120),
+          preview_image_urls: [skcImage],
+          color_image_url: skcImage,
+          main_specs: [colorSpec],
+          skus,
+        });
+        if (colorIndex > 20) throw new Error("Temu 一次最多 20 个颜色（SKC）");
       }
     }
 
@@ -1707,6 +1741,78 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
   const requiredProps = visibleProperties.filter((item) => item.required);
   const optionalProps = visibleProperties.filter((item) => !item.required);
+
+  /**
+   * 一个类目属性的输入控件。三种形态：
+   *  - 只有预设值 → 下拉
+   *  - 只有单位 → 数值输入框（厚度 mm 这类）
+   *  - 两者都有 → 下拉 + 数值输入框（「封面材质」选成分 + 填成分比例 %）
+   * 之前只渲染下拉，导致「下拉+比例」的属性永远填不进数值，Temu 回「请输入数值」。
+   */
+  const attrField = (item: TemuProperty, required: boolean) => {
+    const label = item.name || item.propertyName || `属性 ${item.pid}`;
+    const pick = attrPicks[item.pid] ?? EMPTY_ATTR;
+    const unit = item.valueUnit?.[0] ?? "";
+    const unitHint = unit
+      ? `${item.numberInputTitle || "请输入数值"}（${unit}）`
+      : item.numberInputTitle || "请输入";
+    return (
+      <label className="temu-field" key={item.pid}>
+        <span>
+          {label}
+          {required && <em className="temu-required">*</em>}
+        </span>
+        {item.values?.length ? (
+          <div className={unit ? "temu-spec-row" : undefined}>
+            <select
+              className="temu-input"
+              value={pick.vid || ""}
+              onChange={(event) =>
+                setAttrPicks((current) => ({
+                  ...current,
+                  [item.pid]: { ...pick, vid: Number(event.target.value) || 0 },
+                }))
+              }
+            >
+              <option value="">请选择</option>
+              {item.values.map((value) => (
+                <option key={value.vid} value={value.vid}>
+                  {value.value}
+                </option>
+              ))}
+            </select>
+            {unit ? (
+              <input
+                className="temu-input"
+                value={pick.text}
+                title={unitHint}
+                placeholder={unitHint}
+                onChange={(event) =>
+                  setAttrPicks((current) => ({
+                    ...current,
+                    [item.pid]: { ...pick, text: event.target.value },
+                  }))
+                }
+              />
+            ) : null}
+          </div>
+        ) : (
+          <input
+            className="temu-input"
+            value={pick.text}
+            title={unitHint}
+            placeholder={unitHint}
+            onChange={(event) =>
+              setAttrPicks((current) => ({
+                ...current,
+                [item.pid]: { ...pick, text: event.target.value },
+              }))
+            }
+          />
+        )}
+      </label>
+    );
+  };
   const filledRequired = requiredProps.filter((item) => {
     const pick = attrPicks[item.pid];
     return !!pick && (pick.vid > 0 || !!pick.text.trim());
@@ -2187,7 +2293,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   className="temu-input"
                   value={presetName}
                   onChange={(event) => setPresetName(event.target.value)}
-                  placeholder="把这套设置（分类+运费+仓库）存成预设"
+                  placeholder="预设名（只记分类+运费+仓库，随手切换用）"
+                  title="预设 = 分类 + 运费模板 + 发货仓库，最多存 6 个，用来快速换品"
                   onKeyDown={(event) => {
                     if (event.key === "Enter") savePreset();
                   }}
@@ -2203,9 +2310,15 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 className="temu-input"
                 value={templateName}
                 onChange={(event) => setTemplateName(event.target.value)}
-                placeholder="模板名（留空自动取名）"
+                placeholder="模板名（记分类+属性+物流+开关，批量发布用）"
+                title="产品模板比预设多记了已填属性、尺码表、定制/敏感开关，草稿库批量发布时要套它"
               />
-              <button type="button" className="temu-btn" onClick={saveProductTemplate}>
+              <button
+                type="button"
+                className="temu-btn"
+                onClick={saveProductTemplate}
+                disabled={!categoryPath.length}
+              >
                 存为产品模板
               </button>
               <select
@@ -2239,95 +2352,14 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 <>
                   {requiredProps.length > 0 && (
                     <div className="temu-attr-grid">
-                      {requiredProps.map((item) => {
-                        const label = item.name || item.propertyName || `属性 ${item.pid}`;
-                        const pick = attrPicks[item.pid] ?? EMPTY_ATTR;
-                        return (
-                          <label className="temu-field" key={item.pid}>
-                            <span>
-                              {label}
-                              <em className="temu-required">*</em>
-                            </span>
-                            {item.values?.length ? (
-                              <select
-                                className="temu-input"
-                                value={pick.vid || ""}
-                                onChange={(event) =>
-                                  setAttrPicks((current) => ({
-                                    ...current,
-                                    [item.pid]: { ...pick, vid: Number(event.target.value) || 0 },
-                                  }))
-                                }
-                              >
-                                <option value="">请选择</option>
-                                {item.values.map((value) => (
-                                  <option key={value.vid} value={value.vid}>
-                                    {value.value}
-                                  </option>
-                                ))}
-                              </select>
-                            ) : (
-                              <input
-                                className="temu-input"
-                                value={pick.text}
-                                onChange={(event) =>
-                                  setAttrPicks((current) => ({
-                                    ...current,
-                                    [item.pid]: { ...pick, text: event.target.value },
-                                  }))
-                                }
-                                placeholder={item.valueUnit?.length ? `请输入数值（${item.valueUnit[0]}）` : "请输入"}
-                              />
-                            )}
-                          </label>
-                        );
-                      })}
+                      {requiredProps.map((item) => attrField(item, true))}
                     </div>
                   )}
                   {optionalProps.length > 0 && (
                     <details className="temu-optional-attrs">
                       <summary>选填属性 {optionalProps.length} 项（不填也能发布）</summary>
                       <div className="temu-attr-grid">
-                        {optionalProps.map((item) => {
-                          const label = item.name || item.propertyName || `属性 ${item.pid}`;
-                          const pick = attrPicks[item.pid] ?? EMPTY_ATTR;
-                          return (
-                            <label className="temu-field" key={item.pid}>
-                              <span>{label}</span>
-                              {item.values?.length ? (
-                                <select
-                                  className="temu-input"
-                                  value={pick.vid || ""}
-                                  onChange={(event) =>
-                                    setAttrPicks((current) => ({
-                                      ...current,
-                                      [item.pid]: { ...pick, vid: Number(event.target.value) || 0 },
-                                    }))
-                                  }
-                                >
-                                  <option value="">请选择</option>
-                                  {item.values.map((value) => (
-                                    <option key={value.vid} value={value.vid}>
-                                      {value.value}
-                                    </option>
-                                  ))}
-                                </select>
-                              ) : (
-                                <input
-                                  className="temu-input"
-                                  value={pick.text}
-                                  onChange={(event) =>
-                                    setAttrPicks((current) => ({
-                                      ...current,
-                                      [item.pid]: { ...pick, text: event.target.value },
-                                    }))
-                                  }
-                                  placeholder="请输入"
-                                />
-                              )}
-                            </label>
-                          );
-                        })}
+                        {optionalProps.map((item) => attrField(item, false))}
                       </div>
                     </details>
                   )}
@@ -2538,6 +2570,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               onSizesTextChange={(value) => patch({ sizesText: value })}
               extCodePrefix={form.productCode}
               fallbackThumb={effectiveMaterial}
+              singleSku={saleValueIndex.size === 0}
             />
             {sizeChart.has !== false && (
               <div className="temu-field">
