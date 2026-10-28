@@ -1941,3 +1941,64 @@ def test_size_charts_route_exists(tmp_path: Path) -> None:
     response = TestClient(app).get("/api/temu-publish/categories/1634/size-charts")
     assert response.status_code != 404, response.text
     assert response.status_code in (200, 400, 503)
+
+
+def test_property_payload_omits_empty_optional_fields(tmp_path: Path) -> None:
+    """商品属性只发真实成功案例里有的 7 个字段。
+
+    numberInputValue / valueGroupId / valueGroupName 在 2026-09-27 与 2026-10-26
+    两次真实上架的 payload 里都不存在，空值一起发有可能被判「属性不合法」，
+    所以只在真有值时带上。
+    """
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=StubCatalogClient())
+
+    payload = service.build_goods_payload(_draft())["payload"]
+    item = payload["productPropertyReqs"][0]
+
+    assert item == {
+        "pid": 1,
+        "refPid": 12,
+        "templatePid": 569789,
+        "vid": 10,
+        "propName": "材质",
+        "propValue": "PU",
+        "valueUnit": "",
+    }
+
+
+def test_property_payload_keeps_number_value_when_present(tmp_path: Path) -> None:
+    """数值型属性（单位 cm 等）必须带上 numberInputValue，否则 Temu 让「请输入数值」。"""
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=StubCatalogClient())
+    draft = _draft(
+        properties=[
+            GoodsPropertyInput(
+                pid=1, vid=0, prop_name="长度", prop_value="20", number_input_value="20", value_unit="cm"
+            )
+        ]
+    )
+
+    item = service.build_goods_payload(draft)["payload"]["productPropertyReqs"][0]
+
+    assert item["numberInputValue"] == "20"
+    assert item["valueUnit"] == "cm"
+    assert "valueGroupId" not in item
+
+
+def test_number_property_without_vid_is_not_rejected(tmp_path: Path) -> None:
+    """数值型属性没有 vid（靠文本传值），不能按「vid 不在可选值内」拒掉。"""
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=StubCatalogClient())
+    draft = _draft(
+        properties=[GoodsPropertyInput(pid=1, vid=0, prop_name="材质", prop_value="20cm")]
+    )
+
+    payload = service.build_goods_payload(draft)["payload"]
+
+    assert payload["productPropertyReqs"][0]["propValue"] == "20cm"
+
+
+def test_property_without_vid_and_text_is_rejected(tmp_path: Path) -> None:
+    """既没选值也没填文本：提前拦下来，别让 Temu 回一句看不懂的话。"""
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=StubCatalogClient())
+
+    with pytest.raises(ValueError, match="既没有选值也没有填数值"):
+        service.build_goods_payload(_draft(properties=[GoodsPropertyInput(pid=1, vid=0)]))

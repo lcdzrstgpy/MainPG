@@ -1,9 +1,24 @@
 import { temuPublishApi } from "../api/temuPublishApi";
 import { httpBlob } from "../../../transport/http/client";
 import type { TemuGoodsDraft, TemuPublishPrefill, TemuSkuDraft } from "../types";
+import { matchPresetValue } from "../utils/specMatch";
 import type { ProductTemplate, VariantTemplate } from "./localStore";
 
 const SITE_ID = 100;
+/** 详情图统一缩放到的宽度（Temu 商详要求所有楼层等宽）。 */
+const DETAIL_WIDTH = 800;
+
+/**
+ * 货号清洗：和发布页变种表同一套规则。
+ *
+ * Temu 对 extCode 的字符集很窄，「手机壳（透明）+12」这种会直接被拒，
+ * 所以括号、加号、斜杠、空格一律去掉。
+ */
+function safeCode(value: string | undefined | null): string {
+  return String(value || "")
+    .replace(/[+()（）[\]{}<>《》「」,，.。;；:：/\\|*?"'`~!@#$%^&=\s]+/g, "")
+    .trim();
+}
 
 function splitList(text: string): string[] {
   return text
@@ -67,9 +82,19 @@ export async function buildDraftForPublish(
   if (!carouselSource.length) throw new Error("草稿没有轮播图");
   const carousel: string[] = [];
   for (const path of carouselSource.slice(0, 10)) carousel.push(await toTemuImage(path, leaf));
-  const detail: string[] = [];
+  // 详情图必须走 uploadDetailImage：后端会统一缩放到 DETAIL_WIDTH 并回传真实尺寸。
+  // 直接传原图链接（之前那样）会因为各图宽度不同被判
+  // 「Detail graphic article N floor image width is incorrect」（2000306）。
+  const detailImages: Array<{ url: string; width: number; height: number }> = [];
   for (const path of splitList((prefill.detailImages ?? []).join("\n"))) {
-    detail.push(await toTemuImage(path, leaf));
+    // 已经是图床地址也照样过一遍：要的是「统一宽度 + 真实尺寸」，而不是省一次调用
+    const image = isPublicHttp(path) ? path : await blobToDataUrl(await httpBlob(path));
+    const uploaded = await temuPublishApi.uploadDetailImage(image, DETAIL_WIDTH, leaf);
+    detailImages.push({
+      url: pickUrl(uploaded),
+      width: Number(uploaded.width) || DETAIL_WIDTH,
+      height: Number(uploaded.height) || 0,
+    });
   }
 
   const colors = splitList(variantTemplate?.colorsText ?? prefill.specValue1 ?? "Default");
@@ -89,28 +114,72 @@ export async function buildDraftForPublish(
   const colorParent = productTemplate.colorParentId ?? 0;
   const sizeParent = productTemplate.sizeParentId ?? 0;
 
-  const specs: Array<{ parentSpecId: number; parentName: string; name: string }> = [];
+  // 颜色/尺码必须优先用「类目预设值」：自建规格值提交时会被判
+  // 「不合法的规格属性 Color_Black」。预设值来自叶子类目的销售属性（isSale），
+  // 和发布页下拉用的是同一份数据。
+  const attrs = await temuPublishApi.attributes(leaf).catch(() => null);
+  const saleIndex = new Map<number, Array<{ name: string; specId: number }>>();
+  for (const prop of attrs?.properties ?? []) {
+    if (!prop.isSale) continue;
+    const parentId = Number(prop.parentSpecId ?? 0);
+    if (!parentId) continue;
+    const options = (prop.values ?? [])
+      .map((item) => ({ name: String(item.value ?? "").trim(), specId: Number(item.specId ?? 0) }))
+      .filter((item) => item.name && item.specId > 0);
+    if (options.length) saleIndex.set(parentId, options);
+  }
+
+  // 同一个规格值在一次批量里只解析一次：颜色×尺码是笛卡尔积，尺码会被反复用到，
+  // 没缓存的话「类目无预设值」分支会把同一条规格 create 好几遍。
+  const specCache = new Map<string, { parent_spec_id: number; parent_spec_name: string; spec_id: number; spec_name: string }>();
   const ensure = async (parentId: number, parentName: string, name: string) => {
+    const cacheKey = `${parentId}:${name}`;
+    const cached = specCache.get(cacheKey);
+    if (cached) return cached;
     if (!parentId) throw new Error(`产品模板缺少「${parentName}」父规格`);
+    const options = saleIndex.get(parentId) ?? [];
+    const matched = matchPresetValue(name, options.map((item) => item.name));
+    const preset = matched ? options.find((item) => item.name === matched) : undefined;
+    if (preset) {
+      const resolved = {
+        parent_spec_id: parentId,
+        parent_spec_name: parentName,
+        spec_id: preset.specId,
+        spec_name: preset.name,
+      };
+      specCache.set(cacheKey, resolved);
+      return resolved;
+    }
+    // 该类目压根没有预设值（或模板里填的是自定义值）时才自建，避免每条草稿都建一遍
+    if (options.length) {
+      throw new Error(
+        `「${name}」不是「${parentName}」的合法值：Temu 只认类目预设值`,
+      );
+    }
     const created = await temuPublishApi.createSpec(parentId, name);
     if (!created.specId) throw new Error(`规格「${name}」创建失败`);
-    return {
+    const resolved = {
       parent_spec_id: parentId,
       parent_spec_name: parentName,
       spec_id: created.specId,
       spec_name: name,
     };
+    specCache.set(cacheKey, resolved);
+    return resolved;
   };
 
   const skcs: TemuGoodsDraft["skcs"] = [];
   for (const color of colors) {
     const colorSpec = await ensure(colorParent, productTemplate.colorParentName || "颜色", color);
-    specs.push({ parentSpecId: colorParent, parentName: color, name: color });
     const skus: TemuSkuDraft[] = [];
     for (const size of sizes) {
       const sizeSpec = await ensure(sizeParent, productTemplate.sizeParentName || "尺码", size);
       skus.push({
-        ext_code: [prefill.sku || "SKU", color, size].filter(Boolean).join("-").slice(0, 120),
+        ext_code:
+          [safeCode(prefill.sku) || "SKU", safeCode(color), safeCode(size)]
+            .filter(Boolean)
+            .join("-")
+            .slice(0, 120) || `SKU-${skus.length + 1}`,
         currency_type: "CNY",
         site_id: SITE_ID,
         supplier_price: Math.round(price),
@@ -127,7 +196,9 @@ export async function buildDraftForPublish(
       });
     }
     skcs.push({
-      ext_code: [prefill.sku || "SKC", color].filter(Boolean).join("-").slice(0, 120),
+      ext_code:
+        [safeCode(prefill.sku) || "SKC", safeCode(color)].filter(Boolean).join("-").slice(0, 120) ||
+        `SKC-${skcs.length + 1}`,
       preview_image_urls: [carousel[0]],
       color_image_url: carousel[0],
       main_specs: [colorSpec],
@@ -147,7 +218,9 @@ export async function buildDraftForPublish(
     title_en: "",
     carousel_image_urls: carousel,
     outer_package_image_urls: [],
-    detail_image_urls: detail,
+    detail_image_urls: detailImages.map((item) => item.url),
+    // 带真实宽高的详情图（后端优先用这个）：宽度统一到 800，尺寸来自实际上传结果
+    detail_images: detailImages,
     material_image_url: carousel[0],
     freight_template_id: productTemplate.freightId,
     // 模板里存的 1 天是旧默认值，按 7 天兜底（与发布页一致）

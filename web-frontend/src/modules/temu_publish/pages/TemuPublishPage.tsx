@@ -379,6 +379,30 @@ function pickUploadedUrl(uploaded: TemuImageUploadResult): string {
   return (uploaded.imageUrl as string) || (uploaded.image_url as string) || (uploaded.url as string) || "";
 }
 
+/**
+ * 从 goods.add 的返回里挑出商品 id。
+ *
+ * 网关不同版本的字段名不一样（goodsId / productId / gid…），这里和后端台账
+ * `goods_id_from_result` 用同一套顺序 —— 发布成功后必须让人一眼看到 id，
+ * 否则只能去翻原始 JSON。
+ */
+function goodsIdOf(result: unknown): string {
+  if (!result || typeof result !== "object") return "";
+  const record = result as Record<string, unknown>;
+  for (const key of ["goodsId", "goods_id", "productId", "product_id", "gid", "id"]) {
+    const value = record[key];
+    if (value !== undefined && value !== null && value !== "") return String(value);
+  }
+  for (const key of ["result", "data"]) {
+    const nested = record[key];
+    if (nested && typeof nested === "object") {
+      const found = goodsIdOf(nested);
+      if (found) return found;
+    }
+  }
+  return "";
+}
+
 /** 分区标题：编号 + 名称（如「1 基本信息」）+ 右侧状态。 */
 function SectionHead({
   step,
@@ -464,6 +488,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     loading: false,
     has: null,
   });
+  // 店铺切换版本号：运费模板/发货仓库/尺码表都是「每家店各自一套」，
+  // 换店后必须重新取一遍，否则会拿着上一家店的 id 去发新店的商品。
+  const [shopEpoch, setShopEpoch] = useState(0);
 
   const [rows, setRows] = useState<VariantRow[]>(() => {
     const saved = loadJsonLocal<VariantRow[]>(`${ROWS_KEY}:${storageScope()}`, []);
@@ -859,7 +886,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     return () => {
       alive = false;
     };
-  }, [categoryPath]);
+  }, [categoryPath, shopEpoch]);
 
   /**
    * 标题 → 自动匹配类目。
@@ -1065,6 +1092,40 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       }
     });
 
+  /**
+   * 换店 / 新增店 / 停用店之后必须做的事：把「店铺级」数据全部重取一遍。
+   *
+   * 运费模板 ID、发货仓库 ID、尺码表、父规格（含本店自建的规格值）都是每家店
+   * 各一套。切店后如果还留着上一家店的 freightTemplateId / warehouseId，
+   * 提交时 Temu 只会回一句「仓库不存在」或者干脆建到别的仓去。
+   */
+  const reloadShopScopedData = async () => {
+    setShopEpoch((value) => value + 1);
+    const [freightsR, whR, specsR] = await Promise.all([
+      temuPublishApi.freightTemplates([SITE_ID]).catch(() => null),
+      temuPublishApi.warehouses([SITE_ID]).catch(() => null),
+      temuPublishApi.parentSpecs().catch(() => null),
+    ]);
+    const templates = freightsR?.freightTemplates ?? [];
+    const whList = whR?.warehouseDTOList ?? [];
+    setFreightTemplates(templates);
+    setWarehouseGroups(whList);
+    if (specsR) {
+      const specItems = specsR.parentSpecDTOS ?? [];
+      setParentSpecs(specItems);
+      setColorParentId(findParentSpec(specItems, "颜色", 0)?.parentSpecId ?? 0);
+      setSizeParentId(findParentSpec(specItems, "尺码", 1)?.parentSpecId ?? 0);
+    }
+    // 旧店的值一律丢掉，换成新店的默认值（没有就让用户自己选，别带着旧 id 发出去）
+    const nextFreight = templates[0]?.freightTemplateId ?? "";
+    const nextWarehouse = firstWarehouse(whList)?.warehouseId ?? "";
+    setForm((current) => ({ ...current, freightId: nextFreight, warehouseId: nextWarehouse }));
+    setRows((current) => current.map((row) => ({ ...row, warehouseId: nextWarehouse })));
+    if (!freightsR || !whR) {
+      setError("店铺已切换，但运费模板/发货仓库没取到：点「刷新」重试后再发布。");
+    }
+  };
+
   /** 新增店铺：后端先拿这条 token 打一次网关，成功才保存并设为当前。 */
   const saveCredentials = () =>
     run("settings", async () => {
@@ -1080,6 +1141,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         setTokenInfo(info);
         saveJsonLocal(`${SHOP_INFO_KEY}:${storageScope()}`, info);
       }
+      await reloadShopScopedData();
     });
 
   /** 换店：用已保存的那条 token，不用重新输入。 */
@@ -1092,6 +1154,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         setTokenInfo(info);
         saveJsonLocal(`${SHOP_INFO_KEY}:${storageScope()}`, info);
       }
+      await reloadShopScopedData();
     });
 
   const deleteShop = (shop: TemuShop) =>
@@ -1104,6 +1167,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         setTokenInfo(null);
         saveJsonLocal(`${SHOP_INFO_KEY}:${storageScope()}`, null);
       }
+      await reloadShopScopedData();
     });
 
   /** 解绑当前账号的店铺：只删自己那份凭证。 */
@@ -1117,6 +1181,12 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       setStatus(next);
       setTokenInfo(null);
       saveJsonLocal(`${SHOP_INFO_KEY}:${storageScope()}`, null);
+      // 店铺级数据一起清掉：下次绑别家店时不能还带着这家的运费模板/仓库 id
+      setFreightTemplates([]);
+      setWarehouseGroups([]);
+      setShopEpoch((value) => value + 1);
+      setForm((current) => ({ ...current, freightId: "", warehouseId: "" }));
+      setRows((current) => current.map((row) => ({ ...row, warehouseId: "" })));
     });
 
   const verify = () =>
@@ -1445,7 +1515,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       properties,
       skcs,
       site_ids: [SITE_ID],
-      size_template_ids: sizeTemplates,
+      // 类目明确不需要尺码表（sizeChart.has === false）时不要带旧的模板 id：
+      // 字段被藏起来了，用户看不到也改不掉，带上去只会让 Temu 回一句莫名其妙的话
+      size_template_ids: sizeChart.has === false ? [] : sizeTemplates,
       // 定制/POD 商品要显式打开，否则前台看不到定制入口
       personalization: form.isCustom,
       validate_catalog: true,
@@ -1585,6 +1657,12 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     setRows((current) => (current.length > 1 ? current.filter((row) => row.key !== key) : current));
 
   const leaf = categoryPath[categoryPath.length - 1];
+  // 发布成功后要显示的「商品 id」：网络中断反查到的用 matched_goods，正常提交用返回值
+  const publishedGoodsId = publishResult
+    ? publishResult.confirmed_by_lookup
+      ? String(publishResult.matched_goods?.product_id ?? "")
+      : goodsIdOf(publishResult.result)
+    : "";
   /**
    * 当前选择下「适用」的属性（Temu 属性联动）。
    *
@@ -2609,9 +2687,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   <span>
                     {publishResult.api_type} · {publishResult.summary.skc_count} 个 SKC /{" "}
                     {publishResult.summary.sku_count} 个变种
-                    {publishResult.confirmed_by_lookup && publishResult.matched_goods?.product_id
-                      ? ` · 商品 id ${String(publishResult.matched_goods.product_id)}`
-                      : ""}
+                    {publishedGoodsId ? ` · 商品 id ${publishedGoodsId}` : ""}
                   </span>
                 </div>
                 <pre className="temu-json">

@@ -607,3 +607,63 @@ test("尺码表模板字段按类目隐藏（宠物用品类目不需要）", ()
   assert.match(page, /\{sizeChart\.has !== false && \(/);
   assert.ok(page.includes("无关类目会自动隐藏"));
 });
+
+test("切店后必须重取店铺级数据（运费模板/仓库/尺码表）", () => {
+  // 这两样每家店各一套：带着上一家店的 id 去发新店，Temu 只会回「仓库不存在」
+  assert.match(page, /const reloadShopScopedData = async \(\) => \{/);
+  assert.match(page, /temuPublishApi\.freightTemplates\(\[SITE_ID\]\)/);
+  assert.match(page, /temuPublishApi\.warehouses\(\[SITE_ID\]\)/);
+  assert.match(page, /setRows\(\(current\) => current\.map\(\(row\) => \(\{ \.\.\.row, warehouseId: nextWarehouse \}\)\)\)/);
+
+  // 三个入口都必须调：新增店铺 = 直接启用，换店，删除店铺
+  const callSites = page.split("await reloadShopScopedData();").length - 1;
+  assert.equal(callSites, 3, "新增/切换/删除店铺都要重取店铺级数据");
+
+  // 尺码表按类目 + 店铺版本号重取
+  assert.match(page, /\}, \[categoryPath, shopEpoch\]\)/);
+
+  // 停用店铺要把旧 id 清掉，别留给下一家店
+  assert.match(page, /setFreightTemplates\(\[\]\)/);
+  assert.match(page, /freightId: "", warehouseId: ""/);
+});
+
+test("发布成功要直接显示商品 id（不用去翻原始 JSON）", () => {
+  assert.match(page, /function goodsIdOf\(result: unknown\): string \{/);
+  assert.match(page, /const publishedGoodsId = publishResult/);
+  assert.match(page, /\{publishedGoodsId \? ` · 商品 id \$\{publishedGoodsId\}` : ""\}/);
+});
+
+test("批量发布与单条发布同一套规矩（货号清洗/详情图尺寸/预设规格值）", () => {
+  const batch = readFileSync(new URL("../data/batchPublish.ts", import.meta.url), "utf8");
+
+  // 货号里的括号、加号、斜杠会让 Temu 直接拒，批量路径也要清洗
+  assert.match(batch, /function safeCode\(value: string \| undefined \| null\): string \{/);
+  assert.match(batch, /\[safeCode\(prefill\.sku\) \|\| "SKU", safeCode\(color\), safeCode\(size\)\]/);
+
+  // 详情图必须统一宽度并带真实尺寸，否则 2000306「详情图宽度不正确」
+  assert.match(batch, /const DETAIL_WIDTH = 800;/);
+  assert.match(batch, /temuPublishApi\.uploadDetailImage\(image, DETAIL_WIDTH, leaf\)/);
+  assert.match(batch, /detail_images: detailImages/);
+
+  // 颜色/尺码优先用类目预设值；只有类目压根没有预设值时才 createSpec
+  assert.match(batch, /const saleIndex = new Map<number, Array<\{ name: string; specId: number \}>>\(\)/);
+  assert.match(batch, /const matched = matchPresetValue\(name, options\.map\(\(item\) => item\.name\)\)/);
+  assert.ok(
+    batch.indexOf("if (preset) {") < batch.indexOf("temuPublishApi.createSpec(parentId, name)"),
+    "必须先试预设值，匹不到才自建规格",
+  );
+});
+
+test("批量发布的提示与商品 id 不能静默丢掉", () => {
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+
+  assert.match(library, /const result = await temuPublishApi\.publish\(draft\);/);
+  assert.match(library, /if \(result\.warnings\?\.length\) \{/);
+  assert.match(library, /const warnText = warned/);
+  assert.match(library, /const idText = publishedIds\.length/);
+  assert.match(library, /\$\{idText\}\$\{skippedText\}/);
+});
+
+test("类目不需要尺码表时不带旧的尺码模板 id", () => {
+  assert.match(page, /size_template_ids: sizeChart\.has === false \? \[\] : sizeTemplates,/);
+});

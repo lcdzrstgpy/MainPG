@@ -1262,6 +1262,15 @@ def _validate_against_catalog(
             for value in values
             if isinstance(value, dict) and value.get("vid") is not None
         }
+        # 数值型属性（如「长度 20」+ 单位 cm）本来就没有 vid，是靠 propValue /
+        # numberInputValue 传文本的，vid=0 不能按「不在可选值内」拒掉，
+        # 否则用户一填数值属性就永远发不出去。
+        if int(item.vid) <= 0:
+            if not str(item.prop_value or item.number_input_value or "").strip():
+                raise ValueError(
+                    f"属性「{_property_label(catalog_item)}」既没有选值也没有填数值"
+                )
+            continue
         if allowed and int(item.vid) not in allowed:
             raise ValueError(
                 f"属性「{_property_label(catalog_item)}」的 vid={item.vid} 不在可选值内"
@@ -1302,7 +1311,7 @@ def _property_payload(item: Any, catalog_item: dict[str, Any] | None = None) -> 
         units = catalog_item.get("valueUnit")
         if isinstance(units, list) and units:
             value_unit = str(units[0] or "")
-    return {
+    payload = {
         "pid": pid,
         "refPid": ref_pid,
         "templatePid": template_pid,
@@ -1310,10 +1319,17 @@ def _property_payload(item: Any, catalog_item: dict[str, Any] | None = None) -> 
         "propName": prop_name,
         "propValue": prop_value,
         "valueUnit": value_unit,
-        "numberInputValue": item.number_input_value,
-        "valueGroupId": int(item.value_group_id),
-        "valueGroupName": item.value_group_name,
     }
+    # 这 3 个字段真实成功案例（productId 9282408501 / 45629654961）里都没有，
+    # 只有「数值型属性」和「分组属性」才需要。空值一律不发：少发一个字段顶多是
+    # 走默认值，多发一个空字段却可能被 Temu 判「属性不合法」。
+    if str(item.number_input_value or "").strip():
+        payload["numberInputValue"] = str(item.number_input_value).strip()
+    if int(item.value_group_id):
+        payload["valueGroupId"] = int(item.value_group_id)
+    if str(item.value_group_name or "").strip():
+        payload["valueGroupName"] = str(item.value_group_name).strip()
+    return payload
 
 
 def _catalog_value_text(catalog_item: dict[str, Any], vid: int) -> str:

@@ -413,6 +413,11 @@ export function TemuDraftLibraryPage({
     let ok = 0;
     let fail = 0;
     let skipped = 0;
+    // 批量提交的 warnings（库存 0、标题含中文、详情图尺寸兜底…）不能静默丢掉：
+    // 一条一条弹窗太吵，这里汇总条数 + 头两条，完整内容让用户去发布页看。
+    let warned = 0;
+    const warnSamples: string[] = [];
+    const publishedIds: string[] = [];
     for (const [index, entry] of targets.entries()) {
       setBatchState({
         running: true,
@@ -420,7 +425,19 @@ export function TemuDraftLibraryPage({
       });
       try {
         const draft = await buildDraftForPublish(entryPrefill(entry, categoryMemo), template, variant);
-        await temuPublishApi.publish(draft);
+        const result = await temuPublishApi.publish(draft);
+        const goodsId = String(
+          (result.result as Record<string, unknown> | undefined)?.goodsId ??
+            (result.result as Record<string, unknown> | undefined)?.productId ??
+            "",
+        );
+        if (goodsId) publishedIds.push(goodsId);
+        if (result.warnings?.length) {
+          warned += 1;
+          for (const text of result.warnings) {
+            if (warnSamples.length < 2 && !warnSamples.includes(text)) warnSamples.push(text);
+          }
+        }
         // 批量发布用的是产品模板的类目：记到这条草稿上，列表里就能看到类目路径
         localStore.rememberDraftCategory(entry.id, template.categoryPath);
         ok += 1;
@@ -456,9 +473,15 @@ export function TemuDraftLibraryPage({
       }
     }
     const skippedText = skipped ? `，跳过 ${skipped} 条（24 小时内提交过）` : "";
+    const warnText = warned
+      ? `，${warned} 条有提示（${warnSamples.join("；")}${warned > 1 ? "…" : ""}）`
+      : "";
+    const idText = publishedIds.length
+      ? `，商品 id ${publishedIds.slice(0, 3).join("、")}${publishedIds.length > 3 ? "…" : ""}`
+      : "";
     setBatchState({
       running: false,
-      text: `完成：成功 ${ok} 条${skippedText}，失败 ${fail} 条（失败原因见发布页列表）`,
+      text: `完成：成功 ${ok} 条${idText}${skippedText}，失败 ${fail} 条${warnText}（失败原因见发布页列表）`,
     });
     // 成功的已经从草稿库发出去了：清空勾选，避免下一次误点又提交一遍
     if (ok > 0) setSelected(new Set());
