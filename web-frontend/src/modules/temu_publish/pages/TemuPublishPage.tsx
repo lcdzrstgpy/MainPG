@@ -99,10 +99,24 @@ type AttrPick = { vid: number; text: string };
 type ImageSlot = "carousel" | "outer" | "detail";
 
 const IMAGE_SLOTS: Array<{ key: ImageSlot; label: string; required: boolean; hint: string }> = [
-  { key: "carousel", label: "产品轮播图", required: true, hint: "相当于主图，最多 10 张，1:1、≥800×800、≤2M" },
-  { key: "outer", label: "外包装图片", required: false, hint: "1-6 张，建议含正拍/侧拍/俯拍" },
-  { key: "detail", label: "详情图", required: false, hint: "一个详情模块一张图" },
+  {
+    key: "carousel",
+    label: "产品轮播图",
+    required: true,
+    // 尺寸不用用户自己裁：上传时会居中裁成 1:1 再压成 800×800 JPEG
+    hint: "相当于主图，最多 10 张；上传自动裁成 1:1 / 800×800",
+  },
+  { key: "outer", label: "外包装图片", required: false, hint: "最多 6 张，建议含正拍/侧拍/俯拍" },
+  {
+    key: "detail",
+    label: "详情图",
+    required: false,
+    hint: "最多 30 张，一个详情模块一张图（宽度提交时统一）",
+  },
 ];
+
+/** 各槽位最多几张：上传时就挡，别等提交才被 Temu 拒。 */
+const IMAGE_LIMITS: Record<ImageSlot, number> = { carousel: 10, outer: 6, detail: 30 };
 
 
 /**
@@ -270,6 +284,16 @@ function parseStock(value: string, label: string): number {
   const number = Number(text);
   if (!text || !Number.isFinite(number) || number < 0) throw new Error(`${label}必须填 0 或正整数`);
   return Math.round(number);
+}
+
+/**
+ * Temu 的 extCode（货号）只接受字母、数字、下划线和连字符。
+ *
+ * 中文、括号、加号、空格一律会被拒（实测「货号不合法」），而界面提示写着
+ * 「不能含中文」却没拦 —— 这里统一清洗，清洗后为空再报错。
+ */
+function cleanExtCode(value: string): string {
+  return String(value || "").replace(/[^A-Za-z0-9_-]+/g, "").trim();
 }
 
 /** 取出现次数最多的宽度（详情图统一到这个宽度）；没有就 800。 */
@@ -1215,6 +1239,15 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       const files = Array.from(event.target.files ?? []);
       event.target.value = "";
       if (!files.length) return;
+      // 数量先挡：外包装图 Temu 只收 6 张，轮播 10 张。传上去再被拒会白等半天上传
+      const exist = splitLines(slotText(slot)).length;
+      const limit = IMAGE_LIMITS[slot];
+      if (exist + files.length > limit) {
+        throw new Error(
+          `${IMAGE_SLOTS.find((item) => item.key === slot)?.label ?? "图片"}最多 ${limit} 张：` +
+            `已有 ${exist} 张，这次选了 ${files.length} 张。`,
+        );
+      }
       const leaf = categoryPath[categoryPath.length - 1];
       // 并发 3 张：串行传 6 张要等 6~18 秒，并发后基本等于最慢那张
       const uploadedUrls = await mapWithConcurrency(files, 3, async (file) => {
@@ -1375,8 +1408,27 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     const carouselSource = splitLines(form.carousel);
     if (!carouselSource.length) throw new Error("至少需要一张产品轮播图");
     if (carouselSource.length > 10) throw new Error("轮播图最多 10 张");
+    // 草稿带入 / 手填 URL 也要守上限（上传路径已经挡过，这里兜底）
+    const outerSource = splitLines(form.outerImages);
+    if (outerSource.length > 6) throw new Error("外包装图片最多 6 张");
+    const detailSource = splitLines(form.detailImages);
+    if (detailSource.length > IMAGE_LIMITS.detail) {
+      throw new Error(`详情图最多 ${IMAGE_LIMITS.detail} 张`);
+    }
     if (!form.freightId) throw new Error("请选择运费模板");
     if (!form.warehouseId) throw new Error("请选择默认发货仓库");
+    // 产品货号会拼进 SKC / SKU 货号，含中文或符号 Temu 直接拒
+    const productCode = cleanExtCode(form.productCode);
+    if (form.productCode.trim() && !productCode) {
+      throw new Error("产品货号只能包含字母、数字、- 和 _（不能含中文或其它符号）");
+    }
+    if (form.productCode.trim() && productCode !== form.productCode.trim()) {
+      warnings.push(`产品货号里的中文/符号已自动去掉：${form.productCode.trim()} → ${productCode}`);
+    }
+    // 站外链接直接进 productWhExtAttrReq.outerGoodsUrl，http 会被 Temu 判不合法
+    if (form.externalUrl.trim() && !/^https:\/\//i.test(form.externalUrl.trim())) {
+      throw new Error("站外产品链接必须是 https:// 开头的地址");
+    }
 
     // 本地草稿图/外链图在生成前统一上传到 Temu 图床；已上传过的复用缓存。
     const carousel = await resolveImages(carouselSource, leaf.catId);
@@ -1441,10 +1493,14 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
             "建议售价单位也是「分」，草稿带入的是店铺币种金额时请改成 ×100。",
         );
       }
-      if (!row.extCode.trim()) throw new Error(`${at}缺少 SKU 货号`);
+      const skuCode = cleanExtCode(row.extCode);
+      if (!skuCode) throw new Error(`${at}缺少 SKU 货号（只能用字母/数字/-/_）`);
+      if (skuCode !== row.extCode.trim()) {
+        warnings.push(`${at}SKU 货号里的中文/符号已自动去掉：${row.extCode.trim()} → ${skuCode}`);
+      }
       if (!row.warehouseId) throw new Error(`${at}缺少发货仓库`);
       return {
-        ext_code: row.extCode.trim(),
+        ext_code: skuCode,
         // 半托管供货价按人民币结算：传其它币种会被拒「请选择正确的币种：CNY」
         currency_type: "CNY",
         site_id: SITE_ID,
@@ -1484,7 +1540,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       const row = rows[0];
       const skcImage = row.thumbUrl.trim() || carousel[0];
       skcs.push({
-        ext_code: (form.productCode.trim() || "SKC").slice(0, 120),
+        ext_code: (productCode || "SKC").slice(0, 120),
         preview_image_urls: [skcImage],
         color_image_url: skcImage,
         main_specs: [],
@@ -1519,7 +1575,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         }
         skcs.push({
           // SKC 货号：产品货号 + 颜色，避免多色撞号
-          ext_code: [form.productCode.trim() || "SKC", color].filter(Boolean).join("-").slice(0, 120),
+          ext_code: [productCode || "SKC", cleanExtCode(color)].filter(Boolean).join("-").slice(0, 120),
           preview_image_urls: [skcImage],
           color_image_url: skcImage,
           main_specs: [colorSpec],
@@ -1691,6 +1747,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     setRows((current) => (current.length > 1 ? current.filter((row) => row.key !== key) : current));
 
   const leaf = categoryPath[categoryPath.length - 1];
+  // 产品货号（ParentSKU）：Temu 只认字母/数字/-/_，渲染层也用它拼变种货号前缀
+  const productCode = cleanExtCode(form.productCode);
   // 发布成功后要显示的「商品 id」：网络中断反查到的用 matched_goods，正常提交用返回值
   const publishedGoodsId = publishResult
     ? publishResult.confirmed_by_lookup
@@ -2387,12 +2445,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 产品标题<em className="temu-required">*</em>
                 <em className="temu-muted">{form.title.length}/250，建议英文</em>
               </span>
-              <input
+              <textarea
                 className="temu-input"
                 value={form.title}
                 onChange={(event) => patch({ title: event.target.value })}
                 placeholder="英文标题，突出核心卖点"
                 maxLength={250}
+                rows={3}
               />
             </label>
             <div className="temu-two-col">
@@ -2405,17 +2464,27 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   className="temu-input"
                   value={form.titleEn}
                   onChange={(event) => patch({ titleEn: event.target.value })}
-                  placeholder="英文标题（≤250）"
+                  placeholder={
+                    /[\u4e00-\u9fff]/.test(form.title)
+                      ? "英文标题（≤250）"
+                      : "标题已是英文，这里可留空"
+                  }
                   maxLength={250}
                 />
               </label>
               <label className="temu-field">
                 <span>
                   产品货号
-                  <em className="temu-muted">ParentSKU，变种货号会用它拼前缀</em>
+                  <em className="temu-muted">
+                    {form.productCode.trim() && form.productCode.trim() !== productCode
+                      ? `含中文/符号，提交时会去掉 → ${productCode || "（空，请重填）"}`
+                      : "ParentSKU，变种货号会用它拼前缀"}
+                  </em>
                 </span>
                 <input
-                  className="temu-input"
+                  className={`temu-input${
+                    form.productCode.trim() && form.productCode.trim() !== productCode ? " is-bad" : ""
+                  }`}
                   value={form.productCode}
                   onChange={(event) => patch({ productCode: event.target.value })}
                   placeholder="如 WIG-BOB，不能含中文"
@@ -2426,9 +2495,15 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               <label className="temu-field">
                 <span>
                   产地
-                  <em className="temu-muted">国家代码，提交为 productOrigin</em>
+                  <em className="temu-muted">两位国家代码，提交为 productOrigin</em>
                 </span>
-                <input className="temu-input" value={form.origin} onChange={(event) => patch({ origin: event.target.value })} placeholder="CN" />
+                <input
+                  className="temu-input"
+                  value={form.origin}
+                  maxLength={2}
+                  placeholder="CN"
+                  onChange={(event) => patch({ origin: event.target.value.toUpperCase() })}
+                />
               </label>
               <label className="temu-field">
                 <span>站外产品链接</span>
@@ -2436,7 +2511,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   className="temu-input"
                   value={form.externalUrl}
                   onChange={(event) => patch({ externalUrl: event.target.value })}
-                  placeholder="可选，会提交为 outerGoodsUrl"
+                  placeholder="可选，https:// 开头的商品页地址，提交为 outerGoodsUrl"
                 />
               </label>
             </div>
@@ -2490,6 +2565,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 <TemuImageStrip
                   urls={splitLines(slotText(slot.key))}
                   onChange={(next) => setSlotText(slot.key, next.join("\n"))}
+                  firstBadge={slot.key === "carousel" ? "主图" : undefined}
                   emptyHint={
                     slot.key === "carousel"
                       ? "草稿带入的图会显示在这里；上传会自动裁成 1:1"
@@ -2568,7 +2644,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               defaultWarehouseId={form.warehouseId}
               sizesText={form.sizesText}
               onSizesTextChange={(value) => patch({ sizesText: value })}
-              extCodePrefix={form.productCode}
+              extCodePrefix={productCode}
               fallbackThumb={effectiveMaterial}
               singleSku={saleValueIndex.size === 0}
             />

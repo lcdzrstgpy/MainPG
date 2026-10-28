@@ -133,8 +133,11 @@ test("发布页：轮播/外包装/详情都能看到缩略图（草稿库带来
   assert.match(strip, /if \(isPublicHttp\(path\)\) \{/);
   assert.match(strip, /void httpBlob\(path\)/);
   assert.match(strip, /URL\.createObjectURL\(blob\)/);
-  // 第一张是 Temu 轮播主图（同时当素材图），要标出来且不能前移
-  assert.match(strip, /index === 0 && <em className="temu-img-main">主图<\/em>/);
+  // 第一张是 Temu 轮播主图（同时当素材图），要标出来且不能前移。
+  // 角标由调用方给：详情图/外包装图的第一张不是「主图」，不能一起标。
+  assert.match(strip, /index === 0 && firstBadge \? <em className="temu-img-main">\{firstBadge\}<\/em> : null/);
+  assert.match(strip, /firstBadge\?: string;/);
+  assert.match(page, /firstBadge=\{slot\.key === "carousel" \? "主图" : undefined\}/);
   assert.match(strip, /disabled=\{index === 0\}/);
   // 支持调序 / 删除
   assert.match(strip, /const swap = \(from: number, to: number\) =>/);
@@ -707,4 +710,44 @@ test("属性输入支持「下拉 + 数值」并存（成分比例这类）", ()
 
   // 带单位的必填属性光选下拉不算填好
   assert.match(page, /if \(item\.valueUnit\?\.length && !pick\.text\.trim\(\)\) return true;/);
+});
+
+test("图片张数上限在上传时就挡（外包装 6 张、轮播 10 张）", () => {
+  assert.match(page, /const IMAGE_LIMITS: Record<ImageSlot, number> = \{ carousel: 10, outer: 6, detail: 30 \};/);
+  assert.match(page, /const exist = splitLines\(slotText\(slot\)\)\.length;/);
+  assert.match(page, /if \(exist \+ files\.length > limit\) \{/);
+  // 提交前再兜一次（草稿带入 / 手填 URL 也要守上限）
+  assert.match(page, /if \(outerSource\.length > 6\) throw new Error\("外包装图片最多 6 张"\);/);
+  assert.match(page, /if \(detailSource\.length > IMAGE_LIMITS\.detail\) \{/);
+});
+
+test("货号只发字母数字（中文/符号会让 Temu 直接拒）", () => {
+  assert.match(page, /function cleanExtCode\(value: string\): string \{/);
+  assert.match(page, /\.replace\(\/\[\^A-Za-z0-9_-\]\+\/g, ""\)/);
+
+  // 产品货号含中文：清洗后为空就报错，否则提示被改成了什么
+  assert.match(page, /产品货号只能包含字母、数字、- 和 _（不能含中文或其它符号）/);
+  assert.match(page, /产品货号里的中文\/符号已自动去掉/);
+  assert.match(page, /含中文\/符号，提交时会去掉/);
+
+  // 每个出口都用清洗后的值：SKC 货号、变种前缀、SKU 货号
+  assert.match(page, /ext_code: \(productCode \|\| "SKC"\)\.slice\(0, 120\),/);
+  assert.match(page, /ext_code: \[productCode \|\| "SKC", cleanExtCode\(color\)\]/);
+  assert.match(page, /const skuCode = cleanExtCode\(row\.extCode\);/);
+  assert.match(page, /extCodePrefix=\{productCode\}/);
+});
+
+test("标题用多行文本域（150+ 字符单行看不见）", () => {
+  assert.match(page, /<textarea\n\s*className="temu-input"\n\s*value=\{form\.title\}/);
+  assert.match(page, /rows=\{3\}/);
+  // 标题本身已是英文时，英文标题字段提示可留空
+  assert.match(page, /标题已是英文，这里可留空/);
+});
+
+test("产地/站外链接按 Temu 的格式约束", () => {
+  // productOrigin.region1ShortName 要两位国家代码，填「中国」会被拒
+  assert.match(page, /maxLength=\{2\}/);
+  assert.match(page, /patch\(\{ origin: event\.target\.value\.toUpperCase\(\) \}\)/);
+  // outerGoodsUrl 只收 https
+  assert.ok(page.includes("站外产品链接必须是 https:// 开头的地址"), "站外链接要校验 https");
 });

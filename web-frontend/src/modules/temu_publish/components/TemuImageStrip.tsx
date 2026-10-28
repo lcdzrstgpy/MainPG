@@ -56,10 +56,13 @@ export function TemuImageStrip({
   urls,
   onChange,
   emptyHint,
+  firstBadge,
 }: {
   urls: string[];
   onChange: (next: string[]) => void;
   emptyHint?: string;
+  /** 第 1 张上的角标。只有轮播图的第一张是「主图」，详情图/外包装图没有这个概念。 */
+  firstBadge?: string;
 }) {
   const [preview, setPreview] = useState<string | null>(null);
   const list = urls.map((item) => item.trim()).filter(Boolean);
@@ -81,7 +84,7 @@ export function TemuImageStrip({
         {list.map((url, index) => (
           <span key={`${url}-${index}`} className="temu-img-item">
             <TemuThumb path={url} onOpen={setPreview} />
-            {index === 0 && <em className="temu-img-main">主图</em>}
+            {index === 0 && firstBadge ? <em className="temu-img-main">{firstBadge}</em> : null}
             <span className="temu-img-ops">
               <button
                 type="button"
