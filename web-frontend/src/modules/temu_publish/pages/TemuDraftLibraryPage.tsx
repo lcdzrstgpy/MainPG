@@ -237,8 +237,8 @@ function entryPrefill(
     // 草稿是「元」，发布页是「分」
     supplierPrice: yuanToCents(entry.declared_price),
     suggestedPrice: yuanToCents(entry.suggested_price),
-    // 库存 0 / 空：不带进去（半托管必须 ≥1，带 0 只会让人以为可以直接提交）
-    stock: Number(entry.stock) > 0 ? numericText(entry.stock) : "",
+    // 库存原样带入（0 也是有效值：先建品后补库存）；只有真的没值才留空
+    stock: numericText(entry.stock),
     specName1: entry.spec_name_1 || "",
     specValue1: entry.spec_value_1 || "",
     specName2: entry.spec_name_2 || "",
@@ -301,6 +301,10 @@ export function TemuDraftLibraryPage({
     running: false,
     text: "",
   });
+  // 批量发布弹窗：勾完直接发，模板在弹窗里选（不再要求先去菜单里「引用产品模板」）
+  const [batchOpen, setBatchOpen] = useState(false);
+  // 批量发布里被「24 小时内重复提交」挡下的条目：不算失败，单独列出来
+  const [batchSkipped, setBatchSkipped] = useState<string[]>([]);
   const [editing, setEditing] = useState<TemuDraftEntry | null>(null);
   const [editForm, setEditForm] = useState<TemuDraftEdit>({});
 
@@ -357,7 +361,7 @@ export function TemuDraftLibraryPage({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [preview, confirmEntry]);
+  }, [preview, confirmEntry, batchOpen]);
 
   const selectedIds = () => Array.from(selected);
 
@@ -366,6 +370,24 @@ export function TemuDraftLibraryPage({
     if (!confirmEntry) return;
     onUseDraft(entryPrefill(confirmEntry, categoryMemo));
     setConfirmEntry(null);
+  };
+
+  /** 勾选的草稿（批量发布/批量编辑都按这个口径，和表格里看到的行一致）。 */
+  const batchTargets = useMemo(
+    () => visibleEntries.filter((entry) => selected.has(entry.id)),
+    [visibleEntries, selected],
+  );
+
+  /** 打开「批量发布」弹窗：勾选的草稿按所选模板逐条提交。 */
+  const openBatchDialog = () => {
+    if (batchState.running) return;
+    if (!selected.size) {
+      setError("先勾选要发布的产品");
+      return;
+    }
+    // 只有一个模板就直接选中，省一次点击；有多个则让用户自己挑
+    if (!productTpl && productTemplates.length) setProductTpl(productTemplates[0].name);
+    setBatchOpen(true);
   };
 
   /** 批量发布：勾选的草稿逐条套「产品模板 + 变种模板」→ 组装 → 提交，失败的进失败列表。 */
@@ -382,24 +404,14 @@ export function TemuDraftLibraryPage({
       setError("先勾选要发布的产品");
       return;
     }
-    const confirmed = window.confirm(
-      [
-        `即将把这 ${targets.length} 件商品真正提交到店铺：`,
-        "",
-        ...targets.slice(0, 5).map((item) => `· ${item.title.slice(0, 40)}`),
-        targets.length > 5 ? `… 还有 ${targets.length - 5} 条` : "",
-        "",
-        "接口非幂等：重复提交会重复上架，中途失败只跳过该条不中断。确认开始？",
-      ]
-        .filter(Boolean)
-        .join("\n"),
-    );
-    if (!confirmed) return;
+    setBatchOpen(false);
 
     const variant = variantTemplates.find((item) => item.name === variantTpl) ?? null;
     setBatchState({ running: true, text: `0/${targets.length}` });
+    setBatchSkipped([]);
     let ok = 0;
     let fail = 0;
+    let skipped = 0;
     for (const [index, entry] of targets.entries()) {
       setBatchState({
         running: true,
@@ -412,6 +424,13 @@ export function TemuDraftLibraryPage({
         localStore.rememberDraftCategory(entry.id, template.categoryPath);
         ok += 1;
       } catch (cause) {
+        const reasonText = errorMessage(cause);
+        // 台账挡下的重复提交：这条大概率已经在店铺里了，不算失败、也不进失败历史
+        if (/重复提交/.test(reasonText)) {
+          skipped += 1;
+          setBatchSkipped((current) => [...current, entry.title || entry.sku || "（无标题）"]);
+          continue;
+        }
         fail += 1;
         const parsed = parsePublishError(cause);
         const price = entry.declared_price == null ? "" : String(entry.declared_price);
@@ -435,7 +454,11 @@ export function TemuDraftLibraryPage({
         });
       }
     }
-    setBatchState({ running: false, text: `完成：成功 ${ok} 条，失败 ${fail} 条（失败原因见发布页列表）` });
+    const skippedText = skipped ? `，跳过 ${skipped} 条（24 小时内提交过）` : "";
+    setBatchState({
+      running: false,
+      text: `完成：成功 ${ok} 条${skippedText}，失败 ${fail} 条（失败原因见发布页列表）`,
+    });
     // 成功的已经从草稿库发出去了：清空勾选，避免下一次误点又提交一遍
     if (ok > 0) setSelected(new Set());
     setProductTemplates(localStore.productTemplates());
@@ -507,8 +530,8 @@ export function TemuDraftLibraryPage({
       sku: entry.sku || "",
       declared_price: numericText(entry.declared_price),
       suggested_price: numericText(entry.suggested_price),
-      // 库存 0 / 空：不带进去（半托管必须 ≥1，带 0 只会让人以为可以直接提交）
-    stock: Number(entry.stock) > 0 ? numericText(entry.stock) : "",
+      // 库存原样带入（0 也是有效值：先建品后补库存）；只有真的没值才留空
+    stock: numericText(entry.stock),
       length_cm: numericText(entry.length_cm),
       width_cm: numericText(entry.width_cm),
       height_cm: numericText(entry.height_cm),
@@ -596,7 +619,12 @@ export function TemuDraftLibraryPage({
                 key={key}
                 type="button"
                 className={`temu-draft-tab${filter === key ? " is-active" : ""}`}
-                onClick={() => setFilter(key)}
+                onClick={() => {
+                  setFilter(key);
+                  // 切页签清空勾选：勾选数与「当前页可见待发布条数」必须一致，
+                  // 否则批量发布只发可见的那些，界面上的数字会误导人
+                  setSelected(new Set());
+                }}
               >
                 {label}
               </button>
@@ -633,7 +661,7 @@ export function TemuDraftLibraryPage({
             canBatchPublish={Boolean(productTpl)}
             batchRunning={batchState.running}
             templateCount={productTemplates.length + variantTemplates.length}
-            onBatchPublish={() => void runBatchPublish()}
+            onBatchPublish={openBatchDialog}
             onPickTemplate={setPicker}
           />
 
@@ -641,6 +669,14 @@ export function TemuDraftLibraryPage({
             <p className="temu-batch-progress">
               {batchState.running ? "批量发布中：" : ""}
               {batchState.text}
+            </p>
+          )}
+
+          {batchSkipped.length > 0 && (
+            <p className="temu-muted">
+              已跳过（24 小时内提交过，确认要重复上架请回发布页单条发）：
+              {batchSkipped.slice(0, 3).map((title) => title.slice(0, 20)).join("、")}
+              {batchSkipped.length > 3 ? ` 等 ${batchSkipped.length} 条` : ""}
             </p>
           )}
 
@@ -891,6 +927,121 @@ export function TemuDraftLibraryPage({
           </div>
         )}
       </section>
+
+
+      {batchOpen &&
+        createPortal(
+          <div className="temu-edit-backdrop" onClick={() => setBatchOpen(false)}>
+            <div
+              className="temu-edit-dialog temu-batch-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-label="批量发布"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <header className="temu-edit-head">
+                <div>
+                  <strong>批量发布</strong>
+                  <span>已选 {batchTargets.length} 条，将逐条提交到店铺</span>
+                </div>
+                <button type="button" onClick={() => setBatchOpen(false)} aria-label="关闭">
+                  ×
+                </button>
+              </header>
+
+              <div className="temu-batch-body">
+                <label className="temu-field">
+                  <span>
+                    产品模板<em className="temu-required">*</em>
+                    <em className="temu-muted">类目、必填属性、运费模板、仓库都取自这里</em>
+                  </span>
+                  <select
+                    className="temu-input"
+                    value={productTpl}
+                    onChange={(event) => setProductTpl(event.target.value)}
+                  >
+                    <option value="">
+                      {productTemplates.length ? "请选择产品模板" : "还没有产品模板"}
+                    </option>
+                    {productTemplates.map((item) => (
+                      <option key={item.name} value={item.name}>
+                        {item.name}（{item.categoryPath.map((step) => step.catName).join(" > ")}）
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="temu-field">
+                  <span>
+                    变种模板<em className="temu-muted">可选：按模板的颜色/尺码铺变种</em>
+                  </span>
+                  <select
+                    className="temu-input"
+                    value={variantTpl}
+                    onChange={(event) => setVariantTpl(event.target.value)}
+                  >
+                    <option value="">不套用变种模板</option>
+                    {variantTemplates.map((item) => (
+                      <option key={item.name} value={item.name}>
+                        {item.name}（{item.colorsText} × {item.sizesText}）
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <ul className="temu-batch-list">
+                  {batchTargets.slice(0, 6).map((entry) => (
+                    <li key={entry.id}>
+                      <span>{entry.title || entry.subtitle || "（没有标题）"}</span>
+                      <em>{entry.source === "ai" ? "AI" : "POD"}</em>
+                    </li>
+                  ))}
+                  {batchTargets.length > 6 ? <li className="is-more">… 还有 {batchTargets.length - 6} 条</li> : null}
+                </ul>
+
+                {productTemplates.length === 0 ? (
+                  <p className="temu-confirm-warn">
+                    还没有产品模板：批量发布要用模板里的类目和属性，先去「发布商品」页填好一款再点「存为产品模板」。
+                  </p>
+                ) : (
+                  <p className="temu-edit-note">
+                    接口非幂等：重复提交会在店铺里多出商品；中途某条失败只跳过它，原因进「发布失败历史」。
+                    同一条草稿 24 小时内重复提交会被拦一次，需要你二次确认。
+                  </p>
+                )}
+              </div>
+
+              <footer className="temu-edit-foot">
+                <button type="button" className="temu-btn" onClick={() => setBatchOpen(false)}>
+                  取消
+                </button>
+                <div>
+                  {productTemplates.length === 0 ? (
+                    <button
+                      type="button"
+                      className="temu-btn"
+                      onClick={() => {
+                        setBatchOpen(false);
+                        onCreateProduct?.();
+                      }}
+                    >
+                      去创建模板
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="temu-btn temu-btn-primary"
+                    disabled={!productTpl || batchState.running || !batchTargets.length}
+                    onClick={() => void runBatchPublish()}
+                  >
+                    {batchState.running ? "提交中…" : `开始发布（${batchTargets.length} 条）`}
+                  </button>
+                </div>
+              </footer>
+            </div>
+          </div>,
+          document.body,
+        )}
 
       {confirmEntry &&
         createPortal(

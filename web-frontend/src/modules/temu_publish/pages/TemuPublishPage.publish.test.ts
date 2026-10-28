@@ -174,12 +174,25 @@ test("我的店铺：凭证按登录账号隔离，可解绑且未绑定时给�
   assert.match(api, /clearSettings: \(\) => httpJson<TemuSettingsStatus>\(`\$\{BASE\}\/settings`, \{ method: "DELETE" \}\)/);
   // 页面：解绑前要确认，成功后清掉店铺信息
   assert.match(page, /const clearShop = \(\) =>/);
-  assert.match(page, /window\.confirm\(\s*"解绑会删掉当前账号保存的店铺凭证/);
+  // 解绑只清店铺授权：盈銮 client_id / token 是服务商那层的，换店还要用，不能一起删
+  assert.match(page, /window\.confirm\(\s*"解绑只清掉这个账号的店铺授权/);
   assert.match(page, /const next = await temuPublishApi\.clearSettings\(\);/);
   // 未绑定时顶部横幅 + 顶部 chip 都是「绑定我的店铺」，不能只是报“凭证未配置”
   assert.match(page, /还没绑定你的 Temu 店铺/);
   assert.match(page, /去绑定我的店铺/);
   assert.match(page, /"绑定我的店铺"/);
+  // 盈銮凭据只显示「已配置/未配置」，不把 client/token 掩码摆出来
+  assert.match(page, /const gatewayReady = !!\(status\?\.configured\.yl_client/);
+  assert.ok(!/status\?\.hints\.yl_client/.test(page), "不要再把 client/token 掩码展示出来");
+  assert.match(page, /盈銮凭据<\/span>/);
+  // 盈銮 client_id / token 是服务商预置的：界面上不给输入框，只给状态说明
+  assert.ok(!page.includes("setYlClient"), "不要再用输入框收 client_id");
+  assert.ok(!page.includes("setYlToken"), "不要再用输入框收 盈銮 token");
+  assert.match(page, /服务商凭据（盈銮 client_id \/ token）/);
+  assert.match(page, /已预置，不用管/);
+  // 打开面板时重读一次状态，避免显示成旧值
+  assert.match(page, /void temuPublishApi\s*\.settings\(\)/);
+  assert.match(page, /if \(!fresh\.configured\.ready\) return undefined;/);
   // 面板要说明账号归属，并展示当前店铺/token 有效期
   assert.match(page, /凭证按登录账号各存一份/);
   assert.match(page, /每个账号填自己的 token，互不影响/);
@@ -233,9 +246,9 @@ test("草稿库：批量发布要套模板、逐条提交、失败进记录", ()
   assert.match(bar, /onBatchPublish: \(\) => void;/);
   assert.match(bar, /onPickTemplate: \(kind: "product" \| "variant"\) => void;/);
 
-  // 批量发布：必须先确认（非幂等），逐条 try/catch，失败只跳过不中断
-  assert.match(library, /即将把这 \$\{targets\.length\} 件商品真正提交到店铺/);
-  assert.match(library, /接口非幂等：重复提交会重复上架/);
+  // 批量发布：弹窗里确认（非幂等），逐条 try/catch，失败只跳过不中断
+  assert.match(library, /setBatchOpen\(false\);\n\n    const variant/);
+  assert.match(library, /接口非幂等：重复提交会在店铺里多出商品/);
   assert.match(library, /for \(const \[index, entry\] of targets\.entries\(\)\)/);
   assert.match(library, /await temuPublishApi\.publish\(draft\);/);
   assert.match(library, /localStore\.addFailure\(\{/);
@@ -395,4 +408,51 @@ test("发布：同一条草稿 24 小时内重复提交要先二次确认", () =
   assert.match(page, /if \(\/重复提交\/\.test\(text\)\)/);
   assert.match(page, /await temuPublishApi\.publish\(draft, true\)/);
   assert.ok(page.includes("店铺里会多出一件相同商品"));
+});
+
+
+test("批量发布：勾完直接发，模板在弹窗里选（不用先去菜单引用模板）", () => {
+  const library = readFileSync(
+    new URL("./TemuDraftLibraryPage.tsx", import.meta.url),
+    "utf8",
+  );
+  const bar = readFileSync(new URL("../components/TemuDraftBulkBar.tsx", import.meta.url), "utf8");
+
+  // 菜单项不再因为「没选模板」被禁用，只是勾选/运行中会禁用
+  assert.ok(
+    !/item\.action === "publish" && \(batchRunning \|\| !selectedCount \|\| !canBatchPublish\)/.test(bar),
+  );
+  assert.match(bar, /onBatchPublish/);
+
+  // 点「批量发布」开弹窗，弹窗里选产品模板/变种模板再开始
+  assert.match(library, /onBatchPublish={openBatchDialog}/);
+  assert.match(library, /const \[batchOpen, setBatchOpen\] = useState\(false\);/);
+  assert.match(library, /aria-label="批量发布"/);
+  assert.match(library, /<span>\s*产品模板<em className="temu-required">\*<\/em>/);
+  assert.match(library, /不套用变种模板/);
+  assert.match(library, /开始发布（\$\{batchTargets\.length\} 条）/);
+  // 勾选的条数按「当前可见 + 已勾选」算，和表格看到的行一致
+  assert.match(library, /const batchTargets = useMemo\(/);
+  // 弹窗确认后不再二次 window.confirm
+  assert.ok(!/const confirmed = window\.confirm\(\s*\[\s*`即将把这/.test(library));
+
+  // 台账挡下的重复提交：不算失败，单独计数并回显，避免用户以为「发失败了」去重试
+  assert.match(library, /if \(\/重复提交\/\.test\(reasonText\)\) \{/);
+  assert.match(library, /跳过 \$\{skipped\} 条（24 小时内提交过）/);
+  assert.match(library, /setBatchSkipped\(\(current\) => \[\.\.\.current,/);
+});
+
+test("库存可以是 0：不拦不标红，但草稿带入要保留 0", () => {
+  const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+
+  // 价格/重量还是 >0；库存单独一个允许 0 的解析器
+  assert.match(page, /function parseStock\(value: string, label: string\): number \{/);
+  assert.match(page, /if \(!text \|\| !Number\.isFinite\(number\) \|\| number < 0\)/);
+  assert.match(page, /stock: parseStock\(row\.stock, `\$\{at\}库存`\)/);
+  // 变种表：只有空/负数标红，0 正常
+  assert.match(panel, /String\(row\.stock\)\.trim\(\) === "" \|\| Number\(row\.stock\) < 0/);
+  assert.match(panel, /placeholder="0 也可"/);
+  // 草稿带入：0 不再被当空丢掉
+  assert.match(library, /stock: numericText\(entry\.stock\),/);
 });

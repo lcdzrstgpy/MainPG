@@ -115,6 +115,12 @@
   margin-left: auto;
 }
 
+.ledger-total {
+  font-size: 12px;
+  color: var(--theme-text-secondary, #526a82);
+  white-space: nowrap;
+}
+
 .ledger-status-tabs {
   display: flex;
   align-items: center;

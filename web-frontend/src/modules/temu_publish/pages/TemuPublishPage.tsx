@@ -203,6 +203,17 @@ function parsePositive(value: string, label: string): number {
   return number;
 }
 
+/**
+ * 库存：允许 0（Temu 接受，建出来的商品是「售罄/不可售」状态，卖之前补库存即可）。
+ * 空值或负数才算错 —— 不能像价格那样要求 > 0。
+ */
+function parseStock(value: string, label: string): number {
+  const text = String(value ?? "").trim();
+  const number = Number(text);
+  if (!text || !Number.isFinite(number) || number < 0) throw new Error(`${label}必须填 0 或正整数`);
+  return Math.round(number);
+}
+
 /** 取出现次数最多的宽度（详情图统一到这个宽度）；没有就 800。 */
 function mostCommonWidth(widths: number[]): number {
   const valid = widths.filter((value) => Number.isFinite(value) && value > 0);
@@ -345,8 +356,6 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const publishingRef = useRef(false);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [ylClient, setYlClient] = useState("");
-  const [ylToken, setYlToken] = useState("");
   const [accessToken, setAccessToken] = useState("");
 
   const storageSuffix = useMemo(() => storageScope(), []);
@@ -904,13 +913,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const saveCredentials = () =>
     run("settings", async () => {
       const saved = await temuPublishApi.saveSettings({
-        yl_client: ylClient.trim() || undefined,
-        yl_token: ylToken.trim() || undefined,
         access_token: accessToken.trim() || undefined,
       });
       setStatus(saved);
-      setYlClient("");
-      setYlToken("");
       setAccessToken("");
       if (saved.configured.ready) {
         const info = await temuPublishApi.verifyToken(true);
@@ -923,7 +928,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const clearShop = () =>
     run("clear-shop", async () => {
       const confirmed = window.confirm(
-        "解绑会删掉当前账号保存的店铺凭证，之后要重新填 token 才能发布。确认解绑？",
+        "解绑只清掉这个账号的店铺授权（access_token），盈銮 client_id / token 会保留。\n之后重新授权拿新 token 填进来即可。确认解绑？",
       );
       if (!confirmed) return;
       const next = await temuPublishApi.clearSettings();
@@ -1198,7 +1203,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           suggested_price: row.suggestedPrice.trim()
             ? Math.round(parsePositive(row.suggestedPrice, `${at}建议售价`))
             : null,
-          stock: Math.round(parsePositive(row.stock, `${at}库存（半托管要可售，必须 ≥1）`)),
+          // 库存 0 是合法的（Temu 会建品但不可售），别拿价格的规则卡它
+          stock: parseStock(row.stock, `${at}库存`),
           warehouse_id: row.warehouseId,
           // 页面填 g，接口要毫克；尺寸填 cm，接口要毫米
           weight_mg: Math.round(parsePositive(row.weightG, `${at}重量`) * 1000),
@@ -1435,6 +1441,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const jumpTo = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
   const stepOf = (id: string) => flowSteps.find((item) => item.id === id) ?? flowSteps[0];
   const ready = !!status?.configured.ready;
+  // 盈銮（服务商）凭据：跟具体店铺无关，解绑店铺也保留
+  const gatewayReady = !!(status?.configured.yl_client && status?.configured.yl_token);
   // 发布中一律禁用：接口非幂等，重复点就重复上架
   const submitDisabled = busy !== "" || !ready || publishing;
   const firstPrice = rows[0]?.supplierPrice?.trim() ?? "";
@@ -1454,7 +1462,25 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           <button
             type="button"
             className={`temu-pill temu-store-chip ${ready ? "ok" : "warn"}`}
-            onClick={() => setSettingsOpen((value) => !value)}
+            onClick={() => {
+              const next = !settingsOpen;
+              setSettingsOpen(next);
+              // 面板可能是在别处改过凭证后打开的：重读一次，避免显示成「未配置」
+              if (next) {
+                void temuPublishApi
+                  .settings()
+                  .then((fresh) => {
+                    setStatus(fresh);
+                    // 凭证齐全就顺手校验一次，面板里才能显示店铺名/有效期（服务端有 10 分钟缓存）
+                    if (!fresh.configured.ready) return undefined;
+                    return temuPublishApi
+                      .verifyToken()
+                      .then(setTokenInfo)
+                      .catch(() => undefined);
+                  })
+                  .catch(() => undefined);
+              }
+            }}
             title="点击查看/修改凭证"
           >
             {ready ? tokenInfo?.mall_name || "我的店铺已连接" : "绑定我的店铺"}
@@ -1500,23 +1526,18 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               </strong>
             </div>
             <div>
-              <span>已保存</span>
-              <strong>
-                client {status?.hints.yl_client || "-"} / token {status?.hints.yl_token || "-"} / 店铺{" "}
-                {status?.hints.access_token || "-"}
-              </strong>
+              <span>盈銮凭据</span>
+              <strong>{gatewayReady ? "已配置（解绑店铺不影响）" : "未配置"}</strong>
+            </div>
+            <div>
+              <span>店铺授权</span>
+              <strong>{status?.configured.access_token ? "已配置" : "未绑定"}</strong>
             </div>
           </div>
-          <div className="temu-two-col">
-            <label className="temu-field">
-              <span>x-yl-client</span>
-              <input className="temu-input" value={ylClient} onChange={(event) => setYlClient(event.target.value)} placeholder="留空表示不修改" />
-            </label>
-            <label className="temu-field">
-              <span>x-yl-token</span>
-              <input className="temu-input" type="password" value={ylToken} onChange={(event) => setYlToken(event.target.value)} placeholder="留空表示不修改" />
-            </label>
-          </div>
+          {/* 盈銮 client_id / token 是服务商预置的，不让用户填也不展示 */}
+          <p className="temu-muted">
+            服务商凭据（盈銮 client_id / token）：{gatewayReady ? "已预置，不用管" : "还没预置，请联系服务商开通；这里不用填"}
+          </p>
           <label className="temu-field">
             <span>
               店铺 access_token
@@ -1542,13 +1563,14 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               className="temu-link danger"
               onClick={clearShop}
               disabled={busy !== "" || !status?.owner?.personal}
-              title="只删当前账号的凭证"
+              title="只清掉当前账号的店铺授权，盈銮 client_id/token 会保留"
             >
               解绑我的店铺
             </button>
           </div>
           <p className="temu-muted">
-            每个账号填自己的 token，互不影响；发布商品只会用你自己的店铺。token 过期后重新授权再填一次即可。
+            每个账号填自己的 token，互不影响；发布商品只会用你自己的店铺。
+            盈銮 client_id / token 是服务商那层的凭据，换店、解绑都不会清掉；店铺 token 过期后重新授权再填一次即可。
           </p>
         </section>
       )}

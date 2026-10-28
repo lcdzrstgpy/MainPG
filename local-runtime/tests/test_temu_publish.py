@@ -1333,3 +1333,74 @@ def test_duplicate_detection_is_per_account_and_fingerprint(tmp_path: Path) -> N
     cheaper = _draft().model_copy(deep=True)
     cheaper.skcs[0].skus[0].supplier_price = 999
     assert draft_fingerprint(cheaper) != draft_fingerprint(_draft())
+
+
+def test_gateway_auth_errors_carry_actionable_hint() -> None:
+    """CLIENT_TOKEN_INVALID 要说清是「盈銮网关凭据」而不是店铺 token，并给排查方向。"""
+    from wh_local.modules.temu_publish.router import _gateway_message
+
+    text = _gateway_message("CLIENT_TOKEN_INVALID", "client_id or token is invalid")
+    assert text.startswith("Temu 拒绝了这次提交：client_id or token is invalid")
+    assert "CLIENT_TOKEN_INVALID" in text
+    assert "盈銮网关" in text and "access_token" in text
+
+    net = _gateway_message("NETWORK_ERROR", "网关网络请求失败：SSLEOFError")
+    assert "系统代理" in net and "WH_TEMU_PROXY" in net
+
+    # 没登记的错误码不加多余的话，保持上游原话
+    plain = _gateway_message("SOME_NEW_CODE", "boom")
+    assert plain == "Temu 拒绝了这次提交：boom（错误码 SOME_NEW_CODE）"
+
+
+def test_unbinding_keeps_gateway_credentials(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """解绑只清店铺授权：盈銮 client_id / token 是服务商那层的，换店还要用，必须留着。"""
+    _clear_temu_env(monkeypatch)
+    init_db(tmp_path / "runtime.sqlite3")
+    service = TemuPublishService(
+        tmp_path / "runtime.sqlite3", client=StubCatalogClient(), owner_id="cust_alice"
+    )
+    service.save_settings(
+        TemuSettingsUpdate(yl_client="yl-client", yl_token="yl-token", access_token="shop-a"),
+        "cust_alice",
+    )
+    assert service.settings_status()["configured"]["ready"] is True
+
+    status = service.clear_settings("cust_alice")["configured"]
+    assert status["access_token"] is False
+    assert status["yl_client"] is True and status["yl_token"] is True
+    assert status["ready"] is False
+
+    # 重新授权只补店铺 token 就够了，不用再让服务商发一遍 client/token
+    service.save_settings(TemuSettingsUpdate(access_token="shop-b"), "cust_alice")
+    assert service.settings_status()["configured"]["ready"] is True
+
+
+def test_zero_stock_is_allowed_but_warned(tmp_path: Path) -> None:
+    """库存 0 是合法输入（先建品后补库存），不能拦；但要在 warnings 里提醒不可售。"""
+    from wh_local.modules.temu_publish.schemas import SkcInput, SkuInput, SkuSpecInput
+
+    spec = SkuSpecInput(parent_spec_id=1001, parent_spec_name="颜色", spec_id=2001, spec_name="Red")
+
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=StubCatalogClient())
+    built = service.build_goods_payload(_draft().model_copy(deep=True, update={"skcs": [
+        SkcInput(
+            ext_code="SKC-1",
+            preview_image_urls=["https://img.example.com/skc.jpg"],
+            main_specs=[spec],
+            skus=[SkuInput(
+                ext_code="SKU-1",
+                supplier_price=1299,
+                stock=0,
+                warehouse_id="WH-07346074419333874",
+                weight_mg=200000,
+                length_mm=200,
+                width_mm=150,
+                height_mm=30,
+                specs=[spec],
+            )],
+        )
+    ]}))
+
+    sku = built["payload"]["productSkcReqs"][0]["productSkuReqs"][0]
+    assert sku["productSkuStockQuantityReq"]["warehouseStockQuantityReqs"][0]["targetStockAvailable"] == 0
+    assert any("库存为 0" in item for item in built["warnings"])

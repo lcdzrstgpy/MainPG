@@ -53,6 +53,7 @@ REQUEST_TIMEOUT_SECONDS = 120.0
 # 请求体安全上限（JSON 序列化字节数）。
 MAX_PAYLOAD_BYTES = 10 * 1024 * 1024
 
+
 def _json_size_estimate(value: Any) -> int:
     """估算 JSON 序列化后的字节数，不真正 dumps。
 

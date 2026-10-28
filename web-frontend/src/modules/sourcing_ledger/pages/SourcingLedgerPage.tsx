@@ -567,6 +567,7 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
         </nav>
 
         <div className="ledger-toolbar-actions">
+          <span className="ledger-total">共 {total} 个商品 · 利润从高到低</span>
           <div className="ledger-batch">
             <span className="ledger-batch-title">批量重量（kg）</span>
             <input
@@ -813,7 +814,7 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
       {total > 0 && (
         <div className="ledger-pager">
           <span className="ledger-pager-info">
-            第 {page} / {totalPages} 页 · 共 {total} 个商品 · 最近更新优先
+            第 {page} / {totalPages} 页 · 共 {total} 个商品 · 利润从高到低
           </span>
           <div className="ledger-pager-actions">
             <select

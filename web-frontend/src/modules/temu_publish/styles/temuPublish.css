@@ -2618,3 +2618,57 @@ textarea.temu-input {
   border-color: var(--theme-module-primary-strong, #087bf5);
   background: #f2f9ff;
 }
+
+/* ---------- 批量发布弹窗 ---------- */
+
+.temu-batch-dialog {
+  width: min(560px, 94vw);
+}
+
+.temu-batch-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 2px 0;
+}
+
+.temu-batch-list {
+  margin: 0;
+  padding: 8px 10px;
+  list-style: none;
+  border-radius: var(--radius-sm, 6px);
+  background: var(--theme-module-soft, rgba(0, 0, 0, 0.03));
+  max-height: 168px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.8;
+}
+
+.temu-batch-list li {
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.temu-batch-list li span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.temu-batch-list li em {
+  flex: none;
+  color: var(--theme-text-muted, #7b93a8);
+  font-style: normal;
+}
+
+.temu-batch-list li.is-more {
+  justify-content: flex-start;
+  color: var(--theme-text-muted, #7b93a8);
+}
+
+/* 弹窗里的字段提示不要跟着标签变粗 */
+.temu-batch-dialog .temu-field > span > em {
+  font-style: normal;
+  font-weight: 400;
+}

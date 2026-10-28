@@ -138,18 +138,22 @@ class TemuCredentialStore:
                     )
 
     def clear(self, actor_id: str) -> None:
-        """解绑本人的店铺：删掉这个账号作用域下的全部凭证。
+        """解绑本人的店铺：**只删店铺授权（access_token）**。
 
-        历史全局作用域（LEGACY_SCOPE）里 `updated_by == 本人` 的行也要一起删：
-        那是本人当初认领过来的，只删自己 scope 的话，下次读凭证 `_adopt_legacy`
-        会把它们原样迁回来 —— 界面上就是「解绑了但 token 还在」。
+        `yl_client` / `yl_token` 是服务商（盈銮）级别的凭据，跟具体哪家店铺无关：
+        换一家店、重新授权都还要用同一对，所以解绑时保留，否则每次换店都得让对方再发一遍。
+
+        历史全局作用域（LEGACY_SCOPE）里 `updated_by == 本人` 的 access_token 也要删：
+        只删自己 scope 的话，下次读凭证 `_adopt_legacy` 会把它原样迁回来（解绑了又复活）。
         """
         with transaction(self.database_path) as conn:
-            conn.execute("DELETE FROM secret_values WHERE scope = ?", (self.scope(),))
+            conn.execute(
+                "DELETE FROM secret_values WHERE scope = ? AND name = ?", (self.scope(), "access_token")
+            )
             if self.owner_id:
                 conn.execute(
-                    "DELETE FROM secret_values WHERE scope = ? AND updated_by = ?",
-                    (LEGACY_SCOPE, self.owner_id),
+                    "DELETE FROM secret_values WHERE scope = ? AND name = ? AND updated_by = ?",
+                    (LEGACY_SCOPE, "access_token", self.owner_id),
                 )
 
     def save(self, payload: Any, actor_id: str) -> None:
@@ -582,6 +586,12 @@ def _assemble_payload(
         for sku in skc.skus:
             if sku.thumb_url:
                 _validate_https_urls(f"thumbUrl({sku.ext_code})", [sku.thumb_url])
+
+    # 库存 0 是允许的（Temu 会建品但前台不可售），但要让人知道自己发的是什么状态
+    if any(int(sku.stock) == 0 for skc in draft.skcs for sku in skc.skus):
+        warnings.append(
+            "有 SKU 库存为 0：Temu 允许提交，商品会处于「售罄/不可售」状态，开卖前记得补库存。"
+        )
 
     _ensure_unique([skc.ext_code for skc in draft.skcs], "SKC ext_code")
     _ensure_unique(

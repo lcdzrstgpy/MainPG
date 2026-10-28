@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -192,6 +193,14 @@ class SourcingLedgerService:
             else:
                 summary["pending"] += 1
 
+            # 统计本组内重复的商家货号：同一货号挂多个属性时要用属性区分明细行。
+            code_counts = Counter(
+                code
+                for code in (
+                    _text(getattr(item, "sku_merchant_code", "")) for item in members
+                )
+                if code
+            )
             for index, item in enumerate(members):
                 summary["rows"] += 1
                 declared_rows.append(
@@ -206,7 +215,7 @@ class SourcingLedgerService:
                         "sku_id": _text(getattr(item, "sku_id", "")),
                         "sku_merchant_code": _text(getattr(item, "sku_merchant_code", "")),
                         "sku_attribute_text": _text(getattr(item, "sku_attribute_text", "")),
-                        "sku_ref": self._sku_ref(item, index),
+                        "sku_ref": self._sku_ref(item, index, duplicate_codes=code_counts),
                         "original_price_cny": _decimal_text(
                             getattr(item, "original_declared_price_cny", "")
                         ),
@@ -291,12 +300,19 @@ class SourcingLedgerService:
         return merged
 
     @staticmethod
-    def _sku_ref(item: Any, index: int) -> str:
-        for value in (
-            _text(getattr(item, "sku_id", "")),
-            _text(getattr(item, "sku_merchant_code", "")),
-            _text(getattr(item, "sku_attribute_text", "")),
-        ):
+    def _sku_ref(
+        item: Any, index: int, *, duplicate_codes: Mapping[str, int] | None = None
+    ) -> str:
+        sku_id = _text(getattr(item, "sku_id", ""))
+        if sku_id:
+            return sku_id
+        code = _text(getattr(item, "sku_merchant_code", ""))
+        attribute = _text(getattr(item, "sku_attribute_text", ""))
+        # 同一货号下挂多个 SKU 属性（商家没按变体编货号）时，属性必须进身份，
+        # 否则后写入的变体会覆盖前一个，申报价明细只剩一行。
+        if code and attribute and duplicate_codes and duplicate_codes.get(code, 0) > 1:
+            return f"{code}|{attribute}"
+        for value in (code, attribute):
             if value:
                 return value
         return f"row-{index}"
@@ -735,8 +751,18 @@ class SourcingLedgerService:
             counts[item["status"]] = counts.get(item["status"], 0) + 1
         if wanted_status:
             items = [item for item in items if item["status"] in wanted_status]
-        # 默认按最近更新时间倒序：改过货源/重量/站点或刚采过申报价的排前面。
-        items.sort(key=lambda item: (_timestamp(item.get("updated_at")), item["skc"]), reverse=True)
+        # 默认按利润（净利润）倒序：没有利润（缺申报价/货源/站点）的商品排在最后，
+        # 利润相同时仍按最近更新时间倒序。
+        def _net_profit_key(item: Mapping[str, Any]) -> tuple[bool, Decimal, datetime, str]:
+            value = _num((item.get("profit") or {}).get("net_profit"))
+            return (
+                value is not None,
+                value if value is not None else Decimal(0),
+                _timestamp(item.get("updated_at")),
+                item["skc"],
+            )
+
+        items.sort(key=_net_profit_key, reverse=True)
         total = len(items)
         page = items[max(0, offset): max(0, offset) + max(1, limit)]
         return {
