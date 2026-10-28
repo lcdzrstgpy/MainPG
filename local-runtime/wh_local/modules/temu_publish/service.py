@@ -815,6 +815,27 @@ class TemuPublishService:
             "can_update_stock": False,
         }
 
+    def size_charts(self, cat_id: int) -> dict[str, Any]:
+        """这个类目是否需要/有哪些尺码表。
+
+        只回答「有没有」—— 非空时的返回结构本店拿不到样例（宠物用品类目全是 null），
+        所以不猜字段名，原样把 raw 带回去给以后用。
+        """
+        if int(cat_id) <= 0:
+            return {"cat_id": 0, "has_size_chart": False, "count": 0, "raw": None}
+        result = self._read_cached(
+            f"size-charts:{int(cat_id)}", lambda: self.client().size_charts(int(cat_id))
+        )
+        items = result.get("sizeSpecDataList")
+        rows = items if isinstance(items, list) else []
+        return {
+            "cat_id": int(cat_id),
+            "has_size_chart": bool(rows),
+            "count": len(rows),
+            # 结构未知，原样返回（真要用时先看这条）
+            "raw": rows[:3],
+        }
+
     def goods_detail(self, product_id: int) -> dict[str, Any]:
         """商品详情。个别商品会返回「无权访问」（991000001），由调用方提示用户。"""
         return self._read_cached(

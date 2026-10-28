@@ -15,6 +15,15 @@ export type TemuSettingsStatus = {
   active_shop_id?: string;
 };
 
+/** 类目是否需要尺码表（服装/鞋类需要；宠物用品等返回 false）。 */
+export type TemuSizeChartInfo = {
+  cat_id: number;
+  has_size_chart: boolean;
+  count: number;
+  /** 非空时的原始返回（结构未确认，仅备查） */
+  raw?: unknown;
+};
+
 /** 一个已保存的店铺。token 只回掩码，原文不出后端。 */
 export type TemuShop = {
   id: string;

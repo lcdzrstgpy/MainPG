@@ -13,6 +13,7 @@ import type {
   TemuParentSpec,
   TemuPublishResult,
   TemuSettingsStatus,
+  TemuSizeChartInfo,
   TemuSpecCreated,
   TemuTokenInfo,
   TemuWarehouseGroup,
@@ -102,6 +103,9 @@ export const temuPublishApi = {
 
   goodsDetail: (productId: string | number) =>
     httpJson<Record<string, unknown>>(`${BASE}/goods/${productId}`),
+  /** 这个类目是否需要尺码表（false → 前端隐藏「尺码表模板 ID」） */
+  sizeCharts: (catId: number) => httpJson<TemuSizeChartInfo>(`${BASE}/categories/${catId}/size-charts`),
+
   /** 待补库存清单：扫店铺商品，列出库存为 0 的 SKU（只读） */
   lowStockGoods: (params: { limit?: number; pageSize?: number; maxPages?: number } = {}) =>
     httpJson<TemuLowStockResult>(

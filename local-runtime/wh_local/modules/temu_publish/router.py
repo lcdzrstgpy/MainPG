@@ -436,6 +436,16 @@ def create_temu_publish_router(
         except Exception as exc:  # noqa: BLE001
             raise _handle(exc) from exc
 
+    @router.get("/categories/{cat_id}/size-charts")
+    def size_charts(
+        cat_id: int, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        """该类目是否需要尺码表（服装/鞋类需要，宠物用品等不需要 → 前端据此隐藏字段）。"""
+        try:
+            return _service(actor).size_charts(cat_id)
+        except Exception as exc:  # noqa: BLE001
+            raise _handle(exc) from exc
+
     @router.post("/dimension-check")
     def dimension_check(
         payload: DimensionCheckRequest,

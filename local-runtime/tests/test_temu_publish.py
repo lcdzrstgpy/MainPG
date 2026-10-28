@@ -1873,3 +1873,71 @@ def test_multi_pack_only_sent_when_more_than_one(tmp_path: Path) -> None:
         "skuClassification": 1,
         "productSkuNetContentReq": {},
     }
+
+
+class SizeChartClient(StubCatalogClient):
+    """size_charts 按开关返回空/非空，记录调用次数（验证缓存）。"""
+
+    def __init__(self, rows: list[dict[str, Any]] | None = None) -> None:
+        super().__init__()
+        self.rows = rows or []
+        self.calls = 0
+
+    def size_charts(self, cat_id: int, offset: int = 0, page_size: int = 20) -> dict[str, Any]:
+        self.calls += 1
+        return {
+            "offset": offset,
+            "pageSize": page_size,
+            "totalCount": len(self.rows),
+            "sizeSpecDataList": self.rows or None,
+        }
+
+
+def test_size_charts_reports_whether_category_needs_one(tmp_path: Path) -> None:
+    """类目没有尺码表（宠物用品这类）→ has_size_chart=False，前端据此隐藏字段。"""
+    empty = SizeChartClient()
+    service = TemuPublishService(tmp_path / "a.sqlite3", client=empty)
+    info = service.size_charts(1634)
+    assert info["cat_id"] == 1634
+    assert info["has_size_chart"] is False
+    assert info["count"] == 0
+
+    # 同一类目第二次走缓存，不再打网关
+    service.size_charts(1634)
+    assert empty.calls == 1
+
+    with_rows = SizeChartClient([{"businessId": 1}, {"businessId": 2}])
+    service2 = TemuPublishService(tmp_path / "b.sqlite3", client=with_rows)
+    info2 = service2.size_charts(24376)
+    assert info2["has_size_chart"] is True
+    assert info2["count"] == 2
+    # 结构未知：原样带回去，不猜字段名
+    assert info2["raw"][0] == {"businessId": 1}
+
+
+def test_size_charts_without_category_short_circuits(tmp_path: Path) -> None:
+    """没选类目（cat_id=0）不该打网关。"""
+    client = SizeChartClient([{"businessId": 1}])
+    service = TemuPublishService(tmp_path / "c.sqlite3", client=client)
+    assert service.size_charts(0)["has_size_chart"] is False
+    assert client.calls == 0
+
+
+def test_size_charts_route_exists(tmp_path: Path) -> None:
+    """/categories/{id}/size-charts 路由存在（不是 404/422；无凭证时走统一错误处理）。"""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from wh_local.modules.temu_publish.router import create_temu_publish_router
+    from wh_local.session import Actor, actor_from_authorization
+
+    db_path = tmp_path / "runtime.sqlite3"
+    init_db(db_path)
+    app = FastAPI()
+    app.include_router(create_temu_publish_router(db_path))
+    app.dependency_overrides[actor_from_authorization] = lambda: Actor(
+        id="cust_a", username="a", role="admin"
+    )
+    response = TestClient(app).get("/api/temu-publish/categories/1634/size-charts")
+    assert response.status_code != 404, response.text
+    assert response.status_code in (200, 400, 503)

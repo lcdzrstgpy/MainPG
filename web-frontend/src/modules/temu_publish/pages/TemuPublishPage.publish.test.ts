@@ -589,3 +589,21 @@ test("变种面板：货号清洗特殊字符 + 批量值没应用要提示", ()
   assert.match(panel, /有 \{pendingBatchFields\.length\} 项还没应用/);
   assert.match(panel, /is-urgent/);
 });
+
+test("尺码表模板字段按类目隐藏（宠物用品类目不需要）", () => {
+  const apiSrc = readFileSync(new URL("../api/temuPublishApi.ts", import.meta.url), "utf8");
+  const types = readFileSync(new URL("../types.ts", import.meta.url), "utf8");
+
+  assert.match(types, /export type TemuSizeChartInfo = \{/);
+  assert.ok(apiSrc.includes("/categories/${catId}/size-charts"));
+
+  // 叶子类目变了就查一次；失败按「需要」处理（fail-open，别把必填项藏掉）
+  assert.match(page, /const \[sizeChart, setSizeChart\] = useState<\{ loading: boolean; has: boolean \| null \}>/);
+  assert.match(page, /\.sizeCharts\(leafId\)/);
+  assert.match(page, /setSizeChart\(\{ loading: false, has: !!info\.has_size_chart \}\)/);
+  assert.match(page, /\.catch\(\(\) => \{\s*if \(alive\) setSizeChart\(\{ loading: false, has: null \}\);/);
+
+  // 只有 has === false（明确不需要）才不渲染
+  assert.match(page, /\{sizeChart\.has !== false && \(/);
+  assert.ok(page.includes("无关类目会自动隐藏"));
+});

@@ -459,6 +459,12 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const [parentSpecs, setParentSpecs] = useState<TemuParentSpec[]>([]);
   const [colorParentId, setColorParentId] = useState(0);
   const [sizeParentId, setSizeParentId] = useState(0);
+  // 当前类目要不要尺码表：false 就把「尺码表模板 ID」整块藏掉（宠物用品类目全是 false）
+  const [sizeChart, setSizeChart] = useState<{ loading: boolean; has: boolean | null }>({
+    loading: false,
+    has: null,
+  });
+
   const [rows, setRows] = useState<VariantRow[]>(() => {
     const saved = loadJsonLocal<VariantRow[]>(`${ROWS_KEY}:${storageScope()}`, []);
     return Array.isArray(saved) ? withFreshRowKeys(saved.filter((row) => row && row.key)) : [];
@@ -829,6 +835,31 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   // effect 里要用最新的 applyCategory，用 ref 兜住（它的闭包会随状态重建）
   const applyCategoryRef = useRef(applyCategory);
   applyCategoryRef.current = applyCategory;
+
+  /**
+   * 类目是否有尺码表：服装/鞋类才有，宠物/家居这类没有。
+   * 没有就把「尺码表模板 ID」藏掉，避免让人以为必填。接口失败按「有」处理（fail-open）。
+   */
+  useEffect(() => {
+    const leafId = categoryPath.length ? Number(categoryPath[categoryPath.length - 1].catId) : 0;
+    if (!leafId) {
+      setSizeChart({ loading: false, has: null });
+      return;
+    }
+    let alive = true;
+    setSizeChart((current) => ({ loading: true, has: current.has }));
+    void temuPublishApi
+      .sizeCharts(leafId)
+      .then((info) => {
+        if (alive) setSizeChart({ loading: false, has: !!info.has_size_chart });
+      })
+      .catch(() => {
+        if (alive) setSizeChart({ loading: false, has: null });
+      });
+    return () => {
+      alive = false;
+    };
+  }, [categoryPath]);
 
   /**
    * 标题 → 自动匹配类目。
@@ -2430,10 +2461,15 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               extCodePrefix={form.productCode}
               fallbackThumb={effectiveMaterial}
             />
-            <div className="temu-field">
+            {sizeChart.has !== false && (
+              <div className="temu-field">
                 <span>
                   尺码表模板 ID
-                  <em className="temu-muted">服装/鞋类必填，多个用逗号；需先在 Temu 后台建好</em>
+                  <em className="temu-muted">
+                    {sizeChart.has
+                      ? "这个类目需要尺码表：填 Temu 后台建好的模板 ID，多个用逗号"
+                      : "服装/鞋类必填，多个用逗号；需先在 Temu 后台建好（无关类目会自动隐藏）"}
+                  </em>
                 </span>
                 <input
                   className="temu-input"
@@ -2441,7 +2477,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   onChange={(event) => patch({ sizeTemplates: event.target.value })}
                   placeholder="可选，如 12345,67890"
                 />
-            </div>
+              </div>
+            )}
           </section>
 
           {/* 4 包装信息 */}

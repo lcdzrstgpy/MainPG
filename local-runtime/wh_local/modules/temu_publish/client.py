@@ -270,6 +270,17 @@ class TemuProductClient:
             payload[key] = value
         return self.call("bg.glo.goods.list.get", payload)
 
+    def size_charts(self, cat_id: int, offset: int = 0, page_size: int = 20) -> dict[str, Any]:
+        """类目尺码表查询（bg.glo.goods.sizecharts.get）。
+
+        大多数非服装类目返回 `sizeSpecDataList: null` —— 也就是「这个类目不需要尺码表」。
+        """
+        return self.call(
+            "bg.glo.goods.sizecharts.get",
+            {"catId": int(cat_id), "offset": int(offset), "pageSize": int(page_size)},
+            max_attempts=1,
+        )
+
     def goods_detail(self, product_id: int) -> dict[str, Any]:
         """商品详情（bg.glo.goods.detail.get）。注意：个别商品会返回「无权访问」。"""
         return self.call("bg.glo.goods.detail.get", {"productId": int(product_id)})
