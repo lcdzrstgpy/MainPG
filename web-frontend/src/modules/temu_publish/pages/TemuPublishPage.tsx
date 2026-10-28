@@ -41,6 +41,14 @@ import type {
 import "../styles/temuPublish.css";
 
 const SITE_ID = 100;
+/**
+ * 默认发货时效（天）。
+ *
+ * 原来默认 1 天：填了就等于向 Temu 承诺 24 小时发货，POD/定制根本做不到，会被判延迟发货。
+ * 7 天是 POD 印制的合理生产周期；Temu 允许更长（官方成功案例用的是 90 天），
+ * 需要的可以自己改大。
+ */
+const DEFAULT_SHIPMENT_DAYS = "7";
 const EMPTY_ATTR = { vid: 0, text: "" };
 
 /**
@@ -159,7 +167,7 @@ const EMPTY_FORM: PublishForm = {
   detailImages: "",
   freightId: "",
   warehouseId: "",
-  shipmentDays: "1",
+  shipmentDays: DEFAULT_SHIPMENT_DAYS,
   piecesPerPack: "1",
   description: "",
 };
@@ -417,10 +425,12 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const recentCategoryKey = `${RECENT_CATEGORY_KEY}:${storageSuffix}`;
   const rowsKey = `${ROWS_KEY}:${storageSuffix}`;
 
-  const [form, setForm] = useState<PublishForm>(() => ({
-    ...EMPTY_FORM,
-    ...loadJsonLocal<Partial<PublishForm>>(`${FORM_KEY}:${storageScope()}`, {}),
-  }));
+  const [form, setForm] = useState<PublishForm>(() => {
+    const saved = loadJsonLocal<Partial<PublishForm>>(`${FORM_KEY}:${storageScope()}`, {});
+    // 老版本默认值是 1 天，已存在本机的也纠正过来，否则一进来还是承诺 24 小时发货
+    if (saved.shipmentDays === "1") saved.shipmentDays = DEFAULT_SHIPMENT_DAYS;
+    return { ...EMPTY_FORM, ...saved };
+  });
 
   const [categoryOptions, setCategoryOptions] = useState<TemuCategory[]>([]);
   const [categoryPath, setCategoryPath] = useState<TemuCategory[]>(initialCategoryPath);
@@ -936,7 +946,12 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     patch({
       freightId: form.freightId || template.freightId,
       warehouseId: form.warehouseId || template.warehouseId,
-      shipmentDays: form.shipmentDays || template.shipmentDays,
+      shipmentDays:
+        form.shipmentDays && form.shipmentDays !== "1"
+          ? form.shipmentDays
+          : template.shipmentDays && template.shipmentDays !== "1"
+            ? template.shipmentDays
+            : DEFAULT_SHIPMENT_DAYS,
       origin: form.origin || template.origin,
       sizeTemplates: form.sizeTemplates || template.sizeTemplates,
       isCustom: template.isCustom,
@@ -2477,7 +2492,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 <span>
                   发货时效（天）<em className="temu-required">*</em>
                   <em className="temu-muted">
-                    承诺给 Temu 的备货发货时限，填太短会被判延迟发货（官方成功案例用的是 90 天）
+                    承诺给 Temu 的备货发货时限。默认 7 天（POD 生产周期），填太短会被判延迟发货，
+                    可改大（官方成功案例用的是 90 天）
                   </em>
                 </span>
                 <input
@@ -2485,7 +2501,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   inputMode="numeric"
                   value={form.shipmentDays}
                   onChange={(event) => patch({ shipmentDays: event.target.value })}
-                  placeholder="1"
+                  placeholder={DEFAULT_SHIPMENT_DAYS}
                 />
               </label>
               <label className="temu-field">

@@ -568,6 +568,11 @@ test("多件装：每件装数量填 4/12 才发 productSkuMultiPackReq", () => 
   // 界面上有输入 + 说明（标题里的 4 Pack / 12Pcs）
   assert.ok(page.includes("每件装数量"));
   assert.ok(page.includes("4 Pack / 12Pcs"));
-  // 发货时效补了说明（官方成功案例 90 天），避免默认 1 天被误当承诺
+  // 发货时效默认 7 天（1 天等于承诺 24 小时发货，做不到）
+  assert.match(page, /const DEFAULT_SHIPMENT_DAYS = "7";/);
+  assert.match(page, /shipmentDays: DEFAULT_SHIPMENT_DAYS,/);
+  assert.match(page, /placeholder=\{DEFAULT_SHIPMENT_DAYS\}/);
+  // 本机存档里旧的 1 天要纠正，模板里的 1 天也不能沿用
+  assert.match(page, /if \(saved\.shipmentDays === "1"\) saved\.shipmentDays = DEFAULT_SHIPMENT_DAYS;/);
   assert.ok(page.includes("填太短会被判延迟发货"));
 });

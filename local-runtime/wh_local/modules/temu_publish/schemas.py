@@ -166,7 +166,8 @@ class GoodsDraftInput(BaseModel):
     # 实测字段名是顶层 materialImgUrl（2026-10-26 真调确认），文档里没写。
     material_image_url: str = ""
     freight_template_id: str = Field(min_length=1)
-    shipment_limit_seconds: int = Field(default=86400, ge=1)
+    # 默认 7 天：1 天等于承诺 24 小时发货，POD/定制做不到（会被判延迟发货）
+    shipment_limit_seconds: int = Field(default=7 * 86400, ge=1)
     properties: list[GoodsPropertyInput] = Field(default_factory=list)
     skcs: list[SkcInput] = Field(min_length=1)
     size_template_ids: list[int] = Field(default_factory=list)

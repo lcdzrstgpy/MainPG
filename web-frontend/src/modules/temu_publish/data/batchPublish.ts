@@ -150,7 +150,10 @@ export async function buildDraftForPublish(
     detail_image_urls: detail,
     material_image_url: carousel[0],
     freight_template_id: productTemplate.freightId,
-    shipment_limit_seconds: Math.max(1, Number(productTemplate.shipmentDays || "1")) * 86400,
+    // 模板里存的 1 天是旧默认值，按 7 天兜底（与发布页一致）
+    shipment_limit_seconds:
+      Math.max(1, Number(productTemplate.shipmentDays === "1" ? "7" : productTemplate.shipmentDays || "7") || 7) *
+      86400,
     outer_goods_url: prefill.sourceUrl ?? "",
     properties,
     skcs,
