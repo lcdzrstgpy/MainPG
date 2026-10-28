@@ -669,6 +669,21 @@ POD_MIGRATION_CONTRACTS: dict[str, MigrationEffect] = {
             ),
         },
     ),
+    "029_fission_ai_plans": MigrationEffect(
+        column_additions={
+            "pod_customization_fission_analyses": ("plans_json", "plan_prompt_version"),
+            "pod_customization_fission_batches": (
+                "generation_strategy",
+                "panel_prompt_version",
+            ),
+        },
+        indexes={
+            "idx_pod_fission_batches_strategy": _index(
+                "pod_customization_fission_batches",
+                "generation_strategy status",
+            ),
+        },
+    ),
 }
 
 

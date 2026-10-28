@@ -2,7 +2,7 @@ import type { PodBatch } from "../../pod_customization/types";
 import type { FissionBatch } from "../types";
 
 /** Supply presentation defaults for hidden template metadata, preserving all delivery fields. */
-export type FissionBatchView = PodBatch & Pick<FissionBatch, "source" | "target" | "variants">;
+export type FissionBatchView = PodBatch & Pick<FissionBatch, "source" | "target" | "variants" | "generation_strategy">;
 export function normalizeFissionBatch(batch: FissionBatch): FissionBatchView {
   return {
     ...batch,

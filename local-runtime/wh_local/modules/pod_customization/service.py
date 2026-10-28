@@ -46,7 +46,6 @@ from .contracts import (
     CompositionRequest,
     CompositionUpdateRequest,
     DirectListingTrialCreate,
-    FissionAnalyzeRequest,
     FissionBatchCreate,
     FissionImageRole,
     FissionImageUploadResponse,
@@ -67,13 +66,13 @@ from .composition_runtime import (
     PodCompositionLocalizeRequest,
     PodCompositionRequest,
 )
+from .fission_panel_template import FISSION_PANEL_PROMPT_VERSION
+from .fission_prompts import default_fission_composition
 from .fission_runtime import (
-    FissionAnalysisRequest as RuntimeFissionAnalysisRequest,
+    FISSION_PLAN_PROMPT_VERSION,
     FissionAssetImage,
+    FissionPlanRequest,
 )
-from .fission_registry import FissionRegistryService
-from .fission_planner import plan_fission_variants
-from .fission_prompts import FISSION_PROMPT_COMPILER_VERSION, default_fission_composition
 from .replica_analysis_runtime import (
     MAIN_PROMPT_MODEL,
     MAIN_PROMPT_REFERENCE_ORDER,
@@ -94,7 +93,7 @@ from .export_records import PodExportRecordStore
 from .errors import image_provider_outcome_for_exception, safe_error_message
 from .reconciliation import PodBillingReconciler, deadline_passed
 from .remote_billing import attach_freeze_snapshot
-from .repository import PodCustomizationRepository, PodRepositoryError, ReplicaBatchIdempotentReturn, RegistryVersionConflict
+from .repository import PodCustomizationRepository, PodRepositoryError, ReplicaBatchIdempotentReturn
 from .spec_card_units import display_spec_card_cells
 from .prompts import (
     DEFAULT_COLUMN_COMPOSITION_PANELS,
@@ -211,6 +210,21 @@ def _replica_request_hash(request: ReplicaBatchCreate) -> str:
         request.model_dump(mode="json"), sort_keys=True, ensure_ascii=False, separators=(",", ":")
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _fission_failure_diagnostics(exc: BaseException) -> dict[str, Any]:
+    """出方案失败时落库的可诊断信息：异常原文 + 未通过的校验 + 模型原始输出。
+
+    没有这些字段时，库里只剩 ``error_code=DoubaoArkError``，无法判断是模型缺字段、
+    motifs 不足、main_prompt 太短还是多样性规则没过。``content`` 只截 20000 字符，
+    避免单条记录撑大数据库。
+    """
+    return {
+        "error": str(exc),
+        "error_kind": str(getattr(exc, "error_kind", "") or type(exc).__name__),
+        "validation": str(getattr(exc, "validation_error", "") or ""),
+        "content": str(getattr(exc, "raw_content", "") or "")[:20000],
+    }
 
 
 def blank_spec_card_base_jpeg(side: int = 800) -> bytes:
@@ -703,25 +717,22 @@ class PodCustomizationService:
             preview_url=f"/api/pod-customization/assets/{asset['asset_id']}",
         ).model_dump()
 
-    def analyze_fission_assets(self, actor: Actor, request: FissionAnalyzeRequest) -> dict[str, Any]:
+    def _generate_fission_plans(
+        self, actor: Actor, request: FissionBatchCreate, source: dict[str, Any], target: dict[str, Any]
+    ) -> tuple[str, Any]:
+        """一次双图调用产出 N 套方案，并落库分析记录（零计费）。"""
         if self.fission_analysis_runtime is None:
-            raise RuntimeError("POD 爆款裂变识图服务未启用")
-        source = self.repository.get_asset(request.source_asset_id, actor.workspace_id, actor.id)
-        target = self.repository.get_asset(request.target_asset_id, actor.workspace_id, actor.id)
-        if source.get("kind") != "fission_source_artwork":
-            raise ValueError("样图资产角色错误，必须通过 role=source_artwork 上传")
-        if target.get("kind") != "fission_target_product":
-            raise ValueError("白底产品图资产角色错误，必须通过 role=target_product 上传")
-
+            raise RuntimeError("POD 爆款裂变出方案服务未启用")
         analysis_id = uuid.uuid4().hex
         billing_run = self._freeze_fission_analysis(actor, analysis_id)
         try:
             call_ids = tuple(call.call_id for call in billing_run.plan.calls)
             try:
-                result = self.fission_analysis_runtime.analyze_assets(
-                    RuntimeFissionAnalysisRequest(
-                        source_asset_id=request.source_asset_id,
-                        target_asset_id=request.target_asset_id,
+                result = self.fission_analysis_runtime.generate_plans(
+                    FissionPlanRequest(
+                        request.source_asset_id,
+                        request.target_asset_id,
+                        int(request.requested_count),
                     ),
                     FissionAssetImage(request.source_asset_id, self._asset_data_url(source)),
                     FissionAssetImage(request.target_asset_id, self._asset_data_url(target)),
@@ -738,6 +749,8 @@ class PodCustomizationService:
                     source_asset_id=request.source_asset_id,
                     target_asset_id=request.target_asset_id,
                     status="failed",
+                    raw_response=_fission_failure_diagnostics(exc),
+                    plan_prompt_version=FISSION_PLAN_PROMPT_VERSION,
                     error_code=type(exc).__name__,
                 )
                 raise
@@ -748,29 +761,21 @@ class PodCustomizationService:
                 source_asset_id=request.source_asset_id,
                 target_asset_id=request.target_asset_id,
                 status="succeeded",
-                source_spec=result.source_spec,
-                target_spec=result.target_spec,
-                user_summary=result.user_summary,
-                candidate_payload={
-                    "style_vocabulary": result.style_vocabulary,
-                    "element_vocabulary": result.element_vocabulary,
-                    "palette_vocabulary": result.palette_vocabulary,
-                    "capabilities": result.capability_candidates,
-                    "product_mappings": getattr(result, "product_mapping_candidates", ()),
-                    "rules": result.rule_candidates,
+                target_spec={"product_name": result.product_name},
+                user_summary={
+                    "source_summary": result.source_summary,
+                    "target_summary": result.target_summary,
                 },
-                raw_response=getattr(result, "raw_response", {}),
+                raw_response=result.raw_response,
+                plans=[plan.to_payload() for plan in result.plans],
+                plan_prompt_version=FISSION_PLAN_PROMPT_VERSION,
                 model_version=result.model_version,
                 schema_version=result.schema_version,
             )
-            return {
-                "analysis_id": analysis_id,
-                "status": "succeeded",
-                "product_summary": result.user_summary["target_summary"],
-                "artwork_summary": result.user_summary["source_summary"],
-            }
+            return analysis_id, result
         finally:
             billing_run.settle()
+
 
     def _fission_composition(self, actor: Actor) -> dict[str, Any]:
         record = self.repository.get_active_composition(actor.workspace_id, actor.id, scope=COMPOSITION_SCOPE_FISSION)
@@ -789,58 +794,43 @@ class PodCustomizationService:
         return result
 
     def create_fission_batch(self, actor: Actor, request: FissionBatchCreate, *, enqueue: bool = True) -> dict[str, Any]:
+        """一键开始裂变：出方案 → 冻结 → 落库 → 入队。
+
+        出方案是零计费的独立动作：失败时不建批次、不冻结生图计费。
+        幂等只对「建批次成功」生效；失败后用同一 client_request_id 重试会重新出方案。
+        """
         request_hash = hashlib.sha256(json.dumps(request.model_dump(mode='json'), sort_keys=True,
                                                 ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
-        # Serialize submissions within this service; the repository also fences cross-process races.
         with self._regeneration_lock:
             existing = self.repository.find_fission_batch(actor.workspace_id, actor.id, request.client_request_id)
             if existing is not None:
                 if existing['request_hash'] != request_hash:
                     raise PodRepositoryError('client_request_id 已用于不同的裂变请求', 409)
                 return self.get_fission_batch(actor, existing['batch_id'])
-            analysis = self.repository.get_fission_analysis_for_actor(request.analysis_id, actor.workspace_id, actor.id)
-            if analysis['status'] != 'succeeded':
-                raise PodRepositoryError('识别未成功，请重传图片后重新分析', 409)
-            for field, kind in (('source_asset_id', 'fission_source_artwork'), ('target_asset_id', 'fission_target_product')):
-                asset = self.repository.get_asset(analysis[field], actor.workspace_id, actor.id)
-                if asset['kind'] != kind:
-                    raise PodRepositoryError('裂变图片角色不匹配，请重新上传', 409)
-            candidate_payload = analysis['candidate_payload']
-            registry = FissionRegistryService(self.repository)
-            candidates = registry.validate_candidates({key: candidate_payload.get(key, [])
-                                                       for key in ('capabilities', 'product_mappings', 'rules')})
+            source = self.repository.get_asset(request.source_asset_id, actor.workspace_id, actor.id)
+            target = self.repository.get_asset(request.target_asset_id, actor.workspace_id, actor.id)
+            if source.get('kind') != 'fission_source_artwork':
+                raise PodRepositoryError('样图资产角色错误，必须通过 role=source_artwork 上传', 409)
+            if target.get('kind') != 'fission_target_product':
+                raise PodRepositoryError('白底产品图资产角色错误，必须通过 role=target_product 上传', 409)
+            analysis_id, result = self._generate_fission_plans(actor, request, source, target)
+            plans = [plan.to_payload() for plan in result.plans]
             composition = self._fission_composition(actor)
             batch_id = uuid.uuid4().hex
             billing_run = None
             try:
-                for submission in range(3):
-                    current, projected = registry.preview_candidates(candidates)
-                    planning_input = {**candidate_payload, 'source_spec': analysis['source_spec'],
-                                      'target_spec': analysis['target_spec']}
-                    plans = plan_fission_variants(planning_input, request.requested_count, batch_id,
-                                                  projected.model_dump(mode='json'), composition)
-                    if billing_run is None and (enqueue or self.billing_coordinator is not None):
-                        billing_run = self._freeze_batch(actor, batch_id, request.requested_count,
-                                                        billing_profile=POD_BILLING_PROFILE_FISSION)
-                    try:
-                        batch = self.repository.create_fission_batch_with_registry(
-                            workspace_id=actor.workspace_id, owner_user_id=actor.id, analysis_id=request.analysis_id,
-                            client_request_id=request.client_request_id, request_hash=request_hash,
-                            requested_count=request.requested_count, listing_fields=request.listing_fields.model_dump(mode='json'),
-                            candidates=candidates, plans={int(plan['style_index']): plan for plan in plans},
-                            expected_capability_version=current.capability_version,
-                            expected_rule_version=current.rule_version, composition=composition,
-                            prompt_version=FISSION_PROMPT_COMPILER_VERSION, compiler_version=FISSION_PROMPT_COMPILER_VERSION,
-                            title=request.title, batch_id=batch_id,
-                        )
-                        break
-                    except RegistryVersionConflict:
-                        if submission == 2:
-                            raise PodRepositoryError('能力库正在更新，请稍后重试确认', 409)
-                if batch['batch_id'] != batch_id:
-                    if billing_run is not None:
-                        billing_run.settle()
-                    return self.get_fission_batch(actor, batch['batch_id'])
+                if enqueue or self.billing_coordinator is not None:
+                    billing_run = self._freeze_fission_batch(actor, batch_id, request.requested_count)
+                batch = self.repository.create_fission_batch(
+                    workspace_id=actor.workspace_id, owner_user_id=actor.id, analysis_id=analysis_id,
+                    client_request_id=request.client_request_id, request_hash=request_hash,
+                    requested_count=request.requested_count,
+                    listing_fields=request.listing_fields.model_dump(mode='json'),
+                    plans=plans, composition=composition,
+                    prompt_version=FISSION_PLAN_PROMPT_VERSION,
+                    panel_prompt_version=FISSION_PANEL_PROMPT_VERSION,
+                    title=request.title, batch_id=batch_id,
+                )
             except Exception:
                 if billing_run is not None:
                     billing_run.settle()
@@ -863,7 +853,8 @@ class PodCustomizationService:
         return {'batches': [self._batch_summary(row) for row in rows], 'total': total}
 
     def retry_fission_style(self, actor: Actor, batch_id: str, style_index: int, *, enqueue: bool = True) -> dict[str, Any]:
-        self.get_fission_batch(actor, batch_id)
+        batch = self.get_fission_batch(actor, batch_id)
+        self._require_fission_panel_batch(batch)
         return self.regenerate_style(actor, batch_id, style_index, enqueue=enqueue)
 
     def _replica_assets(
@@ -2226,7 +2217,7 @@ class PodCustomizationService:
             actor, action_id, batch_id, style_index, creative_prompt,
             semi=batch.get("mode") == "semi",
             billing_profile=self._pod_billing_profile(batch),
-            replica_generation_strategy=self._batch_replica_generation_strategy(batch_id),
+            replica_generation_strategy=self._batch_panel_generation_strategy(batch_id),
         )
         try:
             results = self.repository.claim_style_regeneration(
@@ -3303,6 +3294,15 @@ class PodCustomizationService:
             actor, plan, action_type="batch_initial", target_id=batch_id, batch_id=batch_id
         )
 
+    def _freeze_fission_batch(self, actor: Actor, batch_id: str, style_count: int) -> PodBillingRun:
+        """裂变批次计费：每款 4 面板 × 2 次图片调用 + 标题，按款计 link。"""
+        if self.billing_coordinator is None:
+            raise RuntimeError("POD billing coordinator is not configured")
+        plan = PodCallPlan.for_fission_batch(batch_id, style_count=style_count)
+        return self._freeze_action(
+            actor, plan, action_type="batch_initial", target_id=batch_id, batch_id=batch_id
+        )
+
     def _freeze_column_batch(self, actor: Actor, batch_id: str, style_count: int) -> PodBillingRun:
         """列式生成初始批次：按「二级批次（4 款）」冻结，1 组 = 1 link。"""
         if self.billing_coordinator is None:
@@ -3337,18 +3337,26 @@ class PodCustomizationService:
             return POD_BILLING_PROFILE_REPLICA
         return POD_BILLING_PROFILE_RANDOM
 
-    def _batch_replica_generation_strategy(self, batch_id: str) -> str:
-        """从款级快照读取批次生成策略；任一款为独立面板即整批独立面板，否则 grid。"""
+    def _batch_panel_generation_strategy(self, batch_id: str) -> str:
+        """从批次快照读取生图策略：裂变/复刻返回独立面板，其余 grid。"""
         try:
             batch = self.repository.get_batch_internal(batch_id)
         except Exception:  # noqa: BLE001
             return "grid"
-        if str(batch.get("mode") or "") != "replica":
+        mode = str(batch.get("mode") or "")
+        if mode == "fission":
+            return str(batch.get("fission_generation_strategy") or "grid")
+        if mode != "replica":
             return "grid"
         for target in batch.get("replica_targets") or []:
             if str(target.get("generation_strategy") or "") == "independent_panels":
                 return "independent_panels"
         return "grid"
+
+    @staticmethod
+    def _require_fission_panel_batch(batch: dict[str, Any]) -> None:
+        if str(batch.get("generation_strategy") or "grid") != "independent_panels":
+            raise PodRepositoryError("历史裂变批次只读：不支持重试或重新生成", 409)
 
     def _freeze_semi_batch(self, actor: Actor, batch_id: str, count: int) -> PodBillingRun:
         if self.billing_coordinator is None:
@@ -3396,7 +3404,20 @@ class PodCustomizationService:
                 image_style_indices=image_indices,
             )
         else:
-            if self._batch_replica_generation_strategy(batch_id) == "independent_panels":
+            mode = str(batch.get("mode") or "")
+            panel_strategy = self._batch_panel_generation_strategy(batch_id) == "independent_panels"
+            if mode == "fission":
+                if panel_strategy:
+                    plan = PodCallPlan.for_fission_batch_resume(
+                        batch_id,
+                        uuid.uuid4().hex,
+                        image_style_indices=image_indices,
+                        title_style_indices=title_indices,
+                        include_title=self.title_runtime is not None,
+                    )
+                else:
+                    raise PodRepositoryError("历史裂变批次只读：不支持续跑", 409)
+            elif panel_strategy:
                 plan = PodCallPlan.for_replica_batch_resume(
                     batch_id,
                     uuid.uuid4().hex,
@@ -3588,9 +3609,14 @@ class PodCustomizationService:
         if semi:
             plan = PodCallPlan.for_semi_style_retry(action_id)
         elif replica_generation_strategy == "independent_panels":
-            plan = PodCallPlan.for_replica_style_retry(
-                action_id, include_title=self.title_runtime is not None
-            )
+            if billing_profile == POD_BILLING_PROFILE_FISSION:
+                plan = PodCallPlan.for_fission_style_retry(
+                    action_id, include_title=self.title_runtime is not None
+                )
+            else:
+                plan = PodCallPlan.for_replica_style_retry(
+                    action_id, include_title=self.title_runtime is not None
+                )
         else:
             plan = PodCallPlan.for_style_retry(
                 action_id,
@@ -3617,7 +3643,18 @@ class PodCustomizationService:
         if self.billing_coordinator is None:
             raise RuntimeError("POD billing coordinator is not configured")
         batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
-        if self._batch_replica_generation_strategy(batch_id) == "independent_panels":
+        mode = str(batch.get("mode") or "")
+        panel_strategy = self._batch_panel_generation_strategy(batch_id) == "independent_panels"
+        if mode == "fission":
+            if not panel_strategy:
+                raise PodRepositoryError("历史裂变批次只读：不支持重试", 409)
+            plan = PodCallPlan.for_fission_batch_retry(
+                action_id,
+                image_style_indices=image_style_indices,
+                title_style_indices=title_style_indices,
+                include_title=self.title_runtime is not None,
+            )
+        elif panel_strategy:
             plan = PodCallPlan.for_replica_batch_retry(
                 action_id,
                 image_style_indices=image_style_indices,
@@ -4035,6 +4072,7 @@ class PodCustomizationService:
             for key in ("template_id", "template_snapshot_id", "template_name"):
                 payload.pop(key, None)
             payload["template"] = None
+            payload["generation_strategy"] = str(batch.get("fission_generation_strategy") or "grid")
             payload["source"] = self._replica_source_payload({"replica_source": batch.get("fission_source")})
             payload["target"] = self._replica_source_payload({"replica_source": batch.get("fission_target")})
             payload["variants"] = [
