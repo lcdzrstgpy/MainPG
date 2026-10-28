@@ -89,8 +89,6 @@ function draftMissingFields(
   if (!category) missing.push("类目");
   const price = Number(entry.declared_price);
   if (!Number.isFinite(price) || price <= 0) missing.push("申报价");
-  // 参考价发布时不会带出去 → 仍然算「没填」，别让人以为可以点发布
-  else if (entry.declared_price_estimated) missing.push("申报价待确认");
   if (!entry.sku) missing.push("货号");
   const weight = Number(entry.weight_g);
   if (!Number.isFinite(weight) || weight <= 0) missing.push("重量");
@@ -263,24 +261,9 @@ function siteCategoryLabel(
   return memo[entry.id]?.label || entry.category_name || "发布页选类目";
 }
 
-/**
- * 这份草稿进发布页时要人工核对哪些字段。
- *
- * - POD 导出：申报价 / 重量 / 长宽高 都是模板占位值
- * - 参考价：价格是按「成本 × 4、下限 ¥150」算的，不是人填的 —— 发布时不会带出去
- */
+/** POD 导出里申报价 / 重量 / 尺寸是模板占位值，界面上要提醒人工核对。 */
 function buildNeedsReview(entry: TemuDraftEntry): string[] | undefined {
-  const items = new Set<string>();
-  if (entry.source === "pod") {
-    items.add("重量");
-    items.add("长宽高");
-  }
-  if (entry.declared_price_estimated) {
-    items.add("申报价（当前是参考价，发布不会带出去，请自己填）");
-  } else if (entry.source === "pod") {
-    items.add("申报价");
-  }
-  return items.size ? [...items] : undefined;
+  return entry.source === "pod" ? ["申报价", "重量", "长宽高"] : undefined;
 }
 
 function entryPrefill(
@@ -302,10 +285,8 @@ function entryPrefill(
     heightCm: height,
     sourceLabel: entry.source === "ai" ? "AI 处理" : "POD",
     sourceKind: entry.source,
-    // 草稿是「元」，发布页是「分」。
-    // 参考价（成本 × 4、下限 ¥150）**不往发布页带**：那是给眼睛看的参考值，
-    // 直接变成申报价提交出去就是真金白银的定价错误，必须让人自己确认一遍。
-    supplierPrice: entry.declared_price_estimated ? "" : yuanToCents(entry.declared_price),
+    // 草稿是「元」，发布页是「分」
+    supplierPrice: yuanToCents(entry.declared_price),
     suggestedPrice: yuanToCents(entry.suggested_price),
     // 库存原样带入（0 也是有效值：先建品后补库存）；只有真的没值才留空
     stock: numericText(entry.stock),
@@ -957,7 +938,7 @@ export function TemuDraftLibraryPage({
                   <th className="col-sku">货号</th>
                   <th
                     className="col-price"
-                    title="发布时按「分」提交（¥150.00 = 15000 分）。标「参考价·未确认」的是按成本 × 4、下限 ¥150 算出来的，不会带进发布页，需要自己确认后填。"
+                    title="发布时按「分」提交（¥150.00 = 15000 分）。没在预览里改过的价按导出表同一规则给出：成本 × 4，下限 ¥150"
                   >
                     申报价
                   </th>
@@ -1046,14 +1027,6 @@ export function TemuDraftLibraryPage({
                             <strong>¥{price.toFixed(2)}</strong>
                             {/* 发布页填的是「分」，这里直接给出来，省得自己乘 100 */}
                             <em>{Math.round(price * 100)} 分</em>
-                            {entry.declared_price_estimated ? (
-                              <em
-                                className="is-estimated"
-                                title="按成本 × 4、下限 ¥150 算出来的参考价：发布时不会带出去，需要你确认后自己填。"
-                              >
-                                参考价·未确认
-                              </em>
-                            ) : null}
                           </>
                         );
                       })()}

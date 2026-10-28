@@ -101,12 +101,6 @@ export async function buildDraftForPublish(
   const sizes = splitList(variantTemplate?.sizesText ?? prefill.specValue2 ?? "均码");
   const batch = variantTemplate?.batch;
 
-  // 参考价不会出现在 prefill.supplierPrice 里（草稿库不带出去）：这里空就是真的没确认过价
-  if (!batch?.supplierPrice?.trim() && !prefill.supplierPrice?.trim()) {
-    throw new Error(
-      "这条草稿还没有确认过的申报价（参考价不会自动带出去）：先在发布页填好价格再发。",
-    );
-  }
   const price = positive(batch?.supplierPrice || prefill.supplierPrice || "", "申报价格");
   const stock = Number(batch?.stock || prefill.stock || "0");
   const weightG = positive(batch?.weightG || String(Number(prefill.weightKg || 0) * 1000), "重量");
