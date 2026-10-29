@@ -60,6 +60,7 @@ export type VariantTemplate = {
   colorsText: string;
   sizesText: string;
   batch: {
+    /** 单位：元（提交时换算成分） */
     supplierPrice: string;
     suggestedPrice: string;
     stock: string;

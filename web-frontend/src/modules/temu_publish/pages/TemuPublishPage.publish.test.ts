@@ -264,15 +264,57 @@ test("草稿库：批量发布要套模板、逐条提交、失败进记录", ()
   assert.match(batch, /personalization: productTemplate\.isCustom/);
 });
 
-test("草稿金额是「元」，带入发布页要换成「分」", () => {
+test("价格全链路用「元」，只在提交前换成分", () => {
   const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
-  // 草稿(POD 导出/AI 结果)用元，发布页用分：必须 ×100，否则 ¥150 会变成 1.5 元
-  assert.match(library, /function yuanToCents\(value: number \| string \| null \| undefined\): string \{/);
-  assert.match(library, /return String\(Math\.round\(number \* 100\)\);/);
-  assert.match(library, /supplierPrice: yuanToCents\(entry\.declared_price\)/);
-  assert.match(library, /suggestedPrice: yuanToCents\(entry\.suggested_price\)/);
-  // 起价/库存等其它数值不参与换算
-  assert.match(library, /weightKg: weightG \? \(Number\(weightG\) \/ 1000\)\.toFixed\(3\) : ""/);
+  const page = readFileSync(new URL("./TemuPublishPage.tsx", import.meta.url), "utf8");
+  const batch = readFileSync(new URL("../data/batchPublish.ts", import.meta.url), "utf8");
+
+  // 草稿库带入发布页：原样带「元」，不再 ×100
+  // 草稿价先圆整到「分」再带入：12.345 会在提交时被「最多两位小数」拦住
+  assert.match(library, /function moneyText\(value: number \| string \| null \| undefined\): string \{/);
+  assert.match(library, /return String\(Math\.round\(amount \* 100\) \/ 100\);/);
+  assert.match(library, /supplierPrice: moneyText\(entry\.declared_price\)/);
+  assert.match(library, /suggestedPrice: moneyText\(entry\.suggested_price\)/);
+  assert.doesNotMatch(library, /yuanToCents/, "草稿库不该再做元→分换算");
+
+  // 发布页：元 → 分只在组装 payload 时发生，换算函数只有一份（utils/price.ts）
+  const price = readFileSync(new URL("../utils/price.ts", import.meta.url), "utf8");
+  assert.match(price, /export function yuanToCents\(value: string, label: string\): number \{/);
+  assert.match(price, /Math\.round\(Number\(text\) \* 100\)/);
+  assert.match(price, /最多两位小数（例如 12\.99）/);
+  assert.match(page, /supplier_price: yuanToCents\(row\.supplierPrice, `\$\{at\}申报价格`\)/);
+  assert.match(page, /import \{ centsToYuanText, formatYuan, yuanToCents \} from "\.\.\/utils\/price";/);
+
+  // 批量发布复用同一份，不许各写一套
+  assert.match(batch, /import \{ yuanToCents \} from "\.\.\/utils\/price";/);
+  assert.match(batch, /supplier_price: priceCents,/);
+  assert.doesNotMatch(batch, /function yuanToCents\(/, "批量发布不该再自己实现一份换算");
+
+  // 输入框本身是元：label 与 placeholder 都不能再让人按分填
+  const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
+  assert.match(panel, /申报价格（元）/);
+  assert.match(panel, /申报价格\(元\)/);
+  assert.doesNotMatch(panel, /申报价格（分）|申报价格\(分\)/);
+  assert.doesNotMatch(panel, /placeholder="1299"/);
+});
+
+test("本机老数据（价格存的是分）升级后自动换成元，且只换一次", () => {
+  const page = readFileSync(new URL("./TemuPublishPage.tsx", import.meta.url), "utf8");
+
+  // 一次性迁移：不迁的话老数据 1299 会显示成 ¥1299（100 倍价差）
+  assert.match(page, /function migrateLegacyPriceUnit\(suffix: string\): void \{/);
+  assert.match(page, /const PRICE_UNIT_FLAG = "temu_publish_price_unit_yuan_v1";/);
+  assert.match(page, /if \(store\.getItem\(PRICE_UNIT_FLAG\) === "yuan"\) return;/);
+  assert.match(page, /store\.setItem\(PRICE_UNIT_FLAG, "yuan"\);/);
+  // 变种行与变种模板都要迁（批量发布套模板会带出旧价格）
+  assert.match(page, /const rowsKey = `\$\{ROWS_KEY\}:\$\{suffix\}`;/);
+  assert.match(page, /const templateKey = `\$\{VARIANT_TEMPLATE_KEY\}:\$\{suffix\}`;/);
+  // 必须在读 state 之前跑，否则读到的还是分
+  assert.ok(
+    page.indexOf("migrateLegacyPriceUnit(storageScope());") <
+      page.indexOf("const saved = loadJsonLocal<VariantRow[]>"),
+    "迁移要排在读取本机变种行之前",
+  );
 });
 
 test("草稿库站点列显示类目路径：选过的优先、其次草稿自带、最后提示", () => {
@@ -792,8 +834,9 @@ test("草稿库按发布 payload 把信息摆出来（类目/价格分/库存/�
   assert.match(library, /temu-ready is-ok/);
   assert.match(library, /缺 \{missing\.join\(" \/ "\)\}/);
 
-  // 申报价同时给「元」和「分」：发布页填的是分，免得再乘 100
-  assert.match(library, /\{Math\.round\(price \* 100\)\} 分/);
+  // 价格只显示「元」：以前还附一行「15000 分」，数字大又没人看
+  assert.doesNotMatch(library, /\{Math\.round\(price \* 100\)\} 分/);
+  assert.match(library, /return <strong>¥\{price\.toFixed\(2\)\}<\/strong>;/);
   // 未填与 0 的语义分开
   assert.match(library, /temu-draft-missing/);
   assert.match(library, /title="0 库存仍可建品，但在店里是不可售状态"/);
@@ -809,7 +852,7 @@ test("价格照常带入，但界面文案里不出现「推算」二字", () =>
   const types = readFileSync(new URL("../types.ts", import.meta.url), "utf8");
 
   // 功能：成本算出来的价照旧当申报价带进发布页（不拦、不置空）
-  assert.match(library, /supplierPrice: yuanToCents\(entry\.declared_price\),/);
+  assert.match(library, /supplierPrice: moneyText\(entry\.declared_price\),/);
   assert.doesNotMatch(library, /declared_price_estimated \? ""/);
   // 有价就算齐，不会因为「是算出来的」被判缺项
   assert.doesNotMatch(library, /declared_price_estimated\) missing\.push/);

@@ -318,9 +318,9 @@ export type TemuPublishPrefill = {
   sourceLabel?: string;
   /** 来源类型：ai=AI 处理，pod=POD 定制。两者的预填完整度不同，界面要分开提示。 */
   sourceKind?: "ai" | "pod";
-  /** 申报价（店铺币种，单位：分） */
+  /** 申报价（单位：元，如 "12.99"；提交时由发布页换算成接口要的「分」） */
   supplierPrice?: string;
-  /** 建议售价（单位：分） */
+  /** 建议售价（单位：元） */
   suggestedPrice?: string;
   stock?: string;
   /** POD 草稿在模板里是占位值（申报价/重量/尺寸），需要人核对后覆盖 */

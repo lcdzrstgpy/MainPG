@@ -15,7 +15,7 @@ const ATTR_GROUPS: Array<{
     title: "常用项",
     items: [
       { label: "库存", field: "stock" },
-      { label: "申报价格", field: "declared_price" },
+      { label: "申报价格 (元)", field: "declared_price" },
       { label: "重量", field: "weight_g" },
     ],
   },
@@ -33,7 +33,7 @@ const ATTR_GROUPS: Array<{
   {
     title: "变种信息",
     items: [
-      { label: "建议零售价", field: "suggested_price" },
+      { label: "建议零售价 (元)", field: "suggested_price" },
       { label: "长 (cm)", field: "length_cm" },
       { label: "宽 (cm)", field: "width_cm" },
       { label: "高 (cm)", field: "height_cm" },

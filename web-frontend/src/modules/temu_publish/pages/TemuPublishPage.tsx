@@ -14,6 +14,7 @@ import { TemuImageStrip, TemuThumb } from "../components/TemuImageStrip";
 import { localStore, parsePublishError } from "../data/localStore";
 import { categorySearchTexts, dedupeCategoryPaths } from "../utils/categoryMatch";
 import { matchPresetValue } from "../utils/specMatch";
+import { centsToYuanText, formatYuan, yuanToCents } from "../utils/price";
 import type { ProductTemplate, VariantTemplate } from "../data/localStore";
 import { TEMU_PUBLISH_PREFILL_EVENT, TEMU_PUBLISH_PREFILL_KEY } from "../types";
 import type {
@@ -161,6 +162,75 @@ function storageScope(): string {
 const PRESETS_KEY = "temu_publish_presets_v1";
 /** 变种行（价格/库存/尺寸/重量都是手填的）也要落盘，刷新后不能只剩颜色尺码文本。 */
 const ROWS_KEY = "temu_publish_rows_v1";
+// 变种模板存在 data/localStore.ts（VARIANT_KEY），key 必须保持一致
+const VARIANT_TEMPLATE_KEY = "temu_publish_variant_templates";
+/** 价格单位迁移标记：写过一次就不再动，否则会把用户新填的「元」又除一遍 */
+const PRICE_UNIT_FLAG = "temu_publish_price_unit_yuan_v1";
+
+/**
+ * 一次性把本机存着的价格从「分」换成「元」。
+ *
+ * 为什么直接改存储、而不是只改内存里的值：React 严格模式会把 useState 的初始化
+ * 跑两遍，只改内存的话第二遍又读到原始的分值，1299 就变成了 ¥1299。
+ * 改完立刻写标记，以后再也不碰，用户新填的元不会被二次除算。
+ */
+function migrateLegacyPriceUnit(suffix: string): void {
+  try {
+    const store = window.localStorage;
+    if (store.getItem(PRICE_UNIT_FLAG) === "yuan") return;
+
+    const rowsKey = `${ROWS_KEY}:${suffix}`;
+    const rowsRaw = store.getItem(rowsKey);
+    if (rowsRaw) {
+      const rows = JSON.parse(rowsRaw) as VariantRow[];
+      if (Array.isArray(rows)) {
+        store.setItem(
+          rowsKey,
+          JSON.stringify(
+            rows.map((row) =>
+              row && typeof row === "object"
+                ? {
+                    ...row,
+                    supplierPrice: centsToYuanText(row.supplierPrice),
+                    suggestedPrice: centsToYuanText(row.suggestedPrice),
+                  }
+                : row,
+            ),
+          ),
+        );
+      }
+    }
+
+    const templateKey = `${VARIANT_TEMPLATE_KEY}:${suffix}`;
+    const templateRaw = store.getItem(templateKey);
+    if (templateRaw) {
+      const templates = JSON.parse(templateRaw) as Array<Record<string, unknown>>;
+      if (Array.isArray(templates)) {
+        store.setItem(
+          templateKey,
+          JSON.stringify(
+            templates.map((item) => {
+              const batch = item?.batch as Record<string, unknown> | undefined;
+              if (!batch) return item;
+              return {
+                ...item,
+                batch: {
+                  ...batch,
+                  supplierPrice: centsToYuanText(batch.supplierPrice),
+                  suggestedPrice: centsToYuanText(batch.suggestedPrice),
+                },
+              };
+            }),
+          ),
+        );
+      }
+    }
+
+    store.setItem(PRICE_UNIT_FLAG, "yuan");
+  } catch {
+    // 本机存储不可用：跳过迁移，不影响主流程
+  }
+}
 const RECENT_CATEGORY_KEY = "temu_publish_recent_category_v1";
 const SHOP_INFO_KEY = "temu_shop_info_v1";
 
@@ -243,11 +313,6 @@ function initialCategoryPath(): TemuCategory[] {
 }
 
 /** 价格按「分」存，展示成 ¥。 */
-function formatCents(text?: string): string {
-  const value = Number(text);
-  if (!text || !Number.isFinite(value) || value <= 0) return text || "";
-  return `¥${(value / 100).toFixed(2)}`;
-}
 
 function findParentSpec(specs: TemuParentSpec[], keyword: string, fallbackIndex: number): TemuParentSpec | null {
   const hit = specs.find((item) => item.parentSpecName.includes(keyword));
@@ -522,6 +587,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const [shopEpoch, setShopEpoch] = useState(0);
 
   const [rows, setRows] = useState<VariantRow[]>(() => {
+    // 读之前先把本机老数据里的价格从「分」换成「元」（只做一次）
+    migrateLegacyPriceUnit(storageScope());
     const saved = loadJsonLocal<VariantRow[]>(`${ROWS_KEY}:${storageScope()}`, []);
     return Array.isArray(saved) ? withFreshRowKeys(saved.filter((row) => row && row.key)) : [];
   });
@@ -1520,8 +1587,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       const suggested = Number(row.suggestedPrice || 0);
       if (suggested > 0 && price > 0 && suggested * 20 < price) {
         warnings.push(
-          `${at}建议售价 ${row.suggestedPrice} 明显小于申报价 ${row.supplierPrice}：` +
-            "建议售价单位也是「分」，草稿带入的是店铺币种金额时请改成 ×100。",
+          `${at}建议售价 ${row.suggestedPrice} 元远小于申报价 ${row.supplierPrice} 元：` +
+            "确认一下是不是少填了一位（两个都是元，不用换算）。",
         );
       }
       const skuCode = cleanExtCode(row.extCode);
@@ -1535,9 +1602,10 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         // 半托管供货价按人民币结算：传其它币种会被拒「请选择正确的币种：CNY」
         currency_type: "CNY",
         site_id: SITE_ID,
-        supplier_price: Math.round(parsePositive(row.supplierPrice, `${at}申报价格`)),
+        // 界面填元，接口收分（见 parseYuanToCents）
+        supplier_price: yuanToCents(row.supplierPrice, `${at}申报价格`),
         suggested_price: row.suggestedPrice.trim()
-          ? Math.round(parsePositive(row.suggestedPrice, `${at}建议售价`))
+          ? yuanToCents(row.suggestedPrice, `${at}建议售价`)
           : null,
         // 库存 0 是合法的（Temu 会建品但不可售），别拿价格的规则卡它
         stock: parseStock(row.stock, `${at}库存`),
@@ -2241,7 +2309,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   {[
                     prefillInfo.specLabel ? `变种 ${prefillInfo.specLabel}` : "",
                     prefillInfo.imageCount ? `图 ${prefillInfo.imageCount} 张` : "",
-                    prefillInfo.declaredPrice ? `申报价 ${formatCents(prefillInfo.declaredPrice)}` : "",
+                    prefillInfo.declaredPrice ? `申报价 ${formatYuan(prefillInfo.declaredPrice)}` : "",
                   ]
                     .filter(Boolean)
                     .join(" · ") || "标题/图片已填好，核对后补类目即可"}
@@ -3031,7 +3099,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               </div>
               <div>
                 <dt>申报价</dt>
-                <dd>{firstPrice ? formatCents(firstPrice) : "—"}</dd>
+                <dd>{firstPrice ? formatYuan(firstPrice) : "—"}</dd>
               </div>
             </dl>
             <div className="temu-rail-actions">
