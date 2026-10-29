@@ -1016,23 +1016,38 @@ textarea.temu-input {
 .temu-bulk-menu-wrap {
   position: relative;
 }
+/* 批量改价触发器：原来写死一套蓝（#1f6f92 / #f4fbfe），换 peach/alpine 这类主题会串色，
+   改成跟按钮体系同一套主题变量 */
 .temu-bulk-trigger {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 6px 12px;
-  border: 1px solid #cfe1eb;
-  border-radius: 8px;
-  color: #1f6f92;
-  background: #f4fbfe;
-  font-size: 0.78rem;
-  font-weight: 800;
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--theme-module-border, #cfe1eb);
+  border-radius: var(--radius-md, 10px);
+  color: var(--theme-module-primary-strong, #1f6f92);
+  background: var(--theme-module-surface-tint, #f4fbfe);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 650;
   cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease,
+    transform 0.12s ease;
 }
 .temu-bulk-trigger:hover,
 .temu-bulk-trigger.is-open {
-  border-color: #8ecfe6;
-  background: #e9f8fe;
+  border-color: var(--theme-module-primary-strong, #8ecfe6);
+  background: var(--theme-module-surface-soft, #e9f8fe);
+}
+.temu-bulk-trigger:active {
+  transform: translateY(1px);
+}
+.temu-bulk-trigger:focus-visible {
+  outline: 2px solid var(--theme-module-primary-strong, #087bf5);
+  outline-offset: 2px;
 }
 .temu-bulk-panel {
   position: absolute;
@@ -2228,13 +2243,38 @@ textarea.temu-input {
 }
 
 .is-console .temu-variant-del {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* 固定 24×24：原来只有字号，hover 变色时行高会抖一下 */
+  width: 24px;
+  height: 24px;
+  padding: 0;
   border: 0;
-  border-radius: 6px;
-  color: #d75b65;
+  border-radius: 7px;
+  color: #c85c66;
   background: transparent;
+  font: inherit;
   font-size: 15px;
   line-height: 1;
   cursor: pointer;
+  transition:
+    color 0.15s ease,
+    background-color 0.15s ease;
+}
+
+.is-console .temu-variant-del:hover:not(:disabled) {
+  color: #b3313d;
+  background: #ffecee;
+}
+
+.is-console .temu-variant-del:active:not(:disabled) {
+  background: #ffdfe2;
+}
+
+.is-console .temu-variant-del:focus-visible {
+  outline: 2px solid #d75b65;
+  outline-offset: 1px;
 }
 
 .is-console .temu-variant-del:disabled {
@@ -2442,6 +2482,26 @@ textarea.temu-input {
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
+}
+
+.temu-fail-entry {
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease,
+    transform 0.12s ease;
+}
+
+.temu-fail-entry:hover {
+  filter: brightness(0.98);
+}
+
+.temu-fail-entry:active {
+  transform: translateY(1px);
+}
+
+.temu-fail-entry:focus-visible {
+  outline: 2px solid var(--theme-module-primary-strong, #087bf5);
+  outline-offset: 2px;
 }
 
 .temu-fail-entry.has-dot {
@@ -3054,24 +3114,21 @@ textarea.temu-input {
   gap: 8px;
 }
 
-.is-console .temu-console-actions .temu-btn {
-  min-height: 34px;
-  padding: 7px 14px;
+/* 只作用于次要按钮：这条选择器比 .temu-btn-primary 具体，
+   原来会把主按钮的实心底色与白字一起冲成浅底灰字（主按钮因此不够醒目） */
+.is-console .temu-console-actions .temu-btn:not(.temu-btn-primary) {
   border-color: var(--theme-module-border, #dce8f2);
   background: var(--theme-module-surface-soft, #f6fafd);
   color: var(--theme-text-secondary, #527089);
-  font-size: 0.78rem;
 }
 
-.is-console .temu-console-actions .temu-btn:hover:not(:disabled) {
+.is-console .temu-console-actions .temu-btn:not(.temu-btn-primary):hover:not(:disabled) {
   border-color: var(--theme-module-border-strong, #bcd6ec);
   color: var(--theme-text-primary, #1a3551);
 }
 
 .is-console .temu-console-actions .temu-btn-primary {
   padding-inline: 20px;
-  font-weight: 750;
-  box-shadow: 0 10px 20px -14px var(--theme-module-shadow, rgba(8, 123, 245, 0.7));
 }
 
 /* 区块卡：左侧状态条（灰=未开始 / 蓝=当前 / 绿=已完成） */
@@ -3167,4 +3224,132 @@ textarea.temu-input {
   .is-console .temu-console-actions {
     justify-content: flex-start;
   }
+}
+
+
+/* ================================================================
+   按钮体系（2026-10-29）
+   —— 一套尺寸、一套层级、明确的交互反馈。只动样式，不碰逻辑。
+   原来的问题：3 套高度（34 / 26 / 26px）、hover 只变边框、没有按下反馈、
+   没有键盘焦点、主按钮靠 brightness 提亮（发灰）、禁用的主按钮还留着投影。
+   ================================================================ */
+
+/* 高度改成「上下 0 内边距 + min-height + line-height:1」：
+   文字永远垂直居中，原来 7px 内边距配不同字号，并排时高度会差 1~2px */
+.temu-btn {
+  gap: 7px;
+  min-height: 34px;
+  padding: 0 15px;
+  /* 圆角跟主题走，别写死：有的主题 --radius-md 更小 */
+  border-radius: var(--radius-md, 10px);
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  line-height: 1;
+  white-space: nowrap;
+  transition:
+    color 0.15s ease,
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    box-shadow 0.18s ease,
+    transform 0.12s ease,
+    filter 0.15s ease;
+}
+
+/* 次要按钮 hover：整块底色变化，比只改边框"有回应"。
+   排除主按钮/危险/紧急，否则会把它们的实心底色冲成浅色。 */
+.temu-btn:not(.temu-btn-primary):not(.is-danger):not(.is-urgent):hover:not(:disabled) {
+  border-color: var(--theme-module-border-strong, #b9d7ee);
+  background: var(--theme-module-surface-tint, #eff7fd);
+  color: var(--theme-text-primary, #16324f);
+}
+
+/* 按下：轻微下沉 + 阴影收紧 —— 点了有手感 */
+.temu-btn:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: none;
+}
+
+/* 键盘焦点：Tab 过来要看得见（配合 Ctrl+Enter 的键盘工作流） */
+.temu-btn:focus-visible,
+.temu-link:focus-visible {
+  outline: 2px solid var(--theme-module-primary-strong, #087bf5);
+  outline-offset: 2px;
+}
+
+/* 主按钮：实心主色 + 顶部一道内高光 + 柔和下沉阴影，比单纯 brightness 有质感 */
+.temu-btn-primary {
+  border-color: transparent;
+  color: #fff;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0) 58%),
+    var(--theme-module-primary-strong, #087bf5);
+  font-weight: 700;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.24) inset,
+    0 8px 18px -12px var(--theme-module-shadow, rgba(8, 123, 245, 0.75));
+}
+
+.temu-btn-primary:hover:not(:disabled) {
+  color: #fff;
+  filter: brightness(1.07);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.28) inset,
+    0 12px 24px -12px var(--theme-module-shadow, rgba(8, 123, 245, 0.8));
+}
+
+.temu-btn-primary:active:not(:disabled) {
+  filter: brightness(0.96);
+}
+
+/* 禁用的主按钮：不许留投影（留着看着像还能点） */
+.temu-btn-primary:disabled {
+  color: var(--theme-text-muted, #9aa9b8);
+  background: var(--theme-module-surface-soft, #eef2f6);
+  border-color: transparent;
+  box-shadow: none;
+  filter: none;
+}
+
+/* 小号：28px（原来 26px 配 12px 字偏挤）；is-small 与 temu-btn-sm 统一成一套 */
+.is-console .temu-btn-sm,
+.is-console .temu-btn.is-small {
+  min-height: 28px;
+  padding: 0 11px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+/* 顶部操作区统一回基础尺寸，不再单独一套 0.78rem */
+.is-console .temu-console-actions .temu-btn {
+  min-height: 34px;
+  padding: 0 15px;
+  font-size: 13px;
+}
+
+/* 有未应用的值时（应用到全部）：加一个左侧小圆点，比纯黄底更抓眼 */
+.temu-btn.is-urgent {
+  position: relative;
+}
+
+.temu-btn.is-urgent::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #e08a00;
+  flex: none;
+}
+
+/* 文字链接按钮：hover 出下划线，别只靠颜色变化 */
+.temu-link:hover:not(:disabled) {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* 按钮区最后一颗按钮贴右（操作列、行尾动作）保持原来的对齐，只调间距 */
+.is-console .temu-rail-actions,
+.is-console .temu-console-actions,
+.temu-publish-actions {
+  gap: 8px;
 }

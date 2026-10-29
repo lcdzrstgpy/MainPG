@@ -496,6 +496,29 @@ function goodsIdOf(result: unknown): string {
 }
 
 /** 分区标题：编号 + 名称（如「1 基本信息」）+ 右侧状态。 */
+/**
+ * 按钮里的小图标：统一 14px、描边跟随 currentColor（换主题自动变色）。
+ * 只给侧栏那两颗主操作按钮用，顶部按钮保持纯文字（那里四个按钮已经够挤）。
+ */
+function BtnIcon({ path }: { path: string }) {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path
+        d={path}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+const ICON_CHECK = "M3 8.4l3.1 3.1L13 4.9";
+const ICON_SUBMIT = "M8 12.5V4M4.6 7.4L8 4l3.4 3.4";
+const ICON_NEXT = "M3.5 8h9M9 4.5L12.5 8 9 11.5";
+
 function SectionHead({
   step,
   index,
@@ -3029,9 +3052,10 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               )}
               <button
                 type="button"
-                className="temu-btn is-danger"
+                className="temu-btn temu-btn-primary"
                 disabled={submitDisabled}
                 onClick={() => void publishGoods()}
+                title="不可撤销；快捷键 Ctrl+Enter"
               >
                 {publishing ? "提交中…" : "提交发布"}
               </button>
@@ -3181,6 +3205,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 disabled={busy !== "" || !ready}
                 onClick={() => void checkMandatory()}
               >
+                <BtnIcon path={ICON_CHECK} />
                 {busy === "mandatory" ? "校验中…" : "检查必填"}
               </button>
               {publishResult ? (
@@ -3190,6 +3215,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   onClick={startNextItem}
                   title="清掉标题/图片/货号/变种；类目、属性、运费模板、仓库都留着"
                 >
+                  <BtnIcon path={ICON_NEXT} />
                   发下一条
                 </button>
               ) : (
@@ -3200,6 +3226,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   onClick={() => void publishGoods()}
                   title="快捷键 Ctrl+Enter"
                 >
+                  <BtnIcon path={ICON_SUBMIT} />
                   {publishing ? "提交中…" : "提交发布"}
                 </button>
               )}

@@ -977,3 +977,49 @@ test("Ctrl/⌘ + Enter 直接提交，且不会重复上架", () => {
   assert.match(page, /const publishRef = useRef\(publishGoods\);/);
   assert.match(page, /void publishRef\.current\(\);/);
 });
+
+test("按钮体系：一套尺寸、层级不互相覆盖、交互反馈齐全", () => {
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+
+  // 尺寸只剩两档：34 / 28（原来 34 / 26 / 26 三套）
+  assert.match(css, /\.is-console \.temu-btn-sm,\s*\n\.is-console \.temu-btn\.is-small \{/);
+  assert.match(css, /min-height: 34px;\s*\n\s*padding: 0 15px;/);
+
+  // 顶部操作区那条"浅底灰字"必须排除主按钮：它选择器比 .temu-btn-primary 具体，
+  // 不排除就会把主按钮的实心底色和白字冲成浅底（之前就是这样，主按钮不够醒目）
+  assert.match(css, /\.is-console \.temu-console-actions \.temu-btn:not\(\.temu-btn-primary\) \{/);
+  assert.doesNotMatch(
+    css,
+    /\.is-console \.temu-console-actions \.temu-btn \{[^}]*background/,
+    "不带 :not 的那条不能设 background，否则会盖掉主按钮",
+  );
+
+  // 交互反馈：hover 换底色 / active 下沉 / 键盘焦点可见
+  assert.match(css, /\.temu-btn:not\(\.temu-btn-primary\):not\(\.is-danger\):not\(\.is-urgent\):hover:not\(:disabled\)/);
+  assert.match(css, /\.temu-btn:active:not\(:disabled\) \{\s*\n\s*transform: translateY\(1px\);/);
+  assert.match(css, /\.temu-btn:focus-visible,\s*\n\.temu-link:focus-visible \{/);
+
+  // 禁用的主按钮不许留投影，否则看着像还能点
+  assert.match(css, /\.temu-btn-primary:disabled \{[^}]*box-shadow: none;/);
+
+  // 圆角跟主题走，不写死
+  assert.match(css, /border-radius: var\(--radius-md, 10px\);/);
+});
+
+test("批量改价触发器/行删除按钮走主题变量，不写死颜色", () => {
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+
+  // 触发器原来写死 #1f6f92 / #f4fbfe：换 peach / alpine 主题会串成一套不协调的蓝
+  const trigger = css.slice(css.indexOf(".temu-bulk-trigger {"), css.indexOf(".temu-bulk-panel {"));
+  // 三个关键属性都必须走主题变量（fallback 里留老颜色是对的，不算硬编码）
+  assert.match(trigger, /border: 1px solid var\(--theme-module-border/);
+  assert.match(trigger, /color: var\(--theme-module-primary-strong/);
+  assert.match(trigger, /background: var\(--theme-module-surface-tint/);
+  // hover 也不能回落到固定色
+  assert.match(trigger, /background: var\(--theme-module-surface-soft/);
+
+  // 行尾 × ：固定 24×24（原来只有字号，hover 时行高会抖），且有反馈
+  assert.match(css, /\.is-console \.temu-variant-del \{[^}]*width: 24px;/);
+  assert.match(css, /\.is-console \.temu-variant-del:hover:not\(:disabled\)/);
+  assert.match(css, /\.is-console \.temu-variant-del:focus-visible/);
+});
