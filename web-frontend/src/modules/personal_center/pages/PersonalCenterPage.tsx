@@ -195,8 +195,8 @@ const pricingFeatures: Array<{ key: string; label: string; note: string }> = [
 
 /** POD 模块展示名兜底：服务端未给 label 时按计费画像 key 展示。 */
 const POD_PRICING_LABELS: Record<string, string> = {
-  pod_random_v1: "POD 全定制",
-  pod_semi_v1: "POD 半定制",
+  pod_random_v1: "POD 全款直出",
+  pod_semi_v1: "POD 印花创作",
   pod_fission_v1: "POD 爆款裂变",
   // 复刻已统一：新流水用 pod_replica_v1；历史 A/B 两档流水仍展示同一个名字。
   pod_replica_v1: "POD 爆款复刻",
@@ -231,6 +231,9 @@ function formatPointsRange(min: number, max: number) {
 export type UsageServiceGroup = "combo" | "pod" | "batch" | "image" | "text";
 
 export function usageServiceGroup(entry: BillingUsageEntry): UsageServiceGroup {
+  // 自由定制两个画像优先按 billing_profile 归类：远端返回的 feature_key 可能仍是
+  // pod_customization.batch，也可能随版本变化，不能只靠 feature_key 判断。
+  if (String(entry.billing_profile || "").startsWith("pod_free_")) return "pod";
   const fk = String(entry.feature_key || "");
   if (fk === "pod_customization.batch") return "pod";
   if (fk === "product_processing.image_grid_2k") return "image";
@@ -252,12 +255,15 @@ export const USAGE_SERVICE_LABEL: Record<UsageServiceGroup, string> = {
 /** POD 三类服务的展示名：消费流水「服务」按 billing_profile 细分，而非统一叫「POD 定制」。 */
 const POD_SERVICE_LABEL: Record<string, string> = {
   pod_fission_v1: "POD 爆款裂变",
-  pod_random_v1: "POD 全定制",
-  pod_semi_v1: "POD 半定制",
+  pod_random_v1: "POD 全款直出",
+  pod_semi_v1: "POD 印花创作",
   // 复刻不再分档：new 流水统一 pod_replica_v1；A/B 仅为历史流水兼容，展示名一致。
   pod_replica_v1: "POD 爆款复刻",
   pod_replica_v1_a: "POD 爆款复刻",
   pod_replica_v1_b: "POD 爆款复刻",
+  // 自由定制按模型分档计费（Flash 34 / Pro 72），流水里必须分开显示，不能合并成「POD 定制」。
+  pod_free_flash_v1: "POD 自由创意 · Flash",
+  pod_free_pro_v1: "POD 自由创意 · Pro",
 };
 
 export function usageServiceLabel(entry: BillingUsageEntry): string {

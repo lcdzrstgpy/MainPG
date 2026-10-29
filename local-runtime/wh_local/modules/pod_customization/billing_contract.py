@@ -31,6 +31,13 @@ POD_BILLING_PROFILE_RANDOM = "pod_random_v1"
 POD_BILLING_PROFILE_RANDOM_GRID = "pod_random_grid_v1"
 POD_BILLING_PROFILE_FISSION = "pod_fission_v1"
 POD_BILLING_PROFILE_SEMI = "pod_semi_v1"
+# 自由定制：一张图 = 一个 link；Flash / Pro 两个独立画像，单价由服务端倍率决定。
+POD_BILLING_PROFILE_FREE_FLASH = "pod_free_flash_v1"
+POD_BILLING_PROFILE_FREE_PRO = "pod_free_pro_v1"
+FREE_BILLING_PROFILES = (
+    POD_BILLING_PROFILE_FREE_FLASH,
+    POD_BILLING_PROFILE_FREE_PRO,
+)
 # 爆款复刻统一画像：不再区分「普通生成 / 高清直出」，也不区分四宫格与四图；
 # 复刻固定每款直出四张单图，客户端只上报款数（link_count），由远端按「款」统一定价。
 # 历史批次冻结/结算里仍可能留有 pod_replica_v1_a / pod_replica_v1_b（旧 A/B 两档），
@@ -40,6 +47,7 @@ POD_BILLING_PROFILE_REPLICA = "pod_replica_v1"
 # v2 请求里的 module 字段（与账本 module 列同值）。
 POD_MODULE_CUSTOM = "pod_custom"
 POD_MODULE_SEMI = "pod_semi"
+POD_MODULE_FREE = "pod_free"
 POD_MODULE_REPLICA = "pod_replica"
 POD_MODULE_FISSION = "pod_fission"
 # 零计费动作（纯 title scope：brief / composition / 识图 / 结构分析 …）单独归类。
@@ -60,6 +68,8 @@ SEMI_STYLES_PER_GROUP = 4
 
 # 结算单元 ID 从调用 id 里解析 ``:style:{n}:``；n 是历史 1 基序号，unit_id 统一 0 基。
 _STYLE_MARKER = re.compile(r":style:(\d+):")
+# 自由定制的调用 id 里带 ``:variant:{n}:``，用于按「张」分组而不是按「款」。
+_FREE_VARIANT_MARKER = re.compile(r":variant:(\d+):")
 
 _PRODUCT_BATCH_FEATURES: tuple[tuple[PodFeature, str], ...] = (
     ("pod.title", "title"),
@@ -134,6 +144,10 @@ class PodCallPlan:
     # 列式生成的交付款数（>0 即为两级批次）。按「组」上报：1 组 = 1 link，
     # item_count 仍是款数（= 组数 × 4），使用 pod_random_grid_v1 画像。
     column_style_count: int = 0
+    # 自由定制的变体号（1..6）。非空时按「张」分组：1 张 = 1 link。
+    free_variants: tuple[int, ...] = ()
+    # 自由定制冻结的模型对应的 provider key（Flash/Pro 都是 ark）；空值回落全局。
+    image_grant_provider: str = ""
     # v2 账本字段：module 归类、结算单元类型与单元 ID（0 基，与 link_idx 一一对应）。
     # 单元 ID 在生成本次计划时确定并持久化；冻结、续跑、重试、结算全程复用。
     module: str = ""
@@ -145,7 +159,9 @@ class PodCallPlan:
             object.__setattr__(
                 self,
                 "unit_kind",
-                "group" if (self.semi_item_count or self.column_style_count) else "style",
+                "panel"
+                if self.free_variants
+                else ("group" if (self.semi_item_count or self.column_style_count) else "style"),
             )
         if not self.module:
             object.__setattr__(self, "module", self._derive_module())
@@ -153,6 +169,8 @@ class PodCallPlan:
             object.__setattr__(self, "unit_ids", self._derive_unit_ids())
 
     def _derive_module(self) -> str:
+        if self.free_variants or self.billing_profile in FREE_BILLING_PROFILES:
+            return POD_MODULE_FREE
         if self.semi_item_count or self.billing_profile == POD_BILLING_PROFILE_SEMI:
             return POD_MODULE_SEMI
         if self.billing_profile == POD_BILLING_PROFILE_FISSION:
@@ -167,6 +185,8 @@ class PodCallPlan:
     def _derive_unit_ids(self) -> tuple[str, ...]:
         if not self.calls:
             return ()
+        if self.free_variants:
+            return tuple(f"panel-{variant - 1}" for variant in self.free_variants)
         if self.column_style_count:
             groups = sorted(
                 {
@@ -206,6 +226,62 @@ class PodCallPlan:
         if not self.semi_item_count or self.semi_item_count % SEMI_STYLES_PER_GROUP != 0:
             return 0
         return self.semi_item_count // SEMI_STYLES_PER_GROUP
+
+    @property
+    def free_panel_count(self) -> int:
+        """自由定制的 link 数：一张图 = 一个 link。"""
+        return len(self.free_variants)
+
+    @classmethod
+    def for_free_panels(
+        cls,
+        batch_id: str,
+        *,
+        variants: Sequence[int],
+        billing_profile: str,
+        title_enabled: bool = False,
+        idempotency_key: str = "",
+    ) -> "PodCallPlan":
+        """自由定制的一次冻结：``variants`` 是本次要生成的变体号（1..6）。
+
+        阶段一传 ``(1,)``，可带标题调用；阶段二传 ``(2..N)``，只含图片调用。
+        每张图预留 2 次生图尝试，与现有 POD 口径一致。
+        """
+        normalized = tuple(int(variant) for variant in variants)
+        if not normalized or len(set(normalized)) != len(normalized):
+            raise ValueError("free variants must be non-empty and unique")
+        if any(variant < 1 or variant > 6 for variant in normalized):
+            raise ValueError("free variants must be between 1 and 6")
+        if billing_profile not in FREE_BILLING_PROFILES:
+            raise ValueError("free billing profile is invalid")
+        calls: list[PodPlannedCall] = []
+        for variant in normalized:
+            calls.extend(
+                PodPlannedCall(
+                    f"{batch_id}:style:1:variant:{variant}:image:{attempt}",
+                    "pod.image",
+                )
+                for attempt in (1, 2)
+            )
+        if title_enabled:
+            calls.extend(
+                PodPlannedCall(
+                    f"{batch_id}:style:1:title:{attempt}", "pod.title"
+                )
+                for attempt in range(1, TITLE_ATTEMPTS + 1)
+            )
+        if not idempotency_key:
+            suffix = "initial" if normalized == (1,) else "panels-" + "-".join(
+                str(variant) for variant in normalized
+            )
+            idempotency_key = f"pod:free-batch:{batch_id}:{suffix}"
+        return cls(
+            idempotency_key=idempotency_key,
+            calls=tuple(calls),
+            billing_profile=billing_profile,
+            free_variants=normalized,
+            image_grant_provider="ark",
+        )
 
     @classmethod
     def for_semi_batch(cls, batch_id: str, *, count: int) -> "PodCallPlan":
@@ -882,6 +958,16 @@ class PodCallPlan:
         One POD style is one billed product link. Provider retries remain local
         attempts and do not create additional billable subitems.
         """
+        if self.free_variants:
+            # 自由定制：一张图 = 1 link；阶段一可带 title，阶段二只有 four_grid。
+            present = {call.feature for call in self.calls}
+            return {
+                "idempotency_key": self.idempotency_key,
+                "link_count": self.free_panel_count,
+                "item_count": self.free_panel_count,
+                "scope": [remote for pod, remote in _PRODUCT_BATCH_FEATURES if pod in present],
+                "billing_profile": self.billing_profile,
+            }
         if self.column_style_count:
             # 列式生成按「二级批次（4 款）」上报：1 组 = 1 link，item_count 报款数，
             # 沿用 pod_random_v1 的单价配置（不新增画像、不改远端倍率）。
@@ -919,6 +1005,8 @@ class PodCallPlan:
         outcomes: Sequence[PodCallOutcome],
     ) -> dict[str, object]:
         """Fold provider attempts into product-processing subitem outcomes."""
+        if self.free_variants:
+            return self._free_batch_settlement_payload(outcomes)
         # 半定制按「款」展开（口径看 semi_item_count，不看 profile 字符串）。
         if self.semi_item_count:
             return self._semi_batch_settlement_payload(outcomes)
@@ -1031,9 +1119,44 @@ class PodCallPlan:
             for calls in by_style.values()
         )
 
+    def _free_batch_settlement_payload(
+        self, outcomes: Sequence[PodCallOutcome]
+    ) -> dict[str, object]:
+        """自由定制结算：一张图 = 一条 link；标题子项零计费。"""
+        if not self.free_variants:
+            raise ValueError("free settlement requires free variants")
+        outcome_by_call = self._validated_outcomes(outcomes)
+        groups = self._product_batch_groups()
+        present = {call.feature for group in groups for call in group}
+        scope_products = {
+            product for pod, product in _PRODUCT_BATCH_FEATURES if pod in present
+        }
+        items: list[dict[str, object]] = []
+        for link_idx, group in enumerate(groups, start=1):
+            subitems: list[dict[str, str]] = []
+            for pod_feature, product_feature in _PRODUCT_BATCH_FEATURES:
+                if product_feature not in scope_products:
+                    continue
+                matching = [call for call in group if call.feature == pod_feature]
+                succeeded = any(
+                    outcome_by_call[(call.call_id, call.feature)] == "success"
+                    for call in matching
+                )
+                subitems.append(
+                    {
+                        "feature": product_feature,
+                        "status": "success" if succeeded else "no_return",
+                    }
+                )
+            items.append({"link_idx": link_idx, "subitems": subitems})
+        if len(items) != self.free_panel_count:
+            raise ValueError(
+                "free settlement link count does not match the frozen panel count"
+            )
+        return {"items": items}
+
     def _semi_batch_settlement_payload(
-        self,
-        outcomes: Sequence[PodCallOutcome],
+        self, outcomes: Sequence[PodCallOutcome]
     ) -> dict[str, object]:
         """半定制结算：按「组」折叠成一条 subitem（一组 = 1 个 link，默认 32 积分/组，
         实际单价以 freeze 响应的 link_prices 为准）。
@@ -1078,6 +1201,21 @@ class PodCallPlan:
         }
 
     def _product_batch_groups(self) -> tuple[tuple[PodPlannedCall, ...], ...]:
+        if self.free_variants:
+            groups: dict[int, list[PodPlannedCall]] = {
+                variant: [] for variant in self.free_variants
+            }
+            for call in self.calls:
+                match = _FREE_VARIANT_MARKER.search(call.call_id)
+                if match is not None:
+                    group_id = int(match.group(1))
+                elif call.feature == "pod.title":
+                    # 标题只属于阶段一唯一 link；阶段二不会出现标题调用。
+                    group_id = self.free_variants[0]
+                else:
+                    group_id = self.free_variants[0]
+                groups.setdefault(group_id, []).append(call)
+            return tuple(tuple(groups[variant]) for variant in sorted(groups) if groups[variant])
         groups: dict[int, list[PodPlannedCall]] = {}
         for call in self.calls:
             group_id = 1

@@ -53,6 +53,7 @@ const TemuPublishPage = lazy(() => import("../../modules/temu_publish/pages/Temu
 const TemuDraftLibraryPage = lazy(() => import("../../modules/temu_publish/pages/TemuDraftLibraryPage").then((m) => ({ default: m.TemuDraftLibraryPage })));
 const PodCustomizationPage = lazy(() => import("../../modules/pod_customization/pages/PodCustomizationPage").then((m) => ({ default: m.PodCustomizationPage })));
 const PodSemiCustomizationPage = lazy(() => import("../../modules/pod_semi_customization/pages/PodSemiCustomizationPage").then((m) => ({ default: m.PodSemiCustomizationPage })));
+const PodFreeCustomizationPage = lazy(() => import("../../modules/pod_free_customization/pages/PodFreeCustomizationPage").then((m) => ({ default: m.PodFreeCustomizationPage })));
 const PodReplicaPage = lazy(() => import("../../modules/pod_replica/pages/PodReplicaPage").then((m) => ({ default: m.PodReplicaPage })));
 const PodFissionPage = lazy(() => import("../../modules/pod_fission/pages/PodFissionPage").then((m) => ({ default: m.PodFissionPage })));
 const AiVideoPage = lazy(() => import("../../modules/ai_video/pages/AiVideoPage").then((m) => ({ default: m.AiVideoPage })));
@@ -173,6 +174,7 @@ const NON_RESTORABLE_MODULE_IDS: ReadonlySet<string> = new Set(["daily_selection
 const POD_MODULE_IDS: ReadonlySet<WorkspaceModuleId> = new Set<WorkspaceModuleId>([
   "pod_customization",
   "pod_semi_customization",
+  "pod_free_customization",
   "pod_replica",
   "pod_fission",
 ]);
@@ -1127,6 +1129,9 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         break;
       case "pod_semi_customization":
         content = <PodSemiCustomizationPage isActive={isActive} />;
+        break;
+      case "pod_free_customization":
+        content = <PodFreeCustomizationPage isActive={isActive} />;
         break;
       case "pod_replica":
         content = <PodReplicaPage isActive={isActive} />;

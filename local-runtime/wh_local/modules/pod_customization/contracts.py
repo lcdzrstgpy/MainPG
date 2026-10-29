@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Annotated, Any, Literal, TypedDict
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_serializer, model_validator
 
 
 SUPPORTED_PATTERN_COUNTS = (20, 40, 100)
@@ -28,9 +28,26 @@ SEMI_PATTERN_ROLES = ("pattern_1", "pattern_2", "pattern_3", "pattern_4")
 # v4：创意编辑提升为批级硬条款、新增形态/尺寸锁定、材质块按真实材质分支。
 PromptVersion = Literal["v1", "v2", "v3", "v4"]
 
-# 批次模式：全定制 full / 半定制 semi / 爆款复刻 replica。历史批次 mode 默认 full。
-PodBatchMode = Literal["full", "semi", "replica", "fission"]
-POD_BATCH_MODES = ("full", "semi", "replica", "fission")
+# 批次模式：全定制 full / 半定制 semi / 自由定制 free / 爆款复刻 replica / 爆款裂变 fission。
+# 历史批次 mode 默认 full。
+PodBatchMode = Literal["full", "semi", "free", "replica", "fission"]
+POD_BATCH_MODES = ("full", "semi", "free", "replica", "fission")
+
+# 自由定制：一条提示词只出 1 张图；一批次 1 张先出，再选 4~6 张继续。
+MIN_FREE_IMAGE_COUNT = 4
+MAX_FREE_IMAGE_COUNT = 6
+MAX_FREE_PROMPT_LENGTH = 4000
+MAX_FREE_REFERENCE_IMAGES = 4
+# 自由定制只开放豆包 Seedream 两个模型；全局 POD 模型下拉不暴露 Pro。
+FREE_IMAGE_MODEL_FLASH = "doubao-seedream-5-0-flash-260915"
+FREE_IMAGE_MODEL_PRO = "doubao-seedream-5-0-pro-260628"
+FREE_IMAGE_MODELS = (FREE_IMAGE_MODEL_FLASH, FREE_IMAGE_MODEL_PRO)
+FreeImageModel = Literal[
+    "doubao-seedream-5-0-flash-260915",
+    "doubao-seedream-5-0-pro-260628",
+]
+# 变体号 → 发布角色：1~4 复用全定制的四角色，5~6 只进轮播图/描述。
+FREE_PANEL_ROLES = ("hero", "detail_a", "detail_b", "lifestyle", "extra_a", "extra_b")
 # 复刻：一张样图 + 1–200 张目标白底图，每张对应一款。
 MIN_REPLICA_TARGETS = 1
 MAX_REPLICA_TARGETS = 200
@@ -450,6 +467,79 @@ class SemiBatchCreate(BaseModel):
         return self
 
 
+class FreeBatchCreate(BaseModel):
+    """自由定制建批（阶段一）：一条提示词只生成第 1 张。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    client_request_id: str = Field(min_length=1, max_length=128)
+    image_model: FreeImageModel
+    target_image_count: StrictInt = Field(
+        ge=MIN_FREE_IMAGE_COUNT, le=MAX_FREE_IMAGE_COUNT
+    )
+    prompt: str = Field(min_length=1, max_length=MAX_FREE_PROMPT_LENGTH)
+    reference_asset_ids: list[str] = Field(
+        default_factory=list, max_length=MAX_FREE_REFERENCE_IMAGES
+    )
+    title_enabled: bool = True
+    business_fields: BusinessFields = Field(default_factory=BusinessFields)
+    title: str = Field(default="", max_length=120)
+
+    @model_validator(mode="after")
+    def validate_free_batch(self) -> "FreeBatchCreate":
+        if not self.prompt.strip():
+            raise ValueError("生图提示词不能为空")
+        if len(set(self.reference_asset_ids)) != len(self.reference_asset_ids):
+            raise ValueError("参考图不能重复")
+        return self
+
+
+class FreePanelPrompt(BaseModel):
+    """自由定制单槽位生成/重生成：一次只提交当前这一张的提示词。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    prompt: str = Field(min_length=1, max_length=MAX_FREE_PROMPT_LENGTH)
+
+    @model_validator(mode="after")
+    def validate_prompt(self) -> "FreePanelPrompt":
+        if not self.prompt.strip():
+            raise ValueError("提示词不能为空")
+        return self
+
+
+class FreeImageUploadResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    asset_id: str
+    width: int
+    height: int
+    preview_url: str
+
+
+class FreeListingFieldsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    listing_fields: "ListingFields"
+
+
+class FreeSpecCardUpdate(BaseModel):
+    """自由定制单独保存尺寸卡：只改 spec_card，不要求先填完类目/SKU。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    spec_card: SpecCardConfig | None = None
+
+
+class FreePanelReorder(BaseModel):
+    """自由定制拖动排序：把 from 槽位的图移动到 to 槽位（to 已有图则互换）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    from_variant: int = Field(ge=1, le=6)
+    to_variant: int = Field(ge=1, le=6)
+
+
 # --- 爆款复刻：一张样图搬到 1–200 个目标产品，每款独立上架信息 ---
 
 
@@ -484,12 +574,22 @@ class ReplicaAnalyzeRequest(BaseModel):
     """图案迁移方案请求：A 原素材图 + B 目标产品图。
 
     参考图顺序由后端固定为 ``[B, A]``（image 1 = B、image 2 = A），不接受客户端指定。
+    ``force=True`` 跳过同 A/B 的方案缓存，重新调用豆包并覆盖已编辑的正文。
     """
 
     model_config = ConfigDict(extra="forbid")
 
     source_asset_id: str = Field(min_length=1, max_length=64)
     target_asset_id: str = Field(min_length=1, max_length=64)
+    force: bool = False
+
+
+class ReplicaPlanUpdateRequest(BaseModel):
+    """复刻方案手动编辑：只允许改主图提示词正文。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    main_prompt: str = Field(min_length=1, max_length=12000)
 
 
 class ReplicaBatchCreate(BaseModel):
@@ -690,6 +790,8 @@ class SpecCardConfig(BaseModel):
     corner: str = "bottom-right"
     display_unit: str = SPEC_CARD_DISPLAY_UNIT_CM
     cells: tuple[tuple[str, ...], ...] = ()
+    # 自由定制专用：把尺寸卡印到第几张图（1..6）；0 表示不指定（其他模式忽略该字段）。
+    target_variant: int = 0
 
     @model_validator(mode="after")
     def validate_spec_card(self) -> "SpecCardConfig":
@@ -697,10 +799,21 @@ class SpecCardConfig(BaseModel):
             raise ValueError(f"规格卡风格必须是 {' 或 '.join(SPEC_CARD_STYLES)}")
         if self.corner not in SPEC_CARD_CORNERS:
             raise ValueError("规格卡位置必须是右下、左下、右上、左上之一")
+        if not 0 <= int(self.target_variant) <= 6:
+            raise ValueError("规格卡目标图必须是 0~6（0 表示不指定）")
         self.display_unit = validate_spec_card_display_unit(self.display_unit)
         # 空表是合法状态（未配置），由 spec_card_is_configured / 提交拦截处理，这里只校验上限。
         self.cells = validate_spec_card_cells(self.cells, require_content=False)
         return self
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler: Any) -> dict[str, Any]:
+        """target_variant 只在自由定制里赋值；为 0 时不落库/不回包，保持其他模式载荷不变。"""
+
+        data = handler(self)
+        if isinstance(data, dict) and not data.get("target_variant"):
+            data.pop("target_variant", None)
+        return data
 
     @classmethod
     def from_mapping(cls, payload: Mapping[str, Any] | None) -> "SpecCardConfig":
@@ -716,6 +829,7 @@ class SpecCardConfig(BaseModel):
             corner=payload.get("corner", "bottom-right"),
             display_unit=payload.get("display_unit", SPEC_CARD_DISPLAY_UNIT_CM),
             cells=validate_spec_card_cells(payload.get("cells"), require_content=False),
+            target_variant=payload.get("target_variant", 0) or 0,
         )
 
 

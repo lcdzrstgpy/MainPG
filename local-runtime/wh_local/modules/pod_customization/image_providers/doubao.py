@@ -47,6 +47,8 @@ ARK_SQUARE_SIZE = "2048x2048"
 ARK_RESOLUTION_TIER = "2K"
 # 同步调用只有一次往返：2K 出图实测可能上百秒，单次请求给足上限。
 ARK_RESULT_TIMEOUT_SECONDS = 180.0
+# Pro 实测一张 2K 约 160s，180s 余量太小；自由定制单独放宽到 240s。
+ARK_PRO_RESULT_TIMEOUT_SECONDS = 240.0
 # 单次上游调用的错误再试语义由 worker 决定，这里只负责分类。
 ARK_RETRYABLE_STATUS = frozenset({408, 409, 425, 429})
 
@@ -132,6 +134,11 @@ class DoubaoSeedreamImageProvider:
             len(inline_references),
         )
 
+        timeout_seconds = (
+            ARK_PRO_RESULT_TIMEOUT_SECONDS
+            if "seedream-5-0-pro" in str(model)
+            else self._result_timeout_seconds
+        )
         host.acquire_request_token()
         with host.connection_slot(timeout_seconds=30.0):
             host.ensure_open()
@@ -145,7 +152,7 @@ class DoubaoSeedreamImageProvider:
                     "Content-Type": "application/json",
                 },
                 json=body,
-                timeout=self._result_timeout_seconds,
+                timeout=timeout_seconds,
                 allow_redirects=False,
             )
             try:

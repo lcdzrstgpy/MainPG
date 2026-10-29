@@ -27,11 +27,17 @@ from .contracts import (
     CompositionUpdateRequest,
     DirectListingTrialCreate,
     FissionBatchCreate,
+    FreeBatchCreate,
+    FreeListingFieldsUpdate,
+    FreePanelReorder,
+    FreeSpecCardUpdate,
+    FreePanelPrompt,
     ExportSelectionUpdate,
     ManualTitleUpdate,
     RegenerateItemCreate,
     ReplicaAnalyzeRequest,
     ReplicaBatchCreate,
+    ReplicaPlanUpdateRequest,
     SceneOptimizationCreate,
     SemiBatchCreate,
     SpecCardPreviewRequest,
@@ -72,6 +78,7 @@ class PodRequestLimitMiddleware:
             f"{_POD_API_PREFIX}/templates",
             f"{_POD_API_PREFIX}/replica/images",
             f"{_POD_API_PREFIX}/fission/images",
+            f"{_POD_API_PREFIX}/free/images",
         }
         max_bytes = (
             POD_TEMPLATE_MULTIPART_MAX_BYTES
@@ -341,6 +348,161 @@ def create_router(
             },
         )
 
+    # --- 自由定制（用户自带提示词，一条提示词一张图） ---
+    @router.post("/free/images")
+    async def upload_free_reference(
+        request: Request, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        length = request.headers.get("content-length", "")
+        if length.isdigit() and int(length) > POD_TEMPLATE_MULTIPART_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="POD image upload is too large")
+        form = await request.form()
+        upload = form.get("file")
+        if upload is None or not hasattr(upload, "read"):
+            raise HTTPException(status_code=400, detail="file is required")
+        try:
+            content = await upload.read(MAX_TEMPLATE_UPLOAD_BYTES + 1)
+            if len(content) > MAX_TEMPLATE_UPLOAD_BYTES:
+                raise HTTPException(status_code=413, detail="POD image upload is too large")
+            return _call(
+                service.upload_free_reference,
+                actor,
+                filename=str(getattr(upload, "filename", "free-reference")),
+                content=content,
+            )
+        finally:
+            await upload.close()
+
+    @router.post("/free/batches")
+    def create_free_batch(
+        body: FreeBatchCreate, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        return _call(service.create_free_batch, actor, body, enqueue=start_workers)
+
+    @router.get("/free/batches")
+    def list_free_batches(
+        limit: int = Query(default=20, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        permitted(actor, "pod_customization.read")
+        return _call(service.list_free_batches, actor, limit=limit, offset=offset)
+
+    @router.get("/free/batches/{batch_id}")
+    def get_free_batch(
+        batch_id: str, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        permitted(actor, "pod_customization.read")
+        return _call(service.get_free_batch, actor, batch_id)
+
+    @router.post("/free/batches/{batch_id}/panels/{variant_index}/generate")
+    def generate_free_panel(
+        batch_id: str,
+        variant_index: int,
+        body: FreePanelPrompt,
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        _call(service.get_free_batch, actor, batch_id)
+        return _call(
+            service.generate_free_panel,
+            actor,
+            batch_id,
+            variant_index,
+            body.prompt,
+            enqueue=start_workers,
+        )
+
+    @router.post("/free/batches/{batch_id}/panels/{variant_index}/retry")
+    def retry_free_panel(
+        batch_id: str,
+        variant_index: int,
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        _call(service.get_free_batch, actor, batch_id)
+        return _call(
+            service.retry_free_panel,
+            actor,
+            batch_id,
+            variant_index,
+            enqueue=start_workers,
+        )
+
+    @router.put("/free/batches/{batch_id}/listing-fields")
+    def update_free_listing_fields(
+        batch_id: str,
+        body: FreeListingFieldsUpdate,
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        return _call(service.update_free_listing_fields, actor, batch_id, body)
+
+    @router.post("/free/batches/{batch_id}/panels/reorder")
+    def reorder_free_panels(
+        batch_id: str,
+        body: FreePanelReorder,
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        return _call(service.reorder_free_panels, actor, batch_id, body)
+
+    @router.put("/free/batches/{batch_id}/spec-card")
+    def update_free_spec_card(
+        batch_id: str,
+        body: FreeSpecCardUpdate,
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        return _call(service.update_free_spec_card, actor, batch_id, body)
+
+    @router.post("/free/batches/{batch_id}/spec-card/reprint")
+    def reprint_free_spec_card(
+        batch_id: str,
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        return _call(service.reprint_free_spec_card, actor, batch_id)
+
+    @router.post("/free/batches/{batch_id}/cancel")
+    def cancel_free_batch(
+        batch_id: str, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        _call(service.get_free_batch, actor, batch_id)
+        return _call(service.cancel_batch, actor, batch_id)
+
+    @router.delete("/free/batches/{batch_id}")
+    def delete_free_batch(
+        batch_id: str, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        _call(service.get_free_batch, actor, batch_id)
+        return _call(service.delete_batch, actor, batch_id)
+
+    @router.get("/free/batches/{batch_id}/download")
+    def download_free_zip(
+        batch_id: str, actor: Actor = Depends(actor_from_authorization)
+    ) -> Response:
+        permitted(actor, "pod_customization.export")
+        content, filename, item_count = _call(
+            service.download_free_zip, actor, batch_id
+        )
+        ascii_fallback = f"pod-free-{batch_id[:8]}-{item_count}.zip"
+        return Response(
+            content=content,
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="{ascii_fallback}"; '
+                    f"filename*=UTF-8''{quote(filename)}"
+                ),
+                "X-POD-Free-Count": str(item_count),
+            },
+        )
+
     # --- 爆款复刻：独立上传 + 复刻批次创建/查询 ---
     @router.post("/replica/images")
     async def upload_replica_image(request: Request, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
@@ -373,6 +535,22 @@ def create_router(
     ) -> dict[str, Any]:
         permitted(actor, "pod_customization.create")
         return _call(service.analyze_replica_assets, actor, body)
+
+    @router.get("/replica/analyses/{analysis_id}")
+    def get_replica_analysis(
+        analysis_id: str, actor: Actor = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        permitted(actor, "pod_customization.read")
+        return _call(service.get_replica_analysis, actor, analysis_id)
+
+    @router.put("/replica/analyses/{analysis_id}")
+    def update_replica_analysis(
+        analysis_id: str,
+        body: ReplicaPlanUpdateRequest,
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        return _call(service.update_replica_analysis_prompt, actor, analysis_id, body.main_prompt)
 
     @router.post("/replica/batches")
     def create_replica_batch(body: ReplicaBatchCreate, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:

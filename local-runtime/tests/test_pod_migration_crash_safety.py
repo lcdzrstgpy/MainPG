@@ -49,6 +49,8 @@ MIGRATION_NAMES = (
     "027_billing_ledger_v2",
     "028_replica_transfer_plans",
     "029_fission_ai_plans",
+    "030_free_customization",
+    "031_replica_transfer_plan_edit",
 )
 
 

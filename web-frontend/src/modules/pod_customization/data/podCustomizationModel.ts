@@ -133,6 +133,7 @@ export function cloneSpecCardConfig(config: SpecCardConfig): SpecCardConfig {
     corner: config.corner,
     display_unit: config.display_unit ?? "cm",
     cells: config.cells.map((row) => [...row]),
+    ...(config.target_variant ? { target_variant: config.target_variant } : {}),
   };
 }
 

@@ -22,6 +22,8 @@ from ...session import Actor
 from . import spec_card
 from .assets import PodAssetStore
 from .billing_contract import (
+    POD_BILLING_PROFILE_FREE_FLASH,
+    POD_BILLING_PROFILE_FREE_PRO,
     POD_BILLING_PROFILE_RANDOM,
     POD_BILLING_PROFILE_FISSION,
     POD_BILLING_PROFILE_REPLICA,
@@ -46,9 +48,16 @@ from .contracts import (
     CompositionRequest,
     CompositionUpdateRequest,
     DirectListingTrialCreate,
+    FREE_IMAGE_MODEL_PRO,
+    FREE_PANEL_ROLES,
     FissionBatchCreate,
     FissionImageRole,
     FissionImageUploadResponse,
+    FreeBatchCreate,
+    FreeImageUploadResponse,
+    FreeListingFieldsUpdate,
+    FreePanelReorder,
+    FreeSpecCardUpdate,
     GENERATION_LAYOUT_COLUMN,
     ReplicaAnalyzeRequest,
     ReplicaBatchCreate,
@@ -58,6 +67,7 @@ from .contracts import (
     validate_spec_card,
 )
 from .ai_runtime import resolve_pod_image_model
+from .image_providers.catalog import normalize_free_model
 from .brief_runtime import PodBriefRequest
 from .column_generation import group_roles_to_freeze
 from .composition_runtime import (
@@ -74,6 +84,7 @@ from .fission_runtime import (
     FissionPlanRequest,
 )
 from .replica_analysis_runtime import (
+    MAIN_PROMPT_MAX_LENGTH,
     MAIN_PROMPT_MODEL,
     MAIN_PROMPT_REFERENCE_ORDER,
     MAIN_PROMPT_VERSION,
@@ -654,6 +665,378 @@ class PodCustomizationService:
             pass
         return self._batch_payload(batch)
 
+    @staticmethod
+    def _free_billing_profile(image_model: str) -> str:
+        return (
+            POD_BILLING_PROFILE_FREE_PRO
+            if normalize_free_model(image_model) == FREE_IMAGE_MODEL_PRO
+            else POD_BILLING_PROFILE_FREE_FLASH
+        )
+
+    def upload_free_reference(
+        self,
+        actor: Actor,
+        *,
+        filename: str,
+        content: bytes,
+    ) -> dict[str, Any]:
+        """自由定制参考图上传：一张一传，最多 4 张，只作用于第 1 张。"""
+        stored = self.assets.save_image(actor.workspace_id, actor.id, content)
+        asset = self.repository.create_asset(
+            workspace_id=actor.workspace_id,
+            owner_user_id=actor.id,
+            kind="free_reference",
+            filename=filename,
+            relative_path=stored.relative_path,
+            content_type=stored.content_type,
+            byte_size=stored.byte_size,
+            sha256=stored.sha256,
+            width=stored.width,
+            height=stored.height,
+        )
+        return FreeImageUploadResponse(
+            asset_id=asset["asset_id"],
+            width=stored.width,
+            height=stored.height,
+            preview_url=f"/api/pod-customization/assets/{asset['asset_id']}",
+        ).model_dump()
+
+    def create_free_batch(
+        self, actor: Actor, request: FreeBatchCreate, *, enqueue: bool = True
+    ) -> dict[str, Any]:
+        """自由定制阶段一：建批 + 冻结 1 张图（可选标题）+ 入队。"""
+        request = request.model_copy(
+            update={"image_model": normalize_free_model(request.image_model)}
+        )
+        for asset_id in request.reference_asset_ids:
+            self.repository.get_asset(asset_id, actor.workspace_id, actor.id)
+        batch_id = uuid.uuid4().hex
+        self._ensure_semi_placeholder(actor)
+        profile = self._free_billing_profile(request.image_model)
+        billing_run = (
+            self._freeze_free_panels(
+                actor,
+                batch_id,
+                variants=(1,),
+                billing_profile=profile,
+                # 标题等所有图出完后再生成，首图计划不带 title 调用。
+                title_enabled=False,
+                idempotency_key=f"pod:free-batch:{batch_id}:initial",
+                action_type="batch_initial",
+            )
+            if (enqueue or self.billing_coordinator)
+            else None
+        )
+        try:
+            batch = self.repository.create_free_batch(
+                actor.workspace_id, actor.id, request, batch_id=batch_id
+            )
+        except Exception:
+            if billing_run is not None:
+                billing_run.settle()
+            raise
+        if billing_run is not None and self.worker is not None:
+            self.worker.register_billing_run(batch_id, billing_run)
+        if enqueue and self.worker is not None:
+            self.worker.submit(batch_id, billing_run)
+        try:
+            business_logger("pod_processing").info(
+                "========== POD 自由定制批次开始 | batch_id=%s | workspace=%s | 用户=%s | "
+                "模型=%s | 标题=%s | 参考图=%d | 提示词=%s | 冻结计费=%s ==========",
+                batch_id,
+                actor.workspace_id,
+                actor.id,
+                request.image_model,
+                "开" if request.title_enabled else "关",
+                len(request.reference_asset_ids),
+                request.prompt[:200],
+                "有" if billing_run is not None else "无",
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return self._batch_payload(batch)
+
+    def generate_free_panel(
+        self,
+        actor: Actor,
+        batch_id: str,
+        variant_index: int,
+        prompt: str,
+        *,
+        enqueue: bool = True,
+    ) -> dict[str, Any]:
+        """自由定制单槽位生成/重生成：一次只冻结当前这一张。"""
+        batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
+        if batch.get("mode") != "free":
+            raise PodRepositoryError("POD free batch not found", 404)
+        meta = batch.get("generation_meta") or {}
+        target = int(meta.get("free_target_count") or 0)
+        variant = int(variant_index)
+        clean_prompt = str(prompt or "")
+        if not clean_prompt.strip():
+            raise PodRepositoryError("提示词不能为空", 422)
+        if not 1 <= variant <= target:
+            raise PodRepositoryError("槽位号超出当前款式张数", 422)
+        items = {int(item["variant_index"]): item for item in batch.get("items", [])}
+        if variant > 1:
+            first = items.get(1)
+            if first is None or first.get("status") != "completed":
+                raise PodRepositoryError("请先生成主图，后续图固定以主图为参考", 409)
+        panel = next(
+            (
+                row
+                for row in batch.get("free_panels", [])
+                if int(row["variant_index"]) == variant
+            ),
+            None,
+        )
+        reference_asset_ids = (
+            list(panel.get("reference_asset_ids") or []) if variant == 1 and panel else []
+        )
+        all_others_completed = all(
+            items.get(other, {}).get("status") == "completed"
+            for other in range(1, target + 1)
+            if other != variant
+        )
+        title_row = next(
+            (
+                row
+                for row in batch.get("style_titles", [])
+                if int(row.get("style_index") or 0) == 1
+            ),
+            None,
+        )
+        title_should_run = (
+            bool(meta.get("title_enabled"))
+            and (title_row is None or title_row.get("status") != "completed")
+            and all_others_completed
+        )
+        profile = self._free_billing_profile(str(meta.get("image_model") or ""))
+        billing_run = (
+            self._freeze_free_panels(
+                actor,
+                batch_id,
+                variants=(variant,),
+                billing_profile=profile,
+                title_enabled=title_should_run,
+                idempotency_key=(
+                    f"pod:free-batch:{batch_id}:panel:{variant}:{uuid.uuid4().hex}"
+                ),
+                action_type="item_retry" if variant in items else "batch_initial",
+            )
+            if (enqueue or self.billing_coordinator)
+            else None
+        )
+        removed_paths: list[str] = []
+        try:
+            self.repository.upsert_free_panel(
+                batch_id,
+                actor.workspace_id,
+                actor.id,
+                variant,
+                clean_prompt,
+                reference_asset_ids=reference_asset_ids,
+            )
+            # 重做主图：后续已生成的衍生图视为自动放弃，直接清除（积分不返还）。
+            if variant == 1:
+                removed_paths = self.repository.clear_free_downstream(
+                    batch_id, actor.workspace_id, actor.id
+                )
+            if not self.repository.reopen_free_batch(batch_id):
+                raise PodRepositoryError("POD 自由定制批次无法继续", 409)
+        except Exception:
+            if billing_run is not None:
+                billing_run.settle()
+            raise
+        for relative_path in removed_paths:
+            try:
+                self.assets.remove(relative_path)
+            except Exception:
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "POD free main regeneration failed to remove local file: %s",
+                    relative_path,
+                )
+        if billing_run is not None and self.worker is not None:
+            self.worker.register_billing_run(batch_id, billing_run)
+        if enqueue and self.worker is not None:
+            self.worker.submit(batch_id, billing_run)
+        return self._batch_payload(
+            self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
+        )
+
+    def retry_free_panel(
+        self,
+        actor: Actor,
+        batch_id: str,
+        variant_index: int,
+        *,
+        enqueue: bool = True,
+    ) -> dict[str, Any]:
+        """兼容入口：用该槽位已保存的提示词重生成。"""
+        panel = self.repository.get_free_panel(batch_id, int(variant_index))
+        if panel is None:
+            raise PodRepositoryError("POD 自由定制图片不存在", 404)
+        return self.generate_free_panel(
+            actor,
+            batch_id,
+            int(variant_index),
+            str(panel.get("prompt") or ""),
+            enqueue=enqueue,
+        )
+
+    def list_free_batches(
+        self, actor: Actor, *, limit: int = 20, offset: int = 0
+    ) -> dict[str, Any]:
+        rows, total = self.repository.list_batches(
+            actor.workspace_id,
+            actor.id,
+            limit=max(1, min(limit, 100)),
+            offset=max(0, offset),
+            mode="free",
+        )
+        return {"batches": [self._batch_summary(row) for row in rows], "total": total}
+
+    def get_free_batch(self, actor: Actor, batch_id: str) -> dict[str, Any]:
+        batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
+        if batch.get("mode") != "free":
+            raise PodRepositoryError("POD free batch not found", 404)
+        return self._batch_payload(batch)
+
+    def update_free_listing_fields(
+        self, actor: Actor, batch_id: str, request: FreeListingFieldsUpdate
+    ) -> dict[str, Any]:
+        batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
+        if batch.get("mode") != "free":
+            raise PodRepositoryError("POD free batch not found", 404)
+        if not self.repository.update_free_listing_fields(
+            batch_id,
+            actor.workspace_id,
+            actor.id,
+            request.listing_fields.model_dump(),
+        ):
+            raise PodRepositoryError("POD free batch not found", 404)
+        return self._batch_payload(
+            self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
+        )
+
+    def update_free_spec_card(
+        self, actor: Actor, batch_id: str, request: FreeSpecCardUpdate
+    ) -> dict[str, Any]:
+        """只保存尺寸卡（不要求先填完类目/SKU），并让已出图的槽位立即重印或还原。"""
+
+        batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
+        if batch.get("mode") != "free":
+            raise PodRepositoryError("POD free batch not found", 404)
+        mapping = request.spec_card.model_dump() if request.spec_card is not None else None
+        if not self.repository.update_batch_spec_card(batch_id, mapping):
+            raise PodRepositoryError("POD free batch not found", 404)
+        if self.worker is not None:
+            self.worker.refresh_free_spec_card(batch_id)
+        return self._batch_payload(
+            self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
+        )
+
+    def reorder_free_panels(
+        self, actor: Actor, batch_id: str, request: FreePanelReorder
+    ) -> dict[str, Any]:
+        """拖动排序：交换/移动两个槽位的图；尺寸卡不自动转印，等用户点「重印本批次」。"""
+
+        batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
+        if batch.get("mode") != "free":
+            raise PodRepositoryError("POD free batch not found", 404)
+        if not self.repository.swap_free_panel_order(
+            batch_id,
+            actor.workspace_id,
+            actor.id,
+            request.from_variant,
+            request.to_variant,
+        ):
+            raise PodRepositoryError("该槽位还没有可移动的图片", 409)
+        return self._batch_payload(
+            self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
+        )
+
+    def reprint_free_spec_card(self, actor: Actor, batch_id: str) -> dict[str, Any]:
+        """按当前顺序重新印尺寸卡：目标槽位补印，其他已印过的槽位还原干净图。"""
+
+        batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
+        if batch.get("mode") != "free":
+            raise PodRepositoryError("POD free batch not found", 404)
+        if self.worker is None:
+            raise PodRepositoryError("POD worker is not configured", 503)
+        self.worker.refresh_free_spec_card(batch_id)
+        return self._batch_payload(
+            self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
+        )
+
+    def download_free_zip(self, actor: Actor, batch_id: str) -> tuple[bytes, str, int]:
+        batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
+        if batch.get("mode") != "free":
+            raise PodRepositoryError("POD free batch not found", 404)
+        completed = [
+            item
+            for item in batch["items"]
+            if item.get("status") == "completed" and item.get("pattern_asset_id")
+        ]
+        if not completed:
+            raise PodRepositoryError("当前批次没有可下载的图片", 409)
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
+            for item in sorted(completed, key=lambda row: int(row["variant_index"])):
+                variant = int(item["variant_index"])
+                asset = self.repository.get_asset(
+                    item.get("composite_asset_id") or item["pattern_asset_id"],
+                    batch["workspace_id"],
+                    batch["owner_user_id"],
+                )
+                suffix = Path(asset["filename"]).suffix or ".png"
+                archive.writestr(
+                    f"free_{variant:03d}{suffix}",
+                    self.assets.read(asset["relative_path"]),
+                )
+        count = len(completed)
+        filename = f"POD-FREE-{batch_id[:8]}-{count}张.zip"
+        self.export_records.record_success(
+            batch_id=batch_id,
+            workspace_id=actor.workspace_id,
+            owner_user_id=actor.id,
+            file_name=filename,
+            format="free_zip",
+            exported_count=count,
+            skipped_count=0,
+        )
+        return buffer.getvalue(), filename, count
+
+    def _freeze_free_panels(
+        self,
+        actor: Actor,
+        batch_id: str,
+        *,
+        variants: tuple[int, ...],
+        billing_profile: str,
+        title_enabled: bool,
+        idempotency_key: str,
+        action_type: str,
+    ) -> PodBillingRun:
+        if self.billing_coordinator is None:
+            raise RuntimeError("POD billing coordinator is not configured")
+        plan = PodCallPlan.for_free_panels(
+            batch_id,
+            variants=variants,
+            billing_profile=billing_profile,
+            title_enabled=title_enabled,
+            idempotency_key=idempotency_key,
+        )
+        return self._freeze_action(
+            actor,
+            plan,
+            action_type=action_type,
+            target_id=batch_id,
+            batch_id=batch_id,
+        )
+
     def upload_replica_image(
         self,
         actor: Actor,
@@ -953,7 +1336,8 @@ class PodCustomizationService:
 
         动作免费（纯 pod.title scope），但仍走完整的冻结 → 短期密钥 → 调用 → 结算底座，
         保留幂等键与审计。同一 (A, B, 提示词版本, 模型, 参考图顺序) 命中已有方案时直接复用，
-        不再调豆包；失败不写方案表，重新分析会重新调用。
+        不再调豆包；``force=True`` 时跳过缓存重新生成并覆盖手动编辑；失败不写方案表，
+        重新分析会重新调用。
         """
         if self.analysis_runtime is None:
             raise RuntimeError("POD 复刻方案服务未启用")
@@ -964,7 +1348,8 @@ class PodCustomizationService:
         if target.get("kind") != "replica_target":
             raise ValueError("目标产品资产角色错误，必须通过 role=target 上传")
 
-        cached = self.repository.find_replica_transfer_plan(
+        # force=True 表示用户主动「重新生成方案」：必须重新调豆包，不能命中缓存。
+        cached = None if request.force else self.repository.find_replica_transfer_plan(
             actor.workspace_id,
             actor.id,
             request.source_asset_id,
@@ -1066,7 +1451,7 @@ class PodCustomizationService:
 
     @staticmethod
     def _transfer_plan_payload(record: dict[str, Any], *, cached: bool) -> dict[str, Any]:
-        """方案响应：只回方案 id 与版本，不展示任何事实、能力或提示词正文。"""
+        """方案响应：方案 id、版本与正文；编辑时间非空表示正文已被用户手动改过。"""
         return {
             "analysis_id": record["plan_id"],
             "status": "succeeded",
@@ -1074,8 +1459,34 @@ class PodCustomizationService:
             "target_asset_id": record["target_asset_id"],
             "prompt_version": record["prompt_version"],
             "model": record["model"],
+            "main_prompt": str(record["main_prompt"]),
+            "edited_at": str(record.get("edited_at") or ""),
             "cached": cached,
         }
+
+    def get_replica_analysis(self, actor: Actor, analysis_id: str) -> dict[str, Any]:
+        """读回复刻方案正文（抽屉展示 / 草稿恢复）；只允许方案所有者访问。"""
+        record = self.repository.get_replica_transfer_plan(
+            analysis_id, actor.workspace_id, actor.id
+        )
+        return self._transfer_plan_payload(record, cached=False)
+
+    def update_replica_analysis_prompt(
+        self, actor: Actor, analysis_id: str, main_prompt: str
+    ) -> dict[str, Any]:
+        """保存用户手动编辑的方案正文，并返回更新后的方案快照。"""
+        prompt = str(main_prompt or "").strip()
+        if not prompt:
+            raise ValueError("复刻主图提示词不能为空")
+        if len(prompt) > MAIN_PROMPT_MAX_LENGTH:
+            raise ValueError(f"复刻主图提示词不能超过 {MAIN_PROMPT_MAX_LENGTH} 个字符")
+        self.repository.update_replica_transfer_plan_prompt(
+            analysis_id, actor.workspace_id, actor.id, prompt
+        )
+        record = self.repository.get_replica_transfer_plan(
+            analysis_id, actor.workspace_id, actor.id
+        )
+        return self._transfer_plan_payload(record, cached=False)
 
     def resolve_replica_composition_template(
         self, actor: Actor, composition_id: str
@@ -2865,6 +3276,7 @@ class PodCustomizationService:
             repository=self.repository,
             action_key=stored["action_key"],
             resumed=True,
+            image_grant_provider=plan.image_grant_provider,
         )
         if stored["action_type"] == "batch_initial" and has_planned_calls:
             if self.worker is None:
@@ -3030,6 +3442,7 @@ class PodCustomizationService:
             repository=self.repository,
             action_key=stored["action_key"],
             resumed=True,
+            image_grant_provider=plan.image_grant_provider,
         )
         try:
             run.settle()
@@ -3075,6 +3488,7 @@ class PodCustomizationService:
             repository=self.repository,
             action_key=stored["action_key"],
             resumed=True,
+            image_grant_provider=plan.image_grant_provider,
         )
         run.settle()
 
@@ -3770,6 +4184,7 @@ class PodCustomizationService:
             grant,
             repository=self.repository,
             action_key=plan.idempotency_key,
+            image_grant_provider=plan.image_grant_provider,
         )
 
     def _attach_freeze(self, plan: PodCallPlan, grant: PodExecutionGrant) -> None:
@@ -3795,7 +4210,9 @@ class PodCustomizationService:
 
     @staticmethod
     def _plan_item_count(plan: PodCallPlan) -> int:
-        return int(plan.semi_item_count or plan.column_style_count or 0)
+        return int(
+            plan.semi_item_count or plan.column_style_count or plan.free_panel_count or 0
+        )
 
     def _device_id(self) -> str:
         """本机标识：随数据目录持久化，重装后可复用（多设备对账用）。
@@ -3827,6 +4244,8 @@ class PodCustomizationService:
             ),
             semi_item_count=int(payload.get("semi_item_count") or 0),
             column_style_count=int(payload.get("column_style_count") or 0),
+            free_variants=tuple(int(value) for value in payload.get("free_variants") or ()),
+            image_grant_provider=str(payload.get("image_grant_provider") or ""),
             billing_profile=str(payload.get("billing_profile") or POD_BILLING_PROFILE_RANDOM),
             module=str(payload.get("module") or ""),
             unit_kind=str(payload.get("unit_kind") or ""),
@@ -3960,6 +4379,7 @@ class PodCustomizationService:
     def _batch_payload(self, batch: dict[str, Any]) -> dict[str, Any]:
         mode = batch.get("mode") or "full"
         semi = mode == "semi"
+        free = mode == "free"
         replica = mode == "replica"
         snapshot = batch.get("template")
         template_payload = None
@@ -3976,6 +4396,13 @@ class PodCustomizationService:
                 "updated_at": snapshot["created_at"],
             }
         items = [self._item_payload(item) for item in batch["items"]]
+        if free:
+            prompts = {
+                int(panel["variant_index"]): str(panel.get("prompt") or "")
+                for panel in batch.get("free_panels", [])
+            }
+            for item in items:
+                item["prompt"] = prompts.get(int(item.get("variant_index") or 0), "")
         # 款（张）级计数：completed_count/failed_count 是按「组」统计的（1 组 4 张全部
         # 结算才算 1），半定制对外交付单位是「款」，所以另给一份按款的计数。
         completed_item_count = sum(1 for row in batch["items"] if row.get("status") == "completed")
@@ -4020,7 +4447,7 @@ class PodCustomizationService:
             "template_name": batch["template_name"],
             "count": style_count,
             "style_count": style_count,
-            "item_count": style_count * 4,
+            "item_count": len(items) if free else style_count * 4,
             "processed_count": batch["processed_count"],
             "completed_count": batch["completed_count"],
             "failed_count": batch["failed_count"],
@@ -4060,6 +4487,15 @@ class PodCustomizationService:
             "items": items,
             "style_titles": [self._title_payload(title) for title in batch.get("style_titles", [])],
         }
+        if free:
+            meta = batch.get("generation_meta") or {}
+            payload["image_model"] = str(meta.get("image_model") or "")
+            payload["title_enabled"] = bool(meta.get("title_enabled"))
+            payload["target_image_count"] = int(meta.get("free_target_count") or 0)
+            payload["completed_image_count"] = completed_item_count
+            payload["free_stage"] = str(meta.get("free_stage") or "initial")
+            # 模板是惰性占位，前端不应展示。
+            payload["template"] = None
         if replica:
             payload["source"] = self._replica_source_payload(batch)
             payload["targets"] = [
@@ -4190,7 +4626,14 @@ class PodCustomizationService:
             "template_id": batch["template_id"],
             "template_name": batch["template_name"],
             "count": batch["requested_count"],
-            "item_count": int(batch["requested_count"]) * 4,
+            "item_count": (
+                len(rows)
+                if batch.get("mode") == "free"
+                else int(batch["requested_count"]) * 4
+            ),
+            "target_image_count": int(
+                (batch.get("generation_meta") or {}).get("free_target_count") or 0
+            ),
             "processed_count": batch["processed_count"],
             "completed_count": batch["completed_count"],
             "failed_count": batch["failed_count"],
@@ -4238,6 +4681,7 @@ class PodCustomizationService:
             "style_index": item.get("style_index", item["item_index"]),
             "export_selected": bool(item.get("export_selected", True)),
             "variant_index": item.get("variant_index", 1),
+            "prompt": item.get("prompt") or "",
             "status": item["status"],
             "pattern_preview_url": f"/api/pod-customization/assets/{pattern_id}" if pattern_id else None,
             "pattern_download_url": f"/api/pod-customization/assets/{pattern_id}?download=1" if pattern_id else None,

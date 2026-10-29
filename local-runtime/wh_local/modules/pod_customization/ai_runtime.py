@@ -38,6 +38,7 @@ from .image_providers import (
     build_grid_providers,
     grant_provider_for_model,
     image_data_url,
+    normalize_free_model,
     normalize_model,
     provider_for_model,
     suffix_for_content_type,
@@ -132,7 +133,12 @@ class PodCustomizationAiRuntime(AiRuntime):
         This remains one provider request per service-level attempt.  The
         service decides whether a malformed grid receives its single retry.
         """
-        model = _resolve_pod_image_model()
+        # 自由定制在批次上冻结 Flash/Pro，必须优先于全局模型；其它链路传空串。
+        model = (
+            normalize_free_model(request.model)
+            if request.model
+            else _resolve_pod_image_model()
+        )
         provider = self._provider_for(model)
         _required_provider_key(grant, provider.grant_provider)
         references = self._grid_references(request)
@@ -358,13 +364,15 @@ def resolve_pod_image_model() -> str:
     return _resolve_pod_image_model()
 
 
-def pod_image_grant_provider() -> str:
-    """当前 POD 生图平台需要冻结下发的 provider key 名（速创=wuyin，豆包=ark）。
+def pod_image_grant_provider(model: str = "") -> str:
+    """POD 生图平台需要冻结下发的 provider key 名（速创=wuyin，豆包=ark）。
 
+    ``model`` 非空时按批次冻结的模型判定；自由定制用它保证 Pro/Flash 都拿 ark。
     平台的密钥偏好只能由这里给出：把 wuyin 写死会让切到豆包后的批次卡在
     「授权不可用」并无限暂停。
     """
-    return grant_provider_for_model(_resolve_pod_image_model())
+    selected = normalize_free_model(model) if model else _resolve_pod_image_model()
+    return grant_provider_for_model(selected)
 
 
 def _required_provider_key(grant: PodExecutionGrant, provider: str) -> str:

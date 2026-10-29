@@ -66,7 +66,7 @@ export function PodSemiBatchDrawer({
           <button type="button" onClick={onClose} aria-label="关闭">×</button>
         </header>
         <div className="pod-history-drawer-body">
-          <section className="pod-history" aria-label="半定制批次记录">
+          <section className="pod-history" aria-label="印花创作批次记录">
             <header>
               <div><span>BATCH HISTORY</span><h3>最近批次</h3></div>
               <div className="pod-history-header-actions">
@@ -115,7 +115,7 @@ export function PodSemiBatchDrawer({
                   </div>
                 );
               })}
-              {!loading && !batches.length && <p>暂无批次；发起第一个半定制批次后在此查看。</p>}
+              {!loading && !batches.length && <p>暂无批次；发起第一个印花创作批次后在此查看。</p>}
               {loading && !batches.length && <p>正在读取批次记录…</p>}
             </div>
           </section>

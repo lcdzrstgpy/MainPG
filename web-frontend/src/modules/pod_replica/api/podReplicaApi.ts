@@ -7,6 +7,7 @@ import type {
   ReplicaBatchListResponse,
   ReplicaImageRole,
   ReplicaImageUploadResponse,
+  ReplicaPlanUpdateRequest,
 } from "../types";
 
 const API_BASE = "/api/pod-customization";
@@ -52,11 +53,20 @@ async function assetExists(assetId: string): Promise<boolean> {
 
 export const podReplicaApi = {
   uploadImage,
-  /** 主图方案：一组 A/B 只调一次豆包，返回方案 id 与版本（不返回事实/能力）。 */
+  /** 主图方案：一组 A/B 只调一次豆包，返回方案 id、版本与提示词正文。 */
   analyzeAssets: (body: ReplicaAnalyzeRequest) => httpJson<ReplicaAnalyzeResponse>(`${API_BASE}/replica/analyze`, {
     method: "POST",
     body,
   }),
+  /** 读回已产出的主图方案正文（草稿恢复 / 抽屉打开）。 */
+  getAnalysis: (analysisId: string) => httpJson<ReplicaAnalyzeResponse>(
+    `${API_BASE}/replica/analyses/${encodeURIComponent(analysisId)}`,
+  ),
+  /** 保存用户手动编辑后的方案正文。 */
+  updateAnalysis: (analysisId: string, body: ReplicaPlanUpdateRequest) => httpJson<ReplicaAnalyzeResponse>(
+    `${API_BASE}/replica/analyses/${encodeURIComponent(analysisId)}`,
+    { method: "PUT", body },
+  ),
   createBatch: (body: CreateReplicaBatchRequest) => httpJson<ReplicaBatch>(`${API_BASE}/replica/batches`, {
     method: "POST",
     body,

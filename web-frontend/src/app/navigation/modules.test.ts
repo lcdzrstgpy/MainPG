@@ -72,7 +72,22 @@ test("image service nests the existing workflows one level deeper", () => {
 
   const podWorkflow = findGroup("pod_workflow");
   assert.equal(podWorkflow?.defaultChildId, "pod_customization");
-  assert.deepEqual(podWorkflow?.children.map((child) => child.label), ["全定制", "半定制", "爆款复刻", "爆款裂变"]);
+  assert.deepEqual(podWorkflow?.children.map((child) => child.id), [
+    "pod_customization",
+    "pod_semi_customization",
+    "pod_free_customization",
+    "pod_replica",
+    "pod_fission",
+  ]);
+  assert.deepEqual(podWorkflow?.children.map((child) => child.label), [
+    "全款直出",
+    "印花创作",
+    "自由创意",
+    "爆款复刻",
+    "爆款裂变",
+  ]);
+  assert.equal(podWorkflow?.iconClass, "iconfont icon-skin");
+  assert.ok(workspacePageModules.some((module) => module.id === "pod_free_customization"));
 
   const comboWorkflow = findGroup("combo_workflow");
   assert.equal(comboWorkflow?.defaultChildId, "combo_generate");

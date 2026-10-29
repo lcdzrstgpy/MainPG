@@ -224,7 +224,7 @@ export function PodSemiCustomizationPage({ isActive = true }: Props) {
   const startBatch = async () => {
     if (busy) return;
     if (!isSemiCountValid(count)) {
-      setError("半定制数量必须是 4 的倍数（4–200）。");
+      setError("印花创作数量必须是 4 的倍数（4–200）。");
       return;
     }
     if (!isBriefRequestValid(brief)) {
@@ -439,8 +439,8 @@ export function PodSemiCustomizationPage({ isActive = true }: Props) {
         <div className="pod-page-title">
           <span className="pod-page-title-icon iconfont icon-skin" aria-hidden="true" />
           <div>
-            <span>POD SEMI · 纯图案</span>
-            <h1>POD 半定制</h1>
+            <span>POD PATTERN CREATION · 纯图案</span>
+            <h1>印花创作</h1>
             {modulePrice && <span className="pod-page-price">{modulePrice}</span>}
           </div>
         </div>
@@ -487,7 +487,7 @@ export function PodSemiCustomizationPage({ isActive = true }: Props) {
 
         <main className="pod-semi-results">
           {!activeBatch && (
-            <p className="pod-semi-empty">暂无批次，发起第一个半定制批次后在此查看。</p>
+            <p className="pod-semi-empty">暂无批次，发起第一个印花创作批次后在此查看。</p>
           )}
 
           {activeBatch && (
@@ -509,7 +509,7 @@ export function PodSemiCustomizationPage({ isActive = true }: Props) {
                 </div>
               </header>
 
-              <div className="pod-semi-progress" role="progressbar" aria-label="半定制批次进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={semiProgress}>
+              <div className="pod-semi-progress" role="progressbar" aria-label="印花创作批次进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={semiProgress}>
                 <div><span style={{ width: `${semiProgress}%` }} /></div>
                 <small><SemiWaitingTime createdAt={activeBatch.created_at} updatedAt={activeBatch.updated_at} live={isSemiBatchRunning(activeBatch.status)} />完成 {activeBatch.completed_item_count}/{activeBatch.item_count} 款 · 失败 {activeBatch.failed_item_count} 款 · {semiProgress}%</small>
               </div>

@@ -42,6 +42,13 @@ test("replica batch endpoints use the replica paths and json payloads", () => {
   assert.match(apiSource, /\/assets\/\$\{encodeURIComponent\(assetId\)\}/);
 });
 
+test("replica plan can be read back and edited through the analysis endpoints", () => {
+  assert.match(apiSource, /getAnalysis: \(analysisId: string\) => httpJson<ReplicaAnalyzeResponse>\(/);
+  assert.match(apiSource, /`\$\{API_BASE\}\/replica\/analyses\/\$\{encodeURIComponent\(analysisId\)\}`/);
+  assert.match(apiSource, /updateAnalysis: \(analysisId: string, body: ReplicaPlanUpdateRequest\)/);
+  assert.match(apiSource, /method: "PUT", body/);
+});
+
 test("create payload uses snake_case keys required by the backend contract", () => {
   const request = buildReplicaBatchRequest({
     client_request_id: "req-1",

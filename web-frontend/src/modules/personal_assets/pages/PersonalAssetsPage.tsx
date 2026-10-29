@@ -16,7 +16,7 @@ const PAGE_SIZE = 48;
 /** 「一键送入业务」目标：这些模块都以本地图片作为输入，下载后拖入即可使用。 */
 const SEND_TARGETS: Array<{ id: WorkspaceModuleId; label: string }> = [
   { id: "combo_generate", label: "组合生图" },
-  { id: "pod_semi_customization", label: "POD 半定制" },
+  { id: "pod_semi_customization", label: "POD 印花创作" },
   { id: "pod_replica", label: "爆款复刻" },
 ];
 
