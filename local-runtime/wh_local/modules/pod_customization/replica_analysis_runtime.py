@@ -39,6 +39,8 @@ from .title_runtime import (
 
 # 提示词版本：改动任一处的提示词内容或输出契约就必须递增（进入方案表唯一键）。
 # v2：在方案阶段加入「优先满印、尽量覆盖软质可印部件（提手/肩带/口袋等）」的软引导。
+# 说明：曾尝试 v3 全中文方案，豆包生图接口对中文输入文本触发
+# InputTextSensitiveContentDetected 400，已回退到英文方案（保持 v2 以便复用旧缓存）。
 MAIN_PROMPT_VERSION = "pod-replica-main-prompt-v2"
 # 参考图顺序常量：分析与主图生成必须是同一个顺序，避免「识图看的是 B,A、生图给的是 A,B」。
 MAIN_PROMPT_REFERENCE_ORDER = "B,A"

@@ -171,7 +171,9 @@ export type BillingUsageEntry = {
     | "pod_semi_v1"
     | "pod_replica_v1"
     | "pod_replica_v1_a"
-    | "pod_replica_v1_b";
+    | "pod_replica_v1_b"
+    | "pod_free_flash_v1"
+    | "pod_free_pro_v1";
   source_ref: string;
   reserved_points: number;
   charged_points: number;

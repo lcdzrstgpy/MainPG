@@ -22,8 +22,8 @@ test("POD group exposes replica and fission entries beside full and semi customi
   assert.match(shellSource, /case "pod_replica":/);
   assert.match(shellSource, /PodFissionPage/);
   assert.match(shellSource, /case "pod_fission":/);
-  // 原两个入口保持可用。
-  assert.match(modulesSource, /label: "全定制"/);
-  assert.match(modulesSource, /label: "半定制"/);
+  // 原两个入口保持可用（2026-10-29 起改名为全款直出 / 印花创作）。
+  assert.match(modulesSource, /label: "全款直出"/);
+  assert.match(modulesSource, /label: "印花创作"/);
   assert.match(shellSource, /case "pod_semi_customization":/);
 });

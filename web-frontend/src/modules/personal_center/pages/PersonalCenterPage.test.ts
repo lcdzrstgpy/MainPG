@@ -24,16 +24,26 @@ test("fission consumption uses its own POD service label", () => {
   assert.match(contract, /"pod_fission_v1"/);
 });
 
+test("free customization consumption keeps Flash and Pro charges separate", () => {
+  assert.match(source, /pod_free_flash_v1: "POD 自由创意 · Flash"/);
+  assert.match(source, /pod_free_pro_v1: "POD 自由创意 · Pro"/);
+  // 归类不能只依赖 feature_key：远端自由定制流水的 feature_key 仍可能是 pod_customization.batch。
+  assert.match(source, /startsWith\("pod_free_"\)/);
+  const contract = readFileSync(new URL("../api/personalCenterApi.ts", import.meta.url), "utf8");
+  assert.match(contract, /"pod_free_flash_v1"/);
+  assert.match(contract, /"pod_free_pro_v1"/);
+});
+
 test("pricing panel shows server-provided POD module prices and hides the block when absent", () => {
   // 单价必须来自服务端 pod_modules，客户端只做展示与兜底命名，不写死价格。
   assert.match(source, /pricingPodModules/);
   assert.match(source, /pricing\?\.pod_modules/);
   assert.match(source, /podPricingModules\.length > 0/);
   assert.match(source, /POD 按模块计价/);
-  assert.match(source, /pod_semi_v1: "POD 半定制"/);
+  assert.match(source, /pod_semi_v1: "POD 印花创作"/);
   // 复刻统一画像后由服务端追加，客户端不写死价格、只补展示名兜底。
   assert.match(source, /pod_replica_v1: "POD 爆款复刻"/);
-  assert.doesNotMatch(source, /POD 全定制[^\n]*4[05]\s*积分/);
+  assert.doesNotMatch(source, /POD 全款直出[^\n]*4[05]\s*积分/);
   const contract = readFileSync(new URL("../api/personalCenterApi.ts", import.meta.url), "utf8");
   assert.match(contract, /pod_modules\?: BillingPricingModule\[\]/);
   assert.match(contract, /unit_label\?: string/);

@@ -842,6 +842,8 @@
 .pod-spec-card-field-label { color: var(--pod-text-secondary); font-size: .68rem; font-weight: 700; }
 .pod-spec-card-field-label em { color: #d76862; font-style: normal; }
 .pod-spec-card-style-options { display: flex; gap: 8px; }
+/* 自由定制的「印到第几张图」最多 6 项，允许换行。 */
+.pod-spec-card-style-options.is-wrap { flex-wrap: wrap; }
 .pod-spec-card-style-options > button { display: flex; min-width: 96px; flex-direction: column; gap: 2px; padding: 8px 12px; border: 1px solid var(--pod-border); border-radius: 10px; color: var(--pod-text); background: var(--pod-surface-soft); text-align: left; }
 .pod-spec-card-style-options > button b { font-size: .76rem; }
 .pod-spec-card-style-options > button i { color: var(--pod-text-muted); font-size: .6rem; font-style: normal; }

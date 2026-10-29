@@ -57,7 +57,7 @@ export function PodSemiDeleteConfirmDialog({ open, count, busy = false, onClose,
         <header>
           <div>
             <span>DELETE SEMI BATCH</span>
-            <h2 id="pod-semi-delete-confirm-title">删除半定制批次</h2>
+            <h2 id="pod-semi-delete-confirm-title">删除印花创作批次</h2>
           </div>
           <button type="button" onClick={onClose} disabled={busy} aria-label="关闭确认弹窗">
             ×
@@ -68,7 +68,7 @@ export function PodSemiDeleteConfirmDialog({ open, count, busy = false, onClose,
             <strong className="pod-semi-delete-confirm-count">本次将删除 {batchCount} 个批次。</strong>
           )}
           <p>
-            半定制的图案<strong>只保存在本机，没有图床公网备份</strong>。
+            印花创作的图案<strong>只保存在本机，没有图床公网备份</strong>。
             {batchCount > 1 ? "删除这些批次" : "删除该批次"}会把本地图片一并清理，
             <strong>删除后不可恢复</strong>。
           </p>

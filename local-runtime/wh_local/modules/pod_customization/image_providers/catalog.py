@@ -19,18 +19,28 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..contracts import (
+    FREE_IMAGE_MODEL_FLASH,
+    FREE_IMAGE_MODEL_PRO,
+    FREE_IMAGE_MODELS,
+)
+
 SUCHUANG_PLATFORM = "suchuang"
 DOUBAO_PLATFORM = "doubao"
 
 # (模型值, 展示名, 平台实现)
+# Pro 只在自由定制里可选；全局 POD 模型下拉通过 model_choices() 过滤掉它。
 POD_IMAGE_MODELS: tuple[tuple[str, str, str], ...] = (
     ("image_gpt", "GPT-Image-2（速创）", SUCHUANG_PLATFORM),
     ("image_gpt_2.5", "GPT-Image-2.5（速创）", SUCHUANG_PLATFORM),
-    ("doubao-seedream-5-0-flash-260915", "Seedream 5.0 Flash（豆包 · 默认）", DOUBAO_PLATFORM),
+    (FREE_IMAGE_MODEL_FLASH, "Seedream 5.0 Flash（豆包 · 默认）", DOUBAO_PLATFORM),
+    (FREE_IMAGE_MODEL_PRO, "Seedream 5.0 Pro（豆包）", DOUBAO_PLATFORM),
 )
 
 # POD 主力模型：默认走豆包 Seedream（速创两个模型保留为可选）。
-POD_IMAGE_MODEL_DEFAULT = "doubao-seedream-5-0-flash-260915"
+POD_IMAGE_MODEL_DEFAULT = FREE_IMAGE_MODEL_FLASH
+# 全局下拉不暴露 Pro：它只属于自由定制，避免全定制按 Flash 画像用上 Pro。
+_GLOBAL_HIDDEN_MODELS = frozenset({FREE_IMAGE_MODEL_PRO})
 
 # 平台 → 生图时需要冻结下发的 provider key 名（速创=wuyin，豆包=ark）。
 # 冻结/重冻结由远端按画像下发密钥，客户端只能按当前模型声明用哪一个 key，
@@ -46,13 +56,35 @@ _PLATFORM_BY_MODEL: dict[str, str] = {
 
 
 def model_choices() -> list[dict[str, str]]:
-    """前端渲染用的模型清单（不含任何凭据）。"""
-    return [{"value": model, "label": label} for model, label, _platform in POD_IMAGE_MODELS]
+    """全局 POD 模型下拉（不含任何凭据；排除只在自由定制开放的 Pro）。"""
+    return [
+        {"value": model, "label": label}
+        for model, label, _platform in POD_IMAGE_MODELS
+        if model not in _GLOBAL_HIDDEN_MODELS
+    ]
+
+
+def free_model_choices() -> list[dict[str, str]]:
+    """自由定制的模型清单：只允许 Flash / Pro。"""
+    labels = {model: label for model, label, _platform in POD_IMAGE_MODELS}
+    return [{"value": model, "label": labels[model]} for model in FREE_IMAGE_MODELS]
+
+
+def is_free_model(model: Any) -> bool:
+    return str(model or "").strip() in FREE_IMAGE_MODELS
+
+
+def normalize_free_model(model: Any) -> str:
+    """自由定制模型收敛：只接受 Flash / Pro，其余回落到 Flash。"""
+    candidate = str(model or "").strip()
+    return candidate if candidate in FREE_IMAGE_MODELS else FREE_IMAGE_MODEL_FLASH
 
 
 def normalize_model(model: Any) -> str:
-    """把模型名收敛到目录内的合法值，未知值回落到默认模型。"""
+    """把全局模型名收敛到目录内的合法值；Pro 不参与全局选择。"""
     candidate = str(model or "").strip()
+    if candidate in _GLOBAL_HIDDEN_MODELS:
+        return POD_IMAGE_MODEL_DEFAULT
     return candidate if candidate in _PLATFORM_BY_MODEL else POD_IMAGE_MODEL_DEFAULT
 
 

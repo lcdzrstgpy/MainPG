@@ -65,9 +65,11 @@ export type CreateReplicaBatchRequest = {
 export type ReplicaAnalyzeRequest = {
   source_asset_id: string;
   target_asset_id: string;
+  /** 「重新生成方案」置 true：跳过服务端缓存，重新调豆包并覆盖手动编辑。 */
+  force?: boolean;
 };
 
-/** 主图方案响应：只有方案 id 与版本，不展示事实、能力或提示词正文。 */
+/** 主图方案响应：方案 id、版本与提示词正文；edited_at 非空表示正文被手动改过。 */
 export type ReplicaAnalyzeResponse = {
   analysis_id: string;
   status: "succeeded" | "failed";
@@ -75,7 +77,14 @@ export type ReplicaAnalyzeResponse = {
   target_asset_id: string;
   prompt_version: string;
   model: string;
+  main_prompt: string;
+  edited_at: string;
   cached: boolean;
+};
+
+/** 手动编辑主图方案：只改提示词正文。 */
+export type ReplicaPlanUpdateRequest = {
+  main_prompt: string;
 };
 
 /** 前端方案状态：待生成 / 生成中 / 就绪 / 失败。 */

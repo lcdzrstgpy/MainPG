@@ -2,7 +2,8 @@
 
 四个 POD 模块共用同一套生图底座，差异全部收敛在本包内：
 
-- ``catalog``：三个可选模型 → 上游实现/provider key 的映射（对外只有模型，没有"平台"）；
+- ``catalog``：可选模型 → 上游实现/provider key 的映射（对外只有模型，没有"平台"）；
+  Pro 只在自由定制开放，全局下拉不暴露；
 - ``base``：平台无关的请求/结果结构与 host 协议；
 - ``suchuang``：速创（无印）异步生图；
 - ``doubao``：豆包 Seedream（火山方舟）同步生图，参考图 base64 内嵌；
@@ -26,8 +27,11 @@ from .catalog import (
     POD_IMAGE_MODEL_DEFAULT,
     POD_IMAGE_MODELS,
     SUCHUANG_PLATFORM,
+    free_model_choices,
     grant_provider_for_model,
+    is_free_model,
     model_choices,
+    normalize_free_model,
     normalize_model,
     provider_for_model,
 )
@@ -51,9 +55,12 @@ __all__ = [
     "SuChuangImageProvider",
     "ark_size",
     "build_grid_providers",
+    "free_model_choices",
     "grant_provider_for_model",
     "image_data_url",
+    "is_free_model",
     "model_choices",
+    "normalize_free_model",
     "normalize_model",
     "provider_for_model",
     "suchuang_size",

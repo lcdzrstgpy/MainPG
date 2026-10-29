@@ -16,6 +16,7 @@ export type WorkspaceModuleId =
   | "dimension_canvas"
   | "pod_customization"
   | "pod_semi_customization"
+  | "pod_free_customization"
   | "pod_replica"
   | "pod_fission"
   | "ai_video"
@@ -118,7 +119,7 @@ const dimensionCanvas: WorkspaceModule = {
 
 const podCustomization: WorkspaceModule = {
   id: "pod_customization",
-  label: "全定制",
+  label: "全款直出",
   icon: "",
   iconClass: "iconfont icon-appstore",
   description: "批量生成 POD 图片与标题并导出店小秘文件",
@@ -126,10 +127,18 @@ const podCustomization: WorkspaceModule = {
 
 const podSemiCustomization: WorkspaceModule = {
   id: "pod_semi_customization",
-  label: "半定制",
+  label: "印花创作",
   icon: "",
-  iconClass: "iconfont icon-formatpainter",
+  iconClass: "iconfont icon-bg-colors",
   description: "按提示词生成纯图案花色图，按批次打包下载",
+};
+
+const podFreeCustomization: WorkspaceModule = {
+  id: "pod_free_customization",
+  label: "自由创意",
+  icon: "",
+  iconClass: "iconfont icon-bulb-fill",
+  description: "用户自带提示词逐张生图，支持 Seedream Flash / Pro 与店小秘导出",
 };
 
 const podFission: WorkspaceModule = {
@@ -318,9 +327,9 @@ export const workspaceModules: WorkspaceNavigationItem[] = [
     label: "POD定制",
     icon: "",
     iconClass: "iconfont icon-skin",
-    description: "POD 全定制、半定制、爆款复刻与爆款裂变",
+    description: "POD 全款直出、印花创作、自由创意、爆款复刻与爆款裂变",
     defaultChildId: "pod_customization",
-    children: [podCustomization, podSemiCustomization, podReplica, podFission],
+    children: [podCustomization, podSemiCustomization, podFreeCustomization, podReplica, podFission],
   },
   {
     id: "sourcing_workflow",
@@ -382,6 +391,7 @@ export const workspacePageModules: WorkspaceModule[] = [
   dimensionCanvas,
   podCustomization,
   podSemiCustomization,
+  podFreeCustomization,
   podReplica,
   podFission,
   priceVerification,

@@ -228,16 +228,101 @@ def test_analyze_returns_plan_and_reuses_it(tmp_path: Path) -> None:
         "target_asset_id",
         "prompt_version",
         "model",
+        "main_prompt",
+        "edited_at",
         "cached",
     }
     assert payload["status"] == "succeeded"
     assert payload["prompt_version"] == MAIN_PROMPT_VERSION
+    assert payload["main_prompt"] == _MAIN_PROMPT
+    assert payload["edited_at"] == ""
     assert payload["cached"] is False
 
     again = _analyze(client, source_id, target_id)
     assert again["analysis_id"] == payload["analysis_id"]
     assert again["cached"] is True
+    assert again["main_prompt"] == _MAIN_PROMPT
     assert runtime.calls == 1
+
+
+def test_analysis_prompt_can_be_read_and_edited_then_used_by_batch(tmp_path: Path) -> None:
+    runtime = AnalysisRuntime()
+    client, service, _billing = _client(tmp_path, runtime)
+    source_id = _upload(client, "source", "#dd0000")
+    target_id = _upload(client, "target", "#00aa00")
+    analysis_id = _analyze(client, source_id, target_id)["analysis_id"]
+
+    fetched = client.get(f"{API}/replica/analyses/{analysis_id}", headers=HEADERS)
+    assert fetched.status_code == 200, fetched.text
+    assert fetched.json()["main_prompt"] == _MAIN_PROMPT
+    assert fetched.json()["edited_at"] == ""
+
+    edited = "Keep image 1 as the target product and paint image 2's pattern on a sunlit wood table."
+    saved = client.put(
+        f"{API}/replica/analyses/{analysis_id}",
+        headers=HEADERS,
+        json={"main_prompt": f"  {edited}  "},
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["main_prompt"] == edited
+    assert saved.json()["edited_at"]
+
+    # 编辑后建批次：冻结的就是用户改过的正文。
+    body = _create_body(source_id, target_id, analysis_id=analysis_id, client_request_id="edited")
+    created = client.post(f"{API}/replica/batches", headers=HEADERS, json=body)
+    assert created.status_code == 200, created.text
+    plan = _stored_plan(service, created.json()["batch_id"])
+    assert plan["main_prompt"] == edited
+
+
+def test_force_regeneration_bypasses_cache_and_clears_manual_edit(tmp_path: Path) -> None:
+    runtime = AnalysisRuntime()
+    runtime.main_prompt = _MAIN_PROMPT
+    client, _service, _billing = _client(tmp_path, runtime)
+    source_id = _upload(client, "source", "#dd0000")
+    target_id = _upload(client, "target", "#00aa00")
+    analysis_id = _analyze(client, source_id, target_id)["analysis_id"]
+    client.put(
+        f"{API}/replica/analyses/{analysis_id}",
+        headers=HEADERS,
+        json={"main_prompt": "manually edited prompt"},
+    )
+
+    runtime.main_prompt = "regenerated prompt from doubao"
+    response = client.post(
+        f"{API}/replica/analyze",
+        headers=HEADERS,
+        json={"source_asset_id": source_id, "target_asset_id": target_id, "force": True},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["cached"] is False
+    assert payload["main_prompt"] == "regenerated prompt from doubao"
+    assert payload["edited_at"] == ""
+    assert payload["analysis_id"] == analysis_id
+    assert runtime.calls == 2
+
+
+def test_analysis_edit_rejects_empty_or_unknown_plan(tmp_path: Path) -> None:
+    runtime = AnalysisRuntime()
+    client, _service, _billing = _client(tmp_path, runtime)
+    source_id = _upload(client, "source", "#dd0000")
+    target_id = _upload(client, "target", "#00aa00")
+    analysis_id = _analyze(client, source_id, target_id)["analysis_id"]
+
+    blank = client.put(
+        f"{API}/replica/analyses/{analysis_id}", headers=HEADERS, json={"main_prompt": "   "}
+    )
+    assert blank.status_code == 400
+
+    missing = client.put(
+        f"{API}/replica/analyses/not-a-plan", headers=HEADERS, json={"main_prompt": "x"}
+    )
+    assert missing.status_code == 404
+
+    missing_get = client.get(f"{API}/replica/analyses/not-a-plan", headers=HEADERS)
+    assert missing_get.status_code == 404
 
 
 def test_analyze_reuses_a_preexisting_plan_by_unique_key(tmp_path: Path) -> None:

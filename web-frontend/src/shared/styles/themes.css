@@ -549,6 +549,11 @@
   background-size: 260% 100%, 151px 127px, 211px 163px, 179px 139px, 100% 100% !important;
   animation: citrus-hero-splash 11s ease-in-out infinite;
 }
+/* POD 页头：标题是主角，11s 一次的扫光从白色标题后面扫过会看成「一直在闪」，
+   这里单独停掉页头扫光，其余 hero（首页/设置/核价）保留。 */
+[data-theme="sunset"] .pod-page-header {
+  animation: none !important;
+}
 /* POD 页头复用 hero 渐变后，原本的深色标题需要切成浅色。 */
 [data-theme="sunset"] .pod-page-header :is(h1, p),
 [data-theme="sunset"] .pod-page-header .pod-live-badge { color: var(--theme-hero-text) !important; }

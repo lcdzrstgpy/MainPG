@@ -22,7 +22,7 @@ export function PodSemiResultLightbox({ batch, item, busy, onClose, onDownload }
   const filename = `pod-semi-${batch.id.slice(0, 8)}-${semiItemTag(item.index)}`;
   // portal 到 body：tab 面板 fill-mode 动画的层叠上下文会锁住 fixed 层 z-index，被顶栏盖住
   return createPortal(
-    <div className="pod-result-lightbox-layer" role="dialog" aria-modal="true" aria-label="查看半定制图案大图">
+    <div className="pod-result-lightbox-layer" role="dialog" aria-modal="true" aria-label="查看印花创作图案大图">
       <button className="pod-result-lightbox-backdrop" type="button" aria-label="关闭大图" onClick={onClose} />
       <section className="pod-result-lightbox">
         <header>
@@ -34,7 +34,7 @@ export function PodSemiResultLightbox({ batch, item, busy, onClose, onDownload }
         </header>
         <div className="pod-result-lightbox-media">
           {item.pattern_preview_url
-            ? <PodAssetImage path={item.pattern_preview_url} alt="半定制图案大图" />
+            ? <PodAssetImage path={item.pattern_preview_url} alt="印花创作图案大图" />
             : <p>图片生成中</p>}
         </div>
         <div className="pod-result-lightbox-actions pod-semi-lightbox-actions">

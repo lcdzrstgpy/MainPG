@@ -5,6 +5,7 @@ import {
   applyReplicaAnalysis,
   buildReplicaBatchRequest,
   buildReplicaTargetRequest,
+  changeReplicaMainPrompt,
   copyReplicaListingInfo,
   createEmptyReplicaTarget,
   deepCopyReplicaTarget,
@@ -64,6 +65,8 @@ function analysisResponse(overrides: Partial<ReplicaAnalyzeResponse> = {}): Repl
     target_asset_id: "asset_target",
     prompt_version: "pod-replica-main-prompt-v1",
     model: "m",
+    main_prompt: "paint the pattern on the target product",
+    edited_at: "",
     cached: false,
     ...overrides,
   };
@@ -200,6 +203,9 @@ test("applying a plan response moves the target to ready or failed without expos
   assert.equal(ready.analysisStatus, "ready");
   assert.equal(ready.analysisId, "plan-1");
   assert.equal(ready.analysisError, "");
+  assert.equal(ready.mainPrompt, "paint the pattern on the target product");
+  assert.equal(ready.mainPromptEdited, false);
+  assert.equal(ready.mainPromptDirty, false);
   assert.equal(isReplicaAnalysisReady(ready), true);
   assert.deepEqual(Object.keys(ready).filter((key) => key.startsWith("source") || key.startsWith("target")), []);
   assert.equal(Object.prototype.hasOwnProperty.call(ready, "candidateCapabilities"), false);
@@ -230,6 +236,26 @@ test("submit gate requires every target to have a ready main-image plan", () => 
   assert.equal(replicaAnalysisBlockReason(failed), "主图方案生成失败，请重试。");
   assert.equal(replicaAnalysisBlockReason(validTarget()), "");
   assert.equal(validateReplicaTargetDraft(pending).ok, false);
+});
+
+test("manual prompt edits must be saved before submit", () => {
+  const saved = validTarget({ mainPrompt: "original prompt" });
+  assert.equal(validateReplicaTargetDraft(saved).ok, true);
+
+  const dirty = changeReplicaMainPrompt(saved, "edited prompt");
+  assert.equal(dirty.mainPrompt, "edited prompt");
+  assert.equal(dirty.mainPromptDirty, true);
+  assert.deepEqual(validateReplicaTargetDraft(dirty), { ok: false, error: "主图方案有未保存的修改，请先保存。" });
+
+  // 保存成功后服务端返回 edited_at，前端清掉未保存标记并展示「已手动修改」。
+  const afterSave = applyReplicaAnalysis(dirty, analysisResponse({
+    main_prompt: "edited prompt",
+    edited_at: "2026-10-29T09:00:00Z",
+  }));
+  assert.equal(afterSave.mainPrompt, "edited prompt");
+  assert.equal(afterSave.mainPromptEdited, true);
+  assert.equal(afterSave.mainPromptDirty, false);
+  assert.equal(validateReplicaTargetDraft(afterSave).ok, true);
 });
 
 test("fee estimate follows the unified 100-points-per-style replica price", () => {

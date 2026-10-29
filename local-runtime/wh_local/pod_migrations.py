@@ -684,6 +684,23 @@ POD_MIGRATION_CONTRACTS: dict[str, MigrationEffect] = {
             ),
         },
     ),
+    "030_free_customization": MigrationEffect(
+        tables={
+            "pod_customization_free_panels": _table(
+                "batch_id variant_index prompt reference_asset_ids_json created_at updated_at"
+            ),
+        },
+        indexes={
+            "idx_pod_free_panels_batch": _index(
+                "pod_customization_free_panels", "batch_id variant_index"
+            ),
+        },
+    ),
+    "031_replica_transfer_plan_edit": MigrationEffect(
+        column_additions={
+            "pod_customization_replica_transfer_plans": ("edited_at",),
+        },
+    ),
 }
 
 

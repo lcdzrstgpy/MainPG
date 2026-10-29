@@ -33,6 +33,7 @@ from wh_local.modules.pod_customization.replica_analysis_runtime import (
 from wh_local.modules.pod_customization.replica_context import load_frozen_plan
 from wh_local.modules.pod_customization.service import PodCustomizationService
 from wh_local.modules.pod_customization.title_runtime import PodTitleResult
+from wh_local.modules.pod_customization.worker import REPLICA_MAIN_IMAGE_DETAIL_RULE
 from wh_local.modules.product_processing.infrastructure.media import (
     GeneratedMedia,
     MediaProcessingError,
@@ -375,7 +376,8 @@ def test_replica_initial_generation_uses_main_image_anchor(tmp_path: Path) -> No
         }
         assert sorted(panels) == [1, 2, 3, 4]
         main = panels[1]
-        assert main.prompt == _MAIN_PROMPT
+        # 主图 = 豆包方案正文 + 最高优先级细节/可印区域规则。
+        assert main.prompt == f"{_MAIN_PROMPT}\n\n{REPLICA_MAIN_IMAGE_DETAIL_RULE}"
         # 主图参考图固定 [B, A]。
         assert [image.role for image in main.reference_images] == ["target_product", "pattern_source"]
         assert main.reference_images[0].content == target_bytes[style]
@@ -460,7 +462,7 @@ def test_replica_single_style_regeneration_resolves_only_that_style(tmp_path: Pa
     basket_bytes = _asset_bytes(service, actor, batch["_basket_id"])
     source_bytes = _asset_bytes(service, actor, batch["_source_id"])
     for request in _main_requests(runtime).values():
-        assert request.prompt == _MAIN_PROMPT
+        assert request.prompt == f"{_MAIN_PROMPT}\n\n{REPLICA_MAIN_IMAGE_DETAIL_RULE}"
         assert request.reference_images[0].content == basket_bytes
         assert request.reference_images[1].content == source_bytes
         break
@@ -505,7 +507,7 @@ def test_replica_failed_style_retry_after_restart_uses_per_style_context(tmp_pat
         cushion_bytes = _asset_bytes(recovered, actor, batch["_cushion_id"])
         source_bytes = _asset_bytes(recovered, actor, batch["_source_id"])
         for request in _main_requests(recovered_runtime).values():
-            assert request.prompt == _MAIN_PROMPT
+            assert request.prompt == f"{_MAIN_PROMPT}\n\n{REPLICA_MAIN_IMAGE_DETAIL_RULE}"
             assert request.reference_images[0].content == cushion_bytes
             assert request.reference_images[1].content == source_bytes
             break
@@ -544,7 +546,7 @@ def test_replica_resume_after_pause_uses_remaining_style_context(tmp_path: Path)
     }
     for request in _main_requests(runtime).values():
         style, _panel, _attempt = _parse_trial(request.trial_id)
-        assert request.prompt == _MAIN_PROMPT
+        assert request.prompt == f"{_MAIN_PROMPT}\n\n{REPLICA_MAIN_IMAGE_DETAIL_RULE}"
         assert request.reference_images[0].content == target_bytes[style]
         assert request.reference_images[1].content == source_bytes
     service.close()

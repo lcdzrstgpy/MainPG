@@ -19,8 +19,8 @@ import type {
 /**
  * 复刻单款草稿。
  *
- * 主图方案（图案迁移）由服务端一次豆包调用产出，前端只保存 `analysis_id` 与状态，
- * 不再保存/展示任何事实、能力或展示偏好——方案正文由后端冻结进款级计划。
+ * 主图方案（图案迁移）由服务端一次豆包调用产出，前端保存 `analysis_id`、状态与
+ * 方案正文；正文允许用户手动编辑，但必须先保存到服务端（提交按服务端方案表冻结）。
  */
 export type ReplicaTargetDraft = {
   /** 前端稳定 ID：删除/复制/选中都不随数组下标变化串状态。 */
@@ -36,6 +36,12 @@ export type ReplicaTargetDraft = {
   analysisId: string;
   analysisStatus: ReplicaAnalysisStatus;
   analysisError: string;
+  /** 主图方案正文（英文生图提示词，AI 直出，可手动编辑）；提交时后端按方案表冻结这份正文。 */
+  mainPrompt: string;
+  /** 服务端标记：正文已被手动保存过（edited_at 非空）。 */
+  mainPromptEdited: boolean;
+  /** 本地编辑尚未保存：此时不允许提交，避免提交旧正文。 */
+  mainPromptDirty: boolean;
 };
 
 export type ReplicaTargetAsset = {
@@ -85,15 +91,21 @@ export const REPLICA_ANALYSIS_STATUS_LABELS: Record<ReplicaAnalysisStatus, strin
   failed: "方案失败",
 };
 
+/** 方案正文长度上限（与服务端 ReplicaPlanUpdateRequest 保持一致）。 */
+export const REPLICA_MAIN_PROMPT_MAX_LENGTH = 12000;
+
 /** 方案相关字段的默认值（新建目标 / 旧草稿缺省时使用）。 */
 export function emptyReplicaAnalysisFields(): Pick<
   ReplicaTargetDraft,
-  "analysisId" | "analysisStatus" | "analysisError"
+  "analysisId" | "analysisStatus" | "analysisError" | "mainPrompt" | "mainPromptEdited" | "mainPromptDirty"
 > {
   return {
     analysisId: "",
     analysisStatus: "pending",
     analysisError: "",
+    mainPrompt: "",
+    mainPromptEdited: false,
+    mainPromptDirty: false,
   };
 }
 
@@ -137,6 +149,9 @@ function cloneReplicaAnalysisFields(target: ReplicaTargetDraft) {
     analysisId: target.analysisId ?? fallback.analysisId,
     analysisStatus: target.analysisStatus ?? fallback.analysisStatus,
     analysisError: target.analysisError ?? fallback.analysisError,
+    mainPrompt: target.mainPrompt ?? fallback.mainPrompt,
+    mainPromptEdited: target.mainPromptEdited ?? fallback.mainPromptEdited,
+    mainPromptDirty: target.mainPromptDirty ?? fallback.mainPromptDirty,
   };
 }
 
@@ -205,6 +220,11 @@ export function replicaAnalysisBlockReason(target: ReplicaTargetDraft): string {
   }
 }
 
+/** 手动编辑但还没保存时，提交必须被拦住（否则后端会按旧正文出图）。 */
+export function replicaPromptBlockReason(target: ReplicaTargetDraft): string {
+  return target.mainPromptDirty ? "主图方案有未保存的修改，请先保存。" : "";
+}
+
 /** 标记为「生成中」；不覆盖已有方案 id（失败后仍可看到上一份可用的方案）。 */
 export function markReplicaAnalysisAnalyzing(target: ReplicaTargetDraft): ReplicaTargetDraft {
   return { ...target, analysisStatus: "analyzing", analysisError: "" };
@@ -218,7 +238,7 @@ export function markReplicaAnalysisFailed(target: ReplicaTargetDraft, error: str
 /**
  * 落库一次方案结果。
  *
- * 成功即「就绪」——方案正文由后端保管，前端不展示也不需要用户确认；
+ * 成功即「就绪」——方案正文随响应带回来，用户可直接在抽屉里查看与编辑；
  * 服务端返回 failed 时按失败处理，不覆盖既有的可用方案 id。
  */
 export function applyReplicaAnalysis(
@@ -233,7 +253,15 @@ export function applyReplicaAnalysis(
     analysisId: response.analysis_id,
     analysisStatus: "ready",
     analysisError: "",
+    mainPrompt: response.main_prompt,
+    mainPromptEdited: Boolean(response.edited_at),
+    mainPromptDirty: false,
   };
+}
+
+/** 编辑方案正文：只动本地缓冲，保存由「保存修改」触发。 */
+export function changeReplicaMainPrompt(target: ReplicaTargetDraft, value: string): ReplicaTargetDraft {
+  return { ...target, mainPrompt: value, mainPromptDirty: true };
 }
 
 /** 提交门禁：所有目标都必须拿到可用的主图方案。 */
@@ -248,6 +276,9 @@ export function validateReplicaTargetDraft(target: ReplicaTargetDraft): ReplicaT
   // 提交门禁：该款主图方案必须已就绪（未生成 / 生成中 / 失败都不允许提交）。
   const analysisBlock = replicaAnalysisBlockReason(target);
   if (analysisBlock) return { ok: false, error: analysisBlock };
+  // 编辑后的正文必须先在服务端保存，否则批次会按旧方案出图。
+  const promptBlock = replicaPromptBlockReason(target);
+  if (promptBlock) return { ok: false, error: promptBlock };
   // 复用全定制的 SKU / 申报价 / 重量 / 类目 / 规格卡尺寸校验。
   const listing = listingFieldsForApi(target.listingFields, target.specCard);
   if (!listing.value) return { ok: false, error: listing.error };

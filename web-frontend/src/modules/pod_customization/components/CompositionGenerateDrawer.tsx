@@ -118,7 +118,7 @@ export function CompositionGenerateDrawer({ open, onClose, onChanged, scope = "f
           <div>
             <span>COMPOSITION · 视角与构图</span>
             <h2>构图定制</h2>
-            <p>{scope === "replica" ? "爆款复刻专用" : "全定制专用"}：写一句大白话生成一份新模板并自动生效；生成后可在下方手动微调每一轮。</p>
+            <p>{scope === "replica" ? "爆款复刻专用" : "全款直出专用"}：写一句大白话生成一份新模板并自动生效；生成后可在下方手动微调每一轮。</p>
           </div>
           <button type="button" onClick={onClose} aria-label="关闭">×</button>
         </header>

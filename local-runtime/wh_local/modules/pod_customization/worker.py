@@ -62,6 +62,7 @@ from .contracts import (
     ArtDirection,
     BusinessFields,
     COMPOSITION_PANEL_KEYS,
+    FREE_PANEL_ROLES,
     GENERATION_LAYOUT_COLUMN,
     SEMI_PATTERN_ROLES,
 )
@@ -128,6 +129,17 @@ _RETRYABLE_PROVIDER_STATUS_CLASSES = frozenset({
     "gateway_unavailable", "gateway_bad_response", "gateway_in_progress",
 })
 
+# 主图（panel_1）最高优先级硬规则：追加在豆包方案正文之后、重试追加油之前一起提交。
+# 只作用于主图；派生三格的机位与约束仍由 replica_panel_template 控制。
+# 用英文表述：豆包生图接口会对输入文本做审核，中文长句容易被
+# InputTextSensitiveContentDetected 误拦。
+REPLICA_MAIN_IMAGE_DETAIL_RULE = (
+    "ABSOLUTE HIGHEST-PRIORITY RULE — migrate the product's real details faithfully, and carefully "
+    "identify every printable area before applying the pattern, including edges, corners, hems, "
+    "piping, handles and trim; never leave a printable soft part unprinted, and never print onto "
+    "non-printable parts."
+)
+
 
 def _is_retryable_generation_error(exc: BaseException) -> bool:
     return str(getattr(exc, "status_class", "") or "") in _RETRYABLE_PROVIDER_STATUS_CLASSES
@@ -175,6 +187,8 @@ class PodBillingRun:
     repository: PodCustomizationRepository | None = field(default=None, repr=False)
     action_key: str = ""
     resumed: bool = False
+    # 自由定制按批次冻结模型取 provider key（Flash/Pro 都是 ark）；空值回落全局。
+    image_grant_provider: str = ""
     execution_epoch: int = 0
     _outcomes: dict[str, PodCallOutcome] = field(default_factory=dict, init=False, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
@@ -199,7 +213,11 @@ class PodBillingRun:
     def start(self, call_id: str, feature: str) -> None:
         # 生图的 provider key 取决于当前选中的平台（速创=wuyin / 豆包=ark）；
         # 写死 wuyin 会让切到豆包后的批次卡在「授权不可用」并无限暂停。
-        provider = "ark" if feature == "pod.title" else pod_image_grant_provider()
+        provider = (
+            "ark"
+            if feature == "pod.title"
+            else (self.image_grant_provider or pod_image_grant_provider())
+        )
         if not self.grant.provider_key(provider):
             raise PodBillingAuthorizationRequired(
                 "POD provider grant unavailable; this call will be recorded as failed"
@@ -744,6 +762,9 @@ class PodBatchWorker:
         self._require_supported_replica_plan(batch)
         self._require_supported_fission_strategy(batch)
         try:
+            if batch.get("mode") == "free":
+                self._process_free_batch(batch, billing_run, execution=execution)
+                return
             if batch.get("mode") == "semi":
                 # 半定制不用模板、不用参考图：跳过模板图读取，交给纯文生图分支。
                 template_content = b""
@@ -1275,7 +1296,7 @@ class PodBatchWorker:
         fields: BusinessFields,
         panel_index: int | None = None,
     ) -> str:
-        """复刻提示词：panel_1 用方案里的主图提示词，panel_2~4 用派生模板。
+        """复刻提示词：panel_1 用方案里的主图提示词 + 最高优先级细节规则，panel_2~4 用派生模板。
 
         主图提示词由豆包方案一次性产出并随款级计划冻结；派生三格只改机位，
         由 ``build_replica_panel_prompt`` 本地拼装。旧批次没有 v4 计划，
@@ -1284,7 +1305,7 @@ class PodBatchWorker:
         del fields  # 复刻提示词不再由业务字段拼装
         plan = load_frozen_plan(batch, style_index)
         if panel_index is None or int(panel_index) == 1:
-            prompt = plan.main_prompt
+            prompt = f"{plan.main_prompt}\n\n{REPLICA_MAIN_IMAGE_DETAIL_RULE}"
             if attempt > 1:
                 prompt += (
                     "\n\nRETRY ATTEMPT 2 OF 2: keep the exact same target product and the exact same "
@@ -1575,6 +1596,475 @@ class PodBatchWorker:
             direction=self._fission_panel_direction(batch, panel_index),
             panel_index=panel_index,
             attempt=attempt,
+        )
+
+    def _process_free_batch(
+        self,
+        batch: dict[str, Any],
+        billing_run: PodBillingRun,
+        *,
+        execution: BatchExecutionContext,
+    ) -> None:
+        """自由定制：一次调用只出一张；按本次冻结的变体逐张串行生成。"""
+        batch_id = str(batch["batch_id"])
+        meta = batch.get("generation_meta") or {}
+        image_model = str(meta.get("image_model") or "")
+        panels = {
+            int(panel["variant_index"]): panel
+            for panel in batch.get("free_panels", [])
+        }
+        if not image_model:
+            raise RuntimeError("自由定制批次缺少冻结模型")
+        for variant in billing_run.plan.free_variants:
+            self._check_control(batch_id)
+            panel = panels.get(int(variant))
+            if panel is None:
+                raise RuntimeError(f"自由定制缺少第 {variant} 张的提示词")
+            self._generate_free_panel(
+                batch,
+                panel,
+                billing_run,
+                execution=execution,
+                image_model=image_model,
+            )
+            # 标题等所有槽位出完再生成；_generate_free_title 内部会检查是否齐图。
+            self._generate_free_title(batch, billing_run, execution=execution)
+        self._finalize_free_batch(batch_id, execution=execution)
+
+    def _generate_free_panel(
+        self,
+        batch: dict[str, Any],
+        panel: dict[str, Any],
+        billing_run: PodBillingRun,
+        *,
+        execution: BatchExecutionContext,
+        image_model: str,
+    ) -> None:
+        batch_id = str(batch["batch_id"])
+        variant = int(panel["variant_index"])
+        item = next(
+            (
+                row
+                for row in batch.get("items", [])
+                if int(row.get("variant_index") or 0) == variant
+            ),
+            None,
+        )
+        if item is not None and item.get("status") == "completed":
+            return
+        call_ids = (
+            f"{batch_id}:style:1:variant:{variant}:image:1",
+            f"{batch_id}:style:1:variant:{variant}:image:2",
+        )
+        references = self._free_panel_references(batch, panel)
+        last_error = ""
+        for attempt, call_id in enumerate(call_ids, start=1):
+            self._check_control(batch_id)
+            status = billing_run.call_status(call_id)
+            if status == "success":
+                # 上一次运行已拿到结果但尚未落库：直接复用结果资产。
+                current = self.repository.get_batch_internal(batch_id)
+                current_item = next(
+                    (
+                        row
+                        for row in current.get("items", [])
+                        if int(row.get("variant_index") or 0) == variant
+                    ),
+                    None,
+                )
+                if current_item and current_item.get("pattern_asset_id"):
+                    return
+                continue
+            if status == "no_return":
+                continue
+            provider_returned = False
+            audit_call = self.repository.create_generation_call(
+                batch,
+                call_kind="free_panel",
+                # 0 = 由 repository 自增，重生成同一槽位不会撞唯一键。
+                call_index=0,
+                prompt_snapshot=str(panel.get("prompt") or ""),
+            )
+            try:
+                billing_run.start(call_id, "pod.image")
+                request = DirectListingGridRequest(
+                    trial_id=f"{batch_id}-free-{variant}-{attempt}",
+                    prompt=str(panel.get("prompt") or ""),
+                    attempt=attempt,
+                    reference_images=references,
+                    model=image_model,
+                )
+                media = self.ai_runtime.generate_listing_grid(
+                    request, grant=billing_run.grant, call_id=call_id
+                )
+                provider_returned = True
+                # 自由定制：干净母版与叠加尺寸卡的成品分开存，后续改目标图可以重印/还原。
+                clean_media = media
+                carded_media = self._apply_free_spec_card(batch, variant, clean_media)
+                # 计费跟 provider 返回走，不跟发布结果走。
+                billing_run.record(call_id, "pod.image", "success")
+                stored = self._save_asset(
+                    batch,
+                    "direct_listing_panel",
+                    f"free-{variant}{clean_media.suffix}",
+                    clean_media.content,
+                )
+                composite_asset_id = stored["asset_id"]
+                publish_media = clean_media
+                if carded_media is not clean_media:
+                    card_asset = self._save_asset(
+                        batch,
+                        SPEC_CARD_ASSET_KIND,
+                        f"free-{variant}-card{carded_media.suffix}",
+                        carded_media.content,
+                    )
+                    composite_asset_id = card_asset["asset_id"]
+                    publish_media = carded_media
+                public_url = self._publish_free_panel(batch, variant, publish_media)
+                self.repository.finish_generation_call(
+                    audit_call["call_id"],
+                    status="succeeded",
+                    grid_asset_id=stored["asset_id"],
+                    execution_epoch=execution.epoch,
+                )
+                self.repository.finish_style_grid_result(
+                    batch,
+                    style_index=1,
+                    variant_index=variant,
+                    call_id=audit_call["call_id"],
+                    status="completed",
+                    pattern_asset_id=stored["asset_id"],
+                    composite_asset_id=composite_asset_id,
+                    fingerprint=hashlib.sha256(clean_media.content).hexdigest(),
+                    role=FREE_PANEL_ROLES[variant - 1],
+                    public_url=public_url,
+                    execution_epoch=execution.epoch,
+                )
+                return
+            except PodBillingAuthorizationRequired:
+                if not billing_run.has_outcome(call_id):
+                    billing_run.record(call_id, "pod.image", "no_return")
+                self.repository.finish_generation_call(
+                    audit_call["call_id"],
+                    status="failed",
+                    error_message="billing authorization required",
+                    execution_epoch=execution.epoch,
+                )
+                raise
+            except (PodBatchPaused, PodBatchCancelled):
+                raise
+            except RuntimeClosedError as exc:
+                if not provider_returned:
+                    raise PodBillingAuthorizationRequired(
+                        "POD worker stopped before the provider request started; resume after re-authorization"
+                    ) from exc
+                raise RuntimeError("POD worker stopped while processing this provider call") from exc
+            except Exception as exc:
+                last_error = safe_error_message(exc)
+                self.repository.finish_generation_call(
+                    audit_call["call_id"],
+                    status="failed",
+                    error_message=last_error,
+                    execution_epoch=execution.epoch,
+                )
+                if not provider_returned and not billing_run.has_outcome(call_id):
+                    billing_run.record(
+                        call_id,
+                        "pod.image",
+                        image_provider_outcome_for_exception(exc),
+                    )
+        self.repository.fail_free_panel(
+            batch,
+            variant,
+            last_error or "图片生成失败",
+            execution_epoch=execution.epoch,
+        )
+
+    def _free_panel_references(
+        self, batch: dict[str, Any], panel: dict[str, Any]
+    ) -> tuple[ListingReferenceImage, ...]:
+        """第 1 张用用户上传参考图；第 2~N 张固定用第 1 张成品图。"""
+        variant = int(panel["variant_index"])
+        asset_ids: list[str] = []
+        role = "free_reference"
+        if variant == 1:
+            asset_ids = [str(asset_id) for asset_id in panel.get("reference_asset_ids") or []]
+        else:
+            first = next(
+                (
+                    row
+                    for row in batch.get("items", [])
+                    if int(row.get("variant_index") or 0) == 1
+                ),
+                None,
+            )
+            if first is None or first.get("status") != "completed" or not first.get("pattern_asset_id"):
+                raise RuntimeError("第 1 张尚未完成，无法生成后续图")
+            asset_ids = [str(first["pattern_asset_id"])]
+            role = "main_view"
+        references: list[ListingReferenceImage] = []
+        for asset_id in asset_ids:
+            asset = self.repository.get_asset(
+                asset_id, batch["workspace_id"], batch["owner_user_id"]
+            )
+            references.append(
+                ListingReferenceImage(
+                    role=role,
+                    content=self.assets.read(asset["relative_path"]),
+                    content_type=str(asset.get("content_type") or ""),
+                )
+            )
+        return tuple(references)
+
+    def _publish_free_panel(
+        self, batch: dict[str, Any], variant: int, media: Any
+    ) -> str:
+        """发布到 COS 供导出使用；失败不判图片失败，只留空 public_url。"""
+        role = FREE_PANEL_ROLES[variant - 1]
+        for _attempt in (1, 2):
+            try:
+                return self.ai_runtime.publish_listing_image(
+                    media, namespace=batch["workspace_id"], role=role
+                )
+            except Exception:  # noqa: BLE001 - 发布失败可重试，图片本身仍保留
+                continue
+        return ""
+
+    def _apply_free_spec_card(
+        self, batch: dict[str, Any], variant: int, media: Any
+    ) -> Any:
+        """自由定制：尺寸卡配置的目标槽位出图后，把卡叠到这张图上。
+
+        只对 ``target_variant`` 命中的那张生效；未配置 / 渲染失败一律回退干净图，
+        不阻断出图（与全定制的回退口径一致）。
+        """
+
+        from . import spec_card
+        from .contracts import SpecCardConfig, spec_card_is_configured
+
+        listing_fields = batch.get("listing_fields")
+        raw_config = listing_fields.get("spec_card") if isinstance(listing_fields, dict) else None
+        try:
+            config = SpecCardConfig.from_mapping(raw_config)
+        except ValueError as exc:
+            self._log_spec_card_fallback(str(batch["batch_id"]), 1, f"配置不可用：{exc}")
+            return media
+        if (
+            int(config.target_variant) != int(variant)
+            or not config.enabled
+            or not spec_card_is_configured(config)
+        ):
+            return media
+        try:
+            result = spec_card.render_spec_card(
+                media.content,
+                spec_card.SpecCardRequest(
+                    cells=display_spec_card_cells(config.cells, config.display_unit),
+                    style=config.style,
+                    corner=config.corner,
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 - 渲染失败一律回退干净图
+            self._log_spec_card_fallback(
+                str(batch["batch_id"]), 1, safe_error_message(exc) or exc.__class__.__name__
+            )
+            return media
+        return build_spec_card_media(result.jpeg_bytes)
+
+    def refresh_free_spec_card(self, batch_id: str) -> None:
+        """尺寸卡配置变化后，重印/还原已生成的自由定制图片。
+
+        不再调用生图、不产生费用：目标槽位补叠卡片，其他槽位若之前印过则还原成干净母版，
+        并同步重发公网地址。单张失败只记日志，不影响其他槽位。
+        """
+
+        from . import spec_card
+        from .contracts import SpecCardConfig, spec_card_is_configured
+
+        batch = self.repository.get_batch_internal(batch_id)
+        listing_fields = batch.get("listing_fields")
+        raw_config = listing_fields.get("spec_card") if isinstance(listing_fields, dict) else None
+        try:
+            config = SpecCardConfig.from_mapping(raw_config)
+        except ValueError as exc:
+            self._log_spec_card_fallback(batch_id, 1, f"配置不可用：{exc}")
+            return
+        target = int(config.target_variant or 0)
+        can_print = config.enabled and spec_card_is_configured(config)
+        for item in batch.get("items", []):
+            if item.get("status") != "completed":
+                continue
+            variant = int(item.get("variant_index") or 0)
+            if not 1 <= variant <= len(FREE_PANEL_ROLES):
+                continue
+            pattern_id = str(item.get("pattern_asset_id") or "")
+            composite_id = str(item.get("composite_asset_id") or "")
+            if not pattern_id:
+                continue
+            baked = bool(composite_id) and composite_id != pattern_id
+            want = can_print and variant == target
+            if want == baked:
+                continue
+            role = FREE_PANEL_ROLES[variant - 1]
+            try:
+                asset = self.repository.get_asset(
+                    pattern_id, batch["workspace_id"], batch["owner_user_id"]
+                )
+                clean_content = self.assets.read(asset["relative_path"])
+                if want:
+                    result = spec_card.render_spec_card(
+                        clean_content,
+                        spec_card.SpecCardRequest(
+                            cells=display_spec_card_cells(config.cells, config.display_unit),
+                            style=config.style,
+                            corner=config.corner,
+                        ),
+                    )
+                    card_media = build_spec_card_media(result.jpeg_bytes)
+                    card_asset = self._save_asset(
+                        batch,
+                        SPEC_CARD_ASSET_KIND,
+                        f"free-{variant}-card{card_media.suffix}",
+                        card_media.content,
+                    )
+                    public_url = self._publish_free_panel(batch, variant, card_media)
+                    self.repository.set_free_result_composite(
+                        batch_id, variant, card_asset["asset_id"], public_url
+                    )
+                else:
+                    clean_media = _free_panel_media(
+                        clean_content,
+                        str(asset.get("content_type") or "image/png"),
+                        Path(str(asset.get("filename") or "")).suffix or ".png",
+                    )
+                    public_url = self._publish_free_panel(batch, variant, clean_media)
+                    self.repository.set_free_result_composite(
+                        batch_id, variant, pattern_id, public_url
+                    )
+            except Exception as exc:  # noqa: BLE001 - 单张重印失败不影响其他槽位
+                self._log_spec_card_fallback(
+                    batch_id, 1, safe_error_message(exc) or exc.__class__.__name__
+                )
+
+    def _generate_free_title(
+        self,
+        batch: dict[str, Any],
+        billing_run: PodBillingRun,
+        *,
+        execution: BatchExecutionContext,
+    ) -> None:
+        if self.title_runtime is None:
+            return
+        if not bool((batch.get("generation_meta") or {}).get("title_enabled")):
+            return
+        # 这里的 batch 是进入本次执行时的快照，第 1 张刚落库；
+        # 必须重新读一次，否则 item 仍是 queued，标题会被误判为「图片未完成」。
+        current = self.repository.get_batch_internal(str(batch["batch_id"]))
+        title_row = next(
+            (
+                row
+                for row in current.get("style_titles", [])
+                if int(row.get("style_index") or 0) == 1
+            ),
+            None,
+        )
+        if title_row is None or title_row.get("status") == "completed":
+            return
+        target = int((current.get("generation_meta") or {}).get("free_target_count") or 1)
+        items_by_variant = {
+            int(row.get("variant_index") or 0): row for row in current.get("items", [])
+        }
+        if any(
+            items_by_variant.get(variant, {}).get("status") != "completed"
+            for variant in range(1, target + 1)
+        ):
+            return
+        item = items_by_variant.get(1)
+        if item is None or item.get("status") != "completed" or not item.get("pattern_asset_id"):
+            return
+        title_call_ids = self._title_call_ids(
+            billing_run, str(batch["batch_id"]), 1
+        )
+        if not title_call_ids:
+            return
+        asset = self.repository.get_asset(
+            item["pattern_asset_id"], batch["workspace_id"], batch["owner_user_id"]
+        )
+        hero = SimpleNamespace(
+            content=self.assets.read(asset["relative_path"]),
+            content_type=str(asset.get("content_type") or "image/png"),
+        )
+        self.repository.claim_style_title(
+            str(batch["batch_id"]),
+            1,
+            style_task_id=str(item["item_id"]),
+            allow_billing_resume=billing_run.resumed,
+            execution_epoch=execution.epoch,
+        )
+        self._generate_style_title(
+            batch,
+            1,
+            str(item["item_id"]),
+            hero,
+            billing_run,
+            title_call_ids,
+            execution.epoch,
+        )
+
+    def _finalize_free_batch(
+        self, batch_id: str, *, execution: BatchExecutionContext
+    ) -> None:
+        current = self.repository.get_batch_internal(batch_id)
+        title = next(
+            (
+                row
+                for row in current.get("style_titles", [])
+                if int(row.get("style_index") or 0) == 1
+            ),
+            None,
+        )
+        items = {
+            int(item["variant_index"]): item for item in current.get("items", [])
+        }
+        target = int((current.get("generation_meta") or {}).get("free_target_count") or 1)
+        target = max(1, min(target, 6))
+        all_images_completed = all(
+            items.get(variant, {}).get("status") == "completed"
+            for variant in range(1, target + 1)
+        )
+        if (
+            all_images_completed
+            and title is not None
+            and title.get("status") in {"queued", "generating"}
+        ):
+            # 所有图都齐了但标题仍未执行：收敛成 failed，导出前仍允许手动填写。
+            self.repository.fail_style_title(
+                batch_id,
+                1,
+                "标题未生成，请在导出前手动填写",
+                execution_epoch=execution.epoch,
+            )
+        all_completed = all(
+            items.get(variant, {}).get("status") == "completed"
+            for variant in range(1, target + 1)
+        )
+        any_completed = any(
+            item.get("status") == "completed" for item in items.values()
+        )
+        any_failed = any(
+            items.get(variant, {}).get("status") == "failed"
+            for variant in range(1, target + 1)
+        )
+        if all_completed:
+            status = "completed"
+        elif any_failed:
+            status = "partial_failure" if any_completed else "failed"
+        else:
+            # 只是还没开始后面的槽位：当前这次生成已经收敛，批次先回到 completed，
+            # 前端继续点下一个槽位时会重新置为 queued。
+            status = "completed"
+        self.repository.set_batch_status(
+            batch_id, status, execution_epoch=execution.epoch
         )
 
     def _style_generation_inputs(
@@ -3890,6 +4380,22 @@ def build_spec_card_media(jpeg_bytes: bytes) -> Any:
         content_type="image/jpeg",
         suffix=SPEC_CARD_ASSET_SUFFIX,
         provider="local-spec-card",
+        model="local",
+        reference_count=0,
+    )
+
+
+def _free_panel_media(content: bytes, content_type: str, suffix: str) -> Any:
+    """把干净母版字节包成可发布的 media（取消印图时重新发布用）。"""
+
+    from wh_local.modules.product_processing.infrastructure.media import GeneratedMedia
+
+    return GeneratedMedia(
+        stage="direct_listing_panel",
+        content=content,
+        content_type=content_type or "image/png",
+        suffix=suffix or ".png",
+        provider="local",
         model="local",
         reference_count=0,
     )

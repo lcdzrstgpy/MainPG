@@ -157,6 +157,8 @@ export type SpecCardConfig = {
   corner: SpecCardCorner;
   display_unit: SpecCardDisplayUnit;
   cells: string[][];
+  /** 自由定制专用：尺寸卡印到第几张图（1..6，0/缺省=不指定）；其他模式忽略。 */
+  target_variant?: number;
 };
 
 export type SpecCardPreviewRequest = {

@@ -84,10 +84,11 @@ const ANALYSIS_STATUSES: readonly ReplicaAnalysisStatus[] = [
  *
  * 旧草稿（缺字段）→ 回退「待生成方案」。正在生成的状态不落库：
  * 恢复后回到待生成，由页面自动重新发起，避免卡在「生成中」。
+ * 方案正文与编辑标记一起落库，刷新后用户可以继续编辑或直接提交。
  */
 function analysisOrDefault(target: Partial<ReplicaTargetDraft>): Pick<
   ReplicaTargetDraft,
-  "analysisId" | "analysisStatus" | "analysisError"
+  "analysisId" | "analysisStatus" | "analysisError" | "mainPrompt" | "mainPromptEdited" | "mainPromptDirty"
 > {
   const fallback = emptyReplicaAnalysisFields();
   const rawStatus = target.analysisStatus;
@@ -101,6 +102,9 @@ function analysisOrDefault(target: Partial<ReplicaTargetDraft>): Pick<
     // 没有方案 id 就不可能是「就绪」。
     analysisStatus: analysisId ? status : "pending",
     analysisError: typeof target.analysisError === "string" ? target.analysisError : "",
+    mainPrompt: typeof target.mainPrompt === "string" ? target.mainPrompt : fallback.mainPrompt,
+    mainPromptEdited: typeof target.mainPromptEdited === "boolean" ? target.mainPromptEdited : fallback.mainPromptEdited,
+    mainPromptDirty: typeof target.mainPromptDirty === "boolean" ? target.mainPromptDirty : fallback.mainPromptDirty,
   };
 }
 

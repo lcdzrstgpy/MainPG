@@ -24,6 +24,7 @@ import {
   applyReplicaAnalysis,
   attachReplicaTargetAsset,
   buildReplicaBatchRequest,
+  changeReplicaMainPrompt,
   createEmptyReplicaTarget,
   emptyReplicaAnalysisFields,
   firstInvalidReplicaTargetIndex,
@@ -87,6 +88,8 @@ export function PodReplicaPage({ isActive = true }: Props) {
   const lastDraftErrorRef = useRef("");
   // 复合场景：同一目标可能因状态变化重复触发分析，用 ref 去重。
   const analyzingRef = useRef<Set<string>>(new Set());
+  // 按方案 id 去重「读回方案正文」，避免草稿恢复时反复请求。
+  const loadingPromptRef = useRef<Set<string>>(new Set());
   const targetsRef = useRef<ReplicaTargetDraft[]>(targets);
   targetsRef.current = targets;
   const [composition, setComposition] = useState<PodComposition | null>(null);
@@ -274,8 +277,8 @@ export function PodReplicaPage({ isActive = true }: Props) {
     setInvalidTargetId((current) => (current === clientId ? "" : current));
   };
 
-  /** 调一次豆包，让这组 A/B 产出该款的主图方案；前端只保存方案 id 与状态。 */
-  const analyzeTarget = async (clientId: string) => {
+  /** 调一次豆包，让这组 A/B 产出该款的主图方案；force=true 表示「重新生成方案」。 */
+  const analyzeTarget = async (clientId: string, options: { force?: boolean } = {}) => {
     const sourceAssetId = source?.assetId;
     const target = targetsRef.current.find((item) => item.clientId === clientId);
     if (!sourceAssetId || !target?.assetId) { setError("请先上传 POD 样图与该产品的白底图。"); return; }
@@ -286,6 +289,7 @@ export function PodReplicaPage({ isActive = true }: Props) {
       const response = await podReplicaApi.analyzeAssets({
         source_asset_id: sourceAssetId,
         target_asset_id: target.assetId,
+        force: options.force || undefined,
       });
       updateTarget(clientId, (current) => applyReplicaAnalysis(current, response));
     } catch (cause) {
@@ -294,6 +298,62 @@ export function PodReplicaPage({ isActive = true }: Props) {
       analyzingRef.current.delete(clientId);
     }
   };
+
+  /** 「重新生成方案」会覆盖手动修改，先让用户确认。 */
+  const regenerateAnalysis = (clientId: string) => {
+    const target = targetsRef.current.find((item) => item.clientId === clientId);
+    if (target && (target.mainPromptEdited || target.mainPromptDirty)) {
+      const confirmed = window.confirm("重新生成会覆盖当前方案正文（含手动修改），确定继续？");
+      if (!confirmed) return;
+    }
+    void analyzeTarget(clientId, { force: true });
+  };
+
+  /** 保存手动编辑后的方案正文；保存成功后才允许提交。 */
+  const saveMainPrompt = async (clientId: string) => {
+    const target = targetsRef.current.find((item) => item.clientId === clientId);
+    if (!target?.analysisId) { setError("主图方案缺失，请重新生成。"); return; }
+    const prompt = target.mainPrompt.trim();
+    if (!prompt) { setError("主图方案不能为空。"); return; }
+    setBusyAction("save-prompt");
+    try {
+      const response = await podReplicaApi.updateAnalysis(target.analysisId, { main_prompt: prompt });
+      updateTarget(clientId, (current) => applyReplicaAnalysis(current, response));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusyAction("");
+    }
+  };
+
+  const changeMainPrompt = (clientId: string, value: string) =>
+    updateTarget(clientId, (target) => changeReplicaMainPrompt(target, value));
+
+  /** 草稿恢复或旧目标缺正文时，按方案 id 从服务端读回。 */
+  const loadMainPrompt = async (clientId: string, analysisId: string) => {
+    if (loadingPromptRef.current.has(analysisId)) return;
+    loadingPromptRef.current.add(analysisId);
+    try {
+      const response = await podReplicaApi.getAnalysis(analysisId);
+      updateTarget(clientId, (current) => current.analysisId === analysisId && !current.mainPromptDirty
+        ? applyReplicaAnalysis(current, response)
+        : current);
+    } catch {
+      // 读取失败不改变状态：用户仍可点「重新生成方案」。
+    } finally {
+      loadingPromptRef.current.delete(analysisId);
+    }
+  };
+
+  useEffect(() => {
+    for (const target of targets) {
+      if (target.analysisId && target.analysisStatus === "ready" && !target.mainPrompt && !target.mainPromptDirty) {
+        void loadMainPrompt(target.clientId, target.analysisId);
+      }
+    }
+    // loadMainPrompt 通过 ref 去重，这里按方案状态变化触发即可。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [targets]);
 
   // A/B 资产齐备后自动生成主图方案：仅触发「待生成」的目标；失败不自动重试，交给用户点「重新生成方案」。
   useEffect(() => {
@@ -579,7 +639,7 @@ export function PodReplicaPage({ isActive = true }: Props) {
   const resolveStyleProductName = (styleIndex: number) => targets[styleIndex - 1]?.productName.trim() || undefined;
   const specCardBatchContext: SpecCardBatchContext | null = activeBatch ? { id: activeBatch.id, status: activeBatch.status, count: activeBatch.count } : null;
   const specCardStyleIndex = specCardTarget ? targets.findIndex((target) => target.clientId === specCardTarget.clientId) + 1 : undefined;
-  const canSubmit = Boolean(source) && replicaAnalysesReady(targets) && !busyAction;
+  const canSubmit = Boolean(source) && replicaAnalysesReady(targets) && targets.every((target) => !target.mainPromptDirty) && !busyAction;
   const compositionName = composition
     ? (composition.is_builtin ? "系统默认模板（默认机位）" : (composition.name.trim() || "未命名构图"))
     : "系统默认模板（默认机位）";
@@ -670,13 +730,17 @@ export function PodReplicaPage({ isActive = true }: Props) {
         skuLimitReached={Boolean(activeTarget && activeTarget.listingFields.skus.length >= MAX_SKU)}
         showRequiredErrors={listingErrorsRevealed}
         analyzing={activeTarget?.analysisStatus === "analyzing"}
+        savingPrompt={busyAction === "save-prompt"}
         onChangeProductName={changeProductName}
         onListingFieldChange={changeListingField}
         onAddSku={addSku}
         onUpdateSku={updateSku}
         onRemoveSku={removeSku}
         onOpenSpecCardDrawer={setSpecCardTargetId}
+        onChangeMainPrompt={changeMainPrompt}
+        onSaveMainPrompt={(clientId) => void saveMainPrompt(clientId)}
         onAnalyze={(clientId) => void analyzeTarget(clientId)}
+        onRegenerateAnalysis={regenerateAnalysis}
         onClose={() => setActiveTargetId(undefined)}
       />
 

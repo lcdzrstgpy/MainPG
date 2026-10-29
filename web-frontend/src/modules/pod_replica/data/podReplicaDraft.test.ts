@@ -113,6 +113,9 @@ test("a ready main-image plan survives a draft round-trip", () => {
     analysisId: "plan-1",
     analysisStatus: "ready",
     analysisError: "",
+    mainPrompt: "paint the pattern on the target product",
+    mainPromptEdited: true,
+    mainPromptDirty: false,
   };
   savePodReplicaDraft("acc", "ws", { version: POD_REPLICA_DRAFT_VERSION, source: null, targets: [ready] }, storage);
 
@@ -121,6 +124,9 @@ test("a ready main-image plan survives a draft round-trip", () => {
   assert.equal(restored.analysisId, "plan-1");
   assert.equal(restored.analysisStatus, "ready");
   assert.equal(restored.analysisError, "");
+  assert.equal(restored.mainPrompt, "paint the pattern on the target product");
+  assert.equal(restored.mainPromptEdited, true);
+  assert.equal(restored.mainPromptDirty, false);
   // 旧识图字段不再落盘，也不会被恢复成新字段。
   assert.deepEqual(Object.keys(restored).filter((key) => key.startsWith("source") || key.startsWith("target")), []);
 });

@@ -14,6 +14,8 @@ from pathlib import Path
 
 from PIL import Image
 
+from wh_local.modules.pod_customization.worker import REPLICA_MAIN_IMAGE_DETAIL_RULE
+
 from wh_local.modules.pod_customization.billing_contract import (
     POD_BILLING_PROFILE_REPLICA,
     PodExecutionGrant,
@@ -266,7 +268,8 @@ def test_main_image_then_three_derived_panels(tmp_path: Path) -> None:
         assert sorted(by_panel) == [1, 2, 3, 4]
 
         main = by_panel[1]
-        assert main.prompt == _MAIN_PROMPT
+        # 主图 = 豆包方案正文 + 最高优先级细节/可印区域规则。
+        assert main.prompt == f"{_MAIN_PROMPT}\n\n{REPLICA_MAIN_IMAGE_DETAIL_RULE}"
         # 主图参考图固定 [B, A]：第 1 张目标白底图，第 2 张样图。
         assert [image.role for image in main.reference_images] == ["target_product", "pattern_source"]
         assert main.reference_images[0].content == _asset_bytes(service, actor, target_id)
@@ -280,6 +283,7 @@ def test_main_image_then_three_derived_panels(tmp_path: Path) -> None:
             # 派生三格的唯一参考图就是刚才那次主图调用的输出。
             assert request.reference_images[0].content == main_bytes
             assert plan.derived_panels[f"panel_{panel}"] in request.prompt
+            assert REPLICA_MAIN_IMAGE_DETAIL_RULE not in request.prompt
             assert "SINGLE FRAME OUTPUT" in request.prompt
             assert "Create one square 2x2" not in request.prompt
             assert request.attempt == 1
@@ -301,7 +305,7 @@ def test_main_image_then_three_derived_panels(tmp_path: Path) -> None:
         manifest = json.loads(row["prompt_snapshot"])
         assert manifest["strategy"] == "independent_panels"
         assert [entry["panel_index"] for entry in manifest["panels"]] == [1, 2, 3, 4]
-        assert manifest["panels"][0]["prompt"] == _MAIN_PROMPT
+        assert manifest["panels"][0]["prompt"] == f"{_MAIN_PROMPT}\n\n{REPLICA_MAIN_IMAGE_DETAIL_RULE}"
 
         # 整款重试：主图重新生成，三张派生再以新主图为锚点。
         runtime.requests.clear()

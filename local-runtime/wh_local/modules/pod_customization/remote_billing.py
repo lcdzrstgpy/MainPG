@@ -188,7 +188,9 @@ def attach_freeze_snapshot(
         unit_kind=plan.unit_kind,
         billing_profile=plan.billing_profile,
         link_count=len(plan.unit_ids),
-        item_count=_int(plan.semi_item_count or plan.column_style_count),
+        item_count=_int(
+            plan.semi_item_count or plan.column_style_count or plan.free_panel_count
+        ),
         device_id=device_id,
     )
 

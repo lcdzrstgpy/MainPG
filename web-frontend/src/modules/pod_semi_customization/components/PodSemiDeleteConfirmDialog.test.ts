@@ -13,7 +13,7 @@ const styles = readFileSync(
 );
 
 test("§6.3 文案四要点齐备：只存本机 / 无图床备份 / 不可恢复 / 先导出（下载 ZIP）", () => {
-  assert.match(dialog, /删除半定制批次/);
+  assert.match(dialog, /删除印花创作批次/);
   assert.match(dialog, /只保存在本机/);
   assert.match(dialog, /没有图床公网备份/);
   assert.match(dialog, /不可恢复/);
