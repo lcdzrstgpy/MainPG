@@ -681,7 +681,7 @@ class PriceVerificationRepository:
             raise ValueError("terminal command results cannot retain a lease")
         if not isinstance(result, Mapping):
             raise PriceVerificationContractError("result must be a mapping")
-        serialized_result = safe_json_dumps(result)
+        serialized_result = safe_json_dumps(result, reject_write_actions=False)
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
@@ -1113,7 +1113,11 @@ class PriceVerificationRepository:
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (
                             chunk_id, workspace_id, batch_id, content_sha256, normalized_page_url, len(snapshots),
-                            safe_json_dumps(capture), safe_json_dumps([json.loads(value) for _, value in snapshots]),
+                            safe_json_dumps(capture, reject_write_actions=False),
+                            safe_json_dumps(
+                                [json.loads(value) for _, value in snapshots],
+                                reject_write_actions=False,
+                            ),
                             captured_at, now,
                         ),
                     )

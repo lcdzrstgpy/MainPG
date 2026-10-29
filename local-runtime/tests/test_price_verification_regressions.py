@@ -12,7 +12,11 @@ from wh_local.data_collection.plugin_queue import (
     DataCollectionPluginQueue,
 )
 from wh_local.data_collection.routes import PluginResultRequest
-from wh_local.price_verification.contracts import PluginCommandRequest, PriceVerificationActor
+from wh_local.price_verification.contracts import (
+    PluginCommandRequest,
+    PriceVerificationActor,
+    PriceVerificationContractError,
+)
 from wh_local.price_verification.plugin.service import PluginBridgeService
 from wh_local.price_verification.quote_normalizer import QuoteItem, dedupe_quotes
 from wh_local.price_verification.repository import PriceVerificationRepository
@@ -68,10 +72,10 @@ def test_capture_batch_replaces_only_same_page_and_rolls_back_failed_replace(
     failed_capture = {"will": "fail"}
     original_dumps = repository_module.safe_json_dumps
 
-    def fail_new_capture(value: object) -> str:
+    def fail_new_capture(value: object, **kwargs: object) -> str:
         if value is failed_capture:
             raise RuntimeError("serialization failed")
-        return original_dumps(value)
+        return original_dumps(value, **kwargs)
 
     monkeypatch.setattr(repository_module, "safe_json_dumps", fail_new_capture)
     with pytest.raises(RuntimeError, match="serialization failed"):
@@ -425,3 +429,38 @@ def test_product_library_requires_valid_source_and_surfaces_query_failure(tmp_pa
     )
     with pytest.raises(ProductLibraryLookupError, match="产品库货源查询失败"):
         broken._product_library_products(actor, ("VALID",))
+
+
+def test_capture_evidence_with_platform_words_is_still_accepted(tmp_path) -> None:
+    """商品链接/接口文本里出现 order/accept 时不能按「写操作」拒绝整页核价。"""
+    repository = PriceVerificationRepository(tmp_path / "quotes.sqlite3")
+    batch = repository.create_quote_capture_batch(
+        workspace_id="workspace-1", name="batch", created_by="actor-1"
+    )
+    capture = {
+        "page": {"url": "https://temu.example/goods.html?refer_page_name=bgt_order_detail"},
+        "note": "seller should accept order price",
+    }
+    repository.append_quote_capture_chunk(
+        workspace_id="workspace-1",
+        batch_id=batch.batch_id,
+        content_sha256="4" * 64,
+        page_url="https://temu.example/a",
+        capture=capture,
+        items=({"quote_key": "A1", "skc_id": "A1"},),
+        captured_at="2026-10-29T00:00:00+00:00",
+    )
+    chunks = repository.list_quote_capture_chunks(
+        workspace_id="workspace-1", batch_id=batch.batch_id
+    )
+    assert chunks and chunks[0].capture["note"] == "seller should accept order price"
+
+
+def test_outbound_command_payload_with_write_action_is_rejected() -> None:
+    """下行指令仍要拦住写操作，避免插件真的去 accept/reject。"""
+    with pytest.raises(PriceVerificationContractError, match="platform write actions"):
+        PluginCommandRequest(
+            command_type="temu_price_quote_discovery",
+            payload={"action": "bg.local.goods.priceorder.accept"},
+            idempotency_key="idem-1",
+        )

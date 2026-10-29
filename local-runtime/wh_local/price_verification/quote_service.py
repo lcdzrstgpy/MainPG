@@ -214,7 +214,8 @@ class QuoteService:
         actor = _actor(actor)
         if not isinstance(capture, Mapping):
             raise PriceVerificationContractError("capture must be a mapping")
-        safe_capture = safe_json_value(capture)
+        # 采集证据只做脱敏与 JSON 安全化；页面 URL/标题里出现 order 之类单词不该拦截。
+        safe_capture = safe_json_value(capture, reject_write_actions=False)
         if not isinstance(safe_capture, Mapping):
             raise PriceVerificationContractError("capture must be a mapping")
         normalized = normalize_price_quote_discovery(safe_capture)
@@ -233,7 +234,12 @@ class QuoteService:
         except PriceVerificationNotFound as error:  # pragma: no cover - defensive
             raise CaptureBatchRequiredError("create or activate a capture batch before collecting") from error
         snapshots = tuple(_quote_snapshot(item, index=index) for index, item in enumerate(quotes))
-        content_sha256 = sha256(safe_json_dumps({"page_url": page_url, "capture": safe_capture}).encode("utf-8")).hexdigest()
+        content_sha256 = sha256(
+            safe_json_dumps(
+                {"page_url": page_url, "capture": safe_capture},
+                reject_write_actions=False,
+            ).encode("utf-8")
+        ).hexdigest()
         record = self._repository.append_quote_capture_chunk(
             workspace_id=actor.workspace_id,
             batch_id=batch.batch_id,

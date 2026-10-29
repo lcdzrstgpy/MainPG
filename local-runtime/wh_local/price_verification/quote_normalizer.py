@@ -117,10 +117,10 @@ def assert_read_only_evidence(payload: Mapping[str, Any]) -> None:
     if not isinstance(payload, Mapping):
         raise PriceVerificationContractError("price quote evidence must be a mapping")
     try:
-        safe_json_value(payload)
+        # 证据只做 JSON 安全化（脱敏/深度/体积），不做写操作关键字扫描：
+        # 商品链接、接口响应里出现 order/accept 之类的词并不代表要执行写操作。
+        safe_json_value(payload, reject_write_actions=False)
     except PriceVerificationContractError as error:
-        if "platform write" in str(error):
-            raise ForbiddenPlatformWriteError(str(error)) from error
         raise
     for record in network_records(payload):
         method = clean_text(record.get("method")).upper()
@@ -136,7 +136,7 @@ def normalize_price_quote_discovery(payload: Mapping[str, Any]) -> QuotePreview:
     value without recording a conflict for review.
     """
     assert_read_only_evidence(payload)
-    safe_payload = safe_json_value(payload)
+    safe_payload = safe_json_value(payload, reject_write_actions=False)
     records = list(network_records(safe_payload))
     primary = [record for record in records if is_primary_price_quote_record(record)]
     selected = select_current_price_records(primary) or records
