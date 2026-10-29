@@ -69,14 +69,25 @@ const
   DataRootRegSubKey = 'Software\MainPG';
   DataRootRegValueName = 'DataRoot';
 
-// 安装前自动结束正在运行的旧版 MainPG.exe，避免文件占用导致升级不完整
+// 安装前关掉正在运行的旧版 MainPG.exe。
+//
+// 只做 `taskkill /F` + 等 1.2 秒有两个坑，升级后表现为「后端启动失败（初始化数据库时出错）」：
+//   1) 硬杀正在写 SQLite 的进程 → 可能留下半截 WAL，新版本打开库就报错；
+//   2) 1.2 秒不足以让 Windows 释放文件句柄 → 紧接着覆盖 _internal 时部分 DLL/pyd 写不进去，
+//      静默安装又抑制了报错提示，最后装出一个「文件不全」的版本。
+// 所以：先礼貌关闭（不带 /F = 发关闭请求，应用会正常收尾关库）→ 等 → 再强杀 → 再等句柄释放。
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;
 begin
   Result := '';
+  // 1) 优雅关闭：让应用自己走退出流程（数据库正常关闭）
+  Exec('taskkill.exe', '/IM MainPG.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Sleep(2500);
+  // 2) 还不退就强杀（比如卡在确认框/无响应）
   Exec('taskkill.exe', '/F /IM MainPG.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Sleep(1200);
+  // 3) 等句柄释放，避免 _internal 覆盖不完整（这是升级失败最常见的原因）
+  Sleep(1800);
 end;
 
 // 新增"数据存放位置"向导页：让用户把数据放到非系统盘，避免 C 盘被用户数据撑满。

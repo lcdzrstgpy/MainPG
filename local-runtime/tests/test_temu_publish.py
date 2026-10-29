@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from pathlib import Path
 from typing import Any
 
@@ -2277,3 +2279,150 @@ def test_pod_entry_tolerates_missing_spec_card() -> None:
     assert entry["sku"] == "POD-001"
     assert entry["weight_g"] == 350
     assert entry["length_cm"] is None
+
+
+def test_bundled_gateway_fills_provider_credentials(tmp_path: Path, monkeypatch) -> None:
+    """服务商凭据随包下发：用户装上就能用，不用手填。
+
+    优先级：本人加密库 > 随包文件（local 覆盖 > 模板）> 环境变量。
+    """
+    from wh_local.modules.temu_publish import service as service_mod
+    from wh_local.modules.temu_publish.service import TemuCredentialStore
+
+    from wh_local.db import init_db
+
+    db = tmp_path / "runtime.sqlite3"
+    init_db(db)  # secret_values 表由全局建库负责
+
+    bundle = tmp_path / "temu_gateway.json"
+    bundle.write_text(
+        json.dumps({"yl_client": "bundle-client", "yl_token": "bundle-token"}),
+        encoding="utf-8",
+    )
+    local = tmp_path / "temu_gateway.local.json"
+    monkeypatch.setattr(service_mod, "BUNDLED_GATEWAY_PATH", bundle)
+    monkeypatch.setattr(service_mod, "BUNDLED_GATEWAY_LOCAL_PATH", local)
+    for name in ("WH_TEMU_YL_CLIENT", "WH_TEMU_YL_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+
+    store = TemuCredentialStore(db, owner_id="cust_a")
+    loaded = store.load()
+    assert (loaded.client, loaded.token) == ("bundle-client", "bundle-token")
+
+    # local 覆盖优先
+    local.write_text(
+        json.dumps({"yl_client": "local-client"}), encoding="utf-8"
+    )
+    loaded = TemuCredentialStore(db, owner_id="cust_a").load()
+    assert loaded.client == "local-client"
+    assert loaded.token == "bundle-token", "local 缺的字段继续用模板里的"
+
+    # 自己填过的优先于随包文件
+    store.save(
+        type("P", (), {
+            "yl_client": "mine",
+            "yl_token": "mine-token",
+            "access_token": "",
+            "clear_yl_client": False,
+            "clear_yl_token": False,
+            "clear_access_token": False,
+        })(),
+        actor_id="cust_a",
+    )
+    loaded = TemuCredentialStore(db, owner_id="cust_a").load()
+    assert loaded.client == "mine"
+
+
+def test_bundled_gateway_tolerates_missing_or_broken_file(tmp_path: Path, monkeypatch) -> None:
+    """文件缺失/JSON 坏掉都按「没配」处理，绝不让设置页崩。"""
+    from wh_local.modules.temu_publish import service as service_mod
+    from wh_local.modules.temu_publish.service import TemuCredentialStore
+
+    from wh_local.db import init_db
+
+    db = tmp_path / "runtime.sqlite3"
+    init_db(db)
+    missing = tmp_path / "nope.json"
+    broken = tmp_path / "broken.json"
+    broken.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(service_mod, "BUNDLED_GATEWAY_PATH", missing)
+    monkeypatch.setattr(service_mod, "BUNDLED_GATEWAY_LOCAL_PATH", broken)
+    for name in ("WH_TEMU_YL_CLIENT", "WH_TEMU_YL_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+
+    loaded = TemuCredentialStore(db, owner_id="cust_a").load()
+    assert loaded.client == "" and loaded.token == ""
+
+
+def test_sync_provider_credentials_pulls_once_and_skips_when_present(tmp_path: Path, monkeypatch) -> None:
+    """服务器下发：本地空时拉一次并落库；已有凭据绝不覆盖。"""
+    from wh_local.modules.temu_publish import gateway_sync
+    from wh_local.modules.temu_publish.service import TemuCredentialStore
+
+    db = tmp_path / "runtime.sqlite3"
+    init_db(db)
+    gateway_sync.reset_backoff()
+    calls: list[str] = []
+
+    def fake_fetch(base_url: str, token: str, *, timeout: float = 4.0):
+        calls.append(token)
+        return {"yl_client": "srv-client", "yl_token": "srv-token"}
+
+    monkeypatch.setattr(gateway_sync, "fetch_gateway_credentials", fake_fetch)
+
+    assert gateway_sync.sync_provider_credentials(
+        db, "cust_a", base_url="https://x/auth-api", token_resolver=lambda: "tok-1"
+    )
+    cred = TemuCredentialStore(db, owner_id="cust_a").load()
+    assert (cred.client, cred.token) == ("srv-client", "srv-token")
+    # 店铺 token 不能被动过
+    assert cred.access_token == ""
+
+    # 已有就不再拉
+    assert not gateway_sync.sync_provider_credentials(
+        db, "cust_a", base_url="https://x/auth-api", token_resolver=lambda: "tok-2"
+    )
+    assert calls == ["tok-1"]
+
+
+def test_sync_provider_credentials_backs_off_after_failure(tmp_path: Path, monkeypatch) -> None:
+    """服务器没配/网络不通时：不抛异常，且 60 秒内不重复打远端。"""
+    from wh_local.modules.temu_publish import gateway_sync
+
+    db = tmp_path / "runtime.sqlite3"
+    init_db(db)
+    gateway_sync.reset_backoff()
+    calls: list[str] = []
+
+    def failing(base_url: str, token: str, *, timeout: float = 4.0):
+        calls.append(token)
+        return None
+
+    monkeypatch.setattr(gateway_sync, "fetch_gateway_credentials", failing)
+
+    for _ in range(3):
+        assert not gateway_sync.sync_provider_credentials(
+            db, "cust_b", base_url="https://x/auth-api", token_resolver=lambda: "tok"
+        )
+    assert len(calls) == 1, "失败后应退避，不要每次进页面都打远端"
+    gateway_sync.reset_backoff()
+
+
+def test_sync_provider_credentials_needs_token(tmp_path: Path, monkeypatch) -> None:
+    """没登录（拿不到远端 token）时直接跳过，不请求服务器。"""
+    from wh_local.modules.temu_publish import gateway_sync
+
+    db = tmp_path / "runtime.sqlite3"
+    init_db(db)
+    gateway_sync.reset_backoff()
+    called: list[str] = []
+    monkeypatch.setattr(
+        gateway_sync,
+        "fetch_gateway_credentials",
+        lambda *a, **k: called.append("x") or {"yl_client": "c", "yl_token": "t"},
+    )
+
+    assert not gateway_sync.sync_provider_credentials(
+        db, "cust_c", base_url="https://x/auth-api", token_resolver=lambda: ""
+    )
+    assert called == []

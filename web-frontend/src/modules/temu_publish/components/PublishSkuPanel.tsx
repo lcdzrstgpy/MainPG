@@ -5,7 +5,7 @@ import { TemuThumb } from "./TemuImageStrip";
 
 /**
  * 变种信息一行。字段与单位对齐 Temu 刊登表：
- * 预览图 / 颜色 / 尺码 / SKU 货号 / 申报价格（分）/ 长宽高（cm）/ 重量（g）/ 建议售价 / 库存。
+ * 预览图 / 颜色 / 尺码 / SKU 货号 / 申报价格（元）/ 长宽高（cm）/ 重量（g）/ 建议售价（元）/ 库存。
  */
 export type VariantRow = {
   key: string;
@@ -124,12 +124,6 @@ function splitSizes(text: string): string[] {
  * 优化：尺码列表一键铺行 + 批量编辑一次填满整列；表格长所以给横向滚动。
  */
 /** 「分 → 元」提示：15000 显示 ≈ ¥150.00，避免把分当成元看。 */
-function yuanHint(value: string): string {
-  const cents = Number((value || "").trim());
-  if (!Number.isFinite(cents) || cents <= 0) return "";
-  return `≈ ¥${(cents / 100).toFixed(2)}`;
-}
-
 export function PublishSkuPanel({
   rows,
   onRowsChange,
@@ -353,9 +347,14 @@ export function PublishSkuPanel({
         </div>
         <div className="temu-batch-grid">
           <label>
-            申报价格（分）
-            <input className="temu-input" inputMode="numeric" value={batch.supplierPrice} onChange={(e) => patchBatch({ supplierPrice: e.target.value })} placeholder="1299" />
-            <em className="temu-price-preview">{yuanHint(batch.supplierPrice)}</em>
+            申报价格（元）
+            <input
+              className="temu-input"
+              inputMode="decimal"
+              value={batch.supplierPrice}
+              onChange={(e) => patchBatch({ supplierPrice: e.target.value })}
+              placeholder="12.99"
+            />
           </label>
           <label>
             建议售价
@@ -397,12 +396,12 @@ export function PublishSkuPanel({
               </>
             )}
             <span>SKU 货号</span>
-            <span>申报价格(分)</span>
+            <span>申报价格(元)</span>
             <span>长</span>
             <span>宽</span>
             <span>高</span>
             <span>重量(g)</span>
-            <span>建议售价</span>
+            <span>建议售价(元)</span>
             <span>库存</span>
             <span />
           </div>
@@ -442,10 +441,10 @@ export function PublishSkuPanel({
               />
               <input
                 className="temu-input"
-                inputMode="numeric"
+                inputMode="decimal"
                 value={row.supplierPrice}
                 onChange={(event) => onUpdateRow(row.key, { supplierPrice: event.target.value })}
-                placeholder="1299"
+                placeholder="12.99"
               />
               <input
                 className="temu-input"
@@ -473,7 +472,7 @@ export function PublishSkuPanel({
               />
               <input
                 className="temu-input"
-                inputMode="numeric"
+                inputMode="decimal"
                 value={row.suggestedPrice}
                 onChange={(event) => onUpdateRow(row.key, { suggestedPrice: event.target.value })}
                 placeholder="可选"

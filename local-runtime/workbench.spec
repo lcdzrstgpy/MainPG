@@ -57,11 +57,13 @@ if not any(path.parts[-2] == "order_profit" for path in _migration_dirs):
 # 永远看不到这些主题（BUILTIN 只有 classic/sunset/peach/alpine）。
 # 后端按 wh_local/data/themes 相对位置找目录，打包后落在 _internal 下，
 # 正好命中 main.py 里 sys._MEIPASS 那个候选路径。
-_themes = ROOT / "wh_local/data/themes"
-if _themes.is_dir():
-    datas.append((str(_themes), "wh_local/data/themes"))
+# 2026-10-29：整个 data 一起收。原来只收 data/themes，导致新增的
+# data/temu_gateway.json（随包下发的服务商凭据）打不进包。
+_data_dir = ROOT / "wh_local/data"
+if _data_dir.is_dir():
+    datas.append((str(_data_dir), "wh_local/data"))
 else:
-    print("[workbench.spec] WARNING: 缺失 wh_local/data/themes")
+    print("[workbench.spec] WARNING: 缺失 wh_local/data")
 
 # 操作答疑 FAQ 数据（service.faq_data_path() 按 __file__ / _MEIPASS 相对位置读取）
 _help_agent_data = ROOT / "wh_local/modules/help_agent/data"

@@ -921,6 +921,9 @@ def create_app(database_path: Path | None = None) -> FastAPI:
             db_path,
             product_processing=product_processing,
             pod_service_getter=lambda: getattr(app.state, "pod_customization_service", None),
+            # 服务商凭据由客户中心统一保管：登录后拉一次就能用（安装包不必带明文）
+            remote_token_resolver=remote_token_resolver,
+            customer_auth_base_url=config.customer_auth_base_url,
         )
     )
     # 源图同步只在建草稿时挂一次 BackgroundTask，进程重启后排队中的任务会永久丢失，

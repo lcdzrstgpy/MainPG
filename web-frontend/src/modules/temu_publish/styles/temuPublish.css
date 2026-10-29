@@ -2934,3 +2934,237 @@ textarea.temu-input {
 .temu-draft-table .col-cat small.is-draft {
   color: #6b8296;
 }
+
+/* ---------- 发布检查：缺项标红（只在点过发布被拦之后生效） ---------- */
+
+.is-console .temu-field.is-required-empty > span {
+  color: #d8333f;
+}
+.is-console .temu-field.is-required-empty .temu-input {
+  border-color: #e2384a;
+  background: #fff6f6;
+}
+.is-console .temu-required-empty-hint {
+  margin-left: 6px;
+  color: #d8333f;
+  font-size: 0.68rem;
+  font-style: normal;
+  font-weight: 800;
+}
+
+/* 侧栏没完成的那一项：把「还差 xxx」说得跟别的不一样 */
+.is-console .temu-rail-list li:not(.is-done) .temu-rail-label em {
+  color: #b4690e;
+}
+/* 侧栏固定可见：错误摘要放这里，比只放在页面顶部更容易被看到 */
+.is-console .temu-rail-error {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 9px;
+  color: #a11b26;
+  background: #fff1f2;
+  border: 1px solid #f5c2c7;
+  font-size: 0.72rem;
+  line-height: 1.45;
+  word-break: break-word;
+}
+/* 侧栏操作区：滚动时也点得到「检查必填 / 提交发布」 */
+.is-console .temu-rail-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.is-console .temu-rail-actions .temu-btn {
+  width: 100%;
+  justify-content: center;
+}
+/* 发布成功后侧栏直接给结论（商品 id 就在这儿，不用往下翻结果面板） */
+.is-console .temu-rail-ok {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 9px;
+  color: #177245;
+  background: #e9f8ef;
+  border: 1px solid #b6e3c8;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+
+/* ================================================================
+   发布商品页：视觉与结构打磨（2026-10-29）
+   —— 只调排版与层次，不改任何提交逻辑。
+   ================================================================ */
+
+/* 顶部：标题 + 进度条在左，操作按钮在右，两段式更清爽 */
+.is-console .temu-console-top {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px 24px;
+  padding: 16px 22px;
+  background: linear-gradient(
+    180deg,
+    var(--theme-module-surface, #ffffff) 0%,
+    var(--theme-module-surface-soft, #f7fbff) 100%
+  );
+}
+
+.is-console .temu-console-title {
+  display: grid;
+  gap: 7px;
+  align-items: start;
+}
+
+.is-console .temu-console-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.is-console .temu-console-title h1 {
+  font-size: 21px;
+  font-weight: 750;
+  line-height: 1.15;
+}
+
+/* 五段进度条：走到第几步一眼可见 */
+.is-console .temu-progress {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 5px;
+  width: min(360px, 100%);
+}
+
+.is-console .temu-progress span {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--theme-module-border, #e2ecf5);
+  transition: background 0.22s ease;
+}
+
+.is-console .temu-progress span.is-done {
+  background: var(--theme-module-primary-strong, #087bf5);
+}
+
+/* 操作区：主按钮更重，次要按钮更淡 */
+.is-console .temu-console-actions {
+  gap: 8px;
+}
+
+.is-console .temu-console-actions .temu-btn {
+  min-height: 34px;
+  padding: 7px 14px;
+  border-color: var(--theme-module-border, #dce8f2);
+  background: var(--theme-module-surface-soft, #f6fafd);
+  color: var(--theme-text-secondary, #527089);
+  font-size: 0.78rem;
+}
+
+.is-console .temu-console-actions .temu-btn:hover:not(:disabled) {
+  border-color: var(--theme-module-border-strong, #bcd6ec);
+  color: var(--theme-text-primary, #1a3551);
+}
+
+.is-console .temu-console-actions .temu-btn-primary {
+  padding-inline: 20px;
+  font-weight: 750;
+  box-shadow: 0 10px 20px -14px var(--theme-module-shadow, rgba(8, 123, 245, 0.7));
+}
+
+/* 区块卡：左侧状态条（灰=未开始 / 蓝=当前 / 绿=已完成） */
+.is-console .temu-sec {
+  position: relative;
+  gap: 14px;
+  padding: 18px 20px 20px;
+  border-radius: 14px;
+  transition:
+    border-color 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+.is-console .temu-sec::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 16px;
+  bottom: 16px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--theme-module-border, #e2ecf5);
+  transition: background 0.18s ease;
+}
+
+.is-console .temu-sec.is-done::before {
+  background: #2fbe8f;
+}
+
+/* 当前该填的这一块：描边加重 + 序号点亮，扫一眼就知道从哪开始 */
+.is-console .temu-sec.is-active {
+  border-color: var(--theme-module-primary-strong, #087bf5);
+  box-shadow: 0 14px 34px -28px var(--theme-module-shadow, rgba(12, 91, 139, 0.8));
+}
+
+.is-console .temu-sec.is-active::before {
+  background: var(--theme-module-primary-strong, #087bf5);
+}
+
+.is-console .temu-sec-head.is-active .temu-sec-num {
+  color: #ffffff;
+  background: var(--theme-module-primary-strong, #087bf5);
+}
+
+/* 发布区做成收尾块 */
+.is-console .temu-sec-last {
+  background: linear-gradient(
+    180deg,
+    var(--theme-module-surface-soft, #f7fbff) 0%,
+    var(--theme-module-surface, #ffffff) 70%
+  );
+}
+
+/* 区块头排版：标题更实，说明更轻 */
+.is-console .temu-sec-title {
+  gap: 1px;
+}
+
+.is-console .temu-sec-title h2 {
+  font-size: 15.5px;
+  font-weight: 750;
+}
+
+.is-console .temu-sec-title p {
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.is-console .temu-sec-num {
+  width: 26px;
+  height: 26px;
+  font-size: 12px;
+  transition:
+    color 0.18s ease,
+    background 0.18s ease;
+}
+
+/* 字段网格：间距略松、标签更清楚 */
+.is-console .temu-sec .temu-two-col,
+.is-console .temu-sec .temu-three-col {
+  gap: 12px 14px;
+}
+
+.is-console .temu-sec .temu-field > span {
+  font-size: 0.78rem;
+}
+
+@media (max-width: 1180px) {
+  .is-console .temu-console-top {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .is-console .temu-console-actions {
+    justify-content: flex-start;
+  }
+}

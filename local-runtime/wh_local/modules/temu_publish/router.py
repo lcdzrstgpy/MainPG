@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from ...session import Actor, actor_from_authorization
 from .client import TemuCredentialMissing, TemuGatewayError
 from .submissions import DuplicateSubmission
+from .gateway_sync import sync_provider_credentials
 from .library import collect_all_draft_entries, paginate_draft_library
 from .schemas import (
     DetailImageUploadRequest,
@@ -82,9 +83,26 @@ def create_temu_publish_router(
     *,
     product_processing: Any | None = None,
     pod_service_getter: Any | None = None,
+    remote_token_resolver: Any | None = None,
+    customer_auth_base_url: str = "",
 ) -> APIRouter:
     router = APIRouter(prefix="/api/temu-publish", tags=["temu-publish"])
     service = TemuPublishService(database_path)
+
+    def _sync_gateway(actor: Actor) -> None:
+        """本地没有服务商凭据时，从客户中心拉一次（静默失败，退回随包兜底）。
+
+        服务商 YL client/token 是整个系统共用的一对，不该让用户手填；
+        装好的包登录一次就自动配好，换机器也不用重来。
+        """
+        if not customer_auth_base_url or remote_token_resolver is None:
+            return
+        sync_provider_credentials(
+            database_path,
+            actor.id,
+            base_url=customer_auth_base_url,
+            token_resolver=lambda: remote_token_resolver(actor),
+        )
 
     def _service(actor: Actor) -> TemuPublishService:
         """凭证按账号隔离：每次请求都换成当前登录账号的店铺上下文。"""
@@ -145,6 +163,7 @@ def create_temu_publish_router(
     @router.get("/settings")
     def get_settings(actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
         """只返回当前账号的配置状态与脱敏提示，不返回密钥原文。"""
+        _sync_gateway(actor)
         return _service(actor).settings_status()
 
     @router.put("/settings")

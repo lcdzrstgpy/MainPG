@@ -14,6 +14,7 @@ import { TemuImageStrip, TemuThumb } from "../components/TemuImageStrip";
 import { localStore, parsePublishError } from "../data/localStore";
 import { categorySearchTexts, dedupeCategoryPaths } from "../utils/categoryMatch";
 import { matchPresetValue } from "../utils/specMatch";
+import { centsToYuanText, formatYuan, yuanToCents } from "../utils/price";
 import type { ProductTemplate, VariantTemplate } from "../data/localStore";
 import { TEMU_PUBLISH_PREFILL_EVENT, TEMU_PUBLISH_PREFILL_KEY } from "../types";
 import type {
@@ -161,6 +162,78 @@ function storageScope(): string {
 const PRESETS_KEY = "temu_publish_presets_v1";
 /** 变种行（价格/库存/尺寸/重量都是手填的）也要落盘，刷新后不能只剩颜色尺码文本。 */
 const ROWS_KEY = "temu_publish_rows_v1";
+// 变种模板存在 data/localStore.ts（VARIANT_KEY），key 必须保持一致
+const VARIANT_TEMPLATE_KEY = "temu_publish_variant_templates";
+/** 价格单位迁移标记：写过一次就不再动，否则会把用户新填的「元」又除一遍 */
+const PRICE_UNIT_FLAG = "temu_publish_price_unit_yuan_v1";
+
+/**
+ * 一次性把本机存着的价格从「分」换成「元」。
+ *
+ * 为什么直接改存储、而不是只改内存里的值：React 严格模式会把 useState 的初始化
+ * 跑两遍，只改内存的话第二遍又读到原始的分值，1299 就变成了 ¥1299。
+ * 改完立刻写标记，以后再也不碰，用户新填的元不会被二次除算。
+ */
+function migrateLegacyPriceUnit(suffix: string): void {
+  try {
+    const store = window.localStorage;
+    // 标记必须按账号分：rows / 模板都是 <key>:<account>，
+    // 用全局标记会让第二个账号的老数据漏迁（1299 变 ¥1299）
+    const flagKey = `${PRICE_UNIT_FLAG}:${suffix}`;
+    if (store.getItem(flagKey) === "yuan") return;
+
+    const rowsKey = `${ROWS_KEY}:${suffix}`;
+    const rowsRaw = store.getItem(rowsKey);
+    if (rowsRaw) {
+      const rows = JSON.parse(rowsRaw) as VariantRow[];
+      if (Array.isArray(rows)) {
+        store.setItem(
+          rowsKey,
+          JSON.stringify(
+            rows.map((row) =>
+              row && typeof row === "object"
+                ? {
+                    ...row,
+                    supplierPrice: centsToYuanText(row.supplierPrice),
+                    suggestedPrice: centsToYuanText(row.suggestedPrice),
+                  }
+                : row,
+            ),
+          ),
+        );
+      }
+    }
+
+    const templateKey = `${VARIANT_TEMPLATE_KEY}:${suffix}`;
+    const templateRaw = store.getItem(templateKey);
+    if (templateRaw) {
+      const templates = JSON.parse(templateRaw) as Array<Record<string, unknown>>;
+      if (Array.isArray(templates)) {
+        store.setItem(
+          templateKey,
+          JSON.stringify(
+            templates.map((item) => {
+              const batch = item?.batch as Record<string, unknown> | undefined;
+              if (!batch) return item;
+              return {
+                ...item,
+                batch: {
+                  ...batch,
+                  supplierPrice: centsToYuanText(batch.supplierPrice),
+                  suggestedPrice: centsToYuanText(batch.suggestedPrice),
+                },
+              };
+            }),
+          ),
+        );
+      }
+    }
+
+    store.setItem(flagKey, "yuan");
+  } catch {
+    // 本机存储不可用：跳过迁移，不影响主流程
+  }
+}
 const RECENT_CATEGORY_KEY = "temu_publish_recent_category_v1";
 const SHOP_INFO_KEY = "temu_shop_info_v1";
 
@@ -243,11 +316,6 @@ function initialCategoryPath(): TemuCategory[] {
 }
 
 /** 价格按「分」存，展示成 ¥。 */
-function formatCents(text?: string): string {
-  const value = Number(text);
-  if (!text || !Number.isFinite(value) || value <= 0) return text || "";
-  return `¥${(value / 100).toFixed(2)}`;
-}
 
 function findParentSpec(specs: TemuParentSpec[], keyword: string, fallbackIndex: number): TemuParentSpec | null {
   const hit = specs.find((item) => item.parentSpecName.includes(keyword));
@@ -432,13 +500,16 @@ function SectionHead({
   step,
   index,
   extra,
+  active = false,
 }: {
   step: { label: string; hint: string; done: boolean };
   index: number;
   extra?: ReactNode;
+  /** 当前该填的这一块（第一个没填完的）：给个视觉锚点 */
+  active?: boolean;
 }) {
   return (
-    <div className="temu-sec-head">
+    <div className={`temu-sec-head${active ? " is-active" : ""}`}>
       <span className={`temu-sec-num${step.done ? " is-done" : ""}`}>{step.done ? "✓" : index + 1}</span>
       <div className="temu-sec-title">
         <h2>{step.label}</h2>
@@ -463,6 +534,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   // 提交发布进行中：别的任务跑完不能把它「解除」，否则连点就是重复上架
   const [publishing, setPublishing] = useState(false);
   const publishingRef = useRef(false);
+  // 只有「点过发布被拦下来」之后才把必填项标红：一进页面满屏红框反而让人焦虑
+  const [showFieldErrors, setShowFieldErrors] = useState(false);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [accessToken, setAccessToken] = useState("");
@@ -517,6 +590,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const [shopEpoch, setShopEpoch] = useState(0);
 
   const [rows, setRows] = useState<VariantRow[]>(() => {
+    // 读之前先把本机老数据里的价格从「分」换成「元」（只做一次）
+    migrateLegacyPriceUnit(storageScope());
     const saved = loadJsonLocal<VariantRow[]>(`${ROWS_KEY}:${storageScope()}`, []);
     return Array.isArray(saved) ? withFreshRowKeys(saved.filter((row) => row && row.key)) : [];
   });
@@ -1515,8 +1590,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       const suggested = Number(row.suggestedPrice || 0);
       if (suggested > 0 && price > 0 && suggested * 20 < price) {
         warnings.push(
-          `${at}建议售价 ${row.suggestedPrice} 明显小于申报价 ${row.supplierPrice}：` +
-            "建议售价单位也是「分」，草稿带入的是店铺币种金额时请改成 ×100。",
+          `${at}建议售价 ${row.suggestedPrice} 元远小于申报价 ${row.supplierPrice} 元：` +
+            "确认一下是不是少填了一位（两个都是元，不用换算）。",
         );
       }
       const skuCode = cleanExtCode(row.extCode);
@@ -1530,9 +1605,10 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         // 半托管供货价按人民币结算：传其它币种会被拒「请选择正确的币种：CNY」
         currency_type: "CNY",
         site_id: SITE_ID,
-        supplier_price: Math.round(parsePositive(row.supplierPrice, `${at}申报价格`)),
+        // 界面填元，接口收分（见 parseYuanToCents）
+        supplier_price: yuanToCents(row.supplierPrice, `${at}申报价格`),
         suggested_price: row.suggestedPrice.trim()
-          ? Math.round(parsePositive(row.suggestedPrice, `${at}建议售价`))
+          ? yuanToCents(row.suggestedPrice, `${at}建议售价`)
           : null,
         // 库存 0 是合法的（Temu 会建品但不可售），别拿价格的规则卡它
         stock: parseStock(row.stock, `${at}库存`),
@@ -1652,13 +1728,18 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   /** 发布前校验：问网关这个叶子类目还缺哪些必填属性，不会提交商品。 */
   const checkMandatory = () =>
     run("mandatory", async () => {
-      const draft = await composeDraft();
+      const draft = await composeDraft().catch((cause: unknown) => {
+        noteValidationBlocked();
+        throw cause;
+      });
       setMandatory(null);
       const checked = await temuPublishApi.checkMandatory(draft);
       const missing = Array.isArray(checked.result?.requiredMissing)
         ? (checked.result.requiredMissing as Array<{ pid?: number; name?: string }>)
         : [];
       setMandatory({ source: checked.source, result: checked.result, warnings: checked.warnings, missing });
+      // 结果面板在页面最下面：点完直接带过去，别让侧栏那个按钮看着像没反应
+      jumpTo("sec-publish");
     });
 
   /** 真正提交到店铺。非幂等 + 有外部副作用，必须先让用户确认。 */
@@ -1668,7 +1749,12 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     publishingRef.current = true;
     setPublishing(true);
     return run("publish", async () => {
-      const draft = await composeDraft();
+      // 校验没过：把必填项标红，并滚到第一个还没填完的区块 ——
+      // 否则长表单里只看到顶部一句「缺少必填属性」，还得自己往下找在哪
+      const draft = await composeDraft().catch((cause: unknown) => {
+        noteValidationBlocked();
+        throw cause;
+      });
       const skuCount = draft.skcs.reduce((total, skc) => total + skc.skus.length, 0);
       const confirmed = window.confirm(
         [
@@ -1775,6 +1861,49 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const leaf = categoryPath[categoryPath.length - 1];
   // 产品货号（ParentSKU）：Temu 只认字母/数字/-/_，渲染层也用它拼变种货号前缀
   const productCode = cleanExtCode(form.productCode);
+  /**
+   * 发下一条：清掉「这件商品特有」的内容，保留一批商品共用的设置。
+   *
+   * 实际发一批货时常是同一类目、同一运费模板和仓库，只换个款（图/货号/变种不同）。
+   * 以前发完一条要回草稿库重进一次，类目和属性都得重选。
+   *
+   * 保留：类目、属性选择、运费模板、发货仓库、时效、敏感/定制开关、多件装、产地。
+   * 清掉：标题、英文标题、货号、轮播/外包装/详情图、描述、站外链接、变种行、提交结果。
+   */
+  const startNextItem = () => {
+    setForm((current) => ({
+      ...current,
+      title: "",
+      titleEn: "",
+      productCode: "",
+      externalUrl: "",
+      carousel: "",
+      outerImages: "",
+      detailImages: "",
+      description: "",
+    }));
+    setRows([]);
+    setError("");
+    setResult(null);
+    setPublishResult(null);
+    setMandatory(null);
+    setShowFieldErrors(false);
+    setCopied(false);
+    // 上一条草稿的预填数据与来源条必须一起清：
+    // 留着的话「rows 为空就消费 prefillRef」的路径会把它重新填回来，
+    // 侧栏也还挂着「POD 草稿 · 申报价 ¥xx」。
+    prefillRef.current = null;
+    prefillDraftId.current = "";
+    setPrefillInfo(null);
+    // 类目是刻意留着的：标题清空后不该让自动匹配把已选类目冲掉
+    categoryTouchedRef.current = true;
+    jumpTo("sec-info");
+    // 光标直接落到标题：清完这条就能接着打下一件的标题
+    window.setTimeout(() => {
+      document.getElementById("temu-title-input")?.focus({ preventScroll: true });
+    }, 0);
+  };
+
   // 发布成功后要显示的「商品 id」：网络中断反查到的用 matched_goods，正常提交用返回值
   const publishedGoodsId = publishResult
     ? publishResult.confirmed_by_lookup
@@ -1840,8 +1969,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     const unitHint = unit
       ? `${item.numberInputTitle || "请输入数值"}（${unit}）`
       : item.numberInputTitle || "请输入";
+    // 必填没填：只在「点过发布被拦」之后标红，不然一进页面满屏红框
+    const emptyRequired = required && !pick.vid && !pick.text.trim();
     return (
-      <label className="temu-field" key={item.pid}>
+      <label
+        className={`temu-field${showFieldErrors && emptyRequired ? " is-required-empty" : ""}`}
+        key={item.pid}
+      >
         <span>
           {label}
           {required && <em className="temu-required">*</em>}
@@ -1904,52 +2038,89 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const carouselCount = splitLines(form.carousel).length;
 
   // 分区顺序按 Temu 刊登习惯，且只保留「真会提交」的字段：基本信息 → 产品信息 → 变种信息 → 包装信息 → 发布
-  const flowSteps: Array<{ id: string; label: string; done: boolean; hint: string }> = [
+  /** 一行变种是否填全（价格/尺寸/重量/货号/仓库都要有） */
+  const rowIncomplete = (row: VariantRow) =>
+    !(
+      row.sizeName.trim() &&
+      row.extCode.trim() &&
+      row.warehouseId &&
+      row.supplierPrice.trim() &&
+      row.weightG.trim() &&
+      row.lengthCm.trim() &&
+      row.widthCm.trim() &&
+      row.heightCm.trim()
+    );
+  const incompleteRows = rows.filter(rowIncomplete).length;
+  const missingAttrs = requiredProps.length - filledRequired;
+
+  /**
+   * 检查清单：每一格都算出「还差什么」，而不是只写一句静态说明。
+   * 这样填长表单时不用往下翻就知道卡在哪。
+   */
+  const flowBase: Array<{ id: string; label: string; hint: string; missing: string[] }> = [
     {
       id: "sec-base",
       label: "基本信息",
       hint: "店铺、站点、产品分类、产品属性",
-      done: !!leaf?.isLeaf && !!attributes && filledRequired === requiredProps.length,
+      missing: [
+        ...(statusLoaded && !status?.configured.ready ? ["绑定店铺"] : []),
+        ...(!leaf?.isLeaf ? ["选到叶子类目"] : []),
+        ...(leaf?.isLeaf && !attributes ? ["属性还在加载"] : []),
+        ...(missingAttrs > 0 ? [`${missingAttrs} 个必填属性`] : []),
+      ],
     },
     {
       id: "sec-info",
       label: "产品信息",
       hint: "标题、货号、轮播图、素材图",
-      done: form.title.trim().length > 0 && carouselCount > 0,
+      missing: [
+        ...(!form.title.trim() ? ["产品标题"] : []),
+        ...(!carouselCount ? ["轮播图"] : []),
+      ],
     },
     {
       id: "sec-variant",
       label: "变种信息",
       hint: "颜色尺码、申报价格、尺寸重量",
-      done:
-        rows.length > 0 &&
-        rows.every(
-          (row) =>
-            row.sizeName.trim() &&
-            row.extCode.trim() &&
-            row.warehouseId &&
-            row.supplierPrice.trim() &&
-            row.weightG.trim() &&
-            row.lengthCm.trim() &&
-            row.widthCm.trim() &&
-            row.heightCm.trim(),
-        ),
+      missing: [
+        ...(!rows.length ? ["至少一个变种"] : []),
+        ...(rows.length && incompleteRows ? [`${incompleteRows} 行没填全`] : []),
+      ],
     },
     {
       id: "sec-pack",
       label: "包装信息",
       hint: "外包装图、运费模板、发货仓库",
-      done: form.freightId.length > 0 && form.warehouseId.length > 0,
+      missing: [
+        ...(!form.freightId ? ["运费模板"] : []),
+        ...(!form.warehouseId ? ["发货仓库"] : []),
+      ],
     },
     {
       id: "sec-publish",
       label: "校验发布",
       hint: "检查必填 → 提交",
-      done: !!publishResult,
+      missing: [],
     },
   ];
+  const flowSteps = flowBase.map((step) =>
+    step.id === "sec-publish"
+      ? { ...step, done: !!publishResult }
+      : { ...step, done: step.missing.length === 0 },
+  );
+  // 「校验发布」是动作不是内容，统计剩余项时不算它
+  const remainingContentSteps = flowSteps.filter((step) => step.id !== "sec-publish" && !step.done);
+  /** 第一个没填完的区块：给左侧状态条和区块头上色，让人一眼知道该填哪 */
+  const activeSectionId = remainingContentSteps[0]?.id ?? "";
   const doneCount = flowSteps.filter((step) => step.done).length;
   const jumpTo = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+
+  /** 校验没通过时的统一反馈：标红必填项 + 滚到第一个缺口。 */
+  const noteValidationBlocked = () => {
+    setShowFieldErrors(true);
+    const firstGap = flowSteps.find((step) => step.id !== "sec-publish" && !step.done);
+    if (firstGap) jumpTo(firstGap.id);
+  };
   const stepOf = (id: string) => flowSteps.find((item) => item.id === id) ?? flowSteps[0];
   const ready = !!status?.configured.ready;
   // 服务商凭据：跟具体店铺无关，解绑店铺也保留
@@ -1959,15 +2130,50 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const firstPrice = rows[0]?.supplierPrice?.trim() ?? "";
   const effectiveMaterial = form.material.trim() || splitLines(form.carousel)[0] || "";
 
+  // 快捷键拿最新的发布函数：不让每次 render 都重新绑一遍监听
+  const publishRef = useRef(publishGoods);
+  publishRef.current = publishGoods;
+
+  /**
+   * Ctrl / ⌘ + Enter = 点「提交发布」。
+   *
+   * 填完最后一行变种手还在键盘上，连发时也不想每次都摸鼠标找按钮。
+   * 提交本身有 publishing 锁（接口非幂等），连按不会重复上架。
+   */
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Enter" || !(event.ctrlKey || event.metaKey)) return;
+      if (publishing || busy !== "" || !ready) return;
+      event.preventDefault();
+      void publishRef.current();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [publishing, busy, ready]);
+
   return (
     <div className="temu-publish-page is-console">
       <header className="temu-console-top">
         <div className="temu-console-title">
           <p className="eyebrow">TEMU · 半托管刊登</p>
-          <h1>发布商品</h1>
-          <span className="temu-muted">
-            分类属性 → 产品信息 → 变种 → 包装描述 → 发布 · 改动自动存本机
-          </span>
+          <div className="temu-console-heading">
+            <h1>发布商品</h1>
+            <span className={`temu-pill ${remainingContentSteps.length ? "warn" : "ok"}`}>
+              {remainingContentSteps.length ? `还差 ${remainingContentSteps.length} 项` : "可提交"}
+            </span>
+          </div>
+          {/* 五段进度条：一眼看出走到第几步。悬停能看到这一步还差什么 */}
+          <div className="temu-progress" role="presentation">
+            {flowSteps
+              .filter((step) => step.id !== "sec-publish")
+              .map((step) => (
+                <span
+                  key={step.id}
+                  className={step.done ? "is-done" : ""}
+                  title={`${step.label}：${step.done ? "已完成" : `还差 ${step.missing.join("、")}`}`}
+                />
+              ))}
+          </div>
         </div>
         <div className="temu-console-actions">
           <button
@@ -2170,7 +2376,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   {[
                     prefillInfo.specLabel ? `变种 ${prefillInfo.specLabel}` : "",
                     prefillInfo.imageCount ? `图 ${prefillInfo.imageCount} 张` : "",
-                    prefillInfo.declaredPrice ? `申报价 ${formatCents(prefillInfo.declaredPrice)}` : "",
+                    prefillInfo.declaredPrice ? `申报价 ${formatYuan(prefillInfo.declaredPrice)}` : "",
                   ]
                     .filter(Boolean)
                     .join(" · ") || "标题/图片已填好，核对后补类目即可"}
@@ -2228,9 +2434,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           )}
 
           {/* 1 基本信息 */}
-          <section className="temu-sec" id="sec-base">
+          <section
+            className={`temu-sec${stepOf("sec-base").done ? " is-done" : ""}${activeSectionId === "sec-base" ? " is-active" : ""}`}
+            id="sec-base"
+          >
             <SectionHead
               step={stepOf("sec-base")}
+              active={activeSectionId === "sec-base"}
               index={0}
               extra={
                 leaf ? (
@@ -2456,9 +2666,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           </section>
 
           {/* 2 产品信息 */}
-          <section className="temu-sec" id="sec-info">
+          <section
+            className={`temu-sec${stepOf("sec-info").done ? " is-done" : ""}${activeSectionId === "sec-info" ? " is-active" : ""}`}
+            id="sec-info"
+          >
             <SectionHead
               step={stepOf("sec-info")}
+              active={activeSectionId === "sec-info"}
               index={1}
               extra={
                 <span className="temu-muted">
@@ -2470,9 +2684,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               <span>
                 产品标题<em className="temu-required">*</em>
                 <em className="temu-muted">{form.title.length}/250，建议英文</em>
+                {showFieldErrors && !form.title.trim() ? (
+                  <em className="temu-required-empty-hint">必填</em>
+                ) : null}
               </span>
               <textarea
-                className="temu-input"
+                id="temu-title-input"
+                className={`temu-input${showFieldErrors && !form.title.trim() ? " is-bad" : ""}`}
                 value={form.title}
                 onChange={(event) => patch({ title: event.target.value })}
                 placeholder="英文标题，突出核心卖点"
@@ -2629,9 +2847,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           </section>
 
           {/* 3 变种信息 */}
-          <section className="temu-sec" id="sec-variant">
+          <section
+            className={`temu-sec${stepOf("sec-variant").done ? " is-done" : ""}${activeSectionId === "sec-variant" ? " is-active" : ""}`}
+            id="sec-variant"
+          >
             <SectionHead
               step={stepOf("sec-variant")}
+              active={activeSectionId === "sec-variant"}
               index={2}
               extra={<span className="temu-muted">{rows.length} 个变种</span>}
             />
@@ -2695,9 +2917,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           </section>
 
           {/* 4 包装信息 */}
-          <section className="temu-sec" id="sec-pack">
+          <section
+            className={`temu-sec${stepOf("sec-pack").done ? " is-done" : ""}${activeSectionId === "sec-pack" ? " is-active" : ""}`}
+            id="sec-pack"
+          >
             <SectionHead
               step={stepOf("sec-pack")}
+              active={activeSectionId === "sec-pack"}
               index={3}
               extra={<span className="temu-muted">{splitLines(form.outerImages).length} 张外包装图</span>}
             />
@@ -2773,7 +2999,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           </section>
 
           {/* 5 校验发布 */}
-          <section className="temu-sec" id="sec-publish">
+          <section className="temu-sec temu-sec-last" id="sec-publish">
             <SectionHead
               step={stepOf("sec-publish")}
               index={4}
@@ -2848,6 +3074,10 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   >
                     {shopCheck.loading ? "查询中…" : "核对店铺里的商品"}
                   </button>
+                  {/* 发完一条最常接的动作就是发下一条：同款同批，只换图/货号/变种 */}
+                  <button type="button" className="temu-btn temu-btn-sm temu-btn-primary" onClick={startNextItem}>
+                    发下一条
+                  </button>
                 </div>
                 {shopCheck.error && <p className="temu-confirm-warn">查询失败：{shopCheck.error}</p>}
                 {shopCheck.items.length > 0 && (
@@ -2912,8 +3142,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           <div className="temu-rail-card">
             <div className="temu-rail-head">
               <strong>发布检查</strong>
-              <span className={`temu-pill ${doneCount === flowSteps.length ? "ok" : "warn"}`}>
-                {doneCount}/{flowSteps.length}
+              <span className={`temu-pill ${remainingContentSteps.length ? "warn" : "ok"}`}>
+                {remainingContentSteps.length ? `还差 ${remainingContentSteps.length} 项` : "可提交"}
               </span>
             </div>
             <ol className="temu-rail-list">
@@ -2923,7 +3153,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                     <span className="temu-rail-dot">{step.done ? "✓" : index + 1}</span>
                     <span className="temu-rail-label">
                       {step.label}
-                      <em>{step.hint}</em>
+                      {/* 没填完就直说差什么；填完了才显示这块包含哪些内容 */}
+                      <em>{step.done || step.id === "sec-publish" ? step.hint : `还差：${step.missing.join("、")}`}</em>
                     </span>
                   </button>
                 </li>
@@ -2940,10 +3171,54 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               </div>
               <div>
                 <dt>申报价</dt>
-                <dd>{firstPrice ? formatCents(firstPrice) : "—"}</dd>
+                <dd>{firstPrice ? formatYuan(firstPrice) : "—"}</dd>
               </div>
             </dl>
-            <p className="temu-rail-tip">提交会真的在店铺创建商品，不可撤销。填完到最下面「校验发布」提交。</p>
+            <div className="temu-rail-actions">
+              <button
+                type="button"
+                className="temu-btn temu-btn-sm"
+                disabled={busy !== "" || !ready}
+                onClick={() => void checkMandatory()}
+              >
+                {busy === "mandatory" ? "校验中…" : "检查必填"}
+              </button>
+              {publishResult ? (
+                <button
+                  type="button"
+                  className="temu-btn temu-btn-primary temu-btn-sm"
+                  onClick={startNextItem}
+                  title="清掉标题/图片/货号/变种；类目、属性、运费模板、仓库都留着"
+                >
+                  发下一条
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="temu-btn temu-btn-primary temu-btn-sm"
+                  disabled={submitDisabled}
+                  onClick={() => void publishGoods()}
+                  title="快捷键 Ctrl+Enter"
+                >
+                  {publishing ? "提交中…" : "提交发布"}
+                </button>
+              )}
+            </div>
+            {publishResult ? (
+              <p className="temu-rail-ok" role="status">
+                ✓ 已提交到店铺
+                {publishedGoodsId ? ` · 商品 id ${publishedGoodsId}` : ""}
+                {publishResult.confirmed_by_lookup ? "（网络中断后反查到的）" : ""}
+              </p>
+            ) : null}
+            {error ? (
+              <p className="temu-rail-error" role="alert">
+                {error}
+              </p>
+            ) : null}
+            <p className="temu-rail-tip">
+              提交会真的在店铺创建商品，不可撤销。点这里或页面底部的「提交发布」都行，也可以按 Ctrl+Enter。
+            </p>
           </div>
         </aside>
       </div>

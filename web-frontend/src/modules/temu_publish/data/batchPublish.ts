@@ -2,6 +2,7 @@ import { temuPublishApi } from "../api/temuPublishApi";
 import { httpBlob } from "../../../transport/http/client";
 import type { TemuGoodsDraft, TemuPublishPrefill, TemuSkuDraft } from "../types";
 import { matchPresetValue } from "../utils/specMatch";
+import { yuanToCents } from "../utils/price";
 import type { ProductTemplate, VariantTemplate } from "./localStore";
 
 const SITE_ID = 100;
@@ -101,7 +102,11 @@ export async function buildDraftForPublish(
   const sizes = splitList(variantTemplate?.sizesText ?? prefill.specValue2 ?? "均码");
   const batch = variantTemplate?.batch;
 
-  const price = positive(batch?.supplierPrice || prefill.supplierPrice || "", "申报价格");
+  // 界面价格是「元」，提交前换成分
+  const priceCents = yuanToCents(
+    batch?.supplierPrice || prefill.supplierPrice || "",
+    "申报价格",
+  );
   const stock = Number(batch?.stock || prefill.stock || "0");
   const weightG = positive(batch?.weightG || String(Number(prefill.weightKg || 0) * 1000), "重量");
   const lengthCm = positive(batch?.lengthCm || prefill.lengthCm || "", "长度");
@@ -204,7 +209,7 @@ export async function buildDraftForPublish(
     ext_code: extCode,
     currency_type: "CNY",
     site_id: SITE_ID,
-    supplier_price: Math.round(price),
+    supplier_price: priceCents,
     suggested_price: null,
     stock: Number.isFinite(stock) ? Math.max(0, Math.round(stock)) : 0,
     warehouse_id: warehouseId,

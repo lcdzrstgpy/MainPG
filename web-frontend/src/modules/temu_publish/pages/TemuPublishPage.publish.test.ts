@@ -264,15 +264,59 @@ test("草稿库：批量发布要套模板、逐条提交、失败进记录", ()
   assert.match(batch, /personalization: productTemplate\.isCustom/);
 });
 
-test("草稿金额是「元」，带入发布页要换成「分」", () => {
+test("价格全链路用「元」，只在提交前换成分", () => {
   const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
-  // 草稿(POD 导出/AI 结果)用元，发布页用分：必须 ×100，否则 ¥150 会变成 1.5 元
-  assert.match(library, /function yuanToCents\(value: number \| string \| null \| undefined\): string \{/);
-  assert.match(library, /return String\(Math\.round\(number \* 100\)\);/);
-  assert.match(library, /supplierPrice: yuanToCents\(entry\.declared_price\)/);
-  assert.match(library, /suggestedPrice: yuanToCents\(entry\.suggested_price\)/);
-  // 起价/库存等其它数值不参与换算
-  assert.match(library, /weightKg: weightG \? \(Number\(weightG\) \/ 1000\)\.toFixed\(3\) : ""/);
+  const page = readFileSync(new URL("./TemuPublishPage.tsx", import.meta.url), "utf8");
+  const batch = readFileSync(new URL("../data/batchPublish.ts", import.meta.url), "utf8");
+
+  // 草稿库带入发布页：原样带「元」，不再 ×100
+  // 草稿价先圆整到「分」再带入：12.345 会在提交时被「最多两位小数」拦住
+  assert.match(library, /function moneyText\(value: number \| string \| null \| undefined\): string \{/);
+  assert.match(library, /return String\(Math\.round\(amount \* 100\) \/ 100\);/);
+  assert.match(library, /supplierPrice: moneyText\(entry\.declared_price\)/);
+  assert.match(library, /suggestedPrice: moneyText\(entry\.suggested_price\)/);
+  assert.doesNotMatch(library, /yuanToCents/, "草稿库不该再做元→分换算");
+
+  // 发布页：元 → 分只在组装 payload 时发生，换算函数只有一份（utils/price.ts）
+  const price = readFileSync(new URL("../utils/price.ts", import.meta.url), "utf8");
+  assert.match(price, /export function yuanToCents\(value: string, label: string\): number \{/);
+  assert.match(price, /Math\.round\(Number\(text\) \* 100\)/);
+  assert.match(price, /最多两位小数（例如 12\.99）/);
+  assert.match(page, /supplier_price: yuanToCents\(row\.supplierPrice, `\$\{at\}申报价格`\)/);
+  assert.match(page, /import \{ centsToYuanText, formatYuan, yuanToCents \} from "\.\.\/utils\/price";/);
+
+  // 批量发布复用同一份，不许各写一套
+  assert.match(batch, /import \{ yuanToCents \} from "\.\.\/utils\/price";/);
+  assert.match(batch, /supplier_price: priceCents,/);
+  assert.doesNotMatch(batch, /function yuanToCents\(/, "批量发布不该再自己实现一份换算");
+
+  // 输入框本身是元：label 与 placeholder 都不能再让人按分填
+  const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
+  assert.match(panel, /申报价格（元）/);
+  assert.match(panel, /申报价格\(元\)/);
+  assert.doesNotMatch(panel, /申报价格（分）|申报价格\(分\)/);
+  assert.doesNotMatch(panel, /placeholder="1299"/);
+});
+
+test("本机老数据（价格存的是分）升级后自动换成元，且只换一次", () => {
+  const page = readFileSync(new URL("./TemuPublishPage.tsx", import.meta.url), "utf8");
+
+  // 一次性迁移：不迁的话老数据 1299 会显示成 ¥1299（100 倍价差）
+  assert.match(page, /function migrateLegacyPriceUnit\(suffix: string\): void \{/);
+  assert.match(page, /const PRICE_UNIT_FLAG = "temu_publish_price_unit_yuan_v1";/);
+  // 标记按账号分：数据是 <key>:<account>，全局标记会让第二个账号漏迁
+  assert.match(page, /const flagKey = `\$\{PRICE_UNIT_FLAG\}:\$\{suffix\}`;/);
+  assert.match(page, /if \(store\.getItem\(flagKey\) === "yuan"\) return;/);
+  assert.match(page, /store\.setItem\(flagKey, "yuan"\);/);
+  // 变种行与变种模板都要迁（批量发布套模板会带出旧价格）
+  assert.match(page, /const rowsKey = `\$\{ROWS_KEY\}:\$\{suffix\}`;/);
+  assert.match(page, /const templateKey = `\$\{VARIANT_TEMPLATE_KEY\}:\$\{suffix\}`;/);
+  // 必须在读 state 之前跑，否则读到的还是分
+  assert.ok(
+    page.indexOf("migrateLegacyPriceUnit(storageScope());") <
+      page.indexOf("const saved = loadJsonLocal<VariantRow[]>"),
+    "迁移要排在读取本机变种行之前",
+  );
 });
 
 test("草稿库站点列显示类目路径：选过的优先、其次草稿自带、最后提示", () => {
@@ -738,7 +782,10 @@ test("货号只发字母数字（中文/符号会让 Temu 直接拒）", () => {
 });
 
 test("标题用多行文本域（150+ 字符单行看不见）", () => {
-  assert.match(page, /<textarea\n\s*className="temu-input"\n\s*value=\{form\.title\}/);
+  assert.match(
+    page,
+    /<textarea\n\s*id="temu-title-input"\n\s*className=\{`temu-input\$\{[^}]*\}`\}\n\s*value=\{form\.title\}/,
+  );
   assert.match(page, /rows=\{3\}/);
   // 标题本身已是英文时，英文标题字段提示可留空
   assert.match(page, /标题已是英文，这里可留空/);
@@ -792,8 +839,9 @@ test("草稿库按发布 payload 把信息摆出来（类目/价格分/库存/�
   assert.match(library, /temu-ready is-ok/);
   assert.match(library, /缺 \{missing\.join\(" \/ "\)\}/);
 
-  // 申报价同时给「元」和「分」：发布页填的是分，免得再乘 100
-  assert.match(library, /\{Math\.round\(price \* 100\)\} 分/);
+  // 价格只显示「元」：以前还附一行「15000 分」，数字大又没人看
+  assert.doesNotMatch(library, /\{Math\.round\(price \* 100\)\} 分/);
+  assert.match(library, /return <strong>¥\{price\.toFixed\(2\)\}<\/strong>;/);
   // 未填与 0 的语义分开
   assert.match(library, /temu-draft-missing/);
   assert.match(library, /title="0 库存仍可建品，但在店里是不可售状态"/);
@@ -809,7 +857,7 @@ test("价格照常带入，但界面文案里不出现「推算」二字", () =>
   const types = readFileSync(new URL("../types.ts", import.meta.url), "utf8");
 
   // 功能：成本算出来的价照旧当申报价带进发布页（不拦、不置空）
-  assert.match(library, /supplierPrice: yuanToCents\(entry\.declared_price\),/);
+  assert.match(library, /supplierPrice: moneyText\(entry\.declared_price\),/);
   assert.doesNotMatch(library, /declared_price_estimated \? ""/);
   // 有价就算齐，不会因为「是算出来的」被判缺项
   assert.doesNotMatch(library, /declared_price_estimated\) missing\.push/);
@@ -852,4 +900,80 @@ test("右侧「发布检查」下滑时固定在视口", () => {
   assert.match(page, /classList\.contains\("is-pinned"\)/);
   assert.match(page, /setProperty\(\s*"--temu-rail-sticky-top",/);
   assert.match(page, /new MutationObserver\(syncRailTop\)/);
+});
+
+test("发布检查：每一项都说清「还差什么」，被拦时自动定位", () => {
+  // 检查清单不再是静态说明：没填完就列缺项
+  assert.match(page, /const flowBase: Array<\{ id: string; label: string; hint: string; missing: string\[\] \}> = \[/);
+  assert.match(page, /missingAttrs > 0 \? \[`\$\{missingAttrs\} 个必填属性`\] : \[\]/);
+  assert.match(page, /incompleteRows \? \[`\$\{incompleteRows\} 行没填全`\] : \[\]/);
+  assert.match(page, /还差：\$\{step\.missing\.join\("、"\)\}/);
+  assert.match(page, /remainingContentSteps\.length \? `还差 \$\{remainingContentSteps\.length\} 项` : "可提交"/);
+
+  // 点发布被拦：标红必填项 + 滚到第一个没填完的区块
+  assert.match(page, /const draft = await composeDraft\(\)\.catch\(\(cause: unknown\) => \{/);
+  assert.match(page, /setShowFieldErrors\(true\);/);
+  assert.match(page, /const firstGap = flowSteps\.find\(\(step\) => step\.id !== "sec-publish" && !step\.done\);/);
+
+  // 必填项只在「被拦过之后」标红，且属性/标题都覆盖
+  assert.match(page, /const \[showFieldErrors, setShowFieldErrors\] = useState\(false\);/);
+  assert.match(page, /showFieldErrors && emptyRequired \? " is-required-empty"/);
+  assert.match(page, /showFieldErrors && !form\.title\.trim\(\) \? " is-bad"/);
+
+  // 错误摘要放固定侧栏（滚下去也看得到），并带操作按钮
+  assert.match(page, /className="temu-rail-error"/);
+  assert.match(page, /className="temu-rail-actions"/);
+  assert.match(page, /onClick=\{\(\) => void publishGoods\(\)\}/);
+});
+
+test("发下一条：只清本商品特有的内容，类目/属性/运费/仓库全部留着", () => {
+  assert.match(page, /const startNextItem = \(\) => \{/);
+
+  // 清掉的是「这一件」的东西
+  assert.match(
+    page,
+    /title: "",\s*titleEn: "",\s*productCode: "",\s*externalUrl: "",\s*carousel: "",\s*outerImages: "",\s*detailImages: "",\s*description: "",/,
+  );
+  assert.match(page, /setRows\(\[\]\);/);
+  // 不清提交结果的话，侧栏还挂着上一条的「已提交 · 商品 id」
+  assert.match(page, /setPublishResult\(null\);/);
+
+  // 一批商品共用的设置一个都不许清（类目/属性/运费模板/仓库/时效/开关/产地）
+  const start = page.indexOf("const startNextItem = () => {");
+  const body = page.slice(start, page.indexOf("  };", start));
+  for (const keep of [
+    "freightId",
+    "warehouseId",
+    "categoryPath",
+    "attrPicks",
+    "colorsText",
+    "sizesText",
+    "origin",
+    "piecesPerPack",
+    "isSensitive",
+  ]) {
+    assert.ok(!body.includes(keep), `「发下一条」不该清掉共用设置：${keep}`);
+  }
+
+  // 上一条草稿的预填数据要一起清：留着会被「rows 为空就消费 prefillRef」重新填回来
+  assert.match(page, /prefillRef\.current = null;\s*prefillDraftId\.current = "";\s*setPrefillInfo\(null\);/);
+
+  // 标题清空后不能被自动匹配把已选类目冲掉
+  assert.match(page, /categoryTouchedRef\.current = true;\s*jumpTo\("sec-info"\);/);
+  // 光标落到标题，接着就能打下一件
+  assert.match(page, /id="temu-title-input"/);
+  assert.match(page, /document\.getElementById\("temu-title-input"\)\?\.focus\(\{ preventScroll: true \}\)/);
+
+  // 两个入口都要有：侧栏（成功后主按钮换成它）+ 底部结果块
+  assert.equal(page.split("onClick={startNextItem}").length - 1, 2, "侧栏和结果块各一个入口");
+});
+
+test("Ctrl/⌘ + Enter 直接提交，且不会重复上架", () => {
+  assert.match(page, /if \(event\.key !== "Enter" \|\| !\(event\.ctrlKey \|\| event\.metaKey\)\) return;/);
+  // 提交中/别的任务在跑/未就绪时直接忽略，避免连按重复提交
+  assert.match(page, /if \(publishing \|\| busy !== "" \|\| !ready\) return;/);
+  assert.match(page, /event\.preventDefault\(\);/);
+  // 用 ref 取最新函数，不是每次 render 重绑监听
+  assert.match(page, /const publishRef = useRef\(publishGoods\);/);
+  assert.match(page, /void publishRef\.current\(\);/);
 });

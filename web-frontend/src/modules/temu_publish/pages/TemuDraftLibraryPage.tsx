@@ -219,11 +219,17 @@ function DraftThumb({
  * 草稿里的金额都是「元」（POD 导出表、AI 结果口径一致），发布页用「分」。
  * 带入时统一 ×100，避免把 ¥150 当成 1.5 元发出去。
  */
-function yuanToCents(value: number | string | null | undefined): string {
+/**
+ * 价格文本：四舍五入到「分」（两位小数）后去掉多余的零。
+ *
+ * 草稿里的价可能带多位小数（导出表按成本算出来的），直接带进发布页会在提交时
+ * 被「最多两位小数」拦下；这里先规整到分，用户看到的数和最终提交的一分不差。
+ */
+function moneyText(value: number | string | null | undefined): string {
   if (value === null || value === undefined || value === "") return "";
-  const number = Number(value);
-  if (!Number.isFinite(number) || number <= 0) return "";
-  return String(Math.round(number * 100));
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount <= 0) return "";
+  return String(Math.round(amount * 100) / 100);
 }
 
 function numericText(value: number | string | null | undefined): string {
@@ -302,9 +308,9 @@ function entryPrefill(
     heightCm: height,
     sourceLabel: entry.source === "ai" ? "AI 处理" : "POD",
     sourceKind: entry.source,
-    // 草稿是「元」，发布页是「分」
-    supplierPrice: yuanToCents(entry.declared_price),
-    suggestedPrice: yuanToCents(entry.suggested_price),
+    // 草稿和发布页现在都用「元」，原样带过去；换算成「分」是提交前的事
+    supplierPrice: moneyText(entry.declared_price),
+    suggestedPrice: moneyText(entry.suggested_price),
     // 库存原样带入（0 也是有效值：先建品后补库存）；只有真的没值才留空
     stock: numericText(entry.stock),
     specName1: entry.spec_name_1 || "",
@@ -955,7 +961,7 @@ export function TemuDraftLibraryPage({
                   <th className="col-sku">货号</th>
                   <th
                     className="col-price"
-                    title="发布时按「分」提交（¥150.00 = 15000 分）。没在预览里改过的价按导出表同一规则给出：成本 × 4，下限 ¥150"
+                    title="单位是元。发布时系统自动换算成 Temu 要的「分」；没在预览里改过的价按导出表同一规则给出：成本 × 4，下限 ¥150"
                   >
                     申报价
                   </th>
@@ -1050,13 +1056,7 @@ export function TemuDraftLibraryPage({
                         if (!Number.isFinite(price) || price <= 0) {
                           return <span className="temu-draft-missing">未填</span>;
                         }
-                        return (
-                          <>
-                            <strong>¥{price.toFixed(2)}</strong>
-                            {/* 发布页填的是「分」，这里直接给出来，省得自己乘 100 */}
-                            <em>{Math.round(price * 100)} 分</em>
-                          </>
-                        );
+                        return <strong>¥{price.toFixed(2)}</strong>;
                       })()}
                     </td>
                     <td className="col-stock">
