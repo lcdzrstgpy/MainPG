@@ -782,7 +782,10 @@ test("货号只发字母数字（中文/符号会让 Temu 直接拒）", () => {
 });
 
 test("标题用多行文本域（150+ 字符单行看不见）", () => {
-  assert.match(page, /<textarea\n\s*className=\{`temu-input\$\{[^}]*\}`\}\n\s*value=\{form\.title\}/);
+  assert.match(
+    page,
+    /<textarea\n\s*id="temu-title-input"\n\s*className=\{`temu-input\$\{[^}]*\}`\}\n\s*value=\{form\.title\}/,
+  );
   assert.match(page, /rows=\{3\}/);
   // 标题本身已是英文时，英文标题字段提示可留空
   assert.match(page, /标题已是英文，这里可留空/);
@@ -921,4 +924,56 @@ test("发布检查：每一项都说清「还差什么」，被拦时自动定�
   assert.match(page, /className="temu-rail-error"/);
   assert.match(page, /className="temu-rail-actions"/);
   assert.match(page, /onClick=\{\(\) => void publishGoods\(\)\}/);
+});
+
+test("发下一条：只清本商品特有的内容，类目/属性/运费/仓库全部留着", () => {
+  assert.match(page, /const startNextItem = \(\) => \{/);
+
+  // 清掉的是「这一件」的东西
+  assert.match(
+    page,
+    /title: "",\s*titleEn: "",\s*productCode: "",\s*externalUrl: "",\s*carousel: "",\s*outerImages: "",\s*detailImages: "",\s*description: "",/,
+  );
+  assert.match(page, /setRows\(\[\]\);/);
+  // 不清提交结果的话，侧栏还挂着上一条的「已提交 · 商品 id」
+  assert.match(page, /setPublishResult\(null\);/);
+
+  // 一批商品共用的设置一个都不许清（类目/属性/运费模板/仓库/时效/开关/产地）
+  const start = page.indexOf("const startNextItem = () => {");
+  const body = page.slice(start, page.indexOf("  };", start));
+  for (const keep of [
+    "freightId",
+    "warehouseId",
+    "categoryPath",
+    "attrPicks",
+    "colorsText",
+    "sizesText",
+    "origin",
+    "piecesPerPack",
+    "isSensitive",
+  ]) {
+    assert.ok(!body.includes(keep), `「发下一条」不该清掉共用设置：${keep}`);
+  }
+
+  // 上一条草稿的预填数据要一起清：留着会被「rows 为空就消费 prefillRef」重新填回来
+  assert.match(page, /prefillRef\.current = null;\s*prefillDraftId\.current = "";\s*setPrefillInfo\(null\);/);
+
+  // 标题清空后不能被自动匹配把已选类目冲掉
+  assert.match(page, /categoryTouchedRef\.current = true;\s*jumpTo\("sec-info"\);/);
+  // 光标落到标题，接着就能打下一件
+  assert.match(page, /id="temu-title-input"/);
+  assert.match(page, /document\.getElementById\("temu-title-input"\)\?\.focus\(\{ preventScroll: true \}\)/);
+
+  // 两个入口都要有：侧栏（成功后主按钮换成它）+ 底部结果块
+  assert.equal(page.split("onClick={startNextItem}").length - 1, 2, "侧栏和结果块各一个入口");
+});
+
+test("Ctrl/⌘ + Enter 直接提交，且不会重复上架", () => {
+  assert.match(page, /if \(event\.key !== "Enter" \|\| !\(event\.ctrlKey \|\| event\.metaKey\)\) return;/);
+  // 提交中/别的任务在跑/未就绪时直接忽略，避免连按重复提交
+  assert.match(page, /if \(publishing \|\| busy !== "" \|\| !ready\) return;/);
+  assert.match(page, /event\.preventDefault\(\);/);
+  // 用 ref 取最新函数，不是每次 render 重绑监听
+  assert.match(page, /const publishRef = useRef\(publishGoods\);/);
+  assert.match(page, /void publishRef\.current\(\);/);
 });

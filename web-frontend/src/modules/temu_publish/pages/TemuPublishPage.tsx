@@ -1861,6 +1861,49 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const leaf = categoryPath[categoryPath.length - 1];
   // 产品货号（ParentSKU）：Temu 只认字母/数字/-/_，渲染层也用它拼变种货号前缀
   const productCode = cleanExtCode(form.productCode);
+  /**
+   * 发下一条：清掉「这件商品特有」的内容，保留一批商品共用的设置。
+   *
+   * 实际发一批货时常是同一类目、同一运费模板和仓库，只换个款（图/货号/变种不同）。
+   * 以前发完一条要回草稿库重进一次，类目和属性都得重选。
+   *
+   * 保留：类目、属性选择、运费模板、发货仓库、时效、敏感/定制开关、多件装、产地。
+   * 清掉：标题、英文标题、货号、轮播/外包装/详情图、描述、站外链接、变种行、提交结果。
+   */
+  const startNextItem = () => {
+    setForm((current) => ({
+      ...current,
+      title: "",
+      titleEn: "",
+      productCode: "",
+      externalUrl: "",
+      carousel: "",
+      outerImages: "",
+      detailImages: "",
+      description: "",
+    }));
+    setRows([]);
+    setError("");
+    setResult(null);
+    setPublishResult(null);
+    setMandatory(null);
+    setShowFieldErrors(false);
+    setCopied(false);
+    // 上一条草稿的预填数据与来源条必须一起清：
+    // 留着的话「rows 为空就消费 prefillRef」的路径会把它重新填回来，
+    // 侧栏也还挂着「POD 草稿 · 申报价 ¥xx」。
+    prefillRef.current = null;
+    prefillDraftId.current = "";
+    setPrefillInfo(null);
+    // 类目是刻意留着的：标题清空后不该让自动匹配把已选类目冲掉
+    categoryTouchedRef.current = true;
+    jumpTo("sec-info");
+    // 光标直接落到标题：清完这条就能接着打下一件的标题
+    window.setTimeout(() => {
+      document.getElementById("temu-title-input")?.focus({ preventScroll: true });
+    }, 0);
+  };
+
   // 发布成功后要显示的「商品 id」：网络中断反查到的用 matched_goods，正常提交用返回值
   const publishedGoodsId = publishResult
     ? publishResult.confirmed_by_lookup
@@ -2086,6 +2129,27 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const submitDisabled = busy !== "" || !ready || publishing;
   const firstPrice = rows[0]?.supplierPrice?.trim() ?? "";
   const effectiveMaterial = form.material.trim() || splitLines(form.carousel)[0] || "";
+
+  // 快捷键拿最新的发布函数：不让每次 render 都重新绑一遍监听
+  const publishRef = useRef(publishGoods);
+  publishRef.current = publishGoods;
+
+  /**
+   * Ctrl / ⌘ + Enter = 点「提交发布」。
+   *
+   * 填完最后一行变种手还在键盘上，连发时也不想每次都摸鼠标找按钮。
+   * 提交本身有 publishing 锁（接口非幂等），连按不会重复上架。
+   */
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Enter" || !(event.ctrlKey || event.metaKey)) return;
+      if (publishing || busy !== "" || !ready) return;
+      event.preventDefault();
+      void publishRef.current();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [publishing, busy, ready]);
 
   return (
     <div className="temu-publish-page is-console">
@@ -2625,6 +2689,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 ) : null}
               </span>
               <textarea
+                id="temu-title-input"
                 className={`temu-input${showFieldErrors && !form.title.trim() ? " is-bad" : ""}`}
                 value={form.title}
                 onChange={(event) => patch({ title: event.target.value })}
@@ -3009,6 +3074,10 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   >
                     {shopCheck.loading ? "查询中…" : "核对店铺里的商品"}
                   </button>
+                  {/* 发完一条最常接的动作就是发下一条：同款同批，只换图/货号/变种 */}
+                  <button type="button" className="temu-btn temu-btn-sm temu-btn-primary" onClick={startNextItem}>
+                    发下一条
+                  </button>
                 </div>
                 {shopCheck.error && <p className="temu-confirm-warn">查询失败：{shopCheck.error}</p>}
                 {shopCheck.items.length > 0 && (
@@ -3114,14 +3183,26 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               >
                 {busy === "mandatory" ? "校验中…" : "检查必填"}
               </button>
-              <button
-                type="button"
-                className="temu-btn temu-btn-primary temu-btn-sm"
-                disabled={submitDisabled}
-                onClick={() => void publishGoods()}
-              >
-                {publishing ? "提交中…" : "提交发布"}
-              </button>
+              {publishResult ? (
+                <button
+                  type="button"
+                  className="temu-btn temu-btn-primary temu-btn-sm"
+                  onClick={startNextItem}
+                  title="清掉标题/图片/货号/变种；类目、属性、运费模板、仓库都留着"
+                >
+                  发下一条
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="temu-btn temu-btn-primary temu-btn-sm"
+                  disabled={submitDisabled}
+                  onClick={() => void publishGoods()}
+                  title="快捷键 Ctrl+Enter"
+                >
+                  {publishing ? "提交中…" : "提交发布"}
+                </button>
+              )}
             </div>
             {publishResult ? (
               <p className="temu-rail-ok" role="status">
@@ -3135,7 +3216,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 {error}
               </p>
             ) : null}
-            <p className="temu-rail-tip">提交会真的在店铺创建商品，不可撤销。填完到最下面「校验发布」提交。</p>
+            <p className="temu-rail-tip">
+              提交会真的在店铺创建商品，不可撤销。点这里或页面底部的「提交发布」都行，也可以按 Ctrl+Enter。
+            </p>
           </div>
         </aside>
       </div>
