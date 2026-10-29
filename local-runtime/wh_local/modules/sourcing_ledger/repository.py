@@ -41,48 +41,6 @@ def _moq(value: Any) -> int:
         return 1
 
 
-def _preview_url(connection: sqlite3.Connection, raw: Any) -> str:
-    """处理后的预览图地址带 2 小时签名，重新签名后再返回。
-
-    result_json 里存的是当时的临时签名 URL，直接展示几小时后就会 403；
-    这里按预览资产表里的 access_token 重新签一次，拿不到资产就原样返回。
-    """
-    text = _text(raw)
-    if not text.startswith("/api/product-processing/preview/assets/"):
-        return text
-    parts = text.split("?", 1)[0].rstrip("/").split("/")
-    if len(parts) < 3 or parts[-1] != "content":
-        return text
-    asset_id = parts[-2]
-    try:
-        row = connection.execute(
-            "SELECT id, workspace_id, access_token, public_url, managed_path "
-            "FROM product_processing_preview_image_assets WHERE id = ? LIMIT 1",
-            (asset_id,),
-        ).fetchone()
-    except sqlite3.OperationalError:
-        return text
-    if row is None:
-        return text
-    secret = _text(row["access_token"])
-    # 本地有文件时优先走本机签名地址；COS 公网地址只在没有本地文件时兜底。
-    if not _text(row["managed_path"]):
-        return _text(row["public_url"]) or text
-    if not secret:
-        return text
-    expires = ((int(time.time()) // 3600) + 2) * 3600
-    message = "\n".join((_text(row["id"]), _text(row["workspace_id"]), str(expires))).encode("utf-8")
-    signature = hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
-    query = urlencode(
-        {
-            "workspace_id": _text(row["workspace_id"]),
-            "expires": expires,
-            "signature": signature,
-        }
-    )
-    return f"/api/product-processing/preview/assets/{asset_id}/content?{query}"
-
-
 _COLLECTION_BATCH_SOURCES: tuple[tuple[str, str], ...] = (
     ("daily_selection_runs", "run_id"),
     ("shop_collection_batches", "batch_id"),
