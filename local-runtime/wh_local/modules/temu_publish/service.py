@@ -52,6 +52,14 @@ ENV_FALLBACKS = {
     "yl_token": "WH_TEMU_YL_TOKEN",
     "access_token": "WH_TEMU_ACCESS_TOKEN",
 }
+# 服务商凭据（YL client id / token）是**整个系统共用的一对**，不是每个用户自己的。
+# 让每台机器手填一遍不现实，所以支持随安装包下发：wh_local/data/temu_gateway.json。
+# 优先级：用户自己填的（加密库）> 随包下发 > 环境变量。
+BUNDLED_GATEWAY_PATH = Path(__file__).resolve().parents[2] / "data" / "temu_gateway.json"
+# 本机覆盖（不进 git）：打包机上放真值，打出来的包就带着它；仓库里只有空模板。
+BUNDLED_GATEWAY_LOCAL_PATH = (
+    Path(__file__).resolve().parents[2] / "data" / "temu_gateway.local.json"
+)
 
 
 class TemuCredentialStore:
@@ -79,11 +87,42 @@ class TemuCredentialStore:
             # 第一次用：把「当初自己配的」历史全局凭证迁到本人名下
             self._adopt_legacy()
             stored = self._load_stored()
+        bundled = self._load_bundled_gateway()
         values: dict[str, str] = {}
         for name in SECRET_NAMES:
-            value = stored.get(name) or os.environ.get(ENV_FALLBACKS[name], "")
+            # 自己填的 > 随包下发 > 环境变量（CI/排障用）
+            value = (
+                stored.get(name)
+                or bundled.get(name)
+                or os.environ.get(ENV_FALLBACKS[name], "")
+            )
             values[name] = str(value or "").strip()
         return values
+
+    def _load_bundled_gateway(self) -> dict[str, str]:
+        """读随安装包分发的服务商凭据（``wh_local/data/temu_gateway.json``）。
+
+        只覆盖服务商级别的两个字段，**不含**店铺 access_token —— 那是个人的。
+        文件缺失/字段为空/JSON 坏掉都按「没配」处理，绝不让设置页或发布链路崩。
+        """
+        merged: dict[str, str] = {}
+        # local 覆盖优先（打包机上的真值），再退到随包的模板
+        for path in (BUNDLED_GATEWAY_LOCAL_PATH, BUNDLED_GATEWAY_PATH):
+            try:
+                if not path.is_file():
+                    continue
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            for name in ("yl_client", "yl_token"):
+                if name in merged:
+                    continue
+                value = str(payload.get(name) or "").strip()
+                if value:
+                    merged[name] = value
+        return merged
 
     def _load_stored(self) -> dict[str, str]:
         with transaction(self.database_path) as conn:

@@ -55,7 +55,9 @@ for _rel in (
     # 永远看不到这些主题（BUILTIN 只有 classic/sunset/peach/alpine）。
     # 后端按 wh_local/data/themes 相对位置找目录，打包后落在 _internal 下，
     # 正好命中 main.py 里 sys._MEIPASS 那个候选路径。
-    "wh_local/data/themes",
+    # 2026-10-29：整个 data 一起收。原来只收 data/themes，导致新增的
+    # data/temu_gateway.json（随包下发的服务商凭据）打不进包。
+    "wh_local/data",
 ):
     _src = ROOT / _rel
     if _src.is_dir():

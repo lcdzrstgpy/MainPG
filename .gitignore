@@ -122,3 +122,6 @@ generated-images/
 
 # 运行期下载的安装包（客户端自动更新用，几百 MB，不入库）
 local-runtime/updates/
+
+# 服务商凭据的本机覆盖（打包机放真值，不进仓库）
+local-runtime/wh_local/data/temu_gateway.local.json
