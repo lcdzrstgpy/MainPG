@@ -456,6 +456,50 @@ def test_capture_evidence_with_platform_words_is_still_accepted(tmp_path) -> Non
     assert chunks and chunks[0].capture["note"] == "seller should accept order price"
 
 
+def test_quote_snapshot_items_with_platform_words_are_persisted(tmp_path) -> None:
+    """规范化后的报价快照（商品标题/接口地址）也要能入库，不能被写操作扫描拦下。"""
+    repository = PriceVerificationRepository(tmp_path / "quotes.sqlite3")
+    batch = repository.create_quote_capture_batch(
+        workspace_id="workspace-1", name="batch", created_by="actor-1"
+    )
+    repository.append_quote_capture_chunk(
+        workspace_id="workspace-1",
+        batch_id=batch.batch_id,
+        content_sha256="5" * 64,
+        page_url="https://temu.example/a",
+        capture={"page": {"url": "https://temu.example/a"}},
+        items=(
+            {
+                "quote_key": "A1",
+                "skc_id": "A1",
+                "product_title": "Order Now Summer Dress",
+                "source_endpoint": "https://kuajingmaihuo.com/api/bargain-no-bom/batch/order/query",
+            },
+        ),
+        captured_at="2026-10-29T00:00:00+00:00",
+    )
+    chunks = repository.list_quote_capture_chunks(
+        workspace_id="workspace-1", batch_id=batch.batch_id
+    )
+    assert chunks[0].items[0]["product_title"] == "Order Now Summer Dress"
+
+
+def test_quote_snapshots_keep_colliding_quote_keys_unique() -> None:
+    """同一 SKC 下缺 SKU ID 的多个变体不能生成重复 quote_key，否则整页入库被拒。"""
+    from wh_local.price_verification.quote_service import _quote_snapshots
+
+    snapshots = _quote_snapshots(
+        (
+            QuoteItem(skc_id="SKC-1", sku_merchant_code="CODE-1", site="US"),
+            QuoteItem(skc_id="SKC-1", sku_merchant_code="CODE-2", site="US"),
+            QuoteItem(skc_id="SKC-1", site="US"),
+            QuoteItem(skc_id="SKC-1", site="US"),
+        )
+    )
+    keys = [snapshot["quote_key"] for snapshot in snapshots]
+    assert len(set(keys)) == len(keys) == 4
+
+
 def test_outbound_command_payload_with_write_action_is_rejected() -> None:
     """下行指令仍要拦住写操作，避免插件真的去 accept/reject。"""
     with pytest.raises(PriceVerificationContractError, match="platform write actions"):

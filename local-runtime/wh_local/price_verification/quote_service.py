@@ -148,7 +148,7 @@ class QuoteService:
             raise ValueError("quote command must have succeeded before materialization")
 
         normalized = normalize_price_quote_discovery(persisted_command.result)
-        snapshots = tuple(_quote_snapshot(item, index=index) for index, item in enumerate(normalized.quotes))
+        snapshots = _quote_snapshots(normalized.quotes)
         return self._repository.create_quote_run(
             workspace_id=actor.workspace_id,
             command_id=persisted_command.command_id,
@@ -233,7 +233,7 @@ class QuoteService:
             )
         except PriceVerificationNotFound as error:  # pragma: no cover - defensive
             raise CaptureBatchRequiredError("create or activate a capture batch before collecting") from error
-        snapshots = tuple(_quote_snapshot(item, index=index) for index, item in enumerate(quotes))
+        snapshots = _quote_snapshots(quotes)
         content_sha256 = sha256(
             safe_json_dumps(
                 {"page_url": page_url, "capture": safe_capture},
@@ -290,7 +290,7 @@ class QuoteService:
             raise PriceVerificationContractError("capture batch has no quote chunks")
         quotes = [_quote_from_snapshot(item) for chunk in chunks for item in chunk.items]
         merged = dedupe_quotes(quotes)
-        snapshots = tuple(_quote_snapshot(item, index=index) for index, item in enumerate(merged))
+        snapshots = _quote_snapshots(merged)
         run = self._repository.create_quote_run(
             workspace_id=actor.workspace_id,
             command_id=f"direct-capture-batch:{batch.batch_id}",
@@ -717,16 +717,36 @@ def _captured_at(preview: QuotePreview, *, fallback: str) -> str:
     return next((item.captured_at for item in preview.quotes if item.captured_at), fallback)
 
 
-def _quote_snapshot(item: QuoteItem, *, index: int) -> Mapping[str, Any]:
-    snapshot = asdict(item)
-    snapshot["quote_key"] = item.quote_key.strip() or _quote_key(item, index=index)
-    return snapshot
+def _quote_snapshots(quotes: Iterable[QuoteItem]) -> tuple[Mapping[str, Any], ...]:
+    """Build snapshot rows with unique quote_key values.
+
+    弹窗里同一 SKC 下可能有多个只显示货号、没有 SKU ID 的变体，按 skc/sku/spu
+    生成的默认 key 会撞车，导致整页入库被唯一性校验拒绝；这里按出现顺序兜底加后缀。
+    """
+    used: set[str] = set()
+    snapshots: list[Mapping[str, Any]] = []
+    for index, item in enumerate(quotes):
+        snapshot = asdict(item)
+        key = item.quote_key.strip() or _quote_key(item, index=index)
+        if key in used:
+            key = f"{key}|{index}"
+        used.add(key)
+        snapshot["quote_key"] = key
+        snapshots.append(snapshot)
+    return tuple(snapshots)
 
 
 def _quote_key(item: QuoteItem, *, index: int) -> str:
     if item.quote_key.strip():
         return item.quote_key.strip()
-    values = (item.skc_id, item.sku_id, item.spu_or_goods_id, item.site)
+    values = (
+        item.skc_id,
+        item.sku_id,
+        item.sku_merchant_code,
+        item.sku_attribute_text,
+        item.spu_or_goods_id,
+        item.site,
+    )
     key = "|".join(value.strip() for value in values if value and value.strip())
     return key or f"quote-{index}"
 

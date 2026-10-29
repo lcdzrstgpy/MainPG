@@ -2192,7 +2192,9 @@ def _snapshot_rows(items: Sequence[Mapping[str, Any]], *, key_name: str) -> tupl
         if not key.strip() or key in seen:
             raise ValueError(f"{key_name} values must be unique within a run")
         seen.add(key)
-        rows.append((key, safe_json_dumps(item)))
+        # 报价快照来自抓取到的页面证据（标题/接口地址里可能有 order 等词），
+        # 写操作关键字扫描只用于下行指令，不能拦这里的持久化。
+        rows.append((key, safe_json_dumps(item, reject_write_actions=False)))
     return tuple(rows)
 
 
@@ -2220,7 +2222,9 @@ def _source_candidate_rows(candidates: Sequence[Mapping[str, Any]]) -> tuple[tup
         if not quote_key.strip() or not candidate_key.strip() or (quote_key, candidate_key) in seen:
             raise ValueError("quote_key and candidate_key must be unique within a sourcing run")
         seen.add((quote_key, candidate_key))
-        rows.append((quote_key, candidate_key, safe_json_dumps(candidate)))
+        rows.append(
+            (quote_key, candidate_key, safe_json_dumps(candidate, reject_write_actions=False))
+        )
     return tuple(rows)
 
 
@@ -2249,7 +2253,7 @@ def _source_quote_rows(
                 official_link_url,
                 main_image_url,
                 selected_price_cny,
-                safe_json_dumps(source_quote),
+                safe_json_dumps(source_quote, reject_write_actions=False),
             )
         )
     return tuple(rows)
