@@ -1,6 +1,6 @@
 import { getAuthToken, httpJson, toUserMessage } from "../../../transport/http/client";
-import type { AnalyzeFissionAssetsRequest, CreateFissionBatchRequest, FissionAnalysisResponse, FissionBatch, FissionBatchListResponse, FissionImageRole, FissionImageUploadResponse, FissionStyleRetryResponse } from "../types";
-const API_BASE = "/api/pod-customization/fission"; // analysis_id is returned by analyze and required to create a batch
+import type { CreateFissionBatchRequest, FissionBatch, FissionBatchListResponse, FissionImageRole, FissionImageUploadResponse, FissionStyleRetryResponse } from "../types";
+const API_BASE = "/api/pod-customization/fission"; // 一键开始裂变：出方案与分析都在建批次里完成
 function apiUrl(path: string) { return `${(import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "")}${path}`; }
 const FISSION_IMAGE_ROLES: readonly FissionImageRole[] = ["source_artwork", "target_product"];
 
@@ -15,8 +15,7 @@ async function uploadImage(file: File, role: FissionImageRole): Promise<FissionI
 }
 export const podFissionApi = {
   uploadImage,
-  analyzeAssets: (body: AnalyzeFissionAssetsRequest) => httpJson<FissionAnalysisResponse>(`${API_BASE}/analyze`, { method: "POST", body, timeoutMs: 300_000 }),
-  createBatch: (body: CreateFissionBatchRequest) => httpJson<FissionBatch>(`${API_BASE}/batches`, { method: "POST", body }),
+  createBatch: (body: CreateFissionBatchRequest) => httpJson<FissionBatch>(`${API_BASE}/batches`, { method: "POST", body, timeoutMs: 300_000 }),
   listBatches: (limit = 20, offset = 0) => httpJson<FissionBatchListResponse>(`${API_BASE}/batches?${new URLSearchParams({limit:String(limit),offset:String(offset)})}`),
   getBatch: (id: string) => httpJson<FissionBatch>(`${API_BASE}/batches/${encodeURIComponent(id)}`),
   retryStyle: (batchId: string, styleIndex: number) => httpJson<FissionStyleRetryResponse>(`${API_BASE}/batches/${encodeURIComponent(batchId)}/styles/${styleIndex}/retry`, { method: "POST" }),

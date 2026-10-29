@@ -9,7 +9,6 @@ import io
 
 from wh_local.modules.pod_customization.router import create_router
 from wh_local.modules.pod_customization.contracts import (
-    FissionAnalyzeRequest,
     FissionBatchCreate,
     FissionImageRole,
 )
@@ -28,28 +27,32 @@ def _png() -> bytes:
     return output.getvalue()
 
 
-def test_fission_count_accepts_one_through_ten_and_rejects_other_types() -> None:
-    base = {
+def _base(source: str = "source-1", target: str = "target-1") -> dict:
+    return {
         "client_request_id": "request-1",
-        "analysis_id": "analysis-1",
+        "source_asset_id": source,
+        "target_asset_id": target,
         "listing_fields": {
             "category_name": "Bags",
             "skus": [{"name": "One size", "declared_price": 10, "weight_g": 100}],
         },
     }
-    for count in (1, 10):
-        assert FissionBatchCreate(**base, requested_count=count).requested_count == count
-    for count in (0, 11, True, "4"):
+
+
+def test_fission_count_accepts_one_through_five_and_rejects_other_types() -> None:
+    for count in (1, 5):
+        assert FissionBatchCreate(**_base(), requested_count=count).requested_count == count
+    for count in (0, 6, 10, True, "4"):
         with pytest.raises(ValidationError):
-            FissionBatchCreate(**base, requested_count=count)
+            FissionBatchCreate(**_base(), requested_count=count)
 
 
-def test_fission_analysis_requires_two_distinct_asset_ids() -> None:
+def test_fission_batch_requires_two_distinct_asset_ids() -> None:
     with pytest.raises(ValidationError):
-        FissionAnalyzeRequest(source_asset_id="same", target_asset_id="same")
-    request = FissionAnalyzeRequest(source_asset_id="source", target_asset_id="product")
-    assert request.source_asset_id == "source"
-    assert request.target_asset_id == "product"
+        FissionBatchCreate(**_base("same", "same"), requested_count=1)
+    request = FissionBatchCreate(**_base(), requested_count=1)
+    assert request.source_asset_id == "source-1"
+    assert request.target_asset_id == "target-1"
 
 
 def test_fission_image_role_is_explicit() -> None:

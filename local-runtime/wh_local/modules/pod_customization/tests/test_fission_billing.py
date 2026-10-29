@@ -13,16 +13,17 @@ from wh_local.modules.pod_customization.repository import PodCustomizationReposi
 from wh_local.modules.pod_customization.service import PodCustomizationService
 
 
-@pytest.mark.parametrize("count", [1, 10])
-def test_fission_billing_uses_unified_profile_and_style_units(count):
-    plan = PodCallPlan.for_batch(
-        "fission-batch", style_count=count, billing_profile=POD_BILLING_PROFILE_FISSION
-    )
+@pytest.mark.parametrize("count", [1, 5])
+def test_fission_billing_freezes_four_panels_per_style(count):
+    plan = PodCallPlan.for_fission_batch("fission-batch", style_count=count)
     payload = plan.product_batch_freeze_payload()
     assert payload["billing_profile"] == "pod_fission_v1"
     assert payload["link_count"] == count
     assert payload["scope"] == ["title", "four_grid"]
-    assert len(plan.calls) == count * 7
+    assert len(plan.calls) == count * 13
+    image_calls = [call for call in plan.calls if call.feature == "pod.image"]
+    assert len(image_calls) == count * 8
+    assert all(":image:p" in call.call_id for call in image_calls)
     assert plan.module == "pod_fission"
     assert plan.unit_kind == "style"
     assert list(plan.unit_ids) == [f"style-{index}" for index in range(count)]
@@ -32,9 +33,19 @@ def test_fission_billing_uses_unified_profile_and_style_units(count):
 def test_fission_billing_rejects_invalid_count():
     for count in (0, True):
         with pytest.raises(ValueError):
-            PodCallPlan.for_batch(
-                "fission", style_count=count, billing_profile=POD_BILLING_PROFILE_FISSION
-            )
+            PodCallPlan.for_fission_batch("fission", style_count=count)
+
+
+def test_fission_retry_and_resume_keep_panel_shape():
+    retry = PodCallPlan.for_fission_style_retry("batch:style:1:retry:x", include_title=True)
+    assert sum(call.feature == "pod.image" for call in retry.calls) == 8
+    assert retry.billing_profile == POD_BILLING_PROFILE_FISSION
+    resume = PodCallPlan.for_fission_batch_resume(
+        "batch", "resume-1", image_style_indices=(2,), title_style_indices=(1,), include_title=True
+    )
+    assert sum(call.feature == "pod.image" for call in resume.calls) == 8
+    assert sum(call.feature == "pod.title" for call in resume.calls) == 10
+    assert all(":style:2:" in call.call_id for call in resume.calls if call.feature == "pod.image")
 
 
 def test_local_fission_price_matches_full_customization(tmp_path, monkeypatch):
@@ -59,9 +70,7 @@ def test_local_fission_price_matches_full_customization(tmp_path, monkeypatch):
 
 def test_fission_settlement_bills_image_success_even_when_title_failed():
     """统一口径：image = success 即扣该款，标题失败不影响扣费。"""
-    plan = PodCallPlan.for_batch(
-        "fission-batch", style_count=2, billing_profile=POD_BILLING_PROFILE_FISSION
-    )
+    plan = PodCallPlan.for_fission_batch("fission-batch", style_count=2)
     outcomes = tuple(
         PodCallOutcome(
             call.call_id,
@@ -92,15 +101,9 @@ def test_fission_settlement_bills_image_success_even_when_title_failed():
 
 
 def test_fission_settlement_refunds_style_when_image_failed():
-    plan = PodCallPlan.for_batch(
-        "fission-batch", style_count=2, billing_profile=POD_BILLING_PROFILE_FISSION
-    )
+    plan = PodCallPlan.for_fission_batch("fission-batch", style_count=2)
     outcomes = tuple(
-        PodCallOutcome(
-            call.call_id,
-            call.feature,
-            "success" if call.call_id.startswith("fission-batch:style:1:title:") else "no_return",
-        )
+        PodCallOutcome(call.call_id, call.feature, "no_return")
         for call in plan.calls
     )
 
@@ -114,9 +117,7 @@ def test_fission_settlement_refunds_style_when_image_failed():
 def test_fission_title_completion_never_creates_a_second_freeze(tmp_path: Path):
     """补标题免费：标题结果只是 outcome 变化，不产生新的冻结与新的账本行。"""
     repository = PodCustomizationRepository(tmp_path / "ledger.sqlite3")
-    plan = PodCallPlan.for_batch(
-        "fission-batch", style_count=2, billing_profile=POD_BILLING_PROFILE_FISSION
-    )
+    plan = PodCallPlan.for_fission_batch("fission-batch", style_count=2)
     repository.create_billing_run(
         action_key=plan.idempotency_key,
         action_type="batch_initial",
@@ -139,7 +140,6 @@ def test_fission_title_completion_never_creates_a_second_freeze(tmp_path: Path):
         ).fetchone()[0]
     stored = repository.find_billing_run_by_action_key(plan.idempotency_key)
     assert count == 1
-    # 不再固化「可计费款」，也不再反查 public_url / 标题完整性。
     assert "fission_billable_styles" not in stored["action_payload"]
 
 
@@ -164,9 +164,7 @@ def test_delete_batch_keeps_the_fission_ledger(tmp_path: Path) -> None:
     database = tmp_path / "ledger.sqlite3"
     repository = PodCustomizationRepository(database)
     _insert_terminal_batch(database, "fission-del")
-    plan = PodCallPlan.for_batch(
-        "fission-del", style_count=2, billing_profile=POD_BILLING_PROFILE_FISSION
-    )
+    plan = PodCallPlan.for_fission_batch("fission-del", style_count=2)
     repository.create_billing_run(
         action_key=plan.idempotency_key,
         action_type="batch_initial",

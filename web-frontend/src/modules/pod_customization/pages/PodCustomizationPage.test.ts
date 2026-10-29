@@ -222,11 +222,13 @@ test("successful styles retain both regeneration actions until billing is interr
 });
 
 test("brief editor pre-fills the field template inside the textarea (no separate inputs)", () => {
-  // 字段模板直接预置在文本框里：产品名称 / 产品风格 / 产品工艺 / 使用场景 / 目标市场 / 目标人群。
+  // 字段模板直接预置在文本框里：产品名称 / 产品风格 / 产品工艺 / 目标市场 / 目标人群。
   assert.match(
     briefInputSource,
-    /DEFAULT_BRIEF_TEMPLATE = \[[\s\S]*?产品名称：[\s\S]*?产品风格：[\s\S]*?产品工艺：[\s\S]*?使用场景：[\s\S]*?目标市场：[\s\S]*?目标人群：/,
+    /DEFAULT_BRIEF_TEMPLATE = \[[\s\S]*?产品名称：[\s\S]*?产品风格：[\s\S]*?产品工艺：[\s\S]*?目标市场：[\s\S]*?目标人群：/,
   );
+  // v21：使用场景不再出现在智能填写模板里。
+  assert.doesNotMatch(briefInputSource, /"使用场景："/);
   assert.match(briefInputSource, /useState\(DEFAULT_BRIEF_TEMPLATE\)/);
   // 不再另起独立输入控件。
   assert.doesNotMatch(briefInputSource, /pod-brief-provided/);
@@ -234,9 +236,9 @@ test("brief editor pre-fills the field template inside the textarea (no separate
   assert.doesNotMatch(briefInputSource, /aria-label="使用场景基调"/);
 });
 
-test("confirm summary shows the batch-wide craft and scene fields read-only", () => {
+test("confirm summary shows the batch-wide craft field read-only", () => {
   assert.match(source, /<dt>产品工艺<\/dt>/);
-  assert.match(source, /<dt>场景基调<\/dt>/);
+  assert.doesNotMatch(source, /<dt>场景基调<\/dt>/);
 });
 
 test("typing into the title/description restriction asks for an explicit confirmation first", () => {

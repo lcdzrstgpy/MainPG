@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -25,7 +26,6 @@ from .contracts import (
     CompositionRenameRequest,
     CompositionUpdateRequest,
     DirectListingTrialCreate,
-    FissionAnalyzeRequest,
     FissionBatchCreate,
     ExportSelectionUpdate,
     ManualTitleUpdate,
@@ -418,13 +418,6 @@ def create_router(
             )
         finally:
             await upload.close()
-
-    @router.post("/fission/analyze")
-    def analyze_fission_assets(
-        body: FissionAnalyzeRequest, actor: Actor = Depends(actor_from_authorization)
-    ) -> dict[str, Any]:
-        permitted(actor, "pod_customization.create")
-        return _call(service.analyze_fission_assets, actor, body)
 
     @router.post('/fission/batches')
     def create_fission_batch(body: FissionBatchCreate, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
@@ -841,6 +834,11 @@ def _call(function, *args, **kwargs):
             detail="POD billing service returned an invalid response",
         ) from exc
     except CustomerAuthUnavailable as exc:
+        # 503 对用户只是一句「计费服务不可用」；把上游真实原因留在服务端日志里，
+        # 否则每次只能靠猜是网络、5xx 还是契约破坏。
+        logging.getLogger("pod_customization.router").warning(
+            "POD billing service unavailable: %s", exc, exc_info=True
+        )
         raise HTTPException(
             status_code=503,
             detail="POD billing service is unavailable",

@@ -531,7 +531,9 @@ export function ProfitActivityTestPage({ isActive = true, prefill }: { isActive?
 
   async function loadSites() {
     const data = await request<{ sites: Array<Record<string, unknown>> }>("/api/profit-activity/sites");
-    setSiteProfiles(data.sites.map(toSiteSettingProfile));
+    const profiles = data.sites.map(toSiteSettingProfile);
+    setSiteProfiles(profiles);
+    return profiles;
   }
 
   // 保存设置；遇到版本冲突（settings_revision_conflict）时自动重取最新设置并以最新 revision 重试一次，避免被乐观锁卡住
@@ -553,11 +555,19 @@ export function ProfitActivityTestPage({ isActive = true, prefill }: { isActive?
     }
   };
 
-  const openSettingsDialog = () => {
-    const firstSite = siteProfiles[0]?.id || site || "US";
-    const profile = siteProfiles.find((item) => item.id === firstSite);
+  const openSettingsDialog = async () => {
+    // 费率与「货源与利润」共用：打开时先拉最新值，避免两处各自缓存导致显示不一致。
+    let profiles = siteProfiles;
+    let settingsData = settings || {};
+    try {
+      [settingsData, profiles] = await Promise.all([loadSettings(), loadSites()]);
+    } catch {
+      // 拉取失败时仍用本地缓存打开，保存时再处理冲突
+    }
+    const firstSite = profiles[0]?.id || site || "US";
+    const profile = profiles.find((item) => item.id === firstSite);
     setSettingsSite(firstSite);
-    setSettingsDraft(extractSiteSettings(profile?.builtin ? settings || {} : profile?.data || {}, firstSite));
+    setSettingsDraft(extractSiteSettings(profile?.builtin ? settingsData : profile?.data || {}, firstSite));
     setNewSiteOpen(false);
     setNewSiteCodeInvalid(false);
     setSettingsDialogOpen(true);
@@ -1158,16 +1168,12 @@ export function ProfitActivityTestPage({ isActive = true, prefill }: { isActive?
               <button className="profit-settings-dialog-close" type="button" aria-label="关闭产品资料导入" onClick={() => setImportDialogOpen(false)} disabled={!!busy}><span aria-hidden="true">×</span></button>
             </div>
             <div className="profit-upload-row">
-              <div className="profit-import-input-stack">
-                <label>产品资料 Excel（可多选）<input type="file" accept=".xlsx,.xlsm" multiple onChange={(event) => { const files = Array.from(event.target.files || []); setImportFiles(files); persistImportFileNames(files); }} /></label>
-                <label className="profit-import-store-field">店铺（可选）<input value={importStoreName} maxLength={120} onChange={(event) => setImportStoreName(event.target.value)} placeholder="例如：美区一店" /></label>
-              </div>
+              <label className="profit-import-file-field">产品资料 Excel（可多选）<input type="file" accept=".xlsx,.xlsm" multiple onChange={(event) => { const files = Array.from(event.target.files || []); setImportFiles(files); persistImportFileNames(files); }} /></label>
+              <label className="profit-import-store-field">店铺（可选）<input value={importStoreName} maxLength={120} onChange={(event) => setImportStoreName(event.target.value)} placeholder="例如：美区一店" /></label>
               <div className="profit-import-actions">
                 <button className="profit-import-guidelines-trigger" type="button" aria-haspopup="dialog" onClick={() => setImportGuidelinesOpen(true)}>导入规范</button>
-                <div className="profit-import-actions-bottom">
-                  <button onClick={previewImport} disabled={!!busy}>预览入档</button>
-                  <button onClick={confirmImport} disabled={!!busy || !importPreviews.length}>确认导入</button>
-                </div>
+                <button onClick={previewImport} disabled={!!busy}>预览入档</button>
+                <button className="primary-button" onClick={confirmImport} disabled={!!busy || !importPreviews.length}>确认导入</button>
               </div>
             </div>
             {importFiles.length ? <p className="profit-warn">已选择 {importFiles.length} 个文件：{importFiles.map((item) => item.name).join("、")}</p> : lastImportFiles.length ? <p className="muted">上次选择的文件：{lastImportFiles.join("、")}（浏览器出于安全原因不保留本地完整路径，切换页面后需重新选择文件）</p> : null}

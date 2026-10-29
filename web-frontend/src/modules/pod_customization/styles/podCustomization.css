@@ -41,7 +41,8 @@
   gap: 20px;
   margin-bottom: 18px;
   padding: 18px 20px;
-  border: 1px solid var(--pod-border);
+  /* 不再画整圈描边：粉色主题下的边框会在右侧形成一条异色细线。 */
+  border: 0;
   border-radius: 18px;
   background: var(--theme-module-panel-gradient, linear-gradient(120deg, #f5fbff, #fff 64%, #eafaff));
   box-shadow: 0 10px 28px var(--pod-shadow);
@@ -49,9 +50,15 @@
 .pod-page-title { display: flex; align-items: center; gap: 14px; min-width: 0; }
 .pod-page-title-icon { display: grid; place-items: center; width: 46px; height: 46px; flex: 0 0 auto; border: 1px solid var(--pod-border-strong); border-radius: 14px; color: var(--pod-primary); background: var(--pod-surface-tint); font-size: 1.25rem; }
 .pod-page-title > div { min-width: 0; }
-.pod-page-title > div > span { color: var(--pod-primary); font-size: .66rem; font-weight: 900; letter-spacing: .11em; }
+/* 眉标：排除标题下方的价格胶囊，否则会被 .66rem / 主题色覆盖。 */
+.pod-page-title > div > span:not(.pod-page-price) { color: var(--pod-primary); font-size: .66rem; font-weight: 900; letter-spacing: .11em; }
 .pod-page-title h1 { margin: 3px 0 2px; font-size: 1.52rem; letter-spacing: -.035em; }
+/* 标题下方的实时单价：数据来自 /api/customer/billing/summary 的 pod_modules。
+   半透明深底 + 白字，避免白底在深色横幅上过亮、浅色字又看不清。 */
+.pod-page-price { display: flex; width: fit-content; align-items: baseline; gap: 4px; margin-top: 7px; padding: 4px 13px; border: 1px solid rgba(255, 255, 255, .3); border-radius: 999px; color: #fff; background: rgba(38, 22, 30, .42); font-size: .8rem; font-weight: 800; letter-spacing: 0; line-height: 1.45; }
 .pod-page-title p { margin: 0; color: var(--pod-text-secondary); font-size: .78rem; }
+/* 价格胶囊后面若还有描述行（如裂变页），补一点间距。 */
+.pod-page-price + p { margin-top: 7px; }
 .pod-page-header-actions { display: flex; align-items: center; gap: 10px; }
 .pod-page-header-actions > button { display: inline-flex; align-items: center; gap: 7px; padding: 9px 12px; border: 1px solid var(--pod-border-strong); border-radius: 10px; color: var(--pod-primary); background: var(--pod-surface); font-weight: 800; }
 .pod-live-badge { display: inline-flex; align-items: center; gap: 7px; color: var(--pod-text-secondary); font-size: .7rem; font-weight: 800; }

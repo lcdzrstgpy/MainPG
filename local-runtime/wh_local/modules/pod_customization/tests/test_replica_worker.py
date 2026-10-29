@@ -1,4 +1,4 @@
-"""爆款复刻 worker 消费路径：按款解析参考图、标题上下文与规格卡。
+"""爆款复刻 worker 消费路径：主图锚定、派生三格、重试/重启/暂停恢复与规格卡重印。
 
 覆盖初始生成、第二次尝试、单款再生成、失败重试、暂停恢复、重启与指定款规格卡重印。
 全程使用 fake runtime 捕获每款请求，绝不请求真实提供商、不真实扣费。
@@ -12,7 +12,6 @@ import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
-import pytest
 from PIL import Image, ImageDraw
 
 from wh_local.modules.pod_customization.billing_contract import (
@@ -21,10 +20,17 @@ from wh_local.modules.pod_customization.billing_contract import (
 )
 from wh_local.modules.pod_customization.contracts import (
     ListingFields,
+    ReplicaAnalyzeRequest,
     ReplicaBatchCreate,
     ReplicaTargetCreate,
 )
 from wh_local.modules.pod_customization.images import split_grid_2x2
+from wh_local.modules.pod_customization.replica_analysis_runtime import (
+    MAIN_PROMPT_MODEL,
+    MAIN_PROMPT_VERSION,
+    ReplicaMainPromptResult,
+)
+from wh_local.modules.pod_customization.replica_context import load_frozen_plan
 from wh_local.modules.pod_customization.service import PodCustomizationService
 from wh_local.modules.pod_customization.title_runtime import PodTitleResult
 from wh_local.modules.product_processing.infrastructure.media import (
@@ -33,10 +39,10 @@ from wh_local.modules.product_processing.infrastructure.media import (
 )
 from wh_local.session import Actor
 
+_MAIN_PROMPT = (
+    "Main image: reference image 1 is the exact product, reference image 2 supplies the pattern."
+)
 
-# --------------------------------------------------------------------------- #
-# 图片工具
-# --------------------------------------------------------------------------- #
 
 def _encode(image: Image.Image) -> bytes:
     output = io.BytesIO()
@@ -44,7 +50,7 @@ def _encode(image: Image.Image) -> bytes:
     return output.getvalue()
 
 
-def _solid(color: str, size: tuple[int, int] = (200, 160)) -> bytes:
+def _solid(color: str, size: tuple[int, int] = (200, 200)) -> bytes:
     return _encode(Image.new("RGB", size, color))
 
 
@@ -58,6 +64,7 @@ def _pattern(index: int) -> Image.Image:
 
 
 def _grid(seed: int) -> bytes:
+    """2×2 母图：裂变/全定制仍走 grid 策略，四格必须互不相同。"""
     image = Image.new("RGB", (192, 192), "white")
     for pattern, position in zip(
         (_pattern(seed + index) for index in range(4)),
@@ -68,50 +75,77 @@ def _grid(seed: int) -> bytes:
     return _encode(image)
 
 
-def _parse_trial(trial_id: str) -> tuple[int, int]:
+def _parse_trial(trial_id: str) -> tuple[int, int, int]:
+    """解析 trial id：面板请求 → (style, panel, attempt)；grid 请求 → (style, 0, attempt)。"""
+    if "-panel-" not in trial_id:
+        style, attempt = _parse_grid_trial(trial_id)
+        return style, 0, attempt
+    after = trial_id.split("-style-", 1)[1]
+    style = int(after.split("-panel-", 1)[0])
+    rest = after.split("-panel-", 1)[1]
+    panel = int(rest.split("-attempt-", 1)[0])
+    attempt = int(rest.rsplit("-attempt-", 1)[1])
+    return style, panel, attempt
+
+
+def _parse_grid_trial(trial_id: str) -> tuple[int, int]:
+    """``{batch}-style-{n}-[call-id-]attempt-{a}`` → (style, attempt)。"""
     after = trial_id.split("-style-", 1)[1]
     style = int(after.split("-", 1)[0])
     attempt = int(trial_id.rsplit("-attempt-", 1)[1])
     return style, attempt
 
 
-def _sha(content: bytes) -> str:
-    return hashlib.sha256(content).hexdigest()
-
-
-# --------------------------------------------------------------------------- #
-# fake runtime
-# --------------------------------------------------------------------------- #
-
 class CapturingReplicaRuntime:
-    """捕获每款生图请求；可按「款+尝试」配置一次瞬时失败以触发第二次尝试。"""
+    """捕获每款每面板的请求；可按「款」或「款+面板」配置瞬时失败。"""
 
-    def __init__(self, *, fail_style_attempt1: set[int] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        fail_style_attempt1: set[int] | None = None,
+        fail_style_always: set[int] | None = None,
+    ) -> None:
         self.requests: list = []
         self.publications: list[tuple[str, str]] = []
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="replica-ai")
         self._lock = threading.Lock()
         self._counter = 0
         self.fail_style_attempt1 = set(fail_style_attempt1 or ())
+        self.fail_style_always = set(fail_style_always or ())
 
     def submit(self, function, *args, **kwargs) -> Future:
         return self._executor.submit(function, *args, **kwargs)
-
-    def _next_grid(self) -> bytes:
-        with self._lock:
-            self._counter += 1
-            return _grid(self._counter * 4)
 
     def generate_listing_grid(self, request, *, grant=None, call_id="") -> GeneratedMedia:
         assert grant is not None and grant.provider_key("wuyin")
         with self._lock:
             self.requests.append(request)
-        style, attempt = _parse_trial(request.trial_id)
-        if attempt == 1 and style in self.fail_style_attempt1:
+            self._counter += 1
+            index = self._counter
+        is_panel = "-panel-" in request.trial_id
+        if not is_panel:
+            style, _attempt = _parse_grid_trial(request.trial_id)
+            if style in self.fail_style_always or (
+                _attempt == 1 and style in self.fail_style_attempt1
+            ):
+                raise MediaProcessingError("transient provider failure", status_class="transient")
+            return GeneratedMedia(
+                stage="grid_image",
+                content=_grid(index * 4),
+                content_type="image/png",
+                suffix=".png",
+                provider="fake-replica",
+                model=request.model_id,
+                reference_count=len(request.reference_images),
+            )
+        style, _panel, attempt = _parse_trial(request.trial_id)
+        if style in self.fail_style_always or (
+            attempt == 1 and style in self.fail_style_attempt1
+        ):
             raise MediaProcessingError("transient provider failure", status_class="transient")
         return GeneratedMedia(
             stage="grid_image",
-            content=self._next_grid(),
+            content=_solid(f"#{index:02x}{index:02x}{index:02x}"),
             content_type="image/png",
             suffix=".png",
             provider="fake-replica",
@@ -120,6 +154,7 @@ class CapturingReplicaRuntime:
         )
 
     def split_listing_grid(self, media: GeneratedMedia) -> list[GeneratedMedia]:
+        """裂变/全定制仍走 grid 策略，需要本地拆四格；复刻面板路径不会调用这里。"""
         return [
             GeneratedMedia(
                 stage=f"grid_image_{index}",
@@ -140,6 +175,24 @@ class CapturingReplicaRuntime:
 
     def close(self) -> None:
         self._executor.shutdown(wait=True, cancel_futures=True)
+
+
+class FakeAnalysisRuntime:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def generate_main_prompt(
+        self, source_asset, target_asset, *, grant, call_id, call_ids=None, on_start=None, on_outcome=None
+    ) -> ReplicaMainPromptResult:
+        self.calls += 1
+        if on_outcome is not None:
+            on_outcome(call_id, "success")
+        return ReplicaMainPromptResult(
+            main_prompt=_MAIN_PROMPT,
+            model=MAIN_PROMPT_MODEL,
+            prompt_version=MAIN_PROMPT_VERSION,
+            attempt_count=1,
+        )
 
 
 class CapturingTitleRuntime:
@@ -222,6 +275,7 @@ def _service(tmp_path: Path, runtime, title_runtime=None, billing=None) -> PodCu
         tmp_path / "pod-assets",
         runtime,
         title_runtime=title_runtime,
+        analysis_runtime=FakeAnalysisRuntime(),
         billing_coordinator=billing or BillingCoordinator(),
         start_workers=True,
     )
@@ -242,6 +296,12 @@ def _create_two_target_batch(service: PodCustomizationService, actor: Actor) -> 
     basket_id = service.upload_replica_image(
         actor, role="target", filename="basket.png", content=_solid("#2233cc")
     )["asset_id"]
+    analyses = {
+        asset_id: service.analyze_replica_assets(
+            actor, ReplicaAnalyzeRequest(source_asset_id=source_id, target_asset_id=asset_id)
+        )["analysis_id"]
+        for asset_id in (cushion_id, basket_id)
+    }
     request = ReplicaBatchCreate(
         client_request_id="req-worker-1",
         source_asset_id=source_id,
@@ -250,11 +310,13 @@ def _create_two_target_batch(service: PodCustomizationService, actor: Actor) -> 
                 target_asset_id=cushion_id,
                 product_name="抱枕",
                 listing_fields=_listing_fields("40cm", "家居收纳 > 抱枕"),
+                analysis_id=analyses[cushion_id],
             ),
             ReplicaTargetCreate(
                 target_asset_id=basket_id,
                 product_name="收纳篮",
                 listing_fields=_listing_fields("小号", "家居收纳 > 收纳篮"),
+                analysis_id=analyses[basket_id],
             ),
         ],
     )
@@ -268,16 +330,25 @@ def _create_two_target_batch(service: PodCustomizationService, actor: Actor) -> 
 def _requests_by_style(runtime: CapturingReplicaRuntime) -> dict[int, list]:
     grouped: dict[int, list] = {}
     for request in runtime.requests:
-        style, _attempt = _parse_trial(request.trial_id)
+        style, _panel, _attempt = _parse_trial(request.trial_id)
         grouped.setdefault(style, []).append(request)
     return grouped
 
 
+def _main_requests(runtime: CapturingReplicaRuntime) -> dict[int, object]:
+    return {
+        style: request
+        for request in runtime.requests
+        for style, panel, attempt in [_parse_trial(request.trial_id)]
+        if panel == 1 and attempt == 1
+    }
+
+
 # --------------------------------------------------------------------------- #
-# 初始生成：每款自己的样图 + 白底图 + 字段
+# 初始生成：每款自己的主图参考图 + 三张派生
 # --------------------------------------------------------------------------- #
 
-def test_replica_initial_generation_uses_per_style_references_and_fields(tmp_path: Path) -> None:
+def test_replica_initial_generation_uses_main_image_anchor(tmp_path: Path) -> None:
     runtime = CapturingReplicaRuntime()
     titles = CapturingTitleRuntime()
     service = _service(tmp_path, runtime, titles)
@@ -286,34 +357,35 @@ def test_replica_initial_generation_uses_per_style_references_and_fields(tmp_pat
 
     service.worker.process_batch(batch["id"])
 
-    assert len(runtime.requests) == 2
+    # 2 款 × 4 面板 = 8 次单面板调用。
+    assert len(runtime.requests) == 8
     source_bytes = _asset_bytes(service, actor, batch["_source_id"])
-    cushion_bytes = _asset_bytes(service, actor, batch["_cushion_id"])
-    basket_bytes = _asset_bytes(service, actor, batch["_basket_id"])
-    assert cushion_bytes != basket_bytes
+    target_bytes = {
+        1: _asset_bytes(service, actor, batch["_cushion_id"]),
+        2: _asset_bytes(service, actor, batch["_basket_id"]),
+    }
 
     by_style = _requests_by_style(runtime)
-    expected_target = {1: cushion_bytes, 2: basket_bytes}
-    expected_name = {1: "抱枕", 2: "收纳篮"}
     for style, requests in by_style.items():
-        assert len(requests) == 1
-        request = requests[0]
-        # 固定顺序 [pattern_source, target_product]，两张图各按内容寻址。
-        assert [image.role for image in request.reference_images] == [
-            "pattern_source",
-            "target_product",
-        ]
-        assert request.reference_images[0].content == source_bytes
-        assert request.reference_images[1].content == expected_target[style]
-        # 复刻不使用全定制的单模板字段。
-        assert request.template_image == b""
-        # prompt 来自该款业务字段，绝不含样图产品名。
-        assert f"Product name: {expected_name[style]}" in request.prompt
-        assert request.attempt == 1
+        panels = {
+            panel: request
+            for request in requests
+            for _s, panel, attempt in [_parse_trial(request.trial_id)]
+            if attempt == 1
+        }
+        assert sorted(panels) == [1, 2, 3, 4]
+        main = panels[1]
+        assert main.prompt == _MAIN_PROMPT
+        # 主图参考图固定 [B, A]。
+        assert [image.role for image in main.reference_images] == ["target_product", "pattern_source"]
+        assert main.reference_images[0].content == target_bytes[style]
+        assert main.reference_images[1].content == source_bytes
+        assert main.template_image == b""
+        for panel in (2, 3, 4):
+            assert [image.role for image in panels[panel].reference_images] == ["main_view"]
 
     stored = service.get_batch(actor, batch["id"])
     assert stored["status"] == "completed"
-    # 标题上下文同样按款解析产品名。
     assert sorted(request.business_fields.product_name for request in titles.requests) == [
         "抱枕",
         "收纳篮",
@@ -325,10 +397,10 @@ def test_replica_initial_generation_uses_per_style_references_and_fields(tmp_pat
 
 
 # --------------------------------------------------------------------------- #
-# 第二次尝试：同一款自己的参考图与 attempt=2 提示词
+# 第二次尝试：主图重试仍是 [B, A]，并追加 retry 指令
 # --------------------------------------------------------------------------- #
 
-def test_replica_second_attempt_reuses_this_styles_reference_images(tmp_path: Path) -> None:
+def test_replica_second_attempt_reuses_main_image_inputs(tmp_path: Path) -> None:
     runtime = CapturingReplicaRuntime(fail_style_attempt1={2})
     service = _service(tmp_path, runtime)
     actor = _actor()
@@ -339,25 +411,35 @@ def test_replica_second_attempt_reuses_this_styles_reference_images(tmp_path: Pa
     style2 = [
         request for request in runtime.requests if _parse_trial(request.trial_id)[0] == 2
     ]
-    assert sorted(_parse_trial(request.trial_id)[1] for request in style2) == [1, 2]
+    attempts = {
+        (panel, attempt)
+        for request in style2
+        for _s, panel, attempt in [_parse_trial(request.trial_id)]
+    }
+    # 每个面板都落到第二个尝试。
+    assert attempts == {(panel, attempt) for panel in (1, 2, 3, 4) for attempt in (1, 2)}
+
+    main_attempt2 = next(
+        request
+        for request in style2
+        if _parse_trial(request.trial_id)[1:] == (1, 2)
+    )
     basket_bytes = _asset_bytes(service, actor, batch["_basket_id"])
     source_bytes = _asset_bytes(service, actor, batch["_source_id"])
-    for request in style2:
-        assert [image.role for image in request.reference_images] == [
-            "pattern_source",
-            "target_product",
-        ]
-        assert request.reference_images[0].content == source_bytes
-        assert request.reference_images[1].content == basket_bytes
-    attempt2 = next(request for request in style2 if _parse_trial(request.trial_id)[1] == 2)
-    assert "RETRY ATTEMPT 2 OF 2" in attempt2.prompt
+    assert [image.role for image in main_attempt2.reference_images] == [
+        "target_product",
+        "pattern_source",
+    ]
+    assert main_attempt2.reference_images[0].content == basket_bytes
+    assert main_attempt2.reference_images[1].content == source_bytes
+    assert "RETRY ATTEMPT 2 OF 2" in main_attempt2.prompt
     assert service.get_batch(actor, batch["id"])["status"] == "completed"
     service.close()
     runtime.close()
 
 
 # --------------------------------------------------------------------------- #
-# 单款再生成：只解析该款的参考图
+# 单款再生成：只解析该款的主图与派生
 # --------------------------------------------------------------------------- #
 
 def test_replica_single_style_regeneration_resolves_only_that_style(tmp_path: Path) -> None:
@@ -377,10 +459,11 @@ def test_replica_single_style_regeneration_resolves_only_that_style(tmp_path: Pa
     assert {_parse_trial(request.trial_id)[0] for request in runtime.requests} == {2}
     basket_bytes = _asset_bytes(service, actor, batch["_basket_id"])
     source_bytes = _asset_bytes(service, actor, batch["_source_id"])
-    for request in runtime.requests:
-        assert request.reference_images[0].content == source_bytes
-        assert request.reference_images[1].content == basket_bytes
-        assert "Product name: 收纳篮" in request.prompt
+    for request in _main_requests(runtime).values():
+        assert request.prompt == _MAIN_PROMPT
+        assert request.reference_images[0].content == basket_bytes
+        assert request.reference_images[1].content == source_bytes
+        break
     service.close()
     runtime.close()
 
@@ -390,29 +473,11 @@ def test_replica_single_style_regeneration_resolves_only_that_style(tmp_path: Pa
 # --------------------------------------------------------------------------- #
 
 def test_replica_failed_style_retry_after_restart_uses_per_style_context(tmp_path: Path) -> None:
-    runtime = CapturingReplicaRuntime()
+    runtime = CapturingReplicaRuntime(fail_style_always={1})
     service = _service(tmp_path, runtime)
     actor = _actor()
     batch = _create_two_target_batch(service, actor)
 
-    # 让第 1 款的两次尝试都失败（瞬时失败会被自动重试一次，两次都命中失败集合）。
-    def _fail_first_style_always(request, *, grant=None, call_id=""):
-        style, _attempt = _parse_trial(request.trial_id)
-        with runtime._lock:
-            runtime.requests.append(request)
-        if style == 1:
-            raise MediaProcessingError("persistent failure", status_class="transient")
-        return GeneratedMedia(
-            stage="grid_image",
-            content=runtime._next_grid(),
-            content_type="image/png",
-            suffix=".png",
-            provider="fake-replica",
-            model=request.model_id,
-            reference_count=len(request.reference_images),
-        )
-
-    runtime.generate_listing_grid = _fail_first_style_always  # type: ignore[assignment]
     service.worker.process_batch(batch["id"])
     stored = service.get_batch(actor, batch["id"])
     assert stored["status"] in {"partial_failure", "failed"}
@@ -433,19 +498,19 @@ def test_replica_failed_style_retry_after_restart_uses_per_style_context(tmp_pat
             actor, batch["id"], image_style_indices=[1], title_style_indices=[], enqueue=False
         )
         recovered.worker.process_batch_retry(batch["id"], (1,), ())
+        style1 = [
+            request for request in recovered_runtime.requests if _parse_trial(request.trial_id)[0] == 1
+        ]
+        assert style1
+        cushion_bytes = _asset_bytes(recovered, actor, batch["_cushion_id"])
+        source_bytes = _asset_bytes(recovered, actor, batch["_source_id"])
+        for request in _main_requests(recovered_runtime).values():
+            assert request.prompt == _MAIN_PROMPT
+            assert request.reference_images[0].content == cushion_bytes
+            assert request.reference_images[1].content == source_bytes
+            break
     finally:
         recovered.close()
-
-    style1 = [
-        request for request in recovered_runtime.requests if _parse_trial(request.trial_id)[0] == 1
-    ]
-    assert style1
-    cushion_bytes = _asset_bytes(recovered, actor, batch["_cushion_id"])
-    source_bytes = _asset_bytes(recovered, actor, batch["_source_id"])
-    for request in style1:
-        assert request.reference_images[0].content == source_bytes
-        assert request.reference_images[1].content == cushion_bytes
-        assert "Product name: 抱枕" in request.prompt
     recovered_runtime.close()
 
 
@@ -459,11 +524,9 @@ def test_replica_resume_after_pause_uses_remaining_style_context(tmp_path: Path)
     actor = _actor()
     batch = _create_two_target_batch(service, actor)
 
-    # 冻结后直接标记暂停再继续，走暂停恢复的剩余款计划。
     service.repository.request_pause(batch["id"])
     service.repository.mark_batch_paused(batch["id"], "已暂停")
 
-    # 继续会重新冻结剩余款并提交；等待收敛。
     service.resume_batch(actor, batch["id"])
     import time as _time
 
@@ -479,10 +542,11 @@ def test_replica_resume_after_pause_uses_remaining_style_context(tmp_path: Path)
         1: _asset_bytes(service, actor, batch["_cushion_id"]),
         2: _asset_bytes(service, actor, batch["_basket_id"]),
     }
-    for request in runtime.requests:
-        style, _attempt = _parse_trial(request.trial_id)
-        assert request.reference_images[0].content == source_bytes
-        assert request.reference_images[1].content == target_bytes[style]
+    for request in _main_requests(runtime).values():
+        style, _panel, _attempt = _parse_trial(request.trial_id)
+        assert request.prompt == _MAIN_PROMPT
+        assert request.reference_images[0].content == target_bytes[style]
+        assert request.reference_images[1].content == source_bytes
     service.close()
     runtime.close()
 
@@ -510,7 +574,7 @@ def test_replica_spec_card_reprint_updates_only_the_selected_style(tmp_path: Pat
     style2_spec_before = batch["targets"][1]["listing_fields"]["spec_card"]
     mirror_spec_before = service.repository.get_batch_internal(batch["id"])["listing_fields"]["spec_card"]
 
-    service.reprint_batch_spec_card(
+    outcome = service.reprint_batch_spec_card(
         actor,
         batch["id"],
         {
@@ -522,6 +586,7 @@ def test_replica_spec_card_reprint_updates_only_the_selected_style(tmp_path: Pat
         },
         style_index=1,
     )
+    assert outcome["reprinted"] == 1, outcome
 
     after = service.get_batch(actor, batch["id"])
     style1_hero_after = next(
@@ -529,7 +594,6 @@ def test_replica_spec_card_reprint_updates_only_the_selected_style(tmp_path: Pat
     )["public_url"]
     assert style1_hero_after != style1_hero_before
 
-    # 其他款（style 2）四张图与字段快照原封不动。
     style2_after = {
         (item["style_index"], item["role"]): item["public_url"]
         for item in after["items"]
@@ -538,10 +602,22 @@ def test_replica_spec_card_reprint_updates_only_the_selected_style(tmp_path: Pat
     assert style2_after == style2_before
     assert after["targets"][1]["listing_fields"]["spec_card"] == style2_spec_before
 
-    # 被指定款的快照已更新为新的规格卡。
     assert after["targets"][0]["listing_fields"]["spec_card"]["style"] == "dark"
-    # 整批镜像配置未被改写。
     mirror_after = service.repository.get_batch_internal(batch["id"])["listing_fields"]["spec_card"]
     assert mirror_after == mirror_spec_before
+    service.close()
+    runtime.close()
+
+
+def test_frozen_plan_is_v4_for_every_style(tmp_path: Path) -> None:
+    runtime = CapturingReplicaRuntime()
+    service = _service(tmp_path, runtime)
+    actor = _actor()
+    batch = _create_two_target_batch(service, actor)
+    internal = service.repository.get_batch_internal(batch["id"])
+    for style_index in (1, 2):
+        plan = load_frozen_plan(internal, style_index)
+        assert plan.plan_version == "replica-plan-v4"
+        assert plan.main_prompt == _MAIN_PROMPT
     service.close()
     runtime.close()

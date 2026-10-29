@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import uuid
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,10 @@ from wh_local.modules.pod_customization.contracts import (
     ReplicaBatchCreate,
     ReplicaTargetCreate,
     SemiBatchCreate,
+)
+from wh_local.modules.pod_customization.replica_analysis_runtime import (
+    MAIN_PROMPT_MODEL,
+    MAIN_PROMPT_VERSION,
 )
 from wh_local.modules.pod_customization.replica_context import (
     ReplicaStyleSnapshotMissingError,
@@ -69,7 +74,60 @@ def _target(asset_id: str, product_name: str, category: str = "家居收纳 > �
     )
 
 
-def _request(source_asset_id: str, targets: list[ReplicaTargetCreate], *, client_request_id: str) -> ReplicaBatchCreate:
+def _seed_plan(
+    service: PodCustomizationService, actor: Actor, source_asset_id: str, target_asset_id: str
+) -> str:
+    """直接写一条图案迁移方案：这些用例只验证持久化，不跑豆包。
+
+    同一 A/B 已存在方案时复用（唯一键会保留最早那行），保证多个批次共享同一个 plan_id。
+    """
+    existing = service.repository.find_replica_transfer_plan(
+        actor.workspace_id,
+        actor.id,
+        source_asset_id,
+        target_asset_id,
+        MAIN_PROMPT_VERSION,
+        MAIN_PROMPT_MODEL,
+        "B,A",
+    )
+    if existing is not None:
+        return existing["plan_id"]
+    plan_id = uuid.uuid4().hex
+    service.repository.create_replica_transfer_plan(
+        plan_id=plan_id,
+        workspace_id=actor.workspace_id,
+        owner_user_id=actor.id,
+        source_asset_id=source_asset_id,
+        target_asset_id=target_asset_id,
+        prompt_version=MAIN_PROMPT_VERSION,
+        model=MAIN_PROMPT_MODEL,
+        reference_order="B,A",
+        main_prompt=f"main prompt for {target_asset_id}",
+    )
+    return plan_id
+
+
+def _request(
+    source_asset_id: str,
+    targets: list[ReplicaTargetCreate],
+    *,
+    client_request_id: str,
+    service: PodCustomizationService | None = None,
+    actor: Actor | None = None,
+) -> ReplicaBatchCreate:
+    if service is not None and actor is not None:
+        targets = [
+            target
+            if target.analysis_id
+            else target.model_copy(
+                update={
+                    "analysis_id": _seed_plan(
+                        service, actor, source_asset_id, target.target_asset_id
+                    )
+                }
+            )
+            for target in targets
+        ]
     return ReplicaBatchCreate(
         client_request_id=client_request_id,
         source_asset_id=source_asset_id,
@@ -113,6 +171,8 @@ def test_create_replica_batch_persists_full_shape(tmp_path: Path) -> None:
             source_id,
             [_target(target_a, "抱枕", "家居收纳 > 抱枕"), _target(target_b, "收纳篮", "家居收纳 > 收纳篮")],
             client_request_id="req-full-shape",
+            service=service,
+            actor=actor,
         ),
         enqueue=False,
     )
@@ -171,6 +231,8 @@ def test_targets_keep_input_order_and_derived_business_fields(tmp_path: Path) ->
             source_id,
             [_target(target_a, "甲", "类目甲"), _target(target_b, "乙", "类目乙")],
             client_request_id="req-order",
+            service=service,
+            actor=actor,
         ),
         enqueue=False,
     )
@@ -188,7 +250,13 @@ def test_list_and_get_replica_batch_contract(tmp_path: Path) -> None:
     target_id = _upload(service, actor, "target", "#00aa00", "a.png")
     service.create_replica_batch(
         actor,
-        _request(source_id, [_target(target_id, "抱枕")], client_request_id="req-list"),
+        _request(
+            source_id,
+            [_target(target_id, "抱枕")],
+            client_request_id="req-list",
+            service=service,
+            actor=actor,
+        ),
         enqueue=False,
     )
 
@@ -244,7 +312,13 @@ def test_client_request_id_idempotency_and_conflict(tmp_path: Path) -> None:
     source_id = _upload(service, actor, "source", "#dd0000", "source.png")
     target_id = _upload(service, actor, "target", "#00aa00", "a.png")
 
-    request = _request(source_id, [_target(target_id, "抱枕")], client_request_id="req-idem")
+    request = _request(
+        source_id,
+        [_target(target_id, "抱枕")],
+        client_request_id="req-idem",
+        service=service,
+        actor=actor,
+    )
     first = service.create_replica_batch(actor, request, enqueue=False)
     second = service.create_replica_batch(actor, request, enqueue=False)
     assert first["id"] == second["id"]
@@ -269,7 +343,13 @@ def test_delete_batch_cleans_replica_references_and_assets(tmp_path: Path) -> No
     target_id = _upload(service, actor, "target", "#00aa00", "a.png")
     batch = service.create_replica_batch(
         actor,
-        _request(source_id, [_target(target_id, "抱枕")], client_request_id="req-delete"),
+        _request(
+            source_id,
+            [_target(target_id, "抱枕")],
+            client_request_id="req-delete",
+            service=service,
+            actor=actor,
+        ),
         enqueue=False,
     )
     template_id = batch["template_id"]
@@ -295,6 +375,52 @@ def test_delete_batch_cleans_replica_references_and_assets(tmp_path: Path) -> No
             "SELECT COUNT(*) FROM pod_customization_assets WHERE asset_id IN (?, ?)", (source_id, target_id)
         ).fetchone()[0]
         assert remaining_assets == 0
+
+
+def test_delete_batch_keeps_plans_shared_with_another_batch(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    actor = _actor()
+    source_id = _upload(service, actor, "source", "#dd0000", "source.png")
+    target_id = _upload(service, actor, "target", "#00aa00", "a.png")
+    plan_id = _seed_plan(service, actor, source_id, target_id)
+
+    def create(request_id: str) -> str:
+        batch = service.create_replica_batch(
+            actor,
+            _request(
+                source_id,
+                [_target(target_id, "抱枕").model_copy(update={"analysis_id": plan_id})],
+                client_request_id=request_id,
+            ),
+            enqueue=False,
+        )
+        with service.repository._connect() as connection:
+            connection.execute(
+                "UPDATE pod_customization_batches SET status = 'completed' WHERE batch_id = ?",
+                (batch["id"],),
+            )
+        return batch["id"]
+
+    first = create("req-shared-plan-1")
+    second = create("req-shared-plan-2")
+
+    def shared_plan():
+        return service.repository.find_replica_transfer_plan(
+            actor.workspace_id,
+            actor.id,
+            source_id,
+            target_id,
+            MAIN_PROMPT_VERSION,
+            MAIN_PROMPT_MODEL,
+            "B,A",
+        )
+
+    service.delete_batch(actor, first)
+    # 方案仍被第二个批次引用：不能随第一个批次删掉，否则第二个批次的重试会 409。
+    assert shared_plan() is not None
+
+    service.delete_batch(actor, second)
+    assert shared_plan() is None
 
 
 def test_create_rolls_back_on_missing_target_asset(tmp_path: Path) -> None:
@@ -349,7 +475,13 @@ def test_full_and_semi_payloads_keep_backward_compatible_mode(tmp_path: Path) ->
     target_id = _upload(service, actor, "target", "#00aa00", "a.png")
     service.create_replica_batch(
         actor,
-        _request(source_id, [_target(target_id, "抱枕")], client_request_id="req-mode-filter"),
+        _request(
+            source_id,
+            [_target(target_id, "抱枕")],
+            client_request_id="req-mode-filter",
+            service=service,
+            actor=actor,
+        ),
         enqueue=False,
     )
     assert service.list_batches(actor)["total"] == 1
@@ -363,7 +495,13 @@ def test_replica_spec_card_reprint_requires_style_index(tmp_path: Path) -> None:
     target_id = _upload(service, actor, "target", "#00aa00", "a.png")
     batch = service.create_replica_batch(
         actor,
-        _request(source_id, [_target(target_id, "抱枕")], client_request_id="req-reprint"),
+        _request(
+            source_id,
+            [_target(target_id, "抱枕")],
+            client_request_id="req-reprint",
+            service=service,
+            actor=actor,
+        ),
         enqueue=False,
     )
     with service.repository._connect() as connection:

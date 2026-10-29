@@ -1,11 +1,14 @@
-"""爆款复刻领域模型：A/B 事实、能力、规则、构图计划与 ``ReplicaPlan``。
+"""POD 领域模型：A/B 事实规格（裂变共用）+ 复刻 v4 冻结计划 ``ReplicaPlan``。
 
-设计见 ``docs/superpowers/specs/2026-10-13-pod-replica-final-architecture-design.md``。
+自 2026-10-26 起，复刻主链路不再使用事实/能力/规则/构图模型：每个 A/B 对只调一次豆包
+直出 ``main_prompt``，计划只冻结主图提示词、派生三格视角与版本号（见
+``docs/superpowers/specs/2026-10-26-pod-replica-anchor-panel-design.md``）。
+
+仍保留在本模块的 ``FactValue`` / ``SourceArtworkSpec`` / ``TargetProductSpec`` /
+``normalize_*`` 与 ``CapabilitySet`` / ``ReplicaRuleSet`` / ``CompositionPlan`` 属于
+**裂变（fission）与 ``replica_planner`` 的共享底座**，不要因为复刻改版而删除。
 
 本模块只放 Pydantic 模型与纯标准化函数：不含 IO、不调用 provider、不写库。
-标准化函数是「原始豆包 JSON → 可复现事实对象」的唯一入口，保证
-「同一份输入 + 同一版本 → 同一份事实对象」；能力匹配、规则推导与构图选择
-分别在 ``replica_capabilities`` 与 ``replica_planner`` 中实现。
 """
 
 from __future__ import annotations
@@ -27,10 +30,8 @@ FactSource = Literal["model", "user", "system"]
 GenerationStrategy = Literal["grid", "independent_panels"]
 GENERATION_STRATEGIES: tuple[str, ...] = ("grid", "independent_panels")
 
-# 高清直出（independent_panels）暂时下线：分镜提示词还没定稿（四张视角趋同），
-# 先统一按 grid（一款一图后本地拆四格）生成。计划、提示词与计费相关代码都保留，
-# 把这个开关打开即可恢复「用户显式选择生成方式」。详见 service._replica_batch_strategy。
-REPLICA_PANEL_STRATEGY_ENABLED = False
+# 款级冻结计划版本：新链路只认 v4；旧版本计划一律视为历史批次（只读、不可重试）。
+REPLICA_PLAN_VERSION = "replica-plan-v4"
 
 
 class ReplicaPlanNotReadyError(RuntimeError):
@@ -298,29 +299,23 @@ class CompositionPlan(BaseModel):
 
 
 class ReplicaPlan(BaseModel):
-    """冻结的复刻计划：事实 + 能力 + 规则 + 构图计划 + 编译后的 Prompt + 全部版本号。
+    """款级冻结计划（v4）：主图提示词 + 派生三格视角 + 模板与版本。
 
-    同一份分析、能力、规则、用户选择、模板和版本必须得到同一份 ``ReplicaPlan``；
-    生成、重试、暂停恢复、进程重启都只复用本对象，不再重新推导。
+    一个 A/B 对只调一次豆包产出 ``main_prompt``；panel_2~4 的视角来自复刻构图模板，
+    存在 ``derived_panels`` 里。生成、重试、暂停恢复与进程重启都只读这份快照。
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    plan_version: int = Field(default=1, ge=1)
-    source_artwork_spec: SourceArtworkSpec
-    target_product_spec: TargetProductSpec
-    capability_set: CapabilitySet
-    rule_set: ReplicaRuleSet
-    composition_plan: CompositionPlan | None = None
-    generation_strategy: GenerationStrategy = "grid"
-    compiled_prompt: str = ""
-    # 版本冻结：提交后不得随系统升级而改变。
-    analysis_schema_version: str = Field(default=REPLICA_ANALYSIS_SCHEMA_VERSION, max_length=100)
-    capability_registry_version: str = Field(default="", max_length=100)
-    rule_version: str = Field(default="", max_length=100)
-    composition_template_version: str = Field(default="", max_length=100)
-    prompt_compiler_version: str = Field(default="", max_length=100)
+    plan_version: str = Field(default=REPLICA_PLAN_VERSION, max_length=50)
+    main_prompt: str
+    prompt_version: str = Field(default="", max_length=100)
     image_model_version: str = Field(default="", max_length=200)
+    reference_order: str = Field(default="B,A", max_length=20)
+    composition_template_id: str = Field(default="", max_length=100)
+    composition_template_version: str = Field(default="", max_length=100)
+    derived_panels: dict[str, str] = Field(default_factory=dict)
+    generation_strategy: GenerationStrategy = "independent_panels"
 
 
 # --- 原始分析 JSON 标准化 -------------------------------------------------------

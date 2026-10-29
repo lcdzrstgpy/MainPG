@@ -300,6 +300,27 @@ class FissionRegistryService:
             )
             return True
 
+    def record_variant_event(
+        self,
+        *,
+        batch_id: str,
+        style_index: int,
+        outcome: str,
+        failure_kind: str = "",
+    ) -> None:
+        """只记录款级终态用于事后归因：不发布版本、不回滚、不参与任何门槛。"""
+        outcome_value = str(outcome).strip().casefold()
+        if outcome_value not in {"succeeded", "completed", "failed", "cancelled"}:
+            raise ValueError("variant outcome must be succeeded, completed, failed, or cancelled")
+        failure_value = str(failure_kind or "").strip().casefold()
+        with self.repository._connect() as connection:
+            connection.execute(
+                "INSERT OR IGNORE INTO pod_customization_learning_events "
+                "(batch_id, style_index, capability_version, rule_version, status, outcome, failure_kind, reason) "
+                "VALUES (?, ?, 0, 0, 'variant_outcome', ?, ?, '')",
+                (batch_id, int(style_index), outcome_value, failure_value),
+            )
+
     def rollback_after_failures(
         self,
         capability_version: int,

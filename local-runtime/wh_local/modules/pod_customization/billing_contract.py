@@ -31,13 +31,11 @@ POD_BILLING_PROFILE_RANDOM = "pod_random_v1"
 POD_BILLING_PROFILE_RANDOM_GRID = "pod_random_grid_v1"
 POD_BILLING_PROFILE_FISSION = "pod_fission_v1"
 POD_BILLING_PROFILE_SEMI = "pod_semi_v1"
-# 爆款复刻画像（A/B 两档，远端按档位决定「一次上报」的计价倍率）：
-#   A = pod_replica_v1_a：普通生成（grid，本地拆图）——一次上报扣 1 次全定制积分；
-#   B = pod_replica_v1_b：高清直出（independent_panels，直出 4 张）——一次上报扣 4 倍积分。
-# 两者都与全定制按「款」计价同价（固定 45/款），但用独立画像值上报：
-# 远端据此把「复刻」与「全定制」分到不同分类统计，并按 A/B 区分倍率。
-POD_BILLING_PROFILE_REPLICA = "pod_replica_v1_a"
-POD_BILLING_PROFILE_REPLICA_HD = "pod_replica_v1_b"
+# 爆款复刻统一画像：不再区分「普通生成 / 高清直出」，也不区分四宫格与四图；
+# 复刻固定每款直出四张单图，客户端只上报款数（link_count），由远端按「款」统一定价。
+# 历史批次冻结/结算里仍可能留有 pod_replica_v1_a / pod_replica_v1_b（旧 A/B 两档），
+# 仅作历史流水展示，不再由客户端上报。
+POD_BILLING_PROFILE_REPLICA = "pod_replica_v1"
 
 # v2 请求里的 module 字段（与账本 module 列同值）。
 POD_MODULE_CUSTOM = "pod_custom"
@@ -79,10 +77,9 @@ BRIEF_ATTEMPTS = 4
 # 构图定制一次生成预留的文本调用次数：与 brief 同口径（纯 pod.title，零计费）。
 COMPOSITION_ATTEMPTS = 3
 
-# 复刻识图分析与「按模板选构图参数」各预留的调用次数：与 brief/composition 同口径
-# （纯 pod.title，零计费）。分析是视觉调用，但走同一条冻结 → 短期密钥 → 结算底座。
+# 复刻主图方案：一次视觉调用（含契约修复重试），与 brief/composition 同口径
+# （纯 pod.title，零计费），但走同一条冻结 → 短期密钥 → 结算底座。
 REPLICA_ANALYSIS_ATTEMPTS = 3
-REPLICA_COMPOSITION_ATTEMPTS = 3
 # 模板结构识图：一次视觉调用 + 一次契约修复调用（与复刻识图同口径，纯 title 零计费）。
 STRUCTURE_ANALYSIS_ATTEMPTS = 2
 # Fission A/B analysis is one provider call plus one contract repair call.
@@ -92,6 +89,10 @@ FISSION_ANALYSIS_ATTEMPTS = 2
 # （失败回溯预算），与 grid 每款 2 次尝试的口径一致。
 REPLICA_PANEL_COUNT = 4
 REPLICA_PANEL_ATTEMPTS = 2
+
+# 裂变独立面板策略：每款 1 张主图 + 3 张伴生格，每格预留 2 次图片调用。
+FISSION_PANEL_COUNT = 4
+FISSION_PANEL_ATTEMPTS = 2
 
 
 class PodBillingAuthorizationRequired(RuntimeError):
@@ -398,11 +399,10 @@ class PodCallPlan:
     def for_replica_batch(
         cls, batch_id: str, *, style_count: int, generation_strategy: str = "grid"
     ) -> "PodCallPlan":
-        """复刻批次冻结：按生成策略决定每款预留的图片调用形状。
+        """复刻批次冻结：确定每款预留的图片调用形状。
 
-        - ``grid``：与 ``for_batch`` 同形（每款 1 次四宫格 × 2 次尝试）；
-        - ``independent_panels``：每款 4 个面板 × 2 次尝试（共 8 次图片调用）。
-
+        复刻已统一为每款直出四张单图（``independent_panels``），不再有 grid 形态；
+        ``grid`` 分支只为兼容历史批次读取，新批次不会走到。
         产品批次计费以 link 为单位（1 款 = 1 link），单款内部多出来的图片调用不会
         增加 link_count，只用于结算时逐调用对齐 outcomes；未使用的调用补 no_return。
         """
@@ -435,7 +435,7 @@ class PodCallPlan:
         return cls(
             idempotency_key=f"pod:batch:{batch_id}:initial",
             calls=calls,
-            billing_profile=POD_BILLING_PROFILE_REPLICA_HD,
+            billing_profile=POD_BILLING_PROFILE_REPLICA,
         )
 
     @staticmethod
@@ -461,7 +461,7 @@ class PodCallPlan:
         return cls(
             idempotency_key=f"pod:retry:{action_id}",
             calls=tuple(calls),
-            billing_profile=POD_BILLING_PROFILE_REPLICA_HD,
+            billing_profile=POD_BILLING_PROFILE_REPLICA,
         )
 
     @classmethod
@@ -496,7 +496,7 @@ class PodCallPlan:
         return cls(
             idempotency_key=f"pod:retry:{action_id}",
             calls=tuple(calls),
-            billing_profile=POD_BILLING_PROFILE_REPLICA_HD,
+            billing_profile=POD_BILLING_PROFILE_REPLICA,
         )
 
     @classmethod
@@ -534,7 +534,126 @@ class PodCallPlan:
         return cls(
             idempotency_key=f"pod:batch:{batch_id}:resume:{resume_id}",
             calls=tuple(calls),
-            billing_profile=POD_BILLING_PROFILE_REPLICA_HD,
+            billing_profile=POD_BILLING_PROFILE_REPLICA,
+        )
+
+    @staticmethod
+    def _fission_panel_image_calls(prefix: str) -> tuple[PodPlannedCall, ...]:
+        """裂变独立面板：每款 4 面板 × 2 次尝试。"""
+        return tuple(
+            PodPlannedCall(f"{prefix}:image:p{panel_index}:{attempt}", "pod.image")
+            for panel_index in range(1, FISSION_PANEL_COUNT + 1)
+            for attempt in range(1, FISSION_PANEL_ATTEMPTS + 1)
+        )
+
+    @classmethod
+    def for_fission_batch(cls, batch_id: str, *, style_count: int) -> "PodCallPlan":
+        """裂变批次冻结：每款 4 面板 × 2 次图片调用 + 标题调用，按款计 link。"""
+        if isinstance(style_count, bool) or not isinstance(style_count, int) or not 1 <= style_count <= 200:
+            raise ValueError("style_count must be between 1 and 200")
+        calls = tuple(
+            call
+            for style_index in range(1, style_count + 1)
+            for call in (
+                *cls._fission_panel_image_calls(f"{batch_id}:style:{style_index}"),
+                *(
+                    PodPlannedCall(f"{batch_id}:style:{style_index}:title:{attempt}", "pod.title")
+                    for attempt in range(1, TITLE_ATTEMPTS + 1)
+                ),
+            )
+        )
+        return cls(
+            idempotency_key=f"pod:batch:{batch_id}:initial",
+            calls=calls,
+            billing_profile=POD_BILLING_PROFILE_FISSION,
+        )
+
+    @classmethod
+    def for_fission_style_retry(cls, action_id: str, *, include_title: bool) -> "PodCallPlan":
+        """裂变「整款重试」：4 面板 × 2 次（+ 标题）。"""
+        calls: list[PodPlannedCall] = list(cls._fission_panel_image_calls(action_id))
+        if include_title:
+            calls.extend(
+                PodPlannedCall(f"{action_id}:title:{attempt}", "pod.title")
+                for attempt in range(1, TITLE_ATTEMPTS + 1)
+            )
+        return cls(
+            idempotency_key=f"pod:retry:{action_id}",
+            calls=tuple(calls),
+            billing_profile=POD_BILLING_PROFILE_FISSION,
+        )
+
+    @classmethod
+    def for_fission_batch_retry(
+        cls,
+        action_id: str,
+        *,
+        image_style_indices: Sequence[int],
+        title_style_indices: Sequence[int],
+        include_title: bool,
+    ) -> "PodCallPlan":
+        """裂变批量失败重试：按勾选款展开独立面板调用。"""
+        image_indices = tuple(image_style_indices)
+        title_indices = tuple(title_style_indices)
+        if not image_indices and not title_indices:
+            raise ValueError("at least one failed style is required")
+        calls: list[PodPlannedCall] = []
+        for style_index in image_indices:
+            calls.extend(cls._fission_panel_image_calls(f"{action_id}:style:{style_index}"))
+            if include_title:
+                calls.extend(
+                    PodPlannedCall(
+                        f"{action_id}:style:{style_index}:title:{attempt}", "pod.title"
+                    )
+                    for attempt in range(1, TITLE_ATTEMPTS + 1)
+                )
+        for style_index in title_indices:
+            calls.extend(
+                PodPlannedCall(f"{action_id}:style:{style_index}:title:{attempt}", "pod.title")
+                for attempt in range(1, TITLE_ATTEMPTS + 1)
+            )
+        return cls(
+            idempotency_key=f"pod:retry:{action_id}",
+            calls=tuple(calls),
+            billing_profile=POD_BILLING_PROFILE_FISSION,
+        )
+
+    @classmethod
+    def for_fission_batch_resume(
+        cls,
+        batch_id: str,
+        resume_id: str,
+        *,
+        image_style_indices: Sequence[int],
+        title_style_indices: Sequence[int],
+        include_title: bool,
+    ) -> "PodCallPlan":
+        """裂变暂停续跑：只冻结尚未完成的款，调用 id 沿用原批次形状。"""
+        image_indices = tuple(image_style_indices)
+        title_indices = tuple(title_style_indices)
+        if not image_indices and not title_indices:
+            raise ValueError("at least one remaining POD style is required")
+        if set(image_indices) & set(title_indices):
+            raise ValueError("a resumed style cannot be both image and title only")
+        calls: list[PodPlannedCall] = []
+        for style_index in image_indices:
+            calls.extend(cls._fission_panel_image_calls(f"{batch_id}:style:{style_index}"))
+            if include_title:
+                calls.extend(
+                    PodPlannedCall(
+                        f"{batch_id}:style:{style_index}:title:{attempt}", "pod.title"
+                    )
+                    for attempt in range(1, TITLE_ATTEMPTS + 1)
+                )
+        for style_index in title_indices:
+            calls.extend(
+                PodPlannedCall(f"{batch_id}:style:{style_index}:title:{attempt}", "pod.title")
+                for attempt in range(1, TITLE_ATTEMPTS + 1)
+            )
+        return cls(
+            idempotency_key=f"pod:batch:{batch_id}:resume:{resume_id}",
+            calls=tuple(calls),
+            billing_profile=POD_BILLING_PROFILE_FISSION,
         )
 
     @classmethod
@@ -597,7 +716,7 @@ class PodCallPlan:
 
     @classmethod
     def for_replica_analysis(cls, analysis_id: str) -> "PodCallPlan":
-        """复刻识图分析：一次视觉调用（含契约修复重试）。
+        """复刻主图方案：一次视觉调用（含契约修复重试）。
 
         与 ``for_brief`` 同构：只冻结 ``pod.title``，服务端对纯 title scope 零计费。
         """
@@ -638,21 +757,6 @@ class PodCallPlan:
                 for attempt in range(1, FISSION_ANALYSIS_ATTEMPTS + 1)
             ),
         )
-
-    @classmethod
-    def for_replica_composition(cls, batch_id: str, *, style_count: int) -> "PodCallPlan":
-        """复刻「按模板选构图参数」：逐款各一次文本调用（含契约修复重试），同为零计费口径。
-
-        ``style_index`` 从 1 开始，与款级冻结计划一一对应。
-        """
-        if isinstance(style_count, bool) or not isinstance(style_count, int) or style_count < 1:
-            raise ValueError("style_count must be a positive integer")
-        calls = tuple(
-            PodPlannedCall(f"{batch_id}:composition:{style_index}:{attempt}", "pod.title")
-            for style_index in range(1, style_count + 1)
-            for attempt in range(1, REPLICA_COMPOSITION_ATTEMPTS + 1)
-        )
-        return cls(idempotency_key=f"pod:replica-composition:{batch_id}", calls=calls)
 
     @classmethod
     def for_style_retry(

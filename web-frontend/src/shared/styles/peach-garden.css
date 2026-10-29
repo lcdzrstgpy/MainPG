@@ -110,6 +110,7 @@
 [data-theme="peach"] .settings-hero,
 [data-theme="peach"] .price-verification-hero,
 [data-theme="peach"] .profit-activity-hero,
+[data-theme="peach"] .ledger-hero,
 [data-theme="peach"] .verify-commandbar {
   border-color: rgba(217, 93, 120, 0.42);
   background: linear-gradient(118deg, rgba(128, 52, 78, 0.82) 0%, rgba(208, 107, 130, 0.68) 56%, rgba(90, 155, 124, 0.6) 100%);
@@ -135,7 +136,7 @@
 
 /* 页头文字保持可读 */
 [data-theme="peach"] .daily-page-heading .daily-kicker,
-[data-theme="peach"] .pod-page-header .pod-page-title > div > span,
+[data-theme="peach"] .pod-page-header .pod-page-title > div > span:not(.pod-page-price),
 [data-theme="peach"] .price-verification-hero .eyebrow,
 [data-theme="peach"] .profit-activity-hero .eyebrow,
 [data-theme="peach"] .verify-eyebrow {
@@ -146,6 +147,7 @@
 [data-theme="peach"] .pod-page-header .pod-live-badge,
 [data-theme="peach"] .price-verification-hero p:not(.eyebrow),
 [data-theme="peach"] .profit-activity-hero p:not(.eyebrow),
+[data-theme="peach"] .ledger-hero p,
 [data-theme="peach"] .verify-command-title p,
 [data-theme="peach"] .price-verification-hero-status,
 [data-theme="peach"] .back-to-collection-button,
@@ -314,12 +316,8 @@
 }
 
 [data-theme="peach"] .verify-sticky-toolbar {
-  background: linear-gradient(180deg, rgba(255, 251, 248, 0.5), rgba(255, 251, 248, 0.34));
-}
-
-[data-theme="peach"] .verify-sticky-toolbar.is-stuck {
-  background: linear-gradient(180deg, rgba(255, 251, 248, 0.92), rgba(255, 251, 248, 0.82));
-  backdrop-filter: blur(14px) saturate(1.1);
+  /* 吸顶后列表会从下面滚过，这里不能用半透色（其余模块表面仍是半透） */
+  background: #fffbf8;
 }
 
 [data-theme="peach"] .pool-card:hover {

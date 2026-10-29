@@ -13,6 +13,10 @@ from wh_local.modules.pod_customization.contracts import (
     ReplicaBatchCreate,
     ReplicaTargetCreate,
 )
+from wh_local.modules.pod_customization.replica_analysis_runtime import (
+    MAIN_PROMPT_MODEL,
+    MAIN_PROMPT_VERSION,
+)
 from wh_local.modules.pod_customization.replica_context import style_product_context
 from wh_local.modules.pod_customization.repository import PodRepositoryError
 from wh_local.modules.pod_customization.service import PodCustomizationService
@@ -168,13 +172,33 @@ def _two_product_batch(
     source_id = _upload(service, actor, "source", "source.png")
     target_a = _upload(service, actor, "target", "cushion.png")
     target_b = _upload(service, actor, "target", "basket.png")
+
+    def plan_for(asset_id: str, *, index: int) -> str:
+        plan_id = f"{client_request_id}:plan:{index}"
+        service.repository.create_replica_transfer_plan(
+            plan_id=plan_id,
+            workspace_id=actor.workspace_id,
+            owner_user_id=actor.id,
+            source_asset_id=source_id,
+            target_asset_id=asset_id,
+            prompt_version=MAIN_PROMPT_VERSION,
+            model=MAIN_PROMPT_MODEL,
+            reference_order="B,A",
+            main_prompt=f"main prompt {index}",
+        )
+        return plan_id
+
     return service.create_replica_batch(
         actor,
         _request(
             source_id,
             [
-                _target(target_a, "抱枕", listing_a),
-                _target(target_b, "收纳篮", listing_b),
+                _target(target_a, "抱枕", listing_a).model_copy(
+                    update={"analysis_id": plan_for(target_a, index=1)}
+                ),
+                _target(target_b, "收纳篮", listing_b).model_copy(
+                    update={"analysis_id": plan_for(target_b, index=2)}
+                ),
             ],
             client_request_id=client_request_id,
         ),

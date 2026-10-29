@@ -5,12 +5,6 @@ from typing import Annotated, Any, Literal, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
 
-from .replica_specs import (
-    FactOverrides,
-    GenerationStrategy,
-    PresentationPreferences,
-)
-
 
 SUPPORTED_PATTERN_COUNTS = (20, 40, 100)
 MIN_STYLE_COUNT = 1
@@ -43,24 +37,11 @@ MAX_REPLICA_TARGETS = 200
 REPLICA_IMAGE_ROLES = ("source", "target")
 ReplicaImageRole = Literal["source", "target"]
 
-# 爆款裂变：A 样图与 B 白底产品图共同分析，单批最多生成 10 款。
+# 爆款裂变：A 样图与 B 白底产品图一次调用直接产出方案，单批最多生成 5 款。
 MIN_FISSION_STYLES = 1
-MAX_FISSION_STYLES = 10
+MAX_FISSION_STYLES = 5
 FISSION_IMAGE_ROLES = ("source_artwork", "target_product")
 FissionImageRole = Literal["source_artwork", "target_product"]
-
-
-class FissionAnalyzeRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-
-    source_asset_id: str = Field(min_length=1, max_length=64)
-    target_asset_id: str = Field(min_length=1, max_length=64)
-
-    @model_validator(mode="after")
-    def distinct_assets(self) -> "FissionAnalyzeRequest":
-        if self.source_asset_id == self.target_asset_id:
-            raise ValueError("样图与白底产品图必须是不同资产")
-        return self
 
 
 class FissionImageUploadResponse(BaseModel):
@@ -108,13 +89,19 @@ class BusinessFields(BaseModel):
     )
     design_theme: Annotated[str, Field(max_length=500)] = ""
     # 批级全局字段：由用户在「智能填写」区告知，brief 豆包只做规范化（不发明），渲染进 PART 1/PART 4。
-    # 用户未告知即留空 → 回退现有静态块行为（工艺 → _FABRIC_REALISM_BLOCK，场景 → _STYLE_SCENES 轮换）。
+    # 用户未告知即留空；场景不再来自这里，而由美术指导的 scene_options 提供。
     fabric_craft: Annotated[str, Field(max_length=500)] = ""
+    # 兼容旧批次/旧草稿保留；v21 起不再写入、不再注入生图提示词（场景统一由美术指导承担）。
     scene_mood: Annotated[str, Field(max_length=500)] = ""
     style_keywords: list[Annotated[str, Field(max_length=200)]] = Field(
         default_factory=list, max_length=100
     )
     color_preferences: list[Annotated[str, Field(max_length=200)]] = Field(
+        default_factory=list, max_length=100
+    )
+    # 主题强关联色之外的建议点缀色：由智能填写在同一次调用里一并产出，只作辅色/点缀，
+    # 不得替代主题强关联色当主色。旧批次没有该键时为空。
+    accent_colors: list[Annotated[str, Field(max_length=200)]] = Field(
         default_factory=list, max_length=100
     )
     excluded_elements: list[Annotated[str, Field(max_length=200)]] = Field(
@@ -131,6 +118,27 @@ class BusinessFields(BaseModel):
 ART_DIRECTION_TEXT_MAX_LENGTH = 800
 ART_DIRECTION_ITEM_MAX_LENGTH = 200
 ART_DIRECTION_MAX_ITEMS = 12
+SCENE_OPTIONS_MIN_ITEMS = 2
+SCENE_OPTIONS_MAX_ITEMS = 3
+SCENE_OPTION_PROPS_MIN_ITEMS = 3
+SCENE_OPTION_PROPS_MAX_ITEMS = 5
+
+
+class SceneOption(BaseModel):
+    """豆包给出的一个候选场景：环境 + 台面 + 衬托道具。
+
+    整批 2-3 个，按款确定性轮换；代码不再维护本地场景池。
+    """
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    scene: Annotated[str, Field(min_length=1, max_length=ART_DIRECTION_TEXT_MAX_LENGTH)]
+    # 平铺类产品需要具体台面材质；普通产品可留空。
+    surface: Annotated[str, Field(max_length=ART_DIRECTION_ITEM_MAX_LENGTH)] = ""
+    props: list[Annotated[str, Field(max_length=ART_DIRECTION_ITEM_MAX_LENGTH)]] = Field(
+        min_length=SCENE_OPTION_PROPS_MIN_ITEMS,
+        max_length=SCENE_OPTION_PROPS_MAX_ITEMS,
+    )
 
 
 class ArtDirection(BaseModel):
@@ -157,6 +165,10 @@ class ArtDirection(BaseModel):
     avoid: list[Annotated[str, Field(max_length=ART_DIRECTION_ITEM_MAX_LENGTH)]] = Field(
         default_factory=list, max_length=ART_DIRECTION_MAX_ITEMS
     )
+    # 场景池：2-3 个候选，按款确定性轮换；旧数据没有时回退主 scene。
+    scene_options: list[SceneOption] = Field(
+        default_factory=list, max_length=SCENE_OPTIONS_MAX_ITEMS
+    )
 
     def is_empty(self) -> bool:
         return not any(
@@ -170,6 +182,7 @@ class ArtDirection(BaseModel):
                 self.background,
                 self.composition_hint,
                 self.avoid,
+                self.scene_options,
             )
         )
 
@@ -178,11 +191,10 @@ class ArtDirection(BaseModel):
 # 方案见 docs/superpowers/specs/2026-09-12-pod-brief-preprocessing-design.md。
 BRIEF_INPUT_MIN_LENGTH = 1
 BRIEF_INPUT_MAX_LENGTH = 500
-# 元素关键词：够跨款差异化即可。40 项会逼模型为凑数堆无关词，降到 24 项
-#（每款实际只用 1 主锚 + 2 叙事 + 4 点缀，24 项足够轮换）。
-BRIEF_STYLE_KEYWORDS_MIN_ITEMS = 24
-# 偏好配色：60-30-10 只需要 3 色，6 色已足够跨款轮换；不再强制 10 色。
-BRIEF_COLOR_PREFERENCES_MIN_ITEMS = 6
+# 元素关键词：只保留“能放大成主图”的具象主体。纹理/细碎点缀由生图模型自选，不进元素池。
+# v25：16 → 12。不再要求凑到 16，但仍保留 12 的下限，保证多款批次（4 款一组）有足够轮换空间。
+BRIEF_STYLE_KEYWORDS_MIN_ITEMS = 12
+# 偏好配色不再设数量门槛：主题强关联色建议 5-6、点缀色建议 6-10，只由提示词约束。
 # 禁用元素：品牌/商标/版权角色/肖像由 IP_EXCLUDED_ELEMENTS 自动补齐，
 # 模型只需给少量与本主题相关的排除项，不再强制 10 项（否则会编无关内容）。
 BRIEF_EXCLUDED_ELEMENTS_MIN_ITEMS = 3
@@ -370,13 +382,22 @@ class ListingFields(BaseModel):
 
 
 class FissionBatchCreate(BaseModel):
+    """一键开始裂变：一次请求内完成出方案、冻结与生图入队。"""
+
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     client_request_id: str = Field(min_length=1, max_length=128)
-    analysis_id: str = Field(min_length=1, max_length=64)
+    source_asset_id: str = Field(min_length=1, max_length=64)
+    target_asset_id: str = Field(min_length=1, max_length=64)
     requested_count: StrictInt = Field(ge=MIN_FISSION_STYLES, le=MAX_FISSION_STYLES)
     listing_fields: ListingFields
     title: str = Field(default="", max_length=120)
+
+    @model_validator(mode="after")
+    def distinct_assets(self) -> "FissionBatchCreate":
+        if self.source_asset_id == self.target_asset_id:
+            raise ValueError("样图与白底产品图必须是不同资产")
+        return self
 
 
 class BatchCreate(BaseModel):
@@ -445,10 +466,10 @@ class ReplicaImageUploadResponse(BaseModel):
 
 
 class ReplicaTargetCreate(BaseModel):
-    """复刻创建时的单项目标产品：一张白底图 + 商品名 + 复用现有上架字段。
+    """复刻创建时的单项目标产品：一张白底图 + 商品名 + 方案 id + 复用现有上架字段。
 
-    ``analysis_id`` / ``fact_overrides`` / ``presentation_preferences`` 为识图主流程
-    引入的选填字段：老客户端（无分析）不传时保持既有行为。
+    ``analysis_id`` 是 ``/replica/analyze`` 产出的图案迁移方案 id，建批次时按它取
+    已冻结的主图提示词；缺少方案的目标款不允许提交。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -457,19 +478,18 @@ class ReplicaTargetCreate(BaseModel):
     product_name: str = Field(min_length=1, max_length=500)
     listing_fields: ListingFields
     analysis_id: str = Field(default="", max_length=200)
-    fact_overrides: FactOverrides | None = None
-    presentation_preferences: PresentationPreferences = Field(default_factory=PresentationPreferences)
 
 
 class ReplicaAnalyzeRequest(BaseModel):
-    """识图分析请求：A 原素材图 + B 目标产品图，外加可选的用户覆盖与展示偏好。"""
+    """图案迁移方案请求：A 原素材图 + B 目标产品图。
+
+    参考图顺序由后端固定为 ``[B, A]``（image 1 = B、image 2 = A），不接受客户端指定。
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     source_asset_id: str = Field(min_length=1, max_length=64)
     target_asset_id: str = Field(min_length=1, max_length=64)
-    fact_overrides: FactOverrides | None = None
-    presentation_preferences: PresentationPreferences = Field(default_factory=PresentationPreferences)
 
 
 class ReplicaBatchCreate(BaseModel):
@@ -485,11 +505,10 @@ class ReplicaBatchCreate(BaseModel):
     source_asset_id: str = Field(min_length=1, max_length=64)
     title: str = Field(default="", max_length=120)
     creative_prompt: str = Field(default="", max_length=4000)
-    # 构图模板由服务端按当前生效模板冻结；生成策略必须由前端用户显式下发，缺失按 grid 处理。
+    # 构图模板只作用于派生三格（panel_2~4）；主图视角不可指定。
     composition_id: str = Field(default="", max_length=100)
-    generation_strategy: GenerationStrategy | None = None
-    # 原素材（A）识别结果确认：A 有低置信度字段时必须由用户确认后才允许提交。
-    source_confirmed: bool = False
+    # 复刻固定「每款四张单图」（主图 + 三张派生），不再有 grid；保留字段只为显式化契约。
+    generation_strategy: Literal["independent_panels"] | None = "independent_panels"
     targets: list[ReplicaTargetCreate] = Field(
         min_length=MIN_REPLICA_TARGETS, max_length=MAX_REPLICA_TARGETS
     )

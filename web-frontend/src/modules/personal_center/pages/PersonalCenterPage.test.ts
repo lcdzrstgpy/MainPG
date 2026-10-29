@@ -31,8 +31,8 @@ test("pricing panel shows server-provided POD module prices and hides the block 
   assert.match(source, /podPricingModules\.length > 0/);
   assert.match(source, /POD 按模块计价/);
   assert.match(source, /pod_semi_v1: "POD 半定制"/);
-  // 复刻拆成独立倍率分类后由服务端追加，客户端不写死价格、只补展示名兜底。
-  assert.match(source, /pod_replica_v1_a: "POD 爆款复刻"/);
+  // 复刻统一画像后由服务端追加，客户端不写死价格、只补展示名兜底。
+  assert.match(source, /pod_replica_v1: "POD 爆款复刻"/);
   assert.doesNotMatch(source, /POD 全定制[^\n]*4[05]\s*积分/);
   const contract = readFileSync(new URL("../api/personalCenterApi.ts", import.meta.url), "utf8");
   assert.match(contract, /pod_modules\?: BillingPricingModule\[\]/);

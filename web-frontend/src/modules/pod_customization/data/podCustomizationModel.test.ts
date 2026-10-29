@@ -151,11 +151,14 @@ test("business list fields are normalized at the API boundary", () => {
     scene_mood: "暖光木质厨房",
     style_keywords: "复古, 粗线条",
     color_preferences: "松绿、砂岩黄",
+    accent_colors: "香槟金、雾白",
     excluded_elements: "Logo",
     copy_restrictions: " 标题不要出现刺绣、务必带上 2D Flat ",
   });
   assert.deepEqual(payload.core_selling_points, ["轻量", "防漏"]);
   assert.deepEqual(payload.style_keywords, ["复古", "粗线条"]);
+  assert.deepEqual(payload.color_preferences, ["松绿", "砂岩黄"]);
+  assert.deepEqual(payload.accent_colors, ["香槟金", "雾白"]);
   // 上架文案限制是整段自然语言：只去首尾空白，不按分隔符切分。
   assert.equal(payload.copy_restrictions, "标题不要出现刺绣、务必带上 2D Flat");
   // 批级全局字段同样整段透传，只去首尾空白。

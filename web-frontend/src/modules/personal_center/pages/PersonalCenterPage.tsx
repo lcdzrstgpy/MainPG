@@ -197,8 +197,10 @@ const POD_PRICING_LABELS: Record<string, string> = {
   pod_random_v1: "POD 全定制",
   pod_semi_v1: "POD 半定制",
   pod_fission_v1: "POD 爆款裂变",
+  // 复刻已统一：新流水用 pod_replica_v1；历史 A/B 两档流水仍展示同一个名字。
+  pod_replica_v1: "POD 爆款复刻",
   pod_replica_v1_a: "POD 爆款复刻",
-  pod_replica_v1_b: "POD 爆款复刻 · 高清直出",
+  pod_replica_v1_b: "POD 爆款复刻",
 };
 
 /** POD 计价单位兜底：半定制按「组」（4 款 = 1 组），其余按「款」。 */
@@ -251,10 +253,10 @@ const POD_SERVICE_LABEL: Record<string, string> = {
   pod_fission_v1: "POD 爆款裂变",
   pod_random_v1: "POD 全定制",
   pod_semi_v1: "POD 半定制",
-  // 复刻按 A/B 分档：A=普通生成（1 次全定制积分）、B=高清直出（4 倍）。历史流水沿用无后缀值。
+  // 复刻不再分档：new 流水统一 pod_replica_v1；A/B 仅为历史流水兼容，展示名一致。
   pod_replica_v1: "POD 爆款复刻",
-  pod_replica_v1_a: "POD 爆款复刻 · 普通生成",
-  pod_replica_v1_b: "POD 爆款复刻 · 高清直出",
+  pod_replica_v1_a: "POD 爆款复刻",
+  pod_replica_v1_b: "POD 爆款复刻",
 };
 
 export function usageServiceLabel(entry: BillingUsageEntry): string {
@@ -2021,19 +2023,21 @@ export function PersonalCenterPage({ feedbackPrefill = null, panel, onPanelChang
           <article className="personal-card pricing-card">
             <div className="personal-card-title">
               <span className="iconfont icon-calculator" aria-hidden="true" />
-              <div><h2>计费规则</h2><small>服务端权威定价，按规则版本生效，客户端不参与报价。</small></div>
+              <div><h2>计费规则</h2></div>
               <button type="button" onClick={() => refreshBalance()} disabled={balanceCooldownActive || loading}>
                 {balanceCooldownActive ? `${balanceCooldownSeconds} 秒后` : "刷新"}
               </button>
             </div>
 
             <div className="pricing-hero">
-              <span className="pricing-hero-kicker">单条处理链接 · 消费定价</span>
-              <div className="pricing-hero-range">
-                <b>{summary?.pricing.product_link.actual_charge_min_points.toLocaleString() ?? "--"}</b>
-                <em>~</em>
-                <b>{summary?.pricing.product_link.actual_charge_max_points.toLocaleString() ?? "--"}</b>
-                <i>积分 / 条</i>
+              <div className="pricing-hero-main">
+                <span className="pricing-hero-kicker">单条处理链接 · 消费定价</span>
+                <div className="pricing-hero-range">
+                  <b>{summary?.pricing.product_link.actual_charge_min_points.toLocaleString() ?? "--"}</b>
+                  <em>~</em>
+                  <b>{summary?.pricing.product_link.actual_charge_max_points.toLocaleString() ?? "--"}</b>
+                  <i>积分 / 条</i>
+                </div>
               </div>
               <p className="pricing-hero-note">
                 受服务商模型波动影响，单条链接定价在{" "}
@@ -2072,27 +2076,14 @@ export function PersonalCenterPage({ feedbackPrefill = null, panel, onPanelChang
                   {podPricingModules.map((item) => {
                     const label = item.label?.trim() || POD_PRICING_LABELS[item.key] || item.key;
                     const unit = item.unit_label?.trim() || POD_PRICING_UNITS[item.key] || "款";
-                    const baseMin = item.base_charge_min_points;
-                    const baseMax = item.base_charge_max_points;
-                    const baseText =
-                      typeof baseMin === "number" && typeof baseMax === "number"
-                        ? `基准 ${formatPointsRange(baseMin, baseMax)}`
-                        : "";
-                    const multiplierText =
-                      typeof item.multiplier_percent === "number"
-                        ? `当前倍率 ${item.multiplier_percent}%`
-                        : "";
-                    const note = [baseText, multiplierText].filter(Boolean).join(" · ");
                     return (
                       <div key={item.key} className="pricing-pod-card">
                         <span className="pricing-pod-name">
                           <b>{label}</b>
-                          <small>{item.key}</small>
                         </span>
                         <span className="pricing-pod-points">
                           <b>{formatPointsRange(item.charge_min_points, item.charge_max_points)}</b>
                           <i>积分 / {unit}</i>
-                          {note ? <small>{note}</small> : null}
                         </span>
                       </div>
                     );
@@ -2103,7 +2094,6 @@ export function PersonalCenterPage({ feedbackPrefill = null, panel, onPanelChang
 
             <div className="pricing-foot">
               <span>充值换算：{summary?.pricing.ratio_label ?? "1 元 = 100 积分"}</span>
-              <span>规则版本 v{summary?.pricing.rule_version ?? "--"}{summary?.pricing.effective_at ? ` · 生效于 ${formatUsageTime(summary.pricing.effective_at).slice(0, 16)}` : ""}</span>
             </div>
           </article>
         ) : activePanel === "preferences" ? (

@@ -1211,3 +1211,403 @@
     border-radius: 14px;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   产品资料导入 / 导入规范弹窗：沿用页面「半透纸面 + 胶囊」语言。
+   弹窗 portal 到 body，不在 .profit-test-page 作用域内，因此单独作用。
+   注意：桃花源等半透主题下，淡彩 + transparent 会把不透明度压得很低，
+   必须以 --theme-module-surface 打底再叠淡彩。
+   --------------------------------------------------------------------------- */
+.profit-settings-dialog-backdrop {
+  background: var(--theme-module-overlay, rgba(14, 35, 57, 0.34));
+}
+
+.profit-settings-dialog {
+  gap: 18px;
+  padding: 24px 26px;
+  border-color: var(--theme-module-border, #d8e7f2);
+  border-radius: 24px;
+  color: var(--theme-text-primary, #18334d);
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--theme-module-surface-tint, #eaf8ff) 30%, transparent),
+      color-mix(in srgb, var(--theme-module-surface-soft, #f7fafc) 46%, transparent)
+    ),
+    var(--theme-module-surface, #fff);
+  box-shadow: 0 24px 64px var(--theme-card-shadow-lg, rgba(14, 49, 81, 0.28));
+}
+
+.profit-settings-dialog .profit-settings-dialog-head {
+  align-items: flex-start;
+}
+
+.profit-settings-dialog .profit-settings-heading {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.profit-settings-dialog .profit-settings-heading h2 {
+  margin: 0;
+  color: var(--theme-text-primary, #172b44);
+  font-size: 1.12rem;
+  font-weight: var(--weight-semibold, 600);
+}
+
+.profit-settings-dialog .profit-settings-heading p {
+  margin: 0;
+  color: var(--theme-text-secondary, #71879d);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.profit-settings-dialog .profit-settings-dialog-close {
+  display: grid;
+  place-items: center;
+  flex: 0 0 34px;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--theme-module-border, #d8e7f2);
+  border-radius: 999px;
+  color: var(--theme-text-secondary, #4a6983);
+  background: var(--theme-module-surface-raised, #fff);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.profit-settings-dialog .profit-settings-dialog-close span {
+  line-height: 1;
+}
+
+.profit-settings-dialog label {
+  display: grid;
+  gap: 6px;
+  color: var(--theme-text-secondary, #526a82);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+/* 文件 / 店铺 / 三个操作同一行；店铺排在「导入规范」左侧。 */
+.profit-settings-dialog .profit-upload-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(150px, 200px) auto;
+  align-items: end;
+  gap: 16px;
+  margin: 0;
+}
+
+.profit-settings-dialog .profit-import-file-field,
+.profit-settings-dialog .profit-import-store-field {
+  min-width: 0;
+}
+
+.profit-settings-dialog .profit-import-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 中等宽度：文件与店铺同排，操作按钮落到第二行右对齐 */
+@media (max-width: 840px) {
+  .profit-settings-dialog .profit-upload-row {
+    grid-template-columns: minmax(0, 1fr) minmax(140px, 180px);
+  }
+
+  .profit-settings-dialog .profit-import-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-end;
+  }
+}
+
+.profit-settings-dialog .profit-import-guidelines-trigger {
+  width: auto;
+}
+
+.profit-settings-dialog input:not([type="file"]):not([type="checkbox"]):not([type="radio"]) {
+  height: 38px;
+  padding: 0 16px;
+  border: 1px solid var(--theme-module-border, #cfe0eb);
+  border-radius: 999px;
+  color: var(--theme-text-primary, #18334d);
+  background: var(--theme-module-surface-raised, #fff);
+  font-size: 13px;
+}
+
+.profit-settings-dialog input[type="file"] {
+  width: 100%;
+  box-sizing: border-box;
+  height: 44px;
+  padding: 6px 16px 6px 8px;
+  border: 1px solid var(--theme-module-border, #cfe0eb);
+  border-radius: 999px;
+  color: var(--theme-text-secondary, #526a82);
+  background: var(--theme-module-surface-raised, #fff);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.profit-settings-dialog input[type="file"]::file-selector-button {
+  height: 30px;
+  margin-right: 12px;
+  padding: 0 16px;
+  border: 1px solid var(--theme-module-border-strong, #b9dce9);
+  border-radius: 999px;
+  background: var(--theme-module-surface-soft, #f7fafc);
+  color: var(--theme-module-primary-strong, #0877d3);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.18s ease, background-color 0.18s ease;
+}
+
+.profit-settings-dialog input[type="file"]::file-selector-button:hover {
+  border-color: var(--theme-primary, #0877d3);
+  background: var(--theme-module-surface-tint, #eaf8ff);
+}
+
+/* 旧版 WebKit 使用独立伪元素，保持同一外观。 */
+.profit-settings-dialog input[type="file"]::-webkit-file-upload-button {
+  height: 30px;
+  margin-right: 12px;
+  padding: 0 16px;
+  border: 1px solid var(--theme-module-border-strong, #b9dce9);
+  border-radius: 999px;
+  background: var(--theme-module-surface-soft, #f7fafc);
+  color: var(--theme-module-primary-strong, #0877d3);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.profit-settings-dialog button {
+  box-sizing: border-box;
+  height: 36px;
+  margin: 0;
+  padding: 0 18px;
+  border: 1px solid var(--theme-module-border-strong, #b9dce9);
+  border-radius: 999px;
+  color: var(--theme-text-primary, #244f75);
+  background: var(--theme-module-surface-raised, #fff);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color 0.18s ease, background-color 0.18s ease, color 0.18s ease;
+}
+
+.profit-settings-dialog button:hover:not(:disabled) {
+  border-color: var(--theme-primary, #0877d3);
+  color: var(--theme-module-primary-strong, #0877d3);
+  background: var(--theme-module-surface-tint, #eaf8ff);
+}
+
+.profit-settings-dialog button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.profit-settings-dialog .primary-button {
+  /* 全局 .primary-button 自带 margin-top:8px 和 border:0，这里显式对齐三个按钮的盒模型 */
+  margin: 0;
+  border: 1px solid transparent;
+  color: var(--theme-on-primary, #fff);
+  background: var(--theme-primary-button-gradient, linear-gradient(105deg, #b03a55, #d95d78));
+  box-shadow: 0 8px 18px var(--theme-primary-button-shadow, rgba(176, 58, 85, 0.22));
+}
+
+.profit-settings-dialog .primary-button:hover:not(:disabled) {
+  color: var(--theme-on-primary, #fff);
+  background: var(--theme-primary-button-gradient, linear-gradient(105deg, #b03a55, #d95d78));
+  filter: brightness(0.97);
+}
+
+.profit-settings-dialog :is(input, button):focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--theme-primary, #d95d78) 55%, transparent);
+  outline-offset: 2px;
+}
+
+.profit-settings-dialog .profit-warn {
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, #efaa17 42%, transparent);
+  border-radius: 14px;
+  color: #8a5b0d;
+  background: color-mix(in srgb, #efaa17 12%, var(--theme-module-surface, #fff));
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.profit-settings-dialog .muted {
+  margin: 0;
+  color: var(--theme-text-muted, #7b8fa4);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* 预览结果：外层是内容块用 18px，内部单行信息用胶囊。 */
+.profit-settings-dialog .profit-import-summary {
+  gap: 12px;
+  margin: 0;
+  padding: 16px;
+  border: 1px solid var(--theme-module-border, #d8e7f2);
+  border-radius: 18px;
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--theme-module-surface-tint, #eaf8ff) 34%, transparent),
+      color-mix(in srgb, var(--theme-module-surface-soft, #f7fafc) 52%, transparent)
+    ),
+    var(--theme-module-surface, #fff);
+}
+
+.profit-settings-dialog .profit-import-summary-head {
+  align-items: center;
+  gap: 12px;
+}
+
+.profit-settings-dialog .profit-import-summary-head strong {
+  color: var(--theme-text-primary, #14304b);
+  font-size: 13px;
+}
+
+.profit-settings-dialog .profit-import-summary-head span {
+  flex: none;
+  padding: 4px 10px;
+  border-radius: 999px;
+  color: var(--theme-accent, #0b7a45);
+  background: color-mix(in srgb, var(--theme-accent, #0b7a45) 14%, transparent);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.profit-settings-dialog .profit-import-file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  border: 1px solid var(--theme-module-border, #d8e7f2);
+  border-radius: 999px;
+  background: var(--theme-module-surface-raised, #fff);
+}
+
+.profit-settings-dialog .profit-import-file strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--theme-text-primary, #1b3a58);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profit-settings-dialog .profit-import-file-meta {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px 10px;
+  color: var(--theme-text-muted, #70869b);
+  font-size: 11px;
+}
+
+.profit-settings-dialog .profit-import-stats {
+  gap: 10px;
+}
+
+.profit-settings-dialog .profit-import-stats div {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 4px;
+  padding: 10px 16px;
+  border: 1px solid var(--theme-module-border, #d8e7f2);
+  border-radius: 999px;
+  background: var(--theme-module-surface-raised, #fff);
+  text-align: center;
+}
+
+.profit-settings-dialog .profit-import-stats span {
+  color: var(--theme-text-muted, #70869b);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.profit-settings-dialog .profit-import-stats strong {
+  margin: 0;
+  color: var(--theme-module-primary-strong, #b03a55);
+  font-size: 18px;
+}
+
+.profit-settings-dialog .profit-import-stats em {
+  color: var(--theme-text-muted, #70869b);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.profit-settings-dialog .profit-import-reasons {
+  gap: 8px;
+}
+
+.profit-settings-dialog .profit-import-reasons > span {
+  color: var(--theme-text-muted, #70869b);
+  font-size: 11px;
+}
+
+.profit-settings-dialog .profit-import-reasons li {
+  padding: 5px 12px;
+  border: 1px solid var(--theme-module-border, #d8e7f2);
+  border-radius: 999px;
+  color: var(--theme-text-secondary, #5d7185);
+  background: var(--theme-module-surface-raised, #fff);
+  font-size: 11px;
+}
+
+.profit-settings-dialog .profit-import-reasons p {
+  color: var(--theme-text-muted, #70869b);
+  font-size: 12px;
+}
+
+/* 导入规范弹窗正文 */
+.profit-settings-dialog .profit-import-guidelines-content {
+  color: var(--theme-text-secondary, #526a82);
+}
+
+.profit-settings-dialog .profit-import-guidelines-content section {
+  border-color: var(--theme-module-border, #d8e7f2);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--theme-module-surface-raised, #fff) 70%, transparent);
+}
+
+.profit-settings-dialog .profit-import-guidelines-content h3 {
+  color: var(--theme-text-primary, #244f75);
+}
+
+@media (max-width: 760px) {
+  .profit-settings-dialog {
+    padding: 20px;
+    border-radius: 20px;
+  }
+
+  .profit-settings-dialog .profit-upload-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .profit-settings-dialog .profit-import-actions {
+    grid-column: auto;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  .profit-settings-dialog .profit-import-stats {
+    grid-template-columns: 1fr;
+  }
+
+  /* 文件行换行后不再用胶囊，回落连续圆角避免切字。 */
+  .profit-settings-dialog .profit-import-file {
+    align-items: flex-start;
+    flex-direction: column;
+    border-radius: 14px;
+  }
+}

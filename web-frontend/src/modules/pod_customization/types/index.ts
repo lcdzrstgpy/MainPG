@@ -60,18 +60,22 @@ export type PodBusinessFieldsDraft = {
   /** 批级全局字段：整批统一的场景基调（款间在基调内变化），留空即回退默认场景轮换。 */
   scene_mood: string;
   style_keywords: string;
+  /** 主题强关联色：必须「主题词 + 颜色」，生图时每格至少用 1 款、且主色必须来自这里。 */
   color_preferences: string;
+  /** 建议点缀色：只作辅色/点缀，不得当主色；不要求主题前缀。 */
+  accent_colors: string;
   excluded_elements: string;
   /** 选填：用户手写的上架文案限制（如「标题不要出现刺绣」），只作用于标题与描述，不影响图片。 */
   copy_restrictions: string;
 };
 
 export type PodBusinessFields = Omit<PodBusinessFieldsDraft,
-  "core_selling_points" | "style_keywords" | "color_preferences" | "excluded_elements"
+  "core_selling_points" | "style_keywords" | "color_preferences" | "accent_colors" | "excluded_elements"
 > & {
   core_selling_points: string[];
   style_keywords: string[];
   color_preferences: string[];
+  accent_colors: string[];
   excluded_elements: string[];
 };
 
@@ -89,6 +93,12 @@ export type PodBriefFieldsResponse = {
  * 批级美术指导：随智能填写一次性生成，整批（所有二级批次、所有轮次）共用。
  * 只注入第 1 轮的美术指导，派生轮由锚点继承场景与光线。
  */
+export type PodSceneOption = {
+  scene: string;
+  surface: string;
+  props: string[];
+};
+
 export type PodArtDirection = {
   scene: string;
   lighting: string;
@@ -99,6 +109,8 @@ export type PodArtDirection = {
   background: string;
   composition_hint: string;
   avoid: string[];
+  /** 豆包返回的 2-3 个候选场景；生图按款轮换，旧数据可能没有。 */
+  scene_options?: PodSceneOption[];
 };
 
 /** 智能前置层实际代填的字段：业务字段去掉「上架文案限制」（该类限制不由智能填写生成）。 */

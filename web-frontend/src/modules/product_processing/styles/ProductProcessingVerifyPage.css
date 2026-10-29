@@ -257,7 +257,7 @@
   flex: 1 1 auto;
 }
 
-.verify-page.is-pool-empty .verify-section.is-empty .verify-sticky-toolbar-spacer {
+.verify-page.is-pool-empty .verify-section.is-empty > .verify-sticky-toolbar {
   flex: 0 0 auto;
 }
 
@@ -760,30 +760,30 @@
   background: #f8fbfd;
 }
 
-/* ── 草稿池条件吸顶工具栏：滚出导航栏下方后由 JS 切换为 position:fixed（is-stuck）；
-   不需要漂浮时保持容器内（spacer 随工具栏自然撑开，不留空白） ── */
-.verify-sticky-toolbar-spacer {
-  /* 高度由 JS 在吸顶时设置以占位；不吸顶时由内部工具栏撑开 */
-}
-
+/* ── 草稿池吸顶工具栏：position: sticky，随卡片一起在 .content-card 里滚动，
+   到达顶栏下沿后贴住。走流内定位，宽度/左对齐天然与列表一致，不再有独立浮层的
+   撑开、阴影和切页签偏移问题。吸顶后内容会从下面滚过，所以底色必须不透明。 ── */
 .verify-sticky-toolbar {
-  position: relative;
+  position: sticky;
+  /* 顶栏是绝对定位覆盖在内容区上的，--workspace-topbar-height 由 WorkspaceShell 实测写入 */
+  top: calc(var(--workspace-topbar-height, 120px) + 6px);
+  z-index: 5;
   margin-bottom: 6px;
   padding: 6px 4px 8px;
   border-radius: 14px;
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--theme-module-surface-soft, #eef5fb) 88%, transparent) 0%,
-    color-mix(in srgb, var(--theme-module-surface-soft, #eef5fb) 76%, transparent) 100%
-  );
-  transition: box-shadow 0.2s ease;
+  background: var(--theme-module-surface-soft, #eef5fb);
 }
 
-.verify-sticky-toolbar.is-stuck {
-  position: fixed;
-  z-index: 40;
-  margin-bottom: 0;
-  box-shadow: 0 8px 22px rgba(23, 63, 94, 0.14);
+/* 窄屏下顶栏是 sticky（距顶 18/12/10px），视觉下沿 = 偏移 + 高度，吸顶位置要补上这段；
+   顶栏滚出后可收起（标签行上移 66px），吸顶位置要跟着上移，否则会悬在半空。 */
+@media (max-width: 800px) {
+  .verify-sticky-toolbar {
+    top: calc(var(--workspace-topbar-height, 120px) + 24px);
+  }
+
+  html[data-topbar-collapse="on"] .verify-sticky-toolbar {
+    top: calc(var(--workspace-topbar-height, 120px) - 42px);
+  }
 }
 
 .verify-sticky-toolbar .verify-section-head {

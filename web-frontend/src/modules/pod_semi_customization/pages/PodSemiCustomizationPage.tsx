@@ -13,6 +13,7 @@ import {
 import { podCustomizationApi } from "../../pod_customization/api/podCustomizationApi";
 import { PodAssetImage } from "../../pod_customization/data/usePodAssetUrl";
 import { formatPodBatchWaitingTime } from "../../pod_customization/data/podCustomizationModel";
+import { formatPodModulePrice, usePodModulePricing } from "../../pod_customization/data/usePodModulePricing";
 import type {
   PodBriefHistoryItem,
   PodBusinessFieldsDraft,
@@ -94,6 +95,7 @@ const POLL_INTERVAL_MS = 2_000;
 const NOTICE_AUTO_DISMISS_MS = 6_000;
 
 export function PodSemiCustomizationPage({ isActive = true }: Props) {
+  const modulePrice = formatPodModulePrice(usePodModulePricing("pod_semi_v1"));
   const draftScope = useMemo(() => {
     const account = getAuthAccount<PodDraftAccount>();
     const accountId = (account?.account_id || account?.customer_id)?.trim() ?? "";
@@ -439,6 +441,7 @@ export function PodSemiCustomizationPage({ isActive = true }: Props) {
           <div>
             <span>POD SEMI · 纯图案</span>
             <h1>POD 半定制</h1>
+            {modulePrice && <span className="pod-page-price">{modulePrice}</span>}
           </div>
         </div>
         <div className="pod-page-header-actions">

@@ -1,20 +1,18 @@
-import { emptyReplicaAnalysisFields, defaultReplicaPresentationPreferences, type ReplicaTargetDraft } from "./podReplicaModel.ts";
+import { emptyReplicaAnalysisFields, type ReplicaTargetDraft } from "./podReplicaModel.ts";
 import type { PodListingFieldsDraft, SpecCardConfig } from "../../pod_customization/types";
-import type {
-  ReplicaAnalysisStatus,
-  ReplicaPresentationPreferences,
-  ReplicaSpec,
-} from "../types";
+import type { ReplicaAnalysisStatus } from "../types";
 
-export const POD_REPLICA_DRAFT_VERSION = 1;
+/**
+ * 草稿版本 2：复刻改为「一次豆包出主图方案」，前端不再保存事实/能力/展示偏好，
+ * 旧版草稿里的 analysis_id 指向已下线的分析表，必须整体作废重新上传。
+ */
+export const POD_REPLICA_DRAFT_VERSION = 2;
 
 export type PodReplicaSourceDraft = {
   assetId: string;
   filename: string;
   width?: number;
   height?: number;
-  /** 原素材识别结果是否已被用户确认（有低置信度字段时才需要）。 */
-  confirmed?: boolean;
 };
 
 export type PodReplicaDraft = {
@@ -78,40 +76,18 @@ function isTarget(value: unknown): value is ReplicaTargetDraft {
 }
 
 const ANALYSIS_STATUSES: readonly ReplicaAnalysisStatus[] = [
-  "pending", "analyzing", "needs_confirmation", "confirmed", "failed",
+  "pending", "analyzing", "ready", "failed",
 ];
 
-function isReplicaSpec(value: unknown): value is ReplicaSpec {
-  return isRecord(value);
-}
-
-function isPresentationPreferences(value: unknown): value is ReplicaPresentationPreferences {
-  return isRecord(value)
-    && typeof value.use_hand_model === "boolean"
-    && typeof value.use_body_model === "boolean"
-    && typeof value.use_wall_display === "boolean"
-    && typeof value.use_white_background === "boolean"
-    && typeof value.use_lifestyle_scene === "boolean";
-}
-
 /**
- * 归一化识图相关字段。
+ * 归一化方案字段。
  *
- * 旧草稿（v1 及更早，没有这些字段）→ 全部回退默认值，显示「待识别」而不是崩溃。
- * 正在进行的识别状态（analyzing）不落库：恢复后应回到待识别，由用户重新触发分析。
+ * 旧草稿（缺字段）→ 回退「待生成方案」。正在生成的状态不落库：
+ * 恢复后回到待生成，由页面自动重新发起，避免卡在「生成中」。
  */
 function analysisOrDefault(target: Partial<ReplicaTargetDraft>): Pick<
   ReplicaTargetDraft,
-  | "analysisId"
-  | "analysisStatus"
-  | "analysisError"
-  | "sourceArtworkSpec"
-  | "sourceNeedsConfirmation"
-  | "targetProductSpec"
-  | "candidateCapabilities"
-  | "unknownCapabilities"
-  | "factOverrides"
-  | "presentationPreferences"
+  "analysisId" | "analysisStatus" | "analysisError"
 > {
   const fallback = emptyReplicaAnalysisFields();
   const rawStatus = target.analysisStatus;
@@ -119,24 +95,12 @@ function analysisOrDefault(target: Partial<ReplicaTargetDraft>): Pick<
     && rawStatus !== "analyzing"
     ? (rawStatus as ReplicaAnalysisStatus)
     : "pending";
-  const preferences = isPresentationPreferences(target.presentationPreferences)
-    ? target.presentationPreferences
-    : defaultReplicaPresentationPreferences();
+  const analysisId = typeof target.analysisId === "string" ? target.analysisId : fallback.analysisId;
   return {
-    analysisId: typeof target.analysisId === "string" ? target.analysisId : fallback.analysisId,
-    analysisStatus: target.analysisId ? status : "pending",
+    analysisId,
+    // 没有方案 id 就不可能是「就绪」。
+    analysisStatus: analysisId ? status : "pending",
     analysisError: typeof target.analysisError === "string" ? target.analysisError : "",
-    sourceArtworkSpec: isReplicaSpec(target.sourceArtworkSpec) ? target.sourceArtworkSpec : null,
-    sourceNeedsConfirmation: Boolean(target.sourceNeedsConfirmation),
-    targetProductSpec: isReplicaSpec(target.targetProductSpec) ? target.targetProductSpec : null,
-    candidateCapabilities: Array.isArray(target.candidateCapabilities)
-      ? target.candidateCapabilities.filter((item): item is string => typeof item === "string")
-      : [],
-    unknownCapabilities: Array.isArray(target.unknownCapabilities)
-      ? target.unknownCapabilities.filter((item): item is string => typeof item === "string")
-      : [],
-    factOverrides: isRecord(target.factOverrides) ? (target.factOverrides as typeof fallback.factOverrides) : {},
-    presentationPreferences: preferences,
   };
 }
 
@@ -162,7 +126,6 @@ function sourceOrDefault(value: unknown): PodReplicaSourceDraft | null {
     filename: typeof value.filename === "string" ? value.filename : "",
     width: typeof value.width === "number" ? value.width : undefined,
     height: typeof value.height === "number" ? value.height : undefined,
-    confirmed: value.confirmed === true,
   };
 }
 
@@ -171,6 +134,14 @@ function browserStorage(): PodReplicaStorage | null {
     return typeof window !== "undefined" && window.localStorage ? window.localStorage : null;
   } catch {
     return null;
+  }
+}
+
+function removeQuietly(storage: PodReplicaStorage, key: string): void {
+  try {
+    storage.removeItem(key);
+  } catch {
+    // 损坏存储实现不应阻碍页面以空草稿打开。
   }
 }
 
@@ -191,17 +162,18 @@ export function loadPodReplicaDraft(
   if (!raw) return { state: empty };
   try {
     const parsed: unknown = JSON.parse(raw);
-    if (!isRecord(parsed) || parsed.version !== POD_REPLICA_DRAFT_VERSION) throw new Error("invalid payload");
+    if (!isRecord(parsed)) throw new Error("invalid payload");
+    if (parsed.version !== POD_REPLICA_DRAFT_VERSION) {
+      // 旧版草稿的方案 id 已失效：整体作废，提示重新上传，而不是带着坏 id 提交。
+      removeQuietly(storage, key);
+      return { state: empty, error: "爆款复刻已升级：请重新上传样图与白底图。" };
+    }
     const targets = Array.isArray(parsed.targets)
       ? parsed.targets.filter(isTarget).map(cloneTarget)
       : [];
     return { state: { version: POD_REPLICA_DRAFT_VERSION, source: sourceOrDefault(parsed.source), targets } };
   } catch {
-    try {
-      storage.removeItem(key);
-    } catch {
-      // 损坏存储实现不应阻碍页面以空草稿打开。
-    }
+    removeQuietly(storage, key);
     return { state: empty, error: "爆款复刻草稿数据已损坏，已清除当前账号的本地草稿。" };
   }
 }

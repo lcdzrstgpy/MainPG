@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const source = readFileSync(new URL("./ProfitActivityProductsPage.tsx", import.meta.url), "utf8");
-const api = readFileSync(new URL("../api/profitActivityApi.ts", import.meta.url), "utf8");
+const drawer = readFileSync(new URL("../components/ProductSourceDrawer.tsx", import.meta.url), "utf8");
 const styles = readFileSync(new URL("../styles/profitActivityProducts.css", import.meta.url), "utf8");
 
 test("product library edits inline and keeps its compact column contract", () => {
@@ -12,7 +12,9 @@ test("product library edits inline and keeps its compact column contract", () =>
   assert.match(source, /function EditableCell\(/);
   assert.match(source, /<EditableCell field="selling_price"/);
   assert.match(source, /<EditableCell field="note"/);
-  assert.match(source, /<EditableCell field="attachment_image"/);
+  // 附件图列已下线：货源图统一在「货源」抽屉里看。
+  assert.doesNotMatch(source, /AttachmentImageCell/);
+  assert.doesNotMatch(source, /key: "attachmentImage"/);
   assert.doesNotMatch(source, /ProductEditDialog/);
   assert.doesNotMatch(source, /profit-col-resizer/);
   // 表头文案与默认列宽统一由 productTableColumns 派生，表头不是硬编码 <th>。
@@ -31,12 +33,11 @@ test("product library edits inline and keeps its compact column contract", () =>
   assert.match(styles, /\.profit-source-open\s*\{[^}]*font-size:\s*\.56rem/);
 });
 
-test("product edit saves inline and can clear an independent attachment image", () => {
-  // 附件图列（表头「图片」）与商品图分开，走行内编辑上传/清除。
-  assert.match(source, /\{ key: "attachmentImage", label: "图片"/);
-  assert.match(source, /clearAttachmentImage/);
-  assert.match(source, /clearAttachmentImage: inlineEdit\.field === "attachment_image" && inlineEdit\.clear/);
-  assert.match(source, /saveProfitActivityProductEdit/);
-  assert.match(api, /form\.set\("attachment_image", attachmentImage\)/);
-  assert.match(api, /form\.set\("clear_attachment_image", "true"\)/);
+test("product library opens the source drawer and previews ledger source images", () => {
+  // 「货源」列只负责打开抽屉；多货源与货源图（主图 + 用户补充）都在抽屉里维护。
+  assert.match(source, /className="profit-source-open"/);
+  assert.match(source, /setActiveProduct\(/);
+  assert.match(source, /<ProductSourceDrawer/);
+  assert.match(source, /<ImagePreviewModal/);
+  assert.match(drawer, /link\.images/);
 });

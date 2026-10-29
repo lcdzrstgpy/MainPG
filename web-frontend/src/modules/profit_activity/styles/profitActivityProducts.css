@@ -547,10 +547,23 @@
   border: 1px solid #e2eef6;
 }
 
-/* 货源单图：一条链接一张图，放大便于查看商品规格 */
+/* 货源单图：一条链接一张图，放大便于查看商品规格。
+   用 contain 等比缩放（不裁切也不拉伸），截图再宽也不会被压变形。 */
 .profit-source-card-shot {
   width: 92px !important;
   height: 92px !important;
+  object-fit: contain !important;
+  background: #f4f8fb;
+  border: 1px solid #e2eef6;
+}
+
+.profit-source-card-shot.is-zoomable {
+  cursor: zoom-in;
+}
+
+.profit-source-card-shot.is-zoomable:hover {
+  border-color: #0a8cf2;
+  box-shadow: 0 0 0 2px #0a8cf21f;
 }
 
 .profit-source-card-img-fallback {
@@ -808,11 +821,45 @@
   gap: 8px;
 }
 
+/* 抽屉内的保存/撤销按钮样式只作用于 .profit-source-drawer，而抽屉是 portal 到 body 的，
+   拿不到页面级 .profit-products-page button 的基础样式，于是渲染成浏览器原生按钮，
+   与工作台其它按钮不一致。这里补齐主按钮（渐变）与次按钮（描边）两套样式。 */
 .profit-source-edit-toolbar-actions .profit-edit-save,
 .profit-source-edit-toolbar-actions .profit-edit-cancel {
   border-radius: 999px;
   padding: 7px 16px;
   font-size: 0.8rem;
+  font-weight: 800;
+  transition: transform .17s ease, color .17s ease, border-color .17s ease, background-color .17s ease, box-shadow .17s ease;
+}
+
+.profit-source-edit-toolbar-actions .profit-edit-save {
+  border: 0;
+  color: var(--theme-on-primary, #fff);
+  background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0));
+  box-shadow: 0 10px 20px var(--theme-primary-button-shadow, #0b93dc35);
+}
+
+.profit-source-edit-toolbar-actions .profit-edit-save:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 13px 24px var(--theme-primary-button-shadow, #0b93dc35);
+}
+
+.profit-source-edit-toolbar-actions .profit-edit-cancel {
+  border: 1px solid var(--theme-module-border, #cfe0eb);
+  color: var(--theme-text-secondary, #2f5878);
+  background: var(--theme-module-surface, #fff);
+}
+
+.profit-source-edit-toolbar-actions .profit-edit-cancel:hover:not(:disabled) {
+  border-color: var(--theme-module-border-strong, #82c9ef);
+  color: var(--theme-primary, #0a8cf2);
+}
+
+.profit-source-edit-toolbar-actions .profit-edit-save:disabled,
+.profit-source-edit-toolbar-actions .profit-edit-cancel:disabled {
+  cursor: not-allowed;
+  opacity: .6;
 }
 
 /* 导入货源链接的货源组截图（截图1/2/3）与成本 */
@@ -1178,7 +1225,7 @@
   align-items: center;
   gap: 6px;
   width: max-content;
-  min-width: 310px;
+  min-width: 262px;
   max-width: min(520px, calc(100vw - 48px));
   min-height: 44px;
   padding: 5px 7px;
@@ -1190,19 +1237,41 @@
   white-space: normal;
 }
 
-.profit-inline-editor input,
+/* 行内编辑控件统一为工作台规格：34px 高的胶囊输入框 + 主色按钮。 */
+.profit-inline-editor input:not([type="file"]),
 .profit-inline-editor select,
 .profit-inline-editor textarea {
   box-sizing: border-box;
+  height: 30px;
   min-width: 96px;
   max-width: 190px;
-  border: 1px solid var(--theme-module-border, #b9daf0);
+  padding: 0 12px;
+  border: 1px solid var(--theme-module-border, #d8e5ee);
   border-radius: 999px;
-  padding: 6px 12px;
   color: var(--theme-text-primary, #18334d);
   background: var(--theme-module-surface-raised, #fff);
-  outline-color: var(--theme-primary, #13a9f2);
-  font: inherit;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.2;
+  transition: border-color .16s ease, box-shadow .16s ease;
+}
+
+.profit-inline-editor input:not([type="file"]):focus,
+.profit-inline-editor select:focus,
+.profit-inline-editor textarea:focus {
+  outline: none;
+  border-color: var(--theme-primary, #0a8fca);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-primary, #0a8fca) 16%, transparent);
+}
+
+.profit-inline-editor input[type="number"] {
+  width: 112px;
+  min-width: 112px;
+}
+
+.profit-inline-editor input[type="text"] {
+  width: 160px;
+  min-width: 160px;
 }
 
 .profit-inline-editor select {
@@ -1217,9 +1286,12 @@
 }
 
 .profit-inline-editor textarea {
-  width: 170px;
-  min-height: 38px;
-  border-radius: 18px;
+  width: 190px;
+  height: auto;
+  min-height: 46px;
+  padding: 7px 12px;
+  border-radius: 12px;
+  line-height: 1.4;
   resize: vertical;
 }
 
@@ -1249,13 +1321,23 @@
   width: 250px;
   min-width: 250px;
   max-width: 250px;
-  min-height: 34px;
-  border: 1px dashed var(--theme-module-border-strong, #8cccf7);
-  border-radius: 18px;
-  padding: 5px 12px;
-  color: var(--theme-text-secondary, #53708a);
-  background: color-mix(in srgb, var(--theme-module-surface-tint, #f6fbff) 55%, transparent);
-  outline-color: var(--theme-primary, #13a9f2);
+  height: 30px;
+  box-sizing: border-box;
+  padding: 0 10px 0 12px;
+  border: 1px dashed var(--theme-module-border-strong, #82c9ef);
+  border-radius: 999px;
+  color: var(--theme-text-secondary, #526a82);
+  background: var(--theme-module-surface-soft, #f2f9fd);
+  font-size: 12px;
+  transition: border-color .16s ease, box-shadow .16s ease;
+  cursor: pointer;
+}
+
+.profit-inline-image-drop:focus,
+.profit-inline-image-drop:focus-within {
+  outline: none;
+  border-color: var(--theme-primary, #0a8fca);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-primary, #0a8fca) 16%, transparent);
 }
 
 .profit-inline-image-drop span {
@@ -1267,47 +1349,82 @@
 }
 
 .profit-inline-image-drop input {
-  width: 82px;
-  min-width: 82px;
-  max-width: 82px;
+  width: 84px;
+  min-width: 84px;
+  max-width: 84px;
   padding: 0;
   border: 0;
   background: transparent;
-  font-size: .72rem;
+  color: var(--theme-text-secondary, #526a82);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.profit-inline-image-drop input::file-selector-button {
+  height: 20px;
+  margin-right: 6px;
+  padding: 0 9px;
+  border: 1px solid var(--theme-module-border-strong, #82c9ef);
+  border-radius: 999px;
+  color: var(--theme-text-secondary, #526a82);
+  background: var(--theme-module-surface-raised, #fff);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
 }
 
 .profit-inline-save,
 .profit-inline-cancel {
-  width: 38px;
-  min-width: 38px;
-  padding: 4px 5px !important;
+  height: 28px;
+  min-width: 54px;
+  padding: 0 14px !important;
   border-radius: 999px !important;
-  font-size: .74rem !important;
-  line-height: 1.25;
+  font-size: 12px !important;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition: background .16s ease, border-color .16s ease, color .16s ease, box-shadow .16s ease;
 }
 
 .profit-inline-remove-image {
-  width: 26px;
-  min-width: 26px;
-  height: 26px;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
   padding: 0 !important;
-  border: 1px solid #ffd0d0 !important;
+  border: 1px solid #e0726b !important;
   border-radius: 999px !important;
-  color: #df4f58 !important;
-  background: #fff7f7 !important;
-  font-size: 1.1rem !important;
+  color: #c2413a !important;
+  background: transparent !important;
+  font-size: 1.05rem !important;
   line-height: 1 !important;
+  cursor: pointer;
+  transition: background .16s ease, color .16s ease;
+}
+
+.profit-inline-remove-image:hover {
+  color: #fff !important;
+  background: #e0726b !important;
 }
 
 .profit-inline-save {
   color: #fff !important;
-  background: #0a8cf2 !important;
-  border-color: #0a8cf2 !important;
+  border: 1px solid var(--theme-primary, #0a8fca) !important;
+  background: var(--theme-primary, #0a8fca) !important;
+}
+
+.profit-inline-save:hover {
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--theme-primary, #0a8fca) 28%, transparent);
 }
 
 .profit-inline-cancel {
-  color: #577089 !important;
-  background: #f4f8fb !important;
+  color: var(--theme-text-secondary, #526a82) !important;
+  border: 1px solid var(--theme-module-border-strong, #82c9ef) !important;
+  background: transparent !important;
+}
+
+.profit-inline-cancel:hover {
+  background: var(--theme-module-surface-soft, #f2f9fd) !important;
 }
 
 .profit-product-image-empty {
@@ -1628,4 +1745,258 @@
     margin-right: 14px;
     margin-left: 14px;
   }
+}
+
+/* —— 货源侧边栏跟随工作台主题（与「货源与利润」抽屉同一套变量/圆角/按钮） —— */
+.profit-source-drawer {
+  width: min(560px, 92vw);
+  background: var(--theme-module-surface, #fff);
+  border-left: 1px solid var(--theme-module-border, #d8e5ee);
+  box-shadow: -18px 0 40px rgba(12, 28, 42, 0.18);
+}
+
+.profit-source-drawer-head {
+  padding: 18px 22px 14px;
+  background: var(--theme-module-surface, #fff);
+  border-bottom: 1px solid var(--theme-module-border, #e6eef4);
+}
+
+.profit-source-drawer-head h2 {
+  margin: 0 0 6px;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--theme-text-primary, #18334d);
+}
+
+.profit-source-drawer-head p:not(.eyebrow) {
+  color: var(--theme-text-muted, #7b8fa4);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.profit-source-drawer-sep {
+  color: var(--theme-text-muted, #7b8fa4);
+}
+
+.profit-source-drawer-close {
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--theme-text-muted, #7b8fa4);
+  font-size: 22px;
+}
+
+.profit-source-drawer-close:hover {
+  background: var(--theme-module-surface-soft, #f0f5f9);
+  color: var(--theme-text-primary, #18334d);
+}
+
+.profit-source-drawer-body {
+  padding: 16px 22px 24px;
+}
+
+.profit-source-drawer-status {
+  color: var(--theme-text-muted, #7b8fa4);
+  font-weight: 500;
+}
+
+.profit-source-drawer-status.is-error {
+  color: #b42318;
+  background: #fef3f2;
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+}
+
+.profit-source-card {
+  margin-bottom: 10px;
+  border: 1px solid var(--theme-module-border, #e6eef4);
+  border-radius: 12px;
+  background: var(--theme-module-surface-soft, #f7fafc);
+  box-shadow: none;
+}
+
+.profit-source-card-title {
+  color: var(--theme-text-primary, #18334d);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.profit-source-card-meta {
+  color: var(--theme-text-muted, #7b8fa4);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.profit-source-card-shot {
+  border-radius: 10px;
+  border-color: var(--theme-module-border, #e6eef4);
+}
+
+/* 按钮统一为工作台胶囊按钮 */
+.profit-source-edit-button,
+.profit-source-add-row,
+.profit-source-edit-toolbar-actions .profit-edit-save {
+  height: 32px;
+  padding: 0 16px;
+  border-radius: 999px;
+  border: 1px solid var(--theme-primary, #0a8fca);
+  background: var(--theme-primary, #0a8fca);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.profit-source-drawer-head .profit-source-edit-button,
+.profit-source-add-row {
+  border-color: var(--theme-module-border-strong, #82c9ef);
+  background: transparent;
+  color: var(--theme-primary, #0a8fca);
+}
+
+.profit-source-drawer-head .profit-source-edit-button:hover,
+.profit-source-add-row:hover {
+  background: var(--theme-module-surface-soft, #f0f5f9);
+  border-color: var(--theme-primary, #0a8fca);
+  color: var(--theme-primary, #0a8fca);
+}
+
+.profit-source-edit-toolbar-actions .profit-edit-cancel {
+  height: 32px;
+  padding: 0 16px;
+  border-radius: 999px;
+  border: 1px solid var(--theme-module-border, #d8e5ee);
+  background: transparent;
+  color: var(--theme-text-primary, #18334d);
+  font-size: 13px;
+  box-shadow: none;
+}
+
+.profit-source-unlink {
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid #e0726b;
+  background: transparent;
+  color: #c2413a;
+  font-size: 12px;
+  box-shadow: none;
+}
+
+.profit-source-unlink:hover:not(:disabled) {
+  background: #e0726b;
+  border-color: #e0726b;
+  color: #fff;
+}
+
+.profit-source-remove-row {
+  color: #c2413a;
+}
+
+/* 编辑区 */
+.profit-source-edit-row {
+  border: 1px solid var(--theme-module-border, #e6eef4);
+  border-radius: 12px;
+  background: var(--theme-module-surface-soft, #f7fafc);
+}
+
+.profit-source-edit-image {
+  border-color: var(--theme-module-border, #d8e5ee);
+  background: var(--theme-module-surface-raised, #fff);
+}
+
+.profit-source-edit-url input {
+  border-radius: 8px;
+  border: 1px solid var(--theme-module-border, #d8e5ee);
+  background: var(--theme-module-surface-raised, #fff);
+  color: var(--theme-text-primary, #18334d);
+}
+
+.profit-source-edit-meta {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--theme-text-muted, #7b8fa4);
+}
+
+/* 货源图片：与「货源与利润」一致的缩略图带 */
+.profit-source-thumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 176px;
+  flex: none;
+}
+
+.profit-source-thumb {
+  width: 54px;
+  height: 54px;
+  object-fit: cover;
+  border-radius: 10px;
+  border: 1px solid var(--theme-module-border, #e6eef4);
+  background: var(--theme-module-surface-raised, #fff);
+  cursor: zoom-in;
+}
+
+.profit-source-thumb:hover {
+  border-color: var(--theme-primary, #0a8fca);
+}
+
+/* SKU 货号 / 属性 */
+.profit-source-skus {
+  margin: 18px 0 6px;
+}
+
+.profit-source-skus h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--theme-text-primary, #18334d);
+}
+
+.profit-source-sku-scroll {
+  max-height: 280px;
+  overflow: auto;
+  border: 1px solid var(--theme-module-border, #e6eef4);
+  border-radius: 10px;
+  background: var(--theme-module-surface-soft, #f7fafc);
+}
+
+.profit-source-sku-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.profit-source-sku-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 8px 10px;
+  text-align: left;
+  font-weight: 500;
+  color: var(--theme-text-muted, #7b8fa4);
+  background: var(--theme-module-surface, #fff);
+  border-bottom: 1px solid var(--theme-module-border, #e6eef4);
+}
+
+.profit-source-sku-table td {
+  padding: 8px 10px;
+  color: var(--theme-text-primary, #18334d);
+  border-bottom: 1px solid var(--theme-module-border, #eef3f7);
+}
+
+.profit-source-sku-table tr:last-child td {
+  border-bottom: none;
+}
+
+/* 大图预览遮罩与「货源与利润」一致 */
+.profit-image-preview-mask {
+  background: rgba(6, 16, 26, 0.82);
+  backdrop-filter: none;
 }

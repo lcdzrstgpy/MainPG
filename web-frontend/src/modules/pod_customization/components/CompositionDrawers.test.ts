@@ -53,6 +53,18 @@ test("shared panel editor updates the same record with the four role panels", ()
   assert.doesNotMatch(editor, /四宫格|四格/);
 });
 
+test("replica scope locks the main panel and points the template at the three derived views", () => {
+  // 复刻模板只作用于派生三格：主图 panel_1 固定占位且不可编辑。
+  assert.match(editor, /const replicaScope = scope === "replica";/);
+  assert.match(editor, /disabled=\{busy \|\| locked\}/);
+  assert.match(editor, /AI 方案决定，不可编辑/);
+  assert.match(editor, /主图视角由 AI 方案决定，不参与构图/);
+  assert.match(editor, /爆款复刻模板只作用于派生三格/);
+  // 两个入口都把 scope 传给共用编辑器。
+  assert.match(generateDrawer, /<CompositionPanelsEditor[\s\S]{0,120}scope=\{scope\}/);
+  assert.match(editDrawer, /CompositionPanelsEditor composition=\{target\} scope=\{scope\}/);
+});
+
 test("the outdated single-template explainer is gone from every drawer", () => {
   for (const source of [generateDrawer, editDrawer, editor, manager]) {
     assert.doesNotMatch(source, /后台会拆成每个角色/);

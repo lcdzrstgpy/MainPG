@@ -23,6 +23,7 @@ const EMPTY_BUSINESS_FIELDS: PodBusinessFieldsDraft = {
   scene_mood: "",
   style_keywords: "",
   color_preferences: "",
+  accent_colors: "",
   excluded_elements: "",
   copy_restrictions: "",
 };

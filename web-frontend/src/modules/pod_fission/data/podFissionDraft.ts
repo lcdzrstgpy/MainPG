@@ -1,9 +1,9 @@
 import type { SpecCardConfig } from "../../pod_customization/types";
-import type { FissionAnalysisResponse, FissionListingFieldsDraft } from "../types";
+import type { FissionListingFieldsDraft } from "../types";
 
 export const POD_FISSION_DRAFT_VERSION = 1;
 export type PodFissionStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
-export type PodFissionDraft = { version: typeof POD_FISSION_DRAFT_VERSION; sourceAssetId: string; targetAssetId: string; sourceFilename?: string; targetFilename?: string; count: number; listingFields: FissionListingFieldsDraft; specCard?: SpecCardConfig; analysis?: FissionAnalysisResponse };
+export type PodFissionDraft = { version: typeof POD_FISSION_DRAFT_VERSION; sourceAssetId: string; targetAssetId: string; sourceFilename?: string; targetFilename?: string; count: number; listingFields: FissionListingFieldsDraft; specCard?: SpecCardConfig };
 export type PodFissionLoadResult = { state: PodFissionDraft; error?: string };
 export function createEmptyPodFissionDraft(): PodFissionDraft {
   return { version: POD_FISSION_DRAFT_VERSION, sourceAssetId: "", targetAssetId: "", count: 1, listingFields: { title_mode: "long", category_name: "", skus: [{ name: "", declared_price: "", weight_g: "" }] } };
@@ -15,20 +15,7 @@ function restoredSpecCard(value: unknown): SpecCardConfig | undefined {
   if (typeof card.enabled !== "boolean" || !["light", "dark"].includes(card.style) || !["bottom-right", "bottom-left", "top-right", "top-left"].includes(card.corner) || !["cm", "in"].includes(card.display_unit) || !Array.isArray(card.cells) || !card.cells.every((row) => Array.isArray(row) && row.every((cell) => typeof cell === "string"))) return undefined;
   return card;
 }
-/** 只恢复「识别成功」的结果：失败态在界面上与「未识别」等价，没必要带回来。
- *  analysis_id 属于当前账号，真正有效性由后端在建批次时按 actor 复核。 */
-function restoredAnalysis(value: unknown): FissionAnalysisResponse | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const result = value as FissionAnalysisResponse;
-  if (result.status !== "succeeded" || typeof result.analysis_id !== "string" || !result.analysis_id.trim()) return undefined;
-  return {
-    analysis_id: result.analysis_id,
-    status: "succeeded",
-    product_summary: typeof result.product_summary === "string" ? result.product_summary : "",
-    artwork_summary: typeof result.artwork_summary === "string" ? result.artwork_summary : "",
-    error: null,
-  };
-}
+/** 旧草稿里可能还带 analysis 字段；一键开始裂变后不再恢复它。 */
 export function loadPodFissionDraft(accountId: string, workspaceId: string, storage?: PodFissionStorage | null): PodFissionLoadResult {
   const empty = createEmptyPodFissionDraft();
   if (!storage) return { state: empty, error: "无法读取爆款裂变草稿：浏览器本地存储不可用。" };
@@ -48,7 +35,7 @@ export function loadPodFissionDraft(accountId: string, workspaceId: string, stor
         return { name: typeof row.name === "string" ? row.name : "", declared_price: typeof row.declared_price === "string" ? row.declared_price : "", weight_g: typeof row.weight_g === "string" ? row.weight_g : "" };
       }),
     };
-    return { state: { ...empty, sourceAssetId: payload.sourceAssetId, targetAssetId: payload.targetAssetId, sourceFilename: typeof payload.sourceFilename === "string" ? payload.sourceFilename : undefined, targetFilename: typeof payload.targetFilename === "string" ? payload.targetFilename : undefined, count: Number.isInteger(payload.count) && payload.count >= 1 && payload.count <= 52 ? payload.count : 1, listingFields, specCard: restoredSpecCard(payload.specCard), analysis: restoredAnalysis(payload.analysis) } };
+    return { state: { ...empty, sourceAssetId: payload.sourceAssetId, targetAssetId: payload.targetAssetId, sourceFilename: typeof payload.sourceFilename === "string" ? payload.sourceFilename : undefined, targetFilename: typeof payload.targetFilename === "string" ? payload.targetFilename : undefined, count: Number.isInteger(payload.count) && payload.count >= 1 && payload.count <= 5 ? payload.count : 1, listingFields, specCard: restoredSpecCard(payload.specCard) } };
   } catch {
     try { storage.removeItem(key); } catch { /* Leave other accounts' drafts untouched. */ }
     return { state: empty, error: "爆款裂变草稿数据已损坏，已清除当前账号的本地草稿。" };

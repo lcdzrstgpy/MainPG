@@ -36,8 +36,22 @@ test("fission results reuse gallery, lightbox, history, retry and spec-card comp
   assert.match(page, /scope="fission"/);
 });
 
-test("replacing inputs invalidates analysis before uploading and retry refetches full batch", () => {
-  const upload = page.slice(page.indexOf("const upload ="), page.indexOf("const analyze ="));
-  assert.ok(upload.indexOf("setAnalysis(undefined)") < upload.indexOf("podFissionApi.uploadImage"));
+test("one click starts fission: create posts both assets and the requested count", () => {
+  assert.doesNotMatch(page, /analyzeAssets/);
+  assert.match(page, /source_asset_id: source\.id/);
+  assert.match(page, /target_asset_id: target\.id/);
+  assert.match(page, /requested_count: count/);
+  assert.match(page, /开始裂变/);
   assert.match(page, /await podFissionApi\.retryStyle[\s\S]{0,200}refreshActiveBatch/);
+});
+
+test("legacy grid batches are read only in the UI", () => {
+  assert.match(page, /generation_strategy === "grid"/);
+  assert.match(page, /历史裂变批次只读/);
+});
+
+test("quantity presets use the shared sliding indicator so the active pill stays visible", () => {
+  assert.match(page, /useSlidingIndicator/);
+  assert.match(page, /pod-selection-thumb/);
+  assert.match(page, /data-indicator-ready/);
 });

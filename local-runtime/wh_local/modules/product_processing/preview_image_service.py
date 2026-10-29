@@ -24,6 +24,7 @@ except ImportError:  # pragma: no cover - posix
     msvcrt = None  # type: ignore[assignment]
 
 from wh_local.data_collection.public_image_fetch import FetchedPublicImage
+from wh_local.runtime_logs import business_logger
 
 from .domain.policy import (
     AI_GENERATION_FAILED_HINT,
@@ -44,6 +45,7 @@ from .domain.workbooks import (
     create_miaoshou_workbook,
     create_result_workbook,
     require_final_public_image_urls,
+    variant_grid_gaps,
 )
 from .infrastructure.assets import ProductProcessingAssets
 from .infrastructure.database import default_storage_root
@@ -1880,6 +1882,24 @@ class PreviewImageService:
                 spreadsheet_rows = create_miaoshou_workbook(rows, workbook_format, temporary)
             else:
                 final = run_root / f"dxm_import_task_{int(claimed['task_id'])}_{token}.xlsx"
+                # 补齐变种网格属于「替用户改了导出内容」，必须留痕：补齐了哪几组、
+                # 其中多少组是预检侧删掉后按 0 库存占位的。
+                for row in rows:
+                    gaps = variant_grid_gaps(row)
+                    if not gaps:
+                        continue
+                    business_logger("ai_processing").info(
+                        "店小秘导出自动补齐变种网格: skc=%s %s×%s 应为 %d 组 / 当前 %d 组 / "
+                        "补齐 %d 组（已删除按 0 库存占位 %d 组）示例=%s",
+                        str(row.get("skc") or row.get("sku") or "").strip() or "-",
+                        gaps["axis1"] or "-",
+                        gaps["axis2"] or "-",
+                        gaps["expected"],
+                        gaps["present"],
+                        gaps["missing_count"],
+                        gaps["excluded_count"],
+                        "、".join(gaps["sample"]) or "-",
+                    )
                 create_result_workbook(rows, temporary)
                 spreadsheet_rows = len(exports)
             logger.info(

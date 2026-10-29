@@ -47,6 +47,8 @@ MIGRATION_NAMES = (
     "025_template_views",
     "026_style_column_layout",
     "027_billing_ledger_v2",
+    "028_replica_transfer_plans",
+    "029_fission_ai_plans",
 )
 
 

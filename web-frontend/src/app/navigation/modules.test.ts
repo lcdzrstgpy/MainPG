@@ -68,16 +68,19 @@ test("POD customization is a grouped section with full, semi and replica customi
   assert.ok(workspacePageModules.some((module) => module.id === "pod_replica"));
 });
 
-test("sidebar navigation prioritizes price and source matching in its default sourcing workflow", () => {
+test("sidebar navigation prioritizes sourcing & profit in its default sourcing workflow", () => {
   const sourcingWorkflow = workspaceModules.find((module) => module.id === "sourcing_workflow");
 
-  assert.equal(sourcingWorkflow?.defaultChildId, "price_verification");
+  // 「货源成本 / 核价匹配」已合并进「货源与利润」，旧入口只保留路由（hiddenFromSidebar）。
+  assert.equal(sourcingWorkflow?.defaultChildId, "sourcing_ledger");
   assert.deepEqual(sourcingWorkflow?.children?.map((child) => child.id), [
+    "sourcing_ledger",
     "price_verification",
     "profit_activity",
     "profit_activity_products",
   ]);
   assert.deepEqual(sourcingWorkflow?.children?.map((child) => child.label), [
+    "货源与利润",
     "核价/货源匹配",
     "利润活动",
     "货源关联产品库",

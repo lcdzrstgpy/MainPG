@@ -552,7 +552,7 @@
 /* POD 页头复用 hero 渐变后，原本的深色标题需要切成浅色。 */
 [data-theme="sunset"] .pod-page-header :is(h1, p),
 [data-theme="sunset"] .pod-page-header .pod-live-badge { color: var(--theme-hero-text) !important; }
-[data-theme="sunset"] .pod-page-header .pod-page-title > div > span { color: var(--theme-hero-eyebrow) !important; }
+[data-theme="sunset"] .pod-page-header .pod-page-title > div > span:not(.pod-page-price) { color: var(--theme-hero-eyebrow) !important; }
 [data-theme="sunset"] .topbar-card::before,
 [data-theme="sunset"] .sidebar-card::before {
   background:

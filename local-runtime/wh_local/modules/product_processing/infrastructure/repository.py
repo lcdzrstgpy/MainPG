@@ -72,9 +72,14 @@ _COLLECTION_BATCH_DISPLAY_NAME_SOURCES: tuple[tuple[str, str], ...] = (
 
 
 def _collection_batch_display_name(table: str, row: Mapping[str, Any]) -> str:
-    """已落库的展示名优先；为空时按来源渠道用源表字段现算。"""
+    """已落库的展示名优先；为空（或含乱码替换符）时按来源渠道用源表字段现算。
+
+    历史批次曾把 1688 搜索页 GBK 编码的 keywords 按 UTF-8 解码，落库的 display_name
+    里全是 U+FFFD（界面上显示成「�����」）。这种情况一律忽略存储值，改由源字段现算，
+    生成器修好后老批次也能自动恢复正确名称，不用改库。
+    """
     stored = str(row.get("display_name") or "").strip()
-    if stored:
+    if stored and "\ufffd" not in stored:
         return stored
     # 懒加载：batch_naming 属 data_collection 包，避免模块级交叉导入。
     from wh_local.data_collection.batch_naming import (

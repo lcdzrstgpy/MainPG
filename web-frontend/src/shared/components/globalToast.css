@@ -1,15 +1,14 @@
-/* 顶部全局提示（自动消失） */
+/* 右上角全局提示（5 秒后自动消失） */
 .global-toast-viewport {
   position: fixed;
   top: 18px;
-  left: 50%;
-  transform: translateX(-50%);
+  right: 18px;
   z-index: 4000;
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: flex-end;
   gap: 10px;
-  width: min(560px, calc(100vw - 32px));
+  width: min(420px, calc(100vw - 32px));
   pointer-events: none;
 }
 
@@ -94,10 +93,10 @@
 @keyframes global-toast-slide {
   from {
     opacity: 0;
-    transform: translateY(-10px);
+    transform: translateX(16px);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translateX(0);
   }
 }

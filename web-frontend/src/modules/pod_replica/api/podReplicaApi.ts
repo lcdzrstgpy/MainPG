@@ -52,7 +52,7 @@ async function assetExists(assetId: string): Promise<boolean> {
 
 export const podReplicaApi = {
   uploadImage,
-  /** 识图分析 A/B 两张图：一次一目标，返回事实、候选标签与版本。 */
+  /** 主图方案：一组 A/B 只调一次豆包，返回方案 id 与版本（不返回事实/能力）。 */
   analyzeAssets: (body: ReplicaAnalyzeRequest) => httpJson<ReplicaAnalyzeResponse>(`${API_BASE}/replica/analyze`, {
     method: "POST",
     body,

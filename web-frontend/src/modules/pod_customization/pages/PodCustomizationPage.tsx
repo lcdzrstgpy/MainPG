@@ -53,6 +53,7 @@ import {
   type PodSystemTemplate,
 } from "../data/podCustomizationDraft";
 import { usePodAssetUrl, PodAssetImage } from "../data/usePodAssetUrl";
+import { formatPodModulePrice, usePodModulePricing } from "../data/usePodModulePricing";
 import { getAuthAccount } from "../../../transport/http/client";
 import { slidingIndicatorStyle, useSlidingIndicator } from "../../../shared/hooks/useSlidingIndicator";
 import type {
@@ -172,6 +173,7 @@ const EMPTY_BUSINESS_FIELDS_FOR_SWITCH: Record<keyof PodBusinessFieldsDraft, str
   scene_mood: "",
   style_keywords: "",
   color_preferences: "",
+  accent_colors: "",
   excluded_elements: "",
   copy_restrictions: "",
 };
@@ -189,6 +191,7 @@ function replaceTemplate(templates: PodTemplate[], updated: PodTemplate): PodTem
 }
 
 export function PodCustomizationPage({ isActive = true }: Props) {
+  const modulePrice = formatPodModulePrice(usePodModulePricing("pod_random_v1"));
   const draftScope = useMemo(() => {
     const account = getAuthAccount<PodDraftAccount>();
     const accountId = (account?.account_id || account?.customer_id)?.trim() ?? "";
@@ -1055,7 +1058,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   return (
     <section className="pod-customization-page" aria-label="POD 定制">
       <header className="pod-page-header">
-        <div className="pod-page-title"><span className="pod-page-title-icon iconfont icon-skin" aria-hidden="true" /><div><span>POD CUSTOMIZATION · DIRECT LISTING</span><h1>POD 全定制</h1></div></div>
+        <div className="pod-page-title"><span className="pod-page-title-icon iconfont icon-skin" aria-hidden="true" /><div><span>POD CUSTOMIZATION · DIRECT LISTING</span><h1>POD 全定制</h1>{modulePrice && <span className="pod-page-price">{modulePrice}</span>}</div></div>
         <div className="pod-page-header-actions">
           {batchRunning && <span className="pod-live-badge"><i />批次后台运行中</span>}
           <button type="button" onClick={() => setTemplateDrawerOpen(true)}><span className="iconfont icon-upload" />上传当前批次模板</button>
@@ -1248,7 +1251,6 @@ export function PodCustomizationPage({ isActive = true }: Props) {
                 <div><dt>目标人群</dt><dd>{summaryFields.target_audience || "未填写"}</dd></div>
                 <div><dt>统一风格</dt><dd>{summaryFields.design_theme || "未填写"}</dd></div>
                 <div><dt>产品工艺</dt><dd>{summaryFields.fabric_craft || "未填写"}</dd></div>
-                <div><dt>场景基调</dt><dd>{summaryFields.scene_mood || "未填写"}</dd></div>
               </dl>
             </div>
           </section>
