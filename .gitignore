@@ -4,6 +4,7 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
+.venv-*/
 
 # 测试与缓存产物
 .pytest_cache/
