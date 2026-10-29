@@ -177,7 +177,10 @@ const PRICE_UNIT_FLAG = "temu_publish_price_unit_yuan_v1";
 function migrateLegacyPriceUnit(suffix: string): void {
   try {
     const store = window.localStorage;
-    if (store.getItem(PRICE_UNIT_FLAG) === "yuan") return;
+    // 标记必须按账号分：rows / 模板都是 <key>:<account>，
+    // 用全局标记会让第二个账号的老数据漏迁（1299 变 ¥1299）
+    const flagKey = `${PRICE_UNIT_FLAG}:${suffix}`;
+    if (store.getItem(flagKey) === "yuan") return;
 
     const rowsKey = `${ROWS_KEY}:${suffix}`;
     const rowsRaw = store.getItem(rowsKey);
@@ -226,7 +229,7 @@ function migrateLegacyPriceUnit(suffix: string): void {
       }
     }
 
-    store.setItem(PRICE_UNIT_FLAG, "yuan");
+    store.setItem(flagKey, "yuan");
   } catch {
     // 本机存储不可用：跳过迁移，不影响主流程
   }

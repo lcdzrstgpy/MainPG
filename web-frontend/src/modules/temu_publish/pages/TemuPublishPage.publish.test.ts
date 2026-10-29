@@ -304,8 +304,10 @@ test("本机老数据（价格存的是分）升级后自动换成元，且只�
   // 一次性迁移：不迁的话老数据 1299 会显示成 ¥1299（100 倍价差）
   assert.match(page, /function migrateLegacyPriceUnit\(suffix: string\): void \{/);
   assert.match(page, /const PRICE_UNIT_FLAG = "temu_publish_price_unit_yuan_v1";/);
-  assert.match(page, /if \(store\.getItem\(PRICE_UNIT_FLAG\) === "yuan"\) return;/);
-  assert.match(page, /store\.setItem\(PRICE_UNIT_FLAG, "yuan"\);/);
+  // 标记按账号分：数据是 <key>:<account>，全局标记会让第二个账号漏迁
+  assert.match(page, /const flagKey = `\$\{PRICE_UNIT_FLAG\}:\$\{suffix\}`;/);
+  assert.match(page, /if \(store\.getItem\(flagKey\) === "yuan"\) return;/);
+  assert.match(page, /store\.setItem\(flagKey, "yuan"\);/);
   // 变种行与变种模板都要迁（批量发布套模板会带出旧价格）
   assert.match(page, /const rowsKey = `\$\{ROWS_KEY\}:\$\{suffix\}`;/);
   assert.match(page, /const templateKey = `\$\{VARIANT_TEMPLATE_KEY\}:\$\{suffix\}`;/);
