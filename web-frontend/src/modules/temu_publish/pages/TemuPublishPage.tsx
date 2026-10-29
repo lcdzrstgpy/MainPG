@@ -432,13 +432,16 @@ function SectionHead({
   step,
   index,
   extra,
+  active = false,
 }: {
   step: { label: string; hint: string; done: boolean };
   index: number;
   extra?: ReactNode;
+  /** 当前该填的这一块（第一个没填完的）：给个视觉锚点 */
+  active?: boolean;
 }) {
   return (
-    <div className="temu-sec-head">
+    <div className={`temu-sec-head${active ? " is-active" : ""}`}>
       <span className={`temu-sec-num${step.done ? " is-done" : ""}`}>{step.done ? "✓" : index + 1}</span>
       <div className="temu-sec-title">
         <h2>{step.label}</h2>
@@ -1993,6 +1996,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   );
   // 「校验发布」是动作不是内容，统计剩余项时不算它
   const remainingContentSteps = flowSteps.filter((step) => step.id !== "sec-publish" && !step.done);
+  /** 第一个没填完的区块：给左侧状态条和区块头上色，让人一眼知道该填哪 */
+  const activeSectionId = remainingContentSteps[0]?.id ?? "";
   const doneCount = flowSteps.filter((step) => step.done).length;
   const jumpTo = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
 
@@ -2016,10 +2021,24 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       <header className="temu-console-top">
         <div className="temu-console-title">
           <p className="eyebrow">TEMU · 半托管刊登</p>
-          <h1>发布商品</h1>
-          <span className="temu-muted">
-            分类属性 → 产品信息 → 变种 → 包装描述 → 发布 · 改动自动存本机
-          </span>
+          <div className="temu-console-heading">
+            <h1>发布商品</h1>
+            <span className={`temu-pill ${remainingContentSteps.length ? "warn" : "ok"}`}>
+              {remainingContentSteps.length ? `还差 ${remainingContentSteps.length} 项` : "可提交"}
+            </span>
+          </div>
+          {/* 五段进度条：一眼看出走到第几步。悬停能看到这一步还差什么 */}
+          <div className="temu-progress" role="presentation">
+            {flowSteps
+              .filter((step) => step.id !== "sec-publish")
+              .map((step) => (
+                <span
+                  key={step.id}
+                  className={step.done ? "is-done" : ""}
+                  title={`${step.label}：${step.done ? "已完成" : `还差 ${step.missing.join("、")}`}`}
+                />
+              ))}
+          </div>
         </div>
         <div className="temu-console-actions">
           <button
@@ -2280,9 +2299,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           )}
 
           {/* 1 基本信息 */}
-          <section className="temu-sec" id="sec-base">
+          <section
+            className={`temu-sec${stepOf("sec-base").done ? " is-done" : ""}${activeSectionId === "sec-base" ? " is-active" : ""}`}
+            id="sec-base"
+          >
             <SectionHead
               step={stepOf("sec-base")}
+              active={activeSectionId === "sec-base"}
               index={0}
               extra={
                 leaf ? (
@@ -2508,9 +2531,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           </section>
 
           {/* 2 产品信息 */}
-          <section className="temu-sec" id="sec-info">
+          <section
+            className={`temu-sec${stepOf("sec-info").done ? " is-done" : ""}${activeSectionId === "sec-info" ? " is-active" : ""}`}
+            id="sec-info"
+          >
             <SectionHead
               step={stepOf("sec-info")}
+              active={activeSectionId === "sec-info"}
               index={1}
               extra={
                 <span className="temu-muted">
@@ -2684,9 +2711,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           </section>
 
           {/* 3 变种信息 */}
-          <section className="temu-sec" id="sec-variant">
+          <section
+            className={`temu-sec${stepOf("sec-variant").done ? " is-done" : ""}${activeSectionId === "sec-variant" ? " is-active" : ""}`}
+            id="sec-variant"
+          >
             <SectionHead
               step={stepOf("sec-variant")}
+              active={activeSectionId === "sec-variant"}
               index={2}
               extra={<span className="temu-muted">{rows.length} 个变种</span>}
             />
@@ -2750,9 +2781,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           </section>
 
           {/* 4 包装信息 */}
-          <section className="temu-sec" id="sec-pack">
+          <section
+            className={`temu-sec${stepOf("sec-pack").done ? " is-done" : ""}${activeSectionId === "sec-pack" ? " is-active" : ""}`}
+            id="sec-pack"
+          >
             <SectionHead
               step={stepOf("sec-pack")}
+              active={activeSectionId === "sec-pack"}
               index={3}
               extra={<span className="temu-muted">{splitLines(form.outerImages).length} 张外包装图</span>}
             />
@@ -2828,7 +2863,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           </section>
 
           {/* 5 校验发布 */}
-          <section className="temu-sec" id="sec-publish">
+          <section className="temu-sec temu-sec-last" id="sec-publish">
             <SectionHead
               step={stepOf("sec-publish")}
               index={4}
