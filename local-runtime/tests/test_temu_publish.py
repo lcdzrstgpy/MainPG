@@ -2352,3 +2352,77 @@ def test_bundled_gateway_tolerates_missing_or_broken_file(tmp_path: Path, monkey
 
     loaded = TemuCredentialStore(db, owner_id="cust_a").load()
     assert loaded.client == "" and loaded.token == ""
+
+
+def test_sync_provider_credentials_pulls_once_and_skips_when_present(tmp_path: Path, monkeypatch) -> None:
+    """服务器下发：本地空时拉一次并落库；已有凭据绝不覆盖。"""
+    from wh_local.modules.temu_publish import gateway_sync
+    from wh_local.modules.temu_publish.service import TemuCredentialStore
+
+    db = tmp_path / "runtime.sqlite3"
+    init_db(db)
+    gateway_sync.reset_backoff()
+    calls: list[str] = []
+
+    def fake_fetch(base_url: str, token: str, *, timeout: float = 4.0):
+        calls.append(token)
+        return {"yl_client": "srv-client", "yl_token": "srv-token"}
+
+    monkeypatch.setattr(gateway_sync, "fetch_gateway_credentials", fake_fetch)
+
+    assert gateway_sync.sync_provider_credentials(
+        db, "cust_a", base_url="https://x/auth-api", token_resolver=lambda: "tok-1"
+    )
+    cred = TemuCredentialStore(db, owner_id="cust_a").load()
+    assert (cred.client, cred.token) == ("srv-client", "srv-token")
+    # 店铺 token 不能被动过
+    assert cred.access_token == ""
+
+    # 已有就不再拉
+    assert not gateway_sync.sync_provider_credentials(
+        db, "cust_a", base_url="https://x/auth-api", token_resolver=lambda: "tok-2"
+    )
+    assert calls == ["tok-1"]
+
+
+def test_sync_provider_credentials_backs_off_after_failure(tmp_path: Path, monkeypatch) -> None:
+    """服务器没配/网络不通时：不抛异常，且 60 秒内不重复打远端。"""
+    from wh_local.modules.temu_publish import gateway_sync
+
+    db = tmp_path / "runtime.sqlite3"
+    init_db(db)
+    gateway_sync.reset_backoff()
+    calls: list[str] = []
+
+    def failing(base_url: str, token: str, *, timeout: float = 4.0):
+        calls.append(token)
+        return None
+
+    monkeypatch.setattr(gateway_sync, "fetch_gateway_credentials", failing)
+
+    for _ in range(3):
+        assert not gateway_sync.sync_provider_credentials(
+            db, "cust_b", base_url="https://x/auth-api", token_resolver=lambda: "tok"
+        )
+    assert len(calls) == 1, "失败后应退避，不要每次进页面都打远端"
+    gateway_sync.reset_backoff()
+
+
+def test_sync_provider_credentials_needs_token(tmp_path: Path, monkeypatch) -> None:
+    """没登录（拿不到远端 token）时直接跳过，不请求服务器。"""
+    from wh_local.modules.temu_publish import gateway_sync
+
+    db = tmp_path / "runtime.sqlite3"
+    init_db(db)
+    gateway_sync.reset_backoff()
+    called: list[str] = []
+    monkeypatch.setattr(
+        gateway_sync,
+        "fetch_gateway_credentials",
+        lambda *a, **k: called.append("x") or {"yl_client": "c", "yl_token": "t"},
+    )
+
+    assert not gateway_sync.sync_provider_credentials(
+        db, "cust_c", base_url="https://x/auth-api", token_resolver=lambda: ""
+    )
+    assert called == []

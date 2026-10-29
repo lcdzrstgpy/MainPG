@@ -208,6 +208,28 @@ class TemuCredentialStore:
                     (LEGACY_SCOPE, "access_token", self.owner_id),
                 )
 
+    def save_provider_credentials(self, *, client: str, token: str, actor_id: str) -> None:
+        """只写服务商级两字段（服务器下发用），不动店铺 access_token。
+
+        与 ``save()`` 分开是为了避免「同步凭据」把用户已经绑好的店铺清掉。
+        """
+        client_value = str(client or "").strip()
+        token_value = str(token or "").strip()
+        if not client_value or not token_value:
+            raise ValueError("服务商凭据不能为空")
+        now = datetime.now().astimezone().isoformat(timespec="seconds")
+        with transaction(self.database_path) as conn:
+            for name, value in (("yl_client", client_value), ("yl_token", token_value)):
+                conn.execute(
+                    """INSERT INTO secret_values(scope, name, ciphertext, updated_by, updated_at)
+                       VALUES (?, ?, ?, ?, ?)
+                       ON CONFLICT(scope, name) DO UPDATE SET
+                         ciphertext = excluded.ciphertext,
+                         updated_by = excluded.updated_by,
+                         updated_at = excluded.updated_at""",
+                    (self.scope(), name, encrypt_secret(value), actor_id, now),
+                )
+
     def save(self, payload: Any, actor_id: str) -> None:
         updates = {
             "yl_client": (payload.yl_client, payload.clear_yl_client),

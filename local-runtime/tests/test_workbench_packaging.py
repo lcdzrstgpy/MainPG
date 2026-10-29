@@ -32,7 +32,11 @@ def test_workbench_spec_packages_downloadable_themes() -> None:
     spec = Path(__file__).parents[1] / "workbench.spec"
     text = spec.read_text(encoding="utf-8")
 
-    assert '"wh_local/data/themes"' in text, "spec 必须打包主题商店的可下载主题包"
-    themes_dir = Path(__file__).parents[1] / "wh_local" / "data" / "themes"
+    # 2026-10-29：从只收 data/themes 改成收整个 wh_local/data ——
+    # 否则同目录下新增的 temu_gateway.json（服务商凭据随包兜底）打不进包。
+    assert '"wh_local/data"' in text, "spec 必须打包整个 wh_local/data"
+    data_dir = Path(__file__).parents[1] / "wh_local" / "data"
+    themes_dir = data_dir / "themes"
     assert themes_dir.is_dir(), "主题包目录本身也得存在，否则打包进去的是空目录"
     assert any(themes_dir.iterdir()), "主题包目录不能为空"
+    assert (data_dir / "temu_gateway.json").is_file(), "服务商凭据兜底文件要在 data 目录里"
