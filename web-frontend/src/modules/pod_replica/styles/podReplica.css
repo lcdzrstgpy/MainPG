@@ -614,6 +614,53 @@
   color: #b7791f;
 }
 
+/* 方案正文：可直接编辑，等宽字体便于核对行内细节。 */
+.pod-replica-analysis-prompt {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 96px;
+  padding: 10px 12px;
+  border: 1px solid var(--pod-border);
+  border-radius: 12px;
+  background: var(--pod-surface);
+  color: var(--pod-text);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.pod-replica-analysis-prompt:focus {
+  outline: none;
+  border-color: var(--pod-primary);
+}
+
+.pod-replica-analysis-prompt:disabled {
+  opacity: .65;
+}
+
+.pod-replica-analysis-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--pod-text-muted);
+  font-size: 11px;
+}
+
+.pod-replica-analysis-meta span:first-child {
+  margin-right: auto;
+}
+
+.pod-replica-analysis-meta .is-edited {
+  color: #2f7d54;
+  font-weight: 700;
+}
+
+.pod-replica-analysis-meta .is-dirty {
+  color: #b7791f;
+  font-weight: 700;
+}
+
 .pod-replica-facts {
   display: flex;
   flex-direction: column;

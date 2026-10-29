@@ -9,7 +9,13 @@ import { httpJson } from "../../../transport/http/client";
  * 拉取失败静默返回空，由调用方隐藏价格，不阻塞页面。
  */
 
-export type PodModuleKey = "pod_random_v1" | "pod_semi_v1" | "pod_replica_v1" | "pod_fission_v1";
+export type PodModuleKey =
+  | "pod_random_v1"
+  | "pod_semi_v1"
+  | "pod_replica_v1"
+  | "pod_fission_v1"
+  | "pod_free_flash_v1"
+  | "pod_free_pro_v1";
 
 export type PodModulePricing = {
   min: number;
@@ -26,7 +32,11 @@ type RawPodModule = {
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_UNIT = "款";
-const UNIT_BY_KEY: Record<string, string> = { pod_semi_v1: "组" };
+const UNIT_BY_KEY: Record<string, string> = {
+  pod_semi_v1: "组",
+  pod_free_flash_v1: "张",
+  pod_free_pro_v1: "张",
+};
 
 let cache: { at: number; modules: RawPodModule[] } | null = null;
 let inflight: Promise<RawPodModule[]> | null = null;

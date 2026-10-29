@@ -28,6 +28,19 @@ BATCH_BILLING_PROFILE_POD_FISSION = "pod_fission_v1"
 # 半定制（纯图案）独立计费画像：按「组」上报，一组 4 款固定 32 积分（即 8 积分/款）。
 # 客户端半定制把 4 款折叠成 1 个 link 上报（link_count = 组数），故这里按 link 固定 32。
 BATCH_BILLING_PROFILE_POD_SEMI = "pod_semi_v1"
+# 自由定制：一张图 = 1 link；Flash / Pro 两个独立画像。
+BATCH_BILLING_PROFILE_POD_FREE_FLASH = "pod_free_flash_v1"
+BATCH_BILLING_PROFILE_POD_FREE_PRO = "pod_free_pro_v1"
+POD_FREE_FLASH_LINK_PRICE_MIN_POINTS = 34
+POD_FREE_PRO_LINK_PRICE_MIN_POINTS = 72
+POD_FREE_LINK_PRICE_VARIANTS = 1
+_POD_BILLING_PROFILES = {
+    BATCH_BILLING_PROFILE_POD,
+    BATCH_BILLING_PROFILE_POD_SEMI,
+    BATCH_BILLING_PROFILE_POD_FREE_FLASH,
+    BATCH_BILLING_PROFILE_POD_FREE_PRO,
+    BATCH_BILLING_PROFILE_POD_FISSION,
+}
 # POD 通用每条款式定价（本地镜像口径）：保留历史随机区间，全定制仍按此参考。
 # 远端服务端才是权威定价，本地仅用于离线回退、参考实现与测试。
 POD_LINK_PRICE_MIN_POINTS = 40
@@ -794,7 +807,13 @@ def usage_history(
     for row in batch_rows:
         raw_status = str(row["status"] or "")
         billing_profile = str(row["billing_profile"] or BATCH_BILLING_PROFILE_PRODUCT)
-        is_pod = billing_profile in {BATCH_BILLING_PROFILE_POD, BATCH_BILLING_PROFILE_POD_SEMI, BATCH_BILLING_PROFILE_POD_FISSION}
+        is_pod = billing_profile in {
+            BATCH_BILLING_PROFILE_POD,
+            BATCH_BILLING_PROFILE_POD_SEMI,
+            BATCH_BILLING_PROFILE_POD_FREE_FLASH,
+            BATCH_BILLING_PROFILE_POD_FREE_PRO,
+            BATCH_BILLING_PROFILE_POD_FISSION,
+        }
         # 半定制按「组」上报（一组 4 款），展示时要把 link_count 还原成款数。
         is_semi = billing_profile == BATCH_BILLING_PROFILE_POD_SEMI
         freeze_id = str(row["freeze_id"] or "")
@@ -3237,6 +3256,12 @@ def freeze_batch_points(
                 if profile == BATCH_BILLING_PROFILE_POD_REPLICA:
                     min_points = POD_REPLICA_LINK_PRICE_MIN_POINTS
                     variants = POD_REPLICA_LINK_PRICE_VARIANTS
+                elif profile == BATCH_BILLING_PROFILE_POD_FREE_FLASH:
+                    min_points = POD_FREE_FLASH_LINK_PRICE_MIN_POINTS
+                    variants = POD_FREE_LINK_PRICE_VARIANTS
+                elif profile == BATCH_BILLING_PROFILE_POD_FREE_PRO:
+                    min_points = POD_FREE_PRO_LINK_PRICE_MIN_POINTS
+                    variants = POD_FREE_LINK_PRICE_VARIANTS
                 else:
                     semi = profile == BATCH_BILLING_PROFILE_POD_SEMI
                     min_points = POD_SEMI_LINK_PRICE_MIN_POINTS if semi else POD_LINK_PRICE_MIN_POINTS
@@ -3738,12 +3763,12 @@ def settle_batch_points(
         )
         freeze_rule_version = (
             int(freeze["rule_version"] or pricing["rule_version"])
-            if profile in {BATCH_BILLING_PROFILE_POD, BATCH_BILLING_PROFILE_POD_SEMI, BATCH_BILLING_PROFILE_POD_FISSION}
+            if profile in _POD_BILLING_PROFILES
             else int(pricing["rule_version"])
         )
         pod_link_price_units: list[int] = []
         pod_scope: tuple[str, ...] = ()
-        if profile in {BATCH_BILLING_PROFILE_POD, BATCH_BILLING_PROFILE_POD_SEMI, BATCH_BILLING_PROFILE_POD_FISSION}:
+        if profile in _POD_BILLING_PROFILES:
             try:
                 pod_link_price_units = [
                     int(value)
@@ -3782,7 +3807,7 @@ def settle_batch_points(
         for index, entry in enumerate(item_results, start=1):
             if not isinstance(entry, dict):
                 raise HTTPException(status_code=400, detail="item_results entry must be an object")
-            if profile in {BATCH_BILLING_PROFILE_POD, BATCH_BILLING_PROFILE_POD_SEMI, BATCH_BILLING_PROFILE_POD_FISSION}:
+            if profile in _POD_BILLING_PROFILES:
                 try:
                     supplied_link_index = int(entry.get("link_idx"))
                 except (TypeError, ValueError) as exc:
@@ -3792,7 +3817,7 @@ def settle_batch_points(
             link_results = entry.get("subitems")
             if not isinstance(link_results, list):
                 raise HTTPException(status_code=400, detail="subitems must be a list")
-            if profile in {BATCH_BILLING_PROFILE_POD, BATCH_BILLING_PROFILE_POD_SEMI, BATCH_BILLING_PROFILE_POD_FISSION}:
+            if profile in _POD_BILLING_PROFILES:
                 statuses: dict[str, str] = {}
                 for result in link_results:
                     if not isinstance(result, dict):

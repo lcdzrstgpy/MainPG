@@ -6,10 +6,14 @@ type Props = {
   corner: SpecCardCorner;
   enabled: boolean;
   displayUnit: SpecCardDisplayUnit;
+  /** 自由定制：可选的图片槽位；传入时才显示「印到第几张图」。 */
+  targetVariants?: number[];
+  targetVariant?: number;
   onStyleChange: (style: SpecCardStyle) => void;
   onCornerChange: (corner: SpecCardCorner) => void;
   onEnabledChange: (enabled: boolean) => void;
   onDisplayUnitChange: (unit: SpecCardDisplayUnit) => void;
+  onTargetVariantChange?: (variant: number) => void;
   disabled?: boolean;
 };
 
@@ -32,7 +36,7 @@ const DISPLAY_UNIT_OPTIONS: Array<{ value: SpecCardDisplayUnit; label: string; h
 // 2×2 排布与图上实际象限一致：左上 / 右上 / 左下 / 右下。
 const CORNER_OPTIONS: SpecCardCorner[] = ["top-left", "top-right", "bottom-left", "bottom-right"];
 
-export function SpecCardAppearanceControls({ style, corner, enabled, displayUnit, onStyleChange, onCornerChange, onEnabledChange, onDisplayUnitChange, disabled = false }: Props) {
+export function SpecCardAppearanceControls({ style, corner, enabled, displayUnit, targetVariants, targetVariant = 0, onStyleChange, onCornerChange, onEnabledChange, onDisplayUnitChange, onTargetVariantChange, disabled = false }: Props) {
   return (
     <section className="pod-spec-card-appearance" aria-label="卡片外观">
       <div className="pod-spec-card-section-title"><span>APPEARANCE</span><h3>卡片外观</h3></div>
@@ -75,6 +79,28 @@ export function SpecCardAppearanceControls({ style, corner, enabled, displayUnit
               >
                 <b>{option.label}</b>
                 <i aria-hidden="true">{option.hint}</i>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {enabled && targetVariants && targetVariants.length > 0 && (
+        <div className="pod-spec-card-field">
+          <span className="pod-spec-card-field-label">印到第几张图<em>*</em></span>
+          <div className="pod-spec-card-style-options is-wrap" role="radiogroup" aria-label="印到第几张图">
+            {targetVariants.map((variant) => (
+              <button
+                key={variant}
+                type="button"
+                role="radio"
+                aria-checked={targetVariant === variant}
+                className={targetVariant === variant ? "is-active" : ""}
+                disabled={disabled}
+                onClick={() => onTargetVariantChange?.(variant)}
+              >
+                <b>第 {variant} 张</b>
+                <i aria-hidden="true">{variant === 1 ? "主图" : "衍生图"}</i>
               </button>
             ))}
           </div>

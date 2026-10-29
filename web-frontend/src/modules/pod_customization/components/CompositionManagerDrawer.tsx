@@ -132,7 +132,7 @@ export function CompositionManagerDrawer({ open, onClose, onEdit, onActiveChange
           <div>
             <span>COMPOSITION TEMPLATES</span>
             <h2>构图模板管理</h2>
-            <p>{scope === "replica" ? "爆款复刻专用" : "全定制专用"}模板池：系统内置「默认模板」可直接选用；新建批次用「生效中」的那一份，未新建时回退默认模板。</p>
+            <p>{scope === "replica" ? "爆款复刻专用" : "全款直出专用"}模板池：系统内置「默认模板」可直接选用；新建批次用「生效中」的那一份，未新建时回退默认模板。</p>
           </div>
           <button type="button" onClick={onClose} aria-label="关闭">×</button>
         </header>

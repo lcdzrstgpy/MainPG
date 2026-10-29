@@ -1,0 +1,936 @@
+.pod-free-customization-page {
+  --pod-surface: var(--theme-module-surface, #fff);
+  --pod-surface-soft: var(--theme-module-surface-soft, #f7fafc);
+  --pod-surface-tint: var(--theme-module-surface-tint, #eaf8ff);
+  --pod-border: var(--theme-module-border, #d8e9f3);
+  --pod-border-strong: var(--theme-module-border-strong, #a7dafa);
+  --pod-text: var(--theme-text-primary, #13233a);
+  --pod-text-secondary: var(--theme-text-secondary, #527089);
+  --pod-text-muted: var(--theme-text-muted, #8295aa);
+  --pod-primary: var(--theme-primary, #1677ff);
+  --pod-primary-rgb: var(--theme-module-primary-rgb, 8, 119, 211);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
+  color: var(--pod-text);
+  min-height: calc(100dvh - 190px);
+}
+
+.pod-free-customization-page > .pod-page-header {
+  margin-bottom: 0;
+}
+
+/* 左右两栏各套一层底框，与其他 POD 模块一致；栏内分区不再各自成卡。 */
+.pod-free-panel {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+}
+
+.pod-free-panel .pod-setup-card {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.pod-free-gallery {
+  padding: 16px;
+}
+
+/* 与左栏「当前服务由 …」说明同一行、同字号，下方留出与图片的呼吸距离。 */
+.pod-free-hint.pod-free-gallery-hint {
+  margin: 0 0 14px;
+  color: var(--pod-text-secondary);
+  font-size: 0.7rem;
+  line-height: 1.65;
+}
+
+.pod-free-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.pod-free-title-row h1 {
+  margin: 3px 0 2px;
+}
+
+.pod-free-model-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 6px 14px;
+  border: 1px solid var(--pod-border-strong);
+  border-radius: 999px;
+  color: var(--pod-text-secondary);
+  background: var(--pod-surface);
+  font-size: 0.72rem;
+  font-weight: 800;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
+}
+
+.pod-free-model-switch select {
+  border: 0;
+  color: var(--pod-primary);
+  background: transparent;
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 900;
+  outline: none;
+}
+
+.pod-free-inline-price {
+  margin-top: 0;
+  flex: 0 0 auto;
+}
+
+.pod-free-model-intro p {
+  margin: 0;
+  color: var(--pod-text-secondary);
+  font-size: 0.7rem;
+  line-height: 1.65;
+}
+
+.pod-free-count {
+  display: grid;
+  gap: 7px;
+}
+
+.pod-free-count > span {
+  color: var(--pod-text-secondary);
+  font-size: 0.64rem;
+  font-weight: 800;
+}
+
+.pod-free-slots {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.pod-free-slot {
+  position: relative;
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  overflow: hidden;
+  padding: 0;
+  border: 1px solid var(--pod-border);
+  border-radius: 14px;
+  color: var(--pod-text-muted);
+  background: var(--pod-surface-soft);
+  font-size: 0.72rem;
+  font-weight: 800;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.pod-free-slot img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* 交给槽位自己做长按拖动，禁止浏览器原生「拖出图片」和选中。 */
+  pointer-events: none;
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
+.pod-free-slot em {
+  position: absolute;
+  z-index: 3;
+  top: 6px;
+  left: 6px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  color: #fff;
+  background: rgba(15, 23, 42, 0.55);
+  font-size: 0.55rem;
+  font-style: normal;
+}
+
+/* 选中/生成中：不加描边，改用从内而外的呼吸灯。
+   内层由 ::after 压一层贴边的内发光（覆在图片上），外层由自身 box-shadow 做柔和扩散光。 */
+.pod-free-slot.is-active,
+.pod-free-slot.is-generating {
+  z-index: 1;
+  color: var(--pod-primary);
+  animation: pod-free-halo 1.8s ease-in-out infinite;
+}
+
+.pod-free-slot.is-active::after,
+.pod-free-slot.is-generating::after {
+  content: "";
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow:
+    inset 0 0 18px 2px rgba(var(--pod-primary-rgb), 0.55),
+    inset 0 0 46px rgba(var(--pod-primary-rgb), 0.28);
+  pointer-events: none;
+  animation: pod-free-inner-glow 1.8s ease-in-out infinite;
+}
+
+.pod-free-slot.is-active em,
+.pod-free-slot.is-generating em {
+  background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0));
+}
+
+.pod-free-slot.is-failed {
+  border-color: #edc4c1;
+  color: #a84c48;
+  background: #fff4f3;
+}
+
+/* 悬停：已出图的槽位连图带框整体放大（约 1.22 倍）并抬高层级，移开自动回落；点击/选中逻辑不变。 */
+.pod-free-slot.has-image:hover {
+  z-index: 4;
+  transform: scale(1.22);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.26);
+}
+
+/* 主图未生成时后续槽位不可切换；空占位框不参与放大。 */
+.pod-free-slot:disabled {
+  cursor: not-allowed;
+}
+
+/* 长按 2 秒进入拖动排序：抓起态、拖动中、目标槽位高亮。 */
+.pod-free-slot.has-image {
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.pod-free-slot.is-dragging {
+  opacity: 0.28;
+  border-style: dashed;
+  box-shadow: none;
+  transform: none;
+  cursor: grabbing;
+}
+
+.pod-free-slot.is-drop-target {
+  z-index: 5;
+  border-color: var(--pod-primary);
+  box-shadow: inset 0 0 0 3px var(--pod-primary);
+}
+
+/* 跟随鼠标的浮动卡片（portal 到 body）。 */
+.pod-free-drag-ghost {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 900;
+  overflow: hidden;
+  border-radius: 14px;
+  pointer-events: none;
+  box-shadow: 0 26px 52px rgba(15, 23, 42, 0.36);
+  will-change: transform;
+  transform-origin: center;
+}
+
+.pod-free-drag-ghost img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* 拖动过程中其他槽位不再触发放大，避免画面抖动。 */
+.pod-free-slots.is-dragging .pod-free-slot:not(.is-dragging):hover {
+  transform: none;
+  box-shadow: none;
+}
+
+/* 切换图片数量：新增槽位淡入放大，移除槽位淡出缩小后再卸载。 */
+.pod-free-slot.is-entering {
+  animation: pod-free-slot-in 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.pod-free-slot.is-leaving {
+  pointer-events: none;
+  animation: pod-free-slot-out 0.18s ease-in both;
+}
+
+@keyframes pod-free-slot-in {
+  from {
+    opacity: 0;
+    transform: scale(0.9) translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes pod-free-slot-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+}
+
+/* 外层：光晕由贴着卡片向四周扩散（0 → 22px 模糊），不形成硬边。 */
+@keyframes pod-free-halo {
+  0%, 100% {
+    box-shadow:
+      0 0 0 0 rgba(var(--pod-primary-rgb), 0),
+      0 4px 12px rgba(var(--pod-primary-rgb), 0.08);
+  }
+  50% {
+    box-shadow:
+      0 0 26px 2px rgba(var(--pod-primary-rgb), 0.45),
+      0 10px 30px rgba(var(--pod-primary-rgb), 0.3);
+  }
+}
+
+/* 内层：内发光强度随呼吸变化，亮起时像从图片内部透出的灯。 */
+@keyframes pod-free-inner-glow {
+  0%, 100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pod-free-slot.is-active,
+  .pod-free-slot.is-generating,
+  .pod-free-slot.is-active::after,
+  .pod-free-slot.is-generating::after {
+    animation: none;
+  }
+
+  .pod-free-slot.is-active::after,
+  .pod-free-slot.is-generating::after {
+    opacity: 0.7;
+  }
+
+  .pod-free-slot img {
+    transition: none;
+  }
+
+  .pod-free-slot.is-entering,
+  .pod-free-slot.is-leaving {
+    animation: none;
+  }
+}
+
+.pod-free-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.pod-free-message {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 9px 12px;
+  border: 1px solid #b9e5d7;
+  border-radius: 9px;
+  color: #246f61;
+  background: #effbf7;
+  font-size: 0.72rem;
+}
+
+.pod-free-message.is-error {
+  border-color: #edc4c1;
+  color: #a84c48;
+  background: #fff4f3;
+}
+
+.pod-free-message button {
+  margin-left: auto;
+  border: 0;
+  color: currentColor;
+  background: transparent;
+  font-size: 1rem;
+}
+
+.pod-free-hint {
+  margin: 7px 0 0;
+  color: var(--pod-text-muted);
+  font-size: 0.62rem;
+  line-height: 1.5;
+}
+
+/* 定制历史抽屉里每行的删除按钮，挂在共享的 .pod-history-item 胶囊右侧。 */
+.pod-free-history-delete {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 50%;
+  color: var(--pod-text-muted);
+  background: transparent;
+  font-size: 0.72rem;
+}
+
+.pod-free-history-delete:hover {
+  color: #c0392b;
+  background: rgba(192, 57, 43, 0.1);
+}
+
+.pod-free-history-delete:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* --- 左栏 --- */
+.pod-free-model-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.pod-free-model-options button {
+  display: grid;
+  gap: 3px;
+  padding: 10px;
+  border: 1px solid var(--pod-border);
+  border-radius: 11px;
+  color: var(--pod-text);
+  background: var(--pod-surface-soft);
+  text-align: left;
+}
+
+.pod-free-model-options button.is-active {
+  border-color: var(--pod-primary);
+  background: var(--pod-surface-tint);
+  box-shadow: 0 0 0 1px var(--pod-primary) inset;
+}
+
+.pod-free-model-options b {
+  font-size: 0.68rem;
+}
+
+.pod-free-model-options small {
+  color: var(--pod-text-muted);
+  font-size: 0.58rem;
+}
+
+.pod-free-model-options em {
+  color: var(--pod-text-secondary);
+  font-size: 0.58rem;
+  font-style: normal;
+}
+
+.pod-free-prompt {
+  width: 100%;
+  min-height: 180px;
+  padding: 10px;
+  border: 1px solid var(--pod-border);
+  border-radius: 9px;
+  background: var(--pod-surface-soft);
+  color: var(--pod-text);
+  font-family: inherit;
+  font-size: 0.7rem;
+  line-height: 1.65;
+  resize: vertical;
+}
+
+.pod-free-counter {
+  display: block;
+  margin-top: 4px;
+  color: var(--pod-text-muted);
+  font-size: 0.58rem;
+  text-align: right;
+}
+
+.pod-free-ref-collapse {
+  max-height: 420px;
+  overflow: hidden;
+  opacity: 1;
+  transition:
+    max-height 0.32s cubic-bezier(0.22, 1, 0.36, 1),
+    margin 0.32s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.2s ease;
+}
+
+.pod-free-ref-collapse:not(.is-open) {
+  max-height: 0;
+  margin-top: -10px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.pod-free-refs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.pod-free-ref,
+.pod-free-ref-add {
+  position: relative;
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  overflow: hidden;
+  border: 1px dashed var(--pod-border-strong);
+  border-radius: 10px;
+  background: var(--pod-surface-soft);
+}
+
+.pod-free-ref img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.pod-free-ref button {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 50%;
+  color: #fff;
+  background: rgba(15, 23, 42, 0.62);
+  line-height: 1;
+}
+
+.pod-free-ref-add {
+  gap: 4px;
+  color: var(--pod-text-muted);
+  font-size: 0.56rem;
+}
+
+.pod-free-ref-add .iconfont {
+  font-size: 1rem;
+}
+
+.pod-free-switch {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.68rem;
+}
+
+.pod-free-details {
+  margin-top: 9px;
+}
+
+.pod-free-details summary {
+  cursor: pointer;
+  color: var(--pod-text-secondary);
+  font-size: 0.62rem;
+}
+
+.pod-free-details input,
+.pod-free-details textarea {
+  width: 100%;
+  margin-top: 6px;
+  padding: 7px 9px;
+  border: 1px solid var(--pod-border);
+  border-radius: 8px;
+  color: var(--pod-text);
+  background: var(--pod-surface-soft);
+  font: inherit;
+  font-size: 0.64rem;
+}
+
+.pod-free-details textarea {
+  min-height: 54px;
+  resize: vertical;
+}
+
+/* --- 右栏 --- */
+.pod-free-title-actions button,
+.pod-free-export-actions button,
+.pod-free-item figcaption button,
+.pod-free-item figcaption a {
+  padding: 5px 10px;
+  border: 1px solid var(--pod-border);
+  border-radius: 7px;
+  color: var(--pod-text-secondary);
+  background: var(--pod-surface);
+  font-size: 0.62rem;
+  text-decoration: none;
+}
+
+.pod-free-count-options {
+  display: flex;
+  gap: 7px;
+  margin-bottom: 9px;
+}
+
+.pod-free-count-options button {
+  flex: 1;
+  min-height: 32px;
+  padding: 7px 14px;
+  border: 1px solid var(--pod-border);
+  border-radius: 999px;
+  color: var(--pod-text-secondary);
+  background: var(--pod-surface-soft);
+  font-size: 0.66rem;
+}
+
+.pod-free-count-options button.is-active {
+  border-color: var(--pod-primary);
+  color: var(--pod-primary);
+  background: var(--pod-surface-tint);
+  font-weight: 800;
+}
+
+.pod-free-panel-prompts {
+  display: grid;
+  gap: 8px;
+}
+
+.pod-free-panel-prompts label {
+  display: grid;
+  gap: 4px;
+}
+
+.pod-free-panel-prompts span {
+  color: var(--pod-text-secondary);
+  font-size: 0.62rem;
+}
+
+.pod-free-panel-prompts textarea {
+  min-height: 64px;
+  padding: 8px 9px;
+  border: 1px solid var(--pod-border);
+  border-radius: 8px;
+  color: var(--pod-text);
+  background: var(--pod-surface-soft);
+  font: inherit;
+  font-size: 0.64rem;
+  resize: vertical;
+}
+
+.pod-free-items {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.pod-free-item {
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--pod-border);
+  border-radius: 12px;
+  background: var(--pod-surface);
+}
+
+.pod-free-item-media {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  background: var(--pod-surface-soft);
+  color: var(--pod-text-muted);
+  font-size: 0.62rem;
+}
+
+.pod-free-item-media img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.pod-free-item figcaption {
+  display: grid;
+  gap: 3px;
+  padding: 8px;
+}
+
+.pod-free-item figcaption b {
+  font-size: 0.64rem;
+}
+
+.pod-free-item figcaption small {
+  color: var(--pod-text-muted);
+  font-size: 0.56rem;
+}
+
+.pod-free-item figcaption p {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin: 0;
+  color: var(--pod-text-secondary);
+  font-size: 0.58rem;
+  line-height: 1.4;
+}
+
+.pod-free-item figcaption div {
+  display: flex;
+  gap: 6px;
+  margin-top: 3px;
+}
+
+.pod-free-title textarea {
+  width: 100%;
+  min-height: 64px;
+  padding: 8px 9px;
+  border: 1px solid var(--pod-border);
+  border-radius: 8px;
+  color: var(--pod-text);
+  background: var(--pod-surface-soft);
+  font: inherit;
+  font-size: 0.66rem;
+  resize: vertical;
+}
+
+.pod-free-title-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 8px;
+}
+
+/* 标题下方的操作按钮与导出按钮同一套胶囊语言。 */
+.pod-free-title-actions button {
+  min-height: 34px;
+  padding: 7px 16px;
+  border: 1px solid var(--pod-border-strong);
+  border-radius: 999px;
+  color: var(--pod-primary);
+  background: var(--pod-surface);
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.pod-free-title-actions button:not(:disabled):hover {
+  border-color: var(--pod-primary);
+  background: var(--pod-surface-tint);
+}
+
+.pod-free-export-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+/* 「批量添加尺寸 / 导出表格」同一行：入口去掉编辑器里的分隔线和上边距。 */
+.pod-free-export-actions .pod-free-spec-entry {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border-top: 0;
+}
+
+.pod-free-export-actions .pod-free-spec-entry .pod-spec-card-entry-summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 与「导出表格」并排，入口按钮同样做胶囊。 */
+.pod-free-export-actions .pod-spec-card-entry-button {
+  min-height: 36px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  font-size: 0.68rem;
+}
+
+/* 尺寸卡重印：次级胶囊，换序后由用户显式触发。 */
+.pod-free-export-actions .pod-free-reprint {
+  min-height: 36px;
+  padding: 8px 16px;
+  border: 1px solid var(--pod-border-strong);
+  border-radius: 999px;
+  color: var(--pod-primary);
+  background: var(--pod-surface);
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.pod-free-export-actions .pod-free-reprint:not(:disabled):hover {
+  border-color: var(--pod-primary);
+  background: var(--pod-surface-tint);
+}
+
+.pod-free-export-actions .pod-free-reprint:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* 导出操作为主色渐变胶囊 + 下拉收纳。 */
+.pod-free-export-actions .pod-export-menu-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 8px 18px;
+  border: 1px solid var(--pod-border-strong);
+  border-radius: 999px;
+  color: var(--pod-primary);
+  background: var(--pod-surface);
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.pod-free-export-actions .pod-export-menu-trigger {
+  border-color: transparent;
+  color: var(--theme-on-primary, #fff);
+  background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0));
+  box-shadow: 0 7px 16px var(--theme-primary-button-shadow, rgba(11, 147, 220, 0.2));
+}
+
+.pod-free-export-actions .pod-export-menu-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+  box-shadow: none;
+}
+
+.pod-free-export-actions .pod-export-menu-trigger .icon-down {
+  font-size: 0.6rem;
+  transition: transform 0.2s ease;
+}
+
+.pod-free-export-actions .pod-export-menu-trigger[aria-expanded="true"] .icon-down {
+  transform: rotate(180deg);
+}
+
+.pod-free-export-actions .pod-export-menu-list {
+  top: calc(100% + 8px);
+  right: auto;
+  left: 0;
+  min-width: 208px;
+  padding: 6px;
+  border-radius: 18px;
+}
+
+.pod-free-export-actions .pod-export-menu-list button {
+  width: 100%;
+  min-height: 34px;
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 999px;
+  color: var(--pod-text);
+  background: transparent;
+  font-size: 0.66rem;
+  font-weight: 800;
+  text-align: left;
+}
+
+.pod-free-export-actions .pod-export-menu-list button:hover {
+  color: var(--pod-primary);
+  background: var(--pod-surface-tint);
+}
+
+.pod-free-title-actions small {
+  margin-left: auto;
+  color: var(--pod-text-muted);
+  font-size: 0.58rem;
+}
+
+/* 上架编辑器是卡片首块，去掉它内部为「接在其他字段后面」预留的分隔线与上边距。 */
+.pod-free-export .pod-listing-fields {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+/* 重做主图的强制确认弹窗：portal 到 body，需自带一份主题变量。 */
+.pod-free-confirm-layer {
+  --pod-surface: var(--theme-module-surface, #fff);
+  --pod-surface-raised: var(--theme-module-surface-raised, #fff);
+  --pod-border: var(--theme-module-border, #d8e9f3);
+  --pod-border-strong: var(--theme-module-border-strong, #a7dafa);
+  --pod-text: var(--theme-text-primary, #13233a);
+  --pod-text-secondary: var(--theme-text-secondary, #527089);
+  --pod-primary: var(--theme-primary, #1677ff);
+  position: fixed;
+  z-index: 560;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(8, 20, 34, 0.42);
+  backdrop-filter: blur(3px);
+}
+
+.pod-free-confirm {
+  display: grid;
+  gap: 12px;
+  width: min(420px, 94vw);
+  padding: 22px;
+  border: 1px solid var(--pod-border-strong);
+  border-radius: 20px;
+  color: var(--pod-text);
+  background: var(--pod-surface-raised);
+  box-shadow: 0 24px 60px rgba(11, 35, 55, 0.28);
+}
+
+.pod-free-confirm h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.pod-free-confirm p {
+  margin: 0;
+  color: var(--pod-text-secondary);
+  font-size: 0.74rem;
+  line-height: 1.6;
+}
+
+.pod-free-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.pod-free-confirm-actions button {
+  min-height: 36px;
+  padding: 8px 18px;
+  border: 1px solid var(--pod-border-strong);
+  border-radius: 999px;
+  color: var(--pod-primary);
+  background: var(--pod-surface);
+  font-size: 0.7rem;
+  font-weight: 800;
+}
+
+.pod-free-confirm-actions button.is-danger {
+  border-color: transparent;
+  color: #fff;
+  background: #c04a44;
+  box-shadow: 0 7px 16px rgba(192, 74, 68, 0.28);
+}
+
+.pod-free-confirm-actions button.is-danger:hover {
+  background: #a83b36;
+}
+
+@media (max-width: 900px) {
+  .pod-free-customization-page {
+    padding: 14px;
+  }
+
+  .pod-free-items {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

@@ -53,6 +53,8 @@ type Props = {
   baseTemplateId?: string;
   /** 复刻等按款重印场景：只更新该 style_index 的目标快照；全定制不传则维持整批重印。 */
   reprintStyleIndex?: number;
+  /** 自由定制专用：可选槽位列表；传入时抽屉出现「印到第几张图」选择。 */
+  targetVariants?: number[];
   onClose: () => void;
   onSave: (config: SpecCardConfig) => void;
   onReprinted?: (batchId: string, result: SpecCardReprintResponse) => void;
@@ -60,12 +62,13 @@ type Props = {
 
 type ReprintProgress = { done: number; total: number };
 
-export function SpecCardDrawer({ open, config, batch, baseTemplateId, reprintStyleIndex, onClose, onSave, onReprinted }: Props) {
+export function SpecCardDrawer({ open, config, batch, baseTemplateId, reprintStyleIndex, targetVariants, onClose, onSave, onReprinted }: Props) {
   const [cells, setCells] = useState<string[][]>(() => cloneSpecCardConfig(config).cells);
   const [style, setStyle] = useState<SpecCardStyle>(config.style);
   const [corner, setCorner] = useState<SpecCardCorner>(config.corner);
   const [enabled, setEnabled] = useState(config.enabled);
   const [displayUnit, setDisplayUnit] = useState<SpecCardDisplayUnit>(config.display_unit);
+  const [targetVariant, setTargetVariant] = useState<number>(config.target_variant ?? 0);
   const [unlocked, setUnlocked] = useState(false);
   const [reprinting, setReprinting] = useState(false);
   const [reprintProgress, setReprintProgress] = useState<ReprintProgress | null>(null);
@@ -84,6 +87,11 @@ export function SpecCardDrawer({ open, config, batch, baseTemplateId, reprintSty
     setCorner(next.corner);
     setEnabled(next.enabled);
     setDisplayUnit(next.display_unit);
+    // 自由定制默认印到最后一张；旧快照没有该字段时也补成最后一张。
+    setTargetVariant(
+      next.target_variant
+        ?? (targetVariants && targetVariants.length ? targetVariants[targetVariants.length - 1] : 0),
+    );
     setUnlocked(false);
     setReprinting(false);
     setReprintProgress(null);
@@ -102,12 +110,18 @@ export function SpecCardDrawer({ open, config, batch, baseTemplateId, reprintSty
 
   if (!open) return null;
 
+  // 目标槽位跟随可选列表收敛：数量从 6 改回 4 时自动落到最后一张。
+  const resolvedTargetVariant = targetVariants && targetVariants.length
+    ? (targetVariants.includes(targetVariant) ? targetVariant : targetVariants[targetVariants.length - 1])
+    : (config.target_variant ?? 0);
+
   const currentConfig = (): SpecCardConfig => ({
     enabled,
     style,
     corner,
     display_unit: displayUnit,
     cells: cells.map((row) => [...row]),
+    ...(resolvedTargetVariant ? { target_variant: resolvedTargetVariant } : {}),
   });
 
   const saveConfig = () => {
@@ -183,10 +197,13 @@ export function SpecCardDrawer({ open, config, batch, baseTemplateId, reprintSty
             corner={corner}
             enabled={enabled}
             displayUnit={displayUnit}
+            targetVariants={targetVariants}
+            targetVariant={resolvedTargetVariant}
             onStyleChange={setStyle}
             onCornerChange={setCorner}
             onEnabledChange={setEnabled}
             onDisplayUnitChange={setDisplayUnit}
+            onTargetVariantChange={setTargetVariant}
             disabled={readOnly}
           />
 

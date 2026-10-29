@@ -87,6 +87,10 @@ type Props = {
   skuLimitReached: boolean;
   /** 提交过一次后连「必填为空」也一起提示；在此之前只提示「已填但不合规」，避免新表单一片红。 */
   showRequiredErrors?: boolean;
+  /** 自由定制把「批量添加尺寸」入口放到自己的操作行里，这里隐藏。 */
+  hideSpecCardEntry?: boolean;
+  /** 自由定制已有独立的标题编辑区，不再重复选长/短标题。 */
+  hideTitleMode?: boolean;
   onListingFieldChange: (key: "title_mode" | "category_name", value: string) => void;
   onAddSku: () => void;
   onUpdateSku: (index: number, key: SkuField, value: string) => void;
@@ -113,6 +117,8 @@ export function PodListingFieldsEditor({
   skuFieldErrors,
   skuLimitReached,
   showRequiredErrors = false,
+  hideSpecCardEntry = false,
+  hideTitleMode = false,
   onListingFieldChange,
   onAddSku,
   onUpdateSku,
@@ -124,14 +130,16 @@ export function PodListingFieldsEditor({
   return (
     <section className="pod-listing-fields" aria-labelledby="pod-dianxiaomi-listing-title">
       <div className="pod-listing-fields-heading"><span>DIANXIAOMI LISTING</span><h3 id="pod-dianxiaomi-listing-title">店小秘上架信息</h3><small>创建批次时保存为不可缺失的上架快照</small></div>
-      <div className="pod-title-mode" role="radiogroup" aria-label="标题模式">
-        <span>标题模式<em>*</em></span>
-        <div ref={titleModeIndicator.containerRef} data-indicator-ready={titleModeIndicator.ready ? "true" : "false"}>
-          {titleModeIndicator.rect && <span className="pod-selection-thumb" style={slidingIndicatorStyle(titleModeIndicator.rect)} aria-hidden="true" />}
-          <button type="button" role="radio" aria-checked={listingFields.title_mode === "long"} className={listingFields.title_mode === "long" ? "is-active" : ""} onClick={() => onListingFieldChange("title_mode", "long")}><b>长标题</b></button>
-          <button type="button" role="radio" aria-checked={listingFields.title_mode === "short"} className={listingFields.title_mode === "short" ? "is-active" : ""} onClick={() => onListingFieldChange("title_mode", "short")}><b>短标题</b></button>
+      {!hideTitleMode && (
+        <div className="pod-title-mode" role="radiogroup" aria-label="标题模式">
+          <span>标题模式<em>*</em></span>
+          <div ref={titleModeIndicator.containerRef} data-indicator-ready={titleModeIndicator.ready ? "true" : "false"}>
+            {titleModeIndicator.rect && <span className="pod-selection-thumb" style={slidingIndicatorStyle(titleModeIndicator.rect)} aria-hidden="true" />}
+            <button type="button" role="radio" aria-checked={listingFields.title_mode === "long"} className={listingFields.title_mode === "long" ? "is-active" : ""} onClick={() => onListingFieldChange("title_mode", "long")}><b>长标题</b></button>
+            <button type="button" role="radio" aria-checked={listingFields.title_mode === "short"} className={listingFields.title_mode === "short" ? "is-active" : ""} onClick={() => onListingFieldChange("title_mode", "short")}><b>短标题</b></button>
+          </div>
         </div>
-      </div>
+      )}
       <div className="pod-business-fields">
         {LISTING_FIELDS.map((field) => {
           const fieldError = visibleFieldError(skuFieldErrors[field.key], listingFields[field.key], showRequiredErrors);
@@ -177,10 +185,12 @@ export function PodListingFieldsEditor({
           })}
         </div>
       </div>
-      <div className="pod-spec-card-entry" aria-label="规格卡配置">
-        <button type="button" className="pod-spec-card-entry-button" onClick={onOpenSpecCardDrawer}>批量添加尺寸<em>*</em></button>
-        <span className={isSpecCardConfigured(specCard) ? "pod-spec-card-entry-summary" : "pod-spec-card-entry-summary is-warning"}>{specCardSummaryText(specCard)}</span>
-      </div>
+      {!hideSpecCardEntry && (
+        <div className="pod-spec-card-entry" aria-label="规格卡配置">
+          <button type="button" className="pod-spec-card-entry-button" onClick={onOpenSpecCardDrawer}>批量添加尺寸<em>*</em></button>
+          <span className={isSpecCardConfigured(specCard) ? "pod-spec-card-entry-summary" : "pod-spec-card-entry-summary is-warning"}>{specCardSummaryText(specCard)}</span>
+        </div>
+      )}
     </section>
   );
 }

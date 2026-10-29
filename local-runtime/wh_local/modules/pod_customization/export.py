@@ -104,7 +104,7 @@ def analyze_dianxiaomi_export(
             for title in batch.get("style_titles", [])
         ):
             continue
-        images = _style_images(grouped.get(style_index, []))
+        images = _style_images(batch, grouped.get(style_index, []))
         if images is None:
             continue
         structurally_complete.add(style_index)
@@ -243,7 +243,29 @@ def _miaoshou_description(value: Any) -> str:
     return _IMG_TAG.sub(lambda match: match.group(1), str(value or "")).strip()
 
 
-def _style_images(items: list[dict[str, Any]]) -> dict[str, str] | None:
+def _style_images(
+    batch: dict[str, Any], items: list[dict[str, Any]]
+) -> dict[str, str] | None:
+    if batch.get("mode") == "free":
+        # 自由定制：1~4 张映射固定角色；5~6 张只作为附加图进入轮播图/描述。
+        by_variant = {int(item.get("variant_index") or 0): item for item in items}
+        by_role: dict[str, str] = {}
+        for variant, role in enumerate(LISTING_IMAGE_ROLES, start=1):
+            item = by_variant.get(variant)
+            if item is None or item.get("status") != "completed":
+                return None
+            public_url = str(item.get("public_url") or "").strip()
+            if not _is_public_https_url(public_url):
+                return None
+            by_role[role] = public_url
+        for variant, key in ((5, "extra_1"), (6, "extra_2")):
+            item = by_variant.get(variant)
+            if item is None or item.get("status") != "completed":
+                continue
+            public_url = str(item.get("public_url") or "").strip()
+            if _is_public_https_url(public_url):
+                by_role[key] = public_url
+        return by_role
     if len(items) != 4 or any(item.get("status") != "completed" for item in items):
         return None
     by_role: dict[str, str] = {}
@@ -468,6 +490,10 @@ def _build_row(
         )
     suffix = f"{style_index:03d}"
     image_urls = [images[role] for role in LISTING_PRESENTATION_ROLES]
+    # 自由定制的 5~6 张：不新增表格列，只追加到轮播图与描述。
+    image_urls.extend(
+        images[key] for key in ("extra_1", "extra_2") if images.get(key)
+    )
     description = "\n".join(
         [safe_description, *(f'<img src="{url}" />' for url in image_urls)]
     )

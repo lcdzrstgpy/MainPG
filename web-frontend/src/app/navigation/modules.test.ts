@@ -55,16 +55,24 @@ test("POD customization is a grouped section with full, semi and replica customi
   assert.deepEqual(podWorkflow?.children?.map((child) => child.id), [
     "pod_customization",
     "pod_semi_customization",
+    "pod_free_customization",
     "pod_replica",
     "pod_fission",
   ]);
-  assert.deepEqual(podWorkflow?.children?.map((child) => child.label), ["全定制", "半定制", "爆款复刻", "爆款裂变"]);
+  assert.deepEqual(podWorkflow?.children?.map((child) => child.label), [
+    "全款直出",
+    "印花创作",
+    "自由创意",
+    "爆款复刻",
+    "爆款裂变",
+  ]);
   assert.equal(podWorkflow?.iconClass, "iconfont icon-skin");
   // 新增爆款复刻不改变原两个入口的可用性。
   assert.ok(podWorkflow?.children?.some((child) => child.id === "pod_customization"));
   assert.ok(podWorkflow?.children?.some((child) => child.id === "pod_semi_customization"));
   assert.ok(workspacePageModules.some((module) => module.id === "pod_customization"));
   assert.ok(workspacePageModules.some((module) => module.id === "pod_semi_customization"));
+  assert.ok(workspacePageModules.some((module) => module.id === "pod_free_customization"));
   assert.ok(workspacePageModules.some((module) => module.id === "pod_replica"));
 });
 

@@ -37,6 +37,8 @@ from .contracts import (
     COMPOSITION_SCOPE_FULL,
     COMPOSITION_SCOPE_FISSION,
     COMPOSITION_SCOPES,
+    FreeBatchCreate,
+    FREE_PANEL_ROLES,
     GENERATION_LAYOUT_COLUMN,
     GENERATION_LAYOUT_LEGACY,
     MAX_FISSION_STYLES,
@@ -1235,6 +1237,434 @@ class PodCustomizationRepository:
             )
         return self.get_batch(batch_id, workspace_id, owner_user_id)
 
+    def create_free_batch(
+        self,
+        workspace_id: str,
+        owner_user_id: str,
+        request: "FreeBatchCreate",
+        *,
+        batch_id: str | None = None,
+    ) -> dict[str, Any]:
+        """创建自由定制批次（阶段一）：只入队第 1 张。
+
+        ``requested_count`` 固定 1（一个产品/一个款），图片张数由
+        ``generation_meta_json.free_target_count`` 表达，避免影响导出的款循环。
+        """
+        batch_id = str(batch_id or uuid.uuid4().hex)
+        now = _now()
+        title = (
+            request.title.strip()
+            or request.business_fields.product_name.strip()
+            or request.prompt.strip()[:120]
+        )
+        meta = {
+            "image_model": request.image_model,
+            "title_enabled": bool(request.title_enabled),
+            "free_target_count": int(request.target_image_count),
+            "free_stage": "initial",
+            "free_prompt_version": "free-v1",
+        }
+        with self._connect() as connection:
+            placeholder = connection.execute(
+                """SELECT version FROM pod_customization_templates
+                   WHERE template_id = ? AND workspace_id = ?""",
+                (SEMI_PLACEHOLDER_TEMPLATE_ID, workspace_id),
+            ).fetchone()
+            if placeholder is None:
+                raise PodRepositoryError("POD 自由定制占位模板不可用", 409)
+            snapshot = connection.execute(
+                """SELECT snapshot_id, name FROM pod_customization_template_snapshots
+                   WHERE template_id = ? AND version = ?""",
+                (SEMI_PLACEHOLDER_TEMPLATE_ID, placeholder["version"]),
+            ).fetchone()
+            connection.execute(
+                """INSERT INTO pod_customization_batches
+                   (batch_id, workspace_id, owner_user_id, title, status, template_id, template_snapshot_id,
+                    template_name, requested_count, initial_call_count, max_refill_calls, prompt_version,
+                    prompt_snapshot, business_fields_json, listing_fields_json, creative_prompt,
+                    generation_meta_json, mode, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, 1, ?, 0, ?, ?, ?, '{}', ?, ?, 'free', ?, ?)""",
+                (
+                    batch_id,
+                    workspace_id,
+                    owner_user_id,
+                    title[:120],
+                    SEMI_PLACEHOLDER_TEMPLATE_ID,
+                    snapshot["snapshot_id"],
+                    snapshot["name"],
+                    2,
+                    "free-v1",
+                    request.prompt,
+                    request.business_fields.model_dump_json(),
+                    request.prompt,
+                    json.dumps(meta, ensure_ascii=False),
+                    now,
+                    now,
+                ),
+            )
+            connection.execute(
+                """INSERT INTO pod_customization_style_grid_results
+                   (result_id, batch_id, workspace_id, owner_user_id, style_index, variant_index, status,
+                    created_at, updated_at)
+                   VALUES (?, ?, ?, ?, 1, 1, 'queued', ?, ?)""",
+                (uuid.uuid4().hex, batch_id, workspace_id, owner_user_id, now, now),
+            )
+            connection.execute(
+                """INSERT INTO pod_customization_free_panels
+                   (batch_id, variant_index, prompt, reference_asset_ids_json, created_at, updated_at)
+                   VALUES (?, 1, ?, ?, ?, ?)""",
+                (
+                    batch_id,
+                    request.prompt,
+                    json.dumps(list(request.reference_asset_ids), ensure_ascii=False),
+                    now,
+                    now,
+                ),
+            )
+            # 标题等所有图出完再生成；关闭时也保留一行 failed，允许导出前手动填写。
+            connection.execute(
+                """INSERT INTO pod_customization_style_titles
+                   (batch_id, style_index, status, error_message, created_at, updated_at)
+                   VALUES (?, 1, ?, ?, ?, ?)""",
+                (
+                    batch_id,
+                    "queued" if request.title_enabled else "failed",
+                    "" if request.title_enabled else "未启用自动标题，请在导出前手动填写",
+                    now,
+                    now,
+                ),
+            )
+            connection.execute(
+                "INSERT INTO pod_customization_style_grid_batches (batch_id, created_at) VALUES (?, ?)",
+                (batch_id, now),
+            )
+        return self.get_batch(batch_id, workspace_id, owner_user_id)
+
+    def upsert_free_panel(
+        self,
+        batch_id: str,
+        workspace_id: str,
+        owner_user_id: str,
+        variant_index: int,
+        prompt: str,
+        *,
+        reference_asset_ids: Sequence[str] = (),
+    ) -> None:
+        """写入/覆盖某个槽位的提示词，并把该槽位重置为 queued。
+
+        重生成时清空旧图与公网地址：用户选择的是「替换旧图」，旧图不再参与导出。
+        """
+        now = _now()
+        variant = int(variant_index)
+        with self._connect() as connection:
+            batch = connection.execute(
+                """SELECT mode, generation_meta_json FROM pod_customization_batches
+                   WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ?""",
+                (batch_id, workspace_id, owner_user_id),
+            ).fetchone()
+            if batch is None or batch["mode"] != "free":
+                raise PodRepositoryError("POD free batch not found", 404)
+            refs_json = json.dumps(list(reference_asset_ids), ensure_ascii=False)
+            connection.execute(
+                """INSERT INTO pod_customization_free_panels
+                   (batch_id, variant_index, prompt, reference_asset_ids_json, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(batch_id, variant_index) DO UPDATE SET
+                     prompt = excluded.prompt,
+                     reference_asset_ids_json = excluded.reference_asset_ids_json,
+                     updated_at = excluded.updated_at""",
+                (batch_id, variant, prompt, refs_json, now, now),
+            )
+            result = connection.execute(
+                """SELECT result_id FROM pod_customization_style_grid_results
+                   WHERE batch_id = ? AND style_index = 1 AND variant_index = ?""",
+                (batch_id, variant),
+            ).fetchone()
+            if result is None:
+                connection.execute(
+                    """INSERT INTO pod_customization_style_grid_results
+                       (result_id, batch_id, workspace_id, owner_user_id, style_index, variant_index,
+                        status, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, 1, ?, 'queued', ?, ?)""",
+                    (uuid.uuid4().hex, batch_id, workspace_id, owner_user_id, variant, now, now),
+                )
+            else:
+                connection.execute(
+                    """UPDATE pod_customization_style_grid_results
+                       SET status = 'queued', pattern_asset_id = '', composite_asset_id = '',
+                           pattern_fingerprint = '', scene_optimized = 0, error_message = '',
+                           updated_at = ?
+                       WHERE result_id = ?""",
+                    (now, result["result_id"]),
+                )
+                connection.execute(
+                    "DELETE FROM pod_customization_style_grid_publications WHERE result_id = ?",
+                    (result["result_id"],),
+                )
+            try:
+                meta = json.loads(batch["generation_meta_json"] or "{}")
+            except (TypeError, ValueError):
+                meta = {}
+            if not isinstance(meta, dict):
+                meta = {}
+            meta["free_stage"] = "panels"
+            connection.execute(
+                "UPDATE pod_customization_batches SET generation_meta_json = ?, updated_at = ? WHERE batch_id = ?",
+                (json.dumps(meta, ensure_ascii=False), now, batch_id),
+            )
+
+    def list_free_panels(self, batch_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM pod_customization_free_panels
+                   WHERE batch_id = ? ORDER BY variant_index""",
+                (batch_id,),
+            ).fetchall()
+        panels: list[dict[str, Any]] = []
+        for row in rows:
+            panel = dict(row)
+            try:
+                refs = json.loads(panel.pop("reference_asset_ids_json", "[]") or "[]")
+            except (TypeError, ValueError):
+                refs = []
+            panel["reference_asset_ids"] = refs if isinstance(refs, list) else []
+            panels.append(panel)
+        return panels
+
+    def get_free_panel(self, batch_id: str, variant_index: int) -> dict[str, Any] | None:
+        for panel in self.list_free_panels(batch_id):
+            if int(panel["variant_index"]) == int(variant_index):
+                return panel
+        return None
+
+    def fail_free_panel(
+        self,
+        batch: Mapping[str, Any],
+        variant_index: int,
+        error_message: str,
+        *,
+        execution_epoch: int | None = None,
+    ) -> None:
+        now = _now()
+        with self._connect() as connection:
+            if execution_epoch is not None:
+                self._raise_if_execution_expired(connection, str(batch["batch_id"]), execution_epoch)
+            connection.execute(
+                """UPDATE pod_customization_style_grid_results
+                   SET status = 'failed', error_message = ?, updated_at = ?
+                   WHERE batch_id = ? AND style_index = 1 AND variant_index = ?
+                     AND status IN ('queued', 'generating_pattern', 'compositing')""",
+                (_safe_error(error_message), now, batch["batch_id"], int(variant_index)),
+            )
+
+    def clear_free_downstream(
+        self,
+        batch_id: str,
+        workspace_id: str,
+        owner_user_id: str,
+    ) -> list[str]:
+        """重做主图前清掉第 2~N 张衍生结果。
+
+        删除结果行、公网发布地址与不再被引用的本地图片，并把已生成的标题一并作废
+        （标题描述的是旧图，等所有槽位重新出齐后再生成）。返回需要调用方从磁盘删除的
+        relative_path；用户填写的提示词保留在 pod_customization_free_panels。
+        """
+        with self._connect() as connection:
+            batch = connection.execute(
+                """SELECT mode FROM pod_customization_batches
+                   WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ?""",
+                (batch_id, workspace_id, owner_user_id),
+            ).fetchone()
+            if batch is None or batch["mode"] != "free":
+                raise PodRepositoryError("POD free batch not found", 404)
+            rows = connection.execute(
+                """SELECT result_id, pattern_asset_id, composite_asset_id
+                   FROM pod_customization_style_grid_results
+                   WHERE batch_id = ? AND style_index = 1 AND variant_index > 1""",
+                (batch_id,),
+            ).fetchall()
+            if not rows:
+                return []
+            result_ids = [row["result_id"] for row in rows]
+            placeholders = ",".join("?" for _ in result_ids)
+            asset_ids = {
+                value
+                for row in rows
+                for value in (row["pattern_asset_id"], row["composite_asset_id"])
+                if value
+            }
+            connection.execute(
+                f"DELETE FROM pod_customization_style_grid_publications WHERE result_id IN ({placeholders})",
+                result_ids,
+            )
+            connection.execute(
+                f"DELETE FROM pod_customization_style_grid_results WHERE result_id IN ({placeholders})",
+                result_ids,
+            )
+            connection.execute(
+                "DELETE FROM pod_customization_style_titles WHERE batch_id = ? AND style_index = 1",
+                (batch_id,),
+            )
+            return self._delete_assets_and_collect_files(connection, asset_ids)
+
+    def reopen_free_batch(self, batch_id: str) -> bool:
+        """把已完成的自由批次重新置为 queued，供阶段二/单张重试重新入队。"""
+        now = _now()
+        with self._connect() as connection:
+            result = connection.execute(
+                """UPDATE pod_customization_batches
+                   SET status = 'queued', error_message = '', finished_at = '', updated_at = ?,
+                       last_progress_at = ?
+                   WHERE batch_id = ? AND status IN ('completed', 'partial_failure', 'failed', 'cancelled')""",
+                (now, now, batch_id),
+            )
+        return result.rowcount == 1
+
+    def update_free_listing_fields(
+        self,
+        batch_id: str,
+        workspace_id: str,
+        owner_user_id: str,
+        listing_fields: Mapping[str, Any],
+    ) -> bool:
+        now = _now()
+        with self._connect() as connection:
+            result = connection.execute(
+                """UPDATE pod_customization_batches SET listing_fields_json = ?, updated_at = ?
+                   WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ? AND mode = 'free'""",
+                (
+                    json.dumps(dict(listing_fields), ensure_ascii=False),
+                    now,
+                    batch_id,
+                    workspace_id,
+                    owner_user_id,
+                ),
+            )
+        return result.rowcount == 1
+
+    def swap_free_panel_order(
+        self,
+        batch_id: str,
+        workspace_id: str,
+        owner_user_id: str,
+        from_variant: int,
+        to_variant: int,
+    ) -> bool:
+        """交换/移动两个槽位的图与提示词；返回是否命中源槽位。
+
+        结果行、公网发布记录与逐张提示词都跟着图片走，保证换位后提示词仍是这张图的。
+        """
+
+        source = int(from_variant)
+        target = int(to_variant)
+        if source == target:
+            return True
+        temp = 99  # 唯一约束 (batch, style, variant) 需要一个中转值
+        now = _now()
+        with self._connect() as connection:
+            batch = connection.execute(
+                """SELECT mode FROM pod_customization_batches
+                   WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ?""",
+                (batch_id, workspace_id, owner_user_id),
+            ).fetchone()
+            if batch is None or batch["mode"] != "free":
+                raise PodRepositoryError("POD free batch not found", 404)
+            rows = connection.execute(
+                """SELECT result_id, variant_index FROM pod_customization_style_grid_results
+                   WHERE batch_id = ? AND style_index = 1 AND variant_index IN (?, ?)""",
+                (batch_id, source, target),
+            ).fetchall()
+            present = {int(row["variant_index"]) for row in rows}
+            if source not in present:
+                return False
+            swap = target in present
+
+            for table, key in (
+                ("pod_customization_style_grid_results", "result_id"),
+                ("pod_customization_free_panels", "variant_index"),
+            ):
+                if table.endswith("free_panels"):
+                    connection.execute(
+                        f"UPDATE {table} SET variant_index = ? WHERE batch_id = ? AND variant_index = ?",
+                        (temp, batch_id, source),
+                    )
+                    if swap:
+                        connection.execute(
+                            f"UPDATE {table} SET variant_index = ? WHERE batch_id = ? AND variant_index = ?",
+                            (source, batch_id, target),
+                        )
+                    connection.execute(
+                        f"UPDATE {table} SET variant_index = ? WHERE batch_id = ? AND variant_index = ?",
+                        (target, batch_id, temp),
+                    )
+                else:
+                    connection.execute(
+                        f"UPDATE {table} SET variant_index = ?, updated_at = ? WHERE batch_id = ? AND style_index = 1 AND variant_index = ?",
+                        (temp, now, batch_id, source),
+                    )
+                    if swap:
+                        connection.execute(
+                            f"UPDATE {table} SET variant_index = ?, updated_at = ? WHERE batch_id = ? AND style_index = 1 AND variant_index = ?",
+                            (source, now, batch_id, target),
+                        )
+                    connection.execute(
+                        f"UPDATE {table} SET variant_index = ?, updated_at = ? WHERE batch_id = ? AND style_index = 1 AND variant_index = ?",
+                        (target, now, batch_id, temp),
+                    )
+
+            # 公网发布角色按新槽位重标，导出/画廊展示一致。
+            for row in rows:
+                current = int(row["variant_index"])
+                role_variant = target if current == source else source
+                if not swap and current != source:
+                    continue
+                if 1 <= role_variant <= len(FREE_PANEL_ROLES):
+                    connection.execute(
+                        """UPDATE pod_customization_style_grid_publications
+                           SET role = ?, updated_at = ? WHERE result_id = ?""",
+                        (FREE_PANEL_ROLES[role_variant - 1], now, row["result_id"]),
+                    )
+        return True
+
+    def set_free_result_composite(
+        self,
+        batch_id: str,
+        variant_index: int,
+        composite_asset_id: str,
+        public_url: str,
+    ) -> None:
+        """更新自由定制某个槽位的成品资产与公网地址（尺寸卡重印/取消印图时复用）。"""
+
+        now = _now()
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT results.result_id,
+                          COALESCE(publications.role, '') AS role
+                   FROM pod_customization_style_grid_results AS results
+                   LEFT JOIN pod_customization_style_grid_publications AS publications
+                     ON publications.result_id = results.result_id
+                   WHERE results.batch_id = ? AND results.style_index = 1
+                     AND results.variant_index = ?""",
+                (batch_id, int(variant_index)),
+            ).fetchone()
+            if row is None:
+                return
+            connection.execute(
+                """UPDATE pod_customization_style_grid_results
+                   SET composite_asset_id = ?, updated_at = ?
+                   WHERE result_id = ?""",
+                (composite_asset_id, now, row["result_id"]),
+            )
+            if public_url:
+                connection.execute(
+                    """INSERT INTO pod_customization_style_grid_publications
+                       (result_id, role, public_url, updated_at) VALUES (?, ?, ?, ?)
+                       ON CONFLICT(result_id) DO UPDATE SET
+                         role = excluded.role, public_url = excluded.public_url,
+                         updated_at = excluded.updated_at""",
+                    (row["result_id"], row["role"] or "hero", public_url, now),
+                )
+
     def find_replica_batch(
         self, workspace_id: str, owner_user_id: str, client_request_id: str
     ) -> dict[str, Any] | None:
@@ -1690,8 +2120,8 @@ class PodCustomizationRepository:
     ) -> None:
         """写入一个 A/B 对的图案迁移方案（主图提示词）。
 
-        唯一键命中时只刷新提示词正文，保留最早的 ``plan_id``；调用方写入后按唯一键读回，
-        拿到权威记录（并发提交不会产生两条同键方案）。
+        唯一键命中时刷新提示词正文并清空手动编辑时间，保留最早的 ``plan_id``；
+        调用方写入后按唯一键读回，拿到权威记录（并发提交不会产生两条同键方案）。
         """
         prompt = str(main_prompt or "").strip()
         if not prompt:
@@ -1701,14 +2131,35 @@ class PodCustomizationRepository:
             connection.execute(
                 """INSERT INTO pod_customization_replica_transfer_plans
                    (plan_id, workspace_id, owner_user_id, source_asset_id, target_asset_id,
-                    prompt_version, model, reference_order, main_prompt, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    prompt_version, model, reference_order, main_prompt, edited_at, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?)
                    ON CONFLICT (workspace_id, owner_user_id, source_asset_id, target_asset_id,
                                 prompt_version, model, reference_order)
-                   DO UPDATE SET main_prompt = excluded.main_prompt""",
+                   DO UPDATE SET main_prompt = excluded.main_prompt, edited_at = ''""",
                 (plan_id, workspace_id, owner_user_id, source_asset_id, target_asset_id,
                  prompt_version, model, reference_order, prompt, now),
             )
+
+    def update_replica_transfer_plan_prompt(
+        self,
+        plan_id: str,
+        workspace_id: str,
+        owner_user_id: str,
+        main_prompt: str,
+    ) -> None:
+        """保存用户手动编辑的方案正文；不存在或不属于该用户一律 404。"""
+        prompt = str(main_prompt or "").strip()
+        if not prompt:
+            raise PodRepositoryError("复刻主图提示词不能为空", 400)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """UPDATE pod_customization_replica_transfer_plans
+                   SET main_prompt = ?, edited_at = ?
+                   WHERE plan_id = ? AND workspace_id = ? AND owner_user_id = ?""",
+                (prompt, _now(), plan_id, workspace_id, owner_user_id),
+            )
+        if cursor.rowcount == 0:
+            raise PodRepositoryError("POD 复刻方案不存在", 404)
 
     def find_replica_transfer_plan(
         self,
@@ -1819,7 +2270,12 @@ class PodCustomizationRepository:
                              WHERE results.batch_id = titles.batch_id
                                AND results.style_index = titles.style_index
                                AND results.status = 'completed'
-                               AND publications.public_url <> '') = 4
+                               AND publications.public_url <> ''
+                               AND (
+                                 (SELECT mode FROM pod_customization_batches
+                                  WHERE batch_id = titles.batch_id) <> 'free'
+                                 OR results.variant_index BETWEEN 1 AND 4
+                               )) = 4
                           THEN 1 ELSE 0 END AS listing_ready
                    FROM pod_customization_style_titles AS titles
                    WHERE titles.batch_id = ? ORDER BY titles.style_index""",
@@ -1871,6 +2327,13 @@ class PodCustomizationRepository:
                    WHERE batch_id = ?""",
                 (batch_id,),
             ).fetchall()
+            free_panel_rows: list[sqlite3.Row] = []
+            if batch["mode"] == "free":
+                free_panel_rows = connection.execute(
+                    """SELECT * FROM pod_customization_free_panels
+                       WHERE batch_id = ? ORDER BY variant_index""",
+                    (batch_id,),
+                ).fetchall()
             group_rows: list[sqlite3.Row] = []
             sheet_rows: list[sqlite3.Row] = []
             if str(batch["generation_layout"] or "") == GENERATION_LAYOUT_COLUMN:
@@ -1941,6 +2404,15 @@ class PodCustomizationRepository:
             int(row["style_index"]): json.loads(row["elements_json"])
             for row in element_rows
         }
+        result["free_panels"] = []
+        for row in free_panel_rows:
+            panel = dict(row)
+            try:
+                refs = json.loads(panel.pop("reference_asset_ids_json", "[]") or "[]")
+            except (TypeError, ValueError):
+                refs = []
+            panel["reference_asset_ids"] = refs if isinstance(refs, list) else []
+            result["free_panels"].append(panel)
         # 列式生成（两级批次）：L2 组与「组 × 角色」执行状态。legacy 批次为空列表。
         result["generation_layout"] = str(
             result.get("generation_layout") or GENERATION_LAYOUT_LEGACY
@@ -2485,6 +2957,8 @@ class PodCustomizationRepository:
                 # 列式生成按组上报：缺了这个字段，重启后重建的计划会退回「按款」展开，
                 # 冻结 link_count 与结算 item 数不一致 → 远端 400，冻结积分无法释放。
                 "column_style_count": plan.column_style_count,
+                "free_variants": list(plan.free_variants),
+                "image_grant_provider": plan.image_grant_provider,
                 "billing_profile": plan.billing_profile,
                 # v2 账本字段：重启后重建计划必须还原同样的 module / 单元 ID，
                 # 否则续跑与结算会重新推导出不一致的结算单元。
@@ -4153,7 +4627,8 @@ class PodCustomizationRepository:
                    INNER JOIN pod_customization_style_grid_publications AS publications
                      ON publications.result_id = results.result_id
                    WHERE results.batch_id = ? AND results.style_index = ?
-                     AND results.status = 'completed' AND publications.public_url <> ''""",
+                     AND results.status = 'completed' AND publications.public_url <> ''
+                     AND results.variant_index BETWEEN 1 AND 4""",
                 (batch_id, style_index),
             ).fetchone()[0])
             if ready_images != 4:
@@ -4656,6 +5131,16 @@ class PodCustomizationRepository:
         call_id = uuid.uuid4().hex
         now = _now()
         with self._connect() as connection:
+            if int(call_index) <= 0:
+                # (batch_id, call_kind, call_index) 唯一；自由定制的重生成会重复使用同一槽位，
+                # 由这里自增分配，避免撞唯一键。
+                next_index = connection.execute(
+                    """SELECT COALESCE(MAX(call_index), 0) + 1
+                       FROM pod_customization_generation_calls
+                       WHERE batch_id = ? AND call_kind = ?""",
+                    (batch["batch_id"], call_kind),
+                ).fetchone()[0]
+                call_index = int(next_index)
             connection.execute(
                 """INSERT INTO pod_customization_generation_calls
                    (call_id, batch_id, workspace_id, owner_user_id, call_kind, call_index, status,

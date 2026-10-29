@@ -62,6 +62,8 @@ class DirectListingGridRequest:
     reference_images: tuple[ListingReferenceImage, ...] = ()
     # True 时忽略参考图里的公网 URL，改用本地字节（派生轮 URL 失败后的回退）。
     anchor_fallback: bool = False
+    # 批次级模型覆盖：自由定制在建批时冻结 Flash/Pro；空值表示沿用全局模型。
+    model: str = ""
     model_id: str = "gpt-image-2-2k"
     size: str = "1024x1024"
 
